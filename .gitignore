@@ -1,0 +1,15 @@
+# Claude files
+.claude/
+
+# Common files to ignore
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+node_modules/
+__pycache__/
+*.pyc
+.env
+.env.local
