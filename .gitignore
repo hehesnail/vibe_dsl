@@ -1,6 +1,9 @@
 # Claude files
 .claude/
 
+# TileLang source repository (cloned for analysis)
+/tilelang/
+
 # Common files to ignore
 .DS_Store
 *.swp
