@@ -1,98 +1,75 @@
-# TT Metalium 文档目录
+# TT Metalium 文档
 
-本文档目录包含 TT Metalium (TT-Metal) 编程框架的完整参考手册。
-
-## 主要文档
-
-### 📘 TT_Metalium_完整指南_v2.0.md
-
-**统一完整文档** (约14,000 行)
-
-v2.0 版本整合了以下内容的最终文档：
-- 原有完整参考手册的全部9个章节
-- METALIUM_GUIDE.md 官方指南的独特内容（翻译为中文）
-- TT-Metal Tech Reports 技术报告补充
-
-**文档结构**：
-
-```
-TT_Metalium_完整指南_v2.0.md
-│
-├── 前言
-│   ├── 执行摘要 (来自 METALIUM_GUIDE)
-│   ├── 目标读者
-│   └── 学习路径
-│
-├── 第一部分: 架构与概念
-│   ├── 第1章: 架构概述
-│   │   ├── 1.1-1.7: 原有架构内容
-│   │   └── 1.8: 硬件架构专家视角 (新增)
-│   │       ├── GPU 专家视角
-│   │       ├── CPU 专家视角
-│   │       ├── 缓存层次结构详解
-│   │       └── SRAM/缓冲区详解
-│   │
-│   ├── 第2章: 核心概念
-│   │   └── 2.5.6: 原生 Tile 计算详解 (新增)
-│   │
-│   └── 第3章: 编程示例
-│       └── 2.1: 完整的向量加法示例 (新增)
-│
-├── 第二部分: API 参考
-│   ├── 第4章: Host API 参考
-│   ├── 第5章: Circular Buffer API
-│   ├── 第6章: Data Movement API
-│   └── 第7章: Compute Kernel API
-│       └── 1.1: Compute API 跨代兼容性 (新增)
-│
-└── 第三部分: 进阶主题
-    ├── 第8章: 性能优化指南
-    │   └── 9: Fast Dispatch 详解 (新增)
-    └── 第9章: 调试工具详解
-```
-
-## v2.0 新增内容
-
-| 章节 | 新增内容 | 来源 |
-|------|---------|------|
-| **前言** | 执行摘要、目标读者指南 | METALIUM_GUIDE |
-| **第1.8节** | 硬件架构专家视角 | METALIUM_GUIDE |
-| **第2.5.6节** | 原生 Tile 计算详解 | METALIUM_GUIDE |
-| **第3章** | 完整的向量加法示例 | METALIUM_GUIDE |
-| **第7.1.1节** | Compute API 跨代兼容性 | METALIUM_GUIDE |
-| **第8.9节** | Fast Dispatch vs Slow Dispatch | METALIUM_GUIDE |
-
-## 快速开始
-
-### 新用户推荐路径
-1. 阅读 **前言 - 执行摘要** 了解整体架构
-2. 学习 **第1-2章** 掌握架构和核心概念
-3. 完成 **第3章 - 完整的向量加法示例**
-4. 根据需求查阅 **第4-7章** API 参考
-
-### 开发者推荐路径
-1. 直接查阅 **第1.8节 - 硬件架构专家视角** 深入理解架构
-2. 参考 **第8章 - 性能优化指南** 进行优化
-3. 遇到问题查看 **第9章 - 调试工具详解**
-
-## 版本信息
-
-- **文档版本**: v2.0
-- **最后更新**: 2026-03-13
-- **适用 TT-Metalium 版本**: v0.55+
-- **项目地址**: https://github.com/tenstorrent/tt-metal
-- **官方文档**: https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/
-
-### v2.0 更新说明
-
-本次更新整合了 METALIUM_GUIDE.md 官方指南的独特内容，包括：
-- Executive Summary 执行摘要
-- GPU/CPU 专家视角的架构对比
-- 缓存层次结构详解
-- 完整的向量加法编程示例
-- Compute API 跨代兼容性说明
-- Fast Dispatch 与 Slow Dispatch 详解
+本文档目录包含 Tenstorrent TT Metalium (TT-Metal) 编程框架的完整技术参考，涵盖使用指南和源码实现两大主题。
 
 ---
 
-*本文档是 TT Metalium API 深度调研与文档完善计划的成果 - v2.0 整合版*
+## 文档结构
+
+```
+tt_metal/
+├── guide/              # 使用指南与API参考
+│   └── TT_Metalium_完整指南_v2.0.md
+└── source_analysis/    # 源码深度解析
+    └── [13个模块文档]
+```
+
+---
+
+## 📘 guide/ - 使用指南
+
+**适合人群**: 应用开发者、算法工程师、初学用户
+
+包含 TT Metalium 的完整使用指南，从架构概念到API参考，从编程示例到性能优化：
+
+| 章节 | 内容 |
+|------|------|
+| **架构与概念** | 硬件架构概述、核心概念、编程模型 |
+| **API参考** | Host API、Circular Buffer、Data Movement、Compute Kernel |
+| **进阶主题** | 性能优化、调试工具、Fast/Slow Dispatch |
+
+**快速开始**: 新用户建议按顺序阅读，从架构概述到编程示例，逐步掌握 TT Metalium 编程。
+
+---
+
+## 🔍 source_analysis/ - 源码深度解析
+
+**适合人群**: 框架开发者、性能优化工程师、进阶用户
+
+对 `tt_metal/` 源码目录的深度分析，涵盖13个核心模块的实现细节：
+
+| 模块 | 描述 |
+|------|------|
+| **api/** | Host API 接口定义与实现 |
+| **impl/** | 核心实现层（Allocator、Dispatch、Program等）|
+| **llrt/** | 底层运行时（HAL、Firmware、Cluster管理）|
+| **hw/** | 硬件抽象层（Firmware、CKernels、寄存器定义）|
+| **distributed/** | 分布式执行与Mesh Workload |
+| **fabric/** | 芯片间通信与Collective通信 |
+| **jit_build/** | JIT编译系统与内核缓存 |
+| **tools/** | 性能分析工具与调试工具 |
+
+**使用建议**: 配合源码阅读，深入理解框架内部机制。
+
+---
+
+## 如何选择
+
+| 你的需求 | 推荐阅读 |
+|---------|----------|
+| 学习如何使用 TT Metalium 编程 | `guide/` |
+| 了解框架内部实现机制 | `source_analysis/` |
+| 编写高性能计算内核 | 两者结合 |
+| 调试性能问题 | `source_analysis/` 重点查看调度与内存分配 |
+| 移植模型到 Tenstorrent 硬件 | `guide/` 的API参考 + `source_analysis/` 的示例 |
+
+---
+
+## 资源链接
+
+- **项目地址**: https://github.com/tenstorrent/tt-metal
+- **官方文档**: https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/
+
+---
+
+*文档最后更新: 2026-03-13*
