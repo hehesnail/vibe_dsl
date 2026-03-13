@@ -1,221 +1,79 @@
 # TileLang 源代码分析
 
+TileLang 是一个用于开发高性能 GPU/CPU 内核的领域特定语言 (DSL)，基于 TVM 编译器基础设施构建。
+
 ## 项目概览
 
-TileLang 是一个用于开发高性能 GPU/CPU 内核的领域特定语言 (DSL)，基于 TVM 编译器基础设施构建。它通过 Pythonic 的语法让开发者能够编写接近硬件性能的内核代码，而无需直接编写 CUDA/ROCm 底层代码。
-
-## 项目规模
-
 - **Python 文件**: ~217 个
-- **C++ 文件**: ~200 个 (cc + h)
+- **C++ 文件**: ~200 个
 - **示例文件**: ~258 个
-- **仓库地址**: https://github.com/tile-ai/tilelang
+- **官方仓库**: https://github.com/tile-ai/tilelang
 
 ## 支持的硬件后端
 
 | 后端 | 状态 | 说明 |
 |------|------|------|
-| NVIDIA CUDA | ✅ 完全支持 | H100 (TMA/WGMMA), A100, V100, RTX 4090/3090/A6000 |
-| AMD ROCm/HIP | ✅ 完全支持 | MI250 (MatrixCore), MI300X (Async Copy) |
-| Apple Metal | ✅ 支持 | macOS GPU 加速 |
-| WebGPU | ✅ 支持 | Web 端推理 |
-| Huawei Ascend | ✅ 支持 | AscendC 和 Ascend NPU IR 后端 |
-
-## 整体架构
-
-```mermaid
-graph TB
-    subgraph "Python DSL Layer"
-        A[TileLang Python API] --> B[Language Core]
-        B --> C[Kernel Definition]
-        B --> D[Memory Operations]
-        B --> E[Compute Operations]
-        B --> F[Control Flow]
-    end
-
-    subgraph "JIT Compilation Layer"
-        C --> G[JIT Kernel]
-        G --> H[Adapter Layer]
-        H --> I[TVM FFI]
-        H --> J[CuTeDSL]
-        H --> K[NVRTC]
-        H --> L[Cython]
-    end
-
-    subgraph "C++ Core Layer"
-        I --> M[IR Definition]
-        M --> N[Operations]
-        N --> O[Copy/Memory]
-        N --> P[GEMM]
-        N --> Q[Reduce/Atomic]
-        M --> R[Layout System]
-        M --> S[Target Backends]
-    end
-
-    subgraph "Runtime Layer"
-        S --> T[CUDA Runtime]
-        S --> U[HIP Runtime]
-        S --> V[Metal Runtime]
-    end
-```
+| NVIDIA CUDA | ✅ | H100 (TMA/WGMMA), A100, V100, RTX 系列 |
+| AMD ROCm/HIP | ✅ | MI250/MI300X |
+| Apple Metal | ✅ | macOS GPU |
+| WebGPU | ✅ | Web 端推理 |
+| Huawei Ascend | ✅ | AscendC / NPU IR |
 
 ## 核心特性
 
-### 1. Pythonic DSL
-- 使用 Python 语法定义内核
-- 支持张量类型注解
-- 丰富的内置操作（copy, gemm, reduce 等）
-- 灵活的循环控制和并行化
-
-### 2. 自动优化
-- 自动向量化
-- 内存访问优化
-- L2 Cache Swizzling
-- 软件流水线 (Software Pipelining)
-
-### 3. 多后端支持
-- 统一的 DSL，生成不同后端代码
-- CUDA PTX 代码生成
-- HIP 代码生成
-- Metal Shading Language 生成
-
-### 4. 高级功能
-- 自动微分 (AutoDD)
-- 自动调优 (AutoTuner)
-- 性能分析 (Profiler)
-- 量化支持 (Quantization)
-
-## 模块依赖关系
-
-```mermaid
-graph LR
-    subgraph "Frontend"
-        A1[language] --> A2[kernel]
-        A1 --> A3[builtin]
-        A1 --> A4[allocate]
-        A1 --> A5[gemm_op]
-        A1 --> A6[reduce_op]
-    end
-
-    subgraph "JIT"
-        B1[jit] --> B2[adapter]
-        B2 --> B3[tvm_ffi]
-        B2 --> B4[nvrtc]
-        B2 --> B5[cython]
-    end
-
-    subgraph "Transform"
-        C1[transform] --> C2[python_transforms]
-    end
-
-    subgraph "Backend"
-        D1[cpp_core] --> D2[ir]
-        D1 --> D3[op]
-        D1 --> D4[layout]
-        D1 --> D5[target]
-    end
-
-    A2 --> B1
-    B1 --> C1
-    C1 --> D1
-```
-
-## 编译流程概述
-
-```mermaid
-flowchart TB
-    A[Python Kernel Definition] -->|TileLang DSL| B[AST Parsing]
-    B --> C[IR Generation]
-    C --> D[Python Transforms]
-    D --> E[C++ Core IR]
-    E --> F[Optimization Passes]
-    F --> G[Code Generation]
-    G --> H1[CUDA PTX]
-    G --> H2[HIP]
-    G --> H3[Metal]
-    H1 --> I[JIT Compilation]
-    H2 --> I
-    H3 --> I
-    I --> J[Executable Kernel]
-```
-
-## 目录结构
-
-```
-tilelang/
-├── tilelang/              # Python 包
-│   ├── __init__.py        # 包入口
-│   ├── language/          # DSL 语言核心
-│   │   ├── kernel.py      # 内核定义
-│   │   ├── builtin.py     # 内置操作
-│   │   ├── allocate.py    # 内存分配
-│   │   ├── gemm_op.py     # GEMM 操作
-│   │   ├── reduce_op.py   # 归约操作
-│   │   ├── copy_op.py     # 拷贝操作
-│   │   └── ...
-│   ├── jit/               # JIT 编译系统
-│   │   ├── __init__.py
-│   │   ├── kernel.py      # 内核编译
-│   │   └── adapter/       # 适配器
-│   ├── transform/         # Python 层变换
-│   ├── autodd.py          # 自动微分
-│   ├── autotuner/         # 自动调优
-│   ├── profiler/          # 性能分析
-│   └── ...
-├── src/                   # C++ 核心源码
-│   ├── ir.cc              # IR 定义
-│   ├── op/                # 操作实现
-│   │   ├── copy.cc        # 拷贝操作
-│   │   ├── gemm.cc        # GEMM 操作
-│   │   ├── reduce.cc      # 归约操作
-│   │   └── ...
-│   ├── layout/            # 布局系统
-│   ├── target/            # 目标后端
-│   ├── transform/         # C++ 变换
-│   └── runtime/           # 运行时
-├── examples/              # 示例代码
-│   ├── gemm/              # GEMM 示例
-│   ├── flash_attention/   # FlashAttention
-│   ├── deepseek_mla/      # MLA Decoding
-│   └── ...
-├── benchmark/             # 基准测试
-├── testing/               # 测试框架
-└── 3rdparty/              # 第三方依赖
-    ├── tvm/               # TVM 编译器
-    └── cutlass/           # CUTLASS 库
-```
-
-## 关键文件说明
-
-| 文件 | 说明 |
-|------|------|
-| `tilelang/__init__.py` | Python 包入口，导出公共 API |
-| `tilelang/language/kernel.py` | 内核定义核心 |
-| `tilelang/language/builtin.py` | 内置操作（47KB 核心文件）|
-| `tilelang/jit/__init__.py` | JIT 编译入口 |
-| `tilelang/jit/kernel.py` | 内核编译实现 |
-| `src/ir.cc` | C++ IR 定义 |
-| `src/op/copy.cc` | 拷贝操作实现（85KB 重要文件）|
-| `src/op/gemm.cc` | GEMM 操作实现 |
-| `CMakeLists.txt` | 构建配置 |
-| `pyproject.toml` | Python 包配置 |
-
-## 设计哲学
-
-1. **简洁性**: 使用 Pythonic 语法，降低 GPU 编程门槛
-2. **性能优先**: 生成的代码可达到手写 CUDA 的性能
-3. **可移植性**: 同一套代码可编译到不同硬件后端
-4. **可组合性**: 通过 DSL 原语组合实现复杂算子
-5. **与 TVM 生态集成**: 复用 TVM 的编译基础设施
+- **Pythonic DSL**: 使用 Python 语法定义高性能内核
+- **自动优化**: 向量化、内存优化、软件流水线
+- **多后端**: 统一 DSL 生成 CUDA/HIP/Metal 代码
+- **高级功能**: 自动微分、自动调优、性能分析、量化支持
 
 ## 文档索引
 
-- [项目架构详解](./01_architecture_overview.md)
-- [编译流程详解](./02_compilation_pipeline.md)
-- [Python 核心包分析](./python_core/)
-- [JIT 编译系统分析](./jit/)
-- [C++ 核心实现分析](./cpp_core/)
-- [高级功能模块分析](./advanced/)
-- [示例代码分析](./examples/)
+### Python 核心包
+- [01. 包入口与初始化](./python_core/01_package_init.md)
+- [03a. Kernel 与 Frame](./python_core/03_language_core/03a_kernel_and_frame.md)
+- [03b. 内置操作](./python_core/03_language_core/03b_builtin_ops.md)
+- [03c. 内存操作](./python_core/03_language_core/03c_memory_ops.md)
+- [03d. 计算操作](./python_core/03_language_core/03d_compute_ops.md)
+- [03e. 控制流](./python_core/03_language_core/03e_control_flow.md)
+- [03f. 数据类型与代理](./python_core/03_language_core/03f_data_types_and_proxy.md)
+- [03g. AST 与解析器](./python_core/03_language_core/03g_ast_and_parser.md)
+- [04. 变换系统](./python_core/04_transform.md)
+
+### JIT 编译系统
+- [01. JIT 核心](./jit/01_jit_core.md)
+- [02. TVM FFI 适配器](./jit/02_tvm_ffi_adapter.md)
+- [03. CuTeDSL 适配器](./jit/03_cutedsl_adapter.md)
+- [04. NVRTC 适配器](./jit/04_nvrtc_adapter.md)
+- [05. Cython 适配器](./jit/05_cython_adapter.md)
+
+### C++ 核心实现
+- [01. IR 定义](./cpp_core/01_ir_definition.md)
+- [02a. 拷贝与内存操作](./cpp_core/02_operations/02a_copy_and_memory.md)
+- [02b. GEMM 操作](./cpp_core/02_operations/02b_gemm_operations.md)
+- [02c. 归约与原子操作](./cpp_core/02_operations/02c_reduction_and_atomic.md)
+- [02d. 内置函数与数学函数](./cpp_core/02_operations/02d_builtin_and_math.md)
+- [03. 布局系统](./cpp_core/03_layout_system.md)
+- [04. 目标后端](./cpp_core/04_target_backends.md)
+- [05. 运行时系统](./cpp_core/05_runtime.md)
+- [06. 模板系统](./cpp_core/06_templates.md)
+
+### 高级功能
+- [01. 自动微分](./advanced/01_autodd.md)
+- [02. 自动调优](./advanced/02_autotuner.md)
+- [03. 性能分析](./advanced/03_profiler.md)
+- [04. 量化支持](./advanced/04_quantization.md)
+- [05. 分析工具](./advanced/05_analysis.md)
+- [06. Carver 模块](./advanced/06_carver.md)
+
+### 示例代码
+- [01. 基础示例 (GEMM)](./examples/01_basic_examples.md)
+- [02. FlashAttention](./examples/02_flash_attention.md)
+- [03. Linear Attention](./examples/03_linear_attention.md)
+- [04. DeepSeek MLA](./examples/04_deepseek_mla.md)
+- [05. 量化 GEMM](./examples/05_dequantize_gemm.md)
+- [06. 其他示例](./examples/06_other_examples.md)
+
+### 其他
 - [测试框架](./testing.md)
 - [基准测试](./benchmark.md)
+- [完成报告](./ANALYSIS_COMPLETE.md)
