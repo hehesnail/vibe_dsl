@@ -682,3 +682,350 @@ auto eth_kernel = CreateKernel(
 3. **批量优化：**
    - 批量传输比多次小传输更高效
    - 使用双缓冲重叠计算和通信
+
+---
+
+## 2.8 【技术报告补充】张量分片 (Tensor Sharding) 详解
+
+> **来源**: [Tech Report - Tensor Sharding](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/tensor_sharding/tensor_sharding.md)
+
+### 2.8.1 分片基本概念
+
+张量分片是将大张量分割成小的非重叠片段（shards），分布在多个内存 bank 上的技术。这是实现 Tenstorrent 设备高性能的关键。
+
+**分片 vs 交织 (Interleaved)**:
+
+| 特性 | Interleaved | Sharded |
+|------|-------------|---------|
+| 数据分布 | 轮询分布在所有 bank | 集中在指定 cores |
+| 数据局部性 | 低 | 高 |
+| 通信开销 | 高 | 低 |
+| 适用场景 | 通用计算 | 大规模并行计算 |
+
+### 2.8.2 2D 分片策略
+
+#### Height Sharding (高度分片)
+
+沿高度维度（除最后一维外的所有维度）分割张量：
+
+```python
+import ttnn
+import torch
+
+# 定义 core ranges (8 cores 在 2x4 网格)
+core_ranges = ttnn.CoreRangeSet({
+    ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(1, 3))
+})
+
+# 创建 height sharded tensor spec
+tensor_spec = ttnn.TensorSpec(
+    shape=(2, 128, 256),  # Batch=2, Height=128, Width=256
+    dtype=ttnn.float32,
+    layout=ttnn.TILE_LAYOUT,
+    buffer_type=ttnn.BufferType.L1
+).height_sharded(core_ranges)
+
+# 每个 core 获得: 32 rows × 256 columns
+# 总高度 128 * 2 / 8 cores = 32 rows per core
+```
+
+**适用场景**:
+- 行级操作（如 LayerNorm 的行方向）
+- 数据在行方向有大量并行性
+
+#### Width Sharding (宽度分片)
+
+沿宽度维度（最后一维）分割张量：
+
+```python
+# 定义 core ranges (4 cores 在 1x4 网格)
+core_ranges = ttnn.CoreRangeSet({
+    ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 3))
+})
+
+# 创建 width sharded tensor spec
+tensor_spec = ttnn.TensorSpec(
+    shape=(1, 64, 512),  # Batch=1, Height=64, Width=512
+    dtype=ttnn.float32,
+    layout=ttnn.TILE_LAYOUT,
+    buffer_type=ttnn.BufferType.L1
+).width_sharded(core_ranges)
+
+# 每个 core 获得: 64 rows × 128 columns
+# 总宽度 512 / 4 cores = 128 columns per core
+```
+
+**适用场景**:
+- 列级操作（如全连接层的权重矩阵）
+- 数据在列方向有大量并行性
+
+#### Block Sharding (块分片)
+
+同时在高度和宽度维度分割，形成 2D 网格：
+
+```python
+# 定义 core ranges (16 cores 在 4x4 网格)
+core_ranges = ttnn.CoreRangeSet({
+    ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(3, 3))
+})
+
+# 创建 block sharded tensor spec
+tensor_spec = ttnn.TensorSpec(
+    shape=(1, 256, 256),  # Batch=1, Height=256, Width=256
+    dtype=ttnn.float32,
+    layout=ttnn.TILE_LAYOUT,
+    buffer_type=ttnn.BufferType.L1
+).block_sharded(core_ranges)
+
+# 每个 core 获得: 64 rows × 64 columns
+# 256/4 = 64 per dimension in 4x4 core grid
+```
+
+**内存映射**:
+- core (0,0): 左上角块
+- core (1,0): 右上角块
+- core (0,1): 左下角块
+- core (1,1): 右下角块
+
+**适用场景**:
+- 2D 卷积
+- 矩阵乘法中的大矩阵分块
+- 空间局部性要求高的操作
+
+### 2.8.3 高级分片配置
+
+使用 `MemoryConfig` 进行精细控制：
+
+```python
+import ttnn
+
+# Height sharding 高级配置
+memory_config = ttnn.MemoryConfig(
+    ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+    ttnn.BufferType.L1,
+    ttnn.ShardSpec(
+        grid=ttnn.num_cores_to_corerangeset(
+            target_num_cores=8,
+            grid_size=[8, 7],
+            row_wise=True,
+        ),
+        shard_shape=[64, 512],  # 每个 shard: 64 rows x 512 columns
+        shard_orientation=ttnn.ShardOrientation.ROW_MAJOR,
+    ),
+)
+
+# Block sharding 高级配置
+memory_config = ttnn.MemoryConfig(
+    ttnn.TensorMemoryLayout.BLOCK_SHARDED,
+    ttnn.BufferType.L1,
+    ttnn.ShardSpec(
+        grid=ttnn.CoreRangeSet({
+            ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(3, 3))
+        }),
+        shard_shape=[64, 64],  # 每个 block: 64x64
+        shard_orientation=ttnn.ShardOrientation.ROW_MAJOR,
+    ),
+)
+```
+
+### 2.8.4 分片最佳实践
+
+1. **选择合适的分片策略**:
+   - 行操作多 → Height Sharding
+   - 列操作多 → Width Sharding
+   - 2D 操作 → Block Sharding
+
+2. **平衡计算负载**:
+   - 确保每个 core 获得大致相等的工作量
+   - 考虑 tile 对齐要求 (32 的倍数)
+
+3. **内存对齐**:
+   - Shard shape 应该与 tensor 对应维度匹配
+   - Width sharding: H dimension of shard = H dimension of tensor
+   - Height sharding: W dimension of shard = W dimension of tensor
+
+---
+
+## 2.9 【技术报告补充】Programming Examples 关键模式
+
+> **来源**: [Tech Report - Programming Examples](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/prog_examples/prog_examples.md)
+>
+> 以及 `tt_metal/programming_examples/` 目录下的示例代码
+
+### 2.9.1 Hello World Compute Kernel 模式
+
+最基本的 compute kernel 执行模式：
+
+```cpp
+// Host 端代码
+#include <tt-metalium/host_api.hpp>
+#include <tt-metalium/device.hpp>
+#include <tt-metalium/distributed.hpp>
+
+int main() {
+    // 1. 创建 MeshDevice (1x1)
+    auto mesh_device = distributed::MeshDevice::create_unit_mesh(0);
+    auto& cq = mesh_device->mesh_command_queue();
+
+    // 2. 创建 Program
+    Program program = CreateProgram();
+    CoreCoord core = {0, 0};
+
+    // 3. 创建 Compute Kernel
+    // TRISC0 (Unpack), TRISC1 (Math), TRISC2 (Pack) 协作执行
+    KernelHandle compute_kernel = CreateKernel(
+        program,
+        "compute/void_compute_kernel.cpp",
+        core,
+        ComputeConfig{}
+    );
+
+    // 4. 提交执行
+    distributed::MeshWorkload workload;
+    workload.add_program(device_range, std::move(program));
+    distributed::EnqueueMeshWorkload(cq, workload, false);
+    distributed::Finish(cq);
+
+    mesh_device->close();
+    return 0;
+}
+```
+
+**输出解读**:
+```
+0:(x=0,y=0):TR0: Hello, I am the UNPACK core running the compute kernel
+0:(x=0,y=0):TR1: Hello, I am the MATH core running the compute kernel
+0:(x=0,y=0):TR2: Hello, I am the PACK core running the compute kernel
+```
+- `0`: Device ID
+- `(x=0,y=0)`: Tensix core 坐标
+- `TR0/TR1/TR2`: 三个计算核心 (UNPACK/MATH/PACK)
+
+### 2.9.2 Hello World Data Movement Kernel 模式
+
+Data Movement Kernel 的基本模式：
+
+```cpp
+// Host 端代码
+Program program = CreateProgram();
+
+// 创建 Reader Kernel (BRISC - RISC-V 0)
+KernelHandle data_movement_kernel_0 = CreateKernel(
+    program,
+    "dataflow/void_dataflow_kernel.cpp",
+    core,
+    DataMovementConfig{
+        .processor = DataMovementProcessor::RISCV_0,
+        .noc = NOC::RISCV_0_default
+    }
+);
+
+// 创建 Writer Kernel (NCRISC - RISC-V 1)
+KernelHandle data_movement_kernel_1 = CreateKernel(
+    program,
+    "dataflow/void_dataflow_kernel.cpp",
+    core,
+    DataMovementConfig{
+        .processor = DataMovementProcessor::RISCV_1,
+        .noc = NOC::RISCV_1_default
+    }
+);
+```
+
+**输出解读**:
+```
+0:(x=0,y=0):NC: My logical coordinates are 0,0
+0:(x=0,y=0):NC: Hello, host, I am running on Data Movement core 1.
+0:(x=0,y=0):BR: My logical coordinates are 0,0
+0:(x=0,y=0):BR: Hello, host, I am running on Data Movement core 0.
+```
+- `NC`: Data Movement core 1 (NCRISC)
+- `BR`: Data Movement core 0 (BRISC)
+
+### 2.9.3 三 Kernel 协作完整示例
+
+典型的 Reader → Compute → Writer 流水线：
+
+```cpp
+// Host 端配置
+Program program = CreateProgram();
+
+// 1. 创建输入/输出 Circular Buffers
+CircularBufferConfig cb_in_config(
+    num_tiles * tile_size,
+    {{cb_in0, data_format}}
+).set_page_size(cb_in0, tile_size);
+auto cb_in = CreateCircularBuffer(program, core, cb_in_config);
+
+CircularBufferConfig cb_out_config(
+    num_tiles * tile_size,
+    {{cb_out0, data_format}}
+).set_page_size(cb_out0, tile_size);
+auto cb_out = CreateCircularBuffer(program, core, cb_out_config);
+
+// 2. 创建 Reader Kernel
+auto reader = CreateKernel(
+    program, "reader.cpp", core,
+    DataMovementConfig{
+        .processor = DataMovementProcessor::RISCV_0,
+        .noc = NOC::RISCV_0_default
+    }
+);
+
+// 3. 创建 Writer Kernel
+auto writer = CreateKernel(
+    program, "writer.cpp", core,
+    DataMovementConfig{
+        .processor = DataMovementProcessor::RISCV_1,
+        .noc = NOC::RISCV_1_default
+    }
+);
+
+// 4. 创建 Compute Kernel
+auto compute = CreateKernel(
+    program, "compute.cpp", core,
+    ComputeConfig{
+        .math_fidelity = MathFidelity::HiFi4,
+        .fp32_dest_acc_en = false
+    }
+);
+
+// 5. 设置 Runtime Args
+SetRuntimeArgs(program, reader, core, {dram_addr, num_tiles});
+SetRuntimeArgs(program, writer, core, {dram_addr, num_tiles});
+SetRuntimeArgs(program, compute, core, {num_tiles});
+```
+
+### 2.9.4 常用编程模式
+
+**模式1: 双缓冲 (Double Buffering)**
+```cpp
+// Reader 在 Compute 处理当前 tile 时读取下一个 tile
+uint32_t num_input_tiles = 2;  // 双缓冲
+CircularBufferConfig cb_config(
+    num_input_tiles * single_tile_size,
+    {{cb_index, data_format}}
+).set_page_size(cb_index, single_tile_size);
+```
+
+**模式2: 多 Tile 批量处理**
+```cpp
+// 一次处理多个 tile 减少 overhead
+const uint32_t batch_size = 8;
+cb_reserve_back(cb_id, batch_size);
+// ... 批量读取/处理 ...
+cb_push_back(cb_id, batch_size);
+```
+
+**模式3: 分片并行**
+```cpp
+// 在多个 cores 上并行处理不同数据分片
+CoreRange cores({0, 0}, {7, 7});  // 8x8 grid
+for (int y = 0; y < 8; y++) {
+    for (int x = 0; x < 8; x++) {
+        CoreCoord core(x, y);
+        SetRuntimeArgs(program, kernel, core,
+            {shard_addr, shard_size, x, y});
+    }
+}
+```

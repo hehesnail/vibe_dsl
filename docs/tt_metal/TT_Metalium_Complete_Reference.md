@@ -1,10 +1,28 @@
 # TT Metalium (TT-Metal) 编程框架完整参考手册
 
-> **版本**: v1.0
-> **最后更新**: 2026-03-12
+> **版本**: v1.1
+> **最后更新**: 2026-03-13
 > **项目地址**: https://github.com/tenstorrent/tt-metal
 > **官方文档**: https://docs.tenstorrent.com/tt-metal/latest/tt-metalium/
 > **适用版本**: TT-Metalium v0.55+
+
+---
+
+## 更新说明 (v1.1)
+
+本次更新基于 [TT-Metal Tech Reports](https://github.com/tenstorrent/tt-metal/tree/main/tech_reports) 和 [Programming Examples](https://github.com/tenstorrent/tt-metal/tree/main/tt_metal/programming_examples) 进行了深度增强：
+
+### 新增技术报告补充内容
+
+| 章节 | 新增内容 | 来源 |
+|------|---------|------|
+| **第1章 架构概述** | 矩阵引擎架构详解、DRAM 带宽饱和策略、Block Float 数据格式、张量布局与内存 | Tech Reports |
+| **第2章 核心概念** | 张量分片详解 (Height/Width/Block Sharding)、Hello World 编程模式 | Tech Reports + Programming Examples |
+| **第8章 性能优化** | Metal Trace + 多 Command Queue 深度优化指南 | Tech Report - AdvancedPerformanceOptimizationsForModels |
+
+**标注说明**: 新增内容使用 **【技术报告补充】** 标记，并注明具体来源链接。
+
+---
 
 ---
 

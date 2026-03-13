@@ -1158,9 +1158,284 @@ void tensor_parallel_example() {
 
 ---
 
-## 5. Metal Trace 深度优化
+## 5. 【技术报告补充】Metal Trace 与多 Command Queue 深度优化
 
-### 5.1 Trace 捕获最佳实践
+> **来源**: [Tech Report - AdvancedPerformanceOptimizationsForModels](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/AdvancedPerformanceOptimizationsForModels/AdvancedPerformanceOptimizationsForModels.md)
+
+### 5.1 Metal Trace 概述
+
+Metal Trace 是一种性能优化特性，旨在消除模型执行的主机开销。当执行/分发模型的主机时间超过设备运行操作所需时间时，使用 Trace 可以获得显著收益。
+
+**工作原理**:
+- 将操作分发命令记录到 DRAM 缓冲区
+- 重放这些命令时无需重新构建操作
+- 所有操作参数（输入/输出张量形状、地址等）静态保存
+
+**适用场景**:
+- 图像分类等静态尺寸输入/输出
+- 生成式模型的某些部分（需使用多个 trace）
+- 不适合动态变化的序列长度（如文本生成）
+
+**性能对比**:
+```
+Host-Bound Model (无 Trace):
+[Op1]---gap---[Op2]---gap---[Op3]---gap---[Op4]
+        ↑ 主机无法提前分发命令，设备等待
+
+With Trace:
+[Op1][Op2][Op3][Op4]  ← 设备端间隙大幅减小
+  ↑
+主机几乎立即完成分发
+```
+
+### 5.2 Trace API 详解
+
+#### 核心 API
+
+```python
+# 1. trace_region_size 配置
+# 创建设备时预分配 trace 缓冲区大小
+ttnn.open_device(device_id=0, trace_region_size=800768)
+
+# 2. 开始 Trace 捕获
+tid = ttnn.begin_trace_capture(device, cq_id=0)
+
+# 3. 结束 Trace 捕获
+ttnn.end_trace_capture(device, tid, cq_id=0)
+
+# 4. 执行 Trace
+ttnn.execute_trace(device, tid, cq_id=0, blocking=False)
+
+# 5. 释放 Trace
+ttnn.release_trace(device, tid)
+```
+
+#### Trace 缓冲区大小确定
+
+如果 trace 缓冲区不足，会报告所需大小：
+```
+Always | FATAL | Creating trace buffers of size 751616B on device 0,
+         but only 0B is allocated for trace region.
+```
+
+**Pytest 配置**:
+```python
+@pytest.mark.parametrize(
+    "device_params",
+    [{"l1_small_size": 24576, "trace_region_size": 800768}],
+    indirect=True
+)
+```
+
+### 5.3 Trace 使用模式
+
+#### 模式 1: DRAM 持久输入 (Persistent DRAM Input)
+
+适用于无法将所有张量放入 L1 的模型：
+
+```python
+# 在 DRAM 中分配持久输入，通过 reshard 移到 L1
+input_dram_tensor = ttnn.allocate_tensor_on_device(
+    shape, dtype, layout, device, sharded_dram_mem_config
+)
+
+# 首次运行编译模型
+ttnn.copy_host_to_device_tensor(host_tensor, input_dram_tensor, cq_id=0)
+input_l1_tensor = ttnn.to_memory_config(input_dram_tensor, sharded_l1_mem_config)
+output_tensor = run_model(input_l1_tensor)
+
+# 捕获 Trace
+ttnn.copy_host_to_device_tensor(host_tensor, input_dram_tensor, cq_id=0)
+tid = ttnn.begin_trace_capture(device, cq_id=0)
+input_l1_tensor = ttnn.to_memory_config(input_dram_tensor, sharded_l1_mem_config)
+output_tensor = run_model(input_l1_tensor)  # 保持输出张量引用
+ttnn.end_trace_capture(device, tid, cq_id=0)
+
+# 执行 Trace
+ttnn.copy_host_to_device_tensor(host_tensor, input_dram_tensor, cq_id=0)
+ttnn.execute_trace(device, tid, cq_id=0, blocking=False)
+host_output_tensor = output_tensor.cpu(blocking=False)
+ttnn.synchronize_device(device)
+```
+
+#### 模式 2: L1 非持久输入 (Non-Persistent L1 Input)
+
+适用于模型在 L1 放不下持久输入的情况：
+
+```python
+# 首次运行编译模型
+input_l1_tensor = host_tensor.to(device, sharded_l1_mem_config)
+output_tensor = run_model(input_l1_tensor)
+
+# 捕获 Trace
+input_l1_tensor = host_tensor.to(device, sharded_l1_mem_config)
+input_trace_addr = input_l1_tensor.buffer_address()  # 记录地址
+spec = input_l1_tensor.spec
+output_tensor.deallocate(force=True)  # 释放输出以重用地址
+
+tid = ttnn.begin_trace_capture(device, cq_id=0)
+output_tensor = run_model(input_l1_tensor)
+
+# 验证输入张量分配到相同地址
+input_l1_tensor = ttnn.allocate_tensor_on_device(spec, device)
+assert input_trace_addr == input_l1_tensor.buffer_address()
+ttnn.end_trace_capture(device, tid, cq_id=0)
+
+# 执行 Trace
+ttnn.copy_host_to_device_tensor(host_tensor, input_l1_tensor, cq_id=0)
+ttnn.execute_trace(device, tid, cq_id=0, blocking=False)
+host_output_tensor = output_tensor.cpu(blocking=False)
+ttnn.synchronize_device(device)
+```
+
+### 5.4 多 Command Queue 优化
+
+#### 概述
+
+Metal 支持最多两个独立的 command queue 用于 fast dispatch：
+- 两个队列相互独立，可并行分发命令
+- 需要事件同步来协调队列间的依赖关系
+- 常见配置：一个队列专门用于输入写入，另一个用于程序执行和输出读取
+
+**使用场景**:
+- 设备 bound 且输入张量写入时间较长
+- 需要重叠下一个输入的写入与当前模型运行的执行
+
+**性能对比**:
+```
+单 CQ (IO-Bound Model):
+[Model Run 1]---gap---[Model Run 2]---gap---[Model Run 3]
+        ↑ 主机等待写入完成，设备空闲
+
+双 CQ (Multi-CQ):
+[Model Run 1][Model Run 2][Model Run 3]  ← 无间隙
+   ↑
+CQ1 写入 Input 2 与 Model Run 1 执行重叠
+```
+
+#### 多 CQ API
+
+```python
+# 配置多个 command queues (最多 2 个)
+@pytest.mark.parametrize(
+    "device_params",
+    [{
+        "l1_small_size": 24576,
+        "trace_region_size": 800768,
+        "num_command_queues": 2
+    }],
+    indirect=True
+)
+
+# 事件同步 API
+event = ttnn.record_event(device, cq_id=0)  # 在 CQ0 上记录事件
+ttnn.wait_for_event(cq_id=1, event=event)  # CQ1 等待事件
+
+# 预分配输入张量
+device_tensor = ttnn.allocate_tensor_on_device(
+    shape, dtype, layout, device, input_mem_config
+)
+ttnn.copy_host_to_device_tensor(host_tensor, device_tensor, cq_id=1)
+```
+
+#### 多 CQ 使用模式
+
+**模式 1: CQ0 执行+读取，CQ1 写入**
+
+```python
+# 配置
+ops_and_output_cq = 0   # 操作执行和输出读取
+input_write_cq = 1      # 输入写入
+
+# 预分配输入
+device_input = ttnn.allocate_tensor_on_device(input_shape, device)
+
+# 首次运行
+ttnn.copy_host_to_device_tensor(host_input, device_input, cq_id=input_write_cq)
+output = model(device_input)  # 在 CQ0 上
+
+# 生产循环
+for i in range(num_iterations):
+    # CQ0: 执行模型并读取输出
+    output = model(device_input)
+    host_output = output.cpu(blocking=False, cq_id=ops_and_output_cq)
+
+    # CQ1: 准备下一个输入（与上面重叠）
+    ttnn.copy_host_to_device_tensor(
+        next_host_input, device_input, cq_id=input_write_cq
+    )
+
+    ttnn.synchronize_device(device)
+```
+
+**模式 2: CQ0 执行，CQ1 写入+读取**
+
+```python
+ops_cq = 0          # 仅操作执行
+io_cq = 1           # 输入写入和输出读取
+
+device_input = ttnn.allocate_tensor_on_device(input_shape, device)
+device_output = ttnn.allocate_tensor_on_device(output_shape, device)
+
+for i in range(num_iterations):
+    # CQ1: 写入输入
+    ttnn.copy_host_to_device_tensor(host_input, device_input, cq_id=io_cq)
+
+    # CQ0: 执行（等待输入写入完成）
+    ttnn.wait_for_event(ops_cq, input_write_event)
+    model(device_input, output_tensor=device_output)
+    ttnn.record_event(ops_cq, compute_done_event)
+
+    # CQ1: 读取输出（等待计算完成）
+    ttnn.wait_for_event(io_cq, compute_done_event)
+    host_output = device_output.cpu(blocking=False, cq_id=io_cq)
+```
+
+### 5.5 Trace + 多 CQ 组合优化
+
+将 Trace 和多 CQ 结合使用以获得最佳性能：
+
+```python
+# 配置
+device_params = {
+    "l1_small_size": 24576,
+    "trace_region_size": 800768,
+    "num_command_queues": 2
+}
+
+ops_cq = 0      # 操作执行
+io_cq = 1       # I/O 操作
+
+# 预分配张量
+input_dram = ttnn.allocate_tensor_on_device(input_shape, device, dram_mem_config)
+output_tensor = ttnn.allocate_tensor_on_device(output_shape, device)
+
+# 首次运行编译
+ttnn.copy_host_to_device_tensor(host_input, input_dram, cq_id=io_cq)
+input_l1 = ttnn.to_memory_config(input_dram, l1_mem_config)
+output = model(input_l1, output_tensor=output_tensor)
+
+# 捕获 Trace（在 ops_cq 上）
+tid = ttnn.begin_trace_capture(device, cq_id=ops_cq)
+input_l1 = ttnn.to_memory_config(input_dram, l1_mem_config)
+output = model(input_l1, output_tensor=output_tensor)
+ttnn.end_trace_capture(device, tid, cq_id=ops_cq)
+
+# 生产循环
+for i in range(num_iterations):
+    # CQ1: 写入下一个输入（与上一迭代执行重叠）
+    ttnn.copy_host_to_device_tensor(next_input, input_dram, cq_id=io_cq)
+
+    # CQ0: 执行 Trace
+    ttnn.execute_trace(device, tid, cq_id=ops_cq, blocking=False)
+
+    # CQ1: 读取输出
+    host_output = output_tensor.cpu(blocking=False, cq_id=io_cq)
+
+ttnn.synchronize_device(device)
+```
+
+### 5.6 Trace 捕获最佳实践（传统）
 
 #### Trace 工作流程
 

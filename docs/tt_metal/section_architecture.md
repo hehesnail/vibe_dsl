@@ -453,7 +453,218 @@ noc_async_write_multicast(
 
 ---
 
+## 1.8 【技术报告补充】矩阵引擎架构详解
+
+> **来源**: [Tech Report - Matrix Engine](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/matrix_engine/matrix_engine.md)
+
+### 1.8.1 矩阵引擎操作类型
+
+Wormhole 矩阵引擎支持以下操作：矩阵乘法、归约 (Reduce)、逐元素加法/减法/乘法、以及转置。
+
+#### 矩阵乘法性能
+
+Wormhole 矩阵引擎在**单周期**内可执行：
+- **8×16 × 16×16 = 8×16** 矩阵乘法
+- 相当于 **4096 次乘加操作 (MACs)** 每周期
+- 在 1GHz 频率下达到 **4 TFLOPS** 每矩阵引擎
+
+**输入尺寸要求**:
+- 输入 A (in0): 最小 8×16
+- 输入 B (in1): 最小 16×16
+- 若输入小于最小尺寸，有效吞吐按比例下降
+
+#### 归约操作性能
+
+Wormhole 矩阵引擎在**单周期**内可执行：
+- **16×16 归约** (Max/Average/Sum)
+- 相当于 **512 次乘加操作** 每周期
+- 在 1GHz 频率下达到 **0.512 TFLOPS** 每矩阵引擎
+
+### 1.8.2 Math Fidelity 配置
+
+Wormhole 使用 **5b × 7b 乘法器**，Math Fidelity 控制运算精度：
+
+| Fidelity 级别 | SrcA 精度 | SrcB 精度 | 相对性能 | TFLOPS |
+|--------------|-----------|-----------|----------|--------|
+| **LoFi** | 1隐位 + 4 MSB | 1隐位 + 6 MSB | 1.0× | 4.0 |
+| **HiFi2** | 1隐位 + 4 LSB | 1隐位 + 6 MSB | 0.5× | 2.0 |
+| **HiFi3** | 1隐位 + 4 MSB | 1隐位 + 6 LSB | 0.33× | 1.33 |
+| **HiFi4** | 1隐位 + 4 LSB | 1隐位 + 6 LSB | 0.25× | 1.0 |
+
+```cpp
+// Wormhole 计算核配置
+struct WormholeComputeKernelConfig {
+    MathFidelity math_fidelity = MathFidelity::LoFi;  // 默认 LoFi
+    bool math_approx_mode = true;    // 近似模式 (SFPU 操作)
+    bool fp32_dest_acc_en = false;   // FP32 累加
+    bool packer_l1_acc = false;      // L1 累加模式
+};
+```
+
+### 1.8.3 关键配置参数
+
+**Math Approx Mode**:
+- 某些 SFPU 操作支持近似模式
+- 在性能和精度之间权衡
+- 影响的操作包括：指数、GELU、平方根等
+
+**FP32 Dest Acc (DST_ACCUM_MODE)**:
+- Wormhole FPU 支持 Float16/Float16_b 或 Float32 累加
+- 启用 `fp32_dest_acc_en` 时，目的寄存器容量减半
+- Float16_b: 8 tiles; Float32: 4 tiles (使用 DstSync::Half)
+
+**Packer L1 Accumulation**:
+- 在 L1 内存中执行累加
+- Packer 读取输入地址，与 Dest 值累加后写回
+- 适用于高精度累加后转低精度输出
+
+---
+
+## 1.9 【技术报告补充】DRAM 带宽饱和策略
+
+> **来源**: [Tech Report - Saturating DRAM Bandwidth](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/Saturating_DRAM_bandwidth/Saturating_DRAM_bandwidth.md)
+
+### 1.9.1 Wormhole DRAM 架构
+
+Wormhole 架构特点：
+- **12 个 DRAM bank** (Grayskull 有 8 个)
+- 理论带宽：**288 GB/s** (@12Gbps) / **336 GB/s** (@14Gbps)
+- 实际达成：**>92%** 带宽利用率
+
+### 1.9.2 单 Bank 带宽饱和策略
+
+**问题**: 屏障(barrier)导致带宽损失
+- 等待当前块读取完成后才发送后续请求
+- DRAM 在请求间隙处于空闲状态
+
+**解决方案**: 事务 ID (tag) 流水线
+```cpp
+// 为每个数据块分配事务 ID
+// Block 0 -> tag 1
+// Block 1 -> tag 2
+// ...
+// 在第 N 迭代等待 tag N-1，同时发送 tag N 请求
+// 确保始终有一个读取请求在飞行中
+```
+
+### 1.9.3 全 DRAM 带宽饱和策略
+
+**NoC 拥塞避免**:
+1. **每 bank 一个 reader**: 避免多个 reader 访问同一 bank
+2. **就近放置 reader**: 将 reader 放置在距离 DRAM bank 最近的位置
+3. **使用不同虚拟通道 (VC)**: 同一行的 reader 使用不同 NoC VC
+
+**Wormhole harvested row 处理**:
+- N150: 1 行 harvested
+- N300: 2 行 harvested
+- Reader 需要移位到可用坐标，避免路由重叠
+
+### 1.9.4 Shard 张量在 DRAM 中的应用
+
+**适用场景**:
+- MatMul 中 in0 小高度大宽度 (如 32×1024)
+- in1 大宽度 (如 1024×8192)
+- DRAM bound 的计算
+
+**优化策略**:
+1. in0 按宽度 shard 到顶部行
+2. in1 按宽度 shard 到 12 个 DRAM bank
+3. 使用多播(multicast)将 in0 shard 广播到所有 worker core
+4. 输入张量双缓冲，重叠数据移动与计算
+
+**性能数据**:
+
+| Test | DRAM BW @12GBps | DRAM BW @14GBps |
+|------|-----------------|-----------------|
+| DRAM spec speed | 288 GB/s | 336 GB/s |
+| DRAM u-benchmark | 267 GB/s | 310 GB/s |
+| Llama3-70 decode | 239-260 GB/s | 247-294 GB/s |
+| Mixtral8x7b decode | 243-261 GB/s | 267-300 GB/s |
+
+---
+
+## 1.10 【技术报告补充】数据格式详解
+
+> **来源**: [Tech Report - Data Formats](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/data_formats/data_formats.md)
+
+### 1.10.1 Block Float 格式
+
+Tenstorrent 支持 Block Float 数据格式以平衡精度和内存效率：
+
+**BFloat16 → Block Float 转换**:
+- 16 个数据共享一个指数
+- 每个数据有 7 位尾数 (mantissa)
+- BFP8 数据大小约为 BF16 的一半
+
+**支持的 Block Float 格式**:
+- **BFP8**: 16 数据共享指数，7 位尾数
+- **BFP4**: 16 数据共享指数，3 位尾数
+- **BFP2**: 16 数据共享指数，1 位尾数
+
+### 1.10.2 尾数舍入规则
+
+从高精度转换到低精度时：
+1. 尾数舍入到最近值
+2. 遇到平局 (tie) 时，舍入到最近的偶数值
+
+**舍入过程**:
+- Float32 到 BFP8: 23 位尾数舍入到 7 位
+- 保留 6 位 + 1 个隐位 (hidden bit)
+- 使用 guard bit 判断舍入方向
+
+---
+
+## 1.11 【技术报告补充】张量布局与内存
+
+> **来源**: [Tech Report - Tensor Layouts](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/tensor_layouts/tensor_layouts.md)
+
+### 1.11.1 Tensor Layout 类型
+
+**Row-Major Layout**:
+- 每行对应 buffer 中的一个 page
+- 64×64 张量 = 64 个 pages
+
+**Tiled Layout**:
+- Pages 表示为 2D tiles (默认 32×32)
+- 64×64 张量 = 4 个 tiles (每个 32×32)
+
+### 1.11.2 Tile 内部结构
+
+**Face (面)**:
+- 每个 tile 分成 4 个 face (16×16)
+- 矩阵引擎原生支持 16×16 乘法
+- Tile 乘法分解为多个 face 乘法
+
+**Face 内存布局**:
+```
+Tile (32×32):
+┌──────────────┬──────────────┐
+│   Face 0     │   Face 1     │  (rows 0-15)
+│  (16×16)     │  (16×16)     │
+├──────────────┼──────────────┤
+│   Face 2     │   Face 3     │  (rows 16-31)
+│  (16×16)     │  (16×16)     │
+└──────────────┴──────────────┘
+
+内存顺序: face0 -> face1 -> face2 -> face3 (行优先)
+```
+
+### 1.11.3 Memory Layout 类型
+
+**Interleaved (交织)**:
+- Pages 在多个 bank 间轮询分配
+- 新张量总是从 bank 0 开始分配
+- 可能导致张量间的内存碎片
+
+**Sharded (分片)**:
+- 张量被分成 shards 分布在指定 cores 上
+- 提高数据局部性，减少通信开销
+- 支持 Height/Width/Block sharding
+
+---
+
 *本文档基于 TT Metalium 官方文档和源代码结构编写*
+*技术报告补充内容来源: tenstorrent/tt-metal/tech_reports/*
 *参考: /root/dev/vibe_dsl/TT_Metal_Documentation_Summary.md*
 *      /root/dev/vibe_dsl/docs/tt_metal/api_reference_scraped.md*
 *      /root/dev/vibe_dsl/docs/tt_metal/github_repo_structure.md*
