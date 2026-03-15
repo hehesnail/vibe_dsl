@@ -33,6 +33,7 @@
 | Phase 0 | TileLang+Blackhole 配置 | ✅ 已完成 | - | [phase0_tilelang_blackhole_config](./dev_design/phase0_tilelang_blackhole_config.md) | USE_BLACKHOLE, CodeGen 框架 |
 | Phase 1 | CodeGen 框架 | ✅ 已完成 | - | [phase1_codegen_framework](./dev_design/phase1_codegen_framework.md) | 单核 Copy, Reader/Writer Kernel |
 | Phase 1 | Runtime 框架 | ✅ 已完成 | - | [phase1_runtime_framework](./dev_design/phase1_runtime_framework.md) | Build函数, DeviceAPI, 测试 |
+| Phase 1 | E2E Copy 测试 | ✅ 已完成 | - | - | 端到端测试, 4/4 通过 |
 | Phase 2 | SplitBlackholeKernel | ⏳ 未开始 | - | - | R/C/W 拆分 |
 | Phase 2 | PlanBlackholeCB | ⏳ 未开始 | - | - | CB 分配 |
 | Phase 2 | AssignBlackholeCores | ⏳ 未开始 | - | - | 140 核分配 |
