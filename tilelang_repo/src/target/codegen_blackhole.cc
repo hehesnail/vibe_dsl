@@ -209,28 +209,42 @@ std::string CodeGenBlackhole::GenerateSimpleCopyKernel(
                              tile_size_bytes);
   os << "\n";
 
-  // Combined kernel (sequential execution)
+  // Combined kernel (sequential execution) - TT-Sim compatible version
   os << "// Combined Kernel - Single Core Sequential Execution\n";
+  os << "// TT-Sim compatible: uses InterleavedAddrGen for address translation\n";
   os << "void " << func_name << "(uint64_t src_dram_addr, uint64_t dst_dram_addr) {\n";
   os << "  // Execute reader then writer sequentially on same core\n";
   os << "  // CB synchronization ensures data consistency\n";
   os << "  \n";
+  os << "  constexpr uint32_t tile_size = " << tile_size_bytes << ";\n";
+  os << "  constexpr uint32_t num_tiles = " << num_tiles << ";\n";
+  os << "  \n";
+  os << "  // Create address generators for TT-Sim compatibility\n";
+  os << "  InterleavedAddrGen<true> src_gen = {\n";
+  os << "    .bank_base_address = (uint32_t)src_dram_addr,\n";
+  os << "    .page_size = tile_size\n";
+  os << "  };\n";
+  os << "  InterleavedAddrGen<true> dst_gen = {\n";
+  os << "    .bank_base_address = (uint32_t)dst_dram_addr,\n";
+  os << "    .page_size = tile_size\n";
+  os << "  };\n";
+  os << "  \n";
   os << "  // Reader: DRAM -> CB\n";
-  os << "  for (uint32_t i = 0; i < " << num_tiles << "; i++) {\n";
+  os << "  for (uint32_t i = 0; i < num_tiles; i++) {\n";
   os << "    cb_reserve_back(0, 1);\n";
   os << "    uint32_t write_ptr = get_write_ptr(0);\n";
-  os << "    noc_async_read(src_dram_addr + i * " << tile_size_bytes
-     << ", write_ptr, " << tile_size_bytes << ");\n";
+  os << "    uint64_t src_noc_addr = get_noc_addr(i, src_gen);\n";
+  os << "    noc_async_read(src_noc_addr, write_ptr, tile_size);\n";
   os << "    noc_async_read_barrier();\n";
   os << "    cb_push_back(0, 1);\n";
   os << "  }\n";
   os << "  \n";
   os << "  // Writer: CB -> DRAM\n";
-  os << "  for (uint32_t i = 0; i < " << num_tiles << "; i++) {\n";
+  os << "  for (uint32_t i = 0; i < num_tiles; i++) {\n";
   os << "    cb_wait_front(0, 1);\n";
   os << "    uint32_t read_ptr = get_read_ptr(0);\n";
-  os << "    noc_async_write(read_ptr, dst_dram_addr + i * " << tile_size_bytes
-     << ", " << tile_size_bytes << ");\n";
+  os << "    uint64_t dst_noc_addr = get_noc_addr(i, dst_gen);\n";
+  os << "    noc_async_write(read_ptr, dst_noc_addr, tile_size);\n";
   os << "    noc_async_write_barrier();\n";
   os << "    cb_pop_front(0, 1);\n";
   os << "  }\n";
