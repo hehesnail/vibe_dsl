@@ -16,10 +16,31 @@
 
 ## 当前阶段
 
-**阶段**: Phase 1 - CodeGen 与 Runtime 框架
-**目标**: 实现 Blackhole 后端代码生成和运行时模块
+**阶段**: Phase 3 - GEMM 支持
+**目标**: 实现 matmul_tiles 和完整 GEMM 算子
 **开始日期**: 2026-03-16
-**预计完成**: 2026-03-20
+**预计完成**: 2026-03-25
+
+### 上一阶段总结 (Phase 2)
+
+**状态**: ✅ 已完成
+**完成日期**: 2026-03-16
+**主要成果**:
+- **SplitBlackholeKernel Pass**: 将 unified PrimFunc 拆分为 Reader/Compute/Writer 三个 kernel
+- **PlanBlackholeCB Pass**: 规划 64 个 CB 的分配，验证 1.5MB L1 限制
+- **AssignBlackholeCores Pass**: 将 T.Kernel grid 映射到 Blackhole 14x10 Tensix core grid
+- 单元测试: 20 个测试用例覆盖所有三个 Pass
+- 设计文档: 3 份详细设计文档
+
+### Phase 1 总结
+
+**状态**: ✅ 已完成
+**完成日期**: 2026-03-16
+**主要成果**:
+- CodeGen 框架: 支持生成 TT-Metal 风格的 Reader/Writer Kernel
+- Runtime 框架: Build 函数和 Device API 实现
+- TT-Sim 端到端测试: ✅ 4096 个元素全部正确复制
+- 详细报告: [PHASE1_TTSIM_TEST_REPORT.md](../tests/target/PHASE1_TTSIM_TEST_REPORT.md)
 
 ---
 
@@ -33,10 +54,10 @@
 | Phase 0 | TileLang+Blackhole 配置 | ✅ 已完成 | - | [phase0_tilelang_blackhole_config](./dev_design/phase0_tilelang_blackhole_config.md) | USE_BLACKHOLE, CodeGen 框架 |
 | Phase 1 | CodeGen 框架 | ✅ 已完成 | - | [phase1_codegen_framework](./dev_design/phase1_codegen_framework.md) | 单核 Copy, Reader/Writer Kernel |
 | Phase 1 | Runtime 框架 | ✅ 已完成 | - | [phase1_runtime_framework](./dev_design/phase1_runtime_framework.md) | Build函数, DeviceAPI, 测试 |
-| Phase 1 | E2E Copy 测试 | ✅ 已完成 | - | - | 端到端测试, 4/4 通过 |
-| Phase 2 | SplitBlackholeKernel | ⏳ 未开始 | - | - | R/C/W 拆分 |
-| Phase 2 | PlanBlackholeCB | ⏳ 未开始 | - | - | CB 分配 |
-| Phase 2 | AssignBlackholeCores | ⏳ 未开始 | - | - | 140 核分配 |
+| Phase 1 | E2E Copy 测试 | ✅ 已完成 | - | [PHASE1_TTSIM_TEST_REPORT](../tests/target/PHASE1_TTSIM_TEST_REPORT.md) | 端到端测试, TT-Sim 验证通过, 4096 元素正确 |
+| Phase 2 | SplitBlackholeKernel | ✅ 已完成 | - | [phase2_split_blackhole_kernel](./dev_design/phase2_split_blackhole_kernel.md) | R/C/W 拆分 |
+| Phase 2 | PlanBlackholeCB | ✅ 已完成 | - | [phase2_plan_blackhole_cb](./dev_design/phase2_plan_blackhole_cb.md) | CB 分配 |
+| Phase 2 | AssignBlackholeCores | ✅ 已完成 | - | [phase2_assign_blackhole_cores](./dev_design/phase2_assign_blackhole_cores.md) | 140 核分配 |
 | Phase 3 | GEMM 支持 | ⏳ 未开始 | - | - | matmul_tiles |
 | Phase 4 | 性能优化 | ⏳ 未开始 | - | - | 自动 tile size |
 
@@ -52,19 +73,77 @@
 
 | 问题 | 优先级 | 状态 | 相关任务 | 备注 |
 |------|--------|------|----------|------|
-| 无 | - | - | - | Phase 0 准备中 |
+| 无 | - | - | - | Phase 2 已完成，准备进入 Phase 3 |
 
 ---
 
 ## 下一步行动
 
-1. 完成 TileLang 基础环境编译
-2. 验证基础测试通过
-3. 准备 TT-Metal 编译
+### Phase 3 计划 (GEMM 支持)
+
+1. **matmul_tiles 实现**
+   - 调研 TT-Metal LLK 的 matmul_tiles API
+   - 在 CodeGen 中生成矩阵乘法代码
+   - 支持 FP16/BF16 输入，FP32 累加
+
+2. **完整 GEMM 算子**
+   - 实现 T.gemm() 的 Blackhole 后端
+   - 支持分块矩阵乘法 (blocked GEMM)
+   - 双缓冲优化
+
+3. **TT-Sim GEMM 验证**
+   - 小尺寸 GEMM 验证 (32x32x32)
+   - 中等尺寸 GEMM 验证 (256x256x256)
+   - 与参考实现对比结果正确性
+
+4. **性能基准测试**
+   - 测量单核 GEMM 性能
+   - 测量多核并行 GEMM 性能
+   - 与理论峰值对比
 
 ---
 
 ## 已完成任务归档
+
+### Phase 2: 多核拆分与调度 (2026-03-16)
+
+- ✅ **SplitBlackholeKernel Pass** 实现
+  - 头文件: `tilelang_repo/src/transform/split_blackhole_kernel.h`
+  - 实现: `tilelang_repo/src/transform/split_blackhole_kernel.cc`
+  - 单元测试: `tests/transform/test_split_blackhole_kernel.cc`
+  - 功能: 将 unified PrimFunc 拆分为 Reader/Compute/Writer 三个 kernel
+
+- ✅ **PlanBlackholeCB Pass** 实现
+  - 头文件: `tilelang_repo/src/transform/plan_blackhole_cb.h`
+  - 实现: `tilelang_repo/src/transform/plan_blackhole_cb.cc`
+  - 单元测试: `tests/transform/test_plan_blackhole_cb.cc`
+  - 功能: 规划 64 个 CB 的分配，确保不超过 1.5MB L1 限制
+
+- ✅ **AssignBlackholeCores Pass** 实现
+  - 头文件: `tilelang_repo/src/transform/assign_blackhole_cores.h`
+  - 实现: `tilelang_repo/src/transform/assign_blackhole_cores.cc`
+  - 单元测试: `tests/transform/test_assign_blackhole_cores.cc`
+  - 功能: 将 T.Kernel grid 映射到 Blackhole 14x10 Tensix core grid
+
+### Phase 1: CodeGen 与 Runtime 框架 (2026-03-16)
+
+- ✅ CodeGenBlackhole 实现
+  - Reader/Writer Kernel 生成
+  - TT-Sim 兼容代码生成 (InterleavedAddrGen)
+- ✅ Runtime 框架实现
+  - BuildTileLangBlackhole 函数
+  - BlackholeDeviceAPI
+- ✅ TT-Sim 端到端测试
+  - 单核 Copy kernel 验证
+  - 4096 个 FP16 元素正确复制
+  - 详细报告: [PHASE1_TTSIM_TEST_REPORT](../tests/target/PHASE1_TTSIM_TEST_REPORT.md)
+
+### Phase 0: 环境准备 (2026-03-14 ~ 2026-03-15)
+
+- ✅ TileLang 环境准备
+- ✅ TT-Metal 编译 (libtt_metal.so 18MB)
+- ✅ TT-Sim 配置 (libttsim_bh.so 182KB)
+- ✅ 官方示例验证 (add_2_integers_in_riscv)
 
 ### 架构设计阶段 (2026-03-13 ~ 2026-03-15)
 

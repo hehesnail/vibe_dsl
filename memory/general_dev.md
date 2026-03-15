@@ -375,6 +375,322 @@ class XXXDeviceAPI final : public DeviceAPI {
 
 ---
 
+## TT-Sim 内核开发与测试模式
+
+### 1. TT-Sim 兼容内核编写要点
+
+**必须使用 InterleavedAddrGen**:
+```cpp
+// TT-Sim 要求使用 InterleavedAddrGen 进行地址转换
+// 直接使用物理地址会导致 UnimplementedFunctionality 错误
+
+InterleavedAddrGen<true> src_gen = {
+    .bank_base_address = src_dram_addr,
+    .page_size = TILE_SIZE
+};
+
+// 使用 get_noc_addr 获取 NOC 地址
+uint64_t src_noc_addr = get_noc_addr(tile_idx, src_gen);
+noc_async_read(src_noc_addr, l1_buffer_addr, TILE_SIZE);
+```
+
+**单核限制**:
+- TT-Sim 目前只支持 BRISC (RISCV_0) 的完整 NOC 操作
+- NCRISC (RISCV_1) 的 NOC write 在 TT-Sim 上会报错
+- 多核场景需要将 Reader 和 Writer 合并到单个 BRISC kernel
+
+### 2. TT-Sim JIT 环境配置
+
+**符号链接清单** (build_Release 目录):
+```bash
+# 1. SFPI 编译器
+ln -sf $TT_METAL_HOME/runtime/sfpi $TT_METAL_HOME/build_Release/runtime/sfpi
+
+# 2. Hardware 定义
+ln -sf $TT_METAL_HOME/tt_metal/hw $TT_METAL_HOME/build_Release/tt_metal/hw
+
+# 3. TT-LLK 库
+ln -sf $TT_METAL_HOME/tt_metal/third_party/tt_llk \
+       $TT_METAL_HOME/build_Release/tt_metal/third_party/tt_llk
+
+# 4. Host-Device 通用接口
+ln -sf $TT_METAL_HOME/tt_metal/hostdevcommon \
+       $TT_METAL_HOME/build_Release/tt_metal/hostdevcommon
+
+# 5. API 头文件
+ln -sf $TT_METAL_HOME/tt_metal/api/tt-metalium \
+       $TT_METAL_HOME/build_Release/tt_metal/api/tt-metalium
+
+# 6. 工具链
+ln -sf $TT_METAL_HOME/runtime/hw $TT_METAL_HOME/build_Release/runtime/hw
+
+# 7. Profiler 工具
+ln -sf $TT_METAL_HOME/tt_metal/tools/profiler \
+       $TT_METAL_HOME/build_Release/tt_metal/tools/profiler
+```
+
+### 3. TT-Sim 测试流程
+
+**完整测试步骤**:
+```bash
+# 1. 设置环境
+source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh
+
+# 2. 从 TT_METAL_HOME 运行测试
+cd $TT_METAL_HOME
+./build_Release/programming_examples/tilelang_copy_test
+
+# 3. 验证输出
+# 期望: "✓ SUCCESS: Copy kernel test passed!"
+```
+
+**重要注意事项**:
+- 必须从 `$TT_METAL_HOME` 目录运行测试
+- Kernel 文件不要使用 `#include "dataflow_api.h"` (TT-Metal 会自动包含)
+- 使用 `OVERRIDE_KERNEL_PREFIX` 宏指定 kernel 路径
+
+### 4. CodeGen 更新模式
+
+**生成 TT-Sim 兼容代码**:
+```cpp
+std::string CodeGenBlackhole::GenerateSimpleCopyKernel(...) {
+  std::ostringstream os;
+
+  // 生成 InterleavedAddrGen 风格的代码
+  os << "InterleavedAddrGen<true> src_gen = {\n";
+  os << "    .bank_base_address = src_dram_addr,\n";
+  os << "    .page_size = TILE_SIZE\n";
+  os << "};\n";
+
+  os << "uint64_t src_noc_addr = get_noc_addr(i, src_gen);\n";
+  os << "noc_async_read(src_noc_addr, l1_buffer_addr, TILE_SIZE);\n";
+
+  return os.str();
+}
+```
+
+---
+
+## TIR Transform Pass 开发模式
+
+### 1. Pass 基本结构
+
+**模式**: 继承 `StmtExprMutator`，实现 `Transform` 方法
+
+```cpp
+// 头文件: my_pass.h
+class MyPass : public tvm::tir::StmtExprMutator {
+ public:
+  // Main entry point
+  tvm::tir::PrimFunc Transform(const tvm::tir::PrimFunc& func);
+
+  // 辅助方法
+  ResultType AnalyzeSomething(const PrimFunc& func);
+  void ProcessData(DataType& data);
+
+ private:
+  // 内部状态
+  InternalState state_;
+};
+
+// 创建 Pass 的工厂函数
+tvm::tir::transform::Pass MyPassPass();
+```
+
+**实现文件**:
+```cpp
+// my_pass.cc
+PrimFunc MyPass::Transform(const PrimFunc& func) {
+  // 1. 分析阶段
+  state_ = AnalyzeSomething(func);
+
+  // 2. 处理阶段
+  ProcessData(state_);
+
+  // 3. 创建可变的函数副本
+  PrimFunc new_func = func;
+
+  // 4. 存储结果到函数属性
+  StoreResult(new_func, state_);
+
+  return new_func;
+}
+
+// Pass 注册
+class MyPassPassNode : public transform::PassNode {
+ public:
+  IRModule operator()(IRModule mod, const transform::PassContext& pass_ctx) const final {
+    for (const auto& [gvar, func] : mod->functions) {
+      if (auto* prim_func = func.as<PrimFuncNode>()) {
+        PrimFunc updated_func = MyPass().Transform(GetRef<PrimFunc>(prim_func));
+        mod.CopyOnWrite()->Add(gvar, updated_func);
+      }
+    }
+    return mod;
+  }
+
+  TVM_OBJECT_ENABLE(MyPassPassNode, transform::PassNode);
+};
+
+tvm::tir::transform::Pass MyPassPass() {
+  return tvm::make_object<MyPassPassNode>();
+}
+
+TVM_REGISTER_GLOBAL("tl.transform.MyPass")
+    .set_body_typed(MyPassPass);
+```
+
+### 2. StmtExprVisitor 收集信息
+
+**模式**: 使用 Visitor 模式遍历 IR 收集信息
+
+```cpp
+class MyCollector : public StmtExprVisitor {
+ public:
+  std::vector<Buffer> collected_buffers;
+
+ private:
+  void VisitStmt_(const BufferLoadNode* op) final {
+    collected_buffers.push_back(op->buffer);
+    StmtExprVisitor::VisitStmt_(op);
+  }
+
+  void VisitStmt_(const AllocateNode* op) final {
+    // 检查存储 scope
+    auto storage_scope = op->buffer_var->type_annotation.as<PointerTypeNode>();
+    if (storage_scope && storage_scope->storage_scope == "shared") {
+      // 处理 shared memory
+    }
+    StmtExprVisitor::VisitStmt_(op);
+  }
+};
+
+// 使用
+MyCollector collector;
+collector(func->body);
+```
+
+### 3. 函数属性存储
+
+**模式**: 使用 Map<String, ObjectRef> 存储 Pass 结果
+
+```cpp
+void StoreResult(PrimFunc& func, const Result& result) {
+  Map<String, ObjectRef> attrs = func->attrs;
+
+  // 存储简单值
+  Map<String, Integer> result_map;
+  result_map.Set("field1", Integer(result.field1));
+  result_map.Set("field2", Integer(result.field2));
+
+  attrs.Set("tl_pass_result", result_map);
+  func.CopyOnWrite()->attrs = attrs;
+}
+```
+
+### 4. 单元测试模式
+
+**模式**: 使用 gtest 框架，mock TVM 依赖
+
+```cpp
+// 1. Mock 核心数据结构
+struct MockConfig {
+  int field1;
+  int field2;
+};
+
+// 2. Mock Pass 类（简化版，不依赖 TVM）
+class MockMyPass {
+ public:
+  MockConfig Transform(int input) {
+    MockConfig config;
+    config.field1 = input * 2;
+    config.field2 = input + 10;
+    return config;
+  }
+};
+
+// 3. 测试 Fixture
+class MyPassTest : public ::testing::Test {
+ protected:
+  MockMyPass pass;
+  void SetUp() override {}
+  void TearDown() override {}
+};
+
+// 4. 测试用例
+TEST_F(MyPassTest, BasicTest) {
+  auto result = pass.Transform(5);
+  EXPECT_EQ(result.field1, 10);
+  EXPECT_EQ(result.field2, 15);
+}
+
+// 5. 边界测试
+TEST_F(MyPassTest, EdgeCases) {
+  // 测试边界值
+  auto result = pass.Transform(0);
+  EXPECT_EQ(result.field1, 0);
+}
+```
+
+### 5. CMake 集成
+
+**模式**: 使用 GLOB 自动收集源文件
+
+```cmake
+# CMakeLists.txt 中使用 GLOB 自动包含新的 .cc 文件
+file(GLOB TILE_LANG_SRCS
+  src/transform/*.cc    # ← 新增文件自动被包含
+)
+```
+
+**新增文件清单**:
+```
+tilelang_repo/src/transform/
+├── assign_blackhole_cores.h    # Core 分配 Pass 头文件
+├── assign_blackhole_cores.cc   # Core 分配 Pass 实现
+├── plan_blackhole_cb.h         # CB 分配 Pass 头文件
+├── plan_blackhole_cb.cc        # CB 分配 Pass 实现
+├── split_blackhole_kernel.h    # Kernel 拆分 Pass 头文件
+└── split_blackhole_kernel.cc   # Kernel 拆分 Pass 实现
+```
+
+### 6. Blackhole 特有约束处理
+
+**Core 坐标映射**:
+```cpp
+// 逻辑索引 (0-139) 映射到物理坐标 (避开 x=8,9)
+CoreCoord GetCoreCoord(int core_idx) {
+  int x_in_grid = core_idx % 14;  // 0-13
+  int y_in_grid = core_idx / 14;  // 0-9
+
+  // 物理 x: 1-7, 10-16 (跳过 x=8,9)
+  int physical_x = (x_in_grid < 7) ? x_in_grid + 1 : x_in_grid + 3;
+  int physical_y = y_in_grid + 2;   // 2-11
+
+  return CoreCoord{physical_x, physical_y};
+}
+```
+
+**CB 约束检查**:
+```cpp
+bool ValidateCBAllocation(const std::vector<CBConfig>& configs) {
+  // 检查数量
+  if (configs.size() > 64) return false;
+
+  // 检查总大小
+  int total_size = 0;
+  for (const auto& cfg : configs) {
+    total_size += cfg.total_size;
+  }
+  if (total_size > 1572864) return false;  // 1.5MB
+
+  return true;
+}
+```
+
+---
+
 ## 代码审查清单
 
 提交代码前检查：
@@ -383,3 +699,4 @@ class XXXDeviceAPI final : public DeviceAPI {
 - [ ] 已测试代码生成功能
 - [ ] 无调试用的 print/printf 残留
 - [ ] 错误处理完善
+- [ ] TT-Sim 兼容性验证（如适用）

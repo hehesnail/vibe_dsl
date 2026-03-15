@@ -6,16 +6,17 @@
 
 ```
 dev_design/
-├── phase0_tilelang_setup.md          # Phase 0: TileLang 环境
-├── phase0_tt_metal_build.md          # Phase 0: TT-Metal 编译
-├── phase0_tt_sim_build.md            # Phase 0: TT-Sim 编译
-├── phase1_codegen_framework.md       # Phase 1: CodeGen 框架
-├── phase1_runtime_framework.md       # Phase 1: Runtime 框架
-├── phase2_split_kernel.md            # Phase 2: R/C/W 拆分
-├── phase2_plan_cb.md                 # Phase 2: CB 规划
-├── phase2_assign_cores.md            # Phase 2: Core 分配
-├── phase3_gemm.md                    # Phase 3: GEMM 支持
-└── phase4_optimization.md            # Phase 4: 性能优化
+├── phase0_tilelang_setup.md              # Phase 0: TileLang 环境
+├── phase0_tt_metal_build.md              # Phase 0: TT-Metal 编译
+├── phase0_tt_sim_build.md                # Phase 0: TT-Sim 编译
+├── phase0_tilelang_blackhole_config.md   # Phase 0: TileLang+Blackhole 配置
+├── phase1_codegen_framework.md           # Phase 1: CodeGen 框架
+├── phase1_runtime_framework.md           # Phase 1: Runtime 框架
+├── phase2_split_blackhole_kernel.md      # Phase 2: R/C/W 拆分
+├── phase2_plan_blackhole_cb.md           # Phase 2: CB 规划
+├── phase2_assign_blackhole_cores.md      # Phase 2: Core 分配
+├── phase3_gemm.md                        # Phase 3: GEMM 支持
+└── phase4_optimization.md                # Phase 4: 性能优化
 ```
 
 ## 文档模板
@@ -87,6 +88,18 @@ dev_design/
 - 踩过的坑
 ```
 
-## 当前活跃任务
+## 文档状态
 
-暂无 - 等待 Phase 0 开始
+| 文档 | 阶段 | 状态 |
+|------|------|------|
+| phase0_tilelang_setup.md | Phase 0 | ✅ 已完成 |
+| phase0_tt_metal_build.md | Phase 0 | ✅ 已完成 |
+| phase0_tt_sim_build.md | Phase 0 | ✅ 已完成 |
+| phase0_tilelang_blackhole_config.md | Phase 0 | ✅ 已完成 |
+| phase1_codegen_framework.md | Phase 1 | ✅ 已完成 |
+| phase1_runtime_framework.md | Phase 1 | ✅ 已完成 |
+| phase2_split_blackhole_kernel.md | Phase 2 | ✅ 已完成 |
+| phase2_plan_blackhole_cb.md | Phase 2 | ✅ 已完成 |
+| phase2_assign_blackhole_cores.md | Phase 2 | ✅ 已完成 |
+| phase3_gemm.md | Phase 3 | ⏳ 待创建 |
+| phase4_optimization.md | Phase 4 | ⏳ 待创建 |

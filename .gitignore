@@ -24,3 +24,7 @@ tilelang_repo/wheelhouse/
 
 # TT-Metal - exclude large directories
 tt_metal_repo/
+
+# Build directories
+build_test/
+build/
