@@ -97,6 +97,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintSemWait(int sem_id, int value);
   void PrintSemPost(int sem_id);
 
+ public:
   // ==========================================================================
   // Copy Kernel Generation (Phase 1)
   // ==========================================================================
