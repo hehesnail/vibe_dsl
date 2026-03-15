@@ -1,4 +1,4 @@
-# TileLang Tenstorrent 后端扩展 - 实施方案（最终版）
+# TileLang Tenstorrent 后端扩展 - 实施方案（Blackhole 专用版）
 
 ## 设计原则
 
@@ -215,34 +215,28 @@ TileLang DSL (统一代码)
     - LowerTileOp (T.copy/gemm → TIR ops)
     - LegalizeLoop, LegalizeVectorizedLoop
     ↓
-[Blackhole-specific passes]  ← [新增]
+[Blackhole-specific passes]  ← 新增
     │
     ├─ AssignBlackholeCores
     │  输入: T.Kernel(grid_x, grid_y)
-    │  逻辑: split_work_to_cores(grid_x * grid_y, 14x10 core_grid)
-    │  输出: 为每个 core 生成 CoreCoord{x,y}, work_offset, work_per_core
-    │  Blackhole: 140 cores (14x10 grid)
+    │  逻辑: grid_x * grid_y work items 分配到 14x10 core grid
+    │  输出: 每个 core 的 CoreCoord{x,y}, work_offset, work_per_core
     │
     ├─ PlanBlackholeCB
     │  输入: alloc_shared(shape, dtype), num_stages
-    │  逻辑: tile_size = 32*32*sizeof(dtype)
-    │        num_pages = num_stages (双缓冲=2)
-    │        cb_id = 自动分配 (0, 1, 2... 最大 63)
+    │  逻辑: page_size = 32*32*sizeof(dtype), num_pages = num_stages
+    │        cb_id = 0,1,2... (max 63 for Blackhole)
     │  验证: sum(cb_size) < 1.5MB, num_cbs <= 64
     │  输出: CB 配置存入 function attributes
-    │  Blackhole: 64 CBs (vs Wormhole 32)
     │
     └─ SplitBlackholeKernel
        输入: unified PrimFunc
-       分析:
-         - T.copy(DRAM→shared) → reader_func (BRISC)
-         - T.gemm/T.compute → compute_func (TRISC)
-         - T.copy(shared→DRAM) → writer_func (NCRISC)
-       插入同步:
+       分析: 识别 T.copy(DRAM→CB) / T.compute / T.copy(CB→DRAM)
+       插入 CB 同步:
          - reader: cb_reserve_back() / noc_async_read() / cb_push_back()
          - compute: cb_wait_front() / compute / cb_pop_front() / cb_reserve_back() / cb_push_back()
          - writer: cb_wait_front() / noc_async_write() / cb_pop_front()
-       输出: 三个独立的 PrimFunc
+       输出: reader_func, compute_func, writer_func (三个 PrimFunc)
        Blackhole: NCRISC 无 16KB IRAM 限制 (vs Wormhole)
     ↓
 [Phase 3: OptimizeForTarget]  ← 复用部分 passes
@@ -439,62 +433,150 @@ rt_mod_blackhole.cc
 
 ---
 
-## 关键设计确认
+## CI/CD 集成
 
-### 1. DSL 层 100% 兼容
+```yaml
+# .github/workflows/blackhole_test.yaml
+name: Blackhole Tests
 
-- 用户代码无需修改即可编译到 Tenstorrent
-- `T.Kernel`, `T.alloc_shared`, `T.copy`, `T.gemm` 等行为一致
-- 差异完全下沉到 lowering pipeline
+on: [push, pull_request]
 
-### 2. 核心映射
+env:
+  TT_METAL_HOME: /opt/tt-metal
+  TT_SIM_HOME: /opt/tt-sim
+  TT_METAL_SIMULATOR: /opt/tt-sim/build/libttsim_bh.so
+  TT_METAL_SLOW_DISPATCH_MODE: 1
 
+jobs:
+  # Phase 0: 环境准备测试
+  setup:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache TT-Metal Build
+        uses: actions/cache@v3
+        with:
+          path: /opt/tt-metal
+          key: tt-metal-${{ hashFiles('tt_metal_repo/**') }}
+
+      - name: Build TT-Metal
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          cd tt_metal_repo
+          ./build_metal.sh --build-shared-libs --enable-blackhole
+
+      - name: Download TT-Sim
+        run: |
+          wget -q https://github.com/tenstorrent/tt-sim/releases/latest/download/libttsim_bh.so
+          mkdir -p /opt/tt-sim/build
+          mv libttsim_bh.so /opt/tt-sim/build/
+
+  # Phase 1-3: 单元测试和集成测试
+  test:
+    needs: setup
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build TileLang
+        run: |
+          mkdir build && cd build
+          cmake .. \
+            -DTT_METAL_HOME=/opt/tt-metal \
+            -DTT_SIM_HOME=/opt/tt-sim \
+            -DTILELANG_ENABLE_BLACKHOLE=ON \
+            -DTILELANG_USE_TT_SIM=ON
+          make -j$(nproc)
+
+      # Pass 单元测试
+      - name: Test Transform Passes
+        run: |
+          ./build/tests/test_split_blackhole_kernel
+          ./build/tests/test_plan_blackhole_cb
+          ./build/tests/test_assign_blackhole_cores
+
+      # CodeGen 测试
+      - name: Test CodeGen
+        run: |
+          ./build/tests/test_codegen_blackhole
+
+      # Runtime 测试
+      - name: Test Runtime
+        run: |
+          ./build/tests/test_rt_mod_blackhole
+
+      # 端到端集成测试
+      - name: Test Integration
+        env:
+          TT_METAL_SIMULATOR: /opt/tt-sim/build/libttsim_bh.so
+          TT_METAL_SLOW_DISPATCH_MODE: 1
+        run: |
+          pytest tests/blackhole/ -v --tb=short
+
+  # 性能测试（可选）
+  benchmark:
+    needs: test
+    runs-on: [self-hosted, blackhole]  # 真实硬件
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Run Benchmarks
+        run: |
+          pytest tests/blackhole/benchmark/ -v
 ```
-T.Kernel(grid_x, grid_y, threads=128) as (bx, by)
-         ↓  lowering
-Core (X,Y) = MapBlockToCore(bx, by, core_grid)
-work_offset = GetWorkOffset(bx, by)
-work_per_core = GetWorkPerCore(bx, by)
-```
-
-### 3. 内存管理（Blackhole 特有）
-
-```
-T.alloc_shared((M, N), dtype)
-         ↓  lowering
-CB ID = AutoAssignCB()  // 0-63 (Blackhole 支持 64 CBs)
-page_size = 32 * 32 * sizeof(dtype)
-num_pages = num_stages  // 双缓冲
-验证: sum(cb_size) < 1.5MB (Blackhole L1)
-```
-
-### 4. 同步机制
-
-自动生成，用户不可见：
-- Reader (BRISC): `cb_reserve_back()` → `noc_async_read()` → `cb_push_back()`
-- Compute (TRISC): `cb_wait_front()` → `matmul_tiles()` → `cb_pop_front()` → `cb_push_back()`
-- Writer (NCRISC): `cb_wait_front()` → `noc_async_write()` → `cb_pop_front()`
-
-### 5. 与 CUDA/HIP 对比
-
-| 方面 | CUDA (sm_90) | Blackhole | 说明 |
-|------|--------------|-----------|------|
-| 并行粒度 | Thread (1024/SM) | Core (140 total) | Blackhole 无 thread 概念 |
-| 共享内存 | `__shared__` (KB级) | CB (1.5MB L1) | Blackhole CB 更大 |
-| 同步 | `__syncthreads()` | CB push/pop | 生产者-消费者模型 |
-| 代码生成 | NVCC PTX/CUBIN | TT-Metal JIT ELF | 都支持延迟编译 |
 
 ---
 
-## 下一步行动
+## 关键设计决策总结
 
-1. **Phase 0**：编译 TileLang、TT-Metal、TT-Sim，准备环境
-2. **Phase 1**：实现 `codegen_blackhole.cc`，单核 Copy 验证
-3. **Phase 2**：实现三个 Transform Passes，140 核并行验证
-4. **Phase 3**：实现 GEMM 支持
+### 为什么只支持 Blackhole？
 
-## 参考文档
+1. **CB 数量差异**：Blackhole 64 vs Wormhole 32，影响 CB 分配策略
+2. **NCRISC IRAM**：Wormhole 16KB 限制使 Writer kernel 复杂化
+3. **资源集中**：先做好 Blackhole，后续再抽象支持其他架构
 
-- Blackhole 硬件规格：`docs/tt_metal/source_analysis/hw.md`
-- TT-Metal API：`docs/tt_metal/source_analysis/api.md`
-- TileLang CUDA 后端：`tilelang_repo/src/target/codegen_cuda.cc`
+### 为什么用动态链接库而非 Python 包？
+
+1. **性能**：C++ 直接调用避免 Python 开销
+2. **一致性**：与 CUDA/HIP 后端架构一致
+3. **调试**：更容易跟踪 TT-Metal 内部错误
+
+### 为什么延迟编译？
+
+1. **缓存复用**：TT-Metal 的 `JitBuildCache` 自动管理
+2. **快速迭代**：CodeGen 错误不阻塞编译
+3. **与 CUDA 模式一致**：Lazy kernel loading
+
+---
+
+## 附录：参考文件路径
+
+### TileLang 参考
+```
+tilelang_repo/src/target/codegen_cuda.h         # CodeGen 模式参考
+tilelang_repo/src/target/rt_mod_cuda.cc         # Runtime 模式参考
+tilelang_repo/tilelang/engine/phase.py          # Lowering pipeline
+tilelang_repo/tilelang/carver/arch/cuda.py      # Arch 检测模式
+```
+
+### TT-Metal 参考
+```
+tt_metal_repo/tt_metal/api/tt-metalium/         # Public API
+├── host_api.hpp                                # CreateDevice, CreateProgram
+├── kernel.hpp                                  # CreateKernelFromString
+└── circular_buffer.hpp                         # CreateCircularBuffer
+
+tt_metal_repo/tt_metal/core_descriptors/
+└── blackhole_140_arch.yaml                     # 140 cores 配置
+
+tt_metal_repo/tt_metal/third_party/umd/device/api/umd/device/arch/
+└── blackhole_implementation.hpp                # 硬件参数定义
+```
+
+### 硬件规格来源
+```
+tt_metal_repo/tt_metal/hw/inc/internal/tt-1xx/blackhole/
+├── tensix_types.h                              # 数据格式定义
+├── noc/noc_parameters.h                        # NOC 参数
+└── dev_mem_map.h                               # 内存映射
+```
