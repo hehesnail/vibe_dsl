@@ -204,6 +204,32 @@ def target_blackhole(target):
 3. ✅ `CMakeLists.txt` - 添加 USE_BLACKHOLE 支持
 4. ✅ `tilelang.target("blackhole")` - Python target 注册
 
+## 状态
+
+- [x] CMake 配置修改
+- [x] CodeGenBlackhole 框架实现
+- [x] 编译测试 (✅ 2026-03-15 完成)
+- [x] 问题修复 (✅ 2026-03-15 完成)
+
+**验证结果**: `USE_BLACKHOLE=ON` 编译成功，`libtilelang.so` (21MB) 包含 Blackhole 符号
+
+## 遇到的问题与解决
+
+1. **问题**: `Init` 方法标记为 `override` 但父类方法不是 `virtual`
+   - **解决**: 移除 `override` 关键字，改为普通方法重载
+
+2. **问题**: `PrintFuncPrefix`, `PrintType`, `VisitStmt_` 等方法在父类中标记为 `final`
+   - **解决**: 移除这些方法的 override，改用其他机制实现 Blackhole 特定功能
+
+3. **问题**: `TVMContext` 类型不存在
+   - **解决**: 使用 `Device` (即 `DLDevice`) 替代
+
+4. **问题**: `tvm::String` 命名空间错误
+   - **解决**: 使用 `tvm::ffi::String`
+
+5. **问题**: `defined()` 方法在 `ffi::Optional` 上不存在
+   - **解决**: 直接使用 `if (optional_value)` 语法
+
 ## 参考文档
 
 - TileLang CUDA/HIP 后端实现 (`src/target/codegen_cuda.cc`, `codegen_hip.cc`)

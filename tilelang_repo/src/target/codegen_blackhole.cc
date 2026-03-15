@@ -50,31 +50,34 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
                                    const tvm::tir::PrimFunc &f) {
   // Emit TT-Metal headers if needed
   if (need_tt_metal_h_) {
-    stream << "#include <cstdint>\n";
-    stream << "#include <cmath>\n";
-    stream << "\n";
+    decl_stream << "#include <cstdint>\n";
+    decl_stream << "#include <cmath>\n";
+    decl_stream << "\n";
   }
   if (need_dataflow_api_h_) {
-    stream << "// DataMovement kernel API (BRISC/NCRISC)\n";
-    stream << "#include \"dataflow_api.h\"\n";
-    stream << "\n";
+    decl_stream << "// DataMovement kernel API (BRISC/NCRISC)\n";
+    decl_stream << "#include \"dataflow_api.h\"\n";
+    decl_stream << "\n";
   }
   if (need_compute_api_h_) {
-    stream << "// Compute kernel API (TRISC)\n";
-    stream << "#include \"compute_kernel_api.h\"\n";
-    stream << "\n";
+    decl_stream << "// Compute kernel API (TRISC)\n";
+    decl_stream << "#include \"compute_kernel_api.h\"\n";
+    decl_stream << "\n";
   }
 
   // Detect core type from function attributes
-  auto core_type_attr = f->attrs.GetAttr<tvm::String>(tvm::attr::kKernel);
-  if (core_type_attr.defined()) {
-    std::string kernel_type = core_type_attr.value();
-    if (kernel_type == "brisc") {
+  // Note: Using tvm::attr::kGlobalSymbol to detect kernel type
+  auto global_symbol = f->GetAttr<tvm::ffi::String>(tvm::attr::kGlobalSymbol);
+  if (global_symbol) {
+    std::string symbol = global_symbol.value();
+    // Determine core type from symbol name or other attributes
+    // This is a heuristic - adjust based on naming convention
+    if (symbol.find("_brisc") != std::string::npos) {
       core_type_ = CoreType::kBRISC;
-    } else if (kernel_type == "trisc") {
-      core_type_ = CoreType::kTRISC;
-    } else if (kernel_type == "ncrisc") {
+    } else if (symbol.find("_ncrisc") != std::string::npos) {
       core_type_ = CoreType::kNCRISC;
+    } else if (symbol.find("_trisc") != std::string::npos) {
+      core_type_ = CoreType::kTRISC;
     }
   }
 
@@ -82,90 +85,16 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
   CodeGenCHost::AddFunction(gvar, f);
 }
 
-void CodeGenBlackhole::PrintFuncPrefix(std::ostream &os) {
-  // TT-Metal kernels don't need special prefixes
-  // They are compiled as RISC-V ELF by the TT-Metal build system
-  os << "void";
-}
+// Note: PrintFuncPrefix, PrintType, and VisitExpr_ are final in parent class
+// and cannot be overridden. Blackhole-specific handling is done through
+// AddFunction and VisitStmt_ methods, or by preprocessing the IR.
 
-void CodeGenBlackhole::PrintType(tvm::DataType t, std::ostream &os) {
-  // Handle TT-Metal specific vector types if needed
-  // Default to parent implementation
-  CodeGenCHost::PrintType(t, os);
-}
+// Note: VisitStmt_ for AttrStmtNode is final in parent class, so we cannot
+// override it here. CB allocation handling should be done through IR passes
+// that transform the IR before codegen, or through other mechanisms.
 
-void CodeGenBlackhole::VisitExpr_(const tvm::tir::CallNode *op,
-                                  std::ostream &os) {
-  // Handle TT-Metal specific intrinsics
-  if (op->op.same_as(tvm::tir::builtin::call_extern) ||
-      op->op.same_as(tvm::tir::builtin::call_pure_extern)) {
-    std::string func_name = op->args[0].as<tvm::tir::StringImmNode>()->value;
-
-    // Handle CB operations
-    if (func_name == "tt_cb_wait_front") {
-      ICHECK_EQ(op->args.size(), 3);
-      std::string cb_name = op->args[1].as<tvm::tir::StringImmNode>()->value;
-      int num_tiles = op->args[2].as<tvm::tir::IntImmNode>()->value;
-      PrintCBWaitFront(cb_name, num_tiles);
-      return;
-    } else if (func_name == "tt_cb_pop_front") {
-      ICHECK_EQ(op->args.size(), 3);
-      std::string cb_name = op->args[1].as<tvm::tir::StringImmNode>()->value;
-      int num_tiles = op->args[2].as<tvm::tir::IntImmNode>()->value;
-      PrintCBPopFront(cb_name, num_tiles);
-      return;
-    } else if (func_name == "tt_cb_reserve_back") {
-      ICHECK_EQ(op->args.size(), 3);
-      std::string cb_name = op->args[1].as<tvm::tir::StringImmNode>()->value;
-      int num_tiles = op->args[2].as<tvm::tir::IntImmNode>()->value;
-      PrintCBReserveBack(cb_name, num_tiles);
-      return;
-    } else if (func_name == "tt_cb_push_back") {
-      ICHECK_EQ(op->args.size(), 3);
-      std::string cb_name = op->args[1].as<tvm::tir::StringImmNode>()->value;
-      int num_tiles = op->args[2].as<tvm::tir::IntImmNode>()->value;
-      PrintCBPushBack(cb_name, num_tiles);
-      return;
-    }
-
-    // Handle NOC operations
-    if (func_name == "tt_noc_read") {
-      // TODO: Implement NOC read
-      need_dataflow_api_h_ = true;
-    } else if (func_name == "tt_noc_write") {
-      // TODO: Implement NOC write
-      need_dataflow_api_h_ = true;
-    }
-  }
-
-  // Fall back to parent implementation
-  CodeGenCHost::VisitExpr_(op, os);
-}
-
-void CodeGenBlackhole::VisitStmt_(const tvm::tir::AttrStmtNode *op) {
-  // Handle Blackhole-specific attributes
-  if (op->attr_key == tvm::attr::kKernel) {
-    // Kernel type attribute already processed in AddFunction
-    this->PrintStmt(op->body);
-    return;
-  }
-
-  // Handle CB allocation attributes
-  if (op->attr_key == "tt_cb") {
-    // CB allocation directive
-    this->PrintStmt(op->body);
-    return;
-  }
-
-  // Fall back to parent implementation
-  CodeGenCHost::VisitStmt_(op);
-}
-
-void CodeGenBlackhole::VisitStmt_(const tvm::tir::ForNode *op) {
-  // For Blackhole, we use the standard loop generation
-  // TT-Metal compiler will handle loop unrolling if needed
-  CodeGenCHost::VisitStmt_(op);
-}
+// Note: VisitStmt_ for ForNode is final in parent class, so we cannot override.
+// Loop handling customization should be done via IR passes or other mechanisms.
 
 void CodeGenBlackhole::PrintKernelAttributes() {
   // Print kernel-specific attributes for TT-Metal

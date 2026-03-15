@@ -42,16 +42,17 @@ class CodeGenBlackhole : public CodeGenCHost {
  public:
   CodeGenBlackhole();
 
+  // Note: Parent class Init is not virtual, so we just shadow it
   void Init(bool output_ssa, bool emit_asserts, bool emit_fwd_func_decl,
             std::string target_str,
-            const std::unordered_set<std::string> &devices) override;
+            const std::unordered_set<std::string> &devices);
 
   void AddFunction(const tvm::GlobalVar &gvar,
                    const tvm::tir::PrimFunc &f) override;
 
-  // Override codegen methods for Blackhole-specific handling
-  void PrintFuncPrefix(std::ostream &os) final;
-  void PrintType(tvm::DataType t, std::ostream &os) final;
+  // Note: PrintFuncPrefix and PrintType are final in parent class,
+  // so we don't override them here. Blackhole-specific handling
+  // is done through other mechanisms.
 
   // Blackhole core type enumeration
   enum class CoreType {
@@ -67,10 +68,10 @@ class CodeGenBlackhole : public CodeGenCHost {
   // Get the core type
   CoreType GetCoreType() const { return core_type_; }
 
-  // Visitor overrides for Blackhole-specific intrinsics
-  void VisitExpr_(const tvm::tir::CallNode *op, std::ostream &os) override;
-  void VisitStmt_(const tvm::tir::AttrStmtNode *op) override;
-  void VisitStmt_(const tvm::tir::ForNode *op) override;
+  // Note: Visitor methods (VisitExpr_, VisitStmt_) are marked 'final' in the
+  // CodeGenCHost/CodeGenC parent classes and cannot be overridden further.
+  // Blackhole-specific IR handling should be performed via preprocessing passes
+  // that transform the TIR before it reaches the CodeGen stage.
 
  protected:
   // Print TT-Metal specific function attributes
