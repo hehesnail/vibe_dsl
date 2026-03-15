@@ -281,13 +281,67 @@ void libttsim_clock(uint32_t n_clocks);
 
 ### TT-Metal 后端开发注意事项
 
-#### 待补充
+#### 1. CodeGen 类继承注意事项
 
-随着开发深入，记录 TT-Metal 特有的：
-- Kernel 签名规范
-- 内存模型细节
-- 编译和加载流程
-- 调试技巧
+**问题**: TileLang 的 `CodeGenCHost` 继承自 TVM 的 `CodeGenC`，许多方法是 `final` 的
+
+**关键发现**:
+```cpp
+// CodeGenCHost 中以下方法是 final，不能覆盖：
+- void PrintFuncPrefix(std::ostream &os) final;
+- void PrintType(tvm::DataType t, std::ostream &os) final;
+- void VisitStmt_(const tvm::tir::AttrStmtNode *op) final;
+- void VisitStmt_(const tvm::tir::ForNode *op) final;
+```
+
+**解决方案**:
+- 不要尝试覆盖 `final` 方法
+- 在 `AddFunction` 中进行预处理
+- 通过 IR Pass 在 CodeGen 之前转换 TIR
+
+#### 2. TVM FFI 类型系统变化
+
+**命名空间变化** (TVM 新 FFI 系统):
+```cpp
+// 旧方式 (可能不存在)
+tvm::String
+tvm::attr::kKernel
+TVMContext
+
+// 新方式
+tvm::ffi::String
+tvm::attr::kGlobalSymbol  // 替代 kKernel
+Device (即 DLDevice)      // 替代 TVMContext
+```
+
+#### 3. Optional 类型使用
+
+```cpp
+// 正确方式
+auto opt = f->GetAttr<tvm::ffi::String>(tvm::attr::kGlobalSymbol);
+if (opt) {  // 使用 bool 转换，不是 defined()
+    std::string value = opt.value();
+}
+```
+
+#### 4. 注册机制
+
+```cpp
+// 使用 TVM_FFI_STATIC_INIT_BLOCK 注册
+tvm::ffi::reflection::GlobalDef().def("device_api.blackhole", []() -> void* {
+    return static_cast<void*>(BlackholeDeviceAPI::Global());
+});
+```
+
+#### 5. 头文件包含
+
+```cpp
+// Device API 头文件
+#include <tvm/runtime/device_api.h>
+
+// 注册用头文件
+#include <tvm/ffi/reflection/registry.h>
+```
 
 ---
 

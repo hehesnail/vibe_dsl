@@ -258,4 +258,45 @@ Success: Result is 21
 
 ---
 
+### TileLang Blackhole 后端编译错误汇总
+
+**问题**: Blackhole 后端代码编译时出现多个错误
+**时间**: 2026-03-15
+**根本原因**: 不熟悉 TileLang CodeGenCHost 的 API 约束和 TVM FFI 新类型系统
+
+**错误 1**: `Init` 方法标记 `override` 但父类方法非 `virtual`
+```
+error: 'void tvm::tl::CodeGenBlackhole::Init(...)' marked 'override', but does not override
+```
+**解决**: 移除 `override` 关键字
+
+**错误 2**: 尝试覆盖 `final` 方法
+```
+error: virtual function 'PrintFuncPrefix' overriding final function
+error: virtual function 'VisitStmt_' overriding final function
+```
+**解决**: 移除这些方法的 override，改用其他机制
+
+**错误 3**: 类型不存在
+```
+error: 'TVMContext' has not been declared
+error: 'String' is not a member of 'tvm'
+```
+**解决**: 使用 `Device` 替代 `TVMContext`，使用 `tvm::ffi::String`
+
+**错误 4**: Optional 类型使用错误
+```
+error: 'class tvm::ffi::Optional<tvm::ffi::String>' has no member named 'defined'
+```
+**解决**: 使用 `if (optional_value)` 而非 `if (optional_value.defined())`
+
+**关键教训**:
+1. 先阅读父类头文件确认方法签名
+2. 注意 `final` 方法不能覆盖
+3. TVM FFI 类型在 `tvm::ffi` 命名空间下
+
+**参考**: `tilelang_repo/src/target/codegen_blackhole.h`, `codegen_c_host.h`
+
+---
+
 *后续问题继续追加...*
