@@ -24,11 +24,17 @@
 
 #include <tvm/runtime/device_api.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ffi/extra/module.h>
+#include <tvm/ir/transform.h>
+#include <tvm/target/codegen.h>
 
 #include <cstring>
 #include <memory>
 #include <unordered_map>
 #include <vector>
+#include <fstream>
+
+#include "codegen_blackhole.h"
 
 namespace tvm {
 namespace runtime {
@@ -159,4 +165,150 @@ TVM_FFI_STATIC_INIT_BLOCK() {
 }
 
 }  // namespace runtime
-}  // namespace tvm
+
+namespace codegen {
+
+using namespace tvm::runtime;
+
+/*!
+ * \brief Extract function information from IRModule
+ * \param mod The IR module
+ * \return Map from function name to FunctionInfo
+ */
+static std::unordered_map<std::string, FunctionInfo> ExtractFuncInfo(const IRModule& mod) {
+  std::unordered_map<std::string, FunctionInfo> fmap;
+
+  for (auto kv : mod->functions) {
+    ICHECK(kv.second->IsInstance<tir::PrimFuncNode>())
+        << "Can only lower IR Module with PrimFuncs";
+    auto f = Downcast<tir::PrimFunc>(kv.second);
+
+    FunctionInfo info;
+    for (size_t i = 0; i < f->params.size(); ++i) {
+      DataType dtype = f->params[i].dtype();
+      // Device runtime cannot directly take bool arguments, map to int32.
+      if (dtype.is_bool())
+        dtype = DataType::Int(32);
+      info.arg_types.push_back(dtype);
+    }
+
+    auto global_symbol = f->GetAttr<ffi::String>(tvm::attr::kGlobalSymbol);
+    if (global_symbol) {
+      fmap[static_cast<std::string>(global_symbol.value())] = info;
+    }
+  }
+  return fmap;
+}
+
+/*!
+ * \brief Build function for Blackhole target
+ * \param mod The IR module containing PrimFuncs
+ * \param target The target device
+ * \return A runtime module containing the generated code
+ *
+ * This function generates TT-Metal C++ code from TIR using CodeGenBlackhole.
+ * For Phase 1, it generates code without full compilation.
+ * Future phases will add JIT compilation via TT-Metal.
+ */
+ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
+  LOG(INFO) << "BuildTileLangBlackhole: Generating TT-Metal code for Blackhole target";
+
+  bool output_ssa = false;
+  bool emit_asserts = false;
+  bool emit_fwd_func_decl = true;
+
+  std::unordered_set<std::string> devices;
+  devices.insert("blackhole");
+
+  tl::CodeGenBlackhole cg;
+  cg.Init(output_ssa, emit_asserts, emit_fwd_func_decl, target->str(), devices);
+
+  // Process all functions in the module
+  for (auto kv : mod->functions) {
+    ICHECK(kv.second->IsInstance<tir::PrimFuncNode>())
+        << "CodeGenBlackhole: Can only take PrimFunc";
+    auto gvar = Downcast<GlobalVar>(kv.first);
+    auto f = Downcast<tir::PrimFunc>(kv.second);
+
+    // Check calling convention
+    auto calling_conv = f->GetAttr<Integer>(tvm::attr::kCallingConv);
+    if (calling_conv == CallingConv::kDeviceKernelLaunch) {
+      // Device kernel - generate TT-Metal kernel code
+      cg.AddFunction(gvar, f);
+    } else {
+      // Host function - also add it
+      cg.AddFunction(gvar, f);
+    }
+  }
+
+  std::string code = cg.Finish();
+
+  // For Phase 1: Return a C-source module with the generated code
+  // The code can be saved to file and compiled with TT-Metal offline
+  ffi::Array<ffi::String> func_names;
+  auto func_info = ExtractFuncInfo(mod);
+  for (const auto& kv : func_info) {
+    func_names.push_back(kv.first);
+  }
+
+  LOG(INFO) << "BuildTileLangBlackhole: Generated " << code.size()
+            << " bytes of TT-Metal code for " << func_names.size() << " functions";
+
+  // Use CSourceModuleCreate to wrap the generated code
+  // Fourth parameter is empty array for extra compile options
+  return CSourceModuleCreate(code, "cc", func_names, {});
+}
+
+/*!
+ * \brief Build function for Blackhole target without host code
+ * \param mod The IR module containing PrimFuncs
+ * \param target The target device
+ * \return A runtime module containing only device code
+ *
+ * This generates only the device kernels without host wrapper code.
+ */
+ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
+  LOG(INFO) << "BuildTileLangBlackholeWithoutHost: Generating device code only";
+
+  bool output_ssa = false;
+  bool emit_asserts = false;
+  bool emit_fwd_func_decl = false;
+
+  std::unordered_set<std::string> devices;
+  devices.insert("blackhole");
+
+  tl::CodeGenBlackhole cg;
+  cg.Init(output_ssa, emit_asserts, emit_fwd_func_decl, target->str(), devices);
+
+  // Process only device kernel functions
+  for (auto kv : mod->functions) {
+    ICHECK(kv.second->IsInstance<tir::PrimFuncNode>())
+        << "CodeGenBlackhole: Can only take PrimFunc";
+    auto gvar = Downcast<GlobalVar>(kv.first);
+    auto f = Downcast<tir::PrimFunc>(kv.second);
+
+    auto calling_conv = f->GetAttr<Integer>(tvm::attr::kCallingConv);
+    if (calling_conv == CallingConv::kDeviceKernelLaunch) {
+      cg.AddFunction(gvar, f);
+    }
+  }
+
+  std::string code = cg.Finish();
+  ffi::Array<ffi::String> func_names;
+  auto func_info = ExtractFuncInfo(mod);
+  for (const auto& kv : func_info) {
+    func_names.push_back(kv.first);
+  }
+
+  return CSourceModuleCreate(code, "cc", func_names, {});
+}
+
+TVM_FFI_STATIC_INIT_BLOCK() {
+  namespace refl = tvm::ffi::reflection;
+  refl::GlobalDef()
+      .def("target.build.tilelang_blackhole", BuildTileLangBlackhole)
+      .def("target.build.tilelang_blackhole_without_host", BuildTileLangBlackholeWithoutHost);
+}
+
+} // namespace codegen
+} // namespace tvm

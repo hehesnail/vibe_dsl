@@ -299,4 +299,40 @@ error: 'class tvm::ffi::Optional<tvm::ffi::String>' has no member named 'defined
 
 ---
 
+### CSourceModuleCreate 参数类型不匹配
+
+**问题**: 调用 `CSourceModuleCreate` 时编译错误
+```
+error: invalid initialization of reference of type 'const tvm::ffi::Array<tvm::ffi::String>&'
+       from expression of type 'std::vector<std::__cxx11::basic_string<char>>'
+```
+**时间**: 2026-03-16
+**根本原因**: `CSourceModuleCreate` 第三个参数需要 `ffi::Array<ffi::String>` 类型，不是 `std::vector<std::string>`
+
+**解决方案**:
+```cpp
+// 错误写法
+std::vector<std::string> func_names;
+// ... populate func_names
+return CSourceModuleCreate(code, "cc", func_names, {});
+
+// 正确写法
+ffi::Array<ffi::String> func_names;
+// ... populate func_names
+return CSourceModuleCreate(code, "cc", func_names, {});
+```
+
+**完整函数签名**:
+```cpp
+ffi::Module CSourceModuleCreate(
+    const ffi::String& code,
+    const ffi::String& fmt,
+    const ffi::Array<ffi::String>& func_names,
+    const ffi::Array<ffi::String>& compile_opts);
+```
+
+**参考**: `tilelang_repo/src/target/rt_mod_blackhole.cc`
+
+---
+
 *后续问题继续追加...*

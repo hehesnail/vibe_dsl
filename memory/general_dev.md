@@ -309,6 +309,70 @@ void libttsim_clock(uint32_t n_clocks);
 #include <tvm/ffi/reflection/registry.h>
 ```
 
+#### 4. Runtime 模块开发模式
+
+**Build 函数标准结构**:
+
+```cpp
+ffi::Module BuildTileLangXXX(IRModule mod, Target target) {
+  // 1. 初始化 CodeGen
+  CodeGenXXX cg;
+  cg.Init(output_ssa, emit_asserts, emit_fwd_func_decl, target->str(), devices);
+
+  // 2. 处理所有 PrimFunc
+  for (auto kv : mod->functions) {
+    auto gvar = Downcast<GlobalVar>(kv.first);
+    auto f = Downcast<PrimFunc>(kv.second);
+    cg.AddFunction(gvar, f);
+  }
+
+  // 3. 生成代码
+  std::string code = cg.Finish();
+
+  // 4. 提取函数名
+  ffi::Array<ffi::String> func_names;
+  // ... populate func_names
+
+  // 5. 创建模块
+  return CSourceModuleCreate(code, "cc", func_names, {});
+}
+```
+
+**注册机制**:
+
+```cpp
+TVM_FFI_STATIC_INIT_BLOCK() {
+  namespace refl = tvm::ffi::reflection;
+  refl::GlobalDef()
+      .def("target.build.tilelang_xxx", BuildTileLangXXX)
+      .def("target.build.tilelang_xxx_without_host", BuildTileLangXXXWithoutHost)
+      .def("device_api.xxx", []() -> void* {
+        return static_cast<void*>(XXXDeviceAPI::Global());
+      });
+}
+```
+
+**Device API 实现要点**:
+
+```cpp
+class XXXDeviceAPI final : public DeviceAPI {
+ public:
+  void SetDevice(Device dev) final;
+  void GetAttr(Device dev, DeviceAttrKind kind, ffi::Any* rv) final;
+  void* AllocDataSpace(Device dev, size_t nbytes, size_t alignment,
+                       DLDataType type_hint) final;
+  void FreeDataSpace(Device dev, void* ptr) final;
+  void StreamSync(Device dev, TVMStreamHandle stream) final;
+
+  static XXXDeviceAPI* Global();
+};
+```
+
+**关键注意点**:
+- `CSourceModuleCreate` 需要 `ffi::Array<ffi::String>` 类型，不是 `std::vector<std::string>`
+- 需要包含 `<tvm/target/codegen.h>` 获取 `CSourceModuleCreate`
+- Device API 使用单例模式，`Global()` 方法返回静态实例
+
 ---
 
 ## 代码审查清单

@@ -16,10 +16,10 @@
 
 ## 当前阶段
 
-**阶段**: Phase 0 - 环境准备
-**目标**: 准备 TileLang、TT-Metal、TT-Sim 编译环境
-**开始日期**: 2026-03-15
-**预计完成**: 2026-03-22
+**阶段**: Phase 1 - CodeGen 与 Runtime 框架
+**目标**: 实现 Blackhole 后端代码生成和运行时模块
+**开始日期**: 2026-03-16
+**预计完成**: 2026-03-20
 
 ---
 
@@ -31,8 +31,8 @@
 | Phase 0 | TT-Metal 编译 | ✅ 已完成 | - | [phase0_tt_metal_build](./dev_design/phase0_tt_metal_build.md) | libtt_metal.so 18MB |
 | Phase 0 | TT-Sim 配置 | ✅ 已完成 | - | [phase0_tt_sim_build](./dev_design/phase0_tt_sim_build.md) | libttsim_bh.so 182KB, metal_example_add_2_integers_in_riscv 测试通过 |
 | Phase 0 | TileLang+Blackhole 配置 | ✅ 已完成 | - | [phase0_tilelang_blackhole_config](./dev_design/phase0_tilelang_blackhole_config.md) | USE_BLACKHOLE, CodeGen 框架 |
-| Phase 1 | CodeGen 框架 | 🔄 进行中 | - | - | 单核 Copy |
-| Phase 1 | Runtime 框架 | ⏳ 未开始 | - | - | 延迟编译 |
+| Phase 1 | CodeGen 框架 | ✅ 已完成 | - | [phase1_codegen_framework](./dev_design/phase1_codegen_framework.md) | 单核 Copy, Reader/Writer Kernel |
+| Phase 1 | Runtime 框架 | ✅ 已完成 | - | [phase1_runtime_framework](./dev_design/phase1_runtime_framework.md) | Build函数, DeviceAPI, 测试 |
 | Phase 2 | SplitBlackholeKernel | ⏳ 未开始 | - | - | R/C/W 拆分 |
 | Phase 2 | PlanBlackholeCB | ⏳ 未开始 | - | - | CB 分配 |
 | Phase 2 | AssignBlackholeCores | ⏳ 未开始 | - | - | 140 核分配 |
