@@ -139,6 +139,40 @@ vibe_dsl/                    # 主仓库（提交文档+配置）
 └── tasks/                   # 任务文档
 ```
 
+### TT-Metal 编译模式
+
+#### 1. 依赖安装
+
+```bash
+# 创建 clang-20 软链接（如果系统只有 clang-21）
+ln -sf /usr/bin/clang /usr/local/bin/clang-20
+ln -sf /usr/bin/clang++ /usr/local/bin/clang++-20
+
+# 安装系统依赖
+apt-get install -y libnuma-dev libhwloc-dev libcapstone-dev
+```
+
+#### 2. CMake 配置参数
+
+```bash
+cmake -B build_Release \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \  # 解决 RPATH 问题
+  -DENABLE_TRACY=OFF \                    # 禁用 profiler 加速编译
+  -DWITH_PYTHON_BINDINGS=OFF \            # 不需要 Python 绑定
+  -DENABLE_DISTRIBUTED=OFF \              # 不需要分布式
+  -DCMAKE_TOOLCHAIN_FILE=cmake/x86_64-linux-clang-20-libstdcpp-toolchain.cmake \
+  -G Ninja
+```
+
+#### 3. 运行时库路径
+
+```bash
+export LD_LIBRARY_PATH=$TT_METAL_HOME/build_Release/lib:\
+$TT_METAL_HOME/build_Release/tt_metal:\
+$TT_METAL_HOME/build_Release/tt_stl:$LD_LIBRARY_PATH
+```
+
 ### TT-Metal 后端开发注意事项
 
 #### 待补充

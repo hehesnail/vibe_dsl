@@ -82,4 +82,42 @@ tilelang_repo/build/
 
 ---
 
+### TT-Metal 编译依赖问题汇总
+
+**问题**: TT-Metal 编译需要多个系统依赖
+**时间**: 2026-03-15
+**根本原因**: tt_metal_repo 依赖 clang-20、NUMA、hwloc、capstone 等库
+**解决方案**:
+```bash
+# 1. 创建 clang-20 软链接（系统有 clang-21）
+ln -sf /usr/bin/clang /usr/local/bin/clang-20
+ln -sf /usr/bin/clang++ /usr/local/bin/clang++-20
+
+# 2. 安装系统依赖
+apt-get install -y libnuma-dev libhwloc-dev libcapstone-dev
+
+# 3. 配置 cmake（关键参数）
+cmake -B build_Release \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+  -DENABLE_TRACY=OFF \
+  -DWITH_PYTHON_BINDINGS=OFF \
+  -G Ninja
+
+# 4. 设置运行时库路径
+export LD_LIBRARY_PATH=/root/dev/vibe_dsl/tt_metal_repo/build_Release/lib:\
+/root/dev/vibe_dsl/tt_metal_repo/build_Release/tt_metal:\
+/root/dev/vibe_dsl/tt_metal_repo/build_Release/tt_stl:$LD_LIBRARY_PATH
+
+# 5. 编译
+ninja -C build_Release
+```
+**关键文件**:
+- libtt_metal.so: 18MB
+- libdevice.so: 4.6MB
+
+**参考**: tasks/dev_design/phase0_tt_metal_build.md
+
+---
+
 *后续问题继续追加...*
