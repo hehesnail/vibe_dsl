@@ -177,4 +177,41 @@ export TT_UMD_SIMULATOR="${TT_METAL_SIMULATOR}"
 
 ---
 
+### TT-Sim 部分测试失败
+
+**问题**: UMD simulation 测试中部分测试用例失败
+**时间**: 2026-03-15
+**根本原因分析**:
+
+1. **(1, 1) 坐标失败**:
+   - 测试使用 `tt_xy_pair{1, 1}` 作为 core 坐标
+   - 由于移除了 eth cores 列表中的 `1-1`，该坐标无法识别
+   - 错误: `No core type found for system TRANSLATED at location: (1, 1)`
+
+2. **(1, 0) 坐标失败**:
+   - `(1, 0)` 是 DRAM core
+   - TT-Sim 可能不完全支持 DRAM 访问
+   - 错误: `coord_to_tile: coord (1,0)`
+
+3. **SimpleApiTest 失败**:
+   - 测试使用了 `RiscType::ALL_NEO_DMS`，Blackhole 不支持 NEO risc cores
+   - 错误: `NEO risc cores should not be used on Blackhole architecture`
+
+**测试结果汇总**:
+
+| 测试用例 | 参数 | 结果 |
+|---------|------|------|
+| LoopbackSingleTensix | (0, 1) TENSIX | ✅ 通过 |
+| LoopbackSingleTensix | (1, 1) ETH | ❌ 失败 |
+| LoopbackSingleTensix | (1, 0) DRAM | ❌ 失败 |
+| LoopbackStressSize | (0, 1) TENSIX | ✅ 通过 |
+| LoopbackTwoTensix | - | ❌ 失败 (使用 (1,1)) |
+| SimpleApiTest | - | ❌ 失败 (NEO risc) |
+
+**结论**: 核心功能（TENSIX core 的 L1 读写）工作正常，可用于 TileLang 后端开发。
+
+**参考**: `tasks/dev_design/phase0_tt_sim_build.md`
+
+---
+
 *后续问题继续追加...*

@@ -180,52 +180,102 @@ $TT_METAL_HOME/build_Release/tt_stl:$LD_LIBRARY_PATH
 TT-Sim 是预编译库，直接从 GitHub Releases 下载：
 
 ```bash
-# 下载 Blackhole 版本 (v1.4.2)
-curl -L -o $TT_METAL_HOME/sim/libttsim_bh.so \
-  "https://github.com/tenstorrent/ttsim/releases/download/v1.4.2/libttsim_bh.so"
+mkdir -p /work/ttsim
+cd /work/ttsim
+
+# 下载 Blackhole 版本 (v1.4.3 - 最新版本)
+curl -L -o libttsim_bh.so \
+  "https://github.com/tenstorrent/ttsim/releases/download/v1.4.3/libttsim_bh.so"
 
 # 创建符号链接（TT-Metal 期望 libttsim.so 名称）
-ln -sf $TT_METAL_HOME/sim/libttsim_bh.so $TT_METAL_HOME/sim/libttsim.so
+ln -sf libttsim_bh.so libttsim.so
 ```
 
 #### 2. 环境变量配置
 
 ```bash
-# TT-Metal 环境变量
-export TT_METAL_SIMULATOR_HOME="${TT_METAL_HOME}/sim"
-export TT_METAL_SIMULATOR="${TT_METAL_SIMULATOR_HOME}/libttsim.so"
+export TT_METAL_SIMULATOR_HOME="/work/ttsim"
+export TT_METAL_SIMULATOR="/work/ttsim/libttsim.so"
 export TT_METAL_SLOW_DISPATCH_MODE=1      # 禁用快速 dispatch
 export TT_METAL_DISABLE_SFPLOADMACRO=1    # 禁用 SFPU load macro
-
-# UMD 测试额外需要
-export TT_UMD_SIMULATOR="${TT_METAL_SIMULATOR}"
 ```
+
+**注意**: `TT_METAL_SLOW_DISPATCH_MODE` 是必需的，TT-Sim 不支持 Fast Dispatch。
 
 #### 3. soc 描述文件配置
 
 ```bash
-# 复制 soc 描述文件
-cp $TT_METAL_HOME/tt_metal/third_party/umd/tests/soc_descs/blackhole_140_arch.yaml \
+# 复制 soc 描述文件（Blackhole 140 cores）
+cp /path/to/tt_metal/repo/tt_metal/soc_descriptors/blackhole_140_arch.yaml \
    $TT_METAL_SIMULATOR_HOME/soc_descriptor.yaml
 ```
 
-**重要**: Blackhole 需要调整 eth cores 配置（见 bugs.md）。
-
-#### 4. 验证测试
-
-```bash
-cd $TT_METAL_HOME/tt_metal/third_party/umd
-
-# 编译 UMD 测试
-cmake -B build -G Ninja -DTT_UMD_BUILD_ALL=ON
-cmake --build build --target test_simulation_device
-
-# 运行测试
-./build/test/simulation/test_simulation_device \
-  --gtest_filter="*LoopbackSingleTensix*"
-
-# 期望输出: PCI vendor_id=0x1e52 device_id=0xb140 (Blackhole)
+**文件结构要求**:
 ```
+$TT_METAL_SIMULATOR_HOME/
+├── libttsim.so          # TT-Sim 库（符号链接到 libttsim_bh.so）
+├── libttsim_bh.so       # 实际的 Blackhole 仿真库
+└── soc_descriptor.yaml  # SoC 描述文件
+```
+
+#### 4. 核心架构信息
+
+**Blackhole 140 核心布局**:
+- 网格: 17x12 (包含非 Tensix 区域)
+- Worker cores: 140 个 (10 行 x 14 列)
+- 坐标范围: x ∈ [1-7, 10-16], y ∈ [2-11]
+- x=8,9 是 DRAM/ARC/Eth 区域
+
+**PCI 设备 ID**:
+- Vendor ID: 0x1e52 (Tenstorrent)
+- Device ID: 0xb140 (Blackhole)
+- Device ID: 0x401e (Wormhole)
+
+#### 5. 验证测试
+
+**基础测试** (直接调用 TT-Sim API):
+```cpp
+// 加载库
+void* handle = dlopen("/work/ttsim/libttsim.so", RTLD_LAZY);
+
+// 获取函数指针
+auto libttsim_init = (void(*)())dlsym(handle, "libttsim_init");
+auto libttsim_tile_wr = (void(*)(uint32_t, uint32_t, uint64_t, const void*, uint32_t))dlsym(handle, "libttsim_tile_wr_bytes");
+auto libttsim_tile_rd = (void(*)(uint32_t, uint32_t, uint64_t, void*, uint32_t))dlsym(handle, "libttsim_tile_rd_bytes");
+
+// 初始化
+libttsim_init();
+
+// 读写核心内存
+uint32_t data = 0xDEADBEEF;
+libttsim_tile_wr(0, 0, 0x10000, &data, sizeof(data));
+libttsim_tile_rd(0, 0, 0x10000, &data, sizeof(data));
+```
+
+**完整 Worker 核心测试**:
+```bash
+# 测试所有 140 个核心
+cd /root/dev/vibe_dsl
+./test_ttsim_workers
+
+# 期望输出:
+# Worker 核心数量: 140
+# 通过: 140/140
+```
+
+#### 6. TT-Sim API 函数
+
+**核心函数** (C 接口):
+```c
+void libttsim_init(void);
+void libttsim_exit(void);
+uint32_t libttsim_pci_config_rd32(uint32_t bus_dev_fn, uint32_t offset);
+void libttsim_tile_rd_bytes(uint32_t x, uint32_t y, uint64_t addr, void* data, uint32_t size);
+void libttsim_tile_wr_bytes(uint32_t x, uint32_t y, uint64_t addr, const void* data, uint32_t size);
+void libttsim_clock(uint32_t n_clocks);
+```
+
+**注意**: 这些函数使用全局状态，不需要实例指针。
 
 ### TT-Metal 后端开发注意事项
 
