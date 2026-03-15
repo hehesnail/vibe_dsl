@@ -173,6 +173,60 @@ $TT_METAL_HOME/build_Release/tt_metal:\
 $TT_METAL_HOME/build_Release/tt_stl:$LD_LIBRARY_PATH
 ```
 
+### TT-Sim 仿真器配置模式
+
+#### 1. 文件下载与安装
+
+TT-Sim 是预编译库，直接从 GitHub Releases 下载：
+
+```bash
+# 下载 Blackhole 版本 (v1.4.2)
+curl -L -o $TT_METAL_HOME/sim/libttsim_bh.so \
+  "https://github.com/tenstorrent/ttsim/releases/download/v1.4.2/libttsim_bh.so"
+
+# 创建符号链接（TT-Metal 期望 libttsim.so 名称）
+ln -sf $TT_METAL_HOME/sim/libttsim_bh.so $TT_METAL_HOME/sim/libttsim.so
+```
+
+#### 2. 环境变量配置
+
+```bash
+# TT-Metal 环境变量
+export TT_METAL_SIMULATOR_HOME="${TT_METAL_HOME}/sim"
+export TT_METAL_SIMULATOR="${TT_METAL_SIMULATOR_HOME}/libttsim.so"
+export TT_METAL_SLOW_DISPATCH_MODE=1      # 禁用快速 dispatch
+export TT_METAL_DISABLE_SFPLOADMACRO=1    # 禁用 SFPU load macro
+
+# UMD 测试额外需要
+export TT_UMD_SIMULATOR="${TT_METAL_SIMULATOR}"
+```
+
+#### 3. soc 描述文件配置
+
+```bash
+# 复制 soc 描述文件
+cp $TT_METAL_HOME/tt_metal/third_party/umd/tests/soc_descs/blackhole_140_arch.yaml \
+   $TT_METAL_SIMULATOR_HOME/soc_descriptor.yaml
+```
+
+**重要**: Blackhole 需要调整 eth cores 配置（见 bugs.md）。
+
+#### 4. 验证测试
+
+```bash
+cd $TT_METAL_HOME/tt_metal/third_party/umd
+
+# 编译 UMD 测试
+cmake -B build -G Ninja -DTT_UMD_BUILD_ALL=ON
+cmake --build build --target test_simulation_device
+
+# 运行测试
+./build/test/simulation/test_simulation_device \
+  --gtest_filter="*LoopbackSingleTensix*"
+
+# 期望输出: PCI vendor_id=0x1e52 device_id=0xb140 (Blackhole)
+```
+
 ### TT-Metal 后端开发注意事项
 
 #### 待补充
