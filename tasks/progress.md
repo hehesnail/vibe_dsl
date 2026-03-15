@@ -27,7 +27,7 @@
 
 | 阶段 | 任务 | 状态 | 负责人 | 设计文档 | 备注 |
 |------|------|------|--------|----------|------|
-| Phase 0 | TileLang 环境准备 | 🔄 进行中 | - | - | 编译基础功能 |
+| Phase 0 | TileLang 环境准备 | ✅ 已完成 | - | [phase0_tilelang_setup](./dev_design/phase0_tilelang_setup.md) | 基础功能验证通过 |
 | Phase 0 | TT-Metal 编译 | ⏳ 未开始 | - | - | 生成 libtt_metal.so |
 | Phase 0 | TT-Sim 编译 | ⏳ 未开始 | - | - | 生成 libttsim_bh.so |
 | Phase 0 | TileLang+Blackhole 配置 | ⏳ 未开始 | - | - | CMake 配置 |
