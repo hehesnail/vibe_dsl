@@ -48,6 +48,27 @@ export TT_METAL_DISABLE_SFPLOADMACRO=1
 
 ## 测试 TT-Sim
 
+### 官方编程示例
+
+编译并运行 TT-Metal 官方示例：
+
+```bash
+# 编译示例（启用 BUILD_PROGRAMMING_EXAMPLES）
+cmake -B build -DBUILD_PROGRAMMING_EXAMPLES=ON -DENABLE_DISTRIBUTED=OFF ...
+cmake --build build --target metal_example_add_2_integers_in_riscv
+
+# 设置环境变量
+export TT_METAL_HOME=/path/to/tt_metal
+export TT_METAL_RUNTIME_ROOT=$TT_METAL_HOME
+export TT_METAL_SIMULATOR=~/sim/libttsim.so
+export TT_METAL_SLOW_DISPATCH_MODE=1
+export TT_METAL_DISABLE_SFPLOADMACRO=1
+
+# 运行示例
+./build/programming_examples/metal_example_add_2_integers_in_riscv
+# 预期输出: Success: Result is 21
+```
+
 ### 基础测试（验证库加载）
 ```bash
 cd /root/dev/vibe_dsl
