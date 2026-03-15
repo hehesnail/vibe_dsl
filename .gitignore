@@ -1,14 +1,6 @@
 # Claude files
 .claude/
 
-# TileLang source repository (cloned for development)
-# Use setup_tilelang.sh to initialize
-/tilelang_repo/
-
-# TT-Metal source repository
-# Use setup_tt_metal.sh to initialize
-/tt_metal_repo/
-
 # Common files to ignore
 .DS_Store
 *.swp
@@ -21,3 +13,14 @@ __pycache__/
 *.pyc
 .env
 .env.local
+
+# TileLang - exclude large directories
+tilelang_repo/3rdparty/
+tilelang_repo/build/
+tilelang_repo/__pycache__/
+tilelang_repo/*.egg-info/
+tilelang_repo/dist/
+tilelang_repo/wheelhouse/
+
+# TT-Metal - exclude large directories
+tt_metal_repo/
