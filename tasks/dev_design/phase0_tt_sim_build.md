@@ -22,10 +22,20 @@ TT-Sim 是 Tenstorrent 提供的硬件仿真器，可以模拟 Blackhole/Wormhol
 ```bash
 # 必需环境变量
 export TT_METAL_SIMULATOR_HOME=/path/to/sim
-data
 export TT_METAL_SIMULATOR=$TT_METAL_SIMULATOR_HOME/libttsim.so
 export TT_METAL_SLOW_DISPATCH_MODE=1
 export TT_METAL_DISABLE_SFPLOADMACRO=1
+
+# UMD 测试需要（如果使用 UMD 单元测试）
+export TT_UMD_SIMULATOR=$TT_METAL_SIMULATOR
+
+# 库路径（运行时）
+export LD_LIBRARY_PATH=$TT_METAL_HOME/build_Release/tt_metal:\
+$TT_METAL_HOME/build_Release/tt_stl:\
+$TT_METAL_HOME/build_Release/ttnn:\
+$TT_METAL_HOME/build_Release/lib:\
+$TT_METAL_HOME/build_Release/tt_metal/third_party/umd/device:\
+$TT_METAL_HOME/sim:$LD_LIBRARY_PATH
 ```
 
 ### 文件结构
@@ -56,11 +66,15 @@ ln -sf libttsim_bh.so libttsim.so
 ### 2. 复制 soc 描述文件
 
 ```bash
+# 使用完整的 soc descriptor（不是 sim/ 目录下的简化版本）
 cp /path/to/tt_metal/tt_metal/soc_descriptors/blackhole_140_arch.yaml \
    /work/ttsim/soc_descriptor.yaml
 ```
 
-**注意**: 我们使用的是 `soc_descriptors/` 目录下的文件（而非 `tests/soc_descs/`），这个版本配置正确，不需要修改 eth cores。
+**重要**: 必须使用 `soc_descriptors/blackhole_140_arch.yaml` 完整版本，因为：
+- sim/soc_descriptor.yaml 是简化版，缺少 `dram_view_size` 和 `dram_views` 字段
+- Metal 的 `metal_SocDescriptor` 需要这些字段来初始化 DRAM 元数据
+- 完整版本包含所有必需的字段和正确的 eth cores 配置
 
 ### 3. 设置环境变量
 
@@ -117,6 +131,48 @@ Worker 核心数量: 140
 
 **结论**: 所有 140 个 Tensix 核心的 L1 内存读写功能验证通过。
 
+### 3. TT-Metal 官方示例测试
+
+运行 TT-Metal 官方 `add_2_integers_in_riscv` 示例验证完整功能链：
+
+```bash
+export TT_METAL_HOME=/root/dev/vibe_dsl/tt_metal_repo
+export TT_METAL_SIMULATOR=$TT_METAL_HOME/sim/libttsim_bh.so
+export TT_UMD_SIMULATOR=$TT_METAL_HOME/sim/libttsim_bh.so
+
+# 设置库路径
+export LD_LIBRARY_PATH=$TT_METAL_HOME/build_Release/tt_metal:\
+$TT_METAL_HOME/build_Release/tt_stl:\
+$TT_METAL_HOME/build_Release/ttnn:\
+$TT_METAL_HOME/build_Release/lib:\
+$TT_METAL_HOME/build_Release/tt_metal/third_party/umd/device:\
+$TT_METAL_HOME/build_Release/_deps/fmt-build:\
+$TT_METAL_HOME/build_Release/_deps/benchmark-build/src:\
+$TT_METAL_HOME/sim:$LD_LIBRARY_PATH
+
+cd $TT_METAL_HOME
+TT_METAL_SLOW_DISPATCH_MODE=1 \
+  ./build/programming_examples/metal_example_add_2_integers_in_riscv
+```
+
+**测试结果**:
+```
+Success: Result is 21
+[10970] 0.3 seconds (36.0 KHz)
+```
+
+**关键步骤**:
+1. ✅ 仿真器库加载成功
+2. ✅ PCI 设备识别 (vendor_id=0x1e52, device_id=0xb140)
+3. ✅ SocDescriptor 解析成功（需使用完整的 soc_descriptor.yaml）
+4. ✅ Fabric 控制平面初始化
+5. ✅ RISC-V 内核执行加法运算 (10 + 11 = 21)
+6. ✅ 结果验证通过
+
+**重要发现**:
+- sim/soc_descriptor.yaml（简化版）缺少 `dram_view_size` 和 `dram_views` 字段
+- 必须使用 tt_metal/soc_descriptors/blackhole_140_arch.yaml（完整版）
+
 ### 关键成功指标
 
 | 指标 | 期望值 | 实际值 | 状态 |
@@ -146,12 +202,13 @@ Worker 核心数量: 140
 
 1. ✅ `libttsim_bh.so` 库文件已下载 (182KB)
 2. ✅ `libttsim.so` 符号链接已创建
-3. ✅ `soc_descriptor.yaml` 已配置
+3. ✅ `soc_descriptor.yaml` 已配置（使用完整版本）
 4. ✅ 环境变量已确定
 5. ✅ 基础功能验证通过（PCI 识别、Tile 读写）
 6. ✅ 完整 Worker 核心测试通过（140/140）
 7. ✅ 测试程序 `test_ttsim_v3` 和 `test_ttsim_workers`
-8. ✅ 配置文档 `docs/ttsim_setup.md`
+8. ✅ TT-Metal 官方示例测试通过 (`metal_example_add_2_integers_in_riscv`)
+9. ✅ 配置文档 `docs/ttsim_setup.md`
 
 ## 参考文档
 

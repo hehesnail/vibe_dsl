@@ -62,9 +62,19 @@ cmake --build build --target metal_example_add_2_integers_in_riscv
 # 设置环境变量
 export TT_METAL_HOME=/path/to/tt_metal
 export TT_METAL_RUNTIME_ROOT=$TT_METAL_HOME
-export TT_METAL_SIMULATOR=~/sim/libttsim.so
+export TT_METAL_SIMULATOR=$TT_METAL_HOME/sim/libttsim.so
 export TT_METAL_SLOW_DISPATCH_MODE=1
 export TT_METAL_DISABLE_SFPLOADMACRO=1
+
+# 设置库路径（关键步骤）
+export LD_LIBRARY_PATH=$TT_METAL_HOME/build_Release/tt_metal:\
+$TT_METAL_HOME/build_Release/tt_stl:\
+$TT_METAL_HOME/build_Release/ttnn:\
+$TT_METAL_HOME/build_Release/lib:\
+$TT_METAL_HOME/build_Release/tt_metal/third_party/umd/device:\
+$TT_METAL_HOME/build_Release/_deps/fmt-build:\
+$TT_METAL_HOME/build_Release/_deps/benchmark-build/src:\
+$TT_METAL_HOME/sim:$LD_LIBRARY_PATH
 
 # 运行示例
 ./build/programming_examples/metal_example_add_2_integers_in_riscv
