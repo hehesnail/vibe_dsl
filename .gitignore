@@ -1,8 +1,13 @@
 # Claude files
 .claude/
 
-# TileLang source repository (cloned for analysis)
-/tilelang/
+# TileLang source repository (cloned for development)
+# Use setup_tilelang.sh to initialize
+/tilelang_repo/
+
+# TT-Metal source repository
+# Use setup_tt_metal.sh to initialize
+/tt_metal_repo/
 
 # Common files to ignore
 .DS_Store
