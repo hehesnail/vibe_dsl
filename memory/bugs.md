@@ -13,20 +13,6 @@
 
 ## 记录
 
-### 模板示例（删除此行后开始记录）
-
-**问题**: 描述问题的现象
-**时间**: YYYY-MM-DD
-**根本原因**: 为什么会发生
-**解决方案**: 如何解决
-**关键代码**:
-```cpp
-// 相关代码片段
-```
-**参考**: 相关链接或文档
-
----
-
 ### pip install -e 失败
 
 **问题**: `pip install -e . --no-build-isolation` 报错，cmake 配置失败
@@ -332,6 +318,96 @@ ffi::Module CSourceModuleCreate(
 ```
 
 **参考**: `tilelang_repo/src/target/rt_mod_blackhole.cc`
+
+---
+
+### TT-Sim JIT 编译环境缺失文件
+
+**问题**: TT-Sim 测试在 JIT 编译阶段失败，缺少 firmware 源文件和头文件
+**时间**: 2026-03-16
+**错误信息**:
+```
+cc1plus: fatal error: brisc.cc: No such file or directory
+cc1plus: fatal error: active_erisc.cc: No such file or directory
+cc1plus: fatal error: hostdevcommon/profiler_common.h: No such file or directory
+cc1plus: fatal error: tools/profiler/kernel_profiler.hpp: No such file or directory
+```
+
+**根本原因**:
+- TT-Metal 在运行时需要 JIT 编译 firmware 文件
+- 这些文件在 build_Release 目录中没有正确链接到源文件
+- build_Release 和源码目录结构不一致
+
+**解决方案**: 创建以下符号链接
+```bash
+# 1. SFPI 编译器 (RISC-V 工具链)
+ln -sf $TT_METAL_HOME/runtime/sfpi $TT_METAL_HOME/build_Release/runtime/sfpi
+
+# 2. Hardware 定义 (firmware 源文件)
+ln -sf $TT_METAL_HOME/tt_metal/hw $TT_METAL_HOME/build_Release/tt_metal/hw
+
+# 3. TT-LLK 库 (底层 kernel 库)
+ln -sf $TT_METAL_HOME/tt_metal/third_party/tt_llk \
+       $TT_METAL_HOME/build_Release/tt_metal/third_party/tt_llk
+
+# 4. Host-Device 通用接口
+ln -sf $TT_METAL_HOME/tt_metal/hostdevcommon \
+       $TT_METAL_HOME/build_Release/tt_metal/hostdevcommon
+
+# 5. API 头文件 (circular_buffer_constants.h 等)
+ln -sf $TT_METAL_HOME/tt_metal/api/tt-metalium \
+       $TT_METAL_HOME/build_Release/tt_metal/api/tt-metalium
+
+# 6. Runtime 工具链 (linker scripts)
+ln -sf $TT_METAL_HOME/runtime/hw $TT_METAL_HOME/build_Release/runtime/hw
+
+# 7. Profiler 工具
+ln -sf $TT_METAL_HOME/tt_metal/tools/profiler \
+       $TT_METAL_HOME/build_Release/tt_metal/tools/profiler
+```
+
+**关键发现**:
+- 这些链接需要在编译后手动创建（或添加到 cmake install 步骤）
+- 链接结构必须精确匹配编译器期望的路径
+- `hostdevcommon` 需要链接整个目录而非子目录
+
+**参考**: `tests/target/TT_SIM_SUCCESS_REPORT.md`
+
+---
+
+### TT-Sim noc_cmd_ctrl write 未实现错误
+
+**问题**: 使用直接地址访问 DRAM 时 TT-Sim 报错 `noc_cmd_ctrl: write: src_addr=0x180000`
+**时间**: 2026-03-16
+**错误信息**:
+```
+[9438] ERROR: UnimplementedFunctionality: noc_cmd_ctrl: write: src_addr=0x180000
+```
+
+**根本原因**:
+- TT-Sim 不完全支持直接使用物理地址的 NOC 操作
+- 必须使用 `InterleavedAddrGen` 和 `get_noc_addr()` 进行地址转换
+
+**解决方案**:
+```cpp
+// 错误写法 (TT-Sim 不支持)
+noc_async_read(src_dram_addr + i * TILE_SIZE, l1_addr, TILE_SIZE);
+
+// 正确写法 (TT-Sim 兼容)
+InterleavedAddrGen<true> src_gen = {
+    .bank_base_address = src_dram_addr,
+    .page_size = TILE_SIZE
+};
+uint64_t src_noc_addr = get_noc_addr(i, src_gen);
+noc_async_read(src_noc_addr, l1_addr, TILE_SIZE);
+```
+
+**经验总结**:
+- TT-Sim 要求使用高级地址生成 API
+- 直接使用物理地址只在真实硬件上有效
+- CodeGen 必须生成 `InterleavedAddrGen` 风格的代码
+
+**参考**: `tt_metal/programming_examples/add_2_integers_in_riscv/kernels/reader_writer_add_in_riscv.cpp`
 
 ---
 
