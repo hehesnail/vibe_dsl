@@ -81,16 +81,20 @@ $TT_METAL_HOME/sim:$LD_LIBRARY_PATH
 # 预期输出: Success: Result is 21
 ```
 
-### 基础测试（验证库加载）
+### 运行多个官方示例测试
+
+使用提供的测试脚本运行多个官方示例：
+
 ```bash
 cd /root/dev/vibe_dsl/tests/tt_sim
-./bin/test_ttsim_v3
+./run_official_examples.sh
 ```
 
-### Worker 核心测试（验证 140 核心）
-```bash
-./bin/test_ttsim_workers
-```
+该脚本会自动运行以下测试：
+- `metal_example_add_2_integers_in_riscv` - 基础 RISC-V 计算
+- `metal_example_hello_world_datamovement_kernel` - 数据移动
+- `metal_example_loopback` - 环回测试
+- `metal_example_eltwise_binary` - 二元运算
 
 ## TT-Sim API 函数
 

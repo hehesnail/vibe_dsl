@@ -252,15 +252,17 @@ libttsim_tile_wr(0, 0, 0x10000, &data, sizeof(data));
 libttsim_tile_rd(0, 0, 0x10000, &data, sizeof(data));
 ```
 
-**完整 Worker 核心测试**:
+**运行 TT-Metal 官方示例**:
 ```bash
-# 测试所有 140 个核心
+# 运行官方编程示例验证 TT-Sim
 cd /root/dev/vibe_dsl/tests/tt_sim
-./bin/test_ttsim_workers
+./run_official_examples.sh
 
-# 期望输出:
-# Worker 核心数量: 140
-# 通过: 140/140
+# 或使用脚本设置环境后手动运行
+source scripts/setup_tt_sim.sh
+cd $TT_METAL_HOME
+./build/programming_examples/metal_example_add_2_integers_in_riscv
+# 期望输出: Success: Result is 21
 ```
 
 #### 6. TT-Sim API 函数

@@ -86,54 +86,7 @@ cp /path/to/tt_metal/tt_metal/soc_descriptors/blackhole_140_arch.yaml \
 
 ## 验证方法与测试结果
 
-### 1. 基础功能测试
-
-编写最小化测试程序直接调用 TT-Sim API：
-
-```bash
-cd /root/dev/vibe_dsl/tests/tt_sim
-./bin/test_ttsim_v3
-```
-
-**测试结果**:
-```
-=== TT-Sim 最小化测试 v3 ===
-✓ 成功加载 libttsim.so
-✓ 成功获取函数指针
-✓ TT-Sim 初始化成功
-✓ Tenstorrent 设备识别成功 (Vendor ID: 0x1e52)
-✓ Blackhole 设备识别成功 (Device ID: 0xb140)
-✓ 数据验证成功 (Tile 读写)
-```
-
-### 2. 完整 Worker 核心测试
-
-测试所有 140 个 Blackhole worker 核心：
-
-```bash
-./bin/test_ttsim_workers
-```
-
-**测试结果**:
-```
-=== TT-Sim Worker 核心测试 (Blackhole) ===
-Worker 核心数量: 140
-✓ 成功加载 libttsim.so
-✓ TT-Sim 初始化成功
-测试所有 Worker 核心的 L1 内存读写...
-
-测试结果:
-  通过: 140/140
-  失败: 0/140
-  耗时: 0 ms
-  平均: 0 µs/核心
-```
-
-**结论**: 所有 140 个 Tensix 核心的 L1 内存读写功能验证通过。
-
-### 3. TT-Metal 官方示例测试
-
-运行 TT-Metal 官方 `add_2_integers_in_riscv` 示例验证完整功能链：
+运行 TT-Metal 官方示例验证完整功能链：
 
 ```bash
 export TT_METAL_HOME=/root/dev/vibe_dsl/tt_metal_repo
@@ -204,11 +157,9 @@ Success: Result is 21
 2. ✅ `libttsim.so` 符号链接已创建
 3. ✅ `soc_descriptor.yaml` 已配置（使用完整版本）
 4. ✅ 环境变量已确定
-5. ✅ 基础功能验证通过（PCI 识别、Tile 读写）
-6. ✅ 完整 Worker 核心测试通过（140/140）
-7. ✅ 测试程序 `tests/tt_sim/bin/test_ttsim_v3` 和 `tests/tt_sim/bin/test_ttsim_workers`
-8. ✅ TT-Metal 官方示例测试通过 (`metal_example_add_2_integers_in_riscv`)
-9. ✅ 配置文档 `docs/ttsim_setup.md`
+5. ✅ TT-Metal 官方示例测试通过 (`metal_example_add_2_integers_in_riscv`)
+6. ✅ 官方示例批量测试脚本 (`tests/tt_sim/run_official_examples.sh`)
+7. ✅ 配置文档 (`docs/ttsim_setup.md`)
 
 ## 参考文档
 
