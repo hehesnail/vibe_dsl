@@ -30,8 +30,7 @@
 | Phase 0 | TileLang 环境准备 | ✅ 已完成 | - | [phase0_tilelang_setup](./dev_design/phase0_tilelang_setup.md) | 基础功能验证通过 |
 | Phase 0 | TT-Metal 编译 | ✅ 已完成 | - | [phase0_tt_metal_build](./dev_design/phase0_tt_metal_build.md) | libtt_metal.so 18MB |
 | Phase 0 | TT-Sim 配置 | ✅ 已完成 | - | [phase0_tt_sim_build](./dev_design/phase0_tt_sim_build.md) | libttsim_bh.so 182KB, metal_example_add_2_integers_in_riscv 测试通过 |
-| Phase 0 | TileLang+Blackhole 配置 | ⏳ 未开始 | - | - | CMake 配置 |
-| Phase 0 | TileLang+Blackhole 配置 | ⏳ 未开始 | - | - | CMake 配置 |
+| Phase 0 | TileLang+Blackhole 配置 | ✅ 已完成 | - | [phase0_tilelang_blackhole_config](./dev_design/phase0_tilelang_blackhole_config.md) | USE_BLACKHOLE, CodeGen 框架 |
 | Phase 1 | CodeGen 框架 | ⏳ 未开始 | - | - | 单核 Copy |
 | Phase 1 | Runtime 框架 | ⏳ 未开始 | - | - | 延迟编译 |
 | Phase 2 | SplitBlackholeKernel | ⏳ 未开始 | - | - | R/C/W 拆分 |

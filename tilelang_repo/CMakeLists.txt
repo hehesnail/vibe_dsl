@@ -71,11 +71,12 @@ else()
 endif()
 
 # Configs
-set(TILELANG_BACKENDS CUDA ROCM METAL)
+set(TILELANG_BACKENDS CUDA ROCM METAL BLACKHOLE)
 
 set(TILELANG_BACKEND_DOC_CUDA "Enable CUDA backend (ON/OFF/or CUDA SDK path)")
 set(TILELANG_BACKEND_DOC_ROCM "Enable ROCm backend (ON/OFF/or ROCm SDK path)")
 set(TILELANG_BACKEND_DOC_METAL "Enable Metal backend")
+set(TILELANG_BACKEND_DOC_BLACKHOLE "Enable Blackhole (TT-Metal) backend")
 
 # TVM's config.cmake redefines USE_* options later, so we cache the user's choice
 # (including explicit -DUSE_XXX arguments) before we include TVM and restore it
@@ -235,6 +236,30 @@ if(USE_METAL)
   list(APPEND TILE_LANG_SRCS ${TILE_LANG_METAL_SRCS})
   # FIXME: CIBW failed with backtrace, why???
   set(TVM_FFI_USE_LIBBACKTRACE OFF)
+elseif(USE_BLACKHOLE)
+  message(STATUS "Enable Blackhole (TT-Metal) backend")
+  # Find TT-Metal library
+  if(NOT DEFINED TT_METAL_HOME)
+    set(TT_METAL_HOME $ENV{TT_METAL_HOME})
+  endif()
+  if(NOT TT_METAL_HOME)
+    message(FATAL_ERROR "TT_METAL_HOME not set. Please set TT_METAL_HOME to TT-Metal installation directory.")
+  endif()
+  find_library(TT_METAL_LIB tt_metal
+    PATHS ${TT_METAL_HOME}/build_Release/tt_metal ${TT_METAL_HOME}/build/tt_metal
+    NO_DEFAULT_PATH)
+  if(NOT TT_METAL_LIB)
+    message(WARNING "TT-Metal library not found at ${TT_METAL_HOME}. Building with stub implementation.")
+  else()
+    message(STATUS "Found TT-Metal library: ${TT_METAL_LIB}")
+    include_directories(${TT_METAL_HOME}/tt_metal ${TT_METAL_HOME}/tt_metal/third_party/umd)
+    link_directories(${TT_METAL_HOME}/build_Release/tt_metal ${TT_METAL_HOME}/build/tt_metal)
+  endif()
+  file(GLOB TILE_LANG_BLACKHOLE_SRCS
+    src/target/codegen_blackhole.cc
+    src/target/rt_mod_blackhole.cc
+  )
+  list(APPEND TILE_LANG_SRCS ${TILE_LANG_BLACKHOLE_SRCS})
 elseif(USE_ROCM)
   set(CMAKE_HIP_STANDARD 17)
   include(${TVM_SOURCE}/cmake/utils/FindROCM.cmake)
