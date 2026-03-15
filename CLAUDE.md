@@ -4,29 +4,30 @@
 
 为 TileLang DSL 添加 Tenstorrent 硬件后端支持，基于 TT-Metal 底层框架实现编译器后端。
 
-## 核心架构
+## 核心架构（Blackhole）
 
 ```
 TileLang DSL (Python)
-       ↓
+       ↓ LowerAndLegalize
 TIR (TVM IR)
-       ↓
-TT-Metal CodeGen → TT-Metal Runtime
-       ↓
-Tenstorrent Hardware (Grayskull/Wormhole)
+       ↓ Blackhole Passes
+├─ AssignBlackholeCores (14x10 grid)
+├─ PlanBlackholeCB (64 CBs, 1.5MB L1)
+└─ SplitBlackholeKernel (R/C/W 拆分)
+       ↓ CodeGen
+TT-Metal C++ (BRISC/TRISC/NCRISC)
+       ↓ JIT Build (libtt_metal.so)
+RISC-V ELF
+       ↓ Runtime
+Blackhole Hardware (140 cores)
 ```
 
 ## 开发原则
 
-### 1. 渐进式实现
-- 先跑通端到端流程，再优化性能
-- 从简单算子（copy/gemm）开始，逐步支持复杂模式
-- 保持与现有后端的兼容性
-
-### 2. 复用现有基础设施
-- 基于 TVM 的代码生成框架
-- 复用 TileLang 的内存管理和调度逻辑
-- 对接 TT-Metal 的 Kernel 编译和加载机制
+1. **Blackhole 优先**：专注 14x10 grid, 64 CBs, 1.5MB L1 架构
+2. **DSL 兼容**：同一套 TileLang 代码零修改编译到 Blackhole
+3. **动态链接**：通过 libtt_metal.so 调用 TT-Metal API，非 Python 包
+4. **TT-Sim 验证**：无硬件条件下使用仿真器验证功能
 
 ---
 
@@ -178,19 +179,44 @@ tasks/                           # 任务管理
 
 ## 关键文件位置
 
+### 代码实现（参考/新增）
 ```
-tilelang/src/target/
-├── codegen_cuda.h/cc      # CUDA 后端参考
-tilelang/src/target/
-├── codegen_hip.h/cc       # HIP 后端参考
+tilelang_repo/src/target/
+├── codegen_cuda.h/cc              # CUDA 后端参考模式
+├── codegen_blackhole.h/cc         # [新增] Blackhole CodeGen
+└── rt_mod_blackhole.cc            # [新增] Blackhole Runtime
+
+tilelang_repo/src/transform/
+├── split_blackhole_kernel.cc      # [新增] R/C/W 拆分 Pass
+├── plan_blackhole_cb.cc           # [新增] CB 分配 Pass
+└── assign_blackhole_cores.cc      # [新增] Core 分配 Pass
+```
+
+### 技术文档
+```
 docs/tilelang/cpp_core/
-├── 04_target_backends.md  # 后端架构文档
-docs/tt_metal/
-├── source_analysis/       # TT-Metal 源码分析
+└── 04_target_backends.md          # TileLang 后端架构
+docs/tt_metal/source_analysis/
+├── api.md                         # TT-Metal Host API
+├── jit_build.md                   # JIT 编译系统
+└── hw.md                          # Blackhole 硬件规格
+```
+
+### 项目管理
+```
+tasks/
+├── arch_design.md                 # 总体架构设计
+├── progress.md                    # 任务状态看板
+└── dev_design/                    # 各任务详细设计
+memory/
+├── general_dev.md                 # 开发经验总结
+└── bugs.md                        # 问题与解决方案
 ```
 
 ## 代码规范
 
-- 遵循 TVM/TileLang 的命名和代码风格
-- 关键逻辑添加注释，说明与 TT-Metal 的对应关系
-- 保持代码简洁，避免过度工程化
+- **命名**：遵循 TVM 规范，`CamelCase` 类名，`snake_case` 函数/变量
+- **注释**：关键逻辑说明与 TT-Metal API 的对应关系
+- **文件**：每个 Pass/CodeGen 独立文件，头文件暴露接口
+- **测试**：每段代码配套单元测试（gtest/pytest）
+- **提交**：代码+文档同时提交，commit 说明任务阶段
