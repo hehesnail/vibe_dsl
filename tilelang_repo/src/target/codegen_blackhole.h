@@ -97,6 +97,48 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintSemWait(int sem_id, int value);
   void PrintSemPost(int sem_id);
 
+  // ==========================================================================
+  // Copy Kernel Generation (Phase 1)
+  // ==========================================================================
+
+  /*!\brief Generate a simple copy kernel for single-core execution
+   *
+   * Generates both reader and writer kernels that run sequentially
+   * on the same core, using a circular buffer for data transfer.
+   *
+   * \param func_name Name of the generated kernel
+   * \param src_buf Source buffer name
+   * \param dst_buf Destination buffer name
+   * \param num_tiles Number of tiles to copy
+   * \param tile_size_bytes Size of each tile in bytes
+   * \return Generated C++ code string
+   */
+  std::string GenerateSimpleCopyKernel(const std::string& func_name,
+                                       const std::string& src_buf,
+                                       const std::string& dst_buf,
+                                       int num_tiles,
+                                       int tile_size_bytes = 2048);
+
+  /*!\brief Generate reader kernel (BRISC)
+   *
+   * Reads data from DRAM into circular buffer.
+   */
+  std::string GenerateReaderKernel(const std::string& func_name,
+                                   const std::string& src_buf,
+                                   int cb_id,
+                                   int num_tiles,
+                                   int tile_size_bytes);
+
+  /*!\brief Generate writer kernel (NCRISC)
+   *
+   * Writes data from circular buffer to DRAM.
+   */
+  std::string GenerateWriterKernel(const std::string& func_name,
+                                   const std::string& dst_buf,
+                                   int cb_id,
+                                   int num_tiles,
+                                   int tile_size_bytes);
+
  private:
   // Current core type being generated
   CoreType core_type_{CoreType::kUnknown};
