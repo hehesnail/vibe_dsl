@@ -255,8 +255,8 @@ libttsim_tile_rd(0, 0, 0x10000, &data, sizeof(data));
 **完整 Worker 核心测试**:
 ```bash
 # 测试所有 140 个核心
-cd /root/dev/vibe_dsl
-./test_ttsim_workers
+cd /root/dev/vibe_dsl/tests/tt_sim
+./bin/test_ttsim_workers
 
 # 期望输出:
 # Worker 核心数量: 140

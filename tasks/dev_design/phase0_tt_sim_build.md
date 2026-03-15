@@ -91,8 +91,8 @@ cp /path/to/tt_metal/tt_metal/soc_descriptors/blackhole_140_arch.yaml \
 编写最小化测试程序直接调用 TT-Sim API：
 
 ```bash
-cd /root/dev/vibe_dsl
-./test_ttsim_v3
+cd /root/dev/vibe_dsl/tests/tt_sim
+./bin/test_ttsim_v3
 ```
 
 **测试结果**:
@@ -111,7 +111,7 @@ cd /root/dev/vibe_dsl
 测试所有 140 个 Blackhole worker 核心：
 
 ```bash
-./test_ttsim_workers
+./bin/test_ttsim_workers
 ```
 
 **测试结果**:
@@ -206,7 +206,7 @@ Success: Result is 21
 4. ✅ 环境变量已确定
 5. ✅ 基础功能验证通过（PCI 识别、Tile 读写）
 6. ✅ 完整 Worker 核心测试通过（140/140）
-7. ✅ 测试程序 `test_ttsim_v3` 和 `test_ttsim_workers`
+7. ✅ 测试程序 `tests/tt_sim/bin/test_ttsim_v3` 和 `tests/tt_sim/bin/test_ttsim_workers`
 8. ✅ TT-Metal 官方示例测试通过 (`metal_example_add_2_integers_in_riscv`)
 9. ✅ 配置文档 `docs/ttsim_setup.md`
 

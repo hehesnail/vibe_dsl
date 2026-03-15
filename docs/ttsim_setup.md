@@ -83,13 +83,13 @@ $TT_METAL_HOME/sim:$LD_LIBRARY_PATH
 
 ### 基础测试（验证库加载）
 ```bash
-cd /root/dev/vibe_dsl
-./test_ttsim_v3
+cd /root/dev/vibe_dsl/tests/tt_sim
+./bin/test_ttsim_v3
 ```
 
 ### Worker 核心测试（验证 140 核心）
 ```bash
-./test_ttsim_workers
+./bin/test_ttsim_workers
 ```
 
 ## TT-Sim API 函数
