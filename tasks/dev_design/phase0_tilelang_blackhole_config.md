@@ -64,91 +64,112 @@ option(USE_BLACKHOLE "Enable Blackhole backend" OFF)
 
 ### 1. 创建 CodeGen 框架文件
 
-创建 `src/target/codegen_blackhole.h`：
+创建 `src/target/codegen_blackhole.h`（实际实现）：
 
 ```cpp
-#ifndef TILELANG_CODEGEN_BLACKHOLE_H_
-#define TILELANG_CODEGEN_BLACKHOLE_H_
+#ifndef TL_TARGET_SOURCE_CODEGEN_BLACKHOLE_H_
+#define TL_TARGET_SOURCE_CODEGEN_BLACKHOLE_H_
 
-#include <tvm/target/codegen.h>
+#include <string>
+#include <unordered_set>
+
 #include "codegen_c_host.h"
 
-namespace tilelang {
+namespace tvm {
+namespace tl {
 
 class CodeGenBlackhole : public CodeGenCHost {
  public:
   CodeGenBlackhole();
-  virtual ~CodeGenBlackhole();
 
-  // Override CodeGenCHost methods for Blackhole-specific codegen
-  void Init(bool output_ssa, bool emit_asserts);
-  void AddFunction(const PrimFunc& f);
+  // Note: Parent class Init is not virtual, so we just shadow it
+  void Init(bool output_ssa, bool emit_asserts, bool emit_fwd_func_decl,
+            std::string target_str,
+            const std::unordered_set<std::string> &devices);
 
-  // Blackhole-specific code generation
-  void VisitStmt_(const AttrStmtNode* op) override;
-  void VisitExpr_(const CallNode* op) override;
+  void AddFunction(const tvm::GlobalVar &gvar,
+                   const tvm::tir::PrimFunc &f) override;
+
+  // Note: Visitor methods are marked 'final' in parent, cannot override
+  // Blackhole-specific IR handling via preprocessing passes
+
+  // Blackhole core type enumeration
+  enum class CoreType {
+    kBRISC,   // Broadcast RISC - control core
+    kTRISC,   // Tensix RISC - compute core
+    kNCRISC,  // NOC RISC - data movement core
+    kUnknown
+  };
+
+  void SetCoreType(CoreType core_type) { core_type_ = core_type; }
+  CoreType GetCoreType() const { return core_type_; }
+
+ protected:
+  void PrintKernelAttributes();
+  void PrintCBDeclare(const std::string &name, tvm::DataType dtype,
+                      int num_pages, int page_size);
+  void PrintCBWaitFront(const std::string &name, int num_tiles);
+  void PrintCBPopFront(const std::string &name, int num_tiles);
+  void PrintCBReserveBack(const std::string &name, int num_tiles);
+  void PrintCBPushBack(const std::string &name, int num_tiles);
+  void PrintNOCRead(const std::string &src_addr, const std::string &dst_addr, int size);
+  void PrintNOCWrite(const std::string &src_addr, const std::string &dst_addr, int size);
+  void PrintNOCWait();
+  void PrintSemInit(int sem_id, int value);
+  void PrintSemWait(int sem_id, int value);
+  void PrintSemPost(int sem_id);
 
  private:
-  // TT-Metal specific state
-  bool is_brisc_;  // BRISC core
-  bool is_trisc_;  // TRISC core
-  bool is_ncrisc_; // NCRISC core
+  CoreType core_type_{CoreType::kUnknown};
+  bool need_tt_metal_h_{false};
+  bool need_dataflow_api_h_{false};
+  bool need_compute_api_h_{false};
+  bool emit_kernel_wrapper_{true};
+  std::unordered_set<std::string> declared_cbs_;
+  static constexpr int kL1Alignment = 16;
 };
 
-}  // namespace tilelang
+} // namespace tl
+} // namespace tvm
 
-#endif  // TILELANG_CODEGEN_BLACKHOLE_H_
-```
-
-创建 `src/target/codegen_blackhole.cc`：
-
-```cpp
-#include "codegen_blackhole.h"
-
-#include <tvm/ir/transform.h>
-#include <tvm/tir/transform.h>
-
-namespace tilelang {
-
-CodeGenBlackhole::CodeGenBlackhole() : is_brisc_(false), is_trisc_(false), is_ncrisc_(false) {}
-
-CodeGenBlackhole::~CodeGenBlackhole() {}
-
-void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts) {
-  CodeGenCHost::Init(output_ssa, emit_asserts);
-}
-
-void CodeGenBlackhole::AddFunction(const PrimFunc& f) {
-  // TODO: Implement Blackhole-specific function generation
-  CodeGenCHost::AddFunction(f);
-}
-
-void CodeGenBlackhole::VisitStmt_(const AttrStmtNode* op) {
-  // TODO: Handle Blackhole-specific attributes
-  CodeGenCHost::VisitStmt_(op);
-}
-
-void CodeGenBlackhole::VisitExpr_(const CallNode* op) {
-  // TODO: Handle Blackhole-specific intrinsics
-  CodeGenCHost::VisitExpr_(op);
-}
-
-}  // namespace tilelang
+#endif // TL_TARGET_SOURCE_CODEGEN_BLACKHOLE_H_
 ```
 
 ### 2. 创建 Runtime 模块
 
-创建 `src/target/rt_mod_blackhole.cc`：
+创建 `src/target/rt_mod_blackhole.cc`（简化版 DeviceAPI）：
 
 ```cpp
-#include <tvm/runtime/registry.h>
-#include <tvm/runtime/c_runtime_api.h>
+#include <tvm/runtime/device_api.h>
+#include <tvm/ffi/reflection/registry.h>
 
 namespace tvm {
 namespace runtime {
 
-// Blackhole runtime module
-// TODO: Implement TT-Metal device API integration
+class BlackholeDeviceAPI final : public DeviceAPI {
+ public:
+  void SetDevice(Device dev) final;
+  void GetAttr(Device dev, DeviceAttrKind kind, ffi::Any* rv) final;
+  void* AllocDataSpace(Device dev, size_t nbytes, size_t alignment,
+                       DLDataType type_hint) final;
+  void FreeDataSpace(Device dev, void* ptr) final;
+  void* AllocWorkspace(Device dev, size_t size, DLDataType type_hint) final;
+  void FreeWorkspace(Device dev, void* ptr) final;
+  void StreamSync(Device dev, TVMStreamHandle stream) final;
+  TVMStreamHandle CreateStream(Device dev) final;
+  void FreeStream(Device dev, TVMStreamHandle stream) final;
+  static BlackholeDeviceAPI* Global();
+
+ private:
+  static constexpr size_t kL1Alignment = 16;
+};
+
+// Registration via TVM_FFI_STATIC_INIT_BLOCK
+TVM_FFI_STATIC_INIT_BLOCK() {
+  tvm::ffi::reflection::GlobalDef().def("device_api.blackhole", []() -> void* {
+    return static_cast<void*>(BlackholeDeviceAPI::Global());
+  });
+}
 
 }  // namespace runtime
 }  // namespace tvm
@@ -192,10 +213,54 @@ def target_blackhole(target):
 
 ## 验证方法
 
-1. **CMake 配置**：`cmake -DUSE_BLACKHOLE=ON -DTT_METAL_HOME=/path/to/tt_metal ..`
-2. **编译检查**：`ninja` 能成功编译
-3. **Python 导入**：`import tilelang` 正常
-4. **目标注册**：`tl.target("blackhole")` 可用
+### 1. 编译测试
+
+```bash
+# CMake 配置
+cmake -B build_blackhole -DUSE_BLACKHOLE=ON -DUSE_CUDA=OFF
+
+# 编译
+cd build_blackhole && make -j4
+```
+
+**验证点**：
+- `libtilelang.so` 生成成功
+- 包含 Blackhole 符号：`nm -D lib/libtilelang.so | grep -i blackhole`
+
+### 2. 功能测试（待实现）
+
+当前阶段仅完成框架编译，功能测试需要：
+- [ ] CodeGen 生成 TT-Metal 代码测试
+- [ ] DeviceAPI 注册测试
+- [ ] 简单的 kernel 编译测试（无需实际运行）
+
+**示例测试代码**（待实现）：
+```python
+# test_blackhole_codegen.py
+import tilelang as tl
+import tvm
+
+# 测试 target 注册
+target = tvm.target.Target("blackhole")
+print(f"Target: {target}")
+
+# 测试简单的函数生成（无需完整编译）
+@T.prim_func
+def simple_add(A: T.Buffer((16,), "float32"),
+               B: T.Buffer((16,), "float32"),
+               C: T.Buffer((16,), "float32")):
+    for i in T.serial(16):
+        C[i] = A[i] + B[i]
+
+# TODO: 测试代码生成功能
+```
+
+## 当前限制
+
+- 仅完成 CodeGen 框架和 DeviceAPI 基础实现
+- 未实现实际的 TT-Metal 代码生成逻辑
+- 未实现 kernel 加载和执行功能
+- 未连接 TT-Metal 库
 
 ## 预期产出
 

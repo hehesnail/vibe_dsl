@@ -281,65 +281,31 @@ void libttsim_clock(uint32_t n_clocks);
 
 ### TT-Metal 后端开发注意事项
 
-#### 1. CodeGen 类继承注意事项
+**参考详细问题记录**: `memory/bugs.md` - "TileLang Blackhole 后端编译错误汇总"
 
-**问题**: TileLang 的 `CodeGenCHost` 继承自 TVM 的 `CodeGenC`，许多方法是 `final` 的
+#### 1. CodeGen 类继承关键要点
 
-**关键发现**:
 ```cpp
-// CodeGenCHost 中以下方法是 final，不能覆盖：
-- void PrintFuncPrefix(std::ostream &os) final;
-- void PrintType(tvm::DataType t, std::ostream &os) final;
-- void VisitStmt_(const tvm::tir::AttrStmtNode *op) final;
-- void VisitStmt_(const tvm::tir::ForNode *op) final;
+// 不能覆盖的 final 方法
+- PrintFuncPrefix, PrintType
+- VisitStmt_(const AttrStmtNode*), VisitStmt_(const ForNode*)
+
+// 解决方案：在 AddFunction 中预处理，或改用 IR Pass
 ```
 
-**解决方案**:
-- 不要尝试覆盖 `final` 方法
-- 在 `AddFunction` 中进行预处理
-- 通过 IR Pass 在 CodeGen 之前转换 TIR
+#### 2. TVM FFI 类型速查
 
-#### 2. TVM FFI 类型系统变化
+| 旧方式 | 新方式 |
+|--------|--------|
+| `tvm::String` | `tvm::ffi::String` |
+| `tvm::attr::kKernel` | `tvm::attr::kGlobalSymbol` |
+| `TVMContext` | `Device` (即 `DLDevice`) |
+| `opt.defined()` | `if (opt)` |
 
-**命名空间变化** (TVM 新 FFI 系统):
-```cpp
-// 旧方式 (可能不存在)
-tvm::String
-tvm::attr::kKernel
-TVMContext
-
-// 新方式
-tvm::ffi::String
-tvm::attr::kGlobalSymbol  // 替代 kKernel
-Device (即 DLDevice)      // 替代 TVMContext
-```
-
-#### 3. Optional 类型使用
+#### 3. 头文件包含
 
 ```cpp
-// 正确方式
-auto opt = f->GetAttr<tvm::ffi::String>(tvm::attr::kGlobalSymbol);
-if (opt) {  // 使用 bool 转换，不是 defined()
-    std::string value = opt.value();
-}
-```
-
-#### 4. 注册机制
-
-```cpp
-// 使用 TVM_FFI_STATIC_INIT_BLOCK 注册
-tvm::ffi::reflection::GlobalDef().def("device_api.blackhole", []() -> void* {
-    return static_cast<void*>(BlackholeDeviceAPI::Global());
-});
-```
-
-#### 5. 头文件包含
-
-```cpp
-// Device API 头文件
 #include <tvm/runtime/device_api.h>
-
-// 注册用头文件
 #include <tvm/ffi/reflection/registry.h>
 ```
 
