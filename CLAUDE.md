@@ -28,6 +28,7 @@ Blackhole Hardware (140 cores)
 2. **DSL 兼容**：同一套 TileLang 代码零修改编译到 Blackhole
 3. **动态链接**：通过 libtt_metal.so 调用 TT-Metal API，非 Python 包
 4. **TT-Sim 验证**：无硬件条件下使用仿真器验证功能
+5. **自行维护**：tilelang_repo 和 tt_metal_repo 是修改后的开发版本，不向原仓库提交代码
 
 ---
 

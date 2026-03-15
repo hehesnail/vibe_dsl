@@ -66,8 +66,10 @@ def gemm_kernel(A: T.Buffer, B: T.Buffer, C: T.Buffer):
 │   ├── arch_design.md     # 总体架构设计
 │   ├── progress.md        # 任务状态看板
 │   └── dev_design/        # 各任务详细设计
-├── tilelang_repo/         # TileLang 源码（外部）
-└── tt_metal_repo/         # TT-Metal 源码（外部）
+├── tilelang_repo/         # TileLang 源码（⚠️ 自行维护的修改版）
+│                           # 用于开发 Blackhole 后端，不向原仓库提交
+└── tt_metal_repo/         # TT-Metal 源码（⚠️ 自行维护的修改版）
+                            # 编译生成 libtt_metal.so，不向原仓库提交
 ```
 
 ## 开发阶段
