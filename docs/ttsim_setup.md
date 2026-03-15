@@ -24,9 +24,11 @@ ln -s libttsim_bh.so libttsim.so
 ### 2. 复制 SoC 描述文件
 
 ```bash
-cp /root/dev/vibe_dsl/tt_metal_repo/tt_metal/soc_descriptors/blackhole_140_arch.yaml \
+cp $TT_METAL_HOME/tt_metal/soc_descriptors/blackhole_140_arch.yaml \
    /work/ttsim/soc_descriptor.yaml
 ```
+
+**注意**: 使用原始配置即可，不需要修改 eth cores。官方编程示例可以正常工作。
 
 ### 3. 设置环境变量
 
