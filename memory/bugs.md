@@ -27,4 +27,59 @@
 
 ---
 
-*暂无记录 - 等待开发中积累*
+### pip install -e 失败
+
+**问题**: `pip install -e . --no-build-isolation` 报错，cmake 配置失败
+**时间**: 2026-03-15
+**根本原因**: scikit-build-core 会重新运行 cmake，而 FindThreads 在特定环境下检测失败
+**解决方案**: 使用 .pth 文件直接指向已编译的 build 目录，避免 pip 重新构建
+**关键代码**:
+```bash
+# 编译完成后直接创建 .pth 文件
+echo "$(pwd)/tilelang_repo" > "$(python3 -c "import site; print(site.getsitepackages()[0])")/tilelang.pth"
+```
+**参考**: setup_tilelang.sh
+
+---
+
+### @T.prim_func 装饰器获取源码失败
+
+**问题**: 使用 `python -c "..."` 内联代码时，@T.prim_func 报错 `OSError: could not get source code`
+**时间**: 2026-03-15
+**根本原因**: TileLang 使用 `inspect.getsourcelines()` 获取函数 AST，需要源码文件
+**解决方案**: 将测试代码写入 .py 文件再执行
+**关键代码**:
+```python
+# 正确做法：写入文件
+# test.py
+@T.prim_func
+def kernel(...):
+    ...
+
+# 运行
+python test.py
+```
+**参考**: phase0_tilelang_setup.md
+
+---
+
+### tilelang_repo 体积过大无法提交
+
+**问题**: tilelang_repo 体积 1.1GB，git push 会超时/失败
+**时间**: 2026-03-15
+**根本原因**: 3rdparty/ 子模块占 629MB，build/ 占 374MB
+**解决方案**:
+1. .gitignore 排除 3rdparty/ 和 build/
+2. 提交核心源码（src/, tilelang/, docs/ 等，约 20MB）
+3. 提供 setup_tilelang.sh 脚本初始化子模块
+**关键代码**:
+```gitignore
+# .gitignore
+tilelang_repo/3rdparty/
+tilelang_repo/build/
+```
+**参考**: .gitignore, setup_tilelang.sh
+
+---
+
+*后续问题继续追加...*

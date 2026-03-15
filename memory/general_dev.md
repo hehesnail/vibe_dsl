@@ -99,6 +99,46 @@ std::string Finish() {
 
 ## 项目特定模式
 
+### TileLang 环境配置模式
+
+#### 1. 大仓库管理策略
+
+**问题**: tilelang_repo 体积 1.1GB（3rdparty 占 629MB），不适合完整提交
+
+**解决方案**:
+```gitignore
+# .gitignore - 排除大目录
+tilelang_repo/3rdparty/
+tilelang_repo/build/
+```
+
+**初始化流程**:
+```bash
+# 首次克隆后初始化子模块
+cd tilelang_repo
+git submodule update --init --recursive  # 获取 3rdparty
+```
+
+#### 2. Python 包安装模式
+
+**问题**: `pip install -e .` 会重新运行 cmake，可能因环境变量问题失败
+
+**解决方案** - 使用 .pth 文件:
+```bash
+# 编译完成后，指向 build 目录
+echo "$(pwd)/tilelang_repo" > "$(python3 -c "import site; print(site.getsitepackages()[0])")/tilelang.pth"
+```
+
+#### 3. 开发工作流
+
+```
+vibe_dsl/                    # 主仓库（提交文档+配置）
+├── tilelang_repo/           # 代码仓库（提交源码修改）
+│   ├── src/target/          # ← Blackhole CodeGen 开发位置
+│   └── 3rdparty/            # 子模块（不提交）
+└── tasks/                   # 任务文档
+```
+
 ### TT-Metal 后端开发注意事项
 
 #### 待补充
