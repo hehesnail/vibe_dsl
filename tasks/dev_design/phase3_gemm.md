@@ -14,8 +14,9 @@
 - **所属阶段**: Phase 3
 - **前置任务**: phase2_split_blackhole_kernel, phase2_plan_blackhole_cb, phase2_assign_blackhole_cores
 - **负责人**: -
-- **状态**: ✅ 已完成
-- **完成日期**: 2026-03-16
+- **状态**: 🔄 40%（LowerOps matmul 序列已实现，copy/clear 未实现，E2E 未通过）
+- **原标记日期**: 2026-03-16
+- **2026-03-17 审查修正**: CodeGen 可生成 GEMM builtin 调用，但 lower.py 未接入 Blackhole Pass，Copy/Clear lower 未实现，真正的 E2E 路径不通
 
 ---
 

@@ -1,5 +1,10 @@
 # Phase 2: AssignBlackholeCores Pass
 
+> ⚠️ **2026-03-17 设计审查更新**：核心逻辑正确，但 Pass 未正确存储结果。
+> - **实际状态**：🔄 60%（`AnalyzeGrid()` 和 `GetCoreCoord()` 正确，但 `Transform()` 结果未写入 func attrs，Pass 注册函数返回原函数）
+> - **优先级**：P0（需修复结果存储）
+> - **详见**：[design_review.md](../design_review.md) 问题10、第4.5节
+
 ## 任务目标
 
 将 T.Kernel 的 grid 工作负载分配到 Blackhole 的 14x10 Tensix core grid 上。

@@ -1,5 +1,10 @@
 # Phase 2: SplitBlackholeKernel Pass
 
+> ⚠️ **2026-03-17 设计审查更新**：本任务已降级为 Phase 4 可选优化项。
+> - **实际状态**：Stub（`Transform()` 返回原函数）
+> - **降级原因**：TT-Sim 不支持 NCRISC NOC write，拆分后 Writer kernel 无法测试；合并 R/C/W 到 BRISC 单核已验证可行
+> - **详见**：[design_review.md](../design_review.md) 问题8、第4.6节
+
 ## 任务目标
 
 将统一的 PrimFunc 拆分为 Reader、Compute、Writer 三个独立的 kernel，并在其间插入 CB 同步操作。

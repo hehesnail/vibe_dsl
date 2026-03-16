@@ -1,5 +1,11 @@
 # Phase 1: Runtime 框架 - 运行时模块与 Build 集成
 
+> ⚠️ **2026-03-17 设计审查更新**：
+> - **实际状态**：🔄 30%（外部进程模式基本可用，但缺少 CB 配置传递）
+> - **两套实现并存**：`blackhole_module.cc`（外部进程模式，当前激活）和 `blackhole_module_direct.cc`（直接链接，未使用）
+> - **演进路线**：外部进程 → C 桥接层（dlopen） → 直接集成
+> - **详见**：[design_review.md](../design_review.md) 问题9、第4.8节
+
 ## 任务目标
 
 实现 Blackhole 后端的 Runtime 框架，包括：

@@ -1,8 +1,11 @@
 # TileLang Blackhole 后端实现状态
 
 **日期**: 2026-03-17
-**当前阶段**: Phase 3 - True E2E Test Implementation
-**状态**: 代码实现完成，调试中
+**当前阶段**: Phase 2 返工 + Phase 3 补全
+**状态**: 设计审查完成，Pipeline 连通工作未开始
+
+> ⚠️ **2026-03-17 设计审查**：发现 Phase 2 Pass 全部为 Stub，lower.py 未接入 Blackhole Pass，
+> CodeGen 存在硬编码路径。详见 [design_review.md](tasks/design_review.md)。
 
 ## 已完成工作
 
@@ -102,12 +105,25 @@ fatal error: dataflow_api.h: No such file or directory
 | `src/target/blackhole_module.cc` | 调试日志 | 添加 `InspectSource()` 日志 |
 | `testing/python/target/blackhole/test_blackhole_e2e.py` | 测试更新 | True E2E 测试实现 |
 
-## 下一步工作
+## 下一步工作（基于 2026-03-17 设计审查）
 
-1. **解决头文件问题**: 调试 TT-Metal JIT 编译的 include path
-2. **验证 E2E**: 运行 `test_blackhole_true_e2e()` 通过
-3. **完善测试**: 添加更多 kernel 类型（GEMM, elementwise 等）
-4. **性能优化**: 多核并行、CB 双缓冲等
+### P0：让 Pipeline 连通
+1. **修改 lower.py**：在 blackhole 分支中接入 LowerBlackholeOps/PlanCB/AssignCores
+2. **实现 LowerBlackholeOps copy 序列**：`GenerateCopySequence()` 生成 CB+NOC 操作
+3. **实现 PlanBlackholeCB MVP**：收集 alloc_shared → 分配 CB ID → 验证约束
+4. **修复 AssignBlackholeCores**：将计算结果存入 func attrs
+5. **CodeGen 删除硬编码路径**：删除 `DetectSimpleCopyKernel`/`GenerateCopyKernelMain`，统一走 Visitor
+6. **Copy kernel E2E 验证**
+
+### P1：GEMM E2E
+7. 集成 matmul + copy 完整 Pipeline
+8. Runtime 传递 CB 配置
+9. GEMM E2E 验证
+
+### P2：长期优化
+10. C 接口桥接层（替代外部进程模式）
+11. 三核拆分（可选性能优化）
+12. 多核并行（从单核扩展到 140 核）
 
 ## 关键环境变量
 

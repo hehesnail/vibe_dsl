@@ -393,76 +393,108 @@ jobs:
 
 ---
 
-## 实现偏差与修正 (2026-03-16 更新)
+## 实现偏差与修正 (2026-03-17 设计审查更新)
 
-### 发现的问题与解决
+> ⚠️ **重要**：以下内容基于 2026-03-17 全面设计审查，替代此前的修正记录。
+> 详见 [design_review.md](./design_review.md)
 
-#### 1. CodeGenBlackhole 继承策略 → 已解决 ✅
+### 1. Pass 顺序调整
 
-**原设计**: `CodeGenBlackhole` 继承 `CodeGenCHost`，复用C代码生成逻辑。
+**原设计**：`AssignCores → PlanCB → SplitKernel → CodeGen`
 
-**问题**: TT-Metal kernel与普通C函数差异太大，继承导致生成错误格式。
+**修正为**：`LowerBlackholeOps → PlanBlackholeCB → AssignBlackholeCores → CodeGen`
 
-**解决方案**: 重写 `CodeGenBlackhole::AddFunction` 和 `GenerateKernelMain`:
-- ✅ `AddFunction()` → 生成 `kernel_main` 入口
-- ✅ 参数加载 → 使用 `get_arg_val<uint32_t>(idx)`
-- ✅ 头文件包含 → 按需包含 `dataflow_api.h` / `compute_kernel_api.h`
+**理由**：
+- LowerOps 将 `T.copy/T.gemm/T.clear` 展开为 CB/NOC builtin 调用，产生 CB 使用信息
+- PlanCB 需要 builtin 调用中的 CB 信息来分配和验证
+- AssignCores 不依赖前两者，顺序靠后更灵活
 
-**实现状态**: ✅ 已完成，编译测试通过
+**lower.py 应改为**：
+```python
+elif target.kind.name == "blackhole":
+    device_mod = tvm.ffi.get_global_func("tl.transform.LowerBlackholeOps")()(device_mod)
+    device_mod = tvm.ffi.get_global_func("tl.transform.PlanBlackholeCB")()(device_mod)
+    device_mod = tvm.ffi.get_global_func("tl.transform.AssignBlackholeCores")()(device_mod)
+    device_mod = tvm.ffi.get_global_func("target.build.tilelang_blackhole")(device_mod, target)
+```
 
-#### 2. TIR Lowering 流程假设
+### 2. SplitBlackholeKernel 降级为可选
 
-**原设计假设**: TIR passes 完全准备好后，CodeGen只需简单打印。
+**原设计**：必须实现，将统一函数拆分为 Reader/Compute/Writer 三个 PrimFunc
 
-**实际情况**:
-- Split/Plan/Assign passes 已实现
-- 但生成的 TIR 仍包含高层次操作（如 `T.copy`）
-- CodeGen 需要将这些操作转为具体的 CB/NOC 调用
+**修正**：短期搁置，降级为 Phase 4 优化项
 
-**修正方案**:
-- Lowering pipeline 需要增加 `LowerBlackholeIntrinsics` pass
-- 或者 CodeGen 直接识别并转换这些操作
+**理由**：
+- TT-Sim 限制：NCRISC 的 NOC write 操作报错，拆分后 Writer kernel 无法测试
+- Phase 1 已验证：合并 R/C/W 到 BRISC 单核可以工作
+- TT-Metal API 支持同一 core 注册多个 kernel，Runtime 层面可处理分发
+- 真正需要三核并行时（性能优化），可在 Runtime 层面实现
 
-**状态**: 🔄 需要进一步设计
+### 3. CodeGen 架构修正
 
-#### 3. Runtime 实现复杂度低估
+**原设计**：CodeGen 内含启发式检测逻辑（`DetectSimpleCopyKernel()`）
 
-**原设计假设**: 参考CUDA Runtime，实现 `BuildTileLangBlackhole` 即可。
+**修正**：CodeGen 应为纯"IR → 字符串"翻译器，所有决策由 Pass 通过 attrs 传递
 
-**实际情况**:
-- CUDA: 生成 PTX/CUBIN，CUDA driver 加载执行
-- Blackhole: 生成 C++ 代码，需要文件系统操作、CMake编译、进程调用
+**需删除**：
+- `DetectSimpleCopyKernel()` — 启发式，应由 attrs 驱动
+- `GenerateCopyKernelMain()` — 硬编码字符串拼接
+- `GenerateSimpleCopyKernel()` / `GenerateReaderKernel()` / `GenerateWriterKernel()` — 硬编码模板
+- `static bool headers_emitted` — 全局状态 bug
 
-**修正方案**: 分阶段实现:
-1. 阶段1: Python脚本手动调用编译执行（验证流程）
-2. 阶段2: 封装为 `CythonKernelAdapter` 风格（自动化）
+**需保留并强化**：
+- `GenerateGenericKernelMain()` — 作为唯一入口
+- `HandleBlackholeBuiltin()` — 所有 builtin 的统一分发
+- 所有 `Print*()` 方法 — builtin 到 C++ 的翻译
 
-**状态**: ⏳ 等待 CodeGen 完成后进行
+### 4. Runtime 分阶段演进
 
-### 当前架构图
+**原设计**：直接链接 `libtt_metal.so`
+
+**修正**：分三阶段
+1. **当前**：外部进程模式（`blackhole_module.cc` + `tilelang_blackhole_runner`）
+2. **中期**：C 接口桥接层（`libtt_metal_capi.so` + `dlopen`）
+3. **长期**：直接集成（重新激活 `blackhole_module_direct.cc`）
+
+### 当前架构图（2026-03-17 修正版）
 
 ```
 TileLang DSL (Python)
        ↓ lower()
-    TIR (带 Blackhole 特定属性)
+    TIR (统一)
        ↓
 ┌─────────────────────────────────────┐
-│  ✅ CodeGenBlackhole                │
-│  - 生成 kernel_main()               │
-│  - 使用 get_arg_val 加载参数        │
-│  - 包含 TT-Metal API 头文件         │
+│  LowerBlackholeOps [Pass A]         │
+│  T.copy → cb_reserve + noc_read     │
+│  T.gemm → mm_init + matmul_tiles    │
+│  T.clear → tile_regs_acquire        │
 └─────────────────────────────────────┘
-       ↓
-TT-Metal Kernel Code (C++)
        ↓
 ┌─────────────────────────────────────┐
-│  🔄 Runtime BlackholeModule         │  ← stub 实现，需完善
-│  - 设备初始化 (MeshDevice)          │
-│  - Kernel 编译缓存                  │
-│  - 执行队列管理                     │
+│  PlanBlackholeCB [Pass B]           │
+│  分配 CB ID, 验证 <1.5MB, <=64 个  │
+│  结果存入 func attrs                │
 └─────────────────────────────────────┘
        ↓
-RISC-V ELF → TT-Sim → Results
+┌─────────────────────────────────────┐
+│  AssignBlackholeCores [Pass C]      │
+│  Grid → 14x10 Core 映射            │
+│  结果存入 func attrs                │
+└─────────────────────────────────────┘
+       ↓
+┌─────────────────────────────────────┐
+│  CodeGenBlackhole                   │
+│  IR Visitor：builtin → C++ 打印    │
+│  输出：单个 kernel_main() .cpp      │
+│  （合并 R/C/W 到 BRISC）           │
+└─────────────────────────────────────┘
+       ↓
+┌─────────────────────────────────────┐
+│  BlackholeModule (外部进程模式)     │
+│  fork/exec runner → TT-Sim 执行    │
+└─────────────────────────────────────┘
+       ↓
+Results → Python
 ```
 
 ---
