@@ -257,12 +257,13 @@ elseif(USE_BLACKHOLE)
     message(WARNING "TT-Metal library not found at ${TT_METAL_HOME}. Building with stub implementation.")
   else()
     message(STATUS "Found TT-Metal library: ${TT_METAL_LIB}")
-    include_directories(${TT_METAL_HOME}/tt_metal ${TT_METAL_HOME}/tt_metal/third_party/umd)
+    include_directories(${TT_METAL_HOME}/tt_metal/api ${TT_METAL_HOME}/.cpmcache/nlohmann_json/*/include)
     link_directories(${TT_METAL_HOME}/build_Release/tt_metal ${TT_METAL_HOME}/build/tt_metal)
   endif()
   file(GLOB TILE_LANG_BLACKHOLE_SRCS
     src/target/codegen_blackhole.cc
     src/target/rt_mod_blackhole.cc
+    src/target/blackhole_module.cc
     src/tir/builtin_blackhole.cc
     src/transform/lower_blackhole_ops.cc
     src/transform/split_blackhole_kernel.cc

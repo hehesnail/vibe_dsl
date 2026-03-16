@@ -33,11 +33,17 @@
 #include <unordered_map>
 #include <vector>
 #include <fstream>
+#include <filesystem>
+#include <unistd.h>
 
 #include "codegen_blackhole.h"
+#include "blackhole_module.h"
 
 namespace tvm {
 namespace runtime {
+
+using tvm::ffi::Map;
+using tvm::ffi::String;
 
 /*!
  * \brief Blackhole device API
@@ -178,25 +184,87 @@ TVM_REGISTER_TARGET_KIND("blackhole", kDLExtDev)
     .set_default_keys({"blackhole"});
 
 /*!
- * \brief Extract function information from IRModule
- * \param mod The IR module
- * \return Map from function name to FunctionInfo
+ * \brief Extract CB configuration from PrimFunc attrs
+ * \param f The PrimFunc
+ * \return Vector of CB configurations
  */
-static std::unordered_map<std::string, FunctionInfo> ExtractFuncInfo(const IRModule& mod) {
-  std::unordered_map<std::string, FunctionInfo> fmap;
+static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
+  std::vector<CBConfig> cb_configs;
+
+  auto cb_attr = f->GetAttr<ffi::Map<ffi::String, ffi::ObjectRef>>("tl.blackhole_cb_config");
+  if (!cb_attr) {
+    // Use default CB config for simple kernels
+    cb_configs.push_back({0, 1, 2048, "float16"});  // cb_id=0, 1 page, 2KB page size
+    return cb_configs;
+  }
+
+  for (const auto& kv : cb_attr.value()) {
+    CBConfig config;
+    config.cb_id = std::stoi(static_cast<std::string>(kv.first));
+    auto cb_info = Downcast<ffi::Map<ffi::String, ffi::ObjectRef>>(kv.second);
+
+    if (auto num_pages = cb_info.Get("num_pages")) {
+      config.num_pages = Downcast<Integer>(num_pages.value()).IntValue();
+    }
+    if (auto page_size = cb_info.Get("page_size")) {
+      config.page_size = Downcast<Integer>(page_size.value()).IntValue();
+    }
+    if (auto data_format = cb_info.Get("data_format")) {
+      // The value is a TIR StringImm node, not ffi::String
+      config.data_format = Downcast<StringImm>(data_format.value())->value;
+    }
+
+    cb_configs.push_back(config);
+  }
+
+  return cb_configs;
+}
+
+/*!
+ * \brief Extract function information for Blackhole backend
+ * \param mod The IR module
+ * \return Map from function name to BlackholeFunctionInfo
+ */
+static std::unordered_map<std::string, BlackholeFunctionInfo> ExtractBlackholeFuncInfo(
+    const IRModule& mod) {
+  std::unordered_map<std::string, BlackholeFunctionInfo> fmap;
 
   for (auto kv : mod->functions) {
     ICHECK(kv.second->IsInstance<tir::PrimFuncNode>())
         << "Can only lower IR Module with PrimFuncs";
     auto f = Downcast<tir::PrimFunc>(kv.second);
 
-    FunctionInfo info;
+    BlackholeFunctionInfo info;
+
+    // Extract argument types and buffer flags
     for (size_t i = 0; i < f->params.size(); ++i) {
-      DataType dtype = f->params[i].dtype();
+      DLDataType dtype = f->params[i]->dtype;
       // Device runtime cannot directly take bool arguments, map to int32.
-      if (dtype.is_bool())
-        dtype = DataType::Int(32);
+      if (dtype.code == kDLBool) {
+        dtype.code = kDLInt;
+        dtype.bits = 32;
+      }
       info.arg_types.push_back(dtype);
+
+      // Check if this is a buffer argument (handle type)
+      info.is_buffer_arg.push_back(dtype.code == kDLOpaqueHandle);
+    }
+
+    // Extract CB configuration
+    info.cb_configs = ExtractCBConfig(f);
+
+    // Check for multi-kernel configuration (R/C/W split)
+    auto kernel_split = f->GetAttr<ffi::Map<ffi::String, ffi::ObjectRef>>("tl.blackhole_kernel_split");
+    if (kernel_split) {
+      auto reader_opt = kernel_split.value().Get("reader");
+      auto compute_opt = kernel_split.value().Get("compute");
+      auto writer_opt = kernel_split.value().Get("writer");
+      info.has_reader = reader_opt.has_value();
+      info.has_compute = compute_opt.has_value();
+      info.has_writer = writer_opt.has_value();
+    } else {
+      // Single kernel mode
+      info.has_writer = true;
     }
 
     auto global_symbol = f->GetAttr<ffi::String>(tvm::attr::kGlobalSymbol);
@@ -211,11 +279,10 @@ static std::unordered_map<std::string, FunctionInfo> ExtractFuncInfo(const IRMod
  * \brief Build function for Blackhole target
  * \param mod The IR module containing PrimFuncs
  * \param target The target device
- * \return A runtime module containing the generated code
+ * \return A Blackhole runtime module
  *
- * This function generates TT-Metal C++ code from TIR using CodeGenBlackhole.
- * For Phase 1, it generates code without full compilation.
- * Future phases will add JIT compilation via TT-Metal.
+ * This function generates TT-Metal C++ code from TIR using CodeGenBlackhole
+ * and creates a BlackholeModule that can execute the kernels.
  */
 ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
   LOG(INFO) << "BuildTileLangBlackhole: Generating TT-Metal code for Blackhole target";
@@ -229,6 +296,10 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
 
   tl::CodeGenBlackhole cg;
   cg.Init(output_ssa, emit_asserts, emit_fwd_func_decl, target->str(), devices);
+
+  // Create temporary directory for kernel files
+  std::string kernel_dir = "/tmp/tilelang_blackhole/" + std::to_string(getpid());
+  std::filesystem::create_directories(kernel_dir);
 
   // Process all functions in the module
   for (auto kv : mod->functions) {
@@ -250,27 +321,26 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
 
   std::string code = cg.Finish();
 
-  // For Phase 1: Return a C-source module with the generated code
-  // The code can be saved to file and compiled with TT-Metal offline
-  ffi::Array<ffi::String> func_names;
-  auto func_info = ExtractFuncInfo(mod);
-  for (const auto& kv : func_info) {
-    func_names.push_back(kv.first);
+  // Extract function info for BlackholeModule
+  auto func_info_map = ExtractBlackholeFuncInfo(mod);
+
+  // Store kernel code in function info
+  for (auto& kv : func_info_map) {
+    kv.second.kernel_code = code;
   }
 
   LOG(INFO) << "BuildTileLangBlackhole: Generated " << code.size()
-            << " bytes of TT-Metal code for " << func_names.size() << " functions";
+            << " bytes of TT-Metal code for " << func_info_map.size() << " functions";
 
-  // Use CSourceModuleCreate to wrap the generated code
-  // Fourth parameter is empty array for extra compile options
-  return CSourceModuleCreate(code, "cc", func_names, {});
+  // Create BlackholeModule
+  return BlackholeModuleCreate(std::move(func_info_map), kernel_dir);
 }
 
 /*!
  * \brief Build function for Blackhole target without host code
  * \param mod The IR module containing PrimFuncs
  * \param target The target device
- * \return A runtime module containing only device code
+ * \return A Blackhole runtime module with only device code
  *
  * This generates only the device kernels without host wrapper code.
  */
@@ -287,6 +357,10 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
   tl::CodeGenBlackhole cg;
   cg.Init(output_ssa, emit_asserts, emit_fwd_func_decl, target->str(), devices);
 
+  // Create temporary directory for kernel files
+  std::string kernel_dir = "/tmp/tilelang_blackhole/" + std::to_string(getpid());
+  std::filesystem::create_directories(kernel_dir);
+
   // Process only device kernel functions
   for (auto kv : mod->functions) {
     ICHECK(kv.second->IsInstance<tir::PrimFuncNode>())
@@ -301,13 +375,16 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
   }
 
   std::string code = cg.Finish();
-  ffi::Array<ffi::String> func_names;
-  auto func_info = ExtractFuncInfo(mod);
-  for (const auto& kv : func_info) {
-    func_names.push_back(kv.first);
+
+  // Extract function info for BlackholeModule
+  auto func_info_map = ExtractBlackholeFuncInfo(mod);
+
+  // Store kernel code in function info
+  for (auto& kv : func_info_map) {
+    kv.second.kernel_code = code;
   }
 
-  return CSourceModuleCreate(code, "cc", func_names, {});
+  return BlackholeModuleCreate(std::move(func_info_map), kernel_dir);
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {

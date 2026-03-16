@@ -50,6 +50,10 @@ class CodeGenBlackhole : public CodeGenCHost {
   void AddFunction(const tvm::GlobalVar &gvar,
                    const tvm::tir::PrimFunc &f) override;
 
+  // Generate TT-Metal kernel_main entry point
+  void GenerateKernelMain(const tvm::GlobalVar &gvar,
+                          const tvm::tir::PrimFunc &f);
+
   // Override visitor to handle TT-Metal builtin calls
   void VisitExpr_(const tvm::tir::CallNode *op,
                   std::ostream &os) override;
