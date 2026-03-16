@@ -420,13 +420,14 @@ void kernel_main() {
 - [x] 实现所有 Print 函数: PrintMatmulTiles, PrintCBWaitFront, PrintCBPopFront 等
 - [x] 创建 C++ 单元测试: `tests/target/test_blackhole_gemm_codegen_standalone.cpp` (3/3 测试通过)
 
-### Step 5: TT-Sim 验证与 E2E 测试 ✅ 已完成
-- [x] 创建 Python E2E 测试: `tests/target/test_blackhole_gemm_e2e.py`
+### Step 5: TT-Sim 验证与 E2E 测试 ⚠️ 部分完成
+- [x] 创建 Python 测试: `tests/target/test_blackhole_gemm_e2e.py`
   - TileLang DSL -> TIR 编译通过
-  - PyTorch 参考实现验证计算正确性
-  - 保存参考张量供 TT-Sim 验证
-- [x] 验证 32x32x128 GEMM (4 K tiles 累加)
+  - PyTorch 参考实现生成（用于后续对比）
+  - 保存参考张量供后续验证
 - [x] 生成参考 TT-Metal kernel: `/tmp/blackhole_gemm_kernel.cpp`
+- [ ] ⚠️ **真正的端到端测试待实现**: Runtime 执行 kernel 并返回结果到 Python
+- [ ] ⚠️ **数值对比待实现**: Python 端 np.allclose 对比
 
 ### 测试结果
 ```
@@ -693,9 +694,10 @@ void matmul_block(uint32_t in0_cb_id, uint32_t in1_cb_id,
      - 实现所有 Print 函数生成对应 C++ 代码
   4. **单元测试**: `tests/target/test_blackhole_gemm_codegen_standalone.cpp`
      - 3/3 测试通过，验证代码生成正确性
-  5. **E2E 测试**: `tests/target/test_blackhole_gemm_e2e.py`
+  5. **分层验证测试**: `tests/target/test_blackhole_gemm_e2e.py`
      - TileLang DSL -> TIR 编译通过
-     - PyTorch 参考实现验证计算正确性
+     - PyTorch 参考数据生成（用于后续对比）
+     - ⚠️ **注意**: Runtime 执行和数值对比待实现
 
 - **测试验证**:
 ```
@@ -710,10 +712,15 @@ Results: 3/3 tests passed
 ✓ Test 3: Compare with Reference Implementation
   - 与参考 kernel 结构匹配
 
-Python E2E Test:
+Python CodeGen Test:
 ✓ TileLang DSL lowered to TIR successfully
-✓ Reference computation validated (PyTorch)
+✓ PyTorch reference generated (for future comparison)
 ✓ Test artifacts saved to /tmp/blackhole_gemm_*.npy
+
+⚠️ True End-to-End Test Status:
+  - Runtime execution: NOT IMPLEMENTED (BlackholeModule stub)
+  - Python result comparison: NOT IMPLEMENTED
+  - Current: DSL → CodeGen ✅, Execute → Compare 🔄
 ```
 
 - **生成的 TT-Metal Kernel 示例** (`/tmp/blackhole_gemm_kernel.cpp`):

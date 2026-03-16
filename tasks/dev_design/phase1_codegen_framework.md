@@ -207,17 +207,17 @@ void kernel_main() {
 }
 ```
 
-### 3. TT-Sim 验证（已完成 ✅）
+### 3. TT-Sim 手动 Kernel 验证（已完成 ✅）
 
 **状态**: 2026-03-16 完成
 
-- ✅ 生成完整可执行程序
-- ✅ 在 TT-Sim 上运行
+- ✅ 手动编写的 kernel 在 TT-Sim 上运行成功
 - ✅ 验证数据正确拷贝 (4096 个 FP16 元素)
+- ⚠️ **注意**: 这是手动编写的 kernel，不是 TileLang DSL 生成的代码
 
 **详细报告**: [PHASE1_TTSIM_TEST_REPORT](../../tests/target/PHASE1_TTSIM_TEST_REPORT.md)
 
-**关键实现**:
+**关键实现**（手动 kernel 作为参考）:
 ```cpp
 // TT-Sim 兼容代码生成
 void PrintNOCRead(const std::string& src_addr, const std::string& dst_addr, int size) {

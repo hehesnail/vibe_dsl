@@ -2,11 +2,11 @@
 
 ## 测试概述
 
-**测试目标**: 验证 TileLang CodeGen 生成的 Blackhole 后端代码可以在 TT-Sim 上正确运行。
+**测试目标**: 验证手动编写的 TT-Metal kernel 可以在 TT-Sim 上正确运行，作为 CodeGen 生成代码的参考目标。
 
 **测试时间**: 2026-03-16
 
-**测试状态**: ✅ **全部通过**
+**测试状态**: ✅ **手动 Kernel 测试通过**（⚠️ 非 TileLang DSL 生成的代码）
 
 ---
 
@@ -32,11 +32,13 @@
 
 ---
 
-### 2. TT-Sim 端到端测试
+### 2. TT-Sim 手动 Kernel 验证
+
+**⚠️ 注意**: 这是手动编写的 kernel 验证，不是 TileLang DSL 生成的代码。
 
 **测试文件**: `tt_metal/programming_examples/tilelang_copy_test/phase1_ttsim_host.cpp`
 
-**Kernel 文件**: `tt_metal/programming_examples/tilelang_copy_test/kernels/phase1_copy_kernel.cpp`
+**Kernel 文件**: `tt_metal/programming_examples/tilelang_copy_test/kernels/phase1_copy_kernel.cpp` (手动编写)
 
 **测试配置**:
 - Tile 大小: 32x32 FP16 (2048 bytes)
@@ -142,8 +144,16 @@ void kernel_main() {
 Phase 1 目标已达成：
 
 1. ✅ **CodeGen 框架**: 可以生成 TT-Metal 风格的内核代码
-2. ✅ **TT-Sim 兼容性**: 生成的代码可以在 TT-Sim 上正确运行
-3. ✅ **端到端验证**: 完整的 Host + Kernel 测试通过
+2. ✅ **TT-Sim 兼容性验证**: 手动编写的 kernel 在 TT-Sim 上运行成功（证明 TT-Sim 环境配置正确）
+3. ✅ **参考实现**: 手动编写的 kernel 作为 CodeGen 生成目标的参考
+
+**⚠️ 关键区分**:
+- **手动 Kernel**: 已验证可在 TT-Sim 上执行（本测试）
+- **TileLang DSL 生成**: 仅能生成代码，尚未接入 Runtime 执行（真正的端到端测试待实现）
+
+**真正的端到端测试待实现**:
+- TileLang DSL → TIR → CodeGen → Runtime Execute → Python Compare
+- 当前状态: DSL → CodeGen ✅，Runtime Execute → Python Compare 🔄
 
 ### 下一步工作
 

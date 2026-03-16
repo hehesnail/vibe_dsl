@@ -266,20 +266,26 @@ assert "cb_reserve_back" in code
 1. ✅ **更新的 `rt_mod_blackhole.cc`** - Build 函数和 Device API 实现
 2. ✅ **测试文件 `test_runtime_blackhole.cc`** - Runtime 测试
 3. ✅ **编译通过的验证** - 无编译错误
-4. ✅ **TT-Sim 端到端测试** - 运行成功
+4. ✅ **TT-Sim 手动 Kernel 测试** - 运行成功（⚠️ 非 TileLang DSL 生成的代码）
 
-## TT-Sim 验证结果
+## TT-Sim 手动 Kernel 验证
 
-**状态**: ✅ 2026-03-16 完成
+**状态**: ✅ 2026-03-16 完成（⚠️ 手动编写，非 TileLang DSL 生成）
 
 - 测试程序: `phase1_tilelang_ttsim`
-- 测试内核: CodeGen 生成的 `phase1_copy_kernel.cpp`
+- 测试内核: 手动编写的 `phase1_copy_kernel.cpp`
 - 验证数据: 4096 个 FP16 元素全部正确复制
 - 详细报告: [PHASE1_TTSIM_TEST_REPORT](../../tests/target/PHASE1_TTSIM_TEST_REPORT.md)
+
+**关键意义**: 证明 TT-Sim 环境配置正确，可作为 TileLang DSL 生成代码的执行目标
 
 **JIT 环境修复**:
 - 创建了 7 个符号链接解决编译路径问题
 - 详细记录: `memory/bugs.md` - "TT-Sim JIT 编译环境缺失文件"
+
+**真正的端到端测试待实现**:
+- TileLang DSL → TIR → CodeGen → Runtime Execute → Python Compare
+- 当前状态: CodeGen 可生成代码，但 Runtime 未接入 TT-Metal 执行
 
 ## 后续工作
 

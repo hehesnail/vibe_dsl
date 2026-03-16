@@ -101,5 +101,5 @@ dev_design/
 | phase2_split_blackhole_kernel.md | Phase 2 | ✅ 已完成 |
 | phase2_plan_blackhole_cb.md | Phase 2 | ✅ 已完成 |
 | phase2_assign_blackhole_cores.md | Phase 2 | ✅ 已完成 |
-| phase3_gemm.md | Phase 3 | 🔄 进行中 |
+| phase3_gemm.md | Phase 3 | 🔄 CodeGen 完成，真正 E2E 测试待实现 |
 | phase4_optimization.md | Phase 4 | ⏳ 待创建 |
