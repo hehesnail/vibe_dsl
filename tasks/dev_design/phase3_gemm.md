@@ -165,36 +165,263 @@ Blackhole TRISC 包含三个 RISC-V 核心：
 
 | 方案 | 优点 | 缺点 | 选择 |
 |------|------|------|------|
-| A: 直接生成 matmul_tiles 调用 | 简洁，复用 LLK | 需要理解内部细节 | ✅ 选择 |
-| B: 手写汇编指令 | 极致性能 | 复杂度高，难维护 | - |
-| C: 使用 TT-Metal OpLibrary | 更高级抽象 | 灵活性差 | - |
+| A: IR Pass + Visitor CodeGen | 灵活，符合 TVM 架构 | 需要理解 TIR 转换 | ✅ 选择 |
+| B: 直接字符串模板生成 | 简单直接 | 难以处理复杂逻辑 | - |
+| C: 手写汇编指令 | 极致性能 | 复杂度高，难维护 | - |
 
-### 方案 A 详细设计
+### 方案 A 详细设计（修正版）
 
-#### 1. CodeGen 扩展
+**核心思想**: 遵循 TVM 的标准流程
+1. **IR Pass**: 将 TileLang TIR 转换为 TT-Metal 风格的 TIR（添加 CB 操作、内存 scope）
+2. **Visitor CodeGen**: 通过重写 `VisitExpr_` 识别具体操作，生成对应代码
 
-在 `codegen_blackhole.h` 中添加 Compute Kernel 生成：
+#### 1. IR Pass 层（新增 LowerBlackholeOps）
+
+在 `src/transform/` 新增 Pass，将高层 TIR 转换为 TT-Metal 特定 TIR：
+
+```cpp
+// lower_blackhole_ops.cc
+class LowerBlackholeOps : public StmtExprMutator {
+ public:
+  Stmt Transform(const Stmt& stmt) {
+    return VisitStmt(stmt);
+  }
+
+ private:
+  // 识别 T.gemm() -> 转换为 cb_wait_front + matmul_tiles + cb_push_back
+  Stmt VisitStmt_(const EvaluateNode* op) override {
+    if (IsMatmulCall(op)) {
+      return GenerateMatmulSequence(op);
+    }
+    return StmtExprMutator::VisitStmt_(op);
+  }
+
+  // 识别 T.copy() -> 转换为 cb_reserve_back + noc_async_read/write
+  Stmt VisitStmt_(const BufferStoreNode* op) override {
+    if (IsCopyOperation(op)) {
+      return GenerateCopySequence(op);
+    }
+    return StmtExprMutator::VisitStmt_(op);
+  }
+
+  // 生成 matmul_tiles 调用序列
+  Stmt GenerateMatmulSequence(const EvaluateNode* op) {
+    // 生成：
+    // cb_wait_front(cb_in0, K_tiles);
+    // cb_wait_front(cb_in1, K_tiles);
+    // cb_reserve_back(cb_out, 1);
+    // matmul_tiles(cb_in0, cb_in1, 0, 0, 0);
+    // cb_pop_front(cb_in0, K_tiles);
+    // cb_pop_front(cb_in1, K_tiles);
+    // cb_push_back(cb_out, 1);
+  }
+};
+```
+
+#### 2. CodeGen 层（重写 Visitor）
+
+在 `codegen_blackhole.cc` 中重写 `VisitExpr_` 识别具体操作：
 
 ```cpp
 class CodeGenBlackhole : public CodeGenCHost {
  public:
-  // Phase 1: Copy kernels
-  std::string GenerateReaderKernel(...);
-  std::string GenerateWriterKernel(...);
-
-  // Phase 3: Compute kernel
-  std::string GenerateComputeKernel(const PrimFunc& func);
+  void VisitExpr_(const CallNode* op, std::ostream& os) override {
+    // 识别 TT-Metal 特定 intrinsic
+    if (op->op.same_as(builtin::blackhole_matmul_tiles())) {
+      PrintMatmulTiles(op, os);
+    } else if (op->op.same_as(builtin::blackhole_cb_wait_front())) {
+      PrintCBWaitFront(op, os);
+    } else if (op->op.same_as(builtin::blackhole_cb_push_back())) {
+      PrintCBPushBack(op, os);
+    } else if (op->op.same_as(builtin::blackhole_noc_async_read())) {
+      PrintNOCRead(op, os);
+    } else {
+      // 默认处理
+      CodeGenCHost::VisitExpr_(op, os);
+    }
+  }
 
  private:
-  // GEMM specific
-  void PrintMatmulTiles(const std::string& cb_a, const std::string& cb_b,
-                        const std::string& cb_c, int num_k_tiles);
-  void PrintCBWaitFront(const std::string& cb_name, int num_tiles);
-  void PrintCBPopFront(const std::string& cb_name, int num_tiles);
+  // 生成 matmul_tiles 调用
+  void PrintMatmulTiles(const CallNode* op, std::ostream& os) {
+    // op->args[0]: in0_cb_id
+    // op->args[1]: in1_cb_id
+    // op->args[2]: in0_tile_index
+    // op->args[3]: in1_tile_index
+    // op->args[4]: dst_tile_index
+    os << "matmul_tiles(";
+    for (size_t i = 0; i < op->args.size(); ++i) {
+      PrintExpr(op->args[i], os);
+      if (i < op->args.size() - 1) os << ", ";
+    }
+    os << ")";
+  }
+
+  void PrintCBWaitFront(const CallNode* op, std::ostream& os) {
+    os << "cb_wait_front(";
+    PrintExpr(op->args[0], os);  // cb_id
+    os << ", ";
+    PrintExpr(op->args[1], os);  // num_tiles
+    os << ")";
+  }
+
+  void PrintCBPushBack(const CallNode* op, std::ostream& os) {
+    os << "cb_push_back(";
+    PrintExpr(op->args[0], os);  // cb_id
+    os << ", ";
+    PrintExpr(op->args[1], os);  // num_tiles
+    os << ")";
+  }
+
+  void PrintNOCRead(const CallNode* op, std::ostream& os) {
+    os << "noc_async_read(";
+    PrintExpr(op->args[0], os);  // src_addr
+    os << ", ";
+    PrintExpr(op->args[1], os);  // dst_addr
+    os << ", ";
+    PrintExpr(op->args[2], os);  // size
+    os << ")";
+  }
 };
 ```
 
-#### 2. Compute Kernel 生成模板
+#### 3. Builtin 注册（新增 TT-Metal intrinsic）
+
+在 `tvm/tir/builtin.h` 或 TileLang 自定义 builtin 中添加：
+
+```cpp
+// builtin_blackhole.h
+namespace builtin {
+// TT-Metal CB operations
+TVM_DLL const Op& blackhole_cb_reserve_back();
+TVM_DLL const Op& blackhole_cb_push_back();
+TVM_DLL const Op& blackhole_cb_wait_front();
+TVM_DLL const Op& blackhole_cb_pop_front();
+
+// TT-Metal NOC operations
+TVM_DLL const Op& blackhole_noc_async_read();
+TVM_DLL const Op& blackhole_noc_async_write();
+TVM_DLL const Op& blackhole_noc_async_read_barrier();
+TVM_DLL const Op& blackhole_noc_async_write_barrier();
+
+// TT-Metal Compute operations
+TVM_DLL const Op& blackhole_matmul_tiles();
+TVM_DLL const Op& blackhole_mm_init();
+TVM_DLL const Op& blackhole_tile_regs_acquire();
+TVM_DLL const Op& blackhole_tile_regs_commit();
+TVM_DLL const Op& blackhole_pack_tile();
+}  // namespace builtin
+```
+
+#### 4. 完整的 Lowering Pipeline
+
+```
+TileLang DSL (Python)
+    ↓ LowerTileOp (现有)
+TIR (T.copy, T.gemm)
+    ↓ SplitBlackholeKernel (Phase 2)
+TIR (reader/compute/writer PrimFuncs)
+    ↓ LowerBlackholeOps (新增)
+TIR (cb_wait_front, matmul_tiles, noc_async_read...)
+    ↓ PlanBlackholeCB (Phase 2)
+TIR (带 CB ID 分配)
+    ↓ AssignBlackholeCores (Phase 2)
+TIR (带 Core 分配)
+    ↓ CodeGenBlackhole::VisitExpr_
+TT-Metal C++ (kernel_main with matmul_tiles)
+```
+
+#### 5. 示例：T.gemm() 的完整转换流程
+
+**输入** (SplitBlackholeKernel 后的 compute_func):
+```python
+@T.prim_func
+def compute_kernel(A_shared: T.Buffer, B_shared: T.Buffer, C_local: T.Buffer):
+    T.gemm(A_shared, B_shared, C_local)  # TileLang 高层语义
+```
+
+**LowerBlackholeOps 转换后**:
+```python
+@T.prim_func
+def compute_kernel_lowered():
+    # 通过函数属性获取 CB ID
+    cb_in0 = T.meta["cb_in0"]  # CB 0
+    cb_in1 = T.meta["cb_in1"]  # CB 1
+    cb_out = T.meta["cb_out"]  # CB 16
+    K_tiles = T.meta["K_tiles"]  # 4
+
+    # TT-Metal 底层语义
+    T.evaluate(T.call_extern("blackhole_mm_init", cb_in0, cb_in1, cb_out))
+    T.evaluate(T.call_extern("blackhole_tile_regs_acquire"))
+
+    for kt in range(K_tiles):
+        T.evaluate(T.call_extern("blackhole_cb_wait_front", cb_in0, 1))
+        T.evaluate(T.call_extern("blackhole_cb_wait_front", cb_in1, 1))
+        T.evaluate(T.call_extern("blackhole_matmul_tiles", cb_in0, cb_in1, 0, 0, 0))
+        T.evaluate(T.call_extern("blackhole_cb_pop_front", cb_in0, 1))
+        T.evaluate(T.call_extern("blackhole_cb_pop_front", cb_in1, 1))
+
+    T.evaluate(T.call_extern("blackhole_tile_regs_commit"))
+    T.evaluate(T.call_extern("blackhole_tile_regs_wait"))
+    T.evaluate(T.call_extern("blackhole_cb_reserve_back", cb_out, 1))
+    T.evaluate(T.call_extern("blackhole_pack_tile", 0, cb_out))
+    T.evaluate(T.call_extern("blackhole_cb_push_back", cb_out, 1))
+    T.evaluate(T.call_extern("blackhole_tile_regs_release"))
+```
+
+**CodeGen 生成**:
+```cpp
+void kernel_main() {
+    // ... init code ...
+    mm_init(0, 1, 16);
+    tile_regs_acquire();
+
+    for (uint32_t kt = 0; kt < 4; kt++) {
+        cb_wait_front(0, 1);
+        cb_wait_front(1, 1);
+        matmul_tiles(0, 1, 0, 0, 0);
+        cb_pop_front(0, 1);
+        cb_pop_front(1, 1);
+    }
+
+    tile_regs_commit();
+    tile_regs_wait();
+    cb_reserve_back(16, 1);
+    pack_tile(0, 16);
+    cb_push_back(16, 1);
+    tile_regs_release();
+}
+```
+
+## 修正后的实施步骤
+
+### Step 1: TT-Metal LLK 调研 (1天) ✅ 已完成
+
+### Step 2: 添加 TT-Metal Builtin (1天)
+- [ ] 创建 `src/tir/builtin_blackhole.h/cc`
+- [ ] 注册所有 TT-Metal intrinsic (cb_*, noc_*, matmul_*)
+
+### Step 3: LowerBlackholeOps Pass (2天)
+- [ ] 创建 `src/transform/lower_blackhole_ops.cc`
+- [ ] 实现 Matmul 转换逻辑
+- [ ] 实现 Copy 转换逻辑
+- [ ] 单元测试
+
+### Step 4: 更新 CodeGen (1天)
+- [ ] 重写 `VisitExpr_` 处理 CallNode
+- [ ] 实现 `PrintMatmulTiles`, `PrintCBWaitFront` 等
+- [ ] 单元测试
+
+### Step 5: TT-Sim 验证 (2天)
+- [ ] 创建端到端测试
+- [ ] 验证 32x32x32, 128x128x128 GEMM
+
+## 架构优势
+
+1. **符合 TVM 设计哲学**: IR Pass 负责转换，CodeGen 负责打印
+2. **可扩展性**: 新增操作只需添加新的 builtin 和 visitor 处理
+3. **可测试性**: Pass 和 CodeGen 可以独立单元测试
+4. **复用性**: LowerBlackholeOps 可以被其他 Pass 复用
 
 ```cpp
 std::string CodeGenBlackhole::GenerateComputeKernel(
