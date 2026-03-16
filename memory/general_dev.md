@@ -1004,5 +1004,112 @@ python tests/target/test_blackhole_gemm_true_e2e.py
 
 ---
 
+## 端到端验证经验（2026-03-16）
+
+### 分层验证策略
+
+**三层验证架构**:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 第一层: CodeGen 正确性                                          │
+│ - 验证生成的代码是否符合 TT-Metal 格式                          │
+│ - 检查函数入口、参数获取、头文件包含                            │
+│ - 工具: `test_blackhole_e2e.py`                                │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 第二层: 算法正确性（PyTorch 对比）                              │
+│ - 生成参考输入/输出数据                                          │
+│ - 使用 PyTorch 计算参考结果                                      │
+│ - 验证算法逻辑正确性                                            │
+│ - 工具: `test_blackhole_true_e2e.py`                           │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 第三层: 硬件执行验证（TT-Sim/Hardware）                         │
+│ - 编译 kernel 到 RISC-V ELF                                     │
+│ - 在 TT-Sim 或实际硬件上执行                                     │
+│ - 对比执行结果与参考结果                                         │
+│ - 工具: 需要完整的 Runtime 实现                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**优点**:
+- 前两层可以在无硬件环境下完成验证
+- 问题分层定位：CodeGen 问题 vs 算法问题 vs 执行问题
+- PyTorch 作为金标准，验证结果可信
+
+### TT-Metal 库集成策略对比
+
+| 方案 | 优点 | 缺点 | 选择 |
+|------|------|------|------|
+| A: 直接链接 TT-Metal | 性能最好，控制最细 | 依赖链复杂，编译困难 | ❌ 放弃 |
+| B: 外部进程调用 | 实现简单，隔离性好 | 进程间通信开销 | ✅ 选择 |
+| C: Python ctypes | 灵活性高 | 需要维护 C 接口 | ⏳ 备选 |
+
+**选择方案 B 的原因**:
+- TT-Metal 依赖 fmt, nlohmann_json, tt_stl, umd 等多个库
+- CMake 配置复杂，头文件路径难以完全正确
+- 外部进程调用可以保持 TileLang 编译简单
+- 与 Phase 1 成功的测试模式一致
+
+### 关键测试用例设计
+
+**最小可行测试集**:
+
+1. **Copy Kernel**: 验证基本数据传输
+   - 输入: FP16 向量
+   - 输出: 相同向量
+   - 验证: 逐元素相等
+
+2. **Element-wise Add**: 验证简单计算
+   - 输入: 两个 FP16 向量
+   - 输出: 逐元素相加结果
+   - 验证: PyTorch 参考对比
+
+3. **GEMM**: 验证复杂计算（部分支持）
+   - 输入: 两个 FP16 矩阵
+   - 输出: FP32 累加结果
+   - 验证: PyTorch 参考对比
+
+**测试文件位置**:
+```
+tests/target/
+├── test_blackhole_e2e.py          # 第一层: CodeGen 正确性
+├── test_blackhole_true_e2e.py     # 第二层: PyTorch 对比
+└── test_blackhole_gemm_e2e.py     # GEMM 专用测试
+```
+
+### 环境配置要点
+
+**编译环境**:
+```bash
+# TileLang 编译
+export TT_METAL_HOME=/path/to/tt_metal_repo
+cmake -B tilelang_repo/build -S tilelang_repo \
+  -DUSE_BLACKHOLE=ON \
+  -DCMAKE_BUILD_TYPE=Release
+make -C tilelang_repo/build -j32
+```
+
+**运行时环境**:
+```bash
+# Python 路径
+export PYTHONPATH=/path/to/tilelang_repo:$PYTHONPATH
+
+# 库路径（仅 Runtime 需要）
+export LD_LIBRARY_PATH=$TT_METAL_HOME/build/lib:$LD_LIBRARY_PATH
+```
+
+**TT-Sim 环境**:
+```bash
+export TT_METAL_SIMULATOR_HOME="/work/ttsim"
+export TT_METAL_SIMULATOR="/work/ttsim/libttsim.so"
+export TT_METAL_SLOW_DISPATCH_MODE=1
+```
+
+---
+
 *2026-03-16: BlackholeModule 初始实现完成*
 *2026-03-16: CodeGenBlackhole 重写完成，生成 kernel_main 格式*
