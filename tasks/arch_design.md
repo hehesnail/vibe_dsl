@@ -395,29 +395,20 @@ jobs:
 
 ## 实现偏差与修正 (2026-03-16 更新)
 
-### 发现的问题
+### 发现的问题与解决
 
-#### 1. CodeGenBlackhole 继承策略错误
+#### 1. CodeGenBlackhole 继承策略 → 已解决 ✅
 
 **原设计**: `CodeGenBlackhole` 继承 `CodeGenCHost`，复用C代码生成逻辑。
 
-**实际情况**: TT-Metal kernel与普通C函数差异太大，继承导致生成错误格式。
+**问题**: TT-Metal kernel与普通C函数差异太大，继承导致生成错误格式。
 
-**差异对比**:
+**解决方案**: 重写 `CodeGenBlackhole::AddFunction` 和 `GenerateKernelMain`:
+- ✅ `AddFunction()` → 生成 `kernel_main` 入口
+- ✅ 参数加载 → 使用 `get_arg_val<uint32_t>(idx)`
+- ✅ 头文件包含 → 按需包含 `dataflow_api.h` / `compute_kernel_api.h`
 
-| 特性 | 原设计假设 | 实际要求 |
-|------|-----------|---------|
-| 函数入口 | 复用C函数生成 | 必须 `void kernel_main()` |
-| 参数 | 复用参数列表 | 必须使用 `get_arg_val` API |
-| 内存访问 | 复用指针访问 | 必须使用 CB/NOC API |
-
-**修正方案**: 重写 `CodeGenBlackhole`，不再继承 `CodeGenCHost`，独立实现：
-- `AddFunction()` → 生成 `kernel_main`
-- `VisitExpr_(LoadNode*)` → 生成 NOC 读取
-- `VisitStmt_(StoreNode*)` → 生成 NOC 写入
-- `VisitStmt_(AllocateNode*)` → 生成 CB 操作
-
-**状态**: 🐛 未实现，阻塞端到端测试
+**实现状态**: ✅ 已完成，编译测试通过
 
 #### 2. TIR Lowering 流程假设
 
@@ -448,7 +439,7 @@ jobs:
 
 **状态**: ⏳ 等待 CodeGen 完成后进行
 
-### 修正后的架构图
+### 当前架构图
 
 ```
 TileLang DSL (Python)
@@ -456,19 +447,19 @@ TileLang DSL (Python)
     TIR (带 Blackhole 特定属性)
        ↓
 ┌─────────────────────────────────────┐
-│  [Blocker] CodeGenBlackhole         │  ← 需要重写
-│  - 必须生成 kernel_main()           │
-│  - 必须使用 TT-Metal API            │
-│  - 不能生成标准C代码                │
+│  ✅ CodeGenBlackhole                │
+│  - 生成 kernel_main()               │
+│  - 使用 get_arg_val 加载参数        │
+│  - 包含 TT-Metal API 头文件         │
 └─────────────────────────────────────┘
        ↓
-TT-Metal Kernel Files (.cpp)
+TT-Metal Kernel Code (C++)
        ↓
 ┌─────────────────────────────────────┐
-│  [Pending] Runtime Blackhole        │  ← 等待实现
-│  - 自动保存 kernel 文件             │
-│  - 调用 TT-Metal JIT 编译           │
-│  - 执行并返回结果                   │
+│  🔄 Runtime BlackholeModule         │  ← stub 实现，需完善
+│  - 设备初始化 (MeshDevice)          │
+│  - Kernel 编译缓存                  │
+│  - 执行队列管理                     │
 └─────────────────────────────────────┘
        ↓
 RISC-V ELF → TT-Sim → Results

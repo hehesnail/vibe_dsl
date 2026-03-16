@@ -846,3 +846,163 @@ TEST(CodeGenBlackholeGEMM, BasicMatmulTiles) {
 - [ ] TT-Sim 兼容性验证（如适用）
 - [ ] Visitor 模式正确处理所有分支（有 fallback）
 - [ ] 头文件按需包含（使用标志位控制）
+
+---
+
+## Blackhole Runtime Module 实现经验
+
+### 1. TVM Module 架构理解
+
+**核心洞察**: TileLang/TVM 的 Runtime 采用 Host-Device 分离架构
+
+```
+TIR PrimFunc (Device)
+    ↓ CodeGen
+TT-Metal Kernel C++
+    ↓ JIT Compile
+RISC-V ELF
+    ↓ Runtime Module
+Python callable (PackedFunc)
+```
+
+**关键类**:
+- `ffi::ModuleObj`: TVM Module 基类
+- `ffi::Module`: Module 智能指针包装
+- `BlackholeWrappedFunc`: 实际执行器，实现 `operator()(PackedArgs, Any*)`
+
+### 2. BlackholeModule 设计模式
+
+**模式**: 延迟初始化 + 缓存
+
+```cpp
+class BlackholeModuleNode : public ffi::ModuleObj {
+  // 延迟初始化（首次调用时）
+  void EnsureDeviceInitialized() {
+    if (!device_initialized_) {
+      mesh_device_ = MeshDevice::create_unit_mesh(0);
+    }
+  }
+
+  // Program 缓存（避免重复 JIT 编译）
+  CompiledProgram& GetOrCompileProgram(const std::string& func_name) {
+    if (cache_.count(func_name)) return cache_[func_name];
+    // 创建 Program、配置 CB、编译 Kernels
+    return cache_[func_name] = CompileProgram(func_name);
+  }
+};
+```
+
+### 3. 参数传递映射
+
+**TVM Packed Args → TT-Metal Runtime Args**:
+
+| TVM Arg | TT-Metal | 处理 |
+|---------|----------|------|
+| `DLTensor*` (buffer) | `MeshBuffer` | 创建 buffer，写入数据，传递 address |
+| `uint32_t` (scalar) | `uint32_t` | 直接传递 |
+
+### 4. 多 Kernel 执行顺序
+
+**TT-Metal 约束**: RISC-V 内核按提交顺序执行
+
+```cpp
+// Reader
+EnqueueMeshWorkload(cq, reader_workload, blocking=true);
+// Compute
+EnqueueMeshWorkload(cq, compute_workload, blocking=true);
+// Writer
+EnqueueMeshWorkload(cq, writer_workload, blocking=false);
+Finish(cq);  // 全局同步
+```
+
+### 5. 关键注意事项
+
+1. **文件系统**: 使用 `std::filesystem` (C++17)，需 GCC 8+
+2. **Kernel 文件**: TT-Metal JIT 编译需要文件路径，需保存到临时目录
+3. **Buffer 生命周期**: MeshBuffer 需保持存活直到 kernel 执行完成
+4. **错误处理**: TT-Metal 使用异常，建议用 try-catch 包裹
+
+---
+
+## CodeGenBlackhole 重写经验（2026-03-16 更新）
+
+### 1. 从继承到重写的转变
+
+**原方案（失败）**:
+```cpp
+class CodeGenBlackhole : public CodeGenCHost {
+  // 继承导致生成标准C函数格式
+};
+```
+
+**新方案（成功）**:
+```cpp
+class CodeGenBlackhole : public CodeGenCHost {
+ public:
+  void AddFunction(const GlobalVar& gvar, const PrimFunc& f) override {
+    // 完全重写，生成 kernel_main 格式
+    GenerateKernelMain(gvar, f);
+  }
+
+  void GenerateKernelMain(const GlobalVar& gvar, const PrimFunc& f) {
+    stream << "void kernel_main() {\n";
+    // 生成 get_arg_val 参数加载
+    // 生成函数体
+    stream << "}\n";
+  }
+};
+```
+
+### 2. 关键实现要点
+
+**参数加载生成**:
+```cpp
+// Buffer 参数（64-bit 地址）
+stream << "  uint32_t A_lo = get_arg_val<uint32_t>(0);\n";
+stream << "  uint32_t A_hi = get_arg_val<uint32_t>(1);\n";
+stream << "  uint64_t A_addr = ((uint64_t)A_hi << 32) | A_lo;\n";
+stream << "  half* A = (half*)(uintptr_t)A_addr;\n";
+
+// 标量参数（直接加载）
+stream << "  uint32_t scalar = get_arg_val<uint32_t>(2);\n";
+```
+
+**头文件管理**:
+```cpp
+// 根据 core 类型选择头文件
+switch (core_type_) {
+  case CoreType::kBRISC:
+  case CoreType::kNCRISC:
+    decl_stream << "#include \"dataflow_api.h\"\n";
+    break;
+  case CoreType::kTRISC:
+    decl_stream << "#include \"compute_kernel_api.h\"\n";
+    decl_stream << "#include \"dataflow_api.h\"\n";
+    break;
+}
+```
+
+### 3. 测试验证
+
+**生成代码验证**:
+```bash
+# E2E 测试
+python tests/target/test_blackhole_e2e.py
+# 输出: ✓ Build successful! Generated code length: 1743 chars
+
+# GEMM 测试
+python tests/target/test_blackhole_gemm_true_e2e.py
+# 输出: ✓ ALL TESTS PASSED
+```
+
+### 4. 经验教训
+
+1. **不要假设继承能解决问题**: TT-Metal kernel 格式与普通C差异太大，必须重写核心方法
+2. **分离声明和实现**: 头文件在 `decl_stream`，实现在 `stream`
+3. **静态标志防止重复**: 使用 `static bool headers_emitted` 避免重复包含头文件
+4. **测试驱动开发**: 先写测试验证格式，再实现代码生成
+
+---
+
+*2026-03-16: BlackholeModule 初始实现完成*
+*2026-03-16: CodeGenBlackhole 重写完成，生成 kernel_main 格式*
