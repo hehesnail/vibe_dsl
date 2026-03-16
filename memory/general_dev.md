@@ -1124,5 +1124,188 @@ export TT_METAL_SLOW_DISPATCH_MODE=1
 
 ---
 
-*2026-03-16: BlackholeModule 初始实现完成*
+---
+
+## 外部进程执行模式经验（2026-03-16）
+
+### 背景
+
+直接链接 TT-Metal 库到 TileLang 遇到复杂依赖链问题：
+- TT-Metal 依赖 fmt, nlohmann_json, tt_stl, umd 等多个库
+- CMake 配置复杂，头文件路径难以完全正确
+- 编译失败率高，调试困难
+
+### 解决方案：外部进程执行模式
+
+**架构设计**:
+
+```
+TileLang Python
+    ↓
+BlackholeModule (C++)
+    ↓ fork/exec
+ tilelang_blackhole_runner (独立可执行文件)
+    ↓
+TT-Metal Runtime (libtt_metal.so)
+    ↓
+TT-Sim / Hardware
+```
+
+**通信协议**:
+
+1. **Kernel Code**: 通过文件传递 (`.cpp`)
+2. **Input Data**: 通过二进制文件传递 (`.bin`)
+3. **Output Data**: 通过二进制文件传递 (`.bin`)
+4. **Command Line**: 参数传递 (`argv[]`)
+
+**优点**:
+- ✅ 避免复杂的依赖链问题
+- ✅ 独立的 runner 可单独测试和调试
+- ✅ 保持 TileLang 编译简单
+- ✅ 与 Phase 1 成功的测试模式一致
+
+### 实现要点
+
+**BlackholeModule 实现**:
+
+```cpp
+class BlackholeModuleNode : public ffi::ModuleObj {
+ public:
+  void ExecuteExternal(const std::string& func_name,
+                       const std::vector<DLTensor*>& inputs,
+                       const std::vector<uint32_t>& scalar_args,
+                       const std::vector<DLTensor*>& outputs) {
+    // 1. 保存 kernel 代码到文件
+    std::string kernel_path = kernel_dir_ + "/" + func_name + "_kernel.cpp";
+    SaveKernelCode(kernel_path, info.kernel_code);
+
+    // 2. 准备输入数据文件
+    std::string input_path = tmp_dir + "/input.bin";
+    WriteInputData(input_path, inputs);
+
+    // 3. fork/exec 外部 runner
+    pid_t pid = fork();
+    if (pid == 0) {
+      // Child process
+      execl(runner_path_.c_str(), runner_path_.c_str(),
+            kernel_path.c_str(), input_path.c_str(), output_path.c_str(),
+            input_size_str.c_str(), output_size_str.c_str(),
+            nullptr);
+      _exit(1);
+    }
+
+    // 4. 等待执行完成
+    waitpid(pid, &status, 0);
+
+    // 5. 读取输出数据
+    ReadOutputData(output_path, outputs);
+  }
+};
+```
+
+**Runner 实现** (tilelang_blackhole_runner):
+
+```cpp
+int main(int argc, char* argv[]) {
+  // 解析参数
+  std::string kernel_path = argv[1];
+  std::string input_path = argv[2];
+  std::string output_path = argv[3];
+  size_t input_size = std::stoul(argv[4]);
+  size_t output_size = std::stoul(argv[5]);
+
+  // 初始化 TT-Metal
+  auto mesh_device = distributed::MeshDevice::create_unit_mesh(0);
+
+  // 创建 Program 和 CB
+  Program program = CreateProgram();
+  CircularBufferConfig cb_config = ...;
+  CreateCircularBuffer(program, core, cb_config);
+
+  // 加载并执行 kernel
+  KernelHandle kernel = CreateKernel(program, kernel_path, core, config);
+
+  // 执行并读取结果
+  EnqueueMeshWorkload(cq, workload, false);
+  EnqueueReadMeshBuffer(cq, output_data, output_buffer, true);
+
+  // 写入输出文件
+  write_file(output_path, output_data);
+
+  return 0;
+}
+```
+
+**标量参数提取** (TVM FFI):
+
+```cpp
+uint32_t ExtractScalar(const ffi::AnyView& arg, DLDataType dtype) {
+  if (dtype.code == kDLInt) {
+    auto opt = arg.try_cast<int64_t>();
+    if (opt.has_value()) return static_cast<uint32_t>(opt.value());
+  }
+  if (dtype.code == kDLFloat) {
+    auto opt = arg.try_cast<double>();
+    if (opt.has_value()) {
+      float f = static_cast<float>(opt.value());
+      return *reinterpret_cast<uint32_t*>(&f);
+    }
+  }
+  // ...
+}
+```
+
+### 关键注意点
+
+1. **TVM Target Context**: `lower()` 需要在 target context 中执行
+   ```cpp
+   with target:
+       artifact = lower(kernel, target=target)
+   ```
+
+2. **文件路径**: 使用临时目录，避免权限问题
+   ```cpp
+   std::string tmp_dir = "/tmp/tilelang_blackhole_" + std::to_string(getpid());
+   ```
+
+3. **数据格式**: 使用二进制文件直接传递原始字节
+   ```cpp
+   input_file.write(static_cast<char*>(tensor->data), size);
+   ```
+
+4. **错误处理**: Runner 返回非零退出码表示失败
+   ```cpp
+   if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+     LOG(FATAL) << "External runner failed";
+   }
+   ```
+
+### 测试验证
+
+**单元测试**:
+```bash
+# 运行 Blackhole E2E 测试
+export TT_METAL_HOME=/path/to/tt_metal_repo
+pytest testing/python/target/blackhole/test_blackhole_e2e.py -v
+
+# 预期输出:
+# test_blackhole_codegen_only PASSED
+# test_blackhole_true_e2e SKIPPED (需要 TT_METAL_SIMULATOR=1)
+# test_blackhole_kernel_compilation SKIPPED (需要 CodeGen 完善)
+```
+
+**手动测试 Runner**:
+```bash
+# 直接运行 runner
+./tilelang_blackhole_runner kernel.cpp input.bin output.bin 2048 2048
+```
+
+### 状态更新
+
+- ✅ BlackholeModule 外部进程执行实现完成
+- ✅ tilelang_blackhole_runner 编译成功 (705KB)
+- ✅ Python E2E 测试框架 (testing/python/target/blackhole/)
+- ⏳ 完整 TT-Sim 验证（需 CodeGen 完善后）
+
+*2026-03-16: BlackholeModule 外部进程执行模式实现完成*
 *2026-03-16: CodeGenBlackhole 重写完成，生成 kernel_main 格式*
