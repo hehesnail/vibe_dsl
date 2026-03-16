@@ -80,7 +80,7 @@ public:
 
   void VisitStmt_(const tvm::tir::AssertStmtNode *op) final; // NOLINT(*)
 
-  void VisitStmt_(const tvm::tir::AttrStmtNode *op) final; // NOLINT(*)
+  void VisitStmt_(const tvm::tir::AttrStmtNode *op); // NOLINT(*)
 
   void GenerateForwardFunctionDeclarations(
       tvm::ffi::String global_symbol,

@@ -170,6 +170,13 @@ namespace codegen {
 
 using namespace tvm::runtime;
 
+// Register Blackhole target kind
+TVM_REGISTER_TARGET_KIND("blackhole", kDLExtDev)
+    .add_attr_option<int64_t>("max_shared_memory_per_block", 1572864)  // 1.5 MB L1
+    .add_attr_option<int64_t>("num_cores", 140)  // 14x10 Tensix cores
+    .add_attr_option<int64_t>("num_cbs", 64)     // 64 circular buffers per core
+    .set_default_keys({"blackhole"});
+
 /*!
  * \brief Extract function information from IRModule
  * \param mod The IR module

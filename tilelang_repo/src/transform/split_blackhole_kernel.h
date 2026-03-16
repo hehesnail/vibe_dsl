@@ -27,21 +27,21 @@
 
 #include <tvm/tir/function.h>
 #include <tvm/tir/stmt.h>
+#include <tvm/tir/stmt_functor.h>
+#include <tvm/tir/transform.h>
 
 #include <vector>
 
 namespace tvm {
 namespace tl {
 
-using namespace tir;
-
 /*!
  * \brief Result of splitting a kernel into R/C/W components
  */
 struct SplitResult {
-  PrimFunc reader_func;   // Data movement: DRAM -> CB
-  PrimFunc compute_func;  // Computation: CB -> CB (e.g., GEMM)
-  PrimFunc writer_func;   // Data movement: CB -> DRAM
+  tvm::tir::PrimFunc reader_func;   // Data movement: DRAM -> CB
+  tvm::tir::PrimFunc compute_func;  // Computation: CB -> CB (e.g., GEMM)
+  tvm::tir::PrimFunc writer_func;   // Data movement: CB -> DRAM
 
   bool HasReader() const { return reader_func.defined(); }
   bool HasCompute() const { return compute_func.defined(); }
@@ -52,54 +52,28 @@ struct SplitResult {
  * \brief SplitBlackholeKernel Pass
  *
  * This pass splits a unified TIR PrimFunc into three separate kernels
- * for Blackhole architecture:
- * 1. Reader Kernel: Handles data movement from DRAM to Circular Buffer
- * 2. Compute Kernel: Handles computation on data in CBs
- * 3. Writer Kernel: Handles data movement from CB to DRAM
- *
- * Each kernel runs on different RISC-V cores (BRISC/TRISC/NCRISC).
+ * for Blackhole architecture.
  */
-class SplitBlackholeKernel : public StmtExprMutator {
+class SplitBlackholeKernel : public tvm::tir::StmtExprMutator {
  public:
   /*! \brief Main entry point */
-  SplitResult Transform(const PrimFunc& func);
+  SplitResult Transform(const tvm::tir::PrimFunc& func);
 
   /*! \brief Generate Reader kernel from original function */
-  PrimFunc GenerateReaderKernel(const PrimFunc& func);
+  tvm::tir::PrimFunc GenerateReaderKernel(const tvm::tir::PrimFunc& func);
 
   /*! \brief Generate Compute kernel from original function */
-  PrimFunc GenerateComputeKernel(const PrimFunc& func);
+  tvm::tir::PrimFunc GenerateComputeKernel(const tvm::tir::PrimFunc& func);
 
   /*! \brief Generate Writer kernel from original function */
-  PrimFunc GenerateWriterKernel(const PrimFunc& func);
-
-  /*! \brief Check if a function contains CB synchronization of given type */
-  bool ContainsCBSync(const PrimFunc& func, const std::string& sync_type);
-
- private:
-  /*! \brief Analyze data flow to identify read/compute/write regions */
-  struct DataFlowAnalysis {
-    std::vector<Buffer> input_buffers;
-    std::vector<Buffer> output_buffers;
-    std::vector<Buffer> intermediate_buffers;
-    bool has_compute;
-  };
-
-  DataFlowAnalysis AnalyzeDataFlow(const PrimFunc& func);
-
-  /*! \brief Insert CB synchronization primitives */
-  Stmt InsertCBSync(const Stmt& stmt, const std::string& kernel_type);
-
-  /*! \brief Extract statements related to specific buffer types */
-  std::vector<Stmt> ExtractStatements(const Stmt& stmt,
-                                       const std::vector<Buffer>& buffers);
+  tvm::tir::PrimFunc GenerateWriterKernel(const tvm::tir::PrimFunc& func);
 };
 
 /*!
  * \brief Create the SplitBlackholeKernel pass
  * \return The pass function
  */
-tvm::tir::transform::Pass SplitBlackholeKernelPass();
+tir::transform::Pass SplitBlackholeKernelPass();
 
 } // namespace tl
 } // namespace tvm

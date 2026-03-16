@@ -27,14 +27,13 @@
 
 #include <tvm/tir/function.h>
 #include <tvm/tir/stmt.h>
-#include <tvm/tir/op.h>
+#include <tvm/tir/stmt_functor.h>
+#include <tvm/tir/transform.h>
 
 #include <vector>
 
 namespace tvm {
 namespace tl {
-
-using namespace tir;
 
 /*!
  * \brief CB configuration for a shared buffer
@@ -44,10 +43,10 @@ struct CBConfig {
   int num_pages;       // Number of pages (for double buffering)
   int page_size;       // Size of each page in bytes
   int total_size;      // Total size = num_pages * page_size
-  DataType dtype;      // Data type of buffer elements
+  tvm::DataType dtype;      // Data type of buffer elements
 
   CBConfig() : cb_id(0), num_pages(1), page_size(0), total_size(0),
-               dtype(DataType::Float(32)) {}
+               dtype(tvm::DataType::Float(32)) {}
 };
 
 /*!
@@ -58,10 +57,10 @@ struct CBConfig {
  * - Maximum 64 CBs (CB 0-63)
  * - Maximum 1.5MB L1 memory per core
  */
-class PlanBlackholeCB : public StmtExprMutator {
+class PlanBlackholeCB : public tvm::tir::StmtExprMutator {
  public:
   /*! \brief Main entry point */
-  PrimFunc Transform(const PrimFunc& func);
+  tvm::tir::PrimFunc Transform(const tvm::tir::PrimFunc& func);
 
   /*! \brief Get CB configurations */
   std::vector<CBConfig> GetCBConfigs() const { return cb_configs_; }
@@ -77,24 +76,6 @@ class PlanBlackholeCB : public StmtExprMutator {
   static constexpr int kMaxCBCount = 64;       // CB 0-63
 
  private:
-  /*! \brief Visitor to collect alloc_shared statements */
-  class AllocSharedCollector : public StmtExprVisitor {
-   public:
-    std::vector<Buffer> shared_buffers;
-
-   private:
-    void VisitStmt_(const AllocateNode* op) final;
-  };
-
-  /*! \brief Analyze alloc_shared statements and create CB configs */
-  std::vector<CBConfig> AnalyzeAllocShared(const PrimFunc& func);
-
-  /*! \brief Assign CB IDs to configurations */
-  void AssignCBIds(std::vector<CBConfig>& configs);
-
-  /*! \brief Store CB config in function attributes */
-  void StoreCBConfig(PrimFunc& func, const std::vector<CBConfig>& configs);
-
   std::vector<CBConfig> cb_configs_;
 };
 
@@ -102,7 +83,7 @@ class PlanBlackholeCB : public StmtExprMutator {
  * \brief Create the PlanBlackholeCB pass
  * \return The pass function
  */
-tvm::tir::transform::Pass PlanBlackholeCBPass();
+tir::transform::Pass PlanBlackholeCBPass();
 
 } // namespace tl
 } // namespace tvm

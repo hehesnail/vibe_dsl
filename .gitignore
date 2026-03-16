@@ -28,3 +28,23 @@ tt_metal_repo/
 # Build directories
 build_test/
 build/
+# Build directories
+build_blackhole/
+build/
+
+# Generated test files
+phase3_*.cpp
+tests/target/# Makefile
+tests/target/phase3_*
+tests/target/test_blackhole_gemm_codegen_standalone
+tests/target/test_blackhole_gemm_e2e_execution.py
+tests/target/test_blackhole_gemm_ttsim_test
+
+# Generated kernels
+generated_*.cc
+generated_*.cpp
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo

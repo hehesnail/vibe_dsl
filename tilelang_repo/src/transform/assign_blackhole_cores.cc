@@ -24,6 +24,7 @@
 
 #include "assign_blackhole_cores.h"
 
+#include <tvm/ffi/reflection/registry.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
 #include <tvm/tir/stmt_functor.h>
@@ -34,7 +35,15 @@
 namespace tvm {
 namespace tl {
 
-using namespace tir;
+using tir::PrimFunc;
+using tir::PrimFuncNode;
+using tir::StmtExprVisitor;
+using tir::AttrStmtNode;
+using tir::IterVar;
+using tir::as_const_int;
+using tvm::DictAttrs;
+using tvm::DictAttrsNode;
+using tvm::Integer;
 
 // Main entry point
 PrimFunc AssignBlackholeCores::Transform(const PrimFunc& func) {
@@ -200,44 +209,34 @@ bool AssignBlackholeCores::IsValidCoreCoord(const CoreCoord& coord) const {
 // Store assignment in function attributes
 void AssignBlackholeCores::StoreAssignment(PrimFunc& func,
                                            const CoreAssignment& assignment) {
-  Map<String, ObjectRef> attrs = func->attrs;
+  // Create a map with core assignment values
+  ffi::Map<ffi::String, ffi::ObjectRef> new_attrs;
 
-  // Store core assignment as a Map
-  Map<String, Integer> core_assignment;
-  core_assignment.Set("grid_x", Integer(assignment.grid_x));
-  core_assignment.Set("grid_y", Integer(assignment.grid_y));
-  core_assignment.Set("core_grid_x", Integer(assignment.core_grid_x));
-  core_assignment.Set("core_grid_y", Integer(assignment.core_grid_y));
-  core_assignment.Set("work_per_core", Integer(assignment.work_per_core));
-  core_assignment.Set("cores_needed", Integer(assignment.cores_needed));
+  // Store core assignment values
+  new_attrs.Set("tl_blackhole_grid_x", Integer(assignment.grid_x));
+  new_attrs.Set("tl_blackhole_grid_y", Integer(assignment.grid_y));
+  new_attrs.Set("tl_blackhole_core_grid_x", Integer(assignment.core_grid_x));
+  new_attrs.Set("tl_blackhole_core_grid_y", Integer(assignment.core_grid_y));
+  new_attrs.Set("tl_blackhole_work_per_core", Integer(assignment.work_per_core));
+  new_attrs.Set("tl_blackhole_cores_needed", Integer(assignment.cores_needed));
 
-  attrs.Set("tl_blackhole_core_assignment", core_assignment);
-  func.CopyOnWrite()->attrs = attrs;
+  // Update function attributes
+  func.CopyOnWrite()->attrs = DictAttrs(new_attrs);
 }
 
-// Pass registration
-class AssignBlackholeCoresPassNode : public transform::PassNode {
- public:
-  // Entry point
-  IRModule operator()(IRModule mod, const transform::PassContext& pass_ctx) const final {
-    for (const auto& [gvar, func] : mod->functions) {
-      if (auto* prim_func = func.as<PrimFuncNode>()) {
-        PrimFunc updated_func = AssignBlackholeCores().Transform(GetRef<PrimFunc>(prim_func));
-        mod.CopyOnWrite()->Add(gvar, updated_func);
-      }
-    }
-    return mod;
-  }
-
-  TVM_OBJECT_ENABLE(AssignBlackholeCoresPassNode, transform::PassNode);
-};
-
-tvm::tir::transform::Pass AssignBlackholeCoresPass() {
-  return tvm::make_object<AssignBlackholeCoresPassNode>();
+// Modern TVM pass registration
+tir::transform::Pass AssignBlackholeCoresPass() {
+  auto fpass = [](PrimFunc func, IRModule m, tir::transform::PassContext ctx) -> PrimFunc {
+    return AssignBlackholeCores().Transform(func);
+  };
+  return tir::transform::CreatePrimFuncPass(fpass, 0, "tl.transform.AssignBlackholeCores", {});
 }
 
-TVM_REGISTER_GLOBAL("tl.transform.AssignBlackholeCores")
-    .set_body_typed(AssignBlackholeCoresPass);
+TVM_FFI_STATIC_INIT_BLOCK() {
+  namespace refl = tvm::ffi::reflection;
+  refl::GlobalDef()
+      .def("tl.transform.AssignBlackholeCores", AssignBlackholeCoresPass);
+}
 
 }  // namespace tl
 }  // namespace tvm

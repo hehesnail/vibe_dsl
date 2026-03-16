@@ -54,6 +54,22 @@ class CodeGenBlackhole : public CodeGenCHost {
   void VisitExpr_(const tvm::tir::CallNode *op,
                   std::ostream &os) override;
 
+  // Override to handle FloorDiv/FloorMod (not implemented in base CodeGenC)
+  void VisitExpr_(const tvm::tir::FloorDivNode *op,
+                  std::ostream &os) override;
+  void VisitExpr_(const tvm::tir::FloorModNode *op,
+                  std::ostream &os) override;
+
+  // Override AttrStmt visitor to handle CUDA-specific attributes
+  void VisitStmt_(const tvm::tir::AttrStmtNode *op) override;
+
+  // Override storage scope printing for Blackhole memory types
+  void PrintStorageScope(const std::string &scope,
+                         std::ostream &os) override;
+
+  // Override thread index binding for Blackhole
+  void BindThreadIndex(const tvm::tir::IterVar &iv) override;
+
   // Note: PrintFuncPrefix and PrintType are final in parent class,
   // so we don't override them here. Blackhole-specific handling
   // is done through visitor and AddFunction.

@@ -27,11 +27,11 @@
 
 #include <tvm/tir/function.h>
 #include <tvm/tir/stmt.h>
+#include <tvm/tir/stmt_functor.h>
+#include <tvm/tir/transform.h>
 
 namespace tvm {
 namespace tl {
-
-using namespace tir;
 
 /*!
  * \brief Core coordinate on Blackhole physical grid
@@ -73,10 +73,10 @@ struct RuntimeArgs {
  * This pass analyzes T.Kernel grid dimensions and assigns work items
  * to Blackhole's 14x10 Tensix core grid.
  */
-class AssignBlackholeCores : public StmtExprMutator {
+class AssignBlackholeCores : public tvm::tir::StmtExprMutator {
  public:
   /*! \brief Main entry point */
-  PrimFunc Transform(const PrimFunc& func);
+  tvm::tir::PrimFunc Transform(const tvm::tir::PrimFunc& func);
 
   /*! \brief Get core assignment result */
   CoreAssignment GetCoreAssignment() const { return assignment_; }
@@ -97,13 +97,13 @@ class AssignBlackholeCores : public StmtExprMutator {
 
  private:
   /*! \brief Analyze T.Kernel grid dimensions from the function */
-  CoreAssignment AnalyzeGrid(const PrimFunc& func);
+  CoreAssignment AnalyzeGrid(const tvm::tir::PrimFunc& func);
 
   /*! \brief Calculate work distribution across cores */
   void CalculateWorkDistribution(CoreAssignment& assignment);
 
   /*! \brief Store assignment in function attributes */
-  void StoreAssignment(PrimFunc& func, const CoreAssignment& assignment);
+  void StoreAssignment(tvm::tir::PrimFunc& func, const CoreAssignment& assignment);
 
   CoreAssignment assignment_;
 };
@@ -112,7 +112,7 @@ class AssignBlackholeCores : public StmtExprMutator {
  * \brief Create the AssignBlackholeCores pass
  * \return The pass function
  */
- tvm::tir::transform::Pass AssignBlackholeCoresPass();
+tir::transform::Pass AssignBlackholeCoresPass();
 
 } // namespace tl
 } // namespace tvm

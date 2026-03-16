@@ -100,6 +100,131 @@ void CodeGenBlackhole::VisitExpr_(const tvm::tir::CallNode *op,
   CodeGenCHost::VisitExpr_(op, os);
 }
 
+void CodeGenBlackhole::VisitExpr_(const tvm::tir::FloorDivNode *op,
+                                   std::ostream &os) {
+  // FloorDiv is not implemented in base CodeGenC
+  // For Blackhole, we can implement it as regular division for positive integers
+  // Or use a more complex expression: ((a >= 0 ? a : a - b + 1) / b)
+  // For simplicity, we use regular division assuming positive values
+  // TODO: Add proper floor div handling for negative values if needed
+  os << "(";
+  VisitExpr(op->a, os);
+  os << " / ";
+  VisitExpr(op->b, os);
+  os << ")";
+}
+
+void CodeGenBlackhole::VisitExpr_(const tvm::tir::FloorModNode *op,
+                                   std::ostream &os) {
+  // FloorMod is not implemented in base CodeGenC
+  // For Blackhole, implement as regular modulo for positive integers
+  // TODO: Add proper floor mod handling for negative values if needed
+  os << "(";
+  VisitExpr(op->a, os);
+  os << " % ";
+  VisitExpr(op->b, os);
+  os << ")";
+}
+
+void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
+  // For Blackhole, we need to handle thread/block indices differently than CUDA
+  // Blackhole uses a different parallelism model based on Tensix cores
+
+  ICHECK(!var_idmap_.count(iv->var.get()));
+
+  std::string thread_tag = iv->thread_tag;
+
+  // Map CUDA-style thread indices to Blackhole concepts
+  // For single-core execution, we simplify these to constants or core coordinates
+  if (thread_tag == "blockIdx.x") {
+    // Map to Blackhole core X coordinate
+    // For single-core: just 0
+    var_idmap_[iv->var.get()] = "0 /* core_x */";
+  } else if (thread_tag == "blockIdx.y") {
+    // Map to Blackhole core Y coordinate
+    var_idmap_[iv->var.get()] = "0 /* core_y */";
+  } else if (thread_tag == "blockIdx.z") {
+    var_idmap_[iv->var.get()] = "0 /* core_z */";
+  } else if (thread_tag == "threadIdx.x") {
+    // For Blackhole, threadIdx.x could map to worker threads within a core
+    // For now, use the variable name directly
+    var_idmap_[iv->var.get()] = iv->var->name_hint;
+  } else if (thread_tag == "threadIdx.y") {
+    var_idmap_[iv->var.get()] = iv->var->name_hint;
+  } else if (thread_tag == "threadIdx.z") {
+    var_idmap_[iv->var.get()] = iv->var->name_hint;
+  } else {
+    // Unknown thread tag - use the variable name
+    var_idmap_[iv->var.get()] = iv->var->name_hint;
+  }
+}
+
+void CodeGenBlackhole::PrintStorageScope(const std::string &scope,
+                                          std::ostream &os) {
+  // Blackhole uses different memory model than CUDA
+  // - "global" -> DRAM (no keyword needed)
+  // - "shared" / "shared.dyn" -> Circular Buffer (CB) - handled separately
+  // - "local" -> Local registers (no keyword needed)
+  // - "warp" / "warp::sync" -> Not applicable for Blackhole
+
+  if (scope == "shared" || scope == "shared.dyn" ||
+      scope == "shared.barrier") {
+    // For Blackhole, shared memory is allocated as Circular Buffers
+    // CB declarations are handled separately via cb_reserve_back/cb_push_back
+    // Just add a comment for now
+    os << "/* CB */ ";
+  } else if (scope == "local") {
+    // Local scope doesn't need a qualifier in C++
+    // Variables are local by default
+  } else if (scope == "global") {
+    // Global memory - no qualifier needed
+  } else if (scope.find("warp") == 0) {
+    // Warp scope not applicable for Blackhole
+    // Blackhole doesn't have warps like CUDA
+  } else {
+    // Unknown scope - add a comment
+    os << "/* scope: " << scope << " */ ";
+  }
+}
+
+void CodeGenBlackhole::VisitStmt_(const tvm::tir::AttrStmtNode *op) {
+  // Handle Blackhole-specific attribute statements
+  // For TT-Metal kernels, we handle specific attr_keys differently
+
+  if (op->attr_key == tir::attr::thread_extent) {
+    // For thread_extent, we need to bind the thread index variable
+    // This is similar to CUDA but maps to Blackhole core/thread model
+    auto iv = Downcast<tvm::tir::IterVar>(op->node);
+    if (iv->thread_tag.length() != 0) {
+      if (!var_idmap_.count(iv->var.get())) {
+        BindThreadIndex(iv);
+      }
+    }
+    this->VisitStmt(op->body);
+  } else if (op->attr_key == tir::attr::virtual_thread ||
+             op->attr_key == tir::attr::coproc_scope ||
+             op->attr_key == tir::attr::coproc_uop_scope) {
+    // For virtual_thread and coproc attributes, just visit the body
+    // These are CUDA-specific constructs that don't directly apply to Blackhole
+    this->VisitStmt(op->body);
+  } else if (op->attr_key == tir::attr::realize_scope ||
+             op->attr_key == tir::attr::storage_alignment) {
+    // Storage scope/alignment annotations - just visit the body
+    // The Blackhole CB (circular buffer) system handles this differently
+    this->VisitStmt(op->body);
+  } else if (op->attr_key == "pragma_unroll") {
+    // Unroll pragma - just visit the body
+    // Blackhole compiler handles unrolling via TT-Metal
+    this->VisitStmt(op->body);
+  } else if (op->attr_key == "pragma") {
+    // Generic pragma - skip for now
+    this->VisitStmt(op->body);
+  } else {
+    // For all other attributes, fall back to parent class
+    CodeGenCHost::VisitStmt_(op);
+  }
+}
+
 bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
                                                std::ostream &os) {
   if (!op->op->IsInstance<OpNode>()) return false;

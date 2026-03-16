@@ -7,7 +7,8 @@ cmake_minimum_required(VERSION 3.26)
 # pip-installed packages (env WITH_PIP_CUDA_TOOLCHAIN or auto-detect).
 # Must be included before project() so CMAKE_CUDA_COMPILER is set.
 # Skip CUDA detection when building for Blackhole backend only
-if(NOT USE_BLACKHOLE)
+# Check both cache variable and environment variable
+if(NOT USE_BLACKHOLE AND NOT "$ENV{USE_BLACKHOLE}" STREQUAL "1")
   include(${CMAKE_CURRENT_LIST_DIR}/cmake/FindPipCUDAToolkit.cmake)
 endif()
 
@@ -262,6 +263,11 @@ elseif(USE_BLACKHOLE)
   file(GLOB TILE_LANG_BLACKHOLE_SRCS
     src/target/codegen_blackhole.cc
     src/target/rt_mod_blackhole.cc
+    src/tir/builtin_blackhole.cc
+    src/transform/lower_blackhole_ops.cc
+    src/transform/split_blackhole_kernel.cc
+    src/transform/plan_blackhole_cb.cc
+    src/transform/assign_blackhole_cores.cc
   )
   list(APPEND TILE_LANG_SRCS ${TILE_LANG_BLACKHOLE_SRCS})
 elseif(USE_ROCM)
