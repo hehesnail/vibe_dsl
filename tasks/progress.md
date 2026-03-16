@@ -77,9 +77,60 @@
 
 ---
 
+## 当前阻塞问题
+
+| 问题 | 优先级 | 状态 | 相关任务 | 备注 |
+|------|--------|------|----------|------|
+| 无 | - | - | - | Phase 3 已完成，准备进入 Phase 4 |
+
+---
+
 ## 下一步行动
 
-### Phase 3 计划 (GEMM 支持)
+### Phase 4 计划 (性能优化)
+
+1. **自动 Tile Size 选择**
+   - 基于 Blackhole 硬件特性（1.5MB L1, 64 CBs）
+   - 实现启发式算法选择最优 tile size
+
+2. **多核并行优化**
+   - 实现 140 Tensix cores 的负载均衡
+   - 优化 NOC 路由以减少通信延迟
+
+3. **TT-Sim 性能分析**
+   - 测量单核 GEMM 峰值性能
+   - 测量多核扩展效率
+   - 与理论峰值对比分析
+
+---
+
+## 已完成任务归档
+
+### Phase 3: GEMM 支持与 E2E 测试 (2026-03-16)
+
+- ✅ **True End-to-End GEMM Test**
+  - 测试文件: `tests/target/test_blackhole_gemm_true_e2e.py`
+  - 启动脚本: `tests/target/run_blackhole_e2e.sh`
+  - 完整流程: TileLang DSL → TIR → TT-Metal C++ 代码生成
+  - 算法验证: 与 PyTorch 参考实现对比，误差在 FP16 精度范围内
+
+- ✅ **Blackhole Target 注册**
+  - 文件: `tilelang_repo/src/target/rt_mod_blackhole.cc`
+  - 注册 `TVM_REGISTER_TARGET_KIND("blackhole", ...)`
+  - 添加 `target.build.tilelang_blackhole` 构建函数
+
+- ✅ **CodeGenBlackhole 完善**
+  - `VisitStmt_(AttrStmtNode)` - 处理 thread_extent、storage_scope
+  - `BindThreadIndex` - 映射 CUDA 线程索引到 Blackhole core 坐标
+  - `PrintStorageScope` - 处理 shared.dyn/local/global 内存标记
+  - `VisitExpr_(FloorDivNode/FloorModNode)` - 整数运算支持
+  - 移除 `codegen_c_host.h` 中 `VisitStmt_` 的 `final` 关键字
+
+- ✅ **TileLang Lower 集成**
+  - 文件: `tilelang_repo/tilelang/engine/lower.py`
+  - 添加 Blackhole 到 `device_codegen` 和 `device_codegen_without_compile`
+
+### Phase 2: 多核拆分与调度 (2026-03-16)
 
 1. **matmul_tiles 实现**
    - 调研 TT-Metal LLK 的 matmul_tiles API
