@@ -97,6 +97,12 @@ class BlackholeModuleNode : public ffi::ModuleObj {
   /*! \brief Get or compile a program */
   CompiledProgram& GetOrCompileProgram(const std::string& func_name);
 
+  /*! \brief Execute function using external runner process */
+  void ExecuteExternal(const std::string& func_name,
+                       const std::vector<DLTensor*>& inputs,
+                       const std::vector<uint32_t>& scalar_args,
+                       const std::vector<DLTensor*>& outputs);
+
  private:
   // Function information map
   std::unordered_map<std::string, BlackholeFunctionInfo> fmap_;

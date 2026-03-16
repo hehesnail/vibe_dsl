@@ -242,40 +242,10 @@ if(USE_METAL)
   # FIXME: CIBW failed with backtrace, why???
   set(TVM_FFI_USE_LIBBACKTRACE OFF)
 elseif(USE_BLACKHOLE)
-  message(STATUS "Enable Blackhole (TT-Metal) backend")
-  # Find TT-Metal library
-  if(NOT DEFINED TT_METAL_HOME)
-    set(TT_METAL_HOME $ENV{TT_METAL_HOME})
-  endif()
-  if(NOT TT_METAL_HOME)
-    message(FATAL_ERROR "TT_METAL_HOME not set. Please set TT_METAL_HOME to TT-Metal installation directory.")
-  endif()
-  find_library(TT_METAL_LIB tt_metal
-    PATHS ${TT_METAL_HOME}/build_Release/tt_metal ${TT_METAL_HOME}/build/tt_metal
-    NO_DEFAULT_PATH)
-  if(NOT TT_METAL_LIB)
-    message(WARNING "TT-Metal library not found at ${TT_METAL_HOME}. Building with stub implementation.")
-  else()
-    message(STATUS "Found TT-Metal library: ${TT_METAL_LIB}")
-    include_directories(${TT_METAL_HOME}/tt_metal/api)
-    include_directories(${TT_METAL_HOME})
-    include_directories(${TT_METAL_HOME}/tt_stl)
-    # Add nlohmann_json include path
-    file(GLOB NLJSON_DIRS ${TT_METAL_HOME}/.cpmcache/nlohmann_json/*/include)
-    if(NLJSON_DIRS)
-      list(GET NLJSON_DIRS 0 NLJSON_DIR)
-      include_directories(${NLJSON_DIR})
-      message(STATUS "Found nlohmann_json: ${NLJSON_DIR}")
-    endif()
-    # Add fmt include path
-    file(GLOB FMT_DIRS ${TT_METAL_HOME}/.cpmcache/fmt/*/include)
-    if(FMT_DIRS)
-      list(GET FMT_DIRS 0 FMT_DIR)
-      include_directories(${FMT_DIR})
-      message(STATUS "Found fmt: ${FMT_DIR}")
-    endif()
-    link_directories(${TT_METAL_HOME}/build_Release/tt_metal ${TT_METAL_HOME}/build/tt_metal)
-  endif()
+  message(STATUS "Enable Blackhole (TT-Metal) backend (external process mode)")
+  # External process mode: No direct TT-Metal linking required
+  # The actual kernel execution is done by an external runner process
+  # Set TILELANG_BLACKHOLE_RUNNER environment variable to specify runner path
   file(GLOB TILE_LANG_BLACKHOLE_SRCS
     src/target/codegen_blackhole.cc
     src/target/rt_mod_blackhole.cc
