@@ -393,6 +393,89 @@ jobs:
 
 ---
 
+## 实现偏差与修正 (2026-03-16 更新)
+
+### 发现的问题
+
+#### 1. CodeGenBlackhole 继承策略错误
+
+**原设计**: `CodeGenBlackhole` 继承 `CodeGenCHost`，复用C代码生成逻辑。
+
+**实际情况**: TT-Metal kernel与普通C函数差异太大，继承导致生成错误格式。
+
+**差异对比**:
+
+| 特性 | 原设计假设 | 实际要求 |
+|------|-----------|---------|
+| 函数入口 | 复用C函数生成 | 必须 `void kernel_main()` |
+| 参数 | 复用参数列表 | 必须使用 `get_arg_val` API |
+| 内存访问 | 复用指针访问 | 必须使用 CB/NOC API |
+
+**修正方案**: 重写 `CodeGenBlackhole`，不再继承 `CodeGenCHost`，独立实现：
+- `AddFunction()` → 生成 `kernel_main`
+- `VisitExpr_(LoadNode*)` → 生成 NOC 读取
+- `VisitStmt_(StoreNode*)` → 生成 NOC 写入
+- `VisitStmt_(AllocateNode*)` → 生成 CB 操作
+
+**状态**: 🐛 未实现，阻塞端到端测试
+
+#### 2. TIR Lowering 流程假设
+
+**原设计假设**: TIR passes 完全准备好后，CodeGen只需简单打印。
+
+**实际情况**:
+- Split/Plan/Assign passes 已实现
+- 但生成的 TIR 仍包含高层次操作（如 `T.copy`）
+- CodeGen 需要将这些操作转为具体的 CB/NOC 调用
+
+**修正方案**:
+- Lowering pipeline 需要增加 `LowerBlackholeIntrinsics` pass
+- 或者 CodeGen 直接识别并转换这些操作
+
+**状态**: 🔄 需要进一步设计
+
+#### 3. Runtime 实现复杂度低估
+
+**原设计假设**: 参考CUDA Runtime，实现 `BuildTileLangBlackhole` 即可。
+
+**实际情况**:
+- CUDA: 生成 PTX/CUBIN，CUDA driver 加载执行
+- Blackhole: 生成 C++ 代码，需要文件系统操作、CMake编译、进程调用
+
+**修正方案**: 分阶段实现:
+1. 阶段1: Python脚本手动调用编译执行（验证流程）
+2. 阶段2: 封装为 `CythonKernelAdapter` 风格（自动化）
+
+**状态**: ⏳ 等待 CodeGen 完成后进行
+
+### 修正后的架构图
+
+```
+TileLang DSL (Python)
+       ↓ lower()
+    TIR (带 Blackhole 特定属性)
+       ↓
+┌─────────────────────────────────────┐
+│  [Blocker] CodeGenBlackhole         │  ← 需要重写
+│  - 必须生成 kernel_main()           │
+│  - 必须使用 TT-Metal API            │
+│  - 不能生成标准C代码                │
+└─────────────────────────────────────┘
+       ↓
+TT-Metal Kernel Files (.cpp)
+       ↓
+┌─────────────────────────────────────┐
+│  [Pending] Runtime Blackhole        │  ← 等待实现
+│  - 自动保存 kernel 文件             │
+│  - 调用 TT-Metal JIT 编译           │
+│  - 执行并返回结果                   │
+└─────────────────────────────────────┘
+       ↓
+RISC-V ELF → TT-Sim → Results
+```
+
+---
+
 ## 关键设计决策总结
 
 ### 为什么只支持 Blackhole？

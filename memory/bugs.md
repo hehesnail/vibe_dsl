@@ -49,6 +49,37 @@ python test.py
 
 ---
 
+### GEMM TT-Sim 测试结果不匹配
+
+**问题**: GEMM 内核在 TT-Sim 上执行后结果与 CPU 参考实现不匹配
+**时间**: 2026-03-16
+**根本原因**: 内核使用 `InterleavedAddrGen` 进行 DRAM 寻址，而官方示例使用 `TensorAccessorArgs`。
+两种寻址方式的 tile 索引计算可能不同。
+**解决方案**:
+- 方案1：将内核改为使用 `TensorAccessorArgs` 和 `noc_async_read_tile`（官方示例方式）
+- 方案2：调试当前 `InterleavedAddrGen` 的寻址逻辑
+**关键代码**:
+```cpp
+// 当前方式（问题）
+InterleavedAddrGen<true> a_gen = {
+    .bank_base_address = a_dram_addr,
+    .page_size = TILE_SIZE_A
+};
+uint64_t a_noc_addr = get_noc_addr(kt, a_gen);
+noc_async_read(a_noc_addr, a_l1_addr, TILE_SIZE_A);
+
+// 官方示例方式（正确）
+// 在 host 代码中
+TensorAccessorArgs(*src0_dram_buffer).append_to(reader_compile_time_args);
+// 在 kernel 中
+constexpr auto s0_args = TensorAccessorArgs<0>();
+const auto s0 = TensorAccessor(s0_args, src0_addr, get_tile_size(cb_id_in0));
+noc_async_read_tile(a_tile_index, s0, l1_write_addr_in0);
+```
+**参考**: tests/target/TILELANG_GEMM_TTSIM_TEST.md
+
+---
+
 ### tilelang_repo 体积过大无法提交
 
 **问题**: tilelang_repo 体积 1.1GB，git push 会超时/失败
@@ -408,6 +439,91 @@ noc_async_read(src_noc_addr, l1_addr, TILE_SIZE);
 - CodeGen 必须生成 `InterleavedAddrGen` 风格的代码
 
 **参考**: `tt_metal/programming_examples/add_2_integers_in_riscv/kernels/reader_writer_add_in_riscv.cpp`
+
+---
+
+### CodeGenBlackhole 生成格式错误（端到端测试阻塞问题）
+
+**问题**: `CodeGenBlackhole` 生成的是标准C代码，不是真正的TT-Metal kernel格式
+**时间**: 2026-03-16
+**状态**: 🐛 **未解决 - 阻塞端到端测试**
+**根本原因**:
+- `CodeGenBlackhole` 继承自 `CodeGenCHost`
+- 复用了C代码生成逻辑，未针对TT-Metal kernel架构重写
+- TT-Metal kernel与普通C函数在入口、参数、内存访问等方面完全不同
+
+**差异对比**:
+
+| 特性 | 当前生成 | 真正的TT-Metal Kernel |
+|------|---------|----------------------|
+| 入口函数 | `void func(args)` | `void kernel_main()` |
+| 参数传递 | 函数参数列表 | `get_arg_val<uint32_t>(index)` |
+| 全局内存访问 | 指针解引用 `*ptr` | `InterleavedAddrGen` + `noc_async_read` |
+| 共享内存 | 数组 `buf[1024]` | `cb_reserve_back/cb_push_back` |
+| 同步 | 无 | `noc_async_read_barrier` |
+
+**当前生成代码（错误）**:
+```cpp
+void matmul_kernel(half* A, half* B, half* C) {
+  /* CB */ uint8_t buf_dyn_shmem[4096];  // 注释是CB，实际是普通数组
+  float C_local[1024];
+  for (int32_t i = 0; i < 32; ++i) {
+    *(half8*)(A + ...) = ...;  // 直接指针访问，错误
+  }
+}
+```
+
+**期望生成代码**:
+```cpp
+void kernel_main() {
+  uint32_t A_addr = get_arg_val<uint32_t>(0);
+  uint32_t B_addr = get_arg_val<uint32_t>(1);
+  uint32_t C_addr = get_arg_val<uint32_t>(2);
+
+  // CB配置
+  constexpr uint32_t cb_id_in0 = 0;
+  constexpr uint32_t cb_id_in1 = 1;
+  constexpr uint32_t cb_id_out = 16;
+
+  // DRAM地址生成器
+  InterleavedAddrGen<true> a_gen = {
+    .bank_base_address = A_addr,
+    .page_size = 2048
+  };
+
+  // 读取A tile
+  cb_reserve_back(cb_id_in0, 1);
+  uint32_t l1_addr = get_write_ptr(cb_id_in0);
+  uint64_t noc_addr = get_noc_addr(0, a_gen);
+  noc_async_read(noc_addr, l1_addr, 2048);
+  noc_async_read_barrier();
+  cb_push_back(cb_id_in0, 1);
+
+  // ... 计算和写回
+}
+```
+
+**解决方案**:
+1. **重写 `AddFunction`**: 生成 `kernel_main` 而非普通函数
+2. **实现参数转换**: 将函数参数转为 `get_arg_val` 调用
+3. **实现CB分配**: 将 `T.alloc_shared` 转为 CB 操作
+4. **实现内存访问转换**: 将 `T.copy` 转为 NOC 异步操作
+5. **实现同步插入**: 在适当位置插入 `noc_async_read_barrier`
+
+**所需修改文件**:
+- `tilelang_repo/src/target/codegen_blackhole.cc`
+- `tilelang_repo/src/target/codegen_blackhole.h`
+
+**预估工作量**: 2-3天
+
+**参考**:
+- 手动编写的正确示例: `tt_metal/programming_examples/tilelang_copy_test/kernels/phase1_copy_kernel.cpp`
+- TT-Metal API文档: `docs/tt_metal/api/`
+
+**影响**:
+- 阻塞真正的端到端测试（DSL→TT-Sim执行）
+- 目前只能验证代码生成流程，无法实际执行
+- Phase 3 GEMM支持无法完成
 
 ---
 
