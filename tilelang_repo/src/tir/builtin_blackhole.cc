@@ -1,0 +1,131 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+/*!
+ * \file builtin_blackhole.cc
+ * \brief Blackhole (TT-Metal) builtin function implementations.
+ */
+
+#include "builtin_blackhole.h"
+
+namespace tvm {
+namespace tir {
+namespace builtin {
+
+// Helper macro to register a builtin
+#define TIR_DEFINE_BUILTIN(NAME) \
+  const Op& blackhole_##NAME() { \
+    static const Op& op = Op::Get("tl.blackhole." #NAME); \
+    return op; \
+  }
+
+// Circular Buffer Operations
+TIR_DEFINE_BUILTIN(cb_reserve_back)
+TIR_DEFINE_BUILTIN(cb_push_back)
+TIR_DEFINE_BUILTIN(cb_wait_front)
+TIR_DEFINE_BUILTIN(cb_pop_front)
+
+// NOC Operations
+TIR_DEFINE_BUILTIN(noc_async_read)
+TIR_DEFINE_BUILTIN(noc_async_write)
+TIR_DEFINE_BUILTIN(noc_async_read_barrier)
+TIR_DEFINE_BUILTIN(noc_async_write_barrier)
+
+// Compute Operations
+TIR_DEFINE_BUILTIN(mm_init)
+TIR_DEFINE_BUILTIN(matmul_tiles)
+TIR_DEFINE_BUILTIN(tile_regs_acquire)
+TIR_DEFINE_BUILTIN(tile_regs_commit)
+TIR_DEFINE_BUILTIN(tile_regs_wait)
+TIR_DEFINE_BUILTIN(tile_regs_release)
+TIR_DEFINE_BUILTIN(pack_tile)
+
+// Register all builtins in TVM's op registry
+TVM_REGISTER_OP("tl.blackhole.cb_reserve_back")
+    .set_num_inputs(2)
+    .add_argument("cb_id", "int", "Circular buffer ID")
+    .add_argument("num_tiles", "int", "Number of tiles to reserve");
+
+TVM_REGISTER_OP("tl.blackhole.cb_push_back")
+    .set_num_inputs(2)
+    .add_argument("cb_id", "int", "Circular buffer ID")
+    .add_argument("num_tiles", "int", "Number of tiles to push");
+
+TVM_REGISTER_OP("tl.blackhole.cb_wait_front")
+    .set_num_inputs(2)
+    .add_argument("cb_id", "int", "Circular buffer ID")
+    .add_argument("num_tiles", "int", "Number of tiles to wait for");
+
+TVM_REGISTER_OP("tl.blackhole.cb_pop_front")
+    .set_num_inputs(2)
+    .add_argument("cb_id", "int", "Circular buffer ID")
+    .add_argument("num_tiles", "int", "Number of tiles to pop");
+
+TVM_REGISTER_OP("tl.blackhole.noc_async_read")
+    .set_num_inputs(3)
+    .add_argument("src_addr", "uint64", "Source address in DRAM")
+    .add_argument("dst_addr", "uint32", "Destination address in L1")
+    .add_argument("size", "int", "Size in bytes");
+
+TVM_REGISTER_OP("tl.blackhole.noc_async_write")
+    .set_num_inputs(3)
+    .add_argument("src_addr", "uint32", "Source address in L1")
+    .add_argument("dst_addr", "uint64", "Destination address in DRAM")
+    .add_argument("size", "int", "Size in bytes");
+
+TVM_REGISTER_OP("tl.blackhole.noc_async_read_barrier")
+    .set_num_inputs(0);
+
+TVM_REGISTER_OP("tl.blackhole.noc_async_write_barrier")
+    .set_num_inputs(0);
+
+TVM_REGISTER_OP("tl.blackhole.mm_init")
+    .set_num_inputs(3)
+    .add_argument("in0_cb_id", "int", "Input CB 0 ID (A matrix)")
+    .add_argument("in1_cb_id", "int", "Input CB 1 ID (B matrix)")
+    .add_argument("out_cb_id", "int", "Output CB ID (C matrix)");
+
+TVM_REGISTER_OP("tl.blackhole.matmul_tiles")
+    .set_num_inputs(5)
+    .add_argument("in0_cb_id", "int", "Input CB 0 ID")
+    .add_argument("in1_cb_id", "int", "Input CB 1 ID")
+    .add_argument("in0_tile_index", "int", "Tile index in CB 0")
+    .add_argument("in1_tile_index", "int", "Tile index in CB 1")
+    .add_argument("dst_tile_index", "int", "Destination tile index");
+
+TVM_REGISTER_OP("tl.blackhole.tile_regs_acquire")
+    .set_num_inputs(0);
+
+TVM_REGISTER_OP("tl.blackhole.tile_regs_commit")
+    .set_num_inputs(0);
+
+TVM_REGISTER_OP("tl.blackhole.tile_regs_wait")
+    .set_num_inputs(0);
+
+TVM_REGISTER_OP("tl.blackhole.tile_regs_release")
+    .set_num_inputs(0);
+
+TVM_REGISTER_OP("tl.blackhole.pack_tile")
+    .set_num_inputs(2)
+    .add_argument("src_tile_index", "int", "Source tile index in DST")
+    .add_argument("dst_cb_id", "int", "Destination CB ID");
+
+}  // namespace builtin
+}  // namespace tir
+}  // namespace tvm

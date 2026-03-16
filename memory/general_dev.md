@@ -691,6 +691,150 @@ bool ValidateCBAllocation(const std::vector<CBConfig>& configs) {
 
 ---
 
+## CodeGen Visitor 模式实现
+
+### 1. TT-Metal Builtin 识别与分发
+
+**模式**: 重写 `VisitExpr_` 识别特定 Op，分发到专用处理函数
+
+```cpp
+void CodeGenBlackhole::VisitExpr_(const tvm::tir::CallNode *op,
+                                  std::ostream &os) {
+  // Try to handle TT-Metal builtin calls
+  if (HandleBlackholeBuiltin(op, os)) {
+    return;
+  }
+  // Fall back to parent class for other calls
+  CodeGenCHost::VisitExpr_(op, os);
+}
+
+bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
+                                               std::ostream &os) {
+  if (!op->op->IsInstance<OpNode>()) return false;
+
+  Op call_op = Downcast<Op>(op->op);
+  std::string op_name = call_op->name;
+
+  // Check for TT-Metal builtin prefix
+  const std::string prefix = "tl.blackhole.";
+  if (op_name.find(prefix) != 0) return false;
+
+  std::string builtin_name = op_name.substr(prefix.length());
+
+  // Handle each builtin type
+  if (builtin_name == "matmul_tiles") {
+    PrintMatmulTiles(op, os);
+    return true;
+  } else if (builtin_name == "cb_wait_front") {
+    PrintCBWaitFront(op, os);
+    return true;
+  }
+  // ... more builtins
+
+  return false;
+}
+```
+
+**关键要点**:
+- 使用前缀匹配识别自定义 builtin (`tl.blackhole.xxx`)
+- 返回 `bool` 表示是否已处理，便于 fallback
+- 分离解析逻辑和代码生成逻辑
+
+### 2. TT-Metal 算子代码生成
+
+**模式**: 每个 builtin 对应一个 Print 函数
+
+```cpp
+void CodeGenBlackhole::PrintMatmulTiles(const tvm::tir::CallNode *op,
+                                        std::ostream &os) {
+  need_compute_api_h_ = true;  // 标记需要包含头文件
+  os << "matmul_tiles(";
+  PrintExpr(op->args[0], os);  // in0_cb_id
+  os << ", ";
+  PrintExpr(op->args[1], os);  // in1_cb_id
+  os << ", ";
+  PrintExpr(op->args[2], os);  // in0_tile_index
+  os << ", ";
+  PrintExpr(op->args[3], os);  // in1_tile_index
+  os << ", ";
+  PrintExpr(op->args[4], os);  // dst_tile_index
+  os << ")";
+}
+```
+
+**头文件管理**:
+```cpp
+class CodeGenBlackhole : public CodeGenCHost {
+ private:
+  bool need_compute_api_h_ = false;   // compute_kernel_api.h
+  bool need_dataflow_api_h_ = false;  // dataflow_api.h
+
+ public:
+  std::string Finish() {
+    // 按需添加头文件
+    if (need_compute_api_h_) {
+      decl_stream << "#include \"compute_kernel_api.h\"\n";
+    }
+    return CodeGenCHost::Finish();
+  }
+};
+```
+
+### 3. 端到端测试模式
+
+**Python E2E 测试**: DSL -> TIR -> 参考验证
+
+```python
+def test_blackhole_gemm_e2e():
+    # 1. 定义 TileLang kernel
+    @T.prim_func
+    def matmul_kernel(...):
+        with T.Kernel(...) as (bx, by):
+            # ... 分配共享内存
+            T.clear(C_local)
+            for k in T.Pipelined(K_tiles):
+                T.copy(A[...], A_shared)
+                T.copy(B[...], B_shared)
+                T.gemm(A_shared, B_shared, C_local)
+
+    # 2. Lower 到 TIR
+    target = tvm.target.Target("cuda")
+    with target:
+        artifact = tilelang.lower(matmul_kernel)
+
+    # 3. 生成参考实现
+    A = torch.randn(M, K, dtype=torch.float16)
+    B = torch.randn(K, N, dtype=torch.float16)
+    C_ref = torch.matmul(A, B)
+
+    # 4. 保存供 TT-Sim 验证
+    np.save("/tmp/blackhole_gemm_A.npy", A.cpu().numpy())
+    np.save("/tmp/blackhole_gemm_B.npy", B.cpu().numpy())
+    np.save("/tmp/blackhole_gemm_C_ref.npy", C_ref.cpu().numpy())
+```
+
+**C++ 单元测试**: 独立测试 CodeGen 逻辑
+
+```cpp
+// 不依赖 TVM 的完整编译，仅测试代码生成逻辑
+TEST(CodeGenBlackholeGEMM, BasicMatmulTiles) {
+  // 构建 mock TIR
+  auto func = CreateGemmComputeFunc();
+
+  // 生成代码
+  CodeGenBlackhole cg;
+  cg.AddFunction(gvar, func);
+  std::string code = cg.Finish();
+
+  // 验证生成的代码包含期望的模式
+  EXPECT_NE(code.find("matmul_tiles("), std::string::npos);
+  EXPECT_NE(code.find("tile_regs_acquire()"), std::string::npos);
+  // ...
+}
+```
+
+---
+
 ## 代码审查清单
 
 提交代码前检查：
@@ -700,3 +844,5 @@ bool ValidateCBAllocation(const std::vector<CBConfig>& configs) {
 - [ ] 无调试用的 print/printf 残留
 - [ ] 错误处理完善
 - [ ] TT-Sim 兼容性验证（如适用）
+- [ ] Visitor 模式正确处理所有分支（有 fallback）
+- [ ] 头文件按需包含（使用标志位控制）

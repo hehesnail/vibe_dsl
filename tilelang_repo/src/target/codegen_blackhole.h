@@ -50,9 +50,13 @@ class CodeGenBlackhole : public CodeGenCHost {
   void AddFunction(const tvm::GlobalVar &gvar,
                    const tvm::tir::PrimFunc &f) override;
 
+  // Override visitor to handle TT-Metal builtin calls
+  void VisitExpr_(const tvm::tir::CallNode *op,
+                  std::ostream &os) override;
+
   // Note: PrintFuncPrefix and PrintType are final in parent class,
   // so we don't override them here. Blackhole-specific handling
-  // is done through other mechanisms.
+  // is done through visitor and AddFunction.
 
   // Blackhole core type enumeration
   enum class CoreType {
@@ -77,7 +81,31 @@ class CodeGenBlackhole : public CodeGenCHost {
   // Print TT-Metal specific function attributes
   void PrintKernelAttributes();
 
+  // Handle TT-Metal builtin calls (from VisitExpr_)
+  bool HandleBlackholeBuiltin(const tvm::tir::CallNode *op, std::ostream &os);
+
   // Print CB (Circular Buffer) operations
+  void PrintCBReserveBack(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintCBPushBack(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintCBWaitFront(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintCBPopFront(const tvm::tir::CallNode *op, std::ostream &os);
+
+  // Print NOC operations
+  void PrintNOCAsyncRead(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintNOCAsyncWrite(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintNOCReadBarrier(std::ostream &os);
+  void PrintNOCWriteBarrier(std::ostream &os);
+
+  // Print compute operations
+  void PrintMMInit(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintMatmulTiles(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintTileRegsAcquire(std::ostream &os);
+  void PrintTileRegsCommit(std::ostream &os);
+  void PrintTileRegsWait(std::ostream &os);
+  void PrintTileRegsRelease(std::ostream &os);
+  void PrintPackTile(const tvm::tir::CallNode *op, std::ostream &os);
+
+  // Legacy: Print CB operations (old interface)
   void PrintCBDeclare(const std::string &name, tvm::DataType dtype,
                       int num_pages, int page_size);
   void PrintCBWaitFront(const std::string &name, int num_tiles);
@@ -85,7 +113,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintCBReserveBack(const std::string &name, int num_tiles);
   void PrintCBPushBack(const std::string &name, int num_tiles);
 
-  // Print NOC operations
+  // Legacy: Print NOC operations (old interface)
   void PrintNOCRead(const std::string &src_addr, const std::string &dst_addr,
                     int size);
   void PrintNOCWrite(const std::string &src_addr, const std::string &dst_addr,

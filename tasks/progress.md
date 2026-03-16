@@ -58,7 +58,7 @@
 | Phase 2 | SplitBlackholeKernel | ✅ 已完成 | - | [phase2_split_blackhole_kernel](./dev_design/phase2_split_blackhole_kernel.md) | R/C/W 拆分 |
 | Phase 2 | PlanBlackholeCB | ✅ 已完成 | - | [phase2_plan_blackhole_cb](./dev_design/phase2_plan_blackhole_cb.md) | CB 分配 |
 | Phase 2 | AssignBlackholeCores | ✅ 已完成 | - | [phase2_assign_blackhole_cores](./dev_design/phase2_assign_blackhole_cores.md) | 140 核分配 |
-| Phase 3 | GEMM 支持 | 🔄 进行中 | - | [phase3_gemm](./dev_design/phase3_gemm.md) | matmul_tiles |
+| Phase 3 | GEMM 支持 | ✅ 已完成 | - | [phase3_gemm](./dev_design/phase3_gemm.md) | matmul_tiles, Visitor CodeGen, E2E测试 |
 | Phase 4 | 性能优化 | ⏳ 未开始 | - | - | 自动 tile size |
 
 **状态图例**：

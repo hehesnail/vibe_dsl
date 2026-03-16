@@ -27,6 +27,7 @@
 #include <sstream>
 #include <string>
 
+#include "../tir/builtin_blackhole.h"
 #include "tvm/tir/builtin.h"
 #include "tvm/tir/op.h"
 #include "tvm/tir/transform.h"
@@ -85,16 +86,219 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
   CodeGenCHost::AddFunction(gvar, f);
 }
 
-// Note: PrintFuncPrefix, PrintType, and VisitExpr_ are final in parent class
-// and cannot be overridden. Blackhole-specific handling is done through
-// AddFunction and VisitStmt_ methods, or by preprocessing the IR.
+// ============================================================================
+// Visitor Implementation for TT-Metal Builtin Calls
+// ============================================================================
 
-// Note: VisitStmt_ for AttrStmtNode is final in parent class, so we cannot
-// override it here. CB allocation handling should be done through IR passes
-// that transform the IR before codegen, or through other mechanisms.
+void CodeGenBlackhole::VisitExpr_(const tvm::tir::CallNode *op,
+                                  std::ostream &os) {
+  // Try to handle TT-Metal builtin calls
+  if (HandleBlackholeBuiltin(op, os)) {
+    return;
+  }
+  // Fall back to parent class for other calls
+  CodeGenCHost::VisitExpr_(op, os);
+}
 
-// Note: VisitStmt_ for ForNode is final in parent class, so we cannot override.
-// Loop handling customization should be done via IR passes or other mechanisms.
+bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
+                                               std::ostream &os) {
+  if (!op->op->IsInstance<OpNode>()) return false;
+
+  Op call_op = Downcast<Op>(op->op);
+  std::string op_name = call_op->name;
+
+  // Check for TT-Metal builtin prefix
+  const std::string prefix = "tl.blackhole.";
+  if (op_name.find(prefix) != 0) return false;
+
+  std::string builtin_name = op_name.substr(prefix.length());
+
+  // Handle each builtin type
+  if (builtin_name == "cb_reserve_back") {
+    PrintCBReserveBack(op, os);
+    return true;
+  } else if (builtin_name == "cb_push_back") {
+    PrintCBPushBack(op, os);
+    return true;
+  } else if (builtin_name == "cb_wait_front") {
+    PrintCBWaitFront(op, os);
+    return true;
+  } else if (builtin_name == "cb_pop_front") {
+    PrintCBPopFront(op, os);
+    return true;
+  } else if (builtin_name == "noc_async_read") {
+    PrintNOCAsyncRead(op, os);
+    return true;
+  } else if (builtin_name == "noc_async_write") {
+    PrintNOCAsyncWrite(op, os);
+    return true;
+  } else if (builtin_name == "noc_async_read_barrier") {
+    PrintNOCReadBarrier(os);
+    return true;
+  } else if (builtin_name == "noc_async_write_barrier") {
+    PrintNOCWriteBarrier(os);
+    return true;
+  } else if (builtin_name == "mm_init") {
+    PrintMMInit(op, os);
+    return true;
+  } else if (builtin_name == "matmul_tiles") {
+    PrintMatmulTiles(op, os);
+    return true;
+  } else if (builtin_name == "tile_regs_acquire") {
+    PrintTileRegsAcquire(os);
+    return true;
+  } else if (builtin_name == "tile_regs_commit") {
+    PrintTileRegsCommit(os);
+    return true;
+  } else if (builtin_name == "tile_regs_wait") {
+    PrintTileRegsWait(os);
+    return true;
+  } else if (builtin_name == "tile_regs_release") {
+    PrintTileRegsRelease(os);
+    return true;
+  } else if (builtin_name == "pack_tile") {
+    PrintPackTile(op, os);
+    return true;
+  }
+
+  return false;
+}
+
+// ============================================================================
+// TT-Metal Builtin Print Functions
+// ============================================================================
+
+void CodeGenBlackhole::PrintCBReserveBack(const tvm::tir::CallNode *op,
+                                          std::ostream &os) {
+  need_dataflow_api_h_ = true;
+  os << "cb_reserve_back(";
+  PrintExpr(op->args[0], os);  // cb_id
+  os << ", ";
+  PrintExpr(op->args[1], os);  // num_tiles
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintCBPushBack(const tvm::tir::CallNode *op,
+                                       std::ostream &os) {
+  need_dataflow_api_h_ = true;
+  os << "cb_push_back(";
+  PrintExpr(op->args[0], os);  // cb_id
+  os << ", ";
+  PrintExpr(op->args[1], os);  // num_tiles
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintCBWaitFront(const tvm::tir::CallNode *op,
+                                        std::ostream &os) {
+  need_dataflow_api_h_ = true;
+  os << "cb_wait_front(";
+  PrintExpr(op->args[0], os);  // cb_id
+  os << ", ";
+  PrintExpr(op->args[1], os);  // num_tiles
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintCBPopFront(const tvm::tir::CallNode *op,
+                                       std::ostream &os) {
+  need_dataflow_api_h_ = true;
+  os << "cb_pop_front(";
+  PrintExpr(op->args[0], os);  // cb_id
+  os << ", ";
+  PrintExpr(op->args[1], os);  // num_tiles
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintNOCAsyncRead(const tvm::tir::CallNode *op,
+                                         std::ostream &os) {
+  need_dataflow_api_h_ = true;
+  os << "noc_async_read(";
+  PrintExpr(op->args[0], os);  // src_addr
+  os << ", ";
+  PrintExpr(op->args[1], os);  // dst_addr
+  os << ", ";
+  PrintExpr(op->args[2], os);  // size
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintNOCAsyncWrite(const tvm::tir::CallNode *op,
+                                          std::ostream &os) {
+  need_dataflow_api_h_ = true;
+  os << "noc_async_write(";
+  PrintExpr(op->args[0], os);  // src_addr
+  os << ", ";
+  PrintExpr(op->args[1], os);  // dst_addr
+  os << ", ";
+  PrintExpr(op->args[2], os);  // size
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintNOCReadBarrier(std::ostream &os) {
+  need_dataflow_api_h_ = true;
+  os << "noc_async_read_barrier()";
+}
+
+void CodeGenBlackhole::PrintNOCWriteBarrier(std::ostream &os) {
+  need_dataflow_api_h_ = true;
+  os << "noc_async_write_barrier()";
+}
+
+void CodeGenBlackhole::PrintMMInit(const tvm::tir::CallNode *op,
+                                   std::ostream &os) {
+  need_compute_api_h_ = true;
+  os << "mm_init(";
+  PrintExpr(op->args[0], os);  // in0_cb_id
+  os << ", ";
+  PrintExpr(op->args[1], os);  // in1_cb_id
+  os << ", ";
+  PrintExpr(op->args[2], os);  // out_cb_id
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintMatmulTiles(const tvm::tir::CallNode *op,
+                                        std::ostream &os) {
+  need_compute_api_h_ = true;
+  os << "matmul_tiles(";
+  PrintExpr(op->args[0], os);  // in0_cb_id
+  os << ", ";
+  PrintExpr(op->args[1], os);  // in1_cb_id
+  os << ", ";
+  PrintExpr(op->args[2], os);  // in0_tile_index
+  os << ", ";
+  PrintExpr(op->args[3], os);  // in1_tile_index
+  os << ", ";
+  PrintExpr(op->args[4], os);  // dst_tile_index
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintTileRegsAcquire(std::ostream &os) {
+  need_compute_api_h_ = true;
+  os << "tile_regs_acquire()";
+}
+
+void CodeGenBlackhole::PrintTileRegsCommit(std::ostream &os) {
+  need_compute_api_h_ = true;
+  os << "tile_regs_commit()";
+}
+
+void CodeGenBlackhole::PrintTileRegsWait(std::ostream &os) {
+  need_compute_api_h_ = true;
+  os << "tile_regs_wait()";
+}
+
+void CodeGenBlackhole::PrintTileRegsRelease(std::ostream &os) {
+  need_compute_api_h_ = true;
+  os << "tile_regs_release()";
+}
+
+void CodeGenBlackhole::PrintPackTile(const tvm::tir::CallNode *op,
+                                     std::ostream &os) {
+  need_compute_api_h_ = true;
+  os << "pack_tile(";
+  PrintExpr(op->args[0], os);  // src_tile_index
+  os << ", ";
+  PrintExpr(op->args[1], os);  // dst_cb_id
+  os << ")";
+}
 
 void CodeGenBlackhole::PrintKernelAttributes() {
   // Print kernel-specific attributes for TT-Metal

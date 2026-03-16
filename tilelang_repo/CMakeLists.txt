@@ -6,7 +6,10 @@ cmake_minimum_required(VERSION 3.26)
 # Detect CUDA toolkit: tries host installation first, then falls back to
 # pip-installed packages (env WITH_PIP_CUDA_TOOLCHAIN or auto-detect).
 # Must be included before project() so CMAKE_CUDA_COMPILER is set.
-include(${CMAKE_CURRENT_LIST_DIR}/cmake/FindPipCUDAToolkit.cmake)
+# Skip CUDA detection when building for Blackhole backend only
+if(NOT USE_BLACKHOLE)
+  include(${CMAKE_CURRENT_LIST_DIR}/cmake/FindPipCUDAToolkit.cmake)
+endif()
 
 project(TILE_LANG C CXX)
 
@@ -178,6 +181,7 @@ file(GLOB TILE_LANG_SRCS
   src/transform/*.cc
   src/transform/common/*.cc
   src/op/*.cc
+  src/tir/*.cc
   src/target/utils.cc
   src/target/codegen_c_host.cc
   src/target/codegen_cpp.cc
