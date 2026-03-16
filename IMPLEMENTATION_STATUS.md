@@ -62,32 +62,35 @@ void kernel_main() {
   4. 调用 runner 执行 kernel
   5. 对比输出与 PyTorch 参考结果
 
-## 当前问题
+## 已解决问题
 
-### 阻塞问题: TT-Metal JIT 编译找不到头文件
+### ✅ TT-Metal JIT 编译头文件路径问题 (已修复)
 
-**错误信息**:
+**问题描述**:
 ```
 fatal error: dataflow_api.h: No such file or directory
-   11 | #include "dataflow_api.h"
-      |          ^~~~~~~~~~~~~~~~
-compilation terminated.
 ```
 
-**问题分析**:
-- TT-Metal 的 JIT 编译系统需要正确的 include path
-- `dataflow_api.h` 位于 `tt_metal/hw/inc/` 目录下
-- 需要设置正确的环境变量或修改 kernel 保存位置
+**根本原因**:
+- CodeGen 使用了错误的路径 `"dataflow_api.h"`
+- TT-Metal 示例使用的是 `"api/dataflow/dataflow_api.h"`
 
-**已尝试方案**:
-1. ✅ 将 kernel 保存到 `$TT_METAL_HOME/tilelang_kernels/` 目录
-2. ⏳ 待验证: 检查 `TT_METAL_HOME` 环境变量是否正确设置
-3. ⏳ 待验证: 检查 TT-Metal JIT 编译的 include path 配置
+**解决方案** (commit 260a652):
+1. 更新所有 include 路径为 `"api/dataflow/dataflow_api.h"`
+2. 在 `AddFunction()` 中清理 `decl_stream` 以移除 TVM 头文件
+3. 修复 `GetKernelCode()` 以正确组合 `decl_stream` 和 `stream`
 
-**可能的解决方案**:
-1. 设置额外的环境变量（如 `TT_METAL_INC_PATH`）
-2. 修改 runner 代码，在 JIT 编译时添加正确的 `-I` 参数
-3. 使用完整的头文件路径（如 `#include "tt_metal/hw/inc/dataflow_api.h"`）
+**验证结果**:
+```
+✓ Correct include path found: api/dataflow/dataflow_api.h
+✓ No TVM headers found (correct)
+```
+
+## 当前问题
+
+### 待验证: E2E 测试执行
+- 需要运行完整 E2E 测试验证 JIT 编译和执行
+- 检查 runner 是否能正确编译和执行 kernel
 
 ## 文件变更
 
