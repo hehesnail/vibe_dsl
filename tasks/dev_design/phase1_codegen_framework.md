@@ -1,5 +1,11 @@
 # Phase 1: CodeGen 框架 - 单核 Copy
 
+> ⚠️ **2026-03-17 设计审查更新**：
+> - **实际状态**：🔄 50%（builtin visitor 路径 ✅，统一入口 ❌）
+> - **关键问题**：存在两条割裂的代码路径（Path A: IR 驱动 vs Path B: 硬编码字符串拼接），需删除 Path B 并统一到 `GenerateGenericKernelMain()`
+> - **需删除**：`DetectSimpleCopyKernel()`, `GenerateCopyKernelMain()`, `static bool headers_emitted`
+> - **详见**：[design_review.md](../design_review.md) 问题3-4、问题7、第4.7节
+
 ## 任务目标
 
 实现 CodeGenBlackhole 的具体代码生成逻辑，支持单核 Copy 算子，生成可在 TT-Sim 上运行的 TT-Metal C++ kernel。

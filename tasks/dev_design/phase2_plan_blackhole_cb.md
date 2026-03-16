@@ -1,5 +1,11 @@
 # Phase 2: PlanBlackholeCB Pass
 
+> ⚠️ **2026-03-17 设计审查更新**：本任务实际为 Stub，需完整实现。
+> - **实际状态**：❌ 未实现（`Transform()` 返回原函数，`Validate()` 永远返回 true）
+> - **优先级**：P0（Pipeline 连通的必需步骤）
+> - **新设计**：Pass 顺序改为 `LowerBlackholeOps → PlanBlackholeCB → AssignBlackholeCores`，本 Pass 在 LowerOps 之后执行，可从 builtin 调用中收集 CB 使用信息
+> - **详见**：[design_review.md](../design_review.md) 第4.4节
+
 ## 任务目标
 
 将 `T.alloc_shared` 映射到 Blackhole 的 Circular Buffer (CB)，规划 CB 的分配策略。

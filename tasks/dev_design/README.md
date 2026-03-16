@@ -90,16 +90,18 @@ dev_design/
 
 ## 文档状态
 
-| 文档 | 阶段 | 状态 |
-|------|------|------|
-| phase0_tilelang_setup.md | Phase 0 | ✅ 已完成 |
-| phase0_tt_metal_build.md | Phase 0 | ✅ 已完成 |
-| phase0_tt_sim_build.md | Phase 0 | ✅ 已完成 |
-| phase0_tilelang_blackhole_config.md | Phase 0 | ✅ 已完成 |
-| phase1_codegen_framework.md | Phase 1 | ✅ 已完成 |
-| phase1_runtime_framework.md | Phase 1 | ✅ 已完成 |
-| phase2_split_blackhole_kernel.md | Phase 2 | ✅ 已完成 |
-| phase2_plan_blackhole_cb.md | Phase 2 | ✅ 已完成 |
-| phase2_assign_blackhole_cores.md | Phase 2 | ✅ 已完成 |
-| phase3_gemm.md | Phase 3 | 🔄 CodeGen 完成，真正 E2E 测试待实现 |
-| phase4_optimization.md | Phase 4 | ⏳ 待创建 |
+> ⚠️ 2026-03-17 设计审查后更新，详见 [design_review.md](../design_review.md)
+
+| 文档 | 阶段 | 状态 | 说明 |
+|------|------|------|------|
+| phase0_tilelang_setup.md | Phase 0 | ✅ 已完成 | |
+| phase0_tt_metal_build.md | Phase 0 | ✅ 已完成 | |
+| phase0_tt_sim_build.md | Phase 0 | ✅ 已完成 | |
+| phase0_tilelang_blackhole_config.md | Phase 0 | ✅ 已完成 | |
+| phase1_codegen_framework.md | Phase 1 | 🔄 50% | builtin visitor✅ 统一入口❌，需删除硬编码路径 |
+| phase1_runtime_framework.md | Phase 1 | 🔄 30% | 外部进程模式基本可用，需传递 CB 配置 |
+| phase2_split_blackhole_kernel.md | Phase 2 | ⏸️ 搁置 | 降级为 Phase 4 优化项，TT-Sim 不支持 NCRISC NOC write |
+| phase2_plan_blackhole_cb.md | Phase 2 | ❌ Stub | Transform() 返回原函数，需完整实现 |
+| phase2_assign_blackhole_cores.md | Phase 2 | 🔄 60% | 核心逻辑正确，结果未存入 attrs |
+| phase3_gemm.md | Phase 3 | 🔄 40% | LowerOps matmul✅ copy❌ clear❌，E2E 未通 |
+| phase4_optimization.md | Phase 4 | ⏳ 待创建 | 含三核拆分、多核并行等 |
