@@ -126,13 +126,17 @@ ffi::Bytes BlackholeModuleNode::SaveToBytes() const {
 }
 
 ffi::String BlackholeModuleNode::InspectSource(const ffi::String& format) const {
+  LOG(INFO) << "BlackholeModuleNode::InspectSource called";
   auto it = fmap_.find("default");
   if (it != fmap_.end()) {
+    LOG(INFO) << "Found 'default' function, kernel_code size: " << it->second.kernel_code.size();
     return ffi::String(it->second.kernel_code);
   }
   if (!fmap_.empty()) {
+    LOG(INFO) << "Using first function, kernel_code size: " << fmap_.begin()->second.kernel_code.size();
     return ffi::String(fmap_.begin()->second.kernel_code);
   }
+  LOG(WARNING) << "No functions found in fmap_";
   return ffi::String("");
 }
 

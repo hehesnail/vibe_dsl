@@ -89,6 +89,9 @@ def test_blackhole_codegen_only():
         print("Blackhole code generation successful!")
         if hasattr(artifact, 'kernel_source'):
             print(f"Generated source length: {len(artifact.kernel_source)} chars")
+            print("\n=== Generated Kernel ===")
+            print(artifact.kernel_source)
+            print("=== End Kernel ===")
     except Exception as e:
         pytest.skip(f"Blackhole lowering not yet fully implemented: {e}")
 
@@ -106,13 +109,8 @@ def test_blackhole_true_e2e():
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
 
-    # Check for simulator mode
-    use_sim = os.environ.get("TT_METAL_SIMULATOR", "0") == "1"
-    if not use_sim:
-        # Try to check if real hardware is available
-        # For now, skip if not in simulator mode
-        pytest.skip("TT_METAL_SIMULATOR not set to 1. "
-                   "Set TT_METAL_SIMULATOR=1 to run with TT-Sim.")
+    # Note: We attempt to run with TT-Sim if available
+    # The runner will fail gracefully if TT-Sim is not properly configured
 
     # Define test parameters (small for simulator)
     M, N = 32, 32  # Small size for quick simulation
@@ -138,12 +136,15 @@ def test_blackhole_true_e2e():
         kernel = simple_copy_kernel(M, N)
 
         try:
-            # Lower to Blackhole target
-            artifact = lower(kernel, target=target)
+            # Lower to Blackhole target (need target context)
+            with target:
+                artifact = lower(kernel, target=target)
             kernel_code = artifact.kernel_source if hasattr(artifact, 'kernel_source') else str(artifact)
 
-            # Save kernel code
-            kernel_path = os.path.join(tmpdir, "kernel.cpp")
+            # Save kernel code to TT_METAL_HOME (required for JIT compilation)
+            kernel_dir = os.path.join(os.environ["TT_METAL_HOME"], "tilelang_kernels")
+            os.makedirs(kernel_dir, exist_ok=True)
+            kernel_path = os.path.join(kernel_dir, "test_kernel.cpp")
             with open(kernel_path, 'w') as f:
                 f.write(kernel_code)
 

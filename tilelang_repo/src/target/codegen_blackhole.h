@@ -47,12 +47,26 @@ class CodeGenBlackhole : public CodeGenCHost {
             std::string target_str,
             const std::unordered_set<std::string> &devices);
 
+  // Get only the kernel code (without TVM headers)
+  std::string GetKernelCode() const;
+
   void AddFunction(const tvm::GlobalVar &gvar,
                    const tvm::tir::PrimFunc &f) override;
 
   // Generate TT-Metal kernel_main entry point
   void GenerateKernelMain(const tvm::GlobalVar &gvar,
                           const tvm::tir::PrimFunc &f);
+
+  // Detect if this is a simple copy kernel (for optimized code generation)
+  bool DetectSimpleCopyKernel(const tvm::tir::PrimFunc &f);
+
+  // Generate optimized copy kernel using CB + NOC
+  void GenerateCopyKernelMain(const tvm::tir::PrimFunc &f,
+                              const std::string &func_name);
+
+  // Generate generic kernel (fallback)
+  void GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
+                                 const std::string &func_name);
 
   // Override visitor to handle TT-Metal builtin calls
   void VisitExpr_(const tvm::tir::CallNode *op,

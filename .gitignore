@@ -43,6 +43,10 @@ tests/target/test_blackhole_gemm_ttsim_test
 # Generated kernels
 generated_*.cc
 generated_*.cpp
+generated_*.h
+
+# TileLang test generated files
+tilelang_repo/generated/
 
 # Python cache
 __pycache__/

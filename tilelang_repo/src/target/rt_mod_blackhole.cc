@@ -374,14 +374,15 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     }
   }
 
-  std::string code = cg.Finish();
+  // Get pure kernel code (without TVM headers) for TT-Metal compilation
+  std::string kernel_code = cg.GetKernelCode();
 
   // Extract function info for BlackholeModule
   auto func_info_map = ExtractBlackholeFuncInfo(mod);
 
-  // Store kernel code in function info
+  // Store kernel code in function info (pure kernel for device execution)
   for (auto& kv : func_info_map) {
-    kv.second.kernel_code = code;
+    kv.second.kernel_code = kernel_code;
   }
 
   return BlackholeModuleCreate(std::move(func_info_map), kernel_dir);
