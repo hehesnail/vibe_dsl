@@ -19,7 +19,7 @@
 **阶段**: Phase 3 - GEMM 支持（Runtime 完善中）
 **目标**: 实现从 TileLang DSL 到 TT-Sim 执行的完整端到端流程
 **开始日期**: 2026-03-16
-**当前状态**: ✅ **端到端验证完成（CodeGen + PyTorch 对比）**
+**当前状态**: 🔄 **分层验证完成（CodeGen + PyTorch 对比），真正的端到端测试待实现**
 
 ### 关键成果
 
@@ -29,12 +29,16 @@
 - ✅ 支持 TT-Metal API 头文件包含
 - ✅ 生成代码可通过 TileLang Build 流程
 
-**端到端验证已完成**:
+**分层验证进展**（⚠️ 注意：真正的端到端测试 = DSL -> TIR -> CodeGen -> Execute -> Compare，目前仅完成前两步）：
 - ✅ TileLang DSL -> TIR -> CodeGen 流程验证通过
-- ✅ PyTorch 参考结果生成与对比
-- ✅ Copy Kernel 测试通过
-- ✅ Element-wise Add 测试通过
-- ⚠️ GEMM 测试（部分失败，lower pass 问题）
+- ✅ PyTorch 参考结果生成（用于后续对比）
+- ⚠️ Copy Kernel（仅生成代码+参考数据，未执行）
+- ⚠️ Element-wise Add（仅生成代码+参考数据，未执行）
+- 🐛 GEMM（lower pass 问题）
+
+**真正的端到端测试待实现**：
+- 🔄 Runtime 执行 kernel 并返回结果
+- 🔄 Python 端数值对比（np.allclose）
 
 **差异对比**:
 
@@ -43,6 +47,8 @@
 | 函数入口 | `void func(args)` | `void kernel_main()` |
 | 参数获取 | 函数参数 | `get_arg_val<uint32_t>(idx)` |
 | 生成格式 | 标准C代码 | TT-Metal Kernel 格式 |
+
+> 📋 **架构详情**: 见 [arch_design.md](./arch_design.md)
 
 ---
 
@@ -87,7 +93,7 @@
 |------|------|----------|
 | 编译 TileLang | `cmake .. -DUSE_BLACKHOLE=ON && make -j32` | ✅ 成功编译 |
 | CodeGen 测试 | `python tests/target/test_blackhole_e2e.py` | ✅ Build 测试通过 |
-| 端到端测试 | `python tests/target/test_blackhole_true_e2e.py` | ✅ 2/3 测试通过 |
+| CodeGen+参考生成 | `python tests/target/test_blackhole_true_e2e.py` | ✅ 2/3 测试通过（⚠️ 非真正E2E，未执行kernel） |
 
 ### 仍存在的问题
 
@@ -128,9 +134,11 @@
 
 **参考模式**: TileLang CUDA后端通过`CythonKernelAdapter`调用
 
-#### 3. 缺少端到端测试流程 (P1)
+#### 3. 真正的端到端测试流程 (P1)
 
-**问题描述**: 即使kernel生成正确，也没有自动化流程将DSL代码转为TT-Sim执行。
+**端到端测试定义**: DSL -> TIR -> CodeGen -> Runtime Execute -> Python Compare
+
+**问题描述**: 当前仅实现 DSL -> CodeGen + PyTorch 参考生成，缺少 Runtime 执行和结果对比。
 
 **期望流程**:
 ```python
@@ -139,9 +147,15 @@ import tilelang
 func = matmul_kernel(M, N, K)
 artifact = tilelang.lower(func, target="blackhole")
 result = artifact.execute(A, B)  # 自动编译→执行→返回结果
+np.allclose(result, pytorch_ref)  # 验证正确性
 ```
 
-**实际状态**: 目前需要手动复制代码、编写host程序、CMake编译、shell执行。
+**当前状态**:
+- ✅ DSL -> CodeGen 完成
+- ✅ PyTorch 参考生成完成
+- 🔄 Runtime 执行 stub 实现（未接入 TT-Metal）
+- ⏳ 结果回传 Python 未实现
+- ⏳ 数值对比未进行
 
 ---
 
@@ -161,9 +175,10 @@ result = artifact.execute(A, B)  # 自动编译→执行→返回结果
    - [ ] 接入 `CreateProgram` 和 `CreateKernelFromString`
    - [ ] 接入 `EnqueueProgram` 执行
 
-3. **创建端到端测试脚本** (P1)
-   - [ ] Python脚本：DSL→保存kernel→调用CMake编译→执行→验证
-   - [ ] 对比结果与Numpy参考
+3. **真正的端到端测试** (P1) ⚠️ 关键缺口
+   - [ ] Runtime 执行 kernel 并返回结果到 Python
+   - [ ] Python 端数值对比（np.allclose with PyTorch/NumPy 参考）
+   - [ ] 自动化测试：DSL → CodeGen → Execute → Verify
 
 ### 中期目标 (2-4周)
 
@@ -205,9 +220,9 @@ result = artifact.execute(A, B)  # 自动编译→执行→返回结果
 - 验证了TT-Sim执行流程
 - 可作为CodeGen生成目标的参考
 
-### 端到端验证流程
+### 分层验证流程（⚠️ 非真正端到端）
 
-**2026-03-16 更新**: 实现端到端验证流程（DSL → CodeGen → PyTorch 对比）
+**2026-03-16 更新**: 实现分层验证前两步（DSL → CodeGen + PyTorch 参考生成）
 
 ```
 TileLang DSL (Python)
@@ -215,14 +230,16 @@ TileLang DSL (Python)
 TIR (TVM IR)
     ↓ CodeGenBlackhole
 TT-Metal Kernel (C++)
-    ↓ PyTorch Reference
-Result Comparison
+
+[缺口] Runtime Execute → Result → Python Compare
+    ↓
+PyTorch Reference (仅生成参考，未对比)
 ```
 
-**测试脚本**: `tests/target/test_blackhole_true_e2e.py`
-- ✅ Copy Kernel (FP16): DSL → CodeGen → PyTorch 对比
-- ✅ Element-wise Add (FP16): DSL → CodeGen → PyTorch 对比
-- ⚠️ GEMM (FP16→FP32): DSL → CodeGen 工作，lower pass 有问题
+**测试脚本**: `tests/target/test_blackhole_true_e2e.py`（⚠️ 命名有误，实际非E2E）
+- ⚠️ Copy Kernel (FP16): DSL → CodeGen + 参考数据生成（未执行kernel）
+- ⚠️ Element-wise Add (FP16): DSL → CodeGen + 参考数据生成（未执行kernel）
+- 🐛 GEMM (FP16→FP32): lower pass 失败
 
 **执行命令**:
 ```bash
@@ -288,5 +305,5 @@ tt_metal_repo/tt_metal/programming_examples/tilelang_copy_test/
 
 状态更新:
 - ✅ CodeGen 重写完成（kernel_main + get_arg_val）
-- ✅ 端到端验证完成（CodeGen + PyTorch 对比）
+- 🔄 分层验证完成（CodeGen + PyTorch 参考生成），真正的端到端测试待实现
 - 🔄 Runtime 实现中（BlackholeModule TT-Metal 集成）

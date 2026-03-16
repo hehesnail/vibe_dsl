@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
 """
-True End-to-end test for Blackhole backend with PyTorch comparison
-Tests: DSL -> TIR -> CodeGen -> TT-Metal Execution -> Result Verification
+CodeGen + Reference Data Generation Test for Blackhole Backend
+Tests: DSL -> TIR -> CodeGen + PyTorch Reference Generation
 
-This test:
+NOTE: This is NOT a true end-to-end test yet. It does NOT execute the kernel.
+
+True end-to-end test requires:
+1. DSL -> TIR -> CodeGen
+2. Runtime executes kernel on TT-Sim/Hardware
+3. Results returned to Python
+4. Compare with PyTorch/NumPy reference values
+
+This test currently only does:
 1. Generates kernel code using TileLang
 2. Generates reference results using PyTorch
-3. Executes kernel on TT-Sim
-4. Compares results
+3. Saves artifacts (code + data) for manual execution
+
+TODO: Integrate with BlackholeModule.Execute() once Runtime is fully implemented.
 """
 
 import sys
@@ -234,13 +243,16 @@ def generate_gemm_kernel_test():
 
 def main():
     print("\n" + "=" * 70)
-    print("TileLang Blackhole Backend - True End-to-End Test Suite")
+    print("TileLang Blackhole Backend - CodeGen + Reference Test Suite")
     print("=" * 70)
+    print("\n⚠️  NOTE: This is NOT a true end-to-end test yet!")
+    print("   True E2E test = DSL -> CodeGen -> Execute -> Compare with reference")
+    print("   This test only does: DSL -> CodeGen + Generate PyTorch reference")
     print("\nThis test suite:")
     print("1. Generates kernel code using TileLang DSL")
     print("2. Generates reference results using PyTorch")
     print("3. Verifies code generation and compilation pipeline")
-    print("4. (TODO) Execute on TT-Sim and compare results")
+    print("4. (TODO) Execute on TT-Sim and compare results with reference")
 
     results = []
 

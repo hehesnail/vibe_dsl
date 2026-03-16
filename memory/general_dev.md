@@ -1019,21 +1019,27 @@ python tests/target/test_blackhole_gemm_true_e2e.py
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 第二层: 算法正确性（PyTorch 对比）                              │
+│ 第二层: 参考数据生成（PyTorch）                                 │
 │ - 生成参考输入/输出数据                                          │
-│ - 使用 PyTorch 计算参考结果                                      │
-│ - 验证算法逻辑正确性                                            │
-│ - 工具: `test_blackhole_true_e2e.py`                           │
+│ - 使用 PyTorch/NumPy 计算参考结果                                │
+│ - 保存参考数据供后续对比使用                                     │
+│ - ⚠️ 注意：当前未实际执行 kernel，仅生成参考                     │
+│ - 工具: `test_blackhole_true_e2e.py`（命名有误，实际非E2E）     │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 第三层: 硬件执行验证（TT-Sim/Hardware）                         │
-│ - 编译 kernel 到 RISC-V ELF                                     │
+│ 第三层: 真正的端到端测试（TT-Sim/Hardware）                     │
+│ - Runtime 执行 kernel 并返回结果到 Python                        │
+│ - 编译 kernel 到 RISC-V ELF                                      │
 │ - 在 TT-Sim 或实际硬件上执行                                     │
-│ - 对比执行结果与参考结果                                         │
-│ - 工具: 需要完整的 Runtime 实现                                  │
+│ - Python 端对比执行结果与参考结果（np.allclose）                 │
+│ - 工具: 需要完整的 Runtime 实现（BlackholeModule.Execute）       │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+**重要区分**:
+- **分层验证**（当前）：DSL → CodeGen + 参考生成（前两层）
+- **真正端到端**（待实现）：DSL → CodeGen → Execute → Compare
 
 **优点**:
 - 前两层可以在无硬件环境下完成验证
@@ -1056,30 +1062,37 @@ python tests/target/test_blackhole_gemm_true_e2e.py
 
 ### 关键测试用例设计
 
-**最小可行测试集**:
+**最小可行测试集**（⚠️ 当前仅实现分层验证，真正端到端待完成）：
 
 1. **Copy Kernel**: 验证基本数据传输
    - 输入: FP16 向量
    - 输出: 相同向量
-   - 验证: 逐元素相等
+   - 当前: 仅生成代码 + 参考数据（未执行kernel）
+   - 目标: Runtime 执行后逐元素相等
 
 2. **Element-wise Add**: 验证简单计算
    - 输入: 两个 FP16 向量
    - 输出: 逐元素相加结果
-   - 验证: PyTorch 参考对比
+   - 当前: 仅生成代码 + 参考数据（未执行kernel）
+   - 目标: Runtime 执行后与 PyTorch 参考对比
 
-3. **GEMM**: 验证复杂计算（部分支持）
+3. **GEMM**: 验证复杂计算
    - 输入: 两个 FP16 矩阵
    - 输出: FP32 累加结果
-   - 验证: PyTorch 参考对比
+   - 当前: lower pass 失败
+   - 目标: Runtime 执行后与 PyTorch 参考对比
 
 **测试文件位置**:
 ```
 tests/target/
 ├── test_blackhole_e2e.py          # 第一层: CodeGen 正确性
-├── test_blackhole_true_e2e.py     # 第二层: PyTorch 对比
+├── test_blackhole_true_e2e.py     # ⚠️ 非真正E2E，实际仅生成参考数据
 └── test_blackhole_gemm_e2e.py     # GEMM 专用测试
 ```
+
+**真正端到端测试待实现**:
+- DSL → TIR → CodeGen → Runtime Execute → Python Compare
+- 需要: BlackholeModule.Execute() + 结果回传 + np.allclose 对比
 
 ### 环境配置要点
 

@@ -1,26 +1,6 @@
-# TileLang Tenstorrent 后端扩展项目
+# TileLang Tenstorrent 后端扩展项目 - Agent 工作流程
 
-## 项目目标
-
-为 TileLang DSL 添加 Tenstorrent 硬件后端支持，基于 TT-Metal 底层框架实现编译器后端。
-
-## 核心架构（Blackhole）
-
-```
-TileLang DSL (Python)
-       ↓ LowerAndLegalize
-TIR (TVM IR)
-       ↓ Blackhole Passes
-├─ AssignBlackholeCores (14x10 grid)
-├─ PlanBlackholeCB (64 CBs, 1.5MB L1)
-└─ SplitBlackholeKernel (R/C/W 拆分)
-       ↓ CodeGen
-TT-Metal C++ (BRISC/TRISC/NCRISC)
-       ↓ JIT Build (libtt_metal.so)
-RISC-V ELF
-       ↓ Runtime
-Blackhole Hardware (140 cores)
-```
+> 📋 本文档定义 Agent 开发工作流程。项目架构详见 [tasks/arch_design.md](tasks/arch_design.md)。
 
 ## 开发原则
 
