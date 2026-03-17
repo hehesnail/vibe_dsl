@@ -517,4 +517,38 @@ void kernel_main() {
 
 ---
 
+### TileLang Blackhole Pipeline 返工问题汇总
+
+**问题**: Phase 2 Transform Pass 设计与实现严重脱节
+**时间**: 2026-03-17
+**根本原因**: "文档先行"陷阱 - 写文档 → 写 Stub → 写 Mock 测试 → 标记完成
+
+**具体问题清单**:
+
+| 问题 | 位置 | 影响 | 修复方案 |
+|------|------|------|----------|
+| Transform Pass 是 Stub | split_blackhole_kernel.cc, plan_blackhole_cb.cc | Pass 不执行任何转换 | 重新实现 |
+| lower.py 未接入 Pass | lower.py:193-194 | Blackhole 分支直接 CodeGen，无 IR 变换 | 添加 Pass 调用 |
+| 算子识别用字符串匹配 | lower_blackhole_ops.cc:120-123 | 容易误判，脆弱 | 改用 Op 对象比较 |
+| Copy kernel 硬编码 | codegen_blackhole.cc:145-228 | 无法处理复杂情况，tile_size 写死 | 删除，统一走 Visitor |
+| attrs 覆盖而非合并 | assign_blackhole_cores.cc:223 | 丢失其他 Pass 写入的 attrs | 先读取再合并 |
+| static headers_emitted | codegen_blackhole.cc:64 | 进程内不重置，第二个 kernel 无头文件 | 改为实例变量 |
+| core_type 从函数名检测 | codegen_blackhole.cc:80-87 | 不可靠 | 从 IR attrs 读取 |
+
+**修复验证**:
+- ✅ lower.py 正确调用 LowerBlackholeOps → PlanBlackholeCB → AssignBlackholeCores
+- ✅ LowerBlackholeOps 通过 buffer scope 识别 copy 方向
+- ✅ PlanBlackholeCB 正确分配 CB ID 并验证约束
+- ✅ AssignBlackholeCores 正确存储结果到 attrs
+- ✅ CodeGen 统一使用 GenerateGenericKernelMain
+
+**经验教训**:
+1. 避免"文档先行"陷阱 - Pass 必须真正走通 IR 才能标记完成
+2. 所有 Pass 间通信通过 IR attrs，避免全局状态
+3. 算子识别用 Op 比较，不要用字符串匹配
+4. attrs 操作要先读取再合并，不要直接覆盖
+5. CodeGen 不要写硬编码路径，统一走 Visitor
+
+---
+
 *后续问题继续追加...*

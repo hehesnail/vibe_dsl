@@ -967,6 +967,152 @@ stream << "  half* A = (half*)(uintptr_t)A_addr;\n";
 stream << "  uint32_t scalar = get_arg_val<uint32_t>(2);\n";
 ```
 
+---
+
+## Blackhole Pipeline 返工经验（2026-03-17 更新）
+
+### 1. 问题：设计与实现脱节
+
+**症状**：
+- Transform Pass 在文档中标记为"完成"，实际都是 Stub
+- lower.py 未调用任何 Blackhole Pass
+- CodeGen 存在硬编码的 Copy kernel 路径
+
+**根本原因**：
+- "文档先行"陷阱：先写设计文档 → 写 Stub → 写 Mock 测试 → 标记完成
+- 缺乏端到端验证
+
+**解决方案**：
+- 按照 [design_review.md](../tasks/design_review.md) 重新设计 Pipeline
+- Pass 顺序调整为：`LowerOps → PlanCB → AssignCores`（去掉 Split）
+- 所有 Pass 真正走通 IR → IR 转换
+
+### 2. Pattern: Pass 结果通过 IR Attrs 传递
+
+**反模式**（避免）：
+```cpp
+// 不要这样：Pass 之间通过全局状态或 C++ 对象传递
+class PassA {
+  std::vector<Config> configs_;  // 私有状态，其他 Pass 看不到
+};
+```
+
+**正确模式**：
+```cpp
+// Pass A: 将结果写入 func attrs
+void PassA::Transform(PrimFunc& func) {
+  Map<String, ObjectRef> attrs = func->attrs;
+  attrs.Set("blackhole.cb_requirements", cb_reqs);
+  func.CopyOnWrite()->attrs = DictAttrs(attrs);
+}
+
+// Pass B: 从 attrs 读取
+void PassB::Transform(PrimFunc& func) {
+  auto cb_reqs = func->GetAttr<Array<ObjectRef>>("blackhole.cb_requirements");
+  // ...
+}
+```
+
+### 3. Pattern: 删除硬编码路径
+
+**反模式**（避免）：
+```cpp
+// 不要这样：启发式检测 + 硬编码生成
+bool DetectSimpleCopyKernel(PrimFunc f) {
+  return f->params.size() == 2;  // 太脆弱！
+}
+
+void GenerateCopyKernelMain(...) {
+  stream << "cb_reserve_back(0, 1);\n";  // 硬编码 CB 0
+  stream << "noc_async_read(...);\n";   // 硬编码逻辑
+}
+```
+
+**正确模式**：
+```cpp
+// 统一走 IR Visitor，所有信息来自 IR
+void GenerateGenericKernelMain(PrimFunc f) {
+  // 参数加载从 f->params 生成
+  // 函数体通过 VisitStmt(f->body) 生成
+  // Builtin 调用通过 HandleBlackholeBuiltin 分发
+}
+```
+
+### 4. Pattern: 用 Op 比较代替字符串匹配
+
+**反模式**（避免）：
+```cpp
+// 不要这样：字符串匹配脆弱，容易误判
+bool IsMatmulCall(const CallNode* op) {
+  std::string name = Downcast<Op>(op->op)->name;
+  return name.find("gemm") != std::string::npos ||  // 会误判！
+         name.find("matmul") != std::string::npos;
+}
+```
+
+**正确模式**：
+```cpp
+// 直接 Op 对象比较
+bool IsMatmulCall(const CallNode* op) {
+  static const Op& tl_matmul = Op::Get("tl.matmul");
+  static const Op& tl_gemm = Op::Get("tl.gemm");
+  Op call_op = Downcast<Op>(op->op);
+  return call_op.same_as(tl_matmul) || call_op.same_as(tl_gemm);
+}
+```
+
+### 5. Pattern: attrs 合并而非覆盖
+
+**反模式**（避免）：
+```cpp
+// 不要这样：会丢失其他 Pass 写入的 attrs
+void StoreResult(PrimFunc& func, Result r) {
+  Map<String, ObjectRef> new_attrs;
+  new_attrs.Set("my_result", r);  // 只有 my_result
+  func.CopyOnWrite()->attrs = DictAttrs(new_attrs);  // 覆盖所有！
+}
+```
+
+**正确模式**：
+```cpp
+// 先读取现有 attrs，合并后再写回
+void StoreResult(PrimFunc& func, Result r) {
+  Map<String, ObjectRef> attrs;
+  if (func->attrs.defined()) {
+    attrs = func->attrs->dict;  // 保留现有
+  }
+  attrs.Set("my_result", r);     // 添加新的
+  func.CopyOnWrite()->attrs = DictAttrs(attrs);
+}
+```
+
+### 6. Pattern: 实例变量代替 static 变量
+
+**反模式**（避免）：
+```cpp
+// 不要这样：static 变量在进程生命周期内不重置
+void AddFunction(...) {
+  static bool headers_emitted = false;
+  if (!headers_emitted) {
+    EmitHeaders();
+    headers_emitted = true;  // 下次调用不会重置！
+  }
+}
+```
+
+**正确模式**：
+```cpp
+// 使用实例变量
+class CodeGenBlackhole {
+ private:
+  bool headers_emitted_{false};  // 每个实例独立
+};
+
+void CodeGenBlackhole::Init(...) {
+  headers_emitted_ = false;  // 重置状态
+}
+```
+
 **头文件管理**:
 ```cpp
 // 根据 core 类型选择头文件

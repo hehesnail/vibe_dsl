@@ -16,8 +16,8 @@
 
 ## 当前阶段
 
-**阶段**: Phase 2 返工 + Phase 3 补全
-**目标**: 让 Pipeline 真正连通，实现 Copy kernel E2E
+**阶段**: P0 Pipeline 连通 ✅ 已完成，进入 P1 E2E 验证
+**目标**: 实现 Copy kernel E2E 验证 (DSL → TT-Sim)
 **更新日期**: 2026-03-17
 
 ### 2026-03-17 设计审查结论
@@ -56,12 +56,12 @@ lower.py 未接入任何 Blackhole Pass，CodeGen 存在硬编码路径。
 | Phase 1 | CodeGen 框架 | ✅ 已完成 | [phase1_codegen_framework](./dev_design/phase1_codegen_framework.md) | kernel_main 格式 |
 | Phase 1 | Runtime 框架 | ✅ 已完成 | [phase1_runtime_framework](./dev_design/phase1_runtime_framework.md) | 外部进程模式 |
 | Phase 1 | E2E Copy 手动测试 | ✅ 已完成 | - | 手动编写 Kernel 在 TT-Sim 通过 |
-| Phase 2 | LowerBlackholeOps | 🔄 **40%** | [phase3_gemm](./dev_design/phase3_gemm.md) | matmul✅ copy❌ clear❌ |
-| Phase 2 | PlanBlackholeCB | ⚠️ **Stub** | [phase2_plan_blackhole_cb](./dev_design/phase2_plan_blackhole_cb.md) | 返回原函数，需实现 |
-| Phase 2 | AssignBlackholeCores | 🔄 **60%** | [phase2_assign_blackhole_cores](./dev_design/phase2_assign_blackhole_cores.md) | 逻辑正确，结果未存储到 attrs |
+| Phase 2 | LowerBlackholeOps | ✅ **已完成** | [phase3_gemm](./dev_design/phase3_gemm.md) | matmul✅ copy✅ clear✅ |
+| Phase 2 | PlanBlackholeCB | ✅ **已完成** | [phase2_plan_blackhole_cb](./dev_design/phase2_plan_blackhole_cb.md) | MVP 实现，从 attrs 读取配置 |
+| Phase 2 | AssignBlackholeCores | ✅ **已完成** | [phase2_assign_blackhole_cores](./dev_design/phase2_assign_blackhole_cores.md) | 结果正确存储到 attrs |
 | Phase 2 | SplitBlackholeKernel | ⏸️ **搁置** | [phase2_split_blackhole_kernel](./dev_design/phase2_split_blackhole_kernel.md) | TT-Sim 不支持 NCRISC，降为 P2 优化项 |
-| Phase 2 | lower.py 接入 Pass | ⏳ **未开始** | - | Blackhole 分支无 Pass 调用 |
-| Phase 2 | CodeGen 统一入口 | ⏳ **未开始** | - | 需删除硬编码，统一走 Visitor |
+| Phase 2 | lower.py 接入 Pass | ✅ **已完成** | - | LowerOps→PlanCB→AssignCores 顺序 |
+| Phase 2 | CodeGen 统一入口 | ✅ **已完成** | - | 删除硬编码，统一走 IR Visitor |
 | Phase 3 | GEMM CodeGen | ✅ 已完成 | [phase3_gemm](./dev_design/phase3_gemm.md) | Builtin visitor 已实现 |
 | Phase 3 | GEMM E2E 验证 | ⏳ **未开始** | - | 需 Pipeline 连通后 |
 | Phase 4 | 性能优化 | ⏳ 未开始 | - | 三核拆分、自动 tile size |
@@ -91,6 +91,51 @@ lower.py 未接入任何 Blackhole Pass，CodeGen 存在硬编码路径。
 7. **集成 matmul + copy 的完整 Pipeline**
 8. **Runtime 传递 CB 配置**
 9. **GEMM E2E 验证**
+
+---
+
+## 本次更新完成的工作 (2026-03-17)
+
+### P0: Pipeline 连通 ✅
+
+基于 [design_review.md](./design_review.md) 的修正方案，完成了以下关键修改：
+
+1. **lower.py 接入 Blackhole Pass** (`tilelang/engine/lower.py`)
+   - Blackhole 分支添加 LowerBlackholeOps → PlanBlackholeCB → AssignBlackholeCores 调用
+   - 同步修改 device_codegen 和 device_codegen_without_compile
+   - Python transform 模块添加 Pass 导出 (`__init__.py`)
+
+2. **LowerBlackholeOps Copy 序列实现** (`src/transform/lower_blackhole_ops.cc`)
+   - 使用 Op 比较代替字符串匹配检测算子
+   - 通过 buffer scope 判断 copy 方向 (DRAM→CB, CB→DRAM, CB→CB)
+   - 生成完整的 CB/NOC builtin 序列
+   - 将 CB 需求写入 func attrs 供 PlanBlackholeCB 使用
+
+3. **PlanBlackholeCB MVP 实现** (`src/transform/plan_blackhole_cb.cc`)
+   - 从 attrs 读取 CB 需求或从 alloc_shared 推断
+   - 实现 CB ID 分配 (0-15 输入, 16-31 输出)
+   - 验证 CB 数量 <= 64 和总 L1 <= 1.5MB 约束
+   - 将 CB 配置写入 func attrs
+
+4. **AssignBlackholeCores 修复** (`src/transform/assign_blackhole_cores.cc`)
+   - 修复 attrs 合并逻辑（原实现会覆盖所有 attrs）
+   - 统一使用 "blackhole.xxx" 命名规范
+
+5. **CodeGen 重构** (`src/target/codegen_blackhole.cc/.h`)
+   - 删除 DetectSimpleCopyKernel / GenerateCopyKernelMain / GenerateSimpleCopyKernel 等硬编码路径
+   - static headers_emitted 改为实例变量 headers_emitted_
+   - core_type 从 IR attrs 读取，不再从函数名猜测
+   - 统一使用 GenerateGenericKernelMain + HandleBlackholeBuiltin 路径
+
+### 关键决策实施
+
+| 决策 | 实施状态 |
+|------|----------|
+| Pass 顺序: LowerOps → PlanCB → AssignCores | ✅ 已实施 |
+| 算子识别: Op 比较代替字符串匹配 | ✅ 已实施 |
+| CB ID 分配: 0-15 输入, 16-31 输出 | ✅ 已实施 |
+| CodeGen 入口: 统一 GenericKernelMain | ✅ 已实施 |
+| Core type 检测: IR attrs 代替函数名 | ✅ 已实施 |
 
 ---
 
