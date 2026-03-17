@@ -273,18 +273,28 @@ CopyDirection LowerBlackholeOps::GetCopyDirection(const BufferStoreNode* op) con
   std::string dst_scope = GetStorageScope(op->buffer);
   std::string src_scope = GetStorageScope(load->buffer);
 
-  // DRAM -> CB (global/shared -> shared)
-  if ((src_scope.empty() || src_scope == "global") && dst_scope == "shared") {
+  // Helper to check if scope indicates CB (shared memory)
+  auto isCBScope = [](const std::string& scope) {
+    return scope == "shared" || scope == "shared.dyn" || scope.find("shared") == 0;
+  };
+
+  // Helper to check if scope indicates DRAM (global memory)
+  auto isDRAMScope = [](const std::string& scope) {
+    return scope.empty() || scope == "global";
+  };
+
+  // DRAM -> CB (global -> shared)
+  if (isDRAMScope(src_scope) && isCBScope(dst_scope)) {
     return CopyDirection::kDramToCB;
   }
 
   // CB -> DRAM (shared -> global)
-  if (src_scope == "shared" && (dst_scope.empty() || dst_scope == "global")) {
+  if (isCBScope(src_scope) && isDRAMScope(dst_scope)) {
     return CopyDirection::kCBToDram;
   }
 
   // CB -> CB (shared -> shared)
-  if (src_scope == "shared" && dst_scope == "shared") {
+  if (isCBScope(src_scope) && isCBScope(dst_scope)) {
     return CopyDirection::kCBToCB;
   }
 
