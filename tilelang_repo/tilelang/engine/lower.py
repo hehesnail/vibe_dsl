@@ -300,4 +300,4 @@ def lower(
         host_mod.import_module(codegen_mod)
         return CompiledArtifact(host_mod, device_mod, params, codegen_mod.inspect_source(), rt_mod=host_mod)
 
-    return CompiledArtifact(host_mod, device_mod, params, codegen_mod.inspect_source())
+    return CompiledArtifact(host_mod, device_mod, params, codegen_mod.inspect_source(), codegen_mod=codegen_mod)
