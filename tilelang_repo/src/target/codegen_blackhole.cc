@@ -146,8 +146,9 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
              << arg_idx++ << ");\n";
       stream << "  uint64_t " << param_name << "_addr = ((uint64_t)"
              << param_name << "_hi << 32) | " << param_name << "_lo;\n";
-      stream << "  " << dtype << "* " << param_name << " = (" << dtype
-             << "*)(uintptr_t)" << param_name << "_addr;\n";
+      // Use void* for handle types (buffer pointers)
+      stream << "  void* " << param_name << " = (void*)(uintptr_t)"
+             << param_name << "_addr;\n";
     } else if (dtype.is_int() || dtype.is_uint()) {
       // Integer scalar argument
       stream << "  // Argument " << arg_idx << ": " << param_name << " ("
@@ -191,6 +192,22 @@ void CodeGenBlackhole::VisitExpr_(const tvm::tir::CallNode *op,
   }
   // Fall back to parent class for other calls
   CodeGenCHost::VisitExpr_(op, os);
+}
+
+void CodeGenBlackhole::VisitStmt_(const tvm::tir::EvaluateNode *op) {
+  // Handle TT-Metal builtin calls in Evaluate statements
+  if (const auto *call = op->value.as<tvm::tir::CallNode>()) {
+    std::ostringstream os;
+    if (HandleBlackholeBuiltin(call, os)) {
+      // This is a Blackhole builtin - print it as a statement
+      PrintIndent();
+      stream << os.str() << ";\n";
+      return;
+    }
+  }
+  // Fall back to grandparent class (tvm::codegen::CodeGenC) for non-builtin expressions
+  // We need to call the grandparent directly since CodeGenCHost doesn't override VisitStmt_ for EvaluateNode
+  tvm::codegen::CodeGenC::VisitStmt_(op);
 }
 
 void CodeGenBlackhole::VisitExpr_(const tvm::tir::FloorDivNode *op,

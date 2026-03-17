@@ -369,7 +369,9 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     auto f = Downcast<tir::PrimFunc>(kv.second);
 
     auto calling_conv = f->GetAttr<Integer>(tvm::attr::kCallingConv);
-    if (calling_conv == CallingConv::kDeviceKernelLaunch) {
+    // Process device kernels (kDeviceKernelLaunch) OR functions without calling_conv set
+    // (which is the case for Blackhole device functions from tilelang.transform flow)
+    if (!calling_conv.defined() || calling_conv == CallingConv::kDeviceKernelLaunch) {
       cg.AddFunction(gvar, f);
     }
   }

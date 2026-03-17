@@ -70,6 +70,9 @@ class CodeGenBlackhole : public CodeGenCHost {
   // Override AttrStmt visitor to handle CUDA-specific attributes
   void VisitStmt_(const tvm::tir::AttrStmtNode *op) override;
 
+  // Override EvaluateNode to handle TT-Metal builtin calls as statements
+  void VisitStmt_(const tvm::tir::EvaluateNode *op) override;
+
   // Override storage scope printing for Blackhole memory types
   void PrintStorageScope(const std::string &scope,
                          std::ostream &os) override;
