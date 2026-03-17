@@ -112,7 +112,7 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
   }
 
   // Generate TT-Metal kernel_main function using IR visitor
-  GenerateGenericKernelMain(gvar, f);
+  GenerateGenericKernelMain(f, gvar->name_hint);
 }
 
 void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,

@@ -31,8 +31,8 @@ def allow_tma_lower(pass_ctx: PassContext | None = None, target: Target | None =
     """Return True when TMA lowering is enabled for the given target.
 
     This is intentionally decoupled from warp specialization so Hopper TMA can
-    be used in a non-warp-specialized pipeline (e.g., no-WS kernels still need
-    mbarrier allocation/init and expect_tx injection).
+    be used in a non-warp-specialized pipeline (e.g. no-WS kernels still need
+    mbarrier allocation/init and expect_tx injection) even when warp specialization is disabled.
     """
     if pass_ctx is None:
         pass_ctx = tilelang.transform.get_pass_context()
@@ -217,11 +217,25 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
 
 
 def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
+    import os
+    debug_passes = os.environ.get("DEBUG_PASSES", "0") == "1"
+    def check_target(mod, label):
+        if debug_passes:
+            for gvar, func in mod.functions.items():
+                t = func.attrs.get("target")
+                print(f"[DEBUG] {label}: {gvar} -> target={t.kind.name if t else 'None'}")
+        return mod
+
     pass_ctx = tilelang.transform.get_pass_context()
     # Lower the shared.barrier and shared.cluster_barrier into specific initialization slot
     mod = tilelang.transform.LowerSharedBarrier()(mod)
+    check_target(mod, "LowerSharedBarrier")
     # Lower the shared.tmem into specific initialization slot
     mod = tilelang.transform.LowerSharedTmem()(mod)
+    check_target(mod, "LowerSharedTmem")
+    # Early return for Blackhole - skip CUDA-specific passes
+    if target.kind.name == "blackhole":
+        return mod
     # which may be introduced by the LegalizeSafeMemoryAccess
     # Note: The WarpSpecialized + InjectTmaBarrier pipeline is required for correct TMA lowering
     # (mbarrier allocation/init + expect_tx injection) even when warp specialization is disabled.
@@ -283,7 +297,9 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
     if allow_global_thread_synchronization():
         mod = tilelang.transform.ThreadSync("global")(mod)
     mod = tilelang.transform.AnnotateDeviceRegions()(mod)
-    mod = tilelang.transform.SplitHostDevice()(mod)
+    # Skip SplitHostDevice for Blackhole - it has its own kernel model
+    if target.kind.name != "blackhole":
+        mod = tilelang.transform.SplitHostDevice()(mod)
 
     # Mark the function contains pdl_sync or pdl_trigger
     mod = tilelang.transform.MarkCudaSyncCalls(have_pdl(target))(mod)
@@ -308,9 +324,13 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
         mod = tilelang.transform.AnnotateWarpGroupRegAlloc()(mod)
     mod = tilelang.transform.MakePackedAPI()(mod)
     mod = tilelang.transform.Simplify()(mod)
-    mod = tilelang.transform.LowerDeviceKernelLaunch()(mod)
+    # Skip LowerDeviceKernelLaunch for Blackhole - it has its own kernel model
+    if target.kind.name != "blackhole":
+        mod = tilelang.transform.LowerDeviceKernelLaunch()(mod)
+    check_target(mod, "LowerDeviceKernelLaunch")
 
     # Transform threadblock to persistent threadblock
     mod = tilelang.transform.PersistThreadblock()(mod)
+    check_target(mod, "PersistThreadblock")
 
     return mod

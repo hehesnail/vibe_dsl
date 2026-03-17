@@ -44,7 +44,18 @@ def is_device_call_c_device(func: tir.PrimFunc):
 
 
 def is_device_call(func: tir.PrimFunc):
-    return has_device_kernel_launch(func.attrs)
+    # Check for device kernel launch calling convention
+    if has_device_kernel_launch(func.attrs):
+        return True
+
+    # Check if it's a Blackhole target kernel
+    attrs = func.attrs
+    if attrs and "target" in attrs:
+        target = attrs["target"]
+        if isinstance(target, Target) and target.kind.name == "blackhole":
+            return True
+
+    return False
 
 
 def get_device_call(is_device_c: bool = False) -> Callable[[tir.PrimFunc], bool]:

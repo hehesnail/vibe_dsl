@@ -69,12 +69,13 @@ using tir::builtin::blackhole_noc_async_write_barrier;
 using tvm::Integer;
 using tvm::DataType;
 using tvm::IntImm;
-using tvm::String;
-using tvm::Map;
-using tvm::ObjectRef;
-using tvm::Array;
 using tvm::DictAttrs;
-using tvm::tir::PointerTypeNode;
+using tvm::ffi::GetRef;
+using tvm::ffi::String;
+using ffi::String;
+using tvm::ffi::Map;
+using tvm::ffi::Array;
+using tvm::ffi::Any;
 
 // Helper to create a call to TT-Metal builtin
 static Stmt MakeBlackholeCall(const Op& op, const std::vector<PrimExpr>& args) {
@@ -88,15 +89,10 @@ static PrimExpr IntImm32(int value) {
 
 // Helper to get storage scope from buffer
 static std::string GetStorageScope(const Buffer& buffer) {
-  if (buffer->data.defined()) {
-    auto* ptr_type = buffer->data->type_annotation.as<PointerTypeNode>();
-    if (ptr_type) {
-      return ptr_type->storage_scope;
-    }
-  }
-  // Check buffer scope attribute
-  if (buffer->scope.length() > 0) {
-    return buffer->scope;
+  // Use the scope() method which returns ffi::String
+  ffi::String scope = buffer.scope();
+  if (scope.length() > 0) {
+    return std::string(scope);
   }
   return "";
 }
@@ -212,15 +208,15 @@ void LowerBlackholeOps::StoreCBRequirements(PrimFunc& func) {
   }
 
   // Get existing attributes
-  Map<String, ObjectRef> attrs;
+  Map<String, Any> attrs;
   if (func->attrs.defined()) {
     attrs = func->attrs->dict;
   }
 
   // Build CB requirements array
-  Array<ObjectRef> cb_reqs;
+  Array<Any> cb_reqs;
   for (const auto& req : cb_requirements_) {
-    Map<String, ObjectRef> req_map;
+    Map<String, Any> req_map;
     req_map.Set("name", String(req.name));
     req_map.Set("type", String(req.type == CBType::kInput ? "input" :
                                req.type == CBType::kOutput ? "output" : "intermediate"));
@@ -454,6 +450,8 @@ Stmt LowerBlackholeOps::GenerateClearSequence(const CallNode* op) {
 }
 
 // StmtExprMutator overrides
+// Note: We only override specific node types and return the original node
+// for unmatched patterns to avoid deep recursion that causes stack overflow.
 Stmt LowerBlackholeOps::VisitStmt_(const EvaluateNode* op) {
   if (const auto* call = op->value.as<CallNode>()) {
     if (IsMatmulCall(call)) {
@@ -463,14 +461,18 @@ Stmt LowerBlackholeOps::VisitStmt_(const EvaluateNode* op) {
       return GenerateClearSequence(call);
     }
   }
-  return StmtExprMutator::VisitStmt_(op);
+  // Return original statement without recursion to avoid stack overflow
+  // The parent class's VisitStmt_ would recursively visit child nodes,
+  // which can cause deep recursion for deeply nested IR trees.
+  return GetRef<Stmt>(op);
 }
 
 Stmt LowerBlackholeOps::VisitStmt_(const BufferStoreNode* op) {
   if (IsCopyOperation(op)) {
     return GenerateCopySequence(op);
   }
-  return StmtExprMutator::VisitStmt_(op);
+  // Return original statement without recursion
+  return GetRef<Stmt>(op);
 }
 
 // Modern TVM pass registration using CreatePrimFuncPass

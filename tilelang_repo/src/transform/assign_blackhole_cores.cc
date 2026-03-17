@@ -25,6 +25,8 @@
 #include "assign_blackhole_cores.h"
 
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/attrs.h>
+#include <tvm/ir/module.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
 #include <tvm/tir/stmt_functor.h>
@@ -38,6 +40,9 @@ namespace tl {
 using tir::PrimFunc;
 using tir::PrimFuncNode;
 using tir::StmtExprVisitor;
+using tvm::Integer;
+using tvm::ObjectRef;
+using tvm::DictAttrs;
 using tir::AttrStmtNode;
 using tir::IterVar;
 using tir::as_const_int;
@@ -210,7 +215,7 @@ bool AssignBlackholeCores::IsValidCoreCoord(const CoreCoord& coord) const {
 void AssignBlackholeCores::StoreAssignment(PrimFunc& func,
                                            const CoreAssignment& assignment) {
   // Get existing attributes (if any)
-  Map<String, ObjectRef> attrs;
+  tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> attrs;
   if (func->attrs.defined()) {
     attrs = func->attrs->dict;
   }

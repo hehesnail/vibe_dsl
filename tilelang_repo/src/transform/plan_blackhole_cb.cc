@@ -46,10 +46,11 @@ using tir::PrimFunc;
 using tir::PrimFuncNode;
 using tvm::DataType;
 using tvm::Integer;
-using tvm::String;
-using tvm::Map;
-using tvm::ObjectRef;
 using tvm::DictAttrs;
+using tvm::ffi::String;
+using tvm::ffi::Map;
+using tvm::ffi::Array;
+using tvm::ffi::Any;
 
 // Blackhole hardware constraints
 constexpr int kMaxCBs = 64;
@@ -88,39 +89,40 @@ PrimFunc PlanBlackholeCB::Transform(const PrimFunc& func) {
 }
 
 // Get CB requirements from function attributes
-std::vector<PlanBlackholeCB::CBRequirement> PlanBlackholeCB::GetCBRequirements(
+std::vector<CBRequirement> PlanBlackholeCB::GetCBRequirements(
     const PrimFunc& func) {
   std::vector<CBRequirement> requirements;
 
   // Read from function attributes (set by LowerBlackholeOps)
   // Attribute format: "blackhole.cb_requirements" = [cb0_info, cb1_info, ...]
-  if (auto cb_req_attr = func->GetAttr<Array<ObjectRef>>("blackhole.cb_requirements")) {
-    Array<ObjectRef> cb_reqs = cb_req_attr.value();
+  if (auto cb_req_attr = func->GetAttr<Array<Any>>("blackhole.cb_requirements")) {
+    Array<Any> cb_reqs = cb_req_attr.value();
     for (const auto& req : cb_reqs) {
-      if (const auto* map_node = req.as<MapNode>()) {
-        CBRequirement req;
-        Map<String, ObjectRef> req_map = Downcast<Map<String, ObjectRef>>(req);
+      // Try to downcast to Map - if it fails, req_map will be empty
+      Map<String, Any> req_map = req.as<Map<String, Any>>().value_or(Map<String, Any>());
+      if (!req_map.empty()) {
+        CBRequirement cb_req;
 
         if (auto name = req_map.Get("name")) {
-          req.name = Downcast<String>(name).c_str();
+          cb_req.name = Downcast<String>(name.value()).c_str();
         }
         if (auto cb_type = req_map.Get("type")) {
-          String type_str = Downcast<String>(cb_type);
-          if (type_str == "input") req.type = CBType::kInput;
-          else if (type_str == "output") req.type = CBType::kOutput;
-          else req.type = CBType::kIntermediate;
+          String type_str = Downcast<String>(cb_type.value());
+          if (type_str == "input") cb_req.type = CBType::kInput;
+          else if (type_str == "output") cb_req.type = CBType::kOutput;
+          else cb_req.type = CBType::kIntermediate;
         }
         if (auto page_size = req_map.Get("page_size")) {
-          req.page_size = Downcast<Integer>(page_size)->value;
+          cb_req.page_size = Downcast<Integer>(page_size.value())->value;
         }
         if (auto num_pages = req_map.Get("num_pages")) {
-          req.num_pages = Downcast<Integer>(num_pages)->value;
+          cb_req.num_pages = Downcast<Integer>(num_pages.value())->value;
         }
         if (auto data_format = req_map.Get("data_format")) {
-          req.data_format = Downcast<String>(data_format).c_str();
+          cb_req.data_format = Downcast<String>(data_format.value()).c_str();
         }
 
-        requirements.push_back(req);
+        requirements.push_back(cb_req);
       }
     }
   }
@@ -134,7 +136,7 @@ std::vector<PlanBlackholeCB::CBRequirement> PlanBlackholeCB::GetCBRequirements(
 }
 
 // Infer CB requirements from alloc_shared buffers
-std::vector<PlanBlackholeCB::CBRequirement> PlanBlackholeCB::InferFromAllocShared(
+std::vector<CBRequirement> PlanBlackholeCB::InferFromAllocShared(
     const PrimFunc& func) {
   std::vector<CBRequirement> requirements;
 
@@ -145,7 +147,7 @@ std::vector<PlanBlackholeCB::CBRequirement> PlanBlackholeCB::InferFromAllocShare
 
     void VisitStmt_(const tir::AllocateNode* op) final {
       // Check if this is a shared memory allocation
-      auto* ptr_type = op->buffer_var->type_annotation.as<tir::PointerTypeNode>();
+      auto* ptr_type = op->buffer_var->type_annotation.as<PointerTypeNode>();
       if (ptr_type && ptr_type->storage_scope == "shared") {
         CBRequirement req;
         req.name = op->buffer_var->name_hint;
@@ -179,7 +181,7 @@ std::vector<PlanBlackholeCB::CBRequirement> PlanBlackholeCB::InferFromAllocShare
 }
 
 // Assign CB IDs to requirements
-std::vector<PlanBlackholeCB::CBConfig> PlanBlackholeCB::AssignCBIds(
+std::vector<CBConfig> PlanBlackholeCB::AssignCBIds(
     const std::vector<CBRequirement>& requirements) {
   std::vector<CBConfig> configs;
 
@@ -256,17 +258,17 @@ bool PlanBlackholeCB::Validate(const std::vector<CBConfig>& configs) const {
 // Store CB configuration in function attributes
 void PlanBlackholeCB::StoreCBConfig(PrimFunc& func, const std::vector<CBConfig>& configs) {
   // Get existing attributes
-  Map<String, ObjectRef> attrs;
+  Map<String, Any> attrs;
   if (func->attrs.defined()) {
     attrs = func->attrs->dict;
   }
 
   // Build CB configs array
-  Array<ObjectRef> cb_configs;
+  Array<Any> cb_configs;
   int total_l1 = 0;
 
   for (const auto& config : configs) {
-    Map<String, ObjectRef> cb_attr;
+    Map<String, Any> cb_attr;
     cb_attr.Set("cb_id", Integer(config.cb_id));
     cb_attr.Set("page_size", Integer(config.page_size));
     cb_attr.Set("num_pages", Integer(config.num_pages));
