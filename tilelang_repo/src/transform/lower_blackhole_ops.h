@@ -19,81 +19,135 @@
 
 /*!
  * \file lower_blackhole_ops.h
- * \brief Lower TileLang ops to TT-Metal specific ops for Blackhole.
+ * \brief Lower TileLang high-level ops to TT-Metal builtins for Blackhole backend
  */
-#ifndef TL_TRANSFORM_LOWER_BLACKHOLE_OPS_H_
-#define TL_TRANSFORM_LOWER_BLACKHOLE_OPS_H_
 
-#include <tvm/tir/expr.h>
+#ifndef TVM_TL_LOWER_BLACKHOLE_OPS_H_
+#define TVM_TL_LOWER_BLACKHOLE_OPS_H_
+
 #include <tvm/tir/function.h>
+#include <tvm/tir/stmt.h>
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
+
+#include <map>
+#include <string>
+#include <vector>
 
 namespace tvm {
 namespace tl {
 
 /*!
- * \brief Lower TileLang operations to TT-Metal specific builtin calls.
+ * \brief CB type for allocation tracking
+ */
+enum class CBType {
+  kInput,        // CB 0-15: Input buffers (Reader -> Compute)
+  kOutput,       // CB 16-31: Output buffers (Compute -> Writer)
+  kIntermediate  // CB 32-63: Intermediate buffers
+};
+
+/*!
+ * \brief Copy direction classification
+ */
+enum class CopyDirection {
+  kDramToCB,     // DRAM -> CB (Reader)
+  kCBToDram,     // CB -> DRAM (Writer)
+  kCBToCB,       // CB -> CB (local copy)
+  kUnknown
+};
+
+/*!
+ * \brief CB requirement description for PlanBlackholeCB
+ */
+struct CBRequirement {
+  std::string name;        // Buffer name
+  CBType type;             // CB classification
+  int page_size;           // Size of each page in bytes
+  int num_pages;           // Number of pages
+  std::string data_format; // Data format string
+
+  CBRequirement()
+      : type(CBType::kIntermediate), page_size(2048), num_pages(2), data_format("Float16") {}
+};
+
+/*!
+ * \brief LowerBlackholeOps Pass
  *
- * This pass transforms:
- * - T.gemm() -> cb_wait_front + matmul_tiles + cb_push_back sequence
- * - T.copy() -> cb_reserve_back + noc_async_read/write + cb_push_back
- * - T.clear() -> tile_regs_acquire (implicitly zeros DST)
+ * This pass transforms TileLang high-level operations:
+ * - T.copy(A, B) -> CB reserve + NOC read/write + push/pop sequence
+ * - T.gemm(A, B, C) -> MM init + tile_regs_acquire + matmul_tiles + pack_tile
+ * - T.clear(C) -> tile_regs_acquire (zero DST)
  *
- * The output TIR contains only TT-Metal specific builtin calls that
- * can be directly translated to C++ code by CodeGenBlackhole.
+ * Also records CB requirements in function attributes for PlanBlackholeCB.
  */
 class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
  public:
-  /*!\brief Constructor */
   LowerBlackholeOps();
 
-  /*!
-   * \brief Transform a PrimFunc to TT-Metal specific form.
-   * \param func The input PrimFunc
-   * \return The transformed PrimFunc
-   */
+  /*! \brief Main entry point */
   tvm::tir::PrimFunc Transform(const tvm::tir::PrimFunc& func);
 
  private:
-  // Detect specific TileLang operations
-  bool IsMatmulCall(const tvm::tir::CallNode* op) const;
-  bool IsCopyOperation(const tvm::tir::BufferStoreNode* op) const;
-  bool IsClearOperation(const tvm::tir::CallNode* op) const;
-
-  // Generate TT-Metal sequences
-  tvm::tir::Stmt GenerateMatmulSequence(const tvm::tir::CallNode* op);
-  tvm::tir::Stmt GenerateCopySequence(const tvm::tir::BufferStoreNode* op);
-  tvm::tir::Stmt GenerateClearSequence(const tvm::tir::CallNode* op);
-
-  // Helper to create builtin call
-  tvm::tir::Stmt MakeTTMetalCall(const std::string& builtin_name,
-                                  const std::vector<tvm::PrimExpr>& args);
-
-  // StmtExprMutator overrides
-  tvm::tir::Stmt VisitStmt_(const tvm::tir::EvaluateNode* op) override;
-  tvm::tir::Stmt VisitStmt_(const tvm::tir::BufferStoreNode* op) override;
-
-  // Extract CB configuration from function attributes
+  /*! \brief CB configuration from function attributes */
   struct CBConfig {
     int in0_id = 0;
     int in1_id = 1;
     int out_id = 16;
     int num_k_tiles = 1;
   };
+
+  /*! \brief Get CB configuration from function attributes */
   CBConfig GetCBConfig() const;
 
-  // Current function context
-  mutable tvm::tir::PrimFunc current_func_;
+  /*! \brief Allocate a CB ID for a buffer */
+  int AllocateCBId(const tvm::tir::Buffer& buffer, CBType type);
+
+  /*! \brief Store CB requirements in function attributes */
+  void StoreCBRequirements(tvm::tir::PrimFunc& func);
+
+  /*! \brief Detect matmul call using Op comparison (not string matching) */
+  bool IsMatmulCall(const tvm::tir::CallNode* op) const;
+
+  /*! \brief Detect clear operation using Op comparison */
+  bool IsClearOperation(const tvm::tir::CallNode* op) const;
+
+  /*! \brief Detect copy operation by buffer pattern */
+  bool IsCopyOperation(const tvm::tir::BufferStoreNode* op) const;
+
+  /*! \brief Determine copy direction using buffer scopes */
+  CopyDirection GetCopyDirection(const tvm::tir::BufferStoreNode* op) const;
+
+  /*! \brief Generate matmul builtin sequence */
+  tvm::tir::Stmt GenerateMatmulSequence(const tvm::tir::CallNode* op);
+
+  /*! \brief Generate copy builtin sequence (DRAM->CB, CB->DRAM, CB->CB) */
+  tvm::tir::Stmt GenerateCopySequence(const tvm::tir::BufferStoreNode* op);
+
+  /*! \brief Generate clear builtin sequence */
+  tvm::tir::Stmt GenerateClearSequence(const tvm::tir::CallNode* op);
+
+  // StmtExprMutator overrides
+  tvm::tir::Stmt VisitStmt_(const tvm::tir::EvaluateNode* op) override;
+  tvm::tir::Stmt VisitStmt_(const tvm::tir::BufferStoreNode* op) override;
+
+  tvm::tir::PrimFunc current_func_;
+  std::map<tvm::tir::Buffer, int, std::less<>> buffer_to_cb_;
+  std::vector<CBRequirement> cb_requirements_;
+
+  // CB allocation counters
+  int next_input_cb_ = 0;        // Start at 0
+  int next_output_cb_ = 16;      // Start at 16
+  int next_intermediate_cb_ = 32; // Start at 32
+  int next_cb_id_;
 };
 
 /*!
- * \brief Create the LowerBlackholeOps pass.
- * \return The pass object
+ * \brief Create the LowerBlackholeOps pass
+ * \return The pass function
  */
 tvm::tir::transform::Pass LowerBlackholeOpsPass();
 
 }  // namespace tl
 }  // namespace tvm
 
-#endif  // TL_TRANSFORM_LOWER_BLACKHOLE_OPS_H_
+#endif  // TVM_TL_LOWER_BLACKHOLE_OPS_H_

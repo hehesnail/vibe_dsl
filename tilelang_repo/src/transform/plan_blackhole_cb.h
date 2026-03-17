@@ -20,6 +20,12 @@
 /*!
  * \file plan_blackhole_cb.h
  * \brief Plan Circular Buffer (CB) allocation for Blackhole backend
+ *
+ * MVP Implementation (Phase 1):
+ * - Read CB requirements from function attributes (written by LowerBlackholeOps)
+ * - Validate constraints (CB count <= 64, total L1 <= 1.5MB)
+ * - Assign CB IDs following TT-Metal convention: 0-15 input, 16-31 output
+ * - Store CB configuration in function attributes
  */
 
 #ifndef TVM_TL_PLAN_BLACKHOLE_CB_H_
@@ -30,52 +36,97 @@
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
+#include <string>
 #include <vector>
 
 namespace tvm {
 namespace tl {
 
 /*!
- * \brief CB configuration for a shared buffer
+ * \brief CB type classification
+ */
+enum class CBType {
+  kInput,        // CB 0-15: Input buffers (Reader -> Compute)
+  kOutput,       // CB 16-31: Output buffers (Compute -> Writer)
+  kIntermediate  // CB 32-63: Intermediate buffers
+};
+
+/*!
+ * \brief CB requirement description (input to planning)
+ */
+struct CBRequirement {
+  std::string name;        // Buffer name
+  CBType type;             // CB classification
+  int page_size;           // Size of each page in bytes
+  int num_pages;           // Number of pages (for double buffering)
+  std::string data_format; // Data format string (e.g., "Float16", "Float32")
+
+  CBRequirement()
+      : type(CBType::kIntermediate), page_size(2048), num_pages(2), data_format("Float16") {}
+};
+
+/*!
+ * \brief CB configuration result (output from planning)
  */
 struct CBConfig {
-  int cb_id;           // CB identifier (0-63)
-  int num_pages;       // Number of pages (for double buffering)
-  int page_size;       // Size of each page in bytes
-  int total_size;      // Total size = num_pages * page_size
-  tvm::DataType dtype;      // Data type of buffer elements
+  std::string name;        // Buffer name
+  int cb_id;               // Assigned CB identifier (0-63)
+  int page_size;           // Size of each page in bytes
+  int num_pages;           // Number of pages
+  int total_size;          // Total size = num_pages * page_size
+  std::string data_format; // Data format string
 
-  CBConfig() : cb_id(0), num_pages(1), page_size(0), total_size(0),
-               dtype(tvm::DataType::Float(32)) {}
+  CBConfig()
+      : cb_id(0), page_size(2048), num_pages(2), total_size(4096), data_format("Float16") {}
 };
 
 /*!
  * \brief PlanBlackholeCB Pass
  *
- * This pass analyzes T.alloc_shared statements and plans CB allocation
+ * This pass analyzes CB requirements and plans CB allocation
  * respecting Blackhole constraints:
  * - Maximum 64 CBs (CB 0-63)
  * - Maximum 1.5MB L1 memory per core
+ *
+ * CB ID allocation convention (TT-Metal compatible):
+ * - CB 0-15: Input buffers (Reader -> Compute)
+ * - CB 16-31: Output buffers (Compute -> Writer)
+ * - CB 32-63: Intermediate / overflow
  */
 class PlanBlackholeCB : public tvm::tir::StmtExprMutator {
  public:
   /*! \brief Main entry point */
   tvm::tir::PrimFunc Transform(const tvm::tir::PrimFunc& func);
 
-  /*! \brief Get CB configurations */
+  /*! \brief Get CB configurations (after Transform) */
   std::vector<CBConfig> GetCBConfigs() const { return cb_configs_; }
 
-  /*! \brief Validate CB allocation constraints */
-  bool Validate() const;
-
-  /*! \brief Calculate page size for a tile */
-  static int CalculatePageSize(int rows, int cols, int dtype_size);
-
   /*! \brief Blackhole CB constraints */
-  static constexpr int kMaxCBSize = 1572864;   // 1.5MB
+  static constexpr int kMaxL1Size = 1572864;   // 1.5MB = 1,572,864 bytes
   static constexpr int kMaxCBCount = 64;       // CB 0-63
 
+  // CB ID allocation ranges
+  static constexpr int kInputCBStart = 0;
+  static constexpr int kInputCBEnd = 15;
+  static constexpr int kOutputCBStart = 16;
+  static constexpr int kOutputCBEnd = 31;
+
  private:
+  /*! \brief Get CB requirements from function attributes */
+  std::vector<CBRequirement> GetCBRequirements(const tvm::tir::PrimFunc& func);
+
+  /*! \brief Infer CB requirements from alloc_shared buffers */
+  std::vector<CBRequirement> InferFromAllocShared(const tvm::tir::PrimFunc& func);
+
+  /*! \brief Assign CB IDs to requirements */
+  std::vector<CBConfig> AssignCBIds(const std::vector<CBRequirement>& requirements);
+
+  /*! \brief Validate CB allocation constraints */
+  bool Validate(const std::vector<CBConfig>& configs) const;
+
+  /*! \brief Store CB configuration in function attributes */
+  void StoreCBConfig(tvm::tir::PrimFunc& func, const std::vector<CBConfig>& configs);
+
   std::vector<CBConfig> cb_configs_;
 };
 
@@ -85,7 +136,7 @@ class PlanBlackholeCB : public tvm::tir::StmtExprMutator {
  */
 tir::transform::Pass PlanBlackholeCBPass();
 
-} // namespace tl
-} // namespace tvm
+}  // namespace tl
+}  // namespace tvm
 
-#endif // TVM_TL_PLAN_BLACKHOLE_CB_H_
+#endif  // TVM_TL_PLAN_BLACKHOLE_CB_H_

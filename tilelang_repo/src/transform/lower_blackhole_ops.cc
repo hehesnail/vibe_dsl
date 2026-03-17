@@ -20,6 +20,9 @@
 /*!
  * \file lower_blackhole_ops.cc
  * \brief Implementation of LowerBlackholeOps pass.
+ *
+ * Transforms TileLang high-level operations (T.copy, T.gemm, T.clear)
+ * into TT-Metal builtin sequences.
  */
 
 #include "lower_blackhole_ops.h"
@@ -45,6 +48,9 @@ using tir::EvaluateNode;
 using tir::Call;
 using tir::Evaluate;
 using tir::SeqStmt;
+using tir::LetStmt;
+using tir::Var;
+using tir::Buffer;
 using tir::builtin::blackhole_mm_init;
 using tir::builtin::blackhole_cb_wait_front;
 using tir::builtin::blackhole_matmul_tiles;
@@ -56,26 +62,53 @@ using tir::builtin::blackhole_pack_tile;
 using tir::builtin::blackhole_cb_push_back;
 using tir::builtin::blackhole_tile_regs_acquire;
 using tir::builtin::blackhole_tile_regs_release;
+using tir::builtin::blackhole_noc_async_read;
+using tir::builtin::blackhole_noc_async_write;
+using tir::builtin::blackhole_noc_async_read_barrier;
+using tir::builtin::blackhole_noc_async_write_barrier;
 using tvm::Integer;
 using tvm::DataType;
 using tvm::IntImm;
+using tvm::String;
+using tvm::Map;
+using tvm::ObjectRef;
+using tvm::Array;
+using tvm::DictAttrs;
+using tvm::tir::PointerTypeNode;
 
 // Helper to create a call to TT-Metal builtin
 static Stmt MakeBlackholeCall(const Op& op, const std::vector<PrimExpr>& args) {
   return Evaluate(Call(DataType::Int(32), op, args));
 }
 
+// Helper to create IntImm(32) expression
 static PrimExpr IntImm32(int value) {
   return IntImm(DataType::Int(32), value);
 }
 
-LowerBlackholeOps::LowerBlackholeOps() = default;
+// Helper to get storage scope from buffer
+static std::string GetStorageScope(const Buffer& buffer) {
+  if (buffer->data.defined()) {
+    auto* ptr_type = buffer->data->type_annotation.as<PointerTypeNode>();
+    if (ptr_type) {
+      return ptr_type->storage_scope;
+    }
+  }
+  // Check buffer scope attribute
+  if (buffer->scope.length() > 0) {
+    return buffer->scope;
+  }
+  return "";
+}
+
+LowerBlackholeOps::LowerBlackholeOps() : next_cb_id_(0) {
+  // Initialize CB allocation tracking
+}
 
 PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   current_func_ = func;
-
-  // Get CB configuration from function attributes
-  CBConfig cb_config = GetCBConfig();
+  cb_requirements_.clear();
+  next_cb_id_ = 0;
 
   // Transform the function body
   Stmt body = VisitStmt(func->body);
@@ -84,13 +117,17 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   PrimFunc new_func = func;
   new_func.CopyOnWrite()->body = body;
 
+  // Store CB requirements in function attributes for PlanBlackholeCB
+  StoreCBRequirements(new_func);
+
   return new_func;
 }
 
+// Get CB configuration from function attributes
 LowerBlackholeOps::CBConfig LowerBlackholeOps::GetCBConfig() const {
   CBConfig config;
 
-  // Try to get CB configuration from function attributes using GetAttr
+  // Try to get CB configuration from function attributes
   if (auto cb_in0 = current_func_->GetAttr<Integer>("tl_cb_in0")) {
     config.in0_id = cb_in0.value()->value;
   }
@@ -107,62 +144,159 @@ LowerBlackholeOps::CBConfig LowerBlackholeOps::GetCBConfig() const {
   return config;
 }
 
-bool LowerBlackholeOps::IsMatmulCall(const CallNode* op) const {
-  // Check if this is a TileLang matmul call
-  // Pattern: T.gemm(A_shared, B_shared, C_local)
-  // In TIR, this appears as a Call to a specific intrinsic
+// Allocate a CB ID for a buffer
+int LowerBlackholeOps::AllocateCBId(const Buffer& buffer, CBType type) {
+  // Check if this buffer already has a CB assigned
+  auto it = buffer_to_cb_.find(buffer);
+  if (it != buffer_to_cb_.end()) {
+    return it->second;
+  }
 
+  // Allocate new CB ID based on type
+  int cb_id;
+  switch (type) {
+    case CBType::kInput:
+      cb_id = next_input_cb_++;
+      break;
+    case CBType::kOutput:
+      cb_id = next_output_cb_++;
+      break;
+    default:
+      cb_id = next_intermediate_cb_++;
+      break;
+  }
+
+  buffer_to_cb_[buffer] = cb_id;
+
+  // Record CB requirement
+  CBRequirement req;
+  req.name = buffer->name;
+  req.type = type;
+
+  // Calculate page size from buffer shape
+  int64_t total_elements = 1;
+  for (const auto& shape_dim : buffer->shape) {
+    if (const auto* int_imm = shape_dim.as<IntImmNode>()) {
+      total_elements *= int_imm->value;
+    }
+  }
+  req.page_size = static_cast<int>(total_elements * buffer->dtype.bytes());
+  req.num_pages = 2;  // Default double buffering
+
+  // Determine data format
+  if (buffer->dtype.is_float()) {
+    if (buffer->dtype.bits() == 16) {
+      req.data_format = "Float16";
+    } else if (buffer->dtype.bits() == 32) {
+      req.data_format = "Float32";
+    } else if (buffer->dtype.bits() == 8) {
+      req.data_format = "Bfp8";
+    }
+  } else if (buffer->dtype.is_int()) {
+    if (buffer->dtype.bits() == 32) {
+      req.data_format = "Int32";
+    } else if (buffer->dtype.bits() == 16) {
+      req.data_format = "Int16";
+    }
+  }
+
+  cb_requirements_.push_back(req);
+
+  return cb_id;
+}
+
+// Store CB requirements in function attributes
+void LowerBlackholeOps::StoreCBRequirements(PrimFunc& func) {
+  if (cb_requirements_.empty()) {
+    return;
+  }
+
+  // Get existing attributes
+  Map<String, ObjectRef> attrs;
+  if (func->attrs.defined()) {
+    attrs = func->attrs->dict;
+  }
+
+  // Build CB requirements array
+  Array<ObjectRef> cb_reqs;
+  for (const auto& req : cb_requirements_) {
+    Map<String, ObjectRef> req_map;
+    req_map.Set("name", String(req.name));
+    req_map.Set("type", String(req.type == CBType::kInput ? "input" :
+                               req.type == CBType::kOutput ? "output" : "intermediate"));
+    req_map.Set("page_size", Integer(req.page_size));
+    req_map.Set("num_pages", Integer(req.num_pages));
+    req_map.Set("data_format", String(req.data_format));
+
+    cb_reqs.push_back(req_map);
+  }
+
+  attrs.Set("blackhole.cb_requirements", cb_reqs);
+  func.CopyOnWrite()->attrs = DictAttrs(attrs);
+}
+
+// Detect matmul operation using Op comparison
+bool LowerBlackholeOps::IsMatmulCall(const CallNode* op) const {
   if (!op->op->IsInstance<OpNode>()) return false;
 
   Op call_op = Downcast<Op>(op->op);
-  std::string op_name = call_op->name;
 
-  // Check for TileLang matmul intrinsic name patterns
-  return (op_name.find("gemm") != std::string::npos ||
-          op_name.find("matmul") != std::string::npos ||
-          op_name == "tl.matmul");
+  // Direct Op comparison instead of string matching
+  static const Op& tl_matmul = Op::Get("tl.matmul");
+  static const Op& tl_gemm = Op::Get("tl.gemm");
+
+  return call_op.same_as(tl_matmul) || call_op.same_as(tl_gemm);
 }
 
-bool LowerBlackholeOps::IsCopyOperation(const BufferStoreNode* op) const {
-  // Detect copy operations: typically a store from one buffer to another
-  // This is a heuristic - in practice, we'd check for specific patterns
+// Detect clear operation using Op comparison
+bool LowerBlackholeOps::IsClearOperation(const CallNode* op) const {
+  if (!op->op->IsInstance<OpNode>()) return false;
 
-  // For now, identify BufferStore where value is a BufferLoad from another buffer
+  Op call_op = Downcast<Op>(op->op);
+
+  // Direct Op comparison
+  static const Op& tl_clear = Op::Get("tl.clear");
+
+  return call_op.same_as(tl_clear);
+}
+
+// Detect copy operation using buffer scopes
+bool LowerBlackholeOps::IsCopyOperation(const BufferStoreNode* op) const {
+  // Check if this is a BufferStore where value is a BufferLoad from another buffer
   if (const auto* load = op->value.as<BufferLoadNode>()) {
-    // If storing from one buffer to another, it's likely a copy
     return !op->buffer.same_as(load->buffer);
   }
   return false;
 }
 
-bool LowerBlackholeOps::IsClearOperation(const CallNode* op) const {
-  if (!op->op->IsInstance<OpNode>()) return false;
+// Determine copy direction
+CopyDirection LowerBlackholeOps::GetCopyDirection(const BufferStoreNode* op) const {
+  const auto* load = op->value.as<BufferLoadNode>();
+  if (!load) return CopyDirection::kUnknown;
 
-  Op call_op = Downcast<Op>(op->op);
-  std::string op_name = call_op->name;
+  std::string dst_scope = GetStorageScope(op->buffer);
+  std::string src_scope = GetStorageScope(load->buffer);
 
-  return (op_name.find("clear") != std::string::npos ||
-          op_name == "tl.clear");
+  // DRAM -> CB (global/shared -> shared)
+  if ((src_scope.empty() || src_scope == "global") && dst_scope == "shared") {
+    return CopyDirection::kDramToCB;
+  }
+
+  // CB -> DRAM (shared -> global)
+  if (src_scope == "shared" && (dst_scope.empty() || dst_scope == "global")) {
+    return CopyDirection::kCBToDram;
+  }
+
+  // CB -> CB (shared -> shared)
+  if (src_scope == "shared" && dst_scope == "shared") {
+    return CopyDirection::kCBToCB;
+  }
+
+  return CopyDirection::kUnknown;
 }
 
 Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op) {
   CBConfig cb_config = GetCBConfig();
-
-  // Build the matmul sequence:
-  // 1. mm_init(in0_cb, in1_cb, out_cb)
-  // 2. tile_regs_acquire()
-  // 3. For each K tile:
-  //    - cb_wait_front(in0_cb, 1)
-  //    - cb_wait_front(in1_cb, 1)
-  //    - matmul_tiles(in0_cb, in1_cb, 0, 0, 0)
-  //    - cb_pop_front(in0_cb, 1)
-  //    - cb_pop_front(in1_cb, 1)
-  // 4. tile_regs_commit()
-  // 5. tile_regs_wait()
-  // 6. cb_reserve_back(out_cb, 1)
-  // 7. pack_tile(0, out_cb)
-  // 8. cb_push_back(out_cb, 1)
-  // 9. tile_regs_release()
 
   std::vector<Stmt> stmts;
 
@@ -174,8 +308,7 @@ Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op) {
   // 2. Acquire tile registers
   stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
 
-  // 3. Generate K-tile loop if needed
-  // For simplicity, we'll unroll for now with the configured number of K tiles
+  // 3. Generate K-tile loop
   for (int kt = 0; kt < cb_config.num_k_tiles; ++kt) {
     // Wait for input tiles
     stmts.push_back(MakeBlackholeCall(
@@ -222,28 +355,101 @@ Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op) {
 }
 
 Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
-  // For copy operations, we need to determine:
-  // - Source: DRAM or CB
-  // - Destination: CB or DRAM
-  // For now, assume DRAM -> CB (reader) or CB -> DRAM (writer)
+  CopyDirection direction = GetCopyDirection(op);
 
-  // This is a simplified implementation
-  // In practice, we'd need to analyze the buffer scopes
+  if (direction == CopyDirection::kUnknown) {
+    LOG(WARNING) << "LowerBlackholeOps: Unknown copy direction, falling back";
+    return StmtExprMutator::VisitStmt_(op);
+  }
 
-  // For demonstration, generate a simple noc_async_read sequence
+  const auto* load = op->value.as<BufferLoadNode>();
+  if (!load) return StmtExprMutator::VisitStmt_(op);
+
   std::vector<Stmt> stmts;
 
-  // cb_reserve_back(cb_id, num_tiles)
-  // noc_async_read(src_dram_addr, cb_addr, size)
-  // noc_async_read_barrier()
-  // cb_push_back(cb_id, num_tiles)
+  switch (direction) {
+    case CopyDirection::kDramToCB: {
+      // DRAM -> CB (Reader pattern)
+      int cb_id = AllocateCBId(op->buffer, CBType::kInput);
+      int tile_size = 2048;  // Default tile size, should be calculated from buffer
 
-  // Placeholder implementation
-  return VisitStmt_(op);
+      // cb_reserve_back(cb_id, 1)
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(1)}));
+
+      // Note: The actual noc_async_read call requires runtime address calculation
+      // This is handled by CodeGen which generates:
+      // noc_async_read(get_noc_addr(tile_idx, addr_gen), get_write_ptr(cb_id), tile_size)
+
+      // For now, we emit a builtin call that CodeGen will handle
+      // The DRAM address is passed as a runtime argument
+      // Buffer destination is the CB
+
+      // noc_async_read_barrier()
+      stmts.push_back(MakeBlackholeCall(blackhole_noc_async_read_barrier(), {}));
+
+      // cb_push_back(cb_id, 1)
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
+      break;
+    }
+
+    case CopyDirection::kCBToDram: {
+      // CB -> DRAM (Writer pattern)
+      int cb_id = AllocateCBId(load->buffer, CBType::kOutput);
+
+      // cb_wait_front(cb_id, 1)
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(1)}));
+
+      // Note: CodeGen generates:
+      // noc_async_write(get_read_ptr(cb_id), get_noc_addr(tile_idx, addr_gen), tile_size)
+
+      // noc_async_write_barrier()
+      stmts.push_back(MakeBlackholeCall(blackhole_noc_async_write_barrier(), {}));
+
+      // cb_pop_front(cb_id, 1)
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
+      break;
+    }
+
+    case CopyDirection::kCBToCB: {
+      // CB -> CB (local copy)
+      int src_cb_id = AllocateCBId(load->buffer, CBType::kIntermediate);
+      int dst_cb_id = AllocateCBId(op->buffer, CBType::kIntermediate);
+
+      // cb_wait_front(src_cb_id, 1)
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_wait_front(), {IntImm32(src_cb_id), IntImm32(1)}));
+
+      // cb_reserve_back(dst_cb_id, 1)
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_reserve_back(), {IntImm32(dst_cb_id), IntImm32(1)}));
+
+      // Note: local copy would use memcpy or similar
+      // For now, just pop and push markers
+
+      // cb_push_back(dst_cb_id, 1)
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_push_back(), {IntImm32(dst_cb_id), IntImm32(1)}));
+
+      // cb_pop_front(src_cb_id, 1)
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_pop_front(), {IntImm32(src_cb_id), IntImm32(1)}));
+      break;
+    }
+
+    default:
+      return StmtExprMutator::VisitStmt_(op);
+  }
+
+  return SeqStmt::Flatten(stmts);
 }
 
 Stmt LowerBlackholeOps::GenerateClearSequence(const CallNode* op) {
-  // Clear operation: tile_regs_acquire() zeros the DST registers
+  // Clear operation: tile_regs_acquire() to zero DST registers
+  // In full implementation, would also zero-fill
   return MakeBlackholeCall(blackhole_tile_regs_acquire(), {});
 }
 

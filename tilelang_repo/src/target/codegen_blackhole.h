@@ -53,18 +53,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   void AddFunction(const tvm::GlobalVar &gvar,
                    const tvm::tir::PrimFunc &f) override;
 
-  // Generate TT-Metal kernel_main entry point
-  void GenerateKernelMain(const tvm::GlobalVar &gvar,
-                          const tvm::tir::PrimFunc &f);
-
-  // Detect if this is a simple copy kernel (for optimized code generation)
-  bool DetectSimpleCopyKernel(const tvm::tir::PrimFunc &f);
-
-  // Generate optimized copy kernel using CB + NOC
-  void GenerateCopyKernelMain(const tvm::tir::PrimFunc &f,
-                              const std::string &func_name);
-
-  // Generate generic kernel (fallback)
+  // Generate generic kernel_main entry point (IR-driven, no hardcoded paths)
   void GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
                                  const std::string &func_name);
 
@@ -159,52 +148,12 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintSemWait(int sem_id, int value);
   void PrintSemPost(int sem_id);
 
- public:
-  // ==========================================================================
-  // Copy Kernel Generation (Phase 1)
-  // ==========================================================================
-
-  /*!\brief Generate a simple copy kernel for single-core execution
-   *
-   * Generates both reader and writer kernels that run sequentially
-   * on the same core, using a circular buffer for data transfer.
-   *
-   * \param func_name Name of the generated kernel
-   * \param src_buf Source buffer name
-   * \param dst_buf Destination buffer name
-   * \param num_tiles Number of tiles to copy
-   * \param tile_size_bytes Size of each tile in bytes
-   * \return Generated C++ code string
-   */
-  std::string GenerateSimpleCopyKernel(const std::string& func_name,
-                                       const std::string& src_buf,
-                                       const std::string& dst_buf,
-                                       int num_tiles,
-                                       int tile_size_bytes = 2048);
-
-  /*!\brief Generate reader kernel (BRISC)
-   *
-   * Reads data from DRAM into circular buffer.
-   */
-  std::string GenerateReaderKernel(const std::string& func_name,
-                                   const std::string& src_buf,
-                                   int cb_id,
-                                   int num_tiles,
-                                   int tile_size_bytes);
-
-  /*!\brief Generate writer kernel (NCRISC)
-   *
-   * Writes data from circular buffer to DRAM.
-   */
-  std::string GenerateWriterKernel(const std::string& func_name,
-                                   const std::string& dst_buf,
-                                   int cb_id,
-                                   int num_tiles,
-                                   int tile_size_bytes);
-
  private:
-  // Current core type being generated
-  CoreType core_type_{CoreType::kUnknown};
+  // Per-instance header emission flag (replaces static variable)
+  bool headers_emitted_{false};
+
+  // Current core type being generated (from IR attrs, not function name)
+  CoreType core_type_{CoreType::kBRISC};  // Default to BRISC for TT-Sim compatibility
 
   // TT-Metal specific state
   bool need_tt_metal_h_{false};

@@ -209,19 +209,21 @@ bool AssignBlackholeCores::IsValidCoreCoord(const CoreCoord& coord) const {
 // Store assignment in function attributes
 void AssignBlackholeCores::StoreAssignment(PrimFunc& func,
                                            const CoreAssignment& assignment) {
-  // Create a map with core assignment values
-  ffi::Map<ffi::String, ffi::ObjectRef> new_attrs;
+  // Get existing attributes (if any)
+  Map<String, ObjectRef> attrs;
+  if (func->attrs.defined()) {
+    attrs = func->attrs->dict;
+  }
 
-  // Store core assignment values
-  new_attrs.Set("tl_blackhole_grid_x", Integer(assignment.grid_x));
-  new_attrs.Set("tl_blackhole_grid_y", Integer(assignment.grid_y));
-  new_attrs.Set("tl_blackhole_core_grid_x", Integer(assignment.core_grid_x));
-  new_attrs.Set("tl_blackhole_core_grid_y", Integer(assignment.core_grid_y));
-  new_attrs.Set("tl_blackhole_work_per_core", Integer(assignment.work_per_core));
-  new_attrs.Set("tl_blackhole_cores_needed", Integer(assignment.cores_needed));
+  // Store core assignment values (merge with existing)
+  attrs.Set("blackhole.grid_shape", Integer(assignment.grid_x * assignment.grid_y));
+  attrs.Set("blackhole.grid_x", Integer(assignment.grid_x));
+  attrs.Set("blackhole.grid_y", Integer(assignment.grid_y));
+  attrs.Set("blackhole.cores_needed", Integer(assignment.cores_needed));
+  attrs.Set("blackhole.work_per_core", Integer(assignment.work_per_core));
 
   // Update function attributes
-  func.CopyOnWrite()->attrs = DictAttrs(new_attrs);
+  func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 
 // Modern TVM pass registration

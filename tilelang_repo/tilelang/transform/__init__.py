@@ -597,3 +597,42 @@ def LowerLDGSTG():
         The result pass
     """
     return _ffi_api.LowerLDGSTG()  # type: ignore
+
+
+def LowerBlackholeOps():
+    """Lower TileLang high-level operations to TT-Metal builtins for Blackhole backend.
+
+    Transforms T.copy, T.gemm, T.clear into TT-Metal CB/NOC builtin sequences.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.LowerBlackholeOps()  # type: ignore
+
+
+def PlanBlackholeCB():
+    """Plan Circular Buffer (CB) allocation for Blackhole backend.
+
+    Analyzes CB usage from LowerBlackholeOps output and assigns CB IDs.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.PlanBlackholeCB()  # type: ignore
+
+
+def AssignBlackholeCores():
+    """Assign Tensix cores for Blackhole backend.
+
+    Maps logical grid coordinates to physical Tensix core coordinates.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.AssignBlackholeCores()  # type: ignore
