@@ -20,21 +20,43 @@
 **目标**: Copy Kernel 代码生成 (DSL → TT-Metal C++ kernel_main)
 **更新日期**: 2026-03-17
 
-### 本次更新 (2026-03-17)
+### 本次更新 (2026-03-17 晚期)
 
 **完成的工作**:
 1. ✅ 修复 CodeGen 处理 EvaluateNode - 生成 CB/NOC builtin 调用
 2. ✅ 修复 buffer pointer 类型 - 从 `handle*` 改为 `void*`
 3. ✅ 修复 BuildTileLangBlackholeWithoutHost - 处理无 calling_conv 的函数
 4. ✅ 添加 LowerOpaqueBlock 到 lowering pipeline - 处理 BlockRealize 节点
+5. ✅ 添加 `codegen_mod` 到 `CompiledArtifact` - 支持 Blackhole 模块执行
+6. ✅ E2E 测试验证 - DSL → CodeGen → BlackholeModule 流程打通
 
-**当前状态**: Copy Kernel 可以生成完整的 TT-Metal C++ 代码，包含:
-- `kernel_main()` 入口函数
-- 参数加载代码 (`get_arg_val<uint32_t>`)
-- CB 操作 (`cb_reserve_back`, `cb_push_back`, `cb_wait_front`, `cb_pop_front`)
-- NOC Barrier 操作 (`noc_async_read_barrier`, `noc_async_write_barrier`)
+**当前状态**: Copy Kernel Pipeline 已打通：
+```
+DSL → Lowering → Blackhole Passes → CodeGen → BlackholeModule (可获取执行函数)
+```
 
-**下一步**: P1 - 完善 Copy Kernel 的 NOC 读写调用，TT-Sim E2E 验证
+**生成的 Kernel 代码示例** (1043 bytes):
+```cpp
+void kernel_main() {
+  // 参数加载 (get_arg_val<uint32_t>)
+  void* A_handle = (void*)(uintptr_t)A_handle_addr;
+  void* B_handle = (void*)(uintptr_t)B_handle_addr;
+
+  // CB 操作序列
+  for (int32_t i = 0; i < 64; ++i) {
+    cb_reserve_back(0, 1);
+    noc_async_read_barrier();
+    cb_push_back(0, 1);
+  }
+  for (int32_t i_1 = 0; i_1 < 64; ++i_1) {
+    cb_wait_front(0, 1);
+    noc_async_write_barrier();
+    cb_pop_front(0, 1);
+  }
+}
+```
+
+**下一步**: P1 - 完善 NOC 读写调用，TT-Sim 执行与结果对比
 
 ### 2026-03-17 设计审查结论
 
@@ -112,7 +134,9 @@ lower.py 未接入任何 Blackhole Pass，CodeGen 存在硬编码路径。
 
 ## 本次更新完成的工作 (2026-03-17)
 
-### P0: CodeGen 修复 ✅
+### P0: CodeGen 修复与 E2E 流程打通 ✅
+
+修复了 design_review.md 中识别的阻塞性问题，并打通了从 DSL 到 BlackholeModule 的完整流程：
 
 修复了 design_review.md 中识别的阻塞性问题，Copy Kernel 现在可以生成完整的 TT-Metal C++ 代码：
 
@@ -132,6 +156,14 @@ lower.py 未接入任何 Blackhole Pass，CodeGen 存在硬编码路径。
 4. **添加 LowerOpaqueBlock 到 pipeline** (`tilelang/engine/lower.py`)
    - 在 Blackhole lowering 流程中添加 `LowerOpaqueBlock()` 和 `Simplify()`
    - 将 `BlockRealize` 节点 lower 为 CodeGen 可处理的语句
+
+5. **添加 codegen_mod 到 CompiledArtifact** (`tilelang/engine/param.py`, `lower.py`)
+   - 新增 `codegen_mod` 字段保存 Blackhole 执行模块
+   - 支持通过 `artifact.codegen_mod.get_function()` 获取可执行函数
+
+6. **E2E 流程验证** (测试脚本)
+   - 验证 DSL → Lowering → CodeGen → BlackholeModule 完整流程
+   - 确认可以获取执行函数，准备进行 TT-Sim 执行
 
 ### 生成的 Kernel 示例
 
