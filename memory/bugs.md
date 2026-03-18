@@ -89,3 +89,18 @@
   - 应先做函数体级别的 copy 语义识别，再发射整 tile / dataflow 级 builtin
   - codegen 应消费这种整段 copy lowering 结果，而不是依赖 one-tile 特例
 - **当前状态**: 未解决。已拆掉 codegen 对固定 runtime arg 槽位的假设，但 copy 的整函数体语义分析仍需继续推进。
+
+### `CodeGenBlackhole` 当前仍把 `blockIdx.x/y` 绑定成常量 0
+
+- **时间**: 2026-03-18
+- **问题**: 当前 `CodeGenBlackhole::BindThreadIndex()` 会把 `blockIdx.x` / `blockIdx.y` 直接映射成常量 `0 /* core_x/core_y */`。
+- **现象**:
+  - 对 `with T.Kernel(grid_x, grid_y)` 风格的 multi-tile single-core copy，如果 tile 语义依赖 `bx/by`，生成代码里这些 tile 坐标会被常量化
+  - 这会掩盖或破坏多 tile copy 的真实 tile index 语义
+- **当前处理原则**:
+  - Stage 2A copy 测试先使用单 kernel + 显式 serial tile loop 的 `T.copy(global -> shared -> global)` 样例
+  - 让 tile loop 以普通 TIR `for` 变量的形式保留下来，先验证 `LowerTileOp 后 staged loop -> Blackhole builtin -> codegen` 这条主链
+- **后续处理方向**:
+  - 不应长期依赖 `blockIdx` 常量化
+  - 后续需要把单核 tile 遍历语义和 host/runtime scheduling 的边界重新收口，避免 device code 在 tile index 上失真
+- **当前状态**: 未解决。当前 staged copy MVP 通过显式 serial tile loop 绕开该限制。

@@ -191,6 +191,14 @@
   - 生成源码是否仍在循环里反复访问同一 tile
   - codegen 是否仍偷吃固定 runtime arg 槽位命名
 - 如果 Blackhole device code 依赖 `blackhole.runtime_args`，codegen 应直接消费 pass 产出的 schema 和 buffer 绑定，而不是固定假设某个 target mode 对应固定参数位。参数槽位顺序、名字、buffer 对应关系都应来自 IR attrs / schema，而不是写死在 builtin printer 里。
+- 对 Blackhole copy，要先确认 TileLang pipeline 的真实断点：`LowerTileOp()` 先于 `LowerBlackholeOps()` 执行，所以 target pass 通常已经看不到原始 `tl.copy` 节点。更稳的做法是：
+  - 先把 copy 主验收对象定义成 TileLang 原始 `T.copy(global -> shared -> global)` 语义
+  - 再让 `LowerBlackholeOps` 去识别 `LowerTileOp` 之后留下来的 staged copy loop
+  - 而不是继续围绕 `global -> global` 标量赋值循环做 target-specific 猜测
+- 对这种 post-`LowerTileOp` staged copy lowering，更稳的回归测试是：
+  - 直接在 DSL 样例里写显式 `T.copy(global -> shared)` 和 `T.copy(shared -> global)`
+  - 然后检查 pass 后是否只剩一组 tile/dataflow builtin，而不是 vectorized 元素循环里重复发射 builtin
+- 真执行测试需要把编译链和环境问题分层处理。对 Blackhole，`TT_METAL_RUNTIME_ROOT` 缺失时 runner 和 direct-call 都会在 Metal 初始化前失败；这类情况应该在测试前置检查里显式 skip，而不是记成 codegen/pass 回归。
 
 ## 建议的开发顺序
 

@@ -27,12 +27,27 @@ from tilelang.jit import compile as tl_compile
 from tvm.target import Target
 
 
-def check_blackhole_requirements():
-    """Check if Blackhole testing requirements are met."""
+def check_blackhole_codegen_requirements():
+    """Check if Blackhole compilation requirements are met."""
     tilelang_home = os.environ.get("TILELANG_HOME")
-    runner_build_dir = os.environ.get("TILELANG_BLACKHOLE_RUNNER_BUILD_DIR")
     if not tilelang_home:
         return False, "TILELANG_HOME not set"
+    return True, "OK"
+
+
+def check_blackhole_execution_requirements():
+    """Check if Blackhole true-execution requirements are met."""
+    can_codegen, msg = check_blackhole_codegen_requirements()
+    if not can_codegen:
+        return False, msg
+
+    tilelang_home = os.environ["TILELANG_HOME"]
+    runner_build_dir = os.environ.get("TILELANG_BLACKHOLE_RUNNER_BUILD_DIR")
+    tt_metal_runtime_root = os.environ.get("TT_METAL_RUNTIME_ROOT")
+    if not tt_metal_runtime_root:
+        return False, "TT_METAL_RUNTIME_ROOT not set"
+    if not os.path.isdir(os.path.join(tt_metal_runtime_root, "tt_metal")):
+        return False, f"TT_METAL_RUNTIME_ROOT does not contain tt_metal/: {tt_metal_runtime_root}"
 
     runner_candidates = [
         os.path.join(runner_build_dir, "tilelang_blackhole_runner") if runner_build_dir else None,
@@ -80,17 +95,9 @@ def write_single_core_copy_spec(spec_path, kernel_path, tensor_nbytes):
         },
         "cb_configs": [
             {
-                "cb_id": 0,
-                "name": "A",
-                "role": "input",
-                "num_pages": 1,
-                "page_size_bytes": int(tensor_nbytes),
-                "data_format": "Float16_b",
-            },
-            {
-                "cb_id": 16,
-                "name": "B",
-                "role": "output",
+                "cb_id": 32,
+                "name": "A_shared",
+                "role": "intermediate",
                 "num_pages": 1,
                 "page_size_bytes": int(tensor_nbytes),
                 "data_format": "Float16_b",
@@ -116,38 +123,35 @@ def write_single_core_copy_spec(spec_path, kernel_path, tensor_nbytes):
         json.dump(spec, f)
 
 
-def simple_copy_kernel(M: int, N: int, tile_m: int = 32, tile_n: int = 32):
-    """Define a simple copy kernel for Blackhole.
+def staged_copy_kernel(tile_rows: int, tile_cols: int = 1, tile_m: int = 32, tile_n: int = 32):
+    """Define an explicit TileLang T.copy(global->shared->global) kernel."""
+    M = tile_rows * tile_m
+    N = tile_cols * tile_n
 
-    This kernel copies data from input A to output B.
-    The kernel will be lowered to TT-Metal code with CB allocation.
-    """
     @T.prim_func
     def main(
         A: T.Tensor((M, N), "float16"),
         B: T.Tensor((M, N), "float16"),
     ):
-        with T.Kernel(T.ceildiv(N, tile_n), T.ceildiv(M, tile_m)) as (bx, by):
-            # Copy from input to output (simple element-wise copy)
-            # In the Blackhole backend, this will use CBs internally
-            for i, j in T.Parallel(tile_m, tile_n):
-                y = by * tile_m + i
-                x = bx * tile_n + j
-                if y < M and x < N:
-                    B[y, x] = A[y, x]
+        with T.Kernel(1, 1) as (bx, by):
+            A_shared = T.alloc_shared((tile_m, tile_n), "float16")
+            for tile_idx in T.serial(tile_rows * tile_cols):
+                tile_row = tile_idx // tile_cols
+                tile_col = tile_idx % tile_cols
+                T.copy(A[tile_row * tile_m, tile_col * tile_n], A_shared)
+                T.copy(A_shared, B[tile_row * tile_m, tile_col * tile_n])
 
     return main
 
 
 def test_blackhole_codegen_only():
     """Test that Blackhole code generation works (no execution)."""
-    can_run, msg = check_blackhole_requirements()
+    can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
 
     # Define a simple kernel
-    M, N = 64, 64
-    kernel = simple_copy_kernel(M, N)
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=2)
 
     # Compile to Blackhole target (codegen only, no execution)
     target = Target("blackhole")
@@ -170,9 +174,11 @@ def test_blackhole_codegen_only():
 
 def test_blackhole_copy_pass_attrs():
     """Verify copy schema is materialized in pass attrs before runtime extraction."""
-    M, N = 32, 32
-    kernel = simple_copy_kernel(M, N)
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
     mod = tilelang.transform.LowerBlackholeOps()(mod)
     mod = tilelang.transform.PlanBlackholeCB()(mod)
     mod = tilelang.transform.AssignBlackholeCores()(mod)
@@ -182,8 +188,7 @@ def test_blackhole_copy_pass_attrs():
 
     cb_configs = func.attrs["blackhole.cb_configs"]
     cb_roles = [str(cfg["role"]) for cfg in cb_configs]
-    assert "input" in cb_roles
-    assert "output" in cb_roles
+    assert cb_roles == ["intermediate"]
 
     runtime_args = func.attrs["blackhole.runtime_args"]
     runtime_arg_kinds = [str(arg["kind"]) for arg in runtime_args]
@@ -204,12 +209,15 @@ def test_blackhole_copy_pass_attrs():
     body_script = func.body.script()
     assert "tl.blackhole.read_tile_to_cb" in body_script
     assert "tl.blackhole.write_tile_from_cb" in body_script
+    assert body_script.count("tl.blackhole.read_tile_to_cb") == 1
+    assert body_script.count("tl.blackhole.write_tile_from_cb") == 1
+    assert "for i in T.vectorized(8):\n                    T.tl.blackhole.read_tile_to_cb" not in body_script
+    assert "for i in T.vectorized(8):\n                    T.tl.blackhole.write_tile_from_cb" not in body_script
 
 
 def test_blackhole_copy_codegen_uses_runtime_schema():
     """Verify copy codegen consumes runtime arg schema instead of fixed slot names."""
-    M, N = 32, 32
-    kernel = simple_copy_kernel(M, N)
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     target = Target("blackhole")
 
     with target:
@@ -220,6 +228,7 @@ def test_blackhole_copy_codegen_uses_runtime_schema():
     assert "uint32_t B_addr = get_arg_val<uint32_t>(1);" in source
     assert "uint32_t tile_count = get_arg_val<uint32_t>(2);" in source
     assert "uint32_t scratch_l1_addr = get_arg_val<uint32_t>(3);" in source
+    assert "const uint32_t tile_index = tile_row;" in source
     assert "src_dram_addr" not in source
     assert "dst_dram_addr" not in source
 
@@ -233,7 +242,7 @@ def test_blackhole_true_e2e():
     3. Executes the kernel via external runner
     4. Compares results with PyTorch reference
     """
-    can_run, msg = check_blackhole_requirements()
+    can_run, msg = check_blackhole_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
 
@@ -263,7 +272,7 @@ def test_blackhole_true_e2e():
 
         # Compile kernel to Blackhole
         target = Target("blackhole")
-        kernel = simple_copy_kernel(M, N)
+        kernel = staged_copy_kernel(tile_rows=M // 32, tile_cols=N // 32)
 
         try:
             # Lower to Blackhole target (need target context)
@@ -322,7 +331,7 @@ def test_blackhole_true_e2e():
 
 def test_blackhole_module_direct_call():
     """Exercise the BlackholeModule packed-func entrypoint directly."""
-    can_run, msg = check_blackhole_requirements()
+    can_run, msg = check_blackhole_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
 
@@ -333,7 +342,7 @@ def test_blackhole_module_direct_call():
     b_ref = a_torch.clone()
 
     target = Target("blackhole")
-    kernel = simple_copy_kernel(M, N)
+    kernel = staged_copy_kernel(tile_rows=M // 32, tile_cols=N // 32)
 
     with target:
         artifact = lower(kernel, target=target)

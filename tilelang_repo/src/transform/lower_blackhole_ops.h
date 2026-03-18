@@ -32,6 +32,7 @@
 
 #include <map>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace tvm {
@@ -127,6 +128,18 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Determine copy direction using buffer scopes */
   CopyDirection GetCopyDirection(const tvm::tir::BufferStoreNode* op) const;
 
+  /*! \brief Infer copy tile index from a post-LowerTileOp staged copy loop */
+  tvm::PrimExpr InferCopyTileIndex(const tvm::tir::BufferStoreNode* op,
+                                   const tvm::tir::Var& loop_var) const;
+
+  /*! \brief Zero out thread/local element vars when extracting tile base indices */
+  tvm::PrimExpr ZeroThreadAndLoopVars(const tvm::PrimExpr& expr,
+                                      const tvm::tir::Var& loop_var) const;
+
+  /*! \brief Record runtime schema for staged copy global input/output buffers */
+  void RecordStagedCopyBufferBinding(const tvm::tir::BufferStoreNode* op,
+                                     CopyDirection direction);
+
   /*! \brief Record Stage 2 copy requirements for a DRAM -> DRAM copy */
   void RecordDramToDramCopy(const tvm::tir::BufferStoreNode* op);
 
@@ -139,10 +152,16 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Generate copy builtin sequence (DRAM->CB, CB->DRAM, CB->CB) */
   tvm::tir::Stmt GenerateCopySequence(const tvm::tir::BufferStoreNode* op);
 
+  /*! \brief Generate staged copy builtin sequence for a collapsed loop */
+  tvm::tir::Stmt GenerateCopySequence(const tvm::tir::BufferStoreNode* op,
+                                      const tvm::PrimExpr& tile_index);
+
   /*! \brief Generate clear builtin sequence */
   tvm::tir::Stmt GenerateClearSequence(const tvm::tir::CallNode* op);
 
   // StmtExprMutator overrides
+  tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;
+  tvm::tir::Stmt VisitStmt_(const tvm::tir::ForNode* op) override;
   tvm::tir::Stmt VisitStmt_(const tvm::tir::EvaluateNode* op) override;
   tvm::tir::Stmt VisitStmt_(const tvm::tir::BufferStoreNode* op) override;
 
@@ -154,6 +173,7 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   bool needs_copy_runtime_args_ = false;
   std::string copy_input_buffer_name_;
   std::string copy_output_buffer_name_;
+  std::unordered_set<const tvm::tir::VarNode*> thread_index_vars_;
 
   // CB allocation counters
   int next_input_cb_ = 0;        // Start at 0

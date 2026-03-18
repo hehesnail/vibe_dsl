@@ -16,9 +16,12 @@
 - `BlackholeModule` 从 Python 直接调用 packed func 已在 TT-Sim 上跑通 single-core copy，Stage 1 主调用面已收口。
 - Stage 2 不能让 copy 长期停留在 runtime 专用旁路，也不能继续为 gemm 复制类似特化，否则只能证明执行链路通，不能证明编译 pass 已打通。
 - Stage 2A copy pass integration 已开始落地：copy 的 `blackhole.runtime_args`、`blackhole.segment_plan` 与 input/output `cb_configs` 已可由 pass attrs 显式产出，`rt_mod_blackhole` 已优先消费这些 pass 产物。
-- pure copy 已重新接回到 lowered TIR 主链：`LowerBlackholeOps` 现在会产出 `tl.blackhole.read_tile_to_cb / write_tile_from_cb` builtin，`CodeGenBlackhole` 已开始直接消费这些 builtin 生成当前 single-core copy 执行源码；runtime emitter 仅保留回退。
+- copy 主验收对象已从 `global -> global` simple assignment 调整为 TileLang 原始 `T.copy(global -> shared -> global)` 语义。
+- `LowerBlackholeOps` 现在不再把 staged copy 当成逐标量 `BufferStore` 命中即改写，而是开始识别 `LowerTileOp` 之后的 staged copy loop，并产出 `tl.blackhole.read_tile_to_cb / write_tile_from_cb` builtin。
+- `CodeGenBlackhole` 已开始直接消费这些 builtin 生成当前 single-core copy 执行源码；runtime emitter 仅保留回退。
 - copy codegen 的固定参数槽位假设已开始拆除：`CodeGenBlackhole` 现优先从 `blackhole.runtime_args` 和 buffer 绑定里取地址变量，不再要求固定的 `src_dram_addr / dst_dram_addr / num_tiles / scratch_l1_addr` 命名。
-- 但 current copy 仍未达到“正确 compiler lowering”标准：`LowerBlackholeOps` 仍在逐标量 `BufferStore` 上发射 tile-level copy builtin，`32x32` simple copy 的 lowered TIR / codegen 中仍可见循环体里重复出现 `tile_index=0` 的 copy。这说明当前还只是从 runtime emitter 向整函数体 IR 分析迁移中的中间态。
+- 针对显式 staged copy 样例，loop 内重复 `tile_index=0` 的错误 lowering 已开始收敛：当前 lowered TIR / codegen 已能在 outer tile loop 中保留一组 read/write builtin，而不再在 vectorized 元素循环里重复发射 tile builtin。
+- 但 current copy 仍未达到“完全通用的 compiler lowering”标准：当前收敛的是 `LowerTileOp` 后的显式 staged copy loop，不是任意 `global -> global` 赋值循环自动 canonicalization。
 - 当前不再把“能生成 kernel 字符串”视为阶段完成。
 
 ## 任务状态总览
@@ -36,11 +39,11 @@
 
 ## 当前下一步
 
-1. 继续推进 Stage 2A：让 copy 的 kernel 语义不只停留在 runtime schema，还要继续从 pass 产物向更真实的 tile/dataflow 语义收口。
-2. 在 copy 已具备 pass-driven attrs/schema 的基础上，用同一套机制承接 gemm。
-3. 在 copy/gemm 的 pass/schema 收口后，再推进 single-core copy + gemm true E2E。
-4. 在 single-core pass integration 路径稳定后，再推进 multi-core runtime 调度。
-5. 在继续推进 gemm 之前，优先把 copy 从“逐标量 store 改写”收敛成“整段 copy 语义识别 + 整 tile/dataflow lowering”。
+1. 继续推进 Stage 2A：把当前 staged copy loop 识别从 MVP 样例扩展到更稳的 tile-range 分析，减少对当前 `LowerTileOp` 具体 loop 形态的脆弱依赖。
+2. 让 runner / direct-call 真执行测试继续按环境 gate 显式 skip，避免把 `TT_METAL_RUNTIME_ROOT` / TT-Sim 问题误记成编译链回归。
+3. 在 copy 已具备 pass-driven attrs/schema 和 staged-loop lowering 的基础上，用同一套机制承接 gemm。
+4. 在 copy/gemm 的 pass/schema 收口后，再推进 single-core copy + gemm true E2E。
+5. 在 single-core pass integration 路径稳定后，再推进 multi-core runtime 调度。
 
 ## 最近更新
 
@@ -83,5 +86,8 @@
   - `LowerBlackholeOps` 为 pure copy 产出的 `blackhole.runtime_args` 已开始携带 buffer 绑定信息
   - `CodeGenBlackhole` 已改为从 `blackhole.runtime_args` 消费 copy buffer 地址变量，不再固定假设 `src_dram_addr / dst_dram_addr / num_tiles / scratch_l1_addr`
   - 已通过 `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py -k 'copy_pass_attrs or copy_codegen_uses_runtime_schema' -s`
-  - 当前仍未重新确认 TT-Sim 真执行；当前机器环境下运行仍受 TT-Metal / TT-Sim 环境状态影响
-  - 已通过 `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py -k 'copy_pass_attrs or true_e2e or module_direct_call' -s`
+  - Blackhole copy 主测试样例已切到显式 `T.copy(global -> shared -> global)`
+  - `LowerBlackholeOps` 已开始识别 `LowerTileOp` 后的 staged copy loop，并将其收敛成一组 `read_tile_to_cb / write_tile_from_cb`
+  - 已通过 `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py -s`
+    - `copy_pass_attrs` 与 `copy_codegen_uses_runtime_schema` 已通过
+    - `true_e2e` 与 `module_direct_call` 会在缺少 `TT_METAL_RUNTIME_ROOT` 时显式 skip

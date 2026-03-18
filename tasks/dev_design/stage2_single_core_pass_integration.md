@@ -74,6 +74,10 @@ Stage 2 应拆成三个子目标：
 
 - 让 copy 所需执行语义从 pass 产物中显式可见，而不是让 runtime 猜。
 - 让 `ExecutableSpec` 的关键字段逐步成为 pass 结果的直接映射。
+- 让 Blackhole copy 的主验收对象回到 TileLang 原始 `T.copy` 语义：
+  - `global -> shared/CB`
+  - `shared/CB -> global`
+  而不是继续把 `global -> global` 标量赋值循环当成主输入。
 
 ### 要求
 
@@ -90,7 +94,13 @@ Stage 2 应拆成三个子目标：
 当前阶段对 copy 的直接要求进一步明确为：
 
 - `T.copy` 不能只留下 attrs/schema，然后由 `rt_mod_blackhole` 手写 kernel 主体
-- pure copy 必须开始被 lower 成真实的 Blackhole 中层 builtin call
+- Blackhole copy 的语义来源必须是 TileLang 原始 `T.copy` 所表达的 region transfer，而不是后端自己再猜一个 `global -> global` copy
+- 由于 `tilelang.engine.phase.LowerAndLegalize()` 会先执行 `LowerTileOp()`，Blackhole pass 不能假设还能直接看到 `tl.copy` 节点
+- 因此 `LowerBlackholeOps` 的 copy 主线应改为：
+  - 识别 `LowerTileOp()` 之后已经展开出来的 staged copy loop
+  - 从这些 loop 中恢复 `global -> shared/CB` / `shared/CB -> global` 语义
+  - 再发射 Blackhole 中层 builtin
+- 不再接受“逐标量 `BufferStore` 命中就发射一组 tile builtin”作为可接受终态
 - 即使执行路径仍暂时保留 runtime emitter 回退，copy 语义本身也必须先在 TIR body 中存在
 
 建议中层 builtin 形态：
@@ -100,7 +110,7 @@ Stage 2 应拆成三个子目标：
 
 这样 Stage 2A 的第一完成标志不是“copy 还能跑”，而是：
 
-- copy 已重新接回 `TIR AST -> pass visitor -> builtin-based TIR` 主链
+- copy 已重新接回 `TIR AST -> LowerTileOp 展开 -> staged-loop 分析 -> builtin-based TIR` 主链
 
 #### `PlanBlackholeCB`
 
@@ -236,6 +246,7 @@ Stage 2 的要求是：
 ### 执行验证
 
 - 保留并改造 single-core copy 测试，验证其开始走 pass-driven schema
+- copy 主测试样例要改成显式 `T.copy(global -> shared -> global)`，不再用 `B[y, x] = A[y, x]` simple assignment 当主验收对象
 - 新增或改造 single-core gemm true E2E 测试
 - direct-call 与 `spec.json -> runner` 两条主路径都应继续保持一致
 
@@ -254,8 +265,8 @@ Stage 2 的要求是：
 ## 当前进展
 
 - 已完成的 Stage 2A 落地点：
-  - `LowerBlackholeOps` 对 pure `global -> global` copy 不再只依赖 runtime 专用猜测
-  - pure copy 已能显式写出：
+  - `LowerBlackholeOps` 对 copy 已开始写出 pass attrs / builtin，而不再只依赖 runtime 专用猜测
+  - copy 已能显式写出：
     - `blackhole.target_mode = "single_core_copy"`
     - `blackhole.runtime_args`
     - `blackhole.segment_plan`

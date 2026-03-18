@@ -28,8 +28,10 @@
 #include "lower_blackhole_ops.h"
 
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/arith/analyzer.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
+#include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
 #include <algorithm>
@@ -52,6 +54,11 @@ using tir::Evaluate;
 using tir::SeqStmt;
 using tir::LetStmt;
 using tir::Var;
+using tir::For;
+using tir::ForNode;
+using tir::AttrStmt;
+using tir::AttrStmtNode;
+using tir::IterVar;
 using tir::Buffer;
 using tir::builtin::blackhole_mm_init;
 using tir::builtin::blackhole_cb_wait_front;
@@ -80,6 +87,7 @@ using ffi::String;
 using tvm::ffi::Map;
 using tvm::ffi::Array;
 using tvm::ffi::Any;
+using tvm::arith::Analyzer;
 
 // Helper to create a call to TT-Metal builtin
 static Stmt MakeBlackholeCall(const Op& op, const std::vector<PrimExpr>& args) {
@@ -345,12 +353,7 @@ bool LowerBlackholeOps::IsMatmulCall(const CallNode* op) const {
   if (!op->op->IsInstance<OpNode>()) return false;
 
   Op call_op = Downcast<Op>(op->op);
-
-  // Direct Op comparison instead of string matching
-  static const Op& tl_matmul = Op::Get("tl.matmul");
-  static const Op& tl_gemm = Op::Get("tl.gemm");
-
-  return call_op.same_as(tl_matmul) || call_op.same_as(tl_gemm);
+  return call_op->name == "tl.matmul" || call_op->name == "tl.gemm";
 }
 
 // Detect clear operation using Op comparison
@@ -358,11 +361,7 @@ bool LowerBlackholeOps::IsClearOperation(const CallNode* op) const {
   if (!op->op->IsInstance<OpNode>()) return false;
 
   Op call_op = Downcast<Op>(op->op);
-
-  // Direct Op comparison
-  static const Op& tl_clear = Op::Get("tl.clear");
-
-  return call_op.same_as(tl_clear);
+  return call_op->name == "tl.clear";
 }
 
 // Detect copy operation using buffer scopes
@@ -413,6 +412,66 @@ CopyDirection LowerBlackholeOps::GetCopyDirection(const BufferStoreNode* op) con
   }
 
   return CopyDirection::kUnknown;
+}
+
+PrimExpr LowerBlackholeOps::ZeroThreadAndLoopVars(const PrimExpr& expr,
+                                                  const Var& loop_var) const {
+  Map<Var, PrimExpr> subst_map;
+  if (loop_var.defined()) {
+    subst_map.Set(loop_var, IntImm(loop_var.dtype(), 0));
+  }
+  for (const auto* thread_var : thread_index_vars_) {
+    subst_map.Set(GetRef<Var>(thread_var), IntImm(thread_var->dtype, 0));
+  }
+  if (subst_map.empty()) {
+    return expr;
+  }
+  Analyzer analyzer;
+  return analyzer.Simplify(tir::Substitute(expr, subst_map));
+}
+
+PrimExpr LowerBlackholeOps::InferCopyTileIndex(const BufferStoreNode* op,
+                                               const Var& loop_var) const {
+  const auto* load = op->value.as<BufferLoadNode>();
+  ICHECK(load) << "InferCopyTileIndex requires BufferLoad copy source";
+
+  CopyDirection direction = GetCopyDirection(op);
+  const Buffer& global_buffer =
+      direction == CopyDirection::kDramToCB ? load->buffer : op->buffer;
+  const Array<PrimExpr>& global_indices =
+      direction == CopyDirection::kDramToCB ? load->indices : op->indices;
+
+  ICHECK_GE(global_indices.size(), 2U)
+      << "Blackhole staged copy currently expects rank-2 tiled regions";
+  ICHECK_GE(global_buffer->shape.size(), 2U)
+      << "Blackhole staged copy currently expects rank-2 tiled buffers";
+
+  Analyzer analyzer;
+  PrimExpr base_row = ZeroThreadAndLoopVars(global_indices[0], loop_var);
+  PrimExpr base_col = ZeroThreadAndLoopVars(global_indices[1], loop_var);
+  PrimExpr tile_row = analyzer.Simplify(tir::FloorDiv(base_row, IntImm32(32)));
+  PrimExpr tile_col = analyzer.Simplify(tir::FloorDiv(base_col, IntImm32(32)));
+
+  const auto* cols_imm = global_buffer->shape[1].as<IntImmNode>();
+  ICHECK(cols_imm) << "Blackhole staged copy currently expects static tile width";
+  ICHECK_EQ(cols_imm->value % 32, 0)
+      << "Blackhole staged copy currently expects 32-wide tile alignment";
+  PrimExpr tiles_per_row = IntImm32(static_cast<int>(cols_imm->value / 32));
+  return analyzer.Simplify(tile_row * tiles_per_row + tile_col);
+}
+
+void LowerBlackholeOps::RecordStagedCopyBufferBinding(const BufferStoreNode* op,
+                                                      CopyDirection direction) {
+  const auto* load = op->value.as<BufferLoadNode>();
+  if (!load) {
+    return;
+  }
+  needs_copy_runtime_args_ = true;
+  if (direction == CopyDirection::kDramToCB) {
+    copy_input_buffer_name_ = load->buffer->name;
+  } else if (direction == CopyDirection::kCBToDram) {
+    copy_output_buffer_name_ = op->buffer->name;
+  }
 }
 
 void LowerBlackholeOps::RecordDramToDramCopy(const BufferStoreNode* op) {
@@ -535,29 +594,8 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
 
   switch (direction) {
     case CopyDirection::kDramToCB: {
-      // DRAM -> CB (Reader pattern)
-      int cb_id = AllocateCBId(op->buffer, CBType::kInput);
-      int tile_size = 2048;  // Default tile size, should be calculated from buffer
-
-      // cb_reserve_back(cb_id, 1)
-      stmts.push_back(MakeBlackholeCall(
-          blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(1)}));
-
-      // Note: The actual noc_async_read call requires runtime address calculation
-      // This is handled by CodeGen which generates:
-      // noc_async_read(get_noc_addr(tile_idx, addr_gen), get_write_ptr(cb_id), tile_size)
-
-      // For now, we emit a builtin call that CodeGen will handle
-      // The DRAM address is passed as a runtime argument
-      // Buffer destination is the CB
-
-      // noc_async_read_barrier()
-      stmts.push_back(MakeBlackholeCall(blackhole_noc_async_read_barrier(), {}));
-
-      // cb_push_back(cb_id, 1)
-      stmts.push_back(MakeBlackholeCall(
-          blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
-      break;
+      // Staged DRAM -> shared copies should be collapsed at loop granularity.
+      return GetRef<Stmt>(op);
     }
 
     case CopyDirection::kDramToDram: {
@@ -595,23 +633,8 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
     }
 
     case CopyDirection::kCBToDram: {
-      // CB -> DRAM (Writer pattern)
-      int cb_id = AllocateCBId(load->buffer, CBType::kOutput);
-
-      // cb_wait_front(cb_id, 1)
-      stmts.push_back(MakeBlackholeCall(
-          blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(1)}));
-
-      // Note: CodeGen generates:
-      // noc_async_write(get_read_ptr(cb_id), get_noc_addr(tile_idx, addr_gen), tile_size)
-
-      // noc_async_write_barrier()
-      stmts.push_back(MakeBlackholeCall(blackhole_noc_async_write_barrier(), {}));
-
-      // cb_pop_front(cb_id, 1)
-      stmts.push_back(MakeBlackholeCall(
-          blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
-      break;
+      // Staged shared -> DRAM copies should be collapsed at loop granularity.
+      return GetRef<Stmt>(op);
     }
 
     case CopyDirection::kCBToCB: {
@@ -647,10 +670,79 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
   return SeqStmt::Flatten(stmts);
 }
 
+Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
+                                             const PrimExpr& tile_index) {
+  CopyDirection direction = GetCopyDirection(op);
+  const auto* load = op->value.as<BufferLoadNode>();
+  if (!load) {
+    return GetRef<Stmt>(op);
+  }
+
+  std::vector<Stmt> stmts;
+  switch (direction) {
+    case CopyDirection::kDramToCB: {
+      int cb_id = AllocateCBId(op->buffer, CBType::kIntermediate);
+      int tile_bytes = EstimateCopyPageSize(op->buffer);
+      RecordStagedCopyBufferBinding(op, direction);
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(1)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_read_tile_to_cb(),
+          {load->buffer->data, tile_index, IntImm32(cb_id), IntImm32(tile_bytes), IntImm32(0)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
+      return SeqStmt::Flatten(stmts);
+    }
+    case CopyDirection::kCBToDram: {
+      int cb_id = AllocateCBId(load->buffer, CBType::kIntermediate);
+      int tile_bytes = EstimateCopyPageSize(load->buffer);
+      RecordStagedCopyBufferBinding(op, direction);
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(1)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_write_tile_from_cb(),
+          {IntImm32(cb_id), op->buffer->data, tile_index, IntImm32(tile_bytes), IntImm32(0)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
+      return SeqStmt::Flatten(stmts);
+    }
+    default:
+      return GenerateCopySequence(op);
+  }
+}
+
 Stmt LowerBlackholeOps::GenerateClearSequence(const CallNode* op) {
   // Clear operation: tile_regs_acquire() to zero DST registers
   // In full implementation, would also zero-fill
   return MakeBlackholeCall(blackhole_tile_regs_acquire(), {});
+}
+
+Stmt LowerBlackholeOps::VisitStmt_(const AttrStmtNode* op) {
+  if (op->attr_key == tir::attr::thread_extent) {
+    IterVar iv = Downcast<IterVar>(op->node);
+    thread_index_vars_.insert(iv->var.get());
+    Stmt body = VisitStmt(op->body);
+    thread_index_vars_.erase(iv->var.get());
+    if (body.same_as(op->body)) {
+      return GetRef<Stmt>(op);
+    }
+    return AttrStmt(op->node, op->attr_key, op->value, body);
+  }
+  return StmtExprMutator::VisitStmt_(op);
+}
+
+Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
+  if (const auto* store = op->body.as<BufferStoreNode>()) {
+    if (IsCopyOperation(store)) {
+      CopyDirection direction = GetCopyDirection(store);
+      if (direction == CopyDirection::kDramToCB || direction == CopyDirection::kCBToDram) {
+        saw_copy_op_ = true;
+        PrimExpr tile_index = InferCopyTileIndex(store, op->loop_var);
+        return GenerateCopySequence(store, tile_index);
+      }
+    }
+  }
+  return StmtExprMutator::VisitStmt_(op);
 }
 
 // StmtExprMutator overrides
