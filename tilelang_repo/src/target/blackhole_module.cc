@@ -17,6 +17,7 @@
 #include <iostream>
 #include <cstring>
 #include <cstdlib>
+#include <iomanip>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <filesystem>
@@ -30,6 +31,131 @@ namespace runtime {
 
 // Forward declaration
 class BlackholeWrappedFunc;
+
+std::string EscapeJson(const std::string& value) {
+  std::ostringstream os;
+  for (char ch : value) {
+    switch (ch) {
+      case '\"':
+        os << "\\\"";
+        break;
+      case '\\':
+        os << "\\\\";
+        break;
+      case '\b':
+        os << "\\b";
+        break;
+      case '\f':
+        os << "\\f";
+        break;
+      case '\n':
+        os << "\\n";
+        break;
+      case '\r':
+        os << "\\r";
+        break;
+      case '\t':
+        os << "\\t";
+        break;
+      default:
+        if (static_cast<unsigned char>(ch) < 0x20) {
+          os << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+             << static_cast<int>(static_cast<unsigned char>(ch));
+        } else {
+          os << ch;
+        }
+        break;
+    }
+  }
+  return os.str();
+}
+
+std::string QuoteJson(const std::string& value) {
+  return "\"" + EscapeJson(value) + "\"";
+}
+
+std::string SerializeKernelArgSpec(const KernelArgSpec& arg) {
+  std::ostringstream os;
+  os << "{"
+     << "\"name\":" << QuoteJson(arg.name) << ","
+     << "\"kind\":" << QuoteJson(arg.kind) << ","
+     << "\"dtype\":" << QuoteJson(arg.dtype)
+     << "}";
+  return os.str();
+}
+
+std::string SerializeExecutableSpec(const ExecutableSpec& spec,
+                                    const std::vector<uint32_t>& scalar_args,
+                                    size_t input_size_bytes,
+                                    size_t output_size_bytes,
+                                    const std::vector<std::string>& kernel_paths) {
+  std::ostringstream os;
+  os << "{";
+  os << "\"entry_name\":" << QuoteJson(spec.entry_name) << ",";
+  os << "\"target_mode\":" << QuoteJson(spec.target_mode) << ",";
+  os << "\"input_size_bytes\":" << input_size_bytes << ",";
+  os << "\"output_size_bytes\":" << output_size_bytes << ",";
+
+  os << "\"scalar_args\":[";
+  for (size_t i = 0; i < scalar_args.size(); ++i) {
+    if (i != 0) os << ",";
+    os << scalar_args[i];
+  }
+  os << "],";
+
+  os << "\"core_plan\":{"
+     << "\"grid_x\":" << spec.core_plan.grid_x << ","
+     << "\"grid_y\":" << spec.core_plan.grid_y << ","
+     << "\"cores_needed\":" << spec.core_plan.cores_needed << ","
+     << "\"work_per_core\":" << spec.core_plan.work_per_core << ","
+     << "\"core_grid_x\":" << spec.core_plan.core_grid_x << ","
+     << "\"core_grid_y\":" << spec.core_plan.core_grid_y
+     << "},";
+
+  os << "\"cb_configs\":[";
+  for (size_t i = 0; i < spec.cb_configs.size(); ++i) {
+    if (i != 0) os << ",";
+    const auto& cb = spec.cb_configs[i];
+    os << "{"
+       << "\"cb_id\":" << cb.cb_id << ","
+       << "\"name\":" << QuoteJson(cb.name) << ","
+       << "\"role\":" << QuoteJson(cb.role) << ","
+       << "\"num_pages\":" << cb.num_pages << ","
+       << "\"page_size_bytes\":" << cb.page_size_bytes << ","
+       << "\"data_format\":" << QuoteJson(cb.data_format)
+       << "}";
+  }
+  os << "],";
+
+  os << "\"kernels\":[";
+  for (size_t i = 0; i < spec.kernels.size(); ++i) {
+    if (i != 0) os << ",";
+    const auto& kernel = spec.kernels[i];
+    os << "{"
+       << "\"name\":" << QuoteJson(kernel.name) << ","
+       << "\"kind\":" << QuoteJson(kernel.kind) << ","
+       << "\"core_type\":" << QuoteJson(kernel.core_type) << ","
+       << "\"kernel_path\":" << QuoteJson(kernel_paths.at(i)) << ",";
+
+    os << "\"compile_time_args\":[";
+    for (size_t j = 0; j < kernel.compile_time_args.size(); ++j) {
+      if (j != 0) os << ",";
+      os << kernel.compile_time_args[j];
+    }
+    os << "],";
+
+    os << "\"runtime_args\":[";
+    for (size_t j = 0; j < kernel.runtime_args.size(); ++j) {
+      if (j != 0) os << ",";
+      os << SerializeKernelArgSpec(kernel.runtime_args[j]);
+    }
+    os << "]";
+    os << "}";
+  }
+  os << "]";
+  os << "}";
+  return os.str();
+}
 
 /*!
  * \brief Wrapper for Blackhole kernel execution
@@ -187,18 +313,8 @@ void BlackholeModuleNode::ExecuteExternal(
     LOG(FATAL) << "Function not found: " << func_name;
   }
   const ExecutableSpec& info = fit->second;
-
-  // Save kernel code to file
-  std::string kernel_path = kernel_dir_ + "/" + func_name + "_kernel.cpp";
-  {
-    std::ofstream ofs(kernel_path);
-    if (!ofs) {
-      LOG(FATAL) << "Failed to write kernel file: " << kernel_path;
-    }
-    if (info.kernels.empty()) {
-      LOG(FATAL) << "ExecutableSpec has no kernels for function: " << func_name;
-    }
-    ofs << info.kernels.front().source_code;
+  if (info.kernels.empty()) {
+    LOG(FATAL) << "ExecutableSpec has no kernels for function: " << func_name;
   }
 
   // Calculate sizes
@@ -218,6 +334,7 @@ void BlackholeModuleNode::ExecuteExternal(
 
   std::string input_path = tmp_dir + "/input.bin";
   std::string output_path = tmp_dir + "/output.bin";
+  std::string spec_path = tmp_dir + "/spec.json";
 
   // Write input data to file
   {
@@ -231,19 +348,40 @@ void BlackholeModuleNode::ExecuteExternal(
     }
   }
 
+  std::vector<std::string> kernel_paths;
+  kernel_paths.reserve(info.kernels.size());
+  for (size_t i = 0; i < info.kernels.size(); ++i) {
+    const auto& kernel = info.kernels[i];
+    std::string kernel_path = tmp_dir + "/" + func_name + "_" + std::to_string(i) + "_" +
+                              kernel.kind + ".cpp";
+    std::ofstream ofs(kernel_path);
+    if (!ofs) {
+      LOG(FATAL) << "Failed to write kernel file: " << kernel_path;
+    }
+    ofs << kernel.source_code;
+    kernel_paths.push_back(kernel_path);
+  }
+
+  {
+    std::ofstream spec_file(spec_path);
+    if (!spec_file) {
+      LOG(FATAL) << "Failed to create spec file: " << spec_path;
+    }
+    spec_file << SerializeExecutableSpec(
+        info, scalar_args, total_input_size, total_output_size, kernel_paths);
+  }
+
   // Build command line
   std::vector<std::string> cmd_args = {
     runner_path,
-    kernel_path,
+    spec_path,
     input_path,
-    output_path,
-    std::to_string(total_input_size),
-    std::to_string(total_output_size)
+    output_path
   };
 
   // Execute external runner
   LOG(INFO) << "Executing external runner: " << runner_path;
-  LOG(INFO) << "  Kernel: " << kernel_path;
+  LOG(INFO) << "  Spec: " << spec_path;
   LOG(INFO) << "  Input: " << input_path << " (" << total_input_size << " bytes)";
   LOG(INFO) << "  Output: " << output_path << " (" << total_output_size << " bytes)";
 

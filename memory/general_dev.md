@@ -138,6 +138,7 @@
   - `PlanBlackholeCB` / `AssignBlackholeCores` 产出 `blackhole.*`
   - `rt_mod_blackhole` 读取同一套 `blackhole.*`
 - `blackhole.core_plan` 这种结构化 attr 比散落的 `grid_x/grid_y/...` 标量 attr 更适合后续 spec extractor 和 runner 直接消费。
+- 在切 runner 协议时，优先让 `BlackholeModule` 落 `spec.json + input.bin + output.bin + kernel.cpp`，再让 runner 从 spec 驱动创建 CB / kernel / runtime args；不要继续扩展固定位置命令行参数。
 
 ## 建议的开发顺序
 

@@ -268,6 +268,18 @@ static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
   return plan;
 }
 
+static std::vector<KernelArgSpec> MakeDefaultRuntimeArgs(const ExecutableSpec& spec) {
+  std::vector<KernelArgSpec> runtime_args;
+
+  if (spec.target_mode == "single_core_copy") {
+    runtime_args.push_back({"input0", "input_buffer_addr", "uint64"});
+    runtime_args.push_back({"output0", "output_buffer_addr", "uint64"});
+    runtime_args.push_back({"num_tiles", "tile_count", "uint32"});
+  }
+
+  return runtime_args;
+}
+
 /*!
  * \brief Extract executable specs for the Blackhole backend.
  * \param mod The IR module
@@ -369,6 +381,7 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     kernel.kind = "fused_dataflow";
     kernel.core_type = "brisc";
     kernel.source_code = code;
+    kernel.runtime_args = MakeDefaultRuntimeArgs(kv.second);
     kv.second.kernels.push_back(std::move(kernel));
   }
 
@@ -432,6 +445,7 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     kernel.kind = "fused_dataflow";
     kernel.core_type = "brisc";
     kernel.source_code = kernel_code;
+    kernel.runtime_args = MakeDefaultRuntimeArgs(kv.second);
     kv.second.kernels.push_back(std::move(kernel));
   }
 

@@ -33,6 +33,7 @@
 - core plan
 - kernels
 - TVM 调用侧参数类型与 buffer/scalar 标记
+- 外部 runner 所需的最小 JSON 序列化字段
 
 ### 2. Attr 读取协议
 
@@ -47,7 +48,29 @@
 - `tl.blackhole_cb_config`
 - `tl.blackhole_kernel_split`
 
-### 3. Core assignment 输出协议
+### 3. 外部 runner 协议
+
+`BlackholeModule` 改为写出：
+
+- `spec.json`
+- `input.bin`
+- `output.bin`
+- `*.cpp` kernel 源文件
+
+当前 `spec.json` 最小字段：
+
+- `entry_name`
+- `target_mode`
+- `input_size_bytes`
+- `output_size_bytes`
+- `scalar_args`
+- `cb_configs`
+- `core_plan`
+- `kernels[].kernel_path`
+- `kernels[].compile_time_args`
+- `kernels[].runtime_args`
+
+### 4. Core assignment 输出协议
 
 `AssignBlackholeCores` 除保留兼容性标量 attr 外，新增：
 
@@ -63,10 +86,11 @@
 
 - 编译级验证：确认 `rt_mod_blackhole.cc` 与 `blackhole_module.h` 类型一致。
 - 代码级验证：检查 pass 输出 attr 名与 runtime extractor 读取名称一致。
+- runner 级验证：确认 runner 能编译并消费 `spec.json`。
 - 文档级验证：更新 `tasks/progress.md`，使阶段状态与当前实现一致。
 
 ## 当前限制
 
-- 本次不重写 runner 的文件协议，runner 仍是旧 CLI 路径。
-- `ExecutableSpec` 暂时仍只承载单段 kernel 源码，不实现多 kernel/per-core runtime args。
+- `ExecutableSpec` 虽已接到 runner JSON 协议，但当前仍只可靠覆盖单核、单输入、单输出的最小路径。
+- `kernels[].runtime_args` 目前由 `rt_mod_blackhole` 按 `target_mode` 提供保守默认 schema，尚未由 lowering 精确生成。
 - `target_mode` 当前采用保守默认值，后续需由 lowering/segment 规划精化。

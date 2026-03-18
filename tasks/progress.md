@@ -20,20 +20,20 @@
 | 阶段 | 任务 | 状态 | 备注 |
 |------|------|------|------|
 | Stage 0 | 统一 attrs 到 `blackhole.*` | 🔄 进行中 | `rt_mod_blackhole` 已切到 `blackhole.cb_configs/core_plan/target_mode` 主路径 |
-| Stage 0 | 引入 `ExecutableSpec` | 🔄 进行中 | 已落头文件与 extractor 骨架，runner 协议尚未跟进 |
-| Stage 0 | 重构 `rt_mod_blackhole` | ⏳ 未开始 | 改为 spec extractor |
-| Stage 0 | 重构 `BlackholeModule` | ⏳ 未开始 | 改为 spec serializer |
-| Stage 0 | 重写 runner 协议 | ⏳ 未开始 | 改为 `spec.json + input.bin + output.bin` |
+| Stage 0 | 引入 `ExecutableSpec` | 🔄 进行中 | 已落头文件、extractor 和最小 runner JSON 对接 |
+| Stage 0 | 重构 `rt_mod_blackhole` | 🔄 进行中 | 已抽取 Stage 0 spec，并生成最小 runtime arg schema |
+| Stage 0 | 重构 `BlackholeModule` | 🔄 进行中 | 已开始写 `spec.json + input.bin + output.bin + kernel.cpp` |
+| Stage 0 | 重写 runner 协议 | 🔄 进行中 | 已切到 `spec.json + input.bin + output.bin`，仍仅覆盖最小单核路径 |
 | Stage 1 | single-core copy 闭环 | ⏳ 未开始 | true E2E |
 | Stage 2 | single-core gemm 闭环 | ⏳ 未开始 | true E2E |
 | Stage 3 | multi-core runtime 调度 | ⏳ 未开始 | per-core args |
 
 ## 当前下一步
 
-1. 在运行时与 codegen 层引入 `ExecutableSpec`。
-2. 让 `BlackholeModule` 改为序列化/消费完整 spec，而不是只写单个 kernel 源码。
-3. 让 runner 转为 spec-driven executor。
-4. 之后再做 copy 和 gemm 的真实执行闭环。
+1. 让 lowering/segment 生成真实的 `kernels[].runtime_args` 与 `target_mode`，去掉当前保守默认值。
+2. 扩展 runner 和 `BlackholeModule` 到多 kernel、multi-core、per-core runtime args。
+3. 基于新协议做 single-core copy 的真实 E2E 验证。
+4. 之后再做 gemm 的真实执行闭环。
 
 ## 最近更新
 
@@ -42,4 +42,6 @@
   - `blackhole_module.h` 已引入 `ExecutableSpec / KernelSpec / CorePlan` 骨架
   - `AssignBlackholeCores` 已输出 `blackhole.core_plan` 和默认 `blackhole.target_mode`
   - `rt_mod_blackhole` 已读取新 attr schema 并抽取 Stage 0 spec
-  - 已通过 `make -C tilelang_repo/build -j2` 增量编译验证
+  - `BlackholeModule` 已改为写 `spec.json + input.bin + output.bin + kernel.cpp`
+  - runner 已改为读取 `spec.json` 并按 spec 建 CB / kernel / runtime args
+  - 已通过 `make -C tilelang_repo/build -j16` 与 `cmake --build tt_metal_repo/build --target tilelang_blackhole_runner -j16` 编译验证
