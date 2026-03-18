@@ -1,323 +1,142 @@
 # Stage 2 Single-Core Pass Integration 设计
 
-## 目标
+## 基本定位
 
-- 将 Stage 2 的重点从“分别做可跑的 copy/gemm 专用 emitter”调整为“把 single-core copy 与 gemm 所需语义统一前移到 pass 产物中”。
-- 在保留 `ExecutableSpec -> BlackholeModule -> runner` 主路径不变的前提下，让 copy/gemm 的 kernel schema、CB 规划依赖和 runtime args 主要由 lowering / segment / attr 产物驱动。
-- 避免把 Stage 1 copy 的 runtime 专用补洞模式复制到 gemm，同时也避免让 copy 长期停留在 runtime 特化旁路上，造成“执行链路验证通过，但编译 pass 仍未真正打通”的假完成。
+- **状态**: 当前活动阶段设计
+- **前置总体设计**: `final_blackhole_backend_redesign.md`
+- **前置接入矩阵**: `stage2_pass_reuse_matrix.md`
 
-## 影响范围
+本文件只描述 Stage 2 的目标、阶段拆分和验收标准，不再重复承载总体架构结论。
 
-- `tilelang_repo/src/transform/lower_blackhole_ops.cc`
-- `tilelang_repo/src/transform/plan_blackhole_cb.cc`
-- `tilelang_repo/src/transform/assign_blackhole_cores.cc`
-- `tilelang_repo/src/target/rt_mod_blackhole.cc`
-- `tilelang_repo/src/target/codegen_blackhole.cc`
-- `tilelang_repo/src/target/blackhole_module.h`
-- `tilelang_repo/tools/blackhole_runner/runner.cpp`
-- `tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py`
-- `tasks/progress.md`
-- `tasks/dev_design/final_blackhole_backend_redesign.md`
+## 阶段目标
 
-## 背景与问题
+Stage 2 的正式目标已经收紧为：
 
-Stage 1 single-core copy 已完成，但它有明确边界：
+- **先把 Blackhole 重新接回 TileLang / TVM 的 PrimFunc/TIR pass 主链**
+- **再在这条主链上完成 single-core copy 与 GEMM 的语义集成**
+- **最后完成由 pass 主导的 single-core true E2E**
 
-- copy 走的是受控的最小专用 kernel emitter
-- 该路径证明了 `ExecutableSpec -> runner` 主执行模型可行
-- 但它并不等价于“通用 lowering / pass 语义已经完全打通”
+因此 Stage 2 不再等价于“把 gemm 跑起来”，也不再接受：
 
-如果 Stage 2 继续让 copy 停留在 runtime 特化路径、同时对 gemm 也沿用类似思路，在 `rt_mod_blackhole` 侧按 `target_mode` 做大量语义补完，那么最终只能证明：
+- copy 长期停留在 runtime 专用 emitter
+- gemm 继续靠 runtime 侧特化拼语义
+- 绕过 `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch` 继续推进
 
-- 可以手工或半手工生成一个能跑的 copy/gemm spec
-- runner / module 能执行这个 spec
+## 阶段拆分
 
-但不能证明：
+### Stage 2A: pass 主链接入收正
 
-- `LowerBlackholeOps`
-- `PlanBlackholeCB`
-- `AssignBlackholeCores`
-- `BlackholeSpecBuilder`
+目标：
 
-已经形成稳定、可扩展、可复用的编译器路径。
+- 恢复 Blackhole 对通用 TIR / host-device / Packed API pass 的复用
+- 结束当前 `OptimizeForTarget` early return 的长期结构
 
-因此 Stage 2 必须显式加入“single-core pass integration”目标，而不是只看某个算子能否执行。
+任务：
 
-## 核心结论
-
-### 1. Stage 1 copy 特化允许作为过渡起点保留，但 Stage 2 必须开始把 copy 与 gemm 一起迁回 pass
-
-允许保留：
-
-- `single_core_copy` 的最小 runtime emitter
-
-但 Stage 2 不允许：
-
-- 让 copy 长期停留在 runtime 专用 emitter，完全不回迁
-- 在 `rt_mod_blackhole` 中基于 `target_mode == single_core_gemm` 推导完整 gemm kernel 语义
-- 让 runtime 继续猜 `kernels[].runtime_args`
-- 让 copy/gemm 的 kernel 拆分长期停留在 runtime 专用逻辑中
-
-### 2. Stage 2 要先做 copy pass integration，再做 gemm pass integration，最后统一做 true E2E
-
-Stage 2 应拆成三个子目标：
-
-- `Stage 2A`: single-core copy pass integration
-- `Stage 2B`: single-core gemm pass integration
-- `Stage 2C`: single-core copy + gemm true E2E
-
-其中后一步都必须建立在前一步之上，不能跳过。
-
-### 3. Stage 2 的前置条件已进一步明确：先收正 pass 主链接入，再谈 copy/gemm
-
-当前 Blackhole 最大的问题不再只是“copy/gemm 语义还没完全前移”，而是：
-
-- Blackhole 在 `OptimizeForTarget` 中过早退出
-- 大量通用 TIR 规范化 / host-device / Packed API pass 被绕过
-- `rt_mod_blackhole` / `BlackholeModule` 仍在间接承担 PrimFunc 参数与 runtime 参数语义
-
-因此 Stage 2 的真正顺序应调整为：
-
-- `Stage 2A0`: pass 复用矩阵与主链接入收正
-- `Stage 2A`: single-core copy pass integration
-- `Stage 2B`: single-core gemm pass integration
-- `Stage 2C`: single-core copy + gemm true E2E
-
-对应设计见 `stage2_pass_reuse_matrix.md`。
-
-## Stage 2A：single-core copy pass integration
-
-### 目标
-
-- 让 copy 所需执行语义从 pass 产物中显式可见，而不是让 runtime 猜。
-- 让 `ExecutableSpec` 的关键字段逐步成为 pass 结果的直接映射。
-- 建立在 Blackhole 已重新接回通用 TIR / host-device / Packed API 主链的前提上，而不是在当前旁路结构上继续补丁。
-- 让 Blackhole copy 的主验收对象回到 TileLang 原始 `T.copy` 语义：
-  - `global -> shared/CB`
-  - `shared/CB -> global`
-  而不是继续把 `global -> global` 标量赋值循环当成主输入。
-
-### 要求
-
-#### `LowerBlackholeOps`
-
-至少要负责写出：
-
-- copy 对应的 `blackhole.target_mode`
-- copy 的 dataflow 级 tile-access builtin
-- copy segment 所需的中间信息
-- copy runtime arg schema 所需的高层槽位信息
-- 为后续 gemm 复用同一套 schema 迁移路径
-
-当前阶段对 copy 的直接要求进一步明确为：
-
-- `T.copy` 不能只留下 attrs/schema，然后由 `rt_mod_blackhole` 手写 kernel 主体
-- Blackhole copy 的语义来源必须是 TileLang 原始 `T.copy` 所表达的 region transfer，而不是后端自己再猜一个 `global -> global` copy
-- 由于 `tilelang.engine.phase.LowerAndLegalize()` 会先执行 `LowerTileOp()`，Blackhole pass 不能假设还能直接看到 `tl.copy` 节点
-- 因此 `LowerBlackholeOps` 的 copy 主线应改为：
-  - 识别 `LowerTileOp()` 之后已经展开出来的 staged copy loop
-  - 从这些 loop 中恢复 `global -> shared/CB` / `shared/CB -> global` 语义
-  - 再发射 Blackhole 中层 builtin
-- 不再接受“逐标量 `BufferStore` 命中就发射一组 tile builtin”作为可接受终态
-- 即使执行路径仍暂时保留 runtime emitter 回退，copy 语义本身也必须先在 TIR body 中存在
-
-建议中层 builtin 形态：
-
-- `blackhole.read_tile_to_cb(buffer, tile_index, cb_id, tile_bytes, accessor_slot)`
-- `blackhole.write_tile_from_cb(cb_id, buffer, tile_index, tile_bytes, accessor_slot)`
-
-这样 Stage 2A 的第一完成标志不是“copy 还能跑”，而是：
-
-- copy 已重新接回 `TIR AST -> LowerTileOp 展开 -> staged-loop 分析 -> builtin-based TIR` 主链
-
-#### `PlanBlackholeCB`
-
-至少要负责把 copy 需要的 CB 角色和约束显式化：
-
-- input CB
-- output CB
-- 如需保留 scratch / intermediate，也应以 pass 产物显式表达
-
-要求是 copy 的 CB 配置不再主要由 runtime 按惯例猜。
-
-#### `BlackholeSpecBuilder` / `rt_mod_blackhole`
-
-职责应调整为：
-
-- 消费 copy 的 pass attrs / segment 信息
-- 组装 copy 的 `ExecutableSpec`
-- 只补充最小、无语义歧义的默认值
-
-新增约束：
-
-- 不再把“没有 `calling_conv` 的 PrimFunc 也视为 device kernel”作为正式主路径
-- copy 的 runtime arg schema 必须能追溯到 PrimFunc 参数、`buffer_map`、host/device split 与 pass attrs，而不是由 runtime/module 猜
-
-不应继续承担：
-
-- 长期保有 copy 完整 kernel 语义定义权
-- 猜完整 copy runtime arg schema
-- 用 runtime 特判替代 copy pass 产物缺失
-
-## Stage 2B：single-core gemm pass integration
-
-### 目标
-
-- 让 gemm 所需执行语义从 pass 产物中显式可见，而不是让 runtime 猜。
-- 在 copy 已开始回迁 pass 的前提下，用同一套 schema/segment 机制承接 gemm。
-
-### 要求
-
-#### `LowerBlackholeOps`
-
-至少要负责写出：
-
-- gemm 对应的 `blackhole.target_mode`
-- dataflow 级 tile-access builtin
-- segment 所需的中间信息
-- runtime arg schema 所需的高层槽位信息
-
-这里的重点不是“把所有细节都固化在 lowering”，而是让 gemm 的语义来源发生前移。
-
-#### `PlanBlackholeCB`
-
-至少要负责把 gemm 需要的 CB 角色和约束显式化：
-
-- A/B 输入 CB
-- accumulation / intermediate CB
-- output CB
-
-Stage 2 不要求一次性做到最终最优规划，但要求 CB 配置不再主要由 runtime 按惯例猜。
-
-#### `AssignBlackholeCores`
-
-在 single-core gemm 阶段可以继续保持单核 host scheduling plan，但要保证：
-
-- `core_plan` 是明确、稳定、可被 runner 直接消费的
-- gemm 阶段不再额外把 device-side 物理映射塞回 codegen
-
-#### `BlackholeSpecBuilder` / `rt_mod_blackhole`
-
-职责应调整为：
-
-- 消费 pass attrs / segment 信息
-- 组装 `ExecutableSpec`
-- 只补充最小、无语义歧义的默认值
-
-不应继续承担：
-
-- 通过 `target_mode` 反推完整 kernel 结构
-- 猜完整 runtime arg schema
-- 用 runtime 特判替代 pass 产物缺失
-
-## Stage 2C：single-core copy + gemm true E2E
-
-### 完成标准
-
-Stage 2 的 true E2E 只有在以下条件同时满足时才算完成：
-
-- copy 的 `kernels[]` 结构主要由 pass / segment 产物驱动
-- copy 的 `runtime_args` schema 主要由 pass 产物驱动
-- gemm 的 `kernels[]` 结构主要由 pass / segment 产物驱动
-- gemm 的 `runtime_args` schema 主要由 pass 产物驱动
-- runner 只消费 schema，不承担 gemm 语义补完
-- copy 与 gemm 都在 TT-Sim 或真实设备上执行并与 reference 对齐
-
-### 不算完成的情况
-
-以下情况不能宣称 Stage 2 完成：
-
-- copy 能跑，但仍主要依赖 runtime 专用 emitter
-- gemm 能跑，但 reader / compute / writer 仍由 runtime 大量特判拼出
-- gemm 能跑，但 `runtime_args` 仍主要由 `rt_mod_blackhole` 猜
-- copy/gemm 只验证 codegen 输出，不验证真实执行
-- gemm 执行通过，但 pass 产物与最终 spec 长期脱节
-
-## 协议变化
-
-### `target_mode`
-
-Stage 2 对 `target_mode` 的使用约束：
-
-- 保留其作为阶段性模式选择字段
-- 但它只应用于选择有限、明确的执行模式
-- 不应用作“用一个字符串兜底整套 copy/gemm 语义”
-
-### `kernels[].runtime_args`
-
-Stage 2 的要求是：
-
-- copy 路径的最小 runtime arg schema 只能作为过渡起点，必须开始从 pass 产物显式生成
-- gemm 路径的 runtime arg schema 必须开始从 pass 产物显式生成
-- runtime 只能消费 schema，不应长期拥有 kernel 语义定义权
-
-## 验证方式
-
-### 设计验证
-
-- `final_blackhole_backend_redesign.md`
-- `progress.md`
-- Stage 2 设计文档
-
-三者对 Stage 2 的目标、边界、验收标准描述一致。
-
-### 协议验证
-
-- pass 产出的 attrs / segment 信息能支撑 `ExecutableSpec` 构造
-- `ExecutableSpec` 中的 copy/gemm kernels / CB / runtime args 不再主要来自 runtime 猜测
-
-### 执行验证
-
-- Blackhole target 下应恢复 pass 主链验证：
+- 按 `stage2_pass_reuse_matrix.md` 逐项收正 pass 接入
+- 恢复：
   - `AnnotateDeviceRegions`
   - `SplitHostDevice`
   - `MakePackedAPI`
   - `LowerDeviceKernelLaunch` 或其 Blackhole 分支
-- 保留并改造 single-core copy 测试，验证其开始走 pass-driven schema
-- copy 主测试样例要改成显式 `T.copy(global -> shared -> global)`，不再用 `B[y, x] = A[y, x]` simple assignment 当主验收对象
-- 新增或改造 single-core gemm true E2E 测试
-- direct-call 与 `spec.json -> runner` 两条主路径都应继续保持一致
+- 收正 `rt_mod_blackhole` / `BlackholeModule` 的边界
+
+完成标准：
+
+- Blackhole 主路径重新回到 TIR / host-device / Packed API 主链
+- 不再长期依赖“无 `calling_conv` 也可当 device kernel”的路径
+
+### Stage 2B: single-core copy 语义集成
+
+目标：
+
+- 在已收正的 pass 主链上完成 copy 的 Blackhole-aware lowering
+
+任务：
+
+- 在 `LowerTileOp` 中保留 copy 的 Blackhole-preserving 语义
+- `LowerBlackholeOps` 从该语义提取：
+  - `blackhole.runtime_args`
+  - `blackhole.segment_plan`
+  - `blackhole.cb_requirements`
+- `PlanBlackholeCB` 生成 runtime-ready `blackhole.cb_configs`
+- copy 的 spec/codegen 主要由 pass 产物驱动
+
+完成标准：
+
+- copy 的 runtime args / CB / segment / kernel 结构主要来自 pass
+- runtime emitter 只允许保留短期回退，不再是主路径
+
+### Stage 2C: single-core GEMM 语义集成
+
+目标：
+
+- 用与 copy 相同的结构接入 GEMM
+
+任务：
+
+- 在 `LowerTileOp` 中保留 GEMM 的 Blackhole-preserving 语义
+- `LowerBlackholeOps` 提取 GEMM 的 reader / compute / writer 所需 schema
+- 停止扩展 runtime 侧 gemm 特化路径
+
+完成标准：
+
+- GEMM 的关键执行语义主要来自 pass，而不是 runtime/module 特判
+
+### Stage 2D: single-core true E2E
+
+目标：
+
+- copy 与 GEMM 都在 TT-Sim 或真实设备上完成 true E2E
+
+完成标准：
+
+- `spec.json -> runner` 路径通过
+- `artifact.codegen_mod["main"](...)` 路径通过
+- copy / GEMM 的关键执行语义主要来自 pass 产物
 
 ## 当前边界
 
 当前允许保留的过渡项：
 
-- `single_core_copy` 最小专用 emitter 作为短期回退路径
+- `single_core_copy` 最小专用 emitter 作为短期回退
 
-当前不允许再新增的过渡项：
+当前不允许继续扩大的过渡项：
 
-- 将 copy 的 runtime 特化继续扩大为长期主路径
-- 与 copy 对应的 `single_core_gemm` 大块 runtime 语义特化
-- 继续扩大 `rt_mod_blackhole` 对 kernel 语义的反推职责
+- copy runtime 特化继续扩大为正式主路径
+- GEMM 继续复制 copy 阶段的 runtime 特化做法
+- `rt_mod_blackhole` 继续承担 kernel 语义恢复、PrimFunc 参数分类和 host/device 语义定义
 
 ## 当前进展
 
-- 已完成的 Stage 2A 落地点：
-  - `LowerBlackholeOps` 对 copy 已开始写出 pass attrs / builtin，而不再只依赖 runtime 专用猜测
-  - copy 已能显式写出：
-    - `blackhole.target_mode = "single_core_copy"`
-    - `blackhole.runtime_args`
-    - `blackhole.segment_plan`
-    - input/output `blackhole.cb_requirements`
-  - pure copy 已开始被 lower 成真实的 Blackhole 中层 builtin call：
-    - `tl.blackhole.read_tile_to_cb`
-    - `tl.blackhole.write_tile_from_cb`
-  - `PlanBlackholeCB` 已能把这些 requirements 落成 input/output `blackhole.cb_configs`
-  - `rt_mod_blackhole` 已优先读取 pass 产出的：
-    - `blackhole.runtime_args`
-    - `blackhole.segment_plan`
-- 当前仍未完成：
-  - `CodeGenBlackhole` 已开始让上述 copy builtin 成为当前 single-core copy 主执行来源
-  - copy 的 runtime arg 绑定虽然已经开始由 pass schema 主导，但这一步只解决了“固定参数槽位假设”问题，还没有解决“整段函数体 copy 语义如何从 IR 中分析出来”这个更核心的问题
-  - `rt_mod_blackhole` 仍保留最小专用 emitter 作为回退
-  - 当前 pure copy 仍会在逐标量 `BufferStore` 改写时发射 tile-level builtin；对 `32x32` simple copy，lowered TIR 和 codegen 里仍能看到循环体内重复出现 `read_tile_to_cb(..., tile_index=0)` / `write_tile_from_cb(..., tile_index=0)`
-  - 这说明 copy 的更真实 tile/dataflow 语义还没有完全从 pass 直达 kernel emission，当前实现仍是从 runtime emitter 向 compiler 主链迁移中的中间态
-  - gemm 仍未开始接入同一套 pass-driven schema
+- copy 已开始产出：
+  - `blackhole.target_mode`
+  - `blackhole.runtime_args`
+  - `blackhole.segment_plan`
+  - `blackhole.cb_requirements`
+  - `tl.blackhole.read_tile_to_cb / write_tile_from_cb`
+- `PlanBlackholeCB` 已能将 copy requirements 落成 `blackhole.cb_configs`
+- `CodeGenBlackhole` 已开始消费 copy builtin
+- 但 Stage 2A 仍未完成，因此当前 copy 语义集成仍只是中间态，不应被视为正式 compiler path
 
-## 结论
+## 验证方式
 
-Stage 2 的本质不应定义为“把 gemm 跑起来”，而应定义为：
+### 结构验证
 
-- 在 single-core copy 与 gemm 上开始把执行语义从 runtime 迁回 pass
-- 让 `ExecutableSpec` 真正成为 pass 产物的执行载体
-- 在此基础上完成 copy + gemm 的 single-core true E2E
+- Blackhole target 恢复 pass 主链验证：
+  - `AnnotateDeviceRegions`
+  - `SplitHostDevice`
+  - `MakePackedAPI`
+  - `LowerDeviceKernelLaunch`
+
+### copy / GEMM 语义验证
+
+- pass 产出的 attrs / builtin / segment 能支撑 `ExecutableSpec`
+- `ExecutableSpec` 中的 kernels / runtime args / CB 不再主要来自 runtime 猜测
+
+### 执行验证
+
+- copy 与 GEMM 都需要覆盖：
+  - `spec.json -> runner`
+  - `artifact.codegen_mod["main"](...)`
+- 环境不满足时应显式 skip，而不是混成编译链失败

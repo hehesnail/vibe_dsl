@@ -1,100 +1,90 @@
 # TileLang Blackhole 后端开发进度
 
-> 当前唯一设计文档: `tasks/dev_design/final_blackhole_backend_redesign.md`
-> 说明: 本文档只维护阶段状态和任务流转，不再承载任何总体架构设计。
+> 当前唯一总体设计文档: `tasks/dev_design/final_blackhole_backend_redesign.md`
+> 说明: 本文档只维护阶段状态、任务拆分和当前下一步。
 
 ## 当前阶段
 
-- **阶段**: Stage 2 single-core pass integration
+- **阶段**: Stage 2A pass 主链接入收正
 - **日期**: 2026-03-19
-- **目标**: 先把 Blackhole 重新接回 TileLang/TVM 的 PrimFunc/TIR pass 主链，在此基础上推进 copy/gemm 的 pass/schema 收口，再做 single-core true E2E
+- **当前目标**: 先把 Blackhole 重新接回 TileLang / TVM 的 PrimFunc/TIR pass 主链与 host/device 主链，再继续推进 copy / GEMM 的语义集成
 
-## 当前判断
+## 当前状态判断
 
-- pass 已接入 lowering pipeline。
-- `spec.json -> runner` 的最小 single-core copy 已在 TT-Sim 上真实执行通过。
-- `BlackholeModule` 从 Python 直接调用 packed func 已在 TT-Sim 上跑通 single-core copy，Stage 1 主调用面已收口。
-- Stage 2 不能让 copy 长期停留在 runtime 专用旁路，也不能继续为 gemm 复制类似特化，否则只能证明执行链路通，不能证明编译 pass 已打通。
-- Stage 2A copy pass integration 已开始落地：copy 的 `blackhole.runtime_args`、`blackhole.segment_plan` 与 input/output `cb_configs` 已可由 pass attrs 显式产出，`rt_mod_blackhole` 已优先消费这些 pass 产物。
-- copy 主验收对象已从 `global -> global` simple assignment 调整为 TileLang 原始 `T.copy(global -> shared -> global)` 语义。
-- `LowerBlackholeOps` 现在不再把 staged copy 当成逐标量 `BufferStore` 命中即改写，而是开始识别 `LowerTileOp` 之后的 staged copy loop，并产出 `tl.blackhole.read_tile_to_cb / write_tile_from_cb` builtin。
-- `CodeGenBlackhole` 已开始直接消费这些 builtin 生成当前 single-core copy 执行源码；runtime emitter 仅保留回退。
-- copy codegen 的固定参数槽位假设已开始拆除：`CodeGenBlackhole` 现优先从 `blackhole.runtime_args` 和 buffer 绑定里取地址变量，不再要求固定的 `src_dram_addr / dst_dram_addr / num_tiles / scratch_l1_addr` 命名。
-- 针对显式 staged copy 样例，loop 内重复 `tile_index=0` 的错误 lowering 已开始收敛：当前 lowered TIR / codegen 已能在 outer tile loop 中保留一组 read/write builtin，而不再在 vectorized 元素循环里重复发射 tile builtin。
-- 但 current copy 仍未达到“完全通用的 compiler lowering”标准：当前收敛的是 `LowerTileOp` 后的显式 staged copy loop，不是任意 `global -> global` 赋值循环自动 canonicalization。
-- 当前最主要的结构问题已进一步明确：Blackhole 还在 `OptimizeForTarget` 中 early return，导致大段通用 TIR 优化、`SplitHostDevice`、`MakePackedAPI`、`LowerDeviceKernelLaunch` 被旁路。
-- 因此 Stage 2 的前置任务已调整为“pass 复用矩阵 + 主链接入收正”，而不是直接在当前旁路结构上继续扩 copy/gemm。
-- 当前不再把“能生成 kernel 字符串”视为阶段完成。
+- Stage 0 的协议和执行载体已经落地：
+  - `ExecutableSpec`
+  - `BlackholeModule`
+  - `spec.json -> runner`
+- Stage 1 single-core copy 执行闭环已完成：
+  - runner 路径已在 TT-Sim 上通过
+  - Python direct-call 路径已在 TT-Sim 上通过
+- copy 已开始从 runtime 特化迁回 pass / builtin / codegen 主链：
+  - `blackhole.runtime_args`
+  - `blackhole.segment_plan`
+  - `blackhole.cb_configs`
+  - `tl.blackhole.read_tile_to_cb / write_tile_from_cb`
+- 但当前最主要的结构问题已经明确：
+  - Blackhole 仍在 `OptimizeForTarget` 中 early return
+  - 通用 TIR 规范化、`SplitHostDevice`、`MakePackedAPI`、`LowerDeviceKernelLaunch` 仍被旁路
+  - `rt_mod_blackhole` / `BlackholeModule` 还在间接承担部分 PrimFunc 参数和 host/device 语义
 
-## 任务状态总览
+## 分阶段任务
 
-| 阶段 | 任务 | 状态 | 备注 |
-|------|------|------|------|
-| Stage 0 | 统一 attrs 到 `blackhole.*` | 🔄 进行中 | `rt_mod_blackhole` 已切到 `blackhole.cb_configs/core_plan/target_mode` 主路径 |
-| Stage 0 | 引入 `ExecutableSpec` | 🔄 进行中 | 已落头文件、extractor 和最小 runner JSON 对接 |
-| Stage 0 | 重构 `rt_mod_blackhole` | 🔄 进行中 | 已抽取 Stage 0 spec，并生成最小 runtime arg schema |
-| Stage 0 | 重构 `BlackholeModule` | 🔄 进行中 | 已开始写 `spec.json + input.bin + output.bin + kernel.cpp` |
-| Stage 0 | 重写 runner 协议 | 🔄 进行中 | 已切到 `spec.json + input.bin + output.bin`，runner 构建入口已收回 `tilelang_repo/tools/blackhole_runner/` |
-| Stage 1 | single-core copy 闭环 | ✅ 已完成 | spec-driven runner 与 `BlackholeModule` direct call 都已在 TT-Sim 上通过 |
-| Stage 2 | single-core pass integration | 🔄 进行中 | 先迁 copy，再迁 gemm，最后做统一 true E2E |
-| Stage 3 | multi-core runtime 调度 | ⏳ 未开始 | per-core args |
+| 阶段 | 目标 | 状态 | 当前重点 |
+|------|------|------|----------|
+| Stage 0 | 协议与执行载体 | ✅ 已基本完成 | `ExecutableSpec`、runner 协议、module/runner 主路径已落地 |
+| Stage 1 | single-core copy 执行闭环 | ✅ 已完成 | TT-Sim 下 runner 与 direct-call 都已通过 |
+| Stage 2A | pass 主链接入收正 | 🔄 进行中 | 恢复通用 TIR / host-device / Packed API pass 主线 |
+| Stage 2B | single-core copy 语义集成 | ⏳ 未完成 | 在收正后的主链上完成 copy 的 Blackhole-aware lowering |
+| Stage 2C | single-core GEMM 语义集成 | ⏳ 未开始 | 用与 copy 相同的结构接入 GEMM |
+| Stage 2D | single-core true E2E | ⏳ 未完成 | copy + GEMM 都由 pass 主导并完成 true E2E |
+| Stage 3 | multi-core runtime 调度 | ⏳ 未开始 | `CorePlan`、per-core runtime args、多核执行 |
+
+## Stage 2A 任务拆分
+
+### 任务 1: 恢复 pass 主链
+
+- 恢复 Blackhole 对通用 TIR 规范化 pass 的复用
+- 去掉 `OptimizeForTarget` 中对 Blackhole 的长期 early return 设计
+
+### 任务 2: 恢复 host/device 主链
+
+- 恢复：
+  - `AnnotateDeviceRegions`
+  - `SplitHostDevice`
+  - `MakePackedAPI`
+  - `LowerDeviceKernelLaunch` 或其 Blackhole 分支
+- 停止长期依赖“没有 `calling_conv` 也可当 device kernel”的路径
+
+### 任务 3: 收正 runtime/module 边界
+
+- `rt_mod_blackhole` 只消费 device-side PrimFunc 和 pass schema
+- `BlackholeModule` 不再定义 PrimFunc 参数类别或 host/device 边界
+
+## Stage 2B 任务拆分
+
+- 在已恢复的主链上，给 `LowerTileOp` 增加 Blackhole-aware copy lowering
+- 让 `LowerBlackholeOps` 从 Blackhole-preserving TIR 提取：
+  - segment
+  - CB requirements
+  - runtime args
+- 让 copy 的 spec/codegen 主要由 pass 产物驱动
+
+## Stage 2C 任务拆分
+
+- 给 `LowerTileOp` 增加 Blackhole-aware GEMM lowering
+- 停止为 GEMM 扩展 runtime 侧特化
+- 让 GEMM 复用 copy 已建立的 schema / CB / spec 路径
 
 ## 当前下一步
 
-1. 先落地 `stage2_pass_reuse_matrix.md` 中的 pass 接入收正方案，明确哪些通用 TIR / host-device / Packed API pass 需要对 Blackhole 恢复复用。
-2. 以恢复 `AnnotateDeviceRegions` / `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch` 或其 Blackhole 分支为优先项，停止长期依赖“无 `calling_conv` 也可当 device kernel”的路径。
-3. 在主链接入收正后，再继续推进 copy：把 staged copy loop 识别从 MVP 样例扩展到更稳的 tile-range 分析，减少对当前 `LowerTileOp` 具体 loop 形态的脆弱依赖。
-4. 让 runner / direct-call 真执行测试继续按环境 gate 显式 skip，避免把 `TT_METAL_RUNTIME_ROOT` / TT-Sim 问题误记成编译链回归。
-5. 在 copy 的 pass/schema 和 host-device 主线都收正后，再用同一套机制承接 gemm，最后推进 single-core true E2E。
+1. 按 `stage2_pass_reuse_matrix.md` 收正 Blackhole 对现有 pass 主链的接入。
+2. 优先恢复 `SplitHostDevice`、`MakePackedAPI` 与 `LowerDeviceKernelLaunch` 相关路径。
+3. 在主链接入恢复后，再继续推进 copy 的 tile-range / dataflow 语义分析。
+4. 继续把真执行测试按环境 gate 分层，避免把 TT-Sim 环境问题记成编译链问题。
 
-## 最近更新
+## 当前活动设计文档
 
-- 2026-03-18:
-  - 新增 `tasks/dev_design/stage0_executable_spec_attr_alignment.md`
-  - `blackhole_module.h` 已引入 `ExecutableSpec / KernelSpec / CorePlan` 骨架
-  - `AssignBlackholeCores` 已输出 `blackhole.core_plan` 和默认 `blackhole.target_mode`
-  - `rt_mod_blackhole` 已读取新 attr schema 并抽取 Stage 0 spec
-  - `BlackholeModule` 已改为写 `spec.json + input.bin + output.bin + kernel.cpp`
-  - runner 已改为读取 `spec.json` 并按 spec 建 CB / kernel / runtime args
- - runner 源码与构建入口已收敛到 `tilelang_repo/tools/blackhole_runner/`
-  - 已新增顶层总控脚本 `scripts/build_blackhole_stack.sh`
-  - `scripts/build_blackhole_runner.sh` 现会先 bootstrap `TT_METAL_HOME/build_Release`，再构建 runner
-  - runner 构建仍由 TileLang 侧 standalone CMake 管理，不再要求修改 `tt_metal_repo` 源码
-  - `scripts/setup_tt_sim.sh` 已补 `TT_METAL_RUNTIME_ROOT`
-  - 已通过 `./scripts/build_blackhole_runner.sh` 完成：
-    - `metal_example_add_2_integers_in_riscv` 编译
-    - TT-Sim smoke test
-    - `tilelang_blackhole_runner` 编译
-  - 新增 `tasks/dev_design/stage1_single_core_copy_closure.md`
-  - `LowerBlackholeOps` 已为纯 copy PrimFunc 写出 `blackhole.target_mode = "single_core_copy"`
-  - `rt_mod_blackhole` 已为 `single_core_copy` 生成最小 TT-Sim 兼容 copy kernel，并切到 `input/output_buffer_addr32 + tile_count + scratch_l1_buffer_addr32` schema
-  - runner 已支持 `scratch_l1_buffer_addr32` 并按 schema 自动分配 L1 scratch buffer
-  - `testing/python/target/blackhole/test_blackhole_e2e.py::test_blackhole_true_e2e` 已切到 `spec.json + input.bin + output.bin` 新协议
-  - 已通过 `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py -k true_e2e -s` 在 TT-Sim 上跑通 single-core copy，结果与 PyTorch reference 一致
-  - `BlackholeModule` 已修正 packed buffer 参数提取，不再把 `void_args` 误解为 `DLTensor*`
-  - 已新增 `test_blackhole_module_direct_call`
-  - 已通过 `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py -k 'true_e2e or module_direct_call' -s` 验证：
-    - `spec.json -> runner` single-core copy 继续通过
-    - Python 侧直接调用 `artifact.codegen_mod["main"](...)` 已在 TT-Sim 上通过
-  - 新增 `tasks/dev_design/stage2_single_core_pass_integration.md`
-  - 已明确 Stage 2 不再接受“runtime 特化 copy/gemm 后跑通”作为阶段完成标准
-  - `LowerBlackholeOps` 已为 pure copy 额外写出 `blackhole.runtime_args`
-  - `LowerBlackholeOps` 已为 pure copy 额外写出 `blackhole.segment_plan`
-  - pure copy 的 input/output CB requirements 已可由 pass 产出，`PlanBlackholeCB` 会落成 `blackhole.cb_configs`
-  - `rt_mod_blackhole` 已优先读取 `blackhole.runtime_args` 与 `blackhole.segment_plan`，不再只按 `target_mode` 猜 copy metadata
-  - 已新增 `test_blackhole_copy_pass_attrs`
-  - `LowerBlackholeOps` 已为 pure copy 产出 `tl.blackhole.read_tile_to_cb / write_tile_from_cb`
-  - `CodeGenBlackhole` 已为 single-core copy 直接消费上述 builtin 生成可执行 kernel
-  - `LowerBlackholeOps` 为 pure copy 产出的 `blackhole.runtime_args` 已开始携带 buffer 绑定信息
-  - `CodeGenBlackhole` 已改为从 `blackhole.runtime_args` 消费 copy buffer 地址变量，不再固定假设 `src_dram_addr / dst_dram_addr / num_tiles / scratch_l1_addr`
-  - 已通过 `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py -k 'copy_pass_attrs or copy_codegen_uses_runtime_schema' -s`
-  - Blackhole copy 主测试样例已切到显式 `T.copy(global -> shared -> global)`
-  - `LowerBlackholeOps` 已开始识别 `LowerTileOp` 后的 staged copy loop，并将其收敛成一组 `read_tile_to_cb / write_tile_from_cb`
-  - 已通过 `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py -s`
-    - `copy_pass_attrs` 与 `copy_codegen_uses_runtime_schema` 已通过
-    - `true_e2e` 与 `module_direct_call` 会在缺少 `TT_METAL_RUNTIME_ROOT` 时显式 skip
-- 2026-03-19:
-  - 新增 `tasks/dev_design/stage2_pass_reuse_matrix.md`
-  - 已明确 Blackhole 当前最大结构问题是 `OptimizeForTarget` early return，导致大段通用 TIR / host-device / Packed API pass 被旁路
-  - 已明确 Stage 2 的前置任务应先收正 pass 主链接入，而不是继续在当前自定义 kernel model 上堆 copy/gemm
-  - 已将总设计、Stage 2 设计和进度文档统一到“最大化复用 TileLang/TVM pass 主链”的结论上
+- `tasks/dev_design/final_blackhole_backend_redesign.md`
+- `tasks/dev_design/stage2_pass_reuse_matrix.md`
+- `tasks/dev_design/stage2_single_core_pass_integration.md`

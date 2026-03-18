@@ -3,88 +3,58 @@
 ## 基本信息
 
 - **文档ID**: `final_blackhole_backend_redesign`
-- **日期**: 2026-03-18
-- **适用范围**: `tilelang_repo` Blackhole 后端与 TileLang 管理的 runner、`tt_metal_repo` 依赖与 API 参考、相关测试与设计文档
-- **状态**: 当前唯一权威设计
+- **日期**: 2026-03-19
+- **状态**: 当前唯一权威总体设计
+- **适用范围**: `tilelang_repo` Blackhole 后端、runner 协议、相关测试与阶段设计
 
-## 1. 文档定位
+## 1. 当前目标
 
-本文档替代以下文档中已经过时或与源码现状冲突的总体设计结论：
+Blackhole 后端当前的正式目标已经收敛为两点：
 
-- `tasks/design_review.md`
-- `tasks/arch_design.md`
-- `tasks/progress.md` 中关于总体架构的描述
+1. **后端主产物是 `ExecutableSpec`，不是单个 kernel 字符串**
+2. **实现路径必须尽量复用 TileLang / TVM 现有 PrimFunc/TIR 主链，而不是自建一条平行流水线**
 
-旧文档仍保留历史记录价值，但后续实现、评审、拆任务、验收，统一以本文档为准。
+因此 Blackhole 后端不再以“写出一个能跑的 TT-Metal kernel 字符串”为完成标准，而是以：
 
-## 2. 最终结论
+- DSL / PrimFunc / TIR 主链保持成立
+- tile 语义在正确层级被保留并转换
+- `ExecutableSpec -> BlackholeModule -> runner` 负责执行
 
-当前工程的主要问题不是“少几个 pass”，而是后端主抽象放错了。
+作为正式目标。
 
-当前实现默认的核心假设是：
+## 2. 当前问题判断
 
-- 后端产物主要是一段 TT-Metal kernel C++ 字符串
-- runtime/runner 再根据这段代码和若干固定参数去执行
+当前代码已经完成了一部分基础工作：
 
-这个假设与 TT-Metal 的稳定编程模型冲突。TT-Metal 的真实主抽象是：
+- `ExecutableSpec`、runner 协议、`BlackholeModule` 外部执行路径已经存在
+- Stage 1 single-core copy 的 runner 路径和 direct-call 路径都跑通过
+- copy 已开始从 runtime 特化向 pass / builtin / codegen 主链迁移
 
-- `Program`
-- `CircularBuffer`
-- `Kernel`
-- `DataMovementConfig / ComputeConfig`
-- compile-time args
-- runtime args
-- multi-core scheduling
+但当前最大的结构问题已经从“协议没落地”转成了下面三点：
 
-因此，Blackhole 后端的正式目标不应是“把 TIR 直接打印成单个 kernel 文件”，而应是：
+1. **Blackhole 在 `OptimizeForTarget` 中过早 early return**
+   - 大段通用 TIR 规范化与优化 pass 没被复用
+2. **Blackhole 当前跳过 `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch`**
+   - PrimFunc 参数语义、host/device 边界和 runtime 参数绑定仍有一部分在 `rt_mod_blackhole` / `BlackholeModule` 侧补洞
+3. **`LowerBlackholeOps` 的主接入点仍偏晚**
+   - 当前很多 copy 语义仍是从 `LowerTileOp` 之后的 staged loop 恢复，而不是在更稳定的 target-aware lowering 边界上保留
 
-- **从 TileLang TIR 提取 TT-Metal `ExecutableSpec`**
-- **由 spec-driven runtime/runner 去构建并执行 TT-Metal Program**
+因此当前阶段的核心任务已经不是“继续补一个能跑的 copy/gemm”，而是：
 
-## 3. 当前实现的状态诊断
+- **先把 Blackhole 重新接回 TileLang / TVM 的 TIR 主链**
+- **再在这个基础上推进 copy / gemm 的语义集成**
 
-### 3.1 已经存在且应保留的部分
+## 3. 正式架构
 
-- `lower.py` 已经接入：
-  - `LowerBlackholeOps`
-  - `PlanBlackholeCB`
-  - `AssignBlackholeCores`
-- `LowerBlackholeOps` 对 matmul builtin lowering 已有基础框架
-- `PlanBlackholeCB` 已有基本的 CB 规划和约束检查
-- `AssignBlackholeCores` 已有 grid 分析和 core 规划基础
-- `CodeGenBlackhole` 已有 builtin visitor 框架
-- 外部 runner 路径已经打通了“runtime module -> 外部可执行程序”的工程边界
-
-### 3.2 已确认错误或不再采用的设计
-
-- 以“单个 kernel 字符串”为后端主产物
-- 继续把 `SplitBlackholeKernel` 放在关键路径
-- 以裸 `noc_async_read/write(src_addr, dst_addr, size)` 作为主要中间抽象
-- 让 codegen 负责多核的物理 core 映射
-- 继续扩展当前固定命令行 runner 协议
-- 将 `blackhole_module_direct.cc` 作为主路径
-
-### 3.3 已确认的断层
-
-- `PlanBlackholeCB` 写的是 `blackhole.cb_configs`
-- `rt_mod_blackhole.cc` 仍在读旧 attr 名
-- 现有 runtime 和 pass 产物没有真正接通
-- `LowerBlackholeOps` 的 copy/dataflow lowering 仍不足以恢复 TT-Metal 真正需要的 tile access 语义
-- `CodeGenBlackhole` 仍默认一个 PrimFunc 对应一个 `kernel_main()`
-- runner 只支持固定输入，不支持多 kernel、多 CB、compile-time args、per-kernel runtime args schema 和 per-core runtime args
-- Blackhole 目前在 `OptimizeForTarget` 中过早退出，绕过了大量 TileLang/TVM 通用 TIR 优化与 host/device 约束 pass
-- Blackhole 当前跳过 `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch`，导致 PrimFunc 参数、host/device 边界和 runtime 参数语义长期由 `rt_mod_blackhole` / `BlackholeModule` 间接补洞
-
-## 4. 正式架构
-
-### 4.1 总体结构
+### 3.1 总体结构
 
 ```text
-TileLang DSL / TIR
-  -> 现有 TileLang legalize / optimize
-  -> LowerBlackholeOps
-  -> PlanBlackholeCB
-  -> AssignBlackholeCores
+TileLang DSL
+  -> PrimFunc / TIR
+  -> 通用 legalize / normalize / optimize passes
+  -> LowerTileOp(Blackhole-aware)
+  -> AnnotateDeviceRegions / SplitHostDevice / MakePackedAPI / LowerDeviceKernelLaunch
+  -> LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores
   -> BuildTileLangBlackholeWithoutHost
       -> Extract ExecutableSpec
       -> Emit kernel source(s)
@@ -93,368 +63,261 @@ TileLang DSL / TIR
       -> serialize spec + tensor/scalar args
       -> invoke runner
   -> runner
-      -> CreateProgram
-      -> CreateCircularBuffer(s)
-      -> CreateKernelFromString / CreateKernel
-      -> SetRuntimeArgs(per-kernel, per-core)
-      -> Enqueue workload
+      -> CreateProgram / CB / Kernel / RuntimeArgs
+      -> enqueue and read back
 ```
 
-### 4.2 设计原则
+### 3.2 设计原则
 
-1. 以后端执行模型约束 lowering，不以后端打印器约束执行模型。
-2. 先建立稳定协议，再扩算子。
-3. compile-time args 与 runtime args 必须严格分层。
-4. multi-core 主要由 host/runtime 实现，不由 codegen 主导。
-5. `SplitBlackholeKernel` 不进入 MVP 主路径。
-6. Blackhole 以后端差异最小化为目标，优先复用 TileLang/TVM 现有 PrimFunc/TIR pass 主链。
-7. host/device 划分、Packed API 参数语义和通用 TIR 优化默认沿用 TileLang/TVM 现有约束，不再长期由 Blackhole 自定义模型旁路。
+1. **以后端执行模型约束 lowering，不以后端打印器约束执行模型**
+2. **优先复用现有 PrimFunc/TIR pass 主链，只在少量 target-aware 边界定制**
+3. **host/device 划分与 Packed API 参数语义尽量沿用 TileLang / TVM 现有模型**
+4. **compile-time args 与 runtime args 必须严格分层**
+5. **multi-core 主要由 host/runtime 承担，不由 codegen 主导**
+6. **`SplitBlackholeKernel` 和 `blackhole_module_direct.cc` 都不再是主路径设计前提**
 
-### 4.3 Pass 主链接入原则
+## 4. 模块边界
 
-Blackhole 不应再被视为“在 `LowerAndLegalize` 之后直接自建 device pipeline”的特例目标，而应尽量回到：
+### 4.1 `LowerTileOp`
 
-```text
-DSL / PrimFunc
-  -> TileLang/TVM 通用 legalize / normalize / optimize
-  -> LowerTileOp(Blackhole-aware)
-  -> AnnotateDeviceRegions / SplitHostDevice / MakePackedAPI / LowerDeviceKernelLaunch
-  -> Blackhole-specific device passes
-  -> BuildTileLangBlackholeWithoutHost
-```
+这是 Blackhole 最关键的 target-aware 接入点。
 
-其中：
+长期要求：
 
-- `LowerTileOp` 是 Blackhole 最关键的 target-aware 接入点
-- `LowerBlackholeOps` 不再主要承担晚期 loop 语义恢复
-- `rt_mod_blackhole` 与 `BlackholeModule` 不再长期承担 PrimFunc 参数语义与 host/device 边界定义
+- 继续在整个 PrimFunc 上工作
+- 保留普通控制流、标量计算、索引与边界逻辑
+- 对 `tl.copy` / `tl.gemm` 等 tile 语义增加 Blackhole-aware 分支
+- 不再把这些语义完全压碎后再让 Blackhole 从晚期 loop 恢复
 
-## 5. 核心数据结构
+### 4.2 `LowerBlackholeOps`
 
-建议在 `src/target/blackhole_module.h` 一带定义并替换当前以 `BlackholeFunctionInfo` 为中心的弱结构。
+职责：
 
-```cpp
-struct CBConfig {
-  uint32_t cb_id;
-  std::string name;
-  std::string role;              // input/output/intermediate
-  uint32_t page_size_bytes;
-  uint32_t num_pages;
-  std::string data_format;       // Float16_b, Float32, ...
-};
+- 消费 `LowerTileOp(Blackhole-aware)` 之后的 Blackhole-preserving TIR
+- 提取 segment / CB requirements / runtime arg schema
+- 产出 `blackhole.*` attrs 和中层 builtin
 
-struct CorePlan {
-  uint32_t grid_x;
-  uint32_t grid_y;
-  uint32_t cores_needed;
-  uint32_t work_per_core;
-  uint32_t core_grid_x;
-  uint32_t core_grid_y;
-};
+不再承担：
 
-struct KernelArgSpec {
-  std::string name;
-  std::string kind;              // buffer_addr, scalar_u32, start_tile_id, work_per_core
-  std::string dtype;
-};
+- 从晚期普通 loop 中恢复绝大多数 copy/gemm 语义
+- 猜 PrimFunc 参数结构
+- 用 runtime 特判兜底 device kernel 结构
 
-struct KernelSpec {
-  std::string name;
-  std::string kind;              // reader / compute / writer / fused_dataflow
-  std::string core_type;         // brisc / ncrisc / trisc
-  std::string source_code;
-  std::vector<uint32_t> compile_time_args;
-  std::vector<KernelArgSpec> runtime_args;
-};
+### 4.3 `PlanBlackholeCB`
 
-struct ExecutableSpec {
-  std::string entry_name;
-  std::string target_mode;       // single_core_copy / single_core_gemm / multi_core_gemm
-  std::vector<CBConfig> cb_configs;
-  CorePlan core_plan;
-  std::vector<KernelSpec> kernels;
-};
-```
+职责保持明确：
 
-## 6. Attr Schema
+- 从 `blackhole.cb_requirements` / segment 信息收敛到 runtime-ready `blackhole.cb_configs`
 
-只保留以下命名：
+### 4.4 `AssignBlackholeCores`
+
+职责保持明确：
+
+- 只生成 host/runtime 消费的 core scheduling plan
+- 不在 codegen 中固化物理 core 映射
+
+### 4.5 `rt_mod_blackhole`
+
+职责：
+
+- 从 device-side PrimFunc 和 attrs 提取 `ExecutableSpec`
+- 构造 `BlackholeModule(spec)`
+
+约束：
+
+- 只消费 pass 产出的 device-side 语义和 schema
+- 不再长期把“没有 `calling_conv` 的 PrimFunc”视为正式 device kernel 模型
+- 不再定义 PrimFunc 参数类别、host/device 边界和 runtime 参数意义
+
+### 4.6 `BlackholeModule`
+
+职责：
+
+- 作为 TVM runtime adapter / host-side 执行载体
+- 按 spec 序列化 `spec.json + input.bin + output.bin`
+- 调用 runner
+
+约束：
+
+- 不再长期承担 Packed API 或 host/device 语义
+- 输入输出 buffer、scalar、dynamic shape 参数如何映射到 runtime args，必须由 PrimFunc + pass schema 决定
+
+### 4.7 runner
+
+职责：
+
+- 读取 `ExecutableSpec`
+- 创建 `Program`
+- 创建 CB / kernel
+- 设置 compile-time args / runtime args
+- 执行并回读
+
+runner 只消费协议，不理解 PrimFunc / TIR 语义。
+
+## 5. 核心协议
+
+### 5.1 `ExecutableSpec`
+
+当前主协议结构保持：
+
+- `CBConfig`
+- `CorePlan`
+- `KernelArgSpec`
+- `KernelSpec`
+- `ExecutableSpec`
+
+后续工作重点不是继续改协议名字，而是让这些字段的来源真正回到 pass / device-side schema。
+
+### 5.2 Attr Schema
+
+当前主线只保留：
 
 - `blackhole.cb_requirements`
 - `blackhole.cb_configs`
 - `blackhole.core_plan`
 - `blackhole.segment_plan`
 - `blackhole.target_mode`
+- `blackhole.runtime_args`
 
-明确移除旧协议：
+旧协议不再扩展。
 
-- `tl.blackhole_cb_config`
-- `tl.blackhole_kernel_split`
+## 6. 算子策略
 
-## 7. 各模块最终职责
+### 6.1 Copy
 
-### 7.1 `LowerBlackholeOps`
+copy 的正式目标不再是“simple assignment 能猜成 copy”，而是：
 
-职责：
+- 以 TileLang 原始 `T.copy` 语义为验收对象
+- 在 Blackhole 上收敛成 `global -> shared/CB -> global` 形式
+- 经过 TIR 主链、host/device 主链、Blackhole device passes 后形成 `ExecutableSpec`
 
-- 将 TileLang 高层语义降为 TT-Metal 可还原的段内语义
-- 写入 `cb_requirements`
-- 写入 segment 所需的中间信息
+### 6.2 GEMM
 
-前置约束：
+GEMM 的后续集成必须复用与 copy 相同的结构：
 
-- 长期输入应为经过 `LowerTileOp(Blackhole-aware)` 后的 PrimFunc
-- 不应继续依赖“`LowerTileOp` 完全展开后，再从普通 loop/load/store 里恢复绝大多数 tile 语义”作为主路径
+- 不再接受 runtime 侧大块 gemm 特化
+- reader / compute / writer 语义必须主要来自 pass 产物
 
-保留 compute builtin：
+### 6.3 Multi-core
 
-- `cb_reserve_back`
-- `cb_push_back`
-- `cb_wait_front`
-- `cb_pop_front`
-- `mm_init`
-- `matmul_tiles`
-- `tile_regs_*`
-- `pack_tile`
+multi-core 的主要实现位置保持不变：
 
-新增中层 dataflow builtin：
-
-- `blackhole.read_tile_to_cb(buffer, tile_index, cb_id, tile_bytes, accessor_slot)`
-- `blackhole.write_tile_from_cb(cb_id, buffer, tile_index, tile_bytes, accessor_slot)`
-
-### 7.2 `PlanBlackholeCB`
-
-职责：
-
-- 从 `blackhole.cb_requirements` 规划 CB
-- 输出 runtime-ready `blackhole.cb_configs`
-- 验证 Blackhole 约束
-
-建议 CB 分区：
-
-- input: `0..15`
-- output: `16..31`
-- intermediate: `32..63`
-
-### 7.3 `AssignBlackholeCores`
-
-职责：
-
-- 只产生 host scheduling plan
-- 不负责 device code 中 thread index 的最终物理化
-
-输出：
-
-- `grid_x`
-- `grid_y`
-- `cores_needed`
-- `work_per_core`
-- physical grid size
-
-### 7.4 `SplitBlackholeKernel`
-
-结论：
-
-- 退出主路径
-- 文件可保留
-- 不作为当前阶段前置条件
-
-### 7.5 `CodeGenBlackhole`
-
-拆为两层：
-
-- `BlackholeSpecBuilder`
-  - 从 `PrimFunc + attrs` 构造 `ExecutableSpec`
-- `CodeGenBlackhole`
-  - 为单个 `KernelSpec` 生成源代码
-
-约束：
-
-- 不再假设一个 PrimFunc 只生成一个 `kernel_main`
-- 不再在 codegen 里把 `blockIdx` 固化为常量
-
-### 7.6 `rt_mod_blackhole`
-
-职责：
-
-- 从 IRModule/PrimFunc 提取 `ExecutableSpec`
-- 构造 `BlackholeModule(spec)`
-
-约束：
-
-- 只消费 pass 产出的 device-side 语义、attrs 和 schema
-- 不再长期把“没有 `calling_conv` 的 PrimFunc”视为正式 device kernel 模型
-- 不再定义 PrimFunc 参数类别、host/device 边界和 runtime 参数意义
-
-### 7.7 `BlackholeModule`
-
-职责：
-
-- TVM runtime adapter
-- 序列化 `ExecutableSpec + tensors + scalars`
-- 作为 host-side 执行载体调用 runner
-
-约束：
-
-- 不再长期承担 Packed API / host-device 边界语义
-- 输入输出 buffer、scalar、dynamic shape 参数如何映射到 runtime arg，应由 PrimFunc + pass schema 显式决定
-- 调用外部 runner
-
-runner 输入协议：
-
-- `spec.json`
-- `input.bin`
-- `output.bin`
-
-### 7.8 `blackhole_module_direct.cc`
-
-结论：
-
-- 退出主线
-- 作为实验代码保留即可
-- 不继续扩展
-
-### 7.9 runner
-
-职责：
-
-- 读取 `spec.json`
-- 创建设备与 `Program`
-- 创建所有 CB
-- 创建所有 kernels
-- 设置 compile-time args 与 runtime args
-- 执行并回读
-
-优先建议：
-
-- 使用 `CreateKernelFromString`
-
-## 8. 算子策略
-
-### 8.1 Copy
-
-MVP 目标：
-
-- single-core
-- `reader + writer` 两段为正式模式
-- 可临时兼容 `fused_dataflow`
-
-### 8.2 GEMM
-
-MVP 目标：
-
-- single-core
-- `reader + compute + writer`
-- compute 对齐 TT-Metal `mm_init / matmul_tiles / pack_tile`
-
-### 8.3 Multi-core
-
-实现位置：
-
-- runtime/runner
-
-实现方式：
-
+- host/runtime
 - 基于 `CorePlan`
-- materialize `start_tile_id`
-- materialize `work_per_core`
-- per-core `SetRuntimeArgs`
+- materialize per-core runtime args
 
-## 9. 测试矩阵
+## 7. 分阶段路线
 
-### 9.1 Pass tests
+### Stage 0: 协议与执行载体
 
-- 真 `PrimFunc`
-- 真 attrs/assert
-- 不再使用 mock-only pass 测试作为主验证
+目标：
 
-### 9.2 Spec tests
-
-- 输入 lowered PrimFunc
-- 断言 `ExecutableSpec` 结构正确
-
-### 9.3 Codegen tests
-
-- reader/writer/compute 各自源代码结构
-- compile-time args / runtime args schema
-
-### 9.4 True E2E
-
-- `copy single_core`
-- `gemm single_core`
-- `copy multi_core`
-- `gemm multi_core`
-
-注意：只做 codegen 或只做 reference compare 的脚本，不再称为 true E2E。
-
-## 10. 分阶段实施顺序
-
-### Stage 0: 协议重构
-
+- 统一 attrs 到 `blackhole.*`
 - 引入 `ExecutableSpec`
-- 统一 attrs
-- 重构 `rt_mod_blackhole`
-- 重构 `BlackholeFunctionInfo`
+- 改造 `rt_mod_blackhole` / `BlackholeModule`
+- runner 切到 `spec.json` 协议
 
-### Stage 1: copy 单核闭环
+状态：
 
-- 重做 copy lowering
-- spec-driven runner
-- 跑通 single-core copy
+- **已基本完成**
 
-### Stage 2: single-core pass integration
+### Stage 1: single-core copy 执行闭环
 
-- 先把 copy/gemm 的关键执行语义迁回 pass/schema
-- `kernels[]` / `runtime_args` / CB 依赖开始由 pass 产物主导
-- 先迁 copy，再迁 gemm
-- 最后完成 single-core copy/gemm 真执行闭环
+目标：
+
+- 在 TT-Sim 上跑通最小 single-core copy
+- 验证 `ExecutableSpec -> BlackholeModule -> runner` 主执行路径
+
+状态：
+
+- **已完成**
+
+### Stage 2A: pass 主链接入收正
+
+目标：
+
+- 恢复 Blackhole 对通用 TIR / host-device / Packed API pass 的复用
+- 结束当前 `OptimizeForTarget` early return 的长期设计
+- 恢复：
+  - `AnnotateDeviceRegions`
+  - `SplitHostDevice`
+  - `MakePackedAPI`
+  - `LowerDeviceKernelLaunch` 或其 Blackhole 分支
+
+状态：
+
+- **当前进行中**
+
+### Stage 2B: single-core copy 语义集成
+
+目标：
+
+- 在已收正的 pass 主链上完成 copy 的 Blackhole-aware lowering
+- 让 copy 的 runtime arg / CB / segment / codegen 主要来自 pass 产物
+
+状态：
+
+- **未完成，已有中间态实现**
+
+### Stage 2C: single-core GEMM 语义集成
+
+目标：
+
+- 用与 copy 相同的结构承接 GEMM
+- 停止 runtime 侧 gemm 特化路径扩张
+
+状态：
+
+- **未开始**
+
+### Stage 2D: single-core true E2E
+
+目标：
+
+- copy 与 GEMM 都在 TT-Sim 或真实设备上完成 true E2E
+- 且其关键执行语义主要来自 pass，不来自 runtime/module 特判
+
+状态：
+
+- **未完成**
 
 ### Stage 3: multi-core runtime 调度
 
-- runtime 消费 `CorePlan`
-- per-core runtime args
+目标：
 
-### Stage 4: 优化项
+- runner/runtime 消费 `CorePlan`
+- 支持 per-core runtime args
+- multi-core copy / GEMM 真执行
 
-- 评估是否需要 `SplitBlackholeKernel`
-- 评估 direct mode
-- 复杂算子扩展
+状态：
 
-## 11. 文件级改造建议
+- **未开始**
 
-优先改造：
+## 8. 验收标准
 
-- `tilelang_repo/src/target/blackhole_module.h`
-- `tilelang_repo/src/target/blackhole_module.cc`
-- `tilelang_repo/src/target/rt_mod_blackhole.cc`
-- `tilelang_repo/src/target/codegen_blackhole.cc`
-- `tilelang_repo/src/transform/lower_blackhole_ops.cc`
-- `tilelang_repo/src/transform/plan_blackhole_cb.cc`
-- `tilelang_repo/src/transform/assign_blackhole_cores.cc`
-- `tilelang_repo/tools/blackhole_runner/runner.cpp`
+### Stage 2 之前
 
-降级处理：
+- 不再把“能生成 kernel 字符串”视为阶段完成
+- 不再把 runtime 特判路径视为正式编译器路径
 
-- `tilelang_repo/src/target/blackhole_module_direct.cc`
-- `tilelang_repo/src/transform/split_blackhole_kernel.cc`
+### Stage 2 完成
 
-## 12. 需要显式废弃的旧结论
+必须同时满足：
 
-以下说法不再成立：
+- Blackhole 已重新接回 TIR / host-device / Packed API 主链
+- copy / GEMM 的关键执行语义主要来自 pass 产物
+- `ExecutableSpec` 成为 pass 结果的执行载体
+- single-core copy / GEMM 完成 true E2E
 
-- “Blackhole 主产物是一个 kernel 字符串”
-- “SplitBlackholeKernel 是当前阶段核心前置”
-- “codegen 负责 blockIdx 到物理 core 的主要映射”
-- “当前 Python/E2E 测试已经证明完整执行闭环”
-- “外部 runner 现有命令行协议足够扩展”
+### Stage 3 完成
 
-## 13. 验收标准
+- multi-core copy / GEMM true E2E
+- per-core runtime args 与 `CorePlan` 正常工作
 
-一个阶段是否真正完成，以以下标准判断：
+## 9. 当前配套文档
 
-- Stage 0: pass attrs 与 runtime 协议完全一致
-- Stage 1: single-core copy 真执行并结果正确
-- Stage 2: single-core copy/gemm 真执行并结果正确，且 copy/gemm 关键执行语义主要由 pass 产物而非 runtime 特判提供
-- Stage 3: multi-core copy/gemm 真执行并结果正确
-
-任何只验证 codegen、只验证字符串包含关系、只验证参考算法的脚本，都不能单独作为阶段完成依据。
+- `tasks/progress.md`: 当前阶段状态与任务流转
+- `tasks/dev_design/stage2_pass_reuse_matrix.md`: pass 复用矩阵与接入边界
+- `tasks/dev_design/stage2_single_core_pass_integration.md`: Stage 2 活动阶段设计
+- `tasks/dev_design/stage0_executable_spec_attr_alignment.md`: Stage 0 历史设计
+- `tasks/dev_design/stage1_single_core_copy_closure.md`: Stage 1 历史设计
