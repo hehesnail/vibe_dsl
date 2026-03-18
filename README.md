@@ -1,103 +1,57 @@
 # TileLang Blackhole 后端扩展项目
 
-为 TileLang DSL 添加 Tenstorrent Blackhole 硬件后端支持，基于 TT-Metal 底层框架实现编译器后端。
+这是一个为 TileLang 增加 Tenstorrent Blackhole 后端的开发工作区。
 
-## 架构概览
+## 当前入口
 
-```
-TileLang DSL (Python)
-       ↓ LowerAndLegalize
-TIR (TVM IR)
-       ↓ Blackhole Passes (AssignCores/PlanCB/SplitKernel)
-TT-Metal C++ (BRISC/TRISC/NCRISC)
-       ↓ JIT Build (libtt_metal.so)
-RISC-V ELF
-       ↓ Runtime
-Blackhole Hardware (140 cores, 14x10 grid)
-```
+当前仓库只保留一份总体设计：
 
-## 核心设计原则
+- `tasks/dev_design/final_blackhole_backend_redesign.md`
 
-- **Blackhole 专用**：专注 14x10 grid, 64 CBs, 1.5MB L1 架构
-- **DSL 零修改**：同一套 TileLang 代码编译到不同后端
-- **动态链接**：通过 libtt_metal.so 调用 TT-Metal API
-- **TT-Sim 验证**：无硬件条件下使用仿真器验证
+当前工作规范：
 
-```python
-# 同一套 DSL 代码，编译到不同硬件
-@T.prim_func
-def gemm_kernel(A: T.Buffer, B: T.Buffer, C: T.Buffer):
-    with T.Kernel(T.ceildiv(N, 32), T.ceildiv(M, 32)) as (bx, by):
-        A_shared = T.alloc_shared((32, 32), "float16")
-        B_shared = T.alloc_shared((32, 32), "float16")
-        C_local = T.alloc_fragment((32, 32), "float32")
+- `AGENTS.md`
 
-        T.copy(A[by*32:(by+1)*32, :], A_shared)
-        T.copy(B[:, bx*32:(bx+1)*32], B_shared)
-        T.gemm(A_shared, B_shared, C_local)
-        T.copy(C_local, C[by*32:(by+1)*32, bx*32:(bx+1)*32])
+当前状态追踪：
 
-# target = "cuda"      → CUDA kernel
-# target = "blackhole" → Blackhole R/C/W kernels
-```
+- `tasks/progress.md`
 
-## 核心映射关系
+## 仓库组成
 
-| TileLang DSL | GPU (CUDA) | Blackhole |
-|--------------|------------|-----------|
-| `T.Kernel(grid_x, grid_y)` | Grid/Block 硬件调度 | **14x10 Core Grid 软件切分** |
-| `bx, by` | `blockIdx.x/y` | **Core (X,Y) ∈ [0,13]x[0,9]** |
-| `T.alloc_shared` | `__shared__` | **Circular Buffer (CB 0-63)** |
-| `T.copy` | 隐式/异步拷贝 | **显式 NoC 读写** |
-| 同步 | `__syncthreads()` | **CB push/pop** |
+- `tilelang_repo/`：TileLang 开发仓库，Blackhole 后端代码主要改这里
+- `tt_metal_repo/`：TT-Metal 开发仓库，runner、示例、API 参考主要看这里
+- 顶层仓库：任务文档、经验记录、测试、脚本和总控
 
-## 项目结构
+## 常用目录
 
-```
-.
-├── CLAUDE.md              # 工作流程入口（Agent 自动加载）
-├── docs/                  # 技术文档
-│   ├── tilelang/          # TileLang 架构分析
-│   └── tt_metal/          # TT-Metal 源码分析
-├── memory/                # 知识管理
-│   ├── general_dev.md     # 开发经验总结
-│   └── bugs.md            # 问题与解决方案
-├── tasks/                 # 任务管理
-│   ├── arch_design.md     # 总体架构设计
-│   ├── progress.md        # 任务状态看板
-│   └── dev_design/        # 各任务详细设计
-├── tilelang_repo/         # TileLang 源码（⚠️ 自行维护的修改版）
-│                           # 用于开发 Blackhole 后端，不向原仓库提交
-└── tt_metal_repo/         # TT-Metal 源码（⚠️ 自行维护的修改版）
-                            # 编译生成 libtt_metal.so，不向原仓库提交
-```
+- `tilelang_repo/src/target/`
+- `tilelang_repo/src/transform/`
+- `tilelang_repo/tilelang/engine/`
+- `tt_metal_repo/tt_metal/programming_examples/tilelang_blackhole_runner/`
+- `tt_metal_repo/tt_metal/api/tt-metalium/`
+- `tests/target/`
+- `tests/transform/`
+- `memory/`
+- `docs/`
+- `tasks/`
 
-## 开发阶段
+## 当前工程约束
 
-| 阶段 | 目标 | 关键产出 |
-|------|------|----------|
-| Phase 0 | 环境准备 | TileLang/TT-Metal/TT-Sim 编译完成 |
-| Phase 1 | CodeGen 框架 | 单核 Copy 在 TT-Sim 运行 |
-| Phase 2 | R/C/W 拆分 | 140 核并行 Copy |
-| Phase 3 | GEMM 支持 | 矩阵乘法正确性验证 |
-| Phase 4 | 性能优化 | 自动 tile size、内存优化 |
+- Blackhole 后端总体设计只维护一份，不再保留平行架构文档
+- 当前主路径不是“单个 kernel 字符串”，而是朝 `ExecutableSpec -> runner` 收敛
+- 先统一协议，再补 copy/gemm，再做 multi-core
+- 先设计后编码，设计要落到仓库文档里
+- 完成任务后要同步更新进度、经验、问题记录，并提交推送
 
-## 快速开始
+## 推荐阅读顺序
 
-1. **查阅当前任务**：阅读 [`tasks/progress.md`](tasks/progress.md)
-2. **了解架构**：阅读 [`tasks/arch_design.md`](tasks/arch_design.md)
-3. **领取任务**：按工作流程（`CLAUDE.md`）推进开发
+1. `tasks/dev_design/final_blackhole_backend_redesign.md`
+2. `AGENTS.md`
+3. `tasks/progress.md`
+4. `memory/general_dev.md`
+5. `memory/bugs.md`
+6. 相关源码与测试
 
-## 关键文档
+## 说明
 
-- [架构设计](tasks/arch_design.md) - Lowering Pipeline、硬件映射、测试策略
-- [开发进度](tasks/progress.md) - 当前阶段与任务清单
-- [TT-Metal 分析](docs/tt_metal/source_analysis/) - JIT 编译、内存模型、硬件规格
-
-## 技术栈
-
-- **编译器**：TVM / TileLang / MLIR
-- **运行时**：TT-Metal (libtt_metal.so)
-- **仿真**：TT-Sim (libttsim_bh.so)
-- **测试**：gtest (C++) / pytest (Python)
-- **CI/CD**：GitHub Actions
+旧的总体设计文档和过时的阶段设计文档已经移除，以减少信息干扰。
