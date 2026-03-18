@@ -46,6 +46,8 @@ TIR_DEFINE_BUILTIN(noc_async_read)
 TIR_DEFINE_BUILTIN(noc_async_write)
 TIR_DEFINE_BUILTIN(noc_async_read_barrier)
 TIR_DEFINE_BUILTIN(noc_async_write_barrier)
+TIR_DEFINE_BUILTIN(read_tile_to_cb)
+TIR_DEFINE_BUILTIN(write_tile_from_cb)
 
 // Compute Operations
 TIR_DEFINE_BUILTIN(mm_init)
@@ -94,6 +96,22 @@ TVM_REGISTER_OP("tl.blackhole.noc_async_read_barrier")
 
 TVM_REGISTER_OP("tl.blackhole.noc_async_write_barrier")
     .set_num_inputs(0);
+
+TVM_REGISTER_OP("tl.blackhole.read_tile_to_cb")
+    .set_num_inputs(5)
+    .add_argument("buffer", "handle", "Source backing buffer handle")
+    .add_argument("tile_index", "int", "Logical tile index in the source buffer")
+    .add_argument("cb_id", "int", "Destination CB ID")
+    .add_argument("tile_bytes", "int", "Tile size in bytes")
+    .add_argument("accessor_slot", "int", "Accessor slot for later TT-Metal mapping");
+
+TVM_REGISTER_OP("tl.blackhole.write_tile_from_cb")
+    .set_num_inputs(5)
+    .add_argument("cb_id", "int", "Source CB ID")
+    .add_argument("buffer", "handle", "Destination backing buffer handle")
+    .add_argument("tile_index", "int", "Logical tile index in the destination buffer")
+    .add_argument("tile_bytes", "int", "Tile size in bytes")
+    .add_argument("accessor_slot", "int", "Accessor slot for later TT-Metal mapping");
 
 TVM_REGISTER_OP("tl.blackhole.mm_init")
     .set_num_inputs(3)

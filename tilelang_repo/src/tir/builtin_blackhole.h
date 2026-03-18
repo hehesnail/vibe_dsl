@@ -88,6 +88,26 @@ TVM_DLL const Op& blackhole_noc_async_read_barrier();
  */
 TVM_DLL const Op& blackhole_noc_async_write_barrier();
 
+/*!
+ * \brief Read one tile from a backing buffer into a CB/L1 staging area.
+ * \param buffer Backing buffer handle
+ * \param tile_index Logical tile index in the source buffer
+ * \param cb_id Destination circular buffer ID
+ * \param tile_bytes Tile size in bytes
+ * \param accessor_slot Compile-time accessor slot for later TT-Metal mapping
+ */
+TVM_DLL const Op& blackhole_read_tile_to_cb();
+
+/*!
+ * \brief Write one tile from a CB/L1 staging area back to a backing buffer.
+ * \param cb_id Source circular buffer ID
+ * \param buffer Backing buffer handle
+ * \param tile_index Logical tile index in the destination buffer
+ * \param tile_bytes Tile size in bytes
+ * \param accessor_slot Compile-time accessor slot for later TT-Metal mapping
+ */
+TVM_DLL const Op& blackhole_write_tile_from_cb();
+
 // TT-Metal Compute Operations
 
 /*!

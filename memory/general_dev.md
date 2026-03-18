@@ -178,6 +178,9 @@
   - `blackhole.runtime_args`
   - `blackhole.segment_plan`
   这样能直接防止语义又滑回 runtime 猜测路径。
+- 如果目标是把路径重新接回 `TIR -> pass -> codegen` 主链，不要只检查 attrs；还要检查 lowered TIR body 里是否真的出现了目标 builtin call。本阶段对 copy 至少要看到：
+  - `tl.blackhole.read_tile_to_cb`
+  - `tl.blackhole.write_tile_from_cb`
 
 ## 建议的开发顺序
 

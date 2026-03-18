@@ -199,6 +199,10 @@ def test_blackhole_copy_pass_attrs():
     assert str(segment_plan[0]["kind"]) == "fused_dataflow"
     assert str(segment_plan[0]["core_type"]) == "brisc"
 
+    body_script = func.body.script()
+    assert "tl.blackhole.read_tile_to_cb" in body_script
+    assert "tl.blackhole.write_tile_from_cb" in body_script
+
 
 def test_blackhole_true_e2e():
     """True end-to-end test: compile, execute, and verify results.

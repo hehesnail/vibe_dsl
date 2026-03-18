@@ -87,6 +87,21 @@ Stage 2 应拆成三个子目标：
 - copy runtime arg schema 所需的高层槽位信息
 - 为后续 gemm 复用同一套 schema 迁移路径
 
+当前阶段对 copy 的直接要求进一步明确为：
+
+- `T.copy` 不能只留下 attrs/schema，然后由 `rt_mod_blackhole` 手写 kernel 主体
+- pure copy 必须开始被 lower 成真实的 Blackhole 中层 builtin call
+- 即使执行路径仍暂时保留 runtime emitter 回退，copy 语义本身也必须先在 TIR body 中存在
+
+建议中层 builtin 形态：
+
+- `blackhole.read_tile_to_cb(buffer, tile_index, cb_id, tile_bytes, accessor_slot)`
+- `blackhole.write_tile_from_cb(cb_id, buffer, tile_index, tile_bytes, accessor_slot)`
+
+这样 Stage 2A 的第一完成标志不是“copy 还能跑”，而是：
+
+- copy 已重新接回 `TIR AST -> pass visitor -> builtin-based TIR` 主链
+
 #### `PlanBlackholeCB`
 
 至少要负责把 copy 需要的 CB 角色和约束显式化：
@@ -245,12 +260,16 @@ Stage 2 的要求是：
     - `blackhole.runtime_args`
     - `blackhole.segment_plan`
     - input/output `blackhole.cb_requirements`
+  - pure copy 已开始被 lower 成真实的 Blackhole 中层 builtin call：
+    - `tl.blackhole.read_tile_to_cb`
+    - `tl.blackhole.write_tile_from_cb`
   - `PlanBlackholeCB` 已能把这些 requirements 落成 input/output `blackhole.cb_configs`
   - `rt_mod_blackhole` 已优先读取 pass 产出的：
     - `blackhole.runtime_args`
     - `blackhole.segment_plan`
 - 当前仍未完成：
-  - copy kernel 源码本身仍走最小专用 emitter
+  - copy kernel 的真实执行路径仍主要走最小专用 emitter 回退
+  - `CodeGenBlackhole` 还没有让上述 copy builtin 成为当前主执行来源
   - copy 的更真实 tile/dataflow 语义还没有完全从 pass 直达 kernel emission
   - gemm 仍未开始接入同一套 pass-driven schema
 

@@ -68,6 +68,8 @@ using tir::builtin::blackhole_noc_async_read;
 using tir::builtin::blackhole_noc_async_write;
 using tir::builtin::blackhole_noc_async_read_barrier;
 using tir::builtin::blackhole_noc_async_write_barrier;
+using tir::builtin::blackhole_read_tile_to_cb;
+using tir::builtin::blackhole_write_tile_from_cb;
 using tvm::Integer;
 using tvm::DataType;
 using tvm::IntImm;
@@ -546,10 +548,37 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
     }
 
     case CopyDirection::kDramToDram: {
-      // Stage 2 transition path: keep execution on the minimal copy runner path,
-      // but move CB/runtime schema ownership into pass attrs.
+      // Stage 2 transition path: reconnect pure copy to builtin-driven TIR first.
+      // Execution may still temporarily rely on the minimal runtime emitter, but
+      // the copy semantics should now exist explicitly in the lowered TIR body.
       RecordDramToDramCopy(op);
-      return GetRef<Stmt>(op);
+
+      const auto* load = op->value.as<BufferLoadNode>();
+      if (!load) {
+        return GetRef<Stmt>(op);
+      }
+
+      const int src_cb_id = buffer_to_cb_.at(load->buffer);
+      const int dst_cb_id = buffer_to_cb_.at(op->buffer);
+      const int tile_bytes = EstimateCopyPageSize(load->buffer);
+
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_reserve_back(), {IntImm32(src_cb_id), IntImm32(1)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_read_tile_to_cb(),
+          {load->buffer->data, IntImm32(0), IntImm32(src_cb_id), IntImm32(tile_bytes), IntImm32(0)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_push_back(), {IntImm32(src_cb_id), IntImm32(1)}));
+
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_wait_front(), {IntImm32(src_cb_id), IntImm32(1)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_write_tile_from_cb(),
+          {IntImm32(src_cb_id), op->buffer->data, IntImm32(0), IntImm32(tile_bytes), IntImm32(0)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_pop_front(), {IntImm32(src_cb_id), IntImm32(1)}));
+
+      return SeqStmt::Flatten(stmts);
     }
 
     case CopyDirection::kCBToDram: {

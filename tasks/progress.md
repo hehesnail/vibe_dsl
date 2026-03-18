@@ -16,6 +16,7 @@
 - `BlackholeModule` 从 Python 直接调用 packed func 已在 TT-Sim 上跑通 single-core copy，Stage 1 主调用面已收口。
 - Stage 2 不能让 copy 长期停留在 runtime 专用旁路，也不能继续为 gemm 复制类似特化，否则只能证明执行链路通，不能证明编译 pass 已打通。
 - Stage 2A copy pass integration 已开始落地：copy 的 `blackhole.runtime_args`、`blackhole.segment_plan` 与 input/output `cb_configs` 已可由 pass attrs 显式产出，`rt_mod_blackhole` 已优先消费这些 pass 产物。
+- pure copy 已重新接回到 lowered TIR 主链：`LowerBlackholeOps` 现在会产出 `tl.blackhole.read_tile_to_cb / write_tile_from_cb` builtin，但主执行路径仍暂时保留 runtime emitter 回退。
 - 当前不再把“能生成 kernel 字符串”视为阶段完成。
 
 ## 任务状态总览
@@ -74,4 +75,5 @@
   - pure copy 的 input/output CB requirements 已可由 pass 产出，`PlanBlackholeCB` 会落成 `blackhole.cb_configs`
   - `rt_mod_blackhole` 已优先读取 `blackhole.runtime_args` 与 `blackhole.segment_plan`，不再只按 `target_mode` 猜 copy metadata
   - 已新增 `test_blackhole_copy_pass_attrs`
+  - `LowerBlackholeOps` 已为 pure copy 产出 `tl.blackhole.read_tile_to_cb / write_tile_from_cb`
   - 已通过 `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py -k 'copy_pass_attrs or true_e2e or module_direct_call' -s`
