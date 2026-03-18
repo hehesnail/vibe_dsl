@@ -5,16 +5,16 @@
 
 ## 当前阶段
 
-- **阶段**: Stage 2 single-core gemm 闭环
+- **阶段**: Stage 2 single-core pass integration
 - **日期**: 2026-03-18
-- **目标**: 在已完成的 single-core copy 闭环之上，先做 gemm pass/schema 收口，再推进 single-core gemm true E2E
+- **目标**: 在已完成的 single-core copy 执行闭环之上，先把 copy/gemm 统一迁回 pass/schema，再推进 single-core copy + gemm true E2E
 
 ## 当前判断
 
 - pass 已接入 lowering pipeline。
 - `spec.json -> runner` 的最小 single-core copy 已在 TT-Sim 上真实执行通过。
 - `BlackholeModule` 从 Python 直接调用 packed func 已在 TT-Sim 上跑通 single-core copy，Stage 1 主调用面已收口。
-- Stage 2 不能继续复制 Stage 1 copy 的 runtime 专用补洞模式，否则只能证明执行链路通，不能证明编译 pass 已打通。
+- Stage 2 不能让 copy 长期停留在 runtime 专用旁路，也不能继续为 gemm 复制类似特化，否则只能证明执行链路通，不能证明编译 pass 已打通。
 - 当前不再把“能生成 kernel 字符串”视为阶段完成。
 
 ## 任务状态总览
@@ -27,15 +27,15 @@
 | Stage 0 | 重构 `BlackholeModule` | 🔄 进行中 | 已开始写 `spec.json + input.bin + output.bin + kernel.cpp` |
 | Stage 0 | 重写 runner 协议 | 🔄 进行中 | 已切到 `spec.json + input.bin + output.bin`，runner 构建入口已收回 `tilelang_repo/tools/blackhole_runner/` |
 | Stage 1 | single-core copy 闭环 | ✅ 已完成 | spec-driven runner 与 `BlackholeModule` direct call 都已在 TT-Sim 上通过 |
-| Stage 2 | single-core gemm 闭环 | 🔄 进行中 | 先做 pass/schema 收口，再做 true E2E |
+| Stage 2 | single-core pass integration | 🔄 进行中 | 先迁 copy，再迁 gemm，最后做统一 true E2E |
 | Stage 3 | multi-core runtime 调度 | ⏳ 未开始 | per-core args |
 
 ## 当前下一步
 
-1. 新增并落实 Stage 2 设计：gemm 关键执行语义必须开始从 pass/segment 产物生成，而不是由 `rt_mod_blackhole` 猜。
-2. 让 lowering/segment 生成 gemm 所需的 `kernels[].runtime_args`、CB 依赖和模式信息，收敛 `target_mode` 的职责边界。
-3. 在 pass/schema 收口后，再推进 single-core gemm true E2E。
-4. 在 single-core gemm 路径稳定后，再推进 multi-core runtime 调度。
+1. 新增并落实 Stage 2 设计：copy/gemm 关键执行语义都必须开始从 pass/segment 产物生成，而不是由 `rt_mod_blackhole` 猜。
+2. 先让 copy 从 runtime 专用 emitter 迁向 pass-driven schema，再用同一套机制承接 gemm。
+3. 在 copy/gemm 的 pass/schema 收口后，再推进 single-core copy + gemm true E2E。
+4. 在 single-core pass integration 路径稳定后，再推进 multi-core runtime 调度。
 
 ## 最近更新
 
@@ -66,5 +66,5 @@
   - 已通过 `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py -k 'true_e2e or module_direct_call' -s` 验证：
     - `spec.json -> runner` single-core copy 继续通过
     - Python 侧直接调用 `artifact.codegen_mod["main"](...)` 已在 TT-Sim 上通过
-  - 新增 `tasks/dev_design/stage2_single_core_gemm_pass_integration.md`
-  - 已明确 Stage 2 不再接受“runtime 特化 gemm 后跑通”作为阶段完成标准
+  - 新增 `tasks/dev_design/stage2_single_core_pass_integration.md`
+  - 已明确 Stage 2 不再接受“runtime 特化 copy/gemm 后跑通”作为阶段完成标准

@@ -362,12 +362,12 @@ MVP 目标：
 - spec-driven runner
 - 跑通 single-core copy
 
-### Stage 2: gemm 单核闭环
+### Stage 2: single-core pass integration
 
-- 先做 pass/schema 收口，再做 gemm 真执行
+- 先把 copy/gemm 的关键执行语义迁回 pass/schema
 - `kernels[]` / `runtime_args` / CB 依赖开始由 pass 产物主导
-- reader/compute/writer 三段 spec
-- 单核 gemm 真实执行闭环
+- 先迁 copy，再迁 gemm
+- 最后完成 single-core copy/gemm 真执行闭环
 
 ### Stage 3: multi-core runtime 调度
 
@@ -414,7 +414,7 @@ MVP 目标：
 
 - Stage 0: pass attrs 与 runtime 协议完全一致
 - Stage 1: single-core copy 真执行并结果正确
-- Stage 2: single-core gemm 真执行并结果正确，且 gemm 关键执行语义主要由 pass 产物而非 runtime 特判提供
+- Stage 2: single-core copy/gemm 真执行并结果正确，且 copy/gemm 关键执行语义主要由 pass 产物而非 runtime 特判提供
 - Stage 3: multi-core copy/gemm 真执行并结果正确
 
 任何只验证 codegen、只验证字符串包含关系、只验证参考算法的脚本，都不能单独作为阶段完成依据。
