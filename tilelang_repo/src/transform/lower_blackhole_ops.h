@@ -152,6 +152,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   bool saw_copy_op_ = false;
   bool saw_matmul_op_ = false;
   bool needs_copy_runtime_args_ = false;
+  std::string copy_input_buffer_name_;
+  std::string copy_output_buffer_name_;
 
   // CB allocation counters
   int next_input_cb_ = 0;        // Start at 0

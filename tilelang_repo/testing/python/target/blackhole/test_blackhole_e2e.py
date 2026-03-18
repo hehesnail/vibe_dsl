@@ -193,6 +193,8 @@ def test_blackhole_copy_pass_attrs():
         "tile_count",
         "scratch_l1_buffer_addr32",
     ]
+    assert str(runtime_args[0]["buffer"]) == "A"
+    assert str(runtime_args[1]["buffer"]) == "B"
 
     segment_plan = func.attrs["blackhole.segment_plan"]
     assert len(segment_plan) == 1
@@ -202,6 +204,24 @@ def test_blackhole_copy_pass_attrs():
     body_script = func.body.script()
     assert "tl.blackhole.read_tile_to_cb" in body_script
     assert "tl.blackhole.write_tile_from_cb" in body_script
+
+
+def test_blackhole_copy_codegen_uses_runtime_schema():
+    """Verify copy codegen consumes runtime arg schema instead of fixed slot names."""
+    M, N = 32, 32
+    kernel = simple_copy_kernel(M, N)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    source = artifact.kernel_source if hasattr(artifact, "kernel_source") else str(artifact)
+    assert "uint32_t A_addr = get_arg_val<uint32_t>(0);" in source
+    assert "uint32_t B_addr = get_arg_val<uint32_t>(1);" in source
+    assert "uint32_t tile_count = get_arg_val<uint32_t>(2);" in source
+    assert "uint32_t scratch_l1_addr = get_arg_val<uint32_t>(3);" in source
+    assert "src_dram_addr" not in source
+    assert "dst_dram_addr" not in source
 
 
 def test_blackhole_true_e2e():

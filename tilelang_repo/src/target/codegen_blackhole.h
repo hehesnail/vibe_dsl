@@ -25,6 +25,7 @@
 #define TL_TARGET_SOURCE_CODEGEN_BLACKHOLE_H_
 
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "codegen_c_host.h"
@@ -153,6 +154,10 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintSemWait(int sem_id, int value);
   void PrintSemPost(int sem_id);
 
+  void EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f);
+  std::string GetRuntimeArgVarByKind(const std::string &kind) const;
+  std::string GetRuntimeArgVarForBuffer(const tvm::PrimExpr &buffer_expr) const;
+
  private:
   // Per-instance header emission flag (replaces static variable)
   bool headers_emitted_{false};
@@ -164,13 +169,14 @@ class CodeGenBlackhole : public CodeGenCHost {
   bool need_tt_metal_h_{false};
   bool need_dataflow_api_h_{false};
   bool need_compute_api_h_{false};
-  bool is_single_core_copy_mode_{false};
 
   // Whether to emit kernel entry point wrapper
   bool emit_kernel_wrapper_{true};
 
   // Track declared CBs
   std::unordered_set<std::string> declared_cbs_;
+  std::unordered_map<const tvm::tir::VarNode *, std::string> buffer_runtime_arg_map_;
+  std::unordered_map<std::string, std::string> runtime_arg_vars_by_kind_;
 
   // Default L1 memory alignment
   static constexpr int kL1Alignment = 16;

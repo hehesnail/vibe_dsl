@@ -186,6 +186,11 @@
   - 再让 `rt_mod_blackhole` 优先使用 codegen 产物
   - 最后只在 codegen 为空或失败时回退到手写 emitter
   这样更容易分阶段验证，不会一次性打断现有真执行链路。
+- 对 Blackhole copy 这类“看起来最简单”的路径，也不能只盯着 `32x32 one-tile` 是否能跑通；这类 case 容易掩盖“循环体里重复发射同一个 `tile_index=0` copy”这类结构错误。更稳的做法是同时检查：
+  - lowered TIR 是否仍在逐标量 store 上发射 tile builtin
+  - 生成源码是否仍在循环里反复访问同一 tile
+  - codegen 是否仍偷吃固定 runtime arg 槽位命名
+- 如果 Blackhole device code 依赖 `blackhole.runtime_args`，codegen 应直接消费 pass 产出的 schema 和 buffer 绑定，而不是固定假设某个 target mode 对应固定参数位。参数槽位顺序、名字、buffer 对应关系都应来自 IR attrs / schema，而不是写死在 builtin printer 里。
 
 ## 建议的开发顺序
 

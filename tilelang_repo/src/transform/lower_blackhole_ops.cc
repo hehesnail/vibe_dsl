@@ -116,6 +116,8 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   saw_copy_op_ = false;
   saw_matmul_op_ = false;
   needs_copy_runtime_args_ = false;
+  copy_input_buffer_name_.clear();
+  copy_output_buffer_name_.clear();
 
   // Transform the function body
   Stmt body = VisitStmt(func->body);
@@ -291,18 +293,27 @@ void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
   }
 
   Array<Any> runtime_args;
-  auto push_arg = [&](const char* name, const char* kind, const char* dtype) {
+  auto push_arg = [&](const std::string& name, const char* kind, const char* dtype,
+                      const std::string& buffer_name = "") {
     Map<String, Any> arg_map;
     arg_map.Set("name", String(name));
     arg_map.Set("kind", String(kind));
     arg_map.Set("dtype", String(dtype));
+    if (!buffer_name.empty()) {
+      arg_map.Set("buffer", String(buffer_name));
+    }
     runtime_args.push_back(arg_map);
   };
 
-  push_arg("input0", "input_buffer_addr32", "uint32");
-  push_arg("output0", "output_buffer_addr32", "uint32");
-  push_arg("num_tiles", "tile_count", "uint32");
-  push_arg("scratch_l1", "scratch_l1_buffer_addr32", "uint32");
+  const std::string input_arg_name =
+      copy_input_buffer_name_.empty() ? "input_addr" : copy_input_buffer_name_ + "_addr";
+  const std::string output_arg_name =
+      copy_output_buffer_name_.empty() ? "output_addr" : copy_output_buffer_name_ + "_addr";
+
+  push_arg(input_arg_name, "input_buffer_addr32", "uint32", copy_input_buffer_name_);
+  push_arg(output_arg_name, "output_buffer_addr32", "uint32", copy_output_buffer_name_);
+  push_arg("tile_count", "tile_count", "uint32");
+  push_arg("scratch_l1_addr", "scratch_l1_buffer_addr32", "uint32");
 
   attrs.Set("blackhole.runtime_args", runtime_args);
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
@@ -446,6 +457,8 @@ void LowerBlackholeOps::RecordDramToDramCopy(const BufferStoreNode* op) {
   ensure_requirement(load->buffer, CBType::kInput);
   ensure_requirement(op->buffer, CBType::kOutput);
   needs_copy_runtime_args_ = true;
+  copy_input_buffer_name_ = load->buffer->name;
+  copy_output_buffer_name_ = op->buffer->name;
 }
 
 Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op) {

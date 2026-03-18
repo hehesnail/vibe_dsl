@@ -269,8 +269,10 @@ Stage 2 的要求是：
     - `blackhole.segment_plan`
 - 当前仍未完成：
   - `CodeGenBlackhole` 已开始让上述 copy builtin 成为当前 single-core copy 主执行来源
+  - copy 的 runtime arg 绑定虽然已经开始由 pass schema 主导，但这一步只解决了“固定参数槽位假设”问题，还没有解决“整段函数体 copy 语义如何从 IR 中分析出来”这个更核心的问题
   - `rt_mod_blackhole` 仍保留最小专用 emitter 作为回退
-  - copy 的更真实 tile/dataflow 语义还没有完全从 pass 直达 kernel emission
+  - 当前 pure copy 仍会在逐标量 `BufferStore` 改写时发射 tile-level builtin；对 `32x32` simple copy，lowered TIR 和 codegen 里仍能看到循环体内重复出现 `read_tile_to_cb(..., tile_index=0)` / `write_tile_from_cb(..., tile_index=0)`
+  - 这说明 copy 的更真实 tile/dataflow 语义还没有完全从 pass 直达 kernel emission，当前实现仍是从 runtime emitter 向 compiler 主链迁移中的中间态
   - gemm 仍未开始接入同一套 pass-driven schema
 
 ## 结论

@@ -52,7 +52,8 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   core_type_ = CoreType::kBRISC;
   need_dataflow_api_h_ = false;
   need_compute_api_h_ = false;
-  is_single_core_copy_mode_ = false;
+  buffer_runtime_arg_map_.clear();
+  runtime_arg_vars_by_kind_.clear();
 }
 
 std::string CodeGenBlackhole::GetKernelCode() const {
@@ -124,20 +125,11 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   // Generate kernel_main entry point (TT-Metal convention)
   stream << "void kernel_main() {\n";
 
-  auto target_mode_attr = f->GetAttr<tvm::ffi::String>("blackhole.target_mode");
-  is_single_core_copy_mode_ =
-      target_mode_attr && static_cast<std::string>(target_mode_attr.value()) == "single_core_copy";
-
   // Generate argument loading code
   // TT-Metal kernels use get_arg_val<uint32_t>(arg_index) to read arguments
   stream << "  // Load kernel arguments from runtime\n";
-
-  if (is_single_core_copy_mode_) {
-    stream << "  uint32_t src_dram_addr = get_arg_val<uint32_t>(0);\n";
-    stream << "  uint32_t dst_dram_addr = get_arg_val<uint32_t>(1);\n";
-    stream << "  uint32_t num_tiles = get_arg_val<uint32_t>(2);\n";
-    stream << "  uint32_t scratch_l1_addr = get_arg_val<uint32_t>(3);\n";
-    stream << "\n";
+  if (f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.runtime_args")) {
+    EmitRuntimeArgLoads(f);
     this->VisitStmt(f->body);
     stream << "}\n\n";
     return;
@@ -194,6 +186,69 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   this->VisitStmt(f->body);
 
   stream << "}\n\n";
+}
+
+void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
+  buffer_runtime_arg_map_.clear();
+  runtime_arg_vars_by_kind_.clear();
+
+  auto runtime_args_attr = f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.runtime_args");
+  ICHECK(runtime_args_attr) << "blackhole.runtime_args must be present when emitting runtime args";
+
+  std::unordered_map<std::string, const tvm::tir::VarNode *> buffer_vars_by_name;
+  for (const auto &kv : f->buffer_map) {
+    const auto &buffer = kv.second;
+    buffer_vars_by_name[buffer->name] = buffer->data.get();
+  }
+
+  int arg_idx = 0;
+  for (const auto &item : runtime_args_attr.value()) {
+    auto arg_info = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
+        tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
+    if (arg_info.empty()) {
+      continue;
+    }
+
+    std::string arg_name = "arg" + std::to_string(arg_idx);
+    std::string arg_kind;
+    if (auto v = arg_info.Get("name")) {
+      arg_name = Downcast<tvm::ffi::String>(v.value());
+    }
+    if (auto v = arg_info.Get("kind")) {
+      arg_kind = Downcast<tvm::ffi::String>(v.value());
+    }
+
+    stream << "  uint32_t " << arg_name << " = get_arg_val<uint32_t>(" << arg_idx << ");\n";
+    if (!arg_kind.empty() && !runtime_arg_vars_by_kind_.count(arg_kind)) {
+      runtime_arg_vars_by_kind_[arg_kind] = arg_name;
+    }
+
+    if (auto v = arg_info.Get("buffer")) {
+      std::string buffer_name = Downcast<tvm::ffi::String>(v.value());
+      auto it = buffer_vars_by_name.find(buffer_name);
+      if (it != buffer_vars_by_name.end()) {
+        buffer_runtime_arg_map_[it->second] = arg_name;
+      }
+    }
+    ++arg_idx;
+  }
+  stream << "\n";
+}
+
+std::string CodeGenBlackhole::GetRuntimeArgVarByKind(const std::string &kind) const {
+  auto it = runtime_arg_vars_by_kind_.find(kind);
+  ICHECK(it != runtime_arg_vars_by_kind_.end()) << "Missing runtime arg binding for kind: " << kind;
+  return it->second;
+}
+
+std::string CodeGenBlackhole::GetRuntimeArgVarForBuffer(
+    const tvm::PrimExpr &buffer_expr) const {
+  const auto *buffer_var = buffer_expr.as<tvm::tir::VarNode>();
+  ICHECK(buffer_var) << "Expected buffer data var in runtime-arg-backed Blackhole builtin";
+  auto it = buffer_runtime_arg_map_.find(buffer_var);
+  ICHECK(it != buffer_runtime_arg_map_.end())
+      << "Missing runtime arg binding for buffer var: " << buffer_var->name_hint;
+  return it->second;
 }
 
 // ============================================================================
@@ -502,32 +557,34 @@ void CodeGenBlackhole::PrintNOCWriteBarrier(std::ostream &os) {
 void CodeGenBlackhole::PrintReadTileToCB(const tvm::tir::CallNode *op,
                                          std::ostream &os) {
   need_dataflow_api_h_ = true;
-  ICHECK(is_single_core_copy_mode_)
-      << "read_tile_to_cb codegen is currently only wired for single_core_copy mode";
+  const std::string src_addr_var = GetRuntimeArgVarForBuffer(op->args[0]);
+  const std::string scratch_addr_var = GetRuntimeArgVarByKind("scratch_l1_buffer_addr32");
   os << "{ ";
   os << "const uint32_t tile_index = ";
   PrintExpr(op->args[1], os);
   os << "; const uint32_t tile_bytes = ";
   PrintExpr(op->args[3], os);
-  os << "; InterleavedAddrGen<true> src_gen = {.bank_base_address = src_dram_addr, .page_size = tile_bytes}; ";
+  os << "; InterleavedAddrGen<true> src_gen = {.bank_base_address = " << src_addr_var
+     << ", .page_size = tile_bytes}; ";
   os << "uint64_t src_noc_addr = get_noc_addr(tile_index, src_gen); ";
-  os << "noc_async_read(src_noc_addr, scratch_l1_addr, tile_bytes); ";
+  os << "noc_async_read(src_noc_addr, " << scratch_addr_var << ", tile_bytes); ";
   os << "noc_async_read_barrier(); }";
 }
 
 void CodeGenBlackhole::PrintWriteTileFromCB(const tvm::tir::CallNode *op,
                                             std::ostream &os) {
   need_dataflow_api_h_ = true;
-  ICHECK(is_single_core_copy_mode_)
-      << "write_tile_from_cb codegen is currently only wired for single_core_copy mode";
+  const std::string dst_addr_var = GetRuntimeArgVarForBuffer(op->args[1]);
+  const std::string scratch_addr_var = GetRuntimeArgVarByKind("scratch_l1_buffer_addr32");
   os << "{ ";
   os << "const uint32_t tile_index = ";
   PrintExpr(op->args[2], os);
   os << "; const uint32_t tile_bytes = ";
   PrintExpr(op->args[3], os);
-  os << "; InterleavedAddrGen<true> dst_gen = {.bank_base_address = dst_dram_addr, .page_size = tile_bytes}; ";
+  os << "; InterleavedAddrGen<true> dst_gen = {.bank_base_address = " << dst_addr_var
+     << ", .page_size = tile_bytes}; ";
   os << "uint64_t dst_noc_addr = get_noc_addr(tile_index, dst_gen); ";
-  os << "noc_async_write(scratch_l1_addr, dst_noc_addr, tile_bytes); ";
+  os << "noc_async_write(" << scratch_addr_var << ", dst_noc_addr, tile_bytes); ";
   os << "noc_async_write_barrier(); }";
 }
 
