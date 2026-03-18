@@ -136,7 +136,6 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
 
   // Store CB requirements in function attributes for PlanBlackholeCB
   StoreCBRequirements(new_func);
-  StoreTargetMode(new_func);
   StoreRuntimeArgs(new_func);
   StoreSegmentPlan(new_func);
 
@@ -274,19 +273,6 @@ void LowerBlackholeOps::StoreCBRequirements(PrimFunc& func) {
   }
 
   attrs.Set("blackhole.cb_requirements", cb_reqs);
-  func.CopyOnWrite()->attrs = DictAttrs(attrs);
-}
-
-void LowerBlackholeOps::StoreTargetMode(PrimFunc& func) {
-  if (!saw_copy_op_ || saw_matmul_op_) {
-    return;
-  }
-
-  Map<String, Any> attrs;
-  if (func->attrs.defined()) {
-    attrs = func->attrs->dict;
-  }
-  attrs.Set("blackhole.target_mode", String("single_core_copy"));
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 

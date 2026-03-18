@@ -176,7 +176,6 @@ runner 只消费协议，不理解 PrimFunc / TIR 语义。
 - `blackhole.cb_configs`
 - `blackhole.core_plan`
 - `blackhole.segment_plan`
-- `blackhole.target_mode`
 - `blackhole.runtime_args`
 
 旧协议不再扩展。

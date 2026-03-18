@@ -23,6 +23,10 @@
   - `blackhole.segment_plan`
   - `blackhole.cb_configs`
   - `tl.blackhole.read_tile_to_cb / write_tile_from_cb`
+- `blackhole.target_mode` 已从当前主协议移除：
+  - pass 不再产出该 attr
+  - `ExecutableSpec` / `spec.json` / runner 不再依赖该字段
+  - copy fallback 改为按 device-side builtin/schema 判断，而不是模式字符串
 - copy true E2E 新增进展：
   - `spec.json -> runner` 已在 TT-Sim 下通过
   - `artifact.codegen_mod["main"](...)` 已在 TT-Sim 下通过

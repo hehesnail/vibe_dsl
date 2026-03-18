@@ -69,7 +69,6 @@ struct KernelSpec {
  */
 struct ExecutableSpec {
   std::string entry_name;
-  std::string target_mode;
   std::vector<CBConfig> cb_configs;
   CorePlan core_plan;
   std::string default_kernel_kind = "fused_dataflow";

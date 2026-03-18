@@ -82,7 +82,6 @@ def get_runner_path():
 def write_single_core_copy_spec(spec_path, kernel_path, tensor_nbytes):
     spec = {
         "entry_name": "main",
-        "target_mode": "single_core_copy",
         "input_size_bytes": int(tensor_nbytes),
         "output_size_bytes": int(tensor_nbytes),
         "scalar_args": [],
@@ -185,7 +184,7 @@ def test_blackhole_copy_pass_attrs():
     mod = tilelang.transform.AssignBlackholeCores()(mod)
 
     func = mod["main"]
-    assert str(func.attrs["blackhole.target_mode"]) == "single_core_copy"
+    assert "blackhole.target_mode" not in func.attrs
 
     cb_configs = func.attrs["blackhole.cb_configs"]
     cb_roles = [str(cfg["role"]) for cfg in cb_configs]
@@ -255,7 +254,7 @@ def test_blackhole_lower_restores_host_device_split():
     assert host_main.attrs["target"].kind.name == "c"
     assert device_main.attrs["calling_conv"] == CallingConv.DEVICE_KERNEL_LAUNCH
     assert device_main.attrs["target"].kind.name == "blackhole"
-    assert str(device_main.attrs["blackhole.target_mode"]) == "single_core_copy"
+    assert "blackhole.target_mode" not in device_main.attrs
 
 
 def test_blackhole_runtime_module_keeps_host_and_device_entries():

@@ -107,9 +107,6 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Store CB requirements in function attributes */
   void StoreCBRequirements(tvm::tir::PrimFunc& func);
 
-  /*! \brief Store minimal target mode inferred from lowering */
-  void StoreTargetMode(tvm::tir::PrimFunc& func);
-
   /*! \brief Store runtime argument schema inferred during lowering */
   void StoreRuntimeArgs(tvm::tir::PrimFunc& func);
 

@@ -162,7 +162,7 @@
 
 当前新增的稳定经验：
 
-- 在 `global -> global` simple copy 还没有完全 lower 成通用 TT-Metal dataflow 语义时，可以先让 `rt_mod_blackhole` 对 `single_core_copy` 走一个最小专用 kernel emitter；只要主产物仍是 `ExecutableSpec`，这不会破坏总体设计。
+- 在 `global -> global` simple copy 还没有完全 lower 成通用 TT-Metal dataflow 语义时，可以先让 `rt_mod_blackhole` 保留一个最小专用 copy emitter；但它应只按 device-side builtin / runtime schema 回退，不能再把模式字符串当正式协议。
 - 对最小 TT-Sim copy 路径，runner 侧至少要支持这组 runtime arg kind：
   - `input_buffer_addr32`
   - `output_buffer_addr32`
@@ -173,7 +173,6 @@
 - 对最小 single-core copy，`32x32 float16` 恰好是一 tile（2048 bytes），适合作为 TT-Sim 下的最小真执行 case；这类 case 能先验证协议和 runner，再把 module 调用面问题单独隔离出来。
 - 当 `PackFuncVoidAddr` 包装 `kDLOpaqueHandle` 参数时，`void_args[i]` 指向的是 `raw_args[i].v_ptr` 这个槽位地址，而不是最终的 `DLTensor*`；对 Blackhole 这类外部 runner 路径，更稳的做法是优先通过 `ffi::AnyView::try_cast<DLTensor*>()` 取 tensor，只把 `void_args` 当保守回退。
 - 对 Stage 2 这类“pass integration”工作，测试不应只看 `lower(...).codegen_mod` 是否能执行；更稳的做法是再加一层直接检查 pass 后 IR attrs，例如：
-  - `blackhole.target_mode`
   - `blackhole.cb_configs`
   - `blackhole.runtime_args`
   - `blackhole.segment_plan`
@@ -191,6 +190,7 @@
   - 生成源码是否仍在循环里反复访问同一 tile
   - codegen 是否仍偷吃固定 runtime arg 槽位命名
 - 如果 Blackhole device code 依赖 `blackhole.runtime_args`，codegen 应直接消费 pass 产出的 schema 和 buffer 绑定，而不是固定假设某个 target mode 对应固定参数位。参数槽位顺序、名字、buffer 对应关系都应来自 IR attrs / schema，而不是写死在 builtin printer 里。
+- 对 Blackhole 这类还在清理过渡协议的 backend，像 `target_mode` 这种“看起来像分类、实际上又可能被拿来驱动 fallback”的字段要尽早从主协议里移除；否则 pass/schema 已经收口，runtime 仍可能沿着旧标签继续分叉。
 - 对 Blackhole copy，要先确认 TileLang pipeline 的真实断点：`LowerTileOp()` 先于 `LowerBlackholeOps()` 执行，所以 target pass 通常已经看不到原始 `tl.copy` 节点。更稳的做法是：
   - 先把 copy 主验收对象定义成 TileLang 原始 `T.copy(global -> shared -> global)` 语义
   - 再让 `LowerBlackholeOps` 去识别 `LowerTileOp` 之后留下来的 staged copy loop

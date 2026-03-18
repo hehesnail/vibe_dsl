@@ -92,7 +92,6 @@ std::string SerializeExecutableSpec(const ExecutableSpec& spec,
   std::ostringstream os;
   os << "{";
   os << "\"entry_name\":" << QuoteJson(spec.entry_name) << ",";
-  os << "\"target_mode\":" << QuoteJson(spec.target_mode) << ",";
   os << "\"input_size_bytes\":" << input_size_bytes << ",";
   os << "\"output_size_bytes\":" << output_size_bytes << ",";
 

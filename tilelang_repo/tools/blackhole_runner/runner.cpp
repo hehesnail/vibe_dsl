@@ -59,7 +59,6 @@ struct CorePlan {
 
 struct RunConfig {
     std::string entry_name;
-    std::string target_mode;
     std::string spec_path;
     std::string input_path;
     std::string output_path;
@@ -162,7 +161,6 @@ RunConfig parse_args(int argc, char* argv[]) {
     config.input_path = argv[2];
     config.output_path = argv[3];
     config.entry_name = spec_json.value("entry_name", "default");
-    config.target_mode = spec_json.value("target_mode", "single_core_copy");
     config.input_size_bytes = spec_json.value("input_size_bytes", 0u);
     config.output_size_bytes = spec_json.value("output_size_bytes", 0u);
     config.scalar_args = spec_json.value("scalar_args", std::vector<uint32_t>{});

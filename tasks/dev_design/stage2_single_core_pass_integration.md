@@ -99,7 +99,7 @@ Stage 2 的正式目标已经收紧为：
 
 当前允许保留的过渡项：
 
-- `single_core_copy` 最小专用 emitter 作为短期回退
+- copy 最小专用 emitter 作为短期回退，但它只能按 device-side builtin/schema 回退，不能再靠 `target_mode` 这类模式标签驱动
 
 当前不允许继续扩大的过渡项：
 
@@ -119,7 +119,6 @@ Stage 2 的正式目标已经收紧为：
 ## 当前进展
 
 - copy 已开始产出：
-  - `blackhole.target_mode`
   - `blackhole.runtime_args`
   - `blackhole.segment_plan`
   - `blackhole.cb_requirements`

@@ -42,6 +42,7 @@
 
 #include "codegen_blackhole.h"
 #include "blackhole_module.h"
+#include "../tir/builtin_blackhole.h"
 
 namespace tvm {
 namespace runtime {
@@ -272,25 +273,46 @@ static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
   return plan;
 }
 
-static std::vector<KernelArgSpec> MakeDefaultRuntimeArgs(const ExecutableSpec& spec) {
-  std::vector<KernelArgSpec> runtime_args;
-
-  if (spec.target_mode == "single_core_copy") {
-    runtime_args.push_back({"input0", "input_buffer_addr32", "uint32"});
-    runtime_args.push_back({"output0", "output_buffer_addr32", "uint32"});
-    runtime_args.push_back({"num_tiles", "tile_count", "uint32"});
-    runtime_args.push_back({"scratch_l1", "scratch_l1_buffer_addr32", "uint32"});
-  }
-
-  return runtime_args;
+static std::vector<KernelArgSpec> MakeDefaultCopyRuntimeArgs() {
+  return {
+      {"input0", "input_buffer_addr32", "uint32"},
+      {"output0", "output_buffer_addr32", "uint32"},
+      {"num_tiles", "tile_count", "uint32"},
+      {"scratch_l1", "scratch_l1_buffer_addr32", "uint32"},
+  };
 }
 
-static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f,
-                                                     const ExecutableSpec& spec) {
+static bool HasCopyRuntimeArgSchema(const std::vector<KernelArgSpec>& runtime_args) {
+  if (runtime_args.size() != 4) {
+    return false;
+  }
+  return runtime_args[0].kind == "input_buffer_addr32" &&
+         runtime_args[1].kind == "output_buffer_addr32" &&
+         runtime_args[2].kind == "tile_count" &&
+         runtime_args[3].kind == "scratch_l1_buffer_addr32";
+}
+
+static bool HasCopyBuiltins(const tir::PrimFunc& f) {
+  bool found = false;
+  tir::PostOrderVisit(f->body, [&](const ObjectRef& node) {
+    if (found) {
+      return;
+    }
+    const auto* call = node.as<tir::CallNode>();
+    if (!call) {
+      return;
+    }
+    found = call->op.same_as(tir::builtin::blackhole_read_tile_to_cb()) ||
+            call->op.same_as(tir::builtin::blackhole_write_tile_from_cb());
+  });
+  return found;
+}
+
+static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
   std::vector<KernelArgSpec> runtime_args;
   auto runtime_args_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.runtime_args");
   if (!runtime_args_attr) {
-    return MakeDefaultRuntimeArgs(spec);
+    return HasCopyBuiltins(f) ? MakeDefaultCopyRuntimeArgs() : std::vector<KernelArgSpec>{};
   }
 
   for (const auto& item : runtime_args_attr.value()) {
@@ -314,7 +336,7 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f,
   }
 
   if (runtime_args.empty()) {
-    return MakeDefaultRuntimeArgs(spec);
+    return HasCopyBuiltins(f) ? MakeDefaultCopyRuntimeArgs() : std::vector<KernelArgSpec>{};
   }
   return runtime_args;
 }
@@ -393,8 +415,7 @@ static bool IsBlackholeDeviceKernel(const tir::PrimFunc& f) {
   if (calling_conv.defined()) {
     return calling_conv == CallingConv::kDeviceKernelLaunch;
   }
-  return static_cast<bool>(f->GetAttr<ffi::String>("blackhole.target_mode")) ||
-         static_cast<bool>(f->GetAttr<ffi::Array<ffi::Any>>("blackhole.segment_plan")) ||
+  return static_cast<bool>(f->GetAttr<ffi::Array<ffi::Any>>("blackhole.segment_plan")) ||
          static_cast<bool>(f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.core_plan"));
 }
 
@@ -420,9 +441,7 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
 
   spec.cb_configs = ExtractCBConfig(f);
   spec.core_plan = ExtractCorePlan(f);
-  spec.target_mode = f->GetAttr<ffi::String>("blackhole.target_mode")
-                         .value_or(ffi::String("single_core_copy"));
-  spec.runtime_args = ExtractRuntimeArgs(f, spec);
+  spec.runtime_args = ExtractRuntimeArgs(f);
   ExtractSegmentPlan(f, &spec);
   return spec;
 }
@@ -547,11 +566,15 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     kernel.name = kv.first;
     kernel.kind = kv.second.default_kernel_kind;
     kernel.core_type = kv.second.default_kernel_core_type;
-    kernel.source_code = (!code.empty())
-                             ? code
-                             : EmitSingleCoreCopyKernelSource(kv.second);
-    kernel.runtime_args = kv.second.runtime_args.empty() ? MakeDefaultRuntimeArgs(kv.second)
-                                                         : kv.second.runtime_args;
+    kernel.runtime_args = kv.second.runtime_args;
+    kernel.source_code =
+        (!code.empty()) ? code
+                        : (HasCopyRuntimeArgSchema(kernel.runtime_args)
+                               ? EmitSingleCoreCopyKernelSource(kv.second)
+                               : std::string());
+    ICHECK(!kernel.source_code.empty())
+        << "Blackhole build produced no kernel source and no copy fallback was applicable for "
+        << kv.first;
     kv.second.kernels.push_back(std::move(kernel));
   }
 
@@ -611,11 +634,15 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     kernel.name = kv.first;
     kernel.kind = kv.second.default_kernel_kind;
     kernel.core_type = kv.second.default_kernel_core_type;
-    kernel.source_code = (!kernel_code.empty())
-                             ? kernel_code
-                             : EmitSingleCoreCopyKernelSource(kv.second);
-    kernel.runtime_args = kv.second.runtime_args.empty() ? MakeDefaultRuntimeArgs(kv.second)
-                                                         : kv.second.runtime_args;
+    kernel.runtime_args = kv.second.runtime_args;
+    kernel.source_code =
+        (!kernel_code.empty()) ? kernel_code
+                               : (HasCopyRuntimeArgSchema(kernel.runtime_args)
+                                      ? EmitSingleCoreCopyKernelSource(kv.second)
+                                      : std::string());
+    ICHECK(!kernel.source_code.empty())
+        << "Blackhole build produced no kernel source and no copy fallback was applicable for "
+        << kv.first;
     kv.second.kernels.push_back(std::move(kernel));
   }
 

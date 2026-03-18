@@ -159,3 +159,19 @@
   - 只保留类型/作用域注册，跳过 C 数组声明
   - 继续让 runtime/builtin 路径负责真实 CB/L1 资源使用
 - **当前状态**: 已解决。TT-Sim 下 copy 的 `spec.json -> runner` 和 direct-call 两条 true E2E 路径都已通过。
+
+### `blackhole.target_mode` 会把过渡期 copy 标签误当成正式协议
+
+- **时间**: 2026-03-19
+- **问题**: `blackhole.target_mode = "single_core_copy"` 同时出现在 pass attrs、`ExecutableSpec`、`spec.json` 和 runtime fallback 里，容易让人误以为 Blackhole 仍靠模式字符串驱动执行。
+- **现象**:
+  - `LowerBlackholeOps` / `AssignBlackholeCores` 会产出或补默认 `target_mode`
+  - `rt_mod_blackhole` 会把它当作 runtime arg 默认值和旧 device-kernel 识别依据的一部分
+  - true E2E 已经主要靠 `runtime_args` / `segment_plan` / copy builtin 跑通，但协议表面仍残留 `single_core_copy`
+- **根本原因**: Stage 1 为了快速打通 copy 闭环，引入了最小专用 emitter；后续虽然主语义已经迁回 pass/schema，但 `target_mode` 这个过渡字段没有及时从主协议移除。
+- **解决方案**:
+  - 从 `LowerBlackholeOps` / `AssignBlackholeCores` 中移除 `blackhole.target_mode`
+  - 从 `ExecutableSpec`、`spec.json` 和 runner 中移除 `target_mode`
+  - 让 copy fallback 改为按 device-side copy builtin / runtime schema 判断
+  - `IsBlackholeDeviceKernel()` 不再把 `target_mode` 当识别依据
+- **当前状态**: 已解决。copy true E2E 继续通过，但主协议里不再暴露 `single_core_copy` 模式标签。

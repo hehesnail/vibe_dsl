@@ -235,9 +235,6 @@ void AssignBlackholeCores::StoreAssignment(PrimFunc& func,
   attrs.Set("blackhole.cores_needed", Integer(assignment.cores_needed));
   attrs.Set("blackhole.work_per_core", Integer(assignment.work_per_core));
   attrs.Set("blackhole.core_plan", core_plan);
-  if (!attrs.Get("blackhole.target_mode").has_value()) {
-    attrs.Set("blackhole.target_mode", tvm::ffi::String("single_core_copy"));
-  }
 
   // Update function attributes
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
