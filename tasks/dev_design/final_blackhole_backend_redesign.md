@@ -14,7 +14,6 @@
 - `tasks/design_review.md`
 - `tasks/arch_design.md`
 - `tasks/progress.md` 中关于总体架构的描述
-- `IMPLEMENTATION_STATUS.md` 中关于主路径的描述
 
 旧文档仍保留历史记录价值，但后续实现、评审、拆任务、验收，统一以本文档为准。
 
