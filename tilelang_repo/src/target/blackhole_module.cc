@@ -487,12 +487,17 @@ uint32_t ExtractScalar(const ffi::AnyView& arg, DLDataType dtype) {
 }
 
 DLTensor* ExtractTensorArg(const ffi::AnyView& arg, void* void_arg) {
-  if (void_arg != nullptr) {
-    return static_cast<DLTensor*>(void_arg);
-  }
   auto opt_tensor = arg.try_cast<DLTensor*>();
   if (opt_tensor.has_value()) {
     return opt_tensor.value();
+  }
+  if (void_arg != nullptr) {
+    // PackFuncVoidAddr passes the address of raw_args[i].v_ptr for handle args,
+    // not the DLTensor* value itself.
+    DLTensor* tensor = *reinterpret_cast<DLTensor**>(void_arg);
+    if (tensor != nullptr) {
+      return tensor;
+    }
   }
   LOG(FATAL) << "Cannot extract DLTensor* from packed argument";
   return nullptr;

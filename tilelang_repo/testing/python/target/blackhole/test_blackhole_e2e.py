@@ -258,12 +258,45 @@ def test_blackhole_true_e2e():
                 print(f"  Max difference: {diff.max().item()}")
                 print(f"  Mean difference: {diff.mean().item()}")
                 assert False, "Output does not match reference"
-
         except subprocess.TimeoutExpired:
             pytest.fail("Kernel execution timed out (60s)")
         except Exception as e:
             pytest.skip(f"Test skipped due to error: {e}")
 
+
+def test_blackhole_module_direct_call():
+    """Exercise the BlackholeModule packed-func entrypoint directly."""
+    can_run, msg = check_blackhole_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    M, N = 32, 32
+    torch.manual_seed(42)
+    a_torch = torch.randn(M, N, dtype=torch.float16)
+    b_output = torch.zeros_like(a_torch)
+    b_ref = a_torch.clone()
+
+    target = Target("blackhole")
+    kernel = simple_copy_kernel(M, N)
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, b_output)
+
+    atol = 1e-3
+    rtol = 1e-3
+    if torch.allclose(b_output, b_ref, atol=atol, rtol=rtol):
+        print("SUCCESS: BlackholeModule direct call matches PyTorch reference!")
+        print(f"  Input shape: {a_torch.shape}")
+        print(f"  Max difference: {(b_output - b_ref).abs().max().item()}")
+        assert True
+    else:
+        diff = (b_output - b_ref).abs()
+        print("FAILURE: Direct-call output mismatch!")
+        print(f"  Max difference: {diff.max().item()}")
+        print(f"  Mean difference: {diff.mean().item()}")
+        assert False, "Direct-call output does not match reference"
 
 def test_blackhole_kernel_compilation():
     """Test that we can compile a kernel for Blackhole target.

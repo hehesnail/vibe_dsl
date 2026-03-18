@@ -363,7 +363,11 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
 
   for (size_t i = 0; i < info_.tvm_arg_types.size(); ++i) {
     if (info_.tvm_is_buffer_arg[i]) {
-      DLTensor* tensor = static_cast<DLTensor*>(void_args[i]);
+      DLTensor* tensor = args[i].try_cast<DLTensor*>().value_or(nullptr);
+      if (tensor == nullptr && void_args != nullptr && void_args[i] != nullptr) {
+        tensor = *reinterpret_cast<DLTensor**>(void_args[i]);
+      }
+      ICHECK(tensor != nullptr) << "Cannot extract DLTensor* from packed argument";
       if (i < info_.tvm_arg_types.size() - 1) {
         inputs.push_back(tensor);
       } else {

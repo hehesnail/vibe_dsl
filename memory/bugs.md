@@ -66,7 +66,9 @@
   - `spec-driven` runner 手工驱动可以在 TT-Sim 上成功执行 single-core copy
   - 但从 Python 直接调 packed func 时，会在进入 `ExecuteExternal` 后崩溃，尚未稳定打印出完整 runner 调用日志
 - **当前判断**: 问题更可能在 `BlackholeModule` 的 packed-arg / `DLTensor*` 调用面，而不是 copy kernel、runner 协议或 TT-Sim 环境本身。
-- **临时绕行**:
-  - 继续使用 `spec.json + input.bin + output.bin` 协议验证 true E2E
-  - 不把 Python 直调 `codegen_mod["main"]` 当作当前阶段的唯一验证入口
-- **当前限制**: Stage 1 copy 已有真执行验证，但 `BlackholeModule` 顶层调用面还不能视为完成。
+- **根本原因**: `PackFuncVoidAddr` 对 handle 参数传入的 `void_args[i]` 是 `raw_args[i].v_ptr` 槽位地址，不是最终的 `DLTensor*`；BlackholeModule 直接把它当成 `DLTensor*` 解读，导致后续取 shape/data 时踩坏内存。
+- **解决方案**:
+  - 优先用 `ffi::AnyView::try_cast<DLTensor*>()` 解码 tensor 参数
+  - 仅把 `void_args` 作为保守回退，并在使用时先解引用成真正的 `DLTensor*`
+  - 补 direct-call 测试覆盖 `artifact.codegen_mod["main"](...)`
+- **当前状态**: 已解决。`spec.json -> runner` 和 Python direct-call 两条 single-core copy 路径都已在 TT-Sim 上通过。

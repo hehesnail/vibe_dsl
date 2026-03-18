@@ -5,15 +5,15 @@
 
 ## 当前阶段
 
-- **阶段**: Stage 1 single-core copy 闭环
+- **阶段**: Stage 2 single-core gemm 闭环
 - **日期**: 2026-03-18
-- **目标**: 跑通最小 single-core copy 真执行路径，并收敛 `spec.json -> runner` 主路径
+- **目标**: 在已完成的 single-core copy 闭环之上，推进 single-core gemm true E2E
 
 ## 当前判断
 
 - pass 已接入 lowering pipeline。
 - `spec.json -> runner` 的最小 single-core copy 已在 TT-Sim 上真实执行通过。
-- `BlackholeModule` 从 Python 直接调用 packed func 仍有崩溃问题，主调用面还没完全收口。
+- `BlackholeModule` 从 Python 直接调用 packed func 已在 TT-Sim 上跑通 single-core copy，Stage 1 主调用面已收口。
 - 当前不再把“能生成 kernel 字符串”视为阶段完成。
 
 ## 任务状态总览
@@ -25,16 +25,16 @@
 | Stage 0 | 重构 `rt_mod_blackhole` | 🔄 进行中 | 已抽取 Stage 0 spec，并生成最小 runtime arg schema |
 | Stage 0 | 重构 `BlackholeModule` | 🔄 进行中 | 已开始写 `spec.json + input.bin + output.bin + kernel.cpp` |
 | Stage 0 | 重写 runner 协议 | 🔄 进行中 | 已切到 `spec.json + input.bin + output.bin`，runner 构建入口已收回 `tilelang_repo/tools/blackhole_runner/` |
-| Stage 1 | single-core copy 闭环 | 🔄 进行中 | spec-driven runner 真 E2E 已通过，module 调用面仍待收敛 |
-| Stage 2 | single-core gemm 闭环 | ⏳ 未开始 | true E2E |
+| Stage 1 | single-core copy 闭环 | ✅ 已完成 | spec-driven runner 与 `BlackholeModule` direct call 都已在 TT-Sim 上通过 |
+| Stage 2 | single-core gemm 闭环 | 🔄 进行中 | true E2E |
 | Stage 3 | multi-core runtime 调度 | ⏳ 未开始 | per-core args |
 
 ## 当前下一步
 
-1. 收敛 `BlackholeModule` 的真实调用面，解决 Python 侧直接调用 `codegen_mod["main"]` 时在 `ExecuteExternal` 崩溃的问题。
-2. 让 lowering/segment 继续生成更真实的 `kernels[].runtime_args` 与 `target_mode`，减少当前 copy 专用保守路径。
+1. 让 lowering/segment 生成 gemm 所需的更真实 `kernels[].runtime_args` 与 `target_mode`，减少当前 copy 专用保守路径。
+2. 将 copy 阶段暴露出的最小 runtime arg/schema 经验推广到 single-core gemm 真执行闭环。
 3. 扩展 runner 和 `BlackholeModule` 到多 kernel、multi-core、per-core runtime args。
-4. 在 single-core copy 调用面稳定后，再推进 single-core gemm 真执行闭环。
+4. 在 single-core gemm 路径稳定后，再推进 multi-core runtime 调度。
 
 ## 最近更新
 
@@ -60,4 +60,8 @@
   - runner 已支持 `scratch_l1_buffer_addr32` 并按 schema 自动分配 L1 scratch buffer
   - `testing/python/target/blackhole/test_blackhole_e2e.py::test_blackhole_true_e2e` 已切到 `spec.json + input.bin + output.bin` 新协议
   - 已通过 `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py -k true_e2e -s` 在 TT-Sim 上跑通 single-core copy，结果与 PyTorch reference 一致
-  - 当前剩余问题：Python 侧直接调用 `artifact.codegen_mod["main"](...)` 仍会在 `BlackholeModule::ExecuteExternal` 路径崩溃
+  - `BlackholeModule` 已修正 packed buffer 参数提取，不再把 `void_args` 误解为 `DLTensor*`
+  - 已新增 `test_blackhole_module_direct_call`
+  - 已通过 `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py -k 'true_e2e or module_direct_call' -s` 验证：
+    - `spec.json -> runner` single-core copy 继续通过
+    - Python 侧直接调用 `artifact.codegen_mod["main"](...)` 已在 TT-Sim 上通过

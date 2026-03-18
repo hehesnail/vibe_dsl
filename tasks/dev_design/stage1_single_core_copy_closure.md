@@ -100,6 +100,18 @@ Python E2E 测试不再直接按旧 CLI 传：
   - Python E2E 已切到 `spec.json + input.bin + output.bin` 新协议
   - TT-Sim 下已跑通 `32x32 float16` single-core copy，输出与 reference 一致
 - 当前未完成：
-  - `BlackholeModule` 从 Python 直接调 packed func 时仍会在 `ExecuteExternal` 路径崩溃
   - 通用 copy lowering、multi-kernel segmentation、multi-core runtime args 仍未覆盖
   - GEMM 仍留到后续阶段推进
+
+## 收尾更新
+
+- `BlackholeModule` 已修正 packed buffer 参数提取：
+  - 优先通过 `ffi::AnyView::try_cast<DLTensor*>()` 解码 tensor 参数
+  - 不再把 `PackFuncVoidAddr` 传入的 `void_args[i]` 直接误当成 `DLTensor*`
+- 已新增 `test_blackhole_module_direct_call`
+- 已通过：
+  - `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py -k true_e2e -s`
+  - `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py -k 'true_e2e or module_direct_call' -s`
+- 结论：
+  - Stage 1 single-core copy 闭环已完成
+  - 后续主线切到 Stage 2 single-core gemm
