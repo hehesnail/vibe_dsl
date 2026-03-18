@@ -45,6 +45,7 @@
   - `BlackholeModule` 已改为写 `spec.json + input.bin + output.bin + kernel.cpp`
   - runner 已改为读取 `spec.json` 并按 spec 建 CB / kernel / runtime args
  - runner 源码与构建入口已收敛到 `tilelang_repo/tools/blackhole_runner/`
+  - 已新增顶层总控脚本 `scripts/build_blackhole_stack.sh`
   - `scripts/build_blackhole_runner.sh` 现会先 bootstrap `TT_METAL_HOME/build_Release`，再构建 runner
   - runner 构建仍由 TileLang 侧 standalone CMake 管理，不再要求修改 `tt_metal_repo` 源码
   - `scripts/setup_tt_sim.sh` 已补 `TT_METAL_RUNTIME_ROOT`

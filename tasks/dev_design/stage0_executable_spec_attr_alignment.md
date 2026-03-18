@@ -76,6 +76,7 @@ runner 源码与构建入口归属：
 - runner 放在 `tilelang_repo/tools/blackhole_runner/`
 - runner 由 `tilelang_repo/tools/blackhole_runner/CMakeLists.txt` 独立构建
 - runner 二进制默认产物位置收敛到 `tilelang_repo/build-blackhole-runner/tilelang_blackhole_runner`
+- 顶层总控入口为 `scripts/build_blackhole_stack.sh`，显式串起 TileLang 构建、TT-Metal bootstrap、TT-Sim smoke test 和 runner 构建
 - `scripts/build_blackhole_runner.sh` 会先 bootstrap `TT_METAL_HOME/build_Release`，再构建 runner
 - bootstrap 后会通过 TT-Sim 运行 `metal_example_add_2_integers_in_riscv` 作为 smoke test
 - runner 构建只消费 `TT_METAL_HOME/build_Release` 的头文件和库，不再要求修改 `tt_metal_repo` 源码

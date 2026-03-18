@@ -150,6 +150,7 @@
   - 再跑一个 TT-Sim smoke test 验证编译产物可执行
   - 最后再编 TileLang 自己的 runner
   这样能尽早把“编得过”和“跑得起来”分层验证掉。
+- 如果还需要同时重编 `tilelang_repo/build`，更稳的做法是再包一层显式总控脚本，而不是把 runner/TT-Metal 链路塞进 TileLang 默认 `all` 目标；这样普通 TileLang 编译不会被 Blackhole 外部依赖拖慢。
 - 如果 standalone CMake 需要复刻 TT-Metal 的关键编译约束，至少要显式继承：
   - `cxx_std_20`
   - runner 所需的 compile definitions
