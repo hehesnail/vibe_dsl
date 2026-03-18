@@ -115,3 +115,4 @@ Python E2E 测试不再直接按旧 CLI 传：
 - 结论：
   - Stage 1 single-core copy 闭环已完成
   - 后续主线切到 Stage 2 single-core gemm
+  - Stage 2 的重点不再是复制 copy 阶段的 runtime 特化做法，而是先把 gemm 关键执行语义迁回 pass/schema，详见 `tasks/dev_design/stage2_single_core_gemm_pass_integration.md`
