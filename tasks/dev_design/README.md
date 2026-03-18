@@ -9,4 +9,5 @@
 - `stage0_executable_spec_attr_alignment.md`：Stage 0 协议落地设计
 - `stage1_single_core_copy_closure.md`：Stage 1 copy 闭环设计
 - `stage2_single_core_pass_integration.md`：Stage 2 copy/gemm pass/schema 收口设计
+- `stage2_pass_reuse_matrix.md`：Stage 2 pass 复用矩阵与 TIR 主链接入设计
 - `phase0_*`：环境与构建历史记录

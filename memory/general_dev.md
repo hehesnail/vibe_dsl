@@ -199,6 +199,16 @@
   - 直接在 DSL 样例里写显式 `T.copy(global -> shared)` 和 `T.copy(shared -> global)`
   - 然后检查 pass 后是否只剩一组 tile/dataflow builtin，而不是 vectorized 元素循环里重复发射 builtin
 - 真执行测试需要把编译链和环境问题分层处理。对 Blackhole，`TT_METAL_RUNTIME_ROOT` 缺失时 runner 和 direct-call 都会在 Metal 初始化前失败；这类情况应该在测试前置检查里显式 skip，而不是记成 codegen/pass 回归。
+- 当一个新 target 已经接入 TileLang/TVM 的 PrimFunc/TIR 主链时，优先问题不应是“补多少自定义 pass”，而应先核对它是否旁路了现有主线中的关键 pass。对 Blackhole，当前最关键的结构检查项是：
+  - 是否过早在 target-specific optimize 阶段 early return
+  - 是否仍复用了通用 TIR 规范化 pass
+  - 是否仍复用了 `AnnotateDeviceRegions` / `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch`
+  - runtime/module 是否还在间接定义 PrimFunc 参数和 host/device 语义
+- 对这类 target backend，更稳的开发顺序通常是：
+  - 先做一份 pass 复用矩阵
+  - 再把差异压缩到少量 target-aware 接入点
+  - 最后再在这些接入点上推进 copy/gemm 等算子实现
+  否则很容易在 runtime/spec/module 里积累“补洞式语义”。
 
 ## 建议的开发顺序
 

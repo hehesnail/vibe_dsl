@@ -72,6 +72,8 @@
 - `LowerBlackholeOps` 的 copy/dataflow lowering 仍不足以恢复 TT-Metal 真正需要的 tile access 语义
 - `CodeGenBlackhole` 仍默认一个 PrimFunc 对应一个 `kernel_main()`
 - runner 只支持固定输入，不支持多 kernel、多 CB、compile-time args、per-kernel runtime args schema 和 per-core runtime args
+- Blackhole 目前在 `OptimizeForTarget` 中过早退出，绕过了大量 TileLang/TVM 通用 TIR 优化与 host/device 约束 pass
+- Blackhole 当前跳过 `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch`，导致 PrimFunc 参数、host/device 边界和 runtime 参数语义长期由 `rt_mod_blackhole` / `BlackholeModule` 间接补洞
 
 ## 4. 正式架构
 
@@ -105,6 +107,27 @@ TileLang DSL / TIR
 3. compile-time args 与 runtime args 必须严格分层。
 4. multi-core 主要由 host/runtime 实现，不由 codegen 主导。
 5. `SplitBlackholeKernel` 不进入 MVP 主路径。
+6. Blackhole 以后端差异最小化为目标，优先复用 TileLang/TVM 现有 PrimFunc/TIR pass 主链。
+7. host/device 划分、Packed API 参数语义和通用 TIR 优化默认沿用 TileLang/TVM 现有约束，不再长期由 Blackhole 自定义模型旁路。
+
+### 4.3 Pass 主链接入原则
+
+Blackhole 不应再被视为“在 `LowerAndLegalize` 之后直接自建 device pipeline”的特例目标，而应尽量回到：
+
+```text
+DSL / PrimFunc
+  -> TileLang/TVM 通用 legalize / normalize / optimize
+  -> LowerTileOp(Blackhole-aware)
+  -> AnnotateDeviceRegions / SplitHostDevice / MakePackedAPI / LowerDeviceKernelLaunch
+  -> Blackhole-specific device passes
+  -> BuildTileLangBlackholeWithoutHost
+```
+
+其中：
+
+- `LowerTileOp` 是 Blackhole 最关键的 target-aware 接入点
+- `LowerBlackholeOps` 不再主要承担晚期 loop 语义恢复
+- `rt_mod_blackhole` 与 `BlackholeModule` 不再长期承担 PrimFunc 参数语义与 host/device 边界定义
 
 ## 5. 核心数据结构
 
@@ -177,6 +200,11 @@ struct ExecutableSpec {
 - 将 TileLang 高层语义降为 TT-Metal 可还原的段内语义
 - 写入 `cb_requirements`
 - 写入 segment 所需的中间信息
+
+前置约束：
+
+- 长期输入应为经过 `LowerTileOp(Blackhole-aware)` 后的 PrimFunc
+- 不应继续依赖“`LowerTileOp` 完全展开后，再从普通 loop/load/store 里恢复绝大多数 tile 语义”作为主路径
 
 保留 compute builtin：
 
@@ -252,12 +280,24 @@ struct ExecutableSpec {
 - 从 IRModule/PrimFunc 提取 `ExecutableSpec`
 - 构造 `BlackholeModule(spec)`
 
+约束：
+
+- 只消费 pass 产出的 device-side 语义、attrs 和 schema
+- 不再长期把“没有 `calling_conv` 的 PrimFunc”视为正式 device kernel 模型
+- 不再定义 PrimFunc 参数类别、host/device 边界和 runtime 参数意义
+
 ### 7.7 `BlackholeModule`
 
 职责：
 
 - TVM runtime adapter
 - 序列化 `ExecutableSpec + tensors + scalars`
+- 作为 host-side 执行载体调用 runner
+
+约束：
+
+- 不再长期承担 Packed API / host-device 边界语义
+- 输入输出 buffer、scalar、dynamic shape 参数如何映射到 runtime arg，应由 PrimFunc + pass schema 显式决定
 - 调用外部 runner
 
 runner 输入协议：

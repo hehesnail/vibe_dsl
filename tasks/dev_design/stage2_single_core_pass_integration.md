@@ -68,12 +68,30 @@ Stage 2 应拆成三个子目标：
 
 其中后一步都必须建立在前一步之上，不能跳过。
 
+### 3. Stage 2 的前置条件已进一步明确：先收正 pass 主链接入，再谈 copy/gemm
+
+当前 Blackhole 最大的问题不再只是“copy/gemm 语义还没完全前移”，而是：
+
+- Blackhole 在 `OptimizeForTarget` 中过早退出
+- 大量通用 TIR 规范化 / host-device / Packed API pass 被绕过
+- `rt_mod_blackhole` / `BlackholeModule` 仍在间接承担 PrimFunc 参数与 runtime 参数语义
+
+因此 Stage 2 的真正顺序应调整为：
+
+- `Stage 2A0`: pass 复用矩阵与主链接入收正
+- `Stage 2A`: single-core copy pass integration
+- `Stage 2B`: single-core gemm pass integration
+- `Stage 2C`: single-core copy + gemm true E2E
+
+对应设计见 `stage2_pass_reuse_matrix.md`。
+
 ## Stage 2A：single-core copy pass integration
 
 ### 目标
 
 - 让 copy 所需执行语义从 pass 产物中显式可见，而不是让 runtime 猜。
 - 让 `ExecutableSpec` 的关键字段逐步成为 pass 结果的直接映射。
+- 建立在 Blackhole 已重新接回通用 TIR / host-device / Packed API 主链的前提上，而不是在当前旁路结构上继续补丁。
 - 让 Blackhole copy 的主验收对象回到 TileLang 原始 `T.copy` 语义：
   - `global -> shared/CB`
   - `shared/CB -> global`
@@ -129,6 +147,11 @@ Stage 2 应拆成三个子目标：
 - 消费 copy 的 pass attrs / segment 信息
 - 组装 copy 的 `ExecutableSpec`
 - 只补充最小、无语义歧义的默认值
+
+新增约束：
+
+- 不再把“没有 `calling_conv` 的 PrimFunc 也视为 device kernel”作为正式主路径
+- copy 的 runtime arg schema 必须能追溯到 PrimFunc 参数、`buffer_map`、host/device split 与 pass attrs，而不是由 runtime/module 猜
 
 不应继续承担：
 
@@ -245,6 +268,11 @@ Stage 2 的要求是：
 
 ### 执行验证
 
+- Blackhole target 下应恢复 pass 主链验证：
+  - `AnnotateDeviceRegions`
+  - `SplitHostDevice`
+  - `MakePackedAPI`
+  - `LowerDeviceKernelLaunch` 或其 Blackhole 分支
 - 保留并改造 single-core copy 测试，验证其开始走 pass-driven schema
 - copy 主测试样例要改成显式 `T.copy(global -> shared -> global)`，不再用 `B[y, x] = A[y, x]` simple assignment 当主验收对象
 - 新增或改造 single-core gemm true E2E 测试

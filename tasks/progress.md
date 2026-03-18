@@ -6,8 +6,8 @@
 ## 当前阶段
 
 - **阶段**: Stage 2 single-core pass integration
-- **日期**: 2026-03-18
-- **目标**: 在已完成的 single-core copy 执行闭环之上，先把 copy/gemm 统一迁回 pass/schema，再推进 single-core copy + gemm true E2E
+- **日期**: 2026-03-19
+- **目标**: 先把 Blackhole 重新接回 TileLang/TVM 的 PrimFunc/TIR pass 主链，在此基础上推进 copy/gemm 的 pass/schema 收口，再做 single-core true E2E
 
 ## 当前判断
 
@@ -22,6 +22,8 @@
 - copy codegen 的固定参数槽位假设已开始拆除：`CodeGenBlackhole` 现优先从 `blackhole.runtime_args` 和 buffer 绑定里取地址变量，不再要求固定的 `src_dram_addr / dst_dram_addr / num_tiles / scratch_l1_addr` 命名。
 - 针对显式 staged copy 样例，loop 内重复 `tile_index=0` 的错误 lowering 已开始收敛：当前 lowered TIR / codegen 已能在 outer tile loop 中保留一组 read/write builtin，而不再在 vectorized 元素循环里重复发射 tile builtin。
 - 但 current copy 仍未达到“完全通用的 compiler lowering”标准：当前收敛的是 `LowerTileOp` 后的显式 staged copy loop，不是任意 `global -> global` 赋值循环自动 canonicalization。
+- 当前最主要的结构问题已进一步明确：Blackhole 还在 `OptimizeForTarget` 中 early return，导致大段通用 TIR 优化、`SplitHostDevice`、`MakePackedAPI`、`LowerDeviceKernelLaunch` 被旁路。
+- 因此 Stage 2 的前置任务已调整为“pass 复用矩阵 + 主链接入收正”，而不是直接在当前旁路结构上继续扩 copy/gemm。
 - 当前不再把“能生成 kernel 字符串”视为阶段完成。
 
 ## 任务状态总览
@@ -39,11 +41,11 @@
 
 ## 当前下一步
 
-1. 继续推进 Stage 2A：把当前 staged copy loop 识别从 MVP 样例扩展到更稳的 tile-range 分析，减少对当前 `LowerTileOp` 具体 loop 形态的脆弱依赖。
-2. 让 runner / direct-call 真执行测试继续按环境 gate 显式 skip，避免把 `TT_METAL_RUNTIME_ROOT` / TT-Sim 问题误记成编译链回归。
-3. 在 copy 已具备 pass-driven attrs/schema 和 staged-loop lowering 的基础上，用同一套机制承接 gemm。
-4. 在 copy/gemm 的 pass/schema 收口后，再推进 single-core copy + gemm true E2E。
-5. 在 single-core pass integration 路径稳定后，再推进 multi-core runtime 调度。
+1. 先落地 `stage2_pass_reuse_matrix.md` 中的 pass 接入收正方案，明确哪些通用 TIR / host-device / Packed API pass 需要对 Blackhole 恢复复用。
+2. 以恢复 `AnnotateDeviceRegions` / `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch` 或其 Blackhole 分支为优先项，停止长期依赖“无 `calling_conv` 也可当 device kernel”的路径。
+3. 在主链接入收正后，再继续推进 copy：把 staged copy loop 识别从 MVP 样例扩展到更稳的 tile-range 分析，减少对当前 `LowerTileOp` 具体 loop 形态的脆弱依赖。
+4. 让 runner / direct-call 真执行测试继续按环境 gate 显式 skip，避免把 `TT_METAL_RUNTIME_ROOT` / TT-Sim 问题误记成编译链回归。
+5. 在 copy 的 pass/schema 和 host-device 主线都收正后，再用同一套机制承接 gemm，最后推进 single-core true E2E。
 
 ## 最近更新
 
@@ -91,3 +93,8 @@
   - 已通过 `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py -s`
     - `copy_pass_attrs` 与 `copy_codegen_uses_runtime_schema` 已通过
     - `true_e2e` 与 `module_direct_call` 会在缺少 `TT_METAL_RUNTIME_ROOT` 时显式 skip
+- 2026-03-19:
+  - 新增 `tasks/dev_design/stage2_pass_reuse_matrix.md`
+  - 已明确 Blackhole 当前最大结构问题是 `OptimizeForTarget` early return，导致大段通用 TIR / host-device / Packed API pass 被旁路
+  - 已明确 Stage 2 的前置任务应先收正 pass 主链接入，而不是继续在当前自定义 kernel model 上堆 copy/gemm
+  - 已将总设计、Stage 2 设计和进度文档统一到“最大化复用 TileLang/TVM pass 主链”的结论上

@@ -104,3 +104,19 @@
   - 不应长期依赖 `blockIdx` 常量化
   - 后续需要把单核 tile 遍历语义和 host/runtime scheduling 的边界重新收口，避免 device code 在 tile index 上失真
 - **当前状态**: 未解决。当前 staged copy MVP 通过显式 serial tile loop 绕开该限制。
+
+### Blackhole 当前旁路了大量 TileLang/TVM 主线 pass
+
+- **时间**: 2026-03-19
+- **问题**: Blackhole 当前在 `OptimizeForTarget` 中过早 early return，导致很多本应复用的通用 TIR、host/device 与 Packed API pass 没有进入主路径。
+- **现象**:
+  - `AnnotateDeviceRegions` / `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch` 没有在 Blackhole 主线上运行
+  - `rt_mod_blackhole` 会把缺少 `calling_conv` 的 PrimFunc 也当成 device kernel 处理
+  - `BlackholeModule` / `rt_mod_blackhole` 间接承担了部分 PrimFunc 参数、host/device 边界和 runtime 参数语义
+- **根本原因**: 早期为了快速打通 `ExecutableSpec -> runner` 执行路径，Blackhole 采用了自定义 kernel model，并在 `OptimizeForTarget` 中对 Blackhole 提前返回，绕开了 TileLang/TVM 主线中后段 pass。
+- **解决方向**:
+  - 先做 pass 复用矩阵
+  - 优先恢复通用 TIR 规范化和 host/device / Packed API pass 的主线复用
+  - 将 Blackhole 差异收缩到 `LowerTileOp` 附近和少量 device-specific pass
+  - 停止长期依赖“无 `calling_conv` 也可当 device kernel”的路径
+- **当前状态**: 未解决。已形成 `stage2_pass_reuse_matrix.md` 作为后续收正依据。
