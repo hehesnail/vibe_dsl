@@ -27,10 +27,13 @@
 #include <tvm/ffi/extra/module.h>
 #include <tvm/ir/transform.h>
 #include <tvm/target/codegen.h>
+#include <tvm/tir/builtin.h>
+#include <tvm/tir/stmt_functor.h>
 
 #include <cstring>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <fstream>
 #include <filesystem>
@@ -379,6 +382,74 @@ static std::string EmitSingleCoreCopyKernelSource(const ExecutableSpec& spec) {
   return os.str();
 }
 
+static std::string GetPrimFuncName(const GlobalVar& gvar, const tir::PrimFunc& f) {
+  auto global_symbol = f->GetAttr<ffi::String>(tvm::attr::kGlobalSymbol);
+  return global_symbol ? static_cast<std::string>(global_symbol.value())
+                       : static_cast<std::string>(gvar->name_hint);
+}
+
+static bool IsBlackholeDeviceKernel(const tir::PrimFunc& f) {
+  auto calling_conv = f->GetAttr<Integer>(tvm::attr::kCallingConv);
+  if (calling_conv.defined()) {
+    return calling_conv == CallingConv::kDeviceKernelLaunch;
+  }
+  return static_cast<bool>(f->GetAttr<ffi::String>("blackhole.target_mode")) ||
+         static_cast<bool>(f->GetAttr<ffi::Array<ffi::Any>>("blackhole.segment_plan")) ||
+         static_cast<bool>(f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.core_plan"));
+}
+
+static bool IsBlackholeHostEntry(const tir::PrimFunc& f) {
+  auto calling_conv = f->GetAttr<Integer>(tvm::attr::kCallingConv);
+  return calling_conv.defined() && calling_conv == CallingConv::kCPackedFunc;
+}
+
+static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f,
+                                                          const std::string& entry_name) {
+  ExecutableSpec spec;
+  spec.entry_name = entry_name;
+
+  for (size_t i = 0; i < f->params.size(); ++i) {
+    DLDataType dtype = f->params[i]->dtype;
+    if (dtype.code == kDLBool) {
+      dtype.code = kDLInt;
+      dtype.bits = 32;
+    }
+    spec.tvm_arg_types.push_back(dtype);
+    spec.tvm_is_buffer_arg.push_back(dtype.code == kDLOpaqueHandle);
+  }
+
+  spec.cb_configs = ExtractCBConfig(f);
+  spec.core_plan = ExtractCorePlan(f);
+  spec.target_mode = f->GetAttr<ffi::String>("blackhole.target_mode")
+                         .value_or(ffi::String("single_core_copy"));
+  spec.runtime_args = ExtractRuntimeArgs(f, spec);
+  ExtractSegmentPlan(f, &spec);
+  return spec;
+}
+
+static std::string FindLaunchedKernelSymbol(
+    const tir::PrimFunc& f,
+    const std::unordered_set<std::string>& device_kernel_symbols) {
+  std::string kernel_symbol;
+  tir::PostOrderVisit(f->body, [&](const ObjectRef& node) {
+    if (!kernel_symbol.empty()) {
+      return;
+    }
+    const auto* call = node.as<tir::CallNode>();
+    if (!call || !call->op.same_as(tir::builtin::tvm_call_packed()) ||
+        call->args.empty()) {
+      return;
+    }
+    if (const auto* callee = call->args[0].as<StringImmNode>()) {
+      std::string name = callee->value;
+      if (device_kernel_symbols.count(name)) {
+        kernel_symbol = std::move(name);
+      }
+    }
+  });
+  return kernel_symbol;
+}
+
 /*!
  * \brief Extract executable specs for the Blackhole backend.
  * \param mod The IR module
@@ -387,42 +458,44 @@ static std::string EmitSingleCoreCopyKernelSource(const ExecutableSpec& spec) {
 static std::unordered_map<std::string, ExecutableSpec> ExtractBlackholeFuncInfo(
     const IRModule& mod) {
   std::unordered_map<std::string, ExecutableSpec> fmap;
+  std::unordered_map<std::string, ExecutableSpec> device_specs;
+  std::unordered_map<std::string, tir::PrimFunc> host_entries;
+  std::unordered_set<std::string> device_kernel_symbols;
 
   for (auto kv : mod->functions) {
     ICHECK(kv.second->IsInstance<tir::PrimFuncNode>())
         << "Can only lower IR Module with PrimFuncs";
+    auto gvar = Downcast<GlobalVar>(kv.first);
     auto f = Downcast<tir::PrimFunc>(kv.second);
+    std::string func_name = GetPrimFuncName(gvar, f);
 
-    ExecutableSpec spec;
-
-    // Extract argument types and buffer flags
-    for (size_t i = 0; i < f->params.size(); ++i) {
-      DLDataType dtype = f->params[i]->dtype;
-      // Device runtime cannot directly take bool arguments, map to int32.
-      if (dtype.code == kDLBool) {
-        dtype.code = kDLInt;
-        dtype.bits = 32;
-      }
-      spec.tvm_arg_types.push_back(dtype);
-
-      // Check if this is a buffer argument (handle type)
-      spec.tvm_is_buffer_arg.push_back(dtype.code == kDLOpaqueHandle);
-    }
-
-    // Extract CB configuration
-    spec.cb_configs = ExtractCBConfig(f);
-    spec.core_plan = ExtractCorePlan(f);
-    spec.target_mode = f->GetAttr<ffi::String>("blackhole.target_mode")
-                           .value_or(ffi::String("single_core_copy"));
-    spec.runtime_args = ExtractRuntimeArgs(f, spec);
-    ExtractSegmentPlan(f, &spec);
-
-    auto global_symbol = f->GetAttr<ffi::String>(tvm::attr::kGlobalSymbol);
-    if (global_symbol) {
-      spec.entry_name = static_cast<std::string>(global_symbol.value());
-      fmap[spec.entry_name] = spec;
+    if (IsBlackholeDeviceKernel(f)) {
+      device_kernel_symbols.insert(func_name);
+      device_specs.emplace(func_name, ExtractExecutableSpecFromDeviceFunc(f, func_name));
+    } else if (IsBlackholeHostEntry(f)) {
+      host_entries.emplace(func_name, f);
     }
   }
+
+  for (auto& kv : device_specs) {
+    fmap.emplace(kv.first, kv.second);
+  }
+
+  for (const auto& kv : host_entries) {
+    const std::string launched_kernel =
+        FindLaunchedKernelSymbol(kv.second, device_kernel_symbols);
+    if (launched_kernel.empty()) {
+      continue;
+    }
+    auto it = device_specs.find(launched_kernel);
+    if (it == device_specs.end()) {
+      continue;
+    }
+    ExecutableSpec host_spec = it->second;
+    host_spec.entry_name = kv.first;
+    fmap[kv.first] = std::move(host_spec);
+  }
+
   return fmap;
 }
 
@@ -461,16 +534,7 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
         << "CodeGenBlackhole: Can only take PrimFunc";
     auto gvar = Downcast<GlobalVar>(kv.first);
     auto f = Downcast<tir::PrimFunc>(kv.second);
-    auto global_symbol = f->GetAttr<ffi::String>(tvm::attr::kGlobalSymbol);
-    std::string func_name = global_symbol ? static_cast<std::string>(global_symbol.value())
-                                          : static_cast<std::string>(gvar->name_hint);
-    // Check calling convention
-    auto calling_conv = f->GetAttr<Integer>(tvm::attr::kCallingConv);
-    if (calling_conv == CallingConv::kDeviceKernelLaunch) {
-      // Device kernel - generate TT-Metal kernel code
-      cg.AddFunction(gvar, f);
-    } else {
-      // Host function - also add it
+    if (IsBlackholeDeviceKernel(f)) {
       cg.AddFunction(gvar, f);
     }
   }
@@ -533,13 +597,7 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
         << "CodeGenBlackhole: Can only take PrimFunc";
     auto gvar = Downcast<GlobalVar>(kv.first);
     auto f = Downcast<tir::PrimFunc>(kv.second);
-    auto global_symbol = f->GetAttr<ffi::String>(tvm::attr::kGlobalSymbol);
-    std::string func_name = global_symbol ? static_cast<std::string>(global_symbol.value())
-                                          : static_cast<std::string>(gvar->name_hint);
-    auto calling_conv = f->GetAttr<Integer>(tvm::attr::kCallingConv);
-    // Process device kernels (kDeviceKernelLaunch) OR functions without calling_conv set
-    // (which is the case for Blackhole device functions from tilelang.transform flow)
-    if (!calling_conv.defined() || calling_conv == CallingConv::kDeviceKernelLaunch) {
+    if (IsBlackholeDeviceKernel(f)) {
       cg.AddFunction(gvar, f);
     }
   }

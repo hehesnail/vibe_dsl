@@ -198,6 +198,14 @@
 - 对这种 post-`LowerTileOp` staged copy lowering，更稳的回归测试是：
   - 直接在 DSL 样例里写显式 `T.copy(global -> shared)` 和 `T.copy(shared -> global)`
   - 然后检查 pass 后是否只剩一组 tile/dataflow builtin，而不是 vectorized 元素循环里重复发射 builtin
+- 当一个 target 正在从“自定义 unsplit kernel model”切回 `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch` 主线时，不要一次性把所有中后段规范化 pass 都塞回去。更稳的做法是：
+  - 先恢复 host/device 主链和 entry/kernel 语义
+  - 再检查 target-specific device pass 还能否识别 split 后的 kernel 形态
+  - 最后再逐步把 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 这类会重塑 copy/dataflow 形态的 pass 接回去
+- 如果 runtime module 既要复用 split 后的 host entry 名，又要直接承载外部执行入口，spec 提取不要沿用 Packed API PrimFunc 的低层参数签名。更稳的做法是：
+  - 由 host entry 解析出它 launch 的 device kernel
+  - 继续用 device kernel 的用户参数签名构造 runtime module entry
+  - 只把 host Packed API PrimFunc 当作 host/device 语义来源，而不是最终外部调用签名来源
 - 真执行测试需要把编译链和环境问题分层处理。对 Blackhole，`TT_METAL_RUNTIME_ROOT` 缺失时 runner 和 direct-call 都会在 Metal 初始化前失败；这类情况应该在测试前置检查里显式 skip，而不是记成 codegen/pass 回归。
 - 当一个新 target 已经接入 TileLang/TVM 的 PrimFunc/TIR 主链时，优先问题不应是“补多少自定义 pass”，而应先核对它是否旁路了现有主线中的关键 pass。对 Blackhole，当前最关键的结构检查项是：
   - 是否过早在 target-specific optimize 阶段 early return

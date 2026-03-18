@@ -233,8 +233,31 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
     # Lower the shared.tmem into specific initialization slot
     mod = tilelang.transform.LowerSharedTmem()(mod)
     check_target(mod, "LowerSharedTmem")
-    # Early return for Blackhole - skip CUDA-specific passes
     if target.kind.name == "blackhole":
+        # Blackhole should reuse the generic TIR and host/device mainline while
+        # still skipping CUDA/Hopper-only passes that do not map to TT-Metal.
+        mod = tilelang.transform.IfStmtBinding()(mod)
+        mod = tilelang.transform.PlanAndUpdateBufferAllocationLocation()(mod)
+        mod = tilelang.transform.PipelinePlanning()(mod)
+        mod = tilelang.transform.InjectSoftwarePipeline()(mod)
+        mod = tilelang.transform.LowerOpaqueBlock()(mod)
+        mod = tilelang.transform.Simplify()(mod)
+        mod = tir.transform.VerifyMemory()(mod)
+        mod = tir.transform.AnnotateEntryFunc()(mod)
+        if allow_global_thread_synchronization():
+            mod = tilelang.transform.ThreadSync("global")(mod)
+        mod = tilelang.transform.AnnotateDeviceRegions()(mod)
+        mod = tilelang.transform.SplitHostDevice()(mod)
+        mod = tilelang.transform.AnnotateReadOnlyParams()(mod)
+        enable_aggressive_merge = should_enable_aggressive_merge(pass_ctx=pass_ctx, target=target)
+        mod = tilelang.transform.MergeSharedMemoryAllocations(enable_aggressive_merge=enable_aggressive_merge)(mod)
+        mod = tilelang.transform.ThreadSync("shared")(mod)
+        mod = tilelang.transform.ThreadSync("shared.dyn")(mod)
+        mod = tilelang.transform.MergeIfStmt()(mod)
+        mod = tilelang.transform.MakePackedAPI()(mod)
+        mod = tilelang.transform.Simplify()(mod)
+        mod = tilelang.transform.LowerDeviceKernelLaunch()(mod)
+        check_target(mod, "LowerDeviceKernelLaunch")
         return mod
     # which may be introduced by the LegalizeSafeMemoryAccess
     # Note: The WarpSpecialized + InjectTmaBarrier pipeline is required for correct TMA lowering

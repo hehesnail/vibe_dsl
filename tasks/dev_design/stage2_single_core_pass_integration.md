@@ -107,6 +107,15 @@ Stage 2 的正式目标已经收紧为：
 - GEMM 继续复制 copy 阶段的 runtime 特化做法
 - `rt_mod_blackhole` 继续承担 kernel 语义恢复、PrimFunc 参数分类和 host/device 语义定义
 
+当前实现备注：
+
+- Blackhole 现在已经恢复 `AnnotateDeviceRegions -> SplitHostDevice -> MakePackedAPI -> LowerDeviceKernelLaunch` 主链。
+- `lower()` 产物重新分成 host `main` 和 device `main_kernel`，Blackhole build 入口也已改为消费两者的组合模块。
+- 但为了不打断当前 copy 的 staged-copy lowering，`FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 这类会破坏现有 copy 识别形态的 pass 还未提前恢复到 `LowerBlackholeOps` 之前。
+- 因此当前 Stage 2A 的实现状态应理解为：
+  - **host/device 主线已恢复**
+  - **通用中后段规范化 pass 只恢复到一条受控子集**
+
 ## 当前进展
 
 - copy 已开始产出：
@@ -117,6 +126,7 @@ Stage 2 的正式目标已经收紧为：
   - `tl.blackhole.read_tile_to_cb / write_tile_from_cb`
 - `PlanBlackholeCB` 已能将 copy requirements 落成 `blackhole.cb_configs`
 - `CodeGenBlackhole` 已开始消费 copy builtin
+- `BlackholeModule` 对外 entry 的参数签名已重新对齐 split 后 device kernel，不再错误沿用 Packed API 的底层 4 参数签名
 - 但 Stage 2A 仍未完成，因此当前 copy 语义集成仍只是中间态，不应被视为正式 compiler path
 
 ## 验证方式

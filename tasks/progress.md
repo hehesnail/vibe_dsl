@@ -27,6 +27,19 @@
   - Blackhole 仍在 `OptimizeForTarget` 中 early return
   - 通用 TIR 规范化、`SplitHostDevice`、`MakePackedAPI`、`LowerDeviceKernelLaunch` 仍被旁路
   - `rt_mod_blackhole` / `BlackholeModule` 还在间接承担部分 PrimFunc 参数和 host/device 语义
+- 当前新增进展：
+  - Blackhole `lower()` 主路径已恢复：
+    - `AnnotateDeviceRegions`
+    - `SplitHostDevice`
+    - `MakePackedAPI`
+    - `LowerDeviceKernelLaunch`
+  - `lower()` 产物已重新分成：
+    - host `main`
+    - device `main_kernel`
+  - `target.build.tilelang_blackhole[_without_host]` 现已消费 `host_mod + lowered device_mod` 的组合模块
+  - `BlackholeModule` 对外 entry 的参数签名已重新对齐对应 device kernel，不再错误继承 Packed API 的 4 参低层签名
+- 当前仍然保留的阶段限制：
+  - 为了保持 Stage 2B copy 的 staged-copy 识别，`FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等会破坏当前 copy 形态的 pass 还没有提前恢复到 `LowerBlackholeOps` 之前
 
 ## 分阶段任务
 
@@ -46,6 +59,10 @@
 
 - 恢复 Blackhole 对通用 TIR 规范化 pass 的复用
 - 去掉 `OptimizeForTarget` 中对 Blackhole 的长期 early return 设计
+- 当前状态：
+  - 已去掉 Blackhole 的长期 early return
+  - 已恢复一条“host/device 主链优先、copy 识别安全”的 pass 子链
+  - `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 仍待在后续阶段重新接回
 
 ### 任务 2: 恢复 host/device 主链
 
@@ -55,11 +72,20 @@
   - `MakePackedAPI`
   - `LowerDeviceKernelLaunch` 或其 Blackhole 分支
 - 停止长期依赖“没有 `calling_conv` 也可当 device kernel”的路径
+- 当前状态：
+  - 已恢复上述四个 pass
+  - `is_device_call` / Blackhole build 入口已经改为以 split 后的 `calling_conv` 语义为主
+  - 仍保留对旧 unsplit device attrs 的保守兼容检测
 
 ### 任务 3: 收正 runtime/module 边界
 
 - `rt_mod_blackhole` 只消费 device-side PrimFunc 和 pass schema
 - `BlackholeModule` 不再定义 PrimFunc 参数类别或 host/device 边界
+- 当前状态：
+  - `target.build.tilelang_blackhole[_without_host]` 已不再把 host Packed API PrimFunc 当成 device kernel 做 codegen
+  - `ExtractBlackholeFuncInfo()` 已改为：
+    - 从 split 后 device kernel 提取 `ExecutableSpec`
+    - 用 host entry -> launched kernel 绑定恢复对外 entry 名和用户参数签名
 
 ## Stage 2B 任务拆分
 
@@ -78,9 +104,9 @@
 
 ## 当前下一步
 
-1. 按 `stage2_pass_reuse_matrix.md` 收正 Blackhole 对现有 pass 主链的接入。
-2. 优先恢复 `SplitHostDevice`、`MakePackedAPI` 与 `LowerDeviceKernelLaunch` 相关路径。
-3. 在主链接入恢复后，再继续推进 copy 的 tile-range / dataflow 语义分析。
+1. 让 `LowerBlackholeOps` 直接消费 split 后 device kernel 的更稳定 staged-copy 形态。
+2. 在不破坏 copy 识别的前提下，逐步把 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等 pass 接回 Blackhole 主链。
+3. 继续推进 copy 的 tile-range / dataflow 语义分析，为 GEMM 复用同一结构做准备。
 4. 继续把真执行测试按环境 gate 分层，避免把 TT-Sim 环境问题记成编译链问题。
 
 ## 当前活动设计文档

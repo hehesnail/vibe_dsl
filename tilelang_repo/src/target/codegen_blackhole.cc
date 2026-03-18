@@ -196,6 +196,11 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   ICHECK(runtime_args_attr) << "blackhole.runtime_args must be present when emitting runtime args";
 
   std::unordered_map<std::string, const tvm::tir::VarNode *> buffer_vars_by_name;
+  for (const auto &param : f->params) {
+    if (param->dtype.is_handle()) {
+      buffer_vars_by_name[param->name_hint] = param.get();
+    }
+  }
   for (const auto &kv : f->buffer_map) {
     const auto &buffer = kv.second;
     buffer_vars_by_name[buffer->name] = buffer->data.get();

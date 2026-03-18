@@ -25,6 +25,7 @@ from tilelang import language as T
 from tilelang.engine.lower import lower
 from tilelang.jit import compile as tl_compile
 from tvm.target import Target
+from tvm.ir import CallingConv
 
 
 def check_blackhole_codegen_requirements():
@@ -231,6 +232,42 @@ def test_blackhole_copy_codegen_uses_runtime_schema():
     assert "const uint32_t tile_index = tile_row;" in source
     assert "src_dram_addr" not in source
     assert "dst_dram_addr" not in source
+
+
+def test_blackhole_lower_restores_host_device_split():
+    """Blackhole lower() should expose host/device split IR after Stage 2A recovery."""
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    host_funcs = {str(gvar): func for gvar, func in artifact.host_mod.functions.items()}
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+
+    assert 'I.GlobalVar("main")' in host_funcs
+    assert 'I.GlobalVar("main_kernel")' in device_funcs
+
+    host_main = host_funcs['I.GlobalVar("main")']
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+
+    assert host_main.attrs["calling_conv"] == CallingConv.C_PACKED_FUNC
+    assert host_main.attrs["target"].kind.name == "c"
+    assert device_main.attrs["calling_conv"] == CallingConv.DEVICE_KERNEL_LAUNCH
+    assert device_main.attrs["target"].kind.name == "blackhole"
+    assert str(device_main.attrs["blackhole.target_mode"]) == "single_core_copy"
+
+
+def test_blackhole_runtime_module_keeps_host_and_device_entries():
+    """The Blackhole runtime module should expose the public entry and its kernel."""
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    assert artifact.codegen_mod["main"] is not None
+    assert artifact.codegen_mod["main_kernel"] is not None
 
 
 def test_blackhole_true_e2e():

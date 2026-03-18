@@ -53,7 +53,18 @@ def is_device_call(func: tir.PrimFunc):
     if attrs and "target" in attrs:
         target = attrs["target"]
         if isinstance(target, Target) and target.kind.name == "blackhole":
-            return True
+            if "calling_conv" in attrs:
+                return attrs["calling_conv"] == CallingConv.DEVICE_KERNEL_LAUNCH
+            return any(
+                key in attrs
+                for key in (
+                    "blackhole.target_mode",
+                    "blackhole.cb_configs",
+                    "blackhole.core_plan",
+                    "blackhole.runtime_args",
+                    "blackhole.segment_plan",
+                )
+            )
 
     return False
 
@@ -188,6 +199,42 @@ def host_codegen(host_mod: tvm.IRModule, target_host: Target, target: Target | N
     return host_mod
 
 
+def merge_ir_modules(*mods: tvm.IRModule) -> tvm.IRModule:
+    merged = tvm.IRModule({})
+    for mod in mods:
+        for gvar, func in mod.functions.items():
+            merged[gvar] = func
+    return merged
+
+
+def blackhole_codegen(
+    host_mod: tvm.IRModule,
+    device_mod: tvm.IRModule,
+    target: Target,
+    enable_device_compile: bool,
+) -> tuple[tvm.IRModule, tvm.runtime.Module]:
+    device_mod = tilelang.transform.LowerDeviceStorageAccessInfo()(device_mod)
+    device_mod = tilelang.transform.LowerIntrin()(device_mod)
+    device_mod = tir.transform.Simplify()(device_mod)
+    device_mod = tilelang.transform.HoistBroadcastValues()(device_mod)
+    device_mod = tilelang.transform.LowerBlackholeOps()(device_mod)
+    device_mod = tilelang.transform.PlanBlackholeCB()(device_mod)
+    device_mod = tilelang.transform.AssignBlackholeCores()(device_mod)
+
+    if not enable_device_compile:
+        device_mod = tilelang.transform.LowerOpaqueBlock()(device_mod)
+        device_mod = tir.transform.Simplify()(device_mod)
+
+    build_mod = merge_ir_modules(host_mod, device_mod)
+    build_func_name = (
+        "target.build.tilelang_blackhole"
+        if enable_device_compile
+        else "target.build.tilelang_blackhole_without_host"
+    )
+    codegen_mod = tvm.ffi.get_global_func(build_func_name)(build_mod, target)
+    return device_mod, codegen_mod
+
+
 def device_codegen(device_mod: tvm.IRModule, target: Target) -> tvm.IRModule:
     device_mod = tilelang.transform.LowerDeviceStorageAccessInfo()(device_mod)
     device_mod = tilelang.transform.LowerIntrin()(device_mod)
@@ -201,13 +248,6 @@ def device_codegen(device_mod: tvm.IRModule, target: Target) -> tvm.IRModule:
         device_mod = tvm.ffi.get_global_func("target.build.tilelang_hip")(device_mod, target)
     elif target.kind.name == "metal":
         device_mod = tvm.ffi.get_global_func("target.build.metal")(device_mod, target)
-    elif target.kind.name == "blackhole":
-        # Blackhole-specific lowering pipeline
-        # Order: LowerOps -> PlanCB -> AssignCores
-        device_mod = tilelang.transform.LowerBlackholeOps()(device_mod)
-        device_mod = tilelang.transform.PlanBlackholeCB()(device_mod)
-        device_mod = tilelang.transform.AssignBlackholeCores()(device_mod)
-        device_mod = tvm.ffi.get_global_func("target.build.tilelang_blackhole")(device_mod, target)
     else:
         raise ValueError(f"Target {target.kind.name} is not supported")
 
@@ -233,15 +273,6 @@ def device_codegen_without_compile(device_mod: tvm.IRModule, target: Target) -> 
         device_mod = tvm.ffi.get_global_func("target.build.webgpu")(device_mod, target)
     elif target.kind.name == "metal":
         device_mod = tvm.ffi.get_global_func("target.build.metal")(device_mod, target)
-    elif target.kind.name == "blackhole":
-        # Blackhole-specific lowering pipeline (without compile)
-        device_mod = tilelang.transform.LowerBlackholeOps()(device_mod)
-        device_mod = tilelang.transform.PlanBlackholeCB()(device_mod)
-        device_mod = tilelang.transform.AssignBlackholeCores()(device_mod)
-        # Lower BlockRealize and Block nodes before CodeGen
-        device_mod = tilelang.transform.LowerOpaqueBlock()(device_mod)
-        device_mod = tir.transform.Simplify()(device_mod)
-        device_mod = tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(device_mod, target)
     else:
         raise ValueError(f"Target {target.kind.name} is not supported")
 
@@ -293,7 +324,16 @@ def lower(
     host_mod = tir.transform.Filter(_is_host_call)(mod)
     device_mod = tir.transform.Filter(_is_device_call)(mod)
 
-    codegen_mod = device_codegen(device_mod, target) if enable_device_compile else device_codegen_without_compile(device_mod, target)
+    if target.kind.name == "blackhole":
+        device_mod, codegen_mod = blackhole_codegen(
+            host_mod, device_mod, target, enable_device_compile
+        )
+    else:
+        codegen_mod = (
+            device_codegen(device_mod, target)
+            if enable_device_compile
+            else device_codegen_without_compile(device_mod, target)
+        )
 
     if enable_host_codegen:
         host_mod = host_codegen(host_mod, target_host, target=target)

@@ -119,4 +119,29 @@
   - 优先恢复通用 TIR 规范化和 host/device / Packed API pass 的主线复用
   - 将 Blackhole 差异收缩到 `LowerTileOp` 附近和少量 device-specific pass
   - 停止长期依赖“无 `calling_conv` 也可当 device kernel”的路径
-- **当前状态**: 未解决。已形成 `stage2_pass_reuse_matrix.md` 作为后续收正依据。
+- **当前状态**: 部分已解决。`AnnotateDeviceRegions` / `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch` 已恢复到 Blackhole `lower()` 主路径，但中后段通用规范化 pass 仍未全部接回。
+
+### split 后 device kernel 进入中后段规范化后会打断当前 copy 识别
+
+- **时间**: 2026-03-19
+- **问题**: Blackhole 在恢复 `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch` 主线后，如果继续把 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等 pass 提前放到 `LowerBlackholeOps` 之前，当前 copy staged-lowering 会失效。
+- **现象**:
+  - split 后的 device kernel 不再保留 `LowerBlackholeOps` 当前依赖的 staged copy loop 形态
+  - `blackhole.runtime_args` / `blackhole.segment_plan` / copy builtin 不再稳定产出
+  - codegen 会退回普通指针式 load/store 路径
+- **根本原因**: `LowerBlackholeOps` 当前仍主要依赖 split 后 device kernel 中较高层的 staged copy 结构；而 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 会把它重塑成当前 matcher 还无法识别的形态。
+- **解决方案**:
+  - 当前先恢复 host/device 主线，但暂不把上述会破坏 copy 结构的 pass 提前到 `LowerBlackholeOps` 之前
+  - 后续需要扩展 `LowerBlackholeOps`，让它能消费 split 后、进一步规范化后的 device kernel 形态
+- **当前限制**: 这意味着 Stage 2A 目前恢复的是一条“受控 pass 子链”，而不是完整的中后段通用 pass 集。
+
+### split 后 device kernel 的 runtime arg buffer 绑定不能只依赖 `buffer_map`
+
+- **时间**: 2026-03-19
+- **问题**: 在 split 后的 Blackhole device kernel 上，`CodeGenBlackhole` 按 `blackhole.runtime_args` 生成 builtin 代码时，可能报 `Missing runtime arg binding for buffer var: A`。
+- **根本原因**: split 后 device kernel 往往直接以 handle 参数 `A` / `B` 为 builtin buffer 绑定，而 `buffer_map` 为空；如果 codegen 只从 `buffer_map` 建 `buffer -> runtime arg` 映射，就无法把 `blackhole.runtime_args` 中的 `"buffer": "A"` 绑定回对应参数。
+- **解决方案**:
+  - `CodeGenBlackhole::EmitRuntimeArgLoads()` 需要同时从两处建映射：
+    - `PrimFunc::buffer_map`
+    - handle 参数名
+- **当前状态**: 已解决。
