@@ -4,7 +4,7 @@
 
 - **文档ID**: `final_blackhole_backend_redesign`
 - **日期**: 2026-03-18
-- **适用范围**: `tilelang_repo` Blackhole 后端、`tt_metal_repo` TileLang runner 与示例、相关测试与设计文档
+- **适用范围**: `tilelang_repo` Blackhole 后端与 TileLang 管理的 runner、`tt_metal_repo` 依赖与 API 参考、相关测试与设计文档
 - **状态**: 当前唯一权威设计
 
 ## 1. 文档定位

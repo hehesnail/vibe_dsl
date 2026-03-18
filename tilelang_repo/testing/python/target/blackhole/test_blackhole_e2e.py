@@ -7,8 +7,7 @@ This test verifies the complete workflow:
 3. Result comparison with PyTorch reference
 
 Requirements:
-- TT_METAL_HOME environment variable set
-- tilelang_blackhole_runner built and accessible
+- TileLang-managed tilelang_blackhole_runner built and accessible
 - TT-Sim environment configured (or real hardware)
 """
 
@@ -29,19 +28,18 @@ from tvm.target import Target
 
 def check_blackhole_requirements():
     """Check if Blackhole testing requirements are met."""
-    tt_metal_home = os.environ.get("TT_METAL_HOME")
     tilelang_home = os.environ.get("TILELANG_HOME")
+    runner_build_dir = os.environ.get("TILELANG_BLACKHOLE_RUNNER_BUILD_DIR")
     if not tilelang_home:
         return False, "TILELANG_HOME not set"
-    if not tt_metal_home:
-        return False, "TT_METAL_HOME not set"
 
     runner_candidates = [
-        os.path.join(tt_metal_home, "build_Release", "programming_examples", "tilelang_blackhole_runner"),
+        os.path.join(runner_build_dir, "tilelang_blackhole_runner") if runner_build_dir else None,
         os.path.join(tilelang_home, "build-blackhole-runner", "tilelang_blackhole_runner"),
         os.path.join(tilelang_home, "build_blackhole_runner", "tilelang_blackhole_runner"),
         os.path.join(tilelang_home, "tools", "blackhole_runner", "build", "tilelang_blackhole_runner"),
     ]
+    runner_candidates = [path for path in runner_candidates if path]
     if not any(os.path.exists(path) for path in runner_candidates):
         return False, f"Runner not found in {runner_candidates}"
 
@@ -50,13 +48,14 @@ def check_blackhole_requirements():
 
 def get_runner_path():
     tilelang_home = os.environ["TILELANG_HOME"]
-    tt_metal_home = os.environ["TT_METAL_HOME"]
+    runner_build_dir = os.environ.get("TILELANG_BLACKHOLE_RUNNER_BUILD_DIR")
     runner_candidates = [
-        os.path.join(tt_metal_home, "build_Release", "programming_examples", "tilelang_blackhole_runner"),
+        os.path.join(runner_build_dir, "tilelang_blackhole_runner") if runner_build_dir else None,
         os.path.join(tilelang_home, "build-blackhole-runner", "tilelang_blackhole_runner"),
         os.path.join(tilelang_home, "build_blackhole_runner", "tilelang_blackhole_runner"),
         os.path.join(tilelang_home, "tools", "blackhole_runner", "build", "tilelang_blackhole_runner"),
     ]
+    runner_candidates = [path for path in runner_candidates if path]
     for path in runner_candidates:
         if os.path.exists(path):
             return path

@@ -17,6 +17,8 @@ __pycache__/
 # TileLang - exclude large directories
 tilelang_repo/3rdparty/
 tilelang_repo/build/
+tilelang_repo/build-blackhole-runner/
+tilelang_repo/build_blackhole_runner/
 tilelang_repo/__pycache__/
 tilelang_repo/*.egg-info/
 tilelang_repo/dist/

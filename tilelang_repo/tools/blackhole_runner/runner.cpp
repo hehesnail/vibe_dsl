@@ -199,7 +199,7 @@ uint32_t choose_page_size(const RunConfig& config, const std::string& role) {
     return 2048;
 }
 
-void create_circular_buffers(Program& program, const CoreCoord& core, const RunConfig& config) {
+void create_circular_buffers(Program& program, const tt::tt_metal::CoreCoord& core, const RunConfig& config) {
     for (const auto& cb : config.cb_configs) {
         const uint32_t total_size = cb.num_pages * cb.page_size_bytes;
         CircularBufferConfig cb_config(
@@ -209,7 +209,8 @@ void create_circular_buffers(Program& program, const CoreCoord& core, const RunC
     }
 }
 
-KernelHandle create_kernel(Program& program, const CoreCoord& core, const KernelSpec& kernel) {
+KernelHandle create_kernel(
+    Program& program, const tt::tt_metal::CoreCoord& core, const KernelSpec& kernel) {
     if (kernel.core_type == "trisc") {
         return CreateKernel(
             program,
@@ -281,7 +282,7 @@ int main(int argc, char* argv[]) {
         auto mesh_device = distributed::MeshDevice::create_unit_mesh(0);
         auto& cq = mesh_device->mesh_command_queue();
         Program program = CreateProgram();
-        constexpr CoreCoord core = {0, 0};
+        constexpr tt::tt_metal::CoreCoord core = {0, 0};
 
         create_circular_buffers(program, core, config);
 

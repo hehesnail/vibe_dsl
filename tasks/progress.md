@@ -23,7 +23,7 @@
 | Stage 0 | 引入 `ExecutableSpec` | 🔄 进行中 | 已落头文件、extractor 和最小 runner JSON 对接 |
 | Stage 0 | 重构 `rt_mod_blackhole` | 🔄 进行中 | 已抽取 Stage 0 spec，并生成最小 runtime arg schema |
 | Stage 0 | 重构 `BlackholeModule` | 🔄 进行中 | 已开始写 `spec.json + input.bin + output.bin + kernel.cpp` |
-| Stage 0 | 重写 runner 协议 | 🔄 进行中 | 已切到 `spec.json + input.bin + output.bin`，仍仅覆盖最小单核路径 |
+| Stage 0 | 重写 runner 协议 | 🔄 进行中 | 已切到 `spec.json + input.bin + output.bin`，runner 构建入口已收回 `tilelang_repo/tools/blackhole_runner/` |
 | Stage 1 | single-core copy 闭环 | ⏳ 未开始 | true E2E |
 | Stage 2 | single-core gemm 闭环 | ⏳ 未开始 | true E2E |
 | Stage 3 | multi-core runtime 调度 | ⏳ 未开始 | per-core args |
@@ -44,5 +44,6 @@
   - `rt_mod_blackhole` 已读取新 attr schema 并抽取 Stage 0 spec
   - `BlackholeModule` 已改为写 `spec.json + input.bin + output.bin + kernel.cpp`
   - runner 已改为读取 `spec.json` 并按 spec 建 CB / kernel / runtime args
-  - runner 源码已迁到 `tilelang_repo/tools/blackhole_runner/`
-  - 已通过 `make -C tilelang_repo/build -j16` 与 `cmake --build tt_metal_repo/build_Release --target tilelang_blackhole_runner -j16` 编译验证
+  - runner 源码与构建入口已收敛到 `tilelang_repo/tools/blackhole_runner/`
+  - runner 现通过 TileLang 侧 standalone CMake 直接链接 `TT_METAL_HOME/build_Release` 产物，不再要求修改 `tt_metal_repo` 源码
+  - 已通过 `make -C tilelang_repo/build -j16` 与 `cmake --build tilelang_repo/build-blackhole-runner --target tilelang_blackhole_runner -j16` 编译验证

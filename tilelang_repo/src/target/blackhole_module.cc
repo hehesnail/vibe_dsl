@@ -195,11 +195,10 @@ std::string GetRunnerPath() {
     "/opt/tt-metal/tilelang_blackhole_runner"
   };
 
-  // Check TT_METAL_HOME
-  const char* tt_metal_home = std::getenv("TT_METAL_HOME");
-  if (tt_metal_home) {
-    search_paths.push_back(std::string(tt_metal_home) +
-      "/build_Release/programming_examples/tilelang_blackhole_runner/tilelang_blackhole_runner");
+  const char* runner_build_dir = std::getenv("TILELANG_BLACKHOLE_RUNNER_BUILD_DIR");
+  if (runner_build_dir) {
+    search_paths.push_back(std::string(runner_build_dir) +
+      "/tilelang_blackhole_runner");
   }
 
   const char* tilelang_home = std::getenv("TILELANG_HOME");

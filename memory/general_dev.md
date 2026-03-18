@@ -139,11 +139,17 @@
   - `rt_mod_blackhole` 读取同一套 `blackhole.*`
 - `blackhole.core_plan` 这种结构化 attr 比散落的 `grid_x/grid_y/...` 标量 attr 更适合后续 spec extractor 和 runner 直接消费。
 - 在切 runner 协议时，优先让 `BlackholeModule` 落 `spec.json + input.bin + output.bin + kernel.cpp`，再让 runner 从 spec 驱动创建 CB / kernel / runtime args；不要继续扩展固定位置命令行参数。
-- runner 虽然依赖 `TT::Metalium`，但源码归属应留在 `tilelang_repo`，避免把 TileLang 自己定义的协议实现长期挂在 `tt_metal_repo` 的 programming examples 下面。
+- runner 虽然依赖 `TT::Metalium`，但源码和默认构建入口都应留在 `tilelang_repo`，避免把 TileLang 自己定义的协议实现长期挂在 `tt_metal_repo` 的 programming examples 下面。
 - 对这类“源码在 TileLang、依赖在 TT-Metal”的工具，优先采用：
   - 源码放在 `tilelang_repo/tools/...`
-  - 由 `tt_metal_repo` 的现有构建图通过外部 `add_subdirectory(...)` 编进去
-  这样比单独绕过 `TT-Metalium` 导出包做 standalone CMake 更稳。
+  - 由 TileLang 自己的 CMake/脚本产出二进制
+  - 只链接 `TT_METAL_HOME/build_Release` 里的头文件和库
+  - 不要求修改 `tt_metal_repo` 源码
+- 如果 standalone CMake 需要复刻 TT-Metal 的关键编译约束，至少要显式继承：
+  - `cxx_std_20`
+  - runner 所需的 compile definitions
+  - `BUILD_RPATH/INSTALL_RPATH`
+  否则很容易出现“能找到头文件但编译标准或运行时依赖不一致”的假通过。
 
 ## 建议的开发顺序
 
