@@ -13,6 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -332,7 +333,10 @@ int main(int argc, char* argv[]) {
             }
         }
         if (needs_scratch_l1) {
-            const uint32_t scratch_size = choose_page_size(config, "input");
+            uint32_t scratch_size = choose_page_size(config, "input");
+            for (const auto& cb : config.cb_configs) {
+                scratch_size = std::max(scratch_size, cb.num_pages * cb.page_size_bytes);
+            }
             distributed::DeviceLocalBufferConfig scratch_l1_config{
                 .page_size = scratch_size,
                 .buffer_type = BufferType::L1};

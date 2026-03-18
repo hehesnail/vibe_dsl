@@ -175,3 +175,20 @@
   - 让 copy fallback 改为按 device-side copy builtin / runtime schema 判断
   - `IsBlackholeDeviceKernel()` 不再把 `target_mode` 当识别依据
 - **当前状态**: 已解决。copy true E2E 继续通过，但主协议里不再暴露 `single_core_copy` 模式标签。
+
+### rectangular staged copy 会因为 scratch/L1 覆盖而执行错误
+
+- **时间**: 2026-03-19
+- **问题**: `32x64` / `64x32` 这类 staged copy 虽然已经能在 lowered TIR 中展开成多个硬件 `32x32` subtile，但 direct-call 真执行最初仍会输出错误结果。
+- **现象**:
+  - `LowerBlackholeOps` 已能生成正确的 `tile_index` 序列，例如 `tile_row * 2` / `tile_row * 2 + 1`
+  - 但 TT-Sim direct-call 的输出与 PyTorch 参考不一致，`max_diff` 明显非零
+- **根本原因**:
+  - codegen 的 `read_tile_to_cb` / `write_tile_from_cb` 实际都只使用一块 scratch L1 基地址
+  - 当 TIR 里出现 `read-read-write-write` 这类多 subtile 序列时，后一次 read 会覆盖前一次 scratch 内容
+  - runner 也只按单 page size 分配 scratch L1，无法承载最小 CB FIFO 语义
+- **解决方案**:
+  - `LowerBlackholeOps` 把 rectangular staged copy 的 `tile_index` 和 page size 收正到硬件 `32x32` subtile 级
+  - `CodeGenBlackhole` 按 `cb_configs` 为每个 `cb_id` 维护最小 head/tail page queue，并在 scratch L1 上按 page offset 读写
+  - runner 分配 scratch L1 时按 `cb.num_pages * cb.page_size_bytes` 预留足够空间，而不是只分配单 page
+- **当前状态**: 已解决。`32x64 float16` staged copy 的 Python direct-call 已在 TT-Sim 下通过，结果与 PyTorch 参考一致。

@@ -189,6 +189,11 @@
   - lowered TIR 是否仍在逐标量 store 上发射 tile builtin
   - 生成源码是否仍在循环里反复访问同一 tile
   - codegen 是否仍偷吃固定 runtime arg 槽位命名
+- 对 staged copy，如果 DSL tile shape 本身会跨多个硬件 `32x32` tiles，不能简单把整个 shared tile 当成一个 runtime page。更稳的做法是：
+  - `LowerBlackholeOps` 先把 DSL tile 形态展开成多个硬件 subtile 的 `tile_index`
+  - `cb_configs.page_size` 对齐硬件 tile 大小
+  - codegen/runtime 再按 `cb_id` 的 page queue 在 scratch/L1 上模拟最小 FIFO
+  否则很容易出现“结构上看见了多个 subtile，执行时却因为 scratch 覆盖而结果错误”。
 - 如果 Blackhole device code 依赖 `blackhole.runtime_args`，codegen 应直接消费 pass 产出的 schema 和 buffer 绑定，而不是固定假设某个 target mode 对应固定参数位。参数槽位顺序、名字、buffer 对应关系都应来自 IR attrs / schema，而不是写死在 builtin printer 里。
 - 对 Blackhole 这类还在清理过渡协议的 backend，像 `target_mode` 这种“看起来像分类、实际上又可能被拿来驱动 fallback”的字段要尽早从主协议里移除；否则 pass/schema 已经收口，runtime 仍可能沿着旧标签继续分叉。
 - 对 Blackhole copy，要先确认 TileLang pipeline 的真实断点：`LowerTileOp()` 先于 `LowerBlackholeOps()` 执行，所以 target pass 通常已经看不到原始 `tl.copy` 节点。更稳的做法是：

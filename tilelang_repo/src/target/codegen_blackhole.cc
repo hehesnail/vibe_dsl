@@ -24,6 +24,7 @@
 
 #include "codegen_blackhole.h"
 
+#include <algorithm>
 #include <sstream>
 #include <string>
 
@@ -54,6 +55,8 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   need_compute_api_h_ = false;
   buffer_runtime_arg_map_.clear();
   runtime_arg_vars_by_kind_.clear();
+  cb_page_size_by_id_.clear();
+  cb_num_pages_by_id_.clear();
 }
 
 std::string CodeGenBlackhole::GetKernelCode() const {
@@ -191,6 +194,34 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
 void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   buffer_runtime_arg_map_.clear();
   runtime_arg_vars_by_kind_.clear();
+  cb_page_size_by_id_.clear();
+  cb_num_pages_by_id_.clear();
+
+  if (auto cb_configs_attr = f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.cb_configs")) {
+    for (const auto &item : cb_configs_attr.value()) {
+      auto cb_info = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
+          tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
+      if (cb_info.empty()) {
+        continue;
+      }
+      int cb_id = -1;
+      int page_size = 0;
+      int num_pages = 1;
+      if (auto v = cb_info.Get("cb_id")) {
+        cb_id = Downcast<tvm::Integer>(v.value()).IntValue();
+      }
+      if (auto v = cb_info.Get("page_size")) {
+        page_size = Downcast<tvm::Integer>(v.value()).IntValue();
+      }
+      if (auto v = cb_info.Get("num_pages")) {
+        num_pages = Downcast<tvm::Integer>(v.value()).IntValue();
+      }
+      if (cb_id >= 0) {
+        cb_page_size_by_id_[cb_id] = page_size;
+        cb_num_pages_by_id_[cb_id] = std::max(1, num_pages);
+      }
+    }
+  }
 
   auto runtime_args_attr = f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.runtime_args");
   ICHECK(runtime_args_attr) << "blackhole.runtime_args must be present when emitting runtime args";
@@ -238,6 +269,15 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
     ++arg_idx;
   }
   stream << "\n";
+
+  for (const auto &kv : cb_num_pages_by_id_) {
+    const int cb_id = kv.first;
+    stream << "  uint32_t " << GetCBHeadVar(cb_id) << " = 0;\n";
+    stream << "  uint32_t " << GetCBTailVar(cb_id) << " = 0;\n";
+  }
+  if (!cb_num_pages_by_id_.empty()) {
+    stream << "\n";
+  }
 }
 
 std::string CodeGenBlackhole::GetRuntimeArgVarByKind(const std::string &kind) const {
@@ -254,6 +294,26 @@ std::string CodeGenBlackhole::GetRuntimeArgVarForBuffer(
   ICHECK(it != buffer_runtime_arg_map_.end())
       << "Missing runtime arg binding for buffer var: " << buffer_var->name_hint;
   return it->second;
+}
+
+int CodeGenBlackhole::GetCBPageSize(int cb_id) const {
+  auto it = cb_page_size_by_id_.find(cb_id);
+  ICHECK(it != cb_page_size_by_id_.end()) << "Missing CB page size for cb_id=" << cb_id;
+  return it->second;
+}
+
+int CodeGenBlackhole::GetCBNumPages(int cb_id) const {
+  auto it = cb_num_pages_by_id_.find(cb_id);
+  ICHECK(it != cb_num_pages_by_id_.end()) << "Missing CB num_pages for cb_id=" << cb_id;
+  return it->second;
+}
+
+std::string CodeGenBlackhole::GetCBHeadVar(int cb_id) const {
+  return "cb_head_" + std::to_string(cb_id);
+}
+
+std::string CodeGenBlackhole::GetCBTailVar(int cb_id) const {
+  return "cb_tail_" + std::to_string(cb_id);
 }
 
 // ============================================================================
@@ -513,11 +573,15 @@ void CodeGenBlackhole::PrintCBReserveBack(const tvm::tir::CallNode *op,
 void CodeGenBlackhole::PrintCBPushBack(const tvm::tir::CallNode *op,
                                        std::ostream &os) {
   need_dataflow_api_h_ = true;
-  os << "cb_push_back(";
-  PrintExpr(op->args[0], os);  // cb_id
+  const auto* cb_id_imm = op->args[0].as<tvm::tir::IntImmNode>();
+  ICHECK(cb_id_imm) << "Blackhole cb_push_back currently expects constant cb_id";
+  const int cb_id = static_cast<int>(cb_id_imm->value);
+  os << "do { cb_push_back(";
+  PrintExpr(op->args[0], os);
   os << ", ";
-  PrintExpr(op->args[1], os);  // num_tiles
-  os << ")";
+  PrintExpr(op->args[1], os);
+  os << "); " << GetCBTailVar(cb_id) << " = (" << GetCBTailVar(cb_id) << " + 1) % "
+     << GetCBNumPages(cb_id) << "; } while (0)";
 }
 
 void CodeGenBlackhole::PrintCBWaitFront(const tvm::tir::CallNode *op,
@@ -533,11 +597,15 @@ void CodeGenBlackhole::PrintCBWaitFront(const tvm::tir::CallNode *op,
 void CodeGenBlackhole::PrintCBPopFront(const tvm::tir::CallNode *op,
                                        std::ostream &os) {
   need_dataflow_api_h_ = true;
-  os << "cb_pop_front(";
-  PrintExpr(op->args[0], os);  // cb_id
+  const auto* cb_id_imm = op->args[0].as<tvm::tir::IntImmNode>();
+  ICHECK(cb_id_imm) << "Blackhole cb_pop_front currently expects constant cb_id";
+  const int cb_id = static_cast<int>(cb_id_imm->value);
+  os << "do { cb_pop_front(";
+  PrintExpr(op->args[0], os);
   os << ", ";
-  PrintExpr(op->args[1], os);  // num_tiles
-  os << ")";
+  PrintExpr(op->args[1], os);
+  os << "); " << GetCBHeadVar(cb_id) << " = (" << GetCBHeadVar(cb_id) << " + 1) % "
+     << GetCBNumPages(cb_id) << "; } while (0)";
 }
 
 void CodeGenBlackhole::PrintNOCAsyncRead(const tvm::tir::CallNode *op,
@@ -579,15 +647,20 @@ void CodeGenBlackhole::PrintReadTileToCB(const tvm::tir::CallNode *op,
   need_dataflow_api_h_ = true;
   const std::string src_addr_var = GetRuntimeArgVarForBuffer(op->args[0]);
   const std::string scratch_addr_var = GetRuntimeArgVarByKind("scratch_l1_buffer_addr32");
+  const auto* cb_id_imm = op->args[2].as<tvm::tir::IntImmNode>();
+  ICHECK(cb_id_imm) << "Blackhole read_tile_to_cb currently expects constant cb_id";
+  const int cb_id = static_cast<int>(cb_id_imm->value);
   os << "{ ";
   os << "const uint32_t tile_index = ";
   PrintExpr(op->args[1], os);
   os << "; const uint32_t tile_bytes = ";
   PrintExpr(op->args[3], os);
+  os << "; const uint32_t scratch_addr = " << scratch_addr_var << " + "
+     << GetCBTailVar(cb_id) << " * " << GetCBPageSize(cb_id);
   os << "; InterleavedAddrGen<true> src_gen = {.bank_base_address = " << src_addr_var
      << ", .page_size = tile_bytes}; ";
   os << "uint64_t src_noc_addr = get_noc_addr(tile_index, src_gen); ";
-  os << "noc_async_read(src_noc_addr, " << scratch_addr_var << ", tile_bytes); ";
+  os << "noc_async_read(src_noc_addr, scratch_addr, tile_bytes); ";
   os << "noc_async_read_barrier(); }";
 }
 
@@ -596,15 +669,20 @@ void CodeGenBlackhole::PrintWriteTileFromCB(const tvm::tir::CallNode *op,
   need_dataflow_api_h_ = true;
   const std::string dst_addr_var = GetRuntimeArgVarForBuffer(op->args[1]);
   const std::string scratch_addr_var = GetRuntimeArgVarByKind("scratch_l1_buffer_addr32");
+  const auto* cb_id_imm = op->args[0].as<tvm::tir::IntImmNode>();
+  ICHECK(cb_id_imm) << "Blackhole write_tile_from_cb currently expects constant cb_id";
+  const int cb_id = static_cast<int>(cb_id_imm->value);
   os << "{ ";
   os << "const uint32_t tile_index = ";
   PrintExpr(op->args[2], os);
   os << "; const uint32_t tile_bytes = ";
   PrintExpr(op->args[3], os);
+  os << "; const uint32_t scratch_addr = " << scratch_addr_var << " + "
+     << GetCBHeadVar(cb_id) << " * " << GetCBPageSize(cb_id);
   os << "; InterleavedAddrGen<true> dst_gen = {.bank_base_address = " << dst_addr_var
      << ", .page_size = tile_bytes}; ";
   os << "uint64_t dst_noc_addr = get_noc_addr(tile_index, dst_gen); ";
-  os << "noc_async_write(" << scratch_addr_var << ", dst_noc_addr, tile_bytes); ";
+  os << "noc_async_write(scratch_addr, dst_noc_addr, tile_bytes); ";
   os << "noc_async_write_barrier(); }";
 }
 

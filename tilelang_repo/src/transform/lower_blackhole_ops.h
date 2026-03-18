@@ -90,6 +90,12 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   tvm::tir::PrimFunc Transform(const tvm::tir::PrimFunc& func);
 
  private:
+  struct NestedCopyMatch {
+    const tvm::tir::BufferStoreNode* store = nullptr;
+    std::vector<tvm::tir::Var> loop_vars;
+    CopyDirection direction = CopyDirection::kUnknown;
+  };
+
   /*! \brief CB configuration from function attributes */
   struct CBConfig {
     int in0_id = 0;
@@ -129,9 +135,28 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   tvm::PrimExpr InferCopyTileIndex(const tvm::tir::BufferStoreNode* op,
                                    const tvm::tir::Var& loop_var) const;
 
+  /*! \brief Infer the base hardware-tile index for a staged copy loop nest */
+  tvm::PrimExpr InferStagedCopyBaseTileIndex(
+      const tvm::tir::BufferStoreNode* op,
+      const std::vector<tvm::tir::Var>& loop_vars_to_zero) const;
+
   /*! \brief Zero out thread/local element vars when extracting tile base indices */
   tvm::PrimExpr ZeroThreadAndLoopVars(const tvm::PrimExpr& expr,
                                       const tvm::tir::Var& loop_var) const;
+
+  /*! \brief Zero out a set of loop vars and thread vars when extracting tile bases */
+  tvm::PrimExpr ZeroThreadAndLoopVars(const tvm::PrimExpr& expr,
+                                      const std::vector<tvm::tir::Var>& loop_vars) const;
+
+  /*! \brief Find a staged copy BufferStore inside a loop nest and collect nested loop vars */
+  const tvm::tir::BufferStoreNode* FindNestedCopyStore(
+      const tvm::tir::Stmt& stmt,
+      std::vector<tvm::tir::Var>* nested_loop_vars) const;
+
+  /*! \brief Collect staged copy stores reachable under a loop/body statement */
+  void CollectNestedCopyStores(const tvm::tir::Stmt& stmt,
+                               std::vector<tvm::tir::Var>* loop_stack,
+                               std::vector<NestedCopyMatch>* matches) const;
 
   /*! \brief Record runtime schema for staged copy global input/output buffers */
   void RecordStagedCopyBufferBinding(const tvm::tir::BufferStoreNode* op,
@@ -152,6 +177,15 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Generate staged copy builtin sequence for a collapsed loop */
   tvm::tir::Stmt GenerateCopySequence(const tvm::tir::BufferStoreNode* op,
                                       const tvm::PrimExpr& tile_index);
+
+  /*! \brief Generate staged copy builtin sequence for a collapsed loop nest */
+  tvm::tir::Stmt GenerateStagedCopyLoopSequence(const tvm::tir::BufferStoreNode* op,
+                                                const tvm::PrimExpr& base_tile_index);
+
+  /*! \brief Generate fused staged copy sequence for a read-then-write tile loop */
+  tvm::tir::Stmt GenerateFusedStagedCopySequence(const tvm::tir::BufferStoreNode* dram_to_cb,
+                                                 const tvm::tir::BufferStoreNode* cb_to_dram,
+                                                 const tvm::PrimExpr& base_tile_index);
 
   /*! \brief Generate clear builtin sequence */
   tvm::tir::Stmt GenerateClearSequence(const tvm::tir::CallNode* op);

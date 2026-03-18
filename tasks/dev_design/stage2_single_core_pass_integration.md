@@ -116,6 +116,24 @@ Stage 2 的正式目标已经收紧为：
   - **host/device 主线已恢复**
   - **通用中后段规范化 pass 只恢复到一条受控子集**
 
+## 当前收正目标
+
+当前 Stage 2B 的具体收正目标已经进一步收紧为：
+
+- 继续保留 single-core copy true E2E
+- 但把 copy 语义从“只对 `32x32 float16` staged copy 样例成立”收成“按实际 DSL tile 形态推导”
+
+本轮优先处理的固定假设：
+
+- `LowerBlackholeOps` 中 `tile_row / 32`、`tile_col / 32` 这类固定 tile 维度推导
+- 由此衍生的 `tile_index` 计算对 `tile_m != 32` 或 `tile_n != 32` 的失真
+
+本轮暂不处理的更大问题：
+
+- `blockIdx.x/y -> 0` 的 codegen 常量化
+- runner 仍只 materialize 单核 `{0, 0}`
+- GEMM 语义接入
+
 ## 当前进展
 
 - copy 已开始产出：
@@ -130,6 +148,20 @@ Stage 2 的正式目标已经收紧为：
   - `spec.json -> runner`
   - `artifact.codegen_mod["main"](...)`
   - TT-Sim 下 `32x32 float16` staged copy 与 PyTorch 参考一致
+- rectangular staged copy 新增进展：
+  - `32x64 float16` staged `T.copy(global -> shared -> global)` 已能按硬件 `32x32` subtile 正确展开
+  - `artifact.codegen_mod["main"](...)` 已在 TT-Sim 下通过，输出与 PyTorch 参考一致
+- 但当前 true E2E 仍主要证明：
+  - `32x32 float16`
+  - single-core
+  - staged `T.copy(global -> shared -> global)`
+  这条最小路径已经闭环
+- 当前 single-core copy 的实际边界已扩到：
+  - `32x32`
+  - `32x64`
+  - `64x32`
+  这类由 DSL tile shape 映射成多个硬件 `32x32` subtiles 的 staged copy
+- 下一步必须继续证明 copy lowering 的 tile index / tile bytes 来自 DSL 程序本身，而不是固定 `32x32` 假设
 - 但 Stage 2A 仍未完成，因此当前 copy 语义集成仍只是中间态，不应被视为正式 compiler path
 
 ## 验证方式

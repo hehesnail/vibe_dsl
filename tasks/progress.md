@@ -31,10 +31,16 @@
   - `spec.json -> runner` 已在 TT-Sim 下通过
   - `artifact.codegen_mod["main"](...)` 已在 TT-Sim 下通过
   - `32x32 float16` staged `T.copy(global -> shared -> global)` 输出与 PyTorch 参考一致
+- staged copy shape generalization 新增进展：
+  - `LowerBlackholeOps` 已不再把 staged copy 锁死成单一 `32x32` DSL tile 假设
+  - `32x64` / `64x32` staged copy 现在会按硬件 `32x32` subtiles 正确展开 tile index
+  - `blackhole.cb_requirements` / `cb_configs` 的 page size 已重新对齐硬件 tile 大小 `2048 bytes`
+  - `32x64 float16` staged copy 的 Python direct-call 已在 TT-Sim 下通过，结果与 PyTorch 一致
 - 当前仍然存在的主要结构问题：
   - Blackhole 还没有把全部中后段通用规范化 pass 接回主线
   - `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 仍会打断当前 copy staged-lowering
   - `rt_mod_blackhole` / `BlackholeModule` 的 host/device 边界虽然已经收正，但 GEMM 还没有复用这条新主线
+  - `blockIdx.x/y -> 0` 和 runner 单核 `{0, 0}` 仍限制当前 single-core copy 只覆盖单核 execution model
 - 当前新增进展：
   - Blackhole `lower()` 主路径已恢复：
     - `AnnotateDeviceRegions`
@@ -48,6 +54,7 @@
   - `BlackholeModule` 对外 entry 的参数签名已重新对齐对应 device kernel，不再错误继承 Packed API 的 4 参低层签名
 - 当前仍然保留的阶段限制：
   - 为了保持 Stage 2B copy 的 staged-copy 识别，`FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等会破坏当前 copy 形态的 pass 还没有提前恢复到 `LowerBlackholeOps` 之前
+  - `LowerBlackholeOps` 对 staged copy 的 tile index 推导仍残留 `32x32` 形态假设，尚未完全按 DSL tile 形态泛化
 
 ## 分阶段任务
 
@@ -103,6 +110,13 @@
   - CB requirements
   - runtime args
 - 让 copy 的 spec/codegen 主要由 pass 产物驱动
+- 当前追加重点：
+  - 去掉 `LowerBlackholeOps` staged copy 对固定 `32x32` tile 形态的依赖
+  - 让 tile index / tile page size 从实际 DSL tile shape 推导
+  - 用多 tile / 非 `32x32` staged copy 回归验证这一点
+- 当前状态：
+  - `32x64` / `64x32` rectangular staged copy 的结构回归已补齐
+  - `32x64` direct-call true execution 已在 TT-Sim 下通过
 
 ## Stage 2C 任务拆分
 
@@ -113,9 +127,11 @@
 ## 当前下一步
 
 1. 让 `LowerBlackholeOps` 直接消费 split 后 device kernel 的更稳定 staged-copy 形态。
-2. 在不破坏当前 copy true E2E 的前提下，逐步把 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等 pass 接回 Blackhole 主链。
-3. 用 copy 已打通的 `host entry -> device kernel -> spec -> runner` 结构推进 GEMM。
-4. 继续把真执行测试按环境 gate 分层，避免把 TT-Sim 环境问题记成编译链问题。
+2. 继续把 staged copy 从“rectangular tile 也能跑”收成更一般的 DSL tile shape / loop shape 识别，而不是只覆盖当前几种矩形 tile。
+3. 在不破坏当前 copy true E2E 的前提下，逐步把 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等 pass 接回 Blackhole 主链。
+4. 收正 `blockIdx` / `core_plan` / runner 单核执行之间的边界，避免 device code 继续把 core 坐标常量化。
+5. 用 copy 已打通的 `host entry -> device kernel -> spec -> runner` 结构推进 GEMM。
+6. 继续把真执行测试按环境 gate 分层，避免把 TT-Sim 环境问题记成编译链问题。
 
 ## 当前活动设计文档
 

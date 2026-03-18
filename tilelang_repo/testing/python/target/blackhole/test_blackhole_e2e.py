@@ -233,6 +233,39 @@ def test_blackhole_copy_codegen_uses_runtime_schema():
     assert "dst_dram_addr" not in source
 
 
+@pytest.mark.parametrize(
+    "tile_rows,tile_cols,tile_m,tile_n,expected_terms",
+    [
+        (2, 1, 32, 64, ["tile_row * 2", "tile_row * 2 + 1"]),
+        (1, 2, 64, 32, ["tile_idx", "tile_idx + 2"]),
+    ],
+)
+def test_blackhole_copy_tracks_rectangular_tile_shapes(
+    tile_rows, tile_cols, tile_m, tile_n, expected_terms
+):
+    """Rectangular staged copy should lower to hardware-tile indices derived from DSL shape."""
+    kernel = staged_copy_kernel(
+        tile_rows=tile_rows, tile_cols=tile_cols, tile_m=tile_m, tile_n=tile_n
+    )
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+
+    cb_configs = device_main.attrs["blackhole.cb_configs"]
+    assert int(cb_configs[0]["page_size"]) == 2048
+    assert int(cb_configs[0]["num_pages"]) == 2
+
+    body_script = device_main.body.script()
+    assert body_script.count("tl.blackhole.read_tile_to_cb") == 2
+    assert body_script.count("tl.blackhole.write_tile_from_cb") == 2
+    for expected in expected_terms:
+        assert expected in body_script
+
+
 def test_blackhole_lower_restores_host_device_split():
     """Blackhole lower() should expose host/device split IR after Stage 2A recovery."""
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
@@ -398,6 +431,41 @@ def test_blackhole_module_direct_call():
         print(f"  Max difference: {diff.max().item()}")
         print(f"  Mean difference: {diff.mean().item()}")
         assert False, "Direct-call output does not match reference"
+
+
+def test_blackhole_module_direct_call_rectangular_tiles():
+    """Exercise direct-call on a staged copy whose DSL tile shape spans multiple hardware tiles."""
+    can_run, msg = check_blackhole_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    M, N = 64, 64
+    torch.manual_seed(42)
+    a_torch = torch.randn(M, N, dtype=torch.float16)
+    b_output = torch.zeros_like(a_torch)
+    b_ref = a_torch.clone()
+
+    target = Target("blackhole")
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1, tile_m=32, tile_n=64)
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, b_output)
+
+    atol = 1e-3
+    rtol = 1e-3
+    if torch.allclose(b_output, b_ref, atol=atol, rtol=rtol):
+        print("SUCCESS: Rectangular staged-copy direct call matches PyTorch reference!")
+        print(f"  Input shape: {a_torch.shape}")
+        print(f"  Max difference: {(b_output - b_ref).abs().max().item()}")
+        assert True
+    else:
+        diff = (b_output - b_ref).abs()
+        print("FAILURE: Rectangular direct-call output mismatch!")
+        print(f"  Max difference: {diff.max().item()}")
+        print(f"  Mean difference: {diff.mean().item()}")
+        assert False, "Rectangular direct-call output does not match reference"
 
 def test_blackhole_kernel_compilation():
     """Test that we can compile a kernel for Blackhole target.

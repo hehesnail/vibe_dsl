@@ -160,6 +160,10 @@ class CodeGenBlackhole : public CodeGenCHost {
   void EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f);
   std::string GetRuntimeArgVarByKind(const std::string &kind) const;
   std::string GetRuntimeArgVarForBuffer(const tvm::PrimExpr &buffer_expr) const;
+  int GetCBPageSize(int cb_id) const;
+  int GetCBNumPages(int cb_id) const;
+  std::string GetCBHeadVar(int cb_id) const;
+  std::string GetCBTailVar(int cb_id) const;
 
  private:
   // Per-instance header emission flag (replaces static variable)
@@ -180,6 +184,8 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_set<std::string> declared_cbs_;
   std::unordered_map<const tvm::tir::VarNode *, std::string> buffer_runtime_arg_map_;
   std::unordered_map<std::string, std::string> runtime_arg_vars_by_kind_;
+  std::unordered_map<int, int> cb_page_size_by_id_;
+  std::unordered_map<int, int> cb_num_pages_by_id_;
 
   // Default L1 memory alignment
   static constexpr int kL1Alignment = 16;

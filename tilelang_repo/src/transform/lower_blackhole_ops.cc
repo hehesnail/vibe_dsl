@@ -99,6 +99,9 @@ static PrimExpr IntImm32(int value) {
   return IntImm(DataType::Int(32), value);
 }
 
+constexpr int kBlackholeTileRows = 32;
+constexpr int kBlackholeTileCols = 32;
+
 // Helper to get storage scope from buffer
 static std::string GetStorageScope(const Buffer& buffer) {
   // Use the scope() method which returns ffi::String
@@ -199,8 +202,10 @@ int LowerBlackholeOps::AllocateCBId(const Buffer& buffer, CBType type) {
       total_elements *= int_imm->value;
     }
   }
-  req.page_size = static_cast<int>(total_elements * buffer->dtype.bytes());
-  req.num_pages = 2;  // Default double buffering
+  const int total_bytes = static_cast<int>(total_elements * buffer->dtype.bytes());
+  req.page_size = EstimateCopyPageSize(buffer);
+  req.num_pages = std::max(
+      2, req.page_size > 0 ? (total_bytes + req.page_size - 1) / req.page_size : 2);
 
   // Determine data format
   if (buffer->dtype.is_float()) {
@@ -242,7 +247,7 @@ int LowerBlackholeOps::EstimateCopyPageSize(const Buffer& buffer) const {
 
   const int64_t dtype_bytes = buffer->dtype.bytes();
   const int64_t total_bytes = total_elements * dtype_bytes;
-  const int64_t default_tile_bytes = 32 * 32 * dtype_bytes;
+  const int64_t default_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * dtype_bytes;
   return static_cast<int>(std::max<int64_t>(dtype_bytes, std::min(total_bytes, default_tile_bytes)));
 }
 
@@ -402,9 +407,19 @@ CopyDirection LowerBlackholeOps::GetCopyDirection(const BufferStoreNode* op) con
 
 PrimExpr LowerBlackholeOps::ZeroThreadAndLoopVars(const PrimExpr& expr,
                                                   const Var& loop_var) const {
+  if (!loop_var.defined()) {
+    return ZeroThreadAndLoopVars(expr, std::vector<Var>{});
+  }
+  return ZeroThreadAndLoopVars(expr, std::vector<Var>{loop_var});
+}
+
+PrimExpr LowerBlackholeOps::ZeroThreadAndLoopVars(const PrimExpr& expr,
+                                                  const std::vector<Var>& loop_vars) const {
   Map<Var, PrimExpr> subst_map;
-  if (loop_var.defined()) {
-    subst_map.Set(loop_var, IntImm(loop_var.dtype(), 0));
+  for (const auto& loop_var : loop_vars) {
+    if (loop_var.defined()) {
+      subst_map.Set(loop_var, IntImm(loop_var.dtype(), 0));
+    }
   }
   for (const auto* thread_var : thread_index_vars_) {
     subst_map.Set(GetRef<Var>(thread_var), IntImm(thread_var->dtype, 0));
@@ -435,15 +450,109 @@ PrimExpr LowerBlackholeOps::InferCopyTileIndex(const BufferStoreNode* op,
   Analyzer analyzer;
   PrimExpr base_row = ZeroThreadAndLoopVars(global_indices[0], loop_var);
   PrimExpr base_col = ZeroThreadAndLoopVars(global_indices[1], loop_var);
-  PrimExpr tile_row = analyzer.Simplify(tir::FloorDiv(base_row, IntImm32(32)));
-  PrimExpr tile_col = analyzer.Simplify(tir::FloorDiv(base_col, IntImm32(32)));
+  PrimExpr tile_row = analyzer.Simplify(tir::FloorDiv(base_row, IntImm32(kBlackholeTileRows)));
+  PrimExpr tile_col = analyzer.Simplify(tir::FloorDiv(base_col, IntImm32(kBlackholeTileCols)));
 
   const auto* cols_imm = global_buffer->shape[1].as<IntImmNode>();
   ICHECK(cols_imm) << "Blackhole staged copy currently expects static tile width";
-  ICHECK_EQ(cols_imm->value % 32, 0)
+  ICHECK_EQ(cols_imm->value % kBlackholeTileCols, 0)
       << "Blackhole staged copy currently expects 32-wide tile alignment";
-  PrimExpr tiles_per_row = IntImm32(static_cast<int>(cols_imm->value / 32));
+  PrimExpr tiles_per_row = IntImm32(static_cast<int>(cols_imm->value / kBlackholeTileCols));
   return analyzer.Simplify(tile_row * tiles_per_row + tile_col);
+}
+
+PrimExpr LowerBlackholeOps::InferStagedCopyBaseTileIndex(
+    const BufferStoreNode* op, const std::vector<Var>& loop_vars_to_zero) const {
+  const auto* load = op->value.as<BufferLoadNode>();
+  ICHECK(load) << "InferStagedCopyBaseTileIndex requires BufferLoad copy source";
+
+  CopyDirection direction = GetCopyDirection(op);
+  const Buffer& global_buffer =
+      direction == CopyDirection::kDramToCB ? load->buffer : op->buffer;
+  const Array<PrimExpr>& global_indices =
+      direction == CopyDirection::kDramToCB ? load->indices : op->indices;
+
+  ICHECK_GE(global_indices.size(), 2U)
+      << "Blackhole staged copy currently expects rank-2 tiled regions";
+  ICHECK_GE(global_buffer->shape.size(), 2U)
+      << "Blackhole staged copy currently expects rank-2 tiled buffers";
+
+  Analyzer analyzer;
+  PrimExpr base_row = ZeroThreadAndLoopVars(global_indices[0], loop_vars_to_zero);
+  PrimExpr base_col = ZeroThreadAndLoopVars(global_indices[1], loop_vars_to_zero);
+  PrimExpr tile_row =
+      analyzer.Simplify(tir::FloorDiv(base_row, IntImm32(kBlackholeTileRows)));
+  PrimExpr tile_col =
+      analyzer.Simplify(tir::FloorDiv(base_col, IntImm32(kBlackholeTileCols)));
+
+  const auto* cols_imm = global_buffer->shape[1].as<IntImmNode>();
+  ICHECK(cols_imm) << "Blackhole staged copy currently expects static tile width";
+  ICHECK_EQ(cols_imm->value % kBlackholeTileCols, 0)
+      << "Blackhole staged copy currently expects 32-wide tile alignment";
+  PrimExpr tiles_per_row = IntImm32(static_cast<int>(cols_imm->value / kBlackholeTileCols));
+  return analyzer.Simplify(tile_row * tiles_per_row + tile_col);
+}
+
+const BufferStoreNode* LowerBlackholeOps::FindNestedCopyStore(
+    const Stmt& stmt, std::vector<Var>* nested_loop_vars) const {
+  if (const auto* store = stmt.as<BufferStoreNode>()) {
+    return IsCopyOperation(store) ? store : nullptr;
+  }
+  if (const auto* attr = stmt.as<AttrStmtNode>()) {
+    return FindNestedCopyStore(attr->body, nested_loop_vars);
+  }
+  if (const auto* allocate = stmt.as<tir::AllocateNode>()) {
+    return FindNestedCopyStore(allocate->body, nested_loop_vars);
+  }
+  if (const auto* seq = stmt.as<tir::SeqStmtNode>()) {
+    for (const auto& child : seq->seq) {
+      std::vector<Var> child_loop_vars = *nested_loop_vars;
+      if (const BufferStoreNode* store = FindNestedCopyStore(child, &child_loop_vars)) {
+        *nested_loop_vars = std::move(child_loop_vars);
+        return store;
+      }
+    }
+    return nullptr;
+  }
+  if (const auto* loop = stmt.as<ForNode>()) {
+    nested_loop_vars->push_back(loop->loop_var);
+    const BufferStoreNode* store = FindNestedCopyStore(loop->body, nested_loop_vars);
+    if (!store) {
+      nested_loop_vars->pop_back();
+    }
+    return store;
+  }
+  return nullptr;
+}
+
+void LowerBlackholeOps::CollectNestedCopyStores(const Stmt& stmt,
+                                                std::vector<Var>* loop_stack,
+                                                std::vector<NestedCopyMatch>* matches) const {
+  if (const auto* store = stmt.as<BufferStoreNode>()) {
+    if (IsCopyOperation(store)) {
+      matches->push_back({store, *loop_stack, GetCopyDirection(store)});
+    }
+    return;
+  }
+  if (const auto* attr = stmt.as<AttrStmtNode>()) {
+    CollectNestedCopyStores(attr->body, loop_stack, matches);
+    return;
+  }
+  if (const auto* allocate = stmt.as<tir::AllocateNode>()) {
+    CollectNestedCopyStores(allocate->body, loop_stack, matches);
+    return;
+  }
+  if (const auto* seq = stmt.as<tir::SeqStmtNode>()) {
+    for (const auto& child : seq->seq) {
+      CollectNestedCopyStores(child, loop_stack, matches);
+    }
+    return;
+  }
+  if (const auto* loop = stmt.as<ForNode>()) {
+    loop_stack->push_back(loop->loop_var);
+    CollectNestedCopyStores(loop->body, loop_stack, matches);
+    loop_stack->pop_back();
+  }
 }
 
 void LowerBlackholeOps::RecordStagedCopyBufferBinding(const BufferStoreNode* op,
@@ -697,6 +806,159 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
   }
 }
 
+Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op,
+                                                       const PrimExpr& base_tile_index) {
+  CopyDirection direction = GetCopyDirection(op);
+  const auto* load = op->value.as<BufferLoadNode>();
+  if (!load) {
+    return GetRef<Stmt>(op);
+  }
+
+  const Buffer& shared_buffer =
+      direction == CopyDirection::kDramToCB ? op->buffer : load->buffer;
+  ICHECK_GE(shared_buffer->shape.size(), 2U)
+      << "Blackhole staged copy currently expects rank-2 shared tiles";
+  const auto* rows_imm = shared_buffer->shape[0].as<IntImmNode>();
+  const auto* cols_imm = shared_buffer->shape[1].as<IntImmNode>();
+  ICHECK(rows_imm && cols_imm)
+      << "Blackhole staged copy currently expects static shared tile shapes";
+  ICHECK_EQ(rows_imm->value % kBlackholeTileRows, 0)
+      << "Blackhole staged copy currently expects shared tile height aligned to 32";
+  ICHECK_EQ(cols_imm->value % kBlackholeTileCols, 0)
+      << "Blackhole staged copy currently expects shared tile width aligned to 32";
+
+  const int subtile_rows = static_cast<int>(rows_imm->value / kBlackholeTileRows);
+  const int subtile_cols = static_cast<int>(cols_imm->value / kBlackholeTileCols);
+  const int tile_bytes = kBlackholeTileRows * kBlackholeTileCols * shared_buffer->dtype.bytes();
+
+  std::vector<Stmt> stmts;
+  Analyzer analyzer;
+  auto make_tile_index = [&](int subtile_row, int subtile_col) -> PrimExpr {
+    PrimExpr tile_index = base_tile_index;
+    if (subtile_row != 0) {
+      const auto* global_cols_imm =
+          (direction == CopyDirection::kDramToCB ? load->buffer : op->buffer)->shape[1]
+              .as<IntImmNode>();
+      ICHECK(global_cols_imm)
+          << "Blackhole staged copy currently expects static global buffer width";
+      ICHECK_EQ(global_cols_imm->value % kBlackholeTileCols, 0)
+          << "Blackhole staged copy currently expects global width aligned to 32";
+      int tiles_per_row = static_cast<int>(global_cols_imm->value / kBlackholeTileCols);
+      tile_index = analyzer.Simplify(tile_index + IntImm32(subtile_row * tiles_per_row));
+    }
+    if (subtile_col != 0) {
+      tile_index = analyzer.Simplify(tile_index + IntImm32(subtile_col));
+    }
+    return tile_index;
+  };
+
+  if (direction == CopyDirection::kDramToCB) {
+    int cb_id = AllocateCBId(op->buffer, CBType::kIntermediate);
+    RecordStagedCopyBufferBinding(op, direction);
+    for (int subtile_row = 0; subtile_row < subtile_rows; ++subtile_row) {
+      for (int subtile_col = 0; subtile_col < subtile_cols; ++subtile_col) {
+        PrimExpr tile_index = make_tile_index(subtile_row, subtile_col);
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(1)}));
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_read_tile_to_cb(),
+            {load->buffer->data, tile_index, IntImm32(cb_id), IntImm32(tile_bytes), IntImm32(0)}));
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
+      }
+    }
+    return SeqStmt::Flatten(stmts);
+  }
+
+  if (direction == CopyDirection::kCBToDram) {
+    int cb_id = AllocateCBId(load->buffer, CBType::kIntermediate);
+    RecordStagedCopyBufferBinding(op, direction);
+    for (int subtile_row = 0; subtile_row < subtile_rows; ++subtile_row) {
+      for (int subtile_col = 0; subtile_col < subtile_cols; ++subtile_col) {
+        PrimExpr tile_index = make_tile_index(subtile_row, subtile_col);
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(1)}));
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_write_tile_from_cb(),
+            {IntImm32(cb_id), op->buffer->data, tile_index, IntImm32(tile_bytes), IntImm32(0)}));
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
+      }
+    }
+    return SeqStmt::Flatten(stmts);
+  }
+
+  return GenerateCopySequence(op);
+}
+
+Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* dram_to_cb,
+                                                        const BufferStoreNode* cb_to_dram,
+                                                        const PrimExpr& base_tile_index) {
+  const auto* dram_load = dram_to_cb->value.as<BufferLoadNode>();
+  const auto* cb_load = cb_to_dram->value.as<BufferLoadNode>();
+  if (!dram_load || !cb_load) {
+    return GetRef<Stmt>(dram_to_cb);
+  }
+
+  const Buffer& shared_buffer = dram_to_cb->buffer;
+  ICHECK(shared_buffer.same_as(cb_load->buffer))
+      << "Fused staged copy expects DRAM->shared and shared->DRAM to use the same shared buffer";
+  ICHECK_GE(shared_buffer->shape.size(), 2U)
+      << "Blackhole staged copy currently expects rank-2 shared tiles";
+  const auto* rows_imm = shared_buffer->shape[0].as<IntImmNode>();
+  const auto* cols_imm = shared_buffer->shape[1].as<IntImmNode>();
+  ICHECK(rows_imm && cols_imm)
+      << "Blackhole staged copy currently expects static shared tile shapes";
+  ICHECK_EQ(rows_imm->value % kBlackholeTileRows, 0)
+      << "Blackhole staged copy currently expects shared tile height aligned to 32";
+  ICHECK_EQ(cols_imm->value % kBlackholeTileCols, 0)
+      << "Blackhole staged copy currently expects shared tile width aligned to 32";
+
+  const auto* global_cols_imm = dram_load->buffer->shape[1].as<IntImmNode>();
+  ICHECK(global_cols_imm)
+      << "Blackhole staged copy currently expects static global buffer width";
+  ICHECK_EQ(global_cols_imm->value % kBlackholeTileCols, 0)
+      << "Blackhole staged copy currently expects global width aligned to 32";
+  const int tiles_per_row = static_cast<int>(global_cols_imm->value / kBlackholeTileCols);
+  const int subtile_rows = static_cast<int>(rows_imm->value / kBlackholeTileRows);
+  const int subtile_cols = static_cast<int>(cols_imm->value / kBlackholeTileCols);
+  const int tile_bytes = kBlackholeTileRows * kBlackholeTileCols * shared_buffer->dtype.bytes();
+  const int cb_id = AllocateCBId(shared_buffer, CBType::kIntermediate);
+  RecordStagedCopyBufferBinding(dram_to_cb, CopyDirection::kDramToCB);
+  RecordStagedCopyBufferBinding(cb_to_dram, CopyDirection::kCBToDram);
+
+  Analyzer analyzer;
+  std::vector<Stmt> stmts;
+  for (int subtile_row = 0; subtile_row < subtile_rows; ++subtile_row) {
+    for (int subtile_col = 0; subtile_col < subtile_cols; ++subtile_col) {
+      PrimExpr tile_index = base_tile_index;
+      if (subtile_row != 0) {
+        tile_index =
+            analyzer.Simplify(tile_index + IntImm32(subtile_row * tiles_per_row));
+      }
+      if (subtile_col != 0) {
+        tile_index = analyzer.Simplify(tile_index + IntImm32(subtile_col));
+      }
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(1)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_read_tile_to_cb(),
+          {dram_load->buffer->data, tile_index, IntImm32(cb_id), IntImm32(tile_bytes), IntImm32(0)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(1)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_write_tile_from_cb(),
+          {IntImm32(cb_id), cb_to_dram->buffer->data, tile_index, IntImm32(tile_bytes), IntImm32(0)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
+    }
+  }
+
+  return SeqStmt::Flatten(stmts);
+}
+
 Stmt LowerBlackholeOps::GenerateClearSequence(const CallNode* op) {
   // Clear operation: tile_regs_acquire() to zero DST registers
   // In full implementation, would also zero-fill
@@ -718,6 +980,49 @@ Stmt LowerBlackholeOps::VisitStmt_(const AttrStmtNode* op) {
 }
 
 Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
+  std::vector<Var> loop_stack;
+  std::vector<NestedCopyMatch> matches;
+  CollectNestedCopyStores(op->body, &loop_stack, &matches);
+  if (!matches.empty()) {
+    const NestedCopyMatch* dram_to_cb = nullptr;
+    const NestedCopyMatch* cb_to_dram = nullptr;
+    for (const auto& match : matches) {
+      if (match.direction == CopyDirection::kDramToCB && !dram_to_cb) {
+        dram_to_cb = &match;
+      } else if (match.direction == CopyDirection::kCBToDram && !cb_to_dram) {
+        cb_to_dram = &match;
+      }
+    }
+    if (dram_to_cb && cb_to_dram) {
+      saw_copy_op_ = true;
+      std::vector<Var> loop_vars_to_zero = dram_to_cb->loop_vars;
+      for (const auto& v : cb_to_dram->loop_vars) {
+        if (std::find_if(loop_vars_to_zero.begin(), loop_vars_to_zero.end(),
+                         [&](const Var& existing) { return existing.same_as(v); }) ==
+            loop_vars_to_zero.end()) {
+          loop_vars_to_zero.push_back(v);
+        }
+      }
+      PrimExpr base_tile_index =
+          InferStagedCopyBaseTileIndex(dram_to_cb->store, loop_vars_to_zero);
+      return GenerateFusedStagedCopySequence(dram_to_cb->store, cb_to_dram->store,
+                                             base_tile_index);
+    }
+  }
+
+  std::vector<Var> nested_loop_vars;
+  if (const auto* nested_store = FindNestedCopyStore(op->body, &nested_loop_vars)) {
+    CopyDirection direction = GetCopyDirection(nested_store);
+    if (direction == CopyDirection::kDramToCB || direction == CopyDirection::kCBToDram) {
+      saw_copy_op_ = true;
+      std::vector<Var> loop_vars_to_zero{op->loop_var};
+      loop_vars_to_zero.insert(loop_vars_to_zero.end(), nested_loop_vars.begin(),
+                               nested_loop_vars.end());
+      PrimExpr base_tile_index =
+          InferStagedCopyBaseTileIndex(nested_store, loop_vars_to_zero);
+      return GenerateStagedCopyLoopSequence(nested_store, base_tile_index);
+    }
+  }
   if (const auto* store = op->body.as<BufferStoreNode>()) {
     if (IsCopyOperation(store)) {
       CopyDirection direction = GetCopyDirection(store);
