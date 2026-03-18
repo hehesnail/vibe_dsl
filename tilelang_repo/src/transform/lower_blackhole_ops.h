@@ -105,6 +105,9 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Store CB requirements in function attributes */
   void StoreCBRequirements(tvm::tir::PrimFunc& func);
 
+  /*! \brief Store minimal target mode inferred from lowering */
+  void StoreTargetMode(tvm::tir::PrimFunc& func);
+
   /*! \brief Detect matmul call using Op comparison (not string matching) */
   bool IsMatmulCall(const tvm::tir::CallNode* op) const;
 
@@ -133,6 +136,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   tvm::tir::PrimFunc current_func_;
   std::map<tvm::tir::Buffer, int, std::less<>> buffer_to_cb_;
   std::vector<CBRequirement> cb_requirements_;
+  bool saw_copy_op_ = false;
+  bool saw_matmul_op_ = false;
 
   // CB allocation counters
   int next_input_cb_ = 0;        // Start at 0

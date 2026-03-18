@@ -105,6 +105,8 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   current_func_ = func;
   cb_requirements_.clear();
   next_cb_id_ = 0;
+  saw_copy_op_ = false;
+  saw_matmul_op_ = false;
 
   // Transform the function body
   Stmt body = VisitStmt(func->body);
@@ -115,6 +117,7 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
 
   // Store CB requirements in function attributes for PlanBlackholeCB
   StoreCBRequirements(new_func);
+  StoreTargetMode(new_func);
 
   return new_func;
 }
@@ -228,6 +231,19 @@ void LowerBlackholeOps::StoreCBRequirements(PrimFunc& func) {
   }
 
   attrs.Set("blackhole.cb_requirements", cb_reqs);
+  func.CopyOnWrite()->attrs = DictAttrs(attrs);
+}
+
+void LowerBlackholeOps::StoreTargetMode(PrimFunc& func) {
+  if (!saw_copy_op_ || saw_matmul_op_) {
+    return;
+  }
+
+  Map<String, Any> attrs;
+  if (func->attrs.defined()) {
+    attrs = func->attrs->dict;
+  }
+  attrs.Set("blackhole.target_mode", String("single_core_copy"));
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 
@@ -465,6 +481,7 @@ Stmt LowerBlackholeOps::GenerateClearSequence(const CallNode* op) {
 Stmt LowerBlackholeOps::VisitStmt_(const EvaluateNode* op) {
   if (const auto* call = op->value.as<CallNode>()) {
     if (IsMatmulCall(call)) {
+      saw_matmul_op_ = true;
       return GenerateMatmulSequence(call);
     }
     if (IsClearOperation(call)) {
@@ -479,6 +496,7 @@ Stmt LowerBlackholeOps::VisitStmt_(const EvaluateNode* op) {
 
 Stmt LowerBlackholeOps::VisitStmt_(const BufferStoreNode* op) {
   if (IsCopyOperation(op)) {
+    saw_copy_op_ = true;
     return GenerateCopySequence(op);
   }
   // Return original statement without recursion

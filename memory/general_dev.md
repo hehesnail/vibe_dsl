@@ -158,6 +158,20 @@
   否则很容易出现“能找到头文件但编译标准或运行时依赖不一致”的假通过。
 - `.cpmcache` 下的目录名带哈希，但真正不稳定的点不是“有哈希”本身，而是把某个具体哈希写死在源码里；更稳的做法是脚本先 bootstrap TT-Metal，再由 CMake 按包名前缀动态解析对应目录。
 
+### Stage 1 single-core copy 闭环经验
+
+当前新增的稳定经验：
+
+- 在 `global -> global` simple copy 还没有完全 lower 成通用 TT-Metal dataflow 语义时，可以先让 `rt_mod_blackhole` 对 `single_core_copy` 走一个最小专用 kernel emitter；只要主产物仍是 `ExecutableSpec`，这不会破坏总体设计。
+- 对最小 TT-Sim copy 路径，runner 侧至少要支持这组 runtime arg kind：
+  - `input_buffer_addr32`
+  - `output_buffer_addr32`
+  - `tile_count`
+  - `scratch_l1_buffer_addr32`
+- `scratch_l1_buffer_addr32` 不能只在 spec 里声明；runner 必须按 schema 显式分配一块 L1 mesh buffer，否则 copy kernel 只是“协议看起来完整”，实际无法执行。
+- Python 侧验证 Blackhole true E2E 时，即使 `BlackholeModule` 顶层调用面还没收口，也应至少切到 `spec.json + input.bin + output.bin` 新协议；不要继续保留旧 runner CLI 的测试假设。
+- 对最小 single-core copy，`32x32 float16` 恰好是一 tile（2048 bytes），适合作为 TT-Sim 下的最小真执行 case；这类 case 能先验证协议和 runner，再把 module 调用面问题单独隔离出来。
+
 ## 建议的开发顺序
 
 当前推荐顺序：

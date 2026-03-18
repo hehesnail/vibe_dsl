@@ -486,6 +486,18 @@ uint32_t ExtractScalar(const ffi::AnyView& arg, DLDataType dtype) {
   return 0;
 }
 
+DLTensor* ExtractTensorArg(const ffi::AnyView& arg, void* void_arg) {
+  if (void_arg != nullptr) {
+    return static_cast<DLTensor*>(void_arg);
+  }
+  auto opt_tensor = arg.try_cast<DLTensor*>();
+  if (opt_tensor.has_value()) {
+    return opt_tensor.value();
+  }
+  LOG(FATAL) << "Cannot extract DLTensor* from packed argument";
+  return nullptr;
+}
+
 void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
                                        void** void_args) const {
   // Collect arguments
@@ -495,7 +507,7 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
 
   for (size_t i = 0; i < info_.tvm_arg_types.size(); ++i) {
     if (info_.tvm_is_buffer_arg[i]) {
-      DLTensor* tensor = static_cast<DLTensor*>(void_args[i]);
+      DLTensor* tensor = ExtractTensorArg(args[i], void_args != nullptr ? void_args[i] : nullptr);
       if (i < info_.tvm_arg_types.size() - 1) {
         inputs.push_back(tensor);
       } else {

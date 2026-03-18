@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -240,11 +241,21 @@ KernelHandle create_kernel(
             .compile_args = kernel.compile_time_args});
 }
 
+bool kernel_needs_scratch_l1(const KernelSpec& kernel) {
+    for (const auto& arg : kernel.runtime_args) {
+        if (arg.kind == "scratch_l1_buffer_addr32") {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::vector<uint32_t> build_runtime_args(
     const KernelSpec& kernel,
     const RunConfig& config,
     const distributed::MeshBuffer& input_buffer,
-    const distributed::MeshBuffer& output_buffer) {
+    const distributed::MeshBuffer& output_buffer,
+    const distributed::MeshBuffer* scratch_l1_buffer) {
     std::vector<uint32_t> args;
     size_t scalar_index = 0;
     const uint32_t tile_size = choose_page_size(config, "input");
@@ -255,11 +266,20 @@ std::vector<uint32_t> build_runtime_args(
         if (arg.kind == "input_buffer_addr") {
             args.push_back(static_cast<uint32_t>(src_addr & 0xFFFFFFFF));
             args.push_back(static_cast<uint32_t>(src_addr >> 32));
+        } else if (arg.kind == "input_buffer_addr32") {
+            args.push_back(static_cast<uint32_t>(src_addr));
         } else if (arg.kind == "output_buffer_addr") {
             args.push_back(static_cast<uint32_t>(dst_addr & 0xFFFFFFFF));
             args.push_back(static_cast<uint32_t>(dst_addr >> 32));
+        } else if (arg.kind == "output_buffer_addr32") {
+            args.push_back(static_cast<uint32_t>(dst_addr));
         } else if (arg.kind == "tile_count") {
             args.push_back(tile_size == 0 ? 0 : static_cast<uint32_t>(config.input_size_bytes / tile_size));
+        } else if (arg.kind == "scratch_l1_buffer_addr32") {
+            if (scratch_l1_buffer == nullptr) {
+                throw std::runtime_error("Spec requested scratch L1 buffer but none was allocated");
+            }
+            args.push_back(static_cast<uint32_t>(scratch_l1_buffer->address()));
         } else if (arg.kind == "scalar_u32") {
             if (scalar_index >= config.scalar_args.size()) {
                 throw std::runtime_error("Spec requested more scalar args than provided");
@@ -305,13 +325,36 @@ int main(int argc, char* argv[]) {
         auto output_buffer = distributed::MeshBuffer::create(
             output_buffer_config, output_dram_config, mesh_device.get());
 
+        std::shared_ptr<distributed::MeshBuffer> scratch_l1_buffer;
+        bool needs_scratch_l1 = false;
+        for (const auto& kernel_spec : config.kernels) {
+            if (kernel_needs_scratch_l1(kernel_spec)) {
+                needs_scratch_l1 = true;
+                break;
+            }
+        }
+        if (needs_scratch_l1) {
+            const uint32_t scratch_size = choose_page_size(config, "input");
+            distributed::DeviceLocalBufferConfig scratch_l1_config{
+                .page_size = scratch_size,
+                .buffer_type = BufferType::L1};
+            distributed::ReplicatedBufferConfig scratch_l1_buffer_config{.size = scratch_size};
+            scratch_l1_buffer = distributed::MeshBuffer::create(
+                scratch_l1_buffer_config, scratch_l1_config, mesh_device.get());
+        }
+
         EnqueueWriteMeshBuffer(cq, input_buffer, input_data, /*blocking=*/true);
         std::cout << "[Runner] Input transferred\n";
 
         for (const auto& kernel_spec : config.kernels) {
             std::cout << "[Runner] Loading kernel: " << kernel_spec.kernel_path << "\n";
             KernelHandle kernel = create_kernel(program, core, kernel_spec);
-            auto runtime_args = build_runtime_args(kernel_spec, config, *input_buffer, *output_buffer);
+            auto runtime_args = build_runtime_args(
+                kernel_spec,
+                config,
+                *input_buffer,
+                *output_buffer,
+                scratch_l1_buffer ? scratch_l1_buffer.get() : nullptr);
             SetRuntimeArgs(program, kernel, core, runtime_args);
         }
 

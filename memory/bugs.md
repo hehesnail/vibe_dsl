@@ -57,3 +57,16 @@
 - **根本原因**: 手工 `InterleavedAddrGen` 方案与 TT-Metal 主流 `TensorAccessorArgs`/tile accessor 语义不一致，导致 tile 索引和寻址模型偏离官方用法。
 - **当前结论**: 这不是单纯“调一个地址公式”的小问题，而是后端中间抽象需要向 tile-access 语义收敛。
 - **后续处理原则**: Blackhole copy/gemm dataflow 路径应优先对齐 `TensorAccessorArgs` 风格，而不是继续扩展裸地址模式。
+
+### `BlackholeModule` 从 Python 直接调用时在 `ExecuteExternal` 路径崩溃
+
+- **时间**: 2026-03-18
+- **问题**: 通过 Python 直接调用 `artifact.codegen_mod["main"](...)` 时，执行会在 `BlackholeModuleNode::ExecuteExternal` 路径触发 segfault。
+- **现象**:
+  - `spec-driven` runner 手工驱动可以在 TT-Sim 上成功执行 single-core copy
+  - 但从 Python 直接调 packed func 时，会在进入 `ExecuteExternal` 后崩溃，尚未稳定打印出完整 runner 调用日志
+- **当前判断**: 问题更可能在 `BlackholeModule` 的 packed-arg / `DLTensor*` 调用面，而不是 copy kernel、runner 协议或 TT-Sim 环境本身。
+- **临时绕行**:
+  - 继续使用 `spec.json + input.bin + output.bin` 协议验证 true E2E
+  - 不把 Python 直调 `codegen_mod["main"]` 当作当前阶段的唯一验证入口
+- **当前限制**: Stage 1 copy 已有真执行验证，但 `BlackholeModule` 顶层调用面还不能视为完成。

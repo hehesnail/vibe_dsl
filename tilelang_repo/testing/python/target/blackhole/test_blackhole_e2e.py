@@ -17,6 +17,7 @@ import torch
 import os
 import tempfile
 import subprocess
+import json
 
 import tilelang
 import tilelang.testing
@@ -60,6 +61,59 @@ def get_runner_path():
         if os.path.exists(path):
             return path
     raise FileNotFoundError(f"Runner not found in {runner_candidates}")
+
+
+def write_single_core_copy_spec(spec_path, kernel_path, tensor_nbytes):
+    spec = {
+        "entry_name": "main",
+        "target_mode": "single_core_copy",
+        "input_size_bytes": int(tensor_nbytes),
+        "output_size_bytes": int(tensor_nbytes),
+        "scalar_args": [],
+        "core_plan": {
+            "grid_x": 1,
+            "grid_y": 1,
+            "cores_needed": 1,
+            "work_per_core": 1,
+            "core_grid_x": 1,
+            "core_grid_y": 1,
+        },
+        "cb_configs": [
+            {
+                "cb_id": 0,
+                "name": "A",
+                "role": "input",
+                "num_pages": 1,
+                "page_size_bytes": int(tensor_nbytes),
+                "data_format": "Float16_b",
+            },
+            {
+                "cb_id": 16,
+                "name": "B",
+                "role": "output",
+                "num_pages": 1,
+                "page_size_bytes": int(tensor_nbytes),
+                "data_format": "Float16_b",
+            },
+        ],
+        "kernels": [
+            {
+                "name": "main",
+                "kind": "fused_dataflow",
+                "core_type": "brisc",
+                "kernel_path": kernel_path,
+                "compile_time_args": [],
+                "runtime_args": [
+                    {"name": "input0", "kind": "input_buffer_addr32", "dtype": "uint32"},
+                    {"name": "output0", "kind": "output_buffer_addr32", "dtype": "uint32"},
+                    {"name": "num_tiles", "kind": "tile_count", "dtype": "uint32"},
+                    {"name": "scratch_l1", "kind": "scratch_l1_buffer_addr32", "dtype": "uint32"},
+                ],
+            }
+        ],
+    }
+    with open(spec_path, "w", encoding="utf-8") as f:
+        json.dump(spec, f)
 
 
 def simple_copy_kernel(M: int, N: int, tile_m: int = 32, tile_n: int = 32):
@@ -141,6 +195,8 @@ def test_blackhole_true_e2e():
     # Create temporary directory for I/O
     with tempfile.TemporaryDirectory() as tmpdir:
         # Save input data
+        spec_path = os.path.join(tmpdir, "spec.json")
+        kernel_path = os.path.join(tmpdir, "kernel.cpp")
         input_path = os.path.join(tmpdir, "input.bin")
         output_path = os.path.join(tmpdir, "output.bin")
 
@@ -159,27 +215,19 @@ def test_blackhole_true_e2e():
                 artifact = lower(kernel, target=target)
             kernel_code = artifact.kernel_source if hasattr(artifact, 'kernel_source') else str(artifact)
 
-            # Save kernel code to TT_METAL_HOME (required for JIT compilation)
-            kernel_dir = os.path.join(os.environ["TT_METAL_HOME"], "tilelang_kernels")
-            os.makedirs(kernel_dir, exist_ok=True)
-            kernel_path = os.path.join(kernel_dir, "test_kernel.cpp")
-            with open(kernel_path, 'w') as f:
+            with open(kernel_path, 'w', encoding='utf-8') as f:
                 f.write(kernel_code)
+
+            write_single_core_copy_spec(spec_path, kernel_path, a_np.nbytes)
 
             # Get runner path
             runner_path = get_runner_path()
 
-            # Execute kernel via external runner
-            input_size = a_np.nbytes
-            output_size = input_size  # Same size for copy kernel
-
             cmd = [
                 runner_path,
-                kernel_path,
+                spec_path,
                 input_path,
                 output_path,
-                str(input_size),
-                str(output_size)
             ]
 
             # Run the kernel
@@ -190,7 +238,7 @@ def test_blackhole_true_e2e():
 
             # Read output
             with open(output_path, 'rb') as f:
-                output_data = np.frombuffer(f.read(), dtype=np.float16).reshape(M, N)
+                output_data = np.frombuffer(f.read(), dtype=np.float16).copy().reshape(M, N)
 
             # Convert to torch for comparison
             b_output = torch.from_numpy(output_data)
