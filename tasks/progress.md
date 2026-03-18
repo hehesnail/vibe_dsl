@@ -44,6 +44,11 @@
   - `rt_mod_blackhole` 已读取新 attr schema 并抽取 Stage 0 spec
   - `BlackholeModule` 已改为写 `spec.json + input.bin + output.bin + kernel.cpp`
   - runner 已改为读取 `spec.json` 并按 spec 建 CB / kernel / runtime args
-  - runner 源码与构建入口已收敛到 `tilelang_repo/tools/blackhole_runner/`
-  - runner 现通过 TileLang 侧 standalone CMake 直接链接 `TT_METAL_HOME/build_Release` 产物，不再要求修改 `tt_metal_repo` 源码
-  - 已通过 `make -C tilelang_repo/build -j16` 与 `cmake --build tilelang_repo/build-blackhole-runner --target tilelang_blackhole_runner -j16` 编译验证
+ - runner 源码与构建入口已收敛到 `tilelang_repo/tools/blackhole_runner/`
+  - `scripts/build_blackhole_runner.sh` 现会先 bootstrap `TT_METAL_HOME/build_Release`，再构建 runner
+  - runner 构建仍由 TileLang 侧 standalone CMake 管理，不再要求修改 `tt_metal_repo` 源码
+  - `scripts/setup_tt_sim.sh` 已补 `TT_METAL_RUNTIME_ROOT`
+  - 已通过 `./scripts/build_blackhole_runner.sh` 完成：
+    - `metal_example_add_2_integers_in_riscv` 编译
+    - TT-Sim smoke test
+    - `tilelang_blackhole_runner` 编译

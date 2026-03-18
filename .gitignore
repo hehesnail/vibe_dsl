@@ -46,6 +46,7 @@ tests/target/test_blackhole_gemm_ttsim_test
 generated_*.cc
 generated_*.cpp
 generated_*.h
+generated/
 
 # TileLang test generated files
 tilelang_repo/generated/

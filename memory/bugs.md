@@ -38,6 +38,16 @@
   - 正确设置 simulator 路径
   - 启用 slow dispatch 模式
 
+### TT-Metal 示例在 TT-Sim 下缺少 runtime root
+
+- **时间**: 2026-03-18
+- **问题**: `metal_example_add_2_integers_in_riscv` 在 TT-Sim 下启动时报 `Root Directory is not set`。
+- **根本原因**: 运行环境只设置了 simulator 和 `LD_LIBRARY_PATH`，但没有设置 `TT_METAL_RUNTIME_ROOT`，导致 runtime 无法定位 `tt_metal/` 根目录。
+- **解决方案**:
+  - 在 TT-Sim 环境脚本中显式导出 `TT_METAL_RUNTIME_ROOT=$TT_METAL_HOME`
+  - 或者从 `tt_metal_repo` 根目录启动示例
+- **当前限制**: 这类环境问题不会在“仅编译通过”阶段暴露，必须通过一次真实 TT-Sim 执行才能发现。
+
 ## 与当前设计直接相关的记录
 
 ### GEMM 寻址与 tile access 语义不一致

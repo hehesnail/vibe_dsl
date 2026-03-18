@@ -76,6 +76,8 @@ runner 源码与构建入口归属：
 - runner 放在 `tilelang_repo/tools/blackhole_runner/`
 - runner 由 `tilelang_repo/tools/blackhole_runner/CMakeLists.txt` 独立构建
 - runner 二进制默认产物位置收敛到 `tilelang_repo/build-blackhole-runner/tilelang_blackhole_runner`
+- `scripts/build_blackhole_runner.sh` 会先 bootstrap `TT_METAL_HOME/build_Release`，再构建 runner
+- bootstrap 后会通过 TT-Sim 运行 `metal_example_add_2_integers_in_riscv` 作为 smoke test
 - runner 构建只消费 `TT_METAL_HOME/build_Release` 的头文件和库，不再要求修改 `tt_metal_repo` 源码
 - 不再以 `tt_metal_repo/tt_metal/programming_examples/tilelang_blackhole_runner/` 作为主维护位置
 
@@ -96,6 +98,7 @@ runner 源码与构建入口归属：
 - 编译级验证：确认 `rt_mod_blackhole.cc` 与 `blackhole_module.h` 类型一致。
 - 代码级验证：检查 pass 输出 attr 名与 runtime extractor 读取名称一致。
 - runner 级验证：确认 runner 能编译并消费 `spec.json`。
+- 环境级验证：确认 `scripts/setup_tt_sim.sh` 能设好 `TT_METAL_RUNTIME_ROOT` 并在 TT-Sim 上跑通 `metal_example_add_2_integers_in_riscv`。
 - 文档级验证：更新 `tasks/progress.md`，使阶段状态与当前实现一致。
 
 ## 当前限制

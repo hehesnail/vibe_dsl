@@ -145,11 +145,17 @@
   - 由 TileLang 自己的 CMake/脚本产出二进制
   - 只链接 `TT_METAL_HOME/build_Release` 里的头文件和库
   - 不要求修改 `tt_metal_repo` 源码
+- 如果需要从源码自举 `tt_metal` 再编 TileLang 工具，优先把流程收敛成：
+  - 先由 TileLang 顶层脚本 configure/build `TT_METAL_HOME/build_Release`
+  - 再跑一个 TT-Sim smoke test 验证编译产物可执行
+  - 最后再编 TileLang 自己的 runner
+  这样能尽早把“编得过”和“跑得起来”分层验证掉。
 - 如果 standalone CMake 需要复刻 TT-Metal 的关键编译约束，至少要显式继承：
   - `cxx_std_20`
   - runner 所需的 compile definitions
   - `BUILD_RPATH/INSTALL_RPATH`
   否则很容易出现“能找到头文件但编译标准或运行时依赖不一致”的假通过。
+- `.cpmcache` 下的目录名带哈希，但真正不稳定的点不是“有哈希”本身，而是把某个具体哈希写死在源码里；更稳的做法是脚本先 bootstrap TT-Metal，再由 CMake 按包名前缀动态解析对应目录。
 
 ## 建议的开发顺序
 

@@ -16,18 +16,42 @@ add_executable(tilelang_blackhole_runner)
 target_sources(tilelang_blackhole_runner PRIVATE runner.cpp)
 target_compile_features(tilelang_blackhole_runner PRIVATE cxx_std_20)
 
+function(find_single_dir out_var glob_pattern)
+    file(GLOB matches LIST_DIRECTORIES true "${glob_pattern}")
+    set(dir_matches "")
+    foreach(match IN LISTS matches)
+        if(IS_DIRECTORY "${match}")
+            list(APPEND dir_matches "${match}")
+        endif()
+    endforeach()
+    list(LENGTH dir_matches match_count)
+    if(match_count EQUAL 0)
+        message(FATAL_ERROR "No match for ${glob_pattern}")
+    endif()
+    list(GET dir_matches 0 first_match)
+    set(${out_var} "${first_match}" PARENT_SCOPE)
+endfunction()
+
+find_single_dir(REFLECT_DIR "${TT_METAL_HOME}/.cpmcache/reflect/*")
+find_single_dir(ENCHANTUM_DIR "${TT_METAL_HOME}/.cpmcache/enchantum/*")
+find_single_dir(FMT_DIR "${TT_METAL_HOME}/.cpmcache/fmt/*")
+find_single_dir(TT_LOGGER_DIR "${TT_METAL_HOME}/.cpmcache/tt-logger/*")
+find_single_dir(SPDLOG_DIR "${TT_METAL_HOME}/.cpmcache/spdlog/*")
+find_single_dir(NLOHMANN_JSON_DIR "${TT_METAL_HOME}/.cpmcache/nlohmann_json/*")
+
 find_package(nlohmann_json REQUIRED)
 
 target_compile_definitions(tilelang_blackhole_runner PRIVATE
+    OVERRIDE_KERNEL_PREFIX="tt_metal/programming_examples/"
     ENCHANTUM_ENABLE_MSVC_SPEEDUP=1
     FMT_HEADER_ONLY=1
     NTEST
-    OVERRIDE_KERNEL_PREFIX="tt_metal/programming_examples/"
     SPDLOG_COMPILED_LIB
     SPDLOG_FMT_EXTERNAL
     TRACY_IMPORTS
     TRACY_TIMER_FALLBACK
-    TT_ENABLE_LIGHT_METAL_TRACE=1)
+    TT_ENABLE_LIGHT_METAL_TRACE=1
+)
 
 target_compile_options(tilelang_blackhole_runner PRIVATE
     -Wno-int-to-pointer-cast)
@@ -45,12 +69,12 @@ target_include_directories(tilelang_blackhole_runner PRIVATE
     "${TT_METAL_HOME}")
 
 target_include_directories(tilelang_blackhole_runner SYSTEM PRIVATE
-    "${TT_METAL_HOME}/.cpmcache/reflect/f93e77475670eaeacf332927dfe8b50e3f3812e0"
-    "${TT_METAL_HOME}/.cpmcache/enchantum/2fb7ab238e36c101b9848892ddb6382276b65837/enchantum/include"
-    "${TT_METAL_HOME}/.cpmcache/nlohmann_json/798e0374658476027d9723eeb67a262d0f3c8308/include"
-    "${TT_METAL_HOME}/.cpmcache/fmt/69912fb6b71fcb1f7e5deca191a2bb4748c4e7b6/include"
-    "${TT_METAL_HOME}/.cpmcache/tt-logger/d2339ce68562cae34cd95f3fece7fd94eb0529b7/include"
-    "${TT_METAL_HOME}/.cpmcache/spdlog/b1c2586bb5c35a7929362e87f62433eb68206873/include"
+    "${REFLECT_DIR}"
+    "${ENCHANTUM_DIR}/enchantum/include"
+    "${NLOHMANN_JSON_DIR}/include"
+    "${FMT_DIR}/include"
+    "${TT_LOGGER_DIR}/include"
+    "${SPDLOG_DIR}/include"
     "${TT_METAL_HOME}/tt_metal/third_party/umd/device/api"
     "${TT_METAL_HOME}/tt_metal/third_party/tracy/public")
 
