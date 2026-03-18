@@ -23,10 +23,14 @@
   - `blackhole.segment_plan`
   - `blackhole.cb_configs`
   - `tl.blackhole.read_tile_to_cb / write_tile_from_cb`
-- 但当前最主要的结构问题已经明确：
-  - Blackhole 仍在 `OptimizeForTarget` 中 early return
-  - 通用 TIR 规范化、`SplitHostDevice`、`MakePackedAPI`、`LowerDeviceKernelLaunch` 仍被旁路
-  - `rt_mod_blackhole` / `BlackholeModule` 还在间接承担部分 PrimFunc 参数和 host/device 语义
+- copy true E2E 新增进展：
+  - `spec.json -> runner` 已在 TT-Sim 下通过
+  - `artifact.codegen_mod["main"](...)` 已在 TT-Sim 下通过
+  - `32x32 float16` staged `T.copy(global -> shared -> global)` 输出与 PyTorch 参考一致
+- 当前仍然存在的主要结构问题：
+  - Blackhole 还没有把全部中后段通用规范化 pass 接回主线
+  - `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 仍会打断当前 copy staged-lowering
+  - `rt_mod_blackhole` / `BlackholeModule` 的 host/device 边界虽然已经收正，但 GEMM 还没有复用这条新主线
 - 当前新增进展：
   - Blackhole `lower()` 主路径已恢复：
     - `AnnotateDeviceRegions`
@@ -48,7 +52,7 @@
 | Stage 0 | 协议与执行载体 | ✅ 已基本完成 | `ExecutableSpec`、runner 协议、module/runner 主路径已落地 |
 | Stage 1 | single-core copy 执行闭环 | ✅ 已完成 | TT-Sim 下 runner 与 direct-call 都已通过 |
 | Stage 2A | pass 主链接入收正 | 🔄 进行中 | 恢复通用 TIR / host-device / Packed API pass 主线 |
-| Stage 2B | single-core copy 语义集成 | ⏳ 未完成 | 在收正后的主链上完成 copy 的 Blackhole-aware lowering |
+| Stage 2B | single-core copy 语义集成 | 🔄 进行中 | copy 已完成 true E2E，但仍需继续接回剩余通用 pass |
 | Stage 2C | single-core GEMM 语义集成 | ⏳ 未开始 | 用与 copy 相同的结构接入 GEMM |
 | Stage 2D | single-core true E2E | ⏳ 未完成 | copy + GEMM 都由 pass 主导并完成 true E2E |
 | Stage 3 | multi-core runtime 调度 | ⏳ 未开始 | `CorePlan`、per-core runtime args、多核执行 |
@@ -105,8 +109,8 @@
 ## 当前下一步
 
 1. 让 `LowerBlackholeOps` 直接消费 split 后 device kernel 的更稳定 staged-copy 形态。
-2. 在不破坏 copy 识别的前提下，逐步把 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等 pass 接回 Blackhole 主链。
-3. 继续推进 copy 的 tile-range / dataflow 语义分析，为 GEMM 复用同一结构做准备。
+2. 在不破坏当前 copy true E2E 的前提下，逐步把 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等 pass 接回 Blackhole 主链。
+3. 用 copy 已打通的 `host entry -> device kernel -> spec -> runner` 结构推进 GEMM。
 4. 继续把真执行测试按环境 gate 分层，避免把 TT-Sim 环境问题记成编译链问题。
 
 ## 当前活动设计文档

@@ -74,6 +74,9 @@ class CodeGenBlackhole : public CodeGenCHost {
   // Override EvaluateNode to handle TT-Metal builtin calls as statements
   void VisitStmt_(const tvm::tir::EvaluateNode *op) override;
 
+  // Skip C-array allocation for CB-backed shared buffers.
+  void VisitStmt_(const tvm::tir::AllocateNode *op) override;
+
   // Override storage scope printing for Blackhole memory types
   void PrintStorageScope(const std::string &scope,
                          std::ostream &os) override;

@@ -127,6 +127,10 @@ Stage 2 的正式目标已经收紧为：
 - `PlanBlackholeCB` 已能将 copy requirements 落成 `blackhole.cb_configs`
 - `CodeGenBlackhole` 已开始消费 copy builtin
 - `BlackholeModule` 对外 entry 的参数签名已重新对齐 split 后 device kernel，不再错误沿用 Packed API 的底层 4 参数签名
+- copy true E2E 已通过：
+  - `spec.json -> runner`
+  - `artifact.codegen_mod["main"](...)`
+  - TT-Sim 下 `32x32 float16` staged copy 与 PyTorch 参考一致
 - 但 Stage 2A 仍未完成，因此当前 copy 语义集成仍只是中间态，不应被视为正式 compiler path
 
 ## 验证方式

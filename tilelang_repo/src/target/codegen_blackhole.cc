@@ -286,6 +286,21 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::EvaluateNode *op) {
   tvm::codegen::CodeGenC::VisitStmt_(op);
 }
 
+void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
+  std::string scope = GetPtrStorageScope(op->buffer_var);
+  alloc_storage_scope_[op->buffer_var.get()] = scope;
+  RegisterHandleType(op->buffer_var.get(), op->dtype);
+
+  if (scope == "shared" || scope == "shared.dyn" || scope == "shared.barrier") {
+    // Blackhole shared allocations are runtime-managed CB/L1 resources, not
+    // C arrays inside the generated kernel body.
+    this->PrintStmt(op->body);
+    return;
+  }
+
+  tvm::codegen::CodeGenC::VisitStmt_(op);
+}
+
 void CodeGenBlackhole::VisitExpr_(const tvm::tir::FloorDivNode *op,
                                    std::ostream &os) {
   // FloorDiv is not implemented in base CodeGenC

@@ -145,3 +145,17 @@
     - `PrimFunc::buffer_map`
     - handle 参数名
 - **当前状态**: 已解决。
+
+### Blackhole copy kernel codegen 不能为 `shared.dyn` 打印伪 C 数组
+
+- **时间**: 2026-03-19
+- **问题**: 在 TT-Sim true E2E copy 中，runner 已经成功把 kernel 送入 TT-Metal JIT，但内核编译会因为生成了 `/* CB */ half A_shared[1024];` 这类声明而失败。
+- **现象**:
+  - TT-Metal JIT 报 `error: 'half' was not declared in this scope`
+  - 出错位置对应 Blackhole copy kernel 中的 `shared.dyn` allocation
+- **根本原因**: Blackhole 的 `shared/shared.dyn` 语义已经被收口成 CB/L1 资源，但 `CodeGenC::VisitStmt_(AllocateNode)` 仍按普通 C backend 的方式为它打印本地数组声明。
+- **解决方案**:
+  - 在 `CodeGenBlackhole::VisitStmt_(AllocateNode)` 中识别 `shared/shared.dyn/shared.barrier`
+  - 只保留类型/作用域注册，跳过 C 数组声明
+  - 继续让 runtime/builtin 路径负责真实 CB/L1 资源使用
+- **当前状态**: 已解决。TT-Sim 下 copy 的 `spec.json -> runner` 和 direct-call 两条 true E2E 路径都已通过。

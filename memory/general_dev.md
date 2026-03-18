@@ -206,6 +206,10 @@
   - 由 host entry 解析出它 launch 的 device kernel
   - 继续用 device kernel 的用户参数签名构造 runtime module entry
   - 只把 host Packed API PrimFunc 当作 host/device 语义来源，而不是最终外部调用签名来源
+- 对 Blackhole 这类把 `shared/shared.dyn` 映射成 CB/L1 资源的 backend，device codegen 不应再为这些 allocation 打印 C 数组声明；更稳的做法是：
+  - 让 pass/runtime 负责 CB/L1 资源分配
+  - codegen 只保留 builtin 调用和 runtime arg 绑定
+  否则很容易在 TT-Metal JIT 编译阶段引入无意义、甚至不可编译的伪局部数组声明。
 - 真执行测试需要把编译链和环境问题分层处理。对 Blackhole，`TT_METAL_RUNTIME_ROOT` 缺失时 runner 和 direct-call 都会在 Metal 初始化前失败；这类情况应该在测试前置检查里显式 skip，而不是记成 codegen/pass 回归。
 - 当一个新 target 已经接入 TileLang/TVM 的 PrimFunc/TIR 主链时，优先问题不应是“补多少自定义 pass”，而应先核对它是否旁路了现有主线中的关键 pass。对 Blackhole，当前最关键的结构检查项是：
   - 是否过早在 target-specific optimize 阶段 early return
