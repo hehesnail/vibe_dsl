@@ -454,7 +454,8 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
   std::string kernel_dir = "/tmp/tilelang_blackhole/" + std::to_string(getpid());
   std::filesystem::create_directories(kernel_dir);
 
-  // Process non-copy functions through generic codegen.
+  // Process functions through generic codegen. Stage 2 should prefer builtin-driven
+  // codegen for copy as well, while still retaining a runtime emitter fallback.
   for (auto kv : mod->functions) {
     ICHECK(kv.second->IsInstance<tir::PrimFuncNode>())
         << "CodeGenBlackhole: Can only take PrimFunc";
@@ -463,11 +464,6 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     auto global_symbol = f->GetAttr<ffi::String>(tvm::attr::kGlobalSymbol);
     std::string func_name = global_symbol ? static_cast<std::string>(global_symbol.value())
                                           : static_cast<std::string>(gvar->name_hint);
-    auto fit = func_info_map.find(func_name);
-    if (fit != func_info_map.end() && fit->second.target_mode == "single_core_copy") {
-      continue;
-    }
-
     // Check calling convention
     auto calling_conv = f->GetAttr<Integer>(tvm::attr::kCallingConv);
     if (calling_conv == CallingConv::kDeviceKernelLaunch) {
@@ -487,9 +483,9 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     kernel.name = kv.first;
     kernel.kind = kv.second.default_kernel_kind;
     kernel.core_type = kv.second.default_kernel_core_type;
-    kernel.source_code = kv.second.target_mode == "single_core_copy"
-                             ? EmitSingleCoreCopyKernelSource(kv.second)
-                             : code;
+    kernel.source_code = (!code.empty())
+                             ? code
+                             : EmitSingleCoreCopyKernelSource(kv.second);
     kernel.runtime_args = kv.second.runtime_args.empty() ? MakeDefaultRuntimeArgs(kv.second)
                                                          : kv.second.runtime_args;
     kv.second.kernels.push_back(std::move(kernel));
@@ -529,7 +525,9 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
   std::string kernel_dir = "/tmp/tilelang_blackhole/" + std::to_string(getpid());
   std::filesystem::create_directories(kernel_dir);
 
-  // Process only non-copy device kernel functions through generic codegen.
+  // Process device kernel functions through generic codegen. Stage 2 should prefer
+  // builtin-driven codegen for copy as well, while still retaining a runtime
+  // emitter fallback.
   for (auto kv : mod->functions) {
     ICHECK(kv.second->IsInstance<tir::PrimFuncNode>())
         << "CodeGenBlackhole: Can only take PrimFunc";
@@ -538,11 +536,6 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     auto global_symbol = f->GetAttr<ffi::String>(tvm::attr::kGlobalSymbol);
     std::string func_name = global_symbol ? static_cast<std::string>(global_symbol.value())
                                           : static_cast<std::string>(gvar->name_hint);
-    auto fit = func_info_map.find(func_name);
-    if (fit != func_info_map.end() && fit->second.target_mode == "single_core_copy") {
-      continue;
-    }
-
     auto calling_conv = f->GetAttr<Integer>(tvm::attr::kCallingConv);
     // Process device kernels (kDeviceKernelLaunch) OR functions without calling_conv set
     // (which is the case for Blackhole device functions from tilelang.transform flow)
@@ -560,9 +553,9 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     kernel.name = kv.first;
     kernel.kind = kv.second.default_kernel_kind;
     kernel.core_type = kv.second.default_kernel_core_type;
-    kernel.source_code = kv.second.target_mode == "single_core_copy"
-                             ? EmitSingleCoreCopyKernelSource(kv.second)
-                             : kernel_code;
+    kernel.source_code = (!kernel_code.empty())
+                             ? kernel_code
+                             : EmitSingleCoreCopyKernelSource(kv.second);
     kernel.runtime_args = kv.second.runtime_args.empty() ? MakeDefaultRuntimeArgs(kv.second)
                                                          : kv.second.runtime_args;
     kv.second.kernels.push_back(std::move(kernel));

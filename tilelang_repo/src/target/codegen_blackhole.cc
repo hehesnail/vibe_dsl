@@ -52,6 +52,7 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   core_type_ = CoreType::kBRISC;
   need_dataflow_api_h_ = false;
   need_compute_api_h_ = false;
+  is_single_core_copy_mode_ = false;
 }
 
 std::string CodeGenBlackhole::GetKernelCode() const {
@@ -123,9 +124,24 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   // Generate kernel_main entry point (TT-Metal convention)
   stream << "void kernel_main() {\n";
 
+  auto target_mode_attr = f->GetAttr<tvm::ffi::String>("blackhole.target_mode");
+  is_single_core_copy_mode_ =
+      target_mode_attr && static_cast<std::string>(target_mode_attr.value()) == "single_core_copy";
+
   // Generate argument loading code
   // TT-Metal kernels use get_arg_val<uint32_t>(arg_index) to read arguments
   stream << "  // Load kernel arguments from runtime\n";
+
+  if (is_single_core_copy_mode_) {
+    stream << "  uint32_t src_dram_addr = get_arg_val<uint32_t>(0);\n";
+    stream << "  uint32_t dst_dram_addr = get_arg_val<uint32_t>(1);\n";
+    stream << "  uint32_t num_tiles = get_arg_val<uint32_t>(2);\n";
+    stream << "  uint32_t scratch_l1_addr = get_arg_val<uint32_t>(3);\n";
+    stream << "\n";
+    this->VisitStmt(f->body);
+    stream << "}\n\n";
+    return;
+  }
 
   int arg_idx = 0;
   for (size_t i = 0; i < f->params.size(); ++i) {
@@ -373,6 +389,12 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   } else if (builtin_name == "noc_async_write_barrier") {
     PrintNOCWriteBarrier(os);
     return true;
+  } else if (builtin_name == "read_tile_to_cb") {
+    PrintReadTileToCB(op, os);
+    return true;
+  } else if (builtin_name == "write_tile_from_cb") {
+    PrintWriteTileFromCB(op, os);
+    return true;
   } else if (builtin_name == "mm_init") {
     PrintMMInit(op, os);
     return true;
@@ -475,6 +497,38 @@ void CodeGenBlackhole::PrintNOCReadBarrier(std::ostream &os) {
 void CodeGenBlackhole::PrintNOCWriteBarrier(std::ostream &os) {
   need_dataflow_api_h_ = true;
   os << "noc_async_write_barrier()";
+}
+
+void CodeGenBlackhole::PrintReadTileToCB(const tvm::tir::CallNode *op,
+                                         std::ostream &os) {
+  need_dataflow_api_h_ = true;
+  ICHECK(is_single_core_copy_mode_)
+      << "read_tile_to_cb codegen is currently only wired for single_core_copy mode";
+  os << "{ ";
+  os << "const uint32_t tile_index = ";
+  PrintExpr(op->args[1], os);
+  os << "; const uint32_t tile_bytes = ";
+  PrintExpr(op->args[3], os);
+  os << "; InterleavedAddrGen<true> src_gen = {.bank_base_address = src_dram_addr, .page_size = tile_bytes}; ";
+  os << "uint64_t src_noc_addr = get_noc_addr(tile_index, src_gen); ";
+  os << "noc_async_read(src_noc_addr, scratch_l1_addr, tile_bytes); ";
+  os << "noc_async_read_barrier(); }";
+}
+
+void CodeGenBlackhole::PrintWriteTileFromCB(const tvm::tir::CallNode *op,
+                                            std::ostream &os) {
+  need_dataflow_api_h_ = true;
+  ICHECK(is_single_core_copy_mode_)
+      << "write_tile_from_cb codegen is currently only wired for single_core_copy mode";
+  os << "{ ";
+  os << "const uint32_t tile_index = ";
+  PrintExpr(op->args[2], os);
+  os << "; const uint32_t tile_bytes = ";
+  PrintExpr(op->args[3], os);
+  os << "; InterleavedAddrGen<true> dst_gen = {.bank_base_address = dst_dram_addr, .page_size = tile_bytes}; ";
+  os << "uint64_t dst_noc_addr = get_noc_addr(tile_index, dst_gen); ";
+  os << "noc_async_write(scratch_l1_addr, dst_noc_addr, tile_bytes); ";
+  os << "noc_async_write_barrier(); }";
 }
 
 void CodeGenBlackhole::PrintMMInit(const tvm::tir::CallNode *op,

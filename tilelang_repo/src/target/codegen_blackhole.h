@@ -121,6 +121,8 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintNOCAsyncWrite(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintNOCReadBarrier(std::ostream &os);
   void PrintNOCWriteBarrier(std::ostream &os);
+  void PrintReadTileToCB(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintWriteTileFromCB(const tvm::tir::CallNode *op, std::ostream &os);
 
   // Print compute operations
   void PrintMMInit(const tvm::tir::CallNode *op, std::ostream &os);
@@ -162,6 +164,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   bool need_tt_metal_h_{false};
   bool need_dataflow_api_h_{false};
   bool need_compute_api_h_{false};
+  bool is_single_core_copy_mode_{false};
 
   // Whether to emit kernel entry point wrapper
   bool emit_kernel_wrapper_{true};

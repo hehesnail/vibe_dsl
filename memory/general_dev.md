@@ -181,6 +181,11 @@
 - 如果目标是把路径重新接回 `TIR -> pass -> codegen` 主链，不要只检查 attrs；还要检查 lowered TIR body 里是否真的出现了目标 builtin call。本阶段对 copy 至少要看到：
   - `tl.blackhole.read_tile_to_cb`
   - `tl.blackhole.write_tile_from_cb`
+- 当准备把某个 Blackhole 路径从 runtime emitter 切回 codegen 主路径时，可以先采用“codegen 优先、runtime emitter 回退”的切换方式：
+  - 先让 `CodeGenBlackhole` 能消费 builtin
+  - 再让 `rt_mod_blackhole` 优先使用 codegen 产物
+  - 最后只在 codegen 为空或失败时回退到手写 emitter
+  这样更容易分阶段验证，不会一次性打断现有真执行链路。
 
 ## 建议的开发顺序
 

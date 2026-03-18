@@ -268,8 +268,8 @@ Stage 2 的要求是：
     - `blackhole.runtime_args`
     - `blackhole.segment_plan`
 - 当前仍未完成：
-  - copy kernel 的真实执行路径仍主要走最小专用 emitter 回退
-  - `CodeGenBlackhole` 还没有让上述 copy builtin 成为当前主执行来源
+  - `CodeGenBlackhole` 已开始让上述 copy builtin 成为当前 single-core copy 主执行来源
+  - `rt_mod_blackhole` 仍保留最小专用 emitter 作为回退
   - copy 的更真实 tile/dataflow 语义还没有完全从 pass 直达 kernel emission
   - gemm 仍未开始接入同一套 pass-driven schema
 
