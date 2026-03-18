@@ -168,6 +168,33 @@ def test_blackhole_codegen_only():
         pytest.skip(f"Blackhole lowering not yet fully implemented: {e}")
 
 
+def test_blackhole_copy_pass_attrs():
+    """Verify copy schema is materialized in pass attrs before runtime extraction."""
+    M, N = 32, 32
+    kernel = simple_copy_kernel(M, N)
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = tilelang.transform.PlanBlackholeCB()(mod)
+    mod = tilelang.transform.AssignBlackholeCores()(mod)
+
+    func = mod["main"]
+    assert str(func.attrs["blackhole.target_mode"]) == "single_core_copy"
+
+    cb_configs = func.attrs["blackhole.cb_configs"]
+    cb_roles = [str(cfg["role"]) for cfg in cb_configs]
+    assert "input" in cb_roles
+    assert "output" in cb_roles
+
+    runtime_args = func.attrs["blackhole.runtime_args"]
+    runtime_arg_kinds = [str(arg["kind"]) for arg in runtime_args]
+    assert runtime_arg_kinds == [
+        "input_buffer_addr32",
+        "output_buffer_addr32",
+        "tile_count",
+        "scratch_l1_buffer_addr32",
+    ]
+
+
 def test_blackhole_true_e2e():
     """True end-to-end test: compile, execute, and verify results.
 

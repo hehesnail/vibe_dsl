@@ -236,6 +236,21 @@ Stage 2 的要求是：
 - 与 copy 对应的 `single_core_gemm` 大块 runtime 语义特化
 - 继续扩大 `rt_mod_blackhole` 对 kernel 语义的反推职责
 
+## 当前进展
+
+- 已完成的 Stage 2A 落地点：
+  - `LowerBlackholeOps` 对 pure `global -> global` copy 不再只依赖 runtime 专用猜测
+  - pure copy 已能显式写出：
+    - `blackhole.target_mode = "single_core_copy"`
+    - `blackhole.runtime_args`
+    - input/output `blackhole.cb_requirements`
+  - `PlanBlackholeCB` 已能把这些 requirements 落成 input/output `blackhole.cb_configs`
+  - `rt_mod_blackhole` 已优先读取 pass 产出的 `blackhole.runtime_args`
+- 当前仍未完成：
+  - copy kernel 源码本身仍走最小专用 emitter
+  - copy 的更真实 tile/dataflow 语义还没有完全从 pass 直达 kernel emission
+  - gemm 仍未开始接入同一套 pass-driven schema
+
 ## 结论
 
 Stage 2 的本质不应定义为“把 gemm 跑起来”，而应定义为：

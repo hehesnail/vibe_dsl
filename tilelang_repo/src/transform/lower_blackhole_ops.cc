@@ -32,6 +32,8 @@
 #include <tvm/tir/op.h>
 #include <tvm/tir/transform.h>
 
+#include <algorithm>
+
 #include "../tir/builtin_blackhole.h"
 
 namespace tvm {
@@ -103,10 +105,15 @@ LowerBlackholeOps::LowerBlackholeOps() : next_cb_id_(0) {
 
 PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   current_func_ = func;
+  buffer_to_cb_.clear();
   cb_requirements_.clear();
+  next_input_cb_ = 0;
+  next_output_cb_ = 16;
+  next_intermediate_cb_ = 32;
   next_cb_id_ = 0;
   saw_copy_op_ = false;
   saw_matmul_op_ = false;
+  needs_copy_runtime_args_ = false;
 
   // Transform the function body
   Stmt body = VisitStmt(func->body);
@@ -118,6 +125,7 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   // Store CB requirements in function attributes for PlanBlackholeCB
   StoreCBRequirements(new_func);
   StoreTargetMode(new_func);
+  StoreRuntimeArgs(new_func);
 
   return new_func;
 }
@@ -204,6 +212,28 @@ int LowerBlackholeOps::AllocateCBId(const Buffer& buffer, CBType type) {
   return cb_id;
 }
 
+int LowerBlackholeOps::EstimateCopyPageSize(const Buffer& buffer) const {
+  int64_t total_elements = 1;
+  bool all_static = true;
+  for (const auto& shape_dim : buffer->shape) {
+    if (const auto* int_imm = shape_dim.as<IntImmNode>()) {
+      total_elements *= int_imm->value;
+    } else {
+      all_static = false;
+      break;
+    }
+  }
+
+  if (!all_static || total_elements <= 0) {
+    return 2048;
+  }
+
+  const int64_t dtype_bytes = buffer->dtype.bytes();
+  const int64_t total_bytes = total_elements * dtype_bytes;
+  const int64_t default_tile_bytes = 32 * 32 * dtype_bytes;
+  return static_cast<int>(std::max<int64_t>(dtype_bytes, std::min(total_bytes, default_tile_bytes)));
+}
+
 // Store CB requirements in function attributes
 void LowerBlackholeOps::StoreCBRequirements(PrimFunc& func) {
   if (cb_requirements_.empty()) {
@@ -244,6 +274,34 @@ void LowerBlackholeOps::StoreTargetMode(PrimFunc& func) {
     attrs = func->attrs->dict;
   }
   attrs.Set("blackhole.target_mode", String("single_core_copy"));
+  func.CopyOnWrite()->attrs = DictAttrs(attrs);
+}
+
+void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
+  if (!needs_copy_runtime_args_ || saw_matmul_op_) {
+    return;
+  }
+
+  Map<String, Any> attrs;
+  if (func->attrs.defined()) {
+    attrs = func->attrs->dict;
+  }
+
+  Array<Any> runtime_args;
+  auto push_arg = [&](const char* name, const char* kind, const char* dtype) {
+    Map<String, Any> arg_map;
+    arg_map.Set("name", String(name));
+    arg_map.Set("kind", String(kind));
+    arg_map.Set("dtype", String(dtype));
+    runtime_args.push_back(arg_map);
+  };
+
+  push_arg("input0", "input_buffer_addr32", "uint32");
+  push_arg("output0", "output_buffer_addr32", "uint32");
+  push_arg("num_tiles", "tile_count", "uint32");
+  push_arg("scratch_l1", "scratch_l1_buffer_addr32", "uint32");
+
+  attrs.Set("blackhole.runtime_args", runtime_args);
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 
@@ -304,6 +362,11 @@ CopyDirection LowerBlackholeOps::GetCopyDirection(const BufferStoreNode* op) con
     return CopyDirection::kDramToCB;
   }
 
+  // DRAM -> DRAM (global -> global)
+  if (isDRAMScope(src_scope) && isDRAMScope(dst_scope)) {
+    return CopyDirection::kDramToDram;
+  }
+
   // CB -> DRAM (shared -> global)
   if (isCBScope(src_scope) && isDRAMScope(dst_scope)) {
     return CopyDirection::kCBToDram;
@@ -315,6 +378,50 @@ CopyDirection LowerBlackholeOps::GetCopyDirection(const BufferStoreNode* op) con
   }
 
   return CopyDirection::kUnknown;
+}
+
+void LowerBlackholeOps::RecordDramToDramCopy(const BufferStoreNode* op) {
+  const auto* load = op->value.as<BufferLoadNode>();
+  if (!load) return;
+
+  auto ensure_requirement = [&](const Buffer& buffer, CBType type) {
+    auto it = buffer_to_cb_.find(buffer);
+    if (it != buffer_to_cb_.end()) {
+      return;
+    }
+
+    switch (type) {
+      case CBType::kInput:
+        buffer_to_cb_[buffer] = next_input_cb_++;
+        break;
+      case CBType::kOutput:
+        buffer_to_cb_[buffer] = next_output_cb_++;
+        break;
+      default:
+        buffer_to_cb_[buffer] = next_intermediate_cb_++;
+        break;
+    }
+
+    CBRequirement req;
+    req.name = buffer->name;
+    req.type = type;
+    req.page_size = EstimateCopyPageSize(buffer);
+    req.num_pages = 1;
+    if (buffer->dtype.is_float()) {
+      req.data_format = buffer->dtype.bits() == 16 ? "Float16_b" : "Float32";
+    } else if (buffer->dtype.is_uint()) {
+      req.data_format = buffer->dtype.bits() == 16 ? "UInt16" : "UInt32";
+    } else if (buffer->dtype.is_int()) {
+      req.data_format = buffer->dtype.bits() == 16 ? "UInt16" : "UInt32";
+    } else {
+      req.data_format = "Float16_b";
+    }
+    cb_requirements_.push_back(req);
+  };
+
+  ensure_requirement(load->buffer, CBType::kInput);
+  ensure_requirement(op->buffer, CBType::kOutput);
+  needs_copy_runtime_args_ = true;
 }
 
 Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op) {
@@ -414,6 +521,13 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
       break;
+    }
+
+    case CopyDirection::kDramToDram: {
+      // Stage 2 transition path: keep execution on the minimal copy runner path,
+      // but move CB/runtime schema ownership into pass attrs.
+      RecordDramToDramCopy(op);
+      return GetRef<Stmt>(op);
     }
 
     case CopyDirection::kCBToDram: {

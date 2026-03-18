@@ -282,6 +282,40 @@ static std::vector<KernelArgSpec> MakeDefaultRuntimeArgs(const ExecutableSpec& s
   return runtime_args;
 }
 
+static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f,
+                                                     const ExecutableSpec& spec) {
+  std::vector<KernelArgSpec> runtime_args;
+  auto runtime_args_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.runtime_args");
+  if (!runtime_args_attr) {
+    return MakeDefaultRuntimeArgs(spec);
+  }
+
+  for (const auto& item : runtime_args_attr.value()) {
+    auto arg_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+        ffi::Map<ffi::String, ffi::Any>());
+    if (arg_info.empty()) continue;
+
+    KernelArgSpec arg;
+    if (auto v = arg_info.Get("name")) {
+      arg.name = Downcast<String>(v.value());
+    }
+    if (auto v = arg_info.Get("kind")) {
+      arg.kind = Downcast<String>(v.value());
+    }
+    if (auto v = arg_info.Get("dtype")) {
+      arg.dtype = Downcast<String>(v.value());
+    }
+    if (!arg.kind.empty()) {
+      runtime_args.push_back(std::move(arg));
+    }
+  }
+
+  if (runtime_args.empty()) {
+    return MakeDefaultRuntimeArgs(spec);
+  }
+  return runtime_args;
+}
+
 static uint32_t GetCopyTileSizeBytes(const ExecutableSpec& spec) {
   for (const auto& cb : spec.cb_configs) {
     if (cb.role == "input" || cb.role == "output") {
@@ -355,6 +389,7 @@ static std::unordered_map<std::string, ExecutableSpec> ExtractBlackholeFuncInfo(
     spec.core_plan = ExtractCorePlan(f);
     spec.target_mode = f->GetAttr<ffi::String>("blackhole.target_mode")
                            .value_or(ffi::String("single_core_copy"));
+    spec.runtime_args = ExtractRuntimeArgs(f, spec);
 
     auto global_symbol = f->GetAttr<ffi::String>(tvm::attr::kGlobalSymbol);
     if (global_symbol) {
@@ -429,7 +464,8 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     kernel.source_code = kv.second.target_mode == "single_core_copy"
                              ? EmitSingleCoreCopyKernelSource(kv.second)
                              : code;
-    kernel.runtime_args = MakeDefaultRuntimeArgs(kv.second);
+    kernel.runtime_args = kv.second.runtime_args.empty() ? MakeDefaultRuntimeArgs(kv.second)
+                                                         : kv.second.runtime_args;
     kv.second.kernels.push_back(std::move(kernel));
   }
 
@@ -501,7 +537,8 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     kernel.source_code = kv.second.target_mode == "single_core_copy"
                              ? EmitSingleCoreCopyKernelSource(kv.second)
                              : kernel_code;
-    kernel.runtime_args = MakeDefaultRuntimeArgs(kv.second);
+    kernel.runtime_args = kv.second.runtime_args.empty() ? MakeDefaultRuntimeArgs(kv.second)
+                                                         : kv.second.runtime_args;
     kv.second.kernels.push_back(std::move(kernel));
   }
 

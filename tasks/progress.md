@@ -15,6 +15,7 @@
 - `spec.json -> runner` 的最小 single-core copy 已在 TT-Sim 上真实执行通过。
 - `BlackholeModule` 从 Python 直接调用 packed func 已在 TT-Sim 上跑通 single-core copy，Stage 1 主调用面已收口。
 - Stage 2 不能让 copy 长期停留在 runtime 专用旁路，也不能继续为 gemm 复制类似特化，否则只能证明执行链路通，不能证明编译 pass 已打通。
+- Stage 2A copy pass integration 已开始落地：copy 的 `blackhole.runtime_args` 与 input/output `cb_configs` 已可由 pass attrs 显式产出，`rt_mod_blackhole` 已优先消费 pass 产出的 runtime arg schema。
 - 当前不再把“能生成 kernel 字符串”视为阶段完成。
 
 ## 任务状态总览
@@ -32,8 +33,8 @@
 
 ## 当前下一步
 
-1. 新增并落实 Stage 2 设计：copy/gemm 关键执行语义都必须开始从 pass/segment 产物生成，而不是由 `rt_mod_blackhole` 猜。
-2. 先让 copy 从 runtime 专用 emitter 迁向 pass-driven schema，再用同一套机制承接 gemm。
+1. 继续推进 Stage 2A：让 copy 的 kernel 语义不只停留在 runtime schema，还要继续从 pass 产物向更真实的 tile/dataflow 语义收口。
+2. 在 copy 已具备 pass-driven attrs/schema 的基础上，用同一套机制承接 gemm。
 3. 在 copy/gemm 的 pass/schema 收口后，再推进 single-core copy + gemm true E2E。
 4. 在 single-core pass integration 路径稳定后，再推进 multi-core runtime 调度。
 
@@ -68,3 +69,8 @@
     - Python 侧直接调用 `artifact.codegen_mod["main"](...)` 已在 TT-Sim 上通过
   - 新增 `tasks/dev_design/stage2_single_core_pass_integration.md`
   - 已明确 Stage 2 不再接受“runtime 特化 copy/gemm 后跑通”作为阶段完成标准
+  - `LowerBlackholeOps` 已为 pure copy 额外写出 `blackhole.runtime_args`
+  - pure copy 的 input/output CB requirements 已可由 pass 产出，`PlanBlackholeCB` 会落成 `blackhole.cb_configs`
+  - `rt_mod_blackhole` 已优先读取 `blackhole.runtime_args`，不再只按 `target_mode` 猜 copy runtime arg schema
+  - 已新增 `test_blackhole_copy_pass_attrs`
+  - 已通过 `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_e2e.py -k 'copy_pass_attrs or true_e2e or module_direct_call' -s`

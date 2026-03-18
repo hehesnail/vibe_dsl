@@ -53,6 +53,7 @@ enum class CopyDirection {
   kDramToCB,     // DRAM -> CB (Reader)
   kCBToDram,     // CB -> DRAM (Writer)
   kCBToCB,       // CB -> CB (local copy)
+  kDramToDram,   // DRAM -> DRAM (Stage 2 copy pass integration path)
   kUnknown
 };
 
@@ -108,6 +109,9 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Store minimal target mode inferred from lowering */
   void StoreTargetMode(tvm::tir::PrimFunc& func);
 
+  /*! \brief Store runtime argument schema inferred during lowering */
+  void StoreRuntimeArgs(tvm::tir::PrimFunc& func);
+
   /*! \brief Detect matmul call using Op comparison (not string matching) */
   bool IsMatmulCall(const tvm::tir::CallNode* op) const;
 
@@ -119,6 +123,12 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
 
   /*! \brief Determine copy direction using buffer scopes */
   CopyDirection GetCopyDirection(const tvm::tir::BufferStoreNode* op) const;
+
+  /*! \brief Record Stage 2 copy requirements for a DRAM -> DRAM copy */
+  void RecordDramToDramCopy(const tvm::tir::BufferStoreNode* op);
+
+  /*! \brief Estimate a copy tile page size for a buffer */
+  int EstimateCopyPageSize(const tvm::tir::Buffer& buffer) const;
 
   /*! \brief Generate matmul builtin sequence */
   tvm::tir::Stmt GenerateMatmulSequence(const tvm::tir::CallNode* op);
@@ -138,6 +148,7 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   std::vector<CBRequirement> cb_requirements_;
   bool saw_copy_op_ = false;
   bool saw_matmul_op_ = false;
+  bool needs_copy_runtime_args_ = false;
 
   // CB allocation counters
   int next_input_cb_ = 0;        // Start at 0

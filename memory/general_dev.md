@@ -172,6 +172,11 @@
 - Python 侧验证 Blackhole true E2E 时，即使 `BlackholeModule` 顶层调用面还没收口，也应至少切到 `spec.json + input.bin + output.bin` 新协议；不要继续保留旧 runner CLI 的测试假设。
 - 对最小 single-core copy，`32x32 float16` 恰好是一 tile（2048 bytes），适合作为 TT-Sim 下的最小真执行 case；这类 case 能先验证协议和 runner，再把 module 调用面问题单独隔离出来。
 - 当 `PackFuncVoidAddr` 包装 `kDLOpaqueHandle` 参数时，`void_args[i]` 指向的是 `raw_args[i].v_ptr` 这个槽位地址，而不是最终的 `DLTensor*`；对 Blackhole 这类外部 runner 路径，更稳的做法是优先通过 `ffi::AnyView::try_cast<DLTensor*>()` 取 tensor，只把 `void_args` 当保守回退。
+- 对 Stage 2 这类“pass integration”工作，测试不应只看 `lower(...).codegen_mod` 是否能执行；更稳的做法是再加一层直接检查 pass 后 IR attrs，例如：
+  - `blackhole.target_mode`
+  - `blackhole.cb_configs`
+  - `blackhole.runtime_args`
+  这样能直接防止语义又滑回 runtime 猜测路径。
 
 ## 建议的开发顺序
 

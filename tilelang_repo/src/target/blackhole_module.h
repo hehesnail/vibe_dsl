@@ -72,6 +72,7 @@ struct ExecutableSpec {
   std::string target_mode;
   std::vector<CBConfig> cb_configs;
   CorePlan core_plan;
+  std::vector<KernelArgSpec> runtime_args;
   std::vector<KernelSpec> kernels;
 
   // TVM runtime invocation metadata retained during Stage 0.
