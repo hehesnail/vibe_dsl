@@ -44,4 +44,5 @@
   - `rt_mod_blackhole` 已读取新 attr schema 并抽取 Stage 0 spec
   - `BlackholeModule` 已改为写 `spec.json + input.bin + output.bin + kernel.cpp`
   - runner 已改为读取 `spec.json` 并按 spec 建 CB / kernel / runtime args
-  - 已通过 `make -C tilelang_repo/build -j16` 与 `cmake --build tt_metal_repo/build --target tilelang_blackhole_runner -j16` 编译验证
+  - runner 源码已迁到 `tilelang_repo/tools/blackhole_runner/`
+  - 已通过 `make -C tilelang_repo/build -j16` 与 `cmake --build tt_metal_repo/build_Release --target tilelang_blackhole_runner -j16` 编译验证

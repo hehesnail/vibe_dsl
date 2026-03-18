@@ -30,18 +30,37 @@ from tvm.target import Target
 def check_blackhole_requirements():
     """Check if Blackhole testing requirements are met."""
     tt_metal_home = os.environ.get("TT_METAL_HOME")
+    tilelang_home = os.environ.get("TILELANG_HOME")
+    if not tilelang_home:
+        return False, "TILELANG_HOME not set"
     if not tt_metal_home:
         return False, "TT_METAL_HOME not set"
 
-    # Check for runner (note: tilelang_blackhole_runner is the executable itself)
-    runner_path = os.path.join(
-        tt_metal_home,
-        "build_Release/programming_examples/tilelang_blackhole_runner"
-    )
-    if not os.path.exists(runner_path):
-        return False, f"Runner not found at {runner_path}"
+    runner_candidates = [
+        os.path.join(tt_metal_home, "build_Release", "programming_examples", "tilelang_blackhole_runner"),
+        os.path.join(tilelang_home, "build-blackhole-runner", "tilelang_blackhole_runner"),
+        os.path.join(tilelang_home, "build_blackhole_runner", "tilelang_blackhole_runner"),
+        os.path.join(tilelang_home, "tools", "blackhole_runner", "build", "tilelang_blackhole_runner"),
+    ]
+    if not any(os.path.exists(path) for path in runner_candidates):
+        return False, f"Runner not found in {runner_candidates}"
 
     return True, "OK"
+
+
+def get_runner_path():
+    tilelang_home = os.environ["TILELANG_HOME"]
+    tt_metal_home = os.environ["TT_METAL_HOME"]
+    runner_candidates = [
+        os.path.join(tt_metal_home, "build_Release", "programming_examples", "tilelang_blackhole_runner"),
+        os.path.join(tilelang_home, "build-blackhole-runner", "tilelang_blackhole_runner"),
+        os.path.join(tilelang_home, "build_blackhole_runner", "tilelang_blackhole_runner"),
+        os.path.join(tilelang_home, "tools", "blackhole_runner", "build", "tilelang_blackhole_runner"),
+    ]
+    for path in runner_candidates:
+        if os.path.exists(path):
+            return path
+    raise FileNotFoundError(f"Runner not found in {runner_candidates}")
 
 
 def simple_copy_kernel(M: int, N: int, tile_m: int = 32, tile_n: int = 32):
@@ -149,10 +168,7 @@ def test_blackhole_true_e2e():
                 f.write(kernel_code)
 
             # Get runner path
-            runner_path = os.path.join(
-                os.environ["TT_METAL_HOME"],
-                "build_Release/programming_examples/tilelang_blackhole_runner"
-            )
+            runner_path = get_runner_path()
 
             # Execute kernel via external runner
             input_size = a_np.nbytes

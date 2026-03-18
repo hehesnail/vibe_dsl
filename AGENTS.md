@@ -23,7 +23,7 @@
 - `tilelang_repo/src/target/`
 - `tilelang_repo/src/transform/`
 - `tilelang_repo/tilelang/engine/`
-- `tt_metal_repo/tt_metal/programming_examples/tilelang_blackhole_runner/`
+- `tilelang_repo/tools/blackhole_runner/`
 - `tt_metal_repo/tt_metal/api/tt-metalium/`
 - `tests/target/`
 - `tests/transform/`

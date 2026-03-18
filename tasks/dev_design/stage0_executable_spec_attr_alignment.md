@@ -11,6 +11,7 @@
 - `tilelang_repo/src/target/blackhole_module.h`
 - `tilelang_repo/src/target/rt_mod_blackhole.cc`
 - `tilelang_repo/src/transform/assign_blackhole_cores.cc`
+- `tilelang_repo/tools/blackhole_runner/`
 - `tasks/progress.md`
 - `memory/general_dev.md`
 
@@ -69,6 +70,12 @@
 - `kernels[].kernel_path`
 - `kernels[].compile_time_args`
 - `kernels[].runtime_args`
+
+runner 源码与构建入口归属：
+
+- runner 放在 `tilelang_repo/tools/blackhole_runner/`
+- runner 由 `tt_metal_repo/tt_metal/programming_examples/CMakeLists.txt` 通过外部 `add_subdirectory(...)` 纳入现有 TT-Metal 构建图
+- 不再以 `tt_metal_repo/tt_metal/programming_examples/tilelang_blackhole_runner/` 作为主维护位置
 
 ### 4. Core assignment 输出协议
 

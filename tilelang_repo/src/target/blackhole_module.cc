@@ -202,6 +202,16 @@ std::string GetRunnerPath() {
       "/build_Release/programming_examples/tilelang_blackhole_runner/tilelang_blackhole_runner");
   }
 
+  const char* tilelang_home = std::getenv("TILELANG_HOME");
+  if (tilelang_home) {
+    search_paths.push_back(std::string(tilelang_home) +
+      "/build-blackhole-runner/tilelang_blackhole_runner");
+    search_paths.push_back(std::string(tilelang_home) +
+      "/build_blackhole_runner/tilelang_blackhole_runner");
+    search_paths.push_back(std::string(tilelang_home) +
+      "/tools/blackhole_runner/build/tilelang_blackhole_runner");
+  }
+
   for (const auto& path : search_paths) {
     if (std::filesystem::exists(path)) {
       return path;

@@ -389,7 +389,7 @@ MVP 目标：
 - `tilelang_repo/src/transform/lower_blackhole_ops.cc`
 - `tilelang_repo/src/transform/plan_blackhole_cb.cc`
 - `tilelang_repo/src/transform/assign_blackhole_cores.cc`
-- `tt_metal_repo/tt_metal/programming_examples/tilelang_blackhole_runner/runner.cpp`
+- `tilelang_repo/tools/blackhole_runner/runner.cpp`
 
 降级处理：
 

@@ -19,7 +19,7 @@
 ## 仓库组成
 
 - `tilelang_repo/`：TileLang 开发仓库，Blackhole 后端代码主要改这里
-- `tt_metal_repo/`：TT-Metal 开发仓库，runner、示例、API 参考主要看这里
+- `tt_metal_repo/`：TT-Metal 开发仓库，示例、API 参考主要看这里
 - 顶层仓库：任务文档、经验记录、测试、脚本和总控
 
 ## 常用目录
@@ -27,7 +27,7 @@
 - `tilelang_repo/src/target/`
 - `tilelang_repo/src/transform/`
 - `tilelang_repo/tilelang/engine/`
-- `tt_metal_repo/tt_metal/programming_examples/tilelang_blackhole_runner/`
+- `tilelang_repo/tools/blackhole_runner/`
 - `tt_metal_repo/tt_metal/api/tt-metalium/`
 - `tests/target/`
 - `tests/transform/`
