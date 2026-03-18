@@ -112,6 +112,9 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Store runtime argument schema inferred during lowering */
   void StoreRuntimeArgs(tvm::tir::PrimFunc& func);
 
+  /*! \brief Store minimal segment/kernel plan inferred during lowering */
+  void StoreSegmentPlan(tvm::tir::PrimFunc& func);
+
   /*! \brief Detect matmul call using Op comparison (not string matching) */
   bool IsMatmulCall(const tvm::tir::CallNode* op) const;
 

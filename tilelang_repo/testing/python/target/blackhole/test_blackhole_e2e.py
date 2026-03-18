@@ -194,6 +194,11 @@ def test_blackhole_copy_pass_attrs():
         "scratch_l1_buffer_addr32",
     ]
 
+    segment_plan = func.attrs["blackhole.segment_plan"]
+    assert len(segment_plan) == 1
+    assert str(segment_plan[0]["kind"]) == "fused_dataflow"
+    assert str(segment_plan[0]["core_type"]) == "brisc"
+
 
 def test_blackhole_true_e2e():
     """True end-to-end test: compile, execute, and verify results.

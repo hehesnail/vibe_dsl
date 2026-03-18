@@ -316,6 +316,31 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f,
   return runtime_args;
 }
 
+static void ExtractSegmentPlan(const tir::PrimFunc& f, ExecutableSpec* spec) {
+  auto segment_plan_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.segment_plan");
+  if (!segment_plan_attr) {
+    return;
+  }
+
+  const auto& segments = segment_plan_attr.value();
+  if (segments.empty()) {
+    return;
+  }
+
+  auto segment = segments[0].as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+      ffi::Map<ffi::String, ffi::Any>());
+  if (segment.empty()) {
+    return;
+  }
+
+  if (auto v = segment.Get("kind")) {
+    spec->default_kernel_kind = Downcast<String>(v.value());
+  }
+  if (auto v = segment.Get("core_type")) {
+    spec->default_kernel_core_type = Downcast<String>(v.value());
+  }
+}
+
 static uint32_t GetCopyTileSizeBytes(const ExecutableSpec& spec) {
   for (const auto& cb : spec.cb_configs) {
     if (cb.role == "input" || cb.role == "output") {
@@ -390,6 +415,7 @@ static std::unordered_map<std::string, ExecutableSpec> ExtractBlackholeFuncInfo(
     spec.target_mode = f->GetAttr<ffi::String>("blackhole.target_mode")
                            .value_or(ffi::String("single_core_copy"));
     spec.runtime_args = ExtractRuntimeArgs(f, spec);
+    ExtractSegmentPlan(f, &spec);
 
     auto global_symbol = f->GetAttr<ffi::String>(tvm::attr::kGlobalSymbol);
     if (global_symbol) {
@@ -459,8 +485,8 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
   for (auto& kv : func_info_map) {
     KernelSpec kernel;
     kernel.name = kv.first;
-    kernel.kind = "fused_dataflow";
-    kernel.core_type = "brisc";
+    kernel.kind = kv.second.default_kernel_kind;
+    kernel.core_type = kv.second.default_kernel_core_type;
     kernel.source_code = kv.second.target_mode == "single_core_copy"
                              ? EmitSingleCoreCopyKernelSource(kv.second)
                              : code;
@@ -532,8 +558,8 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
   for (auto& kv : func_info_map) {
     KernelSpec kernel;
     kernel.name = kv.first;
-    kernel.kind = "fused_dataflow";
-    kernel.core_type = "brisc";
+    kernel.kind = kv.second.default_kernel_kind;
+    kernel.core_type = kv.second.default_kernel_core_type;
     kernel.source_code = kv.second.target_mode == "single_core_copy"
                              ? EmitSingleCoreCopyKernelSource(kv.second)
                              : kernel_code;

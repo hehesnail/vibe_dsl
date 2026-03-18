@@ -243,9 +243,12 @@ Stage 2 的要求是：
   - pure copy 已能显式写出：
     - `blackhole.target_mode = "single_core_copy"`
     - `blackhole.runtime_args`
+    - `blackhole.segment_plan`
     - input/output `blackhole.cb_requirements`
   - `PlanBlackholeCB` 已能把这些 requirements 落成 input/output `blackhole.cb_configs`
-  - `rt_mod_blackhole` 已优先读取 pass 产出的 `blackhole.runtime_args`
+  - `rt_mod_blackhole` 已优先读取 pass 产出的：
+    - `blackhole.runtime_args`
+    - `blackhole.segment_plan`
 - 当前仍未完成：
   - copy kernel 源码本身仍走最小专用 emitter
   - copy 的更真实 tile/dataflow 语义还没有完全从 pass 直达 kernel emission

@@ -126,6 +126,7 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   StoreCBRequirements(new_func);
   StoreTargetMode(new_func);
   StoreRuntimeArgs(new_func);
+  StoreSegmentPlan(new_func);
 
   return new_func;
 }
@@ -302,6 +303,27 @@ void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
   push_arg("scratch_l1", "scratch_l1_buffer_addr32", "uint32");
 
   attrs.Set("blackhole.runtime_args", runtime_args);
+  func.CopyOnWrite()->attrs = DictAttrs(attrs);
+}
+
+void LowerBlackholeOps::StoreSegmentPlan(PrimFunc& func) {
+  if (!needs_copy_runtime_args_ || saw_matmul_op_) {
+    return;
+  }
+
+  Map<String, Any> attrs;
+  if (func->attrs.defined()) {
+    attrs = func->attrs->dict;
+  }
+
+  Array<Any> kernels;
+  Map<String, Any> kernel;
+  kernel.Set("name", String("main"));
+  kernel.Set("kind", String("fused_dataflow"));
+  kernel.Set("core_type", String("brisc"));
+  kernels.push_back(kernel);
+
+  attrs.Set("blackhole.segment_plan", kernels);
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 

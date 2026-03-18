@@ -176,6 +176,7 @@
   - `blackhole.target_mode`
   - `blackhole.cb_configs`
   - `blackhole.runtime_args`
+  - `blackhole.segment_plan`
   这样能直接防止语义又滑回 runtime 猜测路径。
 
 ## 建议的开发顺序

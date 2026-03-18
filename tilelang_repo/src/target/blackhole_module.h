@@ -72,6 +72,8 @@ struct ExecutableSpec {
   std::string target_mode;
   std::vector<CBConfig> cb_configs;
   CorePlan core_plan;
+  std::string default_kernel_kind = "fused_dataflow";
+  std::string default_kernel_core_type = "brisc";
   std::vector<KernelArgSpec> runtime_args;
   std::vector<KernelSpec> kernels;
 
