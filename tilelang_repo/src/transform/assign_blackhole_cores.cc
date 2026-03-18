@@ -221,11 +221,23 @@ void AssignBlackholeCores::StoreAssignment(PrimFunc& func,
   }
 
   // Store core assignment values (merge with existing)
+  tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> core_plan;
+  core_plan.Set("grid_x", Integer(assignment.grid_x));
+  core_plan.Set("grid_y", Integer(assignment.grid_y));
+  core_plan.Set("cores_needed", Integer(assignment.cores_needed));
+  core_plan.Set("work_per_core", Integer(assignment.work_per_core));
+  core_plan.Set("core_grid_x", Integer(assignment.core_grid_x));
+  core_plan.Set("core_grid_y", Integer(assignment.core_grid_y));
+
   attrs.Set("blackhole.grid_shape", Integer(assignment.grid_x * assignment.grid_y));
   attrs.Set("blackhole.grid_x", Integer(assignment.grid_x));
   attrs.Set("blackhole.grid_y", Integer(assignment.grid_y));
   attrs.Set("blackhole.cores_needed", Integer(assignment.cores_needed));
   attrs.Set("blackhole.work_per_core", Integer(assignment.work_per_core));
+  attrs.Set("blackhole.core_plan", core_plan);
+  if (!attrs.Get("blackhole.target_mode").has_value()) {
+    attrs.Set("blackhole.target_mode", tvm::ffi::String("single_core_copy"));
+  }
 
   // Update function attributes
   func.CopyOnWrite()->attrs = DictAttrs(attrs);

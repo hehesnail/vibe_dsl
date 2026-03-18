@@ -274,6 +274,13 @@ void PlanBlackholeCB::StoreCBConfig(PrimFunc& func, const std::vector<CBConfig>&
     cb_attr.Set("num_pages", Integer(config.num_pages));
     cb_attr.Set("data_format", String(config.data_format));
     cb_attr.Set("name", String(config.name));
+    if (config.cb_id >= kInputCBStart && config.cb_id <= kInputCBEnd) {
+      cb_attr.Set("role", String("input"));
+    } else if (config.cb_id >= kOutputCBStart && config.cb_id <= kOutputCBEnd) {
+      cb_attr.Set("role", String("output"));
+    } else {
+      cb_attr.Set("role", String("intermediate"));
+    }
 
     cb_configs.push_back(cb_attr);
     total_l1 += config.total_size;

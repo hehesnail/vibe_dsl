@@ -38,7 +38,7 @@ class BlackholeWrappedFunc {
  public:
   void Init(BlackholeModuleNode* m, ObjectPtr<Object> sptr,
             const std::string& func_name,
-            const BlackholeFunctionInfo& info) {
+            const ExecutableSpec& info) {
     m_ = m;
     sptr_ = sptr;
     func_name_ = func_name;
@@ -51,7 +51,7 @@ class BlackholeWrappedFunc {
   BlackholeModuleNode* m_;
   ObjectPtr<Object> sptr_;
   std::string func_name_;
-  BlackholeFunctionInfo info_;
+  ExecutableSpec info_;
 };
 
 // Get path to external runner executable
@@ -88,7 +88,7 @@ std::string GetRunnerPath() {
 }
 
 BlackholeModuleNode::BlackholeModuleNode(
-    std::unordered_map<std::string, BlackholeFunctionInfo> fmap,
+    std::unordered_map<std::string, ExecutableSpec> fmap,
     std::string kernel_dir)
     : fmap_(std::move(fmap)),
       kernel_dir_(std::move(kernel_dir)),
@@ -107,12 +107,12 @@ ffi::Optional<ffi::Function> BlackholeModuleNode::GetFunction(const ffi::String&
     return ffi::Function();
   }
 
-  const BlackholeFunctionInfo& info = it->second;
+  const ExecutableSpec& info = it->second;
   BlackholeWrappedFunc f;
   f.Init(this, sptr_to_self, name, info);
 
   std::vector<FunctionInfo::ArgExtraTags> arg_extra_tags;
-  return PackFuncVoidAddr(f, info.arg_types, arg_extra_tags);
+  return PackFuncVoidAddr(f, info.tvm_arg_types, arg_extra_tags);
 }
 
 void BlackholeModuleNode::WriteToFile(const ffi::String& file_name,
@@ -129,12 +129,16 @@ ffi::String BlackholeModuleNode::InspectSource(const ffi::String& format) const 
   LOG(INFO) << "BlackholeModuleNode::InspectSource called";
   auto it = fmap_.find("default");
   if (it != fmap_.end()) {
-    LOG(INFO) << "Found 'default' function, kernel_code size: " << it->second.kernel_code.size();
-    return ffi::String(it->second.kernel_code);
+    const auto& spec = it->second;
+    const std::string source = spec.kernels.empty() ? std::string() : spec.kernels.front().source_code;
+    LOG(INFO) << "Found 'default' function, kernel_code size: " << source.size();
+    return ffi::String(source);
   }
   if (!fmap_.empty()) {
-    LOG(INFO) << "Using first function, kernel_code size: " << fmap_.begin()->second.kernel_code.size();
-    return ffi::String(fmap_.begin()->second.kernel_code);
+    const auto& spec = fmap_.begin()->second;
+    const std::string source = spec.kernels.empty() ? std::string() : spec.kernels.front().source_code;
+    LOG(INFO) << "Using first function, kernel_code size: " << source.size();
+    return ffi::String(source);
   }
   LOG(WARNING) << "No functions found in fmap_";
   return ffi::String("");
@@ -182,7 +186,7 @@ void BlackholeModuleNode::ExecuteExternal(
   if (fit == fmap_.end()) {
     LOG(FATAL) << "Function not found: " << func_name;
   }
-  const BlackholeFunctionInfo& info = fit->second;
+  const ExecutableSpec& info = fit->second;
 
   // Save kernel code to file
   std::string kernel_path = kernel_dir_ + "/" + func_name + "_kernel.cpp";
@@ -191,7 +195,10 @@ void BlackholeModuleNode::ExecuteExternal(
     if (!ofs) {
       LOG(FATAL) << "Failed to write kernel file: " << kernel_path;
     }
-    ofs << info.kernel_code;
+    if (info.kernels.empty()) {
+      LOG(FATAL) << "ExecutableSpec has no kernels for function: " << func_name;
+    }
+    ofs << info.kernels.front().source_code;
   }
 
   // Calculate sizes
@@ -339,10 +346,10 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
   std::vector<DLTensor*> outputs;
   std::vector<uint32_t> scalars;
 
-  for (size_t i = 0; i < info_.arg_types.size(); ++i) {
-    if (info_.is_buffer_arg[i]) {
+  for (size_t i = 0; i < info_.tvm_arg_types.size(); ++i) {
+    if (info_.tvm_is_buffer_arg[i]) {
       DLTensor* tensor = static_cast<DLTensor*>(void_args[i]);
-      if (i < info_.arg_types.size() - 1) {
+      if (i < info_.tvm_arg_types.size() - 1) {
         inputs.push_back(tensor);
       } else {
         outputs.push_back(tensor);
@@ -350,7 +357,7 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
     } else {
       // Extract scalar from packed args
       ffi::AnyView arg = args[i];
-      uint32_t val = ExtractScalar(arg, info_.arg_types[i]);
+      uint32_t val = ExtractScalar(arg, info_.tvm_arg_types[i]);
       scalars.push_back(val);
     }
   }
@@ -361,7 +368,7 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
 
 // Create function
 ffi::Module BlackholeModuleCreate(
-    std::unordered_map<std::string, BlackholeFunctionInfo> fmap,
+    std::unordered_map<std::string, ExecutableSpec> fmap,
     std::string kernel_dir) {
   auto n = ffi::make_object<BlackholeModuleNode>(std::move(fmap), std::move(kernel_dir));
   return ffi::Module(std::move(n));

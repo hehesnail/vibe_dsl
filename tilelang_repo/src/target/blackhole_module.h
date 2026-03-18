@@ -20,27 +20,63 @@ namespace runtime {
 static constexpr const uint32_t kBlackholeMaxCBs = 64;
 
 /*!
- * \brief CB configuration for a kernel
+ * \brief Runtime-ready circular buffer configuration.
  */
 struct CBConfig {
   uint32_t cb_id;
+  std::string name;
+  std::string role;
   uint32_t num_pages;
-  uint32_t page_size;
+  uint32_t page_size_bytes;
   std::string data_format;
 };
 
 /*!
- * \brief Function information for Blackhole kernels
+ * \brief Host scheduling plan derived from Blackhole passes.
  */
-struct BlackholeFunctionInfo {
-  std::string kernel_code;           // Generated kernel source code
-  std::vector<DLDataType> arg_types;   // Argument types
-  std::vector<bool> is_buffer_arg;   // Whether each arg is a buffer (vs scalar)
-  std::vector<CBConfig> cb_configs;  // CB configurations
-  std::string kernel_path;           // Path to saved kernel file
-  bool has_reader = false;           // Whether this function has reader kernel
-  bool has_compute = false;          // Whether this function has compute kernel
-  bool has_writer = false;           // Whether this function has writer kernel
+struct CorePlan {
+  uint32_t grid_x = 1;
+  uint32_t grid_y = 1;
+  uint32_t cores_needed = 1;
+  uint32_t work_per_core = 1;
+  uint32_t core_grid_x = 1;
+  uint32_t core_grid_y = 1;
+};
+
+/*!
+ * \brief Runtime argument schema for an emitted TT-Metal kernel.
+ */
+struct KernelArgSpec {
+  std::string name;
+  std::string kind;
+  std::string dtype;
+};
+
+/*!
+ * \brief Per-kernel source and argument metadata.
+ */
+struct KernelSpec {
+  std::string name;
+  std::string kind;
+  std::string core_type;
+  std::string source_code;
+  std::vector<uint32_t> compile_time_args;
+  std::vector<KernelArgSpec> runtime_args;
+};
+
+/*!
+ * \brief Stage 0 executable description for a lowered PrimFunc.
+ */
+struct ExecutableSpec {
+  std::string entry_name;
+  std::string target_mode;
+  std::vector<CBConfig> cb_configs;
+  CorePlan core_plan;
+  std::vector<KernelSpec> kernels;
+
+  // TVM runtime invocation metadata retained during Stage 0.
+  std::vector<DLDataType> tvm_arg_types;
+  std::vector<bool> tvm_is_buffer_arg;
 };
 
 /*!
@@ -65,7 +101,7 @@ struct CompiledProgram {
 class BlackholeModuleNode : public ffi::ModuleObj {
  public:
   /*! \brief Constructor */
-  BlackholeModuleNode(std::unordered_map<std::string, BlackholeFunctionInfo> fmap,
+  BlackholeModuleNode(std::unordered_map<std::string, ExecutableSpec> fmap,
                       std::string kernel_dir);
 
   /*! \brief Destructor - clean up TT-Metal resources */
@@ -105,7 +141,7 @@ class BlackholeModuleNode : public ffi::ModuleObj {
 
  private:
   // Function information map
-  std::unordered_map<std::string, BlackholeFunctionInfo> fmap_;
+  std::unordered_map<std::string, ExecutableSpec> fmap_;
   // Directory for kernel files
   std::string kernel_dir_;
 
@@ -125,7 +161,7 @@ class BlackholeModuleNode : public ffi::ModuleObj {
  * \return The created module
  */
 ffi::Module BlackholeModuleCreate(
-    std::unordered_map<std::string, BlackholeFunctionInfo> fmap,
+    std::unordered_map<std::string, ExecutableSpec> fmap,
     std::string kernel_dir);
 
 }  // namespace runtime

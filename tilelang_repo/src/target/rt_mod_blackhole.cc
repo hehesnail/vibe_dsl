@@ -184,34 +184,53 @@ TVM_REGISTER_TARGET_KIND("blackhole", kDLExtDev)
     .set_default_keys({"blackhole"});
 
 /*!
- * \brief Extract CB configuration from PrimFunc attrs
+ * \brief Extract CB configuration from PrimFunc attrs.
  * \param f The PrimFunc
  * \return Vector of CB configurations
  */
 static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
   std::vector<CBConfig> cb_configs;
 
-  auto cb_attr = f->GetAttr<ffi::Map<ffi::String, ffi::ObjectRef>>("tl.blackhole_cb_config");
+  auto cb_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.cb_configs");
   if (!cb_attr) {
     // Use default CB config for simple kernels
-    cb_configs.push_back({0, 1, 2048, "float16"});  // cb_id=0, 1 page, 2KB page size
+    cb_configs.push_back({0, "default_cb", "intermediate", 1, 2048, "Float16_b"});
     return cb_configs;
   }
 
-  for (const auto& kv : cb_attr.value()) {
+  for (const auto& item : cb_attr.value()) {
     CBConfig config;
-    config.cb_id = std::stoi(static_cast<std::string>(kv.first));
-    auto cb_info = Downcast<ffi::Map<ffi::String, ffi::ObjectRef>>(kv.second);
+    auto cb_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+        ffi::Map<ffi::String, ffi::Any>());
+    if (cb_info.empty()) continue;
 
+    if (auto cb_id = cb_info.Get("cb_id")) {
+      config.cb_id = Downcast<Integer>(cb_id.value()).IntValue();
+    }
+    if (auto name = cb_info.Get("name")) {
+      config.name = Downcast<String>(name.value());
+    }
+    if (auto role = cb_info.Get("role")) {
+      config.role = Downcast<String>(role.value());
+    }
     if (auto num_pages = cb_info.Get("num_pages")) {
       config.num_pages = Downcast<Integer>(num_pages.value()).IntValue();
     }
     if (auto page_size = cb_info.Get("page_size")) {
-      config.page_size = Downcast<Integer>(page_size.value()).IntValue();
+      config.page_size_bytes = Downcast<Integer>(page_size.value()).IntValue();
     }
     if (auto data_format = cb_info.Get("data_format")) {
-      // The value is a TIR StringImm node, not ffi::String
-      config.data_format = Downcast<StringImm>(data_format.value())->value;
+      config.data_format = Downcast<String>(data_format.value());
+    }
+
+    if (config.name.empty()) {
+      config.name = "cb_" + std::to_string(config.cb_id);
+    }
+    if (config.role.empty()) {
+      config.role = "intermediate";
+    }
+    if (config.data_format.empty()) {
+      config.data_format = "Float16_b";
     }
 
     cb_configs.push_back(config);
@@ -220,21 +239,50 @@ static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
   return cb_configs;
 }
 
+static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
+  CorePlan plan;
+  auto core_plan_attr = f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.core_plan");
+  if (!core_plan_attr) {
+    return plan;
+  }
+
+  const auto& core_plan = core_plan_attr.value();
+  if (auto v = core_plan.Get("grid_x")) {
+    plan.grid_x = Downcast<Integer>(v.value()).IntValue();
+  }
+  if (auto v = core_plan.Get("grid_y")) {
+    plan.grid_y = Downcast<Integer>(v.value()).IntValue();
+  }
+  if (auto v = core_plan.Get("cores_needed")) {
+    plan.cores_needed = Downcast<Integer>(v.value()).IntValue();
+  }
+  if (auto v = core_plan.Get("work_per_core")) {
+    plan.work_per_core = Downcast<Integer>(v.value()).IntValue();
+  }
+  if (auto v = core_plan.Get("core_grid_x")) {
+    plan.core_grid_x = Downcast<Integer>(v.value()).IntValue();
+  }
+  if (auto v = core_plan.Get("core_grid_y")) {
+    plan.core_grid_y = Downcast<Integer>(v.value()).IntValue();
+  }
+  return plan;
+}
+
 /*!
- * \brief Extract function information for Blackhole backend
+ * \brief Extract executable specs for the Blackhole backend.
  * \param mod The IR module
- * \return Map from function name to BlackholeFunctionInfo
+ * \return Map from function name to ExecutableSpec
  */
-static std::unordered_map<std::string, BlackholeFunctionInfo> ExtractBlackholeFuncInfo(
+static std::unordered_map<std::string, ExecutableSpec> ExtractBlackholeFuncInfo(
     const IRModule& mod) {
-  std::unordered_map<std::string, BlackholeFunctionInfo> fmap;
+  std::unordered_map<std::string, ExecutableSpec> fmap;
 
   for (auto kv : mod->functions) {
     ICHECK(kv.second->IsInstance<tir::PrimFuncNode>())
         << "Can only lower IR Module with PrimFuncs";
     auto f = Downcast<tir::PrimFunc>(kv.second);
 
-    BlackholeFunctionInfo info;
+    ExecutableSpec spec;
 
     // Extract argument types and buffer flags
     for (size_t i = 0; i < f->params.size(); ++i) {
@@ -244,32 +292,22 @@ static std::unordered_map<std::string, BlackholeFunctionInfo> ExtractBlackholeFu
         dtype.code = kDLInt;
         dtype.bits = 32;
       }
-      info.arg_types.push_back(dtype);
+      spec.tvm_arg_types.push_back(dtype);
 
       // Check if this is a buffer argument (handle type)
-      info.is_buffer_arg.push_back(dtype.code == kDLOpaqueHandle);
+      spec.tvm_is_buffer_arg.push_back(dtype.code == kDLOpaqueHandle);
     }
 
     // Extract CB configuration
-    info.cb_configs = ExtractCBConfig(f);
-
-    // Check for multi-kernel configuration (R/C/W split)
-    auto kernel_split = f->GetAttr<ffi::Map<ffi::String, ffi::ObjectRef>>("tl.blackhole_kernel_split");
-    if (kernel_split) {
-      auto reader_opt = kernel_split.value().Get("reader");
-      auto compute_opt = kernel_split.value().Get("compute");
-      auto writer_opt = kernel_split.value().Get("writer");
-      info.has_reader = reader_opt.has_value();
-      info.has_compute = compute_opt.has_value();
-      info.has_writer = writer_opt.has_value();
-    } else {
-      // Single kernel mode
-      info.has_writer = true;
-    }
+    spec.cb_configs = ExtractCBConfig(f);
+    spec.core_plan = ExtractCorePlan(f);
+    spec.target_mode = f->GetAttr<ffi::String>("blackhole.target_mode")
+                           .value_or(ffi::String("single_core_copy"));
 
     auto global_symbol = f->GetAttr<ffi::String>(tvm::attr::kGlobalSymbol);
     if (global_symbol) {
-      fmap[static_cast<std::string>(global_symbol.value())] = info;
+      spec.entry_name = static_cast<std::string>(global_symbol.value());
+      fmap[spec.entry_name] = spec;
     }
   }
   return fmap;
@@ -321,12 +359,17 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
 
   std::string code = cg.Finish();
 
-  // Extract function info for BlackholeModule
+  // Extract executable specs for BlackholeModule
   auto func_info_map = ExtractBlackholeFuncInfo(mod);
 
-  // Store kernel code in function info
+  // Attach generated source to the Stage 0 executable spec.
   for (auto& kv : func_info_map) {
-    kv.second.kernel_code = code;
+    KernelSpec kernel;
+    kernel.name = kv.first;
+    kernel.kind = "fused_dataflow";
+    kernel.core_type = "brisc";
+    kernel.source_code = code;
+    kv.second.kernels.push_back(std::move(kernel));
   }
 
   LOG(INFO) << "BuildTileLangBlackhole: Generated " << code.size()
@@ -379,12 +422,17 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
   // Get pure kernel code (without TVM headers) for TT-Metal compilation
   std::string kernel_code = cg.GetKernelCode();
 
-  // Extract function info for BlackholeModule
+  // Extract executable specs for BlackholeModule
   auto func_info_map = ExtractBlackholeFuncInfo(mod);
 
-  // Store kernel code in function info (pure kernel for device execution)
+  // Store pure kernel code in the executable spec.
   for (auto& kv : func_info_map) {
-    kv.second.kernel_code = kernel_code;
+    KernelSpec kernel;
+    kernel.name = kv.first;
+    kernel.kind = "fused_dataflow";
+    kernel.core_type = "brisc";
+    kernel.source_code = kernel_code;
+    kv.second.kernels.push_back(std::move(kernel));
   }
 
   return BlackholeModuleCreate(std::move(func_info_map), kernel_dir);

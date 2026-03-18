@@ -129,6 +129,16 @@
 5. 新功能优先落到 `ExecutableSpec -> runner` 这条主路径上。
 6. 任何局部设计都必须服从 `final_blackhole_backend_redesign.md`。
 
+### Stage 0 协议落地经验
+
+当前新增的稳定经验：
+
+- 在从旧 `BlackholeFunctionInfo` 迁移到 `ExecutableSpec` 时，先保留 TVM 调用侧最小元信息（参数类型、buffer/scalar 标记），再逐步把 runner 协议迁过去，能避免一次性打断 module 调用链。
+- attr 统一不能只改 pass 或只改 runtime；至少要成对同步：
+  - `PlanBlackholeCB` / `AssignBlackholeCores` 产出 `blackhole.*`
+  - `rt_mod_blackhole` 读取同一套 `blackhole.*`
+- `blackhole.core_plan` 这种结构化 attr 比散落的 `grid_x/grid_y/...` 标量 attr 更适合后续 spec extractor 和 runner 直接消费。
+
 ## 建议的开发顺序
 
 当前推荐顺序：

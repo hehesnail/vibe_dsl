@@ -39,7 +39,7 @@ class BlackholeWrappedFunc {
  public:
   void Init(BlackholeModuleNode* m, ObjectPtr<Object> sptr,
             const std::string& func_name,
-            const BlackholeFunctionInfo& info) {
+            const ExecutableSpec& info) {
     m_ = m;
     sptr_ = sptr;
     func_name_ = func_name;
@@ -52,7 +52,7 @@ class BlackholeWrappedFunc {
   BlackholeModuleNode* m_;
   ObjectPtr<Object> sptr_;
   std::string func_name_;
-  BlackholeFunctionInfo info_;
+  ExecutableSpec info_;
 };
 
 /*!
@@ -61,7 +61,7 @@ class BlackholeWrappedFunc {
 class BlackholeModuleNode : public ffi::ModuleObj {
  public:
   BlackholeModuleNode(
-      std::unordered_map<std::string, BlackholeFunctionInfo> fmap,
+      std::unordered_map<std::string, ExecutableSpec> fmap,
       std::string kernel_dir)
       : fmap_(std::move(fmap)),
         kernel_dir_(std::move(kernel_dir)),
@@ -89,12 +89,12 @@ class BlackholeModuleNode : public ffi::ModuleObj {
       return ffi::Function();
     }
 
-    const BlackholeFunctionInfo& info = it->second;
+    const ExecutableSpec& info = it->second;
     BlackholeWrappedFunc f;
     f.Init(this, sptr_to_self, name, info);
 
     std::vector<FunctionInfo::ArgExtraTags> arg_extra_tags;
-    return PackFuncVoidAddr(f, info.arg_types, arg_extra_tags);
+    return PackFuncVoidAddr(f, info.tvm_arg_types, arg_extra_tags);
   }
 
   void WriteToFile(const ffi::String& file_name,
@@ -110,10 +110,12 @@ class BlackholeModuleNode : public ffi::ModuleObj {
   ffi::String InspectSource(const ffi::String& format) const final {
     auto it = fmap_.find("default");
     if (it != fmap_.end()) {
-      return ffi::String(it->second.kernel_code);
+      const auto& spec = it->second;
+      return ffi::String(spec.kernels.empty() ? std::string() : spec.kernels.front().source_code);
     }
     if (!fmap_.empty()) {
-      return ffi::String(fmap_.begin()->second.kernel_code);
+      const auto& spec = fmap_.begin()->second;
+      return ffi::String(spec.kernels.empty() ? std::string() : spec.kernels.front().source_code);
     }
     return ffi::String("");
   }
@@ -157,7 +159,7 @@ class BlackholeModuleNode : public ffi::ModuleObj {
       return program_cache_[func_name] = std::move(prog);
     }
 
-    const BlackholeFunctionInfo& info = fit->second;
+    const ExecutableSpec& info = fit->second;
 
     try {
       // Create program
@@ -174,11 +176,22 @@ class BlackholeModuleNode : public ffi::ModuleObj {
         if (!ofs) {
           LOG(FATAL) << "Failed to write kernel file: " << kernel_path;
         }
-        ofs << info.kernel_code;
+        if (info.kernels.empty()) {
+          LOG(FATAL) << "ExecutableSpec has no kernels for function: " << func_name;
+        }
+        ofs << info.kernels.front().source_code;
       }
 
       // Create kernel based on type
-      if (info.has_reader || (!info.has_reader && !info.has_compute && !info.has_writer)) {
+      bool has_reader = false;
+      bool has_compute = false;
+      bool has_writer = false;
+      for (const auto& kernel : info.kernels) {
+        has_reader = has_reader || kernel.kind == "reader";
+        has_compute = has_compute || kernel.kind == "compute";
+        has_writer = has_writer || kernel.kind == "writer" || kernel.kind == "fused_dataflow";
+      }
+      if (has_reader || (!has_reader && !has_compute && !has_writer)) {
         // DataMovement kernel (BRISC)
         KernelHandle kernel = CreateKernel(
             *program,
@@ -189,7 +202,7 @@ class BlackholeModuleNode : public ffi::ModuleObj {
         prog.reader_kernel = new KernelHandle(kernel);
       }
 
-      if (info.has_compute) {
+      if (has_compute) {
         // Compute kernel (TRISC)
         KernelHandle kernel = CreateKernel(
             *program,
@@ -201,7 +214,7 @@ class BlackholeModuleNode : public ffi::ModuleObj {
         prog.compute_kernel = new KernelHandle(kernel);
       }
 
-      if (info.has_writer) {
+      if (has_writer) {
         // DataMovement kernel (NCRISC) for writer
         KernelHandle kernel = CreateKernel(
             *program,
@@ -230,7 +243,7 @@ class BlackholeModuleNode : public ffi::ModuleObj {
                const std::vector<DLTensor*>& outputs);
 
  private:
-  std::unordered_map<std::string, BlackholeFunctionInfo> fmap_;
+  std::unordered_map<std::string, ExecutableSpec> fmap_;
   std::string kernel_dir_;
   void* mesh_device_;
   bool device_initialized_;
@@ -273,12 +286,12 @@ void BlackholeModuleNode::Execute(const std::string& func_name,
 
   // Create DRAM buffers
   auto fit = fmap_.find(func_name);
-  const BlackholeFunctionInfo& info = fit->second;
+  const ExecutableSpec& info = fit->second;
 
   // Page size from CB config or default to 2048 (32x32 FP16 tile)
   uint32_t page_size = 2048;
   if (!info.cb_configs.empty()) {
-    page_size = info.cb_configs[0].page_size;
+    page_size = info.cb_configs[0].page_size_bytes;
   }
 
   distributed::DeviceLocalBufferConfig dram_config{
@@ -348,21 +361,21 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
   std::vector<DLTensor*> outputs;
   std::vector<uint32_t> scalars;
 
-  for (size_t i = 0; i < info_.arg_types.size(); ++i) {
-    if (info_.is_buffer_arg[i]) {
+  for (size_t i = 0; i < info_.tvm_arg_types.size(); ++i) {
+    if (info_.tvm_is_buffer_arg[i]) {
       DLTensor* tensor = static_cast<DLTensor*>(void_args[i]);
-      if (i < info_.arg_types.size() - 1) {
+      if (i < info_.tvm_arg_types.size() - 1) {
         inputs.push_back(tensor);
       } else {
         outputs.push_back(tensor);
       }
     } else {
       // Extract scalar from packed args
-      if (info_.arg_types[i].code == kDLInt) {
+      if (info_.tvm_arg_types[i].code == kDLInt) {
         scalars.push_back(static_cast<uint32_t>(args[i].operator int64_t()));
-      } else if (info_.arg_types[i].code == kDLUInt) {
+      } else if (info_.tvm_arg_types[i].code == kDLUInt) {
         scalars.push_back(static_cast<uint32_t>(args[i].operator uint64_t()));
-      } else if (info_.arg_types[i].code == kDLFloat) {
+      } else if (info_.tvm_arg_types[i].code == kDLFloat) {
         float f = args[i].operator double();
         scalars.push_back(*reinterpret_cast<uint32_t*>(&f));
       }
@@ -375,7 +388,7 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
 
 // Create function
 ffi::Module BlackholeModuleCreate(
-    std::unordered_map<std::string, BlackholeFunctionInfo> fmap,
+    std::unordered_map<std::string, ExecutableSpec> fmap,
     std::string kernel_dir) {
   auto n = ffi::make_object<BlackholeModuleNode>(std::move(fmap), std::move(kernel_dir));
   return ffi::Module(std::move(n));
