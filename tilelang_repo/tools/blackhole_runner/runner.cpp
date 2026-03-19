@@ -276,6 +276,7 @@ bool kernel_needs_scratch_l1(const KernelSpec& kernel) {
 std::vector<uint32_t> build_runtime_args(
     const KernelSpec& kernel,
     const RunConfig& config,
+    uint32_t current_work_linear_id,
     const distributed::MeshBuffer& input_buffer,
     const distributed::MeshBuffer& output_buffer,
     const distributed::MeshBuffer* scratch_l1_buffer) {
@@ -299,11 +300,7 @@ std::vector<uint32_t> build_runtime_args(
         } else if (arg.kind == "tile_count") {
             args.push_back(tile_size == 0 ? 0 : static_cast<uint32_t>(config.input_size_bytes / tile_size));
         } else if (arg.kind == "current_work_linear_id") {
-            uint32_t work_id = 0;
-            if (!config.core_plan.work_packets.empty()) {
-                work_id = config.core_plan.work_packets.front().work_offset;
-            }
-            args.push_back(work_id);
+            args.push_back(current_work_linear_id);
         } else if (arg.kind == "scratch_l1_buffer_addr32") {
             if (scratch_l1_buffer == nullptr) {
                 throw std::runtime_error("Spec requested scratch L1 buffer but none was allocated");
@@ -330,10 +327,7 @@ int main(int argc, char* argv[]) {
 
         auto mesh_device = distributed::MeshDevice::create_unit_mesh(0);
         auto& cq = mesh_device->mesh_command_queue();
-        Program program = CreateProgram();
         constexpr tt::tt_metal::CoreCoord core = {0, 0};
-
-        create_circular_buffers(program, core, config);
 
         std::cout << "[Runner] Reading input: " << config.input_path
                   << " (" << config.input_size_bytes << " bytes)\n";
@@ -378,24 +372,40 @@ int main(int argc, char* argv[]) {
         EnqueueWriteMeshBuffer(cq, input_buffer, input_data, /*blocking=*/true);
         std::cout << "[Runner] Input transferred\n";
 
-        for (const auto& kernel_spec : config.kernels) {
-            std::cout << "[Runner] Loading kernel: " << kernel_spec.kernel_path << "\n";
-            KernelHandle kernel = create_kernel(program, core, kernel_spec);
-            auto runtime_args = build_runtime_args(
-                kernel_spec,
-                config,
-                *input_buffer,
-                *output_buffer,
-                scratch_l1_buffer ? scratch_l1_buffer.get() : nullptr);
-            SetRuntimeArgs(program, kernel, core, runtime_args);
+        std::vector<uint32_t> work_ids;
+        for (const auto& packet : config.core_plan.work_packets) {
+            for (uint32_t i = 0; i < packet.work_count; ++i) {
+                work_ids.push_back(packet.work_offset + i);
+            }
+        }
+        if (work_ids.empty()) {
+            work_ids.push_back(0);
         }
 
-        distributed::MeshWorkload workload;
-        distributed::MeshCoordinateRange device_range(mesh_device->shape());
-        workload.add_program(device_range, std::move(program));
+        std::cout << "[Runner] Executing " << work_ids.size() << " logical work items\n";
+        for (uint32_t work_id : work_ids) {
+            Program program = CreateProgram();
+            create_circular_buffers(program, core, config);
 
-        std::cout << "[Runner] Executing workload\n";
-        distributed::EnqueueMeshWorkload(cq, workload, /*blocking=*/false);
+            for (const auto& kernel_spec : config.kernels) {
+                std::cout << "[Runner] Loading kernel: " << kernel_spec.kernel_path
+                          << " for work_id=" << work_id << "\n";
+                KernelHandle kernel = create_kernel(program, core, kernel_spec);
+                auto runtime_args = build_runtime_args(
+                    kernel_spec,
+                    config,
+                    work_id,
+                    *input_buffer,
+                    *output_buffer,
+                    scratch_l1_buffer ? scratch_l1_buffer.get() : nullptr);
+                SetRuntimeArgs(program, kernel, core, runtime_args);
+            }
+
+            distributed::MeshWorkload workload;
+            distributed::MeshCoordinateRange device_range(mesh_device->shape());
+            workload.add_program(device_range, std::move(program));
+            distributed::EnqueueMeshWorkload(cq, workload, /*blocking=*/true);
+        }
 
         std::vector<uint8_t> output_data;
         distributed::EnqueueReadMeshBuffer(cq, output_data, output_buffer, /*blocking=*/true);

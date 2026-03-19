@@ -969,9 +969,15 @@ Stmt LowerBlackholeOps::GenerateClearSequence(const CallNode* op) {
 Stmt LowerBlackholeOps::VisitStmt_(const AttrStmtNode* op) {
   if (op->attr_key == tir::attr::thread_extent) {
     IterVar iv = Downcast<IterVar>(op->node);
-    thread_index_vars_.insert(iv->var.get());
+    const std::string thread_tag = iv->thread_tag;
+    const bool zero_thread_var = thread_tag.rfind("threadIdx.", 0) == 0;
+    if (zero_thread_var) {
+      thread_index_vars_.insert(iv->var.get());
+    }
     Stmt body = VisitStmt(op->body);
-    thread_index_vars_.erase(iv->var.get());
+    if (zero_thread_var) {
+      thread_index_vars_.erase(iv->var.get());
+    }
     if (body.same_as(op->body)) {
       return GetRef<Stmt>(op);
     }

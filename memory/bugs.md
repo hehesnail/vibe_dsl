@@ -120,7 +120,18 @@
   - 不要在 copy tile-index 恢复前无条件把 `blockIdx` 相关变量归零
   - 让 split 前 planning 或 split 后 copy matcher 至少保留 `bx/by -> tile_index` 的映射
   - 再由 codegen/runtime ABI 消费 `current_work_linear_id`
-- **当前状态**: 未解决。这是当前 `grid > 1` staged copy 正式验收的主要阻塞之一。
+- **当前状态**: 已解决。`LowerBlackholeOps` 现在只在 tile-index 提取时清零 `threadIdx.*`，不再清零 `blockIdx.*`；grid-indexed staged copy 已能在 lowered TIR 和生成源码中保留 `bx/by -> tile_index` 公式。当前剩余问题转为 host/runtime 真执行验证是否完整覆盖全部 logical work items。
+
+### single-core `grid > 1` 执行不能只把 `work_packets` 停留在 metadata
+
+- **时间**: 2026-03-19
+- **问题**: 即使 `AssignBlackholeCores` 已产出 `work_packets`，如果 runner / host materialization 仍只执行一次 program，并固定传入一个 `current_work_linear_id`，那 `grid > 1` copy 仍只会跑第一个 logical block。
+- **根本原因**: 执行计划和 kernel ABI 已经形成，但 host/runtime 没有把 `work_packets -> current_work_linear_id` 真的 materialize 成多次 single-core logical work 执行。
+- **解决方案**:
+  - runner 侧顺序展开 `work_packets`
+  - 对每个 logical work item 传入对应的 `current_work_linear_id`
+  - 逐次 launch program，直到当前 single-core work packet 消费完
+- **当前状态**: 已解决。runner 现在会按 `work_packets/current_work_linear_id` 顺序执行 single-core logical work items；但这条 `grid > 1` true execution 路径本轮尚未在 TT-Sim 上完成实跑确认。
 
 ### Blackhole 当前旁路了大量 TileLang/TVM 主线 pass
 

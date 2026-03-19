@@ -116,6 +116,13 @@ TT-Metal 的 host-side 主抽象明确是：
 
 它不重新解释 DSL/TIR 语义，只 materialize 已规划好的 plan。
 
+对当前 single-core 最小模型，host/runtime 还应显式承担：
+
+- 顺序消费 `work_packets`
+- 对每个 logical block 传入对应的 `current_work_linear_id`
+
+也就是说，single-core 的“多个 logical blocks”不能只停留在 metadata 上；host materialization 必须真的把它们逐个执行完。
+
 ## 单核最小正确模型
 
 当前阶段只要求 single-core，但 single-core 的正确模型不应等于“把 `blockIdx=0` 写死”。
@@ -145,6 +152,8 @@ TT-Metal 的 host-side 主抽象明确是：
 
 - 不再默认 `blockIdx.x/y` 最终会在 codegen 中被抹成常量
 - runtime arg / kernel ABI 设计要允许传入 `current_work_linear_id`
+- staged copy 的 tile-index 恢复不能在 split 后 matcher 里无条件把 `blockIdx.x/y` 归零；
+  局部 element loop 可以清零，但逻辑 block 坐标必须保留到最终 tile-index 公式
 - `segment_plan` 与 logical work / memory object 使用关系对齐
 
 输出：

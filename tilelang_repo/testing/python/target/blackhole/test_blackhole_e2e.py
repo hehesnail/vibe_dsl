@@ -268,8 +268,8 @@ def test_blackhole_copy_codegen_uses_runtime_schema():
     assert "dst_dram_addr" not in source
 
 
-def test_blackhole_core_plan_preserves_logical_block_launch_metadata():
-    """Grid-indexed copy should surface logical block planning metadata and ABI."""
+def test_blackhole_core_plan_preserves_logical_block_launch():
+    """Grid-indexed copy should preserve logical-block tile indexing into lowered code."""
     kernel = grid_indexed_staged_copy_kernel(grid_x=2, grid_y=3)
     target = Target("blackhole")
 
@@ -288,8 +288,51 @@ def test_blackhole_core_plan_preserves_logical_block_launch_metadata():
     assert int(core_plan["work_packets"][0]["work_offset"]) == 0
     assert int(core_plan["work_packets"][0]["work_count"]) == 6
 
+    body_script = device_main.body.script()
+    assert "tl.blackhole.read_tile_to_cb(A, by * 2 + bx, 32, 2048, 0)" in body_script
+    assert "tl.blackhole.write_tile_from_cb(32, B, by * 2 + bx, 2048, 0)" in body_script
+
     source = artifact.kernel_source if hasattr(artifact, "kernel_source") else str(artifact)
     assert "uint32_t current_work_linear_id = get_arg_val<uint32_t>(2);" in source
+    assert "(current_work_linear_id / 2)" in source
+    assert "(current_work_linear_id % 2)" in source
+    assert "const uint32_t tile_index = 0;" not in source
+
+
+def test_blackhole_module_direct_call_grid_indexed_copy():
+    """Exercise direct-call on a grid-indexed staged copy that depends on bx/by."""
+    can_run, msg = check_blackhole_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    grid_x, grid_y = 2, 3
+    M, N = grid_y * 32, grid_x * 32
+    torch.manual_seed(42)
+    a_torch = torch.randn(M, N, dtype=torch.float16)
+    b_output = torch.zeros_like(a_torch)
+    b_ref = a_torch.clone()
+
+    target = Target("blackhole")
+    kernel = grid_indexed_staged_copy_kernel(grid_x=grid_x, grid_y=grid_y)
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, b_output)
+
+    atol = 1e-3
+    rtol = 1e-3
+    if torch.allclose(b_output, b_ref, atol=atol, rtol=rtol):
+        print("SUCCESS: Grid-indexed staged-copy direct call matches PyTorch reference!")
+        print(f"  Input shape: {a_torch.shape}")
+        print(f"  Max difference: {(b_output - b_ref).abs().max().item()}")
+        assert True
+    else:
+        diff = (b_output - b_ref).abs()
+        print("FAILURE: Grid-indexed direct-call output mismatch!")
+        print(f"  Max difference: {diff.max().item()}")
+        print(f"  Mean difference: {diff.mean().item()}")
+        assert False, "Grid-indexed direct-call output does not match reference"
 
 
 @pytest.mark.parametrize(
