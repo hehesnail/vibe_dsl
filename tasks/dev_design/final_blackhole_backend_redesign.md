@@ -32,10 +32,10 @@ Blackhole 后端当前的正式目标已经收敛为两点：
 
 但当前最大的结构问题已经从“协议没落地”转成了下面三点：
 
-1. **Blackhole 在 `OptimizeForTarget` 中过早 early return**
-   - 大段通用 TIR 规范化与优化 pass 没被复用
-2. **Blackhole 当前跳过 `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch`**
-   - PrimFunc 参数语义、host/device 边界和 runtime 参数绑定仍有一部分在 `rt_mod_blackhole` / `BlackholeModule` 侧补洞
+1. **Blackhole 虽已重新接回 host/device 主链，但还没有把全部中后段通用 pass 收回正式主路径**
+   - `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等仍会打断当前 copy staged-lowering
+2. **execution / memory / launch plan 还没有被显式建模成正式中间层**
+   - `rt_mod_blackhole` / `BlackholeModule` / runner 仍残留一部分过渡期猜测逻辑
 3. **`LowerBlackholeOps` 的主接入点仍偏晚**
    - 当前很多 copy 语义仍是从 `LowerTileOp` 之后的 staged loop 恢复，而不是在更稳定的 target-aware lowering 边界上保留
 
@@ -55,6 +55,10 @@ TileLang DSL
   -> LowerTileOp(Blackhole-aware)
   -> AnnotateDeviceRegions / SplitHostDevice / MakePackedAPI / LowerDeviceKernelLaunch
   -> LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores
+  -> Blackhole execution plan
+      -> logical grid / work packets
+      -> memory objects / CB configs
+      -> kernel ABI / runtime arg schema
   -> BuildTileLangBlackholeWithoutHost
       -> Extract ExecutableSpec
       -> Emit kernel source(s)
@@ -73,8 +77,34 @@ TileLang DSL
 2. **优先复用现有 PrimFunc/TIR pass 主链，只在少量 target-aware 边界定制**
 3. **host/device 划分与 Packed API 参数语义尽量沿用 TileLang / TVM 现有模型**
 4. **compile-time args 与 runtime args 必须严格分层**
-5. **multi-core 主要由 host/runtime 承担，不由 codegen 主导**
-6. **`SplitBlackholeKernel` 和 `blackhole_module_direct.cc` 都不再是主路径设计前提**
+5. **逻辑 block/grid 语义应保留在 TIR/pass 中，不在 runtime 侧重建**
+6. **host 侧主要 materialize 已分析好的执行计划，不重新发明 memory plan / launch plan**
+7. **multi-core 主要由 host/runtime materialize，不由 codegen 主导**
+8. **`SplitBlackholeKernel` 和 `blackhole_module_direct.cc` 都不再是主路径设计前提**
+
+### 3.3 Blackhole execution plan
+
+Blackhole 与 CUDA 的关键差异，不在于“是否有 host”，而在于：
+
+- CUDA 的逻辑 block/grid 语义可以较直接映射到硬件 CTA/grid launch
+- Blackhole 需要额外一层 `logical block -> physical core/work packet` 映射
+
+因此 Blackhole 主路径里必须显式存在一层 execution plan，用来承接：
+
+- 逻辑 grid / block 语义
+- segment / kernel graph
+- memory hierarchy plan
+- kernel ABI
+- core scheduling / work distribution
+
+这层 plan 的主要来源应是 TIR / target-aware passes，而不是 `BlackholeModule` 或 runner 猜测。
+
+哪怕当前只考虑 single-core，也应保持：
+
+- 逻辑 grid 仍来自 `T.Kernel(...)`
+- single-core 只是 `physical_core_count = 1`
+- 一个物理 core 可以顺序处理多个 logical blocks
+- `blockIdx.x/y` 不应在 codegen 中被长期常量化成 `0`
 
 ## 4. 模块边界
 
@@ -108,13 +138,19 @@ TileLang DSL
 职责保持明确：
 
 - 从 `blackhole.cb_requirements` / segment 信息收敛到 runtime-ready `blackhole.cb_configs`
+- 逐步扩展为显式 memory-plan 的 materialization 层，覆盖：
+  - CB page size / num_pages / format / role
+  - scratch / intermediate L1 对象
+  - 生命周期与峰值容量约束
 
 ### 4.4 `AssignBlackholeCores`
 
 职责保持明确：
 
-- 只生成 host/runtime 消费的 core scheduling plan
-- 不在 codegen 中固化物理 core 映射
+- 保留并消费逻辑 grid/block 语义
+- 生成 host/runtime 消费的 core scheduling / work distribution plan
+- 不在 codegen 中固化 `blockIdx -> 常量 0`
+- 不在 runner 中长期写死单核 `{0, 0}` 执行路径
 
 ### 4.5 `rt_mod_blackhole`
 
@@ -141,18 +177,28 @@ TileLang DSL
 
 - 不再长期承担 Packed API 或 host/device 语义
 - 输入输出 buffer、scalar、dynamic shape 参数如何映射到 runtime args，必须由 PrimFunc + pass schema 决定
+- 不再按“最后一个 buffer 是 output”这类位置规则长期猜 ABI
 
 ### 4.7 runner
 
 职责：
 
 - 读取 `ExecutableSpec`
-- 创建 `Program`
-- 创建 CB / kernel
-- 设置 compile-time args / runtime args
+- materialize TT-Metal host-side对象：
+  - `Program`
+  - CB / memory objects
+  - kernel
+  - compile-time args / runtime args
 - 执行并回读
 
 runner 只消费协议，不理解 PrimFunc / TIR 语义。
+
+runner 可以是外部进程，但它只能是 execution plan 的执行器，不能再承担：
+
+- 猜 PrimFunc 参数类别
+- 猜 input / output / scalar 位置
+- 猜逻辑 block 如何映射到 core
+- 猜 CB / scratch / launch graph
 
 ## 5. 核心协议
 
@@ -167,6 +213,16 @@ runner 只消费协议，不理解 PrimFunc / TIR 语义。
 - `ExecutableSpec`
 
 后续工作重点不是继续改协议名字，而是让这些字段的来源真正回到 pass / device-side schema。
+
+允许扩展的方向是：
+
+- 在 `CorePlan` 中补足 logical grid / work packet 语义
+- 在 `KernelSpec` 中补足 kernel-level ABI / launch information
+- 在 `CBConfig` 中补足 memory hierarchy materialization 所需字段
+
+不允许继续扩展的方向是：
+
+- 在 runner / module 里新增一套脱离 TIR 的手写固定 ABI
 
 ### 5.2 Attr Schema
 

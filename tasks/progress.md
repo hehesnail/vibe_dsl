@@ -41,6 +41,15 @@
   - `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 仍会打断当前 copy staged-lowering
   - `rt_mod_blackhole` / `BlackholeModule` 的 host/device 边界虽然已经收正，但 GEMM 还没有复用这条新主线
   - `blockIdx.x/y -> 0` 和 runner 单核 `{0, 0}` 仍限制当前 single-core copy 只覆盖单核 execution model
+- 当前新增设计收束：
+  - 已明确 Blackhole 应复用与 CUDA 类似的分层：
+    - 逻辑 block/grid 语义保留在 TIR
+    - execution / memory / launch plan 由 target-aware passes 产出
+    - host/runtime 只 materialize 该 plan
+  - 已明确当前 single-core 的正确模型不应是“把 `blockIdx=0` 写死”，而应是：
+    - `physical_core_count = 1`
+    - 一个 core 顺序处理多个 logical blocks
+    - `core_plan` / runner 显式承载 logical work distribution
 - 当前新增进展：
   - Blackhole `lower()` 主路径已恢复：
     - `AnnotateDeviceRegions`
@@ -130,11 +139,13 @@
 2. 继续把 staged copy 从“rectangular tile 也能跑”收成更一般的 DSL tile shape / loop shape 识别，而不是只覆盖当前几种矩形 tile。
 3. 在不破坏当前 copy true E2E 的前提下，逐步把 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等 pass 接回 Blackhole 主链。
 4. 收正 `blockIdx` / `core_plan` / runner 单核执行之间的边界，避免 device code 继续把 core 坐标常量化。
-5. 用 copy 已打通的 `host entry -> device kernel -> spec -> runner` 结构推进 GEMM。
-6. 继续把真执行测试按环境 gate 分层，避免把 TT-Sim 环境问题记成编译链问题。
+5. 先把 single-core 执行改成“单核串行处理 logical blocks”的正式模型，再继续扩大 copy 覆盖面。
+6. 用 copy 已打通的 `host entry -> device kernel -> spec -> runner` 结构推进 GEMM。
+7. 继续把真执行测试按环境 gate 分层，避免把 TT-Sim 环境问题记成编译链问题。
 
 ## 当前活动设计文档
 
 - `tasks/dev_design/final_blackhole_backend_redesign.md`
 - `tasks/dev_design/stage2_pass_reuse_matrix.md`
 - `tasks/dev_design/stage2_single_core_pass_integration.md`
+- `tasks/dev_design/stage2_blackhole_logical_block_launch_plan.md`

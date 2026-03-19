@@ -12,6 +12,8 @@
   - 当前最重要的接入矩阵文档
 - `stage2_single_core_pass_integration.md`
   - 当前活动阶段设计
+- `stage2_blackhole_logical_block_launch_plan.md`
+  - 当前 block/core/memory/launch plan 收正文档
 
 ## 2. 已完成阶段的历史设计
 

@@ -122,16 +122,25 @@ Stage 2 的正式目标已经收紧为：
 
 - 继续保留 single-core copy true E2E
 - 但把 copy 语义从“只对 `32x32 float16` staged copy 样例成立”收成“按实际 DSL tile 形态推导”
+- 同时收正逻辑 block 语义、single-core work distribution、memory plan 与 launch ABI 的边界
+
+相关设计见：
+
+- `stage2_blackhole_logical_block_launch_plan.md`
 
 本轮优先处理的固定假设：
 
 - `LowerBlackholeOps` 中 `tile_row / 32`、`tile_col / 32` 这类固定 tile 维度推导
 - 由此衍生的 `tile_index` 计算对 `tile_m != 32` 或 `tile_n != 32` 的失真
 
-本轮暂不处理的更大问题：
+本轮尚未实现、但已进入当前设计主线的问题：
 
 - `blockIdx.x/y -> 0` 的 codegen 常量化
 - runner 仍只 materialize 单核 `{0, 0}`
+- `core_plan` 还没有变成可执行的 logical-work / physical-core plan
+
+本轮暂不处理的更大问题：
+
 - GEMM 语义接入
 
 ## 当前进展
