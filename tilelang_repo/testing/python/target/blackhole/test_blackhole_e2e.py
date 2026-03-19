@@ -214,6 +214,12 @@ def test_blackhole_copy_pass_attrs():
     assert int(cb_configs[0]["total_size_bytes"]) == 4096
     assert int(cb_configs[0]["lifetime_begin"]) == 0
     assert int(cb_configs[0]["lifetime_end"]) == 0
+    cb_bindings = func.attrs["blackhole.cb_bindings"]
+    assert len(cb_bindings) == 1
+    assert int(cb_bindings[0]["requirement_index"]) == 0
+    assert int(cb_bindings[0]["cb_id"]) == int(cb_configs[0]["cb_id"])
+    assert int(cb_bindings[0]["cb_config_index"]) == 0
+    assert str(cb_bindings[0]["memory_object_name"]) == str(cb_configs[0]["name"])
 
     runtime_args = func.attrs["blackhole.runtime_args"]
     runtime_arg_kinds = [str(arg["kind"]) for arg in runtime_args]
@@ -292,6 +298,7 @@ def test_blackhole_cb_planner_reuses_non_overlapping_requirements():
     mod = tilelang.transform.PlanBlackholeCB()(mod)
     func = mod["main"]
     cb_configs = func.attrs["blackhole.cb_configs"]
+    cb_bindings = func.attrs["blackhole.cb_bindings"]
 
     assert len(cb_configs) == 1
     assert int(func.attrs["blackhole.num_cbs"]) == 1
@@ -300,6 +307,15 @@ def test_blackhole_cb_planner_reuses_non_overlapping_requirements():
     assert int(cb_configs[0]["lifetime_begin"]) == 0
     assert int(cb_configs[0]["lifetime_end"]) == 1
     assert [str(name) for name in cb_configs[0]["requirement_names"]] == ["stage0", "stage1"]
+    assert len(cb_bindings) == 2
+    assert [int(binding["requirement_index"]) for binding in cb_bindings] == [0, 1]
+    assert [str(binding["requirement_name"]) for binding in cb_bindings] == ["stage0", "stage1"]
+    assert [int(binding["cb_id"]) for binding in cb_bindings] == [32, 32]
+    assert [int(binding["cb_config_index"]) for binding in cb_bindings] == [0, 0]
+    assert [str(binding["memory_object_name"]) for binding in cb_bindings] == [
+        str(cb_configs[0]["name"]),
+        str(cb_configs[0]["name"]),
+    ]
 
 
 def test_blackhole_cb_planner_rejects_overlapping_large_requirements():

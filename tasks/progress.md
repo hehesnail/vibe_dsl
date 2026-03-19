@@ -59,6 +59,11 @@
   - lifetime 不重叠
   - `cb_configs` 只保留真正要 materialize 的 memory object
   - `cb_configs.requirement_names` 记录被合并的 requirement 名集合
+- `PlanBlackholeCB` 已补 requirement-to-memory-object 显式绑定协议：
+  - `blackhole.cb_bindings.requirement_index`
+  - `blackhole.cb_bindings.requirement_name`
+  - `blackhole.cb_bindings.cb_id`
+  - `blackhole.cb_bindings.cb_config_index`
 - planner protocol struct 已进一步收敛：
   - `CBType/CBRequirement` 已集中到共享头文件
   - 不再依赖 `lower_blackhole_ops.h` / `plan_blackhole_cb.h` 的重复定义保持人工同步
@@ -158,7 +163,7 @@
 7. 在当前 schema 已显式化 `total_size_bytes + lifetime span` 的基础上，继续补真正的 lifetime/reuse 规划，而不再让下游从 `page_size * num_pages` 反推 memory object 语义。
 8. 在当前保守同型非重叠 reuse 的基础上，继续补：
    - 跨更多 requirement 形态的兼容性规则
-   - 更明确的 requirement-to-memory-object 绑定协议
+   - 更完整的 requirement-to-memory-object 绑定协议
 9. 在不破坏 copy 正式 E2E 的前提下，分批接回 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite`。
 10. 最后用同一结构推进 GEMM。
 

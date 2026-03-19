@@ -235,13 +235,15 @@ std::vector<CBConfig> PlanBlackholeCB::AssignCBIds(
   int next_output_id = kOutputCBStart;
   int next_intermediate_id = kOutputCBEnd + 1;  // Start after output range
 
-  for (const auto& req : requirements) {
+  for (size_t req_index = 0; req_index < requirements.size(); ++req_index) {
+    const auto& req = requirements[req_index];
     bool reused = false;
     for (auto& config : configs) {
       if (!IsCompatibleForReuse(req, config)) {
         continue;
       }
       config.lifetime_end = std::max(config.lifetime_end, req.lifetime_end);
+      config.requirement_indices.push_back(static_cast<int>(req_index));
       config.requirement_names.push_back(req.name);
       reused = true;
       break;
@@ -258,6 +260,7 @@ std::vector<CBConfig> PlanBlackholeCB::AssignCBIds(
     config.data_format = req.data_format;
     config.lifetime_begin = req.lifetime_begin;
     config.lifetime_end = req.lifetime_end;
+    config.requirement_indices.push_back(static_cast<int>(req_index));
     config.requirement_names.push_back(req.name);
 
     // Assign CB ID based on type
@@ -329,9 +332,11 @@ void PlanBlackholeCB::StoreCBConfig(PrimFunc& func, const std::vector<CBConfig>&
 
   // Build CB configs array
   Array<Any> cb_configs;
+  Array<Any> cb_bindings;
   int total_l1 = 0;
 
-  for (const auto& config : configs) {
+  for (size_t config_index = 0; config_index < configs.size(); ++config_index) {
+    const auto& config = configs[config_index];
     Map<String, Any> cb_attr;
     cb_attr.Set("cb_id", Integer(config.cb_id));
     cb_attr.Set("page_size", Integer(config.page_size));
@@ -350,10 +355,21 @@ void PlanBlackholeCB::StoreCBConfig(PrimFunc& func, const std::vector<CBConfig>&
 
     cb_configs.push_back(cb_attr);
     total_l1 += config.total_size;
+
+    for (size_t binding_index = 0; binding_index < config.requirement_names.size(); ++binding_index) {
+      Map<String, Any> binding_attr;
+      binding_attr.Set("requirement_index", Integer(config.requirement_indices[binding_index]));
+      binding_attr.Set("requirement_name", String(config.requirement_names[binding_index]));
+      binding_attr.Set("cb_id", Integer(config.cb_id));
+      binding_attr.Set("cb_config_index", Integer(static_cast<int>(config_index)));
+      binding_attr.Set("memory_object_name", String(config.name));
+      cb_bindings.push_back(binding_attr);
+    }
   }
 
   // Store in function attributes
   attrs.Set("blackhole.cb_configs", cb_configs);
+  attrs.Set("blackhole.cb_bindings", cb_bindings);
   attrs.Set("blackhole.total_l1_bytes", Integer(total_l1));
   attrs.Set("blackhole.num_cbs", Integer(static_cast<int>(configs.size())));
 

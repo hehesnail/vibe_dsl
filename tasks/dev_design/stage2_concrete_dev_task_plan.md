@@ -162,9 +162,14 @@ copy 不只验证最小 case，还必须验证：
     - lifetime 不重叠
   - `cb_configs` 继续表达“实际要 materialize 的 memory object”，而不是每条 requirement 一份
   - `cb_configs.requirement_names` 记录被合并的 requirement 名集合
+  - `blackhole.cb_bindings` 显式记录：
+    - `requirement_index`
+    - `requirement_name`
+    - `cb_id`
+    - `cb_config_index`
 - 下一轮 planner 收正切口：
   - 扩展兼容性判断，不再只覆盖“同型 requirement”
-  - 收正 requirement 到 memory object 的绑定协议，不让下游只靠名字猜测
+  - 继续扩 binding protocol，让下游不必只靠 `memory_object_name`/`cb_id` 二选一
 - 在不打断现有 copy true E2E 的前提下，为后续真正的 lifetime/reuse planner 留协议位
 
 #### 完成标准

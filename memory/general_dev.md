@@ -185,6 +185,7 @@
   - 再在测试里显式覆写 `blackhole.cb_requirements`
   - 直接断言 `blackhole.cb_configs/total_l1_bytes/num_cbs`
   这样能把 planner 行为和前面 extractor 的偶然形态分层验证。
+- 对这类本地 C++/Python 混合工程，如果刚改了 pass 并重链 `libtilelang.so`，不要把构建和 pytest 完全并行跑后直接相信第一次结果；更稳的做法是至少做一次串行 `build && pytest`，避免测试先加载旧 `.so` 产物形成假阴性。
 - 如果目标是把路径重新接回 `TIR -> pass -> codegen` 主链，不要只检查 attrs；还要检查 lowered TIR body 里是否真的出现了目标 builtin call。本阶段对 copy 至少要看到：
   - `tl.blackhole.read_tile_to_cb`
   - `tl.blackhole.write_tile_from_cb`
