@@ -58,7 +58,6 @@ def is_device_call(func: tir.PrimFunc):
             return any(
                 key in attrs
                 for key in (
-                    "blackhole.target_mode",
                     "blackhole.cb_configs",
                     "blackhole.core_plan",
                     "blackhole.runtime_args",

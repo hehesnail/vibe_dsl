@@ -238,7 +238,7 @@
   - 从 `ExecutableSpec`、`spec.json` 和 runner 中移除 `target_mode`
   - 让 copy fallback 改为按 device-side copy builtin / runtime schema 判断
   - `IsBlackholeDeviceKernel()` 不再把 `target_mode` 当识别依据
-- **当前状态**: 已解决。copy true E2E 继续通过，但主协议里不再暴露 `single_core_copy` 模式标签。
+- **当前状态**: 已解决。copy true E2E 继续通过；`tilelang.engine.lower.is_device_call()` 也已去掉对 `blackhole.target_mode` 的兼容分支，Blackhole device kernel 识别现在只看正式 `calling_conv` 或正式 `blackhole.*` plan attrs。
 
 ### rectangular staged copy 会因为 scratch/L1 覆盖而执行错误
 

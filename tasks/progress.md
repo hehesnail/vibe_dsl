@@ -67,6 +67,9 @@
 - planner protocol struct 已进一步收敛：
   - `CBType/CBRequirement` 已集中到共享头文件
   - 不再依赖 `lower_blackhole_ops.h` / `plan_blackhole_cb.h` 的重复定义保持人工同步
+- Blackhole host/device 设备函数识别已不再依赖过渡标签：
+  - `tilelang.engine.lower.is_device_call()` 不再把 `blackhole.target_mode` 视为 device-kernel 判据
+  - 只有正式 `calling_conv` 或正式 `blackhole.*` plan attrs 才参与 Blackhole device function 识别
 
 当前仍然存在的主要结构问题：
 

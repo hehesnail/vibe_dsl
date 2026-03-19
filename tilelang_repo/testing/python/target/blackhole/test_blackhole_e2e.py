@@ -22,7 +22,7 @@ import json
 import tilelang
 import tilelang.testing
 from tilelang import language as T
-from tilelang.engine.lower import lower
+from tilelang.engine.lower import is_device_call, lower
 from tilelang.jit import compile as tl_compile
 from tvm.target import Target
 from tvm.ir import CallingConv
@@ -555,6 +555,24 @@ def test_blackhole_lower_restores_host_device_split():
     assert device_main.attrs["calling_conv"] == CallingConv.DEVICE_KERNEL_LAUNCH
     assert device_main.attrs["target"].kind.name == "blackhole"
     assert "blackhole.target_mode" not in device_main.attrs
+
+
+def test_blackhole_target_mode_does_not_define_device_kernel():
+    """`blackhole.target_mode` must not participate in device-kernel detection."""
+
+    @T.prim_func
+    def trivial_kernel(A: T.Buffer((32,), "float16")):
+        with T.Kernel(1, threads=1) as (bx,):
+            A[bx] = A[bx]
+
+    tagged = trivial_kernel.with_attrs(
+        {
+            "target": Target("blackhole"),
+            "blackhole.target_mode": "single_core_copy",
+        }
+    )
+
+    assert not is_device_call(tagged)
 
 
 def test_blackhole_runtime_module_keeps_host_and_device_entries():
