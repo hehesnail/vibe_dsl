@@ -131,7 +131,7 @@
   - runner 侧顺序展开 `work_packets`
   - 对每个 logical work item 传入对应的 `current_work_linear_id`
   - 逐次 launch program，直到当前 single-core work packet 消费完
-- **当前状态**: 已解决。runner 现在会按 `work_packets/current_work_linear_id` 顺序执行 single-core logical work items；但这条 `grid > 1` true execution 路径本轮尚未在 TT-Sim 上完成实跑确认。
+- **当前状态**: 已解决。runner 现在会按 `work_packets/current_work_linear_id` 顺序执行 single-core logical work items，`grid_x=2, grid_y=3, 96x64 float16` 的 grid-indexed staged copy 已在 TT-Sim direct-call 上通过，结果与 PyTorch 参考一致。
 
 ### Blackhole 当前旁路了大量 TileLang/TVM 主线 pass
 

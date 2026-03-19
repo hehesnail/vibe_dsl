@@ -220,6 +220,7 @@
   - 是否过早在 target-specific optimize 阶段 early return
 - Blackhole 这类 C++ backend 改动做完后，Python 结构测试如果仍然看到旧 attrs / 旧 runtime arg schema，先不要急着改逻辑；更稳的做法是先增量重编 `tilelang_repo/build`，确认 `libtilelang.so` 和 Python wrapper 已更新，再重跑 pytest。否则很容易把“加载了旧扩展”误判成 pass/codegen 回归。
 - 对 Blackhole staged copy 的 tile-index 恢复，局部 element/worker 级 `threadIdx.*` 通常应该在 matcher 里清零，但 `blockIdx.*` 不能一起清零；否则 split 后虽然已经有 `core_plan/current_work_linear_id`，copy builtin 仍会退化回固定 `tile_index=0`。
+- 对当前 single-core `grid > 1` bring-up，如果 execution plan 采用 `work_packets + current_work_linear_id`，更稳的做法是让 runner/host 逐个 logical work item 顺序 launch，而不是试图在一次 launch 里模拟完整 grid；这能先把 execution plan 和 tile-index 语义闭环，再把真正的多核 materialization 留到后续阶段。
   - 是否仍复用了通用 TIR 规范化 pass
   - 是否仍复用了 `AnnotateDeviceRegions` / `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch`
   - runtime/module 是否还在间接定义 PrimFunc 参数和 host/device 语义

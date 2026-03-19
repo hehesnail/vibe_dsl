@@ -38,13 +38,17 @@
   - `32x32`
   - `32x64`
   - `64x32`
+- `grid > 1` 且 `bx/by` 参与索引的 direct-call staged copy 已在 TT-Sim 上通过：
+  - `grid_x=2`
+  - `grid_y=3`
+  - `96x64 float16`
 
 当前仍然存在的主要结构问题：
 
 - split 前语义规划仍不够强，copy/gemm 语义仍偏依赖 split 后 matcher 恢复
 - `PlanBlackholeCB` 仍偏 MVP allocator，尚未成为正式 memory planner
 - `BlackholeModule` 还没有彻底成为唯一正式 host-side execution path
-- `grid > 1` 的 true execution 路径虽然已补 host/runtime 顺序 work-item 执行，但本轮只做了结构验证，尚未在 TT-Sim 上完成实跑确认
+- large-shape copy 和 oversubscription 负例还没有补齐
 - `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等通用中后段 pass 仍未安全接回
 
 当前新增设计收束：
@@ -129,11 +133,8 @@
 1. 先把 split 前 / split 后 / host-side 三层边界在代码中收正到一致。
 2. 收正 `LowerTileOp` 的 Blackhole-aware branch，先把 split 前 copy 语义规划固定下来。
 3. 再收正 `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores`，让 split 后 attrs 真正变成正式 `runtime_args / cb_configs / core_plan`。
-4. 在 TT-Sim 上实跑验证 `grid > 1` staged copy，确认新 `work_packets/current_work_linear_id` 执行链闭环。
-5. 把 `BlackholeModule` direct host path 收正成唯一正式执行路径，不再以 external runner 为主路径。
-6. 用 staged copy 补齐：
-   - `grid > 1`
-   - `bx/by` 索引
+4. 把 `BlackholeModule` direct host path 收正成唯一正式执行路径，不再以 external runner 为主路径。
+5. 用 staged copy 补齐：
    - large-shape copy
    - oversubscription 负例
 7. 在不破坏 copy 正式 E2E 的前提下，分批接回 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite`。
