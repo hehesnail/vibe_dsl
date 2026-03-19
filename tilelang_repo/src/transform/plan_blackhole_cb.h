@@ -31,46 +31,17 @@
 #ifndef TVM_TL_PLAN_BLACKHOLE_CB_H_
 #define TVM_TL_PLAN_BLACKHOLE_CB_H_
 
+#include "blackhole_cb_common.h"
+
 #include <tvm/tir/function.h>
 #include <tvm/tir/stmt.h>
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
-#include <string>
 #include <vector>
 
 namespace tvm {
 namespace tl {
-
-/*!
- * \brief CB type classification
- */
-enum class CBType {
-  kInput,        // CB 0-15: Input buffers (Reader -> Compute)
-  kOutput,       // CB 16-31: Output buffers (Compute -> Writer)
-  kIntermediate  // CB 32-63: Intermediate buffers
-};
-
-/*!
- * \brief CB requirement description (input to planning)
- */
-struct CBRequirement {
-  std::string name;        // Buffer name
-  CBType type;             // CB classification
-  int page_size;           // Size of each page in bytes
-  int num_pages;           // Number of pages (for double buffering)
-  std::string data_format; // Data format string (e.g., "Float16", "Float32")
-  int lifetime_begin;      // First requirement slot where this CB is live
-  int lifetime_end;        // Last requirement slot where this CB is live
-
-  CBRequirement()
-      : type(CBType::kIntermediate),
-        page_size(2048),
-        num_pages(2),
-        data_format("Float16"),
-        lifetime_begin(0),
-        lifetime_end(0) {}
-};
 
 /*!
  * \brief CB configuration result (output from planning)

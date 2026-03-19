@@ -59,6 +59,9 @@
   - lifetime 不重叠
   - `cb_configs` 只保留真正要 materialize 的 memory object
   - `cb_configs.requirement_names` 记录被合并的 requirement 名集合
+- planner protocol struct 已进一步收敛：
+  - `CBType/CBRequirement` 已集中到共享头文件
+  - 不再依赖 `lower_blackhole_ops.h` / `plan_blackhole_cb.h` 的重复定义保持人工同步
 
 当前仍然存在的主要结构问题：
 
@@ -156,7 +159,6 @@
 8. 在当前保守同型非重叠 reuse 的基础上，继续补：
    - 跨更多 requirement 形态的兼容性规则
    - 更明确的 requirement-to-memory-object 绑定协议
-   - 最终单一定义的 planner protocol struct
 9. 在不破坏 copy 正式 E2E 的前提下，分批接回 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite`。
 10. 最后用同一结构推进 GEMM。
 

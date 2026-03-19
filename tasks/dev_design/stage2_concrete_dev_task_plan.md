@@ -165,7 +165,6 @@ copy 不只验证最小 case，还必须验证：
 - 下一轮 planner 收正切口：
   - 扩展兼容性判断，不再只覆盖“同型 requirement”
   - 收正 requirement 到 memory object 的绑定协议，不让下游只靠名字猜测
-  - 把 duplicated planner protocol struct 进一步收敛成单一定义
 - 在不打断现有 copy true E2E 的前提下，为后续真正的 lifetime/reuse planner 留协议位
 
 #### 完成标准

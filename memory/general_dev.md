@@ -178,6 +178,7 @@
   - `blackhole.segment_plan`
   这样能直接防止语义又滑回 runtime 猜测路径。
 - 对 Blackhole 这类正在收 protocol schema 的 backend，如果同一个 protocol struct 在多个 pass 头文件里重复定义，并且处于同一 namespace，那么每次 schema 扩展都必须同步更新所有副本，或者尽快集中到单一定义；否则很容易出现 ODR/ABI 错位，最后在完全不相关的位置以字符串拷贝或 vector 操作崩溃。
+- 一旦确认某组 pass 之间共享同一份 protocol schema，不要长期依赖“复制一份完全相同的 struct 定义”来维持一致；更稳的做法是尽快抽出共享头文件，让 extractor/planner 直接 include 同一份定义。
 - 当 `memory plan` 已经形成结构化 attrs 时，像 `total_size_bytes`、`lifetime_begin/end` 这类派生字段应由 planner 显式写出，而不是让 codegen/runtime 再从 `page_size * num_pages` 或 requirement 顺序二次反推；这样更容易把 protocol 和 planner 职责固定下来。
 - 对 `PlanBlackholeCB` 这类 split 后 planner，如果要验证 lifetime/reuse，不必强行等真实 lowering 自然产出复杂 requirement；更稳的做法是：
   - 先复用一条真实 lowered Blackhole PrimFunc 作为 body 载体

@@ -167,7 +167,7 @@
   - 至少保证两处重复定义完全同步
   - 更稳的长期方向是把共享 protocol struct 收敛成单一定义
   - 本轮同时让 `LowerBlackholeOps` 显式写出 `lifetime_begin/end` attrs，避免 planner 侧再隐式猜测
-- **当前状态**: 已解决，但重复定义本身仍是潜在维护风险，后续应继续收敛。
+- **当前状态**: 已进一步解决。`CBType/CBRequirement` 已收敛到共享头文件，不再依赖两份重复定义保持人工同步；当前剩余维护点主要是后续是否还要把更多 planner protocol type 一并集中。
 
 ### Blackhole 当前旁路了大量 TileLang/TVM 主线 pass
 
