@@ -135,12 +135,12 @@
 
 ## 当前下一步
 
-1. 让 `LowerBlackholeOps` 直接消费 split 后 device kernel 的更稳定 staged-copy 形态。
-2. 继续把 staged copy 从“rectangular tile 也能跑”收成更一般的 DSL tile shape / loop shape 识别，而不是只覆盖当前几种矩形 tile。
-3. 在不破坏当前 copy true E2E 的前提下，逐步把 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等 pass 接回 Blackhole 主链。
-4. 收正 `blockIdx` / `core_plan` / runner 单核执行之间的边界，避免 device code 继续把 core 坐标常量化。
-5. 先把 single-core 执行改成“单核串行处理 logical blocks”的正式模型，再继续扩大 copy 覆盖面。
-6. 用 copy 已打通的 `host entry -> device kernel -> spec -> runner` 结构推进 GEMM。
+1. 先把 `blackhole.core_plan` 从摘要信息收正成可执行的 single-core work-plan schema，并同步 `rt_mod_blackhole` / `ExecutableSpec` / `BlackholeModule` / runner。
+2. 去掉 `CodeGenBlackhole` 中 `blockIdx.x/y -> 0` 的常量化，让 logical block 信息改由 execution plan / runtime ABI 提供。
+3. 把 runner 从“单核 `{0, 0}` 跑一次”收正成“单核串行处理 logical blocks”的正式模型，并补 `grid>1` copy 真执行验证。
+4. 再让 `LowerBlackholeOps` 直接消费更稳定的 split 后 device kernel copy 形态，把 staged copy 识别继续收成更一般的 DSL tile shape / loop shape。
+5. 在不破坏当前 copy true E2E 的前提下，分批把 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等 pass 接回 Blackhole 主链。
+6. 用 copy 已打通且已收正的 `host entry -> device kernel -> spec -> runner` 结构推进 GEMM。
 7. 继续把真执行测试按环境 gate 分层，避免把 TT-Sim 环境问题记成编译链问题。
 
 ## 当前活动设计文档
@@ -149,3 +149,4 @@
 - `tasks/dev_design/stage2_pass_reuse_matrix.md`
 - `tasks/dev_design/stage2_single_core_pass_integration.md`
 - `tasks/dev_design/stage2_blackhole_logical_block_launch_plan.md`
+- `tasks/dev_design/stage2_concrete_dev_task_plan.md`
