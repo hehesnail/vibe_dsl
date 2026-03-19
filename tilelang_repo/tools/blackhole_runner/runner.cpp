@@ -50,12 +50,23 @@ struct CBConfig {
 };
 
 struct CorePlan {
-    uint32_t grid_x = 1;
-    uint32_t grid_y = 1;
-    uint32_t cores_needed = 1;
-    uint32_t work_per_core = 1;
-    uint32_t core_grid_x = 1;
-    uint32_t core_grid_y = 1;
+    struct PhysicalCore {
+        uint32_t core_x = 0;
+        uint32_t core_y = 0;
+    };
+
+    struct WorkPacket {
+        uint32_t core_x = 0;
+        uint32_t core_y = 0;
+        uint32_t work_offset = 0;
+        uint32_t work_count = 1;
+    };
+
+    uint32_t logical_grid_x = 1;
+    uint32_t logical_grid_y = 1;
+    std::string linearization = "row_major";
+    std::vector<PhysicalCore> physical_cores;
+    std::vector<WorkPacket> work_packets;
 };
 
 struct RunConfig {
@@ -167,12 +178,25 @@ RunConfig parse_args(int argc, char* argv[]) {
     config.scalar_args = spec_json.value("scalar_args", std::vector<uint32_t>{});
 
     const auto& core = spec_json.value("core_plan", json::object());
-    config.core_plan.grid_x = core.value("grid_x", 1u);
-    config.core_plan.grid_y = core.value("grid_y", 1u);
-    config.core_plan.cores_needed = core.value("cores_needed", 1u);
-    config.core_plan.work_per_core = core.value("work_per_core", 1u);
-    config.core_plan.core_grid_x = core.value("core_grid_x", 1u);
-    config.core_plan.core_grid_y = core.value("core_grid_y", 1u);
+    config.core_plan.logical_grid_x =
+        core.value("logical_grid_x", core.value("grid_x", 1u));
+    config.core_plan.logical_grid_y =
+        core.value("logical_grid_y", core.value("grid_y", 1u));
+    config.core_plan.linearization = core.value("linearization", "row_major");
+    for (const auto& item : core.value("physical_cores", json::array())) {
+        config.core_plan.physical_cores.push_back(CorePlan::PhysicalCore{
+            .core_x = item.value("core_x", 0u),
+            .core_y = item.value("core_y", 0u),
+        });
+    }
+    for (const auto& item : core.value("work_packets", json::array())) {
+        config.core_plan.work_packets.push_back(CorePlan::WorkPacket{
+            .core_x = item.value("core_x", 0u),
+            .core_y = item.value("core_y", 0u),
+            .work_offset = item.value("work_offset", 0u),
+            .work_count = item.value("work_count", 1u),
+        });
+    }
 
     for (const auto& cb : spec_json.value("cb_configs", json::array())) {
         config.cb_configs.push_back(parse_cb_config(cb));
@@ -274,6 +298,12 @@ std::vector<uint32_t> build_runtime_args(
             args.push_back(static_cast<uint32_t>(dst_addr));
         } else if (arg.kind == "tile_count") {
             args.push_back(tile_size == 0 ? 0 : static_cast<uint32_t>(config.input_size_bytes / tile_size));
+        } else if (arg.kind == "current_work_linear_id") {
+            uint32_t work_id = 0;
+            if (!config.core_plan.work_packets.empty()) {
+                work_id = config.core_plan.work_packets.front().work_offset;
+            }
+            args.push_back(work_id);
         } else if (arg.kind == "scratch_l1_buffer_addr32") {
             if (scratch_l1_buffer == nullptr) {
                 throw std::runtime_error("Spec requested scratch L1 buffer but none was allocated");

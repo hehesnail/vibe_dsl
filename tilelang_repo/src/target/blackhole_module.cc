@@ -84,6 +84,26 @@ std::string SerializeKernelArgSpec(const KernelArgSpec& arg) {
   return os.str();
 }
 
+std::string SerializePhysicalCore(const PhysicalCore& core) {
+  std::ostringstream os;
+  os << "{"
+     << "\"core_x\":" << core.core_x << ","
+     << "\"core_y\":" << core.core_y
+     << "}";
+  return os.str();
+}
+
+std::string SerializeWorkPacket(const WorkPacket& packet) {
+  std::ostringstream os;
+  os << "{"
+     << "\"core_x\":" << packet.core_x << ","
+     << "\"core_y\":" << packet.core_y << ","
+     << "\"work_offset\":" << packet.work_offset << ","
+     << "\"work_count\":" << packet.work_count
+     << "}";
+  return os.str();
+}
+
 std::string SerializeExecutableSpec(const ExecutableSpec& spec,
                                     const std::vector<uint32_t>& scalar_args,
                                     size_t input_size_bytes,
@@ -103,12 +123,23 @@ std::string SerializeExecutableSpec(const ExecutableSpec& spec,
   os << "],";
 
   os << "\"core_plan\":{"
-     << "\"grid_x\":" << spec.core_plan.grid_x << ","
-     << "\"grid_y\":" << spec.core_plan.grid_y << ","
-     << "\"cores_needed\":" << spec.core_plan.cores_needed << ","
-     << "\"work_per_core\":" << spec.core_plan.work_per_core << ","
-     << "\"core_grid_x\":" << spec.core_plan.core_grid_x << ","
-     << "\"core_grid_y\":" << spec.core_plan.core_grid_y
+     << "\"logical_grid_x\":" << spec.core_plan.logical_grid_x << ","
+     << "\"logical_grid_y\":" << spec.core_plan.logical_grid_y << ","
+     << "\"linearization\":" << QuoteJson(spec.core_plan.linearization) << ",";
+
+  os << "\"physical_cores\":[";
+  for (size_t i = 0; i < spec.core_plan.physical_cores.size(); ++i) {
+    if (i != 0) os << ",";
+    os << SerializePhysicalCore(spec.core_plan.physical_cores[i]);
+  }
+  os << "],";
+
+  os << "\"work_packets\":[";
+  for (size_t i = 0; i < spec.core_plan.work_packets.size(); ++i) {
+    if (i != 0) os << ",";
+    os << SerializeWorkPacket(spec.core_plan.work_packets[i]);
+  }
+  os << "]"
      << "},";
 
   os << "\"cb_configs\":[";

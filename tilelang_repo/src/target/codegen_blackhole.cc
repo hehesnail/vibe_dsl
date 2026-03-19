@@ -57,6 +57,9 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   runtime_arg_vars_by_kind_.clear();
   cb_page_size_by_id_.clear();
   cb_num_pages_by_id_.clear();
+  logical_grid_x_ = 1;
+  logical_grid_y_ = 1;
+  linearization_ = "row_major";
 }
 
 std::string CodeGenBlackhole::GetKernelCode() const {
@@ -131,6 +134,7 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   // Generate argument loading code
   // TT-Metal kernels use get_arg_val<uint32_t>(arg_index) to read arguments
   stream << "  // Load kernel arguments from runtime\n";
+  LoadCorePlan(f);
   if (f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.runtime_args")) {
     EmitRuntimeArgLoads(f);
     this->VisitStmt(f->body);
@@ -189,6 +193,32 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   this->VisitStmt(f->body);
 
   stream << "}\n\n";
+}
+
+void CodeGenBlackhole::LoadCorePlan(const tvm::tir::PrimFunc &f) {
+  logical_grid_x_ = 1;
+  logical_grid_y_ = 1;
+  linearization_ = "row_major";
+
+  auto core_plan_attr = f->GetAttr<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>("blackhole.core_plan");
+  if (!core_plan_attr) {
+    return;
+  }
+
+  const auto &core_plan = core_plan_attr.value();
+  if (auto v = core_plan.Get("logical_grid_x")) {
+    logical_grid_x_ = Downcast<tvm::Integer>(v.value()).IntValue();
+  } else if (auto v = core_plan.Get("grid_x")) {
+    logical_grid_x_ = Downcast<tvm::Integer>(v.value()).IntValue();
+  }
+  if (auto v = core_plan.Get("logical_grid_y")) {
+    logical_grid_y_ = Downcast<tvm::Integer>(v.value()).IntValue();
+  } else if (auto v = core_plan.Get("grid_y")) {
+    logical_grid_y_ = Downcast<tvm::Integer>(v.value()).IntValue();
+  }
+  if (auto v = core_plan.Get("linearization")) {
+    linearization_ = Downcast<tvm::ffi::String>(v.value());
+  }
 }
 
 void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
@@ -394,16 +424,30 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
   ICHECK(!var_idmap_.count(iv->var.get()));
 
   std::string thread_tag = iv->thread_tag;
+  const bool has_current_work_linear_id =
+      runtime_arg_vars_by_kind_.count("current_work_linear_id") &&
+      linearization_ == "row_major" &&
+      logical_grid_x_ > 0;
 
   // Map CUDA-style thread indices to Blackhole concepts
-  // For single-core execution, we simplify these to constants or core coordinates
+  // For staged single-core execution, logical block indices are reconstructed
+  // from the execution-plan runtime arg instead of being constantized.
   if (thread_tag == "blockIdx.x") {
-    // Map to Blackhole core X coordinate
-    // For single-core: just 0
-    var_idmap_[iv->var.get()] = "0 /* core_x */";
+    if (has_current_work_linear_id) {
+      const std::string &work_id = runtime_arg_vars_by_kind_.at("current_work_linear_id");
+      var_idmap_[iv->var.get()] =
+          "(" + work_id + " % " + std::to_string(logical_grid_x_) + ")";
+    } else {
+      var_idmap_[iv->var.get()] = "0 /* core_x */";
+    }
   } else if (thread_tag == "blockIdx.y") {
-    // Map to Blackhole core Y coordinate
-    var_idmap_[iv->var.get()] = "0 /* core_y */";
+    if (has_current_work_linear_id) {
+      const std::string &work_id = runtime_arg_vars_by_kind_.at("current_work_linear_id");
+      var_idmap_[iv->var.get()] =
+          "(" + work_id + " / " + std::to_string(logical_grid_x_) + ")";
+    } else {
+      var_idmap_[iv->var.get()] = "0 /* core_y */";
+    }
   } else if (thread_tag == "blockIdx.z") {
     var_idmap_[iv->var.get()] = "0 /* core_z */";
   } else if (thread_tag == "threadIdx.x") {

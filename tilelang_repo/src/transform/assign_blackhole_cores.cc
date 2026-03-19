@@ -32,6 +32,7 @@
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace tvm {
@@ -122,58 +123,27 @@ CoreAssignment AssignBlackholeCores::AnalyzeGrid(const PrimFunc& func) {
 
 // Calculate work distribution across cores
 void AssignBlackholeCores::CalculateWorkDistribution(CoreAssignment& assignment) {
-  int total_work = assignment.grid_x * assignment.grid_y;
+  const int total_work = std::max(1, assignment.grid_x * assignment.grid_y);
 
-  if (total_work <= kTotalCores) {
-    // Less work than cores - use one core per work item
-    assignment.work_per_core = 1;
-    assignment.cores_needed = total_work;
-  } else {
-    // More work than cores - distribute evenly
-    assignment.work_per_core = static_cast<int>(
-        std::ceil(static_cast<double>(total_work) / kTotalCores));
-    assignment.cores_needed = kTotalCores;
-  }
+  // Stage 2 keeps Blackhole execution on a single physical core and models the
+  // logical grid explicitly in core_plan/work_packets. Multi-core distribution
+  // is deferred to Stage 3.
+  assignment.work_per_core = total_work;
+  assignment.cores_needed = 1;
 }
 
 // Calculate runtime args for a specific core
 RuntimeArgs AssignBlackholeCores::GetRuntimeArgs(int core_idx) const {
   RuntimeArgs args;
 
-  int total_work = assignment_.grid_x * assignment_.grid_y;
-  int work_offset = core_idx * assignment_.work_per_core;
-
-  if (work_offset >= total_work) {
-    // This core has no work
-    args.work_offset_x = 0;
-    args.work_offset_y = 0;
-    args.work_count_x = 0;
-    args.work_count_y = 0;
+  if (core_idx != 0) {
+    args.work_offset_linear = 0;
+    args.work_count = 0;
     return args;
   }
 
-  // Convert 1D work offset to 2D
-  args.work_offset_y = work_offset / assignment_.grid_x;
-  args.work_offset_x = work_offset % assignment_.grid_x;
-
-  // Calculate work count for this core
-  int remaining_work = total_work - work_offset;
-  int work_count = std::min(assignment_.work_per_core, remaining_work);
-
-  // Simplified: all work in a 1D strip
-  args.work_count_x = work_count;
-  args.work_count_y = 1;
-
-  // Adjust for 2D grid boundaries
-  if (args.work_offset_y < assignment_.grid_y) {
-    int max_work_in_row = assignment_.grid_x - args.work_offset_x;
-    if (work_count > max_work_in_row) {
-      args.work_count_x = max_work_in_row;
-      args.work_count_y = (work_count - max_work_in_row + assignment_.grid_x - 1)
-                          / assignment_.grid_x + 1;
-    }
-  }
-
+  args.work_offset_linear = 0;
+  args.work_count = std::max(1, assignment_.grid_x * assignment_.grid_y);
   return args;
 }
 
@@ -222,12 +192,31 @@ void AssignBlackholeCores::StoreAssignment(PrimFunc& func,
 
   // Store core assignment values (merge with existing)
   tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> core_plan;
-  core_plan.Set("grid_x", Integer(assignment.grid_x));
-  core_plan.Set("grid_y", Integer(assignment.grid_y));
-  core_plan.Set("cores_needed", Integer(assignment.cores_needed));
-  core_plan.Set("work_per_core", Integer(assignment.work_per_core));
-  core_plan.Set("core_grid_x", Integer(assignment.core_grid_x));
-  core_plan.Set("core_grid_y", Integer(assignment.core_grid_y));
+  core_plan.Set("logical_grid_x", Integer(assignment.grid_x));
+  core_plan.Set("logical_grid_y", Integer(assignment.grid_y));
+  core_plan.Set("linearization", ffi::String("row_major"));
+
+  tvm::ffi::Array<tvm::ffi::Any> physical_cores;
+  tvm::ffi::Array<tvm::ffi::Any> work_packets;
+
+  for (int core_idx = 0; core_idx < assignment.cores_needed; ++core_idx) {
+    const CoreCoord coord = GetCoreCoord(core_idx);
+    tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> core_info;
+    core_info.Set("core_x", Integer(coord.x));
+    core_info.Set("core_y", Integer(coord.y));
+    physical_cores.push_back(core_info);
+
+    const RuntimeArgs runtime_args = GetRuntimeArgs(core_idx);
+    tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> packet_info;
+    packet_info.Set("core_x", Integer(coord.x));
+    packet_info.Set("core_y", Integer(coord.y));
+    packet_info.Set("work_offset", Integer(runtime_args.work_offset_linear));
+    packet_info.Set("work_count", Integer(runtime_args.work_count));
+    work_packets.push_back(packet_info);
+  }
+
+  core_plan.Set("physical_cores", physical_cores);
+  core_plan.Set("work_packets", work_packets);
 
   attrs.Set("blackhole.grid_shape", Integer(assignment.grid_x * assignment.grid_y));
   attrs.Set("blackhole.grid_x", Integer(assignment.grid_x));

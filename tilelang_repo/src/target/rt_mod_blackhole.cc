@@ -30,6 +30,7 @@
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/stmt_functor.h>
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <unordered_map>
@@ -252,23 +253,72 @@ static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
   }
 
   const auto& core_plan = core_plan_attr.value();
-  if (auto v = core_plan.Get("grid_x")) {
-    plan.grid_x = Downcast<Integer>(v.value()).IntValue();
+  if (auto v = core_plan.Get("logical_grid_x")) {
+    plan.logical_grid_x = Downcast<Integer>(v.value()).IntValue();
+  } else if (auto v = core_plan.Get("grid_x")) {
+    plan.logical_grid_x = Downcast<Integer>(v.value()).IntValue();
   }
-  if (auto v = core_plan.Get("grid_y")) {
-    plan.grid_y = Downcast<Integer>(v.value()).IntValue();
+  if (auto v = core_plan.Get("logical_grid_y")) {
+    plan.logical_grid_y = Downcast<Integer>(v.value()).IntValue();
+  } else if (auto v = core_plan.Get("grid_y")) {
+    plan.logical_grid_y = Downcast<Integer>(v.value()).IntValue();
   }
-  if (auto v = core_plan.Get("cores_needed")) {
-    plan.cores_needed = Downcast<Integer>(v.value()).IntValue();
+  if (auto v = core_plan.Get("linearization")) {
+    plan.linearization = Downcast<String>(v.value());
   }
-  if (auto v = core_plan.Get("work_per_core")) {
-    plan.work_per_core = Downcast<Integer>(v.value()).IntValue();
+
+  if (auto v = core_plan.Get("physical_cores")) {
+    for (const auto& item : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+      auto core_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+          ffi::Map<ffi::String, ffi::Any>());
+      if (core_info.empty()) {
+        continue;
+      }
+      PhysicalCore core;
+      if (auto x = core_info.Get("core_x")) {
+        core.core_x = Downcast<Integer>(x.value()).IntValue();
+      }
+      if (auto y = core_info.Get("core_y")) {
+        core.core_y = Downcast<Integer>(y.value()).IntValue();
+      }
+      plan.physical_cores.push_back(core);
+    }
   }
-  if (auto v = core_plan.Get("core_grid_x")) {
-    plan.core_grid_x = Downcast<Integer>(v.value()).IntValue();
+
+  if (auto v = core_plan.Get("work_packets")) {
+    for (const auto& item : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+      auto packet_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+          ffi::Map<ffi::String, ffi::Any>());
+      if (packet_info.empty()) {
+        continue;
+      }
+      WorkPacket packet;
+      if (auto x = packet_info.Get("core_x")) {
+        packet.core_x = Downcast<Integer>(x.value()).IntValue();
+      }
+      if (auto y = packet_info.Get("core_y")) {
+        packet.core_y = Downcast<Integer>(y.value()).IntValue();
+      }
+      if (auto offset = packet_info.Get("work_offset")) {
+        packet.work_offset = Downcast<Integer>(offset.value()).IntValue();
+      }
+      if (auto count = packet_info.Get("work_count")) {
+        packet.work_count = Downcast<Integer>(count.value()).IntValue();
+      }
+      plan.work_packets.push_back(packet);
+    }
   }
-  if (auto v = core_plan.Get("core_grid_y")) {
-    plan.core_grid_y = Downcast<Integer>(v.value()).IntValue();
+
+  if (plan.physical_cores.empty()) {
+    plan.physical_cores.push_back(PhysicalCore{});
+  }
+  if (plan.work_packets.empty()) {
+    plan.work_packets.push_back(WorkPacket{
+        0,
+        0,
+        0,
+        std::max<uint32_t>(1, plan.logical_grid_x * plan.logical_grid_y),
+    });
   }
   return plan;
 }
@@ -277,19 +327,21 @@ static std::vector<KernelArgSpec> MakeDefaultCopyRuntimeArgs() {
   return {
       {"input0", "input_buffer_addr32", "uint32"},
       {"output0", "output_buffer_addr32", "uint32"},
+      {"current_work_linear_id", "current_work_linear_id", "uint32"},
       {"num_tiles", "tile_count", "uint32"},
       {"scratch_l1", "scratch_l1_buffer_addr32", "uint32"},
   };
 }
 
 static bool HasCopyRuntimeArgSchema(const std::vector<KernelArgSpec>& runtime_args) {
-  if (runtime_args.size() != 4) {
+  if (runtime_args.size() != 5) {
     return false;
   }
   return runtime_args[0].kind == "input_buffer_addr32" &&
          runtime_args[1].kind == "output_buffer_addr32" &&
-         runtime_args[2].kind == "tile_count" &&
-         runtime_args[3].kind == "scratch_l1_buffer_addr32";
+         runtime_args[2].kind == "current_work_linear_id" &&
+         runtime_args[3].kind == "tile_count" &&
+         runtime_args[4].kind == "scratch_l1_buffer_addr32";
 }
 
 static bool HasCopyBuiltins(const tir::PrimFunc& f) {

@@ -218,6 +218,7 @@
 - 真执行测试需要把编译链和环境问题分层处理。对 Blackhole，`TT_METAL_RUNTIME_ROOT` 缺失时 runner 和 direct-call 都会在 Metal 初始化前失败；这类情况应该在测试前置检查里显式 skip，而不是记成 codegen/pass 回归。
 - 当一个新 target 已经接入 TileLang/TVM 的 PrimFunc/TIR 主链时，优先问题不应是“补多少自定义 pass”，而应先核对它是否旁路了现有主线中的关键 pass。对 Blackhole，当前最关键的结构检查项是：
   - 是否过早在 target-specific optimize 阶段 early return
+- Blackhole 这类 C++ backend 改动做完后，Python 结构测试如果仍然看到旧 attrs / 旧 runtime arg schema，先不要急着改逻辑；更稳的做法是先增量重编 `tilelang_repo/build`，确认 `libtilelang.so` 和 Python wrapper 已更新，再重跑 pytest。否则很容易把“加载了旧扩展”误判成 pass/codegen 回归。
   - 是否仍复用了通用 TIR 规范化 pass
   - 是否仍复用了 `AnnotateDeviceRegions` / `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch`
   - runtime/module 是否还在间接定义 PrimFunc 参数和 host/device 语义

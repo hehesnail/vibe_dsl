@@ -60,11 +60,10 @@ struct CoreAssignment {
  * \brief Runtime arguments for each core
  */
 struct RuntimeArgs {
-  int work_offset_x, work_offset_y;  // Start work item for this core
-  int work_count_x, work_count_y;    // Number of work items for this core
+  int work_offset_linear;  // Row-major logical block offset assigned to this core
+  int work_count;          // Number of logical blocks assigned to this core
 
-  RuntimeArgs() : work_offset_x(0), work_offset_y(0),
-                  work_count_x(1), work_count_y(1) {}
+  RuntimeArgs() : work_offset_linear(0), work_count(1) {}
 };
 
 /*!

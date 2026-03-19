@@ -103,7 +103,24 @@
 - **后续处理方向**:
   - 不应长期依赖 `blockIdx` 常量化
   - 后续需要把单核 tile 遍历语义和 host/runtime scheduling 的边界重新收口，避免 device code 在 tile index 上失真
-- **当前状态**: 未解决。当前 staged copy MVP 通过显式 serial tile loop 绕开该限制。
+- **当前状态**: 部分已解决。`CodeGenBlackhole` 现在已支持在存在 `current_work_linear_id + logical_grid_x` 时按 row-major 绑定 `blockIdx.x/y`；但 grid-indexed staged copy 仍可能在更早的 copy 语义恢复阶段把 `bx/by` 抹平，因此这还不是完整修复。
+
+### grid-indexed staged copy 仍可能在 copy tile-index 恢复前丢失 `bx/by`
+
+- **时间**: 2026-03-19
+- **问题**: 即使 `AssignBlackholeCores` 已产出正式 `core_plan`，copy runtime arg schema 也已补 `current_work_linear_id`，某些 `grid > 1` staged copy 生成的最终 device code 仍会退化成固定 `tile_index = 0`。
+- **现象**:
+  - split 后 device kernel 已带有：
+    - `blackhole.core_plan.logical_grid_x/y`
+    - `blackhole.core_plan.work_packets`
+    - `blackhole.runtime_args.current_work_linear_id`
+  - 但 grid-indexed copy 的最终源码里仍可能只看到固定 tile index，而没有 `bx/by` 推导表达式
+- **根本原因**: `LowerBlackholeOps` 当前在 staged copy tile-index 推断时，会先对 thread/loop vars 做零化归一；这会在 codegen 绑定 `blockIdx` 之前，就把 `bx/by` 参与的 tile-index 语义提前抹掉。
+- **解决方向**:
+  - 不要在 copy tile-index 恢复前无条件把 `blockIdx` 相关变量归零
+  - 让 split 前 planning 或 split 后 copy matcher 至少保留 `bx/by -> tile_index` 的映射
+  - 再由 codegen/runtime ABI 消费 `current_work_linear_id`
+- **当前状态**: 未解决。这是当前 `grid > 1` staged copy 正式验收的主要阻塞之一。
 
 ### Blackhole 当前旁路了大量 TileLang/TVM 主线 pass
 

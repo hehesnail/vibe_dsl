@@ -311,6 +311,7 @@ void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
 
   push_arg(input_arg_name, "input_buffer_addr32", "uint32", copy_input_buffer_name_);
   push_arg(output_arg_name, "output_buffer_addr32", "uint32", copy_output_buffer_name_);
+  push_arg("current_work_linear_id", "current_work_linear_id", "uint32");
   push_arg("tile_count", "tile_count", "uint32");
   push_arg("scratch_l1_addr", "scratch_l1_buffer_addr32", "uint32");
 

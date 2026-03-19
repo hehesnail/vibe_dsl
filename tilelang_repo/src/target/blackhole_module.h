@@ -34,13 +34,30 @@ struct CBConfig {
 /*!
  * \brief Host scheduling plan derived from Blackhole passes.
  */
+struct PhysicalCore {
+  uint32_t core_x = 0;
+  uint32_t core_y = 0;
+};
+
+/*!
+ * \brief Work packet assigned to a physical core.
+ */
+struct WorkPacket {
+  uint32_t core_x = 0;
+  uint32_t core_y = 0;
+  uint32_t work_offset = 0;
+  uint32_t work_count = 1;
+};
+
+/*!
+ * \brief Host scheduling plan derived from Blackhole passes.
+ */
 struct CorePlan {
-  uint32_t grid_x = 1;
-  uint32_t grid_y = 1;
-  uint32_t cores_needed = 1;
-  uint32_t work_per_core = 1;
-  uint32_t core_grid_x = 1;
-  uint32_t core_grid_y = 1;
+  uint32_t logical_grid_x = 1;
+  uint32_t logical_grid_y = 1;
+  std::string linearization = "row_major";
+  std::vector<PhysicalCore> physical_cores;
+  std::vector<WorkPacket> work_packets;
 };
 
 /*!

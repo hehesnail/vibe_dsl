@@ -86,12 +86,11 @@ def write_single_core_copy_spec(spec_path, kernel_path, tensor_nbytes):
         "output_size_bytes": int(tensor_nbytes),
         "scalar_args": [],
         "core_plan": {
-            "grid_x": 1,
-            "grid_y": 1,
-            "cores_needed": 1,
-            "work_per_core": 1,
-            "core_grid_x": 1,
-            "core_grid_y": 1,
+            "logical_grid_x": 1,
+            "logical_grid_y": 1,
+            "linearization": "row_major",
+            "physical_cores": [{"core_x": 1, "core_y": 2}],
+            "work_packets": [{"core_x": 1, "core_y": 2, "work_offset": 0, "work_count": 1}],
         },
         "cb_configs": [
             {
@@ -113,6 +112,11 @@ def write_single_core_copy_spec(spec_path, kernel_path, tensor_nbytes):
                 "runtime_args": [
                     {"name": "input0", "kind": "input_buffer_addr32", "dtype": "uint32"},
                     {"name": "output0", "kind": "output_buffer_addr32", "dtype": "uint32"},
+                    {
+                        "name": "current_work_linear_id",
+                        "kind": "current_work_linear_id",
+                        "dtype": "uint32",
+                    },
                     {"name": "num_tiles", "kind": "tile_count", "dtype": "uint32"},
                     {"name": "scratch_l1", "kind": "scratch_l1_buffer_addr32", "dtype": "uint32"},
                 ],
@@ -140,6 +144,24 @@ def staged_copy_kernel(tile_rows: int, tile_cols: int = 1, tile_m: int = 32, til
                 tile_col = tile_idx % tile_cols
                 T.copy(A[tile_row * tile_m, tile_col * tile_n], A_shared)
                 T.copy(A_shared, B[tile_row * tile_m, tile_col * tile_n])
+
+    return main
+
+
+def grid_indexed_staged_copy_kernel(grid_x: int, grid_y: int, tile_m: int = 32, tile_n: int = 32):
+    """Define a copy kernel whose indices depend on bx/by logical block coordinates."""
+    M = grid_y * tile_m
+    N = grid_x * tile_n
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), "float16"),
+        B: T.Tensor((M, N), "float16"),
+    ):
+        with T.Kernel(grid_x, grid_y) as (bx, by):
+            A_shared = T.alloc_shared((tile_m, tile_n), "float16")
+            T.copy(A[by * tile_m, bx * tile_n], A_shared)
+            T.copy(A_shared, B[by * tile_m, bx * tile_n])
 
     return main
 
@@ -195,11 +217,23 @@ def test_blackhole_copy_pass_attrs():
     assert runtime_arg_kinds == [
         "input_buffer_addr32",
         "output_buffer_addr32",
+        "current_work_linear_id",
         "tile_count",
         "scratch_l1_buffer_addr32",
     ]
     assert str(runtime_args[0]["buffer"]) == "A"
     assert str(runtime_args[1]["buffer"]) == "B"
+
+    core_plan = func.attrs["blackhole.core_plan"]
+    assert int(core_plan["logical_grid_x"]) == 1
+    assert int(core_plan["logical_grid_y"]) == 1
+    assert str(core_plan["linearization"]) == "row_major"
+    assert len(core_plan["physical_cores"]) == 1
+    assert int(core_plan["physical_cores"][0]["core_x"]) == 1
+    assert int(core_plan["physical_cores"][0]["core_y"]) == 2
+    assert len(core_plan["work_packets"]) == 1
+    assert int(core_plan["work_packets"][0]["work_offset"]) == 0
+    assert int(core_plan["work_packets"][0]["work_count"]) == 1
 
     segment_plan = func.attrs["blackhole.segment_plan"]
     assert len(segment_plan) == 1
@@ -226,11 +260,36 @@ def test_blackhole_copy_codegen_uses_runtime_schema():
     source = artifact.kernel_source if hasattr(artifact, "kernel_source") else str(artifact)
     assert "uint32_t A_addr = get_arg_val<uint32_t>(0);" in source
     assert "uint32_t B_addr = get_arg_val<uint32_t>(1);" in source
-    assert "uint32_t tile_count = get_arg_val<uint32_t>(2);" in source
-    assert "uint32_t scratch_l1_addr = get_arg_val<uint32_t>(3);" in source
+    assert "uint32_t current_work_linear_id = get_arg_val<uint32_t>(2);" in source
+    assert "uint32_t tile_count = get_arg_val<uint32_t>(3);" in source
+    assert "uint32_t scratch_l1_addr = get_arg_val<uint32_t>(4);" in source
     assert "const uint32_t tile_index = tile_row;" in source
     assert "src_dram_addr" not in source
     assert "dst_dram_addr" not in source
+
+
+def test_blackhole_core_plan_preserves_logical_block_launch_metadata():
+    """Grid-indexed copy should surface logical block planning metadata and ABI."""
+    kernel = grid_indexed_staged_copy_kernel(grid_x=2, grid_y=3)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    core_plan = device_main.attrs["blackhole.core_plan"]
+
+    assert int(core_plan["logical_grid_x"]) == 2
+    assert int(core_plan["logical_grid_y"]) == 3
+    assert str(core_plan["linearization"]) == "row_major"
+    assert len(core_plan["physical_cores"]) == 1
+    assert len(core_plan["work_packets"]) == 1
+    assert int(core_plan["work_packets"][0]["work_offset"]) == 0
+    assert int(core_plan["work_packets"][0]["work_count"]) == 6
+
+    source = artifact.kernel_source if hasattr(artifact, "kernel_source") else str(artifact)
+    assert "uint32_t current_work_linear_id = get_arg_val<uint32_t>(2);" in source
 
 
 @pytest.mark.parametrize(

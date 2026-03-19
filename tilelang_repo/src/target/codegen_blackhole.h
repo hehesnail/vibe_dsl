@@ -158,6 +158,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintSemPost(int sem_id);
 
   void EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f);
+  void LoadCorePlan(const tvm::tir::PrimFunc &f);
   std::string GetRuntimeArgVarByKind(const std::string &kind) const;
   std::string GetRuntimeArgVarForBuffer(const tvm::PrimExpr &buffer_expr) const;
   int GetCBPageSize(int cb_id) const;
@@ -186,6 +187,9 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_map<std::string, std::string> runtime_arg_vars_by_kind_;
   std::unordered_map<int, int> cb_page_size_by_id_;
   std::unordered_map<int, int> cb_num_pages_by_id_;
+  int logical_grid_x_{1};
+  int logical_grid_y_{1};
+  std::string linearization_{"row_major"};
 
   // Default L1 memory alignment
   static constexpr int kL1Alignment = 16;
