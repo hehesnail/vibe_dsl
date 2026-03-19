@@ -42,13 +42,18 @@
   - `grid_x=2`
   - `grid_y=3`
   - `96x64 float16`
+- large-shape staged copy（总数据量 > `1.5MB`）已在 TT-Sim 上通过：
+  - `800x1024 float16`
+  - `1638400` bytes
+- per-core memory plan oversubscription 负例已补齐：
+  - `1024x1024` shared tile copy
+  - `PlanBlackholeCB` 编译期直接失败
 
 当前仍然存在的主要结构问题：
 
 - split 前语义规划仍不够强，copy/gemm 语义仍偏依赖 split 后 matcher 恢复
 - `PlanBlackholeCB` 仍偏 MVP allocator，尚未成为正式 memory planner
 - `BlackholeModule` 还没有彻底成为唯一正式 host-side execution path
-- large-shape copy 和 oversubscription 负例还没有补齐
 - `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等通用中后段 pass 仍未安全接回
 
 当前新增设计收束：
@@ -134,9 +139,8 @@
 2. 收正 `LowerTileOp` 的 Blackhole-aware branch，先把 split 前 copy 语义规划固定下来。
 3. 再收正 `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores`，让 split 后 attrs 真正变成正式 `runtime_args / cb_configs / core_plan`。
 4. 把 `BlackholeModule` direct host path 收正成唯一正式执行路径，不再以 external runner 为主路径。
-5. 用 staged copy 补齐：
-   - large-shape copy
-   - oversubscription 负例
+5. 把 large-shape / oversubscription 的当前验证沉淀到后续 memory planner 收正里，不再停留在 MVP allocator 行为。
+6. 在不破坏当前 copy true E2E 的前提下，继续把 `PlanBlackholeCB` 从“按 requirement 累加”收成正式 memory planner。
 7. 在不破坏 copy 正式 E2E 的前提下，分批接回 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite`。
 8. 最后用同一结构推进 GEMM。
 

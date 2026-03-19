@@ -76,10 +76,8 @@ PrimFunc PlanBlackholeCB::Transform(const PrimFunc& func) {
   std::vector<CBConfig> configs = AssignCBIds(requirements);
 
   // Validate the allocation
-  if (!Validate(configs)) {
-    LOG(WARNING) << "PlanBlackholeCB: CB allocation validation failed";
-    // Continue anyway - let runtime handle it
-  }
+  ICHECK(Validate(configs))
+      << "PlanBlackholeCB: CB allocation exceeds Blackhole per-core constraints";
 
   // Create mutable copy and store CB configuration
   PrimFunc new_func = func;

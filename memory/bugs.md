@@ -133,6 +133,27 @@
   - 逐次 launch program，直到当前 single-core work packet 消费完
 - **当前状态**: 已解决。runner 现在会按 `work_packets/current_work_linear_id` 顺序执行 single-core logical work items，`grid_x=2, grid_y=3, 96x64 float16` 的 grid-indexed staged copy 已在 TT-Sim direct-call 上通过，结果与 PyTorch 参考一致。
 
+### oversubscription 不应延后到 runtime 才暴露
+
+- **时间**: 2026-03-19
+- **问题**: `PlanBlackholeCB` 之前即使检测到总 L1 占用超过 `1572864` bytes，也只记日志并继续生成 attrs，导致 oversubscription 会滑到更晚的 codegen/runtime 阶段才暴露。
+- **根本原因**: planner 的 `Validate()` 结果没有被当成编译期约束，而是被当成“可恢复 warning”。
+- **解决方案**:
+  - 把 `PlanBlackholeCB` 的 L1/CB 约束收成真正的编译期失败
+  - 用 oversize shared-tile copy 补负例，例如 `1024x1024` shared tile
+- **当前状态**: 已解决。`PlanBlackholeCB` 现在会在 oversubscription 时直接让编译失败；对应负例已补到 Python 测试。
+
+### large-shape copy 需要验证“总数据量大”但“per-core L1 合法”
+
+- **时间**: 2026-03-19
+- **问题**: 如果只验证最小 tile copy 或只验证 oversubscription 负例，很难确认 planner 没把“总 tensor bytes > 1.5MB”误当成“per-core L1 超限”。
+- **解决方案**:
+  - 增加一个总数据量大于 `1.5MB`、但 shared tile 仍是 `32x32` 的 staged copy 正例
+  - 同时检查：
+    - `blackhole.total_l1_bytes` 仍为 `4096`
+    - TT-Sim direct-call 执行结果与 PyTorch 一致
+- **当前状态**: 已解决。`800x1024 float16` staged copy 已在 TT-Sim direct-call 上通过，输入总字节数 `1638400`，结果与 PyTorch 参考一致。
+
 ### Blackhole 当前旁路了大量 TileLang/TVM 主线 pass
 
 - **时间**: 2026-03-19

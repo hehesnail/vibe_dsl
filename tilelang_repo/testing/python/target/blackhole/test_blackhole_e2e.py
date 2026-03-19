@@ -335,6 +335,70 @@ def test_blackhole_module_direct_call_grid_indexed_copy():
         assert False, "Grid-indexed direct-call output does not match reference"
 
 
+def test_blackhole_large_shape_copy_keeps_per_core_l1_small():
+    """Large-shape copy should keep CB/L1 planning bounded by the shared tile, not total tensor bytes."""
+    kernel = staged_copy_kernel(tile_rows=25, tile_cols=32)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+
+    assert int(device_main.attrs["blackhole.total_l1_bytes"]) == 4096
+    cb_configs = device_main.attrs["blackhole.cb_configs"]
+    assert len(cb_configs) == 1
+    assert int(cb_configs[0]["page_size"]) == 2048
+    assert int(cb_configs[0]["num_pages"]) == 2
+
+
+def test_blackhole_module_direct_call_large_shape_copy():
+    """Large-shape copy (>1.5MB total data) should still execute when per-core L1 plan is legal."""
+    can_run, msg = check_blackhole_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    M, N = 25 * 32, 32 * 32  # 800 x 1024 = 1,638,400 bytes of float16 input
+    torch.manual_seed(42)
+    a_torch = torch.randn(M, N, dtype=torch.float16)
+    b_output = torch.zeros_like(a_torch)
+    b_ref = a_torch.clone()
+
+    target = Target("blackhole")
+    kernel = staged_copy_kernel(tile_rows=25, tile_cols=32)
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, b_output)
+
+    atol = 1e-3
+    rtol = 1e-3
+    if torch.allclose(b_output, b_ref, atol=atol, rtol=rtol):
+        print("SUCCESS: Large-shape staged-copy direct call matches PyTorch reference!")
+        print(f"  Input shape: {a_torch.shape}")
+        print(f"  Input bytes: {a_torch.numel() * 2}")
+        print(f"  Max difference: {(b_output - b_ref).abs().max().item()}")
+        assert True
+    else:
+        diff = (b_output - b_ref).abs()
+        print("FAILURE: Large-shape direct-call output mismatch!")
+        print(f"  Max difference: {diff.max().item()}")
+        print(f"  Mean difference: {diff.mean().item()}")
+        assert False, "Large-shape direct-call output does not match reference"
+
+
+def test_blackhole_copy_oversubscription_fails_compile_time():
+    """Per-core CB/L1 oversubscription should fail during compilation, not at runtime."""
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1, tile_m=1024, tile_n=1024)
+    target = Target("blackhole")
+
+    with pytest.raises(Exception, match="PlanBlackholeCB|1572864|1.5MB|per-core constraints"):
+        with target:
+            lower(kernel, target=target)
+
+
 @pytest.mark.parametrize(
     "tile_rows,tile_cols,tile_m,tile_n,expected_terms",
     [
