@@ -76,6 +76,22 @@ std::string RoleForType(CBType type) {
   }
 }
 
+bool IsCompatibleForReuse(const CBRequirement& req, const CBConfig& config) {
+  if (config.role != RoleForType(req.type)) {
+    return false;
+  }
+  if (config.page_size != req.page_size) {
+    return false;
+  }
+  if (config.num_pages != req.num_pages) {
+    return false;
+  }
+  if (config.data_format != req.data_format) {
+    return false;
+  }
+  return req.lifetime_begin > config.lifetime_end;
+}
+
 }  // namespace
 
 // Main entry point
@@ -220,6 +236,20 @@ std::vector<CBConfig> PlanBlackholeCB::AssignCBIds(
   int next_intermediate_id = kOutputCBEnd + 1;  // Start after output range
 
   for (const auto& req : requirements) {
+    bool reused = false;
+    for (auto& config : configs) {
+      if (!IsCompatibleForReuse(req, config)) {
+        continue;
+      }
+      config.lifetime_end = std::max(config.lifetime_end, req.lifetime_end);
+      config.requirement_names.push_back(req.name);
+      reused = true;
+      break;
+    }
+    if (reused) {
+      continue;
+    }
+
     CBConfig config;
     config.name = req.name;
     config.role = RoleForType(req.type);
@@ -228,6 +258,7 @@ std::vector<CBConfig> PlanBlackholeCB::AssignCBIds(
     config.data_format = req.data_format;
     config.lifetime_begin = req.lifetime_begin;
     config.lifetime_end = req.lifetime_end;
+    config.requirement_names.push_back(req.name);
 
     // Assign CB ID based on type
     switch (req.type) {
@@ -311,6 +342,11 @@ void PlanBlackholeCB::StoreCBConfig(PrimFunc& func, const std::vector<CBConfig>&
     cb_attr.Set("role", String(config.role));
     cb_attr.Set("lifetime_begin", Integer(config.lifetime_begin));
     cb_attr.Set("lifetime_end", Integer(config.lifetime_end));
+    Array<Any> requirement_names;
+    for (const auto& req_name : config.requirement_names) {
+      requirement_names.push_back(String(req_name));
+    }
+    cb_attr.Set("requirement_names", requirement_names);
 
     cb_configs.push_back(cb_attr);
     total_l1 += config.total_size;

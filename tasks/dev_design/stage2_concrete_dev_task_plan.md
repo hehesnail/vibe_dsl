@@ -154,6 +154,18 @@ copy 不只验证最小 case，还必须验证：
   - preserve extractor order as the current deterministic requirement order source
   - explicit `total_size_bytes`
   - explicit lifetime span（先至少覆盖 begin/end）
+- 当前已落地的 planner 收正切口：
+  - 先只做保守 reuse，不做全量 allocator
+  - 仅在 requirement 满足这几个条件时允许复用同一个 memory object：
+    - role 相同
+    - `page_size/num_pages/data_format` 相同
+    - lifetime 不重叠
+  - `cb_configs` 继续表达“实际要 materialize 的 memory object”，而不是每条 requirement 一份
+  - `cb_configs.requirement_names` 记录被合并的 requirement 名集合
+- 下一轮 planner 收正切口：
+  - 扩展兼容性判断，不再只覆盖“同型 requirement”
+  - 收正 requirement 到 memory object 的绑定协议，不让下游只靠名字猜测
+  - 把 duplicated planner protocol struct 进一步收敛成单一定义
 - 在不打断现有 copy true E2E 的前提下，为后续真正的 lifetime/reuse planner 留协议位
 
 #### 完成标准

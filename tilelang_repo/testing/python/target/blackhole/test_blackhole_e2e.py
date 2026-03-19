@@ -252,6 +252,85 @@ def test_blackhole_copy_pass_attrs():
     assert "for i in T.vectorized(8):\n                    T.tl.blackhole.write_tile_from_cb" not in body_script
 
 
+def make_blackhole_cb_requirements_mod(cb_requirements):
+    """Build a split/lowered Blackhole module with an explicit CB requirement list."""
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    func = mod["main"].with_attr("blackhole.cb_requirements", cb_requirements)
+    return tilelang.tvm.IRModule({"main": func})
+
+
+def test_blackhole_cb_planner_reuses_non_overlapping_requirements():
+    """Planner should reuse a single CB object for compatible non-overlapping lifetimes."""
+    mod = make_blackhole_cb_requirements_mod(
+        [
+            {
+                "name": "stage0",
+                "type": "intermediate",
+                "page_size": 524288,
+                "num_pages": 2,
+                "data_format": "Float16",
+                "lifetime_begin": 0,
+                "lifetime_end": 0,
+            },
+            {
+                "name": "stage1",
+                "type": "intermediate",
+                "page_size": 524288,
+                "num_pages": 2,
+                "data_format": "Float16",
+                "lifetime_begin": 1,
+                "lifetime_end": 1,
+            },
+        ]
+    )
+
+    mod = tilelang.transform.PlanBlackholeCB()(mod)
+    func = mod["main"]
+    cb_configs = func.attrs["blackhole.cb_configs"]
+
+    assert len(cb_configs) == 1
+    assert int(func.attrs["blackhole.num_cbs"]) == 1
+    assert int(func.attrs["blackhole.total_l1_bytes"]) == 1048576
+    assert int(cb_configs[0]["cb_id"]) == 32
+    assert int(cb_configs[0]["lifetime_begin"]) == 0
+    assert int(cb_configs[0]["lifetime_end"]) == 1
+    assert [str(name) for name in cb_configs[0]["requirement_names"]] == ["stage0", "stage1"]
+
+
+def test_blackhole_cb_planner_rejects_overlapping_large_requirements():
+    """Planner should keep overlapping lifetimes separate and fail if the combined L1 footprint is illegal."""
+    mod = make_blackhole_cb_requirements_mod(
+        [
+            {
+                "name": "stage0",
+                "type": "intermediate",
+                "page_size": 524288,
+                "num_pages": 2,
+                "data_format": "Float16",
+                "lifetime_begin": 0,
+                "lifetime_end": 1,
+            },
+            {
+                "name": "stage1",
+                "type": "intermediate",
+                "page_size": 524288,
+                "num_pages": 2,
+                "data_format": "Float16",
+                "lifetime_begin": 1,
+                "lifetime_end": 2,
+            },
+        ]
+    )
+
+    with pytest.raises(Exception, match="PlanBlackholeCB|1572864|1.5MB|per-core constraints"):
+        tilelang.transform.PlanBlackholeCB()(mod)
+
+
 def test_blackhole_copy_codegen_uses_runtime_schema():
     """Verify copy codegen consumes runtime arg schema instead of fixed slot names."""
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)

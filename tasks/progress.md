@@ -53,6 +53,12 @@
   - `blackhole.cb_configs` 显式带 `role`
   - `blackhole.cb_configs` 显式带 `total_size_bytes`
   - `blackhole.cb_configs` 显式带 `lifetime_begin/end`
+- `PlanBlackholeCB` 已开始做保守的 lifetime-aware reuse：
+  - 同 role
+  - 同 `page_size/num_pages/data_format`
+  - lifetime 不重叠
+  - `cb_configs` 只保留真正要 materialize 的 memory object
+  - `cb_configs.requirement_names` 记录被合并的 requirement 名集合
 
 当前仍然存在的主要结构问题：
 
@@ -147,8 +153,12 @@
 5. 把 large-shape / oversubscription 的当前验证沉淀到后续 memory planner 收正里，不再停留在 MVP allocator 行为。
 6. 在不破坏当前 copy true E2E 的前提下，继续把 `PlanBlackholeCB` 从“按 requirement 累加”收成正式 memory planner。
 7. 在当前 schema 已显式化 `total_size_bytes + lifetime span` 的基础上，继续补真正的 lifetime/reuse 规划，而不再让下游从 `page_size * num_pages` 反推 memory object 语义。
-8. 在不破坏 copy 正式 E2E 的前提下，分批接回 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite`。
-9. 最后用同一结构推进 GEMM。
+8. 在当前保守同型非重叠 reuse 的基础上，继续补：
+   - 跨更多 requirement 形态的兼容性规则
+   - 更明确的 requirement-to-memory-object 绑定协议
+   - 最终单一定义的 planner protocol struct
+9. 在不破坏 copy 正式 E2E 的前提下，分批接回 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite`。
+10. 最后用同一结构推进 GEMM。
 
 ## 当前活动设计文档
 
