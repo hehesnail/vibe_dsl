@@ -67,9 +67,16 @@ struct CBRequirement {
   int page_size;           // Size of each page in bytes
   int num_pages;           // Number of pages
   std::string data_format; // Data format string
+  int lifetime_begin;      // First requirement slot where this CB is live
+  int lifetime_end;        // Last requirement slot where this CB is live
 
   CBRequirement()
-      : type(CBType::kIntermediate), page_size(2048), num_pages(2), data_format("Float16") {}
+      : type(CBType::kIntermediate),
+        page_size(2048),
+        num_pages(2),
+        data_format("Float16"),
+        lifetime_begin(0),
+        lifetime_end(0) {}
 };
 
 /*!

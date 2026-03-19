@@ -60,9 +60,16 @@ struct CBRequirement {
   int page_size;           // Size of each page in bytes
   int num_pages;           // Number of pages (for double buffering)
   std::string data_format; // Data format string (e.g., "Float16", "Float32")
+  int lifetime_begin;      // First requirement slot where this CB is live
+  int lifetime_end;        // Last requirement slot where this CB is live
 
   CBRequirement()
-      : type(CBType::kIntermediate), page_size(2048), num_pages(2), data_format("Float16") {}
+      : type(CBType::kIntermediate),
+        page_size(2048),
+        num_pages(2),
+        data_format("Float16"),
+        lifetime_begin(0),
+        lifetime_end(0) {}
 };
 
 /*!
@@ -70,14 +77,24 @@ struct CBRequirement {
  */
 struct CBConfig {
   std::string name;        // Buffer name
+  std::string role;        // input/output/intermediate
   int cb_id;               // Assigned CB identifier (0-63)
   int page_size;           // Size of each page in bytes
   int num_pages;           // Number of pages
   int total_size;          // Total size = num_pages * page_size
   std::string data_format; // Data format string
+  int lifetime_begin;      // First requirement slot covered by this memory object
+  int lifetime_end;        // Last requirement slot covered by this memory object
 
   CBConfig()
-      : cb_id(0), page_size(2048), num_pages(2), total_size(4096), data_format("Float16") {}
+      : role("intermediate"),
+        cb_id(0),
+        page_size(2048),
+        num_pages(2),
+        total_size(4096),
+        data_format("Float16"),
+        lifetime_begin(0),
+        lifetime_end(0) {}
 };
 
 /*!

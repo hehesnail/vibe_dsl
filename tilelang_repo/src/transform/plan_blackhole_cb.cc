@@ -62,6 +62,22 @@ constexpr int kInputCBEnd = 15;
 constexpr int kOutputCBStart = 16;
 constexpr int kOutputCBEnd = 31;
 
+namespace {
+
+std::string RoleForType(CBType type) {
+  switch (type) {
+    case CBType::kInput:
+      return "input";
+    case CBType::kOutput:
+      return "output";
+    case CBType::kIntermediate:
+    default:
+      return "intermediate";
+  }
+}
+
+}  // namespace
+
 // Main entry point
 PrimFunc PlanBlackholeCB::Transform(const PrimFunc& func) {
   // Get CB requirements from function attributes
@@ -82,6 +98,7 @@ PrimFunc PlanBlackholeCB::Transform(const PrimFunc& func) {
   // Create mutable copy and store CB configuration
   PrimFunc new_func = func;
   StoreCBConfig(new_func, configs);
+  cb_configs_ = configs;
 
   return new_func;
 }
@@ -95,11 +112,14 @@ std::vector<CBRequirement> PlanBlackholeCB::GetCBRequirements(
   // Attribute format: "blackhole.cb_requirements" = [cb0_info, cb1_info, ...]
   if (auto cb_req_attr = func->GetAttr<Array<Any>>("blackhole.cb_requirements")) {
     Array<Any> cb_reqs = cb_req_attr.value();
+    int req_index = 0;
     for (const auto& req : cb_reqs) {
       // Try to downcast to Map - if it fails, req_map will be empty
       Map<String, Any> req_map = req.as<Map<String, Any>>().value_or(Map<String, Any>());
       if (!req_map.empty()) {
         CBRequirement cb_req;
+        cb_req.lifetime_begin = req_index;
+        cb_req.lifetime_end = req_index;
 
         if (auto name = req_map.Get("name")) {
           cb_req.name = Downcast<String>(name.value()).c_str();
@@ -119,9 +139,19 @@ std::vector<CBRequirement> PlanBlackholeCB::GetCBRequirements(
         if (auto data_format = req_map.Get("data_format")) {
           cb_req.data_format = Downcast<String>(data_format.value()).c_str();
         }
+        if (auto lifetime_begin = req_map.Get("lifetime_begin")) {
+          cb_req.lifetime_begin = Downcast<Integer>(lifetime_begin.value())->value;
+        }
+        if (auto lifetime_end = req_map.Get("lifetime_end")) {
+          cb_req.lifetime_end = Downcast<Integer>(lifetime_end.value())->value;
+        }
+        if (cb_req.lifetime_end < cb_req.lifetime_begin) {
+          std::swap(cb_req.lifetime_begin, cb_req.lifetime_end);
+        }
 
         requirements.push_back(cb_req);
       }
+      ++req_index;
     }
   }
 
@@ -150,6 +180,8 @@ std::vector<CBRequirement> PlanBlackholeCB::InferFromAllocShared(
         CBRequirement req;
         req.name = op->buffer_var->name_hint;
         req.type = CBType::kIntermediate;  // Default to intermediate
+        req.lifetime_begin = static_cast<int>(requirements.size());
+        req.lifetime_end = req.lifetime_begin;
 
         // Calculate size from allocation extent
         int64_t total_elements = 1;
@@ -190,9 +222,12 @@ std::vector<CBConfig> PlanBlackholeCB::AssignCBIds(
   for (const auto& req : requirements) {
     CBConfig config;
     config.name = req.name;
+    config.role = RoleForType(req.type);
     config.page_size = req.page_size;
     config.num_pages = req.num_pages;
     config.data_format = req.data_format;
+    config.lifetime_begin = req.lifetime_begin;
+    config.lifetime_end = req.lifetime_end;
 
     // Assign CB ID based on type
     switch (req.type) {
@@ -270,15 +305,12 @@ void PlanBlackholeCB::StoreCBConfig(PrimFunc& func, const std::vector<CBConfig>&
     cb_attr.Set("cb_id", Integer(config.cb_id));
     cb_attr.Set("page_size", Integer(config.page_size));
     cb_attr.Set("num_pages", Integer(config.num_pages));
+    cb_attr.Set("total_size_bytes", Integer(config.total_size));
     cb_attr.Set("data_format", String(config.data_format));
     cb_attr.Set("name", String(config.name));
-    if (config.cb_id >= kInputCBStart && config.cb_id <= kInputCBEnd) {
-      cb_attr.Set("role", String("input"));
-    } else if (config.cb_id >= kOutputCBStart && config.cb_id <= kOutputCBEnd) {
-      cb_attr.Set("role", String("output"));
-    } else {
-      cb_attr.Set("role", String("intermediate"));
-    }
+    cb_attr.Set("role", String(config.role));
+    cb_attr.Set("lifetime_begin", Integer(config.lifetime_begin));
+    cb_attr.Set("lifetime_end", Integer(config.lifetime_end));
 
     cb_configs.push_back(cb_attr);
     total_l1 += config.total_size;

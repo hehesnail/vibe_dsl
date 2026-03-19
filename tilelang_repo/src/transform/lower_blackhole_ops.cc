@@ -194,6 +194,8 @@ int LowerBlackholeOps::AllocateCBId(const Buffer& buffer, CBType type) {
   CBRequirement req;
   req.name = buffer->name;
   req.type = type;
+  req.lifetime_begin = static_cast<int>(cb_requirements_.size());
+  req.lifetime_end = req.lifetime_begin;
 
   // Calculate page size from buffer shape
   int64_t total_elements = 1;
@@ -273,6 +275,8 @@ void LowerBlackholeOps::StoreCBRequirements(PrimFunc& func) {
     req_map.Set("page_size", Integer(req.page_size));
     req_map.Set("num_pages", Integer(req.num_pages));
     req_map.Set("data_format", String(req.data_format));
+    req_map.Set("lifetime_begin", Integer(req.lifetime_begin));
+    req_map.Set("lifetime_end", Integer(std::max(req.lifetime_begin, req.lifetime_end)));
 
     cb_reqs.push_back(req_map);
   }
@@ -595,6 +599,8 @@ void LowerBlackholeOps::RecordDramToDramCopy(const BufferStoreNode* op) {
     CBRequirement req;
     req.name = buffer->name;
     req.type = type;
+    req.lifetime_begin = static_cast<int>(cb_requirements_.size());
+    req.lifetime_end = req.lifetime_begin;
     req.page_size = EstimateCopyPageSize(buffer);
     req.num_pages = 1;
     if (buffer->dtype.is_float()) {

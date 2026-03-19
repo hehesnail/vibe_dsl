@@ -154,6 +154,21 @@
     - TT-Sim direct-call 执行结果与 PyTorch 一致
 - **当前状态**: 已解决。`800x1024 float16` staged copy 已在 TT-Sim direct-call 上通过，输入总字节数 `1638400`，结果与 PyTorch 参考一致。
 
+### duplicated `CBRequirement` schema 会触发跨 pass 的 ODR/ABI 错位
+
+- **时间**: 2026-03-19
+- **问题**: 给 `PlanBlackholeCB` 的 `CBRequirement` 新增 `lifetime_begin/end` 后，`PlanBlackholeCB` 在运行时会随机以字符串拷贝、vector 排序/赋值崩溃。
+- **现象**:
+  - 崩点看起来在 `PlanBlackholeCB::AssignCBIds()` 或排序阶段
+  - backtrace 会落到 `std::string` copy / `memcpy`
+  - Python 侧表现为 segfault 或 abort，而不是干净的 ICHECK 失败
+- **根本原因**: `lower_blackhole_ops.h` 和 `plan_blackhole_cb.h` 在同一 namespace 下重复定义了 `CBRequirement`；当只更新其中一份 schema 时，会触发 ODR/ABI 错位，导致 extractor 写出的对象布局与 planner 读取布局不一致。
+- **解决方案**:
+  - 至少保证两处重复定义完全同步
+  - 更稳的长期方向是把共享 protocol struct 收敛成单一定义
+  - 本轮同时让 `LowerBlackholeOps` 显式写出 `lifetime_begin/end` attrs，避免 planner 侧再隐式猜测
+- **当前状态**: 已解决，但重复定义本身仍是潜在维护风险，后续应继续收敛。
+
 ### Blackhole 当前旁路了大量 TileLang/TVM 主线 pass
 
 - **时间**: 2026-03-19

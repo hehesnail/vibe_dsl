@@ -147,6 +147,15 @@ copy 不只验证最小 case，还必须验证：
 - page size / num pages / data format / total size
 - `1572864` bytes worker L1 hard check
 
+#### 当前实现收正切口
+
+- 先把 `cb_configs` 收成更正式的 memory object，而不是只保留最小 allocator 结果
+- 当前这一轮优先补：
+  - preserve extractor order as the current deterministic requirement order source
+  - explicit `total_size_bytes`
+  - explicit lifetime span（先至少覆盖 begin/end）
+- 在不打断现有 copy true E2E 的前提下，为后续真正的 lifetime/reuse planner 留协议位
+
 #### 完成标准
 
 - 正向 large-shape copy 合法执行

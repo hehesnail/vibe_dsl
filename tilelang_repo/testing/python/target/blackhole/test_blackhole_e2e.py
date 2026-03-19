@@ -211,6 +211,9 @@ def test_blackhole_copy_pass_attrs():
     cb_configs = func.attrs["blackhole.cb_configs"]
     cb_roles = [str(cfg["role"]) for cfg in cb_configs]
     assert cb_roles == ["intermediate"]
+    assert int(cb_configs[0]["total_size_bytes"]) == 4096
+    assert int(cb_configs[0]["lifetime_begin"]) == 0
+    assert int(cb_configs[0]["lifetime_end"]) == 0
 
     runtime_args = func.attrs["blackhole.runtime_args"]
     runtime_arg_kinds = [str(arg["kind"]) for arg in runtime_args]
@@ -351,6 +354,9 @@ def test_blackhole_large_shape_copy_keeps_per_core_l1_small():
     assert len(cb_configs) == 1
     assert int(cb_configs[0]["page_size"]) == 2048
     assert int(cb_configs[0]["num_pages"]) == 2
+    assert int(cb_configs[0]["total_size_bytes"]) == 4096
+    assert int(cb_configs[0]["lifetime_begin"]) == 0
+    assert int(cb_configs[0]["lifetime_end"]) == 0
 
 
 def test_blackhole_module_direct_call_large_shape_copy():
