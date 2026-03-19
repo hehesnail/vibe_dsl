@@ -6,21 +6,22 @@
 - **前置总体设计**: `final_blackhole_backend_redesign.md`
 - **前置接入矩阵**: `stage2_pass_reuse_matrix.md`
 
-本文件只描述 Stage 2 的目标、阶段拆分和验收标准，不再重复承载总体架构结论。
+本文件只描述 Stage 2 的目标、阶段拆分和验收标准，不重复承载总体架构结论。
 
 ## 阶段目标
 
 Stage 2 的正式目标已经收紧为：
 
-- **先把 Blackhole 重新接回 TileLang / TVM 的 PrimFunc/TIR pass 主链**
+- **先把 Blackhole 重新接回 TileLang / TVM 的正式 PrimFunc/TIR 与 host/device 主链**
 - **再在这条主链上完成 single-core copy 与 GEMM 的语义集成**
-- **最后完成由 pass 主导的 single-core true E2E**
+- **最后通过 `BlackholeModule` direct host path 完成 true E2E**
 
-因此 Stage 2 不再等价于“把 gemm 跑起来”，也不再接受：
+因此 Stage 2 不再接受：
 
 - copy 长期停留在 runtime 专用 emitter
-- gemm 继续靠 runtime 侧特化拼语义
+- GEMM 继续靠 runtime 侧特化拼语义
 - 绕过 `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch` 继续推进
+- 把 external runner 或 `spec.json -> runner` 当成正式 E2E 标准
 
 ## 阶段拆分
 
@@ -28,8 +29,8 @@ Stage 2 的正式目标已经收紧为：
 
 目标：
 
-- 恢复 Blackhole 对通用 TIR / host-device / Packed API pass 的复用
-- 结束当前 `OptimizeForTarget` early return 的长期结构
+- 恢复 Blackhole 对通用 TIR / host-device / Packed API 主链的复用
+- 建立 split 前语义规划 / split 后正式 plan 提取 / host-side materialization 三层
 
 任务：
 
@@ -38,34 +39,35 @@ Stage 2 的正式目标已经收紧为：
   - `AnnotateDeviceRegions`
   - `SplitHostDevice`
   - `MakePackedAPI`
-  - `LowerDeviceKernelLaunch` 或其 Blackhole 分支
+  - `LowerDeviceKernelLaunch`
 - 收正 `rt_mod_blackhole` / `BlackholeModule` 的边界
 
 完成标准：
 
-- Blackhole 主路径重新回到 TIR / host-device / Packed API 主链
+- Blackhole 主路径重新回到 TIR / host-device / Packed API 正式主链
 - 不再长期依赖“无 `calling_conv` 也可当 device kernel”的路径
 
-### Stage 2B: single-core copy 语义集成
+### Stage 2B: single-core copy 正式主链
 
 目标：
 
-- 在已收正的 pass 主链上完成 copy 的 Blackhole-aware lowering
+- 在已收正的主链上完成 copy 的 split 前语义规划与 split 后正式 plan 提取
 
 任务：
 
 - 在 `LowerTileOp` 中保留 copy 的 Blackhole-preserving 语义
-- `LowerBlackholeOps` 从该语义提取：
+- `LowerBlackholeOps` 提取：
   - `blackhole.runtime_args`
   - `blackhole.segment_plan`
   - `blackhole.cb_requirements`
-- `PlanBlackholeCB` 生成 runtime-ready `blackhole.cb_configs`
-- copy 的 spec/codegen 主要由 pass 产物驱动
+- `PlanBlackholeCB` 生成正式 `blackhole.cb_configs`
+- `AssignBlackholeCores` 生成正式 `blackhole.core_plan`
+- `BlackholeModule` direct host path 消费这些 plan 执行
 
 完成标准：
 
-- copy 的 runtime args / CB / segment / kernel 结构主要来自 pass
-- runtime emitter 只允许保留短期回退，不再是主路径
+- copy 的 runtime args / memory plan / execution plan 主要来自 pass 产物
+- external runner 仅保留为调试工具，不再是正式主路径
 
 ### Stage 2C: single-core GEMM 语义集成
 
@@ -76,8 +78,9 @@ Stage 2 的正式目标已经收紧为：
 任务：
 
 - 在 `LowerTileOp` 中保留 GEMM 的 Blackhole-preserving 语义
-- `LowerBlackholeOps` 提取 GEMM 的 reader / compute / writer 所需 schema
-- 停止扩展 runtime 侧 gemm 特化路径
+- `LowerBlackholeOps` 提取 GEMM 的 reader / compute / writer schema
+- `PlanBlackholeCB` 与 `AssignBlackholeCores` 为 GEMM 生成同类 plan
+- 停止扩展 runtime 侧 GEMM 特化
 
 完成标准：
 
@@ -87,110 +90,116 @@ Stage 2 的正式目标已经收紧为：
 
 目标：
 
-- copy 与 GEMM 都在 TT-Sim 或真实设备上完成 true E2E
+- copy 与 GEMM 都通过正式 host-device 主路径完成 true E2E
 
 完成标准：
 
-- `spec.json -> runner` 路径通过
-- `artifact.codegen_mod["main"](...)` 路径通过
+- TileLang 暴露的正式 host callable 可以直接执行编译产物
+- `BlackholeModule` 在进程内完成 TT-Metal host materialization / launch / readback
 - copy / GEMM 的关键执行语义主要来自 pass 产物
 
 ## 当前边界
 
 当前允许保留的过渡项：
 
-- copy 最小专用 emitter 作为短期回退，但它只能按 device-side builtin/schema 回退，不能再靠 `target_mode` 这类模式标签驱动
+- runner 仅作为 bring-up / debug / protocol-check 工具
 
 当前不允许继续扩大的过渡项：
 
 - copy runtime 特化继续扩大为正式主路径
 - GEMM 继续复制 copy 阶段的 runtime 特化做法
 - `rt_mod_blackhole` 继续承担 kernel 语义恢复、PrimFunc 参数分类和 host/device 语义定义
-
-当前实现备注：
-
-- Blackhole 现在已经恢复 `AnnotateDeviceRegions -> SplitHostDevice -> MakePackedAPI -> LowerDeviceKernelLaunch` 主链。
-- `lower()` 产物重新分成 host `main` 和 device `main_kernel`，Blackhole build 入口也已改为消费两者的组合模块。
-- 但为了不打断当前 copy 的 staged-copy lowering，`FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 这类会破坏现有 copy 识别形态的 pass 还未提前恢复到 `LowerBlackholeOps` 之前。
-- 因此当前 Stage 2A 的实现状态应理解为：
-  - **host/device 主线已恢复**
-  - **通用中后段规范化 pass 只恢复到一条受控子集**
+- external runner 继续作为正式执行路径
 
 ## 当前收正目标
 
-当前 Stage 2B 的具体收正目标已经进一步收紧为：
+当前 Stage 2B 的具体目标已经收紧为：
 
-- 继续保留 single-core copy true E2E
-- 但把 copy 语义从“只对 `32x32 float16` staged copy 样例成立”收成“按实际 DSL tile 形态推导”
-- 同时收正逻辑 block 语义、single-core work distribution、memory plan 与 launch ABI 的边界
+- 继续保留 single-core copy true execution
+- 把 copy 语义从“只对最小 case 成立”收成“按实际 DSL tile shape / logical block / memory plan 推导”
+- 同时收正：
+  - logical block 语义
+  - single-core work distribution
+  - memory plan
+  - host launch ABI
 
 相关设计见：
 
 - `stage2_blackhole_logical_block_launch_plan.md`
 
-本轮优先处理的固定假设：
-
-- `LowerBlackholeOps` 中 `tile_row / 32`、`tile_col / 32` 这类固定 tile 维度推导
-- 由此衍生的 `tile_index` 计算对 `tile_m != 32` 或 `tile_n != 32` 的失真
-
-本轮尚未实现、但已进入当前设计主线的问题：
+当前必须优先解决的问题：
 
 - `blockIdx.x/y -> 0` 的 codegen 常量化
-- runner 仍只 materialize 单核 `{0, 0}`
-- `core_plan` 还没有变成可执行的 logical-work / physical-core plan
-
-本轮暂不处理的更大问题：
-
-- GEMM 语义接入
+- `blackhole.core_plan` 仍是摘要信息
+- `PlanBlackholeCB` 仍偏 MVP allocator
+- `BlackholeModule` 还没有成为唯一正式执行路径
 
 ## 当前进展
 
+- Blackhole 已恢复：
+  - `AnnotateDeviceRegions`
+  - `SplitHostDevice`
+  - `MakePackedAPI`
+  - `LowerDeviceKernelLaunch`
+- `lower()` 产物已重新分成：
+  - host `main`
+  - device `main_kernel`
+- `target.build.tilelang_blackhole[_without_host]` 已消费 `host_mod + lowered device_mod`
 - copy 已开始产出：
   - `blackhole.runtime_args`
   - `blackhole.segment_plan`
   - `blackhole.cb_requirements`
+  - `blackhole.cb_configs`
   - `tl.blackhole.read_tile_to_cb / write_tile_from_cb`
-- `PlanBlackholeCB` 已能将 copy requirements 落成 `blackhole.cb_configs`
-- `CodeGenBlackhole` 已开始消费 copy builtin
-- `BlackholeModule` 对外 entry 的参数签名已重新对齐 split 后 device kernel，不再错误沿用 Packed API 的底层 4 参数签名
-- copy true E2E 已通过：
-  - `spec.json -> runner`
-  - `artifact.codegen_mod["main"](...)`
-  - TT-Sim 下 `32x32 float16` staged copy 与 PyTorch 参考一致
-- rectangular staged copy 新增进展：
-  - `32x64 float16` staged `T.copy(global -> shared -> global)` 已能按硬件 `32x32` subtile 正确展开
-  - `artifact.codegen_mod["main"](...)` 已在 TT-Sim 下通过，输出与 PyTorch 参考一致
-- 但当前 true E2E 仍主要证明：
-  - `32x32 float16`
-  - single-core
-  - staged `T.copy(global -> shared -> global)`
-  这条最小路径已经闭环
-- 当前 single-core copy 的实际边界已扩到：
+- staged copy 的最小 direct execution 已覆盖：
   - `32x32`
   - `32x64`
   - `64x32`
-  这类由 DSL tile shape 映射成多个硬件 `32x32` subtiles 的 staged copy
-- 下一步必须继续证明 copy lowering 的 tile index / tile bytes 来自 DSL 程序本身，而不是固定 `32x32` 假设
-- 但 Stage 2A 仍未完成，因此当前 copy 语义集成仍只是中间态，不应被视为正式 compiler path
+
+但当前路径仍主要证明：
+
+- minimal copy path 已经 bring-up
+- 还不能视为正式 compiler/runtime path 已完成
 
 ## 验证方式
 
 ### 结构验证
 
-- Blackhole target 恢复 pass 主链验证：
+- Blackhole target 恢复正式主链验证：
   - `AnnotateDeviceRegions`
   - `SplitHostDevice`
   - `MakePackedAPI`
   - `LowerDeviceKernelLaunch`
+- split 后稳定产出：
+  - `blackhole.runtime_args`
+  - `blackhole.segment_plan`
+  - `blackhole.cb_requirements`
+  - `blackhole.cb_configs`
+  - `blackhole.core_plan`
 
 ### copy / GEMM 语义验证
 
-- pass 产出的 attrs / builtin / segment 能支撑 `ExecutableSpec`
-- `ExecutableSpec` 中的 kernels / runtime args / CB 不再主要来自 runtime 猜测
+- pass 产出的 attrs / builtin / segment / memory plan / execution plan 能支撑 `ExecutableSpec`
+- `ExecutableSpec` 中的 kernels / runtime args / CB / core plan 不再主要来自 runtime 猜测
 
 ### 执行验证
 
-- copy 与 GEMM 都需要覆盖：
-  - `spec.json -> runner`
-  - `artifact.codegen_mod["main"](...)`
-- 环境不满足时应显式 skip，而不是混成编译链失败
+正式执行验证只覆盖：
+
+- TileLang 暴露的正式 host callable
+- `BlackholeModule` direct host path
+
+copy 必须覆盖：
+
+- `32x32`
+- `32x64`
+- `64x32`
+- 至少一个 `grid > 1` 且 `bx/by` 参与索引的 case
+- 至少一个总数据量大于 `1.5MB` 的 large-shape copy case
+
+并补一个负例：
+
+- 构造 per-core memory plan 超出 `1572864` bytes 的 case
+- 编译期直接失败
+
+环境不满足时应显式 skip，而不是混成编译链失败。

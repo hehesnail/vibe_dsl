@@ -2,218 +2,268 @@
 
 ## 目标
 
-- 明确 Blackhole 后端应如何复用 TileLang / TVM 现有 PrimFunc/TIR pass 主链。
-- 避免继续沿用当前 `OptimizeForTarget` 中对 Blackhole 的 early return 结构，导致大段通用 pass、host/device 分离和参数约束被旁路。
-- 为后续 copy 首条完整编译链实现提供一份可执行的 pass 接入矩阵，而不是继续在 `rt_mod_blackhole` / `BlackholeModule` 里补语义。
+- 按 TileLang / CUDA 正式调用链重新定义 Blackhole 的 pass 接入方式
+- 不再从旧 Blackhole 实现反推“还剩哪些 pass 没补”
+- 明确：
+  - 哪些 pass 直接复用
+  - 哪些只复用职责，不直接复用实现
+  - 哪些不进入 Blackhole 主线
+  - Blackhole 新增接入点分别位于哪个阶段
 
 ## 核心结论
 
-### 1. Blackhole 应以整个 PrimFunc/TIR 主链为基础，而不是自建平行流水线
-
-后端目标不是“只处理几个 tile 算子”，而是：
-
-- 复用整个 PrimFunc/TIR 的通用合法化、规范化和 host/device 处理
-- 仅在少量 target-aware 边界插入 Blackhole 分支
+### 1. Blackhole 的 pass 主线必须按三层组织
 
 当前正确主线应收敛为：
 
 ```text
 DSL
-  -> PrimFunc/TIR
-  -> 通用 legalize / normalize / optimize passes
-  -> LowerTileOp(Blackhole-aware)
-  -> 通用 host/device / packed API passes
-  -> Blackhole-specific device passes
-  -> ExecutableSpec / CodeGenBlackhole / runner
+  -> LowerAndLegalize
+  -> split 前 Blackhole 语义规划
+  -> AnnotateDeviceRegions / SplitHostDevice / MakePackedAPI / LowerDeviceKernelLaunch
+  -> split 后 Blackhole 正式 plan 提取
+  -> rt_mod_blackhole / BlackholeModule direct host path
 ```
 
-### 2. `LowerTileOp` 是 Blackhole 最关键的 target-aware 接入点
+### 2. 不能再把“memory plan / execution plan”混成一个晚期 matcher 问题
 
-`LowerTileOp` 当前已经在整个 PrimFunc 上工作，并在这里展开：
+Blackhole 需要显式区分：
 
-- `tl.copy`
-- `tl.gemm`
+- split 前语义规划：
+  - 保留 tile/dataflow/shared/block 语义
+- split 后正式 plan 提取：
+  - `runtime_args`
+  - `cb_requirements`
+  - `cb_configs`
+  - `core_plan`
 
-因此 Blackhole 不应继续主要依赖 `LowerTileOp` 之后的晚期 loop pattern 恢复，而应：
+### 3. `LowerTileOp` 和 split 后 Blackhole passes 是两个不同职责区
 
-- 保留整个 TIR 函数体
-- 在 `LowerTileOp` 中为 Blackhole 增加分支
-- 让 tile 相关语义 lower 成“合法 TIR 中仍可识别的 Blackhole-preserving 形式”
-
-### 3. host/device 与参数语义应尽量对齐 TileLang / TVM 主模型
-
-Blackhole 长期不应继续跳过：
-
-- `AnnotateDeviceRegions`
-- `SplitHostDevice`
-- `MakePackedAPI`
-- `LowerDeviceKernelLaunch`
-
-当前 `rt_mod_blackhole` 把“没有 `calling_conv` 的 PrimFunc”直接当 device kernel 收进去，只能视为过渡逻辑，不能再作为正式模型。
+- `LowerTileOp`：
+  split 前语义接入点
+- `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`：
+  split 后正式 plan 提取层
 
 ## Pass 复用矩阵
 
 ### A. 前端合法化 / 语义归一化
 
-| pass | 当前 Blackhole | 目标状态 | 说明 |
-|------|----------------|----------|------|
-| `BindTarget` | 已复用 | `reuse` | 通用 target 绑定，应保持一致 |
-| `AddWrapperForSingleBufStore` | 已复用 | `reuse` | 前端形状归一化，不应由 Blackhole 特化 |
-| `LegalizeNegativeIndex` | 已复用 | `reuse` | 通用索引合法化 |
-| `VerifyParallelLoop` | 已复用 | `reuse` | 通用语义检查 |
-| `InjectAssumes` | 已复用 | `reuse` | 为后续参数/边界检查保留 assume 信息 |
-| `Simplify` | 已复用 | `reuse` | 通用规范化 |
-| `LowerAccessPtr` | 已复用 | `reuse` | 前端 pointer metadata 到标准 TIR |
-| `HoistNonRestrictParams` | 已复用 | `reuse` | 供 host/device 与 codegen 使用 |
+这层全部继续直接复用：
 
-### B. TileLang 高层 tile 语义层
+| pass | 目标状态 | 说明 |
+|------|----------|------|
+| `BindTarget` | `reuse` | 通用 target 绑定 |
+| `AddWrapperForSingleBufStore` | `reuse` | 前端形状归一化 |
+| `LegalizeNegativeIndex` | `reuse` | 通用索引合法化 |
+| `VerifyParallelLoop` | `reuse` | 通用语义检查 |
+| `InjectAssumes` | `reuse` | 参数/边界假设 |
+| `Simplify` | `reuse` | 通用规范化 |
+| `LayoutReducer` | `reuse` | 布局推导前置 |
+| `LayoutInference` | `reuse` | tile/dataflow 布局基础 |
+| `LowerL2Persistent` | `reuse` | 与 Blackhole 主问题正交 |
+| `DecoupleTypeCast` | `reuse` | 表达式合法化 |
+| `LegalizeVectorizedLoop` | `reuse` | 通用 loop 合法化 |
+| `LegalizeSafeMemoryAccess` | `reuse` | 边界安全检查 |
+| `LowerAccessPtr` | `reuse` | 指针 metadata 到标准 TIR |
+| `HoistNonRestrictParams` | `reuse` | host/device 参数基础 |
 
-| pass | 当前 Blackhole | 目标状态 | 说明 |
-|------|----------------|----------|------|
-| `LayoutReducer` | 已复用 | `reuse` | 布局推导前置，应保留 |
-| `LayoutInference` | 已复用 | `reuse` | 为 tile/dataflow 语义提供布局基础 |
-| `LowerTileOp` | 已复用，但无 Blackhole-aware 分支 | `reuse_with_blackhole_branch` | Blackhole 最关键接入点；不能再完全等晚期恢复 |
-| `LowerL2Persistent` | 已复用 | `reuse` | 与当前 Blackhole 主问题正交，可保留 |
+### B. split 前 Blackhole 语义规划
 
-### C. 通用 TIR 规范化 / 优化
+| pass / 层 | 目标状态 | 说明 |
+|-----------|----------|------|
+| `LowerTileOp` | `reuse_with_blackhole_branch` | Blackhole 最关键接入点；负责保留 copy/gemm 的可规划语义 |
+| `IfStmtBinding` | `reuse_or_branch` | 保留其规划职责，按需 target-aware |
+| `PlanAndUpdateBufferAllocationLocation` | `reuse_or_branch` | 保留其 memory/dataflow planning 职责 |
+| `PipelinePlanning` | `reuse_or_branch` | 未来 copy/gemm dataflow 规划的主要承载点 |
+| `InjectSoftwarePipeline` | `reuse_or_branch` | 保留 pipeline planning 职责，不要求照搬 CUDA 实现 |
+| `LowerOpaqueBlock` | `reuse` | 结构规范化 |
+| `VerifyMemory` | `reuse` | 通用内存合法性检查 |
+| `AnnotateEntryFunc` | `reuse` | entry 语义统一 |
 
-| pass | 当前 Blackhole | 目标状态 | 说明 |
-|------|----------------|----------|------|
-| `DecoupleTypeCast` | 已复用 | `reuse` | 通用表达式合法化 |
-| `LegalizeVectorizedLoop` | 已复用 | `reuse` | 通用 loop 合法化 |
-| `LegalizeSafeMemoryAccess` | 已复用 | `reuse` | 边界安全检查 |
-| `LowerOpaqueBlock` | 目前 device-only 辅助复用 | `reuse` | Blackhole 也应进入主线 |
-| `NarrowDataType` | 当前被 early return 绕过 | `reuse` | 通用 dtype 规范化 |
-| `FlattenBuffer` | 当前被 early return 绕过 | `reuse` | 便于后续参数/寻址和 codegen |
-| `ConfigIndexBitwidth` | 当前被 early return 绕过 | `reuse` | 统一 index 计算宽度 |
-| `VectorizeLoop` | 当前被 early return 绕过 | `reuse` | 是否启用可 target-gate，但 pass 本身应纳入主线 |
-| `StorageRewrite` | 当前被 early return 绕过 | `reuse` | 通用存储规划，不应长期缺席 |
-| `LoopUnswitching` | 当前被 early return 绕过 | `reuse` | 通用 loop 优化 |
-| `UnrollLoop` | 当前被 early return 绕过 | `reuse` | 通用 loop 展开 |
-| `RenormalizeSplitPattern` | 当前被 early return 绕过 | `reuse` | 规范化循环分裂模式 |
-| `RemoveNoOp` | 当前被 early return 绕过 | `reuse` | 通用清理 |
-| `HoistIfThenElse` | 当前被 early return 绕过 | `reuse` | 通用控制流规范化 |
-| `VerifyMemory` | 当前被 early return 绕过 | `reuse` | 通用内存验证 |
-| `AnnotateEntryFunc` | 当前被 early return 绕过 | `reuse` | entry 语义统一 |
+这一层的输出不是正式 host/runtime 协议，而是：
+
+- `Blackhole-preserving TIR`
+
+### C. 通用中后段规范化 / 优化
+
+这层不是先验“全复用”，而是按 split 前语义是否还能保真来逐项接回：
+
+| pass | 目标状态 | 说明 |
+|------|----------|------|
+| `NarrowDataType` | `reuse_if_safe` | 通用 dtype 规范化 |
+| `FlattenBuffer` | `reuse_if_safe` | 需以 copy/gemm 语义保真为前提 |
+| `ConfigIndexBitwidth` | `reuse_if_safe` | index 统一 |
+| `VectorizeLoop` | `reuse_if_safe` | 是否启用可 target-gate |
+| `StorageRewrite` | `reuse_if_safe` | 当前最容易打断 copy 识别 |
+| `LoopUnswitching` | `reuse_if_safe` | 通用 loop 优化 |
+| `UnrollLoop` | `reuse_if_safe` | 通用 loop 展开 |
+| `RenormalizeSplitPattern` | `reuse_if_safe` | 规范化循环分裂模式 |
+| `RemoveNoOp` | `reuse_if_safe` | 通用清理 |
+| `HoistIfThenElse` | `reuse_if_safe` | 控制流规范化 |
+
+接回原则：
+
+- 不以兼容旧 Blackhole 实现为准
+- 只要 split 前语义规划仍能保真，就应接回
 
 ### D. host/device 与调用约束
 
-| pass | 当前 Blackhole | 目标状态 | 说明 |
-|------|----------------|----------|------|
-| `AnnotateDeviceRegions` | 当前被 early return 绕过 | `reuse` | host/device 边界识别必须恢复 |
-| `SplitHostDevice` | 当前跳过 | `reuse` | Blackhole 不应长期自定义 kernel model |
-| `AnnotateReadOnlyParams` | 当前被 early return 绕过 | `reuse` | 参数约束与 codegen/runner 协议一致性需要 |
-| `MakePackedAPI` | 当前跳过 | `reuse` | host 侧 PackedFunc 参数解析不应由 `BlackholeModule` 重新定义 |
-| `LowerDeviceKernelLaunch` | 当前跳过 | `reuse_with_blackhole_branch` | 应恢复 `calling_conv` 语义，必要时只在 launch lowering 上加分支 |
+这层全部作为正式主线复用：
 
-### E. 硬件专属调度 / 搬运 / 同步
+| pass | 目标状态 | 说明 |
+|------|----------|------|
+| `AnnotateDeviceRegions` | `reuse` | host/device 边界识别 |
+| `SplitHostDevice` | `reuse` | 不能再绕开 |
+| `AnnotateReadOnlyParams` | `reuse` | 参数约束与 ABI 一致性 |
+| `MakePackedAPI` | `reuse` | 正式 host callable 入口 |
+| `LowerDeviceKernelLaunch` | `reuse` | 正式 launch ABI 与 `thread_extent` 来源 |
 
-| pass | 当前 Blackhole | 目标状态 | 说明 |
-|------|----------------|----------|------|
-| `IfStmtBinding` | 当前被 early return 绕过 | `reuse_with_blackhole_branch` | 通用绑定思路可保留，具体后续是否必须按 Blackhole 数据流调整待定 |
-| `PlanAndUpdateBufferAllocationLocation` | 当前被 early return 绕过 | `reuse_with_blackhole_branch` | 其职责与 Blackhole L1/CB 资源规划相关，优先复用思路 |
-| `PipelinePlanning` | 当前被 early return 绕过 | `reuse_with_blackhole_branch` | 这是未来 copy/gemm dataflow 的重要承载点 |
-| `InjectSoftwarePipeline` | 当前被 early return 绕过 | `reuse_with_blackhole_branch` | 是否直接复用待验证，但职责应保留在 pass 层 |
-| `MergeSharedMemoryAllocations` | 当前被 early return 绕过 | `reuse_with_blackhole_branch` | 与 Blackhole shared/CB/L1 资源有映射关系 |
-| `ThreadSync("global"/"shared"/"shared.dyn")` | 当前被 early return 绕过 | `reuse_with_blackhole_branch` | 同步职责必须在 pass 层，不能留给 runtime 猜 |
-| `PersistThreadblock` | 当前被 early return 绕过 | `do_not_reuse_impl` | 目前更偏 GPU block 模型，先不直接复用实现 |
-| `WarpSpecialized` | 当前被 early return 绕过 | `do_not_reuse_impl` | CUDA warp 专属 |
-| `InjectTmaBarrier` | 当前被 early return 绕过 | `do_not_reuse_impl` | Hopper/TMA 专属 |
-| `MultiVersionBuffer` | 当前被 early return 绕过 | `do_not_reuse_impl` | 与当前 Blackhole MVP 无直接对应 |
-| `RewriteWgmmaSync` | 当前被 early return 绕过 | `do_not_reuse_impl` | WGMMA 专属 |
-| `LowerThreadAllreduce` | 当前被 early return 绕过 | `do_not_reuse_impl` | 线程归约模型暂不对齐 |
-| `LowerLDGSTG` | 当前被 early return 绕过 | `do_not_reuse_impl` | Nvidia 专属 load/store 降法 |
-| `LowerHopperIntrin` | 当前被 early return 绕过 | `do_not_reuse_impl` | Hopper 专属 |
-| `InjectFenceProxy` | 当前被 early return 绕过 | `do_not_reuse_impl` | async proxy 专属 |
-| `AnnotateWarpGroupRegAlloc` | 当前被 early return 绕过 | `do_not_reuse_impl` | warp-group register 语义不适用 |
-| `MarkCudaSyncCalls` | 当前被 early return 绕过 | `do_not_reuse_impl` | CUDA PDL 专属 |
+### E. split 后 Blackhole 正式 plan 提取
 
-## Blackhole 专属 pass 的最终边界
+这层是 Blackhole 真正新增的正式主线，不属于 CUDA 直接复用部分。
 
-### `LowerBlackholeOps`
+| pass / 层 | 目标状态 | 说明 |
+|-----------|----------|------|
+| `LowerBlackholeOps` | `keep_and_refocus` | split 后 requirement extraction：`segment_plan` / `runtime_args` / `cb_requirements` |
+| `PlanBlackholeCB` | `keep_and_expand` | split 后 memory planner：生成正式 `cb_configs` |
+| `AssignBlackholeCores` | `keep_and_expand` | split 后 execution planner：生成正式 `core_plan` |
 
-输入应为：
+### F. 不进入 Blackhole 主线的 CUDA/Hopper 专属实现
 
-- 已经过 `LowerTileOp(Blackhole-aware)` 的 PrimFunc
+| pass | 目标状态 | 说明 |
+|------|----------|------|
+| `WarpSpecialized` | `do_not_reuse_impl` | CUDA warp 专属 |
+| `InjectTmaBarrier` | `do_not_reuse_impl` | Hopper/TMA 专属 |
+| `MultiVersionBuffer` | `do_not_reuse_impl` | 与当前 Blackhole 执行模型不对齐 |
+| `OptimizeCPAsyncSync` | `do_not_reuse_impl` | CUDA cp.async 专属 |
+| `RewriteWgmmaSync` | `do_not_reuse_impl` | WGMMA 专属 |
+| `LowerThreadAllreduce` | `do_not_reuse_impl` | 线程归约模型不对齐 |
+| `LowerLDGSTG` | `do_not_reuse_impl` | Nvidia load/store 降法 |
+| `LowerHopperIntrin` | `do_not_reuse_impl` | Hopper 指令专属 |
+| `InjectFenceProxy` | `do_not_reuse_impl` | async proxy 专属 |
+| `AnnotateWarpGroupRegAlloc` | `do_not_reuse_impl` | warp-group reg alloc 专属 |
+| `MarkCudaSyncCalls` | `do_not_reuse_impl` | CUDA PDL 专属 |
+| `PersistThreadblock` | `do_not_reuse_impl` | GPU persistent block 专属 |
 
-职责应收缩为：
+## Blackhole 新增接入点
 
-- 消费 Blackhole-preserving TIR
-- 产出 `blackhole.*` attrs
-- 提取 segment 计划
-- 提取 runtime arg schema
+### 接入点 1: split 前语义规划
 
-不再承担：
+位置：
 
-- 从晚期普通 loop 中恢复大部分 copy/gemm 语义
-- 猜 PrimFunc 参数结构
-- 用 runtime 特判兜底 device kernel 结构
+- `LowerTileOp` 的 Blackhole-aware branch
 
-### `PlanBlackholeCB`
+职责：
 
-继续保留，职责不变：
+- 保留 copy/gemm/tile/shared/pipeline 语义
+- 输出 `Blackhole-preserving TIR`
 
-- 从 `blackhole.cb_requirements` / segment 信息收敛到 runtime-ready `blackhole.cb_configs`
+### 接入点 2: split 后 requirement extraction
 
-### `AssignBlackholeCores`
+位置：
 
-继续保留，职责不变：
+- `LowerBlackholeOps`
 
-- 只生成 host/runtime 消费的 core scheduling plan
+职责：
+
+- 提取：
+  - `blackhole.segment_plan`
+  - `blackhole.runtime_args`
+  - `blackhole.cb_requirements`
+
+### 接入点 3: split 后 memory planning
+
+位置：
+
+- `PlanBlackholeCB`
+
+职责：
+
+- 生成正式 `blackhole.cb_configs`
+- 做 `cb_id` deterministic 分配、生命周期复用、1.5MB hard check
+
+### 接入点 4: split 后 execution planning
+
+位置：
+
+- `AssignBlackholeCores`
+
+职责：
+
+- 生成正式 `blackhole.core_plan`
+- 补足 logical grid / work packets / physical core mapping
+
+### 接入点 5: host-side materialization
+
+位置：
+
+- `BlackholeModule`
+
+职责：
+
+- 直接 materialize TT-Metal host objects
+- 不再通过 external runner 作为主路径
 
 ## 基于矩阵的改造顺序
 
-### 第一步：恢复 pass 主链
+### 第一步：固定三层模型
 
-- 去掉 Blackhole 在 `OptimizeForTarget` 的长期 early return 设计
-- 优先恢复：
-  - 通用 TIR 规范化 / 优化
-  - host/device 与参数约束相关 pass
+- split 前语义规划
+- split 后正式 plan 提取
+- host-side materialization
 
-### 第二步：收正 host/device 与参数边界
+### 第二步：把差异收缩到四个接入点
 
-- 让 Blackhole 主路径恢复：
-  - `AnnotateDeviceRegions`
-  - `SplitHostDevice`
-  - `MakePackedAPI`
-  - `LowerDeviceKernelLaunch` 或其 Blackhole 分支
-- `rt_mod_blackhole` 不再长期依赖“缺少 `calling_conv` 也当 device kernel”
+- `LowerTileOp`
+- `LowerBlackholeOps`
+- `PlanBlackholeCB`
+- `AssignBlackholeCores`
 
-### 第三步：将差异集中到 `LowerTileOp` 和 Blackhole device passes
+### 第三步：用 copy 打通首条正式主链
 
-- 在 `LowerTileOp` 中保留 copy/gemm 的 Blackhole-preserving 语义
-- `LowerBlackholeOps` 消费这些语义
-- `rt_mod_blackhole` / `BlackholeModule` 只消费 pass 结果
+copy 的正式完成标准不是“能跑”，而是：
 
-### 第四步：以 copy 为首条完整链路验证
+- 经过正式 TIR / host-device 主链
+- 经过 split 后 Blackhole 正式 plan 提取
+- 通过 `BlackholeModule` direct host path 执行
 
-copy 的完成标准不再只是“能跑”，而是：
+### 第四步：在不破坏 copy 主链的前提下接回通用 pass
 
-- 经过通用 TIR pass 主链
-- 经过 host/device 与 Packed API 主链
-- 经过 Blackhole-specific device passes
-- 最终 spec 和 runtime 参数绑定不再依赖 runtime/module 猜测
+- `FlattenBuffer`
+- `VectorizeLoop`
+- `StorageRewrite`
+
+### 第五步：在同一结构上接入 GEMM
+
+- 不再新增 runtime-only 或 runner-only 路径
 
 ## 验证方式
 
 ### 文档一致性
 
-以下文档结论必须保持一致：
+以下文档必须保持一致：
 
 - `final_blackhole_backend_redesign.md`
 - `stage2_single_core_pass_integration.md`
+- `stage2_blackhole_logical_block_launch_plan.md`
+- `stage2_concrete_dev_task_plan.md`
 - `progress.md`
 
-### Pass 级验证
+### 结构验证
 
-- 逐项确认矩阵中的 pass 当前是否被 Blackhole 复用
-- 对 `reuse_with_blackhole_branch` 的 pass，明确后续需要修改的接入点
-- 对 `do_not_reuse_impl` 的 pass，明确 Blackhole 对应职责位置
+- split 前仍有 `Blackhole-preserving TIR`
+- split 后稳定产出：
+  - `blackhole.segment_plan`
+  - `blackhole.runtime_args`
+  - `blackhole.cb_requirements`
+  - `blackhole.cb_configs`
+  - `blackhole.core_plan`
 
-### 实现前置检查
+### 正式执行验证
 
-在开始下一轮代码改造前，必须先满足：
+正式执行只看：
 
-- 不再把 Blackhole 视为“独立于 TIR 主链的自定义 kernel model”
-- 不再让 `BlackholeModule` / `rt_mod_blackhole` 定义 PrimFunc 参数和 host/device 语义
+- TileLang 暴露的正式 host callable
+- `BlackholeModule` direct host path
 
+external runner 不再作为正式阶段完成标准
