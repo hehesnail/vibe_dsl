@@ -37,6 +37,30 @@
 4. 再用 copy 验证 large-shape / grid>1 / memory-plan correctness
 5. 最后再接回更多通用 pass 与 GEMM
 
+## 当前剩余事项优先级
+
+结合当前代码状态，Stage 2A/2B 剩余事项按优先级收敛为：
+
+1. **`BlackholeModule` direct host path**
+   - 当前最硬阻塞
+   - 只要正式执行仍经由 external runner，Stage 2B/2D 的完成定义就不成立
+2. **split 前语义规划收正**
+   - 重点在 `LowerTileOp`
+   - 目标是让 copy/gemm 语义更早被保留下来，而不是主要靠 split 后 matcher 恢复
+3. **`PlanBlackholeCB` memory planner 收正**
+   - 当前已有 schema、lifetime、binding，但仍偏保守 allocator
+   - 需要继续收成正式 memory planner
+4. **分批接回中后段通用 pass**
+   - `FlattenBuffer`
+   - `VectorizeLoop`
+   - `StorageRewrite`
+   - 前提是不打坏当前 copy 主链
+5. **GEMM 接入**
+   - 必须复用前面收正后的同一结构
+   - 不再复制 runtime-only 或 runner-only 路径
+
+这份优先级覆盖当前阶段的实际推进顺序；后续实现默认按这份顺序推进，除非设计文档本身发生变更。
+
 ## 任务总原则
 
 ### 1. 先分层，再补 pass

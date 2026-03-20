@@ -157,18 +157,28 @@
 
 ## 当前下一步
 
-1. 先把 split 前 / split 后 / host-side 三层边界在代码中收正到一致。
-2. 收正 `LowerTileOp` 的 Blackhole-aware branch，先把 split 前 copy 语义规划固定下来。
-3. 再收正 `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores`，让 split 后 attrs 真正变成正式 `runtime_args / cb_configs / core_plan`。
-4. 把 `BlackholeModule` direct host path 收正成唯一正式执行路径，不再以 external runner 为主路径。
-5. 把 large-shape / oversubscription 的当前验证沉淀到后续 memory planner 收正里，不再停留在 MVP allocator 行为。
-6. 在不破坏当前 copy true E2E 的前提下，继续把 `PlanBlackholeCB` 从“按 requirement 累加”收成正式 memory planner。
-7. 在当前 schema 已显式化 `total_size_bytes + lifetime span` 的基础上，继续补真正的 lifetime/reuse 规划，而不再让下游从 `page_size * num_pages` 反推 memory object 语义。
-8. 在当前保守同型非重叠 reuse 的基础上，继续补：
-   - 跨更多 requirement 形态的兼容性规则
-   - 更完整的 requirement-to-memory-object 绑定协议
-9. 在不破坏 copy 正式 E2E 的前提下，分批接回 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite`。
-10. 最后用同一结构推进 GEMM。
+### 当前剩余事项优先级
+
+1. `BlackholeModule` direct host path
+   - 先把模块内 direct materialization / launch / readback 收正成正式主路径
+   - external runner 继续只保留为 bring-up/debug 工具
+2. split 前语义规划收正
+   - 优先收正 `LowerTileOp` 的 Blackhole-aware branch
+   - 先把 copy/gemm 的 Blackhole-preserving 语义在 split 前稳定下来
+3. `PlanBlackholeCB` memory planner 收正
+   - 在不破坏当前 copy true E2E 的前提下，继续把 planner 从 MVP allocator 收成正式 memory planner
+   - 继续补真正的 lifetime/reuse 规划和更完整的 binding protocol
+4. 分批接回中后段通用 pass
+   - 在不破坏 copy 正式 E2E 的前提下，逐步接回 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite`
+5. 用同一结构推进 GEMM
+
+### 当前具体下一步
+
+1. 先把 `BlackholeModule` direct host path 收正成唯一正式执行路径，不再以 external runner 为主路径。
+2. 再收正 `LowerTileOp` 的 Blackhole-aware branch，把 split 前 copy/gemm 语义规划固定下来。
+3. 接着继续收正 `PlanBlackholeCB`，把 large-shape / oversubscription 的当前验证沉淀成更正式的 memory planner 行为。
+4. 然后在不破坏 copy 主链的前提下，分批接回 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite`。
+5. 最后用同一结构推进 GEMM。
 
 ## 当前活动设计文档
 
