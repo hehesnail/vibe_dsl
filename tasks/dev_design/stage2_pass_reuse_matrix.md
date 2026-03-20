@@ -227,11 +227,23 @@ copy 的正式完成标准不是“能跑”，而是：
 - 经过 split 后 Blackhole 正式 plan 提取
 - 通过 `BlackholeModule` direct host path 执行
 
+### 第三步补充：方案 A 新 pass 位置（2026-03-20）
+
+在 B 层（split 前 Blackhole 语义规划）中新增：
+
+| pass / 层 | 目标状态 | 说明 |
+|-----------|----------|------|
+| `AnnotateBlackholeCopySemantics` | `new_pass` | 位于 `LowerTileOp` 之后、`FlattenBuffer` 之前；识别 copy pattern 并添加 `blackhole.copy_direction` annotation |
+
+此 pass 是 Phase 3 split-before 语义规划的推荐方案。不修改 `LowerTileOp` 的核心降级逻辑。
+
 ### 第四步：在不破坏 copy 主链的前提下接回通用 pass
 
-- `FlattenBuffer`
-- `VectorizeLoop`
-- `StorageRewrite`
+- `FlattenBuffer` — shared-scope buffer 需豁免
+- `VectorizeLoop` — 应该安全
+- `StorageRewrite` — shared-scope buffer 不合并
+
+回收条件：每个 pass 单独回收 + 单独测试，确保 split 前语义保真。
 
 ### 第五步：在同一结构上接入 GEMM
 

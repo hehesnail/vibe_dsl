@@ -1,8 +1,8 @@
-# AGENTS.md
+# GEMINI.md
 
 ## 作用
 
-本文件用于告诉 Codex 在这个仓库里应该如何工作。
+本文件用于指示 **Gemini CLI** 在这个仓库里应该如何工作。作为基础强制指令（Contextual Precedence），本文件中的规则具有最高优先级。
 
 它不是总体架构设计文档。涉及 Blackhole 后端架构、主路径、设计取舍时，只看这一份：
 
@@ -44,7 +44,7 @@
 
 ## 先设计，后写代码
 
-这是本仓库的强约束。
+这是本仓库的强约束。对于复杂改动，**建议使用 `enter_plan_mode` 工具**进行设计。
 
 如果任务不是非常小的局部修复，在写代码前必须先形成设计，并保留可回溯的设计记录。
 
@@ -69,19 +69,16 @@
 - 读实际代码、测试、示例，再下判断
 - 关键设计取舍必须与 `final_blackhole_backend_redesign.md` 一致
 
-当前 Blackhole 后端默认推进顺序（2026-03-20 修正）：
+当前 Blackhole 后端默认推进顺序：
 
-1. ~~attrs / 协议~~ ✅
-2. ~~`ExecutableSpec`~~ ✅
-3. ~~`rt_mod_blackhole`~~ ✅
-4. ~~`BlackholeModule` direct path 补全~~ ✅ Phase 1 代码完成
-5. Copy E2E 验收（direct path）— **当前**
-6. split-before 语义规划（方案 A: `AnnotateBlackholeCopySemantics` pass）
-7. 通用 pass 回收
-8. GEMM 接入
-9. multi-core
-
-关键参考：`runner.cpp` 是 direct path 的完整参考蓝本（CB 创建 + runtime args + work-packet 迭代）。
+1. attrs / 协议
+2. `ExecutableSpec`
+3. `rt_mod_blackhole`
+4. `BlackholeModule`
+5. runner 协议
+6. single-core copy
+7. single-core gemm
+8. multi-core
 
 ## 经验与问题记录
 
@@ -133,10 +130,9 @@
    - 没验证就写没验证
    - 有限制就写限制，不要默认后续的人会自己猜到
 
-5. **提交并推送**
-   - 任务完成后，记得 `git commit` 和 `git push`
-   - 提交信息要能反映本次改动的主题
-   - 文档改动和代码改动可以分开提交，避免混乱
+5. **版本控制**
+   - 除非用户明确要求提交，否则 **不要擅自 staging (git add) 或提交 (git commit)**。这是 Gemini CLI 的重要安全准则。
+   - 当用户要求提交时，记得先用 `git status`, `git diff HEAD` 检查，并提供 draft 提交信息给用户确认。
 
 ## 不要做的事
 
@@ -157,13 +153,12 @@
 - 做了与任务匹配的验证
 - 相关状态文档仍然真实
 - 如果本次工作产生了稳定经验或可复用问题，已经同步到 `memory/` 中
-- 已完成 `git commit` 和 `git push`
 - 明确写出未完成项和限制，而不是假装它们不存在
 
 ## 一句话原则
 
-在这个仓库里，Codex 的工作方式应该是：
+在这个仓库里，Gemini CLI 的工作方式应该是：
 
 - **按唯一总设计推进**
 - **先设计后编码**
-- **做完后把进度、经验、问题记录和 git 提交补齐**
+- **做完后把进度、经验和问题记录补齐，并听从指令决定是否提交**

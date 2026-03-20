@@ -66,5 +66,52 @@
 
 ---
 
-## 结论
-通过上述外科手术式的改造，我们将使 TileLang 的编译链路从根本上契合 TT-Metal 的硬件编程范式。这不仅仅是“修复 Bug”，而是补齐了将 SIMT IR 转换为空间数据流架构最关键的拼图。
+## 3. 基于源码审查的逐刀评估（2026-03-20 更新）
+
+对照实际源码审查后的结论：
+
+### 第一刀（SplitBlackholeKernel）：正确但时机不对
+
+**结论**：Copy 阶段不需要，GEMM 阶段才需要。
+
+- TT-Metal 的 `fused_dataflow` kernel 类型允许在 BRISC 上同时做 NOC 读写
+- Copy 操作本质是 DRAM→L1→DRAM 的数据搬运，不涉及 TRISC 计算
+- `runner.cpp` 已能处理多 kernel（遍历 `spec.kernels`），基础设施已就绪
+- 推迟到 GEMM 阶段
+
+### 第二刀（编译 Pipeline 改造）：已基本完成
+
+- `lower.py` 和 `phase.py` 已有 Blackhole-specific 路径
+- Pass 链 `LowerBlackholeOps → PlanBlackholeCB → AssignBlackholeCores` 已建立
+
+### 第三刀（差异化代码生成）：Copy 已够用
+
+- `codegen_blackhole.cc` 已区分 BRISC/NCRISC/TRISC 的 header 包含
+- 当前只生成单个 kernel 文件，GEMM 需要生成 3 个独立 .cpp
+
+### 第四刀（Direct Host Path）：最严重阻塞 → 已修正
+
+原始 `blackhole_module_direct.cc` 存在三个基本功能缺失：
+1. **完全没有 CreateCircularBuffer 调用** — 已修正
+2. **Runtime args 构造不匹配 schema** — 已修正，改为按 `KernelArgSpec.kind` 逐项构造
+3. **单核硬编码，无 work-packet 迭代** — 已修正，改为遍历 `work_packets`
+
+修正方案：以 `runner.cpp` 为参考蓝本，将其逻辑合并到 `blackhole_module.cc` 的 `ExecuteDirect()` 方法中。`blackhole_module_direct.cc` 已合并后删除。
+
+### 第五刀（NOC Barrier 优化）：正确但非阻塞
+
+功能上正确，性能上有优化空间。可推迟到性能优化阶段。
+
+---
+
+## 4. 当前状态（2026-03-20）
+
+- 第一刀：推迟到 GEMM 阶段
+- 第二刀：已完成
+- 第三刀：Copy 已够用，GEMM 时扩展
+- 第四刀：**已修正** — direct path 已补全 CB 创建、runtime args、work-packet 迭代
+- 第五刀：推迟到性能优化阶段
+
+## 原始结论
+
+通过上述外科手术式的改造，我们将使 TileLang 的编译链路从根本上契合 TT-Metal 的硬件编程范式。这不仅仅是”修复 Bug”，而是补齐了将 SIMT IR 转换为空间数据流架构最关键的拼图。

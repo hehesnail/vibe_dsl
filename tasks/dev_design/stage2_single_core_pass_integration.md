@@ -132,7 +132,20 @@ Stage 2 的正式目标已经收紧为：
 - `blockIdx.x/y -> 0` 的 codegen 常量化
 - `blackhole.core_plan` 仍是摘要信息
 - `PlanBlackholeCB` 仍偏 MVP allocator
-- `BlackholeModule` 还没有成为唯一正式执行路径
+- ~~`BlackholeModule` 还没有成为唯一正式执行路径~~ → **已修正（2026-03-20）**：`ExecuteDirect()` 已补全 CB 创建 + runtime args + work-packet 迭代
+
+Phase 3 split-before 语义规划方案确认：
+
+- **方案 A（推荐）**：新增 `AnnotateBlackholeCopySemantics` pass，位于 `LowerTileOp` 之后、`FlattenBuffer` 之前
+  - 识别 copy pattern（BufferStore where value is BufferLoad），添加 `blackhole.copy_direction` annotation
+  - 不修改 `LowerTileOp` 核心降级逻辑
+- 方案 B（备选）：修改 `LowerTileOp` 加 Blackhole 分支，风险较高
+
+通用 pass 回收策略：
+
+- shared-scope buffer 需要豁免 `StorageRewrite` 的合并
+- `FlattenBuffer` 的 shared-scope 跳过分配已在 `codegen_blackhole.cc` 中处理
+- 每个 pass 单独回收 + 单独测试
 
 ## 当前进展
 

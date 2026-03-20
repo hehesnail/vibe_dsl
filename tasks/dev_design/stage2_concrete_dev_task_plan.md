@@ -235,23 +235,34 @@ copy 不只验证最小 case，还必须验证：
 
 #### 主要接入点
 
-- `rt_mod_blackhole`
-- `BlackholeModule`
+- `blackhole_module.cc`（统一实现，合并了 `blackhole_module_direct.cc`）
+- `blackhole_module.h`
+- `CMakeLists.txt`
 
 #### 核心产物
 
 - `ExecutableSpec`
 - direct host materialization / launch / readback
 
+#### 实施方案（2026-03-20，以 runner.cpp 为参考蓝本）
+
+1. **合并文件结构**：`blackhole_module.cc` 成为唯一实现，`blackhole_module_direct.cc` 已合并后删除
+2. **编译模式**：`USE_BLACKHOLE_DIRECT=ON` 时链接 TT-Metal，定义 `TILELANG_BLACKHOLE_DIRECT` 宏
+3. **运行时 fallback**：`TILELANG_BH_USE_RUNNER=1` 时切回 external runner
+4. **CB 创建**：`CreateCircularBuffersFromSpec()` — 遍历 `spec.cb_configs`，为每个 CB 调用 `CreateCircularBuffer`
+5. **Runtime args**：`BuildRuntimeArgsFromSpec()` — 按 `KernelArgSpec.kind` 逐项构造
+6. **Work-packet 迭代**：遍历 `spec.core_plan.work_packets`，为每个 work unit 创建独立 Program 并执行
+7. **DRAM page_size**：使用 role-aware `ChoosePageSize()`（匹配 runner.cpp）
+
 #### 必做能力
 
 - 直接 materialize：
-  - `Program`
+  - `Program`（per work item）
   - `CreateCircularBuffer`
   - `CreateKernel`
   - `SetRuntimeArgs`
-  - `ConfigureDeviceWithProgram`
-  - `LaunchProgram`
+  - `EnqueueMeshWorkload`
+  - `EnqueueReadMeshBuffer`
 - TileLang 正式 host callable 可直接执行
 
 #### 完成标准
@@ -315,19 +326,26 @@ copy 不只验证最小 case，还必须验证：
 - GEMM 不新增 runtime-only 或 runner-only 路径
 - 最小 GEMM direct E2E 通过
 
-## 推荐执行顺序
+## 推荐执行顺序（2026-03-20 修正）
 
-当前建议按下面顺序推进：
+基于源码审查结论，修正后的推进顺序：
 
-1. 任务包 A: 固定三层边界
-2. 任务包 B: split 前语义规划
-3. 任务包 C: split 后 requirement extraction
-4. 任务包 D: memory planner
-5. 任务包 E: execution planner
-6. 任务包 F: `BlackholeModule` direct path
-7. 任务包 G: copy 正式 E2E
-8. 任务包 H: 分批接回中后段通用 pass
-9. 任务包 I: GEMM 接入
+1. **任务包 F**: `BlackholeModule` direct path — **最高优先级，P0 阻塞**
+   - 以 `runner.cpp` 为参考蓝本，已合并到 `blackhole_module.cc`
+   - 补全 CB 创建 + 正确 runtime args + work-packet 迭代
+2. 任务包 A: 固定三层边界
+3. 任务包 G: copy 正式 E2E — 用 direct path 验收
+4. 任务包 B: split 前语义规划 — 推荐方案 A（新增 AnnotateBlackholeCopySemantics pass）
+5. 任务包 H: 分批接回中后段通用 pass
+6. 任务包 I: GEMM 接入
+
+已基本完成不再阻塞的任务包：
+- 任务包 C: split 后 requirement extraction — 已落地
+- 任务包 D: memory planner — 已有保守 reuse + binding protocol
+- 任务包 E: execution planner — 已有 work_packets + physical_cores
+
+旧推荐顺序（已过时）：
+~~A → B → C → D → E → F → G → H → I~~
 
 ## 近期交付建议
 

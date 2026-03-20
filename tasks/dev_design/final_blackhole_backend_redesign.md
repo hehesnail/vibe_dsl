@@ -371,7 +371,69 @@ multi-core 的主要实现位置保持不变：
 - per-core runtime args
 - multi-core execution / memory plan materialization
 
-## 8. 正式验收标准
+## 8. 架构可扩展性评估
+
+### 8.1 当前架构的可扩展性边界
+
+当前三层模型的核心路径是"先压碎（LowerTileOp 标量化）再恢复（LowerBlackholeOps pattern match）"。这个模式的可扩展性随算子复杂度急剧下降：
+
+| 算子类型 | Pattern Match 可行性 | 多核模型 | 当前架构是否覆盖 |
+|---------|---------------------|---------|----------------|
+| Copy | 极简单 (`dst[i,j]=src[i,j]`) | 数据并行 | 已覆盖 |
+| GEMM | 可识别但脆弱 | M/N 维度切分 | 部分覆盖 |
+| Element-wise | 中等 | 数据并行 | **未覆盖** |
+| Reduction | 复杂 | 需跨 tile 累加 | **未覆盖** |
+| Softmax | 很复杂 | 需两趟扫描 | **未覆盖** |
+| FlashAttention | **基本不可能从标量 TIR 恢复** | 需核间数据流 | **未覆盖** |
+
+### 8.2 根本性限制
+
+1. **语义恢复不可扩展**：每增加一种 op 需要新的 pattern matcher，到 FlashAttention 级别的融合算子时 pattern match 完全失效
+2. **其他 IR ops 未处理**：element-wise、reduction、transpose、typecast 等在 Blackhole 上需要不同的 TT-Metal API，当前设计完全没有涉及
+3. **多核模型有上限**：当前 `work_packets` 能表达数据并行，但无法表达核间数据流
+
+### 8.3 中期架构演进方向：Operation-Level Lowering
+
+与其"先压碎再恢复"，更可扩展的方案是**保留 tile-level 操作语义直到最后一刻**：
+
+```text
+TileLang DSL → PrimFunc/TIR（保留 T.copy/T.gemm/T.reduce/T.elementwise）
+  → [Blackhole target 时跳过 LowerTileOp 的标量降级]
+  → MapBlackholeOps：直接从 tile-level op 映射到 TT-Metal 操作序列
+  → 同时确定 CB requirements / kernel split / runtime args
+  → codegen 只做格式化
+```
+
+### 8.4 对当前规划的影响
+
+- **Phase 1-2 不受影响**：direct path + copy E2E 是无论哪种架构都需要的基础设施
+- **Phase 3 需要考虑两条路**：短期走 annotation pass，中期走 operation-level lowering
+- **建议**：Phase 1-2 先打通，Phase 3 时根据 GEMM 的实际 pattern match 难度决定
+
+## 9. 关键源码审查结论
+
+### 9.1 runner.cpp 是 direct path 的完整参考
+
+`runner.cpp` 已经是一个完整、正确的 TT-Metal 执行参考实现，包含：
+- `create_circular_buffers()` — 按 spec 创建所有 CB
+- `build_runtime_args()` — 按 `KernelArgSpec.kind` 逐项构造 runtime args
+- work-packet 迭代 — 遍历 `work_packets` 为每个 work unit 执行独立 program
+
+Direct path 的实现本质上就是把 runner.cpp 的逻辑从独立进程移到 `BlackholeModule` 的 `ExecuteDirect()` 方法中。
+
+### 9.2 CB 创建是 host-side 必做项
+
+`CreateCircularBuffer` 是 TT-Metal 编程的**基本必需步骤**，不是可选优化。没有它 kernel 里的 `cb_reserve_back(cb_id, ...)` 会失败。
+
+### 9.3 SplitBlackholeKernel 推迟到 GEMM 阶段
+
+Copy 操作本质是 DRAM→L1→DRAM 的数据搬运，不涉及 TRISC 计算，单 kernel 在 BRISC 上（fused_dataflow）完全正确。GEMM 才需要拆分为 Reader/Compute/Writer 三个独立 kernel。
+
+### 9.4 split-before 语义规划方案
+
+推荐方案 A：在 `LowerTileOp` 之后、`FlattenBuffer` 之前新增 `AnnotateBlackholeCopySemantics` pass，识别 copy pattern 并添加 annotation。不修改 `LowerTileOp` 的核心降级逻辑。
+
+## 10. 正式验收标准
 
 正式阶段完成标准只看：
 

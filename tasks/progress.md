@@ -5,9 +5,9 @@
 
 ## 当前阶段
 
-- **阶段**: Stage 2A/2B 主链收正与 copy 正式主链推进
-- **日期**: 2026-03-19
-- **当前目标**: 先按 TileLang 正式主链收正 Blackhole 的 split 前语义规划 / split 后正式 plan 提取 / host-side materialization 三层，再在这条主链上完成 copy 与后续 GEMM 的语义集成
+- **阶段**: Stage 2B direct path 补全与 copy E2E 验收
+- **日期**: 2026-03-20
+- **当前目标**: `BlackholeModule` direct host path 已补全（Phase 1 代码完成），接下来用 direct path 跑通所有 copy E2E 测试
 
 ## 当前状态判断
 
@@ -71,12 +71,25 @@
   - `tilelang.engine.lower.is_device_call()` 不再把 `blackhole.target_mode` 视为 device-kernel 判据
   - 只有正式 `calling_conv` 或正式 `blackhole.*` plan attrs 才参与 Blackhole device function 识别
 
+基于源码审查的新进展（2026-03-20）：
+
+- `blackhole_module.cc` 已完成 direct path 补全（Phase 1 代码实现）：
+  - `ExecuteDirect()` 方法：直接调用 TT-Metal API
+  - `CreateCircularBuffersFromSpec()`：按 spec 创建所有 CB（参考 runner.cpp）
+  - `BuildRuntimeArgsFromSpec()`：按 `KernelArgSpec.kind` 逐项构造（参考 runner.cpp）
+  - work-packet 迭代：遍历 `work_packets` 为每个 work unit 创建独立 Program
+  - role-aware `ChoosePageSize()` 用于 DRAM buffer 创建
+- `blackhole_module_direct.cc` 已合并到 `blackhole_module.cc` 后删除
+- CMakeLists.txt 新增 `USE_BLACKHOLE_DIRECT` 编译选项
+- 运行时 fallback：`TILELANG_BH_USE_RUNNER=1` 切回 external runner
+- 架构审查文档已同步更新（五刀方案逐项评估）
+
 当前仍然存在的主要结构问题：
 
 - split 前语义规划仍不够强，copy/gemm 语义仍偏依赖 split 后 matcher 恢复
 - `PlanBlackholeCB` 仍偏 MVP allocator，尚未成为正式 memory planner
-- `BlackholeModule` 还没有彻底成为唯一正式 host-side execution path
 - `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等通用中后段 pass 仍未安全接回
+- direct path 尚未在 TT-Sim 上完成 E2E 验证
 
 当前新增设计收束：
 
@@ -157,28 +170,30 @@
 
 ## 当前下一步
 
-### 当前剩余事项优先级
+### 当前剩余事项优先级（2026-03-20 修正）
 
-1. `BlackholeModule` direct host path
-   - 先把模块内 direct materialization / launch / readback 收正成正式主路径
-   - external runner 继续只保留为 bring-up/debug 工具
-2. split 前语义规划收正
-   - 优先收正 `LowerTileOp` 的 Blackhole-aware branch
-   - 先把 copy/gemm 的 Blackhole-preserving 语义在 split 前稳定下来
-3. `PlanBlackholeCB` memory planner 收正
-   - 在不破坏当前 copy true E2E 的前提下，继续把 planner 从 MVP allocator 收成正式 memory planner
-   - 继续补真正的 lifetime/reuse 规划和更完整的 binding protocol
-4. 分批接回中后段通用 pass
-   - 在不破坏 copy 正式 E2E 的前提下，逐步接回 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite`
-5. 用同一结构推进 GEMM
+1. ~~`BlackholeModule` direct host path~~ → **Phase 1 代码已完成**
+   - `ExecuteDirect()` 已补全 CB 创建 + runtime args + work-packet 迭代
+   - **待验证**：在 TT-Sim 上用 direct path 跑通所有 copy E2E 测试
+2. **Copy E2E 验收（Phase 2）** — 当前首要任务
+   - 用 direct path 跑通 32x32, 32x64, 64x32, grid>1 (96x64), large-shape (800x1024)
+   - 补 oversubscription 负例验证
+3. split 前语义规划收正（Phase 3）
+   - 推荐方案 A：新增 `AnnotateBlackholeCopySemantics` pass
+   - 不修改 `LowerTileOp` 核心降级逻辑
+4. 分批接回中后段通用 pass（Phase 4）
+   - `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite`
+   - shared-scope buffer 需豁免
+5. GEMM 接入（Phase 5）
+   - 激活 `SplitBlackholeKernel`
+   - 生成 3 个独立 kernel 文件
+   - 最小 GEMM E2E
 
 ### 当前具体下一步
 
-1. 先把 `BlackholeModule` direct host path 收正成唯一正式执行路径，不再以 external runner 为主路径。
-2. 再收正 `LowerTileOp` 的 Blackhole-aware branch，把 split 前 copy/gemm 语义规划固定下来。
-3. 接着继续收正 `PlanBlackholeCB`，把 large-shape / oversubscription 的当前验证沉淀成更正式的 memory planner 行为。
-4. 然后在不破坏 copy 主链的前提下，分批接回 `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite`。
-5. 最后用同一结构推进 GEMM。
+1. 用 `USE_BLACKHOLE_DIRECT=ON` 编译，在 TT-Sim 上验证 direct path copy E2E。
+2. 修改 `test_blackhole_e2e.py` 改用 direct path（不设 `TILELANG_BH_USE_RUNNER`）。
+3. 验证通过后，推进 Phase 3 split-before 语义规划。
 
 ## 当前活动设计文档
 
