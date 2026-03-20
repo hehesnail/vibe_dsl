@@ -242,10 +242,12 @@ if(USE_METAL)
   # FIXME: CIBW failed with backtrace, why???
   set(TVM_FFI_USE_LIBBACKTRACE OFF)
 elseif(USE_BLACKHOLE)
-  message(STATUS "Enable Blackhole (TT-Metal) backend (external process mode)")
-  # External process mode: No direct TT-Metal linking required
-  # The actual kernel execution is done by an external runner process
-  # Set TILELANG_BLACKHOLE_RUNNER environment variable to specify runner path
+  # Blackhole (TT-Metal) backend
+  # Two modes:
+  #   USE_BLACKHOLE=ON                    -> external runner process mode (no TT-Metal linking)
+  #   USE_BLACKHOLE=ON + USE_BLACKHOLE_DIRECT=ON -> direct TT-Metal API mode (links TT-Metal)
+  #
+  # At runtime, set TILELANG_BH_USE_RUNNER=1 to force external runner even in direct mode.
   file(GLOB TILE_LANG_BLACKHOLE_SRCS
     src/target/codegen_blackhole.cc
     src/target/rt_mod_blackhole.cc
@@ -257,6 +259,31 @@ elseif(USE_BLACKHOLE)
     src/transform/assign_blackhole_cores.cc
   )
   list(APPEND TILE_LANG_SRCS ${TILE_LANG_BLACKHOLE_SRCS})
+
+  if(USE_BLACKHOLE_DIRECT)
+    message(STATUS "Enable Blackhole direct TT-Metal path")
+    add_compile_definitions(TILELANG_BLACKHOLE_DIRECT)
+
+    # Find TT-Metal installation
+    if(DEFINED ENV{TT_METAL_HOME})
+      set(TT_METAL_HOME $ENV{TT_METAL_HOME})
+    elseif(NOT TT_METAL_HOME)
+      set(TT_METAL_HOME "/opt/tt-metal")
+    endif()
+
+    # TT-Metal include paths
+    include_directories(
+      ${TT_METAL_HOME}/tt_metal/api
+      ${TT_METAL_HOME}/tt_metal/include
+      ${TT_METAL_HOME}/tt_metal
+    )
+
+    # Link TT-Metal libraries
+    link_directories(${TT_METAL_HOME}/build/lib)
+    list(APPEND TVM_RUNTIME_LINKER_LIBS tt_metal tt_metal_common)
+  else()
+    message(STATUS "Enable Blackhole backend (external process mode)")
+  endif()
 elseif(USE_ROCM)
   set(CMAKE_HIP_STANDARD 17)
   include(${TVM_SOURCE}/cmake/utils/FindROCM.cmake)

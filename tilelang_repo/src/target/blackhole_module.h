@@ -158,6 +158,12 @@ class BlackholeModuleNode : public ffi::ModuleObj {
                        const std::vector<uint32_t>& scalar_args,
                        const std::vector<DLTensor*>& outputs);
 
+  /*! \brief Execute function using direct TT-Metal API (requires TILELANG_BLACKHOLE_DIRECT) */
+  void ExecuteDirect(const std::string& func_name,
+                     const std::vector<DLTensor*>& inputs,
+                     const std::vector<uint32_t>& scalar_args,
+                     const std::vector<DLTensor*>& outputs);
+
  private:
   // Function information map
   std::unordered_map<std::string, ExecutableSpec> fmap_;

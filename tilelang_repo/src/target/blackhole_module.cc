@@ -1,9 +1,12 @@
 /*!
  * \file target/blackhole_module.cc
- * \brief Blackhole module implementation using external process execution
+ * \brief Unified Blackhole module implementation
  *
- * This implementation uses an external runner process to execute kernels,
- * avoiding direct TT-Metal linking in TileLang.
+ * This file provides both execution paths for Blackhole kernels:
+ * - Direct TT-Metal API path (default when compiled with TILELANG_BLACKHOLE_DIRECT)
+ * - External runner process path (fallback, or when TT-Metal not linked)
+ *
+ * At runtime, set TILELANG_BH_USE_RUNNER=1 to force the external runner path.
  */
 
 #include "blackhole_module.h"
@@ -12,6 +15,7 @@
 #include <tvm/ffi/function.h>
 #include <tvm/ffi/reflection/registry.h>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -26,11 +30,22 @@
 #include "runtime/meta_data.h"
 #include "runtime/pack_args.h"
 
+#ifdef TILELANG_BLACKHOLE_DIRECT
+#include <tt-metalium/host_api.hpp>
+#include <tt-metalium/device.hpp>
+#include <tt-metalium/distributed.hpp>
+#include <tt-metalium/buffer.hpp>
+#endif
+
 namespace tvm {
 namespace runtime {
 
 // Forward declaration
 class BlackholeWrappedFunc;
+
+// ============================================================================
+// JSON serialization helpers (for external runner path)
+// ============================================================================
 
 std::string EscapeJson(const std::string& value) {
   std::ostringstream os;
@@ -187,9 +202,10 @@ std::string SerializeExecutableSpec(const ExecutableSpec& spec,
   return os.str();
 }
 
-/*!
- * \brief Wrapper for Blackhole kernel execution
- */
+// ============================================================================
+// BlackholeWrappedFunc declaration
+// ============================================================================
+
 class BlackholeWrappedFunc {
  public:
   void Init(BlackholeModuleNode* m, ObjectPtr<Object> sptr,
@@ -210,15 +226,16 @@ class BlackholeWrappedFunc {
   ExecutableSpec info_;
 };
 
-// Get path to external runner executable
+// ============================================================================
+// External runner path utilities
+// ============================================================================
+
 std::string GetRunnerPath() {
-  // Check environment variable first
   const char* env_path = std::getenv("TILELANG_BLACKHOLE_RUNNER");
   if (env_path) {
     return std::string(env_path);
   }
 
-  // Check standard locations
   std::vector<std::string> search_paths = {
     "./tilelang_blackhole_runner",
     "/usr/local/bin/tilelang_blackhole_runner",
@@ -252,6 +269,189 @@ std::string GetRunnerPath() {
   return "";
 }
 
+// Argument extraction helpers
+uint32_t ExtractScalar(const ffi::AnyView& arg, DLDataType dtype) {
+  if (dtype.code == kDLInt) {
+    auto opt_i32 = arg.try_cast<int32_t>();
+    if (opt_i32.has_value()) {
+      return static_cast<uint32_t>(opt_i32.value());
+    }
+    auto opt_i64 = arg.try_cast<int64_t>();
+    if (opt_i64.has_value()) {
+      return static_cast<uint32_t>(opt_i64.value());
+    }
+  }
+  if (dtype.code == kDLUInt) {
+    auto opt_u32 = arg.try_cast<uint32_t>();
+    if (opt_u32.has_value()) {
+      return opt_u32.value();
+    }
+    auto opt_u64 = arg.try_cast<uint64_t>();
+    if (opt_u64.has_value()) {
+      return static_cast<uint32_t>(opt_u64.value());
+    }
+  }
+  if (dtype.code == kDLFloat) {
+    float f = 0.0f;
+    auto opt_f = arg.try_cast<float>();
+    if (opt_f.has_value()) {
+      f = opt_f.value();
+    } else {
+      auto opt_d = arg.try_cast<double>();
+      if (opt_d.has_value()) {
+        f = static_cast<float>(opt_d.value());
+      }
+    }
+    return *reinterpret_cast<uint32_t*>(&f);
+  }
+  LOG(FATAL) << "Cannot extract scalar of type code " << dtype.code;
+  return 0;
+}
+
+DLTensor* ExtractTensorArg(const ffi::AnyView& arg, void* void_arg) {
+  auto opt_tensor = arg.try_cast<DLTensor*>();
+  if (opt_tensor.has_value()) {
+    return opt_tensor.value();
+  }
+  if (void_arg != nullptr) {
+    DLTensor* tensor = *reinterpret_cast<DLTensor**>(void_arg);
+    if (tensor != nullptr) {
+      return tensor;
+    }
+  }
+  LOG(FATAL) << "Cannot extract DLTensor* from packed argument";
+  return nullptr;
+}
+
+// ============================================================================
+// Direct TT-Metal path helpers (only when linked against TT-Metal)
+// ============================================================================
+
+#ifdef TILELANG_BLACKHOLE_DIRECT
+
+using namespace tt::tt_metal;
+
+static tt::DataFormat ParseDataFormat(const std::string& value) {
+  if (value == "Float16" || value == "Float16_b") return tt::DataFormat::Float16_b;
+  if (value == "Float32") return tt::DataFormat::Float32;
+  if (value == "UInt16") return tt::DataFormat::UInt16;
+  if (value == "UInt32") return tt::DataFormat::UInt32;
+  LOG(FATAL) << "Unsupported data format: " << value;
+  return tt::DataFormat::Float16_b;
+}
+
+static uint32_t ChoosePageSize(const ExecutableSpec& spec, const std::string& role) {
+  for (const auto& cb : spec.cb_configs) {
+    if (cb.role == role) return cb.page_size_bytes;
+  }
+  if (!spec.cb_configs.empty()) return spec.cb_configs.front().page_size_bytes;
+  return 2048;
+}
+
+static void CreateCircularBuffersFromSpec(
+    Program& program, const CoreCoord& core, const ExecutableSpec& spec) {
+  for (const auto& cb : spec.cb_configs) {
+    uint32_t total_size = cb.num_pages * cb.page_size_bytes;
+    CircularBufferConfig cb_config(
+        total_size,
+        {{static_cast<uint8_t>(cb.cb_id), ParseDataFormat(cb.data_format)}});
+    cb_config.set_page_size(static_cast<uint8_t>(cb.cb_id), cb.page_size_bytes);
+    CreateCircularBuffer(program, core, cb_config);
+  }
+}
+
+static KernelHandle CreateKernelFromSpec(
+    Program& program, const CoreCoord& core,
+    const KernelSpec& kernel, const std::string& kernel_path) {
+  if (kernel.core_type == "trisc") {
+    return CreateKernel(
+        program,
+        kernel_path,
+        core,
+        ComputeConfig{
+            .math_fidelity = MathFidelity::HiFi4,
+            .fp32_dest_acc_en = false,
+            .math_approx_mode = false,
+            .compile_args = kernel.compile_time_args});
+  }
+
+  DataMovementProcessor processor = DataMovementProcessor::RISCV_0;
+  NOC noc = NOC::RISCV_0_default;
+  if (kernel.core_type == "ncrisc") {
+    processor = DataMovementProcessor::RISCV_1;
+    noc = NOC::RISCV_1_default;
+  }
+
+  return CreateKernel(
+      program,
+      kernel_path,
+      core,
+      DataMovementConfig{
+          .processor = processor,
+          .noc = noc,
+          .compile_args = kernel.compile_time_args});
+}
+
+static bool KernelNeedsScratchL1(const KernelSpec& kernel) {
+  for (const auto& arg : kernel.runtime_args) {
+    if (arg.kind == "scratch_l1_buffer_addr32") return true;
+  }
+  return false;
+}
+
+static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
+    const KernelSpec& kernel,
+    const ExecutableSpec& spec,
+    uint32_t current_work_linear_id,
+    size_t total_input_size,
+    const distributed::MeshBuffer& input_buffer,
+    const distributed::MeshBuffer& output_buffer,
+    const distributed::MeshBuffer* scratch_l1_buffer,
+    const std::vector<uint32_t>& scalar_args) {
+  std::vector<uint32_t> args;
+  size_t scalar_index = 0;
+  const uint32_t tile_size = ChoosePageSize(spec, "input");
+  const uint64_t src_addr = input_buffer.address();
+  const uint64_t dst_addr = output_buffer.address();
+
+  for (const auto& arg_spec : kernel.runtime_args) {
+    if (arg_spec.kind == "input_buffer_addr") {
+      args.push_back(static_cast<uint32_t>(src_addr & 0xFFFFFFFF));
+      args.push_back(static_cast<uint32_t>(src_addr >> 32));
+    } else if (arg_spec.kind == "input_buffer_addr32") {
+      args.push_back(static_cast<uint32_t>(src_addr));
+    } else if (arg_spec.kind == "output_buffer_addr") {
+      args.push_back(static_cast<uint32_t>(dst_addr & 0xFFFFFFFF));
+      args.push_back(static_cast<uint32_t>(dst_addr >> 32));
+    } else if (arg_spec.kind == "output_buffer_addr32") {
+      args.push_back(static_cast<uint32_t>(dst_addr));
+    } else if (arg_spec.kind == "tile_count") {
+      // tile_count = total_input_size / tile_size (matching runner.cpp)
+      args.push_back(tile_size == 0 ? 0 : static_cast<uint32_t>(total_input_size / tile_size));
+    } else if (arg_spec.kind == "current_work_linear_id") {
+      args.push_back(current_work_linear_id);
+    } else if (arg_spec.kind == "scratch_l1_buffer_addr32") {
+      ICHECK(scratch_l1_buffer != nullptr)
+          << "Spec requested scratch L1 buffer but none was allocated";
+      args.push_back(static_cast<uint32_t>(scratch_l1_buffer->address()));
+    } else if (arg_spec.kind == "scalar_u32") {
+      ICHECK(scalar_index < scalar_args.size())
+          << "Spec requested more scalar args than provided";
+      args.push_back(scalar_args[scalar_index++]);
+    } else {
+      LOG(FATAL) << "Unsupported runtime arg kind: " << arg_spec.kind;
+    }
+  }
+
+  return args;
+}
+
+#endif  // TILELANG_BLACKHOLE_DIRECT
+
+// ============================================================================
+// BlackholeModuleNode implementation
+// ============================================================================
+
 BlackholeModuleNode::BlackholeModuleNode(
     std::unordered_map<std::string, ExecutableSpec> fmap,
     std::string kernel_dir)
@@ -262,7 +462,14 @@ BlackholeModuleNode::BlackholeModuleNode(
       device_initialized_(false) {
 }
 
-BlackholeModuleNode::~BlackholeModuleNode() = default;
+BlackholeModuleNode::~BlackholeModuleNode() {
+#ifdef TILELANG_BLACKHOLE_DIRECT
+  if (mesh_device_) {
+    delete static_cast<std::shared_ptr<tt::tt_metal::distributed::MeshDevice>*>(mesh_device_);
+    mesh_device_ = nullptr;
+  }
+#endif
+}
 
 ffi::Optional<ffi::Function> BlackholeModuleNode::GetFunction(const ffi::String& name) {
   ObjectPtr<Object> sptr_to_self = ffi::GetObjectPtr<Object>(this);
@@ -309,10 +516,35 @@ ffi::String BlackholeModuleNode::InspectSource(const ffi::String& format) const 
   return ffi::String("");
 }
 
+// ============================================================================
+// Device initialization
+// ============================================================================
+
 void BlackholeModuleNode::EnsureDeviceInitialized() {
-  // Not used in external process mode
+#ifdef TILELANG_BLACKHOLE_DIRECT
+  if (device_initialized_) return;
+
+  LOG(INFO) << "Initializing Blackhole TT-Metal device...";
+
+  try {
+    auto* device_ptr = new std::shared_ptr<tt::tt_metal::distributed::MeshDevice>(
+        tt::tt_metal::distributed::MeshDevice::create_unit_mesh(0));
+    mesh_device_ = device_ptr;
+
+    LOG(INFO) << "Blackhole device initialized successfully";
+    device_initialized_ = true;
+  } catch (const std::exception& e) {
+    LOG(FATAL) << "Failed to initialize Blackhole device: " << e.what();
+  }
+#else
+  // External process mode - device init happens in runner
   device_initialized_ = true;
+#endif
 }
+
+// ============================================================================
+// Program cache
+// ============================================================================
 
 CompiledProgram& BlackholeModuleNode::GetOrCompileProgram(const std::string& func_name) {
   auto it = program_cache_.find(func_name);
@@ -320,7 +552,8 @@ CompiledProgram& BlackholeModuleNode::GetOrCompileProgram(const std::string& fun
     return it->second;
   }
 
-  // Create placeholder - actual compilation happens in external runner
+  // Create placeholder - actual program creation happens per-execution
+  // because TT-Metal requires fresh Program per work item
   CompiledProgram prog;
   prog.program = nullptr;
   prog.reader_kernel = nullptr;
@@ -332,9 +565,10 @@ CompiledProgram& BlackholeModuleNode::GetOrCompileProgram(const std::string& fun
   return program_cache_[func_name];
 }
 
-/*!
- * \brief Execute a function with given arguments using external process
- */
+// ============================================================================
+// External runner execution path
+// ============================================================================
+
 void BlackholeModuleNode::ExecuteExternal(
     const std::string& func_name,
     const std::vector<DLTensor*>& inputs,
@@ -438,7 +672,6 @@ void BlackholeModuleNode::ExecuteExternal(
     argv.push_back(nullptr);
 
     execv(runner_path.c_str(), argv.data());
-    // If we get here, execv failed
     std::cerr << "Failed to execute runner: " << strerror(errno) << std::endl;
     _exit(1);
   } else {
@@ -472,65 +705,214 @@ void BlackholeModuleNode::ExecuteExternal(
   // Cleanup temporary files
   std::filesystem::remove_all(tmp_dir);
 
-  LOG(INFO) << "Execution completed for " << func_name;
+  LOG(INFO) << "External runner execution completed for " << func_name;
 }
 
-// Helper to extract scalar value from AnyView
-uint32_t ExtractScalar(const ffi::AnyView& arg, DLDataType dtype) {
-  // Try integer types
-  if (dtype.code == kDLInt) {
-    // Try different int sizes using cast
-    auto opt_i32 = arg.try_cast<int32_t>();
-    if (opt_i32.has_value()) {
-      return static_cast<uint32_t>(opt_i32.value());
-    }
-    auto opt_i64 = arg.try_cast<int64_t>();
-    if (opt_i64.has_value()) {
-      return static_cast<uint32_t>(opt_i64.value());
+// ============================================================================
+// Direct TT-Metal execution path
+// ============================================================================
+
+void BlackholeModuleNode::ExecuteDirect(
+    const std::string& func_name,
+    const std::vector<DLTensor*>& inputs,
+    const std::vector<uint32_t>& scalar_args,
+    const std::vector<DLTensor*>& outputs) {
+#ifdef TILELANG_BLACKHOLE_DIRECT
+  using namespace tt::tt_metal;
+
+  EnsureDeviceInitialized();
+
+  auto* device_ptr = static_cast<std::shared_ptr<distributed::MeshDevice>*>(mesh_device_);
+  if (!device_ptr || !*device_ptr) {
+    LOG(FATAL) << "Device not initialized";
+  }
+  auto& mesh_device = *device_ptr;
+  distributed::MeshCommandQueue& cq = mesh_device->mesh_command_queue();
+
+  auto fit = fmap_.find(func_name);
+  if (fit == fmap_.end()) {
+    LOG(FATAL) << "Function not found: " << func_name;
+  }
+  const ExecutableSpec& spec = fit->second;
+  if (spec.kernels.empty()) {
+    LOG(FATAL) << "ExecutableSpec has no kernels for function: " << func_name;
+  }
+
+  // Calculate total sizes
+  size_t total_input_size = 0;
+  for (auto* tensor : inputs) {
+    total_input_size += GetDataSize(*tensor);
+  }
+
+  size_t total_output_size = 0;
+  for (auto* tensor : outputs) {
+    total_output_size += GetDataSize(*tensor);
+  }
+
+  // Use role-aware page size for DRAM buffers (matching runner.cpp)
+  uint32_t input_page_size = ChoosePageSize(spec, "input");
+  uint32_t output_page_size = ChoosePageSize(spec, "output");
+
+  // Create DRAM buffers
+  distributed::DeviceLocalBufferConfig input_dram_config{
+      .page_size = input_page_size,
+      .buffer_type = BufferType::DRAM};
+  distributed::DeviceLocalBufferConfig output_dram_config{
+      .page_size = output_page_size,
+      .buffer_type = BufferType::DRAM};
+
+  distributed::ReplicatedBufferConfig input_buffer_config{.size = total_input_size};
+  auto input_buffer = distributed::MeshBuffer::create(
+      input_buffer_config, input_dram_config, mesh_device.get());
+
+  distributed::ReplicatedBufferConfig output_buffer_config{.size = total_output_size};
+  auto output_buffer = distributed::MeshBuffer::create(
+      output_buffer_config, output_dram_config, mesh_device.get());
+
+  // Create scratch L1 buffer if any kernel needs it
+  std::shared_ptr<distributed::MeshBuffer> scratch_l1_buffer;
+  bool needs_scratch_l1 = false;
+  for (const auto& kernel_spec : spec.kernels) {
+    if (KernelNeedsScratchL1(kernel_spec)) {
+      needs_scratch_l1 = true;
+      break;
     }
   }
-  if (dtype.code == kDLUInt) {
-    auto opt_u32 = arg.try_cast<uint32_t>();
-    if (opt_u32.has_value()) {
-      return opt_u32.value();
+  if (needs_scratch_l1) {
+    uint32_t scratch_size = input_page_size;
+    for (const auto& cb : spec.cb_configs) {
+      scratch_size = std::max(scratch_size, cb.num_pages * cb.page_size_bytes);
     }
-    auto opt_u64 = arg.try_cast<uint64_t>();
-    if (opt_u64.has_value()) {
-      return static_cast<uint32_t>(opt_u64.value());
+    distributed::DeviceLocalBufferConfig scratch_l1_config{
+        .page_size = scratch_size,
+        .buffer_type = BufferType::L1};
+    distributed::ReplicatedBufferConfig scratch_l1_buffer_config{.size = scratch_size};
+    scratch_l1_buffer = distributed::MeshBuffer::create(
+        scratch_l1_buffer_config, scratch_l1_config, mesh_device.get());
+  }
+
+  // Write input data to device
+  std::vector<uint8_t> input_data;
+  input_data.reserve(total_input_size);
+  for (auto* tensor : inputs) {
+    size_t size = GetDataSize(*tensor);
+    auto* p = static_cast<uint8_t*>(tensor->data);
+    input_data.insert(input_data.end(), p, p + size);
+  }
+  EnqueueWriteMeshBuffer(cq, input_buffer, input_data, /*blocking=*/true);
+
+  // Build work IDs from work_packets (matching runner.cpp)
+  std::vector<uint32_t> work_ids;
+  for (const auto& packet : spec.core_plan.work_packets) {
+    for (uint32_t i = 0; i < packet.work_count; ++i) {
+      work_ids.push_back(packet.work_offset + i);
     }
   }
-  if (dtype.code == kDLFloat) {
-    float f = 0.0f;
-    auto opt_f = arg.try_cast<float>();
-    if (opt_f.has_value()) {
-      f = opt_f.value();
-    } else {
-      auto opt_d = arg.try_cast<double>();
-      if (opt_d.has_value()) {
-        f = static_cast<float>(opt_d.value());
-      }
-    }
-    return *reinterpret_cast<uint32_t*>(&f);
+  if (work_ids.empty()) {
+    work_ids.push_back(0);
   }
-  LOG(FATAL) << "Cannot extract scalar of type code " << dtype.code;
-  return 0;
+
+  // Write kernel source files to temp directory
+  std::string tmp_dir = "/tmp/tilelang_bh_direct_" + std::to_string(getpid());
+  std::filesystem::create_directories(tmp_dir);
+
+  std::vector<std::string> kernel_paths;
+  kernel_paths.reserve(spec.kernels.size());
+  for (size_t i = 0; i < spec.kernels.size(); ++i) {
+    const auto& kernel = spec.kernels[i];
+    std::string kernel_path = tmp_dir + "/" + func_name + "_" + std::to_string(i) + "_" +
+                              kernel.kind + ".cpp";
+    std::ofstream ofs(kernel_path);
+    if (!ofs) {
+      LOG(FATAL) << "Failed to write kernel file: " << kernel_path;
+    }
+    ofs << kernel.source_code;
+    kernel_paths.push_back(kernel_path);
+  }
+
+  // Execute each work item (matching runner.cpp work-packet iteration)
+  LOG(INFO) << "Direct path: executing " << work_ids.size()
+            << " logical work items for " << func_name;
+
+  constexpr CoreCoord core = {0, 0};
+
+  for (uint32_t work_id : work_ids) {
+    Program program = CreateProgram();
+
+    // Create circular buffers for this program
+    CreateCircularBuffersFromSpec(program, core, spec);
+
+    // Create and configure each kernel
+    for (size_t ki = 0; ki < spec.kernels.size(); ++ki) {
+      const auto& kernel_spec = spec.kernels[ki];
+      KernelHandle kernel = CreateKernelFromSpec(
+          program, core, kernel_spec, kernel_paths[ki]);
+
+      auto runtime_args = BuildRuntimeArgsFromSpec(
+          kernel_spec, spec, work_id, total_input_size,
+          *input_buffer, *output_buffer,
+          scratch_l1_buffer ? scratch_l1_buffer.get() : nullptr,
+          scalar_args);
+
+      SetRuntimeArgs(program, kernel, core, runtime_args);
+    }
+
+    // Execute program on device
+    distributed::MeshWorkload workload;
+    distributed::MeshCoordinateRange device_range(mesh_device->shape());
+    workload.add_program(device_range, std::move(program));
+    distributed::EnqueueMeshWorkload(cq, workload, /*blocking=*/true);
+  }
+
+  // Read back results
+  std::vector<uint8_t> output_data;
+  distributed::EnqueueReadMeshBuffer(cq, output_data, output_buffer, /*blocking=*/true);
+
+  // Copy to output tensors
+  size_t offset = 0;
+  for (auto* tensor : outputs) {
+    size_t size = GetDataSize(*tensor);
+    ICHECK(offset + size <= output_data.size())
+        << "Output data size mismatch: need " << (offset + size)
+        << " but got " << output_data.size();
+    std::memcpy(tensor->data, output_data.data() + offset, size);
+    offset += size;
+  }
+
+  // Cleanup kernel temp files
+  std::filesystem::remove_all(tmp_dir);
+
+  LOG(INFO) << "Direct path execution completed for " << func_name;
+
+#else
+  LOG(FATAL) << "Direct TT-Metal path not available. "
+             << "Rebuild with TILELANG_BLACKHOLE_DIRECT=ON or use external runner.";
+#endif  // TILELANG_BLACKHOLE_DIRECT
 }
 
-DLTensor* ExtractTensorArg(const ffi::AnyView& arg, void* void_arg) {
-  auto opt_tensor = arg.try_cast<DLTensor*>();
-  if (opt_tensor.has_value()) {
-    return opt_tensor.value();
+// ============================================================================
+// Execution dispatch
+// ============================================================================
+
+/*!
+ * \brief Check if direct execution mode should be used.
+ *
+ * Default behavior depends on compile-time flag:
+ * - With TILELANG_BLACKHOLE_DIRECT: direct path is default
+ * - Without: external runner is the only option
+ *
+ * Set TILELANG_BH_USE_RUNNER=1 to force external runner path.
+ */
+static bool ShouldUseDirectPath() {
+#ifdef TILELANG_BLACKHOLE_DIRECT
+  const char* env = std::getenv("TILELANG_BH_USE_RUNNER");
+  if (env && std::string(env) == "1") {
+    return false;
   }
-  if (void_arg != nullptr) {
-    // PackFuncVoidAddr passes the address of raw_args[i].v_ptr for handle args,
-    // not the DLTensor* value itself.
-    DLTensor* tensor = *reinterpret_cast<DLTensor**>(void_arg);
-    if (tensor != nullptr) {
-      return tensor;
-    }
-  }
-  LOG(FATAL) << "Cannot extract DLTensor* from packed argument";
-  return nullptr;
+  return true;
+#else
+  return false;
+#endif
 }
 
 void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
@@ -549,18 +931,24 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
         outputs.push_back(tensor);
       }
     } else {
-      // Extract scalar from packed args
       ffi::AnyView arg = args[i];
       uint32_t val = ExtractScalar(arg, info_.tvm_arg_types[i]);
       scalars.push_back(val);
     }
   }
 
-  // Execute via external process
-  m_->ExecuteExternal(func_name_, inputs, scalars, outputs);
+  // Dispatch to direct or external path
+  if (ShouldUseDirectPath()) {
+    m_->ExecuteDirect(func_name_, inputs, scalars, outputs);
+  } else {
+    m_->ExecuteExternal(func_name_, inputs, scalars, outputs);
+  }
 }
 
-// Create function
+// ============================================================================
+// Module creation and registration
+// ============================================================================
+
 ffi::Module BlackholeModuleCreate(
     std::unordered_map<std::string, ExecutableSpec> fmap,
     std::string kernel_dir) {
@@ -568,7 +956,6 @@ ffi::Module BlackholeModuleCreate(
   return ffi::Module(std::move(n));
 }
 
-// Load module from bytes (deserialization)
 ffi::Module BlackholeModuleLoadFromBytes(const ffi::Bytes& bytes) {
   LOG(FATAL) << "BlackholeModule LoadFromBytes not yet implemented";
   __builtin_unreachable();
