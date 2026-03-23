@@ -69,19 +69,17 @@
 - 读实际代码、测试、示例，再下判断
 - 关键设计取舍必须与 `final_blackhole_backend_redesign.md` 一致
 
-当前 Blackhole 后端默认推进顺序（2026-03-20 修正）：
+当前 Blackhole 后端默认推进顺序（2026-03-23 更新）：
 
 1. ~~attrs / 协议~~ ✅
 2. ~~`ExecutableSpec`~~ ✅
 3. ~~`rt_mod_blackhole`~~ ✅
-4. ~~`BlackholeModule` direct path 补全~~ ✅ Phase 1 代码完成
-5. Copy E2E 验收（direct path）— **当前**
-6. split-before 语义规划（方案 A: `AnnotateBlackholeCopySemantics` pass）
+4. ~~`BlackholeModule` direct path 补全~~ ✅
+5. ~~Copy E2E 验收（direct path）~~ ✅ 18 passed, 1 skipped
+6. split-before 语义规划（方案 A: `AnnotateBlackholeCopySemantics` pass）— **当前**
 7. 通用 pass 回收
 8. GEMM 接入
 9. multi-core
-
-关键参考：`runner.cpp` 是 direct path 的完整参考蓝本（CB 创建 + runtime args + work-packet 迭代）。
 
 ## 经验与问题记录
 

@@ -351,13 +351,22 @@ multi-core 的主要实现位置保持不变：
 
 - copy 由 pass 主导并走 `BlackholeModule` direct host path 完成正式 E2E
 
-### Stage 2C: single-core GEMM 语义集成
+状态：
+
+- **已完成**（18 passed, 1 skipped；含 grid>1 / large-shape / oversubscription 负例）
+
+### Stage 2C: split-before 语义规划
+
+> 注：本阶段在实施过程中从原计划的"GEMM 语义集成"调整为先落地 split-before 语义规划边界，GEMM 接入顺延至 2C 完成后进行。
 
 目标：
 
-- 用与 copy 相同的结构接入 GEMM
+- 新增 `AnnotateBlackholeCopySemantics` pass
+- 明确 split 前语义规划 / split 后 matcher / codegen 三者的职责边界
+- copy 语义不再主要靠 split 后 matcher 从晚期 loop 恢复
+- 为 GEMM 接入准备最小 semantic schema
 
-### Stage 2D: single-core true E2E
+### Stage 2D: single-core GEMM 语义集成 + true E2E
 
 目标：
 

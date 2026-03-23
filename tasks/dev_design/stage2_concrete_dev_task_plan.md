@@ -22,31 +22,23 @@
 - `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores` 的雏形
 - staged copy 的最小 direct execution 闭环
 
-但要进入正式主线，还存在四个硬阻塞：
+当时存在的四个硬阻塞（已全部解除）：
 
-1. split 前语义规划仍不够强，copy/gemm 语义仍偏依赖 split 后 matcher 恢复
-2. `blackhole.core_plan` 仍是摘要信息，不是正式 execution plan
-3. `blackhole.cb_configs` 仍偏 MVP allocator，不是正式 memory plan
-4. `BlackholeModule` 还没有成为唯一正式 host-side execution path
+1. ~~split 前语义规划仍不够强~~ — 仍是下阶段重点，但 copy E2E 已验收通过
+2. ~~`blackhole.core_plan` 仍是摘要信息~~ — 已补 `logical_grid / physical_cores / work_packets`
+3. ~~`blackhole.cb_configs` 仍偏 MVP allocator~~ — 已补 lifetime-aware reuse / role / bindings
+4. ~~`BlackholeModule` 还没有成为唯一正式 host-side execution path~~ — ✅ direct path 已完成并验收
 
-因此当前阶段的正确推进顺序是：
+## 当前剩余事项优先级（2026-03-23 更新）
 
-1. 先固定 split 前 / split 后 / host-side 三层边界
-2. 再收正 split 后正式 plan
-3. 再把 `BlackholeModule` 收成正式 direct host path
-4. 再用 copy 验证 large-shape / grid>1 / memory-plan correctness
-5. 最后再接回更多通用 pass 与 GEMM
+Stage 2B 已完成，当前处于 Stage 2C：
 
-## 当前剩余事项优先级
-
-结合当前代码状态，Stage 2A/2B 剩余事项按优先级收敛为：
-
-1. **`BlackholeModule` direct host path**
-   - 当前最硬阻塞
-   - 只要正式执行仍经由 external runner，Stage 2B/2D 的完成定义就不成立
-2. **split 前语义规划收正**
-   - 重点在 `LowerTileOp`
-   - 目标是让 copy/gemm 语义更早被保留下来，而不是主要靠 split 后 matcher 恢复
+1. ~~**`BlackholeModule` direct host path**~~ ✅ 完成
+   - direct path 已跑通 32x32 / 32x64 / 64x32 / grid>1 / large-shape / oversubscription 负例
+2. **split 前语义规划收正** — **当前首要**
+   - 推荐方案 A：新增 `AnnotateBlackholeCopySemantics` pass
+   - 明确 split 前 / split 后 matcher / codegen 职责边界
+   - 不修改 `LowerTileOp` 核心降级逻辑
 3. **`PlanBlackholeCB` memory planner 收正**
    - 当前已有 schema、lifetime、binding，但仍偏保守 allocator
    - 需要继续收成正式 memory planner
@@ -58,8 +50,6 @@
 5. **GEMM 接入**
    - 必须复用前面收正后的同一结构
    - 不再复制 runtime-only 或 runner-only 路径
-
-这份优先级覆盖当前阶段的实际推进顺序；后续实现默认按这份顺序推进，除非设计文档本身发生变更。
 
 ## 任务总原则
 

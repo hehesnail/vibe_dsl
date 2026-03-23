@@ -64,14 +64,12 @@
 1. ~~attrs / 协议~~ ✅
 2. ~~`ExecutableSpec`~~ ✅
 3. ~~`rt_mod_blackhole`~~ ✅
-4. ~~`BlackholeModule` direct path 补全~~ ✅ Phase 1 代码完成
-5. Copy E2E 验收（direct path）— **当前首要**
-6. split-before 语义规划（方案 A: `AnnotateBlackholeCopySemantics` pass）
+4. ~~`BlackholeModule` direct path 补全~~ ✅
+5. ~~Copy E2E 验收（direct path）~~ ✅ 18 passed, 1 skipped（含 grid>1 / large-shape / oversubscription 负例）
+6. split-before 语义规划（方案 A: `AnnotateBlackholeCopySemantics` pass）— **当前首要**
 7. 通用 pass 回收（FlattenBuffer / VectorizeLoop / StorageRewrite）
 8. GEMM 接入
 9. multi-core
-
-关键参考：`runner.cpp` 是 direct path 的完整参考蓝本。
 
 ---
 
