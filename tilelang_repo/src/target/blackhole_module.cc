@@ -254,8 +254,6 @@ std::string GetRunnerPath() {
     search_paths.push_back(std::string(tilelang_home) +
       "/build-blackhole-runner/tilelang_blackhole_runner");
     search_paths.push_back(std::string(tilelang_home) +
-      "/build_blackhole_runner/tilelang_blackhole_runner");
-    search_paths.push_back(std::string(tilelang_home) +
       "/tools/blackhole_runner/build/tilelang_blackhole_runner");
   }
 

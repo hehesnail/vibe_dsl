@@ -106,7 +106,6 @@ def get_runner_candidates():
         for path in [
             os.path.join(runner_build_dir, "tilelang_blackhole_runner") if runner_build_dir else None,
             os.path.join(tilelang_home, "build-blackhole-runner", "tilelang_blackhole_runner"),
-            os.path.join(tilelang_home, "build_blackhole_runner", "tilelang_blackhole_runner"),
             os.path.join(tilelang_home, "tools", "blackhole_runner", "build", "tilelang_blackhole_runner"),
         ]
         if path
