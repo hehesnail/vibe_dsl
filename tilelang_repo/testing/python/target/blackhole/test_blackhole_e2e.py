@@ -1,13 +1,12 @@
 """
 True End-to-End Test for TileLang Blackhole Backend
 
-This test verifies the complete workflow:
+This test verifies the Blackhole workflow at two layers:
 1. TileLang DSL kernel compilation to Blackhole target
-2. Kernel execution via external runner
-3. Result comparison with PyTorch reference
+2. Kernel execution via BlackholeModule direct path
+3. Legacy external-runner protocol coverage where still useful
 
 Requirements:
-- TileLang-managed tilelang_blackhole_runner built and accessible
 - TT-Sim environment configured (or real hardware)
 """
 
@@ -36,43 +35,87 @@ def check_blackhole_codegen_requirements():
     return True, "OK"
 
 
-def check_blackhole_execution_requirements():
-    """Check if Blackhole true-execution requirements are met."""
+def check_blackhole_direct_execution_requirements():
+    """Check if BlackholeModule direct execution requirements are met."""
     can_codegen, msg = check_blackhole_codegen_requirements()
     if not can_codegen:
         return False, msg
 
-    tilelang_home = os.environ["TILELANG_HOME"]
-    runner_build_dir = os.environ.get("TILELANG_BLACKHOLE_RUNNER_BUILD_DIR")
     tt_metal_runtime_root = os.environ.get("TT_METAL_RUNTIME_ROOT")
     if not tt_metal_runtime_root:
         return False, "TT_METAL_RUNTIME_ROOT not set"
     if not os.path.isdir(os.path.join(tt_metal_runtime_root, "tt_metal")):
         return False, f"TT_METAL_RUNTIME_ROOT does not contain tt_metal/: {tt_metal_runtime_root}"
 
-    runner_candidates = [
-        os.path.join(runner_build_dir, "tilelang_blackhole_runner") if runner_build_dir else None,
-        os.path.join(tilelang_home, "build-blackhole-runner", "tilelang_blackhole_runner"),
-        os.path.join(tilelang_home, "build_blackhole_runner", "tilelang_blackhole_runner"),
-        os.path.join(tilelang_home, "tools", "blackhole_runner", "build", "tilelang_blackhole_runner"),
-    ]
-    runner_candidates = [path for path in runner_candidates if path]
+    if not direct_build_enabled():
+        return False, "TileLang build does not appear to have USE_BLACKHOLE_DIRECT=ON"
+
+    return True, "OK"
+
+
+def check_blackhole_runner_execution_requirements():
+    """Check if legacy external-runner execution requirements are met."""
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        return False, msg
+
+    runner_candidates = get_runner_candidates()
     if not any(os.path.exists(path) for path in runner_candidates):
         return False, f"Runner not found in {runner_candidates}"
 
     return True, "OK"
 
 
-def get_runner_path():
+def direct_build_enabled():
+    cache_candidates = []
+    loaded_cache = get_loaded_tilelang_cmake_cache()
+    if loaded_cache:
+        cache_candidates.append(loaded_cache)
+
+    tilelang_home = os.environ.get("TILELANG_HOME")
+    if tilelang_home:
+        cache_candidates.extend(
+            [
+                os.path.join(tilelang_home, "build", "CMakeCache.txt"),
+                os.path.join(tilelang_home, "build_blackhole", "CMakeCache.txt"),
+            ]
+        )
+
+    for cache_path in cache_candidates:
+        if not os.path.exists(cache_path):
+            continue
+        with open(cache_path, "r", encoding="utf-8") as f:
+            cache_text = f.read()
+            if "USE_BLACKHOLE_DIRECT" in cache_text and "=ON" in cache_text:
+                return True
+    return False
+
+
+def get_loaded_tilelang_cmake_cache():
+    lib_path = getattr(tilelang, "_LIB_PATH", None)
+    if not lib_path:
+        return None
+    build_dir = os.path.dirname(os.path.dirname(lib_path))
+    return os.path.join(build_dir, "CMakeCache.txt")
+
+
+def get_runner_candidates():
     tilelang_home = os.environ["TILELANG_HOME"]
     runner_build_dir = os.environ.get("TILELANG_BLACKHOLE_RUNNER_BUILD_DIR")
-    runner_candidates = [
-        os.path.join(runner_build_dir, "tilelang_blackhole_runner") if runner_build_dir else None,
-        os.path.join(tilelang_home, "build-blackhole-runner", "tilelang_blackhole_runner"),
-        os.path.join(tilelang_home, "build_blackhole_runner", "tilelang_blackhole_runner"),
-        os.path.join(tilelang_home, "tools", "blackhole_runner", "build", "tilelang_blackhole_runner"),
+    return [
+        path
+        for path in [
+            os.path.join(runner_build_dir, "tilelang_blackhole_runner") if runner_build_dir else None,
+            os.path.join(tilelang_home, "build-blackhole-runner", "tilelang_blackhole_runner"),
+            os.path.join(tilelang_home, "build_blackhole_runner", "tilelang_blackhole_runner"),
+            os.path.join(tilelang_home, "tools", "blackhole_runner", "build", "tilelang_blackhole_runner"),
+        ]
+        if path
     ]
-    runner_candidates = [path for path in runner_candidates if path]
+
+
+def get_runner_path():
+    runner_candidates = get_runner_candidates()
     for path in runner_candidates:
         if os.path.exists(path):
             return path
@@ -399,7 +442,7 @@ def test_blackhole_core_plan_preserves_logical_block_launch():
 
 def test_blackhole_module_direct_call_grid_indexed_copy():
     """Exercise direct-call on a grid-indexed staged copy that depends on bx/by."""
-    can_run, msg = check_blackhole_execution_requirements()
+    can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
 
@@ -456,7 +499,7 @@ def test_blackhole_large_shape_copy_keeps_per_core_l1_small():
 
 def test_blackhole_module_direct_call_large_shape_copy():
     """Large-shape copy (>1.5MB total data) should still execute when per-core L1 plan is legal."""
-    can_run, msg = check_blackhole_execution_requirements()
+    can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
 
@@ -596,7 +639,7 @@ def test_blackhole_true_e2e():
     3. Executes the kernel via external runner
     4. Compares results with PyTorch reference
     """
-    can_run, msg = check_blackhole_execution_requirements()
+    can_run, msg = check_blackhole_runner_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
 
@@ -685,7 +728,7 @@ def test_blackhole_true_e2e():
 
 def test_blackhole_module_direct_call():
     """Exercise the BlackholeModule packed-func entrypoint directly."""
-    can_run, msg = check_blackhole_execution_requirements()
+    can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
 
@@ -720,7 +763,7 @@ def test_blackhole_module_direct_call():
 
 def test_blackhole_module_direct_call_rectangular_tiles():
     """Exercise direct-call on a staged copy whose DSL tile shape spans multiple hardware tiles."""
-    can_run, msg = check_blackhole_execution_requirements()
+    can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
 

@@ -276,6 +276,16 @@ copy 不只验证最小 case，还必须验证：
 
 用 copy 完成首条 Blackhole 正式 compiler/runtime 主链。
 
+#### 验证边界（2026-03-23 收正）
+
+- `BlackholeModule` direct path 是正式验收路径
+- external runner 只保留为 bring-up/debug/protocol-check 路径
+- 因此测试需要显式分层：
+  - direct-call / host-callable 用例只检查 direct path 所需条件
+  - runner 用例单独检查 runner 二进制与旧 spec 执行条件
+- 不能再让 direct-call 用例因为缺少 runner 而被整体 skip
+- `test_blackhole_e2e.py` 中保留 runner 覆盖可以接受，但其结果不代表 Stage 2B 完成
+
 #### 必测 case
 
 - `32x32`
@@ -289,6 +299,18 @@ copy 不只验证最小 case，还必须验证：
 
 - 通过 TileLang host callable + `BlackholeModule` direct path 执行
 - 与 PyTorch 参考一致
+- direct-call 验收用例不再依赖 runner 可执行文件存在
+
+#### 当前状态（2026-03-23）
+
+- 已完成。
+- 本机 TT-Sim 环境下：
+  - 官方 `metal_example_add_2_integers_in_riscv` smoke test 已再次通过
+  - `test_blackhole_e2e.py` 已达到 `18 passed, 1 skipped`
+  - direct path 已通过 `32x32` / `32x64` / `64x32` / `grid>1` / `large-shape`
+- 本轮额外修复：
+  - `tilelang` 开发态默认加载旧 `build/` 库导致 direct 验收误跑旧构建
+  - `ExecuteDirect()` 固定临时 kernel 路径触发 TT-Metal JIT 缓存串扰，导致单测单跑通过但组合跑错结果
 
 ### 任务包 H: 分批接回中后段通用 pass
 
@@ -330,16 +352,14 @@ copy 不只验证最小 case，还必须验证：
 
 基于源码审查结论，修正后的推进顺序：
 
-1. **任务包 F**: `BlackholeModule` direct path — **最高优先级，P0 阻塞**
-   - 以 `runner.cpp` 为参考蓝本，已合并到 `blackhole_module.cc`
-   - 补全 CB 创建 + 正确 runtime args + work-packet 迭代
-2. 任务包 A: 固定三层边界
-3. 任务包 G: copy 正式 E2E — 用 direct path 验收
-4. 任务包 B: split 前语义规划 — 推荐方案 A（新增 AnnotateBlackholeCopySemantics pass）
-5. 任务包 H: 分批接回中后段通用 pass
-6. 任务包 I: GEMM 接入
+1. 任务包 A: 固定三层边界
+2. 任务包 B: split 前语义规划 — 推荐方案 A（新增 AnnotateBlackholeCopySemantics pass）
+3. 任务包 H: 分批接回中后段通用 pass
+4. 任务包 I: GEMM 接入
 
 已基本完成不再阻塞的任务包：
+- 任务包 F: `BlackholeModule` direct path — 已稳定并通过 TT-Sim 验证
+- 任务包 G: copy 正式 E2E — 已完成 direct-path 验收
 - 任务包 C: split 后 requirement extraction — 已落地
 - 任务包 D: memory planner — 已有保守 reuse + binding protocol
 - 任务包 E: execution planner — 已有 work_packets + physical_cores

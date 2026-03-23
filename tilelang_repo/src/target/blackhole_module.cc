@@ -16,6 +16,7 @@
 #include <tvm/ffi/reflection/registry.h>
 
 #include <algorithm>
+#include <atomic>
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -267,6 +268,16 @@ std::string GetRunnerPath() {
   LOG(WARNING) << "tilelang_blackhole_runner not found. "
                << "Set TILELANG_BLACKHOLE_RUNNER environment variable.";
   return "";
+}
+
+static std::string MakeUniqueDirectKernelDir() {
+  static std::atomic<uint64_t> counter{0};
+  const auto id = counter.fetch_add(1, std::memory_order_relaxed);
+  std::filesystem::path dir = std::filesystem::temp_directory_path() /
+                              ("tilelang_bh_direct_" + std::to_string(getpid()) + "_" +
+                               std::to_string(id));
+  std::filesystem::create_directories(dir);
+  return dir.string();
 }
 
 // Argument extraction helpers
@@ -720,13 +731,19 @@ void BlackholeModuleNode::ExecuteDirect(
 #ifdef TILELANG_BLACKHOLE_DIRECT
   using namespace tt::tt_metal;
 
-  EnsureDeviceInitialized();
-
-  auto* device_ptr = static_cast<std::shared_ptr<distributed::MeshDevice>*>(mesh_device_);
-  if (!device_ptr || !*device_ptr) {
-    LOG(FATAL) << "Device not initialized";
+  // Keep direct execution hermetic per call. Reusing a persistent MeshDevice across
+  // multiple Python direct-call tests can leave simulator/device state behind and
+  // cause cross-test contamination that does not exist in the runner process model.
+  LOG(INFO) << "Initializing Blackhole TT-Metal device...";
+  std::shared_ptr<distributed::MeshDevice> mesh_device;
+  try {
+    mesh_device = distributed::MeshDevice::create_unit_mesh(0);
+  } catch (const std::exception& e) {
+    LOG(FATAL) << "Failed to initialize Blackhole device: " << e.what();
   }
-  auto& mesh_device = *device_ptr;
+  ICHECK(mesh_device != nullptr);
+  LOG(INFO) << "Blackhole device initialized successfully";
+
   distributed::MeshCommandQueue& cq = mesh_device->mesh_command_queue();
 
   auto fit = fmap_.find(func_name);
@@ -813,8 +830,7 @@ void BlackholeModuleNode::ExecuteDirect(
   }
 
   // Write kernel source files to temp directory
-  std::string tmp_dir = "/tmp/tilelang_bh_direct_" + std::to_string(getpid());
-  std::filesystem::create_directories(tmp_dir);
+  std::string tmp_dir = MakeUniqueDirectKernelDir();
 
   std::vector<std::string> kernel_paths;
   kernel_paths.reserve(spec.kernels.size());

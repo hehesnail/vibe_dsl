@@ -48,6 +48,16 @@
   - 或者从 `tt_metal_repo` 根目录启动示例
 - **当前限制**: 这类环境问题不会在“仅编译通过”阶段暴露，必须通过一次真实 TT-Sim 执行才能发现。
 
+### direct 构建已完成但 Python 仍加载旧 `build/` 库
+
+- **时间**: 2026-03-23
+- **问题**: `build_blackhole` 已经启用 `USE_BLACKHOLE_DIRECT=ON` 并构建完成，但 `pytest`/Python direct-call 仍然落回 `ExecuteExternal`。
+- **根本原因**: TileLang 开发态默认只从仓库根下的 `build/lib` 加载 `libtilelang.so`；如果同时存在默认 `build/` 和专用 `build_blackhole/`，Python 进程会静默加载旧库，导致测试前置检查与真实执行库不一致。
+- **解决方案**:
+  - 支持并显式导出 `TILELANG_DEV_LIB_ROOT=$TILELANG_HOME/build_blackhole`
+  - direct 测试优先检查当前进程实际加载的 `libtilelang.so` 所属构建目录的 `CMakeCache.txt`
+- **当前状态**: 已解决。`build_blackhole` 库已能被 Python 显式加载，direct-call 执行也已确认进入 `BlackholeModule::ExecuteDirect()`。
+
 ## 与当前设计直接相关的记录
 
 ### GEMM 寻址与 tile access 语义不一致
@@ -256,3 +266,13 @@
   - `CodeGenBlackhole` 按 `cb_configs` 为每个 `cb_id` 维护最小 head/tail page queue，并在 scratch L1 上按 page offset 读写
   - runner 分配 scratch L1 时按 `cb.num_pages * cb.page_size_bytes` 预留足够空间，而不是只分配单 page
 - **当前状态**: 已解决。`32x64 float16` staged copy 的 Python direct-call 已在 TT-Sim 下通过，结果与 PyTorch 参考一致。
+
+### direct path 复用固定 kernel 临时路径会触发 JIT 缓存串扰
+
+- **时间**: 2026-03-23
+- **问题**: `large-shape` / `rectangular` direct-call 用例单独运行能过，但在同一个 pytest 进程里和其他 direct-call case 连续运行时会输出错误结果；同条件下强制切回 runner 又全部通过。
+- **根本原因**: `BlackholeModule::ExecuteDirect()` 会把 kernel 源码写到只按 `pid` 固定的临时目录和固定文件名里。TT-Metal JIT 对该路径产生了可观察的编译结果复用，导致后续 case 可能错误复用前一个 case 的已编译 kernel。
+- **解决方案**:
+  - direct path 的 kernel 临时目录改成“每次执行唯一”
+  - 保持 runner / direct 都以新的源码路径触发独立 JIT 编译
+- **当前状态**: 已解决。修复后 `test_blackhole_e2e.py` 已在 TT-Sim 下整体通过，结果为 `18 passed, 1 skipped`。

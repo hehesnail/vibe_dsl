@@ -31,12 +31,15 @@ if not os.path.exists(THIRD_PARTY_ROOT):
     DEV = True
     tl_dev_root = os.path.dirname(TL_ROOT)
 
-    dev_lib_root = os.path.join(tl_dev_root, "build")
+    dev_lib_root = os.environ.get("TILELANG_DEV_LIB_ROOT", os.path.join(tl_dev_root, "build"))
     # In dev builds, place artifacts under build/lib and point search path there
     # to avoid adding the entire build root to sys.path.
     TL_LIBS = [os.path.join(dev_lib_root, "lib"), os.path.join(dev_lib_root, "tvm")]
     THIRD_PARTY_ROOT = os.path.join(tl_dev_root, "3rdparty")
-    logger.warning(f"Loading tilelang libs from dev root: {dev_lib_root}")
+    if "TILELANG_DEV_LIB_ROOT" in os.environ:
+        logger.warning(f"Loading tilelang libs from TILELANG_DEV_LIB_ROOT: {dev_lib_root}")
+    else:
+        logger.warning(f"Loading tilelang libs from dev root: {dev_lib_root}")
 
 assert TL_LIBS and all(os.path.exists(i) for i in TL_LIBS), f"tilelang lib root do not exists: {TL_LIBS}"
 

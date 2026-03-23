@@ -97,6 +97,25 @@
 
 - 系统依赖、clang 版本、RPATH、`LD_LIBRARY_PATH` 都会直接影响编译和运行。
 - `ENABLE_TRACY=OFF`、关闭不需要的 bindings 能减少构建复杂度。
+- 如果 TileLang 侧要直接 include TT-Metal 新版 host API（而不是只链接旧 runner），构建约束不能只补库路径；至少还要对齐：
+  - `C++20`
+  - `TT_METAL_HOME` repo root
+  - `tt_stl`
+  - `hostdevcommon/api`
+  - `umd/device/api`
+  - `.cpmcache` 下的第三方 include
+  否则常见现象是“先缺头文件，补完头文件后又在 `std::span` / `requires` / `<=>` 上报错”。
+- 如果 TT-Metal 没有给出可直接消费的完整 install tree，不要在 TileLang 里一次性把整片 `.cpmcache` 加进 include path。更稳的过渡方式是：
+  - 能走 package config 的包（如 `fmt` / `nlohmann_json` / `spdlog`）优先走 package config
+  - 只对剩余缺少稳定入口的头（如 `tt-logger` / `enchantum` / `umd_asio`）做定向发现
+  这样至少能把“依赖哪个包”固定下来，而不是把缓存目录本身当接口。
+- 如果本地已经有 `TT_METAL_HOME/build_Release`，更稳的做法是先执行一次本地 staging install，再让 TileLang direct 模式优先消费 install tree：
+  - 例如：`cmake --install $TT_METAL_HOME/build_Release --prefix $TT_METAL_HOME/build_Release/stage`
+  - 然后让 CMake 走 `find_package(tt-metalium CONFIG REQUIRED)`
+  这样能显著减少对 build-tree 导出细节和 `.cpmcache` 目录布局的依赖。
+- TileLang 开发态默认只会从 `<repo>/build/lib` 加载 `libtilelang.so`。如果仓库里同时存在 `build/` 和 `build_blackhole/`，direct-path 验证前必须显式指定当前 Python 进程要加载哪一份库；否则很容易出现“`build_blackhole` 已经编好，但 pytest 仍在跑 `build/` 旧库”的假阳性。
+  - 当前可用做法：导出 `TILELANG_DEV_LIB_ROOT=$TILELANG_HOME/build_blackhole`
+  - direct 测试前置检查也应优先核对“当前进程实际加载的库”对应的 `CMakeCache.txt`，不要只扫描磁盘上某个候选构建目录
 
 ### 2. TT-Sim 配置
 
@@ -104,7 +123,9 @@
 
 - `TT_METAL_SLOW_DISPATCH_MODE=1` 对 TT-Sim 很关键。
 - simulator 库和完整 soc descriptor 的路径必须明确。
+- 如果既没有 `TT_METAL_SIMULATOR`，也没有 `TT_METAL_MOCK_CLUSTER_DESC_PATH`，runtime 会按真机模式探测设备；在没有可见芯片的环境里，这会直接在 Metal 初始化阶段报 `No chips detected in the cluster`。
 - UMD 测试不完全等价于 TT-Metal 编程示例可运行性。
+- 如果 direct path 在运行时把不同 kernel case 的源码反复写到同一个临时路径，TT-Metal JIT 可能按路径复用已编译结果，导致“单测单跑通过、同进程组合跑错结果”。临时 kernel 目录/文件名应该按每次执行唯一化，而不是只按 `pid` 固定。
 
 ### 3. TT-Metal 核心接口使用经验
 
@@ -117,6 +138,10 @@
   - `SetRuntimeArgs`
 - compile-time args 与 runtime args 是一等概念，不是实现细节。
 - multi-core 调度主要是 host/runtime 责任。
+- 如果同一仓库同时保留 direct path 和 external runner，测试前置条件必须分层：
+  - direct-call 用例只检查 direct path 编译/运行条件
+  - runner 用例单独检查 runner 二进制
+  否则 direct path 明明可验证，也会因为 runner 缺失被整体 skip。
 
 ## Blackhole 后端当前有效开发原则
 

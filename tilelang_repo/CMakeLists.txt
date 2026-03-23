@@ -18,6 +18,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+if(USE_BLACKHOLE_DIRECT)
+  set(CMAKE_CXX_STANDARD 20)
+endif()
+
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND "$ENV{CIBUILDWHEEL}")
   # Warning came from tvm submodule
   string(APPEND CMAKE_CXX_FLAGS " -Wno-dangling-reference")
@@ -271,16 +275,26 @@ elseif(USE_BLACKHOLE)
       set(TT_METAL_HOME "/opt/tt-metal")
     endif()
 
-    # TT-Metal include paths
-    include_directories(
-      ${TT_METAL_HOME}/tt_metal/api
-      ${TT_METAL_HOME}/tt_metal/include
-      ${TT_METAL_HOME}/tt_metal
-    )
+    set(TT_METAL_BUILD_DIR "${TT_METAL_HOME}/build_Release" CACHE PATH
+        "TT-Metal build directory used by TileLang direct Blackhole mode")
+    if(NOT EXISTS "${TT_METAL_BUILD_DIR}")
+      message(FATAL_ERROR "TT-Metal build directory not found: ${TT_METAL_BUILD_DIR}")
+    endif()
 
-    # Link TT-Metal libraries
-    link_directories(${TT_METAL_HOME}/build/lib)
-    list(APPEND TVM_RUNTIME_LINKER_LIBS tt_metal tt_metal_common)
+    set(TT_METAL_INSTALL_DIR "${TT_METAL_BUILD_DIR}/stage" CACHE PATH
+        "TT-Metal install tree used by TileLang direct Blackhole mode")
+    if(NOT EXISTS "${TT_METAL_INSTALL_DIR}/lib/cmake/tt-metalium/tt-metalium-config.cmake")
+      message(FATAL_ERROR
+        "TT-Metal install tree not found at ${TT_METAL_INSTALL_DIR}. "
+        "Run `cmake --install ${TT_METAL_BUILD_DIR} --prefix ${TT_METAL_INSTALL_DIR}` first.")
+    endif()
+
+    list(PREPEND CMAKE_PREFIX_PATH ${TT_METAL_INSTALL_DIR})
+    find_package(tt-metalium CONFIG REQUIRED
+      PATHS ${TT_METAL_INSTALL_DIR}
+      NO_DEFAULT_PATH)
+
+    set(TILELANG_BLACKHOLE_DIRECT_IMPORTED_TARGET TT::Metalium)
   else()
     message(STATUS "Enable Blackhole backend (external process mode)")
   endif()
@@ -491,9 +505,15 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 target_include_directories(tilelang_objs PRIVATE ${TILE_LANG_INCLUDES})
+if(USE_BLACKHOLE_DIRECT)
+  target_link_libraries(tilelang_objs PRIVATE ${TILELANG_BLACKHOLE_DIRECT_IMPORTED_TARGET})
+endif()
 
 add_library(tilelang SHARED $<TARGET_OBJECTS:tilelang_objs>)
 target_link_libraries(tilelang PUBLIC tvm)
+if(USE_BLACKHOLE_DIRECT)
+  target_link_libraries(tilelang PUBLIC ${TILELANG_BLACKHOLE_DIRECT_IMPORTED_TARGET})
+endif()
 
 # Place dev build outputs under build/lib for consistency
 set_target_properties(tilelang PROPERTIES
