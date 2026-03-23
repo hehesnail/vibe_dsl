@@ -54,12 +54,12 @@
 - **问题**: `build_blackhole` 已经启用 `USE_BLACKHOLE_DIRECT=ON` 并构建完成，但 `pytest`/Python direct-call 仍然落回 `ExecuteExternal`。
 - **根本原因**: TileLang 开发态默认只从仓库根下的 `build/lib` 加载 `libtilelang.so`；如果同时存在默认 `build/` 和专用 `build_blackhole/`，Python 进程会静默加载旧库，导致测试前置检查与真实执行库不一致。
 - **解决方案**:
-  - 支持并显式导出 `TILELANG_DEV_LIB_ROOT=$TILELANG_HOME/build_blackhole`
   - direct 测试优先检查当前进程实际加载的 `libtilelang.so` 所属构建目录的 `CMakeCache.txt`
 - **补充修正**:
   - 仓库后续约定统一以 `tilelang_repo/build/` 作为默认开发构建目录
   - `TILELANG_DEV_LIB_ROOT` 只保留给临时切换到其他构建目录的场景
-- **当前状态**: 已解决。默认加载重新收回到单一 `build/` 目录；这类问题的长期规避方式是不要把 `build_blackhole/` 当常驻默认构建目录。
+  - 历史过渡目录 `build_blackhole/` 已删除
+- **当前状态**: 已解决。默认加载固定为单一 `build/` 目录；这类问题的长期规避方式是不要保留第二套常驻开发构建目录。
 
 ## 与当前设计直接相关的记录
 

@@ -113,12 +113,10 @@
   - 例如：`cmake --install $TT_METAL_HOME/build_Release --prefix $TT_METAL_HOME/build_Release/stage`
   - 然后让 CMake 走 `find_package(tt-metalium CONFIG REQUIRED)`
   这样能显著减少对 build-tree 导出细节和 `.cpmcache` 目录布局的依赖。
-- TileLang 开发态默认只会从 `<repo>/build/lib` 加载 `libtilelang.so`。如果仓库里同时存在 `build/` 和 `build_blackhole/`，direct-path 验证前必须显式指定当前 Python 进程要加载哪一份库；否则很容易出现“`build_blackhole` 已经编好，但 pytest 仍在跑 `build/` 旧库”的假阳性。
-  - 当前可用做法：导出 `TILELANG_DEV_LIB_ROOT=$TILELANG_HOME/build_blackhole`
-  - direct 测试前置检查也应优先核对“当前进程实际加载的库”对应的 `CMakeCache.txt`，不要只扫描磁盘上某个候选构建目录
-- 更干净的长期做法不是在 `build/` 和 `build_blackhole/` 之间发明自动优先级，而是直接统一成单一开发构建目录：
+- TileLang 开发态默认应固定使用 `<repo>/build/lib/libtilelang.so` 作为唯一标准产物。direct-path 验证前应优先核对“当前进程实际加载的库”对应的 `CMakeCache.txt`，不要只扫描磁盘上的候选构建目录；否则很容易出现“看的是这份库，跑的是另一份库”的假阳性。
+- 更干净的长期做法不是在多套开发构建目录之间发明自动优先级，而是直接统一成单一开发构建目录：
   - 以 `tilelang_repo/build/` 作为唯一默认构建目录
-  - 需要特殊试验目录时再临时使用 `TILELANG_DEV_LIB_ROOT`
+  - 临时试验目录只在明确需要时通过 `TILELANG_DEV_LIB_ROOT` 显式切换，并在试验结束后清理掉
   这样 Python、pytest、CMake cache 和调试日志都只对应一套产物，最不容易出现“看的是这份库，跑的是另一份库”。
 
 ### 2. TT-Sim 配置

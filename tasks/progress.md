@@ -93,9 +93,6 @@
   - direct-call 用例只检查 direct path 所需条件
   - runner 用例单独检查 external runner 条件
   - direct-call 不再因为 runner 缺失而整体 skip
-- `build_blackhole` 已重新收正到 direct 配置：
-  - `USE_BLACKHOLE_DIRECT=ON`
-  - `TT_METAL_HOME=/root/dev/vibe_dsl/tt_metal_repo`
 - direct 模式的 CMake 接入已补第一轮构建对齐：
   - 加入 TT-Metal repo root / `tt_stl` / `hostdevcommon` / `umd` 相关 include 路径
   - direct 模式编译标准提升到 C++20 以匹配 TT-Metal 头文件要求
@@ -107,14 +104,11 @@
   - `TT_METAL_INSTALL_DIR=/root/dev/vibe_dsl/tt_metal_repo/build_Release/stage`
   - `find_package(tt-metalium CONFIG REQUIRED)` 成功
 - `blackhole_module.cc` 已可用 direct 模式单文件编译通过
-- `build_blackhole` 的完整 `tilelang` 目标已在 direct 配置下全量构建通过（`cmake --build ... --target tilelang -j32`）
+- `tilelang_repo/build/` 的完整 `tilelang` 目标已在 direct 配置下全量构建通过（`cmake --build ... --target tilelang -j32`）
 - direct-call 测试现已确认会真正进入 `BlackholeModule::ExecuteDirect()`，不再误落回旧 runner 路径
-- `tilelang` 开发态库加载新增 `TILELANG_DEV_LIB_ROOT` 覆盖：
-  - 可显式让 Python/pytest 加载 `build_blackhole/lib/libtilelang.so`
-  - 避免仓库默认 `build/` 旧库把 direct-path 验证结果污染
 - 当前收尾约定已改回单一开发构建目录：
   - 以后统一以 `tilelang_repo/build/` 为准
-  - `build_blackhole/` 只作为过渡遗留目录，不再作为默认加载来源
+  - 旧 `build_blackhole/` 过渡目录已删除，避免继续误用
   - 如需临时指向其他构建目录，仍使用 `TILELANG_DEV_LIB_ROOT`
 - `test_blackhole_e2e.py` 的 direct 前置检查已改成优先核对”当前进程实际加载的 `libtilelang.so` 对应的 CMakeCache 是否启用 `USE_BLACKHOLE_DIRECT=ON`”
 - 当前 shell 的 TT-Sim 环境已通过 `scripts/setup_tt_sim.sh` 恢复：

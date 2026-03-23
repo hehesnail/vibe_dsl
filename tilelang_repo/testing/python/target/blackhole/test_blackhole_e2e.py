@@ -77,7 +77,6 @@ def direct_build_enabled():
         cache_candidates.extend(
             [
                 os.path.join(tilelang_home, "build", "CMakeCache.txt"),
-                os.path.join(tilelang_home, "build_blackhole", "CMakeCache.txt"),
             ]
         )
 
