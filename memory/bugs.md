@@ -63,6 +63,17 @@
 
 ## 与当前设计直接相关的记录
 
+### Stage 2C copy semantics 不能继续用 `AttrStmt` 承载结构化 schema
+
+- **时间**: 2026-03-23
+- **问题**: Stage 2C 最初设计把 `blackhole.copy_semantics` 规划成 `AttrStmt(attr_key, value=<Map<String, ObjectRef>>)`；实现时发现这条路在当前 TIR API 下不成立。
+- **根本原因**: `AttrStmt.value` 语义仍是 `PrimExpr`，不适合直接承载 `Map<String, Any>` 这类结构化对象；真正适合放结构化 pass 元数据的位置是 `ForNode::annotations` / `BlockNode::annotations`。
+- **解决方案**:
+  - 改为把 `blackhole.copy_semantics` 写到 `ForNode::annotations["blackhole.copy_semantics"]`
+  - schema 用 `Map<String, Any>`，显式带 `src_shape/dst_shape/mid_shape`
+  - `LowerBlackholeOps` 优先消费 loop annotation，再回退旧 matcher
+- **当前状态**: 已解决。`FlattenBuffer + VectorizeLoop` 后的 Stage 2C 专项测试已通过；`StorageRewrite` 仍待后续验证。
+
 ### GEMM 寻址与 tile access 语义不一致
 
 - **时间**: 2026-03-16

@@ -23,6 +23,32 @@ from tvm.target import Target
 from tvm.ir import CallingConv
 
 
+def find_loop_annotation(stmt, attr_key):
+    """Find the first For loop carrying the given annotation key."""
+    if isinstance(stmt, tilelang.tvm.tir.For) and stmt.annotations.get(attr_key) is not None:
+        return stmt.annotations[attr_key]
+    if isinstance(stmt, tilelang.tvm.tir.BlockRealize):
+        return find_loop_annotation(stmt.block.body, attr_key)
+    if isinstance(stmt, tilelang.tvm.tir.Block):
+        return find_loop_annotation(stmt.body, attr_key)
+    if isinstance(stmt, tilelang.tvm.tir.SeqStmt):
+        for child in stmt.seq:
+            found = find_loop_annotation(child, attr_key)
+            if found is not None:
+                return found
+        return None
+    if isinstance(stmt, tilelang.tvm.tir.IfThenElse):
+        found = find_loop_annotation(stmt.then_case, attr_key)
+        if found is not None:
+            return found
+        if stmt.else_case is not None:
+            return find_loop_annotation(stmt.else_case, attr_key)
+        return None
+    if hasattr(stmt, "body"):
+        return find_loop_annotation(stmt.body, attr_key)
+    return None
+
+
 def check_blackhole_codegen_requirements():
     """Check if Blackhole compilation requirements are met."""
     tilelang_home = os.environ.get("TILELANG_HOME")
@@ -210,6 +236,61 @@ def test_blackhole_copy_pass_attrs():
     assert body_script.count("tl.blackhole.write_tile_from_cb") == 1
     assert "for i in T.vectorized(8):\n                    T.tl.blackhole.read_tile_to_cb" not in body_script
     assert "for i in T.vectorized(8):\n                    T.tl.blackhole.write_tile_from_cb" not in body_script
+
+
+def test_blackhole_copy_semantics_annotation_schema():
+    """Stage 2C annotation should be a structured map before split/lowering."""
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+
+    sem = find_loop_annotation(mod["main"].body, "blackhole.copy_semantics")
+    assert sem is not None
+    assert str(sem["kind"]) == "fused_staged_copy"
+    assert str(sem["direction"]) == "dram_to_cb_to_dram"
+    assert str(sem["src_buffer"]) == "A"
+    assert str(sem["mid_buffer"]) == "A_shared"
+    assert str(sem["dst_buffer"]) == "B"
+    assert str(sem["src_scope"]) == "global"
+    assert str(sem["dst_scope"]) == "global"
+    assert str(sem["dtype"]) == "float16"
+    assert [int(x) for x in sem["src_shape"]] == [64, 32]
+    assert [int(x) for x in sem["dst_shape"]] == [64, 32]
+    assert [int(x) for x in sem["mid_shape"]] == [32, 32]
+
+
+def test_blackhole_copy_semantics_survives_flatten_and_vectorize():
+    """Stage 2C copy annotation should remain lowerable after common split-before passes."""
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+    mod = tilelang.transform.FlattenBuffer()(mod)
+    mod = tilelang.transform.VectorizeLoop()(mod)
+    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = tilelang.transform.PlanBlackholeCB()(mod)
+    mod = tilelang.transform.AssignBlackholeCores()(mod)
+
+    func = mod["main"]
+    runtime_args = func.attrs["blackhole.runtime_args"]
+    assert [str(arg["kind"]) for arg in runtime_args] == [
+        "input_buffer_addr32",
+        "output_buffer_addr32",
+        "current_work_linear_id",
+        "tile_count",
+        "scratch_l1_buffer_addr32",
+    ]
+    assert str(runtime_args[0]["buffer"]) == "A"
+    assert str(runtime_args[1]["buffer"]) == "B"
+
+    body_script = func.body.script()
+    assert body_script.count("tl.blackhole.read_tile_to_cb") == 1
+    assert body_script.count("tl.blackhole.write_tile_from_cb") == 1
 
 
 def make_blackhole_cb_requirements_mod(cb_requirements):

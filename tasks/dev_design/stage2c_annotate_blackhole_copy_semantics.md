@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage2c_annotate_blackhole_copy_semantics`
 - **日期**: 2026-03-23
-- **状态**: 设计中
+- **状态**: 实现中
 - **对应阶段**: Stage 2C — split-before 语义规划
 
 ---
@@ -91,30 +91,28 @@ for i in range(N):
 
 ### 3.3 输出
 
-将 copy 所在的**最外层** For loop 包裹为：
+将 copy 所在的**最外层** For loop 标记为带结构化 annotations 的 loop：
 
 ```
-attr [{"blackhole.copy_semantics": <map>}]:
-  for i in range(N):
-    B[i, j] = A[i, j]
+for i in range(N, annotations={"blackhole.copy_semantics": <map>}):
+  B[i, j] = A[i, j]
 ```
 
-Annotation 挂在 `AttrStmt` 的 `attr_key = "blackhole.copy_semantics"` 上，
-value 为一个 `Map<String, ObjectRef>`（见 3.4）。
+Annotation 挂在 `ForNode::annotations["blackhole.copy_semantics"]` 上，
+value 为一个 `Map<String, Any>`（见 3.4）。
 
 Fused copy（同一 loop 内含 dram→cb 和 cb→dram 两个 copy）：
 
 ```
-attr [{"blackhole.copy_semantics": <map with kind="fused_staged_copy">}]:
-  for i in range(N):
-    B[i, j] = A[i, j]     # dram→cb
-    C[k, l] = B[i, j]     # cb→dram
+for i in range(N, annotations={"blackhole.copy_semantics": <map with kind="fused_staged_copy">}):
+  B[i, j] = A[i, j]     # dram→cb
+  C[k, l] = B[i, j]     # cb→dram
 ```
 
 ### 3.4 Annotation Schema
 
 ```
-blackhole.copy_semantics → Map<String, ObjectRef>
+blackhole.copy_semantics → Map<String, Any>
   "kind"        : String
       "staged_copy"                 一个方向
       "fused_staged_copy"           dram→cb + cb→dram，公用同一 shared buffer
@@ -129,6 +127,7 @@ blackhole.copy_semantics → Map<String, ObjectRef>
   "dtype"       : String    "float16" / "float32" / "int32" 等
   "src_shape"   : Array<Integer>    源 buffer 静态 shape（尽力提取）
   "dst_shape"   : Array<Integer>    目标 buffer 静态 shape（尽力提取）
+  "mid_shape"   : Array<Integer>    shared 中间 buffer 静态 shape（存在 shared 中间层时）
 ```
 
 ### 3.5 实现要点
@@ -153,7 +152,7 @@ private:
 1. 调用 `CollectCopyStores` 遍历 loop body，收集所有 `BufferStore(BufferLoad)` copy
 2. 如果找到 dram→cb + cb→dram（fused 情形），构建 `kind="fused_staged_copy"` annotation
 3. 如果找到单方向 copy（dram→cb 或 cb→dram），构建 `kind="staged_copy"` annotation
-4. 用 `AttrStmt(op->node = NullValue, attr_key = "blackhole.copy_semantics", value = annotation, body = GetRef<For>(op))` 包裹
+4. 将 annotation 写入 `ForNode::annotations["blackhole.copy_semantics"]`
 5. 没有 copy 时，走默认 `StmtMutator::VisitStmt_(op)` 继续递归
 
 **不修改** LowerTileOp 的任何逻辑。
@@ -162,32 +161,33 @@ private:
 
 ## 4. LowerBlackholeOps 修改
 
-### 4.1 新增 AttrStmt 处理
+### 4.1 新增 For annotations 处理
 
-在现有 `VisitStmt_(AttrStmtNode)` 里增加对 `"blackhole.copy_semantics"` 的处理：
+在现有 `VisitStmt_(ForNode)` 里优先读取 `op->annotations["blackhole.copy_semantics"]`：
 
 ```cpp
-Stmt LowerBlackholeOps::VisitStmt_(const AttrStmtNode* op) {
-  if (op->attr_key == "blackhole.copy_semantics") {
-    return ConsumeCopySemantics(op);
+Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
+  if (auto ann = op->annotations.Get("blackhole.copy_semantics")) {
+    auto sem = ann->as<Map<String, Any>>().value_or(Map<String, Any>());
+    // 提取 direction、buffer 名称和 src/dst/mid shape
+    // 标记 needs_copy_runtime_args_ = true, saw_copy_op_ = true
   }
-  // ... 现有逻辑
-}
-
-Stmt LowerBlackholeOps::ConsumeCopySemantics(const AttrStmtNode* op) {
-  auto sem = Downcast<Map<String, ObjectRef>>(op->value);
-  // 提取 direction、buffer 名称，设置 copy_input_buffer_name_ 等
-  // 标记 needs_copy_runtime_args_ = true, saw_copy_op_ = true
-  // 继续 VisitStmt(op->body) 以生成实际 builtin 调用序列
-  return VisitStmt(op->body);
+  // 继续走现有 ForNode lowering，生成实际 builtin 调用序列
 }
 ```
 
 ### 4.2 保持现有模式匹配作为 fallback
 
 `VisitStmt_(ForNode)` 现有逻辑**不删除**，作为 fallback：
-- 如果 For loop 外已有 `blackhole.copy_semantics` annotation，会先走 `VisitStmt_(AttrStmtNode)` 进入 `ConsumeCopySemantics`，body 继续分派到 `VisitStmt_(ForNode)`（此时 `needs_copy_runtime_args_` 已设置，逻辑不变）
+- 如果 For loop 已带 `blackhole.copy_semantics` loop annotation，会先消费 annotation 中的方向、buffer 名称与 shape 元数据，再继续走现有 staged-copy lowering
 - 如果没有 annotation（老路径 / 其他非 Blackhole path），仍走现有模式匹配
+
+### 4.3 当前实现状态
+
+- 已实现 `ForNode::annotations["blackhole.copy_semantics"]` 的结构化 schema
+- 已补 `mid_shape` 元数据，用于 `FlattenBuffer` 后恢复 shared tile 形状
+- 已验证 `AnnotateBlackholeCopySemantics -> FlattenBuffer -> VectorizeLoop -> LowerBlackholeOps` 可继续产出 copy builtin 与 runtime attrs
+- `StorageRewrite` 仍未纳入本轮专项验证
 
 ---
 
@@ -224,10 +224,11 @@ mod = tilelang.transform.AnnotateDeviceRegions()(mod)
 
 ## 7. 验证方式
 
-1. `test_blackhole_e2e.py` 全套用例保持 `18 passed, 1 skipped`（无回归）
-2. 在 TIR dump 中能看到 `attr blackhole.copy_semantics` 包裹在 copy For loop 外层
-3. 人工插入 FlattenBuffer（仅测试）后，copy 语义仍能被 `LowerBlackholeOps` 正确识别
-4. `blackhole.runtime_args` / `blackhole.cb_requirements` 内容与当前路径一致
+1. `test_blackhole_e2e.py` 全套用例保持 `15 passed, 5 skipped`（无回归）
+2. 在 TIR dump 中能看到 copy For loop 带 `annotations={"blackhole.copy_semantics": ...}`
+3. `AnnotateBlackholeCopySemantics -> FlattenBuffer -> VectorizeLoop -> LowerBlackholeOps` 专项测试通过
+4. `blackhole.runtime_args` / copy builtin 产出与当前路径一致
+5. `StorageRewrite` 暂未纳入本轮专项验证
 
 ---
 

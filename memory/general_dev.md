@@ -218,6 +218,13 @@
 - 当准备把某个 Blackhole 路径从 runtime emitter 切回 codegen 主路径时，可以先采用“codegen 优先、runtime emitter 回退”的切换方式：
   - 先让 `CodeGenBlackhole` 能消费 builtin
   - 再让 `rt_mod_blackhole` 优先使用 codegen 产物
+- 对 TIR 里的 split-before 结构化元数据，如果 value 需要承载 `Map/Array/String` 等混合对象，不要继续套用 `AttrStmt.value`；更稳的做法是直接挂到 `ForNode::annotations` / `BlockNode::annotations` 这类 `Map<String, Any>` 容器上。`AttrStmt.value` 仍是 `PrimExpr` 语义，适合标量/表达式型 attr，不适合 Stage 2C 这种结构化 copy schema。
+- 如果后续还要让 Blackhole copy 语义跨 `FlattenBuffer` / `VectorizeLoop` 保持可恢复，annotation 里不能只存 buffer 名和方向；还要显式带：
+  - `src_shape`
+  - `dst_shape`
+  - `mid_shape`
+  否则线性化后一旦 global/shared buffer 被压成一维，`LowerBlackholeOps` 就无法仅靠访问表达式稳定恢复 tile 宽高。
+- `VectorizeLoop` 后常见的 copy 索引形态会从标量下标变成 `Ramp(base, stride, lanes)`；如果后端后续只关心 tile 基址，恢复逻辑应先把这类向量索引标量化到 `base`，再继续做 tile-index 计算，不要直接把整个 `Ramp` 当成“不支持的新模式”。
   - 最后只在 codegen 为空或失败时回退到手写 emitter
   这样更容易分阶段验证，不会一次性打断现有真执行链路。
 - 对 Blackhole copy 这类“看起来最简单”的路径，也不能只盯着 `32x32 one-tile` 是否能跑通；这类 case 容易掩盖“循环体里重复发射同一个 `tile_index=0` copy”这类结构错误。更稳的做法是同时检查：

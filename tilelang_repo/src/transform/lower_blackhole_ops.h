@@ -169,9 +169,6 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Generate clear builtin sequence */
   tvm::tir::Stmt GenerateClearSequence(const tvm::tir::CallNode* op);
 
-  /*! \brief Consume blackhole.copy_semantics annotation and record buffer/direction info */
-  tvm::tir::Stmt ConsumeCopySemantics(const tvm::tir::AttrStmtNode* op);
-
   // StmtExprMutator overrides
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;
   tvm::tir::Stmt VisitStmt_(const tvm::tir::ForNode* op) override;
@@ -186,6 +183,9 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   bool needs_copy_runtime_args_ = false;
   std::string copy_input_buffer_name_;
   std::string copy_output_buffer_name_;
+  tvm::ffi::Array<tvm::Integer> copy_input_shape_;
+  tvm::ffi::Array<tvm::Integer> copy_output_shape_;
+  tvm::ffi::Array<tvm::Integer> copy_intermediate_shape_;
   std::unordered_set<const tvm::tir::VarNode*> thread_index_vars_;
 
   // CB allocation counters

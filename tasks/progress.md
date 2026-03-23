@@ -7,7 +7,7 @@
 
 - **阶段**: Stage 2C split-before 语义规划
 - **日期**: 2026-03-23
-- **当前目标**: Stage 2B 已完成，接下来开始收正 split-before copy 语义规划，为后续 GEMM 接入做准备
+- **当前目标**: Stage 2B 已完成，当前继续收正 split-before copy 语义规划，并把 Stage 2C 的协议和专项验证补齐，为后续 GEMM 接入做准备
 
 ## 当前状态判断
 
@@ -119,16 +119,30 @@
   - 删除死代码：`EnsureDeviceInitialized()`、`GetOrCompileProgram()`、`CompiledProgram` struct、`mesh_device_`/`mesh_command_queue_`/`device_initialized_`/`program_cache_`（direct path 每次调用自建局部 `MeshDevice`，这套成员从未被触达）
   - `MakeUniqueTempDir()` 用于 direct path 内部的唯一 kernel 临时目录，消除同进程内多次调用路径冲突
   - 修复后全套 E2E 验收保持 18 passed, 1 skipped
-- Stage 2C 当前未提交实现已补首轮回归修正（2026-03-23）：
-  - `LowerBlackholeOps::ConsumeCopySemantics()` 不再在连续 `dram_to_cb` / `cb_to_dram` annotation 场景下把另一侧 buffer 绑定清空
-  - `CodeGenBlackhole` 对 runtime-arg buffer 绑定补了 body-based fallback，不再只依赖 `buffer_map`
-  - 在统一后的 `build/` 上串行验证 `testing/python/target/blackhole/test_blackhole_e2e.py` 结果为 `13 passed, 6 skipped`
+- Stage 2C 本轮推进已补第一轮实现与专项验证（2026-03-23）：
+  - `AnnotateBlackholeCopySemantics` 已从旧的 `AttrStmt/string` 方案收正为 `ForNode::annotations["blackhole.copy_semantics"]`
+  - copy 语义 schema 已改为结构化 `Map<String, Any>`，不再依赖冒号拼接字符串协议
+  - schema 当前显式带：
+    - `kind`
+    - `direction`
+    - `src_buffer` / `dst_buffer` / `mid_buffer`
+    - `src_scope` / `dst_scope`
+    - `dtype`
+    - `src_shape` / `dst_shape` / `mid_shape`
+  - `LowerBlackholeOps` 已开始优先消费上述 loop annotation，再回退到旧 matcher
+  - `LowerBlackholeOps` 已补 shape-aware tile-index 恢复：
+    - 可从 `FlattenBuffer` 后的线性化 global/shared shape 恢复 tile 语义
+    - 可从 `VectorizeLoop` 后的 `Ramp(base, 1, lanes)` 索引恢复标量 tile 基址
+  - 已新增 Stage 2C 专项测试：
+    - split-before annotation schema 产出检查
+    - `AnnotateBlackholeCopySemantics -> FlattenBuffer -> VectorizeLoop -> LowerBlackholeOps` 稳定性检查
+  - 在统一后的 `build/` 上串行验证 `testing/python/target/blackhole/test_blackhole_e2e.py` 结果为 `15 passed, 5 skipped`
 
 当前仍然存在的主要结构问题：
 
 - split 前语义规划仍不够强，copy/gemm 语义仍偏依赖 split 后 matcher 恢复
 - `PlanBlackholeCB` 仍偏 MVP allocator，尚未成为正式 memory planner
-- `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等通用中后段 pass 仍未安全接回
+- `FlattenBuffer` / `VectorizeLoop` 已完成 Stage 2C 范围内的专项验证，但 `StorageRewrite` 仍未接回或验收
 - copy 路径虽然已经验收完成，但 split-before 语义规划仍未正式落地
 - GEMM 仍未接入正式 direct host path
 
@@ -156,7 +170,7 @@
 | Stage 1 | single-core copy bring-up | ✅ 已完成 | 最小 copy 路径已 bring-up，但不再扩大为正式主线 |
 | Stage 2A | pass 主链接入收正 | 🔄 进行中 | 固定 split 前语义规划 / split 后正式 plan 提取 / host-side materialization 三层 |
 | Stage 2B | single-core copy 正式主链 | ✅ 已完成 | direct path copy E2E 已在 TT-Sim 上验收通过 |
-| Stage 2C | split-before 语义规划 | 🔄 进行中 | 先固定 copy 语义规划边界，再为 GEMM 接入铺路 |
+| Stage 2C | split-before 语义规划 | 🔄 进行中 | copy loop annotation 与 `FlattenBuffer/VectorizeLoop` 验证已落地，`StorageRewrite` 仍待补齐 |
 | Stage 2D | single-core true E2E | ⏳ 未完成 | copy + GEMM 都通过正式 host-device 主路径执行 |
 | Stage 3 | multi-core runtime 调度 | ⏳ 未开始 | `CorePlan` 已补 formal schema，后续补 per-core runtime args 与多核执行 |
 
@@ -217,7 +231,8 @@
 1. ~~`BlackholeModule` direct host path~~ → **已完成**
 2. ~~Copy E2E 验收~~ → **已完成**（18 passed, 1 skipped，含 grid>1 / large-shape / oversubscription 负例）
 3. ~~`ExecuteDirect` 核坐标 / input-output 分类 / 死代码~~ → **已修正**
-4. split 前语义规划收正（Phase 3）— **当前首要任务**
+4. split 前语义规划收正（Phase 3）— **持续推进中**
+5. `StorageRewrite` 场景验证与通用 pass 回收 — **Stage 2C 当前剩余重点**
    - 推荐方案 A：新增 `AnnotateBlackholeCopySemantics` pass
    - 不修改 `LowerTileOp` 核心降级逻辑
 5. 分批接回中后段通用 pass（Phase 4）

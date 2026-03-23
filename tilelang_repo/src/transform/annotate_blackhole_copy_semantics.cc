@@ -23,18 +23,12 @@
  *
  * Runs in the split-before phase (after LowerTileOp, before AnnotateDeviceRegions).
  * Finds BufferStore(BufferLoad) copy loop patterns and wraps the outermost
- * copy-containing For loop with:
+ * copy-containing For loop by attaching a structured loop annotation:
  *
- *   AttrStmt("blackhole.copy_semantics", StringImm("<kind>:<dir>:<src>:<dst>:<dtype>"), ...)
+ *   For(..., annotations={"blackhole.copy_semantics": Map<String, Any>{...}})
  *
  * This gives LowerBlackholeOps stable metadata without requiring pattern-matching
  * on the loop body, which is fragile after FlattenBuffer / VectorizeLoop / StorageRewrite.
- *
- * Annotation string format:
- *   staged_copy:<direction>:<src_buf>:<dst_buf>:<dtype>
- *   fused_staged_copy:dram_to_cb_to_dram:<src_dram>:<mid_shared>:<dst_dram>:<dtype>
- *
- * where <direction> is one of: dram_to_cb, cb_to_dram, dram_to_dram, cb_to_cb
  */
 
 #include <tvm/ffi/reflection/registry.h>
@@ -54,6 +48,10 @@ namespace tl {
 using namespace tir;
 using tvm::ffi::GetRef;
 using tvm::Integer;
+using tvm::ffi::Array;
+using tvm::ffi::Any;
+using tvm::ffi::Map;
+using tvm::ffi::String;
 
 // Attr key used to mark copy-containing For loops
 static constexpr const char* kBlackholeCopySemantics = "blackhole.copy_semantics";
@@ -87,6 +85,16 @@ static std::string DataTypeStr(const DataType& dt) {
     if (dt.bits() == 16) return "uint16";
   }
   return "unknown";
+}
+
+static Array<Integer> ExtractStaticShape(const Buffer& buf) {
+  Array<Integer> shape;
+  for (const PrimExpr& dim : buf->shape) {
+    if (const auto* imm = dim.as<IntImmNode>()) {
+      shape.push_back(Integer(imm->value));
+    }
+  }
+  return shape;
 }
 
 static bool IsCopyOp(const BufferStoreNode* op) {
@@ -161,7 +169,7 @@ static void CollectCopyStores(const Stmt& stmt, std::vector<CopyStoreInfo>* out)
   }
 }
 
-static std::string BuildAnnotationStr(const std::vector<CopyStoreInfo>& copies) {
+static Map<String, Any> BuildAnnotation(const std::vector<CopyStoreInfo>& copies) {
   // Find dram_to_cb and cb_to_dram copies
   const BufferStoreNode* dram_to_cb_store = nullptr;
   const BufferStoreNode* cb_to_dram_store = nullptr;
@@ -179,12 +187,19 @@ static std::string BuildAnnotationStr(const std::vector<CopyStoreInfo>& copies) 
     const auto* dram_load = dram_to_cb_store->value.as<BufferLoadNode>();
     const auto* cb_load   = cb_to_dram_store->value.as<BufferLoadNode>();
     if (dram_load && cb_load) {
-      std::string src_dram  = std::string(dram_load->buffer->name);
-      std::string mid_shared = std::string(dram_to_cb_store->buffer->name);
-      std::string dst_dram  = std::string(cb_to_dram_store->buffer->name);
-      std::string dtype     = DataTypeStr(dram_to_cb_store->buffer->dtype);
-      return "fused_staged_copy:dram_to_cb_to_dram:" +
-             src_dram + ":" + mid_shared + ":" + dst_dram + ":" + dtype;
+      Map<String, Any> ann;
+      ann.Set("kind", String("fused_staged_copy"));
+      ann.Set("direction", String("dram_to_cb_to_dram"));
+      ann.Set("src_buffer", String(dram_load->buffer->name));
+      ann.Set("dst_buffer", String(cb_to_dram_store->buffer->name));
+      ann.Set("mid_buffer", String(dram_to_cb_store->buffer->name));
+      ann.Set("src_scope", String(GetStorageScopeStr(dram_load->buffer)));
+      ann.Set("dst_scope", String(GetStorageScopeStr(cb_to_dram_store->buffer)));
+      ann.Set("dtype", String(DataTypeStr(dram_to_cb_store->buffer->dtype)));
+      ann.Set("src_shape", ExtractStaticShape(dram_load->buffer));
+      ann.Set("dst_shape", ExtractStaticShape(cb_to_dram_store->buffer));
+      ann.Set("mid_shape", ExtractStaticShape(dram_to_cb_store->buffer));
+      return ann;
     }
   }
 
@@ -192,10 +207,18 @@ static std::string BuildAnnotationStr(const std::vector<CopyStoreInfo>& copies) 
   if (dram_to_cb_store) {
     const auto* load = dram_to_cb_store->value.as<BufferLoadNode>();
     if (load) {
-      return "staged_copy:dram_to_cb:" +
-             std::string(load->buffer->name) + ":" +
-             std::string(dram_to_cb_store->buffer->name) + ":" +
-             DataTypeStr(dram_to_cb_store->buffer->dtype);
+      Map<String, Any> ann;
+      ann.Set("kind", String("staged_copy"));
+      ann.Set("direction", String("dram_to_cb"));
+      ann.Set("src_buffer", String(load->buffer->name));
+      ann.Set("dst_buffer", String(dram_to_cb_store->buffer->name));
+      ann.Set("src_scope", String(GetStorageScopeStr(load->buffer)));
+      ann.Set("dst_scope", String(GetStorageScopeStr(dram_to_cb_store->buffer)));
+      ann.Set("dtype", String(DataTypeStr(dram_to_cb_store->buffer->dtype)));
+      ann.Set("src_shape", ExtractStaticShape(load->buffer));
+      ann.Set("dst_shape", ExtractStaticShape(dram_to_cb_store->buffer));
+      ann.Set("mid_shape", ExtractStaticShape(dram_to_cb_store->buffer));
+      return ann;
     }
   }
 
@@ -203,10 +226,18 @@ static std::string BuildAnnotationStr(const std::vector<CopyStoreInfo>& copies) 
   if (cb_to_dram_store) {
     const auto* load = cb_to_dram_store->value.as<BufferLoadNode>();
     if (load) {
-      return "staged_copy:cb_to_dram:" +
-             std::string(load->buffer->name) + ":" +
-             std::string(cb_to_dram_store->buffer->name) + ":" +
-             DataTypeStr(cb_to_dram_store->buffer->dtype);
+      Map<String, Any> ann;
+      ann.Set("kind", String("staged_copy"));
+      ann.Set("direction", String("cb_to_dram"));
+      ann.Set("src_buffer", String(load->buffer->name));
+      ann.Set("dst_buffer", String(cb_to_dram_store->buffer->name));
+      ann.Set("src_scope", String(GetStorageScopeStr(load->buffer)));
+      ann.Set("dst_scope", String(GetStorageScopeStr(cb_to_dram_store->buffer)));
+      ann.Set("dtype", String(DataTypeStr(cb_to_dram_store->buffer->dtype)));
+      ann.Set("src_shape", ExtractStaticShape(load->buffer));
+      ann.Set("dst_shape", ExtractStaticShape(cb_to_dram_store->buffer));
+      ann.Set("mid_shape", ExtractStaticShape(load->buffer));
+      return ann;
     }
   }
 
@@ -215,14 +246,24 @@ static std::string BuildAnnotationStr(const std::vector<CopyStoreInfo>& copies) 
     const auto* store = copies[0].store;
     const auto* load  = store->value.as<BufferLoadNode>();
     if (load) {
-      return "staged_copy:" + copies[0].direction + ":" +
-             std::string(load->buffer->name) + ":" +
-             std::string(store->buffer->name) + ":" +
-             DataTypeStr(store->buffer->dtype);
+      Map<String, Any> ann;
+      ann.Set("kind", String("staged_copy"));
+      ann.Set("direction", String(copies[0].direction));
+      ann.Set("src_buffer", String(load->buffer->name));
+      ann.Set("dst_buffer", String(store->buffer->name));
+      ann.Set("src_scope", String(GetStorageScopeStr(load->buffer)));
+      ann.Set("dst_scope", String(GetStorageScopeStr(store->buffer)));
+      ann.Set("dtype", String(DataTypeStr(store->buffer->dtype)));
+      ann.Set("src_shape", ExtractStaticShape(load->buffer));
+      ann.Set("dst_shape", ExtractStaticShape(store->buffer));
+      return ann;
     }
   }
 
-  return "unknown_copy:unknown";
+  Map<String, Any> ann;
+  ann.Set("kind", String("unknown_copy"));
+  ann.Set("direction", String("unknown"));
+  return ann;
 }
 
 /*!
@@ -255,13 +296,11 @@ class BlackholeCopyAnnotator : public StmtMutator {
       return StmtMutator::VisitStmt_(op);
     }
 
-    std::string ann_str = BuildAnnotationStr(copies);
-
-    // Wrap this For loop with the annotation.
-    // Do NOT recurse into this For loop's body — the annotation marks the
-    // entire loop as a copy unit, which is what LowerBlackholeOps expects.
-    return AttrStmt(Integer(0), kBlackholeCopySemantics,
-                    StringImm(ann_str), GetRef<Stmt>(op));
+    For annotated_loop = GetRef<For>(op);
+    auto* n = annotated_loop.CopyOnWrite();
+    n->annotations = op->annotations;
+    n->annotations.Set(String(kBlackholeCopySemantics), BuildAnnotation(copies));
+    return annotated_loop;
   }
 };
 
