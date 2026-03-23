@@ -99,7 +99,7 @@
 - direct 模式的 CMake 接入已补第一轮构建对齐：
   - 加入 TT-Metal repo root / `tt_stl` / `hostdevcommon` / `umd` 相关 include 路径
   - direct 模式编译标准提升到 C++20 以匹配 TT-Metal 头文件要求
-- direct 依赖发现已从“整片 `.cpmcache` include sweep”收缩到：
+- direct 依赖发现已从”整片 `.cpmcache` include sweep”收缩到：
   - `fmt` / `nlohmann_json` / `spdlog` 走 `build_Release/_deps/*-build` 的 package config
   - `tt-logger` / `enchantum` / `umd_asio` 只按必需头文件做定向发现
 - direct 模式已开始优先消费 TT-Metal local install tree：
@@ -112,13 +112,19 @@
 - `tilelang` 开发态库加载新增 `TILELANG_DEV_LIB_ROOT` 覆盖：
   - 可显式让 Python/pytest 加载 `build_blackhole/lib/libtilelang.so`
   - 避免仓库默认 `build/` 旧库把 direct-path 验证结果污染
-- `test_blackhole_e2e.py` 的 direct 前置检查已改成优先核对“当前进程实际加载的 `libtilelang.so` 对应的 CMakeCache 是否启用 `USE_BLACKHOLE_DIRECT=ON`”
+- `test_blackhole_e2e.py` 的 direct 前置检查已改成优先核对”当前进程实际加载的 `libtilelang.so` 对应的 CMakeCache 是否启用 `USE_BLACKHOLE_DIRECT=ON`”
 - 当前 shell 的 TT-Sim 环境已通过 `scripts/setup_tt_sim.sh` 恢复：
   - 官方 `metal_example_add_2_integers_in_riscv` smoke test 已在本机再次跑通
   - direct path 已在 TT-Sim 上通过 `32x32` / `32x64` / `64x32` / `grid>1` / `large-shape`
 - `BlackholeModule::ExecuteDirect()` 已补唯一 kernel 临时目录：
   - 避免同一 pytest 进程内多个 direct-call case 复用同一路径触发 TT-Metal JIT 缓存串扰
-  - 修复“单测单跑通过、组合跑 large-shape / rectangular 错结果”的问题
+  - 修复”单测单跑通过、组合跑 large-shape / rectangular 错结果”的问题
+- `blackhole_module.cc` 已修正若干 Stage 2B 遗留 bug（2026-03-23）：
+  - `ExecuteDirect()` 核坐标：从硬编码 `{0,0}` 改为读 `work_packet.core_x/core_y`；`{0,0}` 在真实硬件上不是合法 Tensix core
+  - `BlackholeWrappedFunc::operator()` input/output 分类：改为按 `runtime_args` 的 kind（`input_buffer_addr32` / `output_buffer_addr32`）顺序判定，不再依赖”最后一个 buffer = output”位置启发式
+  - 删除死代码：`EnsureDeviceInitialized()`、`GetOrCompileProgram()`、`CompiledProgram` struct、`mesh_device_`/`mesh_command_queue_`/`device_initialized_`/`program_cache_`（direct path 每次调用自建局部 `MeshDevice`，这套成员从未被触达）
+  - `MakeUniqueTempDir()` 统一供 direct 和 external runner 两条路径使用，消除 runner 路径同进程内多次调用路径冲突
+  - 修复后全套 E2E 验收保持 18 passed, 1 skipped
 
 当前仍然存在的主要结构问题：
 
@@ -192,10 +198,11 @@
   - `physical_cores`
   - `work_packets`
 
-### 任务 6: 收正 `BlackholeModule` direct path
+### 任务 6: 收正 `BlackholeModule` direct path ✅
 
 - 不再依赖 external runner 作为正式执行路径
 - 在模块内直接 materialize TT-Metal host objects
+- 核坐标从 work_packet 读取，input/output 按 runtime_args kind 区分
 
 ### 任务 7: 用 copy 完成正式 E2E
 
@@ -207,21 +214,18 @@
 
 ## 当前下一步
 
-### 当前剩余事项优先级（2026-03-20 修正）
+### 当前剩余事项优先级（2026-03-23 更新）
 
-1. ~~`BlackholeModule` direct host path~~ → **Phase 1 代码已完成**
-   - `ExecuteDirect()` 已补全 CB 创建 + runtime args + work-packet 迭代
-   - **待验证**：在 TT-Sim 上用 direct path 跑通所有 copy E2E 测试
-2. ~~Copy E2E 验收（Phase 2）~~ → **已完成**
-   - direct path 已跑通 32x32, 32x64, 64x32, grid>1 (96x64), large-shape (800x1024)
-   - oversubscription 负例已与 direct path 共存验证
-3. split 前语义规划收正（Phase 3）— 当前首要任务
+1. ~~`BlackholeModule` direct host path~~ → **已完成**
+2. ~~Copy E2E 验收~~ → **已完成**（18 passed, 1 skipped，含 grid>1 / large-shape / oversubscription 负例）
+3. ~~`ExecuteDirect` 核坐标 / input-output 分类 / 死代码~~ → **已修正**
+4. split 前语义规划收正（Phase 3）— **当前首要任务**
    - 推荐方案 A：新增 `AnnotateBlackholeCopySemantics` pass
    - 不修改 `LowerTileOp` 核心降级逻辑
-4. 分批接回中后段通用 pass（Phase 4）
+5. 分批接回中后段通用 pass（Phase 4）
    - `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite`
    - shared-scope buffer 需豁免
-5. GEMM 接入（Phase 5）
+6. GEMM 接入（Phase 5）
    - 激活 `SplitBlackholeKernel`
    - 生成 3 个独立 kernel 文件
    - 最小 GEMM E2E
