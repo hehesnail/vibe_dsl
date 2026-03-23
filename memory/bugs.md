@@ -57,9 +57,9 @@
   - 支持并显式导出 `TILELANG_DEV_LIB_ROOT=$TILELANG_HOME/build_blackhole`
   - direct 测试优先检查当前进程实际加载的 `libtilelang.so` 所属构建目录的 `CMakeCache.txt`
 - **补充修正**:
-  - `tilelang.env` 开发态默认选择现在会自动优先 `build_blackhole`，前提是该构建目录存在且 `USE_BLACKHOLE_DIRECT=ON`
-  - `TILELANG_DEV_LIB_ROOT` 仍保留为最高优先级覆盖
-- **当前状态**: 已解决。`build_blackhole` 库已能被 Python 显式加载；在本仓库常见的“双构建目录并存”场景下，默认加载也不再静默回落到旧 `build/`。
+  - 仓库后续约定统一以 `tilelang_repo/build/` 作为默认开发构建目录
+  - `TILELANG_DEV_LIB_ROOT` 只保留给临时切换到其他构建目录的场景
+- **当前状态**: 已解决。默认加载重新收回到单一 `build/` 目录；这类问题的长期规避方式是不要把 `build_blackhole/` 当常驻默认构建目录。
 
 ## 与当前设计直接相关的记录
 

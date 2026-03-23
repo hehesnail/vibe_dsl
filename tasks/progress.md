@@ -112,10 +112,10 @@
 - `tilelang` 开发态库加载新增 `TILELANG_DEV_LIB_ROOT` 覆盖：
   - 可显式让 Python/pytest 加载 `build_blackhole/lib/libtilelang.so`
   - 避免仓库默认 `build/` 旧库把 direct-path 验证结果污染
-- `tilelang.env` 的开发态默认库选择已补自动优先 direct build：
-  - 未显式设置 `TILELANG_DEV_LIB_ROOT` 时，如果 `build_blackhole/lib/libtilelang.so` 存在
-  - 且对应 `CMakeCache.txt` 启用了 `USE_BLACKHOLE_DIRECT=ON`
-  - Python 将默认优先加载 `build_blackhole`，不再静默落回旧 `build/`
+- 当前收尾约定已改回单一开发构建目录：
+  - 以后统一以 `tilelang_repo/build/` 为准
+  - `build_blackhole/` 只作为过渡遗留目录，不再作为默认加载来源
+  - 如需临时指向其他构建目录，仍使用 `TILELANG_DEV_LIB_ROOT`
 - `test_blackhole_e2e.py` 的 direct 前置检查已改成优先核对”当前进程实际加载的 `libtilelang.so` 对应的 CMakeCache 是否启用 `USE_BLACKHOLE_DIRECT=ON`”
 - 当前 shell 的 TT-Sim 环境已通过 `scripts/setup_tt_sim.sh` 恢复：
   - 官方 `metal_example_add_2_integers_in_riscv` smoke test 已在本机再次跑通
@@ -132,7 +132,7 @@
 - Stage 2C 当前未提交实现已补首轮回归修正（2026-03-23）：
   - `LowerBlackholeOps::ConsumeCopySemantics()` 不再在连续 `dram_to_cb` / `cb_to_dram` annotation 场景下把另一侧 buffer 绑定清空
   - `CodeGenBlackhole` 对 runtime-arg buffer 绑定补了 body-based fallback，不再只依赖 `buffer_map`
-  - 在 `build_blackhole` 上串行验证 `testing/python/target/blackhole/test_blackhole_e2e.py` 结果为 `13 passed, 6 skipped`
+  - 在统一后的 `build/` 上串行验证 `testing/python/target/blackhole/test_blackhole_e2e.py` 结果为 `13 passed, 6 skipped`
 
 当前仍然存在的主要结构问题：
 
