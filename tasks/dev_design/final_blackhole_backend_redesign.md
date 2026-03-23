@@ -40,8 +40,8 @@ Blackhole 后端当前的正式目标收敛为三点：
 2. **execution plan / memory plan 还没有作为显式中间层稳定建模**
    - `blackhole.core_plan` 仍偏摘要
    - `blackhole.cb_configs` 仍偏 MVP allocator
-3. **正式执行路径还没有完全切到 `BlackholeModule` direct host path**
-   - external runner 仍残留为过渡主路径的一部分
+3. **正式执行路径已经收敛到 `BlackholeModule` direct host path**
+   - legacy external runner 已删除，不再参与主链
 4. **部分中后段通用 pass 还没有接回正式主线**
    - `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等仍会打断当前 copy 识别
 
@@ -231,13 +231,13 @@ TileLang DSL
 
 状态：
 
-- 降级为 bring-up/debug/protocol-check 工具
+- 已删除，仅保留历史语境中的设计参考价值
 
 约束：
 
 - 不是正式执行路径
 - 不是阶段完成标准
-- 后续可删除
+- 不再重新引入
 
 ## 5. 核心协议
 
@@ -421,14 +421,14 @@ TileLang DSL → PrimFunc/TIR（保留 T.copy/T.gemm/T.reduce/T.elementwise）
 
 ## 9. 关键源码审查结论
 
-### 9.1 runner.cpp 是 direct path 的完整参考
+### 9.1 历史 runner 实现曾是 direct path 的参考蓝本
 
-`runner.cpp` 已经是一个完整、正确的 TT-Metal 执行参考实现，包含：
+已删除的历史 runner 实现曾经提供过一套完整、正确的 TT-Metal 执行参考，核心包括：
 - `create_circular_buffers()` — 按 spec 创建所有 CB
 - `build_runtime_args()` — 按 `KernelArgSpec.kind` 逐项构造 runtime args
 - work-packet 迭代 — 遍历 `work_packets` 为每个 work unit 执行独立 program
 
-Direct path 的实现本质上就是把 runner.cpp 的逻辑从独立进程移到 `BlackholeModule` 的 `ExecuteDirect()` 方法中。
+Direct path 的实现本质上就是把这套 host-side materialization 逻辑收进 `BlackholeModule` 的 `ExecuteDirect()` 方法中。当前仓库已不再保留独立 runner 代码。
 
 ### 9.2 CB 创建是 host-side 必做项
 

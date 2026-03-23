@@ -67,7 +67,7 @@ Stage 2 的正式目标已经收紧为：
 完成标准：
 
 - copy 的 runtime args / memory plan / execution plan 主要来自 pass 产物
-- external runner 仅保留为调试工具，不再是正式主路径
+- Blackhole 正式执行只经过 `BlackholeModule` direct host path
 
 ### Stage 2C: single-core GEMM 语义集成
 
@@ -102,7 +102,7 @@ Stage 2 的正式目标已经收紧为：
 
 当前允许保留的过渡项：
 
-- runner 仅作为 bring-up / debug / protocol-check 工具
+- 无。legacy runner 路径已删除，当前只保留 direct host path 主线
 
 当前不允许继续扩大的过渡项：
 

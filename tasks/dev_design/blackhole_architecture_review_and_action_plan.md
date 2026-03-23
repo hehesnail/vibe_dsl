@@ -76,7 +76,7 @@
 
 - TT-Metal 的 `fused_dataflow` kernel 类型允许在 BRISC 上同时做 NOC 读写
 - Copy 操作本质是 DRAM→L1→DRAM 的数据搬运，不涉及 TRISC 计算
-- `runner.cpp` 已能处理多 kernel（遍历 `spec.kernels`），基础设施已就绪
+- 历史 runner 实现已证明多 kernel（遍历 `spec.kernels`）的 host-side materialization 方式可行
 - 推迟到 GEMM 阶段
 
 ### 第二刀（编译 Pipeline 改造）：已基本完成
@@ -96,7 +96,7 @@
 2. **Runtime args 构造不匹配 schema** — 已修正，改为按 `KernelArgSpec.kind` 逐项构造
 3. **单核硬编码，无 work-packet 迭代** — 已修正，改为遍历 `work_packets`
 
-修正方案：以 `runner.cpp` 为参考蓝本，将其逻辑合并到 `blackhole_module.cc` 的 `ExecuteDirect()` 方法中。`blackhole_module_direct.cc` 已合并后删除。
+修正方案：以历史 runner 实现为参考蓝本，将其逻辑合并到 `blackhole_module.cc` 的 `ExecuteDirect()` 方法中。`blackhole_module_direct.cc` 已合并后删除。
 
 ### 第五刀（NOC Barrier 优化）：正确但非阻塞
 

@@ -268,12 +268,8 @@ copy 不只验证最小 case，还必须验证：
 #### 验证边界（2026-03-23 收正）
 
 - `BlackholeModule` direct path 是正式验收路径
-- external runner 只保留为 bring-up/debug/protocol-check 路径
-- 因此测试需要显式分层：
-  - direct-call / host-callable 用例只检查 direct path 所需条件
-  - runner 用例单独检查 runner 二进制与旧 spec 执行条件
-- 不能再让 direct-call 用例因为缺少 runner 而被整体 skip
-- `test_blackhole_e2e.py` 中保留 runner 覆盖可以接受，但其结果不代表 Stage 2B 完成
+- 测试只保留 direct-call / host-callable 与 compile-time 分层
+- 不能让已删除的 legacy runner 概念重新进入验收边界
 
 #### 必测 case
 

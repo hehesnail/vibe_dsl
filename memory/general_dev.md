@@ -140,10 +140,10 @@
   - `SetRuntimeArgs`
 - compile-time args 与 runtime args 是一等概念，不是实现细节。
 - multi-core 调度主要是 host/runtime 责任。
-- 如果同一仓库同时保留 direct path 和 external runner，测试前置条件必须分层：
+- Blackhole 测试应直接围绕进程内 direct host path 组织：
   - direct-call 用例只检查 direct path 编译/运行条件
-  - runner 用例单独检查 runner 二进制
-  否则 direct path 明明可验证，也会因为 runner 缺失被整体 skip。
+  - compile-time / codegen-only 用例单独覆盖非执行层语义
+  不要再让独立 runner 二进制成为主测试入口或前置条件。
 
 ## Blackhole 后端当前有效开发原则
 
@@ -153,20 +153,19 @@
 2. 不再把 `SplitBlackholeKernel` 当成当前关键路径。
 3. 不再让 codegen 主导多核物理映射。
 4. 不再继续扩展旧 runner 的固定命令行协议。
-5. 新功能优先落到 `ExecutableSpec -> runner` 这条主路径上。
+5. 新功能优先落到 `ExecutableSpec -> BlackholeModule::ExecuteDirect()` 这条主路径上。
 6. 任何局部设计都必须服从 `final_blackhole_backend_redesign.md`。
 
 ### Stage 0 协议落地经验
 
 当前新增的稳定经验：
 
-- 在从旧 `BlackholeFunctionInfo` 迁移到 `ExecutableSpec` 时，先保留 TVM 调用侧最小元信息（参数类型、buffer/scalar 标记），再逐步把 runner 协议迁过去，能避免一次性打断 module 调用链。
+- 在从旧 `BlackholeFunctionInfo` 迁移到 `ExecutableSpec` 时，先保留 TVM 调用侧最小元信息（参数类型、buffer/scalar 标记），再逐步把 host materialization 逻辑迁到 `BlackholeModule`，能避免一次性打断 module 调用链。
 - attr 统一不能只改 pass 或只改 runtime；至少要成对同步：
   - `PlanBlackholeCB` / `AssignBlackholeCores` 产出 `blackhole.*`
   - `rt_mod_blackhole` 读取同一套 `blackhole.*`
-- `blackhole.core_plan` 这种结构化 attr 比散落的 `grid_x/grid_y/...` 标量 attr 更适合后续 spec extractor 和 runner 直接消费。
-- 在切 runner 协议时，优先让 `BlackholeModule` 落 `spec.json + input.bin + output.bin + kernel.cpp`，再让 runner 从 spec 驱动创建 CB / kernel / runtime args；不要继续扩展固定位置命令行参数。
-- runner 虽然依赖 `TT::Metalium`，但源码和默认构建入口都应留在 `tilelang_repo`，避免把 TileLang 自己定义的协议实现长期挂在 `tt_metal_repo` 的 programming examples 下面。
+- `blackhole.core_plan` 这种结构化 attr 比散落的 `grid_x/grid_y/...` 标量 attr 更适合后续 spec extractor 和 direct host path 消费。
+- 旧 runner 协议已删除；当前应由 `BlackholeModule` 直接从 `ExecutableSpec` 驱动 CB 创建、runtime args materialization 和 launch。
 - 对这类“源码在 TileLang、依赖在 TT-Metal”的工具，优先采用：
   - 源码放在 `tilelang_repo/tools/...`
   - 由 TileLang 自己的 CMake/脚本产出二进制
