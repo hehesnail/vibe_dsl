@@ -116,6 +116,11 @@
 - TileLang 开发态默认只会从 `<repo>/build/lib` 加载 `libtilelang.so`。如果仓库里同时存在 `build/` 和 `build_blackhole/`，direct-path 验证前必须显式指定当前 Python 进程要加载哪一份库；否则很容易出现“`build_blackhole` 已经编好，但 pytest 仍在跑 `build/` 旧库”的假阳性。
   - 当前可用做法：导出 `TILELANG_DEV_LIB_ROOT=$TILELANG_HOME/build_blackhole`
   - direct 测试前置检查也应优先核对“当前进程实际加载的库”对应的 `CMakeCache.txt`，不要只扫描磁盘上某个候选构建目录
+- 如果这个仓库同时保留默认 `build/` 和 Blackhole direct 专用 `build_blackhole/`，开发态库加载逻辑最好直接在 `tilelang.env` 收一个自动优先级：
+  - 显式 `TILELANG_DEV_LIB_ROOT` 仍然最高优先级
+  - 否则如果 `build_blackhole/lib/libtilelang.so` 存在，且其 `CMakeCache.txt` 标明 `USE_BLACKHOLE_DIRECT=ON`
+  - 就默认优先加载 `build_blackhole`
+  这样可以减少“忘了导环境变量，结果 Python 静默回到旧库”的低价值排障。
 
 ### 2. TT-Sim 配置
 

@@ -169,6 +169,9 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Generate clear builtin sequence */
   tvm::tir::Stmt GenerateClearSequence(const tvm::tir::CallNode* op);
 
+  /*! \brief Consume blackhole.copy_semantics annotation and record buffer/direction info */
+  tvm::tir::Stmt ConsumeCopySemantics(const tvm::tir::AttrStmtNode* op);
+
   // StmtExprMutator overrides
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;
   tvm::tir::Stmt VisitStmt_(const tvm::tir::ForNode* op) override;

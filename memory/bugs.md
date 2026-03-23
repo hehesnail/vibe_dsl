@@ -56,7 +56,10 @@
 - **解决方案**:
   - 支持并显式导出 `TILELANG_DEV_LIB_ROOT=$TILELANG_HOME/build_blackhole`
   - direct 测试优先检查当前进程实际加载的 `libtilelang.so` 所属构建目录的 `CMakeCache.txt`
-- **当前状态**: 已解决。`build_blackhole` 库已能被 Python 显式加载，direct-call 执行也已确认进入 `BlackholeModule::ExecuteDirect()`。
+- **补充修正**:
+  - `tilelang.env` 开发态默认选择现在会自动优先 `build_blackhole`，前提是该构建目录存在且 `USE_BLACKHOLE_DIRECT=ON`
+  - `TILELANG_DEV_LIB_ROOT` 仍保留为最高优先级覆盖
+- **当前状态**: 已解决。`build_blackhole` 库已能被 Python 显式加载；在本仓库常见的“双构建目录并存”场景下，默认加载也不再静默回落到旧 `build/`。
 
 ## 与当前设计直接相关的记录
 

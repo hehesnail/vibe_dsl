@@ -31,6 +31,7 @@
 #include "../tir/builtin_blackhole.h"
 #include "tvm/tir/builtin.h"
 #include "tvm/tir/op.h"
+#include "tvm/tir/stmt_functor.h"
 #include "tvm/tir/transform.h"
 
 namespace tvm {
@@ -266,6 +267,22 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
     const auto &buffer = kv.second;
     buffer_vars_by_name[buffer->name] = buffer->data.get();
   }
+  // Packed Blackhole entrypoints can arrive after MakePackedAPI, where the
+  // public function params are no longer the original A/B handles and
+  // buffer_map may be empty.  Recover the runtime-backed buffer vars from the
+  // actual TIR body so builtins like read_tile_to_cb(A, ...) still bind.
+  tir::PostOrderVisit(f->body, [&](const tvm::runtime::ObjectRef &node) {
+    if (const auto *store = node.as<tvm::tir::BufferStoreNode>()) {
+      buffer_vars_by_name[store->buffer->name] = store->buffer->data.get();
+      if (const auto *load = store->value.as<tvm::tir::BufferLoadNode>()) {
+        buffer_vars_by_name[load->buffer->name] = load->buffer->data.get();
+      }
+      return;
+    }
+    if (const auto *load = node.as<tvm::tir::BufferLoadNode>()) {
+      buffer_vars_by_name[load->buffer->name] = load->buffer->data.get();
+    }
+  });
 
   int arg_idx = 0;
   for (const auto &item : runtime_args_attr.value()) {

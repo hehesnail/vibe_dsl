@@ -599,6 +599,23 @@ def LowerLDGSTG():
     return _ffi_api.LowerLDGSTG()  # type: ignore
 
 
+def AnnotateBlackholeCopySemantics():
+    """Annotate copy For loops with blackhole.copy_semantics before SplitHostDevice.
+
+    Runs in the split-before phase (after LowerTileOp, before AnnotateDeviceRegions).
+    Finds BufferStore(BufferLoad) copy loop patterns and wraps the outermost
+    copy-containing For loop with an AttrStmt annotation carrying structured
+    copy semantics metadata.  This gives LowerBlackholeOps stable metadata
+    without requiring fragile pattern-matching on the loop body.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.AnnotateBlackholeCopySemantics()  # type: ignore
+
+
 def LowerBlackholeOps():
     """Lower TileLang high-level operations to TT-Metal builtins for Blackhole backend.
 

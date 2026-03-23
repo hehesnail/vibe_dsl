@@ -246,6 +246,10 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
         mod = tir.transform.AnnotateEntryFunc()(mod)
         if allow_global_thread_synchronization():
             mod = tilelang.transform.ThreadSync("global")(mod)
+        # Annotate copy-containing For loops with blackhole.copy_semantics
+        # before SplitHostDevice, so LowerBlackholeOps can consume stable
+        # metadata instead of pattern-matching the loop body.
+        mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
         mod = tilelang.transform.AnnotateDeviceRegions()(mod)
         mod = tilelang.transform.SplitHostDevice()(mod)
         mod = tilelang.transform.AnnotateReadOnlyParams()(mod)

@@ -30,6 +30,7 @@
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/arith/analyzer.h>
 #include <tvm/tir/builtin.h>
+#include <tvm/tir/expr.h>
 #include <tvm/tir/op.h>
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
@@ -972,7 +973,68 @@ Stmt LowerBlackholeOps::GenerateClearSequence(const CallNode* op) {
   return MakeBlackholeCall(blackhole_tile_regs_acquire(), {});
 }
 
+// Parse a colon-separated string into fields
+static std::vector<std::string> SplitAnnotationStr(const std::string& s) {
+  std::vector<std::string> fields;
+  std::string cur;
+  for (char c : s) {
+    if (c == ':') {
+      fields.push_back(cur);
+      cur.clear();
+    } else {
+      cur += c;
+    }
+  }
+  if (!cur.empty()) fields.push_back(cur);
+  return fields;
+}
+
+Stmt LowerBlackholeOps::ConsumeCopySemantics(const AttrStmtNode* op) {
+  // Parse annotation string: kind:direction:src_buf:dst_buf[:mid_buf]:dtype
+  const auto* ann_imm = op->value.as<tir::StringImmNode>();
+  if (!ann_imm) {
+    // Malformed annotation — fall through to body processing
+    return VisitStmt(op->body);
+  }
+
+  const std::vector<std::string> fields = SplitAnnotationStr(ann_imm->value);
+  if (fields.size() < 4) {
+    return VisitStmt(op->body);
+  }
+
+  const std::string& kind = fields[0];
+  const std::string& direction = fields[1];
+
+  if (kind == "fused_staged_copy") {
+    // fields: fused_staged_copy:dram_to_cb_to_dram:src_dram:mid_shared:dst_dram:dtype
+    if (fields.size() >= 5) {
+      copy_input_buffer_name_  = fields[2];  // src dram
+      copy_output_buffer_name_ = fields[4];  // dst dram
+    }
+  } else {
+    // staged_copy:direction:src_buf:dst_buf:dtype
+    if (direction == "dram_to_cb") {
+      copy_input_buffer_name_ = fields[2];  // global src
+    } else if (direction == "cb_to_dram") {
+      copy_output_buffer_name_ = fields[3];  // global dst
+    } else if (direction == "dram_to_dram") {
+      copy_input_buffer_name_  = fields[2];
+      copy_output_buffer_name_ = fields[3];
+    }
+  }
+
+  needs_copy_runtime_args_ = true;
+  saw_copy_op_ = true;
+
+  // Continue visiting the body — this will trigger the existing ForNode /
+  // BufferStore pattern-matching that generates the actual builtin call sequences.
+  return VisitStmt(op->body);
+}
+
 Stmt LowerBlackholeOps::VisitStmt_(const AttrStmtNode* op) {
+  if (op->attr_key == "blackhole.copy_semantics") {
+    return ConsumeCopySemantics(op);
+  }
   if (op->attr_key == tir::attr::thread_extent) {
     IterVar iv = Downcast<IterVar>(op->node);
     const std::string thread_tag = iv->thread_tag;

@@ -27,17 +27,52 @@ TL_LIBS = [i for i in TL_LIBS if os.path.exists(i)]
 
 DEV = False
 THIRD_PARTY_ROOT = os.path.join(TL_ROOT, "3rdparty")
+
+
+def _cmake_cache_has_flag(cache_path: str, flag: str, expected: str = "ON") -> bool:
+    if not os.path.exists(cache_path):
+        return False
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            text = f.read()
+            return f"{flag}:" in text and f"={expected}" in text
+    except OSError:
+        return False
+
+
+def _choose_dev_lib_root(tl_dev_root: str) -> tuple[str, str]:
+    explicit = os.environ.get("TILELANG_DEV_LIB_ROOT")
+    if explicit:
+        return explicit, "explicit"
+
+    default_build = os.path.join(tl_dev_root, "build")
+    direct_build = os.path.join(tl_dev_root, "build_blackhole")
+
+    direct_lib = os.path.join(direct_build, "lib", "libtilelang.so")
+    direct_cache = os.path.join(direct_build, "CMakeCache.txt")
+    if os.path.exists(direct_lib) and _cmake_cache_has_flag(direct_cache, "USE_BLACKHOLE_DIRECT"):
+        return direct_build, "auto-direct"
+
+    return default_build, "default"
+
+
 if not os.path.exists(THIRD_PARTY_ROOT):
     DEV = True
     tl_dev_root = os.path.dirname(TL_ROOT)
 
-    dev_lib_root = os.environ.get("TILELANG_DEV_LIB_ROOT", os.path.join(tl_dev_root, "build"))
+    dev_lib_root, dev_lib_source = _choose_dev_lib_root(tl_dev_root)
     # In dev builds, place artifacts under build/lib and point search path there
     # to avoid adding the entire build root to sys.path.
     TL_LIBS = [os.path.join(dev_lib_root, "lib"), os.path.join(dev_lib_root, "tvm")]
     THIRD_PARTY_ROOT = os.path.join(tl_dev_root, "3rdparty")
-    if "TILELANG_DEV_LIB_ROOT" in os.environ:
+    if dev_lib_source == "explicit":
         logger.warning(f"Loading tilelang libs from TILELANG_DEV_LIB_ROOT: {dev_lib_root}")
+    elif dev_lib_source == "auto-direct":
+        logger.warning(
+            "Loading tilelang libs from direct dev root: %s "
+            "(auto-selected build_blackhole with USE_BLACKHOLE_DIRECT=ON)",
+            dev_lib_root,
+        )
     else:
         logger.warning(f"Loading tilelang libs from dev root: {dev_lib_root}")
 
