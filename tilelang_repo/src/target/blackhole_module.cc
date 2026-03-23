@@ -270,15 +270,6 @@ std::string GetRunnerPath() {
   return "";
 }
 
-static std::string MakeUniqueDirectKernelDir() {
-  static std::atomic<uint64_t> counter{0};
-  const auto id = counter.fetch_add(1, std::memory_order_relaxed);
-  std::filesystem::path dir = std::filesystem::temp_directory_path() /
-                              ("tilelang_bh_direct_" + std::to_string(getpid()) + "_" +
-                               std::to_string(id));
-  std::filesystem::create_directories(dir);
-  return dir.string();
-}
 
 // Argument extraction helpers
 uint32_t ExtractScalar(const ffi::AnyView& arg, DLDataType dtype) {
@@ -467,20 +458,9 @@ BlackholeModuleNode::BlackholeModuleNode(
     std::unordered_map<std::string, ExecutableSpec> fmap,
     std::string kernel_dir)
     : fmap_(std::move(fmap)),
-      kernel_dir_(std::move(kernel_dir)),
-      mesh_device_(nullptr),
-      mesh_command_queue_(nullptr),
-      device_initialized_(false) {
+      kernel_dir_(std::move(kernel_dir)) {
 }
 
-BlackholeModuleNode::~BlackholeModuleNode() {
-#ifdef TILELANG_BLACKHOLE_DIRECT
-  if (mesh_device_) {
-    delete static_cast<std::shared_ptr<tt::tt_metal::distributed::MeshDevice>*>(mesh_device_);
-    mesh_device_ = nullptr;
-  }
-#endif
-}
 
 ffi::Optional<ffi::Function> BlackholeModuleNode::GetFunction(const ffi::String& name) {
   ObjectPtr<Object> sptr_to_self = ffi::GetObjectPtr<Object>(this);
@@ -528,52 +508,16 @@ ffi::String BlackholeModuleNode::InspectSource(const ffi::String& format) const 
 }
 
 // ============================================================================
-// Device initialization
+// Unique temp-directory helper (used by both execution paths)
 // ============================================================================
 
-void BlackholeModuleNode::EnsureDeviceInitialized() {
-#ifdef TILELANG_BLACKHOLE_DIRECT
-  if (device_initialized_) return;
-
-  LOG(INFO) << "Initializing Blackhole TT-Metal device...";
-
-  try {
-    auto* device_ptr = new std::shared_ptr<tt::tt_metal::distributed::MeshDevice>(
-        tt::tt_metal::distributed::MeshDevice::create_unit_mesh(0));
-    mesh_device_ = device_ptr;
-
-    LOG(INFO) << "Blackhole device initialized successfully";
-    device_initialized_ = true;
-  } catch (const std::exception& e) {
-    LOG(FATAL) << "Failed to initialize Blackhole device: " << e.what();
-  }
-#else
-  // External process mode - device init happens in runner
-  device_initialized_ = true;
-#endif
-}
-
-// ============================================================================
-// Program cache
-// ============================================================================
-
-CompiledProgram& BlackholeModuleNode::GetOrCompileProgram(const std::string& func_name) {
-  auto it = program_cache_.find(func_name);
-  if (it != program_cache_.end()) {
-    return it->second;
-  }
-
-  // Create placeholder - actual program creation happens per-execution
-  // because TT-Metal requires fresh Program per work item
-  CompiledProgram prog;
-  prog.program = nullptr;
-  prog.reader_kernel = nullptr;
-  prog.compute_kernel = nullptr;
-  prog.writer_kernel = nullptr;
-  prog.is_compiled = true;
-
-  program_cache_[func_name] = std::move(prog);
-  return program_cache_[func_name];
+static std::string MakeUniqueTempDir(const std::string& prefix) {
+  static std::atomic<uint64_t> counter{0};
+  const auto id = counter.fetch_add(1, std::memory_order_relaxed);
+  std::filesystem::path dir = std::filesystem::temp_directory_path() /
+                              (prefix + std::to_string(getpid()) + "_" + std::to_string(id));
+  std::filesystem::create_directories(dir);
+  return dir.string();
 }
 
 // ============================================================================
@@ -612,9 +556,8 @@ void BlackholeModuleNode::ExecuteExternal(
     total_output_size += GetDataSize(*tensor);
   }
 
-  // Create temporary directory for I/O data
-  std::string tmp_dir = "/tmp/tilelang_blackhole_" + std::to_string(getpid());
-  std::filesystem::create_directories(tmp_dir);
+  // Create temporary directory for I/O data (unique per call to avoid collision)
+  std::string tmp_dir = MakeUniqueTempDir("tilelang_bh_runner_");
 
   std::string input_path = tmp_dir + "/input.bin";
   std::string output_path = tmp_dir + "/output.bin";
@@ -818,19 +761,30 @@ void BlackholeModuleNode::ExecuteDirect(
   }
   EnqueueWriteMeshBuffer(cq, input_buffer, input_data, /*blocking=*/true);
 
-  // Build work IDs from work_packets (matching runner.cpp)
-  std::vector<uint32_t> work_ids;
+  // Build work items: pair each logical work_id with its assigned physical core.
+  // Each WorkPacket entry owns a slice of the logical work range on one core.
+  struct WorkItem {
+    uint32_t work_id;
+    CoreCoord core;
+  };
+  std::vector<WorkItem> work_items;
   for (const auto& packet : spec.core_plan.work_packets) {
+    CoreCoord packet_core{packet.core_x, packet.core_y};
     for (uint32_t i = 0; i < packet.work_count; ++i) {
-      work_ids.push_back(packet.work_offset + i);
+      work_items.push_back({packet.work_offset + i, packet_core});
     }
   }
-  if (work_ids.empty()) {
-    work_ids.push_back(0);
+  if (work_items.empty()) {
+    // Fallback: derive core from physical_cores if available, else use mapping default {1,2}.
+    CoreCoord fallback = spec.core_plan.physical_cores.empty()
+        ? CoreCoord{1, 2}
+        : CoreCoord{spec.core_plan.physical_cores[0].core_x,
+                    spec.core_plan.physical_cores[0].core_y};
+    work_items.push_back({0, fallback});
   }
 
   // Write kernel source files to temp directory
-  std::string tmp_dir = MakeUniqueDirectKernelDir();
+  std::string tmp_dir = MakeUniqueTempDir("tilelang_bh_direct_");
 
   std::vector<std::string> kernel_paths;
   kernel_paths.reserve(spec.kernels.size());
@@ -846,31 +800,29 @@ void BlackholeModuleNode::ExecuteDirect(
     kernel_paths.push_back(kernel_path);
   }
 
-  // Execute each work item (matching runner.cpp work-packet iteration)
-  LOG(INFO) << "Direct path: executing " << work_ids.size()
+  // Execute each work item on its assigned physical core.
+  LOG(INFO) << "Direct path: executing " << work_items.size()
             << " logical work items for " << func_name;
 
-  constexpr CoreCoord core = {0, 0};
-
-  for (uint32_t work_id : work_ids) {
+  for (const auto& item : work_items) {
     Program program = CreateProgram();
 
     // Create circular buffers for this program
-    CreateCircularBuffersFromSpec(program, core, spec);
+    CreateCircularBuffersFromSpec(program, item.core, spec);
 
     // Create and configure each kernel
     for (size_t ki = 0; ki < spec.kernels.size(); ++ki) {
       const auto& kernel_spec = spec.kernels[ki];
       KernelHandle kernel = CreateKernelFromSpec(
-          program, core, kernel_spec, kernel_paths[ki]);
+          program, item.core, kernel_spec, kernel_paths[ki]);
 
       auto runtime_args = BuildRuntimeArgsFromSpec(
-          kernel_spec, spec, work_id, total_input_size,
+          kernel_spec, spec, item.work_id, total_input_size,
           *input_buffer, *output_buffer,
           scratch_l1_buffer ? scratch_l1_buffer.get() : nullptr,
           scalar_args);
 
-      SetRuntimeArgs(program, kernel, core, runtime_args);
+      SetRuntimeArgs(program, kernel, item.core, runtime_args);
     }
 
     // Execute program on device
@@ -933,19 +885,42 @@ static bool ShouldUseDirectPath() {
 
 void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
                                        void** void_args) const {
+  // Classify buffer args as input or output using runtime_args kind info.
+  // runtime_args lists buffer-role entries in the same order they appear in
+  // tvm_is_buffer_arg, interleaved with non-buffer entries that are skipped.
+  std::vector<bool> buffer_is_output;
+  for (const auto& arg : info_.runtime_args) {
+    if (arg.kind == "input_buffer_addr32" || arg.kind == "input_buffer_addr") {
+      buffer_is_output.push_back(false);
+    } else if (arg.kind == "output_buffer_addr32" || arg.kind == "output_buffer_addr") {
+      buffer_is_output.push_back(true);
+    }
+  }
+  // Fallback: if runtime_args carries no buffer kind info, treat last buffer as output.
+  const bool use_position_fallback = buffer_is_output.empty();
+  size_t n_buffer_args = 0;
+  for (bool is_buf : info_.tvm_is_buffer_arg) {
+    if (is_buf) ++n_buffer_args;
+  }
+
   // Collect arguments
   std::vector<DLTensor*> inputs;
   std::vector<DLTensor*> outputs;
   std::vector<uint32_t> scalars;
 
+  size_t buf_idx = 0;
   for (size_t i = 0; i < info_.tvm_arg_types.size(); ++i) {
     if (info_.tvm_is_buffer_arg[i]) {
       DLTensor* tensor = ExtractTensorArg(args[i], void_args != nullptr ? void_args[i] : nullptr);
-      if (i < info_.tvm_arg_types.size() - 1) {
-        inputs.push_back(tensor);
-      } else {
+      bool is_out = use_position_fallback
+          ? (buf_idx == n_buffer_args - 1)
+          : (buf_idx < buffer_is_output.size() && buffer_is_output[buf_idx]);
+      if (is_out) {
         outputs.push_back(tensor);
+      } else {
+        inputs.push_back(tensor);
       }
+      ++buf_idx;
     } else {
       ffi::AnyView arg = args[i];
       uint32_t val = ExtractScalar(arg, info_.tvm_arg_types[i]);

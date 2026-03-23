@@ -98,17 +98,6 @@ struct ExecutableSpec {
   std::vector<bool> tvm_is_buffer_arg;
 };
 
-/*!
- * \brief Compiled program with kernels
- */
-struct CompiledProgram {
-  // Program and kernels (forward declarations to avoid TT-Metal headers here)
-  void* program;           // tt::tt_metal::Program*
-  void* reader_kernel;     // tt::tt_metal::KernelHandle (or 0 if none)
-  void* compute_kernel;    // tt::tt_metal::KernelHandle (or 0 if none)
-  void* writer_kernel;     // tt::tt_metal::KernelHandle (or 0 if none)
-  bool is_compiled;        // Whether this program has been JIT compiled
-};
 
 /*!
  * \brief Blackhole module for executing TT-Metal kernels
@@ -123,8 +112,8 @@ class BlackholeModuleNode : public ffi::ModuleObj {
   BlackholeModuleNode(std::unordered_map<std::string, ExecutableSpec> fmap,
                       std::string kernel_dir);
 
-  /*! \brief Destructor - clean up TT-Metal resources */
-  ~BlackholeModuleNode();
+  /*! \brief Destructor */
+  ~BlackholeModuleNode() = default;
 
   /*! \brief Return module kind */
   const char* kind() const final { return "blackhole"; }
@@ -146,12 +135,6 @@ class BlackholeModuleNode : public ffi::ModuleObj {
   /*! \brief Inspect source code */
   ffi::String InspectSource(const ffi::String& format) const final;
 
-  /*! \brief Initialize TT-Metal device (lazy initialization) */
-  void EnsureDeviceInitialized();
-
-  /*! \brief Get or compile a program */
-  CompiledProgram& GetOrCompileProgram(const std::string& func_name);
-
   /*! \brief Execute function using external runner process */
   void ExecuteExternal(const std::string& func_name,
                        const std::vector<DLTensor*>& inputs,
@@ -169,14 +152,6 @@ class BlackholeModuleNode : public ffi::ModuleObj {
   std::unordered_map<std::string, ExecutableSpec> fmap_;
   // Directory for kernel files
   std::string kernel_dir_;
-
-  // TT-Metal resources (lazy initialization)
-  void* mesh_device_;           // std::shared_ptr<tt::tt_metal::distributed::MeshDevice>*
-  void* mesh_command_queue_;    // tt::tt_metal::distributed::MeshCommandQueue*
-  bool device_initialized_;
-
-  // Compiled program cache
-  std::unordered_map<std::string, CompiledProgram> program_cache_;
 };
 
 /*!
