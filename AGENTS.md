@@ -15,7 +15,7 @@
 这个仓库主要由三部分组成：
 
 - `tilelang_repo/`：TileLang 开发仓库，Blackhole 后端代码主要改这里
-- `tt_metal_repo/`：TT-Metal 开发仓库，runner、示例、API 参考主要看这里
+- `tt_metal_repo/`：TT-Metal 开发仓库，TT-Metal API、示例和运行时参考主要看这里
 - 顶层仓库：任务文档、经验记录、测试、脚本和总控
 
 常用目录：
@@ -23,7 +23,7 @@
 - `tilelang_repo/src/target/`
 - `tilelang_repo/src/transform/`
 - `tilelang_repo/tilelang/engine/`
-- `tilelang_repo/tools/blackhole_runner/`
+- `tilelang_repo/build/`
 - `tt_metal_repo/tt_metal/api/tt-metalium/`
 - `tests/target/`
 - `tests/transform/`
@@ -75,7 +75,7 @@
 2. ~~`ExecutableSpec`~~ ✅
 3. ~~`rt_mod_blackhole`~~ ✅
 4. ~~`BlackholeModule` direct path 补全~~ ✅
-5. ~~Copy E2E 验收（direct path）~~ ✅ 18 passed, 1 skipped
+5. ~~Copy E2E 验收（direct path）~~ ✅
 6. split-before 语义规划（方案 A: `AnnotateBlackholeCopySemantics` pass）— **当前**
 7. 通用 pass 回收
 8. GEMM 接入
@@ -142,9 +142,15 @@
 - 不要把单个 kernel 源码字符串当成后端主产物
 - 不要把 `SplitBlackholeKernel` 当成当前前置条件
 - 不要把多核调度主要放在 codegen 层
-- 不要继续扩展旧 runner 的固定命令行协议
+- 不要重新引入或扩展 legacy external runner 路径
 - 不要把 codegen-only 或 reference-only 测试称为 true E2E
 - 不要让文档和代码长期处于协议错位状态
+
+## 当前事实约束
+
+- Blackhole 正式执行路径只允许 `BlackholeModule` 进程内 direct host path
+- 默认开发构建目录固定为 `tilelang_repo/build/`
+- `build_blackhole/` 与 legacy runner 已删除；如果文档或旧记录提到它们，按历史语境理解，不要恢复
 
 ## 什么算完成
 

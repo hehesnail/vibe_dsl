@@ -9,7 +9,7 @@
 ## 仓库结构
 
 - `tilelang_repo/` — TileLang 开发仓库，Blackhole 后端代码主要改这里
-- `tt_metal_repo/` — TT-Metal 开发仓库，runner、示例、API 参考主要看这里
+- `tt_metal_repo/` — TT-Metal 开发仓库，TT-Metal API、示例、运行时参考主要看这里
 - 顶层仓库 — 任务文档、经验记录、测试、脚本
 
 常用目录：
@@ -17,7 +17,7 @@
 - `tilelang_repo/src/target/` — Blackhole 模块、codegen
 - `tilelang_repo/src/transform/` — Blackhole passes
 - `tilelang_repo/tilelang/engine/` — Python 编译链路
-- `tilelang_repo/tools/blackhole_runner/` — External runner（参考蓝本，不改）
+- `tilelang_repo/build/` — 唯一默认开发构建目录
 - `tt_metal_repo/tt_metal/api/tt-metalium/` — TT-Metal API 参考
 - `tasks/` — 设计文档、进度
 - `memory/` — 持久化经验记录
@@ -54,7 +54,7 @@
 - 不要新增第二份总体设计文档
 - 不要把单个 kernel 字符串当成后端主产物
 - 不要把 `SplitBlackholeKernel` 当成当前前置条件
-- 不要把 external runner 当成正式执行路径
+- 不要重新引入或扩展 legacy external runner 路径
 - 不要让文档和代码长期协议错位
 
 ---
@@ -65,7 +65,7 @@
 2. ~~`ExecutableSpec`~~ ✅
 3. ~~`rt_mod_blackhole`~~ ✅
 4. ~~`BlackholeModule` direct path 补全~~ ✅
-5. ~~Copy E2E 验收（direct path）~~ ✅ 18 passed, 1 skipped（含 grid>1 / large-shape / oversubscription 负例）
+5. ~~Copy E2E 验收（direct path）~~ ✅
 6. split-before 语义规划（方案 A: `AnnotateBlackholeCopySemantics` pass）— **当前首要**
 7. 通用 pass 回收（FlattenBuffer / VectorizeLoop / StorageRewrite）
 8. GEMM 接入
@@ -92,6 +92,14 @@
 - 稳定经验和问题已同步到 `memory/`
 - `git commit` 和 `git push` 已完成
 - 未完成项和限制已明确写出
+
+---
+
+## 当前事实约束
+
+- Blackhole 正式执行路径只剩 `BlackholeModule` 进程内 direct host path
+- 默认开发构建目录固定为 `tilelang_repo/build/`
+- `build_blackhole/` 和 legacy runner 都已删除；旧文档里出现时按历史语境理解，不要恢复
 
 ---
 
