@@ -4,7 +4,6 @@ True End-to-End Test for TileLang Blackhole Backend
 This test verifies the Blackhole workflow at two layers:
 1. TileLang DSL kernel compilation to Blackhole target
 2. Kernel execution via BlackholeModule direct path
-3. Legacy external-runner protocol coverage where still useful
 
 Requirements:
 - TT-Sim environment configured (or real hardware)
@@ -14,9 +13,6 @@ import pytest
 import numpy as np
 import torch
 import os
-import tempfile
-import subprocess
-import json
 
 import tilelang
 import tilelang.testing
@@ -53,19 +49,6 @@ def check_blackhole_direct_execution_requirements():
     return True, "OK"
 
 
-def check_blackhole_runner_execution_requirements():
-    """Check if legacy external-runner execution requirements are met."""
-    can_run, msg = check_blackhole_direct_execution_requirements()
-    if not can_run:
-        return False, msg
-
-    runner_candidates = get_runner_candidates()
-    if not any(os.path.exists(path) for path in runner_candidates):
-        return False, f"Runner not found in {runner_candidates}"
-
-    return True, "OK"
-
-
 def direct_build_enabled():
     cache_candidates = []
     loaded_cache = get_loaded_tilelang_cmake_cache()
@@ -96,76 +79,6 @@ def get_loaded_tilelang_cmake_cache():
         return None
     build_dir = os.path.dirname(os.path.dirname(lib_path))
     return os.path.join(build_dir, "CMakeCache.txt")
-
-
-def get_runner_candidates():
-    tilelang_home = os.environ["TILELANG_HOME"]
-    runner_build_dir = os.environ.get("TILELANG_BLACKHOLE_RUNNER_BUILD_DIR")
-    return [
-        path
-        for path in [
-            os.path.join(runner_build_dir, "tilelang_blackhole_runner") if runner_build_dir else None,
-            os.path.join(tilelang_home, "build-blackhole-runner", "tilelang_blackhole_runner"),
-            os.path.join(tilelang_home, "tools", "blackhole_runner", "build", "tilelang_blackhole_runner"),
-        ]
-        if path
-    ]
-
-
-def get_runner_path():
-    runner_candidates = get_runner_candidates()
-    for path in runner_candidates:
-        if os.path.exists(path):
-            return path
-    raise FileNotFoundError(f"Runner not found in {runner_candidates}")
-
-
-def write_single_core_copy_spec(spec_path, kernel_path, tensor_nbytes):
-    spec = {
-        "entry_name": "main",
-        "input_size_bytes": int(tensor_nbytes),
-        "output_size_bytes": int(tensor_nbytes),
-        "scalar_args": [],
-        "core_plan": {
-            "logical_grid_x": 1,
-            "logical_grid_y": 1,
-            "linearization": "row_major",
-            "physical_cores": [{"core_x": 1, "core_y": 2}],
-            "work_packets": [{"core_x": 1, "core_y": 2, "work_offset": 0, "work_count": 1}],
-        },
-        "cb_configs": [
-            {
-                "cb_id": 32,
-                "name": "A_shared",
-                "role": "intermediate",
-                "num_pages": 1,
-                "page_size_bytes": int(tensor_nbytes),
-                "data_format": "Float16_b",
-            },
-        ],
-        "kernels": [
-            {
-                "name": "main",
-                "kind": "fused_dataflow",
-                "core_type": "brisc",
-                "kernel_path": kernel_path,
-                "compile_time_args": [],
-                "runtime_args": [
-                    {"name": "input0", "kind": "input_buffer_addr32", "dtype": "uint32"},
-                    {"name": "output0", "kind": "output_buffer_addr32", "dtype": "uint32"},
-                    {
-                        "name": "current_work_linear_id",
-                        "kind": "current_work_linear_id",
-                        "dtype": "uint32",
-                    },
-                    {"name": "num_tiles", "kind": "tile_count", "dtype": "uint32"},
-                    {"name": "scratch_l1", "kind": "scratch_l1_buffer_addr32", "dtype": "uint32"},
-                ],
-            }
-        ],
-    }
-    with open(spec_path, "w", encoding="utf-8") as f:
-        json.dump(spec, f)
 
 
 def staged_copy_kernel(tile_rows: int, tile_cols: int = 1, tile_m: int = 32, tile_n: int = 32):
@@ -626,102 +539,6 @@ def test_blackhole_runtime_module_keeps_host_and_device_entries():
 
     assert artifact.codegen_mod["main"] is not None
     assert artifact.codegen_mod["main_kernel"] is not None
-
-
-def test_blackhole_true_e2e():
-    """True end-to-end test: compile, execute, and verify results.
-
-    This test:
-    1. Compiles a TileLang kernel to Blackhole target
-    2. Generates input data using PyTorch
-    3. Executes the kernel via external runner
-    4. Compares results with PyTorch reference
-    """
-    can_run, msg = check_blackhole_runner_execution_requirements()
-    if not can_run:
-        pytest.skip(f"Blackhole requirements not met: {msg}")
-
-    # Note: We attempt to run with TT-Sim if available
-    # The runner will fail gracefully if TT-Sim is not properly configured
-
-    # Define test parameters (small for simulator)
-    M, N = 32, 32  # Small size for quick simulation
-
-    # Generate reference data with PyTorch
-    torch.manual_seed(42)
-    a_torch = torch.randn(M, N, dtype=torch.float16)
-    b_ref = a_torch.clone()  # Copy kernel reference
-
-    # Create temporary directory for I/O
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Save input data
-        spec_path = os.path.join(tmpdir, "spec.json")
-        kernel_path = os.path.join(tmpdir, "kernel.cpp")
-        input_path = os.path.join(tmpdir, "input.bin")
-        output_path = os.path.join(tmpdir, "output.bin")
-
-        # Write input as binary
-        a_np = a_torch.numpy()
-        with open(input_path, 'wb') as f:
-            f.write(a_np.tobytes())
-
-        # Compile kernel to Blackhole
-        target = Target("blackhole")
-        kernel = staged_copy_kernel(tile_rows=M // 32, tile_cols=N // 32)
-
-        try:
-            # Lower to Blackhole target (need target context)
-            with target:
-                artifact = lower(kernel, target=target)
-            kernel_code = artifact.kernel_source if hasattr(artifact, 'kernel_source') else str(artifact)
-
-            with open(kernel_path, 'w', encoding='utf-8') as f:
-                f.write(kernel_code)
-
-            write_single_core_copy_spec(spec_path, kernel_path, a_np.nbytes)
-
-            # Get runner path
-            runner_path = get_runner_path()
-
-            cmd = [
-                runner_path,
-                spec_path,
-                input_path,
-                output_path,
-            ]
-
-            # Run the kernel
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-
-            if result.returncode != 0:
-                pytest.fail(f"Kernel execution failed:\n{result.stderr}")
-
-            # Read output
-            with open(output_path, 'rb') as f:
-                output_data = np.frombuffer(f.read(), dtype=np.float16).copy().reshape(M, N)
-
-            # Convert to torch for comparison
-            b_output = torch.from_numpy(output_data)
-
-            # Compare with reference
-            atol = 1e-3  # Float16 tolerance
-            rtol = 1e-3
-
-            if torch.allclose(b_output, b_ref, atol=atol, rtol=rtol):
-                print("SUCCESS: Blackhole kernel output matches PyTorch reference!")
-                print(f"  Input shape: {a_torch.shape}")
-                print(f"  Max difference: {(b_output - b_ref).abs().max().item()}")
-                assert True
-            else:
-                diff = (b_output - b_ref).abs()
-                print(f"FAILURE: Output mismatch!")
-                print(f"  Max difference: {diff.max().item()}")
-                print(f"  Mean difference: {diff.mean().item()}")
-                assert False, "Output does not match reference"
-        except subprocess.TimeoutExpired:
-            pytest.fail("Kernel execution timed out (60s)")
-        except Exception as e:
-            pytest.skip(f"Test skipped due to error: {e}")
 
 
 def test_blackhole_module_direct_call():

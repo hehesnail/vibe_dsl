@@ -234,15 +234,14 @@ copy 不只验证最小 case，还必须验证：
 - `ExecutableSpec`
 - direct host materialization / launch / readback
 
-#### 实施方案（2026-03-20，以 runner.cpp 为参考蓝本）
+#### 实施方案（2026-03-20，以 direct host path 为目标）
 
 1. **合并文件结构**：`blackhole_module.cc` 成为唯一实现，`blackhole_module_direct.cc` 已合并后删除
 2. **编译模式**：`USE_BLACKHOLE_DIRECT=ON` 时链接 TT-Metal，定义 `TILELANG_BLACKHOLE_DIRECT` 宏
-3. **运行时 fallback**：`TILELANG_BH_USE_RUNNER=1` 时切回 external runner
-4. **CB 创建**：`CreateCircularBuffersFromSpec()` — 遍历 `spec.cb_configs`，为每个 CB 调用 `CreateCircularBuffer`
-5. **Runtime args**：`BuildRuntimeArgsFromSpec()` — 按 `KernelArgSpec.kind` 逐项构造
-6. **Work-packet 迭代**：遍历 `spec.core_plan.work_packets`，为每个 work unit 创建独立 Program 并执行
-7. **DRAM page_size**：使用 role-aware `ChoosePageSize()`（匹配 runner.cpp）
+3. **CB 创建**：`CreateCircularBuffersFromSpec()` — 遍历 `spec.cb_configs`，为每个 CB 调用 `CreateCircularBuffer`
+4. **Runtime args**：`BuildRuntimeArgsFromSpec()` — 按 `KernelArgSpec.kind` 逐项构造
+5. **Work-packet 迭代**：遍历 `spec.core_plan.work_packets`，为每个 work unit 创建独立 Program 并执行
+6. **DRAM page_size**：使用 role-aware `ChoosePageSize()`
 
 #### 必做能力
 

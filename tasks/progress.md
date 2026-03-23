@@ -33,14 +33,14 @@
   - `physical_cores`
   - `work_packets`
 - `LowerBlackholeOps` 已开始为 grid-indexed staged copy 保留 `bx/by -> tile_index` 公式
-- runner 已开始按 `work_packets/current_work_linear_id` 顺序执行 single-core logical work items
+- `BlackholeModule::ExecuteDirect()` 已开始按 `work_packets/current_work_linear_id` 顺序执行 single-core logical work items
 - staged copy 的最小 direct execution 已覆盖：
   - `32x32`
   - `32x64`
   - `64x32`
 - Stage 2B copy E2E 验收已完成：
   - `test_blackhole_e2e.py` 在 TT-Sim 环境下结果为 `18 passed, 1 skipped`
-  - direct path / runner path / compile-time 负例已在同一套环境下共同验证
+  - direct path / compile-time 负例已在同一套环境下共同验证
 - `grid > 1` 且 `bx/by` 参与索引的 direct-call staged copy 已在 TT-Sim 上通过：
   - `grid_x=2`
   - `grid_y=3`
@@ -78,21 +78,17 @@
 
 - `blackhole_module.cc` 已完成 direct path 补全（Phase 1 代码实现）：
   - `ExecuteDirect()` 方法：直接调用 TT-Metal API
-  - `CreateCircularBuffersFromSpec()`：按 spec 创建所有 CB（参考 runner.cpp）
-  - `BuildRuntimeArgsFromSpec()`：按 `KernelArgSpec.kind` 逐项构造（参考 runner.cpp）
+  - `CreateCircularBuffersFromSpec()`：按 spec 创建所有 CB
+  - `BuildRuntimeArgsFromSpec()`：按 `KernelArgSpec.kind` 逐项构造
   - work-packet 迭代：遍历 `work_packets` 为每个 work unit 创建独立 Program
   - role-aware `ChoosePageSize()` 用于 DRAM buffer 创建
 - `blackhole_module_direct.cc` 已合并到 `blackhole_module.cc` 后删除
 - CMakeLists.txt 新增 `USE_BLACKHOLE_DIRECT` 编译选项
-- 运行时 fallback：`TILELANG_BH_USE_RUNNER=1` 切回 external runner
 - 架构审查文档已同步更新（五刀方案逐项评估）
 
 基于本轮推进的新进展（2026-03-23）：
 
-- `test_blackhole_e2e.py` 已开始按执行路径分层：
-  - direct-call 用例只检查 direct path 所需条件
-  - runner 用例单独检查 external runner 条件
-  - direct-call 不再因为 runner 缺失而整体 skip
+- `test_blackhole_e2e.py` 已收敛到 direct-call / compile-time 两类验证，不再依赖 legacy runner 二进制
 - direct 模式的 CMake 接入已补第一轮构建对齐：
   - 加入 TT-Metal repo root / `tt_stl` / `hostdevcommon` / `umd` 相关 include 路径
   - direct 模式编译标准提升到 C++20 以匹配 TT-Metal 头文件要求
@@ -105,7 +101,7 @@
   - `find_package(tt-metalium CONFIG REQUIRED)` 成功
 - `blackhole_module.cc` 已可用 direct 模式单文件编译通过
 - `tilelang_repo/build/` 的完整 `tilelang` 目标已在 direct 配置下全量构建通过（`cmake --build ... --target tilelang -j32`）
-- direct-call 测试现已确认会真正进入 `BlackholeModule::ExecuteDirect()`，不再误落回旧 runner 路径
+- direct-call 测试现已确认会真正进入 `BlackholeModule::ExecuteDirect()`
 - 当前收尾约定已改回单一开发构建目录：
   - 以后统一以 `tilelang_repo/build/` 为准
   - 旧 `build_blackhole/` 过渡目录已删除，避免继续误用
@@ -121,7 +117,7 @@
   - `ExecuteDirect()` 核坐标：从硬编码 `{0,0}` 改为读 `work_packet.core_x/core_y`；`{0,0}` 在真实硬件上不是合法 Tensix core
   - `BlackholeWrappedFunc::operator()` input/output 分类：改为按 `runtime_args` 的 kind（`input_buffer_addr32` / `output_buffer_addr32`）顺序判定，不再依赖”最后一个 buffer = output”位置启发式
   - 删除死代码：`EnsureDeviceInitialized()`、`GetOrCompileProgram()`、`CompiledProgram` struct、`mesh_device_`/`mesh_command_queue_`/`device_initialized_`/`program_cache_`（direct path 每次调用自建局部 `MeshDevice`，这套成员从未被触达）
-  - `MakeUniqueTempDir()` 统一供 direct 和 external runner 两条路径使用，消除 runner 路径同进程内多次调用路径冲突
+  - `MakeUniqueTempDir()` 用于 direct path 内部的唯一 kernel 临时目录，消除同进程内多次调用路径冲突
   - 修复后全套 E2E 验收保持 18 passed, 1 skipped
 - Stage 2C 当前未提交实现已补首轮回归修正（2026-03-23）：
   - `LowerBlackholeOps::ConsumeCopySemantics()` 不再在连续 `dram_to_cb` / `cb_to_dram` annotation 场景下把另一侧 buffer 绑定清空

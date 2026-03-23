@@ -250,8 +250,6 @@ elseif(USE_BLACKHOLE)
   # Two modes:
   #   USE_BLACKHOLE=ON                    -> external runner process mode (no TT-Metal linking)
   #   USE_BLACKHOLE=ON + USE_BLACKHOLE_DIRECT=ON -> direct TT-Metal API mode (links TT-Metal)
-  #
-  # At runtime, set TILELANG_BH_USE_RUNNER=1 to force external runner even in direct mode.
   file(GLOB TILE_LANG_BLACKHOLE_SRCS
     src/target/codegen_blackhole.cc
     src/target/rt_mod_blackhole.cc
