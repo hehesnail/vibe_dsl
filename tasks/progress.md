@@ -143,6 +143,7 @@
 - `PlanBlackholeCB` 仍偏 MVP allocator，尚未成为正式 memory planner
 - `StorageRewrite` 确认不兼容 Blackhole CB 模型（VectorTypeAccessChecker 不识别 DeclBuffer），永久排除于 Blackhole pipeline；Phase 4 若需引入必须先加 shared-scope 豁免
 - GEMM 仍未接入正式 direct host path
+- **架构债（已记录）**：copy 当前用 `fused_dataflow` 单 kernel（BRISC 顺序 read+write），GEMM 用 3-kernel（reader+compute+writer）。两种 schema 并存导致 `rt_mod_blackhole` / `BlackholeModule` 需要维护双重路径。后续应将 copy 也统一进 reader+writer 2-kernel 模型，消除不对称。触发条件：GEMM E2E 稳定后。
 
 基于 Stage 2C 完成的新结论（2026-03-24）：
 

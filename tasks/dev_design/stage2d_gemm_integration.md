@@ -254,10 +254,38 @@ def test_blackhole_gemm_basic():
 - 不支持 fused_staged_copy（dram→sram→dram）作为 reader+writer 融合（暂作 reader 处理）
 - 不做 dynamic shape GEMM（M/N/K 必须是编译期常量 IntImm）
 - 不修改 `CodeGenBlackhole`：3 个 kernel source 用模板产生，不走 TIR codegen
+- **不统一 copy 的 segment 模型**（见下方架构说明）
 
 ---
 
-## 5. 已完成状态
+## 5. 架构说明：copy 与 GEMM 的 segment 模型不对称性
+
+### 5.1 当前状态
+
+| 场景 | segment 模型 | kernel 数量 | 执行核 |
+|------|-------------|-------------|--------|
+| 纯 copy | `fused_dataflow` | 1（BRISC） | BRISC 顺序完成 read + write |
+| GEMM | `reader + compute + writer` | 3 | BRISC read、TRISC compute、NCRISC write |
+
+`SplitBlackholeKernel` 对无 compute op 的函数是 strict no-op，copy 的 segment plan 由 `LowerBlackholeOps::StoreSegmentPlan` 写入（`fused_dataflow`）。
+
+### 5.2 为何当前不统一
+
+纯 copy 不包含 TRISC compute，BRISC 自身可以顺序完成 read→CB→write，不强制要求 reader+writer 拆分。单 kernel 实现更简单，现有 `LowerBlackholeOps` 已稳定产出该路径，无必要在 GEMM 接入期间同步修改。
+
+### 5.3 后续统一方向（架构债）
+
+将 copy 也统一进 reader+writer 2-kernel 模型是合理的后续任务，收益包括：
+
+- `SplitBlackholeKernel` 统一覆盖所有情形（copy 和 GEMM）
+- `rt_mod_blackhole` / `BlackholeModule` 只维护一套多 segment 路径，不需要同时处理 `fused_dataflow` 单 kernel 和 3-kernel 两种 schema
+- BRISC（read）+ NCRISC（write）并行执行，大数据量时有潜在吞吐提升
+
+**触发条件**：GEMM E2E（Step 4/5/6）稳定通过，且 `rt_mod_blackhole` / `BlackholeModule` 已有成熟的多 segment 分发逻辑后，再做统一重构。
+
+---
+
+## 6. 已完成状态
 
 | 步骤 | 状态 |
 |------|------|

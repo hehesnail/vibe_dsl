@@ -294,12 +294,18 @@ copy 的正式目标是：
 - 至少一个 `grid > 1` 且 `bx/by` 参与索引的 case
 - 至少一个总数据量大于 `1.5MB` 的 large-shape copy case
 
+**当前 segment 模型**：纯 copy 使用 `fused_dataflow` 单 kernel（BRISC 顺序完成 read+write）。`SplitBlackholeKernel` 对无 compute op 的函数是 strict no-op。
+
+**架构债**：技术上 copy 可以统一进 reader+writer 2-kernel 模型（BRISC read + NCRISC write 并行），使 `SplitBlackholeKernel` 统一覆盖所有情形，并消除 `rt_mod_blackhole` / `BlackholeModule` 对 `fused_dataflow` 和多 kernel 两种 schema 的双重处理。触发条件：GEMM E2E 稳定后再做，不在 Stage 2D 内。
+
 ### 6.2 GEMM
 
 GEMM 的后续集成必须复用与 copy 相同的结构：
 
 - 不再接受 runtime 侧大块 GEMM 特化
 - reader / compute / writer 语义必须主要来自 split 前语义规划和 split 后正式 plan 提取
+
+**当前 segment 模型**：GEMM 使用 3-kernel（reader BRISC + compute TRISC + writer NCRISC），由 `SplitBlackholeKernel` pass 产出 `blackhole.segment_plan`。
 
 ### 6.3 Multi-core
 
@@ -377,6 +383,18 @@ multi-core 的主要实现位置保持不变：
 目标：
 
 - copy 与 GEMM 都由正式主链执行并完成 direct host-device E2E
+
+状态：
+
+- **进行中**（Step 1/2/3 已完成，Step 4/5/6 待实现）
+- Step 1：`LowerTileOp` Blackhole GEMM skip ✅
+- Step 2：`SplitBlackholeKernel` pass ✅（3-kernel segment_plan，reader/compute/writer）
+- Step 3：`LowerBlackholeOps` 移除 `StoreGemmSegmentPlan`，加 segment_plan 守卫 ✅
+- Step 4：`rt_mod_blackhole` 多 segment 提取 ⏳
+- Step 5：`BlackholeModule` 3-kernel 注册 ⏳
+- Step 6：E2E 测试 ⏳
+
+架构债（不在 2D 内）：copy 统一进 reader+writer 2-kernel 模型，消除 fused_dataflow / 多 kernel 双重 schema。
 
 ### Stage 3: multi-core runtime 调度
 
