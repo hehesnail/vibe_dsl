@@ -63,6 +63,18 @@
 
 ## 与当前设计直接相关的记录
 
+### GEMM `lower()` 当前会卡在 `MergeSharedMemoryAllocations` 的 flat-buffer 前置条件
+
+- **时间**: 2026-03-24
+- **问题**: Stage 2D 在补完 `rt_mod_blackhole` 多 segment extractor 和 `BlackholeModule` 3-kernel direct path 后，`test_blackhole_gemm_basic` 仍无法走完整 `lower()`，当前会在主线 pass 中报：
+  - `MergeSharedMemoryAllocations expects flat memory buffers`
+- **根本原因**: Blackhole 当前对 GEMM 采用 `LowerTileOp` skip，shared alloc 仍保持二维 tile buffer；而 `lower()` 后段的 `MergeSharedMemoryAllocations` 仍假设自己运行在 `FlattenBuffer` 之后，只接受一维扁平 shared buffer。
+- **解决方向**:
+  - 要么在 Blackhole GEMM 进入该 pass 之前先补 `FlattenBuffer`/等价扁平化前置条件
+  - 要么给 `MergeSharedMemoryAllocations` 增加 Blackhole/非扁平 shared buffer 豁免
+  - 在此问题解决前，Step 4/5 可以做编译级和 segment-plan 级验证，但 Step 6 true E2E 仍会被前置 pass 挡住
+- **当前状态**: 未解决。已在 `tasks/progress.md` 记录为 Stage 2D Step 6 的当前 blocker。
+
 ### Stage 2C copy semantics 不能继续用 `AttrStmt` 承载结构化 schema
 
 - **时间**: 2026-03-23

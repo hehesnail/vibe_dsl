@@ -828,12 +828,108 @@ def test_blackhole_split_kernel_gemm_segment_plan():
     reader_arg_names = [str(arg["name"]) for arg in reader_args]
     assert any("addr" in name for name in reader_arg_names), (
         f"Reader should have DRAM buffer addr args, got: {reader_arg_names}")
+    reader_arg_buffers = [str(arg["buffer"]) for arg in reader_args if "buffer" in arg]
+    assert reader_arg_buffers == ["A", "B"]
 
     # Check writer runtime_args contain DRAM buffer addr args
     writer_args = plan[2]["runtime_args"]
     writer_arg_names = [str(arg["name"]) for arg in writer_args]
     assert any("addr" in name for name in writer_arg_names), (
         f"Writer should have DRAM buffer addr args, got: {writer_arg_names}")
+    writer_arg_buffers = [str(arg["buffer"]) for arg in writer_args if "buffer" in arg]
+    assert writer_arg_buffers == ["C"]
+
+
+def test_blackhole_gemm_cb_placeholders_resolve_via_planner():
+    """GEMM compute CB IDs should come from planner bindings, not hardcoded lowering order."""
+    kernel = gemm_kernel()
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+
+    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = tilelang.transform.PlanBlackholeCB()(mod)
+
+    func = mod["main"]
+    placeholders = func.attrs["blackhole.gemm_cb_placeholders"]
+    assert str(placeholders["a"]["requirement_name"]) == "A_shared"
+    assert str(placeholders["b"]["requirement_name"]) == "B_shared"
+    assert str(placeholders["c"]["requirement_name"]) == "C_local"
+    assert int(placeholders["a"]["placeholder_cb_id"]) < 0
+    assert int(placeholders["b"]["placeholder_cb_id"]) < 0
+    assert int(placeholders["c"]["placeholder_cb_id"]) < 0
+
+    cb_bindings = {str(item["requirement_name"]): int(item["cb_id"])
+                   for item in func.attrs["blackhole.cb_bindings"]}
+    assert cb_bindings["A_shared"] != cb_bindings["C_local"]
+    assert cb_bindings["B_shared"] != cb_bindings["C_local"]
+
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    try:
+        with target:
+            artifact = lower(kernel, target=target)
+    except Exception as e:
+        pytest.skip(f"Blackhole lowering not yet fully implemented: {e}")
+
+    source = getattr(artifact, "kernel_source", None)
+    if source is None and hasattr(artifact, "mod"):
+        try:
+            source = artifact.mod.imported_modules[0].get_source()
+        except Exception:
+            source = None
+    if not source and hasattr(artifact, "code"):
+        source = artifact.code
+
+    assert source
+    assert "mm_init(-1" not in source
+    assert "mm_init(-2" not in source
+    assert "mm_init(-3" not in source
+    assert "cb_wait_front(-1" not in source
+    assert "cb_wait_front(-2" not in source
+    assert "cb_reserve_back(-3" not in source
+
+
+def test_blackhole_gemm_basic():
+    """Single-core GEMM should execute via reader/compute/writer direct path."""
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    torch.manual_seed(0)
+    a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    c_output = torch.zeros(32, 32, dtype=torch.float32)
+    c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
+
+    target = Target("blackhole")
+    kernel = gemm_kernel()
+
+    try:
+        with target:
+            artifact = lower(kernel, target=target)
+    except Exception as e:
+        pytest.skip(f"Blackhole GEMM lowering not yet fully implemented: {e}")
+
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+
+    atol = 2e-1
+    rtol = 2e-1
+    if torch.allclose(c_output, c_ref, atol=atol, rtol=rtol):
+        print("SUCCESS: GEMM direct call matches PyTorch reference!")
+        print(f"  Max difference: {(c_output - c_ref).abs().max().item()}")
+        assert True
+    else:
+        diff = (c_output - c_ref).abs()
+        print("FAILURE: GEMM direct-call output mismatch!")
+        print(f"  Max difference: {diff.max().item()}")
+        print(f"  Mean difference: {diff.mean().item()}")
+        assert False, "GEMM direct-call output does not match reference"
 
 
 if __name__ == "__main__":

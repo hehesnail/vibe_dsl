@@ -325,11 +325,11 @@ static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
 
 static std::vector<KernelArgSpec> MakeDefaultCopyRuntimeArgs() {
   return {
-      {"input0", "input_buffer_addr32", "uint32"},
-      {"output0", "output_buffer_addr32", "uint32"},
-      {"current_work_linear_id", "current_work_linear_id", "uint32"},
-      {"num_tiles", "tile_count", "uint32"},
-      {"scratch_l1", "scratch_l1_buffer_addr32", "uint32"},
+      {"input0", "input_buffer_addr32", "uint32", ""},
+      {"output0", "output_buffer_addr32", "uint32", ""},
+      {"current_work_linear_id", "current_work_linear_id", "uint32", ""},
+      {"num_tiles", "tile_count", "uint32", ""},
+      {"scratch_l1", "scratch_l1_buffer_addr32", "uint32", ""},
   };
 }
 
@@ -360,14 +360,9 @@ static bool HasCopyBuiltins(const tir::PrimFunc& f) {
   return found;
 }
 
-static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
+static std::vector<KernelArgSpec> ExtractRuntimeArgsFromArray(const ffi::Array<ffi::Any>& items) {
   std::vector<KernelArgSpec> runtime_args;
-  auto runtime_args_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.runtime_args");
-  if (!runtime_args_attr) {
-    return HasCopyBuiltins(f) ? MakeDefaultCopyRuntimeArgs() : std::vector<KernelArgSpec>{};
-  }
-
-  for (const auto& item : runtime_args_attr.value()) {
+  for (const auto& item : items) {
     auto arg_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
         ffi::Map<ffi::String, ffi::Any>());
     if (arg_info.empty()) continue;
@@ -382,10 +377,23 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
     if (auto v = arg_info.Get("dtype")) {
       arg.dtype = Downcast<String>(v.value());
     }
+    if (auto v = arg_info.Get("buffer")) {
+      arg.buffer = Downcast<String>(v.value());
+    }
     if (!arg.kind.empty()) {
       runtime_args.push_back(std::move(arg));
     }
   }
+  return runtime_args;
+}
+
+static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
+  auto runtime_args_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.runtime_args");
+  if (!runtime_args_attr) {
+    return HasCopyBuiltins(f) ? MakeDefaultCopyRuntimeArgs() : std::vector<KernelArgSpec>{};
+  }
+
+  std::vector<KernelArgSpec> runtime_args = ExtractRuntimeArgsFromArray(runtime_args_attr.value());
 
   if (runtime_args.empty()) {
     return HasCopyBuiltins(f) ? MakeDefaultCopyRuntimeArgs() : std::vector<KernelArgSpec>{};
@@ -393,29 +401,58 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
   return runtime_args;
 }
 
-static void ExtractSegmentPlan(const tir::PrimFunc& f, ExecutableSpec* spec) {
+struct SegmentInfo {
+  std::string name;
+  std::string kind;
+  std::string core_type;
+  std::vector<KernelArgSpec> runtime_args;
+};
+
+static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, ExecutableSpec* spec) {
+  std::vector<SegmentInfo> segments_out;
   auto segment_plan_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.segment_plan");
   if (!segment_plan_attr) {
-    return;
+    return segments_out;
   }
 
   const auto& segments = segment_plan_attr.value();
   if (segments.empty()) {
-    return;
+    return segments_out;
   }
 
-  auto segment = segments[0].as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-      ffi::Map<ffi::String, ffi::Any>());
-  if (segment.empty()) {
-    return;
-  }
+  for (const auto& item : segments) {
+    auto segment = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+        ffi::Map<ffi::String, ffi::Any>());
+    if (segment.empty()) {
+      continue;
+    }
 
-  if (auto v = segment.Get("kind")) {
-    spec->default_kernel_kind = Downcast<String>(v.value());
+    SegmentInfo info;
+    if (auto v = segment.Get("name")) {
+      info.name = Downcast<String>(v.value());
+    }
+    if (auto v = segment.Get("kind")) {
+      info.kind = Downcast<String>(v.value());
+    }
+    if (auto v = segment.Get("core_type")) {
+      info.core_type = Downcast<String>(v.value());
+    }
+    if (auto v = segment.Get("runtime_args")) {
+      info.runtime_args = ExtractRuntimeArgsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
+    }
+
+    if (segments_out.empty()) {
+      if (!info.kind.empty()) {
+        spec->default_kernel_kind = info.kind;
+      }
+      if (!info.core_type.empty()) {
+        spec->default_kernel_core_type = info.core_type;
+      }
+    }
+
+    segments_out.push_back(std::move(info));
   }
-  if (auto v = segment.Get("core_type")) {
-    spec->default_kernel_core_type = Downcast<String>(v.value());
-  }
+  return segments_out;
 }
 
 static uint32_t GetCopyTileSizeBytes(const ExecutableSpec& spec) {
@@ -487,6 +524,7 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
       dtype.code = kDLInt;
       dtype.bits = 32;
     }
+    spec.tvm_arg_names.push_back(f->params[i]->name_hint);
     spec.tvm_arg_types.push_back(dtype);
     spec.tvm_is_buffer_arg.push_back(dtype.code == kDLOpaqueHandle);
   }
@@ -496,6 +534,134 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   spec.runtime_args = ExtractRuntimeArgs(f);
   ExtractSegmentPlan(f, &spec);
   return spec;
+}
+
+class SegmentBodyExtractor final : public tir::StmtMutator {
+ public:
+  explicit SegmentBodyExtractor(std::string segment_kind)
+      : segment_kind_(std::move(segment_kind)) {}
+
+  Stmt VisitStmt_(const tir::SeqStmtNode* op) final {
+    bool has_segment_markers = false;
+    ffi::Array<Stmt> seq;
+    seq.reserve(op->seq.size());
+
+    for (const Stmt& stmt : op->seq) {
+      if (const auto* attr = stmt.as<tir::AttrStmtNode>()) {
+        if (attr->attr_key == "blackhole.segment_kind") {
+          has_segment_markers = true;
+          if (const auto* kind = attr->value.as<StringImmNode>()) {
+            if (kind->value == segment_kind_) {
+              seq.push_back(this->VisitStmt(attr->body));
+            }
+          }
+          continue;
+        }
+      }
+      seq.push_back(this->VisitStmt(stmt));
+    }
+
+    if (!has_segment_markers) {
+      return tir::StmtMutator::VisitStmt_(op);
+    }
+    if (seq.empty()) {
+      return tir::Evaluate(IntImm(DataType::Int(32), 0));
+    }
+    if (seq.size() == 1) {
+      return seq[0];
+    }
+    return tir::SeqStmt(seq);
+  }
+
+ private:
+  std::string segment_kind_;
+};
+
+static ffi::Array<ffi::Any> EncodeRuntimeArgs(const std::vector<KernelArgSpec>& runtime_args) {
+  ffi::Array<ffi::Any> encoded;
+  for (const auto& arg : runtime_args) {
+    ffi::Map<ffi::String, ffi::Any> arg_info;
+    arg_info.Set("name", ffi::String(arg.name));
+    arg_info.Set("kind", ffi::String(arg.kind));
+    arg_info.Set("dtype", ffi::String(arg.dtype));
+    if (!arg.buffer.empty()) {
+      arg_info.Set("buffer", ffi::String(arg.buffer));
+    }
+    encoded.push_back(arg_info);
+  }
+  return encoded;
+}
+
+static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentInfo& segment) {
+  SegmentBodyExtractor extractor(segment.kind);
+  tir::PrimFunc segment_func = f;
+  segment_func.CopyOnWrite()->body = extractor(f->body);
+
+  ffi::Map<ffi::String, ffi::Any> attrs;
+  if (f->attrs.defined()) {
+    attrs = f->attrs->dict;
+  }
+  attrs.Set("blackhole.core_type", ffi::String(segment.core_type));
+  attrs.Set("blackhole.runtime_args", EncodeRuntimeArgs(segment.runtime_args));
+  segment_func.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
+  return segment_func;
+}
+
+static std::string EmitKernelSourceForPrimFunc(const tir::PrimFunc& f,
+                                               const std::string& func_name,
+                                               Target target,
+                                               bool kernel_code_only) {
+  bool output_ssa = false;
+  bool emit_asserts = false;
+  bool emit_fwd_func_decl = !kernel_code_only;
+  std::unordered_set<std::string> devices = {"blackhole"};
+
+  tl::CodeGenBlackhole cg;
+  cg.Init(output_ssa, emit_asserts, emit_fwd_func_decl, target->str(), devices);
+  cg.AddFunction(GlobalVar(func_name), f);
+  return kernel_code_only ? cg.GetKernelCode() : cg.Finish();
+}
+
+static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
+                                             const std::string& func_name,
+                                             Target target,
+                                             bool kernel_code_only,
+                                             ExecutableSpec* spec) {
+  spec->kernels.clear();
+  std::vector<SegmentInfo> segments = ExtractSegmentPlan(f, spec);
+  if (segments.empty()) {
+    KernelSpec kernel;
+    kernel.name = func_name;
+    kernel.kind = spec->default_kernel_kind;
+    kernel.core_type = spec->default_kernel_core_type;
+    kernel.runtime_args = spec->runtime_args;
+    const std::string generated = EmitKernelSourceForPrimFunc(f, func_name, target, kernel_code_only);
+    kernel.source_code =
+        (!generated.empty()) ? generated
+                             : (HasCopyRuntimeArgSchema(kernel.runtime_args)
+                                    ? EmitSingleCoreCopyKernelSource(*spec)
+                                    : std::string());
+    ICHECK(!kernel.source_code.empty())
+        << "Blackhole build produced no kernel source and no copy fallback was applicable for "
+        << func_name;
+    spec->kernels.push_back(std::move(kernel));
+    return;
+  }
+
+  for (const SegmentInfo& segment : segments) {
+    tir::PrimFunc segment_func = MakeSegmentPrimFunc(f, segment);
+    KernelSpec kernel;
+    kernel.name = func_name + "_" + (segment.name.empty() ? segment.kind : segment.name);
+    kernel.kind = segment.kind;
+    kernel.core_type = segment.core_type;
+    kernel.runtime_args = segment.runtime_args;
+    kernel.source_code = EmitKernelSourceForPrimFunc(segment_func, kernel.name, target,
+                                                     kernel_code_only);
+    ICHECK(!kernel.source_code.empty())
+        << "Blackhole build produced no kernel source for segment "
+        << segment.kind << " of " << func_name;
+    spec->kernels.push_back(std::move(kernel));
+  }
 }
 
 static std::string FindLaunchedKernelSymbol(
@@ -583,54 +749,61 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
   LOG(INFO) << "BuildTileLangBlackhole: Generating TT-Metal code for Blackhole target";
 
   auto func_info_map = ExtractBlackholeFuncInfo(mod);
-
-  bool output_ssa = false;
-  bool emit_asserts = false;
-  bool emit_fwd_func_decl = true;
-
-  std::unordered_set<std::string> devices;
-  devices.insert("blackhole");
-
-  tl::CodeGenBlackhole cg;
-  cg.Init(output_ssa, emit_asserts, emit_fwd_func_decl, target->str(), devices);
+  std::unordered_map<std::string, tir::PrimFunc> device_funcs;
+  std::unordered_map<std::string, std::string> host_to_device;
+  std::unordered_set<std::string> device_kernel_symbols;
 
   // Create temporary directory for kernel files
   std::string kernel_dir = "/tmp/tilelang_blackhole/" + std::to_string(getpid());
   std::filesystem::create_directories(kernel_dir);
 
-  // Process functions through generic codegen. Stage 2 should prefer builtin-driven
-  // codegen for copy as well, while still retaining a runtime emitter fallback.
   for (auto kv : mod->functions) {
     ICHECK(kv.second->IsInstance<tir::PrimFuncNode>())
         << "CodeGenBlackhole: Can only take PrimFunc";
     auto gvar = Downcast<GlobalVar>(kv.first);
     auto f = Downcast<tir::PrimFunc>(kv.second);
+    const std::string func_name = GetPrimFuncName(gvar, f);
     if (IsBlackholeDeviceKernel(f)) {
-      cg.AddFunction(gvar, f);
+      device_kernel_symbols.insert(func_name);
+      device_funcs.emplace(func_name, f);
+    }
+  }
+  for (auto kv : mod->functions) {
+    auto gvar = Downcast<GlobalVar>(kv.first);
+    auto f = Downcast<tir::PrimFunc>(kv.second);
+    if (IsBlackholeHostEntry(f)) {
+      const std::string host_name = GetPrimFuncName(gvar, f);
+      const std::string launched_kernel = FindLaunchedKernelSymbol(f, device_kernel_symbols);
+      if (!launched_kernel.empty()) {
+        host_to_device.emplace(host_name, launched_kernel);
+      }
     }
   }
 
-  std::string code = cg.Finish();
-
-  // Attach generated source to the Stage 0 executable spec.
-  for (auto& kv : func_info_map) {
-    KernelSpec kernel;
-    kernel.name = kv.first;
-    kernel.kind = kv.second.default_kernel_kind;
-    kernel.core_type = kv.second.default_kernel_core_type;
-    kernel.runtime_args = kv.second.runtime_args;
-    kernel.source_code =
-        (!code.empty()) ? code
-                        : (HasCopyRuntimeArgSchema(kernel.runtime_args)
-                               ? EmitSingleCoreCopyKernelSource(kv.second)
-                               : std::string());
-    ICHECK(!kernel.source_code.empty())
-        << "Blackhole build produced no kernel source and no copy fallback was applicable for "
-        << kv.first;
-    kv.second.kernels.push_back(std::move(kernel));
+  for (auto& kv : device_funcs) {
+    auto spec_it = func_info_map.find(kv.first);
+    if (spec_it == func_info_map.end()) {
+      continue;
+    }
+    PopulateKernelSpecsForDeviceFunc(kv.second, kv.first, target, /*kernel_code_only=*/false,
+                                     &spec_it->second);
+  }
+  for (const auto& kv : host_to_device) {
+    auto host_it = func_info_map.find(kv.first);
+    auto device_it = func_info_map.find(kv.second);
+    if (host_it != func_info_map.end() && device_it != func_info_map.end()) {
+      host_it->second.kernels = device_it->second.kernels;
+    }
   }
 
-  LOG(INFO) << "BuildTileLangBlackhole: Generated " << code.size()
+  size_t total_code_size = 0;
+  for (const auto& kv : func_info_map) {
+    for (const auto& kernel : kv.second.kernels) {
+      total_code_size += kernel.source_code.size();
+    }
+  }
+
+  LOG(INFO) << "BuildTileLangBlackhole: Generated " << total_code_size
             << " bytes of TT-Metal code for " << func_info_map.size() << " functions";
 
   // Create BlackholeModule
@@ -649,53 +822,50 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
   LOG(INFO) << "BuildTileLangBlackholeWithoutHost: Generating device code only";
 
   auto func_info_map = ExtractBlackholeFuncInfo(mod);
-
-  bool output_ssa = false;
-  bool emit_asserts = false;
-  bool emit_fwd_func_decl = false;
-
-  std::unordered_set<std::string> devices;
-  devices.insert("blackhole");
-
-  tl::CodeGenBlackhole cg;
-  cg.Init(output_ssa, emit_asserts, emit_fwd_func_decl, target->str(), devices);
+  std::unordered_map<std::string, tir::PrimFunc> device_funcs;
+  std::unordered_map<std::string, std::string> host_to_device;
+  std::unordered_set<std::string> device_kernel_symbols;
 
   // Create temporary directory for kernel files
   std::string kernel_dir = "/tmp/tilelang_blackhole/" + std::to_string(getpid());
   std::filesystem::create_directories(kernel_dir);
 
-  // Process device kernel functions through generic codegen. Stage 2 should prefer
-  // builtin-driven codegen for copy as well, while still retaining a runtime
-  // emitter fallback.
   for (auto kv : mod->functions) {
     ICHECK(kv.second->IsInstance<tir::PrimFuncNode>())
         << "CodeGenBlackhole: Can only take PrimFunc";
     auto gvar = Downcast<GlobalVar>(kv.first);
     auto f = Downcast<tir::PrimFunc>(kv.second);
+    const std::string func_name = GetPrimFuncName(gvar, f);
     if (IsBlackholeDeviceKernel(f)) {
-      cg.AddFunction(gvar, f);
+      device_kernel_symbols.insert(func_name);
+      device_funcs.emplace(func_name, f);
     }
   }
-
-  // Get pure kernel code (without TVM headers) for TT-Metal compilation
-  std::string kernel_code = cg.GetKernelCode();
-
-  // Store pure kernel code in the executable spec.
-  for (auto& kv : func_info_map) {
-    KernelSpec kernel;
-    kernel.name = kv.first;
-    kernel.kind = kv.second.default_kernel_kind;
-    kernel.core_type = kv.second.default_kernel_core_type;
-    kernel.runtime_args = kv.second.runtime_args;
-    kernel.source_code =
-        (!kernel_code.empty()) ? kernel_code
-                               : (HasCopyRuntimeArgSchema(kernel.runtime_args)
-                                      ? EmitSingleCoreCopyKernelSource(kv.second)
-                                      : std::string());
-    ICHECK(!kernel.source_code.empty())
-        << "Blackhole build produced no kernel source and no copy fallback was applicable for "
-        << kv.first;
-    kv.second.kernels.push_back(std::move(kernel));
+  for (auto kv : mod->functions) {
+    auto gvar = Downcast<GlobalVar>(kv.first);
+    auto f = Downcast<tir::PrimFunc>(kv.second);
+    if (IsBlackholeHostEntry(f)) {
+      const std::string host_name = GetPrimFuncName(gvar, f);
+      const std::string launched_kernel = FindLaunchedKernelSymbol(f, device_kernel_symbols);
+      if (!launched_kernel.empty()) {
+        host_to_device.emplace(host_name, launched_kernel);
+      }
+    }
+  }
+  for (auto& kv : device_funcs) {
+    auto spec_it = func_info_map.find(kv.first);
+    if (spec_it == func_info_map.end()) {
+      continue;
+    }
+    PopulateKernelSpecsForDeviceFunc(kv.second, kv.first, target, /*kernel_code_only=*/true,
+                                     &spec_it->second);
+  }
+  for (const auto& kv : host_to_device) {
+    auto host_it = func_info_map.find(kv.first);
+    auto device_it = func_info_map.find(kv.second);
+    if (host_it != func_info_map.end() && device_it != func_info_map.end()) {
+      host_it->second.kernels = device_it->second.kernels;
+    }
   }
 
   return BlackholeModuleCreate(std::move(func_info_map), kernel_dir);

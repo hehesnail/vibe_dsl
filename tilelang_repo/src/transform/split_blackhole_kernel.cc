@@ -243,11 +243,15 @@ static std::string ClassifyStmt(const Stmt& stmt,
 static void StoreGemmSegmentPlan(PrimFunc& func,
                                   const std::vector<std::string>& input_buf_names,
                                   const std::string& output_buf_name) {
-  auto make_arg = [](const std::string& name, const char* kind) -> Map<String, Any> {
+  auto make_arg = [](const std::string& name, const char* kind,
+                     const std::string& buffer_name = "") -> Map<String, Any> {
     Map<String, Any> arg;
     arg.Set("name", String(name));
     arg.Set("kind", String(kind));
     arg.Set("dtype", String("uint32"));
+    if (!buffer_name.empty()) {
+      arg.Set("buffer", String(buffer_name));
+    }
     return arg;
   };
 
@@ -259,7 +263,7 @@ static void StoreGemmSegmentPlan(PrimFunc& func,
   Array<Any> reader_args;
   for (const auto& buf_name : input_buf_names) {
     if (!buf_name.empty()) {
-      reader_args.push_back(make_arg(buf_name + "_addr", "input_buffer_addr32"));
+      reader_args.push_back(make_arg(buf_name + "_addr", "input_buffer_addr32", buf_name));
     }
   }
   reader_args.push_back(make_arg("num_k_tiles", "num_k_tiles"));
@@ -282,7 +286,8 @@ static void StoreGemmSegmentPlan(PrimFunc& func,
   writer.Set("core_type", String("ncrisc"));
   Array<Any> writer_args;
   if (!output_buf_name.empty()) {
-    writer_args.push_back(make_arg(output_buf_name + "_addr", "output_buffer_addr32"));
+    writer_args.push_back(make_arg(output_buf_name + "_addr", "output_buffer_addr32",
+                                   output_buf_name));
   }
   writer_args.push_back(make_arg("current_work_linear_id", "current_work_linear_id"));
   writer.Set("runtime_args", writer_args);

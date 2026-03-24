@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <unistd.h>
 #include <filesystem>
+#include <unordered_map>
 
 #include "runtime/file_utils.h"
 #include "runtime/meta_data.h"
@@ -156,14 +157,14 @@ static void CreateCircularBuffersFromSpec(
 static KernelHandle CreateKernelFromSpec(
     Program& program, const CoreCoord& core,
     const KernelSpec& kernel, const std::string& kernel_path) {
-  if (kernel.core_type == "trisc") {
+  if (kernel.core_type == "trisc" || kernel.kind == "compute") {
     return CreateKernel(
         program,
         kernel_path,
         core,
         ComputeConfig{
             .math_fidelity = MathFidelity::HiFi4,
-            .fp32_dest_acc_en = false,
+            .fp32_dest_acc_en = true,
             .math_approx_mode = false,
             .compile_args = kernel.compile_time_args});
   }
@@ -192,35 +193,76 @@ static bool KernelNeedsScratchL1(const KernelSpec& kernel) {
   return false;
 }
 
+struct RuntimeBufferBinding {
+  std::shared_ptr<distributed::MeshBuffer> mesh_buffer;
+  size_t size_bytes{0};
+  bool is_output{false};
+};
+
+static const RuntimeBufferBinding& ResolveRuntimeBufferBinding(
+    const KernelArgSpec& arg_spec,
+    bool expect_output,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
+    const std::vector<std::string>& ordered_names) {
+  if (!arg_spec.buffer.empty()) {
+    auto it = buffer_bindings.find(arg_spec.buffer);
+    ICHECK(it != buffer_bindings.end())
+        << "Missing runtime buffer binding for " << arg_spec.buffer;
+    ICHECK(it->second.is_output == expect_output)
+        << "Runtime buffer role mismatch for " << arg_spec.buffer
+        << ": expected output=" << expect_output;
+    return it->second;
+  }
+
+  ICHECK(!ordered_names.empty())
+      << "No runtime buffer binding available for arg kind " << arg_spec.kind;
+  auto it = buffer_bindings.find(ordered_names.front());
+  ICHECK(it != buffer_bindings.end())
+      << "Missing fallback runtime buffer binding for " << ordered_names.front();
+  return it->second;
+}
+
 static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
     const KernelSpec& kernel,
     const ExecutableSpec& spec,
     uint32_t current_work_linear_id,
-    size_t total_input_size,
-    const distributed::MeshBuffer& input_buffer,
-    const distributed::MeshBuffer& output_buffer,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
+    const std::vector<std::string>& input_names,
+    const std::vector<std::string>& output_names,
     const distributed::MeshBuffer* scratch_l1_buffer,
     const std::vector<uint32_t>& scalar_args) {
   std::vector<uint32_t> args;
   size_t scalar_index = 0;
-  const uint32_t tile_size = ChoosePageSize(spec, "input");
-  const uint64_t src_addr = input_buffer.address();
-  const uint64_t dst_addr = output_buffer.address();
 
   for (const auto& arg_spec : kernel.runtime_args) {
     if (arg_spec.kind == "input_buffer_addr") {
+      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/false,
+                                                        buffer_bindings, input_names);
+      const uint64_t src_addr = binding.mesh_buffer->address();
       args.push_back(static_cast<uint32_t>(src_addr & 0xFFFFFFFF));
       args.push_back(static_cast<uint32_t>(src_addr >> 32));
     } else if (arg_spec.kind == "input_buffer_addr32") {
+      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/false,
+                                                        buffer_bindings, input_names);
+      const uint64_t src_addr = binding.mesh_buffer->address();
       args.push_back(static_cast<uint32_t>(src_addr));
     } else if (arg_spec.kind == "output_buffer_addr") {
+      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/true,
+                                                        buffer_bindings, output_names);
+      const uint64_t dst_addr = binding.mesh_buffer->address();
       args.push_back(static_cast<uint32_t>(dst_addr & 0xFFFFFFFF));
       args.push_back(static_cast<uint32_t>(dst_addr >> 32));
     } else if (arg_spec.kind == "output_buffer_addr32") {
+      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/true,
+                                                        buffer_bindings, output_names);
+      const uint64_t dst_addr = binding.mesh_buffer->address();
       args.push_back(static_cast<uint32_t>(dst_addr));
-    } else if (arg_spec.kind == "tile_count") {
-      // tile_count = total_input_size / tile_size (matching legacy spec semantics)
-      args.push_back(tile_size == 0 ? 0 : static_cast<uint32_t>(total_input_size / tile_size));
+    } else if (arg_spec.kind == "tile_count" || arg_spec.kind == "num_k_tiles") {
+      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/false,
+                                                        buffer_bindings, input_names);
+      const uint32_t tile_size = ChoosePageSize(spec, "input");
+      args.push_back(tile_size == 0 ? 0
+                                    : static_cast<uint32_t>(binding.size_bytes / tile_size));
     } else if (arg_spec.kind == "current_work_linear_id") {
       args.push_back(current_work_linear_id);
     } else if (arg_spec.kind == "scratch_l1_buffer_addr32") {
@@ -317,9 +359,9 @@ static std::string MakeUniqueTempDir(const std::string& prefix) {
 
 void BlackholeModuleNode::ExecuteDirect(
     const std::string& func_name,
-    const std::vector<DLTensor*>& inputs,
+    const std::vector<RuntimeTensorBinding>& buffer_args,
     const std::vector<uint32_t>& scalar_args,
-    const std::vector<DLTensor*>& outputs) {
+    const std::vector<std::string>& output_names) {
 #ifdef TILELANG_BLACKHOLE_DIRECT
   using namespace tt::tt_metal;
 
@@ -347,36 +389,39 @@ void BlackholeModuleNode::ExecuteDirect(
     LOG(FATAL) << "ExecutableSpec has no kernels for function: " << func_name;
   }
 
-  // Calculate total sizes
-  size_t total_input_size = 0;
-  for (auto* tensor : inputs) {
-    total_input_size += GetDataSize(*tensor);
-  }
-
-  size_t total_output_size = 0;
-  for (auto* tensor : outputs) {
-    total_output_size += GetDataSize(*tensor);
-  }
-
   // Use role-aware page size for DRAM buffers so runtime allocation matches spec roles.
   uint32_t input_page_size = ChoosePageSize(spec, "input");
   uint32_t output_page_size = ChoosePageSize(spec, "output");
 
-  // Create DRAM buffers
-  distributed::DeviceLocalBufferConfig input_dram_config{
-      .page_size = input_page_size,
-      .buffer_type = BufferType::DRAM};
-  distributed::DeviceLocalBufferConfig output_dram_config{
-      .page_size = output_page_size,
-      .buffer_type = BufferType::DRAM};
-
-  distributed::ReplicatedBufferConfig input_buffer_config{.size = total_input_size};
-  auto input_buffer = distributed::MeshBuffer::create(
-      input_buffer_config, input_dram_config, mesh_device.get());
-
-  distributed::ReplicatedBufferConfig output_buffer_config{.size = total_output_size};
-  auto output_buffer = distributed::MeshBuffer::create(
-      output_buffer_config, output_dram_config, mesh_device.get());
+  std::unordered_map<std::string, RuntimeBufferBinding> runtime_buffers;
+  std::vector<std::string> input_names;
+  std::vector<std::string> ordered_output_names;
+  for (const auto& binding : buffer_args) {
+    ICHECK(binding.tensor != nullptr) << "Null tensor passed to Blackhole direct path";
+    const size_t tensor_size = GetDataSize(*binding.tensor);
+    distributed::DeviceLocalBufferConfig dram_config{
+        .page_size = binding.is_output ? output_page_size : input_page_size,
+        .buffer_type = BufferType::DRAM};
+    distributed::ReplicatedBufferConfig buffer_config{.size = tensor_size};
+    auto mesh_buffer =
+        distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device.get());
+    runtime_buffers.emplace(binding.name, RuntimeBufferBinding{
+                                              .mesh_buffer = mesh_buffer,
+                                              .size_bytes = tensor_size,
+                                              .is_output = binding.is_output,
+                                          });
+    if (binding.is_output) {
+      ordered_output_names.push_back(binding.name);
+    } else {
+      input_names.push_back(binding.name);
+      std::vector<uint8_t> input_data(tensor_size);
+      std::memcpy(input_data.data(), binding.tensor->data, tensor_size);
+      EnqueueWriteMeshBuffer(cq, mesh_buffer, input_data, /*blocking=*/true);
+    }
+  }
+  if (!output_names.empty()) {
+    ordered_output_names = output_names;
+  }
 
   // Create scratch L1 buffer if any kernel needs it
   std::shared_ptr<distributed::MeshBuffer> scratch_l1_buffer;
@@ -399,16 +444,6 @@ void BlackholeModuleNode::ExecuteDirect(
     scratch_l1_buffer = distributed::MeshBuffer::create(
         scratch_l1_buffer_config, scratch_l1_config, mesh_device.get());
   }
-
-  // Write input data to device
-  std::vector<uint8_t> input_data;
-  input_data.reserve(total_input_size);
-  for (auto* tensor : inputs) {
-    size_t size = GetDataSize(*tensor);
-    auto* p = static_cast<uint8_t*>(tensor->data);
-    input_data.insert(input_data.end(), p, p + size);
-  }
-  EnqueueWriteMeshBuffer(cq, input_buffer, input_data, /*blocking=*/true);
 
   // Build work items: pair each logical work_id with its assigned physical core.
   // Each WorkPacket entry owns a slice of the logical work range on one core.
@@ -466,8 +501,7 @@ void BlackholeModuleNode::ExecuteDirect(
           program, item.core, kernel_spec, kernel_paths[ki]);
 
       auto runtime_args = BuildRuntimeArgsFromSpec(
-          kernel_spec, spec, item.work_id, total_input_size,
-          *input_buffer, *output_buffer,
+          kernel_spec, spec, item.work_id, runtime_buffers, input_names, ordered_output_names,
           scratch_l1_buffer ? scratch_l1_buffer.get() : nullptr,
           scalar_args);
 
@@ -482,18 +516,19 @@ void BlackholeModuleNode::ExecuteDirect(
   }
 
   // Read back results
-  std::vector<uint8_t> output_data;
-  distributed::EnqueueReadMeshBuffer(cq, output_data, output_buffer, /*blocking=*/true);
-
-  // Copy to output tensors
-  size_t offset = 0;
-  for (auto* tensor : outputs) {
-    size_t size = GetDataSize(*tensor);
-    ICHECK(offset + size <= output_data.size())
-        << "Output data size mismatch: need " << (offset + size)
-        << " but got " << output_data.size();
-    std::memcpy(tensor->data, output_data.data() + offset, size);
-    offset += size;
+  for (const auto& binding : buffer_args) {
+    if (!binding.is_output) {
+      continue;
+    }
+    auto it = runtime_buffers.find(binding.name);
+    ICHECK(it != runtime_buffers.end())
+        << "Missing runtime output binding for " << binding.name;
+    std::vector<uint8_t> output_data;
+    distributed::EnqueueReadMeshBuffer(cq, output_data, it->second.mesh_buffer,
+                                       /*blocking=*/true);
+    ICHECK(output_data.size() >= it->second.size_bytes)
+        << "Output data size mismatch for " << binding.name;
+    std::memcpy(binding.tensor->data, output_data.data(), it->second.size_bytes);
   }
 
   // Cleanup kernel temp files
@@ -532,9 +567,9 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
   }
 
   // Collect arguments
-  std::vector<DLTensor*> inputs;
-  std::vector<DLTensor*> outputs;
+  std::vector<RuntimeTensorBinding> buffer_args;
   std::vector<uint32_t> scalars;
+  std::vector<std::string> output_names;
 
   size_t buf_idx = 0;
   for (size_t i = 0; i < info_.tvm_arg_types.size(); ++i) {
@@ -543,10 +578,13 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
       bool is_out = use_position_fallback
           ? (buf_idx == n_buffer_args - 1)
           : (buf_idx < buffer_is_output.size() && buffer_is_output[buf_idx]);
+      const std::string buffer_name =
+          (i < info_.tvm_arg_names.size() && !info_.tvm_arg_names[i].empty())
+              ? info_.tvm_arg_names[i]
+              : ("arg" + std::to_string(i));
+      buffer_args.push_back(RuntimeTensorBinding{buffer_name, tensor, is_out});
       if (is_out) {
-        outputs.push_back(tensor);
-      } else {
-        inputs.push_back(tensor);
+        output_names.push_back(buffer_name);
       }
       ++buf_idx;
     } else {
@@ -556,7 +594,7 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
     }
   }
 
-  m_->ExecuteDirect(func_name_, inputs, scalars, outputs);
+  m_->ExecuteDirect(func_name_, buffer_args, scalars, output_names);
 }
 
 // ============================================================================

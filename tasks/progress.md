@@ -242,14 +242,42 @@
 - `LowerBlackholeOps` 已移除 `StoreGemmSegmentPlan` 分叉逻辑：
   - `StoreSegmentPlan` 现在先检查 `blackhole.segment_plan` 是否已由 `SplitBlackholeKernel` 写入
   - 若已写入则跳过，保留 3-kernel schema；否则走 fused_dataflow 单 kernel 路径
+- Stage 2D Step 3 已补第一轮 planner-driven CB binding 收口（2026-03-24）：
+  - `LowerBlackholeOps` 的 GEMM compute builtin 不再把 `0/1/16` 当最终硬件 `cb_id`
+  - 当前改为写入显式 placeholder CB IDs，并同步写出 `blackhole.gemm_cb_placeholders`
+  - `CodeGenBlackhole` 已开始读取：
+    - `blackhole.gemm_cb_placeholders`
+    - `blackhole.cb_bindings`
+    并在 codegen 阶段把 placeholder 解析成 planner 最终分配的 `cb_id`
+  - 这样 GEMM compute 已不再把 allocator 当前顺序偷渡成协议
+  - 聚焦验证：
+    - `cmake --build tilelang_repo/build --target tilelang -j8`
+    - `pytest -k 'gemm_cb_placeholders_resolve_via_planner or split_kernel_gemm_segment_plan or copy_pass_attrs'`
+    - 结果：`2 passed, 1 skipped`
+- Stage 2D Step 4/5 已补第一轮实现（2026-03-24）：
+  - `rt_mod_blackhole` 不再只消费 `segment_plan[0]`
+  - `KernelArgSpec` 已扩展 `buffer` 字段，segment-level runtime args 可显式绑定 `A/B/C`
+  - `ExecutableSpec` 已额外保留 `tvm_arg_names`
+  - `rt_mod_blackhole` 现已为 reader / compute / writer 生成 segment-specific `PrimFunc`
+    - body 只保留当前 `blackhole.segment_kind`
+    - `blackhole.core_type` / `blackhole.runtime_args` 按当前 segment 改写
+    - 继续复用 `CodeGenBlackhole`
+  - `BlackholeModule::ExecuteDirect()` 已改为按 TVM buffer 参数分别创建 DRAM `MeshBuffer`
+  - `BuildRuntimeArgsFromSpec()` 已可按 `KernelArgSpec.buffer` 绑定多输入/输出 buffer 地址
+  - `CreateKernelFromSpec()` 已按 kind/core_type 路由 reader(BRISC) / compute(TRISC) / writer(NCRISC)
+- 当前新增 blocker（Stage 2D Step 6 前置，2026-03-24）：
+  - GEMM 走完整 `lower()` 时，当前会在 `MergeSharedMemoryAllocations` 失败：
+    - `MergeSharedMemoryAllocations expects flat memory buffers`
+  - 说明当前 `LowerTileOp` Blackhole GEMM skip 后，shared alloc 仍保持二维形态；而主线后段某些 pass 仍假设 `FlattenBuffer` 之后的一维 shared buffer
+  - 这属于 Step 6 之前的新前置问题，不是 `rt_mod_blackhole` / `BlackholeModule` 的多 segment 实现本身
 - 验收：`testing/python/target/blackhole/test_blackhole_e2e.py` 结果为 `16 passed, 5 skipped, 1 xfailed`
 
 当前 Stage 2D 剩余步骤：
 
-- Step 3: `LowerBlackholeOps` GEMM compute 序列已生成（mm_init/matmul_tiles/pack_tile），待接入正式 CB ID 从 `blackhole.cb_configs` 读取（当前用固定 0/1/16）
-- Step 4: `rt_mod_blackhole.cc` 需扩展为遍历所有 segment（当前只取 `[0]`），为 3-kernel plan 建 3 个 KernelSpec
-- Step 5: `BlackholeModule::ExecuteDirect()` 需按 KernelSpec::kind 路由 reader(RISCV_0)/compute(TRISC)/writer(RISCV_1) 注册
-- Step 6: E2E 测试 `test_blackhole_gemm_basic`
+- Step 3: `LowerBlackholeOps` GEMM compute 的 planner-driven CB binding 已接入 codegen；剩余工作转为确认 multi-segment source generation 时继续沿用这套协议
+- Step 4: `rt_mod_blackhole` 多 segment extractor 已落地；剩余工作转为随 Step 6 一起验证实际 lower/build 链路
+- Step 5: `BlackholeModule` 3-kernel 注册已落地；剩余工作转为 TT-Sim / lower 级联验证
+- Step 6: E2E 测试 `test_blackhole_gemm_basic`，当前被 `MergeSharedMemoryAllocations` shared-buffer flatten 前置条件阻塞
 
 ## 当前下一步
 
@@ -259,20 +287,20 @@
 2. ~~Copy E2E 验收~~ → **已完成**（18 passed, 1 skipped，含 grid>1 / large-shape / oversubscription 负例）
 3. ~~`ExecuteDirect` 核坐标 / input-output 分类 / 死代码~~ → **已修正**
 4. ~~split 前语义规划（Stage 2C）~~ → **已完成**（`AnnotateBlackholeCopySemantics` + FlattenBuffer/VectorizeLoop 验证 + StorageRewrite 不兼容性确认）
-5. GEMM 接入（Stage 2D / Phase 5）— **进行中（Step 2 完成）**
+5. GEMM 接入（Stage 2D / Phase 5）— **进行中（Step 4/5 已落地，Step 6 当前首要）**
    - ~~Step 1: `LowerTileOp` Blackhole GEMM skip~~ → **已完成**
    - ~~Step 2: `SplitBlackholeKernel` pass~~ → **已完成**
-   - Step 3: `LowerBlackholeOps` GEMM lower → CB IDs 已接入，待 rt_mod 多 segment
-   - Step 4: `rt_mod_blackhole` 多 segment 提取 → **待实现**
-   - Step 5: `BlackholeModule` 3-kernel 注册 → **待实现**
-   - Step 6: E2E 测试 → **待实现**
+   - ~~Step 3: `LowerBlackholeOps` GEMM lower / planner-driven CB binding~~ → **已完成**
+   - ~~Step 4: `rt_mod_blackhole` 多 segment extractor~~ → **已完成**
+   - ~~Step 5: `BlackholeModule` 3-kernel 注册~~ → **已完成**
+   - Step 6: E2E 测试 → **进行中**（当前被 `MergeSharedMemoryAllocations` / shared flatten 前置条件阻塞）
 6. 分批接回中后段通用 pass（Phase 4）— 可并行或后置
 
 ### 当前具体下一步
 
-1. 扩展 `rt_mod_blackhole.cc` 遍历所有 segment，为每个 segment 创建 `KernelSpec`（Step 4）
-2. 扩展 `BlackholeModule::ExecuteDirect()` 按 kind 路由 reader/compute/writer kernel 注册（Step 5）
-3. 添加 E2E 测试 `test_blackhole_gemm_basic`（Step 6）
+1. 处理 GEMM `lower()` 当前的 shared-buffer flatten blocker（`MergeSharedMemoryAllocations expects flat memory buffers`）
+2. 在 blocker 解除后重跑 `test_blackhole_gemm_basic` direct path（Step 6）
+3. 回填 Step 4/5 的实际 TT-Sim 验收结果
 
 ## 当前活动设计文档
 

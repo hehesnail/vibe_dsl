@@ -58,6 +58,7 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   runtime_arg_vars_by_kind_.clear();
   cb_page_size_by_id_.clear();
   cb_num_pages_by_id_.clear();
+  placeholder_cb_id_map_.clear();
   logical_grid_x_ = 1;
   logical_grid_y_ = 1;
   linearization_ = "row_major";
@@ -136,6 +137,7 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   // TT-Metal kernels use get_arg_val<uint32_t>(arg_index) to read arguments
   stream << "  // Load kernel arguments from runtime\n";
   LoadCorePlan(f);
+  LoadGemmCBPlaceholders(f);
   if (f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.runtime_args")) {
     EmitRuntimeArgLoads(f);
     this->VisitStmt(f->body);
@@ -219,6 +221,53 @@ void CodeGenBlackhole::LoadCorePlan(const tvm::tir::PrimFunc &f) {
   }
   if (auto v = core_plan.Get("linearization")) {
     linearization_ = Downcast<tvm::ffi::String>(v.value());
+  }
+}
+
+void CodeGenBlackhole::LoadGemmCBPlaceholders(const tvm::tir::PrimFunc &f) {
+  placeholder_cb_id_map_.clear();
+
+  auto placeholder_attr =
+      f->GetAttr<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>("blackhole.gemm_cb_placeholders");
+  if (!placeholder_attr) {
+    return;
+  }
+
+  std::unordered_map<std::string, int> cb_id_by_requirement_name;
+  if (auto cb_bindings_attr = f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.cb_bindings")) {
+    for (const auto &item : cb_bindings_attr.value()) {
+      auto binding = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
+          tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
+      if (binding.empty()) {
+        continue;
+      }
+      auto name_it = binding.Get("requirement_name");
+      auto cb_id_it = binding.Get("cb_id");
+      if (!name_it.has_value() || !cb_id_it.has_value()) {
+        continue;
+      }
+      cb_id_by_requirement_name[Downcast<tvm::ffi::String>(name_it.value())] =
+          Downcast<tvm::Integer>(cb_id_it.value()).IntValue();
+    }
+  }
+
+  for (const auto &kv : placeholder_attr.value()) {
+    auto info = kv.second.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
+        tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
+    if (info.empty()) {
+      continue;
+    }
+    auto req_name_it = info.Get("requirement_name");
+    auto placeholder_it = info.Get("placeholder_cb_id");
+    if (!req_name_it.has_value() || !placeholder_it.has_value()) {
+      continue;
+    }
+    const std::string req_name = Downcast<tvm::ffi::String>(req_name_it.value());
+    auto binding_it = cb_id_by_requirement_name.find(req_name);
+    ICHECK(binding_it != cb_id_by_requirement_name.end())
+        << "Missing CB binding for GEMM requirement: " << req_name;
+    const int placeholder = Downcast<tvm::Integer>(placeholder_it.value()).IntValue();
+    placeholder_cb_id_map_[placeholder] = binding_it->second;
   }
 }
 
@@ -341,6 +390,23 @@ std::string CodeGenBlackhole::GetRuntimeArgVarForBuffer(
   ICHECK(it != buffer_runtime_arg_map_.end())
       << "Missing runtime arg binding for buffer var: " << buffer_var->name_hint;
   return it->second;
+}
+
+int CodeGenBlackhole::ResolveCBId(const tvm::PrimExpr &expr) const {
+  const auto *cb_id_imm = expr.as<tvm::tir::IntImmNode>();
+  ICHECK(cb_id_imm) << "Blackhole CB operations currently expect constant cb_id";
+  const int cb_id = static_cast<int>(cb_id_imm->value);
+  if (cb_id >= 0) {
+    return cb_id;
+  }
+  auto it = placeholder_cb_id_map_.find(cb_id);
+  ICHECK(it != placeholder_cb_id_map_.end())
+      << "Missing resolved CB binding for placeholder cb_id=" << cb_id;
+  return it->second;
+}
+
+void CodeGenBlackhole::PrintResolvedCBId(const tvm::PrimExpr &expr, std::ostream &os) const {
+  os << ResolveCBId(expr);
 }
 
 int CodeGenBlackhole::GetCBPageSize(int cb_id) const {
@@ -625,7 +691,7 @@ void CodeGenBlackhole::PrintCBReserveBack(const tvm::tir::CallNode *op,
                                           std::ostream &os) {
   need_dataflow_api_h_ = true;
   os << "cb_reserve_back(";
-  PrintExpr(op->args[0], os);  // cb_id
+  PrintResolvedCBId(op->args[0], os);
   os << ", ";
   PrintExpr(op->args[1], os);  // num_tiles
   os << ")";
@@ -634,11 +700,9 @@ void CodeGenBlackhole::PrintCBReserveBack(const tvm::tir::CallNode *op,
 void CodeGenBlackhole::PrintCBPushBack(const tvm::tir::CallNode *op,
                                        std::ostream &os) {
   need_dataflow_api_h_ = true;
-  const auto* cb_id_imm = op->args[0].as<tvm::tir::IntImmNode>();
-  ICHECK(cb_id_imm) << "Blackhole cb_push_back currently expects constant cb_id";
-  const int cb_id = static_cast<int>(cb_id_imm->value);
+  const int cb_id = ResolveCBId(op->args[0]);
   os << "do { cb_push_back(";
-  PrintExpr(op->args[0], os);
+  os << cb_id;
   os << ", ";
   PrintExpr(op->args[1], os);
   os << "); " << GetCBTailVar(cb_id) << " = (" << GetCBTailVar(cb_id) << " + 1) % "
@@ -649,7 +713,7 @@ void CodeGenBlackhole::PrintCBWaitFront(const tvm::tir::CallNode *op,
                                         std::ostream &os) {
   need_dataflow_api_h_ = true;
   os << "cb_wait_front(";
-  PrintExpr(op->args[0], os);  // cb_id
+  PrintResolvedCBId(op->args[0], os);
   os << ", ";
   PrintExpr(op->args[1], os);  // num_tiles
   os << ")";
@@ -658,11 +722,9 @@ void CodeGenBlackhole::PrintCBWaitFront(const tvm::tir::CallNode *op,
 void CodeGenBlackhole::PrintCBPopFront(const tvm::tir::CallNode *op,
                                        std::ostream &os) {
   need_dataflow_api_h_ = true;
-  const auto* cb_id_imm = op->args[0].as<tvm::tir::IntImmNode>();
-  ICHECK(cb_id_imm) << "Blackhole cb_pop_front currently expects constant cb_id";
-  const int cb_id = static_cast<int>(cb_id_imm->value);
+  const int cb_id = ResolveCBId(op->args[0]);
   os << "do { cb_pop_front(";
-  PrintExpr(op->args[0], os);
+  os << cb_id;
   os << ", ";
   PrintExpr(op->args[1], os);
   os << "); " << GetCBHeadVar(cb_id) << " = (" << GetCBHeadVar(cb_id) << " + 1) % "
@@ -708,9 +770,7 @@ void CodeGenBlackhole::PrintReadTileToCB(const tvm::tir::CallNode *op,
   need_dataflow_api_h_ = true;
   const std::string src_addr_var = GetRuntimeArgVarForBuffer(op->args[0]);
   const std::string scratch_addr_var = GetRuntimeArgVarByKind("scratch_l1_buffer_addr32");
-  const auto* cb_id_imm = op->args[2].as<tvm::tir::IntImmNode>();
-  ICHECK(cb_id_imm) << "Blackhole read_tile_to_cb currently expects constant cb_id";
-  const int cb_id = static_cast<int>(cb_id_imm->value);
+  const int cb_id = ResolveCBId(op->args[2]);
   os << "{ ";
   os << "const uint32_t tile_index = ";
   PrintExpr(op->args[1], os);
@@ -730,9 +790,7 @@ void CodeGenBlackhole::PrintWriteTileFromCB(const tvm::tir::CallNode *op,
   need_dataflow_api_h_ = true;
   const std::string dst_addr_var = GetRuntimeArgVarForBuffer(op->args[1]);
   const std::string scratch_addr_var = GetRuntimeArgVarByKind("scratch_l1_buffer_addr32");
-  const auto* cb_id_imm = op->args[0].as<tvm::tir::IntImmNode>();
-  ICHECK(cb_id_imm) << "Blackhole write_tile_from_cb currently expects constant cb_id";
-  const int cb_id = static_cast<int>(cb_id_imm->value);
+  const int cb_id = ResolveCBId(op->args[0]);
   os << "{ ";
   os << "const uint32_t tile_index = ";
   PrintExpr(op->args[2], os);
@@ -751,11 +809,11 @@ void CodeGenBlackhole::PrintMMInit(const tvm::tir::CallNode *op,
                                    std::ostream &os) {
   need_compute_api_h_ = true;
   os << "mm_init(";
-  PrintExpr(op->args[0], os);  // in0_cb_id
+  PrintResolvedCBId(op->args[0], os);
   os << ", ";
-  PrintExpr(op->args[1], os);  // in1_cb_id
+  PrintResolvedCBId(op->args[1], os);
   os << ", ";
-  PrintExpr(op->args[2], os);  // out_cb_id
+  PrintResolvedCBId(op->args[2], os);
   os << ")";
 }
 
@@ -763,9 +821,9 @@ void CodeGenBlackhole::PrintMatmulTiles(const tvm::tir::CallNode *op,
                                         std::ostream &os) {
   need_compute_api_h_ = true;
   os << "matmul_tiles(";
-  PrintExpr(op->args[0], os);  // in0_cb_id
+  PrintResolvedCBId(op->args[0], os);
   os << ", ";
-  PrintExpr(op->args[1], os);  // in1_cb_id
+  PrintResolvedCBId(op->args[1], os);
   os << ", ";
   PrintExpr(op->args[2], os);  // in0_tile_index
   os << ", ";
@@ -801,7 +859,7 @@ void CodeGenBlackhole::PrintPackTile(const tvm::tir::CallNode *op,
   os << "pack_tile(";
   PrintExpr(op->args[0], os);  // src_tile_index
   os << ", ";
-  PrintExpr(op->args[1], os);  // dst_cb_id
+  PrintResolvedCBId(op->args[1], os);
   os << ")";
 }
 

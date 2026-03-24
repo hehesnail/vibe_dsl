@@ -67,6 +67,7 @@ struct KernelArgSpec {
   std::string name;
   std::string kind;
   std::string dtype;
+  std::string buffer;
 };
 
 /*!
@@ -94,8 +95,18 @@ struct ExecutableSpec {
   std::vector<KernelSpec> kernels;
 
   // TVM runtime invocation metadata retained during Stage 0.
+  std::vector<std::string> tvm_arg_names;
   std::vector<DLDataType> tvm_arg_types;
   std::vector<bool> tvm_is_buffer_arg;
+};
+
+/*!
+ * \brief Runtime tensor binding for direct Blackhole execution.
+ */
+struct RuntimeTensorBinding {
+  std::string name;
+  DLTensor* tensor = nullptr;
+  bool is_output = false;
 };
 
 
@@ -137,9 +148,9 @@ class BlackholeModuleNode : public ffi::ModuleObj {
 
   /*! \brief Execute function using direct TT-Metal API (requires TILELANG_BLACKHOLE_DIRECT) */
   void ExecuteDirect(const std::string& func_name,
-                     const std::vector<DLTensor*>& inputs,
+                     const std::vector<RuntimeTensorBinding>& buffer_args,
                      const std::vector<uint32_t>& scalar_args,
-                     const std::vector<DLTensor*>& outputs);
+                     const std::vector<std::string>& output_names);
 
  private:
   // Function information map

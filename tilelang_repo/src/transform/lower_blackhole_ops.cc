@@ -111,6 +111,9 @@ static PrimExpr ScalarizeVectorizedIndex(const PrimExpr& index) {
 
 constexpr int kBlackholeTileRows = 32;
 constexpr int kBlackholeTileCols = 32;
+constexpr int kGemmInputAPlaceholderCB = -1;
+constexpr int kGemmInputBPlaceholderCB = -2;
+constexpr int kGemmOutputCPlaceholderCB = -3;
 
 // Helper to get storage scope from buffer
 static std::string GetStorageScope(const Buffer& buffer) {
@@ -157,6 +160,7 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
 
   // Store CB requirements in function attributes for PlanBlackholeCB
   StoreCBRequirements(new_func);
+  StoreGemmCBPlaceholders(new_func);
   StoreRuntimeArgs(new_func);
   StoreSegmentPlan(new_func);
 
@@ -341,6 +345,37 @@ void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 
+void LowerBlackholeOps::StoreGemmCBPlaceholders(PrimFunc& func) {
+  if (gemm_a_buffer_name_.empty() || gemm_b_buffer_name_.empty() || gemm_c_buffer_name_.empty()) {
+    return;
+  }
+
+  Map<String, Any> attrs;
+  if (func->attrs.defined()) {
+    attrs = func->attrs->dict;
+  }
+
+  Map<String, Any> placeholder_map;
+
+  Map<String, Any> a_info;
+  a_info.Set("requirement_name", String(gemm_a_buffer_name_));
+  a_info.Set("placeholder_cb_id", Integer(kGemmInputAPlaceholderCB));
+  placeholder_map.Set("a", a_info);
+
+  Map<String, Any> b_info;
+  b_info.Set("requirement_name", String(gemm_b_buffer_name_));
+  b_info.Set("placeholder_cb_id", Integer(kGemmInputBPlaceholderCB));
+  placeholder_map.Set("b", b_info);
+
+  Map<String, Any> c_info;
+  c_info.Set("requirement_name", String(gemm_c_buffer_name_));
+  c_info.Set("placeholder_cb_id", Integer(kGemmOutputCPlaceholderCB));
+  placeholder_map.Set("c", c_info);
+
+  attrs.Set("blackhole.gemm_cb_placeholders", placeholder_map);
+  func.CopyOnWrite()->attrs = DictAttrs(attrs);
+}
+
 void LowerBlackholeOps::StoreSegmentPlan(PrimFunc& func) {
   // If SplitBlackholeKernels already wrote the segment plan, do not overwrite.
   if (func->GetAttr<Array<Any>>("blackhole.segment_plan")) return;
@@ -404,9 +439,8 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
   if (const auto* imm = args[6].as<IntImmNode>()) gemm_n_ = static_cast<int>(imm->value);
   if (const auto* imm = args[7].as<IntImmNode>()) gemm_k_ = static_cast<int>(imm->value);
 
-  // Register CBs: A→CB0 (kInput), B→CB1 (kInput), C→CB16 (kOutput).
-  // PlanBlackholeCB assigns IDs sequentially: kInput starts at 0, kOutput at 16.
-  // Pushing in order A, B (kInput), then C (kOutput) produces exactly CB0, CB1, CB16.
+  // Register GEMM requirements.  The final cb_id is a planner decision and must
+  // be consumed later from blackhole.cb_bindings rather than assumed here.
   const int ab_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_ab_dtype_.bytes();
   const int c_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_c_dtype_.bytes();
 
@@ -738,10 +772,11 @@ void LowerBlackholeOps::RecordDramToDramCopy(const BufferStoreNode* op) {
 }
 
 Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op) {
-  // CB IDs for GEMM: A=CB0, B=CB1, C=CB16 (matched by PlanBlackholeCB allocation order).
-  constexpr int in0_id = 0;
-  constexpr int in1_id = 1;
-  constexpr int out_id = 16;
+  // GEMM uses symbolic CB placeholders here.  The real hardware cb_id is resolved
+  // later from PlanBlackholeCB output (blackhole.cb_bindings) by codegen/materialization.
+  constexpr int in0_id = kGemmInputAPlaceholderCB;
+  constexpr int in1_id = kGemmInputBPlaceholderCB;
+  constexpr int out_id = kGemmOutputCPlaceholderCB;
   // num_k_tiles: how many 32-element K-tiles to accumulate
   const int num_k_tiles = (gemm_k_ > 0) ? (gemm_k_ / kBlackholeTileCols) : 1;
 
