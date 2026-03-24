@@ -5,9 +5,9 @@
 
 ## 当前阶段
 
-- **阶段**: Stage 2C split-before 语义规划
-- **日期**: 2026-03-23
-- **当前目标**: Stage 2B 已完成，当前继续收正 split-before copy 语义规划，并把 Stage 2C 的协议和专项验证补齐，为后续 GEMM 接入做准备
+- **阶段**: Stage 2C split-before 语义规划 ✅ 已完成 → 下一步：通用 pass 回收（Phase 4）+ GEMM 接入
+- **日期**: 2026-03-24
+- **当前目标**: Stage 2C 已完成（annotation + FlattenBuffer/VectorizeLoop 验证 + StorageRewrite 不兼容性确认）；下一步进入 GEMM 接入（Stage 2D）或 通用 pass 回收（Phase 4）
 
 ## 当前状态判断
 
@@ -140,11 +140,16 @@
 
 当前仍然存在的主要结构问题：
 
-- split 前语义规划仍不够强，copy/gemm 语义仍偏依赖 split 后 matcher 恢复
 - `PlanBlackholeCB` 仍偏 MVP allocator，尚未成为正式 memory planner
-- `FlattenBuffer` / `VectorizeLoop` 已完成 Stage 2C 范围内的专项验证，但 `StorageRewrite` 仍未接回或验收
-- copy 路径虽然已经验收完成，但 split-before 语义规划仍未正式落地
+- `StorageRewrite` 确认不兼容 Blackhole CB 模型（VectorTypeAccessChecker 不识别 DeclBuffer），永久排除于 Blackhole pipeline；Phase 4 若需引入必须先加 shared-scope 豁免
 - GEMM 仍未接入正式 direct host path
+
+基于 Stage 2C 完成的新结论（2026-03-24）：
+
+- `AnnotateBlackholeCopySemantics` 已完全落地（ForNode annotation schema）
+- `FlattenBuffer` + `VectorizeLoop` 已在 Stage 2C 范围内专项验证通过
+- `StorageRewrite` 不兼容性已通过 `xfail` 测试记录并文档化
+- Stage 2C 验收：`15 passed, 5 skipped, 1 xfailed`（全部符合预期）
 
 当前新增设计收束：
 
@@ -170,7 +175,7 @@
 | Stage 1 | single-core copy bring-up | ✅ 已完成 | 最小 copy 路径已 bring-up，但不再扩大为正式主线 |
 | Stage 2A | pass 主链接入收正 | 🔄 进行中 | 固定 split 前语义规划 / split 后正式 plan 提取 / host-side materialization 三层 |
 | Stage 2B | single-core copy 正式主链 | ✅ 已完成 | direct path copy E2E 已在 TT-Sim 上验收通过 |
-| Stage 2C | split-before 语义规划 | 🔄 进行中 | copy loop annotation 与 `FlattenBuffer/VectorizeLoop` 验证已落地，`StorageRewrite` 仍待补齐 |
+| Stage 2C | split-before 语义规划 | ✅ 已完成 | annotation + FlattenBuffer/VectorizeLoop 验证通过；StorageRewrite 确认不兼容 Blackhole CB 模型，永久排除 |
 | Stage 2D | single-core true E2E | ⏳ 未完成 | copy + GEMM 都通过正式 host-device 主路径执行 |
 | Stage 3 | multi-core runtime 调度 | ⏳ 未开始 | `CorePlan` 已补 formal schema，后续补 per-core runtime args 与多核执行 |
 
@@ -226,30 +231,25 @@
 
 ## 当前下一步
 
-### 当前剩余事项优先级（2026-03-23 更新）
+### 当前剩余事项优先级（2026-03-24 更新）
 
 1. ~~`BlackholeModule` direct host path~~ → **已完成**
 2. ~~Copy E2E 验收~~ → **已完成**（18 passed, 1 skipped，含 grid>1 / large-shape / oversubscription 负例）
 3. ~~`ExecuteDirect` 核坐标 / input-output 分类 / 死代码~~ → **已修正**
-4. split 前语义规划收正（Phase 3）— **持续推进中**
-5. `StorageRewrite` 场景验证与通用 pass 回收 — **Stage 2C 当前剩余重点**
-   - 推荐方案 A：新增 `AnnotateBlackholeCopySemantics` pass
-   - 不修改 `LowerTileOp` 核心降级逻辑
-5. 分批接回中后段通用 pass（Phase 4）
-   - `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite`
-   - shared-scope buffer 需豁免
-6. GEMM 接入（Phase 5）
+4. ~~split 前语义规划（Stage 2C）~~ → **已完成**（`AnnotateBlackholeCopySemantics` + FlattenBuffer/VectorizeLoop 验证 + StorageRewrite 不兼容性确认）
+5. GEMM 接入（Stage 2D / Phase 5）— **下一首要**
    - 激活 `SplitBlackholeKernel`
-   - 生成 3 个独立 kernel 文件
+   - 生成 reader / compute / writer 3 个独立 kernel
    - 最小 GEMM E2E
+6. 分批接回中后段通用 pass（Phase 4）— 可并行或后置
+   - `FlattenBuffer` / `VectorizeLoop` 可直接接入（已验证）
+   - `StorageRewrite` 需先加 shared-scope 豁免机制才可接入
 
 ### 当前具体下一步
 
-1. 启动 split-before 语义规划实现：
-   - 推荐方案 A：`AnnotateBlackholeCopySemantics`
-   - 先固定 copy semantic unit，再决定 GEMM 复用方式
-2. 明确 `LowerTileOp` / split 后 matcher / codegen 的职责边界，减少 copy 语义恢复对 split 后 matcher 的依赖。
-3. 在 copy 主链稳定前提下，准备 GEMM 接入所需的最小 semantic schema。
+1. 设计 GEMM 接入方案（`SplitBlackholeKernel` 激活路径）
+2. 明确 reader / compute / writer kernel ABI 与 CB 分配方案
+3. 在 copy 主链基础上扩展 `LowerBlackholeOps` 以支持 GEMM 语义
 
 ## 当前活动设计文档
 

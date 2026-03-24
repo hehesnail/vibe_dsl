@@ -293,6 +293,38 @@ def test_blackhole_copy_semantics_survives_flatten_and_vectorize():
     assert body_script.count("tl.blackhole.write_tile_from_cb") == 1
 
 
+@pytest.mark.xfail(
+    reason=(
+        "StorageRewrite is incompatible with the Blackhole CB model: its "
+        "VectorTypeAccessChecker only recognizes AllocateNode as buffer declarations "
+        "but after FlattenBuffer+VectorizeLoop the shared (CB) buffers are represented "
+        "via DeclBuffer, causing a spurious 'buffer used before declaration' error. "
+        "StorageRewrite provides no benefit for Blackhole circular buffers (hardware-managed "
+        "fixed-size resources) and is intentionally excluded from the Blackhole pipeline. "
+        "Phase 4 may add shared-scope exemption if StorageRewrite is ever needed."
+    ),
+    strict=True,
+)
+def test_blackhole_storage_rewrite_incompatible_with_cb_model():
+    """Stage 2C finding: StorageRewrite must NOT be run on Blackhole IR after FlattenBuffer+VectorizeLoop.
+
+    Blackhole 'shared' scope maps to hardware Circular Buffers, not CUDA shared memory.
+    StorageRewrite's VectorTypeAccessChecker does not recognize DeclBuffer as a declaration,
+    so after FlattenBuffer+VectorizeLoop it fails with 'buffer used before declaration'.
+    The Blackhole pipeline correctly excludes StorageRewrite.
+    """
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+    mod = tilelang.transform.FlattenBuffer()(mod)
+    mod = tilelang.transform.VectorizeLoop()(mod)
+    # This is expected to raise — StorageRewrite is not compatible with Blackhole CB IR.
+    mod = tilelang.transform.StorageRewrite()(mod)
+
+
 def make_blackhole_cb_requirements_mod(cb_requirements):
     """Build a split/lowered Blackhole module with an explicit CB requirement list."""
     kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)

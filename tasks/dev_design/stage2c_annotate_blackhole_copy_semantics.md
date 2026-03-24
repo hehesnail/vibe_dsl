@@ -187,7 +187,7 @@ Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
 - 已实现 `ForNode::annotations["blackhole.copy_semantics"]` 的结构化 schema
 - 已补 `mid_shape` 元数据，用于 `FlattenBuffer` 后恢复 shared tile 形状
 - 已验证 `AnnotateBlackholeCopySemantics -> FlattenBuffer -> VectorizeLoop -> LowerBlackholeOps` 可继续产出 copy builtin 与 runtime attrs
-- `StorageRewrite` 仍未纳入本轮专项验证
+- `StorageRewrite` 已明确为**不兼容 Blackhole CB 模型**（见 5. 遗留问题与限制）
 
 ---
 
@@ -224,11 +224,11 @@ mod = tilelang.transform.AnnotateDeviceRegions()(mod)
 
 ## 7. 验证方式
 
-1. `test_blackhole_e2e.py` 全套用例保持 `15 passed, 5 skipped`（无回归）
+1. `test_blackhole_e2e.py` 全套用例：`15 passed, 5 skipped, 1 xfailed`（无回归）
 2. 在 TIR dump 中能看到 copy For loop 带 `annotations={"blackhole.copy_semantics": ...}`
 3. `AnnotateBlackholeCopySemantics -> FlattenBuffer -> VectorizeLoop -> LowerBlackholeOps` 专项测试通过
 4. `blackhole.runtime_args` / copy builtin 产出与当前路径一致
-5. `StorageRewrite` 暂未纳入本轮专项验证
+5. `StorageRewrite` 不兼容性已通过 `test_blackhole_storage_rewrite_incompatible_with_cb_model` 记录（`xfail/strict`）
 
 ---
 
@@ -245,4 +245,8 @@ mod = tilelang.transform.AnnotateDeviceRegions()(mod)
 
 - 当前只处理静态 shape copy（动态 shape 的 tile index 计算留后续）
 - `AnnotateBlackholeCopySemantics` 只处理 `kDramToCB` / `kCBToDram` / `kDramToDram`；GEMM-related copy 语义（kCBToCB）另行处理
-- 通用 pass（FlattenBuffer 等）接回 Blackhole 主线是 Phase 4 的事，本 pass 只是铺路
+- `StorageRewrite` **不兼容 Blackhole CB 模型**：
+  - 根因：`StorageRewrite` 内部的 `VectorTypeAccessChecker` 只识别 `AllocateNode` 作为 buffer 声明；但 `FlattenBuffer` + `VectorizeLoop` 后，shared 作用域的 CB buffer 通过 `DeclBuffer` 表示，checker 无法找到声明，抛出 "buffer used before declaration" 错误
+  - Blackhole shared scope = 硬件 CB，大小固定，由硬件管理；`StorageRewrite` 针对 CUDA 软件管理 shared memory 的合并/复用优化，对 CB 没有意义
+  - **结论**：`StorageRewrite` 应永久排除在 Blackhole pipeline 之外；Phase 4 如需引入，必须先添加 shared-scope 豁免机制
+- `FlattenBuffer` / `VectorizeLoop` 接回 Blackhole 主线是 Phase 4 的事，本 pass 只是铺路

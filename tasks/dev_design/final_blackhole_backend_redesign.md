@@ -366,6 +366,12 @@ multi-core 的主要实现位置保持不变：
 - copy 语义不再主要靠 split 后 matcher 从晚期 loop 恢复
 - 为 GEMM 接入准备最小 semantic schema
 
+状态：
+
+- **已完成**（15 passed, 5 skipped, 1 xfailed）
+- `AnnotateBlackholeCopySemantics` 已落地；`FlattenBuffer` / `VectorizeLoop` 已专项验证
+- `StorageRewrite` 确认不兼容 Blackhole CB 模型，永久排除；Phase 4 需先加 shared-scope 豁免
+
 ### Stage 2D: single-core GEMM 语义集成 + true E2E
 
 目标：
