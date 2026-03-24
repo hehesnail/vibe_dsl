@@ -175,12 +175,17 @@ def test_blackhole_codegen_only():
 
 
 def test_blackhole_copy_pass_attrs():
-    """Verify copy schema is materialized in pass attrs before runtime extraction."""
+    """Verify copy schema is materialized in pass attrs before runtime extraction.
+
+    SplitBlackholeKernel is included to confirm it is a no-op for pure-copy
+    functions (no compute op), leaving the fused_dataflow segment plan intact.
+    """
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     mod = tilelang.tvm.IRModule({"main": kernel})
     target = Target("blackhole")
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)   # must be no-op for copy
     mod = tilelang.transform.LowerBlackholeOps()(mod)
     mod = tilelang.transform.PlanBlackholeCB()(mod)
     mod = tilelang.transform.AssignBlackholeCores()(mod)
@@ -272,6 +277,7 @@ def test_blackhole_copy_semantics_survives_flatten_and_vectorize():
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = tilelang.transform.FlattenBuffer()(mod)
     mod = tilelang.transform.VectorizeLoop()(mod)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)   # must be no-op for copy
     mod = tilelang.transform.LowerBlackholeOps()(mod)
     mod = tilelang.transform.PlanBlackholeCB()(mod)
     mod = tilelang.transform.AssignBlackholeCores()(mod)
