@@ -19,7 +19,8 @@
 
 /*!
  * \file split_blackhole_kernel.h
- * \brief Split unified PrimFunc into Reader/Compute/Writer kernels
+ * \brief SplitBlackholeKernels pass: annotate statements with segment kind
+ *        and emit blackhole.segment_plan for 3-kernel GEMM.
  */
 
 #ifndef TVM_TL_SPLIT_BLACKHOLE_KERNEL_H_
@@ -30,52 +31,23 @@
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
-#include <vector>
-
 namespace tvm {
 namespace tl {
 
 /*!
- * \brief Result of splitting a kernel into R/C/W components
- */
-struct SplitResult {
-  tvm::tir::PrimFunc reader_func;   // Data movement: DRAM -> CB
-  tvm::tir::PrimFunc compute_func;  // Computation: CB -> CB (e.g., GEMM)
-  tvm::tir::PrimFunc writer_func;   // Data movement: CB -> DRAM
-
-  bool HasReader() const { return reader_func.defined(); }
-  bool HasCompute() const { return compute_func.defined(); }
-  bool HasWriter() const { return writer_func.defined(); }
-};
-
-/*!
- * \brief SplitBlackholeKernel Pass
+ * \brief Create the SplitBlackholeKernels pass.
  *
- * This pass splits a unified TIR PrimFunc into three separate kernels
- * for Blackhole architecture.
- */
-class SplitBlackholeKernel : public tvm::tir::StmtExprMutator {
- public:
-  /*! \brief Main entry point */
-  SplitResult Transform(const tvm::tir::PrimFunc& func);
-
-  /*! \brief Generate Reader kernel from original function */
-  tvm::tir::PrimFunc GenerateReaderKernel(const tvm::tir::PrimFunc& func);
-
-  /*! \brief Generate Compute kernel from original function */
-  tvm::tir::PrimFunc GenerateComputeKernel(const tvm::tir::PrimFunc& func);
-
-  /*! \brief Generate Writer kernel from original function */
-  tvm::tir::PrimFunc GenerateWriterKernel(const tvm::tir::PrimFunc& func);
-};
-
-/*!
- * \brief Create the SplitBlackholeKernel pass
- * \return The pass function
+ * Scans each device PrimFunc for compute ops (tl.tileop.gemm_py).
+ * If found, wraps each top-level statement with:
+ *   AttrStmt("blackhole.segment_kind", "reader"|"compute"|"writer", stmt)
+ * and writes blackhole.segment_plan (3-kernel schema) to the function attrs.
+ *
+ * Pure-copy functions (no compute op) are left unchanged; they continue
+ * through the existing fused_dataflow single-kernel path.
  */
 tir::transform::Pass SplitBlackholeKernelPass();
 
-} // namespace tl
-} // namespace tvm
+}  // namespace tl
+}  // namespace tvm
 
-#endif // TVM_TL_SPLIT_BLACKHOLE_KERNEL_H_
+#endif  // TVM_TL_SPLIT_BLACKHOLE_KERNEL_H_

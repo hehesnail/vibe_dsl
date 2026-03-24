@@ -101,6 +101,12 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Detect matmul call using Op comparison (not string matching) */
   bool IsMatmulCall(const tvm::tir::CallNode* op) const;
 
+  /*! \brief Extract GEMM buffer names and dimensions from a tl.tileop.gemm_py call */
+  void ExtractGemmInfo(const tvm::tir::CallNode* op);
+
+  /*! \brief Convert a DataType to TT-Metal data format string */
+  static std::string DataTypeToDataFormat(tvm::DataType dtype);
+
   /*! \brief Detect clear operation using Op comparison */
   bool IsClearOperation(const tvm::tir::CallNode* op) const;
 
@@ -179,10 +185,19 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   std::map<tvm::tir::Buffer, int, std::less<>> buffer_to_cb_;
   std::vector<CBRequirement> cb_requirements_;
   bool saw_copy_op_ = false;
-  bool saw_matmul_op_ = false;
   bool needs_copy_runtime_args_ = false;
   std::string copy_input_buffer_name_;
   std::string copy_output_buffer_name_;
+
+  // GEMM info populated by ExtractGemmInfo
+  std::string gemm_a_buffer_name_;
+  std::string gemm_b_buffer_name_;
+  std::string gemm_c_buffer_name_;
+  int gemm_m_ = 0;
+  int gemm_n_ = 0;
+  int gemm_k_ = 0;
+  tvm::DataType gemm_ab_dtype_;
+  tvm::DataType gemm_c_dtype_;
   tvm::ffi::Array<tvm::Integer> copy_input_shape_;
   tvm::ffi::Array<tvm::Integer> copy_output_shape_;
   tvm::ffi::Array<tvm::Integer> copy_intermediate_shape_;

@@ -140,6 +140,11 @@ class GemmPy(Node, Scriptable):
         Returns:
             GemmInst: The selected GEMM instruction type
         """
+        # Blackhole uses dedicated TRISC hardware for GEMM (no MMA/WGMMA/MFMA).
+        # Return Scalar so layout inference is a no-op (returns {}); the tl.gemm
+        # call is preserved by LowerTileOp and handled by LowerBlackholeOps.
+        if target.kind.name == "blackhole":
+            return GemmInst.Scalar
         return GemmInst(_ffi_api.GemmPyGemmInst(self, int(thread_nums), target))
 
     def _get_implementation_class(self, gemm_inst: GemmInst, target: Target):

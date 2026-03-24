@@ -765,5 +765,70 @@ def test_blackhole_kernel_compilation():
         pytest.skip(f"Blackhole compilation not yet complete: {e}")
 
 
+def gemm_kernel(M: int = 32, N: int = 32, K: int = 128):
+    """GEMM kernel with explicit data-movement: T.copy A/B in, gemm, T.copy C out."""
+    block_M, block_N, block_K = M, N, K
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), "bfloat16"),
+        B: T.Tensor((N, K), "bfloat16"),
+        C: T.Tensor((M, N), "float32"),
+    ):
+        with T.Kernel(1, 1) as (bx, by):
+            A_shared = T.alloc_shared((block_M, block_K), "bfloat16")
+            B_shared = T.alloc_shared((block_N, block_K), "bfloat16")
+            C_local = T.alloc_fragment((block_M, block_N), "float32")
+            T.copy(A[0:block_M, 0:block_K], A_shared)
+            T.copy(B[0:block_N, 0:block_K], B_shared)
+            T.gemm(A_shared, B_shared, C_local, transpose_B=True)
+            T.copy(C_local, C[0:block_M, 0:block_N])
+
+    return main
+
+
+def test_blackhole_split_kernel_gemm_segment_plan():
+    """SplitBlackholeKernel should produce a 3-kernel segment_plan for GEMM."""
+    kernel = gemm_kernel()
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+    # AnnotateBlackholeCopySemantics annotates copy loops with direction metadata;
+    # SplitBlackholeKernel uses those annotations to classify reader/writer stmts.
+    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+
+    # Apply SplitBlackholeKernel to get segment annotations
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+
+    # Find any func that has a segment_plan
+    plan = None
+    for gv, func in mod.functions.items():
+        if func.attrs and "blackhole.segment_plan" in func.attrs:
+            plan = func.attrs["blackhole.segment_plan"]
+            break
+
+    assert plan is not None, "No blackhole.segment_plan found in any function"
+    assert len(plan) == 3, f"Expected 3 segments (reader/compute/writer), got {len(plan)}"
+    assert str(plan[0]["kind"]) == "reader"
+    assert str(plan[1]["kind"]) == "compute"
+    assert str(plan[2]["kind"]) == "writer"
+    assert str(plan[0]["core_type"]) == "brisc"
+    assert str(plan[1]["core_type"]) == "trisc"
+    assert str(plan[2]["core_type"]) == "ncrisc"
+
+    # Check reader runtime_args contain DRAM buffer addr args
+    reader_args = plan[0]["runtime_args"]
+    reader_arg_names = [str(arg["name"]) for arg in reader_args]
+    assert any("addr" in name for name in reader_arg_names), (
+        f"Reader should have DRAM buffer addr args, got: {reader_arg_names}")
+
+    # Check writer runtime_args contain DRAM buffer addr args
+    writer_args = plan[2]["runtime_args"]
+    writer_arg_names = [str(arg["name"]) for arg in writer_args]
+    assert any("addr" in name for name in writer_arg_names), (
+        f"Writer should have DRAM buffer addr args, got: {writer_arg_names}")
+
+
 if __name__ == "__main__":
     tilelang.testing.main()

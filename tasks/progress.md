@@ -229,6 +229,27 @@
 - large-shape copy
 - oversubscription 负例
 
+基于 Stage 2D Step 1-2 完成的新进展（2026-03-24）：
+
+- `LowerTileOp` 已对 Blackhole target 跳过 `GemmPyNode` 展开（Step 1，已完成）
+- `SplitBlackholeKernel` pass 已实现并接入管线（Step 2，已完成）：
+  - 扫描 func body 中含 `gemm_py` 调用的 `SeqStmt`，按状态机分类每个 stmt
+  - `dram_to_cb` ForNode → reader，`gemm_py` EvaluateNode → compute，DRAM 输出 ForNode → writer
+  - 对 `past_compute` + `dst_scope == "global"` 的 copy 正确识别为 writer（处理 `local.fragment → global` 情形）
+  - 写入 `blackhole.segment_plan`（3-kernel schema，reader/compute/writer）
+  - 纯 copy 函数不触发（无 compute op 时直接返回）
+- `LowerBlackholeOps` 已移除 `StoreGemmSegmentPlan` 分叉逻辑：
+  - `StoreSegmentPlan` 现在先检查 `blackhole.segment_plan` 是否已由 `SplitBlackholeKernel` 写入
+  - 若已写入则跳过，保留 3-kernel schema；否则走 fused_dataflow 单 kernel 路径
+- 验收：`testing/python/target/blackhole/test_blackhole_e2e.py` 结果为 `16 passed, 5 skipped, 1 xfailed`
+
+当前 Stage 2D 剩余步骤：
+
+- Step 3: `LowerBlackholeOps` GEMM compute 序列已生成（mm_init/matmul_tiles/pack_tile），待接入正式 CB ID 从 `blackhole.cb_configs` 读取（当前用固定 0/1/16）
+- Step 4: `rt_mod_blackhole.cc` 需扩展为遍历所有 segment（当前只取 `[0]`），为 3-kernel plan 建 3 个 KernelSpec
+- Step 5: `BlackholeModule::ExecuteDirect()` 需按 KernelSpec::kind 路由 reader(RISCV_0)/compute(TRISC)/writer(RISCV_1) 注册
+- Step 6: E2E 测试 `test_blackhole_gemm_basic`
+
 ## 当前下一步
 
 ### 当前剩余事项优先级（2026-03-24 更新）
@@ -237,19 +258,20 @@
 2. ~~Copy E2E 验收~~ → **已完成**（18 passed, 1 skipped，含 grid>1 / large-shape / oversubscription 负例）
 3. ~~`ExecuteDirect` 核坐标 / input-output 分类 / 死代码~~ → **已修正**
 4. ~~split 前语义规划（Stage 2C）~~ → **已完成**（`AnnotateBlackholeCopySemantics` + FlattenBuffer/VectorizeLoop 验证 + StorageRewrite 不兼容性确认）
-5. GEMM 接入（Stage 2D / Phase 5）— **下一首要**
-   - 激活 `SplitBlackholeKernel`
-   - 生成 reader / compute / writer 3 个独立 kernel
-   - 最小 GEMM E2E
+5. GEMM 接入（Stage 2D / Phase 5）— **进行中（Step 2 完成）**
+   - ~~Step 1: `LowerTileOp` Blackhole GEMM skip~~ → **已完成**
+   - ~~Step 2: `SplitBlackholeKernel` pass~~ → **已完成**
+   - Step 3: `LowerBlackholeOps` GEMM lower → CB IDs 已接入，待 rt_mod 多 segment
+   - Step 4: `rt_mod_blackhole` 多 segment 提取 → **待实现**
+   - Step 5: `BlackholeModule` 3-kernel 注册 → **待实现**
+   - Step 6: E2E 测试 → **待实现**
 6. 分批接回中后段通用 pass（Phase 4）— 可并行或后置
-   - `FlattenBuffer` / `VectorizeLoop` 可直接接入（已验证）
-   - `StorageRewrite` 需先加 shared-scope 豁免机制才可接入
 
 ### 当前具体下一步
 
-1. 设计 GEMM 接入方案（`SplitBlackholeKernel` 激活路径）
-2. 明确 reader / compute / writer kernel ABI 与 CB 分配方案
-3. 在 copy 主链基础上扩展 `LowerBlackholeOps` 以支持 GEMM 语义
+1. 扩展 `rt_mod_blackhole.cc` 遍历所有 segment，为每个 segment 创建 `KernelSpec`（Step 4）
+2. 扩展 `BlackholeModule::ExecuteDirect()` 按 kind 路由 reader/compute/writer kernel 注册（Step 5）
+3. 添加 E2E 测试 `test_blackhole_gemm_basic`（Step 6）
 
 ## 当前活动设计文档
 

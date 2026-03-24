@@ -27,6 +27,8 @@
 
 #include "lower_blackhole_ops.h"
 
+#include "../op/utils.h"
+
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/arith/analyzer.h>
 #include <tvm/tir/builtin.h>
@@ -133,13 +135,18 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   next_intermediate_cb_ = 32;
   next_cb_id_ = 0;
   saw_copy_op_ = false;
-  saw_matmul_op_ = false;
   needs_copy_runtime_args_ = false;
   copy_input_buffer_name_.clear();
   copy_output_buffer_name_.clear();
   copy_input_shape_.clear();
   copy_output_shape_.clear();
   copy_intermediate_shape_.clear();
+  gemm_a_buffer_name_.clear();
+  gemm_b_buffer_name_.clear();
+  gemm_c_buffer_name_.clear();
+  gemm_m_ = 0;
+  gemm_n_ = 0;
+  gemm_k_ = 0;
 
   // Transform the function body
   Stmt body = VisitStmt(func->body);
@@ -297,7 +304,7 @@ void LowerBlackholeOps::StoreCBRequirements(PrimFunc& func) {
 }
 
 void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
-  if (!needs_copy_runtime_args_ || saw_matmul_op_) {
+  if (!needs_copy_runtime_args_) {
     return;
   }
 
@@ -335,7 +342,10 @@ void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
 }
 
 void LowerBlackholeOps::StoreSegmentPlan(PrimFunc& func) {
-  if (!needs_copy_runtime_args_ || saw_matmul_op_) {
+  // If SplitBlackholeKernels already wrote the segment plan, do not overwrite.
+  if (func->GetAttr<Array<Any>>("blackhole.segment_plan")) return;
+
+  if (!needs_copy_runtime_args_) {
     return;
   }
 
@@ -360,7 +370,69 @@ bool LowerBlackholeOps::IsMatmulCall(const CallNode* op) const {
   if (!op->op->IsInstance<OpNode>()) return false;
 
   Op call_op = Downcast<Op>(op->op);
-  return call_op->name == "tl.matmul" || call_op->name == "tl.gemm";
+  return call_op->name == "tl.tileop.gemm_py";
+}
+
+std::string LowerBlackholeOps::DataTypeToDataFormat(DataType dtype) {
+  if (dtype.is_bfloat16()) return "Float16_b";
+  if (dtype.is_float16()) return "Float16";
+  if (dtype.is_float() && dtype.bits() == 32) return "Float32";
+  if (dtype.is_float() && dtype.bits() == 8) return "Bfp8";
+  if (dtype.is_int() && dtype.bits() == 32) return "Int32";
+  if (dtype.is_int() && dtype.bits() == 16) return "Int16";
+  return "Float16_b";  // safe fallback
+}
+
+void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
+  // tl.tileop.gemm_py args layout (from gemm_op.py _gemm_impl):
+  //   [0]=A_region, [1]=B_region, [2]=C_region,
+  //   [3]=transA, [4]=transB, [5]=M, [6]=N, [7]=K, ...
+  const auto& args = op->args;
+  ICHECK_GE(args.size(), 8U) << "tl.tileop.gemm_py expects at least 8 args";
+
+  tir::BufferRegion a_region = NormalizeToBufferRegion(args[0]);
+  tir::BufferRegion b_region = NormalizeToBufferRegion(args[1]);
+  tir::BufferRegion c_region = NormalizeToBufferRegion(args[2]);
+
+  gemm_a_buffer_name_ = std::string(a_region->buffer->name);
+  gemm_b_buffer_name_ = std::string(b_region->buffer->name);
+  gemm_c_buffer_name_ = std::string(c_region->buffer->name);
+  gemm_ab_dtype_ = a_region->buffer->dtype;
+  gemm_c_dtype_ = c_region->buffer->dtype;
+
+  if (const auto* imm = args[5].as<IntImmNode>()) gemm_m_ = static_cast<int>(imm->value);
+  if (const auto* imm = args[6].as<IntImmNode>()) gemm_n_ = static_cast<int>(imm->value);
+  if (const auto* imm = args[7].as<IntImmNode>()) gemm_k_ = static_cast<int>(imm->value);
+
+  // Register CBs: A→CB0 (kInput), B→CB1 (kInput), C→CB16 (kOutput).
+  // PlanBlackholeCB assigns IDs sequentially: kInput starts at 0, kOutput at 16.
+  // Pushing in order A, B (kInput), then C (kOutput) produces exactly CB0, CB1, CB16.
+  const int ab_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_ab_dtype_.bytes();
+  const int c_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_c_dtype_.bytes();
+
+  CBRequirement req_a;
+  req_a.name = gemm_a_buffer_name_;
+  req_a.type = CBType::kInput;
+  req_a.page_size = ab_tile_bytes;
+  req_a.num_pages = 2;  // double-buffered for pipeline overlap
+  req_a.data_format = DataTypeToDataFormat(gemm_ab_dtype_);
+  req_a.lifetime_begin = 0;
+  req_a.lifetime_end = 0;
+  cb_requirements_.push_back(req_a);
+
+  CBRequirement req_b = req_a;
+  req_b.name = gemm_b_buffer_name_;
+  cb_requirements_.push_back(req_b);
+
+  CBRequirement req_c;
+  req_c.name = gemm_c_buffer_name_;
+  req_c.type = CBType::kOutput;
+  req_c.page_size = c_tile_bytes;
+  req_c.num_pages = 1;
+  req_c.data_format = DataTypeToDataFormat(gemm_c_dtype_);
+  req_c.lifetime_begin = 0;
+  req_c.lifetime_end = 0;
+  cb_requirements_.push_back(req_c);
 }
 
 // Detect clear operation using Op comparison
@@ -666,41 +738,46 @@ void LowerBlackholeOps::RecordDramToDramCopy(const BufferStoreNode* op) {
 }
 
 Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op) {
-  CBConfig cb_config = GetCBConfig();
+  // CB IDs for GEMM: A=CB0, B=CB1, C=CB16 (matched by PlanBlackholeCB allocation order).
+  constexpr int in0_id = 0;
+  constexpr int in1_id = 1;
+  constexpr int out_id = 16;
+  // num_k_tiles: how many 32-element K-tiles to accumulate
+  const int num_k_tiles = (gemm_k_ > 0) ? (gemm_k_ / kBlackholeTileCols) : 1;
 
   std::vector<Stmt> stmts;
 
   // 1. Initialize MM engine
   stmts.push_back(MakeBlackholeCall(
       blackhole_mm_init(),
-      {IntImm32(cb_config.in0_id), IntImm32(cb_config.in1_id), IntImm32(cb_config.out_id)}));
+      {IntImm32(in0_id), IntImm32(in1_id), IntImm32(out_id)}));
 
   // 2. Acquire tile registers
   stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
 
-  // 3. Generate K-tile loop
-  for (int kt = 0; kt < cb_config.num_k_tiles; ++kt) {
+  // 3. Generate K-tile loop (statically unrolled for fixed-shape GEMM)
+  for (int kt = 0; kt < num_k_tiles; ++kt) {
     // Wait for input tiles
     stmts.push_back(MakeBlackholeCall(
         blackhole_cb_wait_front(),
-        {IntImm32(cb_config.in0_id), IntImm32(1)}));
+        {IntImm32(in0_id), IntImm32(1)}));
     stmts.push_back(MakeBlackholeCall(
         blackhole_cb_wait_front(),
-        {IntImm32(cb_config.in1_id), IntImm32(1)}));
+        {IntImm32(in1_id), IntImm32(1)}));
 
     // Perform matmul
     stmts.push_back(MakeBlackholeCall(
         blackhole_matmul_tiles(),
-        {IntImm32(cb_config.in0_id), IntImm32(cb_config.in1_id),
+        {IntImm32(in0_id), IntImm32(in1_id),
          IntImm32(0), IntImm32(0), IntImm32(0)}));
 
     // Pop input tiles
     stmts.push_back(MakeBlackholeCall(
         blackhole_cb_pop_front(),
-        {IntImm32(cb_config.in0_id), IntImm32(1)}));
+        {IntImm32(in0_id), IntImm32(1)}));
     stmts.push_back(MakeBlackholeCall(
         blackhole_cb_pop_front(),
-        {IntImm32(cb_config.in1_id), IntImm32(1)}));
+        {IntImm32(in1_id), IntImm32(1)}));
   }
 
   // 4-5. Commit and wait
@@ -710,13 +787,13 @@ Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op) {
   // 6-8. Pack and push output
   stmts.push_back(MakeBlackholeCall(
       blackhole_cb_reserve_back(),
-      {IntImm32(cb_config.out_id), IntImm32(1)}));
+      {IntImm32(out_id), IntImm32(1)}));
   stmts.push_back(MakeBlackholeCall(
       blackhole_pack_tile(),
-      {IntImm32(0), IntImm32(cb_config.out_id)}));
+      {IntImm32(0), IntImm32(out_id)}));
   stmts.push_back(MakeBlackholeCall(
       blackhole_cb_push_back(),
-      {IntImm32(cb_config.out_id), IntImm32(1)}));
+      {IntImm32(out_id), IntImm32(1)}));
 
   // 9. Release tile registers
   stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
@@ -1182,7 +1259,7 @@ Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
 Stmt LowerBlackholeOps::VisitStmt_(const EvaluateNode* op) {
   if (const auto* call = op->value.as<CallNode>()) {
     if (IsMatmulCall(call)) {
-      saw_matmul_op_ = true;
+      ExtractGemmInfo(call);
       return GenerateMatmulSequence(call);
     }
     if (IsClearOperation(call)) {

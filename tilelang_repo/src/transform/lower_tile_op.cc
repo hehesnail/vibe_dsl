@@ -16,6 +16,7 @@
 #include "../layout/utils.h"
 #include "../op/builtin.h"
 #include "../op/gemm.h"
+#include "../op/gemm_py.h"
 #include "../op/gemm_sp.h"
 #include "../op/operator.h"
 #include "../op/utils.h"
@@ -967,6 +968,13 @@ private:
     auto tile_op = ParseOperator(tvm::ffi::GetRef<Stmt>(op));
     if (!tile_op.defined())
       return IRMutatorWithAnalyzer::VisitStmt_(op);
+
+    // Blackhole does not use MMA/WGMMA/MFMA. Preserve the tl.gemm call as-is
+    // so that LowerBlackholeOps can recognise and lower it later.
+    if (TargetIsBlackhole(target_) && tile_op->IsInstance<GemmPyNode>()) {
+      return tvm::ffi::GetRef<Stmt>(op);
+    }
+
     AddWorkspaceCallback callback = [this](int num_elem, DataType dtype) {
       auto workspace =
           decl_buffer({PrimExpr(num_elem)}, dtype, "workspace", "shared.dyn");

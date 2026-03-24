@@ -616,6 +616,24 @@ def AnnotateBlackholeCopySemantics():
     return _ffi_api.AnnotateBlackholeCopySemantics()  # type: ignore
 
 
+def SplitBlackholeKernel():
+    """Annotate statements with blackhole.segment_kind for 3-kernel GEMM split.
+
+    Scans each device PrimFunc for compute ops (tl.tileop.gemm_py).
+    If found, wraps each top-level statement with an AttrStmt carrying
+    "reader", "compute", or "writer" segment kind, and writes
+    blackhole.segment_plan (3-kernel schema) to function attrs.
+
+    Pure-copy functions are left unchanged.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.SplitBlackholeKernel()  # type: ignore
+
+
 def LowerBlackholeOps():
     """Lower TileLang high-level operations to TT-Metal builtins for Blackhole backend.
 
