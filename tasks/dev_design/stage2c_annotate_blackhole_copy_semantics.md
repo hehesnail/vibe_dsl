@@ -3,8 +3,8 @@
 ## 基本信息
 
 - **文档ID**: `stage2c_annotate_blackhole_copy_semantics`
-- **日期**: 2026-03-23
-- **状态**: 实现中
+- **日期**: 2026-03-24
+- **状态**: ✅ 已完成
 - **对应阶段**: Stage 2C — split-before 语义规划
 
 ---
