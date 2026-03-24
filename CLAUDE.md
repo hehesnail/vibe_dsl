@@ -49,6 +49,29 @@
 - 先统一协议，再补功能
 - 先闭环，再优化
 
+**新增设计约束（2026-03-24）**：
+
+1. **从第一性原理分析问题，不优先采用 workaround**
+   - 先定位根本原因，再决定改哪一层
+   - 不要用名字匹配、位置假设、临时分支、额外旁路去规避真实问题
+   - 若必须保留临时方案，必须在设计文档中明确写出其过渡性质和退出条件
+
+2. **设计和实现必须通用，不针对单个 case 特判**
+   - 不能把某个当前样例、参数顺序、单个 kernel 形态偷偷固化成协议
+   - 优先做统一 schema、统一 IR 语义、统一 pass 边界
+   - 不要为了眼前 case 引入长期维护成本更高的特殊路径
+
+3. **所需信息优先从 IR 分析；缺失就扩 IR/DSL，不要让后段猜**
+   - 如果信息可以从 IR 得到，就必须从 IR 得到
+   - 如果 IR 表达不够，就扩 attrs/schema，必要时从 DSL 显式表达
+   - 不要把本该前面明确的语义拖到 codegen/runtime 再靠命名、位置、默认顺序猜
+
+对 Blackhole 的具体要求：
+
+- `runtime_args`、`buffer`、`cb`、`segment` 等绑定必须由 IR/schema 明确表达或可从 IR 稳定推导
+- 不要为了绕开当前卡点新增并行执行路径或额外 emitter；优先修主路径
+- 修问题时优先收正协议和主链，而不是堆 workaround
+
 **不要做的事**：
 
 - 不要新增第二份总体设计文档
@@ -98,6 +121,7 @@
 
 - Blackhole 正式执行路径只剩 `BlackholeModule` 进程内 direct host path
 - 默认开发构建目录固定为 `tilelang_repo/build/`
+- 默认并行编译线程数按 `-j32` 执行；除非有明确理由降线程，不要使用更小的默认并行度
 - `build_blackhole/` 和 legacy runner 都已删除；旧文档里出现时按历史语境理解，不要恢复
 - Pass 管线顺序：`AnnotateBlackholeCopySemantics` → `SplitBlackholeKernel` → `LowerBlackholeOps` → `PlanBlackholeCB`
 - `SplitBlackholeKernel` 已实现并已接入管线；纯 copy 走 `fused_dataflow` 单 kernel，GEMM 走 3-kernel（reader/compute/writer）

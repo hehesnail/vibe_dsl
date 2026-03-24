@@ -67,6 +67,29 @@
 - 读实际代码、测试、示例，再下判断
 - 关键设计取舍必须与 `final_blackhole_backend_redesign.md` 一致
 
+新增强约束（2026-03-24）：
+
+1. **从第一性原理分析，不要优先走 workaround**
+   - 遇到问题时，先分析根本原因和真实缺失层级
+   - 不要先用绕路、回退、名字匹配、位置假设、特判分支去“先跑通”
+   - 只有在设计文档显式记录为临时过渡方案时，才允许保留临时解
+
+2. **设计和实现必须具备通用性**
+   - 不能只针对当前 case 写特判实现
+   - 不能把某个样例、某个 kernel、某个当前参数顺序偷渡成协议
+   - 设计应优先面向统一 schema / 统一 IR 语义 / 统一 pass 边界，而不是为单个用例打补丁
+
+3. **优先从 IR 获取信息；信息缺失时扩 IR，不要让 runtime/codegen 猜**
+   - 只要信息可以从 IR 分析得到，就必须从 IR 分析得到
+   - 如果当前 IR 不足以表达后端所需语义，应优先扩展 IR attrs/schema 或 DSL 显式表达
+   - 不要把本应在 DSL / TIR / pass 中明确的信息，拖到 codegen/runtime 再用位置规则、命名规则、默认顺序去猜
+
+对 Blackhole 任务的直接含义：
+
+- `buffer` / `cb` / `segment` / `runtime_args` 绑定应由 IR/schema 明确给出或可从 IR 稳定推导
+- 不要新增“仅为绕过当前卡点”的并行路径、临时 emitter、特判式 fallback，除非设计文档明确记录其阶段性用途和退出条件
+- 修复问题时，优先收正主路径和协议边界，而不是增加新的旁路
+
 当前 Blackhole 后端默认推进顺序（2026-03-24 更新）：
 
 1. ~~attrs / 协议~~ ✅
@@ -148,6 +171,7 @@
 
 - Blackhole 正式执行路径只允许 `BlackholeModule` 进程内 direct host path
 - 默认开发构建目录固定为 `tilelang_repo/build/`
+- 默认并行编译线程数按 `-j32` 执行；除非有明确理由降线程，不要使用更小的默认并行度
 - `build_blackhole/` 与 legacy runner 已删除；如果文档或旧记录提到它们，按历史语境理解，不要恢复
 - 当前 pass 主线按 `AnnotateBlackholeCopySemantics` → `SplitBlackholeKernel` → `LowerBlackholeOps` → `PlanBlackholeCB` 推进
 - `SplitBlackholeKernel` 已接入管线：纯 copy 维持 `fused_dataflow` 单 kernel，GEMM 当前走 reader / compute / writer 三段 schema
