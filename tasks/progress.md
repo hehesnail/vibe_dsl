@@ -270,7 +270,19 @@
     - `MergeSharedMemoryAllocations expects flat memory buffers`
   - 说明当前 `LowerTileOp` Blackhole GEMM skip 后，shared alloc 仍保持二维形态；而主线后段某些 pass 仍假设 `FlattenBuffer` 之后的一维 shared buffer
   - 这属于 Step 6 之前的新前置问题，不是 `rt_mod_blackhole` / `BlackholeModule` 的多 segment 实现本身
-- 验收：`testing/python/target/blackhole/test_blackhole_e2e.py` 结果为 `16 passed, 5 skipped, 1 xfailed`
+- 本轮回归修正（2026-03-24）：
+  - Blackhole 测试文件已按关注点拆分：
+    - `common.py`
+    - `test_blackhole_copy_pipeline.py`
+    - `test_blackhole_copy_runtime.py`
+    - `test_blackhole_gemm.py`
+  - `rt_mod_blackhole` 当前已收正为：
+    - 纯 copy 继续沿用原有 single-kernel build/codegen 主路径
+    - 只有 multi-segment GEMM 才走 segment-specific codegen
+  - `CodeGenBlackhole` 的 copy runtime-arg buffer 绑定回归已修复：
+    - 不再因为 `A.data` / `B.data` 这类 builtin buffer expr 进入 codegen 时丢失绑定
+    - copy codegen / host-device split / rectangular-shape / logical-block 相关回归已恢复通过
+- 当前目录级验收：`tilelang_repo/testing/python/target/blackhole/` 结果为 `16 passed, 7 skipped, 1 xfailed`
 
 当前 Stage 2D 剩余步骤：
 

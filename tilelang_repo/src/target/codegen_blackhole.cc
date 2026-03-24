@@ -55,6 +55,7 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   need_dataflow_api_h_ = false;
   need_compute_api_h_ = false;
   buffer_runtime_arg_map_.clear();
+  buffer_runtime_arg_map_by_name_.clear();
   runtime_arg_vars_by_kind_.clear();
   cb_page_size_by_id_.clear();
   cb_num_pages_by_id_.clear();
@@ -273,6 +274,7 @@ void CodeGenBlackhole::LoadGemmCBPlaceholders(const tvm::tir::PrimFunc &f) {
 
 void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   buffer_runtime_arg_map_.clear();
+  buffer_runtime_arg_map_by_name_.clear();
   runtime_arg_vars_by_kind_.clear();
   cb_page_size_by_id_.clear();
   cb_num_pages_by_id_.clear();
@@ -330,6 +332,24 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
     }
     if (const auto *load = node.as<tvm::tir::BufferLoadNode>()) {
       buffer_vars_by_name[load->buffer->name] = load->buffer->data.get();
+      return;
+    }
+    const auto *call = node.as<tvm::tir::CallNode>();
+    if (!call || !call->op->IsInstance<tvm::OpNode>()) {
+      return;
+    }
+    tvm::Op call_op = Downcast<tvm::Op>(call->op);
+    const std::string op_name = call_op->name;
+    if (op_name == "tl.blackhole.read_tile_to_cb") {
+      if (const auto *buffer_var = call->args[0].as<tvm::tir::VarNode>()) {
+        buffer_vars_by_name[buffer_var->name_hint] = buffer_var;
+      }
+      return;
+    }
+    if (op_name == "tl.blackhole.write_tile_from_cb") {
+      if (const auto *buffer_var = call->args[1].as<tvm::tir::VarNode>()) {
+        buffer_vars_by_name[buffer_var->name_hint] = buffer_var;
+      }
     }
   });
 
@@ -361,6 +381,7 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
       if (it != buffer_vars_by_name.end()) {
         buffer_runtime_arg_map_[it->second] = arg_name;
       }
+      buffer_runtime_arg_map_by_name_[buffer_name] = arg_name;
     }
     ++arg_idx;
   }
@@ -387,9 +408,13 @@ std::string CodeGenBlackhole::GetRuntimeArgVarForBuffer(
   const auto *buffer_var = buffer_expr.as<tvm::tir::VarNode>();
   ICHECK(buffer_var) << "Expected buffer data var in runtime-arg-backed Blackhole builtin";
   auto it = buffer_runtime_arg_map_.find(buffer_var);
-  ICHECK(it != buffer_runtime_arg_map_.end())
+  if (it != buffer_runtime_arg_map_.end()) {
+    return it->second;
+  }
+  auto by_name = buffer_runtime_arg_map_by_name_.find(buffer_var->name_hint);
+  ICHECK(by_name != buffer_runtime_arg_map_by_name_.end())
       << "Missing runtime arg binding for buffer var: " << buffer_var->name_hint;
-  return it->second;
+  return by_name->second;
 }
 
 int CodeGenBlackhole::ResolveCBId(const tvm::PrimExpr &expr) const {

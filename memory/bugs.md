@@ -63,6 +63,21 @@
 
 ## 与当前设计直接相关的记录
 
+### copy codegen 的 runtime-arg buffer 绑定不能依赖“新路径 + 指针 identity”组合
+
+- **时间**: 2026-03-24
+- **问题**: 在 Stage 2D 为 GEMM 引入 multi-segment source generation 后，原本稳定的 copy `lower()` / codegen 回归测试重新失败，报：
+  - `Missing runtime arg binding for buffer var: A`
+- **根本原因**:
+  - 为了支持 GEMM 的 reader / compute / writer，`rt_mod_blackhole` 临时把更多函数送入 segment-specific codegen 路径
+  - 但 copy builtin 在 codegen 阶段看到的是 `A.data` / `B.data` 这类 buffer expr，不保证继续沿用先前 `VarNode*` identity
+  - 如果 `CodeGenBlackhole` 只依赖某个新分支里的对象 identity，或者把 copy 也卷入新的 source-generation 路径，就会把本来稳定的 single-kernel copy 路径带回归
+- **解决方式**:
+  - 保持 pure copy 继续走原有 single-kernel build/codegen 主路径
+  - 只让 multi-segment GEMM 走 segment-specific codegen
+  - `CodeGenBlackhole` 的 buffer 绑定逻辑必须从 IR/schema 恢复，而不是依赖“新增分支里的对象 identity 恰好一致”
+- **当前状态**: 已解决。Blackhole 测试目录当前结果为 `16 passed, 7 skipped, 1 xfailed`；GEMM Step 6 的 blocker 仍是 `MergeSharedMemoryAllocations` 的 flat-buffer 前置条件。
+
 ### GEMM `lower()` 当前会卡在 `MergeSharedMemoryAllocations` 的 flat-buffer 前置条件
 
 - **时间**: 2026-03-24

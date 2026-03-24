@@ -626,18 +626,21 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
                                              const std::string& func_name,
                                              Target target,
                                              bool kernel_code_only,
+                                             const std::string& legacy_code,
                                              ExecutableSpec* spec) {
   spec->kernels.clear();
   std::vector<SegmentInfo> segments = ExtractSegmentPlan(f, spec);
-  if (segments.empty()) {
+  const bool use_legacy_single_kernel_path =
+      segments.empty() ||
+      (segments.size() == 1 && segments[0].kind == "fused_dataflow");
+  if (use_legacy_single_kernel_path) {
     KernelSpec kernel;
     kernel.name = func_name;
     kernel.kind = spec->default_kernel_kind;
     kernel.core_type = spec->default_kernel_core_type;
     kernel.runtime_args = spec->runtime_args;
-    const std::string generated = EmitKernelSourceForPrimFunc(f, func_name, target, kernel_code_only);
     kernel.source_code =
-        (!generated.empty()) ? generated
+        (!legacy_code.empty()) ? legacy_code
                              : (HasCopyRuntimeArgSchema(kernel.runtime_args)
                                     ? EmitSingleCoreCopyKernelSource(*spec)
                                     : std::string());
@@ -750,6 +753,7 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
 
   auto func_info_map = ExtractBlackholeFuncInfo(mod);
   std::unordered_map<std::string, tir::PrimFunc> device_funcs;
+  std::unordered_set<std::string> legacy_single_kernel_funcs;
   std::unordered_map<std::string, std::string> host_to_device;
   std::unordered_set<std::string> device_kernel_symbols;
 
@@ -766,6 +770,11 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     if (IsBlackholeDeviceKernel(f)) {
       device_kernel_symbols.insert(func_name);
       device_funcs.emplace(func_name, f);
+      ExecutableSpec probe_spec;
+      auto segments = ExtractSegmentPlan(f, &probe_spec);
+      if (segments.empty() || (segments.size() == 1 && probe_spec.default_kernel_kind == "fused_dataflow")) {
+        legacy_single_kernel_funcs.insert(func_name);
+      }
     }
   }
   for (auto kv : mod->functions) {
@@ -780,12 +789,32 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     }
   }
 
+  bool output_ssa = false;
+  bool emit_asserts = false;
+  bool emit_fwd_func_decl = true;
+  std::unordered_set<std::string> devices = {"blackhole"};
+  tl::CodeGenBlackhole legacy_cg;
+  legacy_cg.Init(output_ssa, emit_asserts, emit_fwd_func_decl, target->str(), devices);
+  bool has_legacy_funcs = false;
+  for (auto kv : mod->functions) {
+    auto gvar = Downcast<GlobalVar>(kv.first);
+    auto f = Downcast<tir::PrimFunc>(kv.second);
+    const std::string func_name = GetPrimFuncName(gvar, f);
+    if (legacy_single_kernel_funcs.count(func_name)) {
+      legacy_cg.AddFunction(gvar, f);
+      has_legacy_funcs = true;
+    }
+  }
+  const std::string legacy_code = has_legacy_funcs ? legacy_cg.Finish() : std::string();
+
   for (auto& kv : device_funcs) {
     auto spec_it = func_info_map.find(kv.first);
     if (spec_it == func_info_map.end()) {
       continue;
     }
+    const std::string& source = legacy_single_kernel_funcs.count(kv.first) ? legacy_code : std::string();
     PopulateKernelSpecsForDeviceFunc(kv.second, kv.first, target, /*kernel_code_only=*/false,
+                                     source,
                                      &spec_it->second);
   }
   for (const auto& kv : host_to_device) {
@@ -823,6 +852,7 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
 
   auto func_info_map = ExtractBlackholeFuncInfo(mod);
   std::unordered_map<std::string, tir::PrimFunc> device_funcs;
+  std::unordered_set<std::string> legacy_single_kernel_funcs;
   std::unordered_map<std::string, std::string> host_to_device;
   std::unordered_set<std::string> device_kernel_symbols;
 
@@ -839,6 +869,11 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     if (IsBlackholeDeviceKernel(f)) {
       device_kernel_symbols.insert(func_name);
       device_funcs.emplace(func_name, f);
+      ExecutableSpec probe_spec;
+      auto segments = ExtractSegmentPlan(f, &probe_spec);
+      if (segments.empty() || (segments.size() == 1 && probe_spec.default_kernel_kind == "fused_dataflow")) {
+        legacy_single_kernel_funcs.insert(func_name);
+      }
     }
   }
   for (auto kv : mod->functions) {
@@ -852,12 +887,34 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
       }
     }
   }
+  bool output_ssa = false;
+  bool emit_asserts = false;
+  bool emit_fwd_func_decl = false;
+  std::unordered_set<std::string> devices = {"blackhole"};
+  tl::CodeGenBlackhole legacy_cg;
+  legacy_cg.Init(output_ssa, emit_asserts, emit_fwd_func_decl, target->str(), devices);
+  bool has_legacy_funcs = false;
+  for (auto kv : mod->functions) {
+    auto gvar = Downcast<GlobalVar>(kv.first);
+    auto f = Downcast<tir::PrimFunc>(kv.second);
+    const std::string func_name = GetPrimFuncName(gvar, f);
+    if (legacy_single_kernel_funcs.count(func_name)) {
+      legacy_cg.AddFunction(gvar, f);
+      has_legacy_funcs = true;
+    }
+  }
+  const std::string legacy_kernel_code =
+      has_legacy_funcs ? legacy_cg.GetKernelCode() : std::string();
+
   for (auto& kv : device_funcs) {
     auto spec_it = func_info_map.find(kv.first);
     if (spec_it == func_info_map.end()) {
       continue;
     }
+    const std::string& source =
+        legacy_single_kernel_funcs.count(kv.first) ? legacy_kernel_code : std::string();
     PopulateKernelSpecsForDeviceFunc(kv.second, kv.first, target, /*kernel_code_only=*/true,
+                                     source,
                                      &spec_it->second);
   }
   for (const auto& kv : host_to_device) {

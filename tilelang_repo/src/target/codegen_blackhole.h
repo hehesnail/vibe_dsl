@@ -187,6 +187,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   // Track declared CBs
   std::unordered_set<std::string> declared_cbs_;
   std::unordered_map<const tvm::tir::VarNode *, std::string> buffer_runtime_arg_map_;
+  std::unordered_map<std::string, std::string> buffer_runtime_arg_map_by_name_;
   std::unordered_map<std::string, std::string> runtime_arg_vars_by_kind_;
   std::unordered_map<int, int> cb_page_size_by_id_;
   std::unordered_map<int, int> cb_num_pages_by_id_;
