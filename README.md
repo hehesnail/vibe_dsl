@@ -11,10 +11,20 @@
 当前工作规范：
 
 - `AGENTS.md`
+- `CLAUDE.md`
 
 当前状态追踪：
 
 - `tasks/progress.md`
+
+## 当前状态
+
+- 当前日期：`2026-03-24`
+- Stage 2C split-before 语义规划已完成
+- 当前主线在 Stage 2D / Phase 4：
+  - 通用 pass 回收
+  - GEMM 接入（Steps 1-3 已完成，Steps 4-6 为当前首要）
+- Blackhole 正式执行路径已收敛到 `ExecutableSpec -> BlackholeModule` 进程内 direct host path
 
 ## 仓库组成
 
@@ -27,31 +37,30 @@
 - `tilelang_repo/src/target/`
 - `tilelang_repo/src/transform/`
 - `tilelang_repo/tilelang/engine/`
-- `tilelang_repo/tools/blackhole_runner/`
+- `tilelang_repo/build/`
+- `tilelang_repo/testing/python/target/blackhole/`
 - `tt_metal_repo/tt_metal/api/tt-metalium/`
-- `tests/target/`
-- `tests/transform/`
 - `memory/`
-- `docs/`
 - `tasks/`
 
 ## 当前工程约束
 
 - Blackhole 后端总体设计只维护一份，不再保留平行架构文档
-- 当前主路径不是“单个 kernel 字符串”，而是朝 `ExecutableSpec -> runner` 收敛
-- 先统一协议，再补 copy/gemm，再做 multi-core
+- 当前主路径不是“单个 kernel 字符串”，也不是 external runner，而是 `ExecutableSpec -> BlackholeModule` direct host path
+- 当前 pass 主线：`AnnotateBlackholeCopySemantics` → `SplitBlackholeKernel` → `LowerBlackholeOps` → `PlanBlackholeCB`
+- 先统一协议与执行路径，再补 copy / GEMM，再做 multi-core
 - 先设计后编码，设计要落到仓库文档里
 - 完成任务后要同步更新进度、经验、问题记录，并提交推送
 
 ## 推荐阅读顺序
 
 1. `tasks/dev_design/final_blackhole_backend_redesign.md`
-2. `AGENTS.md`
-3. `tasks/progress.md`
+2. `tasks/progress.md`
+3. `AGENTS.md` 或 `CLAUDE.md`
 4. `memory/general_dev.md`
 5. `memory/bugs.md`
 6. 相关源码与测试
 
 ## 说明
 
-旧的总体设计文档和过时的阶段设计文档已经移除，以减少信息干扰。
+旧的总体设计文档、`build_blackhole/` 和 legacy runner 已移除，以减少信息干扰。

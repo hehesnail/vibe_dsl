@@ -24,12 +24,10 @@
 - `tilelang_repo/src/transform/`
 - `tilelang_repo/tilelang/engine/`
 - `tilelang_repo/build/`
+- `tilelang_repo/testing/python/target/blackhole/`
 - `tt_metal_repo/tt_metal/api/tt-metalium/`
-- `tests/target/`
-- `tests/transform/`
 - `tasks/`
 - `memory/`
-- `docs/`
 
 ## 开始任务前
 
@@ -69,16 +67,16 @@
 - 读实际代码、测试、示例，再下判断
 - 关键设计取舍必须与 `final_blackhole_backend_redesign.md` 一致
 
-当前 Blackhole 后端默认推进顺序（2026-03-23 更新）：
+当前 Blackhole 后端默认推进顺序（2026-03-24 更新）：
 
 1. ~~attrs / 协议~~ ✅
 2. ~~`ExecutableSpec`~~ ✅
 3. ~~`rt_mod_blackhole`~~ ✅
 4. ~~`BlackholeModule` direct path 补全~~ ✅
 5. ~~Copy E2E 验收（direct path）~~ ✅
-6. split-before 语义规划（方案 A: `AnnotateBlackholeCopySemantics` pass）— **当前**
-7. 通用 pass 回收
-8. GEMM 接入
+6. ~~split-before 语义规划（`AnnotateBlackholeCopySemantics` + `SplitBlackholeKernel`）~~ ✅
+7. 通用 pass 回收（`FlattenBuffer` / `VectorizeLoop` 已验证；`StorageRewrite` 当前确认不兼容 Blackhole CB 模型）
+8. GEMM 接入（Steps 1-3 ✅，Steps 4-6 **当前首要**）
 9. multi-core
 
 ## 经验与问题记录
@@ -151,6 +149,8 @@
 - Blackhole 正式执行路径只允许 `BlackholeModule` 进程内 direct host path
 - 默认开发构建目录固定为 `tilelang_repo/build/`
 - `build_blackhole/` 与 legacy runner 已删除；如果文档或旧记录提到它们，按历史语境理解，不要恢复
+- 当前 pass 主线按 `AnnotateBlackholeCopySemantics` → `SplitBlackholeKernel` → `LowerBlackholeOps` → `PlanBlackholeCB` 推进
+- `SplitBlackholeKernel` 已接入管线：纯 copy 维持 `fused_dataflow` 单 kernel，GEMM 当前走 reader / compute / writer 三段 schema
 
 ## 什么算完成
 

@@ -53,7 +53,6 @@
 
 - 不要新增第二份总体设计文档
 - 不要把单个 kernel 字符串当成后端主产物
-- 不要把 `SplitBlackholeKernel` 当成当前前置条件
 - 不要重新引入或扩展 legacy external runner 路径
 - 不要让文档和代码长期协议错位
 
@@ -66,9 +65,9 @@
 3. ~~`rt_mod_blackhole`~~ ✅
 4. ~~`BlackholeModule` direct path 补全~~ ✅
 5. ~~Copy E2E 验收（direct path）~~ ✅
-6. split-before 语义规划（方案 A: `AnnotateBlackholeCopySemantics` pass）— **当前首要**
+6. ~~split-before 语义规划（`AnnotateBlackholeCopySemantics` + `SplitBlackholeKernel` pass）~~ ✅
 7. 通用 pass 回收（FlattenBuffer / VectorizeLoop / StorageRewrite）
-8. GEMM 接入
+8. GEMM 接入（Steps 1-3 ✅，Steps 4-6 **当前首要**）
 9. multi-core
 
 ---
@@ -100,6 +99,8 @@
 - Blackhole 正式执行路径只剩 `BlackholeModule` 进程内 direct host path
 - 默认开发构建目录固定为 `tilelang_repo/build/`
 - `build_blackhole/` 和 legacy runner 都已删除；旧文档里出现时按历史语境理解，不要恢复
+- Pass 管线顺序：`AnnotateBlackholeCopySemantics` → `SplitBlackholeKernel` → `LowerBlackholeOps` → `PlanBlackholeCB`
+- `SplitBlackholeKernel` 已实现并已接入管线；纯 copy 走 `fused_dataflow` 单 kernel，GEMM 走 3-kernel（reader/compute/writer）
 
 ---
 
