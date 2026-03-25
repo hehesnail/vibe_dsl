@@ -386,13 +386,13 @@ multi-core 的主要实现位置保持不变：
 
 状态：
 
-- **进行中**（Step 1-5 已完成，Step 6 被 Stage 2E 阻塞）
+- **进行中**（Step 1-5 已完成；Step 6 当前为 direct-path E2E 验收）
 - Step 1：`LowerTileOp` Blackhole GEMM skip ✅
 - Step 2：`SplitBlackholeKernel` pass ✅（3-kernel segment_plan，reader/compute/writer）
 - Step 3：`LowerBlackholeOps` planner-driven CB binding ✅
 - Step 4：`rt_mod_blackhole` 多 segment 提取 ✅
 - Step 5：`BlackholeModule` 3-kernel 注册 ✅
-- Step 6：E2E 测试 ⏳（被 generic pass 阻塞，需 Stage 2E 先完成）
+- Step 6：E2E 测试 ⏳（`lower()` 已通过；当前待 direct runtime 环境就绪后完成执行验收）
 
 架构债（不在 2D 内）：copy 统一进 reader+writer 2-kernel 模型，消除 fused_dataflow / 多 kernel 双重 schema。
 
@@ -416,7 +416,7 @@ multi-core 的主要实现位置保持不变：
 
 状态：
 
-- **进行中**（设计已定稿，实现待开始）
+- **已完成**（StorageRank 扩展、canonicalization pass 与 GEMM lower 解锁均已落地）
 
 ### Stage 3: multi-core runtime 调度
 

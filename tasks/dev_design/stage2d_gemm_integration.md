@@ -343,4 +343,4 @@ def test_blackhole_gemm_basic():
 | Step 3：LowerBlackholeOps 修正 | ✅ 完成（planner-driven CB placeholders + codegen resolve 已落地） |
 | Step 4：rt_mod_blackhole 多 segment | ✅ 完成（segment-specific PrimFunc + KernelSpec 生成） |
 | Step 5：BlackholeModule 3-kernel | ✅ 完成（多 buffer direct path + kind-aware kernel registration） |
-| Step 6：E2E 测试 | 🔄 进行中（当前被 `MergeSharedMemoryAllocations expects flat memory buffers` 阻塞） |
+| Step 6：E2E 测试 | 🔄 进行中（`lower()` 已通过；当前待 direct runtime 环境就绪后完成执行验收） |

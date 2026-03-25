@@ -214,8 +214,8 @@
 | Stage 2A | pass 主链接入收正 | 🔄 进行中 | 固定 split 前语义规划 / split 后正式 plan 提取 / host-side materialization 三层 |
 | Stage 2B | single-core copy 正式主链 | ✅ 已完成 | direct path copy E2E 已在 TT-Sim 上验收通过 |
 | Stage 2C | split-before 语义规划 | ✅ 已完成 | annotation + FlattenBuffer/VectorizeLoop 验证通过；StorageRewrite 确认不兼容 Blackhole CB 模型，永久排除 |
-| Stage 2D | single-core true E2E | ⏳ 未完成（Step 1-5 已完成，Step 6 被 Stage 2E 阻塞） | copy + GEMM 都通过正式 host-device 主路径执行 |
-| Stage 2E | Blackhole 设备资源 IR 语义扩展 | 🔄 进行中 | 扩展 StorageRank + 规范化 pass，解除 GEMM generic pass 阻塞 |
+| Stage 2D | single-core true E2E | 🔄 进行中（Step 1-5 已完成；Step 6 当前为 direct-path E2E 验收） | copy + GEMM 都通过正式 host-device 主路径执行 |
+| Stage 2E | Blackhole 设备资源 IR 语义扩展 | ✅ 已完成 | StorageRank 扩展 + 规范化 pass 已落地，GEMM generic pass 阻塞已解除 |
 | Stage 3 | multi-core runtime 调度 | ⏳ 未开始 | `CorePlan` 已补 formal schema，后续补 per-core runtime args 与多核执行 |
 
 ## Stage 2 当前任务拆分
@@ -303,7 +303,7 @@
   - `BlackholeModule::ExecuteDirect()` 已改为按 TVM buffer 参数分别创建 DRAM `MeshBuffer`
   - `BuildRuntimeArgsFromSpec()` 已可按 `KernelArgSpec.buffer` 绑定多输入/输出 buffer 地址
   - `CreateKernelFromSpec()` 已按 kind/core_type 路由 reader(BRISC) / compute(TRISC) / writer(NCRISC)
-- 当前新增 blocker（Stage 2D Step 6 前置，2026-03-24）：
+- 历史 blocker（Stage 2D Step 6 前置，2026-03-24，已由 Stage 2E 解决）：
   - GEMM 走完整 `lower()` 时，当前会在 `MergeSharedMemoryAllocations` 失败：
     - `MergeSharedMemoryAllocations expects flat memory buffers`
   - 进一步沿 pass 链定位后，当前已确认这只是最早暴露的一个 generic pass 断点；同一根因还会表现为：
@@ -313,7 +313,7 @@
     - `shared/shared.dyn` 在 Blackhole 上本质更接近 CB/L1 transport resource，不等价于 generic shared buffer
     - `local.fragment` 在 Blackhole 上本质更接近 compute-private Dst/fragment resource，不应越过 host/device ABI 边界
     - 当前这些资源仍以普通 TIR buffer/var/scope 进入 `SplitHostDevice / MakePackedAPI / LowerDeviceKernelLaunch`
-  - 这属于 Step 6 之前的结构性前置问题，不是 `rt_mod_blackhole` / `BlackholeModule` 的多 segment 实现本身
+  - 这属于当时 Step 6 之前的结构性前置问题，不是 `rt_mod_blackhole` / `BlackholeModule` 的多 segment 实现本身
 - 本轮设计收敛（2026-03-25）：
   - 已新增通用设计文档：
     - `tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`
@@ -324,6 +324,16 @@
       - transport resources
       - compute-private resources
     - 让后续 GEMM / 非 GEMM compute op 共用统一语义层，而不是继续按算子补 workaround
+- Stage 2E 已完成（2026-03-25）：
+  - `StorageRank` 已扩展：
+    - `kBlackholeCB`
+    - `kBlackholeAccumulator`
+  - `BlackholeDeviceResourceCanonicalization` 已接入正式管线
+  - GEMM `lower()` 已通过，先前三个 generic pass 阻塞已解除：
+    - `MergeSharedMemoryAllocations expects flat memory buffers`
+    - `variables [C_local] are used, but are not passed in as API arguments`
+    - `Only one dynamic shared memory allocation is allowed`
+  - 当前 Stage 2D Step 6 的剩余工作已从“打通 lower()”切换为“验证 direct path 实际执行”
 - 本轮回归修正（2026-03-24）：
   - Blackhole 测试文件已按关注点拆分：
     - `common.py`
@@ -343,10 +353,7 @@
 - Step 3: `LowerBlackholeOps` GEMM compute 的 planner-driven CB binding 已接入 codegen；剩余工作转为确认 multi-segment source generation 时继续沿用这套协议
 - Step 4: `rt_mod_blackhole` 多 segment extractor 已落地；剩余工作转为随 Step 6 一起验证实际 lower/build 链路
 - Step 5: `BlackholeModule` 3-kernel 注册已落地；剩余工作转为 TT-Sim / lower 级联验证
-- Step 6: E2E 测试 `test_blackhole_gemm_basic`，当前被 `MergeSharedMemoryAllocations` shared-buffer flatten 前置条件阻塞
-- Step 6 的当前真实前置工作已扩展为：
-  - 先收正 Blackhole device resource semantics 与 generic host/device pass 的边界
-  - 再处理 `MergeSharedMemoryAllocations` 等具体 generic pass 断点
+- Step 6: E2E 测试 `test_blackhole_gemm_basic`，`lower()` 前置阻塞已解除；当前剩余工作是 direct runtime 环境就绪后的执行验收
 
 ## 当前下一步
 
@@ -356,19 +363,22 @@
 2. ~~Copy E2E 验收~~ → **已完成**（18 passed, 1 skipped，含 grid>1 / large-shape / oversubscription 负例）
 3. ~~`ExecuteDirect` 核坐标 / input-output 分类 / 死代码~~ → **已修正**
 4. ~~split 前语义规划（Stage 2C）~~ → **已完成**（`AnnotateBlackholeCopySemantics` + FlattenBuffer/VectorizeLoop 验证 + StorageRewrite 不兼容性确认）
-5. GEMM 接入（Stage 2D / Phase 5）— **进行中（Step 4/5 已落地；Step 6 当前被通用资源语义边界阻塞）**
+5. GEMM 接入（Stage 2D / Phase 5）— **进行中（Step 1-5 已落地；Step 6 当前为 direct-path E2E 验收）**
    - ~~Step 1: `LowerTileOp` Blackhole GEMM skip~~ → **已完成**
    - ~~Step 2: `SplitBlackholeKernel` pass~~ → **已完成**
    - ~~Step 3: `LowerBlackholeOps` GEMM lower / planner-driven CB binding~~ → **已完成**
    - ~~Step 4: `rt_mod_blackhole` 多 segment extractor~~ → **已完成**
    - ~~Step 5: `BlackholeModule` 3-kernel 注册~~ → **已完成**
-   - Step 6: E2E 测试 → **进行中**（当前前置问题已收敛为 Blackhole device resource semantics 与 generic pass 边界冲突；`MergeSharedMemoryAllocations` 只是最早暴露点）
+   - Step 6: E2E 测试 → **进行中**（`lower()` 已通过；当前待 direct runtime 环境就绪后完成执行验收）
 6. 分批接回中后段通用 pass（Phase 4）— 可并行或后置
-7. 通用设备资源语义收正（Stage 2E 设计）— **已立项**
+7. 通用设备资源语义收正（Stage 2E）— **已完成**
 
 ### 当前具体下一步
 
-执行 Stage 2E（Blackhole 设备资源 IR 语义扩展），设计文档：`tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`
+执行 Stage 2D Step 6：GEMM direct-path E2E 验收。相关设计文档：
+
+- `tasks/dev_design/stage2d_gemm_integration.md`
+- `tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`
 
 ## Stage 2E 任务拆分
 
@@ -418,6 +428,15 @@
   - `MergeSharedMemoryAllocations expects flat memory buffers`
   - `variables [C_local] are used, but are not passed in as API arguments`
   - `Only one dynamic shared memory allocation is allowed`
+
+### Stage 2E 收尾结论
+
+- Stage 2E 已完成，其职责边界停留在：
+  - 扩展 IR 资源类型系统
+  - 在 generic host/device pass 前完成 device-private resource canonicalization
+  - 解除 GEMM `lower()` 的结构性阻塞
+- 它不再是 Stage 2D Step 6 的当前 blocker
+- 当前剩余风险转为 runtime 环境与 direct-path 执行验收，而不是 IR/pass 语义缺失
 - 新增结构验证 test case：
   - 规范化后 IR 无 `shared.dyn` / `local.fragment`
   - `blackhole.resource_plan` 存在且分类正确

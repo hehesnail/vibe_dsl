@@ -76,7 +76,7 @@
   - 保持 pure copy 继续走原有 single-kernel build/codegen 主路径
   - 只让 multi-segment GEMM 走 segment-specific codegen
   - `CodeGenBlackhole` 的 buffer 绑定逻辑必须从 IR/schema 恢复，而不是依赖“新增分支里的对象 identity 恰好一致”
-- **当前状态**: 已解决。Blackhole 测试目录当前结果为 `16 passed, 7 skipped, 1 xfailed`；GEMM Step 6 的 blocker 仍是 `MergeSharedMemoryAllocations` 的 flat-buffer 前置条件。
+- **当前状态**: 已解决。该回归已收正；后续 GEMM `lower()` 阻塞也已由 Stage 2E 统一解除，当前剩余工作转为 direct-path E2E 执行验收。
 
 ### GEMM `lower()` 当前会卡在 `MergeSharedMemoryAllocations` 的 flat-buffer 前置条件
 
@@ -88,7 +88,7 @@
   - 要么在 Blackhole GEMM 进入该 pass 之前先补 `FlattenBuffer`/等价扁平化前置条件
   - 要么给 `MergeSharedMemoryAllocations` 增加 Blackhole/非扁平 shared buffer 豁免
   - 在此问题解决前，Step 4/5 可以做编译级和 segment-plan 级验证，但 Step 6 true E2E 仍会被前置 pass 挡住
-- **当前状态**: 未解决。由 Stage 2E StorageRank 扩展方案统一解决（见下条）。
+- **当前状态**: 已解决。问题已由 Stage 2E 的 StorageRank 扩展与 canonicalization pass 统一解决。
 
 ### Blackhole device-private resource 当前会被 generic host/device pass 误解释
 
@@ -103,7 +103,7 @@
   - 新增 `BlackholeDeviceResourceCanonicalization` pass 在 `SplitHostDevice` 前完成 scope 替换 + allocation 重定位
   - generic pass 自然正确（rank 不匹配 → 跳过），与 WMMA/MMA/Metal/AMX 扩展同构
   - 设计文档：`tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`
-- **当前状态**: 设计已定稿，实现进行中。
+- **当前状态**: 已解决。`StorageRank` 扩展与 `BlackholeDeviceResourceCanonicalization` 已落地，GEMM `lower()` 已不再触发这组三个 generic pass 错误。
 
 ### Stage 2C copy semantics 不能继续用 `AttrStmt` 承载结构化 schema
 
