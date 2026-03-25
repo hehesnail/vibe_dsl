@@ -16,6 +16,11 @@
 
 让 GEMM 的 reader / compute / writer 三段在 direct path 下通过 **真实 TT-Metal CB backing store** 完成 tile 输入输出，而不是通过 scratch L1 临时地址模拟。
 
+注意：
+
+- 本文档只覆盖 Stage 2D 中的 `P1: CB transport / tile dataflow` 子任务
+- 更完整的 Stage 2D 拆分、优先级和 TT-Metal 参考 case 见 `tasks/dev_design/stage2d_ttmetal_contract_audit.md`
+
 完成标准：
 
 - `test_blackhole_gemm_basic` 在 TT-Sim direct path 下通过
@@ -122,10 +127,19 @@ reader/writer 不再以 `scratch_l1_addr` 为主数据面，而应改成：
 
 ## 6. 实施顺序
 
-1. 先对齐 TT-Metal 官方 reader/writer 示例，明确 Blackhole 下 tile read/write 的正式 API 组合
-2. 收正 `CodeGenBlackhole::PrintReadTileToCB` / `PrintWriteTileFromCB`
-3. 跑 `test_blackhole_copy_runtime.py`
-4. 再跑 `test_blackhole_gemm_basic`
+1. 先以 `stage2d_ttmetal_contract_audit.md` 中的 `P0` 结果收正 GEMM compute contract，避免 transport 先落地后仍被 transpose/output format 语义拖回
+2. 对齐 TT-Metal 官方 reader/writer 示例，明确 Blackhole 下 tile read/write 的正式 API 组合
+3. 收正 `CodeGenBlackhole::PrintReadTileToCB` / `PrintWriteTileFromCB`
+4. 收缩 `scratch_l1_buffer_addr32` 在 runtime schema 里的职责
+5. 跑 `test_blackhole_copy_runtime.py`
+6. 再跑 `test_blackhole_gemm_basic`
+
+对应 TT-Metal 参考 case：
+
+- `tt_metal_repo/tt_metal/programming_examples/matmul/matmul_single_core/kernels/dataflow/reader_single_core_mm.cpp`
+- `tt_metal_repo/tt_metal/programming_examples/matmul/matmul_single_core/kernels/dataflow/writer_single_core_mm.cpp`
+- `tt_metal_repo/tt_metal/programming_examples/loopback/loopback.cpp`
+- `tt_metal_repo/tt_metal/programming_examples/vecadd_multi_core/vecadd_multi_core.cpp`
 
 ---
 

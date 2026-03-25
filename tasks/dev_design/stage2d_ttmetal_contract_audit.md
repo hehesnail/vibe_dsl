@@ -282,7 +282,175 @@ TT-Metal 还存在：
 
 ---
 
-## 7. 验证方式
+## 7. Stage 2D 任务拆分与优先级
+
+### P0: GEMM compute 语义补齐
+
+目标：
+
+- 让当前 single-core GEMM direct-path 至少具备正确的 compute contract
+
+需要补的语义：
+
+1. `transpose_B` 正式进入 builtin / lowering / codegen
+2. GEMM output 的 accumulator dtype / packed CB dtype / final tensor dtype 分层
+3. compute kernel compile-time ABI 不再只是一组匿名 ints，至少显式承载 `Mt/Kt/Nt` 与 transpose
+
+为什么优先：
+
+- 当前 `test_blackhole_gemm_basic` 的数值错误里，这层是最直接影响结果正确性的语义
+- 即使 CB data path 修正，如果 transpose 和 output format contract 仍缺失，结果依然不可信
+
+TT-Metal 参考 case：
+
+- `tt_metal_repo/tt_metal/hw/inc/api/compute/matmul.h`
+- `tt_metal_repo/tt_metal/programming_examples/matmul/matmul_single_core/matmul_single_core.cpp`
+- `tt_metal_repo/tt_metal/programming_examples/tilelang_gemm_test/ttsim_gemm_host.cpp`
+
+### P1: CB transport / tile dataflow 语义补齐
+
+目标：
+
+- 让 reader / compute / writer 三段通过真实 CB backing store 共享 tile 数据面
+
+需要补的语义：
+
+1. `read_tile_to_cb/write_tile_from_cb` 改成真实 CB transport
+2. `scratch_l1_buffer_addr32` 从主协议降级
+3. output transport 与最终 writeback 的责任边界明确
+
+为什么排第二：
+
+- 这是当前 direct-path 最显性的执行断点
+- 但它依赖 P0 的 output format contract，否则 transport 写对了，数据解释仍可能错
+
+TT-Metal 参考 case：
+
+- `tt_metal_repo/tt_metal/programming_examples/matmul/matmul_single_core/kernels/dataflow/reader_single_core_mm.cpp`
+- `tt_metal_repo/tt_metal/programming_examples/matmul/matmul_single_core/kernels/dataflow/writer_single_core_mm.cpp`
+- `tt_metal_repo/tt_metal/programming_examples/loopback/loopback.cpp`
+- `tt_metal_repo/tt_metal/programming_examples/vecadd_multi_core/vecadd_multi_core.cpp`
+
+### P2: host layout / tilize-untilize 语义补齐
+
+目标：
+
+- 把 host visible tensor layout 与 device physical tiled layout 正式分层
+
+需要补的语义：
+
+1. host tensor logical layout schema
+2. tilize / untilize responsibility 进入 direct path
+3. packed output -> final tensor writeback contract
+
+为什么排第三：
+
+- 这层决定 direct path 是否真的能覆盖 TT-Metal 正式 matmul 路径
+- 目前 GEMM 之所以还能跑到“有结果”，是因为 host/device layout 错层还没有在最早阶段直接炸掉，不代表语义正确
+
+TT-Metal 参考 case：
+
+- `tt_metal_repo/tt_metal/programming_examples/matmul/matmul_single_core/matmul_single_core.cpp`
+- `tt_metal_repo/docs/source/tt-metalium/tt_metal/examples/matmul_single_core.rst`
+- `tt_metal_repo/ttnn/cpp/ttnn/operations/data_movement/untilize_with_unpadding/device/untilize_with_unpadding_device_operation.hpp`
+- `tt_metal_repo/ttnn/cpp/ttnn/operations/sliding_window/halo/device/untilize_with_halo_program_factory.cpp`
+
+### P3: accessor / runtime work schema 补齐
+
+目标：
+
+- 把 `TensorAccessorArgs` 和 richer work packet 正式放进 `ExecutableSpec`
+
+需要补的语义：
+
+1. accessor descriptors 进入 spec
+2. per-buffer/per-accessor page size 和 layout 元信息进入 spec
+3. runtime work description 从 `tile_count` 升级为 `start_id/range/stride/barrier batch`
+
+为什么排第四：
+
+- 这是让 copy/gemm 不再依赖 codegen/runtime 猜测的关键层
+- 它同时是后续 row-major/stick/sharded 路径的必要前置
+
+TT-Metal 参考 case：
+
+- `tt_metal_repo/tt_metal/api/tt-metalium/tensor_accessor_args.hpp`
+- `tt_metal_repo/tt_metal/programming_examples/pad_multi_core/pad_multi_core.cpp`
+- `tt_metal_repo/tt_metal/programming_examples/shard_data_rm/kernels/reader_sharded_rm.cpp`
+- `tt_metal_repo/tt_metal/programming_examples/matmul/matmul_multi_core/kernels/dataflow/reader_mm_output_tiles_partitioned.cpp`
+- `tt_metal_repo/tt_metal/programming_examples/matmul/matmul_multi_core/kernels/dataflow/writer_unary_interleaved_start_id.cpp`
+
+### P4: copy/dataflow 泛化语义补齐
+
+目标：
+
+- 让 Stage 2D 之后的 copy 不再只覆盖 tile/interleaved 窄 case
+
+需要补的语义：
+
+1. non-tile / stick / row-major dataflow builtin 或等价 schema
+2. padding / alignment / local L1 manual copy contract
+3. sharded/distributed buffer contract
+
+为什么排第五：
+
+- 这层不是当前 GEMM true E2E 的最早 blocker
+- 但如果不补，copy 仍然只是“样例级通过”，不是协议闭环
+
+TT-Metal 参考 case：
+
+- `tt_metal_repo/tt_metal/programming_examples/pad_multi_core/pad_multi_core.cpp`
+- `tt_metal_repo/tt_metal/programming_examples/pad_multi_core/kernels/pad_reader_dims_rm_interleaved.cpp`
+- `tt_metal_repo/tt_metal/programming_examples/shard_data_rm/kernels/reader_sharded_rm.cpp`
+- `tt_metal_repo/tt_metal/programming_examples/distributed/3_distributed_eltwise_add/distributed_eltwise_add.cpp`
+
+### P5: multi-core synchronization / multicast 语义预埋
+
+目标：
+
+- 为 Stage 2D 之后的 multi-core 留正式对象层，而不是到时再补旁路
+
+需要补的语义：
+
+1. semaphore descriptors
+2. remote core coordinate / multicast descriptors
+3. core-to-core transport builtin 或等价 schema
+
+为什么排最后：
+
+- 当前 single-core GEMM 不直接依赖这层
+- 但 TT-Metal 多核主路径明确依赖它，后续不能再把它拖给 codegen/runtime 猜
+
+TT-Metal 参考 case：
+
+- `tt_metal_repo/tt_metal/programming_examples/contributed/multicast/multicast.cpp`
+- `tt_metal_repo/tt_metal/programming_examples/contributed/multicast/kernels/dataflow/inbound_kernel.cpp`
+- `tt_metal_repo/docs/source/tt-metalium/tt_metal/labs/matmul/lab3/lab3.rst`
+- `tt_metal_repo/ttnn/cpp/ttnn/operations/transformer/sdpa_decode/device/sdpa_decode_program_factory.cpp`
+
+---
+
+## 8. 推荐执行顺序
+
+Stage 2D 当前最稳的推进顺序应改成：
+
+1. P0: GEMM compute 语义
+2. P1: CB transport 语义
+3. P2: host layout / tilize-untilize
+4. P3: accessor / runtime work schema
+5. 以 `test_blackhole_gemm_basic` 恢复 true E2E
+6. P4: copy/dataflow 泛化
+7. P5: multi-core synchronization 预埋
+
+这个顺序的原则是：
+
+- 先补当前 GEMM 结果正确性必需的最小 contract
+- 再补会影响更多 case 的通用 schema
+- 最后为 multi-core 预埋正式对象层
+
+---
+
+## 9. 验证方式
 
 这份审计文档本身不以“pytest 全过”为验收标准；它的验收是：
 

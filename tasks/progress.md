@@ -17,7 +17,14 @@
 - **修正设计文档**：`tasks/dev_design/stage2d_cb_identity_protocol.md`
 - **活动设计文档**：`tasks/dev_design/stage2d_gemm_direct_cb_io.md`
 - **补充审计文档**：`tasks/dev_design/stage2d_ttmetal_contract_audit.md`
-- **下一步**: 先按 `stage2d_ttmetal_contract_audit.md` 把 Stage 2D 当前缺失的最小正式 contract 收束成 schema，再继续实现真实 CB dataflow IO、transpose、layout/accessor 相关修正，之后恢复 `test_blackhole_gemm_basic` true E2E 验收
+- **Stage 2D 当前任务拆分与优先级**：
+  - `P0`: GEMM compute 语义补齐（transpose、output packed dtype、compile-time ABI）
+  - `P1`: CB transport / tile dataflow 语义补齐（真实 CB backing store）
+  - `P2`: host layout / tilize-untilize 语义补齐
+  - `P3`: accessor / runtime work schema 补齐
+  - `P4`: copy/dataflow 泛化语义补齐（row-major、stick、pad、sharded）
+  - `P5`: multi-core synchronization / multicast 语义预埋
+- **下一步**: 先做 `P0 -> P1 -> P2 -> P3` 这四项最小正式 contract，再恢复 `test_blackhole_gemm_basic` true E2E；对应参考 case 已收录到 `stage2d_ttmetal_contract_audit.md`
 
 ## 当前状态判断
 
