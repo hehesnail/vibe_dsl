@@ -90,6 +90,32 @@
   - 在此问题解决前，Step 4/5 可以做编译级和 segment-plan 级验证，但 Step 6 true E2E 仍会被前置 pass 挡住
 - **当前状态**: 未解决。已在 `tasks/progress.md` 记录为 Stage 2D Step 6 的当前 blocker。
 
+### Blackhole device-private resource 当前会被 generic host/device pass 误解释
+
+- **时间**: 2026-03-25
+- **问题**: 沿 `AnnotateDeviceRegions -> SplitHostDevice -> MakePackedAPI -> LowerDeviceKernelLaunch` 继续分析后，发现当前 GEMM 报错并不只是 `MergeSharedMemoryAllocations` 的 flat-buffer 前置条件。只要强行绕过最早断点，还会继续暴露：
+  - `In PrimFunc main variables [C_local] are used, but are not passed in as API arguments`
+  - `Only one dynamic shared memory allocation is allowed`
+- **根本原因**:
+  - Blackhole/TT-Metal 编程模型里的对象至少分三层：
+    - host-visible：DRAM tensor / scalar / runtime args
+    - transport resource：CB / L1 FIFO
+    - compute-private：Dst/tile registers / fragment / accumulator
+  - 当前 `shared/shared.dyn` 和 `local.fragment` 仍以 generic TIR `Buffer/Allocate/Var/scope` 形态进入 host/device 主线
+  - 因此 generic pass 会把它们按自己的默认模型解释成：
+    - ABI 参数
+    - generic dynamic shared allocation
+    - launch-time shared-memory slab
+- **解决方向**:
+  - 不应在 `MakePackedAPI` / `LowerDeviceKernelLaunch` 上给 Blackhole 加放行式特判
+  - 应在 `SplitHostDevice` 之前新增一层 Blackhole device resource canonicalization
+  - 显式区分：
+    - host-visible resources
+    - transport resources
+    - compute-private resources
+  - 相关设计已记录在 `tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`
+- **当前状态**: 未解决。当前已从“GEMM-only blocker”收敛为更一般的设备资源语义边界问题。
+
 ### Stage 2C copy semantics 不能继续用 `AttrStmt` 承载结构化 schema
 
 - **时间**: 2026-03-23

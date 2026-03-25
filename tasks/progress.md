@@ -5,9 +5,9 @@
 
 ## 当前阶段
 
-- **阶段**: Stage 2C split-before 语义规划 ✅ 已完成 → 下一步：通用 pass 回收（Phase 4）+ GEMM 接入
-- **日期**: 2026-03-24
-- **当前目标**: Stage 2C 已完成（annotation + FlattenBuffer/VectorizeLoop 验证 + StorageRewrite 不兼容性确认）；下一步进入 GEMM 接入（Stage 2D）或 通用 pass 回收（Phase 4）
+- **阶段**: Stage 2C split-before 语义规划 ✅ 已完成 → 下一步：Stage 2D GEMM 接入收尾 + 通用设备资源语义收正
+- **日期**: 2026-03-25
+- **当前目标**: Stage 2C 已完成（annotation + FlattenBuffer/VectorizeLoop 验证 + StorageRewrite 不兼容性确认）；Stage 2D 当前主阻塞已收敛为 Blackhole device resource model 与 generic host/device pass 边界冲突
 
 ## 当前状态判断
 
@@ -20,6 +20,17 @@
   - `SplitHostDevice`
   - `MakePackedAPI`
   - `LowerDeviceKernelLaunch`
+- 基于本轮 TT-Metal / TT-Metalium 文档、示例和 pass 链复盘，当前已确认：
+  - Blackhole/TT-Metal 编程模型里的核心对象至少分三层：
+    - host-visible：DRAM tensor / scalar / runtime args / kernel handle
+    - transport resource：CB / L1 FIFO / producer-consumer 协议
+    - compute-private：Dst/tile registers / fragment / accumulator / unpack-pack-FPU 配置
+  - 当前 `shared/shared.dyn` 与 `local.fragment` 仍以 generic TIR buffer/scope 形态进入 host/device 主线，语义层级不足
+  - 这会让 generic pass 误把 device-private resource 当成：
+    - ABI 参数
+    - generic dynamic shared memory
+    - launch-time shared-memory slab
+  - 因此当前 GEMM blocker 本质上不是 “`gemm_py` 特例”，而是 **Blackhole device resource semantics 尚未在 IR 中显式承载**
 - copy 已开始从 runtime 特化迁回 pass / builtin / codegen 主链：
   - `blackhole.runtime_args`
   - `blackhole.segment_plan`
@@ -39,8 +50,13 @@
   - `32x64`
   - `64x32`
 - Stage 2B copy E2E 验收已完成：
-  - `test_blackhole_e2e.py` 在 TT-Sim 环境下结果为 `18 passed, 1 skipped`
-  - direct path / compile-time 负例已在同一套环境下共同验证
+  - 当前测试入口已拆分为：
+    - `testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
+    - `testing/python/target/blackhole/test_blackhole_copy_runtime.py`
+  - 本地当前结果：
+    - `test_blackhole_copy_pipeline.py`: `14 passed, 1 skipped, 1 xfailed`
+    - `test_blackhole_copy_runtime.py`: `1 passed, 4 skipped`
+  - 当前 `copy_runtime` 的 skip 原因是环境未配置 `TT_METAL_RUNTIME_ROOT`，不是新的功能回退
 - `grid > 1` 且 `bx/by` 参与索引的 direct-call staged copy 已在 TT-Sim 上通过：
   - `grid_x=2`
   - `grid_y=3`
@@ -88,7 +104,10 @@
 
 基于本轮推进的新进展（2026-03-23）：
 
-- `test_blackhole_e2e.py` 已收敛到 direct-call / compile-time 两类验证，不再依赖 legacy runner 二进制
+- Blackhole 测试已拆分为按关注点分层的入口，不再依赖 legacy runner 二进制：
+  - `test_blackhole_copy_pipeline.py`
+  - `test_blackhole_copy_runtime.py`
+  - `test_blackhole_gemm.py`
 - direct 模式的 CMake 接入已补第一轮构建对齐：
   - 加入 TT-Metal repo root / `tt_stl` / `hostdevcommon` / `umd` 相关 include 路径
   - direct 模式编译标准提升到 C++20 以匹配 TT-Metal 头文件要求
@@ -106,7 +125,7 @@
   - 以后统一以 `tilelang_repo/build/` 为准
   - 旧 `build_blackhole/` 过渡目录已删除，避免继续误用
   - 如需临时指向其他构建目录，仍使用 `TILELANG_DEV_LIB_ROOT`
-- `test_blackhole_e2e.py` 的 direct 前置检查已改成优先核对”当前进程实际加载的 `libtilelang.so` 对应的 CMakeCache 是否启用 `USE_BLACKHOLE_DIRECT=ON`”
+- `direct` 类测试的前置检查已改成优先核对”当前进程实际加载的 `libtilelang.so` 对应的 CMakeCache 是否启用 `USE_BLACKHOLE_DIRECT=ON`”
 - 当前 shell 的 TT-Sim 环境已通过 `scripts/setup_tt_sim.sh` 恢复：
   - 官方 `metal_example_add_2_integers_in_riscv` smoke test 已在本机再次跑通
   - direct path 已在 TT-Sim 上通过 `32x32` / `32x64` / `64x32` / `grid>1` / `large-shape`
@@ -118,7 +137,7 @@
   - `BlackholeWrappedFunc::operator()` input/output 分类：改为按 `runtime_args` 的 kind（`input_buffer_addr32` / `output_buffer_addr32`）顺序判定，不再依赖”最后一个 buffer = output”位置启发式
   - 删除死代码：`EnsureDeviceInitialized()`、`GetOrCompileProgram()`、`CompiledProgram` struct、`mesh_device_`/`mesh_command_queue_`/`device_initialized_`/`program_cache_`（direct path 每次调用自建局部 `MeshDevice`，这套成员从未被触达）
   - `MakeUniqueTempDir()` 用于 direct path 内部的唯一 kernel 临时目录，消除同进程内多次调用路径冲突
-  - 修复后全套 E2E 验收保持 18 passed, 1 skipped
+  - 修复后 copy/runtime 相关测试仍保持通过；当前测试结果以拆分后的 `copy_pipeline` / `copy_runtime` 入口为准
 - Stage 2C 本轮推进已补第一轮实现与专项验证（2026-03-23）：
   - `AnnotateBlackholeCopySemantics` 已从旧的 `AttrStmt/string` 方案收正为 `ForNode::annotations["blackhole.copy_semantics"]`
   - copy 语义 schema 已改为结构化 `Map<String, Any>`，不再依赖冒号拼接字符串协议
@@ -136,7 +155,23 @@
   - 已新增 Stage 2C 专项测试：
     - split-before annotation schema 产出检查
     - `AnnotateBlackholeCopySemantics -> FlattenBuffer -> VectorizeLoop -> LowerBlackholeOps` 稳定性检查
-  - 在统一后的 `build/` 上串行验证 `testing/python/target/blackhole/test_blackhole_e2e.py` 结果为 `15 passed, 5 skipped`
+  - 在统一后的 `build/` 上，当前对应验证入口为：
+    - `testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
+    - 结果：`14 passed, 1 skipped, 1 xfailed`
+
+基于本轮状态核查的新同步（2026-03-24）：
+
+- 当前 Blackhole 测试文件布局为：
+  - `testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
+  - `testing/python/target/blackhole/test_blackhole_copy_runtime.py`
+  - `testing/python/target/blackhole/test_blackhole_gemm.py`
+- 当前本地核查结果：
+  - `test_blackhole_copy_pipeline.py`: `14 passed, 1 skipped, 1 xfailed`
+  - `test_blackhole_copy_runtime.py`: `1 passed, 4 skipped`
+  - `test_blackhole_gemm.py`: `1 passed, 2 skipped`
+- 当前 GEMM 的两个 skip 分别对应：
+  - direct runtime 环境未配置 `TT_METAL_RUNTIME_ROOT`
+  - lowering 仍卡在 `MergeSharedMemoryAllocations expects flat memory buffers`
 
 当前仍然存在的主要结构问题：
 
@@ -268,8 +303,24 @@
 - 当前新增 blocker（Stage 2D Step 6 前置，2026-03-24）：
   - GEMM 走完整 `lower()` 时，当前会在 `MergeSharedMemoryAllocations` 失败：
     - `MergeSharedMemoryAllocations expects flat memory buffers`
-  - 说明当前 `LowerTileOp` Blackhole GEMM skip 后，shared alloc 仍保持二维形态；而主线后段某些 pass 仍假设 `FlattenBuffer` 之后的一维 shared buffer
-  - 这属于 Step 6 之前的新前置问题，不是 `rt_mod_blackhole` / `BlackholeModule` 的多 segment 实现本身
+  - 进一步沿 pass 链定位后，当前已确认这只是最早暴露的一个 generic pass 断点；同一根因还会表现为：
+    - `In PrimFunc main variables [C_local] are used, but are not passed in as API arguments`
+    - `Only one dynamic shared memory allocation is allowed`
+  - 根因已从“GEMM shared buffer 没 flatten”收敛为更一般的问题：
+    - `shared/shared.dyn` 在 Blackhole 上本质更接近 CB/L1 transport resource，不等价于 generic shared buffer
+    - `local.fragment` 在 Blackhole 上本质更接近 compute-private Dst/fragment resource，不应越过 host/device ABI 边界
+    - 当前这些资源仍以普通 TIR buffer/var/scope 进入 `SplitHostDevice / MakePackedAPI / LowerDeviceKernelLaunch`
+  - 这属于 Step 6 之前的结构性前置问题，不是 `rt_mod_blackhole` / `BlackholeModule` 的多 segment 实现本身
+- 本轮设计收敛（2026-03-25）：
+  - 已新增通用设计文档：
+    - `tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`
+  - 新设计方向不是在 `MakePackedAPI` / `LowerDeviceKernelLaunch` 上给 Blackhole 开特判，而是：
+    - 在 `SplitHostDevice` 之前新增 `BlackholeDeviceResourceCanonicalization`
+    - 显式区分：
+      - host-visible resources
+      - transport resources
+      - compute-private resources
+    - 让后续 GEMM / 非 GEMM compute op 共用统一语义层，而不是继续按算子补 workaround
 - 本轮回归修正（2026-03-24）：
   - Blackhole 测试文件已按关注点拆分：
     - `common.py`
@@ -290,6 +341,9 @@
 - Step 4: `rt_mod_blackhole` 多 segment extractor 已落地；剩余工作转为随 Step 6 一起验证实际 lower/build 链路
 - Step 5: `BlackholeModule` 3-kernel 注册已落地；剩余工作转为 TT-Sim / lower 级联验证
 - Step 6: E2E 测试 `test_blackhole_gemm_basic`，当前被 `MergeSharedMemoryAllocations` shared-buffer flatten 前置条件阻塞
+- Step 6 的当前真实前置工作已扩展为：
+  - 先收正 Blackhole device resource semantics 与 generic host/device pass 的边界
+  - 再处理 `MergeSharedMemoryAllocations` 等具体 generic pass 断点
 
 ## 当前下一步
 
@@ -299,20 +353,22 @@
 2. ~~Copy E2E 验收~~ → **已完成**（18 passed, 1 skipped，含 grid>1 / large-shape / oversubscription 负例）
 3. ~~`ExecuteDirect` 核坐标 / input-output 分类 / 死代码~~ → **已修正**
 4. ~~split 前语义规划（Stage 2C）~~ → **已完成**（`AnnotateBlackholeCopySemantics` + FlattenBuffer/VectorizeLoop 验证 + StorageRewrite 不兼容性确认）
-5. GEMM 接入（Stage 2D / Phase 5）— **进行中（Step 4/5 已落地，Step 6 当前首要）**
+5. GEMM 接入（Stage 2D / Phase 5）— **进行中（Step 4/5 已落地；Step 6 当前被通用资源语义边界阻塞）**
    - ~~Step 1: `LowerTileOp` Blackhole GEMM skip~~ → **已完成**
    - ~~Step 2: `SplitBlackholeKernel` pass~~ → **已完成**
    - ~~Step 3: `LowerBlackholeOps` GEMM lower / planner-driven CB binding~~ → **已完成**
    - ~~Step 4: `rt_mod_blackhole` 多 segment extractor~~ → **已完成**
    - ~~Step 5: `BlackholeModule` 3-kernel 注册~~ → **已完成**
-   - Step 6: E2E 测试 → **进行中**（当前被 `MergeSharedMemoryAllocations` / shared flatten 前置条件阻塞）
+   - Step 6: E2E 测试 → **进行中**（当前前置问题已收敛为 Blackhole device resource semantics 与 generic pass 边界冲突；`MergeSharedMemoryAllocations` 只是最早暴露点）
 6. 分批接回中后段通用 pass（Phase 4）— 可并行或后置
+7. 通用设备资源语义收正（Stage 2E 设计）— **已立项**
 
 ### 当前具体下一步
 
-1. 处理 GEMM `lower()` 当前的 shared-buffer flatten blocker（`MergeSharedMemoryAllocations expects flat memory buffers`）
-2. 在 blocker 解除后重跑 `test_blackhole_gemm_basic` direct path（Step 6）
-3. 回填 Step 4/5 的实际 TT-Sim 验收结果
+1. 基于 `stage2e_blackhole_device_resource_semantics.md` 细化最小可实现 schema：resource classification / `blackhole.resource_plan`
+2. 在 `SplitHostDevice` 之前收正 Blackhole device-private resource 边界，避免 `local.fragment` / `shared.dyn` 继续泄漏到 generic ABI / launch pass
+3. 在上述边界收正后重跑 `test_blackhole_gemm_basic` direct path（Step 6）
+4. 回填 Step 4/5 的实际 TT-Sim 验收结果
 
 ## 当前活动设计文档
 
@@ -321,3 +377,4 @@
 - `tasks/dev_design/stage2_single_core_pass_integration.md`
 - `tasks/dev_design/stage2_blackhole_logical_block_launch_plan.md`
 - `tasks/dev_design/stage2_concrete_dev_task_plan.md`
+- `tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`

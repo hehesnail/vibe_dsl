@@ -67,6 +67,11 @@ T.copy(C_local, C)                     # SRAM→DRAM → writer kernel
 
 ## 2. 架构设计（2026-03-24 修订版）
 
+> 2026-03-25 补充说明：
+> 本文档主要覆盖 Stage 2D 的 GEMM 接入拆分、planner 和 direct path 集成。
+> 后续沿主线 pass 继续分析后，当前 Step 6 的根因已确认不只是 GEMM flatten 问题，而是更一般的 Blackhole device resource semantics 与 generic host/device pass 边界冲突。
+> 相关通用设计已单独收敛到 `tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`。
+
 ### 2.1 核心原则
 
 1. **`SplitBlackholeKernels` 是通用 pass**，不写死 GEMM 逻辑，按数据流方向（dram_to_cb / compute / cb_to_dram）通用分类
