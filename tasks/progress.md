@@ -5,9 +5,9 @@
 
 ## 当前阶段
 
-- **阶段**: Stage 2C split-before 语义规划 ✅ 已完成 → 下一步：Stage 2D GEMM 接入收尾 + 通用设备资源语义收正
+- **阶段**: Stage 2E Blackhole 设备资源 IR 语义扩展 — **进行中**
 - **日期**: 2026-03-25
-- **当前目标**: Stage 2C 已完成（annotation + FlattenBuffer/VectorizeLoop 验证 + StorageRewrite 不兼容性确认）；Stage 2D 当前主阻塞已收敛为 Blackhole device resource model 与 generic host/device pass 边界冲突
+- **当前目标**: 扩展 StorageRank 类型系统（`kBlackholeCB` / `kBlackholeAccumulator`），新增 `BlackholeDeviceResourceCanonicalization` pass，解除 GEMM lowering 的 generic pass 阻塞
 
 ## 当前状态判断
 
@@ -212,7 +212,8 @@
 | Stage 2A | pass 主链接入收正 | 🔄 进行中 | 固定 split 前语义规划 / split 后正式 plan 提取 / host-side materialization 三层 |
 | Stage 2B | single-core copy 正式主链 | ✅ 已完成 | direct path copy E2E 已在 TT-Sim 上验收通过 |
 | Stage 2C | split-before 语义规划 | ✅ 已完成 | annotation + FlattenBuffer/VectorizeLoop 验证通过；StorageRewrite 确认不兼容 Blackhole CB 模型，永久排除 |
-| Stage 2D | single-core true E2E | ⏳ 未完成 | copy + GEMM 都通过正式 host-device 主路径执行 |
+| Stage 2D | single-core true E2E | ⏳ 未完成（Step 1-5 已完成，Step 6 被 Stage 2E 阻塞） | copy + GEMM 都通过正式 host-device 主路径执行 |
+| Stage 2E | Blackhole 设备资源 IR 语义扩展 | 🔄 进行中 | 扩展 StorageRank + 规范化 pass，解除 GEMM generic pass 阻塞 |
 | Stage 3 | multi-core runtime 调度 | ⏳ 未开始 | `CorePlan` 已补 formal schema，后续补 per-core runtime args 与多核执行 |
 
 ## Stage 2 当前任务拆分
@@ -365,10 +366,60 @@
 
 ### 当前具体下一步
 
-1. 基于 `stage2e_blackhole_device_resource_semantics.md` 细化最小可实现 schema：resource classification / `blackhole.resource_plan`
-2. 在 `SplitHostDevice` 之前收正 Blackhole device-private resource 边界，避免 `local.fragment` / `shared.dyn` 继续泄漏到 generic ABI / launch pass
-3. 在上述边界收正后重跑 `test_blackhole_gemm_basic` direct path（Step 6）
-4. 回填 Step 4/5 的实际 TT-Sim 验收结果
+执行 Stage 2E（Blackhole 设备资源 IR 语义扩展），设计文档：`tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`
+
+## Stage 2E 任务拆分
+
+### Step 1: 扩展 StorageRank / StorageScope（IR 层）⏳
+
+**文件**：`3rdparty/tvm/src/runtime/thread_storage_scope.h`
+
+- 新增 `kBlackholeCB = 13`、`kBlackholeAccumulator = 14`
+- 更新 `StorageScope::Create()` 解析 `"blackhole.cb"` / `"blackhole.acc"` 前缀
+- 更新 `StorageScope::to_string()` 新增对应 case
+- 验证：构建通过
+
+### Step 2: 新 pass `BlackholeDeviceResourceCanonicalization` 实现 ⏳
+
+**新建**：`src/transform/blackhole_device_resource_canonicalization.cc`
+
+- Phase 1：资源分类（BlackholeResourceClassifier）
+  - 按 scope + 使用模式分类：cb / accumulator / abi / local_scratch
+  - 利用 `blackhole.copy_semantics` annotation 判断 CB role
+  - 利用 `gemm_py` 调用参数判断 accumulator
+- Phase 2：Scope 重写 + Allocation 重定位（BlackholeResourceCanonicalizer）
+  - `shared.dyn` → `blackhole.cb.input` / `blackhole.cb.output`
+  - `local.fragment` / `local`(gemm C) → `blackhole.acc`
+  - device-private Allocate 移回 `thread_extent` AttrStmt 内部
+  - 附加 `blackhole.resource_decl` annotation
+- Phase 3：写 `blackhole.resource_plan` attr
+- 验证：构建通过 + 单元测试
+
+### Step 3: Python 注册 + 管线接入 ⏳
+
+- `tilelang/transform/__init__.py` 新增 FFI 绑定
+- `tilelang/engine/phase.py` 在 `AnnotateBlackholeCopySemantics` 之后、`AnnotateDeviceRegions` 之前接入
+- `src/transform/CMakeLists.txt` 添加新源文件
+- 验证：copy pipeline 回归通过
+
+### Step 4: 下游 pass 更新 ⏳
+
+- `codegen_blackhole.cc`：Allocate 跳过 + PrintStorageScope 用 rank 替代字符串
+- `lower_device_storage_access_info.cc`：新 rank 白名单
+- `lower_blackhole_ops.cc`：CB 识别改为 `rank == kBlackholeCB`
+- 验证：copy pipeline 回归 + GEMM lower 通过
+
+### Step 5: GEMM 解锁验证 ⏳
+
+- `test_blackhole_gemm.py::test_gemm_lower_basic` 通过
+- 三个 generic pass 错误不再出现：
+  - `MergeSharedMemoryAllocations expects flat memory buffers`
+  - `variables [C_local] are used, but are not passed in as API arguments`
+  - `Only one dynamic shared memory allocation is allowed`
+- 新增结构验证 test case：
+  - 规范化后 IR 无 `shared.dyn` / `local.fragment`
+  - `blackhole.resource_plan` 存在且分类正确
+  - 设备函数参数只含 DRAM tensor
 
 ## 当前活动设计文档
 

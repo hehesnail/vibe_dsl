@@ -386,15 +386,37 @@ multi-core 的主要实现位置保持不变：
 
 状态：
 
-- **进行中**（Step 1/2/3 已完成，Step 4/5/6 待实现）
+- **进行中**（Step 1-5 已完成，Step 6 被 Stage 2E 阻塞）
 - Step 1：`LowerTileOp` Blackhole GEMM skip ✅
 - Step 2：`SplitBlackholeKernel` pass ✅（3-kernel segment_plan，reader/compute/writer）
-- Step 3：`LowerBlackholeOps` 移除 `StoreGemmSegmentPlan`，加 segment_plan 守卫 ✅
-- Step 4：`rt_mod_blackhole` 多 segment 提取 ⏳
-- Step 5：`BlackholeModule` 3-kernel 注册 ⏳
-- Step 6：E2E 测试 ⏳
+- Step 3：`LowerBlackholeOps` planner-driven CB binding ✅
+- Step 4：`rt_mod_blackhole` 多 segment 提取 ✅
+- Step 5：`BlackholeModule` 3-kernel 注册 ✅
+- Step 6：E2E 测试 ⏳（被 generic pass 阻塞，需 Stage 2E 先完成）
 
 架构债（不在 2D 内）：copy 统一进 reader+writer 2-kernel 模型，消除 fused_dataflow / 多 kernel 双重 schema。
+
+### Stage 2E: Blackhole 设备资源 IR 语义扩展
+
+目标：
+
+- 扩展 TIR `StorageRank` 类型系统，为 Blackhole CB 和 Dst 累加器引入正式 IR 资源类型
+- 新增 `BlackholeDeviceResourceCanonicalization` pass，在 `SplitHostDevice` 前完成 scope 替换和 allocation 重定位
+- 解除 GEMM lowering 的三个 generic pass 阻塞
+
+设计文档：`tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`
+
+核心设计：
+
+- 新增 `StorageRank::kBlackholeCB = 13`、`StorageRank::kBlackholeAccumulator = 14`
+- `shared.dyn` → `blackhole.cb.input` / `blackhole.cb.output`（CB 是 FIFO 队列，不是共享内存）
+- `local.fragment` → `blackhole.acc`（Dst 是寄存器文件，不是可寻址内存）
+- generic pass 自然正确（rank 不匹配 → 跳过），无需特判
+- 与 WMMA/MMA/Metal/AMX 在 TVM 中的既有 StorageRank 扩展完全同构
+
+状态：
+
+- **进行中**（设计已定稿，实现待开始）
 
 ### Stage 3: multi-core runtime 调度
 

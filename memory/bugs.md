@@ -88,33 +88,22 @@
   - 要么在 Blackhole GEMM 进入该 pass 之前先补 `FlattenBuffer`/等价扁平化前置条件
   - 要么给 `MergeSharedMemoryAllocations` 增加 Blackhole/非扁平 shared buffer 豁免
   - 在此问题解决前，Step 4/5 可以做编译级和 segment-plan 级验证，但 Step 6 true E2E 仍会被前置 pass 挡住
-- **当前状态**: 未解决。已在 `tasks/progress.md` 记录为 Stage 2D Step 6 的当前 blocker。
+- **当前状态**: 未解决。由 Stage 2E StorageRank 扩展方案统一解决（见下条）。
 
 ### Blackhole device-private resource 当前会被 generic host/device pass 误解释
 
 - **时间**: 2026-03-25
-- **问题**: 沿 `AnnotateDeviceRegions -> SplitHostDevice -> MakePackedAPI -> LowerDeviceKernelLaunch` 继续分析后，发现当前 GEMM 报错并不只是 `MergeSharedMemoryAllocations` 的 flat-buffer 前置条件。只要强行绕过最早断点，还会继续暴露：
+- **问题**: GEMM lowering 沿 `AnnotateDeviceRegions -> SplitHostDevice -> MakePackedAPI -> LowerDeviceKernelLaunch` 暴露三个错误：
+  - `MergeSharedMemoryAllocations expects flat memory buffers`
   - `In PrimFunc main variables [C_local] are used, but are not passed in as API arguments`
   - `Only one dynamic shared memory allocation is allowed`
-- **根本原因**:
-  - Blackhole/TT-Metal 编程模型里的对象至少分三层：
-    - host-visible：DRAM tensor / scalar / runtime args
-    - transport resource：CB / L1 FIFO
-    - compute-private：Dst/tile registers / fragment / accumulator
-  - 当前 `shared/shared.dyn` 和 `local.fragment` 仍以 generic TIR `Buffer/Allocate/Var/scope` 形态进入 host/device 主线
-  - 因此 generic pass 会把它们按自己的默认模型解释成：
-    - ABI 参数
-    - generic dynamic shared allocation
-    - launch-time shared-memory slab
-- **解决方向**:
-  - 不应在 `MakePackedAPI` / `LowerDeviceKernelLaunch` 上给 Blackhole 加放行式特判
-  - 应在 `SplitHostDevice` 之前新增一层 Blackhole device resource canonicalization
-  - 显式区分：
-    - host-visible resources
-    - transport resources
-    - compute-private resources
-  - 相关设计已记录在 `tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`
-- **当前状态**: 未解决。当前已从“GEMM-only blocker”收敛为更一般的设备资源语义边界问题。
+- **根本原因**: TIR `StorageScope` 把存储层级与资源语义混为一谈。GPU 两者 1:1 映射，但 Blackhole 的 CB（L1 FIFO 队列）和 Dst 累加器（寄存器文件）打破了这个假设。`shared.dyn` / `local.fragment` 让 generic pass 按 GPU 模型误解释 Blackhole 资源。
+- **解决方案（Stage 2E）**:
+  - 扩展 `StorageRank` 枚举：`kBlackholeCB = 13`、`kBlackholeAccumulator = 14`
+  - 新增 `BlackholeDeviceResourceCanonicalization` pass 在 `SplitHostDevice` 前完成 scope 替换 + allocation 重定位
+  - generic pass 自然正确（rank 不匹配 → 跳过），与 WMMA/MMA/Metal/AMX 扩展同构
+  - 设计文档：`tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`
+- **当前状态**: 设计已定稿，实现进行中。
 
 ### Stage 2C copy semantics 不能继续用 `AttrStmt` 承载结构化 schema
 
