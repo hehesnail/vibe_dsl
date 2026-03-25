@@ -197,6 +197,56 @@
   - 原先那组 generic pass 断点不再出现
   这样才能确认修的是语义边界，而不是偶然绕开了某个报错。
 
+### Stage 2：主链接入与分层收正方法论
+
+当前新增的稳定经验：
+
+- Stage 2A 的首要目标不是“先让某个算子跑起来”，而是先把 target 接回 TileLang / TVM 的正式 host-device 主链：
+  - `AnnotateDeviceRegions`
+  - `SplitHostDevice`
+  - `MakePackedAPI`
+  - `LowerDeviceKernelLaunch`
+  如果这条链还没接回，就不要继续扩大 runtime-only / unsplit-only 路径；否则后面每补一个功能，都会再背一份旁路债。
+- Stage 2B/2C 最重要的方法论是三层分工固定：
+  - split 前：保语义
+  - split 后：提正式 plan
+  - host side：只做 materialization
+  一旦这三层边界不清，`LowerTileOp`、`LowerBlackholeOps`、`rt_mod_blackhole`、`BlackholeModule` 就会互相抢职责，最后又退回 runtime 猜协议。
+- 对 split 前 / split 后的职责划分，一个实用检查是看“某个字段应该在哪层第一次变成显式协议”：
+  - tile/dataflow/block 语义应该在 split 前保住
+  - `segment_plan` / `runtime_args` / `cb_requirements` / `cb_configs` / `core_plan` 应该在 split 后显式产出
+  - 真正的 TT-Metal object 创建应只在 host-side materialization 层发生
+- Stage 2C 的通用模式是：如果某段语义后面会经过 `FlattenBuffer` / `VectorizeLoop` / 类似 destructive pass，就要在前面先挂结构化 annotation，不要等 pass 之后再从 loop/buffer 形态猜回来。
+  - 对 Blackhole copy，这意味着在 `LowerTileOp` 之后、destructive pass 之前显式写 `blackhole.copy_semantics`
+  - annotation 需要带足够的 shape / direction / buffer identity，不能只留最小名字信息
+- Stage 2C/Phase 4 的 pass 回收不要“一次全开”；更稳的做法是逐个 pass 接回、逐个验语义保真。
+  - 先验证 `FlattenBuffer`
+  - 再验证 `VectorizeLoop`
+  - 对 `StorageRewrite` 这类与 target 资源模型直接冲突的 pass，要允许明确记录为“不兼容”，而不是为了“全复用”硬接
+- Stage 2D 的增量接入经验是：新 schema 先隔离到新场景，不要把已稳定路径一起卷入。
+  - 纯 copy 保持原稳定 schema
+  - GEMM 单独走 multi-segment schema
+  - 等新路径稳定后再考虑统一模型
+  这样能避免“为了接新功能，把旧功能一起回退”。
+- Stage 2D 做 runtime / direct path 集成时，先收协议，再做 materialization。
+  - 先让 planner/codegen/runtime 对 `buffer`、segment-level runtime args、CB binding 等 schema 对齐
+  - 再让 `BlackholeModule` 去按 schema 创建 DRAM buffer、CB、kernel、runtime args
+  否则 runtime 很容易再次退回位置规则和命名规则猜 ABI。
+- Stage 2D 的测试要分层，不要只盯着最终 direct-call。
+  - 结构层：看 lowered TIR / attrs / builtin 是否已收正
+  - planner 层：看 `cb_configs` / `core_plan` / bindings 是否正确
+  - runtime 层：再看 direct path 真执行
+  这样才能区分“语义没产出”和“环境没配好”。
+- Stage 2B/2D 对 execution plan 的一个稳定经验是：single-core `grid > 1` 的最小正确模型，不是把 `blockIdx=0` 写死，而是保留 logical grid 语义，再由 host/runtime 用 `work_packets + current_work_linear_id` 顺序 materialize。
+  这样可以先把 logical block 语义和 host-side execution plan 闭环，再把真正 multi-core 留到后续阶段。
+- Stage 2 的总体推进顺序，已经形成一个可复用模式：
+  - 先收主链
+  - 再固定 split 前/后/host 三层边界
+  - 再用最小可验收对象把协议闭环
+  - 再逐步接回 destructive/generic pass
+  - 最后处理更高阶的资源语义或 multi-segment 扩展
+  如果顺序反过来，通常会陷入“局部能跑、整体协议越来越乱”的状态。
+
 ### Stage 0 协议落地经验
 
 当前新增的稳定经验：
