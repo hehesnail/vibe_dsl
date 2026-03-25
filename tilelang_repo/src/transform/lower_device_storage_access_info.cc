@@ -44,6 +44,11 @@ class StorageAccessInfoLower : public StmtExprMutator {
 public:
   Stmt VisitStmt_(const AllocateNode *op) final {
     auto scope = StorageScope::Create(GetPtrStorageScope(op->buffer_var));
+    // Blackhole hardware resources (CB, accumulator) have no TVM MemoryInfo — skip.
+    if (scope.rank == StorageRank::kBlackholeCB ||
+        scope.rank == StorageRank::kBlackholeAccumulator) {
+      return StmtExprMutator::VisitStmt_(op);
+    }
     if (!scope.tag.empty() && scope.tag != ".dyn" && scope.tag != ".var" &&
         scope.tag != ".barrier" && scope.tag != ".cluster_barrier" &&
         scope.tag.find(".descriptor") != 0) {

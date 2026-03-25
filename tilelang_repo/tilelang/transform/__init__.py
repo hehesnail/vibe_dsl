@@ -616,6 +616,22 @@ def AnnotateBlackholeCopySemantics():
     return _ffi_api.AnnotateBlackholeCopySemantics()  # type: ignore
 
 
+def BlackholeDeviceResourceCanonicalization():
+    """Canonicalize Blackhole device-private resource scopes before SplitHostDevice.
+
+    Replaces generic GPU-model scopes with correct Blackhole hardware resource types:
+      shared.dyn / shared  ->  blackhole.cb.{input|output|intermed}
+      local.fragment / local(gemm C)  ->  blackhole.acc
+
+    Also relocates device-private Allocate/DeclBuffer nodes from above the
+    thread_extent AttrStmt to inside it, so SplitHostDevice does not promote
+    them to device function ABI parameters.
+
+    Must run after AnnotateBlackholeCopySemantics and before AnnotateDeviceRegions.
+    """
+    return _ffi_api.BlackholeDeviceResourceCanonicalization()  # type: ignore
+
+
 def SplitBlackholeKernel():
     """Annotate statements with blackhole.segment_kind for 3-kernel GEMM split.
 

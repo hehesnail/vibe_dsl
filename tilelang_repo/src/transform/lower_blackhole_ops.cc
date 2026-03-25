@@ -30,6 +30,7 @@
 #include "../op/utils.h"
 
 #include <tvm/ffi/reflection/registry.h>
+#include "runtime/thread_storage_scope.h"
 #include <tvm/arith/analyzer.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/expr.h>
@@ -494,9 +495,11 @@ CopyDirection LowerBlackholeOps::GetCopyDirection(const BufferStoreNode* op) con
   std::string dst_scope = GetStorageScope(op->buffer);
   std::string src_scope = GetStorageScope(load->buffer);
 
-  // Helper to check if scope indicates CB (shared memory)
+  // Helper to check if scope indicates CB (shared memory or canonicalized blackhole.cb.*)
   auto isCBScope = [](const std::string& scope) {
-    return scope == "shared" || scope == "shared.dyn" || scope.find("shared") == 0;
+    if (scope.rfind("shared", 0) == 0) return true;
+    auto s = runtime::StorageScope::Create(scope);
+    return s.rank == runtime::StorageRank::kBlackholeCB;
   };
 
   // Helper to check if scope indicates DRAM (global memory)

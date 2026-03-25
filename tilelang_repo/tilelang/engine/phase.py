@@ -250,6 +250,7 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
         # before SplitHostDevice, so LowerBlackholeOps can consume stable
         # metadata instead of pattern-matching the loop body.
         mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+        mod = tilelang.transform.BlackholeDeviceResourceCanonicalization()(mod)
         mod = tilelang.transform.AnnotateDeviceRegions()(mod)
         mod = tilelang.transform.SplitHostDevice()(mod)
         mod = tilelang.transform.AnnotateReadOnlyParams()(mod)
