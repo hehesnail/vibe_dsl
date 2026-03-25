@@ -343,4 +343,30 @@ def test_blackhole_gemm_basic():
 | Step 3：LowerBlackholeOps 修正 | ✅ 完成（planner-driven CB placeholders + codegen resolve 已落地） |
 | Step 4：rt_mod_blackhole 多 segment | ✅ 完成（segment-specific PrimFunc + KernelSpec 生成） |
 | Step 5：BlackholeModule 3-kernel | ✅ 完成（多 buffer direct path + kind-aware kernel registration） |
-| Step 6：E2E 测试 | 🔄 进行中（`lower()` 已通过；当前待 direct runtime 环境就绪后完成执行验收） |
+| Step 6：E2E 测试 | 🔄 进行中（`lower()` 已通过；当前 blocker 为 CB identity 协议错位，修正设计见 `stage2d_cb_identity_protocol.md`） |
+
+---
+
+## 7. Step 6 前置修正：CB Identity 唯一协议收正
+
+### 7.1 问题
+
+Step 3 的 placeholder 方案（`-1/-2/-3`）在 codegen 阶段通过 `requirement_name` 做查找替换。这一机制存在通用性缺陷：
+
+1. `LowerBlackholeOps` 对 copy 和 GEMM 使用两套不兼容的 CB identity 体系（实际 id vs placeholder）
+2. `PlanBlackholeCB` 分配 cb_id 后不回写 IR body，IR 和 attrs 中存在两套独立的 id
+3. `CodeGenBlackhole` 用 `requirement_name` 做查找 key，但该 name 不唯一（lifetime reuse 时会重复）
+4. reader/compute/writer 三段因此可能拿到不同的 cb_id
+
+### 7.2 修正方案
+
+详见 `tasks/dev_design/stage2d_cb_identity_protocol.md`。核心：
+
+- `LowerBlackholeOps` 统一用 `requirement_index`（cb_requirements 数组下标）
+- `PlanBlackholeCB` 分配 cb_id 后回写 IR body
+- `CodeGenBlackhole` 直接读 IR 中的 cb_id，不做替换
+- 删除 `blackhole.gemm_cb_placeholders` attr
+
+### 7.3 对 Step 3 设计的影响
+
+Step 3 的 "planner-driven CB placeholders + codegen resolve" 方案被本修正取代。placeholder 体系在统一协议后不再需要。Step 3 的其他产出（`ExtractGemmInfo`、`GenerateMatmulSequence` 的 builtin 序列、`DataTypeToDataFormat`）保持不变。

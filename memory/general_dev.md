@@ -17,6 +17,8 @@
 
 - Blackhole codegen 应只负责把已经明确的 segment/spec 打印成源码。
 - 不要再把 codegen 当成 runtime 规划器或多核调度器。
+- **codegen 不应做 "register allocation 回写" 级别的工作**——如果 IR 中的标识符需要被替换成最终值，这应该是前面某个 pass 的职责，不是 codegen 的。
+- 如果一个 pass 只把规划结果写到 attrs 而不回写 IR body，那后续 pass/codegen 必须从 attrs 恢复状态，这会形成"IR 和 attrs 两套真源"的维护负担。优先让产出规划结果的 pass 同时完成 IR 回写。
 
 ### 2. 类型系统与参数处理
 
@@ -125,6 +127,15 @@
 
 - `TT_METAL_SLOW_DISPATCH_MODE=1` 对 TT-Sim 很关键。
 - simulator 库和完整 soc descriptor 的路径必须明确。
+- `scripts/setup_tt_sim.sh` 必须在**实际执行测试/脚本的同一个 shell**里 `source`；只在先前某个终端里配过一次环境，不等于当前进程里的 `pytest` / `python` 也会自动继承。
+  - 对当前仓库，稳定做法是：
+    - 在命令前缀里显式写 `source ../scripts/setup_tt_sim.sh && ...`（从 `tilelang_repo/` 下执行）
+    - 或 `source scripts/setup_tt_sim.sh && ...`（从顶层仓库执行）
+  - 重点检查变量至少包括：
+    - `TT_METAL_RUNTIME_ROOT`
+    - `TT_METAL_SIMULATOR`
+    - `TT_METAL_SLOW_DISPATCH_MODE`
+    - `LD_LIBRARY_PATH`
 - 如果既没有 `TT_METAL_SIMULATOR`，也没有 `TT_METAL_MOCK_CLUSTER_DESC_PATH`，runtime 会按真机模式探测设备；在没有可见芯片的环境里，这会直接在 Metal 初始化阶段报 `No chips detected in the cluster`。
 - UMD 测试不完全等价于 TT-Metal 编程示例可运行性。
 - 如果 direct path 在运行时把不同 kernel case 的源码反复写到同一个临时路径，TT-Metal JIT 可能按路径复用已编译结果，导致“单测单跑通过、同进程组合跑错结果”。临时 kernel 目录/文件名应该按每次执行唯一化，而不是只按 `pid` 固定。

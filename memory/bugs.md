@@ -63,6 +63,39 @@
 
 ## 与当前设计直接相关的记录
 
+### GEMM direct-path 的 CB identity 当前没有唯一真源
+
+- **时间**: 2026-03-25
+- **问题**: Stage 2D Step 6 在继续推进 `test_blackhole_gemm_basic` 时，已经越过：
+  - GEMM `lower()` 前置阻塞
+  - `MakePackedAPI` / `SplitHostDevice` blocker
+  - TT-Metal compute kernel include / compile blocker
+  但 direct path 仍然无法通过，当前表现为 reader / compute / writer 三段没有在同一个 CB identity 上同步。
+- **现象**:
+  - TIR `device_mod` 中，reader 的 `read_tile_to_cb` 已可表现为 placeholder CB id（`-1/-2`），compute 的 `mm_init/cb_wait_front` 也使用 placeholder（`-1/-2/-3`）
+  - 但最终生成的 reader kernel source 中，`cb_reserve_back/cb_push_back` 仍可能落成局部 CB id（如 `0/1`）
+  - compute / writer 段则可能已经落到 planner 解析后的实际 CB id（如 `3/4/17`）
+  - 结果是 producer 和 consumer 不在同一个 FIFO 上同步；这不是 TT-Metal `cb_reserve_back` API 本身的问题，也不是 `tt::CBIndex` 枚举语义问题
+- **根本原因**:
+  - `LowerBlackholeOps` 当前没有坚持单一 CB identity 模型，仍同时产出：
+    - 局部实际 CB id（如 `0/1/16`）
+    - GEMM 逻辑 placeholder CB id（`-1/-2/-3`）
+  - `PlanBlackholeCB` 当前允许同名 `requirement_name` 生成多份不同 binding，导致：
+    - `blackhole.cb_bindings.requirement_name` 不是唯一键
+    - 同一个 `A_shared/B_shared/C_local` 可能同时对应多个 `cb_id`
+  - `CodeGenBlackhole` / segment codegen 再按名字恢复 binding 时，会让不同 builtin（`reserve/push/read/wait/pop/mm_init/pack`）拿到不同来源的 CB 身份
+- **解决方向**:
+  - 不要继续做 builtin 级点修
+  - 必须先规定谁是 GEMM 三段的唯一 CB identity 真源：
+    - planner 前如果使用 placeholder，则所有相关 builtin 都只能使用 placeholder
+    - planner 后统一替换成最终实际 `cb_id`
+  - `cb_bindings` 不能继续让重名 `requirement_name` 承担唯一身份；需要唯一 requirement instance 级别的绑定键
+  - 只有在这层协议收敛后，reader/compute/writer 才能稳定共享同一组 CB
+- **当前状态**: 设计已完成，待实施。修正设计文档：`tasks/dev_design/stage2d_cb_identity_protocol.md`。
+  - 问题已确认为通用架构缺陷，不是 GEMM 特有
+  - 根因是实现偏离了设计文档（LowerBlackholeOps "不分配最终 cb_id" 但 copy 路径违反；PlanBlackholeCB 只写 attrs 不回写 IR）
+  - 修正方案：统一用 requirement_index → PlanBlackholeCB 回写 IR → codegen 直接读最终 cb_id
+
 ### copy codegen 的 runtime-arg buffer 绑定不能依赖“新路径 + 指针 identity”组合
 
 - **时间**: 2026-03-24

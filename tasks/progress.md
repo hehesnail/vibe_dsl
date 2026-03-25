@@ -5,11 +5,13 @@
 
 ## 当前阶段
 
-- **阶段**: Stage 2E Blackhole 设备资源 IR 语义扩展 — **✅ 已完成**
+- **阶段**: Stage 2D Step 6 前置修正 — CB Identity 唯一协议收正
 - **日期**: 2026-03-25
-- **已完成目标**: 扩展 StorageRank 类型系统（`kBlackholeCB` / `kBlackholeAccumulator`），新增 `BlackholeDeviceResourceCanonicalization` pass，解除 GEMM lowering 的三个 generic pass 阻塞
-- **当前测试结果**：`test_blackhole_copy_pipeline.py`: `14 passed, 1 skipped, 1 xfailed`；`test_blackhole_gemm.py`: `1 passed, 2 skipped`（2 skip 为 runtime 环境未配置，不是新回退）
-- **下一步**: Stage 2D Step 6 GEMM E2E 验收（lower() 已通过，需验证 direct path 执行）
+- **已完成目标**: Stage 2E 已完成；CB identity 协议错位已定位并完成设计
+- **当前测试结果**：`test_blackhole_copy_pipeline.py`: `14 passed, 1 skipped, 1 xfailed`；GEMM compile/lower 主线已推进到 direct execution 阶段，但 `test_blackhole_gemm_basic` 仍被 CB identity 不一致阻塞
+- **当前 blocker**：`LowerBlackholeOps` / `PlanBlackholeCB` / `CodeGenBlackhole` 三层对 CB identity 的协议错位（非 GEMM 特有，是通用架构问题）
+- **修正设计文档**：`tasks/dev_design/stage2d_cb_identity_protocol.md`
+- **下一步**: 按 `stage2d_cb_identity_protocol.md` 实施 CB identity 唯一协议收正，然后恢复 Stage 2D Step 6 E2E 验收
 
 ## 当前状态判断
 
@@ -85,6 +87,17 @@
   - `blackhole.cb_bindings.requirement_name`
   - `blackhole.cb_bindings.cb_id`
   - `blackhole.cb_bindings.cb_config_index`
+- 当前新增结论（2026-03-25）：
+  - Stage 2E 与当前 GEMM direct-path blocker 不冲突
+  - Stage 2E 解决的是 device resource 语义承载（`blackhole.acc` / `blackhole.cb.*`）
+  - 当前 direct-path blocker 是更靠后的 CB identity 唯一性问题：
+    - `LowerBlackholeOps` 仍同时产出局部 CB id（如 `0/1/16`）和 GEMM placeholder CB id（`-1/-2/-3`）
+    - `PlanBlackholeCB` 允许同名 `requirement_name` 出现多份不同 binding，`requirement_name` 不再是唯一键
+    - `CodeGenBlackhole` / segment source generation 继续按名字恢复 binding 时，会让 reader/compute/writer 取到不同的 CB 身份
+  - 当前这一步的真实问题不是 TT-Metal `cb_reserve_back` API 或枚举类型，而是后端内部没有收敛”谁是 CB identity 的唯一真源”
+  - **问题是通用架构缺陷，不是 GEMM 特有**：任何 multi-segment kernel 模式（未来的 fused pipeline、multi-stage copy 等）都会碰到
+  - **设计分析结论**：pass 设计本身没问题，问题在实现偏离了设计。设计文档已规定 LowerBlackholeOps “不分配最终 cb_id”，但 copy 路径直接写入了实际 id；PlanBlackholeCB 只写 attrs 不回写 IR body
+  - **修正方案**：统一用 requirement_index → PlanBlackholeCB 回写 IR → codegen 直接读最终 cb_id。详见 `tasks/dev_design/stage2d_cb_identity_protocol.md`
 - planner protocol struct 已进一步收敛：
   - `CBType/CBRequirement` 已集中到共享头文件
   - 不再依赖 `lower_blackhole_ops.h` / `plan_blackhole_cb.h` 的重复定义保持人工同步
@@ -363,22 +376,26 @@
 2. ~~Copy E2E 验收~~ → **已完成**（18 passed, 1 skipped，含 grid>1 / large-shape / oversubscription 负例）
 3. ~~`ExecuteDirect` 核坐标 / input-output 分类 / 死代码~~ → **已修正**
 4. ~~split 前语义规划（Stage 2C）~~ → **已完成**（`AnnotateBlackholeCopySemantics` + FlattenBuffer/VectorizeLoop 验证 + StorageRewrite 不兼容性确认）
-5. GEMM 接入（Stage 2D / Phase 5）— **进行中（Step 1-5 已落地；Step 6 当前为 direct-path E2E 验收）**
+5. GEMM 接入（Stage 2D / Phase 5）— **进行中（Step 1-5 已落地；Step 6 blocker 已定位，前置修正设计已完成）**
    - ~~Step 1: `LowerTileOp` Blackhole GEMM skip~~ → **已完成**
    - ~~Step 2: `SplitBlackholeKernel` pass~~ → **已完成**
-   - ~~Step 3: `LowerBlackholeOps` GEMM lower / planner-driven CB binding~~ → **已完成**
+   - ~~Step 3: `LowerBlackholeOps` GEMM lower / planner-driven CB binding~~ → **已完成（placeholder 方案将被 CB identity 唯一协议取代）**
    - ~~Step 4: `rt_mod_blackhole` 多 segment extractor~~ → **已完成**
    - ~~Step 5: `BlackholeModule` 3-kernel 注册~~ → **已完成**
-   - Step 6: E2E 测试 → **进行中**（`lower()` 已通过；当前待 direct runtime 环境就绪后完成执行验收）
+   - Step 6 前置修正: CB identity 唯一协议收正 → **设计已完成，待实施**（`stage2d_cb_identity_protocol.md`）
+   - Step 6: E2E 测试 → **待前置修正完成后恢复**
 6. 分批接回中后段通用 pass（Phase 4）— 可并行或后置
 7. 通用设备资源语义收正（Stage 2E）— **已完成**
 
 ### 当前具体下一步
 
-执行 Stage 2D Step 6：GEMM direct-path E2E 验收。相关设计文档：
+执行 Stage 2D Step 6 前置修正：CB Identity 唯一协议收正。相关设计文档：
 
+- `tasks/dev_design/stage2d_cb_identity_protocol.md`（本次修正的详细设计）
 - `tasks/dev_design/stage2d_gemm_integration.md`
 - `tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`
+
+修正完成后恢复 Stage 2D Step 6 GEMM direct-path E2E 验收。
 
 ## Stage 2E 任务拆分
 
@@ -446,6 +463,7 @@
 
 - `tasks/dev_design/final_blackhole_backend_redesign.md`
 - `tasks/dev_design/stage2d_gemm_integration.md`
+- `tasks/dev_design/stage2d_cb_identity_protocol.md`
 - `tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`
 - `tasks/dev_design/stage2_pass_reuse_matrix.md`
 - `tasks/dev_design/stage2_single_core_pass_integration.md`

@@ -90,7 +90,7 @@
 5. ~~Copy E2E 验收（direct path）~~ ✅
 6. ~~split-before 语义规划（`AnnotateBlackholeCopySemantics` + `SplitBlackholeKernel` pass）~~ ✅
 7. 通用 pass 回收（`FlattenBuffer` / `VectorizeLoop` 已验证；`StorageRewrite` 当前确认不兼容 Blackhole CB 模型）
-8. GEMM 接入（Steps 1-5 ✅，Step 6 **当前首要：direct-path E2E 验收**）
+8. GEMM 接入（Steps 1-5 ✅，Step 6 前置修正：**CB identity 唯一协议收正**，设计见 `tasks/dev_design/stage2d_cb_identity_protocol.md`）
 9. multi-core
 
 ---

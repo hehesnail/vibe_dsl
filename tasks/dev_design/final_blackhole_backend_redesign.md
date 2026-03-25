@@ -163,9 +163,13 @@ TileLang DSL
 - 消费 split 后 device kernel
 - 提取 segment / runtime arg schema / CB requirements
 - 产出 `blackhole.segment_plan`、`blackhole.runtime_args`、`blackhole.cb_requirements`
+- IR body 中所有 blackhole builtin 的 CB 参数统一使用 `requirement_index`（cb_requirements 数组下标）
 
 不再承担：
 
+- 分配最终 cb_id（由 PlanBlackholeCB 统一分配）
+- 区分 copy / GEMM 使用不同的 CB identity 体系
+- 产出 GEMM placeholder（-1/-2/-3）或 `blackhole.gemm_cb_placeholders`
 - 从晚期普通 loop 中恢复绝大多数 copy/gemm 语义
 - 猜 PrimFunc 参数结构
 - 用 runtime 特判兜底 device kernel 结构
@@ -176,6 +180,7 @@ TileLang DSL
 
 - 从 `blackhole.cb_requirements` 收敛到正式 `blackhole.cb_configs`
 - 形成 per-device-kernel memory plan
+- **回写 IR body**：把所有 blackhole builtin 中的 `requirement_index` 替换成分配后的最终 `cb_id`
 
 至少覆盖：
 
@@ -184,6 +189,7 @@ TileLang DSL
 - page size / num pages / format
 - 生命周期与复用
 - per-core L1 峰值约束
+- requirement_index → cb_id 映射（`cb_bindings` 以 `requirement_index` 为主键）
 
 ### 4.4 `AssignBlackholeCores`
 
@@ -270,9 +276,14 @@ TileLang DSL
 
 - `blackhole.cb_requirements`
 - `blackhole.cb_configs`
+- `blackhole.cb_bindings`（主键为 `requirement_index`，`requirement_name` 仅辅助调试）
 - `blackhole.core_plan`
 - `blackhole.segment_plan`
 - `blackhole.runtime_args`
+
+已淘汰：
+
+- `blackhole.gemm_cb_placeholders`（由 CB identity 唯一协议收正取代，见 `stage2d_cb_identity_protocol.md`）
 
 旧协议不再扩展。
 
@@ -392,7 +403,13 @@ multi-core 的主要实现位置保持不变：
 - Step 3：`LowerBlackholeOps` planner-driven CB binding ✅
 - Step 4：`rt_mod_blackhole` 多 segment 提取 ✅
 - Step 5：`BlackholeModule` 3-kernel 注册 ✅
-- Step 6：E2E 测试 ⏳（`lower()` 已通过；当前待 direct runtime 环境就绪后完成执行验收）
+- Step 6：E2E 测试 ⏳（`lower()` 已通过；当前 blocker 为 CB identity 协议错位，修正设计见 `stage2d_cb_identity_protocol.md`）
+
+Step 6 前置修正：CB identity 唯一协议收正（设计文档 `stage2d_cb_identity_protocol.md`）
+- LowerBlackholeOps 统一用 requirement_index，不再有 placeholder / 实际 id 两套体系
+- PlanBlackholeCB 新增 IR body 回写，把 requirement_index 替换成最终 cb_id
+- CodeGenBlackhole 删除 placeholder 替换逻辑，直接读 IR 中的 cb_id
+- 删除 `blackhole.gemm_cb_placeholders` attr
 
 架构债（不在 2D 内）：copy 统一进 reader+writer 2-kernel 模型，消除 fused_dataflow / 多 kernel 双重 schema。
 
