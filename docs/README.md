@@ -2,6 +2,13 @@
 
 本目录包含各种 AI 编译器和高性能计算框架的源代码分析文档。
 
+说明：
+
+- 本目录主要承载源码分析与背景资料，不维护本仓库当前开发状态
+- 当前 Blackhole 任务状态、设计主线与下一步请查看：
+  - `tasks/progress.md`
+  - `tasks/dev_design/final_blackhole_backend_redesign.md`
+
 ## 📚 已完成的分析
 
 ### [TileLang](./tilelang/) - 高性能 GPU 内核 DSL

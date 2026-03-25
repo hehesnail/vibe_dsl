@@ -445,8 +445,8 @@
 ## 当前活动设计文档
 
 - `tasks/dev_design/final_blackhole_backend_redesign.md`
+- `tasks/dev_design/stage2d_gemm_integration.md`
+- `tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`
 - `tasks/dev_design/stage2_pass_reuse_matrix.md`
 - `tasks/dev_design/stage2_single_core_pass_integration.md`
 - `tasks/dev_design/stage2_blackhole_logical_block_launch_plan.md`
-- `tasks/dev_design/stage2_concrete_dev_task_plan.md`
-- `tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`

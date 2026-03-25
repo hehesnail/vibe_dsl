@@ -7,9 +7,14 @@
 
 本文件只保留 Stage 1 的阶段结论，不再承载当前活动阶段的设计。
 
+说明：
+
+- 文中出现的 `runner` / `spec.json -> runner` 仅用于记录 Stage 1 bring-up 历史
+- 当前正式执行路径仍以 `ExecutableSpec -> BlackholeModule` 进程内 direct host path 为准
+
 ## Stage 1 目标
 
-Stage 1 的目标是验证最小 single-core copy 真执行路径：
+Stage 1 的目标是验证当时最小 single-core copy 真执行路径：
 
 - `ExecutableSpec -> BlackholeModule -> runner`
 - TT-Sim 下真实执行
