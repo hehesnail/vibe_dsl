@@ -156,6 +156,47 @@
 5. 新功能优先落到 `ExecutableSpec -> BlackholeModule::ExecuteDirect()` 这条主路径上。
 6. 任何局部设计都必须服从 `final_blackhole_backend_redesign.md`。
 
+### 文档与状态治理经验
+
+当前新增的稳定经验：
+
+- 当阶段状态发生切换时，不要只改一处“总览”文档；至少要同步检查：
+  - `tasks/progress.md` 的页首阶段状态
+  - 分阶段任务表
+  - “当前下一步/当前活动设计文档”区块
+  - 对应阶段设计文档的状态字段
+  否则最容易出现“页首已完成、表格仍进行中”的假状态。
+- 对这类长期演进的后端仓库，设计文档应显式分成三类并在索引里写清：
+  - 当前活动文档
+  - 仍有效的支撑设计
+  - 历史设计
+  如果不做这层分类，后续人很容易把旧阶段计划误读成当前执行入口。
+- 当历史设计文档仍需要保留回溯价值时，更稳的做法不是重写正文，而是在文档开头加统一头注，明确：
+  - 这是历史文档还是支撑设计
+  - 当前状态看哪里
+  - 当前总体设计看哪里
+  这样既能减少误导，又不会破坏历史决策上下文。
+
+### Stage 2E：IR 语义扩展经验
+
+当前新增的稳定经验：
+
+- 当某个 target 的硬件资源模型与 generic backend 假设根本不一致时，优先扩 IR 类型系统/资源语义，而不是继续给后段 pass 打豁免或特判。
+  - 本轮对 Blackhole，更稳的解法是扩 `StorageRank`
+  - 再通过 `BlackholeDeviceResourceCanonicalization` 在 generic host/device pass 之前完成 scope canonicalization
+  - 让 `SplitHostDevice` / `MakePackedAPI` / `LowerDeviceKernelLaunch` 自然跳过不该碰的 device-private resource
+- 判断“该不该扩 IR”时，一个实用信号是：同一根因在多个 generic pass 上反复以不同报错出现。
+  - 例如同一轮 GEMM 问题同时表现为：
+    - `MergeSharedMemoryAllocations`
+    - device func 参数提升错误
+    - dynamic shared allocation 约束错误
+  这通常说明问题不在单个 pass，而在更上层的资源语义承载不足。
+- 对这种“IR 语义扩展”型改动，验证不能只看最终功能是否恢复；还应单独验证：
+  - 新类型系统已进入正式管线
+  - canonicalization 后 IR 的 scope/alloc 形态符合预期
+  - 原先那组 generic pass 断点不再出现
+  这样才能确认修的是语义边界，而不是偶然绕开了某个报错。
+
 ### Stage 0 协议落地经验
 
 当前新增的稳定经验：
