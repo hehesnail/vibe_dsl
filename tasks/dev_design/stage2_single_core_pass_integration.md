@@ -1,5 +1,10 @@
 # Stage 2 Single-Core Pass Integration 设计
 
+> 支撑设计说明：
+> 本文保留 Stage 2 分层与阶段拆分的设计背景；
+> 当前主任务请看 `tasks/dev_design/stage2d_gemm_integration.md`，
+> 当前状态请看 `tasks/progress.md`。
+
 ## 基本定位
 
 - **状态**: Stage 2 支撑设计（仍有效，但当前主任务已转到 `stage2d_gemm_integration.md` / `stage2e_blackhole_device_resource_semantics.md`）

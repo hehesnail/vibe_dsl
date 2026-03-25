@@ -1,5 +1,10 @@
 # Phase 0 TileLang 环境准备
 
+> 历史文档说明：
+> 本文仅保留环境准备结论；
+> 当前总体设计请看 `tasks/dev_design/final_blackhole_backend_redesign.md`，
+> 当前状态与下一步请看 `tasks/progress.md`。
+
 ## 文档定位
 
 - **状态**: 历史环境记录

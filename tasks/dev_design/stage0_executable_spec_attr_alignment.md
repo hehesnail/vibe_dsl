@@ -1,5 +1,9 @@
 # Stage 0 ExecutableSpec 与 Attr 对齐设计
 
+> 历史文档说明：
+> 当前状态与下一步请看 `tasks/progress.md`；
+> 当前总体设计请看 `tasks/dev_design/final_blackhole_backend_redesign.md`。
+
 ## 文档定位
 
 - **状态**: 已完成阶段的历史设计

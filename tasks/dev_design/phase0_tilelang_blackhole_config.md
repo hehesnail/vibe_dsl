@@ -1,5 +1,10 @@
 # Phase 0 TileLang + Blackhole 配置
 
+> 历史文档说明：
+> 本文仅保留早期 bring-up 背景；
+> 当前总体设计请看 `tasks/dev_design/final_blackhole_backend_redesign.md`，
+> 当前状态与下一步请看 `tasks/progress.md`。
+
 ## 文档定位
 
 - **状态**: 历史记录

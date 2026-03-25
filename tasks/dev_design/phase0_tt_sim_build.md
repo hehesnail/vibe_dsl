@@ -1,5 +1,10 @@
 # Phase 0 TT-Sim 仿真器配置
 
+> 历史文档说明：
+> 本文仅保留 TT-Sim 基础环境背景；
+> 当前总体设计请看 `tasks/dev_design/final_blackhole_backend_redesign.md`，
+> 当前状态与下一步请看 `tasks/progress.md`。
+
 ## 文档定位
 
 - **状态**: 历史环境记录

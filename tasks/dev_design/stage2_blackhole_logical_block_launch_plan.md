@@ -1,5 +1,10 @@
 # Stage 2 Blackhole Logical Block / Launch Plan 设计
 
+> 支撑设计说明：
+> 本文保留 logical block / launch plan 的设计背景；
+> 当前主任务请看 `tasks/dev_design/stage2d_gemm_integration.md`，
+> 当前状态请看 `tasks/progress.md`。
+
 ## 基本定位
 
 - **状态**: Stage 2 支撑设计（仍有效，当前主任务不再以本文件为唯一入口）

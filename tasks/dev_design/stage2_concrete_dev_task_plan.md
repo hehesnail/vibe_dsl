@@ -1,5 +1,11 @@
 # Stage 2 当前具体开发任务拆解
 
+> 历史文档说明：
+> 本文仅用于回溯 2026-03-23 时点的任务拆解；
+> 当前执行状态请看 `tasks/progress.md`，
+> 当前主任务请看 `tasks/dev_design/stage2d_gemm_integration.md`，
+> 当前总体设计请看 `tasks/dev_design/final_blackhole_backend_redesign.md`。
+
 ## 基本定位
 
 - **状态**: 历史任务规划（已被 `tasks/progress.md`、`stage2d_gemm_integration.md` 与 `stage2e_blackhole_device_resource_semantics.md` 取代）

@@ -1,5 +1,9 @@
 # Stage 2C 设计：AnnotateBlackholeCopySemantics
 
+> 已完成阶段说明：
+> 当前主任务请看 `tasks/dev_design/stage2d_gemm_integration.md`；
+> 当前总体设计与阶段状态请看 `tasks/dev_design/final_blackhole_backend_redesign.md` 和 `tasks/progress.md`。
+
 ## 基本信息
 
 - **文档ID**: `stage2c_annotate_blackhole_copy_semantics`
