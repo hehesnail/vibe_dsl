@@ -23,9 +23,9 @@
 
 - **基于当前最新设计收束，接下来按什么顺序推进 Blackhole 后端开发任务**
 
-## 当前判断
+## 历史判断
 
-结合当前主线与最新设计结论，Blackhole 现在已经具备：
+按 2026-03-23 当时的主线与设计结论，Blackhole 当时已经具备：
 
 - `ExecutableSpec`
 - split 后 host/device 主链
@@ -39,13 +39,13 @@
 3. ~~`blackhole.cb_configs` 仍偏 MVP allocator~~ — 已补 lifetime-aware reuse / role / bindings
 4. ~~`BlackholeModule` 还没有成为唯一正式 host-side execution path~~ — ✅ direct path 已完成并验收
 
-## 当前剩余事项优先级（2026-03-23 更新）
+## 当时剩余事项优先级（2026-03-23 更新）
 
-Stage 2B 已完成，当前处于 Stage 2C：
+当时判断是：Stage 2B 已完成，阶段推进点位于 Stage 2C：
 
 1. ~~**`BlackholeModule` direct host path**~~ ✅ 完成
    - direct path 已跑通 32x32 / 32x64 / 64x32 / grid>1 / large-shape / oversubscription 负例
-2. **split 前语义规划收正** — **当前首要**
+2. **split 前语义规划收正** — **当时首要**
    - 推荐方案 A：新增 `AnnotateBlackholeCopySemantics` pass
    - 明确 split 前 / split 后 matcher / codegen 职责边界
    - 不修改 `LowerTileOp` 核心降级逻辑
@@ -84,7 +84,7 @@ copy 不只验证最小 case，还必须验证：
 - large-shape copy
 - memory-plan 超预算负例
 
-## 当前任务包
+## 历史任务包
 
 ### 任务包 A: 固定三层边界与正式主链
 

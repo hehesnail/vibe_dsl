@@ -98,7 +98,7 @@ Stage 2 的正式目标已经收紧为：
 - `BlackholeModule` 在进程内完成 TT-Metal host materialization / launch / readback
 - copy / GEMM 的关键执行语义主要来自 pass 产物
 
-## 当前边界
+## 当前仍有效的边界
 
 当前允许保留的过渡项：
 
@@ -111,9 +111,9 @@ Stage 2 的正式目标已经收紧为：
 - `rt_mod_blackhole` 继续承担 kernel 语义恢复、PrimFunc 参数分类和 host/device 语义定义
 - external runner 继续作为正式执行路径
 
-## 当前收正目标
+## 历史阶段收正目标
 
-当前 Stage 2B 的具体目标已经收紧为：
+本文件形成时，Stage 2B 的具体目标已经收紧为：
 
 - 继续保留 single-core copy true execution
 - 把 copy 语义从“只对最小 case 成立”收成“按实际 DSL tile shape / logical block / memory plan 推导”
@@ -127,7 +127,7 @@ Stage 2 的正式目标已经收紧为：
 
 - `stage2_blackhole_logical_block_launch_plan.md`
 
-当前必须优先解决的问题：
+当时必须优先解决的问题：
 
 - `blockIdx.x/y -> 0` 的 codegen 常量化
 - `blackhole.core_plan` 仍是摘要信息
@@ -147,7 +147,7 @@ Phase 3 split-before 语义规划方案确认：
 - `FlattenBuffer` 的 shared-scope 跳过分配已在 `codegen_blackhole.cc` 中处理
 - 每个 pass 单独回收 + 单独测试
 
-## 当前进展
+## 历史阶段进展
 
 - Blackhole 已恢复：
   - `AnnotateDeviceRegions`
