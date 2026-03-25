@@ -98,6 +98,56 @@
   - 实施时额外确认了一个容易混淆的点：`requirement_index` 不能偷当 `lifetime_begin/end`
   - 对 GEMM，如果把 `A/B` 输入 requirement 的 lifetime 设成按索引递增，planner 会错误地把它们复用到同一个 input CB；必须显式保留重叠 lifetime
 
+### GEMM direct-path 目前仍未使用真实 CB backing store 传递 tile 数据
+
+- **时间**: 2026-03-26
+- **问题**: 在 CB identity 收正并消除 enqueue deadlock 后，`test_blackhole_gemm_basic` 已能完成 direct execution，但结果明显错误。
+- **现象**:
+  - `BlackholeModule::ExecuteDirect()` 能成功执行完 `reader + compute + writer`
+  - `test_blackhole_gemm_basic` 返回的 `C` 与 PyTorch 参考差异很大：
+    - `max diff=37.24`
+    - `mean diff=8.91`
+- **根本原因**:
+  - `CodeGenBlackhole::PrintReadTileToCB` / `PrintWriteTileFromCB` 当前仍把 tile 数据搬到 `scratch_l1_addr`
+  - 这条路径只是在 direct copy 中“模拟了一个可工作的 staging buffer”
+  - 但 GEMM compute kernel 的 `mm_init/cb_wait_front/matmul_tiles/pack_tile` 消费/生产的是 TT-Metal 的真实 CB backing store
+  - 结果就是：
+    - reader 往 scratch L1 写
+    - compute 从真实 CB 读
+    - writer 再从 scratch L1 读
+  - 三段在 `cb_id` 上同步了，但**没有在同一个真实 tile 数据面上协作**
+- **解决方向**:
+  - 不要继续扩展 scratch L1 旁路
+  - 应把 `read_tile_to_cb/write_tile_from_cb` 收正成 TT-Metal 正式 dataflow 方式：
+    - `cb_reserve_back + get_write_ptr + noc_async_read_tile + cb_push_back`
+    - `cb_wait_front + get_read_ptr + noc_async_write_tile + cb_pop_front`
+  - 设计文档：`tasks/dev_design/stage2d_gemm_direct_cb_io.md`
+- **当前状态**: 未解决。当前已确认这就是 GEMM direct-path true E2E 的主要剩余 blocker。
+
+### Blackhole direct path 当前缺少 TT-Metal 正式 contract 分层
+
+- **时间**: 2026-03-26
+- **问题**: 在继续排查 GEMM direct-path 数值错误时，发现当前 Blackhole 后端不仅缺真实 CB data path，还缺更上层的 TT-Metal contract 分层，导致很多问题会伪装成单个 codegen/runtime bug。
+- **现象**:
+  - copy 在最简单 tile/interleaved case 上可通过，但更复杂的 matmul、untilize、row-major/stick、sharded dataflow 没有正式 schema 可承载
+  - `ExecutableSpec` / `CBConfig` / `KernelArgSpec` 当前无法完整表达 `TensorAccessorArgs`、logical layout、packed dtype、transpose、rich work range、semaphore 等 TT-Metal 主流对象
+- **根本原因**:
+  - 当前 Blackhole schema 还停留在“最小 bring-up”级别：
+    - host logical tensor layout 与 device physical buffer layout 没有分层
+    - tensor dtype / CB packed dtype / accumulator dtype 没有分层
+    - accessor schema 没进入 `ExecutableSpec`
+    - compile-time / runtime work ABI 过薄
+    - CB model 还是 allocator 级别，不是正式 transport-object model
+- **解决方向**:
+  - 不要继续把这些问题当成单点 patch 处理
+  - 先按 `tasks/dev_design/stage2d_ttmetal_contract_audit.md` 收束最小正式 contract：
+    - transpose
+    - packed dtype vs tensor dtype
+    - accessor schema
+    - host tilize/untilize responsibility
+    - richer work/runtime schema
+- **当前状态**: 未解决。当前是 Stage 2D 继续推进前必须明确的设计欠账。
+
 ### copy codegen 的 runtime-arg buffer 绑定不能依赖“新路径 + 指针 identity”组合
 
 - **时间**: 2026-03-24

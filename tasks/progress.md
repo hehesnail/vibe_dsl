@@ -5,13 +5,19 @@
 
 ## 当前阶段
 
-- **阶段**: Stage 2D Step 6 — direct-path E2E 验收恢复中
+- **阶段**: Stage 2D Step 6 — GEMM direct-path TT-Metal contract 收正
 - **日期**: 2026-03-25
-- **已完成目标**: Stage 2E 已完成；CB identity 唯一协议已按设计收正并通过 compile/lower 回归
-- **当前测试结果**：`test_blackhole_copy_pipeline.py`: `15 passed, 1 xfailed`；`test_blackhole_gemm.py`: `3 passed, 1 skipped`
-- **当前 blocker**：无新的代码级 blocker；`test_blackhole_gemm_basic` 仍待在配置好 direct runtime 环境的 shell 中做 true E2E 验收
+- **已完成目标**: Stage 2E 已完成；CB identity 唯一协议已按设计收正并通过 compile/lower 回归；GEMM direct path 已从 enqueue deadlock 推进到真实执行完成
+- **当前测试结果**：
+  - `test_blackhole_copy_pipeline.py`: `16 passed, 1 xfailed`
+  - `test_blackhole_copy_runtime.py`（TT-Sim 环境）: grid-indexed direct call 已重新通过
+  - `test_blackhole_gemm.py`: 结构层 `3 passed, 1 skipped`
+  - `test_blackhole_gemm_basic`：已进入 direct execution 并返回结果，但数值错误
+- **当前 blocker**：GEMM direct path 的显性断点仍是 `CodeGenBlackhole` 的 `read_tile_to_cb/write_tile_from_cb` 没有走真实 TT-Metal CB backing store；但本轮对照 TT-Metal 后已确认，这背后是更大的 contract 缺层：host logical layout、TensorAccessor schema、packed dtype vs tensor dtype、transpose/compute ABI、runtime work description 都还没有正式进入 `ExecutableSpec`
 - **修正设计文档**：`tasks/dev_design/stage2d_cb_identity_protocol.md`
-- **下一步**: 在 direct runtime 环境下恢复并执行 `test_blackhole_gemm_basic`，确认 reader/compute/writer 三段 direct path 真执行通过
+- **活动设计文档**：`tasks/dev_design/stage2d_gemm_direct_cb_io.md`
+- **补充审计文档**：`tasks/dev_design/stage2d_ttmetal_contract_audit.md`
+- **下一步**: 先按 `stage2d_ttmetal_contract_audit.md` 把 Stage 2D 当前缺失的最小正式 contract 收束成 schema，再继续实现真实 CB dataflow IO、transpose、layout/accessor 相关修正，之后恢复 `test_blackhole_gemm_basic` true E2E 验收
 
 ## 当前状态判断
 

@@ -155,6 +155,13 @@
   - direct-call 用例只检查 direct path 编译/运行条件
   - compile-time / codegen-only 用例单独覆盖非执行层语义
   不要再让独立 runner 二进制成为主测试入口或前置条件。
+- 对 TT-Metal 这类 tile/dataflow target，至少要把以下 contract 分层建模：
+  - host logical tensor layout
+  - device buffer/accessor layout
+  - CB transport format
+  - compute ABI
+  - work distribution / synchronization ABI
+  如果这些层被混成“几个 runtime args + codegen 默认约定”，copy 往往还能在最简单 case 上跑通，但 matmul、untilize、row-major/sharded dataflow 很快就会暴露出设计缺层。
 
 ## Blackhole 后端当前有效开发原则
 
