@@ -323,6 +323,25 @@
   - runner 分配 scratch L1 时按 `cb.num_pages * cb.page_size_bytes` 预留足够空间，而不是只分配单 page
 - **当前状态**: 已解决。`32x64 float16` staged copy 的 Python direct-call 已在 TT-Sim 下通过，结果与 PyTorch 参考一致。
 
+### TVM `RemapBufferData` 每次创建新 BufferNode，破坏下游 unordered_map 去重
+
+- **时间**: 2026-03-25
+- **问题**: `BlackholeDeviceResourceCanonicalization` 把 `shared.dyn` 改成 `blackhole.cb.input`。两个 For 循环（`dram_to_cb` / `cb_to_dram`）共享同一个 `A_shared` buffer。经过 canonicalization 后，`LowerBlackholeOps::buffer_to_cb_` 里 `AllocateCBId` 对第一个 loop 分配 id=32，但第二个 loop 再次分配 id=33，导致 codegen 找不到 id=33 的 page size（`Missing CB page size for cb_id=33`）。
+- **根本原因**: `GetNewBuffer` 内部调用 `RemapBufferData(buf, new_data)`，每次调用都创建一个新的 `BufferNode`（新的指针）。两个 loop 里同一个原始 `A_shared` buffer 经过两次 `GetNewBuffer` 变成了两个不同的对象。`buffer_to_cb_` 以 `Buffer`（即 `ObjectRef`，pointer equality）为 key，所以第二个 Buffer 对象查不到第一个 loop 已经分配的 id。
+- **解决方案**: 在 `GetNewBuffer` 内缓存结果：`std::unordered_map<const BufferNode*, Buffer> buf_remap_`；每次创建后存入，再次遇到同一原始 `BufferNode` 时直接返回已缓存的 Buffer 对象。
+
+### TVM `CopyOnWrite()` 对临时 ObjectRef 产生 dangling pointer
+
+- **时间**: 2026-03-25
+- **问题**: 在 `VisitExpr_(BufferLoadNode*)` / `VisitStmt_(BufferStoreNode*)` 中使用 `auto node = Downcast<BufferLoad>(base).CopyOnWrite()` → 堆腐败（`corrupted double-linked list`），在 Python 进程退出时崩溃。
+- **根本原因**: `Downcast<BufferLoad>(base)` 创建了一个临时 ObjectRef（右值），在语句结束的分号处 ref count 降为 0，析构器释放底层对象；`CopyOnWrite()` 返回的裸指针 `node` 随即悬空。所有后续 `node->xxx` 访问都是 UB（heap corruption）。
+- **解决方案**: 不要对临时 ObjectRef 调用 `CopyOnWrite()`。改为直接构造返回值：
+  ```cpp
+  const auto* bl = base.as<BufferLoadNode>();
+  return BufferLoad(new_buf, bl->indices);
+  ```
+  对 `BufferStore` 同理。
+
 ### direct path 复用固定 kernel 临时路径会触发 JIT 缓存串扰
 
 - **时间**: 2026-03-23

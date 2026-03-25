@@ -5,9 +5,11 @@
 
 ## 当前阶段
 
-- **阶段**: Stage 2E Blackhole 设备资源 IR 语义扩展 — **进行中**
+- **阶段**: Stage 2E Blackhole 设备资源 IR 语义扩展 — **✅ 已完成**
 - **日期**: 2026-03-25
-- **当前目标**: 扩展 StorageRank 类型系统（`kBlackholeCB` / `kBlackholeAccumulator`），新增 `BlackholeDeviceResourceCanonicalization` pass，解除 GEMM lowering 的 generic pass 阻塞
+- **已完成目标**: 扩展 StorageRank 类型系统（`kBlackholeCB` / `kBlackholeAccumulator`），新增 `BlackholeDeviceResourceCanonicalization` pass，解除 GEMM lowering 的三个 generic pass 阻塞
+- **当前测试结果**：`test_blackhole_copy_pipeline.py`: `14 passed, 1 skipped, 1 xfailed`；`test_blackhole_gemm.py`: `1 passed, 2 skipped`（2 skip 为 runtime 环境未配置，不是新回退）
+- **下一步**: Stage 2D Step 6 GEMM E2E 验收（lower() 已通过，需验证 direct path 执行）
 
 ## 当前状态判断
 
@@ -370,7 +372,7 @@
 
 ## Stage 2E 任务拆分
 
-### Step 1: 扩展 StorageRank / StorageScope（IR 层）⏳
+### Step 1: 扩展 StorageRank / StorageScope（IR 层）✅
 
 **文件**：`3rdparty/tvm/src/runtime/thread_storage_scope.h`
 
@@ -379,7 +381,7 @@
 - 更新 `StorageScope::to_string()` 新增对应 case
 - 验证：构建通过
 
-### Step 2: 新 pass `BlackholeDeviceResourceCanonicalization` 实现 ⏳
+### Step 2: 新 pass `BlackholeDeviceResourceCanonicalization` 实现 ✅
 
 **新建**：`src/transform/blackhole_device_resource_canonicalization.cc`
 
@@ -395,21 +397,21 @@
 - Phase 3：写 `blackhole.resource_plan` attr
 - 验证：构建通过 + 单元测试
 
-### Step 3: Python 注册 + 管线接入 ⏳
+### Step 3: Python 注册 + 管线接入 ✅
 
 - `tilelang/transform/__init__.py` 新增 FFI 绑定
 - `tilelang/engine/phase.py` 在 `AnnotateBlackholeCopySemantics` 之后、`AnnotateDeviceRegions` 之前接入
 - `src/transform/CMakeLists.txt` 添加新源文件
 - 验证：copy pipeline 回归通过
 
-### Step 4: 下游 pass 更新 ⏳
+### Step 4: 下游 pass 更新 ✅
 
 - `codegen_blackhole.cc`：Allocate 跳过 + PrintStorageScope 用 rank 替代字符串
 - `lower_device_storage_access_info.cc`：新 rank 白名单
 - `lower_blackhole_ops.cc`：CB 识别改为 `rank == kBlackholeCB`
 - 验证：copy pipeline 回归 + GEMM lower 通过
 
-### Step 5: GEMM 解锁验证 ⏳
+### Step 5: GEMM 解锁验证 ✅
 
 - `test_blackhole_gemm.py::test_gemm_lower_basic` 通过
 - 三个 generic pass 错误不再出现：
