@@ -2,14 +2,24 @@
 
 ## 基本定位
 
-- **状态**: 当前活动任务规划
+- **状态**: 历史任务规划（已被 `tasks/progress.md`、`stage2d_gemm_integration.md` 与 `stage2e_blackhole_device_resource_semantics.md` 取代）
 - **前置总体设计**: `final_blackhole_backend_redesign.md`
 - **前置阶段设计**:
   - `stage2_pass_reuse_matrix.md`
   - `stage2_single_core_pass_integration.md`
   - `stage2_blackhole_logical_block_launch_plan.md`
 
-本文件只回答一个问题：
+本文件保留的是 2026-03-23 时点的 Stage 2 任务拆解，用于回溯当时的推进顺序。
+
+当前执行状态与下一步请以：
+
+- `tasks/progress.md`
+- `tasks/dev_design/stage2d_gemm_integration.md`
+- `tasks/dev_design/stage2e_blackhole_device_resource_semantics.md`
+
+为准。
+
+本文件只回答一个历史问题：
 
 - **基于当前最新设计收束，接下来按什么顺序推进 Blackhole 后端开发任务**
 

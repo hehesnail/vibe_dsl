@@ -19,11 +19,14 @@
 
 ## 当前状态
 
-- 当前日期：`2026-03-24`
-- Stage 2C split-before 语义规划已完成
-- 当前主线在 Stage 2D / Phase 4：
-  - 通用 pass 回收
-  - GEMM 接入（Steps 1-3 已完成，Steps 4-6 为当前首要）
+- 当前日期：`2026-03-25`
+- Stage 2E Blackhole 设备资源 IR 语义扩展已完成
+- 当前主线在 Stage 2D Step 6：
+  - GEMM `lower()` 已通过
+  - 当前首要是 GEMM direct-path E2E 验收
+- 通用 pass 当前结论：
+  - `FlattenBuffer` / `VectorizeLoop` 已验证可接回
+  - `StorageRewrite` 当前确认不兼容 Blackhole CB 模型
 - Blackhole 正式执行路径已收敛到 `ExecutableSpec -> BlackholeModule` 进程内 direct host path
 
 ## 仓库组成

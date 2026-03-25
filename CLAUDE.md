@@ -89,8 +89,8 @@
 4. ~~`BlackholeModule` direct path 补全~~ ✅
 5. ~~Copy E2E 验收（direct path）~~ ✅
 6. ~~split-before 语义规划（`AnnotateBlackholeCopySemantics` + `SplitBlackholeKernel` pass）~~ ✅
-7. 通用 pass 回收（FlattenBuffer / VectorizeLoop / StorageRewrite）
-8. GEMM 接入（Steps 1-3 ✅，Steps 4-6 **当前首要**）
+7. 通用 pass 回收（`FlattenBuffer` / `VectorizeLoop` 已验证；`StorageRewrite` 当前确认不兼容 Blackhole CB 模型）
+8. GEMM 接入（Steps 1-5 ✅，Step 6 **当前首要：direct-path E2E 验收**）
 9. multi-core
 
 ---

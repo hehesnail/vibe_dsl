@@ -2,7 +2,7 @@
 
 ## 基本定位
 
-- **状态**: 当前活动阶段设计
+- **状态**: Stage 2 支撑设计（仍有效，但当前主任务已转到 `stage2d_gemm_integration.md` / `stage2e_blackhole_device_resource_semantics.md`）
 - **前置总体设计**: `final_blackhole_backend_redesign.md`
 - **前置接入矩阵**: `stage2_pass_reuse_matrix.md`
 

@@ -2,7 +2,7 @@
 
 ## 基本定位
 
-- **状态**: 当前活动阶段设计
+- **状态**: Stage 2 支撑设计（仍有效，当前主任务不再以本文件为唯一入口）
 - **前置总体设计**: `final_blackhole_backend_redesign.md`
 - **相关阶段设计**:
   - `stage2_pass_reuse_matrix.md`
