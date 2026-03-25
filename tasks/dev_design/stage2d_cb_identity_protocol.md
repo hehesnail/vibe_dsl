@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage2d_cb_identity_protocol`
 - **日期**: 2026-03-25
-- **状态**: 待实施
+- **状态**: 已实施
 - **对应阶段**: Stage 2D Step 6 的前置修正
 - **前置上下文**: Stage 2D Step 1-5 已完成，Step 6 E2E 验收被 CB identity 协议错位阻塞
 
@@ -257,6 +257,33 @@ PlanBlackholeCB 回写时需要知道每个 builtin 的 cb_id 在第几个参数
 - 验证 lowered IR 中无 placeholder（-1/-2/-3）
 - 验证 lowered IR 中无 requirement_index（PlanBlackholeCB 回写后全部替换为最终 cb_id）
 - 验证 `blackhole.gemm_cb_placeholders` attr 不再出现
+
+---
+
+## 8. 实施结果（2026-03-25）
+
+- `LowerBlackholeOps` 已删除 placeholder/局部实际 `cb_id` 双轨写入：
+  - copy/GEMM 统一写 `requirement_index`
+  - `StoreGemmCBPlaceholders()` 已删除
+- `PlanBlackholeCB` 已实现 `RewriteCBIdsInIR()`：
+  - planner 分配后直接把 IR body 中的 `requirement_index` 回写成最终 `cb_id`
+  - codegen 不再承担任何“后补替换”职责
+- `CodeGenBlackhole` 已删除 placeholder/alias 解析路径：
+  - 不再读取 `blackhole.gemm_cb_placeholders`
+  - `ResolveCBId()` 只接受最终非负 `cb_id`
+- `SplitBlackholeKernel` 已停止写 `blackhole.gemm_cb_placeholders`
+- 实施过程中新增确认：
+  - `requirement_index` 与 `lifetime_begin/end` 不能混用成同一语义
+  - 对 GEMM，`A/B` 输入 requirement 必须显式设置重叠 lifetime，避免 planner 误复用为同一个 input CB
+
+本地验证结果：
+
+- `pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py` → `15 passed, 1 xfailed`
+- `pytest -q testing/python/target/blackhole/test_blackhole_gemm.py` → `3 passed, 1 skipped`
+
+当前未完成项：
+
+- `test_blackhole_gemm_basic` 仍未在本轮完成 true E2E 验收；skip 原因是 direct runtime 环境未配置，不是新的代码级回退
 
 ---
 

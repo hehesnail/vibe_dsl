@@ -5,13 +5,13 @@
 
 ## 当前阶段
 
-- **阶段**: Stage 2D Step 6 前置修正 — CB Identity 唯一协议收正
+- **阶段**: Stage 2D Step 6 — direct-path E2E 验收恢复中
 - **日期**: 2026-03-25
-- **已完成目标**: Stage 2E 已完成；CB identity 协议错位已定位并完成设计
-- **当前测试结果**：`test_blackhole_copy_pipeline.py`: `14 passed, 1 skipped, 1 xfailed`；GEMM compile/lower 主线已推进到 direct execution 阶段，但 `test_blackhole_gemm_basic` 仍被 CB identity 不一致阻塞
-- **当前 blocker**：`LowerBlackholeOps` / `PlanBlackholeCB` / `CodeGenBlackhole` 三层对 CB identity 的协议错位（非 GEMM 特有，是通用架构问题）
+- **已完成目标**: Stage 2E 已完成；CB identity 唯一协议已按设计收正并通过 compile/lower 回归
+- **当前测试结果**：`test_blackhole_copy_pipeline.py`: `15 passed, 1 xfailed`；`test_blackhole_gemm.py`: `3 passed, 1 skipped`
+- **当前 blocker**：无新的代码级 blocker；`test_blackhole_gemm_basic` 仍待在配置好 direct runtime 环境的 shell 中做 true E2E 验收
 - **修正设计文档**：`tasks/dev_design/stage2d_cb_identity_protocol.md`
-- **下一步**: 按 `stage2d_cb_identity_protocol.md` 实施 CB identity 唯一协议收正，然后恢复 Stage 2D Step 6 E2E 验收
+- **下一步**: 在 direct runtime 环境下恢复并执行 `test_blackhole_gemm_basic`，确认 reader/compute/writer 三段 direct path 真执行通过
 
 ## 当前状态判断
 
@@ -98,6 +98,14 @@
   - **问题是通用架构缺陷，不是 GEMM 特有**：任何 multi-segment kernel 模式（未来的 fused pipeline、multi-stage copy 等）都会碰到
   - **设计分析结论**：pass 设计本身没问题，问题在实现偏离了设计。设计文档已规定 LowerBlackholeOps “不分配最终 cb_id”，但 copy 路径直接写入了实际 id；PlanBlackholeCB 只写 attrs 不回写 IR body
   - **修正方案**：统一用 requirement_index → PlanBlackholeCB 回写 IR → codegen 直接读最终 cb_id。详见 `tasks/dev_design/stage2d_cb_identity_protocol.md`
+  - **当前实现状态（2026-03-25 晚）**：
+    - `LowerBlackholeOps` 已统一把 copy/GEMM 的 CB 参数写成 `requirement_index`
+    - `PlanBlackholeCB` 已回写 IR body，把 `requirement_index` 统一替换成最终 `cb_id`
+    - `CodeGenBlackhole` / `SplitBlackholeKernel` 已删除 `gemm_cb_placeholders` 和 placeholder/alias 修补逻辑
+    - GEMM requirement 的 `lifetime` 已与 `requirement_index` 解耦，避免 planner 误把 `A/B` 输入 CB 复用到同一个 FIFO
+    - 本地验证：
+      - `pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py` → `15 passed, 1 xfailed`
+      - `pytest -q testing/python/target/blackhole/test_blackhole_gemm.py` → `3 passed, 1 skipped`
 - planner protocol struct 已进一步收敛：
   - `CBType/CBRequirement` 已集中到共享头文件
   - 不再依赖 `lower_blackhole_ops.h` / `plan_blackhole_cb.h` 的重复定义保持人工同步

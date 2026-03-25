@@ -47,9 +47,10 @@
 #include <tvm/tir/op.h>
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
-
 #include <string>
 #include <vector>
+
+#include "../../3rdparty/tvm/src/runtime/thread_storage_scope.h"
 
 namespace tvm {
 namespace tl {
@@ -83,6 +84,53 @@ static std::string GetStringField(const Map<String, Any>& ann, const std::string
   if (!opt.has_value()) return def;
   auto str_opt = opt.value().try_cast<String>();
   return str_opt.has_value() ? std::string(str_opt.value()) : def;
+}
+
+static std::string GetStorageScope(const tir::Buffer& buffer) {
+  ffi::String scope = buffer.scope();
+  if (scope.length() > 0) {
+    return std::string(scope);
+  }
+  return "";
+}
+
+static bool IsDRAMScope(const std::string& scope) {
+  return scope.empty() || scope == "global";
+}
+
+static bool IsAccumulatorLikeScope(const std::string& scope) {
+  if (scope.rfind("local", 0) == 0) return true;
+  auto s = runtime::StorageScope::Create(scope);
+  return s.rank == runtime::StorageRank::kBlackholeAccumulator;
+}
+
+static bool FindWriterOutputBuffer(const Stmt& stmt, std::string* output_buf_name_out) {
+  struct WriterCopyFinder : tir::StmtVisitor {
+    std::string output_buf_name;
+    bool found{false};
+
+    void VisitStmt_(const tir::BufferStoreNode* op) final {
+      if (found) return;
+      const auto* load = op->value.as<tir::BufferLoadNode>();
+      if (!load) return;
+      std::string dst_scope = GetStorageScope(op->buffer);
+      std::string src_scope = GetStorageScope(load->buffer);
+      if (IsDRAMScope(dst_scope) && IsAccumulatorLikeScope(src_scope)) {
+        output_buf_name = op->buffer->name;
+        found = true;
+      }
+    }
+  };
+
+  WriterCopyFinder finder;
+  finder(stmt);
+  if (!finder.found) {
+    return false;
+  }
+  if (output_buf_name_out) {
+    *output_buf_name_out = finder.output_buf_name;
+  }
+  return true;
 }
 
 // ------------------------------------------------------------------
@@ -177,49 +225,60 @@ static std::string ClassifyStmt(const Stmt& stmt,
                                  std::string* input_buf_name_out,
                                  std::string* output_buf_name_out,
                                  bool past_compute) {
+  if (const auto* attr = stmt.as<tir::AttrStmtNode>()) {
+    return ClassifyStmt(attr->body, input_buf_name_out, output_buf_name_out, past_compute);
+  }
+
   if (const auto* for_node = stmt.as<ForNode>()) {
     // Check for blackhole.copy_semantics annotation
     auto ann = for_node->annotations.Get(String(kCopySemantics));
-    if (!ann.has_value()) return "";
+    if (ann.has_value()) {
+      Map<String, Any> ann_map =
+          ann.value().as<Map<String, Any>>().value_or(Map<String, Any>());
+      if (!ann_map.empty()) {
+        std::string direction = GetStringField(ann_map, "direction");
+        std::string kind      = GetStringField(ann_map, "kind");
+        std::string dst_scope = GetStringField(ann_map, "dst_scope");
 
-    Map<String, Any> ann_map =
-        ann.value().as<Map<String, Any>>().value_or(Map<String, Any>());
-    if (ann_map.empty()) return "";
-
-    std::string direction = GetStringField(ann_map, "direction");
-    std::string kind      = GetStringField(ann_map, "kind");
-    std::string dst_scope = GetStringField(ann_map, "dst_scope");
-
-    if (direction == "dram_to_cb") {
-      // reader: captures DRAM source buffer name
-      if (input_buf_name_out) {
-        *input_buf_name_out = GetStringField(ann_map, "src_buffer");
+        if (direction == "dram_to_cb") {
+          // reader: captures DRAM source buffer name
+          if (input_buf_name_out) {
+            *input_buf_name_out = GetStringField(ann_map, "src_buffer");
+          }
+          return "reader";
+        }
+        if (direction == "cb_to_dram") {
+          // writer: captures DRAM destination buffer name
+          if (output_buf_name_out) {
+            *output_buf_name_out = GetStringField(ann_map, "dst_buffer");
+          }
+          return "writer";
+        }
+        if (kind == "fused_staged_copy") {
+          // treat as reader (dram→cb side) for now
+          if (input_buf_name_out) {
+            *input_buf_name_out = GetStringField(ann_map, "src_buffer");
+          }
+          return "reader";
+        }
+        // After a compute op, any copy with a global/DRAM destination is the writer.
+        // This handles local.fragment → global (GEMM output copy).
+        if (past_compute && (dst_scope.empty() || dst_scope == "global")) {
+          if (output_buf_name_out) {
+            *output_buf_name_out = GetStringField(ann_map, "dst_buffer");
+          }
+          return "writer";
+        }
       }
-      return "reader";
     }
-    if (direction == "cb_to_dram") {
-      // writer: captures DRAM destination buffer name
-      if (output_buf_name_out) {
-        *output_buf_name_out = GetStringField(ann_map, "dst_buffer");
-      }
-      return "writer";
-    }
-    if (kind == "fused_staged_copy") {
-      // treat as reader (dram→cb side) for now
-      if (input_buf_name_out) {
-        *input_buf_name_out = GetStringField(ann_map, "src_buffer");
-      }
-      return "reader";
-    }
-    // After a compute op, any copy with a global/DRAM destination is the writer.
-    // This handles local.fragment → global (GEMM output copy).
-    if (past_compute && (dst_scope.empty() || dst_scope == "global")) {
-      if (output_buf_name_out) {
-        *output_buf_name_out = GetStringField(ann_map, "dst_buffer");
-      }
+    if (past_compute && FindWriterOutputBuffer(stmt, output_buf_name_out)) {
       return "writer";
     }
     return "";
+  }
+
+  if (past_compute && FindWriterOutputBuffer(stmt, output_buf_name_out)) {
+    return "writer";
   }
 
   if (const auto* eval = stmt.as<EvaluateNode>()) {
@@ -268,6 +327,7 @@ static void StoreGemmSegmentPlan(PrimFunc& func,
   }
   reader_args.push_back(make_arg("num_k_tiles", "num_k_tiles"));
   reader_args.push_back(make_arg("current_work_linear_id", "current_work_linear_id"));
+  reader_args.push_back(make_arg("scratch_l1_addr", "scratch_l1_buffer_addr32"));
   reader.Set("runtime_args", reader_args);
 
   // Compute kernel (TRISC)
@@ -290,6 +350,7 @@ static void StoreGemmSegmentPlan(PrimFunc& func,
                                    output_buf_name));
   }
   writer_args.push_back(make_arg("current_work_linear_id", "current_work_linear_id"));
+  writer_args.push_back(make_arg("scratch_l1_addr", "scratch_l1_buffer_addr32"));
   writer.Set("runtime_args", writer_args);
 
   Array<Any> kernels;
@@ -377,6 +438,23 @@ static PrimFunc TransformFunc(const PrimFunc& func) {
 
   PrimFunc new_func = func;
   new_func.CopyOnWrite()->body = new_body;
+
+  if (annotator.output_buf_name.empty()) {
+    FindWriterOutputBuffer(new_body, &annotator.output_buf_name);
+  }
+
+  GemmInfoCollector gemm_info_collector;
+  gemm_info_collector(func->body);
+  GemmInfo gemm_info = gemm_info_collector.info;
+  if (gemm_info.a_buf_name.empty() && !annotator.input_buf_names.empty()) {
+    gemm_info.a_buf_name = annotator.input_buf_names[0];
+  }
+  if (gemm_info.b_buf_name.empty() && annotator.input_buf_names.size() > 1) {
+    gemm_info.b_buf_name = annotator.input_buf_names[1];
+  }
+  if (gemm_info.c_buf_name.empty()) {
+    gemm_info.c_buf_name = annotator.output_buf_name;
+  }
 
   // 3. Write segment plan
   StoreGemmSegmentPlan(new_func, annotator.input_buf_names, annotator.output_buf_name);

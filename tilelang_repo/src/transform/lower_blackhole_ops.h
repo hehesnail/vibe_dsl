@@ -34,6 +34,7 @@
 
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -86,8 +87,13 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Get CB configuration from function attributes */
   CBConfig GetCBConfig() const;
 
-  /*! \brief Allocate a CB ID for a buffer */
-  int AllocateCBId(const tvm::tir::Buffer& buffer, CBType type);
+  /*! \brief Register a CB requirement for a buffer and return its requirement_index.
+   *
+   * The returned index is the position of this requirement in cb_requirements_.
+   * It is used as the cb_id placeholder in the IR body.  PlanBlackholeCB will
+   * replace all requirement_index placeholders with the final hardware cb_id.
+   */
+  int AllocateRequirementIndex(const tvm::tir::Buffer& buffer, CBType type);
 
   /*! \brief Store CB requirements in function attributes */
   void StoreCBRequirements(tvm::tir::PrimFunc& func);
@@ -97,9 +103,6 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
 
   /*! \brief Store minimal segment/kernel plan inferred during lowering */
   void StoreSegmentPlan(tvm::tir::PrimFunc& func);
-
-  /*! \brief Store GEMM CB placeholder schema for post-planner consumers */
-  void StoreGemmCBPlaceholders(tvm::tir::PrimFunc& func);
 
   /*! \brief Detect matmul call using Op comparison (not string matching) */
   bool IsMatmulCall(const tvm::tir::CallNode* op) const;
@@ -185,17 +188,23 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   tvm::tir::Stmt VisitStmt_(const tvm::tir::BufferStoreNode* op) override;
 
   tvm::tir::PrimFunc current_func_;
-  std::map<tvm::tir::Buffer, int, std::less<>> buffer_to_cb_;
+  // Maps buffer object → requirement_index in cb_requirements_
+  std::map<tvm::tir::Buffer, int, std::less<>> buffer_to_req_;
+  // Secondary lookup by name (for GEMM buffers pre-registered by ExtractGemmInfo)
+  std::unordered_map<std::string, int> name_to_req_index_;
   std::vector<CBRequirement> cb_requirements_;
   bool saw_copy_op_ = false;
   bool needs_copy_runtime_args_ = false;
   std::string copy_input_buffer_name_;
   std::string copy_output_buffer_name_;
 
-  // GEMM info populated by ExtractGemmInfo
+  // GEMM info populated by ExtractGemmInfo (pre-scan)
   std::string gemm_a_buffer_name_;
   std::string gemm_b_buffer_name_;
   std::string gemm_c_buffer_name_;
+  int gemm_a_req_index_ = -1;  // requirement_index for GEMM input A
+  int gemm_b_req_index_ = -1;  // requirement_index for GEMM input B
+  int gemm_c_req_index_ = -1;  // requirement_index for GEMM output C
   int gemm_m_ = 0;
   int gemm_n_ = 0;
   int gemm_k_ = 0;
@@ -206,11 +215,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   tvm::ffi::Array<tvm::Integer> copy_intermediate_shape_;
   std::unordered_set<const tvm::tir::VarNode*> thread_index_vars_;
 
-  // CB allocation counters
-  int next_input_cb_ = 0;        // Start at 0
-  int next_output_cb_ = 16;      // Start at 16
-  int next_intermediate_cb_ = 32; // Start at 32
-  int next_cb_id_;
+  // Requirement index counter (sequential, 0-based)
+  int next_requirement_index_ = 0;
 };
 
 /*!

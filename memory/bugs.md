@@ -91,10 +91,12 @@
     - planner 后统一替换成最终实际 `cb_id`
   - `cb_bindings` 不能继续让重名 `requirement_name` 承担唯一身份；需要唯一 requirement instance 级别的绑定键
   - 只有在这层协议收敛后，reader/compute/writer 才能稳定共享同一组 CB
-- **当前状态**: 设计已完成，待实施。修正设计文档：`tasks/dev_design/stage2d_cb_identity_protocol.md`。
-  - 问题已确认为通用架构缺陷，不是 GEMM 特有
-  - 根因是实现偏离了设计文档（LowerBlackholeOps "不分配最终 cb_id" 但 copy 路径违反；PlanBlackholeCB 只写 attrs 不回写 IR）
-  - 修正方案：统一用 requirement_index → PlanBlackholeCB 回写 IR → codegen 直接读最终 cb_id
+- **当前状态**: 已解决。修正设计文档：`tasks/dev_design/stage2d_cb_identity_protocol.md`。
+  - `LowerBlackholeOps` 已统一把 CB 参数写成 `requirement_index`
+  - `PlanBlackholeCB` 已回写 IR body，把 `requirement_index` 替换成最终 `cb_id`
+  - `CodeGenBlackhole` / `SplitBlackholeKernel` 已删除 `gemm_cb_placeholders` 和 placeholder/alias 恢复逻辑
+  - 实施时额外确认了一个容易混淆的点：`requirement_index` 不能偷当 `lifetime_begin/end`
+  - 对 GEMM，如果把 `A/B` 输入 requirement 的 lifetime 设成按索引递增，planner 会错误地把它们复用到同一个 input CB；必须显式保留重叠 lifetime
 
 ### copy codegen 的 runtime-arg buffer 绑定不能依赖“新路径 + 指针 identity”组合
 

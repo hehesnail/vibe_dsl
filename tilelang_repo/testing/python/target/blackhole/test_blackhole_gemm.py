@@ -4,6 +4,7 @@ import torch
 import tilelang
 from tilelang.engine.lower import lower
 from tvm.target import Target
+from tvm.tir import stmt_functor
 
 from .common import (
     assert_tensors_close_or_dump,
@@ -44,7 +45,7 @@ def test_blackhole_split_kernel_gemm_segment_plan():
     assert [str(arg["buffer"]) for arg in writer_args if "buffer" in arg] == ["C"]
 
 
-def test_blackhole_gemm_cb_placeholders_resolve_via_planner():
+def test_blackhole_gemm_cb_ids_are_rewritten_by_planner():
     kernel = gemm_kernel()
     mod = tilelang.tvm.IRModule({"main": kernel})
     target = Target("blackhole")
@@ -53,24 +54,44 @@ def test_blackhole_gemm_cb_placeholders_resolve_via_planner():
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
-    mod = tilelang.transform.PlanBlackholeCB()(mod)
+    lower_mod = tilelang.transform.LowerBlackholeOps()(mod)
+    planned_mod = tilelang.transform.PlanBlackholeCB()(lower_mod)
 
-    func = mod["main"]
-    placeholders = func.attrs["blackhole.gemm_cb_placeholders"]
-    assert str(placeholders["a"]["requirement_name"]) == "A_shared"
-    assert str(placeholders["b"]["requirement_name"]) == "B_shared"
-    assert str(placeholders["c"]["requirement_name"]) == "C_local"
-    assert int(placeholders["a"]["placeholder_cb_id"]) < 0
-    assert int(placeholders["b"]["placeholder_cb_id"]) < 0
-    assert int(placeholders["c"]["placeholder_cb_id"]) < 0
+    lower_func = lower_mod["main"]
+    func = planned_mod["main"]
+    assert "blackhole.gemm_cb_placeholders" not in func.attrs
 
-    cb_bindings = {
-        str(item["requirement_name"]): int(item["cb_id"])
-        for item in func.attrs["blackhole.cb_bindings"]
-    }
-    assert cb_bindings["A_shared"] != cb_bindings["C_local"]
-    assert cb_bindings["B_shared"] != cb_bindings["C_local"]
+    def collect_cb_ids(stmt):
+        cb_ids = set()
+
+        def visit(node):
+            if not isinstance(node, tilelang.tvm.tir.Call):
+                return
+            if not hasattr(node.op, "name"):
+                return
+            op_name = node.op.name
+            if op_name in {
+                "tl.blackhole.cb_reserve_back",
+                "tl.blackhole.cb_push_back",
+                "tl.blackhole.cb_wait_front",
+                "tl.blackhole.cb_pop_front",
+                "tl.blackhole.write_tile_from_cb",
+            }:
+                cb_ids.add(int(node.args[0]))
+            elif op_name == "tl.blackhole.read_tile_to_cb":
+                cb_ids.add(int(node.args[2]))
+            elif op_name == "tl.blackhole.mm_init":
+                cb_ids.update(int(arg) for arg in node.args[:3])
+            elif op_name == "tl.blackhole.matmul_tiles":
+                cb_ids.update(int(arg) for arg in node.args[:2])
+            elif op_name == "tl.blackhole.pack_tile":
+                cb_ids.add(int(node.args[1]))
+
+        stmt_functor.post_order_visit(stmt, visit)
+        return cb_ids
+
+    assert collect_cb_ids(lower_func.body) == {0, 1, 2}
+    assert collect_cb_ids(func.body) == {0, 1, 16}
 
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
@@ -92,12 +113,29 @@ def test_blackhole_gemm_cb_placeholders_resolve_via_planner():
         source = artifact.code
 
     assert source
-    assert "mm_init(-1" not in source
-    assert "mm_init(-2" not in source
-    assert "mm_init(-3" not in source
-    assert "cb_wait_front(-1" not in source
-    assert "cb_wait_front(-2" not in source
-    assert "cb_reserve_back(-3" not in source
+    assert "mm_init(-" not in source
+    assert "cb_wait_front(-" not in source
+    assert "cb_reserve_back(-" not in source
+
+
+def test_blackhole_gemm_accumulator_scope_canonicalized():
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+    mod = tilelang.tvm.IRModule({"main": kernel})
+
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+        mod = tilelang.engine.phase.OptimizeForTarget(mod, target)
+
+    func = mod["main"]
+    resource_plan = func.attrs["blackhole.resource_plan"]
+    accum_entries = [item for item in resource_plan if str(item["class"]) == "accumulator"]
+    assert accum_entries
+    assert any(str(item["name"]) == "C_local" for item in accum_entries)
+    assert all(str(item["scope"]) == "blackhole.acc" for item in accum_entries)
+
+    func_text = func.script()
+    assert 'scope="blackhole.acc"' in func_text
 
 
 def test_blackhole_gemm_basic():

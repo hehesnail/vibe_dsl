@@ -25,8 +25,10 @@
 #include "codegen_blackhole.h"
 
 #include <algorithm>
+#include <optional>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "../tir/builtin_blackhole.h"
 #include "tvm/tir/builtin.h"
@@ -59,7 +61,6 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   runtime_arg_vars_by_kind_.clear();
   cb_page_size_by_id_.clear();
   cb_num_pages_by_id_.clear();
-  placeholder_cb_id_map_.clear();
   logical_grid_x_ = 1;
   logical_grid_y_ = 1;
   linearization_ = "row_major";
@@ -110,8 +111,7 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         break;
       case CoreType::kTRISC:
         decl_stream << "// Compute kernel API (TRISC)\n";
-        decl_stream << "#include \"compute_kernel_api.h\"\n";
-        decl_stream << "#include \"api/dataflow/dataflow_api.h\"\n";
+        decl_stream << "#include \"api/compute/matmul.h\"\n";
         break;
       default:
         decl_stream << "// DataMovement kernel API (default)\n";
@@ -138,7 +138,6 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   // TT-Metal kernels use get_arg_val<uint32_t>(arg_index) to read arguments
   stream << "  // Load kernel arguments from runtime\n";
   LoadCorePlan(f);
-  LoadGemmCBPlaceholders(f);
   if (f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.runtime_args")) {
     EmitRuntimeArgLoads(f);
     this->VisitStmt(f->body);
@@ -225,53 +224,6 @@ void CodeGenBlackhole::LoadCorePlan(const tvm::tir::PrimFunc &f) {
   }
 }
 
-void CodeGenBlackhole::LoadGemmCBPlaceholders(const tvm::tir::PrimFunc &f) {
-  placeholder_cb_id_map_.clear();
-
-  auto placeholder_attr =
-      f->GetAttr<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>("blackhole.gemm_cb_placeholders");
-  if (!placeholder_attr) {
-    return;
-  }
-
-  std::unordered_map<std::string, int> cb_id_by_requirement_name;
-  if (auto cb_bindings_attr = f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.cb_bindings")) {
-    for (const auto &item : cb_bindings_attr.value()) {
-      auto binding = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
-          tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
-      if (binding.empty()) {
-        continue;
-      }
-      auto name_it = binding.Get("requirement_name");
-      auto cb_id_it = binding.Get("cb_id");
-      if (!name_it.has_value() || !cb_id_it.has_value()) {
-        continue;
-      }
-      cb_id_by_requirement_name[Downcast<tvm::ffi::String>(name_it.value())] =
-          Downcast<tvm::Integer>(cb_id_it.value()).IntValue();
-    }
-  }
-
-  for (const auto &kv : placeholder_attr.value()) {
-    auto info = kv.second.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
-        tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
-    if (info.empty()) {
-      continue;
-    }
-    auto req_name_it = info.Get("requirement_name");
-    auto placeholder_it = info.Get("placeholder_cb_id");
-    if (!req_name_it.has_value() || !placeholder_it.has_value()) {
-      continue;
-    }
-    const std::string req_name = Downcast<tvm::ffi::String>(req_name_it.value());
-    auto binding_it = cb_id_by_requirement_name.find(req_name);
-    ICHECK(binding_it != cb_id_by_requirement_name.end())
-        << "Missing CB binding for GEMM requirement: " << req_name;
-    const int placeholder = Downcast<tvm::Integer>(placeholder_it.value()).IntValue();
-    placeholder_cb_id_map_[placeholder] = binding_it->second;
-  }
-}
-
 void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   buffer_runtime_arg_map_.clear();
   buffer_runtime_arg_map_by_name_.clear();
@@ -309,14 +261,20 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   ICHECK(runtime_args_attr) << "blackhole.runtime_args must be present when emitting runtime args";
 
   std::unordered_map<std::string, const tvm::tir::VarNode *> buffer_vars_by_name;
+  std::vector<std::string> ordered_handle_buffer_names;
   for (const auto &param : f->params) {
     if (param->dtype.is_handle()) {
       buffer_vars_by_name[param->name_hint] = param.get();
+      ordered_handle_buffer_names.push_back(param->name_hint);
     }
   }
   for (const auto &kv : f->buffer_map) {
     const auto &buffer = kv.second;
     buffer_vars_by_name[buffer->name] = buffer->data.get();
+    if (std::find(ordered_handle_buffer_names.begin(), ordered_handle_buffer_names.end(),
+                  buffer->name) == ordered_handle_buffer_names.end()) {
+      ordered_handle_buffer_names.push_back(buffer->name);
+    }
   }
   // Packed Blackhole entrypoints can arrive after MakePackedAPI, where the
   // public function params are no longer the original A/B handles and
@@ -354,6 +312,10 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   });
 
   int arg_idx = 0;
+  size_t next_input_buffer = 0;
+  size_t next_output_buffer = ordered_handle_buffer_names.empty()
+                                  ? 0
+                                  : ordered_handle_buffer_names.size() - 1;
   for (const auto &item : runtime_args_attr.value()) {
     auto arg_info = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
         tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
@@ -375,13 +337,32 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
       runtime_arg_vars_by_kind_[arg_kind] = arg_name;
     }
 
+    std::optional<std::string> bound_buffer_name;
     if (auto v = arg_info.Get("buffer")) {
-      std::string buffer_name = Downcast<tvm::ffi::String>(v.value());
-      auto it = buffer_vars_by_name.find(buffer_name);
-      if (it != buffer_vars_by_name.end()) {
-        buffer_runtime_arg_map_[it->second] = arg_name;
+      bound_buffer_name = std::string(Downcast<tvm::ffi::String>(v.value()));
+    } else if ((arg_kind == "input_buffer_addr32" || arg_kind == "input_buffer_addr") &&
+               next_input_buffer < ordered_handle_buffer_names.size()) {
+      bound_buffer_name = ordered_handle_buffer_names[next_input_buffer++];
+    } else if ((arg_kind == "output_buffer_addr32" || arg_kind == "output_buffer_addr") &&
+               !ordered_handle_buffer_names.empty() &&
+               next_output_buffer < ordered_handle_buffer_names.size()) {
+      bound_buffer_name = ordered_handle_buffer_names[next_output_buffer];
+      if (next_output_buffer > 0) {
+        --next_output_buffer;
       }
-      buffer_runtime_arg_map_by_name_[buffer_name] = arg_name;
+    }
+
+    if (bound_buffer_name.has_value()) {
+      std::vector<std::string> candidate_names{bound_buffer_name.value()};
+      candidate_names.push_back(bound_buffer_name.value() + "_handle");
+      for (const auto& candidate_name : candidate_names) {
+        auto it = buffer_vars_by_name.find(candidate_name);
+        if (it != buffer_vars_by_name.end()) {
+          buffer_runtime_arg_map_[it->second] = arg_name;
+          buffer_runtime_arg_map_by_name_[candidate_name] = arg_name;
+        }
+      }
+      buffer_runtime_arg_map_by_name_[bound_buffer_name.value()] = arg_name;
     }
     ++arg_idx;
   }
@@ -412,6 +393,20 @@ std::string CodeGenBlackhole::GetRuntimeArgVarForBuffer(
     return it->second;
   }
   auto by_name = buffer_runtime_arg_map_by_name_.find(buffer_var->name_hint);
+  if (by_name == buffer_runtime_arg_map_by_name_.end()) {
+    auto out32 = runtime_arg_vars_by_kind_.find("output_buffer_addr32");
+    auto out64 = runtime_arg_vars_by_kind_.find("output_buffer_addr");
+    const bool has_input_addr32 = runtime_arg_vars_by_kind_.count("input_buffer_addr32");
+    const bool has_input_addr64 = runtime_arg_vars_by_kind_.count("input_buffer_addr");
+    if (!has_input_addr32 && !has_input_addr64) {
+      if (out32 != runtime_arg_vars_by_kind_.end()) {
+        return out32->second;
+      }
+      if (out64 != runtime_arg_vars_by_kind_.end()) {
+        return out64->second;
+      }
+    }
+  }
   ICHECK(by_name != buffer_runtime_arg_map_by_name_.end())
       << "Missing runtime arg binding for buffer var: " << buffer_var->name_hint;
   return by_name->second;
@@ -421,13 +416,8 @@ int CodeGenBlackhole::ResolveCBId(const tvm::PrimExpr &expr) const {
   const auto *cb_id_imm = expr.as<tvm::tir::IntImmNode>();
   ICHECK(cb_id_imm) << "Blackhole CB operations currently expect constant cb_id";
   const int cb_id = static_cast<int>(cb_id_imm->value);
-  if (cb_id >= 0) {
-    return cb_id;
-  }
-  auto it = placeholder_cb_id_map_.find(cb_id);
-  ICHECK(it != placeholder_cb_id_map_.end())
-      << "Missing resolved CB binding for placeholder cb_id=" << cb_id;
-  return it->second;
+  ICHECK_GE(cb_id, 0) << "Blackhole codegen expects final cb_id, but saw placeholder " << cb_id;
+  return cb_id;
 }
 
 void CodeGenBlackhole::PrintResolvedCBId(const tvm::PrimExpr &expr, std::ostream &os) const {

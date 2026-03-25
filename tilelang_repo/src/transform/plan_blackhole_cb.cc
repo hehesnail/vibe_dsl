@@ -38,6 +38,7 @@
 
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 namespace tvm {
 namespace tl {
@@ -92,6 +93,29 @@ bool IsCompatibleForReuse(const CBRequirement& req, const CBConfig& config) {
   return req.lifetime_begin > config.lifetime_end;
 }
 
+std::vector<int> GetCBArgPositions(const std::string& op_name) {
+  if (op_name == "tl.blackhole.cb_reserve_back" ||
+      op_name == "tl.blackhole.cb_push_back" ||
+      op_name == "tl.blackhole.cb_wait_front" ||
+      op_name == "tl.blackhole.cb_pop_front" ||
+      op_name == "tl.blackhole.write_tile_from_cb") {
+    return {0};
+  }
+  if (op_name == "tl.blackhole.read_tile_to_cb") {
+    return {2};
+  }
+  if (op_name == "tl.blackhole.mm_init") {
+    return {0, 1, 2};
+  }
+  if (op_name == "tl.blackhole.matmul_tiles") {
+    return {0, 1};
+  }
+  if (op_name == "tl.blackhole.pack_tile") {
+    return {1};
+  }
+  return {};
+}
+
 }  // namespace
 
 // Main entry point
@@ -114,6 +138,13 @@ PrimFunc PlanBlackholeCB::Transform(const PrimFunc& func) {
   // Create mutable copy and store CB configuration
   PrimFunc new_func = func;
   StoreCBConfig(new_func, configs);
+  std::unordered_map<int, int> cb_id_by_requirement_index;
+  for (const auto& config : configs) {
+    for (int requirement_index : config.requirement_indices) {
+      cb_id_by_requirement_index[requirement_index] = config.cb_id;
+    }
+  }
+  new_func.CopyOnWrite()->body = RewriteCBIdsInIR(new_func->body, cb_id_by_requirement_index);
   cb_configs_ = configs;
 
   return new_func;
@@ -374,6 +405,52 @@ void PlanBlackholeCB::StoreCBConfig(PrimFunc& func, const std::vector<CBConfig>&
   attrs.Set("blackhole.num_cbs", Integer(static_cast<int>(configs.size())));
 
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
+}
+
+tvm::tir::Stmt PlanBlackholeCB::RewriteCBIdsInIR(
+    const tvm::tir::Stmt& body, const std::unordered_map<int, int>& cb_id_by_requirement_index) {
+  class CBIdRewriter : public tir::StmtExprMutator {
+   public:
+    explicit CBIdRewriter(const std::unordered_map<int, int>& mapping) : mapping_(mapping) {}
+
+    PrimExpr VisitExpr_(const tir::CallNode* op) final {
+      PrimExpr expr = tir::StmtExprMutator::VisitExpr_(op);
+      const auto* rewritten = expr.as<tir::CallNode>();
+      ICHECK(rewritten);
+      if (!rewritten->op->IsInstance<OpNode>()) {
+        return expr;
+      }
+      const std::vector<int> positions = GetCBArgPositions(Downcast<Op>(rewritten->op)->name);
+      if (positions.empty()) {
+        return expr;
+      }
+
+      Array<PrimExpr> args = rewritten->args;
+      bool changed = false;
+      for (int pos : positions) {
+        ICHECK_LT(pos, static_cast<int>(args.size()));
+        const auto* imm = args[pos].as<IntImmNode>();
+        ICHECK(imm) << "PlanBlackholeCB expects constant requirement_index before IR rewrite";
+        auto it = mapping_.find(static_cast<int>(imm->value));
+        ICHECK(it != mapping_.end())
+            << "Missing final cb_id for requirement_index=" << imm->value;
+        if (it->second != imm->value) {
+          args.Set(pos, tvm::IntImm(args[pos].dtype(), it->second));
+          changed = true;
+        }
+      }
+      if (!changed) {
+        return expr;
+      }
+      return tir::Call(rewritten->dtype, rewritten->op, args, rewritten->annotations,
+                       rewritten->span);
+    }
+
+   private:
+    const std::unordered_map<int, int>& mapping_;
+  };
+
+  return CBIdRewriter(cb_id_by_requirement_index)(body);
 }
 
 // Modern TVM pass registration

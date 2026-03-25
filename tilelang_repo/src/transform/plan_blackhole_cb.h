@@ -38,6 +38,7 @@
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
+#include <unordered_map>
 #include <vector>
 
 namespace tvm {
@@ -116,6 +117,10 @@ class PlanBlackholeCB : public tvm::tir::StmtExprMutator {
 
   /*! \brief Store CB configuration in function attributes */
   void StoreCBConfig(tvm::tir::PrimFunc& func, const std::vector<CBConfig>& configs);
+
+  /*! \brief Rewrite requirement_index placeholders in IR body to final cb_id values */
+  tvm::tir::Stmt RewriteCBIdsInIR(const tvm::tir::Stmt& body,
+                                  const std::unordered_map<int, int>& cb_id_by_requirement_index);
 
   std::vector<CBConfig> cb_configs_;
 };

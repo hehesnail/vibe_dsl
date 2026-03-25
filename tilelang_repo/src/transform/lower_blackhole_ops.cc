@@ -112,9 +112,6 @@ static PrimExpr ScalarizeVectorizedIndex(const PrimExpr& index) {
 
 constexpr int kBlackholeTileRows = 32;
 constexpr int kBlackholeTileCols = 32;
-constexpr int kGemmInputAPlaceholderCB = -1;
-constexpr int kGemmInputBPlaceholderCB = -2;
-constexpr int kGemmOutputCPlaceholderCB = -3;
 
 // Helper to get storage scope from buffer
 static std::string GetStorageScope(const Buffer& buffer) {
@@ -126,18 +123,14 @@ static std::string GetStorageScope(const Buffer& buffer) {
   return "";
 }
 
-LowerBlackholeOps::LowerBlackholeOps() : next_cb_id_(0) {
-  // Initialize CB allocation tracking
-}
+LowerBlackholeOps::LowerBlackholeOps() : next_requirement_index_(0) {}
 
 PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   current_func_ = func;
-  buffer_to_cb_.clear();
+  buffer_to_req_.clear();
+  name_to_req_index_.clear();
   cb_requirements_.clear();
-  next_input_cb_ = 0;
-  next_output_cb_ = 16;
-  next_intermediate_cb_ = 32;
-  next_cb_id_ = 0;
+  next_requirement_index_ = 0;
   saw_copy_op_ = false;
   needs_copy_runtime_args_ = false;
   copy_input_buffer_name_.clear();
@@ -148,9 +141,24 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   gemm_a_buffer_name_.clear();
   gemm_b_buffer_name_.clear();
   gemm_c_buffer_name_.clear();
+  gemm_a_req_index_ = -1;
+  gemm_b_req_index_ = -1;
+  gemm_c_req_index_ = -1;
   gemm_m_ = 0;
   gemm_n_ = 0;
   gemm_k_ = 0;
+
+  // Pre-scan: register GEMM CB requirements first so their indices are stable
+  // when copy stmts are visited.
+  tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
+    if (!gemm_a_buffer_name_.empty()) {
+      return;
+    }
+    const auto* call = node.as<CallNode>();
+    if (call && IsMatmulCall(call)) {
+      ExtractGemmInfo(call);
+    }
+  });
 
   // Transform the function body
   Stmt body = VisitStmt(func->body);
@@ -161,7 +169,6 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
 
   // Store CB requirements in function attributes for PlanBlackholeCB
   StoreCBRequirements(new_func);
-  StoreGemmCBPlaceholders(new_func);
   StoreRuntimeArgs(new_func);
   StoreSegmentPlan(new_func);
 
@@ -189,35 +196,25 @@ LowerBlackholeOps::CBConfig LowerBlackholeOps::GetCBConfig() const {
   return config;
 }
 
-// Allocate a CB ID for a buffer
-int LowerBlackholeOps::AllocateCBId(const Buffer& buffer, CBType type) {
-  // Check if this buffer already has a CB assigned
-  auto it = buffer_to_cb_.find(buffer);
-  if (it != buffer_to_cb_.end()) {
+int LowerBlackholeOps::AllocateRequirementIndex(const Buffer& buffer, CBType type) {
+  auto it = buffer_to_req_.find(buffer);
+  if (it != buffer_to_req_.end()) {
     return it->second;
   }
-
-  // Allocate new CB ID based on type
-  int cb_id;
-  switch (type) {
-    case CBType::kInput:
-      cb_id = next_input_cb_++;
-      break;
-    case CBType::kOutput:
-      cb_id = next_output_cb_++;
-      break;
-    default:
-      cb_id = next_intermediate_cb_++;
-      break;
+  auto by_name = name_to_req_index_.find(buffer->name);
+  if (by_name != name_to_req_index_.end()) {
+    buffer_to_req_[buffer] = by_name->second;
+    return by_name->second;
   }
 
-  buffer_to_cb_[buffer] = cb_id;
+  const int requirement_index = next_requirement_index_++;
+  buffer_to_req_[buffer] = requirement_index;
+  name_to_req_index_[buffer->name] = requirement_index;
 
-  // Record CB requirement
   CBRequirement req;
   req.name = buffer->name;
   req.type = type;
-  req.lifetime_begin = static_cast<int>(cb_requirements_.size());
+  req.lifetime_begin = requirement_index;
   req.lifetime_end = req.lifetime_begin;
 
   // Calculate page size from buffer shape
@@ -250,8 +247,7 @@ int LowerBlackholeOps::AllocateCBId(const Buffer& buffer, CBType type) {
   }
 
   cb_requirements_.push_back(req);
-
-  return cb_id;
+  return requirement_index;
 }
 
 int LowerBlackholeOps::EstimateCopyPageSize(const Buffer& buffer) const {
@@ -290,8 +286,10 @@ void LowerBlackholeOps::StoreCBRequirements(PrimFunc& func) {
 
   // Build CB requirements array
   Array<Any> cb_reqs;
-  for (const auto& req : cb_requirements_) {
+  for (size_t i = 0; i < cb_requirements_.size(); ++i) {
+    const auto& req = cb_requirements_[i];
     Map<String, Any> req_map;
+    req_map.Set("requirement_index", Integer(static_cast<int>(i)));
     req_map.Set("name", String(req.name));
     req_map.Set("type", String(req.type == CBType::kInput ? "input" :
                                req.type == CBType::kOutput ? "output" : "intermediate"));
@@ -310,6 +308,9 @@ void LowerBlackholeOps::StoreCBRequirements(PrimFunc& func) {
 
 void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
   if (!needs_copy_runtime_args_) {
+    return;
+  }
+  if (func->GetAttr<Array<Any>>("blackhole.segment_plan")) {
     return;
   }
 
@@ -343,37 +344,6 @@ void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
   push_arg("scratch_l1_addr", "scratch_l1_buffer_addr32", "uint32");
 
   attrs.Set("blackhole.runtime_args", runtime_args);
-  func.CopyOnWrite()->attrs = DictAttrs(attrs);
-}
-
-void LowerBlackholeOps::StoreGemmCBPlaceholders(PrimFunc& func) {
-  if (gemm_a_buffer_name_.empty() || gemm_b_buffer_name_.empty() || gemm_c_buffer_name_.empty()) {
-    return;
-  }
-
-  Map<String, Any> attrs;
-  if (func->attrs.defined()) {
-    attrs = func->attrs->dict;
-  }
-
-  Map<String, Any> placeholder_map;
-
-  Map<String, Any> a_info;
-  a_info.Set("requirement_name", String(gemm_a_buffer_name_));
-  a_info.Set("placeholder_cb_id", Integer(kGemmInputAPlaceholderCB));
-  placeholder_map.Set("a", a_info);
-
-  Map<String, Any> b_info;
-  b_info.Set("requirement_name", String(gemm_b_buffer_name_));
-  b_info.Set("placeholder_cb_id", Integer(kGemmInputBPlaceholderCB));
-  placeholder_map.Set("b", b_info);
-
-  Map<String, Any> c_info;
-  c_info.Set("requirement_name", String(gemm_c_buffer_name_));
-  c_info.Set("placeholder_cb_id", Integer(kGemmOutputCPlaceholderCB));
-  placeholder_map.Set("c", c_info);
-
-  attrs.Set("blackhole.gemm_cb_placeholders", placeholder_map);
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 
@@ -445,29 +415,29 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
   const int ab_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_ab_dtype_.bytes();
   const int c_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_c_dtype_.bytes();
 
-  CBRequirement req_a;
-  req_a.name = gemm_a_buffer_name_;
-  req_a.type = CBType::kInput;
-  req_a.page_size = ab_tile_bytes;
-  req_a.num_pages = 2;  // double-buffered for pipeline overlap
-  req_a.data_format = DataTypeToDataFormat(gemm_ab_dtype_);
-  req_a.lifetime_begin = 0;
-  req_a.lifetime_end = 0;
-  cb_requirements_.push_back(req_a);
+  gemm_a_req_index_ = AllocateRequirementIndex(a_region->buffer, CBType::kInput);
+  gemm_b_req_index_ = AllocateRequirementIndex(b_region->buffer, CBType::kInput);
+  gemm_c_req_index_ = AllocateRequirementIndex(c_region->buffer, CBType::kOutput);
 
-  CBRequirement req_b = req_a;
-  req_b.name = gemm_b_buffer_name_;
-  cb_requirements_.push_back(req_b);
+  auto set_requirement_fields = [&](int requirement_index, int page_size, int num_pages,
+                                    const std::string& data_format) {
+    ICHECK_GE(requirement_index, 0);
+    ICHECK_LT(requirement_index, static_cast<int>(cb_requirements_.size()));
+    auto& req = cb_requirements_[requirement_index];
+    req.page_size = page_size;
+    req.num_pages = num_pages;
+    req.data_format = data_format;
+  };
 
-  CBRequirement req_c;
-  req_c.name = gemm_c_buffer_name_;
-  req_c.type = CBType::kOutput;
-  req_c.page_size = c_tile_bytes;
-  req_c.num_pages = 1;
-  req_c.data_format = DataTypeToDataFormat(gemm_c_dtype_);
-  req_c.lifetime_begin = 0;
-  req_c.lifetime_end = 0;
-  cb_requirements_.push_back(req_c);
+  set_requirement_fields(gemm_a_req_index_, ab_tile_bytes, 2, DataTypeToDataFormat(gemm_ab_dtype_));
+  set_requirement_fields(gemm_b_req_index_, ab_tile_bytes, 2, DataTypeToDataFormat(gemm_ab_dtype_));
+  set_requirement_fields(gemm_c_req_index_, c_tile_bytes, 1, DataTypeToDataFormat(gemm_c_dtype_));
+  cb_requirements_[gemm_a_req_index_].lifetime_begin = 0;
+  cb_requirements_[gemm_a_req_index_].lifetime_end = 0;
+  cb_requirements_[gemm_b_req_index_].lifetime_begin = 0;
+  cb_requirements_[gemm_b_req_index_].lifetime_end = 0;
+  cb_requirements_[gemm_c_req_index_].lifetime_begin = 1;
+  cb_requirements_[gemm_c_req_index_].lifetime_end = 1;
 }
 
 // Detect clear operation using Op comparison
@@ -506,6 +476,17 @@ CopyDirection LowerBlackholeOps::GetCopyDirection(const BufferStoreNode* op) con
   auto isDRAMScope = [](const std::string& scope) {
     return scope.empty() || scope == "global";
   };
+
+  auto isAccumulatorLikeScope = [](const std::string& scope) {
+    if (scope.rfind("local", 0) == 0) return true;
+    auto s = runtime::StorageScope::Create(scope);
+    return s.rank == runtime::StorageRank::kBlackholeAccumulator;
+  };
+
+  if (current_func_->GetAttr<Array<Any>>("blackhole.segment_plan").has_value() &&
+      isAccumulatorLikeScope(src_scope) && isDRAMScope(dst_scope)) {
+    return CopyDirection::kCBToDram;
+  }
 
   // DRAM -> CB (global -> shared)
   if (isDRAMScope(src_scope) && isCBScope(dst_scope)) {
@@ -731,29 +712,12 @@ void LowerBlackholeOps::RecordDramToDramCopy(const BufferStoreNode* op) {
   if (!load) return;
 
   auto ensure_requirement = [&](const Buffer& buffer, CBType type) {
-    auto it = buffer_to_cb_.find(buffer);
-    if (it != buffer_to_cb_.end()) {
+    auto it = buffer_to_req_.find(buffer);
+    if (it != buffer_to_req_.end()) {
       return;
     }
-
-    switch (type) {
-      case CBType::kInput:
-        buffer_to_cb_[buffer] = next_input_cb_++;
-        break;
-      case CBType::kOutput:
-        buffer_to_cb_[buffer] = next_output_cb_++;
-        break;
-      default:
-        buffer_to_cb_[buffer] = next_intermediate_cb_++;
-        break;
-    }
-
-    CBRequirement req;
-    req.name = buffer->name;
-    req.type = type;
-    req.lifetime_begin = static_cast<int>(cb_requirements_.size());
-    req.lifetime_end = req.lifetime_begin;
-    req.page_size = EstimateCopyPageSize(buffer);
+    const int requirement_index = AllocateRequirementIndex(buffer, type);
+    auto& req = cb_requirements_.at(requirement_index);
     req.num_pages = 1;
     if (buffer->dtype.is_float()) {
       req.data_format = buffer->dtype.bits() == 16 ? "Float16_b" : "Float32";
@@ -764,7 +728,6 @@ void LowerBlackholeOps::RecordDramToDramCopy(const BufferStoreNode* op) {
     } else {
       req.data_format = "Float16_b";
     }
-    cb_requirements_.push_back(req);
   };
 
   ensure_requirement(load->buffer, CBType::kInput);
@@ -775,11 +738,12 @@ void LowerBlackholeOps::RecordDramToDramCopy(const BufferStoreNode* op) {
 }
 
 Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op) {
-  // GEMM uses symbolic CB placeholders here.  The real hardware cb_id is resolved
-  // later from PlanBlackholeCB output (blackhole.cb_bindings) by codegen/materialization.
-  constexpr int in0_id = kGemmInputAPlaceholderCB;
-  constexpr int in1_id = kGemmInputBPlaceholderCB;
-  constexpr int out_id = kGemmOutputCPlaceholderCB;
+  ICHECK_GE(gemm_a_req_index_, 0);
+  ICHECK_GE(gemm_b_req_index_, 0);
+  ICHECK_GE(gemm_c_req_index_, 0);
+  const int in0_id = gemm_a_req_index_;
+  const int in1_id = gemm_b_req_index_;
+  const int out_id = gemm_c_req_index_;
   // num_k_tiles: how many 32-element K-tiles to accumulate
   const int num_k_tiles = (gemm_k_ > 0) ? (gemm_k_ / kBlackholeTileCols) : 1;
 
@@ -869,8 +833,8 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
         return GetRef<Stmt>(op);
       }
 
-      const int src_cb_id = buffer_to_cb_.at(load->buffer);
-      const int dst_cb_id = buffer_to_cb_.at(op->buffer);
+      const int src_cb_id = buffer_to_req_.at(load->buffer);
+      const int dst_cb_id = buffer_to_req_.at(op->buffer);
       const int tile_bytes = EstimateCopyPageSize(load->buffer);
 
       stmts.push_back(MakeBlackholeCall(
@@ -899,8 +863,8 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
 
     case CopyDirection::kCBToCB: {
       // CB -> CB (local copy)
-      int src_cb_id = AllocateCBId(load->buffer, CBType::kIntermediate);
-      int dst_cb_id = AllocateCBId(op->buffer, CBType::kIntermediate);
+      int src_cb_id = AllocateRequirementIndex(load->buffer, CBType::kIntermediate);
+      int dst_cb_id = AllocateRequirementIndex(op->buffer, CBType::kIntermediate);
 
       // cb_wait_front(src_cb_id, 1)
       stmts.push_back(MakeBlackholeCall(
@@ -941,7 +905,10 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
   std::vector<Stmt> stmts;
   switch (direction) {
     case CopyDirection::kDramToCB: {
-      int cb_id = AllocateCBId(op->buffer, CBType::kIntermediate);
+      const bool segmented_gemm =
+          current_func_->GetAttr<Array<Any>>("blackhole.segment_plan").has_value();
+      int cb_id = AllocateRequirementIndex(
+          op->buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
       int tile_bytes = EstimateCopyPageSize(op->buffer);
       RecordStagedCopyBufferBinding(op, direction);
       stmts.push_back(MakeBlackholeCall(
@@ -954,7 +921,15 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
       return SeqStmt::Flatten(stmts);
     }
     case CopyDirection::kCBToDram: {
-      int cb_id = AllocateCBId(load->buffer, CBType::kIntermediate);
+      const bool segmented_gemm =
+          current_func_->GetAttr<Array<Any>>("blackhole.segment_plan").has_value();
+      const bool accumulator_like_src =
+          GetStorageScope(load->buffer).rfind("local", 0) == 0 ||
+          runtime::StorageScope::Create(GetStorageScope(load->buffer)).rank ==
+              runtime::StorageRank::kBlackholeAccumulator;
+      int cb_id = AllocateRequirementIndex(
+          load->buffer,
+          (segmented_gemm && accumulator_like_src) ? CBType::kOutput : CBType::kIntermediate);
       int tile_bytes = EstimateCopyPageSize(load->buffer);
       RecordStagedCopyBufferBinding(op, direction);
       stmts.push_back(MakeBlackholeCall(
@@ -1037,7 +1012,10 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
   };
 
   if (direction == CopyDirection::kDramToCB) {
-    int cb_id = AllocateCBId(op->buffer, CBType::kIntermediate);
+    const bool segmented_gemm =
+        current_func_->GetAttr<Array<Any>>("blackhole.segment_plan").has_value();
+    int cb_id = AllocateRequirementIndex(
+        op->buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
     RecordStagedCopyBufferBinding(op, direction);
     for (int subtile_row = 0; subtile_row < subtile_rows; ++subtile_row) {
       for (int subtile_col = 0; subtile_col < subtile_cols; ++subtile_col) {
@@ -1055,7 +1033,15 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
   }
 
   if (direction == CopyDirection::kCBToDram) {
-    int cb_id = AllocateCBId(load->buffer, CBType::kIntermediate);
+    const bool segmented_gemm =
+        current_func_->GetAttr<Array<Any>>("blackhole.segment_plan").has_value();
+    const bool accumulator_like_src =
+        GetStorageScope(load->buffer).rfind("local", 0) == 0 ||
+        runtime::StorageScope::Create(GetStorageScope(load->buffer)).rank ==
+            runtime::StorageRank::kBlackholeAccumulator;
+    int cb_id = AllocateRequirementIndex(
+        load->buffer,
+        (segmented_gemm && accumulator_like_src) ? CBType::kOutput : CBType::kIntermediate);
     RecordStagedCopyBufferBinding(op, direction);
     for (int subtile_row = 0; subtile_row < subtile_rows; ++subtile_row) {
       for (int subtile_col = 0; subtile_col < subtile_cols; ++subtile_col) {
@@ -1124,7 +1110,7 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
   const int subtile_rows = static_cast<int>(shared_rows / kBlackholeTileRows);
   const int subtile_cols = static_cast<int>(shared_cols / kBlackholeTileCols);
   const int tile_bytes = kBlackholeTileRows * kBlackholeTileCols * shared_buffer->dtype.bytes();
-  const int cb_id = AllocateCBId(shared_buffer, CBType::kIntermediate);
+  const int cb_id = AllocateRequirementIndex(shared_buffer, CBType::kIntermediate);
   RecordStagedCopyBufferBinding(dram_to_cb, CopyDirection::kDramToCB);
   RecordStagedCopyBufferBinding(cb_to_dram, CopyDirection::kCBToDram);
 

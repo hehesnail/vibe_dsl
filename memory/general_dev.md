@@ -243,6 +243,10 @@
   - 先让 planner/codegen/runtime 对 `buffer`、segment-level runtime args、CB binding 等 schema 对齐
   - 再让 `BlackholeModule` 去按 schema 创建 DRAM buffer、CB、kernel、runtime args
   否则 runtime 很容易再次退回位置规则和命名规则猜 ABI。
+- 对 planner 型协议，`identity` 和 `lifetime` 必须分成两个独立维度建模。
+  - `requirement_index` 负责“这是哪一个 requirement instance”
+  - `lifetime_begin/end` 负责“它何时可复用”
+  - 不能把两者偷合成同一个字段，否则一旦进入 lifetime-aware reuse，planner 就会把“不同 identity 但重叠存活”的资源错误合并。
 - Stage 2D 的测试要分层，不要只盯着最终 direct-call。
   - 结构层：看 lowered TIR / attrs / builtin 是否已收正
   - planner 层：看 `cb_configs` / `core_plan` / bindings 是否正确
