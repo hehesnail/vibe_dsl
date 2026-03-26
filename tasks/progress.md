@@ -98,16 +98,16 @@
 
 ### 活动文档
 
-| 文档 | 用途 |
-|------|------|
-| `final_blackhole_backend_redesign.md` | 唯一总设计 |
-| `stage3_multicore_design.md` | 多核设计（当前活动） |
+| 文档 | 用途 | 状态 |
+|------|------|------|
+| `final_blackhole_backend_redesign.md` | 唯一总设计 | 常青 |
+| `stage3_multicore_design.md` | 多核设计 | ⏳ 待实施 |
+| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P1/P2 ✅，P0 部分，P3-P5 未做） |
 
 ### 已完成（仍有参考价值）
 
 | 文档 | 用途 |
 |------|------|
-| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计（P0 部分完成，P3-P5 未做） |
 | `stage2d_gemm_direct_cb_io.md` | GEMM contract 修复（transpose_B + tilize/untilize） |
 | `stage2d_cb_identity_protocol.md` | CB identity 唯一协议 |
 | `stage2e_blackhole_device_resource_semantics.md` | 设备资源 IR 语义扩展 |
