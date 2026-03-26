@@ -14,22 +14,30 @@
 
 ## 1. 目标
 
-把当前 Stage 2D Step 6 的首要任务收敛为一个统一实现任务：
+> **2026-03-26 审查修正**：原目标把 schema 正式化和 CB 同步修复混为同一优先级。
+> 后续实现复核确认：CB 同步并不是最终根因。lowered TIR 中 reader/writer 周围已经有
+> `cb_reserve_back/cb_push_back/cb_wait_front/cb_pop_front`。当前 direct-path GEMM 错结果的真实根因是：
+> `transpose_B` 语义未进入 runtime/spec，且 `BlackholeModule` 直接上传 row-major tensor，
+> 没有按 TT-Metal matmul contract 做 host-side tilize / untilize。
 
-1. `P0`: GEMM compute 语义补齐
-2. `P1`: CB transport / tile dataflow 语义补齐
+把当前 Stage 2D Step 6 拆分为两个阶段：
 
-注意：
+**阶段 A（正确性）**：修复 CB 同步协议，让 GEMM 数值跑对
+- `PrintReadTileToCB` 加 `cb_reserve_back/cb_push_back`
+- `PrintWriteTileFromCB` 加 `cb_wait_front/cb_pop_front`
+- 验证后排查残余数值问题（transpose、dtype、tile index）
 
-- 本文档覆盖 `P0 + P1` 的最小正式 contract
-- 更完整的 Stage 2D 拆分、优先级和 TT-Metal 参考 case 见 `tasks/dev_design/stage2d_ttmetal_contract_audit.md`
+**阶段 B（协议质量）**：schema 收正和清理
+- GEMM compile-time ABI 正式化（Mt/Kt/Nt/transpose_B/dtype 分层）
+- `scratch_l1_buffer_addr32` 退出主协议
+- 删除 `tilelang_gemm_test`
 
 完成标准：
 
 - `test_blackhole_gemm_basic` 在 TT-Sim direct path 下通过
 - 结果与 PyTorch 参考在当前容差内一致
-- `test_blackhole_copy_runtime.py` 不再依赖 `scratch_l1_buffer_addr32` 作为主协议字段
-- 删除 `tt_metal_repo/tt_metal/programming_examples/tilelang_gemm_test/`，避免 bring-up 样例继续充当错误参考实现
+- `test_blackhole_copy_runtime.py` 不回退
+- 更完整的 Stage 2D 拆分、优先级和 TT-Metal 参考 case 见 `tasks/dev_design/stage2d_ttmetal_contract_audit.md`
 
 ---
 
@@ -50,73 +58,73 @@
 
 ## 3. 根因分析
 
-### 3.1 当前 copy-style builtin 仍在用 scratch L1 伪装“CB data”
+### 3.1 reader/writer 已使用真实 CB backing store 地址，CB 同步不是最终根因
 
-`CodeGenBlackhole` 当前对：
+> **2026-03-26 复核修正**：原分析先后误判为：
+> 1. codegen 用 scratch L1 伪装 CB data
+> 2. codegen 丢了 CB 同步原语
+>
+> 实际查看 lowered TIR 与 generated source 后确认：
+> - `PrintReadTileToCB` / `PrintWriteTileFromCB` 已使用真实 CB backing store 地址
+> - reader/writer 周围也已有 `cb_reserve_back/cb_push_back/cb_wait_front/cb_pop_front`
+>
+> 因此 CB 同步问题不是最终根因。
+>
+> 真实根因转而落在 host/layout contract。
 
-- `tl.blackhole.read_tile_to_cb`
-- `tl.blackhole.write_tile_from_cb`
+实际查看
+> `codegen_blackhole.cc:789-821`，`PrintReadTileToCB` 已使用 `get_write_ptr(cb_id)` 获取
+> 真实 CB backing store 地址，`PrintWriteTileFromCB` 已使用 `get_read_ptr(cb_id)`。
 
-生成的是：
+### 3.2 当前真实根因：`transpose_B` 和 host tilize / untilize contract 缺失
 
-- `cb_reserve_back/cb_push_back` 或 `cb_wait_front/cb_pop_front`
-- 再配合 `scratch_l1_addr + cb_head/tail * page_size`
-- 用 `noc_async_read/noc_async_write` 直接搬到 scratch buffer
+对照 TT-Metal 官方 `matmul_single_core`：
 
-这对 pure copy 路径还能工作，因为：
+- host 输入必须先 `tilize_nfaces`
+- B 若以 `N x K` 形态提供且 `transpose_B=True`，则 host/runtime 必须先转成 `K x N`
+- host 输出必须在 readback 后 `untilize_nfaces`
 
-- reader 和 writer 都只看这块 scratch L1
-- CB 只承担逻辑同步角色
+当前 Blackhole direct path 在修复前的真实行为是：
 
-但对 GEMM 不成立，因为：
+- `transpose_B` 没有正式进入 runtime/spec
+- `BlackholeModule` 直接把 host row-major tensor 原样 memcpy 到 DRAM buffer
+- output 也原样 memcpy 回 host tensor
 
-- compute kernel 的 `mm_init/cb_wait_front/matmul_tiles/pack_tile`
-- 消费的是 **真实 CB backing store**
-- 不是 `scratch_l1_addr` 那块临时地址
+因此，即使 reader/compute/writer 的 CB data path 与同步都成立，compute 看到的 A/B tile 语义和
+host 侧期望的矩阵语义仍然不一致。
 
-结果是：
+### 3.3 `scratch_l1_buffer` 是 copy 路径的历史遗留，对 GEMM 可能是死代码
 
-- reader 往 scratch L1 写
-- compute 从真实 CB 读
-- writer 又从 scratch L1 读
+`blackhole_module.cc` 中仍有 `scratch_l1_buffer_addr32` 的分配和传递逻辑（lines 199-201, 435-456）。
+但由于 codegen 已经在用 `get_write_ptr/get_read_ptr`（即 CB 真实地址），scratch buffer 在 GEMM 3-kernel
+路径中可能根本没被使用。
 
-三段虽然在 `cb_id` 上同步了，但**并没有在同一块真实 tile 数据存储上协作**。
+需要确认：
+- copy 路径是否仍然依赖 scratch（如果 codegen 对 copy 也走 `get_write_ptr`，则 scratch 是全局死代码）
+- 删除 scratch 前需先跑 copy runtime tests 回归确认
 
-### 3.2 当前 direct path 的 scratch 方案不是 GEMM 可复用协议
+### 3.4 compute contract 偏弱，但需区分”影响当前正确性”和”后续协议质量”
 
-这不是某个 tile index 或 runtime arg 小 bug，而是数据面模型不对：
+对照 TT-Metal 官方 `matmul_single_core` 主路径，当前 Blackhole 仍缺以下正式字段：
 
-- copy path 当前是“假的 CB data path”
-- GEMM 需要“真的 CB data path”
+- GEMM compile-time ABI：`Mt`、`Kt`、`Nt`、`transpose_B`
+- output dtype 分层：accumulator dtype、CB transport packed dtype、final tensor dtype
+- 最小 accessor contract：reader/writer 访问 DRAM tile 的 compile-time descriptor
 
-因此不能继续在 `scratch_l1_addr`、tile index、等待顺序上打补丁。
+但需要区分两个层次：
 
-### 3.3 当前 compute contract 仍然偏弱，不足以支撑真实 transport
+**直接影响当前 GEMM basic 数值正确性的**：
+- CB 同步原语缺失 — **确定影响**，必须先修
+- transpose_B — 取决于测试是否需要 transpose，需验证
+- output dtype 分层 — 如果 accumulator 和 output 是同一 dtype，当前可能不影响
 
-对照 TT-Metal 官方 `matmul_single_core` 主路径，当前 Blackhole 仍缺至少以下正式字段：
+**属于协议质量提升但不直接影响当前正确性的**：
+- accessor schema 正式化 — 当前 `InterleavedAddrGen` 对 interleaved 场景功能等价
+- Mt/Kt/Nt 进入 compile-time ABI — 当前已通过 runtime args 传递，只是没正式化
 
-- GEMM compile-time ABI：
-  - `Mt`
-  - `Kt`
-  - `Nt`
-  - `transpose_B`
-- output dtype 分层：
-  - accumulator dtype
-  - CB transport packed dtype
-  - final tensor dtype
-- 最小 accessor contract：
-  - reader/writer 访问 DRAM tile 的 compile-time descriptor
-  - 不再默认 “buffer 地址 + page_size + interleaved” 就等于正式访问协议
+不应在修复同步 bug 之前做大量 schema 工程。
 
-如果这些字段不先显式进入 split 后 schema，那么即使 reader/writer 改成真实 CB backing store，结果仍可能因为：
-
-- B 的 tile 解释方式
-- output pack/writeback dtype
-- DRAM tile accessor 解释方式
-
-继续错误。
-
-### 3.4 `tilelang_gemm_test` 是 bring-up 样例，不应继续充当主线参考
+### 3.5 `tilelang_gemm_test` 是 bring-up 样例，不应继续充当主线参考
 
 对照：
 
@@ -166,51 +174,44 @@
 
 ## 5. 协议/接口变化
 
-### 5.1 GEMM compute contract 要先正式化
+### 5.1 host transpose / tilize / untilize contract 修复（当前已落地）
 
-在 split 后 device-side attrs / `ExecutableSpec` 中，至少新增并稳定以下信息：
+本轮已补的最小正确性 contract：
 
-- GEMM compile-time ABI：
-  - `Mt`
-  - `Kt`
-  - `Nt`
-  - `transpose_B`
-- output dtype 分层：
-  - `accumulator_dtype`
-  - `transport_dtype`
-  - `final_tensor_dtype`
-- 最小 accessor descriptor：
-  - reader 的输入 A/B tile accessor compile-time descriptor
-  - writer 的输出 C tile accessor compile-time descriptor
+- `LowerBlackholeOps` 产出 `blackhole.gemm_contract`
+- `rt_mod_blackhole` 将该 contract 进入 `ExecutableSpec`
+- `BlackholeModule` 在 direct path 下：
+  - A: row-major → tilize
+  - B: row-major `N x K` + `transpose_B=True` → transpose → tilize
+  - C: tiled output → untilize → row-major tensor
 
-约束：
+这一步是当前 `test_blackhole_gemm_basic` 数值通过的直接原因。
 
-- 这些字段必须来自 split 后 device kernel attrs/schema
-- 不允许继续由 `CodeGenBlackhole` / `BlackholeModule` 通过参数位置或默认 page size 规则猜
-- host logical layout 与 device tiled layout 的责任边界必须在 spec 中明确记录；本轮不要求一次完成完整通用 layout 系统，但不能继续把两者视为天然相同
+### 5.2 数值验证后按需补齐的 compute contract
 
-### 5.2 `read_tile_to_cb` / `write_tile_from_cb` 的 codegen 语义要收正
+在 CB 同步修复后，如果数值仍有残余错误，按以下顺序逐项排查：
 
-reader/writer 不再以 `scratch_l1_addr` 为主数据面，而应改成：
+1. `transpose_B` — 确认测试是否需要、codegen 是否已处理
+2. output dtype 分层 — 确认 accumulator 与 output CB 是否 dtype 一致
+3. tile 索引公式 — 确认 A/B/C 的 linear index 是否与参考一致
 
-- reader:
-  - `cb_reserve_back(cb, n)`
-  - `get_write_ptr(cb)`
-  - `noc_async_read_tile(...)` 或等价 tile reader API
-  - `cb_push_back(cb, n)`
-- writer:
-  - `cb_wait_front(cb, n)`
-  - `get_read_ptr(cb)`
-  - `noc_async_write_tile(...)` 或等价 tile writer API
-  - `cb_pop_front(cb, n)`
+### 5.3 `scratch_l1_buffer_addr32` 退出主协议（需先验证安全性）
 
-### 5.3 `scratch_l1_buffer_addr32` 应退出主协议
+在确认 copy 路径也不再依赖 scratch 之后：
 
-一旦读写真正走 CB backing store：
-
-- copy/GEMM 主路径的 runtime arg schema 不应再保留 `scratch_l1_buffer_addr32`
+- copy/GEMM 主路径的 runtime arg schema 移除 `scratch_l1_buffer_addr32`
 - `BlackholeModule` 不再为主路径分配、下发或解释这类 scratch 参数
-- 测试也应同步改成验证“主 schema 中不存在 scratch runtime arg”
+- **前提**：先跑 copy runtime tests 回归确认 scratch 是死代码
+
+### 5.4 GEMM schema 正式化（协议质量，排在正确性之后）
+
+在数值正确之后，作为协议质量提升：
+
+- `Mt/Kt/Nt/transpose_B` 进入 split 后 device kernel attrs
+- output dtype 分层（`accumulator_dtype` / `transport_dtype` / `final_tensor_dtype`）
+- host logical layout 与 device tiled layout 的责任边界在 spec 中记录
+
+约束：不在修正确性 bug 的同一步做这些 schema 工程
 
 ### 5.4 `tilelang_gemm_test` 删除，不做兼容迁移
 
@@ -228,28 +229,25 @@ reader/writer 不再以 `scratch_l1_addr` 为主数据面，而应改成：
 
 ---
 
-## 6. 实施顺序
+## 6. 实施顺序（2026-03-26 审查修正）
 
-1. 删除 `tilelang_gemm_test`，避免实现过程中继续误对照过渡样例
-2. 在 `LowerBlackholeOps` / `SplitBlackholeKernel` / `rt_mod_blackhole` 中补齐 GEMM 最小正式 contract：
-   - `Mt/Kt/Nt`
-   - `transpose_B`
-   - output dtype 分层
-   - 最小 accessor descriptor
-3. 对齐 TT-Metal 官方 reader/writer 示例，明确 Blackhole 下 tile read/write 的正式 API 组合
-4. 收正 `CodeGenBlackhole::PrintReadTileToCB` / `PrintWriteTileFromCB`
-5. 收缩 `scratch_l1_buffer_addr32`：从 runtime schema 和 `BlackholeModule` 主路径中移除
-6. 跑 copy direct runtime 回归
-7. 跑 GEMM direct-path true E2E 回归
+> **原则**：先让 GEMM 数值跑对（最小改动验证），再做协议正式化（schema 质量提升）。
+> 不要用 schema 工程来解决同步 bug。
+
+1. **导出当前 GEMM 3-kernel 生成代码**，与 TT-Metal `matmul_single_core` 参考逐行对比，确认问题不在 CB 同步
+2. **补 `blackhole.gemm_contract`**，让 `transpose_B` 与 GEMM 维度进入 runtime/spec
+3. **补 host-side transpose / tilize / untilize**
+4. **确认 `scratch_l1` 是否是死代码** → copy runtime tests 回归 → 如果是就删
+5. **删除 `tilelang_gemm_test`**（低风险清理，已完成）
+6. **Schema 收正**（Mt/Kt/Nt/transpose_B/dtype 分层）— 作为协议质量改进
+7. **Accessor schema** — 留给 P3/Stage 3
 
 对应 TT-Metal 参考 case：
 
 - `tt_metal_repo/tt_metal/programming_examples/matmul/matmul_single_core/kernels/dataflow/reader_single_core_mm.cpp`
 - `tt_metal_repo/tt_metal/programming_examples/matmul/matmul_single_core/kernels/dataflow/writer_single_core_mm.cpp`
+- `tt_metal_repo/tt_metal/programming_examples/matmul/matmul_single_core/kernels/compute/mm.cpp`
 - `tt_metal_repo/tt_metal/programming_examples/matmul/matmul_single_core/matmul_single_core.cpp`
-- `tt_metal_repo/tt_metal/api/tt-metalium/tensor_accessor_args.hpp`
-- `tt_metal_repo/tt_metal/programming_examples/loopback/loopback.cpp`
-- `tt_metal_repo/tt_metal/programming_examples/vecadd_multi_core/vecadd_multi_core.cpp`
 
 ---
 
@@ -258,9 +256,20 @@ reader/writer 不再以 `scratch_l1_addr` 为主数据面，而应改成：
 - `pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
 - `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`
 - `pytest -q testing/python/target/blackhole/test_blackhole_gemm.py`
-- 重点验：
-  - split 后 attrs / `ExecutableSpec` 中已带 GEMM compile-time ABI、dtype 分层和最小 accessor descriptor
-  - copy/GEMM 主 schema 中不再出现 `scratch_l1_buffer_addr32`
-  - GEMM 不再挂在 enqueue
-  - GEMM 结果与参考一致
-  - copy direct runtime 不回退
+
+### 7.1 阶段 A（正确性）验证
+
+- `test_blackhole_gemm_basic` 不再挂在 enqueue
+- `test_blackhole_gemm_basic` 数值与参考一致
+- `test_blackhole_copy_runtime.py` 不回退
+- `blackhole.gemm_contract` 已进入 split 后 attrs / `ExecutableSpec`
+- direct path 已对 GEMM 输入做 host-side tilize / transpose，对输出做 untilize
+
+### 7.2 阶段 B（协议质量）验证
+
+- copy/GEMM 主 schema 中不再出现 `scratch_l1_buffer_addr32`
+- `tilelang_gemm_test` 已删除，且无主线引用残留
+- split 后 attrs / `ExecutableSpec` 中已带：
+  - GEMM compile-time ABI
+  - dtype 分层
+  - host/device layout 责任边界记录

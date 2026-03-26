@@ -49,7 +49,7 @@
 - 先统一协议，再补功能
 - 先闭环，再优化
 
-**新增设计约束（2026-03-24）**：
+**设计约束**：
 
 1. **从第一性原理分析问题，不优先采用 workaround**
    - 先定位根本原因，再决定改哪一层
@@ -59,14 +59,12 @@
 2. **设计和实现必须通用，不针对单个 case 特判**
    - 不能把某个当前样例、参数顺序、单个 kernel 形态偷偷固化成协议
    - 优先做统一 schema、统一 IR 语义、统一 pass 边界
-   - 不要为了眼前 case 引入长期维护成本更高的特殊路径
 
 3. **所需信息优先从 IR 分析；缺失就扩 IR/DSL，不要让后段猜**
    - 如果信息可以从 IR 得到，就必须从 IR 得到
    - 如果 IR 表达不够，就扩 attrs/schema，必要时从 DSL 显式表达
-   - 不要把本该前面明确的语义拖到 codegen/runtime 再靠命名、位置、默认顺序猜
 
-对 Blackhole 的具体要求：
+**对 Blackhole 的具体要求**：
 
 - `runtime_args`、`buffer`、`cb`、`segment` 等绑定必须由 IR/schema 明确表达或可从 IR 稳定推导
 - 不要为了绕开当前卡点新增并行执行路径或额外 emitter；优先修主路径
@@ -88,10 +86,11 @@
 3. ~~`rt_mod_blackhole`~~ ✅
 4. ~~`BlackholeModule` direct path 补全~~ ✅
 5. ~~Copy E2E 验收（direct path）~~ ✅
-6. ~~split-before 语义规划（`AnnotateBlackholeCopySemantics` + `SplitBlackholeKernel` pass）~~ ✅
-7. 通用 pass 回收（`FlattenBuffer` / `VectorizeLoop` 已验证；`StorageRewrite` 当前确认不兼容 Blackhole CB 模型）
-8. GEMM 接入（Steps 1-5 ✅，Step 6 前置修正：**CB identity 唯一协议收正**，设计见 `tasks/dev_design/stage2d_cb_identity_protocol.md`）
-9. multi-core
+6. ~~split-before 语义规划~~ ✅
+7. ~~通用 pass 回收~~ ✅（FlattenBuffer/VectorizeLoop 已验证；StorageRewrite 永久排除）
+8. ~~GEMM 接入 Steps 1-5~~ ✅（CB identity 唯一协议已收正）
+9. **GEMM E2E 验收** — CB 同步修复 → 数值验证 → schema 收正（设计见 `tasks/dev_design/2026-03-26-stage2d-gemm-contract-implementation-plan.md`）
+10. multi-core
 
 ---
 
@@ -121,20 +120,7 @@
 
 - Blackhole 正式执行路径只剩 `BlackholeModule` 进程内 direct host path
 - 默认开发构建目录固定为 `tilelang_repo/build/`
-- 默认并行编译线程数按 `-j32` 执行；除非有明确理由降线程，不要使用更小的默认并行度
-- `build_blackhole/` 和 legacy runner 都已删除；旧文档里出现时按历史语境理解，不要恢复
-- Pass 管线顺序：`AnnotateBlackholeCopySemantics` → `SplitBlackholeKernel` → `LowerBlackholeOps` → `PlanBlackholeCB`
+- 默认并行编译线程数按 `-j32` 执行
+- `build_blackhole/` 和 legacy runner 都已删除
+- Pass 管线顺序：`AnnotateBlackholeCopySemantics` → `BlackholeDeviceResourceCanonicalization` → `SplitHostDevice` → `SplitBlackholeKernel` → `LowerBlackholeOps` → `PlanBlackholeCB`
 - `SplitBlackholeKernel` 已实现并已接入管线；纯 copy 走 `fused_dataflow` 单 kernel，GEMM 走 3-kernel（reader/compute/writer）
-
----
-
-## memory 系统
-
-持久记忆存放在 `/root/.claude/projects/-root-dev-vibe-dsl/memory/`，包含：
-
-- 用户偏好与协作风格
-- 已验证的开发模式
-- 项目上下文（当前阶段、关键决策）
-- 外部资源指针
-
-每次工作中发现新的稳定经验时，主动更新 memory。

@@ -234,21 +234,52 @@ TT-Metal 还存在：
 
 ## 5. 当前 blocker 的收正
 
-因此，Stage 2D 当前 blocker 不应再表述成单点问题：
+### 5.1 精确描述
 
-- 不是单纯 “`read_tile_to_cb/write_tile_from_cb` 还没对接真实 CB backing store”
+> **2026-03-26 实施修正**：本轮先后排除了两个错误根因：
+> 1. reader/writer 没对接真实 CB backing store
+> 2. reader/writer 丢了 CB 同步原语
+>
+> 实际落实后确认：
+> - `read_tile_to_cb/write_tile_from_cb` 已走真实 CB backing store
+> - lowered TIR 中 reader/writer 周围也已有正确的 reserve/push/wait/pop
+>
+> 当前 `test_blackhole_gemm_basic` 错结果的真实根因是：
+> - `transpose_B` 语义没有进入 runtime/spec
+> - `BlackholeModule` 直接上传 row-major host tensor，没有按 TT-Metal matmul contract 做 tilize/untilize
 
-更准确的描述应是：
+> **2026-03-26 审查修正**：原描述为”reader/writer 还没对接真实 CB backing store”。
+> 实际查看 `codegen_blackhole.cc:789-821`，`PrintReadTileToCB` 已使用 `get_write_ptr(cb_id)`
+> （真实 CB 地址），`PrintWriteTileFromCB` 已使用 `get_read_ptr(cb_id)`。
+>
+> 真正落地后的 blocker 是 **host layout / transpose contract 缺失**。
 
-- GEMM direct path 首先卡在真实 CB data path
-- 但其背后暴露的是更大的 TT-Metal contract 缺层：
+### 5.2 最短 E2E 正确性路径 vs 完整 contract 收正
+
+本审计文档罗列的 7 个 contract 缺口是”最终要做什么”。但在”当前该做什么”层面必须区分：
+
+| 问题 | 对当前 GEMM basic 结果的影响 | 何时做 |
+|------|---------------------------|--------|
+| `transpose_B` 处理 | **直接影响当前 GEMM basic** | 立刻修 |
+| host tilize/untilize | **直接影响当前 GEMM basic** | 立刻修 |
+| CB 同步原语缺失 | 当前 lowered TIR 中已成立，不是最终根因 | 已排除 |
+| output dtype 分层 | 如果 accumulator 和 output 同 dtype，当前不影响 | GEMM basic 通过后再补 |
+| accessor schema 正式化 | **零影响**（InterleavedAddrGen 对 interleaved 功能等价） | P3 / Stage 3 |
+| work description ABI | **零影响** | 后续 |
+| semaphore/multicast | **零影响** | Stage 3 |
+
+**原则**：先让 host/runtime/layout contract 与 current GEMM case 一致，再按 P0-P5 做正式 schema 收正。
+
+### 5.3 背后的完整缺层（不变）
+
+GEMM direct path 当前最靠前的执行断点已经确认是 host/runtime layout contract 缺失，但其背后确实暴露了更大的 TT-Metal contract 缺层：
   - host layout
   - accessor schema
   - transpose/compute ABI
   - packed dtype 分层
   - richer work/runtime schema
 
-也就是说，真实 CB IO 只是当前最靠前的显性断点，不是唯一缺口。
+这些缺层不影响当前 GEMM basic 的数值正确性，但会影响后续更复杂 case 的可扩展性。
 
 ---
 
@@ -256,18 +287,22 @@ TT-Metal 还存在：
 
 ### 6.1 第一优先级：让当前 Stage 2D E2E 有正确的最小正式 contract
 
-先补最小但正式的一组 schema：
+先修当前确定会导致 GEMM basic 数值错误的最短路径：
 
-1. GEMM transpose contract
-2. output packed dtype vs final tensor dtype 分层
-3. accessor schema 进入 `ExecutableSpec`
-4. `read_tile_to_cb/write_tile_from_cb` 改成真实 CB data path
-5. host tilize/untilize responsibility 明确
+1. `PrintReadTileToCB` 补 `cb_reserve_back/cb_push_back`
+2. `PrintWriteTileFromCB` 补 `cb_wait_front/cb_pop_front`
+3. 立即恢复 `test_blackhole_gemm_basic` true E2E 验证
+4. 若仍有残余误差，再按：
+   - `transpose_B`
+   - output dtype 分层
+   - tile index 公式
+   逐项排查
 
 ### 6.2 第二优先级：把 copy/runtime 从 case-specific 收成通用 schema
 
 包括：
 
+- `scratch_l1_buffer_addr32` 死代码确认与移除
 - tile range/work range ABI
 - buffer/accessor descriptors
 - role-level page size 退回 per-buffer/per-accessor schema
@@ -430,23 +465,30 @@ TT-Metal 参考 case：
 
 ---
 
-## 8. 推荐执行顺序
+## 8. 推荐执行顺序（2026-03-26 审查修正）
 
-Stage 2D 当前最稳的推进顺序应改成：
+> **原则变更**：原顺序把 schema 工程（P0/P1 全部）排在验证之前。审查后确认：
+> 当前 GEMM 数值错误的直接根因是 CB 同步原语缺失（5-10 行代码修复），
+> 不应等 schema 正式化之后才修。
 
-1. P0: GEMM compute 语义
-2. P1: CB transport 语义
-3. P2: host layout / tilize-untilize
-4. P3: accessor / runtime work schema
-5. 以 `test_blackhole_gemm_basic` 恢复 true E2E
-6. P4: copy/dataflow 泛化
-7. P5: multi-core synchronization 预埋
+修正后的执行顺序：
 
-这个顺序的原则是：
+1. **CB 同步修复**：`PrintReadTileToCB` 加 `cb_reserve_back/cb_push_back`，`PrintWriteTileFromCB` 加 `cb_wait_front/cb_pop_front` → **立即验证数值**
+2. **残余数值排查**：如果修同步后仍有误差，按生成 kernel source diff 逐项定位（transpose? dtype? tile index?）
+3. **scratch_l1 清理**：确认是死代码后删除
+4. **tilelang_gemm_test 清理**
+5. P0: GEMM compile-time ABI 正式化（Mt/Kt/Nt/transpose_B/dtype 分层进入 attrs）
+6. P1: CB transport schema 补齐
+7. P2: host layout / tilize-untilize
+8. P3: accessor / runtime work schema
+9. P4: copy/dataflow 泛化
+10. P5: multi-core synchronization 预埋
 
-- 先补当前 GEMM 结果正确性必需的最小 contract
-- 再补会影响更多 case 的通用 schema
-- 最后为 multi-core 预埋正式对象层
+核心变化：
+
+- **先修 bug（最小改动），再做 schema（协议质量）**
+- schema 工程不是 GEMM E2E 正确性的前置条件，是后续质量改进
+- 步骤 1-2 完成即可恢复 `test_blackhole_gemm_basic` true E2E
 
 ---
 
