@@ -82,21 +82,18 @@ CoreAssignment AssignBlackholeCores::AnalyzeGrid(const PrimFunc& func) {
     void VisitStmt_(const AttrStmtNode* op) final {
       if (op->attr_key == tir::attr::thread_extent) {
         IterVar iv = Downcast<IterVar>(op->node);
-        // Check for blockIdx.x and blockIdx.y patterns
         std::string name = iv->var->name_hint;
-        if (name.find("blockIdx") != std::string::npos ||
-            name.find("bx") != std::string::npos ||
-            name.find("by") != std::string::npos) {
-          auto extent = as_const_int(iv->dom->extent);
-          if (extent) {
-            if (name.find('x') != std::string::npos) {
-              grid_x = static_cast<int>(*extent);
-              found_grid = true;
-            } else if (name.find('y') != std::string::npos) {
-              grid_y = static_cast<int>(*extent);
-              found_grid = true;
-            }
-          }
+        auto extent = as_const_int(iv->dom->extent);
+        if (!extent) {
+          StmtExprVisitor::VisitStmt_(op);
+          return;
+        }
+        if (name == "blockIdx.x" || name == "bx") {
+          grid_x = static_cast<int>(*extent);
+          found_grid = true;
+        } else if (name == "blockIdx.y" || name == "by") {
+          grid_y = static_cast<int>(*extent);
+          found_grid = true;
         }
       }
       StmtExprVisitor::VisitStmt_(op);
@@ -126,8 +123,10 @@ void AssignBlackholeCores::CalculateWorkDistribution(CoreAssignment& assignment)
   const int total_work = std::max(1, assignment.grid_x * assignment.grid_y);
   const int available_cores = kBlackholeGridX * kBlackholeGridY;
 
-  assignment.work_per_core = 1;
   assignment.cores_needed = std::min(total_work, available_cores);
+  const int base_work = total_work / assignment.cores_needed;
+  const int remainder = total_work % assignment.cores_needed;
+  assignment.work_per_core = base_work + (remainder > 0 ? 1 : 0);
 }
 
 // Calculate runtime args for a specific core
@@ -135,15 +134,18 @@ RuntimeArgs AssignBlackholeCores::GetRuntimeArgs(int core_idx) const {
   RuntimeArgs args;
 
   const int total_work = std::max(1, assignment_.grid_x * assignment_.grid_y);
-  const int work_offset = core_idx * assignment_.work_per_core;
-  if (work_offset >= total_work) {
+  const int cores_needed = std::max(1, assignment_.cores_needed);
+  if (core_idx < 0 || core_idx >= cores_needed) {
     args.work_offset_linear = 0;
     args.work_count = 0;
     return args;
   }
 
+  const int base_work = total_work / cores_needed;
+  const int remainder = total_work % cores_needed;
+  const int work_offset = core_idx * base_work + std::min(core_idx, remainder);
   args.work_offset_linear = work_offset;
-  args.work_count = std::min(assignment_.work_per_core, total_work - work_offset);
+  args.work_count = base_work + (core_idx < remainder ? 1 : 0);
   return args;
 }
 

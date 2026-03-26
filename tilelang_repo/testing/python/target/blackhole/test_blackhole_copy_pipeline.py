@@ -312,6 +312,62 @@ def test_blackhole_core_plan_preserves_logical_block_launch():
     assert "tl.blackhole.write_tile_from_cb(32, B, by * 2 + bx, 2048, 0)" in body_script
 
 
+def test_blackhole_core_plan_preserves_axis_order():
+    kernel = grid_indexed_staged_copy_kernel(grid_x=3, grid_y=2)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    core_plan = device_main.attrs["blackhole.core_plan"]
+
+    assert int(core_plan["logical_grid_x"]) == 3
+    assert int(core_plan["logical_grid_y"]) == 2
+    assert len(core_plan["physical_cores"]) == 6
+    assert len(core_plan["work_packets"]) == 6
+    assert {
+        (int(core["core_x"]), int(core["core_y"])) for core in core_plan["physical_cores"]
+    } == {(1, 2), (2, 2), (3, 2), (4, 2), (5, 2), (6, 2)}
+    assert [int(packet["work_offset"]) for packet in core_plan["work_packets"]] == [0, 1, 2, 3, 4, 5]
+    assert [int(packet["work_count"]) for packet in core_plan["work_packets"]] == [1, 1, 1, 1, 1, 1]
+
+    body_script = device_main.body.script()
+    assert "tl.blackhole.read_tile_to_cb(A, by * 3 + bx, 32, 2048, 0)" in body_script
+    assert "tl.blackhole.write_tile_from_cb(32, B, by * 3 + bx, 2048, 0)" in body_script
+
+
+def test_blackhole_core_plan_covers_oversubscribed_work():
+    kernel = grid_indexed_staged_copy_kernel(grid_x=15, grid_y=10)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    core_plan = device_main.attrs["blackhole.core_plan"]
+
+    assert int(core_plan["logical_grid_x"]) == 15
+    assert int(core_plan["logical_grid_y"]) == 10
+    assert len(core_plan["physical_cores"]) == 140
+    assert len(core_plan["work_packets"]) == 140
+    assert len(
+        {(int(core["core_x"]), int(core["core_y"])) for core in core_plan["physical_cores"]}
+    ) == 140
+    assert int(device_main.attrs["blackhole.work_per_core"]) == 2
+
+    covered = []
+    for packet in core_plan["work_packets"]:
+        work_offset = int(packet["work_offset"])
+        work_count = int(packet["work_count"])
+        covered.extend(range(work_offset, work_offset + work_count))
+
+    assert covered == list(range(150))
+    assert sum(int(packet["work_count"]) for packet in core_plan["work_packets"]) == 150
+
+
 def test_blackhole_copy_oversubscription_fails_compile_time():
     kernel = staged_copy_kernel(tile_rows=1, tile_cols=1, tile_m=1024, tile_n=1024)
     target = Target("blackhole")
