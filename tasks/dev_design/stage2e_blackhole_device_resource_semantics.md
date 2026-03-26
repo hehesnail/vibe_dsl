@@ -1,7 +1,7 @@
 # Stage 2E Blackhole Device Resource Semantics
 
 - 文档ID: `stage2e_blackhole_device_resource_semantics`
-- 状态: approved
+- 状态: 已完成
 - 日期: 2026-03-25（设计定稿）
 - 相关总设计: `tasks/dev_design/final_blackhole_backend_redesign.md`
 

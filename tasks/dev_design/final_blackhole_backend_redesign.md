@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档ID**: `final_blackhole_backend_redesign`
-- **日期**: 2026-03-19
+- **日期**: 2026-03-19（创建），2026-03-26（最近更新）
 - **状态**: 当前唯一权威总体设计
 - **适用范围**: `tilelang_repo` Blackhole 后端、host/device 主链、运行时执行路径、相关阶段设计
 
@@ -24,32 +24,31 @@ Blackhole 后端当前的正式目标收敛为三点：
 
 作为正式目标。
 
-## 2. 当前问题判断
+## 2. 当前状态（2026-03-26）
 
-当前代码已经完成了部分基础工作：
+### 已完成
 
-- `ExecutableSpec`、`rt_mod_blackhole`、`BlackholeModule` 已存在
-- Blackhole 已重新接回 `AnnotateDeviceRegions / SplitHostDevice / MakePackedAPI / LowerDeviceKernelLaunch`
-- copy 已开始从 runtime 特化迁回 pass / builtin / codegen 主链
-- single-core staged copy 的最小 direct-call 路径已经闭环
+- `ExecutableSpec`、`rt_mod_blackhole`、`BlackholeModule` direct host path 已落地
+- Blackhole 已接回 `AnnotateDeviceRegions / SplitHostDevice / MakePackedAPI / LowerDeviceKernelLaunch`
+- split 前语义规划（`AnnotateBlackholeCopySemantics`）、split 后 plan 提取（`LowerBlackholeOps` → `PlanBlackholeCB` → `AssignBlackholeCores`）、host-side materialization（`BlackholeModule`）三层已分清
+- CB identity 唯一协议已收正：`LowerBlackholeOps` 统一产出 `requirement_index`，`PlanBlackholeCB` 回写最终 `cb_id`，codegen 直读
+- `BlackholeDeviceResourceCanonicalization` 已引入 `StorageRank::kBlackholeCB` / `kBlackholeAccumulator`，generic pass 不再误解 Blackhole 资源
+- Copy single-core E2E 通过（16 passed, 1 xfailed）
+- GEMM single-core E2E 通过（4 passed, 1 skipped）：`transpose_B` + host tilize/untilize 已补齐
+- `scratch_l1_buffer_addr32` 全链路移除
+- legacy external runner 已删除
 
-但当前最大的结构问题已经收敛为四点：
+### 已知结构限制
 
-1. **split 前的语义规划和 split 后的正式 plan 提取还没有彻底分层**
-   - 当前仍偏向依赖 `LowerBlackholeOps` 从晚期 staged loop 恢复 copy 语义
-2. **execution plan / memory plan 还没有作为显式中间层稳定建模**
-   - `blackhole.core_plan` 仍偏摘要
-   - `blackhole.cb_configs` 仍偏 MVP allocator
-3. **正式执行路径已经收敛到 `BlackholeModule` direct host path**
-   - legacy external runner 已删除，不再参与主链
-4. **部分中后段通用 pass 还没有接回正式主线**
-   - `FlattenBuffer` / `VectorizeLoop` / `StorageRewrite` 等仍会打断当前 copy 识别
+- `PlanBlackholeCB` 仍是 MVP allocator，非正式 memory planner
+- `StorageRewrite` 与 Blackhole CB 模型不兼容（永久排除）
+- copy 用 `fused_dataflow` 单 kernel，GEMM 用 3-kernel（后续统一为 reader+writer 模型是架构债）
+- TT-Metal contract 缺层审计（P3-P5）仍有欠账，见 `stage2d_ttmetal_contract_audit.md`
 
-因此当前阶段的核心任务已经不是“继续补一个能跑的 copy/gemm bring-up”，而是：
+### 当前活动
 
-- **先把 Blackhole 重新接回 TileLang / TVM 的正式主链**
-- **明确 split 前语义规划 / split 后正式 plan 提取 / host-side materialization 三层**
-- **再在这套结构上推进 copy / GEMM**
+- **Stage 3: multi-core runtime 调度**（设计完成，待实施）
+- 设计文档：`stage3_multicore_design.md`
 
 ## 3. 正式架构
 
@@ -397,19 +396,12 @@ multi-core 的主要实现位置保持不变：
 
 状态：
 
-- **进行中**（Step 1-5 已完成；Step 6 当前为 direct-path E2E 验收）
-- Step 1：`LowerTileOp` Blackhole GEMM skip ✅
-- Step 2：`SplitBlackholeKernel` pass ✅（3-kernel segment_plan，reader/compute/writer）
-- Step 3：`LowerBlackholeOps` planner-driven CB binding ✅
-- Step 4：`rt_mod_blackhole` 多 segment 提取 ✅
-- Step 5：`BlackholeModule` 3-kernel 注册 ✅
-- Step 6：E2E 测试 ⏳（`lower()` 已通过；当前 blocker 为 CB identity 协议错位，修正设计见 `stage2d_cb_identity_protocol.md`）
-
-Step 6 前置修正：CB identity 唯一协议收正（设计文档 `stage2d_cb_identity_protocol.md`）
-- LowerBlackholeOps 统一用 requirement_index，不再有 placeholder / 实际 id 两套体系
-- PlanBlackholeCB 新增 IR body 回写，把 requirement_index 替换成最终 cb_id
-- CodeGenBlackhole 删除 placeholder 替换逻辑，直接读 IR 中的 cb_id
-- 删除 `blackhole.gemm_cb_placeholders` attr
+- **已完成** ✅
+- Steps 1-6 全部完成
+- CB identity 唯一协议已收正（设计文档 `stage2d_cb_identity_protocol.md`）
+- GEMM 根因已修复：`transpose_B` 丢失 + host row-major upload 无 tilize/untilize
+- 额外收正：`scratch_l1` 全链路移除、copy codegen 统一、`GetRuntimeArgVarForBuffer` preferred_kind 重构
+- 测试：copy 16 passed / 1 xfailed，GEMM 4 passed / 1 skipped
 
 架构债（不在 2D 内）：copy 统一进 reader+writer 2-kernel 模型，消除 fused_dataflow / 多 kernel 双重 schema。
 
@@ -439,9 +431,16 @@ Step 6 前置修正：CB identity 唯一协议收正（设计文档 `stage2d_cb_
 
 目标：
 
-- `CorePlan`
-- per-core runtime args
-- multi-core execution / memory plan materialization
+- 让 copy 和 GEMM 在多个 Tensix 核心上真正并行执行
+- `AssignBlackholeCores` 解除 `cores_needed=1` 限制
+- `BlackholeModule` 从 N 个 Program 串行 enqueue 改为 1 个 Program 多核 launch
+
+状态：
+
+- **设计完成，待实施** ⏳
+- 设计文档：`stage3_multicore_design.md`
+- 关键结论：copy/GEMM 多核不需要改 lowering/codegen，只需 host 侧分发 + DSL kernel 用 `bx/by` 索引
+- 改动范围：`assign_blackhole_cores.cc` ~5 行 + `blackhole_module.cc/h` ~40 行 + 测试
 
 ## 8. 架构可扩展性评估
 
@@ -478,9 +477,9 @@ TileLang DSL → PrimFunc/TIR（保留 T.copy/T.gemm/T.reduce/T.elementwise）
 
 ### 8.4 对当前规划的影响
 
-- **Phase 1-2 不受影响**：direct path + copy E2E 是无论哪种架构都需要的基础设施
-- **Phase 3 需要考虑两条路**：短期走 annotation pass，中期走 operation-level lowering
-- **建议**：Phase 1-2 先打通，Phase 3 时根据 GEMM 的实际 pattern match 难度决定
+- **Stage 0-2E 已完成**：direct path + copy/GEMM single-core E2E 是无论哪种架构都需要的基础设施
+- **Stage 3（多核）不受影响**：多核只是 host 侧分发，不涉及语义恢复问题
+- **后续算子扩展**：如果要支持 element-wise/reduction/softmax 等，需要考虑 operation-level lowering 路线
 
 ## 9. 关键源码审查结论
 
