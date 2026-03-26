@@ -220,7 +220,7 @@ def test_blackhole_gemm_basic():
 
 
 def test_blackhole_gemm_multicore_runtime_launch():
-    can_run, msg = check_blackhole_codegen_requirements()
+    can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
 
@@ -231,16 +231,12 @@ def test_blackhole_gemm_multicore_runtime_launch():
     c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
 
     kernel = multicore_gemm_kernel(M=m, N=n, K=k)
-
-    try:
-        jit_kernel = tilelang.compile(
-            kernel,
-            out_idx=[2],
-            target="blackhole",
-            execution_backend="tvm_ffi",
-        )
-    except Exception as e:
-        pytest.skip(f"Blackhole multicore GEMM compile/runtime path not yet fully implemented: {e}")
+    jit_kernel = tilelang.compile(
+        kernel,
+        out_idx=[2],
+        target="blackhole",
+        execution_backend="tvm_ffi",
+    )
 
     assert jit_kernel.artifact is not None
     device_funcs = {
@@ -250,13 +246,22 @@ def test_blackhole_gemm_multicore_runtime_launch():
     core_plan = device_main.attrs["blackhole.core_plan"]
     assert int(core_plan["logical_grid_x"]) == 2
     assert int(core_plan["logical_grid_y"]) == 2
+    assert str(core_plan["linearization"]) == "row_major"
     assert len(core_plan["physical_cores"]) == 4
     assert len(core_plan["work_packets"]) == 4
+    physical_cores = [
+        (int(core["core_x"]), int(core["core_y"])) for core in core_plan["physical_cores"]
+    ]
+    work_packet_cores = [
+        (int(packet["core_x"]), int(packet["core_y"])) for packet in core_plan["work_packets"]
+    ]
+    assert len(set(physical_cores)) == 4
+    assert len(set(work_packet_cores)) == 4
+    assert work_packet_cores == physical_cores
+    assert [int(packet["work_offset"]) for packet in core_plan["work_packets"]] == [0, 1, 2, 3]
+    assert [int(packet["work_count"]) for packet in core_plan["work_packets"]] == [1, 1, 1, 1]
 
-    try:
-        c_output = jit_kernel(a_torch, b_torch)
-    except Exception as e:
-        pytest.skip(f"Blackhole multicore GEMM runtime launch not yet fully implemented: {e}")
+    c_output = jit_kernel(a_torch, b_torch)
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
