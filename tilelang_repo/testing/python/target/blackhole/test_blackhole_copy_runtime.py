@@ -95,6 +95,28 @@ def test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch():
     )
 
 
+def test_blackhole_module_direct_call_rejects_oversubscribed_multi_core_launch():
+    kernel = grid_indexed_staged_copy_kernel(grid_x=15, grid_y=10)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    core_plan = device_main.attrs["blackhole.core_plan"]
+    assert int(core_plan["logical_grid_x"]) == 15
+    assert int(core_plan["logical_grid_y"]) == 10
+    assert int(device_main.attrs["blackhole.work_per_core"]) == 2
+
+    m, n = 10 * 32, 15 * 32
+    a_torch = torch.randn(m, n, dtype=torch.float16)
+    b_output = torch.zeros_like(a_torch)
+
+    with pytest.raises(Exception, match="oversubscribed direct launch is not supported"):
+        artifact.codegen_mod["main"](a_torch, b_output)
+
+
 def test_blackhole_large_shape_copy_keeps_per_core_l1_small():
     kernel = staged_copy_kernel(tile_rows=25, tile_cols=32)
     target = Target("blackhole")

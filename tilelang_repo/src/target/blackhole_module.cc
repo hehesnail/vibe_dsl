@@ -452,21 +452,6 @@ void BlackholeModuleNode::ExecuteDirect(
 #ifdef TILELANG_BLACKHOLE_DIRECT
   using namespace tt::tt_metal;
 
-  // Keep direct execution hermetic per call. Reusing a persistent MeshDevice across
-  // multiple Python direct-call tests can leave simulator/device state behind and
-  // cause cross-test contamination across cases.
-  LOG(INFO) << "Initializing Blackhole TT-Metal device...";
-  std::shared_ptr<distributed::MeshDevice> mesh_device;
-  try {
-    mesh_device = distributed::MeshDevice::create_unit_mesh(0);
-  } catch (const std::exception& e) {
-    LOG(FATAL) << "Failed to initialize Blackhole device: " << e.what();
-  }
-  ICHECK(mesh_device != nullptr);
-  LOG(INFO) << "Blackhole device initialized successfully";
-
-  distributed::MeshCommandQueue& cq = mesh_device->mesh_command_queue();
-
   auto fit = fmap_.find(func_name);
   if (fit == fmap_.end()) {
     LOG(FATAL) << "Function not found: " << func_name;
@@ -479,35 +464,6 @@ void BlackholeModuleNode::ExecuteDirect(
   // Use role-aware page size for DRAM buffers so runtime allocation matches spec roles.
   uint32_t input_page_size = ChoosePageSize(spec, "input");
   uint32_t output_page_size = ChoosePageSize(spec, "output");
-
-  std::unordered_map<std::string, RuntimeBufferBinding> runtime_buffers;
-  std::vector<std::string> input_names;
-  std::vector<std::string> ordered_output_names;
-  for (const auto& binding : buffer_args) {
-    ICHECK(binding.tensor != nullptr) << "Null tensor passed to Blackhole direct path";
-    const size_t tensor_size = GetDataSize(*binding.tensor);
-    distributed::DeviceLocalBufferConfig dram_config{
-        .page_size = binding.is_output ? output_page_size : input_page_size,
-        .buffer_type = BufferType::DRAM};
-    distributed::ReplicatedBufferConfig buffer_config{.size = tensor_size};
-    auto mesh_buffer =
-        distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device.get());
-    runtime_buffers.emplace(binding.name, RuntimeBufferBinding{
-                                              .mesh_buffer = mesh_buffer,
-                                              .size_bytes = tensor_size,
-                                              .is_output = binding.is_output,
-                                          });
-    if (binding.is_output) {
-      ordered_output_names.push_back(binding.name);
-    } else {
-      input_names.push_back(binding.name);
-      std::vector<uint8_t> input_data = BuildInputTransferData(spec, binding);
-      EnqueueWriteMeshBuffer(cq, mesh_buffer, input_data, /*blocking=*/true);
-    }
-  }
-  if (!output_names.empty()) {
-    ordered_output_names = output_names;
-  }
 
   // Build work items: pair each logical work_id with its assigned physical core.
   // Each WorkPacket entry owns a slice of the logical work range on one core.
@@ -539,7 +495,56 @@ void BlackholeModuleNode::ExecuteDirect(
   std::sort(launch_cores.begin(), launch_cores.end());
   launch_cores.erase(std::unique(launch_cores.begin(), launch_cores.end()), launch_cores.end());
   ICHECK(!launch_cores.empty()) << "No launch cores resolved for direct execution";
+  ICHECK(launch_cores.size() == work_items.size())
+      << "Blackhole direct runtime supports only one logical work item per physical core in a "
+         "single launch. Function "
+      << func_name << " maps " << work_items.size() << " logical work items onto "
+      << launch_cores.size() << " unique cores; oversubscribed direct launch is not supported.";
   const CoreRangeSet launch_core_ranges(launch_cores);
+
+  // Keep direct execution hermetic per call. Reusing a persistent MeshDevice across
+  // multiple Python direct-call tests can leave simulator/device state behind and
+  // cause cross-test contamination across cases.
+  LOG(INFO) << "Initializing Blackhole TT-Metal device...";
+  std::shared_ptr<distributed::MeshDevice> mesh_device;
+  try {
+    mesh_device = distributed::MeshDevice::create_unit_mesh(0);
+  } catch (const std::exception& e) {
+    LOG(FATAL) << "Failed to initialize Blackhole device: " << e.what();
+  }
+  ICHECK(mesh_device != nullptr);
+  LOG(INFO) << "Blackhole device initialized successfully";
+
+  distributed::MeshCommandQueue& cq = mesh_device->mesh_command_queue();
+
+  std::unordered_map<std::string, RuntimeBufferBinding> runtime_buffers;
+  std::vector<std::string> input_names;
+  std::vector<std::string> ordered_output_names;
+  for (const auto& binding : buffer_args) {
+    ICHECK(binding.tensor != nullptr) << "Null tensor passed to Blackhole direct path";
+    const size_t tensor_size = GetDataSize(*binding.tensor);
+    distributed::DeviceLocalBufferConfig dram_config{
+        .page_size = binding.is_output ? output_page_size : input_page_size,
+        .buffer_type = BufferType::DRAM};
+    distributed::ReplicatedBufferConfig buffer_config{.size = tensor_size};
+    auto mesh_buffer =
+        distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device.get());
+    runtime_buffers.emplace(binding.name, RuntimeBufferBinding{
+                                              .mesh_buffer = mesh_buffer,
+                                              .size_bytes = tensor_size,
+                                              .is_output = binding.is_output,
+                                          });
+    if (binding.is_output) {
+      ordered_output_names.push_back(binding.name);
+    } else {
+      input_names.push_back(binding.name);
+      std::vector<uint8_t> input_data = BuildInputTransferData(spec, binding);
+      EnqueueWriteMeshBuffer(cq, mesh_buffer, input_data, /*blocking=*/true);
+    }
+  }
+  if (!output_names.empty()) {
+    ordered_output_names = output_names;
+  }
 
   // Write kernel source files to temp directory
   std::string tmp_dir = MakeUniqueTempDir("tilelang_bh_direct_");
