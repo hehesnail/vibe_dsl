@@ -285,6 +285,14 @@ static uint32_t ChoosePageSize(const ExecutableSpec& spec, const std::string& ro
   return 2048;
 }
 
+static uint32_t GetRuntimeNumKTiles(const ExecutableSpec& spec) {
+  if (spec.gemm_contract.enabled) {
+    constexpr uint32_t kBlackholeTileCols = 32;
+    return std::max<uint32_t>(1, spec.gemm_contract.K / kBlackholeTileCols);
+  }
+  return 0;
+}
+
 static void CreateCircularBuffersFromSpec(
     Program& program,
     const std::variant<CoreCoord, CoreRange, CoreRangeSet>& core_spec,
@@ -395,12 +403,22 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
                                                         buffer_bindings, output_names);
       const uint64_t dst_addr = binding.mesh_buffer->address();
       args.push_back(static_cast<uint32_t>(dst_addr));
-    } else if (arg_spec.kind == "tile_count" || arg_spec.kind == "num_k_tiles") {
+    } else if (arg_spec.kind == "tile_count") {
       const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/false,
                                                         buffer_bindings, input_names);
       const uint32_t tile_size = ChoosePageSize(spec, "input");
       args.push_back(tile_size == 0 ? 0
                                     : static_cast<uint32_t>(binding.size_bytes / tile_size));
+    } else if (arg_spec.kind == "num_k_tiles") {
+      uint32_t num_k_tiles = GetRuntimeNumKTiles(spec);
+      if (num_k_tiles == 0) {
+        const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/false,
+                                                          buffer_bindings, input_names);
+        const uint32_t tile_size = ChoosePageSize(spec, "input");
+        num_k_tiles =
+            tile_size == 0 ? 0 : static_cast<uint32_t>(binding.size_bytes / tile_size);
+      }
+      args.push_back(num_k_tiles);
     } else if (arg_spec.kind == "current_work_linear_id") {
       args.push_back(current_work_linear_id);
     } else if (arg_spec.kind == "scalar_u32") {
