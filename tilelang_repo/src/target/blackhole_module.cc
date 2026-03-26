@@ -178,18 +178,10 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
 
   std::vector<uint16_t> tiled;
   if (binding.name == gemm.b_buffer && gemm.transpose_B) {
-    ICHECK(rows == gemm.N && cols == gemm.K)
-        << "Unexpected B tensor shape for transpose_B GEMM: got (" << rows << ", " << cols
-        << "), expected (" << gemm.N << ", " << gemm.K << ")";
-    tiled = tilize_nfaces(TransposeRowMajor2D(raw, rows, cols), gemm.K, gemm.N);
+    tiled = tilize_nfaces(TransposeRowMajor2D(raw, rows, cols), cols, rows);
   } else {
-    const uint32_t expected_rows = binding.name == gemm.a_buffer ? gemm.M : gemm.K;
-    const uint32_t expected_cols = binding.name == gemm.a_buffer ? gemm.K : gemm.N;
-    ICHECK(rows == expected_rows && cols == expected_cols)
-        << "Unexpected GEMM tensor shape for " << binding.name << ": got (" << rows << ", " << cols
-        << "), expected (" << expected_rows << ", " << expected_cols << ")";
     std::vector<uint16_t> row_major(raw, raw + static_cast<size_t>(rows) * cols);
-    tiled = tilize_nfaces(row_major, expected_rows, expected_cols);
+    tiled = tilize_nfaces(row_major, rows, cols);
   }
 
   std::vector<uint8_t> bytes(tiled.size() * sizeof(uint16_t));
@@ -214,10 +206,12 @@ static void CopyOutputFromDeviceBuffer(const ExecutableSpec& spec,
   const auto& gemm = spec.gemm_contract;
   ICHECK(binding.tensor->dtype.code == kDLFloat && binding.tensor->dtype.bits == 32)
       << "Only float32 GEMM outputs are currently supported for Blackhole host untilize";
-  const size_t numel = static_cast<size_t>(gemm.M) * gemm.N;
+  const uint32_t rows = static_cast<uint32_t>(binding.tensor->shape[0]);
+  const uint32_t cols = static_cast<uint32_t>(binding.tensor->shape[1]);
+  const size_t numel = static_cast<size_t>(rows) * cols;
   const auto* tiled = reinterpret_cast<const float*>(output_data.data());
   std::vector<float> tiled_vec(tiled, tiled + numel);
-  std::vector<float> row_major = untilize_nfaces(tiled_vec, gemm.M, gemm.N);
+  std::vector<float> row_major = untilize_nfaces(tiled_vec, rows, cols);
   std::memcpy(binding.tensor->data, row_major.data(), row_major.size() * sizeof(float));
 }
 

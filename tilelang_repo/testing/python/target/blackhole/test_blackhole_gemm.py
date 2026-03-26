@@ -219,7 +219,7 @@ def test_blackhole_gemm_basic():
     )
 
 
-def test_blackhole_gemm_multicore_runtime_launch():
+def test_blackhole_gemm_multicore_direct_call():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -231,16 +231,12 @@ def test_blackhole_gemm_multicore_runtime_launch():
     c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
 
     kernel = multicore_gemm_kernel(M=m, N=n, K=k)
-    jit_kernel = tilelang.compile(
-        kernel,
-        out_idx=[2],
-        target="blackhole",
-        execution_backend="tvm_ffi",
-    )
+    target = Target("blackhole")
+    with target:
+        artifact = lower(kernel, target=target)
 
-    assert jit_kernel.artifact is not None
     device_funcs = {
-        str(gvar): func for gvar, func in jit_kernel.artifact.device_mod.functions.items()
+        str(gvar): func for gvar, func in artifact.device_mod.functions.items()
     }
     device_main = device_funcs['I.GlobalVar("main_kernel")']
     core_plan = device_main.attrs["blackhole.core_plan"]
@@ -261,11 +257,12 @@ def test_blackhole_gemm_multicore_runtime_launch():
     assert [int(packet["work_offset"]) for packet in core_plan["work_packets"]] == [0, 1, 2, 3]
     assert [int(packet["work_count"]) for packet in core_plan["work_packets"]] == [1, 1, 1, 1]
 
-    c_output = jit_kernel(a_torch, b_torch)
+    c_output = torch.zeros(m, n, dtype=torch.float32)
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
         atol=2e-1,
         rtol=2e-1,
-        failure_message="Multicore GEMM runtime-launch output mismatch",
+        failure_message="Multicore GEMM direct-call output mismatch",
     )
