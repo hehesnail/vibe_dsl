@@ -256,7 +256,24 @@ void CodeGenCHost::PrintGetFuncFromBackend(
   this->stream << "}\n";
 }
 
-void CodeGenCHost::PrintCallPacked(const tvm::tir::CallNode *op) {
+std::string CodeGenCHost::GetFFIResultExpr(const std::string &result,
+                                           tvm::DataType dtype) {
+  std::ostringstream os;
+  os << "((";
+  PrintType(dtype, os);
+  os << ")(";
+  if (dtype.is_handle()) {
+    os << result << ".v_ptr";
+  } else if (dtype.is_float()) {
+    os << result << ".v_float64";
+  } else {
+    os << result << ".v_int64";
+  }
+  os << "))";
+  return os.str();
+}
+
+std::string CodeGenCHost::PrintCallPacked(const tvm::tir::CallNode *op) {
   using namespace tvm::tir;
   const StringImmNode *func_name = op->args[0].as<StringImmNode>();
   ICHECK(func_name != nullptr)
@@ -331,6 +348,10 @@ void CodeGenCHost::PrintCallPacked(const tvm::tir::CallNode *op) {
     this->PrintLine("});");
     this->PrintLine("if (", metal_result, " != 0) return ", metal_result, ";");
   }
+  if (op->dtype.is_void()) {
+    return "";
+  }
+  return GetFFIResultExpr(result, op->dtype);
 }
 
 std::string CodeGenCHost::GetPackedName(const tvm::tir::CallNode *op) {
@@ -383,9 +404,9 @@ void CodeGenCHost::VisitExpr_(const tvm::tir::CallNode *op,
     }
     os << stack_name;
   } else if (op->op.same_as(builtin::tvm_call_packed_lowered())) {
-    this->PrintCallPacked(op);
+    os << this->PrintCallPacked(op);
   } else if (op->op.same_as(builtin::tvm_call_cpacked_lowered())) {
-    this->PrintCallPacked(op);
+    os << this->PrintCallPacked(op);
   } else if (op->op.same_as(builtin::tvm_throw_last_error())) {
     this->PrintIndent();
     this->stream << "return -1;\n";

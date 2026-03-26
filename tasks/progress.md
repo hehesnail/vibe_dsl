@@ -5,7 +5,7 @@
 ## 当前阶段
 
 - **阶段**: Stage 3 — multi-core runtime 调度
-- **状态**: ✅ formal direct host path 已完成；下一步回到 TT-Metal contract formalization，另有独立 wrapper/export blocker 待修
+- **状态**: ✅ formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复，下一步回到 TT-Metal contract formalization
 - **日期**: 2026-03-26
 - **设计文档**: `tasks/dev_design/stage3_multicore_design.md`
 
@@ -16,6 +16,7 @@
 | `test_blackhole_copy_pipeline.py` | 18 passed, 1 xfailed |
 | `test_blackhole_copy_runtime.py` | 6 passed |
 | `test_blackhole_gemm.py` | 7 passed |
+| `test_blackhole_tvm_ffi_export.py` | 1 passed |
 
 ---
 
@@ -59,9 +60,9 @@
   - host runtime 之前把 `num_k_tiles` 误从整张输入 buffer 大小推导，single-core 碰巧正确、multi-core 失真
   - writer 之前按整张 output tensor 形状消费 output CB，导致 `cb_wait_front` 多消费而挂死
   - `transpose_B=True` 时，reader 之前仍按未转置的 tile 线性序读 B，导致 multi-core 数值错误
-- 另有独立未解决 blocker：
-  - `tilelang.compile(..., execution_backend=\"tvm_ffi\")` 的 Blackhole wrapper/export path 仍会生成非法 host shim（`kernel_error_code = ;`）
-  - 这不是 formal direct host path 的 blocker，已明确与 Stage 3 direct path 分离
+- 独立 wrapper/export blocker 已解决：
+  - 根因不是 direct path contract，而是 host C codegen 对 `tvm_call_packed_lowered` 只支持语句形态，不支持 `LetStmt` 中的结果表达式
+  - 现已修复为显式从 `TVMFFIAny result` 取回返回值，Blackhole `tvm_ffi` export 最小 case 通过
 
 ---
 
@@ -104,7 +105,6 @@
 | `PlanBlackholeCB` 是 MVP allocator | 低 | 当前足够 |
 | `StorageRewrite` 不兼容 Blackhole CB | — | 永久排除 |
 | copy/GEMM segment 模型不统一（fused_dataflow vs 3-kernel） | 中 | 架构债，Stage 3 后再做 |
-| `tilelang.compile/tvm_ffi` Blackhole wrapper/export 生成非法 host shim | 中 | 不阻塞 formal direct host path，但仍未解决 |
 
 ---
 

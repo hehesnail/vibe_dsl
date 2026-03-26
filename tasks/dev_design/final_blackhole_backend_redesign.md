@@ -49,9 +49,9 @@ Blackhole 后端当前的正式目标收敛为三点：
 
 ### 当前活动
 
-- **TT-Metal contract formalization / wrapper blocker 清理**
+- **TT-Metal contract formalization**
 - Stage 3 formal direct host path 已完成，设计文档：`stage3_multicore_design.md`
-- 独立未解决项：`tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 仍会生成非法 host shim
+- `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复；host C codegen 已支持 packed call 结果表达式
 
 ## 3. 正式架构
 

@@ -107,9 +107,10 @@ private:
   bool is_in_metal_context = false;
 
   std::string GetPackedName(const tvm::tir::CallNode *op);
+  std::string GetFFIResultExpr(const std::string &result, tvm::DataType dtype);
   void PrintGetFuncFromBackend(const std::string &func_name,
                                const std::string &packed_func_name);
-  void PrintCallPacked(const tvm::tir::CallNode *op);
+  std::string PrintCallPacked(const tvm::tir::CallNode *op);
   /*!
    * \brief Print ternary conditional operator implementing binary `op`
    * Forces the operands to be in SSA form.

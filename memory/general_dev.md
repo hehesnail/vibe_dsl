@@ -9,6 +9,10 @@
 
 - codegen 只负责把已明确的 segment/spec 打印成源码，不要让它同时承担协议推断
 - 如果 pass 只把规划结果写到 attrs 而不回写 IR body，后续 pass/codegen 必须从 attrs 恢复状态，形成"两套真源"维护负担。优先让 pass 同时完成 IR 回写
+- 当 host TIR 中的 packed call 以表达式形式出现（如 `LetStmt(x, call_packed(...), ...)`），host codegen 必须同时支持：
+  - 发出 packed runtime 调用语句
+  - 把 `result` 容器重新打印成可用表达式
+  否则最终 C 文本会退化成 `x = ;` 这类空表达式错误
 
 ### 类型与参数
 

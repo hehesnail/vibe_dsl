@@ -4,13 +4,6 @@
 
 ## 未解决
 
-### `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 会生成非法 host shim
-
-- **时间**: 2026-03-26
-- **问题**: 走 `tilelang.compile(..., target="blackhole", execution_backend="tvm_ffi")` 时，生成的 host shim `lib0.c` 会出现 `int32_t kernel_error_code = ;` 这样的非法代码，导致编译失败
-- **影响**: 这是 Blackhole 的通用 wrapper/export blocker；即使最小 single-core copy probe 也能复现，不是 multicore GEMM 特有问题
-- **当前状态**: 未解决。已与 formal `BlackholeModule` direct host path 明确分离；不阻塞当前 Stage 3 direct-path E2E
-
 ### Blackhole direct path 缺少 TT-Metal 正式 contract 分层
 
 - **时间**: 2026-03-26
@@ -20,6 +13,25 @@
 - **当前状态**: 未解决。属于协议质量问题，不直接影响当前 GEMM basic 数值正确性。
 
 ## 已解决（仍有复用价值）
+
+### `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 会生成非法 host shim
+
+- **时间**: 2026-03-26
+- **问题**: 走 `tilelang.compile(..., target="blackhole", execution_backend="tvm_ffi")` 时，生成的 host shim `lib0.c` 会出现 `int32_t kernel_error_code = ;` 这样的非法代码，导致编译失败
+- **影响**: 这是 Blackhole 的通用 wrapper/export blocker；即使最小 single-core copy probe 也能复现，不是 multicore GEMM 特有问题
+- **根本原因**:
+  - host TIR 在 `SplitHostDevice` / `LowerDeviceKernelLaunch` 主链下会形成 `kernel_error_code = T.call_packed("main_kernel", ...)`
+  - 这本身是合法的：host 侧需要消费 packed call 的 `int32` 返回值
+  - 真正的断点在 host C codegen：`CodeGenCHost` 对 `tvm_call_packed_lowered` 只实现了“发出调用语句”，没有在表达式上下文里把 `TVMFFIAny result` 再打印成可用返回值
+  - 因此 `LetStmt` 最终被打印成 `int32_t kernel_error_code = ;`
+- **解决**:
+  - 在 TileLang 自己的 `src/target/codegen_c_host.cc` 中，为 `tvm_call_packed_lowered` / `tvm_call_cpacked_lowered` 补齐表达式返回值打印
+  - packed call 发出后，若 `op->dtype` 非 `void`，显式从 `TVMFFIAny result` 取回 `.v_int64` / `.v_float64` / `.v_ptr` 并按目标 dtype cast
+  - 新增 Blackhole 最小 `tvm_ffi` export 测试，验证 export 成功且 `lib0.c` 不再包含坏的 `kernel_error_code = ;`
+- **教训**:
+  - `call_packed` 既可能作为语句使用，也可能作为表达式使用；host codegen 不能只覆盖“调用成功/失败”这一半
+  - 当 host TIR 已经能准确表示行为时，优先修 codegen 对 IR 语义的承载能力，而不是回头压扁 IR 语义去迁就打印器
+  - 对这类 compile/export blocker，最短闭环是“固定最小复现 + 保留中间 `lib0.c` + 对照 host TIR 和最终 C 文本”
 
 ### multicore GEMM direct path 会先挂死、再暴露 `transpose_B` 数值错误
 

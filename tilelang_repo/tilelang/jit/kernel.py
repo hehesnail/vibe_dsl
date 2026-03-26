@@ -652,7 +652,12 @@ class JITKernel(Generic[_P, _T]):
         if dir_path:
             os.makedirs(dir_path, exist_ok=True)
 
-        self.artifact.rt_mod.export_library(kernel_file)
+        debug_dir = os.environ.get("TILELANG_DEBUG_EXPORT_DIR")
+        if debug_dir:
+            os.makedirs(debug_dir, exist_ok=True)
+            self.artifact.rt_mod.export_library(kernel_file, workspace_dir=debug_dir)
+        else:
+            self.artifact.rt_mod.export_library(kernel_file)
         logger.info(f"Kernel library exported to {os.path.abspath(kernel_file)}")
 
     def _get_ptx(self, verbose: bool | None = None) -> str:
