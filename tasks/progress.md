@@ -69,6 +69,21 @@
 
 ---
 
+## 未完成的 TT-Metal contract 收正
+
+来源：`stage2d_ttmetal_contract_audit.md`（审计已完成，收正部分落地）
+
+| 优先级 | 内容 | 状态 | 备注 |
+|--------|------|------|------|
+| P0 | GEMM compile-time ABI 正式化（dtype 分层进 attrs） | 部分完成 | `gemm_contract` 已有核心字段，dtype 分层未做 |
+| P1 | CB transport schema | ✅ | 已统一到 codegen CB transport，无 scratch |
+| P2 | host tilize/untilize | ✅ | transpose_B + tilize/untilize 已补齐 |
+| P3 | accessor / runtime work schema | ❌ | 不阻塞 Stage 3 |
+| P4 | copy/dataflow 泛化（non-tile/stick/sharded） | ❌ | 不阻塞 Stage 3 |
+| P5 | multi-core synchronization 预埋（semaphore/multicast） | ❌ | Stage 3 不涉及核间同步 |
+
+---
+
 ## 已知结构问题
 
 | 问题 | 优先级 | 备注 |
@@ -76,7 +91,6 @@
 | `PlanBlackholeCB` 是 MVP allocator | 低 | 当前足够 |
 | `StorageRewrite` 不兼容 Blackhole CB | — | 永久排除 |
 | copy/GEMM segment 模型不统一（fused_dataflow vs 3-kernel） | 中 | 架构债，Stage 3 后再做 |
-| TT-Metal contract P3-P5 缺层 | 低 | 见 `stage2d_ttmetal_contract_audit.md` |
 
 ---
 
@@ -93,7 +107,7 @@
 
 | 文档 | 用途 |
 |------|------|
-| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计（P3-P5 结论仍有效） |
+| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计（P0 部分完成，P3-P5 未做） |
 | `stage2d_gemm_direct_cb_io.md` | GEMM contract 修复（transpose_B + tilize/untilize） |
 | `stage2d_cb_identity_protocol.md` | CB identity 唯一协议 |
 | `stage2e_blackhole_device_resource_semantics.md` | 设备资源 IR 语义扩展 |

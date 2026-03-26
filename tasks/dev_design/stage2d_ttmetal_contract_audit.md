@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage2d_ttmetal_contract_audit`
 - **日期**: 2026-03-26
-- **状态**: 已完成（审计结论有效；Stage 2D 实施已收正）
+- **状态**: 审计已完成；收正部分落地（P1/P2 ✅，P0 部分，P3-P5 未做）
 - **对应阶段**: Stage 2D Step 6
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`

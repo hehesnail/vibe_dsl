@@ -43,7 +43,7 @@ Blackhole 后端当前的正式目标收敛为三点：
 - `PlanBlackholeCB` 仍是 MVP allocator，非正式 memory planner
 - `StorageRewrite` 与 Blackhole CB 模型不兼容（永久排除）
 - copy 用 `fused_dataflow` 单 kernel，GEMM 用 3-kernel（后续统一为 reader+writer 模型是架构债）
-- TT-Metal contract 缺层审计（P3-P5）仍有欠账，见 `stage2d_ttmetal_contract_audit.md`
+- TT-Metal contract 收正未完成项：P0（dtype 分层）部分完成，P3（accessor schema）/ P4（copy 泛化）/ P5（synchronization）未做，见 `stage2d_ttmetal_contract_audit.md`
 
 ### 当前活动
 

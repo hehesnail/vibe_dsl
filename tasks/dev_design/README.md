@@ -16,7 +16,7 @@
 | `stage2e_blackhole_device_resource_semantics.md` | 设备资源 IR 语义扩展 | 2026-03-25 |
 | `stage2d_cb_identity_protocol.md` | CB identity 唯一协议 | 2026-03-25 |
 | `stage2d_gemm_direct_cb_io.md` | GEMM contract 修复 | 2026-03-26 |
-| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 2026-03-26 |
+| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计（P0 部分完成，P3-P5 未做） | 2026-03-26 |
 | `2026-03-26-stage2d-gemm-contract-implementation-plan.md` | GEMM contract 实施计划 | 2026-03-26 |
 | `stage2d_gemm_integration.md` | GEMM 接入设计（Steps 1-5） | 2026-03-25 |
 | `stage2c_annotate_blackhole_copy_semantics.md` | copy 语义 annotation | 2026-03-24 |
