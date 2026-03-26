@@ -82,6 +82,20 @@ struct KernelSpec {
   std::vector<KernelArgSpec> runtime_args;
 };
 
+struct GemmContractSpec {
+  bool enabled = false;
+  std::string a_buffer;
+  std::string b_buffer;
+  std::string c_buffer;
+  uint32_t M = 0;
+  uint32_t N = 0;
+  uint32_t K = 0;
+  bool transpose_A = false;
+  bool transpose_B = false;
+  std::string ab_dtype;
+  std::string c_dtype;
+};
+
 /*!
  * \brief Stage 0 executable description for a lowered PrimFunc.
  */
@@ -93,6 +107,7 @@ struct ExecutableSpec {
   std::string default_kernel_core_type = "brisc";
   std::vector<KernelArgSpec> runtime_args;
   std::vector<KernelSpec> kernels;
+  GemmContractSpec gemm_contract;
 
   // TVM runtime invocation metadata retained during Stage 0.
   std::vector<std::string> tvm_arg_names;

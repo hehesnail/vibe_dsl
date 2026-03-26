@@ -479,9 +479,13 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
   alloc_storage_scope_[op->buffer_var.get()] = scope;
   RegisterHandleType(op->buffer_var.get(), op->dtype);
 
-  if (scope == "shared" || scope == "shared.dyn" || scope == "shared.barrier") {
-    // Blackhole shared allocations are runtime-managed CB/L1 resources, not
-    // C arrays inside the generated kernel body.
+  const bool runtime_managed_storage =
+      scope == "shared" || scope == "shared.dyn" || scope == "shared.barrier" ||
+      scope.rfind("blackhole.cb", 0) == 0 || scope == "blackhole.acc";
+
+  if (runtime_managed_storage) {
+    // Blackhole CB/accumulator allocations are runtime/device-managed
+    // resources, not C arrays inside the generated kernel body.
     this->PrintStmt(op->body);
     return;
   }
@@ -567,15 +571,17 @@ void CodeGenBlackhole::PrintStorageScope(const std::string &scope,
   // Blackhole uses different memory model than CUDA
   // - "global" -> DRAM (no keyword needed)
   // - "shared" / "shared.dyn" -> Circular Buffer (CB) - handled separately
+  // - "blackhole.cb.*" / "blackhole.acc" -> runtime/device-managed resource
   // - "local" -> Local registers (no keyword needed)
   // - "warp" / "warp::sync" -> Not applicable for Blackhole
 
   if (scope == "shared" || scope == "shared.dyn" ||
-      scope == "shared.barrier") {
+      scope == "shared.barrier" ||
+      scope.rfind("blackhole.cb", 0) == 0 ||
+      scope == "blackhole.acc") {
     // For Blackhole, shared memory is allocated as Circular Buffers
-    // CB declarations are handled separately via cb_reserve_back/cb_push_back
-    // Just add a comment for now
-    os << "/* CB */ ";
+    // and accumulators are device-private registers.
+    os << "/* blackhole managed resource */ ";
   } else if (scope == "local") {
     // Local scope doesn't need a qualifier in C++
     // Variables are local by default
@@ -784,19 +790,16 @@ void CodeGenBlackhole::PrintReadTileToCB(const tvm::tir::CallNode *op,
                                          std::ostream &os) {
   need_dataflow_api_h_ = true;
   const std::string src_addr_var = GetRuntimeArgVarForBuffer(op->args[0]);
-  const std::string scratch_addr_var = GetRuntimeArgVarByKind("scratch_l1_buffer_addr32");
   const int cb_id = ResolveCBId(op->args[2]);
   os << "{ ";
   os << "const uint32_t tile_index = ";
   PrintExpr(op->args[1], os);
   os << "; const uint32_t tile_bytes = ";
   PrintExpr(op->args[3], os);
-  os << "; const uint32_t scratch_addr = " << scratch_addr_var << " + "
-     << GetCBTailVar(cb_id) << " * " << GetCBPageSize(cb_id);
+  os << "; const uint32_t cb_l1_addr = get_write_ptr(" << cb_id << ")";
   os << "; InterleavedAddrGen<true> src_gen = {.bank_base_address = " << src_addr_var
      << ", .page_size = tile_bytes}; ";
-  os << "uint64_t src_noc_addr = get_noc_addr(tile_index, src_gen); ";
-  os << "noc_async_read(src_noc_addr, scratch_addr, tile_bytes); ";
+  os << "noc_async_read_tile(tile_index, src_gen, cb_l1_addr); ";
   os << "noc_async_read_barrier(); }";
 }
 
@@ -804,19 +807,16 @@ void CodeGenBlackhole::PrintWriteTileFromCB(const tvm::tir::CallNode *op,
                                             std::ostream &os) {
   need_dataflow_api_h_ = true;
   const std::string dst_addr_var = GetRuntimeArgVarForBuffer(op->args[1]);
-  const std::string scratch_addr_var = GetRuntimeArgVarByKind("scratch_l1_buffer_addr32");
   const int cb_id = ResolveCBId(op->args[0]);
   os << "{ ";
   os << "const uint32_t tile_index = ";
   PrintExpr(op->args[2], os);
   os << "; const uint32_t tile_bytes = ";
   PrintExpr(op->args[3], os);
-  os << "; const uint32_t scratch_addr = " << scratch_addr_var << " + "
-     << GetCBHeadVar(cb_id) << " * " << GetCBPageSize(cb_id);
+  os << "; const uint32_t cb_l1_addr = get_read_ptr(" << cb_id << ")";
   os << "; InterleavedAddrGen<true> dst_gen = {.bank_base_address = " << dst_addr_var
      << ", .page_size = tile_bytes}; ";
-  os << "uint64_t dst_noc_addr = get_noc_addr(tile_index, dst_gen); ";
-  os << "noc_async_write(scratch_addr, dst_noc_addr, tile_bytes); ";
+  os << "noc_async_write_tile(tile_index, dst_gen, cb_l1_addr); ";
   os << "noc_async_write_barrier(); }";
 }
 

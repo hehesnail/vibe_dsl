@@ -315,11 +315,16 @@ def lower(
     # Before lowering, do semantic check
     PreLowerSemanticCheck(mod)
 
-    # Phase 1: Lower and legalize the IR
-    mod = LowerAndLegalize(mod, target)
+    # Some target-specific passes still consult Target.current() in addition to
+    # the explicit `target` argument. Run the lowering phases under the target
+    # context so canonicalized targets (for example Blackhole + host target)
+    # observe the same semantics as manual `with target:` debugging flows.
+    with target:
+        # Phase 1: Lower and legalize the IR
+        mod = LowerAndLegalize(mod, target)
 
-    # Phase 2: Optimize the IR for the target
-    mod = OptimizeForTarget(mod, target)
+        # Phase 2: Optimize the IR for the target
+        mod = OptimizeForTarget(mod, target)
 
     host_mod = tir.transform.Filter(_is_host_call)(mod)
     device_mod = tir.transform.Filter(_is_device_call)(mod)

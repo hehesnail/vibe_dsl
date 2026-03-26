@@ -92,6 +92,9 @@ def test_blackhole_gemm_cb_ids_are_rewritten_by_planner():
 
     assert collect_cb_ids(lower_func.body) == {0, 1, 2}
     assert collect_cb_ids(func.body) == {0, 1, 16}
+    func_text = func.body.script()
+    assert func_text.count("tl.blackhole.pack_tile") == 1
+    assert func_text.count("tl.blackhole.write_tile_from_cb") == 1
 
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
@@ -136,6 +139,29 @@ def test_blackhole_gemm_accumulator_scope_canonicalized():
 
     func_text = func.script()
     assert 'scope="blackhole.acc"' in func_text
+
+
+def test_blackhole_gemm_contract_attr_is_materialized():
+    kernel = gemm_kernel()
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+
+    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.LowerBlackholeOps()(mod)
+
+    func = mod["main"]
+    assert func.attrs and "blackhole.gemm_contract" in func.attrs
+    contract = func.attrs["blackhole.gemm_contract"]
+    assert str(contract["a_buffer"]) == "A"
+    assert str(contract["b_buffer"]) == "B"
+    assert str(contract["c_buffer"]) == "C"
+    assert int(contract["M"]) == 32
+    assert int(contract["N"]) == 32
+    assert int(contract["K"]) == 128
+    assert bool(contract["transpose_B"]) is True
 
 
 def test_blackhole_gemm_basic():

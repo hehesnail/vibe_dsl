@@ -32,6 +32,22 @@ def test_blackhole_codegen_only():
         pytest.skip(f"Blackhole lowering not yet fully implemented: {e}")
 
 
+def test_blackhole_codegen_does_not_emit_cb_backed_c_arrays():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = grid_indexed_staged_copy_kernel(grid_x=2, grid_y=3)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    source = artifact.kernel_source if hasattr(artifact, "kernel_source") else str(artifact)
+    assert "scope: blackhole.cb" not in source
+    assert "A_shared[" not in source
+
+
 def test_blackhole_copy_pass_attrs():
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     mod = tilelang.tvm.IRModule({"main": kernel})

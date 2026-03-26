@@ -36,14 +36,30 @@
 #include "../op/builtin.h"
 #include "common/assume.h"
 #include "tir/analysis/var_use_def_analysis.h"
+#include "tir/transforms/ir_utils.h"
 #include "tvm/node/cast.h"
 #include "tvm/runtime/logging.h"
 #include "tvm/tir/stmt.h"
+#include "runtime/thread_storage_scope.h"
 
 namespace tvm {
 namespace tl {
 using namespace ffi;
 namespace tir = tvm::tir;
+using runtime::StorageRank;
+using runtime::StorageScope;
+
+static bool IsBlackholeDevicePrivateVar(const tir::Var& var) {
+  const auto* ptr_type = var->type_annotation.as<PointerTypeNode>();
+  if (!ptr_type) return false;
+  std::string scope_name = GetPtrStorageScope(var);
+  if (scope_name == "local.fragment") {
+    return true;
+  }
+  StorageScope scope = StorageScope::Create(scope_name);
+  return scope.rank == StorageRank::kBlackholeCB ||
+         scope.rank == StorageRank::kBlackholeAccumulator;
+}
 
 // This pass traverses the AST, split the target function into host part and
 // device part and copies all assume attribute statements to the device side.
@@ -150,6 +166,11 @@ private:
       // Sort first by variable type, then by variable name
       std::vector<tir::Var> params{use_def.undefined_.begin(),
                                    use_def.undefined_.end()};
+      params.erase(std::remove_if(params.begin(), params.end(),
+                                  [](const tir::Var& var) {
+                                    return IsBlackholeDevicePrivateVar(var);
+                                  }),
+                   params.end());
       std::sort(params.begin(), params.end(),
                 [](const tir::Var &a, const tir::Var &b) {
                   auto sort_key = [](const tir::Var &var) {
@@ -160,7 +181,13 @@ private:
                   };
                   return sort_key(a) < sort_key(b);
                 });
-      return {params, use_def.undefined_buffers_};
+      Array<tir::Buffer> filtered_buffers;
+      for (const auto& buf : use_def.undefined_buffers_) {
+        if (!IsBlackholeDevicePrivateVar(buf->data)) {
+          filtered_buffers.push_back(buf);
+        }
+      }
+      return {params, filtered_buffers};
     }();
 
     // Create new parameter variables for the device function to avoid sharing

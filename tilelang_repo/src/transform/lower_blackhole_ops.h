@@ -104,6 +104,9 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Store minimal segment/kernel plan inferred during lowering */
   void StoreSegmentPlan(tvm::tir::PrimFunc& func);
 
+  /*! \brief Store minimal GEMM contract metadata for runtime layout handling */
+  void StoreGemmContract(tvm::tir::PrimFunc& func);
+
   /*! \brief Detect matmul call using Op comparison (not string matching) */
   bool IsMatmulCall(const tvm::tir::CallNode* op) const;
 
@@ -208,6 +211,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   int gemm_m_ = 0;
   int gemm_n_ = 0;
   int gemm_k_ = 0;
+  bool gemm_transpose_a_ = false;
+  bool gemm_transpose_b_ = false;
   tvm::DataType gemm_ab_dtype_;
   tvm::DataType gemm_c_dtype_;
   tvm::ffi::Array<tvm::Integer> copy_input_shape_;

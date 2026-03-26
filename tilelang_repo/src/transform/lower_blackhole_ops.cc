@@ -147,6 +147,8 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   gemm_m_ = 0;
   gemm_n_ = 0;
   gemm_k_ = 0;
+  gemm_transpose_a_ = false;
+  gemm_transpose_b_ = false;
 
   // Pre-scan: register GEMM CB requirements first so their indices are stable
   // when copy stmts are visited.
@@ -171,6 +173,7 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   StoreCBRequirements(new_func);
   StoreRuntimeArgs(new_func);
   StoreSegmentPlan(new_func);
+  StoreGemmContract(new_func);
 
   return new_func;
 }
@@ -371,6 +374,70 @@ void LowerBlackholeOps::StoreSegmentPlan(PrimFunc& func) {
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 
+void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
+  if (gemm_a_buffer_name_.empty() || gemm_b_buffer_name_.empty() || gemm_c_buffer_name_.empty()) {
+    return;
+  }
+
+  Map<String, Any> attrs;
+  if (func->attrs.defined()) {
+    attrs = func->attrs->dict;
+  }
+
+  std::string a_buffer = gemm_a_buffer_name_;
+  std::string b_buffer = gemm_b_buffer_name_;
+  std::string c_buffer = gemm_c_buffer_name_;
+  if (auto segment_plan = func->GetAttr<Array<Any>>("blackhole.segment_plan")) {
+    for (const auto& item : segment_plan.value()) {
+      auto segment = item.as<Map<String, Any>>().value_or(Map<String, Any>());
+      if (segment.empty()) {
+        continue;
+      }
+      const std::string kind = segment.Get("kind")
+                                   ? static_cast<std::string>(Downcast<String>(segment.Get("kind").value()))
+                                   : std::string();
+      auto runtime_args = segment.Get("runtime_args");
+      if (!runtime_args) {
+        continue;
+      }
+      for (const auto& arg_item : Downcast<Array<Any>>(runtime_args.value())) {
+        auto arg = arg_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+        if (arg.empty() || !arg.Get("buffer")) {
+          continue;
+        }
+        const std::string buffer_name = Downcast<String>(arg.Get("buffer").value());
+        const std::string arg_kind = arg.Get("kind")
+                                         ? static_cast<std::string>(Downcast<String>(arg.Get("kind").value()))
+                                         : std::string();
+        if (kind == "reader" && arg_kind == "input_buffer_addr32") {
+          if (a_buffer == gemm_a_buffer_name_) {
+            a_buffer = buffer_name;
+          } else if (b_buffer == gemm_b_buffer_name_) {
+            b_buffer = buffer_name;
+          }
+        } else if (kind == "writer" && arg_kind == "output_buffer_addr32") {
+          c_buffer = buffer_name;
+        }
+      }
+    }
+  }
+
+  Map<String, Any> gemm_contract;
+  gemm_contract.Set("a_buffer", String(a_buffer));
+  gemm_contract.Set("b_buffer", String(b_buffer));
+  gemm_contract.Set("c_buffer", String(c_buffer));
+  gemm_contract.Set("M", Integer(gemm_m_));
+  gemm_contract.Set("N", Integer(gemm_n_));
+  gemm_contract.Set("K", Integer(gemm_k_));
+  gemm_contract.Set("transpose_A", Bool(gemm_transpose_a_));
+  gemm_contract.Set("transpose_B", Bool(gemm_transpose_b_));
+  gemm_contract.Set("ab_dtype", String(DataTypeToDataFormat(gemm_ab_dtype_)));
+  gemm_contract.Set("c_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
+
+  attrs.Set("blackhole.gemm_contract", gemm_contract);
+  func.CopyOnWrite()->attrs = DictAttrs(attrs);
+}
+
 // Detect matmul operation using Op comparison
 bool LowerBlackholeOps::IsMatmulCall(const CallNode* op) const {
   if (!op->op->IsInstance<OpNode>()) return false;
@@ -405,6 +472,8 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
   gemm_c_buffer_name_ = std::string(c_region->buffer->name);
   gemm_ab_dtype_ = a_region->buffer->dtype;
   gemm_c_dtype_ = c_region->buffer->dtype;
+  if (const auto* imm = args[3].as<IntImmNode>()) gemm_transpose_a_ = imm->value != 0;
+  if (const auto* imm = args[4].as<IntImmNode>()) gemm_transpose_b_ = imm->value != 0;
 
   if (const auto* imm = args[5].as<IntImmNode>()) gemm_m_ = static_cast<int>(imm->value);
   if (const auto* imm = args[6].as<IntImmNode>()) gemm_n_ = static_cast<int>(imm->value);
@@ -414,6 +483,7 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
   // be consumed later from blackhole.cb_bindings rather than assumed here.
   const int ab_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_ab_dtype_.bytes();
   const int c_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_c_dtype_.bytes();
+  const int num_k_tiles = std::max(1, gemm_k_ / kBlackholeTileCols);
 
   gemm_a_req_index_ = AllocateRequirementIndex(a_region->buffer, CBType::kInput);
   gemm_b_req_index_ = AllocateRequirementIndex(b_region->buffer, CBType::kInput);
@@ -429,8 +499,10 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
     req.data_format = data_format;
   };
 
-  set_requirement_fields(gemm_a_req_index_, ab_tile_bytes, 2, DataTypeToDataFormat(gemm_ab_dtype_));
-  set_requirement_fields(gemm_b_req_index_, ab_tile_bytes, 2, DataTypeToDataFormat(gemm_ab_dtype_));
+  set_requirement_fields(gemm_a_req_index_, ab_tile_bytes, num_k_tiles,
+                         DataTypeToDataFormat(gemm_ab_dtype_));
+  set_requirement_fields(gemm_b_req_index_, ab_tile_bytes, num_k_tiles,
+                         DataTypeToDataFormat(gemm_ab_dtype_));
   set_requirement_fields(gemm_c_req_index_, c_tile_bytes, 1, DataTypeToDataFormat(gemm_c_dtype_));
   cb_requirements_[gemm_a_req_index_].lifetime_begin = 0;
   cb_requirements_[gemm_a_req_index_].lifetime_end = 0;
@@ -954,8 +1026,18 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
     return GetRef<Stmt>(op);
   }
 
+  const bool segmented_gemm =
+      current_func_->GetAttr<Array<Any>>("blackhole.segment_plan").has_value();
+  const bool accumulator_like_src =
+      direction == CopyDirection::kCBToDram &&
+      (GetStorageScope(load->buffer).rfind("local", 0) == 0 ||
+       runtime::StorageScope::Create(GetStorageScope(load->buffer)).rank ==
+           runtime::StorageRank::kBlackholeAccumulator);
+
   const Buffer& shared_buffer =
-      direction == CopyDirection::kDramToCB ? op->buffer : load->buffer;
+      (direction == CopyDirection::kCBToDram && segmented_gemm && accumulator_like_src)
+          ? op->buffer
+          : (direction == CopyDirection::kDramToCB ? op->buffer : load->buffer);
   int64_t shared_rows = 0;
   int64_t shared_cols = 0;
   if (shared_buffer->shape.size() >= 2U) {
@@ -1012,8 +1094,6 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
   };
 
   if (direction == CopyDirection::kDramToCB) {
-    const bool segmented_gemm =
-        current_func_->GetAttr<Array<Any>>("blackhole.segment_plan").has_value();
     int cb_id = AllocateRequirementIndex(
         op->buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
     RecordStagedCopyBufferBinding(op, direction);
@@ -1033,12 +1113,6 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
   }
 
   if (direction == CopyDirection::kCBToDram) {
-    const bool segmented_gemm =
-        current_func_->GetAttr<Array<Any>>("blackhole.segment_plan").has_value();
-    const bool accumulator_like_src =
-        GetStorageScope(load->buffer).rfind("local", 0) == 0 ||
-        runtime::StorageScope::Create(GetStorageScope(load->buffer)).rank ==
-            runtime::StorageRank::kBlackholeAccumulator;
     int cb_id = AllocateRequirementIndex(
         load->buffer,
         (segmented_gemm && accumulator_like_src) ? CBType::kOutput : CBType::kIntermediate);

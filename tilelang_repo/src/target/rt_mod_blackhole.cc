@@ -323,6 +323,51 @@ static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
   return plan;
 }
 
+static GemmContractSpec ExtractGemmContract(const tir::PrimFunc& f) {
+  GemmContractSpec contract;
+  auto gemm_attr = f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.gemm_contract");
+  if (!gemm_attr) {
+    return contract;
+  }
+
+  const auto& attrs = gemm_attr.value();
+  if (auto v = attrs.Get("a_buffer")) {
+    contract.a_buffer = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("b_buffer")) {
+    contract.b_buffer = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("c_buffer")) {
+    contract.c_buffer = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("M")) {
+    contract.M = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = attrs.Get("N")) {
+    contract.N = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = attrs.Get("K")) {
+    contract.K = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = attrs.Get("transpose_A")) {
+    contract.transpose_A = Downcast<Bool>(v.value());
+  }
+  if (auto v = attrs.Get("transpose_B")) {
+    contract.transpose_B = Downcast<Bool>(v.value());
+  }
+  if (auto v = attrs.Get("ab_dtype")) {
+    contract.ab_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("c_dtype")) {
+    contract.c_dtype = Downcast<String>(v.value());
+  }
+
+  contract.enabled = !contract.a_buffer.empty() && !contract.b_buffer.empty() &&
+                     !contract.c_buffer.empty() && contract.M > 0 && contract.N > 0 &&
+                     contract.K > 0;
+  return contract;
+}
+
 static std::vector<KernelArgSpec> MakeDefaultCopyRuntimeArgs() {
   return {
       {"input0", "input_buffer_addr32", "uint32", ""},
@@ -388,6 +433,37 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgsFromArray(const ffi::Array<f
 }
 
 static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
+  if (auto segment_plan_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.segment_plan")) {
+    std::vector<KernelArgSpec> aggregated;
+    std::unordered_set<std::string> seen;
+    for (const auto& item : segment_plan_attr.value()) {
+      auto segment = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+          ffi::Map<ffi::String, ffi::Any>());
+      if (segment.empty()) {
+        continue;
+      }
+      auto runtime_args_it = segment.Get("runtime_args");
+      if (!runtime_args_it.has_value()) {
+        continue;
+      }
+      std::vector<KernelArgSpec> segment_args =
+          ExtractRuntimeArgsFromArray(Downcast<ffi::Array<ffi::Any>>(runtime_args_it.value()));
+      for (const auto& arg : segment_args) {
+        const bool is_buffer_arg =
+            arg.kind == "input_buffer_addr32" || arg.kind == "input_buffer_addr" ||
+            arg.kind == "output_buffer_addr32" || arg.kind == "output_buffer_addr";
+        if (!is_buffer_arg || arg.buffer.empty() || seen.count(arg.buffer)) {
+          continue;
+        }
+        aggregated.push_back(arg);
+        seen.insert(arg.buffer);
+      }
+    }
+    if (!aggregated.empty()) {
+      return aggregated;
+    }
+  }
+
   auto runtime_args_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.runtime_args");
   if (!runtime_args_attr) {
     return HasCopyBuiltins(f) ? MakeDefaultCopyRuntimeArgs() : std::vector<KernelArgSpec>{};
@@ -532,6 +608,7 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   spec.cb_configs = ExtractCBConfig(f);
   spec.core_plan = ExtractCorePlan(f);
   spec.runtime_args = ExtractRuntimeArgs(f);
+  spec.gemm_contract = ExtractGemmContract(f);
   ExtractSegmentPlan(f, &spec);
   return spec;
 }

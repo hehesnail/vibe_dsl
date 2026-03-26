@@ -240,17 +240,17 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
         mod = tilelang.transform.PlanAndUpdateBufferAllocationLocation()(mod)
         mod = tilelang.transform.PipelinePlanning()(mod)
         mod = tilelang.transform.InjectSoftwarePipeline()(mod)
+        # Preserve copy semantics and canonicalize Blackhole device-private
+        # resources before LowerOpaqueBlock destroys the stable IR shape used by
+        # Stage 2C/2E analysis.
+        mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+        mod = tilelang.transform.BlackholeDeviceResourceCanonicalization()(mod)
         mod = tilelang.transform.LowerOpaqueBlock()(mod)
         mod = tilelang.transform.Simplify()(mod)
         mod = tir.transform.VerifyMemory()(mod)
         mod = tir.transform.AnnotateEntryFunc()(mod)
         if allow_global_thread_synchronization():
             mod = tilelang.transform.ThreadSync("global")(mod)
-        # Annotate copy-containing For loops with blackhole.copy_semantics
-        # before SplitHostDevice, so LowerBlackholeOps can consume stable
-        # metadata instead of pattern-matching the loop body.
-        mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-        mod = tilelang.transform.BlackholeDeviceResourceCanonicalization()(mod)
         mod = tilelang.transform.AnnotateDeviceRegions()(mod)
         mod = tilelang.transform.SplitHostDevice()(mod)
         mod = tilelang.transform.AnnotateReadOnlyParams()(mod)

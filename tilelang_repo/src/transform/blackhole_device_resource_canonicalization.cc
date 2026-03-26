@@ -59,6 +59,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "../layout/layout.h"
 #include "runtime/thread_storage_scope.h"
 #include "tir/transforms/ir_utils.h"
 
@@ -164,6 +165,7 @@ class BlackholeResourceClassifier : public StmtExprVisitor {
 
  private:
   std::unordered_set<std::string> gemm_c_names_;
+  std::unordered_set<std::string> layout_fragment_names_;
   // From copy_semantics annotations:
   std::unordered_set<std::string> cb_input_names_;    // appear as dst_buffer in dram_to_cb
   std::unordered_set<std::string> cb_output_names_;   // appear as src_buffer in cb_to_dram
@@ -204,6 +206,20 @@ class BlackholeResourceClassifier : public StmtExprVisitor {
     StmtExprVisitor::VisitExpr_(op);
   }
 
+  void CollectLayoutFragments(const BlockNode* op) {
+    if (!op->annotations.count(attr::kLayoutMap)) return;
+    auto layout_map = op->annotations.Get(attr::kLayoutMap);
+    ICHECK(layout_map) << "layout map is not defined";
+    for (const auto& [buffer, _layout] : layout_map->as<Map<Buffer, Layout>>().value()) {
+      std::string scope = GetScope(buffer->data);
+      if (scope == "local" || scope == "local.fragment") {
+        std::string name = std::string(buffer->name);
+        layout_fragment_names_.insert(name);
+        resource_map[name] = {"blackhole.acc", "accumulator", "accumulator"};
+      }
+    }
+  }
+
   // Walk the IR to find all device-private buffer allocations.
   // Does NOT stop at thread_extent — we classify buffers anywhere in the tree
   // (A_shared/B_shared may be inside thread_extent, C_local may be in alloc_buffers).
@@ -217,12 +233,14 @@ class BlackholeResourceClassifier : public StmtExprVisitor {
       ClassifyAllocates(decl->body);
     } else if (const auto* br = stmt.as<BlockRealizeNode>()) {
       // Check alloc_buffers: these may be device-private but outside thread_extent
+      CollectLayoutFragments(br->block.get());
       for (const auto& buf : br->block->alloc_buffers) {
         std::string scope = GetScope(buf->data);
         ClassifyBuffer(std::string(buf->name), scope);
       }
       ClassifyAllocates(br->block->body);
     } else if (const auto* block = stmt.as<BlockNode>()) {
+      CollectLayoutFragments(block);
       for (const auto& buf : block->alloc_buffers) {
         std::string scope = GetScope(buf->data);
         ClassifyBuffer(std::string(buf->name), scope);
@@ -241,8 +259,9 @@ class BlackholeResourceClassifier : public StmtExprVisitor {
       // Always an accumulator
       resource_map[name] = {"blackhole.acc", "accumulator", "accumulator"};
     } else if (scope == "local") {
-      // Accumulator only if it's the gemm C buffer
-      if (gemm_c_names_.count(name)) {
+      // Accumulator if it is the GEMM C buffer or a local fragment view preserved
+      // through layout_map after LowerAndLegalize.
+      if (gemm_c_names_.count(name) || layout_fragment_names_.count(name)) {
         resource_map[name] = {"blackhole.acc", "accumulator", "accumulator"};
       }
       // else: keep as local — not a Blackhole device-private resource we reclassify

@@ -31,10 +31,21 @@
 #include <tt-metalium/device.hpp>
 #include <tt-metalium/distributed.hpp>
 #include <tt-metalium/buffer.hpp>
+#include <tt-metalium/tilize_utils.hpp>
 #endif
 
 namespace tvm {
 namespace runtime {
+
+static std::string NormalizeBlackholeKernelSource(std::string source) {
+  const std::string old_compute_include = "#include \"compute_kernel_api.h\"";
+  const std::string new_compute_include = "#include \"api/compute/compute_kernel_api.h\"";
+  size_t pos = source.find(old_compute_include);
+  if (pos != std::string::npos) {
+    source.replace(pos, old_compute_include.size(), new_compute_include);
+  }
+  return source;
+}
 
 // Forward declaration
 class BlackholeWrappedFunc;
@@ -124,6 +135,91 @@ DLTensor* ExtractTensorArg(const ffi::AnyView& arg, void* void_arg) {
 #ifdef TILELANG_BLACKHOLE_DIRECT
 
 using namespace tt::tt_metal;
+
+template <typename T>
+static std::vector<T> TransposeRowMajor2D(const T* src, uint32_t rows, uint32_t cols) {
+  std::vector<T> out(static_cast<size_t>(rows) * cols);
+  for (uint32_t r = 0; r < rows; ++r) {
+    for (uint32_t c = 0; c < cols; ++c) {
+      out[static_cast<size_t>(c) * rows + r] = src[static_cast<size_t>(r) * cols + c];
+    }
+  }
+  return out;
+}
+
+static bool IsTwoDimTensor(const DLTensor* tensor) {
+  return tensor != nullptr && tensor->ndim == 2;
+}
+
+static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
+                                                   const RuntimeTensorBinding& binding) {
+  const DLTensor* tensor = binding.tensor;
+  ICHECK(tensor != nullptr);
+  const size_t tensor_size = GetDataSize(*tensor);
+
+  if (!spec.gemm_contract.enabled || !IsTwoDimTensor(tensor)) {
+    std::vector<uint8_t> raw(tensor_size);
+    std::memcpy(raw.data(), tensor->data, tensor_size);
+    return raw;
+  }
+
+  const auto& gemm = spec.gemm_contract;
+  if (binding.name != gemm.a_buffer && binding.name != gemm.b_buffer) {
+    std::vector<uint8_t> raw(tensor_size);
+    std::memcpy(raw.data(), tensor->data, tensor_size);
+    return raw;
+  }
+
+  ICHECK(tensor->dtype.bits == 16)
+      << "Only 16-bit GEMM inputs are currently supported for Blackhole host tilize";
+  const auto* raw = static_cast<const uint16_t*>(tensor->data);
+  const uint32_t rows = static_cast<uint32_t>(tensor->shape[0]);
+  const uint32_t cols = static_cast<uint32_t>(tensor->shape[1]);
+
+  std::vector<uint16_t> tiled;
+  if (binding.name == gemm.b_buffer && gemm.transpose_B) {
+    ICHECK(rows == gemm.N && cols == gemm.K)
+        << "Unexpected B tensor shape for transpose_B GEMM: got (" << rows << ", " << cols
+        << "), expected (" << gemm.N << ", " << gemm.K << ")";
+    tiled = tilize_nfaces(TransposeRowMajor2D(raw, rows, cols), gemm.K, gemm.N);
+  } else {
+    const uint32_t expected_rows = binding.name == gemm.a_buffer ? gemm.M : gemm.K;
+    const uint32_t expected_cols = binding.name == gemm.a_buffer ? gemm.K : gemm.N;
+    ICHECK(rows == expected_rows && cols == expected_cols)
+        << "Unexpected GEMM tensor shape for " << binding.name << ": got (" << rows << ", " << cols
+        << "), expected (" << expected_rows << ", " << expected_cols << ")";
+    std::vector<uint16_t> row_major(raw, raw + static_cast<size_t>(rows) * cols);
+    tiled = tilize_nfaces(row_major, expected_rows, expected_cols);
+  }
+
+  std::vector<uint8_t> bytes(tiled.size() * sizeof(uint16_t));
+  std::memcpy(bytes.data(), tiled.data(), bytes.size());
+  return bytes;
+}
+
+static void CopyOutputFromDeviceBuffer(const ExecutableSpec& spec,
+                                       const RuntimeTensorBinding& binding,
+                                       const std::vector<uint8_t>& output_data) {
+  ICHECK(binding.tensor != nullptr);
+  const size_t tensor_size = GetDataSize(*binding.tensor);
+  ICHECK(output_data.size() >= tensor_size)
+      << "Output data size mismatch for " << binding.name;
+
+  if (!spec.gemm_contract.enabled || binding.name != spec.gemm_contract.c_buffer ||
+      !IsTwoDimTensor(binding.tensor)) {
+    std::memcpy(binding.tensor->data, output_data.data(), tensor_size);
+    return;
+  }
+
+  const auto& gemm = spec.gemm_contract;
+  ICHECK(binding.tensor->dtype.code == kDLFloat && binding.tensor->dtype.bits == 32)
+      << "Only float32 GEMM outputs are currently supported for Blackhole host untilize";
+  const size_t numel = static_cast<size_t>(gemm.M) * gemm.N;
+  const auto* tiled = reinterpret_cast<const float*>(output_data.data());
+  std::vector<float> tiled_vec(tiled, tiled + numel);
+  std::vector<float> row_major = untilize_nfaces(tiled_vec, gemm.M, gemm.N);
+  std::memcpy(binding.tensor->data, row_major.data(), row_major.size() * sizeof(float));
+}
 
 static tt::DataFormat ParseDataFormat(const std::string& value) {
   if (value == "Float16" || value == "Float16_b") return tt::DataFormat::Float16_b;
@@ -414,8 +510,7 @@ void BlackholeModuleNode::ExecuteDirect(
       ordered_output_names.push_back(binding.name);
     } else {
       input_names.push_back(binding.name);
-      std::vector<uint8_t> input_data(tensor_size);
-      std::memcpy(input_data.data(), binding.tensor->data, tensor_size);
+      std::vector<uint8_t> input_data = BuildInputTransferData(spec, binding);
       EnqueueWriteMeshBuffer(cq, mesh_buffer, input_data, /*blocking=*/true);
     }
   }
@@ -480,7 +575,7 @@ void BlackholeModuleNode::ExecuteDirect(
     if (!ofs) {
       LOG(FATAL) << "Failed to write kernel file: " << kernel_path;
     }
-    ofs << kernel.source_code;
+    ofs << NormalizeBlackholeKernelSource(kernel.source_code);
     kernel_paths.push_back(kernel_path);
   }
 
@@ -489,6 +584,8 @@ void BlackholeModuleNode::ExecuteDirect(
             << " logical work items for " << func_name;
 
   for (const auto& item : work_items) {
+    LOG(INFO) << "Direct path: begin work_id=" << item.work_id
+              << " core=(" << item.core.x << "," << item.core.y << ")";
     Program program = CreateProgram();
 
     // Create circular buffers for this program
@@ -497,6 +594,8 @@ void BlackholeModuleNode::ExecuteDirect(
     // Create and configure each kernel
     for (size_t ki = 0; ki < spec.kernels.size(); ++ki) {
       const auto& kernel_spec = spec.kernels[ki];
+      LOG(INFO) << "Direct path: create kernel[" << ki << "] kind=" << kernel_spec.kind
+                << " core_type=" << kernel_spec.core_type;
       KernelHandle kernel = CreateKernelFromSpec(
           program, item.core, kernel_spec, kernel_paths[ki]);
 
@@ -505,14 +604,18 @@ void BlackholeModuleNode::ExecuteDirect(
           scratch_l1_buffer ? scratch_l1_buffer.get() : nullptr,
           scalar_args);
 
+      LOG(INFO) << "Direct path: set runtime args kernel[" << ki
+                << "] count=" << runtime_args.size();
       SetRuntimeArgs(program, kernel, item.core, runtime_args);
     }
 
     // Execute program on device
+    LOG(INFO) << "Direct path: enqueue workload for work_id=" << item.work_id;
     distributed::MeshWorkload workload;
     distributed::MeshCoordinateRange device_range(mesh_device->shape());
     workload.add_program(device_range, std::move(program));
     distributed::EnqueueMeshWorkload(cq, workload, /*blocking=*/true);
+    LOG(INFO) << "Direct path: completed workload for work_id=" << item.work_id;
   }
 
   // Read back results
@@ -526,9 +629,7 @@ void BlackholeModuleNode::ExecuteDirect(
     std::vector<uint8_t> output_data;
     distributed::EnqueueReadMeshBuffer(cq, output_data, it->second.mesh_buffer,
                                        /*blocking=*/true);
-    ICHECK(output_data.size() >= it->second.size_bytes)
-        << "Output data size mismatch for " << binding.name;
-    std::memcpy(binding.tensor->data, output_data.data(), it->second.size_bytes);
+    CopyOutputFromDeviceBuffer(spec, binding, output_data);
   }
 
   // Cleanup kernel temp files
