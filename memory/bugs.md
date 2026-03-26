@@ -9,8 +9,8 @@
 - **时间**: 2026-03-26
 - **问题**: 当前 Blackhole schema 停留在最小 bring-up 级别，缺少：host logical tensor layout 分层、tensor dtype / CB packed dtype / accumulator dtype 分层、accessor schema、rich work description
 - **影响**: copy 在最简单 tile/interleaved case 上可通过，但更复杂场景无正式 schema 承载
-- **解决方向**: 按 `stage2d_ttmetal_contract_audit.md` 的 P0-P5 分层推进，当前做 P0+P1
-- **当前状态**: 未解决。属于协议质量问题，不直接影响当前 GEMM basic 数值正确性。
+- **解决方向**: 按 `stage2d_ttmetal_contract_audit.md` 的 P0-P5 分层推进；当前 P0 dtype 分层、P1、P2 已落地，后续继续做 P3-P5
+- **当前状态**: 部分解决。dtype 分层已进入 `gemm_contract` / `ExecutableSpec` / direct runtime 校验，但 accessor schema 和 richer work schema 仍未建立。
 
 ## 已解决（仍有复用价值）
 

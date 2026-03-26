@@ -57,6 +57,7 @@
 - 稳定 host-side 抽象：Program、CreateCircularBuffer、CreateKernel/CreateKernelFromString、SetRuntimeArgs
 - CB 数据路径需要地址共享（get_write_ptr/get_read_ptr）**和** 同步原语（cb_reserve_back/cb_push_back/cb_wait_front/cb_pop_front）两者缺一不可
 - 对 tile/dataflow target 至少分层：host tensor layout、device buffer/accessor、CB transport、compute ABI、work distribution
+- 当 direct runtime 目前只支持某个 dtype 组合时，也要先把 tensor dtype / CB transport dtype / accumulator dtype 明确写进 schema，再由 runtime 显式校验“不支持的组合”；不要继续把 bring-up 时的硬编码假设当协议
 - 对 TT-Metal GEMM，host layout conversion 是 correctness contract，不是后续优化：
   - host 侧必须明确谁负责 `transpose_B`
   - 上传前必须把 row-major tensor 转成设备期望的 tiled layout

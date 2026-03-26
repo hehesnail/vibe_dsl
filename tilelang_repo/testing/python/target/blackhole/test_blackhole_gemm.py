@@ -191,6 +191,13 @@ def test_blackhole_gemm_contract_attr_is_materialized():
     assert int(contract["N"]) == 32
     assert int(contract["K"]) == 128
     assert bool(contract["transpose_B"]) is True
+    assert str(contract["a_tensor_dtype"]) == "Float16_b"
+    assert str(contract["b_tensor_dtype"]) == "Float16_b"
+    assert str(contract["c_tensor_dtype"]) == "Float32"
+    assert str(contract["a_cb_dtype"]) == "Float16_b"
+    assert str(contract["b_cb_dtype"]) == "Float16_b"
+    assert str(contract["c_cb_dtype"]) == "Float32"
+    assert str(contract["accumulator_dtype"]) == "Float32"
 
 
 def test_blackhole_multicore_gemm_lowering_respects_transposed_b_layout():

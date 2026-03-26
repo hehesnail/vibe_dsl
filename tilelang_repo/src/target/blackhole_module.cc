@@ -156,6 +156,27 @@ static std::pair<uint32_t, uint32_t> GetTensorShape2D(const DLTensor* tensor) {
   return {static_cast<uint32_t>(tensor->shape[0]), static_cast<uint32_t>(tensor->shape[1])};
 }
 
+static std::string DLTensorDataFormat(const DLTensor& tensor) {
+  const DLDataType& dtype = tensor.dtype;
+  if (dtype.code == kDLBfloat && dtype.bits == 16) return "Float16_b";
+  if (dtype.code == kDLFloat && dtype.bits == 16) return "Float16";
+  if (dtype.code == kDLFloat && dtype.bits == 32) return "Float32";
+  if (dtype.code == kDLUInt && dtype.bits == 16) return "UInt16";
+  if (dtype.code == kDLUInt && dtype.bits == 32) return "UInt32";
+  if (dtype.code == kDLInt && dtype.bits == 16) return "Int16";
+  if (dtype.code == kDLInt && dtype.bits == 32) return "Int32";
+  return "unknown";
+}
+
+static void ValidateGemmTensorDType(const RuntimeTensorBinding& binding,
+                                    const std::string& expected_dtype) {
+  ICHECK(binding.tensor != nullptr);
+  const std::string actual_dtype = DLTensorDataFormat(*binding.tensor);
+  ICHECK_EQ(actual_dtype, expected_dtype)
+      << "Unexpected tensor dtype for GEMM binding " << binding.name << ": got " << actual_dtype
+      << ", expected " << expected_dtype;
+}
+
 static void ValidateGemmInputShape(const ExecutableSpec& spec,
                                    const RuntimeTensorBinding& binding,
                                    uint32_t rows,
@@ -221,8 +242,17 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
     return raw;
   }
 
-  ICHECK(tensor->dtype.bits == 16)
-      << "Only 16-bit GEMM inputs are currently supported for Blackhole host tilize";
+  const std::string expected_tensor_dtype =
+      binding.name == gemm.a_buffer ? gemm.a_tensor_dtype : gemm.b_tensor_dtype;
+  const std::string expected_cb_dtype =
+      binding.name == gemm.a_buffer ? gemm.a_cb_dtype : gemm.b_cb_dtype;
+  ValidateGemmTensorDType(binding, expected_tensor_dtype);
+  ICHECK_EQ(expected_tensor_dtype, expected_cb_dtype)
+      << "Blackhole direct GEMM currently requires identical tensor and CB dtype for "
+      << binding.name;
+  ICHECK_EQ(expected_tensor_dtype, "Float16_b")
+      << "Blackhole direct GEMM currently supports only bfloat16 inputs, but " << binding.name
+      << " requested " << expected_tensor_dtype;
   const auto* raw = static_cast<const uint16_t*>(tensor->data);
   const auto [rows, cols] = GetTensorShape2D(tensor);
   ValidateGemmInputShape(spec, binding, rows, cols);
@@ -254,8 +284,15 @@ static void CopyOutputFromDeviceBuffer(const ExecutableSpec& spec,
     return;
   }
 
-  ICHECK(binding.tensor->dtype.code == kDLFloat && binding.tensor->dtype.bits == 32)
-      << "Only float32 GEMM outputs are currently supported for Blackhole host untilize";
+  ValidateGemmTensorDType(binding, spec.gemm_contract.c_tensor_dtype);
+  ICHECK_EQ(spec.gemm_contract.c_cb_dtype, spec.gemm_contract.accumulator_dtype)
+      << "Blackhole direct GEMM currently requires identical output CB and accumulator dtypes";
+  ICHECK_EQ(spec.gemm_contract.c_tensor_dtype, "Float32")
+      << "Blackhole direct GEMM currently supports only float32 outputs, but "
+      << spec.gemm_contract.c_buffer << " requested " << spec.gemm_contract.c_tensor_dtype;
+  ICHECK_EQ(spec.gemm_contract.accumulator_dtype, "Float32")
+      << "Blackhole direct GEMM currently supports only float32 accumulators, but requested "
+      << spec.gemm_contract.accumulator_dtype;
   const auto [rows, cols] = GetTensorShape2D(binding.tensor);
   ValidateGemmOutputShape(spec, rows, cols);
   const size_t numel = static_cast<size_t>(rows) * cols;

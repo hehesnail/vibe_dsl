@@ -149,6 +149,9 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   gemm_k_ = 0;
   gemm_transpose_a_ = false;
   gemm_transpose_b_ = false;
+  gemm_a_dtype_ = DataType::Void();
+  gemm_b_dtype_ = DataType::Void();
+  gemm_c_dtype_ = DataType::Void();
 
   // Pre-scan: register GEMM CB requirements first so their indices are stable
   // when copy stmts are visited.
@@ -430,8 +433,13 @@ void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
   gemm_contract.Set("K", Integer(gemm_k_));
   gemm_contract.Set("transpose_A", Bool(gemm_transpose_a_));
   gemm_contract.Set("transpose_B", Bool(gemm_transpose_b_));
-  gemm_contract.Set("ab_dtype", String(DataTypeToDataFormat(gemm_ab_dtype_)));
-  gemm_contract.Set("c_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
+  gemm_contract.Set("a_tensor_dtype", String(DataTypeToDataFormat(gemm_a_dtype_)));
+  gemm_contract.Set("b_tensor_dtype", String(DataTypeToDataFormat(gemm_b_dtype_)));
+  gemm_contract.Set("c_tensor_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
+  gemm_contract.Set("a_cb_dtype", String(DataTypeToDataFormat(gemm_a_dtype_)));
+  gemm_contract.Set("b_cb_dtype", String(DataTypeToDataFormat(gemm_b_dtype_)));
+  gemm_contract.Set("c_cb_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
+  gemm_contract.Set("accumulator_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
 
   attrs.Set("blackhole.gemm_contract", gemm_contract);
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
@@ -469,7 +477,8 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
   gemm_a_buffer_name_ = std::string(a_region->buffer->name);
   gemm_b_buffer_name_ = std::string(b_region->buffer->name);
   gemm_c_buffer_name_ = std::string(c_region->buffer->name);
-  gemm_ab_dtype_ = a_region->buffer->dtype;
+  gemm_a_dtype_ = a_region->buffer->dtype;
+  gemm_b_dtype_ = b_region->buffer->dtype;
   gemm_c_dtype_ = c_region->buffer->dtype;
   if (const auto* imm = args[3].as<IntImmNode>()) gemm_transpose_a_ = imm->value != 0;
   if (const auto* imm = args[4].as<IntImmNode>()) gemm_transpose_b_ = imm->value != 0;
@@ -480,7 +489,9 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
 
   // Register GEMM requirements.  The final cb_id is a planner decision and must
   // be consumed later from blackhole.cb_bindings rather than assumed here.
-  const int ab_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_ab_dtype_.bytes();
+  ICHECK(gemm_a_dtype_ == gemm_b_dtype_)
+      << "Blackhole GEMM currently requires matching A/B tensor dtypes";
+  const int ab_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_a_dtype_.bytes();
   const int c_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_c_dtype_.bytes();
   const int num_k_tiles = std::max(1, gemm_k_ / kBlackholeTileCols);
 
@@ -499,9 +510,9 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
   };
 
   set_requirement_fields(gemm_a_req_index_, ab_tile_bytes, num_k_tiles,
-                         DataTypeToDataFormat(gemm_ab_dtype_));
+                         DataTypeToDataFormat(gemm_a_dtype_));
   set_requirement_fields(gemm_b_req_index_, ab_tile_bytes, num_k_tiles,
-                         DataTypeToDataFormat(gemm_ab_dtype_));
+                         DataTypeToDataFormat(gemm_b_dtype_));
   set_requirement_fields(gemm_c_req_index_, c_tile_bytes, 1, DataTypeToDataFormat(gemm_c_dtype_));
   cb_requirements_[gemm_a_req_index_].lifetime_begin = 0;
   cb_requirements_[gemm_a_req_index_].lifetime_end = 0;

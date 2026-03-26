@@ -92,8 +92,13 @@ struct GemmContractSpec {
   uint32_t K = 0;
   bool transpose_A = false;
   bool transpose_B = false;
-  std::string ab_dtype;
-  std::string c_dtype;
+  std::string a_tensor_dtype;
+  std::string b_tensor_dtype;
+  std::string c_tensor_dtype;
+  std::string a_cb_dtype;
+  std::string b_cb_dtype;
+  std::string c_cb_dtype;
+  std::string accumulator_dtype;
 };
 
 /*!

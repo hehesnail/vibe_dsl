@@ -50,10 +50,16 @@
 3. `transpose_B=True` 时，reader 必须按 host-transposed tiled-B layout 计算 tile index  
    multi-core 下 B tile 序列应是 `bx + kt * N_tiles`，不是未转置布局的连续 4 个 tile
 
-另有一项明确不在本阶段内、且仍未解决的独立问题：
+另有一项当时明确不与 Stage 3 direct-path 修复混做的独立问题：
 
-- `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 仍会生成非法 host shim（`kernel_error_code = ;`）
-- 这不是 formal `BlackholeModule` direct host path 的 blocker，因此没有与 Stage 3 direct-path 修复混做
+- `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 当时仍会生成非法 host shim（`kernel_error_code = ;`）
+- 这不是 formal `BlackholeModule` direct host path 的 blocker，因此最初没有与 Stage 3 direct-path 修复混做
+
+### 1.2 阶段后续同步（2026-03-27）
+
+- 上述 `tvm_ffi` wrapper/export path blocker 已在 Stage 3 完成后独立修复
+- 根因不是 Blackhole direct-path contract，而是 host C codegen 对 `tvm_call_packed_lowered` 的表达式形态支持不完整
+- 当前状态应以 `tasks/progress.md` 和 `final_blackhole_backend_redesign.md` 为准：Stage 3 已完成，`tvm_ffi` wrapper/export path 也已恢复
 
 ---
 

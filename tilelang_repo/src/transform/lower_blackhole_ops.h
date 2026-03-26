@@ -213,7 +213,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   int gemm_k_ = 0;
   bool gemm_transpose_a_ = false;
   bool gemm_transpose_b_ = false;
-  tvm::DataType gemm_ab_dtype_;
+  tvm::DataType gemm_a_dtype_;
+  tvm::DataType gemm_b_dtype_;
   tvm::DataType gemm_c_dtype_;
   tvm::ffi::Array<tvm::Integer> copy_input_shape_;
   tvm::ffi::Array<tvm::Integer> copy_output_shape_;

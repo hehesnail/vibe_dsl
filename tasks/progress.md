@@ -5,7 +5,7 @@
 ## 当前阶段
 
 - **阶段**: Stage 3 — multi-core runtime 调度
-- **状态**: ✅ formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复，下一步回到 TT-Metal contract formalization
+- **状态**: ✅ formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 dtype 分层正式化
 - **日期**: 2026-03-26
 - **设计文档**: `tasks/dev_design/stage3_multicore_design.md`
 
@@ -89,7 +89,7 @@
 
 | 优先级 | 内容 | 状态 | 备注 |
 |--------|------|------|------|
-| P0 | GEMM compile-time ABI 正式化（dtype 分层进 attrs） | 部分完成 | `gemm_contract` 已有核心字段，dtype 分层未做 |
+| P0 | GEMM compile-time ABI 正式化（dtype 分层进 attrs） | 部分完成 | `gemm_contract` 已补 tensor/CB/accumulator dtype 分层；更丰富 compile-time ABI 仍未做 |
 | P1 | CB transport schema | ✅ | 已统一到 codegen CB transport，无 scratch |
 | P2 | host tilize/untilize | ✅ | transpose_B + tilize/untilize 已补齐 |
 | P3 | accessor / runtime work schema | ❌ | 不阻塞 Stage 3 |

@@ -355,11 +355,26 @@ static GemmContractSpec ExtractGemmContract(const tir::PrimFunc& f) {
   if (auto v = attrs.Get("transpose_B")) {
     contract.transpose_B = Downcast<Bool>(v.value());
   }
-  if (auto v = attrs.Get("ab_dtype")) {
-    contract.ab_dtype = Downcast<String>(v.value());
+  if (auto v = attrs.Get("a_tensor_dtype")) {
+    contract.a_tensor_dtype = Downcast<String>(v.value());
   }
-  if (auto v = attrs.Get("c_dtype")) {
-    contract.c_dtype = Downcast<String>(v.value());
+  if (auto v = attrs.Get("b_tensor_dtype")) {
+    contract.b_tensor_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("c_tensor_dtype")) {
+    contract.c_tensor_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("a_cb_dtype")) {
+    contract.a_cb_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("b_cb_dtype")) {
+    contract.b_cb_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("c_cb_dtype")) {
+    contract.c_cb_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("accumulator_dtype")) {
+    contract.accumulator_dtype = Downcast<String>(v.value());
   }
 
   contract.enabled = !contract.a_buffer.empty() && !contract.b_buffer.empty() &&
