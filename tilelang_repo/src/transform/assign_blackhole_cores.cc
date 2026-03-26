@@ -134,14 +134,16 @@ void AssignBlackholeCores::CalculateWorkDistribution(CoreAssignment& assignment)
 RuntimeArgs AssignBlackholeCores::GetRuntimeArgs(int core_idx) const {
   RuntimeArgs args;
 
-  if (core_idx != 0) {
+  const int total_work = std::max(1, assignment_.grid_x * assignment_.grid_y);
+  const int work_offset = core_idx * assignment_.work_per_core;
+  if (work_offset >= total_work) {
     args.work_offset_linear = 0;
     args.work_count = 0;
     return args;
   }
 
-  args.work_offset_linear = 0;
-  args.work_count = std::max(1, assignment_.grid_x * assignment_.grid_y);
+  args.work_offset_linear = work_offset;
+  args.work_count = std::min(assignment_.work_per_core, total_work - work_offset);
   return args;
 }
 
