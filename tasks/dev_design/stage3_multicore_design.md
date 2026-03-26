@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage3_multicore_design`
 - **日期**: 2026-03-26
-- **状态**: 设计中（已完成第一性原理调研）
+- **状态**: 设计完成，待实施
 - **前置**: Stage 2D 已完成（copy + GEMM single-core E2E）
 - **关联文档**:
   - `final_blackhole_backend_redesign.md` — 唯一总设计
@@ -19,6 +19,20 @@
 当前状态：`AssignBlackholeCores` 已存在，能分析 logical grid，但 **hard-codes `cores_needed = 1`**，所有 work items 串行跑在同一个物理核心上。`BlackholeModule` 已有 per-work-item 循环，每个 work item 创建独立 `Program` 并串行 enqueue。
 
 目标状态：多个 work items 分发到多个物理核心，在同一个 `Program` 内并行执行。
+
+本阶段只解决 **host/runtime 调度**：
+
+- `AssignBlackholeCores` 不再把所有 work item 压到单核
+- `BlackholeModule` 不再按 work item 创建多个 `Program`
+- copy 保持现有 lowering/codegen
+- GEMM 通过 DSL kernel 中的 `bx/by` 索引获得多核 tile offset
+
+本阶段不引入：
+
+- K 维度切分
+- 核间同步 / semaphore / multicast
+- GEMM lowering/codegen 协议改写
+- accessor / dtype layering 正式化
 
 ---
 
@@ -163,8 +177,9 @@ void AssignBlackholeCores::CalculateWorkDistribution(CoreAssignment& assignment)
 `StoreAssignment` 已有多 `work_packets` 生成的循环（line 202），只是当前 `cores_needed=1` 限制了只生成一个。
 
 **约束**：
-- 初版保持 `work_per_core = 1`（每核一个 work item），避免引入 work_per_core > 1 的复杂性
-- 如果 `total_work > 140`（超过可用核心），保持在 140 核上分发，每核多于 1 个 work item
+- 初版保持 `work_per_core = 1`（每核一个 work item），避免引入 `work_per_core > 1` 的复杂性
+- `cores_needed = min(total_work, available_cores)`，不再 hard-code 为 1
+- 如果 `total_work > available_cores`，允许多个 work item 复用同一物理核心，但这不是本阶段主验证路径
 - 不改变 `core_plan` schema
 
 **验证**：
@@ -238,7 +253,13 @@ static KernelHandle CreateKernelFromSpec(
     const KernelSpec& kernel, const std::string& kernel_path);
 ```
 
-TT-Metal API 端不需要任何改动 — `CreateCircularBuffer` 和 `CreateKernel` 已经接受 `std::variant<CoreCoord, CoreRange, CoreRangeSet>`。
+TT-Metal API 端不需要任何改动，`CreateCircularBuffer` 和 `CreateKernel` 已经接受
+`std::variant<CoreCoord, CoreRange, CoreRangeSet>`。
+
+**实现约束**：
+- 所有 segment kernel 注册到同一个 `CoreRangeSet`
+- `SetRuntimeArgs` 继续按 `CoreCoord` 单独下发，保持每核 `current_work_linear_id` 独立
+- 单核 case 必须仍然走同一条主路径，不能新增单核专用 fallback
 
 **验证**：
 - 单核 case（grid=1x1）所有现有 copy/GEMM 测试不回退
@@ -320,9 +341,34 @@ Writer:
 
 ### Step 5: 文档同步
 
-- `progress.md` — Stage 3 完成
+- `progress.md` — Stage 3 状态推进
 - `final_blackhole_backend_redesign.md` — Stage 3 状态更新
 - `memory/general_dev.md` — 多核经验沉淀
+
+---
+
+## 4.1 最终实施选择
+
+经复核，Stage 3 采用以下正式路径：
+
+1. **只改 host/runtime 分发**
+   - `AssignBlackholeCores` 放开多核分配
+   - `BlackholeModule` 改为单 `Program` 多核 launch
+2. **copy 不改 lowering/codegen**
+   - 依赖现有 `BindThreadIndex` 与 `blockIdx` 传导链路
+3. **GEMM 不改 lowering/codegen**
+   - 通过 DSL kernel 中的 `bx/by` 索引让 reader/writer 自然获得 per-core tile offset
+
+不采用的方案：
+
+- 在 `GenerateMatmulSequence` 或 `codegen_blackhole.cc` 中新增 GEMM per-core offset 特判
+- 保留多 `Program` 串行 launch 作为“伪多核”过渡方案
+
+原因：
+
+- 当前第一性原理调研已经证明 `blockIdx -> current_work_linear_id` 的映射链路成立
+- Stage 3 的目标是验证 host/runtime multi-core materialization，而不是再改一轮 lowering/codegen 协议
+- 继续往 codegen/lowering 补 per-core 特判会违反当前“优先从 IR 获取信息，不让 runtime/codegen 猜”的仓库约束
 
 ---
 
