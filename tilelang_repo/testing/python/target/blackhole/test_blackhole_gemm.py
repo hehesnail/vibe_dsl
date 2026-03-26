@@ -219,7 +219,7 @@ def test_blackhole_gemm_basic():
     )
 
 
-def test_blackhole_gemm_multicore_direct_call():
+def test_blackhole_gemm_multicore_runtime_launch():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -228,7 +228,6 @@ def test_blackhole_gemm_multicore_direct_call():
     torch.manual_seed(0)
     a_torch = torch.randn(m, k, dtype=torch.bfloat16)
     b_torch = torch.randn(n, k, dtype=torch.bfloat16)
-    c_output = torch.zeros(m, n, dtype=torch.float32)
     c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
 
     target = Target("blackhole")
@@ -236,12 +235,18 @@ def test_blackhole_gemm_multicore_direct_call():
 
     try:
         with target:
-            artifact = lower(kernel, target=target)
+            jit_kernel = tilelang.compile(
+                kernel,
+                out_idx=-1,
+                execution_backend="tvm_ffi",
+                target=target,
+            )
     except Exception as e:
-        pytest.skip(f"Blackhole multicore GEMM lowering not yet fully implemented: {e}")
+        pytest.skip(f"Blackhole multicore GEMM compile/runtime path not yet fully implemented: {e}")
 
+    assert jit_kernel.artifact is not None
     device_funcs = {
-        str(gvar): func for gvar, func in artifact.device_mod.functions.items()
+        str(gvar): func for gvar, func in jit_kernel.artifact.device_mod.functions.items()
     }
     device_main = device_funcs['I.GlobalVar("main_kernel")']
     core_plan = device_main.attrs["blackhole.core_plan"]
@@ -250,7 +255,7 @@ def test_blackhole_gemm_multicore_direct_call():
     assert len(core_plan["physical_cores"]) == 4
     assert len(core_plan["work_packets"]) == 4
 
-    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+    c_output = jit_kernel(a_torch, b_torch)
     assert_tensors_close_or_dump(
         c_output,
         c_ref,
