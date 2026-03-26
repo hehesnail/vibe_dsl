@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage3_multicore_design`
 - **日期**: 2026-03-26
-- **状态**: 设计完成，待实施
+- **状态**: formal direct host path 已实施完成
 - **前置**: Stage 2D 已完成（copy + GEMM single-core E2E）
 - **关联文档**:
   - `final_blackhole_backend_redesign.md` — 唯一总设计
@@ -33,6 +33,27 @@
 - 核间同步 / semaphore / multicast
 - GEMM lowering/codegen 协议改写
 - accessor / dtype layering 正式化
+
+## 1.1 实施结果（2026-03-26）
+
+- `AssignBlackholeCores` 已按 logical grid 分发多核 `work_packets`
+- `BlackholeModule` 已切到单 `Program` + `CoreRangeSet` 多核 launch
+- copy multi-core direct host path 已通过 TT-Sim
+- GEMM multi-core direct host path 已通过 TT-Sim（`test_blackhole_gemm.py`: `7 passed`）
+
+本轮真正补到的 GEMM multicore direct-path contract 缺口有 3 个：
+
+1. host runtime 的 `num_k_tiles` 不能再从整张输入 buffer 大小反推  
+   multi-core 下必须按 GEMM contract 的 `K / 32` 下发；single-core 之前只是偶然算对
+2. segmented GEMM writer 不能按整张 output tensor 形状消费 output CB  
+   每个 core 只应消费自己 `gemm_m_ x gemm_n_` 的一个 output tile
+3. `transpose_B=True` 时，reader 必须按 host-transposed tiled-B layout 计算 tile index  
+   multi-core 下 B tile 序列应是 `bx + kt * N_tiles`，不是未转置布局的连续 4 个 tile
+
+另有一项明确不在本阶段内、且仍未解决的独立问题：
+
+- `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 仍会生成非法 host shim（`kernel_error_code = ;`）
+- 这不是 formal `BlackholeModule` direct host path 的 blocker，因此没有与 Stage 3 direct-path 修复混做
 
 ---
 

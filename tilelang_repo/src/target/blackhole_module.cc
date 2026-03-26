@@ -288,6 +288,8 @@ static uint32_t ChoosePageSize(const ExecutableSpec& spec, const std::string& ro
 static uint32_t GetRuntimeNumKTiles(const ExecutableSpec& spec) {
   if (spec.gemm_contract.enabled) {
     constexpr uint32_t kBlackholeTileCols = 32;
+    ICHECK_EQ(spec.gemm_contract.K % kBlackholeTileCols, 0)
+        << "Blackhole GEMM direct path requires K to be 32-tile aligned";
     return std::max<uint32_t>(1, spec.gemm_contract.K / kBlackholeTileCols);
   }
   return 0;

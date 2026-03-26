@@ -5,7 +5,7 @@
 ## 当前阶段
 
 - **阶段**: Stage 3 — multi-core runtime 调度
-- **状态**: 设计完成，待实施
+- **状态**: ✅ formal direct host path 已完成；下一步回到 TT-Metal contract formalization，另有独立 wrapper/export blocker 待修
 - **日期**: 2026-03-26
 - **设计文档**: `tasks/dev_design/stage3_multicore_design.md`
 
@@ -13,8 +13,9 @@
 
 | 测试 | 结果 |
 |------|------|
-| `test_blackhole_copy_pipeline.py` | 16 passed, 1 xfailed |
-| `test_blackhole_gemm.py` | 4 passed, 1 skipped |
+| `test_blackhole_copy_pipeline.py` | 18 passed, 1 xfailed |
+| `test_blackhole_copy_runtime.py` | 6 passed |
+| `test_blackhole_gemm.py` | 7 passed |
 
 ---
 
@@ -29,7 +30,7 @@
 | Stage 2C | split-before 语义规划（AnnotateBlackholeCopySemantics） | ✅ |
 | Stage 2D | single-core GEMM + true E2E | ✅ |
 | Stage 2E | 设备资源 IR 语义扩展（StorageRank + Canonicalization） | ✅ |
-| **Stage 3** | **multi-core runtime 调度** | **⏳ 待实施** |
+| **Stage 3** | **multi-core runtime 调度** | **✅ direct host path 完成** |
 
 ---
 
@@ -42,13 +43,25 @@
 
 | Step | 内容 | 改动范围 | 依赖 | 状态 |
 |------|------|---------|------|------|
-| 1 | `AssignBlackholeCores` 解除 `cores_needed=1` | `assign_blackhole_cores.cc` ~5 行 | 无 | ⏳ |
-| 2 | `BlackholeModule` 单 Program 多核 launch | `blackhole_module.cc/h` ~40 行 | Step 1 | ⏳ |
-| 3 | Copy 多核 E2E 验证（TT-Sim） | 测试 | Step 1+2 | ⏳ |
-| 4 | GEMM 多核 E2E 验证（TT-Sim） | 测试（新 DSL kernel 用 `bx/by`） | Step 1+2 | ⏳ |
+| 1 | `AssignBlackholeCores` 解除 `cores_needed=1` | `assign_blackhole_cores.cc` | 无 | ✅ |
+| 2 | `BlackholeModule` 单 Program 多核 launch | `blackhole_module.cc/h` | Step 1 | ✅ |
+| 3 | Copy 多核 E2E 验证（TT-Sim） | 测试 | Step 1+2 | ✅ |
+| 4 | GEMM 多核 E2E 验证（TT-Sim） | 测试（新 DSL kernel 用 `bx/by`） | Step 1+2 | ✅ |
 | 5 | 文档同步与提交 | progress/design/memory | Step 3+4 | ⏳ |
 
 不在 Stage 3 范围：K 维度切分、核间数据流、semaphore/multicast
+
+### Stage 3 结果
+
+- copy multi-core direct host path 已完成并通过 TT-Sim：`test_blackhole_copy_runtime.py` `6 passed`
+- GEMM multi-core direct host path 已完成并通过 TT-Sim：`test_blackhole_gemm.py` `7 passed`
+- multicore GEMM 真正 blocker 是 direct path contract mismatch，不是 `core_plan`：
+  - host runtime 之前把 `num_k_tiles` 误从整张输入 buffer 大小推导，single-core 碰巧正确、multi-core 失真
+  - writer 之前按整张 output tensor 形状消费 output CB，导致 `cb_wait_front` 多消费而挂死
+  - `transpose_B=True` 时，reader 之前仍按未转置的 tile 线性序读 B，导致 multi-core 数值错误
+- 另有独立未解决 blocker：
+  - `tilelang.compile(..., execution_backend=\"tvm_ffi\")` 的 Blackhole wrapper/export path 仍会生成非法 host shim（`kernel_error_code = ;`）
+  - 这不是 formal direct host path 的 blocker，已明确与 Stage 3 direct path 分离
 
 ---
 
@@ -91,6 +104,7 @@
 | `PlanBlackholeCB` 是 MVP allocator | 低 | 当前足够 |
 | `StorageRewrite` 不兼容 Blackhole CB | — | 永久排除 |
 | copy/GEMM segment 模型不统一（fused_dataflow vs 3-kernel） | 中 | 架构债，Stage 3 后再做 |
+| `tilelang.compile/tvm_ffi` Blackhole wrapper/export 生成非法 host shim | 中 | 不阻塞 formal direct host path，但仍未解决 |
 
 ---
 
@@ -101,7 +115,7 @@
 | 文档 | 用途 | 状态 |
 |------|------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总设计 | 常青 |
-| `stage3_multicore_design.md` | 多核设计 | ⏳ 待实施 |
+| `stage3_multicore_design.md` | 多核设计 | ✅ 已实施（formal direct host path） |
 | `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P1/P2 ✅，P0 部分，P3-P5 未做） |
 
 ### 已完成（仍有参考价值）

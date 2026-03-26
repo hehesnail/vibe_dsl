@@ -4,6 +4,13 @@
 
 ## 未解决
 
+### `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 会生成非法 host shim
+
+- **时间**: 2026-03-26
+- **问题**: 走 `tilelang.compile(..., target="blackhole", execution_backend="tvm_ffi")` 时，生成的 host shim `lib0.c` 会出现 `int32_t kernel_error_code = ;` 这样的非法代码，导致编译失败
+- **影响**: 这是 Blackhole 的通用 wrapper/export blocker；即使最小 single-core copy probe 也能复现，不是 multicore GEMM 特有问题
+- **当前状态**: 未解决。已与 formal `BlackholeModule` direct host path 明确分离；不阻塞当前 Stage 3 direct-path E2E
+
 ### Blackhole direct path 缺少 TT-Metal 正式 contract 分层
 
 - **时间**: 2026-03-26
@@ -13,6 +20,22 @@
 - **当前状态**: 未解决。属于协议质量问题，不直接影响当前 GEMM basic 数值正确性。
 
 ## 已解决（仍有复用价值）
+
+### multicore GEMM direct path 会先挂死、再暴露 `transpose_B` 数值错误
+
+- **时间**: 2026-03-26
+- **问题**: `test_blackhole_gemm_multicore_direct_call` 在 formal `BlackholeModule` direct host path 下最初会挂在 `EnqueueMeshWorkload`，修掉挂死后又继续出现明显数值错误
+- **根本原因**:
+  - host runtime 之前把 GEMM `num_k_tiles` 从整张输入 buffer 字节数反推，single-core 碰巧等于 `K/32`，multi-core 下会放大成错误的 K-tile 次数
+  - segmented GEMM writer 之前按整张 output tensor 形状消费 output CB，而 compute 每个 core 只 `pack/push` 自己的一个 output tile，导致 writer 第二次 `cb_wait_front` 卡死
+  - `transpose_B=True` 时，reader 仍按未转置的 tile 线性序读取 B；single-core 因 `N_tiles=1` 未暴露，multi-core 才显式读错 tile
+- **解决**:
+  - `BlackholeModule` 的 GEMM `num_k_tiles` runtime arg 改为直接按 `spec.gemm_contract.K / 32` 下发
+  - `LowerBlackholeOps` 的 segmented GEMM writer 改为按 per-core `gemm_m_ x gemm_n_` output tile 生成 `write_tile_from_cb`
+  - `LowerBlackholeOps` 在 `transpose_B=True` 的 GEMM B-reader 路径上，按 host-transposed tiled layout 生成 tile index
+- **教训**:
+  - multi-core bring-up 不能只看 `core_plan` 和 launch；host transfer contract、reader tile index 和 writer tile consumption 只要有一层还保留 single-core 偶然成立的假设，就会在 multi-core 下立刻暴露
+  - 对 `transpose_B` 这类 contract，single-core `N_tiles=1` 很容易把错误掩盖掉；多核/多列 tile case 必须专门验证
 
 ### `fused_dataflow` 单段 runtime_args / KernelSpec 错位会让 direct runtime 静默读错或拿不到参数
 

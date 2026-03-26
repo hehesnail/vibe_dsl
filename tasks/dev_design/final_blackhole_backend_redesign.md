@@ -35,6 +35,8 @@ Blackhole 后端当前的正式目标收敛为三点：
 - `BlackholeDeviceResourceCanonicalization` 已引入 `StorageRank::kBlackholeCB` / `kBlackholeAccumulator`，generic pass 不再误解 Blackhole 资源
 - Copy single-core E2E 通过（16 passed, 1 xfailed）
 - GEMM single-core E2E 通过（4 passed, 1 skipped）：`transpose_B` + host tilize/untilize 已补齐
+- Copy multi-core E2E 通过（18 passed, 1 xfailed / runtime 6 passed）
+- GEMM multi-core formal direct host path E2E 通过（7 passed）：`num_k_tiles`、writer output-tile consumption、`transpose_B` tiled-B reader index 已收正
 - `scratch_l1_buffer_addr32` 全链路移除
 - legacy external runner 已删除
 
@@ -47,8 +49,9 @@ Blackhole 后端当前的正式目标收敛为三点：
 
 ### 当前活动
 
-- **Stage 3: multi-core runtime 调度**（设计完成，待实施）
-- 设计文档：`stage3_multicore_design.md`
+- **TT-Metal contract formalization / wrapper blocker 清理**
+- Stage 3 formal direct host path 已完成，设计文档：`stage3_multicore_design.md`
+- 独立未解决项：`tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 仍会生成非法 host shim
 
 ## 3. 正式架构
 

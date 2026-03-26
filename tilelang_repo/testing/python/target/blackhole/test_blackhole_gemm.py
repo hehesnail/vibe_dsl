@@ -193,6 +193,25 @@ def test_blackhole_gemm_contract_attr_is_materialized():
     assert bool(contract["transpose_B"]) is True
 
 
+def test_blackhole_multicore_gemm_lowering_respects_transposed_b_layout():
+    kernel = multicore_gemm_kernel()
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+
+    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.LowerBlackholeOps()(mod)
+
+    func_text = mod["main"].script()
+    assert func_text.count("tl.blackhole.write_tile_from_cb") == 1
+    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx, 1, 2048, 0)" in func_text
+    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx + 2, 1, 2048, 0)" in func_text
+    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx + 4, 1, 2048, 0)" in func_text
+    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx + 6, 1, 2048, 0)" in func_text
+
+
 def test_blackhole_gemm_basic():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
