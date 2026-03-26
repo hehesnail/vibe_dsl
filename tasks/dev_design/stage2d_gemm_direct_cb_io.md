@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage2d_gemm_direct_cb_io`
 - **日期**: 2026-03-26
-- **状态**: 进行中
+- **状态**: 已完成
 - **对应阶段**: Stage 2D Step 6 true E2E 验收
 - **前置上下文**:
   - `stage2d_cb_identity_protocol` 已实施完成

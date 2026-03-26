@@ -93,7 +93,7 @@
 7. ~~通用 pass 回收~~ ✅（FlattenBuffer/VectorizeLoop 已验证；StorageRewrite 永久排除）
 8. ~~GEMM 接入 Steps 1-5~~ ✅（CB identity 唯一协议已收正）
 9. ~~GEMM E2E 验收~~ ✅（transpose_B + host tilize/untilize 已补齐）
-10. multi-core
+10. **multi-core** — 设计见 `tasks/dev_design/stage3_multicore_design.md`
 
 ---
 

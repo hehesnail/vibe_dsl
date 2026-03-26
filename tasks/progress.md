@@ -4,28 +4,12 @@
 
 ## 当前阶段
 
-- **阶段**: Stage 2D Step 6 — GEMM direct-path E2E 验收（✅ 已完成）
+- **阶段**: Stage 3 — multi-core runtime 调度（⏳ 设计完成，待实施）
 - **日期**: 2026-03-26
 - **当前测试结果**：
   - `test_blackhole_copy_pipeline.py`: `16 passed, 1 xfailed`
-  - `test_blackhole_copy_runtime.py`（TT-Sim）: `5 passed`
   - `test_blackhole_gemm.py`: `4 passed, 1 skipped`
   - `test_blackhole_gemm_basic`：TT-Sim direct path 数值通过
-- **当前结论**：
-  - 本轮真实根因不是“CB 同步原语缺失”
-  - `LowerBlackholeOps` 生成的 reader/compute/writer TIR 已带正确的 `cb_reserve_back/cb_push_back/cb_wait_front/cb_pop_front`
-  - 当前 direct-path GEMM 错结果的真实根因是：
-    - `transpose_B` 语义在 Blackhole path 上被丢弃
-    - `BlackholeModule` 直接上传 row-major host tensor，没有按 TT-Metal matmul contract 做 host-side tilize / untilize
-  - 本轮已补：
-    - `blackhole.gemm_contract`
-    - `rt_mod_blackhole` → `ExecutableSpec` GEMM contract 传递
-    - `BlackholeModule` 对 GEMM 输入做 host-side transpose/tilize，对输出做 untilize
-    - copy `fused_dataflow` 单 kernel 改走 codegen 生成的 CB transport，不再走 scratch fallback
-    - copy/GEMM 主路径 runtime schema 移除 `scratch_l1_buffer_addr32`
-- **下一步**：
-  - GEMM compile-time ABI / dtype 分层正式化
-  - richer accessor / layout schema 进入 `ExecutableSpec`
 
 ---
 
@@ -33,58 +17,46 @@
 
 | 阶段 | 目标 | 状态 |
 |------|------|------|
-| Stage 0 | 协议与执行载体 | ✅ ExecutableSpec, rt_mod_blackhole, BlackholeModule |
+| Stage 0 | 协议与执行载体 | ✅ |
 | Stage 1 | single-core copy bring-up | ✅ |
-| Stage 2A | pass 主链接入 | ✅ AnnotateDeviceRegions → SplitHostDevice → MakePackedAPI → LowerDeviceKernelLaunch |
-| Stage 2B | single-core copy 正式主链 | ✅ direct path copy E2E on TT-Sim |
-| Stage 2C | split-before 语义规划 | ✅ AnnotateBlackholeCopySemantics + FlattenBuffer/VectorizeLoop; StorageRewrite 永久排除 |
-| Stage 2D | single-core true E2E | ✅ Steps 1-6 完成 |
-| Stage 2E | 设备资源 IR 语义扩展 | ✅ StorageRank + BlackholeDeviceResourceCanonicalization |
-| Stage 3 | multi-core runtime 调度 | ⏳ 未开始 |
+| Stage 2A | pass 主链接入 | ✅ |
+| Stage 2B | single-core copy 正式主链 | ✅ |
+| Stage 2C | split-before 语义规划 | ✅ |
+| Stage 2D | single-core true E2E | ✅ copy + GEMM |
+| Stage 2E | 设备资源 IR 语义扩展 | ✅ StorageRank + Canonicalization |
+| Stage 3 | multi-core runtime 调度 | ⏳ 设计完成，待实施 |
 
 ---
 
-## Stage 2D 当前状态
+## Stage 3 实施计划
 
-### 已完成
+设计文档：`tasks/dev_design/stage3_multicore_design.md`
 
-- Step 1: `LowerTileOp` Blackhole GEMM skip ✅
-- Step 2: `SplitBlackholeKernel` pass（3-kernel reader/compute/writer）✅
-- Step 3: `LowerBlackholeOps` GEMM lower + planner-driven CB binding ✅
-- Step 4: `rt_mod_blackhole` 多 segment extractor ✅
-- Step 5: `BlackholeModule` 3-kernel 注册 ✅
-- Step 6 前置: CB identity 唯一协议收正 ✅
-  - `LowerBlackholeOps` 统一用 `requirement_index`
-  - `PlanBlackholeCB` 回写 IR body，替换为最终 `cb_id`
-  - 删除 placeholder/alias 修补逻辑
+关键调研结论：
+- `blockIdx.*` 不被 `ZeroThreadAndLoopVars` 零化 → tile index 自动含 per-core offset
+- `BindThreadIndex` 已把 `blockIdx.x/y` → `work_id % grid_x` / `work_id / grid_x`
+- **copy 和 GEMM 多核都不需要改 lowering/codegen**，只需 host 侧分发 + DSL kernel 用 `bx/by` 索引
 
-### Step 6: GEMM E2E 验收（已完成）
+### 任务分解
 
-当前 blocker 和修复计划详见：
-- `tasks/dev_design/stage2d_gemm_direct_cb_io.md` — 根因分析
-- `tasks/dev_design/stage2d_ttmetal_contract_audit.md` — TT-Metal contract 缺口审计
-- `tasks/dev_design/2026-03-26-stage2d-gemm-contract-implementation-plan.md` — 实施计划
+| Step | 内容 | 改动范围 | 依赖 | 状态 |
+|------|------|---------|------|------|
+| 1 | `AssignBlackholeCores` 解除 `cores_needed=1` | `assign_blackhole_cores.cc` ~5 行 | 无 | ⏳ |
+| 2 | `BlackholeModule` 单 Program 多核 launch | `blackhole_module.cc/h` ~40 行 | Step 1 | ⏳ |
+| 3 | Copy 多核 E2E 验证（TT-Sim） | 测试 | Step 1+2 | ⏳ |
+| 4 | GEMM 多核 E2E 验证（TT-Sim） | 测试（新 DSL kernel） | Step 1+2 | ⏳ |
+| 5 | 文档同步与提交 | progress/design/memory | Step 3+4 | ⏳ |
 
-本轮实际完成：
-1. 复核 generated kernel source 与 lowered TIR，确认 CB 同步并未丢失
-2. 定位 `transpose_B` 与 host row-major upload / no-untilize 才是 direct-path 数值错误根因
-3. 新增 `blackhole.gemm_contract`，把 GEMM 维度与 transpose 语义从 lowering 传到 runtime
-4. `BlackholeModule` 按 contract 对 GEMM 输入做 host-side transpose/tilize，对输出做 untilize
-5. TT-Sim 验证：
-   - `test_blackhole_gemm_basic` 通过
-   - `test_blackhole_copy_runtime.py` 不回退
-6. copy `fused_dataflow` 单 kernel 改走 codegen CB transport，删除 `scratch_l1_buffer_addr32` 主路径依赖
-7. 删除 `tt_metal_repo/tt_metal/programming_examples/tilelang_gemm_test/`
+不在 Stage 3 范围：K 维度切分、核间数据流、semaphore/multicast
 
 ---
 
-## Copy 验收状态（已完成）
+## Stage 2D 完成记录
 
-- 32x32, 32x64, 64x32 staged copy ✅
-- grid > 1 (grid_x=2, grid_y=3, 96x64 float16) ✅
-- large-shape (800x1024 float16, 1.6MB) ✅
-- oversubscription 负例 (1024x1024, PlanBlackholeCB 编译期失败) ✅
-- 测试: 16 passed, 1 xfailed
+- Steps 1-6 全部完成
+- GEMM 根因：`transpose_B` 丢失 + host row-major upload 无 tilize/untilize
+- 已补：`blackhole.gemm_contract`、host-side transpose/tilize/untilize
+- 额外收正：`scratch_l1` 全链路移除、copy codegen 统一、`GetRuntimeArgVarForBuffer` preferred_kind 重构
 
 ---
 
@@ -92,17 +64,14 @@
 
 - `PlanBlackholeCB` 仍是 MVP allocator，非正式 memory planner
 - `StorageRewrite` 与 Blackhole CB 模型不兼容（永久排除）
-- copy 用 fused_dataflow 单 kernel，GEMM 用 3-kernel，导致 rt_mod/BlackholeModule 双路径维护（后续统一）
-- TT-Metal contract 缺层审计见 `stage2d_ttmetal_contract_audit.md`（本轮已补最小 host layout/transpose contract，P0/P1/P2/P3 仍有正式化欠账）
+- copy 用 fused_dataflow 单 kernel，GEMM 用 3-kernel（后续统一）
+- TT-Metal contract 缺层审计见 `stage2d_ttmetal_contract_audit.md`（P3-P5 仍有欠账）
 
 ---
 
 ## 当前活动设计文档
 
 - `final_blackhole_backend_redesign.md` — 唯一总设计
-- `stage2d_gemm_direct_cb_io.md` — GEMM CB transport 修复
-- `stage2d_ttmetal_contract_audit.md` — TT-Metal contract 审计
-- `2026-03-26-stage2d-gemm-contract-implementation-plan.md` — 实施计划
-- `stage2d_cb_identity_protocol.md` — CB identity 协议（已完成）
-- `stage2d_gemm_integration.md` — GEMM 接入设计
-- `stage2e_blackhole_device_resource_semantics.md` — 设备资源语义（已完成）
+- `stage3_multicore_design.md` — 多核设计（当前活动）
+- `stage2d_ttmetal_contract_audit.md` — TT-Metal contract 审计（已完成，结论仍有效）
+- `stage2d_gemm_direct_cb_io.md` — GEMM contract 修复（已完成）

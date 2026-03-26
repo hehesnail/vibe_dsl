@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage2d_ttmetal_contract_audit`
 - **日期**: 2026-03-26
-- **状态**: 进行中
+- **状态**: 已完成（审计结论有效；Stage 2D 实施已收正）
 - **对应阶段**: Stage 2D Step 6
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -465,30 +465,29 @@ TT-Metal 参考 case：
 
 ---
 
-## 8. 推荐执行顺序（2026-03-26 审查修正）
+## 8. 执行顺序（实际落地记录）
 
-> **原则变更**：原顺序把 schema 工程（P0/P1 全部）排在验证之前。审查后确认：
-> 当前 GEMM 数值错误的直接根因是 CB 同步原语缺失（5-10 行代码修复），
-> 不应等 schema 正式化之后才修。
+> **2026-03-26 实际结论**：CB 同步原语不是根因（lowered TIR 中已有）。
+> 真实根因是 `transpose_B` 丢失 + host row-major upload 无 tilize/untilize。
 
-修正后的执行顺序：
+已完成：
 
-1. **CB 同步修复**：`PrintReadTileToCB` 加 `cb_reserve_back/cb_push_back`，`PrintWriteTileFromCB` 加 `cb_wait_front/cb_pop_front` → **立即验证数值**
-2. **残余数值排查**：如果修同步后仍有误差，按生成 kernel source diff 逐项定位（transpose? dtype? tile index?）
-3. **scratch_l1 清理**：确认是死代码后删除
-4. **tilelang_gemm_test 清理**
-5. P0: GEMM compile-time ABI 正式化（Mt/Kt/Nt/transpose_B/dtype 分层进入 attrs）
-6. P1: CB transport schema 补齐
-7. P2: host layout / tilize-untilize
-8. P3: accessor / runtime work schema
-9. P4: copy/dataflow 泛化
-10. P5: multi-core synchronization 预埋
+1. ✅ 复核 generated kernel source 与 lowered TIR — 确认 CB 同步已成立
+2. ✅ 定位真实根因 — `transpose_B` + host tilize/untilize
+3. ✅ 新增 `blackhole.gemm_contract`（Mt/Kt/Nt/transpose_B）
+4. ✅ `BlackholeModule` host-side transpose/tilize/untilize
+5. ✅ `scratch_l1_buffer_addr32` 全链路移除
+6. ✅ `tilelang_gemm_test` 删除
+7. ✅ Copy codegen 统一回 `EmitKernelSourceForPrimFunc`（不再有 scratch fallback source）
+8. ✅ `GetRuntimeArgVarForBuffer` preferred_kind 重构
 
-核心变化：
+未完成（协议质量，不阻塞 Stage 3）：
 
-- **先修 bug（最小改动），再做 schema（协议质量）**
-- schema 工程不是 GEMM E2E 正确性的前置条件，是后续质量改进
-- 步骤 1-2 完成即可恢复 `test_blackhole_gemm_basic` true E2E
+- P0: GEMM compile-time ABI 正式化（Mt/Kt/Nt/transpose_B/dtype 分层进入 attrs）— `blackhole.gemm_contract` 已携带核心字段，正式化可后续推进
+- P1: CB transport schema — 已统一到 codegen CB transport，无 scratch
+- P3: accessor / runtime work schema
+- P4: copy/dataflow 泛化
+- P5: multi-core synchronization 预埋 → 见 `stage3_multicore_design.md`
 
 ---
 
