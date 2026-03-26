@@ -151,6 +151,57 @@ static bool IsTwoDimTensor(const DLTensor* tensor) {
   return tensor != nullptr && tensor->ndim == 2;
 }
 
+static std::pair<uint32_t, uint32_t> GetTensorShape2D(const DLTensor* tensor) {
+  ICHECK(IsTwoDimTensor(tensor));
+  return {static_cast<uint32_t>(tensor->shape[0]), static_cast<uint32_t>(tensor->shape[1])};
+}
+
+static void ValidateGemmInputShape(const ExecutableSpec& spec,
+                                   const RuntimeTensorBinding& binding,
+                                   uint32_t rows,
+                                   uint32_t cols) {
+  const auto& gemm = spec.gemm_contract;
+  const uint32_t logical_grid_x = std::max<uint32_t>(1, spec.core_plan.logical_grid_x);
+  const uint32_t logical_grid_y = std::max<uint32_t>(1, spec.core_plan.logical_grid_y);
+
+  if (binding.name == gemm.a_buffer) {
+    const uint32_t expected_rows = gemm.transpose_A ? gemm.K * logical_grid_y
+                                                    : gemm.M * logical_grid_y;
+    const uint32_t expected_cols = gemm.transpose_A ? gemm.M : gemm.K;
+    ICHECK(rows == expected_rows && cols == expected_cols)
+        << "Unexpected A tensor shape for GEMM direct path: got (" << rows << ", " << cols
+        << "), expected (" << expected_rows << ", " << expected_cols
+        << ") for logical grid " << logical_grid_y << "x" << logical_grid_x;
+    return;
+  }
+
+  if (binding.name == gemm.b_buffer) {
+    const uint32_t expected_rows = gemm.transpose_B ? gemm.N * logical_grid_x
+                                                    : gemm.K * logical_grid_x;
+    const uint32_t expected_cols = gemm.transpose_B ? gemm.K : gemm.N;
+    ICHECK(rows == expected_rows && cols == expected_cols)
+        << "Unexpected B tensor shape for GEMM direct path: got (" << rows << ", " << cols
+        << "), expected (" << expected_rows << ", " << expected_cols
+        << ") for transpose_B=" << gemm.transpose_B
+        << " and logical grid " << logical_grid_x << "x" << logical_grid_y;
+    return;
+  }
+}
+
+static void ValidateGemmOutputShape(const ExecutableSpec& spec,
+                                    uint32_t rows,
+                                    uint32_t cols) {
+  const auto& gemm = spec.gemm_contract;
+  const uint32_t logical_grid_x = std::max<uint32_t>(1, spec.core_plan.logical_grid_x);
+  const uint32_t logical_grid_y = std::max<uint32_t>(1, spec.core_plan.logical_grid_y);
+  const uint32_t expected_rows = gemm.M * logical_grid_y;
+  const uint32_t expected_cols = gemm.N * logical_grid_x;
+  ICHECK(rows == expected_rows && cols == expected_cols)
+      << "Unexpected C tensor shape for GEMM direct path: got (" << rows << ", " << cols
+      << "), expected (" << expected_rows << ", " << expected_cols
+      << ") for logical grid " << logical_grid_x << "x" << logical_grid_y;
+}
+
 static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
                                                    const RuntimeTensorBinding& binding) {
   const DLTensor* tensor = binding.tensor;
@@ -173,8 +224,8 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
   ICHECK(tensor->dtype.bits == 16)
       << "Only 16-bit GEMM inputs are currently supported for Blackhole host tilize";
   const auto* raw = static_cast<const uint16_t*>(tensor->data);
-  const uint32_t rows = static_cast<uint32_t>(tensor->shape[0]);
-  const uint32_t cols = static_cast<uint32_t>(tensor->shape[1]);
+  const auto [rows, cols] = GetTensorShape2D(tensor);
+  ValidateGemmInputShape(spec, binding, rows, cols);
 
   std::vector<uint16_t> tiled;
   if (binding.name == gemm.b_buffer && gemm.transpose_B) {
@@ -203,12 +254,14 @@ static void CopyOutputFromDeviceBuffer(const ExecutableSpec& spec,
     return;
   }
 
-  const auto& gemm = spec.gemm_contract;
   ICHECK(binding.tensor->dtype.code == kDLFloat && binding.tensor->dtype.bits == 32)
       << "Only float32 GEMM outputs are currently supported for Blackhole host untilize";
-  const uint32_t rows = static_cast<uint32_t>(binding.tensor->shape[0]);
-  const uint32_t cols = static_cast<uint32_t>(binding.tensor->shape[1]);
+  const auto [rows, cols] = GetTensorShape2D(binding.tensor);
+  ValidateGemmOutputShape(spec, rows, cols);
   const size_t numel = static_cast<size_t>(rows) * cols;
+  ICHECK(output_data.size() == numel * sizeof(float))
+      << "Unexpected GEMM output buffer size for " << binding.name << ": got "
+      << output_data.size() << " bytes, expected " << (numel * sizeof(float));
   const auto* tiled = reinterpret_cast<const float*>(output_data.data());
   std::vector<float> tiled_vec(tiled, tiled + numel);
   std::vector<float> row_major = untilize_nfaces(tiled_vec, rows, cols);
