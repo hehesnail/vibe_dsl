@@ -124,12 +124,10 @@ CoreAssignment AssignBlackholeCores::AnalyzeGrid(const PrimFunc& func) {
 // Calculate work distribution across cores
 void AssignBlackholeCores::CalculateWorkDistribution(CoreAssignment& assignment) {
   const int total_work = std::max(1, assignment.grid_x * assignment.grid_y);
+  const int available_cores = kBlackholeGridX * kBlackholeGridY;
 
-  // Stage 2 keeps Blackhole execution on a single physical core and models the
-  // logical grid explicitly in core_plan/work_packets. Multi-core distribution
-  // is deferred to Stage 3.
-  assignment.work_per_core = total_work;
-  assignment.cores_needed = 1;
+  assignment.work_per_core = 1;
+  assignment.cores_needed = std::min(total_work, available_cores);
 }
 
 // Calculate runtime args for a specific core

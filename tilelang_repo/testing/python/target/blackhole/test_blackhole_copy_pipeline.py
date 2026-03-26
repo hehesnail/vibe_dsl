@@ -288,10 +288,8 @@ def test_blackhole_core_plan_preserves_logical_block_launch():
     assert int(core_plan["logical_grid_x"]) == 2
     assert int(core_plan["logical_grid_y"]) == 3
     assert str(core_plan["linearization"]) == "row_major"
-    assert len(core_plan["physical_cores"]) == 1
-    assert len(core_plan["work_packets"]) == 1
-    assert int(core_plan["work_packets"][0]["work_offset"]) == 0
-    assert int(core_plan["work_packets"][0]["work_count"]) == 6
+    assert len(core_plan["physical_cores"]) == 6
+    assert len(core_plan["work_packets"]) == 6
 
     body_script = device_main.body.script()
     assert "tl.blackhole.read_tile_to_cb(A, by * 2 + bx, 32, 2048, 0)" in body_script
