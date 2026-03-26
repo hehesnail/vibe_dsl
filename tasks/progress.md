@@ -9,7 +9,7 @@
 - **当前测试结果**：
   - `test_blackhole_copy_pipeline.py`: `16 passed, 1 xfailed`
   - `test_blackhole_copy_runtime.py`（TT-Sim）: `5 passed`
-  - `test_blackhole_gemm.py`: `3 passed, 1 skipped`
+  - `test_blackhole_gemm.py`: `4 passed, 1 skipped`
   - `test_blackhole_gemm_basic`：TT-Sim direct path 数值通过
 - **当前结论**：
   - 本轮真实根因不是“CB 同步原语缺失”
@@ -21,8 +21,9 @@
     - `blackhole.gemm_contract`
     - `rt_mod_blackhole` → `ExecutableSpec` GEMM contract 传递
     - `BlackholeModule` 对 GEMM 输入做 host-side transpose/tilize，对输出做 untilize
+    - copy `fused_dataflow` 单 kernel 改走 codegen 生成的 CB transport，不再走 scratch fallback
+    - copy/GEMM 主路径 runtime schema 移除 `scratch_l1_buffer_addr32`
 - **下一步**：
-  - `scratch_l1_buffer_addr32` 死代码确认与移除
   - GEMM compile-time ABI / dtype 分层正式化
   - richer accessor / layout schema 进入 `ExecutableSpec`
 
@@ -72,7 +73,8 @@
 5. TT-Sim 验证：
    - `test_blackhole_gemm_basic` 通过
    - `test_blackhole_copy_runtime.py` 不回退
-6. 删除 `tt_metal_repo/tt_metal/programming_examples/tilelang_gemm_test/`
+6. copy `fused_dataflow` 单 kernel 改走 codegen CB transport，删除 `scratch_l1_buffer_addr32` 主路径依赖
+7. 删除 `tt_metal_repo/tt_metal/programming_examples/tilelang_gemm_test/`
 
 ---
 

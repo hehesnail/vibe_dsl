@@ -14,6 +14,25 @@
 
 ## 已解决（仍有复用价值）
 
+### `fused_dataflow` 单段 runtime_args / KernelSpec 错位会让 direct runtime 静默读错或拿不到参数
+
+- **时间**: 2026-03-26
+- **问题**: copy `fused_dataflow` 从 scratch fallback 切回 codegen 主路径后，编译侧最初报 `Missing runtime arg binding for buffer var: A`；修掉后 direct runtime 又出现 `kernel[0] count=0`，结果全零
+- **根本原因**:
+  - `blackhole.segment_plan` 的单段 `fused_dataflow` 没有自己携带 `runtime_args`
+  - `MakeSegmentPrimFunc` / `PopulateKernelSpecsForDeviceFunc` 之前直接使用空的 `segment.runtime_args`
+  - 结果是：
+    - codegen 侧丢失原函数上的 `blackhole.runtime_args`
+    - runtime 侧 `KernelSpec.runtime_args` 也变成空数组
+- **解决**:
+  - 单段 `fused_dataflow` segment 必须继承原函数上的 `blackhole.runtime_args`
+  - `KernelSpec.runtime_args` 也必须回退到 `ExecutableSpec.runtime_args`
+  - codegen 对 copy builtins 的 buffer 绑定在按名字恢复失败时，按 `input_buffer_addr*` / `output_buffer_addr*` 角色回退
+- **教训**:
+  - segment source 和 runtime launch schema 必须同时继承，不然会出现“源码有 arg load / launch 没下发”或反过来的错位
+  - 对单段 `fused_dataflow`，不能默认 `segment.runtime_args` 一定存在
+  - `scratch` fallback 一旦删除，就会立刻暴露 schema 继承问题，这正说明 fallback 之前在掩盖主路径错位
+
 ### GEMM direct-path 数值错误由 `transpose_B` 丢失和 host row-major upload 引起
 
 - **时间**: 2026-03-26

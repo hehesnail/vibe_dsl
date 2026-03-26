@@ -195,13 +195,20 @@ host 侧期望的矩阵语义仍然不一致。
 2. output dtype 分层 — 确认 accumulator 与 output CB 是否 dtype 一致
 3. tile 索引公式 — 确认 A/B/C 的 linear index 是否与参考一致
 
-### 5.3 `scratch_l1_buffer_addr32` 退出主协议（需先验证安全性）
+### 5.3 `scratch_l1_buffer_addr32` 已退出主协议
 
-在确认 copy 路径也不再依赖 scratch 之后：
+本轮实际落地：
 
-- copy/GEMM 主路径的 runtime arg schema 移除 `scratch_l1_buffer_addr32`
-- `BlackholeModule` 不再为主路径分配、下发或解释这类 scratch 参数
-- **前提**：先跑 copy runtime tests 回归确认 scratch 是死代码
+- copy `fused_dataflow` 单 kernel 不再走 `rt_mod_blackhole` 的 scratch fallback source
+- copy 与 GEMM 都统一回到 codegen 生成的 CB transport
+- copy/GEMM 主路径的 runtime arg schema 已移除 `scratch_l1_buffer_addr32`
+- `BlackholeModule` 不再为主路径分配、下发或解释 scratch L1 buffer
+
+额外修正：
+
+- `fused_dataflow` 单 segment 必须继承原函数的 `blackhole.runtime_args`
+- `KernelSpec` 也必须继承该 runtime arg schema，不能只让 segment source 继承
+- codegen 对 `read_tile_to_cb` / `write_tile_from_cb` 的 buffer 绑定，优先按 `buffer` 名，恢复失败时按 `input_buffer_addr*` / `output_buffer_addr*` 角色回退
 
 ### 5.4 GEMM schema 正式化（协议质量，排在正确性之后）
 
@@ -237,7 +244,7 @@ host 侧期望的矩阵语义仍然不一致。
 1. **导出当前 GEMM 3-kernel 生成代码**，与 TT-Metal `matmul_single_core` 参考逐行对比，确认问题不在 CB 同步
 2. **补 `blackhole.gemm_contract`**，让 `transpose_B` 与 GEMM 维度进入 runtime/spec
 3. **补 host-side transpose / tilize / untilize**
-4. **确认 `scratch_l1` 是否是死代码** → copy runtime tests 回归 → 如果是就删
+4. **移除 `scratch_l1` 主路径依赖**（已完成）
 5. **删除 `tilelang_gemm_test`**（低风险清理，已完成）
 6. **Schema 收正**（Mt/Kt/Nt/transpose_B/dtype 分层）— 作为协议质量改进
 7. **Accessor schema** — 留给 P3/Stage 3

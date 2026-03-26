@@ -160,7 +160,8 @@ class CodeGenBlackhole : public CodeGenCHost {
   void EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f);
   void LoadCorePlan(const tvm::tir::PrimFunc &f);
   std::string GetRuntimeArgVarByKind(const std::string &kind) const;
-  std::string GetRuntimeArgVarForBuffer(const tvm::PrimExpr &buffer_expr) const;
+  std::string GetRuntimeArgVarForBuffer(const tvm::PrimExpr &buffer_expr,
+                                        const char* preferred_kind = nullptr) const;
   int ResolveCBId(const tvm::PrimExpr &expr) const;
   void PrintResolvedCBId(const tvm::PrimExpr &expr, std::ostream &os) const;
   int GetCBPageSize(int cb_id) const;

@@ -282,13 +282,6 @@ static KernelHandle CreateKernelFromSpec(
           .compile_args = kernel.compile_time_args});
 }
 
-static bool KernelNeedsScratchL1(const KernelSpec& kernel) {
-  for (const auto& arg : kernel.runtime_args) {
-    if (arg.kind == "scratch_l1_buffer_addr32") return true;
-  }
-  return false;
-}
-
 struct RuntimeBufferBinding {
   std::shared_ptr<distributed::MeshBuffer> mesh_buffer;
   size_t size_bytes{0};
@@ -325,7 +318,6 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
     const std::vector<std::string>& input_names,
     const std::vector<std::string>& output_names,
-    const distributed::MeshBuffer* scratch_l1_buffer,
     const std::vector<uint32_t>& scalar_args) {
   std::vector<uint32_t> args;
   size_t scalar_index = 0;
@@ -361,10 +353,6 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
                                     : static_cast<uint32_t>(binding.size_bytes / tile_size));
     } else if (arg_spec.kind == "current_work_linear_id") {
       args.push_back(current_work_linear_id);
-    } else if (arg_spec.kind == "scratch_l1_buffer_addr32") {
-      ICHECK(scratch_l1_buffer != nullptr)
-          << "Spec requested scratch L1 buffer but none was allocated";
-      args.push_back(static_cast<uint32_t>(scratch_l1_buffer->address()));
     } else if (arg_spec.kind == "scalar_u32") {
       ICHECK(scalar_index < scalar_args.size())
           << "Spec requested more scalar args than provided";
@@ -518,28 +506,6 @@ void BlackholeModuleNode::ExecuteDirect(
     ordered_output_names = output_names;
   }
 
-  // Create scratch L1 buffer if any kernel needs it
-  std::shared_ptr<distributed::MeshBuffer> scratch_l1_buffer;
-  bool needs_scratch_l1 = false;
-  for (const auto& kernel_spec : spec.kernels) {
-    if (KernelNeedsScratchL1(kernel_spec)) {
-      needs_scratch_l1 = true;
-      break;
-    }
-  }
-  if (needs_scratch_l1) {
-    uint32_t scratch_size = input_page_size;
-    for (const auto& cb : spec.cb_configs) {
-      scratch_size = std::max(scratch_size, cb.num_pages * cb.page_size_bytes);
-    }
-    distributed::DeviceLocalBufferConfig scratch_l1_config{
-        .page_size = scratch_size,
-        .buffer_type = BufferType::L1};
-    distributed::ReplicatedBufferConfig scratch_l1_buffer_config{.size = scratch_size};
-    scratch_l1_buffer = distributed::MeshBuffer::create(
-        scratch_l1_buffer_config, scratch_l1_config, mesh_device.get());
-  }
-
   // Build work items: pair each logical work_id with its assigned physical core.
   // Each WorkPacket entry owns a slice of the logical work range on one core.
   struct WorkItem {
@@ -601,7 +567,6 @@ void BlackholeModuleNode::ExecuteDirect(
 
       auto runtime_args = BuildRuntimeArgsFromSpec(
           kernel_spec, spec, item.work_id, runtime_buffers, input_names, ordered_output_names,
-          scratch_l1_buffer ? scratch_l1_buffer.get() : nullptr,
           scalar_args);
 
       LOG(INFO) << "Direct path: set runtime args kernel[" << ki

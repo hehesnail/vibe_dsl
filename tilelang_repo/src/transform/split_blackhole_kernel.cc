@@ -327,7 +327,6 @@ static void StoreGemmSegmentPlan(PrimFunc& func,
   }
   reader_args.push_back(make_arg("num_k_tiles", "num_k_tiles"));
   reader_args.push_back(make_arg("current_work_linear_id", "current_work_linear_id"));
-  reader_args.push_back(make_arg("scratch_l1_addr", "scratch_l1_buffer_addr32"));
   reader.Set("runtime_args", reader_args);
 
   // Compute kernel (TRISC)
@@ -350,7 +349,6 @@ static void StoreGemmSegmentPlan(PrimFunc& func,
                                    output_buf_name));
   }
   writer_args.push_back(make_arg("current_work_linear_id", "current_work_linear_id"));
-  writer_args.push_back(make_arg("scratch_l1_addr", "scratch_l1_buffer_addr32"));
   writer.Set("runtime_args", writer_args);
 
   Array<Any> kernels;

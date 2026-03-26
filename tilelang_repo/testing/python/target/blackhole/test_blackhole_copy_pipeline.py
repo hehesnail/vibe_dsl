@@ -81,7 +81,6 @@ def test_blackhole_copy_pass_attrs():
         "output_buffer_addr32",
         "current_work_linear_id",
         "tile_count",
-        "scratch_l1_buffer_addr32",
     ]
     assert str(runtime_args[0]["buffer"]) == "A"
     assert str(runtime_args[1]["buffer"]) == "B"
@@ -153,7 +152,6 @@ def test_blackhole_copy_semantics_survives_flatten_and_vectorize():
         "output_buffer_addr32",
         "current_work_linear_id",
         "tile_count",
-        "scratch_l1_buffer_addr32",
     ]
     assert str(runtime_args[0]["buffer"]) == "A"
     assert str(runtime_args[1]["buffer"]) == "B"
@@ -267,9 +265,13 @@ def test_blackhole_copy_codegen_uses_runtime_schema():
     assert "uint32_t B_addr = get_arg_val<uint32_t>(1);" in source
     assert "uint32_t current_work_linear_id = get_arg_val<uint32_t>(2);" in source
     assert "uint32_t tile_count = get_arg_val<uint32_t>(3);" in source
-    assert "uint32_t scratch_l1_addr = get_arg_val<uint32_t>(4);" in source
     assert "src_dram_addr" not in source
     assert "dst_dram_addr" not in source
+    assert "scratch_l1_addr" not in source
+    assert "cb_reserve_back(" in source
+    assert "cb_push_back(" in source
+    assert "cb_wait_front(" in source
+    assert "cb_pop_front(" in source
 
 
 def test_blackhole_core_plan_preserves_logical_block_launch():
