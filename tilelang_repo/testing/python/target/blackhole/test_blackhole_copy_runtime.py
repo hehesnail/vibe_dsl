@@ -60,7 +60,7 @@ def test_blackhole_module_direct_call_rectangular_tiles():
     )
 
 
-def test_blackhole_module_direct_call_grid_indexed_copy():
+def test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -76,6 +76,14 @@ def test_blackhole_module_direct_call_grid_indexed_copy():
     kernel = grid_indexed_staged_copy_kernel(grid_x=grid_x, grid_y=grid_y)
     with target:
         artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    core_plan = device_main.attrs["blackhole.core_plan"]
+    assert int(core_plan["logical_grid_x"]) == grid_x
+    assert int(core_plan["logical_grid_y"]) == grid_y
+    assert len(core_plan["physical_cores"]) == 6
+    assert len(core_plan["work_packets"]) == 6
 
     artifact.codegen_mod["main"](a_torch, b_output)
     assert_tensors_close_or_dump(

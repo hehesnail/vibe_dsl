@@ -239,25 +239,28 @@ static uint32_t ChoosePageSize(const ExecutableSpec& spec, const std::string& ro
 }
 
 static void CreateCircularBuffersFromSpec(
-    Program& program, const CoreCoord& core, const ExecutableSpec& spec) {
+    Program& program,
+    const std::variant<CoreCoord, CoreRange, CoreRangeSet>& core_spec,
+    const ExecutableSpec& spec) {
   for (const auto& cb : spec.cb_configs) {
     uint32_t total_size = cb.num_pages * cb.page_size_bytes;
     CircularBufferConfig cb_config(
         total_size,
         {{static_cast<uint8_t>(cb.cb_id), ParseDataFormat(cb.data_format)}});
     cb_config.set_page_size(static_cast<uint8_t>(cb.cb_id), cb.page_size_bytes);
-    CreateCircularBuffer(program, core, cb_config);
+    CreateCircularBuffer(program, core_spec, cb_config);
   }
 }
 
 static KernelHandle CreateKernelFromSpec(
-    Program& program, const CoreCoord& core,
+    Program& program,
+    const std::variant<CoreCoord, CoreRange, CoreRangeSet>& core_spec,
     const KernelSpec& kernel, const std::string& kernel_path) {
   if (kernel.core_type == "trisc" || kernel.kind == "compute") {
     return CreateKernel(
         program,
         kernel_path,
-        core,
+        core_spec,
         ComputeConfig{
             .math_fidelity = MathFidelity::HiFi4,
             .fp32_dest_acc_en = true,
@@ -275,7 +278,7 @@ static KernelHandle CreateKernelFromSpec(
   return CreateKernel(
       program,
       kernel_path,
-      core,
+      core_spec,
       DataMovementConfig{
           .processor = processor,
           .noc = noc,
@@ -528,6 +531,16 @@ void BlackholeModuleNode::ExecuteDirect(
     work_items.push_back({0, fallback});
   }
 
+  std::vector<CoreCoord> launch_cores;
+  launch_cores.reserve(work_items.size());
+  for (const auto& item : work_items) {
+    launch_cores.push_back(item.core);
+  }
+  std::sort(launch_cores.begin(), launch_cores.end());
+  launch_cores.erase(std::unique(launch_cores.begin(), launch_cores.end()), launch_cores.end());
+  ICHECK(!launch_cores.empty()) << "No launch cores resolved for direct execution";
+  const CoreRangeSet launch_core_ranges(launch_cores);
+
   // Write kernel source files to temp directory
   std::string tmp_dir = MakeUniqueTempDir("tilelang_bh_direct_");
 
@@ -545,43 +558,48 @@ void BlackholeModuleNode::ExecuteDirect(
     kernel_paths.push_back(kernel_path);
   }
 
-  // Execute each work item on its assigned physical core.
   LOG(INFO) << "Direct path: executing " << work_items.size()
-            << " logical work items for " << func_name;
+            << " logical work items across " << launch_cores.size()
+            << " launch cores for " << func_name;
 
+  Program program = CreateProgram();
+
+  // Materialize shared CBs and kernels once for the full launch core set.
+  CreateCircularBuffersFromSpec(program, launch_core_ranges, spec);
+
+  std::vector<KernelHandle> kernels;
+  kernels.reserve(spec.kernels.size());
+  for (size_t ki = 0; ki < spec.kernels.size(); ++ki) {
+    const auto& kernel_spec = spec.kernels[ki];
+    LOG(INFO) << "Direct path: create kernel[" << ki << "] kind=" << kernel_spec.kind
+              << " core_type=" << kernel_spec.core_type;
+    kernels.push_back(CreateKernelFromSpec(program, launch_core_ranges, kernel_spec,
+                                           kernel_paths[ki]));
+  }
+
+  // Keep runtime args per core/work-item so each logical work item sees its own ID.
   for (const auto& item : work_items) {
-    LOG(INFO) << "Direct path: begin work_id=" << item.work_id
+    LOG(INFO) << "Direct path: configure work_id=" << item.work_id
               << " core=(" << item.core.x << "," << item.core.y << ")";
-    Program program = CreateProgram();
-
-    // Create circular buffers for this program
-    CreateCircularBuffersFromSpec(program, item.core, spec);
-
-    // Create and configure each kernel
     for (size_t ki = 0; ki < spec.kernels.size(); ++ki) {
       const auto& kernel_spec = spec.kernels[ki];
-      LOG(INFO) << "Direct path: create kernel[" << ki << "] kind=" << kernel_spec.kind
-                << " core_type=" << kernel_spec.core_type;
-      KernelHandle kernel = CreateKernelFromSpec(
-          program, item.core, kernel_spec, kernel_paths[ki]);
-
       auto runtime_args = BuildRuntimeArgsFromSpec(
           kernel_spec, spec, item.work_id, runtime_buffers, input_names, ordered_output_names,
           scalar_args);
 
       LOG(INFO) << "Direct path: set runtime args kernel[" << ki
-                << "] count=" << runtime_args.size();
-      SetRuntimeArgs(program, kernel, item.core, runtime_args);
+                << "] core=(" << item.core.x << "," << item.core.y
+                << ") count=" << runtime_args.size();
+      SetRuntimeArgs(program, kernels[ki], item.core, runtime_args);
     }
-
-    // Execute program on device
-    LOG(INFO) << "Direct path: enqueue workload for work_id=" << item.work_id;
-    distributed::MeshWorkload workload;
-    distributed::MeshCoordinateRange device_range(mesh_device->shape());
-    workload.add_program(device_range, std::move(program));
-    distributed::EnqueueMeshWorkload(cq, workload, /*blocking=*/true);
-    LOG(INFO) << "Direct path: completed workload for work_id=" << item.work_id;
   }
+
+  // Execute the full program once across the multi-core launch set.
+  distributed::MeshWorkload workload;
+  distributed::MeshCoordinateRange device_range(mesh_device->shape());
+  workload.add_program(device_range, std::move(program));
+  LOG(INFO) << "Direct path: enqueue multi-core workload for " << func_name;
+  distributed::EnqueueMeshWorkload(cq, workload, /*blocking=*/true);
 
   // Read back results
   for (const auto& binding : buffer_args) {
