@@ -16,6 +16,7 @@ from .common import (
 )
 from .test_blackhole_copy_pipeline import (
     _extract_blackhole_executable_spec,
+    _expected_launch_spec_for_core_type,
     _require_blackhole_kernel,
     _require_spec_entry,
 )
@@ -372,9 +373,10 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
 
     assert "launch_spec" in reader
     reader_launch_spec = reader["launch_spec"]
-    assert str(reader_launch_spec["core_type"]) == "brisc"
-    assert str(reader_launch_spec["processor"]) == "riscv_0"
-    assert str(reader_launch_spec["noc"]) == "riscv_0_default"
+    expected_reader_launch_spec = _expected_launch_spec_for_core_type(reader["core_type"])
+    assert str(reader_launch_spec["core_type"]) == expected_reader_launch_spec["core_type"]
+    assert str(reader_launch_spec["processor"]) == expected_reader_launch_spec["processor"]
+    assert str(reader_launch_spec["noc"]) == expected_reader_launch_spec["noc"]
 
     assert "compile_time_arg_specs" in compute
     compute_compile_time_arg_specs = compute["compile_time_arg_specs"]
@@ -401,9 +403,10 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
 
     assert "launch_spec" in compute
     compute_launch_spec = compute["launch_spec"]
-    assert str(compute_launch_spec["core_type"]) == "trisc"
-    assert str(compute_launch_spec["processor"]) == ""
-    assert str(compute_launch_spec["noc"]) == ""
+    expected_compute_launch_spec = _expected_launch_spec_for_core_type(compute["core_type"])
+    assert str(compute_launch_spec["core_type"]) == expected_compute_launch_spec["core_type"]
+    assert str(compute_launch_spec["processor"]) == expected_compute_launch_spec["processor"]
+    assert str(compute_launch_spec["noc"]) == expected_compute_launch_spec["noc"]
 
     assert "compile_time_arg_specs" in writer
     writer_compile_time_arg_specs = writer["compile_time_arg_specs"]
@@ -424,9 +427,19 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
 
     assert "launch_spec" in writer
     writer_launch_spec = writer["launch_spec"]
-    assert str(writer_launch_spec["core_type"]) == "ncrisc"
-    assert str(writer_launch_spec["processor"]) == "riscv_1"
-    assert str(writer_launch_spec["noc"]) == "riscv_1_default"
+    expected_writer_launch_spec = _expected_launch_spec_for_core_type(writer["core_type"])
+    assert str(writer_launch_spec["core_type"]) == expected_writer_launch_spec["core_type"]
+    assert str(writer_launch_spec["processor"]) == expected_writer_launch_spec["processor"]
+    assert str(writer_launch_spec["noc"]) == expected_writer_launch_spec["noc"]
+
+
+def test_blackhole_gemm_compile_time_abi_rejects_misaligned_shapes():
+    kernel = gemm_kernel(M=48, N=32, K=128)
+    target = Target("blackhole")
+
+    with pytest.raises(Exception, match="aligned to 32"):
+        with target:
+            lower(kernel, target=target)
 
 
 def test_blackhole_gemm_direct_runtime_rejects_sharded_accessor_schema():

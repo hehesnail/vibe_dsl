@@ -506,15 +506,15 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
     attrs = func->attrs->dict;
   }
 
-  auto make_launch_spec = [](const std::string& kind) -> Map<String, Any> {
-    if (kind == "reader" || kind == "fused_dataflow") {
-      return MakeLaunchSpec("brisc", "riscv_0", "riscv_0_default");
+  auto make_launch_spec = [](const std::string& core_type) -> Map<String, Any> {
+    if (core_type == "brisc") {
+      return MakeLaunchSpec(core_type, "riscv_0", "riscv_0_default");
     }
-    if (kind == "writer") {
-      return MakeLaunchSpec("ncrisc", "riscv_1", "riscv_1_default");
+    if (core_type == "ncrisc") {
+      return MakeLaunchSpec(core_type, "riscv_1", "riscv_1_default");
     }
-    if (kind == "compute") {
-      return MakeLaunchSpec("trisc", "", "");
+    if (core_type == "trisc") {
+      return MakeLaunchSpec(core_type, "", "");
     }
     return Map<String, Any>();
   };
@@ -568,9 +568,15 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
     if (gemm_a_buffer_name_.empty() || gemm_b_buffer_name_.empty() || gemm_c_buffer_name_.empty()) {
       return compile_time_arg_specs;
     }
-    const int mt = std::max(1, gemm_m_ / kBlackholeTileRows);
-    const int kt = std::max(1, gemm_k_ / kBlackholeTileCols);
-    const int nt = std::max(1, gemm_n_ / kBlackholeTileCols);
+    ICHECK_EQ(gemm_m_ % kBlackholeTileRows, 0)
+        << "Blackhole GEMM compile-time ABI requires M to be 32-aligned";
+    ICHECK_EQ(gemm_k_ % kBlackholeTileCols, 0)
+        << "Blackhole GEMM compile-time ABI requires K to be 32-aligned";
+    ICHECK_EQ(gemm_n_ % kBlackholeTileCols, 0)
+        << "Blackhole GEMM compile-time ABI requires N to be 32-aligned";
+    const int mt = gemm_m_ / kBlackholeTileRows;
+    const int kt = gemm_k_ / kBlackholeTileCols;
+    const int nt = gemm_n_ / kBlackholeTileCols;
     compile_time_arg_specs.push_back(MakeCompileTimeArgSpec(
         "gemm_shape",
         "gemm_shape",
@@ -669,7 +675,10 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
       }
       segment.Set("accessors", accessors);
       segment.Set("compile_time_arg_specs", compile_time_arg_specs);
-      Map<String, Any> launch_spec = make_launch_spec(kind);
+      Map<String, Any> launch_spec =
+          make_launch_spec(segment.Get("core_type")
+                               ? static_cast<std::string>(Downcast<String>(segment.Get("core_type").value()))
+                               : std::string());
       if (!launch_spec.empty()) {
         segment.Set("launch_spec", launch_spec);
       }

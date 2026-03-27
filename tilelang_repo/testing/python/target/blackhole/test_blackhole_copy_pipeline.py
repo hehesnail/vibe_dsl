@@ -132,6 +132,17 @@ def _require_spec_entry(entries, *, kind, label, buffer=None):
     return matches[0]
 
 
+def _expected_launch_spec_for_core_type(core_type):
+    core_type = str(core_type)
+    if core_type == "brisc":
+        return {"core_type": "brisc", "processor": "riscv_0", "noc": "riscv_0_default"}
+    if core_type == "ncrisc":
+        return {"core_type": "ncrisc", "processor": "riscv_1", "noc": "riscv_1_default"}
+    if core_type == "trisc":
+        return {"core_type": "trisc", "processor": "", "noc": ""}
+    pytest.fail(f"Unsupported Blackhole core_type for launch spec expectation: {core_type!r}")
+
+
 def _with_richer_accessor_schema(func, common_runtime_args=None, layout_override=None):
     richer_segments = []
     for segment in func.attrs["blackhole.segment_plan"]:
@@ -302,9 +313,10 @@ def test_blackhole_copy_compile_time_abi_is_materialized():
 
     assert "launch_spec" in kernel_spec
     launch_spec = kernel_spec["launch_spec"]
-    assert str(launch_spec["core_type"]) == "brisc"
-    assert str(launch_spec["processor"]) == "riscv_0"
-    assert str(launch_spec["noc"]) == "riscv_0_default"
+    expected_launch_spec = _expected_launch_spec_for_core_type(kernel_spec["core_type"])
+    assert str(launch_spec["core_type"]) == expected_launch_spec["core_type"]
+    assert str(launch_spec["processor"]) == expected_launch_spec["processor"]
+    assert str(launch_spec["noc"]) == expected_launch_spec["noc"]
 
 
 def test_blackhole_copy_semantics_annotation_schema():
