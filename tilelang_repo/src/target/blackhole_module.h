@@ -182,12 +182,18 @@ struct KernelComputeConfigSpec {
   bool fp32_dest_acc_en = false;
   bool math_approx_mode = false;
   std::vector<std::string> unpack_to_dest_mode;
+  bool clear_accum = false;
+  uint32_t k_pack = 1;
+  int32_t wg_wait = 0;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
     writer->WriteObjectKeyValue("math_fidelity", math_fidelity);
     writer->WriteObjectKeyValue("fp32_dest_acc_en", fp32_dest_acc_en);
     writer->WriteObjectKeyValue("math_approx_mode", math_approx_mode);
+    writer->WriteObjectKeyValue("clear_accum", clear_accum);
+    writer->WriteObjectKeyValue("k_pack", static_cast<int64_t>(k_pack));
+    writer->WriteObjectKeyValue("wg_wait", static_cast<int64_t>(wg_wait));
     if (!unpack_to_dest_mode.empty()) {
       writer->WriteObjectKeyValue("unpack_to_dest_mode", unpack_to_dest_mode);
     } else {
@@ -351,6 +357,9 @@ struct ComputeContractSpec {
   bool fp32_dest_acc_en = false;
   bool math_approx_mode = false;
   std::vector<std::string> unpack_to_dest_mode;
+  bool clear_accum = false;
+  uint32_t k_pack = 1;
+  int32_t wg_wait = 0;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -382,6 +391,9 @@ struct ComputeContractSpec {
     writer->WriteObjectKeyValue("math_fidelity", math_fidelity);
     writer->WriteObjectKeyValue("fp32_dest_acc_en", fp32_dest_acc_en);
     writer->WriteObjectKeyValue("math_approx_mode", math_approx_mode);
+    writer->WriteObjectKeyValue("clear_accum", clear_accum);
+    writer->WriteObjectKeyValue("k_pack", static_cast<int64_t>(k_pack));
+    writer->WriteObjectKeyValue("wg_wait", static_cast<int64_t>(wg_wait));
     if (!unpack_to_dest_mode.empty()) {
       writer->WriteObjectKeyValue("unpack_to_dest_mode", unpack_to_dest_mode);
     } else {

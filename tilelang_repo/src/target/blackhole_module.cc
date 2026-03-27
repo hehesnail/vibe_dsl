@@ -557,6 +557,8 @@ static std::vector<uint32_t> BuildKernelCompileTimeArgsFromSchema(
       AppendAccessorCompileTimeArgs(spec, buffer_bindings, &compile_time_args);
     } else if (spec.kind == "gemm_shape" || spec.kind == "gemm_transpose_flags" ||
                spec.kind == "gemm_block_shape" || spec.kind == "gemm_subblock_shape" ||
+               spec.kind == "gemm_clear_accum" || spec.kind == "gemm_k_pack" ||
+               spec.kind == "gemm_wg_wait" ||
                spec.kind == "literal_u32") {
       AppendCompileTimeArgValues(spec, &compile_time_args);
     } else {

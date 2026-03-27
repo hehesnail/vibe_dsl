@@ -419,6 +419,9 @@ static ComputeContractSpec ComputeContractFromLegacyGemm(const GemmContractSpec&
   contract.math_fidelity = "HiFi4";
   contract.fp32_dest_acc_en = true;
   contract.math_approx_mode = false;
+  contract.clear_accum = false;
+  contract.k_pack = 1;
+  contract.wg_wait = 0;
   return contract;
 }
 
@@ -515,6 +518,15 @@ static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
   if (auto v = attrs.Get("math_approx_mode")) {
     contract.math_approx_mode = Downcast<Bool>(v.value());
   }
+  if (auto v = attrs.Get("clear_accum")) {
+    contract.clear_accum = Downcast<Bool>(v.value());
+  }
+  if (auto v = attrs.Get("k_pack")) {
+    contract.k_pack = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = attrs.Get("wg_wait")) {
+    contract.wg_wait = static_cast<int32_t>(Downcast<Integer>(v.value())->value);
+  }
   if (auto v = attrs.Get("unpack_to_dest_mode")) {
     for (const auto& mode : Downcast<ffi::Array<ffi::Any>>(v.value())) {
       contract.unpack_to_dest_mode.push_back(Downcast<String>(mode));
@@ -554,13 +566,24 @@ static bool ExtractComputeConfig(const ffi::Map<ffi::String, ffi::Any>& spec_inf
   if (auto v = spec_info.Get("math_approx_mode")) {
     compute_config->math_approx_mode = Downcast<Bool>(v.value());
   }
+  if (auto v = spec_info.Get("clear_accum")) {
+    compute_config->clear_accum = Downcast<Bool>(v.value());
+  }
+  if (auto v = spec_info.Get("k_pack")) {
+    compute_config->k_pack = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = spec_info.Get("wg_wait")) {
+    compute_config->wg_wait = static_cast<int32_t>(Downcast<Integer>(v.value())->value);
+  }
   if (auto v = spec_info.Get("unpack_to_dest_mode")) {
     for (const auto& mode : Downcast<ffi::Array<ffi::Any>>(v.value())) {
       compute_config->unpack_to_dest_mode.push_back(Downcast<String>(mode));
     }
   }
   return !compute_config->math_fidelity.empty() || compute_config->fp32_dest_acc_en ||
-         compute_config->math_approx_mode || !compute_config->unpack_to_dest_mode.empty();
+         compute_config->math_approx_mode || compute_config->clear_accum ||
+         compute_config->k_pack != 1 || compute_config->wg_wait != 0 ||
+         !compute_config->unpack_to_dest_mode.empty();
 }
 
 static std::vector<KernelArgSpec> MakeDefaultCopyRuntimeArgs() {

@@ -238,6 +238,13 @@ v2 继续扩展：
   - `math_approx_mode`
   - `unpack_to_dest_mode`
 - 对未知 `math_fidelity` / `unpack_to_dest_mode` 的 direct runtime fail-fast 已补齐
+- `tl.gemm_py` 现有 IR 参数 `clear_accum/k_pack/wg_wait` 已继续 formalize 到：
+  - `compute_contract.clear_accum/k_pack/wg_wait`
+  - compute-side `compile_time_arg_specs`:
+    - `gemm_clear_accum`
+    - `gemm_k_pack`
+    - `gemm_wg_wait`
+- 这三项当前已完成“正式 ABI 不再丢失”的闭环；是否被 Blackhole compute kernel 语义消费仍以后续 codegen 演进为准
 
 ---
 

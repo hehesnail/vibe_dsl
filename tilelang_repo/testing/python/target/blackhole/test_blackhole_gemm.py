@@ -13,6 +13,7 @@ from .common import (
     check_blackhole_codegen_requirements,
     check_blackhole_direct_execution_requirements,
     gemm_kernel,
+    gemm_kernel_with_compute_abi,
     gemm_kernel_with_transpose_flags,
 )
 from .test_blackhole_copy_pipeline import (
@@ -379,6 +380,27 @@ def test_blackhole_compute_contract_attr_is_materialized():
     assert bool(contract["fp32_dest_acc_en"]) is True
     assert bool(contract["math_approx_mode"]) is False
     assert [str(item) for item in contract["unpack_to_dest_mode"]] == []
+    assert bool(contract["clear_accum"]) is False
+    assert int(contract["k_pack"]) == 1
+    assert int(contract["wg_wait"]) == 0
+
+
+def test_blackhole_compute_contract_attr_materializes_nondefault_compute_abi():
+    kernel = gemm_kernel_with_compute_abi()
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+
+    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.LowerBlackholeOps()(mod)
+
+    func = mod["main"]
+    contract = func.attrs["blackhole.compute_contract"]
+    assert bool(contract["clear_accum"]) is True
+    assert int(contract["k_pack"]) == 2
+    assert int(contract["wg_wait"]) == 3
 
 
 def test_blackhole_gemm_compile_time_abi_is_materialized():
@@ -452,6 +474,21 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
         kind="gemm_subblock_shape",
         label="compute compile-time",
     )
+    gemm_clear_accum = _require_spec_entry(
+        compute_compile_time_arg_specs,
+        kind="gemm_clear_accum",
+        label="compute compile-time",
+    )
+    gemm_k_pack = _require_spec_entry(
+        compute_compile_time_arg_specs,
+        kind="gemm_k_pack",
+        label="compute compile-time",
+    )
+    gemm_wg_wait = _require_spec_entry(
+        compute_compile_time_arg_specs,
+        kind="gemm_wg_wait",
+        label="compute compile-time",
+    )
     assert str(gemm_shape["name"]) == "gemm_shape"
     assert str(gemm_shape["dtype"]) == "uint32"
     assert int(gemm_shape["offset"]) == 0
@@ -466,6 +503,9 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
     assert [int(value) for value in gemm_transpose_flags["values"]] == [0, 1]
     assert [int(value) for value in gemm_block_shape["values"]] == [1, 1, 4]
     assert [int(value) for value in gemm_subblock_shape["values"]] == [1, 1]
+    assert [int(value) for value in gemm_clear_accum["values"]] == [0]
+    assert [int(value) for value in gemm_k_pack["values"]] == [1]
+    assert [int(value) for value in gemm_wg_wait["values"]] == [0]
 
     assert "launch_spec" in compute
     compute_launch_spec = compute["launch_spec"]
@@ -525,6 +565,46 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
     assert bool(compute_contract["fp32_dest_acc_en"]) is True
     assert bool(compute_contract["math_approx_mode"]) is False
     assert [str(item) for item in compute_contract["unpack_to_dest_mode"]] == []
+    assert bool(compute_contract["clear_accum"]) is False
+    assert int(compute_contract["k_pack"]) == 1
+    assert int(compute_contract["wg_wait"]) == 0
+
+
+def test_blackhole_gemm_compile_time_abi_materializes_nondefault_compute_abi():
+    kernel = gemm_kernel_with_compute_abi()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    compute_contract = executable_spec["compute_contract"]
+    assert bool(compute_contract["clear_accum"]) is True
+    assert int(compute_contract["k_pack"]) == 2
+    assert int(compute_contract["wg_wait"]) == 3
+
+    compute = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="compute", core_type="trisc"
+    )
+    compute_compile_time_arg_specs = compute["compile_time_arg_specs"]
+    gemm_clear_accum = _require_spec_entry(
+        compute_compile_time_arg_specs,
+        kind="gemm_clear_accum",
+        label="compute compile-time",
+    )
+    gemm_k_pack = _require_spec_entry(
+        compute_compile_time_arg_specs,
+        kind="gemm_k_pack",
+        label="compute compile-time",
+    )
+    gemm_wg_wait = _require_spec_entry(
+        compute_compile_time_arg_specs,
+        kind="gemm_wg_wait",
+        label="compute compile-time",
+    )
+    assert [int(value) for value in gemm_clear_accum["values"]] == [1]
+    assert [int(value) for value in gemm_k_pack["values"]] == [2]
+    assert [int(value) for value in gemm_wg_wait["values"]] == [3]
 
 
 def test_blackhole_gemm_compile_time_abi_rejects_misaligned_shapes():

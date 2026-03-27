@@ -198,6 +198,9 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   gemm_k_ = 0;
   gemm_transpose_a_ = false;
   gemm_transpose_b_ = false;
+  gemm_clear_accum_ = false;
+  gemm_k_pack_ = 1;
+  gemm_wg_wait_ = 0;
   gemm_a_dtype_ = DataType::Void();
   gemm_b_dtype_ = DataType::Void();
   gemm_c_dtype_ = DataType::Void();
@@ -526,6 +529,9 @@ void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
   compute_contract.Set("fp32_dest_acc_en", Bool(true));
   compute_contract.Set("math_approx_mode", Bool(false));
   compute_contract.Set("unpack_to_dest_mode", Array<Any>{});
+  compute_contract.Set("clear_accum", Bool(gemm_clear_accum_));
+  compute_contract.Set("k_pack", Integer(gemm_k_pack_));
+  compute_contract.Set("wg_wait", Integer(gemm_wg_wait_));
 
   attrs.Set("blackhole.gemm_contract", gemm_contract);
   attrs.Set("blackhole.compute_contract", compute_contract);
@@ -646,6 +652,33 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
         "compute",
         "",
         {static_cast<uint32_t>(mt), static_cast<uint32_t>(nt)}));
+    compile_time_arg_specs.push_back(MakeCompileTimeArgSpec(
+        "gemm_clear_accum",
+        "gemm_clear_accum",
+        "uint32",
+        10,
+        1,
+        "compute",
+        "",
+        {static_cast<uint32_t>(gemm_clear_accum_ ? 1 : 0)}));
+    compile_time_arg_specs.push_back(MakeCompileTimeArgSpec(
+        "gemm_k_pack",
+        "gemm_k_pack",
+        "uint32",
+        11,
+        1,
+        "compute",
+        "",
+        {static_cast<uint32_t>(gemm_k_pack_)}));
+    compile_time_arg_specs.push_back(MakeCompileTimeArgSpec(
+        "gemm_wg_wait",
+        "gemm_wg_wait",
+        "uint32",
+        12,
+        1,
+        "compute",
+        "",
+        {static_cast<uint32_t>(gemm_wg_wait_)}));
     return compile_time_arg_specs;
   };
 
@@ -809,6 +842,9 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
   gemm_c_dtype_ = c_region->buffer->dtype;
   if (const auto* imm = args[3].as<IntImmNode>()) gemm_transpose_a_ = imm->value != 0;
   if (const auto* imm = args[4].as<IntImmNode>()) gemm_transpose_b_ = imm->value != 0;
+  if (const auto* imm = args[9].as<IntImmNode>()) gemm_clear_accum_ = imm->value != 0;
+  if (const auto* imm = args[14].as<IntImmNode>()) gemm_k_pack_ = static_cast<int>(imm->value);
+  if (const auto* imm = args[15].as<IntImmNode>()) gemm_wg_wait_ = static_cast<int>(imm->value);
 
   if (const auto* imm = args[5].as<IntImmNode>()) gemm_m_ = static_cast<int>(imm->value);
   if (const auto* imm = args[6].as<IntImmNode>()) gemm_n_ = static_cast<int>(imm->value);
