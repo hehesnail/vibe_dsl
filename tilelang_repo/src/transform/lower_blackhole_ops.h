@@ -249,6 +249,7 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   int gemm_k_ = 0;
   bool gemm_transpose_a_ = false;
   bool gemm_transpose_b_ = false;
+  int gemm_policy_type_ = 0;
   bool gemm_clear_accum_ = false;
   int gemm_k_pack_ = 1;
   int gemm_wg_wait_ = 0;

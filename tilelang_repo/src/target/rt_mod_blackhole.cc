@@ -422,6 +422,8 @@ static ComputeContractSpec ComputeContractFromLegacyGemm(const GemmContractSpec&
   contract.clear_accum = false;
   contract.k_pack = 1;
   contract.wg_wait = 0;
+  contract.policy_type = 0;
+  contract.policy_name = "Square";
   return contract;
 }
 
@@ -527,6 +529,12 @@ static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
   if (auto v = attrs.Get("wg_wait")) {
     contract.wg_wait = static_cast<int32_t>(Downcast<Integer>(v.value())->value);
   }
+  if (auto v = attrs.Get("policy_type")) {
+    contract.policy_type = static_cast<int32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = attrs.Get("policy_name")) {
+    contract.policy_name = Downcast<String>(v.value());
+  }
   if (auto v = attrs.Get("unpack_to_dest_mode")) {
     for (const auto& mode : Downcast<ffi::Array<ffi::Any>>(v.value())) {
       contract.unpack_to_dest_mode.push_back(Downcast<String>(mode));
@@ -574,6 +582,12 @@ static bool ExtractComputeConfig(const ffi::Map<ffi::String, ffi::Any>& spec_inf
   }
   if (auto v = spec_info.Get("wg_wait")) {
     compute_config->wg_wait = static_cast<int32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = spec_info.Get("policy_type")) {
+    compute_config->policy_type = static_cast<int32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = spec_info.Get("policy_name")) {
+    compute_config->policy_name = Downcast<String>(v.value());
   }
   if (auto v = spec_info.Get("unpack_to_dest_mode")) {
     for (const auto& mode : Downcast<ffi::Array<ffi::Any>>(v.value())) {

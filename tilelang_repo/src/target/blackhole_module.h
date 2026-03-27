@@ -185,6 +185,8 @@ struct KernelComputeConfigSpec {
   bool clear_accum = false;
   uint32_t k_pack = 1;
   int32_t wg_wait = 0;
+  int32_t policy_type = 0;
+  std::string policy_name;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -194,6 +196,8 @@ struct KernelComputeConfigSpec {
     writer->WriteObjectKeyValue("clear_accum", clear_accum);
     writer->WriteObjectKeyValue("k_pack", static_cast<int64_t>(k_pack));
     writer->WriteObjectKeyValue("wg_wait", static_cast<int64_t>(wg_wait));
+    writer->WriteObjectKeyValue("policy_type", static_cast<int64_t>(policy_type));
+    writer->WriteObjectKeyValue("policy_name", policy_name);
     if (!unpack_to_dest_mode.empty()) {
       writer->WriteObjectKeyValue("unpack_to_dest_mode", unpack_to_dest_mode);
     } else {
@@ -360,6 +364,8 @@ struct ComputeContractSpec {
   bool clear_accum = false;
   uint32_t k_pack = 1;
   int32_t wg_wait = 0;
+  int32_t policy_type = 0;
+  std::string policy_name;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -394,6 +400,8 @@ struct ComputeContractSpec {
     writer->WriteObjectKeyValue("clear_accum", clear_accum);
     writer->WriteObjectKeyValue("k_pack", static_cast<int64_t>(k_pack));
     writer->WriteObjectKeyValue("wg_wait", static_cast<int64_t>(wg_wait));
+    writer->WriteObjectKeyValue("policy_type", static_cast<int64_t>(policy_type));
+    writer->WriteObjectKeyValue("policy_name", policy_name);
     if (!unpack_to_dest_mode.empty()) {
       writer->WriteObjectKeyValue("unpack_to_dest_mode", unpack_to_dest_mode);
     } else {

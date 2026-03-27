@@ -245,6 +245,10 @@ v2 继续扩展：
     - `gemm_k_pack`
     - `gemm_wg_wait`
 - 这三项当前已完成“正式 ABI 不再丢失”的闭环；是否被 Blackhole compute kernel 语义消费仍以后续 codegen 演进为准
+- `tl.gemm_py` 的 `policy` 也已 formalize 到：
+  - `compute_contract.policy_type/policy_name`
+  - compute-side `compile_time_arg_specs.gemm_policy`
+- 当前 `policy` 已完成“正式 ABI 不再丢失”的闭环；是否进一步驱动 Blackhole compute codegen 仍可后续继续收正
 
 ---
 

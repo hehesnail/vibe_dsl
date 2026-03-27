@@ -45,6 +45,21 @@
 namespace tvm {
 namespace tl {
 
+static std::string GemmWarpPolicyTypeToStringForBlackhole(int policy_type) {
+  switch (policy_type) {
+    case 0:
+      return "Square";
+    case 1:
+      return "FullRow";
+    case 2:
+      return "FullCol";
+    case 3:
+      return "Free";
+    default:
+      return "Unknown";
+  }
+}
+
 using tir::PrimFunc;
 using tir::PrimFuncNode;
 using tir::Stmt;
@@ -198,6 +213,7 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   gemm_k_ = 0;
   gemm_transpose_a_ = false;
   gemm_transpose_b_ = false;
+  gemm_policy_type_ = 0;
   gemm_clear_accum_ = false;
   gemm_k_pack_ = 1;
   gemm_wg_wait_ = 0;
@@ -518,6 +534,8 @@ void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
   compute_contract.Set("subblock_n_tiles", Integer(gemm_n_ / kBlackholeTileCols));
   compute_contract.Set("transpose_A", Bool(gemm_transpose_a_));
   compute_contract.Set("transpose_B", Bool(gemm_transpose_b_));
+  compute_contract.Set("policy_type", Integer(gemm_policy_type_));
+  compute_contract.Set("policy_name", String(GemmWarpPolicyTypeToStringForBlackhole(gemm_policy_type_)));
   compute_contract.Set("a_tensor_dtype", String(DataTypeToDataFormat(gemm_a_dtype_)));
   compute_contract.Set("b_tensor_dtype", String(DataTypeToDataFormat(gemm_b_dtype_)));
   compute_contract.Set("c_tensor_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
@@ -679,6 +697,15 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
         "compute",
         "",
         {static_cast<uint32_t>(gemm_wg_wait_)}));
+    compile_time_arg_specs.push_back(MakeCompileTimeArgSpec(
+        "gemm_policy",
+        "gemm_policy",
+        "uint32",
+        13,
+        1,
+        "compute",
+        "",
+        {static_cast<uint32_t>(gemm_policy_type_)}));
     return compile_time_arg_specs;
   };
 
@@ -842,6 +869,7 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
   gemm_c_dtype_ = c_region->buffer->dtype;
   if (const auto* imm = args[3].as<IntImmNode>()) gemm_transpose_a_ = imm->value != 0;
   if (const auto* imm = args[4].as<IntImmNode>()) gemm_transpose_b_ = imm->value != 0;
+  if (const auto* imm = args[8].as<IntImmNode>()) gemm_policy_type_ = static_cast<int>(imm->value);
   if (const auto* imm = args[9].as<IntImmNode>()) gemm_clear_accum_ = imm->value != 0;
   if (const auto* imm = args[14].as<IntImmNode>()) gemm_k_pack_ = static_cast<int>(imm->value);
   if (const auto* imm = args[15].as<IntImmNode>()) gemm_wg_wait_ = static_cast<int>(imm->value);
