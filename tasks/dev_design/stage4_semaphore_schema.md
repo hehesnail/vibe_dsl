@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage4_semaphore_schema`
 - **日期**: 2026-03-27
-- **状态**: 已实现（program-local semaphore schema + kernel binding schema）
+- **状态**: 已实现（program-local semaphore schema + kernel binding schema + 最小 dataflow semaphore builtin）
 - **对应任务**: P5 multi-core synchronization 预埋
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -22,8 +22,9 @@
 1. device attrs 上的正式 `blackhole.semaphore_plan`
 2. `ExecutableSpec` / `BlackholeModule` 对 semaphore plan 的提取与 host materialization
 3. direct runtime 对 malformed / unsupported semaphore schema 的 fail-fast
+4. device-side dataflow kernel 对 program-local semaphore 的最小 builtin 入口
 
-本轮不解决：
+当前文档覆盖到第三轮扩展，但仍不解决：
 
 - multicast
 - global semaphore
@@ -165,6 +166,30 @@ TT-Metal host API 的 semaphore 是另一类正式对象：
 - kernel source 对 semaphore 的真实消费语义
 - `mbar -> semaphore` 自动绑定
 
+### 4.6 第三轮扩展：device-side semaphore builtin（最小 dataflow 入口）
+
+新增 Blackhole builtin：
+
+- `tl.blackhole.get_semaphore(semaphore_id)`
+- `tl.blackhole.semaphore_wait(semaphore_addr, value)`
+- `tl.blackhole.semaphore_set(semaphore_addr, value)`
+
+映射原则：
+
+- runtime 继续只下发 `semaphore_id_u32`
+- device kernel 显式先调用 `get_semaphore(id)` 拿本地 L1 semaphore 地址
+- dataflow codegen 直接打印 TT-Metal `dataflow_api.h` 里的正式原语：
+  - `get_semaphore(...)`
+  - `noc_semaphore_wait(...)`
+  - `noc_semaphore_set(...)`
+
+本轮刻意不做：
+
+- `noc_semaphore_inc`
+- multicast semaphore primitives
+- compute kernel 侧 semaphore primitive
+- 真实 producer/consumer 握手 E2E
+
 ---
 
 ## 5. 验证标准
@@ -173,4 +198,5 @@ TT-Metal host API 的 semaphore 是另一类正式对象：
 - `BlackholeModule` 能消费 semaphore plan，而不是忽略它
 - 未支持的 semaphore schema 会在 direct runtime 早失败
 - `KernelSpec` 能正式携带 semaphore binding，并让 direct runtime 把 semaphore id materialize 成 runtime arg
+- dataflow codegen 能把最小 semaphore builtin 打印成 TT-Metal 正式 device API
 - 文档与 `tasks/progress.md` 同步

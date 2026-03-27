@@ -139,7 +139,7 @@
 | P2 | host tilize/untilize | ✅ | transpose_B + tilize/untilize 已补齐 |
 | P3 | accessor / runtime work schema | 部分完成 | richer work descriptor + accessor/common-runtime schema 已进入 segment plan / KernelSpec，compile-time ABI schema/launch schema 也已收正到主路径；current direct runtime 仅正式支持 interleaved 且对 richer execution 面 fail-fast |
 | P4 | copy/dataflow 泛化（non-tile/stick/sharded） | ❌ | 不阻塞 Stage 3 |
-| P5 | multi-core synchronization 预埋（semaphore/multicast） | ◐ | program-local `semaphore_plan` schema、kernel-level `semaphore_bindings`、以及 `semaphore_id_u32` runtime materialization 已接入；仅支持 worker semaphore，multicast / global semaphore / device-side wait/post builtin 未做 |
+| P5 | multi-core synchronization 预埋（semaphore/multicast） | ◐ | program-local `semaphore_plan` schema、kernel-level `semaphore_bindings`、`semaphore_id_u32` runtime materialization、以及最小 device-side dataflow semaphore builtin（`get_semaphore` / `semaphore_wait` / `semaphore_set`）已接入；仅支持 worker semaphore，multicast / global semaphore / compute-kernel semaphore primitive / producer-consumer E2E 仍未做 |
 
 ---
 
@@ -166,7 +166,7 @@
 | `stage2i_compile_time_abi_schema.md` | compile-time ABI schema 设计 | ✅ 已实施（schema/spec/direct runtime） |
 | `stage2j_compute_contract_schema.md` | compute contract 正式化设计 | ✅ 已实施（schema/spec/runtime 主链） |
 | `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P1/P2 ✅，P0 部分，P3 部分完成，P4 未做，P5 已起步） |
-| `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 | 已实现（program-local worker semaphore + kernel binding） |
+| `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 | 已实现（program-local worker semaphore + kernel binding + 最小 dataflow semaphore builtin） |
 
 ### 已完成（仍有参考价值）
 

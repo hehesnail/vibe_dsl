@@ -714,6 +714,15 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   } else if (builtin_name == "write_tile_from_cb") {
     PrintWriteTileFromCB(op, os);
     return true;
+  } else if (builtin_name == "get_semaphore") {
+    PrintGetSemaphore(op, os);
+    return true;
+  } else if (builtin_name == "semaphore_wait") {
+    PrintSemaphoreWait(op, os);
+    return true;
+  } else if (builtin_name == "semaphore_set") {
+    PrintSemaphoreSet(op, os);
+    return true;
   } else if (builtin_name == "mm_init") {
     PrintMMInit(op, os);
     return true;
@@ -985,22 +994,32 @@ void CodeGenBlackhole::PrintNOCWait() {
   stream << "noc_async_read_barrier();\n";
 }
 
-void CodeGenBlackhole::PrintSemInit(int sem_id, int value) {
+void CodeGenBlackhole::PrintGetSemaphore(const tvm::tir::CallNode *op,
+                                         std::ostream &os) {
   need_dataflow_api_h_ = true;
-  PrintIndent();
-  stream << "// Semaphore init: " << sem_id << " = " << value << "\n";
+  os << "get_semaphore(";
+  PrintExpr(op->args[0], os);
+  os << ")";
 }
 
-void CodeGenBlackhole::PrintSemWait(int sem_id, int value) {
+void CodeGenBlackhole::PrintSemaphoreWait(const tvm::tir::CallNode *op,
+                                          std::ostream &os) {
   need_dataflow_api_h_ = true;
-  PrintIndent();
-  stream << "// Semaphore wait: " << sem_id << " == " << value << "\n";
+  os << "noc_semaphore_wait(reinterpret_cast<volatile tt_l1_ptr uint32_t*>(";
+  PrintExpr(op->args[0], os);
+  os << "), ";
+  PrintExpr(op->args[1], os);
+  os << ")";
 }
 
-void CodeGenBlackhole::PrintSemPost(int sem_id) {
+void CodeGenBlackhole::PrintSemaphoreSet(const tvm::tir::CallNode *op,
+                                         std::ostream &os) {
   need_dataflow_api_h_ = true;
-  PrintIndent();
-  stream << "// Semaphore post: " << sem_id << "\n";
+  os << "noc_semaphore_set(reinterpret_cast<volatile tt_l1_ptr uint32_t*>(";
+  PrintExpr(op->args[0], os);
+  os << "), ";
+  PrintExpr(op->args[1], os);
+  os << ")";
 }
 
 }  // namespace tl

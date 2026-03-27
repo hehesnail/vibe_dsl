@@ -127,6 +127,9 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintNOCWriteBarrier(std::ostream &os);
   void PrintReadTileToCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintWriteTileFromCB(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintGetSemaphore(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintSemaphoreWait(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintSemaphoreSet(const tvm::tir::CallNode *op, std::ostream &os);
 
   // Print compute operations
   void PrintMMInit(const tvm::tir::CallNode *op, std::ostream &os);
@@ -151,11 +154,6 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintNOCWrite(const std::string &src_addr, const std::string &dst_addr,
                      int size);
   void PrintNOCWait();
-
-  // Print semaphore operations
-  void PrintSemInit(int sem_id, int value);
-  void PrintSemWait(int sem_id, int value);
-  void PrintSemPost(int sem_id);
 
   void EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f);
   void LoadCorePlan(const tvm::tir::PrimFunc &f);

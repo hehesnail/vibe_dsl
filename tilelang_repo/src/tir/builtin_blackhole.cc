@@ -48,6 +48,9 @@ TIR_DEFINE_BUILTIN(noc_async_read_barrier)
 TIR_DEFINE_BUILTIN(noc_async_write_barrier)
 TIR_DEFINE_BUILTIN(read_tile_to_cb)
 TIR_DEFINE_BUILTIN(write_tile_from_cb)
+TIR_DEFINE_BUILTIN(get_semaphore)
+TIR_DEFINE_BUILTIN(semaphore_wait)
+TIR_DEFINE_BUILTIN(semaphore_set)
 
 // Compute Operations
 TIR_DEFINE_BUILTIN(mm_init)
@@ -112,6 +115,23 @@ TVM_REGISTER_OP("tl.blackhole.write_tile_from_cb")
     .add_argument("tile_index", "int", "Logical tile index in the destination buffer")
     .add_argument("tile_bytes", "int", "Tile size in bytes")
     .add_argument("accessor_slot", "int", "Accessor slot for later TT-Metal mapping");
+
+TVM_REGISTER_OP("tl.blackhole.get_semaphore")
+    .set_num_inputs(1)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kPure))
+    .add_argument("semaphore_id", "uint32", "Program-local semaphore id");
+
+TVM_REGISTER_OP("tl.blackhole.semaphore_wait")
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("semaphore_addr", "uint32", "Local L1 semaphore address")
+    .add_argument("value", "uint32", "Target semaphore value");
+
+TVM_REGISTER_OP("tl.blackhole.semaphore_set")
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("semaphore_addr", "uint32", "Local L1 semaphore address")
+    .add_argument("value", "uint32", "Value to store");
 
 TVM_REGISTER_OP("tl.blackhole.mm_init")
     .set_num_inputs(3)

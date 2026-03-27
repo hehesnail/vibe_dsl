@@ -7,6 +7,7 @@ from tilelang.engine.lower import is_device_call, lower, merge_ir_modules
 from tvm.ir import CallingConv
 from tvm.target import Target
 from tilelang import tvm
+from tvm import tir
 
 from .common import (
     assert_tensors_close_or_dump,
@@ -82,6 +83,35 @@ def _rebuild_codegen_module_with_semaphore_binding(
         if func.attrs and "blackhole.segment_plan" in func.attrs:
             if semaphore_plan is not None:
                 func = func.with_attr("blackhole.semaphore_plan", semaphore_plan)
+            if segment_mutator is not None:
+                func = func.with_attr(
+                    "blackhole.segment_plan",
+                    segment_mutator(func.attrs["blackhole.segment_plan"]),
+                )
+        rewritten[gvar] = func
+    target = Target("blackhole")
+    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
+
+
+def _rebuild_codegen_module_with_body_and_segment_plan(
+    artifact, *, body_mutator=None, segment_mutator=None
+):
+    device_mod = artifact.device_mod
+    rewritten = {}
+    for gvar, func in device_mod.functions.items():
+        if func.attrs and "blackhole.segment_plan" in func.attrs:
+            if body_mutator is not None:
+                func = tir.PrimFunc(
+                    func.params,
+                    body_mutator(func.body),
+                    func.ret_type,
+                    func.buffer_map,
+                    func.attrs,
+                    func.span,
+                )
             if segment_mutator is not None:
                 func = func.with_attr(
                     "blackhole.segment_plan",
@@ -455,6 +485,59 @@ def test_blackhole_copy_kernel_semaphore_binding_is_materialized():
     assert str(binding["name"]) == "copy_sem"
     assert int(binding["semaphore_id"]) == 0
     assert str(binding["arg_kind"]) == "semaphore_id_u32"
+
+
+def test_blackhole_codegen_emits_device_semaphore_builtins():
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def body_mutator(original_body):
+        semaphore_id = tir.Var("copy_sem", "uint32")
+        semaphore_addr = tir.Var("copy_sem_addr", "uint32")
+        return tir.LetStmt(
+            semaphore_id,
+            tir.call_intrin("uint32", tir.op.Op.get("tl.blackhole.get_semaphore"), tir.IntImm("uint32", 0)),
+            tir.LetStmt(
+                semaphore_addr,
+                semaphore_id,
+                tir.SeqStmt(
+                    [
+                        tir.Evaluate(
+                            tir.call_intrin(
+                                "handle",
+                                tir.op.Op.get("tl.blackhole.semaphore_wait"),
+                                semaphore_addr,
+                                tir.IntImm("uint32", 1),
+                            )
+                        ),
+                        tir.Evaluate(
+                            tir.call_intrin(
+                                "handle",
+                                tir.op.Op.get("tl.blackhole.semaphore_set"),
+                                semaphore_addr,
+                                tir.IntImm("uint32", 0),
+                            )
+                        ),
+                    ]
+                ),
+            ),
+        )
+
+    mutated_mod = _rebuild_codegen_module_with_body_and_segment_plan(
+        artifact, body_mutator=body_mutator
+    )
+
+    executable_spec = mutated_mod.get_function_metadata("main")
+    kernel_spec = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+    source = str(kernel_spec["source_code"])
+    assert "get_semaphore(" in source
+    assert "noc_semaphore_wait(" in source
+    assert "noc_semaphore_set(" in source
 
 
 def test_blackhole_copy_semantics_annotation_schema():

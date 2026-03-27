@@ -68,6 +68,7 @@
   - copy E2E 通过不能证明 matmul contract 正确，因为 copy 只验证字节保持，不验证 tile 语义
 - richer schema 先于更大支持面：如果 schema 已经能表达更多 range/stride 组合，但 direct runtime/codegen 还没正式支持，必须 `ICHECK` fail-fast，不能静默退回旧默认
 - TT-Metal program-local semaphore 当前正式 host API 是 `CreateSemaphore(program, core_ranges, initial_value)`；如果上层 schema 还保留 `core_type`，应把它当校验字段，不要为了“对齐字段”继续依赖 deprecated 的 `CreateSemaphore(..., core_type)`
+- 对 TT-Metal program-local semaphore，host/runtime 正式下发的是 semaphore id；device dataflow kernel 再显式 `get_semaphore(id)` 取本地 L1 地址后做 `noc_semaphore_wait/set`。不要把 semaphore 地址或 barrier 绑定错误建模成 compile-time ABI
 
 ## Blackhole 后端开发原则
 

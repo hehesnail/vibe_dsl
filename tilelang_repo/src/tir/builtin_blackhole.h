@@ -25,6 +25,7 @@
 #define TL_TIR_BUILTIN_BLACKHOLE_H_
 
 #include <tvm/ir/op.h>
+#include <tvm/tir/op_attr_types.h>
 
 namespace tvm {
 namespace tir {
@@ -107,6 +108,28 @@ TVM_DLL const Op& blackhole_read_tile_to_cb();
  * \param accessor_slot Compile-time accessor slot for later TT-Metal mapping
  */
 TVM_DLL const Op& blackhole_write_tile_from_cb();
+
+// TT-Metal Semaphore Operations
+
+/*!
+ * \brief Return the local L1 address of a program-local semaphore.
+ * \param semaphore_id Program-local semaphore id.
+ */
+TVM_DLL const Op& blackhole_get_semaphore();
+
+/*!
+ * \brief Wait until a local semaphore reaches the requested value.
+ * \param semaphore_addr Local L1 semaphore address.
+ * \param value Target value.
+ */
+TVM_DLL const Op& blackhole_semaphore_wait();
+
+/*!
+ * \brief Set a local semaphore to a specific value.
+ * \param semaphore_addr Local L1 semaphore address.
+ * \param value Value to store.
+ */
+TVM_DLL const Op& blackhole_semaphore_set();
 
 // TT-Metal Compute Operations
 
