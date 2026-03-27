@@ -456,7 +456,17 @@ def test_blackhole_gemm_direct_runtime_rejects_sharded_accessor_schema():
 
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
-    richer_func = _with_sharded_accessor_schema(device_main)
+    def mutate_sharded_compile_time_spec(spec, *, segment):
+        if str(spec["kind"]) == "interleaved_accessor_cta":
+            spec["layout"] = "sharded"
+            spec["memory_space"] = "dram"
+        return spec
+
+    richer_func = _with_compile_time_abi_schema(
+        device_main,
+        strip_accessors=True,
+        compile_time_arg_spec_mutator=mutate_sharded_compile_time_spec,
+    )
     mutated_mod = _rebuild_codegen_module_with_segment_plan(
         artifact, richer_func.attrs["blackhole.segment_plan"]
     )
@@ -465,7 +475,38 @@ def test_blackhole_gemm_direct_runtime_rejects_sharded_accessor_schema():
     b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
     c_output = torch.zeros(32, 32, dtype=torch.float32)
 
-    with pytest.raises(tvm.error.InternalError, match="common runtime args|interleaved"):
+    with pytest.raises(tvm.error.InternalError, match="interleaved"):
+        mutated_mod["main"](a_torch, b_torch, c_output)
+
+
+def test_blackhole_gemm_direct_runtime_rejects_mismatched_launch_spec_core_type():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    mutated_segments = []
+    for segment in device_main.attrs["blackhole.segment_plan"]:
+        mutated_segment = dict(segment)
+        if str(mutated_segment["kind"]) == "reader":
+            launch_spec = dict(mutated_segment["launch_spec"])
+            launch_spec["core_type"] = "trisc"
+            mutated_segment["launch_spec"] = launch_spec
+        mutated_segments.append(mutated_segment)
+    mutated_mod = _rebuild_codegen_module_with_segment_plan(artifact, mutated_segments)
+
+    a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    c_output = torch.zeros(32, 32, dtype=torch.float32)
+
+    with pytest.raises(tvm.error.InternalError, match="launch_spec.core_type mismatch"):
         mutated_mod["main"](a_torch, b_torch, c_output)
 
 

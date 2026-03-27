@@ -447,6 +447,31 @@ static void AppendAccessorCompileTimeArgs(const CompileTimeArgSpec& spec,
   }
 }
 
+static void ValidateKernelDirectRuntimeSchema(const KernelSpec& kernel) {
+  ICHECK(kernel.common_runtime_args.empty())
+      << "Blackhole direct runtime currently supports only interleaved accessors without common runtime args";
+
+  for (const auto& spec : kernel.compile_time_arg_specs) {
+    if (spec.kind != "interleaved_accessor_cta") {
+      continue;
+    }
+    ICHECK_EQ(spec.layout, "interleaved")
+        << "Blackhole direct runtime currently supports only interleaved accessors";
+    ICHECK_EQ(spec.memory_space, "dram")
+        << "Blackhole direct runtime currently supports only DRAM accessors";
+  }
+}
+
+static void ValidateKernelDirectRuntimeConstraints(const KernelSpec& kernel) {
+  if (kernel.has_launch_spec && !kernel.launch_spec.core_type.empty()) {
+    ICHECK_EQ(kernel.launch_spec.core_type, kernel.core_type)
+        << "Blackhole launch_spec.core_type mismatch for kernel " << kernel.name
+        << ": launch_spec.core_type=" << kernel.launch_spec.core_type
+        << ", kernel.core_type=" << kernel.core_type;
+  }
+  ValidateKernelDirectRuntimeSchema(kernel);
+}
+
 static std::vector<uint32_t> BuildKernelCompileTimeArgsFromSchema(
     const KernelSpec& kernel,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings) {
@@ -487,12 +512,10 @@ static KernelHandle CreateKernelFromSpec(
     const KernelSpec& kernel,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
     const std::string& kernel_path) {
+  ValidateKernelDirectRuntimeConstraints(kernel);
   const std::vector<uint32_t> compile_time_args =
       BuildKernelCompileTimeArgs(kernel, buffer_bindings);
-  const std::string core_type =
-      kernel.has_launch_spec && !kernel.launch_spec.core_type.empty()
-          ? kernel.launch_spec.core_type
-          : kernel.core_type;
+  const std::string core_type = kernel.core_type;
   if (core_type == "trisc" || kernel.kind == "compute") {
     return CreateKernel(
         program,
@@ -536,13 +559,13 @@ static KernelHandle CreateKernelFromSpec(
 static std::vector<uint32_t> BuildKernelCompileTimeArgs(
     const KernelSpec& kernel,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings) {
+  ValidateKernelDirectRuntimeSchema(kernel);
+
   if (!kernel.compile_time_arg_specs.empty()) {
     return BuildKernelCompileTimeArgsFromSchema(kernel, buffer_bindings);
   }
 
   std::vector<uint32_t> compile_time_args = kernel.compile_time_args;
-  ICHECK(kernel.common_runtime_args.empty())
-      << "Blackhole direct runtime currently supports only interleaved accessors without common runtime args";
   if (kernel.accessors.empty()) {
     return compile_time_args;
   }
@@ -803,6 +826,9 @@ void BlackholeModuleNode::ExecuteDirect(
   const ExecutableSpec& spec = fit->second;
   if (spec.kernels.empty()) {
     LOG(FATAL) << "ExecutableSpec has no kernels for function: " << func_name;
+  }
+  for (const auto& kernel_spec : spec.kernels) {
+    ValidateKernelDirectRuntimeConstraints(kernel_spec);
   }
 
   // Use role-aware page size for DRAM buffers so runtime allocation matches spec roles.

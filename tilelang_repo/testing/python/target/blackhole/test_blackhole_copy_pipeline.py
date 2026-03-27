@@ -424,10 +424,13 @@ def test_blackhole_copy_direct_runtime_rejects_common_runtime_accessor_schema():
             "dtype": "uint32",
         }
     ]
-    richer_func = _with_richer_accessor_schema(device_main, richer_common_runtime_args)
-    mutated_mod = _rebuild_codegen_module_with_segment_plan(
-        artifact, richer_func.attrs["blackhole.segment_plan"]
-    )
+    stripped_func = _with_compile_time_abi_schema(device_main, strip_accessors=True)
+    mutated_segments = []
+    for segment in stripped_func.attrs["blackhole.segment_plan"]:
+        richer_segment = dict(segment)
+        richer_segment["common_runtime_args"] = richer_common_runtime_args
+        mutated_segments.append(richer_segment)
+    mutated_mod = _rebuild_codegen_module_with_segment_plan(artifact, mutated_segments)
 
     a_torch = torch.randn(32, 32, dtype=torch.float16)
     b_output = torch.zeros_like(a_torch)
