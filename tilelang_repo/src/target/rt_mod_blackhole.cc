@@ -383,6 +383,120 @@ static GemmContractSpec ExtractGemmContract(const tir::PrimFunc& f) {
   return contract;
 }
 
+static ComputeContractSpec ComputeContractFromLegacyGemm(const GemmContractSpec& gemm) {
+  ComputeContractSpec contract;
+  if (!gemm.enabled) {
+    return contract;
+  }
+
+  constexpr uint32_t kBlackholeTileRows = 32;
+  constexpr uint32_t kBlackholeTileCols = 32;
+  contract.enabled = true;
+  contract.kind = "gemm";
+  contract.a_buffer = gemm.a_buffer;
+  contract.b_buffer = gemm.b_buffer;
+  contract.c_buffer = gemm.c_buffer;
+  contract.M = gemm.M;
+  contract.N = gemm.N;
+  contract.K = gemm.K;
+  contract.Mt = gemm.M / kBlackholeTileRows;
+  contract.Nt = gemm.N / kBlackholeTileCols;
+  contract.Kt = gemm.K / kBlackholeTileCols;
+  contract.transpose_A = gemm.transpose_A;
+  contract.transpose_B = gemm.transpose_B;
+  contract.a_tensor_dtype = gemm.a_tensor_dtype;
+  contract.b_tensor_dtype = gemm.b_tensor_dtype;
+  contract.c_tensor_dtype = gemm.c_tensor_dtype;
+  contract.a_cb_dtype = gemm.a_cb_dtype;
+  contract.b_cb_dtype = gemm.b_cb_dtype;
+  contract.c_cb_dtype = gemm.c_cb_dtype;
+  contract.accumulator_dtype = gemm.accumulator_dtype;
+  return contract;
+}
+
+static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
+                                                  const GemmContractSpec& gemm_contract) {
+  ComputeContractSpec contract;
+  auto compute_attr = f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.compute_contract");
+  if (!compute_attr) {
+    return ComputeContractFromLegacyGemm(gemm_contract);
+  }
+
+  const auto& attrs = compute_attr.value();
+  if (auto v = attrs.Get("enabled")) {
+    contract.enabled = Downcast<Bool>(v.value());
+  }
+  if (auto v = attrs.Get("kind")) {
+    contract.kind = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("a_buffer")) {
+    contract.a_buffer = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("b_buffer")) {
+    contract.b_buffer = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("c_buffer")) {
+    contract.c_buffer = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("M")) {
+    contract.M = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = attrs.Get("N")) {
+    contract.N = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = attrs.Get("K")) {
+    contract.K = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = attrs.Get("Mt")) {
+    contract.Mt = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = attrs.Get("Nt")) {
+    contract.Nt = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = attrs.Get("Kt")) {
+    contract.Kt = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = attrs.Get("transpose_A")) {
+    contract.transpose_A = Downcast<Bool>(v.value());
+  }
+  if (auto v = attrs.Get("transpose_B")) {
+    contract.transpose_B = Downcast<Bool>(v.value());
+  }
+  if (auto v = attrs.Get("a_tensor_dtype")) {
+    contract.a_tensor_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("b_tensor_dtype")) {
+    contract.b_tensor_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("c_tensor_dtype")) {
+    contract.c_tensor_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("a_cb_dtype")) {
+    contract.a_cb_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("b_cb_dtype")) {
+    contract.b_cb_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("c_cb_dtype")) {
+    contract.c_cb_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("accumulator_dtype")) {
+    contract.accumulator_dtype = Downcast<String>(v.value());
+  }
+
+  contract.enabled = contract.enabled || (!contract.kind.empty() && contract.kind == "gemm" &&
+                                          !contract.a_buffer.empty() &&
+                                          !contract.b_buffer.empty() &&
+                                          !contract.c_buffer.empty() && contract.M > 0 &&
+                                          contract.N > 0 && contract.K > 0);
+  if (contract.enabled && contract.kind == "gemm") {
+    if (contract.Mt == 0 && contract.M > 0) contract.Mt = contract.M / 32;
+    if (contract.Nt == 0 && contract.N > 0) contract.Nt = contract.N / 32;
+    if (contract.Kt == 0 && contract.K > 0) contract.Kt = contract.K / 32;
+  }
+  return contract;
+}
+
 static std::vector<KernelArgSpec> MakeDefaultCopyRuntimeArgs() {
   return {
       {"input0", "input_buffer_addr32", "uint32", ""},
@@ -779,6 +893,7 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   spec.core_plan = ExtractCorePlan(f);
   spec.runtime_args = ExtractRuntimeArgs(f);
   spec.gemm_contract = ExtractGemmContract(f);
+  spec.compute_contract = ExtractComputeContract(f, spec.gemm_contract);
   ExtractSegmentPlan(f, &spec);
   return spec;
 }

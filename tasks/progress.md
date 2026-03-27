@@ -5,7 +5,7 @@
 ## 当前阶段
 
 - **阶段**: Stage 3 — multi-core runtime 调度
-- **状态**: ✅ formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 dtype 分层正式化、P3 richer runtime work schema + accessor/common-runtime schema，以及 compile-time ABI schema/launch schema 的主路径正式化；direct runtime 对未支持 execution 面显式 fail-fast
+- **状态**: ✅ formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 compute contract 正式化（统一 `compute_contract` 承载 GEMM shape/flags/dtype 分层）、P3 richer runtime work schema + accessor/common-runtime schema，以及 compile-time ABI schema/launch schema 的主路径正式化；direct runtime 对未支持 execution 面显式 fail-fast
 - **日期**: 2026-03-27
 - **设计文档**: `tasks/dev_design/stage3_multicore_design.md`
 
@@ -101,6 +101,13 @@
   - GEMM: A/B-separated reader range + writer output range
   - accessor: 仅 interleaved + DRAM + `common_runtime_arg_count = 0`
 
+### Stage 2J（Compute Contract Formalization）
+
+- `blackhole.compute_contract` 已进入 `LowerBlackholeOps -> ExecutableSpec -> BlackholeModule` 主链
+- GEMM direct runtime 的 shape 校验、transpose/tilize、output untilize、`num_k_tiles` / logical N tiles 推导已优先消费 `compute_contract`
+- `blackhole.gemm_contract` 仍保留为兼容字段，但新增 compute 语义不再继续堆在旧字段上
+- 新增 `transpose_A=True, transpose_B=True` 的更宽 GEMM compute case 测试；当前环境 direct runtime 用例因执行前置条件不足而跳过，但 schema/spec 主链已验证
+
 ### Stage 2E（设备资源 IR）
 
 - `StorageRank::kBlackholeCB`、`StorageRank::kBlackholeAccumulator` 已引入
@@ -145,6 +152,7 @@
 | `stage2g_unified_work_schema.md` | richer runtime work schema 设计 | ✅ 已实施（copy/GEMM 主路径） |
 | `stage2h_accessor_schema.md` | accessor/common-runtime schema 设计 | ✅ 已实施（schema/spec） |
 | `stage2i_compile_time_abi_schema.md` | compile-time ABI schema 设计 | ✅ 已实施（schema/spec/direct runtime） |
+| `stage2j_compute_contract_schema.md` | compute contract 正式化设计 | ✅ 已实施（schema/spec/runtime 主链） |
 | `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P1/P2 ✅，P0 部分，P3 部分完成，P4-P5 未做） |
 
 ### 已完成（仍有参考价值）

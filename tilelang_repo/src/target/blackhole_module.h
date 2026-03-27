@@ -296,6 +296,54 @@ struct GemmContractSpec {
   }
 };
 
+struct ComputeContractSpec {
+  bool enabled = false;
+  std::string kind;
+  std::string a_buffer;
+  std::string b_buffer;
+  std::string c_buffer;
+  uint32_t M = 0;
+  uint32_t N = 0;
+  uint32_t K = 0;
+  uint32_t Mt = 0;
+  uint32_t Nt = 0;
+  uint32_t Kt = 0;
+  bool transpose_A = false;
+  bool transpose_B = false;
+  std::string a_tensor_dtype;
+  std::string b_tensor_dtype;
+  std::string c_tensor_dtype;
+  std::string a_cb_dtype;
+  std::string b_cb_dtype;
+  std::string c_cb_dtype;
+  std::string accumulator_dtype;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("enabled", enabled);
+    writer->WriteObjectKeyValue("kind", kind);
+    writer->WriteObjectKeyValue("a_buffer", a_buffer);
+    writer->WriteObjectKeyValue("b_buffer", b_buffer);
+    writer->WriteObjectKeyValue("c_buffer", c_buffer);
+    writer->WriteObjectKeyValue("M", static_cast<int64_t>(M));
+    writer->WriteObjectKeyValue("N", static_cast<int64_t>(N));
+    writer->WriteObjectKeyValue("K", static_cast<int64_t>(K));
+    writer->WriteObjectKeyValue("Mt", static_cast<int64_t>(Mt));
+    writer->WriteObjectKeyValue("Nt", static_cast<int64_t>(Nt));
+    writer->WriteObjectKeyValue("Kt", static_cast<int64_t>(Kt));
+    writer->WriteObjectKeyValue("transpose_A", transpose_A);
+    writer->WriteObjectKeyValue("transpose_B", transpose_B);
+    writer->WriteObjectKeyValue("a_tensor_dtype", a_tensor_dtype);
+    writer->WriteObjectKeyValue("b_tensor_dtype", b_tensor_dtype);
+    writer->WriteObjectKeyValue("c_tensor_dtype", c_tensor_dtype);
+    writer->WriteObjectKeyValue("a_cb_dtype", a_cb_dtype);
+    writer->WriteObjectKeyValue("b_cb_dtype", b_cb_dtype);
+    writer->WriteObjectKeyValue("c_cb_dtype", c_cb_dtype);
+    writer->WriteObjectKeyValue("accumulator_dtype", accumulator_dtype);
+    writer->EndObject();
+  }
+};
+
 /*!
  * \brief Stage 0 executable description for a lowered PrimFunc.
  */
@@ -308,6 +356,7 @@ struct ExecutableSpec {
   std::vector<KernelArgSpec> runtime_args;
   std::vector<KernelSpec> kernels;
   GemmContractSpec gemm_contract;
+  ComputeContractSpec compute_contract;
 
   // TVM runtime invocation metadata retained during Stage 0.
   std::vector<std::string> tvm_arg_names;
@@ -330,6 +379,7 @@ struct ExecutableSpec {
       writer->WriteObjectKeyValue("kernels", kernels);
     }
     writer->WriteObjectKeyValue("gemm_contract", gemm_contract);
+    writer->WriteObjectKeyValue("compute_contract", compute_contract);
     if (!tvm_arg_names.empty()) {
       writer->WriteObjectKeyValue("tvm_arg_names", tvm_arg_names);
     }

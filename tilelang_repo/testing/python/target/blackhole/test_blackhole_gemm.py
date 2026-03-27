@@ -13,6 +13,7 @@ from .common import (
     check_blackhole_codegen_requirements,
     check_blackhole_direct_execution_requirements,
     gemm_kernel,
+    gemm_kernel_with_transpose_flags,
 )
 from .test_blackhole_copy_pipeline import (
     _extract_blackhole_executable_spec,
@@ -328,6 +329,42 @@ def test_blackhole_gemm_contract_attr_is_materialized():
     assert len(writer["common_runtime_args"]) == 0
 
 
+def test_blackhole_compute_contract_attr_is_materialized():
+    kernel = gemm_kernel()
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+
+    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.LowerBlackholeOps()(mod)
+
+    func = mod["main"]
+    assert func.attrs and "blackhole.compute_contract" in func.attrs
+    contract = func.attrs["blackhole.compute_contract"]
+    assert str(contract["kind"]) == "gemm"
+    assert bool(contract["enabled"]) is True
+    assert str(contract["a_buffer"]) == "A"
+    assert str(contract["b_buffer"]) == "B"
+    assert str(contract["c_buffer"]) == "C"
+    assert int(contract["M"]) == 32
+    assert int(contract["N"]) == 32
+    assert int(contract["K"]) == 128
+    assert int(contract["Mt"]) == 1
+    assert int(contract["Nt"]) == 1
+    assert int(contract["Kt"]) == 4
+    assert bool(contract["transpose_A"]) is False
+    assert bool(contract["transpose_B"]) is True
+    assert str(contract["a_tensor_dtype"]) == "Float16_b"
+    assert str(contract["b_tensor_dtype"]) == "Float16_b"
+    assert str(contract["c_tensor_dtype"]) == "Float32"
+    assert str(contract["a_cb_dtype"]) == "Float16_b"
+    assert str(contract["b_cb_dtype"]) == "Float16_b"
+    assert str(contract["c_cb_dtype"]) == "Float32"
+    assert str(contract["accumulator_dtype"]) == "Float32"
+
+
 def test_blackhole_gemm_compile_time_abi_is_materialized():
     kernel = gemm_kernel()
     target = Target("blackhole")
@@ -433,6 +470,19 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
     assert str(writer_launch_spec["processor"]) == expected_writer_launch_spec["processor"]
     assert str(writer_launch_spec["noc"]) == expected_writer_launch_spec["noc"]
 
+    assert "compute_contract" in executable_spec
+    compute_contract = executable_spec["compute_contract"]
+    assert str(compute_contract["kind"]) == "gemm"
+    assert bool(compute_contract["enabled"]) is True
+    assert int(compute_contract["M"]) == 32
+    assert int(compute_contract["N"]) == 32
+    assert int(compute_contract["K"]) == 128
+    assert int(compute_contract["Mt"]) == 1
+    assert int(compute_contract["Nt"]) == 1
+    assert int(compute_contract["Kt"]) == 4
+    assert bool(compute_contract["transpose_A"]) is False
+    assert bool(compute_contract["transpose_B"]) is True
+
 
 def test_blackhole_gemm_compile_time_abi_rejects_misaligned_shapes():
     kernel = gemm_kernel(M=48, N=32, K=128)
@@ -537,6 +587,42 @@ def test_blackhole_gemm_direct_runtime_materializes_compile_time_abi_schema():
     mutated_mod["main"](a_torch, b_torch, c_output)
     assert_tensors_close_or_dump(
         c_output, c_ref, atol=2e-1, rtol=2e-1, failure_message="GEMM direct-call output mismatch"
+    )
+
+
+def test_blackhole_gemm_direct_runtime_supports_transpose_a_compute_contract():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    torch.manual_seed(0)
+    a_torch = torch.randn(128, 32, dtype=torch.bfloat16)
+    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    c_output = torch.zeros(32, 32, dtype=torch.float32)
+    c_ref = torch.matmul(a_torch.float().transpose(0, 1), b_torch.float().transpose(0, 1))
+
+    kernel = gemm_kernel_with_transpose_flags(transpose_A=True, transpose_B=True)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    assert "compute_contract" in executable_spec
+    contract = executable_spec["compute_contract"]
+    assert bool(contract["transpose_A"]) is True
+    assert bool(contract["transpose_B"]) is True
+    assert int(contract["Mt"]) == 1
+    assert int(contract["Nt"]) == 1
+    assert int(contract["Kt"]) == 4
+
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+    assert_tensors_close_or_dump(
+        c_output,
+        c_ref,
+        atol=2e-1,
+        rtol=2e-1,
+        failure_message="GEMM transpose-A direct-call output mismatch",
     )
 
 

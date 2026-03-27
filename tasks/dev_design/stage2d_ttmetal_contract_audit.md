@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage2d_ttmetal_contract_audit`
 - **日期**: 2026-03-27
-- **状态**: 审计已完成；收正部分落地（P0 dtype 分层与 compile-time ABI 主字段已部分 formalize，P1/P2 ✅，P3 已对 copy + GEMM 主路径 formalize，P4-P5 未做）
+- **状态**: 审计已完成；收正部分落地（P0 已继续 formalize 到统一 `compute_contract`，P1/P2 ✅，P3 已对 copy + GEMM 主路径 formalize，P4-P5 未做）
 - **对应阶段**: Stage 2D Step 6
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`

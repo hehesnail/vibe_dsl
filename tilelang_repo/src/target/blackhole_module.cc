@@ -187,11 +187,45 @@ static void ValidateGemmTensorDType(const RuntimeTensorBinding& binding,
       << ", expected " << expected_dtype;
 }
 
+static ComputeContractSpec GetComputeContract(const ExecutableSpec& spec) {
+  if (spec.compute_contract.enabled) {
+    return spec.compute_contract;
+  }
+  if (!spec.gemm_contract.enabled) {
+    return ComputeContractSpec();
+  }
+
+  constexpr uint32_t kBlackholeTileRows = 32;
+  constexpr uint32_t kBlackholeTileCols = 32;
+  ComputeContractSpec contract;
+  contract.enabled = true;
+  contract.kind = "gemm";
+  contract.a_buffer = spec.gemm_contract.a_buffer;
+  contract.b_buffer = spec.gemm_contract.b_buffer;
+  contract.c_buffer = spec.gemm_contract.c_buffer;
+  contract.M = spec.gemm_contract.M;
+  contract.N = spec.gemm_contract.N;
+  contract.K = spec.gemm_contract.K;
+  contract.Mt = spec.gemm_contract.M / kBlackholeTileRows;
+  contract.Nt = spec.gemm_contract.N / kBlackholeTileCols;
+  contract.Kt = spec.gemm_contract.K / kBlackholeTileCols;
+  contract.transpose_A = spec.gemm_contract.transpose_A;
+  contract.transpose_B = spec.gemm_contract.transpose_B;
+  contract.a_tensor_dtype = spec.gemm_contract.a_tensor_dtype;
+  contract.b_tensor_dtype = spec.gemm_contract.b_tensor_dtype;
+  contract.c_tensor_dtype = spec.gemm_contract.c_tensor_dtype;
+  contract.a_cb_dtype = spec.gemm_contract.a_cb_dtype;
+  contract.b_cb_dtype = spec.gemm_contract.b_cb_dtype;
+  contract.c_cb_dtype = spec.gemm_contract.c_cb_dtype;
+  contract.accumulator_dtype = spec.gemm_contract.accumulator_dtype;
+  return contract;
+}
+
 static void ValidateGemmInputShape(const ExecutableSpec& spec,
                                    const RuntimeTensorBinding& binding,
                                    uint32_t rows,
                                    uint32_t cols) {
-  const auto& gemm = spec.gemm_contract;
+  const auto gemm = GetComputeContract(spec);
   const uint32_t logical_grid_x = std::max<uint32_t>(1, spec.core_plan.logical_grid_x);
   const uint32_t logical_grid_y = std::max<uint32_t>(1, spec.core_plan.logical_grid_y);
 
@@ -222,7 +256,7 @@ static void ValidateGemmInputShape(const ExecutableSpec& spec,
 static void ValidateGemmOutputShape(const ExecutableSpec& spec,
                                     uint32_t rows,
                                     uint32_t cols) {
-  const auto& gemm = spec.gemm_contract;
+  const auto gemm = GetComputeContract(spec);
   const uint32_t logical_grid_x = std::max<uint32_t>(1, spec.core_plan.logical_grid_x);
   const uint32_t logical_grid_y = std::max<uint32_t>(1, spec.core_plan.logical_grid_y);
   const uint32_t expected_rows = gemm.M * logical_grid_y;
@@ -238,14 +272,14 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
   const DLTensor* tensor = binding.tensor;
   ICHECK(tensor != nullptr);
   const size_t tensor_size = GetDataSize(*tensor);
+  const auto gemm = GetComputeContract(spec);
 
-  if (!spec.gemm_contract.enabled || !IsTwoDimTensor(tensor)) {
+  if (!gemm.enabled || gemm.kind != "gemm" || !IsTwoDimTensor(tensor)) {
     std::vector<uint8_t> raw(tensor_size);
     std::memcpy(raw.data(), tensor->data, tensor_size);
     return raw;
   }
 
-  const auto& gemm = spec.gemm_contract;
   if (binding.name != gemm.a_buffer && binding.name != gemm.b_buffer) {
     std::vector<uint8_t> raw(tensor_size);
     std::memcpy(raw.data(), tensor->data, tensor_size);
@@ -268,7 +302,8 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
   ValidateGemmInputShape(spec, binding, rows, cols);
 
   std::vector<uint16_t> tiled;
-  if (binding.name == gemm.b_buffer && gemm.transpose_B) {
+  if ((binding.name == gemm.a_buffer && gemm.transpose_A) ||
+      (binding.name == gemm.b_buffer && gemm.transpose_B)) {
     tiled = tilize_nfaces(TransposeRowMajor2D(raw, rows, cols), cols, rows);
   } else {
     std::vector<uint16_t> row_major(raw, raw + static_cast<size_t>(rows) * cols);
@@ -287,22 +322,23 @@ static void CopyOutputFromDeviceBuffer(const ExecutableSpec& spec,
   const size_t tensor_size = GetDataSize(*binding.tensor);
   ICHECK(output_data.size() >= tensor_size)
       << "Output data size mismatch for " << binding.name;
+  const auto gemm = GetComputeContract(spec);
 
-  if (!spec.gemm_contract.enabled || binding.name != spec.gemm_contract.c_buffer ||
+  if (!gemm.enabled || gemm.kind != "gemm" || binding.name != gemm.c_buffer ||
       !IsTwoDimTensor(binding.tensor)) {
     std::memcpy(binding.tensor->data, output_data.data(), tensor_size);
     return;
   }
 
-  ValidateGemmTensorDType(binding, spec.gemm_contract.c_tensor_dtype);
-  ICHECK_EQ(spec.gemm_contract.c_cb_dtype, spec.gemm_contract.accumulator_dtype)
+  ValidateGemmTensorDType(binding, gemm.c_tensor_dtype);
+  ICHECK_EQ(gemm.c_cb_dtype, gemm.accumulator_dtype)
       << "Blackhole direct GEMM currently requires identical output CB and accumulator dtypes";
-  ICHECK_EQ(spec.gemm_contract.c_tensor_dtype, "Float32")
+  ICHECK_EQ(gemm.c_tensor_dtype, "Float32")
       << "Blackhole direct GEMM currently supports only float32 outputs, but "
-      << spec.gemm_contract.c_buffer << " requested " << spec.gemm_contract.c_tensor_dtype;
-  ICHECK_EQ(spec.gemm_contract.accumulator_dtype, "Float32")
+      << gemm.c_buffer << " requested " << gemm.c_tensor_dtype;
+  ICHECK_EQ(gemm.accumulator_dtype, "Float32")
       << "Blackhole direct GEMM currently supports only float32 accumulators, but requested "
-      << spec.gemm_contract.accumulator_dtype;
+      << gemm.accumulator_dtype;
   const auto [rows, cols] = GetTensorShape2D(binding.tensor);
   ValidateGemmOutputShape(spec, rows, cols);
   const size_t numel = static_cast<size_t>(rows) * cols;
@@ -333,11 +369,11 @@ static uint32_t ChoosePageSize(const ExecutableSpec& spec, const std::string& ro
 }
 
 static uint32_t GetRuntimeNumKTiles(const ExecutableSpec& spec) {
-  if (spec.gemm_contract.enabled) {
-    constexpr uint32_t kBlackholeTileCols = 32;
-    ICHECK_EQ(spec.gemm_contract.K % kBlackholeTileCols, 0)
-        << "Blackhole GEMM direct path requires K to be 32-tile aligned";
-    return std::max<uint32_t>(1, spec.gemm_contract.K / kBlackholeTileCols);
+  const auto gemm = GetComputeContract(spec);
+  if (gemm.enabled && gemm.kind == "gemm") {
+    ICHECK_GT(gemm.Kt, 0U)
+        << "Blackhole GEMM direct path requires compute_contract.Kt to be populated";
+    return std::max<uint32_t>(1, gemm.Kt);
   }
   return 0;
 }
@@ -347,12 +383,12 @@ static uint32_t GetRuntimeLogicalGridX(const ExecutableSpec& spec) {
 }
 
 static uint32_t GetRuntimeLogicalNTiles(const ExecutableSpec& spec) {
-  ICHECK(spec.gemm_contract.enabled)
+  const auto gemm = GetComputeContract(spec);
+  ICHECK(gemm.enabled && gemm.kind == "gemm")
       << "logical_n_tiles is only defined for GEMM kernels in Blackhole direct runtime";
-  constexpr uint32_t kBlackholeTileCols = 32;
-  ICHECK_EQ(spec.gemm_contract.N % kBlackholeTileCols, 0)
-      << "Blackhole GEMM direct path requires N to be 32-tile aligned";
-  const uint32_t logical_n_tiles = std::max<uint32_t>(1, spec.gemm_contract.N / kBlackholeTileCols);
+  ICHECK_GT(gemm.Nt, 0U)
+      << "Blackhole GEMM direct path requires compute_contract.Nt to be populated";
+  const uint32_t logical_n_tiles = std::max<uint32_t>(1, gemm.Nt);
   if (spec.core_plan.logical_grid_x > 0) {
     ICHECK_EQ(spec.core_plan.logical_grid_x, logical_n_tiles)
         << "Blackhole GEMM direct runtime requires logical_grid_x to match output N tile count";
@@ -643,6 +679,10 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
                        });
   };
 
+  const auto compute_contract = GetComputeContract(spec);
+  const bool has_gemm_compute_contract =
+      compute_contract.enabled && compute_contract.kind == "gemm";
+
   for (const auto& arg_spec : kernel.runtime_args) {
     if (arg_spec.kind == "input_buffer_addr") {
       const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/false,
@@ -669,29 +709,29 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
     } else if (arg_spec.kind == "work_linear_id" || arg_spec.kind == "current_work_linear_id") {
       args.push_back(work_linear_id);
     } else if (arg_spec.kind == "a_tile_start_id") {
-      args.push_back(spec.gemm_contract.enabled && kernel.kind == "reader" ? by : work_linear_id);
+      args.push_back(has_gemm_compute_contract && kernel.kind == "reader" ? by : work_linear_id);
     } else if (arg_spec.kind == "a_tile_num_tiles") {
       ICHECK(kernel_requests_kind("a_tile_start_id"))
           << "a_tile_num_tiles requires a_tile_start_id in Blackhole direct runtime";
-      args.push_back(spec.gemm_contract.enabled && kernel.kind == "reader" ? num_k_tiles : 1);
+      args.push_back(has_gemm_compute_contract && kernel.kind == "reader" ? num_k_tiles : 1);
     } else if (arg_spec.kind == "a_tile_stride") {
       ICHECK(kernel_requests_kind("a_tile_start_id"))
           << "a_tile_stride requires a_tile_start_id in Blackhole direct runtime";
       args.push_back(1);
     } else if (arg_spec.kind == "b_tile_start_id") {
-      ICHECK(spec.gemm_contract.enabled && kernel.kind == "reader")
+      ICHECK(has_gemm_compute_contract && kernel.kind == "reader")
           << "b_tile_start_id is only supported for GEMM reader kernels in Blackhole direct runtime";
       args.push_back(bx);
     } else if (arg_spec.kind == "b_tile_num_tiles") {
       ICHECK(kernel_requests_kind("b_tile_start_id"))
           << "b_tile_num_tiles requires b_tile_start_id in Blackhole direct runtime";
-      ICHECK(spec.gemm_contract.enabled && kernel.kind == "reader")
+      ICHECK(has_gemm_compute_contract && kernel.kind == "reader")
           << "b_tile_num_tiles is only supported for GEMM reader kernels in Blackhole direct runtime";
       args.push_back(num_k_tiles);
     } else if (arg_spec.kind == "b_tile_stride") {
       ICHECK(kernel_requests_kind("b_tile_start_id"))
           << "b_tile_stride requires b_tile_start_id in Blackhole direct runtime";
-      ICHECK(spec.gemm_contract.enabled && kernel.kind == "reader")
+      ICHECK(has_gemm_compute_contract && kernel.kind == "reader")
           << "b_tile_stride is only supported for GEMM reader kernels in Blackhole direct runtime";
       args.push_back(GetRuntimeLogicalNTiles(spec));
     } else if (arg_spec.kind == "output_tile_start_id") {
@@ -705,7 +745,7 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
           << "output_tile_stride requires output_tile_start_id in Blackhole direct runtime";
       args.push_back(1);
     } else if (arg_spec.kind == "k_tile_start_id") {
-      ICHECK(spec.gemm_contract.enabled)
+      ICHECK(has_gemm_compute_contract)
           << "k_tile_start_id is only supported for GEMM kernels in Blackhole direct runtime";
       ICHECK(kernel_requests_kind("num_k_tiles"))
           << "k_tile_start_id requires num_k_tiles in Blackhole direct runtime";

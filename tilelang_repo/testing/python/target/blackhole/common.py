@@ -160,6 +160,41 @@ def gemm_kernel(M: int = 32, N: int = 32, K: int = 128):
     return main
 
 
+def gemm_kernel_with_transpose_flags(
+    M: int = 32,
+    N: int = 32,
+    K: int = 128,
+    transpose_A: bool = False,
+    transpose_B: bool = True,
+):
+    """GEMM kernel with configurable transpose flags."""
+
+    a_shape = (K, M) if transpose_A else (M, K)
+    b_shape = (N, K) if transpose_B else (K, N)
+    @T.prim_func
+    def main(
+        A: T.Tensor(a_shape, "bfloat16"),
+        B: T.Tensor(b_shape, "bfloat16"),
+        C: T.Tensor((M, N), "float32"),
+    ):
+        with T.Kernel(1, 1) as (bx, by):
+            A_shared = T.alloc_shared(a_shape, "bfloat16")
+            B_shared = T.alloc_shared(b_shape, "bfloat16")
+            C_local = T.alloc_fragment((M, N), "float32")
+            T.copy(A[0 : a_shape[0], 0 : a_shape[1]], A_shared)
+            T.copy(B[0 : b_shape[0], 0 : b_shape[1]], B_shared)
+            T.gemm(
+                A_shared,
+                B_shared,
+                C_local,
+                transpose_A=transpose_A,
+                transpose_B=transpose_B,
+            )
+            T.copy(C_local, C[0:M, 0:N])
+
+    return main
+
+
 def assert_tensors_close_or_dump(actual, expected, atol, rtol, failure_message):
     if torch.allclose(actual, expected, atol=atol, rtol=rtol):
         return

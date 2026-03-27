@@ -496,7 +496,30 @@ void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
   gemm_contract.Set("c_cb_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
   gemm_contract.Set("accumulator_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
 
+  Map<String, Any> compute_contract;
+  compute_contract.Set("enabled", Bool(true));
+  compute_contract.Set("kind", String("gemm"));
+  compute_contract.Set("a_buffer", String(a_buffer));
+  compute_contract.Set("b_buffer", String(b_buffer));
+  compute_contract.Set("c_buffer", String(c_buffer));
+  compute_contract.Set("M", Integer(gemm_m_));
+  compute_contract.Set("N", Integer(gemm_n_));
+  compute_contract.Set("K", Integer(gemm_k_));
+  compute_contract.Set("Mt", Integer(gemm_m_ / kBlackholeTileRows));
+  compute_contract.Set("Nt", Integer(gemm_n_ / kBlackholeTileCols));
+  compute_contract.Set("Kt", Integer(gemm_k_ / kBlackholeTileCols));
+  compute_contract.Set("transpose_A", Bool(gemm_transpose_a_));
+  compute_contract.Set("transpose_B", Bool(gemm_transpose_b_));
+  compute_contract.Set("a_tensor_dtype", String(DataTypeToDataFormat(gemm_a_dtype_)));
+  compute_contract.Set("b_tensor_dtype", String(DataTypeToDataFormat(gemm_b_dtype_)));
+  compute_contract.Set("c_tensor_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
+  compute_contract.Set("a_cb_dtype", String(DataTypeToDataFormat(gemm_a_dtype_)));
+  compute_contract.Set("b_cb_dtype", String(DataTypeToDataFormat(gemm_b_dtype_)));
+  compute_contract.Set("c_cb_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
+  compute_contract.Set("accumulator_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
+
   attrs.Set("blackhole.gemm_contract", gemm_contract);
+  attrs.Set("blackhole.compute_contract", compute_contract);
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 
