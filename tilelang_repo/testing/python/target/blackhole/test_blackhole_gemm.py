@@ -321,6 +321,46 @@ def test_blackhole_gemm_contract_attr_is_materialized():
     assert len(writer["common_runtime_args"]) == 0
 
 
+def test_blackhole_gemm_compile_time_abi_is_materialized():
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = next(
+        func
+        for func in artifact.device_mod.functions.values()
+        if func.attrs and "blackhole.segment_plan" in func.attrs
+    )
+    segment_plan = device_main.attrs["blackhole.segment_plan"]
+    reader = next(item for item in segment_plan if str(item["kind"]) == "reader")
+    compute = next(item for item in segment_plan if str(item["kind"]) == "compute")
+
+    assert "compile_time_arg_specs" in reader
+    reader_compile_time_arg_specs = reader["compile_time_arg_specs"]
+    assert [
+        (str(item["kind"]), int(item["offset"]), str(item["buffer"]))
+        for item in reader_compile_time_arg_specs[:2]
+    ] == [
+        ("interleaved_accessor_cta", 0, "input0"),
+        ("interleaved_accessor_cta", 2, "output0"),
+    ]
+
+    assert "compile_time_arg_specs" in compute
+    compute_compile_time_arg_specs = compute["compile_time_arg_specs"]
+    assert any(str(item["kind"]) == "gemm_shape" for item in compute_compile_time_arg_specs)
+    assert any(
+        str(item["kind"]) == "gemm_transpose_flags" for item in compute_compile_time_arg_specs
+    )
+    gemm_shape = next(item for item in compute_compile_time_arg_specs if str(item["kind"]) == "gemm_shape")
+    gemm_transpose_flags = next(
+        item for item in compute_compile_time_arg_specs if str(item["kind"]) == "gemm_transpose_flags"
+    )
+    assert [int(value) for value in gemm_shape["values"]] == [1, 1, 1]
+    assert [int(value) for value in gemm_transpose_flags["values"]] == [0, 1]
+
+
 def test_blackhole_gemm_direct_runtime_rejects_sharded_accessor_schema():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:

@@ -194,6 +194,37 @@ def test_blackhole_copy_pass_attrs():
     assert body_script.count("tl.blackhole.write_tile_from_cb") == 1
 
 
+def test_blackhole_copy_compile_time_abi_is_materialized():
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = next(
+        func
+        for func in artifact.device_mod.functions.values()
+        if func.attrs and "blackhole.segment_plan" in func.attrs
+    )
+    kernel_spec = device_main.attrs["blackhole.segment_plan"][0]
+
+    assert "compile_time_arg_specs" in kernel_spec
+    compile_time_arg_specs = kernel_spec["compile_time_arg_specs"]
+    assert [
+        (str(item["kind"]), int(item["offset"]), str(item["buffer"]))
+        for item in compile_time_arg_specs
+    ] == [
+        ("interleaved_accessor_cta", 0, "input0"),
+        ("interleaved_accessor_cta", 2, "output0"),
+    ]
+
+    assert "launch_spec" in kernel_spec
+    launch_spec = kernel_spec["launch_spec"]
+    assert str(launch_spec["core_type"]) == "brisc"
+    assert str(launch_spec["processor"]) == "riscv_0"
+    assert str(launch_spec["noc"]) == "riscv_0_default"
+
+
 def test_blackhole_copy_semantics_annotation_schema():
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     mod = tilelang.tvm.IRModule({"main": kernel})
