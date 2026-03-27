@@ -58,16 +58,78 @@ def _rebuild_codegen_module_with_segment_plan(artifact, segment_plan):
     )
 
 
-def _extract_blackhole_executable_spec(artifact):
+def _extract_blackhole_executable_spec(artifact, function_names=("main", "main_kernel")):
     codegen_mod = artifact.codegen_mod
-    for function_name in ("main", "main_kernel"):
+    getter = getattr(codegen_mod, "get_function_metadata", None)
+    if getter is None:
+        pytest.fail("Blackhole runtime module does not expose get_function_metadata()")
+
+    failures = []
+    for function_name in function_names:
         try:
-            spec = codegen_mod.get_function_metadata(function_name)
-        except Exception:
-            spec = None
+            spec = getter(function_name)
+        except (AttributeError, TypeError, ValueError, RuntimeError) as err:
+            failures.append(f"{function_name}: {type(err).__name__}: {err}")
+            continue
         if spec is not None:
             return spec
-    pytest.fail("Blackhole executable spec metadata is not exposed by the built runtime module")
+        failures.append(f"{function_name}: no metadata returned")
+    pytest.fail(
+        "Blackhole executable spec metadata is not exposed by the built runtime module; "
+        + "; ".join(failures)
+    )
+
+
+def _require_blackhole_kernel(kernels, *, kind, core_type=None, name=None):
+    matches = []
+    for kernel in kernels:
+        if str(kernel["kind"]) != kind:
+            continue
+        if core_type is not None and str(kernel["core_type"]) != core_type:
+            continue
+        if name is not None and str(kernel["name"]) != name:
+            continue
+        matches.append(kernel)
+
+    if not matches:
+        available = [
+            f"{str(kernel['name'])}:{str(kernel['kind'])}:{str(kernel['core_type'])}"
+            for kernel in kernels
+        ]
+        pytest.fail(
+            f"Missing Blackhole kernel kind={kind!r} core_type={core_type!r} name={name!r}; "
+            f"available kernels: {available}"
+        )
+    if len(matches) > 1:
+        matched = [
+            f"{str(kernel['name'])}:{str(kernel['kind'])}:{str(kernel['core_type'])}"
+            for kernel in matches
+        ]
+        pytest.fail(
+            f"Ambiguous Blackhole kernel kind={kind!r} core_type={core_type!r} name={name!r}; "
+            f"matched kernels: {matched}"
+        )
+    return matches[0]
+
+
+def _require_spec_entry(entries, *, kind, label, buffer=None):
+    matches = [entry for entry in entries if str(entry["kind"]) == kind]
+    if buffer is not None:
+        matches = [entry for entry in matches if str(entry["buffer"]) == buffer]
+    if not matches:
+        available = [
+            f"{str(entry['kind'])}:{str(entry.get('buffer', ''))}"
+            for entry in entries
+        ]
+        pytest.fail(
+            f"Missing {label} spec kind={kind!r} buffer={buffer!r}; available entries: {available}"
+        )
+    if len(matches) > 1:
+        matched = [f"{str(entry['kind'])}:{str(entry.get('buffer', ''))}" for entry in matches]
+        pytest.fail(
+            f"Ambiguous {label} spec kind={kind!r} buffer={buffer!r}; matched entries: {matched}"
+        )
+    return matches[0]
 
 
 def _with_richer_accessor_schema(func, common_runtime_args=None, layout_override=None):
@@ -214,7 +276,9 @@ def test_blackhole_copy_compile_time_abi_is_materialized():
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    kernel_spec = executable_spec["kernels"][0]
+    kernel_spec = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
 
     assert "compile_time_arg_specs" in kernel_spec
     compile_time_arg_specs = kernel_spec["compile_time_arg_specs"]

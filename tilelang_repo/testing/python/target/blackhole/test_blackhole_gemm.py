@@ -14,6 +14,11 @@ from .common import (
     check_blackhole_direct_execution_requirements,
     gemm_kernel,
 )
+from .test_blackhole_copy_pipeline import (
+    _extract_blackhole_executable_spec,
+    _require_blackhole_kernel,
+    _require_spec_entry,
+)
 
 
 def _with_richer_accessor_schema(func, common_runtime_args=None):
@@ -86,18 +91,6 @@ def _rebuild_codegen_module_with_segment_plan(artifact, segment_plan):
     return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
         build_mod, target
     )
-
-
-def _extract_blackhole_executable_spec(artifact):
-    codegen_mod = artifact.codegen_mod
-    for function_name in ("main", "main_kernel"):
-        try:
-            spec = codegen_mod.get_function_metadata(function_name)
-        except Exception:
-            spec = None
-        if spec is not None:
-            return spec
-    pytest.fail("Blackhole executable spec metadata is not exposed by the built runtime module")
 
 
 def multicore_gemm_kernel(
@@ -342,28 +335,37 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
     kernels = executable_spec["kernels"]
-    reader = next(item for item in kernels if str(item["kind"]) == "reader")
-    compute = next(item for item in kernels if str(item["kind"]) == "compute")
+    reader = _require_blackhole_kernel(kernels, kind="reader", core_type="brisc")
+    compute = _require_blackhole_kernel(kernels, kind="compute", core_type="trisc")
 
     assert "compile_time_arg_specs" in reader
     reader_compile_time_arg_specs = reader["compile_time_arg_specs"]
-    assert [
-        (str(item["kind"]), int(item["offset"]), str(item["buffer"]))
-        for item in reader_compile_time_arg_specs[:2]
-    ] == [
-        ("interleaved_accessor_cta", 0, "A"),
-        ("interleaved_accessor_cta", 2, "B"),
-    ]
+    reader_a = _require_spec_entry(
+        reader_compile_time_arg_specs,
+        kind="interleaved_accessor_cta",
+        label="reader compile-time",
+        buffer="A",
+    )
+    reader_b = _require_spec_entry(
+        reader_compile_time_arg_specs,
+        kind="interleaved_accessor_cta",
+        label="reader compile-time",
+        buffer="B",
+    )
+    assert int(reader_a["offset"]) == 0
+    assert str(reader_a["buffer"]) == "A"
+    assert int(reader_b["offset"]) == 2
+    assert str(reader_b["buffer"]) == "B"
 
     assert "compile_time_arg_specs" in compute
     compute_compile_time_arg_specs = compute["compile_time_arg_specs"]
-    assert any(str(item["kind"]) == "gemm_shape" for item in compute_compile_time_arg_specs)
-    assert any(
-        str(item["kind"]) == "gemm_transpose_flags" for item in compute_compile_time_arg_specs
+    gemm_shape = _require_spec_entry(
+        compute_compile_time_arg_specs, kind="gemm_shape", label="compute compile-time"
     )
-    gemm_shape = next(item for item in compute_compile_time_arg_specs if str(item["kind"]) == "gemm_shape")
-    gemm_transpose_flags = next(
-        item for item in compute_compile_time_arg_specs if str(item["kind"]) == "gemm_transpose_flags"
+    gemm_transpose_flags = _require_spec_entry(
+        compute_compile_time_arg_specs,
+        kind="gemm_transpose_flags",
+        label="compute compile-time",
     )
     assert [int(value) for value in gemm_shape["values"]] == [1, 1, 1]
     assert [int(value) for value in gemm_transpose_flags["values"]] == [0, 1]
