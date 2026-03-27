@@ -7,9 +7,11 @@
 
 #include "blackhole_module.h"
 
+#include <dmlc/json.h>
 #include <dmlc/memory_io.h>
 #include <tvm/ffi/function.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/runtime/data_type.h>
 
 #include <algorithm>
 #include <atomic>
@@ -46,6 +48,13 @@ static std::string NormalizeBlackholeKernelSource(std::string source) {
     source.replace(pos, old_compute_include.size(), new_compute_include);
   }
   return source;
+}
+
+static std::string EncodeExecutableSpecMetadata(const ExecutableSpec& spec) {
+  std::ostringstream os;
+  dmlc::JSONWriter writer(&os);
+  spec.Save(&writer);
+  return os.str();
 }
 
 // Forward declaration
@@ -607,6 +616,14 @@ ffi::Optional<ffi::Function> BlackholeModuleNode::GetFunction(const ffi::String&
 
   std::vector<FunctionInfo::ArgExtraTags> arg_extra_tags;
   return PackFuncVoidAddr(f, info.tvm_arg_types, arg_extra_tags);
+}
+
+ffi::Optional<ffi::String> BlackholeModuleNode::GetFunctionMetadata(const ffi::String& name) {
+  auto it = fmap_.find(name);
+  if (it == fmap_.end()) {
+    return std::nullopt;
+  }
+  return ffi::String(EncodeExecutableSpecMetadata(it->second));
 }
 
 void BlackholeModuleNode::WriteToFile(const ffi::String& file_name,

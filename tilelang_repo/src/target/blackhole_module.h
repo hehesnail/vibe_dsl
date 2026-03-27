@@ -5,8 +5,10 @@
 #ifndef TVM_TL_TARGET_BLACKHOLE_MODULE_H_
 #define TVM_TL_TARGET_BLACKHOLE_MODULE_H_
 
+#include <dmlc/json.h>
 #include <tvm/ffi/function.h>
 #include <tvm/ffi/extra/module.h>
+#include <tvm/runtime/data_type.h>
 
 #include <memory>
 #include <string>
@@ -29,6 +31,17 @@ struct CBConfig {
   uint32_t num_pages;
   uint32_t page_size_bytes;
   std::string data_format;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("cb_id", static_cast<int64_t>(cb_id));
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("role", role);
+    writer->WriteObjectKeyValue("num_pages", static_cast<int64_t>(num_pages));
+    writer->WriteObjectKeyValue("page_size", static_cast<int64_t>(page_size_bytes));
+    writer->WriteObjectKeyValue("data_format", data_format);
+    writer->EndObject();
+  }
 };
 
 /*!
@@ -37,6 +50,13 @@ struct CBConfig {
 struct PhysicalCore {
   uint32_t core_x = 0;
   uint32_t core_y = 0;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("core_x", static_cast<int64_t>(core_x));
+    writer->WriteObjectKeyValue("core_y", static_cast<int64_t>(core_y));
+    writer->EndObject();
+  }
 };
 
 /*!
@@ -47,6 +67,15 @@ struct WorkPacket {
   uint32_t core_y = 0;
   uint32_t work_offset = 0;
   uint32_t work_count = 1;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("core_x", static_cast<int64_t>(core_x));
+    writer->WriteObjectKeyValue("core_y", static_cast<int64_t>(core_y));
+    writer->WriteObjectKeyValue("work_offset", static_cast<int64_t>(work_offset));
+    writer->WriteObjectKeyValue("work_count", static_cast<int64_t>(work_count));
+    writer->EndObject();
+  }
 };
 
 /*!
@@ -58,6 +87,16 @@ struct CorePlan {
   std::string linearization = "row_major";
   std::vector<PhysicalCore> physical_cores;
   std::vector<WorkPacket> work_packets;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("logical_grid_x", static_cast<int64_t>(logical_grid_x));
+    writer->WriteObjectKeyValue("logical_grid_y", static_cast<int64_t>(logical_grid_y));
+    writer->WriteObjectKeyValue("linearization", linearization);
+    writer->WriteObjectKeyValue("physical_cores", physical_cores);
+    writer->WriteObjectKeyValue("work_packets", work_packets);
+    writer->EndObject();
+  }
 };
 
 /*!
@@ -68,6 +107,56 @@ struct KernelArgSpec {
   std::string kind;
   std::string dtype;
   std::string buffer;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("kind", kind);
+    writer->WriteObjectKeyValue("dtype", dtype);
+    if (!buffer.empty()) {
+      writer->WriteObjectKeyValue("buffer", buffer);
+    }
+    writer->EndObject();
+  }
+};
+
+struct CompileTimeArgSpec {
+  std::string kind;
+  uint32_t offset = 0;
+  std::string buffer;
+  std::vector<uint32_t> values;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("kind", kind);
+    writer->WriteObjectKeyValue("offset", static_cast<int64_t>(offset));
+    if (!buffer.empty()) {
+      writer->WriteObjectKeyValue("buffer", buffer);
+    }
+    if (!values.empty()) {
+      std::vector<int64_t> encoded_values;
+      encoded_values.reserve(values.size());
+      for (uint32_t value : values) {
+        encoded_values.push_back(static_cast<int64_t>(value));
+      }
+      writer->WriteObjectKeyValue("values", encoded_values);
+    }
+    writer->EndObject();
+  }
+};
+
+struct KernelLaunchSpec {
+  std::string core_type;
+  std::string processor;
+  std::string noc;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("core_type", core_type);
+    writer->WriteObjectKeyValue("processor", processor);
+    writer->WriteObjectKeyValue("noc", noc);
+    writer->EndObject();
+  }
 };
 
 struct AccessorSpec {
@@ -80,6 +169,24 @@ struct AccessorSpec {
   uint32_t args_config_bits = 0;
   std::string layout;
   std::string memory_space;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("buffer", buffer);
+    writer->WriteObjectKeyValue("slot", static_cast<int64_t>(slot));
+    writer->WriteObjectKeyValue("compile_time_arg_offset",
+                                static_cast<int64_t>(compile_time_arg_offset));
+    writer->WriteObjectKeyValue("compile_time_arg_count",
+                                static_cast<int64_t>(compile_time_arg_count));
+    writer->WriteObjectKeyValue("common_runtime_arg_offset",
+                                static_cast<int64_t>(common_runtime_arg_offset));
+    writer->WriteObjectKeyValue("common_runtime_arg_count",
+                                static_cast<int64_t>(common_runtime_arg_count));
+    writer->WriteObjectKeyValue("args_config_bits", static_cast<int64_t>(args_config_bits));
+    writer->WriteObjectKeyValue("layout", layout);
+    writer->WriteObjectKeyValue("memory_space", memory_space);
+    writer->EndObject();
+  }
 };
 
 /*!
@@ -93,7 +200,42 @@ struct KernelSpec {
   std::vector<uint32_t> compile_time_args;
   std::vector<KernelArgSpec> runtime_args;
   std::vector<KernelArgSpec> common_runtime_args;
+  std::vector<CompileTimeArgSpec> compile_time_arg_specs;
+  bool has_launch_spec = false;
+  KernelLaunchSpec launch_spec;
   std::vector<AccessorSpec> accessors;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("kind", kind);
+    writer->WriteObjectKeyValue("core_type", core_type);
+    writer->WriteObjectKeyValue("source_code", source_code);
+    if (!compile_time_args.empty()) {
+      std::vector<int64_t> encoded_compile_time_args;
+      encoded_compile_time_args.reserve(compile_time_args.size());
+      for (uint32_t value : compile_time_args) {
+        encoded_compile_time_args.push_back(static_cast<int64_t>(value));
+      }
+      writer->WriteObjectKeyValue("compile_time_args", encoded_compile_time_args);
+    }
+    if (!runtime_args.empty()) {
+      writer->WriteObjectKeyValue("runtime_args", runtime_args);
+    }
+    if (!common_runtime_args.empty()) {
+      writer->WriteObjectKeyValue("common_runtime_args", common_runtime_args);
+    }
+    if (!compile_time_arg_specs.empty()) {
+      writer->WriteObjectKeyValue("compile_time_arg_specs", compile_time_arg_specs);
+    }
+    if (has_launch_spec) {
+      writer->WriteObjectKeyValue("launch_spec", launch_spec);
+    }
+    if (!accessors.empty()) {
+      writer->WriteObjectKeyValue("accessors", accessors);
+    }
+    writer->EndObject();
+  }
 };
 
 struct GemmContractSpec {
@@ -113,6 +255,27 @@ struct GemmContractSpec {
   std::string b_cb_dtype;
   std::string c_cb_dtype;
   std::string accumulator_dtype;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("enabled", enabled);
+    writer->WriteObjectKeyValue("a_buffer", a_buffer);
+    writer->WriteObjectKeyValue("b_buffer", b_buffer);
+    writer->WriteObjectKeyValue("c_buffer", c_buffer);
+    writer->WriteObjectKeyValue("M", static_cast<int64_t>(M));
+    writer->WriteObjectKeyValue("N", static_cast<int64_t>(N));
+    writer->WriteObjectKeyValue("K", static_cast<int64_t>(K));
+    writer->WriteObjectKeyValue("transpose_A", transpose_A);
+    writer->WriteObjectKeyValue("transpose_B", transpose_B);
+    writer->WriteObjectKeyValue("a_tensor_dtype", a_tensor_dtype);
+    writer->WriteObjectKeyValue("b_tensor_dtype", b_tensor_dtype);
+    writer->WriteObjectKeyValue("c_tensor_dtype", c_tensor_dtype);
+    writer->WriteObjectKeyValue("a_cb_dtype", a_cb_dtype);
+    writer->WriteObjectKeyValue("b_cb_dtype", b_cb_dtype);
+    writer->WriteObjectKeyValue("c_cb_dtype", c_cb_dtype);
+    writer->WriteObjectKeyValue("accumulator_dtype", accumulator_dtype);
+    writer->EndObject();
+  }
 };
 
 /*!
@@ -132,6 +295,44 @@ struct ExecutableSpec {
   std::vector<std::string> tvm_arg_names;
   std::vector<DLDataType> tvm_arg_types;
   std::vector<bool> tvm_is_buffer_arg;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("entry_name", entry_name);
+    if (!cb_configs.empty()) {
+      writer->WriteObjectKeyValue("cb_configs", cb_configs);
+    }
+    writer->WriteObjectKeyValue("core_plan", core_plan);
+    writer->WriteObjectKeyValue("default_kernel_kind", default_kernel_kind);
+    writer->WriteObjectKeyValue("default_kernel_core_type", default_kernel_core_type);
+    if (!runtime_args.empty()) {
+      writer->WriteObjectKeyValue("runtime_args", runtime_args);
+    }
+    if (!kernels.empty()) {
+      writer->WriteObjectKeyValue("kernels", kernels);
+    }
+    writer->WriteObjectKeyValue("gemm_contract", gemm_contract);
+    if (!tvm_arg_names.empty()) {
+      writer->WriteObjectKeyValue("tvm_arg_names", tvm_arg_names);
+    }
+    if (!tvm_arg_types.empty()) {
+      std::vector<std::string> arg_types;
+      arg_types.reserve(tvm_arg_types.size());
+      for (const auto& dtype : tvm_arg_types) {
+        arg_types.push_back(::tvm::runtime::DLDataTypeToString(dtype));
+      }
+      writer->WriteObjectKeyValue("tvm_arg_types", arg_types);
+    }
+    if (!tvm_is_buffer_arg.empty()) {
+      std::vector<int64_t> is_buffer_arg;
+      is_buffer_arg.reserve(tvm_is_buffer_arg.size());
+      for (bool is_buffer : tvm_is_buffer_arg) {
+        is_buffer_arg.push_back(is_buffer ? 1 : 0);
+      }
+      writer->WriteObjectKeyValue("tvm_is_buffer_arg", is_buffer_arg);
+    }
+    writer->EndObject();
+  }
 };
 
 /*!
@@ -170,6 +371,9 @@ class BlackholeModuleNode : public ffi::ModuleObj {
 
   /*! \brief Get function by name */
   ffi::Optional<ffi::Function> GetFunction(const ffi::String& name) final;
+
+  /*! \brief Get function metadata by name */
+  ffi::Optional<ffi::String> GetFunctionMetadata(const ffi::String& name) final;
 
   /*! \brief Save to file (serialization) */
   void WriteToFile(const ffi::String& file_name, const ffi::String& format) const final;

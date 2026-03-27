@@ -495,6 +495,57 @@ static std::vector<AccessorSpec> ExtractAccessorsFromArray(const ffi::Array<ffi:
   return accessors;
 }
 
+static std::vector<CompileTimeArgSpec> ExtractCompileTimeArgSpecsFromArray(
+    const ffi::Array<ffi::Any>& items) {
+  std::vector<CompileTimeArgSpec> compile_time_arg_specs;
+  for (const auto& item : items) {
+    auto spec_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+        ffi::Map<ffi::String, ffi::Any>());
+    if (spec_info.empty()) {
+      continue;
+    }
+
+    CompileTimeArgSpec spec;
+    if (auto v = spec_info.Get("kind")) {
+      spec.kind = Downcast<String>(v.value());
+    }
+    if (auto v = spec_info.Get("offset")) {
+      spec.offset = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+    }
+    if (auto v = spec_info.Get("buffer")) {
+      spec.buffer = Downcast<String>(v.value());
+    }
+    if (auto v = spec_info.Get("values")) {
+      for (const auto& value : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+        spec.values.push_back(static_cast<uint32_t>(Downcast<Integer>(value).IntValue()));
+      }
+    }
+
+    if (!spec.kind.empty()) {
+      compile_time_arg_specs.push_back(std::move(spec));
+    }
+  }
+  return compile_time_arg_specs;
+}
+
+static bool ExtractLaunchSpec(const ffi::Map<ffi::String, ffi::Any>& spec_info,
+                              KernelLaunchSpec* launch_spec) {
+  if (spec_info.empty()) {
+    return false;
+  }
+  if (auto v = spec_info.Get("core_type")) {
+    launch_spec->core_type = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("processor")) {
+    launch_spec->processor = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("noc")) {
+    launch_spec->noc = Downcast<String>(v.value());
+  }
+  return !launch_spec->core_type.empty() || !launch_spec->processor.empty() ||
+         !launch_spec->noc.empty();
+}
+
 static bool IsUnifiedWorkDescriptorKind(const std::string& kind) {
   return kind == "work_linear_id" || kind == "a_tile_start_id" ||
          kind == "a_tile_num_tiles" || kind == "a_tile_stride" ||
@@ -598,6 +649,9 @@ struct SegmentInfo {
   std::string core_type;
   std::vector<KernelArgSpec> runtime_args;
   std::vector<KernelArgSpec> common_runtime_args;
+  std::vector<CompileTimeArgSpec> compile_time_arg_specs;
+  bool has_launch_spec = false;
+  KernelLaunchSpec launch_spec;
   std::vector<AccessorSpec> accessors;
 };
 
@@ -639,6 +693,15 @@ static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, Execu
     }
     if (auto v = segment.Get("accessors")) {
       info.accessors = ExtractAccessorsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
+    }
+    if (auto v = segment.Get("compile_time_arg_specs")) {
+      info.compile_time_arg_specs =
+          ExtractCompileTimeArgSpecsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
+    }
+    if (auto v = segment.Get("launch_spec")) {
+      auto launch_spec = v.value().as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+          ffi::Map<ffi::String, ffi::Any>());
+      info.has_launch_spec = ExtractLaunchSpec(launch_spec, &info.launch_spec);
     }
 
     if (segments_out.empty()) {
@@ -847,6 +910,11 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
     kernel.core_type = segment.core_type;
     kernel.runtime_args = segment.runtime_args.empty() ? spec->runtime_args : segment.runtime_args;
     kernel.common_runtime_args = segment.common_runtime_args;
+    kernel.compile_time_arg_specs = segment.compile_time_arg_specs;
+    kernel.has_launch_spec = segment.has_launch_spec;
+    if (segment.has_launch_spec) {
+      kernel.launch_spec = segment.launch_spec;
+    }
     kernel.accessors = segment.accessors;
     kernel.source_code = EmitKernelSourceForPrimFunc(segment_func, kernel.name, target,
                                                      kernel_code_only);
