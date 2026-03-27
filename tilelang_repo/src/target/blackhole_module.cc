@@ -187,6 +187,17 @@ static void ValidateGemmTensorDType(const RuntimeTensorBinding& binding,
       << ", expected " << expected_dtype;
 }
 
+static ComputeContractSpec GetComputeContract(const ExecutableSpec& spec);
+
+static void ValidateComputeContractDirectRuntimeConstraints(const ExecutableSpec& spec) {
+  const auto contract = GetComputeContract(spec);
+  if (!contract.enabled || contract.kind != "gemm") {
+    return;
+  }
+  ICHECK(!contract.has_mbarrier)
+      << "Blackhole direct runtime does not yet support GEMM compute_contract.mbarrier bindings";
+}
+
 static ComputeContractSpec GetComputeContract(const ExecutableSpec& spec) {
   if (spec.compute_contract.enabled) {
     return spec.compute_contract;
@@ -909,6 +920,7 @@ void BlackholeModuleNode::ExecuteDirect(
   if (spec.kernels.empty()) {
     LOG(FATAL) << "ExecutableSpec has no kernels for function: " << func_name;
   }
+  ValidateComputeContractDirectRuntimeConstraints(spec);
   for (const auto& kernel_spec : spec.kernels) {
     ValidateKernelDirectRuntimeConstraints(kernel_spec);
   }

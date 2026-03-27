@@ -366,6 +366,10 @@ struct ComputeContractSpec {
   int32_t wg_wait = 0;
   int32_t policy_type = 0;
   std::string policy_name;
+  bool has_mbarrier = false;
+  std::string mbarrier_buffer;
+  std::string mbarrier_scope;
+  std::vector<std::string> mbarrier_index_exprs;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -402,6 +406,14 @@ struct ComputeContractSpec {
     writer->WriteObjectKeyValue("wg_wait", static_cast<int64_t>(wg_wait));
     writer->WriteObjectKeyValue("policy_type", static_cast<int64_t>(policy_type));
     writer->WriteObjectKeyValue("policy_name", policy_name);
+    writer->WriteObjectKeyValue("has_mbarrier", has_mbarrier);
+    writer->WriteObjectKeyValue("mbarrier_buffer", mbarrier_buffer);
+    writer->WriteObjectKeyValue("mbarrier_scope", mbarrier_scope);
+    if (!mbarrier_index_exprs.empty()) {
+      writer->WriteObjectKeyValue("mbarrier_index_exprs", mbarrier_index_exprs);
+    } else {
+      writer->WriteObjectKeyValue("mbarrier_index_exprs", std::vector<std::string>{});
+    }
     if (!unpack_to_dest_mode.empty()) {
       writer->WriteObjectKeyValue("unpack_to_dest_mode", unpack_to_dest_mode);
     } else {

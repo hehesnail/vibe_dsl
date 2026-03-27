@@ -424,6 +424,7 @@ static ComputeContractSpec ComputeContractFromLegacyGemm(const GemmContractSpec&
   contract.wg_wait = 0;
   contract.policy_type = 0;
   contract.policy_name = "Square";
+  contract.has_mbarrier = false;
   return contract;
 }
 
@@ -534,6 +535,20 @@ static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
   }
   if (auto v = attrs.Get("policy_name")) {
     contract.policy_name = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("has_mbarrier")) {
+    contract.has_mbarrier = Downcast<Bool>(v.value());
+  }
+  if (auto v = attrs.Get("mbarrier_buffer")) {
+    contract.mbarrier_buffer = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("mbarrier_scope")) {
+    contract.mbarrier_scope = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("mbarrier_index_exprs")) {
+    for (const auto& expr : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+      contract.mbarrier_index_exprs.push_back(Downcast<String>(expr));
+    }
   }
   if (auto v = attrs.Get("unpack_to_dest_mode")) {
     for (const auto& mode : Downcast<ffi::Array<ffi::Any>>(v.value())) {

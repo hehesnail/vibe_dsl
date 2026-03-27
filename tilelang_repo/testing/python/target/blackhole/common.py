@@ -259,6 +259,32 @@ def gemm_kernel_with_policy(
     return main
 
 
+def gemm_kernel_with_mbar(
+    M: int = 32,
+    N: int = 32,
+    K: int = 128,
+):
+    """GEMM kernel with an explicit barrier binding passed as mbar."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), "bfloat16"),
+        B: T.Tensor((N, K), "bfloat16"),
+        C: T.Tensor((M, N), "float32"),
+    ):
+        with T.Kernel(1, 1) as (bx, by):
+            A_shared = T.alloc_shared((M, K), "bfloat16")
+            B_shared = T.alloc_shared((N, K), "bfloat16")
+            C_local = T.alloc_fragment((M, N), "float32")
+            mbar = T.alloc_barrier(128)
+            T.copy(A[0:M, 0:K], A_shared)
+            T.copy(B[0:N, 0:K], B_shared)
+            T.gemm(A_shared, B_shared, C_local, transpose_B=True, mbar=mbar)
+            T.copy(C_local, C[0:M, 0:N])
+
+    return main
+
+
 def assert_tensors_close_or_dump(actual, expected, atol, rtol, failure_message):
     if torch.allclose(actual, expected, atol=atol, rtol=rtol):
         return

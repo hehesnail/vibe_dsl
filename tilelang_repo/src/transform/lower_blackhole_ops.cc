@@ -39,6 +39,7 @@
 #include <tvm/tir/transform.h>
 
 #include <algorithm>
+#include <sstream>
 
 #include "../tir/builtin_blackhole.h"
 
@@ -58,6 +59,12 @@ static std::string GemmWarpPolicyTypeToStringForBlackhole(int policy_type) {
     default:
       return "Unknown";
   }
+}
+
+static std::string PrimExprToCompactString(const PrimExpr& expr) {
+  std::ostringstream os;
+  os << expr;
+  return os.str();
 }
 
 using tir::PrimFunc;
@@ -205,6 +212,10 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   gemm_a_buffer_name_.clear();
   gemm_b_buffer_name_.clear();
   gemm_c_buffer_name_.clear();
+  gemm_has_mbarrier_ = false;
+  gemm_mbarrier_buffer_name_.clear();
+  gemm_mbarrier_scope_.clear();
+  gemm_mbarrier_index_exprs_.clear();
   gemm_a_req_index_ = -1;
   gemm_b_req_index_ = -1;
   gemm_c_req_index_ = -1;
@@ -536,6 +547,14 @@ void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
   compute_contract.Set("transpose_B", Bool(gemm_transpose_b_));
   compute_contract.Set("policy_type", Integer(gemm_policy_type_));
   compute_contract.Set("policy_name", String(GemmWarpPolicyTypeToStringForBlackhole(gemm_policy_type_)));
+  compute_contract.Set("has_mbarrier", Bool(gemm_has_mbarrier_));
+  compute_contract.Set("mbarrier_buffer", String(gemm_mbarrier_buffer_name_));
+  compute_contract.Set("mbarrier_scope", String(gemm_mbarrier_scope_));
+  Array<Any> mbarrier_index_exprs;
+  for (const auto& expr : gemm_mbarrier_index_exprs_) {
+    mbarrier_index_exprs.push_back(String(expr));
+  }
+  compute_contract.Set("mbarrier_index_exprs", mbarrier_index_exprs);
   compute_contract.Set("a_tensor_dtype", String(DataTypeToDataFormat(gemm_a_dtype_)));
   compute_contract.Set("b_tensor_dtype", String(DataTypeToDataFormat(gemm_b_dtype_)));
   compute_contract.Set("c_tensor_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
@@ -873,6 +892,16 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
   if (const auto* imm = args[9].as<IntImmNode>()) gemm_clear_accum_ = imm->value != 0;
   if (const auto* imm = args[14].as<IntImmNode>()) gemm_k_pack_ = static_cast<int>(imm->value);
   if (const auto* imm = args[15].as<IntImmNode>()) gemm_wg_wait_ = static_cast<int>(imm->value);
+  if (args.size() > 16 && IsBufferLikeExpr(args[16])) {
+    tir::BufferRegion mbar_region = NormalizeToBufferRegion(args[16]);
+    gemm_has_mbarrier_ = true;
+    gemm_mbarrier_buffer_name_ = std::string(mbar_region->buffer->name);
+    gemm_mbarrier_scope_ = GetStorageScope(mbar_region->buffer);
+    gemm_mbarrier_index_exprs_.clear();
+    for (const auto& range : mbar_region->region) {
+      gemm_mbarrier_index_exprs_.push_back(PrimExprToCompactString(range->min));
+    }
+  }
 
   if (const auto* imm = args[5].as<IntImmNode>()) gemm_m_ = static_cast<int>(imm->value);
   if (const auto* imm = args[6].as<IntImmNode>()) gemm_n_ = static_cast<int>(imm->value);

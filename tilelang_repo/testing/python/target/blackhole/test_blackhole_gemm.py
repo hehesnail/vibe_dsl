@@ -14,6 +14,7 @@ from .common import (
     check_blackhole_direct_execution_requirements,
     gemm_kernel,
     gemm_kernel_with_compute_abi,
+    gemm_kernel_with_mbar,
     gemm_kernel_with_policy,
     gemm_kernel_with_transpose_flags,
 )
@@ -97,6 +98,19 @@ def _rebuild_codegen_module_with_segment_plan(artifact, segment_plan):
     for gvar, func in artifact.device_mod.functions.items():
         if func.attrs and "blackhole.segment_plan" in func.attrs:
             func = func.with_attr("blackhole.segment_plan", segment_plan)
+        rewritten[gvar] = func
+    target = Target("blackhole")
+    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
+
+
+def _rebuild_codegen_module_with_compute_contract(artifact, compute_contract):
+    rewritten = {}
+    for gvar, func in artifact.device_mod.functions.items():
+        if func.attrs and "blackhole.compute_contract" in func.attrs:
+            func = func.with_attr("blackhole.compute_contract", compute_contract)
         rewritten[gvar] = func
     target = Target("blackhole")
     build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
@@ -422,6 +436,24 @@ def test_blackhole_compute_contract_attr_materializes_nondefault_policy():
     assert str(contract["policy_name"]) == "FullRow"
 
 
+def test_blackhole_compute_contract_attr_materializes_mbar_binding():
+    kernel = gemm_kernel_with_mbar()
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+
+    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.LowerBlackholeOps()(mod)
+
+    contract = mod["main"].attrs["blackhole.compute_contract"]
+    assert bool(contract["has_mbarrier"]) is True
+    assert str(contract["mbarrier_buffer"]) == "mbar"
+    assert str(contract["mbarrier_scope"]) == "shared.barrier"
+    assert [str(item) for item in contract["mbarrier_index_exprs"]] == ["0"]
+
+
 def test_blackhole_gemm_compile_time_abi_is_materialized():
     kernel = gemm_kernel()
     target = Target("blackhole")
@@ -655,6 +687,34 @@ def test_blackhole_gemm_compile_time_abi_materializes_nondefault_policy():
     assert [int(value) for value in gemm_policy["values"]] == [1]
 
 
+def test_blackhole_gemm_compile_time_abi_materializes_mbar_binding():
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    mutated_contract = dict(executable_spec["compute_contract"])
+    mutated_contract["has_mbarrier"] = True
+    mutated_contract["mbarrier_buffer"] = "mbar"
+    mutated_contract["mbarrier_scope"] = "shared.barrier"
+    mutated_contract["mbarrier_index_exprs"] = ["0"]
+    mutated_mod = _rebuild_codegen_module_with_compute_contract(artifact, mutated_contract)
+
+    executable_spec = mutated_mod.get_function_metadata("main")
+    compute_contract = executable_spec["compute_contract"]
+    assert bool(compute_contract["has_mbarrier"]) is True
+    assert str(compute_contract["mbarrier_buffer"]) == "mbar"
+    assert str(compute_contract["mbarrier_scope"]) == "shared.barrier"
+    assert [str(item) for item in compute_contract["mbarrier_index_exprs"]] == ["0"]
+
+    compute = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="compute", core_type="trisc"
+    )
+    assert all(str(spec["kind"]) != "gemm_mbarrier" for spec in compute["compile_time_arg_specs"])
+
+
 def test_blackhole_gemm_compile_time_abi_rejects_misaligned_shapes():
     kernel = gemm_kernel(M=48, N=32, K=128)
     target = Target("blackhole")
@@ -763,6 +823,33 @@ def test_blackhole_gemm_direct_runtime_rejects_unknown_math_fidelity():
     c_output = torch.zeros(32, 32, dtype=torch.float32)
 
     with pytest.raises(tvm.error.InternalError, match="math_fidelity"):
+        mutated_mod["main"](a_torch, b_torch, c_output)
+
+
+def test_blackhole_gemm_direct_runtime_rejects_mbarrier_compute_contract():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    mutated_contract = dict(executable_spec["compute_contract"])
+    mutated_contract["has_mbarrier"] = True
+    mutated_contract["mbarrier_buffer"] = "mbar"
+    mutated_contract["mbarrier_scope"] = "shared.barrier"
+    mutated_contract["mbarrier_index_exprs"] = ["0"]
+    mutated_mod = _rebuild_codegen_module_with_compute_contract(artifact, mutated_contract)
+
+    a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    c_output = torch.zeros(32, 32, dtype=torch.float32)
+
+    with pytest.raises(tvm.error.InternalError, match="mbarrier"):
         mutated_mod["main"](a_torch, b_torch, c_output)
 
 

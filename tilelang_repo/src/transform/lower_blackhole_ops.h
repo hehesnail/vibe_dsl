@@ -241,6 +241,10 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   std::string gemm_a_buffer_name_;
   std::string gemm_b_buffer_name_;
   std::string gemm_c_buffer_name_;
+  bool gemm_has_mbarrier_ = false;
+  std::string gemm_mbarrier_buffer_name_;
+  std::string gemm_mbarrier_scope_;
+  std::vector<std::string> gemm_mbarrier_index_exprs_;
   int gemm_a_req_index_ = -1;  // requirement_index for GEMM input A
   int gemm_b_req_index_ = -1;  // requirement_index for GEMM input B
   int gemm_c_req_index_ = -1;  // requirement_index for GEMM output C

@@ -249,6 +249,11 @@ v2 继续扩展：
   - `compute_contract.policy_type/policy_name`
   - compute-side `compile_time_arg_specs.gemm_policy`
 - 当前 `policy` 已完成“正式 ABI 不再丢失”的闭环；是否进一步驱动 Blackhole compute codegen 仍可后续继续收正
+- `tl.gemm_py` 的可选 `mbar` 绑定也已 formalize 到：
+  - `compute_contract.has_mbarrier`
+  - `compute_contract.mbarrier_buffer/mbarrier_scope/mbarrier_index_exprs`
+- `mbar` 当前按第一性原理建模为 barrier binding，而不是 compile-time literal，因此本轮不新增 `gemm_mbarrier` compile-time ABI kind
+- Blackhole direct runtime 当前会对 `has_mbarrier=True` 的 GEMM compute contract 显式 fail-fast；barrier 资源的正式执行面仍属于后续 synchronization / execution-surface 工作
 
 ---
 

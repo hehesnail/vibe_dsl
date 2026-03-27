@@ -111,9 +111,11 @@
   - compute precision ABI：`math_fidelity/fp32_dest_acc_en/math_approx_mode/unpack_to_dest_mode`
 - `tl.gemm_py` 现有 compute ABI 参数 `clear_accum/k_pack/wg_wait` 已进入 `compute_contract` 和 compute-side `compile_time_arg_specs`
 - `tl.gemm_py` 现有 warp-level compute ABI 参数 `policy` 已进入 `compute_contract.policy_type/policy_name` 和 compute-side `compile_time_arg_specs`
+- `tl.gemm_py` 可选 `mbar` 绑定已进入 `compute_contract.has_mbarrier/mbarrier_buffer/mbarrier_scope/mbarrier_index_exprs`
 - compute segment 已显式产出 `compute_config`、`gemm_block_shape`、`gemm_subblock_shape`
 - compute segment 已显式产出 `gemm_clear_accum`、`gemm_k_pack`、`gemm_wg_wait`
 - compute segment 已显式产出 `gemm_policy`
+- `mbar` 当前按 barrier binding formalize 到 `compute_contract`，未被错误编码成新的 compile-time literal ABI；direct runtime 对 `has_mbarrier=True` 明确 fail-fast
 - `BlackholeModule` 已改为按 `KernelSpec.compute_config` materialize TT-Metal `ComputeConfig`，不再把 `math_fidelity/fp32_dest_acc_en/math_approx_mode` 写死
 - 新增 `transpose_A=True, transpose_B=True` 的更宽 GEMM compute case 测试；当前环境 direct runtime 用例因执行前置条件不足而跳过，但 schema/spec 主链已验证
 
