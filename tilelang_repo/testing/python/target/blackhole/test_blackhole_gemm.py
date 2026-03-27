@@ -391,7 +391,7 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
     assert int(gemm_shape["offset"]) == 0
     assert int(gemm_shape["count"]) == 3
     assert str(gemm_shape["segment_role"]) == "compute"
-    assert [int(value) for value in gemm_shape["values"]] == [1, 1, 1]
+    assert [int(value) for value in gemm_shape["values"]] == [1, 4, 1]
     assert str(gemm_transpose_flags["name"]) == "gemm_transpose_flags"
     assert str(gemm_transpose_flags["dtype"]) == "uint32"
     assert int(gemm_transpose_flags["offset"]) == 3

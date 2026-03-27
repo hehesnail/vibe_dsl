@@ -568,6 +568,9 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
     if (gemm_a_buffer_name_.empty() || gemm_b_buffer_name_.empty() || gemm_c_buffer_name_.empty()) {
       return compile_time_arg_specs;
     }
+    const int mt = std::max(1, gemm_m_ / kBlackholeTileRows);
+    const int kt = std::max(1, gemm_k_ / kBlackholeTileCols);
+    const int nt = std::max(1, gemm_n_ / kBlackholeTileCols);
     compile_time_arg_specs.push_back(MakeCompileTimeArgSpec(
         "gemm_shape",
         "gemm_shape",
@@ -576,7 +579,7 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
         3,
         "compute",
         "",
-        {1, 1, 1}));
+        {static_cast<uint32_t>(mt), static_cast<uint32_t>(kt), static_cast<uint32_t>(nt)}));
     compile_time_arg_specs.push_back(MakeCompileTimeArgSpec(
         "gemm_transpose_flags",
         "gemm_transpose_flags",
