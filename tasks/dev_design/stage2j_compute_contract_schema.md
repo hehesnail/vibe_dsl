@@ -254,6 +254,7 @@ v2 继续扩展：
   - `compute_contract.mbarrier_buffer/mbarrier_scope/mbarrier_index_exprs`
 - `mbar` 当前按第一性原理建模为 barrier binding，而不是 compile-time literal，因此本轮不新增 `gemm_mbarrier` compile-time ABI kind
 - Blackhole direct runtime 当前会对 `has_mbarrier=True` 的 GEMM compute contract 显式 fail-fast；barrier 资源的正式执行面仍属于后续 synchronization / execution-surface 工作
+- 残留说明：和 TT-Metal 正式 `ComputeConfig` 相比，`dst_full_sync_en`、`bfp8_pack_precise`、以及 `named_compile_args/defines` 仍未进入 Blackhole 主链 formalization；当前状态是“主要字段与主机物化路径已对齐”，不是 `ComputeConfig` 的全量镜像
 
 ---
 

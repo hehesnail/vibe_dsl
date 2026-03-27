@@ -99,6 +99,34 @@ struct CorePlan {
   }
 };
 
+struct CoreRangeSpec {
+  PhysicalCore start;
+  PhysicalCore end;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("start", start);
+    writer->WriteObjectKeyValue("end", end);
+    writer->EndObject();
+  }
+};
+
+struct SemaphoreSpec {
+  uint32_t id = 0;
+  uint32_t initial_value = 0;
+  std::string core_type = "worker";
+  std::vector<CoreRangeSpec> core_ranges;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("id", static_cast<int64_t>(id));
+    writer->WriteObjectKeyValue("initial_value", static_cast<int64_t>(initial_value));
+    writer->WriteObjectKeyValue("core_type", core_type);
+    writer->WriteObjectKeyValue("core_ranges", core_ranges);
+    writer->EndObject();
+  }
+};
+
 /*!
  * \brief Runtime argument schema for an emitted TT-Metal kernel.
  */
@@ -430,6 +458,7 @@ struct ExecutableSpec {
   std::string entry_name;
   std::vector<CBConfig> cb_configs;
   CorePlan core_plan;
+  std::vector<SemaphoreSpec> semaphores;
   std::string default_kernel_kind = "fused_dataflow";
   std::string default_kernel_core_type = "brisc";
   std::vector<KernelArgSpec> runtime_args;
@@ -449,6 +478,9 @@ struct ExecutableSpec {
       writer->WriteObjectKeyValue("cb_configs", cb_configs);
     }
     writer->WriteObjectKeyValue("core_plan", core_plan);
+    if (!semaphores.empty()) {
+      writer->WriteObjectKeyValue("semaphores", semaphores);
+    }
     writer->WriteObjectKeyValue("default_kernel_kind", default_kernel_kind);
     writer->WriteObjectKeyValue("default_kernel_core_type", default_kernel_core_type);
     if (!runtime_args.empty()) {

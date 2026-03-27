@@ -59,6 +59,20 @@ def _rebuild_codegen_module_with_segment_plan(artifact, segment_plan):
     )
 
 
+def _rebuild_codegen_module_with_semaphore_plan(artifact, semaphore_plan):
+    device_mod = artifact.device_mod
+    rewritten = {}
+    for gvar, func in device_mod.functions.items():
+        if func.attrs and "blackhole.segment_plan" in func.attrs:
+            func = func.with_attr("blackhole.semaphore_plan", semaphore_plan)
+        rewritten[gvar] = func
+    target = Target("blackhole")
+    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
+
+
 def _extract_blackhole_executable_spec(artifact, function_names=("main", "main_kernel")):
     codegen_mod = artifact.codegen_mod
     getter = getattr(codegen_mod, "get_function_metadata", None)
@@ -335,6 +349,44 @@ def test_blackhole_copy_compile_time_abi_is_materialized():
     assert str(launch_spec["noc"]) == expected_launch_spec["noc"]
 
 
+def test_blackhole_copy_semaphore_plan_is_materialized():
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    semaphore_plan = [
+        {
+            "id": 0,
+            "initial_value": 0,
+            "core_type": "worker",
+            "core_ranges": [
+                {
+                    "start": {"core_x": 1, "core_y": 2},
+                    "end": {"core_x": 1, "core_y": 2},
+                }
+            ],
+        }
+    ]
+    mutated_mod = _rebuild_codegen_module_with_semaphore_plan(artifact, semaphore_plan)
+
+    executable_spec = mutated_mod.get_function_metadata("main")
+    assert "semaphores" in executable_spec
+    semaphores = executable_spec["semaphores"]
+    assert len(semaphores) == 1
+    semaphore = semaphores[0]
+    assert int(semaphore["id"]) == 0
+    assert int(semaphore["initial_value"]) == 0
+    assert str(semaphore["core_type"]) == "worker"
+    core_ranges = semaphore["core_ranges"]
+    assert len(core_ranges) == 1
+    assert int(core_ranges[0]["start"]["core_x"]) == 1
+    assert int(core_ranges[0]["start"]["core_y"]) == 2
+    assert int(core_ranges[0]["end"]["core_x"]) == 1
+    assert int(core_ranges[0]["end"]["core_y"]) == 2
+
+
 def test_blackhole_copy_semantics_annotation_schema():
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     mod = tilelang.tvm.IRModule({"main": kernel})
@@ -498,6 +550,39 @@ def test_blackhole_copy_direct_runtime_rejects_unknown_compile_time_abi_kind():
     b_output = torch.zeros_like(a_torch)
 
     with pytest.raises(Exception, match="Unsupported Blackhole compile-time ABI kind"):
+        mutated_mod["main"](a_torch, b_output)
+
+
+def test_blackhole_copy_direct_runtime_rejects_unknown_semaphore_core_type():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    semaphore_plan = [
+        {
+            "id": 0,
+            "initial_value": 0,
+            "core_type": "mystery_core",
+            "core_ranges": [
+                {
+                    "start": {"core_x": 1, "core_y": 2},
+                    "end": {"core_x": 1, "core_y": 2},
+                }
+            ],
+        }
+    ]
+    mutated_mod = _rebuild_codegen_module_with_semaphore_plan(artifact, semaphore_plan)
+
+    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    b_output = torch.zeros_like(a_torch)
+
+    with pytest.raises(tvm.error.InternalError, match="semaphore core_type|Unsupported Blackhole semaphore core_type"):
         mutated_mod["main"](a_torch, b_output)
 
 

@@ -117,6 +117,7 @@
 - compute segment 已显式产出 `gemm_policy`
 - `mbar` 当前按 barrier binding formalize 到 `compute_contract`，未被错误编码成新的 compile-time literal ABI；direct runtime 对 `has_mbarrier=True` 明确 fail-fast
 - `BlackholeModule` 已改为按 `KernelSpec.compute_config` materialize TT-Metal `ComputeConfig`，不再把 `math_fidelity/fp32_dest_acc_en/math_approx_mode` 写死
+- 残留点：按 TT-Metal 正式 `ComputeConfig` 口径，`dst_full_sync_en`、`bfp8_pack_precise`、`named_compile_args/defines` 仍未 formalize；当前实现是主轴对齐，不是全量镜像
 - 新增 `transpose_A=True, transpose_B=True` 的更宽 GEMM compute case 测试；当前环境 direct runtime 用例因执行前置条件不足而跳过，但 schema/spec 主链已验证
 
 ### Stage 2E（设备资源 IR）
@@ -138,7 +139,7 @@
 | P2 | host tilize/untilize | ✅ | transpose_B + tilize/untilize 已补齐 |
 | P3 | accessor / runtime work schema | 部分完成 | richer work descriptor + accessor/common-runtime schema 已进入 segment plan / KernelSpec，compile-time ABI schema/launch schema 也已收正到主路径；current direct runtime 仅正式支持 interleaved 且对 richer execution 面 fail-fast |
 | P4 | copy/dataflow 泛化（non-tile/stick/sharded） | ❌ | 不阻塞 Stage 3 |
-| P5 | multi-core synchronization 预埋（semaphore/multicast） | ❌ | Stage 3 不涉及核间同步 |
+| P5 | multi-core synchronization 预埋（semaphore/multicast） | ◐ | program-local `semaphore_plan` schema + direct host materialization 已接入；仅支持 worker semaphore，multicast / global semaphore / kernel 消费语义未做 |
 
 ---
 
@@ -164,7 +165,8 @@
 | `stage2h_accessor_schema.md` | accessor/common-runtime schema 设计 | ✅ 已实施（schema/spec） |
 | `stage2i_compile_time_abi_schema.md` | compile-time ABI schema 设计 | ✅ 已实施（schema/spec/direct runtime） |
 | `stage2j_compute_contract_schema.md` | compute contract 正式化设计 | ✅ 已实施（schema/spec/runtime 主链） |
-| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P1/P2 ✅，P0 部分，P3 部分完成，P4-P5 未做） |
+| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P1/P2 ✅，P0 部分，P3 部分完成，P4 未做，P5 已起步） |
+| `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 | 已实现（program-local worker semaphore） |
 
 ### 已完成（仍有参考价值）
 

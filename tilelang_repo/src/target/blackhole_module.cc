@@ -379,6 +379,36 @@ static uint32_t ChoosePageSize(const ExecutableSpec& spec, const std::string& ro
   return 2048;
 }
 
+static void ValidateSemaphoreCoreType(const std::string& core_type) {
+  ICHECK(core_type.empty() || core_type == "worker")
+      << "Unsupported Blackhole semaphore core_type: " << core_type;
+}
+
+static CoreRangeSet BuildSemaphoreCoreRangeSet(const SemaphoreSpec& semaphore) {
+  std::vector<CoreRange> core_ranges;
+  core_ranges.reserve(semaphore.core_ranges.size());
+  for (const auto& range : semaphore.core_ranges) {
+    const CoreCoord start{range.start.core_x, range.start.core_y};
+    const CoreCoord end{range.end.core_x, range.end.core_y};
+    core_ranges.emplace_back(start, end);
+  }
+  return CoreRangeSet(std::move(core_ranges));
+}
+
+static void CreateSemaphoresFromSpec(Program& program, const ExecutableSpec& spec) {
+  for (const auto& semaphore : spec.semaphores) {
+    ICHECK(!semaphore.core_ranges.empty())
+        << "Blackhole semaphore_plan entry id=" << semaphore.id
+        << " must define at least one core range";
+    ValidateSemaphoreCoreType(semaphore.core_type);
+    const CoreRangeSet core_ranges = BuildSemaphoreCoreRangeSet(semaphore);
+    uint32_t created_id = CreateSemaphore(program, core_ranges, semaphore.initial_value);
+    ICHECK_EQ(created_id, semaphore.id)
+        << "Blackhole semaphore_plan id mismatch: requested " << semaphore.id
+        << ", TT-Metal allocated " << created_id;
+  }
+}
+
 static uint32_t GetRuntimeNumKTiles(const ExecutableSpec& spec) {
   const auto gemm = GetComputeContract(spec);
   if (gemm.enabled && gemm.kind == "gemm") {
@@ -1032,6 +1062,7 @@ void BlackholeModuleNode::ExecuteDirect(
             << " launch cores for " << func_name;
 
   Program program = CreateProgram();
+  CreateSemaphoresFromSpec(program, spec);
 
   // Materialize shared CBs and kernels once for the full launch core set.
   CreateCircularBuffersFromSpec(program, launch_core_ranges, spec);

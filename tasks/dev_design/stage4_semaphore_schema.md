@@ -1,0 +1,139 @@
+# Stage 4 设计：Semaphore Schema 预埋
+
+## 基本信息
+
+- **文档ID**: `stage4_semaphore_schema`
+- **日期**: 2026-03-27
+- **状态**: 已实现（program-local semaphore schema）
+- **对应任务**: P5 multi-core synchronization 预埋
+- **关联文档**:
+  - `tasks/dev_design/final_blackhole_backend_redesign.md`
+  - `tasks/dev_design/stage2d_ttmetal_contract_audit.md`
+  - `tasks/dev_design/stage3_multicore_design.md`
+
+---
+
+## 1. 目标
+
+为 Blackhole 主链预埋 TT-Metal program-local semaphore 的正式对象层。
+
+本轮只解决：
+
+1. device attrs 上的正式 `blackhole.semaphore_plan`
+2. `ExecutableSpec` / `BlackholeModule` 对 semaphore plan 的提取与 host materialization
+3. direct runtime 对 malformed / unsupported semaphore schema 的 fail-fast
+
+本轮不解决：
+
+- multicast
+- global semaphore
+- remote core coordinate / fabric routing
+- 从现有 `mbar` / `shared.barrier` 自动推断 TT-Metal semaphore
+- 真正的跨核 producer/consumer pipeline 执行闭环
+
+---
+
+## 2. 设计边界
+
+### 2.1 为什么不把 `mbar` 直接映射成 semaphore
+
+`mbar` 当前在 TileLang IR 里表达的是 barrier binding / wait-arrive 语义，来源于 CUDA / tcgen05 一侧的 barrier 模型。
+
+TT-Metal host API 的 semaphore 是另一类正式对象：
+
+- `CreateSemaphore(program, core_ranges, initial_value)`
+- `CreateGlobalSemaphore(device, core_ranges, initial_value, buffer_type)`
+
+二者不是同一层对象，当前没有足够 IR 信息可以无损映射。因此本轮明确不做：
+
+- `mbar -> semaphore` 猜测映射
+- `shared.barrier -> semaphore` 猜测映射
+
+如果后续确实需要从 DSL/IR 表达 TT-Metal semaphore，就应扩正式 IR/schema，而不是让 runtime 猜。
+
+### 2.2 过渡策略
+
+本轮的 `blackhole.semaphore_plan` 是正式 schema，但 producer 暂时不接自动 pass。
+
+当前状态：
+
+- consumer 已存在：`rt_mod_blackhole` / `BlackholeModule`
+- producer 暂缺：后续由真正的 synchronization pass 产出
+
+退出条件：
+
+- 有 dedicated pass 或 DSL/IR 扩展稳定产出 `blackhole.semaphore_plan`
+- direct runtime / codegen 不再需要靠测试注入 attrs 验证
+
+---
+
+## 3. 协议方案
+
+在 device PrimFunc attrs 上新增：
+
+- `blackhole.semaphore_plan`
+
+每个 entry 表达一个 program-local semaphore descriptor，最小字段：
+
+- `id`
+- `initial_value`
+- `core_type`
+- `core_ranges`
+
+其中：
+
+- `id` 对齐 TT-Metal `SemaphoreDescriptor.id`
+- `initial_value` 对齐 `CreateSemaphore(..., initial_value, ...)`
+- `core_type` 作为 Blackhole schema 校验字段保留；当前 direct runtime 仅正式支持 `worker`，未知值或非 `worker` 值 fail-fast
+- `core_ranges` 表达该 semaphore 覆盖的 logical core set
+
+本轮不引入：
+
+- semaphore address 预分配
+- global semaphore buffer type
+- per-kernel semaphore binding
+- remote core / multicast descriptors
+
+---
+
+## 4. 实现方案
+
+### 4.1 `ExecutableSpec`
+
+新增：
+
+- `SemaphoreSpec`
+- `ExecutableSpec.semaphores`
+
+### 4.2 `rt_mod_blackhole`
+
+- 提取 `blackhole.semaphore_plan`
+- 写入 `ExecutableSpec.semaphores`
+
+### 4.3 `BlackholeModule`
+
+- 在 direct runtime 创建 `Program` 后、创建 kernels 前，按 `ExecutableSpec.semaphores` 调用 `CreateSemaphore(...)`
+- 当前 direct runtime 只 materialize `worker` semaphore；不试图通过 deprecated TT-Metal API 强行创建其他 core type
+- 当前仅要求 host 对象正确 materialize，不要求 kernel 已消费 semaphore id
+
+### 4.4 测试
+
+先写失败测试，再补实现。
+
+覆盖面：
+
+1. spec 测试
+   - `blackhole.semaphore_plan` 能进入 `ExecutableSpec.semaphores`
+2. direct runtime schema 测试
+   - malformed `core_type` / 缺字段会 fail-fast
+3. host materialization 测试
+   - 当前以 schema/spec + runtime validation 为主
+
+---
+
+## 5. 验证标准
+
+- `ExecutableSpec` 正式携带 semaphore descriptors
+- `BlackholeModule` 能消费 semaphore plan，而不是忽略它
+- 未支持的 semaphore schema 会在 direct runtime 早失败
+- 文档与 `tasks/progress.md` 同步

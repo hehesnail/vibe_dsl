@@ -323,6 +323,66 @@ static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
   return plan;
 }
 
+static std::vector<SemaphoreSpec> ExtractSemaphorePlan(const tir::PrimFunc& f) {
+  std::vector<SemaphoreSpec> semaphores;
+  auto semaphore_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.semaphore_plan");
+  if (!semaphore_attr) {
+    return semaphores;
+  }
+
+  for (const auto& item : semaphore_attr.value()) {
+    auto semaphore_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+        ffi::Map<ffi::String, ffi::Any>());
+    if (semaphore_info.empty()) {
+      continue;
+    }
+
+    SemaphoreSpec spec;
+    if (auto v = semaphore_info.Get("id")) {
+      spec.id = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+    }
+    if (auto v = semaphore_info.Get("initial_value")) {
+      spec.initial_value = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+    }
+    if (auto v = semaphore_info.Get("core_type")) {
+      spec.core_type = Downcast<String>(v.value());
+    }
+    if (auto v = semaphore_info.Get("core_ranges")) {
+      for (const auto& range_any : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+        auto range_info = range_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+            ffi::Map<ffi::String, ffi::Any>());
+        if (range_info.empty()) {
+          continue;
+        }
+
+        auto parse_coord = [](const ffi::Optional<ffi::Any>& coord_any) {
+          PhysicalCore coord;
+          if (!coord_any.has_value()) {
+            return coord;
+          }
+          auto coord_info = coord_any.value().as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+              ffi::Map<ffi::String, ffi::Any>());
+          if (auto x = coord_info.Get("core_x")) {
+            coord.core_x = static_cast<uint32_t>(Downcast<Integer>(x.value()).IntValue());
+          }
+          if (auto y = coord_info.Get("core_y")) {
+            coord.core_y = static_cast<uint32_t>(Downcast<Integer>(y.value()).IntValue());
+          }
+          return coord;
+        };
+
+        CoreRangeSpec range_spec;
+        range_spec.start = parse_coord(range_info.Get("start"));
+        range_spec.end = parse_coord(range_info.Get("end"));
+        spec.core_ranges.push_back(std::move(range_spec));
+      }
+    }
+    semaphores.push_back(std::move(spec));
+  }
+
+  return semaphores;
+}
+
 static GemmContractSpec ExtractGemmContract(const tir::PrimFunc& f) {
   GemmContractSpec contract;
   auto gemm_attr = f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.gemm_contract");
@@ -1016,6 +1076,7 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
 
   spec.cb_configs = ExtractCBConfig(f);
   spec.core_plan = ExtractCorePlan(f);
+  spec.semaphores = ExtractSemaphorePlan(f);
   spec.runtime_args = ExtractRuntimeArgs(f);
   spec.gemm_contract = ExtractGemmContract(f);
   spec.compute_contract = ExtractComputeContract(f, spec.gemm_contract);
