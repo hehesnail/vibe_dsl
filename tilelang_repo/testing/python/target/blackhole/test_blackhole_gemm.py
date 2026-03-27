@@ -3,7 +3,7 @@ import torch
 
 import tilelang
 from tilelang import language as T
-from tilelang.engine.lower import lower
+from tilelang.engine.lower import lower, merge_ir_modules
 from tvm.target import Target
 from tvm.tir import stmt_functor
 
@@ -13,6 +13,30 @@ from .common import (
     check_blackhole_direct_execution_requirements,
     gemm_kernel,
 )
+
+
+def _with_richer_accessor_schema(func, common_runtime_args=None):
+    richer_segments = []
+    for segment in func.attrs["blackhole.segment_plan"]:
+        richer_segment = dict(segment)
+        richer_segment["common_runtime_args"] = list(common_runtime_args or [])
+        richer_accessors = []
+        try:
+            accessors = segment["accessors"]
+        except KeyError:
+            richer_segments.append(richer_segment)
+            continue
+        for accessor in accessors:
+            richer_accessor = dict(accessor)
+            richer_accessor["compile_time_arg_offset"] = int(richer_accessor["slot"])
+            richer_accessor["compile_time_arg_count"] = 2
+            richer_accessor["common_runtime_arg_offset"] = 0
+            richer_accessor["common_runtime_arg_count"] = 0
+            richer_accessor["args_config_bits"] = 1 if str(richer_accessor["layout"]) == "interleaved" else 0
+            richer_accessors.append(richer_accessor)
+        richer_segment["accessors"] = richer_accessors
+        richer_segments.append(richer_segment)
+    return func.with_attr("blackhole.segment_plan", richer_segments)
 
 
 def multicore_gemm_kernel(
@@ -237,6 +261,31 @@ def test_blackhole_gemm_contract_attr_is_materialized():
     assert all(str(item["layout"]) == "interleaved" for item in reader["accessors"])
     assert all(str(item["memory_space"]) == "dram" for item in reader["accessors"])
 
+    richer_common_runtime_args = [
+        {
+            "name": "rank",
+            "kind": "accessor_common_u32",
+            "dtype": "uint32",
+        }
+    ]
+    richer_func = _with_richer_accessor_schema(func, richer_common_runtime_args)
+    richer_reader = next(item for item in richer_func.attrs["blackhole.segment_plan"] if str(item["kind"]) == "reader")
+    richer_writer = next(item for item in richer_func.attrs["blackhole.segment_plan"] if str(item["kind"]) == "writer")
+    assert [int(item["compile_time_arg_offset"]) for item in richer_reader["accessors"]] == [0, 2]
+    assert [int(item["compile_time_arg_count"]) for item in richer_reader["accessors"]] == [2, 2]
+    assert [int(item["common_runtime_arg_offset"]) for item in richer_reader["accessors"]] == [0, 0]
+    assert [int(item["common_runtime_arg_count"]) for item in richer_reader["accessors"]] == [0, 0]
+    assert [int(item["args_config_bits"]) for item in richer_reader["accessors"]] == [1, 1]
+    assert [int(item["compile_time_arg_offset"]) for item in richer_writer["accessors"]] == [0]
+    assert len(richer_reader["common_runtime_args"]) == 1
+    assert len(richer_writer["common_runtime_args"]) == 1
+    assert str(richer_reader["common_runtime_args"][0]["name"]) == "rank"
+    assert str(richer_reader["common_runtime_args"][0]["kind"]) == "accessor_common_u32"
+    assert str(richer_reader["common_runtime_args"][0]["dtype"]) == "uint32"
+    assert str(richer_writer["common_runtime_args"][0]["name"]) == "rank"
+    assert str(richer_writer["common_runtime_args"][0]["kind"]) == "accessor_common_u32"
+    assert str(richer_writer["common_runtime_args"][0]["dtype"]) == "uint32"
+
 
 def test_blackhole_multicore_gemm_lowering_respects_transposed_b_layout():
     kernel = multicore_gemm_kernel()
@@ -255,6 +304,34 @@ def test_blackhole_multicore_gemm_lowering_respects_transposed_b_layout():
     assert "T.tl.blackhole.read_tile_to_cb(B.data, bx + 2, 1, 2048, 2)" in func_text
     assert "T.tl.blackhole.read_tile_to_cb(B.data, bx + 4, 1, 2048, 2)" in func_text
     assert "T.tl.blackhole.read_tile_to_cb(B.data, bx + 6, 1, 2048, 2)" in func_text
+
+
+def test_blackhole_gemm_richer_accessor_schema_roundtrip():
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    rewritten = {}
+    for gvar, func in artifact.device_mod.functions.items():
+        if func.attrs and "blackhole.segment_plan" in func.attrs:
+            richer_common_runtime_args = [
+                {
+                    "name": "rank",
+                    "kind": "accessor_common_u32",
+                    "dtype": "uint32",
+                }
+            ]
+            func = _with_richer_accessor_schema(func, richer_common_runtime_args)
+        rewritten[gvar] = func
+
+    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
+    built = tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
+
+    assert built is not None
 
 
 def test_blackhole_gemm_basic():

@@ -73,6 +73,11 @@ struct KernelArgSpec {
 struct AccessorSpec {
   std::string buffer;
   uint32_t slot = 0;
+  uint32_t compile_time_arg_offset = 0;
+  uint32_t compile_time_arg_count = 0;
+  uint32_t common_runtime_arg_offset = 0;
+  uint32_t common_runtime_arg_count = 0;
+  uint32_t args_config_bits = 0;
   std::string layout;
   std::string memory_space;
 };
@@ -87,6 +92,7 @@ struct KernelSpec {
   std::string source_code;
   std::vector<uint32_t> compile_time_args;
   std::vector<KernelArgSpec> runtime_args;
+  std::vector<KernelArgSpec> common_runtime_args;
   std::vector<AccessorSpec> accessors;
 };
 

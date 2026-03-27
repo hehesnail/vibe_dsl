@@ -454,6 +454,26 @@ static std::vector<AccessorSpec> ExtractAccessorsFromArray(const ffi::Array<ffi:
     if (auto v = accessor_info.Get("slot")) {
       accessor.slot = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
     }
+    if (auto v = accessor_info.Get("compile_time_arg_offset")) {
+      accessor.compile_time_arg_offset =
+          static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+    }
+    if (auto v = accessor_info.Get("compile_time_arg_count")) {
+      accessor.compile_time_arg_count =
+          static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+    }
+    if (auto v = accessor_info.Get("common_runtime_arg_offset")) {
+      accessor.common_runtime_arg_offset =
+          static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+    }
+    if (auto v = accessor_info.Get("common_runtime_arg_count")) {
+      accessor.common_runtime_arg_count =
+          static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+    }
+    if (auto v = accessor_info.Get("args_config_bits")) {
+      accessor.args_config_bits =
+          static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+    }
     if (auto v = accessor_info.Get("layout")) {
       accessor.layout = Downcast<String>(v.value());
     }
@@ -461,6 +481,14 @@ static std::vector<AccessorSpec> ExtractAccessorsFromArray(const ffi::Array<ffi:
       accessor.memory_space = Downcast<String>(v.value());
     }
     if (!accessor.buffer.empty()) {
+      if (accessor.compile_time_arg_offset == 0 && accessor.slot != 0) {
+        accessor.compile_time_arg_offset = accessor.slot;
+      }
+      accessor.slot = accessor.compile_time_arg_offset;
+      if (accessor.compile_time_arg_count == 0) {
+        accessor.compile_time_arg_count =
+            accessor.layout == "interleaved" ? 2U : 0U;
+      }
       accessors.push_back(std::move(accessor));
     }
   }
@@ -526,11 +554,50 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
   return runtime_args;
 }
 
+static std::vector<KernelArgSpec> ExtractCommonRuntimeArgs(const tir::PrimFunc& f) {
+  if (auto segment_plan_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.segment_plan")) {
+    std::vector<KernelArgSpec> aggregated;
+    std::unordered_set<std::string> seen;
+    for (const auto& item : segment_plan_attr.value()) {
+      auto segment = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+          ffi::Map<ffi::String, ffi::Any>());
+      if (segment.empty()) {
+        continue;
+      }
+      auto common_runtime_args_it = segment.Get("common_runtime_args");
+      if (!common_runtime_args_it.has_value()) {
+        continue;
+      }
+      std::vector<KernelArgSpec> segment_args = ExtractRuntimeArgsFromArray(
+          Downcast<ffi::Array<ffi::Any>>(common_runtime_args_it.value()));
+      for (const auto& arg : segment_args) {
+        const std::string dedupe_key =
+            arg.kind.empty() ? arg.name : (arg.kind + ":" + arg.name);
+        if (arg.kind.empty() || seen.count(dedupe_key)) {
+          continue;
+        }
+        aggregated.push_back(arg);
+        seen.insert(dedupe_key);
+      }
+    }
+    if (!aggregated.empty()) {
+      return aggregated;
+    }
+  }
+
+  auto runtime_args_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.common_runtime_args");
+  if (!runtime_args_attr) {
+    return {};
+  }
+  return ExtractRuntimeArgsFromArray(runtime_args_attr.value());
+}
+
 struct SegmentInfo {
   std::string name;
   std::string kind;
   std::string core_type;
   std::vector<KernelArgSpec> runtime_args;
+  std::vector<KernelArgSpec> common_runtime_args;
   std::vector<AccessorSpec> accessors;
 };
 
@@ -565,6 +632,10 @@ static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, Execu
     }
     if (auto v = segment.Get("runtime_args")) {
       info.runtime_args = ExtractRuntimeArgsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
+    }
+    if (auto v = segment.Get("common_runtime_args")) {
+      info.common_runtime_args =
+          ExtractRuntimeArgsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
     }
     if (auto v = segment.Get("accessors")) {
       info.accessors = ExtractAccessorsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
@@ -690,6 +761,15 @@ static ffi::Array<ffi::Any> EncodeAccessors(const std::vector<AccessorSpec>& acc
     ffi::Map<ffi::String, ffi::Any> accessor_info;
     accessor_info.Set("buffer", ffi::String(accessor.buffer));
     accessor_info.Set("slot", Integer(static_cast<int>(accessor.slot)));
+    accessor_info.Set("compile_time_arg_offset",
+                      Integer(static_cast<int>(accessor.compile_time_arg_offset)));
+    accessor_info.Set("compile_time_arg_count",
+                      Integer(static_cast<int>(accessor.compile_time_arg_count)));
+    accessor_info.Set("common_runtime_arg_offset",
+                      Integer(static_cast<int>(accessor.common_runtime_arg_offset)));
+    accessor_info.Set("common_runtime_arg_count",
+                      Integer(static_cast<int>(accessor.common_runtime_arg_count)));
+    accessor_info.Set("args_config_bits", Integer(static_cast<int>(accessor.args_config_bits)));
     accessor_info.Set("layout", ffi::String(accessor.layout));
     accessor_info.Set("memory_space", ffi::String(accessor.memory_space));
     encoded.push_back(accessor_info);
@@ -709,6 +789,9 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
   attrs.Set("blackhole.core_type", ffi::String(segment.core_type));
   if (!segment.runtime_args.empty()) {
     attrs.Set("blackhole.runtime_args", EncodeRuntimeArgs(segment.runtime_args));
+  }
+  if (!segment.common_runtime_args.empty()) {
+    attrs.Set("blackhole.common_runtime_args", EncodeRuntimeArgs(segment.common_runtime_args));
   }
   if (!segment.accessors.empty()) {
     attrs.Set("blackhole.accessors", EncodeAccessors(segment.accessors));
@@ -747,6 +830,7 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
     kernel.kind = spec->default_kernel_kind;
     kernel.core_type = spec->default_kernel_core_type;
     kernel.runtime_args = spec->runtime_args;
+    kernel.common_runtime_args = ExtractCommonRuntimeArgs(f);
     kernel.source_code = legacy_code;
     ICHECK(!kernel.source_code.empty())
         << "Blackhole build produced no kernel source and no copy fallback was applicable for "
@@ -762,6 +846,7 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
     kernel.kind = segment.kind;
     kernel.core_type = segment.core_type;
     kernel.runtime_args = segment.runtime_args.empty() ? spec->runtime_args : segment.runtime_args;
+    kernel.common_runtime_args = segment.common_runtime_args;
     kernel.accessors = segment.accessors;
     kernel.source_code = EmitKernelSourceForPrimFunc(segment_func, kernel.name, target,
                                                      kernel_code_only);
