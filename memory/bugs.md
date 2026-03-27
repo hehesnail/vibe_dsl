@@ -10,7 +10,7 @@
 - **问题**: 当前 Blackhole schema 停留在最小 bring-up 级别，缺少：host logical tensor layout 分层、tensor dtype / CB packed dtype / accumulator dtype 分层、accessor schema、rich work description
 - **影响**: copy 在最简单 tile/interleaved case 上可通过，但更复杂场景无正式 schema 承载
 - **解决方向**: 按 `stage2d_ttmetal_contract_audit.md` 的 P0-P5 分层推进；当前 P0 dtype 分层、P1、P2 已落地，后续继续做 P3-P5
-- **当前状态**: 部分解决。dtype 分层已进入 `gemm_contract` / `ExecutableSpec` / direct runtime 校验，但 accessor schema 和 richer work schema 仍未建立。
+- **当前状态**: 部分解决。dtype 分层已进入 `gemm_contract` / `ExecutableSpec` / direct runtime 校验；P3 richer runtime work schema 已落到 `work_linear_id` + role-explicit `a/b/output/k` descriptors，但 accessor schema 与更广泛 range/stride/batch 语义仍未建立。
 
 ## 已解决（仍有复用价值）
 
@@ -67,6 +67,17 @@
   - segment source 和 runtime launch schema 必须同时继承，不然会出现“源码有 arg load / launch 没下发”或反过来的错位
   - 对单段 `fused_dataflow`，不能默认 `segment.runtime_args` 一定存在
   - `scratch` fallback 一旦删除，就会立刻暴露 schema 继承问题，这正说明 fallback 之前在掩盖主路径错位
+
+### work schema 以单值隐式默认驱动时，copy/GEMM 会在 split/runtime 间静默错位
+
+- **时间**: 2026-03-27
+- **问题**: Blackhole copy 和 GEMM 早期都曾依赖 `current_work_linear_id` / `tile_count` 这种单值默认来表达整套 work 范围，导致 split 后的 reader / compute / writer 以及 direct runtime 在同一语义上并没有对齐
+- **影响**: schema 看起来“有值”，但不同层对 tile start、tile count 和 output range 的理解不一致，容易出现静默读错、参数绑定错位，或者只在 multi-core / segmented case 才暴露的问题
+- **解决**: 把 runtime work schema 改成显式角色化字段，copy 使用 `work_linear_id + a_tile_* + output_tile_*`，GEMM reader / compute / writer 分别携带自己的 `work_linear_id/a_tile_*/b_tile_*/output_tile_*/k_tile_*` 语义，并对缺失 `work_linear_id` 或超出当前支持面的 richer 组合做 fail-fast
+- **教训**:
+  - work 描述不是“一个线性 id + 一个 tile 数”就能覆盖的抽象，split 之后必须按角色把 range 明确写进 schema
+  - `work_linear_id` 和 per-buffer range 不是一回事；前者是逻辑工作身份，后者是 reader/writer 真正消费的范围，不能互相偷代
+  - 只要 runtime 还在从单值默认推导整套工作范围，或 codegen 还在从 range 字段反推 work id，就很容易把协议错位伪装成普通的 launch bug
 
 ### GEMM direct-path 数值错误由 `transpose_B` 丢失和 host row-major upload 引起
 

@@ -18,6 +18,8 @@
 
 - compile-time args 和 runtime args 必须严格区分
 - runtime 参数布局必须显式、可验证，不能依赖隐式猜测
+- 统一 work descriptor 时，优先把 `start_id` / `num_tiles` 这类角色化字段写进 schema；不要继续让 host/runtime 从 `current_work_linear_id`、`tile_count` 之类的单值默认推导整套工作范围
+- 对需要 `blockIdx` 重建的 Blackhole kernel，把 `work_linear_id` 作为独立字段保留；不要让 codegen 从 `a_tile_start_id` / `output_tile_start_id` 之类的 range 字段反推逻辑 work identity
 - 64-bit 地址需明确拆分与重组规则
 
 ### 存储 scope
@@ -63,6 +65,7 @@
   - 上传前必须把 row-major tensor 转成设备期望的 tiled layout
   - 读回后必须做 untilize
   - copy E2E 通过不能证明 matmul contract 正确，因为 copy 只验证字节保持，不验证 tile 语义
+- richer schema 先于更大支持面：如果 schema 已经能表达更多 range/stride 组合，但 direct runtime/codegen 还没正式支持，必须 `ICHECK` fail-fast，不能静默退回旧默认
 
 ## Blackhole 后端开发原则
 

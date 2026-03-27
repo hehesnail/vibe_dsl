@@ -69,9 +69,34 @@ def test_blackhole_split_kernel_gemm_segment_plan():
 
     reader_args = plan[0]["runtime_args"]
     assert [str(arg["buffer"]) for arg in reader_args if "buffer" in arg] == ["A", "B"]
+    assert [str(arg["kind"]) for arg in reader_args] == [
+        "input_buffer_addr32",
+        "input_buffer_addr32",
+        "work_linear_id",
+        "a_tile_start_id",
+        "a_tile_num_tiles",
+        "a_tile_stride",
+        "b_tile_start_id",
+        "b_tile_num_tiles",
+        "b_tile_stride",
+        "k_tile_start_id",
+        "num_k_tiles",
+    ]
+
+    compute_args = plan[1]["runtime_args"]
+    assert [str(arg["kind"]) for arg in compute_args] == [
+        "k_tile_start_id",
+        "num_k_tiles",
+    ]
 
     writer_args = plan[2]["runtime_args"]
     assert [str(arg["buffer"]) for arg in writer_args if "buffer" in arg] == ["C"]
+    assert [str(arg["kind"]) for arg in writer_args if "buffer" not in arg] == [
+        "work_linear_id",
+        "output_tile_start_id",
+        "output_tile_num_tiles",
+        "output_tile_stride",
+    ]
 
 
 def test_blackhole_gemm_cb_ids_are_rewritten_by_planner():

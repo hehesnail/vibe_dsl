@@ -332,6 +332,24 @@ static uint32_t GetRuntimeNumKTiles(const ExecutableSpec& spec) {
   return 0;
 }
 
+static uint32_t GetRuntimeLogicalGridX(const ExecutableSpec& spec) {
+  return std::max<uint32_t>(1, spec.core_plan.logical_grid_x);
+}
+
+static uint32_t GetRuntimeLogicalNTiles(const ExecutableSpec& spec) {
+  ICHECK(spec.gemm_contract.enabled)
+      << "logical_n_tiles is only defined for GEMM kernels in Blackhole direct runtime";
+  constexpr uint32_t kBlackholeTileCols = 32;
+  ICHECK_EQ(spec.gemm_contract.N % kBlackholeTileCols, 0)
+      << "Blackhole GEMM direct path requires N to be 32-tile aligned";
+  const uint32_t logical_n_tiles = std::max<uint32_t>(1, spec.gemm_contract.N / kBlackholeTileCols);
+  if (spec.core_plan.logical_grid_x > 0) {
+    ICHECK_EQ(spec.core_plan.logical_grid_x, logical_n_tiles)
+        << "Blackhole GEMM direct runtime requires logical_grid_x to match output N tile count";
+  }
+  return logical_n_tiles;
+}
+
 static void CreateCircularBuffersFromSpec(
     Program& program,
     const std::variant<CoreCoord, CoreRange, CoreRangeSet>& core_spec,
@@ -418,6 +436,17 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
     const std::vector<uint32_t>& scalar_args) {
   std::vector<uint32_t> args;
   size_t scalar_index = 0;
+  const uint32_t num_k_tiles = GetRuntimeNumKTiles(spec);
+  const uint32_t logical_grid_x = GetRuntimeLogicalGridX(spec);
+  const uint32_t work_linear_id = current_work_linear_id;
+  const uint32_t bx = logical_grid_x == 0 ? 0 : (work_linear_id % logical_grid_x);
+  const uint32_t by = logical_grid_x == 0 ? 0 : (work_linear_id / logical_grid_x);
+  const auto kernel_requests_kind = [&](const char* kind) {
+    return std::any_of(kernel.runtime_args.begin(), kernel.runtime_args.end(),
+                       [&](const KernelArgSpec& runtime_arg) {
+                         return runtime_arg.kind == kind;
+                       });
+  };
 
   for (const auto& arg_spec : kernel.runtime_args) {
     if (arg_spec.kind == "input_buffer_addr") {
@@ -442,24 +471,55 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
                                                         buffer_bindings, output_names);
       const uint64_t dst_addr = binding.mesh_buffer->address();
       args.push_back(static_cast<uint32_t>(dst_addr));
-    } else if (arg_spec.kind == "tile_count") {
-      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/false,
-                                                        buffer_bindings, input_names);
-      const uint32_t tile_size = ChoosePageSize(spec, "input");
-      args.push_back(tile_size == 0 ? 0
-                                    : static_cast<uint32_t>(binding.size_bytes / tile_size));
-    } else if (arg_spec.kind == "num_k_tiles") {
-      uint32_t num_k_tiles = GetRuntimeNumKTiles(spec);
-      if (num_k_tiles == 0) {
-        const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/false,
-                                                          buffer_bindings, input_names);
-        const uint32_t tile_size = ChoosePageSize(spec, "input");
-        num_k_tiles =
-            tile_size == 0 ? 0 : static_cast<uint32_t>(binding.size_bytes / tile_size);
-      }
+    } else if (arg_spec.kind == "work_linear_id" || arg_spec.kind == "current_work_linear_id") {
+      args.push_back(work_linear_id);
+    } else if (arg_spec.kind == "a_tile_start_id") {
+      args.push_back(spec.gemm_contract.enabled && kernel.kind == "reader" ? by : work_linear_id);
+    } else if (arg_spec.kind == "a_tile_num_tiles") {
+      ICHECK(kernel_requests_kind("a_tile_start_id"))
+          << "a_tile_num_tiles requires a_tile_start_id in Blackhole direct runtime";
+      args.push_back(spec.gemm_contract.enabled && kernel.kind == "reader" ? num_k_tiles : 1);
+    } else if (arg_spec.kind == "a_tile_stride") {
+      ICHECK(kernel_requests_kind("a_tile_start_id"))
+          << "a_tile_stride requires a_tile_start_id in Blackhole direct runtime";
+      args.push_back(1);
+    } else if (arg_spec.kind == "b_tile_start_id") {
+      ICHECK(spec.gemm_contract.enabled && kernel.kind == "reader")
+          << "b_tile_start_id is only supported for GEMM reader kernels in Blackhole direct runtime";
+      args.push_back(bx);
+    } else if (arg_spec.kind == "b_tile_num_tiles") {
+      ICHECK(kernel_requests_kind("b_tile_start_id"))
+          << "b_tile_num_tiles requires b_tile_start_id in Blackhole direct runtime";
+      ICHECK(spec.gemm_contract.enabled && kernel.kind == "reader")
+          << "b_tile_num_tiles is only supported for GEMM reader kernels in Blackhole direct runtime";
       args.push_back(num_k_tiles);
-    } else if (arg_spec.kind == "current_work_linear_id") {
-      args.push_back(current_work_linear_id);
+    } else if (arg_spec.kind == "b_tile_stride") {
+      ICHECK(kernel_requests_kind("b_tile_start_id"))
+          << "b_tile_stride requires b_tile_start_id in Blackhole direct runtime";
+      ICHECK(spec.gemm_contract.enabled && kernel.kind == "reader")
+          << "b_tile_stride is only supported for GEMM reader kernels in Blackhole direct runtime";
+      args.push_back(GetRuntimeLogicalNTiles(spec));
+    } else if (arg_spec.kind == "output_tile_start_id") {
+      args.push_back(work_linear_id);
+    } else if (arg_spec.kind == "output_tile_num_tiles") {
+      ICHECK(kernel_requests_kind("output_tile_start_id"))
+          << "output_tile_num_tiles requires output_tile_start_id in Blackhole direct runtime";
+      args.push_back(1);
+    } else if (arg_spec.kind == "output_tile_stride") {
+      ICHECK(kernel_requests_kind("output_tile_start_id"))
+          << "output_tile_stride requires output_tile_start_id in Blackhole direct runtime";
+      args.push_back(1);
+    } else if (arg_spec.kind == "k_tile_start_id") {
+      ICHECK(spec.gemm_contract.enabled)
+          << "k_tile_start_id is only supported for GEMM kernels in Blackhole direct runtime";
+      ICHECK(kernel_requests_kind("num_k_tiles"))
+          << "k_tile_start_id requires num_k_tiles in Blackhole direct runtime";
+      args.push_back(0);
+    } else if (arg_spec.kind == "num_k_tiles") {
+      ICHECK_GT(num_k_tiles, 0)
+          << "num_k_tiles requested by runtime schema, but direct runtime could not derive a "
+             "supported value from ExecutableSpec";
+      args.push_back(num_k_tiles);
     } else if (arg_spec.kind == "scalar_u32") {
       ICHECK(scalar_index < scalar_args.size())
           << "Spec requested more scalar args than provided";

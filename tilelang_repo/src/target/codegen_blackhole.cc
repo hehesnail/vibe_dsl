@@ -549,27 +549,40 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
   ICHECK(!var_idmap_.count(iv->var.get()));
 
   std::string thread_tag = iv->thread_tag;
-  const bool has_current_work_linear_id =
-      runtime_arg_vars_by_kind_.count("current_work_linear_id") &&
-      linearization_ == "row_major" &&
-      logical_grid_x_ > 0;
+  std::optional<std::string> work_id_var;
+  auto work_id_it = runtime_arg_vars_by_kind_.find("work_linear_id");
+  if (work_id_it != runtime_arg_vars_by_kind_.end()) {
+    work_id_var = work_id_it->second;
+  } else if ((work_id_it = runtime_arg_vars_by_kind_.find("current_work_linear_id")) !=
+             runtime_arg_vars_by_kind_.end()) {
+    work_id_var = work_id_it->second;
+  } else {
+    const bool requests_copy_work_descriptor =
+        runtime_arg_vars_by_kind_.count("a_tile_start_id") ||
+        runtime_arg_vars_by_kind_.count("output_tile_start_id");
+    if (requests_copy_work_descriptor) {
+      ICHECK(false)
+          << "Blackhole blockIdx reconstruction requires explicit work_linear_id for the richer "
+             "copy work schema; copy fallback without work_linear_id is unsupported";
+    }
+  }
+  const bool has_runtime_work_id =
+      work_id_var.has_value() && linearization_ == "row_major" && logical_grid_x_ > 0;
 
   // Map CUDA-style thread indices to Blackhole concepts
   // For staged single-core execution, logical block indices are reconstructed
   // from the execution-plan runtime arg instead of being constantized.
   if (thread_tag == "blockIdx.x") {
-    if (has_current_work_linear_id) {
-      const std::string &work_id = runtime_arg_vars_by_kind_.at("current_work_linear_id");
+    if (has_runtime_work_id) {
       var_idmap_[iv->var.get()] =
-          "(" + work_id + " % " + std::to_string(logical_grid_x_) + ")";
+          "(" + work_id_var.value() + " % " + std::to_string(logical_grid_x_) + ")";
     } else {
       var_idmap_[iv->var.get()] = "0 /* core_x */";
     }
   } else if (thread_tag == "blockIdx.y") {
-    if (has_current_work_linear_id) {
-      const std::string &work_id = runtime_arg_vars_by_kind_.at("current_work_linear_id");
+    if (has_runtime_work_id) {
       var_idmap_[iv->var.get()] =
-          "(" + work_id + " / " + std::to_string(logical_grid_x_) + ")";
+          "(" + work_id_var.value() + " / " + std::to_string(logical_grid_x_) + ")";
     } else {
       var_idmap_[iv->var.get()] = "0 /* core_y */";
     }

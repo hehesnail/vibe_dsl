@@ -2,7 +2,9 @@ import pytest
 import torch
 
 from tilelang.engine.lower import lower
+from tilelang.engine.lower import merge_ir_modules
 from tvm.target import Target
+from tilelang import tvm
 
 from .common import (
     assert_tensors_close_or_dump,
@@ -10,6 +12,19 @@ from .common import (
     grid_indexed_staged_copy_kernel,
     staged_copy_kernel,
 )
+
+
+def _rebuild_direct_runtime_module_with_runtime_args(artifact, runtime_args):
+    rewritten = {}
+    for gvar, func in artifact.device_mod.functions.items():
+        if func.attrs and "blackhole.runtime_args" in func.attrs:
+            func = func.with_attr("blackhole.runtime_args", runtime_args)
+        rewritten[gvar] = func
+    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
+    target = Target("blackhole")
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
 
 
 def test_blackhole_module_direct_call():
@@ -161,3 +176,33 @@ def test_blackhole_module_direct_call_large_shape_copy():
         rtol=1e-3,
         failure_message="Large-shape direct-call output mismatch",
     )
+
+
+def test_blackhole_module_direct_call_rejects_unsupported_richer_copy_schema():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    with target:
+        artifact = lower(kernel, target=target)
+
+    unsupported_runtime_args = [
+        {"name": "A_addr", "kind": "input_buffer_addr32", "dtype": "uint32", "buffer": "A"},
+        {"name": "B_addr", "kind": "output_buffer_addr32", "dtype": "uint32", "buffer": "B"},
+        {"name": "work_linear_id", "kind": "work_linear_id", "dtype": "uint32"},
+        {"name": "a_tile_start_id", "kind": "a_tile_start_id", "dtype": "uint32"},
+        {"name": "a_tile_num_tiles", "kind": "a_tile_num_tiles", "dtype": "uint32"},
+        {"name": "a_tile_stride", "kind": "a_tile_stride", "dtype": "uint32"},
+        {"name": "b_tile_start_id", "kind": "b_tile_start_id", "dtype": "uint32"},
+        {"name": "output_tile_start_id", "kind": "output_tile_start_id", "dtype": "uint32"},
+        {"name": "output_tile_num_tiles", "kind": "output_tile_num_tiles", "dtype": "uint32"},
+        {"name": "output_tile_stride", "kind": "output_tile_stride", "dtype": "uint32"},
+    ]
+    mutated_mod = _rebuild_direct_runtime_module_with_runtime_args(artifact, unsupported_runtime_args)
+
+    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    b_output = torch.zeros_like(a_torch)
+    with pytest.raises(Exception, match="b_tile_start_id|unsupported richer schema"):
+        mutated_mod["main"](a_torch, b_output)

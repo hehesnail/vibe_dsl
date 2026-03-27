@@ -325,8 +325,15 @@ static void StoreGemmSegmentPlan(PrimFunc& func,
       reader_args.push_back(make_arg(buf_name + "_addr", "input_buffer_addr32", buf_name));
     }
   }
+  reader_args.push_back(make_arg("work_linear_id", "work_linear_id"));
+  reader_args.push_back(make_arg("a_tile_start_id", "a_tile_start_id"));
+  reader_args.push_back(make_arg("a_tile_num_tiles", "a_tile_num_tiles"));
+  reader_args.push_back(make_arg("a_tile_stride", "a_tile_stride"));
+  reader_args.push_back(make_arg("b_tile_start_id", "b_tile_start_id"));
+  reader_args.push_back(make_arg("b_tile_num_tiles", "b_tile_num_tiles"));
+  reader_args.push_back(make_arg("b_tile_stride", "b_tile_stride"));
+  reader_args.push_back(make_arg("k_tile_start_id", "k_tile_start_id"));
   reader_args.push_back(make_arg("num_k_tiles", "num_k_tiles"));
-  reader_args.push_back(make_arg("current_work_linear_id", "current_work_linear_id"));
   reader.Set("runtime_args", reader_args);
 
   // Compute kernel (TRISC)
@@ -335,6 +342,7 @@ static void StoreGemmSegmentPlan(PrimFunc& func,
   compute.Set("kind", String("compute"));
   compute.Set("core_type", String("trisc"));
   Array<Any> compute_args;
+  compute_args.push_back(make_arg("k_tile_start_id", "k_tile_start_id"));
   compute_args.push_back(make_arg("num_k_tiles", "num_k_tiles"));
   compute.Set("runtime_args", compute_args);
 
@@ -348,7 +356,10 @@ static void StoreGemmSegmentPlan(PrimFunc& func,
     writer_args.push_back(make_arg(output_buf_name + "_addr", "output_buffer_addr32",
                                    output_buf_name));
   }
-  writer_args.push_back(make_arg("current_work_linear_id", "current_work_linear_id"));
+  writer_args.push_back(make_arg("work_linear_id", "work_linear_id"));
+  writer_args.push_back(make_arg("output_tile_start_id", "output_tile_start_id"));
+  writer_args.push_back(make_arg("output_tile_num_tiles", "output_tile_num_tiles"));
+  writer_args.push_back(make_arg("output_tile_stride", "output_tile_stride"));
   writer.Set("runtime_args", writer_args);
 
   Array<Any> kernels;

@@ -5,18 +5,25 @@
 ## 当前阶段
 
 - **阶段**: Stage 3 — multi-core runtime 调度
-- **状态**: ✅ formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 dtype 分层正式化
-- **日期**: 2026-03-26
+- **状态**: ✅ formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 dtype 分层正式化，P3 richer runtime work schema 已对 copy + GEMM 主路径正式化
+- **日期**: 2026-03-27
 - **设计文档**: `tasks/dev_design/stage3_multicore_design.md`
 
-### 最新测试结果
+### 最新回归结果（当前环境）
 
 | 测试 | 结果 |
 |------|------|
-| `test_blackhole_copy_pipeline.py` | 18 passed, 1 xfailed |
+| `test_blackhole_copy_pipeline.py` | 19 passed, 1 xfailed |
+| `test_blackhole_copy_runtime.py` | 2 passed, 5 skipped |
+| `test_blackhole_gemm.py` | 5 passed, 2 skipped |
+| `test_blackhole_tvm_ffi_export.py` | 1 passed |
+
+### 已验证 full-env 结果
+
+| 测试 | 结果 |
+|------|------|
 | `test_blackhole_copy_runtime.py` | 6 passed |
 | `test_blackhole_gemm.py` | 7 passed |
-| `test_blackhole_tvm_ffi_export.py` | 1 passed |
 
 ---
 
@@ -75,6 +82,16 @@
 - CB identity 唯一协议收正：`LowerBlackholeOps` → `requirement_index`，`PlanBlackholeCB` → IR 回写
 - 额外收正：`scratch_l1` 全链路移除、copy codegen 统一、`GetRuntimeArgVarForBuffer` preferred_kind 重构
 
+### Stage 2G（Richer Runtime Work Schema）
+
+- copy runtime ABI 已从 `current_work_linear_id` / `tile_count` 收正为 `work_linear_id + a_tile_* + output_tile_*`
+- GEMM segment runtime ABI 已收正为 reader 的 `work_linear_id + a_tile_* + b_tile_* + k_tile_*`、compute 的 `k_tile_*`、writer 的 `work_linear_id + output_tile_*`
+- `rt_mod_blackhole` / `ExecutableSpec` / `KernelSpec` 已统一消费 richer work descriptor kinds
+- `BindThreadIndex` 不再从 copy range 字段静默猜 work id；缺失 `work_linear_id` 时直接 fail-fast
+- direct runtime 当前正式支持面：
+  - copy: equal source/dest range，且 stride = 1
+  - GEMM: A/B-separated reader range + writer output range
+
 ### Stage 2E（设备资源 IR）
 
 - `StorageRank::kBlackholeCB`、`StorageRank::kBlackholeAccumulator` 已引入
@@ -92,7 +109,7 @@
 | P0 | GEMM compile-time ABI 正式化（dtype 分层进 attrs） | 部分完成 | `gemm_contract` 已补 tensor/CB/accumulator dtype 分层；更丰富 compile-time ABI 仍未做 |
 | P1 | CB transport schema | ✅ | 已统一到 codegen CB transport，无 scratch |
 | P2 | host tilize/untilize | ✅ | transpose_B + tilize/untilize 已补齐 |
-| P3 | accessor / runtime work schema | ❌ | 不阻塞 Stage 3 |
+| P3 | accessor / runtime work schema | 部分完成 | copy + GEMM 已切到 `work_linear_id` + role-explicit richer work descriptor，但 accessor schema 仍未正式化 |
 | P4 | copy/dataflow 泛化（non-tile/stick/sharded） | ❌ | 不阻塞 Stage 3 |
 | P5 | multi-core synchronization 预埋（semaphore/multicast） | ❌ | Stage 3 不涉及核间同步 |
 
@@ -116,7 +133,8 @@
 |------|------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总设计 | 常青 |
 | `stage3_multicore_design.md` | 多核设计 | ✅ 已实施（formal direct host path） |
-| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P1/P2 ✅，P0 部分，P3-P5 未做） |
+| `stage2g_unified_work_schema.md` | richer runtime work schema 设计 | ✅ 已实施（copy/GEMM 主路径） |
+| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P1/P2 ✅，P0 部分，P3 部分完成，P4-P5 未做） |
 
 ### 已完成（仍有参考价值）
 

@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档ID**: `final_blackhole_backend_redesign`
-- **日期**: 2026-03-19（创建），2026-03-26（最近更新）
+- **日期**: 2026-03-19（创建），2026-03-27（最近更新）
 - **状态**: 当前唯一权威总体设计
 - **适用范围**: `tilelang_repo` Blackhole 后端、host/device 主链、运行时执行路径、相关阶段设计
 
@@ -45,7 +45,7 @@ Blackhole 后端当前的正式目标收敛为三点：
 - `PlanBlackholeCB` 仍是 MVP allocator，非正式 memory planner
 - `StorageRewrite` 与 Blackhole CB 模型不兼容（永久排除）
 - copy 用 `fused_dataflow` 单 kernel，GEMM 用 3-kernel（后续统一为 reader+writer 模型是架构债）
-- TT-Metal contract 收正未完成项：P0（dtype 分层）部分完成，P3（accessor schema）/ P4（copy 泛化）/ P5（synchronization）未做，见 `stage2d_ttmetal_contract_audit.md`
+- TT-Metal contract 收正未完成项：P0（dtype 分层）部分完成，P3（unified runtime work schema）已收正到 `work_linear_id` + role-explicit `a/b/output/k` richer descriptor，但 accessor schema 仍未做，P4（copy 泛化）/ P5（synchronization）未做，见 `stage2d_ttmetal_contract_audit.md`
 
 ### 当前活动
 

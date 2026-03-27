@@ -3,8 +3,8 @@
 ## 基本信息
 
 - **文档ID**: `stage2d_ttmetal_contract_audit`
-- **日期**: 2026-03-26
-- **状态**: 审计已完成；收正部分落地（P0 dtype 分层已补、P1/P2 ✅，P3-P5 未做）
+- **日期**: 2026-03-27
+- **状态**: 审计已完成；收正部分落地（P0 dtype 分层已补、P1/P2 ✅，P3 已对 copy + GEMM 部分正式化，P4-P5 未做）
 - **对应阶段**: Stage 2D Step 6
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -98,11 +98,17 @@ TT-Metal 的 dataflow reader/writer 主路径广泛依赖：
 
 ### 3.4 runtime work description ABI 太薄
 
-当前 Blackhole runtime/work schema 基本只覆盖：
+Blackhole runtime/work schema 在 bring-up 阶段最初基本只覆盖：
 
 - `current_work_linear_id`
 - `tile_count`
 - 简单 input/output buffer 地址
+
+当前状态已部分收正：
+
+- copy 已切到显式 `input/output_tile_start_id` + `input/output_num_tiles`
+- GEMM segment 已切到显式 `input/output/k_tile_start_id` + 对应 tile count
+- 但 accessor-derived common runtime args、stride/range/batch 等 richer work descriptors 仍未正式化
 
 而 TT-Metal 官方 dataflow 程序普遍需要更正式的 work ABI，例如：
 
@@ -407,6 +413,14 @@ TT-Metal 参考 case：
 - 这是让 copy/gemm 不再依赖 codegen/runtime 猜测的关键层
 - 它同时是后续 row-major/stick/sharded 路径的必要前置
 
+当前进展：
+
+- copy 和 GEMM 的 runtime work schema 已经从 `current_work_linear_id` / `tile_count` 迁移到显式 work descriptor 形态
+- copy 侧已经收正为 `work_linear_id` + `a_tile_*` + `output_tile_*`，其中 direct runtime/codegen 当前只正式支持 equal-range + stride=1
+- GEMM segment 侧已经收正为 reader 的 `work_linear_id + a_tile_* + b_tile_* + k_tile_*`、compute 的 `k_tile_*`、writer 的 `work_linear_id + output_tile_*`
+- codegen/runtime 对缺失 `work_linear_id` 或超出当前支持面的 richer 组合已改为 fail-fast，而不是再从单值默认静默猜测
+- 这只是 P3 的局部正式化，accessor descriptors、per-accessor layout 元信息和更丰富的 range/stride/batch 语义仍未进入 spec
+
 TT-Metal 参考 case：
 
 - `tt_metal_repo/tt_metal/api/tt-metalium/tensor_accessor_args.hpp`
@@ -485,7 +499,7 @@ TT-Metal 参考 case：
 
 - P0: GEMM compile-time ABI 正式化（Mt/Kt/Nt/transpose_B/dtype 分层进入 attrs）— `blackhole.gemm_contract` 已携带核心字段，正式化可后续推进
 - P1: CB transport schema — 已统一到 codegen CB transport，无 scratch
-- P3: accessor / runtime work schema
+- P3: accessor / runtime work schema（copy + GEMM 已部分正式化）
 - P4: copy/dataflow 泛化
 - P5: multi-core synchronization 预埋 → 见 `stage3_multicore_design.md`
 

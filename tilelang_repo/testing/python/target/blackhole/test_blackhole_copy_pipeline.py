@@ -2,9 +2,10 @@ import pytest
 
 import tilelang
 from tilelang import language as T
-from tilelang.engine.lower import is_device_call, lower
+from tilelang.engine.lower import is_device_call, lower, merge_ir_modules
 from tvm.ir import CallingConv
 from tvm.target import Target
+from tilelang import tvm
 
 from .common import (
     check_blackhole_codegen_requirements,
@@ -13,6 +14,32 @@ from .common import (
     make_blackhole_cb_requirements_mod,
     staged_copy_kernel,
 )
+
+EXPECTED_UNIFIED_COPY_RUNTIME_ARG_KINDS = [
+    "input_buffer_addr32",
+    "output_buffer_addr32",
+    "work_linear_id",
+    "a_tile_start_id",
+    "a_tile_num_tiles",
+    "a_tile_stride",
+    "output_tile_start_id",
+    "output_tile_num_tiles",
+    "output_tile_stride",
+]
+
+
+def _rebuild_codegen_module_with_runtime_args(artifact, runtime_args):
+    device_mod = artifact.device_mod
+    rewritten = {}
+    for gvar, func in device_mod.functions.items():
+        if func.attrs and "blackhole.runtime_args" in func.attrs:
+            func = func.with_attr("blackhole.runtime_args", runtime_args)
+        rewritten[gvar] = func
+    target = Target("blackhole")
+    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
 
 
 def test_blackhole_codegen_only():
@@ -76,12 +103,7 @@ def test_blackhole_copy_pass_attrs():
     assert str(cb_bindings[0]["memory_object_name"]) == str(cb_configs[0]["name"])
 
     runtime_args = func.attrs["blackhole.runtime_args"]
-    assert [str(arg["kind"]) for arg in runtime_args] == [
-        "input_buffer_addr32",
-        "output_buffer_addr32",
-        "current_work_linear_id",
-        "tile_count",
-    ]
+    assert [str(arg["kind"]) for arg in runtime_args] == EXPECTED_UNIFIED_COPY_RUNTIME_ARG_KINDS
     assert str(runtime_args[0]["buffer"]) == "A"
     assert str(runtime_args[1]["buffer"]) == "B"
 
@@ -147,12 +169,7 @@ def test_blackhole_copy_semantics_survives_flatten_and_vectorize():
 
     func = mod["main"]
     runtime_args = func.attrs["blackhole.runtime_args"]
-    assert [str(arg["kind"]) for arg in runtime_args] == [
-        "input_buffer_addr32",
-        "output_buffer_addr32",
-        "current_work_linear_id",
-        "tile_count",
-    ]
+    assert [str(arg["kind"]) for arg in runtime_args] == EXPECTED_UNIFIED_COPY_RUNTIME_ARG_KINDS
     assert str(runtime_args[0]["buffer"]) == "A"
     assert str(runtime_args[1]["buffer"]) == "B"
 
@@ -263,8 +280,13 @@ def test_blackhole_copy_codegen_uses_runtime_schema():
     source = artifact.kernel_source if hasattr(artifact, "kernel_source") else str(artifact)
     assert "uint32_t A_addr = get_arg_val<uint32_t>(0);" in source
     assert "uint32_t B_addr = get_arg_val<uint32_t>(1);" in source
-    assert "uint32_t current_work_linear_id = get_arg_val<uint32_t>(2);" in source
-    assert "uint32_t tile_count = get_arg_val<uint32_t>(3);" in source
+    assert "uint32_t work_linear_id = get_arg_val<uint32_t>(2);" in source
+    assert "uint32_t a_tile_start_id = get_arg_val<uint32_t>(3);" in source
+    assert "uint32_t a_tile_num_tiles = get_arg_val<uint32_t>(4);" in source
+    assert "uint32_t a_tile_stride = get_arg_val<uint32_t>(5);" in source
+    assert "uint32_t output_tile_start_id = get_arg_val<uint32_t>(6);" in source
+    assert "uint32_t output_tile_num_tiles = get_arg_val<uint32_t>(7);" in source
+    assert "uint32_t output_tile_stride = get_arg_val<uint32_t>(8);" in source
     assert "src_dram_addr" not in source
     assert "dst_dram_addr" not in source
     assert "scratch_l1_addr" not in source
@@ -272,6 +294,28 @@ def test_blackhole_copy_codegen_uses_runtime_schema():
     assert "cb_push_back(" in source
     assert "cb_wait_front(" in source
     assert "cb_pop_front(" in source
+
+
+def test_blackhole_copy_codegen_rejects_schema_without_work_linear_id():
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    unsupported_runtime_args = [
+        {"name": "A_addr", "kind": "input_buffer_addr32", "dtype": "uint32", "buffer": "A"},
+        {"name": "B_addr", "kind": "output_buffer_addr32", "dtype": "uint32", "buffer": "B"},
+        {"name": "a_tile_start_id", "kind": "a_tile_start_id", "dtype": "uint32"},
+        {"name": "a_tile_num_tiles", "kind": "a_tile_num_tiles", "dtype": "uint32"},
+        {"name": "a_tile_stride", "kind": "a_tile_stride", "dtype": "uint32"},
+        {"name": "output_tile_start_id", "kind": "output_tile_start_id", "dtype": "uint32"},
+        {"name": "output_tile_num_tiles", "kind": "output_tile_num_tiles", "dtype": "uint32"},
+        {"name": "output_tile_stride", "kind": "output_tile_stride", "dtype": "uint32"},
+    ]
+
+    with pytest.raises(Exception, match="work_linear_id|copy fallback|stride"):
+        _rebuild_codegen_module_with_runtime_args(artifact, unsupported_runtime_args)
 
 
 def test_blackhole_core_plan_preserves_logical_block_launch():

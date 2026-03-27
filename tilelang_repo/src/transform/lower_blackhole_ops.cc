@@ -345,8 +345,13 @@ void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
 
   push_arg(input_arg_name, "input_buffer_addr32", "uint32", copy_input_buffer_name_);
   push_arg(output_arg_name, "output_buffer_addr32", "uint32", copy_output_buffer_name_);
-  push_arg("current_work_linear_id", "current_work_linear_id", "uint32");
-  push_arg("tile_count", "tile_count", "uint32");
+  push_arg("work_linear_id", "work_linear_id", "uint32");
+  push_arg("a_tile_start_id", "a_tile_start_id", "uint32");
+  push_arg("a_tile_num_tiles", "a_tile_num_tiles", "uint32");
+  push_arg("a_tile_stride", "a_tile_stride", "uint32");
+  push_arg("output_tile_start_id", "output_tile_start_id", "uint32");
+  push_arg("output_tile_num_tiles", "output_tile_num_tiles", "uint32");
+  push_arg("output_tile_stride", "output_tile_stride", "uint32");
 
   attrs.Set("blackhole.runtime_args", runtime_args);
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
