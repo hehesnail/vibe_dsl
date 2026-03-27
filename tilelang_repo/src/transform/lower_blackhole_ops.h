@@ -70,6 +70,14 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   tvm::tir::PrimFunc Transform(const tvm::tir::PrimFunc& func);
 
  private:
+  struct AccessorDescriptor {
+    std::string segment_kind;
+    std::string buffer_name;
+    int slot = 0;
+    std::string layout = "interleaved";
+    std::string memory_space = "dram";
+  };
+
   struct NestedCopyMatch {
     const tvm::tir::BufferStoreNode* store = nullptr;
     std::vector<tvm::tir::Var> loop_vars;
@@ -106,6 +114,9 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
 
   /*! \brief Store minimal GEMM contract metadata for runtime layout handling */
   void StoreGemmContract(tvm::tir::PrimFunc& func);
+
+  /*! \brief Store per-segment accessor descriptors for dataflow kernels */
+  void StoreAccessorDescriptors(tvm::tir::PrimFunc& func);
 
   /*! \brief Detect matmul call using Op comparison (not string matching) */
   bool IsMatmulCall(const tvm::tir::CallNode* op) const;
@@ -158,6 +169,17 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
 
   /*! \brief Record Stage 2 copy requirements for a DRAM -> DRAM copy */
   void RecordDramToDramCopy(const tvm::tir::BufferStoreNode* op);
+
+  /*! \brief Register a segment-local interleaved accessor descriptor */
+  void RegisterAccessor(const std::string& segment_kind,
+                        const tvm::tir::Buffer& buffer,
+                        int slot);
+
+  /*! \brief Return compile-time accessor slot for a reader/source buffer */
+  int GetReadAccessorSlot(const tvm::tir::Buffer& buffer, CopyDirection direction) const;
+
+  /*! \brief Return compile-time accessor slot for a writer/destination buffer */
+  int GetWriteAccessorSlot(const tvm::tir::Buffer& buffer, CopyDirection direction) const;
 
   /*! \brief Estimate a copy tile page size for a buffer */
   int EstimateCopyPageSize(const tvm::tir::Buffer& buffer) const;
@@ -220,6 +242,7 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   tvm::ffi::Array<tvm::Integer> copy_output_shape_;
   tvm::ffi::Array<tvm::Integer> copy_intermediate_shape_;
   std::unordered_set<const tvm::tir::VarNode*> thread_index_vars_;
+  std::vector<AccessorDescriptor> accessor_descriptors_;
 
   // Requirement index counter (sequential, 0-based)
   int next_requirement_index_ = 0;

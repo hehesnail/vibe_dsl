@@ -70,6 +70,13 @@ struct KernelArgSpec {
   std::string buffer;
 };
 
+struct AccessorSpec {
+  std::string buffer;
+  uint32_t slot = 0;
+  std::string layout;
+  std::string memory_space;
+};
+
 /*!
  * \brief Per-kernel source and argument metadata.
  */
@@ -80,6 +87,7 @@ struct KernelSpec {
   std::string source_code;
   std::vector<uint32_t> compile_time_args;
   std::vector<KernelArgSpec> runtime_args;
+  std::vector<AccessorSpec> accessors;
 };
 
 struct GemmContractSpec {

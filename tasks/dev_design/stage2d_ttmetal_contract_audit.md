@@ -419,7 +419,8 @@ TT-Metal 参考 case：
 - copy 侧已经收正为 `work_linear_id` + `a_tile_*` + `output_tile_*`，其中 direct runtime/codegen 当前只正式支持 equal-range + stride=1
 - GEMM segment 侧已经收正为 reader 的 `work_linear_id + a_tile_* + b_tile_* + k_tile_*`、compute 的 `k_tile_*`、writer 的 `work_linear_id + output_tile_*`
 - codegen/runtime 对缺失 `work_linear_id` 或超出当前支持面的 richer 组合已改为 fail-fast，而不是再从单值默认静默猜测
-- 这只是 P3 的局部正式化，accessor descriptors、per-accessor layout 元信息和更丰富的 range/stride/batch 语义仍未进入 spec
+- 当前又进一步补上了 interleaved accessor descriptors：copy fused_dataflow 与 GEMM reader/writer 已把 `buffer + slot + layout + memory_space` 进入 segment/kernel schema，并由 host `CreateKernel` 正式 materialize `TensorAccessorArgs`
+- 这仍只是 P3 的部分正式化，per-accessor page-size/layout 泛化、common runtime args 与更丰富的 range/stride/batch 语义仍未进入 spec
 
 TT-Metal 参考 case：
 

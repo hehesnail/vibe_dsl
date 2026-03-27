@@ -827,14 +827,17 @@ void CodeGenBlackhole::PrintReadTileToCB(const tvm::tir::CallNode *op,
   need_dataflow_api_h_ = true;
   const std::string src_addr_var = GetRuntimeArgVarForBuffer(op->args[0], "input_buffer_addr");
   const int cb_id = ResolveCBId(op->args[2]);
+  const auto* accessor_slot = op->args[4].as<tvm::tir::IntImmNode>();
+  ICHECK(accessor_slot) << "Blackhole read_tile_to_cb expects constant accessor slot";
   os << "{ ";
   os << "const uint32_t tile_index = ";
   PrintExpr(op->args[1], os);
   os << "; const uint32_t tile_bytes = ";
   PrintExpr(op->args[3], os);
   os << "; const uint32_t cb_l1_addr = get_write_ptr(" << cb_id << ")";
-  os << "; InterleavedAddrGen<true> src_gen = {.bank_base_address = " << src_addr_var
-     << ", .page_size = tile_bytes}; ";
+  os << "; constexpr auto src_accessor_args = TensorAccessorArgs<" << accessor_slot->value
+     << ">(); const auto src_gen = TensorAccessor(src_accessor_args, " << src_addr_var
+     << ", tile_bytes); ";
   os << "noc_async_read_tile(tile_index, src_gen, cb_l1_addr); ";
   os << "noc_async_read_barrier(); }";
 }
@@ -844,14 +847,17 @@ void CodeGenBlackhole::PrintWriteTileFromCB(const tvm::tir::CallNode *op,
   need_dataflow_api_h_ = true;
   const std::string dst_addr_var = GetRuntimeArgVarForBuffer(op->args[1], "output_buffer_addr");
   const int cb_id = ResolveCBId(op->args[0]);
+  const auto* accessor_slot = op->args[4].as<tvm::tir::IntImmNode>();
+  ICHECK(accessor_slot) << "Blackhole write_tile_from_cb expects constant accessor slot";
   os << "{ ";
   os << "const uint32_t tile_index = ";
   PrintExpr(op->args[2], os);
   os << "; const uint32_t tile_bytes = ";
   PrintExpr(op->args[3], os);
   os << "; const uint32_t cb_l1_addr = get_read_ptr(" << cb_id << ")";
-  os << "; InterleavedAddrGen<true> dst_gen = {.bank_base_address = " << dst_addr_var
-     << ", .page_size = tile_bytes}; ";
+  os << "; constexpr auto dst_accessor_args = TensorAccessorArgs<" << accessor_slot->value
+     << ">(); const auto dst_gen = TensorAccessor(dst_accessor_args, " << dst_addr_var
+     << ", tile_bytes); ";
   os << "noc_async_write_tile(tile_index, dst_gen, cb_l1_addr); ";
   os << "noc_async_write_barrier(); }";
 }

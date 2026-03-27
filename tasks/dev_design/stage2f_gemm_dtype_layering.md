@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage2f_gemm_dtype_layering`
 - **日期**: 2026-03-27
-- **状态**: 实施中
+- **状态**: 部分完成（dtype 分层主字段已进 `blackhole.gemm_contract` / `ExecutableSpec`；更丰富 compile-time ABI 仍未做）
 - **对应任务**: TT-Metal contract formalization 的 P0 子项
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`

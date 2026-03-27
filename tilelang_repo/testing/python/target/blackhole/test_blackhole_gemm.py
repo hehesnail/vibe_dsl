@@ -224,6 +224,19 @@ def test_blackhole_gemm_contract_attr_is_materialized():
     assert str(contract["c_cb_dtype"]) == "Float32"
     assert str(contract["accumulator_dtype"]) == "Float32"
 
+    segment_plan = func.attrs["blackhole.segment_plan"]
+    reader = next(item for item in segment_plan if str(item["kind"]) == "reader")
+    writer = next(item for item in segment_plan if str(item["kind"]) == "writer")
+    assert [(str(item["buffer"]), int(item["slot"])) for item in reader["accessors"]] == [
+        ("A", 0),
+        ("B", 2),
+    ]
+    assert [(str(item["buffer"]), int(item["slot"])) for item in writer["accessors"]] == [
+        ("C", 0)
+    ]
+    assert all(str(item["layout"]) == "interleaved" for item in reader["accessors"])
+    assert all(str(item["memory_space"]) == "dram" for item in reader["accessors"])
+
 
 def test_blackhole_multicore_gemm_lowering_respects_transposed_b_layout():
     kernel = multicore_gemm_kernel()
@@ -238,10 +251,10 @@ def test_blackhole_multicore_gemm_lowering_respects_transposed_b_layout():
 
     func_text = mod["main"].script()
     assert func_text.count("tl.blackhole.write_tile_from_cb") == 1
-    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx, 1, 2048, 0)" in func_text
-    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx + 2, 1, 2048, 0)" in func_text
-    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx + 4, 1, 2048, 0)" in func_text
-    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx + 6, 1, 2048, 0)" in func_text
+    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx, 1, 2048, 2)" in func_text
+    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx + 2, 1, 2048, 2)" in func_text
+    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx + 4, 1, 2048, 2)" in func_text
+    assert "T.tl.blackhole.read_tile_to_cb(B.data, bx + 6, 1, 2048, 2)" in func_text
 
 
 def test_blackhole_gemm_basic():

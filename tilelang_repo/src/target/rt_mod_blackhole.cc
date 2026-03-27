@@ -440,6 +440,33 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgsFromArray(const ffi::Array<f
   return runtime_args;
 }
 
+static std::vector<AccessorSpec> ExtractAccessorsFromArray(const ffi::Array<ffi::Any>& items) {
+  std::vector<AccessorSpec> accessors;
+  for (const auto& item : items) {
+    auto accessor_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+        ffi::Map<ffi::String, ffi::Any>());
+    if (accessor_info.empty()) continue;
+
+    AccessorSpec accessor;
+    if (auto v = accessor_info.Get("buffer")) {
+      accessor.buffer = Downcast<String>(v.value());
+    }
+    if (auto v = accessor_info.Get("slot")) {
+      accessor.slot = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+    }
+    if (auto v = accessor_info.Get("layout")) {
+      accessor.layout = Downcast<String>(v.value());
+    }
+    if (auto v = accessor_info.Get("memory_space")) {
+      accessor.memory_space = Downcast<String>(v.value());
+    }
+    if (!accessor.buffer.empty()) {
+      accessors.push_back(std::move(accessor));
+    }
+  }
+  return accessors;
+}
+
 static bool IsUnifiedWorkDescriptorKind(const std::string& kind) {
   return kind == "work_linear_id" || kind == "a_tile_start_id" ||
          kind == "a_tile_num_tiles" || kind == "a_tile_stride" ||
@@ -504,6 +531,7 @@ struct SegmentInfo {
   std::string kind;
   std::string core_type;
   std::vector<KernelArgSpec> runtime_args;
+  std::vector<AccessorSpec> accessors;
 };
 
 static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, ExecutableSpec* spec) {
@@ -537,6 +565,9 @@ static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, Execu
     }
     if (auto v = segment.Get("runtime_args")) {
       info.runtime_args = ExtractRuntimeArgsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
+    }
+    if (auto v = segment.Get("accessors")) {
+      info.accessors = ExtractAccessorsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
     }
 
     if (segments_out.empty()) {
@@ -653,6 +684,19 @@ static ffi::Array<ffi::Any> EncodeRuntimeArgs(const std::vector<KernelArgSpec>& 
   return encoded;
 }
 
+static ffi::Array<ffi::Any> EncodeAccessors(const std::vector<AccessorSpec>& accessors) {
+  ffi::Array<ffi::Any> encoded;
+  for (const auto& accessor : accessors) {
+    ffi::Map<ffi::String, ffi::Any> accessor_info;
+    accessor_info.Set("buffer", ffi::String(accessor.buffer));
+    accessor_info.Set("slot", Integer(static_cast<int>(accessor.slot)));
+    accessor_info.Set("layout", ffi::String(accessor.layout));
+    accessor_info.Set("memory_space", ffi::String(accessor.memory_space));
+    encoded.push_back(accessor_info);
+  }
+  return encoded;
+}
+
 static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentInfo& segment) {
   SegmentBodyExtractor extractor(segment.kind);
   tir::PrimFunc segment_func = f;
@@ -665,6 +709,9 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
   attrs.Set("blackhole.core_type", ffi::String(segment.core_type));
   if (!segment.runtime_args.empty()) {
     attrs.Set("blackhole.runtime_args", EncodeRuntimeArgs(segment.runtime_args));
+  }
+  if (!segment.accessors.empty()) {
+    attrs.Set("blackhole.accessors", EncodeAccessors(segment.accessors));
   }
   segment_func.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
   return segment_func;
@@ -715,6 +762,7 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
     kernel.kind = segment.kind;
     kernel.core_type = segment.core_type;
     kernel.runtime_args = segment.runtime_args.empty() ? spec->runtime_args : segment.runtime_args;
+    kernel.accessors = segment.accessors;
     kernel.source_code = EmitKernelSourceForPrimFunc(segment_func, kernel.name, target,
                                                      kernel_code_only);
     ICHECK(!kernel.source_code.empty())

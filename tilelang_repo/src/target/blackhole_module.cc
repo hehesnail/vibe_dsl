@@ -32,6 +32,7 @@
 #include <tt-metalium/distributed.hpp>
 #include <tt-metalium/buffer.hpp>
 #include <tt-metalium/tilize_utils.hpp>
+#include <tt-metalium/tensor_accessor_args.hpp>
 #endif
 
 namespace tvm {
@@ -364,10 +365,24 @@ static void CreateCircularBuffersFromSpec(
   }
 }
 
+struct RuntimeBufferBinding {
+  std::shared_ptr<distributed::MeshBuffer> mesh_buffer;
+  size_t size_bytes{0};
+  bool is_output{false};
+};
+
+static std::vector<uint32_t> BuildKernelCompileTimeArgs(
+    const KernelSpec& kernel,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings);
+
 static KernelHandle CreateKernelFromSpec(
     Program& program,
     const std::variant<CoreCoord, CoreRange, CoreRangeSet>& core_spec,
-    const KernelSpec& kernel, const std::string& kernel_path) {
+    const KernelSpec& kernel,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
+    const std::string& kernel_path) {
+  const std::vector<uint32_t> compile_time_args =
+      BuildKernelCompileTimeArgs(kernel, buffer_bindings);
   if (kernel.core_type == "trisc" || kernel.kind == "compute") {
     return CreateKernel(
         program,
@@ -377,7 +392,7 @@ static KernelHandle CreateKernelFromSpec(
             .math_fidelity = MathFidelity::HiFi4,
             .fp32_dest_acc_en = true,
             .math_approx_mode = false,
-            .compile_args = kernel.compile_time_args});
+            .compile_args = compile_time_args});
   }
 
   DataMovementProcessor processor = DataMovementProcessor::RISCV_0;
@@ -394,14 +409,38 @@ static KernelHandle CreateKernelFromSpec(
       DataMovementConfig{
           .processor = processor,
           .noc = noc,
-          .compile_args = kernel.compile_time_args});
+          .compile_args = compile_time_args});
 }
 
-struct RuntimeBufferBinding {
-  std::shared_ptr<distributed::MeshBuffer> mesh_buffer;
-  size_t size_bytes{0};
-  bool is_output{false};
-};
+static std::vector<uint32_t> BuildKernelCompileTimeArgs(
+    const KernelSpec& kernel,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings) {
+  std::vector<uint32_t> compile_time_args = kernel.compile_time_args;
+  if (kernel.accessors.empty()) {
+    return compile_time_args;
+  }
+
+  std::vector<AccessorSpec> accessors = kernel.accessors;
+  std::sort(accessors.begin(), accessors.end(),
+            [](const AccessorSpec& a, const AccessorSpec& b) { return a.slot < b.slot; });
+
+  uint32_t expected_slot = static_cast<uint32_t>(compile_time_args.size());
+  for (const auto& accessor : accessors) {
+    ICHECK_EQ(accessor.layout, "interleaved")
+        << "Blackhole direct runtime currently supports only interleaved accessors";
+    ICHECK_EQ(accessor.memory_space, "dram")
+        << "Blackhole direct runtime currently supports only DRAM accessors";
+    ICHECK_EQ(accessor.slot, expected_slot)
+        << "Accessor compile-time slot mismatch for buffer " << accessor.buffer
+        << ": got " << accessor.slot << ", expected " << expected_slot;
+    auto it = buffer_bindings.find(accessor.buffer);
+    ICHECK(it != buffer_bindings.end())
+        << "Missing runtime buffer binding for accessor buffer " << accessor.buffer;
+    TensorAccessorArgs(*(it->second.mesh_buffer)).append_to(compile_time_args);
+    expected_slot = static_cast<uint32_t>(compile_time_args.size());
+  }
+  return compile_time_args;
+}
 
 static const RuntimeBufferBinding& ResolveRuntimeBufferBinding(
     const KernelArgSpec& arg_spec,
@@ -743,7 +782,7 @@ void BlackholeModuleNode::ExecuteDirect(
     LOG(INFO) << "Direct path: create kernel[" << ki << "] kind=" << kernel_spec.kind
               << " core_type=" << kernel_spec.core_type;
     kernels.push_back(CreateKernelFromSpec(program, launch_core_ranges, kernel_spec,
-                                           kernel_paths[ki]));
+                                           runtime_buffers, kernel_paths[ki]));
   }
 
   // Keep runtime args per core/work-item so each logical work item sees its own ID.

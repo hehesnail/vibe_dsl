@@ -73,6 +73,9 @@ def test_blackhole_codegen_does_not_emit_cb_backed_c_arrays():
     source = artifact.kernel_source if hasattr(artifact, "kernel_source") else str(artifact)
     assert "scope: blackhole.cb" not in source
     assert "A_shared[" not in source
+    assert "TensorAccessorArgs<0>()" in source
+    assert "TensorAccessorArgs<2>()" in source
+    assert "InterleavedAddrGen<true>" not in source
 
 
 def test_blackhole_copy_pass_attrs():
@@ -122,6 +125,10 @@ def test_blackhole_copy_pass_attrs():
     assert len(segment_plan) == 1
     assert str(segment_plan[0]["kind"]) == "fused_dataflow"
     assert str(segment_plan[0]["core_type"]) == "brisc"
+    accessors = segment_plan[0]["accessors"]
+    assert [(str(item["buffer"]), int(item["slot"])) for item in accessors] == [("A", 0), ("B", 2)]
+    assert all(str(item["layout"]) == "interleaved" for item in accessors)
+    assert all(str(item["memory_space"]) == "dram" for item in accessors)
 
     body_script = func.body.script()
     assert "tl.blackhole.read_tile_to_cb" in body_script
@@ -353,7 +360,7 @@ def test_blackhole_core_plan_preserves_logical_block_launch():
 
     body_script = device_main.body.script()
     assert "tl.blackhole.read_tile_to_cb(A, by * 2 + bx, 32, 2048, 0)" in body_script
-    assert "tl.blackhole.write_tile_from_cb(32, B, by * 2 + bx, 2048, 0)" in body_script
+    assert "tl.blackhole.write_tile_from_cb(32, B, by * 2 + bx, 2048, 2)" in body_script
 
 
 def test_blackhole_core_plan_preserves_axis_order():
@@ -379,7 +386,7 @@ def test_blackhole_core_plan_preserves_axis_order():
 
     body_script = device_main.body.script()
     assert "tl.blackhole.read_tile_to_cb(A, by * 3 + bx, 32, 2048, 0)" in body_script
-    assert "tl.blackhole.write_tile_from_cb(32, B, by * 3 + bx, 2048, 0)" in body_script
+    assert "tl.blackhole.write_tile_from_cb(32, B, by * 3 + bx, 2048, 2)" in body_script
 
 
 def test_blackhole_core_plan_covers_oversubscribed_work():

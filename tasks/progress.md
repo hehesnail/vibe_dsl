@@ -5,7 +5,7 @@
 ## 当前阶段
 
 - **阶段**: Stage 3 — multi-core runtime 调度
-- **状态**: ✅ formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 dtype 分层正式化，P3 richer runtime work schema 已对 copy + GEMM 主路径正式化
+- **状态**: ✅ formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 dtype 分层正式化，P3 richer runtime work schema + interleaved accessor schema 已对 copy + GEMM 主路径进一步正式化
 - **日期**: 2026-03-27
 - **设计文档**: `tasks/dev_design/stage3_multicore_design.md`
 
@@ -109,7 +109,7 @@
 | P0 | GEMM compile-time ABI 正式化（dtype 分层进 attrs） | 部分完成 | `gemm_contract` 已补 tensor/CB/accumulator dtype 分层；更丰富 compile-time ABI 仍未做 |
 | P1 | CB transport schema | ✅ | 已统一到 codegen CB transport，无 scratch |
 | P2 | host tilize/untilize | ✅ | transpose_B + tilize/untilize 已补齐 |
-| P3 | accessor / runtime work schema | 部分完成 | copy + GEMM 已切到 `work_linear_id` + role-explicit richer work descriptor，但 accessor schema 仍未正式化 |
+| P3 | accessor / runtime work schema | 部分完成 | richer work descriptor 已正式化；interleaved accessor schema 已进入 segment plan / KernelSpec；更丰富 accessor/common-runtime schema 仍未做 |
 | P4 | copy/dataflow 泛化（non-tile/stick/sharded） | ❌ | 不阻塞 Stage 3 |
 | P5 | multi-core synchronization 预埋（semaphore/multicast） | ❌ | Stage 3 不涉及核间同步 |
 
@@ -134,6 +134,7 @@
 | `final_blackhole_backend_redesign.md` | 唯一总设计 | 常青 |
 | `stage3_multicore_design.md` | 多核设计 | ✅ 已实施（formal direct host path） |
 | `stage2g_unified_work_schema.md` | richer runtime work schema 设计 | ✅ 已实施（copy/GEMM 主路径） |
+| `stage2h_accessor_schema.md` | interleaved accessor schema 设计 | 实施中 |
 | `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P1/P2 ✅，P0 部分，P3 部分完成，P4-P5 未做） |
 
 ### 已完成（仍有参考价值）
