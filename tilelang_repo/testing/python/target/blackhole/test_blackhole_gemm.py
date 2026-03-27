@@ -88,6 +88,18 @@ def _rebuild_codegen_module_with_segment_plan(artifact, segment_plan):
     )
 
 
+def _extract_blackhole_executable_spec(artifact):
+    codegen_mod = artifact.codegen_mod
+    for function_name in ("main", "main_kernel"):
+        try:
+            spec = codegen_mod.get_function_metadata(function_name)
+        except Exception:
+            spec = None
+        if spec is not None:
+            return spec
+    pytest.fail("Blackhole executable spec metadata is not exposed by the built runtime module")
+
+
 def multicore_gemm_kernel(
     M: int = 64, N: int = 64, K: int = 128, tile_m: int = 32, tile_n: int = 32
 ):
@@ -328,14 +340,10 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
     with target:
         artifact = lower(kernel, target=target)
 
-    device_main = next(
-        func
-        for func in artifact.device_mod.functions.values()
-        if func.attrs and "blackhole.segment_plan" in func.attrs
-    )
-    segment_plan = device_main.attrs["blackhole.segment_plan"]
-    reader = next(item for item in segment_plan if str(item["kind"]) == "reader")
-    compute = next(item for item in segment_plan if str(item["kind"]) == "compute")
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    kernels = executable_spec["kernels"]
+    reader = next(item for item in kernels if str(item["kind"]) == "reader")
+    compute = next(item for item in kernels if str(item["kind"]) == "compute")
 
     assert "compile_time_arg_specs" in reader
     reader_compile_time_arg_specs = reader["compile_time_arg_specs"]
@@ -343,8 +351,8 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
         (str(item["kind"]), int(item["offset"]), str(item["buffer"]))
         for item in reader_compile_time_arg_specs[:2]
     ] == [
-        ("interleaved_accessor_cta", 0, "input0"),
-        ("interleaved_accessor_cta", 2, "output0"),
+        ("interleaved_accessor_cta", 0, "A"),
+        ("interleaved_accessor_cta", 2, "B"),
     ]
 
     assert "compile_time_arg_specs" in compute

@@ -58,6 +58,18 @@ def _rebuild_codegen_module_with_segment_plan(artifact, segment_plan):
     )
 
 
+def _extract_blackhole_executable_spec(artifact):
+    codegen_mod = artifact.codegen_mod
+    for function_name in ("main", "main_kernel"):
+        try:
+            spec = codegen_mod.get_function_metadata(function_name)
+        except Exception:
+            spec = None
+        if spec is not None:
+            return spec
+    pytest.fail("Blackhole executable spec metadata is not exposed by the built runtime module")
+
+
 def _with_richer_accessor_schema(func, common_runtime_args=None, layout_override=None):
     richer_segments = []
     for segment in func.attrs["blackhole.segment_plan"]:
@@ -201,12 +213,8 @@ def test_blackhole_copy_compile_time_abi_is_materialized():
     with target:
         artifact = lower(kernel, target=target)
 
-    device_main = next(
-        func
-        for func in artifact.device_mod.functions.values()
-        if func.attrs and "blackhole.segment_plan" in func.attrs
-    )
-    kernel_spec = device_main.attrs["blackhole.segment_plan"][0]
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    kernel_spec = executable_spec["kernels"][0]
 
     assert "compile_time_arg_specs" in kernel_spec
     compile_time_arg_specs = kernel_spec["compile_time_arg_specs"]
