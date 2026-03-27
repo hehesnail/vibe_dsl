@@ -416,13 +416,17 @@ static std::vector<uint32_t> BuildKernelCompileTimeArgs(
     const KernelSpec& kernel,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings) {
   std::vector<uint32_t> compile_time_args = kernel.compile_time_args;
+  ICHECK(kernel.common_runtime_args.empty())
+      << "Blackhole direct runtime currently supports only interleaved accessors without common runtime args";
   if (kernel.accessors.empty()) {
     return compile_time_args;
   }
 
   std::vector<AccessorSpec> accessors = kernel.accessors;
   std::sort(accessors.begin(), accessors.end(),
-            [](const AccessorSpec& a, const AccessorSpec& b) { return a.slot < b.slot; });
+            [](const AccessorSpec& a, const AccessorSpec& b) {
+              return a.compile_time_arg_offset < b.compile_time_arg_offset;
+            });
 
   uint32_t expected_slot = static_cast<uint32_t>(compile_time_args.size());
   for (const auto& accessor : accessors) {
@@ -430,14 +434,18 @@ static std::vector<uint32_t> BuildKernelCompileTimeArgs(
         << "Blackhole direct runtime currently supports only interleaved accessors";
     ICHECK_EQ(accessor.memory_space, "dram")
         << "Blackhole direct runtime currently supports only DRAM accessors";
-    ICHECK_EQ(accessor.slot, expected_slot)
-        << "Accessor compile-time slot mismatch for buffer " << accessor.buffer
-        << ": got " << accessor.slot << ", expected " << expected_slot;
+    ICHECK_EQ(accessor.common_runtime_arg_count, 0U)
+        << "Blackhole direct runtime currently supports only interleaved accessors without common runtime args";
+    ICHECK_EQ(accessor.compile_time_arg_count, 2U)
+        << "Blackhole direct runtime currently supports only interleaved accessors with two compile-time args";
+    ICHECK_EQ(accessor.compile_time_arg_offset, expected_slot)
+        << "Accessor compile-time offset mismatch for buffer " << accessor.buffer
+        << ": got " << accessor.compile_time_arg_offset << ", expected " << expected_slot;
     auto it = buffer_bindings.find(accessor.buffer);
     ICHECK(it != buffer_bindings.end())
         << "Missing runtime buffer binding for accessor buffer " << accessor.buffer;
     TensorAccessorArgs(*(it->second.mesh_buffer)).append_to(compile_time_args);
-    expected_slot = static_cast<uint32_t>(compile_time_args.size());
+    expected_slot += accessor.compile_time_arg_count;
   }
   return compile_time_args;
 }

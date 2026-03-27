@@ -1,4 +1,5 @@
 import pytest
+import torch
 
 import tilelang
 from tilelang import language as T
@@ -9,6 +10,7 @@ from tilelang import tvm
 
 from .common import (
     check_blackhole_codegen_requirements,
+    check_blackhole_direct_execution_requirements,
     find_loop_annotation,
     grid_indexed_staged_copy_kernel,
     make_blackhole_cb_requirements_mod,
@@ -42,7 +44,21 @@ def _rebuild_codegen_module_with_runtime_args(artifact, runtime_args):
     )
 
 
-def _with_richer_accessor_schema(func, common_runtime_args=None):
+def _rebuild_codegen_module_with_segment_plan(artifact, segment_plan):
+    device_mod = artifact.device_mod
+    rewritten = {}
+    for gvar, func in device_mod.functions.items():
+        if func.attrs and "blackhole.segment_plan" in func.attrs:
+            func = func.with_attr("blackhole.segment_plan", segment_plan)
+        rewritten[gvar] = func
+    target = Target("blackhole")
+    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
+
+
+def _with_richer_accessor_schema(func, common_runtime_args=None, layout_override=None):
     richer_segments = []
     for segment in func.attrs["blackhole.segment_plan"]:
         richer_segment = dict(segment)
@@ -55,11 +71,20 @@ def _with_richer_accessor_schema(func, common_runtime_args=None):
             continue
         for accessor in accessors:
             richer_accessor = dict(accessor)
-            richer_accessor["compile_time_arg_offset"] = int(richer_accessor["slot"])
+            if "compile_time_arg_offset" in richer_accessor:
+                richer_accessor["compile_time_arg_offset"] = int(
+                    richer_accessor["compile_time_arg_offset"]
+                )
+            else:
+                richer_accessor["compile_time_arg_offset"] = int(richer_accessor["slot"])
             richer_accessor["compile_time_arg_count"] = 2
             richer_accessor["common_runtime_arg_offset"] = 0
             richer_accessor["common_runtime_arg_count"] = 0
-            richer_accessor["args_config_bits"] = 1 if str(richer_accessor["layout"]) == "interleaved" else 0
+            if layout_override is not None:
+                richer_accessor["layout"] = layout_override
+            richer_accessor["args_config_bits"] = (
+                1 if str(richer_accessor["layout"]) == "interleaved" else 0
+            )
             richer_accessors.append(richer_accessor)
         richer_segment["accessors"] = richer_accessors
         richer_segments.append(richer_segment)
@@ -150,20 +175,17 @@ def test_blackhole_copy_pass_attrs():
     assert str(segment_plan[0]["kind"]) == "fused_dataflow"
     assert str(segment_plan[0]["core_type"]) == "brisc"
     accessors = segment_plan[0]["accessors"]
-    assert [(str(item["buffer"]), int(item["slot"])) for item in accessors] == [("A", 0), ("B", 2)]
+    assert [(str(item["buffer"]), int(item["compile_time_arg_offset"])) for item in accessors] == [
+        ("A", 0),
+        ("B", 2),
+    ]
+    assert [int(item["compile_time_arg_count"]) for item in accessors] == [2, 2]
+    assert [int(item["common_runtime_arg_offset"]) for item in accessors] == [0, 0]
+    assert [int(item["common_runtime_arg_count"]) for item in accessors] == [0, 0]
+    assert [int(item["args_config_bits"]) for item in accessors] == [1, 1]
     assert all(str(item["layout"]) == "interleaved" for item in accessors)
     assert all(str(item["memory_space"]) == "dram" for item in accessors)
-
-    richer_func = _with_richer_accessor_schema(func)
-    richer_accessors = richer_func.attrs["blackhole.segment_plan"][0]["accessors"]
-    assert [
-        int(item["compile_time_arg_offset"]) for item in richer_accessors
-    ] == [0, 2]
-    assert [int(item["compile_time_arg_count"]) for item in richer_accessors] == [2, 2]
-    assert [int(item["common_runtime_arg_offset"]) for item in richer_accessors] == [0, 0]
-    assert [int(item["common_runtime_arg_count"]) for item in richer_accessors] == [0, 0]
-    assert [int(item["args_config_bits"]) for item in richer_accessors] == [1, 1]
-    assert list(richer_func.attrs["blackhole.segment_plan"][0]["common_runtime_args"]) == []
+    assert len(segment_plan[0]["common_runtime_args"]) == 0
 
     body_script = func.body.script()
     assert "tl.blackhole.read_tile_to_cb" in body_script
@@ -239,6 +261,38 @@ def test_blackhole_copy_richer_accessor_schema_roundtrip():
     )
 
     assert built is not None
+
+
+def test_blackhole_copy_direct_runtime_rejects_common_runtime_accessor_schema():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    richer_common_runtime_args = [
+        {
+            "name": "rank",
+            "kind": "accessor_common_u32",
+            "dtype": "uint32",
+        }
+    ]
+    richer_func = _with_richer_accessor_schema(device_main, richer_common_runtime_args)
+    mutated_mod = _rebuild_codegen_module_with_segment_plan(
+        artifact, richer_func.attrs["blackhole.segment_plan"]
+    )
+
+    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    b_output = torch.zeros_like(a_torch)
+
+    with pytest.raises(tvm.error.InternalError, match="common runtime args|interleaved"):
+        mutated_mod["main"](a_torch, b_output)
 
 
 @pytest.mark.xfail(
