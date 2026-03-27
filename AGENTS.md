@@ -93,7 +93,12 @@
 7. ~~通用 pass 回收~~ ✅（FlattenBuffer/VectorizeLoop 已验证；StorageRewrite 永久排除）
 8. ~~GEMM 接入 Steps 1-5~~ ✅（CB identity 唯一协议已收正）
 9. ~~GEMM E2E 验收~~ ✅（transpose_B + host tilize/untilize 已补齐）
-10. **multi-core** — 设计见 `tasks/dev_design/stage3_multicore_design.md`
+10. ~~multi-core~~ ✅（formal direct host path 已完成；设计见 `tasks/dev_design/stage3_multicore_design.md`）
+11. **TT-Metal contract formalization 收尾**
+   - P0：更丰富 compute ABI / dtype 分层继续收正
+   - P3：更宽 accessor / runtime work execution surface
+   - P4：copy/dataflow 泛化（non-tile/stick/sharded）
+   - P5：multi-core synchronization 预埋
 
 ---
 
@@ -136,8 +141,13 @@
 ## 当前事实约束
 
 - Blackhole 正式执行路径只剩 `BlackholeModule` 进程内 direct host path
+- `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复
 - 默认开发构建目录固定为 `tilelang_repo/build/`
 - 默认并行编译线程数按 `-j32` 执行
 - `build_blackhole/` 和 legacy runner 都已删除
 - Pass 管线顺序：`AnnotateBlackholeCopySemantics` → `BlackholeDeviceResourceCanonicalization` → `SplitHostDevice` → `SplitBlackholeKernel` → `LowerBlackholeOps` → `PlanBlackholeCB`
 - `SplitBlackholeKernel` 已实现并已接入管线；纯 copy 走 `fused_dataflow` 单 kernel，GEMM 走 3-kernel（reader/compute/writer）
+- direct runtime 当前正式支持面：
+  - copy：equal source/dest range，且 stride = 1
+  - GEMM：A/B-separated reader range + writer output range
+  - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`

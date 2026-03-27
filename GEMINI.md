@@ -23,13 +23,11 @@
 - `tilelang_repo/src/target/`
 - `tilelang_repo/src/transform/`
 - `tilelang_repo/tilelang/engine/`
-- `tilelang_repo/tools/blackhole_runner/`
+- `tilelang_repo/build/`
+- `tilelang_repo/testing/python/target/blackhole/`
 - `tt_metal_repo/tt_metal/api/tt-metalium/`
-- `tests/target/`
-- `tests/transform/`
 - `tasks/`
 - `memory/`
-- `docs/`
 
 ## 开始任务前
 
@@ -71,14 +69,21 @@
 
 当前 Blackhole 后端默认推进顺序：
 
-1. attrs / 协议
-2. `ExecutableSpec`
-3. `rt_mod_blackhole`
-4. `BlackholeModule`
-5. runner 协议
-6. single-core copy
-7. single-core gemm
-8. multi-core
+1. ~~attrs / 协议~~ ✅
+2. ~~`ExecutableSpec`~~ ✅
+3. ~~`rt_mod_blackhole`~~ ✅
+4. ~~`BlackholeModule` direct path 补全~~ ✅
+5. ~~Copy E2E 验收（direct path）~~ ✅
+6. ~~split-before 语义规划~~ ✅
+7. ~~通用 pass 回收~~ ✅（FlattenBuffer/VectorizeLoop 已验证；StorageRewrite 永久排除）
+8. ~~GEMM 接入 Steps 1-5~~ ✅（CB identity 唯一协议已收正）
+9. ~~GEMM E2E 验收~~ ✅（transpose_B + host tilize/untilize 已补齐）
+10. ~~multi-core~~ ✅（formal direct host path 已完成）
+11. TT-Metal contract formalization 收尾：
+    - P0：更丰富 compute ABI / dtype 分层继续收正
+    - P3：更宽 accessor / runtime work execution surface
+    - P4：copy/dataflow 泛化（non-tile/stick/sharded）
+    - P5：multi-core synchronization 预埋
 
 ## 经验与问题记录
 
@@ -138,11 +143,23 @@
 
 - 不要再新增第二份总体设计文档
 - 不要把单个 kernel 源码字符串当成后端主产物
-- 不要把 `SplitBlackholeKernel` 当成当前前置条件
+- 不要重新引入或扩展 legacy external runner 路径
 - 不要把多核调度主要放在 codegen 层
-- 不要继续扩展旧 runner 的固定命令行协议
 - 不要把 codegen-only 或 reference-only 测试称为 true E2E
 - 不要让文档和代码长期处于协议错位状态
+
+## 当前事实约束
+
+- Blackhole 正式执行路径只剩 `BlackholeModule` 进程内 direct host path
+- `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复
+- 默认开发构建目录固定为 `tilelang_repo/build/`
+- `build_blackhole/` 和 legacy runner 都已删除
+- Pass 管线顺序：`AnnotateBlackholeCopySemantics` → `BlackholeDeviceResourceCanonicalization` → `SplitHostDevice` → `SplitBlackholeKernel` → `LowerBlackholeOps` → `PlanBlackholeCB`
+- `SplitBlackholeKernel` 已实现并已接入管线；纯 copy 走 `fused_dataflow` 单 kernel，GEMM 走 3-kernel（reader/compute/writer）
+- direct runtime 当前正式支持面：
+  - copy：equal source/dest range，且 stride = 1
+  - GEMM：A/B-separated reader range + writer output range
+  - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
 
 ## 什么算完成
 
