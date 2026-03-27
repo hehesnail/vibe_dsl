@@ -83,6 +83,13 @@ def _with_sharded_accessor_schema(func):
     return func.with_attr("blackhole.segment_plan", richer_segments)
 
 
+def _with_mutated_segment_plan(func, segment_mutator):
+    mutated_segments = []
+    for segment in func.attrs["blackhole.segment_plan"]:
+        mutated_segments.append(segment_mutator(dict(segment)))
+    return func.with_attr("blackhole.segment_plan", mutated_segments)
+
+
 def _rebuild_codegen_module_with_segment_plan(artifact, segment_plan):
     rewritten = {}
     for gvar, func in artifact.device_mod.functions.items():
@@ -363,6 +370,15 @@ def test_blackhole_compute_contract_attr_is_materialized():
     assert str(contract["b_cb_dtype"]) == "Float16_b"
     assert str(contract["c_cb_dtype"]) == "Float32"
     assert str(contract["accumulator_dtype"]) == "Float32"
+    assert int(contract["block_m_tiles"]) == 1
+    assert int(contract["block_n_tiles"]) == 1
+    assert int(contract["block_k_tiles"]) == 4
+    assert int(contract["subblock_m_tiles"]) == 1
+    assert int(contract["subblock_n_tiles"]) == 1
+    assert str(contract["math_fidelity"]) == "HiFi4"
+    assert bool(contract["fp32_dest_acc_en"]) is True
+    assert bool(contract["math_approx_mode"]) is False
+    assert [str(item) for item in contract["unpack_to_dest_mode"]] == []
 
 
 def test_blackhole_gemm_compile_time_abi_is_materialized():
@@ -426,6 +442,16 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
         kind="gemm_transpose_flags",
         label="compute compile-time",
     )
+    gemm_block_shape = _require_spec_entry(
+        compute_compile_time_arg_specs,
+        kind="gemm_block_shape",
+        label="compute compile-time",
+    )
+    gemm_subblock_shape = _require_spec_entry(
+        compute_compile_time_arg_specs,
+        kind="gemm_subblock_shape",
+        label="compute compile-time",
+    )
     assert str(gemm_shape["name"]) == "gemm_shape"
     assert str(gemm_shape["dtype"]) == "uint32"
     assert int(gemm_shape["offset"]) == 0
@@ -438,6 +464,8 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
     assert int(gemm_transpose_flags["count"]) == 2
     assert str(gemm_transpose_flags["segment_role"]) == "compute"
     assert [int(value) for value in gemm_transpose_flags["values"]] == [0, 1]
+    assert [int(value) for value in gemm_block_shape["values"]] == [1, 1, 4]
+    assert [int(value) for value in gemm_subblock_shape["values"]] == [1, 1]
 
     assert "launch_spec" in compute
     compute_launch_spec = compute["launch_spec"]
@@ -445,6 +473,12 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
     assert str(compute_launch_spec["core_type"]) == expected_compute_launch_spec["core_type"]
     assert str(compute_launch_spec["processor"]) == expected_compute_launch_spec["processor"]
     assert str(compute_launch_spec["noc"]) == expected_compute_launch_spec["noc"]
+    assert "compute_config" in compute
+    compute_config = compute["compute_config"]
+    assert str(compute_config["math_fidelity"]) == "HiFi4"
+    assert bool(compute_config["fp32_dest_acc_en"]) is True
+    assert bool(compute_config["math_approx_mode"]) is False
+    assert [str(item) for item in compute_config["unpack_to_dest_mode"]] == []
 
     assert "compile_time_arg_specs" in writer
     writer_compile_time_arg_specs = writer["compile_time_arg_specs"]
@@ -482,6 +516,15 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
     assert int(compute_contract["Kt"]) == 4
     assert bool(compute_contract["transpose_A"]) is False
     assert bool(compute_contract["transpose_B"]) is True
+    assert int(compute_contract["block_m_tiles"]) == 1
+    assert int(compute_contract["block_n_tiles"]) == 1
+    assert int(compute_contract["block_k_tiles"]) == 4
+    assert int(compute_contract["subblock_m_tiles"]) == 1
+    assert int(compute_contract["subblock_n_tiles"]) == 1
+    assert str(compute_contract["math_fidelity"]) == "HiFi4"
+    assert bool(compute_contract["fp32_dest_acc_en"]) is True
+    assert bool(compute_contract["math_approx_mode"]) is False
+    assert [str(item) for item in compute_contract["unpack_to_dest_mode"]] == []
 
 
 def test_blackhole_gemm_compile_time_abi_rejects_misaligned_shapes():
@@ -557,6 +600,41 @@ def test_blackhole_gemm_direct_runtime_rejects_mismatched_launch_spec_core_type(
     c_output = torch.zeros(32, 32, dtype=torch.float32)
 
     with pytest.raises(tvm.error.InternalError, match="launch_spec.core_type mismatch"):
+        mutated_mod["main"](a_torch, b_torch, c_output)
+
+
+def test_blackhole_gemm_direct_runtime_rejects_unknown_math_fidelity():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+
+    def mutate_unknown_math_fidelity(segment):
+        if str(segment.get("kind", "")) != "compute":
+            return segment
+        compute_config = dict(segment["compute_config"])
+        compute_config["math_fidelity"] = "UltraFi9"
+        segment["compute_config"] = compute_config
+        return segment
+
+    mutated_func = _with_mutated_segment_plan(device_main, mutate_unknown_math_fidelity)
+    mutated_mod = _rebuild_codegen_module_with_segment_plan(
+        artifact, mutated_func.attrs["blackhole.segment_plan"]
+    )
+
+    a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    c_output = torch.zeros(32, 32, dtype=torch.float32)
+
+    with pytest.raises(tvm.error.InternalError, match="math_fidelity"):
         mutated_mod["main"](a_torch, b_torch, c_output)
 
 

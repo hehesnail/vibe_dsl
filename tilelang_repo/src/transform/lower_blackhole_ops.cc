@@ -508,6 +508,11 @@ void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
   compute_contract.Set("Mt", Integer(gemm_m_ / kBlackholeTileRows));
   compute_contract.Set("Nt", Integer(gemm_n_ / kBlackholeTileCols));
   compute_contract.Set("Kt", Integer(gemm_k_ / kBlackholeTileCols));
+  compute_contract.Set("block_m_tiles", Integer(gemm_m_ / kBlackholeTileRows));
+  compute_contract.Set("block_n_tiles", Integer(gemm_n_ / kBlackholeTileCols));
+  compute_contract.Set("block_k_tiles", Integer(gemm_k_ / kBlackholeTileCols));
+  compute_contract.Set("subblock_m_tiles", Integer(gemm_m_ / kBlackholeTileRows));
+  compute_contract.Set("subblock_n_tiles", Integer(gemm_n_ / kBlackholeTileCols));
   compute_contract.Set("transpose_A", Bool(gemm_transpose_a_));
   compute_contract.Set("transpose_B", Bool(gemm_transpose_b_));
   compute_contract.Set("a_tensor_dtype", String(DataTypeToDataFormat(gemm_a_dtype_)));
@@ -517,6 +522,10 @@ void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
   compute_contract.Set("b_cb_dtype", String(DataTypeToDataFormat(gemm_b_dtype_)));
   compute_contract.Set("c_cb_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
   compute_contract.Set("accumulator_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
+  compute_contract.Set("math_fidelity", String("HiFi4"));
+  compute_contract.Set("fp32_dest_acc_en", Bool(true));
+  compute_contract.Set("math_approx_mode", Bool(false));
+  compute_contract.Set("unpack_to_dest_mode", Array<Any>{});
 
   attrs.Set("blackhole.gemm_contract", gemm_contract);
   attrs.Set("blackhole.compute_contract", compute_contract);
@@ -619,6 +628,24 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
         "",
         {static_cast<uint32_t>(gemm_transpose_a_ ? 1 : 0),
          static_cast<uint32_t>(gemm_transpose_b_ ? 1 : 0)}));
+    compile_time_arg_specs.push_back(MakeCompileTimeArgSpec(
+        "gemm_block_shape",
+        "gemm_block_shape",
+        "uint32",
+        5,
+        3,
+        "compute",
+        "",
+        {static_cast<uint32_t>(mt), static_cast<uint32_t>(nt), static_cast<uint32_t>(kt)}));
+    compile_time_arg_specs.push_back(MakeCompileTimeArgSpec(
+        "gemm_subblock_shape",
+        "gemm_subblock_shape",
+        "uint32",
+        8,
+        2,
+        "compute",
+        "",
+        {static_cast<uint32_t>(mt), static_cast<uint32_t>(nt)}));
     return compile_time_arg_specs;
   };
 
@@ -695,6 +722,12 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
         for (const auto& spec : gemm_compile_time_arg_specs) {
           compile_time_arg_specs.push_back(spec);
         }
+        Map<String, Any> compute_config;
+        compute_config.Set("math_fidelity", String("HiFi4"));
+        compute_config.Set("fp32_dest_acc_en", Bool(true));
+        compute_config.Set("math_approx_mode", Bool(false));
+        compute_config.Set("unpack_to_dest_mode", Array<Any>{});
+        segment.Set("compute_config", compute_config);
       }
       segment.Set("accessors", accessors);
       segment.Set("compile_time_arg_specs", compile_time_arg_specs);

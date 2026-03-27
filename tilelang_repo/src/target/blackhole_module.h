@@ -177,6 +177,26 @@ struct KernelLaunchSpec {
   }
 };
 
+struct KernelComputeConfigSpec {
+  std::string math_fidelity;
+  bool fp32_dest_acc_en = false;
+  bool math_approx_mode = false;
+  std::vector<std::string> unpack_to_dest_mode;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("math_fidelity", math_fidelity);
+    writer->WriteObjectKeyValue("fp32_dest_acc_en", fp32_dest_acc_en);
+    writer->WriteObjectKeyValue("math_approx_mode", math_approx_mode);
+    if (!unpack_to_dest_mode.empty()) {
+      writer->WriteObjectKeyValue("unpack_to_dest_mode", unpack_to_dest_mode);
+    } else {
+      writer->WriteObjectKeyValue("unpack_to_dest_mode", std::vector<std::string>{});
+    }
+    writer->EndObject();
+  }
+};
+
 struct AccessorSpec {
   std::string buffer;
   uint32_t slot = 0;
@@ -221,6 +241,8 @@ struct KernelSpec {
   std::vector<CompileTimeArgSpec> compile_time_arg_specs;
   bool has_launch_spec = false;
   KernelLaunchSpec launch_spec;
+  bool has_compute_config = false;
+  KernelComputeConfigSpec compute_config;
   std::vector<AccessorSpec> accessors;
 
   void Save(dmlc::JSONWriter* writer) const {
@@ -248,6 +270,9 @@ struct KernelSpec {
     }
     if (has_launch_spec) {
       writer->WriteObjectKeyValue("launch_spec", launch_spec);
+    }
+    if (has_compute_config) {
+      writer->WriteObjectKeyValue("compute_config", compute_config);
     }
     if (!accessors.empty()) {
       writer->WriteObjectKeyValue("accessors", accessors);
@@ -308,6 +333,11 @@ struct ComputeContractSpec {
   uint32_t Mt = 0;
   uint32_t Nt = 0;
   uint32_t Kt = 0;
+  uint32_t block_m_tiles = 0;
+  uint32_t block_n_tiles = 0;
+  uint32_t block_k_tiles = 0;
+  uint32_t subblock_m_tiles = 0;
+  uint32_t subblock_n_tiles = 0;
   bool transpose_A = false;
   bool transpose_B = false;
   std::string a_tensor_dtype;
@@ -317,6 +347,10 @@ struct ComputeContractSpec {
   std::string b_cb_dtype;
   std::string c_cb_dtype;
   std::string accumulator_dtype;
+  std::string math_fidelity;
+  bool fp32_dest_acc_en = false;
+  bool math_approx_mode = false;
+  std::vector<std::string> unpack_to_dest_mode;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -331,6 +365,11 @@ struct ComputeContractSpec {
     writer->WriteObjectKeyValue("Mt", static_cast<int64_t>(Mt));
     writer->WriteObjectKeyValue("Nt", static_cast<int64_t>(Nt));
     writer->WriteObjectKeyValue("Kt", static_cast<int64_t>(Kt));
+    writer->WriteObjectKeyValue("block_m_tiles", static_cast<int64_t>(block_m_tiles));
+    writer->WriteObjectKeyValue("block_n_tiles", static_cast<int64_t>(block_n_tiles));
+    writer->WriteObjectKeyValue("block_k_tiles", static_cast<int64_t>(block_k_tiles));
+    writer->WriteObjectKeyValue("subblock_m_tiles", static_cast<int64_t>(subblock_m_tiles));
+    writer->WriteObjectKeyValue("subblock_n_tiles", static_cast<int64_t>(subblock_n_tiles));
     writer->WriteObjectKeyValue("transpose_A", transpose_A);
     writer->WriteObjectKeyValue("transpose_B", transpose_B);
     writer->WriteObjectKeyValue("a_tensor_dtype", a_tensor_dtype);
@@ -340,6 +379,14 @@ struct ComputeContractSpec {
     writer->WriteObjectKeyValue("b_cb_dtype", b_cb_dtype);
     writer->WriteObjectKeyValue("c_cb_dtype", c_cb_dtype);
     writer->WriteObjectKeyValue("accumulator_dtype", accumulator_dtype);
+    writer->WriteObjectKeyValue("math_fidelity", math_fidelity);
+    writer->WriteObjectKeyValue("fp32_dest_acc_en", fp32_dest_acc_en);
+    writer->WriteObjectKeyValue("math_approx_mode", math_approx_mode);
+    if (!unpack_to_dest_mode.empty()) {
+      writer->WriteObjectKeyValue("unpack_to_dest_mode", unpack_to_dest_mode);
+    } else {
+      writer->WriteObjectKeyValue("unpack_to_dest_mode", std::vector<std::string>{});
+    }
     writer->EndObject();
   }
 };

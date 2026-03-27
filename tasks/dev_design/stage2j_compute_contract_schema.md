@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage2j_compute_contract_schema`
 - **日期**: 2026-03-27
-- **状态**: 设计中
+- **状态**: ✅ 已实现（v1 compute_contract + v2 compute precision / block-subblock ABI formalization）
 - **对应任务**: TT-Metal contract formalization 的 P0 收尾
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -73,7 +73,7 @@
 
 - `blackhole.compute_contract`
 
-当前先支持：
+当前 v1 已支持：
 
 - `kind = "gemm"`
 
@@ -106,6 +106,39 @@
 - `Mt/Nt/Kt` 是 compute kernel compile-time tile counts
 - tensor dtype、CB transport dtype、accumulator dtype 明确分层
 
+### 4.2 `compute_contract` v2 扩展
+
+在 v1 基础上，继续新增两组正式字段。
+
+#### A. `compute_shape`
+
+- `tile_shape`
+  - `Mt`
+  - `Nt`
+  - `Kt`
+- `block_shape`
+  - `m_tiles`
+  - `n_tiles`
+  - `k_tiles`
+- `subblock_shape`
+  - `m_tiles`
+  - `n_tiles`
+
+命名原则：
+
+- 不直接绑定 TT-Metal 某一版 API 的局部命名
+- 也不把 TileLang lowering 内部细节暴露成正式协议
+- 但必须能无损映射到 TT-Metal compute kernel compile-time ABI
+
+#### B. `compute_precision`
+
+- `math_fidelity`
+- `fp32_dest_acc_en`
+- `math_approx_mode`
+- `unpack_to_dest_mode`
+
+这组字段作为 compute kernel host `ComputeConfig` 与 compile-time ABI 的正式来源。
+
 ### 4.2 `blackhole.gemm_contract` 的地位
 
 本轮不立即删除 `blackhole.gemm_contract`，原因是：
@@ -134,6 +167,11 @@ direct runtime 对 GEMM 的以下行为改为优先读 `compute_contract`：
 - input transpose / tilize 路径
 - output untilize / readback 校验
 - `num_k_tiles` / logical N tiles 推导
+
+v2 继续扩展：
+
+- compute kernel `ComputeConfig`
+- compute-side precision / block-subblock compile-time materialization
 
 ---
 
@@ -176,6 +214,30 @@ direct runtime 对 GEMM 的以下行为改为优先读 `compute_contract`：
 3. E2E 测试
    - 新增至少一个更宽的 GEMM compute case
    - 当前优先选择 `transpose_A=True` 的 direct runtime case
+
+4. v2 ABI 测试
+   - `compute_contract.compute_precision` 进入 attrs/spec
+   - `compute_contract.block_shape/subblock_shape` 进入 attrs/spec
+   - compute kernel `compile_time_arg_specs` 与 v2 contract 对齐
+   - `BlackholeModule` 不再把 `ComputeConfig.math_fidelity/fp32_dest_acc_en/math_approx_mode` 写死
+
+## 8. 实施结果（2026-03-27）
+
+- `compute_contract` 已继续扩展到：
+  - `block_m_tiles/block_n_tiles/block_k_tiles`
+  - `subblock_m_tiles/subblock_n_tiles`
+  - `math_fidelity/fp32_dest_acc_en/math_approx_mode/unpack_to_dest_mode`
+- `LowerBlackholeOps` 已为 compute segment 正式产出：
+  - `compute_config`
+  - `gemm_block_shape`
+  - `gemm_subblock_shape`
+- `rt_mod_blackhole` 已提取并写入 `KernelSpec.compute_config`
+- `BlackholeModule` 已按 `KernelSpec.compute_config` materialize `ComputeConfig`
+  - `math_fidelity`
+  - `fp32_dest_acc_en`
+  - `math_approx_mode`
+  - `unpack_to_dest_mode`
+- 对未知 `math_fidelity` / `unpack_to_dest_mode` 的 direct runtime fail-fast 已补齐
 
 ---
 

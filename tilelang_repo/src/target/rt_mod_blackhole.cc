@@ -402,6 +402,11 @@ static ComputeContractSpec ComputeContractFromLegacyGemm(const GemmContractSpec&
   contract.Mt = gemm.M / kBlackholeTileRows;
   contract.Nt = gemm.N / kBlackholeTileCols;
   contract.Kt = gemm.K / kBlackholeTileCols;
+  contract.block_m_tiles = contract.Mt;
+  contract.block_n_tiles = contract.Nt;
+  contract.block_k_tiles = contract.Kt;
+  contract.subblock_m_tiles = contract.Mt;
+  contract.subblock_n_tiles = contract.Nt;
   contract.transpose_A = gemm.transpose_A;
   contract.transpose_B = gemm.transpose_B;
   contract.a_tensor_dtype = gemm.a_tensor_dtype;
@@ -411,6 +416,9 @@ static ComputeContractSpec ComputeContractFromLegacyGemm(const GemmContractSpec&
   contract.b_cb_dtype = gemm.b_cb_dtype;
   contract.c_cb_dtype = gemm.c_cb_dtype;
   contract.accumulator_dtype = gemm.accumulator_dtype;
+  contract.math_fidelity = "HiFi4";
+  contract.fp32_dest_acc_en = true;
+  contract.math_approx_mode = false;
   return contract;
 }
 
@@ -456,6 +464,21 @@ static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
   if (auto v = attrs.Get("Kt")) {
     contract.Kt = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
   }
+  if (auto v = attrs.Get("block_m_tiles")) {
+    contract.block_m_tiles = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = attrs.Get("block_n_tiles")) {
+    contract.block_n_tiles = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = attrs.Get("block_k_tiles")) {
+    contract.block_k_tiles = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = attrs.Get("subblock_m_tiles")) {
+    contract.subblock_m_tiles = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = attrs.Get("subblock_n_tiles")) {
+    contract.subblock_n_tiles = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
   if (auto v = attrs.Get("transpose_A")) {
     contract.transpose_A = Downcast<Bool>(v.value());
   }
@@ -483,6 +506,20 @@ static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
   if (auto v = attrs.Get("accumulator_dtype")) {
     contract.accumulator_dtype = Downcast<String>(v.value());
   }
+  if (auto v = attrs.Get("math_fidelity")) {
+    contract.math_fidelity = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("fp32_dest_acc_en")) {
+    contract.fp32_dest_acc_en = Downcast<Bool>(v.value());
+  }
+  if (auto v = attrs.Get("math_approx_mode")) {
+    contract.math_approx_mode = Downcast<Bool>(v.value());
+  }
+  if (auto v = attrs.Get("unpack_to_dest_mode")) {
+    for (const auto& mode : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+      contract.unpack_to_dest_mode.push_back(Downcast<String>(mode));
+    }
+  }
 
   contract.enabled = contract.enabled || (!contract.kind.empty() && contract.kind == "gemm" &&
                                           !contract.a_buffer.empty() &&
@@ -493,8 +530,37 @@ static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
     if (contract.Mt == 0 && contract.M > 0) contract.Mt = contract.M / 32;
     if (contract.Nt == 0 && contract.N > 0) contract.Nt = contract.N / 32;
     if (contract.Kt == 0 && contract.K > 0) contract.Kt = contract.K / 32;
+    if (contract.block_m_tiles == 0) contract.block_m_tiles = contract.Mt;
+    if (contract.block_n_tiles == 0) contract.block_n_tiles = contract.Nt;
+    if (contract.block_k_tiles == 0) contract.block_k_tiles = contract.Kt;
+    if (contract.subblock_m_tiles == 0) contract.subblock_m_tiles = contract.Mt;
+    if (contract.subblock_n_tiles == 0) contract.subblock_n_tiles = contract.Nt;
+    if (contract.math_fidelity.empty()) contract.math_fidelity = "HiFi4";
   }
   return contract;
+}
+
+static bool ExtractComputeConfig(const ffi::Map<ffi::String, ffi::Any>& spec_info,
+                                 KernelComputeConfigSpec* compute_config) {
+  if (spec_info.empty()) {
+    return false;
+  }
+  if (auto v = spec_info.Get("math_fidelity")) {
+    compute_config->math_fidelity = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("fp32_dest_acc_en")) {
+    compute_config->fp32_dest_acc_en = Downcast<Bool>(v.value());
+  }
+  if (auto v = spec_info.Get("math_approx_mode")) {
+    compute_config->math_approx_mode = Downcast<Bool>(v.value());
+  }
+  if (auto v = spec_info.Get("unpack_to_dest_mode")) {
+    for (const auto& mode : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+      compute_config->unpack_to_dest_mode.push_back(Downcast<String>(mode));
+    }
+  }
+  return !compute_config->math_fidelity.empty() || compute_config->fp32_dest_acc_en ||
+         compute_config->math_approx_mode || !compute_config->unpack_to_dest_mode.empty();
 }
 
 static std::vector<KernelArgSpec> MakeDefaultCopyRuntimeArgs() {
@@ -787,6 +853,8 @@ struct SegmentInfo {
   std::vector<CompileTimeArgSpec> compile_time_arg_specs;
   bool has_launch_spec = false;
   KernelLaunchSpec launch_spec;
+  bool has_compute_config = false;
+  KernelComputeConfigSpec compute_config;
   std::vector<AccessorSpec> accessors;
 };
 
@@ -837,6 +905,11 @@ static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, Execu
       auto launch_spec = v.value().as<ffi::Map<ffi::String, ffi::Any>>().value_or(
           ffi::Map<ffi::String, ffi::Any>());
       info.has_launch_spec = ExtractLaunchSpec(launch_spec, &info.launch_spec);
+    }
+    if (auto v = segment.Get("compute_config")) {
+      auto compute_config = v.value().as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+          ffi::Map<ffi::String, ffi::Any>());
+      info.has_compute_config = ExtractComputeConfig(compute_config, &info.compute_config);
     }
 
     if (segments_out.empty()) {
@@ -1050,6 +1123,10 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
     kernel.has_launch_spec = segment.has_launch_spec;
     if (segment.has_launch_spec) {
       kernel.launch_spec = segment.launch_spec;
+    }
+    kernel.has_compute_config = segment.has_compute_config;
+    if (segment.has_compute_config) {
+      kernel.compute_config = segment.compute_config;
     }
     kernel.accessors = segment.accessors;
     kernel.source_code = EmitKernelSourceForPrimFunc(segment_func, kernel.name, target,

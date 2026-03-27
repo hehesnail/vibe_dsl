@@ -430,6 +430,32 @@ static DataMovementProcessor ParseDataMovementProcessor(const std::string& proce
   LOG(FATAL) << "Unsupported Blackhole launch_spec processor: " << processor;
 }
 
+static MathFidelity ParseMathFidelity(const std::string& math_fidelity) {
+  if (math_fidelity == "LoFi") {
+    return MathFidelity::LoFi;
+  }
+  if (math_fidelity == "HiFi2") {
+    return MathFidelity::HiFi2;
+  }
+  if (math_fidelity == "HiFi3") {
+    return MathFidelity::HiFi3;
+  }
+  if (math_fidelity.empty() || math_fidelity == "HiFi4") {
+    return MathFidelity::HiFi4;
+  }
+  LOG(FATAL) << "Unsupported Blackhole compute math_fidelity: " << math_fidelity;
+}
+
+static UnpackToDestMode ParseUnpackToDestMode(const std::string& mode) {
+  if (mode == "Default") {
+    return UnpackToDestMode::Default;
+  }
+  if (mode == "UnpackToDestFp32") {
+    return UnpackToDestMode::UnpackToDestFp32;
+  }
+  LOG(FATAL) << "Unsupported Blackhole unpack_to_dest_mode: " << mode;
+}
+
 static NOC ParseNoc(const std::string& noc) {
   if (noc == "riscv_0_default") {
     return NOC::RISCV_0_default;
@@ -530,6 +556,7 @@ static std::vector<uint32_t> BuildKernelCompileTimeArgsFromSchema(
     if (spec.kind == "interleaved_accessor_cta") {
       AppendAccessorCompileTimeArgs(spec, buffer_bindings, &compile_time_args);
     } else if (spec.kind == "gemm_shape" || spec.kind == "gemm_transpose_flags" ||
+               spec.kind == "gemm_block_shape" || spec.kind == "gemm_subblock_shape" ||
                spec.kind == "literal_u32") {
       AppendCompileTimeArgValues(spec, &compile_time_args);
     } else {
@@ -553,14 +580,27 @@ static KernelHandle CreateKernelFromSpec(
       BuildKernelCompileTimeArgs(kernel, buffer_bindings);
   const std::string core_type = kernel.core_type;
   if (core_type == "trisc" || kernel.kind == "compute") {
+    std::vector<UnpackToDestMode> unpack_to_dest_mode;
+    MathFidelity math_fidelity = MathFidelity::HiFi4;
+    bool fp32_dest_acc_en = true;
+    bool math_approx_mode = false;
+    if (kernel.has_compute_config) {
+      math_fidelity = ParseMathFidelity(kernel.compute_config.math_fidelity);
+      fp32_dest_acc_en = kernel.compute_config.fp32_dest_acc_en;
+      math_approx_mode = kernel.compute_config.math_approx_mode;
+      for (const auto& mode : kernel.compute_config.unpack_to_dest_mode) {
+        unpack_to_dest_mode.push_back(ParseUnpackToDestMode(mode));
+      }
+    }
     return CreateKernel(
         program,
         kernel_path,
         core_spec,
         ComputeConfig{
-            .math_fidelity = MathFidelity::HiFi4,
-            .fp32_dest_acc_en = true,
-            .math_approx_mode = false,
+            .math_fidelity = math_fidelity,
+            .fp32_dest_acc_en = fp32_dest_acc_en,
+            .unpack_to_dest_mode = unpack_to_dest_mode,
+            .math_approx_mode = math_approx_mode,
             .compile_args = compile_time_args});
   }
 
