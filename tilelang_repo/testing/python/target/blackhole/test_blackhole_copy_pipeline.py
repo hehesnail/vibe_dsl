@@ -73,6 +73,28 @@ def _rebuild_codegen_module_with_semaphore_plan(artifact, semaphore_plan):
     )
 
 
+def _rebuild_codegen_module_with_semaphore_binding(
+    artifact, *, semaphore_plan=None, segment_mutator=None
+):
+    device_mod = artifact.device_mod
+    rewritten = {}
+    for gvar, func in device_mod.functions.items():
+        if func.attrs and "blackhole.segment_plan" in func.attrs:
+            if semaphore_plan is not None:
+                func = func.with_attr("blackhole.semaphore_plan", semaphore_plan)
+            if segment_mutator is not None:
+                func = func.with_attr(
+                    "blackhole.segment_plan",
+                    segment_mutator(func.attrs["blackhole.segment_plan"]),
+                )
+        rewritten[gvar] = func
+    target = Target("blackhole")
+    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
+
+
 def _extract_blackhole_executable_spec(artifact, function_names=("main", "main_kernel")):
     codegen_mod = artifact.codegen_mod
     getter = getattr(codegen_mod, "get_function_metadata", None)
@@ -387,6 +409,54 @@ def test_blackhole_copy_semaphore_plan_is_materialized():
     assert int(core_ranges[0]["end"]["core_y"]) == 2
 
 
+def test_blackhole_copy_kernel_semaphore_binding_is_materialized():
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    semaphore_plan = [
+        {
+            "id": 0,
+            "initial_value": 0,
+            "core_type": "worker",
+            "core_ranges": [
+                {
+                    "start": {"core_x": 1, "core_y": 2},
+                    "end": {"core_x": 1, "core_y": 2},
+                }
+            ],
+        }
+    ]
+
+    def segment_mutator(segment_plan):
+        mutated_segments = []
+        for segment in segment_plan:
+            mutated = dict(segment)
+            mutated["semaphore_bindings"] = [
+                {"name": "copy_sem", "semaphore_id": 0, "arg_kind": "semaphore_id_u32"}
+            ]
+            mutated_segments.append(mutated)
+        return mutated_segments
+
+    mutated_mod = _rebuild_codegen_module_with_semaphore_binding(
+        artifact, semaphore_plan=semaphore_plan, segment_mutator=segment_mutator
+    )
+
+    executable_spec = mutated_mod.get_function_metadata("main")
+    kernel_spec = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+    assert "semaphore_bindings" in kernel_spec
+    semaphore_bindings = kernel_spec["semaphore_bindings"]
+    assert len(semaphore_bindings) == 1
+    binding = semaphore_bindings[0]
+    assert str(binding["name"]) == "copy_sem"
+    assert int(binding["semaphore_id"]) == 0
+    assert str(binding["arg_kind"]) == "semaphore_id_u32"
+
+
 def test_blackhole_copy_semantics_annotation_schema():
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     mod = tilelang.tvm.IRModule({"main": kernel})
@@ -584,6 +654,59 @@ def test_blackhole_copy_direct_runtime_rejects_unknown_semaphore_core_type():
 
     with pytest.raises(tvm.error.InternalError, match="semaphore core_type|Unsupported Blackhole semaphore core_type"):
         mutated_mod["main"](a_torch, b_output)
+
+
+def test_blackhole_copy_direct_runtime_accepts_semaphore_id_runtime_arg():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    semaphore_plan = [
+        {
+            "id": 0,
+            "initial_value": 0,
+            "core_type": "worker",
+            "core_ranges": [
+                {
+                    "start": {"core_x": 1, "core_y": 2},
+                    "end": {"core_x": 1, "core_y": 2},
+                }
+            ],
+        }
+    ]
+
+    def segment_mutator(segment_plan):
+        mutated_segments = []
+        for segment in segment_plan:
+            mutated = dict(segment)
+            try:
+                runtime_args = list(segment["runtime_args"])
+            except KeyError:
+                runtime_args = []
+            runtime_args.append(
+                {"name": "copy_sem", "kind": "semaphore_id_u32", "dtype": "uint32"}
+            )
+            mutated["runtime_args"] = runtime_args
+            mutated["semaphore_bindings"] = [
+                {"name": "copy_sem", "semaphore_id": 0, "arg_kind": "semaphore_id_u32"}
+            ]
+            mutated_segments.append(mutated)
+        return mutated_segments
+
+    mutated_mod = _rebuild_codegen_module_with_semaphore_binding(
+        artifact, semaphore_plan=semaphore_plan, segment_mutator=segment_mutator
+    )
+
+    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    b_output = torch.zeros_like(a_torch)
+    mutated_mod["main"](a_torch, b_output)
+    assert_tensors_close_or_dump(a_torch, b_output)
 
 
 @pytest.mark.xfail(

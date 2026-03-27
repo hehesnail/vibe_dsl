@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage4_semaphore_schema`
 - **日期**: 2026-03-27
-- **状态**: 已实现（program-local semaphore schema）
+- **状态**: 已实现（program-local semaphore schema + kernel binding schema）
 - **对应任务**: P5 multi-core synchronization 预埋
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -87,12 +87,18 @@ TT-Metal host API 的 semaphore 是另一类正式对象：
 - `core_type` 作为 Blackhole schema 校验字段保留；当前 direct runtime 仅正式支持 `worker`，未知值或非 `worker` 值 fail-fast
 - `core_ranges` 表达该 semaphore 覆盖的 logical core set
 
-本轮不引入：
+第一轮未引入：
 
 - semaphore address 预分配
 - global semaphore buffer type
-- per-kernel semaphore binding
 - remote core / multicast descriptors
+
+第二轮继续补：
+
+- per-kernel `semaphore_bindings`
+- runtime arg kind `semaphore_id_u32`
+
+也就是把协议从“program 里有哪些 semaphore”推进到“哪个 kernel 需要哪个 semaphore id，以及 host/runtime 如何把它作为正式 runtime arg 下发给 kernel”。
 
 ---
 
@@ -129,6 +135,36 @@ TT-Metal host API 的 semaphore 是另一类正式对象：
 3. host materialization 测试
    - 当前以 schema/spec + runtime validation 为主
 
+### 4.5 第二轮扩展：kernel-level semaphore binding
+
+新增：
+
+- `SemaphoreBindingSpec`
+- `KernelSpec.semaphore_bindings`
+
+每个 binding 最小字段：
+
+- `name`
+- `semaphore_id`
+- `arg_kind`
+
+第二轮正式支持：
+
+- `arg_kind = "semaphore_id_u32"`
+
+语义：
+
+- program 级 `ExecutableSpec.semaphores` 负责创建 TT-Metal semaphore objects
+- kernel 级 `KernelSpec.semaphore_bindings` 负责声明 kernel 需要哪个 planned semaphore
+- direct runtime materialize semaphore 后，建立 `planned semaphore id -> created TT-Metal semaphore id` 映射
+- `BuildRuntimeArgsFromSpec` 遇到 runtime arg kind `semaphore_id_u32` 时，按 kernel binding 找到对应 semaphore id 并写入最终 runtime args
+
+仍不解决：
+
+- device-side wait/post builtin
+- kernel source 对 semaphore 的真实消费语义
+- `mbar -> semaphore` 自动绑定
+
 ---
 
 ## 5. 验证标准
@@ -136,4 +172,5 @@ TT-Metal host API 的 semaphore 是另一类正式对象：
 - `ExecutableSpec` 正式携带 semaphore descriptors
 - `BlackholeModule` 能消费 semaphore plan，而不是忽略它
 - 未支持的 semaphore schema 会在 direct runtime 早失败
+- `KernelSpec` 能正式携带 semaphore binding，并让 direct runtime 把 semaphore id materialize 成 runtime arg
 - 文档与 `tasks/progress.md` 同步

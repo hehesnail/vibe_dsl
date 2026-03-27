@@ -787,6 +787,33 @@ static std::vector<AccessorSpec> ExtractAccessorsFromArray(const ffi::Array<ffi:
   return accessors;
 }
 
+static std::vector<SemaphoreBindingSpec> ExtractSemaphoreBindingsFromArray(
+    const ffi::Array<ffi::Any>& items) {
+  std::vector<SemaphoreBindingSpec> bindings;
+  for (const auto& item : items) {
+    auto binding_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+        ffi::Map<ffi::String, ffi::Any>());
+    if (binding_info.empty()) {
+      continue;
+    }
+
+    SemaphoreBindingSpec binding;
+    if (auto v = binding_info.Get("name")) {
+      binding.name = Downcast<String>(v.value());
+    }
+    if (auto v = binding_info.Get("semaphore_id")) {
+      binding.semaphore_id = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+    }
+    if (auto v = binding_info.Get("arg_kind")) {
+      binding.arg_kind = Downcast<String>(v.value());
+    }
+    if (!binding.name.empty()) {
+      bindings.push_back(std::move(binding));
+    }
+  }
+  return bindings;
+}
+
 static std::vector<CompileTimeArgSpec> ExtractCompileTimeArgSpecsFromArray(
     const ffi::Array<ffi::Any>& items) {
   std::vector<CompileTimeArgSpec> compile_time_arg_specs;
@@ -968,6 +995,7 @@ struct SegmentInfo {
   bool has_compute_config = false;
   KernelComputeConfigSpec compute_config;
   std::vector<AccessorSpec> accessors;
+  std::vector<SemaphoreBindingSpec> semaphore_bindings;
 };
 
 static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, ExecutableSpec* spec) {
@@ -1008,6 +1036,10 @@ static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, Execu
     }
     if (auto v = segment.Get("accessors")) {
       info.accessors = ExtractAccessorsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
+    }
+    if (auto v = segment.Get("semaphore_bindings")) {
+      info.semaphore_bindings =
+          ExtractSemaphoreBindingsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
     }
     if (auto v = segment.Get("compile_time_arg_specs")) {
       info.compile_time_arg_specs =
@@ -1242,6 +1274,7 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
       kernel.compute_config = segment.compute_config;
     }
     kernel.accessors = segment.accessors;
+    kernel.semaphore_bindings = segment.semaphore_bindings;
     kernel.source_code = EmitKernelSourceForPrimFunc(segment_func, kernel.name, target,
                                                      kernel_code_only);
     ICHECK(!kernel.source_code.empty())

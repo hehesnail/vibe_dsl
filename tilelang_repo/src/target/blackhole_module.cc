@@ -395,7 +395,9 @@ static CoreRangeSet BuildSemaphoreCoreRangeSet(const SemaphoreSpec& semaphore) {
   return CoreRangeSet(std::move(core_ranges));
 }
 
-static void CreateSemaphoresFromSpec(Program& program, const ExecutableSpec& spec) {
+static std::unordered_map<uint32_t, uint32_t> CreateSemaphoresFromSpec(Program& program,
+                                                                       const ExecutableSpec& spec) {
+  std::unordered_map<uint32_t, uint32_t> semaphore_ids;
   for (const auto& semaphore : spec.semaphores) {
     ICHECK(!semaphore.core_ranges.empty())
         << "Blackhole semaphore_plan entry id=" << semaphore.id
@@ -406,7 +408,9 @@ static void CreateSemaphoresFromSpec(Program& program, const ExecutableSpec& spe
     ICHECK_EQ(created_id, semaphore.id)
         << "Blackhole semaphore_plan id mismatch: requested " << semaphore.id
         << ", TT-Metal allocated " << created_id;
+    semaphore_ids.emplace(semaphore.id, created_id);
   }
+  return semaphore_ids;
 }
 
 static uint32_t GetRuntimeNumKTiles(const ExecutableSpec& spec) {
@@ -745,6 +749,7 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
     const ExecutableSpec& spec,
     uint32_t current_work_linear_id,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
+    const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
     const std::vector<std::string>& input_names,
     const std::vector<std::string>& output_names,
     const std::vector<uint32_t>& scalar_args) {
@@ -765,6 +770,21 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
   const auto compute_contract = GetComputeContract(spec);
   const bool has_gemm_compute_contract =
       compute_contract.enabled && compute_contract.kind == "gemm";
+  const auto resolve_semaphore_id = [&](const KernelArgSpec& arg_spec) {
+    auto binding_it = std::find_if(
+        kernel.semaphore_bindings.begin(), kernel.semaphore_bindings.end(),
+        [&](const SemaphoreBindingSpec& binding) {
+          return binding.name == arg_spec.name && binding.arg_kind == arg_spec.kind;
+        });
+    ICHECK(binding_it != kernel.semaphore_bindings.end())
+        << "Blackhole runtime arg " << arg_spec.name << " kind=" << arg_spec.kind
+        << " is missing a matching semaphore binding";
+    auto semaphore_it = semaphore_ids.find(binding_it->semaphore_id);
+    ICHECK(semaphore_it != semaphore_ids.end())
+        << "Blackhole kernel semaphore binding " << binding_it->name
+        << " references missing planned semaphore id " << binding_it->semaphore_id;
+    return semaphore_it->second;
+  };
 
   for (const auto& arg_spec : kernel.runtime_args) {
     if (arg_spec.kind == "input_buffer_addr") {
@@ -842,6 +862,8 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
       ICHECK(scalar_index < scalar_args.size())
           << "Spec requested more scalar args than provided";
       args.push_back(scalar_args[scalar_index++]);
+    } else if (arg_spec.kind == "semaphore_id_u32") {
+      args.push_back(resolve_semaphore_id(arg_spec));
     } else {
       LOG(FATAL) << "Unsupported runtime arg kind: " << arg_spec.kind;
     }
@@ -1062,7 +1084,8 @@ void BlackholeModuleNode::ExecuteDirect(
             << " launch cores for " << func_name;
 
   Program program = CreateProgram();
-  CreateSemaphoresFromSpec(program, spec);
+  const std::unordered_map<uint32_t, uint32_t> semaphore_ids =
+      CreateSemaphoresFromSpec(program, spec);
 
   // Materialize shared CBs and kernels once for the full launch core set.
   CreateCircularBuffersFromSpec(program, launch_core_ranges, spec);
@@ -1084,8 +1107,8 @@ void BlackholeModuleNode::ExecuteDirect(
     for (size_t ki = 0; ki < spec.kernels.size(); ++ki) {
       const auto& kernel_spec = spec.kernels[ki];
       auto runtime_args = BuildRuntimeArgsFromSpec(
-          kernel_spec, spec, item.work_id, runtime_buffers, input_names, ordered_output_names,
-          scalar_args);
+          kernel_spec, spec, item.work_id, runtime_buffers, semaphore_ids, input_names,
+          ordered_output_names, scalar_args);
 
       LOG(INFO) << "Direct path: set runtime args kernel[" << ki
                 << "] core=(" << item.core.x << "," << item.core.y

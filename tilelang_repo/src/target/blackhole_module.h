@@ -265,6 +265,20 @@ struct AccessorSpec {
   }
 };
 
+struct SemaphoreBindingSpec {
+  std::string name;
+  uint32_t semaphore_id = 0;
+  std::string arg_kind;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("semaphore_id", static_cast<int64_t>(semaphore_id));
+    writer->WriteObjectKeyValue("arg_kind", arg_kind);
+    writer->EndObject();
+  }
+};
+
 /*!
  * \brief Per-kernel source and argument metadata.
  */
@@ -282,6 +296,7 @@ struct KernelSpec {
   bool has_compute_config = false;
   KernelComputeConfigSpec compute_config;
   std::vector<AccessorSpec> accessors;
+  std::vector<SemaphoreBindingSpec> semaphore_bindings;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -314,6 +329,9 @@ struct KernelSpec {
     }
     if (!accessors.empty()) {
       writer->WriteObjectKeyValue("accessors", accessors);
+    }
+    if (!semaphore_bindings.empty()) {
+      writer->WriteObjectKeyValue("semaphore_bindings", semaphore_bindings);
     }
     writer->EndObject();
   }
