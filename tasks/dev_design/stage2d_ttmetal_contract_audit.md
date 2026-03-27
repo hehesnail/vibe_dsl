@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage2d_ttmetal_contract_audit`
 - **日期**: 2026-03-27
-- **状态**: 审计已完成；收正部分落地（P0 dtype 分层已补、P1/P2 ✅，P3 已对 copy + GEMM 部分正式化，P4-P5 未做）
+- **状态**: 审计已完成；收正部分落地（P0 dtype 分层与 compile-time ABI 主字段已部分 formalize，P1/P2 ✅，P3 已对 copy + GEMM 主路径 formalize，P4-P5 未做）
 - **对应阶段**: Stage 2D Step 6
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -77,7 +77,7 @@ copy 当前之所以能过，主要是因为测试只覆盖了最窄的 tile-ali
 
 当前 `LowerBlackholeOps` 直接按 TileLang `C` tensor dtype 规划 output CB，说明这层分离尚未建立。
 
-### 3.3 accessor schema 没有进入 ExecutableSpec
+### 3.3 accessor schema 曾经没有进入 ExecutableSpec，现已对主路径 formalize
 
 TT-Metal 的 dataflow reader/writer 主路径广泛依赖：
 
@@ -86,15 +86,21 @@ TT-Metal 的 dataflow reader/writer 主路径广泛依赖：
 - compile-time accessor offsets
 - common runtime args
 
-当前 Blackhole 的 `ExecutableSpec / KernelSpec / KernelArgSpec` 只表达了：
+当前主路径已经补上：
 
-- compile-time `uint32_t` 数组
-- runtime arg kind
-- buffer 名字
+- `accessors`
+- `common_runtime_args`
+- `compile_time_arg_offset/count`
+- `common_runtime_arg_offset/count`
+- `layout / memory_space / args_config_bits`
 
-它并没有把 accessor schema 作为一等对象建模。
+并已从 `segment_plan` 进入 `ExecutableSpec / KernelSpec`，由 host `CreateKernel` 正式 materialize 当前 interleaved accessor case。
 
-这意味着 codegen/runtime 仍在“猜 buffer 是如何被访问的”，而不是消费显式 contract。
+当前剩余缺口是：
+
+- 更丰富的 accessor execution surface 仍未开放
+- `layout != interleaved` 或 `common_runtime_arg_count > 0` 仍是 direct runtime fail-fast 面
+- sharded / non-tile / richer CRTA 仍未进入正式执行面
 
 ### 3.4 runtime work description ABI 太薄
 
@@ -122,7 +128,7 @@ Blackhole runtime/work schema 在 bring-up 阶段最初基本只覆盖：
 
 当前 `CorePlan + runtime_args` 还不足以表达这些工作描述。
 
-### 3.5 compile-time ABI 也没有正式化
+### 3.5 compile-time ABI 曾经没有正式化，现已对主路径部分 formalize
 
 TT-Metal kernel contract 不只是一组匿名 compile-time ints。
 
@@ -136,7 +142,21 @@ TT-Metal kernel contract 不只是一组匿名 compile-time ints。
 - data-movement processor / NOC 选择
 - semaphore ids
 
-当前 Blackhole 虽然有 `compile_time_args` 和 `core_type`，但还远不到“正式 ABI schema”的程度。
+当前主路径已经补上：
+
+- `compile_time_arg_specs`
+- `launch_spec`
+- accessor CTA compile-time ABI
+- GEMM `Mt/Kt/Nt`
+- GEMM `transpose_A/B`
+
+并已由 `BlackholeModule` 作为 `CreateKernel` 的正式输入消费。
+
+当前仍未 formalize 的部分包括：
+
+- 更宽的 compute kernel compile-time ABI
+- `defines`
+- semaphore / multicast / sharded accessor materialization
 
 ### 3.6 CB model 还是 allocator 级别，不是 transport-object model
 
@@ -295,14 +315,10 @@ GEMM direct path 当前最靠前的执行断点已经确认是 host/runtime layo
 
 先修当前确定会导致 GEMM basic 数值错误的最短路径：
 
-1. `PrintReadTileToCB` 补 `cb_reserve_back/cb_push_back`
-2. `PrintWriteTileFromCB` 补 `cb_wait_front/cb_pop_front`
+1. `transpose_B` 正式进入 contract
+2. host tilize/untilize 进入 direct path
 3. 立即恢复 `test_blackhole_gemm_basic` true E2E 验证
-4. 若仍有残余误差，再按：
-   - `transpose_B`
-   - output dtype 分层
-   - tile index 公式
-   逐项排查
+4. 若仍有残余误差，再按 output dtype / tile index / runtime ABI 逐项排查
 
 ### 6.2 第二优先级：把 copy/runtime 从 case-specific 收成通用 schema
 
@@ -499,9 +515,9 @@ TT-Metal 参考 case：
 
 未完成（协议质量，不阻塞 Stage 3）：
 
-- P0: GEMM compile-time ABI 正式化（Mt/Kt/Nt/transpose_B/dtype 分层进入 attrs）— `blackhole.gemm_contract` 已携带核心字段，正式化可后续推进
+- P0: GEMM compile-time ABI 正式化（dtype 分层 + 更丰富 compute ABI）— `blackhole.gemm_contract` 已携带核心字段，`Mt/Kt/Nt/transpose_A/B` 已进入 `compile_time_arg_specs`，更丰富 ABI 可后续推进
 - P1: CB transport schema — 已统一到 codegen CB transport，无 scratch
-- P3: accessor / runtime work schema（copy + GEMM 已部分正式化）
+- P3: accessor / runtime work schema（copy + GEMM 主路径已 formalize；更宽 execution surface 未做）
 - P4: copy/dataflow 泛化
 - P5: multi-core synchronization 预埋 → 见 `stage3_multicore_design.md`
 

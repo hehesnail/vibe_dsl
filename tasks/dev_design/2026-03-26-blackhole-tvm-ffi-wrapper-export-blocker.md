@@ -38,20 +38,18 @@ tilelang.compile(..., target="blackhole", execution_backend="tvm_ffi")
 
 ---
 
-## 3. 根因假设
+## 3. 根因判断（已验证）
 
-当前最可疑的主链位置是 `tilelang_repo/src/transform/split_host_device.cc` 中 host/device split 后的 error-propagation 逻辑：
+最终验证结果不是 `SplitHostDevice` 的 return contract 错位，而是 host C codegen 对 packed call 结果表达式支持不完整：
 
-- `SplitHostDevice` 会根据 target device type 决定 device func 是否返回 `int32` status code
-- host shim 侧在 `can_propagate_errors` 分支里生成：
-  - `kernel_error_code`
-  - `kernel_call`
-  - `assert kernel_error_code == success`
-- 当前 Blackhole `tvm_ffi` wrapper/export 路径上，至少有一条 host shim 生成链路没有形成合法的 status-return contract，但后续代码仍按“有 status 返回值”生成 host 侧检查逻辑
+- host TIR 中存在合法的 `LetStmt(x, call_packed(...), ...)`
+- `CodeGenCHost` 对 `tvm_call_packed_lowered` / `tvm_call_cpacked_lowered` 只发出了调用语句
+- 但没有把 `TVMFFIAny result` 重新打印成表达式值
+- 因此最终 `lib0.c` 会退化成 `int32_t kernel_error_code = ;`
 
-因此本轮第一性原理判断是：
+因此本轮第一性原理结论是：
 
-> 问题不在 `BlackholeModule` direct path，也不应在最终 C 文本打印层兜底；而是在 host/device split 主链上，device kernel 返回约定与 host shim error-propagation 生成条件不一致。
+> 问题不在 `BlackholeModule` direct path，也不在 Blackhole 专用 wrapper 旁路；真正断点在 host C codegen 没有完整承载 host TIR 中“packed call 作为表达式”的语义。
 
 ---
 
@@ -75,7 +73,7 @@ tilelang.compile(..., target="blackhole", execution_backend="tvm_ffi")
 
 ### 主要改动点
 
-- `tilelang_repo/src/transform/split_host_device.cc`
+- `tilelang_repo/src/target/codegen_c_host.cc`
 
 ### 可能联动检查点
 
@@ -102,20 +100,21 @@ tilelang.compile(..., target="blackhole", execution_backend="tvm_ffi")
 - 复现不依赖 GEMM
 - 失败点确实在 host shim 编译阶段，而不是更早的 lowering/codegen
 
-### Step 2: 检查 split 后 device func 返回约定
+### Step 2: 检查 host TIR 与最终 host C 文本的一致性
 
-围绕 `SplitHostDevice` 确认：
+围绕 host packed call 表达式确认：
 
-- Blackhole 目标在该路径上是否被错误归入“可传播错误码”的返回模型
-- split 后 device func 的 return type、host shim call site、assert 生成条件是否一致
-- 是否存在“device func 实际无合法返回值，但 host shim 仍生成 `kernel_error_code` 检查”的情况
+- host TIR 中 `call_packed` 是否被合法地用于 `LetStmt`
+- host C codegen 是否既发出调用语句，也重新打印结果表达式
+- 是否存在“调用被发出，但表达式值为空”的情况
 
-### Step 3: 在 split 主链修正生成条件
+### Step 3: 在 host C codegen 主链补齐结果表达式打印
 
 修正原则：
 
-- 只有在 device-side status return contract 明确成立时，才生成 host shim error-propagation 检查
-- 否则 host shim 统一生成合法的 void call，不保留半成立的 error-code 变量/比较逻辑
+- 不新增 Blackhole 特判
+- packed call 作为语句和作为表达式两种形态都要正确支持
+- 非 `void` 返回值必须从 `TVMFFIAny result` 显式取回并按目标 dtype cast
 
 ### Step 4: 验证 compile/export 主链
 

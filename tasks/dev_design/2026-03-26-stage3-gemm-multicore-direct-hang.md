@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage3_gemm_multicore_direct_hang`
 - **日期**: 2026-03-26
-- **状态**: 设计完成，待实施
+- **状态**: 已实施；保留为排障记录
 - **对应阶段**: Stage 3 multi-core runtime 调度
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -30,6 +30,9 @@
 - 不做 GEMM ABI / dtype layering formalization
 - 不做 oversubscribed multi-core GEMM 支持
 - 不新增 runtime fallback 或单独旁路
+
+> 2026-03-27 结果同步：
+> 本文档记录的 direct-path 问题已解决。最终根因收敛为 `num_k_tiles` 下发、writer output tile consumption，以及 `transpose_B=True` 时 tiled-B reader index 三处 direct-path contract mismatch；更外层 `tvm_ffi` wrapper/export blocker 也已在后续独立修复。
 
 ---
 

@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage2i_compile_time_abi_schema`
 - **日期**: 2026-03-27
-- **状态**: 设计中
+- **状态**: ✅ 已实现（schema/spec/direct runtime）
 - **对应任务**: TT-Metal contract formalization 的 P3 延续项
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -28,11 +28,23 @@
 2. GEMM 当前稳定存在的 compile-time ABI：`Mt/Kt/Nt`、`transpose_A/B`
 3. kernel launch metadata 中已直接影响 TT-Metal host `CreateKernel` 的项：`core_type`、`processor`、`noc`
 
+## 1.1 实施结果（2026-03-27）
+
+- `LowerBlackholeOps` 已为 copy/GEMM 主路径产出 `compile_time_arg_specs` 与 `launch_spec`
+- `rt_mod_blackhole` 已提取并写入 `KernelSpec` / `ExecutableSpec`
+- `BlackholeModule` 已以 `compile_time_arg_specs + launch_spec` 为真源 materialize `CreateKernel`
+- direct runtime 对未知 `compile_time_arg_spec.kind`、不支持的 accessor CTA、以及 `launch_spec.core_type` 不一致都已显式 fail-fast
+- 当前正式支持的 compile-time ABI kinds：
+  - `literal_u32`
+  - `interleaved_accessor_cta`
+  - `gemm_shape`
+  - `gemm_transpose_flags`
+
 ---
 
-## 2. 当前问题
+## 2. 实施前问题
 
-当前 `KernelSpec` 仍保留：
+实施前，`KernelSpec` 仍保留：
 
 - `compile_time_args: vector<uint32_t>`
 - `core_type: string`
@@ -50,7 +62,7 @@
 - GEMM `Mt/Kt/Nt/transpose_*` 虽已进入 contract attrs，却还没进入统一 kernel compile-time ABI schema
 - `CreateKernel` 仍需要同时读 `compile_time_args`、`core_type`、并在 host 侧额外猜 `processor/noc`
 
-因此 compile-time ABI 目前还不是正式协议对象。
+因此在本设计启动前，compile-time ABI 还不是正式协议对象。
 
 ---
 

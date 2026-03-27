@@ -45,7 +45,7 @@ Blackhole 后端当前的正式目标收敛为三点：
 - `PlanBlackholeCB` 仍是 MVP allocator，非正式 memory planner
 - `StorageRewrite` 与 Blackhole CB 模型不兼容（永久排除）
 - copy 用 `fused_dataflow` 单 kernel，GEMM 用 3-kernel（后续统一为 reader+writer 模型是架构债）
-- TT-Metal contract 收正未完成项：P0（dtype 分层）部分完成，P3（unified runtime work schema）已收正到 `work_linear_id` + role-explicit `a/b/output/k` richer descriptor，但 accessor schema 仍未做，P4（copy 泛化）/ P5（synchronization）未做，见 `stage2d_ttmetal_contract_audit.md`
+- TT-Metal contract 收正未完成项：P0（dtype 分层）部分完成，P3（unified runtime work schema + accessor/common-runtime schema + compile-time ABI schema）已对 copy/GEMM 主路径 formalize，但更宽的 execution surface 仍未做，P4（copy 泛化）/ P5（synchronization）未做，见 `stage2d_ttmetal_contract_audit.md`
 
 ### 当前活动
 
@@ -440,10 +440,14 @@ multi-core 的主要实现位置保持不变：
 
 状态：
 
-- **设计完成，待实施** ⏳
+- **已完成** ✅
 - 设计文档：`stage3_multicore_design.md`
 - 关键结论：copy/GEMM 多核不需要改 lowering/codegen，只需 host 侧分发 + DSL kernel 用 `bx/by` 索引
-- 改动范围：`assign_blackhole_cores.cc` ~5 行 + `blackhole_module.cc/h` ~40 行 + 测试
+- 已落实结果：
+  - `AssignBlackholeCores` 已解除 `cores_needed=1`
+  - `BlackholeModule` 已切到单 `Program` 多核 launch
+  - copy / GEMM multi-core direct host path 已通过
+  - Stage 3 后独立修复的 `tvm_ffi` wrapper/export blocker 不影响本阶段主结论
 
 ## 8. 架构可扩展性评估
 

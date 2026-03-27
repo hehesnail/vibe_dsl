@@ -19,11 +19,13 @@
 
 ## 当前状态
 
-- 当前日期：`2026-03-25`
-- Stage 2E Blackhole 设备资源 IR 语义扩展已完成
-- 当前主线在 Stage 2D Step 6：
-  - GEMM `lower()` 已通过
-  - 当前首要是 GEMM direct-path E2E 验收
+- 当前日期：`2026-03-27`
+- 当前阶段：Stage 3 multi-core runtime 调度
+- 当前状态：
+  - formal direct host path 已完成
+  - copy / GEMM multi-core direct path 已通过
+  - `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复
+  - TT-Metal contract formalization 正在继续推进，当前主线在 P0/P3 收正
 - 通用 pass 当前结论：
   - `FlattenBuffer` / `VectorizeLoop` 已验证可接回
   - `StorageRewrite` 当前确认不兼容 Blackhole CB 模型
@@ -50,7 +52,7 @@
 
 - Blackhole 后端总体设计只维护一份，不再保留平行架构文档
 - 当前主路径不是“单个 kernel 字符串”，也不是 external runner，而是 `ExecutableSpec -> BlackholeModule` direct host path
-- 当前 pass 主线：`AnnotateBlackholeCopySemantics` → `SplitBlackholeKernel` → `LowerBlackholeOps` → `PlanBlackholeCB`
+- 当前 pass 主线：`AnnotateBlackholeCopySemantics` → `BlackholeDeviceResourceCanonicalization` → `SplitHostDevice` → `SplitBlackholeKernel` → `LowerBlackholeOps` → `PlanBlackholeCB`
 - 先统一协议与执行路径，再补 copy / GEMM，再做 multi-core
 - 先设计后编码，设计要落到仓库文档里
 - 完成任务后要同步更新进度、经验、问题记录，并提交推送

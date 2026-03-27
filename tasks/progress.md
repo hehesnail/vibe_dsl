@@ -5,7 +5,7 @@
 ## 当前阶段
 
 - **阶段**: Stage 3 — multi-core runtime 调度
-- **状态**: ✅ formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 dtype 分层正式化，P3 richer runtime work schema + accessor/common-runtime schema 已对 copy + GEMM 主路径进一步正式化，direct runtime 对未支持 accessor execution 面显式 fail-fast
+- **状态**: ✅ formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 dtype 分层正式化、P3 richer runtime work schema + accessor/common-runtime schema，以及 compile-time ABI schema/launch schema 的主路径正式化；direct runtime 对未支持 execution 面显式 fail-fast
 - **日期**: 2026-03-27
 - **设计文档**: `tasks/dev_design/stage3_multicore_design.md`
 
@@ -59,6 +59,10 @@
 
 不在 Stage 3 范围：K 维度切分、核间数据流、semaphore/multicast
 
+注：
+- 本轮文档已同步到当前状态
+- 若以 `AGENTS.md` 的“任务完成”口径结项，仍需在当前批次结束时完成 `git commit` / `git push`
+
 ### Stage 3 结果
 
 - copy multi-core direct host path 已完成并通过 TT-Sim：`test_blackhole_copy_runtime.py` `6 passed`
@@ -88,9 +92,14 @@
 - GEMM segment runtime ABI 已收正为 reader 的 `work_linear_id + a_tile_* + b_tile_* + k_tile_*`、compute 的 `k_tile_*`、writer 的 `work_linear_id + output_tile_*`
 - `rt_mod_blackhole` / `ExecutableSpec` / `KernelSpec` 已统一消费 richer work descriptor kinds
 - `BindThreadIndex` 不再从 copy range 字段静默猜 work id；缺失 `work_linear_id` 时直接 fail-fast
+- compile-time ABI schema 已进入 segment plan / `KernelSpec` / direct runtime：
+  - accessor CTA 不再只是匿名 compile-time args 位置约定
+  - GEMM `Mt/Kt/Nt`、`transpose_A/B` 已作为显式 `compile_time_arg_specs` 进入主协议
+  - `launch_spec` 已成为 `CreateKernel` host materialization 的正式输入
 - direct runtime 当前正式支持面：
   - copy: equal source/dest range，且 stride = 1
   - GEMM: A/B-separated reader range + writer output range
+  - accessor: 仅 interleaved + DRAM + `common_runtime_arg_count = 0`
 
 ### Stage 2E（设备资源 IR）
 
@@ -106,10 +115,10 @@
 
 | 优先级 | 内容 | 状态 | 备注 |
 |--------|------|------|------|
-| P0 | GEMM compile-time ABI 正式化（dtype 分层进 attrs） | 部分完成 | `gemm_contract` 已补 tensor/CB/accumulator dtype 分层；更丰富 compile-time ABI 仍未做 |
+| P0 | GEMM compile-time ABI 正式化（dtype 分层进 attrs） | 部分完成 | `gemm_contract` 已补 tensor/CB/accumulator dtype 分层，`Mt/Kt/Nt/transpose_A/B` 已进入 `compile_time_arg_specs`；更丰富 compute ABI 仍未做 |
 | P1 | CB transport schema | ✅ | 已统一到 codegen CB transport，无 scratch |
 | P2 | host tilize/untilize | ✅ | transpose_B + tilize/untilize 已补齐 |
-| P3 | accessor / runtime work schema | 部分完成 | richer work descriptor + accessor/common-runtime schema 已进入 segment plan / KernelSpec；current direct runtime 仅正式支持 interleaved 且对 richer execution 面 fail-fast |
+| P3 | accessor / runtime work schema | 部分完成 | richer work descriptor + accessor/common-runtime schema 已进入 segment plan / KernelSpec，compile-time ABI schema/launch schema 也已收正到主路径；current direct runtime 仅正式支持 interleaved 且对 richer execution 面 fail-fast |
 | P4 | copy/dataflow 泛化（non-tile/stick/sharded） | ❌ | 不阻塞 Stage 3 |
 | P5 | multi-core synchronization 预埋（semaphore/multicast） | ❌ | Stage 3 不涉及核间同步 |
 
@@ -135,6 +144,7 @@
 | `stage3_multicore_design.md` | 多核设计 | ✅ 已实施（formal direct host path） |
 | `stage2g_unified_work_schema.md` | richer runtime work schema 设计 | ✅ 已实施（copy/GEMM 主路径） |
 | `stage2h_accessor_schema.md` | accessor/common-runtime schema 设计 | ✅ 已实施（schema/spec） |
+| `stage2i_compile_time_abi_schema.md` | compile-time ABI schema 设计 | ✅ 已实施（schema/spec/direct runtime） |
 | `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P1/P2 ✅，P0 部分，P3 部分完成，P4-P5 未做） |
 
 ### 已完成（仍有参考价值）

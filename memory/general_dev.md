@@ -17,6 +17,7 @@
 ### 类型与参数
 
 - compile-time args 和 runtime args 必须严格区分
+- compile-time ABI 一旦开始 formalize，就要把“匿名 `vector<uint32_t>` + host 侧猜位置”的约定收正成显式 schema（例如 `compile_time_arg_specs` / `launch_spec`）；兼容字段可以暂留，但不能继续当真源
 - runtime 参数布局必须显式、可验证，不能依赖隐式猜测
 - 统一 work descriptor 时，优先把 `start_id` / `num_tiles` 这类角色化字段写进 schema；不要继续让 host/runtime 从 `current_work_linear_id`、`tile_count` 之类的单值默认推导整套工作范围
 - 对需要 `blockIdx` 重建的 Blackhole kernel，把 `work_linear_id` 作为独立字段保留；不要让 codegen 从 `a_tile_start_id` / `output_tile_start_id` 之类的 range 字段反推逻辑 work identity
@@ -79,5 +80,6 @@
 ## 文档治理
 
 - 阶段状态切换时，至少同步检查：progress.md 页首、任务表、活动设计文档列表
+- 排障文档一旦问题已解决，要在文档头部把状态改成“已实施/历史记录”，并把最终根因补回去；不要让“初始假设”继续伪装成当前结论
 - 设计文档分三类：当前活动、仍有效支撑、历史记录
 - 历史文档不重写正文，在开头加头注标明历史性质
