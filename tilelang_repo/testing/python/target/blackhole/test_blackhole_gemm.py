@@ -303,8 +303,8 @@ def test_blackhole_gemm_contract_attr_is_materialized():
     assert str(contract["accumulator_dtype"]) == "Float32"
 
     segment_plan = func.attrs["blackhole.segment_plan"]
-    reader = next(item for item in segment_plan if str(item["kind"]) == "reader")
-    writer = next(item for item in segment_plan if str(item["kind"]) == "writer")
+    reader = _require_blackhole_kernel(segment_plan, kind="reader", core_type="brisc")
+    writer = _require_blackhole_kernel(segment_plan, kind="writer", core_type="ncrisc")
     assert [(str(item["buffer"]), int(item["compile_time_arg_offset"])) for item in reader["accessors"]] == [
         ("A", 0),
         ("B", 2),
