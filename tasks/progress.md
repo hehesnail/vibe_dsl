@@ -5,7 +5,7 @@
 ## 当前阶段
 
 - **阶段**: Stage 3 — multi-core runtime 调度
-- **状态**: ✅ formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 dtype 分层正式化，P3 richer runtime work schema + interleaved accessor schema 已对 copy + GEMM 主路径进一步正式化
+- **状态**: ✅ formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 dtype 分层正式化，P3 richer runtime work schema + accessor/common-runtime schema 已对 copy + GEMM 主路径进一步正式化，direct runtime 对未支持 accessor execution 面显式 fail-fast
 - **日期**: 2026-03-27
 - **设计文档**: `tasks/dev_design/stage3_multicore_design.md`
 
@@ -13,9 +13,9 @@
 
 | 测试 | 结果 |
 |------|------|
-| `test_blackhole_copy_pipeline.py` | 19 passed, 1 xfailed |
+| `test_blackhole_copy_pipeline.py` | 20 passed, 1 skipped, 1 xfailed |
 | `test_blackhole_copy_runtime.py` | 2 passed, 5 skipped |
-| `test_blackhole_gemm.py` | 5 passed, 2 skipped |
+| `test_blackhole_gemm.py` | 6 passed, 3 skipped |
 | `test_blackhole_tvm_ffi_export.py` | 1 passed |
 
 ### 已验证 full-env 结果
@@ -109,7 +109,7 @@
 | P0 | GEMM compile-time ABI 正式化（dtype 分层进 attrs） | 部分完成 | `gemm_contract` 已补 tensor/CB/accumulator dtype 分层；更丰富 compile-time ABI 仍未做 |
 | P1 | CB transport schema | ✅ | 已统一到 codegen CB transport，无 scratch |
 | P2 | host tilize/untilize | ✅ | transpose_B + tilize/untilize 已补齐 |
-| P3 | accessor / runtime work schema | 部分完成 | richer work descriptor 已正式化；interleaved accessor schema 已进入 segment plan / KernelSpec；更丰富 accessor/common-runtime schema 仍未做 |
+| P3 | accessor / runtime work schema | 部分完成 | richer work descriptor + accessor/common-runtime schema 已进入 segment plan / KernelSpec；current direct runtime 仅正式支持 interleaved 且对 richer execution 面 fail-fast |
 | P4 | copy/dataflow 泛化（non-tile/stick/sharded） | ❌ | 不阻塞 Stage 3 |
 | P5 | multi-core synchronization 预埋（semaphore/multicast） | ❌ | Stage 3 不涉及核间同步 |
 
@@ -134,7 +134,7 @@
 | `final_blackhole_backend_redesign.md` | 唯一总设计 | 常青 |
 | `stage3_multicore_design.md` | 多核设计 | ✅ 已实施（formal direct host path） |
 | `stage2g_unified_work_schema.md` | richer runtime work schema 设计 | ✅ 已实施（copy/GEMM 主路径） |
-| `stage2h_accessor_schema.md` | interleaved accessor schema 设计 | 实施中 |
+| `stage2h_accessor_schema.md` | accessor/common-runtime schema 设计 | ✅ 已实施（schema/spec） |
 | `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P1/P2 ✅，P0 部分，P3 部分完成，P4-P5 未做） |
 
 ### 已完成（仍有参考价值）

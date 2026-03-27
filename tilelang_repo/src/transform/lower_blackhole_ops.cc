@@ -453,30 +453,10 @@ void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
 }
 
 void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
-  if (accessor_descriptors_.empty()) {
-    return;
-  }
-
   Map<String, Any> attrs;
   if (func->attrs.defined()) {
     attrs = func->attrs->dict;
   }
-
-  auto encode_accessors = [&](const std::string& segment_kind) {
-    Array<Any> accessors;
-    for (const auto& desc : accessor_descriptors_) {
-      if (desc.segment_kind != segment_kind) {
-        continue;
-      }
-      Map<String, Any> accessor;
-      accessor.Set("buffer", String(desc.buffer_name));
-      accessor.Set("slot", Integer(desc.slot));
-      accessor.Set("layout", String(desc.layout));
-      accessor.Set("memory_space", String(desc.memory_space));
-      accessors.push_back(accessor);
-    }
-    return accessors;
-  };
 
   if (auto segment_plan = func->GetAttr<Array<Any>>("blackhole.segment_plan")) {
     Array<Any> rewritten_segments;
@@ -490,16 +470,93 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
           segment.Get("kind")
               ? static_cast<std::string>(Downcast<String>(segment.Get("kind").value()))
               : std::string();
-      Array<Any> accessors = encode_accessors(kind);
-      if (!accessors.empty()) {
-        segment.Set("accessors", accessors);
+      Array<Any> accessors;
+      if (auto accessor_items = segment.Get("accessors")) {
+        for (const auto& accessor_item : Downcast<Array<Any>>(accessor_items.value())) {
+          auto accessor = accessor_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+          if (accessor.empty()) {
+            accessors.push_back(accessor_item);
+            continue;
+          }
+
+          const int compile_time_arg_offset =
+              accessor.Get("compile_time_arg_offset")
+                  ? Downcast<Integer>(accessor.Get("compile_time_arg_offset").value()).IntValue()
+                  : (accessor.Get("slot")
+                         ? Downcast<Integer>(accessor.Get("slot").value()).IntValue()
+                         : 0);
+          const int compile_time_arg_count =
+              accessor.Get("compile_time_arg_count")
+                  ? Downcast<Integer>(accessor.Get("compile_time_arg_count").value()).IntValue()
+                  : 2;
+          const int common_runtime_arg_offset =
+              accessor.Get("common_runtime_arg_offset")
+                  ? Downcast<Integer>(accessor.Get("common_runtime_arg_offset").value()).IntValue()
+                  : 0;
+          const int common_runtime_arg_count =
+              accessor.Get("common_runtime_arg_count")
+                  ? Downcast<Integer>(accessor.Get("common_runtime_arg_count").value()).IntValue()
+                  : 0;
+          const std::string layout =
+              accessor.Get("layout")
+                  ? static_cast<std::string>(Downcast<String>(accessor.Get("layout").value()))
+                  : std::string("interleaved");
+          const std::string memory_space =
+              accessor.Get("memory_space")
+                  ? static_cast<std::string>(Downcast<String>(accessor.Get("memory_space").value()))
+                  : std::string("dram");
+          const int args_config_bits =
+              accessor.Get("args_config_bits")
+                  ? Downcast<Integer>(accessor.Get("args_config_bits").value()).IntValue()
+                  : (layout == "interleaved" ? 1 : 0);
+
+          accessor.Set("slot", Integer(compile_time_arg_offset));
+          accessor.Set("compile_time_arg_offset", Integer(compile_time_arg_offset));
+          accessor.Set("compile_time_arg_count", Integer(compile_time_arg_count));
+          accessor.Set("common_runtime_arg_offset", Integer(common_runtime_arg_offset));
+          accessor.Set("common_runtime_arg_count", Integer(common_runtime_arg_count));
+          accessor.Set("args_config_bits", Integer(args_config_bits));
+          accessor.Set("layout", String(layout));
+          accessor.Set("memory_space", String(memory_space));
+          accessors.push_back(accessor);
+        }
       }
+      if (accessors.empty()) {
+        accessors = EncodeAccessorDescriptors(kind);
+      }
+      segment.Set("accessors", accessors);
+      segment.Set("common_runtime_args", EncodeCommonRuntimeArgs(kind));
       rewritten_segments.push_back(segment);
     }
     attrs.Set("blackhole.segment_plan", rewritten_segments);
   }
 
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
+}
+
+Array<Any> LowerBlackholeOps::EncodeAccessorDescriptors(const std::string& segment_kind) const {
+  Array<Any> accessors;
+  for (const auto& desc : accessor_descriptors_) {
+    if (desc.segment_kind != segment_kind) {
+      continue;
+    }
+    Map<String, Any> accessor;
+    accessor.Set("buffer", String(desc.buffer_name));
+    accessor.Set("compile_time_arg_offset", Integer(desc.compile_time_arg_offset));
+    accessor.Set("compile_time_arg_count", Integer(desc.compile_time_arg_count));
+    accessor.Set("common_runtime_arg_offset", Integer(desc.common_runtime_arg_offset));
+    accessor.Set("common_runtime_arg_count", Integer(desc.common_runtime_arg_count));
+    accessor.Set("args_config_bits", Integer(desc.args_config_bits));
+    accessor.Set("layout", String(desc.layout));
+    accessor.Set("memory_space", String(desc.memory_space));
+    accessors.push_back(accessor);
+  }
+  return accessors;
+}
+
+Array<Any> LowerBlackholeOps::EncodeCommonRuntimeArgs(const std::string& segment_kind) const {
+  (void)segment_kind;
+  return Array<Any>{};
 }
 
 // Detect matmul operation using Op comparison
@@ -889,18 +946,34 @@ void LowerBlackholeOps::RecordDramToDramCopy(const BufferStoreNode* op) {
 
 void LowerBlackholeOps::RegisterAccessor(const std::string& segment_kind,
                                          const Buffer& buffer,
-                                         int slot) {
+                                         int compile_time_arg_offset,
+                                         int compile_time_arg_count,
+                                         int common_runtime_arg_offset,
+                                         int common_runtime_arg_count,
+                                         int args_config_bits) {
   const std::string buffer_name = buffer->name;
   auto it = std::find_if(accessor_descriptors_.begin(), accessor_descriptors_.end(),
                          [&](const AccessorDescriptor& desc) {
                            return desc.segment_kind == segment_kind &&
-                                  desc.buffer_name == buffer_name && desc.slot == slot;
+                                  desc.buffer_name == buffer_name &&
+                                  desc.compile_time_arg_offset == compile_time_arg_offset &&
+                                  desc.compile_time_arg_count == compile_time_arg_count &&
+                                  desc.common_runtime_arg_offset == common_runtime_arg_offset &&
+                                  desc.common_runtime_arg_count == common_runtime_arg_count &&
+                                  desc.args_config_bits == args_config_bits;
                          });
   if (it != accessor_descriptors_.end()) {
     return;
   }
-  accessor_descriptors_.push_back(
-      AccessorDescriptor{segment_kind, buffer_name, slot, "interleaved", "dram"});
+  accessor_descriptors_.push_back(AccessorDescriptor{segment_kind,
+                                                     buffer_name,
+                                                     compile_time_arg_offset,
+                                                     compile_time_arg_count,
+                                                     common_runtime_arg_offset,
+                                                     common_runtime_arg_count,
+                                                     args_config_bits,
+                                                     "interleaved",
+                                                     "dram"});
 }
 
 int LowerBlackholeOps::GetReadAccessorSlot(const Buffer& buffer, CopyDirection direction) const {
@@ -1038,7 +1111,7 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
           blackhole_read_tile_to_cb(),
           {load->buffer->data, IntImm32(0), IntImm32(src_cb_id), IntImm32(tile_bytes),
            IntImm32(input_accessor_slot)}));
-      RegisterAccessor("fused_dataflow", load->buffer, input_accessor_slot);
+      RegisterAccessor("fused_dataflow", load->buffer, input_accessor_slot, 2, 0, 0, 1);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(src_cb_id), IntImm32(1)}));
 
@@ -1049,7 +1122,7 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
           blackhole_write_tile_from_cb(),
           {IntImm32(src_cb_id), op->buffer->data, IntImm32(0), IntImm32(tile_bytes),
            IntImm32(output_accessor_slot)}));
-      RegisterAccessor("fused_dataflow", op->buffer, output_accessor_slot);
+      RegisterAccessor("fused_dataflow", op->buffer, output_accessor_slot, 2, 0, 0, 1);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_pop_front(), {IntImm32(src_cb_id), IntImm32(1)}));
 
@@ -1105,8 +1178,7 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
   std::vector<Stmt> stmts;
   switch (direction) {
     case CopyDirection::kDramToCB: {
-      const bool segmented_gemm =
-          current_func_->GetAttr<Array<Any>>("blackhole.segment_plan").has_value();
+      const bool segmented_gemm = !gemm_a_buffer_name_.empty();
       int cb_id = AllocateRequirementIndex(
           op->buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
       int tile_bytes = EstimateCopyPageSize(op->buffer);
@@ -1120,14 +1192,13 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
           {load->buffer->data, tile_index, IntImm32(cb_id), IntImm32(tile_bytes),
            IntImm32(accessor_slot)}));
       RegisterAccessor(segmented_gemm ? "reader" : "fused_dataflow", load->buffer,
-                       accessor_slot);
+                       accessor_slot, 2, 0, 0, 1);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
       return SeqStmt::Flatten(stmts);
     }
     case CopyDirection::kCBToDram: {
-      const bool segmented_gemm =
-          current_func_->GetAttr<Array<Any>>("blackhole.segment_plan").has_value();
+      const bool segmented_gemm = !gemm_a_buffer_name_.empty();
       const bool accumulator_like_src =
           GetStorageScope(load->buffer).rfind("local", 0) == 0 ||
           runtime::StorageScope::Create(GetStorageScope(load->buffer)).rank ==
@@ -1146,7 +1217,7 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
           {IntImm32(cb_id), op->buffer->data, tile_index, IntImm32(tile_bytes),
            IntImm32(accessor_slot)}));
       RegisterAccessor(segmented_gemm ? "writer" : "fused_dataflow", op->buffer,
-                       accessor_slot);
+                       accessor_slot, 2, 0, 0, 1);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
       return SeqStmt::Flatten(stmts);
@@ -1164,8 +1235,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
     return GetRef<Stmt>(op);
   }
 
-  const bool segmented_gemm =
-      current_func_->GetAttr<Array<Any>>("blackhole.segment_plan").has_value();
+      const bool segmented_gemm = !gemm_a_buffer_name_.empty();
   const bool accumulator_like_src =
       direction == CopyDirection::kCBToDram &&
       (GetStorageScope(load->buffer).rfind("local", 0) == 0 ||
@@ -1262,7 +1332,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
             {load->buffer->data, tile_index, IntImm32(cb_id), IntImm32(tile_bytes),
              IntImm32(accessor_slot)}));
         RegisterAccessor(segmented_gemm ? "reader" : "fused_dataflow", load->buffer,
-                         accessor_slot);
+                         accessor_slot, 2, 0, 0, 1);
         stmts.push_back(MakeBlackholeCall(
             blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
       }
@@ -1287,7 +1357,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
             {IntImm32(cb_id), op->buffer->data, tile_index, IntImm32(tile_bytes),
              IntImm32(accessor_slot)}));
         RegisterAccessor(segmented_gemm ? "writer" : "fused_dataflow", op->buffer,
-                         accessor_slot);
+                         accessor_slot, 2, 0, 0, 1);
         stmts.push_back(MakeBlackholeCall(
             blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
       }
@@ -1371,7 +1441,7 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
           blackhole_read_tile_to_cb(),
           {dram_load->buffer->data, tile_index, IntImm32(cb_id), IntImm32(tile_bytes),
            IntImm32(input_accessor_slot)}));
-      RegisterAccessor("fused_dataflow", dram_load->buffer, input_accessor_slot);
+      RegisterAccessor("fused_dataflow", dram_load->buffer, input_accessor_slot, 2, 0, 0, 1);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
       stmts.push_back(MakeBlackholeCall(
@@ -1382,7 +1452,7 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
           blackhole_write_tile_from_cb(),
           {IntImm32(cb_id), cb_to_dram->buffer->data, tile_index, IntImm32(tile_bytes),
            IntImm32(output_accessor_slot)}));
-      RegisterAccessor("fused_dataflow", cb_to_dram->buffer, output_accessor_slot);
+      RegisterAccessor("fused_dataflow", cb_to_dram->buffer, output_accessor_slot, 2, 0, 0, 1);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
     }

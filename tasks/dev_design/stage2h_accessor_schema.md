@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage2h_accessor_schema`
 - **日期**: 2026-03-27
-- **状态**: 设计已确认，待实现
+- **状态**: ✅ 已实现（schema/spec 正式化；direct runtime 对 richer accessor execution 面 fail-fast）
 - **对应任务**: TT-Metal contract formalization 的 P3 子项
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -22,7 +22,7 @@
 本轮目标分两层：
 
 1. **interleaved accessor** 继续作为当前正式执行面，并保留 host/runtime materialization
-2. **sharded accessor + accessor-derived common runtime args** 正式进入 schema/spec，但 direct runtime 继续 fail-fast
+2. **sharded accessor + accessor-derived common runtime args** 已正式进入 schema/spec，但 direct runtime 继续 fail-fast
 
 ---
 
@@ -121,10 +121,10 @@
 - `runtime_args`: work/business ABI，例如 `work_linear_id`、`a_tile_start_id`
 - `common_runtime_args`: accessor ABI，例如 rank、tensor shape、bank coords、shard shape 等
 
-本轮要求：
+本轮结果：
 
 - interleaved case 显式携带空数组
-- sharded case 可以进入 schema/spec，但当前 direct runtime 不负责 materialize 执行
+- sharded case 可以进入 schema/spec，但当前 direct runtime 不负责 materialize 执行，而是显式 fail-fast
 
 ### 4.3 `KernelSpec`
 
@@ -166,7 +166,7 @@
   - `constexpr auto accessor_args = TensorAccessorArgs<CTA>()`
   - `const auto accessor = TensorAccessor(accessor_args, addr, tile_bytes)`
   - `noc_async_read_tile / noc_async_write_tile`
-- 这轮不承诺生成 sharded 可执行 kernel；但 schema 已经能表达未来 `TensorAccessorArgs<CTA, CRTA>` 所需信息
+- 当前继续只生成 interleaved 可执行 kernel；但 schema 已经能表达未来 `TensorAccessorArgs<CTA, CRTA>` 所需信息
 
 ---
 

@@ -73,7 +73,11 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   struct AccessorDescriptor {
     std::string segment_kind;
     std::string buffer_name;
-    int slot = 0;
+    int compile_time_arg_offset = 0;
+    int compile_time_arg_count = 2;
+    int common_runtime_arg_offset = 0;
+    int common_runtime_arg_count = 0;
+    int args_config_bits = 1;
     std::string layout = "interleaved";
     std::string memory_space = "dram";
   };
@@ -117,6 +121,12 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
 
   /*! \brief Store per-segment accessor descriptors for dataflow kernels */
   void StoreAccessorDescriptors(tvm::tir::PrimFunc& func);
+
+  /*! \brief Encode current lowering-time accessor descriptors as TIR attrs */
+  tvm::ffi::Array<tvm::ffi::Any> EncodeAccessorDescriptors(const std::string& segment_kind) const;
+
+  /*! \brief Encode empty or richer common-runtime args for a segment */
+  tvm::ffi::Array<tvm::ffi::Any> EncodeCommonRuntimeArgs(const std::string& segment_kind) const;
 
   /*! \brief Detect matmul call using Op comparison (not string matching) */
   bool IsMatmulCall(const tvm::tir::CallNode* op) const;
@@ -173,7 +183,11 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Register a segment-local interleaved accessor descriptor */
   void RegisterAccessor(const std::string& segment_kind,
                         const tvm::tir::Buffer& buffer,
-                        int slot);
+                        int compile_time_arg_offset,
+                        int compile_time_arg_count,
+                        int common_runtime_arg_offset,
+                        int common_runtime_arg_count,
+                        int args_config_bits);
 
   /*! \brief Return compile-time accessor slot for a reader/source buffer */
   int GetReadAccessorSlot(const tvm::tir::Buffer& buffer, CopyDirection direction) const;
