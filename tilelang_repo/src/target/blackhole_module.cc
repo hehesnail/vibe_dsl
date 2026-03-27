@@ -384,6 +384,103 @@ static std::vector<uint32_t> BuildKernelCompileTimeArgs(
     const KernelSpec& kernel,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings);
 
+static DataMovementProcessor ParseDataMovementProcessor(const std::string& processor) {
+  if (processor == "riscv_0") {
+    return DataMovementProcessor::RISCV_0;
+  }
+  if (processor == "riscv_1") {
+    return DataMovementProcessor::RISCV_1;
+  }
+  LOG(FATAL) << "Unsupported Blackhole launch_spec processor: " << processor;
+}
+
+static NOC ParseNoc(const std::string& noc) {
+  if (noc == "riscv_0_default") {
+    return NOC::RISCV_0_default;
+  }
+  if (noc == "riscv_1_default") {
+    return NOC::RISCV_1_default;
+  }
+  LOG(FATAL) << "Unsupported Blackhole launch_spec noc: " << noc;
+}
+
+static void AppendCompileTimeArgValues(const CompileTimeArgSpec& spec,
+                                       std::vector<uint32_t>* compile_time_args) {
+  const size_t before = compile_time_args->size();
+  for (uint32_t value : spec.values) {
+    compile_time_args->push_back(value);
+  }
+  const uint32_t emitted_count =
+      static_cast<uint32_t>(compile_time_args->size() - before);
+  ICHECK_GT(emitted_count, 0U)
+      << "Blackhole compile-time ABI kind " << spec.kind
+      << " did not materialize any values";
+  if (spec.count != 0U) {
+    ICHECK_EQ(spec.count, emitted_count)
+        << "Blackhole compile-time ABI kind " << spec.kind
+        << " has count mismatch: expected " << spec.count
+        << ", materialized " << emitted_count;
+  }
+}
+
+static void AppendAccessorCompileTimeArgs(const CompileTimeArgSpec& spec,
+                                          const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
+                                          std::vector<uint32_t>* compile_time_args) {
+  const std::string buffer_name = !spec.buffer.empty() ? spec.buffer : spec.name;
+  ICHECK(!buffer_name.empty())
+      << "Blackhole interleaved accessor compile-time ABI entry is missing a buffer name";
+  auto it = buffer_bindings.find(buffer_name);
+  ICHECK(it != buffer_bindings.end())
+      << "Missing runtime buffer binding for accessor buffer " << buffer_name;
+
+  const size_t before = compile_time_args->size();
+  TensorAccessorArgs(*(it->second.mesh_buffer)).append_to(*compile_time_args);
+  const uint32_t emitted_count =
+      static_cast<uint32_t>(compile_time_args->size() - before);
+  ICHECK_EQ(emitted_count, 2U)
+      << "Blackhole interleaved accessor compile-time ABI for buffer " << buffer_name
+      << " must materialize exactly two uint32 values";
+  if (spec.count != 0U) {
+    ICHECK_EQ(spec.count, emitted_count)
+        << "Blackhole interleaved accessor compile-time ABI count mismatch for buffer "
+        << buffer_name;
+  }
+}
+
+static std::vector<uint32_t> BuildKernelCompileTimeArgsFromSchema(
+    const KernelSpec& kernel,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings) {
+  std::vector<uint32_t> compile_time_args;
+  std::vector<CompileTimeArgSpec> compile_time_arg_specs = kernel.compile_time_arg_specs;
+  std::sort(compile_time_arg_specs.begin(), compile_time_arg_specs.end(),
+            [](const CompileTimeArgSpec& a, const CompileTimeArgSpec& b) {
+              if (a.offset != b.offset) {
+                return a.offset < b.offset;
+              }
+              return a.name < b.name;
+            });
+
+  uint32_t expected_offset = 0;
+  for (const auto& spec : compile_time_arg_specs) {
+    ICHECK_EQ(spec.offset, expected_offset)
+        << "Blackhole compile-time ABI offset mismatch for " << spec.name
+        << ": got " << spec.offset << ", expected " << expected_offset;
+
+    if (spec.kind == "interleaved_accessor_cta") {
+      AppendAccessorCompileTimeArgs(spec, buffer_bindings, &compile_time_args);
+    } else if (spec.kind == "gemm_shape" || spec.kind == "gemm_transpose_flags" ||
+               spec.kind == "literal_u32") {
+      AppendCompileTimeArgValues(spec, &compile_time_args);
+    } else {
+      LOG(FATAL) << "Unsupported Blackhole compile-time ABI kind: " << spec.kind;
+    }
+
+    expected_offset = static_cast<uint32_t>(compile_time_args.size());
+  }
+
+  return compile_time_args;
+}
+
 static KernelHandle CreateKernelFromSpec(
     Program& program,
     const std::variant<CoreCoord, CoreRange, CoreRangeSet>& core_spec,
@@ -392,7 +489,11 @@ static KernelHandle CreateKernelFromSpec(
     const std::string& kernel_path) {
   const std::vector<uint32_t> compile_time_args =
       BuildKernelCompileTimeArgs(kernel, buffer_bindings);
-  if (kernel.core_type == "trisc" || kernel.kind == "compute") {
+  const std::string core_type =
+      kernel.has_launch_spec && !kernel.launch_spec.core_type.empty()
+          ? kernel.launch_spec.core_type
+          : kernel.core_type;
+  if (core_type == "trisc" || kernel.kind == "compute") {
     return CreateKernel(
         program,
         kernel_path,
@@ -406,7 +507,18 @@ static KernelHandle CreateKernelFromSpec(
 
   DataMovementProcessor processor = DataMovementProcessor::RISCV_0;
   NOC noc = NOC::RISCV_0_default;
-  if (kernel.core_type == "ncrisc") {
+  if (kernel.has_launch_spec) {
+    if (!kernel.launch_spec.processor.empty()) {
+      processor = ParseDataMovementProcessor(kernel.launch_spec.processor);
+    } else if (core_type == "ncrisc") {
+      processor = DataMovementProcessor::RISCV_1;
+    }
+    if (!kernel.launch_spec.noc.empty()) {
+      noc = ParseNoc(kernel.launch_spec.noc);
+    } else if (core_type == "ncrisc") {
+      noc = NOC::RISCV_1_default;
+    }
+  } else if (core_type == "ncrisc") {
     processor = DataMovementProcessor::RISCV_1;
     noc = NOC::RISCV_1_default;
   }
@@ -424,6 +536,10 @@ static KernelHandle CreateKernelFromSpec(
 static std::vector<uint32_t> BuildKernelCompileTimeArgs(
     const KernelSpec& kernel,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings) {
+  if (!kernel.compile_time_arg_specs.empty()) {
+    return BuildKernelCompileTimeArgsFromSchema(kernel, buffer_bindings);
+  }
+
   std::vector<uint32_t> compile_time_args = kernel.compile_time_args;
   ICHECK(kernel.common_runtime_args.empty())
       << "Blackhole direct runtime currently supports only interleaved accessors without common runtime args";

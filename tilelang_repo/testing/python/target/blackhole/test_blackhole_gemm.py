@@ -17,6 +17,7 @@ from .common import (
 from .test_blackhole_copy_pipeline import (
     _extract_blackhole_executable_spec,
     _expected_launch_spec_for_core_type,
+    _with_compile_time_abi_schema,
     _require_blackhole_kernel,
     _require_spec_entry,
 )
@@ -466,6 +467,36 @@ def test_blackhole_gemm_direct_runtime_rejects_sharded_accessor_schema():
 
     with pytest.raises(tvm.error.InternalError, match="common runtime args|interleaved"):
         mutated_mod["main"](a_torch, b_torch, c_output)
+
+
+def test_blackhole_gemm_direct_runtime_materializes_compile_time_abi_schema():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    torch.manual_seed(0)
+    a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    c_output = torch.zeros(32, 32, dtype=torch.float32)
+    c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
+
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    stripped_func = _with_compile_time_abi_schema(device_main, strip_accessors=True)
+    mutated_mod = _rebuild_codegen_module_with_segment_plan(
+        artifact, stripped_func.attrs["blackhole.segment_plan"]
+    )
+
+    mutated_mod["main"](a_torch, b_torch, c_output)
+    assert_tensors_close_or_dump(
+        c_output, c_ref, atol=2e-1, rtol=2e-1, failure_message="GEMM direct-call output mismatch"
+    )
 
 
 def test_blackhole_multicore_gemm_lowering_respects_transposed_b_layout():

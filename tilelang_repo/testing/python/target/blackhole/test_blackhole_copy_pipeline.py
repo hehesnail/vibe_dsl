@@ -9,6 +9,7 @@ from tvm.target import Target
 from tilelang import tvm
 
 from .common import (
+    assert_tensors_close_or_dump,
     check_blackhole_codegen_requirements,
     check_blackhole_direct_execution_requirements,
     find_loop_annotation,
@@ -172,6 +173,21 @@ def _with_richer_accessor_schema(func, common_runtime_args=None, layout_override
             )
             richer_accessors.append(richer_accessor)
         richer_segment["accessors"] = richer_accessors
+        richer_segments.append(richer_segment)
+    return func.with_attr("blackhole.segment_plan", richer_segments)
+
+
+def _with_compile_time_abi_schema(func, *, strip_accessors=False, compile_time_arg_spec_mutator=None):
+    richer_segments = []
+    for segment in func.attrs["blackhole.segment_plan"]:
+        richer_segment = dict(segment)
+        if strip_accessors:
+            richer_segment.pop("accessors", None)
+        if compile_time_arg_spec_mutator is not None and "compile_time_arg_specs" in segment:
+            richer_segment["compile_time_arg_specs"] = [
+                compile_time_arg_spec_mutator(dict(spec), segment=richer_segment)
+                for spec in segment["compile_time_arg_specs"]
+            ]
         richer_segments.append(richer_segment)
     return func.with_attr("blackhole.segment_plan", richer_segments)
 
@@ -417,6 +433,68 @@ def test_blackhole_copy_direct_runtime_rejects_common_runtime_accessor_schema():
     b_output = torch.zeros_like(a_torch)
 
     with pytest.raises(tvm.error.InternalError, match="common runtime args|interleaved"):
+        mutated_mod["main"](a_torch, b_output)
+
+
+def test_blackhole_copy_direct_runtime_materializes_compile_time_abi_schema():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    stripped_func = _with_compile_time_abi_schema(device_main, strip_accessors=True)
+    mutated_mod = _rebuild_codegen_module_with_segment_plan(
+        artifact, stripped_func.attrs["blackhole.segment_plan"]
+    )
+
+    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    b_output = torch.zeros_like(a_torch)
+
+    mutated_mod["main"](a_torch, b_output)
+    assert_tensors_close_or_dump(
+        b_output, a_torch, atol=0.0, rtol=0.0, failure_message="Copy direct-call output mismatch"
+    )
+
+
+def test_blackhole_copy_direct_runtime_rejects_unknown_compile_time_abi_kind():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+
+    def mutate_unknown_kind(spec, *, segment):
+        if str(spec["kind"]) == "interleaved_accessor_cta" and str(spec["buffer"]) == "A":
+            spec["kind"] = "unknown_compile_time_abi_kind"
+        return spec
+
+    mutated_func = _with_compile_time_abi_schema(
+        device_main,
+        strip_accessors=True,
+        compile_time_arg_spec_mutator=mutate_unknown_kind,
+    )
+    mutated_mod = _rebuild_codegen_module_with_segment_plan(
+        artifact, mutated_func.attrs["blackhole.segment_plan"]
+    )
+
+    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    b_output = torch.zeros_like(a_torch)
+
+    with pytest.raises(Exception, match="Unsupported Blackhole compile-time ABI kind"):
         mutated_mod["main"](a_torch, b_output)
 
 
