@@ -506,19 +506,40 @@ static std::vector<CompileTimeArgSpec> ExtractCompileTimeArgSpecsFromArray(
     }
 
     CompileTimeArgSpec spec;
+    if (auto v = spec_info.Get("name")) {
+      spec.name = Downcast<String>(v.value());
+    }
     if (auto v = spec_info.Get("kind")) {
       spec.kind = Downcast<String>(v.value());
+    }
+    if (auto v = spec_info.Get("dtype")) {
+      spec.dtype = Downcast<String>(v.value());
     }
     if (auto v = spec_info.Get("offset")) {
       spec.offset = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
     }
+    if (auto v = spec_info.Get("count")) {
+      spec.count = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+    }
     if (auto v = spec_info.Get("buffer")) {
       spec.buffer = Downcast<String>(v.value());
+    }
+    if (auto v = spec_info.Get("segment_role")) {
+      spec.segment_role = Downcast<String>(v.value());
     }
     if (auto v = spec_info.Get("values")) {
       for (const auto& value : Downcast<ffi::Array<ffi::Any>>(v.value())) {
         spec.values.push_back(static_cast<uint32_t>(Downcast<Integer>(value).IntValue()));
       }
+    }
+    if (auto v = spec_info.Get("layout")) {
+      spec.layout = Downcast<String>(v.value());
+    }
+    if (auto v = spec_info.Get("memory_space")) {
+      spec.memory_space = Downcast<String>(v.value());
+    }
+    if (spec.count == 0) {
+      spec.count = static_cast<uint32_t>(spec.values.size());
     }
 
     if (!spec.kind.empty()) {

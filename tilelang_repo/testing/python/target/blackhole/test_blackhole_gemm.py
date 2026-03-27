@@ -337,6 +337,7 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
     kernels = executable_spec["kernels"]
     reader = _require_blackhole_kernel(kernels, kind="reader", core_type="brisc")
     compute = _require_blackhole_kernel(kernels, kind="compute", core_type="trisc")
+    writer = _require_blackhole_kernel(kernels, kind="writer", core_type="ncrisc")
 
     assert "compile_time_arg_specs" in reader
     reader_compile_time_arg_specs = reader["compile_time_arg_specs"]
@@ -352,10 +353,28 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
         label="reader compile-time",
         buffer="B",
     )
+    assert str(reader_a["name"]) == "A"
+    assert str(reader_a["dtype"]) == "uint32"
     assert int(reader_a["offset"]) == 0
+    assert int(reader_a["count"]) == 2
     assert str(reader_a["buffer"]) == "A"
+    assert str(reader_a["segment_role"]) == "reader"
+    assert str(reader_a["layout"]) == "interleaved"
+    assert str(reader_a["memory_space"]) == "dram"
+    assert str(reader_b["name"]) == "B"
+    assert str(reader_b["dtype"]) == "uint32"
     assert int(reader_b["offset"]) == 2
+    assert int(reader_b["count"]) == 2
     assert str(reader_b["buffer"]) == "B"
+    assert str(reader_b["segment_role"]) == "reader"
+    assert str(reader_b["layout"]) == "interleaved"
+    assert str(reader_b["memory_space"]) == "dram"
+
+    assert "launch_spec" in reader
+    reader_launch_spec = reader["launch_spec"]
+    assert str(reader_launch_spec["core_type"]) == "brisc"
+    assert str(reader_launch_spec["processor"]) == "riscv_0"
+    assert str(reader_launch_spec["noc"]) == "riscv_0_default"
 
     assert "compile_time_arg_specs" in compute
     compute_compile_time_arg_specs = compute["compile_time_arg_specs"]
@@ -367,8 +386,47 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
         kind="gemm_transpose_flags",
         label="compute compile-time",
     )
+    assert str(gemm_shape["name"]) == "gemm_shape"
+    assert str(gemm_shape["dtype"]) == "uint32"
+    assert int(gemm_shape["offset"]) == 0
+    assert int(gemm_shape["count"]) == 3
+    assert str(gemm_shape["segment_role"]) == "compute"
     assert [int(value) for value in gemm_shape["values"]] == [1, 1, 1]
+    assert str(gemm_transpose_flags["name"]) == "gemm_transpose_flags"
+    assert str(gemm_transpose_flags["dtype"]) == "uint32"
+    assert int(gemm_transpose_flags["offset"]) == 3
+    assert int(gemm_transpose_flags["count"]) == 2
+    assert str(gemm_transpose_flags["segment_role"]) == "compute"
     assert [int(value) for value in gemm_transpose_flags["values"]] == [0, 1]
+
+    assert "launch_spec" in compute
+    compute_launch_spec = compute["launch_spec"]
+    assert str(compute_launch_spec["core_type"]) == "trisc"
+    assert str(compute_launch_spec["processor"]) == ""
+    assert str(compute_launch_spec["noc"]) == ""
+
+    assert "compile_time_arg_specs" in writer
+    writer_compile_time_arg_specs = writer["compile_time_arg_specs"]
+    writer_c = _require_spec_entry(
+        writer_compile_time_arg_specs,
+        kind="interleaved_accessor_cta",
+        label="writer compile-time",
+        buffer="C",
+    )
+    assert str(writer_c["name"]) == "C"
+    assert str(writer_c["dtype"]) == "uint32"
+    assert int(writer_c["offset"]) == 0
+    assert int(writer_c["count"]) == 2
+    assert str(writer_c["buffer"]) == "C"
+    assert str(writer_c["segment_role"]) == "writer"
+    assert str(writer_c["layout"]) == "interleaved"
+    assert str(writer_c["memory_space"]) == "dram"
+
+    assert "launch_spec" in writer
+    writer_launch_spec = writer["launch_spec"]
+    assert str(writer_launch_spec["core_type"]) == "ncrisc"
+    assert str(writer_launch_spec["processor"]) == "riscv_1"
+    assert str(writer_launch_spec["noc"]) == "riscv_1_default"
 
 
 def test_blackhole_gemm_direct_runtime_rejects_sharded_accessor_schema():

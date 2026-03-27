@@ -121,17 +121,29 @@ struct KernelArgSpec {
 };
 
 struct CompileTimeArgSpec {
+  std::string name;
   std::string kind;
+  std::string dtype;
   uint32_t offset = 0;
+  uint32_t count = 0;
   std::string buffer;
+  std::string segment_role;
   std::vector<uint32_t> values;
+  std::string layout;
+  std::string memory_space;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
     writer->WriteObjectKeyValue("kind", kind);
+    writer->WriteObjectKeyValue("dtype", dtype);
     writer->WriteObjectKeyValue("offset", static_cast<int64_t>(offset));
+    writer->WriteObjectKeyValue("count", static_cast<int64_t>(count));
     if (!buffer.empty()) {
       writer->WriteObjectKeyValue("buffer", buffer);
+    }
+    if (!segment_role.empty()) {
+      writer->WriteObjectKeyValue("segment_role", segment_role);
     }
     if (!values.empty()) {
       std::vector<int64_t> encoded_values;
@@ -140,6 +152,12 @@ struct CompileTimeArgSpec {
         encoded_values.push_back(static_cast<int64_t>(value));
       }
       writer->WriteObjectKeyValue("values", encoded_values);
+    }
+    if (!layout.empty()) {
+      writer->WriteObjectKeyValue("layout", layout);
+    }
+    if (!memory_space.empty()) {
+      writer->WriteObjectKeyValue("memory_space", memory_space);
     }
     writer->EndObject();
   }

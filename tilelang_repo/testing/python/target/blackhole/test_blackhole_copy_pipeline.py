@@ -283,11 +283,21 @@ def test_blackhole_copy_compile_time_abi_is_materialized():
     assert "compile_time_arg_specs" in kernel_spec
     compile_time_arg_specs = kernel_spec["compile_time_arg_specs"]
     assert [
-        (str(item["kind"]), int(item["offset"]), str(item["buffer"]))
+        (
+            str(item["name"]),
+            str(item["kind"]),
+            str(item["dtype"]),
+            int(item["offset"]),
+            int(item["count"]),
+            str(item["buffer"]),
+            str(item["segment_role"]),
+            str(item["layout"]),
+            str(item["memory_space"]),
+        )
         for item in compile_time_arg_specs
     ] == [
-        ("interleaved_accessor_cta", 0, "input0"),
-        ("interleaved_accessor_cta", 2, "output0"),
+        ("A", "interleaved_accessor_cta", "uint32", 0, 2, "A", "fused_dataflow", "interleaved", "dram"),
+        ("B", "interleaved_accessor_cta", "uint32", 2, 2, "B", "fused_dataflow", "interleaved", "dram"),
     ]
 
     assert "launch_spec" in kernel_spec

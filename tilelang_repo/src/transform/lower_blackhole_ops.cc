@@ -103,6 +103,54 @@ static PrimExpr IntImm32(int value) {
   return IntImm(DataType::Int(32), value);
 }
 
+static Map<String, Any> MakeCompileTimeArgSpec(const std::string& name,
+                                               const std::string& kind,
+                                               const std::string& dtype,
+                                               int offset,
+                                               int count,
+                                               const std::string& segment_role,
+                                               const std::string& buffer = "",
+                                               const std::vector<uint32_t>& values = {},
+                                               const std::string& layout = "",
+                                               const std::string& memory_space = "") {
+  Map<String, Any> spec;
+  spec.Set("name", String(name));
+  spec.Set("kind", String(kind));
+  spec.Set("dtype", String(dtype));
+  spec.Set("offset", Integer(offset));
+  spec.Set("count", Integer(count));
+  if (!buffer.empty()) {
+    spec.Set("buffer", String(buffer));
+  }
+  if (!segment_role.empty()) {
+    spec.Set("segment_role", String(segment_role));
+  }
+  if (!values.empty()) {
+    Array<Any> encoded_values;
+    for (uint32_t value : values) {
+      encoded_values.push_back(Integer(static_cast<int>(value)));
+    }
+    spec.Set("values", encoded_values);
+  }
+  if (!layout.empty()) {
+    spec.Set("layout", String(layout));
+  }
+  if (!memory_space.empty()) {
+    spec.Set("memory_space", String(memory_space));
+  }
+  return spec;
+}
+
+static Map<String, Any> MakeLaunchSpec(const std::string& core_type,
+                                       const std::string& processor,
+                                       const std::string& noc) {
+  Map<String, Any> spec;
+  spec.Set("core_type", String(core_type));
+  spec.Set("processor", String(processor));
+  spec.Set("noc", String(noc));
+  return spec;
+}
+
 static PrimExpr ScalarizeVectorizedIndex(const PrimExpr& index) {
   if (const auto* ramp = index.as<tir::RampNode>()) {
     return ramp->base;
@@ -458,6 +506,90 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
     attrs = func->attrs->dict;
   }
 
+  auto make_launch_spec = [](const std::string& kind) -> Map<String, Any> {
+    if (kind == "reader" || kind == "fused_dataflow") {
+      return MakeLaunchSpec("brisc", "riscv_0", "riscv_0_default");
+    }
+    if (kind == "writer") {
+      return MakeLaunchSpec("ncrisc", "riscv_1", "riscv_1_default");
+    }
+    if (kind == "compute") {
+      return MakeLaunchSpec("trisc", "", "");
+    }
+    return Map<String, Any>();
+  };
+
+  auto make_accessor_cta_specs = [&](const std::string& kind, const Array<Any>& accessors) {
+    Array<Any> compile_time_arg_specs;
+    for (const auto& accessor_item : accessors) {
+      auto accessor = accessor_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+      if (accessor.empty()) {
+        continue;
+      }
+      const std::string buffer =
+          accessor.Get("buffer") ? static_cast<std::string>(Downcast<String>(accessor.Get("buffer").value()))
+                                  : std::string();
+      const int compile_time_arg_offset =
+          accessor.Get("compile_time_arg_offset")
+              ? Downcast<Integer>(accessor.Get("compile_time_arg_offset").value()).IntValue()
+              : (accessor.Get("slot")
+                     ? Downcast<Integer>(accessor.Get("slot").value()).IntValue()
+                     : 0);
+      const int compile_time_arg_count =
+          accessor.Get("compile_time_arg_count")
+              ? Downcast<Integer>(accessor.Get("compile_time_arg_count").value()).IntValue()
+              : 2;
+      const std::string layout =
+          accessor.Get("layout")
+              ? static_cast<std::string>(Downcast<String>(accessor.Get("layout").value()))
+              : std::string("interleaved");
+      const std::string memory_space =
+          accessor.Get("memory_space")
+              ? static_cast<std::string>(Downcast<String>(accessor.Get("memory_space").value()))
+              : std::string("dram");
+
+      compile_time_arg_specs.push_back(MakeCompileTimeArgSpec(
+          buffer,
+          "interleaved_accessor_cta",
+          "uint32",
+          compile_time_arg_offset,
+          compile_time_arg_count,
+          kind,
+          buffer,
+          {},
+          layout,
+          memory_space));
+    }
+    return compile_time_arg_specs;
+  };
+
+  auto make_gemm_compute_cta_specs = [&]() {
+    Array<Any> compile_time_arg_specs;
+    if (gemm_a_buffer_name_.empty() || gemm_b_buffer_name_.empty() || gemm_c_buffer_name_.empty()) {
+      return compile_time_arg_specs;
+    }
+    compile_time_arg_specs.push_back(MakeCompileTimeArgSpec(
+        "gemm_shape",
+        "gemm_shape",
+        "uint32",
+        0,
+        3,
+        "compute",
+        "",
+        {1, 1, 1}));
+    compile_time_arg_specs.push_back(MakeCompileTimeArgSpec(
+        "gemm_transpose_flags",
+        "gemm_transpose_flags",
+        "uint32",
+        3,
+        2,
+        "compute",
+        "",
+        {static_cast<uint32_t>(gemm_transpose_a_ ? 1 : 0),
+         static_cast<uint32_t>(gemm_transpose_b_ ? 1 : 0)}));
+    return compile_time_arg_specs;
+  };
+
   if (auto segment_plan = func->GetAttr<Array<Any>>("blackhole.segment_plan")) {
     Array<Any> rewritten_segments;
     for (const auto& item : segment_plan.value()) {
@@ -471,6 +603,7 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
               ? static_cast<std::string>(Downcast<String>(segment.Get("kind").value()))
               : std::string();
       Array<Any> accessors;
+      Array<Any> compile_time_arg_specs;
       if (auto accessor_items = segment.Get("accessors")) {
         for (const auto& accessor_item : Downcast<Array<Any>>(accessor_items.value())) {
           auto accessor = accessor_item.as<Map<String, Any>>().value_or(Map<String, Any>());
@@ -524,7 +657,19 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
       if (accessors.empty()) {
         accessors = EncodeAccessorDescriptors(kind);
       }
+      compile_time_arg_specs = make_accessor_cta_specs(kind, accessors);
+      if (kind == "compute") {
+        auto gemm_compile_time_arg_specs = make_gemm_compute_cta_specs();
+        for (const auto& spec : gemm_compile_time_arg_specs) {
+          compile_time_arg_specs.push_back(spec);
+        }
+      }
       segment.Set("accessors", accessors);
+      segment.Set("compile_time_arg_specs", compile_time_arg_specs);
+      Map<String, Any> launch_spec = make_launch_spec(kind);
+      if (!launch_spec.empty()) {
+        segment.Set("launch_spec", launch_spec);
+      }
       segment.Set("common_runtime_args", EncodeCommonRuntimeArgs(kind));
       rewritten_segments.push_back(segment);
     }
