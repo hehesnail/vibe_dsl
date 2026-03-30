@@ -342,7 +342,7 @@
 
 状态：
 
-- ◐ 已完成首轮 boundary 收敛（2026-03-31）
+- ◐ 已完成两轮 boundary 收敛（2026-03-31）
 
 目标：
 
@@ -368,11 +368,20 @@
   - 64B-aligned transport page size
 - `InferCopyTileIndex`、`InferStagedCopyBaseTileIndex`、`GenerateStagedCopySequence`、`GenerateFusedStagedCopySequence` 不再各自维护不同文案
 - 新增 pipeline 回归，要求 reject 明确带上 `direct-path boundary` 语义
+- staged copy 的 shared/global shape 提取已收进统一 `ResolveStaticShape2DFromBufferOrMetadata`
+- transport geometry 已收进统一 `StagedCopyTransportGeometry` / `BuildStagedCopyTransportGeometry`
+- `GenerateStagedCopyLoopSequence` 与 `GenerateFusedStagedCopySequence` 现已统一按单一 geometry 派生：
+  - `shared_rows/shared_cols`
+  - `global_cols`
+  - `subtile_rows/subtile_cols`
+  - `tile_bytes/page_bytes`
+  - `l1_stick_stride`
+- page transport 的 global-width-divisible 校验已提前到统一 geometry 派生边界附近，而不是分散到局部 index 构造逻辑里
 
 剩余项：
 
-- shared/global shape 提取本身仍然散落在多处，尚未抽成统一 schema/boundary helper
-- stick/page 与 tile path 的 shape/stride 约束仍混在同一 lowering 逻辑里，后续还要继续拆
+- `InferCopyTileIndex` / `InferStagedCopyBaseTileIndex` 仍保留部分 index 级 shape 语义，后续可继续与 staged geometry helper 对齐
+- stick/page 与 tile path 虽已共享 geometry 派生，但更宽 non-tile/sharded path 仍未进入同一 lowering 边界
 
 #### B3. 明确 `PlanBlackholeCB` 的后续定位
 
