@@ -5,7 +5,7 @@
 ## 当前阶段
 
 - **阶段**: Stage 3 — multi-core runtime 调度
-- **状态**: ✅ Stage 3 formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已完成 P0 compute contract 收尾并收正 `compute_contract -> compute_config` 真源关系与 DSL producer 输入面，且已把 `dst_full_sync_en/bfp8_pack_precise/defines/named_compile_args` 纳入 compute contract / compute config / direct runtime 主链、P3 richer runtime work/accessor/compile-time ABI 主路径正式化，并进一步打通 kernel-level shared `common_runtime_args -> SetCommonRuntimeArgs` host materialization（当前正式支持 shared buffer address / semaphore kinds；accessor-derived CRTA 与 per-work kinds 仍 fail-fast），同时收正 accessor `args_config_bits` 为 TT-Metal `ArgConfig.raw()` 语义并让 compile-time ABI / host materialization 共同消费这份字段、P4 interleaved stick/page copy 主路径与 TT-Sim correctness 闭环（已扩到 `M x W` 与静态 offset subrange，当前 formal boundary 为 `transport_page_size` 需 64B 对齐、transport offset 需 page-aligned、global width 需能整除 shared width），以及 P5 program-local semaphore schema、kernel binding、最小 device-side dataflow semaphore builtin 与 worker producer/consumer TT-Sim E2E；direct runtime 对未支持 execution 面显式 fail-fast
+- **状态**: ✅ Stage 3 formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已完成 P0 compute contract 收尾并收正 `compute_contract -> compute_config` 真源关系与 DSL producer 输入面，且已把 `dst_full_sync_en/bfp8_pack_precise/defines/named_compile_args` 纳入 compute contract / compute config / direct runtime 主链、P3 richer runtime work/accessor/compile-time ABI 主路径收口完成：current copy/GEMM formal surface 上的 work descriptor、accessor/common-runtime schema、compile-time ABI、kernel-level shared `common_runtime_args -> SetCommonRuntimeArgs` host materialization、以及 accessor `args_config_bits -> TT-Metal ArgConfig.raw()` 真源关系都已打通；剩余更宽 execution surface 已明确转移到 P4/P5 或后续专项、P4 interleaved stick/page copy 主路径与 TT-Sim correctness 闭环（已扩到 `M x W` 与静态 offset subrange，当前 formal boundary 为 `transport_page_size` 需 64B 对齐、transport offset 需 page-aligned、global width 需能整除 shared width），以及 P5 program-local semaphore schema、kernel binding、最小 device-side dataflow semaphore builtin 与 worker producer/consumer TT-Sim E2E；direct runtime 对未支持 execution 面显式 fail-fast
 - **日期**: 2026-03-30
 - **设计文档**: `tasks/dev_design/stage3_multicore_design.md`
 
@@ -160,7 +160,7 @@
 | P0 | GEMM compute contract / compute config / producer ABI 正式化 | ✅ | `compute_contract` 已成为 compute 真源，`compute_config` 为 materialization 视图；`dst_full_sync_en/bfp8_pack_precise/defines/named_compile_args` 与 `clear_accum/k_pack/wg_wait/policy` 已走通 DSL -> attrs/spec -> runtime 主链 |
 | P1 | CB transport schema | ✅ | 已统一到 codegen CB transport，无 scratch |
 | P2 | host tilize/untilize | ✅ | transpose_B + tilize/untilize 已补齐 |
-| P3 | accessor / runtime work schema | 部分完成 | richer work descriptor + accessor/common-runtime schema 已进入 segment plan / KernelSpec，compile-time ABI schema/launch schema 也已收正到主路径；direct runtime 已正式支持 kernel-level shared `common_runtime_args` 的 buffer-address / semaphore kinds，但 accessor-derived CRTA、更宽 accessor layout、以及 per-work common kinds 仍 fail-fast |
+| P3 | accessor / runtime work schema | ✅ | current copy/GEMM formal surface 上的 richer work descriptor、accessor/common-runtime schema、compile-time ABI/launch schema、kernel-level shared `common_runtime_args` host materialization、以及 accessor `args_config_bits` 真源关系都已正式化；更宽 accessor/CRTA/non-tile execution surface 已转移到 P4/P5 或后续专项 |
 | P4 | copy/dataflow 泛化（non-tile/stick/sharded） | 部分完成 | interleaved stick/page copy 已扩到 `M x W`（`M` 为 32 的倍数）并支持静态 offset subrange，formal direct-path boundary 为 `transport_page_size` 必须 64B 对齐、transport offset 必须 page-aligned、global width 必须能整除 shared width；更宽 non-tile/sharded 仍未做 |
 | P5 | multi-core synchronization 预埋（semaphore/multicast） | 部分完成 | program-local `semaphore_plan` schema、kernel-level `semaphore_bindings`、`semaphore_id_u32` runtime materialization、最小 device-side dataflow semaphore builtin、以及 worker producer/consumer direct-runtime TT-Sim E2E 已接入；当前仍只支持 worker semaphore，multicast / global semaphore / compute-kernel semaphore primitive / pass-level producer 仍未做 |
 
@@ -190,7 +190,7 @@
 | `stage2j_compute_contract_schema.md` | compute contract 正式化设计 | ✅ 已实施（schema/spec/runtime 主链） |
 | `stage2k_common_runtime_materialization.md` | kernel-level shared common runtime materialization | ✅ 已实施（shared buffer/semaphore common args） |
 | `stage2l_accessor_args_config_bits.md` | accessor args_config_bits 协议收正 | ✅ 已实施（与 TT-Metal ArgConfig 对齐） |
-| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P0/P1/P2 ✅，P3 部分完成，P4 已完成最小 interleaved stick/page path，P5 已推进到 worker semaphore producer/consumer E2E） |
+| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P0/P1/P2/P3 ✅，P4 已完成最小 interleaved stick/page path，P5 已推进到 worker semaphore producer/consumer E2E） |
 | `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 | 已实现（program-local worker semaphore + kernel binding + 最小 dataflow semaphore builtin + worker producer/consumer E2E） |
 | `stage4_copy_stick_generalization.md` | P4 stick/page copy 泛化 | ✅ 已实施（interleaved + DRAM + `M x W`, `M % 32 == 0`，支持静态 offset subrange；未对齐 64B transport page、未 page-align 的 offset、以及 non-divisible global width fail-fast） |
 

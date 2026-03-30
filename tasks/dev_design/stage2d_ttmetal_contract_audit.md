@@ -447,7 +447,11 @@ TT-Metal 参考 case：
 - codegen/runtime 对缺失 `work_linear_id` 或超出当前支持面的 richer 组合已改为 fail-fast，而不是再从单值默认静默猜测
 - 当前又进一步补上了 accessor descriptors：copy fused_dataflow 与 GEMM reader/writer 已把 `buffer + compile_time_arg_offset/count + common_runtime_arg_offset/count + args_config_bits + layout + memory_space` 进入 segment/kernel schema，并由 host `CreateKernel` 正式 materialize当前 interleaved case 的 `TensorAccessorArgs`
 - accessor-derived `common_runtime_args` 也已进入 segment/kernel schema；当前 direct runtime 已开始正式 materialize kernel-level shared `common_runtime_args`（buffer-address / semaphore kinds），但对 `layout != interleaved`、`common_runtime_arg_count > 0`、以及 accessor-derived CRTA 执行面仍显式 fail-fast
-- 这仍只是 P3 的部分正式化，per-accessor page-size/layout 泛化、accessor CRTA materialization、与更丰富的 range/stride/batch 语义仍未进入正式执行面
+- 以上主路径 formalization 现已收口完成：current copy/GEMM formal surface 上，work descriptor、accessor/common-runtime schema、compile-time ABI、shared common-runtime host materialization、以及 accessor `args_config_bits` 真源关系都已正式进入主协议
+- 剩余项已重新归类：
+  - per-accessor page-size/layout 泛化 -> P4
+  - accessor CRTA / sharded execution surface -> P4 或后续专项
+  - 更宽的 range/stride/batch work execution surface -> 后续按 producer 需求单列，不再挂在本轮 P3 名下
 
 TT-Metal 参考 case：
 
@@ -536,7 +540,7 @@ TT-Metal 参考 case：
 
 - P0: GEMM compile-time ABI 正式化（dtype 分层 + 更丰富 compute ABI）— `blackhole.gemm_contract` 已携带核心字段，`Mt/Kt/Nt/transpose_A/B` 已进入 `compile_time_arg_specs`，更丰富 ABI 可后续推进
 - P1: CB transport schema — 已统一到 codegen CB transport，无 scratch
-- P3: accessor / runtime work schema（copy + GEMM 主路径已 formalize；kernel-level shared common runtime channel 已 materialize；更宽 accessor/CRTA execution surface 未做）
+- P3: accessor / runtime work schema（✅ current formal surface 已完成；更宽 accessor/CRTA/non-tile execution surface 已转移到 P4 或后续专项）
 - P4: copy/dataflow 泛化
 - P5: multi-core synchronization 预埋 → semaphore schema / kernel binding / 最小 device builtin 已补；更完整 multicast / synchronization execution surface 仍待后续推进，见 `stage4_semaphore_schema.md`
 
