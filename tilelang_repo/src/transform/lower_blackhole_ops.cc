@@ -406,7 +406,8 @@ bool LowerBlackholeOps::UseStagedCopyPageTransport(const Buffer& shared_buffer) 
   if (!rows_imm || !cols_imm) {
     return false;
   }
-  return rows_imm->value == kBlackholeTileRows && cols_imm->value > 0 &&
+  return rows_imm->value > 0 && rows_imm->value % kBlackholeTileRows == 0 &&
+         cols_imm->value > 0 &&
          cols_imm->value % kBlackholeTileCols != 0;
 }
 

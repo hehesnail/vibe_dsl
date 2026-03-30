@@ -13,8 +13,8 @@
 
 | 测试 | 结果 |
 |------|------|
-| `test_blackhole_copy_pipeline.py` | 25 passed, 6 skipped, 1 xfailed |
-| `test_blackhole_copy_runtime.py` | 2 passed, 7 skipped |
+| `test_blackhole_copy_pipeline.py` | 26 passed, 6 skipped, 1 xfailed |
+| `test_blackhole_copy_runtime.py` | 2 passed, 8 skipped |
 | `test_blackhole_gemm.py` | 21 passed, 10 skipped |
 | `test_blackhole_tvm_ffi_export.py` | 1 passed |
 
@@ -23,7 +23,7 @@
 | 测试 | 结果 |
 |------|------|
 | `test_blackhole_copy_pipeline.py` | 30 passed, 1 xfailed |
-| `test_blackhole_copy_runtime.py` | 9 passed |
+| `test_blackhole_copy_runtime.py` | 10 passed |
 | `test_blackhole_gemm.py` | 31 passed |
 
 ---
@@ -161,7 +161,7 @@
 | P1 | CB transport schema | ✅ | 已统一到 codegen CB transport，无 scratch |
 | P2 | host tilize/untilize | ✅ | transpose_B + tilize/untilize 已补齐 |
 | P3 | accessor / runtime work schema | 部分完成 | richer work descriptor + accessor/common-runtime schema 已进入 segment plan / KernelSpec，compile-time ABI schema/launch schema 也已收正到主路径；current direct runtime 仅正式支持 interleaved 且对 richer execution 面 fail-fast |
-| P4 | copy/dataflow 泛化（non-tile/stick/sharded） | 部分完成 | 最小 interleaved stick/page copy 已走通 lowering/spec/direct runtime/TT-Sim；更宽 non-tile/sharded 仍未做 |
+| P4 | copy/dataflow 泛化（non-tile/stick/sharded） | 部分完成 | interleaved stick/page copy 已扩到 `M x W`（`M` 为 32 的倍数）并走通 lowering/spec/direct runtime/TT-Sim；更宽 non-tile/sharded 仍未做 |
 | P5 | multi-core synchronization 预埋（semaphore/multicast） | 部分完成 | program-local `semaphore_plan` schema、kernel-level `semaphore_bindings`、`semaphore_id_u32` runtime materialization、最小 device-side dataflow semaphore builtin、以及 worker producer/consumer direct-runtime TT-Sim E2E 已接入；当前仍只支持 worker semaphore，multicast / global semaphore / compute-kernel semaphore primitive / pass-level producer 仍未做 |
 
 ---
@@ -190,7 +190,7 @@
 | `stage2j_compute_contract_schema.md` | compute contract 正式化设计 | ✅ 已实施（schema/spec/runtime 主链） |
 | `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P0/P1/P2 ✅，P3 部分完成，P4 已完成最小 interleaved stick/page path，P5 已推进到 worker semaphore producer/consumer E2E） |
 | `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 | 已实现（program-local worker semaphore + kernel binding + 最小 dataflow semaphore builtin + worker producer/consumer E2E） |
-| `stage4_copy_stick_generalization.md` | P4 最小 stick/page copy 泛化 | ✅ 已实施（interleaved + DRAM + `32x16` row-major/stick） |
+| `stage4_copy_stick_generalization.md` | P4 stick/page copy 泛化 | ✅ 已实施（interleaved + DRAM + `M x W`, `M % 32 == 0`） |
 
 ### 已完成（仍有参考价值）
 

@@ -20,7 +20,7 @@
 - interleaved DRAM accessor
 - single-kernel `fused_dataflow`
 - row-major / stick-style contiguous page transport
-- 最小 case：`32 x W`，其中 `W` 不要求是 32 的倍数
+- 当前正式支持目标：`M x W`，其中 `M` 是 32 的倍数、`W` 不要求是 32 的倍数
 
 本轮目标不是做完整 non-tile/sharded 泛化，而是先建立一个正式 page/stick transport 主路径，让 `32x16` 这类最小 non-tile copy 能进入 direct runtime。
 
@@ -34,7 +34,7 @@
 - interleaved accessor，不碰 sharded
 - DRAM <-> CB page transport
 - static shape
-- `shared_rows == 32`
+- `shared_rows % 32 == 0`
 
 本轮不做：
 
@@ -84,13 +84,13 @@
    - 条件：shared width 仍是 32 的倍数
 
 2. stick path
-   - 条件：`shared_rows == 32` 且 shared width 不是 32 的倍数
+   - 条件：`shared_rows % 32 == 0` 且 shared width 不是 32 的倍数
    - 以“每行一个 page/stick”的方式 materialize copy
    - `page_bytes = shared_cols * dtype.bytes()`
    - `pages_per_row = global_cols / shared_cols`
    - `base_page_id = row * pages_per_row + col / shared_cols`
    - 逐行发出 `read_page_to_cb/write_page_from_cb`
-   - `cb_offset_bytes = row * page_bytes`，把 32 个 stick 顺序堆进一个 `2048B` shared page
+   - `cb_offset_bytes = row * page_bytes`，把 `shared_rows` 个 stick 顺序堆进一个 shared page
 
 stick path 仍要求：
 
@@ -120,7 +120,7 @@ runtime 侧不新增第二条执行路径：
 
 ## 6. 验证
 
-新增最小 `32x16` stick copy case：
+新增最小 `32x16` 和 `64x16` stick copy case：
 
 - pipeline/spec 测试验证 lowering 不再因为 width 非 32 对齐而失败
 - direct runtime 测试验证数值正确
@@ -137,7 +137,7 @@ runtime 侧不新增第二条执行路径：
 
 ## 7. 完成标准
 
-- `32x16` interleaved stick copy 能进入 lowering/spec/runtime 主链
+- `M x W`（`M` 为 32 的倍数）interleaved stick copy 能进入 lowering/spec/runtime 主链
 - 不引入新的执行后门或 legacy emitter
 - 现有 tile copy / GEMM 回归保持通过
 - 文档、进度、经验同步
