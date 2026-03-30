@@ -335,6 +335,8 @@
 - accessor direct-runtime schema 校验已统一到 `ValidateDirectRuntimeAccessorSpec`
 - accessor compile-time arg materialization 已统一到 `AppendInterleavedAccessorCompileTimeArgs`
 - schema-based `compile_time_arg_specs` path 和 legacy `kernel.accessors` path 不再各自维护一份 interleaved/DRAM accessor append 逻辑
+- shared buffer-address / semaphore runtime arg materialization 已统一到 `TryAppendSharedRuntimeArg`
+- `BuildCommonRuntimeArgsFromSpec` 与 `BuildRuntimeArgsFromSpec` 不再各自维护一份 shared kind-switch
 
 剩余项：
 

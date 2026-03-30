@@ -1011,6 +1011,57 @@ static uint32_t ResolveRuntimeSemaphoreId(
   return semaphore_it->second;
 }
 
+static void AppendRuntimeBufferAddressArg(
+    const KernelArgSpec& arg_spec,
+    bool expect_output,
+    bool use_32bit_addr,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
+    const std::vector<std::string>& ordered_names,
+    std::vector<uint32_t>* args) {
+  const auto& binding = ResolveRuntimeBufferBinding(arg_spec, expect_output, buffer_bindings,
+                                                    ordered_names);
+  const uint64_t addr = binding.mesh_buffer->address();
+  args->push_back(static_cast<uint32_t>(addr & 0xFFFFFFFF));
+  if (!use_32bit_addr) {
+    args->push_back(static_cast<uint32_t>(addr >> 32));
+  }
+}
+
+static bool TryAppendSharedRuntimeArg(
+    const KernelSpec& kernel,
+    const KernelArgSpec& arg_spec,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
+    const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
+    const std::vector<std::string>& input_names,
+    const std::vector<std::string>& output_names,
+    std::vector<uint32_t>* args) {
+  if (arg_spec.kind == "input_buffer_addr") {
+    AppendRuntimeBufferAddressArg(arg_spec, /*expect_output=*/false, /*use_32bit_addr=*/false,
+                                  buffer_bindings, input_names, args);
+    return true;
+  }
+  if (arg_spec.kind == "input_buffer_addr32") {
+    AppendRuntimeBufferAddressArg(arg_spec, /*expect_output=*/false, /*use_32bit_addr=*/true,
+                                  buffer_bindings, input_names, args);
+    return true;
+  }
+  if (arg_spec.kind == "output_buffer_addr") {
+    AppendRuntimeBufferAddressArg(arg_spec, /*expect_output=*/true, /*use_32bit_addr=*/false,
+                                  buffer_bindings, output_names, args);
+    return true;
+  }
+  if (arg_spec.kind == "output_buffer_addr32") {
+    AppendRuntimeBufferAddressArg(arg_spec, /*expect_output=*/true, /*use_32bit_addr=*/true,
+                                  buffer_bindings, output_names, args);
+    return true;
+  }
+  if (arg_spec.kind == "semaphore_id_u32") {
+    args->push_back(ResolveRuntimeSemaphoreId(kernel, arg_spec, semaphore_ids));
+    return true;
+  }
+  return false;
+}
+
 static std::vector<uint32_t> BuildCommonRuntimeArgsFromSpec(
     const KernelSpec& kernel,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
@@ -1019,31 +1070,8 @@ static std::vector<uint32_t> BuildCommonRuntimeArgsFromSpec(
     const std::vector<std::string>& output_names) {
   std::vector<uint32_t> args;
   for (const auto& arg_spec : kernel.common_runtime_args) {
-    if (arg_spec.kind == "input_buffer_addr") {
-      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/false,
-                                                        buffer_bindings, input_names);
-      const uint64_t src_addr = binding.mesh_buffer->address();
-      args.push_back(static_cast<uint32_t>(src_addr & 0xFFFFFFFF));
-      args.push_back(static_cast<uint32_t>(src_addr >> 32));
-    } else if (arg_spec.kind == "input_buffer_addr32") {
-      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/false,
-                                                        buffer_bindings, input_names);
-      const uint64_t src_addr = binding.mesh_buffer->address();
-      args.push_back(static_cast<uint32_t>(src_addr));
-    } else if (arg_spec.kind == "output_buffer_addr") {
-      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/true,
-                                                        buffer_bindings, output_names);
-      const uint64_t dst_addr = binding.mesh_buffer->address();
-      args.push_back(static_cast<uint32_t>(dst_addr & 0xFFFFFFFF));
-      args.push_back(static_cast<uint32_t>(dst_addr >> 32));
-    } else if (arg_spec.kind == "output_buffer_addr32") {
-      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/true,
-                                                        buffer_bindings, output_names);
-      const uint64_t dst_addr = binding.mesh_buffer->address();
-      args.push_back(static_cast<uint32_t>(dst_addr));
-    } else if (arg_spec.kind == "semaphore_id_u32") {
-      args.push_back(ResolveRuntimeSemaphoreId(kernel, arg_spec, semaphore_ids));
-    } else {
+    if (!TryAppendSharedRuntimeArg(kernel, arg_spec, buffer_bindings, semaphore_ids, input_names,
+                                   output_names, &args)) {
       LOG(FATAL) << "Unsupported common runtime arg kind: " << arg_spec.kind;
     }
   }
@@ -1079,29 +1107,11 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
       compute_contract.enabled && compute_contract.kind == "gemm";
 
   for (const auto& arg_spec : kernel.runtime_args) {
-    if (arg_spec.kind == "input_buffer_addr") {
-      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/false,
-                                                        buffer_bindings, input_names);
-      const uint64_t src_addr = binding.mesh_buffer->address();
-      args.push_back(static_cast<uint32_t>(src_addr & 0xFFFFFFFF));
-      args.push_back(static_cast<uint32_t>(src_addr >> 32));
-    } else if (arg_spec.kind == "input_buffer_addr32") {
-      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/false,
-                                                        buffer_bindings, input_names);
-      const uint64_t src_addr = binding.mesh_buffer->address();
-      args.push_back(static_cast<uint32_t>(src_addr));
-    } else if (arg_spec.kind == "output_buffer_addr") {
-      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/true,
-                                                        buffer_bindings, output_names);
-      const uint64_t dst_addr = binding.mesh_buffer->address();
-      args.push_back(static_cast<uint32_t>(dst_addr & 0xFFFFFFFF));
-      args.push_back(static_cast<uint32_t>(dst_addr >> 32));
-    } else if (arg_spec.kind == "output_buffer_addr32") {
-      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/true,
-                                                        buffer_bindings, output_names);
-      const uint64_t dst_addr = binding.mesh_buffer->address();
-      args.push_back(static_cast<uint32_t>(dst_addr));
-    } else if (arg_spec.kind == "work_linear_id" || arg_spec.kind == "current_work_linear_id") {
+    if (TryAppendSharedRuntimeArg(kernel, arg_spec, buffer_bindings, semaphore_ids, input_names,
+                                  output_names, &args)) {
+      continue;
+    }
+    if (arg_spec.kind == "work_linear_id" || arg_spec.kind == "current_work_linear_id") {
       args.push_back(work_linear_id);
     } else if (arg_spec.kind == "a_tile_start_id") {
       args.push_back(has_gemm_compute_contract && kernel.kind == "reader" ? by : work_linear_id);
@@ -1166,8 +1176,6 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
       const CoreCoord noc_core =
           device.worker_core_from_logical_core(CoreCoord{arg_spec.core_x, arg_spec.core_y});
       args.push_back(static_cast<uint32_t>(noc_core.y));
-    } else if (arg_spec.kind == "semaphore_id_u32") {
-      args.push_back(ResolveRuntimeSemaphoreId(kernel, arg_spec, semaphore_ids));
     } else {
       LOG(FATAL) << "Unsupported runtime arg kind: " << arg_spec.kind;
     }
