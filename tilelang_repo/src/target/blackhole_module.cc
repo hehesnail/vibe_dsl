@@ -770,6 +770,7 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
     const KernelSpec& kernel,
     const ExecutableSpec& spec,
     uint32_t current_work_linear_id,
+    const IDevice& device,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
     const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
     const std::vector<std::string>& input_names,
@@ -884,6 +885,18 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
       ICHECK(scalar_index < scalar_args.size())
           << "Spec requested more scalar args than provided";
       args.push_back(scalar_args[scalar_index++]);
+    } else if (arg_spec.kind == "logical_core_noc_x") {
+      ICHECK(arg_spec.has_core_coord)
+          << "logical_core_noc_x requires core_x/core_y in the runtime arg schema";
+      const CoreCoord noc_core =
+          device.worker_core_from_logical_core(CoreCoord{arg_spec.core_x, arg_spec.core_y});
+      args.push_back(static_cast<uint32_t>(noc_core.x));
+    } else if (arg_spec.kind == "logical_core_noc_y") {
+      ICHECK(arg_spec.has_core_coord)
+          << "logical_core_noc_y requires core_x/core_y in the runtime arg schema";
+      const CoreCoord noc_core =
+          device.worker_core_from_logical_core(CoreCoord{arg_spec.core_x, arg_spec.core_y});
+      args.push_back(static_cast<uint32_t>(noc_core.y));
     } else if (arg_spec.kind == "semaphore_id_u32") {
       args.push_back(resolve_semaphore_id(arg_spec));
     } else {
@@ -1129,7 +1142,7 @@ void BlackholeModuleNode::ExecuteDirect(
     for (size_t ki = 0; ki < spec.kernels.size(); ++ki) {
       const auto& kernel_spec = spec.kernels[ki];
       auto runtime_args = BuildRuntimeArgsFromSpec(
-          kernel_spec, spec, item.work_id, runtime_buffers, semaphore_ids, input_names,
+          kernel_spec, spec, item.work_id, *mesh_device, runtime_buffers, semaphore_ids, input_names,
           ordered_output_names, scalar_args);
 
       LOG(INFO) << "Direct path: set runtime args kernel[" << ki

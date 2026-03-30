@@ -14,6 +14,35 @@
 
 ## 已解决（仍有复用价值）
 
+### worker semaphore 跨核握手如果直接把 logical core 坐标塞进 `get_noc_addr`，TT-Sim 会挂死
+
+- **时间**: 2026-03-30
+- **问题**: 在最小 multi-core copy producer/consumer 验证里，consumer 先 `semaphore_wait`，producer 再 remote signal。最初实现直接把 `core_plan` 里的 worker 坐标当成 `get_noc_addr(x, y, ...)` 的目标坐标，TT-Sim 会在 `EnqueueMeshWorkload` 后卡死
+- **根本原因**:
+  - `core_plan` 当前携带的是 direct runtime 使用的 logical worker core descriptor
+  - TT-Metal kernel 内 `get_noc_addr(...)` 需要的是设备映射后的 worker NOC 坐标
+  - remote core descriptor 必须由 host runtime 结合设备映射显式 materialize，不能让 device code 从 logical core 坐标里猜
+- **解决**:
+  - runtime arg schema 新增 `logical_core_noc_x` / `logical_core_noc_y`
+  - `BlackholeModule::BuildRuntimeArgsFromSpec` 用 `device.worker_core_from_logical_core(...)` 把 logical core descriptor 转成真正的 NOC 坐标
+  - dataflow TIR 新增 `tl.blackhole.runtime_arg_u32(name)`，让 kernel 能显式读取按名字下发的 runtime arg
+  - 最小 worker producer/consumer E2E 改为 `consumer: semaphore_wait` / `producer: noc_semaphore_inc(remote_sem, 1)`，TT-Sim 闭环通过
+- **教训**:
+  - 对跨核同步，remote core descriptor 必须作为正式 schema 进入 host materialization；不要让 device code 从测试常量、logical core 坐标或本地 semaphore 地址去猜远端路由信息
+
+### Blackhole builtin 缺少 `TCallEffectKind` 会在控制流改写后被 TVM 当成非法纯表达式
+
+- **时间**: 2026-03-30
+- **问题**: 在 semaphore E2E 测试里，把现有 copy builtins 放进 `IfThenElse` / `LetStmt` 并重建 `PrimFunc` 后，TVM 会报 `Attribute TCallEffectKind has not been registered` 或 purity/struct-info 相关错误
+- **根本原因**:
+  - 多个 Blackhole builtin 之前只注册了 op 名和参数，没有把副作用属性注册到 TVM
+  - 一旦这些 op 进入更严格的控制流/函数重写路径，TVM 会要求它们显式声明 `kOpaque` 或 `kPure`
+- **解决**:
+  - 为 CB、NOC、tile transport、matmul、tile-reg、semaphore 等 Blackhole builtin 补齐 `TCallEffectKind`
+  - 其中 `get_semaphore` / `runtime_arg_u32` 标为 `kPure`，wait/set/read/write 等副作用操作标为 `kOpaque`
+- **教训**:
+  - 对 target-specific builtin，`TCallEffectKind` 不是可选装饰；只要它们会出现在 TIR 控制流和函数重写里，就必须一开始注册完整
+
 ### accessor-level `common_runtime_arg_count` 在 compile-time ABI 主路径下曾绕过 direct runtime fail-fast
 
 - **时间**: 2026-03-30

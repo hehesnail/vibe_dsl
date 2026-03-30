@@ -128,8 +128,11 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintReadTileToCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintWriteTileFromCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintGetSemaphore(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintRuntimeArgU32(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintSemaphoreWait(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintSemaphoreSet(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintSemaphoreIncRemote(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintSemaphoreSetRemote(const tvm::tir::CallNode *op, std::ostream &os);
 
   // Print compute operations
   void PrintMMInit(const tvm::tir::CallNode *op, std::ostream &os);
@@ -187,6 +190,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_map<const tvm::tir::VarNode *, std::string> buffer_runtime_arg_map_;
   std::unordered_map<std::string, std::string> buffer_runtime_arg_map_by_name_;
   std::unordered_map<std::string, std::string> runtime_arg_vars_by_kind_;
+  std::unordered_map<std::string, std::string> runtime_arg_vars_by_name_;
   std::unordered_map<int, int> cb_page_size_by_id_;
   std::unordered_map<int, int> cb_num_pages_by_id_;
   int logical_grid_x_{1};

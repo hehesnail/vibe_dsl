@@ -837,6 +837,14 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgsFromArray(const ffi::Array<f
     if (auto v = arg_info.Get("buffer")) {
       arg.buffer = Downcast<String>(v.value());
     }
+    if (auto v = arg_info.Get("core_x")) {
+      arg.core_x = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+      arg.has_core_coord = true;
+    }
+    if (auto v = arg_info.Get("core_y")) {
+      arg.core_y = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+      arg.has_core_coord = true;
+    }
     if (!arg.kind.empty()) {
       runtime_args.push_back(std::move(arg));
     }
@@ -1278,6 +1286,10 @@ static ffi::Array<ffi::Any> EncodeRuntimeArgs(const std::vector<KernelArgSpec>& 
     arg_info.Set("dtype", ffi::String(arg.dtype));
     if (!arg.buffer.empty()) {
       arg_info.Set("buffer", ffi::String(arg.buffer));
+    }
+    if (arg.has_core_coord) {
+      arg_info.Set("core_x", Integer(static_cast<int>(arg.core_x)));
+      arg_info.Set("core_y", Integer(static_cast<int>(arg.core_y)));
     }
     encoded.push_back(arg_info);
   }

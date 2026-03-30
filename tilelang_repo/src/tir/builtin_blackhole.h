@@ -116,6 +116,7 @@ TVM_DLL const Op& blackhole_write_tile_from_cb();
  * \param semaphore_id Program-local semaphore id.
  */
 TVM_DLL const Op& blackhole_get_semaphore();
+TVM_DLL const Op& blackhole_runtime_arg_u32();
 
 /*!
  * \brief Wait until a local semaphore reaches the requested value.
@@ -130,6 +131,25 @@ TVM_DLL const Op& blackhole_semaphore_wait();
  * \param value Value to store.
  */
 TVM_DLL const Op& blackhole_semaphore_set();
+
+/*!
+ * \brief Atomically increment a remote worker semaphore.
+ * \param remote_l1_addr Destination core's local semaphore address/offset.
+ * \param remote_core_x Destination worker core x coordinate.
+ * \param remote_core_y Destination worker core y coordinate.
+ * \param value Increment amount.
+ */
+TVM_DLL const Op& blackhole_semaphore_inc_remote();
+
+/*!
+ * \brief Set a remote worker semaphore by sending a local L1 32-bit value to the
+ *        destination core's semaphore address.
+ * \param src_local_l1_addr Local L1 address containing the value to forward.
+ * \param remote_core_x Destination worker core x coordinate.
+ * \param remote_core_y Destination worker core y coordinate.
+ * \param remote_l1_addr Destination core's local semaphore address/offset.
+ */
+TVM_DLL const Op& blackhole_semaphore_set_remote();
 
 // TT-Metal Compute Operations
 

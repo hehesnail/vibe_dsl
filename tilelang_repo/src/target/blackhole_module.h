@@ -135,6 +135,9 @@ struct KernelArgSpec {
   std::string kind;
   std::string dtype;
   std::string buffer;
+  uint32_t core_x = 0;
+  uint32_t core_y = 0;
+  bool has_core_coord = false;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -143,6 +146,10 @@ struct KernelArgSpec {
     writer->WriteObjectKeyValue("dtype", dtype);
     if (!buffer.empty()) {
       writer->WriteObjectKeyValue("buffer", buffer);
+    }
+    if (has_core_coord) {
+      writer->WriteObjectKeyValue("core_x", static_cast<int64_t>(core_x));
+      writer->WriteObjectKeyValue("core_y", static_cast<int64_t>(core_y));
     }
     writer->EndObject();
   }

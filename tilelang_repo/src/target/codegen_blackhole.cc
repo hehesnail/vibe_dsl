@@ -59,6 +59,7 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   buffer_runtime_arg_map_.clear();
   buffer_runtime_arg_map_by_name_.clear();
   runtime_arg_vars_by_kind_.clear();
+  runtime_arg_vars_by_name_.clear();
   cb_page_size_by_id_.clear();
   cb_num_pages_by_id_.clear();
   logical_grid_x_ = 1;
@@ -228,6 +229,7 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   buffer_runtime_arg_map_.clear();
   buffer_runtime_arg_map_by_name_.clear();
   runtime_arg_vars_by_kind_.clear();
+  runtime_arg_vars_by_name_.clear();
   cb_page_size_by_id_.clear();
   cb_num_pages_by_id_.clear();
 
@@ -333,6 +335,7 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
     }
 
     stream << "  uint32_t " << arg_name << " = get_arg_val<uint32_t>(" << arg_idx << ");\n";
+    runtime_arg_vars_by_name_[arg_name] = arg_name;
     if (!arg_kind.empty() && !runtime_arg_vars_by_kind_.count(arg_kind)) {
       runtime_arg_vars_by_kind_[arg_kind] = arg_name;
     }
@@ -717,11 +720,20 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   } else if (builtin_name == "get_semaphore") {
     PrintGetSemaphore(op, os);
     return true;
+  } else if (builtin_name == "runtime_arg_u32") {
+    PrintRuntimeArgU32(op, os);
+    return true;
   } else if (builtin_name == "semaphore_wait") {
     PrintSemaphoreWait(op, os);
     return true;
   } else if (builtin_name == "semaphore_set") {
     PrintSemaphoreSet(op, os);
+    return true;
+  } else if (builtin_name == "semaphore_inc_remote") {
+    PrintSemaphoreIncRemote(op, os);
+    return true;
+  } else if (builtin_name == "semaphore_set_remote") {
+    PrintSemaphoreSetRemote(op, os);
     return true;
   } else if (builtin_name == "mm_init") {
     PrintMMInit(op, os);
@@ -1002,6 +1014,16 @@ void CodeGenBlackhole::PrintGetSemaphore(const tvm::tir::CallNode *op,
   os << ")";
 }
 
+void CodeGenBlackhole::PrintRuntimeArgU32(const tvm::tir::CallNode *op,
+                                          std::ostream &os) {
+  const auto* arg_name = op->args[0].as<tvm::tir::StringImmNode>();
+  ICHECK(arg_name) << "tl.blackhole.runtime_arg_u32 expects a string literal name";
+  auto it = runtime_arg_vars_by_name_.find(arg_name->value);
+  ICHECK(it != runtime_arg_vars_by_name_.end())
+      << "Missing runtime arg binding for name: " << arg_name->value;
+  os << it->second;
+}
+
 void CodeGenBlackhole::PrintSemaphoreWait(const tvm::tir::CallNode *op,
                                           std::ostream &os) {
   need_dataflow_api_h_ = true;
@@ -1020,6 +1042,34 @@ void CodeGenBlackhole::PrintSemaphoreSet(const tvm::tir::CallNode *op,
   os << "), ";
   PrintExpr(op->args[1], os);
   os << ")";
+}
+
+void CodeGenBlackhole::PrintSemaphoreIncRemote(const tvm::tir::CallNode *op,
+                                               std::ostream &os) {
+  need_dataflow_api_h_ = true;
+  os << "noc_semaphore_inc(get_noc_addr(";
+  PrintExpr(op->args[1], os);
+  os << ", ";
+  PrintExpr(op->args[2], os);
+  os << ", ";
+  PrintExpr(op->args[0], os);
+  os << "), ";
+  PrintExpr(op->args[3], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintSemaphoreSetRemote(const tvm::tir::CallNode *op,
+                                               std::ostream &os) {
+  need_dataflow_api_h_ = true;
+  os << "noc_semaphore_set_remote(";
+  PrintExpr(op->args[0], os);
+  os << ", get_noc_addr(";
+  PrintExpr(op->args[1], os);
+  os << ", ";
+  PrintExpr(op->args[2], os);
+  os << ", ";
+  PrintExpr(op->args[3], os);
+  os << "))";
 }
 
 }  // namespace tl

@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage4_semaphore_schema`
 - **日期**: 2026-03-27
-- **状态**: 已实现（program-local semaphore schema + kernel binding schema + 最小 dataflow semaphore builtin）
+- **状态**: 已实现（program-local semaphore schema + kernel binding schema + 最小 dataflow semaphore builtin + worker producer/consumer E2E）
 - **对应任务**: P5 multi-core synchronization 预埋
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -23,14 +23,14 @@
 2. `ExecutableSpec` / `BlackholeModule` 对 semaphore plan 的提取与 host materialization
 3. direct runtime 对 malformed / unsupported semaphore schema 的 fail-fast
 4. device-side dataflow kernel 对 program-local semaphore 的最小 builtin 入口
+5. worker semaphore 的最小 producer/consumer 执行闭环
 
-当前文档覆盖到第三轮扩展，但仍不解决：
+当前文档覆盖到第四轮扩展，但仍不解决：
 
 - multicast
 - global semaphore
-- remote core coordinate / fabric routing
 - 从现有 `mbar` / `shared.barrier` 自动推断 TT-Metal semaphore
-- 真正的跨核 producer/consumer pipeline 执行闭环
+- pass 自动生成的更宽 producer/consumer pipeline
 
 ---
 
@@ -185,10 +185,41 @@ TT-Metal host API 的 semaphore 是另一类正式对象：
 
 本轮刻意不做：
 
-- `noc_semaphore_inc`
 - multicast semaphore primitives
 - compute kernel 侧 semaphore primitive
-- 真实 producer/consumer 握手 E2E
+- 更宽的 producer/consumer 拓扑（multicast/global）
+
+### 4.7 第四轮扩展：最小 worker producer/consumer E2E
+
+在不引入新 pass 或新执行路径的前提下，用现有 multi-core `fused_dataflow` copy kernel 做最小跨核握手验证。
+
+最终收敛方案不是让 kernel 猜 remote core 坐标，而是把 remote worker descriptor 正式写进 runtime schema：
+
+- runtime arg kind `logical_core_noc_x`
+- runtime arg kind `logical_core_noc_y`
+- 由 host runtime 用 `device.worker_core_from_logical_core(...)` materialize 成真正的 NOC 坐标
+- device TIR 通过 `tl.blackhole.runtime_arg_u32(name)` 读取这些显式 runtime args
+
+producer/consumer 语义采用最小 remote signal：
+
+- `bx == 0` 的 worker 作为 producer
+  - 执行原有 tile copy
+  - 对 consumer core 上的同一个 program-local semaphore 执行 `noc_semaphore_inc(..., 1)`
+- `bx == 1` 的 worker 作为 consumer
+  - 先 `semaphore_wait(..., 1)`
+  - 再执行自己的 tile copy
+
+约束：
+
+- 继续只使用 `worker` semaphore
+- 继续只在 dataflow kernel 上验证
+- 不要求从 pass 自动产出 semaphore producer；测试可以通过 body/attrs/runtime-arg 变异构造最小闭环
+
+这个闭环的目的不是扩 execution surface，而是证明：
+
+- host `CreateSemaphore(...)` 物化出来的对象能被跨核 device builtin 真实消费
+- direct runtime 的 multi-core launch、semaphore plan、runtime-materialized remote NOC coords、device builtin 四者在同一程序里已经能协同工作
+- P5 已从“schema + binding + builtin 预埋”推进到“最小真实握手 E2E”
 
 ---
 
@@ -198,5 +229,6 @@ TT-Metal host API 的 semaphore 是另一类正式对象：
 - `BlackholeModule` 能消费 semaphore plan，而不是忽略它
 - 未支持的 semaphore schema 会在 direct runtime 早失败
 - `KernelSpec` 能正式携带 semaphore binding，并让 direct runtime 把 semaphore id materialize 成 runtime arg
-- dataflow codegen 能把最小 semaphore builtin 打印成 TT-Metal 正式 device API
+- dataflow codegen 能把最小 semaphore builtin 打印成 TT-Metal 正式 device API，并能从 runtime schema 读取显式 remote NOC 坐标
+- TT-Sim 下存在一个真实的 multi-core producer/consumer direct-runtime 用例，验证 `semaphore_wait` / `noc_semaphore_inc` 可以跨 worker core 闭环执行
 - 文档与 `tasks/progress.md` 同步
