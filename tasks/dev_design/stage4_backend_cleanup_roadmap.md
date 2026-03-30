@@ -337,11 +337,13 @@
 - schema-based `compile_time_arg_specs` path 和 legacy `kernel.accessors` path 不再各自维护一份 interleaved/DRAM accessor append 逻辑
 - shared buffer-address / semaphore runtime arg materialization 已统一到 `TryAppendSharedRuntimeArg`
 - `BuildCommonRuntimeArgsFromSpec` 与 `BuildRuntimeArgsFromSpec` 不再各自维护一份 shared kind-switch
+- per-work runtime arg 派生值已统一进 `DirectRuntimeWorkContext` / `TryAppendPerWorkRuntimeArg`
+- `BuildRuntimeArgsFromSpec` 不再直接维护 `work_linear_id/bx/by/num_k_tiles/logical_n_tiles` 的大段 kind-switch
 
 剩余项：
 
 - 当前 helper 仍集中在 [blackhole_module.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/blackhole_module.cc) 内，尚未继续拆到单独实现文件
-- runtime/common-runtime arg kind-switch 仍偏集中，后续可继续沿 materializer/helper 边界往下拆
+- runtime/common-runtime arg materializer 已明显收敛，但如果后续再扩更多 per-core/per-work kinds，仍可能需要单独 helper 单元承载
 
 #### B2. 清理 `LowerBlackholeOps` 中协议提取与当前策略派生的边界
 

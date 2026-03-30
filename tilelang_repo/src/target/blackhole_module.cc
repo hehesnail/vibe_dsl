@@ -1062,6 +1062,148 @@ static bool TryAppendSharedRuntimeArg(
   return false;
 }
 
+struct DirectRuntimeWorkContext {
+  uint32_t num_k_tiles = 0;
+  uint32_t logical_grid_x = 0;
+  uint32_t logical_n_tiles = 0;
+  uint32_t work_linear_id = 0;
+  uint32_t bx = 0;
+  uint32_t by = 0;
+  bool has_gemm_compute_contract = false;
+};
+
+static DirectRuntimeWorkContext BuildDirectRuntimeWorkContext(const KernelSpec& kernel,
+                                                             const ExecutableSpec& spec,
+                                                             uint32_t current_work_linear_id) {
+  DirectRuntimeWorkContext context;
+  context.num_k_tiles = GetRuntimeNumKTiles(spec);
+  context.logical_grid_x = GetRuntimeLogicalGridX(spec);
+  context.logical_n_tiles = GetRuntimeLogicalNTiles(spec);
+  context.work_linear_id = current_work_linear_id;
+  context.bx = context.logical_grid_x == 0 ? 0 : (context.work_linear_id % context.logical_grid_x);
+  context.by = context.logical_grid_x == 0 ? 0 : (context.work_linear_id / context.logical_grid_x);
+  const auto compute_contract = GetComputeContract(spec);
+  context.has_gemm_compute_contract =
+      compute_contract.enabled && compute_contract.kind == "gemm";
+  return context;
+}
+
+static bool TryAppendPerWorkRuntimeArg(const KernelSpec& kernel,
+                                       const KernelArgSpec& arg_spec,
+                                       const DirectRuntimeWorkContext& context,
+                                       const IDevice& device,
+                                       size_t* scalar_index,
+                                       const std::vector<uint32_t>& scalar_args,
+                                       std::vector<uint32_t>* args) {
+  const auto kernel_requests_kind = [&](const char* kind) {
+    return std::any_of(kernel.runtime_args.begin(), kernel.runtime_args.end(),
+                       [&](const KernelArgSpec& runtime_arg) {
+                         return runtime_arg.kind == kind;
+                       });
+  };
+
+  if (arg_spec.kind == "work_linear_id" || arg_spec.kind == "current_work_linear_id") {
+    args->push_back(context.work_linear_id);
+    return true;
+  }
+  if (arg_spec.kind == "a_tile_start_id") {
+    args->push_back(context.has_gemm_compute_contract && kernel.kind == "reader"
+                        ? context.by
+                        : context.work_linear_id);
+    return true;
+  }
+  if (arg_spec.kind == "a_tile_num_tiles") {
+    ICHECK(kernel_requests_kind("a_tile_start_id"))
+        << "a_tile_num_tiles requires a_tile_start_id in Blackhole direct runtime";
+    args->push_back(context.has_gemm_compute_contract && kernel.kind == "reader"
+                        ? context.num_k_tiles
+                        : 1);
+    return true;
+  }
+  if (arg_spec.kind == "a_tile_stride") {
+    ICHECK(kernel_requests_kind("a_tile_start_id"))
+        << "a_tile_stride requires a_tile_start_id in Blackhole direct runtime";
+    args->push_back(1);
+    return true;
+  }
+  if (arg_spec.kind == "b_tile_start_id") {
+    ICHECK(context.has_gemm_compute_contract && kernel.kind == "reader")
+        << "b_tile_start_id is only supported for GEMM reader kernels in Blackhole direct runtime";
+    args->push_back(context.bx);
+    return true;
+  }
+  if (arg_spec.kind == "b_tile_num_tiles") {
+    ICHECK(kernel_requests_kind("b_tile_start_id"))
+        << "b_tile_num_tiles requires b_tile_start_id in Blackhole direct runtime";
+    ICHECK(context.has_gemm_compute_contract && kernel.kind == "reader")
+        << "b_tile_num_tiles is only supported for GEMM reader kernels in Blackhole direct runtime";
+    args->push_back(context.num_k_tiles);
+    return true;
+  }
+  if (arg_spec.kind == "b_tile_stride") {
+    ICHECK(kernel_requests_kind("b_tile_start_id"))
+        << "b_tile_stride requires b_tile_start_id in Blackhole direct runtime";
+    ICHECK(context.has_gemm_compute_contract && kernel.kind == "reader")
+        << "b_tile_stride is only supported for GEMM reader kernels in Blackhole direct runtime";
+    args->push_back(context.logical_n_tiles);
+    return true;
+  }
+  if (arg_spec.kind == "output_tile_start_id") {
+    args->push_back(context.work_linear_id);
+    return true;
+  }
+  if (arg_spec.kind == "output_tile_num_tiles") {
+    ICHECK(kernel_requests_kind("output_tile_start_id"))
+        << "output_tile_num_tiles requires output_tile_start_id in Blackhole direct runtime";
+    args->push_back(1);
+    return true;
+  }
+  if (arg_spec.kind == "output_tile_stride") {
+    ICHECK(kernel_requests_kind("output_tile_start_id"))
+        << "output_tile_stride requires output_tile_start_id in Blackhole direct runtime";
+    args->push_back(1);
+    return true;
+  }
+  if (arg_spec.kind == "k_tile_start_id") {
+    ICHECK(context.has_gemm_compute_contract)
+        << "k_tile_start_id is only supported for GEMM kernels in Blackhole direct runtime";
+    ICHECK(kernel_requests_kind("num_k_tiles"))
+        << "k_tile_start_id requires num_k_tiles in Blackhole direct runtime";
+    args->push_back(0);
+    return true;
+  }
+  if (arg_spec.kind == "num_k_tiles") {
+    ICHECK_GT(context.num_k_tiles, 0)
+        << "num_k_tiles requested by runtime schema, but direct runtime could not derive a "
+           "supported value from ExecutableSpec";
+    args->push_back(context.num_k_tiles);
+    return true;
+  }
+  if (arg_spec.kind == "scalar_u32") {
+    ICHECK(*scalar_index < scalar_args.size())
+        << "Spec requested more scalar args than provided";
+    args->push_back(scalar_args[(*scalar_index)++]);
+    return true;
+  }
+  if (arg_spec.kind == "logical_core_noc_x") {
+    ICHECK(arg_spec.has_core_coord)
+        << "logical_core_noc_x requires core_x/core_y in the runtime arg schema";
+    const CoreCoord noc_core =
+        device.worker_core_from_logical_core(CoreCoord{arg_spec.core_x, arg_spec.core_y});
+    args->push_back(static_cast<uint32_t>(noc_core.x));
+    return true;
+  }
+  if (arg_spec.kind == "logical_core_noc_y") {
+    ICHECK(arg_spec.has_core_coord)
+        << "logical_core_noc_y requires core_x/core_y in the runtime arg schema";
+    const CoreCoord noc_core =
+        device.worker_core_from_logical_core(CoreCoord{arg_spec.core_x, arg_spec.core_y});
+    args->push_back(static_cast<uint32_t>(noc_core.y));
+    return true;
+  }
+  return false;
+}
+
 static std::vector<uint32_t> BuildCommonRuntimeArgsFromSpec(
     const KernelSpec& kernel,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
@@ -1090,93 +1232,16 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
     const std::vector<uint32_t>& scalar_args) {
   std::vector<uint32_t> args;
   size_t scalar_index = 0;
-  const uint32_t num_k_tiles = GetRuntimeNumKTiles(spec);
-  const uint32_t logical_grid_x = GetRuntimeLogicalGridX(spec);
-  const uint32_t work_linear_id = current_work_linear_id;
-  const uint32_t bx = logical_grid_x == 0 ? 0 : (work_linear_id % logical_grid_x);
-  const uint32_t by = logical_grid_x == 0 ? 0 : (work_linear_id / logical_grid_x);
-  const auto kernel_requests_kind = [&](const char* kind) {
-    return std::any_of(kernel.runtime_args.begin(), kernel.runtime_args.end(),
-                       [&](const KernelArgSpec& runtime_arg) {
-                         return runtime_arg.kind == kind;
-                       });
-  };
-
-  const auto compute_contract = GetComputeContract(spec);
-  const bool has_gemm_compute_contract =
-      compute_contract.enabled && compute_contract.kind == "gemm";
+  const DirectRuntimeWorkContext context =
+      BuildDirectRuntimeWorkContext(kernel, spec, current_work_linear_id);
 
   for (const auto& arg_spec : kernel.runtime_args) {
     if (TryAppendSharedRuntimeArg(kernel, arg_spec, buffer_bindings, semaphore_ids, input_names,
                                   output_names, &args)) {
       continue;
     }
-    if (arg_spec.kind == "work_linear_id" || arg_spec.kind == "current_work_linear_id") {
-      args.push_back(work_linear_id);
-    } else if (arg_spec.kind == "a_tile_start_id") {
-      args.push_back(has_gemm_compute_contract && kernel.kind == "reader" ? by : work_linear_id);
-    } else if (arg_spec.kind == "a_tile_num_tiles") {
-      ICHECK(kernel_requests_kind("a_tile_start_id"))
-          << "a_tile_num_tiles requires a_tile_start_id in Blackhole direct runtime";
-      args.push_back(has_gemm_compute_contract && kernel.kind == "reader" ? num_k_tiles : 1);
-    } else if (arg_spec.kind == "a_tile_stride") {
-      ICHECK(kernel_requests_kind("a_tile_start_id"))
-          << "a_tile_stride requires a_tile_start_id in Blackhole direct runtime";
-      args.push_back(1);
-    } else if (arg_spec.kind == "b_tile_start_id") {
-      ICHECK(has_gemm_compute_contract && kernel.kind == "reader")
-          << "b_tile_start_id is only supported for GEMM reader kernels in Blackhole direct runtime";
-      args.push_back(bx);
-    } else if (arg_spec.kind == "b_tile_num_tiles") {
-      ICHECK(kernel_requests_kind("b_tile_start_id"))
-          << "b_tile_num_tiles requires b_tile_start_id in Blackhole direct runtime";
-      ICHECK(has_gemm_compute_contract && kernel.kind == "reader")
-          << "b_tile_num_tiles is only supported for GEMM reader kernels in Blackhole direct runtime";
-      args.push_back(num_k_tiles);
-    } else if (arg_spec.kind == "b_tile_stride") {
-      ICHECK(kernel_requests_kind("b_tile_start_id"))
-          << "b_tile_stride requires b_tile_start_id in Blackhole direct runtime";
-      ICHECK(has_gemm_compute_contract && kernel.kind == "reader")
-          << "b_tile_stride is only supported for GEMM reader kernels in Blackhole direct runtime";
-      args.push_back(GetRuntimeLogicalNTiles(spec));
-    } else if (arg_spec.kind == "output_tile_start_id") {
-      args.push_back(work_linear_id);
-    } else if (arg_spec.kind == "output_tile_num_tiles") {
-      ICHECK(kernel_requests_kind("output_tile_start_id"))
-          << "output_tile_num_tiles requires output_tile_start_id in Blackhole direct runtime";
-      args.push_back(1);
-    } else if (arg_spec.kind == "output_tile_stride") {
-      ICHECK(kernel_requests_kind("output_tile_start_id"))
-          << "output_tile_stride requires output_tile_start_id in Blackhole direct runtime";
-      args.push_back(1);
-    } else if (arg_spec.kind == "k_tile_start_id") {
-      ICHECK(has_gemm_compute_contract)
-          << "k_tile_start_id is only supported for GEMM kernels in Blackhole direct runtime";
-      ICHECK(kernel_requests_kind("num_k_tiles"))
-          << "k_tile_start_id requires num_k_tiles in Blackhole direct runtime";
-      args.push_back(0);
-    } else if (arg_spec.kind == "num_k_tiles") {
-      ICHECK_GT(num_k_tiles, 0)
-          << "num_k_tiles requested by runtime schema, but direct runtime could not derive a "
-             "supported value from ExecutableSpec";
-      args.push_back(num_k_tiles);
-    } else if (arg_spec.kind == "scalar_u32") {
-      ICHECK(scalar_index < scalar_args.size())
-          << "Spec requested more scalar args than provided";
-      args.push_back(scalar_args[scalar_index++]);
-    } else if (arg_spec.kind == "logical_core_noc_x") {
-      ICHECK(arg_spec.has_core_coord)
-          << "logical_core_noc_x requires core_x/core_y in the runtime arg schema";
-      const CoreCoord noc_core =
-          device.worker_core_from_logical_core(CoreCoord{arg_spec.core_x, arg_spec.core_y});
-      args.push_back(static_cast<uint32_t>(noc_core.x));
-    } else if (arg_spec.kind == "logical_core_noc_y") {
-      ICHECK(arg_spec.has_core_coord)
-          << "logical_core_noc_y requires core_x/core_y in the runtime arg schema";
-      const CoreCoord noc_core =
-          device.worker_core_from_logical_core(CoreCoord{arg_spec.core_x, arg_spec.core_y});
-      args.push_back(static_cast<uint32_t>(noc_core.y));
-    } else {
+    if (!TryAppendPerWorkRuntimeArg(kernel, arg_spec, context, device, &scalar_index,
+                                    scalar_args, &args)) {
       LOG(FATAL) << "Unsupported runtime arg kind: " << arg_spec.kind;
     }
   }
