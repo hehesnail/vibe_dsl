@@ -257,6 +257,10 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   bool gemm_clear_accum_ = false;
   int gemm_k_pack_ = 1;
   int gemm_wg_wait_ = 0;
+  bool gemm_dst_full_sync_en_ = false;
+  bool gemm_bfp8_pack_precise_ = false;
+  std::vector<std::pair<std::string, std::string>> gemm_defines_;
+  std::vector<std::pair<std::string, uint32_t>> gemm_named_compile_args_;
   tvm::DataType gemm_a_dtype_;
   tvm::DataType gemm_b_dtype_;
   tvm::DataType gemm_c_dtype_;

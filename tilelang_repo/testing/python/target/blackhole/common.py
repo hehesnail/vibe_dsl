@@ -285,6 +285,47 @@ def gemm_kernel_with_mbar(
     return main
 
 
+def gemm_kernel_with_compute_config_extras(
+    M: int = 32,
+    N: int = 32,
+    K: int = 128,
+):
+    """GEMM kernel with richer TT-Metal compute config extras on the DSL surface."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), "bfloat16"),
+        B: T.Tensor((N, K), "bfloat16"),
+        C: T.Tensor((M, N), "float32"),
+    ):
+        with T.Kernel(1, 1) as (bx, by):
+            A_shared = T.alloc_shared((M, K), "bfloat16")
+            B_shared = T.alloc_shared((N, K), "bfloat16")
+            C_local = T.alloc_fragment((M, N), "float32")
+            T.copy(A[0:M, 0:K], A_shared)
+            T.copy(B[0:N, 0:K], B_shared)
+            T.gemm(
+                A_shared,
+                B_shared,
+                C_local,
+                transpose_B=True,
+                dst_full_sync_en=True,
+                bfp8_pack_precise=True,
+                defines={
+                    "BLACKHOLE_TEST_DEFINE": "1",
+                    "BLACKHOLE_ACC_MODE": "fp32",
+                },
+                named_compile_args={
+                    "c_0": 0,
+                    "c_1": 1,
+                    "c_16": 16,
+                },
+            )
+            T.copy(C_local, C[0:M, 0:N])
+
+    return main
+
+
 def assert_tensors_close_or_dump(actual, expected, atol, rtol, failure_message):
     if torch.allclose(actual, expected, atol=atol, rtol=rtol):
         return

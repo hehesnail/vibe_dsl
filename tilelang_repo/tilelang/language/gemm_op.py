@@ -31,6 +31,10 @@ def _gemm_impl(
     k_pack: int = 1,
     wg_wait: int = 0,
     mbar: BarrierType | None = None,
+    dst_full_sync_en: bool = False,
+    bfp8_pack_precise: bool = False,
+    defines: dict[str, str] | None = None,
+    named_compile_args: dict[str, int] | None = None,
 ) -> tir.PrimExpr:
     """Shared GEMM implementation.
 
@@ -110,6 +114,18 @@ def _gemm_impl(
     # The C++ side checks if arg 16 is a BufferLoadNode before using it,
     # so a non-BufferLoad value will be correctly ignored.
     mbar_arg = mbar if mbar is not None else tir.const(0, dtype="int32")
+    sorted_defines = sorted((defines or {}).items())
+    sorted_named_compile_args = sorted((named_compile_args or {}).items())
+    extra_args = [
+        tir.const(1 if dst_full_sync_en else 0, dtype="int32"),
+        tir.const(1 if bfp8_pack_precise else 0, dtype="int32"),
+        tir.const(len(sorted_defines), dtype="int32"),
+    ]
+    for name, value in sorted_defines:
+        extra_args.extend([tir.StringImm(name), tir.StringImm(value)])
+    extra_args.append(tir.const(len(sorted_named_compile_args), dtype="int32"))
+    for name, value in sorted_named_compile_args:
+        extra_args.extend([tir.StringImm(name), tir.const(value, dtype="int32")])
     return tir.call_intrin(
         "handle",
         tir.op.Op.get(op_key),
@@ -132,6 +148,7 @@ def _gemm_impl(
         mbar_arg,
         C_coords[0],
         C_coords[1],
+        *extra_args,
     )
 
 
@@ -147,6 +164,10 @@ def gemm_v1(
     k_pack: int = 1,
     wg_wait: int = 0,
     mbar: BarrierType | None = None,
+    dst_full_sync_en: bool = False,
+    bfp8_pack_precise: bool = False,
+    defines: dict[str, str] | None = None,
+    named_compile_args: dict[str, int] | None = None,
 ) -> tir.PrimExpr:
     """GEMM v1: use op tl.gemm."""
     return _gemm_impl(
@@ -161,6 +182,10 @@ def gemm_v1(
         k_pack,
         wg_wait,
         mbar,
+        dst_full_sync_en,
+        bfp8_pack_precise,
+        defines,
+        named_compile_args,
     )
 
 
@@ -176,6 +201,10 @@ def gemm_v2(
     k_pack: int = 1,
     wg_wait: int = 0,
     mbar: BarrierType | None = None,
+    dst_full_sync_en: bool = False,
+    bfp8_pack_precise: bool = False,
+    defines: dict[str, str] | None = None,
+    named_compile_args: dict[str, int] | None = None,
 ) -> tir.PrimExpr:
     """GEMM v2: use op tl.gemm_py."""
     return _gemm_impl(
@@ -190,6 +219,10 @@ def gemm_v2(
         k_pack,
         wg_wait,
         mbar,
+        dst_full_sync_en,
+        bfp8_pack_precise,
+        defines,
+        named_compile_args,
     )
 
 
@@ -204,6 +237,10 @@ def gemm(
     k_pack: int = 1,
     wg_wait: int = 0,
     mbar: BarrierType | None = None,
+    dst_full_sync_en: bool = False,
+    bfp8_pack_precise: bool = False,
+    defines: dict[str, str] | None = None,
+    named_compile_args: dict[str, int] | None = None,
 ) -> tir.PrimExpr:
     """TileLang GEMM operator.
 
@@ -218,9 +255,28 @@ def gemm(
         k_pack (int): Numbers of packed matrix cores, for ROCm only. Defaults to 1.
         wg_wait (int): Int identifier of the warpgroup MMA batch to wait on.. Defaults to 0.
         mbar (BarrierType, i.e. Buffer | BufferLoad, or Var, optional): Mbarrier in Blackwell. Defaults to None.
+        dst_full_sync_en (bool): TT-Metal compute config flag for Blackhole direct lowering.
+        bfp8_pack_precise (bool): TT-Metal compute config flag for Blackhole direct lowering.
+        defines (Optional[dict[str, str]]): Named preprocessor defines for compute kernel creation.
+        named_compile_args (Optional[dict[str, int]]): Named compile-time arguments for compute kernel creation.
 
     Returns:
         tir.Call: A handle to the GEMM operation.
     """
     impl = gemm_v1 if _env.use_gemm_v1() else gemm_v2
-    return impl(A, B, C, transpose_A, transpose_B, policy, clear_accum, k_pack, wg_wait, mbar)
+    return impl(
+        A,
+        B,
+        C,
+        transpose_A,
+        transpose_B,
+        policy,
+        clear_accum,
+        k_pack,
+        wg_wait,
+        mbar,
+        dst_full_sync_en,
+        bfp8_pack_precise,
+        defines,
+        named_compile_args,
+    )

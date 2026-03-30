@@ -19,6 +19,7 @@
 - compile-time args 和 runtime args 必须严格区分
 - compile-time ABI 一旦开始 formalize，就要把“匿名 `vector<uint32_t>` + host 侧猜位置”的约定收正成显式 schema（例如 `compile_time_arg_specs` / `launch_spec`）；兼容字段可以暂留，但不能继续当真源
 - runtime 参数布局必须显式、可验证，不能依赖隐式猜测
+- 当 TileOp 已有稳定主参数 ABI、但需要继续 formalize 更宽 schema 时，优先把扩展 payload 显式追加到 IR 末尾或扩独立 schema，不要让后段从分散 attrs 或隐式默认值猜 richer contract
 - 统一 work descriptor 时，优先把 `start_id` / `num_tiles` 这类角色化字段写进 schema；不要继续让 host/runtime 从 `current_work_linear_id`、`tile_count` 之类的单值默认推导整套工作范围
 - 对需要 `blockIdx` 重建的 Blackhole kernel，把 `work_linear_id` 作为独立字段保留；不要让 codegen 从 `a_tile_start_id` / `output_tile_start_id` 之类的 range 字段反推逻辑 work identity
 - 64-bit 地址需明确拆分与重组规则

@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage2j_compute_contract_schema`
 - **日期**: 2026-03-27
-- **状态**: ✅ 已实现；2026-03-30 继续收尾 `compute_contract -> compute_config` 真源关系
+- **状态**: ✅ 已实现；2026-03-30 已完成 `compute_contract -> compute_config` 真源关系与 producer 输入面收尾
 - **对应任务**: TT-Metal contract formalization 的 P0 收尾
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -241,16 +241,24 @@ v2 继续扩展：
   - `bfp8_pack_precise`
   - `defines`
   - `named_compile_args`
-- `defines/named_compile_args` 当前先 formalize 到 `compute_contract -> KernelSpec.compute_config ->
-  CreateKernel(ComputeConfig)` 主链，producer 仍主要依赖测试注入/attrs 变异验证，不要求 DSL 已有稳定入口
+- `defines/named_compile_args` 必须同时具备 producer 路径，不能只停在测试注入或 attrs 变异验证
+- producer 侧保持 IR 显式表达，但不打破现有 GEMM 主参数 ABI：
+  - DSL 在 `T.gemm` / `tl.gemm_py` 尾部追加 richer compute-config payload
+  - `LowerBlackholeOps` 从 GEMM call 尾部 payload 提取 `dst_full_sync_en` /
+    `bfp8_pack_precise` / `defines` / `named_compile_args`
+  - `GemmPy` / `Gemm` 现有 lowering/codegen 只消费前 19 个既有参数，忽略尾部扩展 payload
+    ，从而保证兼容
 
 本轮不做：
 
 - 更宽 accessor execution surface
 - sharded / non-interleaved runtime 支持
 - multicast / global semaphore
-   - compute kernel `compile_time_arg_specs` 与 v2 contract 对齐
-   - `BlackholeModule` 不再把 `ComputeConfig.math_fidelity/fp32_dest_acc_en/math_approx_mode` 写死
+
+已完成结果包含：
+
+- compute kernel `compile_time_arg_specs` 与 v2 contract 对齐
+- `BlackholeModule` 不再把 `ComputeConfig.math_fidelity/fp32_dest_acc_en/math_approx_mode` 写死
 
 ## 8. 实施结果（2026-03-27）
 
@@ -258,6 +266,17 @@ v2 继续扩展：
   - `block_m_tiles/block_n_tiles/block_k_tiles`
   - `subblock_m_tiles/subblock_n_tiles`
   - `math_fidelity/fp32_dest_acc_en/math_approx_mode/unpack_to_dest_mode`
+  - `dst_full_sync_en/bfp8_pack_precise/defines/named_compile_args`
+- `compute_config` 已确认为 `compute_contract` 的 materialization view，不再维护独立默认值
+- producer 输入面已完成：
+  - `T.gemm` 新增 `dst_full_sync_en` / `bfp8_pack_precise` / `defines` / `named_compile_args`
+  - `LowerBlackholeOps` 已从 GEMM call payload 提取这些字段并写入
+    `blackhole.compute_contract`
+  - `ExecutableSpec.compute_contract` 和 compute kernel `compute_config` 已稳定 materialize 同一组 richer fields
+- 验证补充到：
+  - attrs/schema: richer compute-config extras 直接由 DSL producer materialize
+  - spec/schema: richer compute-config extras 可从 `ExecutableSpec` 与 `KernelSpec.compute_config` 观测
+  - `test_blackhole_gemm.py`: `21 passed, 8 skipped`
 - `LowerBlackholeOps` 已为 compute segment 正式产出：
   - `compute_config`
   - `gemm_block_shape`

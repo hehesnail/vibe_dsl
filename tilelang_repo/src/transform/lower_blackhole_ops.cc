@@ -67,6 +67,30 @@ static std::string PrimExprToCompactString(const PrimExpr& expr) {
   return os.str();
 }
 
+static Array<Any> EncodeNamedStringPairs(
+    const std::vector<std::pair<std::string, std::string>>& entries) {
+  Array<Any> encoded_entries;
+  for (const auto& [name, value] : entries) {
+    Map<String, Any> entry;
+    entry.Set("name", String(name));
+    entry.Set("value", String(value));
+    encoded_entries.push_back(entry);
+  }
+  return encoded_entries;
+}
+
+static Array<Any> EncodeNamedUint32Pairs(
+    const std::vector<std::pair<std::string, uint32_t>>& entries) {
+  Array<Any> encoded_entries;
+  for (const auto& [name, value] : entries) {
+    Map<String, Any> entry;
+    entry.Set("name", String(name));
+    entry.Set("value", Integer(static_cast<int>(value)));
+    encoded_entries.push_back(entry);
+  }
+  return encoded_entries;
+}
+
 using tir::PrimFunc;
 using tir::PrimFuncNode;
 using tir::Stmt;
@@ -228,6 +252,10 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   gemm_clear_accum_ = false;
   gemm_k_pack_ = 1;
   gemm_wg_wait_ = 0;
+  gemm_dst_full_sync_en_ = false;
+  gemm_bfp8_pack_precise_ = false;
+  gemm_defines_.clear();
+  gemm_named_compile_args_.clear();
   gemm_a_dtype_ = DataType::Void();
   gemm_b_dtype_ = DataType::Void();
   gemm_c_dtype_ = DataType::Void();
@@ -564,12 +592,12 @@ void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
   compute_contract.Set("accumulator_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
   compute_contract.Set("math_fidelity", String("HiFi4"));
   compute_contract.Set("fp32_dest_acc_en", Bool(true));
-  compute_contract.Set("dst_full_sync_en", Bool(false));
+  compute_contract.Set("dst_full_sync_en", Bool(gemm_dst_full_sync_en_));
   compute_contract.Set("math_approx_mode", Bool(false));
   compute_contract.Set("unpack_to_dest_mode", Array<Any>{});
-  compute_contract.Set("bfp8_pack_precise", Bool(false));
-  compute_contract.Set("defines", Array<Any>{});
-  compute_contract.Set("named_compile_args", Array<Any>{});
+  compute_contract.Set("bfp8_pack_precise", Bool(gemm_bfp8_pack_precise_));
+  compute_contract.Set("defines", EncodeNamedStringPairs(gemm_defines_));
+  compute_contract.Set("named_compile_args", EncodeNamedUint32Pairs(gemm_named_compile_args_));
   compute_contract.Set("clear_accum", Bool(gemm_clear_accum_));
   compute_contract.Set("k_pack", Integer(gemm_k_pack_));
   compute_contract.Set("wg_wait", Integer(gemm_wg_wait_));
@@ -589,12 +617,12 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
     Map<String, Any> compute_config;
     compute_config.Set("math_fidelity", String("HiFi4"));
     compute_config.Set("fp32_dest_acc_en", Bool(true));
-    compute_config.Set("dst_full_sync_en", Bool(false));
+    compute_config.Set("dst_full_sync_en", Bool(gemm_dst_full_sync_en_));
     compute_config.Set("math_approx_mode", Bool(false));
     compute_config.Set("unpack_to_dest_mode", Array<Any>{});
-    compute_config.Set("bfp8_pack_precise", Bool(false));
-    compute_config.Set("defines", Array<Any>{});
-    compute_config.Set("named_compile_args", Array<Any>{});
+    compute_config.Set("bfp8_pack_precise", Bool(gemm_bfp8_pack_precise_));
+    compute_config.Set("defines", EncodeNamedStringPairs(gemm_defines_));
+    compute_config.Set("named_compile_args", EncodeNamedUint32Pairs(gemm_named_compile_args_));
     compute_config.Set("clear_accum", Bool(gemm_clear_accum_));
     compute_config.Set("k_pack", Integer(gemm_k_pack_));
     compute_config.Set("wg_wait", Integer(gemm_wg_wait_));
@@ -890,6 +918,11 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
   // tl.tileop.gemm_py args layout (from gemm_op.py _gemm_impl):
   //   [0]=A_region, [1]=B_region, [2]=C_region,
   //   [3]=transA, [4]=transB, [5]=M, [6]=N, [7]=K, ...
+  // Optional Blackhole-only producer payload may continue after the existing
+  // core ABI without affecting GemmPy/Gemm lowering:
+  //   [19]=dst_full_sync_en, [20]=bfp8_pack_precise, [21]=define_count,
+  //   then StringImm name/value define pairs, then named_compile_arg_count,
+  //   then StringImm/IntImm named compile-arg pairs.
   const auto& args = op->args;
   ICHECK_GE(args.size(), 8U) << "tl.tileop.gemm_py expects at least 8 args";
 
@@ -909,6 +942,54 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
   if (const auto* imm = args[9].as<IntImmNode>()) gemm_clear_accum_ = imm->value != 0;
   if (const auto* imm = args[14].as<IntImmNode>()) gemm_k_pack_ = static_cast<int>(imm->value);
   if (const auto* imm = args[15].as<IntImmNode>()) gemm_wg_wait_ = static_cast<int>(imm->value);
+  gemm_dst_full_sync_en_ = false;
+  if (args.size() > 19) {
+    if (const auto* imm = args[19].as<IntImmNode>()) {
+      gemm_dst_full_sync_en_ = imm->value != 0;
+    }
+  }
+  gemm_bfp8_pack_precise_ = false;
+  if (args.size() > 20) {
+    if (const auto* imm = args[20].as<IntImmNode>()) {
+      gemm_bfp8_pack_precise_ = imm->value != 0;
+    }
+  }
+  gemm_defines_.clear();
+  int arg_index = 21;
+  int define_count = 0;
+  if (args.size() > arg_index) {
+    if (const auto* imm = args[arg_index].as<IntImmNode>()) {
+      define_count = static_cast<int>(imm->value);
+      ++arg_index;
+    }
+  }
+  for (int i = 0; i < define_count; ++i) {
+    ICHECK_LT(arg_index + 1, static_cast<int>(args.size()))
+        << "blackhole GEMM define payload is truncated";
+    const auto* name = args[arg_index].as<tir::StringImmNode>();
+    const auto* value = args[arg_index + 1].as<tir::StringImmNode>();
+    ICHECK(name && value) << "blackhole GEMM defines must be encoded as StringImm pairs";
+    gemm_defines_.emplace_back(name->value, value->value);
+    arg_index += 2;
+  }
+  gemm_named_compile_args_.clear();
+  int named_compile_arg_count = 0;
+  if (args.size() > arg_index) {
+    if (const auto* imm = args[arg_index].as<IntImmNode>()) {
+      named_compile_arg_count = static_cast<int>(imm->value);
+      ++arg_index;
+    }
+  }
+  for (int i = 0; i < named_compile_arg_count; ++i) {
+    ICHECK_LT(arg_index + 1, static_cast<int>(args.size()))
+        << "blackhole GEMM named compile arg payload is truncated";
+    const auto* name = args[arg_index].as<tir::StringImmNode>();
+    const auto* value = args[arg_index + 1].as<IntImmNode>();
+    ICHECK(name && value)
+        << "blackhole GEMM named compile args must be encoded as StringImm/IntImm pairs";
+    gemm_named_compile_args_.emplace_back(name->value, static_cast<uint32_t>(value->value));
+    arg_index += 2;
+  }
   if (args.size() > 16 && IsBufferLikeExpr(args[16])) {
     tir::BufferRegion mbar_region = NormalizeToBufferRegion(args[16]);
     gemm_has_mbarrier_ = true;

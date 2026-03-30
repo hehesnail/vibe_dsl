@@ -9,8 +9,8 @@
 - **时间**: 2026-03-26
 - **问题**: 当前 Blackhole schema 仍未完全覆盖 TT-Metal 正式 contract，剩余缺口主要在更宽的 execution surface：host logical tensor layout 泛化、更丰富 dtype/compute ABI、以及 sharded/non-tile/common-runtime accessor 执行面
 - **影响**: copy 在最简单 tile/interleaved case 上可通过，但更复杂场景无正式 schema 承载
-- **解决方向**: 按 `stage2d_ttmetal_contract_audit.md` 的 P0-P5 分层推进；当前 P0 dtype 分层与 compile-time ABI 主字段、P1、P2、P3 主路径 formalization 已落地，后续继续做 P4-P5 和更宽的 P0/P3 execution surface
-- **当前状态**: 部分解决。dtype 分层已进入 `gemm_contract` / `ExecutableSpec` / direct runtime 校验；P3 richer runtime work schema 已落到 `work_linear_id` + role-explicit `a/b/output/k` descriptors；accessor schema、`common_runtime_args`、`compile_time_arg_specs`、`launch_spec` 已进入 segment/kernel schema 并被 direct runtime 消费。当前 remaining gap 是更广泛的 range/stride/batch、sharded accessor、non-tile/stick copy、以及更丰富 compute ABI 仍未进入正式执行面。
+- **解决方向**: 按 `stage2d_ttmetal_contract_audit.md` 的 P0-P5 分层推进；当前 P0 已完成到统一 `compute_contract`，P1、P2、P3 主路径 formalization 已落地，后续继续做 P4-P5 和更宽的 P3 execution surface
+- **当前状态**: 部分解决。P0 已完成：dtype 分层、compute config、以及 `dst_full_sync_en/bfp8_pack_precise/defines/named_compile_args` 已走通 DSL producer -> `compute_contract` -> `ExecutableSpec/KernelSpec` -> direct runtime 主链。P3 richer runtime work schema 已落到 `work_linear_id` + role-explicit `a/b/output/k` descriptors；accessor schema、`common_runtime_args`、`compile_time_arg_specs`、`launch_spec` 已进入 segment/kernel schema 并被 direct runtime 消费。当前 remaining gap 是更广泛的 range/stride/batch、sharded accessor、non-tile/stick copy，以及更宽 execution surface 仍未进入正式执行面。
 
 ## 已解决（仍有复用价值）
 

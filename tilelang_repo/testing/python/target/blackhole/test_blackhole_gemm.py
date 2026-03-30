@@ -13,6 +13,7 @@ from .common import (
     check_blackhole_codegen_requirements,
     check_blackhole_direct_execution_requirements,
     gemm_kernel,
+    gemm_kernel_with_compute_config_extras,
     gemm_kernel_with_compute_abi,
     gemm_kernel_with_mbar,
     gemm_kernel_with_policy,
@@ -420,6 +421,33 @@ def test_blackhole_compute_contract_attr_materializes_nondefault_compute_abi():
     assert int(contract["wg_wait"]) == 3
 
 
+def test_blackhole_compute_contract_attr_materializes_richer_compute_config_extras():
+    kernel = gemm_kernel_with_compute_config_extras()
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+
+    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.LowerBlackholeOps()(mod)
+
+    func = mod["main"]
+    contract = func.attrs["blackhole.compute_contract"]
+    assert bool(contract["dst_full_sync_en"]) is True
+    assert bool(contract["bfp8_pack_precise"]) is True
+    assert [(str(item["name"]), str(item["value"])) for item in contract["defines"]] == [
+        ("BLACKHOLE_ACC_MODE", "fp32"),
+        ("BLACKHOLE_TEST_DEFINE", "1"),
+    ] or [(str(item["name"]), str(item["value"])) for item in contract["defines"]] == [
+        ("BLACKHOLE_TEST_DEFINE", "1"),
+        ("BLACKHOLE_ACC_MODE", "fp32"),
+    ]
+    assert sorted(
+        (str(item["name"]), int(item["value"])) for item in contract["named_compile_args"]
+    ) == [("c_0", 0), ("c_1", 1), ("c_16", 16)]
+
+
 def test_blackhole_compute_segment_compute_config_follows_compute_contract():
     kernel = gemm_kernel_with_compute_abi()
     mod = tilelang.tvm.IRModule({"main": kernel})
@@ -785,6 +813,40 @@ def test_blackhole_gemm_compute_config_materializes_defines_and_named_compile_ar
     assert [
         (str(item["name"]), int(item["value"])) for item in compute_config["named_compile_args"]
     ] == [("c_0", 0), ("c_1", 1), ("c_16", 16)]
+
+
+def test_blackhole_gemm_spec_materializes_dsl_produced_compute_config_extras():
+    kernel = gemm_kernel_with_compute_config_extras()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    compute_contract = executable_spec["compute_contract"]
+    compute = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="compute", core_type="trisc"
+    )
+    compute_config = compute["compute_config"]
+
+    assert bool(compute_contract["dst_full_sync_en"]) is True
+    assert bool(compute_contract["bfp8_pack_precise"]) is True
+    assert bool(compute_config["dst_full_sync_en"]) is True
+    assert bool(compute_config["bfp8_pack_precise"]) is True
+    assert sorted((str(item["name"]), str(item["value"])) for item in compute_contract["defines"]) == [
+        ("BLACKHOLE_ACC_MODE", "fp32"),
+        ("BLACKHOLE_TEST_DEFINE", "1"),
+    ]
+    assert sorted(
+        (str(item["name"]), int(item["value"])) for item in compute_contract["named_compile_args"]
+    ) == [("c_0", 0), ("c_1", 1), ("c_16", 16)]
+    assert sorted((str(item["name"]), str(item["value"])) for item in compute_config["defines"]) == [
+        ("BLACKHOLE_ACC_MODE", "fp32"),
+        ("BLACKHOLE_TEST_DEFINE", "1"),
+    ]
+    assert sorted(
+        (str(item["name"]), int(item["value"])) for item in compute_config["named_compile_args"]
+    ) == [("c_0", 0), ("c_1", 1), ("c_16", 16)]
 
 
 def test_blackhole_gemm_compile_time_abi_materializes_nondefault_policy():
