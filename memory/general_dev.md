@@ -40,6 +40,7 @@
 - `3rdparty/` 和 `build/` 不应进入主仓库提交
 - `pip install -e .` 可能重新触发构建并失败，用 `.pth` 指向本地构建产物
 - C++ 改动后 pytest 前先确认 `libtilelang.so` 已重编，避免加载旧库假阴性
+- 不要对同一个 `tilelang_repo/build/` 并行跑 `cmake --build` 和 pytest。共享构建目录在链接进行中时，测试可能加载到旧/半更新的 `libtilelang.so`，制造假阴性或顺序相关噪声
 
 ## TT-Metal / TT-Sim 环境
 
@@ -68,6 +69,7 @@
   - 读回后必须做 untilize
   - copy E2E 通过不能证明 matmul contract 正确，因为 copy 只验证字节保持，不验证 tile 语义
 - richer schema 先于更大支持面：如果 schema 已经能表达更多 range/stride 组合，但 direct runtime/codegen 还没正式支持，必须 `ICHECK` fail-fast，不能静默退回旧默认
+- 对 non-tile/stick copy，外部 DRAM buffer 的真实 `page_size` 不是 CB `page_size` 的别名；需要把单次 transport 的 `page_bytes` 明确收进 accessor schema（如 `transport_page_size`），再由 direct runtime 用这份 schema 创建 TT-Metal buffer/accessor
 - TT-Metal program-local semaphore 当前正式 host API 是 `CreateSemaphore(program, core_ranges, initial_value)`；如果上层 schema 还保留 `core_type`，应把它当校验字段，不要为了“对齐字段”继续依赖 deprecated 的 `CreateSemaphore(..., core_type)`
 - 对 TT-Metal program-local semaphore，host/runtime 正式下发的是 semaphore id；device dataflow kernel 再显式 `get_semaphore(id)` 取本地 L1 地址后做 `noc_semaphore_wait/set`。不要把 semaphore 地址或 barrier 绑定错误建模成 compile-time ABI
 - 需要跨 worker core 访问 semaphore 时，不要让 kernel 直接猜 remote NOC 坐标，也不要把 logical core 坐标直接塞给 `get_noc_addr(...)`。应把“logical core -> NOC 坐标”收成正式 runtime arg materialization，由 host 用 `worker_core_from_logical_core(...)` 求值后下发

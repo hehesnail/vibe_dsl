@@ -109,6 +109,8 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
       case CoreType::kNCRISC:
         decl_stream << "// DataMovement kernel API (BRISC/NCRISC)\n";
         decl_stream << "#include \"api/dataflow/dataflow_api.h\"\n";
+        decl_stream << "#include \"experimental/circular_buffer.h\"\n";
+        decl_stream << "#include \"experimental/tensor.h\"\n";
         break;
       case CoreType::kTRISC:
         decl_stream << "// Compute kernel API (TRISC)\n";
@@ -306,7 +308,19 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
       }
       return;
     }
+    if (op_name == "tl.blackhole.read_page_to_cb") {
+      if (const auto *buffer_var = call->args[0].as<tvm::tir::VarNode>()) {
+        buffer_vars_by_name[buffer_var->name_hint] = buffer_var;
+      }
+      return;
+    }
     if (op_name == "tl.blackhole.write_tile_from_cb") {
+      if (const auto *buffer_var = call->args[1].as<tvm::tir::VarNode>()) {
+        buffer_vars_by_name[buffer_var->name_hint] = buffer_var;
+      }
+      return;
+    }
+    if (op_name == "tl.blackhole.write_page_from_cb") {
       if (const auto *buffer_var = call->args[1].as<tvm::tir::VarNode>()) {
         buffer_vars_by_name[buffer_var->name_hint] = buffer_var;
       }
@@ -714,8 +728,14 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   } else if (builtin_name == "read_tile_to_cb") {
     PrintReadTileToCB(op, os);
     return true;
+  } else if (builtin_name == "read_page_to_cb") {
+    PrintReadPageToCB(op, os);
+    return true;
   } else if (builtin_name == "write_tile_from_cb") {
     PrintWriteTileFromCB(op, os);
+    return true;
+  } else if (builtin_name == "write_page_from_cb") {
+    PrintWritePageFromCB(op, os);
     return true;
   } else if (builtin_name == "get_semaphore") {
     PrintGetSemaphore(op, os);
@@ -883,6 +903,50 @@ void CodeGenBlackhole::PrintWriteTileFromCB(const tvm::tir::CallNode *op,
      << ", tile_bytes); ";
   os << "noc_async_write_tile(tile_index, dst_gen, cb_l1_addr); ";
   os << "noc_async_write_barrier(); }";
+}
+
+void CodeGenBlackhole::PrintReadPageToCB(const tvm::tir::CallNode *op,
+                                         std::ostream &os) {
+  need_dataflow_api_h_ = true;
+  const std::string src_addr_var = GetRuntimeArgVarForBuffer(op->args[0], "input_buffer_addr");
+  const int cb_id = ResolveCBId(op->args[2]);
+  const auto* accessor_offset = op->args[4].as<tvm::tir::IntImmNode>();
+  ICHECK(accessor_offset)
+      << "Blackhole read_page_to_cb expects constant accessor compile-time offset";
+  os << "{ ";
+  os << "const uint32_t page_id = ";
+  PrintExpr(op->args[1], os);
+  os << "; const uint32_t page_bytes = ";
+  PrintExpr(op->args[3], os);
+  os << "; const uint32_t cb_l1_addr = get_write_ptr(" << cb_id << ") + ";
+  PrintExpr(op->args[5], os);
+  os << "; constexpr auto src_accessor_args = TensorAccessorArgs<" << accessor_offset->value
+     << ">(); const auto src_gen = TensorAccessor(src_accessor_args, " << src_addr_var
+     << "); ";
+  os << "const uint64_t src_noc_addr = src_gen.get_noc_addr(page_id); ";
+  os << "noc_async_read(src_noc_addr, cb_l1_addr, page_bytes); }";
+}
+
+void CodeGenBlackhole::PrintWritePageFromCB(const tvm::tir::CallNode *op,
+                                            std::ostream &os) {
+  need_dataflow_api_h_ = true;
+  const std::string dst_addr_var = GetRuntimeArgVarForBuffer(op->args[1], "output_buffer_addr");
+  const int cb_id = ResolveCBId(op->args[0]);
+  const auto* accessor_offset = op->args[4].as<tvm::tir::IntImmNode>();
+  ICHECK(accessor_offset)
+      << "Blackhole write_page_from_cb expects constant accessor compile-time offset";
+  os << "{ ";
+  os << "const uint32_t page_id = ";
+  PrintExpr(op->args[2], os);
+  os << "; const uint32_t page_bytes = ";
+  PrintExpr(op->args[3], os);
+  os << "; const uint32_t cb_l1_addr = get_read_ptr(" << cb_id << ") + ";
+  PrintExpr(op->args[5], os);
+  os << "; constexpr auto dst_accessor_args = TensorAccessorArgs<" << accessor_offset->value
+     << ">(); const auto dst_gen = TensorAccessor(dst_accessor_args, " << dst_addr_var
+     << "); ";
+  os << "const uint64_t dst_noc_addr = dst_gen.get_noc_addr(page_id); ";
+  os << "noc_async_write(cb_l1_addr, dst_noc_addr, page_bytes); }";
 }
 
 void CodeGenBlackhole::PrintMMInit(const tvm::tir::CallNode *op,

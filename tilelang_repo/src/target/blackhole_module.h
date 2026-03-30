@@ -290,6 +290,7 @@ struct AccessorSpec {
   uint32_t common_runtime_arg_offset = 0;
   uint32_t common_runtime_arg_count = 0;
   uint32_t args_config_bits = 0;
+  uint32_t transport_page_size_bytes = 0;
   std::string layout;
   std::string memory_space;
 
@@ -306,6 +307,10 @@ struct AccessorSpec {
     writer->WriteObjectKeyValue("common_runtime_arg_count",
                                 static_cast<int64_t>(common_runtime_arg_count));
     writer->WriteObjectKeyValue("args_config_bits", static_cast<int64_t>(args_config_bits));
+    if (transport_page_size_bytes != 0) {
+      writer->WriteObjectKeyValue("transport_page_size",
+                                  static_cast<int64_t>(transport_page_size_bytes));
+    }
     writer->WriteObjectKeyValue("layout", layout);
     writer->WriteObjectKeyValue("memory_space", memory_space);
     writer->EndObject();

@@ -100,6 +100,17 @@ TVM_DLL const Op& blackhole_noc_async_write_barrier();
 TVM_DLL const Op& blackhole_read_tile_to_cb();
 
 /*!
+ * \brief Read one contiguous page/stick from a backing buffer into a CB/L1 staging area.
+ * \param buffer Backing buffer handle
+ * \param page_id Logical page index in the source buffer
+ * \param cb_id Destination circular buffer ID
+ * \param page_bytes Page size in bytes
+ * \param accessor_slot Compile-time accessor slot for later TT-Metal mapping
+ * \param cb_offset_bytes Byte offset within the current CB page
+ */
+TVM_DLL const Op& blackhole_read_page_to_cb();
+
+/*!
  * \brief Write one tile from a CB/L1 staging area back to a backing buffer.
  * \param cb_id Source circular buffer ID
  * \param buffer Backing buffer handle
@@ -108,6 +119,17 @@ TVM_DLL const Op& blackhole_read_tile_to_cb();
  * \param accessor_slot Compile-time accessor slot for later TT-Metal mapping
  */
 TVM_DLL const Op& blackhole_write_tile_from_cb();
+
+/*!
+ * \brief Write one contiguous page/stick from a CB/L1 staging area back to a backing buffer.
+ * \param cb_id Source circular buffer ID
+ * \param buffer Backing buffer handle
+ * \param page_id Logical page index in the destination buffer
+ * \param page_bytes Page size in bytes
+ * \param accessor_slot Compile-time accessor slot for later TT-Metal mapping
+ * \param cb_offset_bytes Byte offset within the current CB page
+ */
+TVM_DLL const Op& blackhole_write_page_from_cb();
 
 // TT-Metal Semaphore Operations
 

@@ -379,6 +379,31 @@ static uint32_t ChoosePageSize(const ExecutableSpec& spec, const std::string& ro
   return 2048;
 }
 
+static uint32_t DetermineRuntimeBufferPageSize(const ExecutableSpec& spec,
+                                               const std::string& buffer_name,
+                                               bool is_output) {
+  uint32_t inferred_page_size = 0;
+  for (const auto& kernel : spec.kernels) {
+    for (const auto& accessor : kernel.accessors) {
+      if (accessor.buffer != buffer_name || accessor.transport_page_size_bytes == 0) {
+        continue;
+      }
+      if (inferred_page_size == 0) {
+        inferred_page_size = accessor.transport_page_size_bytes;
+      } else {
+        ICHECK_EQ(inferred_page_size, accessor.transport_page_size_bytes)
+            << "Blackhole direct runtime requires a single transport page size per buffer; "
+            << buffer_name << " used both " << inferred_page_size << " and "
+            << accessor.transport_page_size_bytes;
+      }
+    }
+  }
+  if (inferred_page_size != 0) {
+    return inferred_page_size;
+  }
+  return ChoosePageSize(spec, is_output ? "output" : "input");
+}
+
 static void ValidateSemaphoreCoreType(const std::string& core_type) {
   ICHECK(core_type.empty() || core_type == "worker")
       << "Unsupported Blackhole semaphore core_type: " << core_type;
@@ -1012,10 +1037,6 @@ void BlackholeModuleNode::ExecuteDirect(
     ValidateKernelDirectRuntimeConstraints(kernel_spec);
   }
 
-  // Use role-aware page size for DRAM buffers so runtime allocation matches spec roles.
-  uint32_t input_page_size = ChoosePageSize(spec, "input");
-  uint32_t output_page_size = ChoosePageSize(spec, "output");
-
   // Build work items: pair each logical work_id with its assigned physical core.
   // Each WorkPacket entry owns a slice of the logical work range on one core.
   struct WorkItem {
@@ -1074,8 +1095,10 @@ void BlackholeModuleNode::ExecuteDirect(
   for (const auto& binding : buffer_args) {
     ICHECK(binding.tensor != nullptr) << "Null tensor passed to Blackhole direct path";
     const size_t tensor_size = GetDataSize(*binding.tensor);
+    const uint32_t buffer_page_size =
+        DetermineRuntimeBufferPageSize(spec, binding.name, binding.is_output);
     distributed::DeviceLocalBufferConfig dram_config{
-        .page_size = binding.is_output ? output_page_size : input_page_size,
+        .page_size = buffer_page_size,
         .buffer_type = BufferType::DRAM};
     distributed::ReplicatedBufferConfig buffer_config{.size = tensor_size};
     auto mesh_buffer =
@@ -1087,11 +1110,12 @@ void BlackholeModuleNode::ExecuteDirect(
                                           });
     if (binding.is_output) {
       ordered_output_names.push_back(binding.name);
-    } else {
-      input_names.push_back(binding.name);
-      std::vector<uint8_t> input_data = BuildInputTransferData(spec, binding);
-      EnqueueWriteMeshBuffer(cq, mesh_buffer, input_data, /*blocking=*/true);
     }
+    if (!binding.is_output) {
+      input_names.push_back(binding.name);
+    }
+    std::vector<uint8_t> initial_data = BuildInputTransferData(spec, binding);
+    EnqueueWriteMeshBuffer(cq, mesh_buffer, initial_data, /*blocking=*/true);
   }
   if (!output_names.empty()) {
     ordered_output_names = output_names;

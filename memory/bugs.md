@@ -10,7 +10,22 @@
 - **问题**: 当前 Blackhole schema 仍未完全覆盖 TT-Metal 正式 contract，剩余缺口主要在更宽的 execution surface：host logical tensor layout 泛化、更丰富 dtype/compute ABI、以及 sharded/non-tile/common-runtime accessor 执行面
 - **影响**: copy 在最简单 tile/interleaved case 上可通过，但更复杂场景无正式 schema 承载
 - **解决方向**: 按 `stage2d_ttmetal_contract_audit.md` 的 P0-P5 分层推进；当前 P0 已完成到统一 `compute_contract`，P1、P2、P3 主路径 formalization 已落地，后续继续做 P4-P5 和更宽的 P3 execution surface
-- **当前状态**: 部分解决。P0 已完成：dtype 分层、compute config、以及 `dst_full_sync_en/bfp8_pack_precise/defines/named_compile_args` 已走通 DSL producer -> `compute_contract` -> `ExecutableSpec/KernelSpec` -> direct runtime 主链。P3 richer runtime work schema 已落到 `work_linear_id` + role-explicit `a/b/output/k` descriptors；accessor schema、`common_runtime_args`、`compile_time_arg_specs`、`launch_spec` 已进入 segment/kernel schema 并被 direct runtime 消费。当前 remaining gap 是更广泛的 range/stride/batch、sharded accessor、non-tile/stick copy，以及更宽 execution surface 仍未进入正式执行面。
+- **当前状态**: 部分解决。P0 已完成：dtype 分层、compute config、以及 `dst_full_sync_en/bfp8_pack_precise/defines/named_compile_args` 已走通 DSL producer -> `compute_contract` -> `ExecutableSpec/KernelSpec` -> direct runtime 主链。P3 richer runtime work schema 已落到 `work_linear_id` + role-explicit `a/b/output/k` descriptors；accessor schema、`common_runtime_args`、`compile_time_arg_specs`、`launch_spec` 已进入 segment/kernel schema 并被 direct runtime 消费。P4 已完成最小 interleaved stick/page copy 主路径：`transport_page_size` 进入 accessor schema，`32x16` row-major/stick copy 已通过 TT-Sim。当前 remaining gap 是更广泛的 range/stride/batch、sharded accessor，以及更宽 execution surface。
+
+### direct runtime 若不先把 output tensor 初值同步到 device，partial-write copy 会读回脏数据
+
+- **时间**: 2026-03-30
+- **问题**: 最小 stick/page copy 只覆盖 output tensor 的一部分页面；单独运行时看起来可能正确，但在整份 `test_blackhole_copy_runtime.py` 顺序执行时，未覆盖区域会读回脏数据，导致 `test_blackhole_module_direct_call_stick_copy` 随机失败
+- **根本原因**:
+  - `BlackholeModule::ExecuteDirect` 之前只把 input buffer 写到 device，output buffer 只分配不初始化
+  - tile-aligned full overwrite case 不会暴露这个问题，因为 kernel 会覆盖整个 output
+  - stick/non-tile partial-write case 会保留未写区域，因此 device buffer 的历史内容会泄漏回 host
+- **解决**:
+  - direct runtime 统一在执行前把所有 host tensor 当前内容同步到对应 device buffer
+  - 不再假设 output buffer 一定会被 kernel 全覆盖
+- **教训**:
+  - host direct runtime 不能把“output”当成“无需初始化”的同义词；只要 schema 允许 partial write，output tensor 初值就是 contract 的一部分
+  - 顺序相关失败优先怀疑“未初始化设备内存 + 部分写入”，不要只盯 JIT 缓存或 simulator 污染
 
 ## 已解决（仍有复用价值）
 

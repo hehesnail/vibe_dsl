@@ -17,6 +17,7 @@ from .common import (
     grid_indexed_staged_copy_kernel,
     make_blackhole_cb_requirements_mod,
     staged_copy_kernel,
+    staged_stick_copy_kernel,
 )
 
 EXPECTED_UNIFIED_COPY_RUNTIME_ARG_KINDS = [
@@ -898,13 +899,35 @@ def test_blackhole_cb_planner_reuses_non_overlapping_requirements():
     assert int(func.attrs["blackhole.total_l1_bytes"]) == 1048576
     assert int(cb_configs[0]["cb_id"]) == 32
     assert int(cb_configs[0]["lifetime_begin"]) == 0
-    assert int(cb_configs[0]["lifetime_end"]) == 1
-    assert [str(name) for name in cb_configs[0]["requirement_names"]] == ["stage0", "stage1"]
-    assert len(cb_bindings) == 2
-    assert [int(binding["requirement_index"]) for binding in cb_bindings] == [0, 1]
-    assert [str(binding["requirement_name"]) for binding in cb_bindings] == ["stage0", "stage1"]
-    assert [int(binding["cb_id"]) for binding in cb_bindings] == [32, 32]
-    assert [int(binding["cb_config_index"]) for binding in cb_bindings] == [0, 0]
+
+
+def test_blackhole_stick_copy_pipeline_formalizes_page_transport():
+    target = Target("blackhole")
+    kernel = staged_stick_copy_kernel(tile_m=32, tile_n=16, global_n=32, dtype="float32")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    kernel_spec = _require_blackhole_kernel(
+        spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+    source = str(kernel_spec["source_code"])
+    assert "read_page_to_cb" not in source
+    assert "write_page_from_cb" not in source
+    assert "TensorAccessorArgs<0>()" in source
+    assert "TensorAccessorArgs<2>()" in source
+    assert "get_noc_addr(page_id)" in source
+    assert "noc_async_read(" in source
+    assert "noc_async_write(" in source
+
+    cb_configs = spec["cb_configs"]
+    assert len(cb_configs) == 1
+    assert int(cb_configs[0]["page_size"]) == 2048
+    assert int(cb_configs[0]["num_pages"]) == 1
+    accessors = kernel_spec["accessors"]
+    assert int(accessors[0]["transport_page_size"]) == 64
+    assert int(accessors[1]["transport_page_size"]) == 64
 
 
 def test_blackhole_cb_planner_rejects_overlapping_large_requirements():

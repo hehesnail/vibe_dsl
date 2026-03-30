@@ -13,6 +13,7 @@ from .common import (
     check_blackhole_direct_execution_requirements,
     grid_indexed_staged_copy_kernel,
     staged_copy_kernel,
+    staged_stick_copy_kernel,
 )
 
 
@@ -160,6 +161,33 @@ def test_blackhole_module_direct_call_rectangular_tiles():
         atol=1e-3,
         rtol=1e-3,
         failure_message="Rectangular direct-call output mismatch",
+    )
+
+
+def test_blackhole_module_direct_call_stick_copy():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    m, n = 32, 32
+    torch.manual_seed(42)
+    a_torch = torch.randn(m, n, dtype=torch.float32)
+    b_output = torch.zeros_like(a_torch)
+    b_ref = torch.zeros_like(a_torch)
+    b_ref[:, :16] = a_torch[:, :16]
+
+    target = Target("blackhole")
+    kernel = staged_stick_copy_kernel(tile_m=32, tile_n=16, global_n=32, dtype="float32")
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        b_ref,
+        atol=1e-5,
+        rtol=1e-5,
+        failure_message="Stick direct-call output mismatch",
     )
 
 

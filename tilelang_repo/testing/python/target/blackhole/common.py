@@ -126,6 +126,29 @@ def grid_indexed_staged_copy_kernel(grid_x: int, grid_y: int, tile_m: int = 32, 
     return main
 
 
+def staged_stick_copy_kernel(
+    tile_m: int = 32,
+    tile_n: int = 16,
+    global_n: int = 32,
+    dtype: str = "float32",
+):
+    """Define a minimal interleaved stick-style copy with non-32-aligned width."""
+    assert tile_m == 32
+    assert global_n % tile_n == 0
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((tile_m, global_n), dtype),
+        B: T.Tensor((tile_m, global_n), dtype),
+    ):
+        with T.Kernel(1, 1) as (bx, by):
+            A_shared = T.alloc_shared((tile_m, tile_n), dtype)
+            T.copy(A[0:tile_m, 0:tile_n], A_shared)
+            T.copy(A_shared, B[0:tile_m, 0:tile_n])
+
+    return main
+
+
 def make_blackhole_cb_requirements_mod(cb_requirements):
     """Build a split/lowered Blackhole module with an explicit CB requirement list."""
     kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)

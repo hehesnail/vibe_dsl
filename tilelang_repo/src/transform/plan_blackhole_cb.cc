@@ -98,10 +98,12 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
       op_name == "tl.blackhole.cb_push_back" ||
       op_name == "tl.blackhole.cb_wait_front" ||
       op_name == "tl.blackhole.cb_pop_front" ||
-      op_name == "tl.blackhole.write_tile_from_cb") {
+      op_name == "tl.blackhole.write_tile_from_cb" ||
+      op_name == "tl.blackhole.write_page_from_cb") {
     return {0};
   }
-  if (op_name == "tl.blackhole.read_tile_to_cb") {
+  if (op_name == "tl.blackhole.read_tile_to_cb" ||
+      op_name == "tl.blackhole.read_page_to_cb") {
     return {2};
   }
   if (op_name == "tl.blackhole.mm_init") {

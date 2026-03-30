@@ -812,7 +812,9 @@ static bool HasCopyBuiltins(const tir::PrimFunc& f) {
       return;
     }
     found = call->op.same_as(tir::builtin::blackhole_read_tile_to_cb()) ||
-            call->op.same_as(tir::builtin::blackhole_write_tile_from_cb());
+            call->op.same_as(tir::builtin::blackhole_write_tile_from_cb()) ||
+            call->op.same_as(tir::builtin::blackhole_read_page_to_cb()) ||
+            call->op.same_as(tir::builtin::blackhole_write_page_from_cb());
   });
   return found;
 }
@@ -884,6 +886,10 @@ static std::vector<AccessorSpec> ExtractAccessorsFromArray(const ffi::Array<ffi:
     }
     if (auto v = accessor_info.Get("args_config_bits")) {
       accessor.args_config_bits =
+          static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+    }
+    if (auto v = accessor_info.Get("transport_page_size")) {
+      accessor.transport_page_size_bytes =
           static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
     }
     if (auto v = accessor_info.Get("layout")) {

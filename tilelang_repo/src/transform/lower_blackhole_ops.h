@@ -78,6 +78,7 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
     int common_runtime_arg_offset = 0;
     int common_runtime_arg_count = 0;
     int args_config_bits = 1;
+    int transport_page_size_bytes = 0;
     std::string layout = "interleaved";
     std::string memory_space = "dram";
   };
@@ -187,7 +188,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
                         int compile_time_arg_count,
                         int common_runtime_arg_offset,
                         int common_runtime_arg_count,
-                        int args_config_bits);
+                        int args_config_bits,
+                        int transport_page_size_bytes = 0);
 
   /*! \brief Return compile-time accessor slot for a reader/source buffer */
   int GetReadAccessorSlot(const tvm::tir::Buffer& buffer, CopyDirection direction) const;
@@ -197,6 +199,12 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
 
   /*! \brief Estimate a copy tile page size for a buffer */
   int EstimateCopyPageSize(const tvm::tir::Buffer& buffer) const;
+
+  /*! \brief Override CB requirement page sizing after a more specific contract is known. */
+  void SetRequirementPageLayout(int requirement_index, int page_size, int num_pages);
+
+  /*! \brief Determine whether a staged copy should use page/stick transport. */
+  bool UseStagedCopyPageTransport(const tvm::tir::Buffer& shared_buffer) const;
 
   /*! \brief Generate matmul builtin sequence */
   tvm::tir::Stmt GenerateMatmulSequence(const tvm::tir::CallNode* op);
