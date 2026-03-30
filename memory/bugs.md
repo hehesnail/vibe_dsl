@@ -14,6 +14,19 @@
 
 ## 已解决（仍有复用价值）
 
+### accessor-level `common_runtime_arg_count` 在 compile-time ABI 主路径下曾绕过 direct runtime fail-fast
+
+- **时间**: 2026-03-30
+- **问题**: P3 已经 formalize 了 `accessors` 和 `common_runtime_args`，也约定 direct runtime 只支持 `layout=interleaved` 且 `common_runtime_arg_count=0`。但 `BlackholeModule` 之前只在旧 accessor materialization 路径里检查 `accessor.common_runtime_arg_count`；当 kernel 走 `compile_time_arg_specs` 主路径时，只检查了 `kernel.common_runtime_args.empty()`，没有同步拒绝 accessor 自己声明的 `common_runtime_arg_count > 0`
+- **影响**: richer accessor schema 可以在 schema/spec 层被正确提取，但 direct runtime 的 reject 边界不完整；未支持的 accessor common-runtime 组合可能绕过统一 schema 校验
+- **解决**:
+  - 把 `accessor.layout / accessor.memory_space / accessor.common_runtime_arg_count` 的 direct-runtime 约束统一收进 `ValidateKernelDirectRuntimeSchema`
+  - 新增 copy / GEMM direct runtime reject 测试，专门覆盖 accessor-level `common_runtime_arg_count > 0`
+  - 修正 copy semaphore runtime-arg 测试 helper：当测试通过 `segment.runtime_args` 注入额外 runtime arg 时，必须在原有顶层 `blackhole.runtime_args` 基础上追加；否则 segment 非空会遮蔽顶层 buffer runtime ABI
+- **教训**:
+  - `KernelSpec.accessors` 不是 compile-time ABI schema 的冗余影子；只要 direct runtime 仍消费 accessor descriptor，所有 materialization 路径都必须共享同一条 schema 校验
+  - `segment.runtime_args` 在 `KernelSpec` 上是 override，不是 merge；测试或变异如果只塞新增字段而不带回原始 buffer args，会制造伪 bug
+
 ### `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 会生成非法 host shim
 
 - **时间**: 2026-03-26

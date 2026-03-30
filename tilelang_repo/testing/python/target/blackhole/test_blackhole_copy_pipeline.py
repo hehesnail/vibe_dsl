@@ -75,7 +75,7 @@ def _rebuild_codegen_module_with_semaphore_plan(artifact, semaphore_plan):
 
 
 def _rebuild_codegen_module_with_semaphore_binding(
-    artifact, *, semaphore_plan=None, segment_mutator=None
+    artifact, *, semaphore_plan=None, segment_mutator=None, runtime_args_mutator=None
 ):
     device_mod = artifact.device_mod
     rewritten = {}
@@ -83,6 +83,11 @@ def _rebuild_codegen_module_with_semaphore_binding(
         if func.attrs and "blackhole.segment_plan" in func.attrs:
             if semaphore_plan is not None:
                 func = func.with_attr("blackhole.semaphore_plan", semaphore_plan)
+            if runtime_args_mutator is not None and "blackhole.runtime_args" in func.attrs:
+                func = func.with_attr(
+                    "blackhole.runtime_args",
+                    runtime_args_mutator(func.attrs["blackhole.runtime_args"]),
+                )
             if segment_mutator is not None:
                 func = func.with_attr(
                     "blackhole.segment_plan",
@@ -644,6 +649,40 @@ def test_blackhole_copy_direct_runtime_rejects_common_runtime_accessor_schema():
         mutated_mod["main"](a_torch, b_output)
 
 
+def test_blackhole_copy_direct_runtime_rejects_accessor_common_runtime_arg_count():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    mutated_segments = []
+    for segment in device_main.attrs["blackhole.segment_plan"]:
+        mutated_segment = dict(segment)
+        mutated_accessors = []
+        for accessor in segment["accessors"]:
+            mutated_accessor = dict(accessor)
+            mutated_accessor["common_runtime_arg_offset"] = 0
+            mutated_accessor["common_runtime_arg_count"] = 1
+            mutated_accessors.append(mutated_accessor)
+        mutated_segment["accessors"] = mutated_accessors
+        mutated_segment["common_runtime_args"] = []
+        mutated_segments.append(mutated_segment)
+    mutated_mod = _rebuild_codegen_module_with_segment_plan(artifact, mutated_segments)
+
+    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    b_output = torch.zeros_like(a_torch)
+
+    with pytest.raises(tvm.error.InternalError, match="common runtime args|interleaved"):
+        mutated_mod["main"](a_torch, b_output)
+
+
 def test_blackhole_copy_direct_runtime_materializes_compile_time_abi_schema():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
@@ -750,6 +789,10 @@ def test_blackhole_copy_direct_runtime_accepts_semaphore_id_runtime_arg():
     with target:
         artifact = lower(kernel, target=target)
 
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    base_runtime_args = list(device_main.attrs["blackhole.runtime_args"])
+
     semaphore_plan = [
         {
             "id": 0,
@@ -764,18 +807,16 @@ def test_blackhole_copy_direct_runtime_accepts_semaphore_id_runtime_arg():
         }
     ]
 
+    semaphore_runtime_arg = {"name": "copy_sem", "kind": "semaphore_id_u32", "dtype": "uint32"}
+
+    def runtime_args_mutator(runtime_args):
+        return list(runtime_args) + [semaphore_runtime_arg]
+
     def segment_mutator(segment_plan):
         mutated_segments = []
         for segment in segment_plan:
             mutated = dict(segment)
-            try:
-                runtime_args = list(segment["runtime_args"])
-            except KeyError:
-                runtime_args = []
-            runtime_args.append(
-                {"name": "copy_sem", "kind": "semaphore_id_u32", "dtype": "uint32"}
-            )
-            mutated["runtime_args"] = runtime_args
+            mutated["runtime_args"] = runtime_args_mutator(base_runtime_args)
             mutated["semaphore_bindings"] = [
                 {"name": "copy_sem", "semaphore_id": 0, "arg_kind": "semaphore_id_u32"}
             ]
@@ -783,13 +824,22 @@ def test_blackhole_copy_direct_runtime_accepts_semaphore_id_runtime_arg():
         return mutated_segments
 
     mutated_mod = _rebuild_codegen_module_with_semaphore_binding(
-        artifact, semaphore_plan=semaphore_plan, segment_mutator=segment_mutator
+        artifact,
+        semaphore_plan=semaphore_plan,
+        segment_mutator=segment_mutator,
+        runtime_args_mutator=runtime_args_mutator,
     )
 
     a_torch = torch.randn(32, 32, dtype=torch.float16)
     b_output = torch.zeros_like(a_torch)
     mutated_mod["main"](a_torch, b_output)
-    assert_tensors_close_or_dump(a_torch, b_output)
+    assert_tensors_close_or_dump(
+        a_torch,
+        b_output,
+        atol=0.0,
+        rtol=0.0,
+        failure_message="Copy direct-call output mismatch with semaphore_id_u32 runtime arg",
+    )
 
 
 @pytest.mark.xfail(

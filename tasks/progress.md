@@ -13,17 +13,18 @@
 
 | 测试 | 结果 |
 |------|------|
-| `test_blackhole_copy_pipeline.py` | 20 passed, 1 skipped, 1 xfailed |
+| `test_blackhole_copy_pipeline.py` | 24 passed, 6 skipped, 1 xfailed |
 | `test_blackhole_copy_runtime.py` | 2 passed, 5 skipped |
-| `test_blackhole_gemm.py` | 21 passed, 9 skipped |
+| `test_blackhole_gemm.py` | 21 passed, 10 skipped |
 | `test_blackhole_tvm_ffi_export.py` | 1 passed |
 
 ### 已验证 full-env 结果
 
 | 测试 | 结果 |
 |------|------|
+| `test_blackhole_copy_pipeline.py` | 30 passed, 1 xfailed |
 | `test_blackhole_copy_runtime.py` | 6 passed |
-| `test_blackhole_gemm.py` | 30 passed |
+| `test_blackhole_gemm.py` | 31 passed |
 
 ---
 
@@ -100,6 +101,8 @@
   - copy: equal source/dest range，且 stride = 1
   - GEMM: A/B-separated reader range + writer output range
   - accessor: 仅 interleaved + DRAM + `common_runtime_arg_count = 0`
+  - accessor fail-fast 已补齐到统一 schema 校验层：即使 kernel 走 `compile_time_arg_specs` 主路径，只要 accessor 声明 `common_runtime_arg_count > 0` 也会被 direct runtime 明确拒绝
+  - copy/GEMM 已新增 direct runtime reject 回归，覆盖 accessor-level `common_runtime_arg_count > 0`
 
 ### Stage 2J（Compute Contract Formalization）
 

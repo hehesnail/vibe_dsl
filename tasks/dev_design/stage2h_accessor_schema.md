@@ -195,10 +195,14 @@
 
 4. fail-fast 测试
    - 对 `layout = sharded` 或 `common_runtime_arg_count > 0` 的 kernel，direct runtime 明确拒绝
+   - reject 覆盖必须同时命中两条 materialization 路径：
+     - `KernelSpec.accessors`
+     - `compile_time_arg_specs` 主路径下仍保留的 accessor descriptors
 
 5. 回归
    - copy pipeline 测试
    - GEMM lowering / contract 结构测试
+   - copy / GEMM direct runtime 针对 accessor-level `common_runtime_arg_count > 0` 的拒绝测试
 
 ---
 

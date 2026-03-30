@@ -943,6 +943,42 @@ def test_blackhole_gemm_direct_runtime_rejects_sharded_accessor_schema():
         mutated_mod["main"](a_torch, b_torch, c_output)
 
 
+def test_blackhole_gemm_direct_runtime_rejects_accessor_common_runtime_arg_count():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    mutated_segments = []
+    for segment in device_main.attrs["blackhole.segment_plan"]:
+        mutated_segment = dict(segment)
+        if "accessors" in segment:
+            mutated_accessors = []
+            for accessor in segment["accessors"]:
+                mutated_accessor = dict(accessor)
+                mutated_accessor["common_runtime_arg_offset"] = 0
+                mutated_accessor["common_runtime_arg_count"] = 1
+                mutated_accessors.append(mutated_accessor)
+            mutated_segment["accessors"] = mutated_accessors
+        mutated_segment["common_runtime_args"] = []
+        mutated_segments.append(mutated_segment)
+    mutated_mod = _rebuild_codegen_module_with_segment_plan(artifact, mutated_segments)
+
+    a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    c_output = torch.zeros(32, 32, dtype=torch.float32)
+
+    with pytest.raises(tvm.error.InternalError, match="common runtime args|interleaved"):
+        mutated_mod["main"](a_torch, b_torch, c_output)
+
+
 def test_blackhole_gemm_direct_runtime_rejects_mismatched_launch_spec_core_type():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:

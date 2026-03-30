@@ -555,6 +555,15 @@ static void ValidateKernelDirectRuntimeSchema(const KernelSpec& kernel) {
   ICHECK(kernel.common_runtime_args.empty())
       << "Blackhole direct runtime currently supports only interleaved accessors without common runtime args";
 
+  for (const auto& accessor : kernel.accessors) {
+    ICHECK_EQ(accessor.layout, "interleaved")
+        << "Blackhole direct runtime currently supports only interleaved accessors";
+    ICHECK_EQ(accessor.memory_space, "dram")
+        << "Blackhole direct runtime currently supports only DRAM accessors";
+    ICHECK_EQ(accessor.common_runtime_arg_count, 0U)
+        << "Blackhole direct runtime currently supports only interleaved accessors without common runtime args";
+  }
+
   for (const auto& spec : kernel.compile_time_arg_specs) {
     if (spec.kind != "interleaved_accessor_cta") {
       continue;
