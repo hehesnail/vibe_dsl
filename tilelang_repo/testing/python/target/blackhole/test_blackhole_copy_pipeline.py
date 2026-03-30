@@ -408,6 +408,37 @@ def test_blackhole_copy_compile_time_abi_is_materialized():
     assert str(launch_spec["noc"]) == expected_launch_spec["noc"]
 
 
+def test_blackhole_copy_runtime_arg_identities_are_materialized():
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    assert "runtime_args" in executable_spec
+    runtime_args = executable_spec["runtime_args"]
+    assert [
+        (
+            str(item["name"]),
+            str(item["kind"]),
+            str(item["identity"]),
+            str(item["buffer"]) if "buffer" in item else "",
+        )
+        for item in runtime_args
+    ] == [
+        ("A_addr", "input_buffer_addr32", "input_buffer_addr32:A", "A"),
+        ("B_addr", "output_buffer_addr32", "output_buffer_addr32:B", "B"),
+        ("work_linear_id", "work_linear_id", "work_linear_id", ""),
+        ("a_tile_start_id", "a_tile_start_id", "a_tile_start_id", ""),
+        ("a_tile_num_tiles", "a_tile_num_tiles", "a_tile_num_tiles", ""),
+        ("a_tile_stride", "a_tile_stride", "a_tile_stride", ""),
+        ("output_tile_start_id", "output_tile_start_id", "output_tile_start_id", ""),
+        ("output_tile_num_tiles", "output_tile_num_tiles", "output_tile_num_tiles", ""),
+        ("output_tile_stride", "output_tile_stride", "output_tile_stride", ""),
+    ]
+
+
 def test_blackhole_copy_buffer_materialization_specs_are_exposed():
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     target = Target("blackhole")
@@ -657,6 +688,7 @@ def test_blackhole_copy_direct_runtime_rejects_common_runtime_accessor_schema():
         {
             "name": "rank",
             "kind": "accessor_common_u32",
+            "identity": "rank",
             "dtype": "uint32",
         }
     ]
@@ -692,12 +724,14 @@ def test_blackhole_copy_direct_runtime_materializes_shared_common_runtime_buffer
         {
             "name": "input_buffer_common_addr32",
             "kind": "input_buffer_addr32",
+            "identity": "input_buffer_addr32:A",
             "dtype": "uint32",
             "buffer": "A",
         },
         {
             "name": "output_buffer_common_addr32",
             "kind": "output_buffer_addr32",
+            "identity": "output_buffer_addr32:B",
             "dtype": "uint32",
             "buffer": "B",
         },
@@ -944,7 +978,12 @@ def test_blackhole_copy_direct_runtime_accepts_semaphore_id_runtime_arg():
         }
     ]
 
-    semaphore_runtime_arg = {"name": "copy_sem", "kind": "semaphore_id_u32", "dtype": "uint32"}
+    semaphore_runtime_arg = {
+        "name": "copy_sem",
+        "kind": "semaphore_id_u32",
+        "identity": "copy_sem",
+        "dtype": "uint32",
+    }
 
     def runtime_args_mutator(runtime_args):
         return list(runtime_args) + [semaphore_runtime_arg]
@@ -1211,18 +1250,66 @@ def test_blackhole_copy_codegen_rejects_schema_without_work_linear_id():
         artifact = lower(kernel, target=target)
 
     unsupported_runtime_args = [
-        {"name": "A_addr", "kind": "input_buffer_addr32", "dtype": "uint32", "buffer": "A"},
-        {"name": "B_addr", "kind": "output_buffer_addr32", "dtype": "uint32", "buffer": "B"},
-        {"name": "a_tile_start_id", "kind": "a_tile_start_id", "dtype": "uint32"},
-        {"name": "a_tile_num_tiles", "kind": "a_tile_num_tiles", "dtype": "uint32"},
-        {"name": "a_tile_stride", "kind": "a_tile_stride", "dtype": "uint32"},
-        {"name": "output_tile_start_id", "kind": "output_tile_start_id", "dtype": "uint32"},
-        {"name": "output_tile_num_tiles", "kind": "output_tile_num_tiles", "dtype": "uint32"},
-        {"name": "output_tile_stride", "kind": "output_tile_stride", "dtype": "uint32"},
+        {"name": "A_addr", "kind": "input_buffer_addr32", "identity": "input_buffer_addr32:A", "dtype": "uint32", "buffer": "A"},
+        {"name": "B_addr", "kind": "output_buffer_addr32", "identity": "output_buffer_addr32:B", "dtype": "uint32", "buffer": "B"},
+        {"name": "a_tile_start_id", "kind": "a_tile_start_id", "identity": "a_tile_start_id", "dtype": "uint32"},
+        {"name": "a_tile_num_tiles", "kind": "a_tile_num_tiles", "identity": "a_tile_num_tiles", "dtype": "uint32"},
+        {"name": "a_tile_stride", "kind": "a_tile_stride", "identity": "a_tile_stride", "dtype": "uint32"},
+        {"name": "output_tile_start_id", "kind": "output_tile_start_id", "identity": "output_tile_start_id", "dtype": "uint32"},
+        {"name": "output_tile_num_tiles", "kind": "output_tile_num_tiles", "identity": "output_tile_num_tiles", "dtype": "uint32"},
+        {"name": "output_tile_stride", "kind": "output_tile_stride", "identity": "output_tile_stride", "dtype": "uint32"},
     ]
 
     with pytest.raises(Exception, match="work_linear_id|copy fallback|stride"):
         _rebuild_codegen_module_with_runtime_args(artifact, unsupported_runtime_args)
+
+
+def test_blackhole_copy_codegen_rejects_runtime_arg_without_identity():
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    missing_identity_runtime_args = [
+        {"name": "A_addr", "kind": "input_buffer_addr32", "dtype": "uint32", "buffer": "A"},
+        {"name": "B_addr", "kind": "output_buffer_addr32", "identity": "output_buffer_addr32:B", "dtype": "uint32", "buffer": "B"},
+        {"name": "work_linear_id", "kind": "work_linear_id", "identity": "work_linear_id", "dtype": "uint32"},
+        {"name": "a_tile_start_id", "kind": "a_tile_start_id", "identity": "a_tile_start_id", "dtype": "uint32"},
+        {"name": "a_tile_num_tiles", "kind": "a_tile_num_tiles", "identity": "a_tile_num_tiles", "dtype": "uint32"},
+        {"name": "a_tile_stride", "kind": "a_tile_stride", "identity": "a_tile_stride", "dtype": "uint32"},
+        {"name": "output_tile_start_id", "kind": "output_tile_start_id", "identity": "output_tile_start_id", "dtype": "uint32"},
+        {"name": "output_tile_num_tiles", "kind": "output_tile_num_tiles", "identity": "output_tile_num_tiles", "dtype": "uint32"},
+        {"name": "output_tile_stride", "kind": "output_tile_stride", "identity": "output_tile_stride", "dtype": "uint32"},
+    ]
+
+    with pytest.raises(Exception, match="missing explicit identity"):
+        _rebuild_codegen_module_with_runtime_args(artifact, missing_identity_runtime_args)
+
+
+def test_blackhole_copy_codegen_rejects_common_runtime_arg_without_identity():
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    mutated_segments = []
+    for segment in device_main.attrs["blackhole.segment_plan"]:
+        mutated_segment = dict(segment)
+        mutated_segment["common_runtime_args"] = [
+            {
+                "name": "rank",
+                "kind": "accessor_common_u32",
+                "dtype": "uint32",
+            }
+        ]
+        mutated_segments.append(mutated_segment)
+
+    with pytest.raises(Exception, match="missing explicit identity"):
+        _rebuild_codegen_module_with_segment_plan(artifact, mutated_segments)
 
 
 def test_blackhole_core_plan_preserves_logical_block_launch():

@@ -233,6 +233,21 @@
 - **问题**: 同一 pytest 进程内多个 direct-call case 复用固定 kernel 临时路径，TT-Metal JIT 复用旧编译结果
 - **解决**: kernel 临时目录改成每次执行唯一
 
+### runtime/common-runtime arg heuristic 去重
+
+- **时间**: 2026-03-30
+- **问题**: `rt_mod_blackhole` 之前按 `kind + name/buffer` 聚合 `runtime_args` / `common_runtime_args`，相同 kind 但语义不同的跨 segment 参数会被错误合并，而且 metadata 不显式暴露稳定 identity
+- **根本原因**: arg identity 没有从 lowering/split 端正式产出，spec 提取层只能做 host-side heuristic dedupe
+- **解决**:
+  - `KernelArgSpec` 新增显式 `identity`
+  - `LowerBlackholeOps` / `SplitBlackholeKernel` 产出 `runtime_args` 时显式写入 `identity`
+  - `rt_mod_blackhole` 聚合仅按 `identity` 去重
+  - 缺失 `identity` 的 runtime/common-runtime arg schema build-time 直接拒绝
+  - `ExecutableSpec` 顶层现已显式暴露 `common_runtime_args`
+- **教训**:
+  - schema identity 必须由 IR/lowering 真源提供，不能留给 host-side 提取层猜
+  - 如果一个字段决定 cross-kernel 聚合行为，就必须进入 metadata/spec 真链路，而不是只存在于隐式 dedupe 规则里
+
 ### 环境问题速查
 
 | 问题 | 解决 |

@@ -74,6 +74,14 @@ static constexpr const char* kCopySemantics = "blackhole.copy_semantics";
 // Attr key we emit
 static constexpr const char* kSegmentKind = "blackhole.segment_kind";
 
+static std::string MakeBlackholeRuntimeArgIdentity(const std::string& kind, const std::string& name,
+                                                   const std::string& buffer_name = "") {
+  if (!buffer_name.empty()) {
+    return kind + ":" + buffer_name;
+  }
+  return !kind.empty() ? kind : name;
+}
+
 // ------------------------------------------------------------------
 // Helpers to read annotation fields from a Map<String, Any>
 // ------------------------------------------------------------------
@@ -311,6 +319,7 @@ static void StoreGemmSegmentPlan(PrimFunc& func,
     if (!buffer_name.empty()) {
       arg.Set("buffer", String(buffer_name));
     }
+    arg.Set("identity", String(MakeBlackholeRuntimeArgIdentity(kind, name, buffer_name)));
     return arg;
   };
 

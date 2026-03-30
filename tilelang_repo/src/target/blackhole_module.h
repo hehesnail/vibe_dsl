@@ -135,6 +135,7 @@ struct KernelArgSpec {
   std::string kind;
   std::string dtype;
   std::string buffer;
+  std::string identity;
   uint32_t core_x = 0;
   uint32_t core_y = 0;
   bool has_core_coord = false;
@@ -147,6 +148,7 @@ struct KernelArgSpec {
     if (!buffer.empty()) {
       writer->WriteObjectKeyValue("buffer", buffer);
     }
+    writer->WriteObjectKeyValue("identity", identity);
     if (has_core_coord) {
       writer->WriteObjectKeyValue("core_x", static_cast<int64_t>(core_x));
       writer->WriteObjectKeyValue("core_y", static_cast<int64_t>(core_y));
@@ -572,6 +574,7 @@ struct ExecutableSpec {
   std::string default_kernel_kind = "fused_dataflow";
   std::string default_kernel_core_type = "brisc";
   std::vector<KernelArgSpec> runtime_args;
+  std::vector<KernelArgSpec> common_runtime_args;
   std::vector<KernelSpec> kernels;
   GemmContractSpec gemm_contract;
   ComputeContractSpec compute_contract;
@@ -598,6 +601,9 @@ struct ExecutableSpec {
     writer->WriteObjectKeyValue("default_kernel_core_type", default_kernel_core_type);
     if (!runtime_args.empty()) {
       writer->WriteObjectKeyValue("runtime_args", runtime_args);
+    }
+    if (!common_runtime_args.empty()) {
+      writer->WriteObjectKeyValue("common_runtime_args", common_runtime_args);
     }
     if (!kernels.empty()) {
       writer->WriteObjectKeyValue("kernels", kernels);

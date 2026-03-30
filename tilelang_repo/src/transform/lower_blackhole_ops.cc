@@ -91,6 +91,14 @@ static Array<Any> EncodeNamedUint32Pairs(
   return encoded_entries;
 }
 
+static std::string MakeBlackholeRuntimeArgIdentity(const std::string& kind, const std::string& name,
+                                                   const std::string& buffer_name = "") {
+  if (!buffer_name.empty()) {
+    return kind + ":" + buffer_name;
+  }
+  return !kind.empty() ? kind : name;
+}
+
 using tir::PrimFunc;
 using tir::PrimFuncNode;
 using tir::Stmt;
@@ -484,6 +492,7 @@ void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
     if (!buffer_name.empty()) {
       arg_map.Set("buffer", String(buffer_name));
     }
+    arg_map.Set("identity", String(MakeBlackholeRuntimeArgIdentity(kind, name, buffer_name)));
     runtime_args.push_back(arg_map);
   };
 

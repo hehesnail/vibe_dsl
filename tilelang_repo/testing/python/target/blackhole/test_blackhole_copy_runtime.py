@@ -471,16 +471,16 @@ def test_blackhole_module_direct_call_rejects_unsupported_richer_copy_schema():
         artifact = lower(kernel, target=target)
 
     unsupported_runtime_args = [
-        {"name": "A_addr", "kind": "input_buffer_addr32", "dtype": "uint32", "buffer": "A"},
-        {"name": "B_addr", "kind": "output_buffer_addr32", "dtype": "uint32", "buffer": "B"},
-        {"name": "work_linear_id", "kind": "work_linear_id", "dtype": "uint32"},
-        {"name": "a_tile_start_id", "kind": "a_tile_start_id", "dtype": "uint32"},
-        {"name": "a_tile_num_tiles", "kind": "a_tile_num_tiles", "dtype": "uint32"},
-        {"name": "a_tile_stride", "kind": "a_tile_stride", "dtype": "uint32"},
-        {"name": "b_tile_start_id", "kind": "b_tile_start_id", "dtype": "uint32"},
-        {"name": "output_tile_start_id", "kind": "output_tile_start_id", "dtype": "uint32"},
-        {"name": "output_tile_num_tiles", "kind": "output_tile_num_tiles", "dtype": "uint32"},
-        {"name": "output_tile_stride", "kind": "output_tile_stride", "dtype": "uint32"},
+        {"name": "A_addr", "kind": "input_buffer_addr32", "identity": "input_buffer_addr32:A", "dtype": "uint32", "buffer": "A"},
+        {"name": "B_addr", "kind": "output_buffer_addr32", "identity": "output_buffer_addr32:B", "dtype": "uint32", "buffer": "B"},
+        {"name": "work_linear_id", "kind": "work_linear_id", "identity": "work_linear_id", "dtype": "uint32"},
+        {"name": "a_tile_start_id", "kind": "a_tile_start_id", "identity": "a_tile_start_id", "dtype": "uint32"},
+        {"name": "a_tile_num_tiles", "kind": "a_tile_num_tiles", "identity": "a_tile_num_tiles", "dtype": "uint32"},
+        {"name": "a_tile_stride", "kind": "a_tile_stride", "identity": "a_tile_stride", "dtype": "uint32"},
+        {"name": "b_tile_start_id", "kind": "b_tile_start_id", "identity": "b_tile_start_id", "dtype": "uint32"},
+        {"name": "output_tile_start_id", "kind": "output_tile_start_id", "identity": "output_tile_start_id", "dtype": "uint32"},
+        {"name": "output_tile_num_tiles", "kind": "output_tile_num_tiles", "identity": "output_tile_num_tiles", "dtype": "uint32"},
+        {"name": "output_tile_stride", "kind": "output_tile_stride", "identity": "output_tile_stride", "dtype": "uint32"},
     ]
     mutated_mod = _rebuild_direct_runtime_module_with_runtime_args(artifact, unsupported_runtime_args)
 

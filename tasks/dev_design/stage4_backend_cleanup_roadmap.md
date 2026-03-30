@@ -249,6 +249,10 @@
 
 #### A3. 为 runtime/common-runtime arg 引入稳定 identity
 
+状态：
+
+- ✅ 已完成（2026-03-30）
+
 目标：
 
 - 去掉 `kind + name/buffer_name` 主导的 heuristic 去重
@@ -258,6 +262,31 @@
 - [rt_mod_blackhole.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/rt_mod_blackhole.cc)
 - [blackhole_module.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/blackhole_module.cc)
 - [lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc)
+- [split_blackhole_kernel.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/split_blackhole_kernel.cc)
+
+要求：
+
+- `KernelArgSpec` 新增显式 `identity`
+- lowering / split-produced segment plan 在产出 `runtime_args`、`common_runtime_args` 时就写入 `identity`
+- `ExecutableSpec.runtime_args` / `common_runtime_args` 聚合只按 `identity` 去重
+- 对于缺失 `identity` 的 runtime/common-runtime arg schema，build-time 直接拒绝，不让 `rt_mod_blackhole` 再按 `kind/name/buffer` 猜语义
+
+验证：
+
+- copy/gemm metadata 回归应显式看到 `identity`
+- 新增跨 segment 聚合回归，验证相同 kind 但不同 `identity` 的 args 不会被误合并
+
+本轮落实：
+
+- `KernelArgSpec` 新增显式 `identity`
+- `LowerBlackholeOps::StoreRuntimeArgs` 与 `SplitBlackholeKernel` 产出的 segment `runtime_args` 已显式写入 `identity`
+- `rt_mod_blackhole` 的 runtime/common-runtime arg 提取和聚合改为只按 `identity` 去重
+- 缺失 `identity` 的 runtime/common-runtime arg schema 现已 build-time 明确拒绝
+- `ExecutableSpec` 顶层现已显式暴露 `common_runtime_args`
+- 已补 copy/gemm metadata 与 guard 回归，覆盖：
+  - emitted `identity` 可见
+  - cross-segment dedupe 由 `identity` 驱动
+  - 缺失 `identity` build-time reject
 
 要求：
 

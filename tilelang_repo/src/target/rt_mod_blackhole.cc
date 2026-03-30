@@ -781,15 +781,15 @@ static KernelComputeConfigSpec ComputeConfigFromContract(const ComputeContractSp
 
 static std::vector<KernelArgSpec> MakeDefaultCopyRuntimeArgs() {
   return {
-      {"input0", "input_buffer_addr32", "uint32", ""},
-      {"output0", "output_buffer_addr32", "uint32", ""},
-      {"work_linear_id", "work_linear_id", "uint32", ""},
-      {"a_tile_start_id", "a_tile_start_id", "uint32", ""},
-      {"a_tile_num_tiles", "a_tile_num_tiles", "uint32", ""},
-      {"a_tile_stride", "a_tile_stride", "uint32", ""},
-      {"output_tile_start_id", "output_tile_start_id", "uint32", ""},
-      {"output_tile_num_tiles", "output_tile_num_tiles", "uint32", ""},
-      {"output_tile_stride", "output_tile_stride", "uint32", ""},
+      {"input0", "input_buffer_addr32", "uint32", "", "input_buffer_addr32"},
+      {"output0", "output_buffer_addr32", "uint32", "", "output_buffer_addr32"},
+      {"work_linear_id", "work_linear_id", "uint32", "", "work_linear_id"},
+      {"a_tile_start_id", "a_tile_start_id", "uint32", "", "a_tile_start_id"},
+      {"a_tile_num_tiles", "a_tile_num_tiles", "uint32", "", "a_tile_num_tiles"},
+      {"a_tile_stride", "a_tile_stride", "uint32", "", "a_tile_stride"},
+      {"output_tile_start_id", "output_tile_start_id", "uint32", "", "output_tile_start_id"},
+      {"output_tile_num_tiles", "output_tile_num_tiles", "uint32", "", "output_tile_num_tiles"},
+      {"output_tile_stride", "output_tile_stride", "uint32", "", "output_tile_stride"},
   };
 }
 
@@ -831,6 +831,9 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgsFromArray(const ffi::Array<f
     if (auto v = arg_info.Get("buffer")) {
       arg.buffer = Downcast<String>(v.value());
     }
+    if (auto v = arg_info.Get("identity")) {
+      arg.identity = Downcast<String>(v.value());
+    }
     if (auto v = arg_info.Get("core_x")) {
       arg.core_x = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
       arg.has_core_coord = true;
@@ -840,6 +843,9 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgsFromArray(const ffi::Array<f
       arg.has_core_coord = true;
     }
     if (!arg.kind.empty()) {
+      ICHECK(!arg.identity.empty())
+          << "Blackhole runtime/common-runtime arg '" << arg.name << "' kind '" << arg.kind
+          << "' is missing explicit identity";
       runtime_args.push_back(std::move(arg));
     }
   }
@@ -1008,15 +1014,6 @@ static bool ExtractLaunchSpec(const ffi::Map<ffi::String, ffi::Any>& spec_info,
          !launch_spec->noc.empty();
 }
 
-static bool IsUnifiedWorkDescriptorKind(const std::string& kind) {
-  return kind == "work_linear_id" || kind == "a_tile_start_id" ||
-         kind == "a_tile_num_tiles" || kind == "a_tile_stride" ||
-         kind == "b_tile_start_id" || kind == "b_tile_num_tiles" ||
-         kind == "b_tile_stride" || kind == "output_tile_start_id" ||
-         kind == "output_tile_num_tiles" || kind == "output_tile_stride" ||
-         kind == "k_tile_start_id" || kind == "num_k_tiles";
-}
-
 static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
   if (auto segment_plan_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.segment_plan")) {
     std::vector<KernelArgSpec> aggregated;
@@ -1034,19 +1031,11 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
       std::vector<KernelArgSpec> segment_args =
           ExtractRuntimeArgsFromArray(Downcast<ffi::Array<ffi::Any>>(runtime_args_it.value()));
       for (const auto& arg : segment_args) {
-        const bool is_buffer_arg =
-            arg.kind == "input_buffer_addr32" || arg.kind == "input_buffer_addr" ||
-            arg.kind == "output_buffer_addr32" || arg.kind == "output_buffer_addr";
-        const std::string dedupe_key = is_buffer_arg
-                                           ? (arg.kind + ":" + arg.buffer)
-                                           : (IsUnifiedWorkDescriptorKind(arg.kind)
-                                                  ? arg.kind
-                                                  : (arg.kind + ":" + arg.name));
-        if ((is_buffer_arg && arg.buffer.empty()) || seen.count(dedupe_key)) {
+        if (seen.count(arg.identity)) {
           continue;
         }
         aggregated.push_back(arg);
-        seen.insert(dedupe_key);
+        seen.insert(arg.identity);
       }
     }
     if (!aggregated.empty()) {
@@ -1084,13 +1073,11 @@ static std::vector<KernelArgSpec> ExtractCommonRuntimeArgs(const tir::PrimFunc& 
       std::vector<KernelArgSpec> segment_args = ExtractRuntimeArgsFromArray(
           Downcast<ffi::Array<ffi::Any>>(common_runtime_args_it.value()));
       for (const auto& arg : segment_args) {
-        const std::string dedupe_key =
-            arg.kind.empty() ? arg.name : (arg.kind + ":" + arg.name);
-        if (arg.kind.empty() || seen.count(dedupe_key)) {
+        if (arg.kind.empty() || seen.count(arg.identity)) {
           continue;
         }
         aggregated.push_back(arg);
-        seen.insert(dedupe_key);
+        seen.insert(arg.identity);
       }
     }
     if (!aggregated.empty()) {
@@ -1250,6 +1237,7 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   ValidateExtractedCorePlan(spec.core_plan, entry_name);
   spec.semaphores = ExtractSemaphorePlan(f);
   spec.runtime_args = ExtractRuntimeArgs(f);
+  spec.common_runtime_args = ExtractCommonRuntimeArgs(f);
   spec.gemm_contract = ExtractGemmContract(f);
   spec.compute_contract = ExtractComputeContract(f, spec.gemm_contract);
   ExtractSegmentPlan(f, &spec);
@@ -1304,6 +1292,7 @@ static ffi::Array<ffi::Any> EncodeRuntimeArgs(const std::vector<KernelArgSpec>& 
     arg_info.Set("name", ffi::String(arg.name));
     arg_info.Set("kind", ffi::String(arg.kind));
     arg_info.Set("dtype", ffi::String(arg.dtype));
+    arg_info.Set("identity", ffi::String(arg.identity));
     if (!arg.buffer.empty()) {
       arg_info.Set("buffer", ffi::String(arg.buffer));
     }

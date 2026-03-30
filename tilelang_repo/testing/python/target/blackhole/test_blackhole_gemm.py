@@ -217,6 +217,63 @@ def test_blackhole_split_kernel_gemm_segment_plan():
     ]
 
 
+def test_blackhole_gemm_arg_identity_drives_cross_segment_dedupe():
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+
+    def _with_identity(arg):
+        arg = dict(arg)
+        if "identity" not in arg:
+            if "buffer" in arg:
+                arg["identity"] = f"{arg['kind']}:{arg['buffer']}"
+            else:
+                arg["identity"] = str(arg["kind"])
+        return arg
+
+    mutated_segments = []
+    for segment in device_main.attrs["blackhole.segment_plan"]:
+        mutated_segment = dict(segment)
+        runtime_args = [_with_identity(arg) for arg in segment["runtime_args"]]
+        for arg in runtime_args:
+            if str(arg["kind"]) == "work_linear_id":
+                arg["identity"] = f"{segment['kind']}_work_linear_id"
+        mutated_segment["runtime_args"] = runtime_args
+        mutated_segment["common_runtime_args"] = [
+            {
+                "name": "shared_rank",
+                "kind": "accessor_common_u32",
+                "identity": f"{segment['kind']}_shared_rank",
+                "dtype": "uint32",
+            }
+        ]
+        mutated_segments.append(mutated_segment)
+
+    mutated_mod = _rebuild_codegen_module_with_segment_plan(artifact, mutated_segments)
+    executable_spec = mutated_mod.get_function_metadata("main")
+
+    work_linear_ids = [
+        str(item["identity"])
+        for item in executable_spec["runtime_args"]
+        if str(item["kind"]) == "work_linear_id"
+    ]
+    assert work_linear_ids == ["reader_work_linear_id", "writer_work_linear_id"]
+
+    common_runtime_arg_ids = [
+        str(item["identity"]) for item in executable_spec["common_runtime_args"]
+    ]
+    assert common_runtime_arg_ids == [
+        "reader_shared_rank",
+        "compute_shared_rank",
+        "writer_shared_rank",
+    ]
+
+
 def test_blackhole_gemm_cb_ids_are_rewritten_by_planner():
     kernel = gemm_kernel()
     mod = tilelang.tvm.IRModule({"main": kernel})
@@ -1276,6 +1333,7 @@ def test_blackhole_gemm_richer_accessor_schema_roundtrip():
                 {
                     "name": "rank",
                     "kind": "accessor_common_u32",
+                    "identity": "rank",
                     "dtype": "uint32",
                 }
             ]
