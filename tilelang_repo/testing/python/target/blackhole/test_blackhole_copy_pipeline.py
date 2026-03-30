@@ -955,6 +955,43 @@ def test_blackhole_tall_stick_copy_pipeline_formalizes_page_transport():
     assert int(accessors[1]["transport_page_size"]) == 64
 
 
+def test_blackhole_offset_stick_copy_pipeline_formalizes_page_transport():
+    target = Target("blackhole")
+    kernel = staged_stick_copy_kernel(
+        tile_m=64, tile_n=16, global_n=48, dtype="float32", src_col=16, dst_col=16
+    )
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    kernel_spec = _require_blackhole_kernel(
+        spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+    source = str(kernel_spec["source_code"])
+    assert "get_noc_addr(page_id)" in source
+    assert "noc_async_read(" in source
+    assert "noc_async_write(" in source
+    assert "const uint32_t page_bytes = 64;" in source
+
+    cb_configs = spec["cb_configs"]
+    assert len(cb_configs) == 1
+    assert int(cb_configs[0]["page_size"]) == 4096
+    assert int(cb_configs[0]["num_pages"]) == 1
+    accessors = kernel_spec["accessors"]
+    assert int(accessors[0]["transport_page_size"]) == 64
+    assert int(accessors[1]["transport_page_size"]) == 64
+
+
+def test_blackhole_stick_copy_pipeline_rejects_unaligned_transport_page():
+    target = Target("blackhole")
+    kernel = staged_stick_copy_kernel(tile_m=64, tile_n=24, global_n=48, dtype="float32")
+
+    with pytest.raises(Exception, match="64B-aligned transport page size"):
+        with target:
+            lower(kernel, target=target)
+
+
 def test_blackhole_cb_planner_rejects_overlapping_large_requirements():
     mod = make_blackhole_cb_requirements_mod(
         [

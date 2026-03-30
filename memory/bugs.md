@@ -27,6 +27,22 @@
   - host direct runtime 不能把“output”当成“无需初始化”的同义词；只要 schema 允许 partial write，output tensor 初值就是 contract 的一部分
   - 顺序相关失败优先怀疑“未初始化设备内存 + 部分写入”，不要只盯 JIT 缓存或 simulator 污染
 
+### stick/page copy 若 transport page 未对齐 64B，会在 TT-Metal NOC 层触发地址对齐错误
+
+- **时间**: 2026-03-30
+- **问题**: interleaved stick/page copy 在 schema、lowering、codegen 都看起来正确时，TT-Sim 仍可能在 runtime 报 `alignment of src_addr ... and dst_addr ... does not match`
+- **根本原因**:
+  - 当前 direct path 的 stick transport 走 `TensorAccessor(...).get_noc_addr(page_id)` + `noc_async_read/write`
+  - 当 `transport_page_size` 不是 64B 对齐时，例如 `tile_n=24, dtype=float32 -> page_bytes=96`，page-based NOC 传输会落到 TT-Metal 的地址对齐约束
+  - 这不是 pipeline/schema 丢字段，而是当前正式执行面尚未覆盖更一般的 unaligned stick width
+- **解决**:
+  - 把 `transport_page_size` 明确保留在 accessor schema
+  - `LowerBlackholeOps` 对 stick/page transport 新增统一 fail-fast：`page_bytes % 64 == 0`
+  - 现阶段正式支持 `64B` 对齐的 interleaved row-major stick transport；未对齐 case 在 lowering 阶段直接拒绝
+- **教训**:
+  - 对 TT-Metal stick/page transport，pipeline 看起来“语义对了”不代表 runtime 一定可执行；还要检查底层 NOC/page 对齐约束
+  - 当 direct path 还没覆盖更宽执行面时，应把边界收成 schema/lowering fail-fast，而不是把用户带到 runtime 才撞底层地址错误
+
 ## 已解决（仍有复用价值）
 
 ### worker semaphore 跨核握手如果直接把 logical core 坐标塞进 `get_noc_addr`，TT-Sim 会挂死

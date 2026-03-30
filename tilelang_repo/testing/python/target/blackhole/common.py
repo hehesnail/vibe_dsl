@@ -131,10 +131,14 @@ def staged_stick_copy_kernel(
     tile_n: int = 16,
     global_n: int = 32,
     dtype: str = "float32",
+    src_col: int = 0,
+    dst_col: int = 0,
 ):
     """Define a minimal interleaved stick-style copy with non-32-aligned width."""
     assert tile_m % 32 == 0
     assert global_n % tile_n == 0
+    assert 0 <= src_col <= global_n - tile_n
+    assert 0 <= dst_col <= global_n - tile_n
 
     @T.prim_func
     def main(
@@ -143,8 +147,8 @@ def staged_stick_copy_kernel(
     ):
         with T.Kernel(1, 1) as (bx, by):
             A_shared = T.alloc_shared((tile_m, tile_n), dtype)
-            T.copy(A[0:tile_m, 0:tile_n], A_shared)
-            T.copy(A_shared, B[0:tile_m, 0:tile_n])
+            T.copy(A[0:tile_m, src_col : src_col + tile_n], A_shared)
+            T.copy(A_shared, B[0:tile_m, dst_col : dst_col + tile_n])
 
     return main
 

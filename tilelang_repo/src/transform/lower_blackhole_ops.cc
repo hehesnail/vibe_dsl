@@ -1807,6 +1807,11 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
       use_page_transport ? 1 : static_cast<int>(shared_cols / kBlackholeTileCols);
   const int tile_bytes = kBlackholeTileRows * kBlackholeTileCols * shared_buffer->dtype.bytes();
   const int page_bytes = static_cast<int>(shared_cols * shared_buffer->dtype.bytes());
+  if (use_page_transport) {
+    ICHECK_EQ(page_bytes % 64, 0)
+        << "Blackhole staged stick copy currently requires a 64B-aligned transport page size, "
+        << "but got " << page_bytes << " bytes";
+  }
   const int l1_stick_stride = page_bytes;
   const int shared_bytes = static_cast<int>(shared_rows * l1_stick_stride);
 
@@ -2018,6 +2023,11 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
       use_page_transport ? 1 : static_cast<int>(shared_cols / kBlackholeTileCols);
   const int tile_bytes = kBlackholeTileRows * kBlackholeTileCols * shared_buffer->dtype.bytes();
   const int page_bytes = static_cast<int>(shared_cols * shared_buffer->dtype.bytes());
+  if (use_page_transport) {
+    ICHECK_EQ(page_bytes % 64, 0)
+        << "Blackhole staged stick copy currently requires a 64B-aligned transport page size, "
+        << "but got " << page_bytes << " bytes";
+  }
   const int l1_stick_stride = page_bytes;
   const int shared_pages = shared_rows;
   const int cb_id = AllocateRequirementIndex(shared_buffer, CBType::kIntermediate);

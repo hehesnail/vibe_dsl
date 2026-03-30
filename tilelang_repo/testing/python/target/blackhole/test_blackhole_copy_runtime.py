@@ -218,6 +218,35 @@ def test_blackhole_module_direct_call_tall_stick_copy():
     )
 
 
+def test_blackhole_module_direct_call_offset_stick_copy():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    m, n = 64, 48
+    torch.manual_seed(42)
+    a_torch = torch.randn(m, n, dtype=torch.float32)
+    b_output = torch.zeros_like(a_torch)
+    b_ref = torch.zeros_like(a_torch)
+    b_ref[:, 16:32] = a_torch[:, 16:32]
+
+    target = Target("blackhole")
+    kernel = staged_stick_copy_kernel(
+        tile_m=64, tile_n=16, global_n=48, dtype="float32", src_col=16, dst_col=16
+    )
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](a_torch, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        b_ref,
+        atol=1e-5,
+        rtol=1e-5,
+        failure_message="Offset stick direct-call output mismatch",
+    )
+
+
 def test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
