@@ -14,6 +14,7 @@
 | `stage2i_compile_time_abi_schema.md` | compile-time ABI schema 正式化 | ✅ 已实施（schema/spec/direct runtime） |
 | `stage2j_compute_contract_schema.md` | compute contract 正式化 | ✅ 已实施（schema/spec/runtime 主链） |
 | `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 | ✅ 已实施（program-local semaphore + kernel binding + 最小 dataflow builtin） |
+| `stage4_backend_cleanup_roadmap.md` | 当前主链问题分档与收敛顺序 | 活动中 |
 
 ## 2. 已完成（仍有参考价值）
 

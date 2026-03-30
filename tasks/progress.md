@@ -5,7 +5,7 @@
 ## 当前阶段
 
 - **阶段**: Stage 3 — multi-core runtime 调度
-- **状态**: ✅ Stage 3 formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已完成 P0 compute contract 收尾并收正 `compute_contract -> compute_config` 真源关系与 DSL producer 输入面，且已把 `dst_full_sync_en/bfp8_pack_precise/defines/named_compile_args` 纳入 compute contract / compute config / direct runtime 主链、P3 richer runtime work/accessor/compile-time ABI 主路径收口完成：current copy/GEMM formal surface 上的 work descriptor、accessor/common-runtime schema、compile-time ABI、kernel-level shared `common_runtime_args -> SetCommonRuntimeArgs` host materialization、以及 accessor `args_config_bits -> TT-Metal ArgConfig.raw()` 真源关系都已打通；剩余更宽 execution surface 已明确转移到 P4/P5 或后续专项、P4 interleaved stick/page copy 主路径与 TT-Sim correctness 闭环（已扩到 `M x W` 与静态 offset subrange，当前 formal boundary 为 `transport_page_size` 需 64B 对齐、transport offset 需 page-aligned、global width 需能整除 shared width），以及 P5 program-local semaphore schema、kernel binding、最小 device-side dataflow semaphore builtin 与 worker producer/consumer TT-Sim E2E；direct runtime 对未支持 execution 面显式 fail-fast
+- **状态**: ✅ Stage 3 formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已完成 P0 compute contract 收尾并收正 `compute_contract -> compute_config` 真源关系与 DSL producer 输入面，且已把 `dst_full_sync_en/bfp8_pack_precise/defines/named_compile_args` 纳入 compute contract / compute config / direct runtime 主链、P3 richer runtime work/accessor/compile-time ABI 主路径收口完成：current copy/GEMM formal surface 上的 work descriptor、accessor/common-runtime schema、compile-time ABI、kernel-level shared `common_runtime_args -> SetCommonRuntimeArgs` host materialization、以及 accessor `args_config_bits -> TT-Metal ArgConfig.raw()` 真源关系都已打通；剩余更宽 execution surface 已明确转移到 P4/P5 或后续专项、P4 interleaved stick/page copy 主路径与 TT-Sim correctness 闭环（已扩到 `M x W` 与静态 offset subrange，当前 formal boundary 为 `transport_page_size` 需 64B 对齐、transport offset 需 page-aligned、global width 需能整除 shared width），以及 P5 program-local semaphore schema、kernel binding、最小 device-side dataflow semaphore builtin 与 worker producer/consumer TT-Sim E2E；direct runtime 对未支持 execution 面显式 fail-fast。当前新增 backend cleanup review 已完成，后续收敛顺序见 `tasks/dev_design/stage4_backend_cleanup_roadmap.md`
 - **日期**: 2026-03-30
 - **设计文档**: `tasks/dev_design/stage3_multicore_design.md`
 
@@ -173,6 +173,9 @@
 | `PlanBlackholeCB` 是 MVP allocator | 低 | 当前足够 |
 | `StorageRewrite` 不兼容 Blackhole CB | — | 永久排除 |
 | copy/GEMM segment 模型不统一（fused_dataflow vs 3-kernel） | 中 | 架构债，Stage 3 后再做 |
+| `BlackholeModule` host materialization 过重 | 中 | cleanup roadmap 已建档 |
+| runtime/planner 仍有隐式补洞（如 fallback core） | 中 | 应优先于继续扩 surface 收掉 |
+| runtime/common-runtime arg identity 仍偏 heuristic | 中 | 应收正为 schema-driven identity |
 
 ---
 
@@ -193,6 +196,7 @@
 | `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P0/P1/P2/P3 ✅，P4 已完成最小 interleaved stick/page path，P5 已推进到 worker semaphore producer/consumer E2E） |
 | `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 | 已实现（program-local worker semaphore + kernel binding + 最小 dataflow semaphore builtin + worker producer/consumer E2E） |
 | `stage4_copy_stick_generalization.md` | P4 stick/page copy 泛化 | ✅ 已实施（interleaved + DRAM + `M x W`, `M % 32 == 0`，支持静态 offset subrange；未对齐 64B transport page、未 page-align 的 offset、以及 non-divisible global width fail-fast） |
+| `stage4_backend_cleanup_roadmap.md` | backend cleanup 收敛路线图 | 活动中（分档：短期必须收 / P4 前应收 / P5 前应收） |
 
 ### 已完成（仍有参考价值）
 
