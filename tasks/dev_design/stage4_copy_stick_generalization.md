@@ -21,7 +21,7 @@
 - single-kernel `fused_dataflow`
 - row-major / stick-style contiguous page transport
 - 当前正式支持目标：`M x W`，其中 `M` 是 32 的倍数、`W` 不要求是 32 的倍数
-- 支持 source / destination 在全局 row-major tensor 里的静态列偏移子区间 copy
+- 支持 source / destination 在全局 row-major tensor 里的静态偏移 contiguous subrange copy
 
 本轮目标不是做完整 non-tile/sharded 泛化，而是先建立一个正式 page/stick transport 主路径，让 `32x16`、`64x16` 以及带静态列偏移的最小 non-tile copy 能进入 direct runtime。
 
@@ -37,6 +37,8 @@
 - static shape
 - `shared_rows % 32 == 0`
 - transport `page_bytes % 64 == 0`
+- source / destination transport offset 当前必须按 shared stick/page 宽度对齐
+- global width 当前必须能被 shared width 整除
 
 本轮不做：
 
@@ -88,19 +90,19 @@
 2. stick path
    - 条件：`shared_rows % 32 == 0` 且 shared width 不是 32 的倍数
    - 以“每行一个 page/stick”的方式 materialize copy
-   - `page_bytes = shared_cols * dtype.bytes()`
-   - `pages_per_row = global_cols / shared_cols`
-   - `base_page_id = row * pages_per_row + col / shared_cols`
-   - 逐行发出 `read_page_to_cb/write_page_from_cb`
-   - `cb_offset_bytes = row * page_bytes`，把 `shared_rows` 个 stick 顺序堆进一个 shared page
+- `page_bytes = shared_cols * dtype.bytes()`
+- page transport 继续使用 page-id 语义；起始 source / destination offset 必须能稳定映射到整页边界
+- 逐行发出 `read_page_to_cb/write_page_from_cb`
+- `cb_offset_bytes = row * page_bytes`，把 `shared_rows` 个 stick 顺序堆进一个 shared page
 
 stick path 仍要求：
 
-- global width 能被 shared width 整除
 - source/destination slice 没有额外 stride 变化
-- source/destination slice 可以有静态列偏移，但仍要求 contiguous row-major subrange
+- source/destination slice 可以有静态偏移，但仍要求 contiguous row-major subrange
 - accessor 继续是 interleaved + DRAM
 - 当前 direct path 只正式支持 64B 对齐的 stick transport page；如 `tile_n * dtype.bytes()` 未对齐 64B，则 lowering 直接 fail-fast
+- 当前 direct path 还要求 source / destination offset 按 shared page 宽度对齐；未对齐 case 在 lowering 阶段直接 fail-fast
+- 当前 direct path 仍要求 global width 能被 shared width 整除；更一般 row-major stride 语义还未正式化
 
 ---
 
@@ -124,10 +126,12 @@ runtime 侧不新增第二条执行路径：
 
 ## 6. 验证
 
-新增最小 `32x16`、`64x16` 和 offset subrange stick copy case：
+新增最小 `32x16`、`64x16` 和 offset subrange stick copy case，并补齐边界 reject：
 
 - pipeline/spec 测试验证 lowering 不再因为 width 非 32 对齐而失败
 - pipeline/spec 测试验证 offset case 会正式写出 `transport_page_size`
+- pipeline/spec 测试验证未按 shared page 宽度对齐的 transport offset 会在 lowering 阶段 fail-fast
+- pipeline/spec 测试验证 non-divisible global width 会在 lowering 阶段 fail-fast
 - pipeline/spec 测试验证未对齐 64B 的 `page_bytes` 会在 lowering 阶段 fail-fast
 - direct runtime 测试验证数值正确
 - TT-Sim 下验证同一个 case 真执行通过
@@ -146,6 +150,7 @@ runtime 侧不新增第二条执行路径：
 - `M x W`（`M` 为 32 的倍数）interleaved stick copy 能进入 lowering/spec/runtime 主链
 - 静态 offset subrange stick copy 能进入同一主链
 - 未对齐 64B 的 transport page 由 lowering 明确拒绝，而不是让 runtime 隐式走到 TT-Metal NOC 对齐错误
+- 未按 shared page 宽度对齐的 transport offset / non-divisible global width 由 lowering 明确拒绝，而不是让 runtime 静默读错
 - 不引入新的执行后门或 legacy emitter
 - 现有 tile copy / GEMM 回归保持通过
 - 文档、进度、经验同步

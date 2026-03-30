@@ -983,6 +983,28 @@ def test_blackhole_offset_stick_copy_pipeline_formalizes_page_transport():
     assert int(accessors[1]["transport_page_size"]) == 64
 
 
+def test_blackhole_stick_copy_pipeline_rejects_nondisible_global_width():
+    target = Target("blackhole")
+    kernel = staged_stick_copy_kernel(
+        tile_m=64, tile_n=16, global_n=40, dtype="float32", src_col=16, dst_col=16
+    )
+
+    with pytest.raises(Exception, match="global width divisible by shared width"):
+        with target:
+            lower(kernel, target=target)
+
+
+def test_blackhole_stick_copy_pipeline_rejects_unaligned_transport_offset():
+    target = Target("blackhole")
+    kernel = staged_stick_copy_kernel(
+        tile_m=64, tile_n=16, global_n=48, dtype="float32", src_col=8, dst_col=16
+    )
+
+    with pytest.raises(Exception, match="page-aligned transport offsets"):
+        with target:
+            lower(kernel, target=target)
+
+
 def test_blackhole_stick_copy_pipeline_rejects_unaligned_transport_page():
     target = Target("blackhole")
     kernel = staged_stick_copy_kernel(tile_m=64, tile_n=24, global_n=48, dtype="float32")

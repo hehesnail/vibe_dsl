@@ -136,7 +136,6 @@ def staged_stick_copy_kernel(
 ):
     """Define a minimal interleaved stick-style copy with non-32-aligned width."""
     assert tile_m % 32 == 0
-    assert global_n % tile_n == 0
     assert 0 <= src_col <= global_n - tile_n
     assert 0 <= dst_col <= global_n - tile_n
 

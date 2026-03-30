@@ -1262,10 +1262,15 @@ PrimExpr LowerBlackholeOps::InferCopyTileIndex(const BufferStoreNode* op,
     ICHECK(shared_cols_imm) << "Blackhole staged stick copy expects static shared width";
     const int64_t page_cols = shared_cols_imm->value;
     ICHECK_GT(page_cols, 0);
+    ICHECK(analyzer.CanProve(
+        tir::FloorMod(base_col, IntImm32(static_cast<int>(page_cols))) == IntImm32(0)))
+        << "Blackhole staged stick copy currently requires page-aligned transport offsets, "
+        << "but got column offset " << base_col << " for page width " << page_cols;
     ICHECK_EQ(cols_value % page_cols, 0)
         << "Blackhole staged stick copy expects global width divisible by shared width";
     PrimExpr page_row = base_row;
-    PrimExpr page_col = analyzer.Simplify(tir::FloorDiv(base_col, IntImm32(static_cast<int>(page_cols))));
+    PrimExpr page_col =
+        analyzer.Simplify(tir::FloorDiv(base_col, IntImm32(static_cast<int>(page_cols))));
     PrimExpr pages_per_row = IntImm32(static_cast<int>(cols_value / page_cols));
     return analyzer.Simplify(page_row * pages_per_row + page_col);
   }
@@ -1333,11 +1338,15 @@ PrimExpr LowerBlackholeOps::InferStagedCopyBaseTileIndex(
     ICHECK(shared_cols_imm) << "Blackhole staged stick copy expects static shared width";
     const int64_t page_cols = shared_cols_imm->value;
     ICHECK_GT(page_cols, 0);
+    const PrimExpr transport_col = transpose_b_reader ? base_row : base_col;
+    ICHECK(analyzer.CanProve(
+        tir::FloorMod(transport_col, IntImm32(static_cast<int>(page_cols))) == IntImm32(0)))
+        << "Blackhole staged stick copy currently requires page-aligned transport offsets, "
+        << "but got column offset " << transport_col << " for page width " << page_cols;
     ICHECK_EQ(cols_value % page_cols, 0)
         << "Blackhole staged stick copy expects global width divisible by shared width";
     PrimExpr page_col =
-        analyzer.Simplify(tir::FloorDiv(transpose_b_reader ? base_row : base_col,
-                                        IntImm32(static_cast<int>(page_cols))));
+        analyzer.Simplify(tir::FloorDiv(transport_col, IntImm32(static_cast<int>(page_cols))));
     PrimExpr page_row = transpose_b_reader ? base_col : base_row;
     PrimExpr pages_per_row = IntImm32(static_cast<int>(cols_value / page_cols));
     return analyzer.Simplify(page_row * pages_per_row + page_col);
@@ -1807,6 +1816,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
       use_page_transport ? 1 : static_cast<int>(shared_cols / kBlackholeTileCols);
   const int tile_bytes = kBlackholeTileRows * kBlackholeTileCols * shared_buffer->dtype.bytes();
   const int page_bytes = static_cast<int>(shared_cols * shared_buffer->dtype.bytes());
+  Analyzer analyzer;
   if (use_page_transport) {
     ICHECK_EQ(page_bytes % 64, 0)
         << "Blackhole staged stick copy currently requires a 64B-aligned transport page size, "
@@ -1816,7 +1826,6 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
   const int shared_bytes = static_cast<int>(shared_rows * l1_stick_stride);
 
   std::vector<Stmt> stmts;
-  Analyzer analyzer;
   auto make_tile_index = [&](int subtile_row, int subtile_col) -> PrimExpr {
     PrimExpr tile_index = base_tile_index;
     if (subtile_row != 0) {

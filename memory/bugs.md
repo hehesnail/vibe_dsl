@@ -38,9 +38,11 @@
 - **解决**:
   - 把 `transport_page_size` 明确保留在 accessor schema
   - `LowerBlackholeOps` 对 stick/page transport 新增统一 fail-fast：`page_bytes % 64 == 0`
-  - 现阶段正式支持 `64B` 对齐的 interleaved row-major stick transport；未对齐 case 在 lowering 阶段直接拒绝
+  - 进一步补齐 direct-path 边界：source / destination offset 必须 page-aligned，global width 必须能整除 shared width
+  - 现阶段正式支持 `64B` 对齐且 page-aligned 的 interleaved row-major stick transport；未对齐或 non-divisible case 在 lowering 阶段直接拒绝
 - **教训**:
   - 对 TT-Metal stick/page transport，pipeline 看起来“语义对了”不代表 runtime 一定可执行；还要检查底层 NOC/page 对齐约束
+  - 对 row-major stick transport，不能只检查单次 `page_bytes`；source/destination 是否落在整页边界、全局 width 是否仍满足整页推进，也属于同一个 transport contract
   - 当 direct path 还没覆盖更宽执行面时，应把边界收成 schema/lowering fail-fast，而不是把用户带到 runtime 才撞底层地址错误
 
 ## 已解决（仍有复用价值）
