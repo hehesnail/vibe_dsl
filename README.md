@@ -19,13 +19,13 @@
 
 ## 当前状态
 
-- 当前日期：`2026-03-27`
+- 当前日期：`2026-03-30`
 - 当前阶段：Stage 3 multi-core runtime 调度
 - 当前状态：
   - formal direct host path 已完成
   - copy / GEMM multi-core direct path 已通过
   - `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复
-  - TT-Metal contract formalization 正在继续推进，当前主线在 P0/P3 收正
+  - TT-Metal contract formalization 正在继续推进，当前主线在 P0/P3 收正，以及 P5 的 program-local semaphore schema / kernel binding / 最小 device-side dataflow semaphore builtin 预埋
 - 通用 pass 当前结论：
   - `FlattenBuffer` / `VectorizeLoop` 已验证可接回
   - `StorageRewrite` 当前确认不兼容 Blackhole CB 模型
