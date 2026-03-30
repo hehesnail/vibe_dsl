@@ -300,6 +300,10 @@
 
 #### B1. 拆 `BlackholeModule` 的 host materialization helper 边界
 
+状态：
+
+- ◐ 已完成首轮 helper 边界拆分（2026-03-30）
+
 目标：
 
 - 让主执行流只负责 orchestration，不再直接承载全部 materialization 细节
@@ -320,6 +324,19 @@
 
 - 先拆 helper，不强行大规模重构执行流程
 - 行为保持与当前 formal surface 一致
+
+本轮落实：
+
+- `ExecuteDirect` 里的 work-item 构造已下沉为 `BuildDirectWorkItems` / `BuildDirectLaunchCores`
+- runtime buffer 创建与 host upload 已下沉为 `MaterializeRuntimeBuffers`
+- kernel source 落盘已下沉为 `WriteKernelSourceFiles`
+- kernel + common runtime arg materialization 已下沉为 `CreateProgramKernelsFromSpec`
+- per-work runtime arg 应用已下沉为 `ApplyWorkItemRuntimeArgs`
+
+剩余项：
+
+- 当前 helper 仍集中在 [blackhole_module.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/blackhole_module.cc) 内，尚未继续拆到单独实现文件
+- accessor compile-time arg materialization 仍在同一文件内，需要后续继续收边界
 
 #### B2. 清理 `LowerBlackholeOps` 中协议提取与当前策略派生的边界
 

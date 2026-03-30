@@ -470,6 +470,185 @@ struct RuntimeBufferBinding {
   bool is_output{false};
 };
 
+static KernelHandle CreateKernelFromSpec(
+    Program& program,
+    const std::variant<CoreCoord, CoreRange, CoreRangeSet>& core_spec,
+    const KernelSpec& kernel,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
+    const std::string& kernel_path);
+static std::vector<uint32_t> BuildCommonRuntimeArgsFromSpec(
+    const KernelSpec& kernel,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
+    const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
+    const std::vector<std::string>& input_names,
+    const std::vector<std::string>& output_names);
+static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
+    const KernelSpec& kernel,
+    const ExecutableSpec& spec,
+    uint32_t current_work_linear_id,
+    const IDevice& device,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
+    const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
+    const std::vector<std::string>& input_names,
+    const std::vector<std::string>& output_names,
+    const std::vector<uint32_t>& scalar_args);
+
+struct DirectWorkItem {
+  uint32_t work_id;
+  CoreCoord core;
+};
+
+struct DirectRuntimeBufferState {
+  std::unordered_map<std::string, RuntimeBufferBinding> runtime_buffers;
+  std::vector<std::string> input_names;
+  std::vector<std::string> ordered_output_names;
+};
+
+static std::vector<DirectWorkItem> BuildDirectWorkItems(const ExecutableSpec& spec,
+                                                        const std::string& func_name) {
+  std::vector<DirectWorkItem> work_items;
+  for (const auto& packet : spec.core_plan.work_packets) {
+    CoreCoord packet_core{packet.core_x, packet.core_y};
+    for (uint32_t i = 0; i < packet.work_count; ++i) {
+      work_items.push_back({packet.work_offset + i, packet_core});
+    }
+  }
+  ICHECK(!work_items.empty())
+      << "Blackhole planner/runtime contract requires non-empty work_items derived from "
+         "core_plan.work_packets for "
+      << func_name;
+  return work_items;
+}
+
+static std::vector<CoreCoord> BuildDirectLaunchCores(const std::vector<DirectWorkItem>& work_items,
+                                                     const std::string& func_name) {
+  std::vector<CoreCoord> launch_cores;
+  launch_cores.reserve(work_items.size());
+  for (const auto& item : work_items) {
+    launch_cores.push_back(item.core);
+  }
+  std::sort(launch_cores.begin(), launch_cores.end());
+  launch_cores.erase(std::unique(launch_cores.begin(), launch_cores.end()), launch_cores.end());
+  ICHECK(!launch_cores.empty()) << "No launch cores resolved for direct execution";
+  ICHECK(launch_cores.size() == work_items.size())
+      << "Blackhole direct runtime supports only one logical work item per physical core in a "
+         "single launch. Function "
+      << func_name << " maps " << work_items.size() << " logical work items onto "
+      << launch_cores.size() << " unique cores; oversubscribed direct launch is not supported.";
+  return launch_cores;
+}
+
+static DirectRuntimeBufferState MaterializeRuntimeBuffers(
+    distributed::MeshCommandQueue& cq,
+    distributed::MeshDevice* mesh_device,
+    const ExecutableSpec& spec,
+    const std::vector<RuntimeTensorBinding>& buffer_args,
+    const std::vector<std::string>& output_names) {
+  DirectRuntimeBufferState state;
+  for (const auto& binding : buffer_args) {
+    ICHECK(binding.tensor != nullptr) << "Null tensor passed to Blackhole direct path";
+    const size_t tensor_size = GetDataSize(*binding.tensor);
+    const auto& materialization = ResolveBufferMaterializationSpec(spec, binding.name);
+    distributed::DeviceLocalBufferConfig dram_config{
+        .page_size = materialization.transport_page_size_bytes,
+        .buffer_type = BufferType::DRAM};
+    distributed::ReplicatedBufferConfig buffer_config{.size = tensor_size};
+    auto mesh_buffer =
+        distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device);
+    state.runtime_buffers.emplace(binding.name, RuntimeBufferBinding{
+                                                .mesh_buffer = mesh_buffer,
+                                                .size_bytes = tensor_size,
+                                                .is_output = binding.is_output,
+                                            });
+    if (binding.is_output) {
+      state.ordered_output_names.push_back(binding.name);
+    } else {
+      state.input_names.push_back(binding.name);
+    }
+    std::vector<uint8_t> initial_data = BuildInputTransferData(spec, binding);
+    EnqueueWriteMeshBuffer(cq, mesh_buffer, initial_data, /*blocking=*/true);
+  }
+  if (!output_names.empty()) {
+    state.ordered_output_names = output_names;
+  }
+  return state;
+}
+
+static std::vector<std::string> WriteKernelSourceFiles(const ExecutableSpec& spec,
+                                                       const std::string& func_name,
+                                                       const std::string& tmp_dir) {
+  std::vector<std::string> kernel_paths;
+  kernel_paths.reserve(spec.kernels.size());
+  for (size_t i = 0; i < spec.kernels.size(); ++i) {
+    const auto& kernel = spec.kernels[i];
+    std::string kernel_path = tmp_dir + "/" + func_name + "_" + std::to_string(i) + "_" +
+                              kernel.kind + ".cpp";
+    std::ofstream ofs(kernel_path);
+    if (!ofs) {
+      LOG(FATAL) << "Failed to write kernel file: " << kernel_path;
+    }
+    ofs << NormalizeBlackholeKernelSource(kernel.source_code);
+    kernel_paths.push_back(kernel_path);
+  }
+  return kernel_paths;
+}
+
+static std::vector<KernelHandle> CreateProgramKernelsFromSpec(
+    Program& program,
+    const CoreRangeSet& launch_core_ranges,
+    const ExecutableSpec& spec,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& runtime_buffers,
+    const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
+    const std::vector<std::string>& input_names,
+    const std::vector<std::string>& ordered_output_names,
+    const std::vector<std::string>& kernel_paths) {
+  std::vector<KernelHandle> kernels;
+  kernels.reserve(spec.kernels.size());
+  for (size_t ki = 0; ki < spec.kernels.size(); ++ki) {
+    const auto& kernel_spec = spec.kernels[ki];
+    LOG(INFO) << "Direct path: create kernel[" << ki << "] kind=" << kernel_spec.kind
+              << " core_type=" << kernel_spec.core_type;
+    kernels.push_back(CreateKernelFromSpec(program, launch_core_ranges, kernel_spec,
+                                           runtime_buffers, kernel_paths[ki]));
+    const auto common_runtime_args = BuildCommonRuntimeArgsFromSpec(
+        kernel_spec, runtime_buffers, semaphore_ids, input_names, ordered_output_names);
+    if (!common_runtime_args.empty()) {
+      LOG(INFO) << "Direct path: set common runtime args kernel[" << ki
+                << "] count=" << common_runtime_args.size();
+      SetCommonRuntimeArgs(program, kernels.back(), common_runtime_args);
+    }
+  }
+  return kernels;
+}
+
+static void ApplyWorkItemRuntimeArgs(
+    Program& program,
+    const ExecutableSpec& spec,
+    const std::vector<KernelHandle>& kernels,
+    const std::vector<DirectWorkItem>& work_items,
+    const IDevice& device,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& runtime_buffers,
+    const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
+    const std::vector<std::string>& input_names,
+    const std::vector<std::string>& ordered_output_names,
+    const std::vector<uint32_t>& scalar_args) {
+  for (const auto& item : work_items) {
+    LOG(INFO) << "Direct path: configure work_id=" << item.work_id
+              << " core=(" << item.core.x << "," << item.core.y << ")";
+    for (size_t ki = 0; ki < spec.kernels.size(); ++ki) {
+      const auto& kernel_spec = spec.kernels[ki];
+      auto runtime_args = BuildRuntimeArgsFromSpec(
+          kernel_spec, spec, item.work_id, device, runtime_buffers, semaphore_ids, input_names,
+          ordered_output_names, scalar_args);
+
+      LOG(INFO) << "Direct path: set runtime args kernel[" << ki
+                << "] core=(" << item.core.x << "," << item.core.y
+                << ") count=" << runtime_args.size();
+      SetRuntimeArgs(program, kernels[ki], item.core, runtime_args);
+    }
+  }
+}
+
 static std::vector<uint32_t> BuildKernelCompileTimeArgs(
     const KernelSpec& kernel,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings);
@@ -1111,37 +1290,8 @@ void BlackholeModuleNode::ExecuteDirect(
     ValidateKernelDirectRuntimeConstraints(kernel_spec);
   }
 
-  // Build work items: pair each logical work_id with its assigned physical core.
-  // Each WorkPacket entry owns a slice of the logical work range on one core.
-  struct WorkItem {
-    uint32_t work_id;
-    CoreCoord core;
-  };
-  std::vector<WorkItem> work_items;
-  for (const auto& packet : spec.core_plan.work_packets) {
-    CoreCoord packet_core{packet.core_x, packet.core_y};
-    for (uint32_t i = 0; i < packet.work_count; ++i) {
-      work_items.push_back({packet.work_offset + i, packet_core});
-    }
-  }
-  ICHECK(!work_items.empty())
-      << "Blackhole planner/runtime contract requires non-empty work_items derived from "
-         "core_plan.work_packets for "
-      << func_name;
-
-  std::vector<CoreCoord> launch_cores;
-  launch_cores.reserve(work_items.size());
-  for (const auto& item : work_items) {
-    launch_cores.push_back(item.core);
-  }
-  std::sort(launch_cores.begin(), launch_cores.end());
-  launch_cores.erase(std::unique(launch_cores.begin(), launch_cores.end()), launch_cores.end());
-  ICHECK(!launch_cores.empty()) << "No launch cores resolved for direct execution";
-  ICHECK(launch_cores.size() == work_items.size())
-      << "Blackhole direct runtime supports only one logical work item per physical core in a "
-         "single launch. Function "
-      << func_name << " maps " << work_items.size() << " logical work items onto "
-      << launch_cores.size() << " unique cores; oversubscribed direct launch is not supported.";
+  const std::vector<DirectWorkItem> work_items = BuildDirectWorkItems(spec, func_name);
+  const std::vector<CoreCoord> launch_cores = BuildDirectLaunchCores(work_items, func_name);
   const CoreRangeSet launch_core_ranges(launch_cores);
 
   // Keep direct execution hermetic per call. Reusing a persistent MeshDevice across
@@ -1159,53 +1309,12 @@ void BlackholeModuleNode::ExecuteDirect(
 
   distributed::MeshCommandQueue& cq = mesh_device->mesh_command_queue();
 
-  std::unordered_map<std::string, RuntimeBufferBinding> runtime_buffers;
-  std::vector<std::string> input_names;
-  std::vector<std::string> ordered_output_names;
-  for (const auto& binding : buffer_args) {
-    ICHECK(binding.tensor != nullptr) << "Null tensor passed to Blackhole direct path";
-    const size_t tensor_size = GetDataSize(*binding.tensor);
-    const auto& materialization = ResolveBufferMaterializationSpec(spec, binding.name);
-    distributed::DeviceLocalBufferConfig dram_config{
-        .page_size = materialization.transport_page_size_bytes,
-        .buffer_type = BufferType::DRAM};
-    distributed::ReplicatedBufferConfig buffer_config{.size = tensor_size};
-    auto mesh_buffer =
-        distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device.get());
-    runtime_buffers.emplace(binding.name, RuntimeBufferBinding{
-                                              .mesh_buffer = mesh_buffer,
-                                              .size_bytes = tensor_size,
-                                              .is_output = binding.is_output,
-                                          });
-    if (binding.is_output) {
-      ordered_output_names.push_back(binding.name);
-    }
-    if (!binding.is_output) {
-      input_names.push_back(binding.name);
-    }
-    std::vector<uint8_t> initial_data = BuildInputTransferData(spec, binding);
-    EnqueueWriteMeshBuffer(cq, mesh_buffer, initial_data, /*blocking=*/true);
-  }
-  if (!output_names.empty()) {
-    ordered_output_names = output_names;
-  }
+  DirectRuntimeBufferState runtime_buffer_state =
+      MaterializeRuntimeBuffers(cq, mesh_device.get(), spec, buffer_args, output_names);
 
   // Write kernel source files to temp directory
   std::string tmp_dir = MakeUniqueTempDir("tilelang_bh_direct_");
-
-  std::vector<std::string> kernel_paths;
-  kernel_paths.reserve(spec.kernels.size());
-  for (size_t i = 0; i < spec.kernels.size(); ++i) {
-    const auto& kernel = spec.kernels[i];
-    std::string kernel_path = tmp_dir + "/" + func_name + "_" + std::to_string(i) + "_" +
-                              kernel.kind + ".cpp";
-    std::ofstream ofs(kernel_path);
-    if (!ofs) {
-      LOG(FATAL) << "Failed to write kernel file: " << kernel_path;
-    }
-    ofs << NormalizeBlackholeKernelSource(kernel.source_code);
-    kernel_paths.push_back(kernel_path);
-  }
+  std::vector<std::string> kernel_paths = WriteKernelSourceFiles(spec, func_name, tmp_dir);
 
   LOG(INFO) << "Direct path: executing " << work_items.size()
             << " logical work items across " << launch_cores.size()
@@ -1218,39 +1327,15 @@ void BlackholeModuleNode::ExecuteDirect(
   // Materialize shared CBs and kernels once for the full launch core set.
   CreateCircularBuffersFromSpec(program, launch_core_ranges, spec);
 
-  std::vector<KernelHandle> kernels;
-  kernels.reserve(spec.kernels.size());
-  for (size_t ki = 0; ki < spec.kernels.size(); ++ki) {
-    const auto& kernel_spec = spec.kernels[ki];
-    LOG(INFO) << "Direct path: create kernel[" << ki << "] kind=" << kernel_spec.kind
-              << " core_type=" << kernel_spec.core_type;
-    kernels.push_back(CreateKernelFromSpec(program, launch_core_ranges, kernel_spec,
-                                           runtime_buffers, kernel_paths[ki]));
-    const auto common_runtime_args = BuildCommonRuntimeArgsFromSpec(
-        kernel_spec, runtime_buffers, semaphore_ids, input_names, ordered_output_names);
-    if (!common_runtime_args.empty()) {
-      LOG(INFO) << "Direct path: set common runtime args kernel[" << ki
-                << "] count=" << common_runtime_args.size();
-      SetCommonRuntimeArgs(program, kernels.back(), common_runtime_args);
-    }
-  }
+  std::vector<KernelHandle> kernels = CreateProgramKernelsFromSpec(
+      program, launch_core_ranges, spec, runtime_buffer_state.runtime_buffers, semaphore_ids,
+      runtime_buffer_state.input_names, runtime_buffer_state.ordered_output_names, kernel_paths);
 
   // Keep runtime args per core/work-item so each logical work item sees its own ID.
-  for (const auto& item : work_items) {
-    LOG(INFO) << "Direct path: configure work_id=" << item.work_id
-              << " core=(" << item.core.x << "," << item.core.y << ")";
-    for (size_t ki = 0; ki < spec.kernels.size(); ++ki) {
-      const auto& kernel_spec = spec.kernels[ki];
-      auto runtime_args = BuildRuntimeArgsFromSpec(
-          kernel_spec, spec, item.work_id, *mesh_device, runtime_buffers, semaphore_ids, input_names,
-          ordered_output_names, scalar_args);
-
-      LOG(INFO) << "Direct path: set runtime args kernel[" << ki
-                << "] core=(" << item.core.x << "," << item.core.y
-                << ") count=" << runtime_args.size();
-      SetRuntimeArgs(program, kernels[ki], item.core, runtime_args);
-    }
-  }
+  ApplyWorkItemRuntimeArgs(program, spec, kernels, work_items, *mesh_device,
+                           runtime_buffer_state.runtime_buffers, semaphore_ids,
+                           runtime_buffer_state.input_names,
+                           runtime_buffer_state.ordered_output_names, scalar_args);
 
   // Execute the full program once across the multi-core launch set.
   distributed::MeshWorkload workload;
@@ -1264,8 +1349,8 @@ void BlackholeModuleNode::ExecuteDirect(
     if (!binding.is_output) {
       continue;
     }
-    auto it = runtime_buffers.find(binding.name);
-    ICHECK(it != runtime_buffers.end())
+    auto it = runtime_buffer_state.runtime_buffers.find(binding.name);
+    ICHECK(it != runtime_buffer_state.runtime_buffers.end())
         << "Missing runtime output binding for " << binding.name;
     std::vector<uint8_t> output_data;
     distributed::EnqueueReadMeshBuffer(cq, output_data, it->second.mesh_buffer,
