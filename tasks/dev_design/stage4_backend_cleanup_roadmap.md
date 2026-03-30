@@ -340,6 +340,10 @@
 
 #### B2. 清理 `LowerBlackholeOps` 中协议提取与当前策略派生的边界
 
+状态：
+
+- ◐ 已完成首轮 boundary 收敛（2026-03-31）
+
 目标：
 
 - 降低 copy/dataflow 泛化时继续积累 case-specific lowering 的风险
@@ -355,6 +359,20 @@
 - 识别哪些字段属于正式 schema 真源
 - 识别哪些约束只是当前 stick/page direct-path boundary
 - 对 boundary 做统一 fail-fast，不要在 lowering 深处散落特判
+
+本轮落实：
+
+- stick/page copy 的 3 条正式 direct-path boundary 已收进统一 helper：
+  - page-aligned transport offset
+  - global width divisible by shared width
+  - 64B-aligned transport page size
+- `InferCopyTileIndex`、`InferStagedCopyBaseTileIndex`、`GenerateStagedCopySequence`、`GenerateFusedStagedCopySequence` 不再各自维护不同文案
+- 新增 pipeline 回归，要求 reject 明确带上 `direct-path boundary` 语义
+
+剩余项：
+
+- shared/global shape 提取本身仍然散落在多处，尚未抽成统一 schema/boundary helper
+- stick/page 与 tile path 的 shape/stride 约束仍混在同一 lowering 逻辑里，后续还要继续拆
 
 #### B3. 明确 `PlanBlackholeCB` 的后续定位
 

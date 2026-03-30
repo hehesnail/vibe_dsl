@@ -1189,6 +1189,19 @@ def test_blackhole_stick_copy_pipeline_rejects_unaligned_transport_page():
             lower(kernel, target=target)
 
 
+def test_blackhole_stick_copy_pipeline_reports_direct_path_boundary_context():
+    target = Target("blackhole")
+    kernel = staged_stick_copy_kernel(
+        tile_m=64, tile_n=16, global_n=40, dtype="float32", src_col=16, dst_col=16
+    )
+
+    with pytest.raises(
+        Exception, match="direct-path boundary requires global width divisible by shared width"
+    ):
+        with target:
+            lower(kernel, target=target)
+
+
 def test_blackhole_cb_planner_rejects_overlapping_large_requirements():
     mod = make_blackhole_cb_requirements_mod(
         [

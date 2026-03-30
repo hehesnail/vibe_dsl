@@ -69,6 +69,7 @@
   - 读回后必须做 untilize
   - copy E2E 通过不能证明 matmul contract 正确，因为 copy 只验证字节保持，不验证 tile 语义
 - richer schema 先于更大支持面：如果 schema 已经能表达更多 range/stride 组合，但 direct runtime/codegen 还没正式支持，必须 `ICHECK` fail-fast，不能静默退回旧默认
+- 当前 formal direct-path boundary 如果会在多个 lowering 阶段点被重复检查，就要把校验 helper 和错误口径统一起来；否则后续扩支持面时很容易出现“同一限制，多种报错文案，多处散落特判”
 - 对 non-tile/stick copy，外部 DRAM buffer 的真实 `page_size` 不是 CB `page_size` 的别名；需要把单次 transport 的 `page_bytes` 明确收进 accessor schema（如 `transport_page_size`），再由 direct runtime 用这份 schema 创建 TT-Metal buffer/accessor
 - 当 host runtime 当前只支持一种 buffer materialization（例如 replicated DRAM）时，也不要把它硬编码成执行流里的隐式默认值；应先把每个 runtime buffer 的 materialization descriptor 显式收进 `ExecutableSpec`，再让 runtime 按 descriptor 校验并 materialize
 - 当多个 kernel/segment 共享 runtime arg 或 common runtime arg 时，不要在 spec 提取层继续靠 `kind + name/buffer` 推断“是不是同一个参数”；应由 lowering/split 直接产出稳定 `identity`，`rt_mod_blackhole` 只按 `identity` 聚合，缺失 identity 直接 build-time 拒绝

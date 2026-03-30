@@ -99,6 +99,31 @@ static std::string MakeBlackholeRuntimeArgIdentity(const std::string& kind, cons
   return !kind.empty() ? kind : name;
 }
 
+static void ValidateStagedStickCopyPageAlignedOffset(arith::Analyzer* analyzer,
+                                                     const PrimExpr& transport_col,
+                                                     int64_t page_cols) {
+  ICHECK_GT(page_cols, 0);
+  const PrimExpr page_cols_expr = IntImm(DataType::Int(32), static_cast<int>(page_cols));
+  ICHECK(analyzer->CanProve(
+      tir::FloorMod(transport_col, page_cols_expr) == IntImm(DataType::Int(32), 0)))
+      << "Blackhole staged stick copy direct-path boundary requires page-aligned transport "
+         "offsets, but got column offset "
+      << transport_col << " for page width " << page_cols;
+}
+
+static void ValidateStagedStickCopyGlobalWidthDivisible(int64_t global_cols, int64_t shared_cols) {
+  ICHECK_EQ(global_cols % shared_cols, 0)
+      << "Blackhole staged stick copy direct-path boundary requires global width divisible by "
+         "shared width";
+}
+
+static void ValidateStagedStickCopyTransportPageAlignment(int page_bytes) {
+  ICHECK_EQ(page_bytes % 64, 0)
+      << "Blackhole staged stick copy direct-path boundary requires a 64B-aligned transport "
+         "page size, but got "
+      << page_bytes << " bytes";
+}
+
 using tir::PrimFunc;
 using tir::PrimFuncNode;
 using tir::Stmt;
@@ -1291,13 +1316,8 @@ PrimExpr LowerBlackholeOps::InferCopyTileIndex(const BufferStoreNode* op,
     const auto* shared_cols_imm = shared_buffer->shape[1].as<IntImmNode>();
     ICHECK(shared_cols_imm) << "Blackhole staged stick copy expects static shared width";
     const int64_t page_cols = shared_cols_imm->value;
-    ICHECK_GT(page_cols, 0);
-    ICHECK(analyzer.CanProve(
-        tir::FloorMod(base_col, IntImm32(static_cast<int>(page_cols))) == IntImm32(0)))
-        << "Blackhole staged stick copy currently requires page-aligned transport offsets, "
-        << "but got column offset " << base_col << " for page width " << page_cols;
-    ICHECK_EQ(cols_value % page_cols, 0)
-        << "Blackhole staged stick copy expects global width divisible by shared width";
+    ValidateStagedStickCopyPageAlignedOffset(&analyzer, base_col, page_cols);
+    ValidateStagedStickCopyGlobalWidthDivisible(cols_value, page_cols);
     PrimExpr page_row = base_row;
     PrimExpr page_col =
         analyzer.Simplify(tir::FloorDiv(base_col, IntImm32(static_cast<int>(page_cols))));
@@ -1367,14 +1387,9 @@ PrimExpr LowerBlackholeOps::InferStagedCopyBaseTileIndex(
     const auto* shared_cols_imm = shared_buffer->shape[1].as<IntImmNode>();
     ICHECK(shared_cols_imm) << "Blackhole staged stick copy expects static shared width";
     const int64_t page_cols = shared_cols_imm->value;
-    ICHECK_GT(page_cols, 0);
     const PrimExpr transport_col = transpose_b_reader ? base_row : base_col;
-    ICHECK(analyzer.CanProve(
-        tir::FloorMod(transport_col, IntImm32(static_cast<int>(page_cols))) == IntImm32(0)))
-        << "Blackhole staged stick copy currently requires page-aligned transport offsets, "
-        << "but got column offset " << transport_col << " for page width " << page_cols;
-    ICHECK_EQ(cols_value % page_cols, 0)
-        << "Blackhole staged stick copy expects global width divisible by shared width";
+    ValidateStagedStickCopyPageAlignedOffset(&analyzer, transport_col, page_cols);
+    ValidateStagedStickCopyGlobalWidthDivisible(cols_value, page_cols);
     PrimExpr page_col =
         analyzer.Simplify(tir::FloorDiv(transport_col, IntImm32(static_cast<int>(page_cols))));
     PrimExpr page_row = transpose_b_reader ? base_col : base_row;
@@ -1848,9 +1863,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
   const int page_bytes = static_cast<int>(shared_cols * shared_buffer->dtype.bytes());
   Analyzer analyzer;
   if (use_page_transport) {
-    ICHECK_EQ(page_bytes % 64, 0)
-        << "Blackhole staged stick copy currently requires a 64B-aligned transport page size, "
-        << "but got " << page_bytes << " bytes";
+    ValidateStagedStickCopyTransportPageAlignment(page_bytes);
   }
   const int l1_stick_stride = page_bytes;
   const int shared_bytes = static_cast<int>(shared_rows * l1_stick_stride);
@@ -1906,8 +1919,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
             << "Blackhole staged stick copy requires rank-2 global shape metadata";
         global_cols = global_shape[1]->value;
       }
-      ICHECK_EQ(global_cols % shared_cols, 0)
-          << "Blackhole staged stick copy expects global width divisible by shared width";
+      ValidateStagedStickCopyGlobalWidthDivisible(global_cols, shared_cols);
       const int pages_per_row = static_cast<int>(global_cols / shared_cols);
       page_index = analyzer.Simplify(page_index + IntImm32(page_row * pages_per_row));
     }
@@ -2063,9 +2075,7 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
   const int tile_bytes = kBlackholeTileRows * kBlackholeTileCols * shared_buffer->dtype.bytes();
   const int page_bytes = static_cast<int>(shared_cols * shared_buffer->dtype.bytes());
   if (use_page_transport) {
-    ICHECK_EQ(page_bytes % 64, 0)
-        << "Blackhole staged stick copy currently requires a 64B-aligned transport page size, "
-        << "but got " << page_bytes << " bytes";
+    ValidateStagedStickCopyTransportPageAlignment(page_bytes);
   }
   const int l1_stick_stride = page_bytes;
   const int shared_pages = shared_rows;
@@ -2079,8 +2089,7 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
   Analyzer analyzer;
   std::vector<Stmt> stmts;
   if (use_page_transport) {
-    ICHECK_EQ(global_cols % shared_cols, 0)
-        << "Blackhole staged stick copy expects global width divisible by shared width";
+    ValidateStagedStickCopyGlobalWidthDivisible(global_cols, shared_cols);
     const int global_row_bytes = static_cast<int>(global_cols * dram_load->buffer->dtype.bytes());
     stmts.push_back(MakeBlackholeCall(
         blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(shared_pages)}));
