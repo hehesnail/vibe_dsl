@@ -377,11 +377,12 @@
   - `tile_bytes/page_bytes`
   - `l1_stick_stride`
 - page transport 的 global-width-divisible 校验已提前到统一 geometry 派生边界附近，而不是分散到局部 index 构造逻辑里
+- `InferCopyTileIndex` / `InferStagedCopyBaseTileIndex` 现已改为共用 staged-copy shared/global shape helper 与统一 transport index 线性化逻辑，不再各自保留一套 flattened-index / page-vs-tile 推导
 
 剩余项：
 
-- `InferCopyTileIndex` / `InferStagedCopyBaseTileIndex` 仍保留部分 index 级 shape 语义，后续可继续与 staged geometry helper 对齐
 - stick/page 与 tile path 虽已共享 geometry 派生，但更宽 non-tile/sharded path 仍未进入同一 lowering 边界
+- `LowerBlackholeOps` 里 staged copy helper 目前仍以内联 file-local helper 为主，后续若继续扩 P4 execution surface，可再决定是否抽成更明确的 lowering helper 单元
 
 #### B3. 明确 `PlanBlackholeCB` 的后续定位
 

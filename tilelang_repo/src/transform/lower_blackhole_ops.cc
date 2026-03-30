@@ -271,6 +271,13 @@ struct StagedCopyTransportGeometry {
   int shared_bytes = 0;
 };
 
+struct StagedCopyGlobalIndexInfo {
+  PrimExpr base_row;
+  PrimExpr base_col;
+  int64_t global_rows = 0;
+  int64_t global_cols = 0;
+};
+
 static std::pair<int64_t, int64_t> ResolveStaticShape2DFromBufferOrMetadata(
     const Buffer& buffer,
     const Array<Integer>& fallback_shape,
@@ -318,6 +325,84 @@ static StagedCopyTransportGeometry BuildStagedCopyTransportGeometry(
   geometry.l1_stick_stride = geometry.page_bytes;
   geometry.shared_bytes = static_cast<int>(shared_rows * geometry.l1_stick_stride);
   return geometry;
+}
+
+static std::pair<int64_t, int64_t> ResolveStagedCopySharedShape(
+    const Buffer& shared_buffer,
+    const Array<Integer>& fallback_shape,
+    bool segmented_gemm,
+    bool transpose_b_reader,
+    bool accumulator_like_src,
+    int64_t gemm_m,
+    int64_t gemm_n,
+    int64_t gemm_k) {
+  if (transpose_b_reader) {
+    ICHECK_GT(gemm_k, 0);
+    ICHECK_GT(gemm_n, 0);
+    return {gemm_k, gemm_n};
+  }
+  if (segmented_gemm && accumulator_like_src) {
+    ICHECK_GT(gemm_m, 0);
+    ICHECK_GT(gemm_n, 0);
+    return {gemm_m, gemm_n};
+  }
+  return ResolveStaticShape2DFromBufferOrMetadata(
+      shared_buffer, fallback_shape,
+      "Blackhole staged copy currently expects static shared tile shapes",
+      "Blackhole staged copy currently expects rank-2 shared tiles");
+}
+
+template <typename ZeroIndexFn>
+static StagedCopyGlobalIndexInfo ResolveStagedCopyGlobalIndexInfo(
+    const Buffer& global_buffer,
+    const Array<PrimExpr>& global_indices,
+    const Array<Integer>& fallback_shape,
+    const char* static_shape_message,
+    const char* rank2_message,
+    ZeroIndexFn zero_index,
+    Analyzer* analyzer) {
+  StagedCopyGlobalIndexInfo info;
+  std::tie(info.global_rows, info.global_cols) = ResolveStaticShape2DFromBufferOrMetadata(
+      global_buffer, fallback_shape, static_shape_message, rank2_message);
+  if (global_indices.size() >= 2U) {
+    info.base_row = zero_index(global_indices[0]);
+    info.base_col = zero_index(global_indices[1]);
+    return info;
+  }
+  if (global_indices.size() == 1U) {
+    PrimExpr linear_index = ScalarizeVectorizedIndex(global_indices[0]);
+    PrimExpr row_index =
+        analyzer->Simplify(tir::FloorDiv(linear_index, IntImm32(info.global_cols)));
+    PrimExpr col_index =
+        analyzer->Simplify(tir::FloorMod(linear_index, IntImm32(info.global_cols)));
+    info.base_row = zero_index(row_index);
+    info.base_col = zero_index(col_index);
+    return info;
+  }
+  LOG(FATAL) << "Blackhole staged copy currently expects rank-2 tiled regions";
+}
+
+static PrimExpr LinearizeStagedCopyTransportIndex(Analyzer* analyzer,
+                                                  const PrimExpr& transport_row,
+                                                  const PrimExpr& transport_col,
+                                                  const StagedCopyTransportGeometry& geometry) {
+  if (geometry.use_page_transport) {
+    ValidateStagedStickCopyPageAlignedOffset(analyzer, transport_col, geometry.shared_cols);
+    ValidateStagedStickCopyGlobalWidthDivisible(geometry.global_cols, geometry.shared_cols);
+    PrimExpr page_col =
+        analyzer->Simplify(tir::FloorDiv(transport_col, IntImm32(geometry.shared_cols)));
+    PrimExpr pages_per_row =
+        IntImm32(static_cast<int>(geometry.global_cols / geometry.shared_cols));
+    return analyzer->Simplify(transport_row * pages_per_row + page_col);
+  }
+
+  PrimExpr tile_row =
+      analyzer->Simplify(tir::FloorDiv(transport_row, IntImm32(kBlackholeTileRows)));
+  PrimExpr tile_col =
+      analyzer->Simplify(tir::FloorDiv(transport_col, IntImm32(kBlackholeTileCols)));
+  PrimExpr tiles_per_row =
+      IntImm32(static_cast<int>(geometry.global_cols / kBlackholeTileCols));
+  return analyzer->Simplify(tile_row * tiles_per_row + tile_col);
 }
 
 // Helper to get storage scope from buffer
@@ -1341,59 +1426,38 @@ PrimExpr LowerBlackholeOps::InferCopyTileIndex(const BufferStoreNode* op,
   ICHECK(load) << "InferCopyTileIndex requires BufferLoad copy source";
 
   CopyDirection direction = GetCopyDirection(op);
+  const bool segmented_gemm = !gemm_a_buffer_name_.empty();
+  const bool accumulator_like_src =
+      direction == CopyDirection::kCBToDram &&
+      (GetStorageScope(load->buffer).rfind("local", 0) == 0 ||
+       runtime::StorageScope::Create(GetStorageScope(load->buffer)).rank ==
+           runtime::StorageRank::kBlackholeAccumulator);
+  const bool transpose_b_reader = false;
   const Buffer& global_buffer =
       direction == CopyDirection::kDramToCB ? load->buffer : op->buffer;
   const Array<PrimExpr>& global_indices =
       direction == CopyDirection::kDramToCB ? load->indices : op->indices;
-
-  Analyzer analyzer;
-  PrimExpr base_row;
-  PrimExpr base_col;
-  int64_t cols_value = 0;
-
-  if (global_indices.size() >= 2U && global_buffer->shape.size() >= 2U) {
-    base_row = ZeroThreadAndLoopVars(global_indices[0], loop_var);
-    base_col = ZeroThreadAndLoopVars(global_indices[1], loop_var);
-    const auto* cols_imm = global_buffer->shape[1].as<IntImmNode>();
-    ICHECK(cols_imm) << "Blackhole staged copy currently expects static tile width";
-    cols_value = cols_imm->value;
-  } else if (global_indices.size() == 1U) {
-    const Array<Integer>& annotated_shape =
-        direction == CopyDirection::kDramToCB ? copy_input_shape_ : copy_output_shape_;
-    ICHECK_GE(annotated_shape.size(), 2U)
-        << "Blackhole staged copy requires rank-2 shape metadata after FlattenBuffer";
-    cols_value = annotated_shape[1]->value;
-    PrimExpr linear_index = ScalarizeVectorizedIndex(global_indices[0]);
-    PrimExpr row_index = analyzer.Simplify(tir::FloorDiv(linear_index, IntImm32(cols_value)));
-    PrimExpr col_index = analyzer.Simplify(tir::FloorMod(linear_index, IntImm32(cols_value)));
-    base_row = ZeroThreadAndLoopVars(row_index, loop_var);
-    base_col = ZeroThreadAndLoopVars(col_index, loop_var);
-  } else {
-    LOG(FATAL) << "Blackhole staged copy currently expects rank-2 tiled regions";
-  }
-
   const Buffer& shared_buffer =
       direction == CopyDirection::kDramToCB ? op->buffer : load->buffer;
-  if (UseStagedCopyPageTransport(shared_buffer)) {
-    const auto* shared_cols_imm = shared_buffer->shape[1].as<IntImmNode>();
-    ICHECK(shared_cols_imm) << "Blackhole staged stick copy expects static shared width";
-    const int64_t page_cols = shared_cols_imm->value;
-    ValidateStagedStickCopyPageAlignedOffset(&analyzer, base_col, page_cols);
-    ValidateStagedStickCopyGlobalWidthDivisible(cols_value, page_cols);
-    PrimExpr page_row = base_row;
-    PrimExpr page_col =
-        analyzer.Simplify(tir::FloorDiv(base_col, IntImm32(static_cast<int>(page_cols))));
-    PrimExpr pages_per_row = IntImm32(static_cast<int>(cols_value / page_cols));
-    return analyzer.Simplify(page_row * pages_per_row + page_col);
-  }
+  const Array<Integer>& global_shape =
+      direction == CopyDirection::kDramToCB ? copy_input_shape_ : copy_output_shape_;
 
-  PrimExpr tile_row = analyzer.Simplify(tir::FloorDiv(base_row, IntImm32(kBlackholeTileRows)));
-  PrimExpr tile_col = analyzer.Simplify(tir::FloorDiv(base_col, IntImm32(kBlackholeTileCols)));
-
-  ICHECK_EQ(cols_value % kBlackholeTileCols, 0)
-      << "Blackhole staged copy currently expects 32-wide tile alignment";
-  PrimExpr tiles_per_row = IntImm32(static_cast<int>(cols_value / kBlackholeTileCols));
-  return analyzer.Simplify(tile_row * tiles_per_row + tile_col);
+  Analyzer analyzer;
+  const StagedCopyGlobalIndexInfo global_info = ResolveStagedCopyGlobalIndexInfo(
+      global_buffer, global_indices, global_shape,
+      "Blackhole staged copy currently expects static global buffer shape",
+      "Blackhole staged copy requires rank-2 shape metadata after FlattenBuffer",
+      [&](const PrimExpr& expr) { return ZeroThreadAndLoopVars(expr, loop_var); }, &analyzer);
+  const bool use_page_transport = UseStagedCopyPageTransport(shared_buffer);
+  int64_t shared_rows = 0;
+  int64_t shared_cols = 0;
+  std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
+      shared_buffer, copy_intermediate_shape_, segmented_gemm, transpose_b_reader,
+      accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
+  const StagedCopyTransportGeometry geometry = BuildStagedCopyTransportGeometry(
+      shared_buffer, shared_rows, shared_cols, global_info.global_cols, use_page_transport);
+  return LinearizeStagedCopyTransportIndex(
+      &analyzer, global_info.base_row, global_info.base_col, geometry);
 }
 
 PrimExpr LowerBlackholeOps::InferStagedCopyBaseTileIndex(
@@ -1410,65 +1474,38 @@ PrimExpr LowerBlackholeOps::InferStagedCopyBaseTileIndex(
       direction == CopyDirection::kDramToCB &&
       (std::string(op->buffer->name) == gemm_b_buffer_name_ ||
        (buffer_to_req_.count(op->buffer) && buffer_to_req_.at(op->buffer) == gemm_b_req_index_));
+  const bool segmented_gemm = !gemm_a_buffer_name_.empty();
+  const bool accumulator_like_src =
+      direction == CopyDirection::kCBToDram &&
+      (GetStorageScope(load->buffer).rfind("local", 0) == 0 ||
+       runtime::StorageScope::Create(GetStorageScope(load->buffer)).rank ==
+           runtime::StorageRank::kBlackholeAccumulator);
 
   Analyzer analyzer;
-  PrimExpr base_row;
-  PrimExpr base_col;
-  int64_t rows_value = 0;
-  int64_t cols_value = 0;
   const bool transpose_b_reader = gemm_transpose_b_ && is_gemm_b_input;
-
-  if (global_indices.size() >= 2U && global_buffer->shape.size() >= 2U) {
-    base_row = ZeroThreadAndLoopVars(global_indices[0], loop_vars_to_zero);
-    base_col = ZeroThreadAndLoopVars(global_indices[1], loop_vars_to_zero);
-    const auto* rows_imm = global_buffer->shape[0].as<IntImmNode>();
-    const auto* cols_imm = global_buffer->shape[1].as<IntImmNode>();
-    ICHECK(rows_imm && cols_imm)
-        << "Blackhole staged copy currently expects static tile shape";
-    rows_value = rows_imm->value;
-    cols_value = cols_imm->value;
-  } else if (global_indices.size() == 1U) {
-    const Array<Integer>& annotated_shape =
-        direction == CopyDirection::kDramToCB ? copy_input_shape_ : copy_output_shape_;
-    ICHECK_GE(annotated_shape.size(), 2U)
-        << "Blackhole staged copy requires rank-2 shape metadata after FlattenBuffer";
-    rows_value = annotated_shape[0]->value;
-    cols_value = annotated_shape[1]->value;
-    PrimExpr linear_index = ScalarizeVectorizedIndex(global_indices[0]);
-    PrimExpr row_index = analyzer.Simplify(tir::FloorDiv(linear_index, IntImm32(cols_value)));
-    PrimExpr col_index = analyzer.Simplify(tir::FloorMod(linear_index, IntImm32(cols_value)));
-    base_row = ZeroThreadAndLoopVars(row_index, loop_vars_to_zero);
-    base_col = ZeroThreadAndLoopVars(col_index, loop_vars_to_zero);
-  } else {
-    LOG(FATAL) << "Blackhole staged copy currently expects rank-2 tiled regions";
-  }
-
   const Buffer& shared_buffer =
       direction == CopyDirection::kDramToCB ? op->buffer : load->buffer;
-  if (UseStagedCopyPageTransport(shared_buffer)) {
-    const auto* shared_cols_imm = shared_buffer->shape[1].as<IntImmNode>();
-    ICHECK(shared_cols_imm) << "Blackhole staged stick copy expects static shared width";
-    const int64_t page_cols = shared_cols_imm->value;
-    const PrimExpr transport_col = transpose_b_reader ? base_row : base_col;
-    ValidateStagedStickCopyPageAlignedOffset(&analyzer, transport_col, page_cols);
-    ValidateStagedStickCopyGlobalWidthDivisible(cols_value, page_cols);
-    PrimExpr page_col =
-        analyzer.Simplify(tir::FloorDiv(transport_col, IntImm32(static_cast<int>(page_cols))));
-    PrimExpr page_row = transpose_b_reader ? base_col : base_row;
-    PrimExpr pages_per_row = IntImm32(static_cast<int>(cols_value / page_cols));
-    return analyzer.Simplify(page_row * pages_per_row + page_col);
-  }
-
-  PrimExpr tile_row = analyzer.Simplify(
-      tir::FloorDiv(transpose_b_reader ? base_col : base_row, IntImm32(kBlackholeTileRows)));
-  PrimExpr tile_col = analyzer.Simplify(
-      tir::FloorDiv(transpose_b_reader ? base_row : base_col, IntImm32(kBlackholeTileCols)));
-
-  const int64_t tiled_width = transpose_b_reader ? rows_value : cols_value;
-  ICHECK_EQ(tiled_width % kBlackholeTileCols, 0)
-      << "Blackhole staged copy currently expects 32-wide tile alignment";
-  PrimExpr tiles_per_row = IntImm32(static_cast<int>(tiled_width / kBlackholeTileCols));
-  return analyzer.Simplify(tile_row * tiles_per_row + tile_col);
+  const Array<Integer>& global_shape =
+      direction == CopyDirection::kDramToCB ? copy_input_shape_ : copy_output_shape_;
+  const StagedCopyGlobalIndexInfo global_info = ResolveStagedCopyGlobalIndexInfo(
+      global_buffer, global_indices, global_shape,
+      "Blackhole staged copy currently expects static global buffer shape",
+      "Blackhole staged copy requires rank-2 shape metadata after FlattenBuffer",
+      [&](const PrimExpr& expr) { return ZeroThreadAndLoopVars(expr, loop_vars_to_zero); },
+      &analyzer);
+  int64_t shared_rows = 0;
+  int64_t shared_cols = 0;
+  std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
+      shared_buffer, copy_intermediate_shape_, segmented_gemm, transpose_b_reader,
+      accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
+  const int64_t effective_global_cols =
+      transpose_b_reader ? global_info.global_rows : global_info.global_cols;
+  const StagedCopyTransportGeometry geometry = BuildStagedCopyTransportGeometry(
+      shared_buffer, shared_rows, shared_cols, effective_global_cols,
+      UseStagedCopyPageTransport(shared_buffer));
+  const PrimExpr transport_row = transpose_b_reader ? global_info.base_col : global_info.base_row;
+  const PrimExpr transport_col = transpose_b_reader ? global_info.base_row : global_info.base_col;
+  return LinearizeStagedCopyTransportIndex(&analyzer, transport_row, transport_col, geometry);
 }
 
 const BufferStoreNode* LowerBlackholeOps::FindNestedCopyStore(
@@ -1886,22 +1923,9 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
       direction == CopyDirection::kDramToCB ? op->buffer : load->buffer;
   int64_t shared_rows = 0;
   int64_t shared_cols = 0;
-  if (transpose_b_reader) {
-    ICHECK_GT(gemm_k_, 0);
-    ICHECK_GT(gemm_n_, 0);
-    shared_rows = gemm_k_;
-    shared_cols = gemm_n_;
-  } else if (direction == CopyDirection::kCBToDram && segmented_gemm && accumulator_like_src) {
-    ICHECK_GT(gemm_m_, 0);
-    ICHECK_GT(gemm_n_, 0);
-    shared_rows = gemm_m_;
-    shared_cols = gemm_n_;
-  } else {
-    std::tie(shared_rows, shared_cols) = ResolveStaticShape2DFromBufferOrMetadata(
-        shared_buffer, copy_intermediate_shape_,
-        "Blackhole staged copy currently expects static shared tile shapes",
-        "Blackhole staged copy currently expects rank-2 shared tiles");
-  }
+  std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
+      shared_buffer, copy_intermediate_shape_, segmented_gemm, transpose_b_reader,
+      accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
 
   const bool use_page_transport = UseStagedCopyPageTransport(shared_buffer);
   const Buffer& global_buffer = direction == CopyDirection::kDramToCB ? load->buffer : op->buffer;
@@ -2051,10 +2075,9 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
       << "Fused staged copy expects DRAM->shared and shared->DRAM to use the same shared buffer";
   int64_t shared_rows = 0;
   int64_t shared_cols = 0;
-  std::tie(shared_rows, shared_cols) = ResolveStaticShape2DFromBufferOrMetadata(
-      shared_buffer, copy_intermediate_shape_,
-      "Blackhole staged copy currently expects static shared tile shapes",
-      "Blackhole staged copy currently expects rank-2 shared tiles");
+  std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
+      shared_buffer, copy_intermediate_shape_, /*segmented_gemm=*/false,
+      /*transpose_b_reader=*/false, /*accumulator_like_src=*/false, gemm_m_, gemm_n_, gemm_k_);
   const bool use_page_transport = UseStagedCopyPageTransport(shared_buffer);
   int64_t global_cols = 0;
   std::tie(std::ignore, global_cols) = ResolveStaticShape2DFromBufferOrMetadata(
