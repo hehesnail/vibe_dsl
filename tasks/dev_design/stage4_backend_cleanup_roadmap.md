@@ -210,6 +210,10 @@
 
 #### A2. 把 buffer materialization 从固定 replicated DRAM 抽成 schema-driven 骨架
 
+状态：
+
+- ◐ 已完成首轮骨架（2026-03-30）
+
 目标：
 
 - 不再把“当前是 replicated DRAM”硬编码成 runtime 默认事实
@@ -226,6 +230,22 @@
 - 明确区分“当前 formal direct-path 仅 materialize replicated DRAM”与“schema 可以表达的 buffer shape”
 - host runtime 先引入 buffer materialization helper / descriptor 边界
 - 当前不必一次性支持 sharded/non-DRAM，但要去掉把当前实现当协议默认值的写法
+
+本轮落实：
+
+- `ExecutableSpec` 新增 `buffer_materializations`
+- `rt_mod_blackhole` 已按 accessor/runtime-arg/CB 信息聚合出每个 runtime buffer 的：
+  - `materialization_kind`
+  - `layout`
+  - `memory_space`
+  - `transport_page_size`
+- `BlackholeModule` 已改为消费 `buffer_materializations` 创建 host-side mesh buffer，而不是直接在执行流里推断 page size
+
+剩余项：
+
+- 当前 materialization kind 仍只正式支持 `replicated`
+- 当前 memory space 仍只正式支持 `dram`
+- helper 文件级拆分仍留在 `B1`
 
 #### A3. 为 runtime/common-runtime arg 引入稳定 identity
 

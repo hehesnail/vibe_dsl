@@ -408,6 +408,30 @@ def test_blackhole_copy_compile_time_abi_is_materialized():
     assert str(launch_spec["noc"]) == expected_launch_spec["noc"]
 
 
+def test_blackhole_copy_buffer_materialization_specs_are_exposed():
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    assert "buffer_materializations" in executable_spec
+    materializations = {
+        str(item["buffer"]): (
+            str(item["materialization_kind"]),
+            str(item["layout"]),
+            str(item["memory_space"]),
+            int(item["transport_page_size"]),
+        )
+        for item in executable_spec["buffer_materializations"]
+    }
+    assert materializations == {
+        "A": ("replicated", "interleaved", "dram", 2048),
+        "B": ("replicated", "interleaved", "dram", 2048),
+    }
+
+
 def test_blackhole_copy_semaphore_plan_is_materialized():
     kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
     target = Target("blackhole")

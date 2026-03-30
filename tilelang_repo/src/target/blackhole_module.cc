@@ -371,37 +371,24 @@ static tt::DataFormat ParseDataFormat(const std::string& value) {
   return tt::DataFormat::Float16_b;
 }
 
-static uint32_t ChoosePageSize(const ExecutableSpec& spec, const std::string& role) {
-  for (const auto& cb : spec.cb_configs) {
-    if (cb.role == role) return cb.page_size_bytes;
-  }
-  if (!spec.cb_configs.empty()) return spec.cb_configs.front().page_size_bytes;
-  return 2048;
-}
-
-static uint32_t DetermineRuntimeBufferPageSize(const ExecutableSpec& spec,
-                                               const std::string& buffer_name,
-                                               bool is_output) {
-  uint32_t inferred_page_size = 0;
-  for (const auto& kernel : spec.kernels) {
-    for (const auto& accessor : kernel.accessors) {
-      if (accessor.buffer != buffer_name || accessor.transport_page_size_bytes == 0) {
-        continue;
-      }
-      if (inferred_page_size == 0) {
-        inferred_page_size = accessor.transport_page_size_bytes;
-      } else {
-        ICHECK_EQ(inferred_page_size, accessor.transport_page_size_bytes)
-            << "Blackhole direct runtime requires a single transport page size per buffer; "
-            << buffer_name << " used both " << inferred_page_size << " and "
-            << accessor.transport_page_size_bytes;
-      }
-    }
-  }
-  if (inferred_page_size != 0) {
-    return inferred_page_size;
-  }
-  return ChoosePageSize(spec, is_output ? "output" : "input");
+static const BufferMaterializationSpec& ResolveBufferMaterializationSpec(
+    const ExecutableSpec& spec,
+    const std::string& buffer_name) {
+  auto it = std::find_if(spec.buffer_materializations.begin(), spec.buffer_materializations.end(),
+                         [&](const BufferMaterializationSpec& materialization) {
+                           return materialization.buffer == buffer_name;
+                         });
+  ICHECK(it != spec.buffer_materializations.end())
+      << "Missing Blackhole buffer materialization spec for buffer " << buffer_name;
+  ICHECK_EQ(it->materialization_kind, "replicated")
+      << "Unsupported Blackhole buffer materialization kind for " << buffer_name << ": "
+      << it->materialization_kind;
+  ICHECK_EQ(it->memory_space, "dram")
+      << "Unsupported Blackhole buffer memory_space for " << buffer_name << ": "
+      << it->memory_space;
+  ICHECK_GT(it->transport_page_size_bytes, 0U)
+      << "Blackhole buffer materialization requires transport_page_size for " << buffer_name;
+  return *it;
 }
 
 static void ValidateSemaphoreCoreType(const std::string& core_type) {
@@ -1178,10 +1165,9 @@ void BlackholeModuleNode::ExecuteDirect(
   for (const auto& binding : buffer_args) {
     ICHECK(binding.tensor != nullptr) << "Null tensor passed to Blackhole direct path";
     const size_t tensor_size = GetDataSize(*binding.tensor);
-    const uint32_t buffer_page_size =
-        DetermineRuntimeBufferPageSize(spec, binding.name, binding.is_output);
+    const auto& materialization = ResolveBufferMaterializationSpec(spec, binding.name);
     distributed::DeviceLocalBufferConfig dram_config{
-        .page_size = buffer_page_size,
+        .page_size = materialization.transport_page_size_bytes,
         .buffer_type = BufferType::DRAM};
     distributed::ReplicatedBufferConfig buffer_config{.size = tensor_size};
     auto mesh_buffer =

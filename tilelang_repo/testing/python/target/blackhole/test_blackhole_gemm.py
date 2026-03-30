@@ -698,6 +698,31 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
     assert [str(item) for item in compute_contract["unpack_to_dest_mode"]] == []
 
 
+def test_blackhole_gemm_buffer_materialization_specs_are_exposed():
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    assert "buffer_materializations" in executable_spec
+    materializations = {
+        str(item["buffer"]): (
+            str(item["materialization_kind"]),
+            str(item["layout"]),
+            str(item["memory_space"]),
+            int(item["transport_page_size"]),
+        )
+        for item in executable_spec["buffer_materializations"]
+    }
+    assert materializations == {
+        "A": ("replicated", "interleaved", "dram", 2048),
+        "B": ("replicated", "interleaved", "dram", 2048),
+        "C": ("replicated", "interleaved", "dram", 4096),
+    }
+
+
 def test_blackhole_gemm_kernel_compute_config_follows_compute_contract_in_spec():
     kernel = gemm_kernel_with_compute_abi()
     target = Target("blackhole")

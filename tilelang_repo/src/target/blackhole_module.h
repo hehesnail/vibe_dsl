@@ -335,6 +335,25 @@ struct SemaphoreBindingSpec {
   }
 };
 
+struct BufferMaterializationSpec {
+  std::string buffer;
+  std::string materialization_kind = "replicated";
+  std::string layout;
+  std::string memory_space;
+  uint32_t transport_page_size_bytes = 0;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("buffer", buffer);
+    writer->WriteObjectKeyValue("materialization_kind", materialization_kind);
+    writer->WriteObjectKeyValue("layout", layout);
+    writer->WriteObjectKeyValue("memory_space", memory_space);
+    writer->WriteObjectKeyValue("transport_page_size",
+                                static_cast<int64_t>(transport_page_size_bytes));
+    writer->EndObject();
+  }
+};
+
 /*!
  * \brief Per-kernel source and argument metadata.
  */
@@ -549,6 +568,7 @@ struct ExecutableSpec {
   std::vector<CBConfig> cb_configs;
   CorePlan core_plan;
   std::vector<SemaphoreSpec> semaphores;
+  std::vector<BufferMaterializationSpec> buffer_materializations;
   std::string default_kernel_kind = "fused_dataflow";
   std::string default_kernel_core_type = "brisc";
   std::vector<KernelArgSpec> runtime_args;
@@ -570,6 +590,9 @@ struct ExecutableSpec {
     writer->WriteObjectKeyValue("core_plan", core_plan);
     if (!semaphores.empty()) {
       writer->WriteObjectKeyValue("semaphores", semaphores);
+    }
+    if (!buffer_materializations.empty()) {
+      writer->WriteObjectKeyValue("buffer_materializations", buffer_materializations);
     }
     writer->WriteObjectKeyValue("default_kernel_kind", default_kernel_kind);
     writer->WriteObjectKeyValue("default_kernel_core_type", default_kernel_core_type);

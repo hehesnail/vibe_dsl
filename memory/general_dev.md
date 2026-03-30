@@ -70,6 +70,7 @@
   - copy E2E 通过不能证明 matmul contract 正确，因为 copy 只验证字节保持，不验证 tile 语义
 - richer schema 先于更大支持面：如果 schema 已经能表达更多 range/stride 组合，但 direct runtime/codegen 还没正式支持，必须 `ICHECK` fail-fast，不能静默退回旧默认
 - 对 non-tile/stick copy，外部 DRAM buffer 的真实 `page_size` 不是 CB `page_size` 的别名；需要把单次 transport 的 `page_bytes` 明确收进 accessor schema（如 `transport_page_size`），再由 direct runtime 用这份 schema 创建 TT-Metal buffer/accessor
+- 当 host runtime 当前只支持一种 buffer materialization（例如 replicated DRAM）时，也不要把它硬编码成执行流里的隐式默认值；应先把每个 runtime buffer 的 materialization descriptor 显式收进 `ExecutableSpec`，再让 runtime 按 descriptor 校验并 materialize
 - TT-Metal 的 `SetCommonRuntimeArgs` 是 kernel-level shared channel，只适合对所有 core/work item 相同的 metadata（如 buffer address、semaphore id）；`work_linear_id`、tile range、logical core coord 这类 per-work/per-core 值不能塞进 common channel
 - accessor schema 里凡是叫 `args_config_bits` 的字段，都必须等价于 TT-Metal `tensor_accessor::ArgConfig.raw()`；不要自造“interleaved=1”这类本地编码。当前最小稳定映射是：interleaved+dram=`2`，sharded+dram=`3`，sharded+l1=`1`，interleaved+l1=`0`
 - TT-Metal program-local semaphore 当前正式 host API 是 `CreateSemaphore(program, core_ranges, initial_value)`；如果上层 schema 还保留 `core_type`，应把它当校验字段，不要为了“对齐字段”继续依赖 deprecated 的 `CreateSemaphore(..., core_type)`

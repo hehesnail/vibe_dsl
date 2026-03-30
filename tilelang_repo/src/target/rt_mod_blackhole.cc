@@ -1338,6 +1338,118 @@ static ffi::Array<ffi::Any> EncodeAccessors(const std::vector<AccessorSpec>& acc
   return encoded;
 }
 
+static bool IsInputBufferArgKind(const std::string& kind) {
+  return kind == "input_buffer_addr32" || kind == "input_buffer_addr";
+}
+
+static bool IsOutputBufferArgKind(const std::string& kind) {
+  return kind == "output_buffer_addr32" || kind == "output_buffer_addr";
+}
+
+static std::string ResolveBufferRole(const ExecutableSpec& spec, const std::string& buffer_name) {
+  auto check_args = [&](const std::vector<KernelArgSpec>& args, bool output) {
+    return std::any_of(args.begin(), args.end(), [&](const KernelArgSpec& arg) {
+      if (arg.buffer != buffer_name) {
+        return false;
+      }
+      return output ? IsOutputBufferArgKind(arg.kind) : IsInputBufferArgKind(arg.kind);
+    });
+  };
+
+  if (check_args(spec.runtime_args, /*output=*/true)) {
+    return "output";
+  }
+  if (check_args(spec.runtime_args, /*output=*/false)) {
+    return "input";
+  }
+  for (const auto& kernel : spec.kernels) {
+    if (check_args(kernel.runtime_args, /*output=*/true) ||
+        check_args(kernel.common_runtime_args, /*output=*/true)) {
+      return "output";
+    }
+    if (check_args(kernel.runtime_args, /*output=*/false) ||
+        check_args(kernel.common_runtime_args, /*output=*/false)) {
+      return "input";
+    }
+  }
+  return "";
+}
+
+static uint32_t ChooseBufferMaterializationPageSize(const ExecutableSpec& spec,
+                                                    const std::string& buffer_name) {
+  uint32_t inferred_page_size = 0;
+  for (const auto& kernel : spec.kernels) {
+    for (const auto& accessor : kernel.accessors) {
+      if (accessor.buffer != buffer_name || accessor.transport_page_size_bytes == 0) {
+        continue;
+      }
+      if (inferred_page_size == 0) {
+        inferred_page_size = accessor.transport_page_size_bytes;
+      } else {
+        ICHECK_EQ(inferred_page_size, accessor.transport_page_size_bytes)
+            << "Blackhole buffer materialization requires a single transport page size per "
+               "buffer; "
+            << buffer_name << " used both " << inferred_page_size << " and "
+            << accessor.transport_page_size_bytes;
+      }
+    }
+  }
+  if (inferred_page_size != 0) {
+    return inferred_page_size;
+  }
+
+  const std::string role = ResolveBufferRole(spec, buffer_name);
+  for (const auto& cb : spec.cb_configs) {
+    if (cb.role == role) {
+      return cb.page_size_bytes;
+    }
+  }
+  if (!spec.cb_configs.empty()) {
+    return spec.cb_configs.front().page_size_bytes;
+  }
+  return 2048;
+}
+
+static void PopulateBufferMaterializationSpecs(ExecutableSpec* spec) {
+  std::unordered_map<std::string, BufferMaterializationSpec> by_buffer;
+  std::vector<std::string> order;
+
+  for (const auto& kernel : spec->kernels) {
+    for (const auto& accessor : kernel.accessors) {
+      if (accessor.buffer.empty()) {
+        continue;
+      }
+      auto [it, inserted] = by_buffer.emplace(accessor.buffer, BufferMaterializationSpec{});
+      auto& materialization = it->second;
+      if (inserted) {
+        materialization.buffer = accessor.buffer;
+        materialization.materialization_kind = "replicated";
+        materialization.layout = accessor.layout;
+        materialization.memory_space = accessor.memory_space;
+        order.push_back(accessor.buffer);
+      } else {
+        ICHECK_EQ(materialization.layout, accessor.layout)
+            << "Blackhole buffer materialization requires a single layout per buffer; "
+            << accessor.buffer << " used both " << materialization.layout << " and "
+            << accessor.layout;
+        ICHECK_EQ(materialization.memory_space, accessor.memory_space)
+            << "Blackhole buffer materialization requires a single memory_space per buffer; "
+            << accessor.buffer << " used both " << materialization.memory_space << " and "
+            << accessor.memory_space;
+      }
+    }
+  }
+
+  spec->buffer_materializations.clear();
+  spec->buffer_materializations.reserve(order.size());
+  for (const auto& buffer_name : order) {
+    auto materialization = by_buffer.at(buffer_name);
+    materialization.transport_page_size_bytes =
+        ChooseBufferMaterializationPageSize(*spec, buffer_name);
+    spec->buffer_materializations.push_back(std::move(materialization));
+  }
+}
+
 static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentInfo& segment) {
   SegmentBodyExtractor extractor(segment.kind);
   tir::PrimFunc segment_func = f;
@@ -1583,12 +1695,14 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     PopulateKernelSpecsForDeviceFunc(kv.second, kv.first, target, /*kernel_code_only=*/false,
                                      source,
                                      &spec_it->second);
+    PopulateBufferMaterializationSpecs(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {
     auto host_it = func_info_map.find(kv.first);
     auto device_it = func_info_map.find(kv.second);
     if (host_it != func_info_map.end() && device_it != func_info_map.end()) {
       host_it->second.kernels = device_it->second.kernels;
+      host_it->second.buffer_materializations = device_it->second.buffer_materializations;
     }
   }
 
@@ -1683,12 +1797,14 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     PopulateKernelSpecsForDeviceFunc(kv.second, kv.first, target, /*kernel_code_only=*/true,
                                      source,
                                      &spec_it->second);
+    PopulateBufferMaterializationSpecs(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {
     auto host_it = func_info_map.find(kv.first);
     auto device_it = func_info_map.find(kv.second);
     if (host_it != func_info_map.end() && device_it != func_info_map.end()) {
       host_it->second.kernels = device_it->second.kernels;
+      host_it->second.buffer_materializations = device_it->second.buffer_materializations;
     }
   }
 
