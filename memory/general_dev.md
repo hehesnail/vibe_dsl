@@ -72,6 +72,7 @@
 - 当前 formal direct-path boundary 如果会在多个 lowering 阶段点被重复检查，就要把校验 helper 和错误口径统一起来；否则后续扩支持面时很容易出现“同一限制，多种报错文案，多处散落特判”
 - 当 staged copy 同时存在 tile path 和 page path 时，不要让每个 lowering 分支各自重新推 shared/global shape、subtile 维度和 transport 字节数；应先把这些量收成单一 geometry helper（例如 `ResolveStaticShape2DFromBufferOrMetadata` + `StagedCopyTransportGeometry`），再让具体分支只消费 geometry。这样 boundary 校验、index 计算和 transport 选择才能保持同一真源
 - staged copy 的 index 提取也不要独立维护第二套几何假设。`InferCopyTileIndex` / `InferStagedCopyBaseTileIndex` 这类“只负责线性化 transport index”的逻辑，应直接复用 shared/global shape helper 和统一的 transport index linearizer；否则 flattened-index path、transpose path、page-vs-tile path 很快又会各自漂出一套边界
+- 当 direct runtime 同时保留 schema path 和兼容 legacy path 时，不要让两条路径各自维护一份 accessor 校验或 compile-time arg materialization。应先把 accessor direct-runtime 约束和 append 逻辑收成共享 helper，再让两条路径都调用这份 helper；否则 schema 收正后，legacy path 很容易悄悄漂回旧假设
 - 对 non-tile/stick copy，外部 DRAM buffer 的真实 `page_size` 不是 CB `page_size` 的别名；需要把单次 transport 的 `page_bytes` 明确收进 accessor schema（如 `transport_page_size`），再由 direct runtime 用这份 schema 创建 TT-Metal buffer/accessor
 - 当 host runtime 当前只支持一种 buffer materialization（例如 replicated DRAM）时，也不要把它硬编码成执行流里的隐式默认值；应先把每个 runtime buffer 的 materialization descriptor 显式收进 `ExecutableSpec`，再让 runtime 按 descriptor 校验并 materialize
 - 当多个 kernel/segment 共享 runtime arg 或 common runtime arg 时，不要在 spec 提取层继续靠 `kind + name/buffer` 推断“是不是同一个参数”；应由 lowering/split 直接产出稳定 `identity`，`rt_mod_blackhole` 只按 `identity` 聚合，缺失 identity 直接 build-time 拒绝

@@ -718,18 +718,37 @@ static void AppendCompileTimeArgValues(const CompileTimeArgSpec& spec,
   }
 }
 
-static void AppendAccessorCompileTimeArgs(const CompileTimeArgSpec& spec,
-                                          const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
-                                          std::vector<uint32_t>* compile_time_args) {
-  const std::string buffer_name = !spec.buffer.empty() ? spec.buffer : spec.name;
+static void ValidateDirectRuntimeAccessorSpec(const std::string& buffer_name,
+                                              const std::string& layout,
+                                              const std::string& memory_space,
+                                              uint32_t common_runtime_arg_count,
+                                              uint32_t args_config_bits) {
+  ICHECK_EQ(layout, "interleaved")
+      << "Blackhole direct runtime currently supports only interleaved accessors";
+  ICHECK_EQ(memory_space, "dram")
+      << "Blackhole direct runtime currently supports only DRAM accessors";
+  ICHECK_EQ(common_runtime_arg_count, 0U)
+      << "Blackhole direct runtime currently supports only interleaved accessors without common runtime args";
+  ICHECK_EQ(args_config_bits, 2U)
+      << "Blackhole direct runtime expects interleaved DRAM accessor args_config_bits == 2";
+}
+
+static void AppendInterleavedAccessorCompileTimeArgs(
+    const std::string& buffer_name,
+    uint32_t expected_count,
+    uint32_t args_config_bits,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
+    std::vector<uint32_t>* compile_time_args) {
   ICHECK(!buffer_name.empty())
       << "Blackhole interleaved accessor compile-time ABI entry is missing a buffer name";
+  ValidateDirectRuntimeAccessorSpec(buffer_name, "interleaved", "dram",
+                                    /*common_runtime_arg_count=*/0, args_config_bits);
   auto it = buffer_bindings.find(buffer_name);
   ICHECK(it != buffer_bindings.end())
       << "Missing runtime buffer binding for accessor buffer " << buffer_name;
-  const auto args_config_bits = static_cast<tensor_accessor::ArgsConfig::Underlying>(
-      spec.args_config_bits);
-  const tensor_accessor::ArgsConfig args_config(args_config_bits);
+  const auto underlying_args_config_bits = static_cast<tensor_accessor::ArgsConfig::Underlying>(
+      args_config_bits);
+  const tensor_accessor::ArgsConfig args_config(underlying_args_config_bits);
   ICHECK((args_config & tensor_accessor::ArgConfig::Runtime).raw() == 0)
       << "Blackhole direct runtime does not yet support accessor common runtime args";
 
@@ -740,11 +759,20 @@ static void AppendAccessorCompileTimeArgs(const CompileTimeArgSpec& spec,
   ICHECK_EQ(emitted_count, 2U)
       << "Blackhole interleaved accessor compile-time ABI for buffer " << buffer_name
       << " must materialize exactly two uint32 values";
-  if (spec.count != 0U) {
-    ICHECK_EQ(spec.count, emitted_count)
+  if (expected_count != 0U) {
+    ICHECK_EQ(expected_count, emitted_count)
         << "Blackhole interleaved accessor compile-time ABI count mismatch for buffer "
         << buffer_name;
   }
+}
+
+static void AppendAccessorCompileTimeArgs(
+    const CompileTimeArgSpec& spec,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
+    std::vector<uint32_t>* compile_time_args) {
+  const std::string buffer_name = !spec.buffer.empty() ? spec.buffer : spec.name;
+  AppendInterleavedAccessorCompileTimeArgs(buffer_name, spec.count, spec.args_config_bits,
+                                           buffer_bindings, compile_time_args);
 }
 
 static bool IsSupportedCommonRuntimeArgKind(const std::string& kind) {
@@ -762,26 +790,18 @@ static void ValidateKernelDirectRuntimeSchema(const KernelSpec& kernel) {
   }
 
   for (const auto& accessor : kernel.accessors) {
-    ICHECK_EQ(accessor.layout, "interleaved")
-        << "Blackhole direct runtime currently supports only interleaved accessors";
-    ICHECK_EQ(accessor.memory_space, "dram")
-        << "Blackhole direct runtime currently supports only DRAM accessors";
-    ICHECK_EQ(accessor.common_runtime_arg_count, 0U)
-        << "Blackhole direct runtime currently supports only interleaved accessors without common runtime args";
-    ICHECK_EQ(accessor.args_config_bits, 2U)
-        << "Blackhole direct runtime expects interleaved DRAM accessor args_config_bits == 2";
+    ValidateDirectRuntimeAccessorSpec(accessor.buffer, accessor.layout, accessor.memory_space,
+                                      accessor.common_runtime_arg_count,
+                                      accessor.args_config_bits);
   }
 
   for (const auto& spec : kernel.compile_time_arg_specs) {
     if (spec.kind != "interleaved_accessor_cta") {
       continue;
     }
-    ICHECK_EQ(spec.layout, "interleaved")
-        << "Blackhole direct runtime currently supports only interleaved accessors";
-    ICHECK_EQ(spec.memory_space, "dram")
-        << "Blackhole direct runtime currently supports only DRAM accessors";
-    ICHECK_EQ(spec.args_config_bits, 2U)
-        << "Blackhole direct runtime expects interleaved DRAM accessor args_config_bits == 2";
+    ValidateDirectRuntimeAccessorSpec(!spec.buffer.empty() ? spec.buffer : spec.name, spec.layout,
+                                      spec.memory_space,
+                                      /*common_runtime_arg_count=*/0, spec.args_config_bits);
   }
 }
 
@@ -933,24 +953,17 @@ static std::vector<uint32_t> BuildKernelCompileTimeArgs(
 
   uint32_t expected_slot = static_cast<uint32_t>(compile_time_args.size());
   for (const auto& accessor : accessors) {
-    ICHECK_EQ(accessor.layout, "interleaved")
-        << "Blackhole direct runtime currently supports only interleaved accessors";
-    ICHECK_EQ(accessor.memory_space, "dram")
-        << "Blackhole direct runtime currently supports only DRAM accessors";
-    ICHECK_EQ(accessor.common_runtime_arg_count, 0U)
-        << "Blackhole direct runtime currently supports only interleaved accessors without common runtime args";
-    ICHECK_EQ(accessor.args_config_bits, 2U)
-        << "Blackhole direct runtime expects interleaved DRAM accessor args_config_bits == 2";
+    ValidateDirectRuntimeAccessorSpec(accessor.buffer, accessor.layout, accessor.memory_space,
+                                      accessor.common_runtime_arg_count,
+                                      accessor.args_config_bits);
     ICHECK_EQ(accessor.compile_time_arg_count, 2U)
         << "Blackhole direct runtime currently supports only interleaved accessors with two compile-time args";
     ICHECK_EQ(accessor.compile_time_arg_offset, expected_slot)
         << "Accessor compile-time offset mismatch for buffer " << accessor.buffer
         << ": got " << accessor.compile_time_arg_offset << ", expected " << expected_slot;
-    auto it = buffer_bindings.find(accessor.buffer);
-    ICHECK(it != buffer_bindings.end())
-        << "Missing runtime buffer binding for accessor buffer " << accessor.buffer;
-    TensorAccessorArgs(*(it->second.mesh_buffer), tensor_accessor::ArgsConfig(2))
-        .append_to(compile_time_args);
+    AppendInterleavedAccessorCompileTimeArgs(accessor.buffer, accessor.compile_time_arg_count,
+                                             accessor.args_config_bits, buffer_bindings,
+                                             &compile_time_args);
     expected_slot += accessor.compile_time_arg_count;
   }
   return compile_time_args;

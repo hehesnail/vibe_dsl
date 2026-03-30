@@ -302,7 +302,7 @@
 
 状态：
 
-- ◐ 已完成首轮 helper 边界拆分（2026-03-30）
+- ◐ 已完成两轮 helper 边界拆分（2026-03-31）
 
 目标：
 
@@ -332,11 +332,14 @@
 - kernel source 落盘已下沉为 `WriteKernelSourceFiles`
 - kernel + common runtime arg materialization 已下沉为 `CreateProgramKernelsFromSpec`
 - per-work runtime arg 应用已下沉为 `ApplyWorkItemRuntimeArgs`
+- accessor direct-runtime schema 校验已统一到 `ValidateDirectRuntimeAccessorSpec`
+- accessor compile-time arg materialization 已统一到 `AppendInterleavedAccessorCompileTimeArgs`
+- schema-based `compile_time_arg_specs` path 和 legacy `kernel.accessors` path 不再各自维护一份 interleaved/DRAM accessor append 逻辑
 
 剩余项：
 
 - 当前 helper 仍集中在 [blackhole_module.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/blackhole_module.cc) 内，尚未继续拆到单独实现文件
-- accessor compile-time arg materialization 仍在同一文件内，需要后续继续收边界
+- runtime/common-runtime arg kind-switch 仍偏集中，后续可继续沿 materializer/helper 边界往下拆
 
 #### B2. 清理 `LowerBlackholeOps` 中协议提取与当前策略派生的边界
 
