@@ -53,6 +53,7 @@ Blackhole 后端当前的正式目标收敛为三点：
 - Stage 3 formal direct host path 已完成，设计文档：`stage3_multicore_design.md`
 - `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复；host C codegen 已支持 packed call 结果表达式
 - P5 当前已从“零语义层”推进到：program-local semaphore plan、kernel-level semaphore binding、最小 device-side dataflow semaphore builtin、以及 worker producer/consumer direct-runtime E2E
+- backend cleanup review 与重文件边界拆分草案已建档：`stage4_backend_cleanup_roadmap.md`
 
 ## 3. 正式架构
 
