@@ -985,21 +985,10 @@ def test_blackhole_gemm_direct_runtime_rejects_unknown_math_fidelity():
     with target:
         artifact = lower(kernel, target=target)
 
-    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
-    device_main = device_funcs['I.GlobalVar("main_kernel")']
-
-    def mutate_unknown_math_fidelity(segment):
-        if str(segment.get("kind", "")) != "compute":
-            return segment
-        compute_config = dict(segment["compute_config"])
-        compute_config["math_fidelity"] = "UltraFi9"
-        segment["compute_config"] = compute_config
-        return segment
-
-    mutated_func = _with_mutated_segment_plan(device_main, mutate_unknown_math_fidelity)
-    mutated_mod = _rebuild_codegen_module_with_segment_plan(
-        artifact, mutated_func.attrs["blackhole.segment_plan"]
-    )
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    mutated_contract = dict(executable_spec["compute_contract"])
+    mutated_contract["math_fidelity"] = "UltraFi9"
+    mutated_mod = _rebuild_codegen_module_with_compute_contract(artifact, mutated_contract)
 
     a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
     b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
@@ -1063,6 +1052,45 @@ def test_blackhole_gemm_direct_runtime_materializes_compile_time_abi_schema():
     mutated_mod["main"](a_torch, b_torch, c_output)
     assert_tensors_close_or_dump(
         c_output, c_ref, atol=2e-1, rtol=2e-1, failure_message="GEMM direct-call output mismatch"
+    )
+
+
+def test_blackhole_gemm_direct_runtime_preserves_richer_compute_config_correctness():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    torch.manual_seed(0)
+    a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    c_output = torch.zeros(32, 32, dtype=torch.float32)
+    c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
+
+    kernel = gemm_kernel_with_compute_config_extras()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    compute_contract = executable_spec["compute_contract"]
+    assert bool(compute_contract["dst_full_sync_en"]) is True
+    assert bool(compute_contract["bfp8_pack_precise"]) is True
+    assert sorted((str(item["name"]), str(item["value"])) for item in compute_contract["defines"]) == [
+        ("BLACKHOLE_ACC_MODE", "fp32"),
+        ("BLACKHOLE_TEST_DEFINE", "1"),
+    ]
+    assert sorted(
+        (str(item["name"]), int(item["value"])) for item in compute_contract["named_compile_args"]
+    ) == [("c_0", 0), ("c_1", 1), ("c_16", 16)]
+
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+    assert_tensors_close_or_dump(
+        c_output,
+        c_ref,
+        atol=2e-1,
+        rtol=2e-1,
+        failure_message="GEMM richer compute-config direct-call output mismatch",
     )
 
 
