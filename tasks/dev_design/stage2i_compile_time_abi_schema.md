@@ -107,6 +107,7 @@
 - `count`
 - `buffer`（仅 accessor 类需要）
 - `segment_role`（可选）
+- `args_config_bits`（仅 accessor 类需要）
 
 按 kind 补充：
 
@@ -129,6 +130,7 @@
 - `interleaved_accessor_cta`
   - 表示由 host runtime `TensorAccessorArgs(mesh_buffer)` materialize 的 compile-time ABI 段
   - 当前固定 `count = 2`
+  - `args_config_bits` 严格等价于 TT-Metal `tensor_accessor::ArgConfig.raw()`
 - `gemm_shape`
   - 承载 `Mt/Kt/Nt`
 - `gemm_transpose_flags`
@@ -189,6 +191,7 @@
 
 - `CreateKernel` 前优先按 `compile_time_arg_specs` materialize 最终 compile args
 - `interleaved_accessor_cta` 通过 runtime `MeshBuffer` 转 `TensorAccessorArgs`
+- 当前 direct runtime 对 `interleaved_accessor_cta` 还要求 `layout=interleaved`、`memory_space=dram`、`args_config_bits=2`
 - `gemm_shape` / `gemm_transpose_flags` 直接展开成 compile args
 - 遇到未知 `kind` 明确 fail-fast
 - `launch_spec` 成为决定 `ComputeConfig` / `DataMovementConfig` 的正式输入

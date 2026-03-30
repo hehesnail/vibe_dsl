@@ -89,6 +89,7 @@
 - `layout` 当前至少允许：`interleaved` / `sharded`
 - `memory_space` 当前至少允许：`dram` / `l1`
 - compile-time / common-runtime 两段 offset-count 都是显式协议字段
+- `args_config_bits` 严格等价于 TT-Metal `tensor_accessor::ArgConfig.raw()`，不是 Blackhole 私有编码
 
 ### 4.2 当前 slot 约定
 
@@ -111,6 +112,7 @@
 - `compile_time_arg_count = 2`
 - `common_runtime_arg_offset = 0`
 - `common_runtime_arg_count = 0`
+- `args_config_bits = 2`（`IsDram`）
 
 ### 4.3 common runtime args schema
 
@@ -154,8 +156,10 @@
 - `CreateKernel` 前，根据 `KernelSpec.accessors` 和 runtime `MeshBuffer` 绑定 materialize compile-time accessor args
 - 当前只正式接受：
   - `layout = interleaved`
+  - `memory_space = dram`
+  - `args_config_bits = 2`
   - `common_runtime_arg_count = 0`
-- 如果看到 `layout != interleaved` 或 `common_runtime_arg_count > 0`，direct runtime 直接 fail-fast
+- 如果看到 `layout != interleaved`、`memory_space != dram`、`args_config_bits != 2` 或 `common_runtime_arg_count > 0`，direct runtime 直接 fail-fast
 
 这保证 host/runtime 已经开始消费正式协议，但不会假装已经支持 sharded 执行。
 
