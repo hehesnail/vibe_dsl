@@ -5,7 +5,7 @@
 ## 当前阶段
 
 - **阶段**: Stage 3 — multi-core runtime 调度
-- **状态**: ✅ Stage 3 formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 compute contract 正式化并收正 `compute_contract -> compute_config` 真源关系、P3 richer runtime work/accessor/compile-time ABI 主路径正式化，以及 P5 program-local semaphore schema、kernel binding、最小 device-side dataflow semaphore builtin 预埋；direct runtime 对未支持 execution 面显式 fail-fast
+- **状态**: ✅ Stage 3 formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 compute contract 正式化并收正 `compute_contract -> compute_config` 真源关系，且已把 `dst_full_sync_en/bfp8_pack_precise/defines/named_compile_args` 纳入 compute config 主链、P3 richer runtime work/accessor/compile-time ABI 主路径正式化，以及 P5 program-local semaphore schema、kernel binding、最小 device-side dataflow semaphore builtin 预埋；direct runtime 对未支持 execution 面显式 fail-fast
 - **日期**: 2026-03-30
 - **设计文档**: `tasks/dev_design/stage3_multicore_design.md`
 
@@ -15,7 +15,7 @@
 |------|------|
 | `test_blackhole_copy_pipeline.py` | 20 passed, 1 skipped, 1 xfailed |
 | `test_blackhole_copy_runtime.py` | 2 passed, 5 skipped |
-| `test_blackhole_gemm.py` | 17 passed, 8 skipped |
+| `test_blackhole_gemm.py` | 19 passed, 8 skipped |
 | `test_blackhole_tvm_ffi_export.py` | 1 passed |
 
 ### 已验证 full-env 结果
@@ -108,7 +108,8 @@
 - `blackhole.gemm_contract` 仍保留为兼容字段，但新增 compute 语义不再继续堆在旧字段上
 - `compute_contract` 已继续 formalize：
   - block/subblock ABI：`block_m_tiles/block_n_tiles/block_k_tiles`、`subblock_m_tiles/subblock_n_tiles`
-  - compute precision ABI：`math_fidelity/fp32_dest_acc_en/math_approx_mode/unpack_to_dest_mode`
+  - compute precision ABI：`math_fidelity/fp32_dest_acc_en/dst_full_sync_en/math_approx_mode/unpack_to_dest_mode/bfp8_pack_precise`
+  - compute kernel config extras：`defines/named_compile_args`
 - `tl.gemm_py` 现有 compute ABI 参数 `clear_accum/k_pack/wg_wait` 已进入 `compute_contract` 和 compute-side `compile_time_arg_specs`
 - `tl.gemm_py` 现有 warp-level compute ABI 参数 `policy` 已进入 `compute_contract.policy_type/policy_name` 和 compute-side `compile_time_arg_specs`
 - `tl.gemm_py` 可选 `mbar` 绑定已进入 `compute_contract.has_mbarrier/mbarrier_buffer/mbarrier_scope/mbarrier_index_exprs`
@@ -116,9 +117,14 @@
 - compute segment 已显式产出 `gemm_clear_accum`、`gemm_k_pack`、`gemm_wg_wait`
 - compute segment 已显式产出 `gemm_policy`
 - compute segment / `KernelSpec.compute_config` 已改为从 `compute_contract` 派生，不再各自维护独立默认值
+- `KernelSpec.compute_config` / direct runtime `CreateKernel(ComputeConfig)` 已收正到更完整 TT-Metal 口径：
+  - `dst_full_sync_en`
+  - `bfp8_pack_precise`
+  - `defines`
+  - `named_compile_args`
 - `mbar` 当前按 barrier binding formalize 到 `compute_contract`，未被错误编码成新的 compile-time literal ABI；direct runtime 对 `has_mbarrier=True` 明确 fail-fast
 - `BlackholeModule` 已改为按 `KernelSpec.compute_config` materialize TT-Metal `ComputeConfig`，不再把 `math_fidelity/fp32_dest_acc_en/math_approx_mode` 写死
-- 残留点：按 TT-Metal 正式 `ComputeConfig` 口径，`dst_full_sync_en`、`bfp8_pack_precise`、`named_compile_args/defines` 仍未 formalize；当前实现是主轴对齐，不是全量镜像
+- 残留点：当前 `defines/named_compile_args` 已 formalize 到 schema/spec/runtime 主链，但 producer 仍主要靠测试注入验证，尚未扩到稳定 DSL 输入面；更宽 dtype/compute ABI 仍未做
 - 新增 `transpose_A=True, transpose_B=True` 的更宽 GEMM compute case 测试；当前环境 direct runtime 用例因执行前置条件不足而跳过，但 schema/spec 主链已验证
 
 ### Stage 2E（设备资源 IR）

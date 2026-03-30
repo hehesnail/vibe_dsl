@@ -205,27 +205,67 @@ struct KernelLaunchSpec {
   }
 };
 
+struct KernelDefineSpec {
+  std::string name;
+  std::string value;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("value", value);
+    writer->EndObject();
+  }
+};
+
+struct NamedCompileArgSpec {
+  std::string name;
+  uint32_t value = 0;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("value", static_cast<int64_t>(value));
+    writer->EndObject();
+  }
+};
+
 struct KernelComputeConfigSpec {
   std::string math_fidelity;
   bool fp32_dest_acc_en = false;
+  bool dst_full_sync_en = false;
   bool math_approx_mode = false;
   std::vector<std::string> unpack_to_dest_mode;
+  bool bfp8_pack_precise = false;
   bool clear_accum = false;
   uint32_t k_pack = 1;
   int32_t wg_wait = 0;
   int32_t policy_type = 0;
   std::string policy_name;
+  std::vector<KernelDefineSpec> defines;
+  std::vector<NamedCompileArgSpec> named_compile_args;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
     writer->WriteObjectKeyValue("math_fidelity", math_fidelity);
     writer->WriteObjectKeyValue("fp32_dest_acc_en", fp32_dest_acc_en);
+    writer->WriteObjectKeyValue("dst_full_sync_en", dst_full_sync_en);
     writer->WriteObjectKeyValue("math_approx_mode", math_approx_mode);
+    writer->WriteObjectKeyValue("bfp8_pack_precise", bfp8_pack_precise);
     writer->WriteObjectKeyValue("clear_accum", clear_accum);
     writer->WriteObjectKeyValue("k_pack", static_cast<int64_t>(k_pack));
     writer->WriteObjectKeyValue("wg_wait", static_cast<int64_t>(wg_wait));
     writer->WriteObjectKeyValue("policy_type", static_cast<int64_t>(policy_type));
     writer->WriteObjectKeyValue("policy_name", policy_name);
+    if (!defines.empty()) {
+      writer->WriteObjectKeyValue("defines", defines);
+    } else {
+      writer->WriteObjectKeyValue("defines", std::vector<KernelDefineSpec>{});
+    }
+    if (!named_compile_args.empty()) {
+      writer->WriteObjectKeyValue("named_compile_args", named_compile_args);
+    } else {
+      writer->WriteObjectKeyValue("named_compile_args", std::vector<NamedCompileArgSpec>{});
+    }
     if (!unpack_to_dest_mode.empty()) {
       writer->WriteObjectKeyValue("unpack_to_dest_mode", unpack_to_dest_mode);
     } else {
@@ -405,13 +445,17 @@ struct ComputeContractSpec {
   std::string accumulator_dtype;
   std::string math_fidelity;
   bool fp32_dest_acc_en = false;
+  bool dst_full_sync_en = false;
   bool math_approx_mode = false;
   std::vector<std::string> unpack_to_dest_mode;
+  bool bfp8_pack_precise = false;
   bool clear_accum = false;
   uint32_t k_pack = 1;
   int32_t wg_wait = 0;
   int32_t policy_type = 0;
   std::string policy_name;
+  std::vector<KernelDefineSpec> defines;
+  std::vector<NamedCompileArgSpec> named_compile_args;
   bool has_mbarrier = false;
   std::string mbarrier_buffer;
   std::string mbarrier_scope;
@@ -446,12 +490,24 @@ struct ComputeContractSpec {
     writer->WriteObjectKeyValue("accumulator_dtype", accumulator_dtype);
     writer->WriteObjectKeyValue("math_fidelity", math_fidelity);
     writer->WriteObjectKeyValue("fp32_dest_acc_en", fp32_dest_acc_en);
+    writer->WriteObjectKeyValue("dst_full_sync_en", dst_full_sync_en);
     writer->WriteObjectKeyValue("math_approx_mode", math_approx_mode);
+    writer->WriteObjectKeyValue("bfp8_pack_precise", bfp8_pack_precise);
     writer->WriteObjectKeyValue("clear_accum", clear_accum);
     writer->WriteObjectKeyValue("k_pack", static_cast<int64_t>(k_pack));
     writer->WriteObjectKeyValue("wg_wait", static_cast<int64_t>(wg_wait));
     writer->WriteObjectKeyValue("policy_type", static_cast<int64_t>(policy_type));
     writer->WriteObjectKeyValue("policy_name", policy_name);
+    if (!defines.empty()) {
+      writer->WriteObjectKeyValue("defines", defines);
+    } else {
+      writer->WriteObjectKeyValue("defines", std::vector<KernelDefineSpec>{});
+    }
+    if (!named_compile_args.empty()) {
+      writer->WriteObjectKeyValue("named_compile_args", named_compile_args);
+    } else {
+      writer->WriteObjectKeyValue("named_compile_args", std::vector<NamedCompileArgSpec>{});
+    }
     writer->WriteObjectKeyValue("has_mbarrier", has_mbarrier);
     writer->WriteObjectKeyValue("mbarrier_buffer", mbarrier_buffer);
     writer->WriteObjectKeyValue("mbarrier_scope", mbarrier_scope);

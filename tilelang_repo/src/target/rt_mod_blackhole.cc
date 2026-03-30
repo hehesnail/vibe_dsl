@@ -478,12 +478,16 @@ static ComputeContractSpec ComputeContractFromLegacyGemm(const GemmContractSpec&
   contract.accumulator_dtype = gemm.accumulator_dtype;
   contract.math_fidelity = "HiFi4";
   contract.fp32_dest_acc_en = true;
+  contract.dst_full_sync_en = false;
   contract.math_approx_mode = false;
+  contract.bfp8_pack_precise = false;
   contract.clear_accum = false;
   contract.k_pack = 1;
   contract.wg_wait = 0;
   contract.policy_type = 0;
   contract.policy_name = "Square";
+  contract.defines = {};
+  contract.named_compile_args = {};
   contract.has_mbarrier = false;
   return contract;
 }
@@ -578,8 +582,14 @@ static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
   if (auto v = attrs.Get("fp32_dest_acc_en")) {
     contract.fp32_dest_acc_en = Downcast<Bool>(v.value());
   }
+  if (auto v = attrs.Get("dst_full_sync_en")) {
+    contract.dst_full_sync_en = Downcast<Bool>(v.value());
+  }
   if (auto v = attrs.Get("math_approx_mode")) {
     contract.math_approx_mode = Downcast<Bool>(v.value());
+  }
+  if (auto v = attrs.Get("bfp8_pack_precise")) {
+    contract.bfp8_pack_precise = Downcast<Bool>(v.value());
   }
   if (auto v = attrs.Get("clear_accum")) {
     contract.clear_accum = Downcast<Bool>(v.value());
@@ -595,6 +605,44 @@ static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
   }
   if (auto v = attrs.Get("policy_name")) {
     contract.policy_name = Downcast<String>(v.value());
+  }
+  if (auto v = attrs.Get("defines")) {
+    for (const auto& item : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+      auto define = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+          ffi::Map<ffi::String, ffi::Any>());
+      if (define.empty()) {
+        continue;
+      }
+      KernelDefineSpec entry;
+      if (auto name = define.Get("name")) {
+        entry.name = Downcast<String>(name.value());
+      }
+      if (auto value = define.Get("value")) {
+        entry.value = Downcast<String>(value.value());
+      }
+      if (!entry.name.empty()) {
+        contract.defines.push_back(std::move(entry));
+      }
+    }
+  }
+  if (auto v = attrs.Get("named_compile_args")) {
+    for (const auto& item : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+      auto arg = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+          ffi::Map<ffi::String, ffi::Any>());
+      if (arg.empty()) {
+        continue;
+      }
+      NamedCompileArgSpec entry;
+      if (auto name = arg.Get("name")) {
+        entry.name = Downcast<String>(name.value());
+      }
+      if (auto value = arg.Get("value")) {
+        entry.value = static_cast<uint32_t>(Downcast<Integer>(value.value())->value);
+      }
+      if (!entry.name.empty()) {
+        contract.named_compile_args.push_back(std::move(entry));
+      }
+    }
   }
   if (auto v = attrs.Get("has_mbarrier")) {
     contract.has_mbarrier = Downcast<Bool>(v.value());
@@ -646,8 +694,14 @@ static bool ExtractComputeConfig(const ffi::Map<ffi::String, ffi::Any>& spec_inf
   if (auto v = spec_info.Get("fp32_dest_acc_en")) {
     compute_config->fp32_dest_acc_en = Downcast<Bool>(v.value());
   }
+  if (auto v = spec_info.Get("dst_full_sync_en")) {
+    compute_config->dst_full_sync_en = Downcast<Bool>(v.value());
+  }
   if (auto v = spec_info.Get("math_approx_mode")) {
     compute_config->math_approx_mode = Downcast<Bool>(v.value());
+  }
+  if (auto v = spec_info.Get("bfp8_pack_precise")) {
+    compute_config->bfp8_pack_precise = Downcast<Bool>(v.value());
   }
   if (auto v = spec_info.Get("clear_accum")) {
     compute_config->clear_accum = Downcast<Bool>(v.value());
@@ -664,15 +718,73 @@ static bool ExtractComputeConfig(const ffi::Map<ffi::String, ffi::Any>& spec_inf
   if (auto v = spec_info.Get("policy_name")) {
     compute_config->policy_name = Downcast<String>(v.value());
   }
+  if (auto v = spec_info.Get("defines")) {
+    for (const auto& item : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+      auto define = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+          ffi::Map<ffi::String, ffi::Any>());
+      if (define.empty()) {
+        continue;
+      }
+      KernelDefineSpec entry;
+      if (auto name = define.Get("name")) {
+        entry.name = Downcast<String>(name.value());
+      }
+      if (auto value = define.Get("value")) {
+        entry.value = Downcast<String>(value.value());
+      }
+      if (!entry.name.empty()) {
+        compute_config->defines.push_back(std::move(entry));
+      }
+    }
+  }
+  if (auto v = spec_info.Get("named_compile_args")) {
+    for (const auto& item : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+      auto arg = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+          ffi::Map<ffi::String, ffi::Any>());
+      if (arg.empty()) {
+        continue;
+      }
+      NamedCompileArgSpec entry;
+      if (auto name = arg.Get("name")) {
+        entry.name = Downcast<String>(name.value());
+      }
+      if (auto value = arg.Get("value")) {
+        entry.value = static_cast<uint32_t>(Downcast<Integer>(value.value())->value);
+      }
+      if (!entry.name.empty()) {
+        compute_config->named_compile_args.push_back(std::move(entry));
+      }
+    }
+  }
   if (auto v = spec_info.Get("unpack_to_dest_mode")) {
     for (const auto& mode : Downcast<ffi::Array<ffi::Any>>(v.value())) {
       compute_config->unpack_to_dest_mode.push_back(Downcast<String>(mode));
     }
   }
   return !compute_config->math_fidelity.empty() || compute_config->fp32_dest_acc_en ||
-         compute_config->math_approx_mode || compute_config->clear_accum ||
+         compute_config->dst_full_sync_en || compute_config->math_approx_mode ||
+         compute_config->bfp8_pack_precise || compute_config->clear_accum ||
          compute_config->k_pack != 1 || compute_config->wg_wait != 0 ||
+         !compute_config->defines.empty() || !compute_config->named_compile_args.empty() ||
          !compute_config->unpack_to_dest_mode.empty();
+}
+
+static KernelComputeConfigSpec ComputeConfigFromContract(const ComputeContractSpec& contract) {
+  KernelComputeConfigSpec compute_config;
+  compute_config.math_fidelity = contract.math_fidelity;
+  compute_config.fp32_dest_acc_en = contract.fp32_dest_acc_en;
+  compute_config.dst_full_sync_en = contract.dst_full_sync_en;
+  compute_config.math_approx_mode = contract.math_approx_mode;
+  compute_config.unpack_to_dest_mode = contract.unpack_to_dest_mode;
+  compute_config.bfp8_pack_precise = contract.bfp8_pack_precise;
+  compute_config.clear_accum = contract.clear_accum;
+  compute_config.k_pack = contract.k_pack;
+  compute_config.wg_wait = contract.wg_wait;
+  compute_config.policy_type = contract.policy_type;
+  compute_config.policy_name = contract.policy_name;
+  compute_config.defines = contract.defines;
+  compute_config.named_compile_args = contract.named_compile_args;
+  return compute_config;
 }
 
 static std::vector<KernelArgSpec> MakeDefaultCopyRuntimeArgs() {
@@ -1269,9 +1381,15 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
     if (segment.has_launch_spec) {
       kernel.launch_spec = segment.launch_spec;
     }
-    kernel.has_compute_config = segment.has_compute_config;
-    if (segment.has_compute_config) {
-      kernel.compute_config = segment.compute_config;
+    if ((kernel.core_type == "trisc" || kernel.kind == "compute") && spec->compute_contract.enabled &&
+        spec->compute_contract.kind == "gemm") {
+      kernel.has_compute_config = true;
+      kernel.compute_config = ComputeConfigFromContract(spec->compute_contract);
+    } else {
+      kernel.has_compute_config = segment.has_compute_config;
+      if (segment.has_compute_config) {
+        kernel.compute_config = segment.compute_config;
+      }
     }
     kernel.accessors = segment.accessors;
     kernel.semaphore_bindings = segment.semaphore_bindings;

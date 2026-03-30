@@ -564,8 +564,12 @@ void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
   compute_contract.Set("accumulator_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
   compute_contract.Set("math_fidelity", String("HiFi4"));
   compute_contract.Set("fp32_dest_acc_en", Bool(true));
+  compute_contract.Set("dst_full_sync_en", Bool(false));
   compute_contract.Set("math_approx_mode", Bool(false));
   compute_contract.Set("unpack_to_dest_mode", Array<Any>{});
+  compute_contract.Set("bfp8_pack_precise", Bool(false));
+  compute_contract.Set("defines", Array<Any>{});
+  compute_contract.Set("named_compile_args", Array<Any>{});
   compute_contract.Set("clear_accum", Bool(gemm_clear_accum_));
   compute_contract.Set("k_pack", Integer(gemm_k_pack_));
   compute_contract.Set("wg_wait", Integer(gemm_wg_wait_));
@@ -585,8 +589,12 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
     Map<String, Any> compute_config;
     compute_config.Set("math_fidelity", String("HiFi4"));
     compute_config.Set("fp32_dest_acc_en", Bool(true));
+    compute_config.Set("dst_full_sync_en", Bool(false));
     compute_config.Set("math_approx_mode", Bool(false));
     compute_config.Set("unpack_to_dest_mode", Array<Any>{});
+    compute_config.Set("bfp8_pack_precise", Bool(false));
+    compute_config.Set("defines", Array<Any>{});
+    compute_config.Set("named_compile_args", Array<Any>{});
     compute_config.Set("clear_accum", Bool(gemm_clear_accum_));
     compute_config.Set("k_pack", Integer(gemm_k_pack_));
     compute_config.Set("wg_wait", Integer(gemm_wg_wait_));

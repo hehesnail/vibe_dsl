@@ -718,6 +718,75 @@ def test_blackhole_gemm_compile_time_abi_materializes_nondefault_compute_abi():
     assert [int(value) for value in gemm_wg_wait["values"]] == [3]
 
 
+def test_blackhole_gemm_compute_config_materializes_extended_precision_flags():
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    mutated_contract = dict(executable_spec["compute_contract"])
+    mutated_contract["dst_full_sync_en"] = True
+    mutated_contract["bfp8_pack_precise"] = True
+    mutated_mod = _rebuild_codegen_module_with_compute_contract(artifact, mutated_contract)
+
+    executable_spec = mutated_mod.get_function_metadata("main")
+    compute_contract = executable_spec["compute_contract"]
+    compute = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="compute", core_type="trisc"
+    )
+    compute_config = compute["compute_config"]
+
+    assert bool(compute_contract["dst_full_sync_en"]) is True
+    assert bool(compute_contract["bfp8_pack_precise"]) is True
+    assert bool(compute_config["dst_full_sync_en"]) is True
+    assert bool(compute_config["bfp8_pack_precise"]) is True
+
+
+def test_blackhole_gemm_compute_config_materializes_defines_and_named_compile_args():
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    mutated_contract = dict(executable_spec["compute_contract"])
+    mutated_contract["defines"] = [
+        {"name": "BLACKHOLE_TEST_DEFINE", "value": "1"},
+        {"name": "BLACKHOLE_ACC_MODE", "value": "fp32"},
+    ]
+    mutated_contract["named_compile_args"] = [
+        {"name": "c_0", "value": 0},
+        {"name": "c_1", "value": 1},
+        {"name": "c_16", "value": 16},
+    ]
+    mutated_mod = _rebuild_codegen_module_with_compute_contract(artifact, mutated_contract)
+
+    executable_spec = mutated_mod.get_function_metadata("main")
+    compute_contract = executable_spec["compute_contract"]
+    compute = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="compute", core_type="trisc"
+    )
+    compute_config = compute["compute_config"]
+
+    assert [(str(item["name"]), str(item["value"])) for item in compute_contract["defines"]] == [
+        ("BLACKHOLE_TEST_DEFINE", "1"),
+        ("BLACKHOLE_ACC_MODE", "fp32"),
+    ]
+    assert [
+        (str(item["name"]), int(item["value"])) for item in compute_contract["named_compile_args"]
+    ] == [("c_0", 0), ("c_1", 1), ("c_16", 16)]
+    assert [(str(item["name"]), str(item["value"])) for item in compute_config["defines"]] == [
+        ("BLACKHOLE_TEST_DEFINE", "1"),
+        ("BLACKHOLE_ACC_MODE", "fp32"),
+    ]
+    assert [
+        (str(item["name"]), int(item["value"])) for item in compute_config["named_compile_args"]
+    ] == [("c_0", 0), ("c_1", 1), ("c_16", 16)]
+
+
 def test_blackhole_gemm_compile_time_abi_materializes_nondefault_policy():
     kernel = gemm_kernel_with_policy()
     target = Target("blackhole")

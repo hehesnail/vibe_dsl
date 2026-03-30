@@ -236,6 +236,13 @@ v2 继续扩展：
 - `compute_config` 可以保留在 segment/kernel schema 中，但其字段值必须从 `compute_contract` 派生
 - 不允许 `LowerBlackholeOps`、`rt_mod_blackhole`、`BlackholeModule` 各自再维护一套
   `HiFi4/true/false/...` 的局部默认值
+- 本轮继续补到 TT-Metal `ComputeConfig` 口径里的：
+  - `dst_full_sync_en`
+  - `bfp8_pack_precise`
+  - `defines`
+  - `named_compile_args`
+- `defines/named_compile_args` 当前先 formalize 到 `compute_contract -> KernelSpec.compute_config ->
+  CreateKernel(ComputeConfig)` 主链，producer 仍主要依赖测试注入/attrs 变异验证，不要求 DSL 已有稳定入口
 
 本轮不做：
 

@@ -628,13 +628,25 @@ static KernelHandle CreateKernelFromSpec(
   const std::string core_type = kernel.core_type;
   if (core_type == "trisc" || kernel.kind == "compute") {
     std::vector<UnpackToDestMode> unpack_to_dest_mode;
+    std::map<std::string, std::string> defines;
+    std::unordered_map<std::string, uint32_t> named_compile_args;
     MathFidelity math_fidelity = MathFidelity::HiFi4;
     bool fp32_dest_acc_en = true;
+    bool dst_full_sync_en = false;
     bool math_approx_mode = false;
+    bool bfp8_pack_precise = false;
     if (kernel.has_compute_config) {
       math_fidelity = ParseMathFidelity(kernel.compute_config.math_fidelity);
       fp32_dest_acc_en = kernel.compute_config.fp32_dest_acc_en;
+      dst_full_sync_en = kernel.compute_config.dst_full_sync_en;
       math_approx_mode = kernel.compute_config.math_approx_mode;
+      bfp8_pack_precise = kernel.compute_config.bfp8_pack_precise;
+      for (const auto& define : kernel.compute_config.defines) {
+        defines.emplace(define.name, define.value);
+      }
+      for (const auto& arg : kernel.compute_config.named_compile_args) {
+        named_compile_args.emplace(arg.name, arg.value);
+      }
       for (const auto& mode : kernel.compute_config.unpack_to_dest_mode) {
         unpack_to_dest_mode.push_back(ParseUnpackToDestMode(mode));
       }
@@ -646,9 +658,13 @@ static KernelHandle CreateKernelFromSpec(
         ComputeConfig{
             .math_fidelity = math_fidelity,
             .fp32_dest_acc_en = fp32_dest_acc_en,
+            .dst_full_sync_en = dst_full_sync_en,
             .unpack_to_dest_mode = unpack_to_dest_mode,
+            .bfp8_pack_precise = bfp8_pack_precise,
             .math_approx_mode = math_approx_mode,
-            .compile_args = compile_time_args});
+            .compile_args = compile_time_args,
+            .defines = defines,
+            .named_compile_args = named_compile_args});
   }
 
   DataMovementProcessor processor = DataMovementProcessor::RISCV_0;
