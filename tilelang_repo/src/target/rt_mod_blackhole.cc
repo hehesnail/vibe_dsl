@@ -977,6 +977,10 @@ static std::vector<CompileTimeArgSpec> ExtractCompileTimeArgSpecsFromArray(
         spec.values.push_back(static_cast<uint32_t>(Downcast<Integer>(value).IntValue()));
       }
     }
+    if (auto v = spec_info.Get("args_config_bits")) {
+      spec.args_config_bits =
+          static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+    }
     if (auto v = spec_info.Get("layout")) {
       spec.layout = Downcast<String>(v.value());
     }

@@ -164,6 +164,7 @@ struct CompileTimeArgSpec {
   std::string buffer;
   std::string segment_role;
   std::vector<uint32_t> values;
+  uint32_t args_config_bits = 0;
   std::string layout;
   std::string memory_space;
 
@@ -187,6 +188,9 @@ struct CompileTimeArgSpec {
         encoded_values.push_back(static_cast<int64_t>(value));
       }
       writer->WriteObjectKeyValue("values", encoded_values);
+    }
+    if (args_config_bits != 0) {
+      writer->WriteObjectKeyValue("args_config_bits", static_cast<int64_t>(args_config_bits));
     }
     if (!layout.empty()) {
       writer->WriteObjectKeyValue("layout", layout);

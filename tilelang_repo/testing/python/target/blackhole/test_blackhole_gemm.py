@@ -50,7 +50,7 @@ def _with_richer_accessor_schema(func, common_runtime_args=None):
             richer_accessor["compile_time_arg_count"] = 2
             richer_accessor["common_runtime_arg_offset"] = 0
             richer_accessor["common_runtime_arg_count"] = 0
-            richer_accessor["args_config_bits"] = 1 if str(richer_accessor["layout"]) == "interleaved" else 0
+            richer_accessor["args_config_bits"] = 2 if str(richer_accessor["layout"]) == "interleaved" else 1
             richer_accessors.append(richer_accessor)
         richer_segment["accessors"] = richer_accessors
         richer_segments.append(richer_segment)
@@ -80,7 +80,7 @@ def _with_sharded_accessor_schema(func):
             richer_accessor["common_runtime_arg_offset"] = 0
             richer_accessor["common_runtime_arg_count"] = 0
             richer_accessor["layout"] = "sharded"
-            richer_accessor["args_config_bits"] = 0
+            richer_accessor["args_config_bits"] = 1
             richer_accessors.append(richer_accessor)
         richer_segment["accessors"] = richer_accessors
         richer_segments.append(richer_segment)
@@ -339,14 +339,14 @@ def test_blackhole_gemm_contract_attr_is_materialized():
     assert [int(item["compile_time_arg_count"]) for item in reader["accessors"]] == [2, 2]
     assert [int(item["common_runtime_arg_offset"]) for item in reader["accessors"]] == [0, 0]
     assert [int(item["common_runtime_arg_count"]) for item in reader["accessors"]] == [0, 0]
-    assert [int(item["args_config_bits"]) for item in reader["accessors"]] == [1, 1]
+    assert [int(item["args_config_bits"]) for item in reader["accessors"]] == [2, 2]
     assert [(str(item["buffer"]), int(item["compile_time_arg_offset"])) for item in writer["accessors"]] == [
         ("C", 0)
     ]
     assert [int(item["compile_time_arg_count"]) for item in writer["accessors"]] == [2]
     assert [int(item["common_runtime_arg_offset"]) for item in writer["accessors"]] == [0]
     assert [int(item["common_runtime_arg_count"]) for item in writer["accessors"]] == [0]
-    assert [int(item["args_config_bits"]) for item in writer["accessors"]] == [1]
+    assert [int(item["args_config_bits"]) for item in writer["accessors"]] == [2]
     assert all(str(item["layout"]) == "interleaved" for item in reader["accessors"])
     assert all(str(item["memory_space"]) == "dram" for item in reader["accessors"])
     assert len(reader["common_runtime_args"]) == 0
@@ -545,6 +545,7 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
     assert int(reader_a["count"]) == 2
     assert str(reader_a["buffer"]) == "A"
     assert str(reader_a["segment_role"]) == "reader"
+    assert int(reader_a["args_config_bits"]) == 2
     assert str(reader_a["layout"]) == "interleaved"
     assert str(reader_a["memory_space"]) == "dram"
     assert str(reader_b["name"]) == "B"
@@ -553,6 +554,7 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
     assert int(reader_b["count"]) == 2
     assert str(reader_b["buffer"]) == "B"
     assert str(reader_b["segment_role"]) == "reader"
+    assert int(reader_b["args_config_bits"]) == 2
     assert str(reader_b["layout"]) == "interleaved"
     assert str(reader_b["memory_space"]) == "dram"
 
@@ -649,6 +651,7 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
     assert int(writer_c["count"]) == 2
     assert str(writer_c["buffer"]) == "C"
     assert str(writer_c["segment_role"]) == "writer"
+    assert int(writer_c["args_config_bits"]) == 2
     assert str(writer_c["layout"]) == "interleaved"
     assert str(writer_c["memory_space"]) == "dram"
 

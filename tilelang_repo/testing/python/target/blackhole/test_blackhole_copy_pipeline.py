@@ -241,7 +241,7 @@ def _with_richer_accessor_schema(func, common_runtime_args=None, layout_override
             if layout_override is not None:
                 richer_accessor["layout"] = layout_override
             richer_accessor["args_config_bits"] = (
-                1 if str(richer_accessor["layout"]) == "interleaved" else 0
+                2 if str(richer_accessor["layout"]) == "interleaved" else 1
             )
             richer_accessors.append(richer_accessor)
         richer_segment["accessors"] = richer_accessors
@@ -355,7 +355,7 @@ def test_blackhole_copy_pass_attrs():
     assert [int(item["compile_time_arg_count"]) for item in accessors] == [2, 2]
     assert [int(item["common_runtime_arg_offset"]) for item in accessors] == [0, 0]
     assert [int(item["common_runtime_arg_count"]) for item in accessors] == [0, 0]
-    assert [int(item["args_config_bits"]) for item in accessors] == [1, 1]
+    assert [int(item["args_config_bits"]) for item in accessors] == [2, 2]
     assert all(str(item["layout"]) == "interleaved" for item in accessors)
     assert all(str(item["memory_space"]) == "dram" for item in accessors)
     assert len(segment_plan[0]["common_runtime_args"]) == 0
@@ -390,13 +390,14 @@ def test_blackhole_copy_compile_time_abi_is_materialized():
             int(item["count"]),
             str(item["buffer"]),
             str(item["segment_role"]),
+            int(item["args_config_bits"]),
             str(item["layout"]),
             str(item["memory_space"]),
         )
         for item in compile_time_arg_specs
     ] == [
-        ("A", "interleaved_accessor_cta", "uint32", 0, 2, "A", "fused_dataflow", "interleaved", "dram"),
-        ("B", "interleaved_accessor_cta", "uint32", 2, 2, "B", "fused_dataflow", "interleaved", "dram"),
+        ("A", "interleaved_accessor_cta", "uint32", 0, 2, "A", "fused_dataflow", 2, "interleaved", "dram"),
+        ("B", "interleaved_accessor_cta", "uint32", 2, 2, "B", "fused_dataflow", 2, "interleaved", "dram"),
     ]
 
     assert "launch_spec" in kernel_spec

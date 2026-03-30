@@ -159,6 +159,7 @@ static Map<String, Any> MakeCompileTimeArgSpec(const std::string& name,
                                                const std::string& segment_role,
                                                const std::string& buffer = "",
                                                const std::vector<uint32_t>& values = {},
+                                               int args_config_bits = 0,
                                                const std::string& layout = "",
                                                const std::string& memory_space = "") {
   Map<String, Any> spec;
@@ -180,6 +181,9 @@ static Map<String, Any> MakeCompileTimeArgSpec(const std::string& name,
     }
     spec.Set("values", encoded_values);
   }
+  if (args_config_bits != 0) {
+    spec.Set("args_config_bits", Integer(args_config_bits));
+  }
   if (!layout.empty()) {
     spec.Set("layout", String(layout));
   }
@@ -187,6 +191,18 @@ static Map<String, Any> MakeCompileTimeArgSpec(const std::string& name,
     spec.Set("memory_space", String(memory_space));
   }
   return spec;
+}
+
+static int MakeAccessorArgsConfigBits(const std::string& layout,
+                                      const std::string& memory_space) {
+  int bits = 0;
+  if (layout == "sharded") {
+    bits |= 1;
+  }
+  if (memory_space == "dram") {
+    bits |= 2;
+  }
+  return bits;
 }
 
 static Map<String, Any> MakeLaunchSpec(const std::string& core_type,
@@ -697,6 +713,10 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
           accessor.Get("memory_space")
               ? static_cast<std::string>(Downcast<String>(accessor.Get("memory_space").value()))
               : std::string("dram");
+      const int args_config_bits =
+          accessor.Get("args_config_bits")
+              ? Downcast<Integer>(accessor.Get("args_config_bits").value()).IntValue()
+              : MakeAccessorArgsConfigBits(layout, memory_space);
 
       compile_time_arg_specs.push_back(MakeCompileTimeArgSpec(
           buffer,
@@ -707,6 +727,7 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
           kind,
           buffer,
           {},
+          args_config_bits,
           layout,
           memory_space));
     }
@@ -876,7 +897,7 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
           const int args_config_bits =
               accessor.Get("args_config_bits")
                   ? Downcast<Integer>(accessor.Get("args_config_bits").value()).IntValue()
-                  : (layout == "interleaved" ? 1 : 0);
+                  : MakeAccessorArgsConfigBits(layout, memory_space);
           const int transport_page_size =
               accessor.Get("transport_page_size")
                   ? Downcast<Integer>(accessor.Get("transport_page_size").value()).IntValue()
@@ -1640,7 +1661,7 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
           blackhole_read_tile_to_cb(),
           {load->buffer->data, IntImm32(0), IntImm32(src_cb_id), IntImm32(tile_bytes),
            IntImm32(input_accessor_slot)}));
-      RegisterAccessor("fused_dataflow", load->buffer, input_accessor_slot, 2, 0, 0, 1);
+      RegisterAccessor("fused_dataflow", load->buffer, input_accessor_slot, 2, 0, 0, 2);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(src_cb_id), IntImm32(1)}));
 
@@ -1651,7 +1672,7 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
           blackhole_write_tile_from_cb(),
           {IntImm32(src_cb_id), op->buffer->data, IntImm32(0), IntImm32(tile_bytes),
            IntImm32(output_accessor_slot)}));
-      RegisterAccessor("fused_dataflow", op->buffer, output_accessor_slot, 2, 0, 0, 1);
+      RegisterAccessor("fused_dataflow", op->buffer, output_accessor_slot, 2, 0, 0, 2);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_pop_front(), {IntImm32(src_cb_id), IntImm32(1)}));
 
@@ -1721,7 +1742,7 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
           {load->buffer->data, tile_index, IntImm32(cb_id), IntImm32(tile_bytes),
            IntImm32(accessor_slot)}));
       RegisterAccessor(segmented_gemm ? "reader" : "fused_dataflow", load->buffer,
-                       accessor_slot, 2, 0, 0, 1);
+                       accessor_slot, 2, 0, 0, 2);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
       return SeqStmt::Flatten(stmts);
@@ -1746,7 +1767,7 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
           {IntImm32(cb_id), op->buffer->data, tile_index, IntImm32(tile_bytes),
            IntImm32(accessor_slot)}));
       RegisterAccessor(segmented_gemm ? "writer" : "fused_dataflow", op->buffer,
-                       accessor_slot, 2, 0, 0, 1);
+                       accessor_slot, 2, 0, 0, 2);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
       return SeqStmt::Flatten(stmts);
@@ -1901,7 +1922,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
             {load->buffer->data, page_index, IntImm32(cb_id), IntImm32(page_bytes),
              IntImm32(accessor_slot), IntImm32(page_row * l1_stick_stride)}));
         RegisterAccessor(segmented_gemm ? "reader" : "fused_dataflow", load->buffer,
-                         accessor_slot, 2, 0, 0, 1, page_bytes);
+                         accessor_slot, 2, 0, 0, 2, page_bytes);
       }
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_read_barrier(), {}));
@@ -1919,7 +1940,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
             {load->buffer->data, tile_index, IntImm32(cb_id), IntImm32(tile_bytes),
              IntImm32(accessor_slot)}));
         RegisterAccessor(segmented_gemm ? "reader" : "fused_dataflow", load->buffer,
-                         accessor_slot, 2, 0, 0, 1);
+                         accessor_slot, 2, 0, 0, 2);
         stmts.push_back(MakeBlackholeCall(
             blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
       }
@@ -1945,7 +1966,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
             {IntImm32(cb_id), op->buffer->data, page_index, IntImm32(page_bytes),
              IntImm32(accessor_slot), IntImm32(page_row * l1_stick_stride)}));
         RegisterAccessor(segmented_gemm ? "writer" : "fused_dataflow", op->buffer,
-                         accessor_slot, 2, 0, 0, 1, page_bytes);
+                         accessor_slot, 2, 0, 0, 2, page_bytes);
       }
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_write_barrier(), {}));
@@ -1963,7 +1984,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
             {IntImm32(cb_id), op->buffer->data, tile_index, IntImm32(tile_bytes),
              IntImm32(accessor_slot)}));
         RegisterAccessor(segmented_gemm ? "writer" : "fused_dataflow", op->buffer,
-                         accessor_slot, 2, 0, 0, 1);
+                         accessor_slot, 2, 0, 0, 2);
         stmts.push_back(MakeBlackholeCall(
             blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
       }
@@ -2066,7 +2087,7 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
           blackhole_read_page_to_cb(),
           {dram_load->buffer->data, buffer_byte_offset, IntImm32(cb_id), IntImm32(page_bytes),
            IntImm32(input_accessor_slot), IntImm32(page_row * l1_stick_stride)}));
-      RegisterAccessor("fused_dataflow", dram_load->buffer, input_accessor_slot, 2, 0, 0, 1,
+      RegisterAccessor("fused_dataflow", dram_load->buffer, input_accessor_slot, 2, 0, 0, 2,
                        page_bytes);
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_read_barrier(), {}));
@@ -2087,7 +2108,7 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
           blackhole_write_page_from_cb(),
           {IntImm32(cb_id), cb_to_dram->buffer->data, buffer_byte_offset, IntImm32(page_bytes),
            IntImm32(output_accessor_slot), IntImm32(page_row * l1_stick_stride)}));
-      RegisterAccessor("fused_dataflow", cb_to_dram->buffer, output_accessor_slot, 2, 0, 0, 1,
+      RegisterAccessor("fused_dataflow", cb_to_dram->buffer, output_accessor_slot, 2, 0, 0, 2,
                        page_bytes);
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_write_barrier(), {}));
@@ -2113,7 +2134,7 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
           use_page_transport ? blackhole_read_page_to_cb() : blackhole_read_tile_to_cb(),
           {dram_load->buffer->data, tile_index, IntImm32(cb_id),
            IntImm32(use_page_transport ? page_bytes : tile_bytes), IntImm32(input_accessor_slot)}));
-      RegisterAccessor("fused_dataflow", dram_load->buffer, input_accessor_slot, 2, 0, 0, 1,
+      RegisterAccessor("fused_dataflow", dram_load->buffer, input_accessor_slot, 2, 0, 0, 2,
                        use_page_transport ? page_bytes : tile_bytes);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
@@ -2126,7 +2147,7 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
           {IntImm32(cb_id), cb_to_dram->buffer->data, tile_index,
            IntImm32(use_page_transport ? page_bytes : tile_bytes),
            IntImm32(output_accessor_slot)}));
-      RegisterAccessor("fused_dataflow", cb_to_dram->buffer, output_accessor_slot, 2, 0, 0, 1,
+      RegisterAccessor("fused_dataflow", cb_to_dram->buffer, output_accessor_slot, 2, 0, 0, 2,
                        use_page_transport ? page_bytes : tile_bytes);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
