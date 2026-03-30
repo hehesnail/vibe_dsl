@@ -5,7 +5,7 @@
 ## 当前阶段
 
 - **阶段**: Stage 3 — multi-core runtime 调度
-- **状态**: ✅ Stage 3 formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 compute contract 正式化、P3 richer runtime work/accessor/compile-time ABI 主路径正式化，以及 P5 program-local semaphore schema、kernel binding、最小 device-side dataflow semaphore builtin 预埋；direct runtime 对未支持 execution 面显式 fail-fast
+- **状态**: ✅ Stage 3 formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 compute contract 正式化并收正 `compute_contract -> compute_config` 真源关系、P3 richer runtime work/accessor/compile-time ABI 主路径正式化，以及 P5 program-local semaphore schema、kernel binding、最小 device-side dataflow semaphore builtin 预埋；direct runtime 对未支持 execution 面显式 fail-fast
 - **日期**: 2026-03-30
 - **设计文档**: `tasks/dev_design/stage3_multicore_design.md`
 
@@ -15,7 +15,7 @@
 |------|------|
 | `test_blackhole_copy_pipeline.py` | 20 passed, 1 skipped, 1 xfailed |
 | `test_blackhole_copy_runtime.py` | 2 passed, 5 skipped |
-| `test_blackhole_gemm.py` | 6 passed, 3 skipped |
+| `test_blackhole_gemm.py` | 17 passed, 8 skipped |
 | `test_blackhole_tvm_ffi_export.py` | 1 passed |
 
 ### 已验证 full-env 结果
@@ -115,6 +115,7 @@
 - compute segment 已显式产出 `compute_config`、`gemm_block_shape`、`gemm_subblock_shape`
 - compute segment 已显式产出 `gemm_clear_accum`、`gemm_k_pack`、`gemm_wg_wait`
 - compute segment 已显式产出 `gemm_policy`
+- compute segment / `KernelSpec.compute_config` 已改为从 `compute_contract` 派生，不再各自维护独立默认值
 - `mbar` 当前按 barrier binding formalize 到 `compute_contract`，未被错误编码成新的 compile-time literal ABI；direct runtime 对 `has_mbarrier=True` 明确 fail-fast
 - `BlackholeModule` 已改为按 `KernelSpec.compute_config` materialize TT-Metal `ComputeConfig`，不再把 `math_fidelity/fp32_dest_acc_en/math_approx_mode` 写死
 - 残留点：按 TT-Metal 正式 `ComputeConfig` 口径，`dst_full_sync_en`、`bfp8_pack_precise`、`named_compile_args/defines` 仍未 formalize；当前实现是主轴对齐，不是全量镜像

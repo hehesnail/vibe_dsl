@@ -420,6 +420,36 @@ def test_blackhole_compute_contract_attr_materializes_nondefault_compute_abi():
     assert int(contract["wg_wait"]) == 3
 
 
+def test_blackhole_compute_segment_compute_config_follows_compute_contract():
+    kernel = gemm_kernel_with_compute_abi()
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+
+    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.LowerBlackholeOps()(mod)
+
+    func = mod["main"]
+    contract = func.attrs["blackhole.compute_contract"]
+    plan = func.attrs["blackhole.segment_plan"]
+    compute = next(segment for segment in plan if str(segment["kind"]) == "compute")
+    compute_config = compute["compute_config"]
+
+    assert str(compute_config["math_fidelity"]) == str(contract["math_fidelity"])
+    assert bool(compute_config["fp32_dest_acc_en"]) is bool(contract["fp32_dest_acc_en"])
+    assert bool(compute_config["math_approx_mode"]) is bool(contract["math_approx_mode"])
+    assert [str(item) for item in compute_config["unpack_to_dest_mode"]] == [
+        str(item) for item in contract["unpack_to_dest_mode"]
+    ]
+    assert bool(compute_config["clear_accum"]) is bool(contract["clear_accum"])
+    assert int(compute_config["k_pack"]) == int(contract["k_pack"])
+    assert int(compute_config["wg_wait"]) == int(contract["wg_wait"])
+    assert int(compute_config["policy_type"]) == int(contract["policy_type"])
+    assert str(compute_config["policy_name"]) == str(contract["policy_name"])
+
+
 def test_blackhole_compute_contract_attr_materializes_nondefault_policy():
     kernel = gemm_kernel_with_policy()
     mod = tilelang.tvm.IRModule({"main": kernel})
@@ -622,11 +652,33 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
     assert bool(compute_contract["fp32_dest_acc_en"]) is True
     assert bool(compute_contract["math_approx_mode"]) is False
     assert [str(item) for item in compute_contract["unpack_to_dest_mode"]] == []
-    assert bool(compute_contract["clear_accum"]) is False
-    assert int(compute_contract["k_pack"]) == 1
-    assert int(compute_contract["wg_wait"]) == 0
-    assert int(compute_contract["policy_type"]) == 0
-    assert str(compute_contract["policy_name"]) == "Square"
+
+
+def test_blackhole_gemm_kernel_compute_config_follows_compute_contract_in_spec():
+    kernel = gemm_kernel_with_compute_abi()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    compute = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="compute", core_type="trisc"
+    )
+    compute_config = compute["compute_config"]
+    compute_contract = executable_spec["compute_contract"]
+
+    assert str(compute_config["math_fidelity"]) == str(compute_contract["math_fidelity"])
+    assert bool(compute_config["fp32_dest_acc_en"]) is bool(compute_contract["fp32_dest_acc_en"])
+    assert bool(compute_config["math_approx_mode"]) is bool(compute_contract["math_approx_mode"])
+    assert [str(item) for item in compute_config["unpack_to_dest_mode"]] == [
+        str(item) for item in compute_contract["unpack_to_dest_mode"]
+    ]
+    assert bool(compute_config["clear_accum"]) is bool(compute_contract["clear_accum"])
+    assert int(compute_config["k_pack"]) == int(compute_contract["k_pack"])
+    assert int(compute_config["wg_wait"]) == int(compute_contract["wg_wait"])
+    assert int(compute_config["policy_type"]) == int(compute_contract["policy_type"])
+    assert str(compute_config["policy_name"]) == str(compute_contract["policy_name"])
 
 
 def test_blackhole_gemm_compile_time_abi_materializes_nondefault_compute_abi():

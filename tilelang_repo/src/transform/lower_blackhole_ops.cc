@@ -581,6 +581,20 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
     attrs = func->attrs->dict;
   }
 
+  auto make_compute_config_from_contract = [&]() -> Map<String, Any> {
+    Map<String, Any> compute_config;
+    compute_config.Set("math_fidelity", String("HiFi4"));
+    compute_config.Set("fp32_dest_acc_en", Bool(true));
+    compute_config.Set("math_approx_mode", Bool(false));
+    compute_config.Set("unpack_to_dest_mode", Array<Any>{});
+    compute_config.Set("clear_accum", Bool(gemm_clear_accum_));
+    compute_config.Set("k_pack", Integer(gemm_k_pack_));
+    compute_config.Set("wg_wait", Integer(gemm_wg_wait_));
+    compute_config.Set("policy_type", Integer(gemm_policy_type_));
+    compute_config.Set("policy_name", String(GemmWarpPolicyTypeToStringForBlackhole(gemm_policy_type_)));
+    return compute_config;
+  };
+
   auto make_launch_spec = [](const std::string& core_type) -> Map<String, Any> {
     if (core_type == "brisc") {
       return MakeLaunchSpec(core_type, "riscv_0", "riscv_0_default");
@@ -801,12 +815,7 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
         for (const auto& spec : gemm_compile_time_arg_specs) {
           compile_time_arg_specs.push_back(spec);
         }
-        Map<String, Any> compute_config;
-        compute_config.Set("math_fidelity", String("HiFi4"));
-        compute_config.Set("fp32_dest_acc_en", Bool(true));
-        compute_config.Set("math_approx_mode", Bool(false));
-        compute_config.Set("unpack_to_dest_mode", Array<Any>{});
-        segment.Set("compute_config", compute_config);
+        segment.Set("compute_config", make_compute_config_from_contract());
       }
       segment.Set("accessors", accessors);
       segment.Set("compile_time_arg_specs", compile_time_arg_specs);

@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage2j_compute_contract_schema`
 - **日期**: 2026-03-27
-- **状态**: ✅ 已实现（v1 compute_contract + v2 compute precision / block-subblock ABI formalization）
+- **状态**: ✅ 已实现；2026-03-30 继续收尾 `compute_contract -> compute_config` 真源关系
 - **对应任务**: TT-Metal contract formalization 的 P0 收尾
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -183,6 +183,8 @@ v2 继续扩展：
   - `blackhole.gemm_contract`（兼容）
   - `blackhole.compute_contract`（正式）
 - `Mt/Nt/Kt` 直接从 `M/N/K` 与 tile 常量推导并写入 `compute_contract`
+- compute segment 的 `compute_config` 不再自带一套独立默认值；它必须由 `compute_contract`
+  中的 compute precision / compute ABI 字段投影得到
 
 ### 5.2 `rt_mod_blackhole`
 
@@ -190,12 +192,16 @@ v2 继续扩展：
 - 提取 `blackhole.compute_contract`
 - 写入 `ExecutableSpec`
 - 若 `compute_contract` 缺失但 `gemm_contract` 存在，则允许兼容回填最小 GEMM compute contract
+- `KernelSpec.compute_config` 继续保留为 per-kernel materialization view，但它只能消费正式 schema，
+  不能再和 `compute_contract` 各自维护不同默认值
 
 ### 5.3 `BlackholeModule`
 
 - 新增统一的 `GetComputeContract(spec)` 访问入口
 - GEMM direct runtime 的校验与 host-side materialization 统一优先读 `compute_contract`
 - 保留旧 `gemm_contract` fallback，但只用于兼容，不再作为新增逻辑真源
+- 对 compute kernel `CreateKernel(ComputeConfig)`，优先消费 `KernelSpec.compute_config`；若缺失则从
+  `ExecutableSpec.compute_contract` 派生，不允许默默回退到硬编码默认值
 
 ### 5.4 测试
 
@@ -218,6 +224,24 @@ v2 继续扩展：
 4. v2 ABI 测试
    - `compute_contract.compute_precision` 进入 attrs/spec
    - `compute_contract.block_shape/subblock_shape` 进入 attrs/spec
+
+### 5.5 2026-03-30 收尾约束
+
+本轮 P0 收尾只解决一个问题：把 GEMM compute ABI 的正式真源收敛到 `compute_contract`。
+
+明确约束：
+
+- `compute_contract` 是 compute 语义真源
+- `compute_config` 是 compute kernel host materialization 视图
+- `compute_config` 可以保留在 segment/kernel schema 中，但其字段值必须从 `compute_contract` 派生
+- 不允许 `LowerBlackholeOps`、`rt_mod_blackhole`、`BlackholeModule` 各自再维护一套
+  `HiFi4/true/false/...` 的局部默认值
+
+本轮不做：
+
+- 更宽 accessor execution surface
+- sharded / non-interleaved runtime 支持
+- multicast / global semaphore
    - compute kernel `compile_time_arg_specs` 与 v2 contract 对齐
    - `BlackholeModule` 不再把 `ComputeConfig.math_fidelity/fp32_dest_acc_en/math_approx_mode` 写死
 
