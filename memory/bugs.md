@@ -47,6 +47,23 @@
 
 ## 已解决（仍有复用价值）
 
+### `ExtractCorePlan` / direct runtime 若为空 work plan 自动补默认 packet/core，会把 planner/runtime contract break 伪装成正常执行
+
+- **时间**: 2026-03-30
+- **问题**: Blackhole direct path 早期在两层都保留了 fallback：
+  - `rt_mod_blackhole::ExtractCorePlan` 若 `work_packets` 为空，会自动补一个默认 `WorkPacket`
+  - `BlackholeModule::ExecuteDirect` 若 `work_items` 为空，会再补一个 fallback core
+- **影响**:
+  - planner 没有正确产出 work plan 时，build/runtime 仍会继续往下走
+  - 结果不是立即暴露 contract break，而是变成“看起来还能执行”的假象，后续只会以数值错误、core 映射错位或更脏的 runtime 问题形式出现
+- **解决**:
+  - `ExtractCorePlan` 不再为空 `work_packets` 注入默认 packet
+  - `ExtractExecutableSpecFromDeviceFunc` 新增 core-plan 校验：空 `work_packets` 或零 `work_count` 直接 fail-fast
+  - `ExecuteDirect` 删除 fallback core，要求 `work_items` 必须从 `core_plan.work_packets` 正式导出
+- **教训**:
+  - 对 host/runtime 执行计划，planner 产物缺失时应直接报 schema/spec 错误，不能靠 runtime “补一个最小可运行默认值”
+  - 如果 direct runtime 里还存在默认 core / 默认 work packet 之类的补洞，通常说明真正的 contract 边界还没收正
+
 ### worker semaphore 跨核握手如果直接把 logical core 坐标塞进 `get_noc_addr`，TT-Sim 会挂死
 
 - **时间**: 2026-03-30

@@ -120,6 +120,19 @@ def _rebuild_codegen_module_with_compute_contract(artifact, compute_contract):
     )
 
 
+def _rebuild_codegen_module_with_core_plan(artifact, core_plan):
+    rewritten = {}
+    for gvar, func in artifact.device_mod.functions.items():
+        if func.attrs and "blackhole.core_plan" in func.attrs:
+            func = func.with_attr("blackhole.core_plan", core_plan)
+        rewritten[gvar] = func
+    target = Target("blackhole")
+    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
+
+
 def multicore_gemm_kernel(
     M: int = 64, N: int = 64, K: int = 128, tile_m: int = 32, tile_n: int = 32
 ):
@@ -1325,3 +1338,20 @@ def test_blackhole_gemm_multicore_direct_call():
         rtol=2e-1,
         failure_message="Multicore GEMM direct-call output mismatch",
     )
+
+
+def test_blackhole_gemm_rejects_empty_work_packets_at_build_time():
+    target = Target("blackhole")
+    kernel = multicore_gemm_kernel()
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    core_plan = dict(device_main.attrs["blackhole.core_plan"])
+    assert list(core_plan["work_packets"])
+    core_plan["work_packets"] = []
+
+    with pytest.raises(tvm.error.InternalError, match="core_plan.work_packets|planner/runtime"):
+        _rebuild_codegen_module_with_core_plan(artifact, core_plan)

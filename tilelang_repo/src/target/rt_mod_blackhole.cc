@@ -312,14 +312,6 @@ static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
   if (plan.physical_cores.empty()) {
     plan.physical_cores.push_back(PhysicalCore{});
   }
-  if (plan.work_packets.empty()) {
-    plan.work_packets.push_back(WorkPacket{
-        0,
-        0,
-        0,
-        std::max<uint32_t>(1, plan.logical_grid_x * plan.logical_grid_y),
-    });
-  }
   return plan;
 }
 
@@ -1220,6 +1212,23 @@ static bool IsBlackholeHostEntry(const tir::PrimFunc& f) {
   return calling_conv.defined() && calling_conv == CallingConv::kCPackedFunc;
 }
 
+static void ValidateExtractedCorePlan(const CorePlan& core_plan, const std::string& entry_name) {
+  ICHECK(!core_plan.work_packets.empty())
+      << "Blackhole planner/runtime contract requires non-empty core_plan.work_packets for "
+      << entry_name;
+  uint64_t total_work_items = 0;
+  for (const auto& packet : core_plan.work_packets) {
+    ICHECK_GT(packet.work_count, 0U)
+        << "Blackhole planner/runtime contract requires positive work_count in core_plan."
+           "work_packets for "
+        << entry_name;
+    total_work_items += packet.work_count;
+  }
+  ICHECK_GT(total_work_items, 0U)
+      << "Blackhole planner/runtime contract requires at least one logical work item for "
+      << entry_name;
+}
+
 static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f,
                                                           const std::string& entry_name) {
   ExecutableSpec spec;
@@ -1238,6 +1247,7 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
 
   spec.cb_configs = ExtractCBConfig(f);
   spec.core_plan = ExtractCorePlan(f);
+  ValidateExtractedCorePlan(spec.core_plan, entry_name);
   spec.semaphores = ExtractSemaphorePlan(f);
   spec.runtime_args = ExtractRuntimeArgs(f);
   spec.gemm_contract = ExtractGemmContract(f);

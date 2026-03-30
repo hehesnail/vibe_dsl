@@ -1003,11 +1003,33 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
 // BlackholeModuleNode implementation
 // ============================================================================
 
+static void ValidateExecutableSpecCorePlan(const std::string& func_name,
+                                           const ExecutableSpec& spec) {
+  const auto& core_plan = spec.core_plan;
+  ICHECK(!core_plan.work_packets.empty())
+      << "Blackhole planner/runtime contract requires non-empty core_plan.work_packets for "
+      << func_name;
+  uint64_t total_work_items = 0;
+  for (const auto& packet : core_plan.work_packets) {
+    ICHECK_GT(packet.work_count, 0U)
+        << "Blackhole planner/runtime contract requires positive work_count in core_plan."
+           "work_packets for "
+        << func_name;
+    total_work_items += packet.work_count;
+  }
+  ICHECK_GT(total_work_items, 0U)
+      << "Blackhole planner/runtime contract requires at least one logical work item for "
+      << func_name;
+}
+
 BlackholeModuleNode::BlackholeModuleNode(
     std::unordered_map<std::string, ExecutableSpec> fmap,
     std::string kernel_dir)
     : fmap_(std::move(fmap)),
       kernel_dir_(std::move(kernel_dir)) {
+  for (const auto& entry : fmap_) {
+    ValidateExecutableSpecCorePlan(entry.first, entry.second);
+  }
 }
 
 
@@ -1115,14 +1137,10 @@ void BlackholeModuleNode::ExecuteDirect(
       work_items.push_back({packet.work_offset + i, packet_core});
     }
   }
-  if (work_items.empty()) {
-    // Fallback: derive core from physical_cores if available, else use mapping default {1,2}.
-    CoreCoord fallback = spec.core_plan.physical_cores.empty()
-        ? CoreCoord{1, 2}
-        : CoreCoord{spec.core_plan.physical_cores[0].core_x,
-                    spec.core_plan.physical_cores[0].core_y};
-    work_items.push_back({0, fallback});
-  }
+  ICHECK(!work_items.empty())
+      << "Blackhole planner/runtime contract requires non-empty work_items derived from "
+         "core_plan.work_packets for "
+      << func_name;
 
   std::vector<CoreCoord> launch_cores;
   launch_cores.reserve(work_items.size());

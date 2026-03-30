@@ -181,6 +181,10 @@
 
 #### A1. 去掉 invented fallback core
 
+状态：
+
+- ✅ 已完成（2026-03-30）
+
 目标：
 
 - planner/runtime contract 缺失时显式失败
@@ -196,6 +200,13 @@
 - `work_items` 为空时不再发明默认 core
 - 错误信息要明确指向 planner/runtime contract
 - 新增负向回归，验证 empty work plan 明确失败
+
+本轮落实：
+
+- `rt_mod_blackhole::ExtractCorePlan` 不再为空 `work_packets` 注入默认 `WorkPacket`
+- `ExtractExecutableSpecFromDeviceFunc` 新增 core-plan 校验：空 `work_packets` / 零 `work_count` 直接拒绝
+- `BlackholeModule::ExecuteDirect` 删除 fallback core，改为对空 `work_items` 显式失败
+- 已补 copy/GEMM build-time reject 回归
 
 #### A2. 把 buffer materialization 从固定 replicated DRAM 抽成 schema-driven 骨架
 

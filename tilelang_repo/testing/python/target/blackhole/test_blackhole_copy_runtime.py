@@ -50,6 +50,19 @@ def _rebuild_direct_runtime_module_with_body_and_attrs(
     )
 
 
+def _rebuild_direct_runtime_module_with_core_plan(artifact, core_plan):
+    rewritten = {}
+    for gvar, func in artifact.device_mod.functions.items():
+        if func.attrs and "blackhole.core_plan" in func.attrs:
+            func = func.with_attr("blackhole.core_plan", core_plan)
+        rewritten[gvar] = func
+    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
+    target = Target("blackhole")
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
+
+
 def _inject_worker_semaphore_handshake(remote_core_x, remote_core_y):
     def mutate(original_body):
         def postorder(node):
@@ -382,6 +395,23 @@ def test_blackhole_module_direct_call_rejects_oversubscribed_multi_core_launch()
 
     with pytest.raises(Exception, match="oversubscribed direct launch is not supported"):
         artifact.codegen_mod["main"](a_torch, b_output)
+
+
+def test_blackhole_module_direct_call_rejects_empty_work_packets_at_build_time():
+    target = Target("blackhole")
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    core_plan = dict(device_main.attrs["blackhole.core_plan"])
+    assert list(core_plan["work_packets"])
+    core_plan["work_packets"] = []
+
+    with pytest.raises(tvm.error.InternalError, match="core_plan.work_packets|planner/runtime"):
+        _rebuild_direct_runtime_module_with_core_plan(artifact, core_plan)
 
 
 def test_blackhole_large_shape_copy_keeps_per_core_l1_small():
