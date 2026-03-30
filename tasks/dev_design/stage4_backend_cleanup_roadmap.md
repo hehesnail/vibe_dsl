@@ -393,6 +393,10 @@
 
 #### B3. 明确 `PlanBlackholeCB` 的后续定位
 
+状态：
+
+- ◐ 已完成首轮定位收紧（2026-03-31）
+
 目标：
 
 - 决定它是继续演化成正式 planner，还是长期保持 MVP allocator + 更窄职责
@@ -407,6 +411,16 @@
 
 - 明确 planner 的输入、输出、允许推断的范围
 - 不要让 heuristic 长期伪装成正式协议
+
+本轮落实：
+
+- `PlanBlackholeCB` 已明确收紧为“只消费 explicit `blackhole.cb_requirements`”
+- 默认 `alloc_shared` inference 已移除，不再把 shared allocation 猜测当成 planner 输入来源
+- 已补负向回归，要求缺失 `blackhole.cb_requirements` 时 planner 显式失败
+
+剩余项：
+
+- 目前 allocator/reuse 规则本身仍然是 MVP 风格，后续若继续扩 planner 能力，需要再把“允许 reuse 的正式条件”从实现细节收成更明确的协议
 
 ### C. P5 前应收
 

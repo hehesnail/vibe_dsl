@@ -106,9 +106,6 @@ class PlanBlackholeCB : public tvm::tir::StmtExprMutator {
   /*! \brief Get CB requirements from function attributes */
   std::vector<CBRequirement> GetCBRequirements(const tvm::tir::PrimFunc& func);
 
-  /*! \brief Infer CB requirements from alloc_shared buffers */
-  std::vector<CBRequirement> InferFromAllocShared(const tvm::tir::PrimFunc& func);
-
   /*! \brief Assign CB IDs to requirements */
   std::vector<CBConfig> AssignCBIds(const std::vector<CBRequirement>& requirements);
 

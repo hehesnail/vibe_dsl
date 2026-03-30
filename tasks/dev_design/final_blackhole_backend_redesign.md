@@ -195,6 +195,12 @@ TileLang DSL
 - per-core L1 峰值约束
 - requirement_index → cb_id 映射（`cb_bindings` 以 `requirement_index` 为主键）
 
+正式边界：
+
+- planner 的正式输入是 explicit `blackhole.cb_requirements`
+- 不再默认从 `alloc_shared` / shared allocation 形态推断 planner 输入
+- 如果缺失 `blackhole.cb_requirements`，应显式失败，而不是让 planner 自己猜一套 CB requirement
+
 ### 4.4 `AssignBlackholeCores`
 
 职责：

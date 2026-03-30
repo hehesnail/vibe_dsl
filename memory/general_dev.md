@@ -75,6 +75,7 @@
 - 当 direct runtime 同时保留 schema path 和兼容 legacy path 时，不要让两条路径各自维护一份 accessor 校验或 compile-time arg materialization。应先把 accessor direct-runtime 约束和 append 逻辑收成共享 helper，再让两条路径都调用这份 helper；否则 schema 收正后，legacy path 很容易悄悄漂回旧假设
 - 对 Blackhole direct runtime，shared runtime metadata（buffer address / semaphore id）如果同时出现在 `common_runtime_args` 和 `runtime_args` 两条通道里，不要复制两份 kind-switch。应先抽出共享 materializer，再让 common/per-work 构造器复用；这样后面收窄或扩展 shared arg 支持面时，约束不会在两处漂移
 - 对 Blackhole direct runtime，per-work 派生值（如 `work_linear_id`、`bx/by`、`num_k_tiles`、`logical_n_tiles`）也不要散在 runtime arg 构造循环里现算现判。先收成 `work context`，再让 per-work materializer 消费它；这样 GEMM reader / writer / copy 的共用语义才能稳定下来，后面扩更多 kind 时也不会继续把主函数撑胖
+- 对 `PlanBlackholeCB` 这类 planner pass，正式输入必须是上游显式产出的 schema（这里是 `blackhole.cb_requirements`），不要默认从 `alloc_shared` 这类 IR 形态做推断补洞。planner 一旦既吃正式 schema 又吃 fallback inference，很快就会把“猜出来的行为”沉淀成隐式协议
 - 对 non-tile/stick copy，外部 DRAM buffer 的真实 `page_size` 不是 CB `page_size` 的别名；需要把单次 transport 的 `page_bytes` 明确收进 accessor schema（如 `transport_page_size`），再由 direct runtime 用这份 schema 创建 TT-Metal buffer/accessor
 - 当 host runtime 当前只支持一种 buffer materialization（例如 replicated DRAM）时，也不要把它硬编码成执行流里的隐式默认值；应先把每个 runtime buffer 的 materialization descriptor 显式收进 `ExecutableSpec`，再让 runtime 按 descriptor 校验并 materialize
 - 当多个 kernel/segment 共享 runtime arg 或 common runtime arg 时，不要在 spec 提取层继续靠 `kind + name/buffer` 推断“是不是同一个参数”；应由 lowering/split 直接产出稳定 `identity`，`rt_mod_blackhole` 只按 `identity` 聚合，缺失 identity 直接 build-time 拒绝

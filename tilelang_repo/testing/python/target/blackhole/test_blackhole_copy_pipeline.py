@@ -1076,6 +1076,17 @@ def test_blackhole_cb_planner_reuses_non_overlapping_requirements():
     assert int(cb_configs[0]["lifetime_begin"]) == 0
 
 
+def test_blackhole_cb_planner_requires_explicit_cb_requirements():
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+
+    with pytest.raises(Exception, match="explicit blackhole.cb_requirements|PlanBlackholeCB"):
+        tilelang.transform.PlanBlackholeCB()(mod)
+
+
 def test_blackhole_stick_copy_pipeline_formalizes_page_transport():
     target = Target("blackhole")
     kernel = staged_stick_copy_kernel(tile_m=32, tile_n=16, global_n=32, dtype="float32")

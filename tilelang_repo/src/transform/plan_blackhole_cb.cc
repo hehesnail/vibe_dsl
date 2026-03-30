@@ -204,59 +204,11 @@ std::vector<CBRequirement> PlanBlackholeCB::GetCBRequirements(
     }
   }
 
-  // If no explicit requirements, infer from alloc_shared buffers
-  if (requirements.empty()) {
-    requirements = InferFromAllocShared(func);
-  }
+  ICHECK(!requirements.empty())
+      << "PlanBlackholeCB requires explicit blackhole.cb_requirements; "
+         "alloc_shared inference is no longer part of the formal planner contract";
 
   return requirements;
-}
-
-// Infer CB requirements from alloc_shared buffers
-std::vector<CBRequirement> PlanBlackholeCB::InferFromAllocShared(
-    const PrimFunc& func) {
-  std::vector<CBRequirement> requirements;
-
-  // Analyze function body for Allocate nodes with "shared" scope
-  class AllocSharedAnalyzer : public tir::StmtVisitor {
-   public:
-    std::vector<CBRequirement> requirements;
-
-    void VisitStmt_(const tir::AllocateNode* op) final {
-      // Check if this is a shared memory allocation
-      auto* ptr_type = op->buffer_var->type_annotation.as<PointerTypeNode>();
-      if (ptr_type && ptr_type->storage_scope == "shared") {
-        CBRequirement req;
-        req.name = op->buffer_var->name_hint;
-        req.type = CBType::kIntermediate;  // Default to intermediate
-        req.lifetime_begin = static_cast<int>(requirements.size());
-        req.lifetime_end = req.lifetime_begin;
-
-        // Calculate size from allocation extent
-        int64_t total_elements = 1;
-        for (const auto& extent : op->extents) {
-          if (const auto* int_imm = extent.as<IntImmNode>()) {
-            total_elements *= int_imm->value;
-          }
-        }
-
-        // Estimate page size (assuming tile-based allocation)
-        // For FP16: 2 bytes per element, typical tile 32x32 = 2048 bytes
-        int dtype_bytes = op->dtype.bytes();
-        req.page_size = static_cast<int>(total_elements * dtype_bytes);
-        req.num_pages = 2;  // Default double buffering
-        req.data_format = (dtype_bytes == 2) ? "Float16" : "Float32";
-
-        requirements.push_back(req);
-      }
-      StmtVisitor::VisitStmt_(op);
-    }
-  };
-
-  AllocSharedAnalyzer analyzer;
-  analyzer(func->body);
-
-  return analyzer.requirements;
 }
 
 // Assign CB IDs to requirements
