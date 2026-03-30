@@ -433,12 +433,9 @@ static uint32_t GetRuntimeLogicalNTiles(const ExecutableSpec& spec) {
       << "logical_n_tiles is only defined for GEMM kernels in Blackhole direct runtime";
   ICHECK_GT(gemm.Nt, 0U)
       << "Blackhole GEMM direct path requires compute_contract.Nt to be populated";
-  const uint32_t logical_n_tiles = std::max<uint32_t>(1, gemm.Nt);
-  if (spec.core_plan.logical_grid_x > 0) {
-    ICHECK_EQ(spec.core_plan.logical_grid_x, logical_n_tiles)
-        << "Blackhole GEMM direct runtime requires logical_grid_x to match output N tile count";
-  }
-  return logical_n_tiles;
+  const uint32_t local_n_tiles = std::max<uint32_t>(1, gemm.Nt);
+  const uint32_t logical_grid_x = GetRuntimeLogicalGridX(spec);
+  return local_n_tiles * logical_grid_x;
 }
 
 static void CreateCircularBuffersFromSpec(

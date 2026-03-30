@@ -15,7 +15,7 @@
 |------|------|
 | `test_blackhole_copy_pipeline.py` | 20 passed, 1 skipped, 1 xfailed |
 | `test_blackhole_copy_runtime.py` | 2 passed, 5 skipped |
-| `test_blackhole_gemm.py` | 21 passed, 8 skipped |
+| `test_blackhole_gemm.py` | 21 passed, 9 skipped |
 | `test_blackhole_tvm_ffi_export.py` | 1 passed |
 
 ### 已验证 full-env 结果
@@ -23,7 +23,7 @@
 | 测试 | 结果 |
 |------|------|
 | `test_blackhole_copy_runtime.py` | 6 passed |
-| `test_blackhole_gemm.py` | 7 passed |
+| `test_blackhole_gemm.py` | 30 passed |
 
 ---
 
@@ -129,9 +129,15 @@
   - `named_compile_args`
 - richer compute-config extras 不再依赖测试注入或 attrs 变异；DSL -> `LowerBlackholeOps` -> `ExecutableSpec` ->
   `KernelSpec.compute_config` -> `CreateKernel(ComputeConfig)` 主链已闭环
+- GEMM direct runtime correctness 已补到 richer compute-config case：
+  - 新增 non-default `dst_full_sync_en/bfp8_pack_precise/defines/named_compile_args` 的 direct runtime 数值对比
+  - TT-Sim 下单测通过，整份 `test_blackhole_gemm.py` 已回到 `30 passed`
 - `mbar` 当前按 barrier binding formalize 到 `compute_contract`，未被错误编码成新的 compile-time literal ABI；direct runtime 对 `has_mbarrier=True` 明确 fail-fast
 - `BlackholeModule` 已改为按 `KernelSpec.compute_config` materialize TT-Metal `ComputeConfig`，不再把 `math_fidelity/fp32_dest_acc_en/math_approx_mode` 写死
 - P0 已完成；当前 remaining gap 已转移到 P3/P4/P5 和更宽 dtype / execution surface，而不是 compute contract producer 链路
+- multicore GEMM direct runtime 额外收正：
+  - `compute_contract.N/Nt` 在 multicore 语义上是每个 work/core 的 local output shape
+  - runtime 侧全局 logical N tile 数需按 `Nt * logical_grid_x` 推导，不能直接把 per-core `Nt` 拿去和 grid 宽度比较
 - 新增 `transpose_A=True, transpose_B=True` 的更宽 GEMM compute case 测试；当前环境 direct runtime 用例因执行前置条件不足而跳过，但 schema/spec 主链已验证
 
 ### Stage 2E（设备资源 IR）

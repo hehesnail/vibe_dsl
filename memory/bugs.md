@@ -48,6 +48,7 @@
 - **教训**:
   - multi-core bring-up 不能只看 `core_plan` 和 launch；host transfer contract、reader tile index 和 writer tile consumption 只要有一层还保留 single-core 偶然成立的假设，就会在 multi-core 下立刻暴露
   - 对 `transpose_B` 这类 contract，single-core `N_tiles=1` 很容易把错误掩盖掉；多核/多列 tile case 必须专门验证
+  - `compute_contract.N/Nt` 在 segmented multicore GEMM 里默认表达的是每个 work/core 的 local output shape，不是全局 output 宽度；runtime 如果需要全局 logical N tile 数，必须再结合 `core_plan.logical_grid_x` 推导，不能直接把 per-core `Nt` 当全局值使用
 
 ### `fused_dataflow` 单段 runtime_args / KernelSpec 错位会让 direct runtime 静默读错或拿不到参数
 
