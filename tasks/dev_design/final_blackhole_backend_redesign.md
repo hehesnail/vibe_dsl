@@ -45,7 +45,7 @@ Blackhole 后端当前的正式目标收敛为三点：
 - `PlanBlackholeCB` 仍是 MVP allocator，非正式 memory planner
 - `StorageRewrite` 与 Blackhole CB 模型不兼容（永久排除）
 - copy 用 `fused_dataflow` 单 kernel，GEMM 用 3-kernel（后续统一为 reader+writer 模型是架构债）
-- TT-Metal contract 收正未完成项：P0（compute ABI / dtype 分层）已完成到统一 `compute_contract`，并已打通 DSL producer -> attrs/spec -> runtime 主链；P3（unified runtime work schema + accessor/common-runtime schema + compile-time ABI schema）已对 copy/GEMM 主路径 formalize，但更宽的 execution surface 仍未做；P4（copy 泛化）已完成 interleaved DRAM stick/page 主路径，支持 `M x W`（`M % 32 == 0`）与静态 offset subrange，当前 formal direct-path boundary 为 `transport_page_size` 需 64B 对齐；P5（synchronization）已完成 program-local semaphore schema、kernel binding、最小 dataflow semaphore builtin，以及 worker producer/consumer direct-runtime E2E，但 multicast / global semaphore / pass-level producer 仍未做，见 `stage2d_ttmetal_contract_audit.md` 和 `stage4_semaphore_schema.md`
+- TT-Metal contract 收正未完成项：P0（compute ABI / dtype 分层）已完成到统一 `compute_contract`，并已打通 DSL producer -> attrs/spec -> runtime 主链；P3（unified runtime work schema + accessor/common-runtime schema + compile-time ABI schema）已对 copy/GEMM 主路径 formalize，且 kernel-level shared `common_runtime_args` 已打通到 `SetCommonRuntimeArgs` host materialization，但 accessor-derived CRTA / 更宽 accessor execution surface 仍未做；P4（copy 泛化）已完成 interleaved DRAM stick/page 主路径，支持 `M x W`（`M % 32 == 0`）与静态 offset subrange，当前 formal direct-path boundary 为 `transport_page_size` 需 64B 对齐；P5（synchronization）已完成 program-local semaphore schema、kernel binding、最小 dataflow semaphore builtin，以及 worker producer/consumer direct-runtime E2E，但 multicast / global semaphore / pass-level producer 仍未做，见 `stage2d_ttmetal_contract_audit.md` 和 `stage4_semaphore_schema.md`
 
 ### 当前活动
 

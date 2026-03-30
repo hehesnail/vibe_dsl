@@ -650,6 +650,49 @@ def test_blackhole_copy_direct_runtime_rejects_common_runtime_accessor_schema():
         mutated_mod["main"](a_torch, b_output)
 
 
+def test_blackhole_copy_direct_runtime_materializes_shared_common_runtime_buffer_args():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    common_runtime_args = [
+        {
+            "name": "input_buffer_common_addr32",
+            "kind": "input_buffer_addr32",
+            "dtype": "uint32",
+            "buffer": "A",
+        },
+        {
+            "name": "output_buffer_common_addr32",
+            "kind": "output_buffer_addr32",
+            "dtype": "uint32",
+            "buffer": "B",
+        },
+    ]
+    mutated_segments = []
+    for segment in device_main.attrs["blackhole.segment_plan"]:
+        mutated_segment = dict(segment)
+        mutated_segment["common_runtime_args"] = common_runtime_args
+        mutated_segments.append(mutated_segment)
+    mutated_mod = _rebuild_codegen_module_with_segment_plan(artifact, mutated_segments)
+
+    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    b_output = torch.zeros_like(a_torch)
+
+    mutated_mod["main"](a_torch, b_output)
+    assert_tensors_close_or_dump(
+        b_output, a_torch, atol=0.0, rtol=0.0, failure_message="Copy output mismatch"
+    )
+
+
 def test_blackhole_copy_direct_runtime_rejects_accessor_common_runtime_arg_count():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
@@ -681,6 +724,39 @@ def test_blackhole_copy_direct_runtime_rejects_accessor_common_runtime_arg_count
     b_output = torch.zeros_like(a_torch)
 
     with pytest.raises(tvm.error.InternalError, match="common runtime args|interleaved"):
+        mutated_mod["main"](a_torch, b_output)
+
+
+def test_blackhole_copy_direct_runtime_rejects_work_linear_id_in_common_runtime_args():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = grid_indexed_staged_copy_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    mutated_segments = []
+    for segment in device_main.attrs["blackhole.segment_plan"]:
+        mutated_segment = dict(segment)
+        mutated_segment["common_runtime_args"] = [
+            {
+                "name": "shared_work_linear_id",
+                "kind": "work_linear_id",
+                "dtype": "uint32",
+            }
+        ]
+        mutated_segments.append(mutated_segment)
+    mutated_mod = _rebuild_codegen_module_with_segment_plan(artifact, mutated_segments)
+
+    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    b_output = torch.zeros_like(a_torch)
+
+    with pytest.raises(tvm.error.InternalError, match="common runtime args|shared|Unsupported"):
         mutated_mod["main"](a_torch, b_output)
 
 

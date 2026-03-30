@@ -576,9 +576,19 @@ static void AppendAccessorCompileTimeArgs(const CompileTimeArgSpec& spec,
   }
 }
 
+static bool IsSupportedCommonRuntimeArgKind(const std::string& kind) {
+  return kind == "input_buffer_addr" || kind == "input_buffer_addr32" ||
+         kind == "output_buffer_addr" || kind == "output_buffer_addr32" ||
+         kind == "semaphore_id_u32";
+}
+
 static void ValidateKernelDirectRuntimeSchema(const KernelSpec& kernel) {
-  ICHECK(kernel.common_runtime_args.empty())
-      << "Blackhole direct runtime currently supports only interleaved accessors without common runtime args";
+  for (const auto& arg_spec : kernel.common_runtime_args) {
+    ICHECK(IsSupportedCommonRuntimeArgKind(arg_spec.kind))
+        << "Blackhole direct runtime only supports shared common runtime args for "
+           "buffer addresses and semaphores; unsupported common runtime arg kind: "
+        << arg_spec.kind;
+  }
 
   for (const auto& accessor : kernel.accessors) {
     ICHECK_EQ(accessor.layout, "interleaved")
@@ -791,6 +801,64 @@ static const RuntimeBufferBinding& ResolveRuntimeBufferBinding(
   return it->second;
 }
 
+static uint32_t ResolveRuntimeSemaphoreId(
+    const KernelSpec& kernel,
+    const KernelArgSpec& arg_spec,
+    const std::unordered_map<uint32_t, uint32_t>& semaphore_ids) {
+  auto binding_it = std::find_if(
+      kernel.semaphore_bindings.begin(), kernel.semaphore_bindings.end(),
+      [&](const SemaphoreBindingSpec& binding) {
+        return binding.name == arg_spec.name && binding.arg_kind == arg_spec.kind;
+      });
+  ICHECK(binding_it != kernel.semaphore_bindings.end())
+      << "Blackhole runtime arg " << arg_spec.name << " kind=" << arg_spec.kind
+      << " is missing a matching semaphore binding";
+  auto semaphore_it = semaphore_ids.find(binding_it->semaphore_id);
+  ICHECK(semaphore_it != semaphore_ids.end())
+      << "Blackhole kernel semaphore binding " << binding_it->name
+      << " references missing planned semaphore id " << binding_it->semaphore_id;
+  return semaphore_it->second;
+}
+
+static std::vector<uint32_t> BuildCommonRuntimeArgsFromSpec(
+    const KernelSpec& kernel,
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
+    const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
+    const std::vector<std::string>& input_names,
+    const std::vector<std::string>& output_names) {
+  std::vector<uint32_t> args;
+  for (const auto& arg_spec : kernel.common_runtime_args) {
+    if (arg_spec.kind == "input_buffer_addr") {
+      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/false,
+                                                        buffer_bindings, input_names);
+      const uint64_t src_addr = binding.mesh_buffer->address();
+      args.push_back(static_cast<uint32_t>(src_addr & 0xFFFFFFFF));
+      args.push_back(static_cast<uint32_t>(src_addr >> 32));
+    } else if (arg_spec.kind == "input_buffer_addr32") {
+      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/false,
+                                                        buffer_bindings, input_names);
+      const uint64_t src_addr = binding.mesh_buffer->address();
+      args.push_back(static_cast<uint32_t>(src_addr));
+    } else if (arg_spec.kind == "output_buffer_addr") {
+      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/true,
+                                                        buffer_bindings, output_names);
+      const uint64_t dst_addr = binding.mesh_buffer->address();
+      args.push_back(static_cast<uint32_t>(dst_addr & 0xFFFFFFFF));
+      args.push_back(static_cast<uint32_t>(dst_addr >> 32));
+    } else if (arg_spec.kind == "output_buffer_addr32") {
+      const auto& binding = ResolveRuntimeBufferBinding(arg_spec, /*expect_output=*/true,
+                                                        buffer_bindings, output_names);
+      const uint64_t dst_addr = binding.mesh_buffer->address();
+      args.push_back(static_cast<uint32_t>(dst_addr));
+    } else if (arg_spec.kind == "semaphore_id_u32") {
+      args.push_back(ResolveRuntimeSemaphoreId(kernel, arg_spec, semaphore_ids));
+    } else {
+      LOG(FATAL) << "Unsupported common runtime arg kind: " << arg_spec.kind;
+    }
+  }
+  return args;
+}
+
 static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
     const KernelSpec& kernel,
     const ExecutableSpec& spec,
@@ -818,21 +886,6 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
   const auto compute_contract = GetComputeContract(spec);
   const bool has_gemm_compute_contract =
       compute_contract.enabled && compute_contract.kind == "gemm";
-  const auto resolve_semaphore_id = [&](const KernelArgSpec& arg_spec) {
-    auto binding_it = std::find_if(
-        kernel.semaphore_bindings.begin(), kernel.semaphore_bindings.end(),
-        [&](const SemaphoreBindingSpec& binding) {
-          return binding.name == arg_spec.name && binding.arg_kind == arg_spec.kind;
-        });
-    ICHECK(binding_it != kernel.semaphore_bindings.end())
-        << "Blackhole runtime arg " << arg_spec.name << " kind=" << arg_spec.kind
-        << " is missing a matching semaphore binding";
-    auto semaphore_it = semaphore_ids.find(binding_it->semaphore_id);
-    ICHECK(semaphore_it != semaphore_ids.end())
-        << "Blackhole kernel semaphore binding " << binding_it->name
-        << " references missing planned semaphore id " << binding_it->semaphore_id;
-    return semaphore_it->second;
-  };
 
   for (const auto& arg_spec : kernel.runtime_args) {
     if (arg_spec.kind == "input_buffer_addr") {
@@ -923,7 +976,7 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
           device.worker_core_from_logical_core(CoreCoord{arg_spec.core_x, arg_spec.core_y});
       args.push_back(static_cast<uint32_t>(noc_core.y));
     } else if (arg_spec.kind == "semaphore_id_u32") {
-      args.push_back(resolve_semaphore_id(arg_spec));
+      args.push_back(ResolveRuntimeSemaphoreId(kernel, arg_spec, semaphore_ids));
     } else {
       LOG(FATAL) << "Unsupported runtime arg kind: " << arg_spec.kind;
     }
@@ -1157,6 +1210,13 @@ void BlackholeModuleNode::ExecuteDirect(
               << " core_type=" << kernel_spec.core_type;
     kernels.push_back(CreateKernelFromSpec(program, launch_core_ranges, kernel_spec,
                                            runtime_buffers, kernel_paths[ki]));
+    const auto common_runtime_args = BuildCommonRuntimeArgsFromSpec(
+        kernel_spec, runtime_buffers, semaphore_ids, input_names, ordered_output_names);
+    if (!common_runtime_args.empty()) {
+      LOG(INFO) << "Direct path: set common runtime args kernel[" << ki
+                << "] count=" << common_runtime_args.size();
+      SetCommonRuntimeArgs(program, kernels.back(), common_runtime_args);
+    }
   }
 
   // Keep runtime args per core/work-item so each logical work item sees its own ID.
