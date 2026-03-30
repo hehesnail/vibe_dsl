@@ -352,7 +352,163 @@
 - `B1-B3` 是继续做 P4 前最应该收的结构债
 - `C1-C2` 更贴近 synchronization 深化，不必抢在前面，但必须有计划
 
-## 7. 验证口径
+## 7. 重文件边界拆分草案
+
+这一节只定义职责边界，不要求立刻做“大搬家式重构”。原则是先把边界说清，再做最小拆分。
+
+### 7.1 `BlackholeModule` 边界草案
+
+目标：
+
+- 让 `BlackholeModule` 保持在 “host-side orchestration + TT-Metal launch sequencing” 的职责上
+
+应保留在 `BlackholeModule` 主执行流中的职责：
+
+- 选择待执行 `ExecutableSpec`
+- 校验 direct-runtime formal boundary
+- 创建设备 / command queue / program
+- 组织 “create CB -> create kernel -> set common args -> set per-core args -> launch -> readback” 的顺序
+
+应下沉到 helper 的职责：
+
+- buffer materialization
+- compile-time accessor arg materialization
+- common runtime arg materialization
+- per-work runtime arg materialization
+- work item 展开与 launch core set 构造
+
+建议 helper 形态：
+
+- `blackhole_runtime_buffer_materializer.*`
+  - 输入：`ExecutableSpec` + tensor bindings
+  - 输出：runtime buffer bindings + input/output name ordering
+- `blackhole_runtime_arg_materializer.*`
+  - 输入：`KernelSpec` / `ExecutableSpec` / work item / runtime buffer bindings / semaphore bindings
+  - 输出：`common_runtime_args` 和 per-core `runtime_args`
+- `blackhole_work_plan_materializer.*`
+  - 输入：`CorePlan`
+  - 输出：`work_items`、`launch_core_ranges`
+
+不应继续放在 `BlackholeModule` 里的逻辑：
+
+- invented fallback（如 fallback core）
+- “如果 schema 没说清就 runtime 猜一个默认值”
+- 把“当前 replicated DRAM 实现”直接当成协议事实
+
+最小拆分落点：
+
+- 第一阶段先只抽 helper，不改外部接口
+- 第二阶段再把 buffer/runtime-arg helper 的输入收紧到 schema/spec descriptor
+
+### 7.2 `LowerBlackholeOps` 边界草案
+
+目标：
+
+- 把“协议提取”与“当前 copy/GEMM 策略派生”明确分层
+
+应保留在 `LowerBlackholeOps` 的职责：
+
+- 从 split 后 device kernel 稳定提取：
+  - `segment_plan`
+  - `runtime_args`
+  - `common_runtime_args`
+  - `compile_time_arg_specs`
+  - `accessors`
+  - `cb_requirements`
+- 把必须由 IR 真源提供的信息显式写入 attrs/schema
+
+应与主提取逻辑分离的职责：
+
+- staged copy/stick/page 的具体 shape 推导
+- 当前 direct-path boundary 的约束整理
+- 当前 copy/GEMM shape 的策略性派生逻辑
+
+建议拆分形态：
+
+- `blackhole_copy_lowering_helpers.*`
+  - 专门承载当前 copy/stick/page 相关的 shape/layout 计算与 builtin 序列构造
+- `blackhole_segment_schema_builder.*`
+  - 专门承载 attrs/schema 的构造与写回
+
+不应继续发生的事：
+
+- 在 lowering 深处散落 direct-runtime boundary 的零碎 `ICHECK`
+- 协议真源字段和当前策略字段混用一套派生代码
+
+最小拆分落点：
+
+- 先把 copy-specific shape/layout 推导函数抽出来
+- 再把 attrs/schema 组装收口到单独 builder helper
+
+### 7.3 `rt_mod_blackhole` 边界草案
+
+目标：
+
+- 把 `rt_mod_blackhole` 稳定在 “attrs/schema -> ExecutableSpec” 映射层
+
+应保留的职责：
+
+- 解析 `blackhole.*` attrs
+- 构造 `ExecutableSpec`
+- 组织 codegen 输出与 `BlackholeModule(spec)` 连接
+
+应逐步移除或收紧的职责：
+
+- 基于 `kind + name/buffer_name` 的 heuristic 聚合/去重
+- “schema 不完整时由 host 侧推断一个还算合理的 spec”
+
+建议拆分形态：
+
+- `blackhole_spec_extractors.*`
+  - 专门负责 attrs/schema 的纯解析
+- `blackhole_spec_validators.*`
+  - 专门负责 spec 完整性与 formal-surface 校验
+
+不应继续发生的事：
+
+- spec extraction 和语义修正混在一起
+- segment aggregation 时偷偷建立新的 host-side 语义
+
+最小拆分落点：
+
+- 先把 dedupe/aggregation 规则集中到单一 extractor/validator 边界
+- 后续再引入 stable identity，彻底替换 heuristic key
+
+### 7.4 `PlanBlackholeCB` 的边界建议
+
+这里不优先做文件拆分，先做定位收紧。
+
+应明确保留的职责：
+
+- 从 `cb_requirements` 收敛到 `cb_configs`
+- 建立 requirement -> final `cb_id` 绑定
+- 对当前 formal surface 做 memory-plan 级一致性校验
+
+不应继续扩张的职责：
+
+- 在 planner 里偷偷弥补上游 schema 缺口
+- 让 allocator heuristic 变成隐式协议
+
+结论：
+
+- 先明确 planner 的“允许推断范围”
+- 再决定要不要演化成更正式的 memory planner
+
+### 7.5 `codegen_blackhole` 的边界建议
+
+这里的重点不是马上拆文件，而是写清 readiness 边界。
+
+应明确：
+
+- 当前 accessor codegen 是 compile-time-only
+- richer accessor / CRTA / 更宽 launch ABI 目前不是“只差打开开关”，而是需要显式设计和实现
+
+结论：
+
+- 代码层先保持 fail-fast
+- 文档层必须防止把当前状态误表述成“已支持但未启用”
+
+## 8. 验证口径
 
 本路线图对应的各项任务，在实施时至少应满足以下验证要求：
 
@@ -372,7 +528,7 @@
    - `tasks/progress.md`
    - 对应专项设计文档
 
-## 8. 当前结论
+## 9. 当前结论
 
 当前 Blackhole 后端最大的问题不是“主链没成型”，而是：
 
