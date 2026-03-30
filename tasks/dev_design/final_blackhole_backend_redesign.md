@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档ID**: `final_blackhole_backend_redesign`
-- **日期**: 2026-03-19（创建），2026-03-27（最近更新）
+- **日期**: 2026-03-19（创建），2026-03-30（最近更新）
 - **状态**: 当前唯一权威总体设计
 - **适用范围**: `tilelang_repo` Blackhole 后端、host/device 主链、运行时执行路径、相关阶段设计
 
@@ -24,7 +24,7 @@ Blackhole 后端当前的正式目标收敛为三点：
 
 作为正式目标。
 
-## 2. 当前状态（2026-03-26）
+## 2. 当前状态（2026-03-30）
 
 ### 已完成
 
@@ -45,13 +45,14 @@ Blackhole 后端当前的正式目标收敛为三点：
 - `PlanBlackholeCB` 仍是 MVP allocator，非正式 memory planner
 - `StorageRewrite` 与 Blackhole CB 模型不兼容（永久排除）
 - copy 用 `fused_dataflow` 单 kernel，GEMM 用 3-kernel（后续统一为 reader+writer 模型是架构债）
-- TT-Metal contract 收正未完成项：P0（compute ABI / dtype 分层）已继续 formalize 到统一 `compute_contract`，但更宽 compute ABI 仍未做；P3（unified runtime work schema + accessor/common-runtime schema + compile-time ABI schema）已对 copy/GEMM 主路径 formalize，但更宽的 execution surface 仍未做；P4（copy 泛化）/ P5（synchronization）未做，见 `stage2d_ttmetal_contract_audit.md`
+- TT-Metal contract 收正未完成项：P0（compute ABI / dtype 分层）已继续 formalize 到统一 `compute_contract`，但更宽 compute ABI 仍未做；P3（unified runtime work schema + accessor/common-runtime schema + compile-time ABI schema）已对 copy/GEMM 主路径 formalize，但更宽的 execution surface 仍未做；P4（copy 泛化）未做；P5（synchronization）已完成 program-local semaphore schema、kernel binding、最小 dataflow semaphore builtin 预埋，但 multicast / global semaphore / producer-consumer E2E 仍未做，见 `stage2d_ttmetal_contract_audit.md` 和 `stage4_semaphore_schema.md`
 
 ### 当前活动
 
 - **TT-Metal contract formalization**
 - Stage 3 formal direct host path 已完成，设计文档：`stage3_multicore_design.md`
 - `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复；host C codegen 已支持 packed call 结果表达式
+- P5 当前已从“零语义层”推进到：program-local semaphore plan、kernel-level semaphore binding、以及最小 device-side dataflow semaphore builtin
 
 ## 3. 正式架构
 

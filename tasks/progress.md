@@ -5,8 +5,8 @@
 ## 当前阶段
 
 - **阶段**: Stage 3 — multi-core runtime 调度
-- **状态**: ✅ formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 compute contract 正式化（统一 `compute_contract` 承载 GEMM shape/flags/dtype 分层，并继续 formalize compute precision + block/subblock ABI）、P3 richer runtime work schema + accessor/common-runtime schema，以及 compile-time ABI schema/launch schema 的主路径正式化；direct runtime 对未支持 execution 面显式 fail-fast
-- **日期**: 2026-03-27
+- **状态**: ✅ Stage 3 formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已继续推进到 P0 compute contract 正式化、P3 richer runtime work/accessor/compile-time ABI 主路径正式化，以及 P5 program-local semaphore schema、kernel binding、最小 device-side dataflow semaphore builtin 预埋；direct runtime 对未支持 execution 面显式 fail-fast
+- **日期**: 2026-03-30
 - **设计文档**: `tasks/dev_design/stage3_multicore_design.md`
 
 ### 最新回归结果（当前环境）
@@ -55,13 +55,13 @@
 | 2 | `BlackholeModule` 单 Program 多核 launch | `blackhole_module.cc/h` | Step 1 | ✅ |
 | 3 | Copy 多核 E2E 验证（TT-Sim） | 测试 | Step 1+2 | ✅ |
 | 4 | GEMM 多核 E2E 验证（TT-Sim） | 测试（新 DSL kernel 用 `bx/by`） | Step 1+2 | ✅ |
-| 5 | 文档同步与提交 | progress/design/memory | Step 3+4 | ⏳ |
+| 5 | 文档同步与提交 | progress/design/memory | Step 3+4 | ✅ |
 
 不在 Stage 3 范围：K 维度切分、核间数据流、semaphore/multicast
 
 注：
-- 本轮文档已同步到当前状态
-- 若以 `AGENTS.md` 的“任务完成”口径结项，仍需在当前批次结束时完成 `git commit` / `git push`
+- Stage 3 本体以及后续关联文档已同步到当前状态
+- `git commit` / `git push` 已完成；当前阶段剩余工作属于 Stage 3 之后的 TT-Metal contract formalization
 
 ### Stage 3 结果
 
@@ -165,7 +165,7 @@
 | `stage2h_accessor_schema.md` | accessor/common-runtime schema 设计 | ✅ 已实施（schema/spec） |
 | `stage2i_compile_time_abi_schema.md` | compile-time ABI schema 设计 | ✅ 已实施（schema/spec/direct runtime） |
 | `stage2j_compute_contract_schema.md` | compute contract 正式化设计 | ✅ 已实施（schema/spec/runtime 主链） |
-| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P1/P2 ✅，P0 部分，P3 部分完成，P4 未做，P5 已起步） |
+| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P1/P2 ✅，P0 部分，P3 部分完成，P4 未做，P5 已预埋到 semaphore schema/kernel binding/device builtin） |
 | `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 | 已实现（program-local worker semaphore + kernel binding + 最小 dataflow semaphore builtin） |
 
 ### 已完成（仍有参考价值）

@@ -8,9 +8,12 @@
 |------|------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计 | 常青 |
 | `stage3_multicore_design.md` | Stage 3 多核设计 | ✅ 已实施（formal direct host path） |
-| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P1/P2 ✅，P0 部分完成，P3 主路径 formalize，P4-P5 未做） |
+| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P1/P2 ✅，P0 部分完成，P3 主路径 formalize，P4 未做，P5 已预埋） |
+| `stage2g_unified_work_schema.md` | richer runtime work schema 正式化 | ✅ 已实施（copy/GEMM 主路径） |
 | `stage2h_accessor_schema.md` | accessor/common-runtime schema 正式化 | ✅ 已实施（schema/spec） |
 | `stage2i_compile_time_abi_schema.md` | compile-time ABI schema 正式化 | ✅ 已实施（schema/spec/direct runtime） |
+| `stage2j_compute_contract_schema.md` | compute contract 正式化 | ✅ 已实施（schema/spec/runtime 主链） |
+| `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 | ✅ 已实施（program-local semaphore + kernel binding + 最小 dataflow builtin） |
 
 ## 2. 已完成（仍有参考价值）
 

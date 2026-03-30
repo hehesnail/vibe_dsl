@@ -3,8 +3,8 @@
 ## 基本信息
 
 - **文档ID**: `stage2d_ttmetal_contract_audit`
-- **日期**: 2026-03-27
-- **状态**: 审计已完成；收正部分落地（P0 已继续 formalize 到统一 `compute_contract`，P1/P2 ✅，P3 已对 copy + GEMM 主路径 formalize，P4-P5 未做）
+- **日期**: 2026-03-30
+- **状态**: 审计已完成；收正部分落地（P0 已继续 formalize 到统一 `compute_contract`，P1/P2 ✅，P3 已对 copy + GEMM 主路径 formalize，P4 未做，P5 已完成 semaphore schema/kernel binding/最小 device builtin 预埋）
 - **对应阶段**: Stage 2D Step 6
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -210,7 +210,17 @@ TT-Metal 还存在：
 - remote core addressing
 - core-to-core L1 forwarding
 
-当前 Blackhole IR/schema 完全没有这些对象，因此未来 multi-core 或 ring/mcast pipeline 不可能只靠补 codegen 自动长出来。
+当前状态已从“完全没有这些对象”推进到：
+
+- `ExecutableSpec.semaphores`
+- `KernelSpec.semaphore_bindings`
+- runtime arg kind `semaphore_id_u32`
+- 最小 device-side dataflow semaphore builtin：
+  - `get_semaphore`
+  - `semaphore_wait`
+  - `semaphore_set`
+
+但 multicast、global semaphore、remote core coordinate、以及 producer/consumer E2E 执行面仍未建立，因此未来 multi-core 或 ring/mcast pipeline 仍不能只靠补 codegen 自动长出来。
 
 ---
 
@@ -218,18 +228,18 @@ TT-Metal 还存在：
 
 ### 4.1 `ExecutableSpec`
 
-当前缺：
+当前仍缺：
 
 - host logical layout
 - device physical layout
 - accessor descriptors
 - transport dtype vs tensor dtype 分层
-- semaphore descriptors
+- richer semaphore / multicast descriptors（program-local worker semaphore 已补）
 - richer work descriptors
 
 ### 4.2 `CBConfig`
 
-当前缺：
+当前仍缺：
 
 - multi-index config
 - local/remote index
@@ -243,17 +253,17 @@ TT-Metal 还存在：
 
 - accessor-derived common runtime args
 - tile/stick/block range descriptors
-- semaphore / remote-core arguments
+- remote-core / multicast arguments（program-local semaphore id runtime arg 已补）
 - output transport vs final writeback distinction
 
 ### 4.4 builtin 层
 
-当前缺：
+当前仍缺：
 
 - transpose-aware GEMM builtin contract
 - untilize/tilize contract
 - non-tile/stick dataflow builtin
-- semaphore/core-to-core builtin
+- multicast/core-to-core builtin（最小 semaphore builtin 已补）
 - local CB-backed L1 manipulation contract
 
 ---
@@ -476,12 +486,21 @@ TT-Metal 参考 case：
 目标：
 
 - 为 Stage 2D 之后的 multi-core 留正式对象层，而不是到时再补旁路
+- 先立住 semaphore 的 host/runtime/device 最小主链，再继续扩 multicast 和更完整同步执行面
 
-需要补的语义：
+当前已补的语义：
 
-1. semaphore descriptors
-2. remote core coordinate / multicast descriptors
-3. core-to-core transport builtin 或等价 schema
+1. program-local `semaphore_plan` / semaphore descriptors
+2. kernel-level `semaphore_bindings`
+3. runtime arg materialization：`semaphore_id_u32`
+4. 最小 device-side dataflow semaphore builtin：`get_semaphore` / `semaphore_wait` / `semaphore_set`
+
+仍需补的语义：
+
+1. remote core coordinate / multicast descriptors
+2. global semaphore object model
+3. 更完整的 semaphore opcode 家族与 producer/consumer E2E
+4. core-to-core transport / multicast execution plan
 
 为什么排最后：
 
@@ -519,7 +538,7 @@ TT-Metal 参考 case：
 - P1: CB transport schema — 已统一到 codegen CB transport，无 scratch
 - P3: accessor / runtime work schema（copy + GEMM 主路径已 formalize；更宽 execution surface 未做）
 - P4: copy/dataflow 泛化
-- P5: multi-core synchronization 预埋 → 见 `stage3_multicore_design.md`
+- P5: multi-core synchronization 预埋 → semaphore schema / kernel binding / 最小 device builtin 已补；更完整 multicast / synchronization execution surface 仍待后续推进，见 `stage4_semaphore_schema.md`
 
 ---
 
