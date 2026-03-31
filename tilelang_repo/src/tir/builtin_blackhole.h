@@ -285,6 +285,13 @@ TVM_DLL const Op& blackhole_scalar_exp2_affine();
  */
 TVM_DLL const Op& blackhole_fill_fragment();
 
+/*!
+ * \brief Update a scalar fragment buffer in-place with max(dst, src).
+ * \param dst_buffer Destination scalar local fragment buffer handle
+ * \param src_buffer Source scalar local fragment buffer handle
+ */
+TVM_DLL const Op& blackhole_scalar_max();
+
 }  // namespace builtin
 }  // namespace tir
 }  // namespace tvm

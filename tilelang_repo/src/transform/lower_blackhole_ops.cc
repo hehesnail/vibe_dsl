@@ -483,6 +483,7 @@ static bool HasUnsupportedFragmentOpsInRequirements(const Map<String, Any>& lowe
 namespace {
 bool HasResidualFragmentFill(const Stmt& body);
 bool HasResidualFragmentAdd(const Stmt& body);
+bool HasResidualFragmentMax(const Stmt& body);
 }
 
 static int CountLoweredRowReductionBuiltins(const Stmt& body) {
@@ -577,6 +578,9 @@ static Map<String, Any> PruneSatisfiedLoweringRequirements(const Map<String, Any
           continue;
         }
         if (op_name == "add" && !HasResidualFragmentAdd(body)) {
+          continue;
+        }
+        if (op_name == "max" && !HasResidualFragmentMax(body)) {
           continue;
         }
         kept_ops.push_back(item);
@@ -2805,6 +2809,20 @@ bool HasResidualFragmentAdd(const Stmt& body) {
   return found;
 }
 
+bool HasResidualFragmentMax(const Stmt& body) {
+  bool found = false;
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* store = node.as<BufferStoreNode>();
+    if (!store || !IsUnsupportedResidualLocalScope(store->buffer)) {
+      return;
+    }
+    if (store->value.as<MaxNode>()) {
+      found = true;
+    }
+  });
+  return found;
+}
+
 bool MatchSelfIndexedVectorLoad(const PrimExpr& expr,
                                 const Buffer& dst_buffer,
                                 const Var& loop_var) {
@@ -3196,6 +3214,36 @@ Stmt LowerBlackholeOps::GenerateFragmentFillSequence(const FragmentFillMatch& ma
                            {match.dst->data, match.num_elements, match.value});
 }
 
+bool LowerBlackholeOps::MatchScalarMaxStore(const BufferStoreNode* op,
+                                            ScalarMaxMatch* match) const {
+  if (!op || !match || !IsScalarLocalFragmentBuffer(op->buffer) || op->indices.size() != 1 ||
+      !tir::is_zero(op->indices[0])) {
+    return false;
+  }
+  const auto* max = op->value.as<MaxNode>();
+  if (!max) {
+    return false;
+  }
+
+  auto try_match = [&](const PrimExpr& self_expr, const PrimExpr& other_expr) -> bool {
+    Buffer other;
+    if (!MatchScalarBufferLoadFrom(self_expr, op->buffer) ||
+        !MatchScalarFragmentLoad(other_expr, &other)) {
+      return false;
+    }
+    match->dst = op->buffer;
+    match->src = other;
+    return true;
+  };
+
+  return try_match(max->a, max->b) || try_match(max->b, max->a);
+}
+
+Stmt LowerBlackholeOps::GenerateScalarMaxSequence(const ScalarMaxMatch& match) {
+  return MakeBlackholeCall(tir::builtin::blackhole_scalar_max(),
+                           {match.dst->data, match.src->data});
+}
+
 // Parse a colon-separated string into fields
 Stmt LowerBlackholeOps::VisitStmt_(const AttrStmtNode* op) {
   if (op->attr_key == tir::attr::thread_extent) {
@@ -3411,6 +3459,10 @@ Stmt LowerBlackholeOps::VisitStmt_(const BufferStoreNode* op) {
   FragmentFillMatch fill_match;
   if (MatchScalarFragmentFillStore(op, &fill_match)) {
     return GenerateFragmentFillSequence(fill_match);
+  }
+  ScalarMaxMatch scalar_max_match;
+  if (MatchScalarMaxStore(op, &scalar_max_match)) {
+    return GenerateScalarMaxSequence(scalar_max_match);
   }
   ScalarExp2AffineMatch scalar_exp2_affine_match;
   if (MatchScalarExp2AffineStore(op, &scalar_exp2_affine_match)) {

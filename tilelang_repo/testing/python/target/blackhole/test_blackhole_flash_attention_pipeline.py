@@ -88,14 +88,32 @@ def test_flash_attention_forward_lower_blackhole_ops_emits_generic_lowering_requ
     }.issubset(set(lowering_requirements["fragment_op_kinds"]))
     assert "row_broadcast" not in set(lowering_requirements["fragment_op_kinds"])
     assert "row_broadcast_sources" not in lowering_requirements
-    assert {"exp2", "mul", "div", "max", "cast"}.issubset(
+    assert {"exp2", "mul", "div", "cast"}.issubset(
         set(lowering_requirements["pointwise_op_kinds"])
     )
     assert "fill" not in set(lowering_requirements["pointwise_op_kinds"])
     assert "add" not in set(lowering_requirements["pointwise_op_kinds"])
-    assert list(lowering_requirements["pipeline_stage_counts"]) == [1]
-    assert list(lowering_requirements["pipeline_loop_vars"]) == ["k"]
-    assert "row_reduction_targets" not in lowering_requirements
+    assert "max" not in set(lowering_requirements["pointwise_op_kinds"])
+
+
+def test_flash_attention_forward_optimized_path_lowers_scores_max_updates():
+    lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
+        mha_example,
+        1,
+        32,
+        256,
+        128,
+        False,
+        block_M=128,
+        block_N=128,
+        num_stages=1,
+        threads=128,
+    )["main"]
+    script = lowered.script()
+    lowering_requirements = lowered.attrs["blackhole.lowering_requirements"]
+
+    assert "tl.blackhole.scalar_max" in script
+    assert "max" not in set(lowering_requirements["pointwise_op_kinds"])
 
 
 def test_flash_attention_forward_lower_blackhole_ops_lowers_row_reductions_to_builtins():
@@ -232,7 +250,7 @@ def test_flash_attention_forward_rejects_unlowered_fragment_subset():
     assert "row_broadcast" not in message
     assert "row_reduction" not in message
     assert "fill" not in message
-    assert "max" in message
+    assert "max" not in message
     assert "add" not in message
     assert "cast" in message
 

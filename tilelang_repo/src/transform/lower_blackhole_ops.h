@@ -134,6 +134,11 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
     tvm::PrimExpr value;
   };
 
+  struct ScalarMaxMatch {
+    tvm::tir::Buffer dst;
+    tvm::tir::Buffer src;
+  };
+
   /*! \brief CB configuration from function attributes */
   struct CBConfig {
     int in0_id = 0;
@@ -300,6 +305,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   bool MatchDirectFragmentFill(const tvm::tir::ForNode* op, FragmentFillMatch* match) const;
   bool MatchScalarFragmentFillStore(const tvm::tir::BufferStoreNode* op, FragmentFillMatch* match) const;
   tvm::tir::Stmt GenerateFragmentFillSequence(const FragmentFillMatch& match);
+  bool MatchScalarMaxStore(const tvm::tir::BufferStoreNode* op, ScalarMaxMatch* match) const;
+  tvm::tir::Stmt GenerateScalarMaxSequence(const ScalarMaxMatch& match);
 
   // StmtExprMutator overrides
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;
