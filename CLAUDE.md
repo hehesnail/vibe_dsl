@@ -91,11 +91,12 @@
 8. ~~GEMM 接入 Steps 1-5~~ ✅（CB identity 唯一协议已收正）
 9. ~~GEMM E2E 验收~~ ✅（transpose_B + host tilize/untilize 已补齐）
 10. ~~multi-core~~ ✅（formal direct host path 已完成；设计见 `tasks/dev_design/stage3_multicore_design.md`）
-11. **TT-Metal contract formalization 收尾**
-   - P0：更丰富 compute ABI / dtype 分层继续收正
-   - P3：更宽 accessor / runtime work execution surface
-   - P4：copy/dataflow 泛化（non-tile/stick/sharded）
-   - P5：multi-core synchronization 预埋
+11. ~~TT-Metal contract formalization：P0/P3 主路径收口~~ ✅
+12. **Stage 4 当前主线**
+   - flash-attn forward subset：analysis 三件套已完成，fragment/dataflow lowering 正在推进
+   - P4：更宽 copy/dataflow 泛化（non-tile/stick/sharded）
+   - P5：更宽 synchronization（multicast/global/pass-level producer）
+   - 当前最真实 blocker：`local/accumulator -> shared(CB)` staged copy 还没有正式 lowering
 
 ---
 
@@ -136,3 +137,4 @@
   - copy：equal source/dest range，且 stride = 1
   - GEMM：A/B-separated reader range + writer output range
   - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
+- flash-attn forward subset 当前已完成 analysis 与最小 fragment builtin/codegen 接入；full path 当前主 blocker 是 `local/accumulator -> shared(CB)` staged copy 缺少正式 lowering
