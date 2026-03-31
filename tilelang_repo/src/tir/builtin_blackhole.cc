@@ -71,6 +71,7 @@ TIR_DEFINE_BUILTIN(div_row_bcast)
 TIR_DEFINE_BUILTIN(scalar_fma)
 TIR_DEFINE_BUILTIN(exp2_row_bcast_affine)
 TIR_DEFINE_BUILTIN(scalar_exp2_affine)
+TIR_DEFINE_BUILTIN(fill_fragment)
 
 // Register all builtins in TVM's op registry
 TVM_REGISTER_OP("tl.blackhole.cb_reserve_back")
@@ -282,6 +283,13 @@ TVM_REGISTER_OP("tl.blackhole.scalar_exp2_affine")
     .add_argument("rhs_buffer", "handle", "Right scalar local fragment buffer handle")
     .add_argument("lhs_scale", "float", "Scale applied to lhs")
     .add_argument("rhs_scale", "float", "Scale applied to rhs");
+
+TVM_REGISTER_OP("tl.blackhole.fill_fragment")
+    .set_num_inputs(3)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("dst_buffer", "handle", "Destination local fragment buffer handle")
+    .add_argument("num_elements", "int", "Number of contiguous destination elements")
+    .add_argument("value", "float", "Scalar literal fill value");
 
 }  // namespace builtin
 }  // namespace tir

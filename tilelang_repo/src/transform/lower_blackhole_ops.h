@@ -128,6 +128,12 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
     tvm::PrimExpr rhs_scale;
   };
 
+  struct FragmentFillMatch {
+    tvm::tir::Buffer dst;
+    tvm::PrimExpr num_elements;
+    tvm::PrimExpr value;
+  };
+
   /*! \brief CB configuration from function attributes */
   struct CBConfig {
     int in0_id = 0;
@@ -291,6 +297,9 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   bool MatchScalarExp2AffineStore(const tvm::tir::BufferStoreNode* op,
                                   ScalarExp2AffineMatch* match) const;
   tvm::tir::Stmt GenerateScalarExp2AffineSequence(const ScalarExp2AffineMatch& match);
+  bool MatchDirectFragmentFill(const tvm::tir::ForNode* op, FragmentFillMatch* match) const;
+  bool MatchScalarFragmentFillStore(const tvm::tir::BufferStoreNode* op, FragmentFillMatch* match) const;
+  tvm::tir::Stmt GenerateFragmentFillSequence(const FragmentFillMatch& match);
 
   // StmtExprMutator overrides
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;

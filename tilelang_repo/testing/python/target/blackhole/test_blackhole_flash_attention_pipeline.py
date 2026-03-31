@@ -88,9 +88,10 @@ def test_flash_attention_forward_lower_blackhole_ops_emits_generic_lowering_requ
     }.issubset(set(lowering_requirements["fragment_op_kinds"]))
     assert "row_broadcast" not in set(lowering_requirements["fragment_op_kinds"])
     assert "row_broadcast_sources" not in lowering_requirements
-    assert {"fill", "exp2", "mul", "div", "max", "add", "cast"}.issubset(
+    assert {"exp2", "mul", "div", "max", "add", "cast"}.issubset(
         set(lowering_requirements["pointwise_op_kinds"])
     )
+    assert "fill" not in set(lowering_requirements["pointwise_op_kinds"])
     assert list(lowering_requirements["pipeline_stage_counts"]) == [1]
     assert list(lowering_requirements["pipeline_loop_vars"]) == ["k"]
     assert "row_reduction_targets" not in lowering_requirements
@@ -183,6 +184,26 @@ def test_flash_attention_forward_optimized_path_lowers_scores_exp2_affine_update
     assert "row_broadcast" not in set(lowering_requirements["fragment_op_kinds"])
 
 
+def test_flash_attention_forward_optimized_path_lowers_fragment_fills():
+    lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
+        mha_example,
+        1,
+        32,
+        256,
+        128,
+        False,
+        block_M=128,
+        block_N=128,
+        num_stages=1,
+        threads=128,
+    )["main"]
+    script = lowered.script()
+    lowering_requirements = lowered.attrs["blackhole.lowering_requirements"]
+
+    assert "tl.blackhole.fill_fragment" in script
+    assert "fill" not in set(lowering_requirements["pointwise_op_kinds"])
+
+
 def test_flash_attention_forward_rejects_unlowered_fragment_subset():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
@@ -209,7 +230,7 @@ def test_flash_attention_forward_rejects_unlowered_fragment_subset():
     assert "Blackhole fragment compute subset lowering is not implemented" in message
     assert "row_broadcast" not in message
     assert "row_reduction" not in message
-    assert "fill" in message
+    assert "fill" not in message
     assert "max" in message
     assert "add" in message
     assert "cast" in message

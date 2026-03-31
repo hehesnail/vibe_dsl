@@ -59,6 +59,7 @@
 - 对 fragment/reduction lowering，不要假设 split-after 和 optimized device IR 会保留完全相同的包裹结构。`OptimizeForTarget` 之后，`for extent=1` 常会被抹平成同级 `SeqStmt`，而 `pragma_unroll_explicit` 之类则会额外包成 `AttrStmt`；matcher 应先剥掉这类无语义包装，再匹配真正的 reduction 形态，否则手动 pass 链能 lower、full `lower()` 反而会漏掉同一逻辑
 - 对 flash-attn 这类复杂 fragment compute，不要把整类 `row_broadcast` 一起当成一个 blocker 或一次性全开。更稳的推进方式是先在 `LowerBlackholeOps` 里吃掉最小、形态稳定、且和 TT-Metal 现有 compute primitive 对得上的子集，例如 `dst[i] = dst[i] * scalar[0]` / `dst[i] = dst[i] / scalar[0]` 这类 vector-fragment 自身按 scalar-fragment 更新；再把剩余融合 broadcast（如 `exp2(acc_s[i] * scale - scores_max[0] * scale)`）继续单独收敛。这样 gate 会随着真实 lowering 一步步收窄，而不是永远把整个 `row_broadcast` 黑盒化
 - 对 flash-attn 里的 scalar fragment 链，也应优先抽成通用 scalar primitive，而不是继续让 build-time gate 把它混在 `row_broadcast` 里。像 `logsum = logsum * scores_scale + scores_sum` 这种 `scalar FMA`，适合直接在 `LowerBlackholeOps` lower 成单独 builtin；这样剩余 blocker 会更准确地聚焦到真正还缺的 vector broadcast + unary 融合路径
+- 做 TIR matcher 时，不要用 `same_as` 去判断两个“语义上相等的 extent/stride 常量”是否相等。优化前后 IR 很容易生成不同节点实例的 `IntImm(4)` / `IntImm(32)`，这会让像 `i * 4 + vec` 这种明显线性化的模式白白 miss。更稳的写法是直接对整个 affine 关系做 `Analyzer::Simplify` 后判零，例如比较 `expr - (outer * inner_extent + inner)` 是否可化简为 0
 
 ## TT-Metal / TT-Sim 环境
 

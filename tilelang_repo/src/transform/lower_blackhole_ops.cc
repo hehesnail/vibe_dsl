@@ -480,6 +480,10 @@ static bool HasUnsupportedFragmentOpsInRequirements(const Map<String, Any>& lowe
   return false;
 }
 
+namespace {
+bool HasResidualFragmentFill(const Stmt& body);
+}
+
 static int CountLoweredRowReductionBuiltins(const Stmt& body) {
   int count = 0;
   tir::PostOrderVisit(body, [&](const ObjectRef& node) {
@@ -520,7 +524,9 @@ static Map<String, Any> PruneSatisfiedLoweringRequirements(const Map<String, Any
                                                            const Stmt& body) {
   auto row_targets_opt = lowering_requirements.Get("row_reduction_targets");
   auto row_broadcast_sources_opt = lowering_requirements.Get("row_broadcast_sources");
-  if (!row_targets_opt.has_value() && !row_broadcast_sources_opt.has_value()) {
+  auto pointwise_ops_opt = lowering_requirements.Get("pointwise_op_kinds");
+  if (!row_targets_opt.has_value() && !row_broadcast_sources_opt.has_value() &&
+      !pointwise_ops_opt.has_value()) {
     return lowering_requirements;
   }
 
@@ -557,6 +563,18 @@ static Map<String, Any> PruneSatisfiedLoweringRequirements(const Map<String, Any
         const std::string op_name = Downcast<String>(item);
         if (op_name == "row_reduction" && row_reduction_satisfied) continue;
         if (op_name == "row_broadcast" && row_broadcast_satisfied) continue;
+        kept_ops.push_back(item);
+      }
+      pruned.Set(key, kept_ops);
+      continue;
+    }
+    if (key == "pointwise_op_kinds") {
+      Array<Any> kept_ops;
+      for (const auto& item : Downcast<Array<Any>>(value)) {
+        const std::string op_name = Downcast<String>(item);
+        if (op_name == "fill" && !HasResidualFragmentFill(body)) {
+          continue;
+        }
         kept_ops.push_back(item);
       }
       pruned.Set(key, kept_ops);
@@ -2750,6 +2768,25 @@ bool IsNegInfValue(const PrimExpr& expr) {
   return IsFloatImmValue(expr, -std::numeric_limits<double>::infinity());
 }
 
+bool IsFragmentFillValue(const PrimExpr& expr) {
+  return IsScalarLiteralValue(expr) || IsNegInfValue(expr) || IsZeroValue(expr);
+}
+
+bool HasResidualFragmentFill(const Stmt& body) {
+  bool found = false;
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* store = node.as<BufferStoreNode>();
+    if (!store || !IsUnsupportedResidualLocalScope(store->buffer) ||
+        !IsFragmentFillValue(store->value)) {
+      return;
+    }
+    if (store->indices.size() == 1) {
+      found = true;
+    }
+  });
+  return found;
+}
+
 bool MatchSelfIndexedVectorLoad(const PrimExpr& expr,
                                 const Buffer& dst_buffer,
                                 const Var& loop_var) {
@@ -3091,6 +3128,56 @@ Stmt LowerBlackholeOps::GenerateScalarExp2AffineSequence(const ScalarExp2AffineM
                             match.lhs_scale, match.rhs_scale});
 }
 
+bool LowerBlackholeOps::MatchDirectFragmentFill(const ForNode* op,
+                                                FragmentFillMatch* match) const {
+  if (!op || !match) {
+    return false;
+  }
+  const auto* store = AsUnwrappedBufferStore(op->body);
+  if (!store || !IsVectorLocalFragmentBuffer(store->buffer) || store->indices.size() != 1 ||
+      !store->indices[0].same_as(op->loop_var) || !IsFragmentFillValue(store->value)) {
+    const auto* inner_loop = AsUnwrappedFor(op->body);
+    const auto* inner_store = inner_loop ? AsUnwrappedBufferStore(inner_loop->body) : nullptr;
+    if (!inner_loop || !inner_store || !IsVectorLocalFragmentBuffer(inner_store->buffer) ||
+        inner_store->indices.size() != 1 || !IsFragmentFillValue(inner_store->value)) {
+      return false;
+    }
+    Analyzer analyzer;
+    auto match_linearized_index = [&](const PrimExpr& expr) -> bool {
+      PrimExpr expected = op->loop_var * inner_loop->extent + inner_loop->loop_var;
+      return tir::is_zero(analyzer.Simplify(expr - expected));
+    };
+    if (!match_linearized_index(inner_store->indices[0])) {
+      return false;
+    }
+    match->dst = inner_store->buffer;
+    match->num_elements = analyzer.Simplify(op->extent * inner_loop->extent);
+    match->value = inner_store->value;
+    return true;
+  }
+  match->dst = store->buffer;
+  match->num_elements = op->extent;
+  match->value = store->value;
+  return true;
+}
+
+bool LowerBlackholeOps::MatchScalarFragmentFillStore(const BufferStoreNode* op,
+                                                     FragmentFillMatch* match) const {
+  if (!op || !match || !IsScalarLocalFragmentBuffer(op->buffer) || op->indices.size() != 1 ||
+      !tir::is_zero(op->indices[0]) || !IsFragmentFillValue(op->value)) {
+    return false;
+  }
+  match->dst = op->buffer;
+  match->num_elements = IntImm(DataType::Int(32), 1);
+  match->value = op->value;
+  return true;
+}
+
+Stmt LowerBlackholeOps::GenerateFragmentFillSequence(const FragmentFillMatch& match) {
+  return MakeBlackholeCall(tir::builtin::blackhole_fill_fragment(),
+                           {match.dst->data, match.num_elements, match.value});
+}
+
 // Parse a colon-separated string into fields
 Stmt LowerBlackholeOps::VisitStmt_(const AttrStmtNode* op) {
   if (op->attr_key == tir::attr::thread_extent) {
@@ -3124,17 +3211,13 @@ Stmt LowerBlackholeOps::VisitStmt_(const AllocateNode* op) {
 }
 
 Stmt LowerBlackholeOps::VisitStmt_(const SeqStmtNode* op) {
-  Array<Stmt> lowered_seq;
-  lowered_seq.reserve(op->seq.size());
-  for (const Stmt& stmt : op->seq) {
-    lowered_seq.push_back(VisitStmt(stmt));
-  }
-
   Array<Stmt> rewritten;
-  for (size_t i = 0; i < lowered_seq.size(); ++i) {
-    if (i + 1 < lowered_seq.size()) {
-      const auto* init_store = AsUnwrappedBufferStore(lowered_seq[i]);
-      const auto* reduce_loop = AsUnwrappedFor(lowered_seq[i + 1]);
+  for (size_t i = 0; i < op->seq.size(); ++i) {
+    if (i + 1 < op->seq.size()) {
+      const Stmt& init_stmt = op->seq[i];
+      const Stmt& reduce_stmt = op->seq[i + 1];
+      const auto* init_store = AsUnwrappedBufferStore(init_stmt);
+      const auto* reduce_loop = AsUnwrappedFor(reduce_stmt);
       if (init_store && reduce_loop && IsScalarLocalFragmentBuffer(init_store->buffer) &&
           init_store->indices.size() == 1 && tir::is_zero(init_store->indices[0])) {
         Buffer src_buffer;
@@ -3158,7 +3241,7 @@ Stmt LowerBlackholeOps::VisitStmt_(const SeqStmtNode* op) {
         }
       }
     }
-    rewritten.push_back(lowered_seq[i]);
+    rewritten.push_back(VisitStmt(op->seq[i]));
   }
 
   return SeqStmt::Flatten(rewritten);
@@ -3267,21 +3350,23 @@ Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
       }
     }
   }
-  Stmt lowered = StmtExprMutator::VisitStmt_(op);
-  if (const auto* loop = lowered.as<ForNode>()) {
-    RowReductionMatch row_reduction_match;
-    if (MatchDirectRowReduction(loop, &row_reduction_match)) {
-      return GenerateRowReductionSequence(row_reduction_match);
-    }
-    Exp2RowBroadcastAffineMatch exp2_row_broadcast_match;
-    if (MatchExp2RowBroadcastAffine(loop, &exp2_row_broadcast_match)) {
-      return GenerateExp2RowBroadcastAffineSequence(exp2_row_broadcast_match);
-    }
-    RowBroadcastMatch row_broadcast_match;
-    if (MatchDirectRowBroadcast(loop, &row_broadcast_match)) {
-      return GenerateRowBroadcastSequence(row_broadcast_match);
-    }
+  RowReductionMatch direct_row_reduction_match;
+  if (MatchDirectRowReduction(op, &direct_row_reduction_match)) {
+    return GenerateRowReductionSequence(direct_row_reduction_match);
   }
+  FragmentFillMatch direct_fill_match;
+  if (MatchDirectFragmentFill(op, &direct_fill_match)) {
+    return GenerateFragmentFillSequence(direct_fill_match);
+  }
+  Exp2RowBroadcastAffineMatch direct_exp2_row_broadcast_match;
+  if (MatchExp2RowBroadcastAffine(op, &direct_exp2_row_broadcast_match)) {
+    return GenerateExp2RowBroadcastAffineSequence(direct_exp2_row_broadcast_match);
+  }
+  RowBroadcastMatch direct_row_broadcast_match;
+  if (MatchDirectRowBroadcast(op, &direct_row_broadcast_match)) {
+    return GenerateRowBroadcastSequence(direct_row_broadcast_match);
+  }
+  Stmt lowered = StmtExprMutator::VisitStmt_(op);
   return lowered;
 }
 
@@ -3305,6 +3390,10 @@ Stmt LowerBlackholeOps::VisitStmt_(const EvaluateNode* op) {
 }
 
 Stmt LowerBlackholeOps::VisitStmt_(const BufferStoreNode* op) {
+  FragmentFillMatch fill_match;
+  if (MatchScalarFragmentFillStore(op, &fill_match)) {
+    return GenerateFragmentFillSequence(fill_match);
+  }
   ScalarExp2AffineMatch scalar_exp2_affine_match;
   if (MatchScalarExp2AffineStore(op, &scalar_exp2_affine_match)) {
     return GenerateScalarExp2AffineSequence(scalar_exp2_affine_match);

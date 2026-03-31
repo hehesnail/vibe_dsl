@@ -277,6 +277,14 @@ TVM_DLL const Op& blackhole_exp2_row_bcast_affine();
  */
 TVM_DLL const Op& blackhole_scalar_exp2_affine();
 
+/*!
+ * \brief Fill a local fragment buffer with a scalar literal value.
+ * \param dst_buffer Destination local fragment buffer handle
+ * \param num_elements Number of contiguous destination elements
+ * \param value Scalar literal fill value
+ */
+TVM_DLL const Op& blackhole_fill_fragment();
+
 }  // namespace builtin
 }  // namespace tir
 }  // namespace tvm

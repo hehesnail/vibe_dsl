@@ -191,6 +191,21 @@
   - analysis pass 一旦要被后续 lowering / legality 真正消费，就不能继续靠“全局扫到某类 op 名”这种宽泛近似
   - 对 fragment region 这类结构分析，判定边界必须和 region 自身的数据流绑定，而不是和整个函数的普通算术绑定
 
+### fragment fill 的线性化 matcher 如果用 `same_as` 比较 extent，会漏掉优化后 IR 里的合法 contiguous fill
+
+- **时间**: 2026-03-31
+- **问题**: flash-attn forward 的 optimized device IR 里，`acc_o[i * 4 + vec] = 0` 这种明显 contiguous 的二维线性化 fill 没有被 `LowerBlackholeOps` 匹配到，导致 `fill` 一直残留在 `blackhole.lowering_requirements` 和 full `lower()` 的 unsupported 集合里
+- **根本原因**:
+  - 旧 matcher 试图按子项拆解 `i * inner_extent + inner_var`
+  - 其中 `mul->b.same_as(inner_loop->extent)` 依赖对象同一性，而优化后 IR 里的 `IntImm(4)` 即使语义相等，也不保证和 loop extent 复用同一个节点
+  - 同时如果先递归改写内层 loop，再让外层 matcher 去看，就会丢掉原始二维 fill 结构
+- **解决**:
+  - direct fragment fill 的匹配前移到递归前，避免内层先被改写
+  - 不再对子项做对象级比较，改为用 `Analyzer::Simplify(expr - (outer * inner_extent + inner))` 判零，直接匹配整个 affine 关系
+  - 新增 `tl.blackhole.fill_fragment` builtin，并覆盖 scalar fill 与线性化二维 fill
+- **教训**:
+  - 对优化后 TIR 的 pattern matching，优先比较“整个关系是否代数等价”，不要比较中间常量子节点是不是同一个对象
+
 ### `ExtractCorePlan` / direct runtime 若为空 work plan 自动补默认 packet/core，会把 planner/runtime contract break 伪装成正常执行
 
 - **时间**: 2026-03-30
