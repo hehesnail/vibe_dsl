@@ -4,8 +4,8 @@
 
 ## 当前阶段
 
-- **阶段**: Stage 3 — multi-core runtime 调度
-- **状态**: Stage 3 formal direct host path 已完成；当前主线已从 copy/GEMM bring-up 转到 TT-Metal contract formalization、backend cleanup 和 flash-attn forward subset
+- **阶段**: Stage 4 — TT-Metal contract formalization / flash-attn forward subset
+- **状态**: Stage 3 formal direct host path 已完成；当前主线已正式转到 TT-Metal contract formalization、backend cleanup 和 flash-attn forward subset
 - **当前稳定状态**:
   - `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` 主链已稳定
   - P0 已完成；P3 在 current copy/GEMM formal surface 上已完成收口
@@ -55,6 +55,8 @@
 
 | 测试 | 结果 |
 |------|------|
+| `test_blackhole_flash_attention_analysis.py` | 7 passed |
+| `test_blackhole_flash_attention_pipeline.py` | 10 passed |
 | `test_blackhole_copy_pipeline.py` | 30 passed, 6 skipped, 1 xfailed |
 | `test_blackhole_copy_runtime.py` | 2 passed, 9 skipped |
 | `test_blackhole_gemm.py` | 21 passed, 10 skipped |
