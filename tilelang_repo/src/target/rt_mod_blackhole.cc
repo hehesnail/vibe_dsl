@@ -1259,16 +1259,35 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
                                                           const std::string& entry_name) {
   if (auto lowering_requirements =
           f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.lowering_requirements")) {
+    std::vector<std::string> unsupported_ops;
+    std::unordered_set<std::string> seen_ops;
     if (auto fragment_ops = lowering_requirements.value().Get("fragment_op_kinds")) {
       for (const auto& item : Downcast<ffi::Array<ffi::Any>>(fragment_ops.value())) {
         const std::string op_name = Downcast<String>(item);
-        if (op_name == "row_reduction" || op_name == "row_broadcast" ||
-            op_name == "pointwise_chain") {
-          ICHECK(false)
-              << "Blackhole fragment compute subset lowering is not implemented for op "
-              << op_name;
+        if ((op_name == "row_reduction" || op_name == "row_broadcast") &&
+            seen_ops.insert(op_name).second) {
+          unsupported_ops.push_back(op_name);
         }
       }
+    }
+    if (auto pointwise_ops = lowering_requirements.value().Get("pointwise_op_kinds")) {
+      for (const auto& item : Downcast<ffi::Array<ffi::Any>>(pointwise_ops.value())) {
+        const std::string op_name = Downcast<String>(item);
+        if (seen_ops.insert(op_name).second) {
+          unsupported_ops.push_back(op_name);
+        }
+      }
+    }
+    if (!unsupported_ops.empty()) {
+      std::ostringstream os;
+      for (size_t i = 0; i < unsupported_ops.size(); ++i) {
+        if (i != 0) {
+          os << ", ";
+        }
+        os << unsupported_ops[i];
+      }
+      ICHECK(false) << "Blackhole fragment compute subset lowering is not implemented for ops ["
+                    << os.str() << "]";
     }
   }
 

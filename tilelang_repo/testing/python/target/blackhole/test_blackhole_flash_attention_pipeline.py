@@ -83,6 +83,9 @@ def test_flash_attention_forward_lower_blackhole_ops_emits_generic_lowering_requ
         "scores_scale",
         "logsum",
     ]
+    assert {"fill", "exp2", "mul", "div", "max", "add", "cast"}.issubset(
+        set(lowering_requirements["pointwise_op_kinds"])
+    )
     assert list(lowering_requirements["pipeline_stage_counts"]) == [1]
     assert list(lowering_requirements["pipeline_loop_vars"]) == ["k"]
 
@@ -93,10 +96,7 @@ def test_flash_attention_forward_rejects_unlowered_fragment_subset():
         pytest.skip(f"Blackhole requirements not met: {msg}")
 
     target = Target("blackhole")
-    with pytest.raises(
-        tvm.TVMError,
-        match="Blackhole fragment compute subset lowering is not implemented",
-    ):
+    with pytest.raises(tvm.TVMError) as excinfo:
         with target:
             lower(
                 mha_example.flashattn.jit_impl.get_tir(
@@ -112,6 +112,13 @@ def test_flash_attention_forward_rejects_unlowered_fragment_subset():
                 ),
                 target=target,
             )
+    message = str(excinfo.value)
+    assert "Blackhole fragment compute subset lowering is not implemented" in message
+    assert "pointwise_chain" not in message
+    assert "row_reduction" in message
+    assert "row_broadcast" in message
+    assert "fill" in message
+    assert "mul" in message
 
 
 def test_flash_attention_forward_rejects_unsupported_pipeline_stage_count():
