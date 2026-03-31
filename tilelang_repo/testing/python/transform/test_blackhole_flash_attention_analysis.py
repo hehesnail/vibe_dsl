@@ -41,7 +41,7 @@ def test_mha_forward_exposes_work_decomposition_attrs():
         num_stages=1,
         threads=128,
     )
-    assert "blackhole.work_decomposition" in str(lowered)
+    assert lowered.attrs.get("blackhole.work_decomposition") is not None
 
 
 def test_gqa_forward_exposes_fragment_region_attrs():
@@ -58,7 +58,7 @@ def test_gqa_forward_exposes_fragment_region_attrs():
         num_stages=2,
         threads=128,
     )
-    assert "blackhole.fragment_regions" in str(lowered)
+    assert lowered.attrs.get("blackhole.fragment_regions") is not None
 
 
 def test_forward_pipeline_exposes_stage_attrs():
@@ -74,4 +74,4 @@ def test_forward_pipeline_exposes_stage_attrs():
         num_stages=1,
         threads=128,
     )
-    assert "blackhole.pipeline_stages" in str(lowered)
+    assert lowered.attrs.get("blackhole.pipeline_stages") is not None
