@@ -25,7 +25,8 @@
 - ✅ Latest narrowing: `codegen_blackhole` 已接上 `fill_fragment / reduce_row / scalar_max / cast_fragment_slice / mul_row_bcast / div_row_bcast / scalar_fma / exp2_row_bcast_affine / scalar_exp2_affine` 这批 builtin 的发射路径，并修掉了 `blackhole.acc` 局部符号映射与 `tl.infinity` 这类 device-only codegen 噪声点
 - ✅ Latest narrowing: `CopyDirection::kLocalToCB` 与 `tl.blackhole.write_local_slice_to_cb` 已接入主链，`local/accumulator -> shared(CB)` staged copy 不再残留为二维 `BufferStore`
 - ✅ Current compile-path milestone: 当前支持的 MHA/GQA forward 形态已能通过 full `lower(target=\"blackhole\")`；flash-attn pipeline 回归当前 `16 passed`
-- 🔄 Next focus: 剩余工作转到 runtime 验证与更宽支持面，不再是 compile-path 主 blocker
+- ✅ Runtime test entry landed: `test_blackhole_flash_attention_runtime.py` 已建立，当前环境结果为 `1 passed, 2 skipped`
+- 🔄 Next focus: 剩余工作转到 runtime 真执行验证与更宽支持面，不再是 compile-path 主 blocker
 - 🔄 Task 6 也已开始：第一条 generic fragment-pipeline legality 已落地，当前 `num_stages > 2` 会在主链上显式失败；full `lower()` 的 GQA `num_stages=4` 现在已能稳定命中这条 legality，不再先被 `RegionOp` staged/shared view canonicalization 内部错误打断
 
 ## Reading Guide

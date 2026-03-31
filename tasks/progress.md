@@ -53,6 +53,7 @@
 - **下一步**:
   - 在当前环境继续补 runtime / direct-path 验证
   - 继续扩更宽 flash-attn forward 支持面与 P4/P5 主项
+  - flash-attn runtime 回归入口已建立：`test_blackhole_flash_attention_runtime.py` 当前 `1 passed, 2 skipped`
 
 ### 最新回归结果（当前环境）
 
@@ -60,6 +61,7 @@
 |------|------|
 | `test_blackhole_flash_attention_analysis.py` | 7 passed |
 | `test_blackhole_flash_attention_pipeline.py` | 16 passed |
+| `test_blackhole_flash_attention_runtime.py` | 1 passed, 2 skipped |
 | `test_blackhole_copy_pipeline.py` | 30 passed, 6 skipped, 1 xfailed |
 | `test_blackhole_copy_runtime.py` | 2 passed, 9 skipped |
 | `test_blackhole_gemm.py` | 21 passed, 10 skipped |
