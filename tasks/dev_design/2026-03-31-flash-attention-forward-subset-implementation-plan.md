@@ -14,7 +14,7 @@
 - ✅ Task 2 completed: `AnalyzeBlackholeWorkDecomposition` 已落地并输出结构化 `blackhole.work_decomposition`
 - ✅ Task 3 completed: `AnalyzeBlackholeFragmentRegions` 已覆盖 split-after MHA/GQA 的 `gemm + row_reduction + row_broadcast + pointwise_chain` 形态，`test_blackhole_flash_attention_analysis.py` 当前 `4 passed`
 - ✅ Task 4 completed: `AnalyzeBlackholePipelineStages` 已落地并进入主链
-- 🔄 Current focus: Task 5 / Task 6，开始让 `LowerBlackholeOps` 与 target-level legality 真正消费 analysis 结果
+- 🔄 Current focus: Task 5 / Task 6。`LowerBlackholeOps` 已开始消费 analysis 并产出通用 `blackhole.lowering_requirements` IR attrs；当前显式 fail-fast 已迁移到 `rt_mod_blackhole` 的 build-time gate，下一步是把这些 lowering requirements 继续收成更真实的 legality / lowering 结论
 
 ---
 
@@ -368,7 +368,7 @@ git commit -m "blackhole: add pipeline stage analysis"
 - Modify: `tilelang_repo/src/target/blackhole_module.h`
 - Test: `tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
 
-- [ ] **Step 1: Write failing pipeline/spec tests**
+- [x] **Step 1: Write failing pipeline/spec tests**
 
 ```python
 def test_flash_attention_forward_lowers_without_attention_specific_schema():
@@ -386,7 +386,7 @@ def test_flash_attention_forward_lowers_without_attention_specific_schema():
     assert "kernels" in metadata
 ```
 
-- [ ] **Step 2: Run the targeted test to verify it fails**
+- [x] **Step 2: Run the targeted test to verify it fails**
 
 Run:
 
@@ -400,7 +400,7 @@ Expected:
 FAIL ... unsupported flash-attention forward fragment region
 ```
 
-- [ ] **Step 3: Implement minimal lowering consumption**
+- [x] **Step 3: Implement minimal lowering consumption**
 
 ```cpp
 if (auto fragment_regions = func->GetAttr<Array<Any>>("blackhole.fragment_regions")) {
@@ -415,14 +415,14 @@ if (auto pipeline_info = func->GetAttr<Array<Any>>("blackhole.pipeline_stages"))
 }
 ```
 
-- [ ] **Step 4: Keep `ExecutableSpec` minimal**
+- [x] **Step 4: Keep `ExecutableSpec` minimal**
 
 ```cpp
 // Only freeze final runtime/materialization facts.
 // Do not encode raw fragment_regions or pipeline_stages into ExecutableSpec.
 ```
 
-- [ ] **Step 5: Run targeted tests to verify they pass**
+- [x] **Step 5: Run targeted tests to verify they pass**
 
 Run:
 
@@ -434,6 +434,12 @@ Expected:
 
 ```text
 1 passed
+```
+
+Latest result:
+
+```text
+2 passed
 ```
 
 - [ ] **Step 6: Commit**

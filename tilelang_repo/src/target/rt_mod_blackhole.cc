@@ -1257,6 +1257,21 @@ static void ValidateExtractedCorePlan(const CorePlan& core_plan, const std::stri
 
 static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f,
                                                           const std::string& entry_name) {
+  if (auto lowering_requirements =
+          f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.lowering_requirements")) {
+    if (auto fragment_ops = lowering_requirements.value().Get("fragment_op_kinds")) {
+      for (const auto& item : Downcast<ffi::Array<ffi::Any>>(fragment_ops.value())) {
+        const std::string op_name = Downcast<String>(item);
+        if (op_name == "row_reduction" || op_name == "row_broadcast" ||
+            op_name == "pointwise_chain") {
+          ICHECK(false)
+              << "Blackhole fragment compute subset lowering is not implemented for op "
+              << op_name;
+        }
+      }
+    }
+  }
+
   ExecutableSpec spec;
   spec.entry_name = entry_name;
 

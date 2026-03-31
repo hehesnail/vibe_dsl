@@ -64,6 +64,21 @@
   - 对 split-after TIR 做结构分析时，先确认真实 IR 节点种类，再决定匹配逻辑；不要把 Python/T.script 表面的 `+/*//max` 直觉等同于 `CallNode`
   - 广播/归约语义优先按 buffer role 和 shape 关系识别，比按索引字符串或 rank 差猜更稳
 
+### flash-attention forward 若在 `LowerBlackholeOps` 里直接按 raw analysis attrs 硬炸，会让 analysis 消费与 build-time gate 混在一起
+
+- **时间**: 2026-03-31
+- **问题**: 当 `AnalyzeBlackholeFragmentRegions` 已经能稳定识别 MHA/GQA 的 `row_reduction/row_broadcast/pointwise_chain` 后，`LowerBlackholeOps` 之前会直接对 raw `blackhole.fragment_regions` 做 `ICHECK(false)`，导致主链还没把 analysis 真正接住，就在 transform 层终止
+- **根本原因**:
+  - analysis attrs 和 build-time legality gate 混在了同一层
+  - 这样既看不出 `LowerBlackholeOps` 是否已经开始消费 analysis，也迫使 compile boundary 卡在 transform pass，而不是更合适的 runtime-module/spec 抽取边界
+- **解决**:
+  - `LowerBlackholeOps` 先把 `work_decomposition` / `fragment_regions` / `pipeline_stages` 归一化成一层很薄的 `blackhole.lowering_requirements` IR attrs
+  - 当前 fragment subset 尚未真正 lower 的显式 gate 挪到 `rt_mod_blackhole` 的 `ExtractExecutableSpecFromDeviceFunc`
+  - 保持 `ExecutableSpec` 不直接承载 raw analysis attrs，也不新增 `flash_attention_plan` / `attention_work_contract`
+- **教训**:
+  - analysis 被 lowering 消费，和“不支持的 subset 在哪一层 fail-fast”是两件事，不能混在一个 `ICHECK` 里
+  - 当某类 analysis 还处在“已识别、未执行”的阶段，优先让 transform 层产出最小归一化 summary，再把最终显式 gate 放到更靠近 spec/runtime 的边界
+
 ### Blackhole `lower()` 若在 `SplitBlackholeKernel` 前按旧 device attrs 过滤，会把真实入口 `PrimFunc` 静默排除出 Blackhole pass 主链
 
 - **时间**: 2026-03-31

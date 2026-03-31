@@ -442,6 +442,134 @@ static void ValidateNoResidualFragmentCompute(const Stmt& body) {
   });
 }
 
+static Array<Any> ExtractStringFieldList(const Map<String, Any>& item_map, const char* field_name,
+                                         const char* nested_field_name = nullptr) {
+  Array<Any> result;
+  if (auto items = item_map.Get(field_name)) {
+    for (const auto& item : Downcast<Array<Any>>(items.value())) {
+      if (nested_field_name != nullptr) {
+        auto nested =
+            item.as<Map<String, Any>>().value_or(Map<String, Any>());
+        if (auto field = nested.Get(nested_field_name)) {
+          result.push_back(Downcast<String>(field.value()));
+        }
+      } else {
+        result.push_back(Downcast<String>(item));
+      }
+    }
+  }
+  return result;
+}
+
+static bool HasUnsupportedFragmentOpsInRequirements(const Map<String, Any>& lowering_requirements) {
+  if (auto fragment_ops = lowering_requirements.Get("fragment_op_kinds")) {
+    for (const auto& item : Downcast<Array<Any>>(fragment_ops.value())) {
+      const std::string op_name = Downcast<String>(item);
+      if (op_name == "row_reduction" || op_name == "row_broadcast" ||
+          op_name == "pointwise_chain") {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& func) {
+  Map<String, Any> lowering_requirements;
+
+  if (auto work_info = func->GetAttr<Map<String, Any>>("blackhole.work_decomposition")) {
+    auto work_map = work_info.value();
+    if (auto axes = work_map.Get("axes")) {
+      lowering_requirements.Set("work_axes", axes.value());
+    }
+    if (auto derived = work_map.Get("derived_index_exprs")) {
+      lowering_requirements.Set("derived_index_expr_count",
+                                Integer(static_cast<int>(Downcast<Array<Any>>(derived.value()).size())));
+    }
+    if (auto loop_bounds = work_map.Get("work_dependent_loop_bounds")) {
+      lowering_requirements.Set(
+          "work_dependent_loop_bound_count",
+          Integer(static_cast<int>(Downcast<Array<Any>>(loop_bounds.value()).size())));
+    }
+  }
+
+  if (auto fragment_regions = func->GetAttr<Array<Any>>("blackhole.fragment_regions")) {
+    Array<Any> fragment_ops;
+    std::unordered_set<std::string> seen_ops;
+    Array<Any> row_reduction_targets;
+    std::unordered_set<std::string> seen_reduction_targets;
+    Array<Any> row_broadcast_sources;
+    std::unordered_set<std::string> seen_broadcast_sources;
+    Array<Any> loop_carried_state;
+    std::unordered_set<std::string> seen_loop_carried;
+    for (const auto& region_item : fragment_regions.value()) {
+      auto region = region_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+      for (const auto& item : ExtractStringFieldList(region, "ops")) {
+        const std::string op_name = Downcast<String>(item);
+        if (seen_ops.insert(op_name).second) {
+          fragment_ops.push_back(item);
+        }
+      }
+      for (const auto& item : ExtractStringFieldList(region, "row_reductions", "target")) {
+        const std::string name = Downcast<String>(item);
+        if (seen_reduction_targets.insert(name).second) {
+          row_reduction_targets.push_back(item);
+        }
+      }
+      for (const auto& item : ExtractStringFieldList(region, "row_broadcasts", "source")) {
+        const std::string name = Downcast<String>(item);
+        if (seen_broadcast_sources.insert(name).second) {
+          row_broadcast_sources.push_back(item);
+        }
+      }
+      for (const auto& item : ExtractStringFieldList(region, "loop_carried_state", "name")) {
+        const std::string name = Downcast<String>(item);
+        if (seen_loop_carried.insert(name).second) {
+          loop_carried_state.push_back(item);
+        }
+      }
+    }
+    if (!fragment_ops.empty()) {
+      lowering_requirements.Set("fragment_op_kinds", fragment_ops);
+    }
+    if (!row_reduction_targets.empty()) {
+      lowering_requirements.Set("row_reduction_targets", row_reduction_targets);
+    }
+    if (!row_broadcast_sources.empty()) {
+      lowering_requirements.Set("row_broadcast_sources", row_broadcast_sources);
+    }
+    if (!loop_carried_state.empty()) {
+      lowering_requirements.Set("fragment_loop_carried_state", loop_carried_state);
+    }
+  }
+
+  if (auto pipeline_stages = func->GetAttr<Array<Any>>("blackhole.pipeline_stages")) {
+    Array<Any> stage_counts;
+    Array<Any> loop_vars;
+    std::unordered_set<std::string> seen_loop_vars;
+    for (const auto& stage_item : pipeline_stages.value()) {
+      auto stage = stage_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+      if (auto num_stages = stage.Get("num_stages")) {
+        stage_counts.push_back(Downcast<Integer>(num_stages.value()));
+      }
+      if (auto loop_var = stage.Get("loop_var")) {
+        const std::string loop_var_name = Downcast<String>(loop_var.value());
+        if (seen_loop_vars.insert(loop_var_name).second) {
+          loop_vars.push_back(loop_var.value());
+        }
+      }
+    }
+    if (!stage_counts.empty()) {
+      lowering_requirements.Set("pipeline_stage_counts", stage_counts);
+    }
+    if (!loop_vars.empty()) {
+      lowering_requirements.Set("pipeline_loop_vars", loop_vars);
+    }
+  }
+
+  return lowering_requirements;
+}
+
 // Helper to get storage scope from buffer
 static std::string GetStorageScope(const Buffer& buffer) {
   // Use the scope() method which returns ffi::String
@@ -507,28 +635,8 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
     }
   });
 
-  if (auto fragment_regions = func->GetAttr<Array<Any>>("blackhole.fragment_regions")) {
-    for (const auto& region_item : fragment_regions.value()) {
-      auto region = region_item.as<Map<String, Any>>().value_or(Map<String, Any>());
-      auto ops = region.Get("ops");
-      if (!ops) {
-        continue;
-      }
-      for (const auto& op_item : Downcast<Array<Any>>(ops.value())) {
-        const std::string op_name = Downcast<String>(op_item);
-        if (op_name == "row_reduction" || op_name == "row_broadcast" ||
-            op_name == "pointwise_chain") {
-          ICHECK(false)
-              << "Blackhole fragment compute subset lowering is not implemented for op "
-              << op_name;
-        }
-      }
-    }
-  }
-
   // Transform the function body
   Stmt body = VisitStmt(func->body);
-  ValidateNoResidualFragmentCompute(body);
 
   // Create new function with transformed body
   PrimFunc new_func = func;
@@ -540,6 +648,18 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   StoreSegmentPlan(new_func);
   StoreGemmContract(new_func);
   StoreAccessorDescriptors(new_func);
+
+  Map<String, Any> lowering_requirements = BuildLoweringRequirementsFromAnalysis(func);
+  if (!lowering_requirements.empty()) {
+    Map<String, Any> attrs =
+        new_func->attrs.defined() ? new_func->attrs->dict : Map<String, Any>();
+    attrs.Set("blackhole.lowering_requirements", lowering_requirements);
+    new_func.CopyOnWrite()->attrs = DictAttrs(attrs);
+  }
+
+  if (!HasUnsupportedFragmentOpsInRequirements(lowering_requirements)) {
+    ValidateNoResidualFragmentCompute(body);
+  }
 
   return new_func;
 }
