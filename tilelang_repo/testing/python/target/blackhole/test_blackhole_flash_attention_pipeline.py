@@ -117,8 +117,8 @@ def test_flash_attention_forward_rejects_unlowered_fragment_subset():
     assert "pointwise_chain" not in message
     assert "row_reduction" in message
     assert "row_broadcast" in message
-    assert "fill" in message
-    assert "mul" in message
+    assert "fill" not in message
+    assert "mul" not in message
 
 
 def test_flash_attention_forward_rejects_unsupported_pipeline_stage_count():
