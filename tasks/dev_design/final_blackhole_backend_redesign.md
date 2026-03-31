@@ -54,6 +54,7 @@ Blackhole 后端当前的正式目标收敛为三点：
 - `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复；host C codegen 已支持 packed call 结果表达式
 - P5 当前已从“零语义层”推进到：program-local semaphore plan、kernel-level semaphore binding、最小 device-side dataflow semaphore builtin、worker producer/consumer direct-runtime E2E，以及 `logical_core_noc_x/y -> KernelSpec.remote_core_descriptors` 最小 remote-core descriptor formalization
 - backend cleanup review 与重文件边界拆分草案已建档：`stage4_backend_cleanup_roadmap.md`；cleanup A1/A3 已完成，A2 已落首轮 schema-driven buffer materialization 骨架，B1 已完成四轮 `BlackholeModule` helper 边界拆分，B2 已完成两轮 staged-copy boundary/geometry/index 收敛，B3 已收紧为只消费 explicit `blackhole.cb_requirements`，C1 已收正 compile-time-only accessor codegen 边界，C2 已完成首轮 synchronization host/runtime boundary 收紧
+- 前向 Flash-Attention 设计已建档：`stage4_flash_attention_forward_subset.md`；当前方向已收敛为以 `mha_fwd_bshd` / `gqa_fwd_bshd` 为牵引，补齐通用 work decomposition / fragment compute region / pipelined staging 三类分析与 lowering 能力，且遵循 “IR 优先、spec 最小化”
 
 ## 3. 正式架构
 

@@ -16,6 +16,7 @@
 | `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 | ✅ 已实施（program-local semaphore + kernel binding + 最小 dataflow builtin + remote-core descriptor formalization） |
 | `stage4_copy_stick_generalization.md` | P4 stick/page copy 泛化 | ✅ 已实施（interleaved + DRAM + `M x W`, `M % 32 == 0`，支持静态 offset subrange） |
 | `stage4_backend_cleanup_roadmap.md` | 当前主链问题分档与收敛顺序 | 活动中 |
+| `stage4_flash_attention_forward_subset.md` | 前向 Flash-Attention 语义子集设计 | 设计中 |
 
 ## 2. 已完成（仍有参考价值）
 
