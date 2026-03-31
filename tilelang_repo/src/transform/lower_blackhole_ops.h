@@ -105,6 +105,13 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
     std::string kind;
   };
 
+  struct ScalarFmaMatch {
+    tvm::tir::Buffer dst;
+    tvm::tir::Buffer lhs;
+    tvm::tir::Buffer rhs;
+    tvm::tir::Buffer add;
+  };
+
   /*! \brief CB configuration from function attributes */
   struct CBConfig {
     int in0_id = 0;
@@ -259,6 +266,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   tvm::tir::Stmt GenerateRowReductionSequence(const RowReductionMatch& match);
   bool MatchDirectRowBroadcast(const tvm::tir::ForNode* op, RowBroadcastMatch* match) const;
   tvm::tir::Stmt GenerateRowBroadcastSequence(const RowBroadcastMatch& match);
+  bool MatchScalarFmaStore(const tvm::tir::BufferStoreNode* op, ScalarFmaMatch* match) const;
+  tvm::tir::Stmt GenerateScalarFmaSequence(const ScalarFmaMatch& match);
 
   // StmtExprMutator overrides
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;

@@ -148,6 +148,24 @@ def test_flash_attention_forward_optimized_path_lowers_acc_o_row_broadcast_updat
     assert "tl.blackhole.div_row_bcast" in script
 
 
+def test_flash_attention_forward_optimized_path_lowers_logsum_scalar_fma():
+    lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
+        mha_example,
+        1,
+        32,
+        256,
+        128,
+        False,
+        block_M=128,
+        block_N=128,
+        num_stages=1,
+        threads=128,
+    )["main"]
+    script = lowered.script()
+
+    assert "tl.blackhole.scalar_fma" in script
+
+
 def test_flash_attention_forward_rejects_unlowered_fragment_subset():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:

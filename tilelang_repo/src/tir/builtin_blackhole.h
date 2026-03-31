@@ -246,6 +246,15 @@ TVM_DLL const Op& blackhole_mul_row_bcast();
  */
 TVM_DLL const Op& blackhole_div_row_bcast();
 
+/*!
+ * \brief Fused scalar fragment update: dst = lhs * rhs + addend.
+ * \param dst_buffer Destination scalar local fragment buffer handle
+ * \param lhs_buffer Left multiplicand scalar local fragment buffer handle
+ * \param rhs_buffer Right multiplicand scalar local fragment buffer handle
+ * \param add_buffer Addend scalar local fragment buffer handle
+ */
+TVM_DLL const Op& blackhole_scalar_fma();
+
 }  // namespace builtin
 }  // namespace tir
 }  // namespace tvm

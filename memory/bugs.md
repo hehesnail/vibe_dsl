@@ -58,10 +58,11 @@
 - **解决**:
   - 新增 `tl.blackhole.mul_row_bcast` / `tl.blackhole.div_row_bcast` builtin
   - `LowerBlackholeOps` 新增对最小 row-broadcast 子集的 matcher，先吃掉 `acc_o *= scores_scale[0]` 和 `acc_o /= logsum[0]`
+  - 再把 `logsum = logsum * scores_scale + scores_sum` 这类 scalar fragment 融合更新单独 lower 成 `tl.blackhole.scalar_fma`，不要继续把它和 vector broadcast 混成同一个 blocker
   - 新增 optimized-path pipeline 回归，要求这两条 loop 已被 lower 成 builtin，而不是继续残留为普通 fragment store
 - **教训**:
   - 对复杂 fragment compute blocker，应该优先把“可稳定 lower 的最小子集”从整类 gate 中拆出来，而不是一直把整个大类当黑盒
-  - 对 flash-attn 这类 kernel，progress 最稳的方式是让 gate 随真实 lowering 一步步收窄：先 simple broadcast，再 fused broadcast，再 scalar update；不要企图一步把所有 `row_broadcast` 全开
+  - 对 flash-attn 这类 kernel，progress 最稳的方式是让 gate 随真实 lowering 一步步收窄：先 simple broadcast，再 scalar update，最后再做 fused broadcast；不要企图一步把所有 `row_broadcast` 全开
 
 ### flash-attention 的 row-reduction lowering 若只匹配 split-after 形态，会在 full `lower()` 的 optimized path 上残留旧 blocker
 

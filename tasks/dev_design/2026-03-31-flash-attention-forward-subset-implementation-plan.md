@@ -16,7 +16,7 @@
 - ✅ Task 4 completed: `AnalyzeBlackholePipelineStages` 已落地并进入主链
 - 🔄 Current focus: Task 5 / Task 6。`LowerBlackholeOps` 已开始消费 analysis 并产出通用 `blackhole.lowering_requirements` IR attrs；当前显式 fail-fast 已迁移到 `rt_mod_blackhole` 的 build-time gate，且普通 pointwise op 已不再占据主 blocker
 - ✅ Latest narrowing: flash-attn forward 的 `row_reduction` 现已在 `LowerBlackholeOps` 中正式 lower 到 `tl.blackhole.reduce_row` builtin，并覆盖 split-after 与 post-`OptimizeForTarget` 两条真实 device IR 形态；full `lower()` 的 build-time gate 因此已收窄到只剩 `row_broadcast`
-- 🔄 Latest narrowing: `row_broadcast` 也已开始进入真实 TIR lowering。`LowerBlackholeOps` 当前能把 optimized-path 上的 `acc_o *= scores_scale[0]` / `acc_o /= logsum[0]` lower 成 `tl.blackhole.mul_row_bcast` / `tl.blackhole.div_row_bcast` builtin；剩余 blocker 已收窄到更复杂的融合广播和标量更新路径
+- 🔄 Latest narrowing: `row_broadcast` 也已开始进入真实 TIR lowering。`LowerBlackholeOps` 当前能把 optimized-path 上的 `acc_o *= scores_scale[0]` / `acc_o /= logsum[0]` lower 成 `tl.blackhole.mul_row_bcast` / `tl.blackhole.div_row_bcast` builtin，并把 `logsum = logsum * scores_scale + scores_sum` lower 成 `tl.blackhole.scalar_fma` builtin；剩余 blocker 已收窄到更复杂的融合广播路径
 - 🔄 Next focus: 继续把剩余 `row_broadcast` 从 TIR 正式 lower 成 Blackhole compute 子集，而不是再补 schema 或 summary attrs
 - 🔄 Task 6 也已开始：第一条 generic fragment-pipeline legality 已落地，当前 `num_stages > 2` 会在主链上显式失败；full `lower()` 的 GQA `num_stages=4` 现在已能稳定命中这条 legality，不再先被 `RegionOp` staged/shared view canonicalization 内部错误打断
 

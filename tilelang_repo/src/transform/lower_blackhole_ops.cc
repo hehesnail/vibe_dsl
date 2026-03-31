@@ -2713,6 +2713,13 @@ bool MatchScalarFragmentLoad(const PrimExpr& expr, Buffer* scalar_buffer) {
   return true;
 }
 
+bool MatchScalarBufferLoadFrom(const PrimExpr& expr, const Buffer& buffer) {
+  const auto* load = expr.as<BufferLoadNode>();
+  return load && load->indices.size() == 1 && tir::is_zero(load->indices[0]) &&
+         (load->buffer.same_as(buffer) || load->buffer->data.same_as(buffer->data) ||
+          load->buffer->name == buffer->name);
+}
+
 }  // namespace
 
 bool LowerBlackholeOps::MatchDirectRowReduction(const ForNode* op, RowReductionMatch* match) const {
@@ -2842,6 +2849,46 @@ Stmt LowerBlackholeOps::GenerateRowBroadcastSequence(const RowBroadcastMatch& ma
   const Op& op = match.kind == "mul" ? tir::builtin::blackhole_mul_row_bcast()
                                      : tir::builtin::blackhole_div_row_bcast();
   return MakeBlackholeCall(op, {match.dst->data, match.scalar->data, match.num_elements});
+}
+
+bool LowerBlackholeOps::MatchScalarFmaStore(const BufferStoreNode* op,
+                                            ScalarFmaMatch* match) const {
+  if (!op || !match || !IsScalarLocalFragmentBuffer(op->buffer) || op->indices.size() != 1 ||
+      !tir::is_zero(op->indices[0])) {
+    return false;
+  }
+  const auto* add = op->value.as<AddNode>();
+  if (!add) {
+    return false;
+  }
+
+  auto try_match = [&](const PrimExpr& mul_expr, const PrimExpr& add_expr) -> bool {
+    const auto* mul = mul_expr.as<MulNode>();
+    Buffer mul_lhs;
+    Buffer mul_rhs;
+    Buffer add_buffer;
+    if (!mul || !MatchScalarFragmentLoad(mul->a, &mul_lhs) ||
+        !MatchScalarFragmentLoad(mul->b, &mul_rhs) ||
+        !MatchScalarFragmentLoad(add_expr, &add_buffer)) {
+      return false;
+    }
+    if (!MatchScalarBufferLoadFrom(mul->a, op->buffer) &&
+        !MatchScalarBufferLoadFrom(mul->b, op->buffer)) {
+      return false;
+    }
+    match->dst = op->buffer;
+    match->lhs = mul_lhs;
+    match->rhs = mul_rhs;
+    match->add = add_buffer;
+    return true;
+  };
+
+  return try_match(add->a, add->b) || try_match(add->b, add->a);
+}
+
+Stmt LowerBlackholeOps::GenerateScalarFmaSequence(const ScalarFmaMatch& match) {
+  return MakeBlackholeCall(tir::builtin::blackhole_scalar_fma(),
+                           {match.dst->data, match.lhs->data, match.rhs->data, match.add->data});
 }
 
 // Parse a colon-separated string into fields
@@ -3054,6 +3101,10 @@ Stmt LowerBlackholeOps::VisitStmt_(const EvaluateNode* op) {
 }
 
 Stmt LowerBlackholeOps::VisitStmt_(const BufferStoreNode* op) {
+  ScalarFmaMatch scalar_fma_match;
+  if (MatchScalarFmaStore(op, &scalar_fma_match)) {
+    return GenerateScalarFmaSequence(scalar_fma_match);
+  }
   if (IsCopyOperation(op)) {
     saw_copy_op_ = true;
     return GenerateCopySequence(op);
