@@ -245,8 +245,24 @@
   - 缺失 `identity` 的 runtime/common-runtime arg schema build-time 直接拒绝
   - `ExecutableSpec` 顶层现已显式暴露 `common_runtime_args`
 - **教训**:
-  - schema identity 必须由 IR/lowering 真源提供，不能留给 host-side 提取层猜
-  - 如果一个字段决定 cross-kernel 聚合行为，就必须进入 metadata/spec 真链路，而不是只存在于隐式 dedupe 规则里
+- schema identity 必须由 IR/lowering 真源提供，不能留给 host-side 提取层猜
+- 如果一个字段决定 cross-kernel 聚合行为，就必须进入 metadata/spec 真链路，而不是只存在于隐式 dedupe 规则里
+
+### synchronization schema 直到 direct execution 才暴露 malformed runtime args
+
+- **时间**: 2026-03-31
+- **问题**: `semaphore_id_u32` 缺失 `semaphore_binding`，以及 `logical_core_noc_x/y` 只给单边或坐标不一致时，runtime module build 仍然成功，问题只会在 direct execution 时由分散的 kind-switch 临时撞出来
+- **根本原因**:
+  - synchronization schema 没有在 `ExecutableSpec` / `KernelSpec` 边界统一校验
+  - semaphore 解析和 remote-core NOC 解析分别散在 shared/per-work runtime arg materializer 里
+- **解决**:
+  - 在 `BlackholeModuleNode` 构造期新增 synchronization schema 校验
+  - `semaphore_id_u32` 现要求有唯一匹配 `semaphore_binding`，且 binding 必须引用 `ExecutableSpec.semaphores` 中已规划 semaphore
+  - `logical_core_noc_x/y` 现要求带显式 `identity`、成对出现，并共享同一 logical core 坐标
+  - runtime materialization 已统一到同步 helper/context，而不是继续由两套 kind-switch 分头解释
+- **教训**:
+  - 只要某类 runtime arg 已经形成正式对象层（这里是 semaphore binding 和 remote-core descriptor），就该在 spec 边界集中校验，不能把 malformed schema 留给执行期偶然触发
+  - helper 拆分如果不顺手把协议边界收紧，通常只是在挪代码，不是在减债
 
 ### 环境问题速查
 

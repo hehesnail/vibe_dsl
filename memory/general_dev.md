@@ -85,6 +85,8 @@
 - TT-Metal program-local semaphore 当前正式 host API 是 `CreateSemaphore(program, core_ranges, initial_value)`；如果上层 schema 还保留 `core_type`，应把它当校验字段，不要为了“对齐字段”继续依赖 deprecated 的 `CreateSemaphore(..., core_type)`
 - 对 TT-Metal program-local semaphore，host/runtime 正式下发的是 semaphore id；device dataflow kernel 再显式 `get_semaphore(id)` 取本地 L1 地址后做 `noc_semaphore_wait/set`。不要把 semaphore 地址或 barrier 绑定错误建模成 compile-time ABI
 - 需要跨 worker core 访问 semaphore 时，不要让 kernel 直接猜 remote NOC 坐标，也不要把 logical core 坐标直接塞给 `get_noc_addr(...)`。应把“logical core -> NOC 坐标”收成正式 runtime arg materialization，由 host 用 `worker_core_from_logical_core(...)` 求值后下发
+- 对 synchronization runtime schema，`semaphore_id_u32` 和 `logical_core_noc_x/y` 都不该等到 direct execution 时才由 kind-switch 临时发现问题。更稳的边界是：在 `ExecutableSpec` / `KernelSpec` 构造期就校验 semaphore binding 是否唯一且引用已规划 semaphore，同时要求 remote core descriptor 以共享 `identity` 的 `x/y` 成对出现并指向同一 logical core
+- 当 shared/common-runtime 路径和 per-work 路径都要消费 synchronization metadata 时，不要一边在 shared arg materializer 里解析 semaphore，一边在 per-work materializer 里单独解析 remote core。应先抽统一 synchronization helper/context，再让两条路径复用；否则 P5 一扩 multicast/global semaphore，很快又会长回两套分叉逻辑
 - 当测试或 pass 会把 Blackhole builtins 放进 `IfThenElse` / `LetStmt` / 新 `PrimFunc` 里时，这些 builtin 必须注册正确的 `TCallEffectKind`；否则 TVM 会在 purity / struct-info 校验阶段直接拒绝，表现成控制流重写失败
 
 ## Blackhole 后端开发原则

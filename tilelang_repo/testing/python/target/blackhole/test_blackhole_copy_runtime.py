@@ -328,6 +328,7 @@ def test_blackhole_module_direct_call_grid_indexed_copy_worker_semaphore_handsha
             {
                 "name": "remote_noc_x",
                 "kind": "logical_core_noc_x",
+                "identity": "remote_consumer_core",
                 "dtype": "uint32",
                 "core_x": int(consumer_core["core_x"]),
                 "core_y": int(consumer_core["core_y"]),
@@ -335,6 +336,7 @@ def test_blackhole_module_direct_call_grid_indexed_copy_worker_semaphore_handsha
             {
                 "name": "remote_noc_y",
                 "kind": "logical_core_noc_y",
+                "identity": "remote_consumer_core",
                 "dtype": "uint32",
                 "core_x": int(consumer_core["core_x"]),
                 "core_y": int(consumer_core["core_y"]),

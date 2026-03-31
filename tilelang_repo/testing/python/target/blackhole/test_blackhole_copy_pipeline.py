@@ -1018,6 +1018,67 @@ def test_blackhole_copy_direct_runtime_accepts_semaphore_id_runtime_arg():
     )
 
 
+def test_blackhole_copy_build_rejects_unbound_semaphore_runtime_arg():
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    base_runtime_args = list(device_main.attrs["blackhole.runtime_args"])
+
+    def runtime_args_mutator(runtime_args):
+        return list(runtime_args) + [
+            {
+                "name": "copy_sem",
+                "kind": "semaphore_id_u32",
+                "identity": "copy_sem",
+                "dtype": "uint32",
+            }
+        ]
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="requires a matching semaphore binding|missing a matching semaphore binding",
+    ):
+        _rebuild_codegen_module_with_semaphore_binding(
+            artifact, runtime_args_mutator=runtime_args_mutator
+        )
+
+
+def test_blackhole_copy_build_rejects_unpaired_logical_core_noc_runtime_arg():
+    kernel = grid_indexed_staged_copy_kernel(grid_x=2, grid_y=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    consumer_core = device_main.attrs["blackhole.core_plan"]["physical_cores"][1]
+    base_runtime_args = list(device_main.attrs["blackhole.runtime_args"])
+
+    def runtime_args_mutator(runtime_args):
+        return list(runtime_args) + [
+            {
+                "name": "remote_noc_x",
+                "kind": "logical_core_noc_x",
+                "identity": "remote_consumer_core",
+                "dtype": "uint32",
+                "core_x": int(consumer_core["core_x"]),
+                "core_y": int(consumer_core["core_y"]),
+            }
+        ]
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="logical_core_noc_x.*logical_core_noc_y|synchronization core descriptor",
+    ):
+        _rebuild_codegen_module_with_runtime_args(artifact, runtime_args_mutator(base_runtime_args))
+
+
 @pytest.mark.xfail(
     reason=(
         "StorageRewrite is incompatible with the Blackhole CB model: its "

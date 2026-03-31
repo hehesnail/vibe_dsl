@@ -215,6 +215,15 @@ producer/consumer 语义采用最小 remote signal：
 - 继续只在 dataflow kernel 上验证
 - 不要求从 pass 自动产出 semaphore producer；测试可以通过 body/attrs/runtime-arg 变异构造最小闭环
 
+补充边界（2026-03-31 cleanup）：
+
+- `semaphore_id_u32` 不是“只要 runtime arg 名字对了就能下发”，而是必须在 `KernelSpec.semaphore_bindings` 里有唯一匹配 binding，且 binding 指向 `ExecutableSpec.semaphores` 中已规划的 semaphore
+- `logical_core_noc_x/y` 不是两条彼此独立的 runtime arg，而是同一个 remote-core descriptor 的两个分量：
+  - 必须共享显式 `identity`
+  - 必须成对出现
+  - 必须共享同一 logical core 坐标
+- 这些约束应在 `ExecutableSpec` / `KernelSpec` 边界完成校验，而不是等到 direct execution 时再由 runtime kind-switch 临时发现
+
 这个闭环的目的不是扩 execution surface，而是证明：
 
 - host `CreateSemaphore(...)` 物化出来的对象能被跨核 device builtin 真实消费

@@ -462,6 +462,10 @@
 
 #### C2. 把 synchronization 扩展前的 host/runtime 边界收紧
 
+状态：
+
+- ✅ 已完成首轮边界收紧（2026-03-31）
+
 目标：
 
 - 避免 semaphore/global sync 继续堆在 `BlackholeModule` 里做 ad-hoc materialization
@@ -474,7 +478,31 @@
 要求：
 
 - semaphore/binding/work application 的 host materialization 保持 schema-driven
+- `semaphore_id_u32` 必须在 `KernelSpec.semaphore_bindings` 中有唯一匹配 binding，并且 binding 指向 `ExecutableSpec.semaphores` 里的已规划 semaphore
+- `logical_core_noc_x/y` 必须以成对 descriptor 出现，且共享同一 logical core 坐标；不允许 runtime 侧靠散落字段偶然配对
+- synchronization schema 校验应在 `ExecutableSpec` / `KernelSpec` 边界完成，而不是等到 direct execution 时再由 kind-switch 触发
+- shared/per-work runtime arg materialization 应复用统一的 synchronization helper/context
 - 为 multicast / global semaphore / pass-level producer 预留更清晰的接点
+
+本轮落实：
+
+- `BlackholeModuleNode` 构造期已新增 `ExecutableSpec` 级 synchronization schema 校验
+- `semaphore_id_u32` 现在要求：
+  - `KernelSpec.semaphore_bindings` 中存在唯一匹配 binding
+  - binding 引用的 `semaphore_id` 必须已出现在 `ExecutableSpec.semaphores`
+- `logical_core_noc_x/y` 现在要求：
+  - runtime arg 必须带显式 `identity`
+  - 同一 `identity` 下必须成对出现
+  - `x/y` 必须共享同一 logical core 坐标
+- synchronization runtime materialization 已统一到共享 helper/context：
+  - `ResolveSemaphoreBindingSpec`
+  - `TryAppendSynchronizationRuntimeArg`
+  - `BuildSynchronizationRuntimeContext`
+
+剩余项：
+
+- 当前收紧的是 worker-semaphore + remote logical-core descriptor 的现有 formal surface
+- multicast / global semaphore / pass-level producer 仍属于后续 P5 深化范围
 
 ## 6. 建议执行顺序
 

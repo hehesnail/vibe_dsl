@@ -23,6 +23,7 @@
 #include <unistd.h>
 #include <filesystem>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "runtime/file_utils.h"
 #include "runtime/meta_data.h"
@@ -504,6 +505,11 @@ struct DirectRuntimeBufferState {
   std::vector<std::string> ordered_output_names;
 };
 
+struct SynchronizationRuntimeContext {
+  const IDevice* device{nullptr};
+  const std::unordered_map<uint32_t, uint32_t>* semaphore_ids{nullptr};
+};
+
 static std::vector<DirectWorkItem> BuildDirectWorkItems(const ExecutableSpec& spec,
                                                         const std::string& func_name) {
   std::vector<DirectWorkItem> work_items;
@@ -781,6 +787,95 @@ static bool IsSupportedCommonRuntimeArgKind(const std::string& kind) {
          kind == "semaphore_id_u32";
 }
 
+static bool IsLogicalCoreNocRuntimeArgKind(const std::string& kind) {
+  return kind == "logical_core_noc_x" || kind == "logical_core_noc_y";
+}
+
+static const SemaphoreBindingSpec* ResolveSemaphoreBindingSpec(const KernelSpec& kernel,
+                                                              const KernelArgSpec& arg_spec) {
+  const SemaphoreBindingSpec* matched = nullptr;
+  for (const auto& binding : kernel.semaphore_bindings) {
+    if (binding.name != arg_spec.name || binding.arg_kind != arg_spec.kind) {
+      continue;
+    }
+    ICHECK(matched == nullptr)
+        << "Blackhole synchronization schema requires a unique semaphore binding for runtime arg "
+        << arg_spec.name << " kind=" << arg_spec.kind;
+    matched = &binding;
+  }
+  ICHECK(matched != nullptr)
+      << "Blackhole synchronization schema requires a matching semaphore binding for runtime arg "
+      << arg_spec.name << " kind=" << arg_spec.kind;
+  return matched;
+}
+
+static void ValidateLogicalCoreNocRuntimeArgs(const KernelSpec& kernel) {
+  struct LogicalCorePairState {
+    const KernelArgSpec* x{nullptr};
+    const KernelArgSpec* y{nullptr};
+  };
+
+  std::unordered_map<std::string, LogicalCorePairState> pair_by_identity;
+  for (const auto& arg_spec : kernel.runtime_args) {
+    if (!IsLogicalCoreNocRuntimeArgKind(arg_spec.kind)) {
+      continue;
+    }
+    ICHECK(!arg_spec.identity.empty())
+        << "Blackhole synchronization schema requires identity for runtime arg " << arg_spec.name
+        << " kind=" << arg_spec.kind;
+    ICHECK(arg_spec.has_core_coord)
+        << "Blackhole synchronization schema requires core_x/core_y for runtime arg "
+        << arg_spec.name << " kind=" << arg_spec.kind;
+    auto& pair = pair_by_identity[arg_spec.identity];
+    if (arg_spec.kind == "logical_core_noc_x") {
+      ICHECK(pair.x == nullptr)
+          << "Blackhole synchronization core descriptor " << arg_spec.identity
+          << " cannot define logical_core_noc_x more than once";
+      pair.x = &arg_spec;
+    } else {
+      ICHECK(pair.y == nullptr)
+          << "Blackhole synchronization core descriptor " << arg_spec.identity
+          << " cannot define logical_core_noc_y more than once";
+      pair.y = &arg_spec;
+    }
+  }
+
+  for (const auto& entry : pair_by_identity) {
+    const auto& pair = entry.second;
+    ICHECK(pair.x != nullptr && pair.y != nullptr)
+        << "Blackhole synchronization core descriptor " << entry.first
+        << " must define both logical_core_noc_x and logical_core_noc_y";
+    ICHECK_EQ(pair.x->core_x, pair.y->core_x)
+        << "Blackhole synchronization core descriptor " << entry.first
+        << " must use one logical core for logical_core_noc_x/y";
+    ICHECK_EQ(pair.x->core_y, pair.y->core_y)
+        << "Blackhole synchronization core descriptor " << entry.first
+        << " must use one logical core for logical_core_noc_x/y";
+  }
+}
+
+static void ValidateKernelSynchronizationSchema(
+    const KernelSpec& kernel, const std::unordered_set<uint32_t>& planned_semaphore_ids) {
+  ValidateLogicalCoreNocRuntimeArgs(kernel);
+
+  auto validate_semaphore_runtime_arg = [&](const KernelArgSpec& arg_spec) {
+    if (arg_spec.kind != "semaphore_id_u32") {
+      return;
+    }
+    const auto* binding = ResolveSemaphoreBindingSpec(kernel, arg_spec);
+    ICHECK(planned_semaphore_ids.count(binding->semaphore_id))
+        << "Blackhole synchronization schema requires semaphore binding " << binding->name
+        << " to reference a planned semaphore id; missing id " << binding->semaphore_id;
+  };
+
+  for (const auto& arg_spec : kernel.common_runtime_args) {
+    validate_semaphore_runtime_arg(arg_spec);
+  }
+  for (const auto& arg_spec : kernel.runtime_args) {
+    validate_semaphore_runtime_arg(arg_spec);
+  }
+}
+
 static void ValidateKernelDirectRuntimeSchema(const KernelSpec& kernel) {
   for (const auto& arg_spec : kernel.common_runtime_args) {
     ICHECK(IsSupportedCommonRuntimeArgKind(arg_spec.kind))
@@ -813,6 +908,17 @@ static void ValidateKernelDirectRuntimeConstraints(const KernelSpec& kernel) {
         << ", kernel.core_type=" << kernel.core_type;
   }
   ValidateKernelDirectRuntimeSchema(kernel);
+}
+
+static void ValidateExecutableSpecSynchronizationSchema(const std::string& func_name,
+                                                        const ExecutableSpec& spec) {
+  std::unordered_set<uint32_t> planned_semaphore_ids;
+  for (const auto& semaphore : spec.semaphores) {
+    planned_semaphore_ids.insert(semaphore.id);
+  }
+  for (const auto& kernel : spec.kernels) {
+    ValidateKernelSynchronizationSchema(kernel, planned_semaphore_ids);
+  }
 }
 
 static std::vector<uint32_t> BuildKernelCompileTimeArgsFromSchema(
@@ -996,19 +1102,63 @@ static uint32_t ResolveRuntimeSemaphoreId(
     const KernelSpec& kernel,
     const KernelArgSpec& arg_spec,
     const std::unordered_map<uint32_t, uint32_t>& semaphore_ids) {
-  auto binding_it = std::find_if(
-      kernel.semaphore_bindings.begin(), kernel.semaphore_bindings.end(),
-      [&](const SemaphoreBindingSpec& binding) {
-        return binding.name == arg_spec.name && binding.arg_kind == arg_spec.kind;
-      });
-  ICHECK(binding_it != kernel.semaphore_bindings.end())
-      << "Blackhole runtime arg " << arg_spec.name << " kind=" << arg_spec.kind
-      << " is missing a matching semaphore binding";
-  auto semaphore_it = semaphore_ids.find(binding_it->semaphore_id);
+  const auto* binding = ResolveSemaphoreBindingSpec(kernel, arg_spec);
+  auto semaphore_it = semaphore_ids.find(binding->semaphore_id);
   ICHECK(semaphore_it != semaphore_ids.end())
-      << "Blackhole kernel semaphore binding " << binding_it->name
-      << " references missing planned semaphore id " << binding_it->semaphore_id;
+      << "Blackhole kernel semaphore binding " << binding->name
+      << " references missing planned semaphore id " << binding->semaphore_id;
   return semaphore_it->second;
+}
+
+static CoreCoord ResolveLogicalCoreNocCoord(const KernelArgSpec& arg_spec,
+                                            const IDevice& device) {
+  ICHECK(arg_spec.has_core_coord)
+      << "Blackhole synchronization schema requires core_x/core_y for runtime arg "
+      << arg_spec.name << " kind=" << arg_spec.kind;
+  return device.worker_core_from_logical_core(CoreCoord{arg_spec.core_x, arg_spec.core_y});
+}
+
+static SynchronizationRuntimeContext BuildSynchronizationRuntimeContext(
+    const IDevice& device, const std::unordered_map<uint32_t, uint32_t>& semaphore_ids) {
+  return SynchronizationRuntimeContext{
+      .device = &device,
+      .semaphore_ids = &semaphore_ids,
+  };
+}
+
+static SynchronizationRuntimeContext BuildCommonSynchronizationRuntimeContext(
+    const std::unordered_map<uint32_t, uint32_t>& semaphore_ids) {
+  return SynchronizationRuntimeContext{
+      .device = nullptr,
+      .semaphore_ids = &semaphore_ids,
+  };
+}
+
+static bool TryAppendSynchronizationRuntimeArg(const KernelSpec& kernel,
+                                               const KernelArgSpec& arg_spec,
+                                               const SynchronizationRuntimeContext& sync_context,
+                                               std::vector<uint32_t>* args) {
+  if (arg_spec.kind == "semaphore_id_u32") {
+    ICHECK(sync_context.semaphore_ids != nullptr)
+        << "Blackhole synchronization runtime context is missing semaphore ids";
+    args->push_back(ResolveRuntimeSemaphoreId(kernel, arg_spec, *sync_context.semaphore_ids));
+    return true;
+  }
+  if (arg_spec.kind == "logical_core_noc_x") {
+    ICHECK(sync_context.device != nullptr)
+        << "Blackhole synchronization runtime context is missing device";
+    const CoreCoord noc_core = ResolveLogicalCoreNocCoord(arg_spec, *sync_context.device);
+    args->push_back(static_cast<uint32_t>(noc_core.x));
+    return true;
+  }
+  if (arg_spec.kind == "logical_core_noc_y") {
+    ICHECK(sync_context.device != nullptr)
+        << "Blackhole synchronization runtime context is missing device";
+    const CoreCoord noc_core = ResolveLogicalCoreNocCoord(arg_spec, *sync_context.device);
+    args->push_back(static_cast<uint32_t>(noc_core.y));
+    return true;
+  }
+  return false;
 }
 
 static void AppendRuntimeBufferAddressArg(
@@ -1028,10 +1178,8 @@ static void AppendRuntimeBufferAddressArg(
 }
 
 static bool TryAppendSharedRuntimeArg(
-    const KernelSpec& kernel,
     const KernelArgSpec& arg_spec,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
-    const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
     const std::vector<std::string>& input_names,
     const std::vector<std::string>& output_names,
     std::vector<uint32_t>* args) {
@@ -1053,10 +1201,6 @@ static bool TryAppendSharedRuntimeArg(
   if (arg_spec.kind == "output_buffer_addr32") {
     AppendRuntimeBufferAddressArg(arg_spec, /*expect_output=*/true, /*use_32bit_addr=*/true,
                                   buffer_bindings, output_names, args);
-    return true;
-  }
-  if (arg_spec.kind == "semaphore_id_u32") {
-    args->push_back(ResolveRuntimeSemaphoreId(kernel, arg_spec, semaphore_ids));
     return true;
   }
   return false;
@@ -1091,7 +1235,6 @@ static DirectRuntimeWorkContext BuildDirectRuntimeWorkContext(const KernelSpec& 
 static bool TryAppendPerWorkRuntimeArg(const KernelSpec& kernel,
                                        const KernelArgSpec& arg_spec,
                                        const DirectRuntimeWorkContext& context,
-                                       const IDevice& device,
                                        size_t* scalar_index,
                                        const std::vector<uint32_t>& scalar_args,
                                        std::vector<uint32_t>* args) {
@@ -1185,22 +1328,6 @@ static bool TryAppendPerWorkRuntimeArg(const KernelSpec& kernel,
     args->push_back(scalar_args[(*scalar_index)++]);
     return true;
   }
-  if (arg_spec.kind == "logical_core_noc_x") {
-    ICHECK(arg_spec.has_core_coord)
-        << "logical_core_noc_x requires core_x/core_y in the runtime arg schema";
-    const CoreCoord noc_core =
-        device.worker_core_from_logical_core(CoreCoord{arg_spec.core_x, arg_spec.core_y});
-    args->push_back(static_cast<uint32_t>(noc_core.x));
-    return true;
-  }
-  if (arg_spec.kind == "logical_core_noc_y") {
-    ICHECK(arg_spec.has_core_coord)
-        << "logical_core_noc_y requires core_x/core_y in the runtime arg schema";
-    const CoreCoord noc_core =
-        device.worker_core_from_logical_core(CoreCoord{arg_spec.core_x, arg_spec.core_y});
-    args->push_back(static_cast<uint32_t>(noc_core.y));
-    return true;
-  }
   return false;
 }
 
@@ -1211,9 +1338,12 @@ static std::vector<uint32_t> BuildCommonRuntimeArgsFromSpec(
     const std::vector<std::string>& input_names,
     const std::vector<std::string>& output_names) {
   std::vector<uint32_t> args;
+  const auto sync_context = BuildCommonSynchronizationRuntimeContext(semaphore_ids);
   for (const auto& arg_spec : kernel.common_runtime_args) {
-    if (!TryAppendSharedRuntimeArg(kernel, arg_spec, buffer_bindings, semaphore_ids, input_names,
-                                   output_names, &args)) {
+    if (TryAppendSynchronizationRuntimeArg(kernel, arg_spec, sync_context, &args)) {
+      continue;
+    }
+    if (!TryAppendSharedRuntimeArg(arg_spec, buffer_bindings, input_names, output_names, &args)) {
       LOG(FATAL) << "Unsupported common runtime arg kind: " << arg_spec.kind;
     }
   }
@@ -1234,14 +1364,17 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
   size_t scalar_index = 0;
   const DirectRuntimeWorkContext context =
       BuildDirectRuntimeWorkContext(kernel, spec, current_work_linear_id);
+  const auto sync_context = BuildSynchronizationRuntimeContext(device, semaphore_ids);
 
   for (const auto& arg_spec : kernel.runtime_args) {
-    if (TryAppendSharedRuntimeArg(kernel, arg_spec, buffer_bindings, semaphore_ids, input_names,
-                                  output_names, &args)) {
+    if (TryAppendSynchronizationRuntimeArg(kernel, arg_spec, sync_context, &args)) {
       continue;
     }
-    if (!TryAppendPerWorkRuntimeArg(kernel, arg_spec, context, device, &scalar_index,
-                                    scalar_args, &args)) {
+    if (TryAppendSharedRuntimeArg(arg_spec, buffer_bindings, input_names, output_names, &args)) {
+      continue;
+    }
+    if (!TryAppendPerWorkRuntimeArg(kernel, arg_spec, context, &scalar_index, scalar_args,
+                                    &args)) {
       LOG(FATAL) << "Unsupported runtime arg kind: " << arg_spec.kind;
     }
   }
@@ -1281,6 +1414,7 @@ BlackholeModuleNode::BlackholeModuleNode(
       kernel_dir_(std::move(kernel_dir)) {
   for (const auto& entry : fmap_) {
     ValidateExecutableSpecCorePlan(entry.first, entry.second);
+    ValidateExecutableSpecSynchronizationSchema(entry.first, entry.second);
   }
 }
 
