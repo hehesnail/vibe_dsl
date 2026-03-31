@@ -650,6 +650,15 @@ def SplitBlackholeKernel():
     return _ffi_api.SplitBlackholeKernel()  # type: ignore
 
 
+def AnalyzeBlackholeWorkDecomposition():
+    """Analyze split-after Blackhole launch axes and work-dependent index structure.
+
+    Emits a minimal `blackhole.work_decomposition` PrimFunc attr that captures
+    launch axes, derived index expressions, and work-dependent loop bounds.
+    """
+    return _ffi_api.AnalyzeBlackholeWorkDecomposition()  # type: ignore
+
+
 def LowerBlackholeOps():
     """Lower TileLang high-level operations to TT-Metal builtins for Blackhole backend.
 

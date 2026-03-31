@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+import tilelang
 from tilelang import tvm
 from tilelang.engine.phase import LowerAndLegalize
 from tvm.target import Target
@@ -28,8 +29,16 @@ def _lower_flash_attention_example(example_module, *args, **kwargs):
     )
 
 
+def _analyze_blackhole_work_decomposition(prim_func):
+    mod = tvm.IRModule({"main": prim_func})
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
+    return mod["main"]
+
+
 def test_mha_forward_exposes_work_decomposition_attrs():
-    lowered = _lower_flash_attention_example(
+    lowered = _analyze_blackhole_work_decomposition(
+        _lower_flash_attention_example(
         mha_example,
         1,
         32,
@@ -40,7 +49,7 @@ def test_mha_forward_exposes_work_decomposition_attrs():
         block_N=128,
         num_stages=1,
         threads=128,
-    )
+    ))
     assert lowered.attrs.get("blackhole.work_decomposition") is not None
 
 
