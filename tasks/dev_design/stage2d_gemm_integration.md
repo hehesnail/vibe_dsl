@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage2d_gemm_integration`
 - **日期**: 2026-03-24（2026-03-24 修订：架构重设计，引入 SplitBlackholeKernels pass）
-- **状态**: 执行中
+- **状态**: 已完成；保留为 Stage 2D GEMM 接入记录
 - **对应阶段**: Stage 2D — single-core GEMM 语义集成 + true E2E
 
 ---
