@@ -47,6 +47,22 @@
 
 ## 已解决（仍有复用价值）
 
+### flash-attention 的 `row_broadcast` 若一直作为整类 blocker 保留，会掩盖哪些广播 loop 已经具备稳定 TIR lowering 形态
+
+- **时间**: 2026-03-31
+- **问题**: 在 `row_reduction` 已 lower 后，flash-attn forward 的 full `lower()` 仍统一报 `row_broadcast` 未支持，看起来像所有广播路径都同样缺失
+- **根本原因**:
+  - `row_broadcast` 实际包含多种不同复杂度的 fragment loop
+  - 其中最简单的一类已经有稳定 optimized-path TIR 形态：`dst[i] = dst[i] * scalar[0]` / `dst[i] = dst[i] / scalar[0]`
+  - 如果继续把整类 `row_broadcast` 一起 gate 掉，就会掩盖哪些 loop 已经可以在 `LowerBlackholeOps` 里直接匹配和 lower，哪些仍需要更深的 compute role / canonicalization 支撑
+- **解决**:
+  - 新增 `tl.blackhole.mul_row_bcast` / `tl.blackhole.div_row_bcast` builtin
+  - `LowerBlackholeOps` 新增对最小 row-broadcast 子集的 matcher，先吃掉 `acc_o *= scores_scale[0]` 和 `acc_o /= logsum[0]`
+  - 新增 optimized-path pipeline 回归，要求这两条 loop 已被 lower 成 builtin，而不是继续残留为普通 fragment store
+- **教训**:
+  - 对复杂 fragment compute blocker，应该优先把“可稳定 lower 的最小子集”从整类 gate 中拆出来，而不是一直把整个大类当黑盒
+  - 对 flash-attn 这类 kernel，progress 最稳的方式是让 gate 随真实 lowering 一步步收窄：先 simple broadcast，再 fused broadcast，再 scalar update；不要企图一步把所有 `row_broadcast` 全开
+
 ### flash-attention 的 row-reduction lowering 若只匹配 split-after 形态，会在 full `lower()` 的 optimized path 上残留旧 blocker
 
 - **时间**: 2026-03-31

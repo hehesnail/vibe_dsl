@@ -230,6 +230,22 @@ TVM_DLL const Op& blackhole_pack_tile();
  */
 TVM_DLL const Op& blackhole_reduce_row();
 
+/*!
+ * \brief Multiply a contiguous 1-D local fragment row by a scalar local fragment source.
+ * \param dst_buffer Destination/source vector local fragment buffer handle
+ * \param scalar_buffer Source scalar local fragment buffer handle
+ * \param num_elements Number of contiguous destination elements
+ */
+TVM_DLL const Op& blackhole_mul_row_bcast();
+
+/*!
+ * \brief Divide a contiguous 1-D local fragment row by a scalar local fragment source.
+ * \param dst_buffer Destination/source vector local fragment buffer handle
+ * \param scalar_buffer Source scalar local fragment buffer handle
+ * \param num_elements Number of contiguous destination elements
+ */
+TVM_DLL const Op& blackhole_div_row_bcast();
+
 }  // namespace builtin
 }  // namespace tir
 }  // namespace tvm

@@ -66,6 +66,8 @@ TIR_DEFINE_BUILTIN(tile_regs_wait)
 TIR_DEFINE_BUILTIN(tile_regs_release)
 TIR_DEFINE_BUILTIN(pack_tile)
 TIR_DEFINE_BUILTIN(reduce_row)
+TIR_DEFINE_BUILTIN(mul_row_bcast)
+TIR_DEFINE_BUILTIN(div_row_bcast)
 
 // Register all builtins in TVM's op registry
 TVM_REGISTER_OP("tl.blackhole.cb_reserve_back")
@@ -237,6 +239,20 @@ TVM_REGISTER_OP("tl.blackhole.reduce_row")
     .add_argument("num_elements", "int", "Number of contiguous source elements")
     .add_argument("reduce_kind", "string", "Reduction kind string")
     .add_argument("clear", "bool", "Whether to clear destination before reduction");
+
+TVM_REGISTER_OP("tl.blackhole.mul_row_bcast")
+    .set_num_inputs(3)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("dst_buffer", "handle", "Destination/source vector local fragment buffer handle")
+    .add_argument("scalar_buffer", "handle", "Source scalar local fragment buffer handle")
+    .add_argument("num_elements", "int", "Number of contiguous destination elements");
+
+TVM_REGISTER_OP("tl.blackhole.div_row_bcast")
+    .set_num_inputs(3)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("dst_buffer", "handle", "Destination/source vector local fragment buffer handle")
+    .add_argument("scalar_buffer", "handle", "Source scalar local fragment buffer handle")
+    .add_argument("num_elements", "int", "Number of contiguous destination elements");
 
 }  // namespace builtin
 }  // namespace tir

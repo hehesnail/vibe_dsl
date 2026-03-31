@@ -98,6 +98,13 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
     bool clear = true;
   };
 
+  struct RowBroadcastMatch {
+    tvm::tir::Buffer dst;
+    tvm::tir::Buffer scalar;
+    tvm::PrimExpr num_elements;
+    std::string kind;
+  };
+
   /*! \brief CB configuration from function attributes */
   struct CBConfig {
     int in0_id = 0;
@@ -250,6 +257,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   bool MatchDirectRowReduction(const tvm::tir::ForNode* op, RowReductionMatch* match) const;
   bool MatchAllocatedRowReduction(const tvm::tir::AllocateNode* op, RowReductionMatch* match) const;
   tvm::tir::Stmt GenerateRowReductionSequence(const RowReductionMatch& match);
+  bool MatchDirectRowBroadcast(const tvm::tir::ForNode* op, RowBroadcastMatch* match) const;
+  tvm::tir::Stmt GenerateRowBroadcastSequence(const RowBroadcastMatch& match);
 
   // StmtExprMutator overrides
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;

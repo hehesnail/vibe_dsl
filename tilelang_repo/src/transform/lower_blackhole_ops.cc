@@ -430,6 +430,11 @@ static bool IsUnsupportedResidualLocalScope(const Buffer& buffer) {
   return scope == "local" || scope == "local.fragment" || scope == "blackhole.acc";
 }
 
+static bool IsVectorLocalFragmentBuffer(const Buffer& buffer) {
+  return IsUnsupportedResidualLocalScope(buffer) && buffer->shape.size() == 1 &&
+         !buffer->shape.empty() && !tir::is_one(buffer->shape[0]);
+}
+
 static void ValidateNoResidualFragmentCompute(const Stmt& body) {
   tir::PostOrderVisit(body, [&](const ObjectRef& node) {
     if (const auto* store = node.as<BufferStoreNode>()) {
@@ -2689,6 +2694,25 @@ bool IsNegInfValue(const PrimExpr& expr) {
   return IsFloatImmValue(expr, -std::numeric_limits<double>::infinity());
 }
 
+bool MatchSelfIndexedVectorLoad(const PrimExpr& expr,
+                                const Buffer& dst_buffer,
+                                const Var& loop_var) {
+  const auto* load = expr.as<BufferLoadNode>();
+  return load && (load->buffer.same_as(dst_buffer) || load->buffer->data.same_as(dst_buffer->data) ||
+                  load->buffer->name == dst_buffer->name) &&
+         load->indices.size() == 1 && load->indices[0].same_as(loop_var);
+}
+
+bool MatchScalarFragmentLoad(const PrimExpr& expr, Buffer* scalar_buffer) {
+  const auto* load = expr.as<BufferLoadNode>();
+  if (!load || load->indices.size() != 1 || !tir::is_zero(load->indices[0]) ||
+      !IsScalarLocalFragmentBuffer(load->buffer)) {
+    return false;
+  }
+  *scalar_buffer = load->buffer;
+  return true;
+}
+
 }  // namespace
 
 bool LowerBlackholeOps::MatchDirectRowReduction(const ForNode* op, RowReductionMatch* match) const {
@@ -2778,6 +2802,46 @@ Stmt LowerBlackholeOps::GenerateRowReductionSequence(const RowReductionMatch& ma
   return MakeBlackholeCall(tir::builtin::blackhole_reduce_row(),
                            {match.src->data, match.dst->data, match.num_elements,
                             StringImm(match.kind), Bool(match.clear)});
+}
+
+bool LowerBlackholeOps::MatchDirectRowBroadcast(const ForNode* op,
+                                                RowBroadcastMatch* match) const {
+  if (!op || !match) {
+    return false;
+  }
+  const auto* store = AsUnwrappedBufferStore(op->body);
+  if (!store || !IsVectorLocalFragmentBuffer(store->buffer) || store->indices.size() != 1 ||
+      !store->indices[0].same_as(op->loop_var)) {
+    return false;
+  }
+
+  auto fill_match = [&](const PrimExpr& lhs, const PrimExpr& rhs,
+                        const char* kind) -> bool {
+    Buffer scalar;
+    if (!MatchSelfIndexedVectorLoad(lhs, store->buffer, op->loop_var) ||
+        !MatchScalarFragmentLoad(rhs, &scalar)) {
+      return false;
+    }
+    match->dst = store->buffer;
+    match->scalar = scalar;
+    match->num_elements = op->extent;
+    match->kind = kind;
+    return true;
+  };
+
+  if (const auto* mul = store->value.as<MulNode>()) {
+    return fill_match(mul->a, mul->b, "mul") || fill_match(mul->b, mul->a, "mul");
+  }
+  if (const auto* div = store->value.as<DivNode>()) {
+    return fill_match(div->a, div->b, "div");
+  }
+  return false;
+}
+
+Stmt LowerBlackholeOps::GenerateRowBroadcastSequence(const RowBroadcastMatch& match) {
+  const Op& op = match.kind == "mul" ? tir::builtin::blackhole_mul_row_bcast()
+                                     : tir::builtin::blackhole_div_row_bcast();
+  return MakeBlackholeCall(op, {match.dst->data, match.scalar->data, match.num_elements});
 }
 
 // Parse a colon-separated string into fields
@@ -2961,6 +3025,10 @@ Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
     RowReductionMatch row_reduction_match;
     if (MatchDirectRowReduction(loop, &row_reduction_match)) {
       return GenerateRowReductionSequence(row_reduction_match);
+    }
+    RowBroadcastMatch row_broadcast_match;
+    if (MatchDirectRowBroadcast(loop, &row_broadcast_match)) {
+      return GenerateRowBroadcastSequence(row_broadcast_match);
     }
   }
   return lowered;

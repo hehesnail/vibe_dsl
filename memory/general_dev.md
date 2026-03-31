@@ -56,6 +56,7 @@
 - `T.Pipelined` 经过 device prepasses 后，stage 注解不一定还叫 `num_stages`；Blackhole analysis 至少要同时兼容 `num_stages` 和 `tl_pipelined_num_stages`，否则 optimized path 会比 split-after path 少一层 pipeline 语义
 - `tl.region` 不要假设 `BufferLoad` 索引数必须与 extents 个数完全相等。对 staged/shared view，常见形态是“leading stage index + trailing tile extents”；更稳的 bridge 是把未匹配的前导索引收成 singleton axes，再用提供的 extents 重建尾部 region
 - 对 fragment/reduction lowering，不要假设 split-after 和 optimized device IR 会保留完全相同的包裹结构。`OptimizeForTarget` 之后，`for extent=1` 常会被抹平成同级 `SeqStmt`，而 `pragma_unroll_explicit` 之类则会额外包成 `AttrStmt`；matcher 应先剥掉这类无语义包装，再匹配真正的 reduction 形态，否则手动 pass 链能 lower、full `lower()` 反而会漏掉同一逻辑
+- 对 flash-attn 这类复杂 fragment compute，不要把整类 `row_broadcast` 一起当成一个 blocker 或一次性全开。更稳的推进方式是先在 `LowerBlackholeOps` 里吃掉最小、形态稳定、且和 TT-Metal 现有 compute primitive 对得上的子集，例如 `dst[i] = dst[i] * scalar[0]` / `dst[i] = dst[i] / scalar[0]` 这类 vector-fragment 自身按 scalar-fragment 更新；再把剩余融合 broadcast（如 `exp2(acc_s[i] * scale - scores_max[0] * scale)`）继续单独收敛。这样 gate 会随着真实 lowering 一步步收窄，而不是永远把整个 `row_broadcast` 黑盒化
 
 ## TT-Metal / TT-Sim 环境
 
