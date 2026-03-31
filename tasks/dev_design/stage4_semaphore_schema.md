@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage4_semaphore_schema`
 - **日期**: 2026-03-27
-- **状态**: 已实现（program-local semaphore schema + kernel binding schema + 最小 dataflow semaphore builtin + worker producer/consumer E2E）
+- **状态**: 已实现（program-local semaphore schema + kernel binding schema + 最小 dataflow semaphore builtin + worker producer/consumer E2E + remote-core descriptor formalization）
 - **对应任务**: P5 multi-core synchronization 预埋
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
