@@ -79,20 +79,22 @@
   - analysis 被 lowering 消费，和“不支持的 subset 在哪一层 fail-fast”是两件事，不能混在一个 `ICHECK` 里
   - 当某类 analysis 还处在“已识别、未执行”的阶段，优先让 transform 层产出最小归一化 summary，再把最终显式 gate 放到更靠近 spec/runtime 的边界
 
-### full `lower()` 路径下的 GQA `num_stages=4` 会先撞 GEMM region canonicalization 内部错误，掩盖更前面的 generic stage legality
+### full `lower()` 路径下的 GQA staged/shared GEMM view 若要求 `load->indices.size() == ndim`，会把更前面的 generic stage legality 噪声化
 
 - **时间**: 2026-03-31
 - **问题**: 给 GQA flash-attention 前向喂 `num_stages=4` 时，理论上当前应先被 `fragment pipeline legality` 拒绝；但沿着 full `lower()` 目标链走时，实际会先在 `LowerBlackholeOps::ExtractGemmInfo` 的 `RegionOp` 规范化里报 `load->indices.size() != ndim`
 - **根本原因**:
-  - 更宽的 GQA pipelined GEMM region 形态，在 full target path 里还有比 stage legality 更早的 canonicalization 假设
-  - 这会把本来应该更前置、更通用的 `num_stages` legality 噪声化
+  - 优化后的 device IR 会把 staged shared GEMM operand 表达成类似 `T.region(K_shared_1[stage, 0, 0], 1, 64, 128)` 的视图
+  - 旧的 `RegionOp` bridge 假设 “provided extents 个数 == load indices 个数”，因此无法表达“leading stage index + trailing tile extents”的 staged/shared region
+  - 结果 full target path 会先撞内部 canonicalization 错误，把本来应该更前置、更通用的 `num_stages` legality 噪声化
 - **解决**:
-  - 先把 `num_stages > 2` 的 generic legality 直接绑到 `ForNode.annotations["num_stages"]`
-  - 当前测试先锁在 `LowerBlackholeOps` 直接入口，确保 legality 逻辑本身成立
-  - 后续再单独清 full `lower()` 下 GQA 更宽 GEMM region canonicalization 的内部错误
+  - `RegionOp` 现在允许 `provided_ndim <= load_ndim`
+  - 未匹配的前导 load indices 会被收成 singleton axes，提供的 extents 则用于重建 trailing region axes
+  - `AnalyzeBlackholePipelineStages` 也同步扩到 optimized path：兼容 `tl_pipelined_num_stages`、`blackhole.cb.*` scope 和 suffixed buffer views
+  - 修复后，full `lower()` 的 GQA `num_stages=4` 已会先稳定命中 `Blackhole fragment pipeline legality: unsupported stage count 4`
 - **教训**:
-  - 对复杂 kernel 的 legality，不能完全依赖“等更深层 canonicalization 成功之后再判”
-  - 如果更深层还存在独立内部错误，就先把更前置、更确定的 legality 绑在更早、语义更直接的 IR 信号上
+  - 对 staged/shared tensor view，region bridge 不应把“索引数等于 extents 数”当作普遍真理；这只适合最简单的平面视图
+  - 复杂 kernel 的 legality 需要尽量绑在更早、更语义化的 IR 信号上；否则深层 canonicalization 的窄假设会把真正的边界淹掉
 
 ### GQA 更宽 pipeline 形态的 row-broadcast 若只认 `floor_div`，会在 analysis 层少报 `scores_max/scores_scale/logsum` 广播关系
 

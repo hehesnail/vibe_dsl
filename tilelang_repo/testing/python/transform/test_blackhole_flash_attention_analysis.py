@@ -3,7 +3,7 @@ from pathlib import Path
 
 import tilelang
 from tilelang import tvm
-from tilelang.engine.phase import LowerAndLegalize
+from tilelang.engine.phase import LowerAndLegalize, OptimizeForTarget
 from tvm.target import Target
 
 
@@ -46,6 +46,23 @@ def _analyze_blackhole_fragment_regions(prim_func):
 def _analyze_blackhole_pipeline_stages(prim_func):
     mod = tvm.IRModule({"main": prim_func})
     mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
+    return mod["main"]
+
+
+def _analyze_blackhole_after_device_prepasses(prim_func):
+    target = Target("blackhole")
+    mod = tvm.IRModule({"main": prim_func})
+    with target:
+        mod = LowerAndLegalize(mod, target)
+        mod = OptimizeForTarget(mod, target)
+    mod = tilelang.transform.LowerDeviceStorageAccessInfo()(mod)
+    mod = tilelang.transform.LowerIntrin()(mod)
+    mod = tvm.tir.transform.Simplify()(mod)
+    mod = tilelang.transform.HoistBroadcastValues()(mod)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
     mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
     return mod["main"]
 
@@ -257,3 +274,39 @@ def test_forward_pipeline_exposes_stage_attrs():
     loop_carried_state = {entry["name"] for entry in stage["loop_carried_state"]}
     assert {"acc_o", "scores_max", "logsum"}.issubset(loop_carried_state)
     assert stage["loop_var"] == "k"
+
+
+def test_gqa_forward_optimized_device_ir_still_exposes_fragment_and_pipeline_attrs():
+    lowered = _analyze_blackhole_after_device_prepasses(
+        gqa_example.flashattn.jit_impl.get_tir(
+            1,
+            16,
+            1024,
+            128,
+            False,
+            groups=16,
+            block_M=64,
+            block_N=64,
+            num_stages=4,
+            threads=128,
+        )
+    )
+
+    regions = lowered.attrs["blackhole.fragment_regions"]
+    assert len(regions) == 1
+    region = regions[0]
+    assert {"gemm", "row_reduction", "row_broadcast", "pointwise_chain"}.issubset(set(region["ops"]))
+    row_broadcast_sources = {entry["source"] for entry in region["row_broadcasts"]}
+    assert {"scores_max", "scores_scale", "logsum"}.issubset(row_broadcast_sources)
+
+    stages = lowered.attrs["blackhole.pipeline_stages"]
+    assert len(stages) >= 1
+    matching_stages = [
+        stage
+        for stage in stages
+        if stage["num_stages"] == 4
+        and {"K_shared", "V_shared"}.issubset(
+            {entry["name"] for entry in stage["stage_local_buffers"]}
+        )
+    ]
+    assert len(matching_stages) >= 1

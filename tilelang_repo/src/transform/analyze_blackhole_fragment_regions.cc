@@ -31,6 +31,8 @@
 
 #include <sstream>
 #include <string>
+#include <cctype>
+#include <cstring>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -50,6 +52,7 @@ using tir::ForNode;
 using tir::MaxNode;
 using tir::MulNode;
 using tir::PrimFunc;
+using tir::Stmt;
 using tir::StmtExprVisitor;
 using tir::AddNode;
 using tvm::DictAttrs;
@@ -84,7 +87,18 @@ int64_t StaticNumElements(const Buffer& buffer) {
 }
 
 bool IsFragmentLikeScope(const std::string& scope) {
-  return scope == "local" || scope == "local.fragment";
+  return scope == "local" || scope == "local.fragment" || scope == "blackhole.acc";
+}
+
+std::string CanonicalBufferName(const std::string& name) {
+  size_t pos = name.size();
+  while (pos > 0 && std::isdigit(static_cast<unsigned char>(name[pos - 1]))) {
+    --pos;
+  }
+  if (pos > 0 && pos < name.size() && name[pos - 1] == '_') {
+    return name.substr(0, pos - 1);
+  }
+  return name;
 }
 
 bool ExprUsesFloorDivLikeIndex(const PrimExpr& expr) {
@@ -107,7 +121,7 @@ bool ExprUsesFloorDivLikeIndex(const PrimExpr& expr) {
 
 bool IsLoadFromBuffer(const PrimExpr& expr, const std::string& buffer_name) {
   if (const auto* load = expr.as<BufferLoadNode>()) {
-    return load->buffer->name == buffer_name;
+    return CanonicalBufferName(load->buffer->name) == buffer_name;
   }
   return false;
 }
@@ -115,7 +129,8 @@ bool IsLoadFromBuffer(const PrimExpr& expr, const std::string& buffer_name) {
 bool IsLoadFromNonFragmentLocal(const PrimExpr& expr,
                                 const std::unordered_map<std::string, BufferInfo>& fragment_buffers) {
   if (const auto* load = expr.as<BufferLoadNode>()) {
-    return load->buffer.scope() == "local" && !fragment_buffers.count(load->buffer->name);
+    const std::string canonical_name = CanonicalBufferName(load->buffer->name);
+    return load->buffer.scope() == "local" && !fragment_buffers.count(canonical_name);
   }
   return false;
 }
@@ -123,14 +138,14 @@ bool IsLoadFromNonFragmentLocal(const PrimExpr& expr,
 bool IsLoadFromFragmentBuffer(const PrimExpr& expr,
                               const std::unordered_map<std::string, BufferInfo>& fragment_buffers) {
   if (const auto* load = expr.as<BufferLoadNode>()) {
-    return fragment_buffers.count(load->buffer->name);
+    return fragment_buffers.count(CanonicalBufferName(load->buffer->name));
   }
   return false;
 }
 
 class FragmentRegionAnalyzer final : public StmtExprVisitor {
  public:
-  void Analyze(const PrimFunc& func) { VisitStmt(func->body); }
+  void Analyze(const PrimFunc& func) { AnalyzeTopLevel(func->body); }
 
   bool HasRegion() const { return !fragment_buffers_.empty() || !seen_ops_.empty(); }
 
@@ -182,41 +197,67 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
   }
 
  private:
+  void RegisterFragmentBuffer(const Buffer& buffer, bool allow_plain_local = false) {
+    const std::string scope = buffer.scope();
+    if (!IsFragmentLikeScope(scope)) {
+      return;
+    }
+    const std::string name = CanonicalBufferName(buffer->name);
+    if (scope == "local" && !allow_plain_local) {
+      static constexpr const char* kClearSuffix = "_clear";
+      const size_t suffix_len = std::strlen(kClearSuffix);
+      if (name.size() > suffix_len &&
+          name.compare(name.size() - suffix_len, suffix_len, kClearSuffix) == 0) {
+        return;
+      }
+    }
+    if (fragment_buffers_.emplace(name, BufferInfo{buffer, scope}).second) {
+      fragment_buffer_order_.push_back(name);
+    }
+  }
+
+  void AnalyzeTopLevel(const Stmt& body) {
+    if (const auto* block = body.as<BlockNode>()) {
+      if (block->name_hint == "tilelang_root") {
+        for (const Buffer& buffer : block->alloc_buffers) {
+          RegisterFragmentBuffer(buffer, true);
+        }
+        AnalyzeTopLevel(block->body);
+        return;
+      }
+    }
+    if (const auto* seq = body.as<tir::SeqStmtNode>()) {
+      bool seen_pipeline_loop = false;
+      for (const auto& stmt : seq->seq) {
+        if (!seen_pipeline_loop && stmt.as<ForNode>()) {
+          seen_pipeline_loop = true;
+          inside_pipeline_loop_ = true;
+          VisitStmt(stmt);
+          inside_pipeline_loop_ = false;
+          continue;
+        }
+        if (!seen_pipeline_loop) {
+          pre_loop_stmt_ = true;
+          VisitStmt(stmt);
+          pre_loop_stmt_ = false;
+        } else {
+          post_loop_stmt_ = true;
+          VisitStmt(stmt);
+          post_loop_stmt_ = false;
+        }
+      }
+      return;
+    }
+    VisitStmt(body);
+  }
+
   void VisitStmt_(const BlockNode* op) final {
     if (op->name_hint == "tilelang_root") {
       for (const Buffer& buffer : op->alloc_buffers) {
-        const std::string scope = buffer.scope();
-        if (!IsFragmentLikeScope(scope)) {
-          continue;
-        }
-        const std::string name = buffer->name;
-        if (fragment_buffers_.emplace(name, BufferInfo{buffer, scope}).second) {
-          fragment_buffer_order_.push_back(name);
-        }
+        RegisterFragmentBuffer(buffer);
       }
-
-      if (const auto* seq = op->body.as<tir::SeqStmtNode>()) {
-        bool seen_pipeline_loop = false;
-        for (const auto& stmt : seq->seq) {
-          if (!seen_pipeline_loop && stmt.as<ForNode>()) {
-            seen_pipeline_loop = true;
-            inside_pipeline_loop_ = true;
-            VisitStmt(stmt);
-            inside_pipeline_loop_ = false;
-            continue;
-          }
-          if (!seen_pipeline_loop) {
-            pre_loop_stmt_ = true;
-            VisitStmt(stmt);
-            pre_loop_stmt_ = false;
-          } else {
-            post_loop_stmt_ = true;
-            VisitStmt(stmt);
-            post_loop_stmt_ = false;
-          }
-        }
-        return;
-      }
+      AnalyzeTopLevel(op->body);
+      return;
     }
     StmtExprVisitor::VisitStmt_(op);
   }
@@ -229,7 +270,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
   }
 
   void VisitStmt_(const BufferStoreNode* op) final {
-    const std::string target_name = op->buffer->name;
+    RegisterFragmentBuffer(op->buffer);
+    const std::string target_name = CanonicalBufferName(op->buffer->name);
     if (fragment_buffers_.count(target_name)) {
       if (pre_loop_stmt_) {
         pre_loop_writes_.insert(target_name);
@@ -249,7 +291,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
   }
 
   void VisitExpr_(const BufferLoadNode* op) final {
-    const std::string source_name = op->buffer->name;
+    RegisterFragmentBuffer(op->buffer);
+    const std::string source_name = CanonicalBufferName(op->buffer->name);
     if (fragment_buffers_.count(source_name)) {
       if (pre_loop_stmt_) {
         pre_loop_reads_.insert(source_name);
@@ -372,7 +415,7 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       } else if (node.as<MulNode>() || node.as<DivNode>()) {
         saw_pointwise = true;
       } else if (const auto* load = node.as<BufferLoadNode>()) {
-        const std::string source_name = load->buffer->name;
+        const std::string source_name = CanonicalBufferName(load->buffer->name);
         if (source_name == target_name || !fragment_buffers_.count(source_name)) {
           if (const auto it = temp_reduction_buffers_.find(source_name);
               it != temp_reduction_buffers_.end()) {
@@ -433,10 +476,27 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     }
   }
 
+  std::string CanonicalReductionTarget(const std::string& target_name) const {
+    if (fragment_buffers_.count(target_name)) {
+      return target_name;
+    }
+    static constexpr const char* kClearSuffix = "_clear";
+    const size_t suffix_len = std::strlen(kClearSuffix);
+    if (target_name.size() > suffix_len &&
+        target_name.compare(target_name.size() - suffix_len, suffix_len, kClearSuffix) == 0) {
+      const std::string base_name = target_name.substr(0, target_name.size() - suffix_len);
+      if (fragment_buffers_.count(base_name)) {
+        return base_name;
+      }
+    }
+    return target_name;
+  }
+
   void AddRowReduction(const std::string& target_name, const std::string& kind) {
-    const std::string key = target_name + ":" + kind;
+    const std::string canonical_target = CanonicalReductionTarget(target_name);
+    const std::string key = canonical_target + ":" + kind;
     if (seen_row_reductions_.insert(key).second) {
-      row_reduction_targets_.push_back({target_name, kind});
+      row_reduction_targets_.push_back({canonical_target, kind});
     }
   }
 

@@ -119,16 +119,20 @@ def test_flash_attention_forward_rejects_unsupported_pipeline_stage_count():
         tvm.TVMError,
         match="Blackhole fragment pipeline legality: unsupported stage count 4",
     ):
-        _run_flash_attention_lower_blackhole_ops(
-            gqa_example,
-            1,
-            16,
-            1024,
-            128,
-            False,
-            groups=16,
-            block_M=64,
-            block_N=64,
-            num_stages=4,
-            threads=128,
-        )
+        target = Target("blackhole")
+        with target:
+            lower(
+                gqa_example.flashattn.jit_impl.get_tir(
+                    1,
+                    16,
+                    1024,
+                    128,
+                    False,
+                    groups=16,
+                    block_M=64,
+                    block_N=64,
+                    num_stages=4,
+                    threads=128,
+                ),
+                target=target,
+            )

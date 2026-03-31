@@ -48,6 +48,9 @@
 - 当 analysis 结果还不能直接 lower 成可执行 kernel 时，不要把 raw analysis attrs 直接塞进 `ExecutableSpec`。更稳的过渡做法是：先在 `LowerBlackholeOps` 里把它们归一化成一层很薄的 IR attrs summary（例如 `blackhole.lowering_requirements`），再由更后面的 build/runtime gate 消费并 fail-fast。这样主链能先完成“analysis 被 lowering 真正接住”，又不会把半成品 descriptor 永久冻结进 runtime schema
 - 对 pipelined fragment subset 的早期 legality，优先直接读 loop annotation（例如 `ForNode.annotations["num_stages"]`），不要假设更后面的 region canonicalization 一定先成功。这样即使更宽 GQA/MHA 形态还会在别的 lowering 细节上炸，主链也能先把“这组 stage 配置本来就不支持”显式拦下来
 - row-broadcast 的索引归并信号不要只认 `floor_div/floor_mod`。在 split-after TIR 里，同一类“coarsened row index”也可能被写成 `tir.shift_right(i, k)`；如果 analysis 只认除法不认右移，GQA 这类更宽 fragment pipeline 很容易少报 `row_broadcast`
+- 对优化后的 device IR 做 analysis 时，buffer view 名经常会带 `_1/_2/...` 这类阶段化后缀；analysis 优先按 canonical buffer name 工作，再把具体 view 当作观察入口。否则同一个逻辑 fragment/shared buffer 会在 pass 里被看成多个对象
+- `T.Pipelined` 经过 device prepasses 后，stage 注解不一定还叫 `num_stages`；Blackhole analysis 至少要同时兼容 `num_stages` 和 `tl_pipelined_num_stages`，否则 optimized path 会比 split-after path 少一层 pipeline 语义
+- `tl.region` 不要假设 `BufferLoad` 索引数必须与 extents 个数完全相等。对 staged/shared view，常见形态是“leading stage index + trailing tile extents”；更稳的 bridge 是把未匹配的前导索引收成 singleton axes，再用提供的 extents 重建尾部 region
 
 ## TT-Metal / TT-Sim 环境
 

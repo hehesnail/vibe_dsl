@@ -24,10 +24,12 @@
 
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/tir/expr.h>
+#include <tvm/tir/op.h>
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
 #include <string>
+#include <cctype>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -40,8 +42,11 @@ using tir::BlockNode;
 using tir::Buffer;
 using tir::BufferLoadNode;
 using tir::BufferStoreNode;
+using tir::CallNode;
 using tir::ForNode;
+using tir::IntImmNode;
 using tir::PrimFunc;
+using tir::Stmt;
 using tir::StmtExprVisitor;
 using tvm::DictAttrs;
 using tvm::Integer;
@@ -58,14 +63,27 @@ struct BufferInfo {
 };
 
 bool IsTrackedLocalScope(const std::string& scope) {
-  return scope == "local" || scope == "local.fragment";
+  return scope == "local" || scope == "local.fragment" || scope == "blackhole.acc";
 }
 
-bool IsSharedScope(const std::string& scope) { return scope.rfind("shared", 0) == 0; }
+bool IsStageLocalScope(const std::string& scope) {
+  return scope.rfind("shared", 0) == 0 || scope.rfind("blackhole.cb.", 0) == 0;
+}
+
+std::string CanonicalBufferName(const std::string& name) {
+  size_t pos = name.size();
+  while (pos > 0 && std::isdigit(static_cast<unsigned char>(name[pos - 1]))) {
+    --pos;
+  }
+  if (pos > 0 && pos < name.size() && name[pos - 1] == '_') {
+    return name.substr(0, pos - 1);
+  }
+  return name;
+}
 
 class PipelineStageAnalyzer final : public StmtExprVisitor {
  public:
-  void Analyze(const PrimFunc& func) { VisitStmt(func->body); }
+  void Analyze(const PrimFunc& func) { AnalyzeTopLevel(func->body); }
 
   bool HasPipelineStages() const { return !stages_.empty(); }
 
@@ -106,50 +124,101 @@ class PipelineStageAnalyzer final : public StmtExprVisitor {
     std::vector<std::string> loop_carried_state_names;
   };
 
+  void RegisterObservedBuffer(const Buffer& buffer) {
+    const std::string scope = buffer.scope();
+    const std::string canonical_name = CanonicalBufferName(buffer->name);
+    if (IsStageLocalScope(scope)) {
+      shared_buffers_.emplace(canonical_name, BufferInfo{buffer, scope});
+    } else if (IsTrackedLocalScope(scope)) {
+      tracked_local_buffers_.emplace(canonical_name, BufferInfo{buffer, scope});
+    }
+  }
+
+  void AnalyzeTopLevel(const Stmt& body) {
+    if (const auto* attr = body.as<tir::AttrStmtNode>()) {
+      AnalyzeTopLevel(attr->body);
+      return;
+    }
+    if (const auto* alloc = body.as<tir::AllocateNode>()) {
+      AnalyzeTopLevel(alloc->body);
+      return;
+    }
+    if (const auto* realize = body.as<tir::BlockRealizeNode>()) {
+      AnalyzeTopLevel(realize->block->body);
+      return;
+    }
+    if (const auto* block = body.as<BlockNode>()) {
+      if (block->name_hint == "tilelang_root") {
+        for (const Buffer& buffer : block->alloc_buffers) {
+          RegisterObservedBuffer(buffer);
+        }
+        AnalyzeTopLevel(block->body);
+        return;
+      }
+    }
+    if (const auto* seq = body.as<tir::SeqStmtNode>()) {
+      bool saw_pipeline_loop = false;
+      for (const auto& stmt : seq->seq) {
+        if (!saw_pipeline_loop) {
+          if (const auto* loop = stmt.as<ForNode>()) {
+            std::optional<int64_t> maybe_num_stages = GetNumStages(loop);
+            if (!maybe_num_stages.has_value() && LooksLikePipelineLoop(stmt)) {
+              maybe_num_stages = InferStageCountFromStmt(stmt);
+            }
+            if (maybe_num_stages.has_value()) {
+              saw_pipeline_loop = true;
+              current_stage_ = StageInfo{loop->loop_var->name_hint, maybe_num_stages.value(), {}, {}};
+              pre_loop_stmt_ = false;
+              inside_pipeline_loop_ = true;
+              VisitStmt(stmt);
+              inside_pipeline_loop_ = false;
+              FinalizeCurrentStage();
+              continue;
+            }
+          }
+          pre_loop_stmt_ = true;
+          VisitStmt(stmt);
+          pre_loop_stmt_ = false;
+        } else {
+          post_loop_stmt_ = true;
+          VisitStmt(stmt);
+          post_loop_stmt_ = false;
+        }
+      }
+      return;
+    }
+    VisitStmt(body);
+  }
+
   void VisitStmt_(const BlockNode* op) final {
     if (op->name_hint == "tilelang_root") {
       for (const Buffer& buffer : op->alloc_buffers) {
-        const std::string scope = buffer.scope();
-        const std::string name = buffer->name;
-        if (IsSharedScope(scope)) {
-          shared_buffers_.emplace(name, BufferInfo{buffer, scope});
-        } else if (IsTrackedLocalScope(scope)) {
-          tracked_local_buffers_.emplace(name, BufferInfo{buffer, scope});
-        }
+        RegisterObservedBuffer(buffer);
       }
-
-      if (const auto* seq = op->body.as<tir::SeqStmtNode>()) {
-        bool saw_pipeline_loop = false;
-        for (const auto& stmt : seq->seq) {
-          if (!saw_pipeline_loop) {
-            if (const auto* loop = stmt.as<ForNode>()) {
-              if (auto maybe_num_stages = GetNumStages(loop)) {
-                saw_pipeline_loop = true;
-                current_stage_ = StageInfo{loop->loop_var->name_hint, maybe_num_stages.value(), {}, {}};
-                pre_loop_stmt_ = false;
-                inside_pipeline_loop_ = true;
-                VisitStmt(stmt);
-                inside_pipeline_loop_ = false;
-                FinalizeCurrentStage();
-                continue;
-              }
-            }
-            pre_loop_stmt_ = true;
-            VisitStmt(stmt);
-            pre_loop_stmt_ = false;
-          } else {
-            post_loop_stmt_ = true;
-            VisitStmt(stmt);
-            post_loop_stmt_ = false;
-          }
-        }
-        return;
-      }
+      AnalyzeTopLevel(op->body);
+      return;
     }
     StmtExprVisitor::VisitStmt_(op);
   }
 
   void VisitStmt_(const ForNode* op) final {
+    if (!current_stage_.has_value()) {
+      std::optional<int64_t> maybe_num_stages = GetNumStages(op);
+      if (!maybe_num_stages.has_value() && LooksLikePipelineLoop(GetRef<Stmt>(op))) {
+        maybe_num_stages = InferStageCountFromStmt(GetRef<Stmt>(op));
+      }
+      if (maybe_num_stages.has_value()) {
+        current_stage_ =
+            StageInfo{op->loop_var->name_hint, maybe_num_stages.value(), {}, {}};
+        const bool prev_inside = inside_pipeline_loop_;
+        inside_pipeline_loop_ = true;
+        StmtExprVisitor::VisitStmt(op->body);
+        inside_pipeline_loop_ = prev_inside;
+        FinalizeCurrentStage();
+        return;
+      }
+    }
+
     const bool prev_inside = inside_pipeline_loop_;
     if (current_stage_.has_value() && op->loop_var->name_hint == current_stage_->loop_var) {
       inside_pipeline_loop_ = true;
@@ -159,7 +228,8 @@ class PipelineStageAnalyzer final : public StmtExprVisitor {
   }
 
   void VisitStmt_(const BufferStoreNode* op) final {
-    const std::string name = op->buffer->name;
+    RegisterObservedBuffer(op->buffer);
+    const std::string name = CanonicalBufferName(op->buffer->name);
     if (tracked_local_buffers_.count(name)) {
       if (pre_loop_stmt_) {
         pre_loop_writes_.insert(name);
@@ -176,7 +246,8 @@ class PipelineStageAnalyzer final : public StmtExprVisitor {
   }
 
   void VisitExpr_(const BufferLoadNode* op) final {
-    const std::string name = op->buffer->name;
+    RegisterObservedBuffer(op->buffer);
+    const std::string name = CanonicalBufferName(op->buffer->name);
     if (tracked_local_buffers_.count(name)) {
       if (inside_pipeline_loop_) {
         in_loop_reads_.insert(name);
@@ -192,12 +263,51 @@ class PipelineStageAnalyzer final : public StmtExprVisitor {
     if (!loop->annotations.defined()) {
       return std::nullopt;
     }
-    if (auto value = loop->annotations.Get("num_stages")) {
-      if (const auto* imm = value.value().as<IntImmNode>()) {
-        return imm->value;
+    for (const char* key : {"num_stages", "tl_pipelined_num_stages"}) {
+      if (auto value = loop->annotations.Get(key)) {
+        if (const auto* imm = value.value().as<IntImmNode>()) {
+          return imm->value;
+        }
       }
     }
     return std::nullopt;
+  }
+
+  bool LooksLikePipelineLoop(const Stmt& stmt) const {
+    bool has_gemm = false;
+    tir::PostOrderVisit(stmt, [&has_gemm](const ObjectRef& node) {
+      if (const auto* call = node.as<CallNode>()) {
+        if (const auto* op_node = call->op.as<tvm::OpNode>()) {
+          if (op_node->name == "tl.tileop.gemm_py") {
+            has_gemm = true;
+          }
+        }
+      }
+    });
+    return has_gemm;
+  }
+
+  std::optional<int64_t> InferStageCountFromStmt(const Stmt& stmt) const {
+    std::optional<int64_t> inferred;
+    tir::PostOrderVisit(stmt, [&inferred](const ObjectRef& node) {
+      auto update_from_buffer = [&inferred](const Buffer& buffer) {
+        const std::string scope = buffer.scope();
+        if (!IsStageLocalScope(scope) || buffer->shape.size() < 3) {
+          return;
+        }
+        if (const auto* imm = buffer->shape[0].as<IntImmNode>()) {
+          if (imm->value > 1) {
+            inferred = imm->value;
+          }
+        }
+      };
+      if (const auto* store = node.as<BufferStoreNode>()) {
+        update_from_buffer(store->buffer);
+      } else if (const auto* load = node.as<BufferLoadNode>()) {
+        update_from_buffer(load->buffer);
+      }
+    });
+    return inferred;
   }
 
   void FinalizeCurrentStage() {

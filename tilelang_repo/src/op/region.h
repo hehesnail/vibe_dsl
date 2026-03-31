@@ -79,7 +79,11 @@ public:
    * Build a RegionOp from call arguments:
    * - args[0]: BufferLoad whose indices are per-axis minima.
    * - args[1]: Integer access mask (1=r, 2=w, 3=rw).
-   * - args[2 + i]: Extent of axis i (supports dynamic PrimExpr).
+   * - args[2 + i]: Extent of the trailing region axes (supports dynamic
+   *   PrimExpr). If fewer extents than indices are provided, the unmatched
+   *   leading indices are interpreted as singleton axes. This lets callers
+   *   express staged/shared tensor views such as (stage, row, col) while only
+   *   materializing the trailing tile extents.
    */
   TVM_DLL
   RegionOp(Array<PrimExpr> args,

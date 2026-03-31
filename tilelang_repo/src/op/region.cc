@@ -20,15 +20,27 @@ using namespace tir;
 
 RegionOp::RegionOp(Array<PrimExpr> args, Map<String, ObjectRef> annotations) {
   size_t n = args.size();
-  size_t ndim = n - 2;
+  size_t provided_ndim = n - 2;
   auto load = args[0].as<BufferLoadNode>();
   ICHECK(load);
-  ICHECK(load->indices.size() == ndim)
-      << "load->indices.size() = " << load->indices << " ndim = " << ndim;
+  size_t load_ndim = load->indices.size();
+  ICHECK(provided_ndim <= load_ndim)
+      << "RegionOp expects at most one extent per load axis: load->indices.size() = "
+      << load->indices << " provided_ndim = " << provided_ndim;
   Array<Range> ranges;
-  // Rebuild per-axis ranges from mins (BufferLoad indices) and provided extents
-  for (size_t i = 0; i < ndim; i++) {
-    PrimExpr index = load->indices[i];
+  size_t leading_singleton_axes = load_ndim - provided_ndim;
+
+  // Keep unmatched leading indices as singleton axes. This lets tl.region
+  // carry staged/shared views like (stage, row, col) while only providing
+  // extents for the trailing tile axes.
+  for (size_t i = 0; i < leading_singleton_axes; ++i) {
+    ranges.push_back(Range::FromMinExtent(load->indices[i], 1));
+  }
+
+  // Rebuild the trailing region axes from mins (BufferLoad indices) and the
+  // provided extents.
+  for (size_t i = 0; i < provided_ndim; i++) {
+    PrimExpr index = load->indices[leading_singleton_axes + i];
     PrimExpr extent = args[2 + i];
     if (const auto *ramp = index.as<RampNode>()) {
       const auto *stride_imm = ramp->stride.as<IntImmNode>();

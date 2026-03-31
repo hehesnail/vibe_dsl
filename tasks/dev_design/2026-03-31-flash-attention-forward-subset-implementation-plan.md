@@ -12,10 +12,10 @@
 
 - ✅ Task 1 completed: analysis test夹具已建好
 - ✅ Task 2 completed: `AnalyzeBlackholeWorkDecomposition` 已落地并输出结构化 `blackhole.work_decomposition`
-- ✅ Task 3 completed: `AnalyzeBlackholeFragmentRegions` 已覆盖 split-after MHA/GQA 的 `gemm + row_reduction + row_broadcast + pointwise_chain` 形态，`test_blackhole_flash_attention_analysis.py` 当前 `4 passed`
+- ✅ Task 3 completed: `AnalyzeBlackholeFragmentRegions` 已覆盖 split-after 与优化后 device IR 上的 MHA/GQA `gemm + row_reduction + row_broadcast + pointwise_chain` 形态，`test_blackhole_flash_attention_analysis.py` 当前 `6 passed`
 - ✅ Task 4 completed: `AnalyzeBlackholePipelineStages` 已落地并进入主链
 - 🔄 Current focus: Task 5 / Task 6。`LowerBlackholeOps` 已开始消费 analysis 并产出通用 `blackhole.lowering_requirements` IR attrs；当前显式 fail-fast 已迁移到 `rt_mod_blackhole` 的 build-time gate，下一步是把这些 lowering requirements 继续收成更真实的 legality / lowering 结论
-- 🔄 Task 6 也已开始：第一条 generic fragment-pipeline legality 已落地，当前 `num_stages > 2` 会在 `LowerBlackholeOps` 入口显式失败；但 full `lower()` 的 GQA `num_stages=4` 仍有更早的 region canonicalization 内部错误，因此这条 legality 回归目前先锁在直接 transform 入口
+- 🔄 Task 6 也已开始：第一条 generic fragment-pipeline legality 已落地，当前 `num_stages > 2` 会在主链上显式失败；full `lower()` 的 GQA `num_stages=4` 现在已能稳定命中这条 legality，不再先被 `RegionOp` staged/shared view canonicalization 内部错误打断
 
 ---
 
@@ -520,8 +520,8 @@ Latest result:
 
 Note:
 
-- 当前 legality 回归先锁在 `LowerBlackholeOps` 直接入口
-- full `lower()` 的 GQA `num_stages=4` 仍会先撞更早的 GEMM region canonicalization 内部错误，这属于后续 widening work，不是这条 legality gate 本身失效
+- 当前 legality 回归已经覆盖 full `lower()` 的 GQA `num_stages=4` 主链
+- 更后续的 widening work 不再是“先修更早的 `RegionOp`/canonicalization 内部错误”，而是继续把 generic fragment/pipeline requirements 收成更宽的 executable legality / lowering 结论
 
 - [ ] **Step 5: Commit**
 
