@@ -55,6 +55,8 @@ def is_device_call(func: tir.PrimFunc):
         if isinstance(target, Target) and target.kind.name == "blackhole":
             if "calling_conv" in attrs:
                 return attrs["calling_conv"] == CallingConv.DEVICE_KERNEL_LAUNCH
+            if attrs.get("tir.is_entry_func", False):
+                return True
             return any(
                 key in attrs
                 for key in (

@@ -42,6 +42,8 @@
 - C++ 改动后 pytest 前先确认 `libtilelang.so` 已重编，避免加载旧库假阴性
 - 不要对同一个 `tilelang_repo/build/` 并行跑 `cmake --build` 和 pytest。共享构建目录在链接进行中时，测试可能加载到旧/半更新的 `libtilelang.so`，制造假阴性或顺序相关噪声
 - 对新的 split-after analysis pass，优先把结果写成结构化 IR attrs（`Array<Map<...>>`、`PrimExpr` 等），不要先字符串化再让后续测试/consumer 反解析。测试也应直接断言 attr 结构和 `PrimExpr` 语义，而不是只查字符串片段
+- 对 Blackhole `lower()` 主链，不能在 `SplitBlackholeKernel` / `Analyze*` / `LowerBlackholeOps` 之前就用旧的 device attrs 过滤掉入口 `PrimFunc`。Blackhole entry kernel 在这条链之前通常还没有 `blackhole.*` attrs，因此 `is_device_call()` 必须把 entry `PrimFunc` 视为 device 输入，否则专属 pass 实际上跑在空 `device_mod` 上
+- fragment region analysis 里的 `pointwise_chain` 不能通过全局扫描所有 `tir.add/mul/div/max/...` 来判定；那样会把普通索引算术也误记成 fragment compute。更稳的做法是只在 fragment/local region 自身的 store / dataflow 关系里识别 pointwise
 
 ## TT-Metal / TT-Sim 环境
 

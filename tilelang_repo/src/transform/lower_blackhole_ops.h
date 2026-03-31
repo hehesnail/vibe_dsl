@@ -164,6 +164,15 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   tvm::PrimExpr ZeroThreadAndLoopVars(const tvm::PrimExpr& expr,
                                       const std::vector<tvm::tir::Var>& loop_vars) const;
 
+  /*! \brief Whether an expression uses transport-local vars (thread or supplied loop vars). */
+  bool ExprUsesTransportVar(const tvm::PrimExpr& expr,
+                            const std::vector<tvm::tir::Var>& loop_vars) const;
+
+  /*! \brief Select the 2-D transport axes for a possibly higher-rank global buffer view. */
+  std::pair<int, int> SelectStagedCopyTransportAxes(
+      const tvm::ffi::Array<tvm::PrimExpr>& global_indices,
+      const std::vector<tvm::tir::Var>& loop_vars) const;
+
   /*! \brief Find a staged copy BufferStore inside a loop nest and collect nested loop vars */
   const tvm::tir::BufferStoreNode* FindNestedCopyStore(
       const tvm::tir::Stmt& stmt,

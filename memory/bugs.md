@@ -61,6 +61,36 @@
 
 ## 已解决（仍有复用价值）
 
+### Blackhole `lower()` 若在 `SplitBlackholeKernel` 前按旧 device attrs 过滤，会把真实入口 `PrimFunc` 静默排除出 Blackhole pass 主链
+
+- **时间**: 2026-03-31
+- **问题**: 直接用 `lower(..., target="blackhole")` 编译 flash-attention forward 时，明明 `AnalyzeBlackhole*` 和 `LowerBlackholeOps` 手工串起来已经能看到预期边界，但真实 target-level 编译仍然晚到 codegen 才报 `Find undefined Variable acc_o`
+- **根本原因**:
+  - `tilelang.engine.lower.lower()` 先用 `get_device_call()` 过滤 `device_mod`
+  - Blackhole entry `PrimFunc` 在 `SplitBlackholeKernel` / `Analyze*` / `LowerBlackholeOps` 之前只有 `target=blackhole` 和 entry attrs，还没有 `blackhole.segment_plan` / `blackhole.runtime_args` 这类 device attrs
+  - 结果 `device_mod` 被错误过滤成空模块，Blackhole 专属 pass 实际没跑在真实入口 `main` 上
+- **解决**:
+  - `is_device_call()` 对 `target=blackhole` 且 `tir.is_entry_func` 的 `PrimFunc` 直接返回 `True`
+  - 保持 `lower()` 的 host/device 过滤位置不变，但确保 Blackhole entry kernel 能进入 `blackhole_codegen()` 的主链
+- **教训**:
+  - 对依赖 target-specific split/lowering pass 才形成 device attrs 的后端，不能用“已经形成的 device attrs”去决定它是否进入那条 pass 链
+  - 如果手工 pass 链和真实 `lower()` 路径的行为不一致，优先检查入口模块是否在 pass 之前就被过滤掉了
+
+### fragment region analysis 若把全局 `tir.add/mul/div/max/...` 都记成 `pointwise_chain`，会误伤普通 copy/GEMM kernel
+
+- **时间**: 2026-03-31
+- **问题**: 在收正 Blackhole entry `PrimFunc` 过滤后，普通 copy/gemm 的 `lower()` 也开始被 flash-attention 用的 fragment-subset fail-fast 拦下
+- **根本原因**:
+  - `AnalyzeBlackholeFragmentRegions` 早期在 `VisitExpr_(CallNode)` 里全局扫描 `tir.exp2/max/multiply/add/div/if_then_else`
+  - 普通 kernel 的索引算术、边界表达式、甚至非 fragment 区域里的 call 都会被误记成 `pointwise_chain`
+  - 后续若按 `pointwise_chain` 直接做 fail-fast，就会把不属于 fragment compute 的 kernel 一起拦下
+- **解决**:
+  - 保留对 `gemm` 的全局识别
+  - `pointwise_chain` 的识别收回到 fragment/local region 自身的 `BufferStore` 数据流分析中，只在真实 fragment compute 关系里标记
+- **教训**:
+  - analysis pass 一旦要被后续 lowering / legality 真正消费，就不能继续靠“全局扫到某类 op 名”这种宽泛近似
+  - 对 fragment region 这类结构分析，判定边界必须和 region 自身的数据流绑定，而不是和整个函数的普通算术绑定
+
 ### `ExtractCorePlan` / direct runtime 若为空 work plan 自动补默认 packet/core，会把 planner/runtime contract break 伪装成正常执行
 
 - **时间**: 2026-03-30

@@ -237,11 +237,6 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       const std::string op_name = op_node->name;
       if (op_name == "tl.tileop.gemm_py") {
         AddOp("gemm");
-      } else if (op_name == "tir.exp2" || op_name == "tir.max" || op_name == "tir.multiply" ||
-                 op_name == "tir.add" || op_name == "tir.divide") {
-        AddOp("pointwise_chain");
-      } else if (op_name == "tir.if_then_else") {
-        AddOp("pointwise_chain");
       }
     }
     StmtExprVisitor::VisitExpr_(op);

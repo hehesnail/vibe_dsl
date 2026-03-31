@@ -293,6 +293,23 @@ static std::pair<int64_t, int64_t> ResolveStaticShape2DFromBufferOrMetadata(
   return {fallback_shape[0]->value, fallback_shape[1]->value};
 }
 
+static std::pair<int64_t, int64_t> ResolveStaticShape2DFromBufferAxesOrMetadata(
+    const Buffer& buffer,
+    const Array<Integer>& fallback_shape,
+    int row_axis,
+    int col_axis,
+    const char* static_shape_message,
+    const char* rank2_message) {
+  if (buffer->shape.size() > static_cast<size_t>(std::max(row_axis, col_axis))) {
+    const auto* rows_imm = buffer->shape[row_axis].as<IntImmNode>();
+    const auto* cols_imm = buffer->shape[col_axis].as<IntImmNode>();
+    ICHECK(rows_imm && cols_imm) << static_shape_message;
+    return {rows_imm->value, cols_imm->value};
+  }
+  ICHECK_GE(fallback_shape.size(), 2U) << rank2_message;
+  return {fallback_shape[0]->value, fallback_shape[1]->value};
+}
+
 static StagedCopyTransportGeometry BuildStagedCopyTransportGeometry(
     const Buffer& shared_buffer,
     int64_t shared_rows,
@@ -357,16 +374,18 @@ static StagedCopyGlobalIndexInfo ResolveStagedCopyGlobalIndexInfo(
     const Buffer& global_buffer,
     const Array<PrimExpr>& global_indices,
     const Array<Integer>& fallback_shape,
+    int row_axis,
+    int col_axis,
     const char* static_shape_message,
     const char* rank2_message,
     ZeroIndexFn zero_index,
     Analyzer* analyzer) {
   StagedCopyGlobalIndexInfo info;
-  std::tie(info.global_rows, info.global_cols) = ResolveStaticShape2DFromBufferOrMetadata(
-      global_buffer, fallback_shape, static_shape_message, rank2_message);
-  if (global_indices.size() >= 2U) {
-    info.base_row = zero_index(global_indices[0]);
-    info.base_col = zero_index(global_indices[1]);
+  std::tie(info.global_rows, info.global_cols) = ResolveStaticShape2DFromBufferAxesOrMetadata(
+      global_buffer, fallback_shape, row_axis, col_axis, static_shape_message, rank2_message);
+  if (global_indices.size() > static_cast<size_t>(std::max(row_axis, col_axis))) {
+    info.base_row = zero_index(global_indices[row_axis]);
+    info.base_col = zero_index(global_indices[col_axis]);
     return info;
   }
   if (global_indices.size() == 1U) {
@@ -403,6 +422,24 @@ static PrimExpr LinearizeStagedCopyTransportIndex(Analyzer* analyzer,
   PrimExpr tiles_per_row =
       IntImm32(static_cast<int>(geometry.global_cols / kBlackholeTileCols));
   return analyzer->Simplify(tile_row * tiles_per_row + tile_col);
+}
+
+static bool IsUnsupportedResidualLocalScope(const Buffer& buffer) {
+  const std::string scope = buffer.scope();
+  return scope == "local" || scope == "local.fragment" || scope == "blackhole.acc";
+}
+
+static void ValidateNoResidualFragmentCompute(const Stmt& body) {
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    if (const auto* store = node.as<BufferStoreNode>()) {
+      if (IsUnsupportedResidualLocalScope(store->buffer)) {
+        ICHECK(false)
+            << "Blackhole fragment compute subset lowering is not implemented; residual local "
+               "store remains for buffer "
+            << store->buffer->name;
+      }
+    }
+  });
 }
 
 // Helper to get storage scope from buffer
@@ -470,8 +507,28 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
     }
   });
 
+  if (auto fragment_regions = func->GetAttr<Array<Any>>("blackhole.fragment_regions")) {
+    for (const auto& region_item : fragment_regions.value()) {
+      auto region = region_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+      auto ops = region.Get("ops");
+      if (!ops) {
+        continue;
+      }
+      for (const auto& op_item : Downcast<Array<Any>>(ops.value())) {
+        const std::string op_name = Downcast<String>(op_item);
+        if (op_name == "row_reduction" || op_name == "row_broadcast" ||
+            op_name == "pointwise_chain") {
+          ICHECK(false)
+              << "Blackhole fragment compute subset lowering is not implemented for op "
+              << op_name;
+        }
+      }
+    }
+  }
+
   // Transform the function body
   Stmt body = VisitStmt(func->body);
+  ValidateNoResidualFragmentCompute(body);
 
   // Create new function with transformed body
   PrimFunc new_func = func;
@@ -1420,6 +1477,40 @@ PrimExpr LowerBlackholeOps::ZeroThreadAndLoopVars(const PrimExpr& expr,
   return analyzer.Simplify(tir::Substitute(expr, subst_map));
 }
 
+bool LowerBlackholeOps::ExprUsesTransportVar(const PrimExpr& expr,
+                                             const std::vector<Var>& loop_vars) const {
+  bool uses_transport_var = false;
+  tir::PostOrderVisit(expr, [&](const ObjectRef& node) {
+    if (const auto* var = node.as<tir::VarNode>()) {
+      if (thread_index_vars_.count(var)) {
+        uses_transport_var = true;
+        return;
+      }
+      for (const auto& loop_var : loop_vars) {
+        if (loop_var.defined() && var == loop_var.get()) {
+          uses_transport_var = true;
+          return;
+        }
+      }
+    }
+  });
+  return uses_transport_var;
+}
+
+std::pair<int, int> LowerBlackholeOps::SelectStagedCopyTransportAxes(
+    const Array<PrimExpr>& global_indices, const std::vector<Var>& loop_vars) const {
+  std::vector<int> transport_axes;
+  for (size_t i = 0; i < global_indices.size(); ++i) {
+    if (ExprUsesTransportVar(global_indices[i], loop_vars)) {
+      transport_axes.push_back(static_cast<int>(i));
+    }
+  }
+  if (transport_axes.size() >= 2U) {
+    return {transport_axes.front(), transport_axes.back()};
+  }
+  return {0, 1};
+}
+
 PrimExpr LowerBlackholeOps::InferCopyTileIndex(const BufferStoreNode* op,
                                                const Var& loop_var) const {
   const auto* load = op->value.as<BufferLoadNode>();
@@ -1441,10 +1532,12 @@ PrimExpr LowerBlackholeOps::InferCopyTileIndex(const BufferStoreNode* op,
       direction == CopyDirection::kDramToCB ? op->buffer : load->buffer;
   const Array<Integer>& global_shape =
       direction == CopyDirection::kDramToCB ? copy_input_shape_ : copy_output_shape_;
+  const auto [row_axis, col_axis] =
+      SelectStagedCopyTransportAxes(global_indices, std::vector<Var>{loop_var});
 
   Analyzer analyzer;
   const StagedCopyGlobalIndexInfo global_info = ResolveStagedCopyGlobalIndexInfo(
-      global_buffer, global_indices, global_shape,
+      global_buffer, global_indices, global_shape, row_axis, col_axis,
       "Blackhole staged copy currently expects static global buffer shape",
       "Blackhole staged copy requires rank-2 shape metadata after FlattenBuffer",
       [&](const PrimExpr& expr) { return ZeroThreadAndLoopVars(expr, loop_var); }, &analyzer);
@@ -1487,8 +1580,10 @@ PrimExpr LowerBlackholeOps::InferStagedCopyBaseTileIndex(
       direction == CopyDirection::kDramToCB ? op->buffer : load->buffer;
   const Array<Integer>& global_shape =
       direction == CopyDirection::kDramToCB ? copy_input_shape_ : copy_output_shape_;
+  const auto [row_axis, col_axis] =
+      SelectStagedCopyTransportAxes(global_indices, loop_vars_to_zero);
   const StagedCopyGlobalIndexInfo global_info = ResolveStagedCopyGlobalIndexInfo(
-      global_buffer, global_indices, global_shape,
+      global_buffer, global_indices, global_shape, row_axis, col_axis,
       "Blackhole staged copy currently expects static global buffer shape",
       "Blackhole staged copy requires rank-2 shape metadata after FlattenBuffer",
       [&](const PrimExpr& expr) { return ZeroThreadAndLoopVars(expr, loop_vars_to_zero); },
@@ -1929,12 +2024,16 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
 
   const bool use_page_transport = UseStagedCopyPageTransport(shared_buffer);
   const Buffer& global_buffer = direction == CopyDirection::kDramToCB ? load->buffer : op->buffer;
+  const Array<PrimExpr>& global_indices =
+      direction == CopyDirection::kDramToCB ? load->indices : op->indices;
   const Array<Integer>& global_shape =
       direction == CopyDirection::kDramToCB ? copy_input_shape_ : copy_output_shape_;
+  const auto [row_axis, col_axis] =
+      SelectStagedCopyTransportAxes(global_indices, {});
   int64_t global_rows = 0;
   int64_t global_cols = 0;
-  std::tie(global_rows, global_cols) = ResolveStaticShape2DFromBufferOrMetadata(
-      global_buffer, global_shape,
+  std::tie(global_rows, global_cols) = ResolveStaticShape2DFromBufferAxesOrMetadata(
+      global_buffer, global_shape, row_axis, col_axis,
       "Blackhole staged copy currently expects static global buffer shape",
       "Blackhole staged copy requires rank-2 global shape metadata after FlattenBuffer");
   if (transpose_b_reader) {

@@ -319,7 +319,9 @@ func.CopyOnWrite()->attrs = DictAttrs(attrs);
 - `AnalyzeBlackholeFragmentRegions` 已实现并接入 `SplitBlackholeKernel` 后的主链
 - `AnalyzeBlackholePipelineStages` 已实现并接入 `SplitBlackholeKernel` 后的主链
 - `test_blackhole_flash_attention_analysis.py` 当前为 `3 passed`
-- 当前新的第一个 target-level blocker 已收敛为 `LowerBlackholeOps` staged-copy legality：直接编译 `example_mha_fwd_bshd` 仍会在 `global width aligned to 32` fail-fast，后续应转入 Task 5/6 收正 analysis consumption 与 legality/lowering 边界
+- Blackhole `lower()` 主链入口已收正：`is_device_call()` 现在会把 Blackhole entry `PrimFunc` 当作 device 输入，避免在 `SplitBlackholeKernel` 前把 `main` 过滤掉
+- `AnalyzeBlackholeFragmentRegions` 已收紧为 region-local pointwise 检测，不再把普通索引算术误记成 `pointwise_chain`
+- flash-attention forward 当前 target-level 红灯已前移到 `LowerBlackholeOps` 的显式 fragment-subset fail-fast，`test_blackhole_flash_attention_pipeline.py` 当前为 `1 passed`
 
 - [ ] **Step 4: Run tests to verify they pass**
 
