@@ -8,6 +8,14 @@
 
 **Tech Stack:** TileLang TIR passes, TVM PrimFunc attrs, Blackhole lowering/codegen/runtime, pytest, CMake
 
+## Current Status
+
+- ✅ Task 1 completed: analysis test夹具已建好
+- ✅ Task 2 completed: `AnalyzeBlackholeWorkDecomposition` 已落地并输出结构化 `blackhole.work_decomposition`
+- ✅ Task 3 completed: `AnalyzeBlackholeFragmentRegions` 已覆盖 split-after MHA/GQA 的 `gemm + row_reduction + row_broadcast + pointwise_chain` 形态，`test_blackhole_flash_attention_analysis.py` 当前 `4 passed`
+- ✅ Task 4 completed: `AnalyzeBlackholePipelineStages` 已落地并进入主链
+- 🔄 Current focus: Task 5 / Task 6，开始让 `LowerBlackholeOps` 与 target-level legality 真正消费 analysis 结果
+
 ---
 
 ## File Map
@@ -204,7 +212,7 @@ git commit -m "blackhole: add work decomposition analysis"
 - Modify: `tilelang_repo/src/transform/lower_blackhole_ops.cc`
 - Test: `tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py`
 
-- [ ] **Step 1: Write a region-shape expectation into the test**
+- [x] **Step 1: Write a region-shape expectation into the test**
 
 ```python
 def test_fragment_regions_capture_reduction_and_broadcast_roles():
@@ -219,7 +227,7 @@ def test_fragment_regions_capture_reduction_and_broadcast_roles():
     assert "row_broadcast" in body
 ```
 
-- [ ] **Step 2: Run the targeted test to verify it fails**
+- [x] **Step 2: Run the targeted test to verify it fails**
 
 Run:
 
@@ -233,7 +241,7 @@ Expected:
 FAIL ... row_reduction / row_broadcast not found
 ```
 
-- [ ] **Step 3: Implement fragment region analysis skeleton**
+- [x] **Step 3: Implement fragment region analysis skeleton**
 
 ```cpp
 Map<String, Any> region;
@@ -244,7 +252,7 @@ attrs.Set("blackhole.fragment_regions", Array<Any>{region});
 func.CopyOnWrite()->attrs = DictAttrs(attrs);
 ```
 
-- [ ] **Step 4: Run targeted tests to verify they pass**
+- [x] **Step 4: Run targeted tests to verify they pass**
 
 Run:
 
@@ -256,6 +264,12 @@ Expected:
 
 ```text
 1 passed
+```
+
+Latest result:
+
+```text
+2 passed
 ```
 
 - [ ] **Step 5: Commit**

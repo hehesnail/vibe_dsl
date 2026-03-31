@@ -156,6 +156,54 @@ def test_gqa_forward_exposes_fragment_region_attrs():
     assert {"scores_max", "logsum", "acc_o"}.issubset(loop_carried_state)
 
 
+def test_mha_forward_exposes_fragment_region_roles():
+    lowered = _analyze_blackhole_fragment_regions(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    regions = lowered.attrs["blackhole.fragment_regions"]
+    assert len(regions) == 1
+
+    region = regions[0]
+    fragment_buffer_names = {entry["name"] for entry in region["fragment_buffers"]}
+    assert {
+        "acc_s",
+        "acc_s_cast",
+        "acc_o",
+        "scores_max",
+        "scores_max_prev",
+        "scores_scale",
+        "scores_sum",
+        "logsum",
+    }.issubset(fragment_buffer_names)
+
+    assert {
+        "gemm",
+        "row_reduction",
+        "row_broadcast",
+        "pointwise_chain",
+    }.issubset(set(region["ops"]))
+
+    row_reduction_targets = {entry["target"] for entry in region["row_reductions"]}
+    assert {"scores_max", "scores_sum"}.issubset(row_reduction_targets)
+
+    row_broadcast_sources = {entry["source"] for entry in region["row_broadcasts"]}
+    assert {"scores_max", "scores_scale", "logsum"}.issubset(row_broadcast_sources)
+
+    loop_carried_state = {entry["name"] for entry in region["loop_carried_state"]}
+    assert {"scores_max", "logsum", "acc_o"}.issubset(loop_carried_state)
+
+
 def test_forward_pipeline_exposes_stage_attrs():
     lowered = _analyze_blackhole_pipeline_stages(
         _lower_flash_attention_example(

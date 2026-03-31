@@ -4,20 +4,6 @@
 
 ## 未解决
 
-### flash-attention forward 当前会在 `LowerBlackholeOps` staged-copy path 上过早撞到 tile-aligned copy legality
-
-- **时间**: 2026-03-31
-- **问题**: 直接编译 `examples/flash_attention/example_mha_fwd_bshd.py` 到 Blackhole 时，当前最先报错的是 `Blackhole staged copy currently expects global width aligned to 32`
-- **影响**: 这说明 flash-attention forward 还没进入后续的 fragment/pipeline lowering 消费阶段，主链首先被 staged-copy legality 卡住；如果不先定位是哪类 copy 被送进了当前 tile-aligned boundary，后面继续扩 `LowerBlackholeOps` 只会在错误层面上叠逻辑
-- **当前证据**:
-  - split-after 通用 analysis 已完成：`AnalyzeBlackholeWorkDecomposition`、`AnalyzeBlackholeFragmentRegions`、`AnalyzeBlackholePipelineStages`
-  - `test_blackhole_flash_attention_analysis.py` 已是 `3 passed`
-  - target 级直接编译 `example_mha_fwd_bshd` 仍在 `LowerBlackholeOps` 报 `global width aligned to 32`
-- **解决方向**:
-  - 先定位具体是哪类 copy / 哪个 buffer shape 被送进当前 staged-copy path
-  - 再决定是应走更通用的 legality fail-fast、还是要把这类非当前 tile/stick copy 从旧 copy lowering 边界中分流出来
-  - 不要跳过这个 root cause，直接往 `ExecutableSpec` 或 runtime schema 里加 attention-specific 字段
-
 ### Blackhole direct path 缺少 TT-Metal 正式 contract 分层
 
 - **时间**: 2026-03-26
@@ -60,6 +46,23 @@
   - 当 direct path 还没覆盖更宽执行面时，应把边界收成 schema/lowering fail-fast，而不是把用户带到 runtime 才撞底层地址错误
 
 ## 已解决（仍有复用价值）
+
+### split-after flash-attention fragment analysis 若只识别 `CallNode`，会漏掉真实 TIR 里的 row reduction / row broadcast
+
+- **时间**: 2026-03-31
+- **问题**: `AnalyzeBlackholeFragmentRegions` 在 GQA 上能识别出 `row_reduction` / `row_broadcast`，但 MHA split-after IR 仍只产出 `gemm + pointwise_chain`
+- **根本原因**:
+  - split-after MHA 的关键表达式不是都编码成 `CallNode`
+  - `scores_sum[0] + acc_s[rv]`、`T.max(scores_max[0], scores_max_clear[0])`、`acc_o[i] * scores_scale[0]` 这类关系在 TVM TIR 里分别是 `AddNode` / `MaxNode` / `MulNode` / `DivNode`
+  - 旧分析器只在 `CallNode` 上找 `tir.add/max/div/...`，并且把广播主要建模成索引 rank 差，结果 direct sum/max reduction 和 scalar fragment -> vector fragment broadcast 在 MHA IR 上整片漏掉
+- **解决**:
+  - `AnalyzeBlackholeFragmentRegions` 改为显式识别 `AddNode` / `MaxNode` / `MulNode` / `DivNode`
+  - row reduction 增加对 scalar fragment target 的 direct self-reduction 模式识别
+  - row broadcast 增加对 scalar fragment source -> vector fragment target 的显式识别，不再只依赖索引 rank 差或 floor-div 形态
+  - 新增 MHA fragment-region 回归，要求与 GQA 一样暴露 `gemm + row_reduction + row_broadcast + pointwise_chain`
+- **教训**:
+  - 对 split-after TIR 做结构分析时，先确认真实 IR 节点种类，再决定匹配逻辑；不要把 Python/T.script 表面的 `+/*//max` 直觉等同于 `CallNode`
+  - 广播/归约语义优先按 buffer role 和 shape 关系识别，比按索引字符串或 rank 差猜更稳
 
 ### Blackhole `lower()` 若在 `SplitBlackholeKernel` 前按旧 device attrs 过滤，会把真实入口 `PrimFunc` 静默排除出 Blackhole pass 主链
 
