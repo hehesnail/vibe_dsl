@@ -215,12 +215,13 @@ TT-Metal 还存在：
 - `ExecutableSpec.semaphores`
 - `KernelSpec.semaphore_bindings`
 - runtime arg kind `semaphore_id_u32`
+- `KernelSpec.remote_core_descriptors`
 - 最小 device-side dataflow semaphore builtin：
   - `get_semaphore`
   - `semaphore_wait`
   - `semaphore_set`
 
-但 multicast、global semaphore、remote core coordinate、以及 producer/consumer E2E 执行面仍未建立，因此未来 multi-core 或 ring/mcast pipeline 仍不能只靠补 codegen 自动长出来。
+但 multicast、global semaphore、以及 pass-level producer/consumer 执行面仍未建立，因此未来 multi-core 或 ring/mcast pipeline 仍不能只靠补 codegen 自动长出来。remote core coordinate 已从散装 runtime arg 推进到最小 descriptor formalization，但更宽 multicast/global descriptor 仍未建立。
 
 ---
 
@@ -253,7 +254,7 @@ TT-Metal 还存在：
 
 - accessor-derived common runtime args
 - tile/stick/block range descriptors
-- remote-core / multicast arguments（program-local semaphore id runtime arg 已补）
+- multicast/global descriptors（program-local semaphore id runtime arg 与最小 remote-core descriptor 已补）
 - output transport vs final writeback distinction
 
 ### 4.4 builtin 层

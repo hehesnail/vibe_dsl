@@ -8,12 +8,12 @@
 |------|------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计 | 常青 |
 | `stage3_multicore_design.md` | Stage 3 多核设计 | ✅ 已实施（formal direct host path） |
-| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P0/P1/P2/P3 ✅，P4 已完成最小 interleaved stick/page path，P5 已推进到 worker semaphore producer/consumer E2E） |
+| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P0/P1/P2/P3 ✅，P4 已完成最小 interleaved stick/page path，P5 已推进到 worker semaphore producer/consumer E2E + remote-core descriptor formalization） |
 | `stage2g_unified_work_schema.md` | richer runtime work schema 正式化 | ✅ 已实施（copy/GEMM 主路径） |
 | `stage2h_accessor_schema.md` | accessor/common-runtime schema 正式化 | ✅ 已实施（schema/spec） |
 | `stage2i_compile_time_abi_schema.md` | compile-time ABI schema 正式化 | ✅ 已实施（schema/spec/direct runtime） |
 | `stage2j_compute_contract_schema.md` | compute contract 正式化 | ✅ 已实施（schema/spec/runtime 主链） |
-| `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 | ✅ 已实施（program-local semaphore + kernel binding + 最小 dataflow builtin） |
+| `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 | ✅ 已实施（program-local semaphore + kernel binding + 最小 dataflow builtin + remote-core descriptor formalization） |
 | `stage4_copy_stick_generalization.md` | P4 stick/page copy 泛化 | ✅ 已实施（interleaved + DRAM + `M x W`, `M % 32 == 0`，支持静态 offset subrange） |
 | `stage4_backend_cleanup_roadmap.md` | 当前主链问题分档与收敛顺序 | 活动中 |
 
