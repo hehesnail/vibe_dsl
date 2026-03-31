@@ -22,6 +22,13 @@
 3. 同时遵守 TileLang DSL 设计意图与 TT-Metal / Blackhole 硬件执行现实
 4. 优先把语义保留在 IR 与 analysis pass 中；只把 host/runtime/codegen 无法再从 IR 恢复、且必须冻结的最终结论下沉到最小化 `ExecutableSpec`
 
+### 当前实施位置
+
+- `AnalyzeBlackholeWorkDecomposition` / `AnalyzeBlackholeFragmentRegions` / `AnalyzeBlackholePipelineStages` 已落地
+- `LowerBlackholeOps` 已开始把 fragment 子集 lower 成 Blackhole builtin
+- `codegen_blackhole` 已接上当前最小 fragment builtin 子集
+- 当前真实 blocker 已收敛为 `local/accumulator -> shared(CB)` staged copy 还没有正式 lowering
+
 ## 2. 非目标
 
 - 不支持 backward
@@ -258,6 +265,16 @@ split 后的目标不是重新理解 attention，而是消费通用 analysis pas
 5. 扩 `LowerBlackholeOps`，消费 analysis 结果并生成最小冻结结论
 6. 在 codegen / runtime 侧只消费冻结结论，不新增算法解释逻辑
 7. 以 `mha_fwd_bshd` / `gqa_fwd_bshd` 前向为目标做 correctness / legality 验证
+
+## 12. 当前剩余主 blocker
+
+当前不是 analysis、schema、或 pointwise fragment 子集本身在卡住主线。  
+当前最真实的剩余点是：
+
+- 优化后 device IR 里仍残留 `O_shared_1[tx, ...] = O_shared_local_cast[...]` 这类二维 `BufferStore`
+- 其语义本质是 `local/accumulator -> shared(CB)` staged copy
+- 这条方向还没有被 `LowerBlackholeOps` 正式 lower 成 Blackhole dataflow primitive
+- 因此 full path 目前仍会晚到 shared 非扁平 store 失败
 
 ## 12. 验证方式
 

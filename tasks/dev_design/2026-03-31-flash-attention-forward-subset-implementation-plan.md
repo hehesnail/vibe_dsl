@@ -26,6 +26,12 @@
 - 🔄 Next focus: 当前真实 blocker 已从 fragment gate / `cast` 收敛为 **`local/accumulator -> shared(CB)` staged copy 没有正式 lowering**。`CopyDirection::kLocalToCB` 与 `tl.blackhole.write_local_slice_to_cb` primitive 已预埋，但还没有真正接进 `GenerateCopySequence()` / `codegen_blackhole`
 - 🔄 Task 6 也已开始：第一条 generic fragment-pipeline legality 已落地，当前 `num_stages > 2` 会在主链上显式失败；full `lower()` 的 GQA `num_stages=4` 现在已能稳定命中这条 legality，不再先被 `RegionOp` staged/shared view canonicalization 内部错误打断
 
+## Reading Guide
+
+- 上面的 `Current Status` 是当前权威状态
+- 下方 Task 1-6 的分步 checklist 主要保留作实施记录和文件映射
+- 已完成任务的原始 checkbox 不再逐项回填到每一个历史步骤，避免文档为了“全勾上”而继续膨胀
+
 ---
 
 ## File Map
