@@ -36,6 +36,20 @@ def _analyze_blackhole_work_decomposition(prim_func):
     return mod["main"]
 
 
+def _analyze_blackhole_fragment_regions(prim_func):
+    mod = tvm.IRModule({"main": prim_func})
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
+    return mod["main"]
+
+
+def _analyze_blackhole_pipeline_stages(prim_func):
+    mod = tvm.IRModule({"main": prim_func})
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
+    return mod["main"]
+
+
 def test_mha_forward_exposes_work_decomposition_attrs():
     lowered = _analyze_blackhole_work_decomposition(
         _lower_flash_attention_example(
@@ -94,33 +108,79 @@ def test_mha_forward_exposes_work_decomposition_attrs():
 
 
 def test_gqa_forward_exposes_fragment_region_attrs():
-    lowered = _lower_flash_attention_example(
-        gqa_example,
-        1,
-        16,
-        1024,
-        128,
-        False,
-        groups=16,
-        block_M=64,
-        block_N=64,
-        num_stages=2,
-        threads=128,
+    lowered = _analyze_blackhole_fragment_regions(
+        _lower_flash_attention_example(
+            gqa_example,
+            1,
+            16,
+            1024,
+            128,
+            False,
+            groups=16,
+            block_M=64,
+            block_N=64,
+            num_stages=2,
+            threads=128,
+        )
     )
-    assert lowered.attrs.get("blackhole.fragment_regions") is not None
+    regions = lowered.attrs["blackhole.fragment_regions"]
+    assert len(regions) == 1
+
+    region = regions[0]
+    fragment_buffer_names = {entry["name"] for entry in region["fragment_buffers"]}
+    assert {
+        "acc_s",
+        "acc_s_cast",
+        "acc_o",
+        "scores_max",
+        "scores_max_prev",
+        "scores_scale",
+        "scores_sum",
+        "logsum",
+    }.issubset(fragment_buffer_names)
+
+    assert {
+        "gemm",
+        "row_reduction",
+        "row_broadcast",
+        "pointwise_chain",
+    }.issubset(set(region["ops"]))
+
+    row_reduction_targets = {entry["target"] for entry in region["row_reductions"]}
+    assert {"scores_max", "scores_sum"}.issubset(row_reduction_targets)
+
+    row_broadcast_sources = {entry["source"] for entry in region["row_broadcasts"]}
+    assert {"scores_max", "scores_scale", "logsum"}.issubset(row_broadcast_sources)
+
+    loop_carried_state = {entry["name"] for entry in region["loop_carried_state"]}
+    assert {"scores_max", "logsum", "acc_o"}.issubset(loop_carried_state)
 
 
 def test_forward_pipeline_exposes_stage_attrs():
-    lowered = _lower_flash_attention_example(
-        mha_example,
-        1,
-        32,
-        256,
-        128,
-        True,
-        block_M=128,
-        block_N=128,
-        num_stages=1,
-        threads=128,
+    lowered = _analyze_blackhole_pipeline_stages(
+        _lower_flash_attention_example(
+            gqa_example,
+            1,
+            16,
+            1024,
+            128,
+            False,
+            groups=16,
+            block_M=64,
+            block_N=64,
+            num_stages=2,
+            threads=128,
+        )
     )
-    assert lowered.attrs.get("blackhole.pipeline_stages") is not None
+    stages = lowered.attrs["blackhole.pipeline_stages"]
+    assert len(stages) == 1
+
+    stage = stages[0]
+    assert stage["num_stages"] == 2
+
+    stage_local_buffers = {entry["name"] for entry in stage["stage_local_buffers"]}
+    assert {"K_shared", "V_shared"}.issubset(stage_local_buffers)
+
+    loop_carried_state = {entry["name"] for entry in stage["loop_carried_state"]}
+    assert {"acc_o", "scores_max", "logsum"}.issubset(loop_carried_state)
+    assert stage["loop_var"] == "k"

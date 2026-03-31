@@ -4,6 +4,20 @@
 
 ## 未解决
 
+### flash-attention forward 当前会在 `LowerBlackholeOps` staged-copy path 上过早撞到 tile-aligned copy legality
+
+- **时间**: 2026-03-31
+- **问题**: 直接编译 `examples/flash_attention/example_mha_fwd_bshd.py` 到 Blackhole 时，当前最先报错的是 `Blackhole staged copy currently expects global width aligned to 32`
+- **影响**: 这说明 flash-attention forward 还没进入后续的 fragment/pipeline lowering 消费阶段，主链首先被 staged-copy legality 卡住；如果不先定位是哪类 copy 被送进了当前 tile-aligned boundary，后面继续扩 `LowerBlackholeOps` 只会在错误层面上叠逻辑
+- **当前证据**:
+  - split-after 通用 analysis 已完成：`AnalyzeBlackholeWorkDecomposition`、`AnalyzeBlackholeFragmentRegions`、`AnalyzeBlackholePipelineStages`
+  - `test_blackhole_flash_attention_analysis.py` 已是 `3 passed`
+  - target 级直接编译 `example_mha_fwd_bshd` 仍在 `LowerBlackholeOps` 报 `global width aligned to 32`
+- **解决方向**:
+  - 先定位具体是哪类 copy / 哪个 buffer shape 被送进当前 staged-copy path
+  - 再决定是应走更通用的 legality fail-fast、还是要把这类非当前 tile/stick copy 从旧 copy lowering 边界中分流出来
+  - 不要跳过这个 root cause，直接往 `ExecutableSpec` 或 runtime schema 里加 attention-specific 字段
+
 ### Blackhole direct path 缺少 TT-Metal 正式 contract 分层
 
 - **时间**: 2026-03-26

@@ -659,6 +659,26 @@ def AnalyzeBlackholeWorkDecomposition():
     return _ffi_api.AnalyzeBlackholeWorkDecomposition()  # type: ignore
 
 
+def AnalyzeBlackholeFragmentRegions():
+    """Analyze split-after Blackhole fragment compute regions.
+
+    Emits a structured `blackhole.fragment_regions` PrimFunc attr capturing
+    fragment buffers, row reductions, row broadcasts, pointwise chains,
+    and loop-carried fragment state.
+    """
+    return tvm.ffi.get_global_func("tl.transform.AnalyzeBlackholeFragmentRegions")()
+
+
+def AnalyzeBlackholePipelineStages():
+    """Analyze split-after Blackhole pipelined loop structure.
+
+    Emits a structured `blackhole.pipeline_stages` PrimFunc attr capturing
+    pipelined loop stage count, stage-local shared buffers, and loop-carried
+    local state.
+    """
+    return tvm.ffi.get_global_func("tl.transform.AnalyzeBlackholePipelineStages")()
+
+
 def LowerBlackholeOps():
     """Lower TileLang high-level operations to TT-Metal builtins for Blackhole backend.
 

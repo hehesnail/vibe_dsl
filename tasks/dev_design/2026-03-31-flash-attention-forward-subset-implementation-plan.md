@@ -197,7 +197,7 @@ git add tilelang_repo/src/transform/analyze_blackhole_work_decomposition.cc \
 git commit -m "blackhole: add work decomposition analysis"
 ```
 
-### Task 3: Add Fragment Region Analysis
+### Task 3: Add Fragment Region Analysis ✅
 
 **Files:**
 - Create: `tilelang_repo/src/transform/analyze_blackhole_fragment_regions.cc`
@@ -267,7 +267,7 @@ git add tilelang_repo/src/transform/analyze_blackhole_fragment_regions.cc \
 git commit -m "blackhole: add fragment region analysis"
 ```
 
-### Task 4: Add Pipeline Stage Analysis
+### Task 4: Add Pipeline Stage Analysis ✅
 
 **Files:**
 - Create: `tilelang_repo/src/transform/analyze_blackhole_pipeline_stages.cc`
@@ -313,6 +313,13 @@ stage_info.Set("loop_carried_state", loop_carried_state);
 attrs.Set("blackhole.pipeline_stages", Array<Any>{stage_info});
 func.CopyOnWrite()->attrs = DictAttrs(attrs);
 ```
+
+**已实现状态（2026-03-31）**
+
+- `AnalyzeBlackholeFragmentRegions` 已实现并接入 `SplitBlackholeKernel` 后的主链
+- `AnalyzeBlackholePipelineStages` 已实现并接入 `SplitBlackholeKernel` 后的主链
+- `test_blackhole_flash_attention_analysis.py` 当前为 `3 passed`
+- 当前新的第一个 target-level blocker 已收敛为 `LowerBlackholeOps` staged-copy legality：直接编译 `example_mha_fwd_bshd` 仍会在 `global width aligned to 32` fail-fast，后续应转入 Task 5/6 收正 analysis consumption 与 legality/lowering 边界
 
 - [ ] **Step 4: Run tests to verify they pass**
 

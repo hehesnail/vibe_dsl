@@ -218,6 +218,8 @@ def blackhole_codegen(
     device_mod = tilelang.transform.HoistBroadcastValues()(device_mod)
     device_mod = tilelang.transform.SplitBlackholeKernel()(device_mod)
     device_mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(device_mod)
+    device_mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(device_mod)
+    device_mod = tilelang.transform.AnalyzeBlackholePipelineStages()(device_mod)
     device_mod = tilelang.transform.LowerBlackholeOps()(device_mod)
     device_mod = tilelang.transform.PlanBlackholeCB()(device_mod)
     device_mod = tilelang.transform.AssignBlackholeCores()(device_mod)
