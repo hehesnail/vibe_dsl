@@ -791,6 +791,25 @@ static bool IsLogicalCoreNocRuntimeArgKind(const std::string& kind) {
   return kind == "logical_core_noc_x" || kind == "logical_core_noc_y";
 }
 
+static const RemoteCoreDescriptorSpec* ResolveRemoteCoreDescriptorSpec(
+    const KernelSpec& kernel, const KernelArgSpec& arg_spec) {
+  ICHECK(!arg_spec.identity.empty())
+      << "Blackhole synchronization schema requires identity for runtime arg " << arg_spec.name
+      << " kind=" << arg_spec.kind;
+  const RemoteCoreDescriptorSpec* matched = nullptr;
+  for (const auto& descriptor : kernel.remote_core_descriptors) {
+    if (descriptor.identity != arg_spec.identity) {
+      continue;
+    }
+    matched = &descriptor;
+    break;
+  }
+  ICHECK(matched != nullptr)
+      << "Blackhole synchronization schema requires a matching remote core descriptor for runtime arg "
+      << arg_spec.name << " identity=" << arg_spec.identity;
+  return matched;
+}
+
 static const SemaphoreBindingSpec* ResolveSemaphoreBindingSpec(const KernelSpec& kernel,
                                                               const KernelArgSpec& arg_spec) {
   const SemaphoreBindingSpec* matched = nullptr;
@@ -851,6 +870,21 @@ static void ValidateLogicalCoreNocRuntimeArgs(const KernelSpec& kernel) {
     ICHECK_EQ(pair.x->core_y, pair.y->core_y)
         << "Blackhole synchronization core descriptor " << entry.first
         << " must use one logical core for logical_core_noc_x/y";
+
+    auto descriptor_it =
+        std::find_if(kernel.remote_core_descriptors.begin(), kernel.remote_core_descriptors.end(),
+                     [&](const RemoteCoreDescriptorSpec& descriptor) {
+                       return descriptor.identity == entry.first;
+                     });
+    ICHECK(descriptor_it != kernel.remote_core_descriptors.end())
+        << "Blackhole synchronization core descriptor " << entry.first
+        << " must be materialized into KernelSpec.remote_core_descriptors";
+    ICHECK_EQ(descriptor_it->core_x, pair.x->core_x)
+        << "Blackhole synchronization core descriptor " << entry.first
+        << " core_x mismatch between runtime args and KernelSpec.remote_core_descriptors";
+    ICHECK_EQ(descriptor_it->core_y, pair.x->core_y)
+        << "Blackhole synchronization core descriptor " << entry.first
+        << " core_y mismatch between runtime args and KernelSpec.remote_core_descriptors";
   }
 }
 
@@ -1111,11 +1145,11 @@ static uint32_t ResolveRuntimeSemaphoreId(
 }
 
 static CoreCoord ResolveLogicalCoreNocCoord(const KernelArgSpec& arg_spec,
+                                            const KernelSpec& kernel,
                                             const IDevice& device) {
-  ICHECK(arg_spec.has_core_coord)
-      << "Blackhole synchronization schema requires core_x/core_y for runtime arg "
-      << arg_spec.name << " kind=" << arg_spec.kind;
-  return device.worker_core_from_logical_core(CoreCoord{arg_spec.core_x, arg_spec.core_y});
+  const auto* descriptor = ResolveRemoteCoreDescriptorSpec(kernel, arg_spec);
+  return device.worker_core_from_logical_core(
+      CoreCoord{descriptor->core_x, descriptor->core_y});
 }
 
 static SynchronizationRuntimeContext BuildSynchronizationRuntimeContext(
@@ -1147,14 +1181,14 @@ static bool TryAppendSynchronizationRuntimeArg(const KernelSpec& kernel,
   if (arg_spec.kind == "logical_core_noc_x") {
     ICHECK(sync_context.device != nullptr)
         << "Blackhole synchronization runtime context is missing device";
-    const CoreCoord noc_core = ResolveLogicalCoreNocCoord(arg_spec, *sync_context.device);
+    const CoreCoord noc_core = ResolveLogicalCoreNocCoord(arg_spec, kernel, *sync_context.device);
     args->push_back(static_cast<uint32_t>(noc_core.x));
     return true;
   }
   if (arg_spec.kind == "logical_core_noc_y") {
     ICHECK(sync_context.device != nullptr)
         << "Blackhole synchronization runtime context is missing device";
-    const CoreCoord noc_core = ResolveLogicalCoreNocCoord(arg_spec, *sync_context.device);
+    const CoreCoord noc_core = ResolveLogicalCoreNocCoord(arg_spec, kernel, *sync_context.device);
     args->push_back(static_cast<uint32_t>(noc_core.y));
     return true;
   }

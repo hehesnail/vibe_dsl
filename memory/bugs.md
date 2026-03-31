@@ -264,6 +264,20 @@
   - 只要某类 runtime arg 已经形成正式对象层（这里是 semaphore binding 和 remote-core descriptor），就该在 spec 边界集中校验，不能把 malformed schema 留给执行期偶然触发
   - helper 拆分如果不顺手把协议边界收紧，通常只是在挪代码，不是在减债
 
+### remote core schema 只留在 runtime_args 里，没进入 KernelSpec 真链路
+
+- **时间**: 2026-03-31
+- **问题**: `logical_core_noc_x/y` 虽然已有 identity 和成对校验，但最初仍只是两条 runtime arg；`BlackholeModule` 运行时还得从每条 arg 上拿 `core_x/core_y`，`KernelSpec` metadata 看不到正式 remote-core 对象
+- **根本原因**:
+  - remote worker descriptor 没有从 runtime arg 层上提成独立 schema
+  - segment-local `runtime_args` 和顶层 `blackhole.runtime_args` 两条入口都可能携带 remote-core 信息，如果不统一提取，很容易一条链路有 descriptor、一条链路没有
+- **解决**:
+  - 新增 `KernelSpec.remote_core_descriptors`
+  - `rt_mod_blackhole` 从 kernel 实际消费的 `runtime_args` 统一提取 descriptor，并兼容 segment-local 与顶层 runtime-arg 两条入口
+  - `BlackholeModule` 解析 `logical_core_noc_x/y` 时改为优先消费 descriptor，而不是继续把 arg 上的 `core_x/core_y` 当真源
+- **教训**:
+  - 一旦 runtime arg 里的多个字段共同表达“一个对象”，就应该尽早上提成 spec/schema 对象；否则 host/runtime 层会长期被迫重复做 grouping 和一致性检查
+
 ### 环境问题速查
 
 | 问题 | 解决 |

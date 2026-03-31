@@ -1105,7 +1105,45 @@ struct SegmentInfo {
   KernelComputeConfigSpec compute_config;
   std::vector<AccessorSpec> accessors;
   std::vector<SemaphoreBindingSpec> semaphore_bindings;
+  std::vector<RemoteCoreDescriptorSpec> remote_core_descriptors;
 };
+
+static std::vector<RemoteCoreDescriptorSpec> ExtractRemoteCoreDescriptors(
+    const std::vector<KernelArgSpec>& runtime_args) {
+  std::unordered_map<std::string, RemoteCoreDescriptorSpec> descriptors;
+  for (const auto& arg : runtime_args) {
+    if (arg.kind != "logical_core_noc_x" && arg.kind != "logical_core_noc_y") {
+      continue;
+    }
+    ICHECK(!arg.identity.empty())
+        << "Blackhole remote core descriptor extraction requires identity for runtime arg "
+        << arg.name << " kind=" << arg.kind;
+    ICHECK(arg.has_core_coord)
+        << "Blackhole remote core descriptor extraction requires core_x/core_y for runtime arg "
+        << arg.name << " kind=" << arg.kind;
+    auto [it, inserted] =
+        descriptors.emplace(arg.identity, RemoteCoreDescriptorSpec{arg.identity, arg.core_x, arg.core_y});
+    if (!inserted) {
+      ICHECK_EQ(it->second.core_x, arg.core_x)
+          << "Blackhole remote core descriptor " << arg.identity
+          << " must use one logical core";
+      ICHECK_EQ(it->second.core_y, arg.core_y)
+          << "Blackhole remote core descriptor " << arg.identity
+          << " must use one logical core";
+    }
+  }
+
+  std::vector<RemoteCoreDescriptorSpec> ordered;
+  ordered.reserve(descriptors.size());
+  for (auto& entry : descriptors) {
+    ordered.push_back(std::move(entry.second));
+  }
+  std::sort(ordered.begin(), ordered.end(),
+            [](const RemoteCoreDescriptorSpec& a, const RemoteCoreDescriptorSpec& b) {
+              return a.identity < b.identity;
+            });
+  return ordered;
+}
 
 static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, ExecutableSpec* spec) {
   std::vector<SegmentInfo> segments_out;
@@ -1138,6 +1176,7 @@ static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, Execu
     }
     if (auto v = segment.Get("runtime_args")) {
       info.runtime_args = ExtractRuntimeArgsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
+      info.remote_core_descriptors = ExtractRemoteCoreDescriptors(info.runtime_args);
     }
     if (auto v = segment.Get("common_runtime_args")) {
       info.common_runtime_args =
@@ -1509,6 +1548,9 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
     kernel.core_type = segment.core_type;
     kernel.runtime_args = segment.runtime_args.empty() ? spec->runtime_args : segment.runtime_args;
     kernel.common_runtime_args = segment.common_runtime_args;
+    kernel.remote_core_descriptors = segment.remote_core_descriptors.empty()
+                                         ? ExtractRemoteCoreDescriptors(kernel.runtime_args)
+                                         : segment.remote_core_descriptors;
     kernel.compile_time_arg_specs = segment.compile_time_arg_specs;
     kernel.has_launch_spec = segment.has_launch_spec;
     if (segment.has_launch_spec) {

@@ -1079,6 +1079,64 @@ def test_blackhole_copy_build_rejects_unpaired_logical_core_noc_runtime_arg():
         _rebuild_codegen_module_with_runtime_args(artifact, runtime_args_mutator(base_runtime_args))
 
 
+def test_blackhole_copy_remote_core_descriptor_is_materialized():
+    kernel = grid_indexed_staged_copy_kernel(grid_x=2, grid_y=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    consumer_core = device_main.attrs["blackhole.core_plan"]["physical_cores"][1]
+    runtime_args = list(device_main.attrs["blackhole.runtime_args"])
+    runtime_args.extend(
+        [
+            {
+                "name": "remote_noc_x",
+                "kind": "logical_core_noc_x",
+                "identity": "remote_consumer_core",
+                "dtype": "uint32",
+                "core_x": int(consumer_core["core_x"]),
+                "core_y": int(consumer_core["core_y"]),
+            },
+            {
+                "name": "remote_noc_y",
+                "kind": "logical_core_noc_y",
+                "identity": "remote_consumer_core",
+                "dtype": "uint32",
+                "core_x": int(consumer_core["core_x"]),
+                "core_y": int(consumer_core["core_y"]),
+            },
+        ]
+    )
+
+    def segment_mutator(segment_plan):
+        mutated_segments = []
+        for segment in segment_plan:
+            mutated = dict(segment)
+            mutated["runtime_args"] = runtime_args
+            mutated_segments.append(mutated)
+        return mutated_segments
+
+    mutated_mod = _rebuild_codegen_module_with_semaphore_binding(
+        artifact,
+        segment_mutator=segment_mutator,
+        runtime_args_mutator=lambda _runtime_args: runtime_args,
+    )
+    spec = mutated_mod.get_function_metadata("main")
+    kernel_spec = _require_blackhole_kernel(
+        spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+    assert "remote_core_descriptors" in kernel_spec
+    descriptors = kernel_spec["remote_core_descriptors"]
+    assert len(descriptors) == 1
+    descriptor = descriptors[0]
+    assert str(descriptor["identity"]) == "remote_consumer_core"
+    assert int(descriptor["core_x"]) == int(consumer_core["core_x"])
+    assert int(descriptor["core_y"]) == int(consumer_core["core_y"])
+
+
 @pytest.mark.xfail(
     reason=(
         "StorageRewrite is incompatible with the Blackhole CB model: its "

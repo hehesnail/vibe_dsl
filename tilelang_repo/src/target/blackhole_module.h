@@ -337,6 +337,20 @@ struct SemaphoreBindingSpec {
   }
 };
 
+struct RemoteCoreDescriptorSpec {
+  std::string identity;
+  uint32_t core_x = 0;
+  uint32_t core_y = 0;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("identity", identity);
+    writer->WriteObjectKeyValue("core_x", static_cast<int64_t>(core_x));
+    writer->WriteObjectKeyValue("core_y", static_cast<int64_t>(core_y));
+    writer->EndObject();
+  }
+};
+
 struct BufferMaterializationSpec {
   std::string buffer;
   std::string materialization_kind = "replicated";
@@ -374,6 +388,7 @@ struct KernelSpec {
   KernelComputeConfigSpec compute_config;
   std::vector<AccessorSpec> accessors;
   std::vector<SemaphoreBindingSpec> semaphore_bindings;
+  std::vector<RemoteCoreDescriptorSpec> remote_core_descriptors;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -409,6 +424,9 @@ struct KernelSpec {
     }
     if (!semaphore_bindings.empty()) {
       writer->WriteObjectKeyValue("semaphore_bindings", semaphore_bindings);
+    }
+    if (!remote_core_descriptors.empty()) {
+      writer->WriteObjectKeyValue("remote_core_descriptors", remote_core_descriptors);
     }
     writer->EndObject();
   }

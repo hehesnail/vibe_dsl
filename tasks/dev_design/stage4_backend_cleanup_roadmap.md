@@ -494,6 +494,7 @@
   - runtime arg 必须带显式 `identity`
   - 同一 `identity` 下必须成对出现
   - `x/y` 必须共享同一 logical core 坐标
+- remote-core schema 已开始正式进入 `KernelSpec.remote_core_descriptors`，不再只留在两条 `logical_core_noc_x/y` runtime arg 上
 - synchronization runtime materialization 已统一到共享 helper/context：
   - `ResolveSemaphoreBindingSpec`
   - `TryAppendSynchronizationRuntimeArg`

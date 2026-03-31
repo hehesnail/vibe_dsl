@@ -224,6 +224,15 @@ producer/consumer 语义采用最小 remote signal：
   - 必须共享同一 logical core 坐标
 - 这些约束应在 `ExecutableSpec` / `KernelSpec` 边界完成校验，而不是等到 direct execution 时再由 runtime kind-switch 临时发现
 
+下一步 formalization（已落实到最小主链）：
+
+- 现有 `logical_core_noc_x/y` 已不再只是两条散装 runtime arg
+- `KernelSpec` 现在显式携带 `remote_core_descriptors`
+- 每个 descriptor 最小表达：
+  - `identity`
+  - logical `core_x/core_y`
+- `logical_core_noc_x/y` runtime arg 继续保留给 device 侧按名字读取，但 host/runtime materialization 现已优先消费 descriptor，而不是继续把每条 arg 上的 `core_x/core_y` 当真源
+
 这个闭环的目的不是扩 execution surface，而是证明：
 
 - host `CreateSemaphore(...)` 物化出来的对象能被跨核 device builtin 真实消费
