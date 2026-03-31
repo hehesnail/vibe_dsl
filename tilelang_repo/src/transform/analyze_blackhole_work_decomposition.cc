@@ -23,12 +23,12 @@
  */
 
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/node/structural_hash.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/expr.h>
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
-#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -51,12 +51,6 @@ using tvm::ffi::Map;
 using tvm::ffi::String;
 
 namespace {
-
-std::string PrimExprToCompactString(const PrimExpr& expr) {
-  std::ostringstream os;
-  os << expr;
-  return os.str();
-}
 
 std::string NormalizeLaunchAxisName(const std::string& name) {
   if (name == "blockIdx.x" || name == "bx") {
@@ -90,15 +84,18 @@ class WorkDecompositionAnalyzer : public StmtExprVisitor {
 
     Array<Any> derived_index_exprs;
     for (const auto& expr : derived_index_exprs_) {
-      derived_index_exprs.push_back(String(expr));
+      Map<String, Any> entry;
+      entry.Set("expr", expr);
+      derived_index_exprs.push_back(entry);
     }
     work_info.Set("derived_index_exprs", derived_index_exprs);
 
     Array<Any> work_dependent_loop_bounds;
-    for (const auto& [loop_var, bound_expr] : work_dependent_loop_bounds_) {
+    for (const auto& loop_bound_info : work_dependent_loop_bounds_) {
       Map<String, Any> loop_bound;
-      loop_bound.Set("loop_var", String(loop_var));
-      loop_bound.Set("bound_expr", String(bound_expr));
+      loop_bound.Set("loop_var", String(loop_bound_info.loop_var_name));
+      loop_bound.Set("min", loop_bound_info.min);
+      loop_bound.Set("extent", loop_bound_info.extent);
       work_dependent_loop_bounds.push_back(loop_bound);
     }
     work_info.Set("work_dependent_loop_bounds", work_dependent_loop_bounds);
@@ -107,6 +104,12 @@ class WorkDecompositionAnalyzer : public StmtExprVisitor {
   }
 
  private:
+  struct LoopBoundInfo {
+    std::string loop_var_name;
+    PrimExpr min;
+    PrimExpr extent;
+  };
+
   void VisitStmt_(const AttrStmtNode* op) final {
     if (op->attr_key == tir::attr::thread_extent) {
       IterVar iv = Downcast<IterVar>(op->node);
@@ -126,13 +129,11 @@ class WorkDecompositionAnalyzer : public StmtExprVisitor {
     MaybeRecordDerivedExpr(op->extent);
 
     if (ExprUsesLaunchVar(op->min) || ExprUsesLaunchVar(op->extent)) {
-      std::string bound_expr = PrimExprToCompactString(op->extent);
-      if (!(op->min.as<IntImmNode>() && op->min.as<IntImmNode>()->value == 0)) {
-        bound_expr = PrimExprToCompactString(op->min) + " .. " + bound_expr;
-      }
-      std::string loop_key = op->loop_var->name_hint + ":" + bound_expr;
+      std::string loop_key = op->loop_var->name_hint + "|" + StructuralKey(op->min) + "|" +
+                             StructuralKey(op->extent);
       if (seen_loop_bounds_.insert(loop_key).second) {
-        work_dependent_loop_bounds_.emplace_back(op->loop_var->name_hint, bound_expr);
+        work_dependent_loop_bounds_.push_back(
+            {op->loop_var->name_hint, op->min, op->extent});
       }
     }
 
@@ -165,19 +166,23 @@ class WorkDecompositionAnalyzer : public StmtExprVisitor {
     if (!expr.defined() || !ExprUsesLaunchVar(expr) || IsTrivialLaunchExpr(expr)) {
       return;
     }
-    std::string expr_str = PrimExprToCompactString(expr);
-    if (seen_derived_exprs_.insert(expr_str).second) {
-      derived_index_exprs_.push_back(std::move(expr_str));
+    std::string expr_key = StructuralKey(expr);
+    if (seen_derived_exprs_.insert(expr_key).second) {
+      derived_index_exprs_.push_back(expr);
     }
+  }
+
+  std::string StructuralKey(const PrimExpr& expr) const {
+    return std::to_string(StructuralHash()(expr));
   }
 
   std::unordered_map<const tir::VarNode*, std::string> launch_vars_;
   std::unordered_set<std::string> seen_axes_;
   std::vector<std::string> axes_;
   std::unordered_set<std::string> seen_derived_exprs_;
-  std::vector<std::string> derived_index_exprs_;
+  std::vector<PrimExpr> derived_index_exprs_;
   std::unordered_set<std::string> seen_loop_bounds_;
-  std::vector<std::pair<std::string, std::string>> work_dependent_loop_bounds_;
+  std::vector<LoopBoundInfo> work_dependent_loop_bounds_;
 };
 
 }  // namespace

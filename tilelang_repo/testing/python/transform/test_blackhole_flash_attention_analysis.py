@@ -39,18 +39,49 @@ def _analyze_blackhole_work_decomposition(prim_func):
 def test_mha_forward_exposes_work_decomposition_attrs():
     lowered = _analyze_blackhole_work_decomposition(
         _lower_flash_attention_example(
-        mha_example,
-        1,
-        32,
-        256,
-        128,
-        False,
-        block_M=128,
-        block_N=128,
-        num_stages=1,
-        threads=128,
-    ))
-    assert lowered.attrs.get("blackhole.work_decomposition") is not None
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    work_info = lowered.attrs["blackhole.work_decomposition"]
+    assert list(work_info["axes"]) == ["bx", "by", "bz"]
+
+    derived_index_exprs = work_info["derived_index_exprs"]
+    assert len(derived_index_exprs) > 0
+    first_expr = derived_index_exprs[0]
+    assert "expr" in first_expr
+    assert isinstance(first_expr["expr"], tvm.tir.PrimExpr)
+    assert not isinstance(first_expr["expr"], str)
+
+    causal_lowered = _analyze_blackhole_work_decomposition(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            True,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    causal_work_info = causal_lowered.attrs["blackhole.work_decomposition"]
+    loop_bounds = causal_work_info["work_dependent_loop_bounds"]
+    assert len(loop_bounds) > 0
+    first_loop_bound = loop_bounds[0]
+    assert set(first_loop_bound.keys()) >= {"loop_var", "min", "extent"}
+    assert isinstance(first_loop_bound["min"], tvm.tir.PrimExpr)
+    assert isinstance(first_loop_bound["extent"], tvm.tir.PrimExpr)
 
 
 def test_gqa_forward_exposes_fragment_region_attrs():
