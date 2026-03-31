@@ -5,10 +5,29 @@
 ## 当前阶段
 
 - **阶段**: Stage 3 — multi-core runtime 调度
-- **状态**: ✅ Stage 3 formal direct host path 已完成；`tvm_ffi` wrapper/export blocker 已修复；TT-Metal contract formalization 已完成 P0 compute contract 收尾并收正 `compute_contract -> compute_config` 真源关系与 DSL producer 输入面，且已把 `dst_full_sync_en/bfp8_pack_precise/defines/named_compile_args` 纳入 compute contract / compute config / direct runtime 主链、P3 richer runtime work/accessor/compile-time ABI 主路径收口完成：current copy/GEMM formal surface 上的 work descriptor、accessor/common-runtime schema、compile-time ABI、kernel-level shared `common_runtime_args -> SetCommonRuntimeArgs` host materialization、以及 accessor `args_config_bits -> TT-Metal ArgConfig.raw()` 真源关系都已打通；剩余更宽 execution surface 已明确转移到 P4/P5 或后续专项、P4 interleaved stick/page copy 主路径与 TT-Sim correctness 闭环（已扩到 `M x W` 与静态 offset subrange，当前 formal boundary 为 `transport_page_size` 需 64B 对齐、transport offset 需 page-aligned、global width 需能整除 shared width），以及 P5 program-local semaphore schema、kernel binding、最小 device-side dataflow semaphore builtin、worker producer/consumer TT-Sim E2E、以及 `logical_core_noc_x/y -> KernelSpec.remote_core_descriptors` 最小 remote-core descriptor formalization；direct runtime 对未支持 execution 面显式 fail-fast。当前 backend cleanup review 与重文件边界拆分草案均已建档；cleanup A1（去掉 fallback core / 空 work_packets 显式失败）与 A3（runtime/common-runtime arg explicit identity + identity-driven dedupe + missing-identity build-time reject）已完成，A2 已落首轮 schema-driven buffer materialization 骨架（`ExecutableSpec.buffer_materializations` + runtime consumption），B1 已完成四轮 helper 边界拆分：第一轮把 `ExecuteDirect` orchestration / buffer materialization / kernel+common-arg materialization / per-work runtime-arg application 下沉成 helper，第二轮把 accessor direct-runtime 校验与 accessor compile-time arg materialization 统一进 `ValidateDirectRuntimeAccessorSpec` / `AppendInterleavedAccessorCompileTimeArgs`，schema path 与 legacy accessor path 已改为消费同一套 helper，第三轮把 shared buffer-address / semaphore runtime arg materialization 统一进 `TryAppendSharedRuntimeArg`，`BuildCommonRuntimeArgsFromSpec` 与 `BuildRuntimeArgsFromSpec` 已改为复用同一入口，第四轮把 per-work runtime arg 派生值统一进 `DirectRuntimeWorkContext` / `TryAppendPerWorkRuntimeArg`，`BuildRuntimeArgsFromSpec` 已不再直接维护 `work_linear_id/bx/by/num_k_tiles/logical_n_tiles` 的大段 kind-switch；B2 已完成两轮 boundary 收敛：第一轮统一了 stick/page copy 的 direct-path boundary helper 与 reject 文案，第二轮把 staged-copy shared/global shape、transport geometry、以及 transport index 线性化统一进 `ResolveStaticShape2DFromBufferOrMetadata` / `ResolveStagedCopySharedShape` / `ResolveStagedCopyGlobalIndexInfo` / `StagedCopyTransportGeometry` / `BuildStagedCopyTransportGeometry` / `LinearizeStagedCopyTransportIndex`，`InferCopyTileIndex`、`InferStagedCopyBaseTileIndex`、`GenerateStagedCopyLoopSequence`、`GenerateFusedStagedCopySequence` 已改为消费同一套 helper 真源；B3 已完成首轮定位收紧：`PlanBlackholeCB` 默认不再从 `alloc_shared` 猜测输入，正式边界已收紧为只消费 explicit `blackhole.cb_requirements`，缺失该 attrs 时 planner 现已显式失败；C1 已完成首轮边界收紧：`codegen_blackhole` 的 accessor 发射已统一到共享 helper，codegen 现在明确只支持 compile-time-only accessor slot，slot 不是 `IntImm` 时会在 codegen 阶段直接 fail-fast；C2 已完成首轮 synchronization 边界收紧：`BlackholeModuleNode` 构造期已新增 synchronization schema 校验，`semaphore_id_u32` 现要求唯一匹配 `semaphore_bindings` 且必须引用已规划 semaphore，`logical_core_noc_x/y` 现要求共享 `identity`、成对出现并指向同一 logical core，shared/per-work synchronization materialization 已统一到共享 helper/context，且 remote-core schema 已正式进入 `KernelSpec.remote_core_descriptors`，后续收敛顺序见 `tasks/dev_design/stage4_backend_cleanup_roadmap.md`
-- **补充设计进展**: 已新增 `tasks/dev_design/stage4_flash_attention_forward_subset.md`，把 Blackhole 支持 `example_mha_fwd_bshd.py` / `example_gqa_fwd_bshd.py` 前向完整语义的方案，收敛为“IR 优先、spec 最小化”的通用 work decomposition / fragment compute region / pipelined staging 三类分析与 lowering 设计；当前 split-after analysis 三件套已全部落地：`AnalyzeBlackholeWorkDecomposition`、`AnalyzeBlackholeFragmentRegions`、`AnalyzeBlackholePipelineStages` 已进入 `SplitBlackholeKernel` 之后的 Blackhole lowering 主链，`test_blackhole_flash_attention_analysis.py` 当前 `7 passed`
-- **最新 flash-attn 主链状态**: Blackhole `lower()` 主链边界已收正：`is_device_call()` 现在会把 Blackhole entry `PrimFunc` 视为 device 输入，避免在 `SplitBlackholeKernel` 之前把 `main` 过滤掉；GQA `num_stages=4` 也已在主链上稳定命中 `Blackhole fragment pipeline legality: unsupported stage count 4`，不再先被 `RegionOp` 内部错误或晚期 codegen `Find undefined Variable acc_o` 噪声化。与此同时，`LowerBlackholeOps` 已开始正式消费 split-after analysis，并归一化产出通用 `blackhole.lowering_requirements` attrs；没有新增 `flash_attention_plan` / `attention_work_contract` 一类 attention 专属 schema
-- **最新 flash-attn lowering 进展**: flash-attn forward 的通用 fragment 子集已不再停留在粗粒度 gate 层。`AnalyzeBlackholeFragmentRegions` 现在会显式产出细粒度 `pointwise_ops`（`fill / exp2 / cast / max / add / mul / div / if_then_else`），而 `LowerBlackholeOps` / `codegen_blackhole` 已依次接入以下 builtin 主链：
+- **状态**: Stage 3 formal direct host path 已完成；当前主线已从 copy/GEMM bring-up 转到 TT-Metal contract formalization、backend cleanup 和 flash-attn forward subset
+- **当前稳定状态**:
+  - `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` 主链已稳定
+  - P0 已完成；P3 在 current copy/GEMM formal surface 上已完成收口
+  - P4 已完成 interleaved stick/page copy 主路径；P5 已完成 program-local worker semaphore 与 remote-core descriptor formalization
+  - backend cleanup A1/A2/A3、B1/B2/B3、C1/C2 已完成当前计划内收敛
+- **当前活动主线**:
+  - flash-attn forward subset：analysis 三件套已落地，fragment/dataflow lowering 正在推进
+  - 当前唯一真实主 blocker：`local/accumulator -> shared(CB)` staged copy 还没有正式 lowering
+- **日期**: 2026-03-31
+- **相关设计**:
+  - `tasks/dev_design/final_blackhole_backend_redesign.md`
+  - `tasks/dev_design/stage4_flash_attention_forward_subset.md`
+  - `tasks/dev_design/2026-03-31-flash-attention-forward-subset-implementation-plan.md`
+
+### Flash-Attention 当前推进
+
+- **analysis / legality**:
+  - `AnalyzeBlackholeWorkDecomposition`
+  - `AnalyzeBlackholeFragmentRegions`
+  - `AnalyzeBlackholePipelineStages`
+  已全部接入 `SplitBlackholeKernel` 之后的主链
+- **当前已完成的 fragment lowering 子集**:
   - `tl.blackhole.reduce_row`
   - `tl.blackhole.mul_row_bcast`
   - `tl.blackhole.div_row_bcast`
@@ -18,11 +37,19 @@
   - `tl.blackhole.fill_fragment`
   - `tl.blackhole.scalar_max`
   - `tl.blackhole.cast_fragment_slice`
-  当前 `test_blackhole_flash_attention_pipeline.py` 已推进到 `10 passed`
-- **最新 codegen 收口**: `codegen_blackhole` 已接上上述 fragment builtin 的发射路径，并修掉了 `blackhole.acc` 局部符号映射与 `tl.infinity` 这类 device-only codegen 噪声点。flash-attn forward 的 full `lower()` 因此已经不再卡在旧的 fragment-subset gate、`Find undefined Variable acc_o`、或 `tl.infinity` unresolved call
-- **当前真实 blocker**: flash-attn forward 当前主剩余点已收敛为 **`local/accumulator -> shared(CB)` 的 staged copy 没有正式 lowering**。优化后 device IR 里仍残留 `O_shared_1[tx, ...] = O_shared_local_cast[...]` 这类二维 `BufferStore`；`LowerBlackholeOps` 现已引入 `CopyDirection::kLocalToCB` 并预埋 `tl.blackhole.write_local_slice_to_cb` primitive，但该方向还未真正接入 `GenerateCopySequence()` / `codegen_blackhole`，因此 full path 目前仍会晚到 shared 非扁平 store 失败
-- **日期**: 2026-03-31
-- **设计文档**: `tasks/dev_design/stage3_multicore_design.md`
+- **当前 codegen 状态**:
+  - 上述 fragment builtin 已接入 `codegen_blackhole`
+  - `blackhole.acc` 局部符号映射与 `tl.infinity` 相关的 device-only codegen 噪声已收正
+  - full `lower()` 已不再卡在旧的 fragment-subset gate、`Find undefined Variable acc_o` 或 `tl.infinity` unresolved call
+- **当前真实 blocker**:
+  - 优化后 device IR 里仍残留 `O_shared_1[tx, ...] = O_shared_local_cast[...]` 这类二维 `BufferStore`
+  - 这本质上是 `local/accumulator -> shared(CB)` staged copy
+  - `LowerBlackholeOps` 已引入 `CopyDirection::kLocalToCB`
+  - `tl.blackhole.write_local_slice_to_cb` primitive 已预埋
+  - 但该方向还未真正接入 `GenerateCopySequence()` / `codegen_blackhole`
+- **下一步**:
+  - 正式补齐 `local/accumulator -> shared(CB)` lowering
+  - 不在 codegen 层兜二维 shared store
 
 ### 最新回归结果（当前环境）
 
