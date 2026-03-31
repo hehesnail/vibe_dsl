@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档ID**: `final_blackhole_backend_redesign`
-- **日期**: 2026-03-19（创建），2026-03-30（最近更新）
+- **日期**: 2026-03-19（创建），2026-03-31（最近更新）
 - **状态**: 当前唯一权威总体设计
 - **适用范围**: `tilelang_repo` Blackhole 后端、host/device 主链、运行时执行路径、相关阶段设计
 
@@ -54,7 +54,7 @@ Blackhole 后端当前的正式目标收敛为三点：
 - `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复；host C codegen 已支持 packed call 结果表达式
 - P5 当前已从“零语义层”推进到：program-local semaphore plan、kernel-level semaphore binding、最小 device-side dataflow semaphore builtin、worker producer/consumer direct-runtime E2E，以及 `logical_core_noc_x/y -> KernelSpec.remote_core_descriptors` 最小 remote-core descriptor formalization
 - backend cleanup review 与重文件边界拆分草案已建档：`stage4_backend_cleanup_roadmap.md`；cleanup A1/A3 已完成，A2 已落首轮 schema-driven buffer materialization 骨架，B1 已完成四轮 `BlackholeModule` helper 边界拆分，B2 已完成两轮 staged-copy boundary/geometry/index 收敛，B3 已收紧为只消费 explicit `blackhole.cb_requirements`，C1 已收正 compile-time-only accessor codegen 边界，C2 已完成首轮 synchronization host/runtime boundary 收紧
-- 前向 Flash-Attention 设计已建档：`stage4_flash_attention_forward_subset.md`；当前方向已收敛为以 `mha_fwd_bshd` / `gqa_fwd_bshd` 为牵引，补齐通用 work decomposition / fragment compute region / pipelined staging 三类分析与 lowering 能力，且遵循 “IR 优先、spec 最小化”。当前 `AnalyzeBlackholeWorkDecomposition` / `AnalyzeBlackholeFragmentRegions` / `AnalyzeBlackholePipelineStages` 已接入 Blackhole 主链，且 `lower()` 的 Blackhole device 入口已收正为 entry `PrimFunc` 先进入 `SplitBlackholeKernel` 后的 analysis/lowering 管线；flash-attention forward 当前会在 `LowerBlackholeOps` 的显式 fragment-subset fail-fast 停下，而不是晚到 codegen 才因残留 local fragment store 崩溃
+- 前向 Flash-Attention 设计已建档：`stage4_flash_attention_forward_subset.md`；当前方向已收敛为以 `mha_fwd_bshd` / `gqa_fwd_bshd` 为牵引，补齐通用 work decomposition / fragment compute region / pipelined staging 三类分析与 lowering 能力，且遵循 “IR 优先、spec 最小化”。当前 `AnalyzeBlackholeWorkDecomposition` / `AnalyzeBlackholeFragmentRegions` / `AnalyzeBlackholePipelineStages` 已接入 Blackhole 主链，`lower()` 的 Blackhole device 入口也已收正为 entry `PrimFunc` 先进入 `SplitBlackholeKernel` 后的 analysis/lowering 管线；flash-attention forward 的 `reduce_row / row_broadcast / fill / scalar_max / cast_fragment_slice` 等最小 fragment 子集已开始进入真实 lowering 与 codegen 主链，当前真实剩余点已收敛为 `local/accumulator -> shared(CB)` staged copy 尚无正式 lowering，而不是旧的 fragment-subset fail-fast
 
 ## 3. 正式架构
 

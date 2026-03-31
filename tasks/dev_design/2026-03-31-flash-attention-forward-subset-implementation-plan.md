@@ -14,13 +14,16 @@
 - ✅ Task 2 completed: `AnalyzeBlackholeWorkDecomposition` 已落地并输出结构化 `blackhole.work_decomposition`
 - ✅ Task 3 completed: `AnalyzeBlackholeFragmentRegions` 已覆盖 split-after 与优化后 device IR 上的 MHA/GQA `gemm + row_reduction + row_broadcast + pointwise_chain` 形态，并额外产出细粒度 `pointwise_ops`（`fill/exp2/cast/max/add/mul/div/if_then_else` 等）；`test_blackhole_flash_attention_analysis.py` 当前 `7 passed`
 - ✅ Task 4 completed: `AnalyzeBlackholePipelineStages` 已落地并进入主链
-- 🔄 Current focus: Task 5 / Task 6。`LowerBlackholeOps` 已开始消费 analysis 并产出通用 `blackhole.lowering_requirements` IR attrs；当前显式 fail-fast 已迁移到 `rt_mod_blackhole` 的 build-time gate，且普通 pointwise op 已不再占据主 blocker
-- ✅ Latest narrowing: flash-attn forward 的 `row_reduction` 现已在 `LowerBlackholeOps` 中正式 lower 到 `tl.blackhole.reduce_row` builtin，并覆盖 split-after 与 post-`OptimizeForTarget` 两条真实 device IR 形态；full `lower()` 的 build-time gate 因此已收窄到只剩 `row_broadcast`
-- ✅ Latest narrowing: `row_broadcast` 的 MHA optimized-path 形态已进一步进入真实 TIR lowering。除 `acc_o *= scores_scale[0]` / `acc_o /= logsum[0] -> tl.blackhole.mul_row_bcast/div_row_bcast`、`logsum = logsum * scores_scale + scores_sum -> tl.blackhole.scalar_fma` 外，`acc_s[i] = exp2(acc_s[i] * scale - scores_max[0] * scale)` 也已 lower 成 `tl.blackhole.exp2_row_bcast_affine`，`scores_scale[0] = exp2(scores_max_prev[0] * scale - scores_max[0] * scale)` 已 lower 成 `tl.blackhole.scalar_exp2_affine`
-- ✅ Latest narrowing: flash-attn forward 的 fragment `fill` 已正式 lower 成 `tl.blackhole.fill_fragment` builtin，当前同时覆盖 scalar fill 与优化后 device IR 里的线性化二维 fill；`fill` 已从 `blackhole.lowering_requirements` 和 full `lower()` 的 unsupported 集合中移除
-- ✅ Latest narrowing: `add` 已从剩余 unsupported 集合中移除。当前 pointwise 剪枝不再把 cast/load 索引算术里的 `AddNode` 误判成真正未 lower 的 fragment `add`
-- ✅ Latest narrowing: optimized-path 上的 `scores_max` 更新已 lower 成 `tl.blackhole.scalar_max`，`max` 已从剩余 unsupported 集合中移除
-- 🔄 Next focus: 继续把剩余 pointwise 子集（当前显式 blocker 为 `cast`）从 TIR 正式 lower 成 Blackhole compute 子集，而不是回头继续加 schema/gate
+- 🔄 Current focus: Task 5 / Task 6。`LowerBlackholeOps` 已开始消费 analysis 并产出通用 `blackhole.lowering_requirements` IR attrs；analysis、legality、fragment builtin lowering 与 device-only codegen 边界已经基本接通
+- ✅ Latest narrowing: flash-attn forward 的 `row_reduction` 已 lower 到 `tl.blackhole.reduce_row` builtin，并覆盖 split-after 与 post-`OptimizeForTarget` 两条真实 device IR 形态
+- ✅ Latest narrowing: `row_broadcast` 的最小真实子集已进入 TIR lowering：
+  - `acc_o *= scores_scale[0]` / `acc_o /= logsum[0]` -> `tl.blackhole.mul_row_bcast/div_row_bcast`
+  - `logsum = logsum * scores_scale + scores_sum` -> `tl.blackhole.scalar_fma`
+  - `acc_s[i] = exp2(acc_s[i] * scale - scores_max[0] * scale)` -> `tl.blackhole.exp2_row_bcast_affine`
+  - `scores_scale[0] = exp2(scores_max_prev[0] * scale - scores_max[0] * scale)` -> `tl.blackhole.scalar_exp2_affine`
+- ✅ Latest narrowing: flash-attn forward 的 fragment `fill` / `scalar_max` / `cast_fragment_slice` 已进入正式 lowering；`fill / max / add / cast` 已不再是当前主 blocker
+- ✅ Latest narrowing: `codegen_blackhole` 已接上 `fill_fragment / reduce_row / scalar_max / cast_fragment_slice / mul_row_bcast / div_row_bcast / scalar_fma / exp2_row_bcast_affine / scalar_exp2_affine` 这批 builtin 的发射路径，并修掉了 `blackhole.acc` 局部符号映射与 `tl.infinity` 这类 device-only codegen 噪声点
+- 🔄 Next focus: 当前真实 blocker 已从 fragment gate / `cast` 收敛为 **`local/accumulator -> shared(CB)` staged copy 没有正式 lowering**。`CopyDirection::kLocalToCB` 与 `tl.blackhole.write_local_slice_to_cb` primitive 已预埋，但还没有真正接进 `GenerateCopySequence()` / `codegen_blackhole`
 - 🔄 Task 6 也已开始：第一条 generic fragment-pipeline legality 已落地，当前 `num_stages > 2` 会在主链上显式失败；full `lower()` 的 GQA `num_stages=4` 现在已能稳定命中这条 legality，不再先被 `RegionOp` staged/shared view canonicalization 内部错误打断
 
 ---

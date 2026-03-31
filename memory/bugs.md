@@ -4,6 +4,25 @@
 
 ## 未解决
 
+### flash-attention forward 当前真实主 blocker 是 `local/accumulator -> shared(CB)` staged copy 没有正式 lowering
+
+- **时间**: 2026-03-31
+- **问题**: 在 fragment analysis、row reduction / row broadcast / fill / scalar max / cast slice lowering，以及对应 builtin codegen 都接上后，flash-attn forward 的 full `lower()` 仍然无法继续推进到可执行路径
+- **根本原因**:
+  - 优化后的 device IR 里还残留类似 `O_shared_1[tx, i * 8 + vec] = O_shared_local_cast[vec]` 的二维 `BufferStore`
+  - 这不是普通 shared store，而是 fragment/local 结果写回 CB staging 的语义
+  - Blackhole 当前 copy/dataflow 主链还没有正式承接 `local/accumulator -> shared(CB)` 这条方向，因此 `LowerBlackholeOps` 虽然已识别出 `CopyDirection::kLocalToCB`，但尚未把它真正 lower 成正式 builtin / codegen 路径
+- **影响**:
+  - full path 不再卡在旧的 fragment-subset gate、`Find undefined Variable acc_o`、`tl.infinity` unresolved call 等噪声点
+  - 当前最先暴露的真实失败已变成 shared 非扁平 store / residual staged copy 未 lower
+- **解决方向**:
+  - 把 `local/accumulator -> shared(CB)` 提升成正式 copy direction
+  - 让 `LowerBlackholeOps` 把这类残留 staged copy lower 成显式 builtin（当前预埋为 `tl.blackhole.write_local_slice_to_cb`）
+  - 再由 `codegen_blackhole` 发射对应的 CB write primitive，而不是继续让二维 `BufferStore` 漏到后段
+- **教训**:
+  - 对 Blackhole/TT-Metal，`local` 只是中间态，不应该作为最终资源语义长期留在后段
+  - 一旦某类 `local` 明显处在 fragment 结果写回 CB 的桥接位置，就应尽快收成正式 dataflow primitive，而不是靠 codegen 去兜二维 store
+
 ### Blackhole direct path 缺少 TT-Metal 正式 contract 分层
 
 - **时间**: 2026-03-26

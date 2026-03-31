@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage4_flash_attention_forward_subset`
 - **日期**: 2026-03-31
-- **状态**: 设计中
+- **状态**: 活动中（analysis 已落地，fragment/dataflow lowering 正在推进）
 - **范围**: `tilelang_repo/examples/flash_attention/example_mha_fwd_bshd.py` 与 `example_gqa_fwd_bshd.py` 的前向完整语义；不包含 backward、varlen、wgmma
 
 ## 1. 目标
