@@ -65,6 +65,7 @@ TIR_DEFINE_BUILTIN(tile_regs_commit)
 TIR_DEFINE_BUILTIN(tile_regs_wait)
 TIR_DEFINE_BUILTIN(tile_regs_release)
 TIR_DEFINE_BUILTIN(pack_tile)
+TIR_DEFINE_BUILTIN(reduce_row)
 
 // Register all builtins in TVM's op registry
 TVM_REGISTER_OP("tl.blackhole.cb_reserve_back")
@@ -227,6 +228,15 @@ TVM_REGISTER_OP("tl.blackhole.pack_tile")
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("src_tile_index", "int", "Source tile index in DST")
     .add_argument("dst_cb_id", "int", "Destination CB ID");
+
+TVM_REGISTER_OP("tl.blackhole.reduce_row")
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("src_buffer", "handle", "Source local fragment buffer handle")
+    .add_argument("dst_buffer", "handle", "Destination scalar local fragment buffer handle")
+    .add_argument("num_elements", "int", "Number of contiguous source elements")
+    .add_argument("reduce_kind", "string", "Reduction kind string")
+    .add_argument("clear", "bool", "Whether to clear destination before reduction");
 
 }  // namespace builtin
 }  // namespace tir

@@ -220,6 +220,16 @@ TVM_DLL const Op& blackhole_tile_regs_release();
  */
 TVM_DLL const Op& blackhole_pack_tile();
 
+/*!
+ * \brief Reduce a contiguous 1-D local fragment row into a scalar local fragment target.
+ * \param src_buffer Source local fragment buffer handle
+ * \param dst_buffer Destination scalar local fragment buffer handle
+ * \param num_elements Number of contiguous elements to reduce
+ * \param reduce_kind Reduction kind string ("sum" / "max")
+ * \param clear Whether to clear destination before reduction
+ */
+TVM_DLL const Op& blackhole_reduce_row();
+
 }  // namespace builtin
 }  // namespace tir
 }  // namespace tvm

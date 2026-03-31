@@ -27,6 +27,7 @@
 
 #include "blackhole_cb_common.h"
 
+#include <tvm/tir/expr.h>
 #include <tvm/tir/function.h>
 #include <tvm/tir/stmt.h>
 #include <tvm/tir/stmt_functor.h>
@@ -87,6 +88,14 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
     const tvm::tir::BufferStoreNode* store = nullptr;
     std::vector<tvm::tir::Var> loop_vars;
     CopyDirection direction = CopyDirection::kUnknown;
+  };
+
+  struct RowReductionMatch {
+    tvm::tir::Buffer src;
+    tvm::tir::Buffer dst;
+    tvm::PrimExpr num_elements;
+    std::string kind;
+    bool clear = true;
   };
 
   /*! \brief CB configuration from function attributes */
@@ -237,8 +246,15 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Generate clear builtin sequence */
   tvm::tir::Stmt GenerateClearSequence(const tvm::tir::CallNode* op);
 
+  /*! \brief Detect and lower canonical scalar row-reduction loops on local fragment buffers. */
+  bool MatchDirectRowReduction(const tvm::tir::ForNode* op, RowReductionMatch* match) const;
+  bool MatchAllocatedRowReduction(const tvm::tir::AllocateNode* op, RowReductionMatch* match) const;
+  tvm::tir::Stmt GenerateRowReductionSequence(const RowReductionMatch& match);
+
   // StmtExprMutator overrides
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;
+  tvm::tir::Stmt VisitStmt_(const tvm::tir::AllocateNode* op) override;
+  tvm::tir::Stmt VisitStmt_(const tvm::tir::SeqStmtNode* op) override;
   tvm::tir::Stmt VisitStmt_(const tvm::tir::ForNode* op) override;
   tvm::tir::Stmt VisitStmt_(const tvm::tir::EvaluateNode* op) override;
   tvm::tir::Stmt VisitStmt_(const tvm::tir::BufferStoreNode* op) override;

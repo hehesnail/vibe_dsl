@@ -47,6 +47,24 @@
 
 ## 已解决（仍有复用价值）
 
+### flash-attention 的 row-reduction lowering 若只匹配 split-after 形态，会在 full `lower()` 的 optimized path 上残留旧 blocker
+
+- **时间**: 2026-03-31
+- **问题**: 手动串 `LowerAndLegalize -> SplitBlackholeKernel -> Analyze* -> LowerBlackholeOps` 时，flash-attn forward 的 `row_reduction` 已经能 lower；但真实 full `lower()` 路径仍会在 `rt_mod_blackhole` 报 `row_reduction, row_broadcast` 未支持
+- **根本原因**:
+  - 真正差异不在 `rt_mod_blackhole`，而在 `OptimizeForTarget` 之后的 device IR 形态
+  - split-after 形态里的 direct sum/max reduction 常带 `for extent=1` 包装，旧 matcher 正好能命中
+  - optimized path 里，这些 reduction 会被改写成同级 `SeqStmt`，同时经常带 `AttrStmt(pragma_unroll_explicit)` 包裹；max 临时归约也不再一定额外包一层 `for extent=1`
+  - 结果是同一逻辑 reduction 在手动路径能 lower，在 full `lower()` 上却被漏掉，最后又被 build-time gate 当成旧 blocker 报出
+- **解决**:
+  - `LowerBlackholeOps` 新增对同级 `SeqStmt(init_store, reduce_loop)` 的 direct row-reduction 匹配
+  - `MatchAllocatedRowReduction` 改为同时接受直接 `SeqStmt` 和单层 `for extent=1` 包装
+  - reduction matcher 统一先剥掉无语义的 `AttrStmt` 包装，再匹配 `ForNode` / `BufferStoreNode`
+  - 新增 optimized-path 回归，要求 post-`OptimizeForTarget` 的 `LowerBlackholeOps` 也必须产出 `tl.blackhole.reduce_row`
+- **教训**:
+  - 对 TIR lowering，先确认真实 full pipeline 的 IR 形态，再设计 matcher；不要只对着手工简化 pass 链做模式匹配
+  - 如果“手动 pass 链绿、full `lower()` 仍红”，优先怀疑 prepasses 改写后的 IR 结构，而不是先改 runtime gate
+
 ### split-after flash-attention fragment analysis 若只识别 `CallNode`，会漏掉真实 TIR 里的 row reduction / row broadcast
 
 - **时间**: 2026-03-31

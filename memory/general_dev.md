@@ -55,6 +55,7 @@
 - 对优化后的 device IR 做 analysis 时，buffer view 名经常会带 `_1/_2/...` 这类阶段化后缀；analysis 优先按 canonical buffer name 工作，再把具体 view 当作观察入口。否则同一个逻辑 fragment/shared buffer 会在 pass 里被看成多个对象
 - `T.Pipelined` 经过 device prepasses 后，stage 注解不一定还叫 `num_stages`；Blackhole analysis 至少要同时兼容 `num_stages` 和 `tl_pipelined_num_stages`，否则 optimized path 会比 split-after path 少一层 pipeline 语义
 - `tl.region` 不要假设 `BufferLoad` 索引数必须与 extents 个数完全相等。对 staged/shared view，常见形态是“leading stage index + trailing tile extents”；更稳的 bridge 是把未匹配的前导索引收成 singleton axes，再用提供的 extents 重建尾部 region
+- 对 fragment/reduction lowering，不要假设 split-after 和 optimized device IR 会保留完全相同的包裹结构。`OptimizeForTarget` 之后，`for extent=1` 常会被抹平成同级 `SeqStmt`，而 `pragma_unroll_explicit` 之类则会额外包成 `AttrStmt`；matcher 应先剥掉这类无语义包装，再匹配真正的 reduction 形态，否则手动 pass 链能 lower、full `lower()` 反而会漏掉同一逻辑
 
 ## TT-Metal / TT-Sim 环境
 

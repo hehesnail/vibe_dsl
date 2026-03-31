@@ -39,6 +39,7 @@
 #include <tvm/tir/transform.h>
 
 #include <algorithm>
+#include <limits>
 #include <sstream>
 
 #include "../tir/builtin_blackhole.h"
@@ -474,6 +475,53 @@ static bool HasUnsupportedFragmentOpsInRequirements(const Map<String, Any>& lowe
   return false;
 }
 
+static int CountLoweredRowReductionBuiltins(const Stmt& body) {
+  int count = 0;
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* call = node.as<CallNode>();
+    if (!call || !call->op->IsInstance<OpNode>()) {
+      return;
+    }
+    const Op op = Downcast<Op>(call->op);
+    if (op.same_as(tir::builtin::blackhole_reduce_row()) ||
+        op->name == "tl.blackhole.reduce_row") {
+      ++count;
+    }
+  });
+  return count;
+}
+
+static Map<String, Any> PruneSatisfiedLoweringRequirements(const Map<String, Any>& lowering_requirements,
+                                                           const Stmt& body) {
+  auto row_targets_opt = lowering_requirements.Get("row_reduction_targets");
+  if (!row_targets_opt.has_value()) {
+    return lowering_requirements;
+  }
+  const int target_count = static_cast<int>(Downcast<Array<Any>>(row_targets_opt.value()).size());
+  if (target_count == 0 || CountLoweredRowReductionBuiltins(body) < target_count) {
+    return lowering_requirements;
+  }
+
+  Map<String, Any> pruned;
+  for (const auto& [key, value] : lowering_requirements) {
+    if (key == "row_reduction_targets") {
+      continue;
+    }
+    if (key == "fragment_op_kinds") {
+      Array<Any> kept_ops;
+      for (const auto& item : Downcast<Array<Any>>(value)) {
+        if (Downcast<String>(item) != "row_reduction") {
+          kept_ops.push_back(item);
+        }
+      }
+      pruned.Set(key, kept_ops);
+      continue;
+    }
+    pruned.Set(key, value);
+  }
+  return pruned;
+}
+
 static void ValidateFragmentPipelineLegality(const Map<String, Any>& lowering_requirements) {
   if (auto pipeline_stage_counts = lowering_requirements.Get("pipeline_stage_counts")) {
     for (const auto& item : Downcast<Array<Any>>(pipeline_stage_counts.value())) {
@@ -679,6 +727,7 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
 
   // Transform the function body
   Stmt body = VisitStmt(func->body);
+  lowering_requirements = PruneSatisfiedLoweringRequirements(lowering_requirements, body);
 
   // Create new function with transformed body
   PrimFunc new_func = func;
@@ -1826,6 +1875,33 @@ void LowerBlackholeOps::CollectNestedCopyStores(const Stmt& stmt,
   }
 }
 
+static bool IsPureCopyLoopNest(const Stmt& stmt) {
+  if (const auto* loop = stmt.as<ForNode>()) {
+    return IsPureCopyLoopNest(loop->body);
+  }
+  if (const auto* attr = stmt.as<AttrStmtNode>()) {
+    return IsPureCopyLoopNest(attr->body);
+  }
+  if (const auto* allocate = stmt.as<AllocateNode>()) {
+    return IsPureCopyLoopNest(allocate->body);
+  }
+  if (const auto* seq = stmt.as<SeqStmtNode>()) {
+    if (seq->seq.empty()) {
+      return false;
+    }
+    for (const Stmt& child : seq->seq) {
+      if (!IsPureCopyLoopNest(child)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (const auto* store = stmt.as<BufferStoreNode>()) {
+    return store->value.as<BufferLoadNode>() != nullptr;
+  }
+  return false;
+}
+
 void LowerBlackholeOps::RecordStagedCopyBufferBinding(const BufferStoreNode* op,
                                                       CopyDirection direction) {
   const auto* load = op->value.as<BufferLoadNode>();
@@ -2460,6 +2536,250 @@ Stmt LowerBlackholeOps::GenerateClearSequence(const CallNode* op) {
   return MakeBlackholeCall(blackhole_tile_regs_acquire(), {});
 }
 
+namespace {
+
+bool IsScalarLocalFragmentBuffer(const Buffer& buffer) {
+  if (!IsUnsupportedResidualLocalScope(buffer)) {
+    return false;
+  }
+  return buffer->shape.size() == 1 && tir::is_one(buffer->shape[0]);
+}
+
+bool MatchScalarAccumulatorUpdate(const BufferStoreNode* store,
+                                  const Buffer& accum_buffer,
+                                  const Var& reduce_var,
+                                  Buffer* src_buffer,
+                                  std::string* kind) {
+  auto same_buffer = [](const Buffer& lhs, const Buffer& rhs) {
+    return lhs.same_as(rhs) || lhs->data.get() == rhs->data.get() || lhs->name == rhs->name;
+  };
+  auto same_loop_index = [&](const PrimExpr& index) {
+    if (index.same_as(reduce_var)) {
+      return true;
+    }
+    const auto* index_var = index.as<VarNode>();
+    return index_var &&
+           (index_var == reduce_var.get() || index_var->name_hint == reduce_var->name_hint);
+  };
+  if (!store || !same_buffer(store->buffer, accum_buffer) || store->indices.size() != 1 ||
+      !tir::is_zero(store->indices[0])) {
+    return false;
+  }
+
+  auto try_match_binary = [&](const PrimExpr& lhs, const PrimExpr& rhs,
+                              const char* expected_kind) -> bool {
+    const auto* accum_load = lhs.as<BufferLoadNode>();
+    const auto* src_load = rhs.as<BufferLoadNode>();
+    if (!accum_load || !src_load) {
+      return false;
+    }
+    if (!same_buffer(accum_load->buffer, accum_buffer) || accum_load->indices.size() != 1 ||
+        !tir::is_zero(accum_load->indices[0])) {
+      return false;
+    }
+    if (same_buffer(src_load->buffer, accum_buffer) || src_load->indices.size() != 1 ||
+        !same_loop_index(src_load->indices[0])) {
+      return false;
+    }
+    *src_buffer = src_load->buffer;
+    *kind = expected_kind;
+    return true;
+  };
+
+  if (const auto* add = store->value.as<AddNode>()) {
+    return try_match_binary(add->a, add->b, "sum") || try_match_binary(add->b, add->a, "sum");
+  }
+  if (const auto* max = store->value.as<MaxNode>()) {
+    return try_match_binary(max->a, max->b, "max") || try_match_binary(max->b, max->a, "max");
+  }
+  return false;
+}
+
+bool MatchReductionFinalizeStore(const BufferStoreNode* store,
+                                 const Buffer& tmp_buffer,
+                                 Buffer* dst_buffer,
+                                 std::string* kind) {
+  auto same_buffer = [](const Buffer& lhs, const Buffer& rhs) {
+    return lhs.same_as(rhs) || lhs->data.get() == rhs->data.get() || lhs->name == rhs->name;
+  };
+  if (!store || store->buffer->shape.size() != 1 || store->indices.size() != 1 ||
+      !tir::is_zero(store->indices[0]) || !IsScalarLocalFragmentBuffer(store->buffer)) {
+    return false;
+  }
+
+  auto try_match_binary = [&](const PrimExpr& lhs, const PrimExpr& rhs,
+                              const char* expected_kind) -> bool {
+    const auto* dst_load = lhs.as<BufferLoadNode>();
+    const auto* tmp_load = rhs.as<BufferLoadNode>();
+    if (!dst_load || !tmp_load) {
+      return false;
+    }
+    if (!same_buffer(dst_load->buffer, store->buffer) || dst_load->indices.size() != 1 ||
+        !tir::is_zero(dst_load->indices[0])) {
+      return false;
+    }
+    if (!same_buffer(tmp_load->buffer, tmp_buffer) || tmp_load->indices.size() != 1 ||
+        !tir::is_zero(tmp_load->indices[0])) {
+      return false;
+    }
+    *dst_buffer = store->buffer;
+    *kind = expected_kind;
+    return true;
+  };
+
+  if (const auto* add = store->value.as<AddNode>()) {
+    return try_match_binary(add->a, add->b, "sum") || try_match_binary(add->b, add->a, "sum");
+  }
+  if (const auto* max = store->value.as<MaxNode>()) {
+    return try_match_binary(max->a, max->b, "max") || try_match_binary(max->b, max->a, "max");
+  }
+  return false;
+}
+
+std::vector<Stmt> FlattenSeqStmtBody(const Stmt& body) {
+  if (const auto* seq = body.as<SeqStmtNode>()) {
+    return std::vector<Stmt>(seq->seq.begin(), seq->seq.end());
+  }
+  return {body};
+}
+
+std::vector<Stmt> FlattenSingletonLoopBody(const Stmt& body) {
+  if (const auto* loop = body.as<ForNode>()) {
+    if (tir::is_one(loop->extent)) {
+      return FlattenSeqStmtBody(loop->body);
+    }
+  }
+  return FlattenSeqStmtBody(body);
+}
+
+const ForNode* AsUnwrappedFor(const Stmt& stmt) {
+  Stmt current = stmt;
+  while (const auto* attr = current.as<AttrStmtNode>()) {
+    current = attr->body;
+  }
+  return current.as<ForNode>();
+}
+
+const BufferStoreNode* AsUnwrappedBufferStore(const Stmt& stmt) {
+  Stmt current = stmt;
+  while (const auto* attr = current.as<AttrStmtNode>()) {
+    current = attr->body;
+  }
+  return current.as<BufferStoreNode>();
+}
+
+bool IsFloatImmValue(const PrimExpr& expr, double expected) {
+  if (const auto* imm = expr.as<FloatImmNode>()) {
+    return imm->value == expected;
+  }
+  return false;
+}
+
+bool IsZeroValue(const PrimExpr& expr) {
+  return tir::is_zero(expr) || IsFloatImmValue(expr, 0.0);
+}
+
+bool IsNegInfValue(const PrimExpr& expr) {
+  if (const auto* mul = expr.as<MulNode>()) {
+    return (IsFloatImmValue(mul->a, std::numeric_limits<double>::infinity()) &&
+            IsFloatImmValue(mul->b, -1.0)) ||
+           (IsFloatImmValue(mul->b, std::numeric_limits<double>::infinity()) &&
+            IsFloatImmValue(mul->a, -1.0));
+  }
+  return IsFloatImmValue(expr, -std::numeric_limits<double>::infinity());
+}
+
+}  // namespace
+
+bool LowerBlackholeOps::MatchDirectRowReduction(const ForNode* op, RowReductionMatch* match) const {
+  if (!op || !match || !tir::is_one(op->extent)) {
+    return false;
+  }
+  std::vector<Stmt> stmts = FlattenSingletonLoopBody(op->body);
+  if (stmts.size() != 2) {
+    return false;
+  }
+
+  const auto* init_store = AsUnwrappedBufferStore(stmts[0]);
+  const auto* reduce_loop = AsUnwrappedFor(stmts[1]);
+  if (!init_store || !reduce_loop || !IsScalarLocalFragmentBuffer(init_store->buffer) ||
+      init_store->indices.size() != 1 || !tir::is_zero(init_store->indices[0])) {
+    return false;
+  }
+  Buffer src_buffer;
+  std::string kind;
+  if (!MatchScalarAccumulatorUpdate(AsUnwrappedBufferStore(reduce_loop->body), init_store->buffer,
+                                    reduce_loop->loop_var, &src_buffer, &kind)) {
+    return false;
+  }
+
+  if (kind == "sum" && !IsZeroValue(init_store->value)) {
+    return false;
+  }
+  if (kind == "max" && !IsNegInfValue(init_store->value)) {
+    return false;
+  }
+
+  match->src = src_buffer;
+  match->dst = init_store->buffer;
+  match->num_elements = reduce_loop->extent;
+  match->kind = kind;
+  match->clear = true;
+  return true;
+}
+
+bool LowerBlackholeOps::MatchAllocatedRowReduction(const AllocateNode* op,
+                                                   RowReductionMatch* match) const {
+  if (!op || !match || op->extents.size() != 1 || !tir::is_one(op->extents[0])) {
+    return false;
+  }
+  std::vector<Stmt> stmts = FlattenSingletonLoopBody(op->body);
+  if (stmts.size() != 3) {
+    return false;
+  }
+
+  const auto* init_store = AsUnwrappedBufferStore(stmts[0]);
+  const auto* reduce_loop = AsUnwrappedFor(stmts[1]);
+  const auto* finalize_store = AsUnwrappedBufferStore(stmts[2]);
+  if (init_store) {
+  }
+  if (!init_store || !reduce_loop || !finalize_store || init_store->indices.size() != 1 ||
+      !tir::is_zero(init_store->indices[0])) {
+    return false;
+  }
+  if (init_store->buffer->data.get() != op->buffer_var.get() &&
+      init_store->buffer->name != op->buffer_var->name_hint) {
+    return false;
+  }
+
+  Buffer src_buffer;
+  std::string reduction_kind;
+  if (!MatchScalarAccumulatorUpdate(AsUnwrappedBufferStore(reduce_loop->body), init_store->buffer,
+                                    reduce_loop->loop_var, &src_buffer, &reduction_kind)) {
+    return false;
+  }
+
+  Buffer dst_buffer;
+  std::string finalize_kind;
+  if (!MatchReductionFinalizeStore(finalize_store, init_store->buffer, &dst_buffer, &finalize_kind) ||
+      finalize_kind != reduction_kind) {
+    return false;
+  }
+
+  match->src = src_buffer;
+  match->dst = dst_buffer;
+  match->num_elements = reduce_loop->extent;
+  match->kind = reduction_kind;
+  match->clear = false;
+  return true;
+}
+
+Stmt LowerBlackholeOps::GenerateRowReductionSequence(const RowReductionMatch& match) {
+  return MakeBlackholeCall(tir::builtin::blackhole_reduce_row(),
+                           {match.src->data, match.dst->data, match.num_elements,
+                            StringImm(match.kind), Bool(match.clear)});
+}
+
 // Parse a colon-separated string into fields
 Stmt LowerBlackholeOps::VisitStmt_(const AttrStmtNode* op) {
   if (op->attr_key == tir::attr::thread_extent) {
@@ -2479,6 +2799,58 @@ Stmt LowerBlackholeOps::VisitStmt_(const AttrStmtNode* op) {
     return AttrStmt(op->node, op->attr_key, op->value, body);
   }
   return StmtExprMutator::VisitStmt_(op);
+}
+
+Stmt LowerBlackholeOps::VisitStmt_(const AllocateNode* op) {
+  Stmt lowered = StmtExprMutator::VisitStmt_(op);
+  if (const auto* allocate = lowered.as<AllocateNode>()) {
+    RowReductionMatch match;
+    if (MatchAllocatedRowReduction(allocate, &match)) {
+      return GenerateRowReductionSequence(match);
+    }
+  }
+  return lowered;
+}
+
+Stmt LowerBlackholeOps::VisitStmt_(const SeqStmtNode* op) {
+  Array<Stmt> lowered_seq;
+  lowered_seq.reserve(op->seq.size());
+  for (const Stmt& stmt : op->seq) {
+    lowered_seq.push_back(VisitStmt(stmt));
+  }
+
+  Array<Stmt> rewritten;
+  for (size_t i = 0; i < lowered_seq.size(); ++i) {
+    if (i + 1 < lowered_seq.size()) {
+      const auto* init_store = AsUnwrappedBufferStore(lowered_seq[i]);
+      const auto* reduce_loop = AsUnwrappedFor(lowered_seq[i + 1]);
+      if (init_store && reduce_loop && IsScalarLocalFragmentBuffer(init_store->buffer) &&
+          init_store->indices.size() == 1 && tir::is_zero(init_store->indices[0])) {
+        Buffer src_buffer;
+        std::string kind;
+        if (MatchScalarAccumulatorUpdate(AsUnwrappedBufferStore(reduce_loop->body),
+                                         init_store->buffer,
+                                         reduce_loop->loop_var,
+                                         &src_buffer,
+                                         &kind) &&
+            ((kind == "sum" && IsZeroValue(init_store->value)) ||
+             (kind == "max" && IsNegInfValue(init_store->value)))) {
+          RowReductionMatch match;
+          match.src = src_buffer;
+          match.dst = init_store->buffer;
+          match.num_elements = reduce_loop->extent;
+          match.kind = kind;
+          match.clear = true;
+          rewritten.push_back(GenerateRowReductionSequence(match));
+          ++i;
+          continue;
+        }
+      }
+    }
+    rewritten.push_back(lowered_seq[i]);
+  }
+
+  return SeqStmt::Flatten(rewritten);
 }
 
 Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
@@ -2529,60 +2901,69 @@ Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
     saw_copy_op_ = true;
   }
 
-  std::vector<Var> loop_stack;
-  std::vector<NestedCopyMatch> matches;
-  CollectNestedCopyStores(op->body, &loop_stack, &matches);
-  if (!matches.empty()) {
-    const NestedCopyMatch* dram_to_cb = nullptr;
-    const NestedCopyMatch* cb_to_dram = nullptr;
-    for (const auto& match : matches) {
-      if (match.direction == CopyDirection::kDramToCB && !dram_to_cb) {
-        dram_to_cb = &match;
-      } else if (match.direction == CopyDirection::kCBToDram && !cb_to_dram) {
-        cb_to_dram = &match;
-      }
-    }
-    if (dram_to_cb && cb_to_dram) {
-      saw_copy_op_ = true;
-      std::vector<Var> loop_vars_to_zero = dram_to_cb->loop_vars;
-      for (const auto& v : cb_to_dram->loop_vars) {
-        if (std::find_if(loop_vars_to_zero.begin(), loop_vars_to_zero.end(),
-                         [&](const Var& existing) { return existing.same_as(v); }) ==
-            loop_vars_to_zero.end()) {
-          loop_vars_to_zero.push_back(v);
+  if (IsPureCopyLoopNest(op->body)) {
+    std::vector<Var> loop_stack;
+    std::vector<NestedCopyMatch> matches;
+    CollectNestedCopyStores(op->body, &loop_stack, &matches);
+    if (!matches.empty()) {
+      const NestedCopyMatch* dram_to_cb = nullptr;
+      const NestedCopyMatch* cb_to_dram = nullptr;
+      for (const auto& match : matches) {
+        if (match.direction == CopyDirection::kDramToCB && !dram_to_cb) {
+          dram_to_cb = &match;
+        } else if (match.direction == CopyDirection::kCBToDram && !cb_to_dram) {
+          cb_to_dram = &match;
         }
       }
-      PrimExpr base_tile_index =
-          InferStagedCopyBaseTileIndex(dram_to_cb->store, loop_vars_to_zero);
-      return GenerateFusedStagedCopySequence(dram_to_cb->store, cb_to_dram->store,
-                                             base_tile_index);
+      if (dram_to_cb && cb_to_dram) {
+        saw_copy_op_ = true;
+        std::vector<Var> loop_vars_to_zero = dram_to_cb->loop_vars;
+        for (const auto& v : cb_to_dram->loop_vars) {
+          if (std::find_if(loop_vars_to_zero.begin(), loop_vars_to_zero.end(),
+                           [&](const Var& existing) { return existing.same_as(v); }) ==
+              loop_vars_to_zero.end()) {
+            loop_vars_to_zero.push_back(v);
+          }
+        }
+        PrimExpr base_tile_index =
+            InferStagedCopyBaseTileIndex(dram_to_cb->store, loop_vars_to_zero);
+        return GenerateFusedStagedCopySequence(dram_to_cb->store, cb_to_dram->store,
+                                               base_tile_index);
+      }
     }
-  }
 
-  std::vector<Var> nested_loop_vars;
-  if (const auto* nested_store = FindNestedCopyStore(op->body, &nested_loop_vars)) {
-    CopyDirection direction = GetCopyDirection(nested_store);
-    if (direction == CopyDirection::kDramToCB || direction == CopyDirection::kCBToDram) {
-      saw_copy_op_ = true;
-      std::vector<Var> loop_vars_to_zero{op->loop_var};
-      loop_vars_to_zero.insert(loop_vars_to_zero.end(), nested_loop_vars.begin(),
-                               nested_loop_vars.end());
-      PrimExpr base_tile_index =
-          InferStagedCopyBaseTileIndex(nested_store, loop_vars_to_zero);
-      return GenerateStagedCopyLoopSequence(nested_store, base_tile_index);
-    }
-  }
-  if (const auto* store = op->body.as<BufferStoreNode>()) {
-    if (IsCopyOperation(store)) {
-      CopyDirection direction = GetCopyDirection(store);
+    std::vector<Var> nested_loop_vars;
+    if (const auto* nested_store = FindNestedCopyStore(op->body, &nested_loop_vars)) {
+      CopyDirection direction = GetCopyDirection(nested_store);
       if (direction == CopyDirection::kDramToCB || direction == CopyDirection::kCBToDram) {
         saw_copy_op_ = true;
-        PrimExpr tile_index = InferCopyTileIndex(store, op->loop_var);
-        return GenerateCopySequence(store, tile_index);
+        std::vector<Var> loop_vars_to_zero{op->loop_var};
+        loop_vars_to_zero.insert(loop_vars_to_zero.end(), nested_loop_vars.begin(),
+                                 nested_loop_vars.end());
+        PrimExpr base_tile_index =
+            InferStagedCopyBaseTileIndex(nested_store, loop_vars_to_zero);
+        return GenerateStagedCopyLoopSequence(nested_store, base_tile_index);
+      }
+    }
+    if (const auto* store = op->body.as<BufferStoreNode>()) {
+      if (IsCopyOperation(store)) {
+        CopyDirection direction = GetCopyDirection(store);
+        if (direction == CopyDirection::kDramToCB || direction == CopyDirection::kCBToDram) {
+          saw_copy_op_ = true;
+          PrimExpr tile_index = InferCopyTileIndex(store, op->loop_var);
+          return GenerateCopySequence(store, tile_index);
+        }
       }
     }
   }
-  return StmtExprMutator::VisitStmt_(op);
+  Stmt lowered = StmtExprMutator::VisitStmt_(op);
+  if (const auto* loop = lowered.as<ForNode>()) {
+    RowReductionMatch row_reduction_match;
+    if (MatchDirectRowReduction(loop, &row_reduction_match)) {
+      return GenerateRowReductionSequence(row_reduction_match);
+    }
+  }
+  return lowered;
 }
 
 // StmtExprMutator overrides
