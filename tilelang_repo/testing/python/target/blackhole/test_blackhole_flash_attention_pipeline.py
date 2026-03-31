@@ -17,6 +17,7 @@ if str(EXAMPLE_DIR) not in sys.path:
     sys.path.append(str(EXAMPLE_DIR))
 
 import example_mha_fwd_bshd as mha_example
+import example_gqa_fwd_bshd as gqa_example
 
 
 def _lower_flash_attention_through_blackhole_ops(*, is_causal=False):
@@ -44,6 +45,18 @@ def _lower_flash_attention_through_blackhole_ops(*, is_causal=False):
     mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
     mod = tilelang.transform.LowerBlackholeOps()(mod)
     return mod["main"]
+
+
+def _run_flash_attention_lower_blackhole_ops(example_module, *args, **kwargs):
+    target = Target("blackhole")
+    mod = tvm.IRModule({"main": example_module.flashattn.jit_impl.get_tir(*args, **kwargs)})
+    with target:
+        mod = LowerAndLegalize(mod, target)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
+    mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
+    return tilelang.transform.LowerBlackholeOps()(mod)
 
 
 def test_flash_attention_forward_lower_blackhole_ops_emits_generic_lowering_requirements():
@@ -99,3 +112,23 @@ def test_flash_attention_forward_rejects_unlowered_fragment_subset():
                 ),
                 target=target,
             )
+
+
+def test_flash_attention_forward_rejects_unsupported_pipeline_stage_count():
+    with pytest.raises(
+        tvm.TVMError,
+        match="Blackhole fragment pipeline legality: unsupported stage count 4",
+    ):
+        _run_flash_attention_lower_blackhole_ops(
+            gqa_example,
+            1,
+            16,
+            1024,
+            128,
+            False,
+            groups=16,
+            block_M=64,
+            block_N=64,
+            num_stages=4,
+            threads=128,
+        )

@@ -474,6 +474,32 @@ static bool HasUnsupportedFragmentOpsInRequirements(const Map<String, Any>& lowe
   return false;
 }
 
+static void ValidateFragmentPipelineLegality(const Map<String, Any>& lowering_requirements) {
+  if (auto pipeline_stage_counts = lowering_requirements.Get("pipeline_stage_counts")) {
+    for (const auto& item : Downcast<Array<Any>>(pipeline_stage_counts.value())) {
+      const int stage_count = Downcast<Integer>(item)->value;
+      ICHECK_LE(stage_count, 2)
+          << "Blackhole fragment pipeline legality: unsupported stage count " << stage_count;
+    }
+  }
+}
+
+static void ValidateFragmentPipelineLegalityFromBody(const Stmt& body) {
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* loop = node.as<ForNode>();
+    if (!loop || !loop->annotations.defined()) {
+      return;
+    }
+    auto stage_count = loop->annotations.Get("num_stages");
+    if (!stage_count.has_value()) {
+      return;
+    }
+    const int64_t stages = Downcast<Integer>(stage_count.value())->value;
+    ICHECK_LE(stages, 2)
+        << "Blackhole fragment pipeline legality: unsupported stage count " << stages;
+  });
+}
+
 static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& func) {
   Map<String, Any> lowering_requirements;
 
@@ -622,6 +648,11 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   gemm_a_dtype_ = DataType::Void();
   gemm_b_dtype_ = DataType::Void();
   gemm_c_dtype_ = DataType::Void();
+  ValidateFragmentPipelineLegalityFromBody(func->body);
+  Map<String, Any> lowering_requirements = BuildLoweringRequirementsFromAnalysis(func);
+  if (!lowering_requirements.empty()) {
+    ValidateFragmentPipelineLegality(lowering_requirements);
+  }
 
   // Pre-scan: register GEMM CB requirements first so their indices are stable
   // when copy stmts are visited.
@@ -649,7 +680,6 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   StoreGemmContract(new_func);
   StoreAccessorDescriptors(new_func);
 
-  Map<String, Any> lowering_requirements = BuildLoweringRequirementsFromAnalysis(func);
   if (!lowering_requirements.empty()) {
     Map<String, Any> attrs =
         new_func->attrs.defined() ? new_func->attrs->dict : Map<String, Any>();

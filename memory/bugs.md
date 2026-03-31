@@ -79,6 +79,21 @@
   - analysis 被 lowering 消费，和“不支持的 subset 在哪一层 fail-fast”是两件事，不能混在一个 `ICHECK` 里
   - 当某类 analysis 还处在“已识别、未执行”的阶段，优先让 transform 层产出最小归一化 summary，再把最终显式 gate 放到更靠近 spec/runtime 的边界
 
+### full `lower()` 路径下的 GQA `num_stages=4` 会先撞 GEMM region canonicalization 内部错误，掩盖更前面的 generic stage legality
+
+- **时间**: 2026-03-31
+- **问题**: 给 GQA flash-attention 前向喂 `num_stages=4` 时，理论上当前应先被 `fragment pipeline legality` 拒绝；但沿着 full `lower()` 目标链走时，实际会先在 `LowerBlackholeOps::ExtractGemmInfo` 的 `RegionOp` 规范化里报 `load->indices.size() != ndim`
+- **根本原因**:
+  - 更宽的 GQA pipelined GEMM region 形态，在 full target path 里还有比 stage legality 更早的 canonicalization 假设
+  - 这会把本来应该更前置、更通用的 `num_stages` legality 噪声化
+- **解决**:
+  - 先把 `num_stages > 2` 的 generic legality 直接绑到 `ForNode.annotations["num_stages"]`
+  - 当前测试先锁在 `LowerBlackholeOps` 直接入口，确保 legality 逻辑本身成立
+  - 后续再单独清 full `lower()` 下 GQA 更宽 GEMM region canonicalization 的内部错误
+- **教训**:
+  - 对复杂 kernel 的 legality，不能完全依赖“等更深层 canonicalization 成功之后再判”
+  - 如果更深层还存在独立内部错误，就先把更前置、更确定的 legality 绑在更早、语义更直接的 IR 信号上
+
 ### Blackhole `lower()` 若在 `SplitBlackholeKernel` 前按旧 device attrs 过滤，会把真实入口 `PrimFunc` 静默排除出 Blackhole pass 主链
 
 - **时间**: 2026-03-31
