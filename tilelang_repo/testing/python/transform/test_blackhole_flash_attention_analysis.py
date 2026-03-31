@@ -56,10 +56,13 @@ def test_mha_forward_exposes_work_decomposition_attrs():
 
     derived_index_exprs = work_info["derived_index_exprs"]
     assert len(derived_index_exprs) > 0
-    first_expr = derived_index_exprs[0]
-    assert "expr" in first_expr
-    assert isinstance(first_expr["expr"], tvm.tir.PrimExpr)
-    assert not isinstance(first_expr["expr"], str)
+    assert any(
+        "expr" in entry
+        and isinstance(entry["expr"], tvm.tir.PrimExpr)
+        and not isinstance(entry["expr"], str)
+        and str(entry["expr"]) == "bx * 128"
+        for entry in derived_index_exprs
+    )
 
     causal_lowered = _analyze_blackhole_work_decomposition(
         _lower_flash_attention_example(
@@ -78,10 +81,16 @@ def test_mha_forward_exposes_work_decomposition_attrs():
     causal_work_info = causal_lowered.attrs["blackhole.work_decomposition"]
     loop_bounds = causal_work_info["work_dependent_loop_bounds"]
     assert len(loop_bounds) > 0
-    first_loop_bound = loop_bounds[0]
-    assert set(first_loop_bound.keys()) >= {"loop_var", "min", "extent"}
-    assert isinstance(first_loop_bound["min"], tvm.tir.PrimExpr)
-    assert isinstance(first_loop_bound["extent"], tvm.tir.PrimExpr)
+    k_loop_bounds = [bound for bound in loop_bounds if str(bound["loop_var"]) == "k"]
+    assert len(k_loop_bounds) > 0
+    k_loop_bound = k_loop_bounds[0]
+    assert set(k_loop_bound.keys()) >= {"loop_var", "min", "extent"}
+    assert isinstance(k_loop_bound["min"], tvm.tir.PrimExpr)
+    assert isinstance(k_loop_bound["extent"], tvm.tir.PrimExpr)
+    assert not isinstance(k_loop_bound["min"], str)
+    assert not isinstance(k_loop_bound["extent"], str)
+    assert str(k_loop_bound["min"]) == "0"
+    assert str(k_loop_bound["extent"]) == "bx + 1"
 
 
 def test_gqa_forward_exposes_fragment_region_attrs():
