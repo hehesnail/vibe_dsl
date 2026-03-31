@@ -42,6 +42,13 @@ namespace tl {
 
 namespace {
 
+const tvm::tir::VarNode* AsHandleVar(const tvm::PrimExpr& expr) {
+  if (const auto* var = expr.as<tvm::tir::VarNode>()) {
+    return var;
+  }
+  return nullptr;
+}
+
 void ValidateNoUnsupportedFragmentRequirementsForCodegen(const tvm::tir::PrimFunc& f) {
   auto lowering_requirements =
       f->GetAttr<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>("blackhole.lowering_requirements");
@@ -80,6 +87,50 @@ void ValidateNoUnsupportedFragmentRequirementsForCodegen(const tvm::tir::PrimFun
     ICHECK(false) << "Blackhole fragment compute subset lowering is not implemented for ops ["
                   << os.str() << "]";
   }
+}
+
+ffi::Array<ffi::Any> AggregateSegmentRuntimeArgsForCodegen(const tvm::tir::PrimFunc& f) {
+  ffi::Array<ffi::Any> aggregated;
+  auto segment_plan_attr = f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.segment_plan");
+  if (!segment_plan_attr) {
+    return aggregated;
+  }
+
+  std::unordered_set<std::string> seen_identities;
+  for (const auto& item : segment_plan_attr.value()) {
+    auto segment = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
+        tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
+    if (segment.empty()) {
+      continue;
+    }
+    auto runtime_args_it = segment.Get("runtime_args");
+    if (!runtime_args_it.has_value()) {
+      continue;
+    }
+    for (const auto& arg_item : Downcast<tvm::ffi::Array<tvm::ffi::Any>>(runtime_args_it.value())) {
+      auto arg = arg_item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
+          tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
+      if (arg.empty()) {
+        continue;
+      }
+      std::string identity;
+      if (auto v = arg.Get("identity")) {
+        identity = Downcast<tvm::ffi::String>(v.value());
+      }
+      if (!identity.empty() && !seen_identities.insert(identity).second) {
+        continue;
+      }
+      aggregated.push_back(arg);
+    }
+  }
+  return aggregated;
+}
+
+bool HasRuntimeArgsForCodegen(const tvm::tir::PrimFunc& f) {
+  if (f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.runtime_args")) {
+    return true;
+  }
+  return !AggregateSegmentRuntimeArgsForCodegen(f).empty();
 }
 
 }  // namespace
@@ -187,7 +238,7 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   // TT-Metal kernels use get_arg_val<uint32_t>(arg_index) to read arguments
   stream << "  // Load kernel arguments from runtime\n";
   LoadCorePlan(f);
-  if (f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.runtime_args")) {
+  if (HasRuntimeArgsForCodegen(f)) {
     EmitRuntimeArgLoads(f);
     this->VisitStmt(f->body);
     stream << "}\n\n";
@@ -308,7 +359,14 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   }
 
   auto runtime_args_attr = f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.runtime_args");
-  ICHECK(runtime_args_attr) << "blackhole.runtime_args must be present when emitting runtime args";
+  ffi::Array<ffi::Any> runtime_args;
+  if (runtime_args_attr) {
+    runtime_args = runtime_args_attr.value();
+  } else {
+    runtime_args = AggregateSegmentRuntimeArgsForCodegen(f);
+  }
+  ICHECK(!runtime_args.empty())
+      << "blackhole.runtime_args must be present when emitting runtime args";
 
   std::unordered_map<std::string, const tvm::tir::VarNode *> buffer_vars_by_name;
   std::vector<std::string> ordered_handle_buffer_names;
@@ -378,7 +436,7 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   size_t next_output_buffer = ordered_handle_buffer_names.empty()
                                   ? 0
                                   : ordered_handle_buffer_names.size() - 1;
-  for (const auto &item : runtime_args_attr.value()) {
+  for (const auto &item : runtime_args) {
     auto arg_info = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
         tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
     if (arg_info.empty()) {
@@ -494,7 +552,28 @@ std::string CodeGenBlackhole::GetRuntimeArgVarForBuffer(
     }
   }
 
-  ICHECK(false) << "Missing runtime arg binding for buffer var: " << buffer_var->name_hint;
+  std::ostringstream available_names;
+  bool first = true;
+  for (const auto& kv : runtime_arg_vars_by_name_) {
+    if (!first) {
+      available_names << ", ";
+    }
+    available_names << kv.first;
+    first = false;
+  }
+  std::ostringstream bound_buffers;
+  first = true;
+  for (const auto& kv : buffer_runtime_arg_map_by_name_) {
+    if (!first) {
+      bound_buffers << ", ";
+    }
+    bound_buffers << kv.first << "->" << kv.second;
+    first = false;
+  }
+  ICHECK(false) << "Missing runtime arg binding for buffer var: " << buffer_var->name_hint
+                << ", preferred_kind=" << (preferred_kind ? preferred_kind : "<none>")
+                << ", available arg vars=[" << available_names.str() << "]"
+                << ", bound buffers=[" << bound_buffers.str() << "]";
   return "";
 }
 
@@ -536,6 +615,15 @@ std::string CodeGenBlackhole::GetCBTailVar(int cb_id) const {
 
 void CodeGenBlackhole::VisitExpr_(const tvm::tir::CallNode *op,
                                   std::ostream &os) {
+  if (op->op->IsInstance<OpNode>()) {
+    Op call_op = Downcast<Op>(op->op);
+    if (call_op->name == "tl.infinity") {
+      std::ostringstream dtype_os;
+      PrintType(op->dtype, dtype_os);
+      os << "static_cast<" << dtype_os.str() << ">(1.0f / 0.0f)";
+      return;
+    }
+  }
   // Try to handle TT-Metal builtin calls
   if (HandleBlackholeBuiltin(op, os)) {
     return;
@@ -567,16 +655,37 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
 
   const bool runtime_managed_storage =
       scope == "shared" || scope == "shared.dyn" || scope == "shared.barrier" ||
-      scope.rfind("blackhole.cb", 0) == 0 || scope == "blackhole.acc";
+      scope.rfind("blackhole.cb", 0) == 0;
 
   if (runtime_managed_storage) {
-    // Blackhole CB/accumulator allocations are runtime/device-managed
+    // Blackhole shared / CB allocations are runtime/device-managed
     // resources, not C arrays inside the generated kernel body.
     this->PrintStmt(op->body);
     return;
   }
 
-  tvm::codegen::CodeGenC::VisitStmt_(op);
+  ICHECK(!tvm::tir::is_zero(op->condition));
+  std::string vid = AllocVarID(op->buffer_var.get());
+
+  PrintIndent();
+  size_t constant_size = op->ConstantAllocationSize();
+  ICHECK_GT(constant_size, 0) << "Can only handle constant size stack allocation for now";
+
+  PrintStorageScope(scope, stream);
+  PrintType(op->dtype, stream);
+  stream << ' ' << vid << '[' << constant_size << "];\n";
+
+  std::optional<std::string> prev_var_id;
+  if (auto it = var_idmap_.find(op->buffer_var.get()); it != var_idmap_.end()) {
+    prev_var_id = it->second;
+  }
+  var_idmap_[op->buffer_var.get()] = vid;
+  this->PrintStmt(op->body);
+  if (prev_var_id) {
+    var_idmap_[op->buffer_var.get()] = *prev_var_id;
+  } else {
+    var_idmap_.erase(op->buffer_var.get());
+  }
 }
 
 void CodeGenBlackhole::VisitExpr_(const tvm::tir::FloorDivNode *op,
@@ -609,7 +718,9 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
   // For Blackhole, we need to handle thread/block indices differently than CUDA
   // Blackhole uses a different parallelism model based on Tensix cores
 
-  ICHECK(!var_idmap_.count(iv->var.get()));
+  if (var_idmap_.count(iv->var.get())) {
+    return;
+  }
 
   std::string thread_tag = iv->thread_tag;
   std::optional<std::string> work_id_var;
@@ -821,6 +932,45 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
     return true;
   } else if (builtin_name == "pack_tile") {
     PrintPackTile(op, os);
+    return true;
+  } else if (builtin_name == "fill_fragment") {
+    PrintFillFragment(op, os);
+    return true;
+  } else if (builtin_name == "write_local_slice_to_cb") {
+    PrintWriteLocalSliceToCB(op, os);
+    return true;
+  } else if (builtin_name == "scalar_max") {
+    PrintScalarMax(op, os);
+    return true;
+  } else if (builtin_name == "cast_fragment_slice") {
+    PrintCastFragmentSlice(op, os);
+    return true;
+  } else if (builtin_name == "reduce_row") {
+    PrintReduceRow(op, os);
+    return true;
+  } else if (builtin_name == "mul_row_bcast") {
+    PrintMulRowBcast(op, os);
+    return true;
+  } else if (builtin_name == "mul_grouped_row_bcast") {
+    PrintMulGroupedRowBcast(op, os);
+    return true;
+  } else if (builtin_name == "div_row_bcast") {
+    PrintDivRowBcast(op, os);
+    return true;
+  } else if (builtin_name == "div_grouped_row_bcast") {
+    PrintDivGroupedRowBcast(op, os);
+    return true;
+  } else if (builtin_name == "scalar_fma") {
+    PrintScalarFma(op, os);
+    return true;
+  } else if (builtin_name == "exp2_row_bcast_affine") {
+    PrintExp2RowBcastAffine(op, os);
+    return true;
+  } else if (builtin_name == "exp2_grouped_row_bcast_affine") {
+    PrintExp2GroupedRowBcastAffine(op, os);
+    return true;
+  } else if (builtin_name == "scalar_exp2_affine") {
+    PrintScalarExp2Affine(op, os);
     return true;
   }
 
@@ -1067,6 +1217,467 @@ void CodeGenBlackhole::PrintPackTile(const tvm::tir::CallNode *op,
   os << ", ";
   PrintResolvedCBId(op->args[1], os);
   os << ")";
+}
+
+void CodeGenBlackhole::PrintFillFragment(const tvm::tir::CallNode* op,
+                                         std::ostream& os) {
+  const auto* dst_var = AsHandleVar(op->args[0]);
+  ICHECK(dst_var) << "tl.blackhole.fill_fragment expects a direct destination handle var";
+  auto dtype_it = handle_data_type_.find(dst_var);
+  ICHECK(dtype_it != handle_data_type_.end())
+      << "Missing handle dtype for tl.blackhole.fill_fragment destination";
+
+  std::ostringstream dtype_os;
+  PrintType(dtype_it->second, dtype_os);
+
+  os << "{ " << dtype_os.str() << "* dst = reinterpret_cast<" << dtype_os.str() << "*>(";
+  PrintExpr(op->args[0], os);
+  os << "); const uint32_t num_elements = ";
+  PrintExpr(op->args[1], os);
+  os << "; const " << dtype_os.str() << " value = static_cast<" << dtype_os.str() << ">(";
+  PrintExpr(op->args[2], os);
+  os << "); for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = value; } }";
+}
+
+void CodeGenBlackhole::PrintWriteLocalSliceToCB(const tvm::tir::CallNode* op,
+                                                std::ostream& os) {
+  need_dataflow_api_h_ = true;
+  const auto* src_var = AsHandleVar(op->args[0]);
+  ICHECK(src_var) << "tl.blackhole.write_local_slice_to_cb expects a direct source handle var";
+  auto src_dtype_it = handle_data_type_.find(src_var);
+  ICHECK(src_dtype_it != handle_data_type_.end())
+      << "Missing source handle dtype for tl.blackhole.write_local_slice_to_cb";
+
+  std::ostringstream src_dtype_os;
+  PrintType(src_dtype_it->second, src_dtype_os);
+
+  const int cb_id = ResolveCBId(op->args[1]);
+  os << "{ const " << src_dtype_os.str() << "* src = reinterpret_cast<const "
+     << src_dtype_os.str() << "*>(";
+  PrintExpr(op->args[0], os);
+  os << "); const uint32_t dst_offset_elements = ";
+  PrintExpr(op->args[2], os);
+  os << "; const uint32_t num_elements = ";
+  PrintExpr(op->args[3], os);
+  os << "; " << src_dtype_os.str() << "* dst = reinterpret_cast<" << src_dtype_os.str() << "*>(get_write_ptr("
+     << cb_id << ") + dst_offset_elements * sizeof(" << src_dtype_os.str() << ")); "
+     << "for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = src[i]; } }";
+}
+
+void CodeGenBlackhole::PrintScalarMax(const tvm::tir::CallNode* op,
+                                      std::ostream& os) {
+  const auto* dst_var = AsHandleVar(op->args[0]);
+  const auto* src_var = AsHandleVar(op->args[1]);
+  ICHECK(dst_var && src_var)
+      << "tl.blackhole.scalar_max expects direct handle vars";
+
+  auto dst_dtype_it = handle_data_type_.find(dst_var);
+  auto src_dtype_it = handle_data_type_.find(src_var);
+  ICHECK(dst_dtype_it != handle_data_type_.end())
+      << "Missing destination handle dtype for tl.blackhole.scalar_max";
+  ICHECK(src_dtype_it != handle_data_type_.end())
+      << "Missing source handle dtype for tl.blackhole.scalar_max";
+  ICHECK(dst_dtype_it->second == src_dtype_it->second)
+      << "tl.blackhole.scalar_max expects matching source/destination dtypes";
+
+  std::ostringstream dtype_os;
+  PrintType(dst_dtype_it->second, dtype_os);
+
+  os << "{ " << dtype_os.str() << "* dst = reinterpret_cast<" << dtype_os.str() << "*>(";
+  PrintExpr(op->args[0], os);
+  os << "); const " << dtype_os.str() << "* src = reinterpret_cast<const " << dtype_os.str()
+     << "*>(";
+  PrintExpr(op->args[1], os);
+  os << ");";
+  if (op->args.size() >= 3) {
+    os << " const uint32_t num_elements = ";
+    PrintExpr(op->args[2], os);
+    os << "; for (uint32_t i = 0; i < num_elements; ++i) { "
+       << "dst[i] = (src[i] > dst[i]) ? src[i] : dst[i]; } }";
+  } else {
+    os << " dst[0] = (src[0] > dst[0]) ? src[0] : dst[0]; }";
+  }
+}
+
+void CodeGenBlackhole::PrintCastFragmentSlice(const tvm::tir::CallNode* op,
+                                              std::ostream& os) {
+  const auto* dst_var = AsHandleVar(op->args[0]);
+  const auto* src_var = AsHandleVar(op->args[1]);
+  ICHECK(dst_var && src_var)
+      << "tl.blackhole.cast_fragment_slice expects direct source/destination handle vars";
+
+  auto dst_dtype_it = handle_data_type_.find(dst_var);
+  auto src_dtype_it = handle_data_type_.find(src_var);
+  ICHECK(dst_dtype_it != handle_data_type_.end())
+      << "Missing destination handle dtype for tl.blackhole.cast_fragment_slice";
+  ICHECK(src_dtype_it != handle_data_type_.end())
+      << "Missing source handle dtype for tl.blackhole.cast_fragment_slice";
+
+  std::ostringstream dst_dtype_os;
+  std::ostringstream src_dtype_os;
+  PrintType(dst_dtype_it->second, dst_dtype_os);
+  PrintType(src_dtype_it->second, src_dtype_os);
+
+  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  PrintExpr(op->args[0], os);
+  os << "); const " << src_dtype_os.str() << "* src = reinterpret_cast<const "
+     << src_dtype_os.str() << "*>(";
+  PrintExpr(op->args[1], os);
+  os << "); const uint32_t dst_offset = ";
+  PrintExpr(op->args[2], os);
+  os << "; const uint32_t src_offset = ";
+  PrintExpr(op->args[3], os);
+  os << "; const uint32_t num_elements = ";
+  PrintExpr(op->args[4], os);
+  os << "; for (uint32_t i = 0; i < num_elements; ++i) { dst[dst_offset + i] = static_cast<"
+     << dst_dtype_os.str() << ">(src[src_offset + i]); } }";
+}
+
+void CodeGenBlackhole::PrintReduceRow(const tvm::tir::CallNode* op,
+                                      std::ostream& os) {
+  const auto* src_var = AsHandleVar(op->args[0]);
+  const auto* dst_var = AsHandleVar(op->args[1]);
+  const bool grouped = op->args.size() >= 6;
+  const auto* reduce_kind = op->args[grouped ? 4 : 3].as<tvm::tir::StringImmNode>();
+  const auto* clear = op->args[grouped ? 5 : 4].as<tvm::tir::IntImmNode>();
+  ICHECK(src_var && dst_var && reduce_kind && clear)
+      << "tl.blackhole.reduce_row expects direct handle vars and constant reduce metadata";
+
+  auto src_dtype_it = handle_data_type_.find(src_var);
+  auto dst_dtype_it = handle_data_type_.find(dst_var);
+  ICHECK(src_dtype_it != handle_data_type_.end() && dst_dtype_it != handle_data_type_.end())
+      << "Missing handle dtypes for tl.blackhole.reduce_row";
+
+  std::ostringstream src_dtype_os;
+  std::ostringstream dst_dtype_os;
+  PrintType(src_dtype_it->second, src_dtype_os);
+  PrintType(dst_dtype_it->second, dst_dtype_os);
+
+  os << "{ const " << src_dtype_os.str() << "* src = reinterpret_cast<const "
+     << src_dtype_os.str() << "*>(";
+  PrintExpr(op->args[0], os);
+  os << "); " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  PrintExpr(op->args[1], os);
+  os << "); ";
+  if (grouped) {
+    os << "const uint32_t num_rows = ";
+    PrintExpr(op->args[2], os);
+    os << "; const uint32_t row_width = ";
+    PrintExpr(op->args[3], os);
+    os << "; for (uint32_t row = 0; row < num_rows; ++row) { ";
+    if (reduce_kind->value == "sum") {
+      os << dst_dtype_os.str() << " value = "
+         << (clear->value ? "static_cast<" + dst_dtype_os.str() + ">(0)"
+                          : "dst[row]")
+         << "; for (uint32_t i = 0; i < row_width; ++i) { const uint32_t idx = row * row_width + i; "
+         << "value = static_cast<" << dst_dtype_os.str() << ">(value + static_cast<"
+         << dst_dtype_os.str() << ">(src[idx])); } dst[row] = value; }";
+    } else if (reduce_kind->value == "max") {
+      os << "if (row_width > 0) { " << dst_dtype_os.str() << " value = "
+         << (clear->value ? "static_cast<" + dst_dtype_os.str() + ">(src[row * row_width])"
+                          : "dst[row]")
+         << "; for (uint32_t i = " << (clear->value ? "1" : "0")
+         << "; i < row_width; ++i) { const uint32_t idx = row * row_width + i; const "
+         << dst_dtype_os.str() << " src_value = static_cast<" << dst_dtype_os.str()
+         << ">(src[idx]); value = (src_value > value) ? src_value : value; } dst[row] = value; } }";
+    } else {
+      ICHECK(false) << "Unsupported tl.blackhole.reduce_row kind: " << reduce_kind->value;
+    }
+  } else {
+    os << "const uint32_t num_elements = ";
+    PrintExpr(op->args[2], os);
+    os << "; ";
+    if (reduce_kind->value == "sum") {
+      if (clear->value) {
+        os << "dst[0] = static_cast<" << dst_dtype_os.str() << ">(0); ";
+      }
+      os << "for (uint32_t i = 0; i < num_elements; ++i) { dst[0] = static_cast<"
+         << dst_dtype_os.str() << ">(dst[0] + static_cast<" << dst_dtype_os.str()
+         << ">(src[i])); }";
+    } else if (reduce_kind->value == "max") {
+      os << "if (num_elements > 0) { ";
+      if (clear->value) {
+        os << dst_dtype_os.str() << " value = static_cast<" << dst_dtype_os.str()
+           << ">(src[0]); for (uint32_t i = 1; i < num_elements; ++i) { const "
+           << dst_dtype_os.str() << " src_value = static_cast<" << dst_dtype_os.str()
+           << ">(src[i]); value = (src_value > value) ? src_value : value; } dst[0] = value; ";
+      } else {
+        os << dst_dtype_os.str() << " value = dst[0]; for (uint32_t i = 0; i < num_elements; ++i) { "
+           << "const " << dst_dtype_os.str() << " src_value = static_cast<" << dst_dtype_os.str()
+           << ">(src[i]); value = (src_value > value) ? src_value : value; } dst[0] = value; ";
+      }
+      os << "}";
+    } else {
+      ICHECK(false) << "Unsupported tl.blackhole.reduce_row kind: " << reduce_kind->value;
+    }
+  }
+  os << " }";
+}
+
+void CodeGenBlackhole::PrintMulRowBcast(const tvm::tir::CallNode* op,
+                                        std::ostream& os) {
+  const auto* dst_var = AsHandleVar(op->args[0]);
+  const auto* scalar_var = AsHandleVar(op->args[1]);
+  ICHECK(dst_var && scalar_var) << "tl.blackhole.mul_row_bcast expects direct handle vars";
+  auto dst_dtype_it = handle_data_type_.find(dst_var);
+  auto scalar_dtype_it = handle_data_type_.find(scalar_var);
+  ICHECK(dst_dtype_it != handle_data_type_.end() && scalar_dtype_it != handle_data_type_.end())
+      << "Missing handle dtypes for tl.blackhole.mul_row_bcast";
+
+  std::ostringstream dst_dtype_os;
+  std::ostringstream scalar_dtype_os;
+  PrintType(dst_dtype_it->second, dst_dtype_os);
+  PrintType(scalar_dtype_it->second, scalar_dtype_os);
+  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  PrintExpr(op->args[0], os);
+  os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
+     << scalar_dtype_os.str() << "*>(";
+  PrintExpr(op->args[1], os);
+  os << "); const uint32_t num_elements = ";
+  PrintExpr(op->args[2], os);
+  os << "; for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = static_cast<"
+     << dst_dtype_os.str() << ">(dst[i] * static_cast<" << dst_dtype_os.str()
+     << ">(scalar[0])); } }";
+}
+
+void CodeGenBlackhole::PrintMulGroupedRowBcast(const tvm::tir::CallNode* op,
+                                               std::ostream& os) {
+  const auto* dst_var = AsHandleVar(op->args[0]);
+  const auto* scalar_var = AsHandleVar(op->args[1]);
+  ICHECK(dst_var && scalar_var)
+      << "tl.blackhole.mul_grouped_row_bcast expects direct handle vars";
+  auto dst_dtype_it = handle_data_type_.find(dst_var);
+  auto scalar_dtype_it = handle_data_type_.find(scalar_var);
+  ICHECK(dst_dtype_it != handle_data_type_.end() && scalar_dtype_it != handle_data_type_.end())
+      << "Missing handle dtypes for tl.blackhole.mul_grouped_row_bcast";
+
+  std::ostringstream dst_dtype_os;
+  std::ostringstream scalar_dtype_os;
+  PrintType(dst_dtype_it->second, dst_dtype_os);
+  PrintType(scalar_dtype_it->second, scalar_dtype_os);
+  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  PrintExpr(op->args[0], os);
+  os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
+     << scalar_dtype_os.str() << "*>(";
+  PrintExpr(op->args[1], os);
+  os << "); const uint32_t num_elements = ";
+  PrintExpr(op->args[2], os);
+  os << "; const uint32_t row_width = ";
+  PrintExpr(op->args[3], os);
+  os << "; for (uint32_t i = 0; i < num_elements; ++i) { const uint32_t row = i / row_width; "
+     << "dst[i] = static_cast<" << dst_dtype_os.str() << ">(dst[i] * static_cast<"
+     << dst_dtype_os.str() << ">(scalar[row])); } }";
+}
+
+void CodeGenBlackhole::PrintDivRowBcast(const tvm::tir::CallNode* op,
+                                        std::ostream& os) {
+  const auto* dst_var = AsHandleVar(op->args[0]);
+  const auto* scalar_var = AsHandleVar(op->args[1]);
+  ICHECK(dst_var && scalar_var) << "tl.blackhole.div_row_bcast expects direct handle vars";
+  auto dst_dtype_it = handle_data_type_.find(dst_var);
+  auto scalar_dtype_it = handle_data_type_.find(scalar_var);
+  ICHECK(dst_dtype_it != handle_data_type_.end() && scalar_dtype_it != handle_data_type_.end())
+      << "Missing handle dtypes for tl.blackhole.div_row_bcast";
+
+  std::ostringstream dst_dtype_os;
+  std::ostringstream scalar_dtype_os;
+  PrintType(dst_dtype_it->second, dst_dtype_os);
+  PrintType(scalar_dtype_it->second, scalar_dtype_os);
+  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  PrintExpr(op->args[0], os);
+  os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
+     << scalar_dtype_os.str() << "*>(";
+  PrintExpr(op->args[1], os);
+  os << "); const uint32_t num_elements = ";
+  PrintExpr(op->args[2], os);
+  os << "; for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = static_cast<"
+     << dst_dtype_os.str() << ">(dst[i] / static_cast<" << dst_dtype_os.str()
+     << ">(scalar[0])); } }";
+}
+
+void CodeGenBlackhole::PrintDivGroupedRowBcast(const tvm::tir::CallNode* op,
+                                               std::ostream& os) {
+  const auto* dst_var = AsHandleVar(op->args[0]);
+  const auto* scalar_var = AsHandleVar(op->args[1]);
+  ICHECK(dst_var && scalar_var)
+      << "tl.blackhole.div_grouped_row_bcast expects direct handle vars";
+  auto dst_dtype_it = handle_data_type_.find(dst_var);
+  auto scalar_dtype_it = handle_data_type_.find(scalar_var);
+  ICHECK(dst_dtype_it != handle_data_type_.end() && scalar_dtype_it != handle_data_type_.end())
+      << "Missing handle dtypes for tl.blackhole.div_grouped_row_bcast";
+
+  std::ostringstream dst_dtype_os;
+  std::ostringstream scalar_dtype_os;
+  PrintType(dst_dtype_it->second, dst_dtype_os);
+  PrintType(scalar_dtype_it->second, scalar_dtype_os);
+  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  PrintExpr(op->args[0], os);
+  os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
+     << scalar_dtype_os.str() << "*>(";
+  PrintExpr(op->args[1], os);
+  os << "); const uint32_t num_elements = ";
+  PrintExpr(op->args[2], os);
+  os << "; const uint32_t row_width = ";
+  PrintExpr(op->args[3], os);
+  os << "; for (uint32_t i = 0; i < num_elements; ++i) { const uint32_t row = i / row_width; "
+     << "dst[i] = static_cast<" << dst_dtype_os.str() << ">(dst[i] / static_cast<"
+     << dst_dtype_os.str() << ">(scalar[row])); } }";
+}
+
+void CodeGenBlackhole::PrintScalarFma(const tvm::tir::CallNode* op,
+                                      std::ostream& os) {
+  const auto* dst_var = AsHandleVar(op->args[0]);
+  const auto* lhs_var = AsHandleVar(op->args[1]);
+  const auto* rhs_var = AsHandleVar(op->args[2]);
+  const auto* add_var = AsHandleVar(op->args[3]);
+  ICHECK(dst_var && lhs_var && rhs_var && add_var)
+      << "tl.blackhole.scalar_fma expects direct handle vars";
+
+  auto dst_dtype_it = handle_data_type_.find(dst_var);
+  auto lhs_dtype_it = handle_data_type_.find(lhs_var);
+  auto rhs_dtype_it = handle_data_type_.find(rhs_var);
+  auto add_dtype_it = handle_data_type_.find(add_var);
+  ICHECK(dst_dtype_it != handle_data_type_.end() && lhs_dtype_it != handle_data_type_.end() &&
+         rhs_dtype_it != handle_data_type_.end() && add_dtype_it != handle_data_type_.end())
+      << "Missing handle dtypes for tl.blackhole.scalar_fma";
+
+  std::ostringstream dst_dtype_os;
+  std::ostringstream lhs_dtype_os;
+  std::ostringstream rhs_dtype_os;
+  std::ostringstream add_dtype_os;
+  PrintType(dst_dtype_it->second, dst_dtype_os);
+  PrintType(lhs_dtype_it->second, lhs_dtype_os);
+  PrintType(rhs_dtype_it->second, rhs_dtype_os);
+  PrintType(add_dtype_it->second, add_dtype_os);
+
+  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  PrintExpr(op->args[0], os);
+  os << "); const " << lhs_dtype_os.str() << "* lhs = reinterpret_cast<const "
+     << lhs_dtype_os.str() << "*>(";
+  PrintExpr(op->args[1], os);
+  os << "); const " << rhs_dtype_os.str() << "* rhs = reinterpret_cast<const "
+     << rhs_dtype_os.str() << "*>(";
+  PrintExpr(op->args[2], os);
+  os << "); const " << add_dtype_os.str() << "* add = reinterpret_cast<const "
+     << add_dtype_os.str() << "*>(";
+  PrintExpr(op->args[3], os);
+  os << ");";
+  if (op->args.size() >= 5) {
+    os << " const uint32_t num_elements = ";
+    PrintExpr(op->args[4], os);
+    os << "; for (uint32_t i = 0; i < num_elements; ++i) { "
+       << "dst[i] = static_cast<" << dst_dtype_os.str()
+       << ">(static_cast<float>(lhs[i]) * static_cast<float>(rhs[i]) + static_cast<float>(add[i])); } }";
+  } else {
+    os << " dst[0] = static_cast<" << dst_dtype_os.str()
+       << ">(static_cast<float>(lhs[0]) * static_cast<float>(rhs[0]) + static_cast<float>(add[0])); }";
+  }
+}
+
+void CodeGenBlackhole::PrintExp2RowBcastAffine(const tvm::tir::CallNode* op,
+                                               std::ostream& os) {
+  const auto* dst_var = AsHandleVar(op->args[0]);
+  const auto* scalar_var = AsHandleVar(op->args[1]);
+  ICHECK(dst_var && scalar_var)
+      << "tl.blackhole.exp2_row_bcast_affine expects direct handle vars";
+  auto dst_dtype_it = handle_data_type_.find(dst_var);
+  auto scalar_dtype_it = handle_data_type_.find(scalar_var);
+  ICHECK(dst_dtype_it != handle_data_type_.end() && scalar_dtype_it != handle_data_type_.end())
+      << "Missing handle dtypes for tl.blackhole.exp2_row_bcast_affine";
+
+  std::ostringstream dst_dtype_os;
+  std::ostringstream scalar_dtype_os;
+  PrintType(dst_dtype_it->second, dst_dtype_os);
+  PrintType(scalar_dtype_it->second, scalar_dtype_os);
+
+  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  PrintExpr(op->args[0], os);
+  os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
+     << scalar_dtype_os.str() << "*>(";
+  PrintExpr(op->args[1], os);
+  os << "); const uint32_t num_elements = ";
+  PrintExpr(op->args[2], os);
+  os << "; const float dst_scale = ";
+  PrintExpr(op->args[3], os);
+  os << "; const float scalar_scale = ";
+  PrintExpr(op->args[4], os);
+  os << "; for (uint32_t i = 0; i < num_elements; ++i) { "
+     << "const float expr = static_cast<float>(dst[i]) * dst_scale + "
+     << "static_cast<float>(scalar[0]) * scalar_scale; "
+     << "dst[i] = static_cast<" << dst_dtype_os.str() << ">(std::exp2(expr)); } }";
+}
+
+void CodeGenBlackhole::PrintExp2GroupedRowBcastAffine(const tvm::tir::CallNode* op,
+                                                      std::ostream& os) {
+  const auto* dst_var = AsHandleVar(op->args[0]);
+  const auto* scalar_var = AsHandleVar(op->args[1]);
+  ICHECK(dst_var && scalar_var)
+      << "tl.blackhole.exp2_grouped_row_bcast_affine expects direct handle vars";
+  auto dst_dtype_it = handle_data_type_.find(dst_var);
+  auto scalar_dtype_it = handle_data_type_.find(scalar_var);
+  ICHECK(dst_dtype_it != handle_data_type_.end() && scalar_dtype_it != handle_data_type_.end())
+      << "Missing handle dtypes for tl.blackhole.exp2_grouped_row_bcast_affine";
+
+  std::ostringstream dst_dtype_os;
+  std::ostringstream scalar_dtype_os;
+  PrintType(dst_dtype_it->second, dst_dtype_os);
+  PrintType(scalar_dtype_it->second, scalar_dtype_os);
+
+  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  PrintExpr(op->args[0], os);
+  os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
+     << scalar_dtype_os.str() << "*>(";
+  PrintExpr(op->args[1], os);
+  os << "); const uint32_t num_elements = ";
+  PrintExpr(op->args[2], os);
+  os << "; const uint32_t row_width = ";
+  PrintExpr(op->args[3], os);
+  os << "; const float dst_scale = ";
+  PrintExpr(op->args[4], os);
+  os << "; const float scalar_scale = ";
+  PrintExpr(op->args[5], os);
+  os << "; for (uint32_t i = 0; i < num_elements; ++i) { const uint32_t row = i / row_width; "
+     << "const float expr = static_cast<float>(dst[i]) * dst_scale + "
+     << "static_cast<float>(scalar[row]) * scalar_scale; "
+     << "dst[i] = static_cast<" << dst_dtype_os.str() << ">(std::exp2(expr)); } }";
+}
+
+void CodeGenBlackhole::PrintScalarExp2Affine(const tvm::tir::CallNode* op,
+                                             std::ostream& os) {
+  const auto* dst_var = AsHandleVar(op->args[0]);
+  const auto* lhs_var = AsHandleVar(op->args[1]);
+  const auto* rhs_var = AsHandleVar(op->args[2]);
+  ICHECK(dst_var && lhs_var && rhs_var)
+      << "tl.blackhole.scalar_exp2_affine expects direct handle vars";
+  auto dst_dtype_it = handle_data_type_.find(dst_var);
+  auto lhs_dtype_it = handle_data_type_.find(lhs_var);
+  auto rhs_dtype_it = handle_data_type_.find(rhs_var);
+  ICHECK(dst_dtype_it != handle_data_type_.end() && lhs_dtype_it != handle_data_type_.end() &&
+         rhs_dtype_it != handle_data_type_.end())
+      << "Missing handle dtypes for tl.blackhole.scalar_exp2_affine";
+
+  std::ostringstream dst_dtype_os;
+  std::ostringstream lhs_dtype_os;
+  std::ostringstream rhs_dtype_os;
+  PrintType(dst_dtype_it->second, dst_dtype_os);
+  PrintType(lhs_dtype_it->second, lhs_dtype_os);
+  PrintType(rhs_dtype_it->second, rhs_dtype_os);
+
+  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  PrintExpr(op->args[0], os);
+  os << "); const " << lhs_dtype_os.str() << "* lhs = reinterpret_cast<const "
+     << lhs_dtype_os.str() << "*>(";
+  PrintExpr(op->args[1], os);
+  os << "); const " << rhs_dtype_os.str() << "* rhs = reinterpret_cast<const "
+     << rhs_dtype_os.str() << "*>(";
+  PrintExpr(op->args[2], os);
+  os << "); const float lhs_scale = ";
+  PrintExpr(op->args[3], os);
+  os << "; const float rhs_scale = ";
+  PrintExpr(op->args[4], os);
+  os << "; const float expr = static_cast<float>(lhs[0]) * lhs_scale + "
+     << "static_cast<float>(rhs[0]) * rhs_scale; "
+     << "dst[0] = static_cast<" << dst_dtype_os.str() << ">(std::exp2(expr)); }";
 }
 
 void CodeGenBlackhole::PrintKernelAttributes() {

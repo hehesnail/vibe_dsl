@@ -93,10 +93,10 @@
 10. ~~multi-core~~ ✅（formal direct host path 已完成；设计见 `tasks/dev_design/stage3_multicore_design.md`）
 11. ~~TT-Metal contract formalization：P0/P3 主路径收口~~ ✅
 12. **Stage 4 当前主线**
-   - flash-attn forward subset：analysis 三件套已完成，fragment/dataflow lowering 正在推进
+   - flash-attn forward subset：analysis、fragment/dataflow lowering 与 codegen 已打通当前支持面
    - P4：更宽 copy/dataflow 泛化（non-tile/stick/sharded）
    - P5：更宽 synchronization（multicast/global/pass-level producer）
-   - 当前最真实 blocker：`local/accumulator -> shared(CB)` staged copy 还没有正式 lowering
+   - 当前 compile-path 已无主 blocker；剩余工作转为 runtime 验证与更宽支持面
 
 ---
 
@@ -137,4 +137,4 @@
   - copy：equal source/dest range，且 stride = 1
   - GEMM：A/B-separated reader range + writer output range
   - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
-- flash-attn forward subset 当前已完成 analysis 与最小 fragment builtin/codegen 接入；full path 当前主 blocker 是 `local/accumulator -> shared(CB)` staged copy 缺少正式 lowering
+- flash-attn forward subset 当前已完成 analysis、最小 fragment/dataflow builtin/codegen 接入，并打通当前支持的 MHA/GQA forward compile-path；后续重点是 runtime 验证与更宽支持面

@@ -23,7 +23,9 @@
   - `scores_scale[0] = exp2(scores_max_prev[0] * scale - scores_max[0] * scale)` -> `tl.blackhole.scalar_exp2_affine`
 - ✅ Latest narrowing: flash-attn forward 的 fragment `fill` / `scalar_max` / `cast_fragment_slice` 已进入正式 lowering；`fill / max / add / cast` 已不再是当前主 blocker
 - ✅ Latest narrowing: `codegen_blackhole` 已接上 `fill_fragment / reduce_row / scalar_max / cast_fragment_slice / mul_row_bcast / div_row_bcast / scalar_fma / exp2_row_bcast_affine / scalar_exp2_affine` 这批 builtin 的发射路径，并修掉了 `blackhole.acc` 局部符号映射与 `tl.infinity` 这类 device-only codegen 噪声点
-- 🔄 Next focus: 当前真实 blocker 已从 fragment gate / `cast` 收敛为 **`local/accumulator -> shared(CB)` staged copy 没有正式 lowering**。`CopyDirection::kLocalToCB` 与 `tl.blackhole.write_local_slice_to_cb` primitive 已预埋，但还没有真正接进 `GenerateCopySequence()` / `codegen_blackhole`
+- ✅ Latest narrowing: `CopyDirection::kLocalToCB` 与 `tl.blackhole.write_local_slice_to_cb` 已接入主链，`local/accumulator -> shared(CB)` staged copy 不再残留为二维 `BufferStore`
+- ✅ Current compile-path milestone: 当前支持的 MHA/GQA forward 形态已能通过 full `lower(target=\"blackhole\")`；flash-attn pipeline 回归当前 `16 passed`
+- 🔄 Next focus: 剩余工作转到 runtime 验证与更宽支持面，不再是 compile-path 主 blocker
 - 🔄 Task 6 也已开始：第一条 generic fragment-pipeline legality 已落地，当前 `num_stages > 2` 会在主链上显式失败；full `lower()` 的 GQA `num_stages=4` 现在已能稳定命中这条 legality，不再先被 `RegionOp` staged/shared view canonicalization 内部错误打断
 
 ## Reading Guide

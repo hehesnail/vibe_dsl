@@ -221,6 +221,15 @@ TVM_DLL const Op& blackhole_tile_regs_release();
 TVM_DLL const Op& blackhole_pack_tile();
 
 /*!
+ * \brief Copy a contiguous local fragment slice into the currently reserved CB write window.
+ * \param src_buffer Source local fragment buffer handle
+ * \param dst_cb_id Destination CB id
+ * \param dst_offset_elements Element offset from the beginning of the reserved CB write window
+ * \param num_elements Number of contiguous elements to copy
+ */
+TVM_DLL const Op& blackhole_write_local_slice_to_cb();
+
+/*!
  * \brief Reduce a contiguous 1-D local fragment row into a scalar local fragment target.
  * \param src_buffer Source local fragment buffer handle
  * \param dst_buffer Destination scalar local fragment buffer handle
@@ -237,6 +246,7 @@ TVM_DLL const Op& blackhole_reduce_row();
  * \param num_elements Number of contiguous destination elements
  */
 TVM_DLL const Op& blackhole_mul_row_bcast();
+TVM_DLL const Op& blackhole_mul_grouped_row_bcast();
 
 /*!
  * \brief Divide a contiguous 1-D local fragment row by a scalar local fragment source.
@@ -245,6 +255,7 @@ TVM_DLL const Op& blackhole_mul_row_bcast();
  * \param num_elements Number of contiguous destination elements
  */
 TVM_DLL const Op& blackhole_div_row_bcast();
+TVM_DLL const Op& blackhole_div_grouped_row_bcast();
 
 /*!
  * \brief Fused scalar fragment update: dst = lhs * rhs + addend.
@@ -265,6 +276,7 @@ TVM_DLL const Op& blackhole_scalar_fma();
  * \param scalar_scale Scale applied to the scalar broadcast term
  */
 TVM_DLL const Op& blackhole_exp2_row_bcast_affine();
+TVM_DLL const Op& blackhole_exp2_grouped_row_bcast_affine();
 
 /*!
  * \brief Fused scalar fragment update:
@@ -291,6 +303,16 @@ TVM_DLL const Op& blackhole_fill_fragment();
  * \param src_buffer Source scalar local fragment buffer handle
  */
 TVM_DLL const Op& blackhole_scalar_max();
+
+/*!
+ * \brief Cast a contiguous slice from one local fragment buffer into another.
+ * \param dst_buffer Destination local fragment buffer handle
+ * \param src_buffer Source local fragment buffer handle
+ * \param dst_offset Destination element offset
+ * \param src_offset Source element offset
+ * \param num_elements Number of contiguous elements to cast
+ */
+TVM_DLL const Op& blackhole_cast_fragment_slice();
 
 }  // namespace builtin
 }  // namespace tir

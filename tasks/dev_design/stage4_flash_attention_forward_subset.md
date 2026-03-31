@@ -4,7 +4,7 @@
 
 - **文档ID**: `stage4_flash_attention_forward_subset`
 - **日期**: 2026-03-31
-- **状态**: 活动中（analysis 已落地，fragment/dataflow lowering 正在推进）
+- **状态**: 活动中（analysis 与当前支持面的 compile-path 已打通）
 - **范围**: `tilelang_repo/examples/flash_attention/example_mha_fwd_bshd.py` 与 `example_gqa_fwd_bshd.py` 的前向完整语义；不包含 backward、varlen、wgmma
 
 ## 1. 目标
@@ -26,8 +26,9 @@
 
 - `AnalyzeBlackholeWorkDecomposition` / `AnalyzeBlackholeFragmentRegions` / `AnalyzeBlackholePipelineStages` 已落地
 - `LowerBlackholeOps` 已开始把 fragment 子集 lower 成 Blackhole builtin
-- `codegen_blackhole` 已接上当前最小 fragment builtin 子集
-- 当前真实 blocker 已收敛为 `local/accumulator -> shared(CB)` staged copy 还没有正式 lowering
+- `codegen_blackhole` 已接上当前最小 fragment/dataflow builtin 子集
+- `local/accumulator -> shared(CB)` staged copy 已经 lower 成正式 builtin
+- 当前支持的 MHA/GQA forward compile-path 已打通；剩余工作是 runtime 验证与更宽支持面
 
 ## 2. 非目标
 

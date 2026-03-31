@@ -57,8 +57,8 @@ Blackhole 后端当前的正式目标收敛为三点：
 - 前向 Flash-Attention 设计已建档：`stage4_flash_attention_forward_subset.md`
   - 方向已收敛为：以 `mha_fwd_bshd` / `gqa_fwd_bshd` 为牵引，补齐通用 work decomposition / fragment compute region / pipelined staging 三类分析与 lowering 能力，并坚持 “IR 优先、spec 最小化”
   - 当前 `AnalyzeBlackholeWorkDecomposition` / `AnalyzeBlackholeFragmentRegions` / `AnalyzeBlackholePipelineStages` 已接入 Blackhole 主链，`lower()` 的 Blackhole device 入口也已收正为 entry `PrimFunc` 先进入 `SplitBlackholeKernel` 后的 analysis/lowering 管线
-  - `reduce_row / row_broadcast / fill / scalar_max / cast_fragment_slice` 等最小 fragment 子集已开始进入真实 lowering 与 codegen 主链
-  - 当前真实剩余点已收敛为 `local/accumulator -> shared(CB)` staged copy 尚无正式 lowering，而不是旧的 fragment-subset fail-fast
+  - `reduce_row / row_broadcast / fill / scalar_max / cast_fragment_slice / local_to_cb staging` 等最小 fragment/dataflow 子集已进入真实 lowering 与 codegen 主链
+  - 当前支持的 MHA/GQA forward compile-path 已打通；剩余工作转为 runtime 验证与更宽支持面，而不是旧的 fragment-subset fail-fast 或 `local/accumulator -> shared(CB)` 残留
 
 ## 3. 正式架构
 

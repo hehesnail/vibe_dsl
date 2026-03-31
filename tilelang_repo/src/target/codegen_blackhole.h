@@ -144,6 +144,19 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintTileRegsWait(std::ostream &os);
   void PrintTileRegsRelease(std::ostream &os);
   void PrintPackTile(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintFillFragment(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintWriteLocalSliceToCB(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintScalarMax(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintCastFragmentSlice(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintReduceRow(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintMulRowBcast(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintMulGroupedRowBcast(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintDivRowBcast(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintDivGroupedRowBcast(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintScalarFma(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintExp2RowBcastAffine(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintExp2GroupedRowBcastAffine(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintScalarExp2Affine(const tvm::tir::CallNode *op, std::ostream &os);
 
   // Legacy: Print CB operations (old interface)
   void PrintCBDeclare(const std::string &name, tvm::DataType dtype,

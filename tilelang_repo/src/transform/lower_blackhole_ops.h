@@ -49,6 +49,7 @@ enum class CopyDirection {
   kDramToCB,     // DRAM -> CB (Reader)
   kCBToDram,     // CB -> DRAM (Writer)
   kCBToCB,       // CB -> CB (local copy)
+  kLocalToCB,    // local/accumulator -> CB (fragment/local staging write)
   kDramToDram,   // DRAM -> DRAM (Stage 2 copy pass integration path)
   kUnknown
 };
@@ -94,7 +95,9 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
     tvm::tir::Buffer src;
     tvm::tir::Buffer dst;
     tvm::PrimExpr num_elements;
+    tvm::PrimExpr row_width;
     std::string kind;
+    bool grouped = false;
     bool clear = true;
   };
 
@@ -102,6 +105,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
     tvm::tir::Buffer dst;
     tvm::tir::Buffer scalar;
     tvm::PrimExpr num_elements;
+    tvm::PrimExpr row_width;
+    bool grouped = false;
     std::string kind;
   };
 
@@ -110,12 +115,15 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
     tvm::tir::Buffer lhs;
     tvm::tir::Buffer rhs;
     tvm::tir::Buffer add;
+    tvm::PrimExpr num_elements;
   };
 
   struct Exp2RowBroadcastAffineMatch {
     tvm::tir::Buffer dst;
     tvm::tir::Buffer scalar;
     tvm::PrimExpr num_elements;
+    tvm::PrimExpr row_width;
+    bool grouped = false;
     tvm::PrimExpr dst_scale;
     tvm::PrimExpr scalar_scale;
   };
@@ -137,6 +145,24 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   struct ScalarMaxMatch {
     tvm::tir::Buffer dst;
     tvm::tir::Buffer src;
+    tvm::PrimExpr num_elements;
+  };
+
+  struct FragmentCastMatch {
+    tvm::tir::Buffer dst;
+    tvm::tir::Buffer src;
+    tvm::PrimExpr dst_offset;
+    tvm::PrimExpr src_offset;
+    tvm::PrimExpr num_elements;
+  };
+
+  struct LocalToCBSliceMatch {
+    tvm::tir::Buffer dst;
+    tvm::tir::Buffer src;
+    tvm::PrimExpr dst_offset_elements;
+    tvm::PrimExpr num_elements;
+    tvm::tir::Stmt lowered_loop_body;
+    bool wrap_src_allocation = false;
   };
 
   /*! \brief CB configuration from function attributes */
@@ -290,10 +316,12 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Detect and lower canonical scalar row-reduction loops on local fragment buffers. */
   bool MatchDirectRowReduction(const tvm::tir::ForNode* op, RowReductionMatch* match) const;
   bool MatchAllocatedRowReduction(const tvm::tir::AllocateNode* op, RowReductionMatch* match) const;
+  bool MatchGroupedRowReduction(const tvm::tir::ForNode* op, RowReductionMatch* match) const;
   tvm::tir::Stmt GenerateRowReductionSequence(const RowReductionMatch& match);
   bool MatchDirectRowBroadcast(const tvm::tir::ForNode* op, RowBroadcastMatch* match) const;
   tvm::tir::Stmt GenerateRowBroadcastSequence(const RowBroadcastMatch& match);
   bool MatchScalarFmaStore(const tvm::tir::BufferStoreNode* op, ScalarFmaMatch* match) const;
+  bool MatchGroupedScalarFmaLoop(const tvm::tir::ForNode* op, ScalarFmaMatch* match) const;
   tvm::tir::Stmt GenerateScalarFmaSequence(const ScalarFmaMatch& match);
   bool MatchExp2RowBroadcastAffine(const tvm::tir::ForNode* op,
                                    Exp2RowBroadcastAffineMatch* match) const;
@@ -306,7 +334,13 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   bool MatchScalarFragmentFillStore(const tvm::tir::BufferStoreNode* op, FragmentFillMatch* match) const;
   tvm::tir::Stmt GenerateFragmentFillSequence(const FragmentFillMatch& match);
   bool MatchScalarMaxStore(const tvm::tir::BufferStoreNode* op, ScalarMaxMatch* match) const;
+  bool MatchGroupedScalarMaxLoop(const tvm::tir::ForNode* op, ScalarMaxMatch* match) const;
   tvm::tir::Stmt GenerateScalarMaxSequence(const ScalarMaxMatch& match);
+  bool MatchDirectFragmentCast(const tvm::tir::ForNode* op, FragmentCastMatch* match) const;
+  tvm::tir::Stmt GenerateFragmentCastSequence(const FragmentCastMatch& match);
+  bool MatchDirectLocalToCBSliceLoop(const tvm::tir::ForNode* op, LocalToCBSliceMatch* match) const;
+  tvm::tir::Stmt GenerateLocalToCBSliceLoopSequence(const tvm::tir::ForNode* op,
+                                                    const LocalToCBSliceMatch& match);
 
   // StmtExprMutator overrides
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;

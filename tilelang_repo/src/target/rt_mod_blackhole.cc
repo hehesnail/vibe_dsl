@@ -1402,6 +1402,37 @@ static ffi::Array<ffi::Any> EncodeAccessors(const std::vector<AccessorSpec>& acc
   return encoded;
 }
 
+static ffi::Array<ffi::Any> EncodeCompileTimeArgSpecs(
+    const std::vector<CompileTimeArgSpec>& compile_time_arg_specs) {
+  ffi::Array<ffi::Any> encoded;
+  for (const auto& spec : compile_time_arg_specs) {
+    ffi::Map<ffi::String, ffi::Any> spec_info;
+    spec_info.Set("name", ffi::String(spec.name));
+    spec_info.Set("kind", ffi::String(spec.kind));
+    spec_info.Set("dtype", ffi::String(spec.dtype));
+    spec_info.Set("offset", Integer(static_cast<int>(spec.offset)));
+    spec_info.Set("count", Integer(static_cast<int>(spec.count)));
+    if (!spec.buffer.empty()) {
+      spec_info.Set("buffer", ffi::String(spec.buffer));
+    }
+    if (!spec.segment_role.empty()) {
+      spec_info.Set("segment_role", ffi::String(spec.segment_role));
+    }
+    if (!spec.values.empty()) {
+      ffi::Array<ffi::Any> values;
+      for (uint32_t value : spec.values) {
+        values.push_back(Integer(static_cast<int>(value)));
+      }
+      spec_info.Set("values", values);
+    }
+    if (spec.args_config_bits != 0) {
+      spec_info.Set("args_config_bits", Integer(static_cast<int>(spec.args_config_bits)));
+    }
+    encoded.push_back(spec_info);
+  }
+  return encoded;
+}
+
 static bool IsInputBufferArgKind(const std::string& kind) {
   return kind == "input_buffer_addr32" || kind == "input_buffer_addr";
 }
@@ -1519,20 +1550,94 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
   tir::PrimFunc segment_func = f;
   segment_func.CopyOnWrite()->body = extractor(f->body);
 
+  auto merge_runtime_args = [](const std::vector<KernelArgSpec>& primary,
+                               const std::vector<KernelArgSpec>& fallback) {
+    std::vector<KernelArgSpec> merged;
+    std::unordered_set<std::string> seen;
+    for (const auto& arg : primary) {
+      merged.push_back(arg);
+      if (!arg.identity.empty()) {
+        seen.insert(arg.identity);
+      }
+    }
+    for (const auto& arg : fallback) {
+      if (!arg.identity.empty() && seen.count(arg.identity)) {
+        continue;
+      }
+      merged.push_back(arg);
+      if (!arg.identity.empty()) {
+        seen.insert(arg.identity);
+      }
+    }
+    return merged;
+  };
+
+  const std::vector<KernelArgSpec> merged_runtime_args =
+      merge_runtime_args(segment.runtime_args, ExtractRuntimeArgs(f));
+  const std::vector<KernelArgSpec> merged_common_runtime_args =
+      merge_runtime_args(segment.common_runtime_args, ExtractCommonRuntimeArgs(f));
+
   ffi::Map<ffi::String, ffi::Any> attrs;
   if (f->attrs.defined()) {
     attrs = f->attrs->dict;
   }
   attrs.Set("blackhole.core_type", ffi::String(segment.core_type));
-  if (!segment.runtime_args.empty()) {
-    attrs.Set("blackhole.runtime_args", EncodeRuntimeArgs(segment.runtime_args));
+  if (!merged_runtime_args.empty()) {
+    attrs.Set("blackhole.runtime_args", EncodeRuntimeArgs(merged_runtime_args));
   }
-  if (!segment.common_runtime_args.empty()) {
-    attrs.Set("blackhole.common_runtime_args", EncodeRuntimeArgs(segment.common_runtime_args));
+  if (!merged_common_runtime_args.empty()) {
+    attrs.Set("blackhole.common_runtime_args", EncodeRuntimeArgs(merged_common_runtime_args));
   }
   if (!segment.accessors.empty()) {
     attrs.Set("blackhole.accessors", EncodeAccessors(segment.accessors));
   }
+  ffi::Map<ffi::String, ffi::Any> encoded_segment;
+  if (!segment.name.empty()) {
+    encoded_segment.Set("name", ffi::String(segment.name));
+  }
+  if (!segment.kind.empty()) {
+    encoded_segment.Set("kind", ffi::String(segment.kind));
+  }
+  if (!segment.core_type.empty()) {
+    encoded_segment.Set("core_type", ffi::String(segment.core_type));
+  }
+  if (!merged_runtime_args.empty()) {
+    encoded_segment.Set("runtime_args", EncodeRuntimeArgs(merged_runtime_args));
+  }
+  if (!merged_common_runtime_args.empty()) {
+    encoded_segment.Set("common_runtime_args", EncodeRuntimeArgs(merged_common_runtime_args));
+  }
+  if (!segment.accessors.empty()) {
+    encoded_segment.Set("accessors", EncodeAccessors(segment.accessors));
+  }
+  if (!segment.compile_time_arg_specs.empty()) {
+    encoded_segment.Set("compile_time_arg_specs",
+                        EncodeCompileTimeArgSpecs(segment.compile_time_arg_specs));
+  }
+  if (segment.has_launch_spec) {
+    ffi::Map<ffi::String, ffi::Any> launch_spec;
+    launch_spec.Set("core_type", ffi::String(segment.launch_spec.core_type));
+    launch_spec.Set("processor", ffi::String(segment.launch_spec.processor));
+    launch_spec.Set("noc", ffi::String(segment.launch_spec.noc));
+    encoded_segment.Set("launch_spec", launch_spec);
+  }
+  if (segment.has_compute_config) {
+    ffi::Map<ffi::String, ffi::Any> compute_config;
+    compute_config.Set("math_fidelity", ffi::String(segment.compute_config.math_fidelity));
+    compute_config.Set("fp32_dest_acc_en", Bool(segment.compute_config.fp32_dest_acc_en));
+    compute_config.Set("dst_full_sync_en", Bool(segment.compute_config.dst_full_sync_en));
+    compute_config.Set("math_approx_mode", Bool(segment.compute_config.math_approx_mode));
+    compute_config.Set("bfp8_pack_precise", Bool(segment.compute_config.bfp8_pack_precise));
+    compute_config.Set("clear_accum", Bool(segment.compute_config.clear_accum));
+    compute_config.Set("k_pack", Integer(static_cast<int>(segment.compute_config.k_pack)));
+    compute_config.Set("wg_wait", Integer(segment.compute_config.wg_wait));
+    compute_config.Set("policy_type", Integer(segment.compute_config.policy_type));
+    compute_config.Set("policy_name", ffi::String(segment.compute_config.policy_name));
+    encoded_segment.Set("compute_config", compute_config);
+  }
+  ffi::Array<ffi::Any> segment_plan;
+  segment_plan.push_back(encoded_segment);
+  attrs.Set("blackhole.segment_plan", segment_plan);
   segment_func.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
   return segment_func;
 }
@@ -1582,8 +1687,8 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
     kernel.name = func_name + "_" + (segment.name.empty() ? segment.kind : segment.name);
     kernel.kind = segment.kind;
     kernel.core_type = segment.core_type;
-    kernel.runtime_args = segment.runtime_args.empty() ? spec->runtime_args : segment.runtime_args;
-    kernel.common_runtime_args = segment.common_runtime_args;
+    kernel.runtime_args = ExtractRuntimeArgs(segment_func);
+    kernel.common_runtime_args = ExtractCommonRuntimeArgs(segment_func);
     kernel.remote_core_descriptors = segment.remote_core_descriptors.empty()
                                          ? ExtractRemoteCoreDescriptors(kernel.runtime_args)
                                          : segment.remote_core_descriptors;

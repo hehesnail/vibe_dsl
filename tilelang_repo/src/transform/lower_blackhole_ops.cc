@@ -100,6 +100,80 @@ static std::string MakeBlackholeRuntimeArgIdentity(const std::string& kind, cons
   return !kind.empty() ? kind : name;
 }
 
+static bool IsBufferAddrRuntimeArgKind(const std::string& kind) {
+  return kind == "input_buffer_addr32" || kind == "input_buffer_addr" ||
+         kind == "output_buffer_addr32" || kind == "output_buffer_addr";
+}
+
+static Array<Any> EnsureSegmentBufferRuntimeArgs(const std::string& segment_kind,
+                                                 const Array<Any>& accessors,
+                                                 const Optional<Any>& runtime_args_opt) {
+  const bool is_reader = segment_kind == "reader";
+  const bool is_writer = segment_kind == "writer";
+  if (!is_reader && !is_writer) {
+    return runtime_args_opt ? Downcast<Array<Any>>(runtime_args_opt.value()) : Array<Any>();
+  }
+
+  Array<Any> existing_runtime_args =
+      runtime_args_opt ? Downcast<Array<Any>>(runtime_args_opt.value()) : Array<Any>();
+  Array<Any> buffer_args;
+  Array<Any> other_args;
+  std::vector<std::string> bound_buffers;
+
+  for (const auto& arg_item : existing_runtime_args) {
+    auto arg = arg_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+    if (arg.empty()) {
+      other_args.push_back(arg_item);
+      continue;
+    }
+    const std::string arg_kind =
+        arg.Get("kind") ? static_cast<std::string>(Downcast<String>(arg.Get("kind").value()))
+                        : std::string();
+    if (IsBufferAddrRuntimeArgKind(arg_kind) && arg.Get("buffer")) {
+      bound_buffers.push_back(static_cast<std::string>(Downcast<String>(arg.Get("buffer").value())));
+      buffer_args.push_back(arg_item);
+    } else {
+      other_args.push_back(arg_item);
+    }
+  }
+
+  auto has_bound_buffer = [&](const std::string& buffer_name) {
+    return std::find(bound_buffers.begin(), bound_buffers.end(), buffer_name) != bound_buffers.end();
+  };
+
+  for (const auto& accessor_item : accessors) {
+    auto accessor = accessor_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+    if (accessor.empty() || !accessor.Get("buffer")) {
+      continue;
+    }
+    const std::string buffer_name =
+        static_cast<std::string>(Downcast<String>(accessor.Get("buffer").value()));
+    if (buffer_name.empty() || has_bound_buffer(buffer_name)) {
+      continue;
+    }
+
+    Map<String, Any> arg;
+    const std::string arg_kind = is_reader ? "input_buffer_addr32" : "output_buffer_addr32";
+    const std::string arg_name = buffer_name + "_addr";
+    arg.Set("name", String(arg_name));
+    arg.Set("kind", String(arg_kind));
+    arg.Set("dtype", String("uint32"));
+    arg.Set("buffer", String(buffer_name));
+    arg.Set("identity", String(MakeBlackholeRuntimeArgIdentity(arg_kind, arg_name, buffer_name)));
+    buffer_args.push_back(arg);
+    bound_buffers.push_back(buffer_name);
+  }
+
+  Array<Any> runtime_args;
+  for (const auto& item : buffer_args) {
+    runtime_args.push_back(item);
+  }
+  for (const auto& item : other_args) {
+    runtime_args.push_back(item);
+  }
+  return runtime_args;
+}
+
 static void ValidateStagedStickCopyPageAlignedOffset(arith::Analyzer* analyzer,
                                                      const PrimExpr& transport_col,
                                                      int64_t page_cols) {
@@ -163,6 +237,7 @@ using tir::builtin::blackhole_read_tile_to_cb;
 using tir::builtin::blackhole_read_page_to_cb;
 using tir::builtin::blackhole_write_tile_from_cb;
 using tir::builtin::blackhole_write_page_from_cb;
+using tir::builtin::blackhole_write_local_slice_to_cb;
 using tvm::Integer;
 using tvm::DataType;
 using tvm::IntImm;
@@ -285,8 +360,9 @@ static std::pair<int64_t, int64_t> ResolveStaticShape2DFromBufferOrMetadata(
     const char* static_shape_message,
     const char* rank2_message) {
   if (buffer->shape.size() >= 2U) {
-    const auto* rows_imm = buffer->shape[0].as<IntImmNode>();
-    const auto* cols_imm = buffer->shape[1].as<IntImmNode>();
+    const size_t rank = buffer->shape.size();
+    const auto* rows_imm = buffer->shape[rank - 2].as<IntImmNode>();
+    const auto* cols_imm = buffer->shape[rank - 1].as<IntImmNode>();
     ICHECK(rows_imm && cols_imm) << static_shape_message;
     return {rows_imm->value, cols_imm->value};
   }
@@ -484,6 +560,8 @@ namespace {
 bool HasResidualFragmentFill(const Stmt& body);
 bool HasResidualFragmentAdd(const Stmt& body);
 bool HasResidualFragmentMax(const Stmt& body);
+bool HasResidualFragmentCast(const Stmt& body);
+bool HasResidualRowBroadcast(const Stmt& body);
 }
 
 static int CountLoweredRowReductionBuiltins(const Stmt& body) {
@@ -511,11 +589,17 @@ static int CountLoweredRowBroadcastBuiltins(const Stmt& body) {
     }
     const Op op = Downcast<Op>(call->op);
     if (op.same_as(tir::builtin::blackhole_mul_row_bcast()) ||
+        op.same_as(tir::builtin::blackhole_mul_grouped_row_bcast()) ||
         op.same_as(tir::builtin::blackhole_div_row_bcast()) ||
+        op.same_as(tir::builtin::blackhole_div_grouped_row_bcast()) ||
         op.same_as(tir::builtin::blackhole_exp2_row_bcast_affine()) ||
+        op.same_as(tir::builtin::blackhole_exp2_grouped_row_bcast_affine()) ||
         op->name == "tl.blackhole.mul_row_bcast" ||
+        op->name == "tl.blackhole.mul_grouped_row_bcast" ||
         op->name == "tl.blackhole.div_row_bcast" ||
-        op->name == "tl.blackhole.exp2_row_bcast_affine") {
+        op->name == "tl.blackhole.div_grouped_row_bcast" ||
+        op->name == "tl.blackhole.exp2_row_bcast_affine" ||
+        op->name == "tl.blackhole.exp2_grouped_row_bcast_affine") {
       ++count;
     }
   });
@@ -544,7 +628,7 @@ static Map<String, Any> PruneSatisfiedLoweringRequirements(const Map<String, Any
     const int source_count =
         static_cast<int>(Downcast<Array<Any>>(row_broadcast_sources_opt.value()).size());
     row_broadcast_satisfied =
-        source_count == 0 || CountLoweredRowBroadcastBuiltins(body) >= source_count;
+        source_count == 0 || !HasResidualRowBroadcast(body);
   }
 
   if (!row_reduction_satisfied && !row_broadcast_satisfied) {
@@ -581,6 +665,9 @@ static Map<String, Any> PruneSatisfiedLoweringRequirements(const Map<String, Any
           continue;
         }
         if (op_name == "max" && !HasResidualFragmentMax(body)) {
+          continue;
+        }
+        if (op_name == "cast" && !HasResidualFragmentCast(body)) {
           continue;
         }
         kept_ops.push_back(item);
@@ -1463,6 +1550,7 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
       if (accessors.empty()) {
         accessors = EncodeAccessorDescriptors(kind);
       }
+      Array<Any> runtime_args = EnsureSegmentBufferRuntimeArgs(kind, accessors, segment.Get("runtime_args"));
       compile_time_arg_specs = make_accessor_cta_specs(kind, accessors);
       if (kind == "compute") {
         auto gemm_compile_time_arg_specs = make_gemm_compute_cta_specs();
@@ -1472,6 +1560,9 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
         segment.Set("compute_config", make_compute_config_from_contract());
       }
       segment.Set("accessors", accessors);
+      if (!runtime_args.empty()) {
+        segment.Set("runtime_args", runtime_args);
+      }
       segment.Set("compile_time_arg_specs", compile_time_arg_specs);
       Map<String, Any> launch_spec =
           make_launch_spec(segment.Get("core_type")
@@ -1484,6 +1575,45 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
       rewritten_segments.push_back(segment);
     }
     attrs.Set("blackhole.segment_plan", rewritten_segments);
+
+    auto aggregate_runtime_args = [&](const char* field_name) {
+      Array<Any> aggregated;
+      std::unordered_set<std::string> seen_identities;
+      for (const auto& segment_item : rewritten_segments) {
+        auto segment = segment_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+        if (segment.empty()) {
+          continue;
+        }
+        auto args_it = segment.Get(field_name);
+        if (!args_it) {
+          continue;
+        }
+        for (const auto& arg_item : Downcast<Array<Any>>(args_it.value())) {
+          auto arg = arg_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+          if (arg.empty()) {
+            continue;
+          }
+          const std::string identity =
+              arg.Get("identity")
+                  ? static_cast<std::string>(Downcast<String>(arg.Get("identity").value()))
+                  : std::string();
+          if (!identity.empty() && !seen_identities.insert(identity).second) {
+            continue;
+          }
+          aggregated.push_back(arg);
+        }
+      }
+      return aggregated;
+    };
+
+    Array<Any> aggregated_runtime_args = aggregate_runtime_args("runtime_args");
+    if (!aggregated_runtime_args.empty()) {
+      attrs.Set("blackhole.runtime_args", aggregated_runtime_args);
+    }
+    Array<Any> aggregated_common_runtime_args = aggregate_runtime_args("common_runtime_args");
+    if (!aggregated_common_runtime_args.empty()) {
+      attrs.Set("blackhole.common_runtime_args", aggregated_common_runtime_args);
+    }
   }
 
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
@@ -1727,6 +1857,11 @@ CopyDirection LowerBlackholeOps::GetCopyDirection(const BufferStoreNode* op) con
   // CB -> CB (shared -> shared)
   if (isCBScope(src_scope) && isCBScope(dst_scope)) {
     return CopyDirection::kCBToCB;
+  }
+
+  // local/accumulator -> CB (fragment/local staging -> shared/CB)
+  if (isAccumulatorLikeScope(src_scope) && isCBScope(dst_scope)) {
+    return CopyDirection::kLocalToCB;
   }
 
   return CopyDirection::kUnknown;
@@ -2616,6 +2751,13 @@ bool IsScalarLocalFragmentBuffer(const Buffer& buffer) {
   return buffer->shape.size() == 1 && tir::is_one(buffer->shape[0]);
 }
 
+bool IsRowScalarLocalFragmentBuffer(const Buffer& buffer) {
+  if (!IsUnsupportedResidualLocalScope(buffer)) {
+    return false;
+  }
+  return buffer->shape.size() == 1;
+}
+
 bool MatchScalarAccumulatorUpdate(const BufferStoreNode* store,
                                   const Buffer& accum_buffer,
                                   const Var& reduce_var,
@@ -2725,16 +2867,40 @@ std::vector<Stmt> FlattenSingletonLoopBody(const Stmt& body) {
 
 const ForNode* AsUnwrappedFor(const Stmt& stmt) {
   Stmt current = stmt;
-  while (const auto* attr = current.as<AttrStmtNode>()) {
-    current = attr->body;
+  while (true) {
+    if (const auto* attr = current.as<AttrStmtNode>()) {
+      current = attr->body;
+      continue;
+    }
+    if (const auto* decl = current.as<tir::DeclBufferNode>()) {
+      current = decl->body;
+      continue;
+    }
+    if (const auto* alloc = current.as<tir::AllocateNode>()) {
+      current = alloc->body;
+      continue;
+    }
+    break;
   }
   return current.as<ForNode>();
 }
 
 const BufferStoreNode* AsUnwrappedBufferStore(const Stmt& stmt) {
   Stmt current = stmt;
-  while (const auto* attr = current.as<AttrStmtNode>()) {
-    current = attr->body;
+  while (true) {
+    if (const auto* attr = current.as<AttrStmtNode>()) {
+      current = attr->body;
+      continue;
+    }
+    if (const auto* decl = current.as<tir::DeclBufferNode>()) {
+      current = decl->body;
+      continue;
+    }
+    if (const auto* alloc = current.as<tir::AllocateNode>()) {
+      current = alloc->body;
+      continue;
+    }
+    break;
   }
   return current.as<BufferStoreNode>();
 }
@@ -2744,6 +2910,15 @@ bool IsFloatImmValue(const PrimExpr& expr, double expected) {
     return imm->value == expected;
   }
   return false;
+}
+
+bool IsInfinityExpr(const PrimExpr& expr) {
+  const auto* call = expr.as<CallNode>();
+  if (!call || !call->op->IsInstance<OpNode>()) {
+    return false;
+  }
+  Op op = Downcast<Op>(call->op);
+  return op->name == "tir.infinity";
 }
 
 bool IsScalarLiteralValue(const PrimExpr& expr) {
@@ -2768,12 +2943,14 @@ bool IsZeroValue(const PrimExpr& expr) {
 
 bool IsNegInfValue(const PrimExpr& expr) {
   if (const auto* mul = expr.as<MulNode>()) {
-    return (IsFloatImmValue(mul->a, std::numeric_limits<double>::infinity()) &&
+    return ((IsFloatImmValue(mul->a, std::numeric_limits<double>::infinity()) ||
+             IsInfinityExpr(mul->a)) &&
             IsFloatImmValue(mul->b, -1.0)) ||
-           (IsFloatImmValue(mul->b, std::numeric_limits<double>::infinity()) &&
+           ((IsFloatImmValue(mul->b, std::numeric_limits<double>::infinity()) ||
+             IsInfinityExpr(mul->b)) &&
             IsFloatImmValue(mul->a, -1.0));
   }
-  return IsFloatImmValue(expr, -std::numeric_limits<double>::infinity());
+  return IsFloatImmValue(expr, -std::numeric_limits<double>::infinity()) || IsInfinityExpr(expr);
 }
 
 bool IsFragmentFillValue(const PrimExpr& expr) {
@@ -2823,6 +3000,61 @@ bool HasResidualFragmentMax(const Stmt& body) {
   return found;
 }
 
+bool HasResidualFragmentCast(const Stmt& body) {
+  bool found = false;
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* store = node.as<BufferStoreNode>();
+    if (!store || !IsUnsupportedResidualLocalScope(store->buffer)) {
+      return;
+    }
+    if (store->value.as<CastNode>()) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+bool HasResidualRowBroadcast(const Stmt& body) {
+  bool found = false;
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* store = node.as<BufferStoreNode>();
+    if (!store || !IsVectorLocalFragmentBuffer(store->buffer) || store->indices.size() != 1) {
+      return;
+    }
+    PrimExpr grouped_scalar_index;
+    auto is_grouped_scalar = [&](const PrimExpr& expr) {
+      const auto* load = expr.as<BufferLoadNode>();
+      if (!load || !IsRowScalarLocalFragmentBuffer(load->buffer) || load->indices.size() != 1) {
+        return false;
+      }
+      const auto* floordiv = load->indices[0].as<FloorDivNode>();
+      return floordiv && floordiv->a.same_as(store->indices[0]);
+    };
+    if (const auto* mul = store->value.as<MulNode>()) {
+      if (is_grouped_scalar(mul->a) || is_grouped_scalar(mul->b)) {
+        found = true;
+      }
+      return;
+    }
+    if (const auto* div = store->value.as<DivNode>()) {
+      if (is_grouped_scalar(div->b)) {
+        found = true;
+      }
+      return;
+    }
+    if (const auto* call = store->value.as<CallNode>();
+        call && call->op->IsInstance<OpNode>() && call->args.size() == 1 &&
+        Downcast<Op>(call->op)->name == "tir.exp2") {
+      if (const auto* sub = call->args[0].as<SubNode>()) {
+        if (is_grouped_scalar(sub->a) || is_grouped_scalar(sub->b)) {
+          found = true;
+        }
+      }
+    }
+  });
+  return found;
+}
+
 bool MatchSelfIndexedVectorLoad(const PrimExpr& expr,
                                 const Buffer& dst_buffer,
                                 const Var& loop_var) {
@@ -2842,9 +3074,37 @@ bool MatchScalarFragmentLoad(const PrimExpr& expr, Buffer* scalar_buffer) {
   return true;
 }
 
+bool MatchGroupedScalarFragmentLoad(const PrimExpr& expr,
+                                    const Var& loop_var,
+                                    Buffer* scalar_buffer,
+                                    PrimExpr* row_width) {
+  const auto* load = expr.as<BufferLoadNode>();
+  if (!load || load->indices.size() != 1 || !IsRowScalarLocalFragmentBuffer(load->buffer)) {
+    return false;
+  }
+  const auto* floordiv = load->indices[0].as<FloorDivNode>();
+  if (!floordiv || !floordiv->a.same_as(loop_var)) {
+    return false;
+  }
+  const auto* width_imm = floordiv->b.as<IntImmNode>();
+  if (!width_imm || width_imm->value <= 0) {
+    return false;
+  }
+  *scalar_buffer = load->buffer;
+  *row_width = floordiv->b;
+  return true;
+}
+
 bool MatchScalarBufferLoadFrom(const PrimExpr& expr, const Buffer& buffer) {
   const auto* load = expr.as<BufferLoadNode>();
   return load && load->indices.size() == 1 && tir::is_zero(load->indices[0]) &&
+         (load->buffer.same_as(buffer) || load->buffer->data.same_as(buffer->data) ||
+          load->buffer->name == buffer->name);
+}
+
+bool MatchIndexedRowStateLoad(const PrimExpr& expr, const Buffer& buffer, const Var& loop_var) {
+  const auto* load = expr.as<BufferLoadNode>();
+  return load && load->indices.size() == 1 && load->indices[0].same_as(loop_var) &&
          (load->buffer.same_as(buffer) || load->buffer->data.same_as(buffer->data) ||
           load->buffer->name == buffer->name);
 }
@@ -2909,6 +3169,35 @@ bool MatchScaledScalarFragmentLoad(const PrimExpr& expr, Buffer* scalar_buffer, 
   return false;
 }
 
+bool MatchScaledGroupedScalarFragmentLoad(const PrimExpr& expr,
+                                          const Var& loop_var,
+                                          Buffer* scalar_buffer,
+                                          PrimExpr* row_width,
+                                          PrimExpr* scale) {
+  if (MatchGroupedScalarFragmentLoad(expr, loop_var, scalar_buffer, row_width)) {
+    *scale = make_const(expr.dtype(), 1.0);
+    return true;
+  }
+  const auto* mul = expr.as<MulNode>();
+  if (!mul) {
+    return false;
+  }
+  PrimExpr local_row_width;
+  if (MatchGroupedScalarFragmentLoad(mul->a, loop_var, scalar_buffer, &local_row_width) &&
+      IsScalarLiteralValue(mul->b)) {
+    *row_width = local_row_width;
+    *scale = mul->b;
+    return true;
+  }
+  if (MatchGroupedScalarFragmentLoad(mul->b, loop_var, scalar_buffer, &local_row_width) &&
+      IsScalarLiteralValue(mul->a)) {
+    *row_width = local_row_width;
+    *scale = mul->a;
+    return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 bool LowerBlackholeOps::MatchDirectRowReduction(const ForNode* op, RowReductionMatch* match) const {
@@ -2943,7 +3232,9 @@ bool LowerBlackholeOps::MatchDirectRowReduction(const ForNode* op, RowReductionM
   match->src = src_buffer;
   match->dst = init_store->buffer;
   match->num_elements = reduce_loop->extent;
+  match->row_width = reduce_loop->extent;
   match->kind = kind;
+  match->grouped = false;
   match->clear = true;
   return true;
 }
@@ -2989,12 +3280,137 @@ bool LowerBlackholeOps::MatchAllocatedRowReduction(const AllocateNode* op,
   match->src = src_buffer;
   match->dst = dst_buffer;
   match->num_elements = reduce_loop->extent;
+  match->row_width = reduce_loop->extent;
   match->kind = reduction_kind;
+  match->grouped = false;
   match->clear = false;
   return true;
 }
 
+bool LowerBlackholeOps::MatchGroupedRowReduction(const ForNode* op,
+                                                 RowReductionMatch* match) const {
+  if (!op || !match) {
+    return false;
+  }
+  std::vector<Stmt> stmts = FlattenSingletonLoopBody(op->body);
+  if (stmts.size() != 3 && stmts.size() != 4) {
+    return false;
+  }
+
+  const auto* init_store = AsUnwrappedBufferStore(stmts[0]);
+  const auto* reduce_loop = AsUnwrappedFor(stmts[1]);
+  const auto* allreduce_store = AsUnwrappedBufferStore(stmts[2]);
+  const auto* finalize_store = stmts.size() == 4 ? AsUnwrappedBufferStore(stmts[3]) : nullptr;
+  if (!init_store || !reduce_loop || !allreduce_store ||
+      !IsRowScalarLocalFragmentBuffer(init_store->buffer) || init_store->indices.size() != 1 ||
+      !init_store->indices[0].same_as(op->loop_var)) {
+    return false;
+  }
+
+  auto same_buffer = [](const Buffer& lhs, const Buffer& rhs) {
+    return lhs.same_as(rhs) || lhs->data.get() == rhs->data.get() || lhs->name == rhs->name;
+  };
+
+  Buffer src_buffer;
+  std::string reduction_kind;
+  auto try_match_reduce = [&](const PrimExpr& lhs, const PrimExpr& rhs,
+                              const char* expected_kind) -> bool {
+    const auto* accum_load = lhs.as<BufferLoadNode>();
+    const auto* src_load = rhs.as<BufferLoadNode>();
+    if (!accum_load || !src_load || !same_buffer(accum_load->buffer, init_store->buffer) ||
+        accum_load->indices.size() != 1 || !accum_load->indices[0].same_as(op->loop_var) ||
+        src_load->indices.size() != 1) {
+      return false;
+    }
+    Analyzer analyzer;
+    PrimExpr expected_index = op->loop_var * reduce_loop->extent + reduce_loop->loop_var;
+    if (!tir::is_zero(analyzer.Simplify(src_load->indices[0] - expected_index))) {
+      return false;
+    }
+    src_buffer = src_load->buffer;
+    reduction_kind = expected_kind;
+    return true;
+  };
+
+  const auto* reduce_store = AsUnwrappedBufferStore(reduce_loop->body);
+  if (!reduce_store || !same_buffer(reduce_store->buffer, init_store->buffer) ||
+      reduce_store->indices.size() != 1 || !reduce_store->indices[0].same_as(op->loop_var)) {
+    return false;
+  }
+  if (const auto* add = reduce_store->value.as<AddNode>()) {
+    if (!(try_match_reduce(add->a, add->b, "sum") || try_match_reduce(add->b, add->a, "sum"))) {
+      return false;
+    }
+  } else if (const auto* max = reduce_store->value.as<MaxNode>()) {
+    if (!(try_match_reduce(max->a, max->b, "max") || try_match_reduce(max->b, max->a, "max"))) {
+      return false;
+    }
+  } else {
+    return false;
+  }
+
+  const auto* allreduce_call = allreduce_store->value.as<CallNode>();
+  if (!same_buffer(allreduce_store->buffer, init_store->buffer) || allreduce_store->indices.size() != 1 ||
+      !allreduce_store->indices[0].same_as(op->loop_var) || !allreduce_call ||
+      !allreduce_call->op.same_as(tir::builtin::call_extern())) {
+    return false;
+  }
+
+  Buffer dst_buffer = init_store->buffer;
+  bool clear = true;
+  if (finalize_store != nullptr) {
+    auto try_match_finalize = [&](const PrimExpr& lhs, const PrimExpr& rhs,
+                                  const char* expected_kind) -> bool {
+      const auto* dst_load = lhs.as<BufferLoadNode>();
+      const auto* tmp_load = rhs.as<BufferLoadNode>();
+      if (!dst_load || !tmp_load || dst_load->indices.size() != 1 || tmp_load->indices.size() != 1 ||
+          !dst_load->indices[0].same_as(op->loop_var) || !tmp_load->indices[0].same_as(op->loop_var) ||
+          !same_buffer(tmp_load->buffer, init_store->buffer)) {
+        return false;
+      }
+      dst_buffer = finalize_store->buffer;
+      return same_buffer(dst_load->buffer, finalize_store->buffer) && reduction_kind == expected_kind;
+    };
+
+    if (const auto* add = finalize_store->value.as<AddNode>()) {
+      if (!(try_match_finalize(add->a, add->b, "sum") ||
+            try_match_finalize(add->b, add->a, "sum"))) {
+        return false;
+      }
+    } else if (const auto* max = finalize_store->value.as<MaxNode>()) {
+      if (!(try_match_finalize(max->a, max->b, "max") ||
+            try_match_finalize(max->b, max->a, "max"))) {
+        return false;
+      }
+    } else {
+      return false;
+    }
+    clear = false;
+  }
+
+  if (reduction_kind == "sum" && !IsZeroValue(init_store->value)) {
+    return false;
+  }
+  if (reduction_kind == "max" && !IsNegInfValue(init_store->value)) {
+    return false;
+  }
+
+  match->src = src_buffer;
+  match->dst = dst_buffer;
+  match->num_elements = op->extent;
+  match->row_width = reduce_loop->extent;
+  match->kind = reduction_kind;
+  match->grouped = true;
+  match->clear = clear;
+  return true;
+}
+
 Stmt LowerBlackholeOps::GenerateRowReductionSequence(const RowReductionMatch& match) {
+  if (match.grouped) {
+    return MakeBlackholeCall(tir::builtin::blackhole_reduce_row(),
+                             {match.src->data, match.dst->data, match.num_elements,
+                              match.row_width, StringImm(match.kind), Bool(match.clear)});
+  }
   return MakeBlackholeCall(tir::builtin::blackhole_reduce_row(),
                            {match.src->data, match.dst->data, match.num_elements,
                             StringImm(match.kind), Bool(match.clear)});
@@ -3014,15 +3430,26 @@ bool LowerBlackholeOps::MatchDirectRowBroadcast(const ForNode* op,
   auto fill_match = [&](const PrimExpr& lhs, const PrimExpr& rhs,
                         const char* kind) -> bool {
     Buffer scalar;
-    if (!MatchSelfIndexedVectorLoad(lhs, store->buffer, op->loop_var) ||
-        !MatchScalarFragmentLoad(rhs, &scalar)) {
+    PrimExpr row_width;
+    if (!MatchSelfIndexedVectorLoad(lhs, store->buffer, op->loop_var)) {
       return false;
     }
     match->dst = store->buffer;
-    match->scalar = scalar;
     match->num_elements = op->extent;
     match->kind = kind;
-    return true;
+    match->grouped = false;
+    if (MatchScalarFragmentLoad(rhs, &scalar)) {
+      match->scalar = scalar;
+      match->row_width = op->extent;
+      return true;
+    }
+    if (MatchGroupedScalarFragmentLoad(rhs, op->loop_var, &scalar, &row_width)) {
+      match->scalar = scalar;
+      match->row_width = row_width;
+      match->grouped = true;
+      return true;
+    }
+    return false;
   };
 
   if (const auto* mul = store->value.as<MulNode>()) {
@@ -3035,8 +3462,18 @@ bool LowerBlackholeOps::MatchDirectRowBroadcast(const ForNode* op,
 }
 
 Stmt LowerBlackholeOps::GenerateRowBroadcastSequence(const RowBroadcastMatch& match) {
-  const Op& op = match.kind == "mul" ? tir::builtin::blackhole_mul_row_bcast()
-                                     : tir::builtin::blackhole_div_row_bcast();
+  Op op;
+  if (match.kind == "mul") {
+    op = match.grouped ? tir::builtin::blackhole_mul_grouped_row_bcast()
+                       : tir::builtin::blackhole_mul_row_bcast();
+  } else {
+    op = match.grouped ? tir::builtin::blackhole_div_grouped_row_bcast()
+                       : tir::builtin::blackhole_div_row_bcast();
+  }
+  if (match.grouped) {
+    return MakeBlackholeCall(
+        op, {match.dst->data, match.scalar->data, match.num_elements, match.row_width});
+  }
   return MakeBlackholeCall(op, {match.dst->data, match.scalar->data, match.num_elements});
 }
 
@@ -3069,6 +3506,58 @@ bool LowerBlackholeOps::MatchScalarFmaStore(const BufferStoreNode* op,
     match->lhs = mul_lhs;
     match->rhs = mul_rhs;
     match->add = add_buffer;
+    match->num_elements = PrimExpr();
+    return true;
+  };
+
+  return try_match(add->a, add->b) || try_match(add->b, add->a);
+}
+
+bool LowerBlackholeOps::MatchGroupedScalarFmaLoop(const ForNode* op,
+                                                  ScalarFmaMatch* match) const {
+  if (!op || !match) {
+    return false;
+  }
+  const auto* store = AsUnwrappedBufferStore(op->body);
+  if (!store || !IsRowScalarLocalFragmentBuffer(store->buffer) || store->indices.size() != 1 ||
+      !store->indices[0].same_as(op->loop_var)) {
+    return false;
+  }
+  const auto* add = store->value.as<AddNode>();
+  if (!add) {
+    return false;
+  }
+
+  auto try_match = [&](const PrimExpr& mul_expr, const PrimExpr& add_expr) -> bool {
+    const auto* mul = mul_expr.as<MulNode>();
+    Buffer mul_lhs;
+    Buffer mul_rhs;
+    Buffer add_buffer;
+    if (!mul || !MatchIndexedRowStateLoad(mul->a, store->buffer, op->loop_var) &&
+                    !MatchIndexedRowStateLoad(mul->b, store->buffer, op->loop_var)) {
+      return false;
+    }
+    const PrimExpr& other_mul = MatchIndexedRowStateLoad(mul->a, store->buffer, op->loop_var) ? mul->b : mul->a;
+    const PrimExpr& self_mul = MatchIndexedRowStateLoad(mul->a, store->buffer, op->loop_var) ? mul->a : mul->b;
+    if (!MatchIndexedRowStateLoad(self_mul, store->buffer, op->loop_var)) {
+      return false;
+    }
+    const auto* other_load = other_mul.as<BufferLoadNode>();
+    const auto* add_load = add_expr.as<BufferLoadNode>();
+    if (!other_load || !add_load || other_load->indices.size() != 1 || add_load->indices.size() != 1 ||
+        !other_load->indices[0].same_as(op->loop_var) || !add_load->indices[0].same_as(op->loop_var) ||
+        !IsRowScalarLocalFragmentBuffer(other_load->buffer) ||
+        !IsRowScalarLocalFragmentBuffer(add_load->buffer)) {
+      return false;
+    }
+    mul_lhs = store->buffer;
+    mul_rhs = other_load->buffer;
+    add_buffer = add_load->buffer;
+    match->dst = store->buffer;
+    match->lhs = mul_lhs;
+    match->rhs = mul_rhs;
+    match->add = add_buffer;
+    match->num_elements = op->extent;
     return true;
   };
 
@@ -3076,6 +3565,11 @@ bool LowerBlackholeOps::MatchScalarFmaStore(const BufferStoreNode* op,
 }
 
 Stmt LowerBlackholeOps::GenerateScalarFmaSequence(const ScalarFmaMatch& match) {
+  if (match.num_elements.defined()) {
+    return MakeBlackholeCall(tir::builtin::blackhole_scalar_fma(),
+                             {match.dst->data, match.lhs->data, match.rhs->data, match.add->data,
+                              match.num_elements});
+  }
   return MakeBlackholeCall(tir::builtin::blackhole_scalar_fma(),
                            {match.dst->data, match.lhs->data, match.rhs->data, match.add->data});
 }
@@ -3103,22 +3597,40 @@ bool LowerBlackholeOps::MatchExp2RowBroadcastAffine(const ForNode* op,
   Buffer scalar;
   PrimExpr dst_scale;
   PrimExpr scalar_scale;
-  if (!MatchScaledSelfIndexedVectorLoad(sub->a, store->buffer, op->loop_var, &dst_scale) ||
-      !MatchScaledScalarFragmentLoad(sub->b, &scalar, &scalar_scale)) {
+  PrimExpr row_width;
+  if (!MatchScaledSelfIndexedVectorLoad(sub->a, store->buffer, op->loop_var, &dst_scale)) {
     return false;
   }
 
   match->dst = store->buffer;
-  match->scalar = scalar;
   match->num_elements = op->extent;
   match->dst_scale = dst_scale;
   Analyzer analyzer;
-  match->scalar_scale = analyzer.Simplify(-scalar_scale);
-  return true;
+  match->grouped = false;
+  if (MatchScaledScalarFragmentLoad(sub->b, &scalar, &scalar_scale)) {
+    match->scalar = scalar;
+    match->row_width = op->extent;
+    match->scalar_scale = analyzer.Simplify(-scalar_scale);
+    return true;
+  }
+  if (MatchScaledGroupedScalarFragmentLoad(sub->b, op->loop_var, &scalar, &row_width,
+                                           &scalar_scale)) {
+    match->scalar = scalar;
+    match->row_width = row_width;
+    match->grouped = true;
+    match->scalar_scale = analyzer.Simplify(-scalar_scale);
+    return true;
+  }
+  return false;
 }
 
 Stmt LowerBlackholeOps::GenerateExp2RowBroadcastAffineSequence(
     const Exp2RowBroadcastAffineMatch& match) {
+  if (match.grouped) {
+    return MakeBlackholeCall(tir::builtin::blackhole_exp2_grouped_row_bcast_affine(),
+                             {match.dst->data, match.scalar->data, match.num_elements,
+                              match.row_width, match.dst_scale, match.scalar_scale});
+  }
   return MakeBlackholeCall(tir::builtin::blackhole_exp2_row_bcast_affine(),
                            {match.dst->data, match.scalar->data, match.num_elements,
                             match.dst_scale, match.scalar_scale});
@@ -3233,6 +3745,38 @@ bool LowerBlackholeOps::MatchScalarMaxStore(const BufferStoreNode* op,
     }
     match->dst = op->buffer;
     match->src = other;
+    match->num_elements = PrimExpr();
+    return true;
+  };
+
+  return try_match(max->a, max->b) || try_match(max->b, max->a);
+}
+
+bool LowerBlackholeOps::MatchGroupedScalarMaxLoop(const ForNode* op,
+                                                  ScalarMaxMatch* match) const {
+  if (!op || !match) {
+    return false;
+  }
+  const auto* store = AsUnwrappedBufferStore(op->body);
+  if (!store || !IsRowScalarLocalFragmentBuffer(store->buffer) || store->indices.size() != 1 ||
+      !store->indices[0].same_as(op->loop_var)) {
+    return false;
+  }
+  const auto* max = store->value.as<MaxNode>();
+  if (!max) {
+    return false;
+  }
+
+  auto try_match = [&](const PrimExpr& self_expr, const PrimExpr& other_expr) -> bool {
+    const auto* other_load = other_expr.as<BufferLoadNode>();
+    if (!MatchIndexedRowStateLoad(self_expr, store->buffer, op->loop_var) || !other_load ||
+        other_load->indices.size() != 1 || !other_load->indices[0].same_as(op->loop_var) ||
+        !IsRowScalarLocalFragmentBuffer(other_load->buffer)) {
+      return false;
+    }
+    match->dst = store->buffer;
+    match->src = other_load->buffer;
+    match->num_elements = op->extent;
     return true;
   };
 
@@ -3240,8 +3784,197 @@ bool LowerBlackholeOps::MatchScalarMaxStore(const BufferStoreNode* op,
 }
 
 Stmt LowerBlackholeOps::GenerateScalarMaxSequence(const ScalarMaxMatch& match) {
+  if (match.num_elements.defined()) {
+    return MakeBlackholeCall(tir::builtin::blackhole_scalar_max(),
+                             {match.dst->data, match.src->data, match.num_elements});
+  }
   return MakeBlackholeCall(tir::builtin::blackhole_scalar_max(),
                            {match.dst->data, match.src->data});
+}
+
+bool LowerBlackholeOps::MatchDirectFragmentCast(const ForNode* op,
+                                                FragmentCastMatch* match) const {
+  if (!op || !match) {
+    return false;
+  }
+
+  const auto* store = AsUnwrappedBufferStore(op->body);
+  const ForNode* inner_loop = nullptr;
+  const auto* inner_store = store;
+  PrimExpr linear_index = op->loop_var;
+  PrimExpr num_elements = op->extent;
+  if (!store) {
+    inner_loop = AsUnwrappedFor(op->body);
+    inner_store = inner_loop ? AsUnwrappedBufferStore(inner_loop->body) : nullptr;
+    if (!inner_loop || !inner_store || inner_store->indices.size() != 1) {
+      return false;
+    }
+    linear_index = op->loop_var * inner_loop->extent + inner_loop->loop_var;
+    num_elements = Analyzer().Simplify(op->extent * inner_loop->extent);
+  } else if (store->indices.size() != 1) {
+    return false;
+  }
+
+  if (!inner_store || !IsVectorLocalFragmentBuffer(inner_store->buffer)) {
+    return false;
+  }
+  const auto* cast = inner_store->value.as<CastNode>();
+  const auto* load = cast ? cast->value.as<BufferLoadNode>() : nullptr;
+  if (!cast || !load || load->indices.size() != 1 || !IsVectorLocalFragmentBuffer(load->buffer)) {
+    return false;
+  }
+
+  Analyzer analyzer;
+  PrimExpr dst_offset = analyzer.Simplify(inner_store->indices[0] - linear_index);
+  PrimExpr src_offset = analyzer.Simplify(load->indices[0] - linear_index);
+  if (ExprUsesVar(dst_offset, op->loop_var) || ExprUsesVar(src_offset, op->loop_var)) {
+    return false;
+  }
+  if (inner_loop &&
+      (ExprUsesVar(dst_offset, inner_loop->loop_var) || ExprUsesVar(src_offset, inner_loop->loop_var))) {
+    return false;
+  }
+
+  match->dst = inner_store->buffer;
+  match->src = load->buffer;
+  match->dst_offset = dst_offset;
+  match->src_offset = src_offset;
+  match->num_elements = num_elements;
+  return true;
+}
+
+Stmt LowerBlackholeOps::GenerateFragmentCastSequence(const FragmentCastMatch& match) {
+  return MakeBlackholeCall(tir::builtin::blackhole_cast_fragment_slice(),
+                           {match.dst->data, match.src->data, match.dst_offset,
+                            match.src_offset, match.num_elements});
+}
+
+bool LowerBlackholeOps::MatchDirectLocalToCBSliceLoop(const ForNode* op,
+                                                      LocalToCBSliceMatch* match) const {
+  if (!op || !match) {
+    return false;
+  }
+
+  auto unwrap_stmt = [&](const Stmt& stmt, bool* wrapped_src_allocation) -> Stmt {
+    Stmt current = stmt;
+    while (true) {
+      if (const auto* attr = current.as<AttrStmtNode>()) {
+        current = attr->body;
+        continue;
+      }
+      if (const auto* alloc = current.as<tir::AllocateNode>()) {
+        *wrapped_src_allocation = true;
+        current = alloc->body;
+        continue;
+      }
+      if (const auto* decl = current.as<tir::DeclBufferNode>()) {
+        *wrapped_src_allocation = true;
+        current = decl->body;
+        continue;
+      }
+      break;
+    }
+    return current;
+  };
+
+  const auto build_match = [&](const BufferStoreNode* store, const Var& vector_var,
+                               const PrimExpr& vector_extent, bool wrap_src_allocation,
+                               const std::vector<Stmt>& prefix_stmts) -> bool {
+    if (!store || !IsCopyOperation(store) || GetCopyDirection(store) != CopyDirection::kLocalToCB) {
+      return false;
+    }
+
+    const auto* load = store->value.as<BufferLoadNode>();
+    if (!load || load->indices.size() != 1 || store->indices.size() != 2) {
+      return false;
+    }
+    if (!load->indices[0].same_as(vector_var)) {
+      return false;
+    }
+    if (!IsVectorLocalFragmentBuffer(load->buffer)) {
+      return false;
+    }
+
+    Analyzer analyzer;
+    PrimExpr row_extent = store->buffer->shape[1];
+    PrimExpr dst_linear =
+        analyzer.Simplify(store->indices[0] * row_extent + store->indices[1]);
+    PrimExpr base_offset = analyzer.Simplify(dst_linear - vector_var);
+    if (ExprUsesVar(base_offset, vector_var)) {
+      return false;
+    }
+
+    std::vector<Stmt> rewritten = prefix_stmts;
+    match->dst = store->buffer;
+    match->src = load->buffer;
+    match->dst_offset_elements = base_offset;
+    match->num_elements = vector_extent;
+    match->wrap_src_allocation = wrap_src_allocation;
+    if (rewritten.empty()) {
+      match->lowered_loop_body = Stmt();
+    } else {
+      match->lowered_loop_body =
+          rewritten.size() == 1 ? rewritten.front() : SeqStmt::Flatten(rewritten);
+    }
+    return true;
+  };
+
+  bool direct_wrapped_src_allocation = false;
+  Stmt unwrapped_body = unwrap_stmt(op->body, &direct_wrapped_src_allocation);
+  if (const auto* direct_loop = AsUnwrappedFor(unwrapped_body)) {
+    const auto* store = AsUnwrappedBufferStore(direct_loop->body);
+    return build_match(store, direct_loop->loop_var, direct_loop->extent,
+                       direct_wrapped_src_allocation, {});
+  }
+
+  std::vector<Stmt> stmts = FlattenSeqStmtBody(unwrapped_body);
+  if (stmts.empty()) {
+    return false;
+  }
+  const auto* inner_loop = AsUnwrappedFor(stmts.back());
+  const auto* store = inner_loop ? AsUnwrappedBufferStore(inner_loop->body) : nullptr;
+  if (!inner_loop) {
+    return false;
+  }
+  std::vector<Stmt> prefix(stmts.begin(), stmts.end() - 1);
+  return build_match(store, inner_loop->loop_var, inner_loop->extent,
+                     direct_wrapped_src_allocation, prefix);
+}
+
+Stmt LowerBlackholeOps::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
+                                                           const LocalToCBSliceMatch& match) {
+  const int cb_id = AllocateRequirementIndex(match.dst, CBType::kIntermediate);
+  ICHECK_GE(cb_id, 0);
+  ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
+  const int num_pages = std::max(1, cb_requirements_[cb_id].num_pages);
+
+  std::vector<Stmt> stmts;
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                    {IntImm32(cb_id), IntImm32(num_pages)}));
+  std::vector<Stmt> loop_stmts;
+  if (match.lowered_loop_body.defined()) {
+    loop_stmts.push_back(VisitStmt(match.lowered_loop_body));
+  }
+  loop_stmts.push_back(MakeBlackholeCall(blackhole_write_local_slice_to_cb(),
+                                         {match.src->data, IntImm32(cb_id),
+                                          match.dst_offset_elements, match.num_elements}));
+  Stmt loop_body =
+      loop_stmts.size() == 1 ? loop_stmts.front() : SeqStmt::Flatten(loop_stmts);
+  if (match.wrap_src_allocation) {
+    loop_body = tir::DeclBuffer(match.src, loop_body);
+    loop_body =
+        tir::Allocate(match.src->data, match.src->dtype, match.src->shape, Bool(1), loop_body);
+  }
+  stmts.push_back(For(op->loop_var,
+                      op->min,
+                      op->extent,
+                      op->kind,
+                      loop_body,
+                      op->thread_binding,
+                      op->annotations));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                    {IntImm32(cb_id), IntImm32(num_pages)}));
+  return SeqStmt::Flatten(stmts);
 }
 
 // Parse a colon-separated string into fields
@@ -3420,9 +4153,30 @@ Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
   if (MatchDirectRowReduction(op, &direct_row_reduction_match)) {
     return GenerateRowReductionSequence(direct_row_reduction_match);
   }
+  RowReductionMatch grouped_row_reduction_match;
+  if (MatchGroupedRowReduction(op, &grouped_row_reduction_match)) {
+    return GenerateRowReductionSequence(grouped_row_reduction_match);
+  }
   FragmentFillMatch direct_fill_match;
   if (MatchDirectFragmentFill(op, &direct_fill_match)) {
     return GenerateFragmentFillSequence(direct_fill_match);
+  }
+  ScalarMaxMatch grouped_scalar_max_match;
+  if (MatchGroupedScalarMaxLoop(op, &grouped_scalar_max_match)) {
+    return GenerateScalarMaxSequence(grouped_scalar_max_match);
+  }
+  ScalarFmaMatch grouped_scalar_fma_match;
+  if (MatchGroupedScalarFmaLoop(op, &grouped_scalar_fma_match)) {
+    return GenerateScalarFmaSequence(grouped_scalar_fma_match);
+  }
+  FragmentCastMatch direct_cast_match;
+  if (MatchDirectFragmentCast(op, &direct_cast_match)) {
+    return GenerateFragmentCastSequence(direct_cast_match);
+  }
+  LocalToCBSliceMatch local_to_cb_match;
+  if (MatchDirectLocalToCBSliceLoop(op, &local_to_cb_match)) {
+    saw_copy_op_ = true;
+    return GenerateLocalToCBSliceLoopSequence(op, local_to_cb_match);
   }
   Exp2RowBroadcastAffineMatch direct_exp2_row_broadcast_match;
   if (MatchExp2RowBroadcastAffine(op, &direct_exp2_row_broadcast_match)) {

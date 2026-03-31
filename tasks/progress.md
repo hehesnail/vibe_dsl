@@ -12,8 +12,8 @@
   - P4 已完成 interleaved stick/page copy 主路径；P5 已完成 program-local worker semaphore 与 remote-core descriptor formalization
   - backend cleanup A1/A2/A3、B1/B2/B3、C1/C2 已完成当前计划内收敛
 - **当前活动主线**:
-  - flash-attn forward subset：analysis 三件套已落地，fragment/dataflow lowering 正在推进
-  - 当前唯一真实主 blocker：`local/accumulator -> shared(CB)` staged copy 还没有正式 lowering
+  - flash-attn forward subset：analysis、fragment lowering、dataflow bridging 与 codegen 已接通当前支持面
+  - 当前不再有 compile-path 主 blocker；当前剩余工作转为 runtime/更宽支持面验证
 - **日期**: 2026-03-31
 - **相关设计**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -30,33 +30,35 @@
 - **当前已完成的 fragment lowering 子集**:
   - `tl.blackhole.reduce_row`
   - `tl.blackhole.mul_row_bcast`
+  - `tl.blackhole.mul_grouped_row_bcast`
   - `tl.blackhole.div_row_bcast`
+  - `tl.blackhole.div_grouped_row_bcast`
   - `tl.blackhole.scalar_fma`
   - `tl.blackhole.exp2_row_bcast_affine`
+  - `tl.blackhole.exp2_grouped_row_bcast_affine`
   - `tl.blackhole.scalar_exp2_affine`
   - `tl.blackhole.fill_fragment`
   - `tl.blackhole.scalar_max`
   - `tl.blackhole.cast_fragment_slice`
+  - `tl.blackhole.write_local_slice_to_cb`
 - **当前 codegen 状态**:
   - 上述 fragment builtin 已接入 `codegen_blackhole`
   - `blackhole.acc` 局部符号映射与 `tl.infinity` 相关的 device-only codegen 噪声已收正
-  - full `lower()` 已不再卡在旧的 fragment-subset gate、`Find undefined Variable acc_o` 或 `tl.infinity` unresolved call
-- **当前真实 blocker**:
-  - 优化后 device IR 里仍残留 `O_shared_1[tx, ...] = O_shared_local_cast[...]` 这类二维 `BufferStore`
-  - 这本质上是 `local/accumulator -> shared(CB)` staged copy
-  - `LowerBlackholeOps` 已引入 `CopyDirection::kLocalToCB`
-  - `tl.blackhole.write_local_slice_to_cb` primitive 已预埋
-  - 但该方向还未真正接入 `GenerateCopySequence()` / `codegen_blackhole`
+  - full `lower()` 已不再卡在旧的 fragment-subset gate、`Find undefined Variable acc_o`、`tl.infinity` unresolved call、或 `local/accumulator -> shared(CB)` staged copy 残留
+- **当前状态收口**:
+  - `CopyDirection::kLocalToCB` 已接入 `LowerBlackholeOps`
+  - `local/accumulator -> shared(CB)` staged copy 已 lower 成 `tl.blackhole.write_local_slice_to_cb`
+  - 当前支持的 MHA/GQA forward compile-path 已打通
 - **下一步**:
-  - 正式补齐 `local/accumulator -> shared(CB)` lowering
-  - 不在 codegen 层兜二维 shared store
+  - 在当前环境继续补 runtime / direct-path 验证
+  - 继续扩更宽 flash-attn forward 支持面与 P4/P5 主项
 
 ### 最新回归结果（当前环境）
 
 | 测试 | 结果 |
 |------|------|
 | `test_blackhole_flash_attention_analysis.py` | 7 passed |
-| `test_blackhole_flash_attention_pipeline.py` | 10 passed |
+| `test_blackhole_flash_attention_pipeline.py` | 16 passed |
 | `test_blackhole_copy_pipeline.py` | 30 passed, 6 skipped, 1 xfailed |
 | `test_blackhole_copy_runtime.py` | 2 passed, 9 skipped |
 | `test_blackhole_gemm.py` | 21 passed, 10 skipped |
