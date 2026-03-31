@@ -428,6 +428,10 @@
 
 #### C1. 明确 richer accessor/codegen readiness 边界
 
+状态：
+
+- ◐ 已完成首轮边界收紧（2026-03-31）
+
 目标：
 
 - 把当前“compile-time-only accessor codegen”写成正式限制，而不是模糊状态
@@ -442,6 +446,19 @@
 
 - 明确 codegen 目前支持的 accessor ABI
 - richer accessor/CRTA 路径要么进入正式设计，要么保持 fail-fast
+
+本轮落实：
+
+- [codegen_blackhole.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/codegen_blackhole.cc) 的 4 条 accessor 发射路径已统一到共享 helper：
+  - `ResolveCompileTimeAccessorOffset`
+  - `EmitTensorAccessorGenerator`
+- codegen 现在明确要求 accessor slot 是 compile-time 常量；slot 不是 `IntImm` 时，直接按“compile-time-only accessor slot”边界 fail-fast
+- 已补 codegen 负向回归，覆盖 non-constant accessor slot 在 codegen 阶段显式失败
+
+剩余项：
+
+- 这次收紧的是当前 compile-time-only accessor ABI 边界，不代表 richer accessor / CRTA 已准备好
+- 若后续要支持 `TensorAccessorArgs<CTA, CRTA>` 或更宽 accessor ABI，需要单独设计，不应把当前 helper 误当成“只差打开开关”
 
 #### C2. 把 synchronization 扩展前的 host/runtime 边界收紧
 

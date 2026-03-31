@@ -863,23 +863,48 @@ void CodeGenBlackhole::PrintNOCWriteBarrier(std::ostream &os) {
   os << "noc_async_write_barrier()";
 }
 
+namespace {
+
+int ResolveCompileTimeAccessorOffset(const tvm::tir::CallNode* op,
+                                     int arg_index,
+                                     const char* builtin_name) {
+  const auto* accessor_offset = op->args[arg_index].as<tvm::tir::IntImmNode>();
+  ICHECK(accessor_offset)
+      << "Blackhole codegen currently supports only compile-time-only accessor slots; "
+      << builtin_name << " expects constant accessor compile-time offset";
+  return static_cast<int>(accessor_offset->value);
+}
+
+void EmitTensorAccessorGenerator(std::ostream& os,
+                                 const char* prefix,
+                                 int accessor_offset,
+                                 const std::string& addr_var,
+                                 const std::string& size_expr = "") {
+  os << "; constexpr auto " << prefix << "_accessor_args = TensorAccessorArgs<"
+     << accessor_offset << ">(); const auto " << prefix << "_gen = TensorAccessor("
+     << prefix << "_accessor_args, " << addr_var;
+  if (!size_expr.empty()) {
+    os << ", " << size_expr;
+  }
+  os << "); ";
+}
+
+}  // namespace
+
 void CodeGenBlackhole::PrintReadTileToCB(const tvm::tir::CallNode *op,
                                          std::ostream &os) {
   need_dataflow_api_h_ = true;
   const std::string src_addr_var = GetRuntimeArgVarForBuffer(op->args[0], "input_buffer_addr");
   const int cb_id = ResolveCBId(op->args[2]);
-  const auto* accessor_offset = op->args[4].as<tvm::tir::IntImmNode>();
-  ICHECK(accessor_offset)
-      << "Blackhole read_tile_to_cb expects constant accessor compile-time offset";
+  const int accessor_offset =
+      ResolveCompileTimeAccessorOffset(op, /*arg_index=*/4, "tl.blackhole.read_tile_to_cb");
   os << "{ ";
   os << "const uint32_t tile_index = ";
   PrintExpr(op->args[1], os);
   os << "; const uint32_t tile_bytes = ";
   PrintExpr(op->args[3], os);
   os << "; const uint32_t cb_l1_addr = get_write_ptr(" << cb_id << ")";
-  os << "; constexpr auto src_accessor_args = TensorAccessorArgs<" << accessor_offset->value
-     << ">(); const auto src_gen = TensorAccessor(src_accessor_args, " << src_addr_var
-     << ", tile_bytes); ";
+  EmitTensorAccessorGenerator(os, "src", accessor_offset, src_addr_var, "tile_bytes");
   os << "noc_async_read_tile(tile_index, src_gen, cb_l1_addr); ";
   os << "noc_async_read_barrier(); }";
 }
@@ -889,18 +914,15 @@ void CodeGenBlackhole::PrintWriteTileFromCB(const tvm::tir::CallNode *op,
   need_dataflow_api_h_ = true;
   const std::string dst_addr_var = GetRuntimeArgVarForBuffer(op->args[1], "output_buffer_addr");
   const int cb_id = ResolveCBId(op->args[0]);
-  const auto* accessor_offset = op->args[4].as<tvm::tir::IntImmNode>();
-  ICHECK(accessor_offset)
-      << "Blackhole write_tile_from_cb expects constant accessor compile-time offset";
+  const int accessor_offset =
+      ResolveCompileTimeAccessorOffset(op, /*arg_index=*/4, "tl.blackhole.write_tile_from_cb");
   os << "{ ";
   os << "const uint32_t tile_index = ";
   PrintExpr(op->args[2], os);
   os << "; const uint32_t tile_bytes = ";
   PrintExpr(op->args[3], os);
   os << "; const uint32_t cb_l1_addr = get_read_ptr(" << cb_id << ")";
-  os << "; constexpr auto dst_accessor_args = TensorAccessorArgs<" << accessor_offset->value
-     << ">(); const auto dst_gen = TensorAccessor(dst_accessor_args, " << dst_addr_var
-     << ", tile_bytes); ";
+  EmitTensorAccessorGenerator(os, "dst", accessor_offset, dst_addr_var, "tile_bytes");
   os << "noc_async_write_tile(tile_index, dst_gen, cb_l1_addr); ";
   os << "noc_async_write_barrier(); }";
 }
@@ -910,9 +932,8 @@ void CodeGenBlackhole::PrintReadPageToCB(const tvm::tir::CallNode *op,
   need_dataflow_api_h_ = true;
   const std::string src_addr_var = GetRuntimeArgVarForBuffer(op->args[0], "input_buffer_addr");
   const int cb_id = ResolveCBId(op->args[2]);
-  const auto* accessor_offset = op->args[4].as<tvm::tir::IntImmNode>();
-  ICHECK(accessor_offset)
-      << "Blackhole read_page_to_cb expects constant accessor compile-time offset";
+  const int accessor_offset =
+      ResolveCompileTimeAccessorOffset(op, /*arg_index=*/4, "tl.blackhole.read_page_to_cb");
   os << "{ ";
   os << "const uint32_t page_id = ";
   PrintExpr(op->args[1], os);
@@ -920,9 +941,7 @@ void CodeGenBlackhole::PrintReadPageToCB(const tvm::tir::CallNode *op,
   PrintExpr(op->args[3], os);
   os << "; const uint32_t cb_l1_addr = get_write_ptr(" << cb_id << ") + ";
   PrintExpr(op->args[5], os);
-  os << "; constexpr auto src_accessor_args = TensorAccessorArgs<" << accessor_offset->value
-     << ">(); const auto src_gen = TensorAccessor(src_accessor_args, " << src_addr_var
-     << "); ";
+  EmitTensorAccessorGenerator(os, "src", accessor_offset, src_addr_var);
   os << "const uint64_t src_noc_addr = src_gen.get_noc_addr(page_id); ";
   os << "noc_async_read(src_noc_addr, cb_l1_addr, page_bytes); }";
 }
@@ -932,9 +951,8 @@ void CodeGenBlackhole::PrintWritePageFromCB(const tvm::tir::CallNode *op,
   need_dataflow_api_h_ = true;
   const std::string dst_addr_var = GetRuntimeArgVarForBuffer(op->args[1], "output_buffer_addr");
   const int cb_id = ResolveCBId(op->args[0]);
-  const auto* accessor_offset = op->args[4].as<tvm::tir::IntImmNode>();
-  ICHECK(accessor_offset)
-      << "Blackhole write_page_from_cb expects constant accessor compile-time offset";
+  const int accessor_offset =
+      ResolveCompileTimeAccessorOffset(op, /*arg_index=*/4, "tl.blackhole.write_page_from_cb");
   os << "{ ";
   os << "const uint32_t page_id = ";
   PrintExpr(op->args[2], os);
@@ -942,9 +960,7 @@ void CodeGenBlackhole::PrintWritePageFromCB(const tvm::tir::CallNode *op,
   PrintExpr(op->args[3], os);
   os << "; const uint32_t cb_l1_addr = get_read_ptr(" << cb_id << ") + ";
   PrintExpr(op->args[5], os);
-  os << "; constexpr auto dst_accessor_args = TensorAccessorArgs<" << accessor_offset->value
-     << ">(); const auto dst_gen = TensorAccessor(dst_accessor_args, " << dst_addr_var
-     << "); ";
+  EmitTensorAccessorGenerator(os, "dst", accessor_offset, dst_addr_var);
   os << "const uint64_t dst_noc_addr = dst_gen.get_noc_addr(page_id); ";
   os << "noc_async_write(cb_l1_addr, dst_noc_addr, page_bytes); }";
 }

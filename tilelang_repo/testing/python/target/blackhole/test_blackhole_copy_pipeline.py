@@ -1336,6 +1336,35 @@ def test_blackhole_copy_codegen_rejects_common_runtime_arg_without_identity():
         _rebuild_codegen_module_with_segment_plan(artifact, mutated_segments)
 
 
+def test_blackhole_copy_codegen_rejects_nonconstant_accessor_slot():
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def body_mutator(original_body):
+        bad_slot = tir.Var("bad_accessor_slot", "int32")
+        read_tile = tir.op.Op.get("tl.blackhole.read_tile_to_cb")
+
+        def mutate(expr):
+            if isinstance(expr, tir.Call) and expr.op.same_as(read_tile):
+                args = list(expr.args)
+                args[4] = bad_slot
+                return tir.Call(expr.dtype, expr.op, args, expr.span)
+            return expr
+
+        return tir.stmt_functor.ir_transform(original_body, None, mutate, ["tir.Call"])
+
+    with pytest.raises(
+        Exception,
+        match="compile-time-only accessor slot|constant accessor compile-time offset",
+    ):
+        _rebuild_codegen_module_with_body_and_segment_plan(
+            artifact, body_mutator=body_mutator
+        )
+
+
 def test_blackhole_core_plan_preserves_logical_block_launch():
     kernel = grid_indexed_staged_copy_kernel(grid_x=2, grid_y=3)
     target = Target("blackhole")

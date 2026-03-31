@@ -201,6 +201,9 @@
 - 本轮尽量少动
 - 继续只消费 builtin / lowering 已确定的 compile-time offset 与 kernel attrs
 - 不强行让 codegen 直接依赖完整 `compile_time_arg_specs`
+- 当前 codegen readiness 已明确写实为 compile-time-only accessor slot：
+  - accessor slot 必须是 `IntImm`
+  - non-constant accessor slot 在 codegen 阶段直接 fail-fast
 
 ---
 

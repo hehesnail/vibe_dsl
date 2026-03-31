@@ -171,6 +171,9 @@
   - `const auto accessor = TensorAccessor(accessor_args, addr, tile_bytes)`
   - `noc_async_read_tile / noc_async_write_tile`
 - 当前继续只生成 interleaved 可执行 kernel；但 schema 已经能表达未来 `TensorAccessorArgs<CTA, CRTA>` 所需信息
+- codegen 当前正式边界是 compile-time-only accessor slot：
+  - builtin 中的 accessor slot 必须是 compile-time 常量
+  - 如果 slot 不是 `IntImm`，codegen 直接 fail-fast，不把更宽 accessor execution 面静默混进当前路径
 
 ---
 
