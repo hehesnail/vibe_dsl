@@ -779,20 +779,6 @@ static KernelComputeConfigSpec ComputeConfigFromContract(const ComputeContractSp
   return compute_config;
 }
 
-static std::vector<KernelArgSpec> MakeDefaultCopyRuntimeArgs() {
-  return {
-      {"input0", "input_buffer_addr32", "uint32", "", "input_buffer_addr32"},
-      {"output0", "output_buffer_addr32", "uint32", "", "output_buffer_addr32"},
-      {"work_linear_id", "work_linear_id", "uint32", "", "work_linear_id"},
-      {"a_tile_start_id", "a_tile_start_id", "uint32", "", "a_tile_start_id"},
-      {"a_tile_num_tiles", "a_tile_num_tiles", "uint32", "", "a_tile_num_tiles"},
-      {"a_tile_stride", "a_tile_stride", "uint32", "", "a_tile_stride"},
-      {"output_tile_start_id", "output_tile_start_id", "uint32", "", "output_tile_start_id"},
-      {"output_tile_num_tiles", "output_tile_num_tiles", "uint32", "", "output_tile_num_tiles"},
-      {"output_tile_stride", "output_tile_stride", "uint32", "", "output_tile_stride"},
-  };
-}
-
 static bool HasCopyBuiltins(const tir::PrimFunc& f) {
   bool found = false;
   tir::PostOrderVisit(f->body, [&](const ObjectRef& node) {
@@ -1045,13 +1031,19 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
 
   auto runtime_args_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.runtime_args");
   if (!runtime_args_attr) {
-    return HasCopyBuiltins(f) ? MakeDefaultCopyRuntimeArgs() : std::vector<KernelArgSpec>{};
+    ICHECK(!HasCopyBuiltins(f))
+        << "Blackhole runtime arg schema is required for copy/dataflow kernels; "
+           "blackhole.runtime_args or segment_plan[*].runtime_args is missing";
+    return {};
   }
 
   std::vector<KernelArgSpec> runtime_args = ExtractRuntimeArgsFromArray(runtime_args_attr.value());
 
   if (runtime_args.empty()) {
-    return HasCopyBuiltins(f) ? MakeDefaultCopyRuntimeArgs() : std::vector<KernelArgSpec>{};
+    ICHECK(!HasCopyBuiltins(f))
+        << "Blackhole runtime arg schema is required for copy/dataflow kernels; "
+           "blackhole.runtime_args or segment_plan[*].runtime_args is empty";
+    return {};
   }
   return runtime_args;
 }

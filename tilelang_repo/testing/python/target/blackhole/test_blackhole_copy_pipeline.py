@@ -61,6 +61,27 @@ def _rebuild_codegen_module_with_segment_plan(artifact, segment_plan):
     )
 
 
+def _rebuild_codegen_module_without_copy_runtime_args(artifact):
+    device_mod = artifact.device_mod
+    rewritten = {}
+    for gvar, func in device_mod.functions.items():
+        if func.attrs and "blackhole.segment_plan" in func.attrs:
+            stripped_segments = []
+            for segment in func.attrs["blackhole.segment_plan"]:
+                stripped_segment = dict(segment)
+                stripped_segment.pop("runtime_args", None)
+                stripped_segments.append(stripped_segment)
+            func = func.with_attr("blackhole.segment_plan", stripped_segments)
+            if func.attrs and "blackhole.runtime_args" in func.attrs:
+                func = func.without_attr("blackhole.runtime_args")
+        rewritten[gvar] = func
+    target = Target("blackhole")
+    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
+
+
 def _rebuild_codegen_module_with_semaphore_plan(artifact, semaphore_plan):
     device_mod = artifact.device_mod
     rewritten = {}
@@ -437,6 +458,20 @@ def test_blackhole_copy_runtime_arg_identities_are_materialized():
         ("output_tile_num_tiles", "output_tile_num_tiles", "output_tile_num_tiles", ""),
         ("output_tile_stride", "output_tile_stride", "output_tile_stride", ""),
     ]
+
+
+def test_blackhole_copy_build_rejects_missing_runtime_arg_schema():
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    with pytest.raises(
+        tvm.TVMError,
+        match="Blackhole runtime arg schema is required for copy/dataflow kernels",
+    ):
+        _rebuild_codegen_module_without_copy_runtime_args(artifact)
 
 
 def test_blackhole_copy_buffer_materialization_specs_are_exposed():

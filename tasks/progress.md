@@ -49,6 +49,7 @@
   - `CopyDirection::kLocalToCB` 已接入 `LowerBlackholeOps`
   - `local/accumulator -> shared(CB)` staged copy 已 lower 成 `tl.blackhole.write_local_slice_to_cb`
   - 当前支持的 MHA/GQA forward compile-path 已打通
+  - copy 正式主链已去掉 `input0/output0` 默认 runtime-arg fallback；缺 schema 现在在 `rt_mod_blackhole` build-time 显式失败
 - **下一步**:
   - 在当前环境继续补 runtime / direct-path 验证
   - 继续扩更宽 flash-attn forward 支持面与 P4/P5 主项

@@ -34,6 +34,7 @@
   如果 residual `local` 明显处在 fragment 结果写回 CB 的桥接位置，就不要继续让它以普通 `BufferStore` 漏到 codegen；应尽快收成正式 copy direction / builtin
 - 对这种 `local/accumulator -> shared(CB)` 桥接语义，不要在 codegen 层兜二维 shared store。更稳的主链是：在 `LowerBlackholeOps` 明确成正式 `CopyDirection`，lower 成单独 builtin，再让 `codegen_blackhole` 只消费该 builtin。这样 compile-path blocker 会停在真正的 dataflow 边界，而不是晚到 codegen 的 residual store 噪声
 - 如果 split 后 device kernel 会再按 segment 生成新的 `PrimFunc` 给 codegen/runtime 消费，就不要假设 reader/runtime ABI 只存在于 `segment_plan` 里。更稳的做法是把 segment-level `runtime_args` / `common_runtime_args` 聚合回 segment function 顶层 attrs，并让 `KernelSpec` 从 segment function 自己提取 ABI；否则 codegen/runtime 很容易只看到 compute 子集，最后报 `Missing runtime arg binding for buffer var: K` 这类假象
+- 对正式主链，不要保留 `input0/output0` 这类默认 runtime-arg fallback。copy/dataflow kernel 的 ABI 必须来自 IR/segment schema；一旦 `blackhole.runtime_args` 或 `segment_plan[*].runtime_args` 缺失，就该在 `rt_mod_blackhole` build-time 直接 fail-fast，而不是继续 build 到 codegen 才报 buffer binding 缺失
 - 当 target 硬件资源模型与 generic backend 不一致时，优先扩 IR 类型系统（如 StorageRank），不要给后段 pass 打豁免
 - 判断"该不该扩 IR"的信号：同一根因在多个 generic pass 上以不同报错出现
 

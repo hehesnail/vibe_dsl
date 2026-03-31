@@ -66,6 +66,20 @@
   - 对 Blackhole/TT-Metal，`local` 只是中间态，不应该作为最终资源语义长期留在后段
   - 一旦某类 `local` 明显处在 fragment 结果写回 CB 的桥接位置，就应尽快收成正式 dataflow primitive，而不是靠 codegen 去兜二维 store
 
+### copy 若缺失显式 runtime arg schema，不应退回 `input0/output0` 默认 ABI
+
+- **时间**: 2026-04-01
+- **问题**: `rt_mod_blackhole` 里保留的 `MakeDefaultCopyRuntimeArgs()` 会在 copy/dataflow kernel 缺失 `blackhole.runtime_args` / `segment_plan[*].runtime_args` 时，退回到 `input0/output0` 这类默认 ABI
+- **根本原因**:
+  - 这是早期 bring-up 残留的 fallback
+  - 它让正式主链在 schema 缺失时仍试图继续 build，问题会晚到 codegen 报 `Missing runtime arg binding for buffer var: A`
+- **解决**:
+  - 删除默认 copy runtime-arg fallback
+  - `ExtractRuntimeArgs()` 对含 copy builtins 的 kernel 改为 build-time 显式失败：必须有 IR/segment 提出来的 runtime arg schema
+- **教训**:
+  - 正式主链里，不要保留“默认参数数量/顺序/名字”的 ABI 兜底
+  - 如果 runtime ABI 本来应该由 IR/schema 提供，那 schema 缺失时就该尽早 fail-fast，而不是退回通用占位名字
+
 ### device-only codegen 若绕过 `ExecutableSpec` gate，会把 fragment 子集缺失晚报成 `Find undefined Variable acc_o`
 
 - **时间**: 2026-03-31
