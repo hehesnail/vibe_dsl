@@ -47,6 +47,7 @@
 - 对 split-after TIR 的 fragment analysis，不要只盯 `CallNode`。像 `scores_sum[0] + acc_s[rv]`、`T.max(scores_max[0], tmp[0])` 这类模式在 TVM IR 里常常是 `AddNode` / `MaxNode` / `MulNode` / `DivNode` 等原生表达式节点；如果只扫 `CallNode`，row reduction 和 scalar-to-vector broadcast 会在真实 MHA/GQA IR 上整片漏掉
 - 当 analysis 结果还不能直接 lower 成可执行 kernel 时，不要把 raw analysis attrs 直接塞进 `ExecutableSpec`。更稳的过渡做法是：先在 `LowerBlackholeOps` 里把它们归一化成一层很薄的 IR attrs summary（例如 `blackhole.lowering_requirements`），再由更后面的 build/runtime gate 消费并 fail-fast。这样主链能先完成“analysis 被 lowering 真正接住”，又不会把半成品 descriptor 永久冻结进 runtime schema
 - 对 pipelined fragment subset 的早期 legality，优先直接读 loop annotation（例如 `ForNode.annotations["num_stages"]`），不要假设更后面的 region canonicalization 一定先成功。这样即使更宽 GQA/MHA 形态还会在别的 lowering 细节上炸，主链也能先把“这组 stage 配置本来就不支持”显式拦下来
+- row-broadcast 的索引归并信号不要只认 `floor_div/floor_mod`。在 split-after TIR 里，同一类“coarsened row index”也可能被写成 `tir.shift_right(i, k)`；如果 analysis 只认除法不认右移，GQA 这类更宽 fragment pipeline 很容易少报 `row_broadcast`
 
 ## TT-Metal / TT-Sim 环境
 

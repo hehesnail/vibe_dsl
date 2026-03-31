@@ -92,6 +92,14 @@ bool ExprUsesFloorDivLikeIndex(const PrimExpr& expr) {
   tir::PostOrderVisit(expr, [&found](const ObjectRef& node) {
     if (node.as<tir::FloorDivNode>() || node.as<tir::FloorModNode>()) {
       found = true;
+      return;
+    }
+    if (const auto* call = node.as<CallNode>()) {
+      if (const auto* op_node = call->op.as<OpNode>()) {
+        if (op_node->name == "tir.shift_right") {
+          found = true;
+        }
+      }
     }
   });
   return found;

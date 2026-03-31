@@ -156,6 +156,31 @@ def test_gqa_forward_exposes_fragment_region_attrs():
     assert {"scores_max", "logsum", "acc_o"}.issubset(loop_carried_state)
 
 
+def test_gqa_forward_wider_pipeline_still_exposes_row_broadcast_roles():
+    lowered = _analyze_blackhole_fragment_regions(
+        _lower_flash_attention_example(
+            gqa_example,
+            1,
+            16,
+            1024,
+            128,
+            False,
+            groups=16,
+            block_M=64,
+            block_N=64,
+            num_stages=4,
+            threads=128,
+        )
+    )
+    regions = lowered.attrs["blackhole.fragment_regions"]
+    assert len(regions) == 1
+
+    region = regions[0]
+    assert "row_broadcast" in set(region["ops"])
+    row_broadcast_sources = {entry["source"] for entry in region["row_broadcasts"]}
+    assert {"scores_max", "scores_scale", "logsum"}.issubset(row_broadcast_sources)
+
+
 def test_mha_forward_exposes_fragment_region_roles():
     lowered = _analyze_blackhole_fragment_regions(
         _lower_flash_attention_example(

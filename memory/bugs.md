@@ -94,6 +94,20 @@
   - 对复杂 kernel 的 legality，不能完全依赖“等更深层 canonicalization 成功之后再判”
   - 如果更深层还存在独立内部错误，就先把更前置、更确定的 legality 绑在更早、语义更直接的 IR 信号上
 
+### GQA 更宽 pipeline 形态的 row-broadcast 若只认 `floor_div`，会在 analysis 层少报 `scores_max/scores_scale/logsum` 广播关系
+
+- **时间**: 2026-03-31
+- **问题**: GQA `num_stages=4` 的 split-after analysis 已经能暴露 `pipeline_stages` 和 `row_reduction`，但 `fragment_regions` 里缺少 `row_broadcast`
+- **根本原因**:
+  - 这条形态的广播索引不是 `floor_div(i, k)`，而是 `T.shift_right(i, k)`
+  - 旧的 `ExprUsesFloorDivLikeIndex` 只认 `FloorDiv/FloorMod`，把右移这种同类的“coarsened row index”漏掉了
+- **解决**:
+  - fragment analysis 现在把 `Call(tir.shift_right, ...)` 也视作 row-broadcast 的索引归并信号
+  - 新增 `test_gqa_forward_wider_pipeline_still_exposes_row_broadcast_roles`
+- **教训**:
+  - 对 split-after TIR 的索引分析，不要把“语义上等价的除法/位移归并”拆成两套完全不同的规则
+  - GQA 这类更宽 pipeline 形态很容易把 analysis 写法上的窄假设暴露出来，应该用它来收正通用规则，而不是给 GQA 再加特判
+
 ### Blackhole `lower()` 若在 `SplitBlackholeKernel` 前按旧 device attrs 过滤，会把真实入口 `PrimFunc` 静默排除出 Blackhole pass 主链
 
 - **时间**: 2026-03-31
