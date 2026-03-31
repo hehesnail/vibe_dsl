@@ -27,6 +27,11 @@
 ### 存储 scope
 
 - Blackhole `shared` 的主映射是 CB/L1 资源，不是简单的 C 数组声明
+- 对 TT-Metal/Blackhole，`local` 更适合被看作中间语义桶，而不是最终资源语义。进入后端后应继续分流成：
+  - 真正的小标量临时
+  - fragment / accumulator 对象
+  - `local/accumulator -> shared(CB)` 这类显式 dataflow transfer
+  如果 residual `local` 明显处在 fragment 结果写回 CB 的桥接位置，就不要继续让它以普通 `BufferStore` 漏到 codegen；应尽快收成正式 copy direction / builtin
 - 当 target 硬件资源模型与 generic backend 不一致时，优先扩 IR 类型系统（如 StorageRank），不要给后段 pass 打豁免
 - 判断"该不该扩 IR"的信号：同一根因在多个 generic pass 上以不同报错出现
 
