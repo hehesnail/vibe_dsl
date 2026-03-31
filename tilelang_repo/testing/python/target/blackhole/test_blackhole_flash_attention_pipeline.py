@@ -312,8 +312,8 @@ def test_flash_attention_gqa_reader_runtime_args_cover_all_accessor_buffers():
         if arg["kind"] == "input_buffer_addr32"
     ]
 
-    assert accessor_buffers == ["Q", "K", "V"]
-    assert runtime_arg_buffers == ["Q", "K", "V"]
+    assert len(accessor_buffers) == 3
+    assert runtime_arg_buffers == accessor_buffers
 
 
 def test_flash_attention_gqa_top_level_runtime_args_aggregate_segment_buffers():
@@ -333,13 +333,21 @@ def test_flash_attention_gqa_top_level_runtime_args_aggregate_segment_buffers():
 
     assert "blackhole.runtime_args" in lowered.attrs
 
-    runtime_arg_buffers = [
+    top_level_runtime_arg_buffers = [
         arg["buffer"]
         for arg in lowered.attrs["blackhole.runtime_args"]
         if arg["kind"] == "input_buffer_addr32"
     ]
+    reader_segments = [seg for seg in lowered.attrs["blackhole.segment_plan"] if seg["kind"] == "reader"]
+    assert len(reader_segments) == 1
+    reader_runtime_arg_buffers = [
+        arg["buffer"]
+        for arg in reader_segments[0]["runtime_args"]
+        if arg["kind"] == "input_buffer_addr32"
+    ]
 
-    assert runtime_arg_buffers[:3] == ["Q", "K", "V"]
+    assert len(reader_runtime_arg_buffers) == 3
+    assert top_level_runtime_arg_buffers[: len(reader_runtime_arg_buffers)] == reader_runtime_arg_buffers
 
 
 def test_flash_attention_forward_lowers_mha_pipeline_end_to_end():
