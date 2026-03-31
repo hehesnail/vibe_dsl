@@ -1270,6 +1270,16 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
         }
       }
     }
+    if (auto pointwise_ops = lowering_requirements.value().Get("pointwise_op_kinds")) {
+      for (const auto& item : Downcast<ffi::Array<ffi::Any>>(pointwise_ops.value())) {
+        const std::string op_name = Downcast<String>(item);
+        if ((op_name == "fill" || op_name == "max" || op_name == "add" ||
+             op_name == "cast") &&
+            seen_ops.insert(op_name).second) {
+          unsupported_ops.push_back(op_name);
+        }
+      }
+    }
     if (!unsupported_ops.empty()) {
       std::ostringstream os;
       for (size_t i = 0; i < unsupported_ops.size(); ++i) {

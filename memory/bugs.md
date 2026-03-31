@@ -47,6 +47,22 @@
 
 ## 已解决（仍有复用价值）
 
+### device-only codegen 若绕过 `ExecutableSpec` gate，会把 fragment 子集缺失晚报成 `Find undefined Variable acc_o`
+
+- **时间**: 2026-03-31
+- **问题**: 在 flash-attn forward 的 `row_broadcast` lowering 进一步收窄后，full `lower()` 不再先撞 `rt_mod_blackhole` 的 build-time gate，而是晚到 device-only codegen 报 `Find undefined Variable acc_o`
+- **根本原因**:
+  - `rt_mod_blackhole` 的 fragment-subset gate 只覆盖 `ExecutableSpec` 提取路径
+  - `BuildTileLangBlackholeWithoutHost` 生成 device code 时会直接走 `codegen_blackhole`
+  - 一旦该路径绕过 spec 提取层，尚未 lower 的 fragment local loop 就会在 codegen 里以未绑定局部变量形式爆炸，错误层级明显滞后
+- **解决**:
+  - 保留 `rt_mod_blackhole` 的 unsupported-op gate
+  - 在 `codegen_blackhole` 入口补同一套基于 `blackhole.lowering_requirements` / `pointwise_op_kinds` 的 gate
+  - 让 device-only codegen 与 `ExecutableSpec` 路径在 `fill / max / add / cast` 等尚未 lower 的 pointwise 子集上共享同样的 fail-fast 口径
+- **教训**:
+  - 对同一 lowering 边界，如果仓库里存在多条后端出口，就不能只在其中一条出口做语义 gate
+  - 一旦错误重新晚到 codegen 内部报“undefined variable”或类似噪声，优先检查是不是另一个出口绕过了你以为已经建立的 schema/spec 边界
+
 ### flash-attention 的 `row_broadcast` 若一直作为整类 blocker 保留，会掩盖哪些广播 loop 已经具备稳定 TIR lowering 形态
 
 - **时间**: 2026-03-31

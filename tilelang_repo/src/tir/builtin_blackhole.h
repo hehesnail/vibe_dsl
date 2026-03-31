@@ -255,6 +255,28 @@ TVM_DLL const Op& blackhole_div_row_bcast();
  */
 TVM_DLL const Op& blackhole_scalar_fma();
 
+/*!
+ * \brief Fused vector row-broadcast update:
+ *        dst[i] = exp2(dst[i] * dst_scale + scalar * scalar_scale).
+ * \param dst_buffer Destination/source vector local fragment buffer handle
+ * \param scalar_buffer Source scalar local fragment buffer handle
+ * \param num_elements Number of contiguous destination elements
+ * \param dst_scale Scale applied to the vector source term
+ * \param scalar_scale Scale applied to the scalar broadcast term
+ */
+TVM_DLL const Op& blackhole_exp2_row_bcast_affine();
+
+/*!
+ * \brief Fused scalar fragment update:
+ *        dst = exp2(lhs * lhs_scale + rhs * rhs_scale).
+ * \param dst_buffer Destination scalar local fragment buffer handle
+ * \param lhs_buffer Left scalar local fragment buffer handle
+ * \param rhs_buffer Right scalar local fragment buffer handle
+ * \param lhs_scale Scale applied to lhs
+ * \param rhs_scale Scale applied to rhs
+ */
+TVM_DLL const Op& blackhole_scalar_exp2_affine();
+
 }  // namespace builtin
 }  // namespace tir
 }  // namespace tvm

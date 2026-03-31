@@ -496,28 +496,68 @@ static int CountLoweredRowReductionBuiltins(const Stmt& body) {
   return count;
 }
 
+static int CountLoweredRowBroadcastBuiltins(const Stmt& body) {
+  int count = 0;
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* call = node.as<CallNode>();
+    if (!call || !call->op->IsInstance<OpNode>()) {
+      return;
+    }
+    const Op op = Downcast<Op>(call->op);
+    if (op.same_as(tir::builtin::blackhole_mul_row_bcast()) ||
+        op.same_as(tir::builtin::blackhole_div_row_bcast()) ||
+        op.same_as(tir::builtin::blackhole_exp2_row_bcast_affine()) ||
+        op->name == "tl.blackhole.mul_row_bcast" ||
+        op->name == "tl.blackhole.div_row_bcast" ||
+        op->name == "tl.blackhole.exp2_row_bcast_affine") {
+      ++count;
+    }
+  });
+  return count;
+}
+
 static Map<String, Any> PruneSatisfiedLoweringRequirements(const Map<String, Any>& lowering_requirements,
                                                            const Stmt& body) {
   auto row_targets_opt = lowering_requirements.Get("row_reduction_targets");
-  if (!row_targets_opt.has_value()) {
+  auto row_broadcast_sources_opt = lowering_requirements.Get("row_broadcast_sources");
+  if (!row_targets_opt.has_value() && !row_broadcast_sources_opt.has_value()) {
     return lowering_requirements;
   }
-  const int target_count = static_cast<int>(Downcast<Array<Any>>(row_targets_opt.value()).size());
-  if (target_count == 0 || CountLoweredRowReductionBuiltins(body) < target_count) {
+
+  bool row_reduction_satisfied = !row_targets_opt.has_value();
+  if (row_targets_opt.has_value()) {
+    const int target_count = static_cast<int>(Downcast<Array<Any>>(row_targets_opt.value()).size());
+    row_reduction_satisfied =
+        target_count == 0 || CountLoweredRowReductionBuiltins(body) >= target_count;
+  }
+
+  bool row_broadcast_satisfied = !row_broadcast_sources_opt.has_value();
+  if (row_broadcast_sources_opt.has_value()) {
+    const int source_count =
+        static_cast<int>(Downcast<Array<Any>>(row_broadcast_sources_opt.value()).size());
+    row_broadcast_satisfied =
+        source_count == 0 || CountLoweredRowBroadcastBuiltins(body) >= source_count;
+  }
+
+  if (!row_reduction_satisfied && !row_broadcast_satisfied) {
     return lowering_requirements;
   }
 
   Map<String, Any> pruned;
   for (const auto& [key, value] : lowering_requirements) {
-    if (key == "row_reduction_targets") {
+    if (key == "row_reduction_targets" && row_reduction_satisfied) {
+      continue;
+    }
+    if (key == "row_broadcast_sources" && row_broadcast_satisfied) {
       continue;
     }
     if (key == "fragment_op_kinds") {
       Array<Any> kept_ops;
       for (const auto& item : Downcast<Array<Any>>(value)) {
-        if (Downcast<String>(item) != "row_reduction") {
-          kept_ops.push_back(item);
-        }
+        const std::string op_name = Downcast<String>(item);
+        if (op_name == "row_reduction" && row_reduction_satisfied) continue;
+        if (op_name == "row_broadcast" && row_broadcast_satisfied) continue;
+        kept_ops.push_back(item);
       }
       pruned.Set(key, kept_ops);
       continue;
@@ -2680,6 +2720,22 @@ bool IsFloatImmValue(const PrimExpr& expr, double expected) {
   return false;
 }
 
+bool IsScalarLiteralValue(const PrimExpr& expr) {
+  return expr.as<FloatImmNode>() || expr.as<IntImmNode>();
+}
+
+bool ExprUsesVar(const PrimExpr& expr, const Var& var) {
+  bool found = false;
+  tir::PostOrderVisit(expr, [&](const ObjectRef& node) {
+    if (const auto* var_node = node.as<VarNode>()) {
+      if (var_node == var.get()) {
+        found = true;
+      }
+    }
+  });
+  return found;
+}
+
 bool IsZeroValue(const PrimExpr& expr) {
   return tir::is_zero(expr) || IsFloatImmValue(expr, 0.0);
 }
@@ -2718,6 +2774,66 @@ bool MatchScalarBufferLoadFrom(const PrimExpr& expr, const Buffer& buffer) {
   return load && load->indices.size() == 1 && tir::is_zero(load->indices[0]) &&
          (load->buffer.same_as(buffer) || load->buffer->data.same_as(buffer->data) ||
           load->buffer->name == buffer->name);
+}
+
+bool MatchExp2Call(const PrimExpr& expr, PrimExpr* arg) {
+  const auto* call = expr.as<CallNode>();
+  if (!call || !call->op->IsInstance<OpNode>() || call->args.size() != 1) {
+    return false;
+  }
+  const Op op = Downcast<Op>(call->op);
+  if (op->name != "tir.exp2") {
+    return false;
+  }
+  if (arg != nullptr) {
+    *arg = call->args[0];
+  }
+  return true;
+}
+
+bool MatchScaledSelfIndexedVectorLoad(const PrimExpr& expr,
+                                      const Buffer& dst_buffer,
+                                      const Var& loop_var,
+                                      PrimExpr* scale) {
+  if (MatchSelfIndexedVectorLoad(expr, dst_buffer, loop_var)) {
+    *scale = make_const(expr.dtype(), 1.0);
+    return true;
+  }
+  const auto* mul = expr.as<MulNode>();
+  if (!mul) {
+    return false;
+  }
+  if (MatchSelfIndexedVectorLoad(mul->a, dst_buffer, loop_var) && IsScalarLiteralValue(mul->b) &&
+      !ExprUsesVar(mul->b, loop_var)) {
+    *scale = mul->b;
+    return true;
+  }
+  if (MatchSelfIndexedVectorLoad(mul->b, dst_buffer, loop_var) && IsScalarLiteralValue(mul->a) &&
+      !ExprUsesVar(mul->a, loop_var)) {
+    *scale = mul->a;
+    return true;
+  }
+  return false;
+}
+
+bool MatchScaledScalarFragmentLoad(const PrimExpr& expr, Buffer* scalar_buffer, PrimExpr* scale) {
+  if (MatchScalarFragmentLoad(expr, scalar_buffer)) {
+    *scale = make_const(expr.dtype(), 1.0);
+    return true;
+  }
+  const auto* mul = expr.as<MulNode>();
+  if (!mul) {
+    return false;
+  }
+  if (MatchScalarFragmentLoad(mul->a, scalar_buffer) && IsScalarLiteralValue(mul->b)) {
+    *scale = mul->b;
+    return true;
+  }
+  if (MatchScalarFragmentLoad(mul->b, scalar_buffer) && IsScalarLiteralValue(mul->a)) {
+    *scale = mul->a;
+    return true;
+  }
+  return false;
 }
 
 }  // namespace
@@ -2889,6 +3005,90 @@ bool LowerBlackholeOps::MatchScalarFmaStore(const BufferStoreNode* op,
 Stmt LowerBlackholeOps::GenerateScalarFmaSequence(const ScalarFmaMatch& match) {
   return MakeBlackholeCall(tir::builtin::blackhole_scalar_fma(),
                            {match.dst->data, match.lhs->data, match.rhs->data, match.add->data});
+}
+
+bool LowerBlackholeOps::MatchExp2RowBroadcastAffine(const ForNode* op,
+                                                    Exp2RowBroadcastAffineMatch* match) const {
+  if (!op || !match) {
+    return false;
+  }
+  const auto* store = AsUnwrappedBufferStore(op->body);
+  if (!store || !IsVectorLocalFragmentBuffer(store->buffer) || store->indices.size() != 1 ||
+      !store->indices[0].same_as(op->loop_var)) {
+    return false;
+  }
+
+  PrimExpr exp2_arg;
+  if (!MatchExp2Call(store->value, &exp2_arg)) {
+    return false;
+  }
+  const auto* sub = exp2_arg.as<SubNode>();
+  if (!sub) {
+    return false;
+  }
+
+  Buffer scalar;
+  PrimExpr dst_scale;
+  PrimExpr scalar_scale;
+  if (!MatchScaledSelfIndexedVectorLoad(sub->a, store->buffer, op->loop_var, &dst_scale) ||
+      !MatchScaledScalarFragmentLoad(sub->b, &scalar, &scalar_scale)) {
+    return false;
+  }
+
+  match->dst = store->buffer;
+  match->scalar = scalar;
+  match->num_elements = op->extent;
+  match->dst_scale = dst_scale;
+  Analyzer analyzer;
+  match->scalar_scale = analyzer.Simplify(-scalar_scale);
+  return true;
+}
+
+Stmt LowerBlackholeOps::GenerateExp2RowBroadcastAffineSequence(
+    const Exp2RowBroadcastAffineMatch& match) {
+  return MakeBlackholeCall(tir::builtin::blackhole_exp2_row_bcast_affine(),
+                           {match.dst->data, match.scalar->data, match.num_elements,
+                            match.dst_scale, match.scalar_scale});
+}
+
+bool LowerBlackholeOps::MatchScalarExp2AffineStore(const BufferStoreNode* op,
+                                                   ScalarExp2AffineMatch* match) const {
+  if (!op || !match || !IsScalarLocalFragmentBuffer(op->buffer) || op->indices.size() != 1 ||
+      !tir::is_zero(op->indices[0])) {
+    return false;
+  }
+
+  PrimExpr exp2_arg;
+  if (!MatchExp2Call(op->value, &exp2_arg)) {
+    return false;
+  }
+  const auto* sub = exp2_arg.as<SubNode>();
+  if (!sub) {
+    return false;
+  }
+
+  Buffer lhs;
+  Buffer rhs;
+  PrimExpr lhs_scale;
+  PrimExpr rhs_scale;
+  if (!MatchScaledScalarFragmentLoad(sub->a, &lhs, &lhs_scale) ||
+      !MatchScaledScalarFragmentLoad(sub->b, &rhs, &rhs_scale)) {
+    return false;
+  }
+
+  match->dst = op->buffer;
+  match->lhs = lhs;
+  match->rhs = rhs;
+  match->lhs_scale = lhs_scale;
+  Analyzer analyzer;
+  match->rhs_scale = analyzer.Simplify(-rhs_scale);
+  return true;
+}
+
+Stmt LowerBlackholeOps::GenerateScalarExp2AffineSequence(const ScalarExp2AffineMatch& match) {
+  return MakeBlackholeCall(tir::builtin::blackhole_scalar_exp2_affine(),
+                           {match.dst->data, match.lhs->data, match.rhs->data,
+                            match.lhs_scale, match.rhs_scale});
 }
 
 // Parse a colon-separated string into fields
@@ -3073,6 +3273,10 @@ Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
     if (MatchDirectRowReduction(loop, &row_reduction_match)) {
       return GenerateRowReductionSequence(row_reduction_match);
     }
+    Exp2RowBroadcastAffineMatch exp2_row_broadcast_match;
+    if (MatchExp2RowBroadcastAffine(loop, &exp2_row_broadcast_match)) {
+      return GenerateExp2RowBroadcastAffineSequence(exp2_row_broadcast_match);
+    }
     RowBroadcastMatch row_broadcast_match;
     if (MatchDirectRowBroadcast(loop, &row_broadcast_match)) {
       return GenerateRowBroadcastSequence(row_broadcast_match);
@@ -3101,6 +3305,10 @@ Stmt LowerBlackholeOps::VisitStmt_(const EvaluateNode* op) {
 }
 
 Stmt LowerBlackholeOps::VisitStmt_(const BufferStoreNode* op) {
+  ScalarExp2AffineMatch scalar_exp2_affine_match;
+  if (MatchScalarExp2AffineStore(op, &scalar_exp2_affine_match)) {
+    return GenerateScalarExp2AffineSequence(scalar_exp2_affine_match);
+  }
   ScalarFmaMatch scalar_fma_match;
   if (MatchScalarFmaStore(op, &scalar_fma_match)) {
     return GenerateScalarFmaSequence(scalar_fma_match);

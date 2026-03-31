@@ -112,6 +112,22 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
     tvm::tir::Buffer add;
   };
 
+  struct Exp2RowBroadcastAffineMatch {
+    tvm::tir::Buffer dst;
+    tvm::tir::Buffer scalar;
+    tvm::PrimExpr num_elements;
+    tvm::PrimExpr dst_scale;
+    tvm::PrimExpr scalar_scale;
+  };
+
+  struct ScalarExp2AffineMatch {
+    tvm::tir::Buffer dst;
+    tvm::tir::Buffer lhs;
+    tvm::tir::Buffer rhs;
+    tvm::PrimExpr lhs_scale;
+    tvm::PrimExpr rhs_scale;
+  };
+
   /*! \brief CB configuration from function attributes */
   struct CBConfig {
     int in0_id = 0;
@@ -268,6 +284,13 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   tvm::tir::Stmt GenerateRowBroadcastSequence(const RowBroadcastMatch& match);
   bool MatchScalarFmaStore(const tvm::tir::BufferStoreNode* op, ScalarFmaMatch* match) const;
   tvm::tir::Stmt GenerateScalarFmaSequence(const ScalarFmaMatch& match);
+  bool MatchExp2RowBroadcastAffine(const tvm::tir::ForNode* op,
+                                   Exp2RowBroadcastAffineMatch* match) const;
+  tvm::tir::Stmt GenerateExp2RowBroadcastAffineSequence(
+      const Exp2RowBroadcastAffineMatch& match);
+  bool MatchScalarExp2AffineStore(const tvm::tir::BufferStoreNode* op,
+                                  ScalarExp2AffineMatch* match) const;
+  tvm::tir::Stmt GenerateScalarExp2AffineSequence(const ScalarExp2AffineMatch& match);
 
   // StmtExprMutator overrides
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;

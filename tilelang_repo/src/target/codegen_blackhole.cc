@@ -28,6 +28,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "../tir/builtin_blackhole.h"
@@ -38,6 +39,50 @@
 
 namespace tvm {
 namespace tl {
+
+namespace {
+
+void ValidateNoUnsupportedFragmentRequirementsForCodegen(const tvm::tir::PrimFunc& f) {
+  auto lowering_requirements =
+      f->GetAttr<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>("blackhole.lowering_requirements");
+  if (!lowering_requirements) {
+    return;
+  }
+
+  std::vector<std::string> unsupported_ops;
+  std::unordered_set<std::string> seen_ops;
+  if (auto fragment_ops = lowering_requirements.value().Get("fragment_op_kinds")) {
+    for (const auto& item : Downcast<tvm::ffi::Array<tvm::ffi::Any>>(fragment_ops.value())) {
+      const std::string op_name = Downcast<tvm::ffi::String>(item);
+      if ((op_name == "row_reduction" || op_name == "row_broadcast") &&
+          seen_ops.insert(op_name).second) {
+        unsupported_ops.push_back(op_name);
+      }
+    }
+  }
+  if (auto pointwise_ops = lowering_requirements.value().Get("pointwise_op_kinds")) {
+    for (const auto& item : Downcast<tvm::ffi::Array<tvm::ffi::Any>>(pointwise_ops.value())) {
+      const std::string op_name = Downcast<tvm::ffi::String>(item);
+      if ((op_name == "fill" || op_name == "max" || op_name == "add" || op_name == "cast") &&
+          seen_ops.insert(op_name).second) {
+        unsupported_ops.push_back(op_name);
+      }
+    }
+  }
+  if (!unsupported_ops.empty()) {
+    std::ostringstream os;
+    for (size_t i = 0; i < unsupported_ops.size(); ++i) {
+      if (i != 0) {
+        os << ", ";
+      }
+      os << unsupported_ops[i];
+    }
+    ICHECK(false) << "Blackhole fragment compute subset lowering is not implemented for ops ["
+                  << os.str() << "]";
+  }
+}
+
+}  // namespace
 
 CodeGenBlackhole::CodeGenBlackhole()
     : headers_emitted_(false),
@@ -79,6 +124,7 @@ std::string CodeGenBlackhole::GetKernelCode() const {
 
 void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
                                    const tvm::tir::PrimFunc &f) {
+  ValidateNoUnsupportedFragmentRequirementsForCodegen(f);
   // Emit TT-Metal headers for kernel code (per-instance, not static)
   if (!headers_emitted_) {
     // Clear decl_stream to remove TVM headers added by CodeGenCHost::Init

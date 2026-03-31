@@ -69,6 +69,8 @@ TIR_DEFINE_BUILTIN(reduce_row)
 TIR_DEFINE_BUILTIN(mul_row_bcast)
 TIR_DEFINE_BUILTIN(div_row_bcast)
 TIR_DEFINE_BUILTIN(scalar_fma)
+TIR_DEFINE_BUILTIN(exp2_row_bcast_affine)
+TIR_DEFINE_BUILTIN(scalar_exp2_affine)
 
 // Register all builtins in TVM's op registry
 TVM_REGISTER_OP("tl.blackhole.cb_reserve_back")
@@ -262,6 +264,24 @@ TVM_REGISTER_OP("tl.blackhole.scalar_fma")
     .add_argument("lhs_buffer", "handle", "Left multiplicand scalar local fragment buffer handle")
     .add_argument("rhs_buffer", "handle", "Right multiplicand scalar local fragment buffer handle")
     .add_argument("add_buffer", "handle", "Addend scalar local fragment buffer handle");
+
+TVM_REGISTER_OP("tl.blackhole.exp2_row_bcast_affine")
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("dst_buffer", "handle", "Destination/source vector local fragment buffer handle")
+    .add_argument("scalar_buffer", "handle", "Source scalar local fragment buffer handle")
+    .add_argument("num_elements", "int", "Number of contiguous destination elements")
+    .add_argument("dst_scale", "float", "Scale applied to the vector source term")
+    .add_argument("scalar_scale", "float", "Scale applied to the scalar broadcast term");
+
+TVM_REGISTER_OP("tl.blackhole.scalar_exp2_affine")
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("dst_buffer", "handle", "Destination scalar local fragment buffer handle")
+    .add_argument("lhs_buffer", "handle", "Left scalar local fragment buffer handle")
+    .add_argument("rhs_buffer", "handle", "Right scalar local fragment buffer handle")
+    .add_argument("lhs_scale", "float", "Scale applied to lhs")
+    .add_argument("rhs_scale", "float", "Scale applied to rhs");
 
 }  // namespace builtin
 }  // namespace tir
