@@ -47,6 +47,7 @@ using tir::BufferLoad;
 using tir::BufferLoadNode;
 using tir::BufferStoreNode;
 using tir::CallNode;
+using tir::CastNode;
 using tir::DivNode;
 using tir::ForNode;
 using tir::MaxNode;
@@ -167,6 +168,12 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       ops.push_back(String(op_name));
     }
     region.Set("ops", ops);
+
+    Array<Any> pointwise_ops;
+    for (const auto& op_name : pointwise_op_order_) {
+      pointwise_ops.push_back(String(op_name));
+    }
+    region.Set("pointwise_ops", pointwise_ops);
 
     Array<Any> row_reductions;
     for (const auto& target : row_reduction_targets_) {
@@ -382,10 +389,15 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
           }
           if (op_name == "tir.exp2" || op_name == "tir.if_then_else") {
             saw_pointwise = true;
+            AddPointwiseOp(op_name == "tir.exp2" ? "exp2" : "if_then_else");
           }
         }
+      } else if (node.as<CastNode>()) {
+        saw_pointwise = true;
+        AddPointwiseOp("cast");
       } else if (const auto* max = node.as<MaxNode>()) {
         saw_pointwise = true;
+        AddPointwiseOp("max");
         const bool lhs_self_rhs_temp =
             IsLoadFromBuffer(max->a, target_name) &&
             IsLoadFromNonFragmentLocal(max->b, fragment_buffers_);
@@ -403,6 +415,7 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
         }
       } else if (const auto* add = node.as<AddNode>()) {
         saw_pointwise = true;
+        AddPointwiseOp("add");
         if (target_elements == 1) {
           const bool lhs_self_rhs_fragment =
               IsLoadFromBuffer(add->a, target_name) &&
@@ -412,8 +425,12 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
               IsLoadFromFragmentBuffer(add->a, fragment_buffers_);
           saw_direct_fragment_sum_reduction |= lhs_self_rhs_fragment || rhs_self_lhs_fragment;
         }
-      } else if (node.as<MulNode>() || node.as<DivNode>()) {
+      } else if (node.as<MulNode>()) {
         saw_pointwise = true;
+        AddPointwiseOp("mul");
+      } else if (node.as<DivNode>()) {
+        saw_pointwise = true;
+        AddPointwiseOp("div");
       } else if (const auto* load = node.as<BufferLoadNode>()) {
         const std::string source_name = CanonicalBufferName(load->buffer->name);
         if (source_name == target_name || !fragment_buffers_.count(source_name)) {
@@ -443,6 +460,11 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       if (ExprUsesFloorDivLikeIndex(index)) {
         saw_floor_div_broadcast = true;
       }
+    }
+
+    if (value.as<IntImmNode>() || value.as<FloatImmNode>()) {
+      saw_pointwise = true;
+      AddPointwiseOp("fill");
     }
 
     if (saw_pointwise) {
@@ -476,6 +498,12 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     }
   }
 
+  void AddPointwiseOp(const std::string& op_name) {
+    if (seen_pointwise_ops_.insert(op_name).second) {
+      pointwise_op_order_.push_back(op_name);
+    }
+  }
+
   std::string CanonicalReductionTarget(const std::string& target_name) const {
     if (fragment_buffers_.count(target_name)) {
       return target_name;
@@ -505,6 +533,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
 
   std::unordered_set<std::string> seen_ops_;
   std::vector<std::string> op_order_;
+  std::unordered_set<std::string> seen_pointwise_ops_;
+  std::vector<std::string> pointwise_op_order_;
 
   std::vector<std::pair<std::string, std::string>> row_reduction_targets_;
   std::unordered_set<std::string> seen_row_reductions_;

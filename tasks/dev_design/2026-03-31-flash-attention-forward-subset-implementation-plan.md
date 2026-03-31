@@ -12,7 +12,7 @@
 
 - ✅ Task 1 completed: analysis test夹具已建好
 - ✅ Task 2 completed: `AnalyzeBlackholeWorkDecomposition` 已落地并输出结构化 `blackhole.work_decomposition`
-- ✅ Task 3 completed: `AnalyzeBlackholeFragmentRegions` 已覆盖 split-after 与优化后 device IR 上的 MHA/GQA `gemm + row_reduction + row_broadcast + pointwise_chain` 形态，`test_blackhole_flash_attention_analysis.py` 当前 `6 passed`
+- ✅ Task 3 completed: `AnalyzeBlackholeFragmentRegions` 已覆盖 split-after 与优化后 device IR 上的 MHA/GQA `gemm + row_reduction + row_broadcast + pointwise_chain` 形态，并额外产出细粒度 `pointwise_ops`（`fill/exp2/cast/max/add/mul/div/if_then_else` 等）；`test_blackhole_flash_attention_analysis.py` 当前 `7 passed`
 - ✅ Task 4 completed: `AnalyzeBlackholePipelineStages` 已落地并进入主链
 - 🔄 Current focus: Task 5 / Task 6。`LowerBlackholeOps` 已开始消费 analysis 并产出通用 `blackhole.lowering_requirements` IR attrs；当前显式 fail-fast 已迁移到 `rt_mod_blackhole` 的 build-time gate，下一步是把这些 lowering requirements 继续收成更真实的 legality / lowering 结论
 - 🔄 Task 6 也已开始：第一条 generic fragment-pipeline legality 已落地，当前 `num_stages > 2` 会在主链上显式失败；full `lower()` 的 GQA `num_stages=4` 现在已能稳定命中这条 legality，不再先被 `RegionOp` staged/shared view canonicalization 内部错误打断

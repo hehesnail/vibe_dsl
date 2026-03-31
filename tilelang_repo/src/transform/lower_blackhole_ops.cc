@@ -526,6 +526,8 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
     std::unordered_set<std::string> seen_reduction_targets;
     Array<Any> row_broadcast_sources;
     std::unordered_set<std::string> seen_broadcast_sources;
+    Array<Any> pointwise_op_kinds;
+    std::unordered_set<std::string> seen_pointwise_kinds;
     Array<Any> loop_carried_state;
     std::unordered_set<std::string> seen_loop_carried;
     for (const auto& region_item : fragment_regions.value()) {
@@ -548,6 +550,12 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
           row_broadcast_sources.push_back(item);
         }
       }
+      for (const auto& item : ExtractStringFieldList(region, "pointwise_ops")) {
+        const std::string name = Downcast<String>(item);
+        if (seen_pointwise_kinds.insert(name).second) {
+          pointwise_op_kinds.push_back(item);
+        }
+      }
       for (const auto& item : ExtractStringFieldList(region, "loop_carried_state", "name")) {
         const std::string name = Downcast<String>(item);
         if (seen_loop_carried.insert(name).second) {
@@ -563,6 +571,9 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
     }
     if (!row_broadcast_sources.empty()) {
       lowering_requirements.Set("row_broadcast_sources", row_broadcast_sources);
+    }
+    if (!pointwise_op_kinds.empty()) {
+      lowering_requirements.Set("pointwise_op_kinds", pointwise_op_kinds);
     }
     if (!loop_carried_state.empty()) {
       lowering_requirements.Set("fragment_loop_carried_state", loop_carried_state);
