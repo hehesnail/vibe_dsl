@@ -206,6 +206,21 @@
 - **教训**:
   - 对优化后 TIR 的 pattern matching，优先比较“整个关系是否代数等价”，不要比较中间常量子节点是不是同一个对象
 
+### fragment pointwise residual 如果在整棵表达式树里扫 `AddNode`，会把 cast/load 的索引算术误判成未 lower 的 `add`
+
+- **时间**: 2026-03-31
+- **问题**: flash-attn forward 在 `fill` 已 lower 后，full `lower()` 仍把 `add` 留在 unsupported 集合里，看起来像还有真正的 fragment `add` 没 lower
+- **根本原因**:
+  - pointwise residual 剪枝最初通过遍历 residual local store 的整棵 value 表达式树来找 `AddNode`
+  - 但像 `T.Cast("float16", acc_s[i * 4 + vec])`、`T.Cast("float16", acc_o[i * 8 + vec * 4 + vec_1])` 这类合法 residual `cast`，其 load 索引表达式天然就带 `AddNode`
+  - 结果 helper 会把索引算术错当成真正未 lower 的 pointwise `add`
+- **解决**:
+  - pointwise residual 剪枝改为看 residual store 的**根表达式类型**
+  - 只有当 `store->value` 根节点本身仍是 `AddNode` 时，才继续把 `add` 保留在 unsupported 集合里
+  - `add` 因此从 flash-attn 当前的 explicit blocker 中移除
+- **教训**:
+  - 对复杂 TIR 的 residual scan，必须区分“索引算术”和“值语义”；扫整棵表达式树通常会把这两者混在一起
+
 ### `ExtractCorePlan` / direct runtime 若为空 work plan 自动补默认 packet/core，会把 planner/runtime contract break 伪装成正常执行
 
 - **时间**: 2026-03-30

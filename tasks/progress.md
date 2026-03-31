@@ -19,6 +19,7 @@
 - **最新 row-broadcast lowering 收窄**: `LowerBlackholeOps` 现已把 flash-attn forward 剩余的 fused `row_broadcast` 进一步正式 lower：optimized-path 上的 `acc_s[i] = exp2(acc_s[i] * scale - scores_max[0] * scale)` 会生成 `tl.blackhole.exp2_row_bcast_affine`，`scores_scale[0] = exp2(scores_max_prev[0] * scale - scores_max[0] * scale)` 会生成 `tl.blackhole.scalar_exp2_affine`。`blackhole.lowering_requirements` 因此已不再把 `row_broadcast` 作为当前 MHA optimized-path 的 blocker，`test_blackhole_flash_attention_pipeline.py` 当前 `8 passed`
 - **最新 fail-fast 边界收正**: 由于 device-only codegen 路径会绕过 `ExecutableSpec` 提取层，fragment-subset gate 现在同时进入 `codegen_blackhole` 入口，与 `rt_mod_blackhole` 共享同一套 unsupported 子集口径。full `lower()` 当前会在 `fill / max / add / cast` 这些尚未 lower 的 pointwise 子集上显式失败，不再晚到 codegen 报 `Find undefined Variable acc_o`
 - **最新 pointwise lowering 收窄**: `LowerBlackholeOps` 现已把 flash-attn forward 里的 fragment `fill` 正式 lower 到 `tl.blackhole.fill_fragment` builtin，覆盖 scalar fill（如 `logsum[0] = 0`）以及优化后 device IR 里的线性化二维 fill（如 `acc_o[i * 4 + vec] = 0`）。对应 `rt_mod_blackhole` / device-only codegen 的 fail-fast 口径已同步收窄，`fill` 不再出现在剩余 unsupported 集合中；当前 flash-attn forward 的显式 blocker 已进一步收敛到 `max / add / cast`
+- **最新 pointwise blocker 再收窄**: `add` 已从 flash-attn forward 的剩余 unsupported 集合中移除。当前 `LowerBlackholeOps` 会按 residual local store 的**根表达式**剪枝 pointwise kinds，避免把 `Cast(acc_s[i * 4 + vec])` 这类索引算术里的 `AddNode` 误判成真正未 lower 的 fragment `add`。full `lower()` 当前显式 blocker 已进一步收敛到 `max / cast`
 - **日期**: 2026-03-31
 - **设计文档**: `tasks/dev_design/stage3_multicore_design.md`
 

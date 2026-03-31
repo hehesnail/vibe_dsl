@@ -18,7 +18,8 @@
 - ✅ Latest narrowing: flash-attn forward 的 `row_reduction` 现已在 `LowerBlackholeOps` 中正式 lower 到 `tl.blackhole.reduce_row` builtin，并覆盖 split-after 与 post-`OptimizeForTarget` 两条真实 device IR 形态；full `lower()` 的 build-time gate 因此已收窄到只剩 `row_broadcast`
 - ✅ Latest narrowing: `row_broadcast` 的 MHA optimized-path 形态已进一步进入真实 TIR lowering。除 `acc_o *= scores_scale[0]` / `acc_o /= logsum[0] -> tl.blackhole.mul_row_bcast/div_row_bcast`、`logsum = logsum * scores_scale + scores_sum -> tl.blackhole.scalar_fma` 外，`acc_s[i] = exp2(acc_s[i] * scale - scores_max[0] * scale)` 也已 lower 成 `tl.blackhole.exp2_row_bcast_affine`，`scores_scale[0] = exp2(scores_max_prev[0] * scale - scores_max[0] * scale)` 已 lower 成 `tl.blackhole.scalar_exp2_affine`
 - ✅ Latest narrowing: flash-attn forward 的 fragment `fill` 已正式 lower 成 `tl.blackhole.fill_fragment` builtin，当前同时覆盖 scalar fill 与优化后 device IR 里的线性化二维 fill；`fill` 已从 `blackhole.lowering_requirements` 和 full `lower()` 的 unsupported 集合中移除
-- 🔄 Next focus: 继续把剩余 pointwise 子集（当前显式 blocker 为 `max / add / cast`）从 TIR 正式 lower 成 Blackhole compute 子集，而不是回头继续加 schema/gate
+- ✅ Latest narrowing: `add` 已从剩余 unsupported 集合中移除。当前 pointwise 剪枝不再把 cast/load 索引算术里的 `AddNode` 误判成真正未 lower 的 fragment `add`
+- 🔄 Next focus: 继续把剩余 pointwise 子集（当前显式 blocker 为 `max / cast`）从 TIR 正式 lower 成 Blackhole compute 子集，而不是回头继续加 schema/gate
 - 🔄 Task 6 也已开始：第一条 generic fragment-pipeline legality 已落地，当前 `num_stages > 2` 会在主链上显式失败；full `lower()` 的 GQA `num_stages=4` 现在已能稳定命中这条 legality，不再先被 `RegionOp` staged/shared view canonicalization 内部错误打断
 
 ---

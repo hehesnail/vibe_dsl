@@ -88,10 +88,11 @@ def test_flash_attention_forward_lower_blackhole_ops_emits_generic_lowering_requ
     }.issubset(set(lowering_requirements["fragment_op_kinds"]))
     assert "row_broadcast" not in set(lowering_requirements["fragment_op_kinds"])
     assert "row_broadcast_sources" not in lowering_requirements
-    assert {"exp2", "mul", "div", "max", "add", "cast"}.issubset(
+    assert {"exp2", "mul", "div", "max", "cast"}.issubset(
         set(lowering_requirements["pointwise_op_kinds"])
     )
     assert "fill" not in set(lowering_requirements["pointwise_op_kinds"])
+    assert "add" not in set(lowering_requirements["pointwise_op_kinds"])
     assert list(lowering_requirements["pipeline_stage_counts"]) == [1]
     assert list(lowering_requirements["pipeline_loop_vars"]) == ["k"]
     assert "row_reduction_targets" not in lowering_requirements
@@ -232,7 +233,7 @@ def test_flash_attention_forward_rejects_unlowered_fragment_subset():
     assert "row_reduction" not in message
     assert "fill" not in message
     assert "max" in message
-    assert "add" in message
+    assert "add" not in message
     assert "cast" in message
 
 

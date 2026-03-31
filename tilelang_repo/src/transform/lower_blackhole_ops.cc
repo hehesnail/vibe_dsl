@@ -482,6 +482,7 @@ static bool HasUnsupportedFragmentOpsInRequirements(const Map<String, Any>& lowe
 
 namespace {
 bool HasResidualFragmentFill(const Stmt& body);
+bool HasResidualFragmentAdd(const Stmt& body);
 }
 
 static int CountLoweredRowReductionBuiltins(const Stmt& body) {
@@ -573,6 +574,9 @@ static Map<String, Any> PruneSatisfiedLoweringRequirements(const Map<String, Any
       for (const auto& item : Downcast<Array<Any>>(value)) {
         const std::string op_name = Downcast<String>(item);
         if (op_name == "fill" && !HasResidualFragmentFill(body)) {
+          continue;
+        }
+        if (op_name == "add" && !HasResidualFragmentAdd(body)) {
           continue;
         }
         kept_ops.push_back(item);
@@ -2781,6 +2785,20 @@ bool HasResidualFragmentFill(const Stmt& body) {
       return;
     }
     if (store->indices.size() == 1) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+bool HasResidualFragmentAdd(const Stmt& body) {
+  bool found = false;
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* store = node.as<BufferStoreNode>();
+    if (!store || !IsUnsupportedResidualLocalScope(store->buffer)) {
+      return;
+    }
+    if (store->value.as<AddNode>()) {
       found = true;
     }
   });
