@@ -40,6 +40,24 @@
    - `memory/bugs.md`
 4. 然后读代码，不要只看文档
 
+## TT-Sim 环境入口
+
+凡是要做 Blackhole direct runtime / TT-Sim 真执行验证，不要每次重新搜索环境变量或直接说“没环境”；先走仓库里已经固定的 TT-Sim 环境入口：
+
+```bash
+source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh
+export TILELANG_HOME=<当前 checkout 或 worktree>/tilelang_repo
+cd <当前 checkout 或 worktree>/tilelang_repo
+```
+
+注意：
+
+- `setup_tt_sim.sh` 必须和后续测试命令在**同一个 shell**里执行
+- 如果当前在 git worktree 中工作，**不要 source worktree 里的 `scripts/setup_tt_sim.sh` 副本**；要 source 顶层 checkout 的 `/root/dev/vibe_dsl/scripts/setup_tt_sim.sh`
+- source 完 TT-Sim 脚本后，再把 `TILELANG_HOME` 显式指回当前 checkout/worktree 的 `tilelang_repo`
+- 具体跑哪个 `pytest` case/selector，按当前 task / design / progress 文档决定，不要在这里硬编码成单个 case
+- 一旦进入 TT-Sim / runtime debug，先看 `memory/general_dev.md` 和 `memory/bugs.md`，优先复用已记录的环境、watcher、runtime 边界经验，不要从头试错
+
 ## 先设计，后写代码
 
 这是本仓库的强约束。对于复杂改动，**建议使用 `enter_plan_mode` 工具**进行设计。

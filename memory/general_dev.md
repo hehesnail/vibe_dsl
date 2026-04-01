@@ -83,6 +83,7 @@
 
 - `TT_METAL_SLOW_DISPATCH_MODE=1` 对 TT-Sim 很关键
 - `scripts/setup_tt_sim.sh` 必须在执行测试的同一 shell 里 source
+- 如果当前在 git worktree 中工作，不要 source worktree 里的 `scripts/setup_tt_sim.sh` 副本；应 source 顶层 checkout 的 `/root/dev/vibe_dsl/scripts/setup_tt_sim.sh`，再把 `TILELANG_HOME` 指回当前 worktree 的 `tilelang_repo`
 - 关键变量：`TT_METAL_RUNTIME_ROOT`、`TT_METAL_SIMULATOR`、`TT_METAL_SLOW_DISPATCH_MODE`、`LD_LIBRARY_PATH`
 - direct path kernel 临时目录必须每次执行唯一化，避免 JIT 缓存串扰
 

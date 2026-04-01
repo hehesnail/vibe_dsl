@@ -64,6 +64,24 @@ Blackhole 后端当前的正式目标收敛为三点：
   - `cast_fragment_slice -> blackhole.acc` 这类会被后续 matmul 继续消费的 scratch 结果，必须按未来 matmul 所需页数正式 `cb_push_back`；`GenerateMatmulSequence` 也不能再对同一 `blackhole.acc` 输出 CB 重复 `cb_reserve_back`
   - 当前剩余主 blocker 已前移到 direct runtime 执行期：flash-attn `mha` case 在 workload enqueue 之后出现 hang，Watcher 仍稳定复现 reader `CRBW`、writer `CWFW`、compute `MWDD`，说明后续重点是执行期同步/CB/dataflow 协议验证，而不是 compile-path 补洞
 
+### TT-Sim 固定验证入口
+
+对当前仓库，Blackhole direct runtime / TT-Sim 的固定验证入口应视为一条明确环境入口，而不是运行时再临时搜索环境变量或直接说“没环境”：
+
+```bash
+source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh
+export TILELANG_HOME=<当前 checkout 或 worktree>/tilelang_repo
+cd <当前 checkout 或 worktree>/tilelang_repo
+```
+
+约束：
+
+- `setup_tt_sim.sh` 必须和 `pytest` 在同一个 shell 中执行
+- 当前若在 git worktree 中工作，应 source 顶层 checkout 的 `/root/dev/vibe_dsl/scripts/setup_tt_sim.sh`，不要 source worktree 里的同名副本；否则 `TT_METAL_HOME` 会错误指向 worktree 下的 `tt_metal_repo`
+- source TT-Sim 脚本后，再把 `TILELANG_HOME` 显式指回当前 checkout/worktree 的 `tilelang_repo`
+- 具体跑哪个 runtime `pytest` case/selector，应按当前 task / design / progress 文档决定，不要把某个单独 case 固化成环境入口的一部分
+- 进入 TT-Sim / runtime debug 前，应先看 `memory/general_dev.md` 和 `memory/bugs.md` 里的已有经验，尤其是环境、watcher、runtime contract 与已知失败模式；不要每次从头试错
+
 ## 3. 正式架构
 
 ### 3.1 总体结构
