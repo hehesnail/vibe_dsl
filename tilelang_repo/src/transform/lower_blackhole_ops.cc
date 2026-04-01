@@ -839,9 +839,30 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   copy_input_shape_.clear();
   copy_output_shape_.clear();
   copy_intermediate_shape_.clear();
+  thread_index_vars_.clear();
+  thread_index_var_names_.clear();
+  cb_consumed_fragment_data_names_.clear();
+  cb_consumed_fragment_pages_by_data_name_.clear();
+  tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
+    if (const auto* attr = node.as<AttrStmtNode>()) {
+      if (attr->attr_key != tir::attr::thread_extent) {
+        return;
+      }
+      if (const auto* iv = attr->node.as<IterVarNode>()) {
+        if (std::string(iv->thread_tag).rfind("threadIdx.", 0) == 0) {
+          thread_index_vars_.insert(iv->var.get());
+          thread_index_var_names_.insert(iv->var->name_hint);
+        }
+      }
+    }
+  });
+  current_segment_kind_.clear();
+  read_accessor_slots_.clear();
+  write_accessor_slots_.clear();
   gemm_a_buffer_name_.clear();
   gemm_b_buffer_name_.clear();
   gemm_c_buffer_name_.clear();
+  gemm_c_scope_.clear();
   gemm_has_mbarrier_ = false;
   gemm_mbarrier_buffer_name_.clear();
   gemm_mbarrier_scope_.clear();
@@ -881,6 +902,38 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
     if (call && IsMatmulCall(call)) {
       ExtractGemmInfo(call);
     }
+  });
+
+  // Pre-scan all GEMM calls and record blackhole.acc buffers that will later be
+  // consumed through CB wait/pop semantics. Their local producers must publish
+  // the reserved CB pages before the matmul sequence can make progress.
+  tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
+    const auto* call = node.as<CallNode>();
+    if (!call || !IsMatmulCall(call) || call->args.size() < 8) {
+      return;
+    }
+    int num_k_tiles = 1;
+    if (const auto* k_imm = call->args[7].as<IntImmNode>()) {
+      num_k_tiles = std::max(1, static_cast<int>(k_imm->value) / kBlackholeTileCols);
+    }
+    auto record_if_cb_consumed_fragment = [&](const PrimExpr& expr) {
+      if (!IsBufferLikeExpr(expr)) {
+        return;
+      }
+      tir::BufferRegion region = NormalizeToBufferRegion(expr);
+      if (GetStorageScope(region->buffer) == "blackhole.acc") {
+        const std::string data_name = region->buffer->data->name_hint;
+        cb_consumed_fragment_data_names_.insert(data_name);
+        auto it = cb_consumed_fragment_pages_by_data_name_.find(data_name);
+        if (it == cb_consumed_fragment_pages_by_data_name_.end()) {
+          cb_consumed_fragment_pages_by_data_name_[data_name] = num_k_tiles;
+        } else {
+          it->second = std::max(it->second, num_k_tiles);
+        }
+      }
+    };
+    record_if_cb_consumed_fragment(call->args[0]);
+    record_if_cb_consumed_fragment(call->args[1]);
   });
 
   // Transform the function body
@@ -1684,6 +1737,7 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
   gemm_a_buffer_name_ = std::string(a_region->buffer->name);
   gemm_b_buffer_name_ = std::string(b_region->buffer->name);
   gemm_c_buffer_name_ = std::string(c_region->buffer->name);
+  gemm_c_scope_ = GetStorageScope(c_region->buffer);
   gemm_a_dtype_ = a_region->buffer->dtype;
   gemm_b_dtype_ = b_region->buffer->dtype;
   gemm_c_dtype_ = c_region->buffer->dtype;
@@ -1886,6 +1940,16 @@ PrimExpr LowerBlackholeOps::ZeroThreadAndLoopVars(const PrimExpr& expr,
   for (const auto* thread_var : thread_index_vars_) {
     subst_map.Set(GetRef<Var>(thread_var), IntImm(thread_var->dtype, 0));
   }
+  if (!thread_index_var_names_.empty()) {
+    tir::PostOrderVisit(expr, [&](const ObjectRef& node) {
+      if (const auto* var = node.as<tir::VarNode>()) {
+        if (!thread_index_vars_.count(var) &&
+            thread_index_var_names_.count(var->name_hint)) {
+          subst_map.Set(GetRef<Var>(var), IntImm(var->dtype, 0));
+        }
+      }
+    });
+  }
   if (subst_map.empty()) {
     return expr;
   }
@@ -1899,6 +1963,10 @@ bool LowerBlackholeOps::ExprUsesTransportVar(const PrimExpr& expr,
   tir::PostOrderVisit(expr, [&](const ObjectRef& node) {
     if (const auto* var = node.as<tir::VarNode>()) {
       if (thread_index_vars_.count(var)) {
+        uses_transport_var = true;
+        return;
+      }
+      if (thread_index_var_names_.count(var->name_hint)) {
         uses_transport_var = true;
         return;
       }
@@ -2187,30 +2255,64 @@ void LowerBlackholeOps::RegisterAccessor(const std::string& segment_kind,
                                                      "dram"});
 }
 
-int LowerBlackholeOps::GetReadAccessorSlot(const Buffer& buffer, CopyDirection direction) const {
-  const std::string buffer_name = buffer->name;
-  if (direction == CopyDirection::kDramToCB && !gemm_a_buffer_name_.empty()) {
-    if (buffer_name == gemm_a_buffer_name_) {
-      return 0;
-    }
-    if (buffer_name == gemm_b_buffer_name_) {
-      return 2;
+std::string LowerBlackholeOps::ResolveAccessorSegmentKind(CopyDirection direction) const {
+  if (!current_segment_kind_.empty()) {
+    return current_segment_kind_;
+  }
+  if (direction == CopyDirection::kDramToCB) {
+    return !gemm_a_buffer_name_.empty() ? "reader" : "fused_dataflow";
+  }
+  if (direction == CopyDirection::kCBToDram || direction == CopyDirection::kLocalToCB) {
+    return !gemm_a_buffer_name_.empty() ? "writer" : "fused_dataflow";
+  }
+  return "fused_dataflow";
+}
+
+int LowerBlackholeOps::GetOrAllocateSegmentAccessorSlot(
+    std::unordered_map<std::string, int>* slot_map, const std::string& segment_kind,
+    const Buffer& buffer) {
+  const std::string key = segment_kind + ":" + std::string(buffer->name);
+  auto it = slot_map->find(key);
+  if (it != slot_map->end()) {
+    return it->second;
+  }
+  int next_slot = 0;
+  const std::string prefix = segment_kind + ":";
+  for (const auto& [existing_key, slot] : *slot_map) {
+    if (existing_key.rfind(prefix, 0) == 0) {
+      next_slot = std::max(next_slot, slot + 2);
     }
   }
-  if (!copy_input_buffer_name_.empty() && buffer_name == copy_input_buffer_name_) {
+  slot_map->emplace(key, next_slot);
+  return next_slot;
+}
+
+int LowerBlackholeOps::GetReadAccessorSlot(const std::string& segment_kind, const Buffer& buffer,
+                                           CopyDirection direction) {
+  const std::string buffer_name = buffer->name;
+  if (segment_kind == "fused_dataflow") {
+    if (!copy_input_buffer_name_.empty() && buffer_name == copy_input_buffer_name_) {
+      return 0;
+    }
     return 0;
+  }
+  if (direction == CopyDirection::kDramToCB) {
+    return GetOrAllocateSegmentAccessorSlot(&read_accessor_slots_, segment_kind, buffer);
   }
   return 0;
 }
 
-int LowerBlackholeOps::GetWriteAccessorSlot(const Buffer& buffer, CopyDirection direction) const {
+int LowerBlackholeOps::GetWriteAccessorSlot(const std::string& segment_kind, const Buffer& buffer,
+                                            CopyDirection direction) {
   const std::string buffer_name = buffer->name;
-  if (direction == CopyDirection::kCBToDram && !gemm_c_buffer_name_.empty() &&
-      buffer_name == gemm_c_buffer_name_) {
+  if (segment_kind == "fused_dataflow") {
+    if (!copy_output_buffer_name_.empty() && buffer_name == copy_output_buffer_name_) {
+      return 2;
+    }
     return 0;
   }
-  if (!copy_output_buffer_name_.empty() && buffer_name == copy_output_buffer_name_) {
-    return 2;
+  if (direction == CopyDirection::kCBToDram) {
+    return GetOrAllocateSegmentAccessorSlot(&write_accessor_slots_, segment_kind, buffer);
   }
   return 0;
 }
@@ -2265,9 +2367,11 @@ Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op) {
   stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
 
   // 6-8. Pack and push output
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_cb_reserve_back(),
-      {IntImm32(out_id), IntImm32(1)}));
+  if (gemm_c_scope_ != "blackhole.acc") {
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_cb_reserve_back(),
+        {IntImm32(out_id), IntImm32(1)}));
+  }
   stmts.push_back(MakeBlackholeCall(
       blackhole_pack_tile(),
       {IntImm32(0), IntImm32(out_id)}));
@@ -2317,7 +2421,8 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
 
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_reserve_back(), {IntImm32(src_cb_id), IntImm32(1)}));
-      const int input_accessor_slot = GetReadAccessorSlot(load->buffer, direction);
+      const int input_accessor_slot =
+          GetReadAccessorSlot("fused_dataflow", load->buffer, direction);
       stmts.push_back(MakeBlackholeCall(
           blackhole_read_tile_to_cb(),
           {load->buffer->data, IntImm32(0), IntImm32(src_cb_id), IntImm32(tile_bytes),
@@ -2328,7 +2433,8 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
 
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_wait_front(), {IntImm32(src_cb_id), IntImm32(1)}));
-      const int output_accessor_slot = GetWriteAccessorSlot(op->buffer, direction);
+      const int output_accessor_slot =
+          GetWriteAccessorSlot("fused_dataflow", op->buffer, direction);
       stmts.push_back(MakeBlackholeCall(
           blackhole_write_tile_from_cb(),
           {IntImm32(src_cb_id), op->buffer->data, IntImm32(0), IntImm32(tile_bytes),
@@ -2387,29 +2493,37 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
   }
 
   std::vector<Stmt> stmts;
+  auto maybe_wrap_segment_stmt = [&](const std::string& segment_kind, Stmt stmt) -> Stmt {
+    if (current_segment_kind_.empty() && segment_kind != "fused_dataflow") {
+      return AttrStmt(StringImm("blackhole.segment_kind"), "blackhole.segment_kind",
+                      StringImm(segment_kind), stmt);
+    }
+    return stmt;
+  };
   switch (direction) {
     case CopyDirection::kDramToCB: {
-      const bool segmented_gemm = !gemm_a_buffer_name_.empty();
+      const std::string segment_kind = ResolveAccessorSegmentKind(direction);
+      const bool segmented_gemm = segment_kind == "reader";
       int cb_id = AllocateRequirementIndex(
           op->buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
       int tile_bytes = EstimateCopyPageSize(op->buffer);
       RecordStagedCopyBufferBinding(op, direction);
-      const Buffer& accessor_slot_key = segmented_gemm ? op->buffer : load->buffer;
-      const int accessor_slot = GetReadAccessorSlot(accessor_slot_key, direction);
+      const int accessor_slot = GetReadAccessorSlot(segment_kind, load->buffer, direction);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(1)}));
       stmts.push_back(MakeBlackholeCall(
           blackhole_read_tile_to_cb(),
           {load->buffer->data, tile_index, IntImm32(cb_id), IntImm32(tile_bytes),
            IntImm32(accessor_slot)}));
-      RegisterAccessor(segmented_gemm ? "reader" : "fused_dataflow", load->buffer,
+      RegisterAccessor(segment_kind, load->buffer,
                        accessor_slot, 2, 0, 0, 2);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
-      return SeqStmt::Flatten(stmts);
+      return maybe_wrap_segment_stmt(segment_kind, SeqStmt::Flatten(stmts));
     }
     case CopyDirection::kCBToDram: {
-      const bool segmented_gemm = !gemm_a_buffer_name_.empty();
+      const std::string segment_kind = ResolveAccessorSegmentKind(direction);
+      const bool segmented_gemm = segment_kind == "writer";
       const bool accumulator_like_src =
           GetStorageScope(load->buffer).rfind("local", 0) == 0 ||
           runtime::StorageScope::Create(GetStorageScope(load->buffer)).rank ==
@@ -2419,19 +2533,18 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
           (segmented_gemm && accumulator_like_src) ? CBType::kOutput : CBType::kIntermediate);
       int tile_bytes = EstimateCopyPageSize(load->buffer);
       RecordStagedCopyBufferBinding(op, direction);
-      const Buffer& accessor_slot_key = segmented_gemm ? load->buffer : op->buffer;
-      const int accessor_slot = GetWriteAccessorSlot(accessor_slot_key, direction);
+      const int accessor_slot = GetWriteAccessorSlot(segment_kind, op->buffer, direction);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(1)}));
       stmts.push_back(MakeBlackholeCall(
           blackhole_write_tile_from_cb(),
           {IntImm32(cb_id), op->buffer->data, tile_index, IntImm32(tile_bytes),
            IntImm32(accessor_slot)}));
-      RegisterAccessor(segmented_gemm ? "writer" : "fused_dataflow", op->buffer,
+      RegisterAccessor(segment_kind, op->buffer,
                        accessor_slot, 2, 0, 0, 2);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
-      return SeqStmt::Flatten(stmts);
+      return maybe_wrap_segment_stmt(segment_kind, SeqStmt::Flatten(stmts));
     }
     default:
       return GenerateCopySequence(op);
@@ -2446,7 +2559,8 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
     return GetRef<Stmt>(op);
   }
 
-  const bool segmented_gemm = !gemm_a_buffer_name_.empty();
+  const std::string segment_kind = ResolveAccessorSegmentKind(direction);
+  const bool segmented_gemm = segment_kind == "reader" || segment_kind == "writer";
   const bool accumulator_like_src =
       direction == CopyDirection::kCBToDram &&
       (GetStorageScope(load->buffer).rfind("local", 0) == 0 ||
@@ -2493,6 +2607,13 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
   Analyzer analyzer;
 
   std::vector<Stmt> stmts;
+  auto maybe_wrap_segment_stmt = [&](Stmt stmt) -> Stmt {
+    if (current_segment_kind_.empty() && segment_kind != "fused_dataflow") {
+      return AttrStmt(StringImm("blackhole.segment_kind"), "blackhole.segment_kind",
+                      StringImm(segment_kind), stmt);
+    }
+    return stmt;
+  };
   auto make_tile_index = [&](int subtile_row, int subtile_col) -> PrimExpr {
     PrimExpr tile_index = base_tile_index;
     if (subtile_row != 0) {
@@ -2516,8 +2637,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
     int cb_id = AllocateRequirementIndex(
         op->buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
     RecordStagedCopyBufferBinding(op, direction);
-    const Buffer& accessor_slot_key = segmented_gemm ? op->buffer : load->buffer;
-    const int accessor_slot = GetReadAccessorSlot(accessor_slot_key, direction);
+    const int accessor_slot = GetReadAccessorSlot(segment_kind, load->buffer, direction);
     if (use_page_transport) {
       SetRequirementPageLayout(cb_id, geometry.shared_bytes, 1);
       stmts.push_back(MakeBlackholeCall(
@@ -2528,14 +2648,14 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
             blackhole_read_page_to_cb(), {load->buffer->data, page_index, IntImm32(cb_id),
                                           IntImm32(geometry.page_bytes), IntImm32(accessor_slot),
                                           IntImm32(page_row * geometry.l1_stick_stride)}));
-        RegisterAccessor(segmented_gemm ? "reader" : "fused_dataflow", load->buffer,
+        RegisterAccessor(segment_kind, load->buffer,
                          accessor_slot, 2, 0, 0, 2, geometry.page_bytes);
       }
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_read_barrier(), {}));
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
-      return SeqStmt::Flatten(stmts);
+      return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
     }
     for (int subtile_row = 0; subtile_row < geometry.subtile_rows; ++subtile_row) {
       for (int subtile_col = 0; subtile_col < geometry.subtile_cols; ++subtile_col) {
@@ -2546,13 +2666,13 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
             blackhole_read_tile_to_cb(),
             {load->buffer->data, tile_index, IntImm32(cb_id), IntImm32(geometry.tile_bytes),
              IntImm32(accessor_slot)}));
-        RegisterAccessor(segmented_gemm ? "reader" : "fused_dataflow", load->buffer,
+        RegisterAccessor(segment_kind, load->buffer,
                          accessor_slot, 2, 0, 0, 2);
         stmts.push_back(MakeBlackholeCall(
             blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
       }
     }
-    return SeqStmt::Flatten(stmts);
+    return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
   }
 
   if (direction == CopyDirection::kCBToDram) {
@@ -2560,8 +2680,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
         load->buffer,
         (segmented_gemm && accumulator_like_src) ? CBType::kOutput : CBType::kIntermediate);
     RecordStagedCopyBufferBinding(op, direction);
-    const Buffer& accessor_slot_key = segmented_gemm ? load->buffer : op->buffer;
-    const int accessor_slot = GetWriteAccessorSlot(accessor_slot_key, direction);
+    const int accessor_slot = GetWriteAccessorSlot(segment_kind, op->buffer, direction);
     if (use_page_transport) {
       SetRequirementPageLayout(cb_id, geometry.shared_bytes, 1);
       stmts.push_back(MakeBlackholeCall(
@@ -2573,14 +2692,14 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
                                              IntImm32(geometry.page_bytes),
                                              IntImm32(accessor_slot),
                                              IntImm32(page_row * geometry.l1_stick_stride)}));
-        RegisterAccessor(segmented_gemm ? "writer" : "fused_dataflow", op->buffer,
+        RegisterAccessor(segment_kind, op->buffer,
                          accessor_slot, 2, 0, 0, 2, geometry.page_bytes);
       }
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_write_barrier(), {}));
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
-      return SeqStmt::Flatten(stmts);
+      return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
     }
     for (int subtile_row = 0; subtile_row < geometry.subtile_rows; ++subtile_row) {
       for (int subtile_col = 0; subtile_col < geometry.subtile_cols; ++subtile_col) {
@@ -2591,13 +2710,13 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
             blackhole_write_tile_from_cb(),
             {IntImm32(cb_id), op->buffer->data, tile_index, IntImm32(geometry.tile_bytes),
              IntImm32(accessor_slot)}));
-        RegisterAccessor(segmented_gemm ? "writer" : "fused_dataflow", op->buffer,
+        RegisterAccessor(segment_kind, op->buffer,
                          accessor_slot, 2, 0, 0, 2);
         stmts.push_back(MakeBlackholeCall(
             blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
       }
     }
-    return SeqStmt::Flatten(stmts);
+    return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
   }
 
   return GenerateCopySequence(op);
@@ -2657,7 +2776,7 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
             analyzer.Simplify(buffer_byte_offset + IntImm32(page_row * global_row_bytes));
       }
       const int input_accessor_slot =
-          GetReadAccessorSlot(dram_load->buffer, CopyDirection::kDramToCB);
+          GetReadAccessorSlot("fused_dataflow", dram_load->buffer, CopyDirection::kDramToCB);
       stmts.push_back(MakeBlackholeCall(
           blackhole_read_page_to_cb(),
           {dram_load->buffer->data, buffer_byte_offset, IntImm32(cb_id),
@@ -2680,7 +2799,7 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
             analyzer.Simplify(buffer_byte_offset + IntImm32(page_row * global_row_bytes));
       }
       const int output_accessor_slot =
-          GetWriteAccessorSlot(cb_to_dram->buffer, CopyDirection::kCBToDram);
+          GetWriteAccessorSlot("fused_dataflow", cb_to_dram->buffer, CopyDirection::kCBToDram);
       stmts.push_back(MakeBlackholeCall(
           blackhole_write_page_from_cb(),
           {IntImm32(cb_id), cb_to_dram->buffer->data, buffer_byte_offset,
@@ -2707,7 +2826,7 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(1)}));
       const int input_accessor_slot =
-          GetReadAccessorSlot(dram_load->buffer, CopyDirection::kDramToCB);
+          GetReadAccessorSlot("fused_dataflow", dram_load->buffer, CopyDirection::kDramToCB);
       stmts.push_back(MakeBlackholeCall(
           use_page_transport ? blackhole_read_page_to_cb() : blackhole_read_tile_to_cb(),
           {dram_load->buffer->data, tile_index, IntImm32(cb_id),
@@ -2720,7 +2839,7 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(1)}));
       const int output_accessor_slot =
-          GetWriteAccessorSlot(cb_to_dram->buffer, CopyDirection::kCBToDram);
+          GetWriteAccessorSlot("fused_dataflow", cb_to_dram->buffer, CopyDirection::kCBToDram);
       stmts.push_back(MakeBlackholeCall(
           use_page_transport ? blackhole_write_page_from_cb() : blackhole_write_tile_from_cb(),
           {IntImm32(cb_id), cb_to_dram->buffer->data, tile_index,
@@ -3843,10 +3962,77 @@ bool LowerBlackholeOps::MatchDirectFragmentCast(const ForNode* op,
   return true;
 }
 
-Stmt LowerBlackholeOps::GenerateFragmentCastSequence(const FragmentCastMatch& match) {
-  return MakeBlackholeCall(tir::builtin::blackhole_cast_fragment_slice(),
-                           {match.dst->data, match.src->data, match.dst_offset,
-                            match.src_offset, match.num_elements});
+Stmt LowerBlackholeOps::GenerateFragmentCastSequence(const FragmentCastMatch& match,
+                                                    bool publish_cb) {
+  std::vector<Stmt> stmts;
+  stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cast_fragment_slice(),
+                                    {match.dst->data, match.src->data, match.dst_offset,
+                                     match.src_offset, match.num_elements}));
+
+  if (publish_cb || GetStorageScope(match.dst) == "blackhole.acc") {
+    const int cb_id = AllocateRequirementIndex(match.dst, CBType::kIntermediate);
+    ICHECK_GE(cb_id, 0);
+    ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
+    int num_pages = std::max(1, cb_requirements_[cb_id].num_pages);
+    auto it = cb_consumed_fragment_pages_by_data_name_.find(match.dst->data->name_hint);
+    if (it != cb_consumed_fragment_pages_by_data_name_.end()) {
+      num_pages = std::max(num_pages, it->second);
+    }
+    stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cb_push_back(),
+                                      {IntImm32(cb_id), IntImm32(num_pages)}));
+  }
+
+  return stmts.size() == 1 ? stmts.front() : SeqStmt::Flatten(stmts);
+}
+
+bool LowerBlackholeOps::StmtConsumesBufferViaMatmul(const Stmt& stmt, const Buffer& buffer) const {
+  bool consumed = false;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    if (consumed) {
+      return;
+    }
+    const auto* call = node.as<CallNode>();
+    if (!call || !IsMatmulCall(call) || call->args.size() < 2) {
+      return;
+    }
+    auto matches_buffer = [&](const PrimExpr& expr) {
+      tir::BufferRegion region = NormalizeToBufferRegion(expr);
+      return region->buffer->data.same_as(buffer->data);
+    };
+    consumed = matches_buffer(call->args[0]) || matches_buffer(call->args[1]);
+  });
+  return consumed;
+}
+
+bool LowerBlackholeOps::StmtWritesBuffer(const Stmt& stmt, const Buffer& buffer) const {
+  bool writes = false;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    if (writes) {
+      return;
+    }
+    const auto* store = node.as<BufferStoreNode>();
+    if (store && store->buffer->data.same_as(buffer->data)) {
+      writes = true;
+    }
+  });
+  return writes;
+}
+
+bool LowerBlackholeOps::ShouldPublishFragmentCastResult(const tvm::ffi::Array<Stmt>& seq,
+                                                       size_t start_idx,
+                                                       const Buffer& buffer) const {
+  if (GetStorageScope(buffer) != "blackhole.acc") {
+    return false;
+  }
+  for (size_t i = start_idx; i < seq.size(); ++i) {
+    if (StmtConsumesBufferViaMatmul(seq[i], buffer)) {
+      return true;
+    }
+    if (StmtWritesBuffer(seq[i], buffer)) {
+      return false;
+    }
+  }
+  return false;
 }
 
 bool LowerBlackholeOps::MatchDirectLocalToCBSliceLoop(const ForNode* op,
@@ -3899,7 +4085,7 @@ bool LowerBlackholeOps::MatchDirectLocalToCBSliceLoop(const ForNode* op,
     PrimExpr row_extent = store->buffer->shape[1];
     PrimExpr dst_linear =
         analyzer.Simplify(store->indices[0] * row_extent + store->indices[1]);
-    PrimExpr base_offset = analyzer.Simplify(dst_linear - vector_var);
+    PrimExpr base_offset = ZeroThreadAndLoopVars(dst_linear - vector_var, {vector_var});
     if (ExprUsesVar(base_offset, vector_var)) {
       return false;
     }
@@ -3985,15 +4171,39 @@ Stmt LowerBlackholeOps::VisitStmt_(const AttrStmtNode* op) {
     const bool zero_thread_var = thread_tag.rfind("threadIdx.", 0) == 0;
     if (zero_thread_var) {
       thread_index_vars_.insert(iv->var.get());
+      thread_index_var_names_.insert(iv->var->name_hint);
     }
     Stmt body = VisitStmt(op->body);
     if (zero_thread_var) {
       thread_index_vars_.erase(iv->var.get());
+      thread_index_var_names_.erase(iv->var->name_hint);
     }
     if (body.same_as(op->body)) {
       return GetRef<Stmt>(op);
     }
     return AttrStmt(op->node, op->attr_key, op->value, body);
+  }
+  if (op->attr_key == "blackhole.segment_kind") {
+    std::string previous_segment_kind = current_segment_kind_;
+    if (const auto* kind = op->value.as<StringImmNode>()) {
+      current_segment_kind_ = kind->value;
+    }
+    Stmt body = VisitStmt(op->body);
+    current_segment_kind_ = previous_segment_kind;
+    if (body.same_as(op->body)) {
+      return GetRef<Stmt>(op);
+    }
+    return AttrStmt(op->node, op->attr_key, op->value, body);
+  }
+  return StmtExprMutator::VisitStmt_(op);
+}
+
+Stmt LowerBlackholeOps::VisitStmt_(const DeclBufferNode* op) {
+  if (GetStorageScope(op->buffer) == "blackhole.acc") {
+    const int requirement_index = AllocateRequirementIndex(op->buffer, CBType::kIntermediate);
+    auto& req = cb_requirements_.at(requirement_index);
+    req.lifetime_begin = 0;
+    req.lifetime_end = std::max(req.lifetime_end, next_requirement_index_);
   }
   return StmtExprMutator::VisitStmt_(op);
 }
@@ -4012,6 +4222,14 @@ Stmt LowerBlackholeOps::VisitStmt_(const AllocateNode* op) {
 Stmt LowerBlackholeOps::VisitStmt_(const SeqStmtNode* op) {
   Array<Stmt> rewritten;
   for (size_t i = 0; i < op->seq.size(); ++i) {
+    if (const auto* direct_cast_loop = AsUnwrappedFor(op->seq[i])) {
+      FragmentCastMatch cast_match;
+      if (MatchDirectFragmentCast(direct_cast_loop, &cast_match)) {
+        const bool publish_cb = ShouldPublishFragmentCastResult(op->seq, i + 1, cast_match.dst);
+        rewritten.push_back(GenerateFragmentCastSequence(cast_match, publish_cb));
+        continue;
+      }
+    }
     if (i + 1 < op->seq.size()) {
       const Stmt& init_stmt = op->seq[i];
       const Stmt& reduce_stmt = op->seq[i + 1];
@@ -4122,6 +4340,26 @@ Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
             InferStagedCopyBaseTileIndex(dram_to_cb->store, loop_vars_to_zero);
         return GenerateFusedStagedCopySequence(dram_to_cb->store, cb_to_dram->store,
                                                base_tile_index);
+      }
+
+      bool all_staged_single_direction = true;
+      std::vector<Stmt> lowered_matches;
+      for (const auto& match : matches) {
+        if (match.direction != CopyDirection::kDramToCB &&
+            match.direction != CopyDirection::kCBToDram) {
+          all_staged_single_direction = false;
+          break;
+        }
+        std::vector<Var> loop_vars_to_zero{op->loop_var};
+        loop_vars_to_zero.insert(loop_vars_to_zero.end(), match.loop_vars.begin(),
+                                 match.loop_vars.end());
+        PrimExpr base_tile_index =
+            InferStagedCopyBaseTileIndex(match.store, loop_vars_to_zero);
+        lowered_matches.push_back(GenerateStagedCopyLoopSequence(match.store, base_tile_index));
+      }
+      if (all_staged_single_direction && !lowered_matches.empty()) {
+        saw_copy_op_ = true;
+        return SeqStmt::Flatten(lowered_matches);
       }
     }
 

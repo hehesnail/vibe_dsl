@@ -19,7 +19,7 @@
 
 /*!
  * \file assign_blackhole_cores.h
- * \brief Assign T.Kernel grid work items to Blackhole 14x10 Tensix cores
+ * \brief Assign T.Kernel grid work items to Blackhole 11x10 logical worker cores
  */
 
 #ifndef TVM_TL_ASSIGN_BLACKHOLE_CORES_H_
@@ -34,9 +34,9 @@ namespace tvm {
 namespace tl {
 
 /*!
- * \brief Core coordinate on Blackhole physical grid
- * Physical x: 1-7, 10-16 (avoid x=8,9 which are DRAM/ARC/Eth)
- * Physical y: 2-11
+ * \brief Core coordinate on Blackhole logical worker grid
+ * Logical x: 0-10
+ * Logical y: 0-9
  */
 struct CoreCoord {
   int x, y;
@@ -47,12 +47,12 @@ struct CoreCoord {
  */
 struct CoreAssignment {
   int grid_x, grid_y;           // T.Kernel grid dimensions
-  int core_grid_x, core_grid_y; // Blackhole core grid (14, 10)
+  int core_grid_x, core_grid_y; // Blackhole logical worker grid (11, 10)
   int work_per_core;            // Work items per core
   int cores_needed;             // Total cores needed
 
   CoreAssignment()
-      : grid_x(1), grid_y(1), core_grid_x(14), core_grid_y(10),
+      : grid_x(1), grid_y(1), core_grid_x(11), core_grid_y(10),
         work_per_core(1), cores_needed(1) {}
 };
 
@@ -70,7 +70,7 @@ struct RuntimeArgs {
  * \brief AssignBlackholeCores Pass
  *
  * This pass analyzes T.Kernel grid dimensions and assigns work items
- * to Blackhole's 14x10 Tensix core grid.
+ * to Blackhole's 11x10 logical worker core grid.
  */
 class AssignBlackholeCores : public tvm::tir::StmtExprMutator {
  public:
@@ -83,16 +83,16 @@ class AssignBlackholeCores : public tvm::tir::StmtExprMutator {
   /*! \brief Calculate runtime args for a specific core */
   RuntimeArgs GetRuntimeArgs(int core_idx) const;
 
-  /*! \brief Get physical core coordinate for a logical core index */
+  /*! \brief Get logical worker core coordinate for a logical core index */
   CoreCoord GetCoreCoord(int core_idx) const;
 
   /*! \brief Check if a core coordinate is valid */
   bool IsValidCoreCoord(const CoreCoord& coord) const;
 
   /*! \brief Blackhole grid constants */
-  static constexpr int kBlackholeGridX = 14;
+  static constexpr int kBlackholeGridX = 11;
   static constexpr int kBlackholeGridY = 10;
-  static constexpr int kTotalCores = 140;
+  static constexpr int kTotalCores = 110;
 
  private:
   /*! \brief Analyze T.Kernel grid dimensions from the function */

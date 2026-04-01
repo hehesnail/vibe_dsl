@@ -115,6 +115,9 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
   if (op_name == "tl.blackhole.pack_tile") {
     return {1};
   }
+  if (op_name == "tl.blackhole.write_local_slice_to_cb") {
+    return {1};  // args: (src_handle, cb_id, dst_offset, num_elements)
+  }
   return {};
 }
 
@@ -148,6 +151,40 @@ PrimFunc PlanBlackholeCB::Transform(const PrimFunc& func) {
   }
   new_func.CopyOnWrite()->body = RewriteCBIdsInIR(new_func->body, cb_id_by_requirement_index);
   cb_configs_ = configs;
+
+  // Post-condition: verify no blackhole builtin retains an unrewritten requirement_index.
+  // This catches cases where a new builtin with a cb_id parameter was not registered in
+  // GetCBArgPositions.
+  if (!cb_id_by_requirement_index.empty()) {
+    const int max_requirement_index = static_cast<int>(requirements.size()) - 1;
+    tir::PostOrderVisit(new_func->body, [&](const ObjectRef& node) {
+      if (const auto* call = node.as<tir::CallNode>()) {
+        if (!call->op->IsInstance<OpNode>()) return;
+        const std::string op_name = Downcast<Op>(call->op)->name;
+        if (op_name.rfind("tl.blackhole.", 0) != 0) return;
+        // Skip builtins that are known to have no cb_id args
+        if (GetCBArgPositions(op_name).empty()) {
+          // Scan all IntImm args: if any value falls in [0, max_requirement_index] and is
+          // also a key in cb_id_by_requirement_index with a DIFFERENT final cb_id, we have
+          // an unrewritten cb_id.
+          for (size_t i = 0; i < call->args.size(); ++i) {
+            if (const auto* imm = call->args[i].as<IntImmNode>()) {
+              int val = static_cast<int>(imm->value);
+              auto it = cb_id_by_requirement_index.find(val);
+              if (it != cb_id_by_requirement_index.end() && it->second != val) {
+                LOG(WARNING) << "PlanBlackholeCB post-condition: builtin " << op_name
+                             << " arg[" << i << "]=" << val
+                             << " looks like an unrewritten requirement_index"
+                             << " (expected cb_id=" << it->second << ")."
+                             << " Did you forget to register this builtin in"
+                             << " GetCBArgPositions?";
+              }
+            }
+          }
+        }
+      }
+    });
+  }
 
   return new_func;
 }
@@ -217,8 +254,8 @@ std::vector<CBConfig> PlanBlackholeCB::AssignCBIds(
   std::vector<CBConfig> configs;
 
   int next_input_id = kInputCBStart;
-  int next_output_id = kOutputCBStart;
-  int next_intermediate_id = kOutputCBEnd + 1;  // Start after output range
+  int next_compute_cb_id = kOutputCBStart;
+  int next_spill_id = kOutputCBEnd + 1;
 
   for (size_t req_index = 0; req_index < requirements.size(); ++req_index) {
     const auto& req = requirements[req_index];
@@ -254,19 +291,23 @@ std::vector<CBConfig> PlanBlackholeCB::AssignCBIds(
         if (next_input_id <= kInputCBEnd) {
           config.cb_id = next_input_id++;
         } else {
-          config.cb_id = next_intermediate_id++;
+          config.cb_id = next_spill_id++;
         }
         break;
       case CBType::kOutput:
-        if (next_output_id <= kOutputCBEnd) {
-          config.cb_id = next_output_id++;
+        if (next_compute_cb_id <= kOutputCBEnd) {
+          config.cb_id = next_compute_cb_id++;
         } else {
-          config.cb_id = next_intermediate_id++;
+          config.cb_id = next_spill_id++;
         }
         break;
       case CBType::kIntermediate:
       default:
-        config.cb_id = next_intermediate_id++;
+        if (next_compute_cb_id <= kOutputCBEnd) {
+          config.cb_id = next_compute_cb_id++;
+        } else {
+          config.cb_id = next_spill_id++;
+        }
         break;
     }
 

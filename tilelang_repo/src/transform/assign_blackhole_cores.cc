@@ -19,7 +19,7 @@
 
 /*!
  * \file assign_blackhole_cores.cc
- * \brief Assign T.Kernel grid work items to Blackhole 14x10 Tensix cores
+ * \brief Assign T.Kernel grid work items to Blackhole 11x10 logical worker cores
  */
 
 #include "assign_blackhole_cores.h"
@@ -149,36 +149,20 @@ RuntimeArgs AssignBlackholeCores::GetRuntimeArgs(int core_idx) const {
   return args;
 }
 
-// Get physical core coordinate for a logical core index
+// Get logical worker core coordinate for a logical core index
 CoreCoord AssignBlackholeCores::GetCoreCoord(int core_idx) const {
   CoreCoord coord;
 
-  // Map to logical 14x10 grid
-  int x_in_grid = core_idx % kBlackholeGridX;
-  int y_in_grid = core_idx / kBlackholeGridX;
-
-  // Map to physical coordinates (avoiding x=8,9 which are DRAM/ARC/Eth)
-  // Physical x: 1-7, 10-16
-  if (x_in_grid < 7) {
-    coord.x = x_in_grid + 1;  // 1-7
-  } else {
-    coord.x = x_in_grid + 3;  // 10-16 (skip 8,9)
-  }
-
-  // Physical y: 2-11
-  coord.y = y_in_grid + 2;
+  coord.x = core_idx % kBlackholeGridX;
+  coord.y = core_idx / kBlackholeGridX;
 
   return coord;
 }
 
 // Check if a core coordinate is valid
 bool AssignBlackholeCores::IsValidCoreCoord(const CoreCoord& coord) const {
-  // Valid x: 1-7, 10-16 (avoid 8,9 which are DRAM/ARC/Eth)
-  bool valid_x = (coord.x >= 1 && coord.x <= 7) ||
-                 (coord.x >= 10 && coord.x <= 16);
-
-  // Valid y: 2-11
-  bool valid_y = (coord.y >= 2 && coord.y <= 11);
+  bool valid_x = coord.x >= 0 && coord.x < kBlackholeGridX;
+  bool valid_y = coord.y >= 0 && coord.y < kBlackholeGridY;
 
   return valid_x && valid_y;
 }

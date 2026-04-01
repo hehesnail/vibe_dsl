@@ -27,11 +27,13 @@
 #include <tvm/ffi/extra/module.h>
 #include <tvm/ir/transform.h>
 #include <tvm/target/codegen.h>
+#include <tvm/tir/analysis.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/stmt_functor.h>
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -96,7 +98,7 @@ class BlackholeDeviceAPI final : public DeviceAPI {
         break;
       case kMultiProcessorCount:
         // Number of compute cores (Tensix)
-        rv->operator=(140);
+        rv->operator=(110);
         break;
       case kMaxThreadDimensions:
         rv->operator=(3);
@@ -185,7 +187,7 @@ using namespace tvm::runtime;
 // Register Blackhole target kind
 TVM_REGISTER_TARGET_KIND("blackhole", kDLExtDev)
     .add_attr_option<int64_t>("max_shared_memory_per_block", 1572864)  // 1.5 MB L1
-    .add_attr_option<int64_t>("num_cores", 140)  // 14x10 Tensix cores
+    .add_attr_option<int64_t>("num_cores", 110)  // 11x10 logical worker cores
     .add_attr_option<int64_t>("num_cbs", 64)     // 64 circular buffers per core
     .set_default_keys({"blackhole"});
 
@@ -1017,11 +1019,12 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
       std::vector<KernelArgSpec> segment_args =
           ExtractRuntimeArgsFromArray(Downcast<ffi::Array<ffi::Any>>(runtime_args_it.value()));
       for (const auto& arg : segment_args) {
-        if (seen.count(arg.identity)) {
+        const std::string dedupe_key = arg.identity + ":" + arg.kind;
+        if (seen.count(dedupe_key)) {
           continue;
         }
         aggregated.push_back(arg);
-        seen.insert(arg.identity);
+        seen.insert(dedupe_key);
       }
     }
     if (!aggregated.empty()) {
@@ -1065,11 +1068,12 @@ static std::vector<KernelArgSpec> ExtractCommonRuntimeArgs(const tir::PrimFunc& 
       std::vector<KernelArgSpec> segment_args = ExtractRuntimeArgsFromArray(
           Downcast<ffi::Array<ffi::Any>>(common_runtime_args_it.value()));
       for (const auto& arg : segment_args) {
-        if (arg.kind.empty() || seen.count(arg.identity)) {
+        const std::string dedupe_key = arg.identity + ":" + arg.kind;
+        if (arg.kind.empty() || seen.count(dedupe_key)) {
           continue;
         }
         aggregated.push_back(arg);
-        seen.insert(arg.identity);
+        seen.insert(dedupe_key);
       }
     }
     if (!aggregated.empty()) {
@@ -1313,8 +1317,33 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
 
 class SegmentBodyExtractor final : public tir::StmtMutator {
  public:
-  explicit SegmentBodyExtractor(std::string segment_kind)
-      : segment_kind_(std::move(segment_kind)) {}
+  SegmentBodyExtractor(std::string segment_kind, bool retain_unmarked_stmts)
+      : segment_kind_(std::move(segment_kind)),
+        retain_unmarked_stmts_(retain_unmarked_stmts) {}
+
+  static bool IsNoOp(const Stmt& stmt) {
+    if (!stmt.defined()) {
+      return true;
+    }
+    if (const auto* eval = stmt.as<tir::EvaluateNode>()) {
+      if (const auto* imm = eval->value.as<IntImmNode>()) {
+        return imm->value == 0;
+      }
+    }
+    return false;
+  }
+
+  Stmt VisitStmt_(const tir::AttrStmtNode* op) final {
+    if (op->attr_key == "blackhole.segment_kind") {
+      if (const auto* kind = op->value.as<StringImmNode>()) {
+        if (kind->value == segment_kind_) {
+          return this->VisitStmt(op->body);
+        }
+      }
+      return tir::Evaluate(IntImm(DataType::Int(32), 0));
+    }
+    return tir::StmtMutator::VisitStmt_(op);
+  }
 
   Stmt VisitStmt_(const tir::SeqStmtNode* op) final {
     bool has_segment_markers = false;
@@ -1333,7 +1362,9 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
           continue;
         }
       }
-      seq.push_back(this->VisitStmt(stmt));
+      if (retain_unmarked_stmts_) {
+        seq.push_back(this->VisitStmt(stmt));
+      }
     }
 
     if (!has_segment_markers) {
@@ -1348,8 +1379,65 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
     return tir::SeqStmt(seq);
   }
 
+  Stmt VisitStmt_(const tir::AllocateNode* op) final {
+    Stmt body = this->VisitStmt(op->body);
+    if (IsNoOp(body)) {
+      return tir::Evaluate(IntImm(DataType::Int(32), 0));
+    }
+    if (!tir::UsesVar(body, [buffer_var = op->buffer_var.get()](const tir::VarNode* var) {
+          return var == buffer_var;
+        })) {
+      return body;
+    }
+    if (body.same_as(op->body)) {
+      return GetRef<Stmt>(op);
+    }
+    return tir::Allocate(op->buffer_var, op->dtype, op->extents, op->condition, body,
+                         op->annotations, op->span);
+  }
+
+  Stmt VisitStmt_(const tir::ForNode* op) final {
+    Stmt body = this->VisitStmt(op->body);
+    if (IsNoOp(body)) {
+      return tir::Evaluate(IntImm(DataType::Int(32), 0));
+    }
+    if (body.same_as(op->body)) {
+      return GetRef<Stmt>(op);
+    }
+    return tir::For(op->loop_var, op->min, op->extent, op->kind, body, op->thread_binding,
+                    op->annotations, std::nullopt, op->span);
+  }
+
+  Stmt VisitStmt_(const tir::IfThenElseNode* op) final {
+    Stmt then_case = this->VisitStmt(op->then_case);
+    Stmt else_case = op->else_case.defined() ? this->VisitStmt(op->else_case.value()) : Stmt();
+    const bool then_is_noop = IsNoOp(then_case);
+    const bool else_is_noop = !else_case.defined() || IsNoOp(else_case);
+    if (then_is_noop && else_is_noop) {
+      return tir::Evaluate(IntImm(DataType::Int(32), 0));
+    }
+    if (then_case.same_as(op->then_case) &&
+        ((!op->else_case.defined() && !else_case.defined()) ||
+         (op->else_case.defined() && else_case.same_as(op->else_case.value())))) {
+      return GetRef<Stmt>(op);
+    }
+    return tir::IfThenElse(op->condition, then_case, else_case, op->span);
+  }
+
+  Stmt VisitStmt_(const tir::LetStmtNode* op) final {
+    Stmt body = this->VisitStmt(op->body);
+    if (IsNoOp(body)) {
+      return tir::Evaluate(IntImm(DataType::Int(32), 0));
+    }
+    if (body.same_as(op->body)) {
+      return GetRef<Stmt>(op);
+    }
+    return tir::LetStmt(op->var, op->value, body, op->span);
+  }
+
  private:
   std::string segment_kind_;
+  bool retain_unmarked_stmts_{false};
 };
 
 static ffi::Array<ffi::Any> EncodeRuntimeArgs(const std::vector<KernelArgSpec>& runtime_args) {
@@ -1538,21 +1626,38 @@ static void PopulateBufferMaterializationSpecs(ExecutableSpec* spec) {
 }
 
 static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentInfo& segment) {
-  SegmentBodyExtractor extractor(segment.kind);
+  const bool retain_unmarked_stmts =
+      segment.kind == "compute" || segment.core_type == "trisc";
+  SegmentBodyExtractor extractor(segment.kind, retain_unmarked_stmts);
   tir::PrimFunc segment_func = f;
   segment_func.CopyOnWrite()->body = extractor(f->body);
 
-  auto merge_runtime_args = [](const std::vector<KernelArgSpec>& primary,
-                               const std::vector<KernelArgSpec>& fallback) {
+  auto fallback_arg_allowed = [&](const KernelArgSpec& arg) {
+    if (!IsInputBufferArgKind(arg.kind) && !IsOutputBufferArgKind(arg.kind)) {
+      return true;
+    }
+    if (segment.kind == "reader") {
+      return IsInputBufferArgKind(arg.kind);
+    }
+    if (segment.kind == "writer") {
+      return IsOutputBufferArgKind(arg.kind);
+    }
+    // fused_dataflow and other segment kinds need both input and output buffer args
+    return true;
+  };
+
+  auto select_runtime_args = [](const std::vector<KernelArgSpec>& primary,
+                                const std::vector<KernelArgSpec>& fallback,
+                                const std::function<bool(const KernelArgSpec&)>& allow_fallback) {
+    if (!primary.empty()) {
+      return primary;
+    }
     std::vector<KernelArgSpec> merged;
     std::unordered_set<std::string> seen;
-    for (const auto& arg : primary) {
-      merged.push_back(arg);
-      if (!arg.identity.empty()) {
-        seen.insert(arg.identity);
-      }
-    }
     for (const auto& arg : fallback) {
+      if (!allow_fallback(arg)) {
+        continue;
+      }
       if (!arg.identity.empty() && seen.count(arg.identity)) {
         continue;
       }
@@ -1565,9 +1670,10 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
   };
 
   const std::vector<KernelArgSpec> merged_runtime_args =
-      merge_runtime_args(segment.runtime_args, ExtractRuntimeArgs(f));
+      select_runtime_args(segment.runtime_args, ExtractRuntimeArgs(f), fallback_arg_allowed);
   const std::vector<KernelArgSpec> merged_common_runtime_args =
-      merge_runtime_args(segment.common_runtime_args, ExtractCommonRuntimeArgs(f));
+      select_runtime_args(segment.common_runtime_args, ExtractCommonRuntimeArgs(f),
+                          fallback_arg_allowed);
 
   ffi::Map<ffi::String, ffi::Any> attrs;
   if (f->attrs.defined()) {

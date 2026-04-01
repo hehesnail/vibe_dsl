@@ -118,6 +118,12 @@
 - 当 shared/common-runtime 路径和 per-work 路径都要消费 synchronization metadata 时，不要一边在 shared arg materializer 里解析 semaphore，一边在 per-work materializer 里单独解析 remote core。应先抽统一 synchronization helper/context，再让两条路径复用；否则 P5 一扩 multicast/global semaphore，很快又会长回两套分叉逻辑
 - 如果某类 runtime arg 已经稳定表达成“同一个对象的多个分量”，不要长期只把它们留在 runtime arg 列表里。像 remote worker core 这种 `logical_core_noc_x/y` 成对字段，应该尽快上提成 `KernelSpec` 里的显式 descriptor，再让 runtime arg 只引用 descriptor identity；这样 host/runtime materialization 才不会继续把分量字段本身当真源
 - 当测试或 pass 会把 Blackhole builtins 放进 `IfThenElse` / `LetStmt` / 新 `PrimFunc` 里时，这些 builtin 必须注册正确的 `TCallEffectKind`；否则 TVM 会在 purity / struct-info 校验阶段直接拒绝，表现成控制流重写失败
+- 任何新增的 blackhole builtin，如果携带 cb_id 参数，**必须**在 `PlanBlackholeCB::GetCBArgPositions` 中注册该参数的 position；否则 `PlanBlackholeCB` 的 IR 回写会跳过该 builtin，导致 cb_id 停留在 requirement_index 值。实际案例：`write_local_slice_to_cb` 漏注册 → compute kernel 写错误 CB → writer 永远等不到数据 → runtime hang
+- 对 segment body extraction，当 compute segment 用 `retain_unmarked_stmts_=true` 保留所有未标注语句时，这依赖于 reader/writer 操作都已被 `blackhole.segment_kind` annotation 包裹。如果有未标注的 copy/dataflow 语句，它们会错误地泄漏进 compute kernel
+- `ExtractRuntimeArgs` / `ExtractCommonRuntimeArgs` 在聚合 segment runtime args 时做 dedup，dedup key 必须同时包含 `identity` 和 `kind`（即 `identity:kind`）。`identity` 是分组标识（如同一 remote core 的 x/y 分量），不是唯一标识。只用 `identity` 做 dedup 会丢弃同组内 kind 不同的 arg。实际案例：`logical_core_noc_x/y` 共享 identity `remote_consumer_core`，只用 identity dedup 导致 `_noc_y` 被跳过
+- 对 TT-Metal execution hang，最先用的不是盲目加日志，而是 Watcher。当前仓库环境下，开启 `TT_METAL_WATCHER=2` 后的 watcher 输出默认写到工作目录下的 `generated/watcher/watcher.log`；复现同一 hang 时，稳定不变的 BRISC/NCRISC/TRISC 状态码组合很适合判断“修掉的是局部协议 bug，还是已经推动了死锁边界”
+- 对 `blackhole.acc` 这类 scratch CB，如果结果会被后续 matmul 当输入消费，producer 侧发布页数必须按未来 consumer 的 tile/page 需求来算，而不是按当前 pointwise/cast 自己写了几次就发几页；否则 compute 会在下一次 `mm_init` / `cb_wait_front` 上静默挂死
+- 当 `blackhole.acc` 既承载 scratch storage 又承载 CB 生命周期时，matmul output path 不能再无条件沿用 transport-CB 的 `cb_reserve_back -> pack_tile -> cb_push_back` 模板；是否允许 reserve/push 必须由该输出 scope 的生命周期模型决定
 
 ## Blackhole 后端开发原则
 

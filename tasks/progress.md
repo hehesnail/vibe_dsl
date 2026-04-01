@@ -13,8 +13,8 @@
   - backend cleanup A1/A2/A3、B1/B2/B3、C1/C2 已完成当前计划内收敛
 - **当前活动主线**:
   - flash-attn forward subset：analysis、fragment lowering、dataflow bridging 与 codegen 已接通当前支持面
-  - 当前不再有 compile-path 主 blocker；当前剩余工作转为 runtime/更宽支持面验证
-- **日期**: 2026-03-31
+  - compile/codegen 主 blocker 已进一步收口；当前剩余工作集中在 direct runtime 执行期验证与更宽支持面
+- **日期**: 2026-04-01
 - **相关设计**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
   - `tasks/dev_design/stage4_flash_attention_forward_subset.md`
@@ -44,27 +44,36 @@
 - **当前 codegen 状态**:
   - 上述 fragment builtin 已接入 `codegen_blackhole`
   - `blackhole.acc` 局部符号映射与 `tl.infinity` 相关的 device-only codegen 噪声已收正
+  - `blackhole.acc` 指向 CB 的局部 staging 已改为通过正式 helper 取写指针，不再在 TRISC compute source 里直接物化 `get_local_cb_interface(...).fifo_wr_ptr`
+  - `exp2` 路径大部分已收正到 backend 自有 fast-math helper；部分 `exp2_row_bcast_affine` 形态仍未被 matcher 命中，会回退为原始 TIR `exp2f` call（需继续收敛）
   - full `lower()` 已不再卡在旧的 fragment-subset gate、`Find undefined Variable acc_o`、`tl.infinity` unresolved call、或 `local/accumulator -> shared(CB)` staged copy 残留
 - **当前状态收口**:
   - `CopyDirection::kLocalToCB` 已接入 `LowerBlackholeOps`
   - `local/accumulator -> shared(CB)` staged copy 已 lower 成 `tl.blackhole.write_local_slice_to_cb`
   - 当前支持的 MHA/GQA forward compile-path 已打通
+  - `AssignBlackholeCores` / direct runtime 的 core-plan 协议已收正到连续 logical worker grid：当前环境为 `11 x 10 = 110` worker cores
   - copy 正式主链已去掉 `input0/output0` 默认 runtime-arg fallback；缺 schema 现在在 `rt_mod_blackhole` build-time 显式失败
+- **已修复的 runtime blocker**:
+  - `PlanBlackholeCB::GetCBArgPositions` 漏掉 `write_local_slice_to_cb` → CB ID 未回写 → runtime hang（已修复）
+  - `ExtractRuntimeArgs` identity dedup key 过于激进（`arg.identity` 而非 `arg.identity:arg.kind`），导致 `logical_core_noc_x/y` 同 identity 的第二个 arg 被丢弃（已修复）
+  - `MakeSegmentPrimFunc` 的 `fallback_arg_allowed` 对 `fused_dataflow` 返回 `false`，过滤掉所有 buffer args（已修复）
+  - `cast_fragment_slice` 写出的 `blackhole.acc` scratch CB 若会被后续 matmul 当输入消费，之前没有按未来 matmul 所需页数 `cb_push_back` → 第二次 matmul 永远等不到完整输入页（已修复）
+  - `GenerateMatmulSequence` 之前会对 `blackhole.acc` GEMM 输出 CB 在 `pack_tile` 前重复 `cb_reserve_back`，破坏已持有 scratch CB 的生命周期（已修复）
 - **下一步**:
-  - 在当前环境继续补 runtime / direct-path 验证
+  - 在当前环境继续收敛 flash-attn runtime hang，定位 direct runtime 执行期同步/CB/dataflow blocker
   - 继续扩更宽 flash-attn forward 支持面与 P4/P5 主项
-  - flash-attn runtime 回归入口已建立：`test_blackhole_flash_attention_runtime.py` 当前 `1 passed, 2 skipped`
+  - flash-attn runtime 回归入口已建立；compile/build blocker 已显著减少，但 `test_blackhole_flash_attention_runtime.py -k mha` 当前会在 workload enqueue 之后卡住，尚未通过精度对比
+  - 当前 Watcher 仍稳定复现同一组执行期死锁签名：reader `CRBW`、writer `CWFW`、compute `MWDD`；说明问题已进一步收敛到 execution-time CB/synchronization 协议，而不是 compile/codegen 层
 
 ### 最新回归结果（当前环境）
 
 | 测试 | 结果 |
 |------|------|
-| `test_blackhole_flash_attention_analysis.py` | 7 passed |
-| `test_blackhole_flash_attention_pipeline.py` | 16 passed |
-| `test_blackhole_flash_attention_runtime.py` | 1 passed, 2 skipped |
-| `test_blackhole_copy_pipeline.py` | 30 passed, 6 skipped, 1 xfailed |
+| `test_blackhole_flash_attention_pipeline.py` | 新增 `acc_s_cast` 发布与 `blackhole.acc` GEMM 输出不重复 reserve 回归，当前通过 |
+| `test_blackhole_flash_attention_runtime.py` | 运行时主流程已推进到 workload enqueue / execution 阶段；`-k mha` 当前仍 hang，Watcher 复现 reader `CRBW` / writer `CWFW` / compute `MWDD`，精度对比未通过 |
+| `test_blackhole_copy_pipeline.py` | 40 passed, 10 skipped, 1 xfailed |
 | `test_blackhole_copy_runtime.py` | 2 passed, 9 skipped |
-| `test_blackhole_gemm.py` | 21 passed, 10 skipped |
+| `test_blackhole_gemm.py` | 24 passed, 11 skipped |
 | `test_blackhole_tvm_ffi_export.py` | 1 passed |
 
 ### 已验证 full-env 结果

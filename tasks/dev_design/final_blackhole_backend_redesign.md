@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档ID**: `final_blackhole_backend_redesign`
-- **日期**: 2026-03-19（创建），2026-03-31（最近更新）
+- **日期**: 2026-03-19（创建），2026-04-01（最近更新）
 - **状态**: 当前唯一权威总体设计
 - **适用范围**: `tilelang_repo` Blackhole 后端、host/device 主链、运行时执行路径、相关阶段设计
 
@@ -24,7 +24,7 @@ Blackhole 后端当前的正式目标收敛为三点：
 
 作为正式目标。
 
-## 2. 当前状态（2026-03-31）
+## 2. 当前状态（2026-04-01）
 
 ### 已完成
 
@@ -58,7 +58,11 @@ Blackhole 后端当前的正式目标收敛为三点：
   - 方向已收敛为：以 `mha_fwd_bshd` / `gqa_fwd_bshd` 为牵引，补齐通用 work decomposition / fragment compute region / pipelined staging 三类分析与 lowering 能力，并坚持 “IR 优先、spec 最小化”
   - 当前 `AnalyzeBlackholeWorkDecomposition` / `AnalyzeBlackholeFragmentRegions` / `AnalyzeBlackholePipelineStages` 已接入 Blackhole 主链，`lower()` 的 Blackhole device 入口也已收正为 entry `PrimFunc` 先进入 `SplitBlackholeKernel` 后的 analysis/lowering 管线
   - `reduce_row / row_broadcast / fill / scalar_max / cast_fragment_slice / local_to_cb staging` 等最小 fragment/dataflow 子集已进入真实 lowering 与 codegen 主链
-  - 当前支持的 MHA/GQA forward compile-path 已打通；剩余工作转为 runtime 验证与更宽支持面，而不是旧的 fragment-subset fail-fast 或 `local/accumulator -> shared(CB)` 残留
+  - `exp2` 路径大部分已收正为 backend 自有 fast-math helper；但仍有部分 `exp2_row_bcast_affine` 形态未命中 matcher，会回退成原始 `exp2f` call，需继续收敛
+  - `AssignBlackholeCores` / direct runtime 的 core-plan 协议已收正到连续 logical worker grid；当前环境按 `11 x 10 = 110` worker cores formalize
+  - 当前支持的 MHA/GQA forward compile-path 已打通；runtime 也已越过旧的 fragment-subset fail-fast、`local/accumulator -> shared(CB)` 残留、TRISC math link 和 core lookup blocker
+  - `cast_fragment_slice -> blackhole.acc` 这类会被后续 matmul 继续消费的 scratch 结果，必须按未来 matmul 所需页数正式 `cb_push_back`；`GenerateMatmulSequence` 也不能再对同一 `blackhole.acc` 输出 CB 重复 `cb_reserve_back`
+  - 当前剩余主 blocker 已前移到 direct runtime 执行期：flash-attn `mha` case 在 workload enqueue 之后出现 hang，Watcher 仍稳定复现 reader `CRBW`、writer `CWFW`、compute `MWDD`，说明后续重点是执行期同步/CB/dataflow 协议验证，而不是 compile-path 补洞
 
 ## 3. 正式架构
 
@@ -199,6 +203,27 @@ TileLang DSL
 - 生命周期与复用
 - per-core L1 峰值约束
 - requirement_index → cb_id 映射（`cb_bindings` 以 `requirement_index` 为主键）
+
+**CB ID 回写协议约束**：
+
+- 任何新增的 blackhole builtin，若包含 cb_id 参数，**必须**在 `GetCBArgPositions` 中注册该参数的 position
+- `PlanBlackholeCB` 在回写完成后应做 post-condition 校验：遍历所有 blackhole builtin 的 IntImm 参数，确认不存在残留的 requirement_index 值落在合法 cb_id 范围之外
+- 教训：`write_local_slice_to_cb` 因漏注册导致 cb_id 未被回写，runtime 读写了错误的 CB，引发 hang
+
+**CB 分配策略**：
+
+- input CB: 0-7（`kInputCBStart` ~ `kInputCBEnd`）
+- compute/output/intermediate CB: 16-31（`kOutputCBStart` ~ `kOutputCBEnd`），kOutput 与 kIntermediate 共享此池
+- spill: 32+（仅当 16-31 耗尽时）
+- TRISC compute kernel 只能访问 0-31 范围的 CB；fragment scratch CB 必须落在此范围内
+- flash-attn forward 当前使用 12 CB，16-slot compute 池仍有余量，但后续更复杂 kernel 需关注池压力
+
+**CB-as-fragment-scratch 模式**：
+
+- fragment state（`acc_o`、`scores_max`、`logsum` 等）在 TRISC compute kernel 中通过 CB interface 访问 L1 内存
+- 这类 CB 在 `cb_reserve_back` 后长期持有，整个 compute 循环不做 push/pop，直到最终写回 output CB
+- 这与 transport CB（reader push → compute pop → compute push → writer pop 的 FIFO 协议）语义不同
+- 当 `PlanBlackholeCB` 升级到真正的 memory planner 时，必须区分这两类 CB 的 lifetime 和 reuse 策略
 
 正式边界：
 

@@ -1254,15 +1254,17 @@ static DirectRuntimeWorkContext BuildDirectRuntimeWorkContext(const KernelSpec& 
                                                              const ExecutableSpec& spec,
                                                              uint32_t current_work_linear_id) {
   DirectRuntimeWorkContext context;
-  context.num_k_tiles = GetRuntimeNumKTiles(spec);
   context.logical_grid_x = GetRuntimeLogicalGridX(spec);
-  context.logical_n_tiles = GetRuntimeLogicalNTiles(spec);
   context.work_linear_id = current_work_linear_id;
   context.bx = context.logical_grid_x == 0 ? 0 : (context.work_linear_id % context.logical_grid_x);
   context.by = context.logical_grid_x == 0 ? 0 : (context.work_linear_id / context.logical_grid_x);
   const auto compute_contract = GetComputeContract(spec);
   context.has_gemm_compute_contract =
       compute_contract.enabled && compute_contract.kind == "gemm";
+  if (context.has_gemm_compute_contract) {
+    context.num_k_tiles = GetRuntimeNumKTiles(spec);
+    context.logical_n_tiles = GetRuntimeLogicalNTiles(spec);
+  }
   return context;
 }
 
@@ -1545,8 +1547,6 @@ void BlackholeModuleNode::ExecuteDirect(
   }
 
   const std::vector<DirectWorkItem> work_items = BuildDirectWorkItems(spec, func_name);
-  const std::vector<CoreCoord> launch_cores = BuildDirectLaunchCores(work_items, func_name);
-  const CoreRangeSet launch_core_ranges(launch_cores);
 
   // Keep direct execution hermetic per call. Reusing a persistent MeshDevice across
   // multiple Python direct-call tests can leave simulator/device state behind and
@@ -1560,6 +1560,9 @@ void BlackholeModuleNode::ExecuteDirect(
   }
   ICHECK(mesh_device != nullptr);
   LOG(INFO) << "Blackhole device initialized successfully";
+
+  const std::vector<CoreCoord> launch_cores = BuildDirectLaunchCores(work_items, func_name);
+  const CoreRangeSet launch_core_ranges(launch_cores);
 
   distributed::MeshCommandQueue& cq = mesh_device->mesh_command_queue();
 
@@ -1629,14 +1632,30 @@ void BlackholeModuleNode::ExecuteDirect(
 
 void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
                                        void** void_args) const {
-  // Classify buffer args as input or output using runtime_args kind info.
-  // runtime_args lists buffer-role entries in the same order they appear in
-  // tvm_is_buffer_arg, interleaved with non-buffer entries that are skipped.
+  auto normalize_buffer_name = [](std::string name) {
+    constexpr const char* kHandleSuffix = "_handle";
+    if (name.size() > std::strlen(kHandleSuffix) &&
+        name.compare(name.size() - std::strlen(kHandleSuffix), std::strlen(kHandleSuffix),
+                     kHandleSuffix) == 0) {
+      name.resize(name.size() - std::strlen(kHandleSuffix));
+    }
+    return name;
+  };
+
+  // Prefer explicit schema-derived name->role bindings. Positional fallback remains only for
+  // legacy paths that do not materialize buffer names in runtime_args.
+  std::unordered_map<std::string, bool> buffer_is_output_by_name;
   std::vector<bool> buffer_is_output;
   for (const auto& arg : info_.runtime_args) {
     if (arg.kind == "input_buffer_addr32" || arg.kind == "input_buffer_addr") {
+      if (!arg.buffer.empty()) {
+        buffer_is_output_by_name.emplace(normalize_buffer_name(arg.buffer), false);
+      }
       buffer_is_output.push_back(false);
     } else if (arg.kind == "output_buffer_addr32" || arg.kind == "output_buffer_addr") {
+      if (!arg.buffer.empty()) {
+        buffer_is_output_by_name.emplace(normalize_buffer_name(arg.buffer), true);
+      }
       buffer_is_output.push_back(true);
     }
   }
@@ -1656,16 +1675,23 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
   for (size_t i = 0; i < info_.tvm_arg_types.size(); ++i) {
     if (info_.tvm_is_buffer_arg[i]) {
       DLTensor* tensor = ExtractTensorArg(args[i], void_args != nullptr ? void_args[i] : nullptr);
-      bool is_out = use_position_fallback
-          ? (buf_idx == n_buffer_args - 1)
-          : (buf_idx < buffer_is_output.size() && buffer_is_output[buf_idx]);
       const std::string buffer_name =
           (i < info_.tvm_arg_names.size() && !info_.tvm_arg_names[i].empty())
               ? info_.tvm_arg_names[i]
               : ("arg" + std::to_string(i));
-      buffer_args.push_back(RuntimeTensorBinding{buffer_name, tensor, is_out});
+      const std::string normalized_buffer_name = normalize_buffer_name(buffer_name);
+      auto role_it = buffer_is_output_by_name.find(normalized_buffer_name);
+      bool is_out = false;
+      if (role_it != buffer_is_output_by_name.end()) {
+        is_out = role_it->second;
+      } else {
+        is_out = use_position_fallback
+                     ? (buf_idx == n_buffer_args - 1)
+                     : (buf_idx < buffer_is_output.size() && buffer_is_output[buf_idx]);
+      }
+      buffer_args.push_back(RuntimeTensorBinding{normalized_buffer_name, tensor, is_out});
       if (is_out) {
-        output_names.push_back(buffer_name);
+        output_names.push_back(normalized_buffer_name);
       }
       ++buf_idx;
     } else {

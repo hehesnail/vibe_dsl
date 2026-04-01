@@ -276,11 +276,19 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
                         int args_config_bits,
                         int transport_page_size_bytes = 0);
 
+  std::string ResolveAccessorSegmentKind(CopyDirection direction) const;
+
   /*! \brief Return compile-time accessor slot for a reader/source buffer */
-  int GetReadAccessorSlot(const tvm::tir::Buffer& buffer, CopyDirection direction) const;
+  int GetReadAccessorSlot(const std::string& segment_kind, const tvm::tir::Buffer& buffer,
+                          CopyDirection direction);
 
   /*! \brief Return compile-time accessor slot for a writer/destination buffer */
-  int GetWriteAccessorSlot(const tvm::tir::Buffer& buffer, CopyDirection direction) const;
+  int GetWriteAccessorSlot(const std::string& segment_kind, const tvm::tir::Buffer& buffer,
+                           CopyDirection direction);
+
+  int GetOrAllocateSegmentAccessorSlot(std::unordered_map<std::string, int>* slot_map,
+                                       const std::string& segment_kind,
+                                       const tvm::tir::Buffer& buffer);
 
   /*! \brief Estimate a copy tile page size for a buffer */
   int EstimateCopyPageSize(const tvm::tir::Buffer& buffer) const;
@@ -337,13 +345,21 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   bool MatchGroupedScalarMaxLoop(const tvm::tir::ForNode* op, ScalarMaxMatch* match) const;
   tvm::tir::Stmt GenerateScalarMaxSequence(const ScalarMaxMatch& match);
   bool MatchDirectFragmentCast(const tvm::tir::ForNode* op, FragmentCastMatch* match) const;
-  tvm::tir::Stmt GenerateFragmentCastSequence(const FragmentCastMatch& match);
+  tvm::tir::Stmt GenerateFragmentCastSequence(const FragmentCastMatch& match,
+                                              bool publish_cb = false);
+  bool StmtConsumesBufferViaMatmul(const tvm::tir::Stmt& stmt,
+                                   const tvm::tir::Buffer& buffer) const;
+  bool StmtWritesBuffer(const tvm::tir::Stmt& stmt, const tvm::tir::Buffer& buffer) const;
+  bool ShouldPublishFragmentCastResult(const tvm::ffi::Array<tvm::tir::Stmt>& seq,
+                                       size_t start_idx,
+                                       const tvm::tir::Buffer& buffer) const;
   bool MatchDirectLocalToCBSliceLoop(const tvm::tir::ForNode* op, LocalToCBSliceMatch* match) const;
   tvm::tir::Stmt GenerateLocalToCBSliceLoopSequence(const tvm::tir::ForNode* op,
                                                     const LocalToCBSliceMatch& match);
 
   // StmtExprMutator overrides
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;
+  tvm::tir::Stmt VisitStmt_(const tvm::tir::DeclBufferNode* op) override;
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AllocateNode* op) override;
   tvm::tir::Stmt VisitStmt_(const tvm::tir::SeqStmtNode* op) override;
   tvm::tir::Stmt VisitStmt_(const tvm::tir::ForNode* op) override;
@@ -365,6 +381,7 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   std::string gemm_a_buffer_name_;
   std::string gemm_b_buffer_name_;
   std::string gemm_c_buffer_name_;
+  std::string gemm_c_scope_;
   bool gemm_has_mbarrier_ = false;
   std::string gemm_mbarrier_buffer_name_;
   std::string gemm_mbarrier_scope_;
@@ -392,7 +409,13 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   tvm::ffi::Array<tvm::Integer> copy_output_shape_;
   tvm::ffi::Array<tvm::Integer> copy_intermediate_shape_;
   std::unordered_set<const tvm::tir::VarNode*> thread_index_vars_;
+  std::unordered_set<std::string> thread_index_var_names_;
   std::vector<AccessorDescriptor> accessor_descriptors_;
+  std::string current_segment_kind_;
+  std::unordered_map<std::string, int> read_accessor_slots_;
+  std::unordered_map<std::string, int> write_accessor_slots_;
+  std::unordered_set<std::string> cb_consumed_fragment_data_names_;
+  std::unordered_map<std::string, int> cb_consumed_fragment_pages_by_data_name_;
 
   // Requirement index counter (sequential, 0-based)
   int next_requirement_index_ = 0;

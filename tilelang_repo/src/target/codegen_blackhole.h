@@ -208,6 +208,8 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_map<std::string, std::string> runtime_arg_vars_by_name_;
   std::unordered_map<int, int> cb_page_size_by_id_;
   std::unordered_map<int, int> cb_num_pages_by_id_;
+  std::unordered_map<std::string, int> cb_id_by_requirement_name_;
+  std::unordered_map<std::string, int> cb_num_pages_by_requirement_name_;
   int logical_grid_x_{1};
   int logical_grid_y_{1};
   std::string linearization_{"row_major"};

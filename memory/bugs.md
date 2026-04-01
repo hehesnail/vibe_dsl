@@ -4,6 +4,21 @@
 
 ## 未解决
 
+### flash-attention `mha` direct runtime 在 enqueue 后仍 hang，当前死锁签名稳定收敛到 execution-time CB/synchronization 协议
+
+- **时间**: 2026-04-01
+- **问题**: 在修掉 `write_local_slice_to_cb` CB ID 回写、runtime arg dedup、`fused_dataflow` buffer args 过滤、`cast_fragment_slice` 漏发页数、以及 `blackhole.acc` GEMM 输出重复 reserve 后，`test_blackhole_flash_attention_runtime.py -k mha_forward_direct_runtime` 仍会在 workload enqueue 后 hang
+- **当前现象**:
+  - direct runtime 已能 build、launch，并进入 workload execution
+  - TT-Metal Watcher 当前稳定复现同一组状态码：reader `CRBW`、writer `CWFW`、compute `MWDD`
+  - 说明当前剩余 blocker 已经不是 compile/codegen/build-time 层，而是 execution-time 的同步/CB/dataflow 协议
+- **当前推断**:
+  - `blackhole.acc` 当前仍混合承担 fragment scratch 与 CB queue 两类语义
+  - 虽然已修掉两个局部协议错误，但完整 reserve/publish/wait/consume 时序可能仍与 TT-Metal 对 compute-local scratch/CB 生命周期的期望不一致
+- **下一步方向**:
+  - 继续沿 `acc_s / acc_s_cast / acc_o` 等 scratch CB 做完整生产-消费时序核对
+  - 结合 Watcher / waypoints，把 hang 从“某个 kernel 没返回”缩到“compute 的具体阶段没推进”
+
 ### Blackhole direct path 缺少 TT-Metal 正式 contract 分层
 
 - **时间**: 2026-03-26
@@ -46,6 +61,111 @@
   - 当 direct path 还没覆盖更宽执行面时，应把边界收成 schema/lowering fail-fast，而不是把用户带到 runtime 才撞底层地址错误
 
 ## 已解决（仍有复用价值）
+
+### `cast_fragment_slice` 若把 `blackhole.acc` 结果写到后续 matmul 输入 CB，却不按未来 matmul 需求 `cb_push_back`，compute 会在第二次 matmul 前挂死
+
+- **时间**: 2026-04-01
+- **问题**: flash-attention compute source 里，`acc_s_cast` 这类由 `cast_fragment_slice` 产出的 `blackhole.acc` scratch 结果会被后续第二次 matmul 继续消费；旧 lowering 只做了写入，没有按 future matmul 所需页数正式发布到 CB 生命周期
+- **根本原因**:
+  - `cast_fragment_slice` 之前只被看成局部 pointwise/cast 结果，没有把“后续仍会被 matmul 作为 CB 输入消费”这层生命周期一起编码
+  - 结果 compute source 会在第二次 `mm_init` 前缺少对应的 `cb_push_back`
+  - consumer 侧等待不到完整页数，最终表现成 execution hang
+- **解决**:
+  - `LowerBlackholeOps` 预扫描 future matmul consumer，记录 `blackhole.acc` data name 到所需页数
+  - 对会被 future matmul 消费的 fragment cast 结果，`GenerateFragmentCastSequence` 按该页数正式 `cb_push_back`
+  - 新增 compute-source 回归，要求 `acc_s_cast` 在第二次 matmul 前发布 4 页
+- **教训**:
+  - scratch CB 的生产者不只要“写进去”，还要按未来消费者的协议“正式发布出去”
+  - 当 pointwise/fragment 结果继续进入 matmul 时，生命周期应该按 matmul input CB 看，而不是按 pointwise op 自己的局部语义看
+
+### `GenerateMatmulSequence` 若对 `blackhole.acc` GEMM 输出沿用 transport-CB 模板重复 reserve，会破坏 scratch CB 生命周期
+
+- **时间**: 2026-04-01
+- **问题**: flash-attention compute source 里，`acc_s` / `acc_o` 这类 `blackhole.acc` GEMM 输出 CB 在 `pack_tile` 前又被 `cb_reserve_back` 一次，和已经持有的 scratch CB 生命周期冲突
+- **根本原因**:
+  - 旧 `GenerateMatmulSequence` 无条件沿用普通 transport/output CB 模式
+  - 但 `blackhole.acc` 输出在 flash-attn 里本质上是 compute-local scratch，和 reader->compute->writer 的 FIFO output CB 不是同一类资源
+  - 在这种 scope 上重复 reserve，会把 scratch storage 和 queue 生命周期混成两套互相冲突的协议
+- **解决**:
+  - matmul lowering 在识别 GEMM 输出 scope 为 `blackhole.acc` 时，不再在 `pack_tile` 前重复 `cb_reserve_back`
+  - 新增 compute-source 回归，要求 `blackhole.acc` GEMM 输出前不再出现重复 reserve
+- **教训**:
+  - 不能把 transport CB 的模板机械套到 scratch CB 上
+  - 同一个 CB id 若同时承担 storage 与 queue 语义，必须先明确哪一套生命周期才是真协议，再决定是否 reserve/push
+
+### Blackhole TRISC compute source 若漏接最终 `exp2f` 形态，会把 libc/newlib math 依赖重新带回 device link
+
+- **时间**: 2026-04-01
+- **问题**: flash-attention forward 的 compile/codegen 主链已经把 `exp2` 相关 fragment builtin 接上后，compute kernel 仍可能在最终 source 中残留 `exp2f(...)`，随后在 TT-Metal TRISC link 阶段触发额外 libc/newlib math 依赖，表现成 RW segment 膨胀或链接失败
+- **根本原因**:
+  - `tir.exp2` 在前段不一定以同一种形态走到最终 codegen
+  - 即使 IR 级别已经是 builtin 或 affine helper，最终仍可能在 `codegen_blackhole` 末端回退成 `T.call_pure_extern("exp2f", ...)` / `T.call_extern("exp2f", ...)`
+  - 如果 backend 只拦截早期 `tir.exp2` 形态，而漏掉最终 `exp2f` 形态，TRISC source 就会重新显式引用 libc math
+- **解决**:
+  - `codegen_blackhole` 统一拦截 `tir.exp2`、`call_pure_extern("exp2f", ...)`、`call_extern("exp2f", ...)`
+  - backend 内部统一走自带 fast-math helper，而不是继续把 `exp2f` 发给 device toolchain
+  - 新增 compute-source 回归，要求 flash-attn compute source 不得再出现直接 `exp2f` / `std::exp2`
+- **教训**:
+  - 对 device math builtin，codegen 不能只看“理想 IR 形态”；还要覆盖最终可能落到打印器的外部调用形态
+  - 一旦 TRISC link 开始报 RW segment / libc 相关问题，优先检查最终 emitted source 是否重新漏出了标准库 math 调用
+
+### `AssignBlackholeCores` 若继续产出旧的 physical-style 坐标，会和 direct runtime 的 logical worker grid contract 冲突
+
+- **时间**: 2026-04-01
+- **问题**: flash-attention runtime 在 compile/codegen 主 blocker 去掉后，direct runtime 先后暴露 `No core coordinate found at location: (14, 2, TENSIX, LOGICAL)`、core range 越界和 launch/core 映射错位
+- **根本原因**:
+  - `AssignBlackholeCores` 仍沿用了旧的 `14 x 10` physical-style 坐标直觉
+  - 但当前 direct runtime / TT-Metal worker launch contract 消费的是连续 logical worker grid，而不是物理/NOC 风格坐标
+  - 当 planner 和 runtime 不在同一套 core descriptor 语义上时，问题会先表现成 lookup 失败，进一步又演变成更脏的 launch/runtime 噪声
+- **解决**:
+  - 把 planner/runtime 统一收正到 logical worker grid contract
+  - 当前环境固定为 `11 x 10 = 110` worker cores，`core_idx -> (x, y)` 按连续逻辑坐标线性化
+  - `rt_mod_blackhole` 的 target metadata 也同步改成 `num_cores = 110`
+- **教训**:
+  - `core_plan` 里的 core descriptor 必须明确是“logical worker coords”还是“physical/NOC coords”，不能让 planner/runtime 各自猜
+  - 多核 direct runtime 一旦出现 core lookup / core range 异常，优先检查是不是坐标语义混用了 logical 与 physical 两套系统
+
+### flash-attention runtime 若已越过 compile/launch blocker 仍在 enqueue 后挂住，剩余问题通常已收敛到执行期同步或 CB 协议
+
+- **时间**: 2026-04-01
+- **问题**: 在修掉 flash-attn 的 CB pointer codegen、`exp2f` libc 依赖、以及 core-plan 坐标协议后，`test_blackhole_flash_attention_runtime.py -k mha` 已能完成 build 和 workload enqueue，但执行阶段会长时间卡住，精度对比无法完成
+- **根本原因**:
+  - **已定位**：`PlanBlackholeCB` 的 `GetCBArgPositions` 漏掉了 `tl.blackhole.write_local_slice_to_cb`
+  - 该 builtin 的 cb_id 参数（position 1）没有被回写成最终分配的 cb_id，停留在 requirement_index 值
+  - 表现：compute kernel 里 `cb_reserve_back(24, 16)` / `cb_push_back(24, 16)` 操作 CB 24（正确），但 `write_local_slice_to_cb` 通过 `get_local_cb_interface(11)` 写 CB 11（错误的 requirement_index）
+  - writer kernel `cb_wait_front(24, ...)` 等待 CB 24 的数据永远等不到 → hang
+  - 更广泛的根因是 CB ID 回写协议依赖手动枚举，新增 builtin 容易遗漏
+- **解决**:
+  - 在 `GetCBArgPositions` 中注册 `write_local_slice_to_cb` 的 cb_id position
+  - 在 `PlanBlackholeCB` 回写后新增 post-condition 校验，防止未来再遗漏
+- **状态**: **已修复** (2026-04-01)
+- **教训**:
+  - 当 runtime 已经能进入 enqueue/execution，却只表现为 hang，应该把排查焦点转到执行期同步与 CB 协议，而不是继续在 compile-path 上堆 workaround
+  - CB ID 回写是 “add new builtin → must register” 的协议约束，单靠手动枚举不够安全；需要 post-condition guard
+  - 这类进展要明确记录成”问题层级前移”，否则容易误判成仍停留在旧 blocker
+
+### `ExtractRuntimeArgs` identity dedup 过于激进，会丢弃同 identity 不同 kind 的 runtime arg
+
+- **时间**: 2026-04-01
+- **问题**: `test_blackhole_copy_remote_core_descriptor_is_materialized` 失败，`BlackholeModuleNode` 构造时报 “remote_consumer_core must define both logical_core_noc_x and logical_core_noc_y”
+- **根本原因**:
+  - `ExtractRuntimeArgs` 在聚合 segment runtime args 时用 `arg.identity` 作为 dedup key
+  - `logical_core_noc_x` 和 `logical_core_noc_y` 共享 identity `”remote_consumer_core”` 但 kind 不同
+  - dedup 导致第二个 arg 被跳过，只保留了 `_noc_x`，`_noc_y` 丢失
+  - 此 bug 在 commit `3fb1f37` 引入：把 dedup key 从 `arg.kind + “:” + arg.name` 改成了 `arg.identity`
+- **解决**: 将 dedup key 改为 `arg.identity + “:” + arg.kind`，同时修 `ExtractCommonRuntimeArgs`
+- **状态**: **已修复** (2026-04-01)
+- **教训**: identity 是分组标识（同一个 remote core 的 x/y），不是唯一标识。dedup key 必须包含 kind 才能区分同组内的不同角色
+
+### `MakeSegmentPrimFunc` fallback_arg_allowed 对 fused_dataflow 过滤掉所有 buffer args
+
+- **时间**: 2026-04-01
+- **问题**: copy pipeline 回归失败，报 “Missing runtime arg binding for buffer var: A”
+- **根本原因**:
+  - `fallback_arg_allowed` 在 `fused_dataflow` segment kind 下之前的默认返回值为 `false`
+  - 这导致所有 input/output buffer args 都被过滤掉，fused_dataflow kernel 拿不到任何 buffer 绑定
+- **解决**: 将默认返回值改为 `true`，fused_dataflow 和其他 segment kind 同时需要 input 和 output buffer args
+- **状态**: **已修复** (2026-04-01)
 
 ### flash-attention forward 的 `local/accumulator -> shared(CB)` staged copy 若不进入正式 copy direction，会把真实 blocker晚报成 residual shared store
 

@@ -3,8 +3,8 @@
 ## 基本信息
 
 - **文档ID**: `stage4_flash_attention_forward_subset`
-- **日期**: 2026-03-31
-- **状态**: 活动中（analysis 与当前支持面的 compile-path 已打通）
+- **日期**: 2026-03-31（创建），2026-04-01（最近更新）
+- **状态**: 活动中（analysis 与当前支持面的 compile-path 已打通，当前主 blocker 为 direct runtime execution hang）
 - **范围**: `tilelang_repo/examples/flash_attention/example_mha_fwd_bshd.py` 与 `example_gqa_fwd_bshd.py` 的前向完整语义；不包含 backward、varlen、wgmma
 
 ## 1. 目标
@@ -29,6 +29,10 @@
 - `codegen_blackhole` 已接上当前最小 fragment/dataflow builtin 子集
 - `local/accumulator -> shared(CB)` staged copy 已经 lower 成正式 builtin
 - 当前支持的 MHA/GQA forward compile-path 已打通；剩余工作是 runtime 验证与更宽支持面
+- 当前又收掉了两类执行期协议问题：
+  - `cast_fragment_slice` 写入的 `blackhole.acc` scratch CB 若会被后续 matmul 读取，必须按未来 matmul 所需页数 `cb_push_back`
+  - `blackhole.acc` 作为 GEMM 输出时，compute 侧不能在 `pack_tile` 前对同一输出 CB 重复 `cb_reserve_back`
+- direct runtime `mha` 现已能走到 workload enqueue / execution，但仍会 hang；Watcher 当前稳定复现 reader `CRBW`、writer `CWFW`、compute `MWDD`
 
 ## 2. 非目标
 
@@ -225,6 +229,13 @@ split 后的目标不是重新理解 attention，而是消费通用 analysis pas
 - 允许在一条正式主链内通过多 kernel role / 多 segment 完成
 - 不引入 GPU / WGMMA 心智
 
+### 9.1 当前 runtime 收敛结论
+
+- compile/codegen 主 blocker 已进一步减少，当前剩余主问题在 execution-time 协议
+- `blackhole.acc` 当前同时承担 fragment scratch 与 CB queue 两类语义；虽然已经修掉了“漏发页数”和“重复 reserve”两类问题，但运行时 hang 说明其完整生产/消费时序仍未完全对齐
+- 当前最有价值的调试手段仍是 TT-Metal Watcher；本仓库下的 watcher 输出当前默认落在 `generated/watcher/watcher.log`
+- 现阶段最该优先核对的是 `acc_s / acc_s_cast / acc_o` 这一组 scratch CB 的 reserve / publish / wait / consume 全时序，而不是回头继续扩大 compile-path 特判
+
 这意味着 legality 需要成为正式设计的一部分，而不是失败时再由后段临时拒绝。
 
 ## 10. 现有 schema 的收缩建议
@@ -269,13 +280,23 @@ split 后的目标不是重新理解 attention，而是消费通用 analysis pas
 
 ## 12. 当前剩余主 blocker
 
-当前不是 analysis、schema、或 pointwise fragment 子集本身在卡住主线。  
-当前最真实的剩余点是：
+`local/accumulator -> shared(CB)` staged copy 已 lower 成 `tl.blackhole.write_local_slice_to_cb`，compile-path 不再卡在 residual shared store。
 
-- 优化后 device IR 里仍残留 `O_shared_1[tx, ...] = O_shared_local_cast[...]` 这类二维 `BufferStore`
-- 其语义本质是 `local/accumulator -> shared(CB)` staged copy
-- 这条方向还没有被 `LowerBlackholeOps` 正式 lower 成 Blackhole dataflow primitive
-- 因此 full path 目前仍会晚到 shared 非扁平 store 失败
+当前剩余点集中在 **runtime 执行期**：
+
+1. **execution-time scratch/CB 生命周期仍未完全一致**：`acc_s / acc_s_cast / acc_o` 这类 `blackhole.acc` scratch 结果虽然已经修掉了“漏发页数”和“重复 reserve”两类局部协议错误，但 runtime 仍 hang，说明 reserve / publish / wait / consume 全时序还没有完全对齐
+2. **residual `exp2f`**：部分 `exp2_row_bcast_affine` 形态未被 matcher 命中，回退成原始 TIR `exp2f` call；这块已经不是当前唯一主 blocker，但仍是需要继续收口的 compile/codegen 风险
+3. **Watcher 已能稳定收敛死锁形态**：reader `CRBW`、writer `CWFW`、compute `MWDD`。后续调试重点应继续沿 execution-time CB/synchronization 协议缩小，而不是回头扩大 compile-path 特判
+
+## 12.1 已发现的设计约束
+
+### CB-as-fragment-scratch
+
+flash-attn compute kernel 中 fragment state（`acc_o`、`scores_max`、`logsum` 等）通过 CB interface 访问 L1，而非 FIFO push/pop 协议。这是 TRISC 访问 L1 的正确方式，但与 transport CB 的 FIFO 语义不同。详见 `final_blackhole_backend_redesign.md` 中 PlanBlackholeCB 段落。
+
+### kIntermediate CB 池变更
+
+fragment scratch CB 必须在 16-31 范围内（TRISC 可访问），因此 `kIntermediate` 现与 `kOutput` 共享 16-31 池。flash-attn 当前使用 12 CB。
 
 ## 12. 验证方式
 

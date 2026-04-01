@@ -317,10 +317,10 @@ def test_blackhole_module_direct_call_grid_indexed_copy_worker_semaphore_handsha
     core_plan = device_main.attrs["blackhole.core_plan"]
     producer_core = core_plan["physical_cores"][0]
     consumer_core = core_plan["physical_cores"][1]
-    assert int(producer_core["core_x"]) == 1
-    assert int(producer_core["core_y"]) == 2
-    assert int(consumer_core["core_x"]) == 2
-    assert int(consumer_core["core_y"]) == 2
+    assert int(producer_core["core_x"]) == 0
+    assert int(producer_core["core_y"]) == 0
+    assert int(consumer_core["core_x"]) == 1
+    assert int(consumer_core["core_y"]) == 0
 
     runtime_args = list(device_main.attrs["blackhole.runtime_args"])
     runtime_args.extend(
