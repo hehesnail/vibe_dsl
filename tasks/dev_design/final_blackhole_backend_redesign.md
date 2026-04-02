@@ -722,6 +722,178 @@ TileLang DSL / Python examples
 - `ValidateTTTargetProgram`
 - `MaterializeTTExecutableSpec`
 
+#### 5.3.5 以 flash-attn forward 为例的端到端对接
+
+为了避免三层 IR 停留在抽象口号，下面用当前最关键的 flash-attn forward 子集说明每层到底接什么、产什么。
+
+**A. 输入到 `Semantic Recovery` 的事实**
+
+当前从 TIR 与 `AnalyzeBlackhole*` 至少可以恢复出以下事实：
+
+- 存在以 `Q x K^T` 为核心的 tiled matmul
+- 存在按 row 的 `max / sum / rescale / accumulate` 递推
+- `acc_o`、`scores_max`、`scores_sum/logsum` 是 loop-carried state
+- causal/GQA 变体会给 domain 增加 `bound_expr` 或 `index_remapping`
+- block-sparse/paged/routed 变体会给 domain 增加 `predicate` 或 `index` 来源
+
+**B. `Stateful Semantic IR` 应该长成什么**
+
+在 semantic 层，flash-attn 不是 “reader/compute/writer 三段 kernel”，而是一个带 recurrence 的 attention 算法：
+
+- `Domain`
+  - `q_tile_domain`
+  - `kv_chunk_domain`
+  - 可选 `causal_bound_expr`
+  - 可选 `gqa_index_remapping`
+- `State`
+  - `acc_o : matrix_state(carry)`
+  - `scores_max : vector_state(carry)`
+  - `scores_sum : vector_state(carry)`
+  - `logsum : scalar_state(cross_phase)` 或作为 epilogue 派生结果
+- `Relation`
+  - `scores_max reduced_from qk_scores`
+  - `scores_sum reduced_from exp_scores`
+  - `acc_o carried_across kv_chunk_phase`
+  - `scores_max carried_across kv_chunk_phase`
+  - `scores_sum carried_across kv_chunk_phase`
+- `Phase`
+  - `kv_chunk_phase`
+  - `epilogue_phase`
+- `SemanticRegion`
+  - `qk_matmul`
+  - `row_max_reduce`
+  - `row_sum_reduce`
+  - `rescale_update`
+  - `ov_matmul`
+  - `epilogue_writeback`
+
+这一层的关键是：它已经完整回答了“attention 算法在算什么”，但还没有回答“这些区域如何拆成 task、怎么同步、怎么落到 TT kernel role”。
+
+**C. `Spatial Program IR` 应该长成什么**
+
+在 spatial 层，flash-attn 变成逻辑任务图，而不是 TT 资源图：
+
+- `Task`
+  - `load_q_task`
+  - `stream_k_task`
+  - `stream_v_task`
+  - `attention_step_task`
+  - `store_out_task`
+- `Channel`
+  - `q_tiles`
+  - `k_tiles`
+  - `v_tiles`
+  - `carry_state`
+  - `out_tiles`
+- `Layout`
+  - `q_row_layout`
+  - `kv_chunk_layout`
+  - 可选 `grouped_layout` / `paged_layout`
+- `WorkPartition`
+  - `row_partition`
+  - causal 时可变成 `causal_pair_partition`
+- `SyncEdge`
+  - `load_q_task -> attention_step_task`
+  - `stream_k_task -> attention_step_task`
+  - `stream_v_task -> attention_step_task`
+  - `attention_step_task -> store_out_task`
+- `ResourceIntent`
+  - `transport_buffer(q/k/v)`
+  - `persistent_carry(acc_o/max/sum)`
+  - `output`
+
+这一层的关键是：已经正式定义了 task graph、channel graph、work partition、sync requirements；但仍然没有决定 CB 编号、dst offset、semaphore id、runtime arg slot。
+
+**D. `TT Target IR` 应该长成什么**
+
+在 TT target 层，flash-attn 才正式落成 TT-Metal 可执行 contract：
+
+- `TTKernel`
+  - `reader_qkv`
+  - `compute_attention`
+  - `writer_out`
+- `TTCoreGroup`
+  - `reader_cores`
+  - `compute_cores`
+  - `writer_cores`
+- `TTCBPlan`
+  - transport CB：`q/k/v`
+  - temporary CB：`qk_result / exp_diff`
+  - state CB：需要时承接 `CB-round-trip carry`
+  - output CB
+- `TTDstLayoutPlan`
+  - `acc_o` offset
+  - `scores_max` offset
+  - `scores_sum` offset
+  - `qk_temp` offset
+- `TTSemaphorePlan`
+  - reader -> compute ready
+  - compute -> writer completion
+  - 多核变体下的 multicast / barrier protocol
+- `TTABIPlan`
+  - compile-time tile shape / transpose / pack config
+  - runtime args：tile count、logical row id、kv chunk bounds、buffer base address
+- `TTExecutionPlan`
+  - virtual row partition 到物理 core group 的映射
+  - per-core work packet
+
+这一层的关键是：到这里为止，host/runtime 已经不需要再懂 attention recurrence，也不应该再猜 carry state 该放 dst 还是 CB。
+
+**E. 这条例子体现的分层纪律**
+
+- semantic 层如果没有冻结 `acc_o / scores_max / scores_sum` 的 carry 语义，下游不允许靠 `dst` 或 CB 名字补回来
+- spatial 层如果没有冻结 `task/channel/sync/work partition`，target 层不允许靠 TT kernel 名字现场发明 task graph
+- target 层如果没有冻结 `CB / semaphore / dst layout / ABI`，runtime 不允许靠 host 侧 heuristics 补协议
+
+#### 5.3.6 新架构与当前 pass/模块的映射关系
+
+当前代码不会被一次性推倒；需要把已有 pass 和模块逐步归位到新架构。映射关系如下：
+
+| 当前 pass / 模块 | 在新架构中的正式归属 | 长期命运 | 备注 |
+|------------------|----------------------|----------|------|
+| `AnalyzeBlackholeWorkDecomposition` | `Semantic Recovery` 输入生产者 | 保留并泛化 | 主要产 `Domain / bound_expr / index_remapping` 相关事实 |
+| `AnalyzeBlackholeFragmentRegions` | `Semantic Recovery` 输入生产者 | 保留并泛化 | 主要产 `State / Relation / SemanticRegion` 相关事实 |
+| `AnalyzeBlackholePipelineStages` | `Semantic Recovery` 输入生产者 | 保留并收紧语义 | 主要帮助恢复 `algorithm phase` 与 pipeline 残余信息 |
+| `LowerBlackholeOps` | 当前混合层；未来应拆到 `LowerToSpatialProgram` + `LowerSpatialProgramToTTTarget` | 最终被拆薄或消失 | 现在同时承担语义理解、TT lowering、ABI/schema 提取，正是要被消解的黑洞 |
+| `PlanBlackholeCB` | `TT Target IR` planner 子模块 | 保留但降位 | 未来只做 `ResourceIntent -> TTCBPlan`，不再凭 `cb_requirements` 决定世界 |
+| `AssignBlackholeCores` | `TT Target IR` planner 子模块 | 保留但改职责 | 未来只做 `virtual placement -> TTCoreGroup / TTExecutionPlan` |
+| `rt_mod_blackhole` | `Codegen / Runtime Materialization` | 保留并收边界 | 未来只消费冻结后的 `TTProgram/ExecutableSpec`，不再提取或补协议 |
+| `ExecutableSpec` | `TT Target IR` 的物化结果 | 保留 | 不再是散落 attrs 的二次拼装结果 |
+
+对应到新的 pass 链，目标顺序应为：
+
+```text
+SplitBlackholeKernel
+  -> AnalyzeBlackholeWorkDecomposition
+  -> AnalyzeBlackholeFragmentRegions
+  -> AnalyzeBlackholePipelineStages
+  -> LiftToStatefulSemanticIR
+  -> ValidateStatefulSemanticIR
+  -> LowerToSpatialProgram
+  -> ValidateSpatialProgram
+  -> LowerSpatialProgramToTTTarget
+  -> ValidateTTTargetProgram
+  -> MaterializeTTExecutableSpec
+  -> rt_mod_blackhole
+```
+
+**过渡策略也必须明确**：
+
+1. **Phase A**
+   - 插入 `LiftToStatefulSemanticIR / ValidateStatefulSemanticIR`
+   - 保留 `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores -> rt_mod_blackhole`
+   - 但要求 `LowerBlackholeOps` 优先消费 semantic 真源，而不是继续从普通 loop 猜主语义
+
+2. **Phase B**
+   - 新增 `LowerToSpatialProgram / ValidateSpatialProgram`
+   - 开始把 `task/channel/layout/sync/work partition` 从 `LowerBlackholeOps` 中抽出
+   - `LowerBlackholeOps` 在这一阶段缩成 TT-target helper，而不再是总 lowering 黑洞
+
+3. **Phase C**
+   - 用 `LowerSpatialProgramToTTTarget / ValidateTTTargetProgram / MaterializeTTExecutableSpec` 取代当前散装 target 协议生成
+   - `PlanBlackholeCB` 与 `AssignBlackholeCores` 降为 target planner 子模块
+   - `rt_mod_blackhole` 只做 materialization，不再提取 schema 或兜底解释
+
 ### 5.4 现有 DSL/TIR 与多层 IR 的对接边界
 
 默认路径是：

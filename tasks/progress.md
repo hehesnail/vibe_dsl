@@ -15,6 +15,7 @@
   - flash-attn forward subset：analysis、fragment lowering、dataflow bridging 与 codegen 已接通当前支持面
   - execution hang 已解；当前剩余主工作已收敛为 `blackhole.acc` compute 语义收正、TT-Metal-first tile/CB/dst-reg 主路径迁移、以及更宽支持面
   - 总体架构已重写为多层 compiler-internal IR：`Stateful Semantic IR -> Spatial Program IR -> TT Target IR`；当前代码实现尚未开始，旧 `stateful_tiled_ir` phase 计划已降为新总设计下的 Phase A 历史草案
+  - 总设计已补充各层的目标、输入/输出、冻结事实、validation 职责、层间 handoff contract，以及 flash-attn forward 端到端示例和现有 pass 到新架构的映射表
 - **日期**: 2026-04-02
 - **相关设计**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
