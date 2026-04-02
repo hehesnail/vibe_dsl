@@ -1,10 +1,12 @@
 # Stateful Tiled IR Phase 1 Implementation Plan
 
+> **Status (2026-04-02, superseded as overall architecture):** 这份文档不再代表下一阶段总体架构。当前唯一权威总体设计已改为多层 compiler-internal IR：`Stateful Semantic IR -> Spatial Program IR -> TT Target IR`，见 `tasks/dev_design/final_blackhole_backend_redesign.md`。本文件仅保留为新总设计下 **Phase A（Semantic IR）** 的历史草案与迁移参考，后续如继续执行应先按新总设计重写为对应子计划。除顶部状态说明外，正文中的旧 `Stateful Tiled IR` / `LiftToStatefulTiledIR` / `BlackholeStatefulProgramLowerer` 命名暂未整体回收，阅读时应按“已 supersede 的旧 Phase A 草案”理解。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在尽量不改用户 Python DSL 主体写法的前提下，引入 compiler-internal `Stateful Tiled IR`，并让当前 Blackhole 的 GEMM / online-softmax / flash-attn compute 主链正式迁到这层语义之上。
+**Goal:** 在尽量不改用户 Python DSL 主体写法的前提下，先完成新总设计中 **Phase A: Stateful Semantic IR** 的早期实现草案；本文件原始目标中的单层 `Stateful Tiled IR` 现在应理解为“多层 IR 体系中的语义层草案”，而不再是最终中间层。
 
-**Architecture:** 先在 compiler 内部新增 `Domain / State / Relation / Phase` 四类核心对象（Op kind 延后到 Phase 2）与 `LiftToStatefulTiledIR / ValidateStatefulTiledIR` 两个通用 pass；再把现有 Blackhole analysis pass 的”算法理解”部分前移到这层 IR；最后让 Blackhole target-specific lowering 只消费这层已冻结的语义并映射到 TT-Metal-first `CB / tile / dst-reg / stats-state` 协议。
+**Architecture:** 本文件描述的内容只覆盖新总设计中的语义层草案：先在 compiler 内部新增 `Domain / State / Relation / Phase` 四类核心对象（Op kind 延后到后续阶段）与语义层 `Lift / Validate` pass；`Spatial Program IR` 和 `TT Target IR` 不在本文件内定义。
 
 **Tech Stack:** TileLang Python DSL, TVM PrimFunc/TIR, TVM ObjectRef/ObjectNode, TileLang transform passes, Blackhole lowering/codegen/runtime, pytest, CMake, TT-Sim
 

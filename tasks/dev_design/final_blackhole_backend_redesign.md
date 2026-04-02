@@ -68,7 +68,7 @@ Blackhole 后端当前的正式目标收敛为三点：
     - flash-attn compute 主链以 `CB / tile / dst-reg` 流为正式协议
     - 线性 `fragment` helper 仅保留为过渡层，不再作为 `blackhole.acc` 的长期语义
   - 上游 TIR 对接也需同步收正：Blackhole 后段不再从线性 `BufferLoad/BufferStore` 形态猜 tile 语义；凡是后端无法稳定恢复的 tile contract，必须通过 analysis attrs 或显式 builtin 交付
-  - 这一轮也明确暴露出更上层的 compiler 问题：现有 TileLang/TIR 对 `stateful / routed / phased / segmented tiled program` 的表达能力不足；下一阶段正式方向是在保持 Python DSL 主体写法稳定的前提下，引入 compiler-internal `Stateful Tiled IR`
+  - 这一轮也明确暴露出更上层的 compiler 问题：现有 TileLang/TIR 对 `stateful / routed / phased / segmented tiled program` 的表达能力不足；下一阶段正式方向已重写为 **多层 compiler-internal IR**：`Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
 
 ### TT-Sim 固定验证入口
 
@@ -121,42 +121,77 @@ TileLang DSL
 说明：
 
 - 上述结构描述的是当前已经落地的正式主链
-- 下一阶段不会推翻这条主链，而是在 `PrimFunc / TIR` 与 target-specific plan/lowering 之间插入一层新的 compiler-internal semantic IR，用来结束晚期 target-specific 语义猜测
+- 下一阶段不会推翻这条主链，而是在 `PrimFunc / TIR` 与 target-specific plan/lowering 之间插入多层 compiler-internal IR（`Stateful Semantic IR -> Spatial Program IR -> TT Target IR`），用来结束晚期 target-specific 语义猜测
 
-### 3.2 下一阶段四层编译结构：`Stateful Tiled IR`
+### 3.2 下一阶段多层编译结构：`Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
 
-下一阶段正式方向不是继续在 Blackhole 后段堆 matcher，而是在现有 TileLang/TIR 与 target program lowering 之间引入一层新的内部语义 IR：
+下一阶段正式方向不是继续把复杂度压进单层 `Stateful Tiled IR`，而是在现有 TileLang/TIR 与 TT-Metal target lowering 之间建立一套多层 compiler-internal IR，把算法语义、空间程序结构、目标硬件 contract 明确拆开：
 
 ```text
 TileLang DSL / Python examples
   -> PrimFunc / TIR（保留用户写法、通用 loop/tileop/buffer 结构）
-  -> Semantic Recovery / Lift
-  -> Stateful Tiled IR（算法语义层）
-  -> Target Program Lowering（TT-Metal / CUDA / 其他后端）
+  -> Semantic Recovery
+  -> Stateful Semantic IR
+  -> Semantic Validation
+  -> Spatialization
+  -> Spatial Program IR
+  -> Spatial Validation
+  -> Hardware-Aware Mapping
+  -> TT Target IR
+  -> Target Validation
   -> Codegen / Runtime Materialization
 ```
 
-四层职责固定如下：
+这一分层的设计输入来自四类外部经验，但不会被其中任一工作完整绑定：
+
+- `T2S`：算法语义和空间映射应明确分层
+- `Dato`：`task / channel / layout` 与 `virtual -> physical mapping` 应是一等概念
+- `TL`：hardware representation 和 mapping 是独立编译问题，不是 codegen 细节
+- `SPADA`：routing / synchronization correctness 需要独立 validation，而不是 runtime hang 后再倒查
+
+各层职责固定如下：
 
 1. **PrimFunc / TIR 层**
    - 保留用户程序的自然写法
    - 承接 `loop / alloc / copy / gemm / reduce / pipeline` 等通用结构
    - 不直接暴露 TT-Metal 的 `CB / semaphore / runtime args / kernel role`
 
-2. **Stateful Tiled IR 层**
-   - 统一表达 `stateful / routed / phased / segmented tiled program`
-   - 显式承接 carry/update、tile-state 与 row-state 绑定、routed/paged domain、phase live-in/live-out
+2. **Stateful Semantic IR 层**
+   - 统一表达 `stateful / routed / phased / segmented` 算法语义
+   - 显式承接 carry/update、domain constraints、phase live-in/live-out、selection/scatter/combine 语义
    - 到这一层为止，算法语义恢复必须结束
-   - 注意：当前 Lift 位置在 `SplitBlackholeKernel` 之后，此时 `T.Pipelined` 的 stage 结构和 `T.copy/T.reduce` 的 tile 语义已在 `inject_pipeline` / `LowerTileOp` 阶段丢失，Lift 仍需从压碎后的 TIR + analysis attrs 做 pattern match（见 §8.6 Lift 时机与长期迁移路径）
+   - 这一层回答的是“程序在算什么”，不回答“怎么在 TT 上跑”
 
-3. **Target Program Lowering 层**
-   - 把已明确的算法语义映射成目标硬件协议
-   - 对 TT-Metal/Blackhole 来说，这一层才允许出现 `kernel role / CB / semaphore / compile-time args / runtime args / accessor binding`
-   - 这一层必须包含 **dst register layout planning**（静态分配 tile scratch / stats scratch / matmul accumulator 在 dst 寄存器空间中的 offset）和 **carry strategy 选择**（register-resident carry vs CB-round-trip carry），这两者是生成正确 TT-Metal compute kernel 的前提（见 §8.7）
+3. **Spatial Program IR 层**
+   - 表达空间程序结构：`task / channel / layout / work partition / virtual placement / sync edge / resource intent`
+   - 把算法语义转换成 dataflow/spatial machine 上的逻辑程序
+   - 这一层回答的是“这些语义如何组织成空间任务和通信图”
+   - 这一层仍不出现 TT-specific `CB / semaphore_id / dst offset / runtime arg position`
 
-4. **Codegen / Runtime Materialization 层**
+4. **TT Target IR 层**
+   - 在 TT-Metal hardware model 约束下，把 spatial program 映射成正式 target contract
+   - 这一层才允许出现 `kernel role / CB / semaphore / compile-time args / runtime args / accessor binding`
+   - 这一层必须包含 **dst register layout planning** 和 **carry strategy 选择**（register-resident carry vs CB-round-trip carry）
+   - 这一层回答的是“在 TT-Metal 上具体如何合法、稳定、可执行地落成 host/runtime contract”
+
+5. **Codegen / Runtime Materialization 层**
    - 只负责格式化、装配和执行
    - 不再承担结构推理和语义恢复
+
+关键分层决策表如下：
+
+| 关注点 | 应落在哪一层 | 不应落在哪一层 |
+|--------|--------------|----------------|
+| `carry / combine / phase / routed / segmented / predicate / index_remapping` | `Stateful Semantic IR` | `TT Target IR` / runtime |
+| `task graph / channel / layout / work partition / virtual placement / sync edge` | `Spatial Program IR` | `Stateful Semantic IR` / codegen |
+| `reader / compute / writer`、`CB`、`semaphore`、`dst layout`、`runtime args`、`core placement` | `TT Target IR` | `Stateful Semantic IR` / `Spatial Program IR` |
+| `CreateCircularBuffer / CreateKernel / SetRuntimeArgs` 等 API materialization | `Codegen / Runtime Materialization` | 任一 compiler-internal IR |
+
+等价地说：
+
+- 不允许用 `CB / dst layout / runtime args` 反推 algorithm semantics
+- 不允许把 `task / channel / semaphore` 暴露成 Python DSL 的正式一等概念
+- 不允许让 codegen/runtime 再次承担结构恢复
 
 ### 3.3 设计原则
 
@@ -395,68 +430,78 @@ TileLang DSL / Python examples
 
 旧协议不再扩展。
 
-### 5.3 下一阶段 compiler-internal 语义协议：`Stateful Tiled IR`
+### 5.3 下一阶段 compiler-internal IR 体系：`Stateful Semantic IR / Spatial Program IR / TT Target IR`
 
-`Stateful Tiled IR` 是下一阶段 compiler 内部使用的统一语义层，不直接暴露给 Python 用户，也不直接长成 TT-Metal 的硬件协议。当前 Phase 1 的核心对象是 `Domain / State / Relation / Phase` 四类；`Op` 只作为 Phase 2 的设计预留，不在 Phase 1 固化：
+下一阶段不再把 compiler-internal 抽象收敛成单层 `Stateful Tiled IR`，而是正式采用三层 IR：
 
-1. **`Domain`**
-   - 表达计算迭代域的形态：`dense`、`segmented`、`routed`、`paged`
-   - 回答”这是规则 tile 域，还是按 expert/page/index 重映射后的域”
-   - Domain 必须支持 **constraints / predicates**，不能只靠 kind enum：
-     - `data-dependent bound`：causal attention 的 loop range 依赖 `bx`（如 `T.min(ceildiv(seq_kv, block_N), ceildiv((bx+1)*block_M + past_len, block_N))`）
-     - `masked / predicated`：block sparse attention 的 `block_mask[k] != 0` 筛选
-     - `grouped`：GQA 的 `by // groups` index remapping
-   - 这三种形态出现在最常用的 attention variants 中，不是 exotic case
+1. **`Stateful Semantic IR`**
+   - 只表达算法语义真相，不表达空间程序结构和目标硬件协议
+   - 核心对象：
+     - `Domain`
+     - `State`
+     - `Relation`
+     - `Phase`
+     - `SemanticRegion`
+   - 其中：
+     - `Domain` 表达 `dense / segmented / routed / paged` 与 `bound_expr / predicate / index_remapping`
+     - `State` 表达 `matrix_state / vector_state / scalar_state / index_state` 与 `ephemeral / carry / cross_phase`
+     - `Relation` 表达 `reduced_from / applies_to / indexes / scatters_to / carried_across`
+     - `Phase` 只表达 **algorithm phase**
+     - `SemanticRegion` 表达一段单一语义责任的计算区域（如 `matmul / reduce / normalize / scatter / recurrence`）
+   - 硬约束：
+     - 每个可变对象都必须有明确 `state kind`
+     - 每个 carry/update/merge 都必须显式，不允许继续靠普通 store/load 隐含语义
+     - 每个 gather/scatter/routed access 都必须显式说明 index 来源或 combine 规则
+     - 任何 TT-Metal 特有对象（`CB / semaphore / kernel role / runtime arg`）都不进入这一层
 
-2. **`State`**
-   - 所有可变对象不再统称普通 buffer，而是显式区分 kind：
-     - `matrix_state`（如 `acc_o`，二维 tile 形态）
-     - `vector_state`（如 `scores_max`，一维 row 形态）
-     - `scalar_state`（如 `logsum`）
-     - `index_state`（如 route idx / page idx / selection idx）
-   - 命名使用中性的 `matrix / vector / scalar`，不使用 `tile_state`——“tile” 只在 target lowering 层出现，这样同一份 Stateful Tiled IR 对 CUDA/AMX 等后端仍然成立
-   - selection state machine 在 Phase 1 中先编码为 `index_state + Relation / Phase pattern`，不再单独引入新的 state kind
-   - 每个 state 需带生命周期：`ephemeral`、`carry`、`cross_phase`
-   - carry state 在硬件上有两种实现策略：`register-resident carry`（dst 寄存器长期持有，不 pack/unpack）和 `CB-round-trip carry`（每次迭代 pack/unpack）。**这是 target lowering 的决策，不是 Stateful Tiled IR 层的**——IR 层只标 `carry`，target lowering 根据 dst 寄存器压力选择策略
+2. **`Spatial Program IR`**
+   - 只表达空间程序结构，不表达 TT-Metal 具体资源与 ABI
+   - 核心对象：
+     - `Task`
+     - `Channel`
+     - `Layout`
+     - `WorkPartition`
+     - `Placement`
+     - `SyncEdge`
+     - `ResourceIntent`
+   - 这一层回答的是：
+     - semantic regions 如何组织成逻辑 tasks
+     - task 间有哪些 channel / sync / work partition / virtual placement 约束
+     - 哪些 state 需要 transport、scratch、persistent carry、reduction carrier
+   - 硬约束：
+     - 允许 `virtual placement`
+     - 不允许 `CBIndex / semaphore_id / dst offset / runtime arg position`
+     - 不允许 host/runtime API 名字进入这一层
 
-3. **`Relation`**
-   - 表达 state / tensor / domain 之间的绑定关系，例如：
-     - `reduced_from`
-     - `applies_to`
-     - `indexes`
-     - `scatters_to`
-     - `carried_across`
-   - combine 规则**不使用固定 enum**（`sum/max/min/overwrite`），而是引用 TIR body 中的 reduction function 或保持为 function reference。理由：Welford combine 是多变量耦合的 `(mean, M2, count) = welford_combine(old, new)`，online softmax 的 rescale+accumulate 也不是简单的 sum/max，固定 enum 无法覆盖
-   - `carried_across` 和 Phase 的 `live-in/live-out` 可以互推——只维护一个作为 source-of-truth，另一个作为 derived；Validate pass 必须检查一致性
+3. **`TT Target IR`**
+   - 只表达 TT-Metal/Blackhole 可执行 contract
+   - 核心对象：
+     - `TTKernel`
+     - `TTCoreGroup`
+     - `TTCBPlan`
+     - `TTSemaphorePlan`
+     - `TTDstLayoutPlan`
+     - `TTABIPlan`
+     - `TTExecutionPlan`
+   - 这一层才允许出现：
+     - `reader / compute / writer`
+     - `CB / semaphore / remote-core descriptor`
+     - `compile-time args / runtime args / accessor bindings`
+     - `dst register layout`
+   - `ExecutableSpec` 是从这一层**物化**出来的，而不是再由散落 attrs 拼装
 
-4. **`Phase`**
-   - 显式表达阶段边界、live-in/live-out state、以及阶段间 carry
-   - 不直接编码 `reader/compute/writer`，而是先表达算法阶段关系
-   - **必须区分两种 Phase**：
-     - `algorithm phase`：compute 内的逻辑步骤。flash-attn 的整个 K-loop 在 TT-Metal 上是**单个 algorithm phase**——所有 carried state 在同一个 `tile_regs_acquire/release` block 内原地更新
-     - `pipeline phase`：reader/writer data prefetch 流水线。`T.Pipelined(num_stages=2)` 的 stage 是 data prefetch pipeline，和 compute 内的 algorithm phase 正交
-   - Phase 1 主要关注 algorithm phase；pipeline phase 的 stage structure 在 `inject_pipeline` 后已丢失，后续 Lift 时机前移后再覆盖
+三层之间的 source-of-truth 规则固定如下：
 
-5. **`Op`**（Phase 2 预留，Phase 1 不固化）
-   - 设计意图：表达算法级原语（`tile_compute / state_reduce / state_map / tile_apply_state / state_update / gather / compact / scatter_reduce`），而不是硬件指令
-   - 当前不把它做成 Phase 1 的一等对象。理由：
-     - TT-Metal SDPA 的 dest-reuse matmul + rescale 组合（`custom_mm_reuse_dest_srcb_block`）无法用固定 Op kind 表达
-     - Op kind 一旦固化，每增加一种新 workload 可能都要加新 Op，这和”不为 workload 定制专属 IR”的原则矛盾
-   - Phase 1 用 `Phase` 内的原始 TIR statement + State/Relation annotation 来表达语义
-   - Phase 2 覆盖 MoE/topk/scan 等更多 pattern 后，再回收统一 Op 分类
+- 算法语义的 source-of-truth 在 `Stateful Semantic IR`
+- 空间组织的 source-of-truth 在 `Spatial Program IR`
+- TT 资源与 ABI 的 source-of-truth 在 `TT Target IR`
+- 下层不得回推上层；validation 必须分层做，而不是只在最终 codegen 前做一次
 
-硬约束：
-
-- 每个可变对象都必须有明确 `state kind`
-- 每个 carry/update/merge 都必须显式，不允许继续靠普通 store/load 隐含语义
-- 每个 gather/scatter/routed access 都必须显式说明 index 来源或 combine 规则
-- 任何 TT-Metal 特有对象（`CB / semaphore / kernel role / runtime arg`）都不进入这一层
-
-### 5.4 现有 DSL/TIR 与 `Stateful Tiled IR` 的对接边界
+### 5.4 现有 DSL/TIR 与多层 IR 的对接边界
 
 默认路径是：
 
-`现有 TileLang DSL -> PrimFunc/TIR -> Semantic Recovery / Lift -> Stateful Tiled IR`
+`现有 TileLang DSL -> PrimFunc/TIR -> Semantic Recovery -> Stateful Semantic IR -> Spatialization -> Spatial Program IR -> Hardware-Aware Mapping -> TT Target IR`
 
 也就是说，下一阶段默认仍以**兼容现有 Python DSL 写法**为第一优先级；但兼容不是无条件的，边界如下：
 
@@ -488,7 +533,11 @@ annotation policy 明确如下：
   - `reader/compute/writer kernel`
   - `runtime_args`
 
-这条边界的目标是：**内部 IR 可以大幅增强，但不把复杂度转嫁给用户，不让用户学习 TT-Metal 的编程模型。**
+这条边界的目标是：
+
+- 内部 IR 可以大幅增强，但不把复杂度转嫁给用户
+- 不让用户学习 TT-Metal 的编程模型
+- 不把 `task/channel/semaphore` 变成用户侧 DSL 的一等概念
 
 ## 6. 算子策略
 
@@ -671,25 +720,24 @@ multi-core 的主要实现位置保持不变：
 2. **其他 IR ops 未处理**：element-wise、reduction、transpose、typecast 等在 Blackhole 上需要不同的 TT-Metal API，当前设计完全没有涉及
 3. **多核模型有上限**：当前 `work_packets` 能表达数据并行，但无法表达核间数据流
 
-### 8.3 中期架构演进方向：`Stateful Tiled IR`
+### 8.3 中期架构演进方向：多层 compiler-internal IR
 
-与其继续在 target-specific 后段做"先压碎再恢复"，下一阶段正式方向是引入 compiler-internal `Stateful Tiled IR`，把算法理解与硬件映射硬切开。
+与其继续在 target-specific 后段做“先压碎再恢复”，下一阶段正式方向是引入 **多层 compiler-internal IR**，把算法理解、空间程序结构和目标硬件映射硬切开。
 
 统一性要求如下：
 
-| workload | Domain | State / Relation 的核心组合 |
-|---------|--------|----------------------------------|
-| FlashAttention / online softmax | `dense`（部分变体叠 `paged`） | `matrix_state(carry) + vector_state(carry) + scalar_state(carry) + reduced_from + carried_across` |
-| Causal Flash-Attn | `dense + data-dependent bound` | 同上 + `bound_expr = f(bx)` |
-| GQA | `dense + grouped` | 同上 + `group index remapping` |
-| Block Sparse Attention | `dense + predicated` | 同上 + `sparsity predicate on block_mask` |
-| Welford LayerNorm / RMSNorm | `dense` | `vector_state(carry) × 2-3 (mean/M2/count) + coupled combine function` |
-| Linear Attention / Mamba | `dense` | `matrix_state(carry) + direct accumulate (h += K^T V)` 或 `recurrence (A*h + B*x)` |
-| Split-K GEMM | `dense + partitioned-K` | `matrix_state(carry) + cross-core combine function` |
-| MoE / routed grouped GEMM | `routed + segmented` | `index_state + indexes + scatters_to + segmented domain boundary` |
-| topk / argmax / selection | 多数为 `dense` | `index_state(carry) + reduced_from + carried_across + compact/select rewrite` |
-| paged decode / sparse MLA | `paged`，经常叠 `routed` | `index_state + indexes + carried_across` |
-| scan / Mamba recurrence | 多数为 `dense` | `matrix_state/vector_state(carry) + carried_across + phase-ordered recurrence` |
+| workload | Semantic IR 的核心组合 | Spatial Program IR 的核心组合 | TT Target IR 的核心组合 |
+|---------|-------------------------|-------------------------------|-------------------------|
+| FlashAttention / online softmax | `matrix_state(carry) + vector_state(carry) + scalar_state(carry) + reduced_from + carried_across` | `compute/load/store task + channel + sync edge + row/pair work partition` | `reader/compute/writer + CB plan + dst layout + runtime args` |
+| Causal Flash-Attn | 同上 + `bound_expr = f(bx)` | `balanced pair partition` 或 `causal row partition` | `per-core runtime args + carry strategy + semaphore plan` |
+| GQA | 同上 + `group index remapping` | `grouped layout + grouped work partition` | `core-group placement + accessor/runtime binding` |
+| Block Sparse Attention | 同上 + `predicate(block_mask)` | `predicated channel / sparse partition` | `transport CB + sync protocol + ABI` |
+| Welford LayerNorm / RMSNorm | `vector_state(carry) × 2-3 + coupled combine function` | `reduction task + persistent carrier` | `dst scratch / CB scratch / reduction ABI` |
+| Linear Attention / Mamba | `matrix_state/vector_state(carry) + recurrence` | `phase-ordered tasks + carried channel` | `carry strategy + placement + execution plan` |
+| Split-K GEMM | `matrix_state(carry) + cross-core combine function` | `split-k partition + combine channel` | `multicast / reduction semaphore / CB plan` |
+| MoE / routed grouped GEMM | `routed + segmented + index_state + scatters_to` | `routed task graph + segmented layout + sync edge` | `core-group placement + remote-core descriptors + runtime schema` |
+| topk / argmax / selection | `index_state(carry) + reduced_from + compact/select rewrite` | `selection/rewrite task + channel` | `target reduction ABI + scratch plan` |
+| paged decode / sparse MLA | `paged + routed + index_state` | `paged layout + routing channel` | `page-table ABI + placement + transport plan` |
 
 也就是说：
 
@@ -698,7 +746,11 @@ multi-core 的主要实现位置保持不变：
 - topk 不应要求专用 `topk` IR
 - paged decode 不应要求专用 `paged_attention` IR
 
-真正的一致性来自统一的 `Domain / State / Relation / Op / Phase` 模型，而不是 workload-specific builtin 集合。
+真正的一致性来自：
+
+- 语义层的 `Domain / State / Relation / Phase / SemanticRegion`
+- 空间程序层的 `Task / Channel / Layout / WorkPartition / Placement / SyncEdge / ResourceIntent`
+- 目标层的 `TTKernel / TTCBPlan / TTSemaphorePlan / TTDstLayoutPlan / TTABIPlan / TTExecutionPlan`
 
 ### 8.4 对 Python DSL 兼容性的正式要求
 
@@ -712,7 +764,7 @@ multi-core 的主要实现位置保持不变：
 
 1. 现有复杂 examples 应尽量保持主体写法不变
 2. 真正需要补充的 Python 侧信息，以 annotation/helper 方式出现，而不是要求用户改写 kernel 主体结构
-3. annotation 的心智模型应保持在“carry / routing / selection / combine 规则”层，而不是“CB / semaphore / kernel split / runtime args”层
+3. annotation 的心智模型应保持在“carry / routing / selection / combine 规则”层，而不是“task / channel / CB / semaphore / runtime args”层
 
 ### 8.5 对当前规划的影响与 rollout
 
@@ -722,36 +774,44 @@ multi-core 的主要实现位置保持不变：
   - copy / GEMM / multi-core 主链
 - **当前 flash-attn compile/runtime bring-up 仍有价值**：
   - 它已经把问题收敛到真实语义边界，而不是把问题藏在 build/codegen 噪声里
-- **下一阶段实施顺序（Phase 1a / 1b 拆分）**：
-  - **Phase 1a**（纯 IR 增量，零回归风险）：
-    1. 引入 `Domain / State / Relation / Phase` 核心对象（Op kind 延后到 Phase 2）
-    2. 引入 `LiftToStatefulTiledIR` 与 `ValidateStatefulTiledIR`
-    3. 验收标准：lift 能跑、validate 能拦、现有 GEMM/copy compile-path 测试不回归；TT-Sim runtime 总回归留到 Phase 1b
-  - **Phase 1b**（语义迁移，target lowering 重构）：
-    1. 实现 `BlackholeStatefulProgramLowerer`，包含 dst register layout planning
-    2. 把 flash-attn compute 从混合 `blackhole.acc` 语义迁到 Stateful Tiled IR 消费路径
-    3. 验收标准：flash-attn runtime correctness 通过
-  - **Phase 2**（更宽覆盖面）：
-    1. 回收统一 Op kind 分类
-    2. 把现有 `AnalyzeBlackhole*` 中承担”算法理解”的部分前移并泛化
-    3. 按语义类别扩到 Welford norm / linear-attn / topk / routed / paged / scan
+- **当前 `2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md` 的定位需要降位**：
+  - 它不再代表下一阶段总体架构
+  - 它只保留为新总设计下 **Phase A（Semantic IR）** 的历史草案和子计划参考
+- **下一阶段实施顺序**：
+  - **Phase A: Stateful Semantic IR**
+    1. 新增 `Domain / State / Relation / Phase / SemanticRegion`
+    2. 落 `LiftToStatefulSemanticIR` 与 `ValidateStatefulSemanticIR`
+    3. 验收标准：semantic lift 能跑、semantic validate 能拦、现有 GEMM/copy compile-path 不回归
+  - **Phase B: Spatial Program IR**
+    1. 新增 `Task / Channel / Layout / WorkPartition / Placement / SyncEdge / ResourceIntent`
+    2. 把 flash-attn / online-softmax / GEMM 的 task/channel/layout/sync 一等化
+    3. 验收标准：不再由 `LowerBlackholeOps` 直接同时承担语义理解和 TT lowering
+  - **Phase C: TT Target IR**
+    1. 把 `CB / semaphore / dst layout / kernel role / ABI / execution plan` 统一到 TT target contract
+    2. `ExecutableSpec` 改为从 `TT Target IR` 物化
+    3. 验收标准：flash-attn correctness 通过；runtime/codegen 不再回推上层语义
 - **验证分层**：
-  - lift 层：IR snapshot / structural tests
-  - target-program 层：CB / dst register layout / runtime-arg / accessor binding 结构验证
+  - semantic 层：IR snapshot / semantic validation
+  - spatial 层：task/channel/layout/sync 结构验证
+  - target 层：CB / dst layout / semaphore / runtime-arg / accessor binding 结构验证
   - runtime 层：TT-Sim correctness / 对拍
 
-### 8.6 Lift 时机与长期迁移路径
+### 8.6 Recovery / Spatialization 的时机与长期迁移路径
 
-当前 Lift 位置在 Blackhole pipeline 的**后段**——`SplitBlackholeKernel` 之后：
+当前 `AnalyzeBlackhole*` 仍位于 Blackhole pipeline 的**后段**——`SplitBlackholeKernel` 之后：
 
 ```text
-SplitBlackholeKernel → Analyze* → LiftToStatefulTiledIR → Validate → LowerBlackholeOps
+SplitBlackholeKernel
+  -> AnalyzeBlackholeWorkDecomposition
+  -> AnalyzeBlackholeFragmentRegions
+  -> AnalyzeBlackholePipelineStages
+  -> Semantic Recovery / Lift
 ```
 
 在到达这个位置之前，以下关键信息已丢失：
 
-| 信息 | 丢失位置 | 到达 Lift 时还在？ |
-|------|---------|-------------------|
+| 信息 | 丢失位置 | 到达 Recovery 时还在？ |
+|------|---------|-------------------------|
 | `T.Pipelined` 的 stage/order/group | `inject_pipeline` | 否 |
 | `T.gemm` 的 M/N/K/transpose | `LowerTileOp`（Blackhole: 保留为 `gemm_py`） | 是 |
 | `T.copy` 的 tile 语义 | `LowerTileOp` | 否——已变成标量 loop |
@@ -760,29 +820,38 @@ SplitBlackholeKernel → Analyze* → LiftToStatefulTiledIR → Validate → Low
 | fragment 上的 element-wise ops | `LowerTileOp` | 否——已变成标量 BufferStore/Load |
 | loop-carried state（如 `scores_max *= scale`） | 从未丢失，但变成普通标量赋值 | 部分——需要从标量 pattern match |
 
-**两种路径**：
+阶段性路径如下：
 
-- **路径 A（Phase 1 选择）**：接受 Lift 在后段，依赖 Analyze pass 从压碎后的 TIR 恢复语义。本质是”把 pattern match 搬到 Analyze pass 里，Lift 只做格式转换”。
+- **路径 A（当前现实）**：接受 Recovery 在后段，依赖 `AnalyzeBlackhole*` 从压碎后的 TIR 恢复算法语义；`LiftToStatefulSemanticIR` 只做格式化与真源冻结。
   - 优点：不改现有 lowering pipeline 前半段
-  - 缺点：Analyze pass 的泛化是核心瓶颈，每种新 pattern 要写新 matcher
+  - 缺点：Analyze pass 的 matcher 泛化会成为瓶颈
 
-- **路径 B（长期目标）**：把 Lift 前移到 `inject_pipeline` 之后、`LowerTileOp` 之前。在这个位置 `T.gemm/T.copy/T.reduce/T.Pipelined` 的结构信息全部还在，Lift 做结构化提取而非 pattern match。
-  - 优点：Lift 不再从标量 TIR 猜语义
-  - 缺点：需要改 pipeline 前半段，且此时还没有 host/device split
+- **路径 B（长期目标）**：把 Semantic Recovery 前移到 `inject_pipeline` 之后、`LowerTileOp` 之前；把 Spatialization 放在 semantic lift 之后、target mapping 之前。
+  - 优点：semantic 层不再从标量 TIR 猜语义
+  - 缺点：需要重构 pipeline 前半段，且更早介入 split 前结构
 
-**迁移条件**：当 Phase 1b 完成、且 Phase 2 开始覆盖 Welford/linear-attn 等新 pattern 时，Analyze pass 的 matcher 膨胀会成为工程瓶颈。此时应启动 Lift 时机前移。
+**迁移条件**：当 Phase B 开始覆盖 Welford / routed / paged / selection 等更宽语义时，如果 `AnalyzeBlackhole*` matcher 数量快速膨胀，应启动 Recovery 前移。
 
-### 8.7 TT-Metal SDPA Ground Truth 与 Target Lowering 设计约束
+### 8.7 TT-Metal SDPA Ground Truth 与 `TT Target IR` 设计约束
 
-基于 TT-Metal 原生 SDPA 实现的审查结论，target lowering 必须处理以下设计约束。Phase 1b 的 lowering ground truth 以这三个具体 reference 文件为准：
+基于 TT-Metal 原生 SDPA 实现的审查结论，TT target lowering 必须处理以下设计约束。当前 ground truth 以这三个具体 reference 文件为准：
 
 - `tt_metal_repo/tt-train/sources/ttml/metal/ops/sdpa_fw/device/kernels/compute/sdpa_fw_compute_kernel.cpp`
 - `tt_metal_repo/models/demos/deepseek_v3_b1/kernel_includes/tt_metal/include/compute_kernel_api/sdpa.h`
 - `tt_metal_repo/tt-train/sources/ttml/metal/ops/sdpa_fw/device/sdpa_fw_program_factory.cpp`
 
-#### 8.7.1 dst 寄存器是跨 K-loop 长期持有的
+#### 8.7.1 TT 程序模型本质上是 program-level structure
+
+TT-Metal 原生程序天然由 `reader / compute / writer` 多 kernel、host-side `CreateCircularBuffer / CreateKernel / SetRuntimeArgs` materialization、以及 per-core runtime args 组成。这意味着：
+
+- `reader / compute / writer` 应进入 `TT Target IR`
+- `CreateCircularBuffer / CreateKernel / ComputeConfig` 是 materialization，不应进入 semantic/spatial 层
+- per-core runtime args / core-group placement 是 program-level contract，不是 codegen 小细节
+
+#### 8.7.2 dst 寄存器是跨 K-loop 长期持有的
 
 TT-Metal SDPA 的 `tile_regs_acquire/release` 包裹**整个** chunk loop，不是每次迭代：
+
 ```text
 tile_regs_acquire()              // 整个 chunk loop 之前
 for chunk in 0..num_chunks:
@@ -792,9 +861,10 @@ tile_regs_commit/wait/release()  // 整个 chunk loop 之后
 
 这意味着 `acc_o / scores_max / logsum` 全部 live 在 dst 寄存器里原地更新，不做 CB round-trip。
 
-#### 8.7.2 dst 寄存器布局是编译时静态规划的
+#### 8.7.3 dst 寄存器布局是编译时静态规划的
 
 TT-Metal SDPA 的 dst 空间静态分区：
+
 ```text
 [0, mm2_dst_offset + num_tiles_v * packed_tile_size)  = output accumulator
 [max_dst_offset, max_dst_offset + 2)                  = running max (col 0)
@@ -803,29 +873,39 @@ TT-Metal SDPA 的 dst 空间静态分区：
 [mm1_dst_offset, ...]                                 = QK temporary
 ```
 
-**`BlackholeStatefulProgramLowerer` 必须包含 `PlanDstRegisterLayout` 步骤**，根据 State 的 shape/kind 做静态 offset 分配。这和 `PlanBlackholeCB` 是平行的另一个 resource planner。
+因此 `TTDstLayoutPlan` 必须是 `TT Target IR` 的一等对象，而不是隐藏在 compute codegen helper 里。
 
-#### 8.7.3 CB 分类需要从 State kind 推导
+#### 8.7.4 CB / semaphore 是目标资源，不是普通 buffer lowering 副产品
 
-SDPA 使用 16 个 CB，按功能分为：
-- **Transport CB**（输入 Q/K/V/mask）：reader push → compute pop，标准 FIFO
-- **Ping-pong state CB**（prev/cur max、sum、mm_out）：跨迭代 state 的 host-visible 持久化
-- **Temporary CB**（qk_result、exp_diff）：compute 内单步用完即弃
-- **Output CB**：最终结果写出
+SDPA 使用多类 CB：
 
-`PlanBlackholeCB` 的 resource class 应该从 `StatefulTiledProgram` 的 State kind + lifetime 推导，而不是从 CB requirement 的 role 字符串推导。
+- **Transport CB**（输入 Q/K/V/mask）
+- **Ping-pong state CB**（prev/cur max、sum、mm_out）
+- **Temporary CB**（qk_result、exp_diff）
+- **Output CB**
 
-#### 8.7.4 Carry strategy 是 target lowering 决策
+同时，TT-Metal 文档和多核 matmul/multicast 示例明确表明：
 
-同一个 `carry` state，在不同变体中可能选择不同策略：
-- **Chunk-based SDPA**：register-resident carry（dst 长期持有，性能最优但 dst 空间有限）
-- **Row-based SDPA**：CB-round-trip carry（每次迭代 pack/unpack，dst 压力更小但带宽开销大）
+- `cb_reserve_back / cb_push_back / cb_wait_front / cb_pop_front` 反映的是显式 channel protocol
+- `noc_async_write_multicast / noc_semaphore_set_multicast` 与 semaphore handshake 反映的是显式 sync/routing protocol
 
-Target lowering 必须根据所有 carry state 的总 dst 空间需求，决定哪些走 register-resident、哪些退化到 CB-round-trip。
+因此：
 
-#### 8.7.5 MATH/PACK 线程并行
+- `TTCBPlan` 和 `TTSemaphorePlan` 必须是 `TT Target IR` 的一等对象
+- `PlanBlackholeCB` 未来应降为 target planner 子模块，而不是“凭 cb_requirements 决定世界”的独立主层
 
-TT-Metal 的 fused matmul 里 Sigmoid/SiLU 在 PACK thread 上执行（和 MATH thread 并行）。这是 Tensix 核心的 MATH/PACK/UNPACK 三线程并行特性。Stateful Tiled IR 不需要为此建模（纯硬件细节），但 `BlackholeStatefulProgramLowerer` 必须有能力做”这个 elementwise op 可以调度到 PACK thread”的决策。
+#### 8.7.5 Carry strategy 是 target lowering 决策
+
+同一个 `carry` state，在不同实现里可以有不同 target strategy：
+
+- `register-resident carry`
+- `CB-round-trip carry`
+
+这一选择不属于 semantic 层，必须在 `TT Target IR` 的 target mapping 阶段依据 `dst` 容量、CB 压力、task/channel 结构做出。
+
+#### 8.7.6 MATH/PACK/UNPACK 三线程并行只进入 target 层
+
+TT-Metal 的 fused matmul 中，某些 elementwise/SFPU 工作会在 PACK thread 上执行。这是 Tensix 核心的硬件事实，应作为 `TT Target IR` lowering 与 codegen 的调度约束，而不应污染 semantic/spatial 层对象。
 
 ## 9. 关键源码审查结论
 

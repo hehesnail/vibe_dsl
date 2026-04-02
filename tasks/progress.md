@@ -14,7 +14,7 @@
 - **当前活动主线**:
   - flash-attn forward subset：analysis、fragment lowering、dataflow bridging 与 codegen 已接通当前支持面
   - execution hang 已解；当前剩余主工作已收敛为 `blackhole.acc` compute 语义收正、TT-Metal-first tile/CB/dst-reg 主路径迁移、以及更宽支持面
-  - `Stateful Tiled IR` 方向的设计 review 已收口：Phase 1 实施计划已拆成 Phase 1a/1b，D1-D8 关键结论已同步到总设计；当前代码实现尚未开始
+  - 总体架构已重写为多层 compiler-internal IR：`Stateful Semantic IR -> Spatial Program IR -> TT Target IR`；当前代码实现尚未开始，旧 `stateful_tiled_ir` phase 计划已降为新总设计下的 Phase A 历史草案
 - **日期**: 2026-04-02
 - **相关设计**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -64,8 +64,9 @@
 - **下一步**:
   - 按 `TT-Metal-first` 方向重定义 `blackhole.acc`：后续只表示 compute-side tile scratch
   - 收正上游 TIR 对接边界：后段不再从线性 `BufferLoad/BufferStore` 形态猜 tile 语义，凡是无法稳定恢复的 tile contract 必须通过 analysis attrs 或显式 builtin 交付
-  - 先执行 `Stateful Tiled IR` Phase 1a：落 `LiftToStatefulTiledIR` / `ValidateStatefulTiledIR` skeleton、dense/carry lift、以及 copy/GEMM compile-path zero-regression gate
-  - 再执行 Phase 1b：实现 `BlackholeStatefulProgramLowerer`、dst register layout planning 和 carry strategy lowering，把 flash-attn compute 主链迁到 `CB / tile / dst-reg` 正式协议
+  - 先执行 **Phase A: Stateful Semantic IR**：落 `LiftToStatefulSemanticIR` / `ValidateStatefulSemanticIR` skeleton、domain/state/relation/phase 真源冻结、以及 copy/GEMM compile-path zero-regression gate
+  - 再执行 **Phase B: Spatial Program IR**：把 flash-attn / online-softmax / GEMM 的 `task/channel/layout/sync/work partition` 一等化，拆掉 `LowerBlackholeOps` 当前同时承担语义理解和 target lowering 的边界
+  - 最后执行 **Phase C: TT Target IR**：统一 `CB / semaphore / dst layout / kernel role / ABI / execution plan`，并把 `ExecutableSpec` 改为从 `TT Target IR` 物化
   - 继续扩更宽 flash-attn forward 支持面与 P4/P5 主项
   - flash-attn runtime 当前已不再 hang，但 `test_blackhole_flash_attention_runtime.py -k mha` 仍未通过精度对比；当前主 blocker 已从 execution-time deadlock 收敛为 compute correctness/语义设计问题
 
