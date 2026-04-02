@@ -1,10 +1,17 @@
 # Blackhole 后端清理与收敛路线图
 
+> **归档说明**
+> 本文件保留为 2026-03-30 cleanup 路线图记录。当前总体方向与主入口
+> 以 `tasks/dev_design/final_blackhole_backend_redesign.md` 为准；若涉及
+> 当前实施顺序，以
+> `tasks/dev_design/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`
+> 为准。
+
 ## 基本信息
 
 - **文档ID**: `stage4_backend_cleanup_roadmap`
 - **日期**: 2026-03-30
-- **状态**: 活动中（A/B/C 主项已大部完成；保留为 cleanup 路线图记录）
+- **状态**: 已归档（A/B/C 主项已大部完成；保留为 cleanup 路线图记录）
 - **目的**: 把当前 review 暴露出的设计问题、实现问题、hack 边界和重文件风险，整理成可执行的收敛顺序
 
 ## 1. 目标

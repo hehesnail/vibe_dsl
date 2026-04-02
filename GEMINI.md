@@ -98,10 +98,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 9. ~~GEMM E2E 验收~~ ✅（transpose_B + host tilize/untilize 已补齐）
 10. ~~multi-core~~ ✅（formal direct host path 已完成）
 11. TT-Metal contract formalization 收尾：
-    - P0：更丰富 compute ABI / dtype 分层继续收正
-    - P3：更宽 accessor / runtime work execution surface
+    - P0/P3 当前主路径已收口
     - P4：copy/dataflow 泛化（non-tile/stick/sharded）
     - P5：multi-core synchronization 预埋
+    - flash-attn 当前主 blocker 已从 execution hang 收敛为 `blackhole.acc` 混合语义导致的 compute correctness 问题
+    - 下一阶段正式方向是 compiler-internal `Stateful Tiled IR`；当前实施计划见 `tasks/dev_design/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`
 
 ## 经验与问题记录
 
@@ -178,6 +179,9 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   - copy：equal source/dest range，且 stride = 1
   - GEMM：A/B-separated reader range + writer output range
   - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
+- TT-Sim 当前正式环境入口是顶层 `scripts/setup_tt_sim.sh`
+- `setup_tt_sim.sh` 与后续测试必须在同一个 shell 中执行
+- 如果在 worktree 中运行测试，source 后必须把 `TILELANG_HOME` 指回当前 checkout/worktree
 
 ## 什么算完成
 

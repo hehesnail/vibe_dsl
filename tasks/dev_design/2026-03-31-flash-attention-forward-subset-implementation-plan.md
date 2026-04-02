@@ -1,5 +1,11 @@
 # Flash-Attention Forward Subset Implementation Plan
 
+> **归档说明**
+> 这份计划文档保留为 2026-03-31 的实施记录，已被
+> `tasks/dev_design/final_blackhole_backend_redesign.md` 与
+> `tasks/dev_design/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`
+> 吸收。不要再把本文件当成当前入口或当前实施计划。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让 Blackhole 主链在不改 example 的前提下，具备承接 `example_mha_fwd_bshd.py` / `example_gqa_fwd_bshd.py` 前向完整语义所需的通用 analysis 与 lowering 骨架。

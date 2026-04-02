@@ -8,6 +8,7 @@
 - 当前 Blackhole 任务状态、设计主线与下一步请查看：
   - `tasks/progress.md`
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
+- `docs/ttsim_setup.md` 现在只保留 TT-Sim 环境入口规则，不再维护具体 case 的测试命令模板
 
 ## 📚 已完成的分析
 

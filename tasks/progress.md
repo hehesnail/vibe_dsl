@@ -19,7 +19,7 @@
 - **相关设计**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
   - `tasks/dev_design/stage4_flash_attention_forward_subset.md`
-  - `tasks/dev_design/2026-03-31-flash-attention-forward-subset-implementation-plan.md`
+  - `tasks/dev_design/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`
 
 ### Flash-Attention 当前推进
 
@@ -246,22 +246,24 @@
 | 文档 | 用途 | 状态 |
 |------|------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总设计 | 常青 |
-| `stage3_multicore_design.md` | 多核设计 | ✅ 已实施（formal direct host path） |
-| `stage2g_unified_work_schema.md` | richer runtime work schema 设计 | ✅ 已实施（copy/GEMM 主路径） |
-| `stage2h_accessor_schema.md` | accessor/common-runtime schema 设计 | ✅ 已实施（schema/spec） |
-| `stage2i_compile_time_abi_schema.md` | compile-time ABI schema 设计 | ✅ 已实施（schema/spec/direct runtime） |
-| `stage2j_compute_contract_schema.md` | compute contract 正式化设计 | ✅ 已实施（schema/spec/runtime 主链） |
-| `stage2k_common_runtime_materialization.md` | kernel-level shared common runtime materialization | ✅ 已实施（shared buffer/semaphore common args） |
-| `stage2l_accessor_args_config_bits.md` | accessor args_config_bits 协议收正 | ✅ 已实施（与 TT-Metal ArgConfig 对齐） |
-| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 收正进行中（P0/P1/P2/P3 ✅，P4 已完成最小 interleaved stick/page path，P5 已推进到 worker semaphore producer/consumer E2E） |
-| `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 | 已实现（program-local worker semaphore + kernel binding + 最小 dataflow semaphore builtin + worker producer/consumer E2E） |
-| `stage4_copy_stick_generalization.md` | P4 stick/page copy 泛化 | ✅ 已实施（interleaved + DRAM + `M x W`, `M % 32 == 0`，支持静态 offset subrange；未对齐 64B transport page、未 page-align 的 offset、以及 non-divisible global width fail-fast） |
-| `stage4_backend_cleanup_roadmap.md` | backend cleanup 收敛路线图 | 活动中（分档：短期必须收 / P4 前应收 / P5 前应收） |
+| `2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md` | 当前实施计划 | 活动中 |
+| `stage4_flash_attention_forward_subset.md` | Flash-Attention 作为 consumer 的支持设计 | 活动中（不再定义总体架构方向） |
+| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 支持中（P4/P5 与更宽 execution surface 仍参考它） |
 
 ### 已完成（仍有参考价值）
 
 | 文档 | 用途 |
 |------|------|
+| `stage3_multicore_design.md` | 多核设计（formal direct host path） |
+| `stage2g_unified_work_schema.md` | richer runtime work schema 设计 |
+| `stage2h_accessor_schema.md` | accessor/common-runtime schema 设计 |
+| `stage2i_compile_time_abi_schema.md` | compile-time ABI schema 设计 |
+| `stage2j_compute_contract_schema.md` | compute contract 正式化设计 |
+| `stage2k_common_runtime_materialization.md` | kernel-level shared common runtime materialization |
+| `stage2l_accessor_args_config_bits.md` | accessor args_config_bits 协议收正 |
+| `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 |
+| `stage4_copy_stick_generalization.md` | P4 stick/page copy 泛化 |
+| `stage4_backend_cleanup_roadmap.md` | backend cleanup 收敛路线图记录（已归档） |
 | `stage2d_gemm_direct_cb_io.md` | GEMM contract 修复（transpose_B + tilize/untilize） |
 | `stage2d_cb_identity_protocol.md` | CB identity 唯一协议 |
 | `stage2e_blackhole_device_resource_semantics.md` | 设备资源 IR 语义扩展 |

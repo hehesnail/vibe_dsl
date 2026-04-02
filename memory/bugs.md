@@ -4,20 +4,25 @@
 
 ## 未解决
 
-### flash-attention `mha` direct runtime 在 enqueue 后仍 hang，当前死锁签名稳定收敛到 execution-time CB/synchronization 协议
+### flash-attention runtime 已不再 hang，但 `blackhole.acc` 混合语义会稳定制造 correctness mismatch
 
-- **时间**: 2026-04-01
-- **问题**: 在修掉 `write_local_slice_to_cb` CB ID 回写、runtime arg dedup、`fused_dataflow` buffer args 过滤、`cast_fragment_slice` 漏发页数、以及 `blackhole.acc` GEMM 输出重复 reserve 后，`test_blackhole_flash_attention_runtime.py -k mha_forward_direct_runtime` 仍会在 workload enqueue 后 hang
+- **时间**: 2026-04-02
+- **问题**: 在修掉 `write_local_slice_to_cb` CB ID 回写、runtime arg dedup、`fused_dataflow` buffer args 过滤、`cast_fragment_slice` 漏发页数、以及 `blackhole.acc` GEMM 输出重复 reserve 后，flash-attention direct runtime 已能完整执行结束；当前剩余问题不再是 hang，而是 execution 完成后的 correctness mismatch
 - **当前现象**:
-  - direct runtime 已能 build、launch，并进入 workload execution
-  - TT-Metal Watcher 当前稳定复现同一组状态码：reader `CRBW`、writer `CWFW`、compute `MWDD`
-  - 说明当前剩余 blocker 已经不是 compile/codegen/build-time 层，而是 execution-time 的同步/CB/dataflow 协议
-- **当前推断**:
-  - `blackhole.acc` 当前仍混合承担 fragment scratch 与 CB queue 两类语义
-  - 虽然已修掉两个局部协议错误，但完整 reserve/publish/wait/consume 时序可能仍与 TT-Metal 对 compute-local scratch/CB 生命周期的期望不一致
-- **下一步方向**:
-  - 继续沿 `acc_s / acc_s_cast / acc_o` 等 scratch CB 做完整生产-消费时序核对
-  - 结合 Watcher / waypoints，把 hang 从“某个 kernel 没返回”缩到“compute 的具体阶段没推进”
+  - `test_blackhole_flash_attention_runtime.py -k mha` 已不再卡在 enqueue / execution
+  - 当前失败形态是数值不对，典型表现为 softmax/accumulate 链上的 `nan` 或明显偏差
+  - 说明主 blocker 已从 execution-time 协议错误前移到 compute 语义模型本身
+- **根本原因**:
+  - `blackhole.acc` 仍在部分路径里同时承担两种不兼容语义：
+    - TT-Metal compute 主路径里的 `tile scratch / matmul destination`
+    - 线性 fragment helper 眼中的 `float* / half*` scratch 数组
+  - `GenerateMatmulSequence` 产生的是 `CB / tile / dst-reg` 流
+  - 后续 pointwise / reduction / cast helper 却还会把同一份 scratch 当线性数组解释
+  - hang 被修掉后，这套混合语义自然暴露为 correctness mismatch
+- **解决方向**:
+  - 以 `Stateful Tiled IR` 统一承接 `tile_state / vector_state / carry / phase` 语义
+  - 让 `blackhole.acc` 后续只表示 compute-side tile scratch
+  - 把 stats-state（`scores_max / scores_scale / scores_sum / logsum`）从 tile scratch 里拆出去，禁止后段继续从普通 loop 形态猜语义
 
 ### Blackhole direct path 缺少 TT-Metal 正式 contract 分层
 

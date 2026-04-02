@@ -3,9 +3,11 @@
 ## 基本信息
 
 - **文档ID**: `stage4_flash_attention_forward_subset`
-- **日期**: 2026-03-31（创建），2026-04-01（最近更新）
-- **状态**: 活动中（analysis 与当前支持面的 compile-path 已打通，当前主 blocker 为 direct runtime execution hang）
+- **日期**: 2026-03-31（创建），2026-04-02（最近更新）
+- **状态**: 活动中（analysis 与当前支持面的 compile-path 已打通，execution hang 已解；当前主 blocker 为 compute 语义设计收正）
 - **范围**: `tilelang_repo/examples/flash_attention/example_mha_fwd_bshd.py` 与 `example_gqa_fwd_bshd.py` 的前向完整语义；不包含 backward、varlen、wgmma
+
+> 角色说明：本文档现在只作为 **Flash-Attention 这一类 consumer 的支持设计**。总体架构方向看 `final_blackhole_backend_redesign.md`，当前实施计划看 `2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`。
 
 ## 1. 目标
 
@@ -28,11 +30,12 @@
 - `LowerBlackholeOps` 已开始把 fragment 子集 lower 成 Blackhole builtin
 - `codegen_blackhole` 已接上当前最小 fragment/dataflow builtin 子集
 - `local/accumulator -> shared(CB)` staged copy 已经 lower 成正式 builtin
-- 当前支持的 MHA/GQA forward compile-path 已打通；剩余工作是 runtime 验证与更宽支持面
+- 当前支持的 MHA/GQA forward compile-path 已打通；剩余工作已从 execution hang 转为 compute 语义重构与更宽支持面
 - 当前又收掉了两类执行期协议问题：
   - `cast_fragment_slice` 写入的 `blackhole.acc` scratch CB 若会被后续 matmul 读取，必须按未来 matmul 所需页数 `cb_push_back`
   - `blackhole.acc` 作为 GEMM 输出时，compute 侧不能在 `pack_tile` 前对同一输出 CB 重复 `cb_reserve_back`
-- direct runtime `mha` 现已能走到 workload enqueue / execution，但仍会 hang；Watcher 当前稳定复现 reader `CRBW`、writer `CWFW`、compute `MWDD`
+- direct runtime `mha` 已不再 hang，当前失败形态已收敛为 execution 完成后的 correctness mismatch
+- 当前已确认的根因方向是：`blackhole.acc` 不能继续同时承担“线性 fragment scratch”和“TT-Metal tile/CB scratch”双重语义
 
 ## 2. 非目标
 
@@ -77,6 +80,16 @@
 2. `fragment compute region analysis + lowering`
 3. `pipelined stage analysis`
 
+但截至 2026-04-01，除了“缺能力”之外，还新增了一个更根本的结论：
+
+- 当前 flash-attn 的 correctness blocker 不再是单纯 execution protocol bug
+- 当前更深层的问题是 **compute 语义模型和 TT-Metal 主路径不一致**
+- 具体表现为：
+  - 上游 TIR / analysis 仍然允许把 `acc_s` / `acc_o` 这类状态理解成线性 fragment
+  - `GenerateMatmulSequence` 却在 compute 里生成 `mm_init -> matmul_tiles -> pack_tile -> cb_push_back` 的 tile/CB 流
+  - 后续 pointwise / reduction / cast helper 又把同一份 `blackhole.acc` scratch 当线性 `float*` / `half*` 连续数组解释
+- 这套混合语义在死锁问题收口之后，已经暴露为稳定的 correctness mismatch，而不是偶发 runtime 行为
+
 ## 4. 设计原则
 
 ### 4.1 IR 优先，schema 最小化
@@ -96,6 +109,14 @@
 - 不能只从 TileLang 语义出发，假装硬件是通用 GPU
 - 也不能只从 TT-Metal 约束出发，把 DSL 语义压成不可复用的特判
 - 正确目标是定义面向 Blackhole 的 TileLang 复杂 tiled-kernel 映射，而不是 attention 专属后门
+
+### 4.4 TT-Metal-first compute 语义
+
+- flash-attn compute 正式方向改为 **TT-Metal-first**
+- `blackhole.acc` 不再作为“线性 fragment scratch”的长期抽象
+- `blackhole.acc` 后续只表示 compute-side **tile scratch**
+- `CB / tile / dst-reg` 流是 flash-attn compute 的正式主路径
+- 现有线性 fragment helper 仅保留为过渡实现，不再作为长期协议前提
 
 ## 5. 分层设计
 
@@ -231,16 +252,40 @@ split 后的目标不是重新理解 attention，而是消费通用 analysis pas
 
 ### 9.1 当前 runtime 收敛结论
 
-- compile/codegen 主 blocker 已进一步减少，当前剩余主问题在 execution-time 协议
-- `blackhole.acc` 当前同时承担 fragment scratch 与 CB queue 两类语义；虽然已经修掉了“漏发页数”和“重复 reserve”两类问题，但运行时 hang 说明其完整生产/消费时序仍未完全对齐
+- compile/codegen 主 blocker 已进一步减少，execution hang 已解
+- `blackhole.acc` 当前同时承担线性 fragment scratch 与 TT-Metal tile/CB scratch 两类语义；虽然已经修掉了“漏发页数”和“重复 reserve”两类问题，但 hang 解掉后暴露出这套混合语义本身会产生 correctness mismatch
 - 当前最有价值的调试手段仍是 TT-Metal Watcher；本仓库下的 watcher 输出当前默认落在 `generated/watcher/watcher.log`
-- 现阶段最该优先核对的是 `acc_s / acc_s_cast / acc_o` 这一组 scratch CB 的 reserve / publish / wait / consume 全时序，而不是回头继续扩大 compile-path 特判
+- 当前最该优先收正的不是更多 execution workaround，而是 `acc_s / acc_s_cast / acc_o` 这一组 compute state 的 **tile-scratch-only 语义**
+- TT-Metal matmul / SDPA 参考更接近纯 `CB / tile / dst-reg` 流，而不是当前这种 `blackhole.acc` “直接指针 scratch + CB queue”双重语义
 
 这意味着 legality 需要成为正式设计的一部分，而不是失败时再由后段临时拒绝。
 
-## 10. 现有 schema 的收缩建议
+## 10. 新的 compute 语义收敛方向
 
-### 10.1 明确保留在 `ExecutableSpec` 的
+### 10.1 `blackhole.acc` 的新定义
+
+- `blackhole.acc` 后续只表示 compute-side **tile scratch**
+- 它不再表示线性 `float*` / `half*` fragment 数组
+- 与 `matmul_tiles / pack_tile / copy_tile / dst-reg` 相关的 compute 主链都必须围绕这个定义收正
+
+### 10.2 scalar state 单独建模
+
+- `scores_max / scores_max_prev / scores_scale / scores_sum / logsum` 这类状态不应继续和 tile scratch 共享同一抽象
+- 后续应在 analysis / lowering / planner 上把 scalar scratch 和 tile scratch 显式区分
+
+### 10.3 上游 TIR 对接约束
+
+- Blackhole 后段不再从线性 `BufferLoad/BufferStore` 长相里猜 tile 语义
+- 凡是后端无法稳定恢复的 tile contract，必须通过：
+  - split 前 preserved TIR 结构
+  - split 后 analysis attrs
+  - 或显式 Blackhole builtin
+  稳定交付
+- `tl.tileop.gemm_py` 的全局 `M/N/K` 不能再被直接等价成 compute local tile materialization；flash-attn 这类 kernel 需要更明确的 local tile contract
+
+## 11. 现有 schema 的收缩建议
+
+### 11.1 明确保留在 `ExecutableSpec` 的
 
 - `cb_configs`
 - `core_plan`
@@ -254,21 +299,21 @@ split 后的目标不是重新理解 attention，而是消费通用 analysis pas
 
 这些都属于 host/runtime 必须知道的冻结事实。
 
-### 10.2 优先保留在 IR / split 后 attrs 的
+### 11.2 优先保留在 IR / split 后 attrs 的
 
 - work-dependent index / loop-bound 结构
 - fragment compute 结构
 - pipeline stage 结构
 - 可由 split 后 IR 再分析得到的 region / dependency 信息
 
-### 10.3 需要警惕继续膨胀的
+### 11.3 需要警惕继续膨胀的
 
 - `blackhole.segment_plan`：应偏向 segment 边界与角色，不应继续增长为半个 `ExecutableSpec`
 - `AccessorSpec` / `compile_time_arg_specs`：只承载 ABI / materialization 必需部分，避免重复表达同一事实
 - `grid_x/grid_y/work_per_core/...` 这类摘要 attrs：若 `core_plan` 已是真源，应尽量降级为调试信息或短生命周期 attrs
 - 后续新增 `*DescriptorSpec`：只有 host/runtime 真要消费、且 IR 不在场时才允许新增
 
-## 11. 推荐实施顺序
+## 12. 推荐实施顺序
 
 1. split 前保留并规整 work decomposition / fragment region / pipelined stage 语义
 2. 实现 `AnalyzeBlackholeWorkDecomposition`
@@ -278,17 +323,19 @@ split 后的目标不是重新理解 attention，而是消费通用 analysis pas
 6. 在 codegen / runtime 侧只消费冻结结论，不新增算法解释逻辑
 7. 以 `mha_fwd_bshd` / `gqa_fwd_bshd` 前向为目标做 correctness / legality 验证
 
-## 12. 当前剩余主 blocker
+## 13. 当前剩余主 blocker
 
 `local/accumulator -> shared(CB)` staged copy 已 lower 成 `tl.blackhole.write_local_slice_to_cb`，compile-path 不再卡在 residual shared store。
 
-当前剩余点集中在 **runtime 执行期**：
+当前剩余点集中在 **compute correctness / 语义模型**：
 
-1. **execution-time scratch/CB 生命周期仍未完全一致**：`acc_s / acc_s_cast / acc_o` 这类 `blackhole.acc` scratch 结果虽然已经修掉了“漏发页数”和“重复 reserve”两类局部协议错误，但 runtime 仍 hang，说明 reserve / publish / wait / consume 全时序还没有完全对齐
-2. **residual `exp2f`**：部分 `exp2_row_bcast_affine` 形态未被 matcher 命中，回退成原始 TIR `exp2f` call；这块已经不是当前唯一主 blocker，但仍是需要继续收口的 compile/codegen 风险
-3. **Watcher 已能稳定收敛死锁形态**：reader `CRBW`、writer `CWFW`、compute `MWDD`。后续调试重点应继续沿 execution-time CB/synchronization 协议缩小，而不是回头扩大 compile-path 特判
+1. **`blackhole.acc` 混合语义**：`acc_s / acc_s_cast / acc_o` 仍在部分路径里同时被解释成“线性 fragment scratch”和“TT-Metal tile scratch”，这已经从旧的 hang 演变成稳定 correctness mismatch
+2. **stats-state 尚未成为正式一等语义**：`scores_max / scores_scale / scores_sum / logsum` 仍缺少和 tile scratch 分离后的正式 state model，导致 row-reduce / row-broadcast / exp-affine 还不能完全收进同一主路径
+3. **late matcher 仍在承担过多语义恢复责任**：只要后段还在从普通 `BufferLoad/BufferStore/For` 长相猜 tile contract，flash-attn 这类复杂 kernel 的 correctness 风险就不会真正收口
 
-## 12.1 已发现的设计约束
+因此当前下一步已经不是继续围绕 execution-time hang 缩小，而是把这批语义前移到新的 compiler-internal `Stateful Tiled IR`。
+
+## 13.1 已发现的设计约束
 
 ### CB-as-fragment-scratch
 
@@ -298,7 +345,7 @@ flash-attn compute kernel 中 fragment state（`acc_o`、`scores_max`、`logsum`
 
 fragment scratch CB 必须在 16-31 范围内（TRISC 可访问），因此 `kIntermediate` 现与 `kOutput` 共享 16-31 池。flash-attn 当前使用 12 CB。
 
-## 12. 验证方式
+## 14. 验证方式
 
 设计完成后的实现验证应至少覆盖：
 
@@ -318,7 +365,7 @@ fragment scratch CB 必须在 16-31 范围内（TRISC 可访问），因此 `kIn
 - `example_mha_fwd_bshd.py`
 - `example_gqa_fwd_bshd.py`
 
-## 13. 结论
+## 15. 结论
 
 本设计不建议沿着“新增更多 descriptor”继续扩，而建议：
 

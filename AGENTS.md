@@ -117,7 +117,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - flash-attn forward subset：analysis、fragment/dataflow lowering 与 codegen 已打通当前支持面
    - P4：更宽 copy/dataflow 泛化（non-tile/stick/sharded）
    - P5：更宽 synchronization（multicast/global/pass-level producer）
-   - 当前 compile-path 已无主 blocker；剩余工作转为 runtime 验证与更宽支持面
+   - execution hang 已解；当前主 blocker 已收敛为 `blackhole.acc` 混合语义导致的 compute correctness 问题
+   - 下一阶段正式方向是 compiler-internal `Stateful Tiled IR`；当前实施计划见 `tasks/dev_design/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`
 
 ---
 
@@ -171,3 +172,6 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   - GEMM：A/B-separated reader range + writer output range
   - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
 - flash-attn forward subset 当前已完成 analysis、最小 fragment/dataflow builtin/codegen 接入，并打通当前支持的 MHA/GQA forward compile-path；后续重点是 runtime 验证与更宽支持面
+- TT-Sim 当前正式环境入口是顶层 `scripts/setup_tt_sim.sh`
+- `setup_tt_sim.sh` 与后续测试必须在同一个 shell 中执行
+- 如果在 worktree 中运行测试，source 后必须把 `TILELANG_HOME` 指回当前 checkout/worktree
