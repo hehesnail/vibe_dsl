@@ -17,6 +17,11 @@
     - paged / indexed sparse access
     - stateful reduction-update
     - chunked recurrence / scan
+  - 权威总设计已补齐实现层 contract：
+    - `TIR + companion IR` 混合承载模型
+    - `PrimFunc.attrs + IRModule.global_infos + materialized blackhole.* attrs` 的职责分层
+    - `TIRAnchor / TIRValueBinding`
+    - `AtomicEffect -> semantic region` 的通用恢复规则
   - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界
 
 ## 当前稳定基线
@@ -53,15 +58,19 @@
 
 1. 基于 `tasks/dev_design/final_blackhole_backend_redesign.md` 重写新的 layered-IR implementation plan。
 2. 执行 **Phase A: Stateful Semantic IR**：
+   - `AnalyzeSemanticStructure`
    - `LiftToStatefulSemanticIR`
    - `ValidateStatefulSemanticIR`
    - 冻结 `domain / state / relation / phase`
+   - 明确 `PrimFunc.attrs["tl.semantic_program"]` 与 `TIRAnchor` 承载 contract
    - 保证 copy / GEMM compile-path zero-regression
 3. 执行 **Phase B: Spatial Program IR**：
    - 把 selection/indexing、routed/grouped dispatch、paged decode、stateful update、chunk recurrence 的 `task / channel / layout / sync / work partition` 一等化
+   - 明确 `PrimFunc.attrs["tl.spatial_program"]` 承载 contract
    - 拆掉 `LowerBlackholeOps` 当前同时承担语义理解和 target lowering 的边界
 4. 执行 **Phase C: TT Target IR**：
    - 统一 `CB / semaphore / dst layout / kernel role / ABI / execution plan`
+   - 明确 `PrimFunc.attrs["tl.tt_program"]` 与 `IRModule.global_infos` 中 hardware model/topology 的承载 contract
    - 把 `ExecutableSpec` 改成从 `TT Target IR` 物化
 5. 在新分层下继续扩更宽 flash-attn forward 支持面，以及 P4 / P5 更宽执行面。
 
