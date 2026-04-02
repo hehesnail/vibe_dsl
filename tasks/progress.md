@@ -21,15 +21,18 @@
     - `TIR + companion IR` 混合承载模型
     - `PrimFunc.attrs + IRModule.global_infos + materialized blackhole.* attrs` 的职责分层
     - `TIRAnchor / TIRValueBinding`
-    - `AtomicEffect -> semantic region` 的通用恢复规则
-    - `CombineSpec / SelectionSpec / SegmentSpec / PageSpec / RecurrenceSpec` 这组 typed semantic descriptors
+    - `AtomicEffect -> SemanticRegion` 的通用恢复规则
+    - `Domain / State / Update` semantic core
+    - `AccessMap / UpdateLaw` 作为 `Update` 的 typed 组成部分
     - `SemanticProgram -> SpatialProgram` 的空间化构造规则与 policy 边界
     - `SpatialCandidate / SpatialPolicy / SpatialCostModel` 的 planning contract
     - `SpatialProgram + hardware model -> TTProgram` 的 target mapping 规则与 materialization 边界
     - `TTHardwareModel` 的 typed schema（含 `TTComputeModel` 子模型）
     - `TTProgram -> TT-lowered PrimFunc + ExecutableSpec` 的唯一物化路径
   - 权威总设计已完成系统性 review 并补齐以下 gap（2026-04-02）：
-    - `State.kind` 扩展：新增 `compound_state` + `update_semantics` 区分 attention carry / mamba chunk state / MoE combine
+    - Semantic core 收敛：从较重的 `Domain/State/Relation/Phase/SemanticRegion + descriptor family` 收敛为 `Domain / State / Update`
+    - `AccessMap / UpdateLaw`：吸收 paged/routed/selection/recurrence 语义，不再平行维护 `*Spec` 家族
+    - `StateSSA` 方向：长期 public schema 保持小，内部保留 `StateVersion / StateJoin` 式分析图
     - Recovery Boundary：统一语义系统下的自动恢复 / 最小 DSL 补语义边界 + workload validation matrix + `T.annotate_semantic()` protocol
     - `ProgramPhase`：Spatial Program IR 新增多 kernel 组合的全局阶段边界（fusedmoe 双 T.Kernel、flash_decoding split+combine）
     - `TTComputeModel`：TTHardwareModel 新增 compute 子模型（FPU/SFPU 独立性、dst 争用、pack/unpack mode）
@@ -38,8 +41,8 @@
     - Companion IR invalidation：post-semantic-lift 默认 `unsafe`；只有 audited `identity-preserving / rebind-aware` pass 才能声明 `safe`
     - `SplitBlackholeKernel` 过渡边界：pre-semantic 仅作为 canonicalization / temporary signal producer，compatibility `blackhole.segment_plan` 不是真源
     - Materialized attr ownership：`blackhole.segment_plan/runtime_args/cb_configs/core_plan` 的稳态唯一 writer 固定为 `MaterializeTTExecutableSpec`
-    - Phase A 细分为 A1（最小 multi-family recovery）和 A2（泛化 + 全部 descriptors），A1 gate 强制包含一个 non-attention semantic skeleton case
-    - Section 7 workload 示例全部更新：反映 `compound_state`、typed descriptors（CombineSpec/SelectionSpec/SegmentSpec/PageSpec/RecurrenceSpec）、`ProgramPhase`、composable `role_set`
+    - Phase A 细分为 A1（最小 multi-family recovery）和 A2（泛化 + 更宽 `AccessMap / UpdateLaw` traits），A1 gate 强制包含一个 non-attention semantic skeleton case
+    - Section 7 workload 示例已切换到 `Domain / State / Update` 叙述，去掉 workload-specific semantic enum
   - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界；`topk / fusedmoe / paged decode / chunk recurrence` 同样属于当前设计覆盖面
 
 ## 当前稳定基线
@@ -66,7 +69,7 @@
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组
 - 这正是当前架构切换到 layered IR 的直接动机：
-  - `Stateful Semantic IR` 冻结算法 state / relation / phase 真语义
+  - `Stateful Semantic IR` 冻结算法 `domain / state / update` 真语义
   - `Spatial Program IR` 单独表达 task / channel / layout / sync / work partition
   - `TT Target IR` 统一承接 CB / semaphore / dst layout / kernel role / ABI
 - 但这套分层设计的目标不再是“只修 flash-attn”：
@@ -79,7 +82,8 @@
    - `AnalyzeSemanticStructure`
    - `LiftToStatefulSemanticIR`
    - `ValidateStatefulSemanticIR`
-   - 冻结 `domain / state / relation / phase`
+   - 冻结 `domain / state / update`
+   - 明确 `AccessMap / UpdateLaw` 的最小 schema
    - 明确 `PrimFunc.attrs["tl.semantic_program"]` 与 `TIRAnchor` 承载 contract
    - 收紧 post-semantic-lift invalidation：默认 `unsafe`，仅允许 audited `safe` pass
    - 明确 pre-semantic compatibility attrs 不参与 semantic/spatial truth 判定
