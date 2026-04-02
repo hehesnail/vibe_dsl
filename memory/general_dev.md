@@ -2,6 +2,7 @@
 
 > 当前 Blackhole 后端唯一设计依据: `tasks/dev_design/final_blackhole_backend_redesign.md`
 > 本文档只保留稳定、可复用的工程经验。
+> 文中若出现 `flash-attn` / `GQA` / `MoE` 等例子，只作为具体经验来源，不代表总体架构边界。
 
 ## 当前文档入口
 
@@ -61,9 +62,9 @@
 - 对 split-after TIR 的 fragment analysis，不要只盯 `CallNode`。像 `scores_sum[0] + acc_s[rv]`、`T.max(scores_max[0], tmp[0])` 这类模式在 TVM IR 里常常是 `AddNode` / `MaxNode` / `MulNode` / `DivNode` 等原生表达式节点；如果只扫 `CallNode`，row reduction 和 scalar-to-vector broadcast 会在真实 MHA/GQA IR 上整片漏掉
 - 当 fragment analysis 需要为后续 legality/lowering 提供更细粒度输入时，不要只保留一个粗粒度 `pointwise_chain` 标签。先在 analysis attrs 里把 `fill / exp2 / cast / max / add / mul / div / if_then_else` 这类点算子枚举出来，再让后续 lowering 决定哪些是当前子集、哪些要继续 fail-fast；否则 build-time gate 永远只能对一个黑盒 `pointwise_chain` 报错
 - 当 build-time gate 还没真正支持 fragment 子集执行时，也不要继续按 `pointwise_chain` 这种总括词报错。更稳的做法是：`LowerBlackholeOps` 先汇总细粒度 `pointwise_op_kinds`，`rt_mod_blackhole` 再按具体 unsupported 集合（例如 `row_reduction / row_broadcast / fill / mul / ...`）显式 fail-fast。这样后续实现 fragment lowering 时，可以逐项消掉 blocker，而不是每次都改一整块黑盒 gate
-- 如果某类 fragment 计算暂时还不能执行，但它本身又不是当前最核心的 blocker，不要让它继续挤占 build-time gate。像 flash-attn 前向当前真正阻塞执行的是 `row_reduction / row_broadcast`，那 `rt_mod_blackhole` 的 gate 就应优先收窄到这两类，而不是把普通 pointwise 一并拦住；否则你很难看清下一步该先补 reduction/broadcast 还是点算子 lowering
+- 如果某类 fragment 计算暂时还不能执行，但它本身又不是当前最核心的 blocker，不要让它继续挤占 build-time gate。gate 应优先收窄到真正阻塞当前 consumer 的最小 op family，否则你很难看清下一步该先补哪类 lowering
 - 如果同一 backend 既有 `ExecutableSpec` 路径，也有 device-only codegen 路径，fragment-subset fail-fast 不能只放在 `rt_mod_blackhole` 这类 spec 提取层。否则一旦某条路径绕过 spec，错误就会晚到 codegen 内部爆成 `Find undefined Variable ...` 之类的噪声。对这类 shared lowering boundary，要让 codegen 入口和 spec 提取层共享同一套 unsupported-op gate
-- flash-attention analysis 的测试要按 IR 所在阶段写预期，不要强行要求 split-after IR 和 optimized device IR 暴露完全相同的点算子集合。像 `if_then_else` mask init、`exp2` 这类语义，在 causal 与 non-causal 之间、以及 prepasses 之前和之后，本来就可能以不同节点或已折叠形态出现；测试应锁住该层 IR 仍然可见的结构信号，而不是复用源码层的完整 op 清单
+- 复杂 consumer 的 analysis 测试要按 IR 所在阶段写预期，不要强行要求 split-after IR 和 optimized device IR 暴露完全相同的点算子集合。像 `if_then_else`、`exp2`、predicate init、selection/update 这类语义，在 prepasses 前后本来就可能以不同节点或已折叠形态出现；测试应锁住该层 IR 仍然可见的结构信号，而不是复用源码层的完整 op 清单
 - 当 analysis 结果还不能直接 lower 成可执行 kernel 时，不要把 raw analysis attrs 直接塞进 `ExecutableSpec`。更稳的过渡做法是：先在 `LowerBlackholeOps` 里把它们归一化成一层很薄的 IR attrs summary（例如 `blackhole.lowering_requirements`），再由更后面的 build/runtime gate 消费并 fail-fast。这样主链能先完成“analysis 被 lowering 真正接住”，又不会把半成品 descriptor 永久冻结进 runtime schema
 - 对 pipelined fragment subset 的早期 legality，优先直接读 loop annotation（例如 `ForNode.annotations["num_stages"]`），不要假设更后面的 region canonicalization 一定先成功。这样即使更宽 GQA/MHA 形态还会在别的 lowering 细节上炸，主链也能先把“这组 stage 配置本来就不支持”显式拦下来
 - row-broadcast 的索引归并信号不要只认 `floor_div/floor_mod`。在 split-after TIR 里，同一类“coarsened row index”也可能被写成 `tir.shift_right(i, k)`；如果 analysis 只认除法不认右移，GQA 这类更宽 fragment pipeline 很容易少报 `row_broadcast`
@@ -71,8 +72,8 @@
 - `T.Pipelined` 经过 device prepasses 后，stage 注解不一定还叫 `num_stages`；Blackhole analysis 至少要同时兼容 `num_stages` 和 `tl_pipelined_num_stages`，否则 optimized path 会比 split-after path 少一层 pipeline 语义
 - `tl.region` 不要假设 `BufferLoad` 索引数必须与 extents 个数完全相等。对 staged/shared view，常见形态是“leading stage index + trailing tile extents”；更稳的 bridge 是把未匹配的前导索引收成 singleton axes，再用提供的 extents 重建尾部 region
 - 对 fragment/reduction lowering，不要假设 split-after 和 optimized device IR 会保留完全相同的包裹结构。`OptimizeForTarget` 之后，`for extent=1` 常会被抹平成同级 `SeqStmt`，而 `pragma_unroll_explicit` 之类则会额外包成 `AttrStmt`；matcher 应先剥掉这类无语义包装，再匹配真正的 reduction 形态，否则手动 pass 链能 lower、full `lower()` 反而会漏掉同一逻辑
-- 对 flash-attn 这类复杂 fragment compute，不要把整类 `row_broadcast` 一起当成一个 blocker 或一次性全开。更稳的推进方式是先在 `LowerBlackholeOps` 里吃掉最小、形态稳定、且和 TT-Metal 现有 compute primitive 对得上的子集，例如 `dst[i] = dst[i] * scalar[0]` / `dst[i] = dst[i] / scalar[0]` 这类 vector-fragment 自身按 scalar-fragment 更新；再把剩余融合 broadcast（如 `exp2(acc_s[i] * scale - scores_max[0] * scale)`）继续单独收敛。这样 gate 会随着真实 lowering 一步步收窄，而不是永远把整个 `row_broadcast` 黑盒化
-- 对 flash-attn 里的 scalar fragment 链，也应优先抽成通用 scalar primitive，而不是继续让 build-time gate 把它混在 `row_broadcast` 里。像 `logsum = logsum * scores_scale + scores_sum` 这种 `scalar FMA`，适合直接在 `LowerBlackholeOps` lower 成单独 builtin；这样剩余 blocker 会更准确地聚焦到真正还缺的 vector broadcast + unary 融合路径
+- 对复杂 fragment compute，不要把整类 `row_broadcast` / `select-update` / `fused pointwise` 一起当成一个 blocker 或一次性全开。更稳的推进方式是先在 `LowerBlackholeOps` 里吃掉最小、形态稳定、且和目标后端现有 compute primitive 对得上的子集，再把剩余融合路径继续单独收敛。这样 gate 会随着真实 lowering 一步步收窄，而不是永远把整类语义黑盒化
+- 对 scalar fragment 链，也应优先抽成通用 scalar primitive，而不是继续把它混在更大的 vector-broadcast / fused-update blocker 里。这样剩余 blocker 会更准确地聚焦到真正还缺的复合路径
 - 做 TIR matcher 时，不要用 `same_as` 去判断两个“语义上相等的 extent/stride 常量”是否相等。优化前后 IR 很容易生成不同节点实例的 `IntImm(4)` / `IntImm(32)`，这会让像 `i * 4 + vec` 这种明显线性化的模式白白 miss。更稳的写法是直接对整个 affine 关系做 `Analyzer::Simplify` 后判零，例如比较 `expr - (outer * inner_extent + inner)` 是否可化简为 0
 - 对 fragment pointwise 的 residual 剪枝，不要在整棵表达式树里无差别找 `AddNode` / `MulNode`。像 `Cast(acc_s[i * 4 + vec])` 这种合法 residual `cast`，它的索引表达式天然会带 `AddNode`；如果 helper 扫全树，就会把索引算术误判成尚未 lower 的 pointwise `add`。更稳的口径是先看 residual store 的**根表达式类型**，只在根值本身仍是 `Add/Max/Cast/...` 时才把对应 op 继续保留为 blocker
 - 改 C++/链接 `libtilelang.so` 之后，不要再把 `cmake --build` 和 `pytest` 并行跑。pytest 很容易在新 `.so` 链接完成前启动，看到旧实现，进而把问题误判成“修复没生效”。这类验证应该顺序执行：先 build，确认链接完成，再跑 Python 测试

@@ -38,6 +38,7 @@
 3. 如果任务涉及构建、调试、历史问题，再看：
    - `memory/general_dev.md`
    - `memory/bugs.md`
+   - `tasks/dev_design/README.md`
 4. 然后读代码，不要只看文档
 
 ## TT-Sim 环境入口
@@ -87,22 +88,21 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 
 当前 Blackhole 后端默认推进顺序：
 
-1. ~~attrs / 协议~~ ✅
-2. ~~`ExecutableSpec`~~ ✅
-3. ~~`rt_mod_blackhole`~~ ✅
-4. ~~`BlackholeModule` direct path 补全~~ ✅
-5. ~~Copy E2E 验收（direct path）~~ ✅
-6. ~~split-before 语义规划~~ ✅
-7. ~~通用 pass 回收~~ ✅（FlattenBuffer/VectorizeLoop 已验证；StorageRewrite 永久排除）
-8. ~~GEMM 接入 Steps 1-5~~ ✅（CB identity 唯一协议已收正）
-9. ~~GEMM E2E 验收~~ ✅（transpose_B + host tilize/untilize 已补齐）
-10. ~~multi-core~~ ✅（formal direct host path 已完成）
-11. TT-Metal contract formalization 收尾：
-    - P0/P3 当前主路径已收口
-    - P4：copy/dataflow 泛化（non-tile/stick/sharded）
-    - P5：multi-core synchronization 预埋
-    - flash-attn 当前主 blocker 已从 execution hang 收敛为 `blackhole.acc` 混合语义导致的 compute correctness 问题
-    - 下一阶段正式方向是 compiler-internal `Stateful Tiled IR`；当前实施计划见 `tasks/dev_design/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`
+1. 保持当前稳定基线不回退：
+   - `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path
+   - copy / GEMM current support surface
+   - 第一批复杂 consumer 已打通的 compile-path 子集（当前以 `flash-attn` 为主）
+2. 文档、任务安排和实现边界统一以 `tasks/dev_design/final_blackhole_backend_redesign.md` 为准。
+3. 先重写新的 layered-IR implementation plan，不再沿用已归档的旧单层 Phase 1 草案。
+4. 按新总设计执行：
+   - Phase A：`Stateful Semantic IR`
+   - Phase B：`Spatial Program IR`
+   - Phase C：`TT Target IR`
+5. 在新分层下继续推进：
+   - `flash-attn` `blackhole.acc` 语义收正
+   - `topk / fusedmoe / paged decode / chunk recurrence` 等 family 的统一承接
+   - 更宽 copy/dataflow 支持面（P4）
+   - 更宽 synchronization 支持面（P5）
 
 ## 经验与问题记录
 
@@ -179,6 +179,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   - copy：equal source/dest range，且 stride = 1
   - GEMM：A/B-separated reader range + writer output range
   - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
+- `flash-attn` 当前是第一批 consumer，不是总体架构边界；总体设计同时面向 selection/indexing、routed/grouped dispatch、paged decode、chunk recurrence 等 workload family
 - TT-Sim 当前正式环境入口是顶层 `scripts/setup_tt_sim.sh`
 - `setup_tt_sim.sh` 与后续测试必须在同一个 shell 中执行
 - 如果在 worktree 中运行测试，source 后必须把 `TILELANG_HOME` 指回当前 checkout/worktree

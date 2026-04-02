@@ -4,10 +4,10 @@
 
 - **文档ID**: `stage4_flash_attention_forward_subset`
 - **日期**: 2026-03-31（创建），2026-04-02（最近更新）
-- **状态**: 活动中（作为 `flash-attn` consumer 支持设计；analysis 与当前支持面的 compile-path 已打通，execution hang 已解；当前主 blocker 为 compute 语义设计收正）
+- **状态**: 活动中（作为 `flash-attn` consumer 支持设计；analysis 与当前支持面的 compile-path 已打通；execution hang 已解；剩余问题已收敛为 layered IR 迁移前的 compute 语义正确性问题）
 - **范围**: `tilelang_repo/examples/flash_attention/example_mha_fwd_bshd.py` 与 `example_gqa_fwd_bshd.py` 的前向完整语义；不包含 backward、varlen、wgmma
 
-> 角色说明：本文档现在只作为 **Flash-Attention 这一类 consumer 的支持设计**。总体架构方向看 `final_blackhole_backend_redesign.md`。旧的 `stateful_tiled_ir` 实施计划已归档到 `archive/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`，新的 layered-IR 实施计划仍待重写。
+> 角色说明：本文档现在只作为 **Flash-Attention 这一类 consumer 的支持设计**。总体架构、IR 分层、实现顺序和对象 schema 一律看 `final_blackhole_backend_redesign.md`。本文不再提供总体方向，也不再作为 implementation plan 入口。旧的 `stateful_tiled_ir` 实施计划已归档到 `archive/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`。
 
 ## 1. 目标
 

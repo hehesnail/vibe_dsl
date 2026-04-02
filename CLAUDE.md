@@ -105,7 +105,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 1. 保持当前稳定基线不回退：
    - `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path
    - copy / GEMM current support surface
-   - flash-attn 已打通的 compile-path
+   - 第一批复杂 consumer 已打通的 compile-path 子集（当前以 `flash-attn` 为主）
 2. 文档、任务安排和实现边界统一以 `tasks/dev_design/final_blackhole_backend_redesign.md` 为准。
 3. 先重写新的 layered-IR implementation plan，不再沿用已归档的旧单层 Phase 1 草案。
 4. 按新总设计执行：
@@ -113,7 +113,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - Phase B：`Spatial Program IR`
    - Phase C：`TT Target IR`
 5. 在新分层下继续推进：
-   - flash-attn `blackhole.acc` 语义收正
+   - `flash-attn` `blackhole.acc` 语义收正
+   - `topk / fusedmoe / paged decode / chunk recurrence` 等 family 的统一承接
    - 更宽 copy/dataflow 支持面（P4）
    - 更宽 synchronization 支持面（P5）
 
@@ -158,7 +159,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   - copy：equal source/dest range，且 stride = 1
   - GEMM：A/B-separated reader range + writer output range
   - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
-- flash-attn forward subset 当前已完成 analysis、最小 fragment/dataflow builtin/codegen 接入，并打通当前支持的 MHA/GQA forward compile-path；runtime hang 已解，当前主 blocker 是 `blackhole.acc` 混合语义导致的 compute correctness 问题
+- `flash-attn` forward subset 当前已完成 analysis、最小 fragment/dataflow builtin/codegen 接入，并打通当前支持的 MHA/GQA forward compile-path；runtime hang 已解，当前主 blocker 是 `blackhole.acc` 混合语义导致的 compute correctness 问题
+- 总设计的目标不再局限于 `flash-attn`：后续实现需要同时面向 selection/indexing、routed/grouped dispatch、paged decode、chunk recurrence 等 workload family
 - 后续所有架构推进以 layered IR 为准：
   `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
 - TT-Sim 当前正式环境入口是顶层 `scripts/setup_tt_sim.sh`

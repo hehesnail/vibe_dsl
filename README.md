@@ -16,11 +16,18 @@
   - `Stateful Semantic IR`
   - `Spatial Program IR`
   - `TT Target IR`
+- 这套分层不是为单个 consumer 设计，而是用于统一承接复杂前端计算 family：
+  - selection / indexing
+  - routed / grouped / ragged dispatch
+  - paged / indexed sparse access
+  - stateful reduction-update
+  - chunked recurrence / scan
 - 旧的单层方案、历史 runtime 架构说明、旧 implementation plan 都已移入 `tasks/dev_design/archive/`，不再作为当前实现入口。
 - 当前稳定执行基线仍是 `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path：
   - copy / GEMM direct path 已稳定
-  - flash-attn forward subset 的 analysis、fragment/dataflow lowering 和 codegen 已接通当前支持面
-  - 当前主 blocker 已收敛为 `blackhole.acc` 混合语义导致的 compute correctness 问题
+  - `flash-attn` 只是第一批 consumer，当前 compile-path 已打通
+  - `fusedmoe`、`topk`、`paged decode`、`mamba chunk state` 已进入总设计覆盖面
+  - 当前最具体的执行 blocker 仍是 `flash-attn` 上暴露出的 `blackhole.acc` 混合语义 correctness 问题，但它不再定义总体架构边界
 
 ## 推荐阅读顺序
 

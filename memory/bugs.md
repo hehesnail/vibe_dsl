@@ -1,6 +1,7 @@
 # 问题与 Bug 记录
 
 > 本文档只保留仍然有复用价值的问题记录。已解决且无复用价值的条目已归档删除。
+> 当前总体架构边界以 `tasks/dev_design/final_blackhole_backend_redesign.md` 为准；这里的 consumer-specific 问题记录不替代总体设计。
 
 ## 未解决
 
@@ -25,13 +26,21 @@
   - 最后在 `TT Target IR` 里收正 `CB / semaphore / dst layout / kernel role / ABI`，让 `blackhole.acc` 只表示 compute-side tile scratch
   - 把 stats-state（`scores_max / scores_scale / scores_sum / logsum`）从 tile scratch 语义里彻底拆出去
 
-### Blackhole direct path 缺少 TT-Metal 正式 contract 分层
+### layered IR / TT Target contract 已有总设计，但实现主链尚未迁移完成
 
 - **时间**: 2026-03-26
-- **问题**: 当前 Blackhole schema 仍未完全覆盖 TT-Metal 正式 contract，剩余缺口主要在更宽的 execution surface：host logical tensor layout 泛化、更丰富 dtype/compute ABI、以及 sharded/non-tile/common-runtime accessor 执行面
-- **影响**: copy 在最简单 tile/interleaved case 上可通过，但更复杂场景无正式 schema 承载
-- **解决方向**: 按 `stage2d_ttmetal_contract_audit.md` 的 P0-P5 分层推进；当前 P0 已完成到统一 `compute_contract`，P1、P2、P3 主路径 formalization 已落地，后续继续做 P4-P5 和更宽的 P3 execution surface
-- **当前状态**: 部分解决。P0 已完成：dtype 分层、compute config、以及 `dst_full_sync_en/bfp8_pack_precise/defines/named_compile_args` 已走通 DSL producer -> `compute_contract` -> `ExecutableSpec/KernelSpec` -> direct runtime 主链。P3 richer runtime work schema 已落到 `work_linear_id` + role-explicit `a/b/output/k` descriptors；accessor schema、`common_runtime_args`、`compile_time_arg_specs`、`launch_spec` 已进入 segment/kernel schema 并被 direct runtime 消费。P4 已完成最小 interleaved stick/page copy 主路径：`transport_page_size` 进入 accessor schema，`32x16` row-major/stick copy 已通过 TT-Sim。当前 remaining gap 是更广泛的 range/stride/batch、sharded accessor，以及更宽 execution surface。
+- **问题**: 总设计已经把 `Stateful Semantic IR -> Spatial Program IR -> TT Target IR` 和 `TTHardwareModel` / materialization path 定清，但代码主链还没有迁移到这套分层。当前仍有相当一部分逻辑停留在 `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores -> rt_mod_blackhole` 的混合职责链条里。
+- **影响**:
+  - copy / GEMM 可以继续稳定，但复杂 workload family 还没有统一承接层
+  - TT-Metal contract 虽然在文档和局部 schema 上越来越完整，但还没有成为单一 target truth source
+- **解决方向**:
+  - 按 `final_blackhole_backend_redesign.md` 重写 implementation plan
+  - 先落 `SemanticProgram`
+  - 再落 `SpatialProgram`
+  - 最后把 `TTProgram` 与 `ExecutableSpec` 的唯一物化路径接入主链
+- **当前状态**:
+  - 设计层已完成：分层 IR、typed semantic descriptors、`SpatialCandidate / SpatialPolicy / SpatialCostModel`、`TTHardwareModel`、唯一物化路径都已写入总设计
+  - 实现层未完成：主链还没有这些 typed companion IR object 与对应 pass/validator/materializer
 
 ### direct runtime 若不先把 output tensor 初值同步到 device，partial-write copy 会读回脏数据
 

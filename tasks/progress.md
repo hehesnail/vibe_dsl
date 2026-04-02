@@ -6,7 +6,7 @@
 ## 当前阶段
 
 - **日期**: `2026-04-02`
-- **阶段**: Stage 4 — flash-attn forward subset / TT-Metal contract cleanup / layered IR architecture transition
+- **阶段**: Stage 4 — 复杂 workload family 的 layered IR architecture transition
 - **当前主线**:
   - 以新的分层架构推进后续实现：
     `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
@@ -28,7 +28,7 @@
     - `SpatialProgram + hardware model -> TTProgram` 的 target mapping 规则与 materialization 边界
     - `TTHardwareModel` 的 typed schema
     - `TTProgram -> TT-lowered PrimFunc + ExecutableSpec` 的唯一物化路径
-  - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界
+  - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界；`topk / fusedmoe / paged decode / chunk recurrence` 同样属于当前设计覆盖面
 
 ## 当前稳定基线
 

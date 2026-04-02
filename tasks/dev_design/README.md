@@ -9,8 +9,8 @@
 | 文档 | 用途 | 状态 |
 |------|------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计 | 常青 |
-| `stage4_flash_attention_forward_subset.md` | Flash-Attention 作为 consumer 的支持设计 | 活动中（不再定义总体架构方向） |
-| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 支持中（P4/P5 与更宽 execution surface 仍参考它） |
+| `stage4_flash_attention_forward_subset.md` | `flash-attn` 这一类 consumer 的支持设计 | 活动中（consumer-specific，不再定义总体架构方向） |
+| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 与 execution surface 缺口审计 | 支持中（TT Target IR 的 supporting audit） |
 | `stage4_semaphore_schema.md` | TT Target IR 的 semaphore/sync 支持设计 | 支持中 |
 
 ## 2. 当前清理结果
@@ -25,6 +25,7 @@
 
 - `final_blackhole_backend_redesign.md`
 - 其 Phase A / B / C 迁移顺序
+- 其 workload family 覆盖矩阵
 - 当前仍活动的 supporting docs
 
 已归档、不可再作为当前任务安排入口：
