@@ -10,8 +10,14 @@
 - **当前主线**:
   - 以新的分层架构推进后续实现：
     `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
-  - 在保持 copy / GEMM / current direct-path 稳定的前提下，解决 flash-attn 的 `blackhole.acc` 语义问题
-  - 清理所有仍把已归档旧单层方案当当前入口的文档和任务安排
+  - 在保持 copy / GEMM / current direct-path 稳定的前提下，解决复杂前端计算在 Blackhole 上的统一承接问题
+  - 权威总设计已改为中文主叙述，并明确覆盖：
+    - selection / indexing
+    - routed / grouped / ragged dispatch
+    - paged / indexed sparse access
+    - stateful reduction-update
+    - chunked recurrence / scan
+  - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界
 
 ## 当前稳定基线
 
@@ -40,6 +46,8 @@
   - `Stateful Semantic IR` 冻结算法 state / relation / phase 真语义
   - `Spatial Program IR` 单独表达 task / channel / layout / sync / work partition
   - `TT Target IR` 统一承接 CB / semaphore / dst layout / kernel role / ABI
+- 但这套分层设计的目标不再是“只修 flash-attn”：
+  - 它还需要承接 `topk`、`fusedmoe`、`paged decode`、`mamba chunk state` 等复杂前端计算 family
 
 ## 下一步
 
@@ -50,7 +58,7 @@
    - 冻结 `domain / state / relation / phase`
    - 保证 copy / GEMM compile-path zero-regression
 3. 执行 **Phase B: Spatial Program IR**：
-   - 把 flash-attn / online-softmax / GEMM 的 `task / channel / layout / sync / work partition` 一等化
+   - 把 selection/indexing、routed/grouped dispatch、paged decode、stateful update、chunk recurrence 的 `task / channel / layout / sync / work partition` 一等化
    - 拆掉 `LowerBlackholeOps` 当前同时承担语义理解和 target lowering 的边界
 4. 执行 **Phase C: TT Target IR**：
    - 统一 `CB / semaphore / dst layout / kernel role / ABI / execution plan`
