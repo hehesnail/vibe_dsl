@@ -13,8 +13,9 @@
   - backend cleanup A1/A2/A3、B1/B2/B3、C1/C2 已完成当前计划内收敛
 - **当前活动主线**:
   - flash-attn forward subset：analysis、fragment lowering、dataflow bridging 与 codegen 已接通当前支持面
-  - compile/codegen 主 blocker 已进一步收口；当前剩余工作集中在 direct runtime 执行期验证与更宽支持面
-- **日期**: 2026-04-01
+  - execution hang 已解；当前剩余主工作已收敛为 `blackhole.acc` compute 语义收正、TT-Metal-first tile/CB/dst-reg 主路径迁移、以及更宽支持面
+  - 更上层设计方向已收敛：现有 TileLang/TIR 对 `stateful / routed / phased / segmented tiled program` 的表达不足，下一阶段将引入 compiler-internal `Stateful Tiled IR`，并把 Python 侧变更控制在最小 annotation/helper 范围内
+- **日期**: 2026-04-02
 - **相关设计**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
   - `tasks/dev_design/stage4_flash_attention_forward_subset.md`
@@ -42,6 +43,7 @@
   - `tl.blackhole.cast_fragment_slice`
   - `tl.blackhole.write_local_slice_to_cb`
 - **当前 codegen 状态**:
+  - 现有线性 fragment helper 仍可用于 compile-path bring-up，但已被明确标记为过渡实现，不再作为 `blackhole.acc` 的长期语义前提
   - 上述 fragment builtin 已接入 `codegen_blackhole`
   - `blackhole.acc` 局部符号映射与 `tl.infinity` 相关的 device-only codegen 噪声已收正
   - `blackhole.acc` 指向 CB 的局部 staging 已改为通过正式 helper 取写指针，不再在 TRISC compute source 里直接物化 `get_local_cb_interface(...).fifo_wr_ptr`
@@ -60,17 +62,19 @@
   - `cast_fragment_slice` 写出的 `blackhole.acc` scratch CB 若会被后续 matmul 当输入消费，之前没有按未来 matmul 所需页数 `cb_push_back` → 第二次 matmul 永远等不到完整输入页（已修复）
   - `GenerateMatmulSequence` 之前会对 `blackhole.acc` GEMM 输出 CB 在 `pack_tile` 前重复 `cb_reserve_back`，破坏已持有 scratch CB 的生命周期（已修复）
 - **下一步**:
-  - 在当前环境继续收敛 flash-attn runtime hang，定位 direct runtime 执行期同步/CB/dataflow blocker
+  - 按 `TT-Metal-first` 方向重定义 `blackhole.acc`：后续只表示 compute-side tile scratch
+  - 收正上游 TIR 对接边界：后段不再从线性 `BufferLoad/BufferStore` 形态猜 tile 语义，凡是无法稳定恢复的 tile contract 必须通过 analysis attrs 或显式 builtin 交付
+  - 基于已写入总体设计的 `Stateful Tiled IR`，拆出 `LiftToStatefulTiledIR / ValidateStatefulTiledIR / target-program lowering` 的实施计划
+  - 将 flash-attn compute 主链从当前混合语义迁到 `CB / tile / dst-reg` 正式协议
   - 继续扩更宽 flash-attn forward 支持面与 P4/P5 主项
-  - flash-attn runtime 回归入口已建立；compile/build blocker 已显著减少，但 `test_blackhole_flash_attention_runtime.py -k mha` 当前会在 workload enqueue 之后卡住，尚未通过精度对比
-  - 当前 Watcher 仍稳定复现同一组执行期死锁签名：reader `CRBW`、writer `CWFW`、compute `MWDD`；说明问题已进一步收敛到 execution-time CB/synchronization 协议，而不是 compile/codegen 层
+  - flash-attn runtime 当前已不再 hang，但 `test_blackhole_flash_attention_runtime.py -k mha` 仍未通过精度对比；当前主 blocker 已从 execution-time deadlock 收敛为 compute correctness/语义设计问题
 
 ### 最新回归结果（当前环境）
 
 | 测试 | 结果 |
 |------|------|
 | `test_blackhole_flash_attention_pipeline.py` | 新增 `acc_s_cast` 发布与 `blackhole.acc` GEMM 输出不重复 reserve 回归，当前通过 |
-| `test_blackhole_flash_attention_runtime.py` | 运行时主流程已推进到 workload enqueue / execution 阶段；`-k mha` 当前仍 hang，Watcher 复现 reader `CRBW` / writer `CWFW` / compute `MWDD`，精度对比未通过 |
+| `test_blackhole_flash_attention_runtime.py` | runtime 已不再 hang；`-k mha` 当前执行完成但 correctness 仍未通过，主 blocker 已收敛为 `blackhole.acc` 混合语义导致的 compute correctness 问题 |
 | `test_blackhole_copy_pipeline.py` | 40 passed, 10 skipped, 1 xfailed |
 | `test_blackhole_copy_runtime.py` | 2 passed, 9 skipped |
 | `test_blackhole_gemm.py` | 24 passed, 11 skipped |

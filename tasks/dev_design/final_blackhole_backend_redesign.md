@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档ID**: `final_blackhole_backend_redesign`
-- **日期**: 2026-03-19（创建），2026-04-01（最近更新）
+- **日期**: 2026-03-19（创建），2026-04-02（最近更新）
 - **状态**: 当前唯一权威总体设计
 - **适用范围**: `tilelang_repo` Blackhole 后端、host/device 主链、运行时执行路径、相关阶段设计
 
@@ -24,7 +24,7 @@ Blackhole 后端当前的正式目标收敛为三点：
 
 作为正式目标。
 
-## 2. 当前状态（2026-04-01）
+## 2. 当前状态（2026-04-02）
 
 ### 已完成
 
@@ -57,12 +57,18 @@ Blackhole 后端当前的正式目标收敛为三点：
 - 前向 Flash-Attention 设计已建档：`stage4_flash_attention_forward_subset.md`
   - 方向已收敛为：以 `mha_fwd_bshd` / `gqa_fwd_bshd` 为牵引，补齐通用 work decomposition / fragment compute region / pipelined staging 三类分析与 lowering 能力，并坚持 “IR 优先、spec 最小化”
   - 当前 `AnalyzeBlackholeWorkDecomposition` / `AnalyzeBlackholeFragmentRegions` / `AnalyzeBlackholePipelineStages` 已接入 Blackhole 主链，`lower()` 的 Blackhole device 入口也已收正为 entry `PrimFunc` 先进入 `SplitBlackholeKernel` 后的 analysis/lowering 管线
-  - `reduce_row / row_broadcast / fill / scalar_max / cast_fragment_slice / local_to_cb staging` 等最小 fragment/dataflow 子集已进入真实 lowering 与 codegen 主链
+  - `reduce_row / row_broadcast / fill / scalar_max / cast_fragment_slice / local_to_cb staging` 等最小 fragment/dataflow 子集已进入真实 lowering 与 codegen 主链，但这批线性 fragment helper 现已被明确标记为过渡实现，不再作为长期协议前提
   - `exp2` 路径大部分已收正为 backend 自有 fast-math helper；但仍有部分 `exp2_row_bcast_affine` 形态未命中 matcher，会回退成原始 `exp2f` call，需继续收敛
   - `AssignBlackholeCores` / direct runtime 的 core-plan 协议已收正到连续 logical worker grid；当前环境按 `11 x 10 = 110` worker cores formalize
-  - 当前支持的 MHA/GQA forward compile-path 已打通；runtime 也已越过旧的 fragment-subset fail-fast、`local/accumulator -> shared(CB)` 残留、TRISC math link 和 core lookup blocker
-  - `cast_fragment_slice -> blackhole.acc` 这类会被后续 matmul 继续消费的 scratch 结果，必须按未来 matmul 所需页数正式 `cb_push_back`；`GenerateMatmulSequence` 也不能再对同一 `blackhole.acc` 输出 CB 重复 `cb_reserve_back`
-  - 当前剩余主 blocker 已前移到 direct runtime 执行期：flash-attn `mha` case 在 workload enqueue 之后出现 hang，Watcher 仍稳定复现 reader `CRBW`、writer `CWFW`、compute `MWDD`，说明后续重点是执行期同步/CB/dataflow 协议验证，而不是 compile-path 补洞
+  - 当前支持的 MHA/GQA forward compile-path 已打通；runtime 也已越过旧的 fragment-subset fail-fast、`local/accumulator -> shared(CB)` 残留、TRISC math link、core lookup 和 execution hang blocker
+  - `cast_fragment_slice -> blackhole.acc` 这类会被后续 matmul 继续消费的 scratch 结果，必须按未来 matmul 所需页数正式 `cb_push_back`；`GenerateMatmulSequence` 也不能再对同一 `blackhole.acc` 输出 CB 重复 `cb_reserve_back`；这些修正已经解掉之前的 deadlock
+  - 当前 flash-attn forward 剩余主 blocker 已从 execution hang 收敛为 **compute 语义设计问题**：`blackhole.acc` 不能再同时承担“线性 fragment scratch”和“TT-Metal tile/CB scratch”双重语义
+  - 当前正式方向已收敛为 **TT-Metal-first**：
+    - `blackhole.acc` 后续只表示 compute-side tile scratch
+    - flash-attn compute 主链以 `CB / tile / dst-reg` 流为正式协议
+    - 线性 `fragment` helper 仅保留为过渡层，不再作为 `blackhole.acc` 的长期语义
+  - 上游 TIR 对接也需同步收正：Blackhole 后段不再从线性 `BufferLoad/BufferStore` 形态猜 tile 语义；凡是后端无法稳定恢复的 tile contract，必须通过 analysis attrs 或显式 builtin 交付
+  - 这一轮也明确暴露出更上层的 compiler 问题：现有 TileLang/TIR 对 `stateful / routed / phased / segmented tiled program` 的表达能力不足；下一阶段正式方向是在保持 Python DSL 主体写法稳定的前提下，引入 compiler-internal `Stateful Tiled IR`
 
 ### TT-Sim 固定验证入口
 
@@ -112,7 +118,45 @@ TileLang DSL
       -> readback
 ```
 
-### 3.2 设计原则
+说明：
+
+- 上述结构描述的是当前已经落地的正式主链
+- 下一阶段不会推翻这条主链，而是在 `PrimFunc / TIR` 与 target-specific plan/lowering 之间插入一层新的 compiler-internal semantic IR，用来结束晚期 target-specific 语义猜测
+
+### 3.2 下一阶段四层编译结构：`Stateful Tiled IR`
+
+下一阶段正式方向不是继续在 Blackhole 后段堆 matcher，而是在现有 TileLang/TIR 与 target program lowering 之间引入一层新的内部语义 IR：
+
+```text
+TileLang DSL / Python examples
+  -> PrimFunc / TIR（保留用户写法、通用 loop/tileop/buffer 结构）
+  -> Semantic Recovery / Lift
+  -> Stateful Tiled IR（算法语义层）
+  -> Target Program Lowering（TT-Metal / CUDA / 其他后端）
+  -> Codegen / Runtime Materialization
+```
+
+四层职责固定如下：
+
+1. **PrimFunc / TIR 层**
+   - 保留用户程序的自然写法
+   - 承接 `loop / alloc / copy / gemm / reduce / pipeline` 等通用结构
+   - 不直接暴露 TT-Metal 的 `CB / semaphore / runtime args / kernel role`
+
+2. **Stateful Tiled IR 层**
+   - 统一表达 `stateful / routed / phased / segmented tiled program`
+   - 显式承接 carry/update、tile-state 与 row-state 绑定、routed/paged domain、phase live-in/live-out
+   - 到这一层为止，算法语义恢复必须结束
+
+3. **Target Program Lowering 层**
+   - 把已明确的算法语义映射成目标硬件协议
+   - 对 TT-Metal/Blackhole 来说，这一层才允许出现 `kernel role / CB / semaphore / compile-time args / runtime args / accessor binding`
+
+4. **Codegen / Runtime Materialization 层**
+   - 只负责格式化、装配和执行
+   - 不再承担结构推理和语义恢复
+
+### 3.3 设计原则
 
 1. **以后端执行模型约束 lowering，不以后端打印器约束执行模型**
 2. **优先复用现有 PrimFunc/TIR 与 host/device 主链，只在少量 target-aware 边界定制**
@@ -122,8 +166,10 @@ TileLang DSL
 6. **逻辑 block/grid 语义应保留在 TIR/pass 中，不在 runtime 侧重建**
 7. **multi-core 主要由 host/runtime materialize，不由 codegen 主导**
 8. **`SplitBlackholeKernel`、`blackhole_module_direct.cc`、external runner 都不再是主路径设计前提**
+9. **如果信息不能从现有 TIR 稳定恢复，就必须在 compiler-internal IR 中一等化；只有在语义仍不唯一时，才允许 Python 侧追加极小 annotation**
+10. **用户侧 annotation 只能表达算法语义，不能泄露 TT-Metal/Blackhole 的硬件编程模型**
 
-### 3.3 三层分工
+### 3.4 当前主线路径的三层分工
 
 #### A. split 前语义规划
 
@@ -236,12 +282,14 @@ TileLang DSL
 - TRISC compute kernel 只能访问 0-31 范围的 CB；fragment scratch CB 必须落在此范围内
 - flash-attn forward 当前使用 12 CB，16-slot compute 池仍有余量，但后续更复杂 kernel 需关注池压力
 
-**CB-as-fragment-scratch 模式**：
+**CB-as-compute-scratch 模式**：
 
-- fragment state（`acc_o`、`scores_max`、`logsum` 等）在 TRISC compute kernel 中通过 CB interface 访问 L1 内存
-- 这类 CB 在 `cb_reserve_back` 后长期持有，整个 compute 循环不做 push/pop，直到最终写回 output CB
-- 这与 transport CB（reader push → compute pop → compute push → writer pop 的 FIFO 协议）语义不同
-- 当 `PlanBlackholeCB` 升级到真正的 memory planner 时，必须区分这两类 CB 的 lifetime 和 reuse 策略
+- compute-side scratch CB 分为两类：
+  - transport CB：reader push → compute pop → compute push → writer pop 的 FIFO 协议
+  - compute scratch CB：TRISC compute 长期持有的 tile scratch / scalar scratch
+- `blackhole.acc` 后续只允许表示 compute scratch 中的 **tile scratch**
+- scalar state（如 flash-attn 的 `scores_max` / `logsum` / `scores_sum`）不应再和 tile scratch 复用同一长期语义
+- 当 `PlanBlackholeCB` 升级到真正的 memory planner 时，必须区分 transport CB、tile scratch CB、scalar scratch 三类资源的 lifetime 和 reuse 策略
 
 正式边界：
 
@@ -344,6 +392,87 @@ TileLang DSL
 - `blackhole.gemm_cb_placeholders`（由 CB identity 唯一协议收正取代，见 `stage2d_cb_identity_protocol.md`）
 
 旧协议不再扩展。
+
+### 5.3 下一阶段 compiler-internal 语义协议：`Stateful Tiled IR`
+
+`Stateful Tiled IR` 是下一阶段 compiler 内部使用的统一语义层，不直接暴露给 Python 用户，也不直接长成 TT-Metal 的硬件协议。它至少包含五类一等对象：
+
+1. **`Domain`**
+   - 表达计算迭代域的形态：`dense`、`segmented`、`routed`、`paged`
+   - 回答“这是规则 tile 域，还是按 expert/page/index 重映射后的域”
+
+2. **`State`**
+   - 所有可变对象不再统称普通 buffer，而是显式区分：
+     - `tile_state`
+     - `vector_state`
+     - `scalar_state`
+     - `index_or_selection_state`
+   - 每个 state 还需带生命周期：`ephemeral`、`carry`、`cross_phase`
+
+3. **`Relation`**
+   - 表达 state / tensor / domain 之间的绑定关系，例如：
+     - `reduced_from`
+     - `applies_to`
+     - `indexes`
+     - `scatters_to`
+     - `carried_across`
+
+4. **`Op`**
+   - 表达算法级原语，而不是硬件指令：
+     - `tile_compute`
+     - `state_reduce`
+     - `state_map`
+     - `tile_apply_state`
+     - `state_update`
+     - `gather`
+     - `compact`
+     - `scatter_reduce`
+
+5. **`Phase`**
+   - 显式表达阶段边界、live-in/live-out state、以及阶段间 carry
+   - 不直接编码 `reader/compute/writer`，而是先表达算法阶段关系
+
+硬约束：
+
+- 每个可变对象都必须有明确 `state kind`
+- 每个 carry/update/merge 都必须显式，不允许继续靠普通 store/load 隐含语义
+- 每个 gather/scatter/routed access 都必须显式说明 index 来源或 combine 规则
+- 任何 TT-Metal 特有对象（`CB / semaphore / kernel role / runtime arg`）都不进入这一层
+
+### 5.4 现有 DSL/TIR 与 `Stateful Tiled IR` 的对接边界
+
+默认路径是：
+
+`现有 TileLang DSL -> PrimFunc/TIR -> Semantic Recovery / Lift -> Stateful Tiled IR`
+
+也就是说，下一阶段默认仍以**兼容现有 Python DSL 写法**为第一优先级；但兼容不是无条件的，边界如下：
+
+| 语义类别 | 自动 lift 为主 | 需要极小 annotation 消歧 |
+|---------|----------------|-------------------------|
+| dense tile compute + 常规 reduce/map | 是 | 否 |
+| `tile -> row/vector reduce -> apply-back-to-tile` 稳定模式 | 是 | 否 |
+| 单层或双层 loop-carried state | 大多可自动恢复 | 少数 state kind 不唯一时需要 |
+| 显式 pipeline/barrier/ws 带出的 phase 边界 | 是 | 否 |
+| routed/paged access 且 index/page-table tensor 已显式进入 kernel | 大多可自动恢复 | 当 index 角色不唯一时需要 |
+| MoE routing / segmented domain / scatter_reduce | 不能完全依赖自动恢复 | 需要 |
+| topk / argmax / selection state machine | 不能完全依赖自动恢复 | 需要 |
+| combine 规则（`sum/max/min/overwrite`） | 不能稳定猜测 | 需要 |
+
+annotation policy 明确如下：
+
+- 只接受 **annotation/helper 风格**
+- annotation 只表达算法语义，例如：
+  - 这是 `carry state`
+  - 这是 `routing index`
+  - 这是 `selection state`
+  - 这是 `scatter_reduce(sum/max)` 的 combine 规则
+- annotation **不得**暴露硬件语义，例如：
+  - `CB`
+  - `semaphore`
+  - `reader/compute/writer kernel`
+  - `runtime_args`
+
+这条边界的目标是：**内部 IR 可以大幅增强，但不把复杂度转嫁给用户，不让用户学习 TT-Metal 的编程模型。**
 
 ## 6. 算子策略
 
@@ -526,23 +655,60 @@ multi-core 的主要实现位置保持不变：
 2. **其他 IR ops 未处理**：element-wise、reduction、transpose、typecast 等在 Blackhole 上需要不同的 TT-Metal API，当前设计完全没有涉及
 3. **多核模型有上限**：当前 `work_packets` 能表达数据并行，但无法表达核间数据流
 
-### 8.3 中期架构演进方向：Operation-Level Lowering
+### 8.3 中期架构演进方向：`Stateful Tiled IR`
 
-与其"先压碎再恢复"，更可扩展的方案是**保留 tile-level 操作语义直到最后一刻**：
+与其继续在 target-specific 后段做"先压碎再恢复"，下一阶段正式方向是引入 compiler-internal `Stateful Tiled IR`，把算法理解与硬件映射硬切开。
 
-```text
-TileLang DSL → PrimFunc/TIR（保留 T.copy/T.gemm/T.reduce/T.elementwise）
-  → [Blackhole target 时跳过 LowerTileOp 的标量降级]
-  → MapBlackholeOps：直接从 tile-level op 映射到 TT-Metal 操作序列
-  → 同时确定 CB requirements / kernel split / runtime args
-  → codegen 只做格式化
-```
+统一性要求如下：
 
-### 8.4 对当前规划的影响
+| workload | Domain | State / Relation / Op 的核心组合 |
+|---------|--------|----------------------------------|
+| FlashAttention / online softmax | `dense`（部分变体叠 `paged`） | `tile_state + vector_state + state_reduce + tile_apply_state + carry` |
+| MoE / routed grouped GEMM | `routed + segmented` | `index_state + gather + compact + tile_compute + scatter_reduce` |
+| topk / argmax / selection | 多数为 `dense` | `selection_state + state_reduce + state_update + compact` |
+| paged decode / sparse MLA | `paged`，经常叠 `routed` | `page-table/index state + gather + tile_compute + carry` |
+| scan / Mamba recurrence | 多数为 `dense` | `carry state + state_update + merge/split + phase` |
 
-- **Stage 0-2E 已完成**：direct path + copy/GEMM single-core E2E 是无论哪种架构都需要的基础设施
-- **Stage 3（多核）不受影响**：多核只是 host 侧分发，不涉及语义恢复问题
-- **后续算子扩展**：如果要支持 element-wise/reduction/softmax 等，需要考虑 operation-level lowering 路线
+也就是说：
+
+- attention 不应要求专用 `flash_attention` IR
+- MoE 不应要求专用 `moe` IR
+- topk 不应要求专用 `topk` IR
+- paged decode 不应要求专用 `paged_attention` IR
+
+真正的一致性来自统一的 `Domain / State / Relation / Op / Phase` 模型，而不是 workload-specific builtin 集合。
+
+### 8.4 对 Python DSL 兼容性的正式要求
+
+下一阶段设计明确采用：
+
+- **内部 IR 大幅增强**
+- **Python DSL 只允许极小变化**
+- **任何新增 Python 侧能力都必须保持算法语义视角，不泄露硬件编程模型**
+
+正式边界：
+
+1. 现有复杂 examples 应尽量保持主体写法不变
+2. 真正需要补充的 Python 侧信息，以 annotation/helper 方式出现，而不是要求用户改写 kernel 主体结构
+3. annotation 的心智模型应保持在“carry / routing / selection / combine 规则”层，而不是“CB / semaphore / kernel split / runtime args”层
+
+### 8.5 对当前规划的影响与 rollout
+
+- **Stage 0-3 已完成的基础设施不推翻**：
+  - `ExecutableSpec`
+  - `BlackholeModule` direct host path
+  - copy / GEMM / multi-core 主链
+- **当前 flash-attn compile/runtime bring-up 仍有价值**：
+  - 它已经把问题收敛到真实语义边界，而不是把问题藏在 build/codegen 噪声里
+- **下一阶段实施顺序**：
+  1. 先引入 `LiftToStatefulTiledIR` 与 `ValidateStatefulTiledIR`
+  2. 把现有 `AnalyzeBlackhole* / CanonicalizeBlackhole*` 中承担“算法理解”的部分前移并泛化
+  3. 让 Blackhole target-specific lowering 只消费已明确的 state/domain/phase/program contract
+  4. 先覆盖已 bring-up 的 flash-attn/online-softmax/GEMM 主样例，再按语义类别扩到 topk / routed / paged / scan
+- **验证分层**：
+  - lift 层：IR snapshot / structural tests
+  - target-program 层：CB / semaphore / runtime-arg / accessor binding 结构验证
+  - runtime 层：TT-Sim correctness / 对拍
 
 ## 9. 关键源码审查结论
 
