@@ -497,6 +497,231 @@ TileLang DSL / Python examples
 - TT 资源与 ABI 的 source-of-truth 在 `TT Target IR`
 - 下层不得回推上层；validation 必须分层做，而不是只在最终 codegen 前做一次
 
+这三层不是为了“把一件事拆成三份文档”，而是因为它们回答的是三类本质不同的问题：
+
+| 层级 | 它回答的问题 | 为什么不能放到别层解决 | 这一层冻结的真相 |
+|------|--------------|------------------------|------------------|
+| `Stateful Semantic IR` | 程序到底在算什么，哪些值在 carry，哪些 domain/phase/relation 是算法定义的一部分 | 如果语义继续留在 TIR matcher、target lowering 或 runtime 才恢复，就会重复出现 `blackhole.acc` 这类混合语义 | 算法语义真相 |
+| `Spatial Program IR` | 这些语义如何组织成 task/channel/layout/sync/work partition | 如果直接从 semantic 层跳到 TT 资源层，`task/channel/layout/sync` 会被压成 target 细节，最终又回到单层黑洞 pass | 空间程序真相 |
+| `TT Target IR` | 在 TT-Metal 上具体要用哪些 kernel role、CB、semaphore、dst layout、ABI、placement 才能合法执行 | 如果把这些内容提前到 semantic/spatial 层，会把 TT 编程模型污染到本应通用的内部抽象；如果放到 codegen/runtime 才决定，又会重新引入晚期猜协议 | TT 可执行 contract 真相 |
+
+#### 5.3.1 `Stateful Semantic IR`
+
+**设计目标**
+
+- 结束当前 “先压碎到 TIR，再在 `LowerBlackholeOps`/runtime 附近猜语义” 的模式
+- 把 carry/update/combine/domain constraint/phase ordering 变成 compiler 内部的正式真源
+- 让 flash-attn、online-softmax、Welford、routed/paged/select 这类 workload 可以共享一套算法语义对象，而不是继续堆 workload-specific matcher
+
+**为什么必须单独存在**
+
+- `State / Relation / Phase / Domain` 是算法定义的一部分，不是执行策略
+- 如果这一层不存在，下游只能从 `BufferLoad/BufferStore`、fragment helper 名字、或 target builtins 反推语义
+- 这正是当前 `blackhole.acc` 混合了 “线性 helper 语义” 与 “TT tile scratch 语义” 的根因
+
+**输入**
+
+- `PrimFunc / TIR`
+- `AnalyzeBlackholeWorkDecomposition`
+- `AnalyzeBlackholeFragmentRegions`
+- `AnalyzeBlackholePipelineStages`
+- 必要时极小 Python annotation（仅表达 `carry / routing / selection / combine` 语义）
+
+**输出**
+
+- `SemanticProgram`
+  - `Domain`
+  - `State`
+  - `Relation`
+  - `Phase`
+  - `SemanticRegion`
+
+**这一层必须冻结的事实**
+
+- 哪些对象是 `matrix/vector/scalar/index state`
+- 哪些 state 是 `ephemeral / carry / cross_phase`
+- 哪些 domain 带 `bound_expr / predicate / index_remapping`
+- 哪些 `combine_function / reduced_from / carried_across` 关系存在
+- 哪些 `algorithm phase` 与 `live_in/live_out` 是正式语义
+
+**这一层明确不做的事**
+
+- 不拆 `reader / compute / writer`
+- 不建 `task/channel`
+- 不选 `register-resident carry` 还是 `CB-round-trip carry`
+- 不分配 `CB / semaphore / dst offset / core`
+- 不定义 compile-time/runtime ABI
+
+**这一层的验证职责**
+
+- `state kind`、`lifetime`、`shape` 一致性
+- `carried_across` 与 `live_in/live_out` 一致性
+- `bound_expr / predicate / index_remapping` 完整性
+- `combine_function` 存在性与绑定对象完整性
+- 禁止同一对象同时承担算法 state 与 target scratch 双重语义
+
+**交给下一层的 contract**
+
+`Spatialization` 只能消费已经冻结的算法事实，不允许再：
+
+- 通过 buffer 名、builtin 名、kernel 名猜 state kind
+- 通过 target resource 反推 phase/relation
+- 补写缺失的 combine/routing 语义
+
+#### 5.3.2 `Spatial Program IR`
+
+**设计目标**
+
+- 把算法语义翻译成“可在 spatial/dataflow machine 上组织”的逻辑程序
+- 显式表达 `task / channel / layout / work partition / sync / placement`
+- 让 mapping、routing、synchronization 成为正式编译问题，而不是 TT codegen 附带行为
+
+**为什么必须单独存在**
+
+- `task/channel/layout/sync` 不是算法语义本身，但也远高于 TT 具体资源
+- 如果跳过这一层，semantic 层会被迫长出 execution topology；或者 target 层会变成 “一边理解算法、一边做 TT 资源规划” 的黑洞
+- `Dato/TL/SPADA` 给出的可借鉴点，本质上都落在这层，而不是 semantic 层
+
+**输入**
+
+- `SemanticProgram`
+- target-neutral spatialization policy
+  - task fusion/splitting policy
+  - work partition policy
+  - layout selection policy
+  - sync construction policy
+
+**输出**
+
+- `SpatialProgram`
+  - `Task`
+  - `Channel`
+  - `Layout`
+  - `WorkPartition`
+  - `Placement`
+  - `SyncEdge`
+  - `ResourceIntent`
+
+**这一层必须冻结的事实**
+
+- 哪些 `SemanticRegion` 被组织成哪些 logical task
+- task 间需要哪些 channel，payload/ordering/transport 语义是什么
+- 数据按什么 `layout / shard / group / route / page` 组织
+- 工作如何 partition 到 task 实例
+- 哪些同步关系是正式需要的
+- 哪些资源需求属于 `transport / scratch / persistent carry / reduction carrier / output`
+
+**这一层明确不做的事**
+
+- 不引入 `CBIndex / semaphore_id / dst offset`
+- 不决定 `CreateCircularBuffer` / `SetRuntimeArgs`
+- 不绑定 TT physical cores
+- 不把 logical task 直接等同于最终某个 TT kernel source 文件
+
+**这一层的验证职责**
+
+- task/channel 图是否闭合
+- producer-consumer / barrier / multicast-ready 同步是否足够
+- work partition 与 layout 是否一致
+- carried state 是否在正确 task 边界上传递
+- virtual placement 约束是否自洽
+- 是否存在明显 race/deadlock/routing inconsistency 风险
+
+**交给下一层的 contract**
+
+`Hardware-Aware Mapping` 只能在既有 `Task / Channel / Layout / Sync / ResourceIntent` 基础上落 TT 资源，不允许再：
+
+- 反向改变算法 phase/relation
+- 省略 channel/sync 后靠 TT runtime 隐式补协议
+- 把 work partition 重新发明成另一套隐藏 host 逻辑
+
+#### 5.3.3 `TT Target IR`
+
+**设计目标**
+
+- 把 TT-Metal 原生编程模型吸收成正式 compiler target contract
+- 让 `CB / semaphore / dst layout / kernel role / ABI / execution plan` 成为一等对象
+- 让 codegen/runtime 只做 materialization，不再承担编程模型设计
+
+**为什么必须单独存在**
+
+- TT-Metal 的核心复杂度不只是 emit builtin，而是显式程序结构
+- `reader / compute / writer`、`CreateCircularBuffer`、`SetRuntimeArgs`、per-core launch schema 都是 program contract
+- 如果没有这一层，`LowerBlackholeOps`、`PlanBlackholeCB`、`AssignBlackholeCores`、`rt_mod_blackhole` 会继续散落地共同决定协议
+
+**输入**
+
+- `SpatialProgram`
+- TT hardware model
+  - topology
+  - memory hierarchy
+  - NoC / multicast / semaphore capabilities
+  - dst/register capacity
+  - core kinds and placement constraints
+
+**输出**
+
+- `TTProgram`
+  - `TTKernel`
+  - `TTCoreGroup`
+  - `TTCBPlan`
+  - `TTSemaphorePlan`
+  - `TTDstLayoutPlan`
+  - `TTABIPlan`
+  - `TTExecutionPlan`
+
+**这一层必须冻结的事实**
+
+- 哪些 logical task 对应哪些 `reader / compute / writer / relay / reduction` 角色
+- virtual placement 如何映射到 TT physical core groups
+- 哪些 `ResourceIntent` 落成哪些 CB class / capacity / producer-consumer binding
+- 同步关系如何落成 semaphore / multicast / barrier protocol
+- 哪些 state 驻留在 dst，offset 与 tile span 如何规划
+- compile-time/runtime/accessor/launch ABI 如何稳定编码
+
+**这一层明确不做的事**
+
+- 不再修改 semantic state/relation/phase
+- 不再修改 spatial task/channel/layout/sync 结构
+- 不把 TT API 调用细节混成语义对象
+
+**这一层的验证职责**
+
+- L1 / CB / dst 容量约束
+- semaphore / multicast / routing 合法性
+- core placement 合法性
+- compile-time/runtime ABI 完整性
+- `ExecutableSpec` 所需信息是否齐全且无二义
+
+**交给下一层的 contract**
+
+`Codegen / Runtime Materialization` 只能消费冻结后的 `TTProgram`，不允许再：
+
+- 因为 codegen 方便而改 kernel role / CB binding / runtime arg schema
+- 通过 host 侧猜测 remote core、segment layout、dst 角色
+- 重新决定 carry strategy 或 semaphore protocol
+
+#### 5.3.4 层间对接协议
+
+三层 IR 的 handoff 必须满足下面的接口约束：
+
+| From | To | 必须提供的输入 contract | 这一跳允许做的决定 | 这一跳禁止做的事 |
+|------|----|-------------------------|--------------------|------------------|
+| `Semantic Recovery` | `Stateful Semantic IR` | 已恢复的 domain/state/relation/phase 事实 | 语义对象化、真源冻结 | 偷渡 TT 资源信息 |
+| `Stateful Semantic IR` | `Spatial Program IR` | 冻结后的算法语义 | task/channel/layout/sync/work partition 构造 | 反向修改语义定义 |
+| `Spatial Program IR` | `TT Target IR` | 冻结后的空间程序结构 | TT mapping、resource planning、ABI 定义 | 反向发明新 task graph 或补算法 combine |
+| `TT Target IR` | `ExecutableSpec / runtime` | 冻结后的 target contract | API materialization、kernel/codegen emission | 回推语义、隐式补协议 |
+
+从实现角度看，这对应新的 pass 边界：
+
+- `LiftToStatefulSemanticIR`
+- `ValidateStatefulSemanticIR`
+- `LowerToSpatialProgram`
+- `ValidateSpatialProgram`
+- `LowerSpatialProgramToTTTarget`
+- `ValidateTTTargetProgram`
+- `MaterializeTTExecutableSpec`
+
 ### 5.4 现有 DSL/TIR 与多层 IR 的对接边界
 
 默认路径是：
