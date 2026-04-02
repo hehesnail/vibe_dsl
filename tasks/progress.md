@@ -5,7 +5,7 @@
 
 ## 当前阶段
 
-- **日期**: `2026-04-02`
+- **日期**: `2026-04-03`
 - **阶段**: Stage 4 — 复杂 workload family 的 layered IR architecture transition
 - **当前主线**:
   - 以新的分层架构推进后续实现：
@@ -43,6 +43,11 @@
     - Materialized attr ownership：`blackhole.segment_plan/runtime_args/cb_configs/core_plan` 的稳态唯一 writer 固定为 `MaterializeTTExecutableSpec`
     - Phase A 细分为 A1（最小 multi-family recovery）和 A2（泛化 + 更宽 `AccessMap / UpdateLaw` traits），A1 gate 强制包含一个 non-attention semantic skeleton case
     - Section 7 workload 示例已切换到 `Domain / State / Update` 叙述，去掉 workload-specific semantic enum
+  - 2026-04-03 进一步完成活动文档收口：
+    - 总设计已明确 `SemanticProgram(Domain / State / Update)` 是第一层真源
+    - `AccessMap / UpdateLaw` 明确固定为 `Update` 的组成部分，而不是平行 schema
+    - `TIRAnchor / AtomicEffect / SemanticRegion` 已重新收口为 recovery / binding / projection helper
+    - `stage4_flash_attention_forward_subset.md` 已改成从属 consumer 视角，不再暗含自己的 semantic schema
   - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界；`topk / fusedmoe / paged decode / chunk recurrence` 同样属于当前设计覆盖面
 
 ## 当前稳定基线
@@ -85,6 +90,7 @@
    - 冻结 `domain / state / update`
    - 明确 `AccessMap / UpdateLaw` 的最小 schema
    - 明确 `PrimFunc.attrs["tl.semantic_program"]` 与 `TIRAnchor` 承载 contract
+   - 明确 `AtomicEffect / SemanticRegion` 只是 recovery helper，不是第一层 core schema
    - 收紧 post-semantic-lift invalidation：默认 `unsafe`，仅允许 audited `safe` pass
    - 明确 pre-semantic compatibility attrs 不参与 semantic/spatial truth 判定
    - 保证 copy / GEMM compile-path zero-regression + 至少一个 non-attention semantic skeleton case

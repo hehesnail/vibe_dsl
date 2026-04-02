@@ -3,11 +3,11 @@
 ## 基本信息
 
 - **文档ID**: `stage4_flash_attention_forward_subset`
-- **日期**: 2026-03-31（创建），2026-04-02（最近更新）
+- **日期**: 2026-03-31（创建），2026-04-03（最近更新）
 - **状态**: 活动中（作为 `flash-attn` consumer 支持设计；analysis 与当前支持面的 compile-path 已打通；execution hang 已解；剩余问题已收敛为 layered IR 迁移前的 compute 语义正确性问题）
 - **范围**: `tilelang_repo/examples/flash_attention/example_mha_fwd_bshd.py` 与 `example_gqa_fwd_bshd.py` 的前向完整语义；不包含 backward、varlen、wgmma
 
-> 角色说明：本文档现在只作为 **Flash-Attention 这一类 consumer 的支持设计**。总体架构、IR 分层、实现顺序和对象 schema 一律看 `final_blackhole_backend_redesign.md`。本文不再提供总体方向，也不再作为 implementation plan 入口。旧的 `stateful_tiled_ir` 实施计划已归档到 `archive/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`。
+> 角色说明：本文档现在只作为 **Flash-Attention 这一类 consumer 的支持设计**。总体架构、IR 分层、实现顺序和对象 schema 一律看 `final_blackhole_backend_redesign.md`。本文中的 consumer-specific 语义约束，也必须落回 `Domain / State / Update / AccessMap / UpdateLaw` 这套第一层 semantic core，而不是再定义一套 flash-attn 专属 semantic schema。本文不再提供总体方向，也不再作为 implementation plan 入口。旧的 `stateful_tiled_ir` 实施计划已归档到 `archive/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`。
 
 ## 1. 目标
 
@@ -117,6 +117,31 @@
 - `blackhole.acc` 后续只表示 compute-side **tile scratch**
 - `CB / tile / dst-reg` 流是 flash-attn compute 的正式主路径
 - 现有线性 fragment helper 仅保留为过渡实现，不再作为长期协议前提
+
+### 4.5 先进入第一层 semantic core，再下沉到 tile scratch
+
+这份 consumer 文档不能把 “`blackhole.acc` 只表示 tile scratch” 误写成跳过 semantic 层、直接按
+TT compute 语义建模。对 flash-attn 来说，正确的分层应是：
+
+1. 先在 `Stateful Semantic IR` 冻结：
+   - `Domain`
+     - `q_tile_domain`
+     - `kv_chunk_domain`
+     - causal `predicate/constraints`
+   - `State`
+     - `acc_o`
+     - `scores_stats`
+     - `logsum`
+   - `Update`
+     - `qk_scores_update`
+     - `online_attention_update`
+     - `epilogue/logsum` 相关 update
+   - `AccessMap / UpdateLaw`
+     - grouped-head remap、causal mask、normalized recurrence
+2. 再在 `Spatial Program IR` 组织 stream/load/update/store/carry channel
+3. 最后在 `TT Target IR` 决定哪些 state 用 tile scratch、哪些 state 用 scalar scratch、哪些走 CB / dst / register
+
+也就是说，`blackhole.acc` 的新定义属于 target realization 约束，不是第一层 semantic truth 本身。
 
 ## 5. 分层设计
 
@@ -272,6 +297,8 @@ split 后的目标不是重新理解 attention，而是消费通用 analysis pas
 
 - `scores_max / scores_max_prev / scores_scale / scores_sum / logsum` 这类状态不应继续和 tile scratch 共享同一抽象
 - 后续应在 analysis / lowering / planner 上把 scalar scratch 和 tile scratch 显式区分
+- 更具体地说，它们应先作为 `State` 与相应 `UpdateLaw` 的一部分进入第一层 semantic core，
+  再由后续 spatial / TT 层决定 backing realization
 
 ### 10.3 上游 TIR 对接约束
 
@@ -315,13 +342,14 @@ split 后的目标不是重新理解 attention，而是消费通用 analysis pas
 
 ## 12. 推荐实施顺序
 
-1. split 前保留并规整 work decomposition / fragment region / pipelined stage 语义
-2. 实现 `AnalyzeBlackholeWorkDecomposition`
-3. 实现 `AnalyzeBlackholeFragmentRegions`
-4. 实现 `AnalyzeBlackholePipelineStages`
-5. 扩 `LowerBlackholeOps`，消费 analysis 结果并生成最小冻结结论
-6. 在 codegen / runtime 侧只消费冻结结论，不新增算法解释逻辑
-7. 以 `mha_fwd_bshd` / `gqa_fwd_bshd` 前向为目标做 correctness / legality 验证
+1. 先把 flash-attn 这类 consumer 的最小 semantic skeleton 收成 `Domain / State / Update / AccessMap / UpdateLaw`
+2. split 前保留并规整 work decomposition / fragment region / pipelined stage 语义，确保它们足以恢复这套 semantic skeleton
+3. 实现 `AnalyzeBlackholeWorkDecomposition`
+4. 实现 `AnalyzeBlackholeFragmentRegions`
+5. 实现 `AnalyzeBlackholePipelineStages`
+6. 实现 `AnalyzeSemanticStructure` / `LiftToStatefulSemanticIR`，让 flash-attn 的 carry / normalized update 先冻结到第一层 semantic truth
+7. 再扩 `LowerBlackholeOps`、后续 spatial / TT lowering，只消费冻结后的 semantic 结论，不新增算法解释逻辑
+8. 以 `mha_fwd_bshd` / `gqa_fwd_bshd` 前向为目标做 semantic recovery / correctness / legality 验证
 
 ## 13. 当前剩余主 blocker
 
@@ -330,10 +358,10 @@ split 后的目标不是重新理解 attention，而是消费通用 analysis pas
 当前剩余点集中在 **compute correctness / 语义模型**：
 
 1. **`blackhole.acc` 混合语义**：`acc_s / acc_s_cast / acc_o` 仍在部分路径里同时被解释成“线性 fragment scratch”和“TT-Metal tile scratch”，这已经从旧的 hang 演变成稳定 correctness mismatch
-2. **stats-state 尚未成为正式一等语义**：`scores_max / scores_scale / scores_sum / logsum` 仍缺少和 tile scratch 分离后的正式 state model，导致 row-reduce / row-broadcast / exp-affine 还不能完全收进同一主路径
+2. **stats-state 尚未成为正式一等语义**：`scores_max / scores_scale / scores_sum / logsum` 仍缺少进入 `State + UpdateLaw` 的正式 semantic model，导致 row-reduce / row-broadcast / exp-affine 还不能完全收进同一主路径
 3. **late matcher 仍在承担过多语义恢复责任**：只要后段还在从普通 `BufferLoad/BufferStore/For` 长相猜 tile contract，flash-attn 这类复杂 kernel 的 correctness 风险就不会真正收口
 
-因此当前下一步已经不是继续围绕 execution-time hang 缩小，而是把这批语义前移到新的分层 compiler-internal IR：先冻结到 `Stateful Semantic IR`，再逐步下沉到 `Spatial Program IR` 与 `TT Target IR`。
+因此当前下一步已经不是继续围绕 execution-time hang 缩小，而是把这批语义前移到新的分层 compiler-internal IR：先冻结到 `SemanticProgram(Domain / State / Update)`，再逐步下沉到 `Spatial Program IR` 与 `TT Target IR`。
 
 ## 13.1 已发现的设计约束
 
@@ -376,3 +404,7 @@ fragment scratch CB 必须在 16-31 范围内（TRISC 可访问），因此 `kIn
 一句话概括：
 
 **以 flash-attn forward 为牵引，补齐 Blackhole 对复杂 tiled kernel 的通用 work decomposition、fragment compute region、pipelined staging 三类分析与 lowering 能力；IR 优先，spec 最小化。**
+
+对当前总设计的补充约束是：
+
+**flash-attn 只是第一批 consumer；它对总体架构的真正要求，是第一层 semantic core 必须能稳定表达 carry state、normalized update 与 causal/access 约束，而不是再长出一套 attention 专属 semantic IR。**

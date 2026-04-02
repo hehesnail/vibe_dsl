@@ -24,6 +24,7 @@
 当前没有活动中的旧 `stateful_tiled_ir` 实施计划。下一份实施计划应直接基于：
 
 - `final_blackhole_backend_redesign.md`
+- 其中 Phase A 的第一层 semantic core：`Domain / State / Update`，以及 `AccessMap / UpdateLaw`
 - 其 Phase A / B / C 迁移顺序
 - 其 workload family 覆盖矩阵
 - 当前仍活动的 supporting docs
