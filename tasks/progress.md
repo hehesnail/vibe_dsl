@@ -26,8 +26,20 @@
     - `SemanticProgram -> SpatialProgram` 的空间化构造规则与 policy 边界
     - `SpatialCandidate / SpatialPolicy / SpatialCostModel` 的 planning contract
     - `SpatialProgram + hardware model -> TTProgram` 的 target mapping 规则与 materialization 边界
-    - `TTHardwareModel` 的 typed schema
+    - `TTHardwareModel` 的 typed schema（含 `TTComputeModel` 子模型）
     - `TTProgram -> TT-lowered PrimFunc + ExecutableSpec` 的唯一物化路径
+  - 权威总设计已完成系统性 review 并补齐以下 gap（2026-04-02）：
+    - `State.kind` 扩展：新增 `compound_state` + `update_semantics` 区分 attention carry / mamba chunk state / MoE combine
+    - Recovery Boundary：统一语义系统下的自动恢复 / 最小 DSL 补语义边界 + workload validation matrix + `T.annotate_semantic()` protocol
+    - `ProgramPhase`：Spatial Program IR 新增多 kernel 组合的全局阶段边界（fusedmoe 双 T.Kernel、flash_decoding split+combine）
+    - `TTComputeModel`：TTHardwareModel 新增 compute 子模型（FPU/SFPU 独立性、dst 争用、pack/unpack mode）
+    - `TTKernel.role` 改为 composable `role_set` + `role_flags`（承接 MoE unified kernel pattern）
+    - `TTCBPlan / TTDstLayoutPlan` 新增 `data_format`、`pack_mode`、`unpack_mode`、`l1_acc_mode`、`fpu_sfpu_ordering` 等字段
+    - Companion IR invalidation：post-semantic-lift 默认 `unsafe`；只有 audited `identity-preserving / rebind-aware` pass 才能声明 `safe`
+    - `SplitBlackholeKernel` 过渡边界：pre-semantic 仅作为 canonicalization / temporary signal producer，compatibility `blackhole.segment_plan` 不是真源
+    - Materialized attr ownership：`blackhole.segment_plan/runtime_args/cb_configs/core_plan` 的稳态唯一 writer 固定为 `MaterializeTTExecutableSpec`
+    - Phase A 细分为 A1（最小 multi-family recovery）和 A2（泛化 + 全部 descriptors），A1 gate 强制包含一个 non-attention semantic skeleton case
+    - Section 7 workload 示例全部更新：反映 `compound_state`、typed descriptors（CombineSpec/SelectionSpec/SegmentSpec/PageSpec/RecurrenceSpec）、`ProgramPhase`、composable `role_set`
   - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界；`topk / fusedmoe / paged decode / chunk recurrence` 同样属于当前设计覆盖面
 
 ## 当前稳定基线
@@ -69,7 +81,9 @@
    - `ValidateStatefulSemanticIR`
    - 冻结 `domain / state / relation / phase`
    - 明确 `PrimFunc.attrs["tl.semantic_program"]` 与 `TIRAnchor` 承载 contract
-   - 保证 copy / GEMM compile-path zero-regression
+   - 收紧 post-semantic-lift invalidation：默认 `unsafe`，仅允许 audited `safe` pass
+   - 明确 pre-semantic compatibility attrs 不参与 semantic/spatial truth 判定
+   - 保证 copy / GEMM compile-path zero-regression + 至少一个 non-attention semantic skeleton case
 3. 执行 **Phase B: Spatial Program IR**：
    - 把 selection/indexing、routed/grouped dispatch、paged decode、stateful update、chunk recurrence 的 `task / channel / layout / sync / work partition` 一等化
    - 明确 `PrimFunc.attrs["tl.spatial_program"]` 承载 contract
