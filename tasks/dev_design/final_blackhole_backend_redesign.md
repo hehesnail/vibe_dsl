@@ -7,7 +7,7 @@
 - **Status**: current sole authoritative architecture document
 - **Scope**: `tilelang_repo` Blackhole compiler architecture, compiler-internal IR layering, TT target mapping, runtime materialization boundary
 - **Supersedes**:
-  - the previously mixed runtime-architecture narrative now archived in `tasks/dev_design/legacy_blackhole_runtime_architecture.md`
+  - the previously mixed runtime-architecture narrative now archived in `tasks/dev_design/archive/legacy_blackhole_runtime_architecture.md`
   - the old single-layer `Stateful Tiled IR` direction as the next-stage top-level architecture
 
 ## 1. Problem Definition
@@ -684,7 +684,7 @@ The redesign is only considered real when all of the following are true:
 
 The following documents are historical or implementation-history references only:
 
-- `tasks/dev_design/legacy_blackhole_runtime_architecture.md`
-- `tasks/dev_design/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`
+- `tasks/dev_design/archive/legacy_blackhole_runtime_architecture.md`
+- `tasks/dev_design/archive/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`
 
 They are not authoritative for new implementation work. New implementation must follow this document.

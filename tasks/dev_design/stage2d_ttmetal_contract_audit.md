@@ -8,8 +8,10 @@
 - **对应阶段**: Stage 2D Step 6
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
-  - `tasks/dev_design/stage2d_gemm_direct_cb_io.md`
-  - `tasks/dev_design/stage2d_cb_identity_protocol.md`
+  - `tasks/dev_design/archive/stage2d_gemm_direct_cb_io.md`
+  - `tasks/dev_design/archive/stage2d_cb_identity_protocol.md`
+
+> 角色说明：本文档现在只作为 **TT Target IR / runtime contract** 的支持审计文档。它不再定义总体架构，也不再提供当前实施计划。
 
 ---
 

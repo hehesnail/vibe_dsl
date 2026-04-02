@@ -14,14 +14,15 @@
 - **当前活动主线**:
   - flash-attn forward subset：analysis、fragment lowering、dataflow bridging 与 codegen 已接通当前支持面
   - execution hang 已解；当前剩余主工作已收敛为 `blackhole.acc` compute 语义收正、TT-Metal-first tile/CB/dst-reg 主路径迁移、以及更宽支持面
-  - 权威总设计已重写为当前分层架构：`Stateful Semantic IR -> Spatial Program IR -> TT Target IR`；旧 runtime/混合架构已归档到 `tasks/dev_design/legacy_blackhole_runtime_architecture.md`
+  - 权威总设计已重写为当前分层架构：`Stateful Semantic IR -> Spatial Program IR -> TT Target IR`；旧 runtime/混合架构已归档到 `tasks/dev_design/archive/legacy_blackhole_runtime_architecture.md`
   - 总设计已明确各层 IR 的目标、核心对象、输入/输出、validation 职责、层间 handoff contract，以及 flash-attn forward 端到端示例和现有 pass 到新架构的映射表
+  - `tasks/dev_design/` 根目录已清到只保留活动文档；历史设计、完成记录和旧 implementation plan 已统一移到 `tasks/dev_design/archive/`
 - **日期**: 2026-04-02
 - **相关设计**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
-  - `tasks/dev_design/legacy_blackhole_runtime_architecture.md`
   - `tasks/dev_design/stage4_flash_attention_forward_subset.md`
-  - `tasks/dev_design/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`
+  - `tasks/dev_design/stage2d_ttmetal_contract_audit.md`
+  - `tasks/dev_design/stage4_semaphore_schema.md`
 
 ### Flash-Attention 当前推进
 
@@ -66,7 +67,8 @@
 - **下一步**:
   - 按 `TT-Metal-first` 方向重定义 `blackhole.acc`：后续只表示 compute-side tile scratch
   - 收正上游 TIR 对接边界：后段不再从线性 `BufferLoad/BufferStore` 形态猜 tile 语义，凡是无法稳定恢复的 tile contract 必须通过 analysis attrs 或显式 builtin 交付
-  - 先执行 **Phase A: Stateful Semantic IR**：落 `LiftToStatefulSemanticIR` / `ValidateStatefulSemanticIR` skeleton、domain/state/relation/phase 真源冻结、以及 copy/GEMM compile-path zero-regression gate
+  - 先重写新的 layered-IR implementation plan；旧 `stateful_tiled_ir` Phase 1 草案已归档，不再作为当前任务安排入口
+  - 然后执行 **Phase A: Stateful Semantic IR**：落 `LiftToStatefulSemanticIR` / `ValidateStatefulSemanticIR` skeleton、domain/state/relation/phase 真源冻结、以及 copy/GEMM compile-path zero-regression gate
   - 再执行 **Phase B: Spatial Program IR**：把 flash-attn / online-softmax / GEMM 的 `task/channel/layout/sync/work partition` 一等化，拆掉 `LowerBlackholeOps` 当前同时承担语义理解和 target lowering 的边界
   - 最后执行 **Phase C: TT Target IR**：统一 `CB / semaphore / dst layout / kernel role / ABI / execution plan`，并把 `ExecutableSpec` 改为从 `TT Target IR` 物化
   - 继续扩更宽 flash-attn forward 支持面与 P4/P5 主项
@@ -249,24 +251,10 @@
 | 文档 | 用途 | 状态 |
 |------|------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总设计 | 常青 |
-| `2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md` | 当前实施计划 | 活动中 |
 | `stage4_flash_attention_forward_subset.md` | Flash-Attention 作为 consumer 的支持设计 | 活动中（不再定义总体架构方向） |
 | `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 支持中（P4/P5 与更宽 execution surface 仍参考它） |
+| `stage4_semaphore_schema.md` | TT Target IR semaphore/sync 支持设计 | 支持中 |
 
-### 已完成（仍有参考价值）
+### 已归档
 
-| 文档 | 用途 |
-|------|------|
-| `stage3_multicore_design.md` | 多核设计（formal direct host path） |
-| `stage2g_unified_work_schema.md` | richer runtime work schema 设计 |
-| `stage2h_accessor_schema.md` | accessor/common-runtime schema 设计 |
-| `stage2i_compile_time_abi_schema.md` | compile-time ABI schema 设计 |
-| `stage2j_compute_contract_schema.md` | compute contract 正式化设计 |
-| `stage2k_common_runtime_materialization.md` | kernel-level shared common runtime materialization |
-| `stage2l_accessor_args_config_bits.md` | accessor args_config_bits 协议收正 |
-| `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 |
-| `stage4_copy_stick_generalization.md` | P4 stick/page copy 泛化 |
-| `stage4_backend_cleanup_roadmap.md` | backend cleanup 收敛路线图记录（已归档） |
-| `stage2d_gemm_direct_cb_io.md` | GEMM contract 修复（transpose_B + tilize/untilize） |
-| `stage2d_cb_identity_protocol.md` | CB identity 唯一协议 |
-| `stage2e_blackhole_device_resource_semantics.md` | 设备资源 IR 语义扩展 |
+`tasks/dev_design/archive/` 下的文档全部视为历史记录、完成记录或被 supersede 的旧计划，不再作为当前入口。

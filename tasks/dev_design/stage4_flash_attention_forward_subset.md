@@ -4,10 +4,10 @@
 
 - **文档ID**: `stage4_flash_attention_forward_subset`
 - **日期**: 2026-03-31（创建），2026-04-02（最近更新）
-- **状态**: 活动中（analysis 与当前支持面的 compile-path 已打通，execution hang 已解；当前主 blocker 为 compute 语义设计收正）
+- **状态**: 活动中（作为 `flash-attn` consumer 支持设计；analysis 与当前支持面的 compile-path 已打通，execution hang 已解；当前主 blocker 为 compute 语义设计收正）
 - **范围**: `tilelang_repo/examples/flash_attention/example_mha_fwd_bshd.py` 与 `example_gqa_fwd_bshd.py` 的前向完整语义；不包含 backward、varlen、wgmma
 
-> 角色说明：本文档现在只作为 **Flash-Attention 这一类 consumer 的支持设计**。总体架构方向看 `final_blackhole_backend_redesign.md`，当前实施计划看 `2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`。
+> 角色说明：本文档现在只作为 **Flash-Attention 这一类 consumer 的支持设计**。总体架构方向看 `final_blackhole_backend_redesign.md`。旧的 `stateful_tiled_ir` 实施计划已归档到 `archive/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`，新的 layered-IR 实施计划仍待重写。
 
 ## 1. 目标
 
@@ -333,7 +333,7 @@ split 后的目标不是重新理解 attention，而是消费通用 analysis pas
 2. **stats-state 尚未成为正式一等语义**：`scores_max / scores_scale / scores_sum / logsum` 仍缺少和 tile scratch 分离后的正式 state model，导致 row-reduce / row-broadcast / exp-affine 还不能完全收进同一主路径
 3. **late matcher 仍在承担过多语义恢复责任**：只要后段还在从普通 `BufferLoad/BufferStore/For` 长相猜 tile contract，flash-attn 这类复杂 kernel 的 correctness 风险就不会真正收口
 
-因此当前下一步已经不是继续围绕 execution-time hang 缩小，而是把这批语义前移到新的 compiler-internal `Stateful Tiled IR`。
+因此当前下一步已经不是继续围绕 execution-time hang 缩小，而是把这批语义前移到新的分层 compiler-internal IR：先冻结到 `Stateful Semantic IR`，再逐步下沉到 `Spatial Program IR` 与 `TT Target IR`。
 
 ## 13.1 已发现的设计约束
 

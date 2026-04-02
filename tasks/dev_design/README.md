@@ -2,55 +2,36 @@
 
 > 当前唯一总体设计文档: `final_blackhole_backend_redesign.md`
 
-> 入口规则: 只有出现在“活动文档”里的文件才应被当作当前入口；未列入活动区的文档一律视为完成记录、历史记录，或已被后续设计取代。
+> 入口规则: 根目录只保留当前活动文档；`archive/` 下的文档一律视为历史记录、完成记录，或已被后续设计取代。
 
 ## 1. 活动文档
 
 | 文档 | 用途 | 状态 |
 |------|------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计 | 常青 |
-| `2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md` | 当前实施计划 | 活动中 |
 | `stage4_flash_attention_forward_subset.md` | Flash-Attention 作为 consumer 的支持设计 | 活动中（不再定义总体架构方向） |
 | `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 支持中（P4/P5 与更宽 execution surface 仍参考它） |
+| `stage4_semaphore_schema.md` | TT Target IR 的 semaphore/sync 支持设计 | 支持中 |
 
-## 2. 已完成（仍有参考价值）
+## 2. 当前清理结果
 
-| 文档 | 用途 | 完成日期 |
-|------|------|---------|
-| `2026-03-31-flash-attention-forward-subset-implementation-plan.md` | 旧的 flash-attn subset 实施计划记录 | 2026-03-31 |
-| `stage3_multicore_design.md` | Stage 3 多核设计 | 2026-03-26 |
-| `stage2e_blackhole_device_resource_semantics.md` | 设备资源 IR 语义扩展 | 2026-03-25 |
-| `stage2d_cb_identity_protocol.md` | CB identity 唯一协议 | 2026-03-25 |
-| `stage2d_gemm_direct_cb_io.md` | GEMM contract 修复 | 2026-03-26 |
-| `stage2j_compute_contract_schema.md` | compute contract 正式化 | 2026-03-30 |
-| `stage2g_unified_work_schema.md` | richer runtime work schema 正式化 | 2026-03-27 |
-| `stage2h_accessor_schema.md` | accessor/common-runtime schema 正式化 | 2026-03-27 |
-| `stage2i_compile_time_abi_schema.md` | compile-time ABI schema 正式化 | 2026-03-27 |
-| `stage4_semaphore_schema.md` | P5 semaphore schema 预埋 | 2026-03-27 |
-| `stage4_copy_stick_generalization.md` | P4 stick/page copy 泛化 | 2026-03-30 |
-| `stage4_backend_cleanup_roadmap.md` | backend cleanup 路线图记录 | 2026-03-30 |
-| `2026-03-26-stage2d-gemm-contract-implementation-plan.md` | GEMM contract 实施计划 | 2026-03-26 |
-| `stage2d_gemm_integration.md` | GEMM 接入设计（Steps 1-5） | 2026-03-25 |
-| `stage2c_annotate_blackhole_copy_semantics.md` | copy 语义 annotation | 2026-03-24 |
-| `stage2_pass_reuse_matrix.md` | pass 复用矩阵 | 2026-03-23 |
-| `stage2_single_core_pass_integration.md` | 分层目标与阶段拆分 | 2026-03-22 |
-| `stage2_blackhole_logical_block_launch_plan.md` | block/core/memory plan | 2026-03-22 |
+- 根目录只保留当前活动文档。
+- 已完成专项设计、历史 implementation plan、早期阶段记录、legacy 架构说明，全部移动到 `archive/`。
+- `archive/README.md` 说明了归档区的使用规则。
 
-## 3. 历史记录
+## 3. 当前任务安排
 
-| 文档 | 用途 |
-|------|------|
-| `blackhole_architecture_review_and_action_plan.md` | 早期架构审查 |
-| `2026-03-26-stage3-gemm-multicore-direct-hang.md` | Stage 3 GEMM 多核排障记录 |
-| `2026-03-26-blackhole-tvm-ffi-wrapper-export-blocker.md` | `tvm_ffi` wrapper/export blocker 排障记录 |
-| `stage0_executable_spec_attr_alignment.md` | Stage 0 协议落地 |
-| `stage1_single_core_copy_closure.md` | Stage 1 copy 闭环 |
-| `stage2_concrete_dev_task_plan.md` | 早期 Stage 2 任务拆解（已被后续设计取代） |
-| `phase0_*.md` | 环境准备历史记录 |
+当前没有活动中的旧 `stateful_tiled_ir` 实施计划。下一份实施计划应直接基于：
 
-## 4. 已清理
+- `final_blackhole_backend_redesign.md`
+- 其 Phase A / B / C 迁移顺序
+- 当前仍活动的 supporting docs
 
-- `2026-04-01-flash-attn-ttmetal-first-compute-redesign.md`
-- `2026-04-01-flash-attn-ttmetal-first-compute-redesign-implementation-plan.md`
+已归档、不可再作为当前任务安排入口：
 
-这两份文档已被 `final_blackhole_backend_redesign.md` 与 `2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md` 吸收，继续保留只会制造第二套总体设计心智。
+- `archive/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`
+- 其他所有历史 implementation plan
+
+## 4. Archive
+
+查看 `archive/README.md`。

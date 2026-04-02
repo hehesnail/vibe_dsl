@@ -9,7 +9,9 @@
 - **关联文档**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
   - `tasks/dev_design/stage2d_ttmetal_contract_audit.md`
-  - `tasks/dev_design/stage3_multicore_design.md`
+  - `tasks/dev_design/archive/stage3_multicore_design.md`
+
+> 角色说明：本文档现在只作为 **TT Target IR 中 semaphore 子问题** 的支持设计。总体架构与当前阶段方向以 `final_blackhole_backend_redesign.md` 为准。
 
 ---
 
