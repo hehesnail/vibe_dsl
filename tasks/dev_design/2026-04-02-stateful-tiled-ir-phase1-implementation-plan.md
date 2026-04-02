@@ -1,6 +1,6 @@
 # Stateful Tiled IR Phase 1 Implementation Plan
 
-> **Status (2026-04-02, superseded as overall architecture):** 这份文档不再代表下一阶段总体架构。当前唯一权威总体设计已改为多层 compiler-internal IR：`Stateful Semantic IR -> Spatial Program IR -> TT Target IR`，见 `tasks/dev_design/final_blackhole_backend_redesign.md`。本文件仅保留为新总设计下 **Phase A（Semantic IR）** 的历史草案与迁移参考，后续如继续执行应先按新总设计重写为对应子计划。除顶部状态说明外，正文中的旧 `Stateful Tiled IR` / `LiftToStatefulTiledIR` / `BlackholeStatefulProgramLowerer` 命名暂未整体回收，阅读时应按“已 supersede 的旧 Phase A 草案”理解。
+> **Status (2026-04-02, superseded as overall architecture):** 这份文档不再代表下一阶段总体架构。当前唯一权威总体设计已改为多层 compiler-internal IR：`Stateful Semantic IR -> Spatial Program IR -> TT Target IR`，见 `tasks/dev_design/final_blackhole_backend_redesign.md`。旧的 runtime/混合架构说明已归档到 `tasks/dev_design/legacy_blackhole_runtime_architecture.md`。本文件仅保留为新总设计下 **Phase A（Semantic IR）** 的历史草案与迁移参考，后续如继续执行应先按新总设计重写为对应子计划。除顶部状态说明外，正文中的旧 `Stateful Tiled IR` / `LiftToStatefulTiledIR` / `BlackholeStatefulProgramLowerer` 命名暂未整体回收，阅读时应按“已 supersede 的旧 Phase A 草案”理解。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
