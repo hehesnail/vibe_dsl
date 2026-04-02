@@ -1,260 +1,115 @@
-# TileLang Blackhole 后端开发进度
+# TileLang Blackhole Backend Progress
 
 > 当前唯一总体设计文档: `tasks/dev_design/final_blackhole_backend_redesign.md`
+> `tasks/dev_design/archive/` 下的文档全部是历史记录，不再作为当前任务安排入口。
 
 ## 当前阶段
 
-- **阶段**: Stage 4 — TT-Metal contract formalization / flash-attn forward subset
-- **状态**: Stage 3 formal direct host path 已完成；当前主线已正式转到 TT-Metal contract formalization、backend cleanup 和 flash-attn forward subset
-- **当前稳定状态**:
-  - `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` 主链已稳定
-  - P0 已完成；P3 在 current copy/GEMM formal surface 上已完成收口
-  - P4 已完成 interleaved stick/page copy 主路径；P5 已完成 program-local worker semaphore 与 remote-core descriptor formalization
-  - backend cleanup A1/A2/A3、B1/B2/B3、C1/C2 已完成当前计划内收敛
-- **当前活动主线**:
-  - flash-attn forward subset：analysis、fragment lowering、dataflow bridging 与 codegen 已接通当前支持面
-  - execution hang 已解；当前剩余主工作已收敛为 `blackhole.acc` compute 语义收正、TT-Metal-first tile/CB/dst-reg 主路径迁移、以及更宽支持面
-  - 权威总设计已重写为当前分层架构：`Stateful Semantic IR -> Spatial Program IR -> TT Target IR`；旧 runtime/混合架构已归档到 `tasks/dev_design/archive/legacy_blackhole_runtime_architecture.md`
-  - 总设计已明确各层 IR 的目标、核心对象、输入/输出、validation 职责、层间 handoff contract，以及 flash-attn forward 端到端示例和现有 pass 到新架构的映射表
-  - `tasks/dev_design/` 根目录已清到只保留活动文档；历史设计、完成记录和旧 implementation plan 已统一移到 `tasks/dev_design/archive/`
-- **日期**: 2026-04-02
-- **相关设计**:
-  - `tasks/dev_design/final_blackhole_backend_redesign.md`
-  - `tasks/dev_design/stage4_flash_attention_forward_subset.md`
-  - `tasks/dev_design/stage2d_ttmetal_contract_audit.md`
-  - `tasks/dev_design/stage4_semaphore_schema.md`
+- **日期**: `2026-04-02`
+- **阶段**: Stage 4 — flash-attn forward subset / TT-Metal contract cleanup / layered IR architecture transition
+- **当前主线**:
+  - 以新的分层架构推进后续实现：
+    `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
+  - 在保持 copy / GEMM / current direct-path 稳定的前提下，解决 flash-attn 的 `blackhole.acc` 语义问题
+  - 清理所有仍把已归档旧单层方案当当前入口的文档和任务安排
 
-### Flash-Attention 当前推进
+## 当前稳定基线
 
-- **analysis / legality**:
+- `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path 已稳定
+- `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复
+- copy / GEMM current support surface 已打通，multi-core formal direct host path 已完成
+- TT-Metal contract formalization 当前已完成到：
+  - P0：compute contract 主链
+  - P3：current copy / GEMM formal runtime surface
+  - P4：最小 interleaved stick/page copy 主路径
+  - P5：program-local worker semaphore + remote-core descriptor formalization
+- flash-attn forward subset 当前已完成：
   - `AnalyzeBlackholeWorkDecomposition`
   - `AnalyzeBlackholeFragmentRegions`
   - `AnalyzeBlackholePipelineStages`
-  已全部接入 `SplitBlackholeKernel` 之后的主链
-- **当前已完成的 fragment lowering 子集**:
-  - `tl.blackhole.reduce_row`
-  - `tl.blackhole.mul_row_bcast`
-  - `tl.blackhole.mul_grouped_row_bcast`
-  - `tl.blackhole.div_row_bcast`
-  - `tl.blackhole.div_grouped_row_bcast`
-  - `tl.blackhole.scalar_fma`
-  - `tl.blackhole.exp2_row_bcast_affine`
-  - `tl.blackhole.exp2_grouped_row_bcast_affine`
-  - `tl.blackhole.scalar_exp2_affine`
-  - `tl.blackhole.fill_fragment`
-  - `tl.blackhole.scalar_max`
-  - `tl.blackhole.cast_fragment_slice`
-  - `tl.blackhole.write_local_slice_to_cb`
-- **当前 codegen 状态**:
-  - 现有线性 fragment helper 仍可用于 compile-path bring-up，但已被明确标记为过渡实现，不再作为 `blackhole.acc` 的长期语义前提
-  - 上述 fragment builtin 已接入 `codegen_blackhole`
-  - `blackhole.acc` 局部符号映射与 `tl.infinity` 相关的 device-only codegen 噪声已收正
-  - `blackhole.acc` 指向 CB 的局部 staging 已改为通过正式 helper 取写指针，不再在 TRISC compute source 里直接物化 `get_local_cb_interface(...).fifo_wr_ptr`
-  - `exp2` 路径大部分已收正到 backend 自有 fast-math helper；部分 `exp2_row_bcast_affine` 形态仍未被 matcher 命中，会回退为原始 TIR `exp2f` call（需继续收敛）
-  - full `lower()` 已不再卡在旧的 fragment-subset gate、`Find undefined Variable acc_o`、`tl.infinity` unresolved call、或 `local/accumulator -> shared(CB)` staged copy 残留
-- **当前状态收口**:
-  - `CopyDirection::kLocalToCB` 已接入 `LowerBlackholeOps`
-  - `local/accumulator -> shared(CB)` staged copy 已 lower 成 `tl.blackhole.write_local_slice_to_cb`
-  - 当前支持的 MHA/GQA forward compile-path 已打通
-  - `AssignBlackholeCores` / direct runtime 的 core-plan 协议已收正到连续 logical worker grid：当前环境为 `11 x 10 = 110` worker cores
-  - copy 正式主链已去掉 `input0/output0` 默认 runtime-arg fallback；缺 schema 现在在 `rt_mod_blackhole` build-time 显式失败
-- **已修复的 runtime blocker**:
-  - `PlanBlackholeCB::GetCBArgPositions` 漏掉 `write_local_slice_to_cb` → CB ID 未回写 → runtime hang（已修复）
-  - `ExtractRuntimeArgs` identity dedup key 过于激进（`arg.identity` 而非 `arg.identity:arg.kind`），导致 `logical_core_noc_x/y` 同 identity 的第二个 arg 被丢弃（已修复）
-  - `MakeSegmentPrimFunc` 的 `fallback_arg_allowed` 对 `fused_dataflow` 返回 `false`，过滤掉所有 buffer args（已修复）
-  - `cast_fragment_slice` 写出的 `blackhole.acc` scratch CB 若会被后续 matmul 当输入消费，之前没有按未来 matmul 所需页数 `cb_push_back` → 第二次 matmul 永远等不到完整输入页（已修复）
-  - `GenerateMatmulSequence` 之前会对 `blackhole.acc` GEMM 输出 CB 在 `pack_tile` 前重复 `cb_reserve_back`，破坏已持有 scratch CB 的生命周期（已修复）
-- **下一步**:
-  - 按 `TT-Metal-first` 方向重定义 `blackhole.acc`：后续只表示 compute-side tile scratch
-  - 收正上游 TIR 对接边界：后段不再从线性 `BufferLoad/BufferStore` 形态猜 tile 语义，凡是无法稳定恢复的 tile contract 必须通过 analysis attrs 或显式 builtin 交付
-  - 先重写新的 layered-IR implementation plan；旧 `stateful_tiled_ir` Phase 1 草案已归档，不再作为当前任务安排入口
-  - 然后执行 **Phase A: Stateful Semantic IR**：落 `LiftToStatefulSemanticIR` / `ValidateStatefulSemanticIR` skeleton、domain/state/relation/phase 真源冻结、以及 copy/GEMM compile-path zero-regression gate
-  - 再执行 **Phase B: Spatial Program IR**：把 flash-attn / online-softmax / GEMM 的 `task/channel/layout/sync/work partition` 一等化，拆掉 `LowerBlackholeOps` 当前同时承担语义理解和 target lowering 的边界
-  - 最后执行 **Phase C: TT Target IR**：统一 `CB / semaphore / dst layout / kernel role / ABI / execution plan`，并把 `ExecutableSpec` 改为从 `TT Target IR` 物化
-  - 继续扩更宽 flash-attn forward 支持面与 P4/P5 主项
-  - flash-attn runtime 当前已不再 hang，但 `test_blackhole_flash_attention_runtime.py -k mha` 仍未通过精度对比；当前主 blocker 已从 execution-time deadlock 收敛为 compute correctness/语义设计问题
+  - 最小 fragment/dataflow builtin lowering
+  - 当前支持的 MHA / GQA forward compile-path
 
-### 最新回归结果（当前环境）
+## 当前主 blocker
 
-| 测试 | 结果 |
-|------|------|
-| `test_blackhole_flash_attention_pipeline.py` | 新增 `acc_s_cast` 发布与 `blackhole.acc` GEMM 输出不重复 reserve 回归，当前通过 |
-| `test_blackhole_flash_attention_runtime.py` | runtime 已不再 hang；`-k mha` 当前执行完成但 correctness 仍未通过，主 blocker 已收敛为 `blackhole.acc` 混合语义导致的 compute correctness 问题 |
-| `test_blackhole_copy_pipeline.py` | 40 passed, 10 skipped, 1 xfailed |
-| `test_blackhole_copy_runtime.py` | 2 passed, 9 skipped |
-| `test_blackhole_gemm.py` | 24 passed, 11 skipped |
-| `test_blackhole_tvm_ffi_export.py` | 1 passed |
+- flash-attn runtime 已不再 hang，但 correctness 仍未通过。
+- 根因已经收敛为 `blackhole.acc` 混合语义：
+  - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
+  - 另一部分 helper 仍把它当线性 fragment scratch 数组
+- 这正是当前架构切换到 layered IR 的直接动机：
+  - `Stateful Semantic IR` 冻结算法 state / relation / phase 真语义
+  - `Spatial Program IR` 单独表达 task / channel / layout / sync / work partition
+  - `TT Target IR` 统一承接 CB / semaphore / dst layout / kernel role / ABI
 
-### 已验证 full-env 结果
+## 下一步
 
-| 测试 | 结果 |
-|------|------|
-| `test_blackhole_copy_pipeline.py` | 30 passed, 1 xfailed |
-| `test_blackhole_copy_runtime.py` | 11 passed |
-| `test_blackhole_gemm.py` | 31 passed |
+1. 基于 `tasks/dev_design/final_blackhole_backend_redesign.md` 重写新的 layered-IR implementation plan。
+2. 执行 **Phase A: Stateful Semantic IR**：
+   - `LiftToStatefulSemanticIR`
+   - `ValidateStatefulSemanticIR`
+   - 冻结 `domain / state / relation / phase`
+   - 保证 copy / GEMM compile-path zero-regression
+3. 执行 **Phase B: Spatial Program IR**：
+   - 把 flash-attn / online-softmax / GEMM 的 `task / channel / layout / sync / work partition` 一等化
+   - 拆掉 `LowerBlackholeOps` 当前同时承担语义理解和 target lowering 的边界
+4. 执行 **Phase C: TT Target IR**：
+   - 统一 `CB / semaphore / dst layout / kernel role / ABI / execution plan`
+   - 把 `ExecutableSpec` 改成从 `TT Target IR` 物化
+5. 在新分层下继续扩更宽 flash-attn forward 支持面，以及 P4 / P5 更宽执行面。
 
----
+## 当前代码事实
 
-## 分阶段总览
-
-| 阶段 | 目标 | 状态 |
-|------|------|------|
-| Stage 0 | 协议与执行载体（ExecutableSpec, BlackholeModule） | ✅ |
-| Stage 1 | single-core copy bring-up | ✅ |
-| Stage 2A | pass 主链接入 | ✅ |
-| Stage 2B | single-core copy 正式主链 | ✅ |
-| Stage 2C | split-before 语义规划（AnnotateBlackholeCopySemantics） | ✅ |
-| Stage 2D | single-core GEMM + true E2E | ✅ |
-| Stage 2E | 设备资源 IR 语义扩展（StorageRank + Canonicalization） | ✅ |
-| **Stage 3** | **multi-core runtime 调度** | **✅ direct host path 完成** |
-
----
-
-## Stage 3 实施计划
-
-关键调研结论：
-- `blockIdx.*` 不被 `ZeroThreadAndLoopVars` 零化 → tile index 自动含 per-core offset
-- `BindThreadIndex` 已把 `blockIdx.x/y` → `work_id % grid_x` / `work_id / grid_x`
-- **copy 和 GEMM 多核都不需要改 lowering/codegen**，只需 host 侧分发 + DSL kernel 用 `bx/by` 索引
-
-| Step | 内容 | 改动范围 | 依赖 | 状态 |
-|------|------|---------|------|------|
-| 1 | `AssignBlackholeCores` 解除 `cores_needed=1` | `assign_blackhole_cores.cc` | 无 | ✅ |
-| 2 | `BlackholeModule` 单 Program 多核 launch | `blackhole_module.cc/h` | Step 1 | ✅ |
-| 3 | Copy 多核 E2E 验证（TT-Sim） | 测试 | Step 1+2 | ✅ |
-| 4 | GEMM 多核 E2E 验证（TT-Sim） | 测试（新 DSL kernel 用 `bx/by`） | Step 1+2 | ✅ |
-| 5 | 文档同步与提交 | progress/design/memory | Step 3+4 | ✅ |
-
-不在 Stage 3 范围：K 维度切分、核间数据流、semaphore/multicast
-
-注：
-- Stage 3 本体以及后续关联文档已同步到当前状态
-- `git commit` / `git push` 已完成；当前阶段剩余工作属于 Stage 3 之后的 TT-Metal contract formalization
-
-### Stage 3 结果
-
-- copy multi-core direct host path 已完成并通过 TT-Sim：`test_blackhole_copy_runtime.py` `6 passed`
-- GEMM multi-core direct host path 已完成并通过 TT-Sim：`test_blackhole_gemm.py` `7 passed`
-- multicore GEMM 真正 blocker 是 direct path contract mismatch，不是 `core_plan`：
-  - host runtime 之前把 `num_k_tiles` 误从整张输入 buffer 大小推导，single-core 碰巧正确、multi-core 失真
-  - writer 之前按整张 output tensor 形状消费 output CB，导致 `cb_wait_front` 多消费而挂死
-  - `transpose_B=True` 时，reader 之前仍按未转置的 tile 线性序读 B，导致 multi-core 数值错误
-- 独立 wrapper/export blocker 已解决：
-  - 根因不是 direct path contract，而是 host C codegen 对 `tvm_call_packed_lowered` 只支持语句形态，不支持 `LetStmt` 中的结果表达式
-  - 现已修复为显式从 `TVMFFIAny result` 取回返回值，Blackhole `tvm_ffi` export 最小 case 通过
-
----
-
-## 已完成阶段的关键记录
-
-### Stage 2D（GEMM E2E）
-
-- GEMM 根因：`transpose_B` 丢失 + host row-major upload 无 tilize/untilize
-- 已补：`blackhole.gemm_contract`、host-side transpose/tilize/untilize
-- CB identity 唯一协议收正：`LowerBlackholeOps` → `requirement_index`，`PlanBlackholeCB` → IR 回写
-- 额外收正：`scratch_l1` 全链路移除、copy codegen 统一、`GetRuntimeArgVarForBuffer` preferred_kind 重构
-
-### Stage 2G（Richer Runtime Work Schema）
-
-- copy runtime ABI 已从 `current_work_linear_id` / `tile_count` 收正为 `work_linear_id + a_tile_* + output_tile_*`
-- GEMM segment runtime ABI 已收正为 reader 的 `work_linear_id + a_tile_* + b_tile_* + k_tile_*`、compute 的 `k_tile_*`、writer 的 `work_linear_id + output_tile_*`
-- `rt_mod_blackhole` / `ExecutableSpec` / `KernelSpec` 已统一消费 richer work descriptor kinds
-- `BindThreadIndex` 不再从 copy range 字段静默猜 work id；缺失 `work_linear_id` 时直接 fail-fast
-- compile-time ABI schema 已进入 segment plan / `KernelSpec` / direct runtime：
-  - accessor CTA 不再只是匿名 compile-time args 位置约定
-  - GEMM `Mt/Kt/Nt`、`transpose_A/B` 已作为显式 `compile_time_arg_specs` 进入主协议
-  - `launch_spec` 已成为 `CreateKernel` host materialization 的正式输入
+- 当前 Blackhole 设备侧 pass 主线：
+  `LowerDeviceStorageAccessInfo`
+  -> `LowerIntrin`
+  -> `Simplify`
+  -> `HoistBroadcastValues`
+  -> `SplitBlackholeKernel`
+  -> `AnalyzeBlackholeWorkDecomposition`
+  -> `AnalyzeBlackholeFragmentRegions`
+  -> `AnalyzeBlackholePipelineStages`
+  -> `LowerBlackholeOps`
+  -> `PlanBlackholeCB`
+  -> `AssignBlackholeCores`
+- `SplitBlackholeKernel` 已接入管线：
+  - 纯 copy 走 `fused_dataflow` 单 kernel
+  - GEMM 走 3-kernel（reader / compute / writer）
 - direct runtime 当前正式支持面：
-  - copy: equal source/dest range，且 stride = 1
-  - GEMM: A/B-separated reader range + writer output range
-  - accessor: 仅 interleaved + DRAM + `common_runtime_arg_count = 0`
-  - accessor fail-fast 已补齐到统一 schema 校验层：即使 kernel 走 `compile_time_arg_specs` 主路径，只要 accessor 声明 `common_runtime_arg_count > 0` 也会被 direct runtime 明确拒绝
-  - copy/GEMM 已新增 direct runtime reject 回归，覆盖 accessor-level `common_runtime_arg_count > 0`
+  - copy：equal source/dest range，且 stride = 1
+  - GEMM：A/B-separated reader range + writer output range
+  - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
+- TT-Sim 当前正式入口是顶层 `scripts/setup_tt_sim.sh`，并且必须和后续测试命令在同一个 shell 中执行
 
-### Stage 2J（Compute Contract Formalization）
+## 最新验证
 
-- `blackhole.compute_contract` 已进入 `LowerBlackholeOps -> ExecutableSpec -> BlackholeModule` 主链
-- GEMM direct runtime 的 shape 校验、transpose/tilize、output untilize、`num_k_tiles` / logical N tiles 推导已优先消费 `compute_contract`
-- `blackhole.gemm_contract` 仍保留为兼容字段，但新增 compute 语义不再继续堆在旧字段上
-- `compute_contract` 已继续 formalize：
-  - block/subblock ABI：`block_m_tiles/block_n_tiles/block_k_tiles`、`subblock_m_tiles/subblock_n_tiles`
-  - compute precision ABI：`math_fidelity/fp32_dest_acc_en/dst_full_sync_en/math_approx_mode/unpack_to_dest_mode/bfp8_pack_precise`
-  - compute kernel config extras：`defines/named_compile_args`
-- `tl.gemm_py` 现有 compute ABI 参数 `clear_accum/k_pack/wg_wait` 已进入 `compute_contract` 和 compute-side `compile_time_arg_specs`
-- `tl.gemm_py` 现有 warp-level compute ABI 参数 `policy` 已进入 `compute_contract.policy_type/policy_name` 和 compute-side `compile_time_arg_specs`
-- `tl.gemm_py` 可选 `mbar` 绑定已进入 `compute_contract.has_mbarrier/mbarrier_buffer/mbarrier_scope/mbarrier_index_exprs`
-- compute segment 已显式产出 `compute_config`、`gemm_block_shape`、`gemm_subblock_shape`
-- compute segment 已显式产出 `gemm_clear_accum`、`gemm_k_pack`、`gemm_wg_wait`
-- compute segment 已显式产出 `gemm_policy`
-- compute segment / `KernelSpec.compute_config` 已改为从 `compute_contract` 派生，不再各自维护独立默认值
-- `KernelSpec.compute_config` / direct runtime `CreateKernel(ComputeConfig)` 已收正到更完整 TT-Metal 口径：
-  - `dst_full_sync_en`
-  - `bfp8_pack_precise`
-  - `defines`
-  - `named_compile_args`
-- `T.gemm` 已补上 producer 输入面：
-  - `dst_full_sync_en`
-  - `bfp8_pack_precise`
-  - `defines`
-  - `named_compile_args`
-- richer compute-config extras 不再依赖测试注入或 attrs 变异；DSL -> `LowerBlackholeOps` -> `ExecutableSpec` ->
-  `KernelSpec.compute_config` -> `CreateKernel(ComputeConfig)` 主链已闭环
-- GEMM direct runtime correctness 已补到 richer compute-config case：
-  - 新增 non-default `dst_full_sync_en/bfp8_pack_precise/defines/named_compile_args` 的 direct runtime 数值对比
-  - TT-Sim 下单测通过，整份 `test_blackhole_gemm.py` 已回到 `30 passed`
-- `mbar` 当前按 barrier binding formalize 到 `compute_contract`，未被错误编码成新的 compile-time literal ABI；direct runtime 对 `has_mbarrier=True` 明确 fail-fast
-- `BlackholeModule` 已改为按 `KernelSpec.compute_config` materialize TT-Metal `ComputeConfig`，不再把 `math_fidelity/fp32_dest_acc_en/math_approx_mode` 写死
-- P0 已完成；当前 remaining gap 已转移到 P3/P4/P5 和更宽 dtype / execution surface，而不是 compute contract producer 链路
-- multicore GEMM direct runtime 额外收正：
-  - `compute_contract.N/Nt` 在 multicore 语义上是每个 work/core 的 local output shape
-  - runtime 侧全局 logical N tile 数需按 `Nt * logical_grid_x` 推导，不能直接把 per-core `Nt` 拿去和 grid 宽度比较
-- 新增 `transpose_A=True, transpose_B=True` 的更宽 GEMM compute case 测试；当前环境 direct runtime 用例因执行前置条件不足而跳过，但 schema/spec 主链已验证
+### 当前环境
 
-### Stage 2E（设备资源 IR）
+| 测试 | 结果 |
+|------|------|
+| `test_blackhole_flash_attention_pipeline.py` | 当前通过；已覆盖 `acc_s_cast` 发布与 `blackhole.acc` GEMM 输出不重复 reserve 回归 |
+| `test_blackhole_flash_attention_runtime.py` | runtime 已不再 hang；`-k mha` 当前执行完成但 correctness 未通过 |
+| `test_blackhole_copy_pipeline.py` | `40 passed, 10 skipped, 1 xfailed` |
+| `test_blackhole_copy_runtime.py` | `2 passed, 9 skipped` |
+| `test_blackhole_gemm.py` | `24 passed, 11 skipped` |
+| `test_blackhole_tvm_ffi_export.py` | `1 passed` |
 
-- `StorageRank::kBlackholeCB`、`StorageRank::kBlackholeAccumulator` 已引入
-- `BlackholeDeviceResourceCanonicalization` pass 已接入管线
-- generic pass（FlattenBuffer/VectorizeLoop/MergeSharedMemory）不再误解 Blackhole 资源
+### 已验证 full-env 基线
 
----
+| 测试 | 结果 |
+|------|------|
+| `test_blackhole_copy_pipeline.py` | `30 passed, 1 xfailed` |
+| `test_blackhole_copy_runtime.py` | `11 passed` |
+| `test_blackhole_gemm.py` | `31 passed` |
 
-## 未完成的 TT-Metal contract 收正
+## 当前活动文档
 
-来源：`stage2d_ttmetal_contract_audit.md`（审计已完成，收正部分落地）
+- `tasks/dev_design/final_blackhole_backend_redesign.md`
+- `tasks/dev_design/stage4_flash_attention_forward_subset.md`
+- `tasks/dev_design/stage2d_ttmetal_contract_audit.md`
+- `tasks/dev_design/stage4_semaphore_schema.md`
+- `tasks/dev_design/README.md`
 
-| 优先级 | 内容 | 状态 | 备注 |
-|--------|------|------|------|
-| P0 | GEMM compute contract / compute config / producer ABI 正式化 | ✅ | `compute_contract` 已成为 compute 真源，`compute_config` 为 materialization 视图；`dst_full_sync_en/bfp8_pack_precise/defines/named_compile_args` 与 `clear_accum/k_pack/wg_wait/policy` 已走通 DSL -> attrs/spec -> runtime 主链 |
-| P1 | CB transport schema | ✅ | 已统一到 codegen CB transport，无 scratch |
-| P2 | host tilize/untilize | ✅ | transpose_B + tilize/untilize 已补齐 |
-| P3 | accessor / runtime work schema | ✅ | current copy/GEMM formal surface 上的 richer work descriptor、accessor/common-runtime schema、compile-time ABI/launch schema、kernel-level shared `common_runtime_args` host materialization、以及 accessor `args_config_bits` 真源关系都已正式化；更宽 accessor/CRTA/non-tile execution surface 已转移到 P4/P5 或后续专项 |
-| P4 | copy/dataflow 泛化（non-tile/stick/sharded） | 部分完成 | interleaved stick/page copy 已扩到 `M x W`（`M` 为 32 的倍数）并支持静态 offset subrange，formal direct-path boundary 为 `transport_page_size` 必须 64B 对齐、transport offset 必须 page-aligned、global width 必须能整除 shared width；更宽 non-tile/sharded 仍未做 |
-| P5 | multi-core synchronization 预埋（semaphore/multicast） | 部分完成 | program-local `semaphore_plan` schema、kernel-level `semaphore_bindings`、`semaphore_id_u32` runtime materialization、最小 device-side dataflow semaphore builtin、以及 worker producer/consumer direct-runtime TT-Sim E2E 已接入；当前仍只支持 worker semaphore，multicast / global semaphore / compute-kernel semaphore primitive / pass-level producer 仍未做 |
+## 说明
 
----
-
-## 已知结构问题
-
-| 问题 | 优先级 | 备注 |
-|------|--------|------|
-| `PlanBlackholeCB` 是 MVP allocator | 低 | 当前足够 |
-| `StorageRewrite` 不兼容 Blackhole CB | — | 永久排除 |
-| copy/GEMM segment 模型不统一（fused_dataflow vs 3-kernel） | 中 | 架构债，Stage 3 后再做 |
-| `BlackholeModule` host materialization 过重 | 中 | cleanup roadmap 已建档 |
-
----
-
-## 设计文档索引
-
-### 活动文档
-
-| 文档 | 用途 | 状态 |
-|------|------|------|
-| `final_blackhole_backend_redesign.md` | 唯一总设计 | 常青 |
-| `stage4_flash_attention_forward_subset.md` | Flash-Attention 作为 consumer 的支持设计 | 活动中（不再定义总体架构方向） |
-| `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 缺口审计 | 支持中（P4/P5 与更宽 execution surface 仍参考它） |
-| `stage4_semaphore_schema.md` | TT Target IR semaphore/sync 支持设计 | 支持中 |
-
-### 已归档
-
-`tasks/dev_design/archive/` 下的文档全部视为历史记录、完成记录或被 supersede 的旧计划，不再作为当前入口。
+- 旧的 runtime 架构说明、旧单层 implementation plan、以及过去阶段的详细执行记录都已移入 `tasks/dev_design/archive/`。
+- 如果需要查看历史决策或旧阶段实现背景，去 archive 或 git history；不要再把历史文档当当前任务安排入口。

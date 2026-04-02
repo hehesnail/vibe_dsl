@@ -33,8 +33,9 @@
 
 1. `tasks/dev_design/final_blackhole_backend_redesign.md` — 唯一权威总设计
 2. `tasks/progress.md` — 当前状态与下一步
-3. 如果涉及构建/调试/历史问题，再看 `memory/general_dev.md` 和 `memory/bugs.md`
-4. 然后读代码，不要只看文档
+3. `tasks/dev_design/README.md` — 当前活动设计文档索引
+4. 如果涉及构建/调试/历史问题，再看 `memory/general_dev.md` 和 `memory/bugs.md`
+5. 然后读代码，不要只看文档
 
 ## TT-Sim 环境入口
 
@@ -102,23 +103,20 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 
 ## 当前推进顺序
 
-1. ~~attrs / 协议~~ ✅
-2. ~~`ExecutableSpec`~~ ✅
-3. ~~`rt_mod_blackhole`~~ ✅
-4. ~~`BlackholeModule` direct path 补全~~ ✅
-5. ~~Copy E2E 验收（direct path）~~ ✅
-6. ~~split-before 语义规划~~ ✅
-7. ~~通用 pass 回收~~ ✅（FlattenBuffer/VectorizeLoop 已验证；StorageRewrite 永久排除）
-8. ~~GEMM 接入 Steps 1-5~~ ✅（CB identity 唯一协议已收正）
-9. ~~GEMM E2E 验收~~ ✅（transpose_B + host tilize/untilize 已补齐）
-10. ~~multi-core~~ ✅（formal direct host path 已完成；设计见 `tasks/dev_design/stage3_multicore_design.md`）
-11. ~~TT-Metal contract formalization：P0/P3 主路径收口~~ ✅
-12. **Stage 4 当前主线**
-   - flash-attn forward subset：analysis、fragment/dataflow lowering 与 codegen 已打通当前支持面
-   - P4：更宽 copy/dataflow 泛化（non-tile/stick/sharded）
-   - P5：更宽 synchronization（multicast/global/pass-level producer）
-   - execution hang 已解；当前主 blocker 已收敛为 `blackhole.acc` 混合语义导致的 compute correctness 问题
-   - 下一阶段正式方向是 compiler-internal `Stateful Tiled IR`；当前实施计划见 `tasks/dev_design/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`
+1. 保持当前稳定基线不回退：
+   - `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path
+   - copy / GEMM current support surface
+   - flash-attn 已打通的 compile-path
+2. 文档、任务安排和实现边界统一以 `tasks/dev_design/final_blackhole_backend_redesign.md` 为准。
+3. 先重写新的 layered-IR implementation plan，不再沿用已归档的旧单层 Phase 1 草案。
+4. 按新总设计执行：
+   - Phase A：`Stateful Semantic IR`
+   - Phase B：`Spatial Program IR`
+   - Phase C：`TT Target IR`
+5. 在新分层下继续推进：
+   - flash-attn `blackhole.acc` 语义收正
+   - 更宽 copy/dataflow 支持面（P4）
+   - 更宽 synchronization 支持面（P5）
 
 ---
 
@@ -165,13 +163,17 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 默认开发构建目录固定为 `tilelang_repo/build/`
 - 默认并行编译线程数按 `-j32` 执行
 - `build_blackhole/` 和 legacy runner 都已删除
-- Pass 管线顺序：`AnnotateBlackholeCopySemantics` → `BlackholeDeviceResourceCanonicalization` → `SplitHostDevice` → `SplitBlackholeKernel` → `LowerBlackholeOps` → `PlanBlackholeCB`
+- `tasks/dev_design/` 根目录只保留活动文档；`tasks/dev_design/archive/` 下内容全部视为历史记录，不再作为当前入口
+- 当前 Blackhole 设备侧 pass 主线：
+  `LowerDeviceStorageAccessInfo` → `LowerIntrin` → `Simplify` → `HoistBroadcastValues` → `SplitBlackholeKernel` → `AnalyzeBlackholeWorkDecomposition` → `AnalyzeBlackholeFragmentRegions` → `AnalyzeBlackholePipelineStages` → `LowerBlackholeOps` → `PlanBlackholeCB` → `AssignBlackholeCores`
 - `SplitBlackholeKernel` 已实现并已接入管线；纯 copy 走 `fused_dataflow` 单 kernel，GEMM 走 3-kernel（reader/compute/writer）
 - direct runtime 当前正式支持面：
   - copy：equal source/dest range，且 stride = 1
   - GEMM：A/B-separated reader range + writer output range
   - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
-- flash-attn forward subset 当前已完成 analysis、最小 fragment/dataflow builtin/codegen 接入，并打通当前支持的 MHA/GQA forward compile-path；后续重点是 runtime 验证与更宽支持面
+- flash-attn forward subset 当前已完成 analysis、最小 fragment/dataflow builtin/codegen 接入，并打通当前支持的 MHA/GQA forward compile-path；runtime hang 已解，当前主 blocker 是 `blackhole.acc` 混合语义导致的 compute correctness 问题
+- 后续所有架构推进以 layered IR 为准：
+  `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
 - TT-Sim 当前正式环境入口是顶层 `scripts/setup_tt_sim.sh`
 - `setup_tt_sim.sh` 与后续测试必须在同一个 shell 中执行
 - 如果在 worktree 中运行测试，source 后必须把 `TILELANG_HOME` 指回当前 checkout/worktree

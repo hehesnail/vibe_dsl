@@ -3,6 +3,12 @@
 > 当前 Blackhole 后端唯一设计依据: `tasks/dev_design/final_blackhole_backend_redesign.md`
 > 本文档只保留稳定、可复用的工程经验。
 
+## 当前文档入口
+
+- 当前活动文档只看 `tasks/dev_design/` 根目录和 `tasks/progress.md`。
+- `tasks/dev_design/archive/` 下的内容全部是历史记录，不再作为当前任务安排入口。
+- 如果需要新的实施计划，必须从当前 layered IR 总设计推导，不再复用已归档的旧单层 plan。
+
 ## 编译器后端开发
 
 ### codegen 职责
@@ -130,7 +136,7 @@
 
 1. 不把单个 kernel 字符串当成后端主产物
 2. 新功能落到 `ExecutableSpec → BlackholeModule::ExecuteDirect()` 主路径
-3. 三层分工：split 前保语义 → split 后提正式 plan → host side 只做 materialization
+3. 架构分层要和当前总设计一致：`Stateful Semantic IR → Spatial Program IR → TT Target IR → host/runtime materialization`
 4. planner 的 identity 和 lifetime 必须分成两个独立维度（requirement_index ≠ lifetime）
 5. 新 schema 先隔离到新场景，不卷入已稳定路径；稳定后再统一
 6. 先修 bug（最小改动验证），再做 schema 工程（协议质量提升）
@@ -138,6 +144,8 @@
 ## 文档治理
 
 - 阶段状态切换时，至少同步检查：progress.md 页首、任务表、活动设计文档列表
+- 顶层 `README.md`、`AGENTS.md`、`CLAUDE.md` 只能描述当前主线，不要继续保留被 supersede 的阶段入口或旧计划路径
 - 排障文档一旦问题已解决，要在文档头部把状态改成“已实施/历史记录”，并把最终根因补回去；不要让“初始假设”继续伪装成当前结论
 - 设计文档分三类：当前活动、仍有效支撑、历史记录
+- 历史文档统一移到 `tasks/dev_design/archive/`；根目录只保留当前活动文档
 - 历史文档不重写正文，在开头加头注标明历史性质

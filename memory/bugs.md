@@ -20,9 +20,10 @@
   - 后续 pointwise / reduction / cast helper 却还会把同一份 scratch 当线性数组解释
   - hang 被修掉后，这套混合语义自然暴露为 correctness mismatch
 - **解决方向**:
-  - 以 `Stateful Tiled IR` 统一承接 `tile_state / vector_state / carry / phase` 语义
-  - 让 `blackhole.acc` 后续只表示 compute-side tile scratch
-  - 把 stats-state（`scores_max / scores_scale / scores_sum / logsum`）从 tile scratch 里拆出去，禁止后段继续从普通 loop 形态猜语义
+  - 先在 `Stateful Semantic IR` 冻结 `state / relation / phase / carry` 真语义，不再让后段从普通 loop 形态猜状态角色
+  - 再在 `Spatial Program IR` 单独表达 `task / channel / layout / sync / work partition`，把 flash-attn 的 online-softmax 数据流显式化
+  - 最后在 `TT Target IR` 里收正 `CB / semaphore / dst layout / kernel role / ABI`，让 `blackhole.acc` 只表示 compute-side tile scratch
+  - 把 stats-state（`scores_max / scores_scale / scores_sum / logsum`）从 tile scratch 语义里彻底拆出去
 
 ### Blackhole direct path 缺少 TT-Metal 正式 contract 分层
 
