@@ -688,3 +688,31 @@ The following documents are historical or implementation-history references only
 - `tasks/dev_design/archive/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`
 
 They are not authoritative for new implementation work. New implementation must follow this document.
+
+## 12. References
+
+These papers informed the layering, validation, and target-mapping direction in this document. They are design inputs, not protocol sources of truth for the TileLang Blackhole backend.
+
+- `Dato: A Task-Based Programming Model for Dataflow Accelerators` (2025)
+  https://arxiv.org/abs/2509.06794
+  - referenced for `task / channel / layout` first-class representation and `virtual -> physical` mapping split
+
+- `TL: Automatic End-to-End Compiler of Tile-Based Languages for Spatial Dataflow Architectures` (2025)
+  https://arxiv.org/abs/2512.22168
+  - referenced for explicit hardware representation and compiler-owned spatial mapping
+
+- `SPADA: A Spatial Dataflow Architecture Programming Language` (2025)
+  https://arxiv.org/abs/2511.09447
+  - referenced for rigorous dataflow semantics and explicit routing / synchronization validation
+
+- `Revet: A Language and Compiler for Dataflow Threads` (2023/2024)
+  https://arxiv.org/abs/2302.06124
+  - referenced for separating high-level threaded/dataflow semantics from backend realization
+
+- `Programmatic Control of a Compiler for Generating High-performance Spatial Hardware` (`T2S`, 2017)
+  https://arxiv.org/abs/1711.07606
+  - referenced for separating algorithm semantics from spatial mapping
+
+- `Spatial: A Language and Compiler for Application Accelerators` (PLDI 2018)
+  https://pldi18.sigplan.org/event/pldi-2018-papers-spatial-a-language-and-compiler-for-application-accelerators
+  - referenced as an earlier precedent for accelerator-oriented language/compiler layering
