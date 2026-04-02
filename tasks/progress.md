@@ -22,8 +22,12 @@
     - `PrimFunc.attrs + IRModule.global_infos + materialized blackhole.* attrs` 的职责分层
     - `TIRAnchor / TIRValueBinding`
     - `AtomicEffect -> semantic region` 的通用恢复规则
+    - `CombineSpec / SelectionSpec / SegmentSpec / PageSpec / RecurrenceSpec` 这组 typed semantic descriptors
     - `SemanticProgram -> SpatialProgram` 的空间化构造规则与 policy 边界
+    - `SpatialCandidate / SpatialPolicy / SpatialCostModel` 的 planning contract
     - `SpatialProgram + hardware model -> TTProgram` 的 target mapping 规则与 materialization 边界
+    - `TTHardwareModel` 的 typed schema
+    - `TTProgram -> TT-lowered PrimFunc + ExecutableSpec` 的唯一物化路径
   - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界
 
 ## 当前稳定基线
@@ -69,13 +73,13 @@
 3. 执行 **Phase B: Spatial Program IR**：
    - 把 selection/indexing、routed/grouped dispatch、paged decode、stateful update、chunk recurrence 的 `task / channel / layout / sync / work partition` 一等化
    - 明确 `PrimFunc.attrs["tl.spatial_program"]` 承载 contract
-   - 明确 spatial analysis 与 spatial policy 的边界
+   - 明确 spatial analysis 与 `SpatialCandidate / SpatialPolicy / SpatialCostModel` 的边界
    - 拆掉 `LowerBlackholeOps` 当前同时承担语义理解和 target lowering 的边界
 4. 执行 **Phase C: TT Target IR**：
    - 统一 `CB / semaphore / dst layout / kernel role / ABI / execution plan`
-   - 明确 `PrimFunc.attrs["tl.tt_program"]` 与 `IRModule.global_infos` 中 hardware model/topology 的承载 contract
+   - 明确 `PrimFunc.attrs["tl.tt_program"]` 与 `IRModule.global_infos` 中 `TTHardwareModel` 的承载 contract
    - 明确 target legality analysis 与 TT policy 的边界
-   - 把 `ExecutableSpec` 改成从 `TT Target IR` 物化
+   - 把 `ExecutableSpec` 与 TT-lowered `PrimFunc` 一并改成从 `TT Target IR` 唯一物化
 5. 在新分层下继续扩更宽 flash-attn forward 支持面，以及 P4 / P5 更宽执行面。
 
 ## 当前代码事实

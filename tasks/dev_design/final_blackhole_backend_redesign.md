@@ -364,6 +364,39 @@ TileLang DSL / Python
 1. 能从 IR 稳定恢复的，必须分析得到。
 2. 不能稳定恢复的，不允许后段猜，必须由更早层显式补齐。
 
+#### 高层 semantic descriptor 族
+
+为了避免 `combine_function`、`selection policy`、`segment/page descriptor` 再次退化成零散 attrs，本设计把它们收成 typed descriptor family。它们属于 semantic 层，因为它们描述的是**算法语义约束**，不是 spatial 或 TT 实现细节。
+
+| Descriptor | 挂载位置 | 关键字段 | 典型 workload |
+|------------|----------|----------|---------------|
+| `CombineSpec` | `Relation` / `SemanticRegion` | `kind`, `init_expr`, `update_expr`, `finalize_expr`, `algebraic_traits` | online softmax、Welford、weighted combine、chunk update |
+| `SelectionSpec` | `SemanticRegion` / `State` | `score_expr`, `rank_kind`, `threshold_policy`, `tie_break_policy`, `output_form` | topk、selector、argmax-like family |
+| `SegmentSpec` | `Domain` | `segment_ids`, `segment_sizes`, `segment_offsets`, `logical_to_segment_expr`, `padding_policy` | MoE/grouped/ragged dispatch |
+| `PageSpec` | `Domain` / `State` | `page_table`, `page_size`, `logical_to_physical_expr`, `validity_expr`, `sequence_length_expr` | paged decode、block/page sparse access |
+| `RecurrenceSpec` | `Relation` / `Phase` | `carry_state`, `step_state`, `decay_expr`, `update_order`, `boundary_policy` | chunk recurrence、scan、state-space family |
+
+约束：
+
+1. 这些 descriptor 是 semantic truth，不得被降成字符串名或匿名 `Map<String, Any>`。
+2. `CombineSpec` 不等于 target kernel 模板名；它只表达算法更新律。
+3. `SegmentSpec / PageSpec` 表达逻辑分段与逻辑页语义，不等于 TT runtime descriptor。
+4. 一个 workload 可以同时携带多个 descriptor；例如 paged topk 或 routed weighted combine。
+
+这些 descriptor 的来源规则如下：
+
+- 默认由结构恢复得到：
+  - `CombineSpec` 的基础 reduce/update 骨架
+  - `SelectionSpec` 的基础 rank/threshold 结构
+  - `SegmentSpec` 的 offsets/size/index remap 骨架
+  - `PageSpec` 的 page-table/index-remap/validity 骨架
+- 当结构不足以稳定表达高层含义时，允许前端/早期 IR 显式补齐：
+  - `SelectionSpec.tie_break_policy`
+  - `CombineSpec.algebraic_traits`
+  - `SegmentSpec.padding_policy`
+  - `PageSpec` 的外部协议含义
+  - `RecurrenceSpec.update_order`
+
 ### 5.2 `Spatial Program IR`
 
 #### 为什么需要这一层
@@ -496,6 +529,34 @@ TileLang DSL / Python
 5. grouped/ragged/paged route 一致性
 6. virtual placement 约束不冲突
 7. 明显的 race / deadlock / route inconsistency 可在这一层被提前发现
+
+#### 空间化候选、策略与代价模型
+
+`SpatialProgram` 是最终冻结的空间程序真源，但在冻结之前，compiler 必须能表达“存在多个合法 spatialization 候选”的事实。否则，`LowerToSpatialProgram` 还是会退化成一个带硬编码启发式的黑盒 pass。
+
+因此，在 spatial 层引入下面三类 planning object：
+
+| 对象 | 作用 | 关键字段 |
+|------|------|----------|
+| `SpatialCandidate` | 一个合法的空间化候选 | `tasks`, `channels`, `layouts`, `work_partitions`, `placements`, `sync_edges`, `resource_intents`, `decision_trace` |
+| `SpatialPolicy` | 在合法空间内做选择的 policy 输入 | `fusion_policy`, `partition_preferences`, `layout_preferences`, `placement_preferences`, `sync_preferences`, `reuse_preferences` |
+| `SpatialCostModel` | 对候选进行排序或裁剪 | `transfer_cost`, `fanout_cost`, `sync_cost`, `imbalance_cost`, `locality_score`, `persistent_state_pressure` |
+
+规则：
+
+1. `Analyze / SemanticProgram` 只产出 legality constraints 和 must-have structure。
+2. `LowerToSpatialProgram` 可以先生成一个或多个 `SpatialCandidate`。
+3. `SelectSpatialCandidate` 依据 `SpatialPolicy + SpatialCostModel` 选出唯一 winner，并冻结成 `SpatialProgram`。
+4. 一旦 `SpatialProgram` 冻结，下游 TT 层不得再改变 task/channel/layout/sync 结构。
+
+对真实 workload 的意义：
+
+- MoE 可以在 `expert` 粒度和 `tile` 粒度 route/compute/combine 之间形成多个合法候选。
+- paged decode 可以在 `page` 粒度和 `split` 粒度之间选择 merge 组织方式。
+- causal attention 可在 `row` 和 `pair` work partition 候选之间比较。
+- recurrence family 可在 `carry-local` 与 `carry-channelized` 候选之间比较。
+
+这三类对象中，只有最终选中的 `SpatialProgram` 是长生命周期真源；候选集合与代价明细可以作为 debug artifact 挂接或打印，但不是 runtime/codegen 协议的一部分。
 
 #### 明确不属于这一层的内容
 
@@ -671,6 +732,29 @@ TT 的复杂度不是“最后 codegen 再管一下”：
   - dst/register capacity
   - core kinds 与 placement constraints
 
+#### `TTHardwareModel` schema
+
+`TTProgram` 的合法性不能建立在模糊的“知道机器大概长什么样”上。`IRModule.global_infos["tl.tt.hardware_model"]` 必须是一个 typed object，并至少包含下面这些子模型：
+
+| 子模型 | 关键字段 | 作用 |
+|--------|----------|------|
+| `TTTopologyModel` | `grid_shape`, `core_kinds`, `core_coordinates`, `neighbor_sets`, `placement_regions` | physical core 拓扑与可放置区域 |
+| `TTMemoryModel` | `l1_bytes`, `cb_capacity_rules`, `dram_access_kinds`, `accessor_constraints`, `buffer_visibility_rules` | L1/CB/DRAM 资源约束 |
+| `TTNoCModel` | `unicast_support`, `multicast_support`, `route_scope`, `remote_access_rules`, `bandwidth_classes` | NoC 与 transport 约束 |
+| `TTSyncModel` | `local_semaphore_support`, `remote_semaphore_support`, `barrier_scopes`, `completion_protocols` | sync/signal 合法性边界 |
+| `TTDstModel` | `dst_tile_capacity`, `accumulator_modes`, `register_residency_rules`, `dst_alias_rules` | dst/register 相关约束 |
+| `TTABILimitModel` | `compile_arg_limits`, `runtime_arg_limits`, `common_runtime_arg_support`, `patchable_arg_rules` | ABI 与 launch 约束 |
+
+设计要求：
+
+1. `TTTopologyModel` 必须足以表达 row/column core grouping 与合法邻接关系。
+2. `TTMemoryModel` 必须足以决定某类 `Channel/ResourceIntent` 是否能落成指定 `CB`。
+3. `TTNoCModel + TTSyncModel` 必须足以决定某条 `SyncEdge` 是否能合法 materialize 成 semaphore/barrier/multicast protocol。
+4. `TTDstModel` 必须足以决定长生命周期 compute-local state 能否驻留 dst/register。
+5. `TTABILimitModel` 必须足以约束 compile-time/runtime arg 组织，而不是让 materialization 阶段再失败。
+
+这意味着 `hardware_model` 不是“设备名 + 几个 capability flag”，而是 `ValidateTTTargetProgram` 的直接输入。
+
 #### 输出
 
 - 冻结后的 `TTProgram`
@@ -747,7 +831,15 @@ TT 的复杂度不是“最后 codegen 再管一下”：
    - `blackhole.core_plan`
 2. **executable body 输入**
    - TT-lowered `PrimFunc`
-   - 或等价的 builtin emission plan，再统一 materialize 成 `PrimFunc.body`
+
+这里必须明确唯一物化路径：
+
+1. `MaterializeTTExecutableSpec` 是唯一允许从 `TTProgram` 生成 executable body 的 pass。
+2. 它直接把 `TTProgram` 物化成：
+   - materialized `blackhole.*` attrs / `ExecutableSpec`
+   - target-lowered `PrimFunc.body`
+3. 不保留长期存在的“等价 builtin emission plan”第二路径。
+4. `LowerBlackholeOps`、`codegen_blackhole`、`rt_mod_blackhole` 都不得在 materialization 之后继续发明新的 TT builtins、CB 关系或 ABI 字段。
 
 因此：
 
