@@ -147,10 +147,12 @@ TileLang DSL / Python examples
    - 统一表达 `stateful / routed / phased / segmented tiled program`
    - 显式承接 carry/update、tile-state 与 row-state 绑定、routed/paged domain、phase live-in/live-out
    - 到这一层为止，算法语义恢复必须结束
+   - 注意：当前 Lift 位置在 `SplitBlackholeKernel` 之后，此时 `T.Pipelined` 的 stage 结构和 `T.copy/T.reduce` 的 tile 语义已在 `inject_pipeline` / `LowerTileOp` 阶段丢失，Lift 仍需从压碎后的 TIR + analysis attrs 做 pattern match（见 §8.6 Lift 时机与长期迁移路径）
 
 3. **Target Program Lowering 层**
    - 把已明确的算法语义映射成目标硬件协议
    - 对 TT-Metal/Blackhole 来说，这一层才允许出现 `kernel role / CB / semaphore / compile-time args / runtime args / accessor binding`
+   - 这一层必须包含 **dst register layout planning**（静态分配 tile scratch / stats scratch / matmul accumulator 在 dst 寄存器空间中的 offset）和 **carry strategy 选择**（register-resident carry vs CB-round-trip carry），这两者是生成正确 TT-Metal compute kernel 的前提（见 §8.7）
 
 4. **Codegen / Runtime Materialization 层**
    - 只负责格式化、装配和执行
@@ -395,19 +397,27 @@ TileLang DSL / Python examples
 
 ### 5.3 下一阶段 compiler-internal 语义协议：`Stateful Tiled IR`
 
-`Stateful Tiled IR` 是下一阶段 compiler 内部使用的统一语义层，不直接暴露给 Python 用户，也不直接长成 TT-Metal 的硬件协议。它至少包含五类一等对象：
+`Stateful Tiled IR` 是下一阶段 compiler 内部使用的统一语义层，不直接暴露给 Python 用户，也不直接长成 TT-Metal 的硬件协议。当前 Phase 1 的核心对象是 `Domain / State / Relation / Phase` 四类；`Op` 只作为 Phase 2 的设计预留，不在 Phase 1 固化：
 
 1. **`Domain`**
    - 表达计算迭代域的形态：`dense`、`segmented`、`routed`、`paged`
-   - 回答“这是规则 tile 域，还是按 expert/page/index 重映射后的域”
+   - 回答”这是规则 tile 域，还是按 expert/page/index 重映射后的域”
+   - Domain 必须支持 **constraints / predicates**，不能只靠 kind enum：
+     - `data-dependent bound`：causal attention 的 loop range 依赖 `bx`（如 `T.min(ceildiv(seq_kv, block_N), ceildiv((bx+1)*block_M + past_len, block_N))`）
+     - `masked / predicated`：block sparse attention 的 `block_mask[k] != 0` 筛选
+     - `grouped`：GQA 的 `by // groups` index remapping
+   - 这三种形态出现在最常用的 attention variants 中，不是 exotic case
 
 2. **`State`**
-   - 所有可变对象不再统称普通 buffer，而是显式区分：
-     - `tile_state`
-     - `vector_state`
-     - `scalar_state`
-     - `index_or_selection_state`
-   - 每个 state 还需带生命周期：`ephemeral`、`carry`、`cross_phase`
+   - 所有可变对象不再统称普通 buffer，而是显式区分 kind：
+     - `matrix_state`（如 `acc_o`，二维 tile 形态）
+     - `vector_state`（如 `scores_max`，一维 row 形态）
+     - `scalar_state`（如 `logsum`）
+     - `index_state`（如 route idx / page idx / selection idx）
+   - 命名使用中性的 `matrix / vector / scalar`，不使用 `tile_state`——“tile” 只在 target lowering 层出现，这样同一份 Stateful Tiled IR 对 CUDA/AMX 等后端仍然成立
+   - selection state machine 在 Phase 1 中先编码为 `index_state + Relation / Phase pattern`，不再单独引入新的 state kind
+   - 每个 state 需带生命周期：`ephemeral`、`carry`、`cross_phase`
+   - carry state 在硬件上有两种实现策略：`register-resident carry`（dst 寄存器长期持有，不 pack/unpack）和 `CB-round-trip carry`（每次迭代 pack/unpack）。**这是 target lowering 的决策，不是 Stateful Tiled IR 层的**——IR 层只标 `carry`，target lowering 根据 dst 寄存器压力选择策略
 
 3. **`Relation`**
    - 表达 state / tensor / domain 之间的绑定关系，例如：
@@ -416,21 +426,24 @@ TileLang DSL / Python examples
      - `indexes`
      - `scatters_to`
      - `carried_across`
+   - combine 规则**不使用固定 enum**（`sum/max/min/overwrite`），而是引用 TIR body 中的 reduction function 或保持为 function reference。理由：Welford combine 是多变量耦合的 `(mean, M2, count) = welford_combine(old, new)`，online softmax 的 rescale+accumulate 也不是简单的 sum/max，固定 enum 无法覆盖
+   - `carried_across` 和 Phase 的 `live-in/live-out` 可以互推——只维护一个作为 source-of-truth，另一个作为 derived；Validate pass 必须检查一致性
 
-4. **`Op`**
-   - 表达算法级原语，而不是硬件指令：
-     - `tile_compute`
-     - `state_reduce`
-     - `state_map`
-     - `tile_apply_state`
-     - `state_update`
-     - `gather`
-     - `compact`
-     - `scatter_reduce`
-
-5. **`Phase`**
+4. **`Phase`**
    - 显式表达阶段边界、live-in/live-out state、以及阶段间 carry
    - 不直接编码 `reader/compute/writer`，而是先表达算法阶段关系
+   - **必须区分两种 Phase**：
+     - `algorithm phase`：compute 内的逻辑步骤。flash-attn 的整个 K-loop 在 TT-Metal 上是**单个 algorithm phase**——所有 carried state 在同一个 `tile_regs_acquire/release` block 内原地更新
+     - `pipeline phase`：reader/writer data prefetch 流水线。`T.Pipelined(num_stages=2)` 的 stage 是 data prefetch pipeline，和 compute 内的 algorithm phase 正交
+   - Phase 1 主要关注 algorithm phase；pipeline phase 的 stage structure 在 `inject_pipeline` 后已丢失，后续 Lift 时机前移后再覆盖
+
+5. **`Op`**（Phase 2 预留，Phase 1 不固化）
+   - 设计意图：表达算法级原语（`tile_compute / state_reduce / state_map / tile_apply_state / state_update / gather / compact / scatter_reduce`），而不是硬件指令
+   - 当前不把它做成 Phase 1 的一等对象。理由：
+     - TT-Metal SDPA 的 dest-reuse matmul + rescale 组合（`custom_mm_reuse_dest_srcb_block`）无法用固定 Op kind 表达
+     - Op kind 一旦固化，每增加一种新 workload 可能都要加新 Op，这和”不为 workload 定制专属 IR”的原则矛盾
+   - Phase 1 用 `Phase` 内的原始 TIR statement + State/Relation annotation 来表达语义
+   - Phase 2 覆盖 MoE/topk/scan 等更多 pattern 后，再回收统一 Op 分类
 
 硬约束：
 
@@ -452,11 +465,14 @@ TileLang DSL / Python examples
 | dense tile compute + 常规 reduce/map | 是 | 否 |
 | `tile -> row/vector reduce -> apply-back-to-tile` 稳定模式 | 是 | 否 |
 | 单层或双层 loop-carried state | 大多可自动恢复 | 少数 state kind 不唯一时需要 |
+| data-dependent loop bound（causal attention） | 大多可从 IR 恢复 bound_expr | 当 bound 依赖多个 kernel 参数时可能需要 |
+| grouped index remapping（GQA `by // groups`） | 可自动恢复 | 否（index 算术可识别） |
+| block-level sparsity predicate（block sparse attn） | 不能完全自动 | 需要标记 `predicate tensor` |
 | 显式 pipeline/barrier/ws 带出的 phase 边界 | 是 | 否 |
 | routed/paged access 且 index/page-table tensor 已显式进入 kernel | 大多可自动恢复 | 当 index 角色不唯一时需要 |
 | MoE routing / segmented domain / scatter_reduce | 不能完全依赖自动恢复 | 需要 |
 | topk / argmax / selection state machine | 不能完全依赖自动恢复 | 需要 |
-| combine 规则（`sum/max/min/overwrite`） | 不能稳定猜测 | 需要 |
+| combine 规则（多变量耦合如 Welford / online-softmax rescale） | 不能稳定猜测 | 需要标记 combine function |
 
 annotation policy 明确如下：
 
@@ -661,13 +677,19 @@ multi-core 的主要实现位置保持不变：
 
 统一性要求如下：
 
-| workload | Domain | State / Relation / Op 的核心组合 |
+| workload | Domain | State / Relation 的核心组合 |
 |---------|--------|----------------------------------|
-| FlashAttention / online softmax | `dense`（部分变体叠 `paged`） | `tile_state + vector_state + state_reduce + tile_apply_state + carry` |
-| MoE / routed grouped GEMM | `routed + segmented` | `index_state + gather + compact + tile_compute + scatter_reduce` |
-| topk / argmax / selection | 多数为 `dense` | `selection_state + state_reduce + state_update + compact` |
-| paged decode / sparse MLA | `paged`，经常叠 `routed` | `page-table/index state + gather + tile_compute + carry` |
-| scan / Mamba recurrence | 多数为 `dense` | `carry state + state_update + merge/split + phase` |
+| FlashAttention / online softmax | `dense`（部分变体叠 `paged`） | `matrix_state(carry) + vector_state(carry) + scalar_state(carry) + reduced_from + carried_across` |
+| Causal Flash-Attn | `dense + data-dependent bound` | 同上 + `bound_expr = f(bx)` |
+| GQA | `dense + grouped` | 同上 + `group index remapping` |
+| Block Sparse Attention | `dense + predicated` | 同上 + `sparsity predicate on block_mask` |
+| Welford LayerNorm / RMSNorm | `dense` | `vector_state(carry) × 2-3 (mean/M2/count) + coupled combine function` |
+| Linear Attention / Mamba | `dense` | `matrix_state(carry) + direct accumulate (h += K^T V)` 或 `recurrence (A*h + B*x)` |
+| Split-K GEMM | `dense + partitioned-K` | `matrix_state(carry) + cross-core combine function` |
+| MoE / routed grouped GEMM | `routed + segmented` | `index_state + indexes + scatters_to + segmented domain boundary` |
+| topk / argmax / selection | 多数为 `dense` | `index_state(carry) + reduced_from + carried_across + compact/select rewrite` |
+| paged decode / sparse MLA | `paged`，经常叠 `routed` | `index_state + indexes + carried_across` |
+| scan / Mamba recurrence | 多数为 `dense` | `matrix_state/vector_state(carry) + carried_across + phase-ordered recurrence` |
 
 也就是说：
 
@@ -700,15 +722,110 @@ multi-core 的主要实现位置保持不变：
   - copy / GEMM / multi-core 主链
 - **当前 flash-attn compile/runtime bring-up 仍有价值**：
   - 它已经把问题收敛到真实语义边界，而不是把问题藏在 build/codegen 噪声里
-- **下一阶段实施顺序**：
-  1. 先引入 `LiftToStatefulTiledIR` 与 `ValidateStatefulTiledIR`
-  2. 把现有 `AnalyzeBlackhole* / CanonicalizeBlackhole*` 中承担“算法理解”的部分前移并泛化
-  3. 让 Blackhole target-specific lowering 只消费已明确的 state/domain/phase/program contract
-  4. 先覆盖已 bring-up 的 flash-attn/online-softmax/GEMM 主样例，再按语义类别扩到 topk / routed / paged / scan
+- **下一阶段实施顺序（Phase 1a / 1b 拆分）**：
+  - **Phase 1a**（纯 IR 增量，零回归风险）：
+    1. 引入 `Domain / State / Relation / Phase` 核心对象（Op kind 延后到 Phase 2）
+    2. 引入 `LiftToStatefulTiledIR` 与 `ValidateStatefulTiledIR`
+    3. 验收标准：lift 能跑、validate 能拦、现有 GEMM/copy compile-path 测试不回归；TT-Sim runtime 总回归留到 Phase 1b
+  - **Phase 1b**（语义迁移，target lowering 重构）：
+    1. 实现 `BlackholeStatefulProgramLowerer`，包含 dst register layout planning
+    2. 把 flash-attn compute 从混合 `blackhole.acc` 语义迁到 Stateful Tiled IR 消费路径
+    3. 验收标准：flash-attn runtime correctness 通过
+  - **Phase 2**（更宽覆盖面）：
+    1. 回收统一 Op kind 分类
+    2. 把现有 `AnalyzeBlackhole*` 中承担”算法理解”的部分前移并泛化
+    3. 按语义类别扩到 Welford norm / linear-attn / topk / routed / paged / scan
 - **验证分层**：
   - lift 层：IR snapshot / structural tests
-  - target-program 层：CB / semaphore / runtime-arg / accessor binding 结构验证
+  - target-program 层：CB / dst register layout / runtime-arg / accessor binding 结构验证
   - runtime 层：TT-Sim correctness / 对拍
+
+### 8.6 Lift 时机与长期迁移路径
+
+当前 Lift 位置在 Blackhole pipeline 的**后段**——`SplitBlackholeKernel` 之后：
+
+```text
+SplitBlackholeKernel → Analyze* → LiftToStatefulTiledIR → Validate → LowerBlackholeOps
+```
+
+在到达这个位置之前，以下关键信息已丢失：
+
+| 信息 | 丢失位置 | 到达 Lift 时还在？ |
+|------|---------|-------------------|
+| `T.Pipelined` 的 stage/order/group | `inject_pipeline` | 否 |
+| `T.gemm` 的 M/N/K/transpose | `LowerTileOp`（Blackhole: 保留为 `gemm_py`） | 是 |
+| `T.copy` 的 tile 语义 | `LowerTileOp` | 否——已变成标量 loop |
+| `T.reduce` 的 reduction type/dim | `LowerTileOp` | 否——已变成标量 loop |
+| `T.alloc_fragment` 的 scope | `LowerTileOp`（fragment → local） | 否 |
+| fragment 上的 element-wise ops | `LowerTileOp` | 否——已变成标量 BufferStore/Load |
+| loop-carried state（如 `scores_max *= scale`） | 从未丢失，但变成普通标量赋值 | 部分——需要从标量 pattern match |
+
+**两种路径**：
+
+- **路径 A（Phase 1 选择）**：接受 Lift 在后段，依赖 Analyze pass 从压碎后的 TIR 恢复语义。本质是”把 pattern match 搬到 Analyze pass 里，Lift 只做格式转换”。
+  - 优点：不改现有 lowering pipeline 前半段
+  - 缺点：Analyze pass 的泛化是核心瓶颈，每种新 pattern 要写新 matcher
+
+- **路径 B（长期目标）**：把 Lift 前移到 `inject_pipeline` 之后、`LowerTileOp` 之前。在这个位置 `T.gemm/T.copy/T.reduce/T.Pipelined` 的结构信息全部还在，Lift 做结构化提取而非 pattern match。
+  - 优点：Lift 不再从标量 TIR 猜语义
+  - 缺点：需要改 pipeline 前半段，且此时还没有 host/device split
+
+**迁移条件**：当 Phase 1b 完成、且 Phase 2 开始覆盖 Welford/linear-attn 等新 pattern 时，Analyze pass 的 matcher 膨胀会成为工程瓶颈。此时应启动 Lift 时机前移。
+
+### 8.7 TT-Metal SDPA Ground Truth 与 Target Lowering 设计约束
+
+基于 TT-Metal 原生 SDPA 实现的审查结论，target lowering 必须处理以下设计约束。Phase 1b 的 lowering ground truth 以这三个具体 reference 文件为准：
+
+- `tt_metal_repo/tt-train/sources/ttml/metal/ops/sdpa_fw/device/kernels/compute/sdpa_fw_compute_kernel.cpp`
+- `tt_metal_repo/models/demos/deepseek_v3_b1/kernel_includes/tt_metal/include/compute_kernel_api/sdpa.h`
+- `tt_metal_repo/tt-train/sources/ttml/metal/ops/sdpa_fw/device/sdpa_fw_program_factory.cpp`
+
+#### 8.7.1 dst 寄存器是跨 K-loop 长期持有的
+
+TT-Metal SDPA 的 `tile_regs_acquire/release` 包裹**整个** chunk loop，不是每次迭代：
+```text
+tile_regs_acquire()              // 整个 chunk loop 之前
+for chunk in 0..num_chunks:
+    compute_sdpa_chunk(...)      // 内部不 acquire/release
+tile_regs_commit/wait/release()  // 整个 chunk loop 之后
+```
+
+这意味着 `acc_o / scores_max / logsum` 全部 live 在 dst 寄存器里原地更新，不做 CB round-trip。
+
+#### 8.7.2 dst 寄存器布局是编译时静态规划的
+
+TT-Metal SDPA 的 dst 空间静态分区：
+```text
+[0, mm2_dst_offset + num_tiles_v * packed_tile_size)  = output accumulator
+[max_dst_offset, max_dst_offset + 2)                  = running max (col 0)
+[sum_dst_offset, ...]                                 = running sum (col 32+)
+[corr_exp_dst_offset, ...]                            = correction factor
+[mm1_dst_offset, ...]                                 = QK temporary
+```
+
+**`BlackholeStatefulProgramLowerer` 必须包含 `PlanDstRegisterLayout` 步骤**，根据 State 的 shape/kind 做静态 offset 分配。这和 `PlanBlackholeCB` 是平行的另一个 resource planner。
+
+#### 8.7.3 CB 分类需要从 State kind 推导
+
+SDPA 使用 16 个 CB，按功能分为：
+- **Transport CB**（输入 Q/K/V/mask）：reader push → compute pop，标准 FIFO
+- **Ping-pong state CB**（prev/cur max、sum、mm_out）：跨迭代 state 的 host-visible 持久化
+- **Temporary CB**（qk_result、exp_diff）：compute 内单步用完即弃
+- **Output CB**：最终结果写出
+
+`PlanBlackholeCB` 的 resource class 应该从 `StatefulTiledProgram` 的 State kind + lifetime 推导，而不是从 CB requirement 的 role 字符串推导。
+
+#### 8.7.4 Carry strategy 是 target lowering 决策
+
+同一个 `carry` state，在不同变体中可能选择不同策略：
+- **Chunk-based SDPA**：register-resident carry（dst 长期持有，性能最优但 dst 空间有限）
+- **Row-based SDPA**：CB-round-trip carry（每次迭代 pack/unpack，dst 压力更小但带宽开销大）
+
+Target lowering 必须根据所有 carry state 的总 dst 空间需求，决定哪些走 register-resident、哪些退化到 CB-round-trip。
+
+#### 8.7.5 MATH/PACK 线程并行
+
+TT-Metal 的 fused matmul 里 Sigmoid/SiLU 在 PACK thread 上执行（和 MATH thread 并行）。这是 Tensix 核心的 MATH/PACK/UNPACK 三线程并行特性。Stateful Tiled IR 不需要为此建模（纯硬件细节），但 `BlackholeStatefulProgramLowerer` 必须有能力做”这个 elementwise op 可以调度到 PACK thread”的决策。
 
 ## 9. 关键源码审查结论
 

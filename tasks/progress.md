@@ -14,7 +14,7 @@
 - **当前活动主线**:
   - flash-attn forward subset：analysis、fragment lowering、dataflow bridging 与 codegen 已接通当前支持面
   - execution hang 已解；当前剩余主工作已收敛为 `blackhole.acc` compute 语义收正、TT-Metal-first tile/CB/dst-reg 主路径迁移、以及更宽支持面
-  - 更上层设计方向已收敛：现有 TileLang/TIR 对 `stateful / routed / phased / segmented tiled program` 的表达不足，下一阶段将引入 compiler-internal `Stateful Tiled IR`，并把 Python 侧变更控制在最小 annotation/helper 范围内
+  - `Stateful Tiled IR` 方向的设计 review 已收口：Phase 1 实施计划已拆成 Phase 1a/1b，D1-D8 关键结论已同步到总设计；当前代码实现尚未开始
 - **日期**: 2026-04-02
 - **相关设计**:
   - `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -64,8 +64,8 @@
 - **下一步**:
   - 按 `TT-Metal-first` 方向重定义 `blackhole.acc`：后续只表示 compute-side tile scratch
   - 收正上游 TIR 对接边界：后段不再从线性 `BufferLoad/BufferStore` 形态猜 tile 语义，凡是无法稳定恢复的 tile contract 必须通过 analysis attrs 或显式 builtin 交付
-  - 基于已写入总体设计的 `Stateful Tiled IR`，拆出 `LiftToStatefulTiledIR / ValidateStatefulTiledIR / target-program lowering` 的实施计划
-  - 将 flash-attn compute 主链从当前混合语义迁到 `CB / tile / dst-reg` 正式协议
+  - 先执行 `Stateful Tiled IR` Phase 1a：落 `LiftToStatefulTiledIR` / `ValidateStatefulTiledIR` skeleton、dense/carry lift、以及 copy/GEMM compile-path zero-regression gate
+  - 再执行 Phase 1b：实现 `BlackholeStatefulProgramLowerer`、dst register layout planning 和 carry strategy lowering，把 flash-attn compute 主链迁到 `CB / tile / dst-reg` 正式协议
   - 继续扩更宽 flash-attn forward 支持面与 P4/P5 主项
   - flash-attn runtime 当前已不再 hang，但 `test_blackhole_flash_attention_runtime.py -k mha` 仍未通过精度对比；当前主 blocker 已从 execution-time deadlock 收敛为 compute correctness/语义设计问题
 
