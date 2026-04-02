@@ -322,6 +322,48 @@ TileLang DSL / Python
 3. `TIRAnchor` 是编译器在固定 canonicalization 点上重建出来的结构身份，不是用户可见名字，也不是 case-specific 语义标签。
 4. semantic 层与 TIR 的关系必须是显式对象引用，不允许退化成字符串名匹配或位置假设。
 
+#### 语义恢复的具体规则
+
+`SemanticProgram` 不是把 analysis pass 的零散结论直接拼起来，而是要经过一套稳定的恢复流程：
+
+1. **域恢复**
+   - 从 loop nest、launch/work decomposition、predicate、indirect index expr 中恢复 `Domain`
+   - 产出 `bound_expr / predicate / index_remapping / segment_descriptor`
+2. **状态恢复**
+   - 从 def-use、buffer scope、lifetime、loop-carried use 恢复 `State`
+   - 判定 `ephemeral / carry / cross_phase`
+3. **关系恢复**
+   - 从读写索引关系、归约模式、indirect access、cross-iteration use 恢复 `Relation`
+   - 判定 `reduced_from / indexes / selected_from / partitioned_by / carried_across`
+4. **阶段恢复**
+   - 从 loop-carried edge、pre/post-loop 使用、显式 pipeline/stage signal 恢复 `Phase`
+   - 明确 `live_in / live_out`
+5. **区域恢复**
+   - 从 `AtomicEffect` 图按通用切分规则聚成 `SemanticRegion`
+
+这五步里，前四步都是在建立“语义事实”；只有最后一步才在事实之上做 region partition。
+
+#### semantic 层哪些来自分析，哪些必须显式提供
+
+默认优先从结构恢复：
+
+- loop/domain/bounds/predicate
+- 普通 reduce / gather / scatter / carry
+- 基于 indirect expr 的 index remap
+- 基于 def-use 的 state lifetime
+
+当以下语义无法仅靠结构稳定恢复时，必须允许前端或早期 IR 提供最小显式 hint：
+
+- route / segment 的高层含义
+- selection policy
+- combine function 的高层类别
+- page/block descriptor 的外部协议语义
+
+规则是：
+
+1. 能从 IR 稳定恢复的，必须分析得到。
+2. 不能稳定恢复的，不允许后段猜，必须由更早层显式补齐。
+
 ### 5.2 `Spatial Program IR`
 
 #### 为什么需要这一层
@@ -463,6 +505,87 @@ TileLang DSL / Python
 - `CreateCircularBuffer / SetRuntimeArgs`
 - TT physical core identifier
 
+#### Spatialization 是如何从 semantic 层构造出来的
+
+`SpatialProgram` 不是从 raw TIR 直接恢复出来的，而是从冻结后的 `SemanticProgram` 做**空间化投影**。
+
+推荐的构造顺序：
+
+1. **建立 semantic flow graph**
+   - 节点：`SemanticRegion`
+   - 边：通过 `State / Relation / Phase` 建出的 def-use、carry、fanout、join 关系
+2. **找出必须切开的边界**
+   - phase boundary
+   - carry / cross_phase boundary
+   - routed / paged / grouped domain boundary
+   - select / combine / dispatch / merge 这类天然 topology boundary
+   - 必须单独同步的 producer-consumer boundary
+3. **形成候选 task**
+   - 将同 phase、同 domain family、同主要执行职责的一组 region 聚合为 `Task`
+4. **生成 channel**
+   - 所有跨 task 流动的 state 都显式变成 `Channel`
+5. **生成 layout / partition**
+   - 从 domain 及 access relation 投影出 `Layout` 与 `WorkPartition`
+6. **生成 sync**
+   - 从 phase edge、carry edge、fanout/fanin、completion requirement 构造 `SyncEdge`
+7. **生成 virtual placement**
+   - 从 channel topology 和 locality pressure 生成 `Placement`
+8. **生成 resource intent**
+   - 从 carry / scratch / output / index payload 生成 `ResourceIntent`
+
+因此，`SpatialProgram` 的职责不是“理解算法”，而是把已经冻结的算法语义组织成可执行的空间程序图。
+
+#### Spatial 层的分析事实与 policy 边界
+
+必须由分析确定的事实：
+
+- 哪些 region 之间存在必须的数据依赖
+- 哪些 state 必须跨 task 流动
+- 哪些边界必须同步
+- 哪些 domain/layout/partition 族是语义上被强制的
+
+可以由 spatial policy 决定的内容：
+
+- task 是否进一步 fusion / split
+- channel 是否选择更细或更粗粒度
+- `row / tile / pair / split_k / expert / page / chunk` 的具体 partition 粒度
+- virtual placement 偏好
+- resource intent 的 reuse 策略
+
+这条边界必须写死：
+**analysis 决定 legality 和 must-have structure；policy 只在合法空间内做选择。**
+
+#### Spatial 层与 semantic/TIR 的交互 contract
+
+`SpatialProgram` 的主要输入是 `SemanticProgram`，不是原始 TIR 子树。
+
+它与上层的显式绑定应该体现在：
+
+- `Task.semantic_regions`
+- `Channel.payload_states`
+- `Layout.domain_bindings`
+- `WorkPartition.domain_bindings`
+- `SyncEdge.phase_or_state_bindings`
+
+允许保留的 TIR 级对象只有：
+
+- `PrimExpr`
+  - 例如 partition expr、layout expr、route expr
+- `GlobalVar`
+  - 标识所属 device function
+
+不允许的做法：
+
+- 重新沿 TIR 树匹配 task 边界
+- 根据 builtin 名字猜 sync 边
+- 根据 buffer 名字猜 layout / partition
+
+#### SpatialProgram 的验证与失效规则
+
+1. `SpatialProgram` 依赖 `SemanticProgram`；semantic 层失效时，spatial 层必须同时失效。
+2. `SpatialProgram` 自身一旦生成，后续 target 层不能再修改其 task/channel/layout/sync 结构。
+3. 只有当 semantic 结构不变时，才允许在 spatial policy 层重建不同的 `SpatialProgram` 变体。
+
 ### 5.3 `TT Target IR`
 
 #### 为什么需要这一层
@@ -566,6 +689,77 @@ TT 的复杂度不是“最后 codegen 再管一下”：
 - 修改 semantic state / relation / phase
 - 修改 spatial task / channel / layout / sync 结构
 - runtime 侧补协议或反推语义
+
+#### TT target mapping 是如何从 spatial 层构造出来的
+
+`TTProgram` 不是直接从 TIR 或 runtime schema 拼出来的，而是从 `SpatialProgram + TT hardware model` 做 target-specific mapping。
+
+推荐的构造顺序：
+
+1. **kernel clustering**
+   - 把 `Task` 按职责和 TT program model 聚成 `TTKernel`
+   - 当前最小稳定切法是 `reader / compute / writer`
+2. **core-group mapping**
+   - 把 `Placement` 和 `WorkPartition` 落成 `TTCoreGroup`
+   - 得到 logical work 到 physical core 的映射
+3. **channel/resource -> CB plan**
+   - `Channel + ResourceIntent` 落成 `TTCBPlan`
+4. **sync -> semaphore plan**
+   - `SyncEdge` 落成 `TTSemaphorePlan`
+5. **long-lived compute state -> dst plan**
+   - carry / reduction carrier / persistent compute-local state 落成 `TTDstLayoutPlan`
+6. **program ABI derivation**
+   - 从 kernel inputs/outputs/accessors/work distribution 推出 `TTABIPlan`
+7. **execution plan derivation**
+   - 生成 `kernel_order / remote_core_descriptors / work_distribution`
+
+也就是说，TT 层做的是 **legal target contract synthesis**，不是重新发明空间图。
+
+#### TT 层的分析事实与 policy 边界
+
+必须由 hardware-aware analysis 决定的事实：
+
+- 哪些 mapping 违反 topology / NoC / semaphore / dst / L1 约束
+- 哪些 channel 必须 materialize 成 transport buffer
+- 哪些 carry 可以 register-resident，哪些必须 round-trip
+- 哪些 sync edge 必须落成 semaphore / barrier / multicast protocol
+
+可以由 target policy 决定的内容：
+
+- 具体 kernel clustering 粒度
+- CB class / page size / reuse 偏好
+- dst layout 的具体 packing 方案
+- core placement 在合法区域内的优化选择
+- compile-time / runtime arg 的组织细节
+
+同样必须遵守：
+**analysis 决定 legality；policy 只在合法空间内选一个实现。**
+
+#### TT 层与 TIR/codegen/runtime 的交互 contract
+
+`TTProgram` 自身不是 codegen 直接消费的 AST。它向下游提供两类结果：
+
+1. **target contract**
+   - `ExecutableSpec`
+   - `blackhole.segment_plan`
+   - `blackhole.runtime_args`
+   - `blackhole.cb_configs`
+   - `blackhole.core_plan`
+2. **executable body 输入**
+   - TT-lowered `PrimFunc`
+   - 或等价的 builtin emission plan，再统一 materialize 成 `PrimFunc.body`
+
+因此：
+
+- `codegen_blackhole` 继续以 TIR/builtin 为入口
+- `rt_mod_blackhole` 继续以 `ExecutableSpec` 为主要入口
+- 但二者都不再负责恢复 semantic/spatial 结构
+
+#### TTProgram 的验证与失效规则
+
+1. `TTProgram` 依赖 `SpatialProgram` 与 hardware model；任一失效时必须整体重建。
+2. `TTProgram` 一旦通过 `ValidateTTTargetProgram`，下游只能 materialize，不允许再补语义或重构 task 图。
+3. materialized `blackhole.*` attrs 只是 `TTProgram` 的投影，不能被 runtime/codegen 回写成新的真源。
 
 ### 5.4 IR 承载模型与实现形态
 
