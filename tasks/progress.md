@@ -57,6 +57,11 @@
     - “DSL 补语义” 已拆成独立的“显式语义补充边界”部分，不再和 semantic core 正文混写
     - Phase A 当前不再提前承诺公开 `T.annotate_semantic()`；第一版先定义 compiler-internal `SemanticSupplement` / `tl.semantic_supplement`
     - supplement 只允许裁决少数 IR 无法唯一决定的语义事实，不能覆盖结构恢复，也不能表达 spatial/target 细节
+  - 2026-04-05 继续收口 Spatial IR：
+    - `ProgramPhase` 明确为强边界；跨 phase 通信只能走 materialized `shared_buffers` + global sync，`Channel` 不允许跨 phase
+    - `Task / Channel / Layout / WorkPartition / Placement / SyncEdge / ResourceIntent` 全部改成“小闭枚举 + trait set”，避免 workload-specific kind 无限制膨胀
+    - core schema 已补齐显式 bindings：`payload_states`、`domain_bindings`、`update_or_state_bindings`、`attachment_ref`
+    - spatial planning contract 新增 `SpatialLegalityFacts`，先对象化 must-have structure，再生成 `SpatialCandidate`
   - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界；`topk / fusedmoe / paged decode / chunk recurrence` 同样属于当前设计覆盖面
 
 ## 当前稳定基线
@@ -108,6 +113,9 @@
 3. 执行 **Phase B: Spatial Program IR**：
    - 把 selection/indexing、routed/grouped dispatch、paged decode、stateful update、chunk recurrence 的 `task / channel / layout / sync / work partition` 一等化
    - 明确 `PrimFunc.attrs["tl.spatial_program"]` 承载 contract
+   - 明确 `ProgramPhase` 的强边界与 phase-boundary materialization 规则
+   - 先落 `SpatialLegalityFacts`，再落 `SpatialCandidate / SpatialPolicy / SpatialCostModel`
+   - 保持 `kind` 小闭枚举，细粒度 workload 差异通过 trait/binding 表达，不再靠不断增补 kind
    - 明确 spatial analysis 与 `SpatialCandidate / SpatialPolicy / SpatialCostModel` 的边界
    - 拆掉 `LowerBlackholeOps` 当前同时承担语义理解和 target lowering 的边界
 4. 执行 **Phase C: TT Target IR**：
