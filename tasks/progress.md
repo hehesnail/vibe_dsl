@@ -63,7 +63,7 @@
     - `Task / Channel / Layout / WorkPartition` 的第一版 base family 已进一步收窄，新增 kind 现在要求真的改变一级 legality/candidate/target 分派
     - `traits` 已进一步收成固定轴系统，不再允许自由字符串；每类 spatial object 只允许来自少数预定义 trait axes
     - core schema 已补齐显式 bindings：`payload_states`、`domain_bindings`、`update_or_state_bindings`、`attachment_ref`
-    - spatial planning contract 新增 `SpatialLegalityFacts`，先对象化 must-have structure，再生成 `SpatialCandidate`
+    - spatial planning contract 新增 `SpatialLegalityFacts`，并进一步收成 `Cut/Flow/Phase/Layout/Partition/Sync` 这组 typed legality entries，再生成 `SpatialCandidate`
   - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界；`topk / fusedmoe / paged decode / chunk recurrence` 同样属于当前设计覆盖面
 
 ## 当前稳定基线
