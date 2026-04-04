@@ -50,6 +50,10 @@
     - `TIRAnchor / AtomicEffect / SemanticRegion` 已重新收口为 recovery / binding / projection helper
     - 已补充 semantic 层在 freeze 之后的主要作用：validation truth、spatialization input、invalidation cut、workload normalization
     - `stage4_flash_attention_forward_subset.md` 已改成从属 consumer 视角，不再暗含自己的 semantic schema
+  - 2026-04-05 进一步收口 semantic helper 设计：
+    - `TIRValueBinding` 明确为 typed field-binding index，而不是泛化 value bag
+    - `TIRAnchor` 只保留结构锚点职责，不再重复承担字段级 binding
+    - `SemanticRegion` 明确改成从 `Update` 图导出的非真源视图，只用于 debug / diagnosis / spatial clustering
   - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界；`topk / fusedmoe / paged decode / chunk recurrence` 同样属于当前设计覆盖面
 
 ## 当前稳定基线
@@ -93,6 +97,7 @@
    - 明确 `AccessMap / UpdateLaw` 的最小 schema
    - 明确 `PrimFunc.attrs["tl.semantic_program"]`、typed `TIRAnchor / TIRValueBinding` 与 rebind contract
    - 明确 `AtomicEffect / SemanticRegion` 只是 recovery helper，不是第一层 core schema
+   - 明确 `AtomicEffect -> Update` 恢复与 `Update -> SemanticRegion` 导出之间的边界
    - 收紧 post-semantic-lift invalidation：默认 `unsafe`，仅允许 audited `safe` pass
    - 明确 pre-semantic compatibility attrs 不参与 semantic/spatial truth 判定
    - 保证 copy / GEMM compile-path zero-regression + 至少一个 non-attention semantic skeleton case
