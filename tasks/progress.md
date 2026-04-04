@@ -34,7 +34,7 @@
     - Semantic core 收敛：从较重的 `Domain/State/Relation/Phase/SemanticRegion + descriptor family` 收敛为 `Domain / State / Update`
     - `AccessMap / UpdateLaw`：吸收 paged/routed/selection/recurrence 语义，不再平行维护 `*Spec` 家族
     - `StateSSA` 方向：长期 public schema 保持小，内部保留 `StateVersion / StateJoin` 式分析图
-    - Recovery Boundary：统一语义系统下的自动恢复 / 最小 DSL 补语义边界 + workload validation matrix + `T.annotate_semantic()` protocol
+    - Recovery Boundary：统一语义系统下的自动恢复 / 最小显式语义补充边界 + workload validation matrix
     - `ProgramPhase`：Spatial Program IR 新增多 kernel 组合的全局阶段边界（fusedmoe 双 T.Kernel、flash_decoding split+combine）
     - `TTComputeModel`：TTHardwareModel 新增 compute 子模型（FPU/SFPU 独立性、dst 争用、pack/unpack mode）
     - `TTKernel.role` 改为 composable `role_set` + `role_flags`（承接 MoE unified kernel pattern）
@@ -54,6 +54,9 @@
     - `TIRValueBinding` 明确为 typed field-binding index，而不是泛化 value bag
     - `TIRAnchor` 只保留结构锚点职责，不再重复承担字段级 binding
     - `SemanticRegion` 明确改成从 `Update` 图导出的非真源视图，只用于 debug / diagnosis / spatial clustering
+    - “DSL 补语义” 已拆成独立的“显式语义补充边界”部分，不再和 semantic core 正文混写
+    - Phase A 当前不再提前承诺公开 `T.annotate_semantic()`；第一版先定义 compiler-internal `SemanticSupplement` / `tl.semantic_supplement`
+    - supplement 只允许裁决少数 IR 无法唯一决定的语义事实，不能覆盖结构恢复，也不能表达 spatial/target 细节
   - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界；`topk / fusedmoe / paged decode / chunk recurrence` 同样属于当前设计覆盖面
 
 ## 当前稳定基线
@@ -96,6 +99,7 @@
    - 冻结 `domain / state / update`
    - 明确 `AccessMap / UpdateLaw` 的最小 schema
    - 明确 `PrimFunc.attrs["tl.semantic_program"]`、typed `TIRAnchor / TIRValueBinding` 与 rebind contract
+   - 明确独立的显式语义补充边界，只先定义 compiler-internal `SemanticSupplement` / `tl.semantic_supplement`
    - 明确 `AtomicEffect / SemanticRegion` 只是 recovery helper，不是第一层 core schema
    - 明确 `AtomicEffect -> Update` 恢复与 `Update -> SemanticRegion` 导出之间的边界
    - 收紧 post-semantic-lift invalidation：默认 `unsafe`，仅允许 audited `safe` pass
