@@ -41,7 +41,7 @@
     - `TTCBPlan / TTDstLayoutPlan / TTComputeSyncPlan`：区分 program-level transport/storage plan 与 compute-kernel internal sync / dst residency plan
     - Companion IR invalidation：post-semantic-lift 默认 `unsafe`；只有 audited `identity-preserving / rebind-aware` pass 才能声明 `safe`
     - `SplitBlackholeKernel` 过渡边界：pre-semantic 仅作为 canonicalization / temporary signal producer，compatibility `blackhole.segment_plan` 不是真源
-    - Materialized attr ownership：`blackhole.segment_plan/runtime_args/cb_configs/core_plan` 的稳态唯一 writer 固定为 `MaterializeTTExecutableSpec`
+    - Materialized attr ownership：`blackhole.segment_plan/runtime_args/common_runtime_args/accessors/cb_configs/semaphore_plan/core_plan` 的稳态唯一 writer 固定为 `MaterializeTTExecutableSpec`
     - Phase A 细分为 A1（最小 multi-family recovery）和 A2（泛化 + 更宽 `AccessMap / UpdateLaw` traits），A1 gate 强制包含一个 non-attention semantic skeleton case
     - Section 7 workload 示例已切换到 `Domain / State / Update` 叙述，去掉 workload-specific semantic enum
   - 2026-04-03 进一步完成活动文档收口：
@@ -71,6 +71,8 @@
     - `TTCBPlan.resource_class` 收成小闭 family，细粒度差异走 traits
     - `TTComputeModel` 从操作名清单收回到 capability classes + legality rules
     - TT materialization outputs 已与当前 supporting docs 对齐，`blackhole.semaphore_plan` 明确回到 `MaterializeTTExecutableSpec` 的稳定产物集合
+    - `ExecutableSpec` 已进一步收成 program container + `KernelSpec[]` 的物化边界，顶层 aggregate ABI view 明确降为 compatibility-only
+    - 当前仍保留的 runtime/codegen compatibility shim 已明确点名：segment 聚合顶层 `runtime_args/common_runtime_args`、顶层 `accessors` 回写、legacy attr device-kernel 检测、buffer-role positional fallback；Phase C cutover 后必须删除
   - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界；`topk / fusedmoe / paged decode / chunk recurrence` 同样属于当前设计覆盖面
 
 ## 当前稳定基线
@@ -132,6 +134,8 @@
    - 明确 `PrimFunc.attrs["tl.tt_program"]` 与 `IRModule.global_infos` 中 `TTHardwareModel` 的承载 contract
    - 明确 target legality analysis 与 TT policy 的边界
    - 把 `ExecutableSpec` 与 TT-lowered `PrimFunc` 一并改成从 `TT Target IR` 唯一物化
+   - 明确 `ExecutableSpec` program-shared metadata 与 `KernelSpec` per-kernel ABI 的 ownership
+   - 清除 `rt_mod_blackhole / BlackholeModule / lower.py` 中仍保留的 compatibility aggregation / fallback / legacy attr detection
 5. 在新分层下继续扩更宽 flash-attn forward 支持面，以及 P4 / P5 更宽执行面。
 
 ## 当前代码事实
