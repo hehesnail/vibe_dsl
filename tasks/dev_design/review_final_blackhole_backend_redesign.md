@@ -205,6 +205,8 @@ Section 7 为 attention 列出了 `qk_scores_update`、`softmax_normalize_update
 | R10 | P2 | 在 Phase A2 做 MoE recovery 时验证 `UpdateLaw` 4 种 variant 是否够用 |
 | R11 | P2 | Section 7 示例明确标注"名字只是叙述用例，不是 schema 约束" |
 
+> **后记**（2026-04-05）：设计文档已基于 R1-R10 完成修订。R11 已在后续补丁中落入 Section 7 开头。全部 11 条建议均已响应。
+
 ---
 
 ## 六、评分总结

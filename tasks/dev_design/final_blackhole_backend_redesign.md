@@ -2522,6 +2522,10 @@ recovery 阶段会先把 `TIRAnchor` 附着到这些 `AtomicEffect` 节点上，
 
 本节的作用不是定义协议，而是证明三层 IR 不是围着单一 consumer 设计的。
 
+**注意**：本节中出现的 `Update`、`State`、`Domain` 等对象名字纯属叙述用例，不是 schema 约束。
+semantic recovery 不应匹配这些名字，而应基于 structural pattern（读写集、降维结构、index 依赖关系、cross-iteration def-use）来恢复。
+如果某个实现中出现了 `if update.name == "qk_scores_update"` 这类逻辑，那就违反了通用性原则。
+
 本节里出现的 `qk_scores_update`、`combine_output_update`、`decode_phase` 等名字都只是叙述用例，
 不是 schema key，不是 matcher token，也不是实现期允许硬编码识别的协议字段。
 实现必须通过 `Domain / State / Update / AccessMap / UpdateLaw` 结构来恢复和验证，
