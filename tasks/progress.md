@@ -5,7 +5,7 @@
 
 ## 当前阶段
 
-- **日期**: `2026-04-03`
+- **日期**: `2026-04-05`
 - **阶段**: Stage 4 — 复杂 workload family 的 layered IR architecture transition
 - **当前主线**:
   - 以新的分层架构推进后续实现：
@@ -28,7 +28,7 @@
     - `SemanticProgram -> SpatialProgram` 的空间化构造规则与 policy 边界
     - `SpatialCandidate / SpatialPolicy / SpatialCostModel` 的 planning contract
     - `SpatialProgram + hardware model -> TTProgram` 的 target mapping 规则与 materialization 边界
-    - `TTHardwareModel` 的 typed schema（含 `TTComputeModel` 子模型）
+    - `TTHardwareModel` 的 typed schema（含 capability-oriented `TTComputeModel` 子模型）
     - `TTProgram -> TT-lowered PrimFunc + ExecutableSpec` 的唯一物化路径
   - 权威总设计已完成系统性 review 并补齐以下 gap（2026-04-02）：
     - Semantic core 收敛：从较重的 `Domain/State/Relation/Phase/SemanticRegion + descriptor family` 收敛为 `Domain / State / Update`
@@ -36,9 +36,9 @@
     - `StateSSA` 方向：长期 public schema 保持小，内部保留 `StateVersion / StateJoin` 式分析图
     - Recovery Boundary：统一语义系统下的自动恢复 / 最小显式语义补充边界 + workload validation matrix
     - `ProgramPhase`：Spatial Program IR 新增多 kernel 组合的全局阶段边界（fusedmoe 双 T.Kernel、flash_decoding split+combine）
-    - `TTComputeModel`：TTHardwareModel 新增 compute 子模型（FPU/SFPU 独立性、dst 争用、pack/unpack mode）
-    - `TTKernel.role` 改为 composable `role_set` + `role_flags`（承接 MoE unified kernel pattern）
-    - `TTCBPlan / TTDstLayoutPlan` 新增 `data_format`、`pack_mode`、`unpack_mode`、`l1_acc_mode`、`fpu_sfpu_ordering` 等字段
+    - `TTComputeModel`：TTHardwareModel 新增 capability-oriented compute 子模型（execution units、dst hazard、pack/unpack、accumulator/data-format rules）
+    - `TTKernel`：收回到小闭 family + trait axes，不再用 `role_set + role_flags` 继续堆 target noun
+    - `TTCBPlan / TTDstLayoutPlan / TTComputeSyncPlan`：区分 program-level transport/storage plan 与 compute-kernel internal sync / dst residency plan
     - Companion IR invalidation：post-semantic-lift 默认 `unsafe`；只有 audited `identity-preserving / rebind-aware` pass 才能声明 `safe`
     - `SplitBlackholeKernel` 过渡边界：pre-semantic 仅作为 canonicalization / temporary signal producer，compatibility `blackhole.segment_plan` 不是真源
     - Materialized attr ownership：`blackhole.segment_plan/runtime_args/cb_configs/core_plan` 的稳态唯一 writer 固定为 `MaterializeTTExecutableSpec`
@@ -64,6 +64,13 @@
     - `traits` 已进一步收成固定轴系统，不再允许自由字符串；每类 spatial object 只允许来自少数预定义 trait axes
     - core schema 已补齐显式 bindings：`payload_states`、`domain_bindings`、`update_or_state_bindings`、`attachment_ref`
     - spatial planning contract 新增 `SpatialLegalityFacts`，并进一步收成 `Cut/Flow/Phase/Layout/Partition/Sync` 这组 typed legality entries，再生成 `SpatialCandidate`
+  - 2026-04-05 继续收口 TT Target IR：
+    - `TTSemaphorePlan` 收窄为 program-level semaphore / barrier / multicast contract，compute-kernel internal sync 单独拆成 `TTComputeSyncPlan`
+    - `TTKernel / TTCoreGroup / TTCBPlan / TTSemaphorePlan / TTComputeSyncPlan / TTDstLayoutPlan / TTABIPlan / TTExecutionPlan` 已补齐与 spatial truth 的显式 bindings
+    - `TTKernel` 改成小闭 `kind + traits`，不再依赖自由组合的 `role_set + role_flags`
+    - `TTCBPlan.resource_class` 收成小闭 family，细粒度差异走 traits
+    - `TTComputeModel` 从操作名清单收回到 capability classes + legality rules
+    - TT materialization outputs 已与当前 supporting docs 对齐，`blackhole.semaphore_plan` 明确回到 `MaterializeTTExecutableSpec` 的稳定产物集合
   - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界；`topk / fusedmoe / paged decode / chunk recurrence` 同样属于当前设计覆盖面
 
 ## 当前稳定基线
