@@ -374,6 +374,12 @@ AccessMap {
 - `stable_order_required`
 - `normalized`
 
+说明：
+
+- `expr_anchor / combine_anchor / finalize_anchor / score_anchor / step_anchor / merge_anchor`
+  都是 typed `TIRAnchor`
+- 它们不是新的 semantic object，只是把 `UpdateLaw` 对应的 TIR 计算骨架稳定绑定回来
+
 #### 内部规范化分析图
 
 长期 public schema 保持小，但编译器内部仍应采用近似 `MemorySSA` 的思路做 state versioning。
@@ -426,20 +432,32 @@ AccessMap {
 
 `Stateful Semantic IR` 不是悬空对象图。它需要直接持有对 TIR 世界的类型化引用，但不能长期依赖“某棵旧 TIR 子树的地址”。
 
-因此，这一层额外引入两类桥接对象：
+因此，这一层额外引入两类桥接对象，但它们都只服务于 semantic core 的恢复、绑定和重绑：
 
 | 对象 | 关键字段 | 作用 |
 |------|----------|------|
-| `TIRAnchor` | `func`, `anchor_id`, `reads`, `writes`, `iter_vars`, `span` | `Update` 对应的结构锚点 |
-| `TIRValueBinding` | `func`, `buffer`, `var`, `expr`, `anchor_id` | semantic object 到 TIR 原子的直接绑定 |
+| `TIRAnchor` | `func`, `anchor_id`, `anchor_kind`, `span`, `input_bindings`, `output_bindings` | 给 `Update` 或 `UpdateLaw` 的源计算骨架提供稳定结构锚点 |
+| `TIRValueBinding` | `owner_kind`, `owner_ref`, `binding_kind`, `func`, `buffer?`, `var?`, `expr?`, `anchor_id?` | 为 `Domain / State / AccessMap / Update / UpdateLaw` 字段维护 typed TIR 绑定与 rebind 索引 |
 
 设计要求：
 
 1. `State.backing_buffer`、`Domain.axes/constraints/predicate`、`AccessMap.coord_exprs/validity`
-   等字段，优先直接持有 `Buffer / Var / PrimExpr`。
-2. `Update.anchor` 指向 `TIRAnchor`，而不是保存脆弱的 `Stmt* / Block*` 指针。
-3. `TIRAnchor` 是编译器在固定 canonicalization 点上重建出来的结构身份，不是用户可见名字，也不是 case-specific 语义标签。
-4. semantic 层与 TIR 的关系必须是显式对象引用，不允许退化成字符串名匹配或位置假设。
+   等字段，优先直接持有 `Buffer / Var / PrimExpr`；但编译器仍应同步维护对应的 typed `TIRValueBinding` 索引。
+2. `Update.anchor` 绑定 update 主体；`UpdateLaw` 中的各类 `*_anchor` 绑定对应的 law payload（如 combine/step/finalize/score）。
+3. `TIRValueBinding` 必须按 semantic owner 分类，而不是无类型地存一包 `buffer/var/expr`：
+   - `owner_kind` 至少覆盖 `domain / state / access_map / update / update_law`
+   - `binding_kind` 至少覆盖 `state_buffer / domain_axis / domain_constraint / domain_predicate / access_index_input / access_coord / access_validity / update_guard / law_expr`
+4. `TIRAnchor` 是编译器在固定 canonicalization 点上重建出来的结构身份，不是用户可见名字，也不是 case-specific 语义标签。
+5. semantic 层与 TIR 的关系必须是显式对象引用与 typed binding，不允许退化成字符串名匹配或位置假设。
+
+一句话说，新的 bridge contract 应该是：
+
+- semantic core 自己保存 typed semantic fact
+- `TIRAnchor` 保存“这段语义事实来自哪段稳定 TIR 骨架”
+- `TIRValueBinding` 保存“semantic core 的哪个字段绑定到哪个 TIR 原子”
+
+这样 companion IR invalidation / safe-rebind 才能真正围绕 `Domain / State / Update / AccessMap / UpdateLaw`
+工作，而不是继续沿用旧 schema 时代的松散绑定模型。
 
 #### 语义恢复的具体规则
 
@@ -608,6 +626,30 @@ Phase A 不能从第一天起把全部 policy、annotation protocol、helper vie
 
 这条规则的意义是：Phase B 只能消费冻结后的 `SemanticProgram`，
 不能继续从 raw TIR 或晚期 builtin 序列里“再恢复一次语义”。
+
+#### `SemanticProgram` 在后续层的主要作用
+
+semantic 层不是“恢复完就挂在 attrs 里”的静态记录。它在后续编译阶段至少承担四个明确作用：
+
+1. **validation truth**
+   - `ValidateStatefulSemanticIR` 在这一层检查 `Domain / State / Update / AccessMap / UpdateLaw`
+     是否自洽，尽早暴露 carry、ordered update、indirect access、state identity 的错误
+2. **spatialization input**
+   - `LowerToSpatialProgram` 只能从 `SemanticProgram` 读取 must-preserve 的算法约束：
+     - 哪些 `Update` 必须切开
+     - 哪些 `State` 必须跨 task 流动
+     - 哪些 `UpdateLaw` 要求 ordered update / completion / merge
+     - 哪些 `AccessMap` 要求 gather / scatter / paged / routed 边界
+3. **invalidation cut**
+   - semantic lift 之后，TIR pass 的 safe/unsafe、rebind、re-lift 都以 semantic core 为判据，
+     不再以 ad-hoc attrs 或 runtime schema 为判据
+4. **workload normalization**
+   - `flash-attn / topk / fusedmoe / paged decode / chunk recurrence`
+     最终都先收进同一套 `Domain / State / Update / AccessMap / UpdateLaw`
+     语义骨架，再由 spatial / TT 层做各自的组织与 target realization
+
+因此，semantic 层后面的“主要作用”不是直接参与 codegen，而是：
+**给后续所有层提供唯一、稳定、可验证、可失效重建的算法语义真源。**
 
 #### 最小 TT Target Contract
 

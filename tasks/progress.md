@@ -24,6 +24,7 @@
     - `AtomicEffect -> SemanticRegion` 的通用恢复规则
     - `Domain / State / Update` semantic core
     - `AccessMap / UpdateLaw` 作为 `Update` 的 typed 组成部分
+    - `TIRAnchor / TIRValueBinding` 已开始向 semantic-core-aligned 的 typed bridge 收口
     - `SemanticProgram -> SpatialProgram` 的空间化构造规则与 policy 边界
     - `SpatialCandidate / SpatialPolicy / SpatialCostModel` 的 planning contract
     - `SpatialProgram + hardware model -> TTProgram` 的 target mapping 规则与 materialization 边界
@@ -47,6 +48,7 @@
     - 总设计已明确 `SemanticProgram(Domain / State / Update)` 是第一层真源
     - `AccessMap / UpdateLaw` 明确固定为 `Update` 的组成部分，而不是平行 schema
     - `TIRAnchor / AtomicEffect / SemanticRegion` 已重新收口为 recovery / binding / projection helper
+    - 已补充 semantic 层在 freeze 之后的主要作用：validation truth、spatialization input、invalidation cut、workload normalization
     - `stage4_flash_attention_forward_subset.md` 已改成从属 consumer 视角，不再暗含自己的 semantic schema
   - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界；`topk / fusedmoe / paged decode / chunk recurrence` 同样属于当前设计覆盖面
 
@@ -89,7 +91,7 @@
    - `ValidateStatefulSemanticIR`
    - 冻结 `domain / state / update`
    - 明确 `AccessMap / UpdateLaw` 的最小 schema
-   - 明确 `PrimFunc.attrs["tl.semantic_program"]` 与 `TIRAnchor` 承载 contract
+   - 明确 `PrimFunc.attrs["tl.semantic_program"]`、typed `TIRAnchor / TIRValueBinding` 与 rebind contract
    - 明确 `AtomicEffect / SemanticRegion` 只是 recovery helper，不是第一层 core schema
    - 收紧 post-semantic-lift invalidation：默认 `unsafe`，仅允许 audited `safe` pass
    - 明确 pre-semantic compatibility attrs 不参与 semantic/spatial truth 判定
