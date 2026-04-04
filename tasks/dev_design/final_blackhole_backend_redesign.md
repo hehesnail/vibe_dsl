@@ -479,7 +479,8 @@ AccessMap {
    - 在 `Update` 图上构造内部 `StateVersion / StateJoin`
    - 判定 carry / join / ordered update 的 reaching-def
 5. **区域恢复（导出视图）**
-   - 从 `AtomicEffect` 图按通用切分规则聚成 `SemanticRegion`
+   - 以恢复出的 `Update` 图为真源，按通用切分规则导出 `SemanticRegion`
+   - `AtomicEffect` 只作为切分诊断与 trace 辅助，不再直接形成 region 真源
    - `SemanticRegion` 仅作为 debug / recovery / spatialization helper，不是 semantic 真源
 
 这五步里，前四步都在建立“语义事实”；最后一步只是从事实导出便于分析的区域视图。

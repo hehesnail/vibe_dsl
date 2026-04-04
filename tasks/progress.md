@@ -21,7 +21,7 @@
     - `TIR + companion IR` 混合承载模型
     - `PrimFunc.attrs + IRModule.global_infos + materialized blackhole.* attrs` 的职责分层
     - `TIRAnchor / TIRValueBinding`
-    - `AtomicEffect -> SemanticRegion` 的通用恢复规则
+    - `AtomicEffect -> Update -> SemanticRegion` 的通用恢复 / 导出边界
     - `Domain / State / Update` semantic core
     - `AccessMap / UpdateLaw` 作为 `Update` 的 typed 组成部分
     - `TIRAnchor / TIRValueBinding` 已开始向 semantic-core-aligned 的 typed bridge 收口
