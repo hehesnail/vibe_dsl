@@ -73,6 +73,28 @@
     - TT materialization outputs 已与当前 supporting docs 对齐，`blackhole.semaphore_plan` 明确回到 `MaterializeTTExecutableSpec` 的稳定产物集合
     - `ExecutableSpec` 已进一步收成 program container + `KernelSpec[]` 的物化边界，顶层 aggregate ABI view 明确降为 compatibility-only
     - 当前仍保留的 runtime/codegen compatibility shim 已明确点名：segment 聚合顶层 `runtime_args/common_runtime_args`、顶层 `accessors` 回写、legacy attr device-kernel 检测、buffer-role positional fallback；Phase C cutover 后必须删除
+  - 2026-04-05 完成两轮系统性架构评审，并已把结论收口到总设计第 `3.1` 节：
+    - P0：单一真源 cutover / deletion gates、semantic lift 点与 rebind contract、`ProgramPhase` 宿主、TT common-runtime ABI
+    - P1：TT route/transport/protocol 一等对象、`Placement/ResourceIntent` schema 收口、`TTDstLayoutPlan` / `TTComputeSyncPlan` ownership、host layout/tilize-untilize materialization contract
+    - P2：确认 semantic core、Spatial small-closed family + fixed trait axes、TT capability-oriented model、`ExecutableSpec -> KernelSpec[]` 方向都应保持，不再回退
+  - 2026-04-05 已继续把 P0 直接落进总设计正文：
+    - `ProgramPhase` 稳定宿主已进一步固定为 `IRModule.global_infos["tl.device_programs"]`；单 `PrimFunc` 只是 `member_funcs=1` 的退化情况
+    - `TTKernel / TTABIPlan` 已补显式 common-runtime ABI 分层
+    - semantic lift canonicalization 点已和当前 Blackhole generic 主链对齐
+    - `TIRValueBinding / TIRAnchor` rebind contract 已改成 A2+ contract；Phase A1 先采用 post-lift hard freeze
+    - compatibility shim deletion gates 已补成显式 cutover 条件
+  - 2026-04-05 已继续把 P1 关键 gap 直接落进总设计正文：
+    - `TTTransportPlan` 已引入为 route / transport / protocol 一等对象，不再只靠 `remote_core_descriptors`
+    - `Placement.kind` / `ResourceIntent.kind` 已补第一版 base family，不再停留在“后补小闭枚举”
+    - `TTDstLayoutPlan` / `TTComputeSyncPlan` 的单向 ownership 已写死
+    - host logical layout / tilize-untilize / transpose 已明确回到 materialization ownership
+  - 2026-04-05 已基于 review 文档和源码交叉审计，继续把 implementation-facing gap 写进总设计正文：
+    - early semantic capture 已补成显式 contract：允许 `LowerTileOp` / 早期 canonicalization 保留 compiler-internal semantic seed，供 `AnalyzeSemanticStructure` 消费
+    - `SplitHostDevice` 前的 device-program registry 已补成显式前置约束，用来稳定承接 multi-`T.Kernel` membership / order
+    - Phase A1 最小对象集、non-attention gate 粒度、以及 helper object 可先保持 internal struct 的实现边界已写清
+    - Phase B 已补 simple-workload canonical fast-path，与非 trivial multi-phase spatialization gate
+    - Phase C 已补 minimal `TTHardwareModel` stub 作为 full target mapping 前置准备，并明确先收拢当前实现里的硬件常量
+    - Section 7 示例名字已明确标注为叙述用例，不得成为 matcher token 或 schema key
   - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界；`topk / fusedmoe / paged decode / chunk recurrence` 同样属于当前设计覆盖面
 
 ## 当前稳定基线
@@ -107,34 +129,47 @@
 
 ## 下一步
 
-1. 基于 `tasks/dev_design/final_blackhole_backend_redesign.md` 重写新的 layered-IR implementation plan。
+1. 基于 `tasks/dev_design/final_blackhole_backend_redesign.md` 第 `3.1` 节的 P0 / P1 收口清单，重写新的 layered-IR implementation plan：
+   - 单一真源 cutover / compatibility deletion gates
+   - semantic lift canonicalization 点 + Phase A1 hard freeze + A2+ rebind-aware contract
+   - pre-`SplitHostDevice` device-program registry + `ProgramPhase` 的 module-scope 稳定宿主
+   - early semantic capture / semantic seed 输入通道
+   - TT common-runtime ABI 与 transport/route/protocol typed object
+   - `Placement / ResourceIntent` schema 收口，以及 `TTDstLayoutPlan / TTComputeSyncPlan` ownership
+   - minimal `TTHardwareModel` stub 的准备与 cutover
 2. 执行 **Phase A: Stateful Semantic IR**：
    - `AnalyzeSemanticStructure`
    - `LiftToStatefulSemanticIR`
    - `ValidateStatefulSemanticIR`
    - 冻结 `domain / state / update`
    - 明确 `AccessMap / UpdateLaw` 的最小 schema
-   - 明确 `PrimFunc.attrs["tl.semantic_program"]`、typed `TIRAnchor / TIRValueBinding` 与 rebind contract
+   - 明确 `PrimFunc.attrs["tl.semantic_program"]`、typed `TIRAnchor / TIRValueBinding` 与 A1/A2 的 rebind 分层
+   - 明确 early semantic capture / semantic seed 的最小输入 contract
    - 明确独立的显式语义补充边界，只先定义 compiler-internal `SemanticSupplement` / `tl.semantic_supplement`
    - 明确 `AtomicEffect / SemanticRegion` 只是 recovery helper，不是第一层 core schema
    - 明确 `AtomicEffect -> Update` 恢复与 `Update -> SemanticRegion` 导出之间的边界
-   - 收紧 post-semantic-lift invalidation：默认 `unsafe`，仅允许 audited `safe` pass
+   - Phase A1 先收紧为 post-lift no-mutation hard freeze；rebind-aware safe pass 推迟到 A2+
    - 明确 pre-semantic compatibility attrs 不参与 semantic/spatial truth 判定
-   - 保证 copy / GEMM compile-path zero-regression + 至少一个 non-attention semantic skeleton case
+   - 保证 copy / GEMM compile-path zero-regression + 至少一个 non-attention semantic skeleton case（A1 先只验 `Domain/State/UpdateLaw.kind`）
 3. 执行 **Phase B: Spatial Program IR**：
    - 把 selection/indexing、routed/grouped dispatch、paged decode、stateful update、chunk recurrence 的 `task / channel / layout / sync / work partition` 一等化
    - 明确 `PrimFunc.attrs["tl.spatial_program"]` 承载 contract
-   - 明确 `ProgramPhase` 的强边界与 phase-boundary materialization 规则
+   - 明确 `ProgramPhase` 的强边界与 phase-boundary materialization 规则，以及 `tl.device_programs` 的 module-scope ownership
    - 先落 `SpatialLegalityFacts`，再落 `SpatialCandidate / SpatialPolicy / SpatialCostModel`
+   - 为 simple workload 落 canonical fast-path，避免 trivial case 也走重 candidate synthesis
    - 保持 `kind` 小闭枚举，细粒度 workload 差异通过 trait/binding 表达，不再靠不断增补 kind
    - 明确 spatial analysis 与 `SpatialCandidate / SpatialPolicy / SpatialCostModel` 的边界
    - 拆掉 `LowerBlackholeOps` 当前同时承担语义理解和 target lowering 的边界
+   - 加入至少一个 non-trivial multi-phase case，证明下游不会退化回 `Task:TTKernel = 1:1`
 4. 执行 **Phase C: TT Target IR**：
    - 统一 `CB / semaphore / dst layout / kernel role / ABI / execution plan`
    - 明确 `PrimFunc.attrs["tl.tt_program"]` 与 `IRModule.global_infos` 中 `TTHardwareModel` 的承载 contract
+   - 先建立 minimal `TTHardwareModel` stub，收拢 `PlanBlackholeCB` / runtime / compute config 里的硬件常量
+   - 明确 common-runtime ABI、transport/route/protocol subplan 的稳定 schema
    - 明确 target legality analysis 与 TT policy 的边界
    - 把 `ExecutableSpec` 与 TT-lowered `PrimFunc` 一并改成从 `TT Target IR` 唯一物化
    - 明确 `ExecutableSpec` program-shared metadata 与 `KernelSpec` per-kernel ABI 的 ownership
+   - 明确 host logical layout / tilize-untilize / transpose responsibility 的 materialization ownership
    - 清除 `rt_mod_blackhole / BlackholeModule / lower.py` 中仍保留的 compatibility aggregation / fallback / legacy attr detection
 5. 在新分层下继续扩更宽 flash-attn forward 支持面，以及 P4 / P5 更宽执行面。
 
