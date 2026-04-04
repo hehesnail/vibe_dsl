@@ -9,6 +9,7 @@
 | 文档 | 用途 | 状态 |
 |------|------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计 | 常青 |
+| `review_final_blackhole_backend_redesign.md` | 总设计的系统性 review（含代码交叉审计） | 已完成；设计已基于 review 修订 |
 | `stage4_flash_attention_forward_subset.md` | `flash-attn` 这一类 consumer 的支持设计 | 活动中（consumer-specific，不再定义总体架构方向） |
 | `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 与 execution surface 缺口审计 | 支持中（TT Target IR 的 supporting audit） |
 | `stage4_semaphore_schema.md` | TT Target IR 的 semaphore/sync 支持设计 | 支持中 |

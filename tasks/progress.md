@@ -11,90 +11,17 @@
   - 以新的分层架构推进后续实现：
     `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
   - 在保持 copy / GEMM / current direct-path 稳定的前提下，解决复杂前端计算在 Blackhole 上的统一承接问题
-  - 权威总设计已改为中文主叙述，并明确覆盖：
-    - selection / indexing
-    - routed / grouped / ragged dispatch
-    - paged / indexed sparse access
-    - stateful reduction-update
-    - chunked recurrence / scan
-  - 权威总设计已补齐实现层 contract：
-    - `TIR + companion IR` 混合承载模型
-    - `PrimFunc.attrs + IRModule.global_infos + materialized blackhole.* attrs` 的职责分层
-    - `TIRAnchor / TIRValueBinding`
-    - `AtomicEffect -> Update -> SemanticRegion` 的通用恢复 / 导出边界
-    - `Domain / State / Update` semantic core
-    - `AccessMap / UpdateLaw` 作为 `Update` 的 typed 组成部分
-    - `TIRAnchor / TIRValueBinding` 已开始向 semantic-core-aligned 的 typed bridge 收口
-    - `SemanticProgram -> SpatialProgram` 的空间化构造规则与 policy 边界
-    - `SpatialCandidate / SpatialPolicy / SpatialCostModel` 的 planning contract
-    - `SpatialProgram + hardware model -> TTProgram` 的 target mapping 规则与 materialization 边界
-    - `TTHardwareModel` 的 typed schema（含 capability-oriented `TTComputeModel` 子模型）
-    - `TTProgram -> TT-lowered PrimFunc + ExecutableSpec` 的唯一物化路径
-  - 权威总设计已完成系统性 review 并补齐以下 gap（2026-04-02）：
-    - Semantic core 收敛：从较重的 `Domain/State/Relation/Phase/SemanticRegion + descriptor family` 收敛为 `Domain / State / Update`
-    - `AccessMap / UpdateLaw`：吸收 paged/routed/selection/recurrence 语义，不再平行维护 `*Spec` 家族
-    - `StateSSA` 方向：长期 public schema 保持小，内部保留 `StateVersion / StateJoin` 式分析图
-    - Recovery Boundary：统一语义系统下的自动恢复 / 最小显式语义补充边界 + workload validation matrix
-    - `ProgramPhase`：Spatial Program IR 新增多 kernel 组合的全局阶段边界（fusedmoe 双 T.Kernel、flash_decoding split+combine）
-    - `TTComputeModel`：TTHardwareModel 新增 capability-oriented compute 子模型（execution units、dst hazard、pack/unpack、accumulator/data-format rules）
-    - `TTKernel`：收回到小闭 family + trait axes，不再用 `role_set + role_flags` 继续堆 target noun
-    - `TTCBPlan / TTDstLayoutPlan / TTComputeSyncPlan`：区分 program-level transport/storage plan 与 compute-kernel internal sync / dst residency plan
-    - Companion IR invalidation：post-semantic-lift 默认 `unsafe`；只有 audited `identity-preserving / rebind-aware` pass 才能声明 `safe`
-    - `SplitBlackholeKernel` 过渡边界：pre-semantic 仅作为 canonicalization / temporary signal producer，compatibility `blackhole.segment_plan` 不是真源
-    - Materialized attr ownership：`blackhole.segment_plan/runtime_args/common_runtime_args/accessors/cb_configs/semaphore_plan/core_plan` 的稳态唯一 writer 固定为 `MaterializeTTExecutableSpec`
-    - Phase A 细分为 A1（最小 multi-family recovery）和 A2（泛化 + 更宽 `AccessMap / UpdateLaw` traits），A1 gate 强制包含一个 non-attention semantic skeleton case
-    - Section 7 workload 示例已切换到 `Domain / State / Update` 叙述，去掉 workload-specific semantic enum
-  - 2026-04-03 进一步完成活动文档收口：
-    - 总设计已明确 `SemanticProgram(Domain / State / Update)` 是第一层真源
-    - `AccessMap / UpdateLaw` 明确固定为 `Update` 的组成部分，而不是平行 schema
-    - `TIRAnchor / AtomicEffect / SemanticRegion` 已重新收口为 recovery / binding / projection helper
-    - 已补充 semantic 层在 freeze 之后的主要作用：validation truth、spatialization input、invalidation cut、workload normalization
-    - `stage4_flash_attention_forward_subset.md` 已改成从属 consumer 视角，不再暗含自己的 semantic schema
-  - 2026-04-05 进一步收口 semantic helper 设计：
-    - `TIRValueBinding` 明确为 typed field-binding index，而不是泛化 value bag
-    - `TIRAnchor` 只保留结构锚点职责，不再重复承担字段级 binding
-    - `SemanticRegion` 明确改成从 `Update` 图导出的非真源视图，只用于 debug / diagnosis / spatial clustering
-    - “DSL 补语义” 已拆成独立的“显式语义补充边界”部分，不再和 semantic core 正文混写
-    - Phase A 当前不再提前承诺公开 `T.annotate_semantic()`；第一版先定义 compiler-internal `SemanticSupplement` / `tl.semantic_supplement`
-    - supplement 只允许裁决少数 IR 无法唯一决定的语义事实，不能覆盖结构恢复，也不能表达 spatial/target 细节
-  - 2026-04-05 继续收口 Spatial IR：
-    - `ProgramPhase` 明确为强边界；跨 phase 通信只能走 materialized `shared_buffers` + global sync，`Channel` 不允许跨 phase
-    - `Task / Channel / Layout / WorkPartition / Placement / SyncEdge / ResourceIntent` 全部改成“小闭枚举 + trait set”，避免 workload-specific kind 无限制膨胀
-    - `Task / Channel / Layout / WorkPartition` 的第一版 base family 已进一步收窄，新增 kind 现在要求真的改变一级 legality/candidate/target 分派
-    - `traits` 已进一步收成固定轴系统，不再允许自由字符串；每类 spatial object 只允许来自少数预定义 trait axes
-    - core schema 已补齐显式 bindings：`payload_states`、`domain_bindings`、`update_or_state_bindings`、`attachment_ref`
-    - spatial planning contract 新增 `SpatialLegalityFacts`，并进一步收成 `Cut/Flow/Phase/Layout/Partition/Sync` 这组 typed legality entries，再生成 `SpatialCandidate`
-  - 2026-04-05 继续收口 TT Target IR：
-    - `TTSemaphorePlan` 收窄为 program-level semaphore / barrier / multicast contract，compute-kernel internal sync 单独拆成 `TTComputeSyncPlan`
-    - `TTKernel / TTCoreGroup / TTCBPlan / TTSemaphorePlan / TTComputeSyncPlan / TTDstLayoutPlan / TTABIPlan / TTExecutionPlan` 已补齐与 spatial truth 的显式 bindings
-    - `TTKernel` 改成小闭 `kind + traits`，不再依赖自由组合的 `role_set + role_flags`
-    - `TTCBPlan.resource_class` 收成小闭 family，细粒度差异走 traits
-    - `TTComputeModel` 从操作名清单收回到 capability classes + legality rules
-    - TT materialization outputs 已与当前 supporting docs 对齐，`blackhole.semaphore_plan` 明确回到 `MaterializeTTExecutableSpec` 的稳定产物集合
-    - `ExecutableSpec` 已进一步收成 program container + `KernelSpec[]` 的物化边界，顶层 aggregate ABI view 明确降为 compatibility-only
-    - 当前仍保留的 runtime/codegen compatibility shim 已明确点名：segment 聚合顶层 `runtime_args/common_runtime_args`、顶层 `accessors` 回写、legacy attr device-kernel 检测、buffer-role positional fallback；Phase C cutover 后必须删除
-  - 2026-04-05 完成两轮系统性架构评审，并已把结论收口到总设计第 `3.1` 节：
-    - P0：单一真源 cutover / deletion gates、semantic lift 点与 rebind contract、`ProgramPhase` 宿主、TT common-runtime ABI
-    - P1：TT route/transport/protocol 一等对象、`Placement/ResourceIntent` schema 收口、`TTDstLayoutPlan` / `TTComputeSyncPlan` ownership、host layout/tilize-untilize materialization contract
-    - P2：确认 semantic core、Spatial small-closed family + fixed trait axes、TT capability-oriented model、`ExecutableSpec -> KernelSpec[]` 方向都应保持，不再回退
-  - 2026-04-05 已继续把 P0 直接落进总设计正文：
-    - `ProgramPhase` 稳定宿主已进一步固定为 `IRModule.global_infos["tl.device_programs"]`；单 `PrimFunc` 只是 `member_funcs=1` 的退化情况
-    - `TTKernel / TTABIPlan` 已补显式 common-runtime ABI 分层
-    - semantic lift canonicalization 点已和当前 Blackhole generic 主链对齐
-    - `TIRValueBinding / TIRAnchor` rebind contract 已改成 A2+ contract；Phase A1 先采用 post-lift hard freeze
-    - compatibility shim deletion gates 已补成显式 cutover 条件
-  - 2026-04-05 已继续把 P1 关键 gap 直接落进总设计正文：
-    - `TTTransportPlan` 已引入为 route / transport / protocol 一等对象，不再只靠 `remote_core_descriptors`
-    - `Placement.kind` / `ResourceIntent.kind` 已补第一版 base family，不再停留在“后补小闭枚举”
-    - `TTDstLayoutPlan` / `TTComputeSyncPlan` 的单向 ownership 已写死
-    - host logical layout / tilize-untilize / transpose 已明确回到 materialization ownership
-  - 2026-04-05 已基于 review 文档和源码交叉审计，继续把 implementation-facing gap 写进总设计正文：
-    - early semantic capture 已补成显式 contract：允许 `LowerTileOp` / 早期 canonicalization 保留 compiler-internal semantic seed，供 `AnalyzeSemanticStructure` 消费
-    - `SplitHostDevice` 前的 device-program registry 已补成显式前置约束，用来稳定承接 multi-`T.Kernel` membership / order
-    - Phase A1 最小对象集、non-attention gate 粒度、以及 helper object 可先保持 internal struct 的实现边界已写清
-    - Phase B 已补 simple-workload canonical fast-path，与非 trivial multi-phase spatialization gate
-    - Phase C 已补 minimal `TTHardwareModel` stub 作为 full target mapping 前置准备，并明确先收拢当前实现里的硬件常量
-    - Section 7 示例名字已明确标注为叙述用例，不得成为 matcher token 或 schema key
+  - 权威总设计已完成系统性 review（`review_final_blackhole_backend_redesign.md`）并基于源码交叉审计修订
+  - 总设计当前最终状态摘要：
+    - **Semantic 层**：`Domain / State / Update` + `AccessMap / UpdateLaw`(4 variants) 为 core；`TIRAnchor / TIRValueBinding` 为 bridge；`AtomicEffect / SemanticRegion` 仅为 helper
+    - **早期语义捕获**：`SemanticSeed` 作为 compiler-internal typed signal，在 `LowerTileOp` 或更早保留语义事实，供 `AnalyzeSemanticStructure` 消费
+    - **`ProgramPhase` 宿主**：统一为 `IRModule.global_infos[“tl.device_programs”]`；`CollectDevicePrograms` 在 `SplitHostDevice` 之前建立 registry
+    - **Spatial 层**：小闭枚举 + fixed trait axes；simple workload 有 canonical fast-path
+    - **TT Target 层**：`TTTransportPlan` 一等对象；`TTKernel/TTABIPlan` 显式三层 ABI；`TTHardwareModel` stub 先行收拢硬件常量
+    - **Phase A1 策略**：最小 object 集 + post-lift hard freeze（不允许 TIR mutation）；rebind-aware contract 推到 A2+
+    - **Phase B gate**：至少一个 non-trivial multi-phase case + 证明 Task:TTKernel 不退化为 1:1
+    - **Phase C gate**：`MaterializeTTExecutableSpec` 成为唯一 writer；compatibility shim 按 deletion gate 清除
+    - **通用性保证**：Section 7 示例名字只是叙述用例；recovery 基于 structural pattern 而非 name matching
   - `flash-attn` 仍是第一批 consumer，但不再作为总架构边界；`topk / fusedmoe / paged decode / chunk recurrence` 同样属于当前设计覆盖面
 
 ## 当前稳定基线

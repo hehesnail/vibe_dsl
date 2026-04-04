@@ -21,7 +21,7 @@
   - 后续 pointwise / reduction / cast helper 却还会把同一份 scratch 当线性数组解释
   - hang 被修掉后，这套混合语义自然暴露为 correctness mismatch
 - **解决方向**:
-  - 先在 `Stateful Semantic IR` 冻结 `state / relation / phase / carry` 真语义，不再让后段从普通 loop 形态猜状态角色
+  - 先在 `Stateful Semantic IR` 冻结 `Domain / State / Update`（含 `AccessMap / UpdateLaw`）真语义，通过 `SemanticSeed` 在 lowering 前捕获语义事实，不再让后段从普通 loop 形态猜状态角色
   - 再在 `Spatial Program IR` 单独表达 `task / channel / layout / sync / work partition`，把 flash-attn 的 online-softmax 数据流显式化
   - 最后在 `TT Target IR` 里收正 `CB / semaphore / dst layout / kernel role / ABI`，让 `blackhole.acc` 只表示 compute-side tile scratch
   - 把 stats-state（`scores_max / scores_scale / scores_sum / logsum`）从 tile scratch 语义里彻底拆出去
@@ -34,12 +34,13 @@
   - copy / GEMM 可以继续稳定，但复杂 workload family 还没有统一承接层
   - TT-Metal contract 虽然在文档和局部 schema 上越来越完整，但还没有成为单一 target truth source
 - **解决方向**:
-  - 按 `final_blackhole_backend_redesign.md` 重写 implementation plan
-  - 先落 `SemanticProgram`
-  - 再落 `SpatialProgram`
-  - 最后把 `TTProgram` 与 `ExecutableSpec` 的唯一物化路径接入主链
+  - 按 `final_blackhole_backend_redesign.md` 重写 implementation plan（总设计已完成系统性 review 并修订）
+  - Phase A1：最小 `Domain/State/Update` + `MapLaw/ReduceLaw` + `SemanticSeed` early capture + post-lift hard freeze
+  - Phase A2：泛化 recovery + wider `AccessMap/UpdateLaw` traits + `SemanticSupplement` + rebind-aware contract
+  - Phase B：`ProgramPhase` module-scope 宿主（`DeviceProgramInfo` in `tl.device_programs`）+ simple-workload fast-path + non-trivial multi-phase gate
+  - Phase C：`TTHardwareModel` stub 先行 + `TTTransportPlan` + common-runtime ABI + `MaterializeTTExecutableSpec` 唯一物化
 - **当前状态**:
-  - 设计层已完成：分层 IR、typed semantic descriptors、`SpatialCandidate / SpatialPolicy / SpatialCostModel`、`TTHardwareModel`、唯一物化路径都已写入总设计
+  - 设计层已完成：总设计已经过系统性 review（`review_final_blackhole_backend_redesign.md`）并基于源码交叉审计修订；覆盖 `SemanticSeed`、`DeviceProgramInfo`、Phase A1 hard freeze、small-closed enum + fixed trait axes、simple-workload fast-path、`TTTransportPlan`、three-layer ABI、compatibility deletion gates 等
   - 实现层未完成：主链还没有这些 typed companion IR object 与对应 pass/validator/materializer
 
 ### direct runtime 若不先把 output tensor 初值同步到 device，partial-write copy 会读回脏数据
