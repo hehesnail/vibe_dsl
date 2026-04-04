@@ -10,6 +10,7 @@
 |------|------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计 | 常青 |
 | `review_final_blackhole_backend_redesign.md` | 总设计的系统性 review（含代码交叉审计） | 已完成；设计已基于 review 修订 |
+| `stage4_layered_ir_implementation_plan.md` | 基于当前总设计的分阶段实施计划与验收 gate | 活动中（当前执行入口） |
 | `stage4_flash_attention_forward_subset.md` | `flash-attn` 这一类 consumer 的支持设计 | 活动中（consumer-specific，不再定义总体架构方向） |
 | `stage2d_ttmetal_contract_audit.md` | TT-Metal contract 与 execution surface 缺口审计 | 支持中（TT Target IR 的 supporting audit） |
 | `stage4_semaphore_schema.md` | TT Target IR 的 semaphore/sync 支持设计 | 支持中 |
@@ -22,9 +23,10 @@
 
 ## 3. 当前任务安排
 
-当前没有活动中的旧 `stateful_tiled_ir` 实施计划。下一份实施计划应直接基于：
+当前实施计划直接基于：
 
 - `final_blackhole_backend_redesign.md`
+- `stage4_layered_ir_implementation_plan.md`
 - 其中 Phase A 的第一层 semantic core：`Domain / State / Update`，以及 `AccessMap / UpdateLaw`
 - 其 Phase A / B / C 迁移顺序
 - 其 workload family 覆盖矩阵

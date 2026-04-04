@@ -11,6 +11,7 @@
   - 以新的分层架构推进后续实现：
     `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
   - 在保持 copy / GEMM / current direct-path 稳定的前提下，解决复杂前端计算在 Blackhole 上的统一承接问题
+  - 分阶段实施计划已建立：`tasks/dev_design/stage4_layered_ir_implementation_plan.md`
   - 权威总设计已完成系统性 review（`review_final_blackhole_backend_redesign.md`）并基于源码交叉审计修订
   - 总设计当前最终状态摘要：
     - **Semantic 层**：`Domain / State / Update` + `AccessMap / UpdateLaw`(4 variants) 为 core；`TIRAnchor / TIRValueBinding` 为 bridge；`AtomicEffect / SemanticRegion` 仅为 helper
@@ -56,14 +57,12 @@
 
 ## 下一步
 
-1. 基于 `tasks/dev_design/final_blackhole_backend_redesign.md` 第 `3.1` 节的 P0 / P1 收口清单，重写新的 layered-IR implementation plan：
+1. 执行 [stage4_layered_ir_implementation_plan.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_layered_ir_implementation_plan.md) 的 **Stage 0: P0 Guardrails And Cutover Gates**：
    - 单一真源 cutover / compatibility deletion gates
-   - semantic lift canonicalization 点 + Phase A1 hard freeze + A2+ rebind-aware contract
+   - semantic lift canonicalization 点 + Phase A1 hard freeze
    - pre-`SplitHostDevice` device-program registry + `ProgramPhase` 的 module-scope 稳定宿主
    - early semantic capture / semantic seed 输入通道
-   - TT common-runtime ABI 与 transport/route/protocol typed object
-   - `Placement / ResourceIntent` schema 收口，以及 `TTDstLayoutPlan / TTComputeSyncPlan` ownership
-   - minimal `TTHardwareModel` stub 的准备与 cutover
+   - Stage 0 结构测试与 shared zero-regression baseline
 2. 执行 **Phase A: Stateful Semantic IR**：
    - `AnalyzeSemanticStructure`
    - `LiftToStatefulSemanticIR`
@@ -147,6 +146,7 @@
 ## 当前活动文档
 
 - `tasks/dev_design/final_blackhole_backend_redesign.md`
+- `tasks/dev_design/stage4_layered_ir_implementation_plan.md`
 - `tasks/dev_design/stage4_flash_attention_forward_subset.md`
 - `tasks/dev_design/stage2d_ttmetal_contract_audit.md`
 - `tasks/dev_design/stage4_semaphore_schema.md`
