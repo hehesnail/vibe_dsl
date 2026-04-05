@@ -91,6 +91,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - 如果信息可以从 IR 得到，就必须从 IR 得到
    - 如果 IR 表达不够，就扩 attrs/schema，必要时从 DSL 显式表达
 
+4. **IR 分析必须基于 IR 结构与类型，不允许基于名字匹配恢复语义**
+   - 不允许用 buffer/var/op 的命名约定（如 `idx`、`scores_*`、`logsum`）来决定语义角色、绑定关系或协议分支
+   - 语义恢复必须优先依赖 IR 自身可验证的信息：对象类型、storage scope、def-use、region/access pattern、loop-carried/dataflow 结构、attrs/schema
+   - 如果仅靠当前 IR 结构仍无法稳定区分语义，就扩 IR/DSL/schema；不要把名字匹配升级成长期分析手段
+
 **对 Blackhole 的具体要求**：
 
 - `runtime_args`、`buffer`、`cb`、`segment` 等绑定必须由 IR/schema 明确表达或可从 IR 稳定推导
@@ -103,6 +108,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 不要把单个 kernel 字符串当成后端主产物
 - 不要重新引入或扩展 legacy external runner 路径
 - 不要让文档和代码长期协议错位
+- 不要在分析 pass 里用名字匹配当作 IR 语义恢复依据；名字只能用于日志、调试和实例展示，不能进入协议判断
 
 ---
 
