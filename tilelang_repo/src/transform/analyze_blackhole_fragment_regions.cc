@@ -160,6 +160,7 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       Map<String, Any> entry;
       entry.Set("name", String(name));
       entry.Set("scope", String(info.scope));
+      entry.Set("is_integer", Integer(info.buffer->dtype.is_int() || info.buffer->dtype.is_uint()));
       fragment_buffers.push_back(entry);
     }
     region.Set("fragment_buffers", fragment_buffers);

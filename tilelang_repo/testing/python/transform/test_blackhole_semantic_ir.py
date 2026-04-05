@@ -68,6 +68,14 @@ def _prepare_blackhole_phase_a_module(prim_func):
     return mod
 
 
+def _lift_semantic_program_from_existing_structure(prim_func):
+    mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
+    mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
+    mod = tilelang.transform.LiftStatefulSemanticIR()(mod)
+    mod = tilelang.transform.ValidateStatefulSemanticIR()(mod)
+    return mod
+
+
 def test_device_program_registry_is_collected_before_split_host_device():
     mod = _prepare_blackhole_stage0_module()
     mod = tilelang.transform.CollectDevicePrograms()(mod)
@@ -184,6 +192,72 @@ def test_topk_semantic_program_lifts_select_updates_and_selection_roles():
     assert "select" in law_kinds
     assert "selection_state" in state_roles
     assert "index_state" in state_roles
+
+
+@T.prim_func
+def _synthetic_selection_without_name_hints(
+    logits: T.Buffer((16,), "float32"),
+    out_values: T.Buffer((4,), "float32"),
+    out_slots: T.Buffer((4,), "int32"),
+):
+    T.func_attr(
+        {
+            "global_symbol": "main",
+            "target": tvm.target.Target("blackhole"),
+            "blackhole.fragment_regions": [
+                {
+                    "fragment_buffers": [
+                        {"name": "score_fragment", "scope": "blackhole.acc", "is_integer": 0},
+                        {"name": "carry_slots", "scope": "blackhole.acc", "is_integer": 1},
+                        {"name": "best_value", "scope": "blackhole.acc", "is_integer": 0},
+                        {"name": "best_slot", "scope": "blackhole.acc", "is_integer": 1},
+                    ],
+                    "ops": ["pointwise_chain", "row_reduction", "row_broadcast"],
+                    "pointwise_ops": ["if_then_else", "max"],
+                    "row_reductions": [
+                        {"target": "best_value", "kind": "max"},
+                        {"target": "best_slot", "kind": "max"},
+                    ],
+                    "row_broadcasts": [{"source": "score_fragment"}, {"source": "best_value"}],
+                    "loop_carried_state": [
+                        {"name": "score_fragment"},
+                        {"name": "carry_slots"},
+                        {"name": "best_value"},
+                        {"name": "best_slot"},
+                    ],
+                }
+            ],
+        }
+    )
+    with T.Kernel(1, threads=32):
+        score_fragment = T.decl_buffer((16,), "float32", scope="blackhole.acc")
+        carry_slots = T.decl_buffer((16,), "int32", scope="blackhole.acc")
+        best_value = T.decl_buffer((4,), "float32", scope="blackhole.acc")
+        best_slot = T.decl_buffer((4,), "int32", scope="blackhole.acc")
+        tx = T.launch_thread("threadIdx.x", 32)
+
+        if tx < 16:
+            score_fragment[tx] = logits[tx]
+            carry_slots[tx] = tx
+        if tx < 4:
+            best_value[tx] = T.max(score_fragment[tx * 4], score_fragment[tx * 4 + 1])
+            best_slot[tx] = T.if_then_else(
+                score_fragment[tx * 4] >= score_fragment[tx * 4 + 1],
+                carry_slots[tx * 4],
+                carry_slots[tx * 4 + 1],
+            )
+            out_values[tx] = best_value[tx]
+            out_slots[tx] = best_slot[tx]
+
+
+def test_topk_semantic_program_recovers_index_state_from_integer_ir_not_names():
+    mod = _lift_semantic_program_from_existing_structure(_synthetic_selection_without_name_hints)
+
+    program = mod["main"].attrs["tl.semantic_program"]
+    state_roles_by_name = {str(state.name): str(state.role) for state in program.states}
+
+    assert state_roles_by_name["best_slot"] == "index_state"
+    assert "selection_state" in set(state_roles_by_name.values())
 
 
 def test_chunk_recurrence_semantic_program_lifts_recurrence_updates():

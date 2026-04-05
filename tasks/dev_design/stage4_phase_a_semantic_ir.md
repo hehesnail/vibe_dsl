@@ -133,6 +133,7 @@ Design note:
   - algorithmic carry / reduction-update state
   - transient compute scratch / matmul destination hint
   但这种区分必须通过抽象 role/trait 表达，不能把 `scores_max / logsum / acc_s_cast` 等具体命名写成长期协议
+- A2 semantic recovery 必须基于 IR 结构与 typed analysis attrs；如果当前 attrs 不足以稳定恢复角色，就先扩 attrs/schema，不能回退到名字匹配
 
 - [x] **Step 1: Expand semantic schema beyond A1**
 
@@ -171,7 +172,7 @@ Expected:
 
 - `topk` 稳定 lift 出 `UpdateLaw.kind == select`
 - chunk recurrence 稳定 lift 出 `UpdateLaw.kind == recurrence`
-- `flash-attn` 的 stats/carry/update 不再依赖 raw TIR 晚期猜测
+- `flash-attn` 的 stats/carry/update 不再依赖名字匹配；若结构信号不足，必须显式扩 attrs/schema
 - `flash-attn` pipeline 断言能看见 algorithmic state 与 transient scratch 的语义分离
 
 - [x] **Step 4: Re-run shared zero-regression baseline**
@@ -202,15 +203,23 @@ Implemented note:
 - A2 明确保持 workload-agnostic schema：
   - `flash-attn / topk / chunk recurrence` 只作为 validation family
   - schema 本身不引入 workload-specific noun bag
+- 当前为避免名字匹配，`AnalyzeBlackholeFragmentRegions` 已向 `fragment_buffers`
+  补充 typed `is_integer` 结构信号，`AnalyzeSemanticStructure` 用这份 typed attr
+  恢复 `index_state`
 - `flash-attn` 当前已在 semantic layer 和 pipeline gate 上稳定看到：
   - algorithmic carry / reduction state
   - transient compute scratch
   的抽象角色分离
+- 当前仍有未完成项：
+  - A2 schema 已落地
+  - 但 semantic recovery 精度仍在继续收紧，尤其是 `selection_state` 这类较粗角色的结构化区分还未完成
 - 当前验证：
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -q`
-    - `10 passed`
+    - `11 passed`
+  - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names' -q`
+    - `1 passed`
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'topk or selection or recurrence' -q`
-    - coverage 已包含在全量 `10 passed` 中
+    - `4 passed`（含新的 no-name-hint regression）
   - `pytest testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
     - `26 passed`
   - shared zero-regression baseline：

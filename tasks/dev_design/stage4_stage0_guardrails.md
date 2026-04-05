@@ -88,15 +88,15 @@ Run the shared zero-regression baseline above.
 Status:
 
 - `test_blackhole_copy_pipeline.py -q`
-  - `49 passed, 1 skipped, 1 xfailed`
+  - `40 passed, 10 skipped, 1 xfailed`
 - `test_blackhole_copy_runtime.py -q`
   - `12 passed`
 - `test_blackhole_gemm.py -q`
-  - `35 passed`
+  - `24 passed, 11 skipped`
 - `test_blackhole_tvm_ffi_export.py -q`
   - `1 passed`
 - `test_blackhole_flash_attention_pipeline.py -q`
-  - `25 passed`
+  - `26 passed`
 
 - [x] **Step 4: Stage 0 exit gate**
 
@@ -110,4 +110,5 @@ Only proceed when:
 Exit status:
 
 - 本阶段的 migration guardrails 已在当前 Blackhole 主链落地
+- 本阶段不负责 semantic role recovery 精度；后续如果 Phase A 语义分类需要更多结构信号，应扩 attrs/schema，不在 Stage 0 回退到名字匹配
 - Phase A 可以开始承接 `SemanticProgram` typed companion IR 本体

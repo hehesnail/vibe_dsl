@@ -47,9 +47,7 @@ bool IsTrackedStateScope(const std::string& scope) {
   return scope == "local" || scope == "local.fragment" || scope == "blackhole.acc";
 }
 
-bool LooksLikeIndexScope(const std::string& scope) { return scope == "blackhole.acc" || scope == "local.fragment"; }
-
-class LocalStateCollector : public tir::StmtExprVisitor {
+class LocalBufferCollector : public tir::StmtExprVisitor {
  public:
   void VisitStmt_(const tir::BlockNode* op) final {
     for (const tir::Buffer& buffer : op->alloc_buffers) {
@@ -64,17 +62,22 @@ class LocalStateCollector : public tir::StmtExprVisitor {
       const auto& entry = entries_.at(name);
       Map<String, Any> state;
       state.Set("name", String(name));
-      state.Set("role", String(entry.role));
+      state.Set("role", String("transient"));
       state.Set("scope", String(entry.scope));
       states.push_back(state);
     }
     return states;
   }
 
+  bool HasIntegerDType(const std::string& name) const {
+    auto it = entries_.find(name);
+    return it != entries_.end() && it->second.is_integer;
+  }
+
  private:
   struct StateEntry {
-    std::string role;
     std::string scope;
+    bool is_integer{false};
   };
 
   void Register(const tir::Buffer& buffer) {
@@ -86,7 +89,7 @@ class LocalStateCollector : public tir::StmtExprVisitor {
     if (entries_.count(name)) {
       return;
     }
-    entries_.emplace(name, StateEntry{"compute_state", scope});
+    entries_.emplace(name, StateEntry{scope, buffer->dtype.is_int() || buffer->dtype.is_uint()});
     order_.push_back(name);
   }
 
@@ -135,6 +138,9 @@ tir::transform::Pass AnalyzeSemanticStructure() {
       PushStringUnique(&domain_traits, &seen_traits, "pipeline");
     }
 
+    LocalBufferCollector buffer_collector;
+    buffer_collector(func->body);
+
     Array<Any> states;
     std::unordered_map<std::string, int> state_index;
     std::unordered_set<std::string> reduction_targets;
@@ -169,11 +175,12 @@ tir::transform::Pass AnalyzeSemanticStructure() {
         for (const Any& buffer_any : tvm::Downcast<Array<Any>>(region["fragment_buffers"])) {
           auto buffer = tvm::Downcast<Map<String, Any>>(buffer_any);
           const std::string name = buffer["name"].cast<String>();
-          const std::string scope = buffer["scope"].cast<String>();
-          register_state(name, "transient",
-                         buffer["scope"].cast<String>());
-          if (LooksLikeIndexScope(scope) && (name.find("idx") != std::string::npos ||
-                                             name.find("index") != std::string::npos)) {
+          register_state(name, "transient", buffer["scope"].cast<String>());
+          bool is_integer = buffer_collector.HasIntegerDType(name);
+          if (auto it = buffer.find("is_integer"); it != buffer.end()) {
+            is_integer = static_cast<bool>(tvm::Downcast<Integer>((*it).second)->value);
+          }
+          if (is_integer) {
             integer_states.insert(name);
           }
         }
@@ -206,7 +213,7 @@ tir::transform::Pass AnalyzeSemanticStructure() {
           auto reduction = tvm::Downcast<Map<String, Any>>(reduction_any);
           const std::string target = reduction["target"].cast<String>();
           reduction_targets.insert(target);
-          if (target.find("idx") != std::string::npos || target.find("index") != std::string::npos) {
+          if (buffer_collector.HasIntegerDType(target)) {
             integer_states.insert(target);
           }
           const std::string role = integer_states.count(target)
@@ -230,9 +237,7 @@ tir::transform::Pass AnalyzeSemanticStructure() {
         }
       }
     } else {
-      LocalStateCollector collector;
-      collector(func->body);
-      states = collector.Encode();
+      states = buffer_collector.Encode();
     }
 
     Array<Any> updates;

@@ -34,6 +34,10 @@
   - `UpdateLaw.kind == select / recurrence`
   - typed `SemanticSupplement`
   - workload-agnostic semantic state roles
+- 但 Phase A 当前还存在一个已确认的精度收口项：
+  - semantic recovery 不能依赖名字匹配
+  - 当前已经开始把这类恢复改成基于 typed attrs / IR 结构
+  - `index_state` 的最小稳定信号现已通过 `fragment_buffers[*].is_integer` 从上游 analysis 显式传递
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组
@@ -46,8 +50,8 @@
 ## 下一步
 
 1. 执行 [stage4_phase_a_semantic_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_a_semantic_ir.md)
-   - Phase A 当前已经完成 A1 + A2
-   - semantic root cause 现已在 typed semantic object 上显式表达
+   - Phase A 当前已完成 A1 + A2 的 schema 落地
+   - 下一步继续收紧 semantic recovery precision，去掉剩余 heuristic residue
 2. 执行 [stage4_phase_b_spatial_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_b_spatial_ir.md)
    - 一等化 `ProgramPhase / Task / Channel / Layout / WorkPartition`
 3. 执行 [stage4_phase_c_tt_target_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_c_tt_target_ir.md)
@@ -101,11 +105,13 @@
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'device_program_registry or semantic_seeds or hard_freeze' -q`
   - `3 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
-  - `10 passed`
+  - `11 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names' -q`
+  - `1 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'copy or gemm or flash_attention' -q`
   - `4 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'topk or selection or recurrence' -q`
-  - coverage 已包含在全量 `10 passed` 中
+  - `4 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `40 passed, 10 skipped, 1 xfailed`
 - `source scripts/setup_tt_sim.sh && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
