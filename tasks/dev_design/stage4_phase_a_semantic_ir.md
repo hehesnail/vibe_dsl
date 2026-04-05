@@ -188,6 +188,45 @@ AnalyzeBlackholeWorkDecomposition
 
 ### 4.1 这个例子本身在算什么
 
+先说业务位置：这个 `topk` 在 LLM 里最典型的用途是 **MoE routing**，不是生成阶段常说的
+`top-k sampling`。
+
+在这个例子里：
+
+- `logits`
+  - shape 是 `[M, N]`
+  - 表示 `M` 个 token 对 `N` 个 candidate expert 的 router 分数
+- `topk_gates`
+  - shape 是 `[M, topk]`
+  - 表示每个 token 最终选中的前 `k` 个 expert 分数
+- `topk_indices`
+  - shape 是 `[M, topk]`
+  - 表示每个 token 最终选中的前 `k` 个 expert 编号
+
+把它放回完整的 MoE LLM 流程里，可以理解成：
+
+1. router / gate 网络先算出每个 token 对每个 expert 的分数，也就是这里的 `logits`
+2. 这个 `topk` kernel 为每个 token 选出前 `k` 个 expert
+3. 后面的 routed dispatch / grouped dispatch 会按 `topk_indices` 把 token 发到对应 expert
+4. combine / weighted merge 会继续消费 `topk_gates`
+
+所以这个例子的业务含义不是“把一堆数排个序”这么简单，而是：
+
+- 决定 token 去哪些 expert
+- 决定每个 expert 的路由权重
+
+这也是为什么它特别适合拿来解释 `Phase A`。从语义角度看，它天然包含：
+
+- selection / indexing family
+  - 从一整行 candidate 里选出少数目标 expert
+- companion index flow
+  - 选中的 value 和选中的 expert id 必须成对流动
+- carried state
+  - 选中过的位置会被 mask 掉，再进入下一轮 `k+1`
+
+也就是说，这个例子不是随便挑的一个小 kernel，而是 LLM 里很典型的
+`selection -> routing` 前置步骤，正好能把 `Phase A` 想冻结的 algorithmic truth 讲清楚。
+
 在进入 IR 之前，先看这个例子在 DSL 里到底写了什么。`tilelang_repo/examples/topk/example_topk.py`
 里的核心 kernel 是：
 
