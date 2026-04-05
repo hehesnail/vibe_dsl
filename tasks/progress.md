@@ -88,6 +88,14 @@
       `preserve / typed_rebind / invalidate` 的结构必要性
     - 明确了 `Phase A -> Phase B` 的关系是
       `refinement by organization`，而不是再做一次 semantic recovery
+  - `Phase A` 文档现已再往前补成 theorem/obligation checklist：
+    - 固定了 `Evidence Domain / Abstract Domain / alpha / refinement checker`
+    - 列出了 `Lift Soundness / Graph Soundness / Contract Preservation /
+      Typed Rebind Preservation / Invalidation Safety / Phase A->B Refinement /
+      Rejection Discipline`
+    - 把下一步最值钱的 research deliverable 收敛为：
+      formal semantics note、obligation matrix、`Phase B` refinement validator、
+      small mechanized core
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组

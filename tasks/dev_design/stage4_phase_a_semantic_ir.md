@@ -1510,3 +1510,245 @@ algorithmic state、compute scratch 和 target-local resource intent。
 - `Phase B` 只能组织这些已冻结的 semantic facts，不能重新发明或修正它们
 
 这就是本仓库里 `Phase A` 最自然、也最有价值的理论化方向。
+
+## Task 9: Theorem and Obligation Checklist for Phase A
+
+如果要把上面的 repo-driven 定义继续收成更正式的研究说明，最合适的下一层不是直接写
+proof assistant 代码，而是先把 theorem、precondition、proof obligation 和可执行检查点
+写成固定 checklist。
+
+这一节的目标是把当前 `Phase A` 从：
+
+- “理论方向已经讲清”
+
+推进到：
+
+- “已经知道下一步具体要证明什么，以及哪些现有 pass/validator 在承接这些命题”
+
+### Core Mathematical Objects
+
+对本仓库，`Phase A` 至少需要固定下面 4 类对象：
+
+1. **Canonical Evidence Domain `E`**
+   - 由 `tl.semantic_witnesses`、selected fragment attrs、semantic seed、hard-freeze precondition
+     组成
+2. **Abstract Semantic Domain `A`**
+   - 由 `SemanticProgram` core 与 state/effect graph 组成
+3. **Abstraction Function `alpha : E -> A`**
+   - 由 `AnalyzeSemanticStructure + LiftStatefulSemanticIR` 实现
+4. **Refinement Checker `R(e, a)`**
+   - 由 `ValidateSemanticRefinement` 的 obligation family 近似实现
+
+在当前仓库语境里，不必强求一开始就把 `gamma` 写成完整集合语义；更现实的落点是：
+
+- 先写出 `R(e, alpha(e))`
+- 让 validator 与 theorem checklist 对齐
+
+### Theorem T1: Evidence Well-Formedness
+
+**命题**
+
+- 进入 `LiftStatefulSemanticIR` 的 canonical evidence 必须满足 vocabulary closure、payload closure、
+  anchor closure 和 canonicalization-point precondition。
+
+**为什么它重要**
+
+- 如果 `E` 自身不封闭，后续所有 abstraction theorem 都会失去对象边界。
+
+**当前对应实现**
+
+- `semantic_vocab`
+- `semantic_witness_decoder`
+- `semantic_witness_payloads`
+
+**还缺什么**
+
+- 把“哪些 evidence source 算 canonical”写成更正式的 precondition，而不是只在 pass 顺序里隐含
+
+### Theorem T2: Lift Soundness
+
+**命题**
+
+- 对任意满足 precondition 的 evidence `e`，若 `a = alpha(e)`，则 `a` 中的
+  `State.role / UpdateLaw.kind / source_set / companion / carried_from / loop_carried`
+  不会与 `e` 矛盾。
+
+**当前仓库版本的可接受表述**
+
+- `ValidateSemanticRefinement(alpha(e))` 通过时，`alpha(e)` 是 `e` 的 sound abstraction
+
+**为什么它重要**
+
+- 这是 `Phase A` 能否被称为 semantic layer 的最低门槛。
+
+**当前对应实现**
+
+- `LiftStatefulSemanticIR`
+- `ValidateSemanticRefinement`
+
+**还缺什么**
+
+- 把“sound abstraction”的语义对象写成正式定义，而不是只用 validator 行为去代替定义
+
+### Theorem T3: Graph Soundness
+
+**命题**
+
+- `StateVersion / StateDef / StateUse / StateJoin` 必须是 `SemanticProgram` 中
+  state/update facts 的一致 normalization，而不是额外发明的新真相。
+
+**更具体地说**
+
+- graph 不能引入 core/witness 中不存在的 stateful fact
+- graph 必须为 carried/order/source/companion facts 提供一致的 normalization skeleton
+- target-less update 不应被伪造为 stateful version producer
+
+**为什么它重要**
+
+- 如果 graph 自己会发明语义，那它就不是 normalization layer，而成了第二 semantic channel。
+
+**当前对应实现**
+
+- `semantic_state_effect_graph`
+- `ValidateStatefulSemanticIR`
+- `ValidateSemanticRefinement`
+
+**还缺什么**
+
+- 一份 graph-as-normalization 的正式语义说明
+
+### Theorem T4: Contract Preservation
+
+**命题**
+
+- audited-safe `preserve` pass family 不改变 `Phase A` 抽象语义。
+
+**当前仓库版本的实际含义**
+
+- body hash、witness、core、graph 都保持一致
+- 不允许 silent drift
+
+**为什么它重要**
+
+- 没有这个 theorem，semantic freeze 只是“建议”，不是 contract。
+
+**当前对应实现**
+
+- `tl.semantic_hard_freeze`
+- `ValidateSemanticRefinement`
+
+**还缺什么**
+
+- audited-safe preserve pass family 的显式白名单与逐 pass obligation
+
+### Theorem T5: Typed Rebind Preservation
+
+**命题**
+
+- 对允许的 rebind scope，只要 remap/trace/pre-post hash/graph refresh 满足 contract，
+  rebind 前后的抽象语义应视为等价。
+
+**为什么它重要**
+
+- 否则 `typed_rebind` 只是“比较安全的重写器”，而不是有语义保证的 contract mode。
+
+**当前对应实现**
+
+- `TypedRebindBlackholeCompanionPrograms`
+- `semantic_rebind`
+- `ValidateSemanticRefinement`
+
+**还缺什么**
+
+- 把“语义等价”具体化成 state/update/law/graph 级别的 preservation relation
+- 给不同 `rebind_scope` 写出更细的 obligation 表
+
+### Theorem T6: Invalidation Safety
+
+**命题**
+
+- 当 preserve/rebind obligation 无法被证明时，整体 invalidation 是 sound 的 fail-closed 行为。
+
+**为什么它重要**
+
+- 这保证编译器在不能维护 semantic truth 时，至少不会继续传播 stale truth。
+
+**当前对应实现**
+
+- `InvalidateBlackholeCompanionPrograms`
+
+**还缺什么**
+
+- 更明确地区分“precision loss”与“soundness risk”，避免把所有困难都粗暴归为 invalidate
+
+### Theorem T7: Phase A to Phase B Refinement
+
+**命题**
+
+- `Phase B` 生成的 `SpatialProgram` 必须 refinement-preserve `Phase A` 已冻结的 algorithmic truth。
+
+**当前仓库里的正确解释**
+
+- `Phase B` 只能组织 semantic facts
+- 不能重命名事实的意义
+- 不能引入与 `Phase A` 矛盾的新 algorithmic truth
+
+**为什么它重要**
+
+- 否则 `Phase A` 的 formalization 只是局部漂亮，到了 `Phase B` 仍可能重新混层。
+
+**当前对应实现**
+
+- 还没有代码实现；这是 `Phase B` 最值得最早补的 validator 方向
+
+**还缺什么**
+
+- `SpatialProgram` 的 formal object model
+- `SemanticProgram -> SpatialProgram` 的 executable refinement checker
+
+### Theorem T8: Rejection Discipline
+
+**命题**
+
+- 对不属于 canonical evidence domain，或不能 soundly 归约到 current semantic core 的 workload/evidence，
+  compiler 必须 reject / invalidate / defer，而不是猜。
+
+**为什么它重要**
+
+- 没有 rejection discipline，`Phase A` 最终一定会重新滑回 heuristic recovery。
+
+**当前对应实现**
+
+- 部分体现在 validator / invalidate contract 中
+
+**还缺什么**
+
+- 一份明确的 “reject rather than guess” 入口清单
+- 把 rejection 分成：
+  - evidence 不足
+  - core 不足
+  - 属于 Phase B/C 的 truth
+
+### Research Deliverables Worth Pursuing Next
+
+如果真要把 `Phase A` 继续往 research artifact 推，最值得追加的 deliverable 是：
+
+1. **Formal semantics note**
+   - 写清 `E / A / alpha / refinement relation`
+2. **Obligation matrix**
+   - 每个 theorem 对应哪些 pass、哪些 validator、哪些 fail-closed path
+3. **Phase B refinement validator**
+   - 先做 executable version，不急着 mechanize
+4. **Small mechanized core**
+   - 只 mechanize witness/core/validator 的最小闭集，而不是整个 compiler
+
+### Minimal “Paper Honest” Claim
+
+如果今天就必须对外做一个学术上诚实的表述，最合理的版本应该是：
+
+- 我们没有证明一个万能语义恢复器
+- 我们定义并实现了一个针对 canonical evidence domain 的 bounded semantic abstraction layer
+- 它带有 typed witness、normalized state/effect graph、以及可执行的 refinement contract
+- 它为后续 `SpatialProgram` refinement 提供了冻结的 algorithmic truth boundary
+
+这个表述既不夸大，也不会低估当前设计真正已经达到的高度。
