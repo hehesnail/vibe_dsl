@@ -327,6 +327,41 @@ def test_chunk_recurrence_semantic_program_lifts_recurrence_updates():
     )
 
 
+def test_chunk_recurrence_edges_are_recovered_from_compute_pattern():
+    mod = _prepare_blackhole_phase_a_module(
+        chunk_delta_h_example.tilelang_chunk_gated_delta_rule_fwd_h.jit_impl.get_tir(
+            B=1,
+            S=64,
+            H=4,
+            DK=32,
+            DV=32,
+            input_dtype=T.float16,
+            output_dtype=T.float16,
+            accum_dtype=T.float32,
+            gate_dtype=T.float16,
+            state_dtype=T.float32,
+            chunk_size=32,
+            use_g=True,
+            use_initial_state=True,
+            store_final_state=True,
+            save_new_value=True,
+            block_DK=32,
+            block_DV=32,
+            threads=128,
+            num_stages=1,
+        )
+    )
+
+    program = mod["main"].attrs["tl.semantic_program"]
+    recurrence_bindings = [
+        {str(binding.kind): str(binding.value_repr) for binding in update.bindings}
+        for update in program.updates
+        if str(update.law.kind) == "recurrence"
+    ]
+
+    assert any("recurrence_source_state" in bindings for bindings in recurrence_bindings)
+
+
 def test_flash_attention_semantic_program_separates_algorithmic_state_from_transient_scratch():
     mod = _prepare_blackhole_phase_a_module(
         _lower_flash_attention_example(

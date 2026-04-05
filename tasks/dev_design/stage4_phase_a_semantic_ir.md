@@ -220,6 +220,12 @@ Implemented note:
   - `target -> source_states`
   - `LiftStatefulSemanticIR` 优先把这份 typed 关系写进 `UpdateLaw.source_states`
   - `select / recurrence / reduce` 不再默认把 `target_state` 自己回填成唯一 source
+- `AnalyzeBlackholeFragmentRegions` 现在也会显式导出 `recurrence_edges`：
+  - `target`
+  - `source_states`
+  这份 carried-update edge 当前会被 `AnalyzeSemanticStructure` 写进对应
+  `recurrence` update 的 typed binding（当前为 `recurrence_source_state`），
+  避免 recurrence 继续只剩“carried role + source_states 列表”而没有显式 edge 事实
 - `recurrence` 当前也不再依赖 `gemm + loop_carried_state` 的组合 heuristic；
   A2 当前至少已收正到直接基于 loop-carried 结构恢复 recurrence update
 - `flash-attn` 当前已在 semantic layer 和 pipeline gate 上稳定看到：
@@ -231,12 +237,14 @@ Implemented note:
   - 但 semantic recovery 精度仍在继续收紧，尤其是 `selection_state` 这类较粗角色的结构化区分还未完成
 - 当前验证：
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -q`
-    - `11 passed`
+    - `13 passed`
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names' -q`
     - `1 passed`
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names or chunk_recurrence_semantic_program_lifts_recurrence_updates' -q`
     - `2 passed`
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'selection_pairing_is_recovered_from_compute_pattern' -q`
+    - `1 passed`
+  - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'chunk_recurrence_edges_are_recovered_from_compute_pattern' -q`
     - `1 passed`
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'topk or selection or recurrence' -q`
     - `4 passed`（含新的 no-name-hint regression）

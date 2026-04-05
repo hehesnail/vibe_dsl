@@ -46,6 +46,10 @@
     `select` update bindings（`paired_value_state`），不再只留下孤立的
     `selection_state / index_state`
   - `recurrence` 当前已改成直接基于 loop-carried 结构恢复，不再依赖 `gemm` 命中
+  - `recurrence` 的 carried-update edge 也开始前移：
+    `fragment_regions[*].recurrence_edges`
+    当前已能把 carried target 的 typed source edge 带到 `recurrence` update
+    bindings（`recurrence_source_state`），不再只留下 late-assembled recurrence update
   - `UpdateLaw.source_states` 也开始从上游 typed relation 恢复：
     `fragment_regions[*].update_sources`
     当前已能显式承接 `select / recurrence / reduce` 的 source-state 关系，
@@ -112,6 +116,7 @@
   - `flash-attn / topk / chunk recurrence` 的 workload-agnostic semantic gate
   - `fragment_regions[*].selection_targets`
   - `fragment_regions[*].selection_pairs`
+  - `fragment_regions[*].recurrence_edges`
   - `fragment_regions[*].update_sources`
 - TT-Sim 当前正式入口是顶层 `scripts/setup_tt_sim.sh`，并且必须和后续测试命令在同一个 shell 中执行
 
@@ -120,12 +125,14 @@
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'device_program_registry or semantic_seeds or hard_freeze' -q`
   - `3 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
-  - `11 passed`
+  - `13 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names' -q`
   - `1 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names or chunk_recurrence_semantic_program_lifts_recurrence_updates' -q`
   - `2 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'selection_pairing_is_recovered_from_compute_pattern' -q`
+  - `1 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'chunk_recurrence_edges_are_recovered_from_compute_pattern' -q`
   - `1 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'copy or gemm or flash_attention' -q`
   - `4 passed`

@@ -235,6 +235,23 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     }
     region.Set("loop_carried_state", loop_carried_state);
 
+    Array<Any> recurrence_edges;
+    for (const auto& target : loop_carried_order_) {
+      auto it = update_source_order_.find(target);
+      if (it == update_source_order_.end() || it->second.empty()) {
+        continue;
+      }
+      Map<String, Any> entry;
+      entry.Set("target", String(target));
+      Array<Any> sources;
+      for (const auto& source : it->second) {
+        sources.push_back(String(source));
+      }
+      entry.Set("source_states", sources);
+      recurrence_edges.push_back(entry);
+    }
+    region.Set("recurrence_edges", recurrence_edges);
+
     return region;
   }
 

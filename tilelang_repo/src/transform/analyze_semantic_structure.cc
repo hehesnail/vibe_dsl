@@ -149,6 +149,7 @@ tir::transform::Pass AnalyzeSemanticStructure() {
     std::unordered_set<std::string> selection_targets;
     std::unordered_map<std::string, Array<Any>> update_sources_by_target;
     std::unordered_map<std::string, std::string> paired_value_state_by_selection_target;
+    std::unordered_map<std::string, Array<Any>> recurrence_edges_by_target;
     auto register_state = [&states, &state_index](const std::string& name, const std::string& role,
                                                   const std::string& scope) {
       auto it = state_index.find(name);
@@ -207,6 +208,13 @@ tir::transform::Pass AnalyzeSemanticStructure() {
             auto pair_map = tvm::Downcast<Map<String, Any>>(pair_any);
             paired_value_state_by_selection_target[pair_map["companion_target"].cast<String>()] =
                 pair_map["value_target"].cast<String>();
+          }
+        }
+        if (region.count("recurrence_edges")) {
+          for (const Any& edge_any : tvm::Downcast<Array<Any>>(region["recurrence_edges"])) {
+            auto edge_map = tvm::Downcast<Map<String, Any>>(edge_any);
+            recurrence_edges_by_target[edge_map["target"].cast<String>()] =
+                tvm::Downcast<Array<Any>>(edge_map["source_states"]);
           }
         }
         for (const Any& reduction_any : tvm::Downcast<Array<Any>>(region["row_reductions"])) {
@@ -290,8 +298,20 @@ tir::transform::Pass AnalyzeSemanticStructure() {
             entry.Set("kind", String("recurrence"));
             entry.Set("target_state", String(state_name));
             entry.Set("traits", Array<Any>{String("carried"), String("staged")});
-            if (auto it = update_sources_by_target.find(state_name);
-                it != update_sources_by_target.end()) {
+            if (auto it = recurrence_edges_by_target.find(state_name);
+                it != recurrence_edges_by_target.end()) {
+              entry.Set("source_states", it->second);
+              Array<Any> bindings;
+              for (const Any& source_any : it->second) {
+                Map<String, Any> binding;
+                binding.Set("kind", String("recurrence_source_state"));
+                binding.Set("symbol", String("state"));
+                binding.Set("value_repr", tvm::Downcast<String>(source_any));
+                bindings.push_back(binding);
+              }
+              entry.Set("bindings", bindings);
+            } else if (auto it = update_sources_by_target.find(state_name);
+                       it != update_sources_by_target.end()) {
               entry.Set("source_states", it->second);
             }
             updates.push_back(entry);
