@@ -115,6 +115,24 @@ Implemented note:
 - Modify: `tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py`
 - Modify: `tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
 
+Design note:
+
+- A2 继续遵守“语义层只保留抽象 role / trait，不允许 workload-specific 名字进入协议”的总原则
+- `flash-attn` / `topk` / `chunk recurrence` 只是 validation family，不是 schema family
+- A2 的 state role 应保持 small-closed、非 workload-specific；当前扩面目标：
+  - `carry`
+  - `reduction_accumulator`
+  - `selection_state`
+  - `index_state`
+  - `transient`
+- A2 的 law 扩面目标：
+  - 在 A1 的 `map / reduce` 之外，补 `select / recurrence`
+- `SemanticSupplement` 只允许承载 typed semantic recovery 缺口，不能退化成 workload noun bag
+- 对 `flash-attn`，A2 要求语义层能区分：
+  - algorithmic carry / reduction-update state
+  - transient compute scratch / matmul destination hint
+  但这种区分必须通过抽象 role/trait 表达，不能把 `scores_max / logsum / acc_s_cast` 等具体命名写成长期协议
+
 - [ ] **Step 1: Expand semantic schema beyond A1**
 
 Required additions:
@@ -136,7 +154,10 @@ This is the first stage allowed to directly attack the root cause behind the cur
 
 - [ ] **Step 3: Add one non-attention semantic gate**
 
-Recommended first gate: `topk`
+Recommended gates for A2:
+
+1. `topk`
+2. chunk recurrence
 
 Run:
 
@@ -147,8 +168,10 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attent
 
 Expected:
 
-- 至少一个 non-attention case 稳定 lift 出正确的 `UpdateLaw.kind`
+- `topk` 稳定 lift 出 `UpdateLaw.kind == select`
+- chunk recurrence 稳定 lift 出 `UpdateLaw.kind == recurrence`
 - `flash-attn` 的 stats/carry/update 不再依赖 raw TIR 晚期猜测
+- `flash-attn` pipeline 断言能看见 algorithmic state 与 transient scratch 的语义分离
 
 - [ ] **Step 4: Re-run shared zero-regression baseline**
 
