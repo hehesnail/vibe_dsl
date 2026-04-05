@@ -433,3 +433,220 @@ Implemented note:
 
 只有把这四项补齐，`Phase A` 才能从“当前已完成的工程语义层”进一步升级成
 “有界、可验证、可维护的 semantic abstraction layer”。
+
+## Typed Witness Schema
+
+上面的 proof framing 只定义了“evidence 必须闭集化”，但还没有把 witness family 本身写死。
+`Phase A` 若要避免 relation attr 继续膨胀，下一步必须把当前开放 evidence 收成 compiler-internal
+typed witness family。
+
+### Witness Design Goal
+
+witness 不是新的 semantic core；它们是：
+
+- pre-lift canonical evidence 的 typed 载体
+- `AnalyzeSemanticStructure` 的正式输入
+- `ValidateStatefulSemanticIR` / 后续 refinement validator 的核对对象
+
+因此 witness family 必须满足：
+
+1. 小闭集
+2. 每个 witness 都有稳定 target anchor
+3. 每个 witness 都有唯一合法的 core projection
+4. witness 不允许直接表达 spatial / TT target 事实
+
+### Minimal Witness Family
+
+结合当前已落地的 A2 evidence，第一版最小 witness family 建议固定为：
+
+1. **`SelectionTargetWitness`**
+   - target: state anchor
+   - payload:
+     - `selection_axis`
+     - `selection_scope`
+   - legal projection:
+     - `State.role = selection_state`
+     - 必要时补 `AccessMap.traits`
+2. **`SelectionPairWitness`**
+   - target: selection companion / output anchor
+   - payload:
+     - `value_state`
+     - `companion_state`
+     - `source_states`
+   - legal projection:
+     - `Update.bindings(kind = paired_value_state)`
+     - `UpdateLaw.source_states`
+3. **`ArgReduceWitness`**
+   - target: reduction target anchor
+   - payload:
+     - `selector_source`
+     - `companion_flow`
+   - legal projection:
+     - `State.role = index_state`
+4. **`UpdateSourceWitness`**
+   - target: update anchor
+   - payload:
+     - `source_states`
+   - legal projection:
+     - `UpdateLaw.source_states`
+5. **`RecurrenceEdgeWitness`**
+   - target: recurrence update / carried state anchor
+   - payload:
+     - `source_states`
+     - `ordered_dims`
+   - legal projection:
+     - `UpdateLaw.kind = recurrence`
+     - `UpdateLaw.source_states`
+     - `Update.bindings(kind = recurrence_source_state)`
+6. **`StateIdentityWitness`**
+   - target: state anchor
+   - payload:
+     - `identity_kind`
+     - `justification`
+   - legal projection:
+     - `State.role`
+     - 或 typed `SemanticSupplement(state_identity)`
+7. **`SemanticBoundaryWitness`**
+   - target: update / region anchor
+   - payload:
+     - `boundary_kind`
+     - `ordered_requirement`
+   - legal projection:
+     - `SemanticSupplement(semantic_boundary)`
+     - 或 `UpdateLaw` typed trait
+
+### Witness Normal Form
+
+所有 witness 都应统一具备下面的最小公共字段：
+
+- `witness_kind`
+- `target_anchor_id`
+- `payload`
+- `evidence_sources`
+- `canonicalization_point`
+
+其中：
+
+- `target_anchor_id` 必须指向 pre-lift 已稳定存在的结构锚点
+- `evidence_sources` 只记录该 witness 来自哪些 analysis pass / seed channel
+- `canonicalization_point` 用来证明该 witness 绑定在哪个 pass window 上有效
+
+### Witness-to-Core Contract
+
+对每一类 witness，必须明确写死：
+
+1. 它能投影到哪个 core 字段
+2. 哪些字段是 required
+3. 哪些 supplement 是唯一允许的裁决出口
+4. 哪些 witness 组合才合法
+
+当前最关键的几条 contract：
+
+- `SelectionPairWitness` 不能单独存在：
+  - 必须和某个 `select` update 对齐
+- `ArgReduceWitness` 不能直接产出新的 `UpdateLaw.kind`
+  - 它只能帮助裁决 `index_state`
+- `RecurrenceEdgeWitness` 若存在：
+  - 其 target 对应 update 不允许继续保持 `kind = map / reduce / select`
+- `UpdateSourceWitness` 若存在：
+  - 对应 `UpdateLaw.source_states` 不允许再回退成默认 `target_state`
+
+### Current Migration Requirement
+
+这意味着当前 A2 已落地的开放 relation attr：
+
+- `selection_targets`
+- `selection_pairs`
+- `arg_reduce_targets`
+- `update_sources`
+- `recurrence_edges`
+
+长期都不应继续以开放 attrs 形式直接被 semantic lift 消费，而应迁移成 typed witness family。
+
+在 witness cutover 完成之前，这些 attrs 仍可作为 compatibility producer 存在；但要补 deletion gate：
+
+- 一旦 typed witness producer 稳定接管，同名开放 attrs 不再允许承担 semantic 真源入口
+
+## Stronger Refinement Validator
+
+当前 `ValidateStatefulSemanticIR` 仍然只做最小结构检查。要把 `Phase A` 提升到“可验证的抽象层”，
+必须新增一层更强的 refinement validator。
+
+### Validator Goal
+
+refinement validator 不是再做一遍 recovery；它只回答一件事：
+
+- 当前 `SemanticProgram` 是否真是当前 canonical witness set 的合法抽象
+
+因此它检查的不是“有没有猜对 workload”，而是：
+
+- semantic core 是否解释了 witness
+- supplement 是否只补裁决、不补结构
+- pass 之后 companion state 是否仍处在 preserve / rebind / invalidate 合同内
+
+### Required Checks
+
+第一版 refinement validator 至少应覆盖：
+
+1. **Witness Coverage**
+   - 每个 witness 都必须：
+     - 被某个 core 字段消费
+     - 或被显式拒绝并给出 invalidation / unsupported reason
+   - 不允许 orphan witness
+2. **Projection Consistency**
+   - `SelectionPairWitness`
+     - 对应 update 必须是 `select`
+     - 对应 binding 必须存在 `paired_value_state`
+   - `ArgReduceWitness`
+     - 对应 state 必须是 `index_state`
+   - `RecurrenceEdgeWitness`
+     - 对应 update 必须是 `recurrence`
+     - 对应 binding 必须存在 `recurrence_source_state`
+   - `UpdateSourceWitness`
+     - 对应 `UpdateLaw.source_states` 必须与 witness payload 一致
+3. **Supplement Legality**
+   - `SemanticSupplement.kind` 只能来自允许集合
+   - supplement target 必须指向已有 anchor
+   - supplement 不能重述已可由 witness 唯一恢复的结构事实
+4. **Role/Law Compatibility**
+   - `carry` state 不允许只关联纯 `map` update 而无 ordered source witness
+   - `index_state` 不允许由纯 transient fragment state 无 witness 地推导得到
+   - `selection_state` / `index_state` / `reduction_accumulator`
+     的角色组合必须与对应 update family 相容
+5. **Anchor/Biding Integrity**
+   - `Update.bindings` / `SemanticSupplement.target_anchor_id`
+     不能引用缺失 anchor
+   - witness target、update anchor、state anchor 必须在同一 canonicalization epoch 中有效
+6. **Pass-Window Legality**
+   - 若 `tl.semantic_hard_freeze` 之后发生 unsafe mutation 且未 rebind
+     companion program 必须已经失效
+   - 若 companion program 仍存在，则必须证明当前 pass window 属于 preserve 或 typed rebind
+
+### Validator Decomposition
+
+为了避免一个 monolithic validator 重新变成黑盒，建议拆成三层：
+
+1. **`ValidateSemanticWitnesses`**
+   - witness 自身是否 well-formed
+2. **`ValidateStatefulSemanticIR`**
+   - `SemanticProgram` 结构是否合法
+3. **`ValidateSemanticRefinement`**
+   - witness 与 `SemanticProgram` 是否满足 refinement contract
+
+其中：
+
+- 当前已有的 `ValidateStatefulSemanticIR` 可继续保留为最小结构 gate
+- 新的 `ValidateSemanticRefinement` 负责真正的 abstraction soundness 检查
+
+### Exit-Gate Consequence
+
+一旦进入这一步，`Phase A` 的“完成”标准也应相应升级：
+
+- 不再只是 compile regression 全绿
+- 而是：
+  - witness producer 稳定
+  - witness-to-core projection 有固定 contract
+  - refinement validator 能拦住 witness/core mismatch
+
+只有到这一步，`Phase A` 才能真正摆脱“workload 增加时继续补 relation + regression case”的
+被动演化模式。

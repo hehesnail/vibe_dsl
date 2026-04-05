@@ -47,7 +47,9 @@
   - `stage4_phase_a_semantic_ir.md` 当前已补齐 post-A2 formal proof framing：
     - `Phase A` 的弱证明目标
     - canonical evidence / abstract domain / `α` / `γ` 的最小定义
-    - 当前仍缺 typed witness closure、stronger validator、以及 preserve/rebind/invalidate contract
+    - `typed witness family` 的最小闭集设计
+    - `ValidateSemanticRefinement` 的职责与 required checks
+    - 当前仍缺 typed witness closure 的代码 cutover、stronger validator 实现、以及 preserve/rebind/invalidate contract
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组
