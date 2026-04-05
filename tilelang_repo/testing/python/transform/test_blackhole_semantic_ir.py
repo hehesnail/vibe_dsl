@@ -674,3 +674,109 @@ def test_semantic_payload_rejects_malformed_payload_shape():
 
     with pytest.raises(tvm.TVMError):
         normalize_relation_binding({"binding_kind": "not_a_binding_kind"})
+
+
+def test_semantic_program_exposes_state_effect_graph():
+    mod = _prepare_blackhole_phase_a_module(
+        chunk_delta_h_example.tilelang_chunk_gated_delta_rule_fwd_h.jit_impl.get_tir(
+            B=1,
+            S=64,
+            H=4,
+            DK=32,
+            DV=32,
+            input_dtype=T.float16,
+            output_dtype=T.float16,
+            accum_dtype=T.float32,
+            gate_dtype=T.float16,
+            state_dtype=T.float32,
+            chunk_size=32,
+            use_g=True,
+            use_initial_state=True,
+            store_final_state=True,
+            save_new_value=True,
+            block_DK=32,
+            block_DV=32,
+            threads=128,
+            num_stages=1,
+        )
+    )
+
+    program = mod["main"].attrs["tl.semantic_program"]
+    assert len(program.state_versions) > 0
+    assert len(program.state_defs) > 0
+    assert len(program.state_uses) > 0
+    assert len(program.state_joins) > 0
+    assert any(str(join.kind) == "loop_carried" for join in program.state_joins)
+
+
+def test_refinement_validator_rejects_missing_loop_carried_join_for_carry_state():
+    mod = _prepare_blackhole_phase_a_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+
+    program = mod["main"].attrs["tl.semantic_program"]
+    rebuilt_program = tvm.get_global_func("tl.SemanticProgram")(
+        list(program.domains),
+        list(program.states),
+        list(program.updates),
+        list(program.supplements),
+        list(program.seeds),
+        list(program.anchors),
+        list(program.state_versions),
+        list(program.state_defs),
+        list(program.state_uses),
+        [],
+    )
+    main = mod["main"].with_attr("tl.semantic_program", rebuilt_program)
+    mod.update_func(mod.get_global_var("main"), main)
+
+    with pytest.raises(tvm.TVMError):
+        tilelang.transform.ValidateSemanticRefinement()(mod)
+
+
+def test_typed_rebind_contract_allows_safe_body_refresh():
+    mod = _prepare_blackhole_phase_a_refined_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    mod = _append_noop_to_main_body(mod)
+    mod = tilelang.transform.TypedRebindBlackholeCompanionPrograms(
+        {
+            "reason": "unit_test_safe_rebind",
+            "rebind_scope": "body_hash_refresh",
+        }
+    )(mod)
+
+    attrs = mod["main"].attrs
+    freeze = attrs["tl.semantic_hard_freeze"]
+    assert str(freeze["contract_mode"]) == "typed_rebind"
+    assert int(freeze["rebind_epoch"]) >= 1
+    assert str(freeze["rebind_scope"]) == "body_hash_refresh"
+
+    tilelang.transform.ValidateSemanticRefinement()(mod)
+
+
+def test_typed_rebind_requires_trace_metadata():
+    mod = _prepare_blackhole_phase_a_refined_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    mod = _append_noop_to_main_body(mod)
+    main = mod["main"].with_attr(
+        "tl.semantic_hard_freeze",
+        {
+            "state": "lifted_a1",
+            "body_hash": str(tvm.ir.structural_hash(mod["main"].body)),
+            "contract_mode": "typed_rebind",
+            "rebind_epoch": 1,
+        },
+    )
+    mod.update_func(mod.get_global_var("main"), main)
+
+    with pytest.raises(tvm.TVMError):
+        tilelang.transform.ValidateSemanticRefinement()(mod)

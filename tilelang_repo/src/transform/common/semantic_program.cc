@@ -95,10 +95,66 @@ SemanticWitness::SemanticWitness(ffi::String subject_kind, ffi::String subject_a
   data_ = std::move(n);
 }
 
+StateVersion::StateVersion(ffi::String name, ffi::String state_name, ffi::String producer_update,
+                           ffi::String kind, ffi::Array<ffi::String> source_versions,
+                           ffi::Array<TIRAnchor> anchors) {
+  auto n = ffi::make_object<StateVersionNode>();
+  n->name = std::move(name);
+  n->state_name = std::move(state_name);
+  n->producer_update = std::move(producer_update);
+  n->kind = std::move(kind);
+  n->source_versions = std::move(source_versions);
+  n->anchors = std::move(anchors);
+  data_ = std::move(n);
+}
+
+StateDef::StateDef(ffi::String name, ffi::String state_name, ffi::String version_name,
+                   ffi::String producer_update, ffi::String kind,
+                   ffi::Array<TIRAnchor> anchors) {
+  auto n = ffi::make_object<StateDefNode>();
+  n->name = std::move(name);
+  n->state_name = std::move(state_name);
+  n->version_name = std::move(version_name);
+  n->producer_update = std::move(producer_update);
+  n->kind = std::move(kind);
+  n->anchors = std::move(anchors);
+  data_ = std::move(n);
+}
+
+StateUse::StateUse(ffi::String name, ffi::String consumer_update, ffi::String state_name,
+                   ffi::String version_name, ffi::String kind,
+                   ffi::Array<TIRAnchor> anchors) {
+  auto n = ffi::make_object<StateUseNode>();
+  n->name = std::move(name);
+  n->consumer_update = std::move(consumer_update);
+  n->state_name = std::move(state_name);
+  n->version_name = std::move(version_name);
+  n->kind = std::move(kind);
+  n->anchors = std::move(anchors);
+  data_ = std::move(n);
+}
+
+StateJoin::StateJoin(ffi::String name, ffi::String state_name, ffi::String kind,
+                     ffi::Array<ffi::String> input_versions, ffi::String output_version,
+                     ffi::Array<TIRAnchor> anchors) {
+  auto n = ffi::make_object<StateJoinNode>();
+  n->name = std::move(name);
+  n->state_name = std::move(state_name);
+  n->kind = std::move(kind);
+  n->input_versions = std::move(input_versions);
+  n->output_version = std::move(output_version);
+  n->anchors = std::move(anchors);
+  data_ = std::move(n);
+}
+
 SemanticProgram::SemanticProgram(ffi::Array<Domain> domains, ffi::Array<State> states,
                                  ffi::Array<Update> updates,
                                  ffi::Array<SemanticSupplement> supplements,
-                                 ffi::Array<ffi::String> seeds, ffi::Array<TIRAnchor> anchors) {
+                                 ffi::Array<ffi::String> seeds, ffi::Array<TIRAnchor> anchors,
+                                 ffi::Array<StateVersion> state_versions,
+                                 ffi::Array<StateDef> state_defs,
+                                 ffi::Array<StateUse> state_uses,
+                                 ffi::Array<StateJoin> state_joins) {
   auto n = ffi::make_object<SemanticProgramNode>();
   n->domains = std::move(domains);
   n->states = std::move(states);
@@ -106,6 +162,10 @@ SemanticProgram::SemanticProgram(ffi::Array<Domain> domains, ffi::Array<State> s
   n->supplements = std::move(supplements);
   n->seeds = std::move(seeds);
   n->anchors = std::move(anchors);
+  n->state_versions = std::move(state_versions);
+  n->state_defs = std::move(state_defs);
+  n->state_uses = std::move(state_uses);
+  n->state_joins = std::move(state_joins);
   data_ = std::move(n);
 }
 
@@ -119,6 +179,10 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   UpdateNode::RegisterReflection();
   SemanticSupplementNode::RegisterReflection();
   SemanticWitnessNode::RegisterReflection();
+  StateVersionNode::RegisterReflection();
+  StateDefNode::RegisterReflection();
+  StateUseNode::RegisterReflection();
+  StateJoinNode::RegisterReflection();
   SemanticProgramNode::RegisterReflection();
 }
 
@@ -181,14 +245,52 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                                                  std::move(evidence_sources),
                                                  std::move(canonicalization_point));
                         });
+  refl::GlobalDef().def("tl.StateVersion",
+                        [](ffi::String name, ffi::String state_name, ffi::String producer_update,
+                           ffi::String kind, ffi::Array<ffi::String> source_versions,
+                           ffi::Array<TIRAnchor> anchors) {
+                          return StateVersion(std::move(name), std::move(state_name),
+                                              std::move(producer_update), std::move(kind),
+                                              std::move(source_versions), std::move(anchors));
+                        });
+  refl::GlobalDef().def("tl.StateDef",
+                        [](ffi::String name, ffi::String state_name, ffi::String version_name,
+                           ffi::String producer_update, ffi::String kind,
+                           ffi::Array<TIRAnchor> anchors) {
+                          return StateDef(std::move(name), std::move(state_name),
+                                          std::move(version_name), std::move(producer_update),
+                                          std::move(kind), std::move(anchors));
+                        });
+  refl::GlobalDef().def("tl.StateUse",
+                        [](ffi::String name, ffi::String consumer_update, ffi::String state_name,
+                           ffi::String version_name, ffi::String kind,
+                           ffi::Array<TIRAnchor> anchors) {
+                          return StateUse(std::move(name), std::move(consumer_update),
+                                          std::move(state_name), std::move(version_name),
+                                          std::move(kind), std::move(anchors));
+                        });
+  refl::GlobalDef().def("tl.StateJoin",
+                        [](ffi::String name, ffi::String state_name, ffi::String kind,
+                           ffi::Array<ffi::String> input_versions, ffi::String output_version,
+                           ffi::Array<TIRAnchor> anchors) {
+                          return StateJoin(std::move(name), std::move(state_name),
+                                           std::move(kind), std::move(input_versions),
+                                           std::move(output_version), std::move(anchors));
+                        });
   refl::GlobalDef().def("tl.SemanticProgram",
                         [](ffi::Array<Domain> domains, ffi::Array<State> states,
                            ffi::Array<Update> updates,
                            ffi::Array<SemanticSupplement> supplements,
-                           ffi::Array<ffi::String> seeds, ffi::Array<TIRAnchor> anchors) {
+                           ffi::Array<ffi::String> seeds, ffi::Array<TIRAnchor> anchors,
+                           ffi::Array<StateVersion> state_versions,
+                           ffi::Array<StateDef> state_defs,
+                           ffi::Array<StateUse> state_uses,
+                           ffi::Array<StateJoin> state_joins) {
                           return SemanticProgram(std::move(domains), std::move(states),
                                                  std::move(updates), std::move(supplements),
-                                                 std::move(seeds), std::move(anchors));
+                                                 std::move(seeds), std::move(anchors),
+                                                 std::move(state_versions), std::move(state_defs),
+                                                 std::move(state_uses), std::move(state_joins));
                         });
 }
 

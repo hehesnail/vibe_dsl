@@ -61,6 +61,18 @@ bool ContractModeRequiresRebindEpoch(ContractMode mode) {
   return mode == ContractMode::kTypedRebind;
 }
 
+bool ContractModeRequiresPreviousBodyHash(ContractMode mode) {
+  return mode == ContractMode::kTypedRebind;
+}
+
+bool ContractModeRequiresRebindScope(ContractMode mode) {
+  return mode == ContractMode::kTypedRebind;
+}
+
+bool ContractModeRequiresRebindTrace(ContractMode mode) {
+  return mode == ContractMode::kTypedRebind;
+}
+
 }  // namespace semantic
 }  // namespace tl
 }  // namespace tvm

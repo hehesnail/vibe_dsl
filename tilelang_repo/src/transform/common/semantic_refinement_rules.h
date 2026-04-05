@@ -19,6 +19,9 @@ TVM_DLL BindingKind DefaultBindingKindForRelation(WitnessFactAxis axis);
 TVM_DLL bool BindingKindCompatibleWithRelation(WitnessFactAxis axis, BindingKind binding_kind);
 TVM_DLL bool ContractModeRequiresBodyHash(ContractMode mode);
 TVM_DLL bool ContractModeRequiresRebindEpoch(ContractMode mode);
+TVM_DLL bool ContractModeRequiresPreviousBodyHash(ContractMode mode);
+TVM_DLL bool ContractModeRequiresRebindScope(ContractMode mode);
+TVM_DLL bool ContractModeRequiresRebindTrace(ContractMode mode);
 
 }  // namespace semantic
 }  // namespace tl

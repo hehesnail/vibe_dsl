@@ -14,6 +14,7 @@
 
 #include "common/semantic_program.h"
 #include "common/semantic_refinement_rules.h"
+#include "common/semantic_state_effect_graph.h"
 #include "common/semantic_vocab.h"
 #include "common/semantic_witness_decoder.h"
 
@@ -229,7 +230,11 @@ tir::transform::Pass LiftStatefulSemanticIR() {
     }
 
     Array<String> seeds = DowncastStringArray(tvm::Downcast<Array<Any>>(structure["seeds"]));
-    SemanticProgram semantic_program(domains, states, updates, supplements, seeds, anchors);
+    BuiltStateEffectGraph graph = BuildStateEffectGraph(
+        states, updates, maybe_witnesses.value_or(Array<SemanticWitness>{}));
+    SemanticProgram semantic_program(domains, states, updates, supplements, seeds, anchors,
+                                     graph.state_versions, graph.state_defs, graph.state_uses,
+                                     graph.state_joins);
 
     tir::PrimFunc updated = tvm::WithoutAttr(func, attr::kTLCompanionInvalidationReason);
     Map<String, Any> attrs = updated->attrs.defined() ? updated->attrs->dict : Map<String, Any>();

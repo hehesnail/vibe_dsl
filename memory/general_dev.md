@@ -106,6 +106,13 @@
 - 做 TIR matcher 时，不要用 `same_as` 去判断两个“语义上相等的 extent/stride 常量”是否相等。优化前后 IR 很容易生成不同节点实例的 `IntImm(4)` / `IntImm(32)`，这会让像 `i * 4 + vec` 这种明显线性化的模式白白 miss。更稳的写法是直接对整个 affine 关系做 `Analyzer::Simplify` 后判零，例如比较 `expr - (outer * inner_extent + inner)` 是否可化简为 0
 - 对 fragment pointwise 的 residual 剪枝，不要在整棵表达式树里无差别找 `AddNode` / `MulNode`。像 `Cast(acc_s[i * 4 + vec])` 这种合法 residual `cast`，它的索引表达式天然会带 `AddNode`；如果 helper 扫全树，就会把索引算术误判成尚未 lower 的 pointwise `add`。更稳的口径是先看 residual store 的**根表达式类型**，只在根值本身仍是 `Add/Max/Cast/...` 时才把对应 op 继续保留为 blocker
 - 改 C++/链接 `libtilelang.so` 之后，不要再把 `cmake --build` 和 `pytest` 并行跑。pytest 很容易在新 `.so` 链接完成前启动，看到旧实现，进而把问题误判成“修复没生效”。这类验证应该顺序执行：先 build，确认链接完成，再跑 Python 测试
+- 对 `SemanticProgram` 的 internal state/effect graph，不要默认“每个 update 都必须产出 version/def”。像
+  copy pipeline 这类 target-less `map` update，本身没有 semantic state，应当留在 semantic core 的
+  update 集合里，但不要强行进入 state/effect graph；否则会制造 orphan version，并把 validator
+  假设抬得比 schema 还强
+- `loop_carried` graph fact 也不要只靠 `carry role` 或显式 `carried_from` relation 来生成。对
+  `UpdateLaw.kind == recurrence` 的 ordered update，同样要产出 `StateJoin(loop_carried)`；否则
+  synthetic topk / selection recurrence gate 会在 refinement 中被误判为缺失 carried effect
 
 ## TT-Metal / TT-Sim 环境
 

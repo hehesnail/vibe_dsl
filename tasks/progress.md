@@ -67,6 +67,15 @@
       `fact_value`
     - `relation.derives_index_from` 已收成 empty payload，不再保留冗余
       `"kind": "index_derivation"` 协议
+  - 进入 `Phase B` 前要求补齐的 3 个理论层机制现在也已代码落地：
+    - companion lifecycle 现在有 machine-checkable
+      `preserve / typed_rebind / invalidate` contract
+    - `ValidateSemanticRefinement` 现已覆盖 witness coverage、typed rebind legality、
+      graph consistency、以及 source/companion/carried relation 与 graph fact 的一致性
+    - `SemanticProgram` 现已持有 internal state/effect graph：
+      `StateVersion / StateDef / StateUse / StateJoin`
+    - `TypedRebindBlackholeCompanionPrograms` 已作为 audited-safe rebind 入口接入 Python API
+      与 C++ 主线
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组
@@ -130,6 +139,10 @@
   - `fragment_regions[*].arg_reduce_targets`
   - `fragment_regions[*].recurrence_edges`
   - `fragment_regions[*].update_sources`
+  - Phase A closing hardening：
+    - `typed_rebind` contract
+    - stronger `ValidateSemanticRefinement`
+    - internal state/effect graph normalization
 - TT-Sim 当前正式入口是顶层 `scripts/setup_tt_sim.sh`，并且必须和后续测试命令在同一个 shell 中执行
 
 ## 最近验证
@@ -137,7 +150,9 @@
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'device_program_registry or semantic_seeds or hard_freeze' -q`
   - `3 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
-  - `24 passed`
+  - `28 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'state_effect_graph or typed_rebind or missing_loop_carried_join' -q`
+  - `4 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'semantic_vocab_normalizes or semantic_vocab_rejects' -q`
   - `2 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'semantic_payload' -q`

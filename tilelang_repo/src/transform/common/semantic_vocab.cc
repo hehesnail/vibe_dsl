@@ -94,6 +94,37 @@ std::optional<BindingKind> ParseBindingKind(const std::string& value) {
   return std::nullopt;
 }
 
+std::optional<StateVersionKind> ParseStateVersionKind(const std::string& value) {
+  if (value == "initial") return StateVersionKind::kInitial;
+  if (value == "update_result") return StateVersionKind::kUpdateResult;
+  return std::nullopt;
+}
+
+std::optional<StateDefKind> ParseStateDefKind(const std::string& value) {
+  if (value == "initial") return StateDefKind::kInitial;
+  if (value == "update_result") return StateDefKind::kUpdateResult;
+  return std::nullopt;
+}
+
+std::optional<StateUseKind> ParseStateUseKind(const std::string& value) {
+  if (value == "source_state") return StateUseKind::kSourceState;
+  if (value == "companion_state") return StateUseKind::kCompanionState;
+  if (value == "carried_state") return StateUseKind::kCarriedState;
+  return std::nullopt;
+}
+
+std::optional<StateJoinKind> ParseStateJoinKind(const std::string& value) {
+  if (value == "loop_carried") return StateJoinKind::kLoopCarried;
+  if (value == "ordered_update") return StateJoinKind::kOrderedUpdate;
+  return std::nullopt;
+}
+
+std::optional<RebindScope> ParseRebindScope(const std::string& value) {
+  if (value == "body_hash_refresh") return RebindScope::kBodyHashRefresh;
+  if (value == "anchor_remap") return RebindScope::kAnchorRemap;
+  return std::nullopt;
+}
+
 const char* ToString(WitnessSubjectKind kind) {
   switch (kind) {
     case WitnessSubjectKind::kDomain:
@@ -222,6 +253,63 @@ const char* ToString(BindingKind kind) {
       return "recurrence_source_state";
   }
   LOG(FATAL) << "Unknown BindingKind";
+  return "unknown";
+}
+
+const char* ToString(StateVersionKind kind) {
+  switch (kind) {
+    case StateVersionKind::kInitial:
+      return "initial";
+    case StateVersionKind::kUpdateResult:
+      return "update_result";
+  }
+  LOG(FATAL) << "Unknown StateVersionKind";
+  return "unknown";
+}
+
+const char* ToString(StateDefKind kind) {
+  switch (kind) {
+    case StateDefKind::kInitial:
+      return "initial";
+    case StateDefKind::kUpdateResult:
+      return "update_result";
+  }
+  LOG(FATAL) << "Unknown StateDefKind";
+  return "unknown";
+}
+
+const char* ToString(StateUseKind kind) {
+  switch (kind) {
+    case StateUseKind::kSourceState:
+      return "source_state";
+    case StateUseKind::kCompanionState:
+      return "companion_state";
+    case StateUseKind::kCarriedState:
+      return "carried_state";
+  }
+  LOG(FATAL) << "Unknown StateUseKind";
+  return "unknown";
+}
+
+const char* ToString(StateJoinKind kind) {
+  switch (kind) {
+    case StateJoinKind::kLoopCarried:
+      return "loop_carried";
+    case StateJoinKind::kOrderedUpdate:
+      return "ordered_update";
+  }
+  LOG(FATAL) << "Unknown StateJoinKind";
+  return "unknown";
+}
+
+const char* ToString(RebindScope scope) {
+  switch (scope) {
+    case RebindScope::kBodyHashRefresh:
+      return "body_hash_refresh";
+    case RebindScope::kAnchorRemap:
+      return "anchor_remap";
+  }
+  LOG(FATAL) << "Unknown RebindScope";
   return "unknown";
 }
 

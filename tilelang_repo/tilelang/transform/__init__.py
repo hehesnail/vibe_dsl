@@ -647,6 +647,11 @@ def InvalidateBlackholeCompanionPrograms(reason: str):
     return tvm.ffi.get_global_func("tl.transform.InvalidateBlackholeCompanionPrograms")(reason)
 
 
+def TypedRebindBlackholeCompanionPrograms(plan: dict):
+    """Apply a typed rebind contract to live Blackhole semantic companion attrs."""
+    return tvm.ffi.get_global_func("tl.transform.TypedRebindBlackholeCompanionPrograms")(plan)
+
+
 def SplitBlackholeKernel():
     """Annotate statements with blackhole.segment_kind for 3-kernel GEMM split.
 

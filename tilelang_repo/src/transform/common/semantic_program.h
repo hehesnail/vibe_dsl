@@ -257,6 +257,129 @@ class SemanticWitness : public ObjectRef {
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SemanticWitness, ObjectRef, SemanticWitnessNode);
 };
 
+class StateVersionNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String state_name;
+  ffi::String producer_update;
+  ffi::String kind;
+  ffi::Array<ffi::String> source_versions;
+  ffi::Array<TIRAnchor> anchors;
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<StateVersionNode>()
+        .def_ro("name", &StateVersionNode::name)
+        .def_ro("state_name", &StateVersionNode::state_name)
+        .def_ro("producer_update", &StateVersionNode::producer_update)
+        .def_ro("kind", &StateVersionNode::kind)
+        .def_ro("source_versions", &StateVersionNode::source_versions)
+        .def_ro("anchors", &StateVersionNode::anchors);
+  }
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.StateVersion", StateVersionNode, Object);
+};
+
+class StateVersion : public ObjectRef {
+ public:
+  TVM_DLL StateVersion(ffi::String name, ffi::String state_name, ffi::String producer_update,
+                       ffi::String kind, ffi::Array<ffi::String> source_versions,
+                       ffi::Array<TIRAnchor> anchors);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(StateVersion, ObjectRef, StateVersionNode);
+};
+
+class StateDefNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String state_name;
+  ffi::String version_name;
+  ffi::String producer_update;
+  ffi::String kind;
+  ffi::Array<TIRAnchor> anchors;
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<StateDefNode>()
+        .def_ro("name", &StateDefNode::name)
+        .def_ro("state_name", &StateDefNode::state_name)
+        .def_ro("version_name", &StateDefNode::version_name)
+        .def_ro("producer_update", &StateDefNode::producer_update)
+        .def_ro("kind", &StateDefNode::kind)
+        .def_ro("anchors", &StateDefNode::anchors);
+  }
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.StateDef", StateDefNode, Object);
+};
+
+class StateDef : public ObjectRef {
+ public:
+  TVM_DLL StateDef(ffi::String name, ffi::String state_name, ffi::String version_name,
+                   ffi::String producer_update, ffi::String kind,
+                   ffi::Array<TIRAnchor> anchors);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(StateDef, ObjectRef, StateDefNode);
+};
+
+class StateUseNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String consumer_update;
+  ffi::String state_name;
+  ffi::String version_name;
+  ffi::String kind;
+  ffi::Array<TIRAnchor> anchors;
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<StateUseNode>()
+        .def_ro("name", &StateUseNode::name)
+        .def_ro("consumer_update", &StateUseNode::consumer_update)
+        .def_ro("state_name", &StateUseNode::state_name)
+        .def_ro("version_name", &StateUseNode::version_name)
+        .def_ro("kind", &StateUseNode::kind)
+        .def_ro("anchors", &StateUseNode::anchors);
+  }
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.StateUse", StateUseNode, Object);
+};
+
+class StateUse : public ObjectRef {
+ public:
+  TVM_DLL StateUse(ffi::String name, ffi::String consumer_update, ffi::String state_name,
+                   ffi::String version_name, ffi::String kind, ffi::Array<TIRAnchor> anchors);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(StateUse, ObjectRef, StateUseNode);
+};
+
+class StateJoinNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String state_name;
+  ffi::String kind;
+  ffi::Array<ffi::String> input_versions;
+  ffi::String output_version;
+  ffi::Array<TIRAnchor> anchors;
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<StateJoinNode>()
+        .def_ro("name", &StateJoinNode::name)
+        .def_ro("state_name", &StateJoinNode::state_name)
+        .def_ro("kind", &StateJoinNode::kind)
+        .def_ro("input_versions", &StateJoinNode::input_versions)
+        .def_ro("output_version", &StateJoinNode::output_version)
+        .def_ro("anchors", &StateJoinNode::anchors);
+  }
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.StateJoin", StateJoinNode, Object);
+};
+
+class StateJoin : public ObjectRef {
+ public:
+  TVM_DLL StateJoin(ffi::String name, ffi::String state_name, ffi::String kind,
+                    ffi::Array<ffi::String> input_versions, ffi::String output_version,
+                    ffi::Array<TIRAnchor> anchors);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(StateJoin, ObjectRef, StateJoinNode);
+};
+
 class SemanticProgramNode : public Object {
  public:
   ffi::Array<Domain> domains;
@@ -265,6 +388,10 @@ class SemanticProgramNode : public Object {
   ffi::Array<SemanticSupplement> supplements;
   ffi::Array<ffi::String> seeds;
   ffi::Array<TIRAnchor> anchors;
+  ffi::Array<StateVersion> state_versions;
+  ffi::Array<StateDef> state_defs;
+  ffi::Array<StateUse> state_uses;
+  ffi::Array<StateJoin> state_joins;
 
   static void RegisterReflection() {
     namespace refl = tvm::ffi::reflection;
@@ -274,7 +401,11 @@ class SemanticProgramNode : public Object {
         .def_ro("updates", &SemanticProgramNode::updates)
         .def_ro("supplements", &SemanticProgramNode::supplements)
         .def_ro("seeds", &SemanticProgramNode::seeds)
-        .def_ro("anchors", &SemanticProgramNode::anchors);
+        .def_ro("anchors", &SemanticProgramNode::anchors)
+        .def_ro("state_versions", &SemanticProgramNode::state_versions)
+        .def_ro("state_defs", &SemanticProgramNode::state_defs)
+        .def_ro("state_uses", &SemanticProgramNode::state_uses)
+        .def_ro("state_joins", &SemanticProgramNode::state_joins);
   }
 
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.SemanticProgram", SemanticProgramNode, Object);
@@ -285,7 +416,11 @@ class SemanticProgram : public ObjectRef {
   TVM_DLL SemanticProgram(ffi::Array<Domain> domains, ffi::Array<State> states,
                           ffi::Array<Update> updates,
                           ffi::Array<SemanticSupplement> supplements,
-                          ffi::Array<ffi::String> seeds, ffi::Array<TIRAnchor> anchors);
+                          ffi::Array<ffi::String> seeds, ffi::Array<TIRAnchor> anchors,
+                          ffi::Array<StateVersion> state_versions,
+                          ffi::Array<StateDef> state_defs,
+                          ffi::Array<StateUse> state_uses,
+                          ffi::Array<StateJoin> state_joins);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SemanticProgram, ObjectRef, SemanticProgramNode);
 };
 

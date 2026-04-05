@@ -12,6 +12,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "common/semantic_program.h"
 #include "common/semantic_refinement_rules.h"
@@ -59,6 +60,29 @@ bool HasBinding(const Update& update, const std::string& kind, const std::string
   return false;
 }
 
+bool HasStateUse(const Array<StateUse>& state_uses, const std::string& consumer_update,
+                 const std::string& state_name, StateUseKind kind) {
+  for (const StateUse& use : state_uses) {
+    auto parsed_kind = ParseStateUseKind(static_cast<std::string>(use->kind));
+    if (std::string(use->consumer_update) == consumer_update &&
+        std::string(use->state_name) == state_name && parsed_kind && *parsed_kind == kind) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool HasLoopCarriedJoin(const Array<StateJoin>& state_joins, const std::string& state_name) {
+  for (const StateJoin& join : state_joins) {
+    auto parsed_kind = ParseStateJoinKind(static_cast<std::string>(join->kind));
+    if (std::string(join->state_name) == state_name && parsed_kind &&
+        *parsed_kind == StateJoinKind::kLoopCarried) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 tir::transform::Pass ValidateSemanticRefinement() {
@@ -90,6 +114,20 @@ tir::transform::Pass ValidateSemanticRefinement() {
       ICHECK(freeze.find("rebind_epoch") != freeze.end())
           << "typed_rebind contract requires rebind_epoch";
     }
+    if (ContractModeRequiresPreviousBodyHash(*contract_mode)) {
+      ICHECK(freeze.find("previous_body_hash") != freeze.end())
+          << "typed_rebind contract requires previous_body_hash";
+    }
+    if (ContractModeRequiresRebindScope(*contract_mode)) {
+      auto rebind_scope_it = freeze.find("rebind_scope");
+      ICHECK(rebind_scope_it != freeze.end()) << "typed_rebind contract requires rebind_scope";
+      ICHECK(ParseRebindScope(tvm::Downcast<String>((*rebind_scope_it).second)))
+          << "typed_rebind contract uses unsupported rebind_scope";
+    }
+    if (ContractModeRequiresRebindTrace(*contract_mode)) {
+      ICHECK(freeze.find("rebind_trace") != freeze.end())
+          << "typed_rebind contract requires rebind_trace";
+    }
     if (auto it = freeze.find("body_hash"); it != freeze.end()) {
       const std::string expected_hash = tvm::Downcast<String>((*it).second);
       const std::string current_hash = std::to_string(tvm::StructuralHash()(func->body));
@@ -115,12 +153,25 @@ tir::transform::Pass ValidateSemanticRefinement() {
       update_names.insert(update->name);
     }
 
+    std::unordered_map<std::string, std::vector<StateVersion>> versions_by_update;
+    for (const StateVersion& version : program->state_versions) {
+      if (!std::string(version->producer_update).empty()) {
+        versions_by_update[version->producer_update].push_back(version);
+      }
+    }
+    std::unordered_map<std::string, StateDef> defs_by_version;
+    for (const StateDef& def : program->state_defs) {
+      defs_by_version.emplace(def->version_name, def);
+    }
+
     for (const SemanticSupplement& supplement : program->supplements) {
       ICHECK(ParseSupplementKind(static_cast<std::string>(supplement->kind)))
           << "Unsupported SemanticSupplement kind in refinement validator: "
           << supplement->kind;
     }
 
+    std::unordered_set<int> consumed_witness_indices;
+    int witness_index = 0;
     for (const SemanticWitness& witness : witnesses) {
       auto decoded = DecodeSemanticWitness(witness);
       ICHECK(decoded) << "Unsupported semantic witness vocabulary: "
@@ -161,6 +212,7 @@ tir::transform::Pass ValidateSemanticRefinement() {
         ICHECK(role) << "state.role witness requires supported role payload";
         ICHECK_EQ(states_by_name.at(decoded->subject_anchor_id)->role, String(ToString(*role)))
             << "state.role witness does not match SemanticProgram";
+        consumed_witness_indices.insert(witness_index);
       } else if (decoded->subject_kind == WitnessSubjectKind::kUpdate &&
                  decoded->fact_axis == WitnessFactAxis::kLawFamily) {
         auto law_kind = DecodeWitnessUpdateLawKind(witness);
@@ -168,6 +220,7 @@ tir::transform::Pass ValidateSemanticRefinement() {
         ICHECK_EQ(updates_by_name.at(decoded->subject_anchor_id)->law->kind,
                   String(ToString(*law_kind)))
             << "update.law_family witness does not match SemanticProgram";
+        consumed_witness_indices.insert(witness_index);
       } else if (decoded->subject_kind == WitnessSubjectKind::kUpdate &&
                  decoded->fact_axis == WitnessFactAxis::kSourceSet) {
         auto payload = DecodeWitnessUpdateSourceSetPayload(witness);
@@ -175,6 +228,19 @@ tir::transform::Pass ValidateSemanticRefinement() {
         auto actual = ToStringSet(updates_by_name.at(decoded->subject_anchor_id)->law->source_states);
         std::unordered_set<std::string> expected(payload->sources.begin(), payload->sources.end());
         ICHECK(actual == expected) << "update.source_set witness does not match SemanticProgram";
+        for (const std::string& source_state : payload->sources) {
+          ICHECK(HasStateUse(program->state_uses, decoded->subject_anchor_id, source_state,
+                             StateUseKind::kSourceState))
+              << "update.source_set witness missing StateUse for " << source_state;
+        }
+        consumed_witness_indices.insert(witness_index);
+      } else if (decoded->subject_kind == WitnessSubjectKind::kUpdate &&
+                 decoded->fact_axis == WitnessFactAxis::kOrdering) {
+        const Update& update = updates_by_name.at(decoded->subject_anchor_id);
+        ICHECK(HasLoopCarriedJoin(program->state_joins, update->state_name))
+            << "update.ordering witness requires loop-carried StateJoin for "
+            << update->state_name;
+        consumed_witness_indices.insert(witness_index);
       } else if (decoded->subject_kind == WitnessSubjectKind::kRelation &&
                  decoded->fact_axis == WitnessFactAxis::kCompanion) {
         const Update& update = updates_by_name.at(decoded->subject_anchor_id);
@@ -190,7 +256,11 @@ tir::transform::Pass ValidateSemanticRefinement() {
         for (const String& related_anchor : witness->related_anchor_ids) {
           ICHECK(HasBinding(update, ToString(binding_kind), related_anchor))
               << "relation.companion witness missing update binding for " << related_anchor;
+          ICHECK(HasStateUse(program->state_uses, decoded->subject_anchor_id, related_anchor,
+                             StateUseKind::kCompanionState))
+              << "relation.companion witness missing companion StateUse for " << related_anchor;
         }
+        consumed_witness_indices.insert(witness_index);
       } else if (decoded->subject_kind == WitnessSubjectKind::kRelation &&
                  decoded->fact_axis == WitnessFactAxis::kCarriedFrom) {
         const Update& update = updates_by_name.at(decoded->subject_anchor_id);
@@ -206,14 +276,49 @@ tir::transform::Pass ValidateSemanticRefinement() {
         for (const String& related_anchor : witness->related_anchor_ids) {
           ICHECK(HasBinding(update, ToString(binding_kind), related_anchor))
               << "relation.carried_from witness missing update binding for " << related_anchor;
+          ICHECK(HasStateUse(program->state_uses, decoded->subject_anchor_id, related_anchor,
+                             StateUseKind::kCarriedState))
+              << "relation.carried_from witness missing carried StateUse for " << related_anchor;
         }
+        ICHECK(HasLoopCarriedJoin(program->state_joins, update->state_name))
+            << "relation.carried_from requires loop-carried StateJoin for " << update->state_name;
+        consumed_witness_indices.insert(witness_index);
       } else if (decoded->subject_kind == WitnessSubjectKind::kRelation &&
                  decoded->fact_axis == WitnessFactAxis::kDerivesIndexFrom) {
         ICHECK_EQ(std::string(states_by_name.at(decoded->subject_anchor_id)->role),
                   ToString(StateRole::kIndexState))
             << "relation.derives_index_from requires index_state";
+        consumed_witness_indices.insert(witness_index);
+      }
+      ++witness_index;
+    }
+
+    for (const Update& update : program->updates) {
+      if (std::string(update->state_name).empty()) {
+        continue;
+      }
+      ICHECK_EQ(versions_by_update[std::string(update->name)].size(), 1U)
+          << "Each update must define exactly one StateVersion: " << update->name;
+      const StateVersion& produced_version = versions_by_update[std::string(update->name)].front();
+      ICHECK(defs_by_version.count(produced_version->name))
+          << "Produced StateVersion missing matching StateDef: " << produced_version->name;
+      for (const String& source_state : update->law->source_states) {
+        ICHECK(HasStateUse(program->state_uses, update->name, source_state,
+                           StateUseKind::kSourceState))
+            << "Update source state missing StateUse: " << update->name << " <- " << source_state;
       }
     }
+
+    for (const State& state : program->states) {
+      auto role = ParseStateRole(static_cast<std::string>(state->role));
+      if (role && *role == StateRole::kCarry) {
+        ICHECK(HasLoopCarriedJoin(program->state_joins, state->name))
+            << "carry state requires loop-carried StateJoin: " << state->name;
+      }
+    }
+
+    ICHECK_EQ(consumed_witness_indices.size(), witnesses.size())
+        << "ValidateSemanticRefinement found orphan semantic witness coverage";
 
     return func;
   };

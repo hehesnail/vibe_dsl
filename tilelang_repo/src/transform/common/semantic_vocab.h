@@ -77,6 +77,32 @@ enum class BindingKind {
   kRecurrenceSourceState,
 };
 
+enum class StateVersionKind {
+  kInitial,
+  kUpdateResult,
+};
+
+enum class StateDefKind {
+  kInitial,
+  kUpdateResult,
+};
+
+enum class StateUseKind {
+  kSourceState,
+  kCompanionState,
+  kCarriedState,
+};
+
+enum class StateJoinKind {
+  kLoopCarried,
+  kOrderedUpdate,
+};
+
+enum class RebindScope {
+  kBodyHashRefresh,
+  kAnchorRemap,
+};
+
 TVM_DLL std::optional<WitnessSubjectKind> ParseWitnessSubjectKind(const std::string& value);
 TVM_DLL std::optional<WitnessFactAxis> ParseWitnessFactAxis(const std::string& value);
 TVM_DLL std::optional<StateRole> ParseStateRole(const std::string& value);
@@ -84,6 +110,11 @@ TVM_DLL std::optional<UpdateLawKind> ParseUpdateLawKind(const std::string& value
 TVM_DLL std::optional<SupplementKind> ParseSupplementKind(const std::string& value);
 TVM_DLL std::optional<ContractMode> ParseContractMode(const std::string& value);
 TVM_DLL std::optional<BindingKind> ParseBindingKind(const std::string& value);
+TVM_DLL std::optional<StateVersionKind> ParseStateVersionKind(const std::string& value);
+TVM_DLL std::optional<StateDefKind> ParseStateDefKind(const std::string& value);
+TVM_DLL std::optional<StateUseKind> ParseStateUseKind(const std::string& value);
+TVM_DLL std::optional<StateJoinKind> ParseStateJoinKind(const std::string& value);
+TVM_DLL std::optional<RebindScope> ParseRebindScope(const std::string& value);
 
 TVM_DLL const char* ToString(WitnessSubjectKind kind);
 TVM_DLL const char* ToString(WitnessFactAxis axis);
@@ -92,6 +123,11 @@ TVM_DLL const char* ToString(UpdateLawKind kind);
 TVM_DLL const char* ToString(SupplementKind kind);
 TVM_DLL const char* ToString(ContractMode mode);
 TVM_DLL const char* ToString(BindingKind kind);
+TVM_DLL const char* ToString(StateVersionKind kind);
+TVM_DLL const char* ToString(StateDefKind kind);
+TVM_DLL const char* ToString(StateUseKind kind);
+TVM_DLL const char* ToString(StateJoinKind kind);
+TVM_DLL const char* ToString(RebindScope scope);
 
 }  // namespace semantic
 }  // namespace tl

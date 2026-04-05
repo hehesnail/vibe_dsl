@@ -952,3 +952,156 @@ Verification:
   - `24 passed, 11 skipped`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
   - `26 passed`
+
+## Task 6: Phase A Closing Hardening Before Phase B
+
+`Phase A` 当前已经满足工程 exit gate，但在进入 `Phase B` 之前，还必须把下面三类
+“理论层机制”补成代码里的正式 contract；否则 `Spatial Program IR` 一旦开始引入更多
+restructure / companion consumer，`Phase A` 很容易重新退化成“回归 case 绿，但语义真源
+边界不够硬”的状态。
+
+这一步不扩 semantic vocabulary，不扩 workload family 支持面，只补三类高杠杆机制：
+
+1. **Machine-checkable preserve / typed_rebind / invalidate contract**
+2. **Stronger refinement validator**
+3. **Internal state/effect graph**
+
+### Design Goal
+
+进入 `Phase B` 之前，`Phase A` 至少应从“工程上可用的 semantic recovery layer”升级到：
+
+- companion IR 生命周期有正式合同
+- witness -> semantic core 的投影有更强的 refinement check
+- carry / ordered update / source-set / companion relation 不再只靠扁平对象和局部 relation，
+  而有统一的 internal graph normalization skeleton
+
+### Scope Boundaries
+
+这一步**不做**：
+
+- 新 workload family 扩面
+- 新 semantic core noun
+- `Phase B / C` object 设计
+- 把 `Phase A` 直接升级成完整形式化证明系统
+
+这一步**要做**：
+
+1. `typed_rebind` 不再只停留在 freeze schema 中的枚举值
+2. `ValidateSemanticRefinement` 继续从“payload/value 一致性校验”升级到：
+   - witness coverage
+   - graph consistency
+   - stronger role/law compatibility
+   - typed rebind legality
+3. `SemanticProgram` 内部新增 state/effect normalization graph：
+   - `StateVersion`
+   - `StateDef`
+   - `StateUse`
+   - `StateJoin`
+
+### Intended Code Shape
+
+- `semantic_program.h/.cc`
+  - 新增 `StateVersion / StateDef / StateUse / StateJoin`
+  - `SemanticProgram` 持有上述 graph objects
+- `semantic_rebind.*`
+  - 集中定义 typed rebind plan / helper / apply logic
+- `LiftStatefulSemanticIR`
+  - 在 semantic core 投影完成后，统一构建 internal state/effect graph
+- `ValidateStatefulSemanticIR`
+  - 覆盖 graph well-formedness
+- `ValidateSemanticRefinement`
+  - 校验 witness/core/graph/refreeze contract 一致性
+- `TypedRebindBlackholeCompanionPrograms`
+  - 作为 audited-safe pass contract 的第一版正式入口
+
+### Required Semantic Contracts
+
+1. **Preserve**
+   - `body_hash` 不变
+   - graph / witness / semantic core 全部保持一致
+2. **Typed Rebind**
+   - 允许 `body_hash` 变化
+   - 必须显式携带 `rebind_epoch`
+   - 必须显式记录 rebind 作用域 / remap 结果
+   - rebind 后 witness/core/graph 必须重新自洽
+3. **Invalidate**
+   - companion attrs 必须整体删除
+   - 不允许留下 stale `tl.semantic_program`
+
+### Required Validator Strengthening
+
+在现有 validator 基础上，至少补下面几类检查：
+
+1. **Witness Coverage**
+   - 每个 witness 必须被某个 semantic field 或 graph fact 消费
+2. **Role/Law Compatibility**
+   - `carry` state 必须进入 graph join
+   - `index_state` 必须有合法 derivation witness
+   - `selection` / `companion` / `carried_from` 必须与 update family 相容
+3. **Graph Consistency**
+   - `StateDef` / `StateUse` / `StateJoin` 不能引用缺失 state / update / version
+   - `UpdateLaw.source_states` 必须和 `StateUse` source set 一致
+   - carried / ordered update 必须在 graph 中留下 join 或 effect edge
+4. **Typed Rebind Legality**
+   - `typed_rebind` 必须有 epoch
+   - 必须有 before/after body hash 与 rebind trace
+   - typed rebind 后 graph / witness / semantic core 不允许出现 orphan anchor
+
+### Expected Exit State
+
+完成后，`Phase A` 的“完成”定义升级为：
+
+- semantic layer 不只是 compile-path 回归全绿
+- companion 生命周期可检查
+- rebind 不再是 schema 占位
+- validator 能拦住 witness/core/graph mismatch
+- Phase B 只消费冻结后的 semantic truth，不再倒逼 Phase A 回头补 matcher
+
+### Implemented Status
+
+当前这 3 项已经按上面的边界落地：
+
+- `SemanticProgram` 已新增：
+  - `StateVersion`
+  - `StateDef`
+  - `StateUse`
+  - `StateJoin`
+- `LiftStatefulSemanticIR` 现在会在 semantic core 投影后统一构建 internal state/effect graph
+  - graph 只覆盖 **stateful** update；像 copy path 这类没有显式 semantic state 的 target-less
+    `map` update，不强行进入 graph
+- `ValidateStatefulSemanticIR` 现在除 role/law 之外，还检查 graph well-formedness：
+  - version/def/use/join 引用闭包
+  - update target state closure
+  - graph kind legality
+- `ValidateSemanticRefinement` 现在已增强为：
+  - witness coverage 必须完整
+  - `update.source_set` 必须对应 `StateUse(source_state)`
+  - `relation.companion` / `relation.carried_from` 必须对应 binding + `StateUse`
+  - `carry` state 与 `recurrence` update 必须对应 `loop_carried` `StateJoin`
+  - `typed_rebind` 必须显式携带
+    `previous_body_hash / rebind_epoch / rebind_scope / rebind_trace`
+- `TypedRebindBlackholeCompanionPrograms` 已实现为正式 pass：
+  - 支持 audited-safe `body_hash_refresh`
+  - 支持 state/update remap 计划
+  - 会重写 structure / witnesses / semantic program，并刷新 freeze contract
+
+### Implementation Notes
+
+- `loop_carried StateJoin` 的生成不能只看 `carry role` 或显式 `carried_from` relation；
+  对 `UpdateLaw.kind == recurrence` 的 ordered update，也必须生成 join。否则 topk / selection
+  这类 synthetic recurrence gate 会在 refinement 里误报缺失。
+- internal state/effect graph 不应覆盖所有 update，而应只覆盖能绑定到 semantic state 的 update。
+  否则像 copy pipeline 里 `target_state == ""` 的 root `map` update 会制造伪造的 orphan version。
+
+### Final Verification
+
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'state_effect_graph or typed_rebind or missing_loop_carried_join' -q`
+  - `4 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
+  - `28 passed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
+  - `40 passed, 10 skipped, 1 xfailed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q`
+  - `24 passed, 11 skipped`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
+  - `26 passed`
