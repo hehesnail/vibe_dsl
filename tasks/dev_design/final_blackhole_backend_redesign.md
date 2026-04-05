@@ -72,6 +72,35 @@ Stateful Semantic IR
 5. 让 codegen/runtime 退回 materialization 和 execution，而不是继续承担语义重建。
 6. 让这套设计不仅能解释当前 `flash-attn`，还要能承接其他复杂前端计算 family。
 
+### 2.1.1 可证明性边界
+
+本设计不承诺下面这个强命题：
+
+- 对任意未来 workload family，固定不变的 `Stateful Semantic IR` vocabulary 都一定足够
+
+这个强命题本身就不该被承诺。对任意程序自动恢复所有非平凡语义性质，会触到不可判定性边界；因此总设计只追求更弱、也更正确的命题：
+
+- 对一个有限的 semantic core，如果某类 workload 的算法语义可以归约到这套 core，
+  则 `Stateful Semantic IR` 可以作为该 workload family 的有界抽象域
+
+因此，本设计要求的“通用性”不是“以后永远不需要新增任何概念”，而是：
+
+1. 正式长期 vocabulary 必须保持小闭集
+2. 新增 workload 时，优先证明它是否可归约到现有 semantic core
+3. 只有当某个新语义轴确实跨 family 复用、且无法归约到现有 core 时，才允许扩 semantic core
+4. 如果某类信息本质上属于 task/layout/sync/placement/transport/ABI，就必须进入 `Spatial Program IR` 或 `TT Target IR`，而不是继续塞回 `Stateful Semantic IR`
+
+换句话说，本设计允许证明的是：
+
+- bounded semantic vocabulary
+- sound abstraction over a chosen workload class
+- evidence-to-core reducibility
+
+本设计不承诺：
+
+- arbitrary future workload completeness
+- automatic semantic recovery of every nontrivial program property
+
 ### 2.2 非目标
 
 1. 不设计 TT-Metal 专用用户 DSL。
@@ -355,6 +384,50 @@ TileLang DSL / Python
 1. 第一层 IR 的真源是 `SemanticProgram(Domain / State / Update)`。
 2. `AccessMap / UpdateLaw` 作为 `Update` 的组成部分存在，而不是另一套平行核心对象。
 3. `TIRAnchor / TIRValueBinding / AtomicEffect / SemanticRegion` 都只是恢复、绑定或投影视图辅助对象，不得反客为主变成新的第一层 schema 核心。
+
+#### Semantic Core 与 Analysis Evidence
+
+为了避免 `Phase A` 退化成无限增长的语义词汇表，`Stateful Semantic IR` 必须明确区分两类东西：
+
+1. **semantic core**
+   - 对外成立、长期稳定、允许被后续层依赖的正式语义对象
+   - 只包括：
+     - `Domain`
+     - `State`
+     - `Update`
+     - `AccessMap`
+     - `UpdateLaw`
+     - 少量固定 role / law / trait 轴
+
+2. **analysis evidence**
+   - 只用于从 TIR 恢复 semantic core 的中间证据
+   - 例如局部 selection pairing、arg-reduction target、recurrence edge、source-state 依赖
+   - 它们可以存在于 analysis attrs 中，但不能被视为长期 companion IR vocabulary
+
+这一区分是 `Phase A` 可自证通用性的关键：
+
+- semantic core 必须保持小闭集
+- analysis evidence 允许随恢复需求变化，但它们不是正式 vocabulary
+- 每一个 evidence 都必须能归约到某个已有 core 字段
+
+若某个 evidence 不能归约到下列任一项：
+
+- `State.role`
+- `UpdateLaw.kind`
+- `UpdateLaw.source_states`
+- `AccessMap.traits`
+- `Update.bindings`
+
+则说明两种可能：
+
+1. semantic core 少了一个真正基础、跨 family 复用的语义轴
+2. 该信息不属于 `Stateful Semantic IR`，而属于 `Spatial Program IR` 或 `TT Target IR`
+
+因此，`Phase A` 的设计纪律不是“尽量少加 evidence”，而是：
+
+- evidence 不是 vocabulary
+- evidence 必须可归约
+- 不可归约的复杂性必须分流到 Phase B / C
 
 #### 对象设计
 
