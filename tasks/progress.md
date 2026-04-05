@@ -44,6 +44,10 @@
   - `recurrence` 当前消费 `fragment_regions[*].recurrence_edges`，并下沉为
     `recurrence_source_state`
   - `UpdateLaw.source_states` 当前消费 `fragment_regions[*].update_sources`
+  - `stage4_phase_a_semantic_ir.md` 当前已补齐 post-A2 formal proof framing：
+    - `Phase A` 的弱证明目标
+    - canonical evidence / abstract domain / `α` / `γ` 的最小定义
+    - 当前仍缺 typed witness closure、stronger validator、以及 preserve/rebind/invalidate contract
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组
