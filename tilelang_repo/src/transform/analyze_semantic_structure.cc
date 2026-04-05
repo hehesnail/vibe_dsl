@@ -31,6 +31,9 @@ using namespace tvm::tl::semantic;
 
 namespace {
 
+// Strip trailing `_N` suffix added by TIR lowering (e.g. `logits_frag_1` -> `logits_frag`).
+// Assumption: lowering only appends `_<digits>` to buffer names.  If a future lowering
+// pass uses a different naming convention this function must be updated accordingly.
 std::string CanonicalBufferName(const std::string& name) {
   size_t pos = name.size();
   while (pos > 0 && std::isdigit(static_cast<unsigned char>(name[pos - 1]))) {
@@ -243,10 +246,15 @@ tir::transform::Pass AnalyzeSemanticStructure() {
           if (buffer_collector.HasIntegerDType(target)) {
             integer_states.insert(target);
           }
-          const std::string role =
-              (arg_reduce_targets.count(target) || integer_states.count(target))
-                  ? ToString(StateRole::kIndexState)
-                  : ToString(StateRole::kReductionAccumulator);
+          // A reduction target is index_state only if it actually carries index information:
+          // either it has integer dtype, or it is an integer arg-reduce target.  Non-integer
+          // arg_reduce_targets (e.g. the value component of an arg-reduce pair) remain
+          // reduction_accumulator — they participate in arg-reduce but don't carry indices.
+          const bool is_index = integer_states.count(target) ||
+                                (arg_reduce_targets.count(target) &&
+                                 buffer_collector.HasIntegerDType(target));
+          const std::string role = is_index ? ToString(StateRole::kIndexState)
+                                            : ToString(StateRole::kReductionAccumulator);
           register_state(target, role, "");
         }
         for (const std::string& carried : loop_carried_states) {
@@ -279,6 +287,10 @@ tir::transform::Pass AnalyzeSemanticStructure() {
     }
 
     for (const std::string& target : arg_reduce_targets) {
+      // derives_index_from requires index_state; only emit for integer arg-reduce targets.
+      if (!integer_states.count(target)) {
+        continue;
+      }
       witnesses.push_back(MakeWitness(ToString(WitnessSubjectKind::kRelation), target,
                                       ToString(WitnessFactAxis::kDerivesIndexFrom),
                                       MakeEmptyPayload(), Array<String>{},

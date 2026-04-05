@@ -122,6 +122,23 @@
 - audited-safe rebind pass：
   - `TypedRebindBlackholeCompanionPrograms`
 
+## 2.4 信任边界与已知假设
+
+`Phase A` 的 witness quality 完全取决于上游 fragment analysis 的质量。具体来说：
+
+- `AnalyzeBlackholeWorkDecomposition` 决定 domain skeleton
+- `AnalyzeBlackholeFragmentRegions` 决定 fragment evidence（`selection_pairs`、`arg_reduce_targets`、`update_sources`、`recurrence_edges`）
+- `AnalyzeBlackholePipelineStages` 决定 pipeline trait
+
+`Phase A` 内部的 `AnalyzeSemanticStructure -> LiftStatefulSemanticIR -> ValidateSemanticRefinement` 只能保证：
+给定上游 evidence，lift 和 validation 是正确的。但如果上游 evidence 本身遗漏或错误，`Phase A` 不会发明出正确语义。
+
+因此，扩展新 workload family（如 fusedmoe、paged decode）时，**首先要确认上游 fragment analysis 能正确收集该 family 的 evidence**，然后才是 `Phase A` 的 witness/core/validator 是否覆盖。
+
+另外，`CanonicalBufferName`（`analyze_semantic_structure.cc`）假设 lowering 只在 buffer 名末尾追加 `_<digits>` suffix。如果未来 lowering pass 改变命名规则，这里需要同步更新。
+
+`TypedRebindBlackholeCompanionPrograms` 在 rebind 时会重建 state/effect graph（调用 `BuildStateEffectGraph`），不会沿用��� graph。`body_hash` 校验确保 body 不会在 rebind 后被静默修改。
+
 ## 3. 当前代码落点
 
 核心代码面现在集中在：
@@ -545,7 +562,7 @@ witness 片段长这样：
 states = [
   {"name": "logits_frag", "role": "selection_state"},
   {"name": "expand_max_idx", "role": "index_state"},
-  {"name": "max_val", "role": "index_state"},
+  {"name": "max_val", "role": "reduction_accumulator"},
   {"name": "max_idx", "role": "index_state"},
 ]
 
@@ -563,9 +580,10 @@ updates = [
 ]
 ```
 
-这里有个故意不粉饰的事实：真实当前实现里，`max_val` 也会被 lift 成 `index_state`。这不是文档写错，而是
-当前 `topk` 路径里 `arg_reduce_targets = ["max_val", "max_idx"]` 的直接结果。文档这里选择保留真实输出，而不把它
-改写成“更理想的语义角色”，目的就是让这份 walkthrough 真的对得上仓库现状。
+当前实现里，`max_val` 被 lift 成 `reduction_accumulator`，`max_idx` 被 lift 成 `index_state`。
+虽然上游 fragment analysis 的 `arg_reduce_targets` 同时包含 `max_val` 和 `max_idx`，但 `Phase A`
+只对 **integer** arg-reduce target 赋予 `index_state` 角色。`max_val` 是 float 值，不携带 index
+信息，因此保持 `reduction_accumulator`。
 
 这里能直接看出 `Phase A` 的核心设计：
 

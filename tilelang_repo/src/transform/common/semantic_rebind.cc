@@ -194,6 +194,10 @@ SemanticProgram ApplySemanticRebindToProgram(const SemanticProgram& program,
                              bindings));
   }
 
+  // Rebuild the state/effect graph from the (possibly remapped) states/updates/witnesses.
+  // This ensures the graph stays consistent after name remapping — it is NOT carried over
+  // from the pre-rebind program.  The body_hash check in ValidateSemanticRefinement
+  // prevents silent graph staleness if the body changes structurally.
   BuiltStateEffectGraph graph = BuildStateEffectGraph(states, updates, witnesses);
   return SemanticProgram(program->domains, states, updates, program->supplements, program->seeds,
                          program->anchors, graph.state_versions, graph.state_defs,
