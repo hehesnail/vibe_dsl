@@ -221,6 +221,38 @@ with T.Kernel(T.ceildiv(M, blk_m), threads=threads) as bx:
             topk_indices[bx * blk_m + i, k] = max_idx[i]
 ```
 
+先把这段代码里的记号讲清楚：
+
+- `M`
+  - 输入矩阵 `logits` 的总行数，也就是总 token / row 数。
+- `N`
+  - 每一行的列数，也就是每个 token 要在多少个 candidate 上做 `topk`。
+- `topk`
+  - 每一行要选几轮最大值；这里的外层 `for k in T.serial(topk)` 就是在做第 `k` 轮选择。
+- `blk_m`
+  - 一个 kernel block 一次处理多少行。
+- `bx`
+  - `T.Kernel(... ) as bx` 里的 block 索引。第 `bx` 个 block 负责输入里的
+    `bx * blk_m : (bx + 1) * blk_m` 这段行范围。
+- `i`
+  - block 内的行下标，也就是当前 block 负责的第几行。
+- `j`
+  - 当前行内的列下标，也就是 candidate / expert / column 位置。
+- `tx`
+  - lowering 到 Blackhole TIR 之后出现的 `threadIdx.x` 线程索引，用来把 fragment 内的并行访问展开到具体线程。
+- `logits_frag`
+  - 当前 block 的行片段，存在 `blackhole.acc` 里，是后面多轮 `topk` 都会反复更新的工作集。
+- `max_val`
+  - 当前第 `k` 轮、每一行选出来的最大值。
+- `expand_max_idx`
+  - 把“哪一列命中了当前最大值”扩展到整行上的中间 companion/index buffer。
+- `max_idx`
+  - 当前第 `k` 轮最终归并出来的列号。
+- `topk_gates`
+  - 输出 value，shape 是 `[M, topk]`。
+- `topk_indices`
+  - 输出 index，shape 是 `[M, topk]`。
+
 这个算法做的事情很直接：对每一行 `logits`，连续做 `topk` 轮“找最大值并把它拿走”。
 
 可以按下面这个顺序理解：
@@ -287,6 +319,23 @@ logits_frag_1[i_5] = T.if_then_else(
 topk_gates[i_6 * 16 + T.shift_right(tx, 3), k] = max_val_1[i_6]
 topk_indices[i_6 * 16 + T.shift_right(tx, 3), k] = max_idx_1[i_6]
 ```
+
+这里还要补一个读 TIR 的小提示：
+
+- `bx` 和 DSL 里的 `bx` 含义一样，仍然是 block 索引。
+- `tx` 是 lowering 后显式出现的 `threadIdx.x`。
+- `i_2 / i_3 / i_4 / i_5 / i_6 / rv / vec` 这些带后缀的名字只是 lowering 之后拆出来的 loop var /
+  reduction var；它们本身不带额外算法语义，不要把注意力放在这些编号上。
+- 真正重要的是：
+  - 这些循环体在读写哪个 fragment buffer
+  - 它们之间的 def-use / compare / reduce / overwrite 关系是什么
+
+也就是说，读这段 TIR 时，重点不是“`i_4` 是谁”，而是：
+
+- `max_val_1` 是怎么从 `logits_frag_1` 里归约出来的
+- `expand_max_idx_1` 是怎么依赖 `max_val_1` 和 `logits_frag_1` 的
+- `max_idx_1` 是怎么再从 `expand_max_idx_1` 里归约出来的
+- `logits_frag_1` 是怎么在每轮之后被 mask 掉的
 
 这段真实 IR 已经包含了后面要恢复语义所需的结构事实：
 
