@@ -85,7 +85,8 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
   - 不再把 formal proof 草稿混在实现文档里
   - 当前只作为 `Phase B` 的输入边界与实现参考保留
   - `stage4_phase_a_semantic_ir.md` 已补充基于真实 `example_topk` IR/attrs 的 `topk / selection`
-    端到端 walkthrough，用于说明 `Phase A` 的 pass-by-pass 状态、核心思想与设计动机
+    端到端 walkthrough，并贴出关键 TIR 片段与逐段解析，用于说明 `Phase A` 的 pass-by-pass 状态、
+    核心思想与设计动机
 
 ## 最新验证摘要
 

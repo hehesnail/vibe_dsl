@@ -191,23 +191,37 @@ AnalyzeBlackholeWorkDecomposition
 在 `SplitBlackholeKernel` 之后，这个 kernel 的关键 body 片段已经长成下面这样：
 
 ```python
+bx = T.launch_thread("blockIdx.x", 1)
 logits_frag = T.decl_buffer((16,), scope="blackhole.acc")
 max_val = T.decl_buffer((4,), scope="blackhole.acc")
 expand_max_idx = T.decl_buffer((16,), "int32", scope="blackhole.acc")
 max_idx = T.decl_buffer((4,), "int32", scope="blackhole.acc")
+tx = T.launch_thread("threadIdx.x", 128)
+
+for i in T.unroll(4):
+    for vec in T.vectorized(4):
+        logits_frag_1[i * 4 + vec] = logits[i * 16 + T.shift_right(tx, 3), T.bitwise_and(tx, 7) * 4 + vec]
 
 max_val_1[i_2] = T.max(max_val_1[i_2], logits_frag_1[i_2 * 4 + rv])
+max_val_1[i_2] = T.call_extern("float32", "tl::AllReduce<tl::MaxOp, 8, 1, 0>::run", max_val_1[i_2])
+
 expand_max_idx_1[i_3] = T.if_then_else(
     max_val_1[T.shift_right(i_3, 2)] == logits_frag_1[i_3],
     T.bitwise_and(tx, 7) * 4 + T.bitwise_and(i_3, 3),
     expand_max_idx_1[i_3],
 )
+
 max_idx_1[i_4] = T.max(max_idx_1[i_4], expand_max_idx_1[i_4 * 4 + rv])
+max_idx_1[i_4] = T.call_extern("int32", "tl::AllReduce<tl::MaxOp, 8, 1, 0>::run", max_idx_1[i_4])
+
 logits_frag_1[i_5] = T.if_then_else(
     max_val_1[T.shift_right(i_5, 2)] == logits_frag_1[i_5],
     T.float32(-10000.0),
     logits_frag_1[i_5],
 )
+
+topk_gates[i_6 * 16 + T.shift_right(tx, 3), k] = max_val_1[i_6]
+topk_indices[i_6 * 16 + T.shift_right(tx, 3), k] = max_idx_1[i_6]
 ```
 
 这段真实 IR 已经包含了后面要恢复语义所需的结构事实：
@@ -216,6 +230,27 @@ logits_frag_1[i_5] = T.if_then_else(
 - `expand_max_idx` 通过 `if_then_else` 和 `max_val` / `logits_frag` 关联起来
 - `max_idx` 对 `expand_max_idx` 再做一次 index-style reduction
 - `logits_frag` 在每轮 `k` 之后被重新写回，形成 recurrence-like carry
+
+可以按下面这个顺序直接读这段 IR：
+
+1. `logits_frag = decl_buffer((16,), scope="blackhole.acc")`
+   - 说明这里有一个 fragment-local 浮点 state，后面很多 update 都围绕它展开。
+2. `expand_max_idx = decl_buffer((16,), "int32", scope="blackhole.acc")`
+   - 说明这里还有一个 fragment-local 整型 state，它不是最终输出，但会先承接 companion/index 信息。
+3. `logits_frag_1[...] = logits[...]`
+   - 先把当前 tile 的 logits 搬进 fragment buffer，后面所有 reduction/select 都发生在 fragment-local state 上。
+4. `max_val_1[i_2] = T.max(... logits_frag_1 ...)`
+   - 这是第一层 value reduction；它只看 value，不直接生成 index。
+5. `expand_max_idx_1[i_3] = T.if_then_else(max_val == logits_frag, lane_id, old_value)`
+   - 这一步才把 “哪个位置命中了当前 max” 编进 companion/index state。
+   - 它同时依赖 `max_val` 和 `logits_frag`，所以后面 `update_sources` 会把这两个都记下来。
+6. `max_idx_1[i_4] = T.max(... expand_max_idx_1 ...)`
+   - 把 fragment 内部的 candidate index 再归并成最终 index。
+7. `logits_frag_1[i_5] = T.if_then_else(..., -10000.0, logits_frag_1[i_5])`
+   - 把当前已选中的位置 mask 掉，为下一轮 `k` 做准备。
+   - 这就是为什么 `logits_frag` 后面不仅参与 `select`，还会参与 `recurrence`。
+8. `topk_gates[...] = max_val_1[...]` / `topk_indices[...] = max_idx_1[...]`
+   - 这里才是最终 materialization；也就是说，前面这些 `blackhole.acc` buffer 才是 `Phase A` 真正关心的算法 state。
 
 但在这一步，语义仍然只是结构事实：
 
