@@ -38,6 +38,9 @@
   - semantic recovery 不能依赖名字匹配
   - 当前已经开始把这类恢复改成基于 typed attrs / IR 结构
   - `index_state` 的最小稳定信号现已通过 `fragment_buffers[*].is_integer` 从上游 analysis 显式传递
+  - `selection_state` 当前已改成消费 `fragment_regions[*].selection_targets`
+    这类 typed relation，而不是全局 `if_then_else` heuristic
+  - `recurrence` 当前已改成直接基于 loop-carried 结构恢复，不再依赖 `gemm` 命中
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组

@@ -194,6 +194,12 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     }
     region.Set("row_broadcasts", row_broadcasts);
 
+    Array<Any> selection_targets;
+    for (const auto& target : selection_target_order_) {
+      selection_targets.push_back(String(target));
+    }
+    region.Set("selection_targets", selection_targets);
+
     Array<Any> loop_carried_state;
     for (const auto& name : loop_carried_order_) {
       Map<String, Any> entry;
@@ -392,6 +398,9 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
           if (op_name == "tir.exp2" || op_name == "tir.if_then_else") {
             saw_pointwise = true;
             AddPointwiseOp(op_name == "tir.exp2" ? "exp2" : "if_then_else");
+            if (op_name == "tir.if_then_else") {
+              AddSelectionTarget(target_name);
+            }
           }
         }
       } else if (node.as<CastNode>()) {
@@ -530,6 +539,13 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     }
   }
 
+  void AddSelectionTarget(const std::string& target_name) {
+    const std::string canonical_target = CanonicalReductionTarget(target_name);
+    if (seen_selection_targets_.insert(canonical_target).second) {
+      selection_target_order_.push_back(canonical_target);
+    }
+  }
+
   std::unordered_map<std::string, BufferInfo> fragment_buffers_;
   std::vector<std::string> fragment_buffer_order_;
 
@@ -542,6 +558,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
   std::unordered_set<std::string> seen_row_reductions_;
   std::unordered_set<std::string> seen_row_broadcast_sources_;
   std::vector<std::string> row_broadcast_sources_;
+  std::unordered_set<std::string> seen_selection_targets_;
+  std::vector<std::string> selection_target_order_;
 
   bool pre_loop_stmt_ = false;
   bool inside_pipeline_loop_ = false;

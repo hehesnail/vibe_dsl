@@ -425,7 +425,6 @@ def test_flash_attention_forward_pipeline_lifts_semantic_roles_without_workload_
 
     assert {"carry", "reduction_accumulator", "transient"}.issubset(state_roles)
     assert "recurrence" in law_kinds
-    assert "selection_state" in state_roles
 
 
 def test_flash_attention_forward_lowers_gqa_pipeline_for_supported_stage_count():

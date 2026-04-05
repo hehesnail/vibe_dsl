@@ -206,6 +206,11 @@ Implemented note:
 - 当前为避免名字匹配，`AnalyzeBlackholeFragmentRegions` 已向 `fragment_buffers`
   补充 typed `is_integer` 结构信号，`AnalyzeSemanticStructure` 用这份 typed attr
   恢复 `index_state`
+- `AnalyzeBlackholeFragmentRegions` 当前还会显式导出 `selection_targets`
+  这类局部计算关系事实；`AnalyzeSemanticStructure` 现在消费这些 typed targets，
+  而不是再用全局 `if_then_else` / `row_broadcast` 命中去晚期猜 `selection_state`
+- `recurrence` 当前也不再依赖 `gemm + loop_carried_state` 的组合 heuristic；
+  A2 当前至少已收正到直接基于 loop-carried 结构恢复 recurrence update
 - `flash-attn` 当前已在 semantic layer 和 pipeline gate 上稳定看到：
   - algorithmic carry / reduction state
   - transient compute scratch

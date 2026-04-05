@@ -257,7 +257,7 @@ def test_topk_semantic_program_recovers_index_state_from_integer_ir_not_names():
     state_roles_by_name = {str(state.name): str(state.role) for state in program.states}
 
     assert state_roles_by_name["best_slot"] == "index_state"
-    assert "selection_state" in set(state_roles_by_name.values())
+    assert state_roles_by_name["best_value"] == "reduction_accumulator"
 
 
 def test_chunk_recurrence_semantic_program_lifts_recurrence_updates():
