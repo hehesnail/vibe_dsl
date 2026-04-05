@@ -24,29 +24,33 @@ std::optional<DecodedSemanticWitness> DecodeSemanticWitness(const SemanticWitnes
                                 static_cast<std::string>(witness->canonicalization_point)};
 }
 
+std::optional<StateRolePayload> DecodeWitnessStateRolePayload(const SemanticWitness& witness) {
+  return DecodeStateRolePayload(witness->fact_value);
+}
+
+std::optional<UpdateLawFamilyPayload> DecodeWitnessUpdateLawFamilyPayload(
+    const SemanticWitness& witness) {
+  return DecodeUpdateLawFamilyPayload(witness->fact_value);
+}
+
+std::optional<UpdateSourceSetPayload> DecodeWitnessUpdateSourceSetPayload(
+    const SemanticWitness& witness) {
+  return DecodeUpdateSourceSetPayload(witness->fact_value);
+}
+
+std::optional<RelationBindingPayload> DecodeWitnessRelationBindingPayload(
+    const SemanticWitness& witness) {
+  return DecodeRelationBindingPayload(witness->fact_value);
+}
+
 std::optional<StateRole> DecodeWitnessStateRole(const SemanticWitness& witness) {
-  auto it = witness->fact_value.find("role");
-  if (it == witness->fact_value.end()) {
-    return std::nullopt;
-  }
-  return ParseStateRole(static_cast<std::string>(tvm::Downcast<ffi::String>((*it).second)));
+  auto payload = DecodeWitnessStateRolePayload(witness);
+  return payload ? std::optional<StateRole>(payload->role) : std::nullopt;
 }
 
 std::optional<UpdateLawKind> DecodeWitnessUpdateLawKind(const SemanticWitness& witness) {
-  auto it = witness->fact_value.find("kind");
-  if (it == witness->fact_value.end()) {
-    return std::nullopt;
-  }
-  return ParseUpdateLawKind(static_cast<std::string>(tvm::Downcast<ffi::String>((*it).second)));
-}
-
-std::optional<BindingKind> DecodeWitnessBindingKind(const SemanticWitness& witness,
-                                                    const char* payload_key) {
-  auto it = witness->fact_value.find(payload_key);
-  if (it == witness->fact_value.end()) {
-    return std::nullopt;
-  }
-  return ParseBindingKind(static_cast<std::string>(tvm::Downcast<ffi::String>((*it).second)));
+  auto payload = DecodeWitnessUpdateLawFamilyPayload(witness);
+  return payload ? std::optional<UpdateLawKind>(payload->kind) : std::nullopt;
 }
 
 std::optional<ContractMode> DecodeContractMode(const ffi::Map<ffi::String, ffi::Any>& freeze) {
@@ -55,19 +59,6 @@ std::optional<ContractMode> DecodeContractMode(const ffi::Map<ffi::String, ffi::
     return std::nullopt;
   }
   return ParseContractMode(static_cast<std::string>(tvm::Downcast<ffi::String>((*it).second)));
-}
-
-std::vector<std::string> DecodeWitnessStringPayloadArray(const SemanticWitness& witness,
-                                                         const char* payload_key) {
-  std::vector<std::string> result;
-  auto it = witness->fact_value.find(payload_key);
-  if (it == witness->fact_value.end()) {
-    return result;
-  }
-  for (const ffi::Any& value : tvm::Downcast<ffi::Array<ffi::Any>>((*it).second)) {
-    result.push_back(tvm::Downcast<ffi::String>(value));
-  }
-  return result;
 }
 
 }  // namespace semantic

@@ -646,3 +646,31 @@ def test_semantic_vocab_rejects_unknown_closed_vocabulary_symbol():
 
     with pytest.raises(tvm.TVMError):
         normalize_binding_kind("definitely_not_a_binding_kind")
+
+
+def test_semantic_payload_normalizes_known_typed_payload_families():
+    normalize_state_role = tvm.get_global_func("tl.SemanticPayloadNormalizeStateRole")
+    normalize_law_family = tvm.get_global_func("tl.SemanticPayloadNormalizeUpdateLawFamily")
+    normalize_source_set = tvm.get_global_func("tl.SemanticPayloadNormalizeSourceSet")
+    normalize_relation_binding = tvm.get_global_func("tl.SemanticPayloadNormalizeRelationBinding")
+
+    role_payload = normalize_state_role({"role": "selection_state"})
+    law_payload = normalize_law_family({"kind": "select"})
+    source_payload = normalize_source_set({"sources": ["scores", "carry"]})
+    binding_payload = normalize_relation_binding({"binding_kind": "paired_value_state"})
+
+    assert str(role_payload["role"]) == "selection_state"
+    assert str(law_payload["kind"]) == "select"
+    assert list(source_payload["sources"]) == ["scores", "carry"]
+    assert str(binding_payload["binding_kind"]) == "paired_value_state"
+
+
+def test_semantic_payload_rejects_malformed_payload_shape():
+    normalize_source_set = tvm.get_global_func("tl.SemanticPayloadNormalizeSourceSet")
+    normalize_relation_binding = tvm.get_global_func("tl.SemanticPayloadNormalizeRelationBinding")
+
+    with pytest.raises(tvm.TVMError):
+        normalize_source_set({"sources": "not_an_array"})
+
+    with pytest.raises(tvm.TVMError):
+        normalize_relation_binding({"binding_kind": "not_a_binding_kind"})

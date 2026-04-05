@@ -850,3 +850,105 @@ Verification:
   - `24 passed, 11 skipped`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
   - `26 passed`
+
+## Task 5: Stage 2.7 - Typed Witness Payload Families
+
+`Stage 2.6` 已经把 closed vocabulary、typed decoder 和 centralized rule table 收正了，
+但 `SemanticWitness.fact_value` 的高频 payload 仍然主要表现为 pass 内部手拼的
+`Map<String, Any>`：
+
+- `state.role -> {"role": ...}`
+- `update.law_family -> {"kind": ...}`
+- `update.source_set -> {"sources": [...]}`
+- `relation.{companion,carried_from} -> {"binding_kind": ...}`
+
+这会带来两个长期问题：
+
+1. payload shape 仍然由各个 pass 自己记忆和手工维护
+2. “边界 string / 内部 typed” 还没有贯彻到 payload 层
+
+因此下一步不是继续在 `LiftStatefulSemanticIR` 和 validator 里手写 payload key，而是把
+payload 也拆成正式层次：
+
+1. **Typed Payload Builders**
+   - `AnalyzeSemanticStructure` 不再手工拼 `Map<String, Any>`
+   - 统一通过 payload builder 产出 canonical payload
+2. **Typed Payload Decoders**
+   - `LiftStatefulSemanticIR` 与 `ValidateSemanticRefinement`
+     不再自己按 key 拆 `fact_value`
+   - 一律先 decode 成 typed payload view
+3. **Payload Normalization Hooks**
+   - Python / FFI 边界允许通过集中 normalize/build helper 构造 payload
+   - 保持 attr/serialization 边界的 canonical form
+
+### Design Constraints
+
+- 不新增 workload-shaped payload class
+- 不把 payload decoder 再散回各个 pass
+- payload schema 必须和 `WitnessFactAxis` 对齐
+- 若某个 axis 不需要额外值，允许空 payload；不强制保留冗余 `"kind"` 协议
+- payload legality 必须由集中模块判定，而不是各 pass 自己猜 key/shape
+
+### Intended Code Shape
+
+- `semantic_witness_payloads.h/.cc`
+  - 定义 typed payload family
+  - builder / decoder / normalize helper
+- `AnalyzeSemanticStructure`
+  - 通过 payload builder 发射 canonical witness payload
+- `semantic_witness_decoder.h/.cc`
+  - 复用 typed payload decoder，而不是自己拆 `fact_value`
+- `LiftStatefulSemanticIR`
+  - 只消费 typed payload view
+- `ValidateSemanticRefinement`
+  - 只消费 typed payload view，并验证 payload shape 与 refinement 一致
+
+### Expected First Payload Families
+
+- `StateRolePayload`
+- `UpdateLawFamilyPayload`
+- `UpdateSourceSetPayload`
+- `RelationBindingPayload`
+- 必要时允许 `EmptyPayload`
+
+### Expected Verification
+
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'semantic_payload' -q`
+  - 验证 payload builder / normalize hook / rejection behavior
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
+  - witness / lift / refinement 主回归保持通过
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
+
+Status:
+
+- `2026-04-05` 已实现并验证
+
+Delivered:
+
+- `semantic_witness_payloads.h/.cc`
+  - centralized typed payload builder / decoder / normalize helper
+- `AnalyzeSemanticStructure`
+  - 使用 payload builder 发射 canonical witness payload
+- `semantic_witness_decoder.h/.cc`
+  - 复用 typed payload decoder，而不是手工按 key 拆 `fact_value`
+- `LiftStatefulSemanticIR`
+  - 只消费 typed payload view
+- `ValidateSemanticRefinement`
+  - 改为验证 typed payload shape 与 semantic refinement 一致
+- `relation.derives_index_from`
+  - 改为 empty payload；移除冗余 `"kind": "index_derivation"` 字段
+
+Verification:
+
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'semantic_payload' -q`
+  - `2 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
+  - `24 passed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
+  - `40 passed, 10 skipped, 1 xfailed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q`
+  - `24 passed, 11 skipped`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
+  - `26 passed`

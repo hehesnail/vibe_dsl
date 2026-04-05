@@ -170,10 +170,10 @@ tir::transform::Pass ValidateSemanticRefinement() {
             << "update.law_family witness does not match SemanticProgram";
       } else if (decoded->subject_kind == WitnessSubjectKind::kUpdate &&
                  decoded->fact_axis == WitnessFactAxis::kSourceSet) {
-        auto it = witness->fact_value.find("sources");
-        ICHECK(it != witness->fact_value.end()) << "update.source_set witness requires sources payload";
+        auto payload = DecodeWitnessUpdateSourceSetPayload(witness);
+        ICHECK(payload) << "update.source_set witness requires supported sources payload";
         auto actual = ToStringSet(updates_by_name.at(decoded->subject_anchor_id)->law->source_states);
-        auto expected = ToStringSet(tvm::Downcast<Array<Any>>((*it).second));
+        std::unordered_set<std::string> expected(payload->sources.begin(), payload->sources.end());
         ICHECK(actual == expected) << "update.source_set witness does not match SemanticProgram";
       } else if (decoded->subject_kind == WitnessSubjectKind::kRelation &&
                  decoded->fact_axis == WitnessFactAxis::kCompanion) {
@@ -181,9 +181,10 @@ tir::transform::Pass ValidateSemanticRefinement() {
         auto law_kind = ParseUpdateLawKind(static_cast<std::string>(update->law->kind));
         ICHECK(law_kind && RelationAxisCompatibleWithLawKind(decoded->fact_axis, *law_kind))
             << "relation.companion requires a select update";
-        BindingKind binding_kind =
-            DecodeWitnessBindingKind(witness, "binding_kind")
-                .value_or(DefaultBindingKindForRelation(decoded->fact_axis));
+        BindingKind binding_kind = DefaultBindingKindForRelation(decoded->fact_axis);
+        if (auto payload = DecodeWitnessRelationBindingPayload(witness)) {
+          binding_kind = payload->binding_kind;
+        }
         ICHECK(BindingKindCompatibleWithRelation(decoded->fact_axis, binding_kind))
             << "relation.companion uses incompatible binding kind " << ToString(binding_kind);
         for (const String& related_anchor : witness->related_anchor_ids) {
@@ -196,9 +197,10 @@ tir::transform::Pass ValidateSemanticRefinement() {
         auto law_kind = ParseUpdateLawKind(static_cast<std::string>(update->law->kind));
         ICHECK(law_kind && RelationAxisCompatibleWithLawKind(decoded->fact_axis, *law_kind))
             << "relation.carried_from requires a recurrence update";
-        BindingKind binding_kind =
-            DecodeWitnessBindingKind(witness, "binding_kind")
-                .value_or(DefaultBindingKindForRelation(decoded->fact_axis));
+        BindingKind binding_kind = DefaultBindingKindForRelation(decoded->fact_axis);
+        if (auto payload = DecodeWitnessRelationBindingPayload(witness)) {
+          binding_kind = payload->binding_kind;
+        }
         ICHECK(BindingKindCompatibleWithRelation(decoded->fact_axis, binding_kind))
             << "relation.carried_from uses incompatible binding kind " << ToString(binding_kind);
         for (const String& related_anchor : witness->related_anchor_ids) {

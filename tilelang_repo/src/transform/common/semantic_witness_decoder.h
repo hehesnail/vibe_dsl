@@ -14,6 +14,7 @@
 
 #include "semantic_program.h"
 #include "semantic_vocab.h"
+#include "semantic_witness_payloads.h"
 
 namespace tvm {
 namespace tl {
@@ -30,13 +31,16 @@ struct DecodedSemanticWitness {
 };
 
 TVM_DLL std::optional<DecodedSemanticWitness> DecodeSemanticWitness(const SemanticWitness& witness);
+TVM_DLL std::optional<StateRolePayload> DecodeWitnessStateRolePayload(const SemanticWitness& witness);
+TVM_DLL std::optional<UpdateLawFamilyPayload> DecodeWitnessUpdateLawFamilyPayload(
+    const SemanticWitness& witness);
+TVM_DLL std::optional<UpdateSourceSetPayload> DecodeWitnessUpdateSourceSetPayload(
+    const SemanticWitness& witness);
+TVM_DLL std::optional<RelationBindingPayload> DecodeWitnessRelationBindingPayload(
+    const SemanticWitness& witness);
 TVM_DLL std::optional<StateRole> DecodeWitnessStateRole(const SemanticWitness& witness);
 TVM_DLL std::optional<UpdateLawKind> DecodeWitnessUpdateLawKind(const SemanticWitness& witness);
-TVM_DLL std::optional<BindingKind> DecodeWitnessBindingKind(const SemanticWitness& witness,
-                                                            const char* payload_key);
 TVM_DLL std::optional<ContractMode> DecodeContractMode(const ffi::Map<ffi::String, ffi::Any>& freeze);
-TVM_DLL std::vector<std::string> DecodeWitnessStringPayloadArray(const SemanticWitness& witness,
-                                                                 const char* payload_key);
 
 }  // namespace semantic
 }  // namespace tl

@@ -95,36 +95,41 @@ tir::transform::Pass LiftStatefulSemanticIR() {
         }
         if (decoded->subject_kind == WitnessSubjectKind::kState &&
             decoded->fact_axis == WitnessFactAxis::kRole) {
-          if (auto role = DecodeWitnessStateRole(witness)) {
-            state_role_by_anchor[decoded->subject_anchor_id] = *role;
+          if (auto payload = DecodeWitnessStateRolePayload(witness)) {
+            state_role_by_anchor[decoded->subject_anchor_id] = payload->role;
           }
         } else if (decoded->subject_kind == WitnessSubjectKind::kUpdate &&
                    decoded->fact_axis == WitnessFactAxis::kLawFamily) {
-          if (auto law_kind = DecodeWitnessUpdateLawKind(witness)) {
-            update_kind_by_anchor[decoded->subject_anchor_id] = *law_kind;
+          if (auto payload = DecodeWitnessUpdateLawFamilyPayload(witness)) {
+            update_kind_by_anchor[decoded->subject_anchor_id] = payload->kind;
           }
         } else if (decoded->subject_kind == WitnessSubjectKind::kUpdate &&
                    decoded->fact_axis == WitnessFactAxis::kSourceSet) {
-          update_sources_by_anchor[decoded->subject_anchor_id] =
-              DecodeWitnessStringPayloadArray(witness, "sources");
+          if (auto payload = DecodeWitnessUpdateSourceSetPayload(witness)) {
+            update_sources_by_anchor[decoded->subject_anchor_id] = payload->sources;
+          }
         } else if (decoded->subject_kind == WitnessSubjectKind::kRelation &&
                    decoded->fact_axis == WitnessFactAxis::kCompanion) {
           companion_relations_by_update[decoded->subject_anchor_id] = {};
           for (const String& related : witness->related_anchor_ids) {
             companion_relations_by_update[decoded->subject_anchor_id].push_back(related);
           }
-          companion_binding_kind_by_update[decoded->subject_anchor_id] =
-              DecodeWitnessBindingKind(witness, "binding_kind")
-                  .value_or(DefaultBindingKindForRelation(decoded->fact_axis));
+          BindingKind binding_kind = DefaultBindingKindForRelation(decoded->fact_axis);
+          if (auto payload = DecodeWitnessRelationBindingPayload(witness)) {
+            binding_kind = payload->binding_kind;
+          }
+          companion_binding_kind_by_update[decoded->subject_anchor_id] = binding_kind;
         } else if (decoded->subject_kind == WitnessSubjectKind::kRelation &&
                    decoded->fact_axis == WitnessFactAxis::kCarriedFrom) {
           carried_relations_by_update[decoded->subject_anchor_id] = {};
           for (const String& related : witness->related_anchor_ids) {
             carried_relations_by_update[decoded->subject_anchor_id].push_back(related);
           }
-          carried_binding_kind_by_update[decoded->subject_anchor_id] =
-              DecodeWitnessBindingKind(witness, "binding_kind")
-                  .value_or(DefaultBindingKindForRelation(decoded->fact_axis));
+          BindingKind binding_kind = DefaultBindingKindForRelation(decoded->fact_axis);
+          if (auto payload = DecodeWitnessRelationBindingPayload(witness)) {
+            binding_kind = payload->binding_kind;
+          }
+          carried_binding_kind_by_update[decoded->subject_anchor_id] = binding_kind;
         }
       }
     }

@@ -60,6 +60,13 @@
     - 新增 `semantic_vocab / semantic_witness_decoder / semantic_refinement_rules`
     - string 现在主要保留在 FFI/attr 边界
     - `LiftStatefulSemanticIR` 与 `ValidateSemanticRefinement` 内部已改为 typed vocab + centralized rule table
+  - `Phase A` 当前又把高频 witness payload 收成了集中 typed family：
+    - 新增 `semantic_witness_payloads`
+    - `AnalyzeSemanticStructure` 现在通过 centralized payload builder 发射 canonical payload
+    - `LiftStatefulSemanticIR` 与 `ValidateSemanticRefinement` 不再直接按 key 拆
+      `fact_value`
+    - `relation.derives_index_from` 已收成 empty payload，不再保留冗余
+      `"kind": "index_derivation"` 协议
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组
@@ -130,8 +137,10 @@
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'device_program_registry or semantic_seeds or hard_freeze' -q`
   - `3 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
-  - `22 passed`
+  - `24 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'semantic_vocab_normalizes or semantic_vocab_rejects' -q`
+  - `2 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'semantic_payload' -q`
   - `2 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'witness or refinement or invalidation_contract' -q`
   - `5 passed`

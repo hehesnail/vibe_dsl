@@ -75,6 +75,12 @@
   - `semantic_witness_decoder` 统一做 raw witness -> typed view 的 payload 解析
   - `semantic_refinement_rules` 统一维护 relation/binding/contract legality
   - string 只留在 FFI reflection、attr 存储和报错打印边界
+- 进一步收紧 witness payload 时，也不要让 `AnalyzeSemanticStructure`、lift、validator
+  各自手拼/手拆 `Map<String, Any>`。更稳的形态是：
+  - `semantic_witness_payloads` 统一维护 canonical payload family
+  - analysis 通过 payload builder 发射 witness
+  - lift / refinement validator 只消费 typed payload decoder
+  - 对不需要额外值的 axis，允许 empty payload；不要保留冗余 `"kind": ...` 协议
 - 类似地，不要在 `AnalyzeSemanticStructure` 末端用“本 region 里出现过 `if_then_else` / `gemm`”这种全局命中来直接判 `selection_state` / `recurrence`。更稳的做法是把局部计算关系先提升成 typed attr，例如 `selection_targets`、loop-carried update facts，再由 semantic lift 消费
 - 对 selection/indexing family，仅仅恢复出 `selection_state` 和 `index_state` 还不够。如果后续语义需要知道“哪个 value state 和哪个 companion/index state 属于同一次 selection”，就应把这层 pairing 作为上游 typed analysis attr 显式导出，例如 `blackhole.fragment_regions[*].selection_pairs = {value_target, companion_target, source_states}`，再由 semantic lift 写进对应 `select` update 的 typed binding（如 `paired_value_state`）
 - 对 selection/indexing family 的 arg-reduction target，也不要再靠 integer hint 去判 `index_state`。更稳的做法是让 fragment analysis 显式导出 `blackhole.fragment_regions[*].arg_reduce_targets`，把“这个 reduction target 属于 selection companion/value flow”作为 typed relation 固化下来，再由 semantic lift 恢复角色
