@@ -1752,3 +1752,203 @@ proof assistant 代码，而是先把 theorem、precondition、proof obligation 
 - 它为后续 `SpatialProgram` refinement 提供了冻结的 algorithmic truth boundary
 
 这个表述既不夸大，也不会低估当前设计真正已经达到的高度。
+
+## Task 10: Formal Semantics Note Skeleton for This Repo
+
+为了避免后续 research track 再次退回“概念很多但对象不固定”，这里直接给出一版适合本仓库的
+`formal semantics note` 骨架。它不是第二份总设计，而是将来如果要写技术报告、research memo
+或 mechanization note，最自然的展开顺序。
+
+### Section 1: Scope and Claim
+
+先把 claim 收窄到本仓库真正能 defend 的版本：
+
+- 研究对象不是任意 lower 后 TIR 的全语义恢复
+- 研究对象是 `Phase A` 消费的 canonical evidence domain
+- 目标不是 completeness
+- 目标是 bounded semantic abstraction 的 soundness
+
+建议固定成下面这个 claim：
+
+- 对满足 canonical evidence precondition 的程序，`Phase A` 产生的 `SemanticProgram`
+  是该 evidence domain 上的 sound abstraction；后续 audited preserve/rebind pass 不破坏该抽象，
+  `Phase B` 只能对其做 organization-preserving refinement。
+
+### Section 2: Concrete Objects
+
+这一节只定义本仓库真正拿来做 `Phase A` 输入的对象，不扩到全部 compiler IR。
+
+建议固定：
+
+- `E_seed`
+  - pre-lift semantic seeds
+- `E_frag`
+  - selected fragment attrs
+- `E_w`
+  - `tl.semantic_witnesses`
+- `E_freeze_pre`
+  - lift 之前可要求的 freeze/canonicalization precondition
+
+合起来得到：
+
+- `E = (E_seed, E_frag, E_w, E_freeze_pre)`
+
+关键点：
+
+- `E` 是 collecting domain
+- `E` 只包含 `Phase A` 实际依赖的事实
+- 不把 `Phase B/C` 才需要的 spatial/target truth 混进来
+
+### Section 3: Abstract Objects
+
+这一节定义 `A`，也就是 `Phase A` 的抽象语义对象。
+
+建议固定：
+
+- `A_core`
+  - `Domain`
+  - `State`
+  - `Update`
+  - `UpdateLaw`
+  - `SemanticSupplement`
+- `A_graph`
+  - `StateVersion`
+  - `StateDef`
+  - `StateUse`
+  - `StateJoin`
+- `A_contract`
+  - `preserve`
+  - `typed_rebind`
+  - `invalidate`
+
+合起来得到：
+
+- `A = (A_core, A_graph, A_contract)`
+
+关键点：
+
+- `A_graph` 是 normalization，不是第二 semantic channel
+- `A_contract` 是 companion truth 的生命周期语义，而不是纯工程元数据
+
+### Section 4: Semantic Meaning of Each Abstract Component
+
+这里不写实现细节，而写语义解释。
+
+至少要明确：
+
+- `State.role`
+  - 表示哪类 algorithmic state
+- `UpdateLaw.kind`
+  - 表示哪类 abstract update family
+- `source_set`
+  - 表示该 update 语义上依赖哪些 state
+- `companion`
+  - 表示 selection/value-index 之类的 companion relation
+- `carried_from`
+  - 表示 recurrence/carry 依赖
+- `StateJoin(loop_carried)`
+  - 表示 ordered recurrence boundary
+
+这一节的目标不是列举字段，而是回答：
+
+- “这个对象在抽象语义里到底是什么意思”
+
+### Section 5: Abstraction and Validation
+
+这一节定义：
+
+- `alpha : E -> A`
+- `R(e, a)`
+
+对本仓库的最现实写法是：
+
+- `alpha` 由 `AnalyzeSemanticStructure + LiftStatefulSemanticIR` 实现
+- `R(e, a)` 由 `ValidateSemanticRefinement` 近似实现
+
+建议明确两条关系：
+
+1. `alpha` 负责从 evidence 生成 semantic abstraction
+2. `R` 负责检查生成结果是否满足 soundness obligation
+
+这样后面不管是否引入完整 `gamma`，至少对象关系已经定了。
+
+### Section 6: Soundness Theorems
+
+这一节直接复用 `Task 9` 的 theorem checklist，但改成更像 report 的组织：
+
+1. Evidence well-formedness
+2. Lift soundness
+3. Graph soundness
+4. Preserve theorem
+5. Typed rebind theorem
+6. Invalidation safety
+7. `Phase A -> Phase B` refinement theorem
+8. Rejection discipline
+
+每个 theorem 都应写：
+
+- statement
+- precondition
+- checked by
+- still missing
+
+### Section 7: Failure Modes and Explicit Non-Goals
+
+这一节很重要，因为它决定论文/技术报告是否诚实。
+
+建议明确写出：
+
+- 本工作不证明 arbitrary workload completeness
+- 本工作不证明从任意 lower 后 IR 自动恢复所有非平凡语义
+- 本工作不保证没有 precision loss
+- 本工作允许 reject / invalidate / defer
+- 本工作当前不证明 `Phase C` target materialization correctness
+
+同时列出真实 failure mode：
+
+- evidence 不足
+- current semantic core 不足
+- truth 属于 `Phase B/C`
+- companion contract 被破坏
+
+### Section 8: Bridge to Phase B
+
+这一节只讲一个核心句子：
+
+- `Phase B` 不是 semantic recovery layer，而是 organization-preserving refinement layer
+
+然后展开成：
+
+- `Phase B` 允许增加 task/channel/layout/workpartition structure
+- `Phase B` 不允许修改 `Phase A` 冻结的 algorithmic truth
+- `Phase B` 最需要的是 executable refinement validator，而不是新的 heuristic matcher
+
+这会把 `Phase A` formalization 和主线工程推进真正接起来，而不是停在 `Phase A` 自我完结。
+
+### Section 9: Minimal Mechanization Plan
+
+如果将来真要 mechanize，这一节应该非常克制。
+
+推荐最小顺序：
+
+1. mechanize witness vocabulary and payload family
+2. mechanize `SemanticProgram` core
+3. mechanize state/effect graph normalization invariant
+4. mechanize `ValidateSemanticRefinement` 对应的核心 lemma
+
+不要直接 mechanize：
+
+- 全部 TIR
+- 全部 Phase B/C
+- 全编译器执行语义
+
+因为那会把研究重心从“证明 `Phase A` 是什么”转成“和整个 compiler 规模作战”。
+
+### Immediate Next Research Artifacts
+
+如果要真正开始沿这条线做事，建议顺序是：
+
+1. 把上面的 skeleton 复制成单独 `formal semantics note`
+2. 为 `Task 9` 的每个 theorem 做一页 obligation matrix
+3. 在 `Phase B` 开始前，先定义 `SemanticProgram -> SpatialProgram` 的 refinement interface
+4. 只有当这三步稳定后，再考虑 mechanization

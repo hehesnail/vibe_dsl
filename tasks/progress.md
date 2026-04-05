@@ -96,6 +96,10 @@
     - 把下一步最值钱的 research deliverable 收敛为：
       formal semantics note、obligation matrix、`Phase B` refinement validator、
       small mechanized core
+  - `Phase A` 文档当前又把 `formal semantics note` 的 repo-specific skeleton 补出来了：
+    - 先固定 `Scope / Concrete Objects / Abstract Objects / alpha / R / Soundness Theorems`
+    - 再固定 `Failure Modes / Bridge to Phase B / Minimal Mechanization Plan`
+    - 这样后续 research track 可以直接展开，不需要再从抽象概念重新组织
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组
