@@ -114,6 +114,7 @@ Implemented note:
 - Modify: `tilelang_repo/src/transform/validate_stateful_semantic_ir.cc`
 - Modify: `tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py`
 - Modify: `tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
+- Status: `2026-04-05` 已落地
 
 Design note:
 
@@ -133,7 +134,7 @@ Design note:
   - transient compute scratch / matmul destination hint
   但这种区分必须通过抽象 role/trait 表达，不能把 `scores_max / logsum / acc_s_cast` 等具体命名写成长期协议
 
-- [ ] **Step 1: Expand semantic schema beyond A1**
+- [x] **Step 1: Expand semantic schema beyond A1**
 
 Required additions:
 
@@ -143,7 +144,7 @@ Required additions:
 - typed `SemanticSupplement`
 - clearer `AtomicEffect -> Update` recovery boundary
 
-- [ ] **Step 2: Make `flash-attn` carry / stats state explicit in semantic layer**
+- [x] **Step 2: Make `flash-attn` carry / stats state explicit in semantic layer**
 
 This stage must separate:
 
@@ -152,7 +153,7 @@ This stage must separate:
 
 This is the first stage allowed to directly attack the root cause behind the current `blackhole.acc` correctness mismatch.
 
-- [ ] **Step 3: Add one non-attention semantic gate**
+- [x] **Step 3: Add one non-attention semantic gate**
 
 Recommended gates for A2:
 
@@ -173,14 +174,51 @@ Expected:
 - `flash-attn` 的 stats/carry/update 不再依赖 raw TIR 晚期猜测
 - `flash-attn` pipeline 断言能看见 algorithmic state 与 transient scratch 的语义分离
 
-- [ ] **Step 4: Re-run shared zero-regression baseline**
+- [x] **Step 4: Re-run shared zero-regression baseline**
 
 Run the shared zero-regression baseline above.
 
-- [ ] **Step 5: Stage 2 exit gate**
+- [x] **Step 5: Stage 2 exit gate**
 
 Only proceed when:
 
 - `flash-attn` semantic root cause 已在 semantic 层有显式对象表达
 - 至少一个 non-attention semantic gate 通过
 - shared zero-regression baseline 全绿
+
+Implemented note:
+
+- `SemanticProgram` 现在额外承载 typed `SemanticSupplement`，A2 当前已把
+  `AccessMap.traits`、`UpdateLaw.kind == select / recurrence` 和 supplement payload
+  接进 typed semantic object set
+- `AnalyzeSemanticStructure` 当前会从现有
+  `fragment_regions / work_decomposition / pipeline_stages / semantic_seeds`
+  恢复抽象 state role：
+  - `carry`
+  - `reduction_accumulator`
+  - `selection_state`
+  - `index_state`
+  - `transient`
+- A2 明确保持 workload-agnostic schema：
+  - `flash-attn / topk / chunk recurrence` 只作为 validation family
+  - schema 本身不引入 workload-specific noun bag
+- `flash-attn` 当前已在 semantic layer 和 pipeline gate 上稳定看到：
+  - algorithmic carry / reduction state
+  - transient compute scratch
+  的抽象角色分离
+- 当前验证：
+  - `pytest testing/python/transform/test_blackhole_semantic_ir.py -q`
+    - `10 passed`
+  - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'topk or selection or recurrence' -q`
+    - coverage 已包含在全量 `10 passed` 中
+  - `pytest testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
+    - `26 passed`
+  - shared zero-regression baseline：
+    - `test_blackhole_copy_pipeline.py -q`
+      - `40 passed, 10 skipped, 1 xfailed`
+    - `test_blackhole_copy_runtime.py -q` under `scripts/setup_tt_sim.sh`
+      - `12 passed`
+    - `test_blackhole_gemm.py -q`
+      - `24 passed, 11 skipped`
+    - `test_blackhole_tvm_ffi_export.py -q`
+      - `1 passed`

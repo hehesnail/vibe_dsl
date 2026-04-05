@@ -72,13 +72,22 @@ Update::Update(ffi::String name, ffi::String state_name, UpdateLaw law,
   data_ = std::move(n);
 }
 
+SemanticSupplement::SemanticSupplement(ffi::String kind, ffi::Map<ffi::String, ffi::Any> payload) {
+  auto n = ffi::make_object<SemanticSupplementNode>();
+  n->kind = std::move(kind);
+  n->payload = std::move(payload);
+  data_ = std::move(n);
+}
+
 SemanticProgram::SemanticProgram(ffi::Array<Domain> domains, ffi::Array<State> states,
-                                 ffi::Array<Update> updates, ffi::Array<ffi::String> seeds,
-                                 ffi::Array<TIRAnchor> anchors) {
+                                 ffi::Array<Update> updates,
+                                 ffi::Array<SemanticSupplement> supplements,
+                                 ffi::Array<ffi::String> seeds, ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<SemanticProgramNode>();
   n->domains = std::move(domains);
   n->states = std::move(states);
   n->updates = std::move(updates);
+  n->supplements = std::move(supplements);
   n->seeds = std::move(seeds);
   n->anchors = std::move(anchors);
   data_ = std::move(n);
@@ -92,6 +101,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   DomainNode::RegisterReflection();
   StateNode::RegisterReflection();
   UpdateNode::RegisterReflection();
+  SemanticSupplementNode::RegisterReflection();
   SemanticProgramNode::RegisterReflection();
 }
 
@@ -137,13 +147,18 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                           return Update(std::move(name), std::move(state_name), std::move(law),
                                         std::move(anchors), std::move(bindings));
                         });
+  refl::GlobalDef().def("tl.SemanticSupplement",
+                        [](ffi::String kind, ffi::Map<ffi::String, ffi::Any> payload) {
+                          return SemanticSupplement(std::move(kind), std::move(payload));
+                        });
   refl::GlobalDef().def("tl.SemanticProgram",
                         [](ffi::Array<Domain> domains, ffi::Array<State> states,
-                           ffi::Array<Update> updates, ffi::Array<ffi::String> seeds,
-                           ffi::Array<TIRAnchor> anchors) {
+                           ffi::Array<Update> updates,
+                           ffi::Array<SemanticSupplement> supplements,
+                           ffi::Array<ffi::String> seeds, ffi::Array<TIRAnchor> anchors) {
                           return SemanticProgram(std::move(domains), std::move(states),
-                                                 std::move(updates), std::move(seeds),
-                                                 std::move(anchors));
+                                                 std::move(updates), std::move(supplements),
+                                                 std::move(seeds), std::move(anchors));
                         });
 }
 

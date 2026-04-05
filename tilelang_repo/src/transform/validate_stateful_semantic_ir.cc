@@ -26,6 +26,12 @@ bool IsAllowedLawKind(const ffi::String& kind) {
   return kKinds.count(kind);
 }
 
+bool IsAllowedStateRole(const ffi::String& role) {
+  static const std::unordered_set<std::string> kRoles = {
+      "carry", "reduction_accumulator", "selection_state", "index_state", "transient"};
+  return kRoles.count(role);
+}
+
 }  // namespace
 
 tir::transform::Pass ValidateStatefulSemanticIR() {
@@ -37,6 +43,11 @@ tir::transform::Pass ValidateStatefulSemanticIR() {
     ICHECK(maybe_program) << "ValidateStatefulSemanticIR requires tl.semantic_program";
     const SemanticProgram& program = maybe_program.value();
     ICHECK(!program->domains.empty()) << "SemanticProgram must contain at least one Domain";
+    for (const State& state : program->states) {
+      ICHECK(state.defined());
+      ICHECK(IsAllowedStateRole(state->role))
+          << "Unsupported State.role in A2 validator: " << state->role;
+    }
     for (const Update& update : program->updates) {
       ICHECK(update.defined());
       ICHECK(update->law.defined()) << "SemanticProgram update must carry UpdateLaw";

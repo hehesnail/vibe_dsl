@@ -397,6 +397,37 @@ def test_flash_attention_forward_lowers_mha_pipeline_end_to_end():
     assert artifact is not None
 
 
+def test_flash_attention_forward_pipeline_lifts_semantic_roles_without_workload_specific_schema():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                256,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    program = artifact.device_mod["main_kernel"].attrs["tl.semantic_program"]
+    state_roles = {str(state.role) for state in program.states}
+    law_kinds = {str(update.law.kind) for update in program.updates}
+
+    assert {"carry", "reduction_accumulator", "transient"}.issubset(state_roles)
+    assert "recurrence" in law_kinds
+    assert "selection_state" in state_roles
+
+
 def test_flash_attention_forward_lowers_gqa_pipeline_for_supported_stage_count():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:

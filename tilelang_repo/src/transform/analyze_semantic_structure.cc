@@ -47,6 +47,8 @@ bool IsTrackedStateScope(const std::string& scope) {
   return scope == "local" || scope == "local.fragment" || scope == "blackhole.acc";
 }
 
+bool LooksLikeIndexScope(const std::string& scope) { return scope == "blackhole.acc" || scope == "local.fragment"; }
+
 class LocalStateCollector : public tir::StmtExprVisitor {
  public:
   void VisitStmt_(const tir::BlockNode* op) final {
@@ -135,6 +137,12 @@ tir::transform::Pass AnalyzeSemanticStructure() {
 
     Array<Any> states;
     std::unordered_map<std::string, int> state_index;
+    std::unordered_set<std::string> reduction_targets;
+    std::unordered_set<std::string> integer_states;
+    std::unordered_set<std::string> loop_carried_states;
+    std::unordered_set<std::string> select_candidate_states;
+    bool saw_if_then_else = false;
+    bool saw_gemm_loop_carried = false;
     auto register_state = [&states, &state_index](const std::string& name, const std::string& role,
                                                   const std::string& scope) {
       auto it = state_index.find(name);
@@ -160,12 +168,65 @@ tir::transform::Pass AnalyzeSemanticStructure() {
         auto region = tvm::Downcast<Map<String, Any>>(region_any);
         for (const Any& buffer_any : tvm::Downcast<Array<Any>>(region["fragment_buffers"])) {
           auto buffer = tvm::Downcast<Map<String, Any>>(buffer_any);
-          register_state(buffer["name"].cast<String>(), "compute_state",
+          const std::string name = buffer["name"].cast<String>();
+          const std::string scope = buffer["scope"].cast<String>();
+          register_state(name, "transient",
                          buffer["scope"].cast<String>());
+          if (LooksLikeIndexScope(scope) && (name.find("idx") != std::string::npos ||
+                                             name.find("index") != std::string::npos)) {
+            integer_states.insert(name);
+          }
         }
         for (const Any& carried_any : tvm::Downcast<Array<Any>>(region["loop_carried_state"])) {
           auto carried = tvm::Downcast<Map<String, Any>>(carried_any);
-          register_state(carried["name"].cast<String>(), "carry_state", "");
+          const std::string name = carried["name"].cast<String>();
+          loop_carried_states.insert(name);
+          register_state(name, "carry", "");
+        }
+        for (const Any& pointwise_any : tvm::Downcast<Array<Any>>(region["pointwise_ops"])) {
+          if (tvm::Downcast<String>(pointwise_any) == "if_then_else") {
+            saw_if_then_else = true;
+          }
+        }
+        if (region.count("ops")) {
+          for (const Any& op_any : tvm::Downcast<Array<Any>>(region["ops"])) {
+            if (tvm::Downcast<String>(op_any) == "gemm" && !loop_carried_states.empty()) {
+              saw_gemm_loop_carried = true;
+            }
+          }
+        }
+        if (region.count("row_broadcasts") &&
+            !tvm::Downcast<Array<Any>>(region["row_broadcasts"]).empty()) {
+          for (const Any& broadcast_any : tvm::Downcast<Array<Any>>(region["row_broadcasts"])) {
+            auto source = tvm::Downcast<Map<String, Any>>(broadcast_any);
+            select_candidate_states.insert(source["source"].cast<String>());
+          }
+        }
+        for (const Any& reduction_any : tvm::Downcast<Array<Any>>(region["row_reductions"])) {
+          auto reduction = tvm::Downcast<Map<String, Any>>(reduction_any);
+          const std::string target = reduction["target"].cast<String>();
+          reduction_targets.insert(target);
+          if (target.find("idx") != std::string::npos || target.find("index") != std::string::npos) {
+            integer_states.insert(target);
+          }
+          const std::string role = integer_states.count(target)
+                                       ? "index_state"
+                                       : (saw_if_then_else ? "selection_state"
+                                                           : "reduction_accumulator");
+          register_state(target, role, "");
+          if (role == "selection_state") {
+            select_candidate_states.insert(target);
+          }
+        }
+        for (const std::string& carried : loop_carried_states) {
+          if (!reduction_targets.count(carried)) {
+            register_state(carried, "carry", "");
+          }
+        }
+        for (const std::string& name : select_candidate_states) {
+          if (!integer_states.count(name)) {
+            register_state(name, "selection_state", "");
+          }
         }
       }
     } else {
@@ -194,6 +255,26 @@ tir::transform::Pass AnalyzeSemanticStructure() {
           entry.Set("reduce_kind", reduction["kind"].cast<String>());
           updates.push_back(entry);
         }
+        if (saw_if_then_else && !select_candidate_states.empty()) {
+          for (const std::string& state_name : select_candidate_states) {
+            Map<String, Any> entry;
+            entry.Set("name", String(std::string("select_") + state_name));
+            entry.Set("kind", String(integer_states.count(state_name) ? "select" : "select"));
+            entry.Set("target_state", String(state_name));
+            entry.Set("traits", Array<Any>{String("selected"), String("indexed")});
+            updates.push_back(entry);
+          }
+        }
+        if (saw_gemm_loop_carried) {
+          for (const std::string& state_name : loop_carried_states) {
+            Map<String, Any> entry;
+            entry.Set("name", String(std::string("recur_") + state_name));
+            entry.Set("kind", String("recurrence"));
+            entry.Set("target_state", String(state_name));
+            entry.Set("traits", Array<Any>{String("carried"), String("staged")});
+            updates.push_back(entry);
+          }
+        }
       }
     }
 
@@ -211,6 +292,13 @@ tir::transform::Pass AnalyzeSemanticStructure() {
     structure.Set("states", states);
     structure.Set("updates", updates);
     structure.Set("seeds", seeds);
+    structure.Set("supplements", Array<Any>{
+                                     Map<String, Any>{{"kind", String("analysis_sources")},
+                                                      {"payload",
+                                                       Map<String, Any>{{"has_fragment_regions",
+                                                                         Bool(func->GetAttr<Array<Any>>("blackhole.fragment_regions").has_value())},
+                                                                        {"has_pipeline_stages",
+                                                                         Bool(func->GetAttr<Array<Any>>("blackhole.pipeline_stages").has_value())}}}}});
 
     Map<String, Any> attrs = func->attrs.defined() ? func->attrs->dict : Map<String, Any>();
     attrs.Set(attr::kTLSemanticStructure, structure);

@@ -199,11 +199,34 @@ class Update : public ObjectRef {
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(Update, ObjectRef, UpdateNode);
 };
 
+class SemanticSupplementNode : public Object {
+ public:
+  ffi::String kind;
+  ffi::Map<ffi::String, ffi::Any> payload;
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<SemanticSupplementNode>()
+        .def_ro("kind", &SemanticSupplementNode::kind)
+        .def_ro("payload", &SemanticSupplementNode::payload);
+  }
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.SemanticSupplement", SemanticSupplementNode, Object);
+};
+
+class SemanticSupplement : public ObjectRef {
+ public:
+  TVM_DLL SemanticSupplement(ffi::String kind, ffi::Map<ffi::String, ffi::Any> payload);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SemanticSupplement, ObjectRef,
+                                             SemanticSupplementNode);
+};
+
 class SemanticProgramNode : public Object {
  public:
   ffi::Array<Domain> domains;
   ffi::Array<State> states;
   ffi::Array<Update> updates;
+  ffi::Array<SemanticSupplement> supplements;
   ffi::Array<ffi::String> seeds;
   ffi::Array<TIRAnchor> anchors;
 
@@ -213,6 +236,7 @@ class SemanticProgramNode : public Object {
         .def_ro("domains", &SemanticProgramNode::domains)
         .def_ro("states", &SemanticProgramNode::states)
         .def_ro("updates", &SemanticProgramNode::updates)
+        .def_ro("supplements", &SemanticProgramNode::supplements)
         .def_ro("seeds", &SemanticProgramNode::seeds)
         .def_ro("anchors", &SemanticProgramNode::anchors);
   }
@@ -223,8 +247,9 @@ class SemanticProgramNode : public Object {
 class SemanticProgram : public ObjectRef {
  public:
   TVM_DLL SemanticProgram(ffi::Array<Domain> domains, ffi::Array<State> states,
-                          ffi::Array<Update> updates, ffi::Array<ffi::String> seeds,
-                          ffi::Array<TIRAnchor> anchors);
+                          ffi::Array<Update> updates,
+                          ffi::Array<SemanticSupplement> supplements,
+                          ffi::Array<ffi::String> seeds, ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SemanticProgram, ObjectRef, SemanticProgramNode);
 };
 

@@ -72,8 +72,12 @@ tir::transform::Pass LiftStatefulSemanticIR() {
       if (update_map.count("target_state") && !tvm::Downcast<String>(update_map["target_state"]).empty()) {
         source_states.push_back(tvm::Downcast<String>(update_map["target_state"]));
       }
+      Array<String> access_traits;
+      if (update_map.count("traits")) {
+        access_traits = DowncastStringArray(tvm::Downcast<Array<Any>>(update_map["traits"]));
+      }
       Array<AccessMap> access_maps{
-          AccessMap("tir_region", {}, {})};
+          AccessMap("tir_region", {}, access_traits)};
       UpdateLaw law(tvm::Downcast<String>(update_map["kind"]),
                     tvm::Downcast<String>(update_map["target_state"]), source_states,
                     access_maps);
@@ -86,8 +90,18 @@ tir::transform::Pass LiftStatefulSemanticIR() {
                                update_anchors, bindings));
     }
 
+    Array<SemanticSupplement> supplements;
+    if (structure.count("supplements")) {
+      for (const Any& supplement_any : tvm::Downcast<Array<Any>>(structure["supplements"])) {
+        auto supplement_map = tvm::Downcast<Map<String, Any>>(supplement_any);
+        supplements.push_back(
+            SemanticSupplement(tvm::Downcast<String>(supplement_map["kind"]),
+                               tvm::Downcast<Map<String, Any>>(supplement_map["payload"])));
+      }
+    }
+
     Array<String> seeds = DowncastStringArray(tvm::Downcast<Array<Any>>(structure["seeds"]));
-    SemanticProgram semantic_program(domains, states, updates, seeds, anchors);
+    SemanticProgram semantic_program(domains, states, updates, supplements, seeds, anchors);
 
     Map<String, Any> attrs = func->attrs.defined() ? func->attrs->dict : Map<String, Any>();
     attrs.Set(attr::kTLSemanticProgram, semantic_program);
