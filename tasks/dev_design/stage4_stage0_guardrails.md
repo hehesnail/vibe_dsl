@@ -31,7 +31,7 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attent
 - Modify: `tilelang_repo/tilelang/transform/__init__.py`
 - Modify: `tasks/progress.md`
 
-- [ ] **Step 1: Establish the migration guardrails**
+- [x] **Step 1: Establish the migration guardrails**
 
 Deliver:
 
@@ -41,7 +41,25 @@ Deliver:
 - unsafe TIR mutation 导致 `tl.semantic_program / tl.spatial_program / tl.tt_program` 整体失效的 contract
 - compatibility deletion gates checklist
 
-- [ ] **Step 2: Add Stage 0 structure tests**
+Implemented:
+
+- `tilelang_repo/src/transform/common/semantic_program.h`
+  - 定义 `tl.device_programs`、`tl.semantic_seeds`、`tl.semantic_hard_freeze`
+  - 定义 `tl.semantic_program` / `tl.spatial_program` / `tl.tt_program`
+  - 定义 `tl.companion_invalidation_reason`
+- `tilelang_repo/src/transform/collect_device_programs.cc`
+  - 在 `SplitHostDevice` 前为 Blackhole `PrimFunc` 建立 module-scope device-program registry
+- `tilelang_repo/src/transform/project_semantic_seeds.cc`
+  - 投影最小 pre-lift semantic seeds
+  - 定义 hard-freeze state=`pre_lift_seeded`
+  - 定义 unsafe mutation 触发 companion IR 整体失效的 contract
+- `tilelang_repo/tilelang/engine/phase.py`
+  - 在 Blackhole 主链 `SplitHostDevice` 前接入
+    `AnnotateDeviceRegions -> ProjectSemanticSeeds -> CollectDevicePrograms`
+- `tilelang_repo/tilelang/transform/__init__.py`
+  - 暴露 `CollectDevicePrograms` / `ProjectSemanticSeeds` / `InvalidateBlackholeCompanionPrograms`
+
+- [x] **Step 2: Add Stage 0 structure tests**
 
 Run:
 
@@ -55,11 +73,32 @@ Expected:
 - `tl.semantic_seeds` 在 semantic lift 前可见
 - lift 之后 unsafe mutator 会显式拒绝或触发整体失效
 
-- [ ] **Step 3: Re-run shared zero-regression baseline**
+Status:
+
+- `tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py`
+  - `test_device_program_registry_is_collected_before_split_host_device`
+  - `test_semantic_seeds_are_projected_before_semantic_lift`
+  - `test_hard_freeze_invalidates_companion_programs_after_unsafe_mutation`
+- 验证结果：`3 passed`
+
+- [x] **Step 3: Re-run shared zero-regression baseline**
 
 Run the shared zero-regression baseline above.
 
-- [ ] **Step 4: Stage 0 exit gate**
+Status:
+
+- `test_blackhole_copy_pipeline.py -q`
+  - `49 passed, 1 skipped, 1 xfailed`
+- `test_blackhole_copy_runtime.py -q`
+  - `12 passed`
+- `test_blackhole_gemm.py -q`
+  - `35 passed`
+- `test_blackhole_tvm_ffi_export.py -q`
+  - `1 passed`
+- `test_blackhole_flash_attention_pipeline.py -q`
+  - `25 passed`
+
+- [x] **Step 4: Stage 0 exit gate**
 
 Only proceed when:
 
@@ -67,3 +106,8 @@ Only proceed when:
 - `ProgramPhase` 的稳定宿主不再依赖单 `PrimFunc.attrs`
 - `SemanticSeed` 输入通道和 deletion gates 已有结构测试
 - shared zero-regression baseline 全绿
+
+Exit status:
+
+- 本阶段的 migration guardrails 已在当前 Blackhole 主链落地
+- Phase A 可以开始承接 `SemanticProgram` typed companion IR 本体

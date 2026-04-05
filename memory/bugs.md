@@ -78,6 +78,35 @@
 
 ## 已解决（仍有复用价值）
 
+### schema-only compile-time ABI 若 strip `accessors` 却不从 `compile_time_arg_specs` 补 `buffer_materializations`，direct runtime 会在 ABI 校验前先报缺失 buffer spec
+
+- **时间**: 2026-04-05
+- **问题**: `test_blackhole_copy_direct_runtime_materializes_compile_time_abi_schema` / `test_blackhole_gemm_direct_runtime_materializes_compile_time_abi_schema` 在把 segment `accessors` 删掉、只保留 `compile_time_arg_specs` 后，direct runtime 会先报 `Missing Blackhole buffer materialization spec for buffer A`
+- **根本原因**:
+  - `BuildKernelCompileTimeArgsFromSchema` 已经能从 `compile_time_arg_specs` 生成 accessor compile-time args
+  - 但 `PopulateBufferMaterializationSpecs` 仍只从 legacy `kernel.accessors` 推导运行时 buffer materialization
+  - 一旦 schema-only 路径 strip 掉 `accessors`，runtime 还没走到真正的 compile-time ABI kind / args_config_bits 校验，就先因为缺少 `buffer_materializations` 失败
+- **解决**:
+  - `PopulateBufferMaterializationSpecs` 同时从 `kernel.compile_time_arg_specs` 的 `buffer/layout/memory_space` 元数据恢复 materialization descriptors
+  - 不再把 materialization 推导绑死在 `interleaved_accessor_cta` 或 legacy `accessors` 唯一路径上
+- **教训**:
+  - 只要 schema 已经声明自己能脱离 legacy attr 独立成立，runtime 依赖的所有派生物也必须能从这份 schema 重建
+  - 否则测试看起来像是在验证“ABI kind / accessor config”，实际却会被更早的兼容层缺口遮住
+
+### runtime arg dedup 若只在 spec 提取层修，而漏掉 segment fallback 或 codegen 聚合，同类 bug 会在 direct-runtime rebuild 路径重现
+
+- **时间**: 2026-04-05
+- **问题**: `test_blackhole_module_direct_call_grid_indexed_copy_worker_semaphore_handshake` 仍报 `Missing runtime arg binding for name: remote_noc_y`，即使 `ExtractRuntimeArgs` / `ExtractCommonRuntimeArgs` 已经改成 `identity:kind` dedup
+- **根本原因**:
+  - direct-runtime rebuild 路径会先经过 `MakeSegmentPrimFunc` 的 fallback runtime-arg merge，再走 `codegen_blackhole` 的 segment runtime-arg 聚合
+  - 这两层仍沿用旧的 “只按 `identity` dedup” 逻辑
+  - 对共享 identity `remote_consumer_core` 的 `logical_core_noc_x/y`，`_noc_y` 仍会在后续层被二次吞掉
+- **解决**:
+  - 把 `MakeSegmentPrimFunc` fallback merge 和 `codegen_blackhole` segment runtime-arg 聚合统一改成 `identity + ":" + kind`
+- **教训**:
+  - 这种协议修正不能只改一层 extractor；凡是会重新聚合/回填 runtime arg 的路径，都必须同步用同一 dedup key
+  - `identity` 表达的是“同一对象”，不是“唯一字段”；一旦 schema 允许对象拆成多个 kind 分量，所有聚合器都要遵守这个事实
+
 ### `cast_fragment_slice` 若把 `blackhole.acc` 结果写到后续 matmul 输入 CB，却不按未来 matmul 需求 `cb_push_back`，compute 会在第二次 matmul 前挂死
 
 - **时间**: 2026-04-01

@@ -40,17 +40,20 @@
 
 ## 下一步
 
-1. 执行 [stage4_stage0_guardrails.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_stage0_guardrails.md)
-   - 固定 `tl.device_programs`、`tl.semantic_seeds`、A1 hard freeze、deletion gates
-2. 执行 [stage4_phase_a_semantic_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_a_semantic_ir.md)
+1. 执行 [stage4_phase_a_semantic_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_a_semantic_ir.md)
    - 完成 `SemanticProgram` 最小 core 和 A2 扩面
-3. 执行 [stage4_phase_b_spatial_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_b_spatial_ir.md)
+2. 执行 [stage4_phase_b_spatial_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_b_spatial_ir.md)
    - 一等化 `ProgramPhase / Task / Channel / Layout / WorkPartition`
-4. 执行 [stage4_phase_c_tt_target_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_c_tt_target_ir.md)
+3. 执行 [stage4_phase_c_tt_target_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_c_tt_target_ir.md)
    - 完成 TT target cutover、compatibility deletion、`flash-attn` correctness payoff、以及 family expansion
 
 ## 当前代码事实
 
+- Stage 4 Stage 0 guardrails 已落地：
+  - `IRModule.global_infos["tl.device_programs"]` 已在 `SplitHostDevice` 前建立
+  - `PrimFunc.attrs["tl.semantic_seeds"]` 已作为 pre-lift typed input 通道接入
+  - `tl.semantic_hard_freeze` / `tl.companion_invalidation_reason` 已定义最小 A1 hard-freeze contract
+  - `CollectDevicePrograms`、`ProjectSemanticSeeds`、`InvalidateBlackholeCompanionPrograms` 已接入主线与 Python API
 - 当前 Blackhole 设备侧 pass 主线：
   `LowerDeviceStorageAccessInfo`
   -> `LowerIntrin`
@@ -64,6 +67,21 @@
   -> `PlanBlackholeCB`
   -> `AssignBlackholeCores`
 - TT-Sim 当前正式入口是顶层 `scripts/setup_tt_sim.sh`，并且必须和后续测试命令在同一个 shell 中执行
+
+## 最近验证
+
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'device_program_registry or semantic_seeds or hard_freeze' -q`
+  - `3 passed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
+  - `49 passed, 1 skipped, 1 xfailed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
+  - `12 passed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q`
+  - `35 passed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py -q`
+  - `1 passed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
+  - `25 passed`
 
 ## 当前活动文档
 

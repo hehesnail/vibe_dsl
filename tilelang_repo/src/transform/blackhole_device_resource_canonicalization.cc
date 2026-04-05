@@ -208,9 +208,11 @@ class BlackholeResourceClassifier : public StmtExprVisitor {
 
   void CollectLayoutFragments(const BlockNode* op) {
     if (!op->annotations.count(attr::kLayoutMap)) return;
-    auto layout_map = op->annotations.Get(attr::kLayoutMap);
-    ICHECK(layout_map) << "layout map is not defined";
-    for (const auto& [buffer, _layout] : layout_map->as<Map<Buffer, Layout>>().value()) {
+    auto layout_map_any = op->annotations.Get(attr::kLayoutMap);
+    if (!layout_map_any) return;
+    auto layout_map = layout_map_any->as<Map<Buffer, Layout>>();
+    if (!layout_map || !layout_map.value().defined()) return;
+    for (const auto& [buffer, _layout] : layout_map.value()) {
       std::string scope = GetScope(buffer->data);
       if (scope == "local" || scope == "local.fragment") {
         std::string name = std::string(buffer->name);

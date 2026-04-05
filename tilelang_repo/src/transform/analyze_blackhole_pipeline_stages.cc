@@ -52,6 +52,7 @@ using tvm::DictAttrs;
 using tvm::Integer;
 using tvm::ffi::Any;
 using tvm::ffi::Array;
+using tvm::ffi::GetRef;
 using tvm::ffi::Map;
 using tvm::ffi::String;
 

@@ -826,7 +826,7 @@ def test_blackhole_copy_direct_runtime_rejects_work_linear_id_in_common_runtime_
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
 
-    kernel = grid_indexed_staged_copy_kernel()
+    kernel = grid_indexed_staged_copy_kernel(grid_x=2, grid_y=1)
     target = Target("blackhole")
 
     with target:
@@ -841,6 +841,7 @@ def test_blackhole_copy_direct_runtime_rejects_work_linear_id_in_common_runtime_
             {
                 "name": "shared_work_linear_id",
                 "kind": "work_linear_id",
+                "identity": "shared_work_linear_id",
                 "dtype": "uint32",
             }
         ]
@@ -947,7 +948,7 @@ def test_blackhole_copy_direct_runtime_rejects_accessor_runtime_crta_bits():
     a_torch = torch.randn(32, 32, dtype=torch.float16)
     b_output = torch.zeros_like(a_torch)
 
-    with pytest.raises(tvm.error.InternalError, match="common runtime args"):
+    with pytest.raises(tvm.error.InternalError, match="common runtime args|args_config_bits == 2"):
         mutated_mod["main"](a_torch, b_output)
 
 

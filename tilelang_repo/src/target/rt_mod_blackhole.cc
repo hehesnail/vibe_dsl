@@ -1589,29 +1589,43 @@ static void PopulateBufferMaterializationSpecs(ExecutableSpec* spec) {
   std::unordered_map<std::string, BufferMaterializationSpec> by_buffer;
   std::vector<std::string> order;
 
+  auto register_buffer = [&](const std::string& buffer_name, const std::string& layout,
+                             const std::string& memory_space) {
+    if (buffer_name.empty()) {
+      return;
+    }
+    auto [it, inserted] = by_buffer.emplace(buffer_name, BufferMaterializationSpec{});
+    auto& materialization = it->second;
+    if (inserted) {
+      materialization.buffer = buffer_name;
+      materialization.materialization_kind = "replicated";
+      materialization.layout = layout;
+      materialization.memory_space = memory_space;
+      order.push_back(buffer_name);
+      return;
+    }
+    ICHECK_EQ(materialization.layout, layout)
+        << "Blackhole buffer materialization requires a single layout per buffer; "
+        << buffer_name << " used both " << materialization.layout << " and " << layout;
+    ICHECK_EQ(materialization.memory_space, memory_space)
+        << "Blackhole buffer materialization requires a single memory_space per buffer; "
+        << buffer_name << " used both " << materialization.memory_space << " and " << memory_space;
+  };
+
   for (const auto& kernel : spec->kernels) {
     for (const auto& accessor : kernel.accessors) {
       if (accessor.buffer.empty()) {
         continue;
       }
-      auto [it, inserted] = by_buffer.emplace(accessor.buffer, BufferMaterializationSpec{});
-      auto& materialization = it->second;
-      if (inserted) {
-        materialization.buffer = accessor.buffer;
-        materialization.materialization_kind = "replicated";
-        materialization.layout = accessor.layout;
-        materialization.memory_space = accessor.memory_space;
-        order.push_back(accessor.buffer);
-      } else {
-        ICHECK_EQ(materialization.layout, accessor.layout)
-            << "Blackhole buffer materialization requires a single layout per buffer; "
-            << accessor.buffer << " used both " << materialization.layout << " and "
-            << accessor.layout;
-        ICHECK_EQ(materialization.memory_space, accessor.memory_space)
-            << "Blackhole buffer materialization requires a single memory_space per buffer; "
-            << accessor.buffer << " used both " << materialization.memory_space << " and "
-            << accessor.memory_space;
+      register_buffer(accessor.buffer, accessor.layout, accessor.memory_space);
+    }
+    for (const auto& compile_time_arg_spec : kernel.compile_time_arg_specs) {
+      if (compile_time_arg_spec.buffer.empty() || compile_time_arg_spec.layout.empty() ||
+          compile_time_arg_spec.memory_space.empty()) {
+        continue;
       }
+      register_buffer(compile_time_arg_spec.buffer, compile_time_arg_spec.layout,
+                      compile_time_arg_spec.memory_space);
     }
   }
 
@@ -1658,12 +1672,14 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
       if (!allow_fallback(arg)) {
         continue;
       }
-      if (!arg.identity.empty() && seen.count(arg.identity)) {
+      const std::string dedupe_key =
+          !arg.identity.empty() && !arg.kind.empty() ? arg.identity + ":" + arg.kind : arg.identity;
+      if (!dedupe_key.empty() && seen.count(dedupe_key)) {
         continue;
       }
       merged.push_back(arg);
-      if (!arg.identity.empty()) {
-        seen.insert(arg.identity);
+      if (!dedupe_key.empty()) {
+        seen.insert(dedupe_key);
       }
     }
     return merged;

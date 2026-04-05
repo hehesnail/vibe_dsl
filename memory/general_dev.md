@@ -57,6 +57,10 @@
 - C++ 改动后 pytest 前先确认 `libtilelang.so` 已重编，避免加载旧库假阴性
 - 不要对同一个 `tilelang_repo/build/` 并行跑 `cmake --build` 和 pytest。共享构建目录在链接进行中时，测试可能加载到旧/半更新的 `libtilelang.so`，制造假阴性或顺序相关噪声
 - 对新的 split-after analysis pass，优先把结果写成结构化 IR attrs（`Array<Map<...>>`、`PrimExpr` 等），不要先字符串化再让后续测试/consumer 反解析。测试也应直接断言 attr 结构和 `PrimExpr` 语义，而不是只查字符串片段
+- 对 layered IR 迁移的 Stage 0 护栏，不要继续把 program registry 或 pre-lift semantic 输入挂在单个 `PrimFunc.attrs` 上。更稳的主链是：
+  - module-scope registry 进 `IRModule.global_infos["tl.device_programs"]`
+  - pre-lift typed 输入进 `PrimFunc.attrs["tl.semantic_seeds"]`
+  - unsafe TIR mutation 统一通过 companion invalidation contract 使 `tl.semantic_program / tl.spatial_program / tl.tt_program` 整体失效
 - 对 Blackhole `lower()` 主链，不能在 `SplitBlackholeKernel` / `Analyze*` / `LowerBlackholeOps` 之前就用旧的 device attrs 过滤掉入口 `PrimFunc`。Blackhole entry kernel 在这条链之前通常还没有 `blackhole.*` attrs，因此 `is_device_call()` 必须把 entry `PrimFunc` 视为 device 输入，否则专属 pass 实际上跑在空 `device_mod` 上
 - fragment region analysis 里的 `pointwise_chain` 不能通过全局扫描所有 `tir.add/mul/div/max/...` 来判定；那样会把普通索引算术也误记成 fragment compute。更稳的做法是只在 fragment/local region 自身的 store / dataflow 关系里识别 pointwise
 - 对 split-after TIR 的 fragment analysis，不要只盯 `CallNode`。像 `scores_sum[0] + acc_s[rv]`、`T.max(scores_max[0], tmp[0])` 这类模式在 TVM IR 里常常是 `AddNode` / `MaxNode` / `MulNode` / `DivNode` 等原生表达式节点；如果只扫 `CallNode`，row reduction 和 scalar-to-vector broadcast 会在真实 MHA/GQA IR 上整片漏掉
@@ -116,7 +120,9 @@
 - 对 codegen 层的 accessor ABI，也要把“当前只是 compile-time-only”写成显式边界，而不是模糊约定。像 `TensorAccessorArgs<CTA>()` 这种路径，如果 slot 不是 compile-time 常量，就应该在 codegen 阶段直接 fail-fast；不要让更宽 accessor / CRTA execution 面以“先打印出来再说”的方式悄悄混入当前主链
 - 对 non-tile/stick copy，外部 DRAM buffer 的真实 `page_size` 不是 CB `page_size` 的别名；需要把单次 transport 的 `page_bytes` 明确收进 accessor schema（如 `transport_page_size`），再由 direct runtime 用这份 schema 创建 TT-Metal buffer/accessor
 - 当 host runtime 当前只支持一种 buffer materialization（例如 replicated DRAM）时，也不要把它硬编码成执行流里的隐式默认值；应先把每个 runtime buffer 的 materialization descriptor 显式收进 `ExecutableSpec`，再让 runtime 按 descriptor 校验并 materialize
+- 当 direct runtime 开始正式支持 compile-time ABI schema-only 路径时，`buffer_materializations` 不能只从 legacy `accessors` 推导；也必须能从 `compile_time_arg_specs` 上带的 `buffer/layout/memory_space` 元数据恢复。否则一旦测试或新 pass strip 掉 `accessors`，runtime 会在真正的 ABI 校验之前先报 “Missing buffer materialization spec”
 - 当多个 kernel/segment 共享 runtime arg 或 common runtime arg 时，不要在 spec 提取层继续靠 `kind + name/buffer` 推断“是不是同一个参数”；应由 lowering/split 直接产出稳定 `identity`，`rt_mod_blackhole` 只按 `identity` 聚合，缺失 identity 直接 build-time 拒绝
+- runtime/common-runtime arg 的 dedup key 只要进入“同一对象多个分量”的 schema，就必须统一成 `identity + ":" + kind`，而不能在 codegen、segment fallback、spec 提取里各写一套更弱的 dedup。remote core 的 `logical_core_noc_x/y` 就是稳定案例：`identity` 只表示“同一 remote core”，不是唯一 arg key
 - TT-Metal 的 `SetCommonRuntimeArgs` 是 kernel-level shared channel，只适合对所有 core/work item 相同的 metadata（如 buffer address、semaphore id）；`work_linear_id`、tile range、logical core coord 这类 per-work/per-core 值不能塞进 common channel
 - accessor schema 里凡是叫 `args_config_bits` 的字段，都必须等价于 TT-Metal `tensor_accessor::ArgConfig.raw()`；不要自造“interleaved=1”这类本地编码。当前最小稳定映射是：interleaved+dram=`2`，sharded+dram=`3`，sharded+l1=`1`，interleaved+l1=`0`
 - TT-Metal program-local semaphore 当前正式 host API 是 `CreateSemaphore(program, core_ranges, initial_value)`；如果上层 schema 还保留 `core_type`，应把它当校验字段，不要为了“对齐字段”继续依赖 deprecated 的 `CreateSemaphore(..., core_type)`

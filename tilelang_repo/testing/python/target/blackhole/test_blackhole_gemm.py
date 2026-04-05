@@ -1109,7 +1109,7 @@ def test_blackhole_gemm_direct_runtime_rejects_accessor_runtime_crta_bits():
     b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
     c_output = torch.zeros(32, 32, dtype=torch.float32)
 
-    with pytest.raises(tvm.error.InternalError, match="common runtime args"):
+    with pytest.raises(tvm.error.InternalError, match="common runtime args|args_config_bits == 2"):
         mutated_mod["main"](a_torch, b_torch, c_output)
 
 

@@ -96,7 +96,7 @@ ffi::Array<ffi::Any> AggregateSegmentRuntimeArgsForCodegen(const tvm::tir::PrimF
     return aggregated;
   }
 
-  std::unordered_set<std::string> seen_identities;
+  std::unordered_set<std::string> seen_runtime_args;
   for (const auto& item : segment_plan_attr.value()) {
     auto segment = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
         tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
@@ -114,10 +114,16 @@ ffi::Array<ffi::Any> AggregateSegmentRuntimeArgsForCodegen(const tvm::tir::PrimF
         continue;
       }
       std::string identity;
+      std::string kind;
       if (auto v = arg.Get("identity")) {
         identity = Downcast<tvm::ffi::String>(v.value());
       }
-      if (!identity.empty() && !seen_identities.insert(identity).second) {
+      if (auto v = arg.Get("kind")) {
+        kind = Downcast<tvm::ffi::String>(v.value());
+      }
+      std::string dedupe_key =
+          !identity.empty() && !kind.empty() ? identity + ":" + kind : identity;
+      if (!dedupe_key.empty() && !seen_runtime_args.insert(dedupe_key).second) {
         continue;
       }
       aggregated.push_back(arg);

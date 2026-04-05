@@ -632,6 +632,21 @@ def BlackholeDeviceResourceCanonicalization():
     return _ffi_api.BlackholeDeviceResourceCanonicalization()  # type: ignore
 
 
+def ProjectSemanticSeeds():
+    """Project lightweight pre-lift semantic seeds for Stage 4 semantic recovery."""
+    return tvm.ffi.get_global_func("tl.transform.ProjectSemanticSeeds")()
+
+
+def CollectDevicePrograms():
+    """Collect module-scope device-program registry before SplitHostDevice."""
+    return tvm.ffi.get_global_func("tl.transform.CollectDevicePrograms")()
+
+
+def InvalidateBlackholeCompanionPrograms(reason: str):
+    """Drop frozen companion IR attrs after an unsafe mutator changes TIR structure."""
+    return tvm.ffi.get_global_func("tl.transform.InvalidateBlackholeCompanionPrograms")(reason)
+
+
 def SplitBlackholeKernel():
     """Annotate statements with blackhole.segment_kind for 3-kernel GEMM split.
 

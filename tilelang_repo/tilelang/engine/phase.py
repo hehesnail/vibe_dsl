@@ -252,6 +252,8 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
         if allow_global_thread_synchronization():
             mod = tilelang.transform.ThreadSync("global")(mod)
         mod = tilelang.transform.AnnotateDeviceRegions()(mod)
+        mod = tilelang.transform.ProjectSemanticSeeds()(mod)
+        mod = tilelang.transform.CollectDevicePrograms()(mod)
         mod = tilelang.transform.SplitHostDevice()(mod)
         mod = tilelang.transform.AnnotateReadOnlyParams()(mod)
         enable_aggressive_merge = should_enable_aggressive_merge(pass_ctx=pass_ctx, target=target)
