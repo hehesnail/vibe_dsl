@@ -124,10 +124,11 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 - `progress.md` 现在只保留相对稳定的阶段状态、主 blocker、当前下一步和验证摘要。
 - 详细逐步实现记录、历史 checklist 和理论证明草稿分别留在阶段文档、git history 与 formalization note 中。
 - `stage4_semantic_manifest.md` 当前作为 `Phase A` 信息源重构初设保留：
-  - 它的定位是把 explicit-op truth 从 late matcher 前移到真实销毁边界：
+  - 它的定位是把 `Phase A` 需要的 explicit-op evidence 从 late matcher 前移到真实销毁边界：
     - `LowerTileOp` 边界的 early capture
     - `SplitHostDevice` 之后的显式 projection
     - device-side pre-`LowerIntrin` 的 residual augment
+  - semantic recovery 主体仍然只在 `AnalyzeSemanticStructure -> LiftStatefulSemanticIR -> Validate*`
   - 它不是新的跨层真源，也不改变 `Phase B / C` 只消费冻结后 companion IR 的边界
 - `final_blackhole_backend_redesign.md` 已在 `2026-04-06` 按当前执行状态刷新：
   - 已收成轻量总体设计文档
