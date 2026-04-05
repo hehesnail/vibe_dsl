@@ -2150,3 +2150,295 @@ proof assistant 代码，而是先把 theorem、precondition、proof obligation 
 - `ValidateSemanticRefinement` 可以继续按 `R` 的 obligation family 去扩
 - `Phase B` 可以围绕 `I_B` 去设计 refinement validator
 - 后续若做 mechanization，也知道应该 mechanize 哪些最小对象，而不是盲目扩到全编译器
+
+## Task 12: Executable Obligation Matrix for `R(E, A)`
+
+为了让 `R(E, A)` 不停留在“一个语义上应该成立的谓词”，这里把它进一步展开成
+可直接对照当前代码和后续验证器的 obligation matrix。
+
+可以把 `R(E, A)` 看成下面这些 obligation 的合取：
+
+- `R_vocab`
+- `R_anchor`
+- `R_role`
+- `R_law`
+- `R_source`
+- `R_relation`
+- `R_graph`
+- `R_contract`
+- `R_rebind`
+- `R_reject`
+
+### O1. `R_vocab`: Witness Vocabulary Closure
+
+**含义**
+
+- `E_w` 中每个 witness 都必须属于当前允许的 subject/axis/payload family
+
+**当前实现对应**
+
+- `semantic_vocab`
+- `semantic_witness_decoder`
+- `semantic_witness_payloads`
+
+**当前可执行检查点**
+
+- unsupported subject/axis/payload 直接在 decode/validator 阶段 fail
+
+**后续仍缺**
+
+- 更明确地区分：
+  - vocabulary 不合法
+  - payload shape 不合法
+  - payload 值超出当前 semantic core
+
+### O2. `R_anchor`: Anchor and Related-Object Closure
+
+**含义**
+
+- witness 所引用的 subject anchor、related anchor 必须都能在 `A_core` 中闭合
+
+**当前实现对应**
+
+- `ValidateSemanticRefinement` 的 state/update/relation anchor closure 检查
+
+**为什么它重要**
+
+- 没有 anchor closure，witness 就不能被视为 semantic fact 的证据，只能算噪音。
+
+### O3. `R_role`: State Role Soundness
+
+**含义**
+
+- `A_core` 中每个 `State.role` 都必须被某种合法 evidence 支撑
+- 不能凭 lift/pass 作者主观决定新增 semantic role
+
+**当前实现对应**
+
+- `state.role` witness
+- `ValidateSemanticRefinement` 的 role equality 检查
+
+**后续仍缺**
+
+- role 的抽象语义说明文
+- role 对 `Phase B` 的 preservation obligation
+
+### O4. `R_law`: Update Law Soundness
+
+**含义**
+
+- `UpdateLaw.kind` 必须来自合法 witness/evidence，不允许在 `Phase A` 内部二次猜测
+
+**当前实现对应**
+
+- `update.law_family` witness
+- `ValidateSemanticRefinement` 的 law equality 检查
+
+**后续仍缺**
+
+- law family 的 abstract transformer semantics
+
+### O5. `R_source`: Source-Set Soundness
+
+**含义**
+
+- `UpdateLaw.source_states` 必须既与 witness 一致，也与 graph 中的 `StateUse(source_state)` 一致
+
+**当前实现对应**
+
+- `update.source_set` witness
+- `ValidateSemanticRefinement` 中 source-set 与 `StateUse` 的一致性检查
+
+**为什么它重要**
+
+- 这是后续 `Phase B` 组织 dataflow/ordering 的直接 semantic input。
+
+### O6. `R_relation`: Companion / Carry Relation Soundness
+
+**含义**
+
+- `companion`
+  - 必须同时落在 binding、law compatibility、graph use 三处
+- `carried_from`
+  - 必须同时落在 binding、law compatibility、graph use、join obligation 四处
+
+**当前实现对应**
+
+- `relation.companion`
+- `relation.carried_from`
+- `ValidateSemanticRefinement` 中 binding/use/join 三重检查
+
+**后续仍缺**
+
+- companion relation 的更明确抽象语义定义
+- index/value companion 与 future spatial routing 的关系说明
+
+### O7. `R_graph`: Graph Normalization Soundness
+
+**含义**
+
+- `A_graph` 既不能发明新语义，也不能漏掉 `Phase A` 已承诺的 state/effect fact
+
+最关键的两条已经在实现里验证过：
+
+- target-less update 不应伪造 `StateVersion`
+- recurrence update 必须落成 `loop_carried StateJoin`
+
+**当前实现对应**
+
+- `semantic_state_effect_graph`
+- `ValidateStatefulSemanticIR`
+- `ValidateSemanticRefinement`
+
+**后续仍缺**
+
+- graph completeness 相对于 current abstraction contract 的更明确说明
+
+### O8. `R_contract`: Freeze Contract Legality
+
+**含义**
+
+- live companion program 必须处于合法 freeze state
+- invalid companion 不允许继续携带 stale semantic truth
+
+**当前实现对应**
+
+- `tl.semantic_hard_freeze`
+- `InvalidateBlackholeCompanionPrograms`
+- `ValidateSemanticRefinement`
+
+**后续仍缺**
+
+- 各 contract mode 的更细粒度 machine-readable semantics
+
+### O9. `R_rebind`: Typed Rebind Preservation Obligation
+
+**含义**
+
+- `typed_rebind` 不只是“允许 body 变”，而是：
+  - before/after hash 合法
+  - rebind scope 合法
+  - trace 合法
+  - remap 后 witness/core/graph 重新闭合
+
+**当前实现对应**
+
+- `TypedRebindBlackholeCompanionPrograms`
+- `semantic_rebind`
+- `ValidateSemanticRefinement`
+
+**后续仍缺**
+
+- 不同 `rebind_scope` 的分 scope preservation theorem
+
+### O10. `R_reject`: Reject Rather Than Guess
+
+**含义**
+
+- 当 `E` 超出 current semantic core 或违反 precondition 时，编译器必须 fail-closed
+
+**当前实现对应**
+
+- 部分通过 validator fail / invalidate 实现
+
+**后续仍缺**
+
+- 一份更系统的 reject taxonomy：
+  - unsupported evidence
+  - unsupported semantic axis
+  - belongs-to-Phase-B/C
+  - contract broken
+
+### Why This Matrix Matters
+
+这张 obligation matrix 的价值在于：
+
+- 它让 `R(E, A)` 从“概念上正确”变成“可枚举、可逐项验证的 contract family”
+- 它给 `ValidateSemanticRefinement` 提供了明确扩展路线
+- 它也天然给 `Phase B` 的 refinement checker 提供了输入接口
+
+## Task 13: Phase B Refinement Validator Skeleton
+
+既然 `Phase A -> Phase B` 的正确关系是 `refinement by organization`，那最自然的下一个研究与工程交汇点，
+就是给 `Phase B` 设计一个 executable refinement validator。
+
+这个 validator 的目标不是证明 TT target 正确，而是先证明：
+
+- `SpatialProgram` 没有破坏 `Phase A` 已冻结的 algorithmic truth
+
+### Inputs
+
+建议把 `Phase B` validator 的输入固定成：
+
+- `A = (A_core, A_graph, A_contract)` from `Phase A`
+- `S = SpatialProgram`
+
+也就是：
+
+- 不再读 raw fragment attrs
+- 不再直接读 raw witness
+- 只读冻结后的 semantic truth
+
+### Required Obligations
+
+`Phase B` validator 至少应检查下面 6 类 obligation：
+
+1. **Semantic Coverage**
+   - 每个必须 materialize 的 semantic update/state 都在 `SpatialProgram` 中被组织了
+
+2. **No Semantic Invention**
+   - `SpatialProgram` 不能发明 `Phase A` 没有承诺的新 algorithmic role/law/relation
+
+3. **Dependency Preservation**
+   - `source_set / companion / carried_from / loop_carried` 所表达的依赖，不能在 spatial organization 中被破坏
+
+4. **Phase-Boundary Respect**
+   - `ProgramPhase / Task / Channel / SyncEdge` 的边界必须服从 `Phase A` 已有的 ordering/carry truth
+
+5. **Layout/Partition Non-Interference**
+   - layout/workpartition 可以增加组织结构，但不能改变 semantic meaning
+
+6. **Fail-Closed on Missing Structure**
+   - 如果 `SpatialProgram` 无法组织某个 semantic truth，应 reject/defer，而不是偷偷丢掉
+
+### Minimal Executable Shape
+
+第一版不需要 theorem prover，直接做 executable checker 即可：
+
+- `ValidateSpatialRefinement(SemanticProgram, SpatialProgram)`
+
+建议输出形态和 `ValidateSemanticRefinement` 一样：
+
+- fail-fast
+- 明确报告违反的是哪类 obligation
+
+### Repo-Oriented Mapping
+
+对应到未来 `Phase B` 文件，最自然的落点是：
+
+- `lower_to_spatial_program.cc`
+- `validate_spatial_program.cc`
+
+但它们的 contract 应该明确写成：
+
+- `lower_to_spatial_program` 负责 `A -> S`
+- `validate_spatial_program` 负责检查 `S` 是否 refinement-preserve `A`
+
+而不是让 `Phase B` 再偷偷恢复一遍 semantic truth。
+
+### What This Finishes
+
+当 `Task 11 + Task 12 + Task 13` 都固定下来以后，`Phase A` 这条理论线其实就已经收口到一个很明确的状态：
+
+- 有对象：`E / A / alpha / R`
+- 有 theorem family：`T1..T8`
+- 有 executable approximation：`ValidateSemanticRefinement`
+- 有下一层接口：`I_B`
+- 有 `Phase B` validator skeleton
+
+到这里为止，已经足够支撑：
+
+- 技术报告
+- research memo
+- 后续 `Phase B` validator 设计
+- 小范围 mechanization 规划

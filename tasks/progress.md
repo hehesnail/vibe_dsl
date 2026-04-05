@@ -106,6 +106,13 @@
     - `alpha` 明确成 witness build + semantic lift + graph normalization 的组合
     - `R` 明确成 refinement obligation family，而 `ValidateSemanticRefinement` 是其
       executable approximation
+  - `Phase A` 文档又继续收口了两层：
+    - 把 `R(E, A)` 展开成 executable obligation matrix：
+      `R_vocab / R_anchor / R_role / R_law / R_source / R_relation / R_graph /
+      R_contract / R_rebind / R_reject`
+    - 把 `Phase B` 最自然的下一步固定成
+      `ValidateSpatialRefinement(SemanticProgram, SpatialProgram)` skeleton，
+      明确 `Phase B` 应做的是 organization-preserving refinement，而不是二次 semantic recovery
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组
