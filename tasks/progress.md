@@ -120,5 +120,5 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 - `progress.md` 现在只保留相对稳定的阶段状态、主 blocker、当前下一步和验证摘要。
 - 详细逐步实现记录、历史 checklist 和理论证明草稿分别留在阶段文档、git history 与 formalization note 中。
 - `final_blackhole_backend_redesign.md` 已在 `2026-04-06` 按当前执行状态刷新：
-  - `Phase A` 相关内容回归为长期边界与已完成状态
-  - 具体实施细节继续以下游阶段文档为准
+  - 已收成轻量总体设计文档
+  - `Phase A/B/C` 细节默认下沉到对应 stage 文档

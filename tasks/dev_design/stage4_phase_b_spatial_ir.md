@@ -1,16 +1,159 @@
 # Stage 4 Phase B: Spatial Program IR
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+## 基本信息
 
-**Goal:** 把冻结后的语义真相投影成 `SpatialProgram`，一等化 task/channel/layout/sync/work partition，并证明下游不会退化回 `Task:TTKernel = 1:1`。
+- **文档角色**: `Phase B` 实施与设计边界文档
+- **当前状态**: 当前主实施阶段
+- **上游输入**: 冻结后的 `SemanticProgram`
+- **下游输出**: 冻结后的 `SpatialProgram`
+- **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
 
-**Architecture:** `Phase B` 的重点是明确 `ProgramPhase` 的 module-scope ownership、simple-workload fast-path 和 non-trivial multi-phase gate。它不负责 target 物化，只负责把 semantic truth 转成稳定的空间程序结构。
+## 1. Phase B 的职责
 
-**Tech Stack:** TileLang transform passes, TVM Object system, pytest
+`Phase B` 只负责一件事：
 
----
+- 把已经冻结的 algorithmic truth 组织成稳定的 spatial/dataflow program structure
 
-## Shared Zero-Regression Baseline
+它回答的问题是：
+
+- 哪些 `Update` 应该组织成哪些 `Task`
+- 哪些 `State` 之间要形成哪些 `Channel`
+- 哪些 `Layout / WorkPartition / SyncEdge / Placement / ResourceIntent` 必须显式存在
+- 多 `T.Kernel` / 多 device member 程序的 `ProgramPhase` 边界在哪里
+
+它不负责：
+
+- 再做一次 semantic recovery
+- 发明 TT resource / CB / semaphore / ABI
+- 从 raw TIR 或 late builtin 重新猜 `carry / selection / recurrence / source_states`
+
+## 2. Core Design Boundary
+
+### 2.1 核心对象
+
+`Phase B` 的长期 core object set 是：
+
+- `SpatialProgram`
+- `ProgramPhase`
+- `Task`
+- `Channel`
+- `Layout`
+- `WorkPartition`
+- `Placement`
+- `SyncEdge`
+- `ResourceIntent`
+
+### 2.2 ProgramPhase 的稳定宿主
+
+`ProgramPhase` 的跨函数真相固定挂在：
+
+- `IRModule.global_infos["tl.device_programs"]`
+
+而：
+
+- `PrimFunc.attrs["tl.spatial_program"]`
+
+只保留 member-local spatial truth。
+
+因此：
+
+- 单 `PrimFunc` 程序只是 `member_funcs.size() == 1` 的退化情况
+- 任何 cross-function 的 phase order、shared buffer、global sync 都不能由单个 `PrimFunc` 自己发明
+
+### 2.3 小闭集 family
+
+`Phase B` 仍然遵守 small-closed family 设计：
+
+- `Task.kind`
+  - `transfer`
+  - `compute`
+  - `collective`
+  - `control`
+- `Layout.kind`
+  - `regular`
+  - `packed`
+  - `indexed`
+- `WorkPartition.kind`
+  - `replicated`
+  - `blocked`
+  - `indexed`
+  - `filtered`
+- `Placement.kind`
+  - `execution`
+  - `communication`
+  - `phase_boundary`
+- `SyncEdge.kind`
+  - `dependency`
+  - `barrier`
+  - `completion`
+- `ResourceIntent.kind`
+  - `buffer`
+  - `state_residency`
+  - `synchronization_support`
+  - `phase_boundary_materialization`
+
+更细差异通过 bindings 与 typed traits 表达，不通过 workload noun 扩 schema。
+
+### 2.4 Legality 与 Policy 的边界
+
+`Phase B` 必须明确区分：
+
+- **analysis / legality facts**
+  - 哪些 cut 是必须的
+  - 哪些 state flow 必须显式化
+  - 哪些 phase boundary 必须物化
+  - 哪些 layout / partition family 是被语义强制的
+- **policy decisions**
+  - 合法空间内的 fusion / split 偏好
+  - canonical fast-path 选择
+  - placement / reuse / sync 粒度偏好
+
+规则是：
+
+- analysis 决定 legality
+- policy 只在合法空间内选择
+
+### 2.5 不能回退的约束
+
+`Phase B` 不允许：
+
+- 直接消费 raw fragment attrs 当 semantic truth
+- 通过名字匹配恢复 spatial 边界
+- 把 `Task:TTKernel = 1:1` 固化成默认心智模型
+- 用 TT resource 名词污染 `Task / Channel / Layout / WorkPartition`
+
+## 3. Semantic To Spatial Contract
+
+`Phase B` 只允许从下列上游真源读取必须保留的算法约束：
+
+- `SemanticProgram`
+- internal state/effect graph
+- companion lifecycle contract
+
+主要投影关系是：
+
+- `Update` -> 一个或多个 `Task`
+- `State` -> `Channel` / `SyncEdge` / `ResourceIntent`
+- `Domain` -> `Layout` / `WorkPartition` 的候选空间
+- `AccessMap` -> gather / scatter / paged / routed 等空间边界
+- `UpdateLaw` -> ordered update / carry / merge / completion requirement
+
+如果 `Phase B` 发现缺失 truth，处理原则只能是：
+
+1. 若该 truth 本质上属于 `Phase A`，回去补 witness/core/validator
+2. 若该 truth 本质上属于 spatial organization，本层补 object / legality / policy
+3. 不允许直接加 matcher 绕过分层
+
+## 4. 当前实施重点
+
+当前 `Phase B` 的实施重点是：
+
+1. 引入 `SpatialProgram` 与 `ProgramPhase`
+2. 建立 simple-workload canonical fast-path
+3. 跑通至少一个 non-trivial multi-phase spatial gate
+4. 让 `LowerBlackholeOps` 不再继续承担 task/channel/layout/sync 的 monolithic 黑洞职责
+
+## 5. Shared Zero-Regression Baseline
 
 ```bash
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q
@@ -20,7 +163,7 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_expo
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q
 ```
 
-## Task 3: Stage 3 - Phase B Spatial Program IR
+## 6. Task 3: Stage 3 - Phase B Spatial Program IR
 
 **Files:**
 - Create: `tilelang_repo/src/transform/lower_to_spatial_program.cc`

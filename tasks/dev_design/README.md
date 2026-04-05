@@ -11,8 +11,8 @@
 | 文档 | 角色 | 状态 |
 |------|------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计 | 常青 |
-| `stage4_phase_b_spatial_ir.md` | 当前主实施文档 | 当前进行中 |
-| `stage4_phase_c_tt_target_ir.md` | `Phase B` 之后的下一阶段实施文档 | 已定义，待推进 |
+| `stage4_phase_b_spatial_ir.md` | 当前主实施文档；承接 `Spatial Program IR` 详细设计与实施 | 当前进行中 |
+| `stage4_phase_c_tt_target_ir.md` | `Phase B` 之后的下一阶段实施文档；承接 `TT Target IR` 详细设计、cutover 与 deletion gates | 已定义，待推进 |
 
 ## 2. 当前阶段文档
 
@@ -50,6 +50,7 @@
 ## 5. 清理规则
 
 - 根目录不再保留额外的总 implementation plan。
+- `final_blackhole_backend_redesign.md` 现在保持为轻量总纲；阶段细节默认下沉到对应 stage 文档。
 - 已完成专项设计、历史 implementation plan、早期阶段记录、legacy 架构说明，全部移动到 `archive/`。
 - `archive/README.md` 说明了归档区的使用规则。
 
