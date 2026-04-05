@@ -5,7 +5,7 @@
 
 ## 当前阶段
 
-- **日期**: `2026-04-05`
+- **日期**: `2026-04-06`
 - **阶段**: Stage 4（总阶段）— layered IR architecture transition for complex workload families
 - **当前定义**:
   - Stage 4 现在是当前 Blackhole 架构迁移的总包含阶段：
@@ -76,6 +76,12 @@
       `StateVersion / StateDef / StateUse / StateJoin`
     - `TypedRebindBlackholeCompanionPrograms` 已作为 audited-safe rebind 入口接入 Python API
       与 C++ 主线
+  - `Phase A` 的 research-grade formalization backlog 也已写入
+    `stage4_phase_a_semantic_ir.md`：
+    - 把 academic 目标收成“sound abstraction over canonical evidence domain”
+    - 明确了 concrete semantics / abstract semantics / `alpha-gamma` / pass contract /
+      translation validation 的研究任务
+    - 明确这条 formalization 轨道是 **Phase B 并行研究项**，不是当前工程 blocker
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组

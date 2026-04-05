@@ -1105,3 +1105,205 @@ restructure / companion consumer，`Phase A` 很容易重新退化成“回归 c
   - `24 passed, 11 skipped`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
   - `26 passed`
+
+## Task 7: Research-Guided Phase A Formalization Backlog
+
+`Phase A` 到这里已经按项目的工程和理论边界完成，可以进入 `Phase B`。但如果后续想把它
+进一步升级成**学术意义上可证明的 semantic abstraction layer**，接下来的工作不应该是
+“再补更多 workload case”，而应是把现有设计 formalize 成可证明对象。
+
+这条线不是当前工程 blocker；它是与 `Phase B / C` 并行的 research track。它的目标不是证明
+“任意 lower 后 TIR 都能被自动恢复语义”，而是证明更弱、也更正确的命题：
+
+- 对一个明确限定的 canonical evidence domain，如果某个 workload family 的关键语义能被
+  该 evidence domain 观测并归约到 `SemanticProgram` core，那么
+  `AnalyzeSemanticStructure + LiftStatefulSemanticIR` 产出的 `SemanticProgram`
+  是这个 evidence domain 的 sound abstraction。
+
+### What “Academic Completion” Means Here
+
+对本仓库，学术意义上的 `Phase A` 完成，不是“测试足够多”，而是至少要能正式表述并 defend：
+
+1. `Phase A` 的 concrete semantics 是什么
+2. `SemanticProgram` 的 abstract semantics 是什么
+3. `alpha / gamma` 或等价 refinement relation 是什么
+4. `preserve / typed_rebind / invalidate` 分别保持什么语义合同
+5. `Phase A -> Phase B` 的 cutover 为什么是 refinement-preserving
+
+### Research Workstream A: Canonical Evidence Collecting Semantics
+
+第一步不要直接去 formalize 全部 lower 后 TIR，而是 formalize `Phase A` 实际消费的
+canonical evidence domain：
+
+- `tl.semantic_witnesses`
+- `fragment_regions[*].selection_targets`
+- `fragment_regions[*].selection_pairs`
+- `fragment_regions[*].arg_reduce_targets`
+- `fragment_regions[*].recurrence_edges`
+- `fragment_regions[*].update_sources`
+- pre-lift semantic seeds 与 hard-freeze contract
+
+这里建议采用 **collecting semantics -> abstraction** 的口径，而不是“直接对 pass 代码做证明”。
+更具体地说，应定义：
+
+- 哪些 evidence object 属于合法观测集
+- 每种 evidence 代表哪类可观测语义事实
+- 哪些事实属于 algorithmic state / update law / carry boundary / selection companion
+- 哪些事实不属于 `Phase A`，而应留给 `Phase B / C`
+
+这条路线直接对应抽象解释框架，而不是 ad hoc matcher 叙事。
+
+Repo mapping:
+
+- `AnalyzeSemanticStructure`
+- `semantic_witness_payloads`
+- `semantic_witness_decoder`
+
+### Research Workstream B: Abstract Semantics of SemanticProgram
+
+第二步 formalize `SemanticProgram` 自身，而不是只把它当序列化对象：
+
+- `Domain / State / Update / UpdateLaw`
+- `StateVersion / StateDef / StateUse / StateJoin`
+- `SemanticSupplement`
+- hard-freeze contract
+
+这里最重要的是把当前工程对象解释成**抽象语义事实**：
+
+- `State.role` 不只是枚举值，而是 abstract state class
+- `UpdateLaw.kind` 不只是 tag，而是 abstract transformer family
+- `StateJoin(loop_carried)` 不只是 graph edge，而是 recurrence/order fact
+- `typed_rebind` 不只是 attr rewrite，而是“保持抽象语义、刷新 anchor/body hash”的受限变换
+
+Repo mapping:
+
+- `semantic_program.h/.cc`
+- `semantic_state_effect_graph.*`
+- `semantic_rebind.*`
+
+### Research Workstream C: Alpha/Gamma or Refinement Relation
+
+第三步把 `Phase A` 的弱证明目标写成正式关系：
+
+- `alpha : Evidence -> SemanticProgram`
+- `gamma : SemanticProgram -> Set[Evidence]`
+
+或者，如果更适合工程实现，也可以写成 forward simulation / refinement relation，而不强求
+完整 Galois connection。关键是要明确：
+
+- `LiftStatefulSemanticIR` 实现的是哪个抽象函数
+- `ValidateSemanticRefinement` 在检查哪个 soundness obligation
+- 哪些 witness/core/graph mismatch 属于“抽象不 sound”
+- 哪些 workload/evidence 组合应被 reject，而不是被错误 lift
+
+对当前仓库，最现实的 theorem statement 应该是：
+
+- `ValidateSemanticRefinement(alpha(e))` 成立时，`alpha(e)` 不伪造与 `e` 矛盾的语义事实
+
+而不是：
+
+- `alpha(e)` 是所有程序语义的最精确恢复
+
+### Research Workstream D: Pass Contracts as Semantic Preservation Obligations
+
+第四步把现有 `preserve / typed_rebind / invalidate` 从工程合同升级成正式 proof obligation。
+
+建议的命题拆分：
+
+1. **Preserve theorem**
+   - body hash、witness、semantic core、state/effect graph 都保持不变
+2. **Typed rebind theorem**
+   - 允许 body/anchor 变化
+   - 但要求 remap + trace + refreshed graph 后，抽象语义与 rebind 前等价
+3. **Invalidate safety theorem**
+   - 一旦 companion 无法证明保持语义，就必须整体失效，不能留下 stale truth
+
+这部分不需要一开始就做全编译器证明；更现实的做法是：
+
+- 先对 audited pass family 建立局部 preservation obligation
+- 非 audited pass 继续 fail-closed 到 `invalidate`
+
+Repo mapping:
+
+- `TypedRebindBlackholeCompanionPrograms`
+- `InvalidateBlackholeCompanionPrograms`
+- `ValidateSemanticRefinement`
+
+### Research Workstream E: Phase A -> Phase B Translation Validation
+
+第五步不要一开始就追求“整条编译器全证明”，而是优先补
+`SemanticProgram -> SpatialProgram` 的 translation validation。
+
+对本项目，这条线尤其重要，因为真正的当前 blocker 已经是 `Phase B / C`：
+
+- `Phase A` 负责冻结算法语义真相
+- `Phase B` 负责 program/task/channel/layout/workpartition
+- 如果 `Phase B` 不能被检查为 semantic-refining，那么 `Phase A` 的 formalization 价值会被削弱
+
+因此，更现实的 research path 是：
+
+1. 先让 `Phase A` 有 formal semantics
+2. 再给 `Phase B` 写一个 executable refinement validator
+3. 最后才考虑整条编译链的更强 theorem
+
+### Research Workstream F: Effect/Resource Typing for Blackhole-Specific Ambiguity
+
+`blackhole.acc` 的历史问题说明，后续 formalization 不能只盯 state/update，还必须补
+effect/resource typing 视角。否则很多“算法语义 vs compute scratch / transport resource”的
+混淆，最终都会在 `Phase B / C` 重新出现。
+
+对本仓库，最值得 formalize 的 effect/resource 轴是：
+
+- algorithmic state
+- transient scratch
+- index companion / selection companion
+- ordered recurrence / carry boundary
+- target/runtime resource boundary
+
+这条线不要求把所有 TT resource 直接拉回 `Phase A`，但要求 `Phase A` 明确知道哪些东西
+不是它的职责，并把 effect/resource 边界留给 `Phase B / C`。
+
+### Recommended Order
+
+如果真要沿 academic 路线继续推进，建议顺序是：
+
+1. formalize canonical evidence semantics
+2. formalize `SemanticProgram` abstract semantics
+3. 写出 `alpha / gamma` 或 refinement relation
+4. 把 `ValidateSemanticRefinement` 显式对应到 theorem obligations
+5. 做 `Phase A -> Phase B` translation validation
+6. 最后再考虑 proof assistant mechanization
+
+### Mechanization Recommendation
+
+如果将来要做 mechanized proof，最合适的切入点不是直接 mechanize 全部 TIR，而是：
+
+- 先 mechanize `tl.semantic_witnesses`
+- 再 mechanize `SemanticProgram` 小闭集 core
+- 再 mechanize `ValidateSemanticRefinement` 所对应的 soundness lemma
+
+proof assistant 选择上，`Rocq/Coq` 与现有 CompCert 生态最接近，适合较严肃的 compiler proof；
+如果目标更偏快速实验，也可以先用 Lean/Isabelle 做较小核心的试验性 formalization。
+
+### Primary References
+
+- Cousot and Cousot, *Abstract Interpretation: A Unified Lattice Model for Static Analysis of Programs by Construction or Approximation of Fixpoints*, POPL 1977  
+  https://www.di.ens.fr/~cousot/COUSOTpapers/POPL77.shtml
+- Cousot, *Types as Abstract Interpretations*, POPL 1997  
+  https://www.di.ens.fr/~cousot/COUSOTpapers/POPL97.shtml
+- Cousot and Cousot, *Abstract Interpretation Algorithms and Proof Methods*, POPL 2014  
+  https://www.di.ens.fr/~cousot/COUSOTpapers/POPL14.shtml
+- Darais and Van Horn, *Constructive Galois Connections: Taming Proofs of Static Analyses*, ICFP 2016  
+  https://arxiv.org/abs/1507.03559
+- Lattner et al., *MLIR: Scaling Compiler Infrastructure for Domain Specific Computation*, 2020  
+  https://arxiv.org/abs/2002.11054
+- Wang et al., *Homeostasis: A Compiler Correctness Framework for Self-Regulating Program Analysis*, 2021  
+  https://arxiv.org/abs/2106.01768
+- Lopes et al., *Alive2: Bounded Translation Validation for LLVM*, PLDI 2021  
+  https://pldi21.sigplan.org/details/pldi-2021-papers/5/Alive2-Bounded-Translation-Validation-for-LLVM
+- Leroy, *Formal Verification of a Realistic Compiler*, CACM 2009  
+  https://www.cs.cmu.edu/~15811/papers/compcert.pdf
+- Lucassen and Gifford, *Polymorphic Effect Systems*, 1988  
+  https://research.ibm.com/publications/polymorphic-effect-systems
+- Tofte and Talpin, *Region-Based Memory Management*, 1997  
+  https://www.sciencedirect.com/science/article/pii/S0890540196926139
