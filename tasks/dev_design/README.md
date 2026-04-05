@@ -12,6 +12,7 @@
 | `review_final_blackhole_backend_redesign.md` | 总设计的系统性 review（含代码交叉审计） | 已完成；设计已基于 review 修订 |
 | `stage4_stage0_guardrails.md` | Stage 0：迁移护栏、device-program registry、semantic seed、deletion gates | 活动中 |
 | `stage4_phase_a_semantic_ir.md` | Phase A：Stateful Semantic IR（A1/A2） | 活动中 |
+| `stage4_phase_a_formalization_note.md` | Phase A：理论化 / 证明化并行文档 | 活动中；非工程 blocker |
 | `stage4_phase_b_spatial_ir.md` | Phase B：Spatial Program IR | 活动中 |
 | `stage4_phase_c_tt_target_ir.md` | Phase C：TT Target IR、cutover、family expansion | 活动中 |
 
@@ -28,6 +29,7 @@
 - `final_blackhole_backend_redesign.md`
 - `stage4_stage0_guardrails.md`
 - `stage4_phase_a_semantic_ir.md`
+- `stage4_phase_a_formalization_note.md`
 - `stage4_phase_b_spatial_ir.md`
 - `stage4_phase_c_tt_target_ir.md`
 - 其中 Phase A 的第一层 semantic core：`Domain / State / Update`，以及 `AccessMap / UpdateLaw`

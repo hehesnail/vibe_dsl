@@ -76,43 +76,12 @@
       `StateVersion / StateDef / StateUse / StateJoin`
     - `TypedRebindBlackholeCompanionPrograms` 已作为 audited-safe rebind 入口接入 Python API
       与 C++ 主线
-  - `Phase A` 的 research-grade formalization backlog 也已写入
-    `stage4_phase_a_semantic_ir.md`：
-    - 把 academic 目标收成“sound abstraction over canonical evidence domain”
-    - 明确了 concrete semantics / abstract semantics / `alpha-gamma` / pass contract /
-      translation validation 的研究任务
-    - 明确这条 formalization 轨道是 **Phase B 并行研究项**，不是当前工程 blocker
-  - `Phase A` 文档现在还进一步补了 repo-driven 理论定义：
-    - 从本仓库的三类 truth 混层问题，推导出 `Phase A` 为什么必须是 abstraction layer
-    - 明确了 witness/core/validator、state/effect graph、以及
-      `preserve / typed_rebind / invalidate` 的结构必要性
-    - 明确了 `Phase A -> Phase B` 的关系是
-      `refinement by organization`，而不是再做一次 semantic recovery
-  - `Phase A` 文档现已再往前补成 theorem/obligation checklist：
-    - 固定了 `Evidence Domain / Abstract Domain / alpha / refinement checker`
-    - 列出了 `Lift Soundness / Graph Soundness / Contract Preservation /
-      Typed Rebind Preservation / Invalidation Safety / Phase A->B Refinement /
-      Rejection Discipline`
-    - 把下一步最值钱的 research deliverable 收敛为：
-      formal semantics note、obligation matrix、`Phase B` refinement validator、
-      small mechanized core
-  - `Phase A` 文档当前又把 `formal semantics note` 的 repo-specific skeleton 补出来了：
-    - 先固定 `Scope / Concrete Objects / Abstract Objects / alpha / R / Soundness Theorems`
-    - 再固定 `Failure Modes / Bridge to Phase B / Minimal Mechanization Plan`
-    - 这样后续 research track 可以直接展开，不需要再从抽象概念重新组织
-  - `Phase A` 文档现在还把 `E / A / alpha / R` 写成了 repo-specific 半正式定义：
-    - `E` 明确成 seeds/fragment attrs/witness/precondition 的 canonical evidence tuple
-    - `A` 明确成 `core + graph + contract`
-    - `alpha` 明确成 witness build + semantic lift + graph normalization 的组合
-    - `R` 明确成 refinement obligation family，而 `ValidateSemanticRefinement` 是其
-      executable approximation
-  - `Phase A` 文档又继续收口了两层：
-    - 把 `R(E, A)` 展开成 executable obligation matrix：
-      `R_vocab / R_anchor / R_role / R_law / R_source / R_relation / R_graph /
-      R_contract / R_rebind / R_reject`
-    - 把 `Phase B` 最自然的下一步固定成
-      `ValidateSpatialRefinement(SemanticProgram, SpatialProgram)` skeleton，
-      明确 `Phase B` 应做的是 organization-preserving refinement，而不是二次 semantic recovery
+  - `Phase A` 的理论化/证明化内容已从实现文档中单独抽到
+    [stage4_phase_a_formalization_note.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_a_formalization_note.md)：
+    - formalization 轨道明确标为 **Phase B 并行研究项**
+    - 其中固定了 `E / A / alpha / R`
+    - 其中收口了 theorem/obligation checklist 与 `Phase B` refinement validator skeleton
+    - `stage4_phase_a_semantic_ir.md` 现在回到工程实现入口，不再混放完整理论证明草稿
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组
@@ -228,6 +197,7 @@
 - `tasks/dev_design/final_blackhole_backend_redesign.md`
 - `tasks/dev_design/stage4_stage0_guardrails.md`
 - `tasks/dev_design/stage4_phase_a_semantic_ir.md`
+- `tasks/dev_design/stage4_phase_a_formalization_note.md`
 - `tasks/dev_design/stage4_phase_b_spatial_ir.md`
 - `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
 - `tasks/dev_design/README.md`
