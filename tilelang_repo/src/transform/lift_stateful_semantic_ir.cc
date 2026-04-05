@@ -13,6 +13,9 @@
 #include <unordered_set>
 
 #include "common/semantic_program.h"
+#include "common/semantic_refinement_rules.h"
+#include "common/semantic_vocab.h"
+#include "common/semantic_witness_decoder.h"
 
 namespace tvm {
 namespace tl {
@@ -22,6 +25,7 @@ using tvm::ffi::Any;
 using tvm::ffi::Array;
 using tvm::ffi::Map;
 using tvm::ffi::String;
+using namespace tvm::tl::semantic;
 
 namespace {
 
@@ -50,22 +54,16 @@ Array<TIRValueBinding> DowncastBindingArray(const Array<Any>& items) {
   return result;
 }
 
-std::vector<std::string> DowncastStringVector(const Array<Any>& items) {
-  std::vector<std::string> result;
-  for (const Any& item : items) {
-    result.push_back(tvm::Downcast<String>(item));
-  }
-  return result;
-}
-
-void PushBindingUnique(Array<TIRValueBinding>* bindings, const std::string& kind,
+void PushBindingUnique(Array<TIRValueBinding>* bindings, BindingKind kind,
                        const std::string& value_repr) {
   for (const TIRValueBinding& binding : *bindings) {
-    if (std::string(binding->kind) == kind && std::string(binding->value_repr) == value_repr) {
+    if (std::string(binding->kind) == ToString(kind) &&
+        std::string(binding->value_repr) == value_repr) {
       return;
     }
   }
-  bindings->push_back(TIRValueBinding(String(kind), String("state"), String(value_repr)));
+  bindings->push_back(
+      TIRValueBinding(String(ToString(kind)), String("state"), String(value_repr)));
 }
 
 }  // namespace
@@ -82,47 +80,51 @@ tir::transform::Pass LiftStatefulSemanticIR() {
     Map<String, Any> structure = maybe_structure.value();
     auto maybe_witnesses = func->GetAttr<Array<SemanticWitness>>(attr::kTLSemanticWitnesses);
 
-    std::unordered_map<std::string, std::string> state_role_by_anchor;
-    std::unordered_map<std::string, std::string> update_kind_by_anchor;
+    std::unordered_map<std::string, StateRole> state_role_by_anchor;
+    std::unordered_map<std::string, UpdateLawKind> update_kind_by_anchor;
     std::unordered_map<std::string, std::vector<std::string>> update_sources_by_anchor;
     std::unordered_map<std::string, std::vector<std::string>> companion_relations_by_update;
-    std::unordered_map<std::string, std::string> companion_binding_kind_by_update;
+    std::unordered_map<std::string, BindingKind> companion_binding_kind_by_update;
     std::unordered_map<std::string, std::vector<std::string>> carried_relations_by_update;
-    std::unordered_map<std::string, std::string> carried_binding_kind_by_update;
+    std::unordered_map<std::string, BindingKind> carried_binding_kind_by_update;
     if (maybe_witnesses) {
       for (const SemanticWitness& witness : maybe_witnesses.value()) {
-        const std::string subject_kind = witness->subject_kind;
-        const std::string subject_anchor = witness->subject_anchor_id;
-        const std::string fact_axis = witness->fact_axis;
-        if (subject_kind == "state" && fact_axis == "role") {
-          if (auto it = witness->fact_value.find("role"); it != witness->fact_value.end()) {
-            state_role_by_anchor[subject_anchor] = tvm::Downcast<String>((*it).second);
+        auto decoded = DecodeSemanticWitness(witness);
+        if (!decoded) {
+          continue;
+        }
+        if (decoded->subject_kind == WitnessSubjectKind::kState &&
+            decoded->fact_axis == WitnessFactAxis::kRole) {
+          if (auto role = DecodeWitnessStateRole(witness)) {
+            state_role_by_anchor[decoded->subject_anchor_id] = *role;
           }
-        } else if (subject_kind == "update" && fact_axis == "law_family") {
-          if (auto it = witness->fact_value.find("kind"); it != witness->fact_value.end()) {
-            update_kind_by_anchor[subject_anchor] = tvm::Downcast<String>((*it).second);
+        } else if (decoded->subject_kind == WitnessSubjectKind::kUpdate &&
+                   decoded->fact_axis == WitnessFactAxis::kLawFamily) {
+          if (auto law_kind = DecodeWitnessUpdateLawKind(witness)) {
+            update_kind_by_anchor[decoded->subject_anchor_id] = *law_kind;
           }
-        } else if (subject_kind == "update" && fact_axis == "source_set") {
-          if (auto it = witness->fact_value.find("sources"); it != witness->fact_value.end()) {
-            update_sources_by_anchor[subject_anchor] =
-                DowncastStringVector(tvm::Downcast<Array<Any>>((*it).second));
-          }
-        } else if (subject_kind == "relation" && fact_axis == "companion") {
-          companion_relations_by_update[subject_anchor] = {};
+        } else if (decoded->subject_kind == WitnessSubjectKind::kUpdate &&
+                   decoded->fact_axis == WitnessFactAxis::kSourceSet) {
+          update_sources_by_anchor[decoded->subject_anchor_id] =
+              DecodeWitnessStringPayloadArray(witness, "sources");
+        } else if (decoded->subject_kind == WitnessSubjectKind::kRelation &&
+                   decoded->fact_axis == WitnessFactAxis::kCompanion) {
+          companion_relations_by_update[decoded->subject_anchor_id] = {};
           for (const String& related : witness->related_anchor_ids) {
-            companion_relations_by_update[subject_anchor].push_back(related);
+            companion_relations_by_update[decoded->subject_anchor_id].push_back(related);
           }
-          if (auto it = witness->fact_value.find("binding_kind"); it != witness->fact_value.end()) {
-            companion_binding_kind_by_update[subject_anchor] = tvm::Downcast<String>((*it).second);
-          }
-        } else if (subject_kind == "relation" && fact_axis == "carried_from") {
-          carried_relations_by_update[subject_anchor] = {};
+          companion_binding_kind_by_update[decoded->subject_anchor_id] =
+              DecodeWitnessBindingKind(witness, "binding_kind")
+                  .value_or(DefaultBindingKindForRelation(decoded->fact_axis));
+        } else if (decoded->subject_kind == WitnessSubjectKind::kRelation &&
+                   decoded->fact_axis == WitnessFactAxis::kCarriedFrom) {
+          carried_relations_by_update[decoded->subject_anchor_id] = {};
           for (const String& related : witness->related_anchor_ids) {
-            carried_relations_by_update[subject_anchor].push_back(related);
+            carried_relations_by_update[decoded->subject_anchor_id].push_back(related);
           }
-          if (auto it = witness->fact_value.find("binding_kind"); it != witness->fact_value.end()) {
-            carried_binding_kind_by_update[subject_anchor] = tvm::Downcast<String>((*it).second);
-          }
+          carried_binding_kind_by_update[decoded->subject_anchor_id] =
+              DecodeWitnessBindingKind(witness, "binding_kind")
+                  .value_or(DefaultBindingKindForRelation(decoded->fact_axis));
         }
       }
     }
@@ -142,7 +144,7 @@ tir::transform::Pass LiftStatefulSemanticIR() {
       String state_role = tvm::Downcast<String>(state_map["role"]);
       if (auto it = state_role_by_anchor.find(std::string(state_name));
           it != state_role_by_anchor.end()) {
-        state_role = String(it->second);
+        state_role = String(ToString(it->second));
       }
       Array<TIRAnchor> state_anchors{
           TIRAnchor("state_source", state_role)};
@@ -157,7 +159,7 @@ tir::transform::Pass LiftStatefulSemanticIR() {
       String update_kind = tvm::Downcast<String>(update_map["kind"]);
       if (auto it = update_kind_by_anchor.find(std::string(update_name));
           it != update_kind_by_anchor.end()) {
-        update_kind = String(it->second);
+        update_kind = String(ToString(it->second));
       }
       String target_state = tvm::Downcast<String>(update_map["target_state"]);
       Array<String> source_states;
@@ -190,20 +192,20 @@ tir::transform::Pass LiftStatefulSemanticIR() {
       }
       if (auto it = companion_relations_by_update.find(std::string(update_name));
           it != companion_relations_by_update.end()) {
-        const std::string binding_kind =
+        const BindingKind binding_kind =
             companion_binding_kind_by_update.count(std::string(update_name))
                 ? companion_binding_kind_by_update[std::string(update_name)]
-                : "paired_value_state";
+                : BindingKind::kPairedValueState;
         for (const auto& related : it->second) {
           PushBindingUnique(&bindings, binding_kind, related);
         }
       }
       if (auto it = carried_relations_by_update.find(std::string(update_name));
           it != carried_relations_by_update.end()) {
-        const std::string binding_kind =
+        const BindingKind binding_kind =
             carried_binding_kind_by_update.count(std::string(update_name))
                 ? carried_binding_kind_by_update[std::string(update_name)]
-                : "recurrence_source_state";
+                : BindingKind::kRecurrenceSourceState;
         for (const auto& related : it->second) {
           PushBindingUnique(&bindings, binding_kind, related);
         }
@@ -231,7 +233,7 @@ tir::transform::Pass LiftStatefulSemanticIR() {
               Map<String, Any>{{"state", String("lifted_a1")},
                                {"body_hash",
                                 String(std::to_string(tvm::StructuralHash()(func->body)))},
-                               {"contract_mode", String("preserve")},
+                               {"contract_mode", String(ToString(ContractMode::kPreserve))},
                                {"unsafe_mutation_policy",
                                 String("invalidate_companion_programs")}});
     updated.CopyOnWrite()->attrs = DictAttrs(attrs);

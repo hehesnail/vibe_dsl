@@ -56,6 +56,10 @@
     - `InvalidateBlackholeCompanionPrograms` 现在会整体清除
       `tl.semantic_structure / tl.semantic_witnesses / tl.semantic_program / tl.spatial_program / tl.tt_program`
       并把 hard-freeze contract 标记为 `invalidate`
+  - `Phase A` 当前还进一步收正了 stringly-typed 内部协议：
+    - 新增 `semantic_vocab / semantic_witness_decoder / semantic_refinement_rules`
+    - string 现在主要保留在 FFI/attr 边界
+    - `LiftStatefulSemanticIR` 与 `ValidateSemanticRefinement` 内部已改为 typed vocab + centralized rule table
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组
@@ -126,7 +130,9 @@
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'device_program_registry or semantic_seeds or hard_freeze' -q`
   - `3 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
-  - `20 passed`
+  - `22 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'semantic_vocab_normalizes or semantic_vocab_rejects' -q`
+  - `2 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'witness or refinement or invalidation_contract' -q`
   - `5 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names' -q`

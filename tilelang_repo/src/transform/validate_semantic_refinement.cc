@@ -14,6 +14,9 @@
 #include <unordered_set>
 
 #include "common/semantic_program.h"
+#include "common/semantic_refinement_rules.h"
+#include "common/semantic_vocab.h"
+#include "common/semantic_witness_decoder.h"
 
 namespace tvm {
 namespace tl {
@@ -22,6 +25,7 @@ using tvm::ffi::Any;
 using tvm::ffi::Array;
 using tvm::ffi::Map;
 using tvm::ffi::String;
+using namespace tvm::tl::semantic;
 
 namespace {
 
@@ -55,34 +59,6 @@ bool HasBinding(const Update& update, const std::string& kind, const std::string
   return false;
 }
 
-bool IsAllowedSupplementKind(const std::string& kind) {
-  static const std::unordered_set<std::string> kAllowed = {
-      "state_identity", "access_trait", "update_law_trait", "semantic_boundary"};
-  return kAllowed.count(kind);
-}
-
-bool IsAllowedSubjectKind(const std::string& kind) {
-  static const std::unordered_set<std::string> kAllowed = {
-      "domain", "state", "update", "access", "relation", "boundary"};
-  return kAllowed.count(kind);
-}
-
-bool IsAllowedFactAxis(const std::string& axis) {
-  static const std::unordered_set<std::string> kAllowed = {
-      "role",          "identity",         "lifetime",      "law_family",
-      "source_set",    "ordering",         "boundary",      "indirection",
-      "selection_contract",                "distribution_hint",
-      "companion",     "derives_index_from", "feeds_update", "carried_from",
-      "semantic_boundary",                 "ordered_region"};
-  return kAllowed.count(axis);
-}
-
-bool IsAllowedContractMode(const std::string& mode) {
-  static const std::unordered_set<std::string> kAllowed = {
-      "preserve", "typed_rebind", "invalidate"};
-  return kAllowed.count(mode);
-}
-
 }  // namespace
 
 tir::transform::Pass ValidateSemanticRefinement() {
@@ -105,15 +81,12 @@ tir::transform::Pass ValidateSemanticRefinement() {
     const Array<SemanticWitness>& witnesses = maybe_witnesses.value();
 
     const Map<String, Any>& freeze = maybe_freeze.value();
-    auto contract_it = freeze.find("contract_mode");
-    ICHECK(contract_it != freeze.end())
+    auto contract_mode = DecodeContractMode(freeze);
+    ICHECK(contract_mode)
         << "ValidateSemanticRefinement requires tl.semantic_hard_freeze.contract_mode";
-    const std::string contract_mode = tvm::Downcast<String>((*contract_it).second);
-    ICHECK(IsAllowedContractMode(contract_mode))
-        << "Unsupported semantic companion contract mode: " << contract_mode;
-    ICHECK_NE(contract_mode, "invalidate")
+    ICHECK(*contract_mode != ContractMode::kInvalidate)
         << "Invalidated companion program cannot retain tl.semantic_program";
-    if (contract_mode == "typed_rebind") {
+    if (ContractModeRequiresRebindEpoch(*contract_mode)) {
       ICHECK(freeze.find("rebind_epoch") != freeze.end())
           << "typed_rebind contract requires rebind_epoch";
     }
@@ -124,7 +97,7 @@ tir::transform::Pass ValidateSemanticRefinement() {
           << "Semantic companion contract violation: PrimFunc body changed after lift without "
              "invalidate/rebind";
     } else {
-      ICHECK_NE(contract_mode, "preserve")
+      ICHECK(!ContractModeRequiresBodyHash(*contract_mode))
           << "preserve contract requires tl.semantic_hard_freeze.body_hash";
     }
 
@@ -143,37 +116,36 @@ tir::transform::Pass ValidateSemanticRefinement() {
     }
 
     for (const SemanticSupplement& supplement : program->supplements) {
-      ICHECK(IsAllowedSupplementKind(supplement->kind))
+      ICHECK(ParseSupplementKind(static_cast<std::string>(supplement->kind)))
           << "Unsupported SemanticSupplement kind in refinement validator: "
           << supplement->kind;
     }
 
     for (const SemanticWitness& witness : witnesses) {
-      const std::string subject_kind = witness->subject_kind;
-      const std::string subject_anchor = witness->subject_anchor_id;
-      const std::string fact_axis = witness->fact_axis;
-      ICHECK(IsAllowedSubjectKind(subject_kind))
-          << "Unsupported witness subject kind: " << witness->subject_kind;
-      ICHECK(IsAllowedFactAxis(fact_axis))
-          << "Unsupported witness fact axis: " << witness->fact_axis;
+      auto decoded = DecodeSemanticWitness(witness);
+      ICHECK(decoded) << "Unsupported semantic witness vocabulary: "
+                      << witness->subject_kind << "/" << witness->fact_axis;
       ICHECK(!std::string(witness->canonicalization_point).empty())
           << "Semantic witness must carry canonicalization_point";
       ICHECK(!witness->evidence_sources.empty())
           << "Semantic witness must carry at least one evidence source";
 
-      if (subject_kind == "state") {
-        ICHECK(states_by_name.count(subject_anchor))
-            << "State witness references missing state anchor: " << subject_anchor;
-      } else if (subject_kind == "update") {
-        ICHECK(updates_by_name.count(subject_anchor))
-            << "Update witness references missing update anchor: " << subject_anchor;
-      } else if (subject_kind == "relation") {
-        if (fact_axis == "derives_index_from") {
-          ICHECK(states_by_name.count(subject_anchor))
-              << "Relation witness references missing state anchor: " << subject_anchor;
-        } else {
-          ICHECK(updates_by_name.count(subject_anchor))
-              << "Relation witness references missing update anchor: " << subject_anchor;
+      if (decoded->subject_kind == WitnessSubjectKind::kState) {
+        ICHECK(states_by_name.count(decoded->subject_anchor_id))
+            << "State witness references missing state anchor: " << decoded->subject_anchor_id;
+      } else if (decoded->subject_kind == WitnessSubjectKind::kUpdate) {
+        ICHECK(updates_by_name.count(decoded->subject_anchor_id))
+            << "Update witness references missing update anchor: " << decoded->subject_anchor_id;
+      } else if (decoded->subject_kind == WitnessSubjectKind::kRelation) {
+        if (RelationAxisRequiresStateAnchor(decoded->fact_axis)) {
+          ICHECK(states_by_name.count(decoded->subject_anchor_id))
+              << "Relation witness references missing state anchor: "
+              << decoded->subject_anchor_id;
+        }
+        if (RelationAxisRequiresUpdateAnchor(decoded->fact_axis)) {
+          ICHECK(updates_by_name.count(decoded->subject_anchor_id))
+              << "Relation witness references missing update anchor: "
+              << decoded->subject_anchor_id;
         }
       }
 
@@ -183,49 +155,60 @@ tir::transform::Pass ValidateSemanticRefinement() {
             << "Semantic witness references missing related anchor: " << related;
       }
 
-      if (subject_kind == "state" && fact_axis == "role") {
-        auto it = witness->fact_value.find("role");
-        ICHECK(it != witness->fact_value.end()) << "state.role witness requires role payload";
-        ICHECK_EQ(states_by_name.at(subject_anchor)->role, tvm::Downcast<String>((*it).second))
+      if (decoded->subject_kind == WitnessSubjectKind::kState &&
+          decoded->fact_axis == WitnessFactAxis::kRole) {
+        auto role = DecodeWitnessStateRole(witness);
+        ICHECK(role) << "state.role witness requires supported role payload";
+        ICHECK_EQ(states_by_name.at(decoded->subject_anchor_id)->role, String(ToString(*role)))
             << "state.role witness does not match SemanticProgram";
-      } else if (subject_kind == "update" && fact_axis == "law_family") {
-        auto it = witness->fact_value.find("kind");
-        ICHECK(it != witness->fact_value.end()) << "update.law_family witness requires kind payload";
-        ICHECK_EQ(updates_by_name.at(subject_anchor)->law->kind,
-                  tvm::Downcast<String>((*it).second))
+      } else if (decoded->subject_kind == WitnessSubjectKind::kUpdate &&
+                 decoded->fact_axis == WitnessFactAxis::kLawFamily) {
+        auto law_kind = DecodeWitnessUpdateLawKind(witness);
+        ICHECK(law_kind) << "update.law_family witness requires supported kind payload";
+        ICHECK_EQ(updates_by_name.at(decoded->subject_anchor_id)->law->kind,
+                  String(ToString(*law_kind)))
             << "update.law_family witness does not match SemanticProgram";
-      } else if (subject_kind == "update" && fact_axis == "source_set") {
+      } else if (decoded->subject_kind == WitnessSubjectKind::kUpdate &&
+                 decoded->fact_axis == WitnessFactAxis::kSourceSet) {
         auto it = witness->fact_value.find("sources");
         ICHECK(it != witness->fact_value.end()) << "update.source_set witness requires sources payload";
-        auto actual = ToStringSet(updates_by_name.at(subject_anchor)->law->source_states);
+        auto actual = ToStringSet(updates_by_name.at(decoded->subject_anchor_id)->law->source_states);
         auto expected = ToStringSet(tvm::Downcast<Array<Any>>((*it).second));
         ICHECK(actual == expected) << "update.source_set witness does not match SemanticProgram";
-      } else if (subject_kind == "relation" && fact_axis == "companion") {
-        const Update& update = updates_by_name.at(subject_anchor);
-        ICHECK_EQ(std::string(update->law->kind), "select")
+      } else if (decoded->subject_kind == WitnessSubjectKind::kRelation &&
+                 decoded->fact_axis == WitnessFactAxis::kCompanion) {
+        const Update& update = updates_by_name.at(decoded->subject_anchor_id);
+        auto law_kind = ParseUpdateLawKind(static_cast<std::string>(update->law->kind));
+        ICHECK(law_kind && RelationAxisCompatibleWithLawKind(decoded->fact_axis, *law_kind))
             << "relation.companion requires a select update";
-        auto it = witness->fact_value.find("binding_kind");
-        std::string binding_kind =
-            it != witness->fact_value.end() ? std::string(tvm::Downcast<String>((*it).second))
-                                            : "paired_value_state";
+        BindingKind binding_kind =
+            DecodeWitnessBindingKind(witness, "binding_kind")
+                .value_or(DefaultBindingKindForRelation(decoded->fact_axis));
+        ICHECK(BindingKindCompatibleWithRelation(decoded->fact_axis, binding_kind))
+            << "relation.companion uses incompatible binding kind " << ToString(binding_kind);
         for (const String& related_anchor : witness->related_anchor_ids) {
-          ICHECK(HasBinding(update, binding_kind, related_anchor))
+          ICHECK(HasBinding(update, ToString(binding_kind), related_anchor))
               << "relation.companion witness missing update binding for " << related_anchor;
         }
-      } else if (subject_kind == "relation" && fact_axis == "carried_from") {
-        const Update& update = updates_by_name.at(subject_anchor);
-        ICHECK_EQ(std::string(update->law->kind), "recurrence")
+      } else if (decoded->subject_kind == WitnessSubjectKind::kRelation &&
+                 decoded->fact_axis == WitnessFactAxis::kCarriedFrom) {
+        const Update& update = updates_by_name.at(decoded->subject_anchor_id);
+        auto law_kind = ParseUpdateLawKind(static_cast<std::string>(update->law->kind));
+        ICHECK(law_kind && RelationAxisCompatibleWithLawKind(decoded->fact_axis, *law_kind))
             << "relation.carried_from requires a recurrence update";
-        auto it = witness->fact_value.find("binding_kind");
-        std::string binding_kind =
-            it != witness->fact_value.end() ? std::string(tvm::Downcast<String>((*it).second))
-                                            : "recurrence_source_state";
+        BindingKind binding_kind =
+            DecodeWitnessBindingKind(witness, "binding_kind")
+                .value_or(DefaultBindingKindForRelation(decoded->fact_axis));
+        ICHECK(BindingKindCompatibleWithRelation(decoded->fact_axis, binding_kind))
+            << "relation.carried_from uses incompatible binding kind " << ToString(binding_kind);
         for (const String& related_anchor : witness->related_anchor_ids) {
-          ICHECK(HasBinding(update, binding_kind, related_anchor))
+          ICHECK(HasBinding(update, ToString(binding_kind), related_anchor))
               << "relation.carried_from witness missing update binding for " << related_anchor;
         }
-      } else if (subject_kind == "relation" && fact_axis == "derives_index_from") {
-        ICHECK_EQ(std::string(states_by_name.at(subject_anchor)->role), "index_state")
+      } else if (decoded->subject_kind == WitnessSubjectKind::kRelation &&
+                 decoded->fact_axis == WitnessFactAxis::kDerivesIndexFrom) {
+        ICHECK_EQ(std::string(states_by_name.at(decoded->subject_anchor_id)->role),
+                  ToString(StateRole::kIndexState))
             << "relation.derives_index_from requires index_state";
       }
     }

@@ -746,6 +746,98 @@ Expected:
 - witness/refinement contract 不回退当前 A1/A2 gate
 - compile-path baseline 继续全绿
 
+## Task 4: Stage 2.6 - Typed Semantic Vocabulary And Modular Rule Tables
+
+当前 `Generic Witness Algebra` 已经把 workload-specific relation bag 收敛成闭 vocabulary，
+但实现仍然大量依赖：
+
+- `ffi::String`
+- `Map<String, Any>`
+- pass 内部散落的字符串比较
+
+这在“避免名字匹配猜语义”这个层面已经足够，但在“模块化、可演化、可防膨胀”的层面还不够硬。
+
+因此下一步收口目标不是继续加字符串 allow-list，而是把 `Phase A` 进一步拆成三层：
+
+1. **Semantic Vocab**
+   - 统一定义：
+     - `WitnessSubjectKind`
+     - `WitnessFactAxis`
+     - `StateRole`
+     - `UpdateLawKind`
+     - `SupplementKind`
+     - `ContractMode`
+     - `BindingKind`
+   - FFI / attr 边界仍然以 string form 存在
+   - pass 内部一律先 decode 成 typed enum，再做逻辑
+2. **Semantic Witness Decoder**
+   - 把 `SemanticWitness` 从 raw string payload 解析成内部 typed view
+   - `LiftStatefulSemanticIR` 与 `ValidateSemanticRefinement` 不再自己手写
+     `"state" && "role"` 这类分派
+3. **Semantic Refinement Rules**
+   - 把 relation compatibility、contract legality、binding compatibility
+     从 validator/pass 内部抽成集中规则模块
+
+### Design Constraints
+
+- 不新增 workload-shaped witness class
+- 不回退到名字匹配
+- string 只允许存在于：
+  - attr key
+  - FFI reflection / serialization 边界
+  - debug / error message
+- 语义判断、规则分派、contract legality 必须使用 typed vocabulary
+
+### Intended Code Shape
+
+- `semantic_program.h/.cc`
+  - 保留 FFI object 定义
+- `semantic_vocab.h/.cc`
+  - 定义 enum class + parse/print helper
+- `semantic_witness_decoder.h/.cc`
+  - 定义 typed witness view 与 payload decoder
+- `semantic_refinement_rules.h/.cc`
+  - 定义 relation/update/binding/contract 的合法性规则
+- `AnalyzeSemanticStructure`
+  - 产出 raw witness 时使用 centralized vocab printer
+- `LiftStatefulSemanticIR`
+  - 只消费 typed decoder
+- `ValidateStatefulSemanticIR` / `ValidateSemanticRefinement`
+  - 只消费 typed vocab 与 centralized rule table
+
+Status:
+
+- `2026-04-05` 已实现并验证
+
+Delivered:
+
+- `semantic_vocab.h/.cc`
+  - closed enum vocabulary
+  - parse / print helper
+  - FFI normalization hooks
+- `semantic_witness_decoder.h/.cc`
+  - raw witness -> typed witness view
+  - centralized payload decoder
+- `semantic_refinement_rules.h/.cc`
+  - relation / binding / contract legality rule table
+- `LiftStatefulSemanticIR`
+  - 不再直接在 pass 内散落 `"state" && "role"` 风格字符串分派
+- `ValidateStatefulSemanticIR` / `ValidateSemanticRefinement`
+  - 改为 typed vocab + centralized rule table
+
+Verification:
+
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'semantic_vocab_normalizes or semantic_vocab_rejects' -q`
+  - `2 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
+  - `22 passed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
+  - `40 passed, 10 skipped, 1 xfailed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q`
+  - `24 passed, 11 skipped`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
+  - `26 passed`
+
 Verification:
 
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'witness or refinement or invalidation_contract' -q`

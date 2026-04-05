@@ -15,6 +15,7 @@
 #include <unordered_set>
 
 #include "common/semantic_program.h"
+#include "common/semantic_vocab.h"
 
 namespace tvm {
 namespace tl {
@@ -24,6 +25,7 @@ using tvm::ffi::Any;
 using tvm::ffi::Array;
 using tvm::ffi::Map;
 using tvm::ffi::String;
+using namespace tvm::tl::semantic;
 
 namespace {
 
@@ -62,7 +64,7 @@ class LocalBufferCollector : public tir::StmtExprVisitor {
       const auto& entry = entries_.at(name);
       Map<String, Any> state;
       state.Set("name", String(name));
-      state.Set("role", String("transient"));
+      state.Set("role", String(ToString(StateRole::kTransient)));
       state.Set("scope", String(entry.scope));
       states.push_back(state);
     }
@@ -189,7 +191,7 @@ tir::transform::Pass AnalyzeSemanticStructure() {
         for (const Any& buffer_any : tvm::Downcast<Array<Any>>(region["fragment_buffers"])) {
           auto buffer = tvm::Downcast<Map<String, Any>>(buffer_any);
           const std::string name = buffer["name"].cast<String>();
-          register_state(name, "transient", buffer["scope"].cast<String>());
+          register_state(name, ToString(StateRole::kTransient), buffer["scope"].cast<String>());
           bool is_integer = buffer_collector.HasIntegerDType(name);
           if (auto it = buffer.find("is_integer"); it != buffer.end()) {
             is_integer = static_cast<bool>(tvm::Downcast<Integer>((*it).second)->value);
@@ -202,7 +204,7 @@ tir::transform::Pass AnalyzeSemanticStructure() {
           auto carried = tvm::Downcast<Map<String, Any>>(carried_any);
           const std::string name = carried["name"].cast<String>();
           loop_carried_states.insert(name);
-          register_state(name, "carry", "");
+          register_state(name, ToString(StateRole::kCarry), "");
         }
         if (region.count("selection_targets")) {
           for (const Any& target_any : tvm::Downcast<Array<Any>>(region["selection_targets"])) {
@@ -246,20 +248,20 @@ tir::transform::Pass AnalyzeSemanticStructure() {
           }
           const std::string role =
               (arg_reduce_targets.count(target) || integer_states.count(target))
-                  ? "index_state"
-                  : "reduction_accumulator";
+                  ? ToString(StateRole::kIndexState)
+                  : ToString(StateRole::kReductionAccumulator);
           register_state(target, role, "");
         }
         for (const std::string& carried : loop_carried_states) {
           if (!reduction_targets.count(carried)) {
-            register_state(carried, "carry", "");
+            register_state(carried, ToString(StateRole::kCarry), "");
           }
         }
         for (const std::string& name : selection_targets) {
           if (paired_selection_companions.count(name)) {
-            register_state(name, "index_state", "");
+            register_state(name, ToString(StateRole::kIndexState), "");
           } else if (!integer_states.count(name)) {
-            register_state(name, "selection_state", "");
+            register_state(name, ToString(StateRole::kSelectionState), "");
           }
         }
       }
@@ -271,7 +273,9 @@ tir::transform::Pass AnalyzeSemanticStructure() {
       auto state_map = tvm::Downcast<Map<String, Any>>(state_any);
       Map<String, Any> role_payload;
       role_payload.Set("role", state_map["role"]);
-      witnesses.push_back(MakeWitness("state", state_map["name"].cast<String>(), "role",
+      witnesses.push_back(MakeWitness(ToString(WitnessSubjectKind::kState),
+                                      state_map["name"].cast<String>(),
+                                      ToString(WitnessFactAxis::kRole),
                                       std::move(role_payload), Array<String>{},
                                       Array<String>{String("states")}));
     }
@@ -279,7 +283,8 @@ tir::transform::Pass AnalyzeSemanticStructure() {
     for (const std::string& target : arg_reduce_targets) {
       Map<String, Any> relation_payload;
       relation_payload.Set("kind", String("index_derivation"));
-      witnesses.push_back(MakeWitness("relation", target, "derives_index_from",
+      witnesses.push_back(MakeWitness(ToString(WitnessSubjectKind::kRelation), target,
+                                      ToString(WitnessFactAxis::kDerivesIndexFrom),
                                       std::move(relation_payload), Array<String>{},
                                       Array<String>{String("fragment_regions")}));
     }
@@ -288,12 +293,13 @@ tir::transform::Pass AnalyzeSemanticStructure() {
     {
       Map<String, Any> entry;
       entry.Set("name", String("root_map"));
-      entry.Set("kind", String("map"));
+      entry.Set("kind", String(ToString(UpdateLawKind::kMap)));
       entry.Set("target_state", String(states.empty() ? "" : tvm::Downcast<Map<String, Any>>(states[0])["name"].cast<String>()));
       updates.push_back(entry);
       Map<String, Any> law_payload;
-      law_payload.Set("kind", String("map"));
-      witnesses.push_back(MakeWitness("update", "root_map", "law_family", std::move(law_payload),
+      law_payload.Set("kind", String(ToString(UpdateLawKind::kMap)));
+      witnesses.push_back(MakeWitness(ToString(WitnessSubjectKind::kUpdate), "root_map",
+                                      ToString(WitnessFactAxis::kLawFamily), std::move(law_payload),
                                       Array<String>{},
                                       Array<String>{String("semantic_structure")}));
     }
@@ -304,7 +310,7 @@ tir::transform::Pass AnalyzeSemanticStructure() {
           auto reduction = tvm::Downcast<Map<String, Any>>(reduction_any);
           Map<String, Any> entry;
           entry.Set("name", String(std::string("reduce_") + reduction["target"].cast<String>()));
-          entry.Set("kind", String("reduce"));
+          entry.Set("kind", String(ToString(UpdateLawKind::kReduce)));
           entry.Set("target_state", reduction["target"].cast<String>());
           entry.Set("reduce_kind", reduction["kind"].cast<String>());
           if (auto it = update_sources_by_target.find(reduction["target"].cast<String>());
@@ -315,15 +321,17 @@ tir::transform::Pass AnalyzeSemanticStructure() {
           const std::string update_name =
               std::string("reduce_") + reduction["target"].cast<String>();
           Map<String, Any> law_payload;
-          law_payload.Set("kind", String("reduce"));
-          witnesses.push_back(MakeWitness("update", update_name, "law_family",
+          law_payload.Set("kind", String(ToString(UpdateLawKind::kReduce)));
+          witnesses.push_back(MakeWitness(ToString(WitnessSubjectKind::kUpdate), update_name,
+                                          ToString(WitnessFactAxis::kLawFamily),
                                           std::move(law_payload), Array<String>{},
                                           Array<String>{String("row_reductions")}));
           if (auto it = update_sources_by_target.find(reduction["target"].cast<String>());
               it != update_sources_by_target.end()) {
             Map<String, Any> source_payload;
             source_payload.Set("sources", it->second);
-            witnesses.push_back(MakeWitness("update", update_name, "source_set",
+            witnesses.push_back(MakeWitness(ToString(WitnessSubjectKind::kUpdate), update_name,
+                                            ToString(WitnessFactAxis::kSourceSet),
                                             std::move(source_payload), Array<String>{},
                                             Array<String>{String("update_sources")}));
           }
@@ -332,7 +340,7 @@ tir::transform::Pass AnalyzeSemanticStructure() {
           for (const std::string& state_name : selection_targets) {
             Map<String, Any> entry;
             entry.Set("name", String(std::string("select_") + state_name));
-            entry.Set("kind", String("select"));
+            entry.Set("kind", String(ToString(UpdateLawKind::kSelect)));
             entry.Set("target_state", String(state_name));
             entry.Set("traits", Array<Any>{String("selected"), String("indexed")});
             if (auto it = update_sources_by_target.find(state_name);
@@ -343,7 +351,7 @@ tir::transform::Pass AnalyzeSemanticStructure() {
                 it != paired_value_state_by_selection_target.end()) {
               Array<Any> bindings;
               Map<String, Any> binding;
-              binding.Set("kind", String("paired_value_state"));
+              binding.Set("kind", String(ToString(BindingKind::kPairedValueState)));
               binding.Set("symbol", String("state"));
               binding.Set("value_repr", String(it->second));
               bindings.push_back(binding);
@@ -352,24 +360,27 @@ tir::transform::Pass AnalyzeSemanticStructure() {
             updates.push_back(entry);
             const std::string update_name = std::string("select_") + state_name;
             Map<String, Any> law_payload;
-            law_payload.Set("kind", String("select"));
-            witnesses.push_back(MakeWitness("update", update_name, "law_family",
+            law_payload.Set("kind", String(ToString(UpdateLawKind::kSelect)));
+            witnesses.push_back(MakeWitness(ToString(WitnessSubjectKind::kUpdate), update_name,
+                                            ToString(WitnessFactAxis::kLawFamily),
                                             std::move(law_payload), Array<String>{},
                                             Array<String>{String("selection_targets")}));
             if (auto it = update_sources_by_target.find(state_name);
                 it != update_sources_by_target.end()) {
               Map<String, Any> source_payload;
               source_payload.Set("sources", it->second);
-              witnesses.push_back(MakeWitness("update", update_name, "source_set",
+              witnesses.push_back(MakeWitness(ToString(WitnessSubjectKind::kUpdate), update_name,
+                                              ToString(WitnessFactAxis::kSourceSet),
                                               std::move(source_payload), Array<String>{},
                                               Array<String>{String("update_sources")}));
             }
             if (auto it = paired_value_state_by_selection_target.find(state_name);
                 it != paired_value_state_by_selection_target.end()) {
               Map<String, Any> relation_payload;
-              relation_payload.Set("binding_kind", String("paired_value_state"));
+              relation_payload.Set("binding_kind", String(ToString(BindingKind::kPairedValueState)));
               witnesses.push_back(
-                  MakeWitness("relation", update_name, "companion",
+                  MakeWitness(ToString(WitnessSubjectKind::kRelation), update_name,
+                              ToString(WitnessFactAxis::kCompanion),
                               std::move(relation_payload),
                               Array<String>{String(it->second)},
                               Array<String>{String("selection_pairs")}));
@@ -380,7 +391,7 @@ tir::transform::Pass AnalyzeSemanticStructure() {
           for (const std::string& state_name : loop_carried_states) {
             Map<String, Any> entry;
             entry.Set("name", String(std::string("recur_") + state_name));
-            entry.Set("kind", String("recurrence"));
+            entry.Set("kind", String(ToString(UpdateLawKind::kRecurrence)));
             entry.Set("target_state", String(state_name));
             entry.Set("traits", Array<Any>{String("carried"), String("staged")});
             if (auto it = recurrence_edges_by_target.find(state_name);
@@ -389,7 +400,7 @@ tir::transform::Pass AnalyzeSemanticStructure() {
               Array<Any> bindings;
               for (const Any& source_any : it->second) {
                 Map<String, Any> binding;
-                binding.Set("kind", String("recurrence_source_state"));
+                binding.Set("kind", String(ToString(BindingKind::kRecurrenceSourceState)));
                 binding.Set("symbol", String("state"));
                 binding.Set("value_repr", tvm::Downcast<String>(source_any));
                 bindings.push_back(binding);
@@ -402,37 +413,44 @@ tir::transform::Pass AnalyzeSemanticStructure() {
             updates.push_back(entry);
             const std::string update_name = std::string("recur_") + state_name;
             Map<String, Any> law_payload;
-            law_payload.Set("kind", String("recurrence"));
-            witnesses.push_back(MakeWitness("update", update_name, "law_family",
+            law_payload.Set("kind", String(ToString(UpdateLawKind::kRecurrence)));
+            witnesses.push_back(MakeWitness(ToString(WitnessSubjectKind::kUpdate), update_name,
+                                            ToString(WitnessFactAxis::kLawFamily),
                                             std::move(law_payload), Array<String>{},
                                             Array<String>{String("loop_carried_state")}));
             Map<String, Any> ordering_payload;
             ordering_payload.Set("ordering", String("ordered"));
-            witnesses.push_back(MakeWitness("update", update_name, "ordering",
+            witnesses.push_back(MakeWitness(ToString(WitnessSubjectKind::kUpdate), update_name,
+                                            ToString(WitnessFactAxis::kOrdering),
                                             std::move(ordering_payload), Array<String>{},
                                             Array<String>{String("recurrence_edges")}));
             if (auto it = recurrence_edges_by_target.find(state_name);
                 it != recurrence_edges_by_target.end()) {
               Map<String, Any> carried_payload;
-              carried_payload.Set("binding_kind", String("recurrence_source_state"));
+              carried_payload.Set("binding_kind",
+                                  String(ToString(BindingKind::kRecurrenceSourceState)));
               Array<String> related_sources;
               for (const Any& source_any : it->second) {
                 related_sources.push_back(tvm::Downcast<String>(source_any));
               }
-              witnesses.push_back(MakeWitness("relation", update_name, "carried_from",
+              witnesses.push_back(MakeWitness(ToString(WitnessSubjectKind::kRelation),
+                                              update_name,
+                                              ToString(WitnessFactAxis::kCarriedFrom),
                                               std::move(carried_payload),
                                               std::move(related_sources),
                                               Array<String>{String("recurrence_edges")}));
               Map<String, Any> source_payload;
               source_payload.Set("sources", it->second);
-              witnesses.push_back(MakeWitness("update", update_name, "source_set",
+              witnesses.push_back(MakeWitness(ToString(WitnessSubjectKind::kUpdate), update_name,
+                                              ToString(WitnessFactAxis::kSourceSet),
                                               std::move(source_payload), Array<String>{},
                                               Array<String>{String("recurrence_edges")}));
             } else if (auto it = update_sources_by_target.find(state_name);
                        it != update_sources_by_target.end()) {
               Map<String, Any> source_payload;
               source_payload.Set("sources", it->second);
-              witnesses.push_back(MakeWitness("update", update_name, "source_set",
+              witnesses.push_back(MakeWitness(ToString(WitnessSubjectKind::kUpdate), update_name,
+                                              ToString(WitnessFactAxis::kSourceSet),
                                               std::move(source_payload), Array<String>{},
                                               Array<String>{String("update_sources")}));
             }

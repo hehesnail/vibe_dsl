@@ -629,3 +629,20 @@ def test_invalidation_contract_clears_semantic_companions_after_unsafe_mutation(
     assert str(freeze["state"]) == "invalidated"
 
     tilelang.transform.ValidateSemanticRefinement()(mod)
+
+
+def test_semantic_vocab_normalizes_known_closed_vocabulary():
+    normalize_binding_kind = tvm.get_global_func("tl.SemanticVocabNormalizeBindingKind")
+    normalize_contract_mode = tvm.get_global_func("tl.SemanticVocabNormalizeContractMode")
+    normalize_subject_kind = tvm.get_global_func("tl.SemanticVocabNormalizeWitnessSubjectKind")
+
+    assert str(normalize_binding_kind("paired_value_state")) == "paired_value_state"
+    assert str(normalize_contract_mode("preserve")) == "preserve"
+    assert str(normalize_subject_kind("relation")) == "relation"
+
+
+def test_semantic_vocab_rejects_unknown_closed_vocabulary_symbol():
+    normalize_binding_kind = tvm.get_global_func("tl.SemanticVocabNormalizeBindingKind")
+
+    with pytest.raises(tvm.TVMError):
+        normalize_binding_kind("definitely_not_a_binding_kind")

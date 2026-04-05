@@ -10,26 +10,18 @@
 #include <unordered_set>
 
 #include "common/semantic_program.h"
+#include "common/semantic_vocab.h"
 
 namespace tvm {
 namespace tl {
+
+using namespace tvm::tl::semantic;
 
 namespace {
 
 bool IsBlackholePrimFunc(const tir::PrimFunc& func) {
   auto target = func->GetAttr<Target>(tvm::attr::kTarget);
   return target && target.value()->kind->name == "blackhole";
-}
-
-bool IsAllowedLawKind(const ffi::String& kind) {
-  static const std::unordered_set<std::string> kKinds = {"map", "reduce", "select", "recurrence"};
-  return kKinds.count(kind);
-}
-
-bool IsAllowedStateRole(const ffi::String& role) {
-  static const std::unordered_set<std::string> kRoles = {
-      "carry", "reduction_accumulator", "selection_state", "index_state", "transient"};
-  return kRoles.count(role);
 }
 
 }  // namespace
@@ -45,13 +37,13 @@ tir::transform::Pass ValidateStatefulSemanticIR() {
     ICHECK(!program->domains.empty()) << "SemanticProgram must contain at least one Domain";
     for (const State& state : program->states) {
       ICHECK(state.defined());
-      ICHECK(IsAllowedStateRole(state->role))
+      ICHECK(ParseStateRole(static_cast<std::string>(state->role)))
           << "Unsupported State.role in A2 validator: " << state->role;
     }
     for (const Update& update : program->updates) {
       ICHECK(update.defined());
       ICHECK(update->law.defined()) << "SemanticProgram update must carry UpdateLaw";
-      ICHECK(IsAllowedLawKind(update->law->kind))
+      ICHECK(ParseUpdateLawKind(static_cast<std::string>(update->law->kind)))
           << "Unsupported UpdateLaw.kind in A1 validator: " << update->law->kind;
     }
     return func;

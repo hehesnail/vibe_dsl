@@ -32,6 +32,7 @@
 #include <string>
 
 #include "common/semantic_program.h"
+#include "common/semantic_vocab.h"
 
 namespace tvm {
 namespace tl {
@@ -40,6 +41,7 @@ using tvm::DictAttrs;
 using tvm::ffi::Any;
 using tvm::ffi::Map;
 using tvm::ffi::String;
+using namespace tvm::tl::semantic;
 
 namespace {
 
@@ -127,7 +129,7 @@ tir::PrimFunc StripCompanionAttrs(const tir::PrimFunc& func, const ffi::String& 
       {{attr::kTLCompanionInvalidationReason, reason},
        {attr::kTLSemanticHardFreeze,
         Map<String, Any>{{"state", ffi::String("invalidated")},
-                         {"contract_mode", ffi::String("invalidate")},
+                         {"contract_mode", ffi::String(ToString(ContractMode::kInvalidate))},
                          {"unsafe_mutation_policy", ffi::String("require_relift")},
                          {"invalidation_reason", reason}}}});
   return updated;
