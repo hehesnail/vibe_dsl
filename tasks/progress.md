@@ -34,26 +34,16 @@
   - `UpdateLaw.kind == select / recurrence`
   - typed `SemanticSupplement`
   - workload-agnostic semantic state roles
-- 但 Phase A 当前还存在一个已确认的精度收口项：
-  - semantic recovery 不能依赖名字匹配
-  - 当前已经开始把这类恢复改成基于 typed attrs / IR 结构
-  - `index_state` 的最小稳定信号现已通过 `fragment_buffers[*].is_integer` 从上游 analysis 显式传递
-  - `selection_state` 当前已改成消费 `fragment_regions[*].selection_targets`
-    这类 typed relation，而不是全局 `if_then_else` heuristic
-  - `selection` 的 value/index companion pairing 也开始前移：
-    `fragment_regions[*].selection_pairs`
-    当前已能把 `value_target <-> companion_target` 的 typed pairing 带到
-    `select` update bindings（`paired_value_state`），不再只留下孤立的
-    `selection_state / index_state`
-  - `recurrence` 当前已改成直接基于 loop-carried 结构恢复，不再依赖 `gemm` 命中
-  - `recurrence` 的 carried-update edge 也开始前移：
-    `fragment_regions[*].recurrence_edges`
-    当前已能把 carried target 的 typed source edge 带到 `recurrence` update
-    bindings（`recurrence_source_state`），不再只留下 late-assembled recurrence update
-  - `UpdateLaw.source_states` 也开始从上游 typed relation 恢复：
-    `fragment_regions[*].update_sources`
-    当前已能显式承接 `select / recurrence / reduce` 的 source-state 关系，
-    不再默认把 `target_state` 自己回填成唯一 source
+- Phase A 当前已按设计边界完成：
+  - semantic recovery 不再依赖名字匹配
+  - `selection_state` 当前消费 `fragment_regions[*].selection_targets`
+  - `selection` 的 value/index companion pairing 当前消费
+    `fragment_regions[*].selection_pairs`，并下沉为 `paired_value_state`
+  - selection/index family 的 arg-reduction target 当前消费
+    `fragment_regions[*].arg_reduce_targets`
+  - `recurrence` 当前消费 `fragment_regions[*].recurrence_edges`，并下沉为
+    `recurrence_source_state`
+  - `UpdateLaw.source_states` 当前消费 `fragment_regions[*].update_sources`
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组
@@ -65,12 +55,9 @@
 
 ## 下一步
 
-1. 执行 [stage4_phase_a_semantic_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_a_semantic_ir.md)
-   - Phase A 当前已完成 A1 + A2 的 schema 落地
-   - 下一步继续收紧 semantic recovery precision，去掉剩余 heuristic residue
-2. 执行 [stage4_phase_b_spatial_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_b_spatial_ir.md)
+1. 执行 [stage4_phase_b_spatial_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_b_spatial_ir.md)
    - 一等化 `ProgramPhase / Task / Channel / Layout / WorkPartition`
-3. 执行 [stage4_phase_c_tt_target_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_c_tt_target_ir.md)
+2. 执行 [stage4_phase_c_tt_target_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_c_tt_target_ir.md)
    - 完成 TT target cutover、compatibility deletion、`flash-attn` correctness payoff、以及 family expansion
 
 ## 当前代码事实
@@ -116,6 +103,7 @@
   - `flash-attn / topk / chunk recurrence` 的 workload-agnostic semantic gate
   - `fragment_regions[*].selection_targets`
   - `fragment_regions[*].selection_pairs`
+  - `fragment_regions[*].arg_reduce_targets`
   - `fragment_regions[*].recurrence_edges`
   - `fragment_regions[*].update_sources`
 - TT-Sim 当前正式入口是顶层 `scripts/setup_tt_sim.sh`，并且必须和后续测试命令在同一个 shell 中执行
@@ -125,12 +113,16 @@
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'device_program_registry or semantic_seeds or hard_freeze' -q`
   - `3 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
-  - `13 passed`
+  - `15 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names' -q`
   - `1 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names or chunk_recurrence_semantic_program_lifts_recurrence_updates' -q`
   - `2 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'selection_pairing_is_recovered_from_compute_pattern' -q`
+  - `1 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'selection_pairing_recovers_index_role_without_integer_hints' -q`
+  - `1 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'topk_fragment_analysis_recovers_arg_reduce_targets' -q`
   - `1 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'chunk_recurrence_edges_are_recovered_from_compute_pattern' -q`
   - `1 passed`

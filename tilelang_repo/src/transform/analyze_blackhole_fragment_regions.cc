@@ -186,6 +186,12 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     }
     region.Set("row_reductions", row_reductions);
 
+    Array<Any> arg_reduce_targets;
+    for (const auto& target : BuildArgReduceTargets()) {
+      arg_reduce_targets.push_back(String(target));
+    }
+    region.Set("arg_reduce_targets", arg_reduce_targets);
+
     Array<Any> row_broadcasts;
     for (const auto& source : row_broadcast_sources_) {
       Map<String, Any> entry;
@@ -662,6 +668,29 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       }
     }
     return pairs;
+  }
+
+  std::vector<std::string> BuildArgReduceTargets() const {
+    std::vector<std::string> targets;
+    std::unordered_set<std::string> selection_like_sources(selection_target_order_.begin(),
+                                                           selection_target_order_.end());
+    for (const auto& pair : BuildSelectionPairs()) {
+      selection_like_sources.insert(pair.companion_target);
+    }
+    for (const auto& row_reduction : row_reduction_targets_) {
+      const std::string& target = row_reduction.first;
+      auto it = update_source_order_.find(target);
+      if (it == update_source_order_.end()) {
+        continue;
+      }
+      for (const auto& source : it->second) {
+        if (selection_like_sources.count(source)) {
+          targets.push_back(target);
+          break;
+        }
+      }
+    }
+    return targets;
   }
 
   std::unordered_map<std::string, BufferInfo> fragment_buffers_;

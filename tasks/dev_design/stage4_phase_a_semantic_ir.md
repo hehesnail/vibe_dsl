@@ -203,9 +203,6 @@ Implemented note:
 - A2 明确保持 workload-agnostic schema：
   - `flash-attn / topk / chunk recurrence` 只作为 validation family
   - schema 本身不引入 workload-specific noun bag
-- 当前为避免名字匹配，`AnalyzeBlackholeFragmentRegions` 已向 `fragment_buffers`
-  补充 typed `is_integer` 结构信号，`AnalyzeSemanticStructure` 用这份 typed attr
-  恢复 `index_state`
 - `AnalyzeBlackholeFragmentRegions` 当前还会显式导出 `selection_targets`
   这类局部计算关系事实；`AnalyzeSemanticStructure` 现在消费这些 typed targets，
   而不是再用全局 `if_then_else` / `row_broadcast` 命中去晚期猜 `selection_state`
@@ -216,6 +213,10 @@ Implemented note:
   这份 pairing 当前会被 `AnalyzeSemanticStructure` 下沉到对应 `select` update 的
   typed binding（当前为 `paired_value_state`），避免继续在 semantic lift 末端猜
   “哪个 value state 和哪个 index/companion state 属于同一次 selection”
+- `AnalyzeBlackholeFragmentRegions` 现在也会显式导出 `arg_reduce_targets`：
+  - row-reduction target whose source comes from a selection companion/value flow
+  这份 typed relation 当前优先用于恢复 `index_state`，
+  不再把 selection/index family 的角色判定建立在 integer hint 上
 - `AnalyzeBlackholeFragmentRegions` 现在也会显式导出 `update_sources`：
   - `target -> source_states`
   - `LiftStatefulSemanticIR` 优先把这份 typed 关系写进 `UpdateLaw.source_states`
@@ -232,17 +233,22 @@ Implemented note:
   - algorithmic carry / reduction state
   - transient compute scratch
   的抽象角色分离
-- 当前仍有未完成项：
-  - A2 schema 已落地
-  - 但 semantic recovery 精度仍在继续收紧，尤其是 `selection_state` 这类较粗角色的结构化区分还未完成
+- 以当前总设计对 Phase A 的边界看，A2 exit gate 已满足：
+  - workload-agnostic semantic schema 已稳定
+  - `selection / recurrence / source-state` 的关键计算关系已显式进入 typed analysis attrs
+  - shared zero-regression baseline 全绿
 - 当前验证：
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -q`
-    - `13 passed`
+    - `15 passed`
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names' -q`
     - `1 passed`
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names or chunk_recurrence_semantic_program_lifts_recurrence_updates' -q`
     - `2 passed`
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'selection_pairing_is_recovered_from_compute_pattern' -q`
+    - `1 passed`
+  - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'selection_pairing_recovers_index_role_without_integer_hints' -q`
+    - `1 passed`
+  - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'topk_fragment_analysis_recovers_arg_reduce_targets' -q`
     - `1 passed`
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'chunk_recurrence_edges_are_recovered_from_compute_pattern' -q`
     - `1 passed`

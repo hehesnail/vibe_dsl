@@ -144,11 +144,13 @@ tir::transform::Pass AnalyzeSemanticStructure() {
     Array<Any> states;
     std::unordered_map<std::string, int> state_index;
     std::unordered_set<std::string> reduction_targets;
+    std::unordered_set<std::string> arg_reduce_targets;
     std::unordered_set<std::string> integer_states;
     std::unordered_set<std::string> loop_carried_states;
     std::unordered_set<std::string> selection_targets;
     std::unordered_map<std::string, Array<Any>> update_sources_by_target;
     std::unordered_map<std::string, std::string> paired_value_state_by_selection_target;
+    std::unordered_set<std::string> paired_selection_companions;
     std::unordered_map<std::string, Array<Any>> recurrence_edges_by_target;
     auto register_state = [&states, &state_index](const std::string& name, const std::string& role,
                                                   const std::string& scope) {
@@ -203,11 +205,18 @@ tir::transform::Pass AnalyzeSemanticStructure() {
                 tvm::Downcast<Array<Any>>(source_map["sources"]);
           }
         }
+        if (region.count("arg_reduce_targets")) {
+          for (const Any& target_any : tvm::Downcast<Array<Any>>(region["arg_reduce_targets"])) {
+            arg_reduce_targets.insert(tvm::Downcast<String>(target_any));
+          }
+        }
         if (region.count("selection_pairs")) {
           for (const Any& pair_any : tvm::Downcast<Array<Any>>(region["selection_pairs"])) {
             auto pair_map = tvm::Downcast<Map<String, Any>>(pair_any);
-            paired_value_state_by_selection_target[pair_map["companion_target"].cast<String>()] =
+            const std::string companion_target = pair_map["companion_target"].cast<String>();
+            paired_value_state_by_selection_target[companion_target] =
                 pair_map["value_target"].cast<String>();
+            paired_selection_companions.insert(companion_target);
           }
         }
         if (region.count("recurrence_edges")) {
@@ -225,7 +234,9 @@ tir::transform::Pass AnalyzeSemanticStructure() {
             integer_states.insert(target);
           }
           const std::string role =
-              integer_states.count(target) ? "index_state" : "reduction_accumulator";
+              (arg_reduce_targets.count(target) || integer_states.count(target))
+                  ? "index_state"
+                  : "reduction_accumulator";
           register_state(target, role, "");
         }
         for (const std::string& carried : loop_carried_states) {
@@ -234,7 +245,9 @@ tir::transform::Pass AnalyzeSemanticStructure() {
           }
         }
         for (const std::string& name : selection_targets) {
-          if (!integer_states.count(name)) {
+          if (paired_selection_companions.count(name)) {
+            register_state(name, "index_state", "");
+          } else if (!integer_states.count(name)) {
             register_state(name, "selection_state", "");
           }
         }

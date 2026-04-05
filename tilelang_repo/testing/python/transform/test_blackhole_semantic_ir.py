@@ -68,6 +68,23 @@ def _prepare_blackhole_phase_a_module(prim_func):
     return mod
 
 
+def _prepare_blackhole_fragment_analysis_module(prim_func):
+    mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
+    target = Target("blackhole")
+    with target:
+        if not (mod["main"].attrs and mod["main"].attrs.get("target") is not None):
+            mod = LowerAndLegalize(mod, target)
+        mod = OptimizeForTarget(mod, target)
+    mod = tilelang.transform.LowerDeviceStorageAccessInfo()(mod)
+    mod = tilelang.transform.LowerIntrin()(mod)
+    mod = tvm.tir.transform.Simplify()(mod)
+    mod = tilelang.transform.HoistBroadcastValues()(mod)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
+    return mod
+
+
 def _lift_semantic_program_from_existing_structure(prim_func):
     mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
     mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
@@ -271,6 +288,84 @@ def test_topk_semantic_program_recovers_index_state_from_integer_ir_not_names():
     assert "carry_slots" in select_updates["select_best_slot"]
 
 
+@T.prim_func
+def _synthetic_selection_pair_without_integer_hints(
+    logits: T.Buffer((16,), "float32"),
+    out_values: T.Buffer((4,), "float32"),
+    out_slots: T.Buffer((4,), "float32"),
+):
+    T.func_attr(
+        {
+            "global_symbol": "main",
+            "target": tvm.target.Target("blackhole"),
+            "blackhole.fragment_regions": [
+                {
+                    "fragment_buffers": [
+                        {"name": "score_fragment", "scope": "blackhole.acc", "is_integer": 0},
+                        {"name": "carry_slots", "scope": "blackhole.acc", "is_integer": 0},
+                        {"name": "best_value", "scope": "blackhole.acc", "is_integer": 0},
+                        {"name": "best_slot", "scope": "blackhole.acc", "is_integer": 0},
+                    ],
+                    "ops": ["pointwise_chain", "row_reduction", "row_broadcast"],
+                    "pointwise_ops": ["if_then_else", "max"],
+                    "row_reductions": [
+                        {"target": "best_value", "kind": "max"},
+                    ],
+                    "row_broadcasts": [{"source": "score_fragment"}, {"source": "best_value"}],
+                    "selection_targets": ["best_slot"],
+                    "selection_pairs": [
+                        {
+                            "value_target": "best_value",
+                            "companion_target": "best_slot",
+                            "source_states": ["score_fragment"],
+                        }
+                    ],
+                    "update_sources": [
+                        {"target": "best_value", "sources": ["score_fragment"]},
+                        {"target": "best_slot", "sources": ["score_fragment", "carry_slots"]},
+                    ],
+                    "loop_carried_state": [
+                        {"name": "score_fragment"},
+                        {"name": "carry_slots"},
+                        {"name": "best_value"},
+                        {"name": "best_slot"},
+                    ],
+                }
+            ],
+        }
+    )
+    with T.Kernel(1, threads=32):
+        score_fragment = T.decl_buffer((16,), "float32", scope="blackhole.acc")
+        carry_slots = T.decl_buffer((16,), "float32", scope="blackhole.acc")
+        best_value = T.decl_buffer((4,), "float32", scope="blackhole.acc")
+        best_slot = T.decl_buffer((4,), "float32", scope="blackhole.acc")
+        tx = T.launch_thread("threadIdx.x", 32)
+
+        if tx < 16:
+            score_fragment[tx] = logits[tx]
+            carry_slots[tx] = T.Cast("float32", tx)
+        if tx < 4:
+            best_value[tx] = T.max(score_fragment[tx * 4], score_fragment[tx * 4 + 1])
+            best_slot[tx] = T.if_then_else(
+                score_fragment[tx * 4] >= score_fragment[tx * 4 + 1],
+                carry_slots[tx * 4],
+                carry_slots[tx * 4 + 1],
+            )
+            out_values[tx] = best_value[tx]
+            out_slots[tx] = best_slot[tx]
+
+
+def test_selection_pairing_recovers_index_role_without_integer_hints():
+    mod = _lift_semantic_program_from_existing_structure(
+        _synthetic_selection_pair_without_integer_hints
+    )
+
+    program = mod["main"].attrs["tl.semantic_program"]
+    state_roles_by_name = {str(state.name): str(state.role) for state in program.states}
+
+    assert state_roles_by_name["best_slot"] == "index_state"
+
+
 def test_selection_pairing_is_recovered_from_compute_pattern():
     mod = _prepare_blackhole_phase_a_module(
         example_topk.tl_topk.jit_impl.get_tir(M=64, N=32, topk=4, blk_m=64, threads=128)
@@ -284,6 +379,21 @@ def test_selection_pairing_is_recovered_from_compute_pattern():
     }
 
     assert any("paired_value_state" in bindings for bindings in selection_pairs.values())
+
+
+def test_topk_fragment_analysis_recovers_arg_reduce_targets():
+    mod = _prepare_blackhole_fragment_analysis_module(
+        example_topk.tl_topk.jit_impl.get_tir(M=64, N=32, topk=4, blk_m=64, threads=128)
+    )
+
+    fragment_regions = mod["main"].attrs["blackhole.fragment_regions"]
+    arg_reduce_targets = {
+        str(target)
+        for region in fragment_regions
+        for target in region["arg_reduce_targets"]
+    }
+
+    assert "max_idx" in arg_reduce_targets
 
 
 def test_chunk_recurrence_semantic_program_lifts_recurrence_updates():
