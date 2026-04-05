@@ -49,7 +49,13 @@
     - canonical evidence / abstract domain / `α` / `γ` 的最小定义
     - `typed witness family` 的最小闭集设计
     - `ValidateSemanticRefinement` 的职责与 required checks
-    - 当前仍缺 typed witness closure 的代码 cutover、stronger validator 实现、以及 preserve/rebind/invalidate contract
+  - `Phase A` 的 generic witness / refinement / invalidation contract 现已代码落地：
+    - `tl.semantic_witnesses` 已作为 compiler-internal generic witness algebra 接入
+    - `AnalyzeSemanticStructure` 现在先投影 witness，再由 `LiftStatefulSemanticIR` 投影到 semantic core
+    - `ValidateSemanticRefinement` 已接入 Python API 与 Blackhole 主编译链
+    - `InvalidateBlackholeCompanionPrograms` 现在会整体清除
+      `tl.semantic_structure / tl.semantic_witnesses / tl.semantic_program / tl.spatial_program / tl.tt_program`
+      并把 hard-freeze contract 标记为 `invalidate`
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组
@@ -85,6 +91,7 @@
   -> `AnalyzeSemanticStructure`
   -> `LiftStatefulSemanticIR`
   -> `ValidateStatefulSemanticIR`
+  -> `ValidateSemanticRefinement`
   -> `LowerBlackholeOps`
   -> `PlanBlackholeCB`
   -> `AssignBlackholeCores`
@@ -119,7 +126,9 @@
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'device_program_registry or semantic_seeds or hard_freeze' -q`
   - `3 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
-  - `15 passed`
+  - `20 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'witness or refinement or invalidation_contract' -q`
+  - `5 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names' -q`
   - `1 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names or chunk_recurrence_semantic_program_lifts_recurrence_updates' -q`

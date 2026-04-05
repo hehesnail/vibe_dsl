@@ -79,6 +79,22 @@ SemanticSupplement::SemanticSupplement(ffi::String kind, ffi::Map<ffi::String, f
   data_ = std::move(n);
 }
 
+SemanticWitness::SemanticWitness(ffi::String subject_kind, ffi::String subject_anchor_id,
+                                 ffi::String fact_axis, ffi::Map<ffi::String, ffi::Any> fact_value,
+                                 ffi::Array<ffi::String> related_anchor_ids,
+                                 ffi::Array<ffi::String> evidence_sources,
+                                 ffi::String canonicalization_point) {
+  auto n = ffi::make_object<SemanticWitnessNode>();
+  n->subject_kind = std::move(subject_kind);
+  n->subject_anchor_id = std::move(subject_anchor_id);
+  n->fact_axis = std::move(fact_axis);
+  n->fact_value = std::move(fact_value);
+  n->related_anchor_ids = std::move(related_anchor_ids);
+  n->evidence_sources = std::move(evidence_sources);
+  n->canonicalization_point = std::move(canonicalization_point);
+  data_ = std::move(n);
+}
+
 SemanticProgram::SemanticProgram(ffi::Array<Domain> domains, ffi::Array<State> states,
                                  ffi::Array<Update> updates,
                                  ffi::Array<SemanticSupplement> supplements,
@@ -102,6 +118,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   StateNode::RegisterReflection();
   UpdateNode::RegisterReflection();
   SemanticSupplementNode::RegisterReflection();
+  SemanticWitnessNode::RegisterReflection();
   SemanticProgramNode::RegisterReflection();
 }
 
@@ -150,6 +167,19 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("tl.SemanticSupplement",
                         [](ffi::String kind, ffi::Map<ffi::String, ffi::Any> payload) {
                           return SemanticSupplement(std::move(kind), std::move(payload));
+                        });
+  refl::GlobalDef().def("tl.SemanticWitness",
+                        [](ffi::String subject_kind, ffi::String subject_anchor_id,
+                           ffi::String fact_axis, ffi::Map<ffi::String, ffi::Any> fact_value,
+                           ffi::Array<ffi::String> related_anchor_ids,
+                           ffi::Array<ffi::String> evidence_sources,
+                           ffi::String canonicalization_point) {
+                          return SemanticWitness(std::move(subject_kind),
+                                                 std::move(subject_anchor_id),
+                                                 std::move(fact_axis), std::move(fact_value),
+                                                 std::move(related_anchor_ids),
+                                                 std::move(evidence_sources),
+                                                 std::move(canonicalization_point));
                         });
   refl::GlobalDef().def("tl.SemanticProgram",
                         [](ffi::Array<Domain> domains, ffi::Array<State> states,

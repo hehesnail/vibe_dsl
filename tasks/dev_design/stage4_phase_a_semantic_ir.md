@@ -434,11 +434,11 @@ Implemented note:
 只有把这四项补齐，`Phase A` 才能从“当前已完成的工程语义层”进一步升级成
 “有界、可验证、可维护的 semantic abstraction layer”。
 
-## Typed Witness Schema
+## Generic Witness Algebra
 
-上面的 proof framing 只定义了“evidence 必须闭集化”，但还没有把 witness family 本身写死。
-`Phase A` 若要避免 relation attr 继续膨胀，下一步必须把当前开放 evidence 收成 compiler-internal
-typed witness family。
+上面的 proof framing 只定义了“evidence 必须闭集化”，但还没有把 witness system 本身写成
+一开始就具备通用性的 schema。`Phase A` 若要避免再次走向 case-by-case 膨胀，witness 不能按
+当前 workload family 或当前 relation 名字切类；它必须从一开始就是**正交的事实代数**。
 
 ### Witness Design Goal
 
@@ -446,126 +446,135 @@ witness 不是新的 semantic core；它们是：
 
 - pre-lift canonical evidence 的 typed 载体
 - `AnalyzeSemanticStructure` 的正式输入
-- `ValidateStatefulSemanticIR` / 后续 refinement validator 的核对对象
+- `LiftStatefulSemanticIR` 的投影来源
+- `ValidateSemanticRefinement` 的核对对象
 
-因此 witness family 必须满足：
+因此 witness algebra 必须满足：
 
 1. 小闭集
-2. 每个 witness 都有稳定 target anchor
-3. 每个 witness 都有唯一合法的 core projection
-4. witness 不允许直接表达 spatial / TT target 事实
-
-### Minimal Witness Family
-
-结合当前已落地的 A2 evidence，第一版最小 witness family 建议固定为：
-
-1. **`SelectionTargetWitness`**
-   - target: state anchor
-   - payload:
-     - `selection_axis`
-     - `selection_scope`
-   - legal projection:
-     - `State.role = selection_state`
-     - 必要时补 `AccessMap.traits`
-2. **`SelectionPairWitness`**
-   - target: selection companion / output anchor
-   - payload:
-     - `value_state`
-     - `companion_state`
-     - `source_states`
-   - legal projection:
-     - `Update.bindings(kind = paired_value_state)`
-     - `UpdateLaw.source_states`
-3. **`ArgReduceWitness`**
-   - target: reduction target anchor
-   - payload:
-     - `selector_source`
-     - `companion_flow`
-   - legal projection:
-     - `State.role = index_state`
-4. **`UpdateSourceWitness`**
-   - target: update anchor
-   - payload:
-     - `source_states`
-   - legal projection:
-     - `UpdateLaw.source_states`
-5. **`RecurrenceEdgeWitness`**
-   - target: recurrence update / carried state anchor
-   - payload:
-     - `source_states`
-     - `ordered_dims`
-   - legal projection:
-     - `UpdateLaw.kind = recurrence`
-     - `UpdateLaw.source_states`
-     - `Update.bindings(kind = recurrence_source_state)`
-6. **`StateIdentityWitness`**
-   - target: state anchor
-   - payload:
-     - `identity_kind`
-     - `justification`
-   - legal projection:
-     - `State.role`
-     - 或 typed `SemanticSupplement(state_identity)`
-7. **`SemanticBoundaryWitness`**
-   - target: update / region anchor
-   - payload:
-     - `boundary_kind`
-     - `ordered_requirement`
-   - legal projection:
-     - `SemanticSupplement(semantic_boundary)`
-     - 或 `UpdateLaw` typed trait
+2. 每个 witness 都绑定稳定结构锚点
+3. witness 只表达 semantic fact，不表达 workload noun
+4. witness 只沿少数正交 axis 扩展，而不是沿 family 扩展
+5. witness 不允许直接表达 spatial / TT target 事实
 
 ### Witness Normal Form
 
 所有 witness 都应统一具备下面的最小公共字段：
 
-- `witness_kind`
-- `target_anchor_id`
-- `payload`
+- `subject_kind`
+- `subject_anchor_id`
+- `fact_axis`
+- `fact_value`
+- `related_anchor_ids`
 - `evidence_sources`
 - `canonicalization_point`
 
 其中：
 
-- `target_anchor_id` 必须指向 pre-lift 已稳定存在的结构锚点
-- `evidence_sources` 只记录该 witness 来自哪些 analysis pass / seed channel
-- `canonicalization_point` 用来证明该 witness 绑定在哪个 pass window 上有效
+- `subject_kind`
+  - `domain`
+  - `state`
+  - `update`
+  - `access`
+  - `relation`
+  - `boundary`
+- `subject_anchor_id`
+  - 必须指向 pre-lift 已稳定存在的结构锚点
+- `fact_axis`
+  - 只能从预定义 axis 集合中选择
+- `fact_value`
+  - 只能是该 axis 允许的 typed payload
+- `related_anchor_ids`
+  - 用于伴随关系、carried dependency、derived-index dependency 等跨对象事实
+- `evidence_sources`
+  - 只记录该 witness 来自哪些 analysis pass / seed channel
+- `canonicalization_point`
+  - 记录该 witness 绑定在哪个 pass window 上有效
 
-### Witness-to-Core Contract
+### Closed Witness Axes
 
-对每一类 witness，必须明确写死：
+第一版 witness algebra 不按 workload 切类，而按 subject-kind x fact-axis 切分。
+推荐第一版固定下面这些 axis。
 
-1. 它能投影到哪个 core 字段
-2. 哪些字段是 required
-3. 哪些 supplement 是唯一允许的裁决出口
-4. 哪些 witness 组合才合法
+1. **State axes**
+   - `role`
+   - `identity`
+   - `lifetime`
+2. **Update axes**
+   - `law_family`
+   - `source_set`
+   - `ordering`
+   - `boundary`
+3. **Access axes**
+   - `indirection`
+   - `selection_contract`
+   - `distribution_hint`
+4. **Relation axes**
+   - `companion`
+   - `derives_index_from`
+   - `feeds_update`
+   - `carried_from`
+5. **Boundary axes**
+   - `semantic_boundary`
+   - `ordered_region`
 
-当前最关键的几条 contract：
+这组 axis 的含义是：
 
-- `SelectionPairWitness` 不能单独存在：
-  - 必须和某个 `select` update 对齐
-- `ArgReduceWitness` 不能直接产出新的 `UpdateLaw.kind`
-  - 它只能帮助裁决 `index_state`
-- `RecurrenceEdgeWitness` 若存在：
-  - 其 target 对应 update 不允许继续保持 `kind = map / reduce / select`
-- `UpdateSourceWitness` 若存在：
-  - 对应 `UpdateLaw.source_states` 不允许再回退成默认 `target_state`
+- 新 workload 进入时，优先复用现有 axis 组合
+- 只有当某个新事实既跨 family 复用、又无法归约到现有 axis 时，才允许扩 axis
+- 不允许为 `topk`、`paged decode`、`fusedmoe`、`flash-attn` 各自新增 witness 类
 
-### Current Migration Requirement
+### Witness-to-Core Projection
 
-这意味着当前 A2 已落地的开放 relation attr：
+对每个 axis，都必须写死唯一合法的 core projection：
+
+| subject kind | fact axis | legal projection |
+|--------------|-----------|------------------|
+| `state` | `role` | `State.role` |
+| `state` | `identity` | `State.role` 或 `SemanticSupplement(state_identity)` |
+| `update` | `law_family` | `UpdateLaw.kind` |
+| `update` | `source_set` | `UpdateLaw.source_states` |
+| `update` | `ordering` | `UpdateLaw` typed trait / `SemanticSupplement(update_law_trait)` |
+| `update` | `boundary` | `SemanticSupplement(semantic_boundary)` |
+| `access` | `indirection` | `AccessMap.traits` |
+| `access` | `selection_contract` | `AccessMap.traits` / `Update.bindings` |
+| `relation` | `companion` | `Update.bindings` |
+| `relation` | `derives_index_from` | `State.role = index_state` |
+| `relation` | `feeds_update` | `UpdateLaw.source_states` |
+| `relation` | `carried_from` | `UpdateLaw.kind = recurrence` + `UpdateLaw.source_states` + `Update.bindings` |
+| `boundary` | `semantic_boundary` | `SemanticSupplement(semantic_boundary)` |
+
+这条表的意义是：
+
+- witness 不是自由解释的提示
+- witness 必须有唯一合法投影
+- witness 一旦无法找到合法投影，就说明 schema 设计有洞，或该事实本该分流到 `Phase B / C`
+
+### Compatibility Mapping From Current A2 Evidence
+
+当前 A2 已落地的开放 relation attr 只作为 compatibility producer 保留，并映射到通用 witness algebra：
 
 - `selection_targets`
+  - `state.role = selection_state`
+  - 必要时补 `access.selection_contract`
 - `selection_pairs`
+  - `relation.companion`
+  - `relation.feeds_update`
 - `arg_reduce_targets`
+  - `relation.derives_index_from`
+  - `state.role = index_state`
 - `update_sources`
+  - `update.source_set`
 - `recurrence_edges`
+  - `relation.carried_from`
+  - `update.ordering`
 
-长期都不应继续以开放 attrs 形式直接被 semantic lift 消费，而应迁移成 typed witness family。
+因此 cutover 的目标不是“新增一批 selection/recurrence witness class”，而是：
 
-在 witness cutover 完成之前，这些 attrs 仍可作为 compatibility producer 存在；但要补 deletion gate：
+- 让这些开放 attrs 先投影到统一 witness algebra
+- 再由统一 witness algebra 投影到 semantic core
 
-- 一旦 typed witness producer 稳定接管，同名开放 attrs 不再允许承担 semantic 真源入口
+一旦 witness producer 稳定接管，同名开放 attrs 不再允许承担 semantic 真源入口。
 
 ## Stronger Refinement Validator
 
@@ -594,25 +603,29 @@ refinement validator 不是再做一遍 recovery；它只回答一件事：
      - 或被显式拒绝并给出 invalidation / unsupported reason
    - 不允许 orphan witness
 2. **Projection Consistency**
-   - `SelectionPairWitness`
-     - 对应 update 必须是 `select`
-     - 对应 binding 必须存在 `paired_value_state`
-   - `ArgReduceWitness`
-     - 对应 state 必须是 `index_state`
-   - `RecurrenceEdgeWitness`
-     - 对应 update 必须是 `recurrence`
-     - 对应 binding 必须存在 `recurrence_source_state`
-   - `UpdateSourceWitness`
+   - `state.role`
+     - 对应 `State.role` 必须一致
+   - `update.law_family`
+     - 对应 `UpdateLaw.kind` 必须一致
+   - `update.source_set`
      - 对应 `UpdateLaw.source_states` 必须与 witness payload 一致
+   - `relation.companion`
+     - 对应 update 必须属于允许伴随关系的 family，且对应 binding 必须存在
+   - `relation.carried_from`
+     - 对应 update 必须是 `recurrence`，且 carried source binding 必须存在
+   - `relation.derives_index_from`
+     - 对应 state 必须是 `index_state`
 3. **Supplement Legality**
    - `SemanticSupplement.kind` 只能来自允许集合
    - supplement target 必须指向已有 anchor
    - supplement 不能重述已可由 witness 唯一恢复的结构事实
 4. **Role/Law Compatibility**
-   - `carry` state 不允许只关联纯 `map` update 而无 ordered source witness
-   - `index_state` 不允许由纯 transient fragment state 无 witness 地推导得到
+   - `carry` state 不允许只关联纯 `map` update 而无 `relation.carried_from` /
+     `update.ordering` 事实
+   - `index_state` 不允许由纯 transient fragment state 无 `relation.derives_index_from`
+     或裁决 supplement 地推导得到
    - `selection_state` / `index_state` / `reduction_accumulator`
-     的角色组合必须与对应 update family 相容
+     的角色组合必须与 `update.law_family` 和 `access.selection_contract` 相容
 5. **Anchor/Biding Integrity**
    - `Update.bindings` / `SemanticSupplement.target_anchor_id`
      不能引用缺失 anchor
@@ -650,3 +663,98 @@ refinement validator 不是再做一遍 recovery；它只回答一件事：
 
 只有到这一步，`Phase A` 才能真正摆脱“workload 增加时继续补 relation + regression case”的
 被动演化模式。
+
+## Task 3: Stage 2.5 - Generic Witness Algebra And Refinement Contract
+
+**Files:**
+- Modify: `tilelang_repo/src/transform/common/semantic_program.h`
+- Modify: `tilelang_repo/src/transform/common/semantic_program.cc`
+- Modify: `tilelang_repo/src/transform/analyze_semantic_structure.cc`
+- Modify: `tilelang_repo/src/transform/lift_stateful_semantic_ir.cc`
+- Create: `tilelang_repo/src/transform/validate_semantic_refinement.cc`
+- Modify: `tilelang_repo/src/transform/validate_stateful_semantic_ir.cc`
+- Modify: `tilelang_repo/tilelang/transform/__init__.py`
+- Modify: `tilelang_repo/tilelang/engine/lower.py`
+- Modify: `tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py`
+- Modify: `tasks/progress.md`
+- Status: `2026-04-05` 已实现并验证
+
+- [x] **Step 1: Add failing tests for generic witness production and refinement checks**
+
+Run:
+
+```bash
+pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'witness or refinement' -q
+```
+
+Expected:
+
+- 新测试先 fail
+- fail 原因是：
+  - 尚无 typed generic witness object
+  - 尚无 `ValidateSemanticRefinement`
+  - 尚无 preserve / rebind / invalidate 的 machine-checkable enforcement
+
+- [x] **Step 2: Introduce generic witness objects and compatibility projection**
+
+Deliver:
+
+- compiler-internal generic witness algebra
+- 当前开放 attrs 先投影成 witness，再由 witness 投影到 semantic core
+- 不新增 workload-shaped witness class
+
+- [x] **Step 3: Add generic refinement validation**
+
+Run:
+
+```bash
+pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'witness_projection or refinement_mismatch' -q
+```
+
+Expected:
+
+- validator 能发现 witness/core mismatch
+- validator 能拒绝 orphan witness
+- validator 能拒绝非法 supplement 重述结构事实
+
+- [x] **Step 4: Mechanize preserve / rebind / invalidate contract**
+
+Run:
+
+```bash
+pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'hard_freeze or invalidation or rebind_contract' -q
+```
+
+Expected:
+
+- unsafe mutation 后 companion IR 整体失效
+- 未声明 preserve / typed rebind 的 pass 不能静默保留 semantic companion
+
+- [x] **Step 5: Re-run semantic and baseline verification**
+
+Run:
+
+```bash
+pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q
+pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q
+pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q
+pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q
+```
+
+Expected:
+
+- witness/refinement contract 不回退当前 A1/A2 gate
+- compile-path baseline 继续全绿
+
+Verification:
+
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'witness or refinement or invalidation_contract' -q`
+  - `5 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
+  - `20 passed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
+  - `40 passed, 10 skipped, 1 xfailed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q`
+  - `24 passed, 11 skipped`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
+  - `26 passed`

@@ -1,10 +1,12 @@
 import sys
 from pathlib import Path
 
+import pytest
 import tilelang
 import tilelang.language as T
 from tilelang import tvm
 from tilelang.engine.phase import LowerAndLegalize, OptimizeForTarget
+from tvm import tir
 from tvm.target import Target
 
 THIS_DIR = Path(__file__).resolve().parent
@@ -65,7 +67,31 @@ def _prepare_blackhole_phase_a_module(prim_func):
     mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
     mod = tilelang.transform.LiftStatefulSemanticIR()(mod)
     mod = tilelang.transform.ValidateStatefulSemanticIR()(mod)
+    mod = tilelang.transform.ValidateSemanticRefinement()(mod)
     return mod
+
+
+def _prepare_blackhole_semantic_witness_module(prim_func):
+    mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
+    target = Target("blackhole")
+    with target:
+        if not (mod["main"].attrs and mod["main"].attrs.get("target") is not None):
+            mod = LowerAndLegalize(mod, target)
+        mod = OptimizeForTarget(mod, target)
+    mod = tilelang.transform.LowerDeviceStorageAccessInfo()(mod)
+    mod = tilelang.transform.LowerIntrin()(mod)
+    mod = tvm.tir.transform.Simplify()(mod)
+    mod = tilelang.transform.HoistBroadcastValues()(mod)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
+    mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
+    mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
+    return mod
+
+
+def _prepare_blackhole_phase_a_refined_module(prim_func):
+    return _prepare_blackhole_phase_a_module(prim_func)
 
 
 def _prepare_blackhole_fragment_analysis_module(prim_func):
@@ -90,6 +116,18 @@ def _lift_semantic_program_from_existing_structure(prim_func):
     mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
     mod = tilelang.transform.LiftStatefulSemanticIR()(mod)
     mod = tilelang.transform.ValidateStatefulSemanticIR()(mod)
+    mod = tilelang.transform.ValidateSemanticRefinement()(mod)
+    return mod
+
+
+def _append_noop_to_main_body(mod):
+    func = mod["main"]
+    body = func.body
+    if isinstance(body, tir.SeqStmt):
+        new_body = tir.SeqStmt(list(body.seq) + [tir.Evaluate(0)])
+    else:
+        new_body = tir.SeqStmt([body, tir.Evaluate(0)])
+    mod.update_func(mod.get_global_var("main"), func.with_body(new_body))
     return mod
 
 
@@ -129,6 +167,9 @@ def test_hard_freeze_invalidates_companion_programs_after_unsafe_mutation():
     assert "tl.spatial_program" not in attrs
     assert "tl.tt_program" not in attrs
     assert str(attrs["tl.companion_invalidation_reason"]) == "unit_test_unsafe_mutation"
+    freeze = attrs["tl.semantic_hard_freeze"]
+    assert str(freeze["contract_mode"]) == "invalidate"
+    assert str(freeze["state"]) == "invalidated"
 
 
 def test_copy_semantic_program_lifts_minimal_domain_and_map_update():
@@ -396,6 +437,21 @@ def test_topk_fragment_analysis_recovers_arg_reduce_targets():
     assert "max_idx" in arg_reduce_targets
 
 
+def test_topk_semantic_witnesses_expose_generic_fact_axes():
+    mod = _prepare_blackhole_semantic_witness_module(
+        example_topk.tl_topk.jit_impl.get_tir(M=64, N=32, topk=4, blk_m=64, threads=128)
+    )
+
+    witnesses = mod["main"].attrs["tl.semantic_witnesses"]
+    fact_axes = {(str(w.subject_kind), str(w.fact_axis)) for w in witnesses}
+
+    assert ("state", "role") in fact_axes
+    assert ("update", "law_family") in fact_axes
+    assert ("update", "source_set") in fact_axes
+    assert ("relation", "companion") in fact_axes
+    assert ("relation", "derives_index_from") in fact_axes
+
+
 def test_chunk_recurrence_semantic_program_lifts_recurrence_updates():
     mod = _prepare_blackhole_phase_a_module(
         chunk_delta_h_example.tilelang_chunk_gated_delta_rule_fwd_h.jit_impl.get_tir(
@@ -472,6 +528,38 @@ def test_chunk_recurrence_edges_are_recovered_from_compute_pattern():
     assert any("recurrence_source_state" in bindings for bindings in recurrence_bindings)
 
 
+def test_chunk_recurrence_semantic_witnesses_capture_generic_carried_facts():
+    mod = _prepare_blackhole_semantic_witness_module(
+        chunk_delta_h_example.tilelang_chunk_gated_delta_rule_fwd_h.jit_impl.get_tir(
+            B=1,
+            S=64,
+            H=4,
+            DK=32,
+            DV=32,
+            input_dtype=T.float16,
+            output_dtype=T.float16,
+            accum_dtype=T.float32,
+            gate_dtype=T.float16,
+            state_dtype=T.float32,
+            chunk_size=32,
+            use_g=True,
+            use_initial_state=True,
+            store_final_state=True,
+            save_new_value=True,
+            block_DK=32,
+            block_DV=32,
+            threads=128,
+            num_stages=1,
+        )
+    )
+
+    witnesses = mod["main"].attrs["tl.semantic_witnesses"]
+    fact_axes = {(str(w.subject_kind), str(w.fact_axis)) for w in witnesses}
+
+    assert ("update", "ordering") in fact_axes
+    assert ("relation", "carried_from") in fact_axes
+
+
 def test_flash_attention_semantic_program_separates_algorithmic_state_from_transient_scratch():
     mod = _prepare_blackhole_phase_a_module(
         _lower_flash_attention_example(
@@ -494,3 +582,50 @@ def test_flash_attention_semantic_program_separates_algorithmic_state_from_trans
     assert "carry" in state_roles
     assert "reduction_accumulator" in state_roles
     assert "transient" in state_roles
+
+
+def test_refinement_validator_rejects_orphan_relation_witness():
+    mod = _prepare_blackhole_phase_a_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+
+    make_witness = tvm.get_global_func("tl.SemanticWitness")
+    orphan = make_witness(
+        "relation",
+        "orphan_anchor",
+        "companion",
+        {"kind": "companion"},
+        ["missing_anchor"],
+        ["unit_test"],
+        "post_analyze",
+    )
+    main = mod["main"].with_attr("tl.semantic_witnesses", [orphan])
+    mod.update_func(mod.get_global_var("main"), main)
+
+    with pytest.raises(tvm.TVMError):
+        tilelang.transform.ValidateSemanticRefinement()(mod)
+
+
+def test_refinement_validator_rejects_body_mutation_without_invalidation():
+    mod = _prepare_blackhole_phase_a_refined_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    mod = _append_noop_to_main_body(mod)
+
+    with pytest.raises(tvm.TVMError):
+        tilelang.transform.ValidateSemanticRefinement()(mod)
+
+
+def test_invalidation_contract_clears_semantic_companions_after_unsafe_mutation():
+    mod = _prepare_blackhole_phase_a_refined_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    mod = _append_noop_to_main_body(mod)
+    mod = tilelang.transform.InvalidateBlackholeCompanionPrograms("unit_test_body_mutation")(mod)
+
+    attrs = mod["main"].attrs
+    assert "tl.semantic_structure" not in attrs
+    assert "tl.semantic_witnesses" not in attrs
+    assert "tl.semantic_program" not in attrs
+    assert "tl.spatial_program" not in attrs
+    assert "tl.tt_program" not in attrs
+    assert str(attrs["tl.companion_invalidation_reason"]) == "unit_test_body_mutation"
+    freeze = attrs["tl.semantic_hard_freeze"]
+    assert str(freeze["contract_mode"]) == "invalidate"
+    assert str(freeze["state"]) == "invalidated"
+
+    tilelang.transform.ValidateSemanticRefinement()(mod)

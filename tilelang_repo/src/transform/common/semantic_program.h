@@ -19,6 +19,7 @@ constexpr const char* kTLDevicePrograms = "tl.device_programs";
 constexpr const char* kTLSemanticSeeds = "tl.semantic_seeds";
 constexpr const char* kTLSemanticHardFreeze = "tl.semantic_hard_freeze";
 constexpr const char* kTLSemanticStructure = "tl.semantic_structure";
+constexpr const char* kTLSemanticWitnesses = "tl.semantic_witnesses";
 constexpr const char* kTLSemanticProgram = "tl.semantic_program";
 constexpr const char* kTLSpatialProgram = "tl.spatial_program";
 constexpr const char* kTLTTProgram = "tl.tt_program";
@@ -219,6 +220,41 @@ class SemanticSupplement : public ObjectRef {
   TVM_DLL SemanticSupplement(ffi::String kind, ffi::Map<ffi::String, ffi::Any> payload);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SemanticSupplement, ObjectRef,
                                              SemanticSupplementNode);
+};
+
+class SemanticWitnessNode : public Object {
+ public:
+  ffi::String subject_kind;
+  ffi::String subject_anchor_id;
+  ffi::String fact_axis;
+  ffi::Map<ffi::String, ffi::Any> fact_value;
+  ffi::Array<ffi::String> related_anchor_ids;
+  ffi::Array<ffi::String> evidence_sources;
+  ffi::String canonicalization_point;
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<SemanticWitnessNode>()
+        .def_ro("subject_kind", &SemanticWitnessNode::subject_kind)
+        .def_ro("subject_anchor_id", &SemanticWitnessNode::subject_anchor_id)
+        .def_ro("fact_axis", &SemanticWitnessNode::fact_axis)
+        .def_ro("fact_value", &SemanticWitnessNode::fact_value)
+        .def_ro("related_anchor_ids", &SemanticWitnessNode::related_anchor_ids)
+        .def_ro("evidence_sources", &SemanticWitnessNode::evidence_sources)
+        .def_ro("canonicalization_point", &SemanticWitnessNode::canonicalization_point);
+  }
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.SemanticWitness", SemanticWitnessNode, Object);
+};
+
+class SemanticWitness : public ObjectRef {
+ public:
+  TVM_DLL SemanticWitness(ffi::String subject_kind, ffi::String subject_anchor_id,
+                          ffi::String fact_axis, ffi::Map<ffi::String, ffi::Any> fact_value,
+                          ffi::Array<ffi::String> related_anchor_ids,
+                          ffi::Array<ffi::String> evidence_sources,
+                          ffi::String canonicalization_point);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SemanticWitness, ObjectRef, SemanticWitnessNode);
 };
 
 class SemanticProgramNode : public Object {

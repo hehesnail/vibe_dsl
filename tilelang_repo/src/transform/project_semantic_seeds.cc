@@ -117,16 +117,19 @@ Map<String, Any> MakeSeedPayload(const tir::PrimFunc& func, const ffi::String& r
 
 tir::PrimFunc StripCompanionAttrs(const tir::PrimFunc& func, const ffi::String& reason) {
   tir::PrimFunc updated = func;
-  if (updated->GetAttr<ObjectRef>(attr::kTLSemanticProgram)) {
-    updated = WithAttrs(std::move(updated), {{attr::kTLCompanionInvalidationReason, reason}});
-    updated = tvm::WithoutAttr(std::move(updated), attr::kTLSemanticProgram);
-  }
-  if (updated->GetAttr<ObjectRef>(attr::kTLSpatialProgram)) {
-    updated = tvm::WithoutAttr(std::move(updated), attr::kTLSpatialProgram);
-  }
-  if (updated->GetAttr<ObjectRef>(attr::kTLTTProgram)) {
-    updated = tvm::WithoutAttr(std::move(updated), attr::kTLTTProgram);
-  }
+  updated = tvm::WithoutAttr(std::move(updated), attr::kTLSemanticStructure);
+  updated = tvm::WithoutAttr(std::move(updated), attr::kTLSemanticWitnesses);
+  updated = tvm::WithoutAttr(std::move(updated), attr::kTLSemanticProgram);
+  updated = tvm::WithoutAttr(std::move(updated), attr::kTLSpatialProgram);
+  updated = tvm::WithoutAttr(std::move(updated), attr::kTLTTProgram);
+  updated = WithAttrs(
+      std::move(updated),
+      {{attr::kTLCompanionInvalidationReason, reason},
+       {attr::kTLSemanticHardFreeze,
+        Map<String, Any>{{"state", ffi::String("invalidated")},
+                         {"contract_mode", ffi::String("invalidate")},
+                         {"unsafe_mutation_policy", ffi::String("require_relift")},
+                         {"invalidation_reason", reason}}}});
   return updated;
 }
 

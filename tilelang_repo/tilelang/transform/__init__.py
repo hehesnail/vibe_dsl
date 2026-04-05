@@ -709,6 +709,11 @@ def ValidateStatefulSemanticIR():
     return tvm.ffi.get_global_func("tl.transform.ValidateStatefulSemanticIR")()
 
 
+def ValidateSemanticRefinement():
+    """Validate that SemanticProgram is a legal refinement of generic semantic witnesses."""
+    return tvm.ffi.get_global_func("tl.transform.ValidateSemanticRefinement")()
+
+
 def LowerBlackholeOps():
     """Lower TileLang high-level operations to TT-Metal builtins for Blackhole backend.
 
