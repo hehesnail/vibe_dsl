@@ -637,6 +637,21 @@ def ProjectSemanticSeeds():
     return tvm.ffi.get_global_func("tl.transform.ProjectSemanticSeeds")()
 
 
+def CollectSemanticManifestSeeds():
+    """Capture explicit-op evidence before LowerTileOp destroys it on Blackhole."""
+    return tvm.ffi.get_global_func("tl.transform.CollectSemanticManifestSeeds")()
+
+
+def ProjectSemanticManifest():
+    """Project early explicit-op manifest seeds onto the post-split Blackhole PrimFunc."""
+    return tvm.ffi.get_global_func("tl.transform.ProjectSemanticManifest")()
+
+
+def AugmentSemanticManifest():
+    """Augment the projected semantic manifest with residual device-side explicit ops."""
+    return tvm.ffi.get_global_func("tl.transform.AugmentSemanticManifest")()
+
+
 def CollectDevicePrograms():
     """Collect module-scope device-program registry before SplitHostDevice."""
     return tvm.ffi.get_global_func("tl.transform.CollectDevicePrograms")()

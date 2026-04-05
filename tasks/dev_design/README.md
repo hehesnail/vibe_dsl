@@ -21,6 +21,7 @@
 | `stage4_stage0_guardrails.md` | Stage 0 护栏与 cutover 前提 | 已落地；作为边界参考保留 |
 | `stage4_phase_a_semantic_ir.md` | `Phase A` 工程边界、已落地对象与 `Phase B` 输入约束 | 已完成；作为实现参考保留 |
 | `stage4_phase_a_formalization_note.md` | `Phase A` 理论化 / 证明化并行文档 | 并行 research track；非工程 blocker |
+| `stage4_semantic_manifest.md` | Phase A 信息源重构：正向语义传递替代反向恢复 | Phase 1 已落地；Phase 2 待推进 |
 | `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 实施文档 | 当前进行中 |
 | `stage4_phase_c_tt_target_ir.md` | `TT Target IR`、cutover、family expansion | 下一阶段 |
 

@@ -57,6 +57,7 @@ def _prepare_blackhole_phase_a_module(prim_func):
             mod = LowerAndLegalize(mod, target)
         mod = OptimizeForTarget(mod, target)
     mod = tilelang.transform.LowerDeviceStorageAccessInfo()(mod)
+    mod = tilelang.transform.AugmentSemanticManifest()(mod)
     mod = tilelang.transform.LowerIntrin()(mod)
     mod = tvm.tir.transform.Simplify()(mod)
     mod = tilelang.transform.HoistBroadcastValues()(mod)
@@ -79,6 +80,7 @@ def _prepare_blackhole_semantic_witness_module(prim_func):
             mod = LowerAndLegalize(mod, target)
         mod = OptimizeForTarget(mod, target)
     mod = tilelang.transform.LowerDeviceStorageAccessInfo()(mod)
+    mod = tilelang.transform.AugmentSemanticManifest()(mod)
     mod = tilelang.transform.LowerIntrin()(mod)
     mod = tvm.tir.transform.Simplify()(mod)
     mod = tilelang.transform.HoistBroadcastValues()(mod)
@@ -131,6 +133,37 @@ def _append_noop_to_main_body(mod):
     return mod
 
 
+@T.prim_func
+def _semantic_manifest_explicit_ops_kernel(
+    A: T.Buffer((32, 32), "float16"),
+    B: T.Buffer((32,), "float16"),
+):
+    with T.Kernel(1, 1, threads=128) as (bx, by):
+        A_shared = T.alloc_shared((32, 32), "float16")
+        B_shared = T.alloc_shared((32,), "float16")
+        T.copy(A, A_shared)
+        T.fill(B_shared, 0)
+        T.reduce_sum(A_shared, B_shared, dim=1, clear=False)
+        T.copy(B_shared, B)
+
+
+def _prepare_blackhole_manifest_projected_module(prim_func):
+    mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
+    target = Target("blackhole")
+    with target:
+        if not (mod["main"].attrs and mod["main"].attrs.get("target") is not None):
+            mod = LowerAndLegalize(mod, target)
+        mod = OptimizeForTarget(mod, target)
+    return mod
+
+
+def _prepare_blackhole_manifest_augmented_module(prim_func):
+    mod = _prepare_blackhole_manifest_projected_module(prim_func)
+    mod = tilelang.transform.LowerDeviceStorageAccessInfo()(mod)
+    mod = tilelang.transform.AugmentSemanticManifest()(mod)
+    return mod
+
+
 def test_device_program_registry_is_collected_before_split_host_device():
     mod = _prepare_blackhole_stage0_module()
     mod = tilelang.transform.CollectDevicePrograms()(mod)
@@ -150,6 +183,69 @@ def test_semantic_seeds_are_projected_before_semantic_lift():
     assert list(seeds["capture_kinds"]) == ["device_program_membership"]
     freeze = mod["main"].attrs["tl.semantic_hard_freeze"]
     assert str(freeze["unsafe_mutation_policy"]) == "invalidate_companion_programs"
+
+
+def test_semantic_manifest_seeds_capture_early_explicit_ops_before_lower_tile_op():
+    mod = tvm.IRModule(
+        {"main": _semantic_manifest_explicit_ops_kernel.with_attr("global_symbol", "main")}
+    )
+    target = Target("blackhole")
+    with target:
+        mod = LowerAndLegalize(mod, target)
+
+    manifest_seeds = mod["main"].attrs["tl.semantic_manifest_seeds"]
+    operations = list(manifest_seeds["operations"])
+    op_kinds = [str(op["kind"]) for op in operations]
+    buffer_names = {str(desc["name"]) for desc in manifest_seeds["buffers"]}
+
+    assert op_kinds.count("copy") >= 2
+    assert "fill" in op_kinds
+    assert "reduce" in op_kinds
+    assert {"A", "B", "A_shared", "B_shared"}.issubset(buffer_names)
+    assert len(list(manifest_seeds["ordered_regions"])) == 1
+
+
+def test_semantic_manifest_is_projected_onto_blackhole_primfunc_after_optimize_for_target():
+    mod = _prepare_blackhole_manifest_projected_module(_semantic_manifest_explicit_ops_kernel)
+
+    manifest = mod["main"].attrs["tl.semantic_manifest"]
+    operations = list(manifest["operations"])
+
+    assert [str(op["kind"]) for op in operations].count("copy") >= 2
+    assert any(str(op["capture_stage"]) == "early_capture" for op in operations)
+    assert len(list(manifest["anchors"])) >= len(operations) + 1
+
+
+def test_semantic_manifest_late_augment_collects_residual_gemm_payload():
+    mod = _prepare_blackhole_manifest_augmented_module(gemm_kernel())
+
+    manifest = mod["main"].attrs["tl.semantic_manifest"]
+    operations = list(manifest["operations"])
+    gemm_ops = [op for op in operations if str(op["kind"]) == "gemm_py"]
+
+    assert len(gemm_ops) == 1
+    assert str(gemm_ops[0]["capture_stage"]) == "late_augment"
+    assert {"A_shared", "B_shared", "C_local"}.issubset(
+        {str(desc["name"]) for desc in manifest["buffers"]}
+    )
+
+
+def test_analyze_semantic_structure_consumes_manifest_as_explicit_op_evidence():
+    mod = _prepare_blackhole_phase_a_module(gemm_kernel())
+
+    structure = mod["main"].attrs["tl.semantic_structure"]
+    witnesses = mod["main"].attrs["tl.semantic_witnesses"]
+    program = mod["main"].attrs["tl.semantic_program"]
+
+    assert "explicit_op_manifest" in {str(seed) for seed in structure["seeds"]}
+    assert any(
+        str(w.subject_kind) == "boundary"
+        and str(w.fact_axis) == "ordered_region"
+        and "semantic_manifest" in {str(source) for source in w.evidence_sources}
+        for w in witnesses
+    )
+    assert "explicit_op_manifest" in {str(seed) for seed in program.seeds}
+    assert any(str(supplement.kind) == "semantic_boundary" for supplement in program.supplements)
 
 
 def test_hard_freeze_invalidates_companion_programs_after_unsafe_mutation():

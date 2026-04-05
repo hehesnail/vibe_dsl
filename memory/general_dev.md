@@ -86,6 +86,12 @@
 - 对 selection/indexing family 的 arg-reduction target，也不要再靠 integer hint 去判 `index_state`。更稳的做法是让 fragment analysis 显式导出 `blackhole.fragment_regions[*].arg_reduce_targets`，把“这个 reduction target 属于 selection companion/value flow”作为 typed relation 固化下来，再由 semantic lift 恢复角色
 - 对 chunk recurrence / carry family，也不要满足于“有 `carry` role 和 `UpdateLaw.kind == recurrence` 就算完成”。如果后续语义需要知道 carried update 的具体 edge，应把它作为上游 typed attr 显式导出，例如 `blackhole.fragment_regions[*].recurrence_edges = {target, source_states}`，再由 semantic lift 写进对应 `recurrence` update 的 typed binding（如 `recurrence_source_state`）
 - 对 Phase A semantic recovery，不要让 `LiftStatefulSemanticIR` 长期把 `UpdateLaw.source_states` 默认回填成 `[target_state]`。如果 `select / reduce / recurrence` 的 source-state 关系对后续语义判断有意义，就应先在上游 analysis attrs 中显式导出，例如 `blackhole.fragment_regions[*].update_sources = {target, sources}`，再由 lift 原样消费
+- 对会在 lowering 边界被销毁的 Phase A explicit-op evidence，也不要继续等到
+  `AnalyzeBlackholeFragmentRegions` 之后再从 lowered loop 里倒推。更稳的主链是：
+  `CollectSemanticManifestSeeds -> ProjectSemanticManifest -> AugmentSemanticManifest`。
+  其中 early capture 只抓会被 `LowerTileOp` 吃掉的 op（当前 `copy / fill / reduce / cumsum`），
+  late augment 只补 device-side residual explicit op（当前 `gemm_py`）；`AnalyzeSemanticStructure`
+  只把 manifest 当 evidence / supplement 使用，不把它升级成新的 semantic truth source
 - 对 Blackhole `lower()` 主链，不能在 `SplitBlackholeKernel` / `Analyze*` / `LowerBlackholeOps` 之前就用旧的 device attrs 过滤掉入口 `PrimFunc`。Blackhole entry kernel 在这条链之前通常还没有 `blackhole.*` attrs，因此 `is_device_call()` 必须把 entry `PrimFunc` 视为 device 输入，否则专属 pass 实际上跑在空 `device_mod` 上
 - fragment region analysis 里的 `pointwise_chain` 不能通过全局扫描所有 `tir.add/mul/div/max/...` 来判定；那样会把普通索引算术也误记成 fragment compute。更稳的做法是只在 fragment/local region 自身的 store / dataflow 关系里识别 pointwise
 - 对 split-after TIR 的 fragment analysis，不要只盯 `CallNode`。像 `scores_sum[0] + acc_s[rv]`、`T.max(scores_max[0], tmp[0])` 这类模式在 TVM IR 里常常是 `AddNode` / `MaxNode` / `MulNode` / `DivNode` 等原生表达式节点；如果只扫 `CallNode`，row reduction 和 scalar-to-vector broadcast 会在真实 MHA/GQA IR 上整片漏掉

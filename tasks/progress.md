@@ -33,6 +33,8 @@
   - `Stateful Semantic IR` 已落地并完成 Phase B 前 hardening
   - 工程边界文档：`tasks/dev_design/stage4_phase_a_semantic_ir.md`
   - 理论并行文档：`tasks/dev_design/stage4_phase_a_formalization_note.md`
+  - `stage4_semantic_manifest` `Phase 1` 已落地：
+    `CollectSemanticManifestSeeds -> ProjectSemanticManifest -> AugmentSemanticManifest`
 - **Phase B**: 当前主实施阶段
   - 目标是把冻结后的 semantic truth 组织成 `SpatialProgram`
 - **Phase C**: 已定义，待 Phase B 后推进
@@ -60,6 +62,7 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 
 - Blackhole 设备侧 pass 主线当前为：
   `LowerDeviceStorageAccessInfo`
+  -> `AugmentSemanticManifest`
   -> `LowerIntrin`
   -> `Simplify`
   -> `HoistBroadcastValues`
@@ -80,6 +83,8 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
   - internal state/effect graph normalization
   - `preserve / typed_rebind / invalidate` lifecycle contract
   - `TypedRebindBlackholeCompanionPrograms`
+  - `tl.semantic_manifest_seeds / tl.semantic_manifest`
+  - `AnalyzeSemanticStructure` 对 manifest 的 seed / witness / supplement integration
 - `Phase A` 当前工程状态已经收口：
   - 不再依赖名字匹配恢复语义
   - 不再把 formal proof 草稿混在实现文档里
@@ -87,11 +92,13 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
   - `stage4_phase_a_semantic_ir.md` 已补充基于真实 `example_topk` IR/attrs 的 `topk / selection`
     端到端 walkthrough，并补了 LLM/MoE 业务语境、源 DSL、算法语义、关键记号说明、TIR 片段与逐段解析，用于说明
     `Phase A` 的 pass-by-pass 状态、核心思想与设计动机
+  - `LowerAndLegalize` 已在 `LowerTileOp` 前插入 `CollectSemanticManifestSeeds`
+  - `OptimizeForTarget` 已在 `SplitHostDevice` 后插入 `ProjectSemanticManifest`
 
 ## 最新验证摘要
 
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
-  - `28 passed`
+  - `32 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `40 passed, 10 skipped, 1 xfailed`
 - `source scripts/setup_tt_sim.sh && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
@@ -123,12 +130,13 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 
 - `progress.md` 现在只保留相对稳定的阶段状态、主 blocker、当前下一步和验证摘要。
 - 详细逐步实现记录、历史 checklist 和理论证明草稿分别留在阶段文档、git history 与 formalization note 中。
-- `stage4_semantic_manifest.md` 当前作为 `Phase A` 信息源重构初设保留：
+- `stage4_semantic_manifest.md` 当前作为 `Phase A` 信息源重构文档保留：
   - 它的定位是把 `Phase A` 需要的 explicit-op evidence 从 late matcher 前移到真实销毁边界：
     - `LowerTileOp` 边界的 early capture
     - `SplitHostDevice` 之后的显式 projection
     - device-side pre-`LowerIntrin` 的 residual augment
   - semantic recovery 主体仍然只在 `AnalyzeSemanticStructure -> LiftStatefulSemanticIR -> Validate*`
+  - 当前 `Phase 1` 已实施，`Phase 2` 仍待把更多 structural evidence 从 `fragment_regions` 迁走
   - 它不是新的跨层真源，也不改变 `Phase B / C` 只消费冻结后 companion IR 的边界
 - `final_blackhole_backend_redesign.md` 已在 `2026-04-06` 按当前执行状态刷新：
   - 已收成轻量总体设计文档

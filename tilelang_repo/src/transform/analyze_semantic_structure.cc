@@ -27,6 +27,7 @@ using tvm::ffi::Any;
 using tvm::ffi::Array;
 using tvm::ffi::Map;
 using tvm::ffi::String;
+using tvm::Integer;
 using namespace tvm::tl::semantic;
 
 namespace {
@@ -462,11 +463,50 @@ tir::transform::Pass AnalyzeSemanticStructure() {
     }
 
     Array<Any> seeds;
+    std::unordered_set<std::string> seen_seed_markers;
     if (auto semantic_seeds = func->GetAttr<Map<String, Any>>(attr::kTLSemanticSeeds)) {
       if (auto capture = semantic_seeds.value().find("capture_kinds");
           capture != semantic_seeds.value().end()) {
-        seeds = tvm::Downcast<Array<Any>>((*capture).second);
+        for (const Any& seed_any : tvm::Downcast<Array<Any>>((*capture).second)) {
+          PushStringUnique(&seeds, &seen_seed_markers, tvm::Downcast<String>(seed_any));
+        }
       }
+    }
+    Array<Any> supplements;
+    if (auto manifest = func->GetAttr<Map<String, Any>>(attr::kTLSemanticManifest)) {
+      PushStringUnique(&seeds, &seen_seed_markers, "explicit_op_manifest");
+
+      Array<Any> manifest_op_kinds;
+      std::unordered_set<std::string> seen_manifest_op_kinds;
+      if (auto op_it = manifest.value().find("operations"); op_it != manifest.value().end()) {
+        for (const Any& op_any : tvm::Downcast<Array<Any>>((*op_it).second)) {
+          auto op_map = tvm::Downcast<Map<String, Any>>(op_any);
+          PushStringUnique(&manifest_op_kinds, &seen_manifest_op_kinds, op_map["kind"].cast<String>());
+        }
+      }
+
+      int ordered_region_count = 0;
+      if (auto region_it = manifest.value().find("ordered_regions");
+          region_it != manifest.value().end()) {
+        for (const Any& region_any : tvm::Downcast<Array<Any>>((*region_it).second)) {
+          auto region = tvm::Downcast<Map<String, Any>>(region_any);
+          ++ordered_region_count;
+          witnesses.push_back(MakeWitness(ToString(WitnessSubjectKind::kBoundary),
+                                          region["anchor"].cast<String>(),
+                                          ToString(WitnessFactAxis::kOrderedRegion),
+                                          MakeEmptyPayload(), Array<String>{},
+                                          Array<String>{String("semantic_manifest")}));
+        }
+      }
+
+      Map<String, Any> supplement_payload;
+      supplement_payload.Set("source", String("semantic_manifest"));
+      supplement_payload.Set("operation_kinds", manifest_op_kinds);
+      supplement_payload.Set("ordered_region_count", Integer(ordered_region_count));
+      Map<String, Any> supplement;
+      supplement.Set("kind", String(ToString(SupplementKind::kSemanticBoundary)));
+      supplement.Set("payload", supplement_payload);
+      supplements.push_back(supplement);
     }
 
     structure.Set("domain_name", String("device_program"));
@@ -475,7 +515,7 @@ tir::transform::Pass AnalyzeSemanticStructure() {
     structure.Set("states", states);
     structure.Set("updates", updates);
     structure.Set("seeds", seeds);
-    structure.Set("supplements", Array<Any>{});
+    structure.Set("supplements", supplements);
 
     Map<String, Any> attrs = func->attrs.defined() ? func->attrs->dict : Map<String, Any>();
     attrs.Set(attr::kTLSemanticStructure, structure);

@@ -17,6 +17,8 @@ namespace tl {
 namespace attr {
 constexpr const char* kTLDevicePrograms = "tl.device_programs";
 constexpr const char* kTLSemanticSeeds = "tl.semantic_seeds";
+constexpr const char* kTLSemanticManifestSeeds = "tl.semantic_manifest_seeds";
+constexpr const char* kTLSemanticManifest = "tl.semantic_manifest";
 constexpr const char* kTLSemanticHardFreeze = "tl.semantic_hard_freeze";
 constexpr const char* kTLSemanticStructure = "tl.semantic_structure";
 constexpr const char* kTLSemanticWitnesses = "tl.semantic_witnesses";

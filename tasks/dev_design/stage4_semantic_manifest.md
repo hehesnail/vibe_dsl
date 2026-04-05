@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档角色**: `Phase A` 信息源重构初设
-- **当前状态**: 设计中
+- **当前状态**: `Phase 1` 已实施（`2026-04-06`），`Phase 2` 待推进
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
 - **直接前置**: `tasks/dev_design/stage4_phase_a_semantic_ir.md`
 
@@ -133,6 +133,27 @@ blackhole_codegen(device_mod)
 
 原因很简单：这些已经不是 raw evidence，而是在往 witness / semantic core 滑。
 
+### 4.4 当前实现落点（`2026-04-06`）
+
+- `LowerAndLegalize` 已在 `LayoutInference` 之后、`LowerTileOp` 之前插入
+  `CollectSemanticManifestSeeds`
+- `OptimizeForTarget` 已在 `SplitHostDevice` 之后插入 `ProjectSemanticManifest`
+- Blackhole device-side pass 主线已在 `LowerDeviceStorageAccessInfo` 之后、`LowerIntrin` 之前插入
+  `AugmentSemanticManifest`
+- `CollectSemanticManifestSeeds` 当前只抓会被 `LowerTileOp` 吃掉的 explicit-op：
+  `copy / fill / reduce / cumsum`
+- `AugmentSemanticManifest` 当前只补 residual explicit-op：`gemm_py`
+- manifest schema 当前已经以 typed attr 形式落地：
+  - `buffers` 保留 `buffer / name / scope / dtype / shape`
+  - `operations` 保留 op kind、capture stage、ordered-region anchor 与 typed payload
+  - `ordered_regions` 保留最小 lexical ordered region
+  - `anchors` 保留 operation / ordered-region anchor
+- `AnalyzeSemanticStructure` 当前对 manifest 的消费边界也已经落地：
+  - 追加 `explicit_op_manifest` seed
+  - 发出 `boundary / ordered_region` witness，`evidence_source = semantic_manifest`
+  - 增加 `semantic_boundary` supplement
+  - 不改变 `SemanticProgram` core 的 `Domain / State / Update` 词汇边界
+
 ## 5. 第一阶段范围
 
 按 evidence 类型看：
@@ -180,7 +201,7 @@ blackhole_codegen(device_mod)
 
 ## 7. 迁移
 
-### 7.1 Phase 1
+### 7.1 Phase 1（已实施，`2026-04-06`）
 
 目标：
 
@@ -194,6 +215,10 @@ blackhole_codegen(device_mod)
 4. `AnalyzeSemanticStructure` 可统一读取 manifest
 5. explicit-op witness 优先来自 manifest
 6. `fragment_regions` 继续承接 residual structural evidence
+
+当前状态：
+
+- 1-6 已完成
 
 ### 7.2 Phase 2
 
@@ -237,3 +262,14 @@ blackhole_codegen(device_mod)
 2. projection：split 后 evidence slice 正确落到对应 device `PrimFunc`
 3. late augment：`gemm_py` 能补入 manifest
 4. semantic integration：`AnalyzeSemanticStructure` 能从 manifest 产出对应 witness
+
+当前已执行验证（`2026-04-06`）：
+
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
+  - `32 passed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
+  - `40 passed, 10 skipped, 1 xfailed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q`
+  - `24 passed, 11 skipped`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
+  - `26 passed`
