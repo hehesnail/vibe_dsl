@@ -82,6 +82,12 @@
     - 明确了 concrete semantics / abstract semantics / `alpha-gamma` / pass contract /
       translation validation 的研究任务
     - 明确这条 formalization 轨道是 **Phase B 并行研究项**，不是当前工程 blocker
+  - `Phase A` 文档现在还进一步补了 repo-driven 理论定义：
+    - 从本仓库的三类 truth 混层问题，推导出 `Phase A` 为什么必须是 abstraction layer
+    - 明确了 witness/core/validator、state/effect graph、以及
+      `preserve / typed_rebind / invalidate` 的结构必要性
+    - 明确了 `Phase A -> Phase B` 的关系是
+      `refinement by organization`，而不是再做一次 semantic recovery
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组
