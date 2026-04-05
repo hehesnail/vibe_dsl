@@ -100,6 +100,12 @@
     - 先固定 `Scope / Concrete Objects / Abstract Objects / alpha / R / Soundness Theorems`
     - 再固定 `Failure Modes / Bridge to Phase B / Minimal Mechanization Plan`
     - 这样后续 research track 可以直接展开，不需要再从抽象概念重新组织
+  - `Phase A` 文档现在还把 `E / A / alpha / R` 写成了 repo-specific 半正式定义：
+    - `E` 明确成 seeds/fragment attrs/witness/precondition 的 canonical evidence tuple
+    - `A` 明确成 `core + graph + contract`
+    - `alpha` 明确成 witness build + semantic lift + graph normalization 的组合
+    - `R` 明确成 refinement obligation family，而 `ValidateSemanticRefinement` 是其
+      executable approximation
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组

@@ -1952,3 +1952,201 @@ proof assistant 代码，而是先把 theorem、precondition、proof obligation 
 2. 为 `Task 9` 的每个 theorem 做一页 obligation matrix
 3. 在 `Phase B` 开始前，先定义 `SemanticProgram -> SpatialProgram` 的 refinement interface
 4. 只有当这三步稳定后，再考虑 mechanization
+
+## Task 11: Semi-Formal Definitions of E, A, alpha, and R
+
+为了让上面的 `formal semantics note` skeleton 不是只有目录，这里先给出一版适合本仓库的
+半正式定义。目标不是一次把它写成可 mechanize 数学对象，而是把对象边界固定到足够明确，
+使后续 theorem/validator/Phase B refinement 都能引用同一套定义。
+
+### Definition D1: Canonical Evidence Domain `E`
+
+对本仓库，`Phase A` 的 concrete 输入不定义为“任意 lower 后 TIR”，而定义为一个有限 evidence tuple：
+
+- `E = (E_seed, E_frag, E_w, E_pre)`
+
+其中：
+
+- `E_seed`
+  - pre-lift semantic seed 集合
+  - 例如：tile op family、reduction/selection/recurrence skeleton、device-program membership
+- `E_frag`
+  - selected fragment analysis attrs
+  - 例如：
+    - `selection_targets`
+    - `selection_pairs`
+    - `arg_reduce_targets`
+    - `recurrence_edges`
+    - `update_sources`
+- `E_w`
+  - canonicalized witness multiset，也就是 `tl.semantic_witnesses`
+- `E_pre`
+  - 使 lift 合法的 precondition
+  - 例如：
+    - 已经过了允许的 canonicalization point
+    - witness vocabulary/payload/anchor closure 成立
+    - companion 没被 invalidated
+
+这个定义的关键点是：
+
+- `E` 是 **Phase A actually consumes**
+- `E` 不是全部 IR 执行语义
+- `E` 是可观察、可枚举、可 fail-fast 的 collecting domain
+
+### Definition D2: Abstract Semantic Domain `A`
+
+`Phase A` 的输出定义为：
+
+- `A = (A_core, A_graph, A_contract)`
+
+其中：
+
+- `A_core`
+  - `Domain`
+  - `State`
+  - `Update`
+  - `UpdateLaw`
+  - `SemanticSupplement`
+- `A_graph`
+  - `StateVersion`
+  - `StateDef`
+  - `StateUse`
+  - `StateJoin`
+- `A_contract`
+  - `preserve`
+  - `typed_rebind`
+  - `invalidate`
+
+这里有两个刻意的限制：
+
+- `A_graph` 只允许表达 core 的 normalization，不允许引入第二 semantic truth
+- `A_contract` 是抽象 truth 的 lifecycle 语义，不只是实现元数据
+
+### Definition D3: State and Update Meaning
+
+为了避免 `A_core` 继续被当成“带枚举的对象树”，这里把最关键的两个对象先定成语义解释：
+
+- `State(name, role, scope, anchors)`
+  - 表示一个 algorithmic state class 的抽象代表
+  - `role` 限定它在算法语义中的职责，而不是 workload noun
+- `Update(name, target_state, law, bindings)`
+  - 表示作用在一个 algorithmic state 上的抽象变换实例
+  - `law.kind` 表示该变换属于哪一类抽象 update family
+
+于是：
+
+- `carry` 表示跨 step / loop boundary 保持的 state class
+- `selection_state` 表示 selection/value flow 的抽象 state
+- `index_state` 表示 selection companion / index flow 的抽象 state
+- `recurrence` 表示带 ordered carry 结构的 abstract update family
+- `select` 表示带 value/index companion 关系的 abstract update family
+
+### Definition D4: Graph Meaning
+
+`A_graph` 的对象语义约束为：
+
+- `StateVersion`
+  - 一个 state 的抽象版本点
+- `StateDef`
+  - 一个 version 的定义来源
+- `StateUse`
+  - 一个 update 对某个 state version 的抽象使用
+- `StateJoin`
+  - 对 carried / ordered boundary 的抽象 join fact
+
+更强的一句定义是：
+
+- `A_graph` 不是额外真相，而是把 `A_core` 中已经存在的 state/update 事实
+  规范化为 version/def/use/join skeleton
+
+因此：
+
+- 如果 graph 引入 core/witness 中不存在的 stateful fact，则 graph 不 sound
+- 如果 graph 漏掉 `Phase A` 明确承诺的 carried/order/source/companion fact，则 graph 不 complete
+  于当前 abstraction contract
+
+### Definition D5: Abstraction Function `alpha`
+
+对本仓库，`alpha` 不定义成一个单独纯函数实现文件，而定义成 pass composition：
+
+- `alpha = BuildWitnesses ; LiftSemanticCore ; NormalizeStateEffect`
+
+具体映射到实现：
+
+- `AnalyzeSemanticStructure`
+  - 负责从 seeds/fragment attrs 中生成 canonical witness input
+- `LiftStatefulSemanticIR`
+  - 负责 witness -> core projection
+- `semantic_state_effect_graph`
+  - 负责 core -> normalized graph projection
+
+所以更具体地说：
+
+- `alpha(E)` 的结果就是当前 `tl.semantic_program`
+
+但这里有个重要限制：
+
+- `alpha` 只对满足 `E_pre` 的 evidence 定义
+- 不满足 precondition 的输入，不要求 `alpha` 返回有意义 abstraction；应 reject / invalidate / defer
+
+### Definition D6: Refinement Predicate `R(E, A)`
+
+`R(E, A)` 定义为：
+
+- `A` 不伪造与 `E` 矛盾的 semantic facts
+- `A` 的 graph 是 `A_core` 的合法 normalization
+- `A_contract` 与当前 companion lifecycle 一致
+
+在当前仓库里，`R` 由多个 obligation 组成，而不是单一 bool 定义：
+
+- role/law compatibility
+- source/companion/carried relation consistency
+- loop-carried join consistency
+- graph closure
+- hard-freeze contract legality
+- typed rebind legality
+- witness coverage
+
+当前实现上，`ValidateSemanticRefinement` 是 `R` 的 executable approximation。
+
+### Definition D7: Soundness Target
+
+基于上面的对象，当前仓库最值得追求的 soundness target 是：
+
+- 对任意满足 precondition 的 `E`，若 `A = alpha(E)` 且 `R(E, A)` 成立，
+  则 `A` 中的 semantic facts 可以被后续 compiler 当作冻结后的 algorithmic truth 使用
+
+注意这里故意没有承诺：
+
+- `A` 是最精确 abstraction
+- `A` 覆盖任意未来 workload
+- `A` 保留全部 lower 前程序意义
+
+这个 target 和当前工程边界是一致的，也更适合作为后续 theorem 的母命题。
+
+### Definition D8: Phase A to Phase B Interface
+
+给 `Phase B` 的输入接口可以直接写成：
+
+- `I_B = (A_core, A_graph, A_contract)`
+
+也就是说，`Phase B` 的输入不是 raw witness，也不是 fragment attrs，而是：
+
+- 已冻结的 algorithmic truth
+- 以及它的 normalized state/effect skeleton
+
+因此 `Phase B` 的 refinement obligation 可以先写成：
+
+- 对任意 `SpatialProgram S`，若 `LowerToSpatialProgram(A) = S`，则 `S` 只能组织 `A` 的 truth，
+  不能修改 `A` 已承诺的 semantic meaning
+
+这就是 `Phase A -> Phase B` interface 的半正式版本。
+
+### What This Buys Us
+
+把 `E`、`A`、`alpha`、`R` 固定下来以后，后面的工作会突然清楚很多：
+
+- `Task 9` 的 theorem checklist 都有了共同对象
+- `ValidateSemanticRefinement` 可以继续按 `R` 的 obligation family 去扩
+- `Phase B` 可以围绕 `I_B` 去设计 refinement validator
+- 后续若做 mechanization，也知道应该 mechanize 哪些最小对象，而不是盲目扩到全编译器
