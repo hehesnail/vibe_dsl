@@ -200,6 +200,20 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     }
     region.Set("selection_targets", selection_targets);
 
+    Array<Any> selection_pairs;
+    for (const auto& pair : BuildSelectionPairs()) {
+      Map<String, Any> entry;
+      entry.Set("value_target", String(pair.value_target));
+      entry.Set("companion_target", String(pair.companion_target));
+      Array<Any> sources;
+      for (const auto& source : pair.shared_sources) {
+        sources.push_back(String(source));
+      }
+      entry.Set("source_states", sources);
+      selection_pairs.push_back(entry);
+    }
+    region.Set("selection_pairs", selection_pairs);
+
     Array<Any> update_sources;
     for (const auto& target : update_source_target_order_) {
       Map<String, Any> entry;
@@ -576,6 +590,61 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
         order.push_back(source_name);
       }
     }
+  }
+
+  struct SelectionPair {
+    std::string value_target;
+    std::string companion_target;
+    std::vector<std::string> shared_sources;
+  };
+
+  std::vector<SelectionPair> BuildSelectionPairs() const {
+    std::vector<SelectionPair> pairs;
+    for (const auto& companion_target : selection_target_order_) {
+      auto companion_it = update_source_order_.find(companion_target);
+      if (companion_it == update_source_order_.end()) {
+        continue;
+      }
+      int best_overlap = 0;
+      std::string best_value_target;
+      std::vector<std::string> best_shared_sources;
+      bool ambiguous = false;
+      for (const auto& row_reduction : row_reduction_targets_) {
+        const std::string& value_target = row_reduction.first;
+        if (value_target == companion_target) {
+          continue;
+        }
+        auto value_it = update_source_order_.find(value_target);
+        if (value_it == update_source_order_.end()) {
+          continue;
+        }
+        std::vector<std::string> shared_sources;
+        for (const auto& source : companion_it->second) {
+          for (const auto& candidate_source : value_it->second) {
+            if (source == candidate_source) {
+              shared_sources.push_back(source);
+              break;
+            }
+          }
+        }
+        const int overlap = static_cast<int>(shared_sources.size());
+        if (overlap == 0) {
+          continue;
+        }
+        if (overlap > best_overlap) {
+          best_overlap = overlap;
+          best_value_target = value_target;
+          best_shared_sources = std::move(shared_sources);
+          ambiguous = false;
+        } else if (overlap == best_overlap) {
+          ambiguous = true;
+        }
+      }
+      if (best_overlap > 0 && !ambiguous) {
+        pairs.push_back(SelectionPair{best_value_target, companion_target, best_shared_sources});
+      }
+    }
+    return pairs;
   }
 
   std::unordered_map<std::string, BufferInfo> fragment_buffers_;

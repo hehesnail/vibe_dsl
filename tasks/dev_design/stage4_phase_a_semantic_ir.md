@@ -209,6 +209,13 @@ Implemented note:
 - `AnalyzeBlackholeFragmentRegions` 当前还会显式导出 `selection_targets`
   这类局部计算关系事实；`AnalyzeSemanticStructure` 现在消费这些 typed targets，
   而不是再用全局 `if_then_else` / `row_broadcast` 命中去晚期猜 `selection_state`
+- `AnalyzeBlackholeFragmentRegions` 现在也会显式导出 `selection_pairs`：
+  - `value_target`
+  - `companion_target`
+  - `source_states`
+  这份 pairing 当前会被 `AnalyzeSemanticStructure` 下沉到对应 `select` update 的
+  typed binding（当前为 `paired_value_state`），避免继续在 semantic lift 末端猜
+  “哪个 value state 和哪个 index/companion state 属于同一次 selection”
 - `AnalyzeBlackholeFragmentRegions` 现在也会显式导出 `update_sources`：
   - `target -> source_states`
   - `LiftStatefulSemanticIR` 优先把这份 typed 关系写进 `UpdateLaw.source_states`
@@ -229,6 +236,8 @@ Implemented note:
     - `1 passed`
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names or chunk_recurrence_semantic_program_lifts_recurrence_updates' -q`
     - `2 passed`
+  - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'selection_pairing_is_recovered_from_compute_pattern' -q`
+    - `1 passed`
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'topk or selection or recurrence' -q`
     - `4 passed`（含新的 no-name-hint regression）
   - `pytest testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`

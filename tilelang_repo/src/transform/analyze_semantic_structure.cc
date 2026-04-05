@@ -148,6 +148,7 @@ tir::transform::Pass AnalyzeSemanticStructure() {
     std::unordered_set<std::string> loop_carried_states;
     std::unordered_set<std::string> selection_targets;
     std::unordered_map<std::string, Array<Any>> update_sources_by_target;
+    std::unordered_map<std::string, std::string> paired_value_state_by_selection_target;
     auto register_state = [&states, &state_index](const std::string& name, const std::string& role,
                                                   const std::string& scope) {
       auto it = state_index.find(name);
@@ -199,6 +200,13 @@ tir::transform::Pass AnalyzeSemanticStructure() {
             auto source_map = tvm::Downcast<Map<String, Any>>(source_any);
             update_sources_by_target[source_map["target"].cast<String>()] =
                 tvm::Downcast<Array<Any>>(source_map["sources"]);
+          }
+        }
+        if (region.count("selection_pairs")) {
+          for (const Any& pair_any : tvm::Downcast<Array<Any>>(region["selection_pairs"])) {
+            auto pair_map = tvm::Downcast<Map<String, Any>>(pair_any);
+            paired_value_state_by_selection_target[pair_map["companion_target"].cast<String>()] =
+                pair_map["value_target"].cast<String>();
           }
         }
         for (const Any& reduction_any : tvm::Downcast<Array<Any>>(region["row_reductions"])) {
@@ -261,6 +269,16 @@ tir::transform::Pass AnalyzeSemanticStructure() {
             if (auto it = update_sources_by_target.find(state_name);
                 it != update_sources_by_target.end()) {
               entry.Set("source_states", it->second);
+            }
+            if (auto it = paired_value_state_by_selection_target.find(state_name);
+                it != paired_value_state_by_selection_target.end()) {
+              Array<Any> bindings;
+              Map<String, Any> binding;
+              binding.Set("kind", String("paired_value_state"));
+              binding.Set("symbol", String("state"));
+              binding.Set("value_repr", String(it->second));
+              bindings.push_back(binding);
+              entry.Set("bindings", bindings);
             }
             updates.push_back(entry);
           }

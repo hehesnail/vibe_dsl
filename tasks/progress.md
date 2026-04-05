@@ -40,6 +40,11 @@
   - `index_state` 的最小稳定信号现已通过 `fragment_buffers[*].is_integer` 从上游 analysis 显式传递
   - `selection_state` 当前已改成消费 `fragment_regions[*].selection_targets`
     这类 typed relation，而不是全局 `if_then_else` heuristic
+  - `selection` 的 value/index companion pairing 也开始前移：
+    `fragment_regions[*].selection_pairs`
+    当前已能把 `value_target <-> companion_target` 的 typed pairing 带到
+    `select` update bindings（`paired_value_state`），不再只留下孤立的
+    `selection_state / index_state`
   - `recurrence` 当前已改成直接基于 loop-carried 结构恢复，不再依赖 `gemm` 命中
   - `UpdateLaw.source_states` 也开始从上游 typed relation 恢复：
     `fragment_regions[*].update_sources`
@@ -106,6 +111,7 @@
   - `UpdateLaw.kind == select / recurrence`
   - `flash-attn / topk / chunk recurrence` 的 workload-agnostic semantic gate
   - `fragment_regions[*].selection_targets`
+  - `fragment_regions[*].selection_pairs`
   - `fragment_regions[*].update_sources`
 - TT-Sim 当前正式入口是顶层 `scripts/setup_tt_sim.sh`，并且必须和后续测试命令在同一个 shell 中执行
 
@@ -119,6 +125,8 @@
   - `1 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names or chunk_recurrence_semantic_program_lifts_recurrence_updates' -q`
   - `2 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'selection_pairing_is_recovered_from_compute_pattern' -q`
+  - `1 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'copy or gemm or flash_attention' -q`
   - `4 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'topk or selection or recurrence' -q`

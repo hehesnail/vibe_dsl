@@ -271,6 +271,21 @@ def test_topk_semantic_program_recovers_index_state_from_integer_ir_not_names():
     assert "carry_slots" in select_updates["select_best_slot"]
 
 
+def test_selection_pairing_is_recovered_from_compute_pattern():
+    mod = _prepare_blackhole_phase_a_module(
+        example_topk.tl_topk.jit_impl.get_tir(M=64, N=32, topk=4, blk_m=64, threads=128)
+    )
+
+    program = mod["main"].attrs["tl.semantic_program"]
+    selection_pairs = {
+        str(update.name): {str(binding.kind): str(binding.value_repr) for binding in update.bindings}
+        for update in program.updates
+        if str(update.law.kind) == "select"
+    }
+
+    assert any("paired_value_state" in bindings for bindings in selection_pairs.values())
+
+
 def test_chunk_recurrence_semantic_program_lifts_recurrence_updates():
     mod = _prepare_blackhole_phase_a_module(
         chunk_delta_h_example.tilelang_chunk_gated_delta_rule_fwd_h.jit_impl.get_tir(

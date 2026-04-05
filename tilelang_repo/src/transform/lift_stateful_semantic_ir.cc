@@ -34,6 +34,18 @@ Array<String> DowncastStringArray(const Array<Any>& items) {
   return result;
 }
 
+Array<TIRValueBinding> DowncastBindingArray(const Array<Any>& items) {
+  Array<TIRValueBinding> result;
+  for (const Any& item : items) {
+    auto binding_map = tvm::Downcast<Map<String, Any>>(item);
+    result.push_back(
+        TIRValueBinding(tvm::Downcast<String>(binding_map["kind"]),
+                        tvm::Downcast<String>(binding_map["symbol"]),
+                        tvm::Downcast<String>(binding_map["value_repr"])));
+  }
+  return result;
+}
+
 }  // namespace
 
 tir::transform::Pass LiftStatefulSemanticIR() {
@@ -88,6 +100,12 @@ tir::transform::Pass LiftStatefulSemanticIR() {
           TIRAnchor("update_kind", tvm::Downcast<String>(update_map["kind"]))};
       Array<TIRValueBinding> bindings{
           TIRValueBinding("target_state", "state", tvm::Downcast<String>(update_map["target_state"]))};
+      if (update_map.count("bindings")) {
+        for (const TIRValueBinding& binding :
+             DowncastBindingArray(tvm::Downcast<Array<Any>>(update_map["bindings"]))) {
+          bindings.push_back(binding);
+        }
+      }
       updates.push_back(Update(tvm::Downcast<String>(update_map["name"]),
                                tvm::Downcast<String>(update_map["target_state"]), law,
                                update_anchors, bindings));
