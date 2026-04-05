@@ -10,9 +10,10 @@ Rules:
 4. Internal links, task names, and file paths inside archived documents may intentionally remain historical rather than fully rewritten.
 5. Current work should start from:
    - `tasks/dev_design/final_blackhole_backend_redesign.md`
-   - `tasks/dev_design/stage4_flash_attention_forward_subset.md`
-   - `tasks/dev_design/stage2d_ttmetal_contract_audit.md`
-   - `tasks/dev_design/stage4_semaphore_schema.md`
+   - `tasks/dev_design/stage4_stage0_guardrails.md`
+   - `tasks/dev_design/stage4_phase_a_semantic_ir.md`
+   - `tasks/dev_design/stage4_phase_b_spatial_ir.md`
+   - `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
 
 Notable archived files:
 

@@ -93,11 +93,16 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - copy / GEMM current support surface
    - 第一批复杂 consumer 已打通的 compile-path 子集（当前以 `flash-attn` 为主）
 2. 文档、任务安排和实现边界统一以 `tasks/dev_design/final_blackhole_backend_redesign.md` 为准。
-3. 先重写新的 layered-IR implementation plan，不再沿用已归档的旧单层 Phase 1 草案。
+3. 当前 Stage 4 直接按分阶段文档执行，不再保留单一总 implementation plan 入口：
+   - `tasks/dev_design/stage4_stage0_guardrails.md`
+   - `tasks/dev_design/stage4_phase_a_semantic_ir.md`
+   - `tasks/dev_design/stage4_phase_b_spatial_ir.md`
+   - `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
 4. 按新总设计执行：
-   - Phase A：`Stateful Semantic IR`
-   - Phase B：`Spatial Program IR`
-   - Phase C：`TT Target IR`
+   - Phase A1：`Stateful Semantic IR`（最小 `Domain/State/Update` + `MapLaw/ReduceLaw` full payload + early semantic seed + post-lift hard freeze）
+   - Phase A2：`Stateful Semantic IR`（泛化 recovery + wider `AccessMap/UpdateLaw` traits + `SemanticSupplement` + rebind-aware contract）
+   - Phase B：`Spatial Program IR`（`ProgramPhase` module-scope 宿主 + simple-workload fast-path + non-trivial multi-phase gate）
+   - Phase C：`TT Target IR`（`TTHardwareModel` stub 先行 + `TTTransportPlan` + common-runtime ABI + `MaterializeTTExecutableSpec` 唯一物化）
 5. 在新分层下继续推进：
    - `flash-attn` `blackhole.acc` 语义收正
    - `topk / fusedmoe / paged decode / chunk recurrence` 等 family 的统一承接

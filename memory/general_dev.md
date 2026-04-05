@@ -8,7 +8,7 @@
 
 - 当前活动文档只看 `tasks/dev_design/` 根目录和 `tasks/progress.md`。
 - `tasks/dev_design/archive/` 下的内容全部是历史记录，不再作为当前任务安排入口。
-- 如果需要新的实施计划，必须从当前 layered IR 总设计推导，不再复用已归档的旧单层 plan。
+- 当前 Stage 4 直接按四份分阶段文档执行，不再额外维护单一总 implementation plan。
 
 ## 编译器后端开发
 

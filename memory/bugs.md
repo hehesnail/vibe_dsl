@@ -34,9 +34,9 @@
   - copy / GEMM 可以继续稳定，但复杂 workload family 还没有统一承接层
   - TT-Metal contract 虽然在文档和局部 schema 上越来越完整，但还没有成为单一 target truth source
 - **解决方向**:
-  - 按 `final_blackhole_backend_redesign.md` 重写 implementation plan（总设计已完成系统性 review 并修订）
-  - Phase A1：最小 `Domain/State/Update` + `MapLaw/ReduceLaw` + `SemanticSeed` early capture + post-lift hard freeze
-  - Phase A2：泛化 recovery + wider `AccessMap/UpdateLaw` traits + `SemanticSupplement` + rebind-aware contract
+  - 按 `final_blackhole_backend_redesign.md` 与当前 Stage 4 分阶段文档推进迁移
+  - Stage 0：迁移护栏、`tl.device_programs`、`tl.semantic_seeds`、A1 hard freeze、deletion gates
+  - Phase A：最小 `Domain/State/Update` + `MapLaw/ReduceLaw` + `SemanticSeed` early capture，再扩到 wider `AccessMap/UpdateLaw` / `SemanticSupplement`
   - Phase B：`ProgramPhase` module-scope 宿主（`DeviceProgramInfo` in `tl.device_programs`）+ simple-workload fast-path + non-trivial multi-phase gate
   - Phase C：`TTHardwareModel` stub 先行 + `TTTransportPlan` + common-runtime ABI + `MaterializeTTExecutableSpec` 唯一物化
 - **当前状态**:

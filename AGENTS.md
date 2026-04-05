@@ -1,7 +1,5 @@
 # AGENTS.md
 
-## 作用
-
 本文件用于告诉 Codex 在这个仓库里应该如何工作。
 
 架构设计只看一份：`tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -10,9 +8,9 @@
 
 ## 仓库结构
 
-- `tilelang_repo/`：TileLang 开发仓库，Blackhole 后端代码主要改这里
-- `tt_metal_repo/`：TT-Metal 开发仓库，TT-Metal API、示例和运行时参考主要看这里
-- 顶层仓库：任务文档、经验记录、测试、脚本
+- `tilelang_repo/` — TileLang 开发仓库，Blackhole 后端代码主要改这里
+- `tt_metal_repo/` — TT-Metal 开发仓库，TT-Metal API、示例、运行时参考主要看这里
+- 顶层仓库 — 任务文档、经验记录、测试、脚本
 
 常用目录：
 
@@ -20,7 +18,6 @@
 - `tilelang_repo/src/transform/` — Blackhole passes
 - `tilelang_repo/tilelang/engine/` — Python 编译链路
 - `tilelang_repo/build/` — 唯一默认开发构建目录
-- `tilelang_repo/testing/python/target/blackhole/` — Blackhole 测试
 - `tt_metal_repo/tt_metal/api/tt-metalium/` — TT-Metal API 参考
 - `tasks/` — 设计文档、进度
 - `memory/` — 持久化经验记录
@@ -34,12 +31,20 @@
 1. `tasks/dev_design/final_blackhole_backend_redesign.md` — 唯一权威总设计
 2. `tasks/progress.md` — 当前状态与下一步
 3. `tasks/dev_design/README.md` — 当前活动设计文档索引
-4. 如果涉及构建/调试/历史问题，再看 `memory/general_dev.md` 和 `memory/bugs.md`
+4. 如果涉及构建/调试/历史问题，再读 `memory/general_dev.md` 和 `memory/bugs.md`
 5. 然后读代码，不要只看文档
+
+## 工作区偏好
+
+- 默认**不要**使用 `git worktree`
+- 直接在当前 checkout 上工作，除非用户**明确要求**使用 worktree
+- 如果当前本来就在 worktree 中，再按本文档里已有的 worktree 约束执行；不要主动新建一个
+
+---
 
 ## TT-Sim 环境入口
 
-凡是要做 Blackhole direct runtime / TT-Sim 真执行验证，不要每次临时搜索环境变量或直接说“没环境”；先走仓库里已经固定的 TT-Sim 环境入口：
+凡是要做 Blackhole direct runtime / TT-Sim 真执行验证，不要每次重新搜索环境变量或直接说“没环境”；先走仓库里已经固定的 TT-Sim 环境入口：
 
 ```bash
 source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh
@@ -47,11 +52,11 @@ export TILELANG_HOME=<当前 checkout 或 worktree>/tilelang_repo
 cd <当前 checkout 或 worktree>/tilelang_repo
 ```
 
-约束：
+注意：
 
 - `setup_tt_sim.sh` 必须和后续测试命令在**同一个 shell**里执行
 - 如果当前在 git worktree 中工作，**不要 source worktree 里的 `scripts/setup_tt_sim.sh` 副本**；要 source 顶层 checkout 的 `/root/dev/vibe_dsl/scripts/setup_tt_sim.sh`
-- source 完 TT-Sim 脚本后，再把 `TILELANG_HOME` 显式指回**当前 checkout/worktree** 的 `tilelang_repo`
+- source 完 TT-Sim 脚本后，再把 `TILELANG_HOME` 显式指回当前 checkout/worktree 的 `tilelang_repo`
 - 具体跑哪个 `pytest` case/selector，按当前 task / design / progress 文档决定，不要在这里硬编码成单个 case
 - 一旦进入 TT-Sim / runtime debug，先看 `memory/general_dev.md` 和 `memory/bugs.md`，优先复用已记录的环境、watcher、runtime 边界经验，不要从头试错
 
@@ -108,28 +113,21 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - copy / GEMM current support surface
    - 第一批复杂 consumer 已打通的 compile-path 子集（当前以 `flash-attn` 为主）
 2. 文档、任务安排和实现边界统一以 `tasks/dev_design/final_blackhole_backend_redesign.md` 为准。
-3. 先重写新的 layered-IR implementation plan，不再沿用已归档的旧单层 Phase 1 草案。
+3. 当前 Stage 4 直接按分阶段文档执行，不再保留单一总 implementation plan 入口：
+   - `tasks/dev_design/stage4_stage0_guardrails.md`
+   - `tasks/dev_design/stage4_phase_a_semantic_ir.md`
+   - `tasks/dev_design/stage4_phase_b_spatial_ir.md`
+   - `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
 4. 按新总设计执行：
-   - Phase A：`Stateful Semantic IR`
-   - Phase B：`Spatial Program IR`
-   - Phase C：`TT Target IR`
+   - Phase A1：`Stateful Semantic IR`（最小 `Domain/State/Update` + `MapLaw/ReduceLaw` full payload + early semantic seed + post-lift hard freeze）
+   - Phase A2：`Stateful Semantic IR`（泛化 recovery + wider `AccessMap/UpdateLaw` traits + `SemanticSupplement` + rebind-aware contract）
+   - Phase B：`Spatial Program IR`（`ProgramPhase` module-scope 宿主 + simple-workload fast-path + non-trivial multi-phase gate）
+   - Phase C：`TT Target IR`（`TTHardwareModel` stub 先行 + `TTTransportPlan` + common-runtime ABI + `MaterializeTTExecutableSpec` 唯一物化）
 5. 在新分层下继续推进：
    - `flash-attn` `blackhole.acc` 语义收正
    - `topk / fusedmoe / paged decode / chunk recurrence` 等 family 的统一承接
    - 更宽 copy/dataflow 支持面（P4）
    - 更宽 synchronization 支持面（P5）
-
----
-
-## 经验与问题记录
-
-### 什么时候更新 `memory/general_dev.md`
-
-当你发现了以后还会反复用到的稳定经验：通用开发模式、构建/调试技巧、代码组织经验、后端开发方法论。不要把一次性 workaround 写成"最佳实践"。
-
-### 什么时候更新 `memory/bugs.md`
-
-当你遇到了真实问题，并且问题本身或解决过程以后可能复用：现象、根本原因、解决方式、仍存在的限制。
 
 ---
 

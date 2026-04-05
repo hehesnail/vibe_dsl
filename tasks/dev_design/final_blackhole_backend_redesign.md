@@ -107,7 +107,7 @@ Stateful Semantic IR
 
 这些结论不是第二份总体设计；它们是本总设计后续实现时必须遵守的收口约束。
 
-#### P0：在 implementation plan 稳定之前必须补齐
+#### P0：在 Stage 4 分阶段实施文档执行前必须补齐
 
 1. **单一真源 cutover 必须变成机器可执行的删除门槛**
    - `MaterializeTTExecutableSpec` 已被定义为唯一稳态 writer，但当前实现里
@@ -230,11 +230,11 @@ Stateful Semantic IR
    - 都要求同一套 layered IR 边界，只是对 semantic / spatial / TT contract 的投影不同
    - 因此后续实现验证不能再只用 attention family 当唯一 gate
 
-#### 这组优先级对 implementation planning 的直接要求
+#### 这组优先级对 Stage 4 分阶段实施的直接要求
 
-在开始新的 layered-IR implementation plan 之前，必须先把下面这组收口点写成显式任务边界：
+在开始当前 Stage 4 分阶段实施文档执行之前，必须先把下面这组收口点写成显式任务边界：
 
-1. P0 全部进入 implementation plan 的前置章节，而不是散落在各 Phase 任务内部
+1. P0 全部进入 Stage 0 文档或等价的前置章节，而不是散落在各 Phase 任务内部
 2. P1 必须作为 Phase B / Phase C 的 schema gate，而不是“实现时再看”
 3. P2 中被判定为“方向已对”的部分，不允许在实现期因为当前样例便利性回退成 case-by-case matcher 或 noun bag schema
 

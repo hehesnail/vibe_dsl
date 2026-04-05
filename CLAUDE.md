@@ -34,6 +34,12 @@
 4. 如果涉及构建/调试/历史问题，再读 `memory/general_dev.md` 和 `memory/bugs.md`
 5. 然后读代码，不要只看文档
 
+## 工作区偏好
+
+- 默认**不要**使用 `git worktree`
+- 直接在当前 checkout 上工作，除非用户**明确要求**使用 worktree
+- 如果当前本来就在 worktree 中，再按本文档里已有的 worktree 约束执行；不要主动新建一个
+
 ---
 
 ## TT-Sim 环境入口
@@ -107,7 +113,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - copy / GEMM current support surface
    - 第一批复杂 consumer 已打通的 compile-path 子集（当前以 `flash-attn` 为主）
 2. 文档、任务安排和实现边界统一以 `tasks/dev_design/final_blackhole_backend_redesign.md` 为准。
-3. 先重写新的 layered-IR implementation plan，不再沿用已归档的旧单层 Phase 1 草案。
+3. 当前 Stage 4 直接按分阶段文档执行，不再保留单一总 implementation plan 入口：
+   - `tasks/dev_design/stage4_stage0_guardrails.md`
+   - `tasks/dev_design/stage4_phase_a_semantic_ir.md`
+   - `tasks/dev_design/stage4_phase_b_spatial_ir.md`
+   - `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
 4. 按新总设计执行：
    - Phase A1：`Stateful Semantic IR`（最小 `Domain/State/Update` + `MapLaw/ReduceLaw` full payload + early semantic seed + post-lift hard freeze）
    - Phase A2：`Stateful Semantic IR`（泛化 recovery + wider `AccessMap/UpdateLaw` traits + `SemanticSupplement` + rebind-aware contract）
