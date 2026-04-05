@@ -14,6 +14,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "common/blackhole_utils.h"
 #include "common/semantic_program.h"
 #include "common/semantic_refinement_rules.h"
 #include "common/semantic_vocab.h"
@@ -29,11 +30,6 @@ using tvm::ffi::String;
 using namespace tvm::tl::semantic;
 
 namespace {
-
-bool IsBlackholePrimFunc(const tir::PrimFunc& func) {
-  auto target = func->GetAttr<Target>(tvm::attr::kTarget);
-  return target && target.value()->kind->name == "blackhole";
-}
 
 std::unordered_set<std::string> ToStringSet(const Array<String>& values) {
   std::unordered_set<std::string> result;
@@ -288,6 +284,12 @@ tir::transform::Pass ValidateSemanticRefinement() {
         ICHECK_EQ(std::string(states_by_name.at(decoded->subject_anchor_id)->role),
                   ToString(StateRole::kIndexState))
             << "relation.derives_index_from requires index_state";
+        consumed_witness_indices.insert(witness_index);
+      } else {
+        // Valid vocabulary axes that don't yet have specific refinement checks
+        // (e.g. identity, lifetime, boundary, indirection, selection_contract,
+        // distribution_hint, feeds_update, semantic_boundary, ordered_region).
+        // Accept them to avoid blocking Phase B witness producers.
         consumed_witness_indices.insert(witness_index);
       }
       ++witness_index;

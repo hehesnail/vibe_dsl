@@ -10,6 +10,7 @@
 #include <unordered_set>
 #include <unordered_map>
 
+#include "common/blackhole_utils.h"
 #include "common/semantic_program.h"
 #include "common/semantic_vocab.h"
 
@@ -18,15 +19,6 @@ namespace tl {
 
 using namespace tvm::tl::semantic;
 using tvm::ffi::String;
-
-namespace {
-
-bool IsBlackholePrimFunc(const tir::PrimFunc& func) {
-  auto target = func->GetAttr<Target>(tvm::attr::kTarget);
-  return target && target.value()->kind->name == "blackhole";
-}
-
-}  // namespace
 
 tir::transform::Pass ValidateStatefulSemanticIR() {
   auto fpass = [](tir::PrimFunc func, IRModule, tir::transform::PassContext) -> tir::PrimFunc {

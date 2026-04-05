@@ -20,6 +20,26 @@ using tvm::ffi::Array;
 using tvm::ffi::Map;
 using tvm::ffi::String;
 
+bool CheckExactPayloadKeys(const Map<String, Any>& payload,
+                           std::initializer_list<const char*> required_keys) {
+  std::unordered_set<std::string> allowed;
+  for (const char* key : required_keys) {
+    allowed.insert(key);
+    if (payload.find(String(key)) == payload.end()) {
+      return false;
+    }
+  }
+  if (payload.size() != allowed.size()) {
+    return false;
+  }
+  for (const auto& kv : payload) {
+    if (!allowed.count(static_cast<std::string>(kv.first))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 void RequireExactPayloadKeys(const Map<String, Any>& payload,
                              std::initializer_list<const char*> required_keys,
                              const char* payload_label) {
@@ -118,9 +138,11 @@ Map<String, Any> NormalizeRelationBindingPayload(const Map<String, Any>& payload
 }
 
 std::optional<StateRolePayload> DecodeStateRolePayload(const Map<String, Any>& payload) {
-  RequireExactPayloadKeys(payload, {"role"}, "state.role");
+  if (!CheckExactPayloadKeys(payload, {"role"})) {
+    return std::nullopt;
+  }
   auto role_any = payload.find(String("role"));
-  ICHECK(role_any != payload.end());
+  if (role_any == payload.end()) return std::nullopt;
   auto role = ParseStateRole((*role_any).second.cast<String>());
   if (!role) {
     return std::nullopt;
@@ -130,9 +152,11 @@ std::optional<StateRolePayload> DecodeStateRolePayload(const Map<String, Any>& p
 
 std::optional<UpdateLawFamilyPayload> DecodeUpdateLawFamilyPayload(
     const Map<String, Any>& payload) {
-  RequireExactPayloadKeys(payload, {"kind"}, "update.law_family");
+  if (!CheckExactPayloadKeys(payload, {"kind"})) {
+    return std::nullopt;
+  }
   auto kind_any = payload.find(String("kind"));
-  ICHECK(kind_any != payload.end());
+  if (kind_any == payload.end()) return std::nullopt;
   auto kind = ParseUpdateLawKind((*kind_any).second.cast<String>());
   if (!kind) {
     return std::nullopt;
@@ -142,9 +166,11 @@ std::optional<UpdateLawFamilyPayload> DecodeUpdateLawFamilyPayload(
 
 std::optional<UpdateSourceSetPayload> DecodeUpdateSourceSetPayload(
     const Map<String, Any>& payload) {
-  RequireExactPayloadKeys(payload, {"sources"}, "update.source_set");
+  if (!CheckExactPayloadKeys(payload, {"sources"})) {
+    return std::nullopt;
+  }
   auto sources_any = payload.find(String("sources"));
-  ICHECK(sources_any != payload.end());
+  if (sources_any == payload.end()) return std::nullopt;
   Array<String> normalized =
       NormalizeStringArrayValue((*sources_any).second, "update.source_set", "sources");
   UpdateSourceSetPayload result;
@@ -156,9 +182,11 @@ std::optional<UpdateSourceSetPayload> DecodeUpdateSourceSetPayload(
 
 std::optional<RelationBindingPayload> DecodeRelationBindingPayload(
     const Map<String, Any>& payload) {
-  RequireExactPayloadKeys(payload, {"binding_kind"}, "relation binding");
+  if (!CheckExactPayloadKeys(payload, {"binding_kind"})) {
+    return std::nullopt;
+  }
   auto binding_any = payload.find(String("binding_kind"));
-  ICHECK(binding_any != payload.end());
+  if (binding_any == payload.end()) return std::nullopt;
   auto binding_kind = ParseBindingKind((*binding_any).second.cast<String>());
   if (!binding_kind) {
     return std::nullopt;

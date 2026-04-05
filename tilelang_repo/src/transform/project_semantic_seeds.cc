@@ -31,6 +31,7 @@
 
 #include <string>
 
+#include "common/blackhole_utils.h"
 #include "common/semantic_program.h"
 #include "common/semantic_vocab.h"
 
@@ -77,11 +78,6 @@ class SeedCollector : public tir::StmtVisitor {
   bool has_pipeline_stage_skeleton_{false};
   bool saw_launch_threads_{false};
 };
-
-bool IsBlackholePrimFunc(const tir::PrimFunc& func) {
-  auto target = func->GetAttr<Target>(tvm::attr::kTarget);
-  return target && target.value()->kind->name == "blackhole";
-}
 
 ffi::Array<ffi::String> PlannedKernelNames(const ffi::String& root_symbol, int region_count) {
   ffi::Array<ffi::String> names;
@@ -172,10 +168,6 @@ transform::Pass InvalidateBlackholeCompanionPrograms(ffi::String reason) {
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("tl.transform.ProjectSemanticSeeds", ProjectSemanticSeeds);
-}
-
-TVM_FFI_STATIC_INIT_BLOCK() {
-  namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("tl.transform.InvalidateBlackholeCompanionPrograms",
                         InvalidateBlackholeCompanionPrograms);
 }

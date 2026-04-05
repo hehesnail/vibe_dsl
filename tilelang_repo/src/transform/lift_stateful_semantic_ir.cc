@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "common/blackhole_utils.h"
 #include "common/semantic_program.h"
 #include "common/semantic_refinement_rules.h"
 #include "common/semantic_state_effect_graph.h"
@@ -29,11 +30,6 @@ using tvm::ffi::String;
 using namespace tvm::tl::semantic;
 
 namespace {
-
-bool IsBlackholePrimFunc(const tir::PrimFunc& func) {
-  auto target = func->GetAttr<Target>(tvm::attr::kTarget);
-  return target && target.value()->kind->name == "blackhole";
-}
 
 Array<String> DowncastStringArray(const Array<Any>& items) {
   Array<String> result;

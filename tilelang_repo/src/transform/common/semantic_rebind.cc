@@ -7,6 +7,9 @@
 
 #include <tvm/runtime/logging.h>
 
+#include <algorithm>
+#include <vector>
+
 #include "semantic_refinement_rules.h"
 #include "semantic_state_effect_graph.h"
 
@@ -117,12 +120,19 @@ SemanticRebindPlan DecodeSemanticRebindPlan(const Map<String, Any>& plan) {
   decoded.state_remap = DecodeRemapEntries(plan, "state_remap");
   decoded.update_remap = DecodeRemapEntries(plan, "update_remap");
   if (decoded.trace.empty()) {
-    for (const auto& kv : decoded.state_remap) {
+    // Sort keys for deterministic trace order across runs.
+    std::vector<std::pair<std::string, std::string>> sorted_state(
+        decoded.state_remap.begin(), decoded.state_remap.end());
+    std::sort(sorted_state.begin(), sorted_state.end());
+    for (const auto& kv : sorted_state) {
       decoded.trace.push_back(Map<String, Any>{{"kind", String("state")},
                                                {"old", String(kv.first)},
                                                {"new", String(kv.second)}});
     }
-    for (const auto& kv : decoded.update_remap) {
+    std::vector<std::pair<std::string, std::string>> sorted_update(
+        decoded.update_remap.begin(), decoded.update_remap.end());
+    std::sort(sorted_update.begin(), sorted_update.end());
+    for (const auto& kv : sorted_update) {
       decoded.trace.push_back(Map<String, Any>{{"kind", String("update")},
                                                {"old", String(kv.first)},
                                                {"new", String(kv.second)}});

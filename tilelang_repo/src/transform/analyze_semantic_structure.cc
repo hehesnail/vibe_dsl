@@ -14,6 +14,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "common/blackhole_utils.h"
 #include "common/semantic_program.h"
 #include "common/semantic_vocab.h"
 #include "common/semantic_witness_payloads.h"
@@ -29,11 +30,6 @@ using tvm::ffi::String;
 using namespace tvm::tl::semantic;
 
 namespace {
-
-bool IsBlackholePrimFunc(const tir::PrimFunc& func) {
-  auto target = func->GetAttr<Target>(tvm::attr::kTarget);
-  return target && target.value()->kind->name == "blackhole";
-}
 
 std::string CanonicalBufferName(const std::string& name) {
   size_t pos = name.size();
@@ -294,7 +290,13 @@ tir::transform::Pass AnalyzeSemanticStructure() {
       Map<String, Any> entry;
       entry.Set("name", String("root_map"));
       entry.Set("kind", String(ToString(UpdateLawKind::kMap)));
-      entry.Set("target_state", String(states.empty() ? "" : tvm::Downcast<Map<String, Any>>(states[0])["name"].cast<String>()));
+      // root_map targets the single state only when unambiguous;
+      // otherwise leave empty — Phase B decides spatial ownership.
+      String root_target("");
+      if (states.size() == 1) {
+        root_target = tvm::Downcast<Map<String, Any>>(states[0])["name"].cast<String>();
+      }
+      entry.Set("target_state", root_target);
       updates.push_back(entry);
       witnesses.push_back(MakeWitness(ToString(WitnessSubjectKind::kUpdate), "root_map",
                                       ToString(WitnessFactAxis::kLawFamily),

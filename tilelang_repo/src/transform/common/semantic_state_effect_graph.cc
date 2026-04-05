@@ -40,6 +40,10 @@ std::string StateJoinName(const std::string& update_name) {
   return "join_" + update_name;
 }
 
+std::string StateJoinOutputVersionName(const std::string& update_name) {
+  return "join_" + update_name + "_out";
+}
+
 bool StateHasRole(const State& state, StateRole role) {
   auto parsed = ParseStateRole(static_cast<std::string>(state->role));
   return parsed && *parsed == role;
@@ -159,11 +163,18 @@ BuiltStateEffectGraph BuildStateEffectGraph(const Array<State>& states, const Ar
     const bool is_recurrence_update =
         update_kind && *update_kind == UpdateLawKind::kRecurrence;
     if (is_carry_target || has_carried_relation || is_recurrence_update) {
+      const std::string join_output = StateJoinOutputVersionName(update_name);
+      graph.state_versions.push_back(StateVersion(
+          String(join_output), update->state_name, String(""),
+          String(ToString(StateVersionKind::kUpdateResult)),
+          {String(previous_target_version), String(output_version)},
+          {TIRAnchor("version_kind", "join_output")}));
       graph.state_joins.push_back(StateJoin(
           String(StateJoinName(update_name)), update->state_name,
           String(ToString(StateJoinKind::kLoopCarried)),
-          {String(previous_target_version), String(output_version)}, String(output_version),
+          {String(previous_target_version), String(output_version)}, String(join_output),
           {TIRAnchor("join_kind", "loop_carried")}));
+      current_version_by_state[target_state] = join_output;
     }
   }
 

@@ -9,6 +9,7 @@
 #include <tvm/target/target.h>
 #include <tvm/tir/transform.h>
 
+#include "common/blackhole_utils.h"
 #include "common/semantic_program.h"
 #include "common/semantic_rebind.h"
 #include "common/semantic_vocab.h"
@@ -21,15 +22,6 @@ using tvm::ffi::Any;
 using tvm::ffi::Map;
 using tvm::ffi::String;
 using namespace tvm::tl::semantic;
-
-namespace {
-
-bool IsBlackholePrimFunc(const tir::PrimFunc& func) {
-  auto target = func->GetAttr<Target>(tvm::attr::kTarget);
-  return target && target.value()->kind->name == "blackhole";
-}
-
-}  // namespace
 
 tir::transform::Pass TypedRebindBlackholeCompanionPrograms(Map<String, Any> plan) {
   auto fpass = [plan](tir::PrimFunc func, IRModule, tir::transform::PassContext) -> tir::PrimFunc {
