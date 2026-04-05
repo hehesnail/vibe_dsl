@@ -69,7 +69,10 @@ tir::transform::Pass LiftStatefulSemanticIR() {
     for (const Any& update_any : tvm::Downcast<Array<Any>>(structure["updates"])) {
       auto update_map = tvm::Downcast<Map<String, Any>>(update_any);
       Array<String> source_states;
-      if (update_map.count("target_state") && !tvm::Downcast<String>(update_map["target_state"]).empty()) {
+      if (update_map.count("source_states")) {
+        source_states = DowncastStringArray(tvm::Downcast<Array<Any>>(update_map["source_states"]));
+      } else if (update_map.count("target_state") &&
+                 !tvm::Downcast<String>(update_map["target_state"]).empty()) {
         source_states.push_back(tvm::Downcast<String>(update_map["target_state"]));
       }
       Array<String> access_traits;

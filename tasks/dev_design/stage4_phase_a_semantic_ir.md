@@ -209,6 +209,10 @@ Implemented note:
 - `AnalyzeBlackholeFragmentRegions` 当前还会显式导出 `selection_targets`
   这类局部计算关系事实；`AnalyzeSemanticStructure` 现在消费这些 typed targets，
   而不是再用全局 `if_then_else` / `row_broadcast` 命中去晚期猜 `selection_state`
+- `AnalyzeBlackholeFragmentRegions` 现在也会显式导出 `update_sources`：
+  - `target -> source_states`
+  - `LiftStatefulSemanticIR` 优先把这份 typed 关系写进 `UpdateLaw.source_states`
+  - `select / recurrence / reduce` 不再默认把 `target_state` 自己回填成唯一 source
 - `recurrence` 当前也不再依赖 `gemm + loop_carried_state` 的组合 heuristic；
   A2 当前至少已收正到直接基于 loop-carried 结构恢复 recurrence update
 - `flash-attn` 当前已在 semantic layer 和 pipeline gate 上稳定看到：
@@ -223,6 +227,8 @@ Implemented note:
     - `11 passed`
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names' -q`
     - `1 passed`
+  - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names or chunk_recurrence_semantic_program_lifts_recurrence_updates' -q`
+    - `2 passed`
   - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'topk or selection or recurrence' -q`
     - `4 passed`（含新的 no-name-hint regression）
   - `pytest testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`

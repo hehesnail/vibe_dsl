@@ -200,6 +200,19 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     }
     region.Set("selection_targets", selection_targets);
 
+    Array<Any> update_sources;
+    for (const auto& target : update_source_target_order_) {
+      Map<String, Any> entry;
+      entry.Set("target", String(target));
+      Array<Any> sources;
+      for (const auto& source : update_source_order_.at(target)) {
+        sources.push_back(String(source));
+      }
+      entry.Set("sources", sources);
+      update_sources.push_back(entry);
+    }
+    region.Set("update_sources", update_sources);
+
     Array<Any> loop_carried_state;
     for (const auto& name : loop_carried_order_) {
       Map<String, Any> entry;
@@ -501,6 +514,10 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
         }
       }
     }
+
+    if (!local_sources.empty()) {
+      AddUpdateSources(target_name, local_sources);
+    }
   }
 
   void AddOp(const std::string& op_name) {
@@ -546,6 +563,21 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     }
   }
 
+  void AddUpdateSources(const std::string& target_name,
+                        const std::unordered_set<std::string>& source_names) {
+    const std::string canonical_target = CanonicalReductionTarget(target_name);
+    if (update_sources_.find(canonical_target) == update_sources_.end()) {
+      update_source_target_order_.push_back(canonical_target);
+    }
+    auto& seen = update_sources_[canonical_target];
+    auto& order = update_source_order_[canonical_target];
+    for (const auto& source_name : source_names) {
+      if (seen.insert(source_name).second) {
+        order.push_back(source_name);
+      }
+    }
+  }
+
   std::unordered_map<std::string, BufferInfo> fragment_buffers_;
   std::vector<std::string> fragment_buffer_order_;
 
@@ -560,6 +592,9 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
   std::vector<std::string> row_broadcast_sources_;
   std::unordered_set<std::string> seen_selection_targets_;
   std::vector<std::string> selection_target_order_;
+  std::unordered_map<std::string, std::unordered_set<std::string>> update_sources_;
+  std::unordered_map<std::string, std::vector<std::string>> update_source_order_;
+  std::vector<std::string> update_source_target_order_;
 
   bool pre_loop_stmt_ = false;
   bool inside_pipeline_loop_ = false;

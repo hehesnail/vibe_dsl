@@ -41,6 +41,10 @@
   - `selection_state` 当前已改成消费 `fragment_regions[*].selection_targets`
     这类 typed relation，而不是全局 `if_then_else` heuristic
   - `recurrence` 当前已改成直接基于 loop-carried 结构恢复，不再依赖 `gemm` 命中
+  - `UpdateLaw.source_states` 也开始从上游 typed relation 恢复：
+    `fragment_regions[*].update_sources`
+    当前已能显式承接 `select / recurrence / reduce` 的 source-state 关系，
+    不再默认把 `target_state` 自己回填成唯一 source
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组
@@ -101,6 +105,8 @@
     - `transient`
   - `UpdateLaw.kind == select / recurrence`
   - `flash-attn / topk / chunk recurrence` 的 workload-agnostic semantic gate
+  - `fragment_regions[*].selection_targets`
+  - `fragment_regions[*].update_sources`
 - TT-Sim 当前正式入口是顶层 `scripts/setup_tt_sim.sh`，并且必须和后续测试命令在同一个 shell 中执行
 
 ## 最近验证
@@ -111,6 +117,8 @@
   - `11 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names' -q`
   - `1 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'recovers_index_state_from_integer_ir_not_names or chunk_recurrence_semantic_program_lifts_recurrence_updates' -q`
+  - `2 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'copy or gemm or flash_attention' -q`
   - `4 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'topk or selection or recurrence' -q`

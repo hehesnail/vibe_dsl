@@ -219,6 +219,11 @@ def _synthetic_selection_without_name_hints(
                         {"target": "best_slot", "kind": "max"},
                     ],
                     "row_broadcasts": [{"source": "score_fragment"}, {"source": "best_value"}],
+                    "selection_targets": ["best_slot"],
+                    "update_sources": [
+                        {"target": "best_value", "sources": ["score_fragment"]},
+                        {"target": "best_slot", "sources": ["score_fragment", "carry_slots"]},
+                    ],
                     "loop_carried_state": [
                         {"name": "score_fragment"},
                         {"name": "carry_slots"},
@@ -255,9 +260,15 @@ def test_topk_semantic_program_recovers_index_state_from_integer_ir_not_names():
 
     program = mod["main"].attrs["tl.semantic_program"]
     state_roles_by_name = {str(state.name): str(state.role) for state in program.states}
+    select_updates = {
+        str(update.name): [str(state) for state in update.law.source_states]
+        for update in program.updates
+        if str(update.law.kind) == "select"
+    }
 
     assert state_roles_by_name["best_slot"] == "index_state"
     assert state_roles_by_name["best_value"] == "reduction_accumulator"
+    assert "carry_slots" in select_updates["select_best_slot"]
 
 
 def test_chunk_recurrence_semantic_program_lifts_recurrence_updates():
@@ -288,9 +299,17 @@ def test_chunk_recurrence_semantic_program_lifts_recurrence_updates():
     program = mod["main"].attrs["tl.semantic_program"]
     law_kinds = {str(update.law.kind) for update in program.updates}
     state_roles = {str(state.role) for state in program.states}
+    recurrence_sources = [
+        (str(update.state_name), [str(state) for state in update.law.source_states])
+        for update in program.updates
+        if str(update.law.kind) == "recurrence"
+    ]
 
     assert "recurrence" in law_kinds
     assert "carry" in state_roles
+    assert any(
+        any(source != target for source in sources) for target, sources in recurrence_sources
+    )
 
 
 def test_flash_attention_semantic_program_separates_algorithmic_state_from_transient_scratch():

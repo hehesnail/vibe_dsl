@@ -147,6 +147,7 @@ tir::transform::Pass AnalyzeSemanticStructure() {
     std::unordered_set<std::string> integer_states;
     std::unordered_set<std::string> loop_carried_states;
     std::unordered_set<std::string> selection_targets;
+    std::unordered_map<std::string, Array<Any>> update_sources_by_target;
     auto register_state = [&states, &state_index](const std::string& name, const std::string& role,
                                                   const std::string& scope) {
       auto it = state_index.find(name);
@@ -193,6 +194,13 @@ tir::transform::Pass AnalyzeSemanticStructure() {
             selection_targets.insert(tvm::Downcast<String>(target_any));
           }
         }
+        if (region.count("update_sources")) {
+          for (const Any& source_any : tvm::Downcast<Array<Any>>(region["update_sources"])) {
+            auto source_map = tvm::Downcast<Map<String, Any>>(source_any);
+            update_sources_by_target[source_map["target"].cast<String>()] =
+                tvm::Downcast<Array<Any>>(source_map["sources"]);
+          }
+        }
         for (const Any& reduction_any : tvm::Downcast<Array<Any>>(region["row_reductions"])) {
           auto reduction = tvm::Downcast<Map<String, Any>>(reduction_any);
           const std::string target = reduction["target"].cast<String>();
@@ -237,6 +245,10 @@ tir::transform::Pass AnalyzeSemanticStructure() {
           entry.Set("kind", String("reduce"));
           entry.Set("target_state", reduction["target"].cast<String>());
           entry.Set("reduce_kind", reduction["kind"].cast<String>());
+          if (auto it = update_sources_by_target.find(reduction["target"].cast<String>());
+              it != update_sources_by_target.end()) {
+            entry.Set("source_states", it->second);
+          }
           updates.push_back(entry);
         }
         if (!selection_targets.empty()) {
@@ -246,6 +258,10 @@ tir::transform::Pass AnalyzeSemanticStructure() {
             entry.Set("kind", String("select"));
             entry.Set("target_state", String(state_name));
             entry.Set("traits", Array<Any>{String("selected"), String("indexed")});
+            if (auto it = update_sources_by_target.find(state_name);
+                it != update_sources_by_target.end()) {
+              entry.Set("source_states", it->second);
+            }
             updates.push_back(entry);
           }
         }
@@ -256,6 +272,10 @@ tir::transform::Pass AnalyzeSemanticStructure() {
             entry.Set("kind", String("recurrence"));
             entry.Set("target_state", String(state_name));
             entry.Set("traits", Array<Any>{String("carried"), String("staged")});
+            if (auto it = update_sources_by_target.find(state_name);
+                it != update_sources_by_target.end()) {
+              entry.Set("source_states", it->second);
+            }
             updates.push_back(entry);
           }
         }
