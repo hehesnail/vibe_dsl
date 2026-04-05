@@ -28,14 +28,12 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attent
 - Create: `tilelang_repo/src/transform/validate_stateful_semantic_ir.cc`
 - Modify: `tilelang_repo/src/transform/common/semantic_program.h`
 - Modify: `tilelang_repo/src/transform/common/semantic_program.cc`
-- Modify: `tilelang_repo/src/transform/analyze_blackhole_work_decomposition.cc`
-- Modify: `tilelang_repo/src/transform/analyze_blackhole_fragment_regions.cc`
-- Modify: `tilelang_repo/src/transform/analyze_blackhole_pipeline_stages.cc`
-- Modify: `tilelang_repo/tilelang/engine/phase.py`
+- Modify: `tilelang_repo/tilelang/engine/lower.py`
+- Modify: `tilelang_repo/tilelang/transform/__init__.py`
 - Modify: `tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py`
-- Modify: `tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
+- Status: `2026-04-05` 已落地
 
-- [ ] **Step 1: Add the minimal semantic object set**
+- [x] **Step 1: Add the minimal semantic object set**
 
 Required objects:
 
@@ -54,7 +52,7 @@ A1 explicit boundary:
 - `SelectLaw` / `RecurrenceLaw` allowed as `kind` shell only if needed by validator
 - no rebind-aware safe-pass contract yet
 
-- [ ] **Step 2: Lift and validate copy / GEMM / flash-attn subset**
+- [x] **Step 2: Lift and validate copy / GEMM / flash-attn subset**
 
 Run:
 
@@ -69,17 +67,42 @@ Expected:
 - copy / GEMM 不丢已有 compile-path 能力
 - `flash-attn` subset 至少能稳定 lift 出 `Domain / State / UpdateLaw.kind`
 
-- [ ] **Step 3: Re-run shared zero-regression baseline**
+- [x] **Step 3: Re-run shared zero-regression baseline**
 
 Run the shared zero-regression baseline above.
 
-- [ ] **Step 4: Stage 1 exit gate**
+- [x] **Step 4: Stage 1 exit gate**
 
 Only proceed when:
 
 - A1 minimal object set 已稳定
 - `ValidateStatefulSemanticIR` 能拦住结构不一致输入
 - copy / GEMM / current `flash-attn` compile-path 零回归
+
+Implemented note:
+
+- `SemanticProgram / Domain / State / Update / AccessMap / UpdateLaw / TIRAnchor / TIRValueBinding`
+  已作为最小 typed object set 接入
+- A1 当前通过 `AnalyzeSemanticStructure -> LiftStatefulSemanticIR -> ValidateStatefulSemanticIR`
+  从现有 `blackhole.work_decomposition / fragment_regions / pipeline_stages / semantic_seeds`
+  构建最小语义层
+- Blackhole 主设备链当前已在 `tilelang/engine/lower.py` 中接入 A1 semantic lift
+- 当前验证：
+  - `pytest testing/python/transform/test_blackhole_semantic_ir.py -q`
+    - `7 passed`
+  - `pytest testing/python/transform/test_blackhole_semantic_ir.py -k 'copy or gemm or flash_attention' -q`
+    - `4 passed`
+  - `pytest testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
+    - `25 passed`
+  - shared zero-regression baseline：
+    - `test_blackhole_copy_pipeline.py -q`
+      - `40 passed, 10 skipped, 1 xfailed`
+    - `test_blackhole_copy_runtime.py -q` under `scripts/setup_tt_sim.sh`
+      - `12 passed`
+    - `test_blackhole_gemm.py -q`
+      - `24 passed, 11 skipped`
+    - `test_blackhole_tvm_ffi_export.py -q`
+      - `1 passed`
 
 ## Task 2: Stage 2 - Phase A2 Semantic Expansion
 

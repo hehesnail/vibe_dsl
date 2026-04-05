@@ -1,0 +1,151 @@
+/*!
+ * \file semantic_program.cc
+ * \brief Minimal Stage 4 semantic IR object constructors and reflection.
+ */
+
+#include "semantic_program.h"
+
+namespace tvm {
+namespace tl {
+
+TIRAnchor::TIRAnchor(ffi::String kind, ffi::String value_repr) {
+  auto n = ffi::make_object<TIRAnchorNode>();
+  n->kind = std::move(kind);
+  n->value_repr = std::move(value_repr);
+  data_ = std::move(n);
+}
+
+TIRValueBinding::TIRValueBinding(ffi::String kind, ffi::String symbol, ffi::String value_repr) {
+  auto n = ffi::make_object<TIRValueBindingNode>();
+  n->kind = std::move(kind);
+  n->symbol = std::move(symbol);
+  n->value_repr = std::move(value_repr);
+  data_ = std::move(n);
+}
+
+AccessMap::AccessMap(ffi::String kind, ffi::Array<PrimExpr> indices, ffi::Array<ffi::String> traits) {
+  auto n = ffi::make_object<AccessMapNode>();
+  n->kind = std::move(kind);
+  n->indices = std::move(indices);
+  n->traits = std::move(traits);
+  data_ = std::move(n);
+}
+
+UpdateLaw::UpdateLaw(ffi::String kind, ffi::String target_state,
+                     ffi::Array<ffi::String> source_states, ffi::Array<AccessMap> access_maps) {
+  auto n = ffi::make_object<UpdateLawNode>();
+  n->kind = std::move(kind);
+  n->target_state = std::move(target_state);
+  n->source_states = std::move(source_states);
+  n->access_maps = std::move(access_maps);
+  data_ = std::move(n);
+}
+
+Domain::Domain(ffi::String name, ffi::Array<ffi::String> axes, ffi::Array<ffi::String> traits,
+               ffi::Array<TIRAnchor> anchors) {
+  auto n = ffi::make_object<DomainNode>();
+  n->name = std::move(name);
+  n->axes = std::move(axes);
+  n->traits = std::move(traits);
+  n->anchors = std::move(anchors);
+  data_ = std::move(n);
+}
+
+State::State(ffi::String name, ffi::String role, ffi::String storage_scope,
+             ffi::Array<TIRAnchor> anchors) {
+  auto n = ffi::make_object<StateNode>();
+  n->name = std::move(name);
+  n->role = std::move(role);
+  n->storage_scope = std::move(storage_scope);
+  n->anchors = std::move(anchors);
+  data_ = std::move(n);
+}
+
+Update::Update(ffi::String name, ffi::String state_name, UpdateLaw law,
+               ffi::Array<TIRAnchor> anchors, ffi::Array<TIRValueBinding> bindings) {
+  auto n = ffi::make_object<UpdateNode>();
+  n->name = std::move(name);
+  n->state_name = std::move(state_name);
+  n->law = std::move(law);
+  n->anchors = std::move(anchors);
+  n->bindings = std::move(bindings);
+  data_ = std::move(n);
+}
+
+SemanticProgram::SemanticProgram(ffi::Array<Domain> domains, ffi::Array<State> states,
+                                 ffi::Array<Update> updates, ffi::Array<ffi::String> seeds,
+                                 ffi::Array<TIRAnchor> anchors) {
+  auto n = ffi::make_object<SemanticProgramNode>();
+  n->domains = std::move(domains);
+  n->states = std::move(states);
+  n->updates = std::move(updates);
+  n->seeds = std::move(seeds);
+  n->anchors = std::move(anchors);
+  data_ = std::move(n);
+}
+
+TVM_FFI_STATIC_INIT_BLOCK() {
+  TIRAnchorNode::RegisterReflection();
+  TIRValueBindingNode::RegisterReflection();
+  AccessMapNode::RegisterReflection();
+  UpdateLawNode::RegisterReflection();
+  DomainNode::RegisterReflection();
+  StateNode::RegisterReflection();
+  UpdateNode::RegisterReflection();
+  SemanticProgramNode::RegisterReflection();
+}
+
+TVM_FFI_STATIC_INIT_BLOCK() {
+  namespace refl = tvm::ffi::reflection;
+  refl::GlobalDef().def("tl.TIRAnchor",
+                        [](ffi::String kind, ffi::String value_repr) {
+                          return TIRAnchor(std::move(kind), std::move(value_repr));
+                        });
+  refl::GlobalDef().def("tl.TIRValueBinding",
+                        [](ffi::String kind, ffi::String symbol, ffi::String value_repr) {
+                          return TIRValueBinding(std::move(kind), std::move(symbol),
+                                                 std::move(value_repr));
+                        });
+  refl::GlobalDef().def("tl.AccessMap",
+                        [](ffi::String kind, ffi::Array<PrimExpr> indices,
+                           ffi::Array<ffi::String> traits) {
+                          return AccessMap(std::move(kind), std::move(indices), std::move(traits));
+                        });
+  refl::GlobalDef().def("tl.UpdateLaw",
+                        [](ffi::String kind, ffi::String target_state,
+                           ffi::Array<ffi::String> source_states,
+                           ffi::Array<AccessMap> access_maps) {
+                          return UpdateLaw(std::move(kind), std::move(target_state),
+                                           std::move(source_states), std::move(access_maps));
+                        });
+  refl::GlobalDef().def("tl.Domain",
+                        [](ffi::String name, ffi::Array<ffi::String> axes,
+                           ffi::Array<ffi::String> traits, ffi::Array<TIRAnchor> anchors) {
+                          return Domain(std::move(name), std::move(axes), std::move(traits),
+                                        std::move(anchors));
+                        });
+  refl::GlobalDef().def("tl.State",
+                        [](ffi::String name, ffi::String role, ffi::String storage_scope,
+                           ffi::Array<TIRAnchor> anchors) {
+                          return State(std::move(name), std::move(role), std::move(storage_scope),
+                                       std::move(anchors));
+                        });
+  refl::GlobalDef().def("tl.Update",
+                        [](ffi::String name, ffi::String state_name, UpdateLaw law,
+                           ffi::Array<TIRAnchor> anchors,
+                           ffi::Array<TIRValueBinding> bindings) {
+                          return Update(std::move(name), std::move(state_name), std::move(law),
+                                        std::move(anchors), std::move(bindings));
+                        });
+  refl::GlobalDef().def("tl.SemanticProgram",
+                        [](ffi::Array<Domain> domains, ffi::Array<State> states,
+                           ffi::Array<Update> updates, ffi::Array<ffi::String> seeds,
+                           ffi::Array<TIRAnchor> anchors) {
+                          return SemanticProgram(std::move(domains), std::move(states),
+                                                 std::move(updates), std::move(seeds),
+                                                 std::move(anchors));
+                        });
+}
+
+}  // namespace tl
+}  // namespace tvm

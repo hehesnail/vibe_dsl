@@ -29,6 +29,11 @@
 
 ## 当前主 blocker
 
+- Phase A1 最小 `SemanticProgram` 已落地，但当前还停在 A1 边界：
+  - `Domain / State / Update / AccessMap / UpdateLaw`
+  - `MapLaw / ReduceLaw`
+  - 最小 `TIRAnchor / TIRValueBinding`
+  - 基于现有 `blackhole.*` analysis attrs 的 typed lift / validate
 - 当前 layered IR 迁移的直接动机仍然是 `blackhole.acc` 混合语义问题：
   - 一部分 lowering 仍把它当 TT compute-side tile scratch / matmul destination
   - 另一部分 helper 仍把它当线性 fragment scratch 数组
@@ -41,7 +46,9 @@
 ## 下一步
 
 1. 执行 [stage4_phase_a_semantic_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_a_semantic_ir.md)
-   - 完成 `SemanticProgram` 最小 core 和 A2 扩面
+   - 当前进入 A2：扩 `AccessMap.traits` / `SelectLaw` / `RecurrenceLaw` / `SemanticSupplement`
+   - 把 `flash-attn` carry/stats state 和 TT compute scratch 明确分离
+   - 增加第一个 non-attention semantic gate（优先 `topk`）
 2. 执行 [stage4_phase_b_spatial_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_b_spatial_ir.md)
    - 一等化 `ProgramPhase / Task / Channel / Layout / WorkPartition`
 3. 执行 [stage4_phase_c_tt_target_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_c_tt_target_ir.md)
@@ -63,21 +70,37 @@
   -> `AnalyzeBlackholeWorkDecomposition`
   -> `AnalyzeBlackholeFragmentRegions`
   -> `AnalyzeBlackholePipelineStages`
+  -> `AnalyzeSemanticStructure`
+  -> `LiftStatefulSemanticIR`
+  -> `ValidateStatefulSemanticIR`
   -> `LowerBlackholeOps`
   -> `PlanBlackholeCB`
   -> `AssignBlackholeCores`
+- Phase A1 当前已落地的最小语义对象：
+  - `SemanticProgram`
+  - `Domain`
+  - `State`
+  - `Update`
+  - `AccessMap`
+  - `UpdateLaw`
+  - `TIRAnchor`
+  - `TIRValueBinding`
 - TT-Sim 当前正式入口是顶层 `scripts/setup_tt_sim.sh`，并且必须和后续测试命令在同一个 shell 中执行
 
 ## 最近验证
 
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'device_program_registry or semantic_seeds or hard_freeze' -q`
   - `3 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
+  - `7 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'copy or gemm or flash_attention' -q`
+  - `4 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
-  - `49 passed, 1 skipped, 1 xfailed`
-- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
+  - `40 passed, 10 skipped, 1 xfailed`
+- `source scripts/setup_tt_sim.sh && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
   - `12 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q`
-  - `35 passed`
+  - `24 passed, 11 skipped`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py -q`
   - `1 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`

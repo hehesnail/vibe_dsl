@@ -1,7 +1,25 @@
+import sys
+from pathlib import Path
+
 import tilelang
 import tilelang.language as T
 from tilelang import tvm
+from tilelang.engine.phase import LowerAndLegalize, OptimizeForTarget
 from tvm.target import Target
+
+THIS_DIR = Path(__file__).resolve().parent
+BLACKHOLE_TARGET_TEST_DIR = THIS_DIR.parent / "target" / "blackhole"
+if str(BLACKHOLE_TARGET_TEST_DIR) not in sys.path:
+    sys.path.append(str(BLACKHOLE_TARGET_TEST_DIR))
+if str(THIS_DIR) not in sys.path:
+    sys.path.append(str(THIS_DIR))
+
+from common import gemm_kernel, staged_copy_kernel
+from test_blackhole_flash_attention_analysis import (
+    _lower_flash_attention_example,
+    gqa_example,
+    mha_example,
+)
 
 
 @T.prim_func
@@ -18,6 +36,27 @@ def _prepare_blackhole_stage0_module():
     mod = tvm.IRModule({"main": _stage0_seed_kernel.with_attr("global_symbol", "main")})
     mod = tvm.tir.transform.BindTarget(Target("blackhole"))(mod)
     mod = tilelang.transform.AnnotateDeviceRegions()(mod)
+    return mod
+
+
+def _prepare_blackhole_phase_a_module(prim_func):
+    mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
+    target = Target("blackhole")
+    with target:
+        if not (mod["main"].attrs and mod["main"].attrs.get("target") is not None):
+            mod = LowerAndLegalize(mod, target)
+        mod = OptimizeForTarget(mod, target)
+    mod = tilelang.transform.LowerDeviceStorageAccessInfo()(mod)
+    mod = tilelang.transform.LowerIntrin()(mod)
+    mod = tvm.tir.transform.Simplify()(mod)
+    mod = tilelang.transform.HoistBroadcastValues()(mod)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
+    mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
+    mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
+    mod = tilelang.transform.LiftStatefulSemanticIR()(mod)
+    mod = tilelang.transform.ValidateStatefulSemanticIR()(mod)
     return mod
 
 
@@ -57,3 +96,68 @@ def test_hard_freeze_invalidates_companion_programs_after_unsafe_mutation():
     assert "tl.spatial_program" not in attrs
     assert "tl.tt_program" not in attrs
     assert str(attrs["tl.companion_invalidation_reason"]) == "unit_test_unsafe_mutation"
+
+
+def test_copy_semantic_program_lifts_minimal_domain_and_map_update():
+    mod = _prepare_blackhole_phase_a_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+
+    program = mod["main"].attrs["tl.semantic_program"]
+    assert len(program.domains) == 1
+    assert str(program.domains[0].name) == "device_program"
+    assert len(program.updates) >= 1
+    assert {str(update.law.kind) for update in program.updates} == {"map"}
+
+
+def test_gemm_semantic_program_lifts_fragment_state_and_map_update():
+    mod = _prepare_blackhole_phase_a_module(gemm_kernel())
+
+    program = mod["main"].attrs["tl.semantic_program"]
+    state_names = {str(state.name) for state in program.states}
+    assert "C_local" in state_names
+    assert any(str(state.role) == "compute_state" for state in program.states)
+    assert "map" in {str(update.law.kind) for update in program.updates}
+
+
+def test_flash_attention_semantic_program_lifts_carry_state_and_reduce_updates():
+    mod = _prepare_blackhole_phase_a_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+
+    program = mod["main"].attrs["tl.semantic_program"]
+    state_names = {str(state.name) for state in program.states}
+    assert {"scores_max", "logsum", "acc_o"}.issubset(state_names)
+    assert "reduce" in {str(update.law.kind) for update in program.updates}
+
+
+def test_flash_attention_gqa_semantic_program_lifts_fragment_state_subset():
+    mod = _prepare_blackhole_phase_a_module(
+        _lower_flash_attention_example(
+            gqa_example,
+            1,
+            16,
+            1024,
+            128,
+            False,
+            groups=16,
+            block_M=64,
+            block_N=64,
+            num_stages=2,
+            threads=128,
+        )
+    )
+
+    program = mod["main"].attrs["tl.semantic_program"]
+    state_names = {str(state.name) for state in program.states}
+    assert {"acc_s", "acc_s_cast", "scores_sum"}.issubset(state_names)
+    assert len(program.domains) == 1

@@ -694,6 +694,21 @@ def AnalyzeBlackholePipelineStages():
     return tvm.ffi.get_global_func("tl.transform.AnalyzeBlackholePipelineStages")()
 
 
+def AnalyzeSemanticStructure():
+    """Analyze minimal Stage 4 semantic structure from Blackhole analysis attrs."""
+    return tvm.ffi.get_global_func("tl.transform.AnalyzeSemanticStructure")()
+
+
+def LiftStatefulSemanticIR():
+    """Lift the minimal Stage 4 semantic structure into a typed SemanticProgram."""
+    return tvm.ffi.get_global_func("tl.transform.LiftStatefulSemanticIR")()
+
+
+def ValidateStatefulSemanticIR():
+    """Validate the A1 minimal SemanticProgram invariants."""
+    return tvm.ffi.get_global_func("tl.transform.ValidateStatefulSemanticIR")()
+
+
 def LowerBlackholeOps():
     """Lower TileLang high-level operations to TT-Metal builtins for Blackhole backend.
 

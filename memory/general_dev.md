@@ -55,6 +55,7 @@
 - `3rdparty/` 和 `build/` 不应进入主仓库提交
 - `pip install -e .` 可能重新触发构建并失败，用 `.pth` 指向本地构建产物
 - C++ 改动后 pytest 前先确认 `libtilelang.so` 已重编，避免加载旧库假阴性
+- 当前 `tilelang_repo/CMakeLists.txt` 通过 `file(GLOB ...)` 收集源码；新增 `.cc` 文件后只跑 `make` 不够，必须先在 `tilelang_repo/build/` 里重新执行一次 `cmake ..`，否则新文件不会进 build graph，Python 侧会表现成“wrapper 已加但 global func 仍然找不到”
 - 不要对同一个 `tilelang_repo/build/` 并行跑 `cmake --build` 和 pytest。共享构建目录在链接进行中时，测试可能加载到旧/半更新的 `libtilelang.so`，制造假阴性或顺序相关噪声
 - 对新的 split-after analysis pass，优先把结果写成结构化 IR attrs（`Array<Map<...>>`、`PrimExpr` 等），不要先字符串化再让后续测试/consumer 反解析。测试也应直接断言 attr 结构和 `PrimExpr` 语义，而不是只查字符串片段
 - 对 layered IR 迁移的 Stage 0 护栏，不要继续把 program registry 或 pre-lift semantic 输入挂在单个 `PrimFunc.attrs` 上。更稳的主链是：
