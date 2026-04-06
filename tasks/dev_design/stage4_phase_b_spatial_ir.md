@@ -5,7 +5,10 @@
 - **文档角色**: `Phase B` 实施与设计边界文档
 - **当前状态**: 当前主实施阶段；`2026-04-06` 已完成首轮落地：
   `SpatialProgram / ProgramPhase`、copy/GEMM fast-path、`flash-attn` multi-phase gate、
-  以及 `LowerBlackholeOps` 对 spatial summary 的最小接线均已进入主链
+  以及 `LowerBlackholeOps` 对 spatial summary 的最小接线均已进入主链。
+  但这仍是 **Phase B first landing**，还不是可直接进入 `Phase C` 的最终退出状态；
+  在 `SpatialProgram` 成为唯一可信 spatial truth owner 之前，仍需完成本页第 7 节定义的
+  hardening gates。
 - **上游输入**: 冻结后的 `SemanticProgram`
 - **下游输出**: 冻结后的 `SpatialProgram`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -278,3 +281,136 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py -q
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q
 ```
+
+## 7. Hardening Gates Before Phase C
+
+`Phase B` 的目标不是“已经有一套 `SpatialProgram` 对象”，而是：
+
+- 让 `Spatial Program IR` 真正成为 `SemanticProgram -> TTProgram` 之间唯一可信的
+  spatial truth owner
+
+只有满足下面这些 gate，`Phase C` 才允许开始做正式 cutover。
+
+### 7.1 Truth-Source Purity
+
+`LowerToSpatialProgram` 必须完成真源纯化：
+
+- `Phase B` 只能消费冻结后的 `SemanticProgram`
+- `blackhole.work_decomposition`
+- `blackhole.segment_plan`
+- `blackhole.pipeline_stages`
+- `blackhole.fragment_regions`
+
+这些 attr 都不能再作为 spatial truth source。
+
+允许的过渡状态只有两种：
+
+1. 这些信息已经被 `Phase A` 归约成 semantic truth
+2. 这些信息只作为 lowering compatibility summary 存在，不再参与 `SpatialProgram`
+   构造决策
+
+当前代码仍未完全达标：
+
+- `Layout / WorkPartition` 仍直接从 `blackhole.work_decomposition` 恢复
+- GEMM fast-path 仍直接依赖 `blackhole.segment_plan`
+
+### 7.2 Schema Strengthening
+
+当前 `Task / Channel / Layout / WorkPartition / Placement / SyncEdge / ResourceIntent`
+已经 object 化，但仍偏向 `name / kind / traits` summary。
+
+进入 `Phase C` 前，至少要补到足以稳定承载下面这些 spatial-owned truth：
+
+- task ownership
+- channel payload / source-state / versioned-state flow
+- layout / work-partition 的结构化依据
+- phase-boundary materialization contract
+- cross-member phase ordering
+- synchronization semantics
+
+原则是：
+
+- 不能让 `Phase C` 再回头猜 task graph / state flow / phase boundary
+- 不能把这些 truth 继续散落在 legacy `blackhole.*` attr 里
+
+### 7.3 Legality Must Be Explicit
+
+`ValidateSpatialProgram` 当前只做结构健全性检查，还不等于 spatial legality validator。
+
+进入 `Phase C` 前，validator 至少要能 fail-fast 检出：
+
+- phase order / phase boundary 不一致
+- channel source-target-state 绑定不一致
+- layout / partition 与 semantic domain 不一致
+- multi-phase state materialization 缺失
+- module-scope `tl.device_programs` 与 member-local `tl.spatial_program`
+  的 cross-function truth 不一致
+
+规则仍然是：
+
+- analysis 决定 legality
+- policy 只在合法空间内选择
+
+### 7.4 Lowering Consumer Cutover
+
+`LowerBlackholeOps` 在 `Phase B` 完成前必须收窄成 spatial consumer，而不是继续承担
+残余 spatial recovery。
+
+目标状态：
+
+- `LowerBlackholeOps` 只读取 `SpatialProgram` 提供的 lowering contract
+- 对 task / channel / layout / sync / phase-boundary 的判断不再回头读取
+  `fragment_regions` / `work_decomposition` / `pipeline_stages`
+
+当前仍未完全达标：
+
+- lowering requirements 仍同时读取 `blackhole.work_decomposition`
+- lowering-facing fragment summary 仍依赖 `blackhole.fragment_regions`
+- pipeline 相关 summary 仍直接来自 `blackhole.pipeline_stages`
+
+这类 mixed ownership 在 `Phase C` 之前必须继续收紧。
+
+### 7.5 Family Coverage Gates
+
+当前 `copy / GEMM / flash-attn` 只能证明首轮 spatial cut 可行，不能证明设计已经足够 general。
+
+在进入 `Phase C` 前，`Phase B` 至少需要补齐：
+
+1. 一个 `selection / indexing` family 的 spatial gate
+   - 推荐第一项：`topk`
+2. 一个非 attention 的更复杂 family gate
+   - 推荐从下面三者中至少打一项：
+   - `routed / grouped dispatch`
+   - `paged / indexed sparse decode`
+   - `chunk recurrence / scan`
+
+要求不是“所有 runtime correctness 一次做完”，而是：
+
+- compile-path 上能证明 `SemanticProgram -> SpatialProgram` 的 object boundary 成立
+- spatial object set 不会因新 family 立刻退化回 workload-specific matcher
+
+### 7.6 Module-Scope Program Truth
+
+`tl.device_programs` 不能只停留在“聚合 phase 列表”的最小实现。
+
+进入 `Phase C` 前，它必须稳定承载 cross-function spatial truth，至少包括：
+
+- phase order
+- member_func ownership
+- cross-member phase-boundary truth
+
+单 `PrimFunc` 程序仍只是退化情况，不应反向成为默认心智模型。
+
+## 8. Current Gap Inventory
+
+基于当前实现状态，`Phase B` 的主要缺口可以收成下面四类：
+
+1. spatial builder 仍存在 legacy attr truth leakage
+2. object schema 已有骨架，但还不够强到支撑 `Phase C` 只读消费
+3. validator 仍偏结构检查，缺少真正的 legality contract
+4. family coverage 仍不足以支撑“足够 general”的宣称
+
+因此当前状态应表述为：
+
+- `Phase B` 已完成首轮落地并验证主链可行
+- `Phase B` 尚未完成 hardening，不应直接表述为已具备 `Phase C` cutover 前提

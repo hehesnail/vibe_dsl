@@ -45,26 +45,38 @@
   - `flash-attn` multi-phase spatial gate 已打通
   - `LowerBlackholeOps` 已开始显式消费 `tl.spatial_program`
     的 phase/channel/phase-boundary summary
+  - 当前状态应视为 `Phase B first landing`，仍需完成 truth-source purity /
+    schema strengthening / legality validator / consumer cutover / wider family gates
+    之后，才可进入 `Phase C` 正式 cutover
 - **Phase C**: 已定义，待 Phase B 后推进
 
 ## 当前主 blocker
 
 当前 blocker 已经不是 `Phase A` 语义恢复本身，而是：
 
-- 还没有完成 `Spatial Program IR -> TT Target IR` 的单一真源切换
+- `Phase B` 仍未完成 hardening，`SpatialProgram` 还没有成为足以支撑
+  `Phase C` cutover 的唯一可信 spatial truth owner
+- `Spatial Program IR -> TT Target IR` 的单一真源切换因此还不能直接开始
 
 这也是当前 `blackhole.acc` correctness payoff 仍未完全兑现的根因：问题已经转成
 spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 
 ## 下一步
 
-1. 执行 `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
+1. 先完成 `Phase B` hardening gates
+   - `LowerToSpatialProgram` truth-source purity：
+     不再把 `work_decomposition / segment_plan / pipeline_stages / fragment_regions`
+     当 spatial truth source
+   - `SpatialProgram` schema strengthening：
+     让 task/channel/layout/sync/phase-boundary truth 足以支撑下游只读消费
+   - `ValidateSpatialProgram` 从结构检查升级到 legality validator
+   - 继续收紧 `Phase B -> LowerBlackholeOps` 边界：
+     逐步迁走对 `blackhole.fragment_regions` 等 legacy summary 的 lowering-facing residual 依赖
+   - 补齐 `selection / indexing` 与至少一个非 attention family 的 spatial gate
+2. 通过 hardening gate 后，再执行 `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
    - 完成 TT target cutover
    - 删除 compatibility writer / reader / fallback
    - 承接 `flash-attn` correctness payoff 与更宽 family expansion
-2. 继续收紧 `Phase B -> LowerBlackholeOps` 边界
-   - 逐步迁走对 `blackhole.fragment_regions` 的 lowering-facing residual 依赖
-   - 让 task/channel/layout/sync truth 只保留在 companion IR
 
 ## 当前代码事实
 
@@ -119,6 +131,12 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
     - unsplit single-`PrimFunc` 退化场景对 `tl.device_programs.root_symbol` 的 registry fallback
     - `LowerBlackholeOps` lowering requirements 中的
       `spatial_phase_count / spatial_channel_count / spatial_phase_boundary_states`
+  - `Phase B` 当前的主要未完成项也已明确：
+    - `LowerToSpatialProgram` 仍直接读取 `blackhole.work_decomposition`
+      与 `blackhole.segment_plan` 的部分 truth
+    - `ValidateSpatialProgram` 仍以结构完整性检查为主，尚未升级为强 legality validator
+    - `LowerBlackholeOps` 仍同时读取 `tl.spatial_program` 与 legacy analysis attrs
+    - transform-level family gate 目前仍只覆盖 `copy / GEMM / flash-attn`
   - `blackhole.fragment_regions` 不再是 semantic truth 输入；
     semantic 侧所有 evidence 已切换为 manifest-first 消费；
     `fragment_regions` 当前唯一剩余消费者是 `LowerBlackholeOps`（lowering-facing）
