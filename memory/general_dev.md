@@ -62,6 +62,10 @@
   - module-scope registry 进 `IRModule.global_infos["tl.device_programs"]`
   - pre-lift typed 输入进 `PrimFunc.attrs["tl.semantic_seeds"]`
   - unsafe TIR mutation 统一通过 companion invalidation contract 使 `tl.semantic_program / tl.spatial_program / tl.tt_program` 整体失效
+- 对 `tl.device_programs` 的 pre-`SplitHostDevice` 退化场景，也不要假设 module 里一定已经存在
+  规划出来的 `*_kernel` member `PrimFunc`。当当前 module 仍只保留 root `PrimFunc` 时，
+  `Phase B` 的 registry 聚合和 validator 需要允许 `root_symbol` fallback；
+  否则 companion IR 已经生成，module-scope phase truth 仍会被空 registry 误判失败
 - 对 Phase A semantic schema，state role / update law / supplement 都必须保持 workload-agnostic。`flash-attn`、`topk`、chunk recurrence 这类 family 只用来验证抽象角色能否恢复，不要把 workload noun 直接升格成 schema
 - 对 Phase A typed witness / refinement contract，也不要直接做 workload-shaped witness class。更稳的主链是：
   - `AnalyzeSemanticStructure` 先把开放 analysis attrs 投影成通用 `tl.semantic_witnesses`
@@ -114,6 +118,12 @@
   - `fragment_regions` 只保留 lowering 真需要的 target / handle summary
   - 如果 fragment matcher 还要识别 reduction target，本体依据也应是 `AddNode/MaxNode` 等
     IR 结构，而不是模板名字
+- 如果正式 device `main_kernel` 路径缺的正好是 `row_reduction.kind` 这类 semantic-owned 事实，
+  修法也必须继续往 `Phase A` 收：
+  - 让 fragment analysis / manifest structural evidence 把 `kind` 带齐
+  - 让 `AnalyzeSemanticStructure -> LiftStatefulSemanticIR` 恢复统一 semantic truth
+  - 不要为了补某个 multi-phase spatial gate，临时让 `Phase B` 直接回读
+    `blackhole.fragment_regions`
 - 对 Blackhole `lower()` 主链，不能在 `SplitBlackholeKernel` / `Analyze*` / `LowerBlackholeOps` 之前就用旧的 device attrs 过滤掉入口 `PrimFunc`。Blackhole entry kernel 在这条链之前通常还没有 `blackhole.*` attrs，因此 `is_device_call()` 必须把 entry `PrimFunc` 视为 device 输入，否则专属 pass 实际上跑在空 `device_mod` 上
 - fragment region analysis 里的 `pointwise_chain` 不能通过全局扫描所有 `tir.add/mul/div/max/...` 来判定；那样会把普通索引算术也误记成 fragment compute。更稳的做法是只在 fragment/local region 自身的 store / dataflow 关系里识别 pointwise
 - 对 split-after TIR 的 fragment analysis，不要只盯 `CallNode`。像 `scores_sum[0] + acc_s[rv]`、`T.max(scores_max[0], tmp[0])` 这类模式在 TVM IR 里常常是 `AddNode` / `MaxNode` / `MulNode` / `DivNode` 等原生表达式节点；如果只扫 `CallNode`，row reduction 和 scalar-to-vector broadcast 会在真实 MHA/GQA IR 上整片漏掉

@@ -736,6 +736,33 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
     }
   }
 
+  if (auto spatial_program = func->GetAttr<SpatialProgram>(attr::kTLSpatialProgram)) {
+    const SpatialProgram& program = spatial_program.value();
+    if (!program->phases.empty()) {
+      lowering_requirements.Set("spatial_phase_count",
+                                Integer(static_cast<int>(program->phases.size())));
+    }
+    if (!program->channels.empty()) {
+      lowering_requirements.Set("spatial_channel_count",
+                                Integer(static_cast<int>(program->channels.size())));
+    }
+    Array<Any> phase_boundary_states;
+    std::unordered_set<std::string> seen_phase_boundary_states;
+    for (const ResourceIntent& intent : program->resource_intents) {
+      if (static_cast<std::string>(intent->kind) != "phase_boundary_materialization") {
+        continue;
+      }
+      const std::string target_name = intent->target_name;
+      if (target_name.empty() || !seen_phase_boundary_states.insert(target_name).second) {
+        continue;
+      }
+      phase_boundary_states.push_back(String(target_name));
+    }
+    if (!phase_boundary_states.empty()) {
+      lowering_requirements.Set("spatial_phase_boundary_states", phase_boundary_states);
+    }
+  }
+
   if (auto fragment_regions = func->GetAttr<Array<Any>>("blackhole.fragment_regions")) {
     Array<Any> fragment_ops;
     std::unordered_set<std::string> seen_ops;

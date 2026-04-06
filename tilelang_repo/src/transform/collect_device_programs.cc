@@ -34,10 +34,12 @@ namespace tvm {
 namespace tl {
 
 TLDeviceProgramInfo::TLDeviceProgramInfo(ffi::String root_symbol,
-                                         ffi::Array<ffi::String> member_funcs) {
+                                         ffi::Array<ffi::String> member_funcs,
+                                         ffi::Array<ProgramPhase> phases) {
   auto n = ffi::make_object<TLDeviceProgramInfoNode>();
   n->root_symbol = std::move(root_symbol);
   n->member_funcs = std::move(member_funcs);
+  n->phases = std::move(phases);
   data_ = std::move(n);
 }
 
@@ -118,7 +120,8 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("tl.TLDeviceProgramInfo", [](ffi::String root_symbol,
                                                      ffi::Array<ffi::String> member_funcs) {
-    return TLDeviceProgramInfo(std::move(root_symbol), std::move(member_funcs));
+    return TLDeviceProgramInfo(std::move(root_symbol), std::move(member_funcs),
+                               ffi::Array<ProgramPhase>{});
   });
 }
 

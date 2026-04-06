@@ -427,6 +427,43 @@ def test_flash_attention_forward_pipeline_lifts_semantic_roles_without_workload_
     assert "recurrence" in law_kinds
 
 
+def test_flash_attention_forward_pipeline_attaches_multi_phase_spatial_program():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                256,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    device_func = artifact.device_mod["main_kernel"]
+    program = device_func.attrs["tl.spatial_program"]
+    lowering_requirements = device_func.attrs["blackhole.lowering_requirements"]
+    assert len(program.phases) >= 2
+    assert len(program.channels) >= 1
+    assert "phase_boundary_materialization" in {str(intent.kind) for intent in program.resource_intents}
+    assert int(lowering_requirements["spatial_phase_count"]) >= 2
+    assert int(lowering_requirements["spatial_channel_count"]) >= 1
+    assert set(lowering_requirements["spatial_phase_boundary_states"]) >= {
+        "O_shared_local_cast",
+        "acc_o",
+        "scores_sum",
+    }
+
+
 def test_flash_attention_forward_lowers_gqa_pipeline_for_supported_stage_count():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:

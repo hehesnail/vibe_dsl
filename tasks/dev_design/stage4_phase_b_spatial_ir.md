@@ -3,7 +3,9 @@
 ## 基本信息
 
 - **文档角色**: `Phase B` 实施与设计边界文档
-- **当前状态**: 当前主实施阶段；前置 `Phase A` 与 `semantic manifest` `Phase 1-2` 已收口
+- **当前状态**: 当前主实施阶段；`2026-04-06` 已完成首轮落地：
+  `SpatialProgram / ProgramPhase`、copy/GEMM fast-path、`flash-attn` multi-phase gate、
+  以及 `LowerBlackholeOps` 对 spatial summary 的最小接线均已进入主链
 - **上游输入**: 冻结后的 `SemanticProgram`
 - **下游输出**: 冻结后的 `SpatialProgram`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -176,12 +178,16 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attent
 - Create: `tilelang_repo/src/transform/validate_spatial_program.cc`
 - Create: `tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
 - Modify: `tilelang_repo/src/transform/common/semantic_program.h`
-- Modify: `tilelang_repo/tilelang/engine/phase.py`
+- Modify: `tilelang_repo/src/transform/common/semantic_program.cc`
+- Modify: `tilelang_repo/src/transform/collect_device_programs.cc`
+- Modify: `tilelang_repo/src/transform/analyze_blackhole_fragment_regions.cc`
+- Modify: `tilelang_repo/tilelang/engine/lower.py`
+- Modify: `tilelang_repo/tilelang/transform/__init__.py`
 - Modify: `tilelang_repo/src/transform/lower_blackhole_ops.cc`
 - Modify: `tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py`
 - Modify: `tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
 
-- [ ] **Step 1: Introduce `SpatialProgram` and `ProgramPhase`**
+- [x] **Step 1: Introduce `SpatialProgram` and `ProgramPhase`**
 
 Required objects:
 
@@ -201,7 +207,7 @@ Rules:
 - member-local truth lives in `PrimFunc.attrs["tl.spatial_program"]`
 - simple workload gets canonical fast-path
 
-- [ ] **Step 2: Add simple-workload fast-path for copy / GEMM**
+- [x] **Step 2: Add simple-workload fast-path for copy / GEMM**
 
 Run:
 
@@ -215,7 +221,7 @@ Expected:
 - copy / GEMM 不需要进入重 candidate synthesis
 - trivial workload 仍能快速构造 canonical `SpatialProgram`
 
-- [ ] **Step 3: Add one non-trivial multi-phase spatial gate**
+- [x] **Step 3: Add one non-trivial multi-phase spatial gate**
 
 Recommended first gate: `flash-attn`
 
@@ -231,14 +237,44 @@ Expected:
 - 至少一个 case 证明下游不会退化回 `Task:TTKernel = 1:1`
 - `ProgramPhase` / `Channel` / phase-boundary materialization 在结构测试里可见
 
-- [ ] **Step 4: Re-run shared zero-regression baseline**
+- [x] **Step 4: Re-run shared zero-regression baseline**
 
 Run the shared zero-regression baseline above.
 
-- [ ] **Step 5: Stage 3 exit gate**
+- [x] **Step 5: Stage 3 exit gate**
 
 Only proceed when:
 
 - `SpatialProgram` 能消费冻结后的 semantic truth
 - simple-workload fast-path 稳定
 - 至少一个 non-trivial multi-phase spatial gate 通过
+
+### 6.1 2026-04-06 实施结果
+
+- `LowerToSpatialProgram -> ValidateSpatialProgram` 已接入 Blackhole 主线，位置在
+  `ValidateSemanticRefinement` 之后、`LowerBlackholeOps` 之前
+- `tl.device_programs` 现在会聚合 `ProgramPhase` truth；对 pre-`SplitHostDevice`
+  的单 `PrimFunc` 退化场景，registry/validator 已支持 root-symbol fallback
+- copy canonical fast-path：
+  单 `transfer` task + 单 phase + 单 channel
+- GEMM canonical fast-path：
+  `reader / compute / writer` 三 task + 三 channel
+- `flash-attn` 首个 non-trivial gate 已通过：
+  `phase0_compute(reduce_*) -> phase1_stateful(recur_*)`
+- 为保持 `Phase B` 只消费冻结后的 semantic truth，split device `main_kernel`
+  路径缺失的 `row_reduction.kind` 已回补到 Phase A evidence，而不是让 `Phase B`
+  直接回退消费 `fragment_regions`
+- `LowerBlackholeOps` 已开始显式读取 `tl.spatial_program`，并把
+  `spatial_phase_count / spatial_channel_count / spatial_phase_boundary_states`
+  写入 `blackhole.lowering_requirements`
+
+### 6.2 本轮验证
+
+```bash
+pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q
+pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q
+source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q
+pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q
+pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py -q
+pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q
+```

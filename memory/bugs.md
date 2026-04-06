@@ -78,6 +78,33 @@
 
 ## 已解决（仍有复用价值）
 
+### split device `main_kernel` 路径若漏掉 `row_reduction.kind`，`SemanticProgram` 会退化丢失 reduce update，进而把 `SpatialProgram` 压扁成单一 stateful phase
+
+- **时间**: 2026-04-06
+- **问题**: `flash-attn` 的 transform helper 能产出两阶段 `SpatialProgram`，但正式
+  `lower()` 链路里 `artifact.device_mod["main_kernel"]` 只有 recurrence updates，
+  `tl.spatial_program` 退化成单一 `phase1_stateful`
+- **根本原因**:
+  - `AnalyzeSemanticStructure` 只会为带 `kind` 的 `row_reductions` 发射 reduce witness/update
+  - split device `main_kernel` 路径上的 `blackhole.fragment_regions[*].row_reductions`
+    只有 `target + target_buffer`，没有 `kind`
+  - 结果 `LiftStatefulSemanticIR` 在正式 device 主链里拿不到 `reduce_scores_max /
+    reduce_scores_sum`，`Phase B` 只能看见 recurrence updates
+- **解决**:
+  - `AnalyzeBlackholeFragmentRegions` 对每个 row reduction 显式写出 `kind`
+    （当前按 IR 结构区分 `max / sum`）
+  - `LowerToSpatialProgram` / `ValidateSpatialProgram` 对 pre-`SplitHostDevice`
+    单 `PrimFunc` 退化场景补 `tl.device_programs.root_symbol` fallback，
+    保证 module-scope `ProgramPhase` truth 不会因预计划 member 名丢失
+  - `LowerBlackholeOps` 开始显式读取 `tl.spatial_program` summary，
+    把 `spatial_phase_count / spatial_channel_count / spatial_phase_boundary_states`
+    带入 lowering requirements
+- **教训**:
+  - 缺的是 semantic-owned truth，就回补 `Phase A` evidence；不要让 `Phase B`
+    临时绕回 `fragment_regions`
+  - companion IR 的 module-scope registry 在 unsplit 退化场景也必须有一致语义，
+    否则 validator 会在 member-local truth 已经正确时误报失败
+
 ### schema-only compile-time ABI 若 strip `accessors` 却不从 `compile_time_arg_specs` 补 `buffer_materializations`，direct runtime 会在 ABI 校验前先报缺失 buffer spec
 
 - **时间**: 2026-04-05

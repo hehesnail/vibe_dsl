@@ -186,6 +186,10 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       Map<String, Any> entry;
       entry.Set(schema_key::kTarget, String(BufferName(buffer)));
       entry.Set(schema_key::kTargetBuffer, buffer);
+      if (auto kind_it = row_reduction_kind_.find(target_key);
+          kind_it != row_reduction_kind_.end() && !kind_it->second.empty()) {
+        entry.Set(schema_key::kKind, String(kind_it->second));
+      }
       row_reductions.push_back(entry);
     }
     region.Set(manifest_key::kRowReductions, row_reductions);
@@ -661,7 +665,12 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     if (has_self_max_with_temp || temp_reduction_kind == "max" || saw_direct_fragment_max_reduction ||
         temp_reduction_kind == "sum" || saw_direct_fragment_sum_reduction) {
       AddOp("row_reduction");
-      AddRowReduction(target_key);
+      const std::string reduction_kind =
+          (has_self_max_with_temp || temp_reduction_kind == "max" ||
+           saw_direct_fragment_max_reduction)
+              ? "max"
+              : "sum";
+      AddRowReduction(target_key, reduction_kind);
     }
 
     if (!local_sources.empty() &&
@@ -691,9 +700,13 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     }
   }
 
-  void AddRowReduction(const tir::VarNode* target_key) {
+  void AddRowReduction(const tir::VarNode* target_key, const std::string& kind) {
     if (seen_row_reductions_.insert(target_key).second) {
       row_reduction_targets_.push_back(target_key);
+    }
+    if (auto it = row_reduction_kind_.find(target_key);
+        it == row_reduction_kind_.end() || it->second.empty()) {
+      row_reduction_kind_[target_key] = kind;
     }
   }
 
@@ -804,6 +817,7 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
 
   std::vector<const tir::VarNode*> row_reduction_targets_;
   std::unordered_set<const tir::VarNode*> seen_row_reductions_;
+  std::unordered_map<const tir::VarNode*, std::string> row_reduction_kind_;
   std::unordered_set<const tir::VarNode*> seen_row_broadcast_sources_;
   std::vector<const tir::VarNode*> row_broadcast_sources_;
   std::unordered_set<const tir::VarNode*> seen_selection_targets_;

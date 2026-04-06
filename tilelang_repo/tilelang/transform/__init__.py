@@ -734,6 +734,16 @@ def ValidateSemanticRefinement():
     return tvm.ffi.get_global_func("tl.transform.ValidateSemanticRefinement")()
 
 
+def LowerToSpatialProgram():
+    """Lower frozen SemanticProgram truth into a typed SpatialProgram."""
+    return tvm.ffi.get_global_func("tl.transform.LowerToSpatialProgram")()
+
+
+def ValidateSpatialProgram():
+    """Validate minimal Phase B SpatialProgram invariants."""
+    return tvm.ffi.get_global_func("tl.transform.ValidateSpatialProgram")()
+
+
 def LowerBlackholeOps():
     """Lower TileLang high-level operations to TT-Metal builtins for Blackhole backend.
 

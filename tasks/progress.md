@@ -38,7 +38,13 @@
   - `AnalyzeSemanticStructure` 已改成对 manifest structural evidence 的 manifest-first 消费，
     `fragment_regions` 退化为 compatibility fallback
 - **Phase B**: 当前主实施阶段
-  - 目标是把冻结后的 semantic truth 组织成 `SpatialProgram`
+  - `SpatialProgram / ProgramPhase / Task / Channel / Layout / WorkPartition /
+    Placement / SyncEdge / ResourceIntent` 已落地
+  - `LowerToSpatialProgram -> ValidateSpatialProgram` 已接入 Blackhole 主线
+  - copy / GEMM simple-workload fast-path 已稳定
+  - `flash-attn` multi-phase spatial gate 已打通
+  - `LowerBlackholeOps` 已开始显式消费 `tl.spatial_program`
+    的 phase/channel/phase-boundary summary
 - **Phase C**: 已定义，待 Phase B 后推进
 
 ## 当前主 blocker
@@ -52,13 +58,13 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 
 ## 下一步
 
-1. 执行 `tasks/dev_design/stage4_phase_b_spatial_ir.md`
-   - 引入 `SpatialProgram / ProgramPhase / Task / Channel / Layout / WorkPartition`
-   - 建立 `Phase A -> Phase B` 的稳定消费边界
-2. 执行 `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
+1. 执行 `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
    - 完成 TT target cutover
    - 删除 compatibility writer / reader / fallback
    - 承接 `flash-attn` correctness payoff 与更宽 family expansion
+2. 继续收紧 `Phase B -> LowerBlackholeOps` 边界
+   - 逐步迁走对 `blackhole.fragment_regions` 的 lowering-facing residual 依赖
+   - 让 task/channel/layout/sync truth 只保留在 companion IR
 
 ## 当前代码事实
 
@@ -76,6 +82,8 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
   -> `LiftStatefulSemanticIR`
   -> `ValidateStatefulSemanticIR`
   -> `ValidateSemanticRefinement`
+  -> `LowerToSpatialProgram`
+  -> `ValidateSpatialProgram`
   -> `LowerBlackholeOps`
   -> `PlanBlackholeCB`
   -> `AssignBlackholeCores`
@@ -103,8 +111,14 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
   - `row_reductions` 的 semantic `reduce_kind` truth source 当前已固定到 manifest explicit-op payload：
     - `tl.semantic_manifest.structural_regions[*].row_reductions[*].kind` 由 explicit `reduce`
       payload 的 `reduce_kind` 生成
-    - `blackhole.fragment_regions[*].row_reductions` 只保留 lowering-facing
-      `target + target_buffer` summary，不再从 `AllReduce<...>` callee 字符串回推 kind
+    - split device / `main_kernel` 路径的 `blackhole.fragment_regions[*].row_reductions[*].kind`
+      也已补齐为 IR-structural truth，避免 `Phase B` 因 kind 缺失退化成单一 stateful phase
+  - `Phase B` 当前已具备：
+    - typed `SpatialProgram` / `ProgramPhase` object set
+    - module-scope `ProgramPhase` aggregation 写回 `tl.device_programs`
+    - unsplit single-`PrimFunc` 退化场景对 `tl.device_programs.root_symbol` 的 registry fallback
+    - `LowerBlackholeOps` lowering requirements 中的
+      `spatial_phase_count / spatial_channel_count / spatial_phase_boundary_states`
   - `blackhole.fragment_regions` 不再是 semantic truth 输入；
     semantic 侧所有 evidence 已切换为 manifest-first 消费；
     `fragment_regions` 当前唯一剩余消费者是 `LowerBlackholeOps`（lowering-facing）
@@ -124,16 +138,18 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
   - `39 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py -q`
   - `7 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q`
+  - `4 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
-  - `40 passed, 10 skipped, 1 xfailed`
-- `source scripts/setup_tt_sim.sh && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
+  - `41 passed, 10 skipped, 1 xfailed`
+- `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
   - `12 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q`
-  - `24 passed, 11 skipped`
+  - `26 passed, 11 skipped`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py -q`
   - `1 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
-  - `26 passed`
+  - `27 passed`
 
 说明：
 

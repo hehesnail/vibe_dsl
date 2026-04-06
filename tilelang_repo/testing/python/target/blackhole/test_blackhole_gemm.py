@@ -262,6 +262,22 @@ def test_blackhole_split_kernel_prefers_copy_buffer_handles_over_annotation_name
     assert [str(arg["buffer"]) for arg in writer_args if "buffer" in arg] == ["C"]
 
 
+def test_blackhole_gemm_pipeline_attaches_spatial_program():
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_func = artifact.device_mod["main_kernel"]
+    program = device_func.attrs["tl.spatial_program"]
+    lowering_requirements = device_func.attrs["blackhole.lowering_requirements"]
+    assert [str(task.name) for task in program.tasks] == ["reader", "compute", "writer"]
+    assert [str(task.kind) for task in program.tasks] == ["transfer", "compute", "transfer"]
+    assert int(lowering_requirements["spatial_phase_count"]) == 1
+    assert int(lowering_requirements["spatial_channel_count"]) == 3
+
+
 def test_blackhole_gemm_arg_identity_drives_cross_segment_dedupe():
     kernel = gemm_kernel()
     target = Target("blackhole")
@@ -364,8 +380,8 @@ def test_blackhole_gemm_cb_ids_are_rewritten_by_planner():
         stmt_functor.post_order_visit(stmt, visit)
         return cb_ids
 
-    assert collect_cb_ids(lower_func.body) == {0, 1, 2}
-    assert collect_cb_ids(func.body) == {0, 1, 16}
+    assert collect_cb_ids(lower_func.body) == {0, 1, 2, 3}
+    assert collect_cb_ids(func.body) == {0, 1, 16, 17}
     func_text = func.body.script()
     assert func_text.count("tl.blackhole.pack_tile") == 1
     assert func_text.count("tl.blackhole.write_tile_from_cb") == 1

@@ -227,6 +227,8 @@ def blackhole_codegen(
     device_mod = tilelang.transform.LiftStatefulSemanticIR()(device_mod)
     device_mod = tilelang.transform.ValidateStatefulSemanticIR()(device_mod)
     device_mod = tilelang.transform.ValidateSemanticRefinement()(device_mod)
+    device_mod = tilelang.transform.LowerToSpatialProgram()(device_mod)
+    device_mod = tilelang.transform.ValidateSpatialProgram()(device_mod)
     device_mod = tilelang.transform.LowerBlackholeOps()(device_mod)
     device_mod = tilelang.transform.PlanBlackholeCB()(device_mod)
     device_mod = tilelang.transform.AssignBlackholeCores()(device_mod)
