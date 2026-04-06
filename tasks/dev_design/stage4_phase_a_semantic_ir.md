@@ -134,6 +134,19 @@
 - `AnalyzeBlackholeFragmentRegions` 当前退化为 compatibility fallback / residual reduction evidence
 - `AnalyzeBlackholePipelineStages` 决定 pipeline trait
 
+这里要特别区分两件事：
+
+- `FragmentRegionAnalyzer` 这套**分析逻辑**本身仍然有用
+- `blackhole.fragment_regions` 这个 **attr 形态** 已不再应该承担 semantic truth ownership
+
+当前之所以还保留 `blackhole.fragment_regions`，是因为 `row_reductions` 仍是 mixed ownership：
+
+- semantic 侧还会用它恢复 `reduce_*` update
+- lowering 侧的 `LowerBlackholeOps` 也还会直接消费它做 lowering-facing summary
+
+因此，当前不能把 `row_reductions` 简单理解成“还没迁完的 semantic truth”，它同时也是
+未拆分完成的 lowering compatibility contract。
+
 `Phase A` 内部的 `AnalyzeSemanticStructure -> LiftStatefulSemanticIR -> ValidateSemanticRefinement` 只能保证：
 给定上游 evidence，lift 和 validation 是正确的。但如果上游 evidence 本身遗漏或错误，`Phase A` 不会发明出正确语义。
 

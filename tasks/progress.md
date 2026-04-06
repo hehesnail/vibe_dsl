@@ -90,6 +90,8 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
   - manifest-backed structural evidence：
     `fragment_buffers / selection_targets / selection_pairs / arg_reduce_targets /
     update_sources / loop_carried_state / recurrence_edges`
+  - `blackhole.fragment_regions` 已不再是 semantic truth 主输入；
+    当前保留原因是 `row_reductions` 仍同时服务 semantic recovery 与 `LowerBlackholeOps`
 - `Phase A` 当前工程状态已经收口：
   - 不再依赖名字匹配恢复语义
   - 不再把 formal proof 草稿混在实现文档里
@@ -144,6 +146,12 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
   - 当前 `Phase 1-2` 已实施；`selection / arg-reduce / recurrence` structural evidence
     已前移到 manifest 并改成 manifest-first 消费
   - `fragment_regions` 当前仍保留 `row_reductions` 与 residual compatibility 职责
+  - `fragment_regions` 的剩余存在理由已经收敛：
+    - semantic 侧：`reduce_*` update 的 residual evidence
+    - lowering 侧：`LowerBlackholeOps` 当前的 fragment subset / legality summary
+  - 后续删除顺序应是：
+    先迁走 `row_reductions` 的 semantic-owned 部分，再给 lowering 建独立 summary，
+    最后删除 `fragment_regions`
   - 它不是新的跨层真源，也不改变 `Phase B / C` 只消费冻结后 companion IR 的边界
 - `final_blackhole_backend_redesign.md` 已在 `2026-04-06` 按当前执行状态刷新：
   - 已收成轻量总体设计文档

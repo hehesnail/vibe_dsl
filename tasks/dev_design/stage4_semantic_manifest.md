@@ -66,7 +66,7 @@
 | `tl.semantic_seeds` | device program / pipeline skeleton | explicit-op payload | `AnalyzeSemanticStructure` |
 | `tl.semantic_manifest_seeds` | early lowering 会销毁的 explicit-op evidence | semantic core | `ProjectSemanticManifest` |
 | `tl.semantic_manifest` | 投影并补全后的 explicit-op evidence | witness / `SemanticProgram` | `AnalyzeSemanticStructure` |
-| `blackhole.fragment_regions` | residual structural evidence + 当前兼容职责 | 长期 semantic truth owner | `AnalyzeSemanticStructure`, `LowerBlackholeOps` |
+| `blackhole.fragment_regions` | residual reduction evidence + lowering compatibility summary | semantic truth owner | `AnalyzeSemanticStructure` fallback, `LowerBlackholeOps` |
 | `tl.semantic_witnesses` | 统一 witness axis | raw lowering payload | lift / validator |
 | `tl.semantic_program` | 冻结后的算法语义 | raw analysis attr | `Phase B` |
 
@@ -74,6 +74,28 @@
 
 1. manifest 只是一层 evidence carrier。
 2. semantic truth 仍然只在 `AnalyzeSemanticStructure -> LiftStatefulSemanticIR -> Validate*` 里冻结。
+
+### 3.4 `fragment_regions` 当前真实角色
+
+在 `Phase 2` 之后，`blackhole.fragment_regions` 的角色已经收缩成两部分：
+
+- `AnalyzeSemanticStructure` 的 compatibility fallback
+- `LowerBlackholeOps` 当前仍在消费的 fragment/lowering summary
+
+它已经**不是** semantic truth owner，也不该继续被当成 `Phase A` 的主 evidence source。
+
+当前仍保留它，不是因为 semantic manifest 不够，而是因为 `row_reductions` 这类事实现在仍是
+**mixed ownership**：
+
+- semantic 侧需要它来恢复 `reduce_*` update
+- lowering 侧也需要它来做 fragment subset summary / legality / fail-fast
+
+因此当前不能把整块 `row_reductions` 粗暴平移到 manifest。那会重新制造两份混合真源：
+
+- semantic 侧一份
+- lowering 侧一份
+
+这正是本文要避免的。
 
 ## 4. 方案
 
@@ -258,7 +280,24 @@ blackhole_codegen(device_mod)
 - 1-4 已完成
 - `row_reductions` 仍保留在 `fragment_regions`：
   - 这是有意保留的 residual compatibility / reduction evidence
+  - 原因不是遗漏，而是它当前仍同时服务：
+    - `AnalyzeSemanticStructure` 的 `reduce_*` update 恢复
+    - `LowerBlackholeOps` 的 lowering-facing summary
   - 不改变当前 `LowerBlackholeOps` 与 compile-path 行为
+
+### 7.3 `fragment_regions` 的退出条件
+
+`blackhole.fragment_regions` 的最终命运仍然是退场，但顺序必须明确：
+
+1. 先把 semantic 侧剩余需要的 `row_reductions` 相关 evidence 拆成 manifest-first / semantic-owned 输入
+2. 再把 lowering 侧需要的 reduction / fragment subset summary 迁到独立 lowering-facing summary
+3. 等 `LowerBlackholeOps` 不再直接读 `fragment_regions`
+4. 最后让 `AnalyzeBlackholeFragmentRegions` 降成内部 helper 或调试路径，删除该 companion attr
+
+也就是说：
+
+- 现在不删，是因为还有 lowering consumer
+- 后面要删，但要先踢掉 consumer，再踢掉 attr 本身
 
 ## 8. 不做的事
 

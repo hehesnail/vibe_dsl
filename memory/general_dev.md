@@ -98,6 +98,10 @@
   还必须把这些关系引用到的 `fragment_buffers / update_sources / loop_carried_state`
   一起带上；否则 witness/lift 仍会因为缺失局部 state descriptor 或 source-set 而退回
   `fragment_regions`
+- 对 `blackhole.fragment_regions` 的后续收尾，也不要把“删 attr”当成第一步。更稳的顺序是：
+  先踢掉 semantic consumer，再踢掉 lowering consumer，最后再删 attr 本身。当前
+  `row_reductions` 之所以还留在 `fragment_regions`，不是因为 semantic manifest 不够，而是因为
+  这块事实仍然 mixed ownership：semantic recovery 和 `LowerBlackholeOps` 都在消费
 - 对 Blackhole `lower()` 主链，不能在 `SplitBlackholeKernel` / `Analyze*` / `LowerBlackholeOps` 之前就用旧的 device attrs 过滤掉入口 `PrimFunc`。Blackhole entry kernel 在这条链之前通常还没有 `blackhole.*` attrs，因此 `is_device_call()` 必须把 entry `PrimFunc` 视为 device 输入，否则专属 pass 实际上跑在空 `device_mod` 上
 - fragment region analysis 里的 `pointwise_chain` 不能通过全局扫描所有 `tir.add/mul/div/max/...` 来判定；那样会把普通索引算术也误记成 fragment compute。更稳的做法是只在 fragment/local region 自身的 store / dataflow 关系里识别 pointwise
 - 对 split-after TIR 的 fragment analysis，不要只盯 `CallNode`。像 `scores_sum[0] + acc_s[rv]`、`T.max(scores_max[0], tmp[0])` 这类模式在 TVM IR 里常常是 `AddNode` / `MaxNode` / `MulNode` / `DivNode` 等原生表达式节点；如果只扫 `CallNode`，row reduction 和 scalar-to-vector broadcast 会在真实 MHA/GQA IR 上整片漏掉
