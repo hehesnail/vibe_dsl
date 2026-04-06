@@ -168,6 +168,12 @@
     - pipeline stage truth 已开始迁离 legacy attr：
       `AnalyzeSemanticStructure` 会把 `blackhole.pipeline_stages` 收成
       `pipeline_structure` semantic supplement，
+    - `Phase B` 当前的主要剩余问题已经从“compile-path 有没有接上”
+      变成“`SpatialProgram` 是否真的承载 execution-bearing contract”：
+      目前 `Layout / WorkPartition / Task / ProgramPhase` 仍有明显 structural scaffold
+      倾向，后续推进重点是把 task formation、flow semantics、domain realization、
+      phase partial order 这些 non-TT-specific truth 收紧进 `SpatialProgram`
+      本体，而不是让 `Phase C` translator 再次恢复
       `LowerToSpatialProgram` 再把它投影成
       `ResourceIntent(kind=synchronization_support, traits+=pipeline_contract)`
     - `LowerBlackholeOps` 的 pipeline legality input

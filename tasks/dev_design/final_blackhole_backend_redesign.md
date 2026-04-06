@@ -198,6 +198,12 @@ TileLang DSL / Python
 3. analysis 决定 legality，policy 只在合法空间内选择
 4. 不允许回头发明 semantic truth
 5. 不允许让 `Task:TTKernel = 1:1` 退化成隐式默认
+6. 这层必须是 execution-bearing contract，不允许退化成结构化 summary
+7. `Task / Channel / Layout / WorkPartition / ProgramPhase / SyncEdge` 必须冻结
+   task formation、state/data flow、domain remap/partition、phase boundary 与 ordering
+   这些执行相关但非 TT-specific 的 truth
+8. 如果 `Phase C` 需要某个 non-TT-specific truth 才能合法 mapping，
+   那个 truth 必须先进入 `Spatial Program IR`，不能在 target translator 里临时恢复
 
 `Phase B` 的详细对象边界和实施计划见：
 

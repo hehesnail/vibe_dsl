@@ -303,6 +303,11 @@
   先变成 mandatory contract，
   然后 `ValidateSpatialProgram` 再改成 contract-first 校验；
   display-name 字段只保留 identity / debug 角色
+- `Phase B` 的 schema strengthening 不只是把字符串 linkage 换成 index linkage。
+  真正的目标是让 `SpatialProgram` 变成 execution-bearing contract：
+  如果 `Phase C` 做合法 TT mapping 还需要某个 non-TT-specific truth，
+  那个 truth 就必须先进入 `SpatialProgram` schema / validator，
+  不能让 target translator 自己恢复一层 spatial structure
 - 对 Blackhole 的 device resource canonicalization，不要把
   `blackhole.resource_plan` 当唯一真源。`grouped / routed / paged` 这类 family 的
   block-local shared alloc_buffer 很可能还没先出现在 plan 里，但 IR storage scope

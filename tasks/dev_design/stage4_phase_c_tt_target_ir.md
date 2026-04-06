@@ -37,6 +37,16 @@
 `phase_name / task_name / source_task / target_task / channel_names`
 当 primary linkage source；这些字段现在只保留 display/identity 职责。
 
+如果 `Phase C` 发现仅靠当前 `SpatialProgram` 还无法合法确定：
+
+- task formation
+- state/data flow semantics
+- domain remap / partition semantics
+- phase boundary / ordering semantics
+
+那结论只能是 `Phase B` contract 还不够，必须回去扩 `SpatialProgram` schema / validator；
+`Phase C` 不允许自己补一层恢复逻辑。
+
 ## 2. Core Design Boundary
 
 ### 2.1 核心对象

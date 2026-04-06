@@ -7,9 +7,8 @@
   `SpatialProgram / ProgramPhase`、copy/GEMM fast-path、`flash-attn` multi-phase gate、
   representative family gate、`LowerToSpatialProgram -> ValidateSpatialProgram`、
   以及 `LowerBlackholeOps` 的 spatial-only consumer cutover 均已进入主链。
-  `Phase B` 作为 `SemanticProgram -> SpatialProgram` 的 compile-path 边界已经收口；
-  后续 schema / validator 的继续加固不再单独阻塞阶段切换，而由 `Phase C`
-  translator 的真实 contract 需求继续驱动。
+  但当前实现仍偏向 structural scaffold；`Phase B` 的下一阶段重点不是再补对象数量，
+  而是把 `SpatialProgram` 从“结构投影 IR”继续收紧成 execution-bearing spatial contract。
 - **上游输入**: 冻结后的 `SemanticProgram`
 - **下游输出**: 冻结后的 `SpatialProgram`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -156,14 +155,45 @@
 2. 若该 truth 本质上属于 spatial organization，本层补 object / legality / policy
 3. 不允许直接加 matcher 绕过分层
 
+### 3.1 Spatial IR 必须承载的执行语义
+
+`Phase B` 的目标不是把 semantic truth 换一套对象名存一遍，而是冻结
+“如何执行成 spatial/dataflow program” 这件事本身。
+
+这意味着：
+
+- `Task` 必须承载稳定的 execution-unit formation truth：
+  哪些 update/state interaction 共同组成一个可执行单元，为什么需要 split/fuse，
+  它属于哪个 phase，以及它对下游是 `transfer / compute / collective / control`
+  中的哪一类执行角色
+- `Channel` 必须承载稳定的 flow truth：
+  source/target task、相关 state、是否跨 phase、是否要求 ordered delivery /
+  completion / versioned state flow；不能只剩“有一条边”
+- `Layout` / `WorkPartition` 必须承载稳定的 domain-realization truth：
+  它来源于哪个 semantic domain，是否是 indexed / filtered / grouped / paged /
+  blocked 之类的空间展开，是否存在 work-dependent bounds，不能只剩 axes 列表
+- `ProgramPhase` / `SyncEdge` 必须承载稳定的 partial-order truth：
+  哪些 task/channel 共同构成一个 phase，phase 间为什么需要 barrier / completion /
+  carry boundary，不能只剩 phase 名字和显示顺序
+- `Placement` / `ResourceIntent` 必须承载 stable spatial obligations：
+  execution / communication / phase-boundary 的 placement intent，
+  以及 state residency / boundary materialization / pipeline / fragment 这些
+  已经不是 semantic、但还没进入 TT resource 的 contract
+
+判断标准只有一个：
+
+- 如果某个 non-TT-specific truth 是 `Phase C` 做合法 mapping 必须知道的，
+  那它就必须在 `SpatialProgram` 里显式存在；`Phase C` 不允许自行恢复
+
 ## 4. 当前实施重点
 
 当前 `Phase B` 的实施重点是：
 
-1. 引入 `SpatialProgram` 与 `ProgramPhase`
-2. 建立 simple-workload canonical fast-path
-3. 跑通至少一个 non-trivial multi-phase spatial gate
-4. 让 `LowerBlackholeOps` 不再继续承担 task/channel/layout/sync 的 monolithic 黑洞职责
+1. 保住已经完成的 compile-path hardening，不回退到 legacy attr 主链
+2. 把 `SpatialProgram` 从 structural scaffold 收紧成 execution-bearing contract
+3. 让 `Layout / WorkPartition / Channel / SyncEdge / ProgramPhase`
+   不只是结构 summary，而是稳定的执行语义载体
+4. 保证 `Phase C` 只能做 TT mapping/materialization，不能再发明 spatial structure
 
 ## 5. Shared Zero-Regression Baseline
 
@@ -662,6 +692,17 @@ spatial legality validator 再推进一格：
 
 - 不能让 `Phase C` 再回头猜 task graph / state flow / phase boundary
 - 不能把这些 truth 继续散落在 legacy `blackhole.*` attr 里
+- 不能把 `SpatialProgram` 只做成结构化 display object；schema 必须足够强，
+  让 `Phase C` 只能消费它、不能重新合成它
+
+当前 schema strengthening 的真正方向不是“继续补更多字段”，而是把下列 execution-bearing
+truth 变成稳定 contract：
+
+- task formation basis
+- flow / delivery / state-version semantics
+- domain remap / filter / index / shard semantics
+- phase-local 与 cross-phase partial order
+- spatial-owned but non-TT-specific resource obligations
 
 本轮优先补强的 schema 子项是：
 
