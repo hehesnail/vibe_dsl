@@ -736,32 +736,17 @@ state_joins += [
 也就是说，这里在文档里展示具体名字，只是为了让 pass-by-pass walkthrough 可读；真实协议仍然是基于
 IR 结构、类型、def-use 和 canonical evidence，而不是变量命名。
 
-## 5. 当前验证摘要
+## 5. 验证归属
 
-截至 `2026-04-06`，当前稳定验证快照是：
+这份文档不再保存逐次验证结果或具体通过数字。
+最新验证快照统一以 [progress.md](/root/dev/vibe_dsl/tasks/progress.md) 为准。
 
-- `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
-  - `38 passed`
-- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
-  - `40 passed, 10 skipped, 1 xfailed`
-- `source scripts/setup_tt_sim.sh && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
-  - `12 passed`
-- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q`
-  - `24 passed, 11 skipped`
-- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py -q`
-  - `1 passed`
-- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
-  - `26 passed`
+这里长期只保留两条稳定结论：
 
-这些验证说明：
-
-- `Phase A` 当前 compile-path 与 semantic gate 是稳定的
-- `copy / GEMM / current flash-attn compile-path` 没有因 semantic layer 回退
-
-但这不等价于 `flash-attn` correctness 已完整闭环并进入稳定基线。
-
-`blackhole.acc` 的最终 correctness payoff 已经是 `Phase B / C` 单一真源切换问题，不再是
-`Phase A` 语义恢复本身的 blocker。
+- `Phase A` 当前 compile-path 与 semantic gate 已经稳定，`SemanticProgram`
+  可以作为 `Phase B` 的正式输入边界
+- `flash-attn` 的最终 correctness payoff 不属于 `Phase A`；
+  它已经转成 `Phase B / C` 的单一真源切换与 target materialization 问题
 
 ## 6. 现在如何使用这份文档
 
@@ -774,7 +759,7 @@ IR 结构、类型、def-use 和 canonical evidence，而不是变量命名。
 它不再承担：
 
 - 逐步实施 checklist
-- 逐次测试流水账
+- 测试明细与单次验证数字
 - formal proof 草稿
 
 这些内容已经分别分流到：

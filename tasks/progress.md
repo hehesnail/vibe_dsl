@@ -172,6 +172,8 @@
   `Phase A` 完成、`Phase B` compile-path cutover 收口但整体未结束、
   当前主实施重点仍在 `Phase B` contract hardening、以及 manifest-first、
   正式 pass 链与 `fragment_regions` 残余职责的当前口径。
+  同一轮也已把 `Stage 0 / Phase A / Phase C` 文档里的旧 checklist、
+  一次性验证数字和 task/step 计划体压回长期有效的边界描述。
 - `stage4_semantic_manifest.md` 当前作为 `Phase A` 信息源重构文档保留：
   - 它的定位是把 `Phase A` 需要的 explicit-op evidence 从 late matcher 前移到真实销毁边界：
     - `LowerTileOp` 边界的 early capture

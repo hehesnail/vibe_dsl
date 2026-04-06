@@ -1,114 +1,58 @@
 # Stage 4 Stage 0: P0 Guardrails And Cutover Gates
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+## 基本信息
 
-**Goal:** 在 layered IR 正式落地前，先把单一真源 cutover、semantic lift 边界、device-program registry、early semantic capture 和 deletion gates 固定下来。
+- **文档角色**: `Stage 0` 已落地边界文档
+- **当前状态**: 已完成；作为后续 `Phase A / B / C` 的前置假设保留
+- **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
 
-**Architecture:** `Stage 0` 不直接解决 `flash-attn` correctness，本阶段只负责建立迁移护栏，避免后续 Phase A/B/C 一边新增 companion IR 一边继续让 legacy attrs 长成第二真源。
+## 1. 目标
 
-**Tech Stack:** TileLang transform passes, TVM PrimFunc / IRModule attrs/global_infos, pytest
+`Stage 0` 不直接解决任何特定 workload 的 correctness。
+它只负责建立 layered IR 迁移护栏，防止后续阶段在新增 companion IR 的同时，
+继续让 legacy attrs 长成第二真源。
 
----
+## 2. 已落地的稳定边界
 
-## Shared Zero-Regression Baseline
+`Stage 0` 已经固定了下面这些长期约束：
 
-```bash
-pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q
-pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q
-pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q
-pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py -q
-pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q
-```
+- `IRModule.global_infos["tl.device_programs"]` 是唯一 module-scope device-program registry
+- `PrimFunc.attrs["tl.semantic_seeds"]` 是 pre-lift typed input 通道
+- post-lift hard-freeze 与 unsafe mutation 失效规则已经建立
+- `tl.semantic_program / tl.spatial_program / tl.tt_program` 的 invalidation
+  contract 已定义
+- compatibility deletion gates 已成为正式迁移纪律，而不是临时口头约定
 
-## Task 0: Stage 0 - P0 Guardrails And Cutover Gates
+## 3. 代码落点
 
-**Files:**
-- Create: `tilelang_repo/src/transform/collect_device_programs.cc`
-- Create: `tilelang_repo/src/transform/project_semantic_seeds.cc`
-- Create: `tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py`
-- Modify: `tilelang_repo/src/transform/common/semantic_program.h`
-- Modify: `tilelang_repo/tilelang/engine/phase.py`
-- Modify: `tilelang_repo/tilelang/transform/__init__.py`
-- Modify: `tasks/progress.md`
+`Stage 0` 当前对应的稳定实现包括：
 
-- [x] **Step 1: Establish the migration guardrails**
+- [collect_device_programs.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/collect_device_programs.cc)
+- [project_semantic_seeds.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/project_semantic_seeds.cc)
+- [semantic_program.h](/root/dev/vibe_dsl/tilelang_repo/src/transform/common/semantic_program.h)
+- [phase.py](/root/dev/vibe_dsl/tilelang_repo/tilelang/engine/phase.py)
+- [__init__.py](/root/dev/vibe_dsl/tilelang_repo/tilelang/transform/__init__.py)
+- [test_blackhole_semantic_ir.py](/root/dev/vibe_dsl/tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py)
 
-Deliver:
+## 4. 后续阶段可以直接假定的事实
 
-- `IRModule.global_infos["tl.device_programs"]` 作为唯一 module-scope device-program registry
-- `PrimFunc.attrs["tl.semantic_seeds"]` 作为 pre-lift typed input 通道
-- A1 `post-lift hard freeze` 规则
-- unsafe TIR mutation 导致 `tl.semantic_program / tl.spatial_program / tl.tt_program` 整体失效的 contract
-- compatibility deletion gates checklist
+`Phase A / B / C` 现在可以直接依赖：
 
-Implemented:
+- `SplitHostDevice` 之前已经存在稳定的 device-program registry
+- semantic lift 之前已经存在 typed seed 通道
+- unsafe TIR mutation 不会让 companion IR 进入 silent stale 状态
+- deletion gates 已经要求新主链稳定后再删除 compatibility path
 
-- `tilelang_repo/src/transform/common/semantic_program.h`
-  - 定义 `tl.device_programs`、`tl.semantic_seeds`、`tl.semantic_hard_freeze`
-  - 定义 `tl.semantic_program` / `tl.spatial_program` / `tl.tt_program`
-  - 定义 `tl.companion_invalidation_reason`
-- `tilelang_repo/src/transform/collect_device_programs.cc`
-  - 在 `SplitHostDevice` 前为 Blackhole `PrimFunc` 建立 module-scope device-program registry
-- `tilelang_repo/src/transform/project_semantic_seeds.cc`
-  - 投影最小 pre-lift semantic seeds
-  - 定义 hard-freeze state=`pre_lift_seeded`
-  - 定义 unsafe mutation 触发 companion IR 整体失效的 contract
-- `tilelang_repo/tilelang/engine/phase.py`
-  - 在 Blackhole 主链 `SplitHostDevice` 前接入
-    `AnnotateDeviceRegions -> ProjectSemanticSeeds -> CollectDevicePrograms`
-- `tilelang_repo/tilelang/transform/__init__.py`
-  - 暴露 `CollectDevicePrograms` / `ProjectSemanticSeeds` / `InvalidateBlackholeCompanionPrograms`
+## 5. 不属于 Stage 0 的事情
 
-- [x] **Step 2: Add Stage 0 structure tests**
+这份文档不再承担：
 
-Run:
+- 逐步实施 checklist
+- 一次性验证数字
+- workload-specific semantic recovery 说明
 
-```bash
-pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -k 'device_program_registry or semantic_seeds or hard_freeze' -q
-```
+这些内容现在分别归属：
 
-Expected:
-
-- `tl.device_programs` 能被查询
-- `tl.semantic_seeds` 在 semantic lift 前可见
-- lift 之后 unsafe mutator 会显式拒绝或触发整体失效
-
-Status:
-
-- `tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py`
-  - `test_device_program_registry_is_collected_before_split_host_device`
-  - `test_semantic_seeds_are_projected_before_semantic_lift`
-  - `test_hard_freeze_invalidates_companion_programs_after_unsafe_mutation`
-- 验证结果：`3 passed`
-
-- [x] **Step 3: Re-run shared zero-regression baseline**
-
-Run the shared zero-regression baseline above.
-
-Status:
-
-- `test_blackhole_copy_pipeline.py -q`
-  - `40 passed, 10 skipped, 1 xfailed`
-- `test_blackhole_copy_runtime.py -q`
-  - `12 passed`
-- `test_blackhole_gemm.py -q`
-  - `24 passed, 11 skipped`
-- `test_blackhole_tvm_ffi_export.py -q`
-  - `1 passed`
-- `test_blackhole_flash_attention_pipeline.py -q`
-  - `26 passed`
-
-- [x] **Step 4: Stage 0 exit gate**
-
-Only proceed when:
-
-- `CollectDevicePrograms` 已在 `SplitHostDevice` 前建立 registry
-- `ProgramPhase` 的稳定宿主不再依赖单 `PrimFunc.attrs`
-- `SemanticSeed` 输入通道和 deletion gates 已有结构测试
-- shared zero-regression baseline 全绿
-
-Exit status:
-
-- 本阶段的 migration guardrails 已在当前 Blackhole 主链落地
-- 本阶段不负责 semantic role recovery 精度；后续如果 Phase A 语义分类需要更多结构信号，应扩 attrs/schema，不在 Stage 0 回退到名字匹配
-- Phase A 可以开始承接 `SemanticProgram` typed companion IR 本体
+- 当前验证快照: [progress.md](/root/dev/vibe_dsl/tasks/progress.md)
+- semantic recovery 边界: [stage4_phase_a_semantic_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_a_semantic_ir.md)
+- spatial / target cutover: [stage4_phase_b_spatial_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_b_spatial_ir.md) 和 [stage4_phase_c_tt_target_ir.md](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_c_tt_target_ir.md)
