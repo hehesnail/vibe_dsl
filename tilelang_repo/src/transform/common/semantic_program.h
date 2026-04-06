@@ -67,6 +67,7 @@ constexpr const char* kOperations = "operations";
 constexpr const char* kOrderedRegion = "ordered_region";
 constexpr const char* kPayload = "payload";
 constexpr const char* kPipelineStages = "pipeline_stages";
+constexpr const char* kWorkDependentLoopBounds = "work_dependent_loop_bounds";
 constexpr const char* kScope = "scope";
 constexpr const char* kShape = "shape";
 constexpr const char* kSource = "source";
@@ -589,6 +590,7 @@ class WorkPartitionNode : public Object {
   ffi::String target_name;
   ffi::Array<ffi::String> axes;
   ffi::Array<ffi::String> traits;
+  ffi::Map<ffi::String, ffi::Any> payload;
   ffi::Array<TIRAnchor> anchors;
 
   static void RegisterReflection() {
@@ -599,6 +601,7 @@ class WorkPartitionNode : public Object {
         .def_ro("target_name", &WorkPartitionNode::target_name)
         .def_ro("axes", &WorkPartitionNode::axes)
         .def_ro("traits", &WorkPartitionNode::traits)
+        .def_ro("payload", &WorkPartitionNode::payload)
         .def_ro("anchors", &WorkPartitionNode::anchors);
   }
 
@@ -609,6 +612,7 @@ class WorkPartition : public ObjectRef {
  public:
   TVM_DLL WorkPartition(ffi::String name, ffi::String kind, ffi::String target_name,
                         ffi::Array<ffi::String> axes, ffi::Array<ffi::String> traits,
+                        ffi::Map<ffi::String, ffi::Any> payload,
                         ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(WorkPartition, ObjectRef,
                                              WorkPartitionNode);

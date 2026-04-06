@@ -127,7 +127,20 @@ tir::transform::Pass ValidateStatefulSemanticIR() {
           ICHECK(stage.count(String(schema_key::kLoopVar)))
               << "pipeline_structure stage must carry loop_var";
           ICHECK(stage.count(String(schema_key::kNumStages)))
-              << "pipeline_structure stage must carry num_stages";
+            << "pipeline_structure stage must carry num_stages";
+        }
+      } else if (*kind == SupplementKind::kWorkDecompositionStructure) {
+        auto maybe_loop_bounds =
+            supplement->payload.Get(String(schema_key::kWorkDependentLoopBounds));
+        ICHECK(maybe_loop_bounds)
+            << "work_decomposition_structure supplement must carry work_dependent_loop_bounds";
+        Array<Any> loop_bounds = tvm::Downcast<Array<Any>>(maybe_loop_bounds.value());
+        ICHECK(!loop_bounds.empty())
+            << "work_decomposition_structure supplement must carry at least one loop bound";
+        for (const Any& bound_any : loop_bounds) {
+          auto bound = tvm::Downcast<Map<String, Any>>(bound_any);
+          ICHECK(bound.count(String(schema_key::kLoopVar)))
+              << "work_decomposition_structure bound must carry loop_var";
         }
       }
     }

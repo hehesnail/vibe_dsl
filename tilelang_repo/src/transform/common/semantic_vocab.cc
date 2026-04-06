@@ -78,6 +78,7 @@ std::optional<SupplementKind> ParseSupplementKind(const std::string& value) {
   if (value == "update_law_trait") return SupplementKind::kUpdateLawTrait;
   if (value == "semantic_boundary") return SupplementKind::kSemanticBoundary;
   if (value == "pipeline_structure") return SupplementKind::kPipelineStructure;
+  if (value == "work_decomposition_structure") return SupplementKind::kWorkDecompositionStructure;
   return std::nullopt;
 }
 
@@ -228,6 +229,8 @@ const char* ToString(SupplementKind kind) {
       return "semantic_boundary";
     case SupplementKind::kPipelineStructure:
       return "pipeline_structure";
+    case SupplementKind::kWorkDecompositionStructure:
+      return "work_decomposition_structure";
   }
   LOG(FATAL) << "Unknown SupplementKind";
   return "unknown";

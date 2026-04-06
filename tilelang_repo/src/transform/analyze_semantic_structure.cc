@@ -766,6 +766,21 @@ void CollectSeedsAndSupplements(const tir::PrimFunc& func,
     supplement.Set("payload", supplement_payload);
     supplements->push_back(supplement);
   }
+  if (auto work = func->GetAttr<Map<String, Any>>("blackhole.work_decomposition")) {
+    if (auto bounds = work.value().Get(String(schema_key::kWorkDependentLoopBounds))) {
+      Array<Any> loop_bounds = tvm::Downcast<Array<Any>>(bounds.value());
+      if (!loop_bounds.empty()) {
+        PushStringUnique(seeds, &seen_seed_markers, "work_decomposition_analysis");
+        Map<String, Any> supplement_payload;
+        supplement_payload.Set(String(schema_key::kSource), String("blackhole.work_decomposition"));
+        supplement_payload.Set(String(schema_key::kWorkDependentLoopBounds), loop_bounds);
+        Map<String, Any> supplement;
+        supplement.Set("kind", String(ToString(SupplementKind::kWorkDecompositionStructure)));
+        supplement.Set("payload", supplement_payload);
+        supplements->push_back(supplement);
+      }
+    }
+  }
 }
 
 }  // namespace

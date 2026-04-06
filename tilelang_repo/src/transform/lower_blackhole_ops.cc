@@ -888,6 +888,20 @@ static int GetSpatialDerivedIndexExprCountFromProgram(const SpatialProgram& prog
   return 0;
 }
 
+static int GetWorkDependentLoopBoundCountFromProgram(const SpatialProgram& program) {
+  if (!program.defined()) {
+    return 0;
+  }
+  for (const WorkPartition& partition : program->work_partitions) {
+    auto maybe_loop_bounds = partition->payload.Get(String(schema_key::kWorkDependentLoopBounds));
+    if (!maybe_loop_bounds) {
+      continue;
+    }
+    return static_cast<int>(Downcast<Array<Any>>(maybe_loop_bounds.value()).size());
+  }
+  return 0;
+}
+
 static bool HasTrait(const Array<String>& traits, const char* expected) {
   for (const String& trait : traits) {
     if (static_cast<std::string>(trait) == expected) {
@@ -958,6 +972,12 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
     if (derived_index_expr_count > 0) {
       lowering_requirements.Set("derived_index_expr_count", Integer(derived_index_expr_count));
     }
+    const int work_dependent_loop_bound_count =
+        GetWorkDependentLoopBoundCountFromProgram(spatial_program.value());
+    if (work_dependent_loop_bound_count > 0) {
+      lowering_requirements.Set("work_dependent_loop_bound_count",
+                                Integer(work_dependent_loop_bound_count));
+    }
   }
 
   if (auto work_info = func->GetAttr<Map<String, Any>>("blackhole.work_decomposition")) {
@@ -974,10 +994,12 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
             Integer(static_cast<int>(Downcast<Array<Any>>(derived.value()).size())));
       }
     }
-    if (auto loop_bounds = work_map.Get("work_dependent_loop_bounds")) {
+    if (!lowering_requirements.count("work_dependent_loop_bound_count")) {
+      if (auto loop_bounds = work_map.Get("work_dependent_loop_bounds")) {
       lowering_requirements.Set(
           "work_dependent_loop_bound_count",
           Integer(static_cast<int>(Downcast<Array<Any>>(loop_bounds.value()).size())));
+      }
     }
   }
 

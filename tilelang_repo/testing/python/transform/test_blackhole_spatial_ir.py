@@ -143,6 +143,28 @@ def test_flash_attention_spatial_program_projects_pipeline_contract_resource_int
     assert [str(stage["loop_var"]) for stage in stage_records] == ["k", "k"]
 
 
+def test_flash_attention_spatial_program_projects_work_dependent_bounds_into_work_partition_payload():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            True,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    partition = mod["main"].attrs["tl.spatial_program"].work_partitions[0]
+
+    loop_bounds = partition.payload["work_dependent_loop_bounds"]
+    assert len(loop_bounds) > 0
+    assert any(str(bound["loop_var"]) == "k" for bound in loop_bounds)
+
+
 def test_topk_spatial_program_exposes_selection_and_recurrence_family_gate():
     mod = _prepare_blackhole_phase_b_module(
         example_topk.tl_topk.jit_impl.get_tir(M=64, N=32, topk=4, blk_m=64, threads=128)
@@ -320,6 +342,55 @@ def test_validate_spatial_program_rejects_pipeline_program_without_pipeline_cont
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
+def test_validate_spatial_program_rejects_work_dependent_domain_without_partition_payload():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            True,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    make_partition = tvm.get_global_func("tl.WorkPartition")
+    make_program = tvm.get_global_func("tl.SpatialProgram")
+    rebuilt_partitions = [
+        make_partition(
+            partition.name,
+            partition.kind,
+            partition.target_name,
+            partition.axes,
+            partition.traits,
+            {},
+            partition.anchors,
+        )
+        for partition in program.work_partitions
+    ]
+    bad_program = make_program(
+        program.member_func,
+        program.phases,
+        program.tasks,
+        program.channels,
+        program.layouts,
+        rebuilt_partitions,
+        program.placements,
+        program.sync_edges,
+        program.resource_intents,
+        program.anchors,
+    )
+    mod = _replace_spatial_program(mod, bad_program)
+
+    with pytest.raises(Exception, match="work-dependent domains to materialize work partition payload"):
+        tilelang.transform.ValidateSpatialProgram()(mod)
+
+
 def test_validate_spatial_program_rejects_registry_phase_signature_mismatch():
     mod = _prepare_blackhole_phase_b_module(
         _lower_flash_attention_example(
@@ -438,3 +509,25 @@ def test_lower_blackhole_ops_recovers_pipeline_requirements_without_pipeline_att
 
     assert [int(item) for item in lowering_requirements["pipeline_stage_counts"]] == [2, 2]
     assert [str(item) for item in lowering_requirements["pipeline_loop_vars"]] == ["k"]
+
+
+def test_lower_blackhole_ops_recovers_work_dependent_loop_bound_count_without_work_decomposition():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            True,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    mod = _strip_attr(mod, "blackhole.work_decomposition")
+    lowered = tilelang.transform.LowerBlackholeOps()(mod)["main"]
+    lowering_requirements = lowered.attrs["blackhole.lowering_requirements"]
+
+    assert int(lowering_requirements["work_dependent_loop_bound_count"]) > 0

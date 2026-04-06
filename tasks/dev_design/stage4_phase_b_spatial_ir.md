@@ -403,6 +403,39 @@ spatial legality validator 再推进一格：
 - 删掉 `blackhole.pipeline_stages` 后，`LowerBlackholeOps` 仍能恢复
   `pipeline_stage_counts / pipeline_loop_vars`
 
+### 6.8 2026-04-06 Hardening Slice: Work-Dependent Bound Contract Migration
+
+本轮继续收 `blackhole.work_decomposition` 的 residual truth，但只针对它还在
+`LowerBlackholeOps` 里承担唯一价值的那一项：
+
+- `work_dependent_loop_bounds`
+
+具体迁移如下：
+
+- `AnalyzeSemanticStructure` 现在会把
+  `blackhole.work_decomposition.work_dependent_loop_bounds`
+  收成 `SemanticProgram.supplements[*]`
+  - kind: `work_decomposition_structure`
+  - payload: `work_dependent_loop_bounds[*]`
+- `WorkPartition` schema 已补上 typed `payload`
+- `LowerToSpatialProgram` 现在会把这份 truth 投影到
+  `SpatialProgram.work_partitions[*].payload.work_dependent_loop_bounds`
+- `ValidateSpatialProgram` 现在会校验：
+  - semantic domain 带 `work_dependent_bounds` trait 时，
+    `SpatialProgram` 不能丢失对应的 `WorkPartition` payload
+  - payload 不能是空的
+- `LowerBlackholeOps` 现在优先从 `WorkPartition.payload`
+  恢复 `work_dependent_loop_bound_count`
+  - `blackhole.work_decomposition` 只退回 compatibility fallback
+
+对应测试：
+
+- causal `flash-attn` 的 `SpatialProgram` 必须显式投影
+  `work_dependent_loop_bounds`
+- 删掉 `WorkPartition` payload 后，`ValidateSpatialProgram` 会 fail-fast
+- 删掉 `blackhole.work_decomposition` 后，`LowerBlackholeOps` 仍能恢复
+  `work_dependent_loop_bound_count`
+
 ## 7. Hardening Gates Before Phase C
 
 `Phase B` 的目标不是“已经有一套 `SpatialProgram` 对象”，而是：
@@ -517,6 +550,8 @@ spatial legality validator。
 当前仍未完全达标：
 
 - `work_axes / derived_index_expr_count` 已改为优先读取 `tl.spatial_program`
+- `work_dependent_loop_bound_count` 已改为优先读取
+  `WorkPartition.payload.work_dependent_loop_bounds`
 - lowering-facing fragment summary 已有 `SemanticProgram + residual body scan`
   fallback，但 `blackhole.fragment_regions` 仍保留 compatibility path
 - pipeline legality 已切到 `tl.spatial_program` 优先读取，

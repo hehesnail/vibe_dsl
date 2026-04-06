@@ -254,6 +254,15 @@
   `LowerToSpatialProgram` 再把它投影成
   `ResourceIntent(kind=synchronization_support, traits+=pipeline_contract, payload=...)`，
   然后 `LowerBlackholeOps` 改成 spatial-program-first 读取，legacy attr 和 body annotation 最后才降成 fallback
+- 对 `Phase B` 的 work-decomposition truth migration，也不要让 `LowerBlackholeOps` 继续直接绑定
+  `blackhole.work_decomposition.work_dependent_loop_bounds`。更稳的顺序是：
+  `AnalyzeSemanticStructure` 先把这份信息收成
+  `SemanticSupplement(kind=work_decomposition_structure)`，
+  `LowerToSpatialProgram` 再把它投影成
+  `WorkPartition.payload.work_dependent_loop_bounds`，
+  `ValidateSpatialProgram` 对 `work_dependent_bounds` domain 强制要求 payload，
+  最后 `LowerBlackholeOps` 再改成 spatial-program-first 恢复
+  `work_dependent_loop_bound_count`
 
 ## Blackhole 后端开发原则
 

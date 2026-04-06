@@ -185,6 +185,7 @@ tvm::transform::Pass ValidateSpatialProgram() {
       auto maybe_semantic_program =
           func.value()->GetAttr<SemanticProgram>(attr::kTLSemanticProgram);
       bool semantic_requires_pipeline_contract = false;
+      bool semantic_requires_work_dependent_payload = false;
       if (maybe_semantic_program && !maybe_semantic_program.value()->domains.empty()) {
         const Domain& domain = maybe_semantic_program.value()->domains[0];
         for (const SpatialLayout& layout : program->layouts) {
@@ -201,9 +202,19 @@ tvm::transform::Pass ValidateSpatialProgram() {
               << "ValidateSpatialProgram found work partition axes inconsistent with semantic "
                  "domain";
         }
+        if (HasTrait(domain->traits, "work_dependent_bounds")) {
+          semantic_requires_work_dependent_payload = true;
+        }
         for (const SemanticSupplement& supplement : maybe_semantic_program.value()->supplements) {
           if (static_cast<std::string>(supplement->kind) !=
               semantic::ToString(semantic::SupplementKind::kPipelineStructure)) {
+            if (static_cast<std::string>(supplement->kind) ==
+                semantic::ToString(semantic::SupplementKind::kWorkDecompositionStructure)) {
+              auto maybe_loop_bounds =
+                  supplement->payload.Get(String(schema_key::kWorkDependentLoopBounds));
+              semantic_requires_work_dependent_payload =
+                  maybe_loop_bounds && !Downcast<Array<Any>>(maybe_loop_bounds.value()).empty();
+            }
             continue;
           }
           auto maybe_pipeline_stages =
@@ -214,6 +225,26 @@ tvm::transform::Pass ValidateSpatialProgram() {
             break;
           }
         }
+      }
+
+      if (semantic_requires_work_dependent_payload) {
+        bool has_partition_payload = false;
+        for (const WorkPartition& partition : program->work_partitions) {
+          auto maybe_loop_bounds =
+              partition->payload.Get(String(schema_key::kWorkDependentLoopBounds));
+          if (!maybe_loop_bounds) {
+            continue;
+          }
+          Array<Any> loop_bounds = Downcast<Array<Any>>(maybe_loop_bounds.value());
+          ICHECK(!loop_bounds.empty())
+              << "ValidateSpatialProgram requires work partition payload loop bounds to be "
+                 "non-empty";
+          has_partition_payload = true;
+          break;
+        }
+        ICHECK(has_partition_payload)
+            << "ValidateSpatialProgram requires work-dependent domains to materialize work "
+               "partition payload";
       }
 
       std::unordered_set<std::string> resource_intent_kinds;

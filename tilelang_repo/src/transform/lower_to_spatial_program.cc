@@ -107,6 +107,20 @@ std::optional<Array<Any>> GetPipelineStagesFromSupplements(const SemanticProgram
   return std::nullopt;
 }
 
+std::optional<Array<Any>> GetWorkDependentLoopBoundsFromSupplements(const SemanticProgram& program) {
+  for (const SemanticSupplement& supplement : program->supplements) {
+    if (static_cast<std::string>(supplement->kind) !=
+        ToString(SupplementKind::kWorkDecompositionStructure)) {
+      continue;
+    }
+    if (auto loop_bounds =
+            supplement->payload.Get(String(schema_key::kWorkDependentLoopBounds))) {
+      return Downcast<Array<Any>>(loop_bounds.value());
+    }
+  }
+  return std::nullopt;
+}
+
 void AppendPipelineResourceIntent(const std::string& member_func, const SemanticProgram& program,
                                   Array<ResourceIntent>* resource_intents) {
   auto pipeline_stages = GetPipelineStagesFromSupplements(program);
@@ -119,6 +133,14 @@ void AppendPipelineResourceIntent(const std::string& member_func, const Semantic
       String("pipeline_contract_" + member_func), String("synchronization_support"),
       String(member_func), MakeTraits({"phase_b", "pipeline_contract"}), std::move(payload),
       MakeAnchors("spatial_resource_intent", "pipeline_contract_" + member_func)));
+}
+
+Map<String, Any> BuildWorkPartitionPayload(const SemanticProgram& program) {
+  Map<String, Any> payload;
+  if (auto loop_bounds = GetWorkDependentLoopBoundsFromSupplements(program)) {
+    payload.Set(String(schema_key::kWorkDependentLoopBounds), loop_bounds.value());
+  }
+  return payload;
 }
 
 std::vector<std::string> CollectSegmentKindsFromBody(const tir::Stmt& body) {
@@ -239,7 +261,8 @@ std::string GenericPhaseNameForUpdate(const Update& update, bool multi_phase) {
 }
 
 void BuildCommonSpatialScaffolding(const std::string& member_func, const Array<String>& work_axes,
-                                   bool has_derived_indices, Array<SpatialLayout>* layouts,
+                                   bool has_derived_indices, const SemanticProgram& program,
+                                   Array<SpatialLayout>* layouts,
                                    Array<WorkPartition>* work_partitions) {
   const std::string layout_kind = has_derived_indices ? "indexed" : "regular";
   const std::string partition_kind = work_axes.size() > 1 ? "blocked" : "replicated";
@@ -250,6 +273,7 @@ void BuildCommonSpatialScaffolding(const std::string& member_func, const Array<S
   work_partitions->push_back(WorkPartition(String("partition_" + member_func), String(partition_kind),
                                            String(member_func), work_axes,
                                            MakeTraits({"phase_b"}),
+                                           BuildWorkPartitionPayload(program),
                                            MakeAnchors("spatial_partition", member_func)));
 }
 
@@ -280,7 +304,7 @@ SpatialProgramBundle BuildCopyFastPath(const std::string& member_func,
                      MakeTraits({"fast_path", "copy"}), EmptyPayload(),
                      MakeAnchors("spatial_resource_intent", "copy_buffer"))};
   AppendPipelineResourceIntent(member_func, program, &resource_intents);
-  BuildCommonSpatialScaffolding(member_func, work_axes, has_derived_indices, &layouts,
+  BuildCommonSpatialScaffolding(member_func, work_axes, has_derived_indices, program, &layouts,
                                 &work_partitions);
   return {SpatialProgram(String(member_func), phases, tasks, channels, layouts,
                          work_partitions, placements, sync_edges, resource_intents,
@@ -350,7 +374,7 @@ SpatialProgramBundle BuildGemmFastPath(const std::string& member_func,
                      MakeTraits({"fast_path", "gemm"}), EmptyPayload(),
                      MakeAnchors("spatial_resource_intent", "gemm_accumulator"))};
   AppendPipelineResourceIntent(member_func, program, &resource_intents);
-  BuildCommonSpatialScaffolding(member_func, work_axes, has_derived_indices, &layouts,
+  BuildCommonSpatialScaffolding(member_func, work_axes, has_derived_indices, program, &layouts,
                                 &work_partitions);
   return {SpatialProgram(String(member_func), phases, tasks, channels, layouts,
                          work_partitions, placements, sync_edges, resource_intents,
@@ -468,7 +492,7 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
 
   Array<SpatialLayout> layouts;
   Array<WorkPartition> work_partitions;
-  BuildCommonSpatialScaffolding(member_func, work_axes, has_derived_indices, &layouts,
+  BuildCommonSpatialScaffolding(member_func, work_axes, has_derived_indices, program, &layouts,
                                 &work_partitions);
 
   Array<SyncEdge> sync_edges;

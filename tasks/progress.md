@@ -164,6 +164,16 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
     - `ValidateSpatialProgram` 现在会显式校验 pipeline contract：
       pipeline program 不能缺失 pipeline resource intent，
       contract payload 也必须携带 `pipeline_stages[*].loop_var / num_stages`
+    - `work_dependent_loop_bounds` 也已开始迁离 `blackhole.work_decomposition`：
+      `AnalyzeSemanticStructure` 会把它收成
+      `work_decomposition_structure` semantic supplement，
+      `LowerToSpatialProgram` 再把它投影成
+      `WorkPartition.payload.work_dependent_loop_bounds`
+    - `LowerBlackholeOps` 现在优先从 `WorkPartition.payload`
+      恢复 `work_dependent_loop_bound_count`，
+      `blackhole.work_decomposition` 只剩 compatibility fallback
+    - `ValidateSpatialProgram` 现在也会显式校验
+      `work_dependent_bounds` domain 不能丢失 `WorkPartition` payload
     - transform-level family gate 已补到 `topk / selection`，`Phase B`
       当前覆盖 `copy / GEMM / flash-attn / topk`
   - `Phase B` 当前的主要未完成项也已明确：
@@ -173,7 +183,8 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
       还不是完整的 spatial legality validator
     - `LowerBlackholeOps` 仍同时读取 `tl.spatial_program` 与 lowering-facing
       legacy analysis attrs；`fragment_regions` 仍保留 compatibility path，
-      `pipeline_stages` 已不再是 primary input，但仍保留 compatibility fallback
+      `pipeline_stages` / `work_decomposition` 已不再是 primary input，
+      但仍保留 compatibility fallback
     - transform-level family gate 虽已覆盖 `topk / selection`，
       但 `routed / paged / chunk recurrence` 仍未接入 `Phase B` coverage
   - `blackhole.fragment_regions` 不再是 semantic truth 输入；
@@ -197,7 +208,7 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py -q`
   - `7 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q`
-  - `16 passed`
+  - `19 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `41 passed, 10 skipped, 1 xfailed`
 - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
