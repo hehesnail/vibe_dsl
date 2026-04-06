@@ -3,12 +3,15 @@
 ## 基本信息
 
 - **文档角色**: `Phase B` 实施与设计边界文档
-- **当前状态**: `2026-04-06` compile-path hardening 已收口，但整体未结束：
+- **当前状态**: `2026-04-07` compile-path hardening 已收口，但整体未结束：
   `SpatialProgram / ProgramPhase`、copy/GEMM fast-path、`flash-attn` multi-phase gate、
   representative family gate、`LowerToSpatialProgram -> ValidateSpatialProgram`、
   以及 `LowerBlackholeOps` 的 spatial-only consumer cutover 均已进入主链。
-  但当前实现仍偏向 structural scaffold；`Phase B` 的下一阶段重点不是再补对象数量，
-  而是把 `SpatialProgram` 从“结构投影 IR”继续收紧成 execution-bearing spatial contract。
+  但当前实现仍偏向 structural scaffold：
+  `SpatialCapabilityModel` 尚不存在，`Spatial*` object/vocab 仍与 semantic infra 共址，
+  `Channel.kind` 仍只有 `tensor_flow / state_flow / phase_boundary` 三个粗粒度值，
+  `ValidateSpatialProgram` 也还只是结构/一致性 gate，不是 capability legality pass。
+  当前下一阶段重点是先把 spatial 边界收正，再用 translator 的真实需求 demand-driven 地补 contract。
 - **上游输入**: 冻结后的 `SemanticProgram`
 - **下游输出**: 冻结后的 `SpatialProgram`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -117,6 +120,7 @@
 
 - analysis 决定 legality
 - policy 只在合法空间内选择
+- capability-aware synthesis 发生在 builder / translator probe，不发生在 validator
 
 ### 2.5 不能回退的约束
 
@@ -475,10 +479,10 @@
 当前 `Phase B` 的实施重点是：
 
 1. 保住已经完成的 compile-path hardening，不回退到 legacy attr 主链
-2. 把 `SpatialProgram` 从 structural scaffold 收紧成 execution-bearing contract
-3. 让 `Layout / WorkPartition / Channel / SyncEdge / ProgramPhase`
-   不只是结构 summary，而是稳定的执行语义载体
-4. 保证 `Phase C` 只能做 TT mapping/materialization，不能再发明 spatial structure
+2. 先把 `Spatial*` types / vocab / schema key 从 semantic infra 中拆出来
+3. 落地来自 SoC descriptor 的最小 `SpatialCapabilityModel`
+4. 用 read-only translator demand probe 反推 `SpatialProgram` 还缺什么 non-TT-specific truth
+5. 只补 probe 真正需要的 contract，保证 `Phase C` 只能做 TT mapping/materialization
 
 ## 5. 当前稳定边界
 
@@ -521,10 +525,34 @@
 
 ## 6. 未完成设计必须收实的部分
 
-### 6.1 `SpatialCapabilityModel`
+### 6.1 Spatial / Semantic Boundary Cleanup
 
-`SpatialProgram` 要成为有价值的 virtual spatial program，必须先引入
-`SpatialCapabilityModel`。这不是 implementation hint，而是本阶段缺失的正式对象。
+当前代码里：
+
+- `SpatialProgram` 及其 object 定义仍在 `common/semantic_program.h`
+- spatial closed vocabulary 仍在 `common/semantic_vocab.h`
+- `tl.spatial_program` / `tl.tt_program` attr key 也仍由 semantic header 承载
+
+这不是命名问题，而是当前最大的演化债之一。
+如果不先拆，后续 `SpatialProgram` schema、channel kind、capability model
+每演进一次，都会把 semantic layer 一起拖进来。
+
+**当前要求**
+
+- semantic object/vocab 与 spatial object/vocab 必须物理分离
+- 共享 attr key / invalidation key 可以放到 neutral companion header
+- semantic layer 不再拥有 spatial schema / spatial vocab / target-bound companion entry
+
+**退出标准**
+
+- `LowerToSpatialProgram` / `ValidateSpatialProgram` / `LowerBlackholeOps`
+  只 include spatial-owned header
+- `SemanticProgram` 相关 rebind / validator 不再依赖 spatial object definition
+
+### 6.2 `SpatialCapabilityModel`
+
+`SpatialCapabilityModel` 目前不存在。
+因此当前文档和进度里不应再把 builder/validator 写成“已经 capability-informed”。
 
 **宿主**
 
@@ -532,178 +560,147 @@
 
 **producer**
 
-- target-specific capability lowerer
-- 对 Blackhole，初始 producer 从 concrete `TTHardwareModel` 导出抽象能力视图
+- target-specific capability provider
+- 对 Blackhole，第一版直接从 TT-Metal/UMD SoC descriptor 导出
+
+**Blackhole 第一版输入**
+
+- `arch_name`
+- logical worker grid / functional worker set
+- DRAM views / worker-visible DRAM endpoint
+- ETH / router-only core集合
+- `worker_l1_size` / `dram_view_size`
+- NOC translation / overlay / packer / unpacker feature bit
 
 **consumer**
 
 - `LowerToSpatialProgram`
-- `ValidateSpatialProgram`
+- `SpatialProgram -> TT target` read-only translator probe
 
-**最小字段**
-
-- `topology_class`
-- `placement_domains`
-- `communication_domains`
-- `supported_flow_kinds`
-- `supported_sync_kinds`
-- `supported_layout_kinds`
-- `supported_partition_kinds`
-- `supported_residency_kinds`
-- `replication_capabilities`
-- `cross_domain_visibility_capabilities`
-
-**边界**
+**明确边界**
 
 - 它只能表达抽象能力，不表达 resource id、kernel kind、CB plan、ABI slot
-- 它是 `Phase B` legality/policy 输入，不是 `Phase C` materialization 输出
+- validator 不负责“根据 capability 重新判断 legality”
+- capability model 是 synthesis 输入，不是 validator 的 policy/legality 引擎
 
-### 6.2 `Task` Contract
+### 6.3 Translator Demand Probe
 
-当前 `Task` 只有 `kind + update_names + phase_index` 级别的信息，不够。
-未完成设计必须补到下面这个强度：
+`Phase B` 当前不应该凭想象把所有 execution-bearing contract 一次补完。
+正确顺序是先建立一个只读 translator probe，让真实 consumer 来暴露 contract 缺口。
 
-**必须新增的 contract**
+**这个 probe 必须做到**
 
-- `execution_signature`
-  - `law_class`
-  - `access_class`
-  - `state_interaction_class`
-- `formation_basis`
-  - 哪些 semantic edge 迫使 split
-  - 哪些条件允许 fuse
-- `phase_class`
-  - phase-local compute / stateful update / routing / combine / carry step
-- `placement_constraints`
-  - 是否要求 locality / communication adjacency / replicated execution
+- 只消费 `SpatialProgram + TTHardwareModel/SoC snapshot`
+- 绝不回 Semantic/TIR 恢复 non-TT-specific spatial semantics
+- 绝不写 `TTProgram` / `ExecutableSpec`
+- 对缺失的 spatial truth 产出明确的 “missing contract” 诊断，而不是悄悄 fallback
 
-**算法输出要求**
+**当前用它驱动的 family**
 
-- `Task` 必须能回答“为什么它是一个 task”，不是只回答“它叫什么”
+- copy
+- GEMM
+- `flash-attn` forward compile-path subset
 
-### 6.3 `Channel` Contract
+目标不是现在就补全五个算法 family，而是先让 probe 把真正缺的 spatial contract 收敛出来。
 
-当前 `Channel` 还偏向“边 + state name”。
-未完成设计必须补到下面这个强度：
+### 6.4 `Channel` Contract
 
-**必须新增的 contract**
+这是当前最紧迫的 contract 缺口。
+现有 `tensor_flow / state_flow / phase_boundary` 三种 `Channel.kind`
+不足以支撑 `Phase C` 的 flow mapping 决策。
+
+**需要收正的原则**
+
+- `Channel.kind` 不能再只编码 payload 来源
+- mapping 真正需要的是 flow topology、delivery/visibility 和 payload class
+
+**最小补强方向**
 
 - `flow_kind`
   - `point_to_point`
   - `broadcast`
   - `gather`
+  - `scatter`
   - `reduce_merge`
   - `carry`
-  - `scatter`
+- `payload_kind`
+  - `tensor`
+  - `state_version`
+  - `index`
+  - `predicate`
+  - `token`
 - `delivery_kind`
   - `ordered`
   - `completion_visible`
   - `buffered_async`
   - `phase_boundary_materialized`
-- `state_contract`
+- `version / ownership contract`
   - `state_index`
   - `source_version`
   - `target_version`
-- `communication_constraints`
-  - same-domain only / neighborhood-limited / cross-domain allowed
+  - `source_domain / target_domain`
 
-**算法输出要求**
+**明确迁移口径**
 
-- `Channel` 必须能回答“这条 flow 为什么存在、它要求什么可见性和顺序”
+- 当前 `tensor_flow / state_flow / phase_boundary` 应下沉成兼容 trait 或 display helper
+- 它们不能继续充当 `Phase C` 的 primary flow-mapping discriminator
 
-### 6.4 `Layout / WorkPartition` Contract
+### 6.5 剩余 Spatial Contract 补强
 
-当前 `Layout / WorkPartition` 仍然太像 semantic domain 的外显化。
-未完成设计必须补到下面这个强度：
+`Task / Layout / WorkPartition / Placement / ProgramPhase / SyncEdge`
+后续要补，但必须按 translator probe 的真实需求来补，不按“先把所有论文里的对象都做出来”推进。
 
-**必须新增的 contract**
+**当前已知必须补的方向**
 
-- `domain_realization_kind`
-  - direct
-  - packed
-  - indexed
-  - filtered
-  - grouped
-  - paged
-  - chunked
-- `transform_basis`
-  - 来自哪个 `AccessMap`
-  - 哪类 remap / filter / indirection / chunking 触发它
-- `ownership_basis`
-  - blocked / replicated / indexed-owner / filtered-owner
-- `capability_requirements`
-  - replication needed
-  - neighborhood communication needed
-  - stable carry ownership needed
+- `Task`
+  - 需要 formation basis 与 abstract execution role
+  - 不能继续只靠 `kind + update_names + phase_index`
+- `Layout / WorkPartition`
+  - 不能继续只按 `derived_indices` 和轴数决定 `indexed / blocked / replicated`
+  - grouped / paged / routed / chunked 不能被统一拍平成 `indexed`
+- `Placement`
+  - 当前 fast-path 里的 `brisc / trisc / ncrisc` trait 属于 TT leakage
+  - 应改成 abstract placement / affinity / locality obligation
+- `ProgramPhase / SyncEdge`
+  - 还缺 closure basis、ordering basis、visibility/materialization requirement
 
 **明确禁止**
 
-- 只按轴数决定 `blocked / replicated`
-- 把 grouped / paged / routed / chunked 全退化成 `indexed`
+- 先围绕五个 workload family 各写一轮特化算法，再事后总结 contract
+- 因为当前 fast-path 方便，就把 TT-specific core noun 固化进 spatial schema
 
-### 6.5 `ProgramPhase / SyncEdge` Contract
+### 6.6 `ValidateSpatialProgram` 的职责
 
-当前 `ProgramPhase` 和 `SyncEdge` 已有 linkage，但 ordering semantics 仍不够强。
-未完成设计必须补到下面这个强度：
-
-**必须新增的 contract**
-
-- `ProgramPhase.phase_class`
-  - local_compute
-  - stateful_update
-  - route_dispatch
-  - combine
-  - carry_step
-- `ProgramPhase.closure_basis`
-  - 为什么这些 task 可以在同一 phase 内闭包
-- `SyncEdge.ordering_kind`
-  - dependency
-  - completion
-  - barrier
-  - async_arrival
-- `SyncEdge.visibility_kind`
-  - local
-  - cross_phase
-  - cross_member
-- `SyncEdge.materialization_requirement`
-  - 是否要求显式 phase-boundary state materialization
-
-**算法输出要求**
-
-- phase 不是显示分组，而是 partial-order condensation 的结果
-
-### 6.6 `ValidateSpatialProgram` 的最终职责
-
-当前 validator 已经不是空壳，但还不够。
-未完成设计要把 validator 的职责固定成：
+validator 要继续变强，但方向必须收正：
+它验证的是“contract 是否显式、完整、自洽”，不是“替 synthesis 再做一遍 capability legality”。
 
 **必须 fail-fast 的错误**
 
-- task formation contract 自相矛盾
-- channel flow kind 与 state/version contract 不一致
-- layout/work partition 与 domain/access basis 不一致
-- phase closure basis 与 sync edge ordering 不一致
-- capability requirement 超出 `SpatialCapabilityModel`
+- index / linkage / phase aggregation 自相矛盾
+- channel 的 flow/payload/delivery/version contract 不一致
+- layout/work partition 与 semantic domain/access basis 不一致
+- phase closure basis 与 sync edge ordering/visibility contract 不一致
 - module-scope `tl.device_programs` 与 member-local `tl.spatial_program`
   的 phase truth 不一致
 
 **明确禁止**
 
-- 只做结构串联检查
-- 让 `Phase C` 发现 legality 问题后反向修正 `SpatialProgram`
+- 把 validator 做成 capability-aware policy/legality solver
+- 在 validator 里补 translator 缺的 spatial meaning
+- 让 `Phase C` 发现 legality 问题后再反向修正 `SpatialProgram`
 
 ## 7. 当前退出条件
 
 `Phase B` 不再以“compile-path 已打通”作为完成标准。
 当前真正的退出条件是：
 
-1. `SpatialCapabilityModel` 落地，并被 builder/validator 主链消费
-2. `Task / Channel / Layout / WorkPartition / ProgramPhase / SyncEdge`
-   补齐上面列出的 execution-bearing contract
-3. `ValidateSpatialProgram` 能对这些 contract 做 capability-informed legality 检查
-4. `Phase C` translator 不需要再恢复 non-TT-specific spatial semantics
+1. `Spatial*` types / vocab / schema key 已从 semantic infra 中拆出
+2. `SpatialCapabilityModel` 落地，并由 builder 主链消费；Blackhole 第一版来自 SoC descriptor
+3. translator demand probe 已经存在，并且不会恢复 non-TT-specific spatial semantics
+4. `Channel` contract 已足够区分 `Phase C` 当前需要的 flow mapping 决策
+5. `ValidateSpatialProgram` 已收正为 coherence/completeness gate，而不是 capability legality pass
 
-在这四条未达成前，`Phase B` 的 compile-path 虽然已完成，
+在这五条未达成前，`Phase B` 的 compile-path 虽然已完成，
 但 `SpatialProgram` 还不能视为最终形态的 virtual spatial program。
 
 ## 8. Shared Zero-Regression Baseline

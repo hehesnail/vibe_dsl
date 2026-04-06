@@ -50,18 +50,26 @@
       `copy / GEMM / flash-attn / topk / chunk_o / fusedmoe_routed / mla_decode_paged`
   - `Phase B` 当前应理解为：
     `SemanticProgram -> SpatialProgram` compile-path cutover 已收口，
-    但 execution-bearing contract / capability-informed legality 仍会继续演进；
-    这些后续补强现在由未来 `Phase C` translator 的真实需求驱动
+    但 execution-bearing contract 仍明显不完整；
+    `SpatialCapabilityModel` 尚不存在，`Spatial*` definitions 仍未从 semantic infra 拆出，
+    `Channel.kind` 也还不足以支撑 `Phase C` flow mapping。
+    这些后续补强必须由 translator 的真实需求 demand-driven 推进，
+    但不应再把 validator 写成 capability legality pass
   - `stage4_phase_b_spatial_ir.md` 已完成一轮文档收敛：
     删除过期 hardening 流水账，只保留稳定边界、未完成 contract 设计和当前退出条件
 - **Phase C**: 已定义；以 `Phase B` contract hardening 达标为实现前提
-  - `TT Target IR` 已定义，当前作为下一阶段设计与 cutover 入口保留
+  - `TT Target IR` 已定义
+  - 当前允许启动的只有 read-only translator demand probe 与 hardware intake；
+    正式 `TTProgram / MaterializeTTExecutableSpec` cutover 还没有开始
 
 ## 当前主 blocker
 
 当前 blocker 已经收敛到：
 
-- `Spatial Program IR -> TT Target IR` 的单一真源切换尚未落地
+- `Spatial*` types / vocab / attr ownership 仍与 semantic infra 共址
+- `SpatialCapabilityModel` 尚未落地，Blackhole hardware truth 仍散落在硬编码常量中
+- `Channel` flow contract 仍过粗，translator 还拿不到足够的 flow-mapping discriminator
+- 因此 `Spatial Program IR -> TT Target IR` 的单一真源切换尚未落地
 - `TTProgram / MaterializeTTExecutableSpec` 仍不存在，当前 target/runtime contract
   还停留在 `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores -> rt_mod_blackhole`
   的旧主链上
@@ -73,14 +81,14 @@
 ## 下一步
 
 1. 继续执行 `tasks/dev_design/stage4_phase_b_spatial_ir.md`
-   - 把 `SpatialProgram` 从结构化 scaffold 继续收紧成 execution-bearing contract
-   - 落地 abstract `SpatialCapabilityModel`
-   - 让 task formation / flow semantics / domain realization / ordering synthesis
-     进入可验证 schema
-2. 以 `tasks/dev_design/stage4_phase_c_tt_target_ir.md` 作为下一阶段入口准备 translator 边界
-   - 用最小 `TTProgram` 需求反推 `SpatialProgram` 仍缺的 non-TT-specific truth
-   - 但不把这一步写成 `Phase C` 已正式启动
-3. 在 `Phase B` contract 达标后，再启动 `TTProgram / MaterializeTTExecutableSpec`
+   - 先把 `Spatial*` types / vocab / shared key 从 semantic infra 中拆出
+   - 落地来自 SoC descriptor 的最小 `SpatialCapabilityModel`
+   - 优先扩 `Channel` flow contract，而不是继续并行补更多 workload 特化
+2. 以 `tasks/dev_design/stage4_phase_c_tt_target_ir.md` 启动 read-only translator demand probe
+   - 用最小 `TTHardwareModelStub + SpatialProgram` 尝试做 TT mapping
+   - 对缺失的 non-TT-specific truth 产出明确 missing-contract 诊断
+   - 不把这一步写成 `Phase C` 正式 cutover 已启动
+3. 在 probe 不再恢复 spatial semantics 后，再启动 `TTProgram / MaterializeTTExecutableSpec`
    的单一真源 cutover
 
 ## 当前代码事实
@@ -110,7 +118,7 @@
   - semantic-owned structural evidence 与 direct-runtime binding 已切到 handle-first，
     不再依赖名字匹配恢复语义
   - `fragment_regions` 只剩 residual reduction evidence 与 lowering compatibility
-  - `Phase B` 当前稳定事实：
+- `Phase B` 当前稳定事实：
   - `SpatialProgram / ProgramPhase / Task / Channel / Layout / WorkPartition /
     Placement / SyncEdge / ResourceIntent` 已落地
   - `LowerToSpatialProgram -> ValidateSpatialProgram` 已接入主线，
@@ -120,15 +128,21 @@
   - `ValidateSpatialProgram` 现已把
     `Task / Channel / Layout / WorkPartition / Placement / SyncEdge / ResourceIntent.kind`
     收成 closed vocabulary fail-fast；unknown kind 不再 silent pass
+  - 但 validator 当前只做结构/一致性/semantic alignment gate，
+    不做 capability-informed legality
+  - `Spatial*` object/vocab 仍定义在 semantic 头文件里，尚未完成边界拆分
+  - `Channel.kind` 当前只有 `tensor_flow / state_flow / phase_boundary`
   - representative family gate 当前覆盖
     `copy / GEMM / flash-attn / topk / chunk_o / fusedmoe_routed / mla_decode_paged`
-  - `SpatialProgram` 当前定位已经收紧为
-    target-informed but non-target-materialized virtual spatial/dataflow program；
-    其 execution-bearing contract 继续由未来 `Phase C` translator 的真实需求驱动增强
+  - `LowerToSpatialProgram` 当前仍未消费 capability model；
+    fast-path 里也仍残留 `brisc / trisc / ncrisc` 这类 TT leakage trait
+  - `SpatialProgram` 当前只能视为 compile-path 已接通的 first-cut spatial scaffold，
+    其 execution-bearing contract 继续由 translator 的真实需求驱动增强
 - 当前仍未完成的事实：
   - `TTProgram / MaterializeTTExecutableSpec` 仍不存在
-  - `Phase C` 还没有启动正式实现，也还没有证明
+  - `Phase C` 还没有启动正式 cutover 实现，也还没有证明
     `SpatialProgram -> TTProgram` 的单一真源切换
+  - translator demand probe 仍未落地
   - `flash-attn` 的 `blackhole.acc` correctness payoff 仍归属 `Phase C2`
 
 ## 最新验证摘要
@@ -158,8 +172,8 @@
 ## 当前文档入口
 
 - `tasks/dev_design/final_blackhole_backend_redesign.md`
-- `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
 - `tasks/dev_design/stage4_phase_b_spatial_ir.md`
+- `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
 - `tasks/dev_design/stage4_semantic_manifest.md`
 - `tasks/dev_design/stage4_phase_a_semantic_ir.md`
 - `tasks/dev_design/stage4_phase_a_formalization_note.md`

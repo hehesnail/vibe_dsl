@@ -4,7 +4,8 @@
 
 - **文档角色**: `Phase C` 实施与设计边界文档
 - **当前状态**: 已定义；`Phase B` compile-path 已收口，但 contract hardening
-  仍未结束，`Phase C` 以此为实现前提
+  仍未结束。当前允许启动的是 read-only translator demand probe 与 hardware intake，
+  不是 `TTProgram / MaterializeTTExecutableSpec` 的正式 cutover
 - **上游输入**: 冻结后的 `SpatialProgram`
 - **下游输出**: `TTProgram` 与 `MaterializeTTExecutableSpec` 物化结果
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -47,6 +48,14 @@
 
 那结论只能是 `Phase B` contract 还不够，必须回去扩 `SpatialProgram` schema / validator；
 `Phase C` 不允许自己补一层恢复逻辑。
+
+这条约束也决定了 `Phase C` 的第一步不应该是“直接开始写正式 translator 并在里面补洞”，
+而应该是：
+
+- 先写 read-only translator demand probe
+- 让它把缺失的 non-TT-specific truth 明确报出来
+- 再回到 `Phase B` 补 contract
+- 只有 probe 不再要求恢复 spatial semantics 时，才进入正式 `TTProgram` cutover
 
 这也意味着 `Phase C` 和硬件模型的关系要分成两层：
 
@@ -185,11 +194,11 @@ TT 层仍然遵守 small-closed family 设计：
 
 当前 `Phase C` 的实施重点是：
 
-1. 建立最小 TT target object 集
-2. 让 copy / GEMM 先完成 target materialization cutover
-3. 删除 compatibility 路径
-4. 兑现 `flash-attn` correctness payoff
-5. 在新主链下做 family expansion
+1. 建立最小 `TTHardwareModel` / SoC snapshot intake
+2. 建立 read-only translator demand probe
+3. 用 probe 的缺口清单驱动 `Phase B` contract hardening
+4. 只有在 probe 不再恢复 spatial semantics 后，再启动正式 `TTProgram` cutover
+5. copy / GEMM / `flash-attn` correctness payoff 与 family expansion 都排在这之后
 
 ## 5. Shared Zero-Regression Baseline
 
@@ -210,9 +219,40 @@ cd /root/dev/vibe_dsl/tilelang_repo
 pytest testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py -k 'mha or gqa' -q
 ```
 
-## 7. Phase C1: Minimal TT Target Core And Materialization Cutover
+## 7. Phase C0: Translator Demand Probe And Hardware Intake
 
 ### 7.1 主要文件
+
+- Create:
+  - `tilelang_repo/src/transform/common/tt_hardware_model.h`
+  - `tilelang_repo/src/transform/common/tt_hardware_model.cc`
+  - `tilelang_repo/src/transform/lower_spatial_program_to_tt_target_probe.cc`
+  - `tilelang_repo/testing/python/transform/test_blackhole_tt_target_probe.py`
+- Modify:
+  - `tasks/dev_design/stage4_phase_b_spatial_ir.md`
+  - `tasks/progress.md`
+
+### 7.2 交付物
+
+- 最小 `TTHardwareModelStub`，其第一版输入直接来自 TT-Metal SoC descriptor
+- read-only translator probe：
+  - 只消费 `SpatialProgram + TTHardwareModelStub`
+  - 不写 `TTProgram`
+  - 不写 `ExecutableSpec`
+  - 不恢复 non-TT-specific spatial semantics
+- 对 copy / GEMM / 一个 multi-phase representative path 产出明确的 missing-contract 诊断
+
+### 7.3 退出条件
+
+- probe 不再从 `phase_name / task_name / source_task / target_task` 这类 display 字段恢复主语义
+- probe 的失败若存在，只能是：
+  - `Phase B` 尚未显式提供的 non-TT-specific contract
+  - 或已经进入 TT-specific 的真实 target legality blocker
+- `11x10 / 110 / worker_l1_size / dram-view` 这类当前散落常量开始收口到 `TTHardwareModelStub`
+
+## 8. Phase C1: Minimal TT Target Core And Materialization Cutover
+
+### 8.1 主要文件
 
 - Create:
   - `tilelang_repo/src/transform/common/tt_target_program.h`
@@ -230,7 +270,7 @@ pytest testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py
   - `tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
   - `tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py`
 
-### 7.2 交付物
+### 8.2 交付物
 
 - 最小 TT target object set：
   - `TTProgram`
@@ -248,16 +288,16 @@ pytest testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py
 - `blackhole.runtime_args / common_runtime_args / cb_configs / core_plan`
   降为 compatibility projection
 
-### 7.3 退出条件
+### 8.3 退出条件
 
 - `TTABIPlan` 已拥有 compile-time / common-runtime / per-work 三层 ABI
 - `TTTransportPlan / TTHardwareModelStub` 已接入 legality 检查
 - copy / GEMM spec/runtime 已经由 `MaterializeTTExecutableSpec` 接管
 - Shared zero-regression baseline 继续全绿
 
-## 8. Phase C2: Compatibility Deletion And Flash-Attn Correctness
+## 9. Phase C2: Compatibility Deletion And Flash-Attn Correctness
 
-### 8.1 主要文件
+### 9.1 主要文件
 
 - Modify:
   - `tilelang_repo/src/transform/lower_blackhole_ops.cc`
@@ -269,7 +309,7 @@ pytest testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py
   - `tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
   - `tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`
 
-### 8.2 交付物
+### 9.2 交付物
 
 - 按 deletion gate 删除 compatibility writer / fallback reader：
   - `blackhole.segment_plan`
@@ -283,15 +323,15 @@ pytest testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py
 - `blackhole.acc` 不再同时承载 algorithm state 与 TT scratch 两类真语义
 - MHA / GQA direct runtime correctness 在 TT-Sim 下闭环
 
-### 8.3 退出条件
+### 9.3 退出条件
 
 - `flash-attn` MHA/GQA direct runtime correctness 通过
 - 基线 copy / GEMM / export / pipeline 全绿
 - compatibility writer / reader / fallback 已按 deletion gates 收掉
 
-## 9. Phase C3: Family Expansion Under The New Mainline
+## 10. Phase C3: Family Expansion Under The New Mainline
 
-### 9.1 主要文件
+### 10.1 主要文件
 
 - Modify:
   - `tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py`
@@ -300,14 +340,14 @@ pytest testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py
   - consumer-specific tests alongside selected workloads
   - `tasks/progress.md`
 
-### 9.2 推荐顺序
+### 10.2 推荐顺序
 
 1. `topk`
 2. paged decode
 3. `fusedmoe`
 4. chunk recurrence
 
-### 9.3 退出条件
+### 10.3 退出条件
 
 - 新增 family 不引入 case-by-case matcher
 - 每个 family 都先通过 semantic / spatial / TT compile gate

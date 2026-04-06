@@ -12,7 +12,7 @@
 |------|------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计 | 常青 |
 | `stage4_phase_b_spatial_ir.md` | 当前主实施文档；承接 `Spatial Program IR` contract hardening、稳定边界与未完成设计 | compile-path 已收口；contract hardening 仍进行中 |
-| `stage4_phase_c_tt_target_ir.md` | 下一阶段实施入口；承接 `TT Target IR` 详细设计、cutover 与 deletion gates | 已定义；以 `Phase B` 达标为前提 |
+| `stage4_phase_c_tt_target_ir.md` | 下一阶段实施入口；承接 `TT Target IR` 详细设计、translator demand probe、cutover 与 deletion gates | 已定义；当前先作为 demand-probe / hardware-intake 边界文档保留 |
 
 ## 2. 当前阶段文档
 
@@ -23,7 +23,7 @@
 | `stage4_phase_a_formalization_note.md` | `Phase A` 理论化 / 证明化并行文档 | 并行 research track；非工程 blocker |
 | `stage4_semantic_manifest.md` | Phase A 信息源重构：正向语义传递替代反向恢复 | Phase 1-2 已落地；作为边界参考保留 |
 | `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 实施文档 | compile-path 已收口；contract hardening 仍进行中 |
-| `stage4_phase_c_tt_target_ir.md` | `TT Target IR`、cutover、family expansion | 已定义；以 `Phase B` 达标为前提 |
+| `stage4_phase_c_tt_target_ir.md` | `TT Target IR`、translator demand probe、cutover、family expansion | 已定义；当前先作为 demand-probe / hardware-intake 边界文档保留 |
 
 ## 3. 支撑与审计文档
 
@@ -36,8 +36,8 @@
 当前默认执行顺序：
 
 1. `final_blackhole_backend_redesign.md`
-2. `stage4_phase_c_tt_target_ir.md`
-3. `stage4_phase_b_spatial_ir.md`
+2. `stage4_phase_b_spatial_ir.md`
+3. `stage4_phase_c_tt_target_ir.md`
 
 在需要回看前置边界时，再引用：
 
