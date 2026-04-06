@@ -13,7 +13,7 @@ if str(BLACKHOLE_TARGET_TEST_DIR) not in sys.path:
 if str(THIS_DIR) not in sys.path:
     sys.path.append(str(THIS_DIR))
 
-from common import gemm_kernel, staged_copy_kernel
+from common import gemm_kernel, grid_indexed_staged_copy_kernel, staged_copy_kernel
 from test_blackhole_flash_attention_analysis import _lower_flash_attention_example, mha_example
 
 
@@ -39,6 +39,22 @@ def _prepare_blackhole_phase_b_module(prim_func):
     mod = tilelang.transform.ValidateSemanticRefinement()(mod)
     mod = tilelang.transform.LowerToSpatialProgram()(mod)
     mod = tilelang.transform.ValidateSpatialProgram()(mod)
+    return mod
+
+
+def _strip_attr(mod, attr_name: str):
+    func = mod["main"].without_attr(attr_name)
+    mod = tvm.IRModule({"main": func})
+    if "tl.device_programs" in mod.global_infos:
+        mod = mod.with_attr("tl.device_programs", mod.global_infos["tl.device_programs"])
+    return mod
+
+
+def _drop_existing_spatial_program(mod):
+    func = mod["main"].without_attr("tl.spatial_program")
+    mod = tvm.IRModule({"main": func})
+    if "tl.device_programs" in mod.global_infos:
+        mod = mod.with_attr("tl.device_programs", mod.global_infos["tl.device_programs"])
     return mod
 
 
@@ -91,3 +107,33 @@ def test_flash_attention_spatial_program_exposes_multi_phase_channels():
     assert "phase_boundary_materialization" in {str(intent.kind) for intent in program.resource_intents}
     assert len(registry) == 1
     assert len(registry[0].phases) >= 2
+
+
+def test_spatial_program_layout_axes_come_from_semantic_program_not_work_decomposition():
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=2, tile_cols=3))
+    semantic_program = mod["main"].attrs["tl.semantic_program"]
+    expected_axes = [str(axis) for axis in semantic_program.domains[0].axes]
+
+    mod = _strip_attr(mod, "blackhole.work_decomposition")
+    mod = _drop_existing_spatial_program(mod)
+    mod = tilelang.transform.LowerToSpatialProgram()(mod)
+    mod = tilelang.transform.ValidateSpatialProgram()(mod)
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    assert [str(axis) for axis in program.layouts[0].axes] == expected_axes
+    assert [str(axis) for axis in program.work_partitions[0].axes] == expected_axes
+
+
+def test_spatial_program_layout_kind_comes_from_semantic_domain_traits_not_work_decomposition():
+    mod = _prepare_blackhole_phase_b_module(grid_indexed_staged_copy_kernel(grid_x=2, grid_y=3))
+    semantic_program = mod["main"].attrs["tl.semantic_program"]
+    assert "derived_indices" in {str(trait) for trait in semantic_program.domains[0].traits}
+
+    mod = _strip_attr(mod, "blackhole.work_decomposition")
+    mod = _drop_existing_spatial_program(mod)
+    mod = tilelang.transform.LowerToSpatialProgram()(mod)
+    mod = tilelang.transform.ValidateSpatialProgram()(mod)
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    assert str(program.layouts[0].kind) == "indexed"
+    assert str(program.work_partitions[0].kind) == "blocked"

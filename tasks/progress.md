@@ -129,11 +129,15 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
     - typed `SpatialProgram` / `ProgramPhase` object set
     - module-scope `ProgramPhase` aggregation 写回 `tl.device_programs`
     - unsplit single-`PrimFunc` 退化场景对 `tl.device_programs.root_symbol` 的 registry fallback
+    - `Layout / WorkPartition` 的 spatial scaffolding 已切到 semantic-domain-first：
+      优先读取 `SemanticProgram.domains[*].axes / traits`，`blackhole.work_decomposition`
+      只保留过渡回退
     - `LowerBlackholeOps` lowering requirements 中的
       `spatial_phase_count / spatial_channel_count / spatial_phase_boundary_states`
   - `Phase B` 当前的主要未完成项也已明确：
-    - `LowerToSpatialProgram` 仍直接读取 `blackhole.work_decomposition`
-      与 `blackhole.segment_plan` 的部分 truth
+    - `LowerToSpatialProgram` 仍保留对 `blackhole.work_decomposition`
+      与 `blackhole.segment_plan` 的部分过渡依赖；其中 `segment_plan`
+      仍是 GEMM fast-path 的 truth source
     - `ValidateSpatialProgram` 仍以结构完整性检查为主，尚未升级为强 legality validator
     - `LowerBlackholeOps` 仍同时读取 `tl.spatial_program` 与 legacy analysis attrs
     - transform-level family gate 目前仍只覆盖 `copy / GEMM / flash-attn`
@@ -157,7 +161,7 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py -q`
   - `7 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q`
-  - `4 passed`
+  - `6 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `41 passed, 10 skipped, 1 xfailed`
 - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`

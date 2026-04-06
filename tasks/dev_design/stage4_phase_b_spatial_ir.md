@@ -282,6 +282,25 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_expo
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q
 ```
 
+### 6.3 2026-04-06 Hardening Slice: Semantic-Domain-First Spatial Scaffolding
+
+本轮 `Phase B` hardening 已落地一个 truth-source purity 子项：
+
+- `LowerToSpatialProgram` 构造 `Layout / WorkPartition` 时，已改为优先读取
+  `SemanticProgram.domains[*].axes / traits`
+- `blackhole.work_decomposition` 仍允许作为过渡回退，但不再是 primary truth source
+
+这一步当前覆盖到：
+
+- `layout.axes`
+- `work_partition.axes`
+- `layout.kind == indexed` 的 `derived_indices` 判定
+
+对应测试：
+
+- 删除 `blackhole.work_decomposition` 后，`SpatialProgram` 仍能从
+  `SemanticProgram.domain` 恢复正确的 axes / indexed layout
+
 ## 7. Hardening Gates Before Phase C
 
 `Phase B` 的目标不是“已经有一套 `SpatialProgram` 对象”，而是：

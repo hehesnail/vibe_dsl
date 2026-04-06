@@ -60,7 +60,10 @@ std::string GetMemberFuncName(const GlobalVar& gvar, const tir::PrimFunc& func) 
   return func->GetAttr<String>(tvm::attr::kGlobalSymbol).value_or(gvar->name_hint);
 }
 
-Array<String> GetWorkAxes(const tir::PrimFunc& func) {
+Array<String> GetWorkAxes(const SemanticProgram& program, const tir::PrimFunc& func) {
+  if (!program->domains.empty() && !program->domains[0]->axes.empty()) {
+    return program->domains[0]->axes;
+  }
   Array<String> axes;
   if (auto work_info = func->GetAttr<Map<String, Any>>("blackhole.work_decomposition")) {
     if (auto work_axes = work_info.value().Get("axes")) {
@@ -72,7 +75,14 @@ Array<String> GetWorkAxes(const tir::PrimFunc& func) {
   return axes;
 }
 
-bool HasDerivedIndices(const tir::PrimFunc& func) {
+bool HasDerivedIndices(const SemanticProgram& program, const tir::PrimFunc& func) {
+  if (!program->domains.empty()) {
+    for (const String& trait : program->domains[0]->traits) {
+      if (static_cast<std::string>(trait) == "derived_indices") {
+        return true;
+      }
+    }
+  }
   if (auto work_info = func->GetAttr<Map<String, Any>>("blackhole.work_decomposition")) {
     if (auto derived = work_info.value().Get("derived_index_exprs")) {
       return !Downcast<Array<Any>>(derived.value()).empty();
@@ -450,8 +460,8 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
 SpatialProgramBundle BuildSpatialProgramForFunc(const std::string& member_func,
                                                 const SemanticProgram& program,
                                                 const tir::PrimFunc& func) {
-  Array<String> work_axes = GetWorkAxes(func);
-  const bool has_derived_indices = HasDerivedIndices(func);
+  Array<String> work_axes = GetWorkAxes(program, func);
+  const bool has_derived_indices = HasDerivedIndices(program, func);
   if (IsSimpleCopyFastPath(program, func)) {
     return BuildCopyFastPath(member_func, program, work_axes, has_derived_indices);
   }
