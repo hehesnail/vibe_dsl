@@ -18,6 +18,7 @@ from .common import (
     gemm_kernel_with_mbar,
     gemm_kernel_with_policy,
     gemm_kernel_with_transpose_flags,
+    lower_blackhole_ops_through_phase_b,
 )
 from .test_blackhole_copy_pipeline import (
     _extract_blackhole_executable_spec,
@@ -343,8 +344,7 @@ def test_blackhole_gemm_cb_ids_are_rewritten_by_planner():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    lower_mod = tilelang.transform.LowerBlackholeOps()(mod)
+    lower_mod = lower_blackhole_ops_through_phase_b(mod)
     planned_mod = tilelang.transform.PlanBlackholeCB()(lower_mod)
 
     lower_func = lower_mod["main"]
@@ -439,8 +439,7 @@ def test_blackhole_gemm_contract_attr_is_materialized():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = lower_blackhole_ops_through_phase_b(mod)
 
     func = mod["main"]
     assert func.attrs and "blackhole.gemm_contract" in func.attrs
@@ -492,8 +491,7 @@ def test_blackhole_compute_contract_attr_is_materialized():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = lower_blackhole_ops_through_phase_b(mod)
 
     func = mod["main"]
     assert func.attrs and "blackhole.compute_contract" in func.attrs
@@ -542,8 +540,7 @@ def test_blackhole_compute_contract_attr_materializes_nondefault_compute_abi():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = lower_blackhole_ops_through_phase_b(mod)
 
     func = mod["main"]
     contract = func.attrs["blackhole.compute_contract"]
@@ -560,8 +557,7 @@ def test_blackhole_compute_contract_attr_materializes_richer_compute_config_extr
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = lower_blackhole_ops_through_phase_b(mod)
 
     func = mod["main"]
     contract = func.attrs["blackhole.compute_contract"]
@@ -587,8 +583,7 @@ def test_blackhole_compute_segment_compute_config_follows_compute_contract():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = lower_blackhole_ops_through_phase_b(mod)
 
     func = mod["main"]
     contract = func.attrs["blackhole.compute_contract"]
@@ -617,8 +612,7 @@ def test_blackhole_compute_contract_attr_materializes_nondefault_policy():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = lower_blackhole_ops_through_phase_b(mod)
 
     contract = mod["main"].attrs["blackhole.compute_contract"]
     assert int(contract["policy_type"]) == 1
@@ -633,8 +627,7 @@ def test_blackhole_compute_contract_attr_materializes_mbar_binding():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = lower_blackhole_ops_through_phase_b(mod)
 
     contract = mod["main"].attrs["blackhole.compute_contract"]
     assert bool(contract["has_mbarrier"]) is True
@@ -1369,8 +1362,7 @@ def test_blackhole_multicore_gemm_lowering_respects_transposed_b_layout():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = lower_blackhole_ops_through_phase_b(mod)
 
     func_text = mod["main"].script()
     assert func_text.count("tl.blackhole.write_tile_from_cb") == 1

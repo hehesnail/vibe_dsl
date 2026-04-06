@@ -191,6 +191,18 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
       Blackhole-only 的 IR-structural fallback：
       `shared* -> blackhole.cb`、`local.fragment -> blackhole.acc`
       不再只依赖 `blackhole.resource_plan` 的显式条目
+    - `LowerBlackholeOps` 的 lowering-requirements consumer path
+      已完成 hard cutover：
+      现在显式要求 `tl.spatial_program`，并且
+      `work_axes / derived_index_expr_count / work_dependent_loop_bound_count /
+      spatial_phase_count / spatial_channel_count / spatial_phase_boundary_states /
+      pipeline_stage_counts / pipeline_loop_vars / fragment_*`
+      都只从 `SpatialProgram` 恢复
+    - target/transform tests 里所有直接验证 `LowerBlackholeOps` 的路径
+      也已切回真实主线：
+      `SplitBlackholeKernel -> Analyze* -> AnalyzeSemanticStructure ->
+      LiftStatefulSemanticIR -> Validate* -> LowerToSpatialProgram ->
+      ValidateSpatialProgram -> LowerBlackholeOps`
     - transform-level family gate 已补到
       `topk / selection / chunk recurrence / routed dispatch / paged decode`，
       `Phase B` 当前覆盖
@@ -200,10 +212,11 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
       的过渡回退；`segment_plan` 已不再是 spatial builder truth source
     - `ValidateSpatialProgram` 目前只覆盖最小 semantic-domain legality，
       还不是完整的 spatial legality validator
-    - `LowerBlackholeOps` 仍同时读取 `tl.spatial_program` 与 lowering-facing
-      legacy analysis attrs；`fragment_regions` 仍保留 compatibility path，
-      `pipeline_stages` / `work_decomposition` 已不再是 primary input，
-      但仍保留 compatibility fallback
+    - `LowerBlackholeOps` 的 lowering-requirements path 已不再回读
+      `work_decomposition / fragment_regions / pipeline_stages`，
+      但 `SpatialProgram` schema 和 validator 仍未强到可以直接进入 `Phase C`
+    - `LowerToSpatialProgram` 仍保留对 `blackhole.work_decomposition`
+      的过渡回退；这条 truth-source purity 还没完全收干净
     - transform-level family gate 已覆盖
       `topk / selection / chunk recurrence / routed dispatch / paged decode`，
       但这还只是 compile-path representative coverage，
@@ -229,7 +242,7 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py -q`
   - `7 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q`
-  - `25 passed`
+  - `26 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `41 passed, 10 skipped, 1 xfailed`
 - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`

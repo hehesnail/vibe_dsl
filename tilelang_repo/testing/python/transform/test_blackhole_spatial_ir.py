@@ -74,6 +74,15 @@ def _replace_spatial_program(mod, program):
     return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
 
+def _strip_attr_from_all_functions(mod, attr_name: str):
+    rewritten = {}
+    for gvar, func in mod.functions.items():
+        if func.attrs and func.attrs.get(attr_name) is not None:
+            func = func.without_attr(attr_name)
+        rewritten[gvar] = func
+    return tvm.IRModule(rewritten, global_infos=mod.global_infos)
+
+
 def test_spatial_passes_are_registered():
     assert hasattr(tilelang.transform, "LowerToSpatialProgram")
     assert hasattr(tilelang.transform, "ValidateSpatialProgram")
@@ -640,6 +649,14 @@ def test_lower_blackhole_ops_uses_spatial_program_work_axes_without_work_decompo
 
     assert list(lowering_requirements["work_axes"]) == ["bx", "by"]
     assert int(lowering_requirements["derived_index_expr_count"]) == 1
+
+
+def test_lower_blackhole_ops_requires_spatial_program_contract():
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    mod = _strip_attr_from_all_functions(mod, "tl.spatial_program")
+
+    with pytest.raises(Exception, match="requires tl.spatial_program"):
+        tilelang.transform.LowerBlackholeOps()(mod)
 
 
 def test_lower_blackhole_ops_recovers_fragment_requirements_without_fragment_regions():

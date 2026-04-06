@@ -538,6 +538,57 @@ spatial legality validator 再推进一格：
 - `test_fusedmoe_routed_spatial_program_exposes_routed_dispatch_family_gate`
 - `test_paged_decode_spatial_program_exposes_paged_indexed_family_gate`
 
+### 6.12 2026-04-06 Hardening Slice: `LowerBlackholeOps` Consumer Hard Cutover
+
+在 family gate 补齐之后，`Phase B` 主链里最危险的残余问题已经不是 coverage，
+而是 `LowerBlackholeOps` 的 lowering-requirements 构造仍允许走 legacy-only 输入。
+
+这会制造一个错误心智模型：
+
+- 代码里虽然已经有 `tl.spatial_program`
+- 但 consumer 其实仍能在缺失 `SpatialProgram` 时回头读
+  `blackhole.work_decomposition / fragment_regions / pipeline_stages`
+- 结果测试和局部调试很容易继续绕开 `SemanticProgram -> SpatialProgram` 主链
+
+本轮把这条边界做成 hard cutover：
+
+- `LowerBlackholeOps` 现在显式要求 `tl.spatial_program`
+  - 缺失时直接报错
+  - 不再回退到 legacy-only 输入
+- lowering requirements 里的下列字段现在只允许从 `SpatialProgram` 恢复：
+  - `work_axes`
+  - `derived_index_expr_count`
+  - `work_dependent_loop_bound_count`
+  - `spatial_phase_count`
+  - `spatial_channel_count`
+  - `spatial_phase_boundary_states`
+  - `pipeline_stage_counts / pipeline_loop_vars`
+  - `fragment_op_kinds / row_reduction_targets / row_broadcast_sources /
+    pointwise_op_kinds / fragment_loop_carried_state`
+- 旧的 residual fallback：
+  - `blackhole.work_decomposition`
+  - `blackhole.fragment_regions`
+  - `blackhole.pipeline_stages`
+  - body `num_stages` annotation
+  已从 `LowerBlackholeOps` lowering-requirements 主路径删除
+
+这轮同时也把 target/transform 测试统一收回真实主线：
+
+- target tests 不再手搓 `SplitBlackholeKernel -> LowerBlackholeOps`
+- 改为走测试侧 helper：
+  `SplitBlackholeKernel -> Analyze* -> AnalyzeSemanticStructure ->
+  LiftStatefulSemanticIR -> Validate* -> LowerToSpatialProgram ->
+  ValidateSpatialProgram -> LowerBlackholeOps`
+
+对应测试：
+
+- `test_lower_blackhole_ops_requires_spatial_program_contract`
+- `test_blackhole_copy_pass_attrs`
+- `test_blackhole_copy_lowering_prefers_buffer_handles_over_annotation_names`
+- `test_blackhole_copy_semantics_survives_flatten_and_vectorize`
+- `test_blackhole_gemm_*` 下所有直接调用 `LowerBlackholeOps` 的 target tests
+- `test_blackhole_flash_attention_pipeline.py` 的 `_lower_blackhole_ops` helper paths
+
 ## 7. Hardening Gates Before Phase C
 
 `Phase B` 的目标不是“已经有一套 `SpatialProgram` 对象”，而是：
@@ -665,13 +716,19 @@ spatial legality validator。
 
 当前仍未完全达标：
 
-- `work_axes / derived_index_expr_count` 已改为优先读取 `tl.spatial_program`
-- `work_dependent_loop_bound_count` 已改为优先读取
-  `WorkPartition.payload.work_dependent_loop_bounds`
-- lowering-facing fragment summary 已有 `SemanticProgram + residual body scan`
-  fallback，但 `blackhole.fragment_regions` 仍保留 compatibility path
-- pipeline legality 已切到 `tl.spatial_program` 优先读取，
-  但 `blackhole.pipeline_stages` / body-annotation 仍保留 compatibility fallback
+- lowering requirements 这条 consumer path 已经 hard cutover：
+  `LowerBlackholeOps` 显式要求 `tl.spatial_program`，
+  不再接受 legacy-only `work_decomposition / fragment_regions / pipeline_stages`
+  输入
+- target/transform tests 也已统一到 `SemanticProgram -> SpatialProgram ->
+  LowerBlackholeOps` 主线
+
+当前还没完全完成的，不再是这条 consumer path 本身，而是：
+
+- `LowerToSpatialProgram` 仍保留对 `blackhole.work_decomposition`
+  的过渡回退
+- `ValidateSpatialProgram` 还不是最终形态的完整 legality validator
+- `SpatialProgram` schema 还需要继续做强，才能无保留进入 `Phase C`
 
 这类 mixed ownership 在 `Phase C` 之前必须继续收紧。
 

@@ -273,6 +273,11 @@
   最后 `LowerBlackholeOps` 再改成 spatial-program-first 恢复
   `fragment_op_kinds / row_reduction_targets / row_broadcast_sources /
   pointwise_op_kinds / fragment_loop_carried_state`
+- 一旦 `LowerBlackholeOps` 的 lowering-requirements 已经能完全从
+  `tl.spatial_program` 恢复，就不要继续保留“没 `SpatialProgram` 也能凑合跑”的 legacy
+  fallback。更稳的 cutover 是直接让 `LowerBlackholeOps` 硬要求
+  `tl.spatial_program`，然后把 target/transform tests 一起切回真实主线；否则测试会长期
+  伪装成“后端还支持 legacy-only 输入”，把 `Phase B` 的单一真源边界重新污染掉
 - 对 Blackhole 的 device resource canonicalization，不要把
   `blackhole.resource_plan` 当唯一真源。`grouped / routed / paged` 这类 family 的
   block-local shared alloc_buffer 很可能还没先出现在 plan 里，但 IR storage scope

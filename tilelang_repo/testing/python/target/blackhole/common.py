@@ -87,6 +87,27 @@ def check_blackhole_direct_execution_requirements():
     return True, "OK"
 
 
+def prepare_blackhole_phase_b_module(mod):
+    """Run the Blackhole Phase B mainline up to a validated SpatialProgram."""
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
+    mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
+    mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
+    mod = tilelang.transform.LiftStatefulSemanticIR()(mod)
+    mod = tilelang.transform.ValidateStatefulSemanticIR()(mod)
+    mod = tilelang.transform.ValidateSemanticRefinement()(mod)
+    mod = tilelang.transform.LowerToSpatialProgram()(mod)
+    mod = tilelang.transform.ValidateSpatialProgram()(mod)
+    return mod
+
+
+def lower_blackhole_ops_through_phase_b(mod):
+    """Lower via the SemanticProgram -> SpatialProgram mainline before LowerBlackholeOps."""
+    mod = prepare_blackhole_phase_b_module(mod)
+    return tilelang.transform.LowerBlackholeOps()(mod)
+
+
 def staged_copy_kernel(tile_rows: int, tile_cols: int = 1, tile_m: int = 32, tile_n: int = 32):
     """Define an explicit TileLang T.copy(global->shared->global) kernel."""
     m = tile_rows * tile_m
@@ -159,7 +180,7 @@ def make_blackhole_cb_requirements_mod(cb_requirements):
     target = tilelang.tvm.target.Target("blackhole")
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = lower_blackhole_ops_through_phase_b(mod)
     func = mod["main"].with_attr("blackhole.cb_requirements", cb_requirements)
     return tilelang.tvm.IRModule({"main": func})
 

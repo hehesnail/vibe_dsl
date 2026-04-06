@@ -15,6 +15,7 @@ from .common import (
     check_blackhole_direct_execution_requirements,
     find_loop_annotation,
     grid_indexed_staged_copy_kernel,
+    lower_blackhole_ops_through_phase_b,
     make_blackhole_cb_requirements_mod,
     staged_copy_kernel,
     staged_stick_copy_kernel,
@@ -352,8 +353,7 @@ def test_blackhole_copy_pass_attrs():
     target = Target("blackhole")
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = lower_blackhole_ops_through_phase_b(mod)
     mod = tilelang.transform.PlanBlackholeCB()(mod)
     mod = tilelang.transform.AssignBlackholeCores()(mod)
 
@@ -705,7 +705,7 @@ def test_blackhole_copy_lowering_prefers_buffer_handles_over_annotation_names():
         },
     )
     mod = tilelang.tvm.IRModule({"main": func})
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = lower_blackhole_ops_through_phase_b(mod)
 
     runtime_args = mod["main"].attrs["blackhole.runtime_args"]
     buffers = [str(arg["buffer"]) for arg in runtime_args if "buffer" in arg]
@@ -721,8 +721,7 @@ def test_blackhole_copy_semantics_survives_flatten_and_vectorize():
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = tilelang.transform.FlattenBuffer()(mod)
     mod = tilelang.transform.VectorizeLoop()(mod)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = lower_blackhole_ops_through_phase_b(mod)
     mod = tilelang.transform.PlanBlackholeCB()(mod)
     mod = tilelang.transform.AssignBlackholeCores()(mod)
 

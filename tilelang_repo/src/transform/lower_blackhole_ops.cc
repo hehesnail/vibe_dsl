@@ -538,25 +538,6 @@ static void ValidateNoResidualFragmentCompute(const Stmt& body) {
   });
 }
 
-static Array<Any> ExtractStringFieldList(const Map<String, Any>& item_map, const char* field_name,
-                                         const char* nested_field_name = nullptr) {
-  Array<Any> result;
-  if (auto items = item_map.Get(field_name)) {
-    for (const auto& item : Downcast<Array<Any>>(items.value())) {
-      if (nested_field_name != nullptr) {
-        auto nested =
-            item.as<Map<String, Any>>().value_or(Map<String, Any>());
-        if (auto field = nested.Get(nested_field_name)) {
-          result.push_back(Downcast<String>(field.value()));
-        }
-      } else {
-        result.push_back(Downcast<String>(item));
-      }
-    }
-  }
-  return result;
-}
-
 static bool HasUnsupportedFragmentOpsInRequirements(const Map<String, Any>& lowering_requirements) {
   if (auto fragment_ops = lowering_requirements.Get("fragment_op_kinds")) {
     for (const auto& item : Downcast<Array<Any>>(fragment_ops.value())) {
@@ -577,131 +558,6 @@ bool HasResidualFragmentAdd(const Stmt& body);
 bool HasResidualFragmentMax(const Stmt& body);
 bool HasResidualFragmentCast(const Stmt& body);
 bool HasResidualRowBroadcast(const Stmt& body);
-}
-
-static bool HasResidualFragmentComputeChain(const Stmt& body) {
-  bool found = false;
-  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
-    const auto* store = node.as<BufferStoreNode>();
-    if (!store || !IsUnsupportedResidualLocalScope(store->buffer)) {
-      return;
-    }
-    found = true;
-  });
-  return found;
-}
-
-static Array<Any> CollectResidualFragmentPointwiseKinds(const Stmt& body) {
-  Array<Any> pointwise_op_kinds;
-  std::unordered_set<std::string> seen_pointwise_kinds;
-  auto add_kind = [&](const char* kind) {
-    if (seen_pointwise_kinds.insert(kind).second) {
-      pointwise_op_kinds.push_back(String(kind));
-    }
-  };
-
-  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
-    const auto* store = node.as<BufferStoreNode>();
-    if (!store || !IsUnsupportedResidualLocalScope(store->buffer)) {
-      return;
-    }
-    if (IsFragmentFillValue(store->value) && store->indices.size() == 1) {
-      add_kind("fill");
-      return;
-    }
-    if (store->value.as<AddNode>()) {
-      add_kind("add");
-      return;
-    }
-    if (store->value.as<MaxNode>()) {
-      add_kind("max");
-      return;
-    }
-    if (store->value.as<CastNode>()) {
-      add_kind("cast");
-      return;
-    }
-    if (store->value.as<MulNode>()) {
-      add_kind("mul");
-      return;
-    }
-    if (store->value.as<DivNode>()) {
-      add_kind("div");
-      return;
-    }
-  });
-  return pointwise_op_kinds;
-}
-
-static void CollectFragmentFallbackRequirements(const PrimFunc& func,
-                                                Map<String, Any>* lowering_requirements) {
-  auto semantic_program = func->GetAttr<SemanticProgram>(attr::kTLSemanticProgram);
-
-  Array<Any> fragment_ops;
-  std::unordered_set<std::string> seen_ops;
-  auto add_fragment_op = [&](const char* op_name) {
-    if (seen_ops.insert(op_name).second) {
-      fragment_ops.push_back(String(op_name));
-    }
-  };
-
-  Array<Any> row_reduction_targets;
-  std::unordered_set<std::string> seen_reduction_targets;
-  Array<Any> loop_carried_state;
-  std::unordered_set<std::string> seen_loop_carried;
-  if (semantic_program) {
-    for (const Update& update : semantic_program.value()->updates) {
-      const auto kind =
-          semantic::ParseUpdateLawKind(static_cast<std::string>(update->law->kind));
-      const std::string state_name = update->state_name;
-      if (kind && *kind == semantic::UpdateLawKind::kReduce && !state_name.empty() &&
-          seen_reduction_targets.insert(state_name).second) {
-        row_reduction_targets.push_back(String(state_name));
-        add_fragment_op("row_reduction");
-      }
-    }
-    for (const State& state : semantic_program.value()->states) {
-      const auto role = semantic::ParseStateRole(static_cast<std::string>(state->role));
-      const std::string state_name = state->name;
-      if (!role || state_name.empty()) {
-        continue;
-      }
-      if (*role == semantic::StateRole::kCarry && seen_loop_carried.insert(state_name).second) {
-        loop_carried_state.push_back(String(state_name));
-      }
-    }
-  }
-
-  if (HasResidualRowBroadcast(func->body)) {
-    add_fragment_op("row_broadcast");
-    Array<Any> row_broadcast_sources;
-    if (!row_reduction_targets.empty()) {
-      for (const auto& item : row_reduction_targets) {
-        row_broadcast_sources.push_back(item);
-      }
-    } else {
-      row_broadcast_sources.push_back(String("row_broadcast"));
-    }
-    lowering_requirements->Set("row_broadcast_sources", row_broadcast_sources);
-  }
-
-  Array<Any> pointwise_op_kinds = CollectResidualFragmentPointwiseKinds(func->body);
-  if (!pointwise_op_kinds.empty()) {
-    add_fragment_op("pointwise_chain");
-    lowering_requirements->Set("pointwise_op_kinds", pointwise_op_kinds);
-  } else if (HasResidualFragmentComputeChain(func->body)) {
-    add_fragment_op("pointwise_chain");
-  }
-
-  if (!fragment_ops.empty()) {
-    lowering_requirements->Set("fragment_op_kinds", fragment_ops);
-  }
-  if (!row_reduction_targets.empty()) {
-    lowering_requirements->Set("row_reduction_targets", row_reduction_targets);
-  }
-  if (!loop_carried_state.empty()) {
-    lowering_requirements->Set("fragment_loop_carried_state", loop_carried_state);
-  }
 }
 
 static int CountLoweredRowReductionBuiltins(const Stmt& body) {
@@ -980,214 +836,59 @@ static void CollectFragmentRequirementsFromSpatialProgram(const SpatialProgram& 
   }
 }
 
-static void CollectPipelineStageInfoFromBody(const Stmt& body, Array<Any>* stage_counts,
-                                             Array<Any>* loop_vars) {
-  std::unordered_set<std::string> seen_loop_vars;
-  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
-    const auto* loop = node.as<ForNode>();
-    if (!loop || !loop->annotations.defined()) {
-      return;
-    }
-    auto stage_count = loop->annotations.Get("num_stages");
-    if (!stage_count.has_value()) {
-      return;
-    }
-    stage_counts->push_back(Downcast<Integer>(stage_count.value()));
-    const std::string loop_var_name = loop->loop_var->name_hint;
-    if (!loop_var_name.empty() && seen_loop_vars.insert(loop_var_name).second) {
-      loop_vars->push_back(String(loop_var_name));
-    }
-  });
-}
-
-static void CollectFragmentRequirementsFromFragmentRegions(const Array<Any>& fragment_regions,
-                                                           Map<String, Any>* lowering_requirements) {
-  Array<Any> fragment_ops;
-  std::unordered_set<std::string> seen_ops;
-  Array<Any> row_reduction_targets;
-  std::unordered_set<std::string> seen_reduction_targets;
-  Array<Any> row_broadcast_sources;
-  std::unordered_set<std::string> seen_broadcast_sources;
-  Array<Any> pointwise_op_kinds;
-  std::unordered_set<std::string> seen_pointwise_kinds;
-  Array<Any> loop_carried_state;
-  std::unordered_set<std::string> seen_loop_carried;
-  for (const auto& region_item : fragment_regions) {
-    auto region = region_item.as<Map<String, Any>>().value_or(Map<String, Any>());
-    for (const auto& item : ExtractStringFieldList(region, "ops")) {
-      const std::string op_name = Downcast<String>(item);
-      if (seen_ops.insert(op_name).second) {
-        fragment_ops.push_back(item);
-      }
-    }
-    for (const auto& item :
-         ExtractStringFieldList(region, manifest_key::kRowReductions, schema_key::kTarget)) {
-      const std::string name = Downcast<String>(item);
-      if (seen_reduction_targets.insert(name).second) {
-        row_reduction_targets.push_back(item);
-      }
-    }
-    for (const auto& item :
-         ExtractStringFieldList(region, "row_broadcasts", schema_key::kSource)) {
-      const std::string name = Downcast<String>(item);
-      if (seen_broadcast_sources.insert(name).second) {
-        row_broadcast_sources.push_back(item);
-      }
-    }
-    for (const auto& item : ExtractStringFieldList(region, "pointwise_ops")) {
-      const std::string name = Downcast<String>(item);
-      if (seen_pointwise_kinds.insert(name).second) {
-        pointwise_op_kinds.push_back(item);
-      }
-    }
-    for (const auto& item :
-         ExtractStringFieldList(region, manifest_key::kLoopCarriedState, schema_key::kName)) {
-      const std::string name = Downcast<String>(item);
-      if (seen_loop_carried.insert(name).second) {
-        loop_carried_state.push_back(item);
-      }
-    }
-  }
-  SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kFragmentOpKinds),
-                               fragment_ops);
-  SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kRowReductionTargets),
-                               row_reduction_targets);
-  SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kRowBroadcastSources),
-                               row_broadcast_sources);
-  SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kPointwiseOpKinds),
-                               pointwise_op_kinds);
-  SetArrayRequirementIfMissing(lowering_requirements,
-                               String(schema_key::kFragmentLoopCarriedState),
-                               loop_carried_state);
-}
-
 static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& func) {
   Map<String, Any> lowering_requirements;
   auto spatial_program = func->GetAttr<SpatialProgram>(attr::kTLSpatialProgram);
+  ICHECK(spatial_program)
+      << "LowerBlackholeOps requires tl.spatial_program; run LowerToSpatialProgram and "
+         "ValidateSpatialProgram before lowering";
 
-  if (spatial_program) {
-    if (auto axes = GetSpatialWorkAxesFromProgram(spatial_program.value())) {
-      lowering_requirements.Set("work_axes", axes.value());
-    }
-    const int derived_index_expr_count =
-        GetSpatialDerivedIndexExprCountFromProgram(spatial_program.value());
-    if (derived_index_expr_count > 0) {
-      lowering_requirements.Set("derived_index_expr_count", Integer(derived_index_expr_count));
-    }
-    const int work_dependent_loop_bound_count =
-        GetWorkDependentLoopBoundCountFromProgram(spatial_program.value());
-    if (work_dependent_loop_bound_count > 0) {
-      lowering_requirements.Set("work_dependent_loop_bound_count",
-                                Integer(work_dependent_loop_bound_count));
-    }
+  const SpatialProgram& program = spatial_program.value();
+  if (auto axes = GetSpatialWorkAxesFromProgram(program)) {
+    lowering_requirements.Set("work_axes", axes.value());
   }
-
-  if (auto work_info = func->GetAttr<Map<String, Any>>("blackhole.work_decomposition")) {
-    auto work_map = work_info.value();
-    if (!lowering_requirements.count("work_axes")) {
-      if (auto axes = work_map.Get("axes")) {
-        lowering_requirements.Set("work_axes", axes.value());
-      }
-    }
-    if (!lowering_requirements.count("derived_index_expr_count")) {
-      if (auto derived = work_map.Get("derived_index_exprs")) {
-        lowering_requirements.Set(
-            "derived_index_expr_count",
-            Integer(static_cast<int>(Downcast<Array<Any>>(derived.value()).size())));
-      }
-    }
-    if (!lowering_requirements.count("work_dependent_loop_bound_count")) {
-      if (auto loop_bounds = work_map.Get("work_dependent_loop_bounds")) {
-      lowering_requirements.Set(
-          "work_dependent_loop_bound_count",
-          Integer(static_cast<int>(Downcast<Array<Any>>(loop_bounds.value()).size())));
-      }
-    }
+  const int derived_index_expr_count = GetSpatialDerivedIndexExprCountFromProgram(program);
+  if (derived_index_expr_count > 0) {
+    lowering_requirements.Set("derived_index_expr_count", Integer(derived_index_expr_count));
   }
-
-  if (spatial_program) {
-    const SpatialProgram& program = spatial_program.value();
-    if (!program->phases.empty()) {
-      lowering_requirements.Set("spatial_phase_count",
-                                Integer(static_cast<int>(program->phases.size())));
-    }
-    if (!program->channels.empty()) {
-      lowering_requirements.Set("spatial_channel_count",
-                                Integer(static_cast<int>(program->channels.size())));
-    }
-    Array<Any> phase_boundary_states;
-    std::unordered_set<std::string> seen_phase_boundary_states;
-    for (const ResourceIntent& intent : program->resource_intents) {
-      if (static_cast<std::string>(intent->kind) != "phase_boundary_materialization") {
-        continue;
-      }
-      const std::string target_name = intent->target_name;
-      if (target_name.empty() || !seen_phase_boundary_states.insert(target_name).second) {
-        continue;
-      }
-      phase_boundary_states.push_back(String(target_name));
-    }
-    if (!phase_boundary_states.empty()) {
-      lowering_requirements.Set("spatial_phase_boundary_states", phase_boundary_states);
-    }
-    Array<Any> stage_counts;
-    Array<Any> loop_vars;
-    CollectPipelineStageInfoFromSpatialProgram(program, &stage_counts, &loop_vars);
-    if (!stage_counts.empty()) {
-      lowering_requirements.Set("pipeline_stage_counts", stage_counts);
-    }
-    if (!loop_vars.empty()) {
-      lowering_requirements.Set("pipeline_loop_vars", loop_vars);
-    }
-    CollectFragmentRequirementsFromSpatialProgram(program, &lowering_requirements);
+  const int work_dependent_loop_bound_count = GetWorkDependentLoopBoundCountFromProgram(program);
+  if (work_dependent_loop_bound_count > 0) {
+    lowering_requirements.Set("work_dependent_loop_bound_count",
+                              Integer(work_dependent_loop_bound_count));
   }
-
-  if (auto fragment_regions = func->GetAttr<Array<Any>>("blackhole.fragment_regions")) {
-    CollectFragmentRequirementsFromFragmentRegions(fragment_regions.value(),
-                                                  &lowering_requirements);
-  } else {
-    if (!lowering_requirements.count(String(schema_key::kFragmentOpKinds)) &&
-        !lowering_requirements.count(String(schema_key::kRowReductionTargets)) &&
-        !lowering_requirements.count(String(schema_key::kRowBroadcastSources)) &&
-        !lowering_requirements.count(String(schema_key::kPointwiseOpKinds)) &&
-        !lowering_requirements.count(String(schema_key::kFragmentLoopCarriedState))) {
-      CollectFragmentFallbackRequirements(func, &lowering_requirements);
-    }
+  if (!program->phases.empty()) {
+    lowering_requirements.Set("spatial_phase_count",
+                              Integer(static_cast<int>(program->phases.size())));
   }
-
-  if (auto pipeline_stages = func->GetAttr<Array<Any>>("blackhole.pipeline_stages")) {
-    Array<Any> stage_counts;
-    Array<Any> loop_vars;
-    std::unordered_set<std::string> seen_loop_vars;
-    for (const auto& stage_item : pipeline_stages.value()) {
-      auto stage = stage_item.as<Map<String, Any>>().value_or(Map<String, Any>());
-      if (auto num_stages = stage.Get("num_stages")) {
-        stage_counts.push_back(Downcast<Integer>(num_stages.value()));
-      }
-      if (auto loop_var = stage.Get("loop_var")) {
-        const std::string loop_var_name = Downcast<String>(loop_var.value());
-        if (seen_loop_vars.insert(loop_var_name).second) {
-          loop_vars.push_back(loop_var.value());
-        }
-      }
-    }
-    if (!stage_counts.empty() && !lowering_requirements.count("pipeline_stage_counts")) {
-      lowering_requirements.Set("pipeline_stage_counts", stage_counts);
-    }
-    if (!loop_vars.empty() && !lowering_requirements.count("pipeline_loop_vars")) {
-      lowering_requirements.Set("pipeline_loop_vars", loop_vars);
-    }
+  if (!program->channels.empty()) {
+    lowering_requirements.Set("spatial_channel_count",
+                              Integer(static_cast<int>(program->channels.size())));
   }
-
+  Array<Any> phase_boundary_states;
+  std::unordered_set<std::string> seen_phase_boundary_states;
+  for (const ResourceIntent& intent : program->resource_intents) {
+    if (static_cast<std::string>(intent->kind) != "phase_boundary_materialization") {
+      continue;
+    }
+    const std::string target_name = intent->target_name;
+    if (target_name.empty() || !seen_phase_boundary_states.insert(target_name).second) {
+      continue;
+    }
+    phase_boundary_states.push_back(String(target_name));
+  }
+  if (!phase_boundary_states.empty()) {
+    lowering_requirements.Set("spatial_phase_boundary_states", phase_boundary_states);
+  }
   Array<Any> stage_counts;
   Array<Any> loop_vars;
-  CollectPipelineStageInfoFromBody(func->body, &stage_counts, &loop_vars);
-  if (!stage_counts.empty() && !lowering_requirements.count("pipeline_stage_counts")) {
+  CollectPipelineStageInfoFromSpatialProgram(program, &stage_counts, &loop_vars);
+  if (!stage_counts.empty()) {
     lowering_requirements.Set("pipeline_stage_counts", stage_counts);
   }
-  if (!loop_vars.empty() && !lowering_requirements.count("pipeline_loop_vars")) {
+  if (!loop_vars.empty()) {
     lowering_requirements.Set("pipeline_loop_vars", loop_vars);
   }
+  CollectFragmentRequirementsFromSpatialProgram(program, &lowering_requirements);
 
   return lowering_requirements;
 }

@@ -10,7 +10,7 @@ from tilelang.engine.phase import OptimizeForTarget
 from tilelang import tvm
 from tvm.target import Target
 
-from .common import check_blackhole_codegen_requirements
+from .common import check_blackhole_codegen_requirements, lower_blackhole_ops_through_phase_b
 from .test_blackhole_copy_pipeline import (
     _extract_blackhole_executable_spec,
     _require_blackhole_kernel,
@@ -44,11 +44,7 @@ def _lower_flash_attention_through_blackhole_ops(*, is_causal=False):
     )
     with target:
         mod = LowerAndLegalize(mod, target)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
-    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
-    mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = lower_blackhole_ops_through_phase_b(mod)
     return mod["main"]
 
 
@@ -57,11 +53,7 @@ def _run_flash_attention_lower_blackhole_ops(example_module, *args, **kwargs):
     mod = tvm.IRModule({"main": example_module.flashattn.jit_impl.get_tir(*args, **kwargs)})
     with target:
         mod = LowerAndLegalize(mod, target)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
-    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
-    mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
-    return tilelang.transform.LowerBlackholeOps()(mod)
+    return lower_blackhole_ops_through_phase_b(mod)
 
 
 def _run_flash_attention_lower_blackhole_ops_after_optimize(example_module, *args, **kwargs):
@@ -70,11 +62,7 @@ def _run_flash_attention_lower_blackhole_ops_after_optimize(example_module, *arg
     with target:
         mod = LowerAndLegalize(mod, target)
         mod = OptimizeForTarget(mod, target)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
-    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
-    mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
-    return tilelang.transform.LowerBlackholeOps()(mod)
+    return lower_blackhole_ops_through_phase_b(mod)
 
 
 def test_flash_attention_forward_lower_blackhole_ops_emits_generic_lowering_requirements():
