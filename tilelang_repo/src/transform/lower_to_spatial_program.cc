@@ -63,32 +63,20 @@ std::string GetMemberFuncName(const GlobalVar& gvar, const tir::PrimFunc& func) 
   return func->GetAttr<String>(tvm::attr::kGlobalSymbol).value_or(gvar->name_hint);
 }
 
-Array<String> GetWorkAxes(const SemanticProgram& program, const tir::PrimFunc& func) {
-  if (!program->domains.empty() && !program->domains[0]->axes.empty()) {
-    return program->domains[0]->axes;
-  }
-  Array<String> axes;
-  if (auto work_info = func->GetAttr<Map<String, Any>>("blackhole.work_decomposition")) {
-    if (auto work_axes = work_info.value().Get("axes")) {
-      for (const auto& axis_any : Downcast<Array<Any>>(work_axes.value())) {
-        axes.push_back(Downcast<String>(axis_any));
-      }
-    }
-  }
-  return axes;
+Array<String> GetWorkAxes(const SemanticProgram& program) {
+  ICHECK(!program->domains.empty())
+      << "LowerToSpatialProgram requires SemanticProgram to carry at least one domain";
+  ICHECK(!program->domains[0]->axes.empty())
+      << "LowerToSpatialProgram requires SemanticProgram domains to carry work axes";
+  return program->domains[0]->axes;
 }
 
-bool HasDerivedIndices(const SemanticProgram& program, const tir::PrimFunc& func) {
-  if (!program->domains.empty()) {
-    for (const String& trait : program->domains[0]->traits) {
-      if (static_cast<std::string>(trait) == "derived_indices") {
-        return true;
-      }
-    }
-  }
-  if (auto work_info = func->GetAttr<Map<String, Any>>("blackhole.work_decomposition")) {
-    if (auto derived = work_info.value().Get("derived_index_exprs")) {
-      return !Downcast<Array<Any>>(derived.value()).empty();
+bool HasDerivedIndices(const SemanticProgram& program) {
+  ICHECK(!program->domains.empty())
+      << "LowerToSpatialProgram requires SemanticProgram to carry at least one domain";
+  for (const String& trait : program->domains[0]->traits) {
+    if (static_cast<std::string>(trait) == "derived_indices") {
+      return true;
     }
   }
   return false;
@@ -217,10 +205,7 @@ std::string CoreTypeTraitForSegmentKind(const std::string& segment_kind) {
   return "";
 }
 
-bool IsSimpleCopyFastPath(const SemanticProgram& program, const tir::PrimFunc& func) {
-  if (func->GetAttr<Array<Any>>("blackhole.segment_plan")) {
-    return false;
-  }
+bool IsSimpleCopyFastPath(const SemanticProgram& program) {
   if (!program->states.empty() || program->updates.size() != 1) {
     return false;
   }
@@ -430,12 +415,6 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
   std::unordered_set<std::string> known_task_names;
   for (const Update& update : program->updates) {
     const std::string update_name = static_cast<std::string>(update->name);
-    const std::string state_name = static_cast<std::string>(update->state_name);
-    const auto law_kind = ParseUpdateLawKind(static_cast<std::string>(update->law->kind));
-    if (update_name == "root_map" && state_name.empty() && law_kind &&
-        *law_kind == UpdateLawKind::kMap && program->updates.size() > 1) {
-      continue;
-    }
     const std::string phase_name = GenericPhaseNameForUpdate(update, multi_phase);
     const std::string task_kind = GenericTaskKindForUpdate(update);
     Task task(String(update_name), String(task_kind), String(phase_name),
@@ -573,9 +552,9 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
 SpatialProgramBundle BuildSpatialProgramForFunc(const std::string& member_func,
                                                 const SemanticProgram& program,
                                                 const tir::PrimFunc& func) {
-  Array<String> work_axes = GetWorkAxes(program, func);
-  const bool has_derived_indices = HasDerivedIndices(program, func);
-  if (IsSimpleCopyFastPath(program, func)) {
+  Array<String> work_axes = GetWorkAxes(program);
+  const bool has_derived_indices = HasDerivedIndices(program);
+  if (IsSimpleCopyFastPath(program)) {
     return BuildCopyFastPath(member_func, program, work_axes, has_derived_indices);
   }
   if (IsSimpleGemmFastPath(program, func)) {

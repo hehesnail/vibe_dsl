@@ -3,12 +3,13 @@
 ## 基本信息
 
 - **文档角色**: `Phase B` 实施与设计边界文档
-- **当前状态**: 当前主实施阶段；`2026-04-06` 已完成首轮落地：
+- **当前状态**: `2026-04-06` 已完成 compile-path hardening：
   `SpatialProgram / ProgramPhase`、copy/GEMM fast-path、`flash-attn` multi-phase gate、
-  以及 `LowerBlackholeOps` 对 spatial summary 的最小接线均已进入主链。
-  但这仍是 **Phase B first landing**，还不是可直接进入 `Phase C` 的最终退出状态；
-  在 `SpatialProgram` 成为唯一可信 spatial truth owner 之前，仍需完成本页第 7 节定义的
-  hardening gates。
+  representative family gate、`LowerToSpatialProgram -> ValidateSpatialProgram`、
+  以及 `LowerBlackholeOps` 的 spatial-only consumer cutover 均已进入主链。
+  `Phase B` 作为 `SemanticProgram -> SpatialProgram` 的 compile-path 边界已经收口；
+  后续 schema / validator 的继续加固不再单独阻塞阶段切换，而由 `Phase C`
+  translator 的真实 contract 需求继续驱动。
 - **上游输入**: 冻结后的 `SemanticProgram`
 - **下游输出**: 冻结后的 `SpatialProgram`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -805,20 +806,26 @@ schema strengthening / consumer cutover。
 这轮 hardening 的明确边界：
 
 - `segment_plan` 已不再参与 `SpatialProgram` builder
-- `work_decomposition` / `fragment_regions` / `pipeline_stages` 仍可保留 compatibility path
-- 但不能让这些 legacy attrs 继续外溢成 validator 或 `LowerBlackholeOps`
-  的 primary truth source
+- `LowerToSpatialProgram` 不再把 `work_decomposition` 当 builder truth source
+- `work_decomposition` / `fragment_regions` / `pipeline_stages` 仍可在更后段保留
+  compatibility path
+- 但不能让这些 legacy attrs 继续外溢成 validator、generic builder，
+  或 `LowerBlackholeOps` 的 primary truth source
+
+另外，generic builder 不能再用 `root_map` 之类的 update name 做协议分支：
+
+- generic path 按 semantic `Update` object 自身建 task
+- update name 只作为 IR object identity、调试和打印，不承担语义分流职责
 
 ## 8. Current Gap Inventory
 
-基于当前实现状态，`Phase B` 的主要缺口可以收成下面四类：
+基于当前实现状态，`Phase B` 的当前结论应表述为：
 
-1. spatial builder 仍存在 legacy attr truth leakage
-2. object schema 已有骨架，但还不够强到支撑 `Phase C` 只读消费
-3. validator 仍偏结构检查，缺少真正的 legality contract
-4. family coverage 仍不足以支撑“足够 general”的宣称
-
-因此当前状态应表述为：
-
-- `Phase B` 已完成首轮落地并验证主链可行
-- `Phase B` 尚未完成 hardening，不应直接表述为已具备 `Phase C` cutover 前提
+1. `SemanticProgram -> SpatialProgram` compile-path cutover 已完成
+2. spatial builder / validator / consumer 的 primary truth 已切回 typed companion IR
+3. `ValidateSpatialProgram` 当前会把 semantic statefulness 显式投影成最小 legality：
+   stateful semantic states 必须对应 `state_residency`，multi-phase program 还必须覆盖
+   每个 stateful state 的 `phase_boundary_materialization`
+4. representative family gate 已证明当前 object boundary 不会立刻退化回 workload-specific matcher
+5. 后续更强 schema / legality contract 仍然需要，但它们现在属于 `Phase C`
+   translator 驱动的下一轮增强，而不是继续停在 `Phase B` 的 blocker

@@ -37,49 +37,47 @@
     `CollectSemanticManifestSeeds -> ProjectSemanticManifest -> AugmentSemanticManifest`
   - `AnalyzeSemanticStructure` 已改成对 manifest structural evidence 的 manifest-first 消费，
     `fragment_regions` 退化为 compatibility fallback
-- **Phase B**: 当前主实施阶段
+- **Phase B**: 已完成 compile-path hardening
   - `SpatialProgram / ProgramPhase / Task / Channel / Layout / WorkPartition /
     Placement / SyncEdge / ResourceIntent` 已落地
   - `LowerToSpatialProgram -> ValidateSpatialProgram` 已接入 Blackhole 主线
-  - copy / GEMM simple-workload fast-path 已稳定
-  - `flash-attn` multi-phase spatial gate 已打通
-  - `LowerBlackholeOps` 已开始显式消费 `tl.spatial_program`
-    的 phase/channel/phase-boundary summary
-  - 当前状态应视为 `Phase B first landing`，仍需完成 truth-source purity /
-    schema strengthening / legality validator / consumer cutover / wider family gates
-    之后，才可进入 `Phase C` 正式 cutover
-- **Phase C**: 已定义，待 Phase B 后推进
+  - compile-path hardening 已收口：
+    - `LowerToSpatialProgram` 不再把 `work_decomposition / segment_plan`
+      当 spatial builder truth source
+    - `LowerBlackholeOps` 已硬要求 `tl.spatial_program`，不再回读
+      `work_decomposition / fragment_regions / pipeline_stages`
+    - representative family gate 已覆盖
+      `copy / GEMM / flash-attn / topk / chunk_o / fusedmoe_routed / mla_decode_paged`
+  - `Phase B` 当前应视为已完成 `SemanticProgram -> SpatialProgram`
+    compile-path cutover；后续 schema / validator 的继续加固将由 `Phase C` translator
+    真实需求驱动，而不再作为继续停在 `Phase B` 的 blocker
+- **Phase C**: 当前主实施阶段
+  - `TT Target IR` 已定义，下一步开始 `Spatial Program IR -> TT Target IR`
+    的单一真源 cutover
 
 ## 当前主 blocker
 
-当前 blocker 已经不是 `Phase A` 语义恢复本身，而是：
+当前 blocker 已经收敛到：
 
-- `Phase B` 仍未完成 hardening，`SpatialProgram` 还没有成为足以支撑
-  `Phase C` cutover 的唯一可信 spatial truth owner
-- `Spatial Program IR -> TT Target IR` 的单一真源切换因此还不能直接开始
+- `Spatial Program IR -> TT Target IR` 的单一真源切换尚未开始落地
+- `TTProgram / MaterializeTTExecutableSpec` 仍不存在，当前 target/runtime contract
+  还停留在 `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores -> rt_mod_blackhole`
+  的旧主链上
 
-这也是当前 `blackhole.acc` correctness payoff 仍未完全兑现的根因：问题已经转成
-spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
+这也是当前 `blackhole.acc` correctness payoff 仍未完全兑现的根因：主 blocker
+已经转成 spatial / target 层的 contract materialization，而不是继续补 semantic matcher
+或继续在 `Phase B` 保留 legacy attr fallback。
 
 ## 下一步
 
-1. 先完成 `Phase B` hardening gates
-   - `LowerToSpatialProgram` truth-source purity：
-     不再把 `work_decomposition / segment_plan / pipeline_stages / fragment_regions`
-     当 spatial truth source
-   - `SpatialProgram` schema strengthening：
-     让 task/channel/layout/sync/phase-boundary truth 足以支撑下游只读消费
-   - `ValidateSpatialProgram` 从结构检查升级到 legality validator
-   - 继续收紧 `Phase B -> LowerBlackholeOps` 边界：
-     逐步迁走对 `blackhole.fragment_regions` 等 legacy summary 的 lowering-facing residual 依赖
-   - family gate 的最小 compile-path 代表当前已具备
-     （`topk / chunk_o / fusedmoe_routed / mla_decode_paged`）；
-     下一步不再把 family coverage 当主 blocker，而是继续收 truth-source purity /
-     schema / validator / consumer cutover
-2. 通过 hardening gate 后，再执行 `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
-   - 完成 TT target cutover
+1. 执行 `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
+   - 落地 `TTProgram`
+   - 让 `MaterializeTTExecutableSpec` 成为唯一 target materialization
    - 删除 compatibility writer / reader / fallback
-   - 承接 `flash-attn` correctness payoff 与更宽 family expansion
+2. 用 `TTProgram` translator 反推 `SpatialProgram` 还缺的 contract
+   - 继续按 typed schema 扩 `Task / Channel / Placement / ResourceIntent`
+   - 继续收紧 `ValidateSpatialProgram`，但只补真实 translator 需要的 legality
+3. 在新 target 主链上承接 `flash-attn` correctness payoff 与更宽 family expansion
 
 ## 当前代码事实
 
@@ -133,8 +131,7 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
     - module-scope `ProgramPhase` aggregation 写回 `tl.device_programs`
     - unsplit single-`PrimFunc` 退化场景对 `tl.device_programs.root_symbol` 的 registry fallback
     - `Layout / WorkPartition` 的 spatial scaffolding 已切到 semantic-domain-first：
-      优先读取 `SemanticProgram.domains[*].axes / traits`，`blackhole.work_decomposition`
-      只保留过渡回退
+      `LowerToSpatialProgram` 只读取 `SemanticProgram.domains[*].axes / traits`
     - `ValidateSpatialProgram` 已从纯结构检查升级到最小 semantic-domain legality gate：
       `layout / work_partition` 必须和 `SemanticProgram.domain` 的 axes 对齐，
       `layout.kind == indexed` 必须和 `derived_indices` trait 对齐
@@ -161,6 +158,10 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
     - `ValidateSpatialProgram` 已继续补强 phase/channel/module-scope legality：
       phase channel 必须真正落到 owning phase，非首 multi-phase phase 不能失去
       channel contract，`tl.device_programs` 也不再只比较 phase 数量
+    - `ValidateSpatialProgram` 现在也会把 semantic statefulness 显式收成最小 legality：
+      stateful semantic states 必须 materialize `state_residency`，
+      multi-phase spatial program 还必须为每个 stateful semantic state
+      提供 `phase_boundary_materialization`
     - `ValidateSpatialProgram` 现在也会显式校验 fragment contract：
       fragment program 不能缺失 fragment resource intent，
       contract payload 必须显式携带 `fragment_op_kinds`
@@ -203,24 +204,18 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
       `SplitBlackholeKernel -> Analyze* -> AnalyzeSemanticStructure ->
       LiftStatefulSemanticIR -> Validate* -> LowerToSpatialProgram ->
       ValidateSpatialProgram -> LowerBlackholeOps`
+    - generic spatial builder 已不再对 `root_map` 之类的 update name 做协议分支；
+      generic path 按 semantic `Update` object 自身建 task，更新名只作为 object identity
     - transform-level family gate 已补到
       `topk / selection / chunk recurrence / routed dispatch / paged decode`，
       `Phase B` 当前覆盖
       `copy / GEMM / flash-attn / topk / chunk_o / fusedmoe_routed / mla_decode_paged`
-  - `Phase B` 当前的主要未完成项也已明确：
-    - `LowerToSpatialProgram` 仍保留对 `blackhole.work_decomposition`
-      的过渡回退；`segment_plan` 已不再是 spatial builder truth source
-    - `ValidateSpatialProgram` 目前只覆盖最小 semantic-domain legality，
-      还不是完整的 spatial legality validator
-    - `LowerBlackholeOps` 的 lowering-requirements path 已不再回读
-      `work_decomposition / fragment_regions / pipeline_stages`，
-      但 `SpatialProgram` schema 和 validator 仍未强到可以直接进入 `Phase C`
-    - `LowerToSpatialProgram` 仍保留对 `blackhole.work_decomposition`
-      的过渡回退；这条 truth-source purity 还没完全收干净
-    - transform-level family gate 已覆盖
-      `topk / selection / chunk recurrence / routed dispatch / paged decode`，
-      但这还只是 compile-path representative coverage，
-      不是 `Phase C` cutover proof，也不等于 runtime correctness 全完成
+  - `Phase B` 当前的边界已经收口：
+    - compile-path cutover 已完成
+    - 当前不再把 residual `Phase B` fallback cleanup 当主 blocker
+    - `SpatialProgram` 更强的 schema / validator 继续增强会跟随 `Phase C`
+      translator 的真实 contract 需求推进
+    - 这不等于 `Phase C` cutover proof，也不等于 runtime correctness 全完成
   - `blackhole.fragment_regions` 不再是 semantic truth 输入；
     semantic 侧所有 evidence 已切换为 manifest-first 消费；
     `fragment_regions` 当前只保留 `LowerBlackholeOps` lowering-facing compatibility 职责，
@@ -242,7 +237,7 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py -q`
   - `7 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q`
-  - `26 passed`
+  - `28 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `41 passed, 10 skipped, 1 xfailed`
 - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
@@ -262,9 +257,9 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 ## 当前文档入口
 
 - `tasks/dev_design/final_blackhole_backend_redesign.md`
-- `tasks/dev_design/stage4_semantic_manifest.md`
-- `tasks/dev_design/stage4_phase_b_spatial_ir.md`
 - `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
+- `tasks/dev_design/stage4_phase_b_spatial_ir.md`
+- `tasks/dev_design/stage4_semantic_manifest.md`
 - `tasks/dev_design/stage4_phase_a_semantic_ir.md`
 - `tasks/dev_design/stage4_phase_a_formalization_note.md`
 - `tasks/dev_design/stage4_stage0_guardrails.md`
@@ -276,7 +271,8 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 - 详细逐步实现记录、历史 checklist 和理论证明草稿分别留在阶段文档、git history 与 formalization note 中。
 - `2026-04-06` 已完成一轮活动文档状态审计：
   `README.md`、`AGENTS.md`、`CLAUDE.md`、active stage docs 已统一到
-  `Phase A` 完成、`Phase B` 主线、manifest-first 与 `fragment_regions` 残余职责的当前口径。
+  `Phase A` 完成、`Phase B` compile-path hardening 收口、`Phase C` 成为当前主线、
+  以及 manifest-first 与 `fragment_regions` 残余职责的当前口径。
 - `stage4_semantic_manifest.md` 当前作为 `Phase A` 信息源重构文档保留：
   - 它的定位是把 `Phase A` 需要的 explicit-op evidence 从 late matcher 前移到真实销毁边界：
     - `LowerTileOp` 边界的 early capture

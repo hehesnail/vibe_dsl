@@ -74,6 +74,11 @@ def _replace_spatial_program(mod, program):
     return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
 
+def _replace_semantic_program(mod, program):
+    func = mod["main"].with_attr("tl.semantic_program", program)
+    return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
+
+
 def _strip_attr_from_all_functions(mod, attr_name: str):
     rewritten = {}
     for gvar, func in mod.functions.items():
@@ -368,6 +373,64 @@ def test_gemm_spatial_program_uses_segment_kind_ir_not_segment_plan():
     assert len(program.channels) >= 2
 
 
+def test_spatial_program_builder_does_not_branch_on_root_map_update_name():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    semantic_program = mod["main"].attrs["tl.semantic_program"]
+    scaffold_index = next(
+        i
+        for i, update in enumerate(semantic_program.updates)
+        if str(update.law.kind) == "map"
+        and str(update.state_name) == ""
+        and str(update.law.target_state) == ""
+        and len(update.law.source_states) == 0
+    )
+
+    make_update = tvm.get_global_func("tl.Update")
+    make_program = tvm.get_global_func("tl.SemanticProgram")
+    rebuilt_updates = list(semantic_program.updates)
+    scaffold_update = rebuilt_updates[scaffold_index]
+    rebuilt_updates[scaffold_index] = make_update(
+        "renamed_scaffold_map",
+        scaffold_update.state_name,
+        scaffold_update.law,
+        scaffold_update.anchors,
+        scaffold_update.bindings,
+    )
+    rebuilt_program = make_program(
+        list(semantic_program.domains),
+        list(semantic_program.states),
+        rebuilt_updates,
+        list(semantic_program.supplements),
+        list(semantic_program.seeds),
+        list(semantic_program.anchors),
+        list(semantic_program.state_versions),
+        list(semantic_program.state_defs),
+        list(semantic_program.state_uses),
+        list(semantic_program.state_joins),
+    )
+
+    mod = _replace_semantic_program(_drop_existing_spatial_program(mod), rebuilt_program)
+    mod = tilelang.transform.LowerToSpatialProgram()(mod)
+    mod = tilelang.transform.ValidateSpatialProgram()(mod)
+    rebuilt_task_names = [str(task.name) for task in mod["main"].attrs["tl.spatial_program"].tasks]
+
+    assert "renamed_scaffold_map" in rebuilt_task_names
+    assert "root_map" not in rebuilt_task_names
+
+
 def test_validate_spatial_program_rejects_layout_axes_mismatch_with_semantic_domain():
     mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=2, tile_cols=3))
     program = mod["main"].attrs["tl.spatial_program"]
@@ -445,6 +508,59 @@ def test_validate_spatial_program_rejects_multi_phase_program_without_channel_co
     mod = _replace_spatial_program(mod, bad_program)
 
     with pytest.raises(Exception, match="downstream multi-phase programs to reference at least one channel"):
+        tilelang.transform.ValidateSpatialProgram()(mod)
+
+
+def test_validate_spatial_program_rejects_insufficient_phase_boundary_materialization():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    semantic_program = mod["main"].attrs["tl.semantic_program"]
+    stateful_count = sum(
+        1
+        for state in semantic_program.states
+        if str(state.role)
+        in {"carry", "reduction_accumulator", "selection_state", "index_state"}
+    )
+    assert stateful_count > 1
+
+    program = mod["main"].attrs["tl.spatial_program"]
+    make_program = tvm.get_global_func("tl.SpatialProgram")
+    seen_boundary_intent = False
+    rebuilt_intents = []
+    for intent in program.resource_intents:
+        if str(intent.kind) == "phase_boundary_materialization":
+            if seen_boundary_intent:
+                continue
+            seen_boundary_intent = True
+        rebuilt_intents.append(intent)
+
+    bad_program = make_program(
+        program.member_func,
+        program.phases,
+        program.tasks,
+        program.channels,
+        program.layouts,
+        program.work_partitions,
+        program.placements,
+        program.sync_edges,
+        rebuilt_intents,
+        program.anchors,
+    )
+    mod = _replace_spatial_program(mod, bad_program)
+
+    with pytest.raises(Exception, match="phase-boundary intent for each stateful semantic state"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 

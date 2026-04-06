@@ -278,6 +278,10 @@
   fallback。更稳的 cutover 是直接让 `LowerBlackholeOps` 硬要求
   `tl.spatial_program`，然后把 target/transform tests 一起切回真实主线；否则测试会长期
   伪装成“后端还支持 legacy-only 输入”，把 `Phase B` 的单一真源边界重新污染掉
+- 对 `Phase B` generic spatial builder，也不要用 `root_map` 这类 update name 去判
+  “这个 update 该不该 materialize 成 task”。更稳的主链是 generic path 直接按
+  semantic `Update` object 建 task；名字只能留给 IR object identity、调试和打印，
+  不承担协议分支职责
 - 对 Blackhole 的 device resource canonicalization，不要把
   `blackhole.resource_plan` 当唯一真源。`grouped / routed / paged` 这类 family 的
   block-local shared alloc_buffer 很可能还没先出现在 plan 里，但 IR storage scope

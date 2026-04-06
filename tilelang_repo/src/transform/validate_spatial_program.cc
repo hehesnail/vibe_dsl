@@ -192,6 +192,7 @@ tvm::transform::Pass ValidateSpatialProgram() {
       bool semantic_requires_pipeline_contract = false;
       bool semantic_requires_fragment_contract = false;
       bool semantic_requires_work_dependent_payload = false;
+      int semantic_stateful_state_count = 0;
       if (maybe_semantic_program && !maybe_semantic_program.value()->domains.empty()) {
         const Domain& domain = maybe_semantic_program.value()->domains[0];
         for (const SpatialLayout& layout : program->layouts) {
@@ -210,6 +211,15 @@ tvm::transform::Pass ValidateSpatialProgram() {
         }
         if (HasTrait(domain->traits, "work_dependent_bounds")) {
           semantic_requires_work_dependent_payload = true;
+        }
+        for (const State& state : maybe_semantic_program.value()->states) {
+          auto role = semantic::ParseStateRole(static_cast<std::string>(state->role));
+          if (role && (*role == semantic::StateRole::kCarry ||
+                       *role == semantic::StateRole::kReductionAccumulator ||
+                       *role == semantic::StateRole::kSelectionState ||
+                       *role == semantic::StateRole::kIndexState)) {
+            ++semantic_stateful_state_count;
+          }
         }
         for (const SemanticSupplement& supplement : maybe_semantic_program.value()->supplements) {
           const std::string supplement_kind = static_cast<std::string>(supplement->kind);
@@ -266,8 +276,13 @@ tvm::transform::Pass ValidateSpatialProgram() {
       std::unordered_set<std::string> resource_intent_kinds;
       bool has_fragment_contract = false;
       bool has_pipeline_contract = false;
+      int state_residency_count = 0;
+      int phase_boundary_materialization_count = 0;
       for (const ResourceIntent& intent : program->resource_intents) {
-        resource_intent_kinds.insert(static_cast<std::string>(intent->kind));
+        const std::string intent_kind = static_cast<std::string>(intent->kind);
+        resource_intent_kinds.insert(intent_kind);
+        state_residency_count += intent_kind == "state_residency";
+        phase_boundary_materialization_count += intent_kind == "phase_boundary_materialization";
         if (IsFragmentContractIntent(intent)) {
           has_fragment_contract = true;
           auto maybe_fragment_ops =
@@ -327,6 +342,16 @@ tvm::transform::Pass ValidateSpatialProgram() {
         ICHECK(resource_intent_kinds.count("phase_boundary_materialization"))
             << "ValidateSpatialProgram requires multi-phase programs to materialize at least "
                "one phase-boundary resource intent";
+        if (semantic_stateful_state_count > 0) {
+          ICHECK_GE(phase_boundary_materialization_count, semantic_stateful_state_count)
+              << "ValidateSpatialProgram requires multi-phase programs to materialize a "
+                 "phase-boundary intent for each stateful semantic state";
+        }
+      }
+      if (semantic_stateful_state_count > 0) {
+        ICHECK_GE(state_residency_count, semantic_stateful_state_count)
+            << "ValidateSpatialProgram requires stateful semantic states to materialize "
+               "state-residency intents";
       }
       if (semantic_requires_pipeline_contract) {
         ICHECK(has_pipeline_contract)

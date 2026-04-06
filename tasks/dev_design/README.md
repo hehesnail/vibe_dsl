@@ -11,8 +11,8 @@
 | 文档 | 角色 | 状态 |
 |------|------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计 | 常青 |
-| `stage4_phase_b_spatial_ir.md` | 当前主实施文档；承接 `Spatial Program IR` 详细设计与实施 | 当前进行中 |
-| `stage4_phase_c_tt_target_ir.md` | `Phase B` 之后的下一阶段实施文档；承接 `TT Target IR` 详细设计、cutover 与 deletion gates | 已定义，待推进 |
+| `stage4_phase_c_tt_target_ir.md` | 当前主实施文档；承接 `TT Target IR` 详细设计、cutover 与 deletion gates | 当前进行中 |
+| `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 详细设计与已完成 cutover/hardening 边界 | 已完成；作为 `Phase C` 输入边界保留 |
 
 ## 2. 当前阶段文档
 
@@ -22,8 +22,8 @@
 | `stage4_phase_a_semantic_ir.md` | `Phase A` 工程边界、已落地对象与 `Phase B` 输入约束 | 已完成；作为实现参考保留 |
 | `stage4_phase_a_formalization_note.md` | `Phase A` 理论化 / 证明化并行文档 | 并行 research track；非工程 blocker |
 | `stage4_semantic_manifest.md` | Phase A 信息源重构：正向语义传递替代反向恢复 | Phase 1-2 已落地；作为边界参考保留 |
-| `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 实施文档 | 当前进行中 |
-| `stage4_phase_c_tt_target_ir.md` | `TT Target IR`、cutover、family expansion | 下一阶段 |
+| `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 实施文档 | 已完成 compile-path hardening |
+| `stage4_phase_c_tt_target_ir.md` | `TT Target IR`、cutover、family expansion | 当前进行中 |
 
 ## 3. 支撑与审计文档
 
@@ -36,8 +36,8 @@
 当前默认执行顺序：
 
 1. `final_blackhole_backend_redesign.md`
-2. `stage4_phase_b_spatial_ir.md`
-3. `stage4_phase_c_tt_target_ir.md`
+2. `stage4_phase_c_tt_target_ir.md`
+3. `stage4_phase_b_spatial_ir.md`
 
 在需要回看前置边界时，再引用：
 
