@@ -78,6 +78,35 @@
 
 ## 已解决（仍有复用价值）
 
+### `BlackholeDeviceResourceCanonicalization` 不能只信 `blackhole.resource_plan`
+
+- **时间**: 2026-04-06
+- **问题**: `grouped / routed / paged` family 在 `OptimizeForTarget` 后仍有
+  block-local `shared` alloc_buffer 停留在 `shared.dyn`，导致它们看起来像是卡在
+  `MergeSharedMemoryAllocations` 或更前面的 shared-memory 统一化边界，实际上还没进入
+  Blackhole 自己的资源 canonicalization 主语义
+- **根本原因**:
+  - `BlackholeDeviceResourceCanonicalization` 之前只 canonicalize
+    `blackhole.resource_plan` 里显式列出的 resource
+  - 对 `grouped_gemm / fusedmoe_routed / mla_decode_paged` 这类 kernel，
+    `A_shared / B_shared` 一类的 block-local shared alloc_buffer
+    不一定会在 `resource_plan` 里先出现
+  - 结果这些 buffer 会漏掉 `shared* -> blackhole.cb` 的作用域重写，
+    后面 family gate 就会被假性前置 blocker 噪声化
+- **解决**:
+  - 不改 TileLang 公用的 `MergeSharedMemoryAllocations`
+  - 只在 Blackhole-only 的 `BlackholeDeviceResourceCanonicalization`
+    里补 IR-structural fallback
+    - `shared* -> blackhole.cb`
+    - `local.fragment -> blackhole.acc`
+  - 让 `alloc_buffer / Allocate / DeclBuffer` 三条路径都能在缺失 plan entry 时
+    按 storage scope 完成 canonicalization
+- **教训**:
+  - 不要把某个 family 编不过早期 target pipeline 就立刻归因成通用 shared-memory merge pass；
+    先检查 Blackhole 自己的 resource canonicalization 是否遗漏了 typed storage truth
+  - 修 Blackhole-only resource 语义时，优先在 Blackhole-only pass 内补
+    IR-structural fallback，不要为了单后端问题去改跨平台公用 pass 语义
+
 ### split device `main_kernel` 路径若漏掉 `row_reduction.kind`，`SemanticProgram` 会退化丢失 reduce update，进而把 `SpatialProgram` 压扁成单一 stateful phase
 
 - **时间**: 2026-04-06

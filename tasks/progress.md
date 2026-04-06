@@ -72,7 +72,10 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
    - `ValidateSpatialProgram` 从结构检查升级到 legality validator
    - 继续收紧 `Phase B -> LowerBlackholeOps` 边界：
      逐步迁走对 `blackhole.fragment_regions` 等 legacy summary 的 lowering-facing residual 依赖
-   - 补齐 `selection / indexing` 与至少一个非 attention family 的 spatial gate
+   - family gate 的最小 compile-path 代表当前已具备
+     （`topk / chunk_o / fusedmoe_routed / mla_decode_paged`）；
+     下一步不再把 family coverage 当主 blocker，而是继续收 truth-source purity /
+     schema / validator / consumer cutover
 2. 通过 hardening gate 后，再执行 `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
    - 完成 TT target cutover
    - 删除 compatibility writer / reader / fallback
@@ -184,8 +187,14 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
       `blackhole.work_decomposition` 只剩 compatibility fallback
     - `ValidateSpatialProgram` 现在也会显式校验
       `work_dependent_bounds` domain 不能丢失 `WorkPartition` payload
-    - transform-level family gate 已补到 `topk / selection`，`Phase B`
-      当前覆盖 `copy / GEMM / flash-attn / topk`
+    - `BlackholeDeviceResourceCanonicalization` 现在也有
+      Blackhole-only 的 IR-structural fallback：
+      `shared* -> blackhole.cb`、`local.fragment -> blackhole.acc`
+      不再只依赖 `blackhole.resource_plan` 的显式条目
+    - transform-level family gate 已补到
+      `topk / selection / chunk recurrence / routed dispatch / paged decode`，
+      `Phase B` 当前覆盖
+      `copy / GEMM / flash-attn / topk / chunk_o / fusedmoe_routed / mla_decode_paged`
   - `Phase B` 当前的主要未完成项也已明确：
     - `LowerToSpatialProgram` 仍保留对 `blackhole.work_decomposition`
       的过渡回退；`segment_plan` 已不再是 spatial builder truth source
@@ -195,8 +204,10 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
       legacy analysis attrs；`fragment_regions` 仍保留 compatibility path，
       `pipeline_stages` / `work_decomposition` 已不再是 primary input，
       但仍保留 compatibility fallback
-    - transform-level family gate 虽已覆盖 `topk / selection`，
-      但 `routed / paged / chunk recurrence` 仍未接入 `Phase B` coverage
+    - transform-level family gate 已覆盖
+      `topk / selection / chunk recurrence / routed dispatch / paged decode`，
+      但这还只是 compile-path representative coverage，
+      不是 `Phase C` cutover proof，也不等于 runtime correctness 全完成
   - `blackhole.fragment_regions` 不再是 semantic truth 输入；
     semantic 侧所有 evidence 已切换为 manifest-first 消费；
     `fragment_regions` 当前只保留 `LowerBlackholeOps` lowering-facing compatibility 职责，
@@ -214,11 +225,11 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 ## 最新验证摘要
 
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
-  - `39 passed`
+  - `40 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py -q`
   - `7 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q`
-  - `21 passed`
+  - `25 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `41 passed, 10 skipped, 1 xfailed`
 - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`

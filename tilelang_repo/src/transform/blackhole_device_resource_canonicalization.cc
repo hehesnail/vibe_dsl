@@ -337,7 +337,7 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
   }
 
  private:
-  const std::unordered_map<std::string, ResourceInfo>& resource_map_;
+  std::unordered_map<std::string, ResourceInfo> resource_map_;
   // var remapping: old buffer_var → new buffer_var (by identity)
   std::unordered_map<const VarNode*, Var> var_remap_;
   // name → canonical new var (for name-based fallback: fragment views share a name with
@@ -351,14 +351,25 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
   // true once we have entered (and are wrapping) the outermost thread_extent
   bool wrapped_{false};
 
-  bool IsDevicePrivate(const std::string& name) const {
-    return resource_map_.count(name) > 0;
-  }
-
   const ResourceInfo* GetInfo(const std::string& name) const {
     auto it = resource_map_.find(name);
     if (it == resource_map_.end()) return nullptr;
     return &it->second;
+  }
+
+  const ResourceInfo* GetOrInferInfo(const std::string& name,
+                                     const std::string& scope) {
+    if (const auto* info = GetInfo(name)) return info;
+
+    if (IsCBScope(scope)) {
+      resource_map_[name] = {"blackhole.cb", "intermed", "cb"};
+      return &resource_map_.at(name);
+    }
+    if (scope == "local.fragment") {
+      resource_map_[name] = {"blackhole.acc", "accumulator", "accumulator"};
+      return &resource_map_.at(name);
+    }
+    return nullptr;
   }
 
   Var GetNewVar(const Var& old_var) {
@@ -403,8 +414,8 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
     Array<Buffer> new_alloc_buffers;
     for (const auto& buf : op->alloc_buffers) {
       std::string name = std::string(buf->name);
-      if (IsDevicePrivate(name)) {
-        const ResourceInfo* info = GetInfo(name);
+      const ResourceInfo* info = GetOrInferInfo(name, buf.scope());
+      if (info != nullptr) {
         Var new_var = RemapVarScope(buf->data, info->new_scope);
         var_remap_[buf->data.get()] = new_var;
         name_to_new_var_[name] = new_var;  // For name-based fallback (e.g. fragment views)
@@ -436,8 +447,8 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
   // Inside thread_extent (wrapped_ == true): just remap scope in-place.
   Stmt VisitStmt_(const AllocateNode* op) final {
     std::string name = op->buffer_var->name_hint;
-    if (IsDevicePrivate(name)) {
-      const ResourceInfo* info = GetInfo(name);
+    const ResourceInfo* info = GetOrInferInfo(name, GetScope(op->buffer_var));
+    if (info != nullptr) {
       Var new_var = RemapVarScope(op->buffer_var, info->new_scope);
       var_remap_[op->buffer_var.get()] = new_var;
       name_to_new_var_[name] = new_var;  // For name-based fallback
@@ -467,7 +478,7 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
   // Inside thread_extent: update buffer data var in-place.
   Stmt VisitStmt_(const DeclBufferNode* op) final {
     std::string name = op->buffer->name;
-    if (IsDevicePrivate(name)) {
+    if (GetOrInferInfo(name, op->buffer.scope()) != nullptr) {
       Buffer new_buf = GetNewBuffer(op->buffer);
       if (!wrapped_) {
         // Above thread_extent: strip this node, collect for relocation

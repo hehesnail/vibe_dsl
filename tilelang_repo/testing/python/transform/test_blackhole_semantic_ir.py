@@ -13,6 +13,7 @@ THIS_DIR = Path(__file__).resolve().parent
 BLACKHOLE_TARGET_TEST_DIR = THIS_DIR.parent / "target" / "blackhole"
 TOPK_EXAMPLE_DIR = THIS_DIR.parents[2] / "examples" / "topk"
 GDN_EXAMPLE_DIR = THIS_DIR.parents[2] / "examples" / "gdn"
+GROUPED_GEMM_EXAMPLE_DIR = THIS_DIR.parents[2] / "examples" / "grouped_gemm"
 if str(BLACKHOLE_TARGET_TEST_DIR) not in sys.path:
     sys.path.append(str(BLACKHOLE_TARGET_TEST_DIR))
 if str(THIS_DIR) not in sys.path:
@@ -21,10 +22,13 @@ if str(TOPK_EXAMPLE_DIR) not in sys.path:
     sys.path.append(str(TOPK_EXAMPLE_DIR))
 if str(GDN_EXAMPLE_DIR) not in sys.path:
     sys.path.append(str(GDN_EXAMPLE_DIR))
+if str(GROUPED_GEMM_EXAMPLE_DIR) not in sys.path:
+    sys.path.append(str(GROUPED_GEMM_EXAMPLE_DIR))
 
 from common import gemm_kernel, staged_copy_kernel
 import example_topk
 import example_chunk_delta_h as chunk_delta_h_example
+import example_grouped_gemm_fwd
 from test_blackhole_flash_attention_analysis import (
     _lower_flash_attention_example,
     gqa_example,
@@ -110,6 +114,21 @@ def _prepare_blackhole_fragment_analysis_module(prim_func):
     mod = tilelang.transform.SplitBlackholeKernel()(mod)
     mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
     mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
+    return mod
+
+
+def _prepare_blackhole_resource_canonicalized_module(prim_func):
+    mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
+    target = Target("blackhole")
+    with target:
+        if not (mod["main"].attrs and mod["main"].attrs.get("target") is not None):
+            mod = LowerAndLegalize(mod, target)
+        mod = tilelang.transform.IfStmtBinding()(mod)
+        mod = tilelang.transform.PlanAndUpdateBufferAllocationLocation()(mod)
+        mod = tilelang.transform.PipelinePlanning()(mod)
+        mod = tilelang.transform.InjectSoftwarePipeline()(mod)
+        mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+        mod = tilelang.transform.BlackholeDeviceResourceCanonicalization()(mod)
     return mod
 
 
@@ -296,6 +315,32 @@ def test_device_program_registry_is_collected_before_split_host_device():
     assert len(registry) == 1
     assert registry[0].root_symbol == "main"
     assert list(registry[0].member_funcs) == ["main_kernel"]
+
+
+def test_grouped_gemm_resource_canonicalization_rewrites_shared_buffers_to_blackhole_cb():
+    mod = _prepare_blackhole_resource_canonicalized_module(
+        example_grouped_gemm_fwd.grouped_gemm.get_tir(
+            (32, 48),
+            64,
+            32,
+            16,
+            16,
+            16,
+            1,
+            128,
+        )
+    )
+    func = mod["main"]
+    resource_plan = func.attrs["blackhole.resource_plan"]
+
+    cb_entries = {
+        str(item["name"]): str(item["scope"])
+        for item in resource_plan
+        if str(item["class"]) == "cb"
+    }
+
+    assert {"A_shared", "B_shared"} <= set(cb_entries)
+    assert all(cb_entries[name].startswith("blackhole.cb") for name in ("A_shared", "B_shared"))
 
 
 def test_semantic_seeds_are_projected_before_semantic_lift():

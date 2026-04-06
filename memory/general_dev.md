@@ -273,6 +273,13 @@
   最后 `LowerBlackholeOps` 再改成 spatial-program-first 恢复
   `fragment_op_kinds / row_reduction_targets / row_broadcast_sources /
   pointwise_op_kinds / fragment_loop_carried_state`
+- 对 Blackhole 的 device resource canonicalization，不要把
+  `blackhole.resource_plan` 当唯一真源。`grouped / routed / paged` 这类 family 的
+  block-local shared alloc_buffer 很可能还没先出现在 plan 里，但 IR storage scope
+  已经足够表达它应该变成 `blackhole.cb` 还是 `blackhole.acc`。更稳的做法是只在
+  Blackhole-only canonicalizer 里补 IR-structural fallback
+  （`shared* -> blackhole.cb`、`local.fragment -> blackhole.acc`），
+  而不是去改跨平台公用的 `MergeSharedMemoryAllocations`
 
 ## Blackhole 后端开发原则
 

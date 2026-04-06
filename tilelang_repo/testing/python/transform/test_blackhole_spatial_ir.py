@@ -10,15 +10,27 @@ from tvm.target import Target
 THIS_DIR = Path(__file__).resolve().parent
 BLACKHOLE_TARGET_TEST_DIR = THIS_DIR.parent / "target" / "blackhole"
 TOPK_EXAMPLE_DIR = THIS_DIR.parents[2] / "examples" / "topk"
+GDN_EXAMPLE_DIR = THIS_DIR.parents[2] / "examples" / "gdn"
+FUSEDMOE_EXAMPLE_DIR = THIS_DIR.parents[2] / "examples" / "fusedmoe"
+DEEPSEEK_MLA_EXAMPLE_DIR = THIS_DIR.parents[2] / "examples" / "deepseek_mla"
 if str(BLACKHOLE_TARGET_TEST_DIR) not in sys.path:
     sys.path.append(str(BLACKHOLE_TARGET_TEST_DIR))
 if str(THIS_DIR) not in sys.path:
     sys.path.append(str(THIS_DIR))
 if str(TOPK_EXAMPLE_DIR) not in sys.path:
     sys.path.append(str(TOPK_EXAMPLE_DIR))
+if str(GDN_EXAMPLE_DIR) not in sys.path:
+    sys.path.append(str(GDN_EXAMPLE_DIR))
+if str(FUSEDMOE_EXAMPLE_DIR) not in sys.path:
+    sys.path.append(str(FUSEDMOE_EXAMPLE_DIR))
+if str(DEEPSEEK_MLA_EXAMPLE_DIR) not in sys.path:
+    sys.path.append(str(DEEPSEEK_MLA_EXAMPLE_DIR))
 
 from common import gemm_kernel, grid_indexed_staged_copy_kernel, staged_copy_kernel
 import example_topk
+import example_chunk_o
+import example_fusedmoe_tilelang
+import example_mla_decode_paged
 from test_blackhole_flash_attention_analysis import _lower_flash_attention_example, mha_example
 
 
@@ -210,6 +222,100 @@ def test_topk_spatial_program_exposes_selection_and_recurrence_family_gate():
     assert len(program.channels) >= 3
 
 
+def test_chunk_o_spatial_program_exposes_chunk_recurrence_family_gate():
+    mod = _prepare_blackhole_phase_b_module(
+        example_chunk_o.tilelang_chunk_fwd_o.get_tir(
+            B=1,
+            S=64,
+            H=1,
+            DK=16,
+            DV=16,
+            input_dtype="float16",
+            output_dtype="float16",
+            accum_dtype="float32",
+            gate_dtype="float32",
+            chunk_size=64,
+            scale=1.0,
+            use_g=True,
+            block_S=64,
+            block_DK=16,
+            block_DV=16,
+            threads=128,
+            num_stages=1,
+        )
+    )
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    assert len(program.phases) >= 2
+    assert {"select", "recurrence"} <= {
+        str(trait) for task in program.tasks for trait in task.traits
+    }
+    assert len(program.channels) >= 1
+    assert any(
+        str(intent.kind) == "lowering_support"
+        and "fragment_contract" in {str(trait) for trait in intent.traits}
+        for intent in program.resource_intents
+    )
+
+
+def test_fusedmoe_routed_spatial_program_exposes_routed_dispatch_family_gate():
+    mod = _prepare_blackhole_phase_b_module(
+        example_fusedmoe_tilelang.moe_forward_tilelang_routed.get_tir(
+            64,
+            32,
+            4,
+            "float16",
+            64,
+            4,
+            block_token=32,
+            block_dhidden=32,
+            block_dexpert=32,
+            threads=128,
+            num_stages=1,
+        )
+    )
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    assert len(program.phases) >= 2
+    assert {"select", "recurrence"} <= {
+        str(trait) for task in program.tasks for trait in task.traits
+    }
+    assert len(program.channels) >= 1
+    assert any(
+        str(intent.kind) == "state_residency"
+        and "selection_state" in {str(trait) for trait in intent.traits}
+        for intent in program.resource_intents
+    )
+
+
+def test_paged_decode_spatial_program_exposes_paged_indexed_family_gate():
+    mod = _prepare_blackhole_phase_b_module(
+        example_mla_decode_paged.mla_decode_tilelang.get_tir(
+            1,
+            1,
+            1,
+            64,
+            16,
+            4,
+            16,
+            1,
+            2,
+            16,
+            None,
+        )
+    )
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    assert len(program.phases) >= 2
+    assert {"select", "recurrence"} <= {
+        str(trait) for task in program.tasks for trait in task.traits
+    }
+    assert len(program.channels) >= 1
+    assert any(
+        str(intent.kind) == "state_residency"
+        and "selection_state" in {str(trait) for trait in intent.traits}
+        for intent in program.resource_intents
+    )
 def test_spatial_program_layout_axes_come_from_semantic_program_not_work_decomposition():
     mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=2, tile_cols=3))
     semantic_program = mod["main"].attrs["tl.semantic_program"]
@@ -555,8 +661,69 @@ def test_lower_blackhole_ops_recovers_fragment_requirements_without_fragment_reg
     lowered = tilelang.transform.LowerBlackholeOps()(mod)["main"]
     lowering_requirements = lowered.attrs["blackhole.lowering_requirements"]
 
-    assert "pointwise_chain" in {str(item) for item in lowering_requirements["fragment_op_kinds"]}
+    assert {"pointwise_chain", "gemm"} <= {
+        str(item) for item in lowering_requirements["fragment_op_kinds"]
+    }
     assert {"mul", "div"} <= {str(item) for item in lowering_requirements["pointwise_op_kinds"]}
+    assert len(lowering_requirements["fragment_loop_carried_state"]) > 0
+
+
+def test_lower_blackhole_ops_prefers_spatial_fragment_contract_over_fragment_regions():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    make_resource_intent = tvm.get_global_func("tl.ResourceIntent")
+    make_program = tvm.get_global_func("tl.SpatialProgram")
+    rebuilt_intents = []
+    for intent in program.resource_intents:
+        if "fragment_contract" in {str(trait) for trait in intent.traits}:
+            payload = dict(intent.payload)
+            payload["pointwise_op_kinds"] = ["mul"]
+            rebuilt_intents.append(
+                make_resource_intent(
+                    intent.name,
+                    intent.kind,
+                    intent.target_name,
+                    intent.traits,
+                    payload,
+                    intent.anchors,
+                )
+            )
+        else:
+            rebuilt_intents.append(intent)
+    mod = _replace_spatial_program(
+        mod,
+        make_program(
+            program.member_func,
+            program.phases,
+            program.tasks,
+            program.channels,
+            program.layouts,
+            program.work_partitions,
+            program.placements,
+            program.sync_edges,
+            rebuilt_intents,
+            program.anchors,
+        ),
+    )
+
+    lowered = tilelang.transform.LowerBlackholeOps()(mod)["main"]
+    lowering_requirements = lowered.attrs["blackhole.lowering_requirements"]
+
+    assert {str(item) for item in lowering_requirements["pointwise_op_kinds"]} == {"mul"}
 
 
 def test_lower_blackhole_ops_recovers_pipeline_requirements_without_pipeline_attr():

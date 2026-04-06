@@ -472,6 +472,72 @@ spatial legality validator 再推进一格：
 - 删掉 `blackhole.fragment_regions` 后，`LowerBlackholeOps` 仍能恢复
   `fragment_op_kinds / pointwise_op_kinds`
 
+### 6.10 2026-04-06 Hardening Slice: Chunk Recurrence Family Gate
+
+本轮继续补 wider family gate，但不再新增定制样例，而是直接拿现有
+`gdn/example_chunk_o.py` 作为非-attention recurrence family 的 compile-path 代表。
+
+结论是：
+
+- `chunk_o` 当前已经能稳定通过
+  `LowerToSpatialProgram -> ValidateSpatialProgram`
+- 其 `SpatialProgram` 会显式暴露：
+  - multi-phase structure
+  - `select + recurrence` task traits
+  - `fragment_contract` resource intent
+
+这说明当前 `Phase B` 的 generic spatialization，已经不只覆盖
+`flash-attn / topk`，也覆盖至少一类 chunk recurrence family。
+
+对应测试：
+
+- `test_chunk_o_spatial_program_exposes_chunk_recurrence_family_gate`
+
+### 6.11 2026-04-06 Hardening Slice: Routed/Paged Family Entry via Blackhole Resource Canonicalization
+
+在补 `chunk_o` family gate 之后，`routed / paged` family 仍然没有进入 `Phase B`。
+本轮继续顺着 compile-path 往前查，结论是：
+
+- 真实 blocker 不是 `MergeSharedMemoryAllocations`
+- 真实 blocker 是 `BlackholeDeviceResourceCanonicalization`
+  只 canonicalize 了 `blackhole.resource_plan` 里显式列出的 resource
+- 对 `grouped / routed / paged` 这类 kernel，block-local `shared` alloc_buffer
+  常会留在 `shared.dyn`，没有被收成 `blackhole.cb.*`
+
+因此本轮的修正是：
+
+- 不动 TileLang 公用的 `MergeSharedMemoryAllocations`
+- 只在 Blackhole-only 的
+  `BlackholeDeviceResourceCanonicalization` 里补 IR-structural fallback
+  - `shared* -> blackhole.cb`
+  - `local.fragment -> blackhole.acc`
+- fallback 依据是 storage scope，本身不依赖 workload 名字、buffer 名字或 case-specific matcher
+
+这轮修正之后，compile-path 上的结果是：
+
+- `grouped_gemm` 现在会把 `A_shared / B_shared`
+  稳定 canonicalize 到 `blackhole.cb.*`
+- `fusedmoe/example_fusedmoe_tilelang.py` 的 routed path
+  现在能稳定进入 `LowerToSpatialProgram -> ValidateSpatialProgram`
+- `deepseek_mla/example_mla_decode_paged.py`
+  现在也能稳定进入 `LowerToSpatialProgram -> ValidateSpatialProgram`
+- 它们的 `SpatialProgram` 都会暴露：
+  - multi-phase structure
+  - `select + recurrence` task traits
+  - `selection_state` resource intent
+
+这说明当前 `Phase B` 的 generic spatialization 已经不只覆盖
+`copy / GEMM / flash-attn / topk / chunk recurrence`，也至少覆盖：
+
+- 一个 `routed / grouped dispatch` family
+- 一个 `paged / indexed sparse decode` family
+
+对应测试：
+
+- `test_grouped_gemm_resource_canonicalization_rewrites_shared_buffers_to_blackhole_cb`
+- `test_fusedmoe_routed_spatial_program_exposes_routed_dispatch_family_gate`
+- `test_paged_decode_spatial_program_exposes_paged_indexed_family_gate`
+
 ## 7. Hardening Gates Before Phase C
 
 `Phase B` 的目标不是“已经有一套 `SpatialProgram` 对象”，而是：
@@ -611,7 +677,10 @@ spatial legality validator。
 
 ### 7.5 Family Coverage Gates
 
-当前 `copy / GEMM / flash-attn / topk` 只能证明首轮 spatial cut 可行，不能证明设计已经足够 general。
+当前 `copy / GEMM / flash-attn / topk / chunk recurrence / routed dispatch / paged decode`
+的 compile-path coverage，已经说明 `SemanticProgram -> SpatialProgram` 的 object boundary
+不会一离开 attention/GEMM 就立刻退化回 matcher bag；但这仍不能替代 truth-source purity /
+schema strengthening / consumer cutover。
 
 在进入 `Phase C` 前，`Phase B` 至少需要补齐：
 
@@ -622,6 +691,23 @@ spatial legality validator。
    - `routed / grouped dispatch`
    - `paged / indexed sparse decode`
    - `chunk recurrence / scan`
+
+当前状态：
+
+- `selection / indexing` 已经通过 `topk`
+- `chunk recurrence / scan` 已经至少通过一项（`gdn/example_chunk_o.py`）
+- `routed / grouped dispatch` 已经至少通过一项
+  （`fusedmoe/example_fusedmoe_tilelang.py`）
+- `paged / indexed sparse decode` 已经至少通过一项
+  （`deepseek_mla/example_mla_decode_paged.py`）
+
+因此 family coverage gate 的最小 compile-path 要求现在已经满足；
+`Phase B` 之所以仍不能进入 `Phase C`，剩下卡的不是 family gate，而是：
+
+- truth-source purity 还没完全收干净
+- schema strengthening 还没够强
+- `ValidateSpatialProgram` 还不是完整 legality validator
+- `LowerBlackholeOps` 还没有完全切成只读 spatial contract 的 consumer
 
 要求不是“所有 runtime correctness 一次做完”，而是：
 
