@@ -308,6 +308,12 @@
   如果 `Phase C` 做合法 TT mapping 还需要某个 non-TT-specific truth，
   那个 truth 就必须先进入 `SpatialProgram` schema / validator，
   不能让 target translator 自己恢复一层 spatial structure
+- `SpatialProgram` 也不应该被误解成“完全硬件无关”的层。
+  更稳的分层是：
+  - `Phase B` 读取 abstract `SpatialCapabilityModel`
+  - `Phase C` 读取 concrete `TTHardwareModel`
+  这样 `Spatial IR` 才能成为 target-informed but non-target-materialized
+  的 virtual spatial/dataflow program，而不是 semantic summary
 - 对 Blackhole 的 device resource canonicalization，不要把
   `blackhole.resource_plan` 当唯一真源。`grouped / routed / paged` 这类 family 的
   block-local shared alloc_buffer 很可能还没先出现在 plan 里，但 IR storage scope

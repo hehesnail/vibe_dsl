@@ -47,6 +47,15 @@
 那结论只能是 `Phase B` contract 还不够，必须回去扩 `SpatialProgram` schema / validator；
 `Phase C` 不允许自己补一层恢复逻辑。
 
+这也意味着 `Phase C` 和硬件模型的关系要分成两层：
+
+- `Phase B` 读取 abstract `SpatialCapabilityModel`
+- `Phase C` 读取 concrete `TTHardwareModel`
+
+`Phase C` 不负责把 concrete target capability “翻译回” spatial semantics；
+它只负责把已经 capability-informed 的 virtual spatial program
+物化成具体 TT resource / ABI / execution contract。
+
 ## 2. Core Design Boundary
 
 ### 2.1 核心对象

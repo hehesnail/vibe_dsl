@@ -127,6 +127,30 @@
 - 把 `Task:TTKernel = 1:1` 固化成默认心智模型
 - 用 TT resource 名词污染 `Task / Channel / Layout / WorkPartition`
 
+### 2.6 参考方法论收口
+
+`Phase B` 后续不再只以“对象有没有建出来”为目标，而明确按参考论文里的共同方法论收口：
+
+- `T2S` 给出的核心纪律是：temporal definition 和 spatial mapping 分离；
+  `SpatialProgram` 必须承载 mapping 本身，而不是把 mapping 留给后段恢复
+- `Dato` 给出的核心纪律是：task / stream / shard / virtual placement 必须是一等对象；
+  `SpatialProgram` 必须能表达 virtual task graph 与 virtual mapping，
+  再交给 target-specific physical mapping
+- `SPADA` 给出的核心纪律是：routing / async / ordering 不是注释，
+  而是 legality object；`SpatialProgram` 必须能对 flow / sync 做 fail-fast legality
+- `TL` 给出的核心纪律是：spatialization 必须读取 hardware capability，
+  不可能在真空中完成；但这种输入应该是 abstract capability，而不是 TT noun
+- `Revet` 给出的核心纪律是：rich program model 应先降成 generic dataflow program，
+  再落到 backend；不能把 backend 写成 workload matcher bag
+
+因此，`Phase B` 的正确目标是：
+
+- 构造一个 target-informed 但 non-target-materialized 的 virtual spatial/dataflow program
+
+而不是：
+
+- 只构造一组结构对象，等 `Phase C` 再补空间执行语义
+
 ## 3. Semantic To Spatial Contract
 
 `Phase B` 只允许从下列上游真源读取必须保留的算法约束：
@@ -184,6 +208,54 @@
 
 - 如果某个 non-TT-specific truth 是 `Phase C` 做合法 mapping 必须知道的，
   那它就必须在 `SpatialProgram` 里显式存在；`Phase C` 不允许自行恢复
+
+### 3.2 抽象硬件能力接口
+
+`SpatialProgram` 不能只看语义，不看机器。
+但它看的也不应该是 TT resource noun，而是抽象 hardware capability。
+
+这里引入的设计口径是：
+
+- `Phase B` 读取 `SpatialCapabilityModel`
+- `Phase C` 读取 `TTHardwareModel`
+- `SpatialCapabilityModel` 是从 concrete target model 导出的抽象能力视图
+
+`SpatialCapabilityModel` 至少要表达：
+
+- topology class / communication neighborhood
+- virtual placement domain 的形状与允许关系
+- flow capability：point-to-point / multicast / reduce / gather / scatter / carry
+- ordering capability：dependency / completion / barrier / async arrival
+- residency capability：ephemeral / persistent / transport-backed / replicated
+- partition capability：blocked / indexed / filtered / grouped / paged / chunked
+
+它的职责不是决定具体 TT resource id，而是限制和引导：
+
+- 哪些 task formation 是合法且值得保留的
+- 哪些 flow/sync family 是可表达的
+- 哪些 layout / work partition family 是目标能力允许的
+- 哪些 virtual placement / communication shaping 是可行的
+
+### 3.3 需要补进 Spatial IR 的算法职责
+
+参考论文里真正有价值的不是 object 名字，而是 spatial synthesis 算法。
+按这个口径，`Phase B` 后续必须补的不是“更多字段”，而是更明确的算法职责：
+
+- task formation algorithm
+  - 从 semantic state/update graph 构造稳定 task graph
+  - split/fuse 必须有 legality basis 和 capability-aware policy basis
+- flow shaping algorithm
+  - 从 access/update/state version 关系构造 point-to-point、broadcast、
+    gather/scatter、carry、reduction 这些 flow class
+- domain realization algorithm
+  - 从 `Domain + AccessMap + UpdateLaw` 构造 indexed / filtered / grouped /
+    paged / chunked 的 layout / partition contract
+- phase and ordering synthesis
+  - 从 stateful dependence、cross-update completion、carry/reduction semantics
+    构造 partial order，而不是只靠一两个固定 phase 名
+- capability-informed legality / policy
+  - 用 `SpatialCapabilityModel` 裁掉不合法候选
+  - 在合法候选里再做 locality / reuse / communication / synchronization tradeoff
 
 ## 4. 当前实施重点
 

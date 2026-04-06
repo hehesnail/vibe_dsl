@@ -123,7 +123,7 @@ TileLang DSL / Python
 |----|--------------|------|----------|
 | `PrimFunc / TIR` | 用户和通用 lowering 表达了什么计算结构？ | 通用 TileLang / TVM IR | 规范化 TIR |
 | `Stateful Semantic IR` | 程序在逻辑域上如何更新算法状态？ | 算法语义 | `SemanticProgram` |
-| `Spatial Program IR` | 这个算法如何组织成 spatial/dataflow 程序？ | task/channel/layout/sync/work truth | `SpatialProgram` |
+| `Spatial Program IR` | 这个算法如何在抽象空间机器上组织成 spatial/dataflow 程序？ | task/channel/layout/sync/work truth + abstract hardware capability constraints | `SpatialProgram` |
 | `TT Target IR` | 这个 spatial program 如何变成合法 TT contract？ | TT 资源与 ABI 合约 | `TTProgram` |
 | `ExecutableSpec / runtime` | 冻结后的 TT contract 如何被物化并执行？ | 目标物化 schema | `ExecutableSpec` / host objects |
 
@@ -141,6 +141,10 @@ TileLang DSL / Python
 | Chunked recurrence / scan | cross-step state、chunk domain、ordered recurrence | chunk task graph、chunk partition、state carry | persistent carry、dst/CB realization、runtime chunk descriptors |
 
 这张表是总设计的覆盖声明；具体 gate 和分阶段实现以阶段文档为准。
+
+这里的 “Spatial 层必须表达” 指的是虚拟空间程序 contract，而不是 TT-specific 资源分配。
+它必须强到足以在抽象硬件能力约束下完成 virtual mapping、communication shaping 与
+ordering synthesis，然后再交给 `Phase C` 做具体 target materialization。
 
 ## 5. 三层 IR 的核心合同
 
@@ -204,6 +208,30 @@ TileLang DSL / Python
    这些执行相关但非 TT-specific 的 truth
 8. 如果 `Phase C` 需要某个 non-TT-specific truth 才能合法 mapping，
    那个 truth 必须先进入 `Spatial Program IR`，不能在 target translator 里临时恢复
+9. 这层不是“完全硬件无关”的；它必须读取抽象 hardware capability constraints，
+   但不能提前物化成 TT resource / ABI / kernel noun
+
+### 5.2.1 Abstract Spatial Hardware Interface
+
+`Spatial Program IR` 不是在真空中生成的。
+它需要一个 target-provided、但仍然 non-TT-specific 的抽象能力视图，本文称为
+`SpatialCapabilityModel`。
+
+它至少要表达：
+
+- topology class / neighborhood relation
+- 可用的 placement domain 与 communication domain
+- 支持的 flow family：point-to-point、broadcast、reduce、gather/scatter、carry
+- 支持的 ordering / synchronization family：dependency、completion、barrier、async arrival
+- residency / persistence / transport class
+- partition / replication / sharding 的合法空间
+
+规则是：
+
+- `Phase B` 只能消费这类 abstract capability，不消费 TT kernel / CB / semaphore / ABI noun
+- `Phase C` 持有 concrete `TTHardwareModel`
+- `SpatialCapabilityModel` 由具体 target model 导出，是 `Phase B` legality / policy 的输入，
+  不是 target materialization 的输出
 
 `Phase B` 的详细对象边界和实施计划见：
 
@@ -371,11 +399,21 @@ LowerDeviceStorageAccessInfo
 
 - `Dato: A Task-Based Programming Model for Dataflow Accelerators` (2025)
   - https://arxiv.org/abs/2509.06794
+  - 设计输入：task / stream / sharding / virtual mapping 必须是一等对象；
+    先构造 virtual spatial graph，再做 target-specific physical mapping
 - `TL: Automatic End-to-End Compiler of Tile-Based Languages for Spatial Dataflow Architectures` (2025)
   - https://arxiv.org/abs/2512.22168
+  - 设计输入：spatialization 必须读取 topology / memory / capability 这类 hardware representation，
+    但这些输入不应直接污染 virtual spatial IR 为 target noun
 - `SPADA: A Spatial Dataflow Architecture Programming Language` (2025)
   - https://arxiv.org/abs/2511.09447
+  - 设计输入：routing / async / ordering 需要进入 legality contract，
+    而不是留给 backend ad-hoc 恢复
 - `Revet: A Language and Compiler for Dataflow Threads` (2023/2024)
   - https://arxiv.org/abs/2302.06124
+  - 设计输入：rich program model 应先落到 generic dataflow/spatial program，
+    再进入 backend-specific materialization
 - `Programmatic Control of a Compiler for Generating High-performance Spatial Hardware` (`T2S`, 2017)
   - https://arxiv.org/abs/1711.07606
+  - 设计输入：temporal definition 与 spatial mapping 分离；
+    spatial layer 必须显式承载 loop/data transform 与 mapping 语义
