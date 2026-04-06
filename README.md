@@ -16,6 +16,11 @@
   - `Stateful Semantic IR`
   - `Spatial Program IR`
   - `TT Target IR`
+- `Phase A` 与 `stage4_semantic_manifest` `Phase 1-2` 已完成：
+  - `AnalyzeSemanticStructure` 已是 manifest-first
+  - `blackhole.fragment_regions` 只剩 residual reduction evidence 与 lowering compatibility 职责
+- 当前主实施阶段是 `Phase B / Spatial Program IR`
+- 当前总体 blocker 是 `Spatial Program IR -> TT Target IR` 的单一真源切换尚未完成
 - 这套分层不是为单个 consumer 设计，而是用于统一承接复杂前端计算 family：
   - selection / indexing
   - routed / grouped / ragged dispatch
@@ -27,7 +32,7 @@
   - copy / GEMM direct path 已稳定
   - `flash-attn` 只是第一批 consumer，当前 compile-path 已打通
   - `fusedmoe`、`topk`、`paged decode`、`mamba chunk state` 已进入总设计覆盖面
-  - 当前最具体的执行 blocker 仍是 `flash-attn` 上暴露出的 `blackhole.acc` 混合语义 correctness 问题，但它不再定义总体架构边界
+  - `flash-attn` 的 `blackhole.acc` correctness payoff 属于 `Phase C2`，不再是当前总体架构 blocker
 
 ## 推荐阅读顺序
 

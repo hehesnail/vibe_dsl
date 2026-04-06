@@ -9,6 +9,10 @@
   - TT-Metal API（`tt_metal/api/tt-metalium/`、SDPA program factory、compute kernel API）
   - TileLang DSL 表面与前端 workload 示例
 
+> 注：这份文档是 `2026-04-05` 的设计审计快照，用来解释总设计为什么这样收敛。
+> `R1-R11` 已全部响应；当前工程状态、阶段主线与 blocker 以
+> `tasks/progress.md` 和各阶段文档为准，而不是以本文中的未来式建议段落为准。
+
 ---
 
 ## 一、总体评价

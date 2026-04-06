@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档 ID**: `final_blackhole_backend_redesign`
-- **日期**: 2026-03-19（创建），2026-04-03（重写并收敛为当前版本），2026-04-06（在 `Phase A` 完成后按当前分阶段结构再次精简）
+- **日期**: 2026-03-19（创建），2026-04-03（重写并收敛为当前版本），2026-04-06（在 `Phase A` 完成后按当前分阶段结构再次精简，并完成一轮状态对齐审计）
 - **状态**: 当前唯一权威总体设计文档
 - **定位**: 常青总纲；只保留长期架构、层间边界、单一真源与 cutover 原则
 - **阶段文档**:
@@ -93,10 +93,11 @@ Stateful Semantic IR
 1. `BlackholeModule` 进程内 direct host path 仍是唯一正式执行路径。
 2. `ExecutableSpec` 仍是 runtime 消费的最终物化产物。
 3. copy / GEMM / export 当前支持面必须保持不回退。
-4. 现有 recovery-oriented analysis pass 仍然是 semantic recovery 的起点：
+4. 现有 recovery-oriented analysis pass 与 manifest capture 路径仍然是 semantic recovery 的起点：
    - `AnalyzeBlackholeWorkDecomposition`
-   - `AnalyzeBlackholeFragmentRegions`
+   - `AnalyzeBlackholeFragmentRegions`（当前已退化为 compatibility fallback / residual reduction evidence）
    - `AnalyzeBlackholePipelineStages`
+   - `CollectSemanticManifestSeeds -> ProjectSemanticManifest -> AugmentSemanticManifest`
 5. `PlanBlackholeCB`、`AssignBlackholeCores`、`rt_mod_blackhole` 在迁移期间仍保留，但它们的长期职责必须收回到 target/runtime 边界。
 
 ## 4. 权威架构
@@ -290,6 +291,7 @@ TileLang DSL / Python
   - refinement validator
   - internal state/effect graph
   - lifecycle contract
+  - `stage4_semantic_manifest` `Phase 1-2`
 - **Phase B**: 当前主实施阶段
 - **Phase C**: 已定义；待 `Phase B` 后推进
 
@@ -307,6 +309,7 @@ TileLang DSL / Python
 
 ```text
 LowerDeviceStorageAccessInfo
+  -> AugmentSemanticManifest
   -> LowerIntrin
   -> Simplify
   -> HoistBroadcastValues
@@ -322,6 +325,12 @@ LowerDeviceStorageAccessInfo
   -> PlanBlackholeCB
   -> AssignBlackholeCores
 ```
+
+其中当前 `Phase A` 相关的稳定事实已经是：
+
+- `AnalyzeSemanticStructure` 对 manifest structural evidence 采用 manifest-first 消费
+- `blackhole.fragment_regions` 只剩 residual reduction evidence 与 compatibility fallback
+- `Phase B / C` 不能再把 `fragment_regions` 当 semantic truth source
 
 `Phase B / C` 相关 pass 以阶段文档推进，不在总设计中重复实施 checklist。
 

@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档角色**: `Phase B` 实施与设计边界文档
-- **当前状态**: 当前主实施阶段
+- **当前状态**: 当前主实施阶段；前置 `Phase A` 与 `semantic manifest` `Phase 1-2` 已收口
 - **上游输入**: 冻结后的 `SemanticProgram`
 - **下游输出**: 冻结后的 `SpatialProgram`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -129,6 +129,12 @@
 - `SemanticProgram`
 - internal state/effect graph
 - companion lifecycle contract
+
+这也意味着：
+
+- `Phase B` 不直接读取 `tl.semantic_manifest`
+- `Phase B` 不直接读取 `blackhole.fragment_regions`
+- manifest / fragment evidence 必须先在 `Phase A` 被归约成冻结后的 semantic truth
 
 主要投影关系是：
 

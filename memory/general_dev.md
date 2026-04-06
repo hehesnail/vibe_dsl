@@ -200,6 +200,9 @@
 
 - 阶段状态切换时，至少同步检查：progress.md 页首、任务表、活动设计文档列表
 - 顶层 `README.md`、`AGENTS.md`、`CLAUDE.md` 只能描述当前主线，不要继续保留被 supersede 的阶段入口或旧计划路径
+- 做活动文档审计时，不要只改 `tasks/progress.md`。更稳的做法是把 `README.md`、`AGENTS.md`、`CLAUDE.md`、
+  `final_blackhole_backend_redesign.md` 和当前 active stage docs 一起对齐；否则 pass 主线、当前 blocker、
+  `fragment_regions` 角色这类事实很快会在不同入口里漂移
 - 排障文档一旦问题已解决，要在文档头部把状态改成“已实施/历史记录”，并把最终根因补回去；不要让“初始假设”继续伪装成当前结论
 - 设计文档分三类：当前活动、仍有效支撑、历史记录
 - 历史文档统一移到 `tasks/dev_design/archive/`；根目录只保留当前活动文档

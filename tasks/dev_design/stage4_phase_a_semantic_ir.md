@@ -735,7 +735,7 @@ IR 结构、类型、def-use 和 canonical evidence，而不是变量命名。
 截至 `2026-04-06`，当前稳定验证快照是：
 
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
-  - `28 passed`
+  - `38 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `40 passed, 10 skipped, 1 xfailed`
 - `source scripts/setup_tt_sim.sh && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
@@ -752,9 +752,7 @@ IR 结构、类型、def-use 和 canonical evidence，而不是变量命名。
 - `Phase A` 当前 compile-path 与 semantic gate 是稳定的
 - `copy / GEMM / current flash-attn compile-path` 没有因 semantic layer 回退
 
-但这不等价于：
-
-- `flash-attn` correctness 已成为稳定基线
+但这不等价于 `flash-attn` correctness 已完整闭环并进入稳定基线。
 
 `blackhole.acc` 的最终 correctness payoff 已经是 `Phase B / C` 单一真源切换问题，不再是
 `Phase A` 语义恢复本身的 blocker。

@@ -163,14 +163,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - `tasks/dev_design/stage4_phase_a_semantic_ir.md`
    - `tasks/dev_design/stage4_phase_b_spatial_ir.md`
    - `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
-4. 按新总设计执行：
-   - Phase A1：`Stateful Semantic IR`（最小 `Domain/State/Update` + `MapLaw/ReduceLaw` full payload + early semantic seed + post-lift hard freeze）
-   - Phase A2：`Stateful Semantic IR`（泛化 recovery + wider `AccessMap/UpdateLaw` traits + `SemanticSupplement` + rebind-aware contract）
-   - Phase B：`Spatial Program IR`（`ProgramPhase` module-scope 宿主 + simple-workload fast-path + non-trivial multi-phase gate）
-   - Phase C：`TT Target IR`（`TTHardwareModel` stub 先行 + `TTTransportPlan` + common-runtime ABI + `MaterializeTTExecutableSpec` 唯一物化）
+4. 当前执行重点按新总设计推进：
+   - `Phase A1 / A2` 已完成；语义层与 semantic manifest 已收口
+   - `Phase B`：`Spatial Program IR`（`ProgramPhase` module-scope 宿主 + simple-workload fast-path + non-trivial multi-phase gate）
+   - `Phase C`：`TT Target IR`（`TTHardwareModel` stub 先行 + `TTTransportPlan` + common-runtime ABI + `MaterializeTTExecutableSpec` 唯一物化）
 5. 在新分层下继续推进：
-   - `flash-attn` `blackhole.acc` 语义收正
-   - `topk / fusedmoe / paged decode / chunk recurrence` 等 family 的统一承接
+   - `Phase C2` 承接 `flash-attn` `blackhole.acc` correctness payoff
+   - `topk / fusedmoe / paged decode / chunk recurrence` 等 family 在新主链下统一承接
    - 更宽 copy/dataflow 支持面（P4）
    - 更宽 synchronization 支持面（P5）
 
@@ -208,14 +207,19 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 默认并行编译线程数按 `-j32` 执行
 - `build_blackhole/` 和 legacy runner 都已删除
 - `tasks/dev_design/` 根目录只保留活动文档；`tasks/dev_design/archive/` 下内容全部视为历史记录，不再作为当前入口
+- `Phase A` 与 `stage4_semantic_manifest` `Phase 1-2` 已完成；
+  `AnalyzeSemanticStructure` 已改成 manifest-first，
+  `blackhole.fragment_regions` 仅剩 residual reduction evidence 与 lowering compatibility 职责
 - 当前 Blackhole 设备侧 pass 主线：
-  `LowerDeviceStorageAccessInfo` → `LowerIntrin` → `Simplify` → `HoistBroadcastValues` → `SplitBlackholeKernel` → `AnalyzeBlackholeWorkDecomposition` → `AnalyzeBlackholeFragmentRegions` → `AnalyzeBlackholePipelineStages` → `LowerBlackholeOps` → `PlanBlackholeCB` → `AssignBlackholeCores`
+  `LowerDeviceStorageAccessInfo` → `AugmentSemanticManifest` → `LowerIntrin` → `Simplify` → `HoistBroadcastValues` → `SplitBlackholeKernel` → `AnalyzeBlackholeWorkDecomposition` → `AnalyzeBlackholeFragmentRegions` → `AnalyzeBlackholePipelineStages` → `AnalyzeSemanticStructure` → `LiftStatefulSemanticIR` → `ValidateStatefulSemanticIR` → `ValidateSemanticRefinement` → `LowerBlackholeOps` → `PlanBlackholeCB` → `AssignBlackholeCores`
 - `SplitBlackholeKernel` 已实现并已接入管线；纯 copy 走 `fused_dataflow` 单 kernel，GEMM 走 3-kernel（reader/compute/writer）
 - direct runtime 当前正式支持面：
   - copy：equal source/dest range，且 stride = 1
   - GEMM：A/B-separated reader range + writer output range
   - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
-- `flash-attn` forward subset 当前已完成 analysis、最小 fragment/dataflow builtin/codegen 接入，并打通当前支持的 MHA/GQA forward compile-path；runtime hang 已解，当前主 blocker 是 `blackhole.acc` 混合语义导致的 compute correctness 问题
+- `flash-attn` forward subset 当前已完成 analysis、最小 fragment/dataflow builtin/codegen 接入，并打通当前支持的 MHA/GQA forward compile-path；
+  其 `blackhole.acc` correctness payoff 当前归属 `Phase C2`，不是总体架构的当前主 blocker
+- 当前总体架构 blocker 是 `Spatial Program IR -> TT Target IR` 的单一真源切换尚未完成
 - 总设计的目标不再局限于 `flash-attn`：后续实现需要同时面向 selection/indexing、routed/grouped dispatch、paged decode、chunk recurrence 等 workload family
 - 后续所有架构推进以 layered IR 为准：
   `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`

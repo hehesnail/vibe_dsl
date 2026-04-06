@@ -29,7 +29,7 @@
 
 | 文档 | 角色 | 状态 |
 |------|------|------|
-| `review_final_blackhole_backend_redesign.md` | 总设计的系统性 review 与代码交叉审计记录 | 已完成；作为审计参考保留 |
+| `review_final_blackhole_backend_redesign.md` | 总设计的系统性 review 与代码交叉审计记录 | 已完成；作为设计审计快照保留，不承担当前状态跟踪 |
 
 ## 4. 当前任务安排
 

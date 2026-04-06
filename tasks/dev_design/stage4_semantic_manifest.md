@@ -2,7 +2,7 @@
 
 ## 基本信息
 
-- **文档角色**: `Phase A` 信息源重构初设
+- **文档角色**: `Phase A` 信息源重构设计与收口文档
 - **当前状态**: `Phase 1-2` 已实施（`2026-04-06`），当前作为 `Phase A` 信息源边界文档保留
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
 - **直接前置**: `tasks/dev_design/stage4_phase_a_semantic_ir.md`
@@ -15,12 +15,12 @@
 | manifest 是什么 | `Phase A` 的 pre-lift evidence input |
 | manifest 能不能替代 `AnalyzeSemanticStructure` | 不能 |
 | manifest 能不能直接生成 `SemanticProgram` | 不能 |
-| 第一阶段要做什么 | 把 explicit-op evidence 从 `fragment_regions` 的 late matcher 路径中切出来 |
-| 第一阶段不做什么 | 不强行把 `selection_pairs / arg_reduce_targets / recurrence_edges` 并进 manifest |
+| 当前已完成什么 | explicit-op evidence 与 selection / arg-reduce / recurrence structural evidence 已前移到 manifest |
+| 当前剩余债务 | `row_reductions` 仍留在 `fragment_regions`，因为 semantic/lowering mixed ownership 尚未拆开 |
 
 一句话版本：
 
-> manifest 不是新语义层，只是把 `Phase A` 需要的一部分 evidence 从更稳定的 capture 边界带到 `AnalyzeSemanticStructure`。
+> manifest 不是新语义层，只是把 `Phase A` 需要的 explicit-op 和 structural evidence 从更稳定的 capture 边界带到 `AnalyzeSemanticStructure`。
 
 ## 2. 问题
 
@@ -65,7 +65,7 @@
 |---|---|---|---|
 | `tl.semantic_seeds` | device program / pipeline skeleton | explicit-op payload | `AnalyzeSemanticStructure` |
 | `tl.semantic_manifest_seeds` | early lowering 会销毁的 explicit-op evidence | semantic core | `ProjectSemanticManifest` |
-| `tl.semantic_manifest` | 投影并补全后的 explicit-op evidence | witness / `SemanticProgram` | `AnalyzeSemanticStructure` |
+| `tl.semantic_manifest` | 投影并补全后的 explicit-op + structural evidence | witness / `SemanticProgram` | `AnalyzeSemanticStructure` |
 | `blackhole.fragment_regions` | residual reduction evidence + lowering compatibility summary | semantic truth owner | `AnalyzeSemanticStructure` fallback, `LowerBlackholeOps` |
 | `tl.semantic_witnesses` | 统一 witness axis | raw lowering payload | lift / validator |
 | `tl.semantic_program` | 冻结后的算法语义 | raw analysis attr | `Phase B` |
@@ -147,12 +147,11 @@ blackhole_codegen(device_mod)
 
 仍然明确不放：
 
-- `selection_pairs`
-- `arg_reduce_targets`
-- `recurrence_edges`
 - `State.role`
 - `UpdateLaw.kind`
 - `paired_value_state`
+- `row_reductions`
+- lowering-facing fragment subset / legality summary
 
 原因很简单：这些已经不是 raw evidence，而是在往 witness / semantic core 滑。
 
@@ -165,7 +164,11 @@ blackhole_codegen(device_mod)
   `AugmentSemanticManifest`
 - `CollectSemanticManifestSeeds` 当前只抓会被 `LowerTileOp` 吃掉的 explicit-op：
   `copy / fill / reduce / cumsum`
-- `AugmentSemanticManifest` 当前只补 residual explicit-op：`gemm_py`
+- `AugmentSemanticManifest` 当前同时承担：
+  - residual explicit-op augment：`gemm_py`
+  - structural evidence 前移：
+    `fragment_buffers / selection_targets / selection_pairs / arg_reduce_targets /
+    update_sources / loop_carried_state / recurrence_edges`
 - manifest schema 当前已经以 typed attr 形式落地：
   - `buffers` 保留 `buffer / name / scope / dtype / shape`
   - `operations` 保留 op kind、capture stage、ordered-region anchor 与 typed payload
@@ -187,48 +190,51 @@ blackhole_codegen(device_mod)
   - manifest-only 输入已经足够支撑 `select / recurrence` witness 与 semantic lift
   - 不改变 `SemanticProgram` core 的 `Domain / State / Update` 词汇边界
 
-## 5. 第一阶段范围
+## 5. 当前 evidence 覆盖面
 
-按 evidence 类型看：
+按当前实现状态看：
 
-| evidence 类型 | 例子 | 第一阶段是否进 manifest |
+| evidence 类型 | 例子 | 当前是否进 manifest |
 |---|---|---|
 | explicit-op payload | `copy / fill / reduce / cumsum / gemm_py` | 是 |
-| domain skeleton | work axes / derived indices | 否 |
-| pipeline skeleton | pipeline trait | 否 |
-| residual structural evidence | `selection_pairs / arg_reduce_targets / recurrence_edges` | 否 |
+| structural evidence | `selection_targets / selection_pairs / arg_reduce_targets / recurrence_edges / update_sources / loop_carried_state` | 是 |
+| domain skeleton | work axes / derived indices | 否，仍由 `blackhole.work_decomposition` 承接 |
+| pipeline skeleton | pipeline trait | 否，仍由 `blackhole.pipeline_stages` 承接 |
+| residual reduction evidence | `row_reductions` | 否，仍留在 `fragment_regions` |
 | target-facing lowering requirement | CB / segment / runtime lowering 需求 | 否 |
 
-也就是说，第一阶段的准确表述是：
+也就是说，当前 manifest 的准确边界是：
 
-- 把 explicit-op evidence 从 late matcher 路径切出来
-- residual structural evidence 先不硬塞进 manifest
+- 把会被 destructive lowering 吃掉的 explicit-op evidence 前移保存
+- 把 selection / arg-reduce / recurrence 相关 structural evidence 前移为 typed carrier
+- 不把 domain / pipeline skeleton、lowering summary、`row_reductions` 混进 manifest
 
-## 6. `AnalyzeSemanticStructure` 怎么接
+## 6. `AnalyzeSemanticStructure` 当前怎么接
 
 `AnalyzeSemanticStructure` 的职责不变，只是输入面收正。
 
-第一阶段输入：
+当前输入：
 
 | 输入 | 用途 |
 |---|---|
-| `tl.semantic_manifest` | explicit-op evidence |
-| `blackhole.fragment_regions` | residual structural evidence |
+| `tl.semantic_manifest` | explicit-op evidence + manifest-backed structural evidence |
+| `blackhole.fragment_regions` | residual reduction evidence + compatibility fallback |
 | `blackhole.work_decomposition` | domain skeleton |
 | `blackhole.pipeline_stages` | pipeline trait |
 | `tl.semantic_seeds` | pre-lift typed seed |
 
-第一阶段输出不变：
+当前输出不变：
 
 - `tl.semantic_structure`
 - `tl.semantic_witnesses`
 - `tl.semantic_program`
 
-所以真正变化的是：
+所以当前真正变化的是：
 
 | 项 | 变化 |
 |---|---|
 | explicit-op evidence 来源 | 从主要依赖 `fragment_regions` 改为优先读 manifest |
+| selection / recurrence structural evidence 来源 | 从主要依赖 `fragment_regions` 改为 manifest-first |
 | witness 生成位置 | 不变，仍在 `AnalyzeSemanticStructure` |
 | semantic core lift 位置 | 不变，仍在 `LiftStatefulSemanticIR` |
 
@@ -310,7 +316,7 @@ blackhole_codegen(device_mod)
 
 ## 9. 验证
 
-第一阶段验证只看三类东西：
+当前验证主要看三类东西：
 
 | 验证项 | 目标 |
 |---|---|
@@ -325,13 +331,17 @@ blackhole_codegen(device_mod)
 3. late augment：`gemm_py` 能补入 manifest
 4. semantic integration：`AnalyzeSemanticStructure` 能从 manifest 产出对应 witness
 
-当前已执行验证（`2026-04-06`）：
+当前最新稳定验证快照（`2026-04-06`，与 `tasks/progress.md` 对齐）：
 
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
-  - `32 passed`
+  - `38 passed`
+- `source scripts/setup_tt_sim.sh && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
+  - `12 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `40 passed, 10 skipped, 1 xfailed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q`
   - `24 passed, 11 skipped`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py -q`
+  - `1 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
   - `26 passed`

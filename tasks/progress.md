@@ -137,6 +137,9 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 
 - `progress.md` 现在只保留相对稳定的阶段状态、主 blocker、当前下一步和验证摘要。
 - 详细逐步实现记录、历史 checklist 和理论证明草稿分别留在阶段文档、git history 与 formalization note 中。
+- `2026-04-06` 已完成一轮活动文档状态审计：
+  `README.md`、`AGENTS.md`、`CLAUDE.md`、active stage docs 已统一到
+  `Phase A` 完成、`Phase B` 主线、manifest-first 与 `fragment_regions` 残余职责的当前口径。
 - `stage4_semantic_manifest.md` 当前作为 `Phase A` 信息源重构文档保留：
   - 它的定位是把 `Phase A` 需要的 explicit-op evidence 从 late matcher 前移到真实销毁边界：
     - `LowerTileOp` 边界的 early capture
