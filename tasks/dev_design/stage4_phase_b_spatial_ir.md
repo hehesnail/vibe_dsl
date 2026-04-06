@@ -301,6 +301,32 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attent
 - 删除 `blackhole.work_decomposition` 后，`SpatialProgram` 仍能从
   `SemanticProgram.domain` 恢复正确的 axes / indexed layout
 
+### 6.4 2026-04-06 Hardening Slice: Validator / Consumer / Family Gate
+
+本轮继续补了三个直接面向 `Phase C` 的 hardening 子项：
+
+- `ValidateSpatialProgram` 不再只看 object 是否“能串起来”，还会校验
+  `SpatialLayout / WorkPartition` 与 `SemanticProgram.domain` 的一致性
+  - `layout.axes` 必须和 semantic domain axes 一致
+  - `work_partition.axes` 必须和 semantic domain axes 一致
+  - `layout.kind == indexed` 必须和 semantic domain 的 `derived_indices` trait 对齐
+- `LowerBlackholeOps` 的 `work_axes / derived_index_expr_count` 已改为优先从
+  `tl.spatial_program` 恢复
+  - `blackhole.work_decomposition` 仍保留 compatibility fallback
+  - `spatial_phase_count / spatial_channel_count / spatial_phase_boundary_states`
+    继续只从 `tl.spatial_program` 恢复
+- `Phase B` family gate 已补到 `topk / selection`
+  - `SpatialProgram` 现在有 compile-path 测试覆盖 `select + recurrence` workload family
+
+对应测试：
+
+- 伪造 semantic-domain 不一致的 `SpatialProgram` 时，`ValidateSpatialProgram`
+  会 fail-fast
+- 删除 `blackhole.work_decomposition` 后，`LowerBlackholeOps` 仍能从
+  `tl.spatial_program` 导出 `work_axes / derived_index_expr_count`
+- `example_topk` 已纳入 `Phase B` transform-level coverage，验证 selection/indexing
+  family 不会立刻退化回 workload-specific matcher
+
 ## 7. Hardening Gates Before Phase C
 
 `Phase B` 的目标不是“已经有一套 `SpatialProgram` 对象”，而是：
@@ -330,7 +356,8 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attent
 
 当前代码仍未完全达标：
 
-- `Layout / WorkPartition` 仍直接从 `blackhole.work_decomposition` 恢复
+- `Layout / WorkPartition` 已切到 semantic-domain-first，
+  但 `blackhole.work_decomposition` 仍保留 compatibility fallback
 - GEMM fast-path 仍直接依赖 `blackhole.segment_plan`
 
 ### 7.2 Schema Strengthening
@@ -354,7 +381,8 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attent
 
 ### 7.3 Legality Must Be Explicit
 
-`ValidateSpatialProgram` 当前只做结构健全性检查，还不等于 spatial legality validator。
+`ValidateSpatialProgram` 当前已经具备最小 semantic-domain legality gate，但还不等于完整的
+spatial legality validator。
 
 进入 `Phase C` 前，validator 至少要能 fail-fast 检出：
 
@@ -383,15 +411,15 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attent
 
 当前仍未完全达标：
 
-- lowering requirements 仍同时读取 `blackhole.work_decomposition`
+- `work_axes / derived_index_expr_count` 已改为优先读取 `tl.spatial_program`
 - lowering-facing fragment summary 仍依赖 `blackhole.fragment_regions`
-- pipeline 相关 summary 仍直接来自 `blackhole.pipeline_stages`
+- pipeline legality 仍保留 `blackhole.pipeline_stages` / body-annotation compatibility path
 
 这类 mixed ownership 在 `Phase C` 之前必须继续收紧。
 
 ### 7.5 Family Coverage Gates
 
-当前 `copy / GEMM / flash-attn` 只能证明首轮 spatial cut 可行，不能证明设计已经足够 general。
+当前 `copy / GEMM / flash-attn / topk` 只能证明首轮 spatial cut 可行，不能证明设计已经足够 general。
 
 在进入 `Phase C` 前，`Phase B` 至少需要补齐：
 
@@ -419,6 +447,31 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attent
 - cross-member phase-boundary truth
 
 单 `PrimFunc` 程序仍只是退化情况，不应反向成为默认心智模型。
+
+## 7.7 2026-04-06 Hardening Execution Order
+
+`Phase B` 的剩余问题必须按 fixed order 收口，不能按“哪个 attr 看起来更顺手”零散修补。
+
+本轮 hardening 的执行顺序固定为：
+
+1. 先把 `ValidateSpatialProgram` 从结构检查升级到最小 legality gate
+   - phase / task / channel / layout / work-partition 的 cross-reference 必须一致
+   - multi-phase 程序除了 `phase_boundary_materialization` 外，还必须证明 phase 间真的有
+     channel 或 boundary state contract
+2. 再把 `LowerBlackholeOps` 收窄成 spatial consumer
+   - `spatial_phase_count / spatial_channel_count / spatial_phase_boundary_states`
+     只允许从 `tl.spatial_program` 恢复
+   - `work_axes / derived_index_count` 应优先从 `SpatialProgram.layouts /
+     work_partitions` 恢复，不再把 `blackhole.work_decomposition` 当 primary source
+3. 最后扩 family gate
+   - 至少补一个非 `copy / GEMM / flash-attn` 的 compile-path spatial case，确认当前 schema
+     不会一离开这三类 workload 就退化
+
+这轮 hardening 的明确边界：
+
+- 可以暂时保留 `segment_plan` 作为 GEMM fast-path 的 builder 输入
+- 但不能让 `segment_plan` / `work_decomposition` 继续外溢成 validator 或
+  `LowerBlackholeOps` 的 primary truth source
 
 ## 8. Current Gap Inventory
 

@@ -38,6 +38,8 @@
 #include <tvm/tir/expr.h>
 #include <tvm/tir/op.h>
 #include <tvm/tir/stmt_functor.h>
+
+#include <optional>
 #include <tvm/tir/transform.h>
 
 #include <algorithm>
@@ -717,17 +719,96 @@ static void ValidateFragmentPipelineLegalityFromBody(const Stmt& body) {
   });
 }
 
+static std::optional<Array<Any>> GetSpatialWorkAxesFromProgram(const SpatialProgram& program) {
+  if (!program.defined()) {
+    return std::nullopt;
+  }
+  for (const SpatialLayout& layout : program->layouts) {
+    if (!layout->axes.empty()) {
+      Array<Any> axes;
+      for (const String& axis : layout->axes) {
+        axes.push_back(axis);
+      }
+      return axes;
+    }
+  }
+  for (const WorkPartition& partition : program->work_partitions) {
+    if (!partition->axes.empty()) {
+      Array<Any> axes;
+      for (const String& axis : partition->axes) {
+        axes.push_back(axis);
+      }
+      return axes;
+    }
+  }
+  return std::nullopt;
+}
+
+static int GetSpatialDerivedIndexExprCountFromProgram(const SpatialProgram& program) {
+  if (!program.defined()) {
+    return 0;
+  }
+  for (const SpatialLayout& layout : program->layouts) {
+    if (static_cast<std::string>(layout->kind) == "indexed") {
+      return 1;
+    }
+    for (const String& trait : layout->traits) {
+      if (static_cast<std::string>(trait) == "derived_indices") {
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+static void CollectPipelineStageInfoFromBody(const Stmt& body, Array<Any>* stage_counts,
+                                             Array<Any>* loop_vars) {
+  std::unordered_set<std::string> seen_loop_vars;
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* loop = node.as<ForNode>();
+    if (!loop || !loop->annotations.defined()) {
+      return;
+    }
+    auto stage_count = loop->annotations.Get("num_stages");
+    if (!stage_count.has_value()) {
+      return;
+    }
+    stage_counts->push_back(Downcast<Integer>(stage_count.value()));
+    const std::string loop_var_name = loop->loop_var->name_hint;
+    if (!loop_var_name.empty() && seen_loop_vars.insert(loop_var_name).second) {
+      loop_vars->push_back(String(loop_var_name));
+    }
+  });
+}
+
 static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& func) {
   Map<String, Any> lowering_requirements;
+  auto spatial_program = func->GetAttr<SpatialProgram>(attr::kTLSpatialProgram);
+
+  if (spatial_program) {
+    if (auto axes = GetSpatialWorkAxesFromProgram(spatial_program.value())) {
+      lowering_requirements.Set("work_axes", axes.value());
+    }
+    const int derived_index_expr_count =
+        GetSpatialDerivedIndexExprCountFromProgram(spatial_program.value());
+    if (derived_index_expr_count > 0) {
+      lowering_requirements.Set("derived_index_expr_count", Integer(derived_index_expr_count));
+    }
+  }
 
   if (auto work_info = func->GetAttr<Map<String, Any>>("blackhole.work_decomposition")) {
     auto work_map = work_info.value();
-    if (auto axes = work_map.Get("axes")) {
-      lowering_requirements.Set("work_axes", axes.value());
+    if (!lowering_requirements.count("work_axes")) {
+      if (auto axes = work_map.Get("axes")) {
+        lowering_requirements.Set("work_axes", axes.value());
+      }
     }
-    if (auto derived = work_map.Get("derived_index_exprs")) {
-      lowering_requirements.Set("derived_index_expr_count",
-                                Integer(static_cast<int>(Downcast<Array<Any>>(derived.value()).size())));
+    if (!lowering_requirements.count("derived_index_expr_count")) {
+      if (auto derived = work_map.Get("derived_index_exprs")) {
+        lowering_requirements.Set(
+            "derived_index_expr_count",
+            Integer(static_cast<int>(Downcast<Array<Any>>(derived.value()).size())));
+      }
     }
     if (auto loop_bounds = work_map.Get("work_dependent_loop_bounds")) {
       lowering_requirements.Set(
@@ -736,7 +817,7 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
     }
   }
 
-  if (auto spatial_program = func->GetAttr<SpatialProgram>(attr::kTLSpatialProgram)) {
+  if (spatial_program) {
     const SpatialProgram& program = spatial_program.value();
     if (!program->phases.empty()) {
       lowering_requirements.Set("spatial_phase_count",
@@ -846,6 +927,16 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
     if (!loop_vars.empty()) {
       lowering_requirements.Set("pipeline_loop_vars", loop_vars);
     }
+  }
+
+  Array<Any> stage_counts;
+  Array<Any> loop_vars;
+  CollectPipelineStageInfoFromBody(func->body, &stage_counts, &loop_vars);
+  if (!stage_counts.empty()) {
+    lowering_requirements.Set("pipeline_stage_counts", stage_counts);
+  }
+  if (!loop_vars.empty()) {
+    lowering_requirements.Set("pipeline_loop_vars", loop_vars);
   }
 
   return lowering_requirements;

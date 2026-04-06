@@ -20,6 +20,31 @@ using tvm::ffi::Any;
 using tvm::ffi::Array;
 using tvm::ffi::String;
 
+namespace {
+
+bool HasTrait(const Array<String>& traits, const char* expected) {
+  for (const String& trait : traits) {
+    if (static_cast<std::string>(trait) == expected) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool SameAxes(const Array<String>& lhs, const Array<String>& rhs) {
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+  for (int i = 0; i < lhs.size(); ++i) {
+    if (static_cast<std::string>(lhs[i]) != static_cast<std::string>(rhs[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 tvm::transform::Pass ValidateSpatialProgram() {
   auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
     std::unordered_map<std::string, Array<ProgramPhase>> phases_by_member_func;
@@ -40,6 +65,10 @@ tvm::transform::Pass ValidateSpatialProgram() {
              "PrimFunc global_symbol";
       ICHECK(!program->phases.empty()) << "ValidateSpatialProgram requires at least one phase";
       ICHECK(!program->tasks.empty()) << "ValidateSpatialProgram requires at least one task";
+      ICHECK(!program->layouts.empty())
+          << "ValidateSpatialProgram requires at least one spatial layout";
+      ICHECK(!program->work_partitions.empty())
+          << "ValidateSpatialProgram requires at least one work partition";
 
       std::unordered_set<std::string> phase_names;
       for (const ProgramPhase& phase : program->phases) {
@@ -84,6 +113,25 @@ tvm::transform::Pass ValidateSpatialProgram() {
           ICHECK(channel_names.count(static_cast<std::string>(channel_name)))
               << "ValidateSpatialProgram found phase referencing unknown channel "
               << channel_name;
+        }
+      }
+
+      auto maybe_semantic_program = func.value()->GetAttr<SemanticProgram>(attr::kTLSemanticProgram);
+      if (maybe_semantic_program && !maybe_semantic_program.value()->domains.empty()) {
+        const Domain& domain = maybe_semantic_program.value()->domains[0];
+        for (const SpatialLayout& layout : program->layouts) {
+          ICHECK(SameAxes(layout->axes, domain->axes))
+              << "ValidateSpatialProgram found layout axes inconsistent with semantic domain";
+          const bool semantic_indexed = HasTrait(domain->traits, "derived_indices");
+          const bool layout_indexed = static_cast<std::string>(layout->kind) == "indexed";
+          ICHECK_EQ(layout_indexed, semantic_indexed)
+              << "ValidateSpatialProgram found layout kind inconsistent with semantic domain "
+                 "derived_indices trait";
+        }
+        for (const WorkPartition& partition : program->work_partitions) {
+          ICHECK(SameAxes(partition->axes, domain->axes))
+              << "ValidateSpatialProgram found work partition axes inconsistent with semantic "
+                 "domain";
         }
       }
 
