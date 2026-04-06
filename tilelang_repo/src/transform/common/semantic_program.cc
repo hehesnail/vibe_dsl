@@ -198,6 +198,7 @@ Channel::Channel(ffi::String name, ffi::String kind, ffi::String source_task,
 
 SpatialLayout::SpatialLayout(ffi::String name, ffi::String kind, ffi::String target_name,
                              ffi::Array<ffi::String> axes, ffi::Array<ffi::String> traits,
+                             ffi::Map<ffi::String, ffi::Any> payload,
                              ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<SpatialLayoutNode>();
   n->name = std::move(name);
@@ -205,6 +206,7 @@ SpatialLayout::SpatialLayout(ffi::String name, ffi::String kind, ffi::String tar
   n->target_name = std::move(target_name);
   n->axes = std::move(axes);
   n->traits = std::move(traits);
+  n->payload = std::move(payload);
   n->anchors = std::move(anchors);
   data_ = std::move(n);
 }
@@ -454,10 +456,12 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                         [](ffi::String name, ffi::String kind, ffi::String target_name,
                            ffi::Array<ffi::String> axes,
                            ffi::Array<ffi::String> traits,
+                           ffi::Map<ffi::String, ffi::Any> payload,
                            ffi::Array<TIRAnchor> anchors) {
                           return SpatialLayout(std::move(name), std::move(kind),
                                                std::move(target_name), std::move(axes),
-                                               std::move(traits), std::move(anchors));
+                                               std::move(traits), std::move(payload),
+                                               std::move(anchors));
                         });
   refl::GlobalDef().def("tl.WorkPartition",
                         [](ffi::String name, ffi::String kind, ffi::String target_name,

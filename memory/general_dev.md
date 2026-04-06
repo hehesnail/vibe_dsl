@@ -282,6 +282,16 @@
   “这个 update 该不该 materialize 成 task”。更稳的主链是 generic path 直接按
   semantic `Update` object 建 task；名字只能留给 IR object identity、调试和打印，
   不承担协议分支职责
+- 对 `Phase B` stronger-contract schema，也不要只做“名字还在，但大家约定优先不用”。
+  更稳的 cutover 是先把跨层 linkage 收成显式 contract，再让 validator / consumer
+  改成优先吃这层 contract。当前稳定模式是：
+  - `SpatialLayout.payload.domain_index` /
+    `WorkPartition.payload.domain_index`
+    绑定 `SemanticProgram.domains[*]`
+  - `ResourceIntent.payload.target_kind + target_index`
+    绑定 semantic-state target
+  - `LowerBlackholeOps` 这类 consumer 再按 `target_index` 恢复对象，
+    而不是回头按 `target_name` 字符串重新查表
 - 对 Blackhole 的 device resource canonicalization，不要把
   `blackhole.resource_plan` 当唯一真源。`grouped / routed / paged` 这类 family 的
   block-local shared alloc_buffer 很可能还没先出现在 plan 里，但 IR storage scope

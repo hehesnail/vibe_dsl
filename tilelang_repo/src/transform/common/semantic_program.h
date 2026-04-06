@@ -55,6 +55,7 @@ constexpr const char* kCaptureStage = "capture_stage";
 constexpr const char* kCompanionBuffer = "companion_buffer";
 constexpr const char* kCompanionTarget = "companion_target";
 constexpr const char* kDirection = "direction";
+constexpr const char* kDomainIndex = "domain_index";
 constexpr const char* kDType = "dtype";
 constexpr const char* kFragmentLoopCarriedState = "fragment_loop_carried_state";
 constexpr const char* kFragmentOpKinds = "fragment_op_kinds";
@@ -84,6 +85,8 @@ constexpr const char* kSrcBufferRef = "src_buffer_ref";
 constexpr const char* kSrcShape = "src_shape";
 constexpr const char* kTarget = "target";
 constexpr const char* kTargetBuffer = "target_buffer";
+constexpr const char* kTargetIndex = "target_index";
+constexpr const char* kTargetKind = "target_kind";
 constexpr const char* kValue = "value";
 constexpr const char* kValueBuffer = "value_buffer";
 constexpr const char* kValueTarget = "value_target";
@@ -94,6 +97,12 @@ constexpr const char* kLoopVar = "loop_var";
 constexpr const char* kStageLocalBuffers = "stage_local_buffers";
 constexpr const char* kLoopCarriedState = "loop_carried_state";
 }  // namespace schema_key
+
+namespace spatial_contract {
+constexpr const char* kSemanticStateTarget = "semantic_state";
+constexpr const char* kTaskTarget = "task";
+constexpr const char* kMemberFuncTarget = "member_func";
+}  // namespace spatial_contract
 
 class TIRAnchorNode : public Object {
  public:
@@ -564,6 +573,7 @@ class SpatialLayoutNode : public Object {
   ffi::String target_name;
   ffi::Array<ffi::String> axes;
   ffi::Array<ffi::String> traits;
+  ffi::Map<ffi::String, ffi::Any> payload;
   ffi::Array<TIRAnchor> anchors;
 
   static void RegisterReflection() {
@@ -574,6 +584,7 @@ class SpatialLayoutNode : public Object {
         .def_ro("target_name", &SpatialLayoutNode::target_name)
         .def_ro("axes", &SpatialLayoutNode::axes)
         .def_ro("traits", &SpatialLayoutNode::traits)
+        .def_ro("payload", &SpatialLayoutNode::payload)
         .def_ro("anchors", &SpatialLayoutNode::anchors);
   }
 
@@ -584,6 +595,7 @@ class SpatialLayout : public ObjectRef {
  public:
   TVM_DLL SpatialLayout(ffi::String name, ffi::String kind, ffi::String target_name,
                         ffi::Array<ffi::String> axes, ffi::Array<ffi::String> traits,
+                        ffi::Map<ffi::String, ffi::Any> payload,
                         ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SpatialLayout, ObjectRef, SpatialLayoutNode);
 };

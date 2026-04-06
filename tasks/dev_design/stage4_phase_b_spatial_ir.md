@@ -678,6 +678,28 @@ spatial legality validator 再推进一格：
   `LowerBlackholeOps` 不再把 `blackhole.pipeline_stages / fragment_regions`
   当 primary source
 
+本轮已经先落了一层 **index-based linkage contract**：
+
+- `SpatialLayout.payload.domain_index`
+  与 `WorkPartition.payload.domain_index`
+  现在是 validator 和 consumer 的 primary domain linkage
+- `ResourceIntent.payload.target_kind + target_index`
+  现在是 semantic-state-targeted contract 的 primary linkage
+- `LowerBlackholeOps` 的 phase-boundary state 恢复已经切到
+  `semantic_state[target_index]`，不再按 `target_name` 字符串恢复
+
+下一轮 schema strengthening 的优先级不再是继续塞更多名字字段，而是继续把这层
+index-based linkage 扩到更多 object：
+
+- `SpatialLayout / WorkPartition` 必须显式携带 `domain_index`
+- `ResourceIntent` 必须显式携带 `target_kind + target_index`
+- `Channel / Placement / SyncEdge / ProgramPhase / Task` 也应逐步补齐对应的
+  `*_index / *_indices` contract
+
+目的不是“把名字删光”，而是把名字降级成 display/identity 字段，让跨层 consumer 和
+validator 优先吃显式 linkage contract，而不是靠 `state_name / target_name / task_name`
+字符串重新查表。
+
 ### 7.3 Legality Must Be Explicit
 
 `ValidateSpatialProgram` 当前已经具备最小 semantic-domain legality gate，但还不等于完整的
@@ -729,7 +751,8 @@ spatial legality validator。
 - `LowerToSpatialProgram` 仍保留对 `blackhole.work_decomposition`
   的过渡回退
 - `ValidateSpatialProgram` 还不是最终形态的完整 legality validator
-- `SpatialProgram` schema 还需要继续做强，才能无保留进入 `Phase C`
+- `SpatialProgram` schema 还需要继续把 task/channel/placement/phase linkage
+  从名字查表收成更强 contract，才能无保留进入 `Phase C`
 
 这类 mixed ownership 在 `Phase C` 之前必须继续收紧。
 
@@ -827,5 +850,8 @@ schema strengthening / consumer cutover。
    stateful semantic states 必须对应 `state_residency`，multi-phase program 还必须覆盖
    每个 stateful state 的 `phase_boundary_materialization`
 4. representative family gate 已证明当前 object boundary 不会立刻退化回 workload-specific matcher
-5. 后续更强 schema / legality contract 仍然需要，但它们现在属于 `Phase C`
+5. stronger-contract schema 的第一轮已经落地：
+   `domain_index` 与 `target_kind / target_index`
+   已进入 `SpatialProgram` payload contract，并被 validator / consumer 主链消费
+6. 后续更强 schema / legality contract 仍然需要，但它们现在属于 `Phase C`
    translator 驱动的下一轮增强，而不是继续停在 `Phase B` 的 blocker

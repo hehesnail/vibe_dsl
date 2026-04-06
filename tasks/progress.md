@@ -5,7 +5,7 @@
 
 ## 当前阶段
 
-- **日期**: `2026-04-06`
+- **日期**: `2026-04-07`
 - **总阶段**: Stage 4
 - **当前主线**: layered IR architecture transition
   - `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
@@ -199,6 +199,17 @@
       spatial_phase_count / spatial_channel_count / spatial_phase_boundary_states /
       pipeline_stage_counts / pipeline_loop_vars / fragment_*`
       都只从 `SpatialProgram` 恢复
+    - `Phase B` 的第一轮 stronger-contract schema 已开始落地：
+      - `SpatialLayout.payload.domain_index` 与
+        `WorkPartition.payload.domain_index`
+        现在显式绑定 `SemanticProgram.domains[*]`
+      - `ResourceIntent.payload.target_kind / target_index`
+        现在显式绑定 semantic state target；
+        `LowerBlackholeOps` 的 `spatial_phase_boundary_states`
+        不再按 `target_name` 字符串查表，而是按
+        `semantic_program.states[target_index]` 恢复
+      - `ValidateSpatialProgram` 现在会显式要求这些 linkage contract 存在且合法，
+        而不是只接受名字能对上的弱协议
     - target/transform tests 里所有直接验证 `LowerBlackholeOps` 的路径
       也已切回真实主线：
       `SplitBlackholeKernel -> Analyze* -> AnalyzeSemanticStructure ->
@@ -237,7 +248,7 @@
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py -q`
   - `7 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q`
-  - `28 passed`
+  - `31 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `41 passed, 10 skipped, 1 xfailed`
 - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`

@@ -7,6 +7,7 @@
 #include <tvm/ir/transform.h>
 
 #include <string>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -21,6 +22,7 @@ using tvm::ffi::Any;
 using tvm::ffi::Array;
 using tvm::ffi::Map;
 using tvm::ffi::String;
+using tvm::Integer;
 
 namespace {
 
@@ -71,6 +73,20 @@ bool IsPipelineContractIntent(const ResourceIntent& intent) {
 bool IsFragmentContractIntent(const ResourceIntent& intent) {
   return static_cast<std::string>(intent->kind) == "lowering_support" &&
          HasTrait(intent->traits, "fragment_contract");
+}
+
+std::optional<int64_t> GetPayloadIndex(const Map<String, Any>& payload, const char* key) {
+  if (auto value = payload.Get(String(key))) {
+    return Downcast<Integer>(value.value())->value;
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> GetPayloadString(const Map<String, Any>& payload, const char* key) {
+  if (auto value = payload.Get(String(key))) {
+    return static_cast<std::string>(Downcast<String>(value.value()));
+  }
+  return std::nullopt;
 }
 
 }  // namespace
@@ -193,9 +209,17 @@ tvm::transform::Pass ValidateSpatialProgram() {
       bool semantic_requires_fragment_contract = false;
       bool semantic_requires_work_dependent_payload = false;
       int semantic_stateful_state_count = 0;
+      std::unordered_set<int> semantic_stateful_state_indices;
       if (maybe_semantic_program && !maybe_semantic_program.value()->domains.empty()) {
-        const Domain& domain = maybe_semantic_program.value()->domains[0];
+        const SemanticProgram& semantic_program = maybe_semantic_program.value();
         for (const SpatialLayout& layout : program->layouts) {
+          auto maybe_domain_index = GetPayloadIndex(layout->payload, schema_key::kDomainIndex);
+          ICHECK(maybe_domain_index)
+              << "ValidateSpatialProgram requires spatial layouts to carry domain_index contract";
+          ICHECK_GE(*maybe_domain_index, 0);
+          ICHECK_LT(*maybe_domain_index, semantic_program->domains.size())
+              << "ValidateSpatialProgram found layout with invalid semantic domain index";
+          const Domain& domain = semantic_program->domains[*maybe_domain_index];
           ICHECK(SameAxes(layout->axes, domain->axes))
               << "ValidateSpatialProgram found layout axes inconsistent with semantic domain";
           const bool semantic_indexed = HasTrait(domain->traits, "derived_indices");
@@ -205,23 +229,33 @@ tvm::transform::Pass ValidateSpatialProgram() {
                  "derived_indices trait";
         }
         for (const WorkPartition& partition : program->work_partitions) {
+          auto maybe_domain_index = GetPayloadIndex(partition->payload, schema_key::kDomainIndex);
+          ICHECK(maybe_domain_index) << "ValidateSpatialProgram requires work partitions to carry "
+                                        "domain_index contract";
+          ICHECK_GE(*maybe_domain_index, 0);
+          ICHECK_LT(*maybe_domain_index, semantic_program->domains.size())
+              << "ValidateSpatialProgram found work partition with invalid semantic domain index";
+          const Domain& domain = semantic_program->domains[*maybe_domain_index];
           ICHECK(SameAxes(partition->axes, domain->axes))
               << "ValidateSpatialProgram found work partition axes inconsistent with semantic "
                  "domain";
         }
+        const Domain& domain = semantic_program->domains[0];
         if (HasTrait(domain->traits, "work_dependent_bounds")) {
           semantic_requires_work_dependent_payload = true;
         }
-        for (const State& state : maybe_semantic_program.value()->states) {
+        for (int i = 0; i < semantic_program->states.size(); ++i) {
+          const State& state = semantic_program->states[i];
           auto role = semantic::ParseStateRole(static_cast<std::string>(state->role));
           if (role && (*role == semantic::StateRole::kCarry ||
                        *role == semantic::StateRole::kReductionAccumulator ||
                        *role == semantic::StateRole::kSelectionState ||
                        *role == semantic::StateRole::kIndexState)) {
             ++semantic_stateful_state_count;
+            semantic_stateful_state_indices.insert(i);
           }
         }
-        for (const SemanticSupplement& supplement : maybe_semantic_program.value()->supplements) {
+        for (const SemanticSupplement& supplement : semantic_program->supplements) {
           const std::string supplement_kind = static_cast<std::string>(supplement->kind);
           if (supplement_kind ==
               semantic::ToString(semantic::SupplementKind::kFragmentLoweringStructure)) {
@@ -278,11 +312,41 @@ tvm::transform::Pass ValidateSpatialProgram() {
       bool has_pipeline_contract = false;
       int state_residency_count = 0;
       int phase_boundary_materialization_count = 0;
+      std::unordered_set<int> state_residency_state_indices;
+      std::unordered_set<int> phase_boundary_state_indices;
       for (const ResourceIntent& intent : program->resource_intents) {
         const std::string intent_kind = static_cast<std::string>(intent->kind);
         resource_intent_kinds.insert(intent_kind);
         state_residency_count += intent_kind == "state_residency";
         phase_boundary_materialization_count += intent_kind == "phase_boundary_materialization";
+        if (intent_kind == "state_residency" ||
+            intent_kind == "phase_boundary_materialization") {
+          auto maybe_target_kind = GetPayloadString(intent->payload, schema_key::kTargetKind);
+          ICHECK(maybe_target_kind &&
+                 *maybe_target_kind == spatial_contract::kSemanticStateTarget)
+              << "ValidateSpatialProgram requires state materialization intents to carry "
+                 "semantic_state target_kind contract";
+          auto maybe_target_index = GetPayloadIndex(intent->payload, schema_key::kTargetIndex);
+          ICHECK(maybe_target_index)
+              << "ValidateSpatialProgram requires state materialization intents to carry "
+                 "target_index contract";
+          ICHECK(maybe_semantic_program)
+              << "ValidateSpatialProgram requires SemanticProgram when validating state-targeted "
+                 "resource intents";
+          ICHECK_GE(*maybe_target_index, 0);
+          ICHECK_LT(*maybe_target_index, maybe_semantic_program.value()->states.size())
+              << "ValidateSpatialProgram found state-targeted intent with invalid target_index";
+          if (intent_kind == "state_residency") {
+            if (semantic_stateful_state_indices.count(*maybe_target_index)) {
+              state_residency_state_indices.insert(*maybe_target_index);
+            }
+          } else {
+            ICHECK(semantic_stateful_state_indices.count(*maybe_target_index))
+                << "ValidateSpatialProgram requires phase-boundary intents to target "
+                   "stateful semantic states";
+            phase_boundary_state_indices.insert(*maybe_target_index);
+          }
+        }
         if (IsFragmentContractIntent(intent)) {
           has_fragment_contract = true;
           auto maybe_fragment_ops =
@@ -346,10 +410,16 @@ tvm::transform::Pass ValidateSpatialProgram() {
           ICHECK_GE(phase_boundary_materialization_count, semantic_stateful_state_count)
               << "ValidateSpatialProgram requires multi-phase programs to materialize a "
                  "phase-boundary intent for each stateful semantic state";
+          ICHECK_GE(phase_boundary_state_indices.size(), semantic_stateful_state_count)
+              << "ValidateSpatialProgram requires multi-phase programs to materialize a "
+                 "phase-boundary intent for each stateful semantic state";
         }
       }
       if (semantic_stateful_state_count > 0) {
         ICHECK_GE(state_residency_count, semantic_stateful_state_count)
+            << "ValidateSpatialProgram requires stateful semantic states to materialize "
+               "state-residency intents";
+        ICHECK_GE(state_residency_state_indices.size(), semantic_stateful_state_count)
             << "ValidateSpatialProgram requires stateful semantic states to materialize "
                "state-residency intents";
       }

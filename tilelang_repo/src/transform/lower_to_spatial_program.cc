@@ -24,6 +24,7 @@ namespace tl {
 
 using tvm::DictAttrs;
 using tvm::GlobalInfo;
+using tvm::Integer;
 using tvm::ffi::Any;
 using tvm::ffi::Array;
 using tvm::ffi::Map;
@@ -54,6 +55,25 @@ Array<String> MakeTraits(std::initializer_list<const char*> values) {
 }
 
 Map<String, Any> EmptyPayload() { return Map<String, Any>(); }
+
+Map<String, Any> BuildDomainPayload(int domain_index) {
+  Map<String, Any> payload;
+  payload.Set(String(schema_key::kDomainIndex), Integer(domain_index));
+  return payload;
+}
+
+Map<String, Any> BuildTargetPayload(const char* target_kind, int target_index) {
+  Map<String, Any> payload;
+  payload.Set(String(schema_key::kTargetKind), String(target_kind));
+  payload.Set(String(schema_key::kTargetIndex), Integer(target_index));
+  return payload;
+}
+
+Map<String, Any> BuildMemberFuncTargetPayload() {
+  Map<String, Any> payload;
+  payload.Set(String(schema_key::kTargetKind), String(spatial_contract::kMemberFuncTarget));
+  return payload;
+}
 
 Array<TIRAnchor> MakeAnchors(const std::string& kind, const std::string& value) {
   return Array<TIRAnchor>{TIRAnchor(String(kind), String(value))};
@@ -132,7 +152,7 @@ void AppendPipelineResourceIntent(const std::string& member_func, const Semantic
   if (!pipeline_stages.has_value() || pipeline_stages->empty()) {
     return;
   }
-  Map<String, Any> payload;
+  Map<String, Any> payload = BuildMemberFuncTargetPayload();
   payload.Set(String(schema_key::kPipelineStages), pipeline_stages.value());
   resource_intents->push_back(ResourceIntent(
       String("pipeline_contract_" + member_func), String("synchronization_support"),
@@ -146,15 +166,16 @@ void AppendFragmentResourceIntent(const std::string& member_func, const Semantic
   if (!fragment_payload.has_value()) {
     return;
   }
+  Map<String, Any> payload = fragment_payload.value();
+  payload.Set(String(schema_key::kTargetKind), String(spatial_contract::kMemberFuncTarget));
   resource_intents->push_back(ResourceIntent(
       String("fragment_contract_" + member_func), String("lowering_support"),
-      String(member_func), MakeTraits({"phase_b", "fragment_contract"}),
-      fragment_payload.value(),
+      String(member_func), MakeTraits({"phase_b", "fragment_contract"}), payload,
       MakeAnchors("spatial_resource_intent", "fragment_contract_" + member_func)));
 }
 
-Map<String, Any> BuildWorkPartitionPayload(const SemanticProgram& program) {
-  Map<String, Any> payload;
+Map<String, Any> BuildWorkPartitionPayload(const SemanticProgram& program, int domain_index) {
+  Map<String, Any> payload = BuildDomainPayload(domain_index);
   if (auto loop_bounds = GetWorkDependentLoopBoundsFromSupplements(program)) {
     payload.Set(String(schema_key::kWorkDependentLoopBounds), loop_bounds.value());
   }
@@ -281,14 +302,15 @@ void BuildCommonSpatialScaffolding(const std::string& member_func, const Array<S
                                    Array<WorkPartition>* work_partitions) {
   const std::string layout_kind = has_derived_indices ? "indexed" : "regular";
   const std::string partition_kind = work_axes.size() > 1 ? "blocked" : "replicated";
+  constexpr int kPrimaryDomainIndex = 0;
   layouts->push_back(SpatialLayout(String("layout_" + member_func), String(layout_kind),
                                    String(member_func), work_axes,
-                                   MakeTraits({"phase_b"}),
+                                   MakeTraits({"phase_b"}), BuildDomainPayload(kPrimaryDomainIndex),
                                    MakeAnchors("spatial_layout", member_func)));
   work_partitions->push_back(WorkPartition(String("partition_" + member_func), String(partition_kind),
                                            String(member_func), work_axes,
                                            MakeTraits({"phase_b"}),
-                                           BuildWorkPartitionPayload(program),
+                                           BuildWorkPartitionPayload(program, kPrimaryDomainIndex),
                                            MakeAnchors("spatial_partition", member_func)));
 }
 
@@ -387,7 +409,10 @@ SpatialProgramBundle BuildGemmFastPath(const std::string& member_func,
                      MakeAnchors("spatial_resource_intent", "gemm_input_buffers")),
       ResourceIntent(String("gemm_accumulator"), String("state_residency"),
                      String(program->states.empty() ? "" : static_cast<std::string>(program->states[0]->name)),
-                     MakeTraits({"fast_path", "gemm"}), EmptyPayload(),
+                     MakeTraits({"fast_path", "gemm"}),
+                     program->states.empty()
+                         ? EmptyPayload()
+                         : BuildTargetPayload(spatial_contract::kSemanticStateTarget, 0),
                      MakeAnchors("spatial_resource_intent", "gemm_accumulator"))};
   AppendFragmentResourceIntent(member_func, program, &resource_intents);
   AppendPipelineResourceIntent(member_func, program, &resource_intents);
@@ -519,9 +544,16 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
   }
 
   Array<ResourceIntent> resource_intents;
+  std::unordered_map<std::string, int> state_index_by_name;
+  for (int i = 0; i < program->states.size(); ++i) {
+    state_index_by_name[static_cast<std::string>(program->states[i]->name)] = i;
+  }
   for (const State& state : program->states) {
     const auto role = ParseStateRole(static_cast<std::string>(state->role));
     const std::string state_name = static_cast<std::string>(state->name);
+    auto state_index_it = state_index_by_name.find(state_name);
+    ICHECK(state_index_it != state_index_by_name.end())
+        << "LowerToSpatialProgram requires semantic state indices for state-targeted intents";
     const bool is_stateful = role && (*role == StateRole::kCarry ||
                                       *role == StateRole::kReductionAccumulator ||
                                       *role == StateRole::kSelectionState ||
@@ -531,12 +563,13 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
         state->name,
         Array<String>{String(static_cast<std::string>(state->role)),
                       String(static_cast<std::string>(state->storage_scope))},
-        EmptyPayload(),
+        BuildTargetPayload(spatial_contract::kSemanticStateTarget, state_index_it->second),
         MakeAnchors("spatial_resource_intent", state_name)));
     if (multi_phase && is_stateful) {
       resource_intents.push_back(ResourceIntent(
           String("phase_boundary_" + state_name), String("phase_boundary_materialization"),
-          state->name, MakeTraits({"phase_boundary"}), EmptyPayload(),
+          state->name, MakeTraits({"phase_boundary"}),
+          BuildTargetPayload(spatial_contract::kSemanticStateTarget, state_index_it->second),
           MakeAnchors("spatial_resource_intent", "phase_boundary_" + state_name)));
     }
   }

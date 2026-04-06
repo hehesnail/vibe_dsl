@@ -345,6 +345,14 @@ def test_spatial_program_layout_axes_come_from_semantic_program_not_work_decompo
     assert [str(axis) for axis in program.work_partitions[0].axes] == expected_axes
 
 
+def test_spatial_program_projects_domain_index_contracts_into_layout_and_partition():
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=2, tile_cols=3))
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    assert int(program.layouts[0].payload["domain_index"]) == 0
+    assert int(program.work_partitions[0].payload["domain_index"]) == 0
+
+
 def test_spatial_program_layout_kind_comes_from_semantic_domain_traits_not_work_decomposition():
     mod = _prepare_blackhole_phase_b_module(grid_indexed_staged_copy_kernel(grid_x=2, grid_y=3))
     semantic_program = mod["main"].attrs["tl.semantic_program"]
@@ -443,6 +451,7 @@ def test_validate_spatial_program_rejects_layout_axes_mismatch_with_semantic_dom
         program.layouts[0].target_name,
         ["bogus_axis"],
         program.layouts[0].traits,
+        program.layouts[0].payload,
         program.layouts[0].anchors,
     )
     bad_program = make_program(
@@ -564,6 +573,37 @@ def test_validate_spatial_program_rejects_insufficient_phase_boundary_materializ
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
+def test_spatial_program_phase_boundary_intents_project_state_index_contract():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    program = mod["main"].attrs["tl.spatial_program"]
+    phase_boundary_intents = [
+        intent for intent in program.resource_intents if str(intent.kind) == "phase_boundary_materialization"
+    ]
+    semantic_program = mod["main"].attrs["tl.semantic_program"]
+    expected_state_indices = [
+        i
+        for i, state in enumerate(semantic_program.states)
+        if str(state.role) in {"carry", "reduction_accumulator", "selection_state", "index_state"}
+    ]
+
+    assert len(phase_boundary_intents) > 0
+    assert all(str(intent.payload["target_kind"]) == "semantic_state" for intent in phase_boundary_intents)
+    assert sorted(int(intent.payload["target_index"]) for intent in phase_boundary_intents) == expected_state_indices
+
+
 def test_validate_spatial_program_rejects_pipeline_program_without_pipeline_contract():
     mod = _prepare_blackhole_phase_b_module(
         _lower_flash_attention_example(
@@ -670,7 +710,7 @@ def test_validate_spatial_program_rejects_work_dependent_domain_without_partitio
             partition.target_name,
             partition.axes,
             partition.traits,
-            {},
+            {"domain_index": partition.payload["domain_index"]},
             partition.anchors,
         )
         for partition in program.work_partitions
@@ -857,6 +897,69 @@ def test_lower_blackhole_ops_prefers_spatial_fragment_contract_over_fragment_reg
     lowering_requirements = lowered.attrs["blackhole.lowering_requirements"]
 
     assert {str(item) for item in lowering_requirements["pointwise_op_kinds"]} == {"mul"}
+
+
+def test_lower_blackhole_ops_uses_phase_boundary_state_index_contract_not_target_name():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    semantic_program = mod["main"].attrs["tl.semantic_program"]
+    expected_state_names = [
+        str(state.name)
+        for state in semantic_program.states
+        if str(state.role) in {"carry", "reduction_accumulator", "selection_state", "index_state"}
+    ]
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    make_resource_intent = tvm.get_global_func("tl.ResourceIntent")
+    make_program = tvm.get_global_func("tl.SpatialProgram")
+    rebuilt_intents = []
+    for intent in program.resource_intents:
+        if str(intent.kind) == "phase_boundary_materialization":
+            payload = dict(intent.payload)
+            rebuilt_intents.append(
+                make_resource_intent(
+                    intent.name,
+                    intent.kind,
+                    f"bogus_state_{int(payload['target_index'])}",
+                    intent.traits,
+                    payload,
+                    intent.anchors,
+                )
+            )
+        else:
+            rebuilt_intents.append(intent)
+    mod = _replace_spatial_program(
+        mod,
+        make_program(
+            program.member_func,
+            program.phases,
+            program.tasks,
+            program.channels,
+            program.layouts,
+            program.work_partitions,
+            program.placements,
+            program.sync_edges,
+            rebuilt_intents,
+            program.anchors,
+        ),
+    )
+
+    lowered = tilelang.transform.LowerBlackholeOps()(mod)["main"]
+    lowering_requirements = lowered.attrs["blackhole.lowering_requirements"]
+
+    assert [str(item) for item in lowering_requirements["spatial_phase_boundary_states"]] == expected_state_names
 
 
 def test_lower_blackhole_ops_recovers_pipeline_requirements_without_pipeline_attr():

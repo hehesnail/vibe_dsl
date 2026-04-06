@@ -758,6 +758,21 @@ static int GetWorkDependentLoopBoundCountFromProgram(const SpatialProgram& progr
   return 0;
 }
 
+static std::optional<int64_t> GetPayloadIndex(const Map<String, Any>& payload, const char* key) {
+  if (auto value = payload.Get(String(key))) {
+    return Downcast<Integer>(value.value())->value;
+  }
+  return std::nullopt;
+}
+
+static std::optional<std::string> GetPayloadString(const Map<String, Any>& payload,
+                                                   const char* key) {
+  if (auto value = payload.Get(String(key))) {
+    return static_cast<std::string>(Downcast<String>(value.value()));
+  }
+  return std::nullopt;
+}
+
 static bool HasTrait(const Array<String>& traits, const char* expected) {
   for (const String& trait : traits) {
     if (static_cast<std::string>(trait) == expected) {
@@ -842,6 +857,7 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
   ICHECK(spatial_program)
       << "LowerBlackholeOps requires tl.spatial_program; run LowerToSpatialProgram and "
          "ValidateSpatialProgram before lowering";
+  auto semantic_program = func->GetAttr<SemanticProgram>(attr::kTLSemanticProgram);
 
   const SpatialProgram& program = spatial_program.value();
   if (auto axes = GetSpatialWorkAxesFromProgram(program)) {
@@ -870,11 +886,25 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
     if (static_cast<std::string>(intent->kind) != "phase_boundary_materialization") {
       continue;
     }
-    const std::string target_name = intent->target_name;
-    if (target_name.empty() || !seen_phase_boundary_states.insert(target_name).second) {
+    auto maybe_target_kind = GetPayloadString(intent->payload, schema_key::kTargetKind);
+    auto maybe_target_index = GetPayloadIndex(intent->payload, schema_key::kTargetIndex);
+    ICHECK(maybe_target_kind &&
+           *maybe_target_kind == spatial_contract::kSemanticStateTarget &&
+           maybe_target_index)
+        << "LowerBlackholeOps requires phase-boundary intents to carry semantic_state "
+           "target_kind/target_index contract";
+    ICHECK(semantic_program)
+        << "LowerBlackholeOps requires tl.semantic_program when consuming phase-boundary "
+           "state contracts";
+    ICHECK_GE(*maybe_target_index, 0);
+    ICHECK_LT(*maybe_target_index, semantic_program.value()->states.size())
+        << "LowerBlackholeOps found phase-boundary intent with invalid target_index";
+    const std::string state_name =
+        static_cast<std::string>(semantic_program.value()->states[*maybe_target_index]->name);
+    if (state_name.empty() || !seen_phase_boundary_states.insert(state_name).second) {
       continue;
     }
-    phase_boundary_states.push_back(String(target_name));
+    phase_boundary_states.push_back(String(state_name));
   }
   if (!phase_boundary_states.empty()) {
     lowering_requirements.Set("spatial_phase_boundary_states", phase_boundary_states);
