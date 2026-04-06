@@ -327,6 +327,32 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attent
 - `example_topk` 已纳入 `Phase B` transform-level coverage，验证 selection/indexing
   family 不会立刻退化回 workload-specific matcher
 
+### 6.5 2026-04-06 Hardening Slice: GEMM Builder Purity / Fragment Fallback
+
+本轮继续补了两个直接指向 `truth-source purity` 和 `consumer cutover` 的缺口：
+
+- `LowerToSpatialProgram` 的 GEMM fast-path 已不再读取 `blackhole.segment_plan`
+  - `reader / compute / writer` task graph 现在直接从
+    `SplitBlackholeKernel` 留在 IR body 上的 `blackhole.segment_kind`
+    annotation 恢复
+  - `segment_plan` 可以继续作为后续 lowering / runtime compatibility attr 存在，
+    但不再参与 `SpatialProgram` 构造
+- `LowerBlackholeOps` 的 fragment lowering requirements 已不再把
+  `blackhole.fragment_regions` 当成唯一来源
+  - 当 `fragment_regions` 存在时，仍优先消费这份 lowering-facing compatibility summary
+  - 当 `fragment_regions` 缺失时，会退回到
+    `SemanticProgram + residual body scan`
+    恢复最小 fragment contract：
+    `fragment_op_kinds / pointwise_op_kinds / row_reduction_targets /
+    row_broadcast_sources / fragment_loop_carried_state`
+
+对应测试：
+
+- 删除 `blackhole.segment_plan` 后，GEMM 仍能恢复 `reader / compute / writer`
+  spatial fast-path
+- 删除 `blackhole.fragment_regions` 后，`LowerBlackholeOps` 仍能恢复
+  `flash-attn` 所需的 fragment lowering requirements
+
 ## 7. Hardening Gates Before Phase C
 
 `Phase B` 的目标不是“已经有一套 `SpatialProgram` 对象”，而是：
@@ -358,7 +384,8 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attent
 
 - `Layout / WorkPartition` 已切到 semantic-domain-first，
   但 `blackhole.work_decomposition` 仍保留 compatibility fallback
-- GEMM fast-path 仍直接依赖 `blackhole.segment_plan`
+- `pipeline_stages` / `fragment_regions` 仍保留 lowering-facing compatibility 角色，
+  尚未完全收敛到更强的 typed contract
 
 ### 7.2 Schema Strengthening
 
@@ -412,7 +439,8 @@ spatial legality validator。
 当前仍未完全达标：
 
 - `work_axes / derived_index_expr_count` 已改为优先读取 `tl.spatial_program`
-- lowering-facing fragment summary 仍依赖 `blackhole.fragment_regions`
+- lowering-facing fragment summary 已有 `SemanticProgram + residual body scan`
+  fallback，但 `blackhole.fragment_regions` 仍保留 compatibility path
 - pipeline legality 仍保留 `blackhole.pipeline_stages` / body-annotation compatibility path
 
 这类 mixed ownership 在 `Phase C` 之前必须继续收紧。
@@ -469,9 +497,10 @@ spatial legality validator。
 
 这轮 hardening 的明确边界：
 
-- 可以暂时保留 `segment_plan` 作为 GEMM fast-path 的 builder 输入
-- 但不能让 `segment_plan` / `work_decomposition` 继续外溢成 validator 或
-  `LowerBlackholeOps` 的 primary truth source
+- `segment_plan` 已不再参与 `SpatialProgram` builder
+- `work_decomposition` / `fragment_regions` / `pipeline_stages` 仍可保留 compatibility path
+- 但不能让这些 legacy attrs 继续外溢成 validator 或 `LowerBlackholeOps`
+  的 primary truth source
 
 ## 8. Current Gap Inventory
 

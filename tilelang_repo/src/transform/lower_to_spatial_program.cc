@@ -6,6 +6,7 @@
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/ir/attrs.h>
 #include <tvm/ir/transform.h>
+#include <tvm/tir/stmt_functor.h>
 
 #include <algorithm>
 #include <string>
@@ -91,22 +92,48 @@ bool HasDerivedIndices(const SemanticProgram& program, const tir::PrimFunc& func
   return false;
 }
 
-bool HasSimpleSegmentPlanKinds(const tir::PrimFunc& func,
-                               const std::vector<std::string>& expected_kinds) {
-  auto segment_plan = func->GetAttr<Array<Any>>("blackhole.segment_plan");
-  if (!segment_plan || segment_plan.value().size() != expected_kinds.size()) {
-    return false;
-  }
-  for (size_t i = 0; i < expected_kinds.size(); ++i) {
-    auto segment = segment_plan.value()[i].as<Map<String, Any>>().value_or(Map<String, Any>());
-    if (segment.empty() || !segment.Get("kind")) {
-      return false;
+std::vector<std::string> CollectSegmentKindsFromBody(const tir::Stmt& body) {
+  class SegmentKindCollector : public tir::StmtVisitor {
+   public:
+    void VisitStmt_(const tir::AttrStmtNode* op) final {
+      if (op->attr_key == "blackhole.segment_kind") {
+        if (const auto* kind = op->value.as<tir::StringImmNode>()) {
+          const std::string segment_kind = kind->value;
+          if (seen_.insert(segment_kind).second) {
+            segment_kinds_.push_back(segment_kind);
+          }
+        }
+      }
+      tir::StmtVisitor::VisitStmt_(op);
     }
-    if (static_cast<std::string>(Downcast<String>(segment.Get("kind").value())) != expected_kinds[i]) {
-      return false;
-    }
+
+    const std::vector<std::string>& segment_kinds() const { return segment_kinds_; }
+
+   private:
+    std::unordered_set<std::string> seen_;
+    std::vector<std::string> segment_kinds_;
+  };
+
+  SegmentKindCollector collector;
+  collector(body);
+  return collector.segment_kinds();
+}
+
+bool HasSimpleSegmentKinds(const tir::PrimFunc& func, const std::vector<std::string>& expected_kinds) {
+  return CollectSegmentKindsFromBody(func->body) == expected_kinds;
+}
+
+std::string CoreTypeTraitForSegmentKind(const std::string& segment_kind) {
+  if (segment_kind == "reader") {
+    return "brisc";
   }
-  return true;
+  if (segment_kind == "compute") {
+    return "trisc";
+  }
+  if (segment_kind == "writer") {
+    return "ncrisc";
+  }
+  return "";
 }
 
 bool IsSimpleCopyFastPath(const SemanticProgram& program, const tir::PrimFunc& func) {
@@ -121,7 +148,7 @@ bool IsSimpleCopyFastPath(const SemanticProgram& program, const tir::PrimFunc& f
 }
 
 bool IsSimpleGemmFastPath(const SemanticProgram& program, const tir::PrimFunc& func) {
-  if (!HasSimpleSegmentPlanKinds(func, {"reader", "compute", "writer"})) {
+  if (!HasSimpleSegmentKinds(func, {"reader", "compute", "writer"})) {
     return false;
   }
   if (program->updates.size() != 1 || program->states.size() > 1) {
@@ -239,11 +266,7 @@ SpatialProgramBundle BuildGemmFastPath(const std::string& member_func,
   Array<Task> tasks;
   Array<Placement> placements;
   Array<String> task_names;
-  Array<Any> segment_plan = func->GetAttr<Array<Any>>("blackhole.segment_plan").value();
-  for (const auto& segment_item : segment_plan) {
-    auto segment = segment_item.as<Map<String, Any>>().value_or(Map<String, Any>());
-    const std::string segment_name =
-        static_cast<std::string>(Downcast<String>(segment.Get("kind").value()));
+  for (const std::string& segment_name : CollectSegmentKindsFromBody(func->body)) {
     const std::string task_kind = segment_name == "compute" ? "compute" : "transfer";
     Array<String> update_names;
     if (!program->updates.empty()) {
@@ -254,9 +277,9 @@ SpatialProgramBundle BuildGemmFastPath(const std::string& member_func,
                          MakeAnchors("spatial_task", segment_name)));
     task_names.push_back(String(segment_name));
     std::vector<std::string> placement_traits{"fast_path", "gemm"};
-    if (segment.Get("core_type")) {
-      placement_traits.push_back(
-          static_cast<std::string>(Downcast<String>(segment.Get("core_type").value())));
+    const std::string core_type_trait = CoreTypeTraitForSegmentKind(segment_name);
+    if (!core_type_trait.empty()) {
+      placement_traits.push_back(core_type_trait);
     }
     placements.push_back(Placement(String("place_" + segment_name), String("execution"),
                                    String(segment_name), String(member_func),

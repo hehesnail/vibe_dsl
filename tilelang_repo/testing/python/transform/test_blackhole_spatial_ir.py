@@ -166,6 +166,19 @@ def test_spatial_program_layout_kind_comes_from_semantic_domain_traits_not_work_
     assert str(program.work_partitions[0].kind) == "blocked"
 
 
+def test_gemm_spatial_program_uses_segment_kind_ir_not_segment_plan():
+    mod = _prepare_blackhole_phase_b_module(gemm_kernel())
+    mod = _strip_attr(mod, "blackhole.segment_plan")
+    mod = _drop_existing_spatial_program(mod)
+    mod = tilelang.transform.LowerToSpatialProgram()(mod)
+    mod = tilelang.transform.ValidateSpatialProgram()(mod)
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    assert [str(task.name) for task in program.tasks] == ["reader", "compute", "writer"]
+    assert [str(task.kind) for task in program.tasks] == ["transfer", "compute", "transfer"]
+    assert len(program.channels) >= 2
+
+
 def test_validate_spatial_program_rejects_layout_axes_mismatch_with_semantic_domain():
     mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=2, tile_cols=3))
     program = mod["main"].attrs["tl.spatial_program"]
@@ -206,3 +219,26 @@ def test_lower_blackhole_ops_uses_spatial_program_work_axes_without_work_decompo
 
     assert list(lowering_requirements["work_axes"]) == ["bx", "by"]
     assert int(lowering_requirements["derived_index_expr_count"]) == 1
+
+
+def test_lower_blackhole_ops_recovers_fragment_requirements_without_fragment_regions():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    mod = _strip_attr(mod, "blackhole.fragment_regions")
+    lowered = tilelang.transform.LowerBlackholeOps()(mod)["main"]
+    lowering_requirements = lowered.attrs["blackhole.lowering_requirements"]
+
+    assert "pointwise_chain" in {str(item) for item in lowering_requirements["fragment_op_kinds"]}
+    assert {"mul", "div"} <= {str(item) for item in lowering_requirements["pointwise_op_kinds"]}

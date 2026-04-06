@@ -30,6 +30,7 @@
 #include "../op/utils.h"
 #include "common/blackhole_utils.h"
 #include "common/semantic_program.h"
+#include "common/semantic_vocab.h"
 
 #include <tvm/ffi/reflection/registry.h>
 #include "runtime/thread_storage_scope.h"
@@ -570,11 +571,137 @@ static bool HasUnsupportedFragmentOpsInRequirements(const Map<String, Any>& lowe
 }
 
 namespace {
+bool IsFragmentFillValue(const PrimExpr& expr);
 bool HasResidualFragmentFill(const Stmt& body);
 bool HasResidualFragmentAdd(const Stmt& body);
 bool HasResidualFragmentMax(const Stmt& body);
 bool HasResidualFragmentCast(const Stmt& body);
 bool HasResidualRowBroadcast(const Stmt& body);
+}
+
+static bool HasResidualFragmentComputeChain(const Stmt& body) {
+  bool found = false;
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* store = node.as<BufferStoreNode>();
+    if (!store || !IsUnsupportedResidualLocalScope(store->buffer)) {
+      return;
+    }
+    found = true;
+  });
+  return found;
+}
+
+static Array<Any> CollectResidualFragmentPointwiseKinds(const Stmt& body) {
+  Array<Any> pointwise_op_kinds;
+  std::unordered_set<std::string> seen_pointwise_kinds;
+  auto add_kind = [&](const char* kind) {
+    if (seen_pointwise_kinds.insert(kind).second) {
+      pointwise_op_kinds.push_back(String(kind));
+    }
+  };
+
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* store = node.as<BufferStoreNode>();
+    if (!store || !IsUnsupportedResidualLocalScope(store->buffer)) {
+      return;
+    }
+    if (IsFragmentFillValue(store->value) && store->indices.size() == 1) {
+      add_kind("fill");
+      return;
+    }
+    if (store->value.as<AddNode>()) {
+      add_kind("add");
+      return;
+    }
+    if (store->value.as<MaxNode>()) {
+      add_kind("max");
+      return;
+    }
+    if (store->value.as<CastNode>()) {
+      add_kind("cast");
+      return;
+    }
+    if (store->value.as<MulNode>()) {
+      add_kind("mul");
+      return;
+    }
+    if (store->value.as<DivNode>()) {
+      add_kind("div");
+      return;
+    }
+  });
+  return pointwise_op_kinds;
+}
+
+static void CollectFragmentFallbackRequirements(const PrimFunc& func,
+                                                Map<String, Any>* lowering_requirements) {
+  auto semantic_program = func->GetAttr<SemanticProgram>(attr::kTLSemanticProgram);
+
+  Array<Any> fragment_ops;
+  std::unordered_set<std::string> seen_ops;
+  auto add_fragment_op = [&](const char* op_name) {
+    if (seen_ops.insert(op_name).second) {
+      fragment_ops.push_back(String(op_name));
+    }
+  };
+
+  Array<Any> row_reduction_targets;
+  std::unordered_set<std::string> seen_reduction_targets;
+  Array<Any> loop_carried_state;
+  std::unordered_set<std::string> seen_loop_carried;
+  if (semantic_program) {
+    for (const Update& update : semantic_program.value()->updates) {
+      const auto kind =
+          semantic::ParseUpdateLawKind(static_cast<std::string>(update->law->kind));
+      const std::string state_name = update->state_name;
+      if (kind && *kind == semantic::UpdateLawKind::kReduce && !state_name.empty() &&
+          seen_reduction_targets.insert(state_name).second) {
+        row_reduction_targets.push_back(String(state_name));
+        add_fragment_op("row_reduction");
+      }
+    }
+    for (const State& state : semantic_program.value()->states) {
+      const auto role = semantic::ParseStateRole(static_cast<std::string>(state->role));
+      const std::string state_name = state->name;
+      if (!role || state_name.empty()) {
+        continue;
+      }
+      if (*role == semantic::StateRole::kCarry && seen_loop_carried.insert(state_name).second) {
+        loop_carried_state.push_back(String(state_name));
+      }
+    }
+  }
+
+  if (HasResidualRowBroadcast(func->body)) {
+    add_fragment_op("row_broadcast");
+    Array<Any> row_broadcast_sources;
+    if (!row_reduction_targets.empty()) {
+      for (const auto& item : row_reduction_targets) {
+        row_broadcast_sources.push_back(item);
+      }
+    } else {
+      row_broadcast_sources.push_back(String("row_broadcast"));
+    }
+    lowering_requirements->Set("row_broadcast_sources", row_broadcast_sources);
+  }
+
+  Array<Any> pointwise_op_kinds = CollectResidualFragmentPointwiseKinds(func->body);
+  if (!pointwise_op_kinds.empty()) {
+    add_fragment_op("pointwise_chain");
+    lowering_requirements->Set("pointwise_op_kinds", pointwise_op_kinds);
+  } else if (HasResidualFragmentComputeChain(func->body)) {
+    add_fragment_op("pointwise_chain");
+  }
+
+  if (!fragment_ops.empty()) {
+    lowering_requirements->Set("fragment_op_kinds", fragment_ops);
+  }
+  if (!row_reduction_targets.empty()) {
+    lowering_requirements->Set("row_reduction_targets", row_reduction_targets);
+  }
+  if (!loop_carried_state.empty()) {
+    lowering_requirements->Set("fragment_loop_carried_state", loop_carried_state);
+  }
 }
 
 static int CountLoweredRowReductionBuiltins(const Stmt& body) {
@@ -903,6 +1030,8 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
     if (!loop_carried_state.empty()) {
       lowering_requirements.Set("fragment_loop_carried_state", loop_carried_state);
     }
+  } else {
+    CollectFragmentFallbackRequirements(func, &lowering_requirements);
   }
 
   if (auto pipeline_stages = func->GetAttr<Array<Any>>("blackhole.pipeline_stages")) {

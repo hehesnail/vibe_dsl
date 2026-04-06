@@ -139,6 +139,19 @@
 - 对 `LowerBlackholeOps` 的 lowering requirements，`work_axes / derived_index_expr_count`
   应优先从 `tl.spatial_program` 恢复；`blackhole.work_decomposition` 只保留 compatibility
   fallback。这样 consumer 才不会在 `Phase B` 已 object 化后继续回头吃旧 attr
+- 对 `Phase B` 的 GEMM spatial builder，也不要继续把 `blackhole.segment_plan`
+  当成 `reader / compute / writer` task graph 的真源。更稳的主链是：
+  - `SplitBlackholeKernel` 在 IR body 上留下 `blackhole.segment_kind`
+  - `LowerToSpatialProgram` 直接从这些 segment annotation 恢复 task/placement 顺序
+  - `segment_plan` 只保留给后续 lowering/runtime compatibility 使用，不再参与
+    `SpatialProgram` 构造
+- 对 `LowerBlackholeOps` 的 fragment lowering requirements，也不要让
+  `blackhole.fragment_regions` 成为唯一输入。更稳的过渡边界是：
+  - `fragment_regions` 存在时，把它当 lowering-facing compatibility summary 消费
+  - `fragment_regions` 缺失时，从 `SemanticProgram + residual body scan`
+    恢复最小 `fragment_op_kinds / pointwise_op_kinds / row_reduction_targets`
+  - 这样 `fragment_regions` 可以继续缩到 compatibility path，而不会反向卡死
+    `Phase B` consumer cutover
 - 对 Blackhole `lower()` 主链，不能在 `SplitBlackholeKernel` / `Analyze*` / `LowerBlackholeOps` 之前就用旧的 device attrs 过滤掉入口 `PrimFunc`。Blackhole entry kernel 在这条链之前通常还没有 `blackhole.*` attrs，因此 `is_device_call()` 必须把 entry `PrimFunc` 视为 device 输入，否则专属 pass 实际上跑在空 `device_mod` 上
 - fragment region analysis 里的 `pointwise_chain` 不能通过全局扫描所有 `tir.add/mul/div/max/...` 来判定；那样会把普通索引算术也误记成 fragment compute。更稳的做法是只在 fragment/local region 自身的 store / dataflow 关系里识别 pointwise
 - 对 split-after TIR 的 fragment analysis，不要只盯 `CallNode`。像 `scores_sum[0] + acc_s[rv]`、`T.max(scores_max[0], tmp[0])` 这类模式在 TVM IR 里常常是 `AddNode` / `MaxNode` / `MulNode` / `DivNode` 等原生表达式节点；如果只扫 `CallNode`，row reduction 和 scalar-to-vector broadcast 会在真实 MHA/GQA IR 上整片漏掉
