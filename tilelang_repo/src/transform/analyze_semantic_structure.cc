@@ -92,6 +92,37 @@ Array<Any> ResolveStateArray(const Map<String, Any>& entry, const char* state_ke
   return resolved;
 }
 
+void AppendUniqueResolvedString(Array<Any>* values, std::unordered_set<std::string>* seen,
+                                const std::string& value) {
+  if (!value.empty() && seen->insert(value).second) {
+    values->push_back(String(value));
+  }
+}
+
+void CollectUniqueStringField(Array<Any>* values, std::unordered_set<std::string>* seen,
+                              const Map<String, Any>& region, const char* field_name,
+                              const char* nested_field_name = nullptr) {
+  auto it = region.find(field_name);
+  if (it == region.end()) {
+    return;
+  }
+  for (const Any& item : tvm::Downcast<Array<Any>>((*it).second)) {
+    if (nested_field_name == nullptr) {
+      AppendUniqueResolvedString(values, seen, ResolveStateName(item));
+      continue;
+    }
+    auto nested = item.try_cast<Map<String, Any>>();
+    if (!nested.has_value()) {
+      continue;
+    }
+    auto field_it = nested.value().find(nested_field_name);
+    if (field_it == nested.value().end()) {
+      continue;
+    }
+    AppendUniqueResolvedString(values, seen, ResolveStateName((*field_it).second));
+  }
+}
+
 bool IsTrackedStateScope(const std::string& scope) {
   return scope == "local" || scope == "local.fragment" || scope == "blackhole.acc";
 }
@@ -754,6 +785,53 @@ void CollectSeedsAndSupplements(const tir::PrimFunc& func,
     supplement.Set("kind", String(ToString(SupplementKind::kSemanticBoundary)));
     supplement.Set("payload", supplement_payload);
     supplements->push_back(supplement);
+  }
+  if (auto fragment_regions = func->GetAttr<Array<Any>>("blackhole.fragment_regions")) {
+    Array<Any> fragment_op_kinds;
+    std::unordered_set<std::string> seen_fragment_ops;
+    Array<Any> row_reduction_targets;
+    std::unordered_set<std::string> seen_row_reduction_targets;
+    Array<Any> row_broadcast_sources;
+    std::unordered_set<std::string> seen_row_broadcast_sources;
+    Array<Any> pointwise_op_kinds;
+    std::unordered_set<std::string> seen_pointwise_ops;
+    Array<Any> fragment_loop_carried_state;
+    std::unordered_set<std::string> seen_loop_carried_state;
+    for (const Any& region_any : fragment_regions.value()) {
+      auto region = tvm::Downcast<Map<String, Any>>(region_any);
+      CollectUniqueStringField(&fragment_op_kinds, &seen_fragment_ops, region, "ops");
+      CollectUniqueStringField(&row_reduction_targets, &seen_row_reduction_targets, region,
+                               manifest_key::kRowReductions, schema_key::kTarget);
+      CollectUniqueStringField(&row_broadcast_sources, &seen_row_broadcast_sources, region,
+                               "row_broadcasts", schema_key::kSource);
+      CollectUniqueStringField(&pointwise_op_kinds, &seen_pointwise_ops, region,
+                               "pointwise_ops");
+      CollectUniqueStringField(&fragment_loop_carried_state, &seen_loop_carried_state, region,
+                               manifest_key::kLoopCarriedState, schema_key::kName);
+    }
+    if (!fragment_op_kinds.empty()) {
+      PushStringUnique(seeds, &seen_seed_markers, "fragment_region_analysis");
+      Map<String, Any> supplement_payload;
+      supplement_payload.Set(String(schema_key::kSource), String("blackhole.fragment_regions"));
+      supplement_payload.Set(String(schema_key::kFragmentOpKinds), fragment_op_kinds);
+      if (!row_reduction_targets.empty()) {
+        supplement_payload.Set(String(schema_key::kRowReductionTargets), row_reduction_targets);
+      }
+      if (!row_broadcast_sources.empty()) {
+        supplement_payload.Set(String(schema_key::kRowBroadcastSources), row_broadcast_sources);
+      }
+      if (!pointwise_op_kinds.empty()) {
+        supplement_payload.Set(String(schema_key::kPointwiseOpKinds), pointwise_op_kinds);
+      }
+      if (!fragment_loop_carried_state.empty()) {
+        supplement_payload.Set(String(schema_key::kFragmentLoopCarriedState),
+                               fragment_loop_carried_state);
+      }
+      Map<String, Any> supplement;
+      supplement.Set("kind", String(ToString(SupplementKind::kFragmentLoweringStructure)));
+      supplement.Set("payload", supplement_payload);
+      supplements->push_back(supplement);
+    }
   }
   if (auto pipeline_stages = func->GetAttr<Array<Any>>("blackhole.pipeline_stages");
       pipeline_stages && !pipeline_stages.value().empty()) {

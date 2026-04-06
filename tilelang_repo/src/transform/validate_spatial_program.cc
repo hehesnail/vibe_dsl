@@ -68,6 +68,11 @@ bool IsPipelineContractIntent(const ResourceIntent& intent) {
          HasTrait(intent->traits, "pipeline_contract");
 }
 
+bool IsFragmentContractIntent(const ResourceIntent& intent) {
+  return static_cast<std::string>(intent->kind) == "lowering_support" &&
+         HasTrait(intent->traits, "fragment_contract");
+}
+
 }  // namespace
 
 tvm::transform::Pass ValidateSpatialProgram() {
@@ -185,6 +190,7 @@ tvm::transform::Pass ValidateSpatialProgram() {
       auto maybe_semantic_program =
           func.value()->GetAttr<SemanticProgram>(attr::kTLSemanticProgram);
       bool semantic_requires_pipeline_contract = false;
+      bool semantic_requires_fragment_contract = false;
       bool semantic_requires_work_dependent_payload = false;
       if (maybe_semantic_program && !maybe_semantic_program.value()->domains.empty()) {
         const Domain& domain = maybe_semantic_program.value()->domains[0];
@@ -206,9 +212,19 @@ tvm::transform::Pass ValidateSpatialProgram() {
           semantic_requires_work_dependent_payload = true;
         }
         for (const SemanticSupplement& supplement : maybe_semantic_program.value()->supplements) {
-          if (static_cast<std::string>(supplement->kind) !=
+          const std::string supplement_kind = static_cast<std::string>(supplement->kind);
+          if (supplement_kind ==
+              semantic::ToString(semantic::SupplementKind::kFragmentLoweringStructure)) {
+            auto maybe_fragment_ops =
+                supplement->payload.Get(String(schema_key::kFragmentOpKinds));
+            semantic_requires_fragment_contract =
+                maybe_fragment_ops &&
+                !Downcast<Array<Any>>(maybe_fragment_ops.value()).empty();
+            continue;
+          }
+          if (supplement_kind !=
               semantic::ToString(semantic::SupplementKind::kPipelineStructure)) {
-            if (static_cast<std::string>(supplement->kind) ==
+            if (supplement_kind ==
                 semantic::ToString(semantic::SupplementKind::kWorkDecompositionStructure)) {
               auto maybe_loop_bounds =
                   supplement->payload.Get(String(schema_key::kWorkDependentLoopBounds));
@@ -248,9 +264,47 @@ tvm::transform::Pass ValidateSpatialProgram() {
       }
 
       std::unordered_set<std::string> resource_intent_kinds;
+      bool has_fragment_contract = false;
       bool has_pipeline_contract = false;
       for (const ResourceIntent& intent : program->resource_intents) {
         resource_intent_kinds.insert(static_cast<std::string>(intent->kind));
+        if (IsFragmentContractIntent(intent)) {
+          has_fragment_contract = true;
+          auto maybe_fragment_ops =
+              intent->payload.Get(String(schema_key::kFragmentOpKinds));
+          ICHECK(maybe_fragment_ops)
+              << "ValidateSpatialProgram requires fragment contracts to carry fragment_op_kinds";
+          Array<Any> fragment_ops = Downcast<Array<Any>>(maybe_fragment_ops.value());
+          ICHECK(!fragment_ops.empty())
+              << "ValidateSpatialProgram requires fragment contracts to carry at least one "
+                 "fragment op";
+          bool requires_pointwise_payload = false;
+          bool requires_row_broadcast_payload = false;
+          for (const Any& op_any : fragment_ops) {
+            const std::string op_name = Downcast<String>(op_any);
+            requires_pointwise_payload |= op_name == "pointwise_chain";
+            requires_row_broadcast_payload |= op_name == "row_broadcast";
+          }
+          if (requires_pointwise_payload) {
+            auto maybe_pointwise_ops =
+                intent->payload.Get(String(schema_key::kPointwiseOpKinds));
+            ICHECK(maybe_pointwise_ops)
+                << "ValidateSpatialProgram requires fragment pointwise_chain contracts to "
+                   "carry pointwise_op_kinds";
+            ICHECK(!Downcast<Array<Any>>(maybe_pointwise_ops.value()).empty())
+                << "ValidateSpatialProgram requires fragment pointwise_op_kinds to be non-empty";
+          }
+          if (requires_row_broadcast_payload) {
+            auto maybe_row_broadcast_sources =
+                intent->payload.Get(String(schema_key::kRowBroadcastSources));
+            ICHECK(maybe_row_broadcast_sources)
+                << "ValidateSpatialProgram requires fragment row_broadcast contracts to carry "
+                   "row_broadcast_sources";
+            ICHECK(!Downcast<Array<Any>>(maybe_row_broadcast_sources.value()).empty())
+                << "ValidateSpatialProgram requires fragment row_broadcast_sources to be "
+                   "non-empty";
+          }
+        }
         if (IsPipelineContractIntent(intent)) {
           has_pipeline_contract = true;
           auto maybe_pipeline_stages = intent->payload.Get(String(schema_key::kPipelineStages));
@@ -278,6 +332,11 @@ tvm::transform::Pass ValidateSpatialProgram() {
         ICHECK(has_pipeline_contract)
             << "ValidateSpatialProgram requires pipeline programs to materialize at least one "
                "pipeline contract";
+      }
+      if (semantic_requires_fragment_contract) {
+        ICHECK(has_fragment_contract)
+            << "ValidateSpatialProgram requires fragment programs to materialize at least one "
+               "fragment contract";
       }
 
       phases_by_member_func[member_func] = program->phases;

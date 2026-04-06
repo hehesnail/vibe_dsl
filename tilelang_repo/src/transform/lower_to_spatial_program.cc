@@ -107,6 +107,23 @@ std::optional<Array<Any>> GetPipelineStagesFromSupplements(const SemanticProgram
   return std::nullopt;
 }
 
+std::optional<Map<String, Any>> GetFragmentLoweringPayloadFromSupplements(
+    const SemanticProgram& program) {
+  for (const SemanticSupplement& supplement : program->supplements) {
+    if (static_cast<std::string>(supplement->kind) !=
+        ToString(SupplementKind::kFragmentLoweringStructure)) {
+      continue;
+    }
+    auto maybe_fragment_ops =
+        supplement->payload.Get(String(schema_key::kFragmentOpKinds));
+    if (maybe_fragment_ops &&
+        !Downcast<Array<Any>>(maybe_fragment_ops.value()).empty()) {
+      return supplement->payload;
+    }
+  }
+  return std::nullopt;
+}
+
 std::optional<Array<Any>> GetWorkDependentLoopBoundsFromSupplements(const SemanticProgram& program) {
   for (const SemanticSupplement& supplement : program->supplements) {
     if (static_cast<std::string>(supplement->kind) !=
@@ -133,6 +150,19 @@ void AppendPipelineResourceIntent(const std::string& member_func, const Semantic
       String("pipeline_contract_" + member_func), String("synchronization_support"),
       String(member_func), MakeTraits({"phase_b", "pipeline_contract"}), std::move(payload),
       MakeAnchors("spatial_resource_intent", "pipeline_contract_" + member_func)));
+}
+
+void AppendFragmentResourceIntent(const std::string& member_func, const SemanticProgram& program,
+                                  Array<ResourceIntent>* resource_intents) {
+  auto fragment_payload = GetFragmentLoweringPayloadFromSupplements(program);
+  if (!fragment_payload.has_value()) {
+    return;
+  }
+  resource_intents->push_back(ResourceIntent(
+      String("fragment_contract_" + member_func), String("lowering_support"),
+      String(member_func), MakeTraits({"phase_b", "fragment_contract"}),
+      fragment_payload.value(),
+      MakeAnchors("spatial_resource_intent", "fragment_contract_" + member_func)));
 }
 
 Map<String, Any> BuildWorkPartitionPayload(const SemanticProgram& program) {
@@ -303,6 +333,7 @@ SpatialProgramBundle BuildCopyFastPath(const std::string& member_func,
       ResourceIntent(String("copy_buffer"), String("buffer"), String("copy"),
                      MakeTraits({"fast_path", "copy"}), EmptyPayload(),
                      MakeAnchors("spatial_resource_intent", "copy_buffer"))};
+  AppendFragmentResourceIntent(member_func, program, &resource_intents);
   AppendPipelineResourceIntent(member_func, program, &resource_intents);
   BuildCommonSpatialScaffolding(member_func, work_axes, has_derived_indices, program, &layouts,
                                 &work_partitions);
@@ -373,6 +404,7 @@ SpatialProgramBundle BuildGemmFastPath(const std::string& member_func,
                      String(program->states.empty() ? "" : static_cast<std::string>(program->states[0]->name)),
                      MakeTraits({"fast_path", "gemm"}), EmptyPayload(),
                      MakeAnchors("spatial_resource_intent", "gemm_accumulator"))};
+  AppendFragmentResourceIntent(member_func, program, &resource_intents);
   AppendPipelineResourceIntent(member_func, program, &resource_intents);
   BuildCommonSpatialScaffolding(member_func, work_axes, has_derived_indices, program, &layouts,
                                 &work_partitions);
@@ -529,6 +561,7 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
           MakeAnchors("spatial_resource_intent", "phase_boundary_" + state_name)));
     }
   }
+  AppendFragmentResourceIntent(member_func, program, &resource_intents);
   AppendPipelineResourceIntent(member_func, program, &resource_intents);
 
   return {SpatialProgram(String(member_func), phases, tasks, channels, layouts,

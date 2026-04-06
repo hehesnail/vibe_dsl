@@ -263,6 +263,16 @@
   `ValidateSpatialProgram` 对 `work_dependent_bounds` domain 强制要求 payload，
   最后 `LowerBlackholeOps` 再改成 spatial-program-first 恢复
   `work_dependent_loop_bound_count`
+- 对 `Phase B` 的 fragment truth migration，也不要让 `LowerBlackholeOps` 直接把
+  `blackhole.fragment_regions` 当 primary input。更稳的顺序是：
+  `AnalyzeSemanticStructure` 先把 lowering-facing fragment summary 收成
+  `SemanticSupplement(kind=fragment_lowering_structure)`，
+  `LowerToSpatialProgram` 再把它投影成
+  `ResourceIntent(kind=lowering_support, traits+=fragment_contract, payload=...)`，
+  `ValidateSpatialProgram` 对 fragment program 强制要求 contract，
+  最后 `LowerBlackholeOps` 再改成 spatial-program-first 恢复
+  `fragment_op_kinds / row_reduction_targets / row_broadcast_sources /
+  pointwise_op_kinds / fragment_loop_carried_state`
 
 ## Blackhole 后端开发原则
 

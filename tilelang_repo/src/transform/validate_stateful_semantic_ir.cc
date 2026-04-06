@@ -115,7 +115,38 @@ tir::transform::Pass ValidateStatefulSemanticIR() {
       auto kind = ParseSupplementKind(static_cast<std::string>(supplement->kind));
       ICHECK(kind) << "Unsupported SemanticSupplement kind in A2 validator: "
                    << supplement->kind;
-      if (*kind == SupplementKind::kPipelineStructure) {
+      if (*kind == SupplementKind::kFragmentLoweringStructure) {
+        auto maybe_fragment_ops =
+            supplement->payload.Get(String(schema_key::kFragmentOpKinds));
+        ICHECK(maybe_fragment_ops)
+            << "fragment_lowering_structure supplement must carry fragment_op_kinds";
+        Array<Any> fragment_ops = tvm::Downcast<Array<Any>>(maybe_fragment_ops.value());
+        ICHECK(!fragment_ops.empty())
+            << "fragment_lowering_structure supplement must carry at least one fragment op";
+        bool requires_pointwise_payload = false;
+        bool requires_row_broadcast_payload = false;
+        for (const Any& op_any : fragment_ops) {
+          const std::string op_name = tvm::Downcast<String>(op_any);
+          requires_pointwise_payload |= op_name == "pointwise_chain";
+          requires_row_broadcast_payload |= op_name == "row_broadcast";
+        }
+        if (requires_pointwise_payload) {
+          auto maybe_pointwise_ops =
+              supplement->payload.Get(String(schema_key::kPointwiseOpKinds));
+          ICHECK(maybe_pointwise_ops)
+              << "fragment_lowering_structure pointwise_chain must carry pointwise_op_kinds";
+          ICHECK(!tvm::Downcast<Array<Any>>(maybe_pointwise_ops.value()).empty())
+              << "fragment_lowering_structure pointwise_op_kinds must be non-empty";
+        }
+        if (requires_row_broadcast_payload) {
+          auto maybe_row_broadcast_sources =
+              supplement->payload.Get(String(schema_key::kRowBroadcastSources));
+          ICHECK(maybe_row_broadcast_sources)
+              << "fragment_lowering_structure row_broadcast must carry row_broadcast_sources";
+          ICHECK(!tvm::Downcast<Array<Any>>(maybe_row_broadcast_sources.value()).empty())
+              << "fragment_lowering_structure row_broadcast_sources must be non-empty";
+        }
+      } else if (*kind == SupplementKind::kPipelineStructure) {
         auto maybe_pipeline_stages = supplement->payload.Get(String(schema_key::kPipelineStages));
         ICHECK(maybe_pipeline_stages)
             << "pipeline_structure supplement must carry pipeline_stages payload";

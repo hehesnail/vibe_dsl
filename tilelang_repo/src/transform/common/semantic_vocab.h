@@ -63,6 +63,7 @@ enum class SupplementKind {
   kAccessTrait,
   kUpdateLawTrait,
   kSemanticBoundary,
+  kFragmentLoweringStructure,
   kPipelineStructure,
   kWorkDecompositionStructure,
 };

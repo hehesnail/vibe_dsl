@@ -436,6 +436,42 @@ spatial legality validator 再推进一格：
 - 删掉 `blackhole.work_decomposition` 后，`LowerBlackholeOps` 仍能恢复
   `work_dependent_loop_bound_count`
 
+### 6.9 2026-04-06 Hardening Slice: Fragment Contract Migration
+
+本轮继续收 `blackhole.fragment_regions` 的 lowering-facing residual truth，但仍保持
+它在 `Phase A` 里的 compatibility 身份，不把删除 attr 本身当目标。目标是：
+
+- 让 `SpatialProgram` 开始显式持有 `fragment` lowering contract
+- 让 `LowerBlackholeOps` 不再把 `blackhole.fragment_regions` 当 primary input
+
+具体迁移如下：
+
+- `AnalyzeSemanticStructure` 现在会把
+  `blackhole.fragment_regions` 里的 lowering-facing summary 收成
+  `SemanticProgram.supplements[*]`
+  - kind: `fragment_lowering_structure`
+  - payload:
+    `fragment_op_kinds / row_reduction_targets / row_broadcast_sources /
+    pointwise_op_kinds / fragment_loop_carried_state`
+- `LowerToSpatialProgram` 现在会把这份 truth 投影成
+  `ResourceIntent(kind=lowering_support, traits+=fragment_contract)`
+- `ValidateSpatialProgram` 现在会校验：
+  - semantic 侧要求 fragment contract 时，`SpatialProgram` 不能缺失该 resource intent
+  - contract payload 必须显式携带 `fragment_op_kinds`
+  - `pointwise_chain` / `row_broadcast` 不能丢失其从属 payload
+- `LowerBlackholeOps` 现在优先从
+  `tl.spatial_program.resource_intents[*].payload`
+  恢复 fragment lowering requirements
+  - `blackhole.fragment_regions` 退回 compatibility fallback
+  - `SemanticProgram + residual body scan` 仍保留作无 attr 时的最后 fallback
+
+对应测试：
+
+- `flash-attn` 的 `SpatialProgram` 必须显式投影 fragment contract resource intent
+- 删掉 fragment contract 后，`ValidateSpatialProgram` 会 fail-fast
+- 删掉 `blackhole.fragment_regions` 后，`LowerBlackholeOps` 仍能恢复
+  `fragment_op_kinds / pointwise_op_kinds`
+
 ## 7. Hardening Gates Before Phase C
 
 `Phase B` 的目标不是“已经有一套 `SpatialProgram` 对象”，而是：
@@ -468,7 +504,7 @@ spatial legality validator 再推进一格：
 - `Layout / WorkPartition` 已切到 semantic-domain-first，
   但 `blackhole.work_decomposition` 仍保留 compatibility fallback
 - `pipeline_stages` / `fragment_regions` 仍保留 lowering-facing compatibility 角色，
-  尚未完全收敛到更强的 typed contract
+  但都已开始迁入 typed contract，尚未完全删掉 fallback
 
 本轮新增的明确 cutover 设计是：
 
@@ -480,6 +516,15 @@ spatial legality validator 再推进一格：
 - 只有在 `LowerBlackholeOps` 能从 `tl.spatial_program` 直接恢复
   `pipeline_stage_counts / pipeline_loop_vars` 之后，
   `blackhole.pipeline_stages` 才能降成纯 compatibility fallback
+- `blackhole.fragment_regions` 也不能被“直接删掉”
+- `AnalyzeSemanticStructure` 必须先把 fragment lowering truth 收成
+  `SemanticProgram.supplements[*]`
+- `LowerToSpatialProgram` 再把这份 truth 投影成
+  `SpatialProgram.resource_intents[*]` 里的 typed fragment contract
+- 只有在 `LowerBlackholeOps` 能从 `tl.spatial_program` 直接恢复
+  `fragment_op_kinds / row_reduction_targets / row_broadcast_sources /
+  pointwise_op_kinds / fragment_loop_carried_state` 之后，
+  `blackhole.fragment_regions` 才能继续往纯 compatibility fallback 收敛
 
 ### 7.2 Schema Strengthening
 
@@ -507,8 +552,13 @@ spatial legality validator 再推进一格：
 - pipeline legality 相关的 spatial-owned truth
   （`loop_var / num_stages / stage_local_buffers / loop_carried_state`）
   先挂在 `ResourceIntent(kind=synchronization_support, traits+=pipeline_contract)` 上
+- fragment legality / lowering 相关的 spatial-owned truth
+  （`fragment_op_kinds / row_reduction_targets / row_broadcast_sources /
+  pointwise_op_kinds / fragment_loop_carried_state`）
+  先挂在 `ResourceIntent(kind=lowering_support, traits+=fragment_contract)` 上
 - 这不是最终 schema 终点，但它必须足以支撑
-  `LowerBlackholeOps` 不再把 `blackhole.pipeline_stages` 当 primary source
+  `LowerBlackholeOps` 不再把 `blackhole.pipeline_stages / fragment_regions`
+  当 primary source
 
 ### 7.3 Legality Must Be Explicit
 

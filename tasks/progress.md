@@ -145,12 +145,22 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
     - `LowerBlackholeOps` lowering requirements 中的
       `spatial_phase_count / spatial_channel_count / spatial_phase_boundary_states`
     - `LowerBlackholeOps` 的 fragment lowering requirements
-      已不再把 `blackhole.fragment_regions` 当唯一输入：
-      `fragment_regions` 缺失时，可从 `SemanticProgram + residual body scan`
+      已切到 spatial-program-first：
+      `AnalyzeSemanticStructure` 会把 `blackhole.fragment_regions`
+      收成 `fragment_lowering_structure` semantic supplement，
+      `LowerToSpatialProgram` 再把它投影成
+      `ResourceIntent(kind=lowering_support, traits+=fragment_contract)`
+    - `LowerBlackholeOps` 现在优先从 fragment contract resource intent payload
+      恢复 `fragment_op_kinds / row_reduction_targets / row_broadcast_sources /
+      pointwise_op_kinds / fragment_loop_carried_state`
+    - `fragment_regions` 缺失时，仍可从 `SemanticProgram + residual body scan`
       恢复最小 fragment contract
     - `ValidateSpatialProgram` 已继续补强 phase/channel/module-scope legality：
       phase channel 必须真正落到 owning phase，非首 multi-phase phase 不能失去
       channel contract，`tl.device_programs` 也不再只比较 phase 数量
+    - `ValidateSpatialProgram` 现在也会显式校验 fragment contract：
+      fragment program 不能缺失 fragment resource intent，
+      contract payload 必须显式携带 `fragment_op_kinds`
     - pipeline stage truth 已开始迁离 legacy attr：
       `AnalyzeSemanticStructure` 会把 `blackhole.pipeline_stages` 收成
       `pipeline_structure` semantic supplement，
@@ -208,7 +218,7 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py -q`
   - `7 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q`
-  - `19 passed`
+  - `21 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `41 passed, 10 skipped, 1 xfailed`
 - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`

@@ -143,6 +143,37 @@ def test_flash_attention_spatial_program_projects_pipeline_contract_resource_int
     assert [str(stage["loop_var"]) for stage in stage_records] == ["k", "k"]
 
 
+def test_flash_attention_spatial_program_projects_fragment_contract_resource_intent():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    fragment_contracts = [
+        intent
+        for intent in program.resource_intents
+        if str(intent.kind) == "lowering_support"
+        and "fragment_contract" in {str(trait) for trait in intent.traits}
+    ]
+
+    assert len(fragment_contracts) == 1
+    payload = fragment_contracts[0].payload
+    assert "pointwise_chain" in {str(item) for item in payload["fragment_op_kinds"]}
+    assert {"mul", "div"} <= {str(item) for item in payload["pointwise_op_kinds"]}
+    assert len(payload["row_reduction_targets"]) > 0
+
+
 def test_flash_attention_spatial_program_projects_work_dependent_bounds_into_work_partition_payload():
     mod = _prepare_blackhole_phase_b_module(
         _lower_flash_attention_example(
@@ -339,6 +370,46 @@ def test_validate_spatial_program_rejects_pipeline_program_without_pipeline_cont
     mod = _replace_spatial_program(mod, bad_program)
 
     with pytest.raises(Exception, match="pipeline programs to materialize at least one pipeline contract"):
+        tilelang.transform.ValidateSpatialProgram()(mod)
+
+
+def test_validate_spatial_program_rejects_fragment_program_without_fragment_contract():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    make_program = tvm.get_global_func("tl.SpatialProgram")
+    bad_program = make_program(
+        program.member_func,
+        program.phases,
+        program.tasks,
+        program.channels,
+        program.layouts,
+        program.work_partitions,
+        program.placements,
+        program.sync_edges,
+        [
+            intent
+            for intent in program.resource_intents
+            if "fragment_contract" not in {str(trait) for trait in intent.traits}
+        ],
+        program.anchors,
+    )
+    mod = _replace_spatial_program(mod, bad_program)
+
+    with pytest.raises(Exception, match="fragment programs to materialize at least one fragment contract"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 

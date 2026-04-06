@@ -939,6 +939,47 @@ static void CollectPipelineStageInfoFromSpatialProgram(const SpatialProgram& pro
   }
 }
 
+static void SetArrayRequirementIfMissing(Map<String, Any>* lowering_requirements,
+                                         const String& key, const Array<Any>& values) {
+  if (!values.empty() && !lowering_requirements->count(key)) {
+    lowering_requirements->Set(key, values);
+  }
+}
+
+static void CollectFragmentRequirementsFromSpatialProgram(const SpatialProgram& program,
+                                                         Map<String, Any>* lowering_requirements) {
+  for (const ResourceIntent& intent : program->resource_intents) {
+    if (static_cast<std::string>(intent->kind) != "lowering_support" ||
+        !HasTrait(intent->traits, "fragment_contract")) {
+      continue;
+    }
+    if (auto fragment_ops = intent->payload.Get(String(schema_key::kFragmentOpKinds))) {
+      SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kFragmentOpKinds),
+                                   Downcast<Array<Any>>(fragment_ops.value()));
+    }
+    if (auto row_targets = intent->payload.Get(String(schema_key::kRowReductionTargets))) {
+      SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kRowReductionTargets),
+                                   Downcast<Array<Any>>(row_targets.value()));
+    }
+    if (auto row_broadcasts =
+            intent->payload.Get(String(schema_key::kRowBroadcastSources))) {
+      SetArrayRequirementIfMissing(lowering_requirements,
+                                   String(schema_key::kRowBroadcastSources),
+                                   Downcast<Array<Any>>(row_broadcasts.value()));
+    }
+    if (auto pointwise_ops = intent->payload.Get(String(schema_key::kPointwiseOpKinds))) {
+      SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kPointwiseOpKinds),
+                                   Downcast<Array<Any>>(pointwise_ops.value()));
+    }
+    if (auto loop_carried =
+            intent->payload.Get(String(schema_key::kFragmentLoopCarriedState))) {
+      SetArrayRequirementIfMissing(lowering_requirements,
+                                   String(schema_key::kFragmentLoopCarriedState),
+                                   Downcast<Array<Any>>(loop_carried.value()));
+    }
+  }
+}
+
 static void CollectPipelineStageInfoFromBody(const Stmt& body, Array<Any>* stage_counts,
                                              Array<Any>* loop_vars) {
   std::unordered_set<std::string> seen_loop_vars;
@@ -957,6 +998,67 @@ static void CollectPipelineStageInfoFromBody(const Stmt& body, Array<Any>* stage
       loop_vars->push_back(String(loop_var_name));
     }
   });
+}
+
+static void CollectFragmentRequirementsFromFragmentRegions(const Array<Any>& fragment_regions,
+                                                           Map<String, Any>* lowering_requirements) {
+  Array<Any> fragment_ops;
+  std::unordered_set<std::string> seen_ops;
+  Array<Any> row_reduction_targets;
+  std::unordered_set<std::string> seen_reduction_targets;
+  Array<Any> row_broadcast_sources;
+  std::unordered_set<std::string> seen_broadcast_sources;
+  Array<Any> pointwise_op_kinds;
+  std::unordered_set<std::string> seen_pointwise_kinds;
+  Array<Any> loop_carried_state;
+  std::unordered_set<std::string> seen_loop_carried;
+  for (const auto& region_item : fragment_regions) {
+    auto region = region_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+    for (const auto& item : ExtractStringFieldList(region, "ops")) {
+      const std::string op_name = Downcast<String>(item);
+      if (seen_ops.insert(op_name).second) {
+        fragment_ops.push_back(item);
+      }
+    }
+    for (const auto& item :
+         ExtractStringFieldList(region, manifest_key::kRowReductions, schema_key::kTarget)) {
+      const std::string name = Downcast<String>(item);
+      if (seen_reduction_targets.insert(name).second) {
+        row_reduction_targets.push_back(item);
+      }
+    }
+    for (const auto& item :
+         ExtractStringFieldList(region, "row_broadcasts", schema_key::kSource)) {
+      const std::string name = Downcast<String>(item);
+      if (seen_broadcast_sources.insert(name).second) {
+        row_broadcast_sources.push_back(item);
+      }
+    }
+    for (const auto& item : ExtractStringFieldList(region, "pointwise_ops")) {
+      const std::string name = Downcast<String>(item);
+      if (seen_pointwise_kinds.insert(name).second) {
+        pointwise_op_kinds.push_back(item);
+      }
+    }
+    for (const auto& item :
+         ExtractStringFieldList(region, manifest_key::kLoopCarriedState, schema_key::kName)) {
+      const std::string name = Downcast<String>(item);
+      if (seen_loop_carried.insert(name).second) {
+        loop_carried_state.push_back(item);
+      }
+    }
+  }
+  SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kFragmentOpKinds),
+                               fragment_ops);
+  SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kRowReductionTargets),
+                               row_reduction_targets);
+  SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kRowBroadcastSources),
+                               row_broadcast_sources);
+  SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kPointwiseOpKinds),
+                               pointwise_op_kinds);
+  SetArrayRequirementIfMissing(lowering_requirements,
+                               String(schema_key::kFragmentLoopCarriedState),
+                               loop_carried_state);
 }
 
 static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& func) {
@@ -1037,69 +1139,20 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
     if (!loop_vars.empty()) {
       lowering_requirements.Set("pipeline_loop_vars", loop_vars);
     }
+    CollectFragmentRequirementsFromSpatialProgram(program, &lowering_requirements);
   }
 
   if (auto fragment_regions = func->GetAttr<Array<Any>>("blackhole.fragment_regions")) {
-    Array<Any> fragment_ops;
-    std::unordered_set<std::string> seen_ops;
-    Array<Any> row_reduction_targets;
-    std::unordered_set<std::string> seen_reduction_targets;
-    Array<Any> row_broadcast_sources;
-    std::unordered_set<std::string> seen_broadcast_sources;
-    Array<Any> pointwise_op_kinds;
-    std::unordered_set<std::string> seen_pointwise_kinds;
-    Array<Any> loop_carried_state;
-    std::unordered_set<std::string> seen_loop_carried;
-    for (const auto& region_item : fragment_regions.value()) {
-      auto region = region_item.as<Map<String, Any>>().value_or(Map<String, Any>());
-      for (const auto& item : ExtractStringFieldList(region, "ops")) {
-        const std::string op_name = Downcast<String>(item);
-        if (seen_ops.insert(op_name).second) {
-          fragment_ops.push_back(item);
-        }
-      }
-      for (const auto& item : ExtractStringFieldList(region, "row_reductions", "target")) {
-        const std::string name = Downcast<String>(item);
-        if (seen_reduction_targets.insert(name).second) {
-          row_reduction_targets.push_back(item);
-        }
-      }
-      for (const auto& item : ExtractStringFieldList(region, "row_broadcasts", "source")) {
-        const std::string name = Downcast<String>(item);
-        if (seen_broadcast_sources.insert(name).second) {
-          row_broadcast_sources.push_back(item);
-        }
-      }
-      for (const auto& item : ExtractStringFieldList(region, "pointwise_ops")) {
-        const std::string name = Downcast<String>(item);
-        if (seen_pointwise_kinds.insert(name).second) {
-          pointwise_op_kinds.push_back(item);
-        }
-      }
-      for (const auto& item : ExtractStringFieldList(region, "loop_carried_state", "name")) {
-        const std::string name = Downcast<String>(item);
-        if (seen_loop_carried.insert(name).second) {
-          loop_carried_state.push_back(item);
-        }
-      }
-    }
-    if (!fragment_ops.empty()) {
-      lowering_requirements.Set("fragment_op_kinds", fragment_ops);
-    }
-    if (!row_reduction_targets.empty()) {
-      lowering_requirements.Set("row_reduction_targets", row_reduction_targets);
-    }
-    if (!row_broadcast_sources.empty()) {
-      lowering_requirements.Set("row_broadcast_sources", row_broadcast_sources);
-    }
-    if (!pointwise_op_kinds.empty()) {
-      lowering_requirements.Set("pointwise_op_kinds", pointwise_op_kinds);
-    }
-    if (!loop_carried_state.empty()) {
-      lowering_requirements.Set("fragment_loop_carried_state", loop_carried_state);
-    }
+    CollectFragmentRequirementsFromFragmentRegions(fragment_regions.value(),
+                                                  &lowering_requirements);
   } else {
-    CollectFragmentFallbackRequirements(func, &lowering_requirements);
+    if (!lowering_requirements.count(String(schema_key::kFragmentOpKinds)) &&
+        !lowering_requirements.count(String(schema_key::kRowReductionTargets)) &&
+        !lowering_requirements.count(String(schema_key::kRowBroadcastSources)) &&
+        !lowering_requirements.count(String(schema_key::kPointwiseOpKinds)) &&
+        !lowering_requirements.count(String(schema_key::kFragmentLoopCarriedState))) {
+      CollectFragmentFallbackRequirements(func, &lowering_requirements);
+    }
   }
 
   if (auto pipeline_stages = func->GetAttr<Array<Any>>("blackhole.pipeline_stages")) {

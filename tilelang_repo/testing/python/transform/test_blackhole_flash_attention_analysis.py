@@ -166,9 +166,9 @@ def test_gqa_forward_exposes_fragment_region_attrs():
         "pointwise_chain",
     }.issubset(set(region["ops"]))
 
-    row_reduction_targets = {entry["target"] for entry in region["row_reductions"]}
-    assert {"scores_max", "scores_sum"}.issubset(row_reduction_targets)
-    assert all("kind" not in entry for entry in region["row_reductions"])
+    row_reduction_kinds = {entry["target"]: entry["kind"] for entry in region["row_reductions"]}
+    assert row_reduction_kinds["scores_max"] == "max"
+    assert row_reduction_kinds["scores_sum"] == "sum"
 
     row_broadcast_sources = {entry["source"] for entry in region["row_broadcasts"]}
     assert {"scores_max", "scores_scale", "logsum"}.issubset(row_broadcast_sources)
@@ -242,9 +242,9 @@ def test_mha_forward_exposes_fragment_region_roles():
         "pointwise_chain",
     }.issubset(set(region["ops"]))
 
-    row_reduction_targets = {entry["target"] for entry in region["row_reductions"]}
-    assert {"scores_max", "scores_sum"}.issubset(row_reduction_targets)
-    assert all("kind" not in entry for entry in region["row_reductions"])
+    row_reduction_kinds = {entry["target"]: entry["kind"] for entry in region["row_reductions"]}
+    assert row_reduction_kinds["scores_max"] == "max"
+    assert row_reduction_kinds["scores_sum"] == "sum"
 
     row_broadcast_sources = {entry["source"] for entry in region["row_broadcasts"]}
     assert {"scores_max", "scores_scale", "logsum"}.issubset(row_broadcast_sources)
