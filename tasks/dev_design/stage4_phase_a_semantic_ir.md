@@ -133,6 +133,9 @@
   update_sources / loop_carried_state / recurrence_edges / row_reductions`）
 - `AnalyzeBlackholeFragmentRegions` 当前仅作为 lowering-facing evidence source（`LowerBlackholeOps`）
 - `AnalyzeBlackholePipelineStages` 决定 pipeline trait
+- `structural_regions` / `blackhole.fragment_regions` 当前对 state / edge / source-set
+  都同时保留 display name 和 typed `Buffer` handle；`AnalyzeSemanticStructure`
+  已切到 handle-first 消费，字符串只保留兼容回退
 
 这里要特别区分两件事：
 
@@ -151,7 +154,8 @@
 
 因此，扩展新 workload family（如 fusedmoe、paged decode）时，**首先要确认上游 manifest / fragment evidence source 能正确收集该 family 的 evidence**，然后才是 `Phase A` 的 witness/core/validator 是否覆盖。
 
-另外，`CanonicalBufferName`（`analyze_semantic_structure.cc`）假设 lowering 只在 buffer 名末尾追加 `_<digits>` suffix。如果未来 lowering pass 改变命名规则，这里需要同步更新。
+`2026-04-06` 的收尾重构里，semantic main path 已不再依赖 `CanonicalBufferName`
+这类 suffix 归一化逻辑；state identity 统一优先取 `Buffer.data` / typed handle，对外名字仅作为 display/debug 信息。
 
 `TypedRebindBlackholeCompanionPrograms` 在 rebind 时会重建 state/effect graph（调用 `BuildStateEffectGraph`），不会沿用旧 graph。`body_hash` 校验确保 body 不会在 rebind 后被静默修改。
 

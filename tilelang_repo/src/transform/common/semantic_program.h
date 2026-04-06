@@ -46,6 +46,44 @@ constexpr const char* kRecurrenceEdges = "recurrence_edges";
 constexpr const char* kRowReductions = "row_reductions";
 }  // namespace manifest_key
 
+// Shared object-field keys used inside typed Map<String, Any> payloads.
+namespace schema_key {
+constexpr const char* kAnchor = "anchor";
+constexpr const char* kBuffer = "buffer";
+constexpr const char* kBuffers = "buffers";
+constexpr const char* kCaptureStage = "capture_stage";
+constexpr const char* kCompanionBuffer = "companion_buffer";
+constexpr const char* kCompanionTarget = "companion_target";
+constexpr const char* kDirection = "direction";
+constexpr const char* kDType = "dtype";
+constexpr const char* kIsInteger = "is_integer";
+constexpr const char* kKind = "kind";
+constexpr const char* kMidBuffer = "mid_buffer";
+constexpr const char* kMidBufferRef = "mid_buffer_ref";
+constexpr const char* kMidShape = "mid_shape";
+constexpr const char* kName = "name";
+constexpr const char* kOperations = "operations";
+constexpr const char* kOrderedRegion = "ordered_region";
+constexpr const char* kPayload = "payload";
+constexpr const char* kScope = "scope";
+constexpr const char* kShape = "shape";
+constexpr const char* kSource = "source";
+constexpr const char* kSourceBuffers = "source_buffers";
+constexpr const char* kSources = "sources";
+constexpr const char* kSourceStates = "source_states";
+constexpr const char* kSrcBuffer = "src_buffer";
+constexpr const char* kSrcBufferRef = "src_buffer_ref";
+constexpr const char* kSrcShape = "src_shape";
+constexpr const char* kTarget = "target";
+constexpr const char* kTargetBuffer = "target_buffer";
+constexpr const char* kValue = "value";
+constexpr const char* kValueBuffer = "value_buffer";
+constexpr const char* kValueTarget = "value_target";
+constexpr const char* kDstBuffer = "dst_buffer";
+constexpr const char* kDstBufferRef = "dst_buffer_ref";
+constexpr const char* kDstShape = "dst_shape";
+}  // namespace schema_key
+
 class TIRAnchorNode : public Object {
  public:
   ffi::String kind;

@@ -51,6 +51,8 @@
 #include <vector>
 
 #include "../../3rdparty/tvm/src/runtime/thread_storage_scope.h"
+#include "common/blackhole_utils.h"
+#include "common/semantic_program.h"
 
 namespace tvm {
 namespace tl {
@@ -92,6 +94,17 @@ static std::string GetStringField(const Map<String, Any>& ann, const std::string
   if (!opt.has_value()) return def;
   auto str_opt = opt.value().try_cast<String>();
   return str_opt.has_value() ? std::string(str_opt.value()) : def;
+}
+
+static std::string GetBufferNameField(const Map<String, Any>& ann, const char* name_key,
+                                      const char* ref_key) {
+  if (auto opt = ann.Get(String(ref_key)); opt.has_value()) {
+    auto buffer = opt.value().try_cast<tir::Buffer>();
+    if (buffer.has_value()) {
+      return BufferIdentityName(buffer.value());
+    }
+  }
+  return GetStringField(ann, name_key);
 }
 
 static std::string GetStorageScope(const tir::Buffer& buffer) {
@@ -173,53 +186,6 @@ static bool HasComputeOp(const Stmt& body) {
 // Collect info about compute ops (for segment plan)
 // ------------------------------------------------------------------
 
-struct GemmInfo {
-  std::string a_buf_name;
-  std::string b_buf_name;
-  std::string c_buf_name;
-};
-
-class GemmInfoCollector : public StmtVisitor {
- public:
-  GemmInfo info;
-  bool found = false;
-
-  void VisitStmt_(const EvaluateNode* op) final {
-    if (found) return;
-    if (const auto* call = op->value.as<tir::CallNode>()) {
-      if (const auto* op_node = call->op.as<OpNode>()) {
-        if (op_node->name != "tl.tileop.gemm_py") return;
-      } else {
-        return;
-      }
-      // args[0]=A, [1]=B, [2]=C (BufferVar or Cast wrapping BufferVar)
-      const auto& args = call->args;
-      if (args.size() >= 3) {
-        auto extract_name = [](const PrimExpr& e) -> std::string {
-          // BufferVar node: tir::Var whose type_annotation is a buffer
-          // In TIR the region arg is typically a tir::Var
-          if (const auto* var = e.as<tir::VarNode>()) {
-            return std::string(var->name_hint);
-          }
-          // May be wrapped in a call (buffer region pointer)
-          if (const auto* call = e.as<tir::CallNode>()) {
-            if (!call->args.empty()) {
-              if (const auto* var = call->args[0].as<tir::VarNode>()) {
-                return std::string(var->name_hint);
-              }
-            }
-          }
-          return "";
-        };
-        info.a_buf_name = extract_name(args[0]);
-        info.b_buf_name = extract_name(args[1]);
-        info.c_buf_name = extract_name(args[2]);
-      }
-      found = true;
-    }
-  }
-};
-
 // ------------------------------------------------------------------
 // Classify a single top-level statement and return its segment kind.
 // Returns "" for passthrough (no annotation).
@@ -244,28 +210,31 @@ static std::string ClassifyStmt(const Stmt& stmt,
       Map<String, Any> ann_map =
           ann.value().as<Map<String, Any>>().value_or(Map<String, Any>());
       if (!ann_map.empty()) {
-        std::string direction = GetStringField(ann_map, "direction");
-        std::string kind      = GetStringField(ann_map, "kind");
+        std::string direction = GetStringField(ann_map, schema_key::kDirection);
+        std::string kind      = GetStringField(ann_map, schema_key::kKind);
         std::string dst_scope = GetStringField(ann_map, "dst_scope");
 
         if (direction == "dram_to_cb") {
           // reader: captures DRAM source buffer name
           if (input_buf_name_out) {
-            *input_buf_name_out = GetStringField(ann_map, "src_buffer");
+            *input_buf_name_out =
+                GetBufferNameField(ann_map, schema_key::kSrcBuffer, schema_key::kSrcBufferRef);
           }
           return "reader";
         }
         if (direction == "cb_to_dram") {
           // writer: captures DRAM destination buffer name
           if (output_buf_name_out) {
-            *output_buf_name_out = GetStringField(ann_map, "dst_buffer");
+            *output_buf_name_out =
+                GetBufferNameField(ann_map, schema_key::kDstBuffer, schema_key::kDstBufferRef);
           }
           return "writer";
         }
         if (kind == "fused_staged_copy") {
           // treat as reader (dram→cb side) for now
           if (input_buf_name_out) {
-            *input_buf_name_out = GetStringField(ann_map, "src_buffer");
+            *input_buf_name_out =
+                GetBufferNameField(ann_map, schema_key::kSrcBuffer, schema_key::kSrcBufferRef);
           }
           return "reader";
         }
@@ -273,7 +242,8 @@ static std::string ClassifyStmt(const Stmt& stmt,
         // This handles local.fragment → global (GEMM output copy).
         if (past_compute && (dst_scope.empty() || dst_scope == "global")) {
           if (output_buf_name_out) {
-            *output_buf_name_out = GetStringField(ann_map, "dst_buffer");
+            *output_buf_name_out =
+                GetBufferNameField(ann_map, schema_key::kDstBuffer, schema_key::kDstBufferRef);
           }
           return "writer";
         }
@@ -459,19 +429,6 @@ static PrimFunc TransformFunc(const PrimFunc& func) {
 
   if (annotator.output_buf_name.empty()) {
     FindWriterOutputBuffer(new_body, &annotator.output_buf_name);
-  }
-
-  GemmInfoCollector gemm_info_collector;
-  gemm_info_collector(func->body);
-  GemmInfo gemm_info = gemm_info_collector.info;
-  if (gemm_info.a_buf_name.empty() && !annotator.input_buf_names.empty()) {
-    gemm_info.a_buf_name = annotator.input_buf_names[0];
-  }
-  if (gemm_info.b_buf_name.empty() && annotator.input_buf_names.size() > 1) {
-    gemm_info.b_buf_name = annotator.input_buf_names[1];
-  }
-  if (gemm_info.c_buf_name.empty()) {
-    gemm_info.c_buf_name = annotator.output_buf_name;
   }
 
   // 3. Write segment plan

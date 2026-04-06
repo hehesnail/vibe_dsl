@@ -98,6 +98,11 @@
   还必须把这些关系引用到的 `fragment_buffers / update_sources / loop_carried_state`
   一起带上；否则 witness/lift 仍会因为缺失局部 state descriptor 或 source-set 而退回
   `fragment_regions`
+- 当 structural evidence 或 cross-pass annotation 里既要保留可读名字、又要保留真实绑定对象时，
+  不要再把 display name 当协议主键。更稳的 schema 是：
+  - attr entry 同时携带 `name + typed Buffer handle`
+  - consumer 一律 handle-first，按 `Buffer.data` identity 恢复 state / segment / accessor / copy 绑定
+  - string 只留作日志、调试、兼容回退
 - 对 `blackhole.fragment_regions` 的后续收尾，也不要把“删 attr”当成第一步。更稳的顺序是：
   先踢掉 semantic consumer，再踢掉 lowering consumer，最后再删 attr 本身。当前
   `row_reductions` 之所以还留在 `fragment_regions`，不是因为 semantic manifest 不够，而是因为
@@ -113,7 +118,10 @@
 - 当 analysis 结果还不能直接 lower 成可执行 kernel 时，不要把 raw analysis attrs 直接塞进 `ExecutableSpec`。更稳的过渡做法是：先在 `LowerBlackholeOps` 里把它们归一化成一层很薄的 IR attrs summary（例如 `blackhole.lowering_requirements`），再由更后面的 build/runtime gate 消费并 fail-fast。这样主链能先完成“analysis 被 lowering 真正接住”，又不会把半成品 descriptor 永久冻结进 runtime schema
 - 对 pipelined fragment subset 的早期 legality，优先直接读 loop annotation（例如 `ForNode.annotations["num_stages"]`），不要假设更后面的 region canonicalization 一定先成功。这样即使更宽 GQA/MHA 形态还会在别的 lowering 细节上炸，主链也能先把“这组 stage 配置本来就不支持”显式拦下来
 - row-broadcast 的索引归并信号不要只认 `floor_div/floor_mod`。在 split-after TIR 里，同一类“coarsened row index”也可能被写成 `tir.shift_right(i, k)`；如果 analysis 只认除法不认右移，GQA 这类更宽 fragment pipeline 很容易少报 `row_broadcast`
-- 对优化后的 device IR 做 analysis 时，buffer view 名经常会带 `_1/_2/...` 这类阶段化后缀；analysis 优先按 canonical buffer name 工作，再把具体 view 当作观察入口。否则同一个逻辑 fragment/shared buffer 会在 pass 里被看成多个对象
+- 对优化后的 device IR 做 analysis 时，不要再靠 `_1/_2/...` 这类 view 后缀归一化 buffer 名来恢复同一逻辑对象。更稳的做法是：
+  - 能带 typed `Buffer` handle 的 schema/attr 就直接带 handle
+  - 不能直接带 handle 的 matcher 至少按 backing `Buffer.data` / `Var` identity 合并
+  - 如果现有 IR 还表达不出这层稳定 identity，就扩 schema，而不是发明新的命名约定
 - `T.Pipelined` 经过 device prepasses 后，stage 注解不一定还叫 `num_stages`；Blackhole analysis 至少要同时兼容 `num_stages` 和 `tl_pipelined_num_stages`，否则 optimized path 会比 split-after path 少一层 pipeline 语义
 - `tl.region` 不要假设 `BufferLoad` 索引数必须与 extents 个数完全相等。对 staged/shared view，常见形态是“leading stage index + trailing tile extents”；更稳的 bridge 是把未匹配的前导索引收成 singleton axes，再用提供的 extents 重建尾部 region
 - 对 fragment/reduction lowering，不要假设 split-after 和 optimized device IR 会保留完全相同的包裹结构。`OptimizeForTarget` 之后，`for extent=1` 常会被抹平成同级 `SeqStmt`，而 `pragma_unroll_explicit` 之类则会额外包成 `AttrStmt`；matcher 应先剥掉这类无语义包装，再匹配真正的 reduction 形态，否则手动 pass 链能 lower、full `lower()` 反而会漏掉同一逻辑
@@ -121,6 +129,10 @@
 - 对 scalar fragment 链，也应优先抽成通用 scalar primitive，而不是继续把它混在更大的 vector-broadcast / fused-update blocker 里。这样剩余 blocker 会更准确地聚焦到真正还缺的复合路径
 - 做 TIR matcher 时，不要用 `same_as` 去判断两个“语义上相等的 extent/stride 常量”是否相等。优化前后 IR 很容易生成不同节点实例的 `IntImm(4)` / `IntImm(32)`，这会让像 `i * 4 + vec` 这种明显线性化的模式白白 miss。更稳的写法是直接对整个 affine 关系做 `Analyzer::Simplify` 后判零，例如比较 `expr - (outer * inner_extent + inner)` 是否可化简为 0
 - 对 fragment pointwise 的 residual 剪枝，不要在整棵表达式树里无差别找 `AddNode` / `MulNode`。像 `Cast(acc_s[i * 4 + vec])` 这种合法 residual `cast`，它的索引表达式天然会带 `AddNode`；如果 helper 扫全树，就会把索引算术误判成尚未 lower 的 pointwise `add`。更稳的口径是先看 residual store 的**根表达式类型**，只在根值本身仍是 `Add/Max/Cast/...` 时才把对应 op 继续保留为 blocker
+- 对 plain-local fragment state 和临时 reduction scratch 的区分，也不要再靠 `_clear`、`tmp` 之类命名暗示。更稳的依据是：
+  - `layout_map` / storage-role 是否把该 buffer 声明成 persistent fragment state
+  - store / reduce / finalize 的 def-use 结构是否说明它只是短生命周期 scratch
+  - 一旦结构上已经能证明是 temp scratch，就应尽早从 fragment-state 集合里剔除，避免后续 semantic / lowering 把它当真状态
 - 改 C++/链接 `libtilelang.so` 之后，不要再把 `cmake --build` 和 `pytest` 并行跑。pytest 很容易在新 `.so` 链接完成前启动，看到旧实现，进而把问题误判成“修复没生效”。这类验证应该顺序执行：先 build，确认链接完成，再跑 Python 测试
 - 对 `SemanticProgram` 的 internal state/effect graph，不要默认“每个 update 都必须产出 version/def”。像
   copy pipeline 这类 target-less `map` update，本身没有 semantic state，应当留在 semantic core 的

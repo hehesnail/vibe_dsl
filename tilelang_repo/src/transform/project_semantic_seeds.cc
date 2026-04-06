@@ -139,20 +139,20 @@ const char* ReduceTypeToString(const ReduceType& type) {
 Map<String, Any> EncodeManifestAnchor(const String& anchor, const String& kind,
                                       const String& capture_stage, int ordinal) {
   Map<String, Any> encoded;
-  encoded.Set("anchor", anchor);
-  encoded.Set("kind", kind);
-  encoded.Set("capture_stage", capture_stage);
+  encoded.Set(schema_key::kAnchor, anchor);
+  encoded.Set(schema_key::kKind, kind);
+  encoded.Set(schema_key::kCaptureStage, capture_stage);
   encoded.Set("ordinal", Integer(ordinal));
   return encoded;
 }
 
 Map<String, Any> EncodeBufferDescriptor(const tir::Buffer& buffer) {
   Map<String, Any> descriptor;
-  descriptor.Set("buffer", buffer);
-  descriptor.Set("name", String(buffer->name));
-  descriptor.Set("scope", String(buffer.scope()));
-  descriptor.Set("dtype", buffer->dtype);
-  descriptor.Set("shape", buffer->shape);
+  descriptor.Set(schema_key::kBuffer, buffer);
+  descriptor.Set(schema_key::kName, String(BufferIdentityName(buffer)));
+  descriptor.Set(schema_key::kScope, String(buffer.scope()));
+  descriptor.Set(schema_key::kDType, buffer->dtype);
+  descriptor.Set(schema_key::kShape, buffer->shape);
   return descriptor;
 }
 
@@ -176,7 +176,7 @@ Map<String, Any> MergeManifest(const Map<String, Any>& base, const Map<String, A
     if (auto it = manifest.find(manifest_key::kBuffers); it != manifest.end()) {
       for (const Any& buffer_any : tvm::Downcast<ffi::Array<Any>>((*it).second)) {
         auto descriptor = tvm::Downcast<Map<String, Any>>(buffer_any);
-        const std::string name = descriptor["name"].cast<String>();
+        const std::string name = descriptor[schema_key::kName].cast<String>();
         if (seen_buffer_names.insert(name).second) {
           buffers.push_back(descriptor);
         }
@@ -215,7 +215,7 @@ Map<String, Any> MergeManifest(const Map<String, Any>& base, const Map<String, A
 Map<String, Any> EncodeStructuralManifestRegion(const Map<String, Any>& region,
                                                 const String& capture_stage) {
   Map<String, Any> encoded;
-  encoded.Set("capture_stage", capture_stage);
+  encoded.Set(schema_key::kCaptureStage, capture_stage);
 
   auto copy_field = [&](const char* key) {
     if (auto it = region.find(String(key)); it != region.end()) {
@@ -280,9 +280,9 @@ class SemanticManifestCollector : public tir::StmtVisitor {
     ffi::Array<Any> ordered_regions;
     {
       Map<String, Any> region;
-      region.Set("anchor", region_anchor_);
-      region.Set("capture_stage", capture_stage_);
-      region.Set("operations", ordered_region_operations_);
+      region.Set(schema_key::kAnchor, region_anchor_);
+      region.Set(schema_key::kCaptureStage, capture_stage_);
+      region.Set(schema_key::kOperations, ordered_region_operations_);
       ordered_regions.push_back(region);
     }
 
@@ -331,12 +331,12 @@ class SemanticManifestCollector : public tir::StmtVisitor {
     }
 
     Map<String, Any> op;
-    op.Set("anchor", anchor);
-    op.Set("kind", String(kind));
-    op.Set("capture_stage", capture_stage_);
-    op.Set("ordered_region", region_anchor_);
-    op.Set("buffers", buffer_names);
-    op.Set("payload", payload);
+    op.Set(schema_key::kAnchor, anchor);
+    op.Set(schema_key::kKind, String(kind));
+    op.Set(schema_key::kCaptureStage, capture_stage_);
+    op.Set(schema_key::kOrderedRegion, region_anchor_);
+    op.Set(schema_key::kBuffers, buffer_names);
+    op.Set(schema_key::kPayload, payload);
     operations_.push_back(op);
     ordered_region_operations_.push_back(anchor);
     anchors_.push_back(EncodeManifestAnchor(anchor, String("operation"), capture_stage_, ordinal));

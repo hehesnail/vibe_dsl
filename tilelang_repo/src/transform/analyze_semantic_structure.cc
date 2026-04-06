@@ -9,7 +9,6 @@
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
-#include <cctype>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -36,18 +35,61 @@ namespace {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// Strip trailing `_N` suffix added by TIR lowering (e.g. `logits_frag_1` -> `logits_frag`).
-// Assumption: lowering only appends `_<digits>` to buffer names.  If a future lowering
-// pass uses a different naming convention this function must be updated accordingly.
-std::string CanonicalBufferName(const std::string& name) {
-  size_t pos = name.size();
-  while (pos > 0 && std::isdigit(static_cast<unsigned char>(name[pos - 1]))) {
-    --pos;
+std::string ResolveStateNameFromMap(const Map<String, Any>& entry, const char* name_key,
+                                    const char* buffer_key) {
+  if (auto it = entry.find(buffer_key); it != entry.end()) {
+    auto buffer = (*it).second.try_cast<tir::Buffer>();
+    if (buffer.has_value()) {
+      const std::string resolved = BufferIdentityName(buffer.value());
+      if (!resolved.empty()) {
+        return resolved;
+      }
+    }
   }
-  if (pos > 0 && pos < name.size() && name[pos - 1] == '_') {
-    return name.substr(0, pos - 1);
+  if (auto it = entry.find(name_key); it != entry.end()) {
+    return (*it).second.cast<String>();
   }
-  return name;
+  return "";
+}
+
+std::string ResolveStateName(const Any& value) {
+  if (auto string_value = value.try_cast<String>(); string_value.has_value()) {
+    return string_value.value();
+  }
+  auto map_value = value.try_cast<Map<String, Any>>();
+  if (!map_value.has_value()) {
+    return "";
+  }
+  return ResolveStateNameFromMap(map_value.value(), schema_key::kName, schema_key::kBuffer);
+}
+
+Array<Any> ResolveStateArray(const Map<String, Any>& entry, const char* state_key,
+                             const char* buffer_key) {
+  Array<Any> resolved;
+  if (auto it = entry.find(buffer_key); it != entry.end()) {
+    for (const Any& buffer_any : tvm::Downcast<Array<Any>>((*it).second)) {
+      auto buffer = buffer_any.try_cast<tir::Buffer>();
+      if (!buffer.has_value()) {
+        continue;
+      }
+      const std::string name = BufferIdentityName(buffer.value());
+      if (!name.empty()) {
+        resolved.push_back(String(name));
+      }
+    }
+    if (!resolved.empty()) {
+      return resolved;
+    }
+  }
+  if (auto it = entry.find(state_key); it != entry.end()) {
+    for (const Any& state_any : tvm::Downcast<Array<Any>>((*it).second)) {
+      const std::string name = ResolveStateName(state_any);
+      if (!name.empty()) {
+        resolved.push_back(String(name));
+      }
+    }
+  }
+  return resolved;
 }
 
 bool IsTrackedStateScope(const std::string& scope) {
@@ -68,9 +110,9 @@ class LocalBufferCollector : public tir::StmtExprVisitor {
     for (const auto& name : order_) {
       const auto& entry = entries_.at(name);
       Map<String, Any> state;
-      state.Set("name", String(name));
+      state.Set(schema_key::kName, String(name));
       state.Set("role", String(ToString(StateRole::kTransient)));
-      state.Set("scope", String(entry.scope));
+      state.Set(schema_key::kScope, String(entry.scope));
       states.push_back(state);
     }
     return states;
@@ -92,7 +134,10 @@ class LocalBufferCollector : public tir::StmtExprVisitor {
     if (!IsTrackedStateScope(scope)) {
       return;
     }
-    const std::string name = CanonicalBufferName(buffer->name);
+    const std::string name = BufferIdentityName(buffer);
+    if (name.empty()) {
+      return;
+    }
     if (entries_.count(name)) {
       return;
     }
@@ -174,15 +219,15 @@ struct EvidenceAccumulator {
       auto entry = tvm::Downcast<Map<String, Any>>(states[it->second]);
       entry.Set("role", String(role));
       if (!scope.empty()) {
-        entry.Set("scope", String(scope));
+        entry.Set(schema_key::kScope, String(scope));
       }
       states.Set(it->second, entry);
       return;
     }
     Map<String, Any> entry;
-    entry.Set("name", String(name));
+    entry.Set(schema_key::kName, String(name));
     entry.Set("role", String(role));
-    entry.Set("scope", String(scope));
+    entry.Set(schema_key::kScope, String(scope));
     state_index.emplace(name, static_cast<int>(states.size()));
     states.push_back(entry);
   }
@@ -244,10 +289,12 @@ struct EvidenceAccumulator {
       for (const Any& buffer_any :
            tvm::Downcast<Array<Any>>(region[manifest_key::kFragmentBuffers])) {
         auto buffer = tvm::Downcast<Map<String, Any>>(buffer_any);
-        const std::string name = buffer["name"].cast<String>();
-        RegisterState(name, ToString(StateRole::kTransient), buffer["scope"].cast<String>());
+        const std::string name =
+            ResolveStateNameFromMap(buffer, schema_key::kName, schema_key::kBuffer);
+        RegisterState(name, ToString(StateRole::kTransient),
+                      buffer[schema_key::kScope].cast<String>());
         bool is_integer = buffer_collector.HasIntegerDType(name);
-        if (auto it = buffer.find("is_integer"); it != buffer.end()) {
+        if (auto it = buffer.find(schema_key::kIsInteger); it != buffer.end()) {
           is_integer = static_cast<bool>(tvm::Downcast<Integer>((*it).second)->value);
         }
         if (is_integer) {
@@ -259,7 +306,8 @@ struct EvidenceAccumulator {
       for (const Any& carried_any :
            tvm::Downcast<Array<Any>>(region[manifest_key::kLoopCarriedState])) {
         auto carried = tvm::Downcast<Map<String, Any>>(carried_any);
-        const std::string name = carried["name"].cast<String>();
+        const std::string name =
+            ResolveStateNameFromMap(carried, schema_key::kName, schema_key::kBuffer);
         RegisterStringFact(&loop_carried_states, &loop_carried_state_evidence_sources, name,
                            loop_carried_source);
         RegisterState(name, ToString(StateRole::kCarry), "");
@@ -269,7 +317,7 @@ struct EvidenceAccumulator {
       for (const Any& target_any :
            tvm::Downcast<Array<Any>>(region[manifest_key::kSelectionTargets])) {
         RegisterStringFact(&selection_targets, &selection_target_evidence_sources,
-                           tvm::Downcast<String>(target_any), selection_target_source);
+                           ResolveStateName(target_any), selection_target_source);
       }
     }
     if (region.count(manifest_key::kUpdateSources)) {
@@ -277,8 +325,10 @@ struct EvidenceAccumulator {
            tvm::Downcast<Array<Any>>(region[manifest_key::kUpdateSources])) {
         auto source_map = tvm::Downcast<Map<String, Any>>(source_any);
         RegisterArrayFact(&update_sources_by_target, &update_source_evidence_sources,
-                          source_map["target"].cast<String>(),
-                          tvm::Downcast<Array<Any>>(source_map["sources"]),
+                          ResolveStateNameFromMap(source_map, schema_key::kTarget,
+                                                  schema_key::kTargetBuffer),
+                          ResolveStateArray(source_map, schema_key::kSources,
+                                            schema_key::kSourceBuffers),
                           update_source_source);
       }
     }
@@ -286,15 +336,18 @@ struct EvidenceAccumulator {
       for (const Any& target_any :
            tvm::Downcast<Array<Any>>(region[manifest_key::kArgReduceTargets])) {
         RegisterStringFact(&arg_reduce_targets, &arg_reduce_target_evidence_sources,
-                           tvm::Downcast<String>(target_any), arg_reduce_source);
+                           ResolveStateName(target_any), arg_reduce_source);
       }
     }
     if (region.count(manifest_key::kSelectionPairs)) {
       for (const Any& pair_any :
            tvm::Downcast<Array<Any>>(region[manifest_key::kSelectionPairs])) {
         auto pair_map = tvm::Downcast<Map<String, Any>>(pair_any);
-        RegisterSelectionPair(pair_map["companion_target"].cast<String>(),
-                              pair_map["value_target"].cast<String>(),
+        RegisterSelectionPair(
+            ResolveStateNameFromMap(pair_map, schema_key::kCompanionTarget,
+                                    schema_key::kCompanionBuffer),
+            ResolveStateNameFromMap(pair_map, schema_key::kValueTarget,
+                                    schema_key::kValueBuffer),
                               selection_pair_source);
       }
     }
@@ -303,12 +356,18 @@ struct EvidenceAccumulator {
            tvm::Downcast<Array<Any>>(region[manifest_key::kRecurrenceEdges])) {
         auto edge_map = tvm::Downcast<Map<String, Any>>(edge_any);
         RegisterArrayFact(&recurrence_edges_by_target, &recurrence_edge_evidence_sources,
-                          edge_map["target"].cast<String>(),
-                          tvm::Downcast<Array<Any>>(edge_map["source_states"]),
+                          ResolveStateNameFromMap(edge_map, schema_key::kTarget,
+                                                  schema_key::kTargetBuffer),
+                          ResolveStateArray(edge_map, schema_key::kSourceStates,
+                                            schema_key::kSourceBuffers),
                           recurrence_edge_source);
         RegisterStringFact(&loop_carried_states, &loop_carried_state_evidence_sources,
-                           edge_map["target"].cast<String>(), loop_carried_source);
-        RegisterState(edge_map["target"].cast<String>(), ToString(StateRole::kCarry), "");
+                           ResolveStateNameFromMap(edge_map, schema_key::kTarget,
+                                                   schema_key::kTargetBuffer),
+                           loop_carried_source);
+        RegisterState(ResolveStateNameFromMap(edge_map, schema_key::kTarget,
+                                              schema_key::kTargetBuffer),
+                      ToString(StateRole::kCarry), "");
       }
     }
     // row_reductions — manifest-first: only ingest if not already registered.
@@ -316,8 +375,9 @@ struct EvidenceAccumulator {
       for (const Any& reduction_any :
            tvm::Downcast<Array<Any>>(region[manifest_key::kRowReductions])) {
         auto reduction = tvm::Downcast<Map<String, Any>>(reduction_any);
-        RegisterReduction(reduction["target"].cast<String>(),
-                          reduction["kind"].cast<String>(),
+        RegisterReduction(ResolveStateNameFromMap(reduction, schema_key::kTarget,
+                                                  schema_key::kTargetBuffer),
+                          reduction[schema_key::kKind].cast<String>(),
                           source_tag);
       }
     }
@@ -378,11 +438,12 @@ void IngestAllEvidence(const tir::PrimFunc& func, EvidenceAccumulator* acc,
       for (const Any& buffer_any :
            tvm::Downcast<Array<Any>>(region[manifest_key::kFragmentBuffers])) {
         auto buffer = tvm::Downcast<Map<String, Any>>(buffer_any);
-        const std::string name = buffer["name"].cast<String>();
+        const std::string name =
+            ResolveStateNameFromMap(buffer, schema_key::kName, schema_key::kBuffer);
         acc->RegisterState(name, ToString(StateRole::kTransient),
-                           buffer["scope"].cast<String>());
+                           buffer[schema_key::kScope].cast<String>());
         bool is_integer = buffer_collector.HasIntegerDType(name);
-        if (auto it = buffer.find("is_integer"); it != buffer.end()) {
+        if (auto it = buffer.find(schema_key::kIsInteger); it != buffer.end()) {
           is_integer = static_cast<bool>(tvm::Downcast<Integer>((*it).second)->value);
         }
         if (is_integer) {
@@ -396,9 +457,9 @@ void IngestAllEvidence(const tir::PrimFunc& func, EvidenceAccumulator* acc,
     // No fragment regions at all — fall back to buffer collector.
     for (const Any& state_any : buffer_collector.Encode()) {
       auto state_map = tvm::Downcast<Map<String, Any>>(state_any);
-      const std::string name = state_map["name"].cast<String>();
+      const std::string name = state_map[schema_key::kName].cast<String>();
       acc->RegisterState(name, state_map["role"].cast<String>(),
-                         state_map["scope"].cast<String>());
+                         state_map[schema_key::kScope].cast<String>());
       if (buffer_collector.HasIntegerDType(name)) {
         acc->integer_states.insert(name);
       }
@@ -450,7 +511,7 @@ void EmitStateRoleWitnesses(const EvidenceAccumulator& acc,
     ICHECK(role) << "AnalyzeSemanticStructure encountered unsupported state role "
                  << state_map["role"].cast<String>();
     witnesses->push_back(MakeWitness(ToString(WitnessSubjectKind::kState),
-                                     state_map["name"].cast<String>(),
+                                     state_map[schema_key::kName].cast<String>(),
                                      ToString(WitnessFactAxis::kRole),
                                      MakeStateRolePayload(*role), Array<String>{},
                                      Array<String>{String("states")}));
@@ -727,7 +788,8 @@ tir::transform::Pass AnalyzeSemanticStructure() {
       entry.Set("kind", String(ToString(UpdateLawKind::kMap)));
       String root_target("");
       if (acc.states.size() == 1) {
-        root_target = tvm::Downcast<Map<String, Any>>(acc.states[0])["name"].cast<String>();
+        root_target =
+            tvm::Downcast<Map<String, Any>>(acc.states[0])[schema_key::kName].cast<String>();
       }
       entry.Set("target_state", root_target);
       updates.push_back(entry);

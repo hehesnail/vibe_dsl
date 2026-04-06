@@ -74,6 +74,7 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
  private:
   struct AccessorDescriptor {
     std::string segment_kind;
+    tvm::tir::Buffer buffer;
     std::string buffer_name;
     int compile_time_arg_offset = 0;
     int compile_time_arg_count = 2;
@@ -369,20 +370,26 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   tvm::tir::PrimFunc current_func_;
   // Maps buffer object → requirement_index in cb_requirements_
   std::map<tvm::tir::Buffer, int, std::less<>> buffer_to_req_;
-  // Secondary lookup by name (for GEMM buffers pre-registered by ExtractGemmInfo)
-  std::unordered_map<std::string, int> name_to_req_index_;
+  // Secondary lookup by backing storage identity for aliased Buffer objects.
+  std::unordered_map<const tvm::tir::VarNode*, int> buffer_data_to_req_index_;
   std::vector<CBRequirement> cb_requirements_;
   bool saw_copy_op_ = false;
   bool needs_copy_runtime_args_ = false;
+  tvm::tir::Buffer copy_input_buffer_;
+  tvm::tir::Buffer copy_output_buffer_;
   std::string copy_input_buffer_name_;
   std::string copy_output_buffer_name_;
 
   // GEMM info populated by ExtractGemmInfo (pre-scan)
+  tvm::tir::Buffer gemm_a_buffer_;
+  tvm::tir::Buffer gemm_b_buffer_;
+  tvm::tir::Buffer gemm_c_buffer_;
   std::string gemm_a_buffer_name_;
   std::string gemm_b_buffer_name_;
   std::string gemm_c_buffer_name_;
   std::string gemm_c_scope_;
   bool gemm_has_mbarrier_ = false;
+  tvm::tir::Buffer gemm_mbarrier_buffer_;
   std::string gemm_mbarrier_buffer_name_;
   std::string gemm_mbarrier_scope_;
   std::vector<std::string> gemm_mbarrier_index_exprs_;

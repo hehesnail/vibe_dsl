@@ -28,6 +28,8 @@
 #include "lower_blackhole_ops.h"
 
 #include "../op/utils.h"
+#include "common/blackhole_utils.h"
+#include "common/semantic_program.h"
 
 #include <tvm/ffi/reflection/registry.h>
 #include "runtime/thread_storage_scope.h"
@@ -39,6 +41,7 @@
 #include <tvm/tir/transform.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <sstream>
 
@@ -98,6 +101,14 @@ static std::string MakeBlackholeRuntimeArgIdentity(const std::string& kind, cons
     return kind + ":" + buffer_name;
   }
   return !kind.empty() ? kind : name;
+}
+
+static std::string MakeSegmentBufferKey(const std::string& segment_kind,
+                                        const tir::Buffer& buffer) {
+  std::ostringstream os;
+  os << segment_kind << ":"
+     << reinterpret_cast<uintptr_t>(BufferDataIdentity(buffer));
+  return os.str();
 }
 
 static bool IsBufferAddrRuntimeArgKind(const std::string& kind) {
@@ -828,12 +839,14 @@ LowerBlackholeOps::LowerBlackholeOps() : next_requirement_index_(0) {}
 PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   current_func_ = func;
   buffer_to_req_.clear();
-  name_to_req_index_.clear();
+  buffer_data_to_req_index_.clear();
   cb_requirements_.clear();
   accessor_descriptors_.clear();
   next_requirement_index_ = 0;
   saw_copy_op_ = false;
   needs_copy_runtime_args_ = false;
+  copy_input_buffer_ = Buffer();
+  copy_output_buffer_ = Buffer();
   copy_input_buffer_name_.clear();
   copy_output_buffer_name_.clear();
   copy_input_shape_.clear();
@@ -859,11 +872,15 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   current_segment_kind_.clear();
   read_accessor_slots_.clear();
   write_accessor_slots_.clear();
+  gemm_a_buffer_ = Buffer();
+  gemm_b_buffer_ = Buffer();
+  gemm_c_buffer_ = Buffer();
   gemm_a_buffer_name_.clear();
   gemm_b_buffer_name_.clear();
   gemm_c_buffer_name_.clear();
   gemm_c_scope_.clear();
   gemm_has_mbarrier_ = false;
+  gemm_mbarrier_buffer_ = Buffer();
   gemm_mbarrier_buffer_name_.clear();
   gemm_mbarrier_scope_.clear();
   gemm_mbarrier_index_exprs_.clear();
@@ -991,18 +1008,18 @@ int LowerBlackholeOps::AllocateRequirementIndex(const Buffer& buffer, CBType typ
   if (it != buffer_to_req_.end()) {
     return it->second;
   }
-  auto by_name = name_to_req_index_.find(buffer->name);
-  if (by_name != name_to_req_index_.end()) {
-    buffer_to_req_[buffer] = by_name->second;
-    return by_name->second;
+  auto by_data = buffer_data_to_req_index_.find(buffer->data.get());
+  if (by_data != buffer_data_to_req_index_.end()) {
+    buffer_to_req_[buffer] = by_data->second;
+    return by_data->second;
   }
 
   const int requirement_index = next_requirement_index_++;
   buffer_to_req_[buffer] = requirement_index;
-  name_to_req_index_[buffer->name] = requirement_index;
+  buffer_data_to_req_index_[buffer->data.get()] = requirement_index;
 
   CBRequirement req;
-  req.name = buffer->name;
+  req.name = BufferIdentityName(buffer);
   req.type = type;
   req.lifetime_begin = requirement_index;
   req.lifetime_end = req.lifetime_begin;
@@ -1146,13 +1163,18 @@ void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
     runtime_args.push_back(arg_map);
   };
 
+  const std::string input_buffer_name =
+      copy_input_buffer_.defined() ? BufferIdentityName(copy_input_buffer_) : copy_input_buffer_name_;
+  const std::string output_buffer_name = copy_output_buffer_.defined()
+                                             ? BufferIdentityName(copy_output_buffer_)
+                                             : copy_output_buffer_name_;
   const std::string input_arg_name =
-      copy_input_buffer_name_.empty() ? "input_addr" : copy_input_buffer_name_ + "_addr";
+      input_buffer_name.empty() ? "input_addr" : input_buffer_name + "_addr";
   const std::string output_arg_name =
-      copy_output_buffer_name_.empty() ? "output_addr" : copy_output_buffer_name_ + "_addr";
+      output_buffer_name.empty() ? "output_addr" : output_buffer_name + "_addr";
 
-  push_arg(input_arg_name, "input_buffer_addr32", "uint32", copy_input_buffer_name_);
-  push_arg(output_arg_name, "output_buffer_addr32", "uint32", copy_output_buffer_name_);
+  push_arg(input_arg_name, "input_buffer_addr32", "uint32", input_buffer_name);
+  push_arg(output_arg_name, "output_buffer_addr32", "uint32", output_buffer_name);
   push_arg("work_linear_id", "work_linear_id", "uint32");
   push_arg("a_tile_start_id", "a_tile_start_id", "uint32");
   push_arg("a_tile_num_tiles", "a_tile_num_tiles", "uint32");
@@ -1190,7 +1212,7 @@ void LowerBlackholeOps::StoreSegmentPlan(PrimFunc& func) {
 }
 
 void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
-  if (gemm_a_buffer_name_.empty() || gemm_b_buffer_name_.empty() || gemm_c_buffer_name_.empty()) {
+  if (!gemm_a_buffer_.defined() || !gemm_b_buffer_.defined() || !gemm_c_buffer_.defined()) {
     return;
   }
 
@@ -1734,9 +1756,12 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
   tir::BufferRegion b_region = NormalizeToBufferRegion(args[1]);
   tir::BufferRegion c_region = NormalizeToBufferRegion(args[2]);
 
-  gemm_a_buffer_name_ = std::string(a_region->buffer->name);
-  gemm_b_buffer_name_ = std::string(b_region->buffer->name);
-  gemm_c_buffer_name_ = std::string(c_region->buffer->name);
+  gemm_a_buffer_ = a_region->buffer;
+  gemm_b_buffer_ = b_region->buffer;
+  gemm_c_buffer_ = c_region->buffer;
+  gemm_a_buffer_name_ = BufferIdentityName(a_region->buffer);
+  gemm_b_buffer_name_ = BufferIdentityName(b_region->buffer);
+  gemm_c_buffer_name_ = BufferIdentityName(c_region->buffer);
   gemm_c_scope_ = GetStorageScope(c_region->buffer);
   gemm_a_dtype_ = a_region->buffer->dtype;
   gemm_b_dtype_ = b_region->buffer->dtype;
@@ -1798,7 +1823,8 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
   if (args.size() > 16 && IsBufferLikeExpr(args[16])) {
     tir::BufferRegion mbar_region = NormalizeToBufferRegion(args[16]);
     gemm_has_mbarrier_ = true;
-    gemm_mbarrier_buffer_name_ = std::string(mbar_region->buffer->name);
+    gemm_mbarrier_buffer_ = mbar_region->buffer;
+    gemm_mbarrier_buffer_name_ = BufferIdentityName(mbar_region->buffer);
     gemm_mbarrier_scope_ = GetStorageScope(mbar_region->buffer);
     gemm_mbarrier_index_exprs_.clear();
     for (const auto& range : mbar_region->region) {
@@ -2049,7 +2075,7 @@ PrimExpr LowerBlackholeOps::InferStagedCopyBaseTileIndex(
       direction == CopyDirection::kDramToCB ? load->indices : op->indices;
   const bool is_gemm_b_input =
       direction == CopyDirection::kDramToCB &&
-      (std::string(op->buffer->name) == gemm_b_buffer_name_ ||
+      ((gemm_b_buffer_.defined() && SameBufferIdentity(op->buffer, gemm_b_buffer_)) ||
        (buffer_to_req_.count(op->buffer) && buffer_to_req_.at(op->buffer) == gemm_b_req_index_));
   const bool segmented_gemm = !gemm_a_buffer_name_.empty();
   const bool accumulator_like_src =
@@ -2184,9 +2210,11 @@ void LowerBlackholeOps::RecordStagedCopyBufferBinding(const BufferStoreNode* op,
   }
   needs_copy_runtime_args_ = true;
   if (direction == CopyDirection::kDramToCB) {
-    copy_input_buffer_name_ = load->buffer->name;
+    copy_input_buffer_ = load->buffer;
+    copy_input_buffer_name_ = BufferIdentityName(load->buffer);
   } else if (direction == CopyDirection::kCBToDram) {
-    copy_output_buffer_name_ = op->buffer->name;
+    copy_output_buffer_ = op->buffer;
+    copy_output_buffer_name_ = BufferIdentityName(op->buffer);
   }
 }
 
@@ -2216,8 +2244,10 @@ void LowerBlackholeOps::RecordDramToDramCopy(const BufferStoreNode* op) {
   ensure_requirement(load->buffer, CBType::kInput);
   ensure_requirement(op->buffer, CBType::kOutput);
   needs_copy_runtime_args_ = true;
-  copy_input_buffer_name_ = load->buffer->name;
-  copy_output_buffer_name_ = op->buffer->name;
+  copy_input_buffer_ = load->buffer;
+  copy_output_buffer_ = op->buffer;
+  copy_input_buffer_name_ = BufferIdentityName(load->buffer);
+  copy_output_buffer_name_ = BufferIdentityName(op->buffer);
 }
 
 void LowerBlackholeOps::RegisterAccessor(const std::string& segment_kind,
@@ -2228,11 +2258,10 @@ void LowerBlackholeOps::RegisterAccessor(const std::string& segment_kind,
                                          int common_runtime_arg_count,
                                          int args_config_bits,
                                          int transport_page_size_bytes) {
-  const std::string buffer_name = buffer->name;
   auto it = std::find_if(accessor_descriptors_.begin(), accessor_descriptors_.end(),
                          [&](const AccessorDescriptor& desc) {
                            return desc.segment_kind == segment_kind &&
-                                  desc.buffer_name == buffer_name &&
+                                  SameBufferIdentity(desc.buffer, buffer) &&
                                   desc.compile_time_arg_offset == compile_time_arg_offset &&
                                   desc.compile_time_arg_count == compile_time_arg_count &&
                                   desc.common_runtime_arg_offset == common_runtime_arg_offset &&
@@ -2244,7 +2273,8 @@ void LowerBlackholeOps::RegisterAccessor(const std::string& segment_kind,
     return;
   }
   accessor_descriptors_.push_back(AccessorDescriptor{segment_kind,
-                                                     buffer_name,
+                                                     buffer,
+                                                     BufferIdentityName(buffer),
                                                      compile_time_arg_offset,
                                                      compile_time_arg_count,
                                                      common_runtime_arg_offset,
@@ -2271,15 +2301,14 @@ std::string LowerBlackholeOps::ResolveAccessorSegmentKind(CopyDirection directio
 int LowerBlackholeOps::GetOrAllocateSegmentAccessorSlot(
     std::unordered_map<std::string, int>* slot_map, const std::string& segment_kind,
     const Buffer& buffer) {
-  const std::string key = segment_kind + ":" + std::string(buffer->name);
+  const std::string key = MakeSegmentBufferKey(segment_kind, buffer);
   auto it = slot_map->find(key);
   if (it != slot_map->end()) {
     return it->second;
   }
   int next_slot = 0;
-  const std::string prefix = segment_kind + ":";
   for (const auto& [existing_key, slot] : *slot_map) {
-    if (existing_key.rfind(prefix, 0) == 0) {
+    if (existing_key.rfind(segment_kind + ":", 0) == 0) {
       next_slot = std::max(next_slot, slot + 2);
     }
   }
@@ -2289,9 +2318,8 @@ int LowerBlackholeOps::GetOrAllocateSegmentAccessorSlot(
 
 int LowerBlackholeOps::GetReadAccessorSlot(const std::string& segment_kind, const Buffer& buffer,
                                            CopyDirection direction) {
-  const std::string buffer_name = buffer->name;
   if (segment_kind == "fused_dataflow") {
-    if (!copy_input_buffer_name_.empty() && buffer_name == copy_input_buffer_name_) {
+    if (copy_input_buffer_.defined() && SameBufferIdentity(buffer, copy_input_buffer_)) {
       return 0;
     }
     return 0;
@@ -2304,9 +2332,8 @@ int LowerBlackholeOps::GetReadAccessorSlot(const std::string& segment_kind, cons
 
 int LowerBlackholeOps::GetWriteAccessorSlot(const std::string& segment_kind, const Buffer& buffer,
                                             CopyDirection direction) {
-  const std::string buffer_name = buffer->name;
   if (segment_kind == "fused_dataflow") {
-    if (!copy_output_buffer_name_.empty() && buffer_name == copy_output_buffer_name_) {
+    if (copy_output_buffer_.defined() && SameBufferIdentity(buffer, copy_output_buffer_)) {
       return 2;
     }
     return 0;
@@ -2568,7 +2595,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
            runtime::StorageRank::kBlackholeAccumulator);
   const bool transpose_b_reader =
       direction == CopyDirection::kDramToCB && segmented_gemm && gemm_transpose_b_ &&
-      (std::string(op->buffer->name) == gemm_b_buffer_name_ ||
+      ((gemm_b_buffer_.defined() && SameBufferIdentity(op->buffer, gemm_b_buffer_)) ||
        (buffer_to_req_.count(op->buffer) && buffer_to_req_.at(op->buffer) == gemm_b_req_index_));
 
   const Buffer& shared_buffer =
@@ -2882,9 +2909,7 @@ bool MatchScalarAccumulatorUpdate(const BufferStoreNode* store,
                                   const Var& reduce_var,
                                   Buffer* src_buffer,
                                   std::string* kind) {
-  auto same_buffer = [](const Buffer& lhs, const Buffer& rhs) {
-    return lhs.same_as(rhs) || lhs->data.get() == rhs->data.get() || lhs->name == rhs->name;
-  };
+  auto same_buffer = [](const Buffer& lhs, const Buffer& rhs) { return SameBufferIdentity(lhs, rhs); };
   auto same_loop_index = [&](const PrimExpr& index) {
     if (index.same_as(reduce_var)) {
       return true;
@@ -2931,9 +2956,7 @@ bool MatchReductionFinalizeStore(const BufferStoreNode* store,
                                  const Buffer& tmp_buffer,
                                  Buffer* dst_buffer,
                                  std::string* kind) {
-  auto same_buffer = [](const Buffer& lhs, const Buffer& rhs) {
-    return lhs.same_as(rhs) || lhs->data.get() == rhs->data.get() || lhs->name == rhs->name;
-  };
+  auto same_buffer = [](const Buffer& lhs, const Buffer& rhs) { return SameBufferIdentity(lhs, rhs); };
   if (!store || store->buffer->shape.size() != 1 || store->indices.size() != 1 ||
       !tir::is_zero(store->indices[0]) || !IsScalarLocalFragmentBuffer(store->buffer)) {
     return false;
@@ -3178,8 +3201,7 @@ bool MatchSelfIndexedVectorLoad(const PrimExpr& expr,
                                 const Buffer& dst_buffer,
                                 const Var& loop_var) {
   const auto* load = expr.as<BufferLoadNode>();
-  return load && (load->buffer.same_as(dst_buffer) || load->buffer->data.same_as(dst_buffer->data) ||
-                  load->buffer->name == dst_buffer->name) &&
+  return load && SameBufferIdentity(load->buffer, dst_buffer) &&
          load->indices.size() == 1 && load->indices[0].same_as(loop_var);
 }
 
@@ -3217,15 +3239,13 @@ bool MatchGroupedScalarFragmentLoad(const PrimExpr& expr,
 bool MatchScalarBufferLoadFrom(const PrimExpr& expr, const Buffer& buffer) {
   const auto* load = expr.as<BufferLoadNode>();
   return load && load->indices.size() == 1 && tir::is_zero(load->indices[0]) &&
-         (load->buffer.same_as(buffer) || load->buffer->data.same_as(buffer->data) ||
-          load->buffer->name == buffer->name);
+         SameBufferIdentity(load->buffer, buffer);
 }
 
 bool MatchIndexedRowStateLoad(const PrimExpr& expr, const Buffer& buffer, const Var& loop_var) {
   const auto* load = expr.as<BufferLoadNode>();
   return load && load->indices.size() == 1 && load->indices[0].same_as(loop_var) &&
-         (load->buffer.same_as(buffer) || load->buffer->data.same_as(buffer->data) ||
-          load->buffer->name == buffer->name);
+         SameBufferIdentity(load->buffer, buffer);
 }
 
 bool MatchExp2Call(const PrimExpr& expr, PrimExpr* arg) {
@@ -3377,8 +3397,7 @@ bool LowerBlackholeOps::MatchAllocatedRowReduction(const AllocateNode* op,
       !tir::is_zero(init_store->indices[0])) {
     return false;
   }
-  if (init_store->buffer->data.get() != op->buffer_var.get() &&
-      init_store->buffer->name != op->buffer_var->name_hint) {
+  if (BufferDataIdentity(init_store->buffer) != op->buffer_var.get()) {
     return false;
   }
 
@@ -3426,9 +3445,7 @@ bool LowerBlackholeOps::MatchGroupedRowReduction(const ForNode* op,
     return false;
   }
 
-  auto same_buffer = [](const Buffer& lhs, const Buffer& rhs) {
-    return lhs.same_as(rhs) || lhs->data.get() == rhs->data.get() || lhs->name == rhs->name;
-  };
+  auto same_buffer = [](const Buffer& lhs, const Buffer& rhs) { return SameBufferIdentity(lhs, rhs); };
 
   Buffer src_buffer;
   std::string reduction_kind;
@@ -4283,29 +4300,54 @@ Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
       }
       return opt.value().try_cast<Array<Integer>>().value_or(Array<Integer>{});
     };
+    auto get_buffer = [&sem](const char* key) -> Buffer {
+      auto opt = sem.Get(String(key));
+      if (!opt.has_value()) {
+        return Buffer();
+      }
+      return opt.value().try_cast<Buffer>().value_or(Buffer());
+    };
 
-    const std::string kind = get_string("kind");
-    const std::string direction = get_string("direction");
+    const std::string kind = get_string(schema_key::kKind);
+    const std::string direction = get_string(schema_key::kDirection);
 
     if (kind == "fused_staged_copy") {
-      copy_input_buffer_name_ = get_string("src_buffer");
-      copy_output_buffer_name_ = get_string("dst_buffer");
-      copy_input_shape_ = get_shape("src_shape");
-      copy_output_shape_ = get_shape("dst_shape");
-      copy_intermediate_shape_ = get_shape("mid_shape");
+      copy_input_buffer_ = get_buffer(schema_key::kSrcBufferRef);
+      copy_output_buffer_ = get_buffer(schema_key::kDstBufferRef);
+      copy_input_buffer_name_ = copy_input_buffer_.defined()
+                                    ? BufferIdentityName(copy_input_buffer_)
+                                    : get_string(schema_key::kSrcBuffer);
+      copy_output_buffer_name_ = copy_output_buffer_.defined()
+                                     ? BufferIdentityName(copy_output_buffer_)
+                                     : get_string(schema_key::kDstBuffer);
+      copy_input_shape_ = get_shape(schema_key::kSrcShape);
+      copy_output_shape_ = get_shape(schema_key::kDstShape);
+      copy_intermediate_shape_ = get_shape(schema_key::kMidShape);
     } else if (direction == "dram_to_cb") {
-      copy_input_buffer_name_ = get_string("src_buffer");
-      copy_input_shape_ = get_shape("src_shape");
-      copy_intermediate_shape_ = get_shape("mid_shape");
+      copy_input_buffer_ = get_buffer(schema_key::kSrcBufferRef);
+      copy_input_buffer_name_ = copy_input_buffer_.defined()
+                                    ? BufferIdentityName(copy_input_buffer_)
+                                    : get_string(schema_key::kSrcBuffer);
+      copy_input_shape_ = get_shape(schema_key::kSrcShape);
+      copy_intermediate_shape_ = get_shape(schema_key::kMidShape);
     } else if (direction == "cb_to_dram") {
-      copy_output_buffer_name_ = get_string("dst_buffer");
-      copy_output_shape_ = get_shape("dst_shape");
-      copy_intermediate_shape_ = get_shape("mid_shape");
+      copy_output_buffer_ = get_buffer(schema_key::kDstBufferRef);
+      copy_output_buffer_name_ = copy_output_buffer_.defined()
+                                     ? BufferIdentityName(copy_output_buffer_)
+                                     : get_string(schema_key::kDstBuffer);
+      copy_output_shape_ = get_shape(schema_key::kDstShape);
+      copy_intermediate_shape_ = get_shape(schema_key::kMidShape);
     } else if (direction == "dram_to_dram") {
-      copy_input_buffer_name_ = get_string("src_buffer");
-      copy_output_buffer_name_ = get_string("dst_buffer");
-      copy_input_shape_ = get_shape("src_shape");
-      copy_output_shape_ = get_shape("dst_shape");
+      copy_input_buffer_ = get_buffer(schema_key::kSrcBufferRef);
+      copy_output_buffer_ = get_buffer(schema_key::kDstBufferRef);
+      copy_input_buffer_name_ = copy_input_buffer_.defined()
+                                    ? BufferIdentityName(copy_input_buffer_)
+                                    : get_string(schema_key::kSrcBuffer);
+      copy_output_buffer_name_ = copy_output_buffer_.defined()
+                                     ? BufferIdentityName(copy_output_buffer_)
+                                     : get_string(schema_key::kDstBuffer);
+      copy_input_shape_ = get_shape(schema_key::kSrcShape);
+      copy_output_shape_ = get_shape(schema_key::kDstShape);
     }
 
     needs_copy_runtime_args_ = true;

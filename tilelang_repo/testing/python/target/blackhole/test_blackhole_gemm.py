@@ -217,6 +217,51 @@ def test_blackhole_split_kernel_gemm_segment_plan():
     ]
 
 
+def test_blackhole_split_kernel_prefers_copy_buffer_handles_over_annotation_names():
+    kernel = gemm_kernel()
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+
+    def mutate(stmt):
+        if not isinstance(stmt, tvm.tir.For):
+            return stmt
+        sem = stmt.annotations.get("blackhole.copy_semantics")
+        if sem is None:
+            return stmt
+        annotations = dict(stmt.annotations)
+        annotations["blackhole.copy_semantics"] = {
+            **dict(sem),
+            "src_buffer": "WRONG_INPUT_BUFFER",
+            "mid_buffer": "WRONG_INTERMEDIATE_BUFFER",
+            "dst_buffer": "WRONG_OUTPUT_BUFFER",
+        }
+        return tvm.tir.For(
+            stmt.loop_var,
+            stmt.min,
+            stmt.extent,
+            stmt.kind,
+            stmt.body,
+            stmt.thread_binding,
+            annotations,
+            stmt.step,
+            getattr(stmt, "span", None),
+        )
+
+    mutated_body = stmt_functor.ir_transform(mod["main"].body, None, mutate, ["tir.For"])
+    mod.update_func(mod.get_global_var("main"), mod["main"].with_body(mutated_body))
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+
+    plan = mod["main"].attrs["blackhole.segment_plan"]
+    reader_args = plan[0]["runtime_args"]
+    writer_args = plan[2]["runtime_args"]
+
+    assert [str(arg["buffer"]) for arg in reader_args if "buffer" in arg] == ["A", "B"]
+    assert [str(arg["buffer"]) for arg in writer_args if "buffer" in arg] == ["C"]
+
+
 def test_blackhole_gemm_arg_identity_drives_cross_segment_dedupe():
     kernel = gemm_kernel()
     target = Target("blackhole")

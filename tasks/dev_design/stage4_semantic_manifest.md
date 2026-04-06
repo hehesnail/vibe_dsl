@@ -172,6 +172,15 @@ blackhole_codegen(device_mod)
   - structural evidence 前移：
     `fragment_buffers / selection_targets / selection_pairs / arg_reduce_targets /
     update_sources / loop_carried_state / recurrence_edges`
+- `2026-04-06` 的 schema 收口补充了 handle-first nested fields：
+  - `fragment_buffers[*].buffer`
+  - `selection_targets[*].buffer`
+  - `arg_reduce_targets[*].buffer`
+  - `selection_pairs[*].value_buffer / companion_buffer / source_buffers`
+  - `update_sources[*].target_buffer / source_buffers`
+  - `loop_carried_state[*].buffer`
+  - `recurrence_edges[*].target_buffer / source_buffers`
+  semantic 侧 consumer 当前统一优先读这些 typed handle，再回退 legacy 字符串字段
 - manifest schema 当前已经以 typed attr 形式落地：
   - `buffers` 保留 `buffer / name / scope / dtype / shape`
   - `operations` 保留 op kind、capture stage、ordered-region anchor 与 typed payload
@@ -211,7 +220,9 @@ blackhole_codegen(device_mod)
 - 把会被 destructive lowering 吃掉的 explicit-op evidence 前移保存
 - 把 selection / arg-reduce / recurrence 相关 structural evidence 前移为 typed carrier
 - 不把 domain / pipeline skeleton、lowering summary 混进 manifest
-- `row_reductions` 已迁入 manifest；`LowerBlackholeOps` 仍独立从 `fragment_regions` 读 lowering-facing `row_reduction_targets`
+  - `row_reductions` 已迁入 manifest；`LowerBlackholeOps` 仍独立从 `fragment_regions` 读 lowering-facing `row_reduction_targets`
+  - `blackhole.copy_semantics` 也已扩成 handle-first schema（`src/dst/mid_buffer_ref`），
+    `SplitBlackholeKernel` / `LowerBlackholeOps` 当前优先按 typed buffer handle 恢复 runtime/segment 绑定
 
 ## 6. `AnalyzeSemanticStructure` 当前怎么接
 

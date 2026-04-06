@@ -90,7 +90,16 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
   - manifest-backed structural evidence：
     `fragment_buffers / selection_targets / selection_pairs / arg_reduce_targets /
     update_sources / loop_carried_state / recurrence_edges / row_reductions`
-  - manifest schema key 已集中到 `manifest_key::` 命名空间（`semantic_program.h`）
+  - manifest / structural nested-field key 已集中到
+    `manifest_key::` / `schema_key::` 命名空间（`semantic_program.h`）
+  - structural evidence / copy semantics / direct-runtime binding 当前已切到 handle-first：
+    - `structural_regions[*]` 与 `blackhole.fragment_regions[*]` 对 state/edge/buffer
+      同时保留 display name 和 typed `Buffer` handle
+    - `AnalyzeSemanticStructure` manifest-first 消费 typed handle，旧字符串只保留兼容回退
+    - `SplitBlackholeKernel` / `LowerBlackholeOps` 对 copy/runtime/accessor 绑定优先按
+      `Buffer.data` identity 与 typed handle 恢复，不再信任 annotation name string
+  - `AnalyzeBlackholeFragmentRegions` 当前对 plain-local fragment state 与 temp reduction scratch
+    的区分优先依赖 `layout_map` 与 store/dataflow 结构，不再靠 `_clear` 命名约定
   - `blackhole.fragment_regions` 不再是 semantic truth 输入；
     semantic 侧所有 evidence 已切换为 manifest-first 消费；
     `fragment_regions` 当前唯一剩余消费者是 `LowerBlackholeOps`（lowering-facing）
@@ -107,7 +116,9 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 ## 最新验证摘要
 
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
-  - `38 passed`
+  - `39 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py -q`
+  - `7 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `40 passed, 10 skipped, 1 xfailed`
 - `source scripts/setup_tt_sim.sh && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
@@ -151,6 +162,8 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
   - 当前 `Phase 1-2` 已实施；`selection / arg-reduce / recurrence` structural evidence
     已前移到 manifest 并改成 manifest-first 消费
   - `fragment_regions` 当前仍保留 `row_reductions` 与 residual compatibility 职责
+  - `structural_regions` / `fragment_regions` 当前的 state/edge entry 已扩成
+    `name + typed Buffer handle` 双通道 schema；后续 consumer 新逻辑默认应吃 handle-first
   - `fragment_regions` 的剩余存在理由已经收敛：
     - semantic 侧：`reduce_*` update 的 residual evidence
     - lowering 侧：`LowerBlackholeOps` 当前的 fragment subset / legality summary

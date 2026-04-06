@@ -133,6 +133,21 @@ def _append_noop_to_main_body(mod):
     return mod
 
 
+def _entry_name(entry, *keys):
+    if isinstance(entry, str):
+        return entry
+    for key in keys:
+        try:
+            return str(entry[key])
+        except (KeyError, TypeError):
+            continue
+    return str(entry)
+
+
+def _entry_names(entries, *keys):
+    return [_entry_name(entry, *keys) for entry in entries]
+
+
 @T.prim_func
 def _semantic_manifest_explicit_ops_kernel(
     A: T.Buffer((32, 32), "float16"),
@@ -347,12 +362,12 @@ def test_semantic_manifest_phase2_collects_selection_and_arg_reduce_structural_e
     manifest = mod["main"].attrs["tl.semantic_manifest"]
     structural_regions = list(manifest["structural_regions"])
     selection_targets = {
-        str(target)
+        _entry_name(target, "name", "target")
         for region in structural_regions
         for target in region.get("selection_targets", [])
     }
     arg_reduce_targets = {
-        str(target)
+        _entry_name(target, "name", "target")
         for region in structural_regions
         for target in region.get("arg_reduce_targets", [])
     }
@@ -395,13 +410,47 @@ def test_semantic_manifest_phase2_collects_recurrence_structural_evidence():
     manifest = mod["main"].attrs["tl.semantic_manifest"]
     structural_regions = list(manifest["structural_regions"])
     recurrence_edges = [
-        (str(edge["target"]), [str(source) for source in edge["source_states"]])
+        (
+            _entry_name(edge, "target", "name"),
+            _entry_names(edge["source_states"], "name", "target"),
+        )
         for region in structural_regions
         for edge in region.get("recurrence_edges", [])
     ]
+    loop_carried_state = {
+        _entry_name(state, "name", "target")
+        for region in structural_regions
+        for state in region.get("loop_carried_state", [])
+    }
 
-    assert any(target == "b_h_fragment" for target, _ in recurrence_edges)
+    assert recurrence_edges
+    assert any(target in loop_carried_state for target, _ in recurrence_edges)
     assert any(any(source != target for source in sources) for target, sources in recurrence_edges)
+
+
+def test_semantic_manifest_phase2_structural_entries_carry_buffer_handles():
+    mod = _prepare_blackhole_manifest_augmented_module(
+        example_topk.tl_topk.jit_impl.get_tir(M=64, N=32, topk=4, blk_m=64, threads=128)
+    )
+
+    manifest = mod["main"].attrs["tl.semantic_manifest"]
+    structural_region = next(
+        region for region in manifest["structural_regions"] if len(region.get("selection_pairs", [])) > 0
+    )
+    fragment_buffer = structural_region["fragment_buffers"][0]
+    selection_target = structural_region["selection_targets"][0]
+    selection_pair = structural_region["selection_pairs"][0]
+    arg_reduce_target = structural_region["arg_reduce_targets"][0]
+    update_source = structural_region["update_sources"][0]
+
+    assert "buffer" in fragment_buffer
+    assert "buffer" in selection_target
+    assert "buffer" in arg_reduce_target
+    assert "value_buffer" in selection_pair
+    assert "companion_buffer" in selection_pair
+    assert "source_buffers" in selection_pair
+    assert "target_buffer" in update_source
+    assert "source_buffers" in update_source
 
 
 def test_analyze_semantic_structure_consumes_manifest_as_explicit_op_evidence():
@@ -746,7 +795,7 @@ def test_topk_fragment_analysis_recovers_arg_reduce_targets():
 
     fragment_regions = mod["main"].attrs["blackhole.fragment_regions"]
     arg_reduce_targets = {
-        str(target)
+        _entry_name(target, "name", "target")
         for region in fragment_regions
         for target in region["arg_reduce_targets"]
     }

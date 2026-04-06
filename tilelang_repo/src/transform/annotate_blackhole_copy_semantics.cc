@@ -42,6 +42,8 @@
 #include <string>
 #include <vector>
 
+#include "common/semantic_program.h"
+
 namespace tvm {
 namespace tl {
 
@@ -188,17 +190,20 @@ static Map<String, Any> BuildAnnotation(const std::vector<CopyStoreInfo>& copies
     const auto* cb_load   = cb_to_dram_store->value.as<BufferLoadNode>();
     if (dram_load && cb_load) {
       Map<String, Any> ann;
-      ann.Set("kind", String("fused_staged_copy"));
-      ann.Set("direction", String("dram_to_cb_to_dram"));
-      ann.Set("src_buffer", String(dram_load->buffer->name));
-      ann.Set("dst_buffer", String(cb_to_dram_store->buffer->name));
-      ann.Set("mid_buffer", String(dram_to_cb_store->buffer->name));
+      ann.Set(schema_key::kKind, String("fused_staged_copy"));
+      ann.Set(schema_key::kDirection, String("dram_to_cb_to_dram"));
+      ann.Set(schema_key::kSrcBuffer, String(dram_load->buffer->name));
+      ann.Set(schema_key::kSrcBufferRef, dram_load->buffer);
+      ann.Set(schema_key::kDstBuffer, String(cb_to_dram_store->buffer->name));
+      ann.Set(schema_key::kDstBufferRef, cb_to_dram_store->buffer);
+      ann.Set(schema_key::kMidBuffer, String(dram_to_cb_store->buffer->name));
+      ann.Set(schema_key::kMidBufferRef, dram_to_cb_store->buffer);
       ann.Set("src_scope", String(GetStorageScopeStr(dram_load->buffer)));
       ann.Set("dst_scope", String(GetStorageScopeStr(cb_to_dram_store->buffer)));
-      ann.Set("dtype", String(DataTypeStr(dram_to_cb_store->buffer->dtype)));
-      ann.Set("src_shape", ExtractStaticShape(dram_load->buffer));
-      ann.Set("dst_shape", ExtractStaticShape(cb_to_dram_store->buffer));
-      ann.Set("mid_shape", ExtractStaticShape(dram_to_cb_store->buffer));
+      ann.Set(schema_key::kDType, String(DataTypeStr(dram_to_cb_store->buffer->dtype)));
+      ann.Set(schema_key::kSrcShape, ExtractStaticShape(dram_load->buffer));
+      ann.Set(schema_key::kDstShape, ExtractStaticShape(cb_to_dram_store->buffer));
+      ann.Set(schema_key::kMidShape, ExtractStaticShape(dram_to_cb_store->buffer));
       return ann;
     }
   }
@@ -208,16 +213,18 @@ static Map<String, Any> BuildAnnotation(const std::vector<CopyStoreInfo>& copies
     const auto* load = dram_to_cb_store->value.as<BufferLoadNode>();
     if (load) {
       Map<String, Any> ann;
-      ann.Set("kind", String("staged_copy"));
-      ann.Set("direction", String("dram_to_cb"));
-      ann.Set("src_buffer", String(load->buffer->name));
-      ann.Set("dst_buffer", String(dram_to_cb_store->buffer->name));
+      ann.Set(schema_key::kKind, String("staged_copy"));
+      ann.Set(schema_key::kDirection, String("dram_to_cb"));
+      ann.Set(schema_key::kSrcBuffer, String(load->buffer->name));
+      ann.Set(schema_key::kSrcBufferRef, load->buffer);
+      ann.Set(schema_key::kDstBuffer, String(dram_to_cb_store->buffer->name));
+      ann.Set(schema_key::kDstBufferRef, dram_to_cb_store->buffer);
       ann.Set("src_scope", String(GetStorageScopeStr(load->buffer)));
       ann.Set("dst_scope", String(GetStorageScopeStr(dram_to_cb_store->buffer)));
-      ann.Set("dtype", String(DataTypeStr(dram_to_cb_store->buffer->dtype)));
-      ann.Set("src_shape", ExtractStaticShape(load->buffer));
-      ann.Set("dst_shape", ExtractStaticShape(dram_to_cb_store->buffer));
-      ann.Set("mid_shape", ExtractStaticShape(dram_to_cb_store->buffer));
+      ann.Set(schema_key::kDType, String(DataTypeStr(dram_to_cb_store->buffer->dtype)));
+      ann.Set(schema_key::kSrcShape, ExtractStaticShape(load->buffer));
+      ann.Set(schema_key::kDstShape, ExtractStaticShape(dram_to_cb_store->buffer));
+      ann.Set(schema_key::kMidShape, ExtractStaticShape(dram_to_cb_store->buffer));
       return ann;
     }
   }
@@ -227,16 +234,18 @@ static Map<String, Any> BuildAnnotation(const std::vector<CopyStoreInfo>& copies
     const auto* load = cb_to_dram_store->value.as<BufferLoadNode>();
     if (load) {
       Map<String, Any> ann;
-      ann.Set("kind", String("staged_copy"));
-      ann.Set("direction", String("cb_to_dram"));
-      ann.Set("src_buffer", String(load->buffer->name));
-      ann.Set("dst_buffer", String(cb_to_dram_store->buffer->name));
+      ann.Set(schema_key::kKind, String("staged_copy"));
+      ann.Set(schema_key::kDirection, String("cb_to_dram"));
+      ann.Set(schema_key::kSrcBuffer, String(load->buffer->name));
+      ann.Set(schema_key::kSrcBufferRef, load->buffer);
+      ann.Set(schema_key::kDstBuffer, String(cb_to_dram_store->buffer->name));
+      ann.Set(schema_key::kDstBufferRef, cb_to_dram_store->buffer);
       ann.Set("src_scope", String(GetStorageScopeStr(load->buffer)));
       ann.Set("dst_scope", String(GetStorageScopeStr(cb_to_dram_store->buffer)));
-      ann.Set("dtype", String(DataTypeStr(cb_to_dram_store->buffer->dtype)));
-      ann.Set("src_shape", ExtractStaticShape(load->buffer));
-      ann.Set("dst_shape", ExtractStaticShape(cb_to_dram_store->buffer));
-      ann.Set("mid_shape", ExtractStaticShape(load->buffer));
+      ann.Set(schema_key::kDType, String(DataTypeStr(cb_to_dram_store->buffer->dtype)));
+      ann.Set(schema_key::kSrcShape, ExtractStaticShape(load->buffer));
+      ann.Set(schema_key::kDstShape, ExtractStaticShape(cb_to_dram_store->buffer));
+      ann.Set(schema_key::kMidShape, ExtractStaticShape(load->buffer));
       return ann;
     }
   }
@@ -247,22 +256,24 @@ static Map<String, Any> BuildAnnotation(const std::vector<CopyStoreInfo>& copies
     const auto* load  = store->value.as<BufferLoadNode>();
     if (load) {
       Map<String, Any> ann;
-      ann.Set("kind", String("staged_copy"));
-      ann.Set("direction", String(copies[0].direction));
-      ann.Set("src_buffer", String(load->buffer->name));
-      ann.Set("dst_buffer", String(store->buffer->name));
+      ann.Set(schema_key::kKind, String("staged_copy"));
+      ann.Set(schema_key::kDirection, String(copies[0].direction));
+      ann.Set(schema_key::kSrcBuffer, String(load->buffer->name));
+      ann.Set(schema_key::kSrcBufferRef, load->buffer);
+      ann.Set(schema_key::kDstBuffer, String(store->buffer->name));
+      ann.Set(schema_key::kDstBufferRef, store->buffer);
       ann.Set("src_scope", String(GetStorageScopeStr(load->buffer)));
       ann.Set("dst_scope", String(GetStorageScopeStr(store->buffer)));
-      ann.Set("dtype", String(DataTypeStr(store->buffer->dtype)));
-      ann.Set("src_shape", ExtractStaticShape(load->buffer));
-      ann.Set("dst_shape", ExtractStaticShape(store->buffer));
+      ann.Set(schema_key::kDType, String(DataTypeStr(store->buffer->dtype)));
+      ann.Set(schema_key::kSrcShape, ExtractStaticShape(load->buffer));
+      ann.Set(schema_key::kDstShape, ExtractStaticShape(store->buffer));
       return ann;
     }
   }
 
   Map<String, Any> ann;
-  ann.Set("kind", String("unknown_copy"));
-  ann.Set("direction", String("unknown"));
+  ann.Set(schema_key::kKind, String("unknown_copy"));
+  ann.Set(schema_key::kDirection, String("unknown"));
   return ann;
 }
 

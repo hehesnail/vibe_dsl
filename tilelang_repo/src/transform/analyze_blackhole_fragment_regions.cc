@@ -31,14 +31,15 @@
 
 #include <sstream>
 #include <string>
-#include <cctype>
-#include <cstring>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include "../layout/layout.h"
+#include "common/blackhole_utils.h"
 #include "common/fragment_region_analysis.h"
+#include "common/semantic_program.h"
 
 namespace tvm {
 namespace tl {
@@ -67,16 +68,14 @@ using tvm::ffi::String;
 
 namespace {
 
-std::string ExprToString(const PrimExpr& expr) {
-  std::ostringstream os;
-  os << expr;
-  return os.str();
-}
-
 struct BufferInfo {
   Buffer buffer;
   std::string scope;
 };
+
+const tir::VarNode* BufferKey(const Buffer& buffer) { return BufferDataIdentity(buffer); }
+
+std::string BufferName(const Buffer& buffer) { return BufferIdentityName(buffer); }
 
 int64_t StaticNumElements(const Buffer& buffer) {
   int64_t num_elements = 1;
@@ -92,17 +91,6 @@ int64_t StaticNumElements(const Buffer& buffer) {
 
 bool IsFragmentLikeScope(const std::string& scope) {
   return scope == "local" || scope == "local.fragment" || scope == "blackhole.acc";
-}
-
-std::string CanonicalBufferName(const std::string& name) {
-  size_t pos = name.size();
-  while (pos > 0 && std::isdigit(static_cast<unsigned char>(name[pos - 1]))) {
-    --pos;
-  }
-  if (pos > 0 && pos < name.size() && name[pos - 1] == '_') {
-    return name.substr(0, pos - 1);
-  }
-  return name;
 }
 
 bool ExprUsesFloorDivLikeIndex(const PrimExpr& expr) {
@@ -123,26 +111,47 @@ bool ExprUsesFloorDivLikeIndex(const PrimExpr& expr) {
   return found;
 }
 
-bool IsLoadFromBuffer(const PrimExpr& expr, const std::string& buffer_name) {
+std::string GetAllReduceKind(const CallNode* call) {
+  if (call == nullptr || !call->op.same_as(tir::builtin::call_extern()) || call->args.empty()) {
+    return "";
+  }
+  const auto* callee = call->args[0].as<tir::StringImmNode>();
+  if (callee == nullptr) {
+    return "";
+  }
+  const std::string callee_name = callee->value;
+  if (callee_name.find("tl::AllReduce<tl::MaxOp") != std::string::npos) {
+    return "max";
+  }
+  if (callee_name.find("tl::AllReduce<tl::SumOp") != std::string::npos) {
+    return "sum";
+  }
+  return "";
+}
+
+bool IsLoadFromBuffer(const PrimExpr& expr, const Buffer& buffer) {
   if (const auto* load = expr.as<BufferLoadNode>()) {
-    return CanonicalBufferName(load->buffer->name) == buffer_name;
+    return SameBufferIdentity(load->buffer, buffer);
   }
   return false;
 }
 
 bool IsLoadFromNonFragmentLocal(const PrimExpr& expr,
-                                const std::unordered_map<std::string, BufferInfo>& fragment_buffers) {
+                                const std::unordered_map<const tir::VarNode*, BufferInfo>&
+                                    fragment_buffers) {
   if (const auto* load = expr.as<BufferLoadNode>()) {
-    const std::string canonical_name = CanonicalBufferName(load->buffer->name);
-    return load->buffer.scope() == "local" && !fragment_buffers.count(canonical_name);
+    const auto* key = BufferKey(load->buffer);
+    return load->buffer.scope() == "local" && key != nullptr && !fragment_buffers.count(key);
   }
   return false;
 }
 
 bool IsLoadFromFragmentBuffer(const PrimExpr& expr,
-                              const std::unordered_map<std::string, BufferInfo>& fragment_buffers) {
+                              const std::unordered_map<const tir::VarNode*, BufferInfo>&
+                                  fragment_buffers) {
   if (const auto* load = expr.as<BufferLoadNode>()) {
-    return fragment_buffers.count(CanonicalBufferName(load->buffer->name));
+    const auto* key = BufferKey(load->buffer);
+    return key != nullptr && fragment_buffers.count(key);
   }
   return false;
 }
@@ -151,21 +160,27 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
  public:
   void Analyze(const PrimFunc& func) { AnalyzeTopLevel(func->body); }
 
-  bool HasRegion() const { return !fragment_buffers_.empty() || !seen_ops_.empty(); }
+  bool HasRegion() const { return !fragment_buffer_order_.empty() || !seen_ops_.empty(); }
 
   Map<String, Any> EncodeSingleRegion() const {
     Map<String, Any> region;
 
     Array<Any> fragment_buffers;
-    for (const auto& name : fragment_buffer_order_) {
-      const auto& info = fragment_buffers_.at(name);
+    for (const auto* key : fragment_buffer_order_) {
+      auto info_it = fragment_buffers_.find(key);
+      if (info_it == fragment_buffers_.end()) {
+        continue;
+      }
+      const auto& info = info_it->second;
       Map<String, Any> entry;
-      entry.Set("name", String(name));
-      entry.Set("scope", String(info.scope));
-      entry.Set("is_integer", Integer(info.buffer->dtype.is_int() || info.buffer->dtype.is_uint()));
+      entry.Set(schema_key::kName, String(BufferName(info.buffer)));
+      entry.Set(schema_key::kBuffer, info.buffer);
+      entry.Set(schema_key::kScope, String(info.scope));
+      entry.Set(schema_key::kIsInteger,
+                Integer(info.buffer->dtype.is_int() || info.buffer->dtype.is_uint()));
       fragment_buffers.push_back(entry);
     }
-    region.Set("fragment_buffers", fragment_buffers);
+    region.Set(manifest_key::kFragmentBuffers, fragment_buffers);
 
     Array<Any> ops;
     for (const auto& op_name : op_order_) {
@@ -181,106 +196,194 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
 
     Array<Any> row_reductions;
     for (const auto& target : row_reduction_targets_) {
+      auto buffer_it = fragment_buffers_.find(target.first);
+      if (buffer_it == fragment_buffers_.end()) {
+        continue;
+      }
+      const Buffer& buffer = buffer_it->second.buffer;
       Map<String, Any> entry;
-      entry.Set("target", String(target.first));
-      entry.Set("kind", String(target.second));
+      entry.Set(schema_key::kTarget, String(BufferName(buffer)));
+      entry.Set(schema_key::kTargetBuffer, buffer);
+      entry.Set(schema_key::kKind, String(target.second));
       row_reductions.push_back(entry);
     }
-    region.Set("row_reductions", row_reductions);
+    region.Set(manifest_key::kRowReductions, row_reductions);
 
     Array<Any> arg_reduce_targets;
-    for (const auto& target : BuildArgReduceTargets()) {
-      arg_reduce_targets.push_back(String(target));
+    for (const auto* key : BuildArgReduceTargets()) {
+      auto buffer_it = fragment_buffers_.find(key);
+      if (buffer_it == fragment_buffers_.end()) {
+        continue;
+      }
+      const Buffer& buffer = buffer_it->second.buffer;
+      Map<String, Any> entry;
+      entry.Set(schema_key::kName, String(BufferName(buffer)));
+      entry.Set(schema_key::kBuffer, buffer);
+      arg_reduce_targets.push_back(entry);
     }
-    region.Set("arg_reduce_targets", arg_reduce_targets);
+    region.Set(manifest_key::kArgReduceTargets, arg_reduce_targets);
 
     Array<Any> row_broadcasts;
-    for (const auto& source : row_broadcast_sources_) {
+    for (const auto* key : row_broadcast_sources_) {
+      auto buffer_it = fragment_buffers_.find(key);
+      if (buffer_it == fragment_buffers_.end()) {
+        continue;
+      }
+      const Buffer& buffer = buffer_it->second.buffer;
       Map<String, Any> entry;
-      entry.Set("source", String(source));
+      entry.Set(schema_key::kSource, String(BufferName(buffer)));
+      entry.Set(schema_key::kBuffer, buffer);
       row_broadcasts.push_back(entry);
     }
     region.Set("row_broadcasts", row_broadcasts);
 
     Array<Any> selection_targets;
-    for (const auto& target : selection_target_order_) {
-      selection_targets.push_back(String(target));
+    for (const auto* key : selection_target_order_) {
+      auto buffer_it = fragment_buffers_.find(key);
+      if (buffer_it == fragment_buffers_.end()) {
+        continue;
+      }
+      const Buffer& buffer = buffer_it->second.buffer;
+      Map<String, Any> entry;
+      entry.Set(schema_key::kName, String(BufferName(buffer)));
+      entry.Set(schema_key::kBuffer, buffer);
+      selection_targets.push_back(entry);
     }
-    region.Set("selection_targets", selection_targets);
+    region.Set(manifest_key::kSelectionTargets, selection_targets);
 
     Array<Any> selection_pairs;
     for (const auto& pair : BuildSelectionPairs()) {
-      Map<String, Any> entry;
-      entry.Set("value_target", String(pair.value_target));
-      entry.Set("companion_target", String(pair.companion_target));
-      Array<Any> sources;
-      for (const auto& source : pair.shared_sources) {
-        sources.push_back(String(source));
+      auto value_it = fragment_buffers_.find(pair.value_target);
+      auto companion_it = fragment_buffers_.find(pair.companion_target);
+      if (value_it == fragment_buffers_.end() || companion_it == fragment_buffers_.end()) {
+        continue;
       }
-      entry.Set("source_states", sources);
+      const Buffer& value_buffer = value_it->second.buffer;
+      const Buffer& companion_buffer = companion_it->second.buffer;
+      Map<String, Any> entry;
+      entry.Set(schema_key::kValueTarget, String(BufferName(value_buffer)));
+      entry.Set(schema_key::kValueBuffer, value_buffer);
+      entry.Set(schema_key::kCompanionTarget, String(BufferName(companion_buffer)));
+      entry.Set(schema_key::kCompanionBuffer, companion_buffer);
+      Array<Any> sources;
+      Array<Any> source_buffers;
+      for (const auto& source : pair.shared_sources) {
+        auto source_it = fragment_buffers_.find(source);
+        if (source_it == fragment_buffers_.end()) {
+          continue;
+        }
+        const Buffer& source_buffer = source_it->second.buffer;
+        sources.push_back(String(BufferName(source_buffer)));
+        source_buffers.push_back(source_buffer);
+      }
+      entry.Set(schema_key::kSourceStates, sources);
+      entry.Set(schema_key::kSourceBuffers, source_buffers);
       selection_pairs.push_back(entry);
     }
-    region.Set("selection_pairs", selection_pairs);
+    region.Set(manifest_key::kSelectionPairs, selection_pairs);
 
     Array<Any> update_sources;
-    for (const auto& target : update_source_target_order_) {
-      Map<String, Any> entry;
-      entry.Set("target", String(target));
-      Array<Any> sources;
-      for (const auto& source : update_source_order_.at(target)) {
-        sources.push_back(String(source));
+    for (const auto* target : update_source_target_order_) {
+      auto target_it = fragment_buffers_.find(target);
+      if (target_it == fragment_buffers_.end()) {
+        continue;
       }
-      entry.Set("sources", sources);
+      const Buffer& target_buffer = target_it->second.buffer;
+      Map<String, Any> entry;
+      entry.Set(schema_key::kTarget, String(BufferName(target_buffer)));
+      entry.Set(schema_key::kTargetBuffer, target_buffer);
+      Array<Any> sources;
+      Array<Any> source_buffers;
+      for (const auto* source : update_source_order_.at(target)) {
+        auto source_it = fragment_buffers_.find(source);
+        if (source_it == fragment_buffers_.end()) {
+          continue;
+        }
+        const Buffer& source_buffer = source_it->second.buffer;
+        sources.push_back(String(BufferName(source_buffer)));
+        source_buffers.push_back(source_buffer);
+      }
+      entry.Set(schema_key::kSources, sources);
+      entry.Set(schema_key::kSourceBuffers, source_buffers);
       update_sources.push_back(entry);
     }
-    region.Set("update_sources", update_sources);
+    region.Set(manifest_key::kUpdateSources, update_sources);
 
     Array<Any> loop_carried_state;
-    for (const auto& name : loop_carried_order_) {
+    for (const auto* key : loop_carried_order_) {
+      auto buffer_it = fragment_buffers_.find(key);
+      if (buffer_it == fragment_buffers_.end()) {
+        continue;
+      }
+      const Buffer& buffer = buffer_it->second.buffer;
       Map<String, Any> entry;
-      entry.Set("name", String(name));
+      entry.Set(schema_key::kName, String(BufferName(buffer)));
+      entry.Set(schema_key::kBuffer, buffer);
       loop_carried_state.push_back(entry);
     }
-    region.Set("loop_carried_state", loop_carried_state);
+    region.Set(manifest_key::kLoopCarriedState, loop_carried_state);
 
     Array<Any> recurrence_edges;
-    for (const auto& target : loop_carried_order_) {
+    for (const auto* target : loop_carried_order_) {
       auto it = update_source_order_.find(target);
       if (it == update_source_order_.end() || it->second.empty()) {
         continue;
       }
-      Map<String, Any> entry;
-      entry.Set("target", String(target));
-      Array<Any> sources;
-      for (const auto& source : it->second) {
-        sources.push_back(String(source));
+      auto target_it = fragment_buffers_.find(target);
+      if (target_it == fragment_buffers_.end()) {
+        continue;
       }
-      entry.Set("source_states", sources);
+      const Buffer& target_buffer = target_it->second.buffer;
+      Map<String, Any> entry;
+      entry.Set(schema_key::kTarget, String(BufferName(target_buffer)));
+      entry.Set(schema_key::kTargetBuffer, target_buffer);
+      Array<Any> sources;
+      Array<Any> source_buffers;
+      for (const auto* source : it->second) {
+        auto source_it = fragment_buffers_.find(source);
+        if (source_it == fragment_buffers_.end()) {
+          continue;
+        }
+        const Buffer& source_buffer = source_it->second.buffer;
+        sources.push_back(String(BufferName(source_buffer)));
+        source_buffers.push_back(source_buffer);
+      }
+      entry.Set(schema_key::kSourceStates, sources);
+      entry.Set(schema_key::kSourceBuffers, source_buffers);
       recurrence_edges.push_back(entry);
     }
-    region.Set("recurrence_edges", recurrence_edges);
+    region.Set(manifest_key::kRecurrenceEdges, recurrence_edges);
 
     return region;
   }
 
  private:
   void RegisterFragmentBuffer(const Buffer& buffer, bool allow_plain_local = false) {
+    (void)allow_plain_local;
     const std::string scope = buffer.scope();
     if (!IsFragmentLikeScope(scope)) {
       return;
     }
-    const std::string name = CanonicalBufferName(buffer->name);
-    if (scope == "local" && !allow_plain_local) {
-      static constexpr const char* kClearSuffix = "_clear";
-      const size_t suffix_len = std::strlen(kClearSuffix);
-      if (name.size() > suffix_len &&
-          name.compare(name.size() - suffix_len, suffix_len, kClearSuffix) == 0) {
-        return;
-      }
+    const auto* key = BufferKey(buffer);
+    if (key == nullptr) {
+      return;
     }
-    if (fragment_buffers_.emplace(name, BufferInfo{buffer, scope}).second) {
-      fragment_buffer_order_.push_back(name);
+    if (temp_reduction_buffers_.count(key)) {
+      return;
     }
+    if (fragment_buffers_.emplace(key, BufferInfo{buffer, scope}).second) {
+      fragment_buffer_order_.push_back(key);
+    }
+  }
+
+  void UnregisterFragmentBuffer(const tir::VarNode* key) {
+    if (key == nullptr) {
+      return;
+    }
+    fragment_buffers_.erase(key);
+    fragment_buffer_order_.erase(
+        std::remove(fragment_buffer_order_.begin(), fragment_buffer_order_.end(), key),
+        fragment_buffer_order_.end());
   }
 
   void AnalyzeTopLevel(const Stmt& body) {
@@ -319,6 +422,22 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
   }
 
   void VisitStmt_(const BlockNode* op) final {
+    if (op->annotations.count(attr::kLayoutMap)) {
+      auto layout_map_any = op->annotations.Get(attr::kLayoutMap);
+      if (layout_map_any) {
+        auto layout_map = layout_map_any->as<Map<Buffer, Layout>>();
+        if (layout_map && layout_map.value().defined()) {
+          for (const auto& [buffer, _layout] : layout_map.value()) {
+            const std::string scope = buffer.scope();
+            if (scope == "local" || scope == "local.fragment" || scope == "blackhole.acc") {
+              if (const auto* key = BufferKey(buffer); key != nullptr) {
+                layout_fragment_buffers_.insert(key);
+              }
+            }
+          }
+        }
+      }
+    }
     if (op->name_hint == "tilelang_root") {
       for (const Buffer& buffer : op->alloc_buffers) {
         RegisterFragmentBuffer(buffer);
@@ -337,38 +456,43 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
   }
 
   void VisitStmt_(const BufferStoreNode* op) final {
+    const auto* target_key = BufferKey(op->buffer);
+    if (op->buffer.scope() == "local" && target_key != nullptr &&
+        !layout_fragment_buffers_.count(target_key) &&
+        DetectTempReductionBuffer(op->buffer, op->value)) {
+      UnregisterFragmentBuffer(BufferKey(op->buffer));
+      StmtExprVisitor::VisitStmt_(op);
+      return;
+    }
     RegisterFragmentBuffer(op->buffer);
-    const std::string target_name = CanonicalBufferName(op->buffer->name);
-    if (fragment_buffers_.count(target_name)) {
+    if (target_key != nullptr && fragment_buffers_.count(target_key)) {
       if (pre_loop_stmt_) {
-        pre_loop_writes_.insert(target_name);
+        pre_loop_writes_.insert(target_key);
       }
       if (inside_pipeline_loop_) {
-        in_loop_writes_.insert(target_name);
+        in_loop_writes_.insert(target_key);
       }
       if (post_loop_stmt_) {
-        post_loop_writes_.insert(target_name);
+        post_loop_writes_.insert(target_key);
       }
 
-      DetectOpsAndRelationships(target_name, op->value, op->indices);
-    } else if (op->buffer.scope() == "local") {
-      DetectTempReductionBuffer(target_name, op->value);
+      DetectOpsAndRelationships(op->buffer, op->value, op->indices);
     }
     StmtExprVisitor::VisitStmt_(op);
   }
 
   void VisitExpr_(const BufferLoadNode* op) final {
     RegisterFragmentBuffer(op->buffer);
-    const std::string source_name = CanonicalBufferName(op->buffer->name);
-    if (fragment_buffers_.count(source_name)) {
+    const auto* source_key = BufferKey(op->buffer);
+    if (source_key != nullptr && fragment_buffers_.count(source_key)) {
       if (pre_loop_stmt_) {
-        pre_loop_reads_.insert(source_name);
+        pre_loop_reads_.insert(source_key);
       }
       if (inside_pipeline_loop_) {
-        in_loop_reads_.insert(source_name);
+        in_loop_reads_.insert(source_key);
       }
       if (post_loop_stmt_) {
-        post_loop_reads_.insert(source_name);
+        post_loop_reads_.insert(source_key);
       }
     }
     StmtExprVisitor::VisitExpr_(op);
@@ -384,23 +508,26 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     StmtExprVisitor::VisitExpr_(op);
   }
 
-  void DetectTempReductionBuffer(const std::string& target_name, const PrimExpr& value) {
+  bool DetectTempReductionBuffer(const Buffer& target_buffer, const PrimExpr& value) {
+    const auto* target_key = BufferKey(target_buffer);
+    if (target_key == nullptr) {
+      return false;
+    }
     bool has_allreduce_max = false;
     bool has_allreduce_sum = false;
     bool has_local_max_reduction = false;
     bool has_local_sum_reduction = false;
     tir::PostOrderVisit(value, [&](const ObjectRef& node) {
       if (const auto* call = node.as<CallNode>()) {
+        if (const std::string reduce_kind = GetAllReduceKind(call); !reduce_kind.empty()) {
+          has_allreduce_max |= reduce_kind == "max";
+          has_allreduce_sum |= reduce_kind == "sum";
+        }
         if (const auto* op_node = call->op.as<OpNode>()) {
           const std::string op_name = op_node->name;
-          if (op_node->name == "tir.call_extern" && !call->args.empty()) {
-            const std::string callee = ExprToString(GetRef<PrimExpr>(call));
-            has_allreduce_max |= callee.find("AllReduce<tl::MaxOp") != std::string::npos;
-            has_allreduce_sum |= callee.find("AllReduce<tl::SumOp") != std::string::npos;
-          }
           if (call->args.size() == 2) {
-            const bool lhs_self = IsLoadFromBuffer(call->args[0], target_name);
-            const bool rhs_self = IsLoadFromBuffer(call->args[1], target_name);
+            const bool lhs_self = IsLoadFromBuffer(call->args[0], target_buffer);
+            const bool rhs_self = IsLoadFromBuffer(call->args[1], target_buffer);
             const bool lhs_fragment = IsLoadFromFragmentBuffer(call->args[0], fragment_buffers_);
             const bool rhs_fragment = IsLoadFromFragmentBuffer(call->args[1], fragment_buffers_);
             if (op_name == "tir.max") {
@@ -413,45 +540,56 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       }
     });
     if (has_allreduce_max) {
-      temp_reduction_buffers_[target_name] = "max";
-    } else if (has_allreduce_sum) {
-      temp_reduction_buffers_[target_name] = "sum";
-    } else if (has_local_max_reduction) {
-      temp_reduction_buffers_[target_name] = "max";
-    } else if (has_local_sum_reduction) {
-      temp_reduction_buffers_[target_name] = "sum";
+      temp_reduction_buffers_[target_key] = "max";
+      return true;
     }
+    if (has_allreduce_sum) {
+      temp_reduction_buffers_[target_key] = "sum";
+      return true;
+    }
+    if (has_local_max_reduction) {
+      temp_reduction_buffers_[target_key] = "max";
+      return true;
+    }
+    if (has_local_sum_reduction) {
+      temp_reduction_buffers_[target_key] = "sum";
+      return true;
+    }
+    return false;
   }
 
-  void DetectOpsAndRelationships(const std::string& target_name, const PrimExpr& value,
+  void DetectOpsAndRelationships(const Buffer& target_buffer, const PrimExpr& value,
                                  const Array<PrimExpr>& store_indices) {
+    const auto* target_key = BufferKey(target_buffer);
+    if (target_key == nullptr) {
+      return;
+    }
     bool saw_pointwise = false;
     bool saw_floor_div_broadcast = false;
     bool saw_rank_broadcast = false;
     bool saw_scalar_fragment_broadcast = false;
     bool saw_direct_fragment_max_reduction = false;
     bool saw_direct_fragment_sum_reduction = false;
-    std::unordered_set<std::string> local_sources;
+    std::unordered_set<const tir::VarNode*> local_sources;
     bool has_allreduce_max = false;
     bool has_allreduce_sum = false;
     bool has_self_max_with_temp = false;
     std::string temp_reduction_kind;
-    const int64_t target_elements = StaticNumElements(fragment_buffers_.at(target_name).buffer);
+    const int64_t target_elements = StaticNumElements(fragment_buffers_.at(target_key).buffer);
 
     tir::PostOrderVisit(value, [&](const ObjectRef& node) {
       if (const auto* call = node.as<CallNode>()) {
+        if (const std::string reduce_kind = GetAllReduceKind(call); !reduce_kind.empty()) {
+          has_allreduce_max |= reduce_kind == "max";
+          has_allreduce_sum |= reduce_kind == "sum";
+        }
         if (const auto* op_node = call->op.as<OpNode>()) {
           const std::string op_name = op_node->name;
-          if (op_name == "tir.call_extern" && !call->args.empty()) {
-            const std::string callee = ExprToString(GetRef<PrimExpr>(call));
-            has_allreduce_max |= callee.find("AllReduce<tl::MaxOp") != std::string::npos;
-            has_allreduce_sum |= callee.find("AllReduce<tl::SumOp") != std::string::npos;
-          }
           if (op_name == "tir.exp2" || op_name == "tir.if_then_else") {
             saw_pointwise = true;
             AddPointwiseOp(op_name == "tir.exp2" ? "exp2" : "if_then_else");
             if (op_name == "tir.if_then_else") {
-              AddSelectionTarget(target_name);
+              AddSelectionTarget(target_key);
             }
           }
         }
@@ -462,17 +600,19 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
         saw_pointwise = true;
         AddPointwiseOp("max");
         const bool lhs_self_rhs_temp =
-            IsLoadFromBuffer(max->a, target_name) &&
+            IsLoadFromBuffer(max->a, target_buffer) &&
             IsLoadFromNonFragmentLocal(max->b, fragment_buffers_);
         const bool rhs_self_lhs_temp =
-            IsLoadFromBuffer(max->b, target_name) &&
+            IsLoadFromBuffer(max->b, target_buffer) &&
             IsLoadFromNonFragmentLocal(max->a, fragment_buffers_);
         has_self_max_with_temp |= lhs_self_rhs_temp || rhs_self_lhs_temp;
 
         const bool lhs_self_rhs_fragment =
-            IsLoadFromBuffer(max->a, target_name) && IsLoadFromFragmentBuffer(max->b, fragment_buffers_);
+            IsLoadFromBuffer(max->a, target_buffer) &&
+            IsLoadFromFragmentBuffer(max->b, fragment_buffers_);
         const bool rhs_self_lhs_fragment =
-            IsLoadFromBuffer(max->b, target_name) && IsLoadFromFragmentBuffer(max->a, fragment_buffers_);
+            IsLoadFromBuffer(max->b, target_buffer) &&
+            IsLoadFromFragmentBuffer(max->a, fragment_buffers_);
         if (target_elements == 1) {
           saw_direct_fragment_max_reduction |= lhs_self_rhs_fragment || rhs_self_lhs_fragment;
         }
@@ -481,10 +621,10 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
         AddPointwiseOp("add");
         if (target_elements == 1) {
           const bool lhs_self_rhs_fragment =
-              IsLoadFromBuffer(add->a, target_name) &&
+              IsLoadFromBuffer(add->a, target_buffer) &&
               IsLoadFromFragmentBuffer(add->b, fragment_buffers_);
           const bool rhs_self_lhs_fragment =
-              IsLoadFromBuffer(add->b, target_name) &&
+              IsLoadFromBuffer(add->b, target_buffer) &&
               IsLoadFromFragmentBuffer(add->a, fragment_buffers_);
           saw_direct_fragment_sum_reduction |= lhs_self_rhs_fragment || rhs_self_lhs_fragment;
         }
@@ -495,19 +635,19 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
         saw_pointwise = true;
         AddPointwiseOp("div");
       } else if (const auto* load = node.as<BufferLoadNode>()) {
-        const std::string source_name = CanonicalBufferName(load->buffer->name);
-        if (source_name == target_name || !fragment_buffers_.count(source_name)) {
-          if (const auto it = temp_reduction_buffers_.find(source_name);
+        const auto* source_key = BufferKey(load->buffer);
+        if (source_key == nullptr || source_key == target_key || !fragment_buffers_.count(source_key)) {
+          if (const auto it = temp_reduction_buffers_.find(source_key);
               it != temp_reduction_buffers_.end()) {
             temp_reduction_kind = it->second;
           }
           return;
         }
-        local_sources.insert(source_name);
+        local_sources.insert(source_key);
         if (load->indices.size() < store_indices.size()) {
           saw_rank_broadcast = true;
         }
-        const int64_t source_elements = StaticNumElements(fragment_buffers_.at(source_name).buffer);
+        const int64_t source_elements = StaticNumElements(fragment_buffers_.at(source_key).buffer);
         if (source_elements == 1 && target_elements > 1) {
           saw_scalar_fragment_broadcast = true;
         }
@@ -537,25 +677,25 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     if (has_allreduce_max || has_self_max_with_temp || temp_reduction_kind == "max" ||
         saw_direct_fragment_max_reduction) {
       AddOp("row_reduction");
-      AddRowReduction(target_name, "max");
+      AddRowReduction(target_key, "max");
     }
     if (has_allreduce_sum || temp_reduction_kind == "sum" || saw_direct_fragment_sum_reduction) {
       AddOp("row_reduction");
-      AddRowReduction(target_name, "sum");
+      AddRowReduction(target_key, "sum");
     }
 
     if (!local_sources.empty() &&
         (saw_floor_div_broadcast || saw_rank_broadcast || saw_scalar_fragment_broadcast)) {
       AddOp("row_broadcast");
-      for (const auto& source_name : local_sources) {
-        if (seen_row_broadcast_sources_.insert(source_name).second) {
-          row_broadcast_sources_.push_back(source_name);
+      for (const auto* source_key : local_sources) {
+        if (seen_row_broadcast_sources_.insert(source_key).second) {
+          row_broadcast_sources_.push_back(source_key);
         }
       }
     }
 
     if (!local_sources.empty()) {
-      AddUpdateSources(target_name, local_sources);
+      AddUpdateSources(target_key, local_sources);
     }
   }
 
@@ -571,71 +711,51 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     }
   }
 
-  std::string CanonicalReductionTarget(const std::string& target_name) const {
-    if (fragment_buffers_.count(target_name)) {
-      return target_name;
-    }
-    static constexpr const char* kClearSuffix = "_clear";
-    const size_t suffix_len = std::strlen(kClearSuffix);
-    if (target_name.size() > suffix_len &&
-        target_name.compare(target_name.size() - suffix_len, suffix_len, kClearSuffix) == 0) {
-      const std::string base_name = target_name.substr(0, target_name.size() - suffix_len);
-      if (fragment_buffers_.count(base_name)) {
-        return base_name;
-      }
-    }
-    return target_name;
-  }
-
-  void AddRowReduction(const std::string& target_name, const std::string& kind) {
-    const std::string canonical_target = CanonicalReductionTarget(target_name);
-    const std::string key = canonical_target + ":" + kind;
-    if (seen_row_reductions_.insert(key).second) {
-      row_reduction_targets_.push_back({canonical_target, kind});
+  void AddRowReduction(const tir::VarNode* target_key, const std::string& kind) {
+    if (seen_row_reductions_[target_key].insert(kind).second) {
+      row_reduction_targets_.push_back({target_key, kind});
     }
   }
 
-  void AddSelectionTarget(const std::string& target_name) {
-    const std::string canonical_target = CanonicalReductionTarget(target_name);
-    if (seen_selection_targets_.insert(canonical_target).second) {
-      selection_target_order_.push_back(canonical_target);
+  void AddSelectionTarget(const tir::VarNode* target_key) {
+    if (seen_selection_targets_.insert(target_key).second) {
+      selection_target_order_.push_back(target_key);
     }
   }
 
-  void AddUpdateSources(const std::string& target_name,
-                        const std::unordered_set<std::string>& source_names) {
-    const std::string canonical_target = CanonicalReductionTarget(target_name);
-    if (update_sources_.find(canonical_target) == update_sources_.end()) {
-      update_source_target_order_.push_back(canonical_target);
+  void AddUpdateSources(const tir::VarNode* target_key,
+                        const std::unordered_set<const tir::VarNode*>& source_keys) {
+    if (update_sources_.find(target_key) == update_sources_.end()) {
+      update_source_target_order_.push_back(target_key);
     }
-    auto& seen = update_sources_[canonical_target];
-    auto& order = update_source_order_[canonical_target];
-    for (const auto& source_name : source_names) {
-      if (seen.insert(source_name).second) {
-        order.push_back(source_name);
+    auto& seen = update_sources_[target_key];
+    auto& order = update_source_order_[target_key];
+    for (const auto* source_key : source_keys) {
+      if (seen.insert(source_key).second) {
+        order.push_back(source_key);
       }
     }
   }
 
   struct SelectionPair {
-    std::string value_target;
-    std::string companion_target;
-    std::vector<std::string> shared_sources;
+    const tir::VarNode* value_target{nullptr};
+    const tir::VarNode* companion_target{nullptr};
+    std::vector<const tir::VarNode*> shared_sources;
   };
 
   std::vector<SelectionPair> BuildSelectionPairs() const {
     std::vector<SelectionPair> pairs;
-    for (const auto& companion_target : selection_target_order_) {
+    for (const auto* companion_target : selection_target_order_) {
       auto companion_it = update_source_order_.find(companion_target);
       if (companion_it == update_source_order_.end()) {
         continue;
       }
       int best_overlap = 0;
-      std::string best_value_target;
-      std::vector<std::string> best_shared_sources;
+      const tir::VarNode* best_value_target = nullptr;
+      std::vector<const tir::VarNode*> best_shared_sources;
       bool ambiguous = false;
       for (const auto& row_reduction : row_reduction_targets_) {
-        const std::string& value_target = row_reduction.first;
+        const tir::VarNode* value_target = row_reduction.first;
         if (value_target == companion_target) {
           continue;
         }
@@ -643,9 +763,9 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
         if (value_it == update_source_order_.end()) {
           continue;
         }
-        std::vector<std::string> shared_sources;
-        for (const auto& source : companion_it->second) {
-          for (const auto& candidate_source : value_it->second) {
+        std::vector<const tir::VarNode*> shared_sources;
+        for (const auto* source : companion_it->second) {
+          for (const auto* candidate_source : value_it->second) {
             if (source == candidate_source) {
               shared_sources.push_back(source);
               break;
@@ -672,20 +792,20 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     return pairs;
   }
 
-  std::vector<std::string> BuildArgReduceTargets() const {
-    std::vector<std::string> targets;
-    std::unordered_set<std::string> selection_like_sources(selection_target_order_.begin(),
-                                                           selection_target_order_.end());
+  std::vector<const tir::VarNode*> BuildArgReduceTargets() const {
+    std::vector<const tir::VarNode*> targets;
+    std::unordered_set<const tir::VarNode*> selection_like_sources(selection_target_order_.begin(),
+                                                                   selection_target_order_.end());
     for (const auto& pair : BuildSelectionPairs()) {
       selection_like_sources.insert(pair.companion_target);
     }
     for (const auto& row_reduction : row_reduction_targets_) {
-      const std::string& target = row_reduction.first;
+      const tir::VarNode* target = row_reduction.first;
       auto it = update_source_order_.find(target);
       if (it == update_source_order_.end()) {
         continue;
       }
-      for (const auto& source : it->second) {
+      for (const auto* source : it->second) {
         if (selection_like_sources.count(source)) {
           targets.push_back(target);
           break;
@@ -695,48 +815,49 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     return targets;
   }
 
-  std::unordered_map<std::string, BufferInfo> fragment_buffers_;
-  std::vector<std::string> fragment_buffer_order_;
+  std::unordered_map<const tir::VarNode*, BufferInfo> fragment_buffers_;
+  std::vector<const tir::VarNode*> fragment_buffer_order_;
+  std::unordered_set<const tir::VarNode*> layout_fragment_buffers_;
 
   std::unordered_set<std::string> seen_ops_;
   std::vector<std::string> op_order_;
   std::unordered_set<std::string> seen_pointwise_ops_;
   std::vector<std::string> pointwise_op_order_;
 
-  std::vector<std::pair<std::string, std::string>> row_reduction_targets_;
-  std::unordered_set<std::string> seen_row_reductions_;
-  std::unordered_set<std::string> seen_row_broadcast_sources_;
-  std::vector<std::string> row_broadcast_sources_;
-  std::unordered_set<std::string> seen_selection_targets_;
-  std::vector<std::string> selection_target_order_;
-  std::unordered_map<std::string, std::unordered_set<std::string>> update_sources_;
-  std::unordered_map<std::string, std::vector<std::string>> update_source_order_;
-  std::vector<std::string> update_source_target_order_;
+  std::vector<std::pair<const tir::VarNode*, std::string>> row_reduction_targets_;
+  std::unordered_map<const tir::VarNode*, std::unordered_set<std::string>> seen_row_reductions_;
+  std::unordered_set<const tir::VarNode*> seen_row_broadcast_sources_;
+  std::vector<const tir::VarNode*> row_broadcast_sources_;
+  std::unordered_set<const tir::VarNode*> seen_selection_targets_;
+  std::vector<const tir::VarNode*> selection_target_order_;
+  std::unordered_map<const tir::VarNode*, std::unordered_set<const tir::VarNode*>> update_sources_;
+  std::unordered_map<const tir::VarNode*, std::vector<const tir::VarNode*>> update_source_order_;
+  std::vector<const tir::VarNode*> update_source_target_order_;
 
   bool pre_loop_stmt_ = false;
   bool inside_pipeline_loop_ = false;
   bool post_loop_stmt_ = false;
 
-  std::unordered_set<std::string> pre_loop_writes_;
-  std::unordered_set<std::string> in_loop_writes_;
-  std::unordered_set<std::string> post_loop_writes_;
-  std::unordered_set<std::string> pre_loop_reads_;
-  std::unordered_set<std::string> in_loop_reads_;
-  std::unordered_set<std::string> post_loop_reads_;
-  std::unordered_map<std::string, std::string> temp_reduction_buffers_;
+  std::unordered_set<const tir::VarNode*> pre_loop_writes_;
+  std::unordered_set<const tir::VarNode*> in_loop_writes_;
+  std::unordered_set<const tir::VarNode*> post_loop_writes_;
+  std::unordered_set<const tir::VarNode*> pre_loop_reads_;
+  std::unordered_set<const tir::VarNode*> in_loop_reads_;
+  std::unordered_set<const tir::VarNode*> post_loop_reads_;
+  std::unordered_map<const tir::VarNode*, std::string> temp_reduction_buffers_;
 
-  mutable std::vector<std::string> loop_carried_order_;
+  mutable std::vector<const tir::VarNode*> loop_carried_order_;
 
   void FinalizeLoopCarriedState() const {
     if (!loop_carried_order_.empty()) {
       return;
     }
-    for (const auto& name : fragment_buffer_order_) {
-      const bool carried = in_loop_writes_.count(name) &&
-                           (pre_loop_writes_.count(name) || in_loop_reads_.count(name) ||
-                            post_loop_reads_.count(name));
+    for (const auto* key : fragment_buffer_order_) {
+      const bool carried = in_loop_writes_.count(key) &&
+                           (pre_loop_writes_.count(key) || in_loop_reads_.count(key) ||
+                            post_loop_reads_.count(key));
       if (carried) {
-        loop_carried_order_.push_back(name);
+        loop_carried_order_.push_back(key);
       }
     }
   }
