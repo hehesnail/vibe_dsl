@@ -142,6 +142,12 @@
   - phase 引用的 channel，其 `target_task` 必须属于该 phase
   - `tl.device_programs` 不能只校验 phase 数量；要至少核对
     `ProgramPhase(name/task_names/channel_names)` signature
+- 对 `Phase B` 已经声明成 small-closed family 的 top-level spatial kind，也不要继续让
+  validator 默许未知字符串穿过主链。更稳的底线是：
+  - `Task / Channel / Layout / WorkPartition / Placement / SyncEdge / ResourceIntent.kind`
+    一律走 `semantic_vocab` 的 parse/to-string 闭集
+  - unknown kind 在 `ValidateSpatialProgram` 立刻 fail-fast
+  - 这样后续 builder / consumer 才不会把拼写错误或半迁移协议当成合法 spatial object
 - 对 `LowerBlackholeOps` 的 lowering requirements，`work_axes / derived_index_expr_count`
   应优先从 `tl.spatial_program` 恢复；`blackhole.work_decomposition` 只保留 compatibility
   fallback。这样 consumer 才不会在 `Phase B` 已 object 化后继续回头吃旧 attr

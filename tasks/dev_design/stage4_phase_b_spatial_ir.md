@@ -501,6 +501,17 @@
   - `Placement.payload.task_index`
   - `SyncEdge.payload.source_task_index / target_task_index`
   - `ProgramPhase.payload.phase_index / task_indices / channel_indices`
+- `ValidateSpatialProgram` 当前已把 top-level spatial object `kind` 收成
+  closed vocabulary fail-fast：
+  - `Task.kind`
+  - `Channel.kind`
+  - `Layout.kind`
+  - `WorkPartition.kind`
+  - `Placement.kind`
+  - `SyncEdge.kind`
+  - `ResourceIntent.kind`
+  这一步的目标不是补 execution-bearing payload，而是先把当前已经声明成小闭集的
+  顶层协议从 stringly-typed silent pass 收紧成 validator hard gate
 
 当前不应再从本文件里继续继承的旧心智模型：
 

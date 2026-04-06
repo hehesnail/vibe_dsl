@@ -106,6 +106,51 @@ enum class RebindScope {
   kAnchorRemap,
 };
 
+// ---------------------------------------------------------------------------
+// Spatial IR closed vocabularies (Phase B)
+// ---------------------------------------------------------------------------
+
+enum class SpatialTaskKind {
+  kTransfer,
+  kCompute,
+  kCollective,
+  kControl,
+};
+
+enum class SpatialChannelKind {
+  kTensorFlow,
+  kStateFlow,
+  kPhaseBoundary,
+};
+
+enum class SpatialLayoutKind {
+  kRegular,
+  kIndexed,
+};
+
+enum class SpatialPartitionKind {
+  kBlocked,
+  kReplicated,
+};
+
+enum class SpatialPlacementKind {
+  kExecution,
+};
+
+enum class SpatialSyncKind {
+  kDependency,
+  kCompletion,
+  kBarrier,
+};
+
+enum class SpatialResourceIntentKind {
+  kBuffer,
+  kStateResidency,
+  kSynchronizationSupport,
+  kPhaseBoundaryMaterialization,
+  kLoweringSupport,
+};
+
 TVM_DLL std::optional<WitnessSubjectKind> ParseWitnessSubjectKind(const std::string& value);
 TVM_DLL std::optional<WitnessFactAxis> ParseWitnessFactAxis(const std::string& value);
 TVM_DLL std::optional<StateRole> ParseStateRole(const std::string& value);
@@ -119,6 +164,14 @@ TVM_DLL std::optional<StateUseKind> ParseStateUseKind(const std::string& value);
 TVM_DLL std::optional<StateJoinKind> ParseStateJoinKind(const std::string& value);
 TVM_DLL std::optional<RebindScope> ParseRebindScope(const std::string& value);
 
+TVM_DLL std::optional<SpatialTaskKind> ParseSpatialTaskKind(const std::string& value);
+TVM_DLL std::optional<SpatialChannelKind> ParseSpatialChannelKind(const std::string& value);
+TVM_DLL std::optional<SpatialLayoutKind> ParseSpatialLayoutKind(const std::string& value);
+TVM_DLL std::optional<SpatialPartitionKind> ParseSpatialPartitionKind(const std::string& value);
+TVM_DLL std::optional<SpatialPlacementKind> ParseSpatialPlacementKind(const std::string& value);
+TVM_DLL std::optional<SpatialSyncKind> ParseSpatialSyncKind(const std::string& value);
+TVM_DLL std::optional<SpatialResourceIntentKind> ParseSpatialResourceIntentKind(const std::string& value);
+
 TVM_DLL const char* ToString(WitnessSubjectKind kind);
 TVM_DLL const char* ToString(WitnessFactAxis axis);
 TVM_DLL const char* ToString(StateRole role);
@@ -131,6 +184,14 @@ TVM_DLL const char* ToString(StateDefKind kind);
 TVM_DLL const char* ToString(StateUseKind kind);
 TVM_DLL const char* ToString(StateJoinKind kind);
 TVM_DLL const char* ToString(RebindScope scope);
+
+TVM_DLL const char* ToString(SpatialTaskKind kind);
+TVM_DLL const char* ToString(SpatialChannelKind kind);
+TVM_DLL const char* ToString(SpatialLayoutKind kind);
+TVM_DLL const char* ToString(SpatialPartitionKind kind);
+TVM_DLL const char* ToString(SpatialPlacementKind kind);
+TVM_DLL const char* ToString(SpatialSyncKind kind);
+TVM_DLL const char* ToString(SpatialResourceIntentKind kind);
 
 }  // namespace semantic
 }  // namespace tl

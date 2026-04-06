@@ -13,6 +13,9 @@
 namespace tvm {
 namespace tl {
 
+/*! \brief Convert ffi::String to std::string without static_cast noise. */
+inline std::string str(const ffi::String& s) { return static_cast<std::string>(s); }
+
 inline bool IsBlackholePrimFunc(const tir::PrimFunc& func) {
   auto target = func->GetAttr<Target>(tvm::attr::kTarget);
   return target && target.value()->kind->name == "blackhole";

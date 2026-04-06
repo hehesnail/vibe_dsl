@@ -322,6 +322,127 @@ const char* ToString(RebindScope scope) {
   return "unknown";
 }
 
+// ---------------------------------------------------------------------------
+// Spatial IR vocabularies (Phase B)
+// ---------------------------------------------------------------------------
+
+std::optional<SpatialTaskKind> ParseSpatialTaskKind(const std::string& value) {
+  if (value == "transfer") return SpatialTaskKind::kTransfer;
+  if (value == "compute") return SpatialTaskKind::kCompute;
+  if (value == "collective") return SpatialTaskKind::kCollective;
+  if (value == "control") return SpatialTaskKind::kControl;
+  return std::nullopt;
+}
+
+std::optional<SpatialChannelKind> ParseSpatialChannelKind(const std::string& value) {
+  if (value == "tensor_flow") return SpatialChannelKind::kTensorFlow;
+  if (value == "state_flow") return SpatialChannelKind::kStateFlow;
+  if (value == "phase_boundary") return SpatialChannelKind::kPhaseBoundary;
+  return std::nullopt;
+}
+
+std::optional<SpatialLayoutKind> ParseSpatialLayoutKind(const std::string& value) {
+  if (value == "regular") return SpatialLayoutKind::kRegular;
+  if (value == "indexed") return SpatialLayoutKind::kIndexed;
+  return std::nullopt;
+}
+
+std::optional<SpatialPartitionKind> ParseSpatialPartitionKind(const std::string& value) {
+  if (value == "blocked") return SpatialPartitionKind::kBlocked;
+  if (value == "replicated") return SpatialPartitionKind::kReplicated;
+  return std::nullopt;
+}
+
+std::optional<SpatialPlacementKind> ParseSpatialPlacementKind(const std::string& value) {
+  if (value == "execution") return SpatialPlacementKind::kExecution;
+  return std::nullopt;
+}
+
+std::optional<SpatialSyncKind> ParseSpatialSyncKind(const std::string& value) {
+  if (value == "dependency") return SpatialSyncKind::kDependency;
+  if (value == "completion") return SpatialSyncKind::kCompletion;
+  if (value == "barrier") return SpatialSyncKind::kBarrier;
+  return std::nullopt;
+}
+
+std::optional<SpatialResourceIntentKind> ParseSpatialResourceIntentKind(const std::string& value) {
+  if (value == "buffer") return SpatialResourceIntentKind::kBuffer;
+  if (value == "state_residency") return SpatialResourceIntentKind::kStateResidency;
+  if (value == "synchronization_support") return SpatialResourceIntentKind::kSynchronizationSupport;
+  if (value == "phase_boundary_materialization") return SpatialResourceIntentKind::kPhaseBoundaryMaterialization;
+  if (value == "lowering_support") return SpatialResourceIntentKind::kLoweringSupport;
+  return std::nullopt;
+}
+
+const char* ToString(SpatialTaskKind kind) {
+  switch (kind) {
+    case SpatialTaskKind::kTransfer: return "transfer";
+    case SpatialTaskKind::kCompute: return "compute";
+    case SpatialTaskKind::kCollective: return "collective";
+    case SpatialTaskKind::kControl: return "control";
+  }
+  LOG(FATAL) << "Unknown SpatialTaskKind";
+  return "unknown";
+}
+
+const char* ToString(SpatialChannelKind kind) {
+  switch (kind) {
+    case SpatialChannelKind::kTensorFlow: return "tensor_flow";
+    case SpatialChannelKind::kStateFlow: return "state_flow";
+    case SpatialChannelKind::kPhaseBoundary: return "phase_boundary";
+  }
+  LOG(FATAL) << "Unknown SpatialChannelKind";
+  return "unknown";
+}
+
+const char* ToString(SpatialLayoutKind kind) {
+  switch (kind) {
+    case SpatialLayoutKind::kRegular: return "regular";
+    case SpatialLayoutKind::kIndexed: return "indexed";
+  }
+  LOG(FATAL) << "Unknown SpatialLayoutKind";
+  return "unknown";
+}
+
+const char* ToString(SpatialPartitionKind kind) {
+  switch (kind) {
+    case SpatialPartitionKind::kBlocked: return "blocked";
+    case SpatialPartitionKind::kReplicated: return "replicated";
+  }
+  LOG(FATAL) << "Unknown SpatialPartitionKind";
+  return "unknown";
+}
+
+const char* ToString(SpatialPlacementKind kind) {
+  switch (kind) {
+    case SpatialPlacementKind::kExecution: return "execution";
+  }
+  LOG(FATAL) << "Unknown SpatialPlacementKind";
+  return "unknown";
+}
+
+const char* ToString(SpatialSyncKind kind) {
+  switch (kind) {
+    case SpatialSyncKind::kDependency: return "dependency";
+    case SpatialSyncKind::kCompletion: return "completion";
+    case SpatialSyncKind::kBarrier: return "barrier";
+  }
+  LOG(FATAL) << "Unknown SpatialSyncKind";
+  return "unknown";
+}
+
+const char* ToString(SpatialResourceIntentKind kind) {
+  switch (kind) {
+    case SpatialResourceIntentKind::kBuffer: return "buffer";
+    case SpatialResourceIntentKind::kStateResidency: return "state_residency";
+    case SpatialResourceIntentKind::kSynchronizationSupport: return "synchronization_support";
+    case SpatialResourceIntentKind::kPhaseBoundaryMaterialization: return "phase_boundary_materialization";
+    case SpatialResourceIntentKind::kLoweringSupport: return "lowering_support";
+  }
+  LOG(FATAL) << "Unknown SpatialResourceIntentKind";
+  return "unknown";
+}
+
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("tl.SemanticVocabNormalizeBindingKind", [](ffi::String value) {

@@ -79,6 +79,22 @@ def _replace_semantic_program(mod, program):
     return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
 
+def _make_spatial_program_like(program, **overrides):
+    make_program = tvm.get_global_func("tl.SpatialProgram")
+    return make_program(
+        overrides.get("member_func", program.member_func),
+        overrides.get("phases", program.phases),
+        overrides.get("tasks", program.tasks),
+        overrides.get("channels", program.channels),
+        overrides.get("layouts", program.layouts),
+        overrides.get("work_partitions", program.work_partitions),
+        overrides.get("placements", program.placements),
+        overrides.get("sync_edges", program.sync_edges),
+        overrides.get("resource_intents", program.resource_intents),
+        overrides.get("anchors", program.anchors),
+    )
+
+
 def _strip_attr_from_all_functions(mod, attr_name: str):
     rewritten = {}
     for gvar, func in mod.functions.items():
@@ -499,6 +515,175 @@ def test_validate_spatial_program_rejects_layout_axes_mismatch_with_semantic_dom
 
     with pytest.raises(Exception, match="layout axes.*semantic domain"):
         tilelang.transform.ValidateSpatialProgram()(mod)
+
+
+def test_validate_spatial_program_rejects_unknown_task_kind():
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    make_task = tvm.get_global_func("tl.Task")
+    rebuilt_tasks = [
+        make_task(
+            task.name,
+            "bogus_task_kind",
+            task.phase_name,
+            task.update_names,
+            task.traits,
+            task.payload,
+            task.anchors,
+        )
+        if i == 0
+        else task
+        for i, task in enumerate(program.tasks)
+    ]
+    mod = _replace_spatial_program(mod, _make_spatial_program_like(program, tasks=rebuilt_tasks))
+
+    with pytest.raises(Exception, match="unknown task kind"):
+        tilelang.transform.ValidateSpatialProgram()(mod)
+
+
+def test_validate_spatial_program_rejects_unknown_channel_kind():
+    mod = _prepare_blackhole_phase_b_module(gemm_kernel())
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    make_channel = tvm.get_global_func("tl.Channel")
+    rebuilt_channels = [
+        make_channel(
+            channel.name,
+            "bogus_channel_kind",
+            channel.source_task,
+            channel.target_task,
+            channel.state_name,
+            channel.traits,
+            channel.payload,
+            channel.anchors,
+        )
+        if i == 0
+        else channel
+        for i, channel in enumerate(program.channels)
+    ]
+    mod = _replace_spatial_program(
+        mod, _make_spatial_program_like(program, channels=rebuilt_channels)
+    )
+
+    with pytest.raises(Exception, match="unknown channel kind"):
+        tilelang.transform.ValidateSpatialProgram()(mod)
+
+
+def test_validate_spatial_program_rejects_unknown_layout_and_partition_kinds():
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=2, tile_cols=3))
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    make_layout = tvm.get_global_func("tl.SpatialLayout")
+    make_partition = tvm.get_global_func("tl.WorkPartition")
+    rebuilt_layouts = [
+        make_layout(
+            layout.name,
+            "bogus_layout_kind",
+            layout.target_name,
+            layout.axes,
+            layout.traits,
+            layout.payload,
+            layout.anchors,
+        )
+        if i == 0
+        else layout
+        for i, layout in enumerate(program.layouts)
+    ]
+    rebuilt_partitions = [
+        make_partition(
+            partition.name,
+            "bogus_partition_kind",
+            partition.target_name,
+            partition.axes,
+            partition.traits,
+            partition.payload,
+            partition.anchors,
+        )
+        if i == 0
+        else partition
+        for i, partition in enumerate(program.work_partitions)
+    ]
+
+    bad_layout_mod = _replace_spatial_program(
+        mod, _make_spatial_program_like(program, layouts=rebuilt_layouts)
+    )
+    with pytest.raises(Exception, match="unknown layout kind"):
+        tilelang.transform.ValidateSpatialProgram()(bad_layout_mod)
+
+    bad_partition_mod = _replace_spatial_program(
+        mod, _make_spatial_program_like(program, work_partitions=rebuilt_partitions)
+    )
+    with pytest.raises(Exception, match="unknown work partition kind"):
+        tilelang.transform.ValidateSpatialProgram()(bad_partition_mod)
+
+
+def test_validate_spatial_program_rejects_unknown_placement_sync_and_resource_intent_kinds():
+    mod = _prepare_blackhole_phase_b_module(gemm_kernel())
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    make_placement = tvm.get_global_func("tl.Placement")
+    make_sync_edge = tvm.get_global_func("tl.SyncEdge")
+    make_resource_intent = tvm.get_global_func("tl.ResourceIntent")
+    rebuilt_placements = [
+        make_placement(
+            placement.name,
+            "bogus_placement_kind",
+            placement.task_name,
+            placement.member_func,
+            placement.traits,
+            placement.payload,
+            placement.anchors,
+        )
+        if i == 0
+        else placement
+        for i, placement in enumerate(program.placements)
+    ]
+    rebuilt_edges = [
+        make_sync_edge(
+            edge.name,
+            "bogus_sync_kind",
+            edge.source,
+            edge.target,
+            edge.traits,
+            edge.payload,
+            edge.anchors,
+        )
+        if i == 0
+        else edge
+        for i, edge in enumerate(program.sync_edges)
+    ]
+    rebuilt_intents = [
+        make_resource_intent(
+            intent.name,
+            "bogus_resource_intent_kind",
+            intent.target_name,
+            intent.traits,
+            intent.payload,
+            intent.anchors,
+        )
+        if i == 0
+        else intent
+        for i, intent in enumerate(program.resource_intents)
+    ]
+
+    bad_placement_mod = _replace_spatial_program(
+        mod, _make_spatial_program_like(program, placements=rebuilt_placements)
+    )
+    with pytest.raises(Exception, match="unknown placement kind"):
+        tilelang.transform.ValidateSpatialProgram()(bad_placement_mod)
+
+    bad_sync_mod = _replace_spatial_program(
+        mod, _make_spatial_program_like(program, sync_edges=rebuilt_edges)
+    )
+    with pytest.raises(Exception, match="unknown sync edge kind"):
+        tilelang.transform.ValidateSpatialProgram()(bad_sync_mod)
+
+    bad_intent_mod = _replace_spatial_program(
+        mod, _make_spatial_program_like(program, resource_intents=rebuilt_intents)
+    )
+    with pytest.raises(Exception, match="unknown resource intent kind"):
+        tilelang.transform.ValidateSpatialProgram()(bad_intent_mod)
 
 
 def test_validate_spatial_program_rejects_multi_phase_program_without_channel_contract():

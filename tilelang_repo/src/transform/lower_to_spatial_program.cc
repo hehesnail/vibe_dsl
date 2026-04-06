@@ -8,7 +8,6 @@
 #include <tvm/ir/transform.h>
 #include <tvm/tir/stmt_functor.h>
 
-#include <algorithm>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -30,6 +29,7 @@ using tvm::ffi::Array;
 using tvm::ffi::Map;
 using tvm::ffi::String;
 using namespace tvm::tl::semantic;
+using tvm::tl::str;
 
 namespace {
 
@@ -142,7 +142,7 @@ bool HasDerivedIndices(const SemanticProgram& program) {
   ICHECK(!program->domains.empty())
       << "LowerToSpatialProgram requires SemanticProgram to carry at least one domain";
   for (const String& trait : program->domains[0]->traits) {
-    if (static_cast<std::string>(trait) == "derived_indices") {
+    if (str(trait) == "derived_indices") {
       return true;
     }
   }
@@ -151,7 +151,7 @@ bool HasDerivedIndices(const SemanticProgram& program) {
 
 std::optional<Array<Any>> GetPipelineStagesFromSupplements(const SemanticProgram& program) {
   for (const SemanticSupplement& supplement : program->supplements) {
-    if (static_cast<std::string>(supplement->kind) !=
+    if (str(supplement->kind) !=
         ToString(SupplementKind::kPipelineStructure)) {
       continue;
     }
@@ -165,7 +165,7 @@ std::optional<Array<Any>> GetPipelineStagesFromSupplements(const SemanticProgram
 std::optional<Map<String, Any>> GetFragmentLoweringPayloadFromSupplements(
     const SemanticProgram& program) {
   for (const SemanticSupplement& supplement : program->supplements) {
-    if (static_cast<std::string>(supplement->kind) !=
+    if (str(supplement->kind) !=
         ToString(SupplementKind::kFragmentLoweringStructure)) {
       continue;
     }
@@ -181,7 +181,7 @@ std::optional<Map<String, Any>> GetFragmentLoweringPayloadFromSupplements(
 
 std::optional<Array<Any>> GetWorkDependentLoopBoundsFromSupplements(const SemanticProgram& program) {
   for (const SemanticSupplement& supplement : program->supplements) {
-    if (static_cast<std::string>(supplement->kind) !=
+    if (str(supplement->kind) !=
         ToString(SupplementKind::kWorkDecompositionStructure)) {
       continue;
     }
@@ -202,7 +202,8 @@ void AppendPipelineResourceIntent(const std::string& member_func, const Semantic
   Map<String, Any> payload = BuildMemberFuncTargetPayload();
   payload.Set(String(schema_key::kPipelineStages), pipeline_stages.value());
   resource_intents->push_back(ResourceIntent(
-      String("pipeline_contract_" + member_func), String("synchronization_support"),
+      String("pipeline_contract_" + member_func),
+      String(ToString(SpatialResourceIntentKind::kSynchronizationSupport)),
       String(member_func), MakeTraits({"phase_b", "pipeline_contract"}), std::move(payload),
       MakeAnchors("spatial_resource_intent", "pipeline_contract_" + member_func)));
 }
@@ -216,7 +217,8 @@ void AppendFragmentResourceIntent(const std::string& member_func, const Semantic
   Map<String, Any> payload = fragment_payload.value();
   payload.Set(String(schema_key::kTargetKind), String(spatial_contract::kMemberFuncTarget));
   resource_intents->push_back(ResourceIntent(
-      String("fragment_contract_" + member_func), String("lowering_support"),
+      String("fragment_contract_" + member_func),
+      String(ToString(SpatialResourceIntentKind::kLoweringSupport)),
       String(member_func), MakeTraits({"phase_b", "fragment_contract"}), payload,
       MakeAnchors("spatial_resource_intent", "fragment_contract_" + member_func)));
 }
@@ -277,7 +279,7 @@ bool IsSimpleCopyFastPath(const SemanticProgram& program) {
   if (!program->states.empty() || program->updates.size() != 1) {
     return false;
   }
-  auto kind = ParseUpdateLawKind(static_cast<std::string>(program->updates[0]->law->kind));
+  auto kind = ParseUpdateLawKind(str(program->updates[0]->law->kind));
   return kind && *kind == UpdateLawKind::kMap;
 }
 
@@ -289,7 +291,7 @@ bool IsSimpleGemmFastPath(const SemanticProgram& program, const tir::PrimFunc& f
     return false;
   }
   if (program->states.size() == 1) {
-    auto role = ParseStateRole(static_cast<std::string>(program->states[0]->role));
+    auto role = ParseStateRole(str(program->states[0]->role));
     if (!role || *role != StateRole::kTransient) {
       return false;
     }
@@ -299,13 +301,13 @@ bool IsSimpleGemmFastPath(const SemanticProgram& program, const tir::PrimFunc& f
 
 bool NeedsMultiPhase(const SemanticProgram& program) {
   for (const Update& update : program->updates) {
-    auto kind = ParseUpdateLawKind(static_cast<std::string>(update->law->kind));
+    auto kind = ParseUpdateLawKind(str(update->law->kind));
     if (kind && *kind != UpdateLawKind::kMap) {
       return true;
     }
   }
   for (const State& state : program->states) {
-    auto role = ParseStateRole(static_cast<std::string>(state->role));
+    auto role = ParseStateRole(str(state->role));
     if (role && (*role == StateRole::kCarry || *role == StateRole::kReductionAccumulator ||
                  *role == StateRole::kSelectionState || *role == StateRole::kIndexState)) {
       return true;
@@ -314,29 +316,28 @@ bool NeedsMultiPhase(const SemanticProgram& program) {
   return false;
 }
 
-std::string GenericTaskKindForUpdate(const Update& update) {
-  auto kind = ParseUpdateLawKind(static_cast<std::string>(update->law->kind));
+const char* GenericTaskKindForUpdate(const Update& update) {
+  auto kind = ParseUpdateLawKind(str(update->law->kind));
   if (!kind) {
-    return "compute";
+    return ToString(SpatialTaskKind::kCompute);
   }
   switch (*kind) {
     case UpdateLawKind::kMap:
-      return "compute";
+      return ToString(SpatialTaskKind::kCompute);
     case UpdateLawKind::kReduce:
-      return "collective";
+      return ToString(SpatialTaskKind::kCollective);
     case UpdateLawKind::kSelect:
-      return "control";
     case UpdateLawKind::kRecurrence:
-      return "control";
+      return ToString(SpatialTaskKind::kControl);
   }
-  return "compute";
+  return ToString(SpatialTaskKind::kCompute);
 }
 
 std::string GenericPhaseNameForUpdate(const Update& update, bool multi_phase) {
   if (!multi_phase) {
     return "phase0_compute";
   }
-  auto kind = ParseUpdateLawKind(static_cast<std::string>(update->law->kind));
+  auto kind = ParseUpdateLawKind(str(update->law->kind));
   if (kind && *kind == UpdateLawKind::kRecurrence) {
     return "phase1_stateful";
   }
@@ -347,8 +348,10 @@ void BuildCommonSpatialScaffolding(const std::string& member_func, const Array<S
                                    bool has_derived_indices, const SemanticProgram& program,
                                    Array<SpatialLayout>* layouts,
                                    Array<WorkPartition>* work_partitions) {
-  const std::string layout_kind = has_derived_indices ? "indexed" : "regular";
-  const std::string partition_kind = work_axes.size() > 1 ? "blocked" : "replicated";
+  const char* layout_kind = ToString(has_derived_indices ? SpatialLayoutKind::kIndexed
+                                                         : SpatialLayoutKind::kRegular);
+  const char* partition_kind = ToString(work_axes.size() > 1 ? SpatialPartitionKind::kBlocked
+                                                             : SpatialPartitionKind::kReplicated);
   constexpr int kPrimaryDomainIndex = 0;
   layouts->push_back(SpatialLayout(String("layout_" + member_func), String(layout_kind),
                                    String(member_func), work_axes,
@@ -366,12 +369,13 @@ SpatialProgramBundle BuildCopyFastPath(const std::string& member_func,
                                        const Array<String>& work_axes,
                                        bool has_derived_indices) {
   Array<Task> tasks{
-      Task(String("copy"), String("transfer"), String("phase0_copy"),
+      Task(String("copy"), String(ToString(SpatialTaskKind::kTransfer)), String("phase0_copy"),
            Array<String>{String(program->updates[0]->name)}, MakeTraits({"fast_path", "copy"}),
            BuildTaskPayload(0),
            MakeAnchors("spatial_task", "copy"))};
   Array<Channel> channels{
-      Channel(String("copy_tensor"), String("tensor_flow"), String("copy"), String("copy"),
+      Channel(String("copy_tensor"), String(ToString(SpatialChannelKind::kTensorFlow)),
+              String("copy"), String("copy"),
               String(), MakeTraits({"fast_path", "copy"}), BuildChannelPayload(0, 0),
               MakeAnchors("spatial_channel", "copy_tensor"))};
   Array<ProgramPhase> phases{
@@ -382,12 +386,14 @@ SpatialProgramBundle BuildCopyFastPath(const std::string& member_func,
   Array<SpatialLayout> layouts;
   Array<WorkPartition> work_partitions;
   Array<Placement> placements{
-      Placement(String("place_copy"), String("execution"), String("copy"), String(member_func),
+      Placement(String("place_copy"), String(ToString(SpatialPlacementKind::kExecution)),
+                String("copy"), String(member_func),
                 MakeTraits({"fast_path", "copy"}), BuildPlacementPayload(0),
                 MakeAnchors("spatial_placement", "copy"))};
   Array<SyncEdge> sync_edges;
   Array<ResourceIntent> resource_intents{
-      ResourceIntent(String("copy_buffer"), String("buffer"), String("copy"),
+      ResourceIntent(String("copy_buffer"), String(ToString(SpatialResourceIntentKind::kBuffer)),
+                     String("copy"),
                      MakeTraits({"fast_path", "copy"}), EmptyPayload(),
                      MakeAnchors("spatial_resource_intent", "copy_buffer"))};
   AppendFragmentResourceIntent(member_func, program, &resource_intents);
@@ -409,7 +415,9 @@ SpatialProgramBundle BuildGemmFastPath(const std::string& member_func,
   Array<Placement> placements;
   Array<String> task_names;
   for (const std::string& segment_name : CollectSegmentKindsFromBody(func->body)) {
-    const std::string task_kind = segment_name == "compute" ? "compute" : "transfer";
+    const char* task_kind = segment_name == "compute"
+        ? ToString(SpatialTaskKind::kCompute)
+        : ToString(SpatialTaskKind::kTransfer);
     Array<String> update_names;
     if (!program->updates.empty()) {
       update_names.push_back(program->updates[0]->name);
@@ -424,20 +432,22 @@ SpatialProgramBundle BuildGemmFastPath(const std::string& member_func,
     if (!core_type_trait.empty()) {
       placement_traits.push_back(core_type_trait);
     }
-    placements.push_back(Placement(String("place_" + segment_name), String("execution"),
+    const char* placement_kind = ToString(SpatialPlacementKind::kExecution);
+    placements.push_back(Placement(String("place_" + segment_name), String(placement_kind),
                                    String(segment_name), String(member_func),
                                    ToStringArray(placement_traits), BuildPlacementPayload(task_names.size() - 1),
                                    MakeAnchors("spatial_placement", segment_name)));
   }
+  const char* tensor_flow = ToString(SpatialChannelKind::kTensorFlow);
   Array<Channel> channels{
-      Channel(String("a_tiles"), String("tensor_flow"), String("reader"), String("compute"),
+      Channel(String("a_tiles"), String(tensor_flow), String("reader"), String("compute"),
               String("A"), MakeTraits({"fast_path", "gemm"}), BuildChannelPayload(0, 1),
               MakeAnchors("spatial_channel", "a_tiles")),
-      Channel(String("b_tiles"), String("tensor_flow"), String("reader"), String("compute"),
+      Channel(String("b_tiles"), String(tensor_flow), String("reader"), String("compute"),
               String("B"), MakeTraits({"fast_path", "gemm"}), BuildChannelPayload(0, 1),
               MakeAnchors("spatial_channel", "b_tiles")),
-      Channel(String("c_tiles"), String("tensor_flow"), String("compute"), String("writer"),
-              String(program->states.empty() ? "" : static_cast<std::string>(program->states[0]->name)),
+      Channel(String("c_tiles"), String(tensor_flow), String("compute"), String("writer"),
+              String(program->states.empty() ? "" : str(program->states[0]->name)),
               MakeTraits({"fast_path", "gemm"}),
               program->states.empty() ? BuildChannelPayload(1, 2) : BuildChannelPayload(1, 2, 0),
               MakeAnchors("spatial_channel", "c_tiles"))};
@@ -449,19 +459,22 @@ SpatialProgramBundle BuildGemmFastPath(const std::string& member_func,
                    MakeAnchors("spatial_phase", "phase0_gemm"))};
   Array<SpatialLayout> layouts;
   Array<WorkPartition> work_partitions;
+  const char* dep_kind = ToString(SpatialSyncKind::kDependency);
   Array<SyncEdge> sync_edges{
-      SyncEdge(String("reader_to_compute"), String("dependency"), String("reader"),
+      SyncEdge(String("reader_to_compute"), String(dep_kind), String("reader"),
                String("compute"), MakeTraits({"fast_path", "gemm"}), BuildSyncEdgePayload(0, 1),
                MakeAnchors("spatial_sync", "reader_to_compute")),
-      SyncEdge(String("compute_to_writer"), String("dependency"), String("compute"),
+      SyncEdge(String("compute_to_writer"), String(dep_kind), String("compute"),
                String("writer"), MakeTraits({"fast_path", "gemm"}), BuildSyncEdgePayload(1, 2),
                MakeAnchors("spatial_sync", "compute_to_writer"))};
   Array<ResourceIntent> resource_intents{
-      ResourceIntent(String("gemm_input_buffers"), String("buffer"), String("reader"),
+      ResourceIntent(String("gemm_input_buffers"),
+                     String(ToString(SpatialResourceIntentKind::kBuffer)), String("reader"),
                      MakeTraits({"fast_path", "gemm"}), EmptyPayload(),
                      MakeAnchors("spatial_resource_intent", "gemm_input_buffers")),
-      ResourceIntent(String("gemm_accumulator"), String("state_residency"),
-                     String(program->states.empty() ? "" : static_cast<std::string>(program->states[0]->name)),
+      ResourceIntent(String("gemm_accumulator"),
+                     String(ToString(SpatialResourceIntentKind::kStateResidency)),
+                     String(program->states.empty() ? "" : str(program->states[0]->name)),
                      MakeTraits({"fast_path", "gemm"}),
                      program->states.empty()
                          ? EmptyPayload()
@@ -497,21 +510,22 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
   std::unordered_map<std::string, int> task_index_by_name;
   std::unordered_map<std::string, int> state_index_by_name;
   for (int i = 0; i < program->states.size(); ++i) {
-    state_index_by_name[static_cast<std::string>(program->states[i]->name)] = i;
+    state_index_by_name[str(program->states[i]->name)] = i;
   }
   std::unordered_set<std::string> known_task_names;
   for (const Update& update : program->updates) {
-    const std::string update_name = static_cast<std::string>(update->name);
+    const std::string update_name = str(update->name);
     const std::string phase_name = GenericPhaseNameForUpdate(update, multi_phase);
-    const std::string task_kind = GenericTaskKindForUpdate(update);
+    const char* task_kind = GenericTaskKindForUpdate(update);
     Task task(String(update_name), String(task_kind), String(phase_name),
               Array<String>{update->name},
-              Array<String>{String("phase_b"), String(static_cast<std::string>(update->law->kind))},
+              Array<String>{String("phase_b"), String(str(update->law->kind))},
               BuildTaskPayload(phase_index_by_name.at(phase_name)),
               MakeAnchors("spatial_task", update_name));
     tasks.push_back(task);
     const int task_index = static_cast<int>(tasks.size()) - 1;
-    placements.push_back(Placement(String("place_" + update_name), String("execution"),
+    const char* placement_kind = ToString(SpatialPlacementKind::kExecution);
+    placements.push_back(Placement(String("place_" + update_name), String(placement_kind),
                                    String(update_name), String(member_func),
                                    MakeTraits({"phase_b"}), BuildPlacementPayload(task_index),
                                    MakeAnchors("spatial_placement", update_name)));
@@ -521,49 +535,38 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
     known_task_names.insert(update_name);
   }
 
-  if (tasks.empty() && !program->updates.empty()) {
-    const std::string update_name = static_cast<std::string>(program->updates[0]->name);
-    Task task(String(update_name), String("compute"), String("phase0_compute"),
-              Array<String>{program->updates[0]->name}, MakeTraits({"phase_b"}),
-              BuildTaskPayload(phase_index_by_name.at("phase0_compute")),
-              MakeAnchors("spatial_task", update_name));
-    tasks.push_back(task);
-    const int task_index = static_cast<int>(tasks.size()) - 1;
-    placements.push_back(Placement(String("place_" + update_name), String("execution"),
-                                   String(update_name), String(member_func),
-                                   MakeTraits({"phase_b"}), BuildPlacementPayload(task_index),
-                                   MakeAnchors("spatial_placement", update_name)));
-    phase_to_tasks["phase0_compute"].push_back(update_name);
-    tasks_by_update[update_name] = task;
-    task_index_by_name[update_name] = task_index;
-    known_task_names.insert(update_name);
-  }
-
   Array<Channel> channels;
   std::unordered_map<std::string, std::vector<std::string>> phase_to_channels;
   std::unordered_map<std::string, std::string> version_to_producer_task;
   for (const StateDef& def : program->state_defs) {
-    const std::string producer_update = static_cast<std::string>(def->producer_update);
+    const std::string producer_update = str(def->producer_update);
     if (known_task_names.count(producer_update)) {
-      version_to_producer_task[static_cast<std::string>(def->version_name)] = producer_update;
+      version_to_producer_task[str(def->version_name)] = producer_update;
     }
   }
   std::unordered_set<std::string> seen_channel_keys;
   for (const StateUse& use : program->state_uses) {
-    const std::string consumer_update = static_cast<std::string>(use->consumer_update);
-    const std::string version_name = static_cast<std::string>(use->version_name);
+    const std::string consumer_update = str(use->consumer_update);
+    const std::string version_name = str(use->version_name);
     if (!known_task_names.count(consumer_update) || !version_to_producer_task.count(version_name)) {
       continue;
     }
-    const std::string source_task = version_to_producer_task.at(version_name);
-    const std::string state_name = static_cast<std::string>(use->state_name);
-    const std::string channel_key = source_task + "->" + consumer_update + ":" + state_name;
-    if (!seen_channel_keys.insert(channel_key).second) {
+    const std::string& source_task = version_to_producer_task.at(version_name);
+    const std::string state_name = str(use->state_name);
+    std::string channel_key;
+    channel_key.reserve(source_task.size() + consumer_update.size() + state_name.size() + 3);
+    channel_key += source_task;
+    channel_key += "->";
+    channel_key += consumer_update;
+    channel_key += ":";
+    channel_key += state_name;
+    if (!seen_channel_keys.insert(std::move(channel_key)).second) {
       continue;
     }
     const std::string channel_name = "channel_" + state_name + "_" + consumer_update;
     auto state_index_it = state_index_by_name.find(state_name);
-    channels.push_back(Channel(String(channel_name), String("state_flow"), String(source_task),
+    const char* state_flow = ToString(SpatialChannelKind::kStateFlow);
+    channels.push_back(Channel(String(channel_name), String(state_flow), String(source_task),
                                String(consumer_update), String(state_name),
                                MakeTraits({"phase_b"}),
                                state_index_it == state_index_by_name.end()
@@ -573,14 +576,15 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
                                                          task_index_by_name.at(consumer_update),
                                                          state_index_it->second),
                                MakeAnchors("spatial_channel", channel_name)));
-    const std::string phase_name = static_cast<std::string>(tasks_by_update[consumer_update]->phase_name);
+    const std::string phase_name = str(tasks_by_update[consumer_update]->phase_name);
     phase_to_channels[phase_name].push_back(channel_name);
   }
 
   if (channels.empty() && multi_phase && !phase_to_tasks["phase0_compute"].empty() &&
       !phase_to_tasks["phase1_stateful"].empty()) {
     const std::string channel_name = "channel_phase_boundary";
-    channels.push_back(Channel(String(channel_name), String("phase_boundary"),
+    channels.push_back(Channel(String(channel_name),
+                               String(ToString(SpatialChannelKind::kPhaseBoundary)),
                                String(phase_to_tasks["phase0_compute"].front()),
                                String(phase_to_tasks["phase1_stateful"].front()), String(),
                                MakeTraits({"phase_boundary"}),
@@ -594,7 +598,7 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
   Array<ProgramPhase> phases;
   std::unordered_map<std::string, int> channel_index_by_name;
   for (int i = 0; i < channels.size(); ++i) {
-    channel_index_by_name[static_cast<std::string>(channels[i]->name)] = i;
+    channel_index_by_name[str(channels[i]->name)] = i;
   }
   for (const auto& phase_name : phase_order) {
     auto task_it = phase_to_tasks.find(phase_name);
@@ -633,7 +637,8 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
       phase_to_tasks.count("phase1_stateful") &&
       !phase_to_tasks["phase0_compute"].empty() &&
       !phase_to_tasks["phase1_stateful"].empty()) {
-    sync_edges.push_back(SyncEdge(String("phase0_to_phase1"), String("completion"),
+    sync_edges.push_back(SyncEdge(String("phase0_to_phase1"),
+                                  String(ToString(SpatialSyncKind::kCompletion)),
                                   String(phase_to_tasks["phase0_compute"].front()),
                                   String(phase_to_tasks["phase1_stateful"].front()),
                                   MakeTraits({"phase_boundary"}),
@@ -645,8 +650,8 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
 
   Array<ResourceIntent> resource_intents;
   for (const State& state : program->states) {
-    const auto role = ParseStateRole(static_cast<std::string>(state->role));
-    const std::string state_name = static_cast<std::string>(state->name);
+    const auto role = ParseStateRole(str(state->role));
+    const std::string state_name = str(state->name);
     auto state_index_it = state_index_by_name.find(state_name);
     ICHECK(state_index_it != state_index_by_name.end())
         << "LowerToSpatialProgram requires semantic state indices for state-targeted intents";
@@ -654,16 +659,19 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
                                       *role == StateRole::kReductionAccumulator ||
                                       *role == StateRole::kSelectionState ||
                                       *role == StateRole::kIndexState);
+    const char* intent_kind = is_stateful
+        ? ToString(SpatialResourceIntentKind::kStateResidency)
+        : ToString(SpatialResourceIntentKind::kBuffer);
     resource_intents.push_back(ResourceIntent(
-        String("intent_" + state_name), String(is_stateful ? "state_residency" : "buffer"),
-        state->name,
-        Array<String>{String(static_cast<std::string>(state->role)),
-                      String(static_cast<std::string>(state->storage_scope))},
+        String("intent_" + state_name), String(intent_kind), state->name,
+        Array<String>{String(str(state->role)),
+                      String(str(state->storage_scope))},
         BuildTargetPayload(spatial_contract::kSemanticStateTarget, state_index_it->second),
         MakeAnchors("spatial_resource_intent", state_name)));
     if (multi_phase && is_stateful) {
       resource_intents.push_back(ResourceIntent(
-          String("phase_boundary_" + state_name), String("phase_boundary_materialization"),
+          String("phase_boundary_" + state_name),
+          String(ToString(SpatialResourceIntentKind::kPhaseBoundaryMaterialization)),
           state->name, MakeTraits({"phase_boundary"}),
           BuildTargetPayload(spatial_contract::kSemanticStateTarget, state_index_it->second),
           MakeAnchors("spatial_resource_intent", "phase_boundary_" + state_name)));
@@ -731,7 +739,7 @@ tvm::transform::Pass LowerToSpatialProgram() {
         auto program_info = Downcast<TLDeviceProgramInfo>(info);
         Array<ProgramPhase> phases;
         for (const String& member_func : program_info->member_funcs) {
-          auto it = phases_by_member_func.find(static_cast<std::string>(member_func));
+          auto it = phases_by_member_func.find(str(member_func));
           if (it == phases_by_member_func.end()) {
             continue;
           }
@@ -740,7 +748,7 @@ tvm::transform::Pass LowerToSpatialProgram() {
           }
         }
         if (phases.empty() && program_info->member_funcs.size() == 1) {
-          auto root_it = phases_by_member_func.find(static_cast<std::string>(program_info->root_symbol));
+          auto root_it = phases_by_member_func.find(str(program_info->root_symbol));
           if (root_it != phases_by_member_func.end()) {
             for (const ProgramPhase& phase : root_it->second) {
               phases.push_back(phase);

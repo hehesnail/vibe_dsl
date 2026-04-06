@@ -110,13 +110,16 @@
   - semantic-owned structural evidence 与 direct-runtime binding 已切到 handle-first，
     不再依赖名字匹配恢复语义
   - `fragment_regions` 只剩 residual reduction evidence 与 lowering compatibility
-- `Phase B` 当前稳定事实：
+  - `Phase B` 当前稳定事实：
   - `SpatialProgram / ProgramPhase / Task / Channel / Layout / WorkPartition /
     Placement / SyncEdge / ResourceIntent` 已落地
   - `LowerToSpatialProgram -> ValidateSpatialProgram` 已接入主线，
     `LowerBlackholeOps` 已硬要求 `tl.spatial_program`
   - spatial linkage 已有第一轮 stronger-contract：
     `domain_index`、`target_kind / target_index`、以及 phase/task/channel linkage payload
+  - `ValidateSpatialProgram` 现已把
+    `Task / Channel / Layout / WorkPartition / Placement / SyncEdge / ResourceIntent.kind`
+    收成 closed vocabulary fail-fast；unknown kind 不再 silent pass
   - representative family gate 当前覆盖
     `copy / GEMM / flash-attn / topk / chunk_o / fusedmoe_routed / mla_decode_paged`
   - `SpatialProgram` 当前定位已经收紧为
@@ -135,7 +138,7 @@
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py -q`
   - `7 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q`
-  - `38 passed`
+  - `42 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `41 passed, 10 skipped, 1 xfailed`
 - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
