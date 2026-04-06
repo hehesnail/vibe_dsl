@@ -18,6 +18,9 @@ namespace tvm {
 namespace tl {
 
 using namespace tvm::tl::semantic;
+using tvm::ffi::Any;
+using tvm::ffi::Array;
+using tvm::ffi::Map;
 using tvm::ffi::String;
 
 tir::transform::Pass ValidateStatefulSemanticIR() {
@@ -106,6 +109,26 @@ tir::transform::Pass ValidateStatefulSemanticIR() {
             << "StateJoin references missing input version: " << input_version;
         ICHECK_EQ(version_state_by_name.at(input_version), std::string(join->state_name))
             << "StateJoin input_version does not match join state";
+      }
+    }
+    for (const SemanticSupplement& supplement : program->supplements) {
+      auto kind = ParseSupplementKind(static_cast<std::string>(supplement->kind));
+      ICHECK(kind) << "Unsupported SemanticSupplement kind in A2 validator: "
+                   << supplement->kind;
+      if (*kind == SupplementKind::kPipelineStructure) {
+        auto maybe_pipeline_stages = supplement->payload.Get(String(schema_key::kPipelineStages));
+        ICHECK(maybe_pipeline_stages)
+            << "pipeline_structure supplement must carry pipeline_stages payload";
+        Array<Any> pipeline_stages = tvm::Downcast<Array<Any>>(maybe_pipeline_stages.value());
+        ICHECK(!pipeline_stages.empty())
+            << "pipeline_structure supplement must carry at least one pipeline stage";
+        for (const Any& stage_any : pipeline_stages) {
+          auto stage = tvm::Downcast<Map<String, Any>>(stage_any);
+          ICHECK(stage.count(String(schema_key::kLoopVar)))
+              << "pipeline_structure stage must carry loop_var";
+          ICHECK(stage.count(String(schema_key::kNumStages)))
+              << "pipeline_structure stage must carry num_stages";
+        }
       }
     }
     return func;

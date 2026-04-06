@@ -12,12 +12,14 @@
 
 #include "common/blackhole_utils.h"
 #include "common/semantic_program.h"
+#include "common/semantic_vocab.h"
 
 namespace tvm {
 namespace tl {
 
 using tvm::ffi::Any;
 using tvm::ffi::Array;
+using tvm::ffi::Map;
 using tvm::ffi::String;
 
 namespace {
@@ -59,6 +61,11 @@ bool SamePhaseSignature(const ProgramPhase& lhs, const ProgramPhase& rhs) {
   return static_cast<std::string>(lhs->name) == static_cast<std::string>(rhs->name) &&
          SameStringArray(lhs->task_names, rhs->task_names) &&
          SameStringArray(lhs->channel_names, rhs->channel_names);
+}
+
+bool IsPipelineContractIntent(const ResourceIntent& intent) {
+  return static_cast<std::string>(intent->kind) == "synchronization_support" &&
+         HasTrait(intent->traits, "pipeline_contract");
 }
 
 }  // namespace
@@ -175,7 +182,9 @@ tvm::transform::Pass ValidateSpatialProgram() {
         }
       }
 
-      auto maybe_semantic_program = func.value()->GetAttr<SemanticProgram>(attr::kTLSemanticProgram);
+      auto maybe_semantic_program =
+          func.value()->GetAttr<SemanticProgram>(attr::kTLSemanticProgram);
+      bool semantic_requires_pipeline_contract = false;
       if (maybe_semantic_program && !maybe_semantic_program.value()->domains.empty()) {
         const Domain& domain = maybe_semantic_program.value()->domains[0];
         for (const SpatialLayout& layout : program->layouts) {
@@ -192,16 +201,52 @@ tvm::transform::Pass ValidateSpatialProgram() {
               << "ValidateSpatialProgram found work partition axes inconsistent with semantic "
                  "domain";
         }
+        for (const SemanticSupplement& supplement : maybe_semantic_program.value()->supplements) {
+          if (static_cast<std::string>(supplement->kind) !=
+              semantic::ToString(semantic::SupplementKind::kPipelineStructure)) {
+            continue;
+          }
+          auto maybe_pipeline_stages =
+              supplement->payload.Get(String(schema_key::kPipelineStages));
+          semantic_requires_pipeline_contract =
+              maybe_pipeline_stages && !Downcast<Array<Any>>(maybe_pipeline_stages.value()).empty();
+          if (semantic_requires_pipeline_contract) {
+            break;
+          }
+        }
       }
 
       std::unordered_set<std::string> resource_intent_kinds;
+      bool has_pipeline_contract = false;
       for (const ResourceIntent& intent : program->resource_intents) {
         resource_intent_kinds.insert(static_cast<std::string>(intent->kind));
+        if (IsPipelineContractIntent(intent)) {
+          has_pipeline_contract = true;
+          auto maybe_pipeline_stages = intent->payload.Get(String(schema_key::kPipelineStages));
+          ICHECK(maybe_pipeline_stages)
+              << "ValidateSpatialProgram requires pipeline contracts to carry pipeline_stages";
+          Array<Any> pipeline_stages = Downcast<Array<Any>>(maybe_pipeline_stages.value());
+          ICHECK(!pipeline_stages.empty())
+              << "ValidateSpatialProgram requires pipeline contracts to carry at least one "
+                 "pipeline stage";
+          for (const Any& stage_any : pipeline_stages) {
+            auto stage = Downcast<Map<String, Any>>(stage_any);
+            ICHECK(stage.count(String(schema_key::kLoopVar)))
+                << "ValidateSpatialProgram requires pipeline stage entries to carry loop_var";
+            ICHECK(stage.count(String(schema_key::kNumStages)))
+                << "ValidateSpatialProgram requires pipeline stage entries to carry num_stages";
+          }
+        }
       }
       if (program->phases.size() > 1) {
         ICHECK(resource_intent_kinds.count("phase_boundary_materialization"))
             << "ValidateSpatialProgram requires multi-phase programs to materialize at least "
                "one phase-boundary resource intent";
+      }
+      if (semantic_requires_pipeline_contract) {
+        ICHECK(has_pipeline_contract)
+            << "ValidateSpatialProgram requires pipeline programs to materialize at least one "
+               "pipeline contract";
       }
 
       phases_by_member_func[member_func] = program->phases;

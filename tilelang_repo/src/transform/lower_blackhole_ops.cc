@@ -888,6 +888,43 @@ static int GetSpatialDerivedIndexExprCountFromProgram(const SpatialProgram& prog
   return 0;
 }
 
+static bool HasTrait(const Array<String>& traits, const char* expected) {
+  for (const String& trait : traits) {
+    if (static_cast<std::string>(trait) == expected) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void CollectPipelineStageInfoFromSpatialProgram(const SpatialProgram& program,
+                                                       Array<Any>* stage_counts,
+                                                       Array<Any>* loop_vars) {
+  std::unordered_set<std::string> seen_loop_vars;
+  for (const ResourceIntent& intent : program->resource_intents) {
+    if (static_cast<std::string>(intent->kind) != "synchronization_support" ||
+        !HasTrait(intent->traits, "pipeline_contract")) {
+      continue;
+    }
+    auto maybe_pipeline_stages = intent->payload.Get(String(schema_key::kPipelineStages));
+    if (!maybe_pipeline_stages) {
+      continue;
+    }
+    for (const Any& stage_any : Downcast<Array<Any>>(maybe_pipeline_stages.value())) {
+      auto stage = stage_any.as<Map<String, Any>>().value_or(Map<String, Any>());
+      if (auto num_stages = stage.Get(String(schema_key::kNumStages))) {
+        stage_counts->push_back(Downcast<Integer>(num_stages.value()));
+      }
+      if (auto loop_var = stage.Get(String(schema_key::kLoopVar))) {
+        const std::string loop_var_name = Downcast<String>(loop_var.value());
+        if (!loop_var_name.empty() && seen_loop_vars.insert(loop_var_name).second) {
+          loop_vars->push_back(loop_var.value());
+        }
+      }
+    }
+  }
+}
+
 static void CollectPipelineStageInfoFromBody(const Stmt& body, Array<Any>* stage_counts,
                                              Array<Any>* loop_vars) {
   std::unordered_set<std::string> seen_loop_vars;
@@ -968,6 +1005,15 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
     }
     if (!phase_boundary_states.empty()) {
       lowering_requirements.Set("spatial_phase_boundary_states", phase_boundary_states);
+    }
+    Array<Any> stage_counts;
+    Array<Any> loop_vars;
+    CollectPipelineStageInfoFromSpatialProgram(program, &stage_counts, &loop_vars);
+    if (!stage_counts.empty()) {
+      lowering_requirements.Set("pipeline_stage_counts", stage_counts);
+    }
+    if (!loop_vars.empty()) {
+      lowering_requirements.Set("pipeline_loop_vars", loop_vars);
     }
   }
 
@@ -1050,10 +1096,10 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
         }
       }
     }
-    if (!stage_counts.empty()) {
+    if (!stage_counts.empty() && !lowering_requirements.count("pipeline_stage_counts")) {
       lowering_requirements.Set("pipeline_stage_counts", stage_counts);
     }
-    if (!loop_vars.empty()) {
+    if (!loop_vars.empty() && !lowering_requirements.count("pipeline_loop_vars")) {
       lowering_requirements.Set("pipeline_loop_vars", loop_vars);
     }
   }
@@ -1061,10 +1107,10 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
   Array<Any> stage_counts;
   Array<Any> loop_vars;
   CollectPipelineStageInfoFromBody(func->body, &stage_counts, &loop_vars);
-  if (!stage_counts.empty()) {
+  if (!stage_counts.empty() && !lowering_requirements.count("pipeline_stage_counts")) {
     lowering_requirements.Set("pipeline_stage_counts", stage_counts);
   }
-  if (!loop_vars.empty()) {
+  if (!loop_vars.empty() && !lowering_requirements.count("pipeline_loop_vars")) {
     lowering_requirements.Set("pipeline_loop_vars", loop_vars);
   }
 

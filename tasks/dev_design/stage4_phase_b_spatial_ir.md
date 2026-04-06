@@ -373,6 +373,36 @@ spatial legality validator 再推进一格：
 - 伪造一个 member-local phase 名和 `tl.device_programs` 聚合 truth 不一致的
   `SpatialProgram`，validator 会 fail-fast
 
+### 6.7 2026-04-06 Hardening Slice: Pipeline Contract Migration
+
+本轮把 `pipeline_stages` 从 lowering-facing legacy attr 往 typed companion contract
+再推进一层，目标是让 `LowerBlackholeOps` 不再把
+`blackhole.pipeline_stages` 当 primary source：
+
+- `AnalyzeSemanticStructure` 现在会把 `blackhole.pipeline_stages`
+  收成 `SemanticProgram.supplements[*]`
+  - kind: `pipeline_structure`
+  - payload: `pipeline_stages[*].loop_var / num_stages / stage_local_buffers /
+    loop_carried_state`
+- `ResourceIntent` schema 已补上 typed `payload`
+- `LowerToSpatialProgram` 现在会把 semantic supplement 投影成
+  `ResourceIntent(kind=synchronization_support, traits+=pipeline_contract)`
+- `ValidateSpatialProgram` 现在会校验：
+  - pipeline contract 必须真的携带 `pipeline_stages`
+  - 每个 stage entry 必须携带 `loop_var / num_stages`
+  - 语义侧要求 pipeline contract 时，`SpatialProgram` 不能缺失该 resource intent
+- `LowerBlackholeOps` 现在优先从 `tl.spatial_program.resource_intents[*].payload`
+  恢复 `pipeline_stage_counts / pipeline_loop_vars`
+  - `blackhole.pipeline_stages` 退回 compatibility fallback
+  - body `num_stages` annotation 退回最后 fallback
+
+对应测试：
+
+- `SpatialProgram` 必须显式暴露 pipeline contract resource intent
+- 删掉 pipeline contract 后，`ValidateSpatialProgram` 会 fail-fast
+- 删掉 `blackhole.pipeline_stages` 后，`LowerBlackholeOps` 仍能恢复
+  `pipeline_stage_counts / pipeline_loop_vars`
+
 ## 7. Hardening Gates Before Phase C
 
 `Phase B` 的目标不是“已经有一套 `SpatialProgram` 对象”，而是：
@@ -407,6 +437,17 @@ spatial legality validator 再推进一格：
 - `pipeline_stages` / `fragment_regions` 仍保留 lowering-facing compatibility 角色，
   尚未完全收敛到更强的 typed contract
 
+本轮新增的明确 cutover 设计是：
+
+- `blackhole.pipeline_stages` 不能被“直接删掉”
+- `AnalyzeSemanticStructure` 必须先把 pipeline stage truth 收成
+  `SemanticProgram.supplements[*]`
+- `LowerToSpatialProgram` 再把这份 truth 投影成 `SpatialProgram.resource_intents[*]`
+  里的 typed pipeline contract
+- 只有在 `LowerBlackholeOps` 能从 `tl.spatial_program` 直接恢复
+  `pipeline_stage_counts / pipeline_loop_vars` 之后，
+  `blackhole.pipeline_stages` 才能降成纯 compatibility fallback
+
 ### 7.2 Schema Strengthening
 
 当前 `Task / Channel / Layout / WorkPartition / Placement / SyncEdge / ResourceIntent`
@@ -425,6 +466,16 @@ spatial legality validator 再推进一格：
 
 - 不能让 `Phase C` 再回头猜 task graph / state flow / phase boundary
 - 不能把这些 truth 继续散落在 legacy `blackhole.*` attr 里
+
+本轮优先补强的 schema 子项是：
+
+- `ResourceIntent` 需要从纯 `name / kind / target / traits` summary
+  升到可携带 typed payload 的 contract node
+- pipeline legality 相关的 spatial-owned truth
+  （`loop_var / num_stages / stage_local_buffers / loop_carried_state`）
+  先挂在 `ResourceIntent(kind=synchronization_support, traits+=pipeline_contract)` 上
+- 这不是最终 schema 终点，但它必须足以支撑
+  `LowerBlackholeOps` 不再把 `blackhole.pipeline_stages` 当 primary source
 
 ### 7.3 Legality Must Be Explicit
 
@@ -445,6 +496,7 @@ spatial legality validator。
 - phase-channel contract 必须真正落到 owning phase
 - downstream multi-phase phase 不能没有 channel contract
 - module-scope aggregated phase truth 不能只在 phase 数量上“凑巧一致”
+- pipeline domain program 不能丢失 pipeline contract resource intent
 
 规则仍然是：
 
@@ -467,7 +519,8 @@ spatial legality validator。
 - `work_axes / derived_index_expr_count` 已改为优先读取 `tl.spatial_program`
 - lowering-facing fragment summary 已有 `SemanticProgram + residual body scan`
   fallback，但 `blackhole.fragment_regions` 仍保留 compatibility path
-- pipeline legality 仍保留 `blackhole.pipeline_stages` / body-annotation compatibility path
+- pipeline legality 已切到 `tl.spatial_program` 优先读取，
+  但 `blackhole.pipeline_stages` / body-annotation 仍保留 compatibility fallback
 
 这类 mixed ownership 在 `Phase C` 之前必须继续收紧。
 

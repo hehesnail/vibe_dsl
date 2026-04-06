@@ -62,9 +62,11 @@ constexpr const char* kMidBuffer = "mid_buffer";
 constexpr const char* kMidBufferRef = "mid_buffer_ref";
 constexpr const char* kMidShape = "mid_shape";
 constexpr const char* kName = "name";
+constexpr const char* kNumStages = "num_stages";
 constexpr const char* kOperations = "operations";
 constexpr const char* kOrderedRegion = "ordered_region";
 constexpr const char* kPayload = "payload";
+constexpr const char* kPipelineStages = "pipeline_stages";
 constexpr const char* kScope = "scope";
 constexpr const char* kShape = "shape";
 constexpr const char* kSource = "source";
@@ -82,6 +84,9 @@ constexpr const char* kValueTarget = "value_target";
 constexpr const char* kDstBuffer = "dst_buffer";
 constexpr const char* kDstBufferRef = "dst_buffer_ref";
 constexpr const char* kDstShape = "dst_shape";
+constexpr const char* kLoopVar = "loop_var";
+constexpr const char* kStageLocalBuffers = "stage_local_buffers";
+constexpr const char* kLoopCarriedState = "loop_carried_state";
 }  // namespace schema_key
 
 class TIRAnchorNode : public Object {
@@ -677,6 +682,7 @@ class ResourceIntentNode : public Object {
   ffi::String kind;
   ffi::String target_name;
   ffi::Array<ffi::String> traits;
+  ffi::Map<ffi::String, ffi::Any> payload;
   ffi::Array<TIRAnchor> anchors;
 
   static void RegisterReflection() {
@@ -686,6 +692,7 @@ class ResourceIntentNode : public Object {
         .def_ro("kind", &ResourceIntentNode::kind)
         .def_ro("target_name", &ResourceIntentNode::target_name)
         .def_ro("traits", &ResourceIntentNode::traits)
+        .def_ro("payload", &ResourceIntentNode::payload)
         .def_ro("anchors", &ResourceIntentNode::anchors);
   }
 
@@ -695,7 +702,7 @@ class ResourceIntentNode : public Object {
 class ResourceIntent : public ObjectRef {
  public:
   TVM_DLL ResourceIntent(ffi::String name, ffi::String kind, ffi::String target_name,
-                         ffi::Array<ffi::String> traits,
+                         ffi::Array<ffi::String> traits, ffi::Map<ffi::String, ffi::Any> payload,
                          ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(ResourceIntent, ObjectRef,
                                              ResourceIntentNode);

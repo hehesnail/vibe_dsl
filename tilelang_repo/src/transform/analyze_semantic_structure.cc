@@ -755,6 +755,17 @@ void CollectSeedsAndSupplements(const tir::PrimFunc& func,
     supplement.Set("payload", supplement_payload);
     supplements->push_back(supplement);
   }
+  if (auto pipeline_stages = func->GetAttr<Array<Any>>("blackhole.pipeline_stages");
+      pipeline_stages && !pipeline_stages.value().empty()) {
+    PushStringUnique(seeds, &seen_seed_markers, "pipeline_stage_analysis");
+    Map<String, Any> supplement_payload;
+    supplement_payload.Set(String(schema_key::kSource), String("blackhole.pipeline_stages"));
+    supplement_payload.Set(String(schema_key::kPipelineStages), pipeline_stages.value());
+    Map<String, Any> supplement;
+    supplement.Set("kind", String(ToString(SupplementKind::kPipelineStructure)));
+    supplement.Set("payload", supplement_payload);
+    supplements->push_back(supplement);
+  }
 }
 
 }  // namespace

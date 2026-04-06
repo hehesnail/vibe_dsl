@@ -249,6 +249,11 @@
 - 对 TT-Metal execution hang，最先用的不是盲目加日志，而是 Watcher。当前仓库环境下，开启 `TT_METAL_WATCHER=2` 后的 watcher 输出默认写到工作目录下的 `generated/watcher/watcher.log`；复现同一 hang 时，稳定不变的 BRISC/NCRISC/TRISC 状态码组合很适合判断“修掉的是局部协议 bug，还是已经推动了死锁边界”
 - 对 `blackhole.acc` 这类 scratch CB，如果结果会被后续 matmul 当输入消费，producer 侧发布页数必须按未来 consumer 的 tile/page 需求来算，而不是按当前 pointwise/cast 自己写了几次就发几页；否则 compute 会在下一次 `mm_init` / `cb_wait_front` 上静默挂死
 - 当 `blackhole.acc` 既承载 scratch storage 又承载 CB 生命周期时，matmul output path 不能再无条件沿用 transport-CB 的 `cb_reserve_back -> pack_tile -> cb_push_back` 模板；是否允许 reserve/push 必须由该输出 scope 的生命周期模型决定
+- 对 `Phase B` 的 pipeline-stage truth migration，不能把 `blackhole.pipeline_stages` 直接从 `LowerBlackholeOps` 里删掉。更稳的 cutover 顺序是：
+  `AnalyzeSemanticStructure` 先把 stage truth 收成 `SemanticSupplement(kind=pipeline_structure)`，
+  `LowerToSpatialProgram` 再把它投影成
+  `ResourceIntent(kind=synchronization_support, traits+=pipeline_contract, payload=...)`，
+  然后 `LowerBlackholeOps` 改成 spatial-program-first 读取，legacy attr 和 body annotation 最后才降成 fallback
 
 ## Blackhole 后端开发原则
 

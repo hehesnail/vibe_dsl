@@ -53,6 +53,8 @@ Array<String> MakeTraits(std::initializer_list<const char*> values) {
   return result;
 }
 
+Map<String, Any> EmptyPayload() { return Map<String, Any>(); }
+
 Array<TIRAnchor> MakeAnchors(const std::string& kind, const std::string& value) {
   return Array<TIRAnchor>{TIRAnchor(String(kind), String(value))};
 }
@@ -90,6 +92,33 @@ bool HasDerivedIndices(const SemanticProgram& program, const tir::PrimFunc& func
     }
   }
   return false;
+}
+
+std::optional<Array<Any>> GetPipelineStagesFromSupplements(const SemanticProgram& program) {
+  for (const SemanticSupplement& supplement : program->supplements) {
+    if (static_cast<std::string>(supplement->kind) !=
+        ToString(SupplementKind::kPipelineStructure)) {
+      continue;
+    }
+    if (auto pipeline_stages = supplement->payload.Get(String(schema_key::kPipelineStages))) {
+      return Downcast<Array<Any>>(pipeline_stages.value());
+    }
+  }
+  return std::nullopt;
+}
+
+void AppendPipelineResourceIntent(const std::string& member_func, const SemanticProgram& program,
+                                  Array<ResourceIntent>* resource_intents) {
+  auto pipeline_stages = GetPipelineStagesFromSupplements(program);
+  if (!pipeline_stages.has_value() || pipeline_stages->empty()) {
+    return;
+  }
+  Map<String, Any> payload;
+  payload.Set(String(schema_key::kPipelineStages), pipeline_stages.value());
+  resource_intents->push_back(ResourceIntent(
+      String("pipeline_contract_" + member_func), String("synchronization_support"),
+      String(member_func), MakeTraits({"phase_b", "pipeline_contract"}), std::move(payload),
+      MakeAnchors("spatial_resource_intent", "pipeline_contract_" + member_func)));
 }
 
 std::vector<std::string> CollectSegmentKindsFromBody(const tir::Stmt& body) {
@@ -248,8 +277,9 @@ SpatialProgramBundle BuildCopyFastPath(const std::string& member_func,
   Array<SyncEdge> sync_edges;
   Array<ResourceIntent> resource_intents{
       ResourceIntent(String("copy_buffer"), String("buffer"), String("copy"),
-                     MakeTraits({"fast_path", "copy"}),
+                     MakeTraits({"fast_path", "copy"}), EmptyPayload(),
                      MakeAnchors("spatial_resource_intent", "copy_buffer"))};
+  AppendPipelineResourceIntent(member_func, program, &resource_intents);
   BuildCommonSpatialScaffolding(member_func, work_axes, has_derived_indices, &layouts,
                                 &work_partitions);
   return {SpatialProgram(String(member_func), phases, tasks, channels, layouts,
@@ -313,12 +343,13 @@ SpatialProgramBundle BuildGemmFastPath(const std::string& member_func,
                MakeAnchors("spatial_sync", "compute_to_writer"))};
   Array<ResourceIntent> resource_intents{
       ResourceIntent(String("gemm_input_buffers"), String("buffer"), String("reader"),
-                     MakeTraits({"fast_path", "gemm"}),
+                     MakeTraits({"fast_path", "gemm"}), EmptyPayload(),
                      MakeAnchors("spatial_resource_intent", "gemm_input_buffers")),
       ResourceIntent(String("gemm_accumulator"), String("state_residency"),
                      String(program->states.empty() ? "" : static_cast<std::string>(program->states[0]->name)),
-                     MakeTraits({"fast_path", "gemm"}),
+                     MakeTraits({"fast_path", "gemm"}), EmptyPayload(),
                      MakeAnchors("spatial_resource_intent", "gemm_accumulator"))};
+  AppendPipelineResourceIntent(member_func, program, &resource_intents);
   BuildCommonSpatialScaffolding(member_func, work_axes, has_derived_indices, &layouts,
                                 &work_partitions);
   return {SpatialProgram(String(member_func), phases, tasks, channels, layouts,
@@ -465,14 +496,16 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
         state->name,
         Array<String>{String(static_cast<std::string>(state->role)),
                       String(static_cast<std::string>(state->storage_scope))},
+        EmptyPayload(),
         MakeAnchors("spatial_resource_intent", state_name)));
     if (multi_phase && is_stateful) {
       resource_intents.push_back(ResourceIntent(
           String("phase_boundary_" + state_name), String("phase_boundary_materialization"),
-          state->name, MakeTraits({"phase_boundary"}),
+          state->name, MakeTraits({"phase_boundary"}), EmptyPayload(),
           MakeAnchors("spatial_resource_intent", "phase_boundary_" + state_name)));
     }
   }
+  AppendPipelineResourceIntent(member_func, program, &resource_intents);
 
   return {SpatialProgram(String(member_func), phases, tasks, channels, layouts,
                          work_partitions, placements, sync_edges, resource_intents,

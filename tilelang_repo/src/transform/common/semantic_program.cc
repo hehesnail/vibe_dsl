@@ -250,12 +250,14 @@ SyncEdge::SyncEdge(ffi::String name, ffi::String kind, ffi::String source,
 
 ResourceIntent::ResourceIntent(ffi::String name, ffi::String kind, ffi::String target_name,
                                ffi::Array<ffi::String> traits,
+                               ffi::Map<ffi::String, ffi::Any> payload,
                                ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<ResourceIntentNode>();
   n->name = std::move(name);
   n->kind = std::move(kind);
   n->target_name = std::move(target_name);
   n->traits = std::move(traits);
+  n->payload = std::move(payload);
   n->anchors = std::move(anchors);
   data_ = std::move(n);
 }
@@ -483,10 +485,12 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("tl.ResourceIntent",
                         [](ffi::String name, ffi::String kind, ffi::String target_name,
                            ffi::Array<ffi::String> traits,
+                           ffi::Map<ffi::String, ffi::Any> payload,
                            ffi::Array<TIRAnchor> anchors) {
                           return ResourceIntent(std::move(name), std::move(kind),
                                                 std::move(target_name),
-                                                std::move(traits), std::move(anchors));
+                                                std::move(traits), std::move(payload),
+                                                std::move(anchors));
                         });
   refl::GlobalDef().def("tl.ProgramPhase",
                         [](ffi::String name, ffi::Array<ffi::String> task_names,

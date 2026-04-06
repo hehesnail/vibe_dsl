@@ -63,6 +63,7 @@ enum class SupplementKind {
   kAccessTrait,
   kUpdateLawTrait,
   kSemanticBoundary,
+  kPipelineStructure,
 };
 
 enum class ContractMode {

@@ -113,6 +113,36 @@ def test_flash_attention_spatial_program_exposes_multi_phase_channels():
     assert len(registry[0].phases) >= 2
 
 
+def test_flash_attention_spatial_program_projects_pipeline_contract_resource_intent():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=2,
+            threads=128,
+        )
+    )
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    pipeline_contracts = [
+        intent
+        for intent in program.resource_intents
+        if str(intent.kind) == "synchronization_support"
+        and "pipeline_contract" in {str(trait) for trait in intent.traits}
+    ]
+
+    assert len(pipeline_contracts) == 1
+    stage_records = pipeline_contracts[0].payload["pipeline_stages"]
+    assert [int(stage["num_stages"]) for stage in stage_records] == [2, 2]
+    assert [str(stage["loop_var"]) for stage in stage_records] == ["k", "k"]
+
+
 def test_topk_spatial_program_exposes_selection_and_recurrence_family_gate():
     mod = _prepare_blackhole_phase_b_module(
         example_topk.tl_topk.jit_impl.get_tir(M=64, N=32, topk=4, blk_m=64, threads=128)
@@ -250,6 +280,46 @@ def test_validate_spatial_program_rejects_multi_phase_program_without_channel_co
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
+def test_validate_spatial_program_rejects_pipeline_program_without_pipeline_contract():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=2,
+            threads=128,
+        )
+    )
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    make_program = tvm.get_global_func("tl.SpatialProgram")
+    bad_program = make_program(
+        program.member_func,
+        program.phases,
+        program.tasks,
+        program.channels,
+        program.layouts,
+        program.work_partitions,
+        program.placements,
+        program.sync_edges,
+        [
+            intent
+            for intent in program.resource_intents
+            if "pipeline_contract" not in {str(trait) for trait in intent.traits}
+        ],
+        program.anchors,
+    )
+    mod = _replace_spatial_program(mod, bad_program)
+
+    with pytest.raises(Exception, match="pipeline programs to materialize at least one pipeline contract"):
+        tilelang.transform.ValidateSpatialProgram()(mod)
+
+
 def test_validate_spatial_program_rejects_registry_phase_signature_mismatch():
     mod = _prepare_blackhole_phase_b_module(
         _lower_flash_attention_example(
@@ -345,3 +415,26 @@ def test_lower_blackhole_ops_recovers_fragment_requirements_without_fragment_reg
 
     assert "pointwise_chain" in {str(item) for item in lowering_requirements["fragment_op_kinds"]}
     assert {"mul", "div"} <= {str(item) for item in lowering_requirements["pointwise_op_kinds"]}
+
+
+def test_lower_blackhole_ops_recovers_pipeline_requirements_without_pipeline_attr():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=2,
+            threads=128,
+        )
+    )
+    mod = _strip_attr(mod, "blackhole.pipeline_stages")
+    lowered = tilelang.transform.LowerBlackholeOps()(mod)["main"]
+    lowering_requirements = lowered.attrs["blackhole.lowering_requirements"]
+
+    assert [int(item) for item in lowering_requirements["pipeline_stage_counts"]] == [2, 2]
+    assert [str(item) for item in lowering_requirements["pipeline_loop_vars"]] == ["k"]
