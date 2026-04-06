@@ -41,6 +41,7 @@
 #include "../op/operator.h"
 #include "../op/reduce.h"
 #include "common/blackhole_utils.h"
+#include "common/fragment_region_analysis.h"
 #include "common/semantic_program.h"
 #include "common/semantic_vocab.h"
 
@@ -168,6 +169,7 @@ Map<String, Any> MergeManifest(const Map<String, Any>& base, const Map<String, A
   ffi::Array<Any> operations;
   ffi::Array<Any> ordered_regions;
   ffi::Array<Any> anchors;
+  ffi::Array<Any> structural_regions;
   std::unordered_set<std::string> seen_buffer_names;
 
   auto append_buffers = [&](const Map<String, Any>& manifest) {
@@ -197,12 +199,67 @@ Map<String, Any> MergeManifest(const Map<String, Any>& base, const Map<String, A
   append_array(&ordered_regions, extra, "ordered_regions");
   append_array(&anchors, base, "anchors");
   append_array(&anchors, extra, "anchors");
+  append_array(&structural_regions, base, "structural_regions");
+  append_array(&structural_regions, extra, "structural_regions");
 
   merged.Set("buffers", buffers);
   merged.Set("operations", operations);
   merged.Set("ordered_regions", ordered_regions);
   merged.Set("anchors", anchors);
+  if (!structural_regions.empty()) {
+    merged.Set("structural_regions", structural_regions);
+  }
   return merged;
+}
+
+Map<String, Any> EncodeStructuralManifestRegion(const Map<String, Any>& region,
+                                                const String& capture_stage) {
+  Map<String, Any> encoded;
+  encoded.Set("capture_stage", capture_stage);
+
+  auto copy_field = [&](const char* key) {
+    if (auto it = region.find(String(key)); it != region.end()) {
+      encoded.Set(String(key), (*it).second);
+    }
+  };
+
+  copy_field("fragment_buffers");
+  copy_field("selection_targets");
+  copy_field("selection_pairs");
+  copy_field("arg_reduce_targets");
+  copy_field("update_sources");
+  copy_field("loop_carried_state");
+  copy_field("recurrence_edges");
+  return encoded;
+}
+
+Map<String, Any> CollectStructuralManifestEvidence(const tir::PrimFunc& func,
+                                                   const String& capture_stage) {
+  Map<String, Any> encoded_regions = AnalyzeBlackholeFragmentRegionEvidence(func);
+  if (encoded_regions.empty()) {
+    return {};
+  }
+
+  auto regions_it = encoded_regions.find("regions");
+  if (regions_it == encoded_regions.end()) {
+    return {};
+  }
+
+  ffi::Array<Any> structural_regions;
+  for (const Any& region_any : tvm::Downcast<ffi::Array<Any>>((*regions_it).second)) {
+    auto region = tvm::Downcast<Map<String, Any>>(region_any);
+    auto structural_region = EncodeStructuralManifestRegion(region, capture_stage);
+    if (structural_region.size() > 1) {
+      structural_regions.push_back(structural_region);
+    }
+  }
+  if (structural_regions.empty()) {
+    return {};
+  }
+
+  Map<String, Any> manifest;
+  manifest.Set("structural_regions", structural_regions);
+  return manifest;
 }
 
 class SemanticManifestCollector : public tir::StmtVisitor {
@@ -440,6 +497,8 @@ tir::transform::Pass AugmentSemanticManifest() {
     SemanticManifestCollector collector(String("late_augment"), false, true);
     collector(func->body);
     auto augment = collector.Encode();
+    augment =
+        MergeManifest(augment, CollectStructuralManifestEvidence(func, String("late_augment")));
     if (augment.empty()) {
       return func;
     }

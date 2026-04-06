@@ -33,8 +33,10 @@
   - `Stateful Semantic IR` 已落地并完成 Phase B 前 hardening
   - 工程边界文档：`tasks/dev_design/stage4_phase_a_semantic_ir.md`
   - 理论并行文档：`tasks/dev_design/stage4_phase_a_formalization_note.md`
-  - `stage4_semantic_manifest` `Phase 1` 已落地：
+  - `stage4_semantic_manifest` `Phase 1-2` 已落地：
     `CollectSemanticManifestSeeds -> ProjectSemanticManifest -> AugmentSemanticManifest`
+  - `AnalyzeSemanticStructure` 已改成对 manifest structural evidence 的 manifest-first 消费，
+    `fragment_regions` 退化为 compatibility fallback
 - **Phase B**: 当前主实施阶段
   - 目标是把冻结后的 semantic truth 组织成 `SpatialProgram`
 - **Phase C**: 已定义，待 Phase B 后推进
@@ -85,6 +87,9 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
   - `TypedRebindBlackholeCompanionPrograms`
   - `tl.semantic_manifest_seeds / tl.semantic_manifest`
   - `AnalyzeSemanticStructure` 对 manifest 的 seed / witness / supplement integration
+  - manifest-backed structural evidence：
+    `fragment_buffers / selection_targets / selection_pairs / arg_reduce_targets /
+    update_sources / loop_carried_state / recurrence_edges`
 - `Phase A` 当前工程状态已经收口：
   - 不再依赖名字匹配恢复语义
   - 不再把 formal proof 草稿混在实现文档里
@@ -98,7 +103,7 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 ## 最新验证摘要
 
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py -q`
-  - `32 passed`
+  - `38 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `40 passed, 10 skipped, 1 xfailed`
 - `source scripts/setup_tt_sim.sh && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
@@ -136,7 +141,9 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
     - `SplitHostDevice` 之后的显式 projection
     - device-side pre-`LowerIntrin` 的 residual augment
   - semantic recovery 主体仍然只在 `AnalyzeSemanticStructure -> LiftStatefulSemanticIR -> Validate*`
-  - 当前 `Phase 1` 已实施，`Phase 2` 仍待把更多 structural evidence 从 `fragment_regions` 迁走
+  - 当前 `Phase 1-2` 已实施；`selection / arg-reduce / recurrence` structural evidence
+    已前移到 manifest 并改成 manifest-first 消费
+  - `fragment_regions` 当前仍保留 `row_reductions` 与 residual compatibility 职责
   - 它不是新的跨层真源，也不改变 `Phase B / C` 只消费冻结后 companion IR 的边界
 - `final_blackhole_backend_redesign.md` 已在 `2026-04-06` 按当前执行状态刷新：
   - 已收成轻量总体设计文档

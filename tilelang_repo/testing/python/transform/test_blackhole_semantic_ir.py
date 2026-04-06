@@ -164,6 +164,115 @@ def _prepare_blackhole_manifest_augmented_module(prim_func):
     return mod
 
 
+@T.prim_func
+def _synthetic_manifest_selection_structure(
+    logits: T.Buffer((16,), "float32"),
+    out_values: T.Buffer((4,), "float32"),
+    out_slots: T.Buffer((4,), "int32"),
+):
+    T.func_attr(
+        {
+            "global_symbol": "main",
+            "target": tvm.target.Target("blackhole"),
+            "tl.semantic_manifest": {
+                "buffers": [],
+                "operations": [],
+                "ordered_regions": [],
+                "anchors": [],
+                "structural_regions": [
+                    {
+                        "capture_stage": "late_augment",
+                        "fragment_buffers": [
+                            {"name": "score_fragment", "scope": "blackhole.acc", "is_integer": 0},
+                            {"name": "carry_slots", "scope": "blackhole.acc", "is_integer": 1},
+                            {"name": "best_value", "scope": "blackhole.acc", "is_integer": 0},
+                            {"name": "best_slot", "scope": "blackhole.acc", "is_integer": 1},
+                        ],
+                        "selection_targets": ["best_slot"],
+                        "selection_pairs": [
+                            {
+                                "value_target": "best_value",
+                                "companion_target": "best_slot",
+                                "source_states": ["score_fragment"],
+                            }
+                        ],
+                        "arg_reduce_targets": ["best_slot"],
+                        "update_sources": [
+                            {"target": "best_value", "sources": ["score_fragment"]},
+                            {"target": "best_slot", "sources": ["score_fragment", "carry_slots"]},
+                        ],
+                    }
+                ],
+            },
+        }
+    )
+    with T.Kernel(1, threads=32):
+        score_fragment = T.decl_buffer((16,), "float32", scope="blackhole.acc")
+        carry_slots = T.decl_buffer((16,), "int32", scope="blackhole.acc")
+        best_value = T.decl_buffer((4,), "float32", scope="blackhole.acc")
+        best_slot = T.decl_buffer((4,), "int32", scope="blackhole.acc")
+        tx = T.launch_thread("threadIdx.x", 32)
+
+        if tx < 16:
+            score_fragment[tx] = logits[tx]
+            carry_slots[tx] = tx
+        if tx < 4:
+            best_value[tx] = T.max(score_fragment[tx * 4], score_fragment[tx * 4 + 1])
+            best_slot[tx] = T.if_then_else(
+                score_fragment[tx * 4] >= score_fragment[tx * 4 + 1],
+                carry_slots[tx * 4],
+                carry_slots[tx * 4 + 1],
+            )
+            out_values[tx] = best_value[tx]
+            out_slots[tx] = best_slot[tx]
+
+
+@T.prim_func
+def _synthetic_manifest_recurrence_structure(
+    inp: T.Buffer((16,), "float32"),
+    out: T.Buffer((16,), "float32"),
+):
+    T.func_attr(
+        {
+            "global_symbol": "main",
+            "target": tvm.target.Target("blackhole"),
+            "tl.semantic_manifest": {
+                "buffers": [],
+                "operations": [],
+                "ordered_regions": [],
+                "anchors": [],
+                "structural_regions": [
+                    {
+                        "capture_stage": "late_augment",
+                        "fragment_buffers": [
+                            {"name": "input_state", "scope": "blackhole.acc", "is_integer": 0},
+                            {"name": "carry_state", "scope": "blackhole.acc", "is_integer": 0},
+                        ],
+                        "loop_carried_state": [{"name": "carry_state"}],
+                        "recurrence_edges": [
+                            {
+                                "target": "carry_state",
+                                "source_states": ["input_state", "carry_state"],
+                            }
+                        ],
+                        "update_sources": [
+                            {"target": "carry_state", "sources": ["input_state", "carry_state"]}
+                        ],
+                    }
+                ],
+            },
+        }
+    )
+    with T.Kernel(1, threads=32):
+        input_state = T.decl_buffer((16,), "float32", scope="blackhole.acc")
+        carry_state = T.decl_buffer((16,), "float32", scope="blackhole.acc")
+        tx = T.launch_thread("threadIdx.x", 32)
+        if tx < 16:
+            input_state[tx] = inp[tx]
+            carry_state[tx] = input_state[tx] + carry_state[tx]
+            out[tx] = carry_state[tx]
+
+
 def test_device_program_registry_is_collected_before_split_host_device():
     mod = _prepare_blackhole_stage0_module()
     mod = tilelang.transform.CollectDevicePrograms()(mod)
@@ -230,6 +339,71 @@ def test_semantic_manifest_late_augment_collects_residual_gemm_payload():
     )
 
 
+def test_semantic_manifest_phase2_collects_selection_and_arg_reduce_structural_evidence():
+    mod = _prepare_blackhole_manifest_augmented_module(
+        example_topk.tl_topk.jit_impl.get_tir(M=64, N=32, topk=4, blk_m=64, threads=128)
+    )
+
+    manifest = mod["main"].attrs["tl.semantic_manifest"]
+    structural_regions = list(manifest["structural_regions"])
+    selection_targets = {
+        str(target)
+        for region in structural_regions
+        for target in region.get("selection_targets", [])
+    }
+    arg_reduce_targets = {
+        str(target)
+        for region in structural_regions
+        for target in region.get("arg_reduce_targets", [])
+    }
+    selection_pairs = [
+        (str(pair["value_target"]), str(pair["companion_target"]))
+        for region in structural_regions
+        for pair in region.get("selection_pairs", [])
+    ]
+
+    assert "expand_max_idx" in selection_targets
+    assert "max_idx" in arg_reduce_targets
+    assert ("max_val", "expand_max_idx") in selection_pairs
+
+
+def test_semantic_manifest_phase2_collects_recurrence_structural_evidence():
+    mod = _prepare_blackhole_manifest_augmented_module(
+        chunk_delta_h_example.tilelang_chunk_gated_delta_rule_fwd_h.jit_impl.get_tir(
+            B=1,
+            S=64,
+            H=4,
+            DK=32,
+            DV=32,
+            input_dtype=T.float16,
+            output_dtype=T.float16,
+            accum_dtype=T.float32,
+            gate_dtype=T.float16,
+            state_dtype=T.float32,
+            chunk_size=32,
+            use_g=True,
+            use_initial_state=True,
+            store_final_state=True,
+            save_new_value=True,
+            block_DK=32,
+            block_DV=32,
+            threads=128,
+            num_stages=1,
+        )
+    )
+
+    manifest = mod["main"].attrs["tl.semantic_manifest"]
+    structural_regions = list(manifest["structural_regions"])
+    recurrence_edges = [
+        (str(edge["target"]), [str(source) for source in edge["source_states"]])
+        for region in structural_regions
+        for edge in region.get("recurrence_edges", [])
+    ]
+
+    assert any(target == "b_h_fragment" for target, _ in recurrence_edges)
+    assert any(any(source != target for source in sources) for target, sources in recurrence_edges)
+
+
 def test_analyze_semantic_structure_consumes_manifest_as_explicit_op_evidence():
     mod = _prepare_blackhole_phase_a_module(gemm_kernel())
 
@@ -246,6 +420,53 @@ def test_analyze_semantic_structure_consumes_manifest_as_explicit_op_evidence():
     )
     assert "explicit_op_manifest" in {str(seed) for seed in program.seeds}
     assert any(str(supplement.kind) == "semantic_boundary" for supplement in program.supplements)
+
+
+def test_analyze_semantic_structure_recovers_selection_from_manifest_without_fragment_regions():
+    mod = _lift_semantic_program_from_existing_structure(_synthetic_manifest_selection_structure)
+
+    witnesses = mod["main"].attrs["tl.semantic_witnesses"]
+    program = mod["main"].attrs["tl.semantic_program"]
+    state_roles_by_name = {str(state.name): str(state.role) for state in program.states}
+    select_updates = {str(update.name): update for update in program.updates if str(update.law.kind) == "select"}
+
+    assert state_roles_by_name["best_slot"] == "index_state"
+    assert "select_best_slot" in select_updates
+    assert any(
+        str(w.subject_kind) == "relation"
+        and str(w.subject_anchor_id) == "select_best_slot"
+        and str(w.fact_axis) == "companion"
+        and "semantic_manifest" in {str(source) for source in w.evidence_sources}
+        for w in witnesses
+    )
+    assert any(
+        str(w.subject_kind) == "relation"
+        and str(w.subject_anchor_id) == "best_slot"
+        and str(w.fact_axis) == "derives_index_from"
+        and "semantic_manifest" in {str(source) for source in w.evidence_sources}
+        for w in witnesses
+    )
+
+
+def test_analyze_semantic_structure_recovers_recurrence_from_manifest_without_fragment_regions():
+    mod = _lift_semantic_program_from_existing_structure(_synthetic_manifest_recurrence_structure)
+
+    witnesses = mod["main"].attrs["tl.semantic_witnesses"]
+    program = mod["main"].attrs["tl.semantic_program"]
+    recurrence_updates = [update for update in program.updates if str(update.law.kind) == "recurrence"]
+
+    assert recurrence_updates
+    assert any(
+        str(binding.kind) == "recurrence_source_state"
+        for update in recurrence_updates
+        for binding in update.bindings
+    )
+    assert any(
+        str(w.subject_kind) == "relation"
+        and str(w.fact_axis) == "carried_from"
+        and "semantic_manifest" in {str(source) for source in w.evidence_sources}
+        for w in witnesses
+    )
 
 
 def test_hard_freeze_invalidates_companion_programs_after_unsafe_mutation():
@@ -548,6 +769,29 @@ def test_topk_semantic_witnesses_expose_generic_fact_axes():
     assert ("relation", "derives_index_from") in fact_axes
 
 
+def test_topk_semantic_witnesses_prefer_manifest_structural_sources():
+    mod = _prepare_blackhole_semantic_witness_module(
+        example_topk.tl_topk.jit_impl.get_tir(M=64, N=32, topk=4, blk_m=64, threads=128)
+    )
+
+    witnesses = mod["main"].attrs["tl.semantic_witnesses"]
+
+    assert any(
+        str(w.subject_kind) == "relation"
+        and str(w.subject_anchor_id) == "select_expand_max_idx"
+        and str(w.fact_axis) == "companion"
+        and "semantic_manifest" in {str(source) for source in w.evidence_sources}
+        for w in witnesses
+    )
+    assert any(
+        str(w.subject_kind) == "relation"
+        and str(w.subject_anchor_id) == "max_idx"
+        and str(w.fact_axis) == "derives_index_from"
+        and "semantic_manifest" in {str(source) for source in w.evidence_sources}
+        for w in witnesses
+    )
+
+
 def test_chunk_recurrence_semantic_program_lifts_recurrence_updates():
     mod = _prepare_blackhole_phase_a_module(
         chunk_delta_h_example.tilelang_chunk_gated_delta_rule_fwd_h.jit_impl.get_tir(
@@ -654,6 +898,41 @@ def test_chunk_recurrence_semantic_witnesses_capture_generic_carried_facts():
 
     assert ("update", "ordering") in fact_axes
     assert ("relation", "carried_from") in fact_axes
+
+
+def test_chunk_recurrence_semantic_witnesses_prefer_manifest_sources():
+    mod = _prepare_blackhole_semantic_witness_module(
+        chunk_delta_h_example.tilelang_chunk_gated_delta_rule_fwd_h.jit_impl.get_tir(
+            B=1,
+            S=64,
+            H=4,
+            DK=32,
+            DV=32,
+            input_dtype=T.float16,
+            output_dtype=T.float16,
+            accum_dtype=T.float32,
+            gate_dtype=T.float16,
+            state_dtype=T.float32,
+            chunk_size=32,
+            use_g=True,
+            use_initial_state=True,
+            store_final_state=True,
+            save_new_value=True,
+            block_DK=32,
+            block_DV=32,
+            threads=128,
+            num_stages=1,
+        )
+    )
+
+    witnesses = mod["main"].attrs["tl.semantic_witnesses"]
+
+    assert any(
+        str(w.subject_kind) == "relation"
+        and str(w.fact_axis) == "carried_from"
+        and "semantic_manifest" in {str(source) for source in w.evidence_sources}
+        for w in witnesses
+    )
 
 
 def test_flash_attention_semantic_program_separates_algorithmic_state_from_transient_scratch():

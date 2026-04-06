@@ -124,20 +124,24 @@
 
 ## 2.4 信任边界与已知假设
 
-`Phase A` 的 witness quality 完全取决于上游 fragment analysis 的质量。具体来说：
+`Phase A` 的 witness quality 取决于上游 evidence source 的质量。当前已经分成两类：
 
 - `AnalyzeBlackholeWorkDecomposition` 决定 domain skeleton
-- `AnalyzeBlackholeFragmentRegions` 决定 fragment evidence（`selection_pairs`、`arg_reduce_targets`、`update_sources`、`recurrence_edges`）
+- `CollectSemanticManifestSeeds -> ProjectSemanticManifest -> AugmentSemanticManifest`
+  决定 explicit-op evidence 与 manifest-backed structural evidence
+  （当前包括 `fragment_buffers / selection_targets / selection_pairs / arg_reduce_targets /
+  update_sources / loop_carried_state / recurrence_edges`）
+- `AnalyzeBlackholeFragmentRegions` 当前退化为 compatibility fallback / residual reduction evidence
 - `AnalyzeBlackholePipelineStages` 决定 pipeline trait
 
 `Phase A` 内部的 `AnalyzeSemanticStructure -> LiftStatefulSemanticIR -> ValidateSemanticRefinement` 只能保证：
 给定上游 evidence，lift 和 validation 是正确的。但如果上游 evidence 本身遗漏或错误，`Phase A` 不会发明出正确语义。
 
-因此，扩展新 workload family（如 fusedmoe、paged decode）时，**首先要确认上游 fragment analysis 能正确收集该 family 的 evidence**，然后才是 `Phase A` 的 witness/core/validator 是否覆盖。
+因此，扩展新 workload family（如 fusedmoe、paged decode）时，**首先要确认上游 manifest / fragment evidence source 能正确收集该 family 的 evidence**，然后才是 `Phase A` 的 witness/core/validator 是否覆盖。
 
 另外，`CanonicalBufferName`（`analyze_semantic_structure.cc`）假设 lowering 只在 buffer 名末尾追加 `_<digits>` suffix。如果未来 lowering pass 改变命名规则，这里需要同步更新。
 
-`TypedRebindBlackholeCompanionPrograms` 在 rebind 时会重建 state/effect graph（调用 `BuildStateEffectGraph`），不会沿用��� graph。`body_hash` 校验确保 body 不会在 rebind 后被静默修改。
+`TypedRebindBlackholeCompanionPrograms` 在 rebind 时会重建 state/effect graph（调用 `BuildStateEffectGraph`），不会沿用旧 graph。`body_hash` 校验确保 body 不会在 rebind 后被静默修改。
 
 ## 3. 当前代码落点
 
@@ -158,7 +162,12 @@
 当前 Blackhole 设备侧 pass 主线中与 `Phase A` 直接相关的部分是：
 
 ```text
-AnalyzeBlackholeWorkDecomposition
+AugmentSemanticManifest
+-> LowerIntrin
+-> Simplify
+-> HoistBroadcastValues
+-> SplitBlackholeKernel
+-> AnalyzeBlackholeWorkDecomposition
 -> AnalyzeBlackholeFragmentRegions
 -> AnalyzeBlackholePipelineStages
 -> AnalyzeSemanticStructure
@@ -171,6 +180,8 @@ AnalyzeBlackholeWorkDecomposition
 `Phase A` 当前使用并维护的 companion attrs 包括：
 
 - `tl.semantic_seeds`
+- `tl.semantic_manifest_seeds`
+- `tl.semantic_manifest`
 - `tl.semantic_structure`
 - `tl.semantic_witnesses`
 - `tl.semantic_program`

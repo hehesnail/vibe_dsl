@@ -38,6 +38,8 @@
 #include <utility>
 #include <vector>
 
+#include "common/fragment_region_analysis.h"
+
 namespace tvm {
 namespace tl {
 
@@ -753,16 +755,24 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
 
 }  // namespace
 
+Map<String, Any> AnalyzeBlackholeFragmentRegionEvidence(const PrimFunc& func) {
+  FragmentRegionAnalyzer analyzer;
+  analyzer.Analyze(func);
+  if (!analyzer.HasRegion()) {
+    return {};
+  }
+  return analyzer.Encode();
+}
+
 tir::transform::Pass AnalyzeBlackholeFragmentRegionsPass() {
   auto fpass = [](PrimFunc func, IRModule, tir::transform::PassContext) -> PrimFunc {
-    FragmentRegionAnalyzer analyzer;
-    analyzer.Analyze(func);
-    if (!analyzer.HasRegion()) {
+    Map<String, Any> encoded = AnalyzeBlackholeFragmentRegionEvidence(func);
+    if (encoded.empty()) {
       return func;
     }
 
     Map<String, Any> attrs = func->attrs.defined() ? func->attrs->dict : Map<String, Any>();
-    attrs.Set("blackhole.fragment_regions", analyzer.Encode()["regions"]);
+    attrs.Set("blackhole.fragment_regions", encoded["regions"]);
     PrimFunc updated = func;
     updated.CopyOnWrite()->attrs = DictAttrs(attrs);
     return updated;

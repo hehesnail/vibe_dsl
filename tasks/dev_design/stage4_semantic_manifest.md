@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档角色**: `Phase A` 信息源重构初设
-- **当前状态**: `Phase 1` 已实施（`2026-04-06`），`Phase 2` 待推进
+- **当前状态**: `Phase 1-2` 已实施（`2026-04-06`），当前作为 `Phase A` 信息源边界文档保留
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
 - **直接前置**: `tasks/dev_design/stage4_phase_a_semantic_ir.md`
 
@@ -113,7 +113,7 @@ blackhole_codegen(device_mod)
 
 ### 4.3 manifest schema
 
-第一阶段保持最小：
+当前已落地 schema：
 
 | 字段 | 含义 |
 |---|---|
@@ -121,8 +121,9 @@ blackhole_codegen(device_mod)
 | `operations` | explicit-op payload 列表 |
 | `ordered_regions` | 最小 ordered / serial region anchor |
 | `anchors` | split / region 级稳定锚点 |
+| `structural_regions` | selection / arg-reduce / recurrence 相关 structural evidence |
 
-第一阶段明确不放：
+仍然明确不放：
 
 - `selection_pairs`
 - `arg_reduce_targets`
@@ -148,10 +149,20 @@ blackhole_codegen(device_mod)
   - `operations` 保留 op kind、capture stage、ordered-region anchor 与 typed payload
   - `ordered_regions` 保留最小 lexical ordered region
   - `anchors` 保留 operation / ordered-region anchor
+  - `structural_regions` 保留：
+    - `fragment_buffers`
+    - `selection_targets`
+    - `selection_pairs`
+    - `arg_reduce_targets`
+    - `update_sources`
+    - `loop_carried_state`
+    - `recurrence_edges`
 - `AnalyzeSemanticStructure` 当前对 manifest 的消费边界也已经落地：
   - 追加 `explicit_op_manifest` seed
   - 发出 `boundary / ordered_region` witness，`evidence_source = semantic_manifest`
   - 增加 `semantic_boundary` supplement
+  - `selection / arg-reduce / recurrence` witness 现在 manifest-first
+  - manifest-only 输入已经足够支撑 `select / recurrence` witness 与 semantic lift
   - 不改变 `SemanticProgram` core 的 `Domain / State / Update` 词汇边界
 
 ## 5. 第一阶段范围
@@ -220,7 +231,7 @@ blackhole_codegen(device_mod)
 
 - 1-6 已完成
 
-### 7.2 Phase 2
+### 7.2 Phase 2（已实施，`2026-04-06`）
 
 目标：
 
@@ -233,9 +244,21 @@ blackhole_codegen(device_mod)
 - `arg_reduce_targets`
 - `recurrence_edges`
 
-预期结果：
+完成条件：
 
-- `fragment_regions` 对 `AnalyzeSemanticStructure` 退化成 compatibility fallback
+1. `AugmentSemanticManifest` 能前移 `selection_targets / selection_pairs / arg_reduce_targets /
+   recurrence_edges`
+2. 为了让 manifest-only consumer 成立，同时带上 `fragment_buffers / update_sources /
+   loop_carried_state`
+3. `AnalyzeSemanticStructure` 对上述结构 evidence 改成 manifest-first
+4. `fragment_regions` 对 `AnalyzeSemanticStructure` 退化成 compatibility fallback
+
+当前状态：
+
+- 1-4 已完成
+- `row_reductions` 仍保留在 `fragment_regions`：
+  - 这是有意保留的 residual compatibility / reduction evidence
+  - 不改变当前 `LowerBlackholeOps` 与 compile-path 行为
 
 ## 8. 不做的事
 
