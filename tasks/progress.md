@@ -179,6 +179,9 @@
       “target-informed but non-target-materialized virtual spatial/dataflow program”，
       后续 `Phase B` 需要引入 abstract `SpatialCapabilityModel` 作为 legality / policy 输入；
       concrete `TTHardwareModel` 仍归 `Phase C`
+    - `Phase B` 文档里的算法职责也已具体化为五组正式算法：
+      `task formation`、`flow shaping`、`domain realization`、
+      `phase and ordering synthesis`、`capability-informed legality/policy`
       `LowerToSpatialProgram` 再把它投影成
       `ResourceIntent(kind=synchronization_support, traits+=pipeline_contract)`
     - `LowerBlackholeOps` 的 pipeline legality input

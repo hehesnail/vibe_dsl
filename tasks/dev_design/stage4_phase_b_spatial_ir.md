@@ -257,6 +257,219 @@
   - 用 `SpatialCapabilityModel` 裁掉不合法候选
   - 在合法候选里再做 locality / reuse / communication / synchronization tradeoff
 
+### 3.4 具体算法定义
+
+下面这些算法不是实现建议，而是 `Phase B` 的正式职责定义。
+后续代码、validator 和 `Phase C` 边界都按它们来约束。
+
+#### 3.4.1 Task Formation Algorithm
+
+**输入**
+
+- `SemanticProgram.updates`
+- `SemanticProgram.states / state_defs / state_uses / state_joins`
+- `Domain / AccessMap / UpdateLaw`
+- `SpatialCapabilityModel`
+
+**输出**
+
+- 一组稳定的 `Task`
+- 每个 `Task` 的 execution role、phase membership 候选、update membership
+
+**算法**
+
+1. 先构造 `update-state` 二部图：
+   - update 写哪些 state version
+   - update 读哪些 state version
+   - 哪些 state join/merge 形成多源汇合
+2. 对每个 update 计算 `execution signature`：
+   - update law class：`map / reduce / select / recurrence`
+   - access class：dense / indexed / indirect / paged / grouped / predicate-filtered
+   - state interaction class：stateless / carry / reduction / selection / index-valued
+3. 计算 **mandatory cut predicates**。两个 update 之间只要满足任一条件，就不能默认 fuse：
+   - 中间存在 state version boundary，且该 version 要求 materialized flow
+   - law class 不兼容，必须区分 `transfer / compute / collective / control`
+   - access class 对 layout/partition 的要求不兼容
+   - `SpatialCapabilityModel` 不允许它们共享 placement / communication domain
+   - 会破坏 ordered update / carry / reduction completion 语义
+4. 以 update 为初始 seed task，先按 mandatory cut 切开。
+5. 仅在以下条件全部满足时，允许把相邻 seed task 融合为同一个 virtual task：
+   - phase class 兼容
+   - layout/partition family 兼容
+   - flow 仍可在 task 内局部实现，不需要显式 channel
+   - capability model 允许共享 placement / locality domain
+6. 对每个 task 赋 `Task.kind`：
+   - 以主导 execution signature 决定，不允许靠 workload 名字决定
+   - `map` + data movement dominated -> `transfer`
+   - dense arithmetic dominated -> `compute`
+   - reduction / merge dominated -> `collective`
+   - select / route / recurrence control dominated -> `control`
+
+**不允许**
+
+- 直接按 workload 名字或单个 kernel 形态分 task
+- 先假设 `Task:TTKernel = 1:1`，再倒推 task
+
+#### 3.4.2 Flow Shaping Algorithm
+
+**输入**
+
+- `state_defs / state_uses / state_joins`
+- `UpdateLaw`
+- `AccessMap`
+- `SpatialCapabilityModel`
+
+**输出**
+
+- 一组 `Channel`
+- 每条 channel 的 flow class、delivery semantics、state/version contract
+
+**算法**
+
+1. 以 `state version` 为主键构造 producer-consumer relation。
+2. 对每条 relation 先求 `flow class`：
+   - 单 producer -> 单 consumer：`point_to_point`
+   - 单 producer -> 多 consumer 同版本：`broadcast`
+   - 多 producer / join -> 单 consumer：`gather` 或 `reduce_merge`
+   - recurrence / carry edge：`carry`
+   - indirect index selected subset：`scatter` / `filtered`
+3. 再求 `delivery semantics`：
+   - 是否必须 ordered
+   - 是否必须 completion-visible
+   - 是否必须跨 phase materialize
+   - 是否允许 async arrival / buffered transport
+4. 如果 flow class 超出 `SpatialCapabilityModel` 能表达的 family，
+   直接判非法，不允许偷偷降成 generic tensor flow。
+5. 生成 `Channel` 时，显式绑定：
+   - source task
+   - target task
+   - state / version target
+   - flow class
+   - delivery semantics
+
+**不允许**
+
+- 把所有边都压成同一种 `tensor_flow`
+- 丢掉 version / delivery semantics 让 `Phase C` 再猜
+
+#### 3.4.3 Domain Realization Algorithm
+
+**输入**
+
+- `Domain`
+- `AccessMap`
+- `UpdateLaw`
+- `SemanticSupplement` 里的 derived/indexed/paged/grouped/chunk evidence
+- `SpatialCapabilityModel`
+
+**输出**
+
+- `Layout`
+- `WorkPartition`
+
+**算法**
+
+1. 从 semantic domain 取出 base iteration space。
+2. 从 access map / supplement 识别 domain transform：
+   - derived index
+   - predicate filter
+   - indirect gather/scatter
+   - grouped / routed remap
+   - paged indirection
+   - chunked step decomposition
+3. 先确定 `layout family`：
+   - direct affine / separable access -> `regular`
+   - packed contiguous subgroup -> `packed`
+   - derived / indirect / paged index -> `indexed`
+   - predicate-selected subset -> `filtered`
+   - routed/grouped remap -> grouped/filter-index hybrid contract
+4. 再确定 `partition family`：
+   - separable multi-axis tiling -> `blocked`
+   - scalar or replicated read-mostly domain -> `replicated`
+   - index-driven subset ownership -> `indexed`
+   - predicate- or route-selected subset -> `filtered`
+5. 用 `SpatialCapabilityModel` 过滤不合法选择：
+   - 不支持该 partition family 就 fail-fast
+   - 不支持 required replication / sharding / neighborhood 就 fail-fast
+6. 在合法候选中做 policy 选择：
+   - 优先 locality preserving
+   - 优先减少 cross-neighborhood traffic
+   - 优先保留 stateful carry/reduction 所需稳定 ownership
+
+**不允许**
+
+- 只按轴数决定 `blocked / replicated`
+- 把 paged / grouped / routed / chunked 全都退化成普通 indexed axes
+
+#### 3.4.4 Phase And Ordering Synthesis Algorithm
+
+**输入**
+
+- `Task`
+- `Channel`
+- stateful/reduction/carry semantics
+- `SpatialCapabilityModel`
+
+**输出**
+
+- `ProgramPhase`
+- `SyncEdge`
+- `phase_boundary_materialization` requirements
+
+**算法**
+
+1. 从 task graph 构造 must-happen-before relation。
+2. 把以下边标成 ordering-critical：
+   - carry
+   - reduction completion
+   - selection/index state handoff
+   - explicit phase-boundary materialization
+3. 对每条 ordering-critical edge 判断：
+   - 是否允许同 phase 局部实现
+   - 是否必须跨 phase
+   - 是否需要 barrier / completion / async arrival
+4. 把可局部闭包的子图合成同一个 phase。
+5. 把必须 materialize 的边切成 cross-phase edge，并生成：
+   - `SyncEdge`
+   - `ResourceIntent(kind=phase_boundary_materialization)`
+6. 对 phase condensation graph 做 topological ordering，得到稳定 `ProgramPhase` 序列。
+
+**不允许**
+
+- 只靠固定的 `phase0_compute / phase1_stateful` 模板命名
+- 没有 ordering proof 就先生成 phase 再补 sync
+
+#### 3.4.5 Capability-Informed Legality And Policy
+
+**输入**
+
+- 候选 `Task / Channel / Layout / WorkPartition / ProgramPhase`
+- `SpatialCapabilityModel`
+
+**输出**
+
+- 合法候选空间
+- policy 选中的 canonical `SpatialProgram`
+
+**legality 必须回答**
+
+- 该 flow class 是否被机器支持
+- 该 layout / partition family 是否被机器支持
+- 该 placement / neighborhood 假设是否被机器支持
+- 该 ordering / sync family 是否可表达
+- 该 residency / persistence 假设是否成立
+
+**policy 才能回答**
+
+- 在多个合法 task split/fuse 中选哪个
+- 在多个合法 partition/layout 中选哪个
+- 在多个合法 communication shaping 中选哪个
+
+**不允许**
+
+- policy 先选，再让 validator 兜底
+- 因为当前样例“能跑”就把 capability 不支持的结构塞进 Spatial IR
+
 ## 4. 当前实施重点
 
 当前 `Phase B` 的实施重点是：
