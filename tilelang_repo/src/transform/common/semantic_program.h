@@ -28,6 +28,24 @@ constexpr const char* kTLTTProgram = "tl.tt_program";
 constexpr const char* kTLCompanionInvalidationReason = "tl.companion_invalidation_reason";
 }  // namespace attr
 
+// Manifest schema keys — used as Map<String,Any> keys inside kTLSemanticManifest
+// and structural_regions.  Centralised here so a typo becomes a compile error.
+namespace manifest_key {
+constexpr const char* kBuffers = "buffers";
+constexpr const char* kOperations = "operations";
+constexpr const char* kOrderedRegions = "ordered_regions";
+constexpr const char* kAnchors = "anchors";
+constexpr const char* kStructuralRegions = "structural_regions";
+constexpr const char* kFragmentBuffers = "fragment_buffers";
+constexpr const char* kSelectionTargets = "selection_targets";
+constexpr const char* kSelectionPairs = "selection_pairs";
+constexpr const char* kArgReduceTargets = "arg_reduce_targets";
+constexpr const char* kUpdateSources = "update_sources";
+constexpr const char* kLoopCarriedState = "loop_carried_state";
+constexpr const char* kRecurrenceEdges = "recurrence_edges";
+constexpr const char* kRowReductions = "row_reductions";
+}  // namespace manifest_key
+
 class TIRAnchorNode : public Object {
  public:
   ffi::String kind;

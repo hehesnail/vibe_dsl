@@ -89,9 +89,11 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
   - `AnalyzeSemanticStructure` 对 manifest 的 seed / witness / supplement integration
   - manifest-backed structural evidence：
     `fragment_buffers / selection_targets / selection_pairs / arg_reduce_targets /
-    update_sources / loop_carried_state / recurrence_edges`
-  - `blackhole.fragment_regions` 已不再是 semantic truth 主输入；
-    当前保留原因是 `row_reductions` 仍同时服务 semantic recovery 与 `LowerBlackholeOps`
+    update_sources / loop_carried_state / recurrence_edges / row_reductions`
+  - manifest schema key 已集中到 `manifest_key::` 命名空间（`semantic_program.h`）
+  - `blackhole.fragment_regions` 不再是 semantic truth 输入；
+    semantic 侧所有 evidence 已切换为 manifest-first 消费；
+    `fragment_regions` 当前唯一剩余消费者是 `LowerBlackholeOps`（lowering-facing）
 - `Phase A` 当前工程状态已经收口：
   - 不再依赖名字匹配恢复语义
   - 不再把 formal proof 草稿混在实现文档里

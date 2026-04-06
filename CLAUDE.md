@@ -208,8 +208,9 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - `build_blackhole/` 和 legacy runner 都已删除
 - `tasks/dev_design/` 根目录只保留活动文档；`tasks/dev_design/archive/` 下内容全部视为历史记录，不再作为当前入口
 - `Phase A` 与 `stage4_semantic_manifest` `Phase 1-2` 已完成；
-  `AnalyzeSemanticStructure` 已改成 manifest-first，
-  `blackhole.fragment_regions` 仅剩 residual reduction evidence 与 lowering compatibility 职责
+  `AnalyzeSemanticStructure` 已全面改成 manifest-first（含 `row_reductions`），
+  `blackhole.fragment_regions` 仅剩 `LowerBlackholeOps` lowering-facing 消费；
+  manifest schema key 已集中到 `manifest_key::` 命名空间
 - 当前 Blackhole 设备侧 pass 主线：
   `LowerDeviceStorageAccessInfo` → `AugmentSemanticManifest` → `LowerIntrin` → `Simplify` → `HoistBroadcastValues` → `SplitBlackholeKernel` → `AnalyzeBlackholeWorkDecomposition` → `AnalyzeBlackholeFragmentRegions` → `AnalyzeBlackholePipelineStages` → `AnalyzeSemanticStructure` → `LiftStatefulSemanticIR` → `ValidateStatefulSemanticIR` → `ValidateSemanticRefinement` → `LowerBlackholeOps` → `PlanBlackholeCB` → `AssignBlackholeCores`
 - `SplitBlackholeKernel` 已实现并已接入管线；纯 copy 走 `fused_dataflow` 单 kernel，GEMM 走 3-kernel（reader/compute/writer）

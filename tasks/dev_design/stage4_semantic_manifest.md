@@ -150,10 +150,13 @@ blackhole_codegen(device_mod)
 - `State.role`
 - `UpdateLaw.kind`
 - `paired_value_state`
-- `row_reductions`
 - lowering-facing fragment subset / legality summary
 
 原因很简单：这些已经不是 raw evidence，而是在往 witness / semantic core 滑。
+
+`row_reductions` 已在 `2026-04-06` 迁入 manifest structural evidence（`manifest_key::kRowReductions`），
+`AnalyzeSemanticStructure` 对 reduction evidence 改成 manifest-first 消费。
+`LowerBlackholeOps` 仍通过 `blackhole.fragment_regions` 消费 `row_reduction_targets`（lowering-facing，不归 manifest 管）。
 
 ### 4.4 当前实现落点（`2026-04-06`）
 
@@ -200,14 +203,15 @@ blackhole_codegen(device_mod)
 | structural evidence | `selection_targets / selection_pairs / arg_reduce_targets / recurrence_edges / update_sources / loop_carried_state` | 是 |
 | domain skeleton | work axes / derived indices | 否，仍由 `blackhole.work_decomposition` 承接 |
 | pipeline skeleton | pipeline trait | 否，仍由 `blackhole.pipeline_stages` 承接 |
-| residual reduction evidence | `row_reductions` | 否，仍留在 `fragment_regions` |
+| reduction evidence | `row_reductions` | 是（`2026-04-06` 已迁入 manifest structural evidence） |
 | target-facing lowering requirement | CB / segment / runtime lowering 需求 | 否 |
 
 也就是说，当前 manifest 的准确边界是：
 
 - 把会被 destructive lowering 吃掉的 explicit-op evidence 前移保存
 - 把 selection / arg-reduce / recurrence 相关 structural evidence 前移为 typed carrier
-- 不把 domain / pipeline skeleton、lowering summary、`row_reductions` 混进 manifest
+- 不把 domain / pipeline skeleton、lowering summary 混进 manifest
+- `row_reductions` 已迁入 manifest；`LowerBlackholeOps` 仍独立从 `fragment_regions` 读 lowering-facing `row_reduction_targets`
 
 ## 6. `AnalyzeSemanticStructure` 当前怎么接
 
@@ -217,8 +221,8 @@ blackhole_codegen(device_mod)
 
 | 输入 | 用途 |
 |---|---|
-| `tl.semantic_manifest` | explicit-op evidence + manifest-backed structural evidence |
-| `blackhole.fragment_regions` | residual reduction evidence + compatibility fallback |
+| `tl.semantic_manifest` | explicit-op evidence + manifest-backed structural evidence（含 `row_reductions`） |
+| `blackhole.fragment_regions` | lowering compatibility fallback（semantic 侧仅在 manifest 缺失时回退） |
 | `blackhole.work_decomposition` | domain skeleton |
 | `blackhole.pipeline_stages` | pipeline trait |
 | `tl.semantic_seeds` | pre-lift typed seed |
@@ -284,26 +288,28 @@ blackhole_codegen(device_mod)
 当前状态：
 
 - 1-4 已完成
-- `row_reductions` 仍保留在 `fragment_regions`：
-  - 这是有意保留的 residual compatibility / reduction evidence
-  - 原因不是遗漏，而是它当前仍同时服务：
-    - `AnalyzeSemanticStructure` 的 `reduce_*` update 恢复
-    - `LowerBlackholeOps` 的 lowering-facing summary
-  - 不改变当前 `LowerBlackholeOps` 与 compile-path 行为
+- `row_reductions` 已在 `2026-04-06` 完成 manifest 迁入：
+  - `EncodeStructuralManifestRegion` 现在 copy `manifest_key::kRowReductions`
+  - `AnalyzeSemanticStructure` 对 reduction evidence 改成 manifest-first 消费
+    （通过 `EvidenceAccumulator::IngestStructuralRegion` 统一处理 manifest 和 fragment_regions 来源）
+  - `LowerBlackholeOps` 仍独立从 `blackhole.fragment_regions` 读 `row_reduction_targets`（lowering-facing，不归 manifest 管）
+  - semantic 侧已完成所有 evidence 的 manifest-first 切换
+- manifest schema 所有 key 已集中到 `manifest_key::` 命名空间（`semantic_program.h`）
 
 ### 7.3 `fragment_regions` 的退出条件
 
 `blackhole.fragment_regions` 的最终命运仍然是退场，但顺序必须明确：
 
-1. 先把 semantic 侧剩余需要的 `row_reductions` 相关 evidence 拆成 manifest-first / semantic-owned 输入
+1. ~~先把 semantic 侧剩余需要的 `row_reductions` 相关 evidence 拆成 manifest-first / semantic-owned 输入~~ **已完成（`2026-04-06`）**
 2. 再把 lowering 侧需要的 reduction / fragment subset summary 迁到独立 lowering-facing summary
 3. 等 `LowerBlackholeOps` 不再直接读 `fragment_regions`
 4. 最后让 `AnalyzeBlackholeFragmentRegions` 降成内部 helper 或调试路径，删除该 companion attr
 
 也就是说：
 
-- 现在不删，是因为还有 lowering consumer
-- 后面要删，但要先踢掉 consumer，再踢掉 attr 本身
+- semantic 侧不再依赖 `fragment_regions` 作为 primary evidence source（manifest-first 已全面生效）
+- `fragment_regions` 当前唯一剩余消费者是 `LowerBlackholeOps`（lowering-facing）
+- 后面要删，但要先给 lowering 建独立 summary，再踢掉 attr 本身
 
 ## 8. 不做的事
 

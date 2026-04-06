@@ -173,7 +173,7 @@ Map<String, Any> MergeManifest(const Map<String, Any>& base, const Map<String, A
   std::unordered_set<std::string> seen_buffer_names;
 
   auto append_buffers = [&](const Map<String, Any>& manifest) {
-    if (auto it = manifest.find("buffers"); it != manifest.end()) {
+    if (auto it = manifest.find(manifest_key::kBuffers); it != manifest.end()) {
       for (const Any& buffer_any : tvm::Downcast<ffi::Array<Any>>((*it).second)) {
         auto descriptor = tvm::Downcast<Map<String, Any>>(buffer_any);
         const std::string name = descriptor["name"].cast<String>();
@@ -193,21 +193,21 @@ Map<String, Any> MergeManifest(const Map<String, Any>& base, const Map<String, A
 
   append_buffers(base);
   append_buffers(extra);
-  append_array(&operations, base, "operations");
-  append_array(&operations, extra, "operations");
-  append_array(&ordered_regions, base, "ordered_regions");
-  append_array(&ordered_regions, extra, "ordered_regions");
-  append_array(&anchors, base, "anchors");
-  append_array(&anchors, extra, "anchors");
-  append_array(&structural_regions, base, "structural_regions");
-  append_array(&structural_regions, extra, "structural_regions");
+  append_array(&operations, base, manifest_key::kOperations);
+  append_array(&operations, extra, manifest_key::kOperations);
+  append_array(&ordered_regions, base, manifest_key::kOrderedRegions);
+  append_array(&ordered_regions, extra, manifest_key::kOrderedRegions);
+  append_array(&anchors, base, manifest_key::kAnchors);
+  append_array(&anchors, extra, manifest_key::kAnchors);
+  append_array(&structural_regions, base, manifest_key::kStructuralRegions);
+  append_array(&structural_regions, extra, manifest_key::kStructuralRegions);
 
-  merged.Set("buffers", buffers);
-  merged.Set("operations", operations);
-  merged.Set("ordered_regions", ordered_regions);
-  merged.Set("anchors", anchors);
+  merged.Set(manifest_key::kBuffers, buffers);
+  merged.Set(manifest_key::kOperations, operations);
+  merged.Set(manifest_key::kOrderedRegions, ordered_regions);
+  merged.Set(manifest_key::kAnchors, anchors);
   if (!structural_regions.empty()) {
-    merged.Set("structural_regions", structural_regions);
+    merged.Set(manifest_key::kStructuralRegions, structural_regions);
   }
   return merged;
 }
@@ -223,13 +223,14 @@ Map<String, Any> EncodeStructuralManifestRegion(const Map<String, Any>& region,
     }
   };
 
-  copy_field("fragment_buffers");
-  copy_field("selection_targets");
-  copy_field("selection_pairs");
-  copy_field("arg_reduce_targets");
-  copy_field("update_sources");
-  copy_field("loop_carried_state");
-  copy_field("recurrence_edges");
+  copy_field(manifest_key::kFragmentBuffers);
+  copy_field(manifest_key::kSelectionTargets);
+  copy_field(manifest_key::kSelectionPairs);
+  copy_field(manifest_key::kArgReduceTargets);
+  copy_field(manifest_key::kUpdateSources);
+  copy_field(manifest_key::kLoopCarriedState);
+  copy_field(manifest_key::kRecurrenceEdges);
+  copy_field(manifest_key::kRowReductions);
   return encoded;
 }
 
@@ -258,7 +259,7 @@ Map<String, Any> CollectStructuralManifestEvidence(const tir::PrimFunc& func,
   }
 
   Map<String, Any> manifest;
-  manifest.Set("structural_regions", structural_regions);
+  manifest.Set(manifest_key::kStructuralRegions, structural_regions);
   return manifest;
 }
 
@@ -292,10 +293,10 @@ class SemanticManifestCollector : public tir::StmtVisitor {
     }
 
     Map<String, Any> manifest;
-    manifest.Set("buffers", buffers_);
-    manifest.Set("operations", operations_);
-    manifest.Set("ordered_regions", ordered_regions);
-    manifest.Set("anchors", anchors);
+    manifest.Set(manifest_key::kBuffers, buffers_);
+    manifest.Set(manifest_key::kOperations, operations_);
+    manifest.Set(manifest_key::kOrderedRegions, ordered_regions);
+    manifest.Set(manifest_key::kAnchors, anchors);
     return manifest;
   }
 
