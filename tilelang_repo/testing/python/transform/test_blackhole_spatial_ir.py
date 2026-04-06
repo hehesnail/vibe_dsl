@@ -49,26 +49,17 @@ def _prepare_blackhole_phase_b_module(prim_func):
 
 def _strip_attr(mod, attr_name: str):
     func = mod["main"].without_attr(attr_name)
-    mod = tvm.IRModule({"main": func})
-    if "tl.device_programs" in mod.global_infos:
-        mod = mod.with_attr("tl.device_programs", mod.global_infos["tl.device_programs"])
-    return mod
+    return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
 
 def _drop_existing_spatial_program(mod):
     func = mod["main"].without_attr("tl.spatial_program")
-    mod = tvm.IRModule({"main": func})
-    if "tl.device_programs" in mod.global_infos:
-        mod = mod.with_attr("tl.device_programs", mod.global_infos["tl.device_programs"])
-    return mod
+    return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
 
 def _replace_spatial_program(mod, program):
     func = mod["main"].with_attr("tl.spatial_program", program)
-    mod = tvm.IRModule({"main": func})
-    if "tl.device_programs" in mod.global_infos:
-        mod = mod.with_attr("tl.device_programs", mod.global_infos["tl.device_programs"])
-    return mod
+    return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
 
 def test_spatial_passes_are_registered():
@@ -208,6 +199,118 @@ def test_validate_spatial_program_rejects_layout_axes_mismatch_with_semantic_dom
     mod = _replace_spatial_program(mod, bad_program)
 
     with pytest.raises(Exception, match="layout axes.*semantic domain"):
+        tilelang.transform.ValidateSpatialProgram()(mod)
+
+
+def test_validate_spatial_program_rejects_multi_phase_program_without_channel_contract():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    make_phase = tvm.get_global_func("tl.ProgramPhase")
+    rebuilt_phases = []
+    for i, phase in enumerate(program.phases):
+        rebuilt_phases.append(
+            make_phase(
+                phase.name,
+                phase.task_names,
+                [] if i == 1 else phase.channel_names,
+                phase.traits,
+                phase.anchors,
+            )
+        )
+    make_program = tvm.get_global_func("tl.SpatialProgram")
+    bad_program = make_program(
+        program.member_func,
+        rebuilt_phases,
+        program.tasks,
+        program.channels,
+        program.layouts,
+        program.work_partitions,
+        program.placements,
+        program.sync_edges,
+        program.resource_intents,
+        program.anchors,
+    )
+    mod = _replace_spatial_program(mod, bad_program)
+
+    with pytest.raises(Exception, match="downstream multi-phase programs to reference at least one channel"):
+        tilelang.transform.ValidateSpatialProgram()(mod)
+
+
+def test_validate_spatial_program_rejects_registry_phase_signature_mismatch():
+    mod = _prepare_blackhole_phase_b_module(
+        _lower_flash_attention_example(
+            mha_example,
+            1,
+            32,
+            256,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    make_phase = tvm.get_global_func("tl.ProgramPhase")
+    make_task = tvm.get_global_func("tl.Task")
+    make_program = tvm.get_global_func("tl.SpatialProgram")
+
+    original_phase_name = str(program.phases[0].name)
+    renamed_phase_name = original_phase_name + "_renamed"
+    rebuilt_phases = []
+    for phase in program.phases:
+        rebuilt_phases.append(
+            make_phase(
+                renamed_phase_name if str(phase.name) == original_phase_name else phase.name,
+                phase.task_names,
+                phase.channel_names,
+                phase.traits,
+                phase.anchors,
+            )
+        )
+    rebuilt_tasks = []
+    for task in program.tasks:
+        rebuilt_tasks.append(
+            make_task(
+                task.name,
+                task.kind,
+                renamed_phase_name if str(task.phase_name) == original_phase_name else task.phase_name,
+                task.update_names,
+                task.traits,
+                task.anchors,
+            )
+        )
+    bad_program = make_program(
+        program.member_func,
+        rebuilt_phases,
+        rebuilt_tasks,
+        program.channels,
+        program.layouts,
+        program.work_partitions,
+        program.placements,
+        program.sync_edges,
+        program.resource_intents,
+        program.anchors,
+    )
+    mod = _replace_spatial_program(mod, bad_program)
+
+    with pytest.raises(Exception, match="aggregated ProgramPhase truth to match member-local phase signatures"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 

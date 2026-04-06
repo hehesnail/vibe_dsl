@@ -136,6 +136,12 @@
   - `SpatialLayout / WorkPartition.axes` 必须和 `SemanticProgram.domain.axes` 对齐
   - `layout.kind == indexed` 必须和 semantic domain 的 `derived_indices` trait 对齐
   这样 spatial builder 一旦回退到错误真源，会在 `ValidateSpatialProgram` 立刻 fail-fast
+- 对 `Phase B` validator 的下一层 hardening，也不要让 multi-phase contract 只停留在
+  “有 phase_boundary_materialization 就算通过”。更稳的 legality contract 是：
+  - downstream phase 必须显式引用自己的 channel contract
+  - phase 引用的 channel，其 `target_task` 必须属于该 phase
+  - `tl.device_programs` 不能只校验 phase 数量；要至少核对
+    `ProgramPhase(name/task_names/channel_names)` signature
 - 对 `LowerBlackholeOps` 的 lowering requirements，`work_axes / derived_index_expr_count`
   应优先从 `tl.spatial_program` 恢复；`blackhole.work_decomposition` 只保留 compatibility
   fallback。这样 consumer 才不会在 `Phase B` 已 object 化后继续回头吃旧 attr

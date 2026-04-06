@@ -148,6 +148,9 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
       已不再把 `blackhole.fragment_regions` 当唯一输入：
       `fragment_regions` 缺失时，可从 `SemanticProgram + residual body scan`
       恢复最小 fragment contract
+    - `ValidateSpatialProgram` 已继续补强 phase/channel/module-scope legality：
+      phase channel 必须真正落到 owning phase，非首 multi-phase phase 不能失去
+      channel contract，`tl.device_programs` 也不再只比较 phase 数量
     - transform-level family gate 已补到 `topk / selection`，`Phase B`
       当前覆盖 `copy / GEMM / flash-attn / topk`
   - `Phase B` 当前的主要未完成项也已明确：
@@ -181,7 +184,7 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py -q`
   - `7 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q`
-  - `11 passed`
+  - `13 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `41 passed, 10 skipped, 1 xfailed`
 - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`

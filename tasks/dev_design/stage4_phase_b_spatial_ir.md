@@ -353,6 +353,26 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attent
 - 删除 `blackhole.fragment_regions` 后，`LowerBlackholeOps` 仍能恢复
   `flash-attn` 所需的 fragment lowering requirements
 
+### 6.6 2026-04-06 Hardening Slice: Stronger Phase / Registry Legality
+
+本轮继续把 `ValidateSpatialProgram` 从“最小 semantic-domain legality”往真正的
+spatial legality validator 再推进一格：
+
+- `Placement` 现在必须引用已知 task，且 `member_func` 必须和当前
+  `SpatialProgram.member_func` 一致
+- `SyncEdge` 现在必须引用已知 task
+- phase 不再只检查“引用的 channel 名存在”
+  - phase 引用的 channel，其 `target_task` 必须属于该 phase
+  - multi-phase 程序里，非首 phase 不能失去 channel contract
+- `tl.device_programs` 不再只比较聚合出来的 phase 数量
+  - 现在会逐项核对 phase signature：`name / task_names / channel_names`
+
+对应测试：
+
+- 伪造一个下游 phase 失去 channel contract 的 `SpatialProgram`，validator 会 fail-fast
+- 伪造一个 member-local phase 名和 `tl.device_programs` 聚合 truth 不一致的
+  `SpatialProgram`，validator 会 fail-fast
+
 ## 7. Hardening Gates Before Phase C
 
 `Phase B` 的目标不是“已经有一套 `SpatialProgram` 对象”，而是：
@@ -419,6 +439,12 @@ spatial legality validator。
 - multi-phase state materialization 缺失
 - module-scope `tl.device_programs` 与 member-local `tl.spatial_program`
   的 cross-function truth 不一致
+
+本轮已新增的显式 contract：
+
+- phase-channel contract 必须真正落到 owning phase
+- downstream multi-phase phase 不能没有 channel contract
+- module-scope aggregated phase truth 不能只在 phase 数量上“凑巧一致”
 
 规则仍然是：
 

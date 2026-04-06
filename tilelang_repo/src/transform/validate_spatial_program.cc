@@ -43,6 +43,24 @@ bool SameAxes(const Array<String>& lhs, const Array<String>& rhs) {
   return true;
 }
 
+bool SameStringArray(const Array<String>& lhs, const Array<String>& rhs) {
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+  for (int i = 0; i < lhs.size(); ++i) {
+    if (static_cast<std::string>(lhs[i]) != static_cast<std::string>(rhs[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool SamePhaseSignature(const ProgramPhase& lhs, const ProgramPhase& rhs) {
+  return static_cast<std::string>(lhs->name) == static_cast<std::string>(rhs->name) &&
+         SameStringArray(lhs->task_names, rhs->task_names) &&
+         SameStringArray(lhs->channel_names, rhs->channel_names);
+}
+
 }  // namespace
 
 tvm::transform::Pass ValidateSpatialProgram() {
@@ -78,16 +96,20 @@ tvm::transform::Pass ValidateSpatialProgram() {
       }
 
       std::unordered_set<std::string> task_names;
+      std::unordered_map<std::string, std::string> task_to_phase;
       for (const Task& task : program->tasks) {
         const std::string task_name = static_cast<std::string>(task->name);
         ICHECK(task_names.insert(task_name).second)
             << "ValidateSpatialProgram found duplicate task " << task_name;
-        ICHECK(phase_names.count(static_cast<std::string>(task->phase_name)))
+        const std::string phase_name = static_cast<std::string>(task->phase_name);
+        ICHECK(phase_names.count(phase_name))
             << "ValidateSpatialProgram found task assigned to unknown phase "
             << task->phase_name;
+        task_to_phase[task_name] = phase_name;
       }
 
       std::unordered_set<std::string> channel_names;
+      std::unordered_map<std::string, Channel> channels_by_name;
       for (const Channel& channel : program->channels) {
         const std::string channel_name = static_cast<std::string>(channel->name);
         ICHECK(channel_names.insert(channel_name).second)
@@ -102,17 +124,54 @@ tvm::transform::Pass ValidateSpatialProgram() {
               << "ValidateSpatialProgram found channel with unknown target task "
               << channel->target_task;
         }
+        channels_by_name[channel_name] = channel;
       }
 
-      for (const ProgramPhase& phase : program->phases) {
+      for (const Placement& placement : program->placements) {
+        const std::string task_name = static_cast<std::string>(placement->task_name);
+        ICHECK(task_names.count(task_name))
+            << "ValidateSpatialProgram found placement referencing unknown task " << task_name;
+        ICHECK_EQ(static_cast<std::string>(placement->member_func), member_func)
+            << "ValidateSpatialProgram requires placement.member_func to match "
+               "SpatialProgram.member_func";
+      }
+
+      for (const SyncEdge& edge : program->sync_edges) {
+        const std::string source_task = static_cast<std::string>(edge->source);
+        const std::string target_task = static_cast<std::string>(edge->target);
+        ICHECK(task_names.count(source_task))
+            << "ValidateSpatialProgram found sync edge with unknown source task " << source_task;
+        ICHECK(task_names.count(target_task))
+            << "ValidateSpatialProgram found sync edge with unknown target task " << target_task;
+      }
+
+      for (int i = 0; i < program->phases.size(); ++i) {
+        const ProgramPhase& phase = program->phases[i];
+        const std::string phase_name = static_cast<std::string>(phase->name);
         for (const String& task_name : phase->task_names) {
-          ICHECK(task_names.count(static_cast<std::string>(task_name)))
+          const std::string task_name_str = static_cast<std::string>(task_name);
+          ICHECK(task_names.count(task_name_str))
               << "ValidateSpatialProgram found phase referencing unknown task " << task_name;
+          ICHECK_EQ(task_to_phase.at(task_name_str), phase_name)
+              << "ValidateSpatialProgram found phase referencing task assigned to a different "
+                 "phase";
         }
         for (const String& channel_name : phase->channel_names) {
-          ICHECK(channel_names.count(static_cast<std::string>(channel_name)))
+          const std::string channel_name_str = static_cast<std::string>(channel_name);
+          ICHECK(channel_names.count(channel_name_str))
               << "ValidateSpatialProgram found phase referencing unknown channel "
               << channel_name;
+          const Channel& channel = channels_by_name.at(channel_name_str);
+          if (!static_cast<std::string>(channel->target_task).empty()) {
+            ICHECK_EQ(task_to_phase.at(static_cast<std::string>(channel->target_task)), phase_name)
+                << "ValidateSpatialProgram requires phase channel contracts to target tasks in "
+                   "the owning phase";
+          }
+        }
+        if (program->phases.size() > 1 && i > 0) {
+          ICHECK(!phase->channel_names.empty())
+              << "ValidateSpatialProgram requires downstream multi-phase programs to reference "
+                 "at least one channel";
         }
       }
 
@@ -172,6 +231,11 @@ tvm::transform::Pass ValidateSpatialProgram() {
         ICHECK_EQ(info->phases.size(), expected_phases.size())
             << "ValidateSpatialProgram requires tl.device_programs to carry aggregated "
                "ProgramPhase truth";
+        for (int i = 0; i < info->phases.size(); ++i) {
+          ICHECK(SamePhaseSignature(info->phases[i], expected_phases[i]))
+              << "ValidateSpatialProgram requires tl.device_programs aggregated ProgramPhase "
+                 "truth to match member-local phase signatures";
+        }
       }
     }
 
