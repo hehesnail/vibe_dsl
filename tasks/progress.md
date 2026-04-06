@@ -100,6 +100,11 @@ spatial / target 层的 truth ownership，而不是继续补 semantic matcher。
       `Buffer.data` identity 与 typed handle 恢复，不再信任 annotation name string
   - `AnalyzeBlackholeFragmentRegions` 当前对 plain-local fragment state 与 temp reduction scratch
     的区分优先依赖 `layout_map` 与 store/dataflow 结构，不再靠 `_clear` 命名约定
+  - `row_reductions` 的 semantic `reduce_kind` truth source 当前已固定到 manifest explicit-op payload：
+    - `tl.semantic_manifest.structural_regions[*].row_reductions[*].kind` 由 explicit `reduce`
+      payload 的 `reduce_kind` 生成
+    - `blackhole.fragment_regions[*].row_reductions` 只保留 lowering-facing
+      `target + target_buffer` summary，不再从 `AllReduce<...>` callee 字符串回推 kind
   - `blackhole.fragment_regions` 不再是 semantic truth 输入；
     semantic 侧所有 evidence 已切换为 manifest-first 消费；
     `fragment_regions` 当前唯一剩余消费者是 `LowerBlackholeOps`（lowering-facing）

@@ -168,6 +168,7 @@ def test_gqa_forward_exposes_fragment_region_attrs():
 
     row_reduction_targets = {entry["target"] for entry in region["row_reductions"]}
     assert {"scores_max", "scores_sum"}.issubset(row_reduction_targets)
+    assert all("kind" not in entry for entry in region["row_reductions"])
 
     row_broadcast_sources = {entry["source"] for entry in region["row_broadcasts"]}
     assert {"scores_max", "scores_scale", "logsum"}.issubset(row_broadcast_sources)
@@ -243,6 +244,7 @@ def test_mha_forward_exposes_fragment_region_roles():
 
     row_reduction_targets = {entry["target"] for entry in region["row_reductions"]}
     assert {"scores_max", "scores_sum"}.issubset(row_reduction_targets)
+    assert all("kind" not in entry for entry in region["row_reductions"])
 
     row_broadcast_sources = {entry["source"] for entry in region["row_broadcasts"]}
     assert {"scores_max", "scores_scale", "logsum"}.issubset(row_broadcast_sources)

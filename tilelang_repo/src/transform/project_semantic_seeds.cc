@@ -238,22 +238,59 @@ Map<String, Any> CollectStructuralManifestEvidence(const tir::PrimFunc& func,
                                                    const String& capture_stage) {
   Map<String, Any> encoded_regions = AnalyzeBlackholeFragmentRegionEvidence(func);
   if (encoded_regions.empty()) {
-    return {};
-  }
-
-  auto regions_it = encoded_regions.find("regions");
-  if (regions_it == encoded_regions.end()) {
-    return {};
+    encoded_regions = Map<String, Any>();
   }
 
   ffi::Array<Any> structural_regions;
-  for (const Any& region_any : tvm::Downcast<ffi::Array<Any>>((*regions_it).second)) {
-    auto region = tvm::Downcast<Map<String, Any>>(region_any);
-    auto structural_region = EncodeStructuralManifestRegion(region, capture_stage);
-    if (structural_region.size() > 1) {
-      structural_regions.push_back(structural_region);
+  if (auto regions_it = encoded_regions.find("regions"); regions_it != encoded_regions.end()) {
+    for (const Any& region_any : tvm::Downcast<ffi::Array<Any>>((*regions_it).second)) {
+      auto region = tvm::Downcast<Map<String, Any>>(region_any);
+      auto structural_region = EncodeStructuralManifestRegion(region, capture_stage);
+      if (structural_region.size() > 1) {
+        structural_regions.push_back(structural_region);
+      }
     }
   }
+
+  if (auto manifest = func->GetAttr<Map<String, Any>>(attr::kTLSemanticManifest)) {
+    if (auto ops_it = manifest.value().find(String(manifest_key::kOperations));
+        ops_it != manifest.value().end()) {
+      ffi::Array<Any> row_reductions;
+      std::unordered_set<std::string> seen_targets;
+      for (const Any& op_any : tvm::Downcast<ffi::Array<Any>>((*ops_it).second)) {
+        auto op = tvm::Downcast<Map<String, Any>>(op_any);
+        auto kind = op.Get(String(schema_key::kKind));
+        auto payload = op.Get(String(schema_key::kPayload));
+        if (!kind.has_value() || !payload.has_value() ||
+            tvm::Downcast<String>(kind.value()) != "reduce") {
+          continue;
+        }
+        auto payload_map = tvm::Downcast<Map<String, Any>>(payload.value());
+        auto dst = payload_map.Get(String("dst"));
+        auto reduce_kind = payload_map.Get(String("reduce_kind"));
+        if (!dst.has_value() || !reduce_kind.has_value()) {
+          continue;
+        }
+        tir::BufferRegion dst_region = tvm::Downcast<tir::BufferRegion>(dst.value());
+        const std::string target_name = BufferIdentityName(dst_region->buffer);
+        if (!seen_targets.insert(target_name).second) {
+          continue;
+        }
+        Map<String, Any> entry;
+        entry.Set(schema_key::kTarget, String(target_name));
+        entry.Set(schema_key::kTargetBuffer, dst_region->buffer);
+        entry.Set(schema_key::kKind, tvm::Downcast<String>(reduce_kind.value()));
+        row_reductions.push_back(entry);
+      }
+      if (!row_reductions.empty()) {
+        Map<String, Any> structural_region;
+        structural_region.Set(schema_key::kCaptureStage, capture_stage);
+        structural_region.Set(manifest_key::kRowReductions, row_reductions);
+        structural_regions.push_back(structural_region);
+      }
+    }
+  }
+
   if (structural_regions.empty()) {
     return {};
   }

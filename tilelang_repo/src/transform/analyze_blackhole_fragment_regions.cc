@@ -111,24 +111,6 @@ bool ExprUsesFloorDivLikeIndex(const PrimExpr& expr) {
   return found;
 }
 
-std::string GetAllReduceKind(const CallNode* call) {
-  if (call == nullptr || !call->op.same_as(tir::builtin::call_extern()) || call->args.empty()) {
-    return "";
-  }
-  const auto* callee = call->args[0].as<tir::StringImmNode>();
-  if (callee == nullptr) {
-    return "";
-  }
-  const std::string callee_name = callee->value;
-  if (callee_name.find("tl::AllReduce<tl::MaxOp") != std::string::npos) {
-    return "max";
-  }
-  if (callee_name.find("tl::AllReduce<tl::SumOp") != std::string::npos) {
-    return "sum";
-  }
-  return "";
-}
-
 bool IsLoadFromBuffer(const PrimExpr& expr, const Buffer& buffer) {
   if (const auto* load = expr.as<BufferLoadNode>()) {
     return SameBufferIdentity(load->buffer, buffer);
@@ -195,8 +177,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     region.Set("pointwise_ops", pointwise_ops);
 
     Array<Any> row_reductions;
-    for (const auto& target : row_reduction_targets_) {
-      auto buffer_it = fragment_buffers_.find(target.first);
+    for (const auto* target_key : row_reduction_targets_) {
+      auto buffer_it = fragment_buffers_.find(target_key);
       if (buffer_it == fragment_buffers_.end()) {
         continue;
       }
@@ -204,7 +186,6 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       Map<String, Any> entry;
       entry.Set(schema_key::kTarget, String(BufferName(buffer)));
       entry.Set(schema_key::kTargetBuffer, buffer);
-      entry.Set(schema_key::kKind, String(target.second));
       row_reductions.push_back(entry);
     }
     region.Set(manifest_key::kRowReductions, row_reductions);
@@ -513,40 +494,41 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     if (target_key == nullptr) {
       return false;
     }
-    bool has_allreduce_max = false;
-    bool has_allreduce_sum = false;
     bool has_local_max_reduction = false;
     bool has_local_sum_reduction = false;
+    auto mark_local_reduction = [&](const PrimExpr& lhs, const PrimExpr& rhs,
+                                    const char* kind) {
+      const bool lhs_self = IsLoadFromBuffer(lhs, target_buffer);
+      const bool rhs_self = IsLoadFromBuffer(rhs, target_buffer);
+      const bool lhs_fragment = IsLoadFromFragmentBuffer(lhs, fragment_buffers_);
+      const bool rhs_fragment = IsLoadFromFragmentBuffer(rhs, fragment_buffers_);
+      if (!((lhs_self && rhs_fragment) || (rhs_self && lhs_fragment))) {
+        return;
+      }
+      if (std::string(kind) == "max") {
+        has_local_max_reduction = true;
+      } else if (std::string(kind) == "sum") {
+        has_local_sum_reduction = true;
+      }
+    };
     tir::PostOrderVisit(value, [&](const ObjectRef& node) {
       if (const auto* call = node.as<CallNode>()) {
-        if (const std::string reduce_kind = GetAllReduceKind(call); !reduce_kind.empty()) {
-          has_allreduce_max |= reduce_kind == "max";
-          has_allreduce_sum |= reduce_kind == "sum";
-        }
         if (const auto* op_node = call->op.as<OpNode>()) {
           const std::string op_name = op_node->name;
           if (call->args.size() == 2) {
-            const bool lhs_self = IsLoadFromBuffer(call->args[0], target_buffer);
-            const bool rhs_self = IsLoadFromBuffer(call->args[1], target_buffer);
-            const bool lhs_fragment = IsLoadFromFragmentBuffer(call->args[0], fragment_buffers_);
-            const bool rhs_fragment = IsLoadFromFragmentBuffer(call->args[1], fragment_buffers_);
             if (op_name == "tir.max") {
-              has_local_max_reduction |= (lhs_self && rhs_fragment) || (rhs_self && lhs_fragment);
+              mark_local_reduction(call->args[0], call->args[1], "max");
             } else if (op_name == "tir.add") {
-              has_local_sum_reduction |= (lhs_self && rhs_fragment) || (rhs_self && lhs_fragment);
+              mark_local_reduction(call->args[0], call->args[1], "sum");
             }
           }
         }
+      } else if (const auto* max = node.as<MaxNode>()) {
+        mark_local_reduction(max->a, max->b, "max");
+      } else if (const auto* add = node.as<AddNode>()) {
+        mark_local_reduction(add->a, add->b, "sum");
       }
     });
-    if (has_allreduce_max) {
-      temp_reduction_buffers_[target_key] = "max";
-      return true;
-    }
-    if (has_allreduce_sum) {
-      temp_reduction_buffers_[target_key] = "sum";
-      return true;
-    }
     if (has_local_max_reduction) {
       temp_reduction_buffers_[target_key] = "max";
       return true;
@@ -571,18 +553,25 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     bool saw_direct_fragment_max_reduction = false;
     bool saw_direct_fragment_sum_reduction = false;
     std::unordered_set<const tir::VarNode*> local_sources;
-    bool has_allreduce_max = false;
-    bool has_allreduce_sum = false;
     bool has_self_max_with_temp = false;
     std::string temp_reduction_kind;
     const int64_t target_elements = StaticNumElements(fragment_buffers_.at(target_key).buffer);
+    auto is_self_reduce_from_larger_fragment = [&](const PrimExpr& self_expr,
+                                                   const PrimExpr& fragment_expr) {
+      const auto* fragment_load = fragment_expr.as<BufferLoadNode>();
+      if (!IsLoadFromBuffer(self_expr, target_buffer) || fragment_load == nullptr) {
+        return false;
+      }
+      const auto* source_key = BufferKey(fragment_load->buffer);
+      if (source_key == nullptr || !fragment_buffers_.count(source_key)) {
+        return false;
+      }
+      const int64_t source_elements = StaticNumElements(fragment_buffers_.at(source_key).buffer);
+      return source_elements > target_elements;
+    };
 
     tir::PostOrderVisit(value, [&](const ObjectRef& node) {
       if (const auto* call = node.as<CallNode>()) {
-        if (const std::string reduce_kind = GetAllReduceKind(call); !reduce_kind.empty()) {
-          has_allreduce_max |= reduce_kind == "max";
-          has_allreduce_sum |= reduce_kind == "sum";
-        }
         if (const auto* op_node = call->op.as<OpNode>()) {
           const std::string op_name = op_node->name;
           if (op_name == "tir.exp2" || op_name == "tir.if_then_else") {
@@ -613,21 +602,16 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
         const bool rhs_self_lhs_fragment =
             IsLoadFromBuffer(max->b, target_buffer) &&
             IsLoadFromFragmentBuffer(max->a, fragment_buffers_);
-        if (target_elements == 1) {
-          saw_direct_fragment_max_reduction |= lhs_self_rhs_fragment || rhs_self_lhs_fragment;
-        }
+        saw_direct_fragment_max_reduction |=
+            is_self_reduce_from_larger_fragment(max->a, max->b) ||
+            is_self_reduce_from_larger_fragment(max->b, max->a) ||
+            ((target_elements == 1) && (lhs_self_rhs_fragment || rhs_self_lhs_fragment));
       } else if (const auto* add = node.as<AddNode>()) {
         saw_pointwise = true;
         AddPointwiseOp("add");
-        if (target_elements == 1) {
-          const bool lhs_self_rhs_fragment =
-              IsLoadFromBuffer(add->a, target_buffer) &&
-              IsLoadFromFragmentBuffer(add->b, fragment_buffers_);
-          const bool rhs_self_lhs_fragment =
-              IsLoadFromBuffer(add->b, target_buffer) &&
-              IsLoadFromFragmentBuffer(add->a, fragment_buffers_);
-          saw_direct_fragment_sum_reduction |= lhs_self_rhs_fragment || rhs_self_lhs_fragment;
-        }
+        saw_direct_fragment_sum_reduction |=
+            is_self_reduce_from_larger_fragment(add->a, add->b) ||
+            is_self_reduce_from_larger_fragment(add->b, add->a);
       } else if (node.as<MulNode>()) {
         saw_pointwise = true;
         AddPointwiseOp("mul");
@@ -674,14 +658,10 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       AddOp("pointwise_chain");
     }
 
-    if (has_allreduce_max || has_self_max_with_temp || temp_reduction_kind == "max" ||
-        saw_direct_fragment_max_reduction) {
+    if (has_self_max_with_temp || temp_reduction_kind == "max" || saw_direct_fragment_max_reduction ||
+        temp_reduction_kind == "sum" || saw_direct_fragment_sum_reduction) {
       AddOp("row_reduction");
-      AddRowReduction(target_key, "max");
-    }
-    if (has_allreduce_sum || temp_reduction_kind == "sum" || saw_direct_fragment_sum_reduction) {
-      AddOp("row_reduction");
-      AddRowReduction(target_key, "sum");
+      AddRowReduction(target_key);
     }
 
     if (!local_sources.empty() &&
@@ -711,9 +691,9 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     }
   }
 
-  void AddRowReduction(const tir::VarNode* target_key, const std::string& kind) {
-    if (seen_row_reductions_[target_key].insert(kind).second) {
-      row_reduction_targets_.push_back({target_key, kind});
+  void AddRowReduction(const tir::VarNode* target_key) {
+    if (seen_row_reductions_.insert(target_key).second) {
+      row_reduction_targets_.push_back(target_key);
     }
   }
 
@@ -754,8 +734,7 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       const tir::VarNode* best_value_target = nullptr;
       std::vector<const tir::VarNode*> best_shared_sources;
       bool ambiguous = false;
-      for (const auto& row_reduction : row_reduction_targets_) {
-        const tir::VarNode* value_target = row_reduction.first;
+      for (const auto* value_target : row_reduction_targets_) {
         if (value_target == companion_target) {
           continue;
         }
@@ -799,8 +778,7 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     for (const auto& pair : BuildSelectionPairs()) {
       selection_like_sources.insert(pair.companion_target);
     }
-    for (const auto& row_reduction : row_reduction_targets_) {
-      const tir::VarNode* target = row_reduction.first;
+    for (const auto* target : row_reduction_targets_) {
       auto it = update_source_order_.find(target);
       if (it == update_source_order_.end()) {
         continue;
@@ -824,8 +802,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
   std::unordered_set<std::string> seen_pointwise_ops_;
   std::vector<std::string> pointwise_op_order_;
 
-  std::vector<std::pair<const tir::VarNode*, std::string>> row_reduction_targets_;
-  std::unordered_map<const tir::VarNode*, std::unordered_set<std::string>> seen_row_reductions_;
+  std::vector<const tir::VarNode*> row_reduction_targets_;
+  std::unordered_set<const tir::VarNode*> seen_row_reductions_;
   std::unordered_set<const tir::VarNode*> seen_row_broadcast_sources_;
   std::vector<const tir::VarNode*> row_broadcast_sources_;
   std::unordered_set<const tir::VarNode*> seen_selection_targets_;

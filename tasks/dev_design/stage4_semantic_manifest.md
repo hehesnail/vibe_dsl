@@ -156,7 +156,10 @@ blackhole_codegen(device_mod)
 
 `row_reductions` 已在 `2026-04-06` 迁入 manifest structural evidence（`manifest_key::kRowReductions`），
 `AnalyzeSemanticStructure` 对 reduction evidence 改成 manifest-first 消费。
-`LowerBlackholeOps` 仍通过 `blackhole.fragment_regions` 消费 `row_reduction_targets`（lowering-facing，不归 manifest 管）。
+`2026-04-06` 的后续收口进一步明确了 truth ownership：
+- manifest 内的 `row_reductions[*].kind` 现在直接来自 explicit `reduce` op payload（`reduce_kind`）
+- `blackhole.fragment_regions[*].row_reductions` 只保留 lowering-facing `target + target_buffer` summary，不再在 lowered TIR 上重推 `kind`
+- `LowerBlackholeOps` 仍通过 `blackhole.fragment_regions` 消费 `row_reduction_targets`（lowering-facing，不归 manifest 管）。
 
 ### 4.4 当前实现落点（`2026-04-06`）
 

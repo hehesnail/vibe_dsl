@@ -375,9 +375,13 @@ struct EvidenceAccumulator {
       for (const Any& reduction_any :
            tvm::Downcast<Array<Any>>(region[manifest_key::kRowReductions])) {
         auto reduction = tvm::Downcast<Map<String, Any>>(reduction_any);
+        auto kind = reduction.Get(String(schema_key::kKind));
+        if (!kind.has_value()) {
+          continue;
+        }
         RegisterReduction(ResolveStateNameFromMap(reduction, schema_key::kTarget,
                                                   schema_key::kTargetBuffer),
-                          reduction[schema_key::kKind].cast<String>(),
+                          kind.value().cast<String>(),
                           source_tag);
       }
     }

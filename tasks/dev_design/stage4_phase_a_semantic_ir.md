@@ -146,6 +146,9 @@
 
 - semantic 侧通过 manifest structural evidence 消费 `row_reductions`（manifest-first）
 - lowering 侧的 `LowerBlackholeOps` 仍独立从 `blackhole.fragment_regions` 读 `row_reduction_targets`
+- `2026-04-06` 的后续收口里，manifest `row_reductions[*].kind` 已改为直接来自 explicit
+  `reduce` op payload；`blackhole.fragment_regions[*].row_reductions` 只保留 lowering-facing
+  `target + target_buffer` summary，不再在 fragment analysis 里从 `AllReduce<...>` 名字回推 reducer kind
 
 因此 `blackhole.fragment_regions` 当前唯一剩余消费者是 lowering 侧。
 
