@@ -51,6 +51,8 @@
   - `Phase B` 当前应视为已完成 `SemanticProgram -> SpatialProgram`
     compile-path cutover；后续 schema / validator 的继续加固将由 `Phase C` translator
     真实需求驱动，而不再作为继续停在 `Phase B` 的 blocker
+  - `stage4_phase_b_spatial_ir.md` 已完成一轮文档收敛：
+    删除过期 hardening 流水账，只保留稳定边界、未完成 contract 设计和当前退出条件
 - **Phase C**: 当前主实施阶段
   - `TT Target IR` 已定义，下一步开始 `Spatial Program IR -> TT Target IR`
     的单一真源 cutover

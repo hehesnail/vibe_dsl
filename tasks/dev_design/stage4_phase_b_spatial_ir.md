@@ -480,723 +480,228 @@
    不只是结构 summary，而是稳定的执行语义载体
 4. 保证 `Phase C` 只能做 TT mapping/materialization，不能再发明 spatial structure
 
-## 5. Shared Zero-Regression Baseline
+## 5. 当前稳定边界
+
+当前代码已经稳定成立的边界只有这些，其他内容不要再从本文件里读成“已完成实现”：
+
+- `SpatialProgram / ProgramPhase / Task / Channel / Layout / WorkPartition /
+  Placement / SyncEdge / ResourceIntent` object set 已落地主链
+- `LowerToSpatialProgram -> ValidateSpatialProgram` 已位于
+  `ValidateSemanticRefinement` 之后、`LowerBlackholeOps` 之前
+- `LowerBlackholeOps` 已显式要求 `tl.spatial_program`，
+  lowering-requirements 主路径不再接受 legacy-only spatial truth
+- module-scope `ProgramPhase` truth 已聚合到 `tl.device_programs`
+- representative compile-path family gate 已覆盖：
+  `copy / GEMM / flash-attn / topk / chunk_o / fusedmoe_routed / mla_decode_paged`
+- 第一轮 stronger-contract payload 已落地：
+  - `SpatialLayout / WorkPartition.payload.domain_index`
+  - `ResourceIntent.payload.target_kind / target_index`
+  - `Task.payload.phase_index`
+  - `Channel.payload.source_task_index / target_task_index / state_index`
+  - `Placement.payload.task_index`
+  - `SyncEdge.payload.source_task_index / target_task_index`
+  - `ProgramPhase.payload.phase_index / task_indices / channel_indices`
+
+当前不应再从本文件里继续继承的旧心智模型：
+
+- `Phase B` 只是“对象化 summary”
+- `Phase B` 还在依赖 `segment_plan / pipeline_stages / fragment_regions` 做主链判断
+- `Phase B` 必须停在 compile-path hardening，不再承接更强 contract 设计
+
+## 6. 未完成设计必须收实的部分
+
+### 6.1 `SpatialCapabilityModel`
+
+`SpatialProgram` 要成为有价值的 virtual spatial program，必须先引入
+`SpatialCapabilityModel`。这不是 implementation hint，而是本阶段缺失的正式对象。
+
+**宿主**
+
+- module-scope global info：`IRModule.global_infos["tl.spatial_capability_model"]`
+
+**producer**
+
+- target-specific capability lowerer
+- 对 Blackhole，初始 producer 从 concrete `TTHardwareModel` 导出抽象能力视图
+
+**consumer**
+
+- `LowerToSpatialProgram`
+- `ValidateSpatialProgram`
+
+**最小字段**
+
+- `topology_class`
+- `placement_domains`
+- `communication_domains`
+- `supported_flow_kinds`
+- `supported_sync_kinds`
+- `supported_layout_kinds`
+- `supported_partition_kinds`
+- `supported_residency_kinds`
+- `replication_capabilities`
+- `cross_domain_visibility_capabilities`
+
+**边界**
+
+- 它只能表达抽象能力，不表达 resource id、kernel kind、CB plan、ABI slot
+- 它是 `Phase B` legality/policy 输入，不是 `Phase C` materialization 输出
+
+### 6.2 `Task` Contract
+
+当前 `Task` 只有 `kind + update_names + phase_index` 级别的信息，不够。
+未完成设计必须补到下面这个强度：
+
+**必须新增的 contract**
+
+- `execution_signature`
+  - `law_class`
+  - `access_class`
+  - `state_interaction_class`
+- `formation_basis`
+  - 哪些 semantic edge 迫使 split
+  - 哪些条件允许 fuse
+- `phase_class`
+  - phase-local compute / stateful update / routing / combine / carry step
+- `placement_constraints`
+  - 是否要求 locality / communication adjacency / replicated execution
+
+**算法输出要求**
+
+- `Task` 必须能回答“为什么它是一个 task”，不是只回答“它叫什么”
+
+### 6.3 `Channel` Contract
+
+当前 `Channel` 还偏向“边 + state name”。
+未完成设计必须补到下面这个强度：
+
+**必须新增的 contract**
+
+- `flow_kind`
+  - `point_to_point`
+  - `broadcast`
+  - `gather`
+  - `reduce_merge`
+  - `carry`
+  - `scatter`
+- `delivery_kind`
+  - `ordered`
+  - `completion_visible`
+  - `buffered_async`
+  - `phase_boundary_materialized`
+- `state_contract`
+  - `state_index`
+  - `source_version`
+  - `target_version`
+- `communication_constraints`
+  - same-domain only / neighborhood-limited / cross-domain allowed
+
+**算法输出要求**
+
+- `Channel` 必须能回答“这条 flow 为什么存在、它要求什么可见性和顺序”
+
+### 6.4 `Layout / WorkPartition` Contract
+
+当前 `Layout / WorkPartition` 仍然太像 semantic domain 的外显化。
+未完成设计必须补到下面这个强度：
+
+**必须新增的 contract**
+
+- `domain_realization_kind`
+  - direct
+  - packed
+  - indexed
+  - filtered
+  - grouped
+  - paged
+  - chunked
+- `transform_basis`
+  - 来自哪个 `AccessMap`
+  - 哪类 remap / filter / indirection / chunking 触发它
+- `ownership_basis`
+  - blocked / replicated / indexed-owner / filtered-owner
+- `capability_requirements`
+  - replication needed
+  - neighborhood communication needed
+  - stable carry ownership needed
+
+**明确禁止**
+
+- 只按轴数决定 `blocked / replicated`
+- 把 grouped / paged / routed / chunked 全退化成 `indexed`
+
+### 6.5 `ProgramPhase / SyncEdge` Contract
+
+当前 `ProgramPhase` 和 `SyncEdge` 已有 linkage，但 ordering semantics 仍不够强。
+未完成设计必须补到下面这个强度：
+
+**必须新增的 contract**
+
+- `ProgramPhase.phase_class`
+  - local_compute
+  - stateful_update
+  - route_dispatch
+  - combine
+  - carry_step
+- `ProgramPhase.closure_basis`
+  - 为什么这些 task 可以在同一 phase 内闭包
+- `SyncEdge.ordering_kind`
+  - dependency
+  - completion
+  - barrier
+  - async_arrival
+- `SyncEdge.visibility_kind`
+  - local
+  - cross_phase
+  - cross_member
+- `SyncEdge.materialization_requirement`
+  - 是否要求显式 phase-boundary state materialization
+
+**算法输出要求**
+
+- phase 不是显示分组，而是 partial-order condensation 的结果
+
+### 6.6 `ValidateSpatialProgram` 的最终职责
+
+当前 validator 已经不是空壳，但还不够。
+未完成设计要把 validator 的职责固定成：
+
+**必须 fail-fast 的错误**
+
+- task formation contract 自相矛盾
+- channel flow kind 与 state/version contract 不一致
+- layout/work partition 与 domain/access basis 不一致
+- phase closure basis 与 sync edge ordering 不一致
+- capability requirement 超出 `SpatialCapabilityModel`
+- module-scope `tl.device_programs` 与 member-local `tl.spatial_program`
+  的 phase truth 不一致
+
+**明确禁止**
+
+- 只做结构串联检查
+- 让 `Phase C` 发现 legality 问题后反向修正 `SpatialProgram`
+
+## 7. 当前退出条件
+
+`Phase B` 不再以“compile-path 已打通”作为完成标准。
+当前真正的退出条件是：
+
+1. `SpatialCapabilityModel` 落地，并被 builder/validator 主链消费
+2. `Task / Channel / Layout / WorkPartition / ProgramPhase / SyncEdge`
+   补齐上面列出的 execution-bearing contract
+3. `ValidateSpatialProgram` 能对这些 contract 做 capability-informed legality 检查
+4. `Phase C` translator 不需要再恢复 non-TT-specific spatial semantics
+
+在这四条未达成前，`Phase B` 的 compile-path 虽然已完成，
+但 `SpatialProgram` 还不能视为最终形态的 virtual spatial program。
+
+## 8. Shared Zero-Regression Baseline
 
 ```bash
+pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py -q
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q
 ```
-
-## 6. Task 3: Stage 3 - Phase B Spatial Program IR
-
-**Files:**
-- Create: `tilelang_repo/src/transform/lower_to_spatial_program.cc`
-- Create: `tilelang_repo/src/transform/validate_spatial_program.cc`
-- Create: `tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
-- Modify: `tilelang_repo/src/transform/common/semantic_program.h`
-- Modify: `tilelang_repo/src/transform/common/semantic_program.cc`
-- Modify: `tilelang_repo/src/transform/collect_device_programs.cc`
-- Modify: `tilelang_repo/src/transform/analyze_blackhole_fragment_regions.cc`
-- Modify: `tilelang_repo/tilelang/engine/lower.py`
-- Modify: `tilelang_repo/tilelang/transform/__init__.py`
-- Modify: `tilelang_repo/src/transform/lower_blackhole_ops.cc`
-- Modify: `tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py`
-- Modify: `tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
-
-- [x] **Step 1: Introduce `SpatialProgram` and `ProgramPhase`**
-
-Required objects:
-
-- `SpatialProgram`
-- `ProgramPhase`
-- `Task`
-- `Channel`
-- `Layout`
-- `WorkPartition`
-- `Placement`
-- `SyncEdge`
-- `ResourceIntent`
-
-Rules:
-
-- module-scope `ProgramPhase` truth lives in `tl.device_programs`
-- member-local truth lives in `PrimFunc.attrs["tl.spatial_program"]`
-- simple workload gets canonical fast-path
-
-- [x] **Step 2: Add simple-workload fast-path for copy / GEMM**
-
-Run:
-
-```bash
-pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -k 'copy or gemm or fast_path' -q
-pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q
-```
-
-Expected:
-
-- copy / GEMM 不需要进入重 candidate synthesis
-- trivial workload 仍能快速构造 canonical `SpatialProgram`
-
-- [x] **Step 3: Add one non-trivial multi-phase spatial gate**
-
-Recommended first gate: `flash-attn`
-
-Run:
-
-```bash
-pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -k 'flash_attention or multi_phase' -q
-pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q
-```
-
-Expected:
-
-- 至少一个 case 证明下游不会退化回 `Task:TTKernel = 1:1`
-- `ProgramPhase` / `Channel` / phase-boundary materialization 在结构测试里可见
-
-- [x] **Step 4: Re-run shared zero-regression baseline**
-
-Run the shared zero-regression baseline above.
-
-- [x] **Step 5: Stage 3 exit gate**
-
-Only proceed when:
-
-- `SpatialProgram` 能消费冻结后的 semantic truth
-- simple-workload fast-path 稳定
-- 至少一个 non-trivial multi-phase spatial gate 通过
-
-### 6.1 2026-04-06 实施结果
-
-- `LowerToSpatialProgram -> ValidateSpatialProgram` 已接入 Blackhole 主线，位置在
-  `ValidateSemanticRefinement` 之后、`LowerBlackholeOps` 之前
-- `tl.device_programs` 现在会聚合 `ProgramPhase` truth；对 pre-`SplitHostDevice`
-  的单 `PrimFunc` 退化场景，registry/validator 已支持 root-symbol fallback
-- copy canonical fast-path：
-  单 `transfer` task + 单 phase + 单 channel
-- GEMM canonical fast-path：
-  `reader / compute / writer` 三 task + 三 channel
-- `flash-attn` 首个 non-trivial gate 已通过：
-  `phase0_compute(reduce_*) -> phase1_stateful(recur_*)`
-- 为保持 `Phase B` 只消费冻结后的 semantic truth，split device `main_kernel`
-  路径缺失的 `row_reduction.kind` 已回补到 Phase A evidence，而不是让 `Phase B`
-  直接回退消费 `fragment_regions`
-- `LowerBlackholeOps` 已开始显式读取 `tl.spatial_program`，并把
-  `spatial_phase_count / spatial_channel_count / spatial_phase_boundary_states`
-  写入 `blackhole.lowering_requirements`
-
-### 6.2 本轮验证
-
-```bash
-pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q
-pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q
-source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q
-pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q
-pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py -q
-pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q
-```
-
-### 6.3 2026-04-06 Hardening Slice: Semantic-Domain-First Spatial Scaffolding
-
-本轮 `Phase B` hardening 已落地一个 truth-source purity 子项：
-
-- `LowerToSpatialProgram` 构造 `Layout / WorkPartition` 时，已改为优先读取
-  `SemanticProgram.domains[*].axes / traits`
-- `blackhole.work_decomposition` 仍允许作为过渡回退，但不再是 primary truth source
-
-这一步当前覆盖到：
-
-- `layout.axes`
-- `work_partition.axes`
-- `layout.kind == indexed` 的 `derived_indices` 判定
-
-对应测试：
-
-- 删除 `blackhole.work_decomposition` 后，`SpatialProgram` 仍能从
-  `SemanticProgram.domain` 恢复正确的 axes / indexed layout
-
-### 6.4 2026-04-06 Hardening Slice: Validator / Consumer / Family Gate
-
-本轮继续补了三个直接面向 `Phase C` 的 hardening 子项：
-
-- `ValidateSpatialProgram` 不再只看 object 是否“能串起来”，还会校验
-  `SpatialLayout / WorkPartition` 与 `SemanticProgram.domain` 的一致性
-  - `layout.axes` 必须和 semantic domain axes 一致
-  - `work_partition.axes` 必须和 semantic domain axes 一致
-  - `layout.kind == indexed` 必须和 semantic domain 的 `derived_indices` trait 对齐
-- `LowerBlackholeOps` 的 `work_axes / derived_index_expr_count` 已改为优先从
-  `tl.spatial_program` 恢复
-  - `blackhole.work_decomposition` 仍保留 compatibility fallback
-  - `spatial_phase_count / spatial_channel_count / spatial_phase_boundary_states`
-    继续只从 `tl.spatial_program` 恢复
-- `Phase B` family gate 已补到 `topk / selection`
-  - `SpatialProgram` 现在有 compile-path 测试覆盖 `select + recurrence` workload family
-
-对应测试：
-
-- 伪造 semantic-domain 不一致的 `SpatialProgram` 时，`ValidateSpatialProgram`
-  会 fail-fast
-- 删除 `blackhole.work_decomposition` 后，`LowerBlackholeOps` 仍能从
-  `tl.spatial_program` 导出 `work_axes / derived_index_expr_count`
-- `example_topk` 已纳入 `Phase B` transform-level coverage，验证 selection/indexing
-  family 不会立刻退化回 workload-specific matcher
-
-### 6.5 2026-04-06 Hardening Slice: GEMM Builder Purity / Fragment Fallback
-
-本轮继续补了两个直接指向 `truth-source purity` 和 `consumer cutover` 的缺口：
-
-- `LowerToSpatialProgram` 的 GEMM fast-path 已不再读取 `blackhole.segment_plan`
-  - `reader / compute / writer` task graph 现在直接从
-    `SplitBlackholeKernel` 留在 IR body 上的 `blackhole.segment_kind`
-    annotation 恢复
-  - `segment_plan` 可以继续作为后续 lowering / runtime compatibility attr 存在，
-    但不再参与 `SpatialProgram` 构造
-- `LowerBlackholeOps` 的 fragment lowering requirements 已不再把
-  `blackhole.fragment_regions` 当成唯一来源
-  - 当 `fragment_regions` 存在时，仍优先消费这份 lowering-facing compatibility summary
-  - 当 `fragment_regions` 缺失时，会退回到
-    `SemanticProgram + residual body scan`
-    恢复最小 fragment contract：
-    `fragment_op_kinds / pointwise_op_kinds / row_reduction_targets /
-    row_broadcast_sources / fragment_loop_carried_state`
-
-对应测试：
-
-- 删除 `blackhole.segment_plan` 后，GEMM 仍能恢复 `reader / compute / writer`
-  spatial fast-path
-- 删除 `blackhole.fragment_regions` 后，`LowerBlackholeOps` 仍能恢复
-  `flash-attn` 所需的 fragment lowering requirements
-
-### 6.6 2026-04-06 Hardening Slice: Stronger Phase / Registry Legality
-
-本轮继续把 `ValidateSpatialProgram` 从“最小 semantic-domain legality”往真正的
-spatial legality validator 再推进一格：
-
-- `Placement` 现在必须引用已知 task，且 `member_func` 必须和当前
-  `SpatialProgram.member_func` 一致
-- `SyncEdge` 现在必须引用已知 task
-- phase 不再只检查“引用的 channel 名存在”
-  - phase 引用的 channel，其 `target_task` 必须属于该 phase
-  - multi-phase 程序里，非首 phase 不能失去 channel contract
-- `tl.device_programs` 不再只比较聚合出来的 phase 数量
-  - 现在会逐项核对 phase signature：`name / task_names / channel_names`
-
-对应测试：
-
-- 伪造一个下游 phase 失去 channel contract 的 `SpatialProgram`，validator 会 fail-fast
-- 伪造一个 member-local phase 名和 `tl.device_programs` 聚合 truth 不一致的
-  `SpatialProgram`，validator 会 fail-fast
-
-### 6.7 2026-04-06 Hardening Slice: Pipeline Contract Migration
-
-本轮把 `pipeline_stages` 从 lowering-facing legacy attr 往 typed companion contract
-再推进一层，目标是让 `LowerBlackholeOps` 不再把
-`blackhole.pipeline_stages` 当 primary source：
-
-- `AnalyzeSemanticStructure` 现在会把 `blackhole.pipeline_stages`
-  收成 `SemanticProgram.supplements[*]`
-  - kind: `pipeline_structure`
-  - payload: `pipeline_stages[*].loop_var / num_stages / stage_local_buffers /
-    loop_carried_state`
-- `ResourceIntent` schema 已补上 typed `payload`
-- `LowerToSpatialProgram` 现在会把 semantic supplement 投影成
-  `ResourceIntent(kind=synchronization_support, traits+=pipeline_contract)`
-- `ValidateSpatialProgram` 现在会校验：
-  - pipeline contract 必须真的携带 `pipeline_stages`
-  - 每个 stage entry 必须携带 `loop_var / num_stages`
-  - 语义侧要求 pipeline contract 时，`SpatialProgram` 不能缺失该 resource intent
-- `LowerBlackholeOps` 现在优先从 `tl.spatial_program.resource_intents[*].payload`
-  恢复 `pipeline_stage_counts / pipeline_loop_vars`
-  - `blackhole.pipeline_stages` 退回 compatibility fallback
-  - body `num_stages` annotation 退回最后 fallback
-
-对应测试：
-
-- `SpatialProgram` 必须显式暴露 pipeline contract resource intent
-- 删掉 pipeline contract 后，`ValidateSpatialProgram` 会 fail-fast
-- 删掉 `blackhole.pipeline_stages` 后，`LowerBlackholeOps` 仍能恢复
-  `pipeline_stage_counts / pipeline_loop_vars`
-
-### 6.8 2026-04-06 Hardening Slice: Work-Dependent Bound Contract Migration
-
-本轮继续收 `blackhole.work_decomposition` 的 residual truth，但只针对它还在
-`LowerBlackholeOps` 里承担唯一价值的那一项：
-
-- `work_dependent_loop_bounds`
-
-具体迁移如下：
-
-- `AnalyzeSemanticStructure` 现在会把
-  `blackhole.work_decomposition.work_dependent_loop_bounds`
-  收成 `SemanticProgram.supplements[*]`
-  - kind: `work_decomposition_structure`
-  - payload: `work_dependent_loop_bounds[*]`
-- `WorkPartition` schema 已补上 typed `payload`
-- `LowerToSpatialProgram` 现在会把这份 truth 投影到
-  `SpatialProgram.work_partitions[*].payload.work_dependent_loop_bounds`
-- `ValidateSpatialProgram` 现在会校验：
-  - semantic domain 带 `work_dependent_bounds` trait 时，
-    `SpatialProgram` 不能丢失对应的 `WorkPartition` payload
-  - payload 不能是空的
-- `LowerBlackholeOps` 现在优先从 `WorkPartition.payload`
-  恢复 `work_dependent_loop_bound_count`
-  - `blackhole.work_decomposition` 只退回 compatibility fallback
-
-对应测试：
-
-- causal `flash-attn` 的 `SpatialProgram` 必须显式投影
-  `work_dependent_loop_bounds`
-- 删掉 `WorkPartition` payload 后，`ValidateSpatialProgram` 会 fail-fast
-- 删掉 `blackhole.work_decomposition` 后，`LowerBlackholeOps` 仍能恢复
-  `work_dependent_loop_bound_count`
-
-### 6.9 2026-04-06 Hardening Slice: Fragment Contract Migration
-
-本轮继续收 `blackhole.fragment_regions` 的 lowering-facing residual truth，但仍保持
-它在 `Phase A` 里的 compatibility 身份，不把删除 attr 本身当目标。目标是：
-
-- 让 `SpatialProgram` 开始显式持有 `fragment` lowering contract
-- 让 `LowerBlackholeOps` 不再把 `blackhole.fragment_regions` 当 primary input
-
-具体迁移如下：
-
-- `AnalyzeSemanticStructure` 现在会把
-  `blackhole.fragment_regions` 里的 lowering-facing summary 收成
-  `SemanticProgram.supplements[*]`
-  - kind: `fragment_lowering_structure`
-  - payload:
-    `fragment_op_kinds / row_reduction_targets / row_broadcast_sources /
-    pointwise_op_kinds / fragment_loop_carried_state`
-- `LowerToSpatialProgram` 现在会把这份 truth 投影成
-  `ResourceIntent(kind=lowering_support, traits+=fragment_contract)`
-- `ValidateSpatialProgram` 现在会校验：
-  - semantic 侧要求 fragment contract 时，`SpatialProgram` 不能缺失该 resource intent
-  - contract payload 必须显式携带 `fragment_op_kinds`
-  - `pointwise_chain` / `row_broadcast` 不能丢失其从属 payload
-- `LowerBlackholeOps` 现在优先从
-  `tl.spatial_program.resource_intents[*].payload`
-  恢复 fragment lowering requirements
-  - `blackhole.fragment_regions` 退回 compatibility fallback
-  - `SemanticProgram + residual body scan` 仍保留作无 attr 时的最后 fallback
-
-对应测试：
-
-- `flash-attn` 的 `SpatialProgram` 必须显式投影 fragment contract resource intent
-- 删掉 fragment contract 后，`ValidateSpatialProgram` 会 fail-fast
-- 删掉 `blackhole.fragment_regions` 后，`LowerBlackholeOps` 仍能恢复
-  `fragment_op_kinds / pointwise_op_kinds`
-
-### 6.10 2026-04-06 Hardening Slice: Chunk Recurrence Family Gate
-
-本轮继续补 wider family gate，但不再新增定制样例，而是直接拿现有
-`gdn/example_chunk_o.py` 作为非-attention recurrence family 的 compile-path 代表。
-
-结论是：
-
-- `chunk_o` 当前已经能稳定通过
-  `LowerToSpatialProgram -> ValidateSpatialProgram`
-- 其 `SpatialProgram` 会显式暴露：
-  - multi-phase structure
-  - `select + recurrence` task traits
-  - `fragment_contract` resource intent
-
-这说明当前 `Phase B` 的 generic spatialization，已经不只覆盖
-`flash-attn / topk`，也覆盖至少一类 chunk recurrence family。
-
-对应测试：
-
-- `test_chunk_o_spatial_program_exposes_chunk_recurrence_family_gate`
-
-### 6.11 2026-04-06 Hardening Slice: Routed/Paged Family Entry via Blackhole Resource Canonicalization
-
-在补 `chunk_o` family gate 之后，`routed / paged` family 仍然没有进入 `Phase B`。
-本轮继续顺着 compile-path 往前查，结论是：
-
-- 真实 blocker 不是 `MergeSharedMemoryAllocations`
-- 真实 blocker 是 `BlackholeDeviceResourceCanonicalization`
-  只 canonicalize 了 `blackhole.resource_plan` 里显式列出的 resource
-- 对 `grouped / routed / paged` 这类 kernel，block-local `shared` alloc_buffer
-  常会留在 `shared.dyn`，没有被收成 `blackhole.cb.*`
-
-因此本轮的修正是：
-
-- 不动 TileLang 公用的 `MergeSharedMemoryAllocations`
-- 只在 Blackhole-only 的
-  `BlackholeDeviceResourceCanonicalization` 里补 IR-structural fallback
-  - `shared* -> blackhole.cb`
-  - `local.fragment -> blackhole.acc`
-- fallback 依据是 storage scope，本身不依赖 workload 名字、buffer 名字或 case-specific matcher
-
-这轮修正之后，compile-path 上的结果是：
-
-- `grouped_gemm` 现在会把 `A_shared / B_shared`
-  稳定 canonicalize 到 `blackhole.cb.*`
-- `fusedmoe/example_fusedmoe_tilelang.py` 的 routed path
-  现在能稳定进入 `LowerToSpatialProgram -> ValidateSpatialProgram`
-- `deepseek_mla/example_mla_decode_paged.py`
-  现在也能稳定进入 `LowerToSpatialProgram -> ValidateSpatialProgram`
-- 它们的 `SpatialProgram` 都会暴露：
-  - multi-phase structure
-  - `select + recurrence` task traits
-  - `selection_state` resource intent
-
-这说明当前 `Phase B` 的 generic spatialization 已经不只覆盖
-`copy / GEMM / flash-attn / topk / chunk recurrence`，也至少覆盖：
-
-- 一个 `routed / grouped dispatch` family
-- 一个 `paged / indexed sparse decode` family
-
-对应测试：
-
-- `test_grouped_gemm_resource_canonicalization_rewrites_shared_buffers_to_blackhole_cb`
-- `test_fusedmoe_routed_spatial_program_exposes_routed_dispatch_family_gate`
-- `test_paged_decode_spatial_program_exposes_paged_indexed_family_gate`
-
-### 6.12 2026-04-06 Hardening Slice: `LowerBlackholeOps` Consumer Hard Cutover
-
-在 family gate 补齐之后，`Phase B` 主链里最危险的残余问题已经不是 coverage，
-而是 `LowerBlackholeOps` 的 lowering-requirements 构造仍允许走 legacy-only 输入。
-
-这会制造一个错误心智模型：
-
-- 代码里虽然已经有 `tl.spatial_program`
-- 但 consumer 其实仍能在缺失 `SpatialProgram` 时回头读
-  `blackhole.work_decomposition / fragment_regions / pipeline_stages`
-- 结果测试和局部调试很容易继续绕开 `SemanticProgram -> SpatialProgram` 主链
-
-本轮把这条边界做成 hard cutover：
-
-- `LowerBlackholeOps` 现在显式要求 `tl.spatial_program`
-  - 缺失时直接报错
-  - 不再回退到 legacy-only 输入
-- lowering requirements 里的下列字段现在只允许从 `SpatialProgram` 恢复：
-  - `work_axes`
-  - `derived_index_expr_count`
-  - `work_dependent_loop_bound_count`
-  - `spatial_phase_count`
-  - `spatial_channel_count`
-  - `spatial_phase_boundary_states`
-  - `pipeline_stage_counts / pipeline_loop_vars`
-  - `fragment_op_kinds / row_reduction_targets / row_broadcast_sources /
-    pointwise_op_kinds / fragment_loop_carried_state`
-- 旧的 residual fallback：
-  - `blackhole.work_decomposition`
-  - `blackhole.fragment_regions`
-  - `blackhole.pipeline_stages`
-  - body `num_stages` annotation
-  已从 `LowerBlackholeOps` lowering-requirements 主路径删除
-
-这轮同时也把 target/transform 测试统一收回真实主线：
-
-- target tests 不再手搓 `SplitBlackholeKernel -> LowerBlackholeOps`
-- 改为走测试侧 helper：
-  `SplitBlackholeKernel -> Analyze* -> AnalyzeSemanticStructure ->
-  LiftStatefulSemanticIR -> Validate* -> LowerToSpatialProgram ->
-  ValidateSpatialProgram -> LowerBlackholeOps`
-
-对应测试：
-
-- `test_lower_blackhole_ops_requires_spatial_program_contract`
-- `test_blackhole_copy_pass_attrs`
-- `test_blackhole_copy_lowering_prefers_buffer_handles_over_annotation_names`
-- `test_blackhole_copy_semantics_survives_flatten_and_vectorize`
-- `test_blackhole_gemm_*` 下所有直接调用 `LowerBlackholeOps` 的 target tests
-- `test_blackhole_flash_attention_pipeline.py` 的 `_lower_blackhole_ops` helper paths
-
-## 7. Hardening Gates Before Phase C
-
-`Phase B` 的目标不是“已经有一套 `SpatialProgram` 对象”，而是：
-
-- 让 `Spatial Program IR` 真正成为 `SemanticProgram -> TTProgram` 之间唯一可信的
-  spatial truth owner
-
-只有满足下面这些 gate，`Phase C` 才允许开始做正式 cutover。
-
-### 7.1 Truth-Source Purity
-
-`LowerToSpatialProgram` 必须完成真源纯化：
-
-- `Phase B` 只能消费冻结后的 `SemanticProgram`
-- `blackhole.work_decomposition`
-- `blackhole.segment_plan`
-- `blackhole.pipeline_stages`
-- `blackhole.fragment_regions`
-
-这些 attr 都不能再作为 spatial truth source。
-
-允许的过渡状态只有两种：
-
-1. 这些信息已经被 `Phase A` 归约成 semantic truth
-2. 这些信息只作为 lowering compatibility summary 存在，不再参与 `SpatialProgram`
-   构造决策
-
-当前代码仍未完全达标：
-
-- `Layout / WorkPartition` 已切到 semantic-domain-first，
-  但 `blackhole.work_decomposition` 仍保留 compatibility fallback
-- `pipeline_stages` / `fragment_regions` 仍保留 lowering-facing compatibility 角色，
-  但都已开始迁入 typed contract，尚未完全删掉 fallback
-
-本轮新增的明确 cutover 设计是：
-
-- `blackhole.pipeline_stages` 不能被“直接删掉”
-- `AnalyzeSemanticStructure` 必须先把 pipeline stage truth 收成
-  `SemanticProgram.supplements[*]`
-- `LowerToSpatialProgram` 再把这份 truth 投影成 `SpatialProgram.resource_intents[*]`
-  里的 typed pipeline contract
-- 只有在 `LowerBlackholeOps` 能从 `tl.spatial_program` 直接恢复
-  `pipeline_stage_counts / pipeline_loop_vars` 之后，
-  `blackhole.pipeline_stages` 才能降成纯 compatibility fallback
-- `blackhole.fragment_regions` 也不能被“直接删掉”
-- `AnalyzeSemanticStructure` 必须先把 fragment lowering truth 收成
-  `SemanticProgram.supplements[*]`
-- `LowerToSpatialProgram` 再把这份 truth 投影成
-  `SpatialProgram.resource_intents[*]` 里的 typed fragment contract
-- 只有在 `LowerBlackholeOps` 能从 `tl.spatial_program` 直接恢复
-  `fragment_op_kinds / row_reduction_targets / row_broadcast_sources /
-  pointwise_op_kinds / fragment_loop_carried_state` 之后，
-  `blackhole.fragment_regions` 才能继续往纯 compatibility fallback 收敛
-
-### 7.2 Schema Strengthening
-
-当前 `Task / Channel / Layout / WorkPartition / Placement / SyncEdge / ResourceIntent`
-已经 object 化，但仍偏向 `name / kind / traits` summary。
-
-进入 `Phase C` 前，至少要补到足以稳定承载下面这些 spatial-owned truth：
-
-- task ownership
-- channel payload / source-state / versioned-state flow
-- layout / work-partition 的结构化依据
-- phase-boundary materialization contract
-- cross-member phase ordering
-- synchronization semantics
-
-原则是：
-
-- 不能让 `Phase C` 再回头猜 task graph / state flow / phase boundary
-- 不能把这些 truth 继续散落在 legacy `blackhole.*` attr 里
-- 不能把 `SpatialProgram` 只做成结构化 display object；schema 必须足够强，
-  让 `Phase C` 只能消费它、不能重新合成它
-
-当前 schema strengthening 的真正方向不是“继续补更多字段”，而是把下列 execution-bearing
-truth 变成稳定 contract：
-
-- task formation basis
-- flow / delivery / state-version semantics
-- domain remap / filter / index / shard semantics
-- phase-local 与 cross-phase partial order
-- spatial-owned but non-TT-specific resource obligations
-
-本轮优先补强的 schema 子项是：
-
-- `ResourceIntent` 需要从纯 `name / kind / target / traits` summary
-  升到可携带 typed payload 的 contract node
-- pipeline legality 相关的 spatial-owned truth
-  （`loop_var / num_stages / stage_local_buffers / loop_carried_state`）
-  先挂在 `ResourceIntent(kind=synchronization_support, traits+=pipeline_contract)` 上
-- fragment legality / lowering 相关的 spatial-owned truth
-  （`fragment_op_kinds / row_reduction_targets / row_broadcast_sources /
-  pointwise_op_kinds / fragment_loop_carried_state`）
-  先挂在 `ResourceIntent(kind=lowering_support, traits+=fragment_contract)` 上
-- 这不是最终 schema 终点，但它必须足以支撑
-  `LowerBlackholeOps` 不再把 `blackhole.pipeline_stages / fragment_regions`
-  当 primary source
-
-本轮已经先落了一层 **index-based linkage contract**：
-
-- `SpatialLayout.payload.domain_index`
-  与 `WorkPartition.payload.domain_index`
-  现在是 validator 和 consumer 的 primary domain linkage
-- `ResourceIntent.payload.target_kind + target_index`
-  现在是 semantic-state-targeted contract 的 primary linkage
-- `LowerBlackholeOps` 的 phase-boundary state 恢复已经切到
-  `semantic_state[target_index]`，不再按 `target_name` 字符串恢复
-- `Task / Channel / Placement / SyncEdge / ProgramPhase`
-  现在也开始显式携带 linkage payload：
-  - `Task.payload.phase_index`
-  - `Channel.payload.source_task_index / target_task_index / state_index`
-  - `Placement.payload.task_index`
-  - `SyncEdge.payload.source_task_index / target_task_index`
-  - `ProgramPhase.payload.phase_index / task_indices / channel_indices`
-- `ValidateSpatialProgram` 现在会显式要求这些 payload contract 存在，
-  不能再只靠 `phase_name / task_name / source_task / target_task / channel_names`
-  这些 display 字段把结构“串起来”
-
-下一轮 schema strengthening 的优先级不再是继续塞更多名字字段，而是继续把这层
-index-based linkage 扩到更多 object：
-
-- `SpatialLayout / WorkPartition` 必须显式携带 `domain_index`
-- `ResourceIntent` 必须显式携带 `target_kind + target_index`
-- `Task` 必须显式携带 `phase_index`
-- `Channel` 必须显式携带
-  `source_task_index / target_task_index / state_index`
-- `Placement` 必须显式携带 `task_index`
-- `SyncEdge` 必须显式携带 `source_task_index / target_task_index`
-- `ProgramPhase` 必须显式携带
-  `phase_index / task_indices / channel_indices`
-
-目的不是“把名字删光”，而是把名字降级成 display/identity 字段，让跨层 consumer 和
-validator 优先吃显式 linkage contract，而不是靠 `state_name / target_name / task_name`
-字符串重新查表。
-
-### 7.3 Legality Must Be Explicit
-
-`ValidateSpatialProgram` 当前已经具备最小 semantic-domain legality gate，但还不等于完整的
-spatial legality validator。
-
-进入 `Phase C` 前，validator 至少要能 fail-fast 检出：
-
-- phase order / phase boundary 不一致
-- channel source-target-state 绑定不一致
-- layout / partition 与 semantic domain 不一致
-- multi-phase state materialization 缺失
-- module-scope `tl.device_programs` 与 member-local `tl.spatial_program`
-  的 cross-function truth 不一致
-
-本轮已新增的显式 contract：
-
-- phase-channel contract 必须真正落到 owning phase
-- downstream multi-phase phase 不能没有 channel contract
-- module-scope aggregated phase truth 不能只在 phase 数量上“凑巧一致”
-- pipeline domain program 不能丢失 pipeline contract resource intent
-
-规则仍然是：
-
-- analysis 决定 legality
-- policy 只在合法空间内选择
-
-### 7.4 Lowering Consumer Cutover
-
-`LowerBlackholeOps` 在 `Phase B` 完成前必须收窄成 spatial consumer，而不是继续承担
-残余 spatial recovery。
-
-目标状态：
-
-- `LowerBlackholeOps` 只读取 `SpatialProgram` 提供的 lowering contract
-- 对 task / channel / layout / sync / phase-boundary 的判断不再回头读取
-  `fragment_regions` / `work_decomposition` / `pipeline_stages`
-
-当前仍未完全达标：
-
-- lowering requirements 这条 consumer path 已经 hard cutover：
-  `LowerBlackholeOps` 显式要求 `tl.spatial_program`，
-  不再接受 legacy-only `work_decomposition / fragment_regions / pipeline_stages`
-  输入
-- target/transform tests 也已统一到 `SemanticProgram -> SpatialProgram ->
-  LowerBlackholeOps` 主线
-
-当前还没完全完成的，不再是这条 consumer path 本身，而是：
-
-- `LowerToSpatialProgram` 仍保留对 `blackhole.work_decomposition`
-  的过渡回退
-- `ValidateSpatialProgram` 还不是最终形态的完整 legality validator
-- `SpatialProgram` schema 还需要继续把 task/channel/placement/phase linkage
-  从名字查表收成更强 contract，才能无保留进入 `Phase C`
-
-这类 mixed ownership 在 `Phase C` 之前必须继续收紧。
-
-### 7.5 Family Coverage Gates
-
-当前 `copy / GEMM / flash-attn / topk / chunk recurrence / routed dispatch / paged decode`
-的 compile-path coverage，已经说明 `SemanticProgram -> SpatialProgram` 的 object boundary
-不会一离开 attention/GEMM 就立刻退化回 matcher bag；但这仍不能替代 truth-source purity /
-schema strengthening / consumer cutover。
-
-在进入 `Phase C` 前，`Phase B` 至少需要补齐：
-
-1. 一个 `selection / indexing` family 的 spatial gate
-   - 推荐第一项：`topk`
-2. 一个非 attention 的更复杂 family gate
-   - 推荐从下面三者中至少打一项：
-   - `routed / grouped dispatch`
-   - `paged / indexed sparse decode`
-   - `chunk recurrence / scan`
-
-当前状态：
-
-- `selection / indexing` 已经通过 `topk`
-- `chunk recurrence / scan` 已经至少通过一项（`gdn/example_chunk_o.py`）
-- `routed / grouped dispatch` 已经至少通过一项
-  （`fusedmoe/example_fusedmoe_tilelang.py`）
-- `paged / indexed sparse decode` 已经至少通过一项
-  （`deepseek_mla/example_mla_decode_paged.py`）
-
-因此 family coverage gate 的最小 compile-path 要求现在已经满足；
-`Phase B` 之所以仍不能进入 `Phase C`，剩下卡的不是 family gate，而是：
-
-- truth-source purity 还没完全收干净
-- schema strengthening 还没够强
-- `ValidateSpatialProgram` 还不是完整 legality validator
-- `LowerBlackholeOps` 还没有完全切成只读 spatial contract 的 consumer
-
-要求不是“所有 runtime correctness 一次做完”，而是：
-
-- compile-path 上能证明 `SemanticProgram -> SpatialProgram` 的 object boundary 成立
-- spatial object set 不会因新 family 立刻退化回 workload-specific matcher
-
-### 7.6 Module-Scope Program Truth
-
-`tl.device_programs` 不能只停留在“聚合 phase 列表”的最小实现。
-
-进入 `Phase C` 前，它必须稳定承载 cross-function spatial truth，至少包括：
-
-- phase order
-- member_func ownership
-- cross-member phase-boundary truth
-
-单 `PrimFunc` 程序仍只是退化情况，不应反向成为默认心智模型。
-
-## 7.7 2026-04-06 Hardening Execution Order
-
-`Phase B` 的剩余问题必须按 fixed order 收口，不能按“哪个 attr 看起来更顺手”零散修补。
-
-本轮 hardening 的执行顺序固定为：
-
-1. 先把 `ValidateSpatialProgram` 从结构检查升级到最小 legality gate
-   - phase / task / channel / layout / work-partition 的 cross-reference 必须一致
-   - multi-phase 程序除了 `phase_boundary_materialization` 外，还必须证明 phase 间真的有
-     channel 或 boundary state contract
-2. 再把 `LowerBlackholeOps` 收窄成 spatial consumer
-   - `spatial_phase_count / spatial_channel_count / spatial_phase_boundary_states`
-     只允许从 `tl.spatial_program` 恢复
-   - `work_axes / derived_index_count` 应优先从 `SpatialProgram.layouts /
-     work_partitions` 恢复，不再把 `blackhole.work_decomposition` 当 primary source
-3. 最后扩 family gate
-   - 至少补一个非 `copy / GEMM / flash-attn` 的 compile-path spatial case，确认当前 schema
-     不会一离开这三类 workload 就退化
-
-这轮 hardening 的明确边界：
-
-- `segment_plan` 已不再参与 `SpatialProgram` builder
-- `LowerToSpatialProgram` 不再把 `work_decomposition` 当 builder truth source
-- `work_decomposition` / `fragment_regions` / `pipeline_stages` 仍可在更后段保留
-  compatibility path
-- 但不能让这些 legacy attrs 继续外溢成 validator、generic builder，
-  或 `LowerBlackholeOps` 的 primary truth source
-
-另外，generic builder 不能再用 `root_map` 之类的 update name 做协议分支：
-
-- generic path 按 semantic `Update` object 自身建 task
-- update name 只作为 IR object identity、调试和打印，不承担语义分流职责
-
-## 8. Current Gap Inventory
-
-基于当前实现状态，`Phase B` 的当前结论应表述为：
-
-1. `SemanticProgram -> SpatialProgram` compile-path cutover 已完成
-2. spatial builder / validator / consumer 的 primary truth 已切回 typed companion IR
-3. `ValidateSpatialProgram` 当前会把 semantic statefulness 显式投影成最小 legality：
-   stateful semantic states 必须对应 `state_residency`，multi-phase program 还必须覆盖
-   每个 stateful state 的 `phase_boundary_materialization`
-4. representative family gate 已证明当前 object boundary 不会立刻退化回 workload-specific matcher
-5. stronger-contract schema 的第一轮已经落地：
-   `domain_index` 与 `target_kind / target_index`
-   已进入 `SpatialProgram` payload contract，并被 validator / consumer 主链消费
-6. stronger-contract schema 的第二轮也已经落地：
-   `Task / Channel / Placement / SyncEdge / ProgramPhase`
-   已补齐第一批 `*_index / *_indices` linkage payload，
-   `ValidateSpatialProgram` 已切成 contract-first
-7. 后续更强 schema / legality contract 仍然需要，但它们现在属于 `Phase C`
-   translator 驱动的下一轮增强，而不是继续停在 `Phase B` 的 blocker
