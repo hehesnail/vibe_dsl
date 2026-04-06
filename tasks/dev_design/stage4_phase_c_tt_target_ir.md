@@ -26,6 +26,17 @@
 - 重新发明 task graph 或 `ProgramPhase`
 - 让 runtime/codegen 继续补 target contract
 
+当前 `Phase C` translator 可以依赖的上游边界已经明确收紧到：
+
+- `SpatialLayout / WorkPartition` 的 `domain_index`
+- `ResourceIntent` 的 `target_kind / target_index`
+- `Task / Channel / Placement / SyncEdge / ProgramPhase`
+  的第一轮 `*_index / *_indices` linkage payload
+
+也就是说，`Phase C` 不能再把
+`phase_name / task_name / source_task / target_task / channel_names`
+当 primary linkage source；这些字段现在只保留 display/identity 职责。
+
 ## 2. Core Design Boundary
 
 ### 2.1 核心对象

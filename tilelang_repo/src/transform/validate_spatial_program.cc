@@ -10,6 +10,7 @@
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "common/blackhole_utils.h"
 #include "common/semantic_program.h"
@@ -59,10 +60,39 @@ bool SameStringArray(const Array<String>& lhs, const Array<String>& rhs) {
   return true;
 }
 
+bool SameIntegerAnyArray(const Array<Any>& lhs, const Array<Any>& rhs) {
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+  for (int i = 0; i < lhs.size(); ++i) {
+    if (Downcast<Integer>(lhs[i])->value != Downcast<Integer>(rhs[i])->value) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::optional<int64_t> GetPayloadIndex(const Map<String, Any>& payload, const char* key);
+
 bool SamePhaseSignature(const ProgramPhase& lhs, const ProgramPhase& rhs) {
+  auto lhs_phase_index = GetPayloadIndex(lhs->payload, schema_key::kPhaseIndex);
+  auto rhs_phase_index = GetPayloadIndex(rhs->payload, schema_key::kPhaseIndex);
+  auto lhs_task_indices = lhs->payload.Get(String(schema_key::kTaskIndices));
+  auto rhs_task_indices = rhs->payload.Get(String(schema_key::kTaskIndices));
+  auto lhs_channel_indices = lhs->payload.Get(String(schema_key::kChannelIndices));
+  auto rhs_channel_indices = rhs->payload.Get(String(schema_key::kChannelIndices));
   return static_cast<std::string>(lhs->name) == static_cast<std::string>(rhs->name) &&
          SameStringArray(lhs->task_names, rhs->task_names) &&
-         SameStringArray(lhs->channel_names, rhs->channel_names);
+         SameStringArray(lhs->channel_names, rhs->channel_names) &&
+         lhs_phase_index == rhs_phase_index &&
+         lhs_task_indices.has_value() == rhs_task_indices.has_value() &&
+         lhs_channel_indices.has_value() == rhs_channel_indices.has_value() &&
+         (!lhs_task_indices.has_value() ||
+          SameIntegerAnyArray(Downcast<Array<Any>>(lhs_task_indices.value()),
+                              Downcast<Array<Any>>(rhs_task_indices.value()))) &&
+         (!lhs_channel_indices.has_value() ||
+          SameIntegerAnyArray(Downcast<Array<Any>>(lhs_channel_indices.value()),
+                              Downcast<Array<Any>>(rhs_channel_indices.value())));
 }
 
 bool IsPipelineContractIntent(const ResourceIntent& intent) {
@@ -85,6 +115,17 @@ std::optional<int64_t> GetPayloadIndex(const Map<String, Any>& payload, const ch
 std::optional<std::string> GetPayloadString(const Map<String, Any>& payload, const char* key) {
   if (auto value = payload.Get(String(key))) {
     return static_cast<std::string>(Downcast<String>(value.value()));
+  }
+  return std::nullopt;
+}
+
+std::optional<std::vector<int64_t>> GetPayloadIndices(const Map<String, Any>& payload, const char* key) {
+  if (auto value = payload.Get(String(key))) {
+    std::vector<int64_t> result;
+    for (const Any& item : Downcast<Array<Any>>(value.value())) {
+      result.push_back(Downcast<Integer>(item)->value);
+    }
+    return result;
   }
   return std::nullopt;
 }
@@ -117,87 +158,152 @@ tvm::transform::Pass ValidateSpatialProgram() {
           << "ValidateSpatialProgram requires at least one work partition";
 
       std::unordered_set<std::string> phase_names;
+      std::vector<std::string> phase_name_by_index(program->phases.size());
+      std::vector<std::vector<int64_t>> phase_task_indices_by_index(program->phases.size());
+      std::vector<std::vector<int64_t>> phase_channel_indices_by_index(program->phases.size());
       for (const ProgramPhase& phase : program->phases) {
         const std::string phase_name = static_cast<std::string>(phase->name);
         ICHECK(phase_names.insert(phase_name).second)
             << "ValidateSpatialProgram found duplicate phase " << phase_name;
+        auto maybe_phase_index = GetPayloadIndex(phase->payload, schema_key::kPhaseIndex);
+        ICHECK(maybe_phase_index)
+            << "ValidateSpatialProgram requires program phases to carry phase_index contract";
+        ICHECK_GE(*maybe_phase_index, 0);
+        ICHECK_LT(*maybe_phase_index, program->phases.size())
+            << "ValidateSpatialProgram found program phase with invalid phase_index";
+        auto maybe_task_indices = GetPayloadIndices(phase->payload, schema_key::kTaskIndices);
+        ICHECK(maybe_task_indices)
+            << "ValidateSpatialProgram requires program phases to carry task_indices contract";
+        auto maybe_channel_indices = GetPayloadIndices(phase->payload, schema_key::kChannelIndices);
+        ICHECK(maybe_channel_indices)
+            << "ValidateSpatialProgram requires program phases to carry channel_indices contract";
+        phase_name_by_index[*maybe_phase_index] = phase_name;
+        phase_task_indices_by_index[*maybe_phase_index] = std::move(*maybe_task_indices);
+        phase_channel_indices_by_index[*maybe_phase_index] = std::move(*maybe_channel_indices);
       }
 
       std::unordered_set<std::string> task_names;
-      std::unordered_map<std::string, std::string> task_to_phase;
-      for (const Task& task : program->tasks) {
+      std::vector<std::string> task_name_by_index(program->tasks.size());
+      std::vector<int64_t> task_phase_index_by_index(program->tasks.size(), -1);
+      for (int task_index = 0; task_index < program->tasks.size(); ++task_index) {
+        const Task& task = program->tasks[task_index];
         const std::string task_name = static_cast<std::string>(task->name);
         ICHECK(task_names.insert(task_name).second)
             << "ValidateSpatialProgram found duplicate task " << task_name;
-        const std::string phase_name = static_cast<std::string>(task->phase_name);
-        ICHECK(phase_names.count(phase_name))
-            << "ValidateSpatialProgram found task assigned to unknown phase "
-            << task->phase_name;
-        task_to_phase[task_name] = phase_name;
+        auto maybe_phase_index = GetPayloadIndex(task->payload, schema_key::kPhaseIndex);
+        ICHECK(maybe_phase_index)
+            << "ValidateSpatialProgram requires tasks to carry phase_index contract";
+        ICHECK_GE(*maybe_phase_index, 0);
+        ICHECK_LT(*maybe_phase_index, program->phases.size())
+            << "ValidateSpatialProgram found task with invalid phase_index";
+        const std::string phase_name = phase_name_by_index[*maybe_phase_index];
+        ICHECK(!phase_name.empty())
+            << "ValidateSpatialProgram found task referencing unresolved phase_index";
+        ICHECK_EQ(static_cast<std::string>(task->phase_name), phase_name)
+            << "ValidateSpatialProgram found task phase_name inconsistent with phase_index contract";
+        task_name_by_index[task_index] = task_name;
+        task_phase_index_by_index[task_index] = *maybe_phase_index;
       }
 
       std::unordered_set<std::string> channel_names;
-      std::unordered_map<std::string, Channel> channels_by_name;
-      for (const Channel& channel : program->channels) {
+      std::vector<std::string> channel_name_by_index(program->channels.size());
+      std::vector<int64_t> channel_target_task_index_by_index(program->channels.size(), -1);
+      for (int channel_index = 0; channel_index < program->channels.size(); ++channel_index) {
+        const Channel& channel = program->channels[channel_index];
         const std::string channel_name = static_cast<std::string>(channel->name);
         ICHECK(channel_names.insert(channel_name).second)
             << "ValidateSpatialProgram found duplicate channel " << channel_name;
-        if (!static_cast<std::string>(channel->source_task).empty()) {
-          ICHECK(task_names.count(static_cast<std::string>(channel->source_task)))
-              << "ValidateSpatialProgram found channel with unknown source task "
-              << channel->source_task;
-        }
-        if (!static_cast<std::string>(channel->target_task).empty()) {
-          ICHECK(task_names.count(static_cast<std::string>(channel->target_task)))
-              << "ValidateSpatialProgram found channel with unknown target task "
-              << channel->target_task;
-        }
-        channels_by_name[channel_name] = channel;
+        auto maybe_source_task_index =
+            GetPayloadIndex(channel->payload, schema_key::kSourceTaskIndex);
+        auto maybe_target_task_index =
+            GetPayloadIndex(channel->payload, schema_key::kTargetTaskIndex);
+        ICHECK(maybe_source_task_index && maybe_target_task_index)
+            << "ValidateSpatialProgram requires channels to carry "
+               "source_task_index/target_task_index contract";
+        ICHECK_GE(*maybe_source_task_index, 0);
+        ICHECK_LT(*maybe_source_task_index, program->tasks.size())
+            << "ValidateSpatialProgram found channel with invalid source_task_index";
+        ICHECK_GE(*maybe_target_task_index, 0);
+        ICHECK_LT(*maybe_target_task_index, program->tasks.size())
+            << "ValidateSpatialProgram found channel with invalid target_task_index";
+        ICHECK_EQ(static_cast<std::string>(channel->source_task),
+                  task_name_by_index[*maybe_source_task_index])
+            << "ValidateSpatialProgram found channel source_task inconsistent with source_task_index";
+        ICHECK_EQ(static_cast<std::string>(channel->target_task),
+                  task_name_by_index[*maybe_target_task_index])
+            << "ValidateSpatialProgram found channel target_task inconsistent with target_task_index";
+        channel_name_by_index[channel_index] = channel_name;
+        channel_target_task_index_by_index[channel_index] = *maybe_target_task_index;
       }
 
       for (const Placement& placement : program->placements) {
-        const std::string task_name = static_cast<std::string>(placement->task_name);
-        ICHECK(task_names.count(task_name))
-            << "ValidateSpatialProgram found placement referencing unknown task " << task_name;
+        auto maybe_task_index = GetPayloadIndex(placement->payload, schema_key::kTaskIndex);
+        ICHECK(maybe_task_index)
+            << "ValidateSpatialProgram requires placements to carry task_index contract";
+        ICHECK_GE(*maybe_task_index, 0);
+        ICHECK_LT(*maybe_task_index, program->tasks.size())
+            << "ValidateSpatialProgram found placement with invalid task_index";
+        ICHECK_EQ(static_cast<std::string>(placement->task_name), task_name_by_index[*maybe_task_index])
+            << "ValidateSpatialProgram found placement task_name inconsistent with task_index";
         ICHECK_EQ(static_cast<std::string>(placement->member_func), member_func)
             << "ValidateSpatialProgram requires placement.member_func to match "
                "SpatialProgram.member_func";
       }
 
       for (const SyncEdge& edge : program->sync_edges) {
-        const std::string source_task = static_cast<std::string>(edge->source);
-        const std::string target_task = static_cast<std::string>(edge->target);
-        ICHECK(task_names.count(source_task))
-            << "ValidateSpatialProgram found sync edge with unknown source task " << source_task;
-        ICHECK(task_names.count(target_task))
-            << "ValidateSpatialProgram found sync edge with unknown target task " << target_task;
+        auto maybe_source_task_index = GetPayloadIndex(edge->payload, schema_key::kSourceTaskIndex);
+        auto maybe_target_task_index = GetPayloadIndex(edge->payload, schema_key::kTargetTaskIndex);
+        ICHECK(maybe_source_task_index && maybe_target_task_index)
+            << "ValidateSpatialProgram requires sync edges to carry "
+               "source_task_index/target_task_index contract";
+        ICHECK_GE(*maybe_source_task_index, 0);
+        ICHECK_LT(*maybe_source_task_index, program->tasks.size())
+            << "ValidateSpatialProgram found sync edge with invalid source_task_index";
+        ICHECK_GE(*maybe_target_task_index, 0);
+        ICHECK_LT(*maybe_target_task_index, program->tasks.size())
+            << "ValidateSpatialProgram found sync edge with invalid target_task_index";
+        ICHECK_EQ(static_cast<std::string>(edge->source), task_name_by_index[*maybe_source_task_index])
+            << "ValidateSpatialProgram found sync edge source inconsistent with source_task_index";
+        ICHECK_EQ(static_cast<std::string>(edge->target), task_name_by_index[*maybe_target_task_index])
+            << "ValidateSpatialProgram found sync edge target inconsistent with target_task_index";
       }
 
       for (int i = 0; i < program->phases.size(); ++i) {
         const ProgramPhase& phase = program->phases[i];
         const std::string phase_name = static_cast<std::string>(phase->name);
-        for (const String& task_name : phase->task_names) {
-          const std::string task_name_str = static_cast<std::string>(task_name);
-          ICHECK(task_names.count(task_name_str))
-              << "ValidateSpatialProgram found phase referencing unknown task " << task_name;
-          ICHECK_EQ(task_to_phase.at(task_name_str), phase_name)
-              << "ValidateSpatialProgram found phase referencing task assigned to a different "
-                 "phase";
+        auto maybe_phase_index = GetPayloadIndex(phase->payload, schema_key::kPhaseIndex);
+        ICHECK(maybe_phase_index);
+        ICHECK_EQ(*maybe_phase_index, i)
+            << "ValidateSpatialProgram requires phase_index contract to follow phase order";
+        const auto& task_indices = phase_task_indices_by_index[i];
+        ICHECK_EQ(phase->task_names.size(), task_indices.size())
+            << "ValidateSpatialProgram requires phase task_names to stay aligned with task_indices";
+        for (int j = 0; j < task_indices.size(); ++j) {
+          const int64_t task_index = task_indices[j];
+          ICHECK_GE(task_index, 0);
+          ICHECK_LT(task_index, program->tasks.size())
+              << "ValidateSpatialProgram found phase with invalid task_indices entry";
+          ICHECK_EQ(task_phase_index_by_index[task_index], i)
+              << "ValidateSpatialProgram found phase task_indices entry assigned to a different phase";
+          ICHECK_EQ(static_cast<std::string>(phase->task_names[j]), task_name_by_index[task_index])
+              << "ValidateSpatialProgram found phase task_names inconsistent with task_indices";
         }
-        for (const String& channel_name : phase->channel_names) {
-          const std::string channel_name_str = static_cast<std::string>(channel_name);
-          ICHECK(channel_names.count(channel_name_str))
-              << "ValidateSpatialProgram found phase referencing unknown channel "
-              << channel_name;
-          const Channel& channel = channels_by_name.at(channel_name_str);
-          if (!static_cast<std::string>(channel->target_task).empty()) {
-            ICHECK_EQ(task_to_phase.at(static_cast<std::string>(channel->target_task)), phase_name)
-                << "ValidateSpatialProgram requires phase channel contracts to target tasks in "
-                   "the owning phase";
-          }
+        const auto& channel_indices = phase_channel_indices_by_index[i];
+        ICHECK_EQ(phase->channel_names.size(), channel_indices.size())
+            << "ValidateSpatialProgram requires phase channel_names to stay aligned with channel_indices";
+        for (int j = 0; j < channel_indices.size(); ++j) {
+          const int64_t channel_index = channel_indices[j];
+          ICHECK_GE(channel_index, 0);
+          ICHECK_LT(channel_index, program->channels.size())
+              << "ValidateSpatialProgram found phase with invalid channel_indices entry";
+          ICHECK_EQ(static_cast<std::string>(phase->channel_names[j]), channel_name_by_index[channel_index])
+              << "ValidateSpatialProgram found phase channel_names inconsistent with channel_indices";
+          ICHECK_EQ(task_phase_index_by_index[channel_target_task_index_by_index[channel_index]], i)
+              << "ValidateSpatialProgram requires phase channel contracts to target tasks in "
+                 "the owning phase";
         }
         if (program->phases.size() > 1 && i > 0) {
-          ICHECK(!phase->channel_names.empty())
+          ICHECK(!channel_indices.empty())
               << "ValidateSpatialProgram requires downstream multi-phase programs to reference "
                  "at least one channel";
         }

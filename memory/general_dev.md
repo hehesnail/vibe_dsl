@@ -292,6 +292,17 @@
     绑定 semantic-state target
   - `LowerBlackholeOps` 这类 consumer 再按 `target_index` 恢复对象，
     而不是回头按 `target_name` 字符串重新查表
+- 对 `Task / Channel / Placement / SyncEdge / ProgramPhase` 这类
+  `SpatialProgram` 结构对象，也不要继续把 `phase_name / task_name / source_task /
+  target_task / channel_names` 当隐式 linkage 协议。更稳的 cutover 是：
+  - `Task.payload.phase_index`
+  - `Channel.payload.source_task_index / target_task_index / state_index`
+  - `Placement.payload.task_index`
+  - `SyncEdge.payload.source_task_index / target_task_index`
+  - `ProgramPhase.payload.phase_index / task_indices / channel_indices`
+  先变成 mandatory contract，
+  然后 `ValidateSpatialProgram` 再改成 contract-first 校验；
+  display-name 字段只保留 identity / debug 角色
 - 对 Blackhole 的 device resource canonicalization，不要把
   `blackhole.resource_plan` 当唯一真源。`grouped / routed / paged` 这类 family 的
   block-local shared alloc_buffer 很可能还没先出现在 plan 里，但 IR storage scope

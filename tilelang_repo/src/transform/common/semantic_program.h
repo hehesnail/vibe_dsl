@@ -52,6 +52,7 @@ constexpr const char* kAnchor = "anchor";
 constexpr const char* kBuffer = "buffer";
 constexpr const char* kBuffers = "buffers";
 constexpr const char* kCaptureStage = "capture_stage";
+constexpr const char* kChannelIndices = "channel_indices";
 constexpr const char* kCompanionBuffer = "companion_buffer";
 constexpr const char* kCompanionTarget = "companion_target";
 constexpr const char* kDirection = "direction";
@@ -70,15 +71,18 @@ constexpr const char* kOperations = "operations";
 constexpr const char* kOrderedRegion = "ordered_region";
 constexpr const char* kPayload = "payload";
 constexpr const char* kPipelineStages = "pipeline_stages";
+constexpr const char* kPhaseIndex = "phase_index";
 constexpr const char* kPointwiseOpKinds = "pointwise_op_kinds";
 constexpr const char* kRowBroadcastSources = "row_broadcast_sources";
 constexpr const char* kRowReductionTargets = "row_reduction_targets";
+constexpr const char* kStateIndex = "state_index";
 constexpr const char* kWorkDependentLoopBounds = "work_dependent_loop_bounds";
 constexpr const char* kScope = "scope";
 constexpr const char* kShape = "shape";
 constexpr const char* kSource = "source";
 constexpr const char* kSourceBuffers = "source_buffers";
 constexpr const char* kSources = "sources";
+constexpr const char* kSourceTaskIndex = "source_task_index";
 constexpr const char* kSourceStates = "source_states";
 constexpr const char* kSrcBuffer = "src_buffer";
 constexpr const char* kSrcBufferRef = "src_buffer_ref";
@@ -87,6 +91,9 @@ constexpr const char* kTarget = "target";
 constexpr const char* kTargetBuffer = "target_buffer";
 constexpr const char* kTargetIndex = "target_index";
 constexpr const char* kTargetKind = "target_kind";
+constexpr const char* kTargetTaskIndex = "target_task_index";
+constexpr const char* kTaskIndex = "task_index";
+constexpr const char* kTaskIndices = "task_indices";
 constexpr const char* kValue = "value";
 constexpr const char* kValueBuffer = "value_buffer";
 constexpr const char* kValueTarget = "value_target";
@@ -509,6 +516,7 @@ class TaskNode : public Object {
   ffi::String phase_name;
   ffi::Array<ffi::String> update_names;
   ffi::Array<ffi::String> traits;
+  ffi::Map<ffi::String, ffi::Any> payload;
   ffi::Array<TIRAnchor> anchors;
 
   static void RegisterReflection() {
@@ -519,6 +527,7 @@ class TaskNode : public Object {
         .def_ro("phase_name", &TaskNode::phase_name)
         .def_ro("update_names", &TaskNode::update_names)
         .def_ro("traits", &TaskNode::traits)
+        .def_ro("payload", &TaskNode::payload)
         .def_ro("anchors", &TaskNode::anchors);
   }
 
@@ -529,6 +538,7 @@ class Task : public ObjectRef {
  public:
   TVM_DLL Task(ffi::String name, ffi::String kind, ffi::String phase_name,
                ffi::Array<ffi::String> update_names, ffi::Array<ffi::String> traits,
+               ffi::Map<ffi::String, ffi::Any> payload,
                ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(Task, ObjectRef, TaskNode);
 };
@@ -541,6 +551,7 @@ class ChannelNode : public Object {
   ffi::String target_task;
   ffi::String state_name;
   ffi::Array<ffi::String> traits;
+  ffi::Map<ffi::String, ffi::Any> payload;
   ffi::Array<TIRAnchor> anchors;
 
   static void RegisterReflection() {
@@ -552,6 +563,7 @@ class ChannelNode : public Object {
         .def_ro("target_task", &ChannelNode::target_task)
         .def_ro("state_name", &ChannelNode::state_name)
         .def_ro("traits", &ChannelNode::traits)
+        .def_ro("payload", &ChannelNode::payload)
         .def_ro("anchors", &ChannelNode::anchors);
   }
 
@@ -562,7 +574,8 @@ class Channel : public ObjectRef {
  public:
   TVM_DLL Channel(ffi::String name, ffi::String kind, ffi::String source_task,
                   ffi::String target_task, ffi::String state_name,
-                  ffi::Array<ffi::String> traits, ffi::Array<TIRAnchor> anchors);
+                  ffi::Array<ffi::String> traits, ffi::Map<ffi::String, ffi::Any> payload,
+                  ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(Channel, ObjectRef, ChannelNode);
 };
 
@@ -642,6 +655,7 @@ class PlacementNode : public Object {
   ffi::String task_name;
   ffi::String member_func;
   ffi::Array<ffi::String> traits;
+  ffi::Map<ffi::String, ffi::Any> payload;
   ffi::Array<TIRAnchor> anchors;
 
   static void RegisterReflection() {
@@ -652,6 +666,7 @@ class PlacementNode : public Object {
         .def_ro("task_name", &PlacementNode::task_name)
         .def_ro("member_func", &PlacementNode::member_func)
         .def_ro("traits", &PlacementNode::traits)
+        .def_ro("payload", &PlacementNode::payload)
         .def_ro("anchors", &PlacementNode::anchors);
   }
 
@@ -662,6 +677,7 @@ class Placement : public ObjectRef {
  public:
   TVM_DLL Placement(ffi::String name, ffi::String kind, ffi::String task_name,
                     ffi::String member_func, ffi::Array<ffi::String> traits,
+                    ffi::Map<ffi::String, ffi::Any> payload,
                     ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(Placement, ObjectRef, PlacementNode);
 };
@@ -673,6 +689,7 @@ class SyncEdgeNode : public Object {
   ffi::String source;
   ffi::String target;
   ffi::Array<ffi::String> traits;
+  ffi::Map<ffi::String, ffi::Any> payload;
   ffi::Array<TIRAnchor> anchors;
 
   static void RegisterReflection() {
@@ -683,6 +700,7 @@ class SyncEdgeNode : public Object {
         .def_ro("source", &SyncEdgeNode::source)
         .def_ro("target", &SyncEdgeNode::target)
         .def_ro("traits", &SyncEdgeNode::traits)
+        .def_ro("payload", &SyncEdgeNode::payload)
         .def_ro("anchors", &SyncEdgeNode::anchors);
   }
 
@@ -693,6 +711,7 @@ class SyncEdge : public ObjectRef {
  public:
   TVM_DLL SyncEdge(ffi::String name, ffi::String kind, ffi::String source,
                    ffi::String target, ffi::Array<ffi::String> traits,
+                   ffi::Map<ffi::String, ffi::Any> payload,
                    ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SyncEdge, ObjectRef, SyncEdgeNode);
 };
@@ -735,6 +754,7 @@ class ProgramPhaseNode : public Object {
   ffi::Array<ffi::String> task_names;
   ffi::Array<ffi::String> channel_names;
   ffi::Array<ffi::String> traits;
+  ffi::Map<ffi::String, ffi::Any> payload;
   ffi::Array<TIRAnchor> anchors;
 
   static void RegisterReflection() {
@@ -744,6 +764,7 @@ class ProgramPhaseNode : public Object {
         .def_ro("task_names", &ProgramPhaseNode::task_names)
         .def_ro("channel_names", &ProgramPhaseNode::channel_names)
         .def_ro("traits", &ProgramPhaseNode::traits)
+        .def_ro("payload", &ProgramPhaseNode::payload)
         .def_ro("anchors", &ProgramPhaseNode::anchors);
   }
 
@@ -754,7 +775,9 @@ class ProgramPhase : public ObjectRef {
  public:
   TVM_DLL ProgramPhase(ffi::String name, ffi::Array<ffi::String> task_names,
                        ffi::Array<ffi::String> channel_names,
-                       ffi::Array<ffi::String> traits, ffi::Array<TIRAnchor> anchors);
+                       ffi::Array<ffi::String> traits,
+                       ffi::Map<ffi::String, ffi::Any> payload,
+                       ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(ProgramPhase, ObjectRef, ProgramPhaseNode);
 };
 

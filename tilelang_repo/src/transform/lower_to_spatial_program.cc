@@ -56,6 +56,14 @@ Array<String> MakeTraits(std::initializer_list<const char*> values) {
 
 Map<String, Any> EmptyPayload() { return Map<String, Any>(); }
 
+Array<Any> ToIntegerAnyArray(const std::vector<int>& values) {
+  Array<Any> result;
+  for (int value : values) {
+    result.push_back(Integer(value));
+  }
+  return result;
+}
+
 Map<String, Any> BuildDomainPayload(int domain_index) {
   Map<String, Any> payload;
   payload.Set(String(schema_key::kDomainIndex), Integer(domain_index));
@@ -72,6 +80,45 @@ Map<String, Any> BuildTargetPayload(const char* target_kind, int target_index) {
 Map<String, Any> BuildMemberFuncTargetPayload() {
   Map<String, Any> payload;
   payload.Set(String(schema_key::kTargetKind), String(spatial_contract::kMemberFuncTarget));
+  return payload;
+}
+
+Map<String, Any> BuildTaskPayload(int phase_index) {
+  Map<String, Any> payload;
+  payload.Set(String(schema_key::kPhaseIndex), Integer(phase_index));
+  return payload;
+}
+
+Map<String, Any> BuildChannelPayload(int source_task_index, int target_task_index,
+                                     std::optional<int> state_index = std::nullopt) {
+  Map<String, Any> payload;
+  payload.Set(String(schema_key::kSourceTaskIndex), Integer(source_task_index));
+  payload.Set(String(schema_key::kTargetTaskIndex), Integer(target_task_index));
+  if (state_index.has_value()) {
+    payload.Set(String(schema_key::kStateIndex), Integer(state_index.value()));
+  }
+  return payload;
+}
+
+Map<String, Any> BuildPlacementPayload(int task_index) {
+  Map<String, Any> payload;
+  payload.Set(String(schema_key::kTaskIndex), Integer(task_index));
+  return payload;
+}
+
+Map<String, Any> BuildSyncEdgePayload(int source_task_index, int target_task_index) {
+  Map<String, Any> payload;
+  payload.Set(String(schema_key::kSourceTaskIndex), Integer(source_task_index));
+  payload.Set(String(schema_key::kTargetTaskIndex), Integer(target_task_index));
+  return payload;
+}
+
+Map<String, Any> BuildProgramPhasePayload(int phase_index, const std::vector<int>& task_indices,
+                                          const std::vector<int>& channel_indices) {
+  Map<String, Any> payload;
+  payload.Set(String(schema_key::kPhaseIndex), Integer(phase_index));
+  payload.Set(String(schema_key::kTaskIndices), ToIntegerAnyArray(task_indices));
+  payload.Set(String(schema_key::kChannelIndices), ToIntegerAnyArray(channel_indices));
   return payload;
 }
 
@@ -321,20 +368,23 @@ SpatialProgramBundle BuildCopyFastPath(const std::string& member_func,
   Array<Task> tasks{
       Task(String("copy"), String("transfer"), String("phase0_copy"),
            Array<String>{String(program->updates[0]->name)}, MakeTraits({"fast_path", "copy"}),
+           BuildTaskPayload(0),
            MakeAnchors("spatial_task", "copy"))};
   Array<Channel> channels{
       Channel(String("copy_tensor"), String("tensor_flow"), String("copy"), String("copy"),
-              String(), MakeTraits({"fast_path", "copy"}),
+              String(), MakeTraits({"fast_path", "copy"}), BuildChannelPayload(0, 0),
               MakeAnchors("spatial_channel", "copy_tensor"))};
   Array<ProgramPhase> phases{
       ProgramPhase(String("phase0_copy"), Array<String>{String("copy")},
                    Array<String>{String("copy_tensor")}, MakeTraits({"fast_path", "copy"}),
+                   BuildProgramPhasePayload(0, {0}, {0}),
                    MakeAnchors("spatial_phase", "phase0_copy"))};
   Array<SpatialLayout> layouts;
   Array<WorkPartition> work_partitions;
   Array<Placement> placements{
       Placement(String("place_copy"), String("execution"), String("copy"), String(member_func),
-                MakeTraits({"fast_path", "copy"}), MakeAnchors("spatial_placement", "copy"))};
+                MakeTraits({"fast_path", "copy"}), BuildPlacementPayload(0),
+                MakeAnchors("spatial_placement", "copy"))};
   Array<SyncEdge> sync_edges;
   Array<ResourceIntent> resource_intents{
       ResourceIntent(String("copy_buffer"), String("buffer"), String("copy"),
@@ -366,6 +416,7 @@ SpatialProgramBundle BuildGemmFastPath(const std::string& member_func,
     }
     tasks.push_back(Task(String(segment_name), String(task_kind), String("phase0_gemm"),
                          update_names, MakeTraits({"fast_path", "gemm"}),
+                         BuildTaskPayload(0),
                          MakeAnchors("spatial_task", segment_name)));
     task_names.push_back(String(segment_name));
     std::vector<std::string> placement_traits{"fast_path", "gemm"};
@@ -375,33 +426,35 @@ SpatialProgramBundle BuildGemmFastPath(const std::string& member_func,
     }
     placements.push_back(Placement(String("place_" + segment_name), String("execution"),
                                    String(segment_name), String(member_func),
-                                   ToStringArray(placement_traits),
+                                   ToStringArray(placement_traits), BuildPlacementPayload(task_names.size() - 1),
                                    MakeAnchors("spatial_placement", segment_name)));
   }
   Array<Channel> channels{
       Channel(String("a_tiles"), String("tensor_flow"), String("reader"), String("compute"),
-              String("A"), MakeTraits({"fast_path", "gemm"}),
+              String("A"), MakeTraits({"fast_path", "gemm"}), BuildChannelPayload(0, 1),
               MakeAnchors("spatial_channel", "a_tiles")),
       Channel(String("b_tiles"), String("tensor_flow"), String("reader"), String("compute"),
-              String("B"), MakeTraits({"fast_path", "gemm"}),
+              String("B"), MakeTraits({"fast_path", "gemm"}), BuildChannelPayload(0, 1),
               MakeAnchors("spatial_channel", "b_tiles")),
       Channel(String("c_tiles"), String("tensor_flow"), String("compute"), String("writer"),
               String(program->states.empty() ? "" : static_cast<std::string>(program->states[0]->name)),
               MakeTraits({"fast_path", "gemm"}),
+              program->states.empty() ? BuildChannelPayload(1, 2) : BuildChannelPayload(1, 2, 0),
               MakeAnchors("spatial_channel", "c_tiles"))};
   Array<ProgramPhase> phases{
       ProgramPhase(String("phase0_gemm"), task_names,
                    Array<String>{String("a_tiles"), String("b_tiles"), String("c_tiles")},
                    MakeTraits({"fast_path", "gemm"}),
+                   BuildProgramPhasePayload(0, {0, 1, 2}, {0, 1, 2}),
                    MakeAnchors("spatial_phase", "phase0_gemm"))};
   Array<SpatialLayout> layouts;
   Array<WorkPartition> work_partitions;
   Array<SyncEdge> sync_edges{
       SyncEdge(String("reader_to_compute"), String("dependency"), String("reader"),
-               String("compute"), MakeTraits({"fast_path", "gemm"}),
+               String("compute"), MakeTraits({"fast_path", "gemm"}), BuildSyncEdgePayload(0, 1),
                MakeAnchors("spatial_sync", "reader_to_compute")),
       SyncEdge(String("compute_to_writer"), String("dependency"), String("compute"),
-               String("writer"), MakeTraits({"fast_path", "gemm"}),
+               String("writer"), MakeTraits({"fast_path", "gemm"}), BuildSyncEdgePayload(1, 2),
                MakeAnchors("spatial_sync", "compute_to_writer"))};
   Array<ResourceIntent> resource_intents{
       ResourceIntent(String("gemm_input_buffers"), String("buffer"), String("reader"),
@@ -432,11 +485,20 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
   const std::vector<std::string> phase_order =
       multi_phase ? std::vector<std::string>{"phase0_compute", "phase1_stateful"}
                   : std::vector<std::string>{"phase0_compute"};
+  std::unordered_map<std::string, int> phase_index_by_name;
+  for (int i = 0; i < phase_order.size(); ++i) {
+    phase_index_by_name[phase_order[i]] = i;
+  }
 
   Array<Task> tasks;
   Array<Placement> placements;
   std::unordered_map<std::string, std::vector<std::string>> phase_to_tasks;
   std::unordered_map<std::string, Task> tasks_by_update;
+  std::unordered_map<std::string, int> task_index_by_name;
+  std::unordered_map<std::string, int> state_index_by_name;
+  for (int i = 0; i < program->states.size(); ++i) {
+    state_index_by_name[static_cast<std::string>(program->states[i]->name)] = i;
+  }
   std::unordered_set<std::string> known_task_names;
   for (const Update& update : program->updates) {
     const std::string update_name = static_cast<std::string>(update->name);
@@ -445,13 +507,17 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
     Task task(String(update_name), String(task_kind), String(phase_name),
               Array<String>{update->name},
               Array<String>{String("phase_b"), String(static_cast<std::string>(update->law->kind))},
+              BuildTaskPayload(phase_index_by_name.at(phase_name)),
               MakeAnchors("spatial_task", update_name));
     tasks.push_back(task);
+    const int task_index = static_cast<int>(tasks.size()) - 1;
     placements.push_back(Placement(String("place_" + update_name), String("execution"),
                                    String(update_name), String(member_func),
-                                   MakeTraits({"phase_b"}), MakeAnchors("spatial_placement", update_name)));
+                                   MakeTraits({"phase_b"}), BuildPlacementPayload(task_index),
+                                   MakeAnchors("spatial_placement", update_name)));
     phase_to_tasks[phase_name].push_back(update_name);
     tasks_by_update[update_name] = task;
+    task_index_by_name[update_name] = task_index;
     known_task_names.insert(update_name);
   }
 
@@ -459,13 +525,17 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
     const std::string update_name = static_cast<std::string>(program->updates[0]->name);
     Task task(String(update_name), String("compute"), String("phase0_compute"),
               Array<String>{program->updates[0]->name}, MakeTraits({"phase_b"}),
+              BuildTaskPayload(phase_index_by_name.at("phase0_compute")),
               MakeAnchors("spatial_task", update_name));
     tasks.push_back(task);
+    const int task_index = static_cast<int>(tasks.size()) - 1;
     placements.push_back(Placement(String("place_" + update_name), String("execution"),
                                    String(update_name), String(member_func),
-                                   MakeTraits({"phase_b"}), MakeAnchors("spatial_placement", update_name)));
+                                   MakeTraits({"phase_b"}), BuildPlacementPayload(task_index),
+                                   MakeAnchors("spatial_placement", update_name)));
     phase_to_tasks["phase0_compute"].push_back(update_name);
     tasks_by_update[update_name] = task;
+    task_index_by_name[update_name] = task_index;
     known_task_names.insert(update_name);
   }
 
@@ -492,9 +562,17 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
       continue;
     }
     const std::string channel_name = "channel_" + state_name + "_" + consumer_update;
+    auto state_index_it = state_index_by_name.find(state_name);
     channels.push_back(Channel(String(channel_name), String("state_flow"), String(source_task),
                                String(consumer_update), String(state_name),
-                               MakeTraits({"phase_b"}), MakeAnchors("spatial_channel", channel_name)));
+                               MakeTraits({"phase_b"}),
+                               state_index_it == state_index_by_name.end()
+                                   ? BuildChannelPayload(task_index_by_name.at(source_task),
+                                                         task_index_by_name.at(consumer_update))
+                                   : BuildChannelPayload(task_index_by_name.at(source_task),
+                                                         task_index_by_name.at(consumer_update),
+                                                         state_index_it->second),
+                               MakeAnchors("spatial_channel", channel_name)));
     const std::string phase_name = static_cast<std::string>(tasks_by_update[consumer_update]->phase_name);
     phase_to_channels[phase_name].push_back(channel_name);
   }
@@ -506,23 +584,42 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
                                String(phase_to_tasks["phase0_compute"].front()),
                                String(phase_to_tasks["phase1_stateful"].front()), String(),
                                MakeTraits({"phase_boundary"}),
+                               BuildChannelPayload(
+                                   task_index_by_name.at(phase_to_tasks["phase0_compute"].front()),
+                                   task_index_by_name.at(phase_to_tasks["phase1_stateful"].front())),
                                MakeAnchors("spatial_channel", channel_name)));
     phase_to_channels["phase1_stateful"].push_back(channel_name);
   }
 
   Array<ProgramPhase> phases;
+  std::unordered_map<std::string, int> channel_index_by_name;
+  for (int i = 0; i < channels.size(); ++i) {
+    channel_index_by_name[static_cast<std::string>(channels[i]->name)] = i;
+  }
   for (const auto& phase_name : phase_order) {
     auto task_it = phase_to_tasks.find(phase_name);
     if (task_it == phase_to_tasks.end() || task_it->second.empty()) {
       continue;
     }
     const auto channel_it = phase_to_channels.find(phase_name);
+    std::vector<int> task_indices;
+    for (const auto& task_name : task_it->second) {
+      task_indices.push_back(task_index_by_name.at(task_name));
+    }
+    std::vector<int> channel_indices;
+    if (channel_it != phase_to_channels.end()) {
+      for (const auto& channel_name : channel_it->second) {
+        channel_indices.push_back(channel_index_by_name.at(channel_name));
+      }
+    }
     phases.push_back(ProgramPhase(String(phase_name), ToStringArray(task_it->second),
                                   channel_it == phase_to_channels.end()
                                       ? Array<String>{}
                                       : ToStringArray(channel_it->second),
                                   ToStringArray(multi_phase ? std::vector<std::string>{"phase_b", "multi_phase"}
                                                             : std::vector<std::string>{"phase_b"}),
+                                  BuildProgramPhasePayload(phase_index_by_name.at(phase_name),
+                                                          task_indices, channel_indices),
                                   MakeAnchors("spatial_phase", phase_name)));
   }
 
@@ -540,14 +637,13 @@ SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
                                   String(phase_to_tasks["phase0_compute"].front()),
                                   String(phase_to_tasks["phase1_stateful"].front()),
                                   MakeTraits({"phase_boundary"}),
+                                  BuildSyncEdgePayload(
+                                      task_index_by_name.at(phase_to_tasks["phase0_compute"].front()),
+                                      task_index_by_name.at(phase_to_tasks["phase1_stateful"].front())),
                                   MakeAnchors("spatial_sync", "phase0_to_phase1")));
   }
 
   Array<ResourceIntent> resource_intents;
-  std::unordered_map<std::string, int> state_index_by_name;
-  for (int i = 0; i < program->states.size(); ++i) {
-    state_index_by_name[static_cast<std::string>(program->states[i]->name)] = i;
-  }
   for (const State& state : program->states) {
     const auto role = ParseStateRole(static_cast<std::string>(state->role));
     const std::string state_name = static_cast<std::string>(state->name);

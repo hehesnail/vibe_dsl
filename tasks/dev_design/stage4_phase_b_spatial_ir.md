@@ -687,14 +687,29 @@ spatial legality validator 再推进一格：
   现在是 semantic-state-targeted contract 的 primary linkage
 - `LowerBlackholeOps` 的 phase-boundary state 恢复已经切到
   `semantic_state[target_index]`，不再按 `target_name` 字符串恢复
+- `Task / Channel / Placement / SyncEdge / ProgramPhase`
+  现在也开始显式携带 linkage payload：
+  - `Task.payload.phase_index`
+  - `Channel.payload.source_task_index / target_task_index / state_index`
+  - `Placement.payload.task_index`
+  - `SyncEdge.payload.source_task_index / target_task_index`
+  - `ProgramPhase.payload.phase_index / task_indices / channel_indices`
+- `ValidateSpatialProgram` 现在会显式要求这些 payload contract 存在，
+  不能再只靠 `phase_name / task_name / source_task / target_task / channel_names`
+  这些 display 字段把结构“串起来”
 
 下一轮 schema strengthening 的优先级不再是继续塞更多名字字段，而是继续把这层
 index-based linkage 扩到更多 object：
 
 - `SpatialLayout / WorkPartition` 必须显式携带 `domain_index`
 - `ResourceIntent` 必须显式携带 `target_kind + target_index`
-- `Channel / Placement / SyncEdge / ProgramPhase / Task` 也应逐步补齐对应的
-  `*_index / *_indices` contract
+- `Task` 必须显式携带 `phase_index`
+- `Channel` 必须显式携带
+  `source_task_index / target_task_index / state_index`
+- `Placement` 必须显式携带 `task_index`
+- `SyncEdge` 必须显式携带 `source_task_index / target_task_index`
+- `ProgramPhase` 必须显式携带
+  `phase_index / task_indices / channel_indices`
 
 目的不是“把名字删光”，而是把名字降级成 display/identity 字段，让跨层 consumer 和
 validator 优先吃显式 linkage contract，而不是靠 `state_name / target_name / task_name`
@@ -853,5 +868,9 @@ schema strengthening / consumer cutover。
 5. stronger-contract schema 的第一轮已经落地：
    `domain_index` 与 `target_kind / target_index`
    已进入 `SpatialProgram` payload contract，并被 validator / consumer 主链消费
-6. 后续更强 schema / legality contract 仍然需要，但它们现在属于 `Phase C`
+6. stronger-contract schema 的第二轮也已经落地：
+   `Task / Channel / Placement / SyncEdge / ProgramPhase`
+   已补齐第一批 `*_index / *_indices` linkage payload，
+   `ValidateSpatialProgram` 已切成 contract-first
+7. 后续更强 schema / legality contract 仍然需要，但它们现在属于 `Phase C`
    translator 驱动的下一轮增强，而不是继续停在 `Phase B` 的 blocker

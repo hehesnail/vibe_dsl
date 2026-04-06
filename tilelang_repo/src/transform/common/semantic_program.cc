@@ -171,6 +171,7 @@ SemanticProgram::SemanticProgram(ffi::Array<Domain> domains, ffi::Array<State> s
 
 Task::Task(ffi::String name, ffi::String kind, ffi::String phase_name,
            ffi::Array<ffi::String> update_names, ffi::Array<ffi::String> traits,
+           ffi::Map<ffi::String, ffi::Any> payload,
            ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<TaskNode>();
   n->name = std::move(name);
@@ -178,13 +179,15 @@ Task::Task(ffi::String name, ffi::String kind, ffi::String phase_name,
   n->phase_name = std::move(phase_name);
   n->update_names = std::move(update_names);
   n->traits = std::move(traits);
+  n->payload = std::move(payload);
   n->anchors = std::move(anchors);
   data_ = std::move(n);
 }
 
 Channel::Channel(ffi::String name, ffi::String kind, ffi::String source_task,
                  ffi::String target_task, ffi::String state_name,
-                 ffi::Array<ffi::String> traits, ffi::Array<TIRAnchor> anchors) {
+                 ffi::Array<ffi::String> traits, ffi::Map<ffi::String, ffi::Any> payload,
+                 ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<ChannelNode>();
   n->name = std::move(name);
   n->kind = std::move(kind);
@@ -192,6 +195,7 @@ Channel::Channel(ffi::String name, ffi::String kind, ffi::String source_task,
   n->target_task = std::move(target_task);
   n->state_name = std::move(state_name);
   n->traits = std::move(traits);
+  n->payload = std::move(payload);
   n->anchors = std::move(anchors);
   data_ = std::move(n);
 }
@@ -228,6 +232,7 @@ WorkPartition::WorkPartition(ffi::String name, ffi::String kind, ffi::String tar
 
 Placement::Placement(ffi::String name, ffi::String kind, ffi::String task_name,
                      ffi::String member_func, ffi::Array<ffi::String> traits,
+                     ffi::Map<ffi::String, ffi::Any> payload,
                      ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<PlacementNode>();
   n->name = std::move(name);
@@ -235,12 +240,14 @@ Placement::Placement(ffi::String name, ffi::String kind, ffi::String task_name,
   n->task_name = std::move(task_name);
   n->member_func = std::move(member_func);
   n->traits = std::move(traits);
+  n->payload = std::move(payload);
   n->anchors = std::move(anchors);
   data_ = std::move(n);
 }
 
 SyncEdge::SyncEdge(ffi::String name, ffi::String kind, ffi::String source,
                    ffi::String target, ffi::Array<ffi::String> traits,
+                   ffi::Map<ffi::String, ffi::Any> payload,
                    ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<SyncEdgeNode>();
   n->name = std::move(name);
@@ -248,6 +255,7 @@ SyncEdge::SyncEdge(ffi::String name, ffi::String kind, ffi::String source,
   n->source = std::move(source);
   n->target = std::move(target);
   n->traits = std::move(traits);
+  n->payload = std::move(payload);
   n->anchors = std::move(anchors);
   data_ = std::move(n);
 }
@@ -269,12 +277,14 @@ ResourceIntent::ResourceIntent(ffi::String name, ffi::String kind, ffi::String t
 ProgramPhase::ProgramPhase(ffi::String name, ffi::Array<ffi::String> task_names,
                            ffi::Array<ffi::String> channel_names,
                            ffi::Array<ffi::String> traits,
+                           ffi::Map<ffi::String, ffi::Any> payload,
                            ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<ProgramPhaseNode>();
   n->name = std::move(name);
   n->task_names = std::move(task_names);
   n->channel_names = std::move(channel_names);
   n->traits = std::move(traits);
+  n->payload = std::move(payload);
   n->anchors = std::move(anchors);
   data_ = std::move(n);
 }
@@ -437,19 +447,23 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                         [](ffi::String name, ffi::String kind, ffi::String phase_name,
                            ffi::Array<ffi::String> update_names,
                            ffi::Array<ffi::String> traits,
+                           ffi::Map<ffi::String, ffi::Any> payload,
                            ffi::Array<TIRAnchor> anchors) {
                           return Task(std::move(name), std::move(kind), std::move(phase_name),
                                       std::move(update_names), std::move(traits),
+                                      std::move(payload),
                                       std::move(anchors));
                         });
   refl::GlobalDef().def("tl.Channel",
                         [](ffi::String name, ffi::String kind, ffi::String source_task,
                            ffi::String target_task, ffi::String state_name,
                            ffi::Array<ffi::String> traits,
+                           ffi::Map<ffi::String, ffi::Any> payload,
                            ffi::Array<TIRAnchor> anchors) {
                           return Channel(std::move(name), std::move(kind),
                                          std::move(source_task), std::move(target_task),
                                          std::move(state_name), std::move(traits),
+                                         std::move(payload),
                                          std::move(anchors));
                         });
   refl::GlobalDef().def("tl.SpatialLayout",
@@ -477,18 +491,22 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("tl.Placement",
                         [](ffi::String name, ffi::String kind, ffi::String task_name,
                            ffi::String member_func, ffi::Array<ffi::String> traits,
+                           ffi::Map<ffi::String, ffi::Any> payload,
                            ffi::Array<TIRAnchor> anchors) {
                           return Placement(std::move(name), std::move(kind),
                                            std::move(task_name), std::move(member_func),
-                                           std::move(traits), std::move(anchors));
+                                           std::move(traits), std::move(payload),
+                                           std::move(anchors));
                         });
   refl::GlobalDef().def("tl.SyncEdge",
                         [](ffi::String name, ffi::String kind, ffi::String source,
                            ffi::String target, ffi::Array<ffi::String> traits,
+                           ffi::Map<ffi::String, ffi::Any> payload,
                            ffi::Array<TIRAnchor> anchors) {
                           return SyncEdge(std::move(name), std::move(kind),
                                           std::move(source), std::move(target),
-                                          std::move(traits), std::move(anchors));
+                                          std::move(traits), std::move(payload),
+                                          std::move(anchors));
                         });
   refl::GlobalDef().def("tl.ResourceIntent",
                         [](ffi::String name, ffi::String kind, ffi::String target_name,
@@ -504,10 +522,12 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                         [](ffi::String name, ffi::Array<ffi::String> task_names,
                            ffi::Array<ffi::String> channel_names,
                            ffi::Array<ffi::String> traits,
+                           ffi::Map<ffi::String, ffi::Any> payload,
                            ffi::Array<TIRAnchor> anchors) {
                           return ProgramPhase(std::move(name), std::move(task_names),
                                               std::move(channel_names),
-                                              std::move(traits), std::move(anchors));
+                                              std::move(traits), std::move(payload),
+                                              std::move(anchors));
                         });
   refl::GlobalDef().def("tl.SpatialProgram",
                         [](ffi::String member_func, ffi::Array<ProgramPhase> phases,

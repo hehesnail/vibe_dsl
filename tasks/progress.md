@@ -210,6 +210,14 @@
         `semantic_program.states[target_index]` 恢复
       - `ValidateSpatialProgram` 现在会显式要求这些 linkage contract 存在且合法，
         而不是只接受名字能对上的弱协议
+    - `Phase B` 的第二轮 stronger-contract schema 也已落地：
+      - `Task.payload.phase_index`
+      - `Channel.payload.source_task_index / target_task_index / state_index`
+      - `Placement.payload.task_index`
+      - `SyncEdge.payload.source_task_index / target_task_index`
+      - `ProgramPhase.payload.phase_index / task_indices / channel_indices`
+      - `ValidateSpatialProgram` 现在对 phase/task/channel/placement/sync
+        linkage 采用 contract-first 校验，而不是字符串查表
     - target/transform tests 里所有直接验证 `LowerBlackholeOps` 的路径
       也已切回真实主线：
       `SplitBlackholeKernel -> Analyze* -> AnalyzeSemanticStructure ->
@@ -248,7 +256,7 @@
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py -q`
   - `7 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q`
-  - `31 passed`
+  - `38 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `41 passed, 10 skipped, 1 xfailed`
 - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
