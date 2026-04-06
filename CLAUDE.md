@@ -115,6 +115,28 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 先统一协议，再补功能
 - 先闭环，再优化
 
+**代码结构原则**：
+
+1. **分离 analysis 与 transformation**
+   - analysis 产出 facts（不可变的结论），transformation 消费 facts 并改写 IR
+   - 一个 pass 如果同时在收集信息和产出结果，说明它在混两个 pass 的职责
+   - 这是编译器工程的基本纪律：analysis 和 rewrite 的耦合会让两边都无法独立演化
+
+2. **中间状态必须有显式类型，不允许靠局部变量隐式传递**
+   - 如果一组相关状态需要在多个阶段之间流动，它就应该是一个 struct / IR node / typed container
+   - 裸 `unordered_map` 和 `unordered_set` 散在同一个函数作用域里，是隐式中间表示的信号
+   - 编译器里每一层 IR 都有显式 schema，pass 内部的中间表示也应该遵循同样的标准
+
+3. **用类型系统捕获协议错误，不靠命名约定**
+   - 跨模块共享的常量（attr key、schema field name、enum value）必须定义在一处，消费侧引用定义
+   - 目的是把协议不一致从运行时 silent failure 提升到编译期错误
+   - 这包括 C++ 侧的 `constexpr` 常量和 Python 侧的 module-level 定义
+
+4. **单一职责：一个函数 / 一个 pass / 一个文件只解决一个问题**
+   - 判断标准不是行数，而是"能否用一句话描述它做什么"
+   - 如果描述需要"并且"连接两个不同的动作，就应该拆
+   - 在编译器里，这通常表现为：一个 pass 同时消费多个不相关的 attr 并产出混合结果
+
 **设计约束**：
 
 1. **从第一性原理分析问题，不优先采用 workaround**
