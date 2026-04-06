@@ -28,20 +28,10 @@
 #include <tvm/target/target.h>
 #include <tvm/tir/stmt_functor.h>
 
-#include "common/semantic_program.h"
+#include "common/spatial_program.h"
 
 namespace tvm {
 namespace tl {
-
-TLDeviceProgramInfo::TLDeviceProgramInfo(ffi::String root_symbol,
-                                         ffi::Array<ffi::String> member_funcs,
-                                         ffi::Array<ProgramPhase> phases) {
-  auto n = ffi::make_object<TLDeviceProgramInfoNode>();
-  n->root_symbol = std::move(root_symbol);
-  n->member_funcs = std::move(member_funcs);
-  n->phases = std::move(phases);
-  data_ = std::move(n);
-}
 
 namespace {
 
@@ -112,17 +102,6 @@ transform::Pass CollectDevicePrograms() {
     return mod;
   };
   return transform::CreateModulePass(pass_func, 0, "tl.transform.CollectDevicePrograms", {});
-}
-
-TVM_FFI_STATIC_INIT_BLOCK() { TLDeviceProgramInfoNode::RegisterReflection(); }
-
-TVM_FFI_STATIC_INIT_BLOCK() {
-  namespace refl = tvm::ffi::reflection;
-  refl::GlobalDef().def("tl.TLDeviceProgramInfo", [](ffi::String root_symbol,
-                                                     ffi::Array<ffi::String> member_funcs) {
-    return TLDeviceProgramInfo(std::move(root_symbol), std::move(member_funcs),
-                               ffi::Array<ProgramPhase>{});
-  });
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {

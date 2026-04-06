@@ -30,7 +30,7 @@
 #include "../op/utils.h"
 #include "common/blackhole_utils.h"
 #include "common/semantic_program.h"
-#include "common/semantic_vocab.h"
+#include "common/spatial_program.h"
 
 #include <tvm/ffi/reflection/registry.h>
 #include "runtime/thread_storage_scope.h"

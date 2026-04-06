@@ -148,6 +148,22 @@
     一律走 `semantic_vocab` 的 parse/to-string 闭集
   - unknown kind 在 `ValidateSpatialProgram` 立刻 fail-fast
   - 这样后续 builder / consumer 才不会把拼写错误或半迁移协议当成合法 spatial object
+- `Phase B`/`C` 的 shared companion 边界也不要再混在 `semantic_*` 头文件里。当前稳定做法是：
+  - `companion_base` 放 shared attr/schema key 与 `TIRAnchor`
+  - `spatial_vocab` 只放 spatial closed vocab
+  - `spatial_program` 只放 `SpatialProgram / ProgramPhase / TLDeviceProgramInfo / SpatialCapabilityModel`
+  - `semantic_*` 只保留 `Phase A` semantic object 与 witness/refinement 相关定义
+- 对 `Phase B` 的 execution-bearing channel contract，也不要再把 flow/payload/delivery 混成
+  一个 `Channel.kind`。当前稳定口径是：
+  - `Channel.kind` 只表达 flow family（如 `point_to_point / carry / reduce_merge`）
+  - payload 里的 `payload_kind / delivery_kind` 单独表达传输内容与可见性/边界语义
+  - `ValidateSpatialProgram` 只校 coherence/completeness；capability legality 留给 builder/probe
+- `Phase C` 的 read-only translator intake 也不要直接回 TIR 恢复 spatial semantics。当前稳定主链是：
+  - `LowerToSpatialProgram` 发布 `IRModule.global_infos["tl.tt_hardware_model"]`
+    与 `IRModule.global_infos["tl.spatial_capability_model"]`
+  - `LowerSpatialProgramToTTTargetProbe` 只消费
+    `SpatialProgram + TTHardwareModel + SpatialCapabilityModel`
+  - 一旦 probe 还缺 truth，只能回补 `Phase B` contract，不能在 probe 里重新猜语义
 - 对 `LowerBlackholeOps` 的 lowering requirements，`work_axes / derived_index_expr_count`
   应优先从 `tl.spatial_program` 恢复；`blackhole.work_decomposition` 只保留 compatibility
   fallback。这样 consumer 才不会在 `Phase B` 已 object 化后继续回头吃旧 attr

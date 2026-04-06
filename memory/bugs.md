@@ -26,12 +26,13 @@
   - 最后在 `TT Target IR` 里收正 `CB / semaphore / dst layout / kernel role / ABI`，让 `blackhole.acc` 只表示 compute-side tile scratch
   - 把 stats-state（`scores_max / scores_scale / scores_sum / logsum`）从 tile scratch 语义里彻底拆出去
 
-### `Phase B` compile-path 已收口，但 `SpatialProgram -> TTProgram` 真源切换仍未落地
+### `Phase B` 已完成，但 `SpatialProgram -> TTProgram` 真源切换仍未落地
 
 - **时间**: 2026-03-26（建立），2026-04-07（状态刷新）
-- **问题**: `SemanticProgram -> SpatialProgram` compile-path 已经接通，但
-  `TTProgram / MaterializeTTExecutableSpec` 仍不存在。当前 target/runtime contract
-  仍主要停留在 `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores -> rt_mod_blackhole`
+- **问题**: `Phase B` 的 contract hardening 已完成：`Spatial*` 边界已拆分、
+  `SpatialCapabilityModel / TTHardwareModel` 已发布、read-only translator demand probe
+  也已落地；但 `TTProgram / MaterializeTTExecutableSpec` 仍不存在。当前 target/runtime
+  contract 仍主要停留在 `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores -> rt_mod_blackhole`
   的旧链条里，`Phase C` 真正的 target materialization 单一真源尚未建立。
 - **影响**:
   - `SpatialProgram` 还没有经过 `TTProgram` translator 的真正验真
@@ -43,8 +44,10 @@
   - 用 translator 反推 `SpatialProgram` 仍缺的 non-TT-specific contract
   - 再删除 compatibility writer / reader / fallback
 - **当前状态**:
-  - `Phase A` 已完成，`Phase B` 已完成 compile-path cutover
+  - `Phase A` 已完成，`Phase B` 已完成 contract hardening 与 translator intake 验真
   - `SpatialProgram` 已进入正式 pass 链，`LowerBlackholeOps` 已硬要求它
+  - `LowerSpatialProgramToTTTargetProbe` 已能消费
+    `SpatialProgram + TTHardwareModel + SpatialCapabilityModel`
   - 但 `Phase C` 还没有 typed target IR object / validator / materializer 主链
 
 ### direct runtime 若不先把 output tensor 初值同步到 device，partial-write copy 会读回脏数据

@@ -744,6 +744,11 @@ def ValidateSpatialProgram():
     return tvm.ffi.get_global_func("tl.transform.ValidateSpatialProgram")()
 
 
+def LowerSpatialProgramToTTTargetProbe():
+    """Probe SpatialProgram against TT target intake contracts without materializing TTProgram."""
+    return tvm.ffi.get_global_func("tl.transform.LowerSpatialProgramToTTTargetProbe")()
+
+
 def LowerBlackholeOps():
     """Lower TileLang high-level operations to TT-Metal builtins for Blackhole backend.
 

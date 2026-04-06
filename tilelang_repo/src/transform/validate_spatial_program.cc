@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "common/blackhole_utils.h"
+#include "common/spatial_program.h"
+#include "common/spatial_vocab.h"
 #include "common/semantic_program.h"
 #include "common/semantic_vocab.h"
 
@@ -26,6 +28,7 @@ using tvm::ffi::Optional;
 using tvm::ffi::String;
 using tvm::Integer;
 using namespace tvm::tl::semantic;
+namespace sp = tvm::tl::spatial;
 using tvm::tl::str;
 
 namespace {
@@ -123,14 +126,14 @@ bool SamePhaseSignature(const ProgramPhase& lhs, const ProgramPhase& rhs) {
 // ---------------------------------------------------------------------------
 
 bool IsPipelineContractIntent(const ResourceIntent& intent) {
-  auto parsed = ParseSpatialResourceIntentKind(str(intent->kind));
-  return parsed && *parsed == SpatialResourceIntentKind::kSynchronizationSupport &&
+  auto parsed = sp::ParseSpatialResourceIntentKind(str(intent->kind));
+  return parsed && *parsed == sp::SpatialResourceIntentKind::kSynchronizationSupport &&
          HasTrait(intent->traits, "pipeline_contract");
 }
 
 bool IsFragmentContractIntent(const ResourceIntent& intent) {
-  auto parsed = ParseSpatialResourceIntentKind(str(intent->kind));
-  return parsed && *parsed == SpatialResourceIntentKind::kLoweringSupport &&
+  auto parsed = sp::ParseSpatialResourceIntentKind(str(intent->kind));
+  return parsed && *parsed == sp::SpatialResourceIntentKind::kLoweringSupport &&
          HasTrait(intent->traits, "fragment_contract");
 }
 
@@ -142,47 +145,67 @@ bool IsStatefulRole(const std::string& role_str) {
                   *role == StateRole::kIndexState);
 }
 
-SpatialTaskKind RequireTaskKind(const Task& task) {
-  auto parsed = ParseSpatialTaskKind(str(task->kind));
+sp::SpatialTaskKind RequireTaskKind(const Task& task) {
+  auto parsed = sp::ParseSpatialTaskKind(str(task->kind));
   ICHECK(parsed) << "ValidateSpatialProgram found unknown task kind " << str(task->kind);
   return *parsed;
 }
 
-SpatialChannelKind RequireChannelKind(const Channel& channel) {
-  auto parsed = ParseSpatialChannelKind(str(channel->kind));
+sp::SpatialChannelKind RequireChannelKind(const Channel& channel) {
+  auto parsed = sp::ParseSpatialChannelKind(str(channel->kind));
   ICHECK(parsed) << "ValidateSpatialProgram found unknown channel kind " << str(channel->kind);
   return *parsed;
 }
 
-SpatialLayoutKind RequireLayoutKind(const SpatialLayout& layout) {
-  auto parsed = ParseSpatialLayoutKind(str(layout->kind));
+sp::SpatialLayoutKind RequireLayoutKind(const SpatialLayout& layout) {
+  auto parsed = sp::ParseSpatialLayoutKind(str(layout->kind));
   ICHECK(parsed) << "ValidateSpatialProgram found unknown layout kind " << str(layout->kind);
   return *parsed;
 }
 
-SpatialPartitionKind RequirePartitionKind(const WorkPartition& partition) {
-  auto parsed = ParseSpatialPartitionKind(str(partition->kind));
+sp::SpatialPartitionKind RequirePartitionKind(const WorkPartition& partition) {
+  auto parsed = sp::ParseSpatialPartitionKind(str(partition->kind));
   ICHECK(parsed) << "ValidateSpatialProgram found unknown work partition kind "
                  << str(partition->kind);
   return *parsed;
 }
 
-SpatialPlacementKind RequirePlacementKind(const Placement& placement) {
-  auto parsed = ParseSpatialPlacementKind(str(placement->kind));
+sp::SpatialPlacementKind RequirePlacementKind(const Placement& placement) {
+  auto parsed = sp::ParseSpatialPlacementKind(str(placement->kind));
   ICHECK(parsed) << "ValidateSpatialProgram found unknown placement kind " << str(placement->kind);
   return *parsed;
 }
 
-SpatialSyncKind RequireSyncKind(const SyncEdge& edge) {
-  auto parsed = ParseSpatialSyncKind(str(edge->kind));
+sp::SpatialSyncKind RequireSyncKind(const SyncEdge& edge) {
+  auto parsed = sp::ParseSpatialSyncKind(str(edge->kind));
   ICHECK(parsed) << "ValidateSpatialProgram found unknown sync edge kind " << str(edge->kind);
   return *parsed;
 }
 
-SpatialResourceIntentKind RequireResourceIntentKind(const ResourceIntent& intent) {
-  auto parsed = ParseSpatialResourceIntentKind(str(intent->kind));
+sp::SpatialResourceIntentKind RequireResourceIntentKind(const ResourceIntent& intent) {
+  auto parsed = sp::ParseSpatialResourceIntentKind(str(intent->kind));
   ICHECK(parsed) << "ValidateSpatialProgram found unknown resource intent kind "
                  << str(intent->kind);
+  return *parsed;
+}
+
+sp::SpatialChannelPayloadKind RequireChannelPayloadKind(const Channel& channel) {
+  auto maybe_payload_kind = GetPayloadString(channel->payload, schema_key::kPayloadKind);
+  ICHECK(maybe_payload_kind)
+      << "ValidateSpatialProgram requires channels to carry payload_kind/delivery_kind contract";
+  auto parsed = sp::ParseSpatialChannelPayloadKind(*maybe_payload_kind);
+  ICHECK(parsed) << "ValidateSpatialProgram found unknown channel payload kind "
+                 << *maybe_payload_kind;
+  return *parsed;
+}
+
+sp::SpatialChannelDeliveryKind RequireChannelDeliveryKind(const Channel& channel) {
+  auto maybe_delivery_kind = GetPayloadString(channel->payload, schema_key::kDeliveryKind);
+  ICHECK(maybe_delivery_kind)
+      << "ValidateSpatialProgram requires channels to carry payload_kind/delivery_kind contract";
+  auto parsed = sp::ParseSpatialChannelDeliveryKind(*maybe_delivery_kind);
+  ICHECK(parsed) << "ValidateSpatialProgram found unknown channel delivery kind "
+                 << *maybe_delivery_kind;
   return *parsed;
 }
 
@@ -199,6 +222,7 @@ struct ValidationContext {
   std::vector<int64_t> task_phase_index_by_index;
 
   std::vector<std::string> channel_name_by_index;
+  std::vector<int64_t> channel_source_task_index_by_index;
   std::vector<int64_t> channel_target_task_index_by_index;
 };
 
@@ -263,12 +287,13 @@ void ValidateTasks(const SpatialProgram& program, ValidationContext* ctx) {
 
 void ValidateChannels(const SpatialProgram& program, ValidationContext* ctx) {
   ctx->channel_name_by_index.resize(program->channels.size());
+  ctx->channel_source_task_index_by_index.resize(program->channels.size(), -1);
   ctx->channel_target_task_index_by_index.resize(program->channels.size(), -1);
 
   std::unordered_set<std::string> channel_names;
   for (int channel_index = 0; channel_index < program->channels.size(); ++channel_index) {
     const Channel& channel = program->channels[channel_index];
-    RequireChannelKind(channel);
+    const auto channel_kind = RequireChannelKind(channel);
     const std::string channel_name = str(channel->name);
     ICHECK(channel_names.insert(channel_name).second)
         << "ValidateSpatialProgram found duplicate channel " << channel_name;
@@ -289,7 +314,39 @@ void ValidateChannels(const SpatialProgram& program, ValidationContext* ctx) {
         << "ValidateSpatialProgram found channel source_task inconsistent with source_task_index";
     ICHECK_EQ(str(channel->target_task), ctx->task_name_by_index[*maybe_target_task_index])
         << "ValidateSpatialProgram found channel target_task inconsistent with target_task_index";
+    const auto payload_kind = RequireChannelPayloadKind(channel);
+    const auto delivery_kind = RequireChannelDeliveryKind(channel);
+    const int64_t source_phase_index = ctx->task_phase_index_by_index[*maybe_source_task_index];
+    const int64_t target_phase_index = ctx->task_phase_index_by_index[*maybe_target_task_index];
+    const bool cross_phase = source_phase_index != target_phase_index;
+    if (payload_kind == sp::SpatialChannelPayloadKind::kStateVersion) {
+      auto maybe_state_index = GetPayloadIndex(channel->payload, schema_key::kStateIndex);
+      ICHECK(maybe_state_index)
+          << "ValidateSpatialProgram requires state_version channels to carry state_index contract";
+      ICHECK(!str(channel->state_name).empty())
+          << "ValidateSpatialProgram requires state_version channels to carry state_name";
+    }
+    if (channel_kind == sp::SpatialChannelKind::kCarry ||
+        channel_kind == sp::SpatialChannelKind::kReduceMerge) {
+      ICHECK(payload_kind == sp::SpatialChannelPayloadKind::kStateVersion ||
+             payload_kind == sp::SpatialChannelPayloadKind::kToken)
+          << "ValidateSpatialProgram requires carry/reduce_merge channels to carry "
+             "state_version or token payload";
+    }
+    if (delivery_kind == sp::SpatialChannelDeliveryKind::kPhaseBoundaryMaterialized) {
+      ICHECK(cross_phase)
+          << "ValidateSpatialProgram requires phase_boundary_materialized delivery to cross "
+             "phase boundaries";
+      ICHECK_LT(source_phase_index, target_phase_index)
+          << "ValidateSpatialProgram requires phase_boundary_materialized delivery to advance "
+             "phase order";
+    } else if (cross_phase) {
+      ICHECK(false)
+          << "ValidateSpatialProgram requires cross-phase channels to carry "
+             "phase_boundary_materialized delivery";
+    }
     ctx->channel_name_by_index[channel_index] = channel_name;
+    ctx->channel_source_task_index_by_index[channel_index] = *maybe_source_task_index;
     ctx->channel_target_task_index_by_index[channel_index] = *maybe_target_task_index;
   }
 }
@@ -310,6 +367,9 @@ void ValidatePlacementsAndSyncEdges(const SpatialProgram& program,
     ICHECK_EQ(str(placement->member_func), member_func)
         << "ValidateSpatialProgram requires placement.member_func to match "
            "SpatialProgram.member_func";
+    auto maybe_affinity_kind = GetPayloadString(placement->payload, schema_key::kAffinityKind);
+    ICHECK(maybe_affinity_kind)
+        << "ValidateSpatialProgram requires placements to carry affinity_kind contract";
   }
 
   for (const SyncEdge& edge : program->sync_edges) {
@@ -398,7 +458,7 @@ void ValidateSemanticAlignment(const SpatialProgram& program,
     ICHECK(SameStringArray(layout->axes, domain->axes))
         << "ValidateSpatialProgram found layout axes inconsistent with semantic domain";
     const bool semantic_indexed = HasTrait(domain->traits, "derived_indices");
-    const bool layout_indexed = layout_kind == SpatialLayoutKind::kIndexed;
+    const bool layout_indexed = layout_kind == sp::SpatialLayoutKind::kIndexed;
     ICHECK_EQ(layout_indexed, semantic_indexed)
         << "ValidateSpatialProgram found layout kind inconsistent with semantic domain "
            "derived_indices trait";
@@ -473,8 +533,10 @@ void ValidateWorkDependentPayload(const SpatialProgram& program) {
 void ValidateResourceIntents(const SpatialProgram& program,
                              const Optional<SemanticProgram>& maybe_semantic_program,
                              const SemanticRequirements& reqs) {
-  const char* state_residency_str = ToString(SpatialResourceIntentKind::kStateResidency);
-  const char* phase_boundary_str = ToString(SpatialResourceIntentKind::kPhaseBoundaryMaterialization);
+  const char* state_residency_str =
+      sp::ToString(sp::SpatialResourceIntentKind::kStateResidency);
+  const char* phase_boundary_str =
+      sp::ToString(sp::SpatialResourceIntentKind::kPhaseBoundaryMaterialization);
 
   std::unordered_set<std::string> resource_intent_kinds;
   bool has_fragment_contract = false;
@@ -485,15 +547,15 @@ void ValidateResourceIntents(const SpatialProgram& program,
   std::unordered_set<int> phase_boundary_state_indices;
 
   for (const ResourceIntent& intent : program->resource_intents) {
-    const SpatialResourceIntentKind intent_kind = RequireResourceIntentKind(intent);
+    const sp::SpatialResourceIntentKind intent_kind = RequireResourceIntentKind(intent);
     const std::string intent_kind_str = str(intent->kind);
     resource_intent_kinds.insert(intent_kind_str);
-    state_residency_count += (intent_kind == SpatialResourceIntentKind::kStateResidency);
+    state_residency_count += (intent_kind == sp::SpatialResourceIntentKind::kStateResidency);
     phase_boundary_materialization_count +=
-        (intent_kind == SpatialResourceIntentKind::kPhaseBoundaryMaterialization);
+        (intent_kind == sp::SpatialResourceIntentKind::kPhaseBoundaryMaterialization);
 
-    if (intent_kind == SpatialResourceIntentKind::kStateResidency ||
-        intent_kind == SpatialResourceIntentKind::kPhaseBoundaryMaterialization) {
+    if (intent_kind == sp::SpatialResourceIntentKind::kStateResidency ||
+        intent_kind == sp::SpatialResourceIntentKind::kPhaseBoundaryMaterialization) {
       auto maybe_target_kind = GetPayloadString(intent->payload, schema_key::kTargetKind);
       ICHECK(maybe_target_kind &&
              *maybe_target_kind == spatial_contract::kSemanticStateTarget)
@@ -509,7 +571,7 @@ void ValidateResourceIntents(const SpatialProgram& program,
       ICHECK_GE(*maybe_target_index, 0);
       ICHECK_LT(*maybe_target_index, maybe_semantic_program.value()->states.size())
           << "ValidateSpatialProgram found state-targeted intent with invalid target_index";
-      if (intent_kind == SpatialResourceIntentKind::kStateResidency) {
+      if (intent_kind == sp::SpatialResourceIntentKind::kStateResidency) {
         if (reqs.stateful_state_indices.count(*maybe_target_index)) {
           state_residency_state_indices.insert(*maybe_target_index);
         }

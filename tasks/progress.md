@@ -37,42 +37,44 @@
     `CollectSemanticManifestSeeds -> ProjectSemanticManifest -> AugmentSemanticManifest`
   - `AnalyzeSemanticStructure` 已改成对 manifest structural evidence 的 manifest-first 消费，
     `fragment_regions` 退化为 compatibility fallback
-- **Phase B**: compile-path cutover 已收口，但整体未结束
-  - `SpatialProgram / ProgramPhase / Task / Channel / Layout / WorkPartition /
-    Placement / SyncEdge / ResourceIntent` 已落地
-  - `LowerToSpatialProgram -> ValidateSpatialProgram` 已接入 Blackhole 主线
-  - compile-path hardening 已收口：
-    - `LowerToSpatialProgram` 不再把 `work_decomposition / segment_plan`
-      当 spatial builder truth source
-    - `LowerBlackholeOps` 已硬要求 `tl.spatial_program`，不再回读
-      `work_decomposition / fragment_regions / pipeline_stages`
-    - representative family gate 已覆盖
-      `copy / GEMM / flash-attn / topk / chunk_o / fusedmoe_routed / mla_decode_paged`
-  - `Phase B` 当前应理解为：
-    `SemanticProgram -> SpatialProgram` compile-path cutover 已收口，
-    但 execution-bearing contract 仍明显不完整；
-    `SpatialCapabilityModel` 尚不存在，`Spatial*` definitions 仍未从 semantic infra 拆出，
-    `Channel.kind` 也还不足以支撑 `Phase C` flow mapping。
-    这些后续补强必须由 translator 的真实需求 demand-driven 推进，
-    但不应再把 validator 写成 capability legality pass
-  - `stage4_phase_b_spatial_ir.md` 已完成一轮文档收敛：
-    删除过期 hardening 流水账，只保留稳定边界、未完成 contract 设计和当前退出条件
+- **Phase B**: 已完成
+  - `Spatial*` object/vocab/shared key 已从 semantic infra 中拆出：
+    - `companion_base.{h,cc}`
+    - `spatial_vocab.{h,cc}`
+    - `spatial_program.{h,cc}`
+  - `LowerToSpatialProgram -> ValidateSpatialProgram` 已接入 Blackhole 主线，
+    `LowerBlackholeOps` 已硬要求 `tl.spatial_program`
+  - `IRModule.global_infos` 现已正式发布：
+    - `tl.tt_hardware_model`
+    - `tl.spatial_capability_model`
+  - `LowerToSpatialProgram` 已消费来自 SoC descriptor 的最小 capability snapshot：
+    - layout / partition / flow family 选择经 capability model 收口
+    - placement 不再泄漏 `brisc / trisc / ncrisc`，改用 neutral `affinity_kind`
+    - `Channel.kind` 已收正为 flow family；`payload_kind / delivery_kind`
+      成为显式 contract
+  - `ValidateSpatialProgram` 当前口径已收正为：
+    structure/coherence/completeness gate，而不是 capability legality pass
+  - read-only translator demand probe 已落地：
+    `LowerSpatialProgramToTTTargetProbe`
 - **Phase C**: 已定义；以 `Phase B` contract hardening 达标为实现前提
   - `TT Target IR` 已定义
-  - 当前允许启动的只有 read-only translator demand probe 与 hardware intake；
-    正式 `TTProgram / MaterializeTTExecutableSpec` cutover 还没有开始
+  - read-only translator demand probe 与 hardware intake 已落地
+  - 正式 `TTProgram / MaterializeTTExecutableSpec` cutover 还没有开始
 
 ## 当前主 blocker
 
 当前 blocker 已经收敛到：
 
-- `Spatial*` types / vocab / attr ownership 仍与 semantic infra 共址
-- `SpatialCapabilityModel` 尚未落地，Blackhole hardware truth 仍散落在硬编码常量中
-- `Channel` flow contract 仍过粗，translator 还拿不到足够的 flow-mapping discriminator
-- 因此 `Spatial Program IR -> TT Target IR` 的单一真源切换尚未落地
-- `TTProgram / MaterializeTTExecutableSpec` 仍不存在，当前 target/runtime contract
-  还停留在 `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores -> rt_mod_blackhole`
+- `Phase B` contract hardening 已完成，但 `TTProgram / MaterializeTTExecutableSpec`
+  仍不存在
+- `LowerSpatialProgramToTTTargetProbe` 已能消费
+  `SpatialProgram + TTHardwareModel + SpatialCapabilityModel`，
+  但这条路径还只是 read-only intake 验真，不负责物化 target object
+- 当前 target/runtime contract 仍主要停留在
+  `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores -> rt_mod_blackhole`
   的旧主链上
+- 因此 `Spatial Program IR -> TT Target IR -> ExecutableSpec`
+  的单一真源切换尚未真正开始
 
 这也是当前 `blackhole.acc` correctness payoff 仍未完全兑现的根因：主 blocker
 已经转成 spatial / target 层的 contract materialization，而不是继续补 semantic matcher
@@ -80,16 +82,15 @@
 
 ## 下一步
 
-1. 继续执行 `tasks/dev_design/stage4_phase_b_spatial_ir.md`
-   - 先把 `Spatial*` types / vocab / shared key 从 semantic infra 中拆出
-   - 落地来自 SoC descriptor 的最小 `SpatialCapabilityModel`
-   - 优先扩 `Channel` flow contract，而不是继续并行补更多 workload 特化
-2. 以 `tasks/dev_design/stage4_phase_c_tt_target_ir.md` 启动 read-only translator demand probe
-   - 用最小 `TTHardwareModelStub + SpatialProgram` 尝试做 TT mapping
-   - 对缺失的 non-TT-specific truth 产出明确 missing-contract 诊断
-   - 不把这一步写成 `Phase C` 正式 cutover 已启动
-3. 在 probe 不再恢复 spatial semantics 后，再启动 `TTProgram / MaterializeTTExecutableSpec`
-   的单一真源 cutover
+1. 以 `tasks/dev_design/stage4_phase_c_tt_target_ir.md` 启动正式 `TTProgram` object set
+   - 复用当前 `tl.tt_hardware_model` / `tl.spatial_capability_model`
+   - 把 probe 当前验证的 intake contract 物化成 typed target objects
+2. 启动 `MaterializeTTExecutableSpec` 单一真源 cutover
+   - 让 `ExecutableSpec` 不再从 `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores`
+     的旧 planning attr 链间接恢复真语义
+3. 在 `TTProgram` 主链建立后，再推进 `Phase C2`
+   - `flash-attn` `blackhole.acc` correctness payoff
+   - 更宽 workload family expansion
 
 ## 当前代码事实
 
@@ -123,26 +124,28 @@
     Placement / SyncEdge / ResourceIntent` 已落地
   - `LowerToSpatialProgram -> ValidateSpatialProgram` 已接入主线，
     `LowerBlackholeOps` 已硬要求 `tl.spatial_program`
-  - spatial linkage 已有第一轮 stronger-contract：
-    `domain_index`、`target_kind / target_index`、以及 phase/task/channel linkage payload
+  - `Spatial*` object/vocab/shared key 已从 semantic infra 拆出，
+    `TIRAnchor` 与 shared key 由 `companion_base` 承载
+  - module-scope hardware/capability snapshot 已落地：
+    `tl.tt_hardware_model` / `tl.spatial_capability_model`
+  - spatial linkage 已收成 execution-bearing 最小 contract：
+    `domain_index`、`target_kind / target_index`、`phase/task/channel linkage payload`、
+    `placement.affinity_kind`、以及 channel `payload_kind / delivery_kind`
   - `ValidateSpatialProgram` 现已把
     `Task / Channel / Layout / WorkPartition / Placement / SyncEdge / ResourceIntent.kind`
-    收成 closed vocabulary fail-fast；unknown kind 不再 silent pass
-  - 但 validator 当前只做结构/一致性/semantic alignment gate，
-    不做 capability-informed legality
-  - `Spatial*` object/vocab 仍定义在 semantic 头文件里，尚未完成边界拆分
-  - `Channel.kind` 当前只有 `tensor_flow / state_flow / phase_boundary`
+    收成 closed vocabulary fail-fast，并校验 channel / placement completeness；
+    但 validator 仍只做结构/一致性/semantic alignment gate，不做 capability legality
+  - `Channel.kind` 当前已是 flow family：
+    `point_to_point / broadcast / gather / scatter / reduce_merge / carry`
+  - `LowerSpatialProgramToTTTargetProbe` 已落地，明确承担 read-only translator
+    intake 诊断，不恢复 non-TT-specific spatial semantics
   - representative family gate 当前覆盖
     `copy / GEMM / flash-attn / topk / chunk_o / fusedmoe_routed / mla_decode_paged`
-  - `LowerToSpatialProgram` 当前仍未消费 capability model；
-    fast-path 里也仍残留 `brisc / trisc / ncrisc` 这类 TT leakage trait
-  - `SpatialProgram` 当前只能视为 compile-path 已接通的 first-cut spatial scaffold，
-    其 execution-bearing contract 继续由 translator 的真实需求驱动增强
+  - `SpatialProgram` 现在可以视为 `Phase C` translator intake 的稳定 virtual spatial contract
 - 当前仍未完成的事实：
   - `TTProgram / MaterializeTTExecutableSpec` 仍不存在
   - `Phase C` 还没有启动正式 cutover 实现，也还没有证明
     `SpatialProgram -> TTProgram` 的单一真源切换
-  - translator demand probe 仍未落地
   - `flash-attn` 的 `blackhole.acc` correctness payoff 仍归属 `Phase C2`
 
 ## 最新验证摘要
@@ -152,7 +155,15 @@
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py -q`
   - `7 passed`
 - `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q`
-  - `42 passed`
+  - `44 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_tt_target_probe.py -q`
+  - `6 passed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q -k test_blackhole_copy_pass_attrs`
+  - `1 passed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q -k test_blackhole_gemm_pipeline_attaches_spatial_program`
+  - `1 passed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q -k test_flash_attention_forward_pipeline_attaches_multi_phase_spatial_program`
+  - `1 passed`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q`
   - `41 passed, 10 skipped, 1 xfailed`
 - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`
@@ -167,6 +178,7 @@
 说明：
 
 - `Phase A` compile-path 和 semantic gate 当前稳定
+- `Phase B` contract hardening / probe / hardware intake 当前稳定
 - `flash-attn` correctness 仍不应被写成已完成稳定基线
 
 ## 当前文档入口

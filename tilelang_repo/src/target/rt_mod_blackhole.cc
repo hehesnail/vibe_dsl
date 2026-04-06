@@ -188,6 +188,8 @@ using namespace tvm::runtime;
 TVM_REGISTER_TARGET_KIND("blackhole", kDLExtDev)
     .add_attr_option<int64_t>("max_shared_memory_per_block", 1572864)  // 1.5 MB L1
     .add_attr_option<int64_t>("num_cores", 110)  // 11x10 logical worker cores
+    .add_attr_option<int64_t>("logical_worker_grid_x", 11)
+    .add_attr_option<int64_t>("logical_worker_grid_y", 10)
     .add_attr_option<int64_t>("num_cbs", 64)     // 64 circular buffers per core
     .set_default_keys({"blackhole"});
 

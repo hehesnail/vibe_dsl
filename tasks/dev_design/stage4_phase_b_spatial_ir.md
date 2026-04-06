@@ -3,15 +3,14 @@
 ## 基本信息
 
 - **文档角色**: `Phase B` 实施与设计边界文档
-- **当前状态**: `2026-04-07` compile-path hardening 已收口，但整体未结束：
-  `SpatialProgram / ProgramPhase`、copy/GEMM fast-path、`flash-attn` multi-phase gate、
-  representative family gate、`LowerToSpatialProgram -> ValidateSpatialProgram`、
-  以及 `LowerBlackholeOps` 的 spatial-only consumer cutover 均已进入主链。
-  但当前实现仍偏向 structural scaffold：
-  `SpatialCapabilityModel` 尚不存在，`Spatial*` object/vocab 仍与 semantic infra 共址，
-  `Channel.kind` 仍只有 `tensor_flow / state_flow / phase_boundary` 三个粗粒度值，
-  `ValidateSpatialProgram` 也还只是结构/一致性 gate，不是 capability legality pass。
-  当前下一阶段重点是先把 spatial 边界收正，再用 translator 的真实需求 demand-driven 地补 contract。
+- **当前状态**: `2026-04-07` 已完成：
+  `Spatial*` object/vocab/shared key 已从 semantic infra 拆出；
+  `SpatialCapabilityModel / TTHardwareModel` 已作为 module-scope global info 落地；
+  `LowerToSpatialProgram` 已消费 capability model，
+  `Channel.kind + payload_kind + delivery_kind` 与 `placement.affinity_kind`
+  已收成 translator intake 所需的最小 execution-bearing contract；
+  `LowerSpatialProgramToTTTargetProbe` 也已作为 read-only translator demand probe 落地。
+  当前文档保留为 `Phase C` 上游边界与退出条件记录，不再承担持续中的主实施角色。
 - **上游输入**: 冻结后的 `SemanticProgram`
 - **下游输出**: 冻结后的 `SpatialProgram`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -551,12 +550,13 @@
 
 ### 6.2 `SpatialCapabilityModel`
 
-`SpatialCapabilityModel` 目前不存在。
-因此当前文档和进度里不应再把 builder/validator 写成“已经 capability-informed”。
+`SpatialCapabilityModel` 已落地。
+当前稳定口径是：builder/probe 已 capability-informed，validator 仍不是 capability legality pass。
 
 **宿主**
 
 - module-scope global info：`IRModule.global_infos["tl.spatial_capability_model"]`
+- companion neutral key 由 shared companion header 统一定义；semantic layer 不再声明它
 
 **producer**
 
@@ -572,6 +572,19 @@
 - `worker_l1_size` / `dram_view_size`
 - NOC translation / overlay / packer / unpacker feature bit
 
+**当前最小稳定字段**
+
+- `topology_class = grid`
+- `placement_domain = logical_worker_grid`
+- `logical_worker_grid_x / logical_worker_grid_y`
+- `functional_worker_count / router_only_count / dram_view_count`
+- `worker_l1_size / dram_view_size`
+- `supported_flow_kinds`
+- `supported_payload_kinds`
+- `supported_delivery_kinds`
+- `supported_layout_kinds`
+- `supported_partition_kinds`
+
 **consumer**
 
 - `LowerToSpatialProgram`
@@ -582,11 +595,15 @@
 - 它只能表达抽象能力，不表达 resource id、kernel kind、CB plan、ABI slot
 - validator 不负责“根据 capability 重新判断 legality”
 - capability model 是 synthesis 输入，不是 validator 的 policy/legality 引擎
+- `LowerToSpatialProgram` 必须显式消费它来决定：
+  - layout / partition family 是否允许
+  - channel flow / delivery family 是否允许
+  - placement obligation 是否只能写成 abstract affinity，而不是 TT core noun
 
 ### 6.3 Translator Demand Probe
 
-`Phase B` 当前不应该凭想象把所有 execution-bearing contract 一次补完。
-正确顺序是先建立一个只读 translator probe，让真实 consumer 来暴露 contract 缺口。
+`Phase B` 当前已经按这个顺序完成：
+先建立只读 translator probe，再用 probe 驱动 contract 补强。
 
 **这个 probe 必须做到**
 
@@ -605,9 +622,9 @@
 
 ### 6.4 `Channel` Contract
 
-这是当前最紧迫的 contract 缺口。
-现有 `tensor_flow / state_flow / phase_boundary` 三种 `Channel.kind`
-不足以支撑 `Phase C` 的 flow mapping 决策。
+这部分 contract 已按当前 `Phase C` intake 需求落地。
+旧的 `tensor_flow / state_flow / phase_boundary` 三种 `Channel.kind`
+已不再承担 primary flow-mapping 语义。
 
 **需要收正的原则**
 
@@ -640,6 +657,14 @@
   - `target_version`
   - `source_domain / target_domain`
 
+**当前最小落地口径**
+
+- `Channel.kind` 直接承担 `flow_kind`
+- `payload_kind` / `delivery_kind` 进入 `Channel.payload`
+- `source_task_index / target_task_index / state_index` 继续保留为 linkage contract
+- `source_version` / `target_version` 在当前 builder 能恢复时必须显式写出；恢复不到时不能由 probe 回 TIR 猜
+- `tensor_flow / state_flow / phase_boundary` 仅允许作为 trait / display helper 保留
+
 **明确迁移口径**
 
 - 当前 `tensor_flow / state_flow / phase_boundary` 应下沉成兼容 trait 或 display helper
@@ -648,7 +673,8 @@
 ### 6.5 剩余 Spatial Contract 补强
 
 `Task / Layout / WorkPartition / Placement / ProgramPhase / SyncEdge`
-后续要补，但必须按 translator probe 的真实需求来补，不按“先把所有论文里的对象都做出来”推进。
+后续仍可继续增强，但必须按 translator probe 与正式 `TTProgram` translator 的真实需求来补，
+不按“先把所有论文里的对象都做出来”推进。
 
 **当前已知必须补的方向**
 
@@ -659,8 +685,9 @@
   - 不能继续只按 `derived_indices` 和轴数决定 `indexed / blocked / replicated`
   - grouped / paged / routed / chunked 不能被统一拍平成 `indexed`
 - `Placement`
-  - 当前 fast-path 里的 `brisc / trisc / ncrisc` trait 属于 TT leakage
-  - 应改成 abstract placement / affinity / locality obligation
+  - fast-path 已去掉 `brisc / trisc / ncrisc` trait
+  - 当前稳定口径是 abstract `affinity_kind`；后续如需更强 locality obligation，
+    仍应保持 non-TT-specific
 - `ProgramPhase / SyncEdge`
   - 还缺 closure basis、ordering basis、visibility/materialization requirement
 

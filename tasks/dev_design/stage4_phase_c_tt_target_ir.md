@@ -3,9 +3,12 @@
 ## 基本信息
 
 - **文档角色**: `Phase C` 实施与设计边界文档
-- **当前状态**: 已定义；`Phase B` compile-path 已收口，但 contract hardening
-  仍未结束。当前允许启动的是 read-only translator demand probe 与 hardware intake，
-  不是 `TTProgram / MaterializeTTExecutableSpec` 的正式 cutover
+- **当前状态**: `2026-04-07` read-only translator demand probe 与 hardware intake
+  已落地：
+  `LowerSpatialProgramToTTTargetProbe` 已能消费
+  `SpatialProgram + TTHardwareModel + SpatialCapabilityModel` 并对缺失 contract
+  发出明确诊断。当前下一步是进入 `TTProgram / MaterializeTTExecutableSpec`
+  的正式 typed target cutover
 - **上游输入**: 冻结后的 `SpatialProgram`
 - **下游输出**: `TTProgram` 与 `MaterializeTTExecutableSpec` 物化结果
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -235,12 +238,23 @@ pytest testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py
 ### 7.2 交付物
 
 - 最小 `TTHardwareModelStub`，其第一版输入直接来自 TT-Metal SoC descriptor
+- module-scope global info：
+  - `IRModule.global_infos["tl.tt_hardware_model"]`
+  - `IRModule.global_infos["tl.spatial_capability_model"]`
 - read-only translator probe：
   - 只消费 `SpatialProgram + TTHardwareModelStub`
   - 不写 `TTProgram`
   - 不写 `ExecutableSpec`
   - 不恢复 non-TT-specific spatial semantics
 - 对 copy / GEMM / 一个 multi-phase representative path 产出明确的 missing-contract 诊断
+
+**当前 probe 的最小 demand 面**
+
+- `Task.kind + abstract placement affinity`
+- `Channel.kind(flow_kind) + payload.payload_kind + payload.delivery_kind`
+- `Channel` linkage contract：`source_task_index / target_task_index / state_index`
+- `Layout / WorkPartition` 的 `domain_index`
+- `ProgramPhase / SyncEdge` 的 ordering closure
 
 ### 7.3 退出条件
 

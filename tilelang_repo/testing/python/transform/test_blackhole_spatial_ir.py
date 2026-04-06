@@ -109,6 +109,25 @@ def test_spatial_passes_are_registered():
     assert hasattr(tilelang.transform, "ValidateSpatialProgram")
 
 
+def test_lower_to_spatial_program_publishes_spatial_capability_model_snapshot():
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+
+    capability_models = mod.global_infos["tl.spatial_capability_model"]
+    assert len(capability_models) == 1
+    capability = capability_models[0]
+
+    assert str(capability.arch_name) == "BLACKHOLE"
+    assert str(capability.topology_class) == "grid"
+    assert str(capability.placement_domain) == "logical_worker_grid"
+    assert int(capability.logical_worker_grid_x) == 11
+    assert int(capability.logical_worker_grid_y) == 10
+    assert int(capability.worker_l1_size) > 0
+    assert int(capability.dram_view_size) > 0
+    assert int(capability.functional_worker_count) > 0
+    assert "point_to_point" in {str(kind) for kind in capability.supported_flow_kinds}
+    assert "carry" in {str(kind) for kind in capability.supported_flow_kinds}
+
+
 def test_copy_spatial_program_uses_single_transfer_fast_path():
     mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
     program = mod["main"].attrs["tl.spatial_program"]
@@ -117,6 +136,9 @@ def test_copy_spatial_program_uses_single_transfer_fast_path():
     assert [str(task.name) for task in program.tasks] == ["copy"]
     assert [str(task.kind) for task in program.tasks] == ["transfer"]
     assert len(program.channels) == 1
+    assert str(program.channels[0].kind) == "point_to_point"
+    assert str(program.channels[0].payload["payload_kind"]) == "tensor"
+    assert str(program.channels[0].payload["delivery_kind"]) == "buffered_async"
 
 
 def test_gemm_spatial_program_uses_reader_compute_writer_fast_path():
@@ -127,6 +149,25 @@ def test_gemm_spatial_program_uses_reader_compute_writer_fast_path():
     assert [str(task.kind) for task in program.tasks] == ["transfer", "compute", "transfer"]
     assert len(program.phases) == 1
     assert len(program.channels) >= 2
+
+    placements = {str(placement.task_name): placement for placement in program.placements}
+    assert {task: str(placement.payload["affinity_kind"]) for task, placement in placements.items()} == {
+        "reader": "ingress",
+        "compute": "compute",
+        "writer": "egress",
+    }
+    assert all(
+        {"brisc", "trisc", "ncrisc"}.isdisjoint({str(trait) for trait in placement.traits})
+        for placement in program.placements
+    )
+
+    channels = {str(channel.name): channel for channel in program.channels}
+    assert str(channels["a_tiles"].kind) == "point_to_point"
+    assert str(channels["a_tiles"].payload["payload_kind"]) == "tensor"
+    assert str(channels["a_tiles"].payload["delivery_kind"]) == "buffered_async"
+    assert str(channels["c_tiles"].kind) == "point_to_point"
+    assert str(channels["c_tiles"].payload["payload_kind"]) == "state_version"
+    assert str(channels["c_tiles"].payload["delivery_kind"]) == "completion_visible"
 
 
 def test_flash_attention_spatial_program_exposes_multi_phase_channels():
@@ -153,6 +194,10 @@ def test_flash_attention_spatial_program_exposes_multi_phase_channels():
     assert "phase_boundary_materialization" in {str(intent.kind) for intent in program.resource_intents}
     assert len(registry) == 1
     assert len(registry[0].phases) >= 2
+    assert "phase_boundary_materialized" in {
+        str(channel.payload["delivery_kind"]) for channel in program.channels
+    }
+    assert "carry" in {str(channel.kind) for channel in program.channels}
 
 
 def test_flash_attention_spatial_program_projects_pipeline_contract_resource_intent():
@@ -907,6 +952,49 @@ def test_validate_spatial_program_rejects_channel_without_task_index_contract():
     mod = _replace_spatial_program(mod, bad_program)
 
     with pytest.raises(Exception, match="channels to carry source_task_index/target_task_index contract"):
+        tilelang.transform.ValidateSpatialProgram()(mod)
+
+
+def test_validate_spatial_program_rejects_channel_without_payload_and_delivery_contract():
+    mod = _prepare_blackhole_phase_b_module(gemm_kernel())
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    make_channel = tvm.get_global_func("tl.Channel")
+    make_program = tvm.get_global_func("tl.SpatialProgram")
+    rebuilt_channels = [
+        make_channel(
+            channel.name,
+            channel.kind,
+            channel.source_task,
+            channel.target_task,
+            channel.state_name,
+            channel.traits,
+            {
+                key: value
+                for key, value in channel.payload.items()
+                if key not in {"payload_kind", "delivery_kind"}
+            },
+            channel.anchors,
+        )
+        if i == 0
+        else channel
+        for i, channel in enumerate(program.channels)
+    ]
+    bad_program = make_program(
+        program.member_func,
+        program.phases,
+        program.tasks,
+        rebuilt_channels,
+        program.layouts,
+        program.work_partitions,
+        program.placements,
+        program.sync_edges,
+        program.resource_intents,
+        program.anchors,
+    )
+    mod = _replace_spatial_program(mod, bad_program)
+
+    with pytest.raises(Exception, match="channels to carry payload_kind/delivery_kind contract"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
