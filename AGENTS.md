@@ -187,8 +187,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
 4. 当前执行重点按新总设计推进：
    - `Phase A1 / A2` 已完成；语义层与 semantic manifest 已收口
-   - `Phase B`：`Spatial Program IR`（`ProgramPhase` module-scope 宿主 + simple-workload fast-path + non-trivial multi-phase gate）
-   - `Phase C`：`TT Target IR`（`TTHardwareModel` stub 先行 + `TTTransportPlan` + common-runtime ABI + `MaterializeTTExecutableSpec` 唯一物化）
+   - `Phase B`：compile-path cutover 已收口，但整体未结束；
+     当前主实施重点仍是把 `SpatialProgram` 做成 execution-bearing contract
+   - `Phase C`：已定义；以 `Phase B` contract hardening 达标为实现前提
+     （`TTProgram` + `MaterializeTTExecutableSpec` 唯一物化）
 5. 在新分层下继续推进：
    - `Phase C2` 承接 `flash-attn` `blackhole.acc` correctness payoff
    - `topk / fusedmoe / paged decode / chunk recurrence` 等 family 在新主链下统一承接
@@ -233,7 +235,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `AnalyzeSemanticStructure` 已改成 manifest-first，
   `blackhole.fragment_regions` 仅剩 residual reduction evidence 与 lowering compatibility 职责
 - 当前 Blackhole 设备侧 pass 主线：
-  `LowerDeviceStorageAccessInfo` → `AugmentSemanticManifest` → `LowerIntrin` → `Simplify` → `HoistBroadcastValues` → `SplitBlackholeKernel` → `AnalyzeBlackholeWorkDecomposition` → `AnalyzeBlackholeFragmentRegions` → `AnalyzeBlackholePipelineStages` → `AnalyzeSemanticStructure` → `LiftStatefulSemanticIR` → `ValidateStatefulSemanticIR` → `ValidateSemanticRefinement` → `LowerBlackholeOps` → `PlanBlackholeCB` → `AssignBlackholeCores`
+  `LowerDeviceStorageAccessInfo` → `AugmentSemanticManifest` → `LowerIntrin` → `Simplify` → `HoistBroadcastValues` → `SplitBlackholeKernel` → `AnalyzeBlackholeWorkDecomposition` → `AnalyzeBlackholeFragmentRegions` → `AnalyzeBlackholePipelineStages` → `AnalyzeSemanticStructure` → `LiftStatefulSemanticIR` → `ValidateStatefulSemanticIR` → `ValidateSemanticRefinement` → `LowerToSpatialProgram` → `ValidateSpatialProgram` → `LowerBlackholeOps` → `PlanBlackholeCB` → `AssignBlackholeCores`
 - `SplitBlackholeKernel` 已实现并已接入管线；纯 copy 走 `fused_dataflow` 单 kernel，GEMM 走 3-kernel（reader/compute/writer）
 - direct runtime 当前正式支持面：
   - copy：equal source/dest range，且 stride = 1
@@ -242,6 +244,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - `flash-attn` forward subset 当前已完成 analysis、最小 fragment/dataflow builtin/codegen 接入，并打通当前支持的 MHA/GQA forward compile-path；
   其 `blackhole.acc` correctness payoff 当前归属 `Phase C2`，不是总体架构的当前主 blocker
 - 当前总体架构 blocker 是 `Spatial Program IR -> TT Target IR` 的单一真源切换尚未完成
+- `Phase B` 当前状态应理解为：
+  - compile-path 已收口
+  - `SpatialProgram` 是当前唯一 spatial 主链
+  - 更强的 execution-bearing contract 与 abstract `SpatialCapabilityModel`
+    继续由未来 `Phase C` translator 的真实需求驱动补齐
 - 总设计的目标不再局限于 `flash-attn`：后续实现需要同时面向 selection/indexing、routed/grouped dispatch、paged decode、chunk recurrence 等 workload family
 - 后续所有架构推进以 layered IR 为准：
   `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`

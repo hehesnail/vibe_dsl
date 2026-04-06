@@ -26,22 +26,26 @@
   - 最后在 `TT Target IR` 里收正 `CB / semaphore / dst layout / kernel role / ABI`，让 `blackhole.acc` 只表示 compute-side tile scratch
   - 把 stats-state（`scores_max / scores_scale / scores_sum / logsum`）从 tile scratch 语义里彻底拆出去
 
-### layered IR / TT Target contract 已有总设计，但实现主链尚未迁移完成
+### `Phase B` compile-path 已收口，但 `SpatialProgram -> TTProgram` 真源切换仍未落地
 
-- **时间**: 2026-03-26
-- **问题**: 总设计已经把 `Stateful Semantic IR -> Spatial Program IR -> TT Target IR` 和 `TTHardwareModel` / materialization path 定清，但代码主链还没有迁移到这套分层。当前仍有相当一部分逻辑停留在 `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores -> rt_mod_blackhole` 的混合职责链条里。
+- **时间**: 2026-03-26（建立），2026-04-07（状态刷新）
+- **问题**: `SemanticProgram -> SpatialProgram` compile-path 已经接通，但
+  `TTProgram / MaterializeTTExecutableSpec` 仍不存在。当前 target/runtime contract
+  仍主要停留在 `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores -> rt_mod_blackhole`
+  的旧链条里，`Phase C` 真正的 target materialization 单一真源尚未建立。
 - **影响**:
-  - copy / GEMM 可以继续稳定，但复杂 workload family 还没有统一承接层
-  - TT-Metal contract 虽然在文档和局部 schema 上越来越完整，但还没有成为单一 target truth source
+  - `SpatialProgram` 还没有经过 `TTProgram` translator 的真正验真
+  - target/runtime 仍可能在旧链条里继续持有 TT-specific planning truth
+  - `flash-attn` 的 `blackhole.acc` correctness payoff 仍被卡在 `Phase C2`
 - **解决方向**:
   - 按 `final_blackhole_backend_redesign.md` 与当前 Stage 4 分阶段文档推进迁移
-  - Stage 0：迁移护栏、`tl.device_programs`、`tl.semantic_seeds`、A1 hard freeze、deletion gates
-  - Phase A：最小 `Domain/State/Update` + `MapLaw/ReduceLaw` + `SemanticSeed` early capture，再扩到 wider `AccessMap/UpdateLaw` / `SemanticSupplement`
-  - Phase B：`ProgramPhase` module-scope 宿主（`DeviceProgramInfo` in `tl.device_programs`）+ simple-workload fast-path + non-trivial multi-phase gate
-  - Phase C：`TTHardwareModel` stub 先行 + `TTTransportPlan` + common-runtime ABI + `MaterializeTTExecutableSpec` 唯一物化
+  - `Phase C` 先建立最小 `TTProgram` object set 与 `MaterializeTTExecutableSpec`
+  - 用 translator 反推 `SpatialProgram` 仍缺的 non-TT-specific contract
+  - 再删除 compatibility writer / reader / fallback
 - **当前状态**:
-  - 设计层已完成：总设计已经过系统性 review（`review_final_blackhole_backend_redesign.md`）并基于源码交叉审计修订；覆盖 `SemanticSeed`、`DeviceProgramInfo`、Phase A1 hard freeze、small-closed enum + fixed trait axes、simple-workload fast-path、`TTTransportPlan`、three-layer ABI、compatibility deletion gates 等
-  - 实现层未完成：主链还没有这些 typed companion IR object 与对应 pass/validator/materializer
+  - `Phase A` 已完成，`Phase B` 已完成 compile-path cutover
+  - `SpatialProgram` 已进入正式 pass 链，`LowerBlackholeOps` 已硬要求它
+  - 但 `Phase C` 还没有 typed target IR object / validator / materializer 主链
 
 ### direct runtime 若不先把 output tensor 初值同步到 device，partial-write copy 会读回脏数据
 

@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档角色**: `Phase B` 实施与设计边界文档
-- **当前状态**: `2026-04-06` 已完成 compile-path hardening：
+- **当前状态**: `2026-04-06` compile-path hardening 已收口，但整体未结束：
   `SpatialProgram / ProgramPhase`、copy/GEMM fast-path、`flash-attn` multi-phase gate、
   representative family gate、`LowerToSpatialProgram -> ValidateSpatialProgram`、
   以及 `LowerBlackholeOps` 的 spatial-only consumer cutover 均已进入主链。

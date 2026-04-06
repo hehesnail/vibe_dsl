@@ -3,7 +3,8 @@
 ## 基本信息
 
 - **文档角色**: `Phase C` 实施与设计边界文档
-- **当前状态**: 已定义；待 `Phase B` 产出稳定 `SpatialProgram` 后推进
+- **当前状态**: 已定义；`Phase B` compile-path 已收口，但 contract hardening
+  仍未结束，`Phase C` 以此为实现前提
 - **上游输入**: 冻结后的 `SpatialProgram`
 - **下游输出**: `TTProgram` 与 `MaterializeTTExecutableSpec` 物化结果
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
