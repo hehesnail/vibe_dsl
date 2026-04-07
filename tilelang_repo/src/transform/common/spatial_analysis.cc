@@ -108,6 +108,23 @@ std::optional<std::vector<int64_t>> GetPayloadIndices(const Map<String, Any>& pa
   return std::nullopt;
 }
 
+Array<TIRAnchor> MakeAnchors(const std::string& kind, const std::string& value) {
+  return Array<TIRAnchor>{TIRAnchor(String(kind), String(value))};
+}
+
+std::string GetMemberFuncName(const GlobalVar& gvar, const tir::PrimFunc& func) {
+  return func->GetAttr<String>("global_symbol").value_or(gvar->name_hint);
+}
+
+bool ContainsKind(const Array<String>& supported_kinds, const std::string& expected) {
+  for (const String& supported_kind : supported_kinds) {
+    if (str(supported_kind) == expected) {
+      return true;
+    }
+  }
+  return false;
+}
+
 Array<String> ToStringArray(const std::vector<std::string>& values) {
   Array<String> result;
   for (const auto& value : values) {
@@ -417,10 +434,16 @@ std::unordered_set<std::string> CollectKnownUpdateNames(const SemanticProgram& p
 
 std::unordered_map<std::string, std::vector<ProducerVersionEdge>> BuildVersionProducerEdges(
     const SemanticProgram& program) {
+  return BuildVersionProducerEdges(program, std::unordered_set<std::string>());
+}
+
+std::unordered_map<std::string, std::vector<ProducerVersionEdge>> BuildVersionProducerEdges(
+    const SemanticProgram& program, const std::unordered_set<std::string>& allowed_updates) {
+  const bool filter_updates = !allowed_updates.empty();
   std::unordered_map<std::string, std::vector<ProducerVersionEdge>> direct_edges_by_version;
   for (const StateDef& def : program->state_defs) {
     const std::string producer_update = str(def->producer_update);
-    if (producer_update.empty()) {
+    if (producer_update.empty() || (filter_updates && !allowed_updates.count(producer_update))) {
       continue;
     }
     direct_edges_by_version[str(def->version_name)].push_back(

@@ -169,6 +169,17 @@
 
 ### 2.5 低层基础设施
 
+#### pass 拆分后，新 `.cc` 若没接进 `TILE_LANG_BLACKHOLE_SRCS`，会在 Python 导入时炸成共享库未定义符号
+
+- **症状**: C++ 编译似乎通过，但 Python/pytest 一加载 `libtilelang.so` 就报
+  `symbol lookup error: undefined symbol: BuildSpatialExecutionPlanForFunc(...)`
+- **根因**: 新 split 出来的 translation unit 没被编进 `tilelang` 共享库，
+  旧对象里只留下未解析引用
+- **修法**: 把新文件显式加入 `tilelang_repo/CMakeLists.txt` 的
+  `TILE_LANG_BLACKHOLE_SRCS`，重新 `cmake` + `cmake --build`
+- **教训**: “文件已存在”不等于“目标已链接”；对 split pass，先用
+  `nm -D libtilelang.so | c++filt` 确认符号真的进库
+
 #### `TT_METAL_WATCHER` 改变症状时，先区分 direct runtime 回归还是 watcher 线程自己炸了
 
 - **症状**: multicore GEMM direct call 在 `TT_METAL_WATCHER=10` 下于 `Dump #2` 前后 `SIGABRT`，或开 `TT_METAL_WATCHER_TEST_MODE=1` 后卡在同一 dump；但关闭 watcher 后 direct runtime baseline 仍能通过

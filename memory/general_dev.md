@@ -15,8 +15,9 @@
 ## 2. 构建模式
 
 - C++ 改动后，先确认 `libtilelang.so` 已重编，再跑 pytest
-- 当前 `tilelang_repo/CMakeLists.txt` 用 `file(GLOB ...)` 收源码；
-  新增 `.cc` 文件后，要先在 `tilelang_repo/build/` 里重新执行一次 `cmake ..`
+- 当前 `tilelang_repo/CMakeLists.txt` 的 Blackhole 源列表不是“目录自动全量收集”；
+  split 新 `.cc` 文件后，必须把它显式接进 `TILE_LANG_BLACKHOLE_SRCS`，
+  然后重新执行一次 CMake 并重链 `libtilelang.so`
 - 同一个 `tilelang_repo/build/` 不要并行跑 `cmake --build` 和 pytest
 - `pip install -e .` 不是默认开发路径；更稳的是用 `.pth` 指向本地构建产物
 - `3rdparty/` 和 `build/` 不进主仓库

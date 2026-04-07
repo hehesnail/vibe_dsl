@@ -8,6 +8,7 @@
 #include <tvm/ir/transform.h>
 #include <tvm/target/target.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,7 @@ namespace tvm {
 namespace tl {
 
 using tvm::DictAttrs;
+using tvm::GlobalInfo;
 using tvm::ffi::Any;
 using tvm::ffi::Map;
 using tvm::ffi::String;
@@ -46,23 +48,6 @@ Map<String, Any> BuildWorkPartitionPayload(const SemanticProgram& program, int d
     payload.Set(String(schema_key::kWorkDependentLoopBounds), loop_bounds.value());
   }
   return payload;
-}
-
-Array<TIRAnchor> MakeAnchors(const std::string& kind, const std::string& value) {
-  return Array<TIRAnchor>{TIRAnchor(String(kind), String(value))};
-}
-
-std::string GetMemberFuncName(const GlobalVar& gvar, const tir::PrimFunc& func) {
-  return func->GetAttr<String>("global_symbol").value_or(gvar->name_hint);
-}
-
-bool ContainsKind(const Array<String>& supported_kinds, const char* kind) {
-  for (const String& supported_kind : supported_kinds) {
-    if (str(supported_kind) == kind) {
-      return true;
-    }
-  }
-  return false;
 }
 
 void RequireCapabilitySupport(const Array<String>& supported_kinds, const char* kind,
@@ -118,6 +103,8 @@ SpatialDomainPlan BuildSpatialDomainPlan(const std::string& member_func,
 tvm::transform::Pass AnalyzeSpatialDomainPlan() {
   auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
     IRModule updates = IRModule(Map<GlobalVar, BaseFunc>({}));
+    std::optional<TTHardwareModel> hardware_model;
+    std::optional<SpatialCapabilityModel> capability_model;
     for (const auto& [gvar, base_func] : mod->functions) {
       auto func = base_func.as<tir::PrimFunc>();
       if (!func || !IsBlackholePrimFunc(func.value())) {
@@ -130,11 +117,13 @@ tvm::transform::Pass AnalyzeSpatialDomainPlan() {
       auto maybe_target = func.value()->GetAttr<Target>(tvm::attr::kTarget);
       ICHECK(maybe_target)
           << "AnalyzeSpatialDomainPlan requires blackhole PrimFunc target to derive capability";
-      const TTHardwareModel hardware_model = BuildBlackholeTTHardwareModel(maybe_target.value());
-      const SpatialCapabilityModel capability_model = DeriveSpatialCapabilityModel(hardware_model);
+      if (!hardware_model || !capability_model) {
+        hardware_model = BuildBlackholeTTHardwareModel(maybe_target.value());
+        capability_model = DeriveSpatialCapabilityModel(hardware_model.value());
+      }
       const std::string member_func = GetMemberFuncName(gvar, func.value());
       const SpatialDomainPlan domain_plan =
-          BuildSpatialDomainPlan(member_func, maybe_semantic.value(), capability_model);
+          BuildSpatialDomainPlan(member_func, maybe_semantic.value(), capability_model.value());
       tir::PrimFunc updated_func = func.value();
       Map<String, Any> attrs = updated_func->attrs.defined() ? updated_func->attrs->dict
                                                              : Map<String, Any>();
@@ -143,6 +132,16 @@ tvm::transform::Pass AnalyzeSpatialDomainPlan() {
       updates->Add(gvar, updated_func);
     }
     mod->Update(updates);
+    if (hardware_model || capability_model) {
+      mod = mod->ShallowCopy();
+    }
+    if (hardware_model) {
+      mod->UpdateGlobalInfo(attr::kTLTTHardwareModel, Array<GlobalInfo>{hardware_model.value()});
+    }
+    if (capability_model) {
+      mod->UpdateGlobalInfo(attr::kTLSpatialCapabilityModel,
+                            Array<GlobalInfo>{capability_model.value()});
+    }
     return mod;
   };
   return tvm::transform::CreateModulePass(pass_func, 0,

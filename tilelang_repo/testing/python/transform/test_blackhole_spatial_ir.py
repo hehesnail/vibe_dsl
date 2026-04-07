@@ -502,6 +502,19 @@ def test_lower_to_spatial_program_publishes_spatial_capability_model_snapshot():
     }
 
 
+def test_analyze_spatial_domain_plan_publishes_spatial_capability_model_snapshot():
+    mod = _prepare_blackhole_pre_spatial_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    mod = tilelang.transform.AnalyzeSpatialDomainPlan()(mod)
+
+    capability_models = mod.global_infos["tl.spatial_capability_model"]
+    assert len(capability_models) == 1
+    capability = capability_models[0]
+
+    assert str(capability.arch_name) == "BLACKHOLE"
+    assert str(capability.topology_class) == "grid"
+    assert str(capability.placement_domain) == "logical_worker_grid"
+
+
 def test_copy_spatial_program_uses_single_transfer_fast_path():
     mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
     program = mod["main"].attrs["tl.spatial_program"]
@@ -1021,6 +1034,36 @@ def test_spatial_program_projects_task_phase_channel_and_placement_index_contrac
     assert [int(item) for item in phase.payload["task_indices"]] == [0]
     assert [int(item) for item in phase.payload["channel_indices"]] == [0]
     assert int(placement.payload["task_index"]) == 0
+
+
+def test_spatial_program_projects_typed_linkage_fields():
+    mod = _prepare_blackhole_phase_b_module(gemm_kernel())
+    program = mod["main"].attrs["tl.spatial_program"]
+
+    phase = program.phases[0]
+    reader = program.tasks[0]
+    output_channel = next(channel for channel in program.channels if str(channel.name) == "c_tiles")
+    compute_to_writer = next(edge for edge in program.sync_edges if str(edge.name) == "compute_to_writer")
+    reader_placement = next(
+        placement for placement in program.placements if str(placement.task_name) == "reader"
+    )
+
+    assert int(phase.phase_index) == 0
+    assert [int(item) for item in phase.task_indices] == [0, 1, 2]
+    assert int(reader.phase_index) == 0
+    assert str(reader.execution_role) == "tile_ingress"
+    assert str(reader.formation_basis)
+    assert int(output_channel.source_task_index) == 1
+    assert int(output_channel.target_task_index) == 2
+    assert str(output_channel.payload_kind) == "state_version"
+    assert str(output_channel.delivery_kind) == "completion_visible"
+    assert int(reader_placement.task_index) == 0
+    assert str(reader_placement.affinity_kind) == "ingress"
+    assert str(reader_placement.obligation_kind) == "execution"
+    assert int(compute_to_writer.source_task_index) == 1
+    assert int(compute_to_writer.target_task_index) == 2
+    assert str(compute_to_writer.ordering_kind) == "must_happen_before"
+    assert str(compute_to_writer.materialization_kind) == "completion_visibility"
 
 
 def test_spatial_program_projects_state_and_sync_index_contracts():

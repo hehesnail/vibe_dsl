@@ -19,6 +19,9 @@ class TaskNode : public Object {
   ffi::String name;
   ffi::String kind;
   ffi::String phase_name;
+  int64_t phase_index = -1;
+  ffi::String execution_role;
+  ffi::String formation_basis;
   ffi::Array<ffi::String> update_names;
   ffi::Array<ffi::String> traits;
   ffi::Map<ffi::String, ffi::Any> payload;
@@ -30,6 +33,9 @@ class TaskNode : public Object {
         .def_ro("name", &TaskNode::name)
         .def_ro("kind", &TaskNode::kind)
         .def_ro("phase_name", &TaskNode::phase_name)
+        .def_ro("phase_index", &TaskNode::phase_index)
+        .def_ro("execution_role", &TaskNode::execution_role)
+        .def_ro("formation_basis", &TaskNode::formation_basis)
         .def_ro("update_names", &TaskNode::update_names)
         .def_ro("traits", &TaskNode::traits)
         .def_ro("payload", &TaskNode::payload)
@@ -53,7 +59,14 @@ class ChannelNode : public Object {
   ffi::String kind;
   ffi::String source_task;
   ffi::String target_task;
+  int64_t source_task_index = -1;
+  int64_t target_task_index = -1;
+  ffi::String payload_kind;
+  ffi::String delivery_kind;
   ffi::String state_name;
+  int64_t state_index = -1;
+  ffi::String source_version;
+  ffi::String target_version;
   ffi::Array<ffi::String> traits;
   ffi::Map<ffi::String, ffi::Any> payload;
   ffi::Array<TIRAnchor> anchors;
@@ -65,7 +78,14 @@ class ChannelNode : public Object {
         .def_ro("kind", &ChannelNode::kind)
         .def_ro("source_task", &ChannelNode::source_task)
         .def_ro("target_task", &ChannelNode::target_task)
+        .def_ro("source_task_index", &ChannelNode::source_task_index)
+        .def_ro("target_task_index", &ChannelNode::target_task_index)
+        .def_ro("payload_kind", &ChannelNode::payload_kind)
+        .def_ro("delivery_kind", &ChannelNode::delivery_kind)
         .def_ro("state_name", &ChannelNode::state_name)
+        .def_ro("state_index", &ChannelNode::state_index)
+        .def_ro("source_version", &ChannelNode::source_version)
+        .def_ro("target_version", &ChannelNode::target_version)
         .def_ro("traits", &ChannelNode::traits)
         .def_ro("payload", &ChannelNode::payload)
         .def_ro("anchors", &ChannelNode::anchors);
@@ -88,6 +108,8 @@ class SpatialLayoutNode : public Object {
   ffi::String name;
   ffi::String kind;
   ffi::String target_name;
+  int64_t domain_index = -1;
+  ffi::String domain_transform_kind;
   ffi::Array<ffi::String> axes;
   ffi::Array<ffi::String> traits;
   ffi::Map<ffi::String, ffi::Any> payload;
@@ -99,6 +121,8 @@ class SpatialLayoutNode : public Object {
         .def_ro("name", &SpatialLayoutNode::name)
         .def_ro("kind", &SpatialLayoutNode::kind)
         .def_ro("target_name", &SpatialLayoutNode::target_name)
+        .def_ro("domain_index", &SpatialLayoutNode::domain_index)
+        .def_ro("domain_transform_kind", &SpatialLayoutNode::domain_transform_kind)
         .def_ro("axes", &SpatialLayoutNode::axes)
         .def_ro("traits", &SpatialLayoutNode::traits)
         .def_ro("payload", &SpatialLayoutNode::payload)
@@ -122,6 +146,8 @@ class WorkPartitionNode : public Object {
   ffi::String name;
   ffi::String kind;
   ffi::String target_name;
+  int64_t domain_index = -1;
+  ffi::String partition_family;
   ffi::Array<ffi::String> axes;
   ffi::Array<ffi::String> traits;
   ffi::Map<ffi::String, ffi::Any> payload;
@@ -133,6 +159,8 @@ class WorkPartitionNode : public Object {
         .def_ro("name", &WorkPartitionNode::name)
         .def_ro("kind", &WorkPartitionNode::kind)
         .def_ro("target_name", &WorkPartitionNode::target_name)
+        .def_ro("domain_index", &WorkPartitionNode::domain_index)
+        .def_ro("partition_family", &WorkPartitionNode::partition_family)
         .def_ro("axes", &WorkPartitionNode::axes)
         .def_ro("traits", &WorkPartitionNode::traits)
         .def_ro("payload", &WorkPartitionNode::payload)
@@ -156,7 +184,11 @@ class PlacementNode : public Object {
   ffi::String name;
   ffi::String kind;
   ffi::String task_name;
+  int64_t task_index = -1;
   ffi::String member_func;
+  ffi::String affinity_kind;
+  ffi::String obligation_kind;
+  ffi::String placement_domain;
   ffi::Array<ffi::String> traits;
   ffi::Map<ffi::String, ffi::Any> payload;
   ffi::Array<TIRAnchor> anchors;
@@ -167,7 +199,11 @@ class PlacementNode : public Object {
         .def_ro("name", &PlacementNode::name)
         .def_ro("kind", &PlacementNode::kind)
         .def_ro("task_name", &PlacementNode::task_name)
+        .def_ro("task_index", &PlacementNode::task_index)
         .def_ro("member_func", &PlacementNode::member_func)
+        .def_ro("affinity_kind", &PlacementNode::affinity_kind)
+        .def_ro("obligation_kind", &PlacementNode::obligation_kind)
+        .def_ro("placement_domain", &PlacementNode::placement_domain)
         .def_ro("traits", &PlacementNode::traits)
         .def_ro("payload", &PlacementNode::payload)
         .def_ro("anchors", &PlacementNode::anchors);
@@ -191,6 +227,10 @@ class SyncEdgeNode : public Object {
   ffi::String kind;
   ffi::String source;
   ffi::String target;
+  int64_t source_task_index = -1;
+  int64_t target_task_index = -1;
+  ffi::String ordering_kind;
+  ffi::String materialization_kind;
   ffi::Array<ffi::String> traits;
   ffi::Map<ffi::String, ffi::Any> payload;
   ffi::Array<TIRAnchor> anchors;
@@ -202,6 +242,10 @@ class SyncEdgeNode : public Object {
         .def_ro("kind", &SyncEdgeNode::kind)
         .def_ro("source", &SyncEdgeNode::source)
         .def_ro("target", &SyncEdgeNode::target)
+        .def_ro("source_task_index", &SyncEdgeNode::source_task_index)
+        .def_ro("target_task_index", &SyncEdgeNode::target_task_index)
+        .def_ro("ordering_kind", &SyncEdgeNode::ordering_kind)
+        .def_ro("materialization_kind", &SyncEdgeNode::materialization_kind)
         .def_ro("traits", &SyncEdgeNode::traits)
         .def_ro("payload", &SyncEdgeNode::payload)
         .def_ro("anchors", &SyncEdgeNode::anchors);
@@ -224,6 +268,8 @@ class ResourceIntentNode : public Object {
   ffi::String name;
   ffi::String kind;
   ffi::String target_name;
+  ffi::String target_kind;
+  int64_t target_index = -1;
   ffi::Array<ffi::String> traits;
   ffi::Map<ffi::String, ffi::Any> payload;
   ffi::Array<TIRAnchor> anchors;
@@ -234,6 +280,8 @@ class ResourceIntentNode : public Object {
         .def_ro("name", &ResourceIntentNode::name)
         .def_ro("kind", &ResourceIntentNode::kind)
         .def_ro("target_name", &ResourceIntentNode::target_name)
+        .def_ro("target_kind", &ResourceIntentNode::target_kind)
+        .def_ro("target_index", &ResourceIntentNode::target_index)
         .def_ro("traits", &ResourceIntentNode::traits)
         .def_ro("payload", &ResourceIntentNode::payload)
         .def_ro("anchors", &ResourceIntentNode::anchors);
@@ -253,6 +301,10 @@ class ResourceIntent : public ObjectRef {
 class ProgramPhaseNode : public Object {
  public:
   ffi::String name;
+  int64_t phase_index = -1;
+  ffi::Array<Integer> task_indices;
+  ffi::Array<Integer> channel_indices;
+  ffi::String closure_basis;
   ffi::Array<ffi::String> task_names;
   ffi::Array<ffi::String> channel_names;
   ffi::Array<ffi::String> traits;
@@ -263,6 +315,10 @@ class ProgramPhaseNode : public Object {
     namespace refl = tvm::ffi::reflection;
     refl::ObjectDef<ProgramPhaseNode>()
         .def_ro("name", &ProgramPhaseNode::name)
+        .def_ro("phase_index", &ProgramPhaseNode::phase_index)
+        .def_ro("task_indices", &ProgramPhaseNode::task_indices)
+        .def_ro("channel_indices", &ProgramPhaseNode::channel_indices)
+        .def_ro("closure_basis", &ProgramPhaseNode::closure_basis)
         .def_ro("task_names", &ProgramPhaseNode::task_names)
         .def_ro("channel_names", &ProgramPhaseNode::channel_names)
         .def_ro("traits", &ProgramPhaseNode::traits)

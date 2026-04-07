@@ -8,6 +8,37 @@
 namespace tvm {
 namespace tl {
 
+namespace {
+
+int64_t GetIntFieldOrDefault(const ffi::Map<ffi::String, ffi::Any>& payload, const char* key,
+                             int64_t default_value = -1) {
+  if (auto value = payload.Get(ffi::String(key))) {
+    return Downcast<Integer>(value.value())->value;
+  }
+  return default_value;
+}
+
+ffi::String GetStringFieldOrDefault(const ffi::Map<ffi::String, ffi::Any>& payload, const char* key,
+                                    ffi::String default_value = ffi::String()) {
+  if (auto value = payload.Get(ffi::String(key))) {
+    return Downcast<ffi::String>(value.value());
+  }
+  return default_value;
+}
+
+ffi::Array<Integer> GetIntegerArrayFieldOrEmpty(const ffi::Map<ffi::String, ffi::Any>& payload,
+                                                const char* key) {
+  ffi::Array<Integer> result;
+  if (auto value = payload.Get(ffi::String(key))) {
+    for (const ffi::Any& item : Downcast<ffi::Array<ffi::Any>>(value.value())) {
+      result.push_back(Downcast<Integer>(item));
+    }
+  }
+  return result;
+}
+
+}  // namespace
+
 Task::Task(ffi::String name, ffi::String kind, ffi::String phase_name,
            ffi::Array<ffi::String> update_names, ffi::Array<ffi::String> traits,
            ffi::Map<ffi::String, ffi::Any> payload, ffi::Array<TIRAnchor> anchors) {
@@ -15,6 +46,9 @@ Task::Task(ffi::String name, ffi::String kind, ffi::String phase_name,
   n->name = std::move(name);
   n->kind = std::move(kind);
   n->phase_name = std::move(phase_name);
+  n->phase_index = GetIntFieldOrDefault(payload, schema_key::kPhaseIndex);
+  n->execution_role = GetStringFieldOrDefault(payload, schema_key::kExecutionRole);
+  n->formation_basis = GetStringFieldOrDefault(payload, schema_key::kFormationBasis);
   n->update_names = std::move(update_names);
   n->traits = std::move(traits);
   n->payload = std::move(payload);
@@ -31,7 +65,14 @@ Channel::Channel(ffi::String name, ffi::String kind, ffi::String source_task,
   n->kind = std::move(kind);
   n->source_task = std::move(source_task);
   n->target_task = std::move(target_task);
+  n->source_task_index = GetIntFieldOrDefault(payload, schema_key::kSourceTaskIndex);
+  n->target_task_index = GetIntFieldOrDefault(payload, schema_key::kTargetTaskIndex);
+  n->payload_kind = GetStringFieldOrDefault(payload, schema_key::kPayloadKind);
+  n->delivery_kind = GetStringFieldOrDefault(payload, schema_key::kDeliveryKind);
   n->state_name = std::move(state_name);
+  n->state_index = GetIntFieldOrDefault(payload, schema_key::kStateIndex);
+  n->source_version = GetStringFieldOrDefault(payload, schema_key::kSourceVersion);
+  n->target_version = GetStringFieldOrDefault(payload, schema_key::kTargetVersion);
   n->traits = std::move(traits);
   n->payload = std::move(payload);
   n->anchors = std::move(anchors);
@@ -46,6 +87,8 @@ SpatialLayout::SpatialLayout(ffi::String name, ffi::String kind, ffi::String tar
   n->name = std::move(name);
   n->kind = std::move(kind);
   n->target_name = std::move(target_name);
+  n->domain_index = GetIntFieldOrDefault(payload, schema_key::kDomainIndex);
+  n->domain_transform_kind = GetStringFieldOrDefault(payload, schema_key::kDomainTransformKind);
   n->axes = std::move(axes);
   n->traits = std::move(traits);
   n->payload = std::move(payload);
@@ -61,6 +104,8 @@ WorkPartition::WorkPartition(ffi::String name, ffi::String kind, ffi::String tar
   n->name = std::move(name);
   n->kind = std::move(kind);
   n->target_name = std::move(target_name);
+  n->domain_index = GetIntFieldOrDefault(payload, schema_key::kDomainIndex);
+  n->partition_family = GetStringFieldOrDefault(payload, schema_key::kPartitionFamily);
   n->axes = std::move(axes);
   n->traits = std::move(traits);
   n->payload = std::move(payload);
@@ -76,7 +121,11 @@ Placement::Placement(ffi::String name, ffi::String kind, ffi::String task_name,
   n->name = std::move(name);
   n->kind = std::move(kind);
   n->task_name = std::move(task_name);
+  n->task_index = GetIntFieldOrDefault(payload, schema_key::kTaskIndex);
   n->member_func = std::move(member_func);
+  n->affinity_kind = GetStringFieldOrDefault(payload, schema_key::kAffinityKind);
+  n->obligation_kind = GetStringFieldOrDefault(payload, schema_key::kObligationKind);
+  n->placement_domain = GetStringFieldOrDefault(payload, schema_key::kPlacementDomain);
   n->traits = std::move(traits);
   n->payload = std::move(payload);
   n->anchors = std::move(anchors);
@@ -91,6 +140,10 @@ SyncEdge::SyncEdge(ffi::String name, ffi::String kind, ffi::String source, ffi::
   n->kind = std::move(kind);
   n->source = std::move(source);
   n->target = std::move(target);
+  n->source_task_index = GetIntFieldOrDefault(payload, schema_key::kSourceTaskIndex);
+  n->target_task_index = GetIntFieldOrDefault(payload, schema_key::kTargetTaskIndex);
+  n->ordering_kind = GetStringFieldOrDefault(payload, schema_key::kOrderingKind);
+  n->materialization_kind = GetStringFieldOrDefault(payload, schema_key::kMaterializationKind);
   n->traits = std::move(traits);
   n->payload = std::move(payload);
   n->anchors = std::move(anchors);
@@ -105,6 +158,8 @@ ResourceIntent::ResourceIntent(ffi::String name, ffi::String kind, ffi::String t
   n->name = std::move(name);
   n->kind = std::move(kind);
   n->target_name = std::move(target_name);
+  n->target_kind = GetStringFieldOrDefault(payload, schema_key::kTargetKind);
+  n->target_index = GetIntFieldOrDefault(payload, schema_key::kTargetIndex);
   n->traits = std::move(traits);
   n->payload = std::move(payload);
   n->anchors = std::move(anchors);
@@ -118,6 +173,10 @@ ProgramPhase::ProgramPhase(ffi::String name, ffi::Array<ffi::String> task_names,
                            ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<ProgramPhaseNode>();
   n->name = std::move(name);
+  n->phase_index = GetIntFieldOrDefault(payload, schema_key::kPhaseIndex);
+  n->task_indices = GetIntegerArrayFieldOrEmpty(payload, schema_key::kTaskIndices);
+  n->channel_indices = GetIntegerArrayFieldOrEmpty(payload, schema_key::kChannelIndices);
+  n->closure_basis = GetStringFieldOrDefault(payload, schema_key::kClosureBasis);
   n->task_names = std::move(task_names);
   n->channel_names = std::move(channel_names);
   n->traits = std::move(traits);

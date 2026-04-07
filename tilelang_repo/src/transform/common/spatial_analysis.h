@@ -50,6 +50,10 @@ std::optional<std::string> GetPayloadString(const Map<String, Any>& payload, con
 std::optional<std::vector<int64_t>> GetPayloadIndices(const Map<String, Any>& payload,
                                                       const char* key);
 
+Array<TIRAnchor> MakeAnchors(const std::string& kind, const std::string& value);
+std::string GetMemberFuncName(const GlobalVar& gvar, const tir::PrimFunc& func);
+bool ContainsKind(const Array<String>& supported_kinds, const std::string& expected);
+
 Array<String> ToStringArray(const std::vector<std::string>& values);
 Array<String> MakeTraits(std::initializer_list<const char*> values);
 bool HasTrait(const Array<String>& traits, const char* trait);
@@ -89,6 +93,8 @@ std::unordered_map<std::string, int> BuildDistinctConsumerCountByVersion(
 std::unordered_set<std::string> CollectKnownUpdateNames(const SemanticProgram& program);
 std::unordered_map<std::string, std::vector<ProducerVersionEdge>> BuildVersionProducerEdges(
     const SemanticProgram& program);
+std::unordered_map<std::string, std::vector<ProducerVersionEdge>> BuildVersionProducerEdges(
+    const SemanticProgram& program, const std::unordered_set<std::string>& allowed_updates);
 
 std::string DeriveOrderingKindForChannel(sp::SpatialChannelKind channel_kind,
                                          sp::SpatialChannelDeliveryKind delivery_kind);

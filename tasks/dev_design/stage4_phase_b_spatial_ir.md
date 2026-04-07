@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档角色**: `Phase B` 已完成阶段文档
-- **当前状态**: `2026-04-07` 已完成
+- **当前状态**: `2026-04-08` 已完成并完成审计收口
 - **已完成子阶段**: boundary cleanup、capability intake、probe、最小 contract hardening、execution-bearing 收尾
 - **仍未完成**: 无；后续工作已转入 `Phase C`
 - **上游输入**: 冻结后的 `SemanticProgram`
@@ -151,6 +151,16 @@
 - generic builder 已把第 3 节定义的五类算法收进稳定主链
 - `Task / Channel / Layout / WorkPartition / ProgramPhase / SyncEdge /
   Placement / ResourceIntent` 的 execution-bearing truth 已冻结成 typed spatial payload
+- `AnalyzeSpatialDomainPlan -> AnalyzeSpatialExecutionPlan -> MaterializeSpatialProgram`
+  已拆成显式 pass 链，`LowerToSpatialProgram` 仅保留兼容 wrapper；
+  `spatial_program_builder.cc` 成为 shared synthesis owner
+- `spatial_analysis.h/cc` 已成为 Phase B 的共享 helper / contract 真源；
+  builder、validator、probe、domain plan 不再各自维护同逻辑拷贝
+- `Task / Channel / Placement / SyncEdge / ProgramPhase / Layout /
+  WorkPartition / ResourceIntent` 的高频链接字段已上提为 typed field，
+  downstream consumer 主链接改走 typed/index contract
+- name 字段继续保留，但只承担 display / debug / identity 角色；
+  validator 的 referential integrity 已以 index linkage 为 canonical
 - `phase_boundary_materialization` 已收窄为真实跨 phase state handoff，
   不再把“任何后续 phase 仍会读取的 state”过度扩成边界物化集合
 - `ValidateSpatialProgram` 已对 stronger contract 做 coherence / completeness /
@@ -159,8 +169,28 @@
   已只消费冻结后的 typed spatial truth，不再回补 generic spatial 语义洞
 - copy / GEMM fast path 仍保留，但它们只作为 execution-bearing
   `SpatialProgram` contract 的退化特例
+- copy / GEMM fast path 与 generic path 现已共享 task / channel / placement /
+  phase / sync contract construction helper，不再并行手写整套 schema
 
-## 5.1 当前收尾策略
+## 5.1 审计收口结论
+
+对 `tasks/dev_design/phase_b_code_audit.md` 中列出的问题，`Phase C` 之前需要收口的部分已完成：
+
+- 大规模重复 helper 已集中到 `spatial_analysis.h/cc`
+- `lower_to_spatial_program.cc` monolith 已拆分
+- capability model 已在 `AnalyzeSpatialDomainPlan` 发布到 module global info，
+  后续 pass 直接复用
+- validator 已改为共享分析 helper + structural / referential integrity gate
+- dual linkage 已改成 index canonical、name display-only
+- 高频 payload truth 已提升成 typed field，减少 stringly-typed 消费
+- fast path 已共享 contract construction helper，避免 generic/fast path 漂移
+
+仍保留为 `Phase C` 继续演进的项：
+
+- 更深层的 IR node schema 分化
+- quantitative capability field 被 planning / mapping 正式消费
+
+## 5.2 当前收尾策略
 
 `Phase B` 的剩余工作按单一路径收尾：
 
@@ -177,7 +207,7 @@
 - 不把 family-specific matcher 扩成新的主路径
 - 不新增并行执行路径或额外 emitter 绕开当前 blocker
 
-## 5.2 本轮必须收实的协议
+## 5.3 本轮必须收实的协议
 
 为了让 `SpatialProgram` 成为 execution-bearing spatial program，
 本轮必须把下面这些 truth 显式收成 typed payload / linkage contract：
@@ -213,7 +243,7 @@
 - downstream consumer 的主链接一律走 typed payload / index linkage
 - 若当前 schema 仍不足以稳定表达这些 truth，就先扩 schema，再写 builder / validator
 
-## 5.3 收尾算法
+## 5.4 收尾算法
 
 ### 5.3.1 Task Formation
 

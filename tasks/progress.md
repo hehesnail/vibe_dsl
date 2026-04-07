@@ -29,6 +29,9 @@
   - 已完成后续代码重构：
     `AnalyzeSpatialDomainPlan -> AnalyzeSpatialExecutionPlan -> MaterializeSpatialProgram`
     已拆出，`LowerToSpatialProgram` 退化为兼容 wrapper
+  - 已完成审计收口：
+    shared helper 去重、typed field 上提、index canonical linkage、
+    validator 收窄、fast path contract 共构、capability model 前置发布
 - **Phase C**: 已定义；准备轨已完成
   - 已完成：read-only translator demand probe、hardware intake
   - 未开始：正式 `TTProgram / MaterializeTTExecutableSpec` cutover
@@ -62,6 +65,9 @@
 
 - `Phase B` 已完成一轮完成后设计审计；当前不重新打开 `Phase B`，
   而是带着 object-boundary 风险清单进入 `Phase C`
+- `tasks/dev_design/phase_b_code_audit.md` 中点名的结构性问题已按当前
+  `Phase C` 前置范围收口：monolith 已拆分、关键 payload truth 已提升为
+  typed field、name 退回 display/debug、consumer 主链接走 typed/index truth
 - 当前最值得在 `Phase C` 中继续验证的边界包括：
   - `Placement` 是否会被消费成真实 target mapping constraint
   - `SpatialCapabilityModel` 的 quantitative hardware fields 是否会进入 planning / mapping
@@ -122,10 +128,10 @@ LowerDeviceStorageAccessInfo
   - `cmake -S tilelang_repo -B tilelang_repo/build`
   - `cmake --build tilelang_repo/build -j32`
 - transform:
-  - `test_blackhole_spatial_ir.py -q`: `69 passed`
+  - `test_blackhole_spatial_ir.py -q`: `71 passed`
   - `test_blackhole_tt_target_probe.py -q`: `17 passed`
-  - `test_blackhole_spatial_ir.py -q test_blackhole_tt_target_probe.py -q`:
-    `86 passed`
+  - `test_blackhole_spatial_ir.py -k "typed_linkage_fields or spatial_capability_model_snapshot" -q`:
+    `3 passed`
 - target:
   - `test_blackhole_copy_pipeline.py -q test_blackhole_gemm.py -q`:
     `68 passed, 21 skipped, 1 xfailed`

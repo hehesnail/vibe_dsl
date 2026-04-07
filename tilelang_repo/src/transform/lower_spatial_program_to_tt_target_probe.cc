@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "common/blackhole_utils.h"
+#include "common/spatial_analysis.h"
 #include "common/spatial_program.h"
 #include "common/spatial_vocab.h"
 #include "common/tt_hardware_model.h"
@@ -31,29 +32,6 @@ namespace sp = tvm::tl::spatial;
 using tvm::tl::str;
 
 namespace {
-
-std::optional<int64_t> GetPayloadIndex(const Map<String, Any>& payload, const char* key) {
-  if (auto value = payload.Get(String(key))) {
-    return Downcast<Integer>(value.value())->value;
-  }
-  return std::nullopt;
-}
-
-std::optional<std::string> GetPayloadString(const Map<String, Any>& payload, const char* key) {
-  if (auto value = payload.Get(String(key))) {
-    return str(Downcast<String>(value.value()));
-  }
-  return std::nullopt;
-}
-
-bool ContainsKind(const Array<String>& supported_kinds, const std::string& expected) {
-  for (const String& supported_kind : supported_kinds) {
-    if (str(supported_kind) == expected) {
-      return true;
-    }
-  }
-  return false;
-}
 
 bool IsNeutralAffinity(const std::string& affinity_kind) {
   static const std::unordered_set<std::string> kNeutralAffinities = {
@@ -75,56 +53,26 @@ void ValidateTaskIndexRange(const String& subject_name, const char* subject_kind
       << key_name << " out of bounds";
 }
 
-std::string DeriveOrderingKindForChannel(sp::SpatialChannelKind channel_kind,
-                                         sp::SpatialChannelDeliveryKind delivery_kind) {
-  switch (channel_kind) {
-    case sp::SpatialChannelKind::kCarry:
-      return "carry_handoff";
-    case sp::SpatialChannelKind::kReduceMerge:
-      return "reduction_completion";
-    case sp::SpatialChannelKind::kGather:
-    case sp::SpatialChannelKind::kScatter:
-      return "selection_index_handoff";
-    default:
-      return delivery_kind == sp::SpatialChannelDeliveryKind::kPhaseBoundaryMaterialized
-                 ? "phase_boundary_materialization"
-                 : "must_happen_before";
-  }
-}
-
-std::string DeriveMaterializationKindForChannel(sp::SpatialChannelKind channel_kind,
-                                                sp::SpatialChannelDeliveryKind delivery_kind) {
-  if (delivery_kind == sp::SpatialChannelDeliveryKind::kPhaseBoundaryMaterialized) {
-    return "phase_boundary_materialization";
-  }
-  if (channel_kind == sp::SpatialChannelKind::kReduceMerge) {
-    return "completion_visibility";
-  }
-  return "phase_boundary";
-}
-
 void ValidateChannelContract(const Channel& channel, const SpatialCapabilityModel& capability_model,
                              int task_count) {
-  auto maybe_payload_kind = GetPayloadString(channel->payload, schema_key::kPayloadKind);
-  ICHECK(maybe_payload_kind)
+  const std::string payload_kind = str(channel->payload_kind);
+  ICHECK(!payload_kind.empty())
       << "missing spatial contract: channel " << str(channel->name) << " "
       << schema_key::kPayloadKind;
-  auto maybe_delivery_kind = GetPayloadString(channel->payload, schema_key::kDeliveryKind);
-  ICHECK(maybe_delivery_kind)
+  const std::string delivery_kind = str(channel->delivery_kind);
+  ICHECK(!delivery_kind.empty())
       << "missing spatial contract: channel " << str(channel->name) << " "
       << schema_key::kDeliveryKind;
-  auto maybe_source_task_index = GetPayloadIndex(channel->payload, schema_key::kSourceTaskIndex);
-  auto maybe_target_task_index = GetPayloadIndex(channel->payload, schema_key::kTargetTaskIndex);
-  ICHECK(maybe_source_task_index && maybe_target_task_index)
+  ICHECK(channel->source_task_index >= 0 && channel->target_task_index >= 0)
       << "missing spatial contract: channel " << str(channel->name) << " source/target task index";
   ValidateTaskIndexRange(channel->name, "channel", schema_key::kSourceTaskIndex,
-                         *maybe_source_task_index, task_count);
+                         channel->source_task_index, task_count);
   ValidateTaskIndexRange(channel->name, "channel", schema_key::kTargetTaskIndex,
-                         *maybe_target_task_index, task_count);
+                         channel->target_task_index, task_count);
 
   auto parsed_channel_kind = sp::ParseSpatialChannelKind(str(channel->kind));
-  auto parsed_payload_kind = sp::ParseSpatialChannelPayloadKind(*maybe_payload_kind);
-  auto parsed_delivery_kind = sp::ParseSpatialChannelDeliveryKind(*maybe_delivery_kind);
+  auto parsed_payload_kind = sp::ParseSpatialChannelPayloadKind(payload_kind);
+  auto parsed_delivery_kind = sp::ParseSpatialChannelDeliveryKind(delivery_kind);
   ICHECK(parsed_channel_kind)
       << "missing spatial contract: channel " << str(channel->name) << " kind";
   ICHECK(parsed_payload_kind)
@@ -135,23 +83,20 @@ void ValidateChannelContract(const Channel& channel, const SpatialCapabilityMode
   ICHECK(ContainsKind(capability_model->supported_flow_kinds, str(channel->kind)))
       << "missing spatial contract: channel " << str(channel->name) << " unsupported flow kind "
       << str(channel->kind);
-  ICHECK(ContainsKind(capability_model->supported_payload_kinds, *maybe_payload_kind))
+  ICHECK(ContainsKind(capability_model->supported_payload_kinds, payload_kind))
       << "missing spatial contract: channel " << str(channel->name)
-      << " unsupported payload kind " << *maybe_payload_kind;
-  ICHECK(ContainsKind(capability_model->supported_delivery_kinds, *maybe_delivery_kind))
+      << " unsupported payload kind " << payload_kind;
+  ICHECK(ContainsKind(capability_model->supported_delivery_kinds, delivery_kind))
       << "missing spatial contract: channel " << str(channel->name)
-      << " unsupported delivery kind " << *maybe_delivery_kind;
-  if (*maybe_payload_kind == sp::ToString(sp::SpatialChannelPayloadKind::kStateVersion)) {
-    auto maybe_state_index = GetPayloadIndex(channel->payload, schema_key::kStateIndex);
-    ICHECK(maybe_state_index)
+      << " unsupported delivery kind " << delivery_kind;
+  if (payload_kind == sp::ToString(sp::SpatialChannelPayloadKind::kStateVersion)) {
+    ICHECK(channel->state_index >= 0)
         << "missing spatial contract: channel " << str(channel->name) << " "
         << schema_key::kStateIndex;
-    auto maybe_source_version = GetPayloadString(channel->payload, schema_key::kSourceVersion);
-    ICHECK(maybe_source_version && !maybe_source_version->empty())
+    ICHECK(!str(channel->source_version).empty())
         << "missing spatial contract: channel " << str(channel->name) << " "
         << schema_key::kSourceVersion;
-    auto maybe_target_version = GetPayloadString(channel->payload, schema_key::kTargetVersion);
-    ICHECK(maybe_target_version && !maybe_target_version->empty())
+    ICHECK(!str(channel->target_version).empty())
         << "missing spatial contract: channel " << str(channel->name) << " "
         << schema_key::kTargetVersion;
   }
@@ -159,70 +104,59 @@ void ValidateChannelContract(const Channel& channel, const SpatialCapabilityMode
 
 void ValidatePlacementContract(const Placement& placement,
                               const SpatialCapabilityModel& capability_model, int task_count) {
-  auto maybe_task_index = GetPayloadIndex(placement->payload, schema_key::kTaskIndex);
-  ICHECK(maybe_task_index)
+  ICHECK(placement->task_index >= 0)
       << "missing spatial contract: placement " << str(placement->name) << " "
       << schema_key::kTaskIndex;
-  ValidateTaskIndexRange(placement->name, "placement", schema_key::kTaskIndex, *maybe_task_index,
+  ValidateTaskIndexRange(placement->name, "placement", schema_key::kTaskIndex, placement->task_index,
                          task_count);
-  auto maybe_affinity_kind = GetPayloadString(placement->payload, schema_key::kAffinityKind);
-  ICHECK(maybe_affinity_kind)
+  const std::string affinity_kind = str(placement->affinity_kind);
+  ICHECK(!affinity_kind.empty())
       << "missing spatial contract: placement " << str(placement->name) << " "
       << schema_key::kAffinityKind;
-  auto maybe_obligation_kind = GetPayloadString(placement->payload, schema_key::kObligationKind);
-  ICHECK(maybe_obligation_kind && !maybe_obligation_kind->empty())
+  ICHECK(!str(placement->obligation_kind).empty())
       << "missing spatial contract: placement " << str(placement->name) << " "
       << schema_key::kObligationKind;
-  auto maybe_placement_domain =
-      GetPayloadString(placement->payload, schema_key::kPlacementDomain);
-  ICHECK(maybe_placement_domain && !maybe_placement_domain->empty())
+  ICHECK(!str(placement->placement_domain).empty())
       << "missing spatial contract: placement " << str(placement->name) << " "
       << schema_key::kPlacementDomain;
-  ICHECK(!IsTTLeakingAffinity(*maybe_affinity_kind))
-      << "TT-leaking placement affinity: " << *maybe_affinity_kind;
-  ICHECK(IsNeutralAffinity(*maybe_affinity_kind))
+  ICHECK(!IsTTLeakingAffinity(affinity_kind))
+      << "TT-leaking placement affinity: " << affinity_kind;
+  ICHECK(IsNeutralAffinity(affinity_kind))
       << "missing spatial contract: placement " << str(placement->name)
-      << " unsupported neutral affinity " << *maybe_affinity_kind;
-  ICHECK(*maybe_placement_domain == str(capability_model->placement_domain))
+      << " unsupported neutral affinity " << affinity_kind;
+  ICHECK(str(placement->placement_domain) == str(capability_model->placement_domain))
       << "missing spatial contract: placement " << str(placement->name)
-      << " placement_domain mismatch " << *maybe_placement_domain;
+      << " placement_domain mismatch " << str(placement->placement_domain);
 }
 
 void ValidatePhaseContract(const ProgramPhase& phase) {
-  auto maybe_phase_index = GetPayloadIndex(phase->payload, schema_key::kPhaseIndex);
-  ICHECK(maybe_phase_index)
+  ICHECK(phase->phase_index >= 0)
       << "missing spatial contract: phase " << str(phase->name) << " "
       << schema_key::kPhaseIndex;
-  auto maybe_task_indices = phase->payload.Get(String(schema_key::kTaskIndices));
+  auto maybe_task_indices = GetPayloadIndices(phase->payload, schema_key::kTaskIndices);
   ICHECK(maybe_task_indices)
       << "missing spatial contract: phase " << str(phase->name) << " "
       << schema_key::kTaskIndices;
-  auto maybe_channel_indices = phase->payload.Get(String(schema_key::kChannelIndices));
+  auto maybe_channel_indices = GetPayloadIndices(phase->payload, schema_key::kChannelIndices);
   ICHECK(maybe_channel_indices)
       << "missing spatial contract: phase " << str(phase->name) << " "
       << schema_key::kChannelIndices;
-  auto maybe_closure_basis = GetPayloadString(phase->payload, schema_key::kClosureBasis);
-  ICHECK(maybe_closure_basis && !maybe_closure_basis->empty())
+  ICHECK(!str(phase->closure_basis).empty())
       << "missing spatial contract: phase " << str(phase->name) << " "
       << schema_key::kClosureBasis;
 }
 
 void ValidateSyncEdgeContract(const SyncEdge& edge, int task_count) {
-  auto maybe_source_task_index = GetPayloadIndex(edge->payload, schema_key::kSourceTaskIndex);
-  auto maybe_target_task_index = GetPayloadIndex(edge->payload, schema_key::kTargetTaskIndex);
-  ICHECK(maybe_source_task_index && maybe_target_task_index)
+  ICHECK(edge->source_task_index >= 0 && edge->target_task_index >= 0)
       << "missing spatial contract: sync edge " << str(edge->name) << " source/target task index";
   ValidateTaskIndexRange(edge->name, "sync edge", schema_key::kSourceTaskIndex,
-                         *maybe_source_task_index, task_count);
+                         edge->source_task_index, task_count);
   ValidateTaskIndexRange(edge->name, "sync edge", schema_key::kTargetTaskIndex,
-                         *maybe_target_task_index, task_count);
-  auto maybe_ordering_kind = GetPayloadString(edge->payload, schema_key::kOrderingKind);
-  ICHECK(maybe_ordering_kind && !maybe_ordering_kind->empty())
+                         edge->target_task_index, task_count);
+  ICHECK(!str(edge->ordering_kind).empty())
       << "missing spatial contract: sync edge " << str(edge->name) << " "
       << schema_key::kOrderingKind;
-  auto maybe_materialization_kind =
-      GetPayloadString(edge->payload, schema_key::kMaterializationKind);
-  ICHECK(maybe_materialization_kind && !maybe_materialization_kind->empty())
+  ICHECK(!str(edge->materialization_kind).empty())
       << "missing spatial contract: sync edge " << str(edge->name) << " "
       << schema_key::kMaterializationKind;
 }
@@ -232,41 +166,33 @@ void ValidateSyncEdgeCapability(const SyncEdge& edge,
   ICHECK(ContainsKind(capability_model->supported_sync_kinds, str(edge->kind)))
       << "missing spatial contract: sync edge " << str(edge->name) << " unsupported sync kind "
       << str(edge->kind);
-  auto maybe_ordering_kind = GetPayloadString(edge->payload, schema_key::kOrderingKind);
-  ICHECK(maybe_ordering_kind && ContainsKind(capability_model->supported_ordering_kinds,
-                                             *maybe_ordering_kind))
+  const std::string ordering_kind = str(edge->ordering_kind);
+  ICHECK(!ordering_kind.empty() &&
+         ContainsKind(capability_model->supported_ordering_kinds, ordering_kind))
       << "missing spatial contract: sync edge " << str(edge->name)
-      << " unsupported ordering kind " << (maybe_ordering_kind ? *maybe_ordering_kind : "");
-  auto maybe_materialization_kind =
-      GetPayloadString(edge->payload, schema_key::kMaterializationKind);
-  ICHECK(maybe_materialization_kind &&
+      << " unsupported ordering kind " << ordering_kind;
+  const std::string materialization_kind = str(edge->materialization_kind);
+  ICHECK(!materialization_kind.empty() &&
          ContainsKind(capability_model->supported_materialization_kinds,
-                      *maybe_materialization_kind))
+                      materialization_kind))
       << "missing spatial contract: sync edge " << str(edge->name)
-      << " unsupported materialization kind "
-      << (maybe_materialization_kind ? *maybe_materialization_kind : "");
+      << " unsupported materialization kind " << materialization_kind;
 }
 
 void ValidateLayoutContract(const SpatialLayout& layout) {
-  auto maybe_domain_index = GetPayloadIndex(layout->payload, schema_key::kDomainIndex);
-  ICHECK(maybe_domain_index)
+  ICHECK(layout->domain_index >= 0)
       << "missing spatial contract: layout " << str(layout->name) << " "
       << schema_key::kDomainIndex;
-  auto maybe_domain_transform_kind =
-      GetPayloadString(layout->payload, schema_key::kDomainTransformKind);
-  ICHECK(maybe_domain_transform_kind && !maybe_domain_transform_kind->empty())
+  ICHECK(!str(layout->domain_transform_kind).empty())
       << "missing spatial contract: layout " << str(layout->name) << " "
       << schema_key::kDomainTransformKind;
 }
 
 void ValidateWorkPartitionContract(const WorkPartition& partition) {
-  auto maybe_domain_index = GetPayloadIndex(partition->payload, schema_key::kDomainIndex);
-  ICHECK(maybe_domain_index)
+  ICHECK(partition->domain_index >= 0)
       << "missing spatial contract: work partition " << str(partition->name) << " "
       << schema_key::kDomainIndex;
-  auto maybe_partition_family =
-      GetPayloadString(partition->payload, schema_key::kPartitionFamily);
-  ICHECK(maybe_partition_family && !maybe_partition_family->empty())
+  ICHECK(!str(partition->partition_family).empty())
       << "missing spatial contract: work partition " << str(partition->name) << " "
       << schema_key::kPartitionFamily;
 }
@@ -274,12 +200,10 @@ void ValidateWorkPartitionContract(const WorkPartition& partition) {
 std::vector<int64_t> BuildTaskPhaseIndexByTask(const SpatialProgram& program) {
   std::vector<int64_t> phase_index_by_task(program->tasks.size(), -1);
   for (int task_index = 0; task_index < program->tasks.size(); ++task_index) {
-    auto maybe_phase_index =
-        GetPayloadIndex(program->tasks[task_index]->payload, schema_key::kPhaseIndex);
-    ICHECK(maybe_phase_index)
+    ICHECK(program->tasks[task_index]->phase_index >= 0)
         << "missing spatial contract: task " << str(program->tasks[task_index]->name) << " "
         << schema_key::kPhaseIndex;
-    phase_index_by_task[task_index] = *maybe_phase_index;
+    phase_index_by_task[task_index] = program->tasks[task_index]->phase_index;
   }
   return phase_index_by_task;
 }
@@ -291,42 +215,32 @@ void ValidateCrossPhaseSyncCoverage(const SpatialProgram& program) {
   const std::vector<int64_t> task_phase_index_by_task = BuildTaskPhaseIndexByTask(program);
   std::unordered_set<std::string> covered_phase_pairs;
   for (const SyncEdge& edge : program->sync_edges) {
-    auto maybe_source_task_index = GetPayloadIndex(edge->payload, schema_key::kSourceTaskIndex);
-    auto maybe_target_task_index = GetPayloadIndex(edge->payload, schema_key::kTargetTaskIndex);
-    auto maybe_ordering_kind = GetPayloadString(edge->payload, schema_key::kOrderingKind);
-    auto maybe_materialization_kind =
-        GetPayloadString(edge->payload, schema_key::kMaterializationKind);
-    ICHECK(maybe_source_task_index && maybe_target_task_index)
+    ICHECK(edge->source_task_index >= 0 && edge->target_task_index >= 0)
         << "missing spatial contract: sync edge " << str(edge->name)
         << " source/target task index";
-    const int64_t source_phase_index = task_phase_index_by_task[*maybe_source_task_index];
-    const int64_t target_phase_index = task_phase_index_by_task[*maybe_target_task_index];
+    const int64_t source_phase_index = task_phase_index_by_task[edge->source_task_index];
+    const int64_t target_phase_index = task_phase_index_by_task[edge->target_task_index];
     if (source_phase_index != target_phase_index) {
       covered_phase_pairs.insert(std::to_string(source_phase_index) + "->" +
                                  std::to_string(target_phase_index) + "|" +
-                                 *maybe_ordering_kind + "|" + *maybe_materialization_kind);
+                                 str(edge->ordering_kind) + "|" +
+                                 str(edge->materialization_kind));
     }
   }
 
   std::unordered_set<std::string> required_phase_pairs;
   for (const Channel& channel : program->channels) {
-    auto maybe_source_task_index =
-        GetPayloadIndex(channel->payload, schema_key::kSourceTaskIndex);
-    auto maybe_target_task_index =
-        GetPayloadIndex(channel->payload, schema_key::kTargetTaskIndex);
-    auto maybe_payload_kind = GetPayloadString(channel->payload, schema_key::kPayloadKind);
-    auto maybe_delivery_kind = GetPayloadString(channel->payload, schema_key::kDeliveryKind);
-    ICHECK(maybe_source_task_index && maybe_target_task_index)
+    ICHECK(channel->source_task_index >= 0 && channel->target_task_index >= 0)
         << "missing spatial contract: channel " << str(channel->name)
         << " source/target task index";
-    ICHECK(maybe_payload_kind && maybe_delivery_kind)
+    ICHECK(!str(channel->payload_kind).empty() && !str(channel->delivery_kind).empty())
         << "missing spatial contract: channel " << str(channel->name)
         << " payload/delivery kind";
-    const int64_t source_phase_index = task_phase_index_by_task[*maybe_source_task_index];
-    const int64_t target_phase_index = task_phase_index_by_task[*maybe_target_task_index];
+    const int64_t source_phase_index = task_phase_index_by_task[channel->source_task_index];
+    const int64_t target_phase_index = task_phase_index_by_task[channel->target_task_index];
     if (source_phase_index != target_phase_index) {
       auto parsed_channel_kind = sp::ParseSpatialChannelKind(str(channel->kind));
-      auto parsed_delivery_kind = sp::ParseSpatialChannelDeliveryKind(*maybe_delivery_kind);
+      auto parsed_delivery_kind = sp::ParseSpatialChannelDeliveryKind(str(channel->delivery_kind));
       ICHECK(parsed_channel_kind && parsed_delivery_kind)
           << "missing spatial contract: channel " << str(channel->name)
           << " flow/delivery kind parse";
