@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档角色**: `Phase C` 当前设计边界与 cutover 文档
-- **当前状态**: `2026-04-07` 准备轨已落地，`Phase B` 前置已满足；正式 cutover 尚未开始
+- **当前状态**: `2026-04-08` 准备轨已落地，`Phase B` 前置已满足；正式 cutover 尚未开始
 - **已完成子阶段**: read-only translator demand probe、`TTHardwareModel` intake
 - **仍未完成**: `TTProgram`、`MaterializeTTExecutableSpec`、旧主链删除
 - **上游输入**: 冻结后的 `SpatialProgram`
@@ -102,6 +102,12 @@
   只有在 planning / mapping 真正消费后，才证明其长期存在价值
 - `ResourceIntent` 必须继续保持 small-closed kind discipline；
   `Phase C` 不应把更多杂项支持信息重新塞回这一层
+- `Phase B` 里仍保留为 typed field + payload 并存的 schema，
+  需要在 `Phase C` translator 消费稳定后继续把长期 truth 从 payload 上提，
+  避免 node 继续停留在半 stringly-typed 状态
+- 各类 spatial node 的 object boundary 仍需通过 `TTProgram` translator 的真实消费
+  继续验证；如果某些 truth 只有 payload key 区分而没有 node-level schema 差异，
+  应在 `Phase C` 中继续分化 typed schema，而不是让 target 侧 reader 长期手动解包
 
 正式 translator 不能把下面这些字段当主语义：
 
@@ -175,6 +181,12 @@
 - runtime/codegen 还没有切到只读消费 `TTProgram`
 - compatibility writer / fallback reader 还没有按 deletion gate 删除
 - `flash-attn` 的 `blackhole.acc` correctness payoff 仍归属 `Phase C2`
+- `SpatialCapabilityModel` 的 quantitative hardware fields
+  还没有进入正式 planning / mapping 主链
+- `Placement / ResourceIntent / Layout / WorkPartition` 的长期 object boundary
+  还没有经过 `TTProgram` materialization 的最终验证
+- 部分 spatial node 仍保留 payload-backed truth；
+  更彻底的 typed schema 分化仍属于 `Phase C` 演进内容
 
 因此当前 `Phase C` 还不能判定为已开始正式 cutover，但前置阶段已不再阻塞。
 
