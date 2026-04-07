@@ -38,7 +38,9 @@ def _prepare_blackhole_phase_b_module(prim_func):
     mod = tilelang.transform.LiftStatefulSemanticIR()(mod)
     mod = tilelang.transform.ValidateStatefulSemanticIR()(mod)
     mod = tilelang.transform.ValidateSemanticRefinement()(mod)
-    mod = tilelang.transform.LowerToSpatialProgram()(mod)
+    mod = tilelang.transform.AnalyzeSpatialDomainPlan()(mod)
+    mod = tilelang.transform.AnalyzeSpatialExecutionPlan()(mod)
+    mod = tilelang.transform.MaterializeSpatialProgram()(mod)
     mod = tilelang.transform.ValidateSpatialProgram()(mod)
     return mod
 

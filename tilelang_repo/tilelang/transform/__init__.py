@@ -739,6 +739,21 @@ def LowerToSpatialProgram():
     return tvm.ffi.get_global_func("tl.transform.LowerToSpatialProgram")()
 
 
+def AnalyzeSpatialDomainPlan():
+    """Derive typed Spatial domain contracts from SemanticProgram."""
+    return tvm.ffi.get_global_func("tl.transform.AnalyzeSpatialDomainPlan")()
+
+
+def AnalyzeSpatialExecutionPlan():
+    """Derive typed Spatial execution contracts from SemanticProgram."""
+    return tvm.ffi.get_global_func("tl.transform.AnalyzeSpatialExecutionPlan")()
+
+
+def MaterializeSpatialProgram():
+    """Assemble SpatialProgram from typed Spatial domain and execution plans."""
+    return tvm.ffi.get_global_func("tl.transform.MaterializeSpatialProgram")()
+
+
 def ValidateSpatialProgram():
     """Validate minimal Phase B SpatialProgram invariants."""
     return tvm.ffi.get_global_func("tl.transform.ValidateSpatialProgram")()

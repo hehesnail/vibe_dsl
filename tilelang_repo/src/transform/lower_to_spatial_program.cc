@@ -38,6 +38,11 @@ using namespace tvm::tl::semantic;
 namespace sp = tvm::tl::spatial;
 using tvm::tl::str;
 
+// Cross-pass entry points.
+tvm::transform::Pass AnalyzeSpatialDomainPlan();
+tvm::transform::Pass AnalyzeSpatialExecutionPlan();
+tvm::transform::Pass MaterializeSpatialProgram();
+
 namespace {
 
 struct SpatialProgramBundle {
@@ -2108,9 +2113,58 @@ SpatialProgramBundle BuildSpatialProgramForFunc(const std::string& member_func,
   return BuildGenericSpatialProgram(member_func, program, capability_model);
 }
 
+SpatialExecutionPlan BuildSpatialExecutionPlanForFunc(const std::string& member_func,
+                                                      const SemanticProgram& program,
+                                                      const tir::PrimFunc& func,
+                                                      const SpatialCapabilityModel& capability_model) {
+  const SpatialProgramBundle bundle =
+      BuildSpatialProgramForFunc(member_func, program, func, capability_model);
+  return SpatialExecutionPlan(String(member_func), bundle.program->phases, bundle.program->tasks,
+                              bundle.program->channels, bundle.program->placements,
+                              bundle.program->sync_edges, bundle.program->resource_intents,
+                              MakeAnchors("spatial_execution_plan", member_func));
+}
+
 }  // namespace
 
-tvm::transform::Pass LowerToSpatialProgram() {
+tvm::transform::Pass AnalyzeSpatialExecutionPlan() {
+  auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
+    IRModule updates = IRModule(Map<GlobalVar, BaseFunc>({}));
+    for (const auto& [gvar, base_func] : mod->functions) {
+      auto func = base_func.as<tir::PrimFunc>();
+      if (!func || !IsBlackholePrimFunc(func.value())) {
+        continue;
+      }
+      auto maybe_semantic = func.value()->GetAttr<SemanticProgram>(attr::kTLSemanticProgram);
+      if (!maybe_semantic) {
+        continue;
+      }
+      ICHECK(func.value()->GetAttr<SpatialDomainPlan>(attr::kTLSpatialDomainPlan))
+          << "AnalyzeSpatialExecutionPlan requires AnalyzeSpatialDomainPlan to run first";
+      auto maybe_target = func.value()->GetAttr<Target>(tvm::attr::kTarget);
+      ICHECK(maybe_target)
+          << "AnalyzeSpatialExecutionPlan requires blackhole PrimFunc target to derive capability";
+      const TTHardwareModel hardware_model = BuildBlackholeTTHardwareModel(maybe_target.value());
+      const SpatialCapabilityModel capability_model = DeriveSpatialCapabilityModel(hardware_model);
+      const std::string member_func = GetMemberFuncName(gvar, func.value());
+      const SpatialExecutionPlan execution_plan =
+          BuildSpatialExecutionPlanForFunc(member_func, maybe_semantic.value(), func.value(),
+                                           capability_model);
+      tir::PrimFunc updated_func = func.value();
+      Map<String, Any> attrs = updated_func->attrs.defined() ? updated_func->attrs->dict
+                                                             : Map<String, Any>();
+      attrs.Set(attr::kTLSpatialExecutionPlan, execution_plan);
+      updated_func.CopyOnWrite()->attrs = DictAttrs(attrs);
+      updates->Add(gvar, updated_func);
+    }
+    mod->Update(updates);
+    return mod;
+  };
+  return tvm::transform::CreateModulePass(pass_func, 0,
+                                          "tl.transform.AnalyzeSpatialExecutionPlan", {});
+}
+
+tvm::transform::Pass MaterializeSpatialProgram() {
   auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
     IRModule updates = IRModule(Map<GlobalVar, BaseFunc>({}));
     std::unordered_map<std::string, Array<ProgramPhase>> phases_by_member_func;
@@ -2123,7 +2177,7 @@ tvm::transform::Pass LowerToSpatialProgram() {
       }
       auto maybe_target = func->GetAttr<Target>(tvm::attr::kTarget);
       ICHECK(maybe_target)
-          << "LowerToSpatialProgram requires blackhole PrimFunc target to derive "
+          << "MaterializeSpatialProgram requires blackhole PrimFunc target to derive "
              "TTHardwareModel/SpatialCapabilityModel";
       hardware_model = BuildBlackholeTTHardwareModel(maybe_target.value());
       capability_model = DeriveSpatialCapabilityModel(hardware_model.value());
@@ -2137,23 +2191,27 @@ tvm::transform::Pass LowerToSpatialProgram() {
       ensure_models(func.value());
       auto maybe_program = func.value()->GetAttr<SpatialProgram>(attr::kTLSpatialProgram);
       if (maybe_program) {
-        phases_by_member_func[GetMemberFuncName(gvar, func.value())] =
-            maybe_program.value()->phases;
+        phases_by_member_func[GetMemberFuncName(gvar, func.value())] = maybe_program.value()->phases;
         continue;
       }
-      auto maybe_semantic = func.value()->GetAttr<SemanticProgram>(attr::kTLSemanticProgram);
-      if (!maybe_semantic) {
+      auto maybe_domain_plan = func.value()->GetAttr<SpatialDomainPlan>(attr::kTLSpatialDomainPlan);
+      auto maybe_execution_plan =
+          func.value()->GetAttr<SpatialExecutionPlan>(attr::kTLSpatialExecutionPlan);
+      if (!maybe_domain_plan || !maybe_execution_plan) {
         continue;
       }
       const std::string member_func = GetMemberFuncName(gvar, func.value());
-      SpatialProgramBundle spatial = BuildSpatialProgramForFunc(member_func, maybe_semantic.value(),
-                                                                func.value(),
-                                                                capability_model.value());
-      phases_by_member_func[member_func] = spatial.phases;
+      SpatialProgram program(
+          String(member_func), maybe_execution_plan.value()->phases, maybe_execution_plan.value()->tasks,
+          maybe_execution_plan.value()->channels, maybe_domain_plan.value()->layouts,
+          maybe_domain_plan.value()->work_partitions, maybe_execution_plan.value()->placements,
+          maybe_execution_plan.value()->sync_edges, maybe_execution_plan.value()->resource_intents,
+          MakeAnchors("spatial_program", member_func));
+      phases_by_member_func[member_func] = program->phases;
       tir::PrimFunc updated_func = func.value();
       Map<String, Any> attrs = updated_func->attrs.defined() ? updated_func->attrs->dict
                                                              : Map<String, Any>();
-      attrs.Set(attr::kTLSpatialProgram, spatial.program);
+      attrs.Set(attr::kTLSpatialProgram, program);
       updated_func.CopyOnWrite()->attrs = DictAttrs(attrs);
       updates->Add(gvar, updated_func);
     }
@@ -2198,11 +2256,27 @@ tvm::transform::Pass LowerToSpatialProgram() {
     }
     return mod;
   };
-  return tvm::transform::CreateModulePass(pass_func, 0, "tl.transform.LowerToSpatialProgram", {});
+  return tvm::transform::CreateModulePass(pass_func, 0,
+                                          "tl.transform.MaterializeSpatialProgram", {});
+}
+
+tvm::transform::Pass LowerToSpatialProgram() {
+  auto pass_func = [](IRModule mod, tvm::transform::PassContext pass_ctx) {
+    mod = AnalyzeSpatialDomainPlan()(mod);
+    mod = AnalyzeSpatialExecutionPlan()(mod);
+    mod = MaterializeSpatialProgram()(mod);
+    return mod;
+  };
+  return tvm::transform::CreateModulePass(pass_func, 0,
+                                          "tl.transform.LowerToSpatialProgram", {});
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
+  refl::GlobalDef().def("tl.transform.AnalyzeSpatialExecutionPlan",
+                        AnalyzeSpatialExecutionPlan);
+  refl::GlobalDef().def("tl.transform.MaterializeSpatialProgram",
+                        MaterializeSpatialProgram);
   refl::GlobalDef().def("tl.transform.LowerToSpatialProgram", LowerToSpatialProgram);
 }
 

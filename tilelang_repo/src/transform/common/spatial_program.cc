@@ -126,6 +126,35 @@ ProgramPhase::ProgramPhase(ffi::String name, ffi::Array<ffi::String> task_names,
   data_ = std::move(n);
 }
 
+SpatialDomainPlan::SpatialDomainPlan(ffi::String member_func, ffi::Array<SpatialLayout> layouts,
+                                     ffi::Array<WorkPartition> work_partitions,
+                                     ffi::Array<TIRAnchor> anchors) {
+  auto n = ffi::make_object<SpatialDomainPlanNode>();
+  n->member_func = std::move(member_func);
+  n->layouts = std::move(layouts);
+  n->work_partitions = std::move(work_partitions);
+  n->anchors = std::move(anchors);
+  data_ = std::move(n);
+}
+
+SpatialExecutionPlan::SpatialExecutionPlan(ffi::String member_func, ffi::Array<ProgramPhase> phases,
+                                           ffi::Array<Task> tasks, ffi::Array<Channel> channels,
+                                           ffi::Array<Placement> placements,
+                                           ffi::Array<SyncEdge> sync_edges,
+                                           ffi::Array<ResourceIntent> resource_intents,
+                                           ffi::Array<TIRAnchor> anchors) {
+  auto n = ffi::make_object<SpatialExecutionPlanNode>();
+  n->member_func = std::move(member_func);
+  n->phases = std::move(phases);
+  n->tasks = std::move(tasks);
+  n->channels = std::move(channels);
+  n->placements = std::move(placements);
+  n->sync_edges = std::move(sync_edges);
+  n->resource_intents = std::move(resource_intents);
+  n->anchors = std::move(anchors);
+  data_ = std::move(n);
+}
+
 SpatialProgram::SpatialProgram(ffi::String member_func, ffi::Array<ProgramPhase> phases,
                                ffi::Array<Task> tasks, ffi::Array<Channel> channels,
                                ffi::Array<SpatialLayout> layouts,
@@ -202,6 +231,8 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   SyncEdgeNode::RegisterReflection();
   ResourceIntentNode::RegisterReflection();
   ProgramPhaseNode::RegisterReflection();
+  SpatialDomainPlanNode::RegisterReflection();
+  SpatialExecutionPlanNode::RegisterReflection();
   SpatialProgramNode::RegisterReflection();
   TLDeviceProgramInfoNode::RegisterReflection();
   SpatialCapabilityModelNode::RegisterReflection();
@@ -287,6 +318,27 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                           return ProgramPhase(std::move(name), std::move(task_names),
                                               std::move(channel_names), std::move(traits),
                                               std::move(payload), std::move(anchors));
+                        });
+  refl::GlobalDef().def("tl.SpatialDomainPlan",
+                        [](ffi::String member_func, ffi::Array<SpatialLayout> layouts,
+                           ffi::Array<WorkPartition> work_partitions,
+                           ffi::Array<TIRAnchor> anchors) {
+                          return SpatialDomainPlan(std::move(member_func), std::move(layouts),
+                                                   std::move(work_partitions),
+                                                   std::move(anchors));
+                        });
+  refl::GlobalDef().def("tl.SpatialExecutionPlan",
+                        [](ffi::String member_func, ffi::Array<ProgramPhase> phases,
+                           ffi::Array<Task> tasks, ffi::Array<Channel> channels,
+                           ffi::Array<Placement> placements,
+                           ffi::Array<SyncEdge> sync_edges,
+                           ffi::Array<ResourceIntent> resource_intents,
+                           ffi::Array<TIRAnchor> anchors) {
+                          return SpatialExecutionPlan(
+                              std::move(member_func), std::move(phases), std::move(tasks),
+                              std::move(channels), std::move(placements),
+                              std::move(sync_edges), std::move(resource_intents),
+                              std::move(anchors));
                         });
   refl::GlobalDef().def("tl.SpatialProgram",
                         [](ffi::String member_func, ffi::Array<ProgramPhase> phases,

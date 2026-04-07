@@ -48,6 +48,9 @@
 当前稳定 companion 习惯：
 
 - seed / manifest / witness / program 分层存放
+- intermediate typed plan 只要进入 pass 链，就要和最终 companion truth 一起纳入
+  invalidation；只删 `tl.spatial_program` 而保留 `tl.spatial_domain_plan` /
+  `tl.spatial_execution_plan` 会制造 stale plan
 - workload noun 不进入长期 semantic schema
 - evidence carrier 不是 truth owner
 - 兼容 attr 的删除顺序固定为：
@@ -81,6 +84,10 @@
 
 - 如果 pass 只把规划结果写到 attrs 而不回写 IR body，就会制造两套真源；
   优先让 pass 同时完成 IR 回写
+- `Phase B` 内部若出现一个 lowering 同时做 domain synthesis、task formation、
+  phase ordering 和 final materialization，应优先拆成
+  `Analyze... -> Analyze... -> Materialize...` 的 pass 链，让 analysis facts
+  先以 typed plan 落地，再由 materialize pass 组装最终 companion IR
 - unsupported subset gate 应在所有后端出口共享
 - gate 应按具体 contract / op family 报错，不要长期用黑盒总括词
 - 需要的信息优先从 typed IR / schema 拿；拿不到就扩 IR / schema，

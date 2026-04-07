@@ -448,6 +448,8 @@ tir::PrimFunc StripCompanionAttrs(const tir::PrimFunc& func, const ffi::String& 
   updated = tvm::WithoutAttr(std::move(updated), attr::kTLSemanticStructure);
   updated = tvm::WithoutAttr(std::move(updated), attr::kTLSemanticWitnesses);
   updated = tvm::WithoutAttr(std::move(updated), attr::kTLSemanticProgram);
+  updated = tvm::WithoutAttr(std::move(updated), attr::kTLSpatialDomainPlan);
+  updated = tvm::WithoutAttr(std::move(updated), attr::kTLSpatialExecutionPlan);
   updated = tvm::WithoutAttr(std::move(updated), attr::kTLSpatialProgram);
   updated = tvm::WithoutAttr(std::move(updated), attr::kTLTTProgram);
   updated = WithAttrs(

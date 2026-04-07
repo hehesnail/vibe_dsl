@@ -54,8 +54,33 @@ def _prepare_blackhole_phase_b_module(prim_func):
     mod = tilelang.transform.LiftStatefulSemanticIR()(mod)
     mod = tilelang.transform.ValidateStatefulSemanticIR()(mod)
     mod = tilelang.transform.ValidateSemanticRefinement()(mod)
-    mod = tilelang.transform.LowerToSpatialProgram()(mod)
+    mod = tilelang.transform.AnalyzeSpatialDomainPlan()(mod)
+    mod = tilelang.transform.AnalyzeSpatialExecutionPlan()(mod)
+    mod = tilelang.transform.MaterializeSpatialProgram()(mod)
     mod = tilelang.transform.ValidateSpatialProgram()(mod)
+    return mod
+
+
+def _prepare_blackhole_pre_spatial_module(prim_func):
+    mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
+    target = Target("blackhole")
+    with target:
+        if not (mod["main"].attrs and mod["main"].attrs.get("target") is not None):
+            mod = LowerAndLegalize(mod, target)
+        mod = OptimizeForTarget(mod, target)
+    mod = tilelang.transform.LowerDeviceStorageAccessInfo()(mod)
+    mod = tilelang.transform.AugmentSemanticManifest()(mod)
+    mod = tilelang.transform.LowerIntrin()(mod)
+    mod = tvm.tir.transform.Simplify()(mod)
+    mod = tilelang.transform.HoistBroadcastValues()(mod)
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
+    mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
+    mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
+    mod = tilelang.transform.LiftStatefulSemanticIR()(mod)
+    mod = tilelang.transform.ValidateStatefulSemanticIR()(mod)
+    mod = tilelang.transform.ValidateSemanticRefinement()(mod)
     return mod
 
 
@@ -424,8 +449,33 @@ def _strip_attr_from_all_functions(mod, attr_name: str):
 
 
 def test_spatial_passes_are_registered():
+    assert hasattr(tilelang.transform, "AnalyzeSpatialDomainPlan")
+    assert hasattr(tilelang.transform, "AnalyzeSpatialExecutionPlan")
+    assert hasattr(tilelang.transform, "MaterializeSpatialProgram")
     assert hasattr(tilelang.transform, "LowerToSpatialProgram")
     assert hasattr(tilelang.transform, "ValidateSpatialProgram")
+
+
+def test_spatial_pass_pipeline_materializes_from_typed_intermediate_contracts():
+    mod = _prepare_blackhole_pre_spatial_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+
+    domain_analyzed = tilelang.transform.AnalyzeSpatialDomainPlan()(mod)
+    main = domain_analyzed["main"]
+    assert main.attrs.get("tl.spatial_domain_plan") is not None
+    assert main.attrs.get("tl.spatial_execution_plan") is None
+    assert main.attrs.get("tl.spatial_program") is None
+
+    execution_analyzed = tilelang.transform.AnalyzeSpatialExecutionPlan()(domain_analyzed)
+    main = execution_analyzed["main"]
+    assert main.attrs.get("tl.spatial_domain_plan") is not None
+    assert main.attrs.get("tl.spatial_execution_plan") is not None
+    assert main.attrs.get("tl.spatial_program") is None
+
+    materialized = tilelang.transform.MaterializeSpatialProgram()(execution_analyzed)
+    main = materialized["main"]
+    assert main.attrs.get("tl.spatial_domain_plan") is not None
+    assert main.attrs.get("tl.spatial_execution_plan") is not None
+    assert main.attrs.get("tl.spatial_program") is not None
 
 
 def test_lower_to_spatial_program_publishes_spatial_capability_model_snapshot():

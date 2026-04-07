@@ -5,7 +5,7 @@
 
 ## 当前阶段
 
-- **日期**: `2026-04-07`
+- **日期**: `2026-04-08`
 - **总阶段**: Stage 4
 - **当前主线**: `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
 
@@ -26,6 +26,9 @@
 - **Phase B**: 已完成
   - 已完成：execution-bearing `SpatialProgram` contract、stronger validator、
     TT probe intake 与 shared zero-regression baseline
+  - 已完成后续代码重构：
+    `AnalyzeSpatialDomainPlan -> AnalyzeSpatialExecutionPlan -> MaterializeSpatialProgram`
+    已拆出，`LowerToSpatialProgram` 退化为兼容 wrapper
 - **Phase C**: 已定义；准备轨已完成
   - 已完成：read-only translator demand probe、hardware intake
   - 未开始：正式 `TTProgram / MaterializeTTExecutableSpec` cutover
@@ -33,8 +36,9 @@
 ## `Phase B` 收尾结果
 
 - `Spatial*` object/vocab/shared key 已从 semantic infra 拆出
-- `LowerToSpatialProgram -> ValidateSpatialProgram` 已接入主线，
-  `LowerBlackholeOps` 已硬要求 `tl.spatial_program`
+- `AnalyzeSpatialDomainPlan -> AnalyzeSpatialExecutionPlan -> MaterializeSpatialProgram
+  -> ValidateSpatialProgram` 已接入主线，`LowerToSpatialProgram`
+  仅保留兼容 wrapper，`LowerBlackholeOps` 已硬要求 `tl.spatial_program`
 - `tl.tt_hardware_model` / `tl.spatial_capability_model` 已发布为 module-scope global info
 - `LowerToSpatialProgram` 已消费来自 SoC descriptor 的最小 capability snapshot
 - `Channel.kind + payload_kind + delivery_kind` 与 `placement.affinity_kind`
@@ -44,6 +48,8 @@
   ordering legality gate
 - generic builder 已把 `Task` formation、flow shaping、domain realization、
   phase / ordering synthesis 收进稳定主链
+- `SpatialDomainPlan` / `SpatialExecutionPlan` 已成为 `Phase B` 内部 typed 中间契约，
+  不再把 domain/layout 与 task/channel/phase 收敛在单个 lowering 入口
 - `phase_boundary_materialization` 已收窄为真实跨 phase state handoff，
   不再把“任意后续 phase 读取的 state”过度记为边界物化
 
@@ -101,7 +107,9 @@ LowerDeviceStorageAccessInfo
   -> LiftStatefulSemanticIR
   -> ValidateStatefulSemanticIR
   -> ValidateSemanticRefinement
-  -> LowerToSpatialProgram
+  -> AnalyzeSpatialDomainPlan
+  -> AnalyzeSpatialExecutionPlan
+  -> MaterializeSpatialProgram
   -> ValidateSpatialProgram
   -> LowerBlackholeOps
   -> PlanBlackholeCB
@@ -111,14 +119,16 @@ LowerDeviceStorageAccessInfo
 ## 最新验证摘要
 
 - build:
+  - `cmake -S tilelang_repo -B tilelang_repo/build`
   - `cmake --build tilelang_repo/build -j32`
 - transform:
-  - `test_blackhole_spatial_ir.py -q`: `68 passed`
+  - `test_blackhole_spatial_ir.py -q`: `69 passed`
   - `test_blackhole_tt_target_probe.py -q`: `17 passed`
+  - `test_blackhole_spatial_ir.py -q test_blackhole_tt_target_probe.py -q`:
+    `86 passed`
 - target:
-  - `test_blackhole_copy_pipeline.py -q`: `50 passed, 1 skipped, 1 xfailed`
-  - `test_blackhole_copy_runtime.py -q`: `12 passed`
-  - `test_blackhole_gemm.py -q`: `38 passed`
+  - `test_blackhole_copy_pipeline.py -q test_blackhole_gemm.py -q`:
+    `68 passed, 21 skipped, 1 xfailed`
   - `test_blackhole_tvm_ffi_export.py -q`: `1 passed`
   - `test_blackhole_flash_attention_pipeline.py -q`: `27 passed`
 

@@ -130,14 +130,19 @@
 ## 4. 当前已完成的部分
 
 - `Spatial*` object/vocab/shared key 已从 semantic infra 拆出
-- `LowerToSpatialProgram -> ValidateSpatialProgram` 已接入主线，
+- `AnalyzeSpatialDomainPlan -> AnalyzeSpatialExecutionPlan -> MaterializeSpatialProgram
+  -> ValidateSpatialProgram` 已接入主线，
+  `LowerToSpatialProgram` 退化为兼容 wrapper，
   `LowerBlackholeOps` 已硬要求 `tl.spatial_program`
 - `tl.tt_hardware_model` / `tl.spatial_capability_model` 已作为 module-scope global info 落地
-- `LowerToSpatialProgram` 已消费来自 SoC descriptor 的最小 capability snapshot
+- `AnalyzeSpatialDomainPlan` / `AnalyzeSpatialExecutionPlan`
+  已消费来自 SoC descriptor 的最小 capability snapshot
 - `Channel.kind + payload_kind + delivery_kind` 与 `placement.affinity_kind`
   已收成当前 probe intake 所需的最小 contract
 - `LowerSpatialProgramToTTTargetProbe` 已落地，并且不会恢复 non-TT-specific spatial semantics
 - `ValidateSpatialProgram` 已收正为 coherence / completeness gate
+- `SpatialDomainPlan` / `SpatialExecutionPlan` 已落成 `Phase B` 内部 typed 中间契约，
+  用于分离 domain/layout synthesis 与 task/channel/phase synthesis
 - representative compile-path family gate 已覆盖：
   `copy / GEMM / flash-attn / topk / chunk_o / fusedmoe_routed / mla_decode_paged`
 
@@ -289,7 +294,9 @@
 
 ```text
 SemanticProgram
-  -> LowerToSpatialProgram
+  -> AnalyzeSpatialDomainPlan
+  -> AnalyzeSpatialExecutionPlan
+  -> MaterializeSpatialProgram
   -> ValidateSpatialProgram
   -> LowerSpatialProgramToTTTargetProbe
 ```

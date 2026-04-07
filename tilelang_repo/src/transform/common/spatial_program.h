@@ -282,6 +282,73 @@ class ProgramPhase : public ObjectRef {
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(ProgramPhase, ObjectRef, ProgramPhaseNode);
 };
 
+class SpatialDomainPlanNode : public Object {
+ public:
+  ffi::String member_func;
+  ffi::Array<SpatialLayout> layouts;
+  ffi::Array<WorkPartition> work_partitions;
+  ffi::Array<TIRAnchor> anchors;
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<SpatialDomainPlanNode>()
+        .def_ro("member_func", &SpatialDomainPlanNode::member_func)
+        .def_ro("layouts", &SpatialDomainPlanNode::layouts)
+        .def_ro("work_partitions", &SpatialDomainPlanNode::work_partitions)
+        .def_ro("anchors", &SpatialDomainPlanNode::anchors);
+  }
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.SpatialDomainPlan", SpatialDomainPlanNode, Object);
+};
+
+class SpatialDomainPlan : public ObjectRef {
+ public:
+  TVM_DLL SpatialDomainPlan(ffi::String member_func, ffi::Array<SpatialLayout> layouts,
+                            ffi::Array<WorkPartition> work_partitions,
+                            ffi::Array<TIRAnchor> anchors);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SpatialDomainPlan, ObjectRef,
+                                             SpatialDomainPlanNode);
+};
+
+class SpatialExecutionPlanNode : public Object {
+ public:
+  ffi::String member_func;
+  ffi::Array<ProgramPhase> phases;
+  ffi::Array<Task> tasks;
+  ffi::Array<Channel> channels;
+  ffi::Array<Placement> placements;
+  ffi::Array<SyncEdge> sync_edges;
+  ffi::Array<ResourceIntent> resource_intents;
+  ffi::Array<TIRAnchor> anchors;
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<SpatialExecutionPlanNode>()
+        .def_ro("member_func", &SpatialExecutionPlanNode::member_func)
+        .def_ro("phases", &SpatialExecutionPlanNode::phases)
+        .def_ro("tasks", &SpatialExecutionPlanNode::tasks)
+        .def_ro("channels", &SpatialExecutionPlanNode::channels)
+        .def_ro("placements", &SpatialExecutionPlanNode::placements)
+        .def_ro("sync_edges", &SpatialExecutionPlanNode::sync_edges)
+        .def_ro("resource_intents", &SpatialExecutionPlanNode::resource_intents)
+        .def_ro("anchors", &SpatialExecutionPlanNode::anchors);
+  }
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.SpatialExecutionPlan", SpatialExecutionPlanNode, Object);
+};
+
+class SpatialExecutionPlan : public ObjectRef {
+ public:
+  TVM_DLL SpatialExecutionPlan(ffi::String member_func, ffi::Array<ProgramPhase> phases,
+                               ffi::Array<Task> tasks, ffi::Array<Channel> channels,
+                               ffi::Array<Placement> placements,
+                               ffi::Array<SyncEdge> sync_edges,
+                               ffi::Array<ResourceIntent> resource_intents,
+                               ffi::Array<TIRAnchor> anchors);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SpatialExecutionPlan, ObjectRef,
+                                             SpatialExecutionPlanNode);
+};
+
 class SpatialProgramNode : public Object {
  public:
   ffi::String member_func;
