@@ -117,7 +117,7 @@ Stateful Semantic IR
 
 - 已完成
 - `AnalyzeSemanticStructure` 已采用 manifest-first 消费
-- `fragment_regions` 只剩 residual reduction evidence 与 lowering compatibility
+- `fragment_regions` 不再是 semantic truth owner；当前只剩 compatibility fallback 与 lowering-facing summary
 
 ### 4.2 `Phase B`
 
