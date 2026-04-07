@@ -11,8 +11,8 @@
 | 文档 | 角色 | 状态 |
 |------|------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计 | 常青 |
-| `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 当前主实施文档；定义 `Phase B` 正文职责、剩余 contract 与完成判定 | contract-hardening 子阶段已完成；整体仍在进行中 |
-| `stage4_phase_c_tt_target_ir.md` | `TT Target IR` 设计与 cutover 文档；当前作为准备轨保留 | demand-probe / hardware-intake 已落地；正式 cutover 仍受剩余 `Phase B` 工作阻塞 |
+| `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 当前主实施文档 | contract-hardening 子阶段已完成；整体仍在进行中 |
+| `stage4_phase_c_tt_target_ir.md` | `TT Target IR` 设计与 cutover 文档 | 准备轨已落地；正式 cutover 仍受剩余 `Phase B` 工作阻塞 |
 
 ## 2. 当前阶段文档
 
@@ -22,8 +22,8 @@
 | `stage4_phase_a_semantic_ir.md` | `Phase A` 工程边界、已落地对象与 `Phase B` 输入约束 | 已完成；作为实现参考保留 |
 | `stage4_phase_a_formalization_note.md` | `Phase A` 理论化 / 证明化并行文档 | 并行 research track；非工程 blocker |
 | `stage4_semantic_manifest.md` | Phase A 信息源重构：正向语义传递替代反向恢复 | Phase 1-2 已落地；作为边界参考保留 |
-| `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 边界、算法职责、剩余 contract 与回归文档 | contract-hardening 子阶段已完成；当前主实施入口 |
-| `stage4_phase_c_tt_target_ir.md` | `TT Target IR`、translator demand probe、cutover、family expansion | demand-probe / hardware-intake 已落地；当前为准备轨文档 |
+| `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 边界、剩余 contract 与回归文档 | contract-hardening 子阶段已完成；当前主实施入口 |
+| `stage4_phase_c_tt_target_ir.md` | `TT Target IR`、probe、cutover、family expansion | 准备轨已落地；当前为参考文档 |
 
 ## 3. 支撑与审计文档
 
