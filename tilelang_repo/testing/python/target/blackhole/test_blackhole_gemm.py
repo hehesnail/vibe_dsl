@@ -380,11 +380,13 @@ def test_blackhole_gemm_cb_ids_are_rewritten_by_planner():
         stmt_functor.post_order_visit(stmt, visit)
         return cb_ids
 
-    assert collect_cb_ids(lower_func.body) == {0, 1, 2, 3}
-    assert collect_cb_ids(func.body) == {0, 1, 16, 17}
+    assert collect_cb_ids(lower_func.body) == {0, 1, 2}
+    assert collect_cb_ids(func.body) == {0, 1, 16}
     func_text = func.body.script()
     assert func_text.count("tl.blackhole.pack_tile") == 1
     assert func_text.count("tl.blackhole.write_tile_from_cb") == 1
+    assert "T.tl.blackhole.pack_tile(0, 16)" in func_text
+    assert "T.tl.blackhole.cb_wait_front(16, 1)" in func_text
 
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
@@ -1399,6 +1401,33 @@ def test_blackhole_gemm_richer_accessor_schema_roundtrip():
     )
 
     assert built is not None
+
+
+def test_blackhole_gemm_reuses_single_cb_requirement_for_accumulator_output():
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    c_local_configs = [cfg for cfg in executable_spec["cb_configs"] if str(cfg["name"]) == "C_local"]
+    assert len(c_local_configs) == 1
+
+    c_local_cb_id = int(c_local_configs[0]["cb_id"])
+    compute_kernel = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="compute", core_type="trisc"
+    )
+    writer_kernel = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="writer", core_type="ncrisc"
+    )
+
+    compute_source = str(compute_kernel["source_code"])
+    writer_source = str(writer_kernel["source_code"])
+    assert f"pack_tile(0, {c_local_cb_id});" in compute_source
+    assert f"cb_push_back({c_local_cb_id}, 1);" in compute_source
+    assert f"cb_wait_front({c_local_cb_id}, 1);" in writer_source
+    assert f"cb_pop_front({c_local_cb_id}, 1);" in writer_source
 
 
 def test_blackhole_gemm_basic():

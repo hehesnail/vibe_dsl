@@ -2,10 +2,10 @@
 
 ## 基本信息
 
-- **文档角色**: `Phase B` 当前主实施文档
-- **当前状态**: `2026-04-07` 仍在进行中
-- **已完成子阶段**: boundary cleanup、capability intake、probe、最小 contract hardening
-- **仍未完成**: spatial synthesis algorithm 本体与 stronger execution-bearing contract
+- **文档角色**: `Phase B` 已完成阶段文档
+- **当前状态**: `2026-04-07` 已完成
+- **已完成子阶段**: boundary cleanup、capability intake、probe、最小 contract hardening、execution-bearing 收尾
+- **仍未完成**: 无；后续工作已转入 `Phase C`
 - **上游输入**: 冻结后的 `SemanticProgram`
 - **下游输出**: 冻结后的 `SpatialProgram`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -141,17 +141,160 @@
 - representative compile-path family gate 已覆盖：
   `copy / GEMM / flash-attn / topk / chunk_o / fusedmoe_routed / mla_decode_paged`
 
-## 5. 当前仍未完成的部分
+## 5. 本轮收尾结果
 
-- generic builder 还没有把第 3 节定义的五类算法完整收进主链
-- `Task` 仍缺 formation basis 与 abstract execution role
-- `Layout / WorkPartition` 还不能把 grouped / paged / routed / chunked
-  一等表达成稳定 contract
-- `ProgramPhase / SyncEdge` 还缺 closure / ordering / visibility /
-  materialization basis
-- `ValidateSpatialProgram` 还没有对这些 stronger contract 做完整 fail-fast 校验
-- 因此当前 `SpatialProgram` 只达到 read-only probe intake 的最小上游 contract，
-  还不是最终形态的 virtual spatial program
+- generic builder 已把第 3 节定义的五类算法收进稳定主链
+- `Task / Channel / Layout / WorkPartition / ProgramPhase / SyncEdge /
+  Placement / ResourceIntent` 的 execution-bearing truth 已冻结成 typed spatial payload
+- `phase_boundary_materialization` 已收窄为真实跨 phase state handoff，
+  不再把“任何后续 phase 仍会读取的 state”过度扩成边界物化集合
+- `ValidateSpatialProgram` 已对 stronger contract 做 coherence / completeness /
+  semantic alignment / ordering legality fail-fast 校验
+- `LowerSpatialProgramToTTTargetProbe` 与 `LowerBlackholeOps`
+  已只消费冻结后的 typed spatial truth，不再回补 generic spatial 语义洞
+- copy / GEMM fast path 仍保留，但它们只作为 execution-bearing
+  `SpatialProgram` contract 的退化特例
+
+## 5.1 当前收尾策略
+
+`Phase B` 的剩余工作按单一路径收尾：
+
+- 继续保留 copy / GEMM fast path，但它们只允许作为
+  execution-bearing `SpatialProgram` contract 的退化特例
+- generic builder 必须成为 `SemanticProgram -> SpatialProgram`
+  的唯一 synthesis owner
+- `Phase C` probe / downstream lowering 只允许消费冻结后的 typed spatial truth，
+  不再补 non-TT-specific 语义洞
+
+本轮不做的事：
+
+- 不启动正式 `TTProgram / MaterializeTTExecutableSpec` cutover
+- 不把 family-specific matcher 扩成新的主路径
+- 不新增并行执行路径或额外 emitter 绕开当前 blocker
+
+## 5.2 本轮必须收实的协议
+
+为了让 `SpatialProgram` 成为 execution-bearing spatial program，
+本轮必须把下面这些 truth 显式收成 typed payload / linkage contract：
+
+- `Task`
+  - formation basis
+  - execution role
+  - phase membership
+  - update membership
+- `Channel`
+  - source / target task linkage
+  - flow kind
+  - payload kind
+  - delivery kind
+  - state / version linkage
+- `Layout / WorkPartition`
+  - semantic domain basis
+  - domain transform kind
+  - partition family
+  - work-dependent bounds / partition evidence
+- `ProgramPhase / SyncEdge`
+  - partial-order basis
+  - phase closure basis
+  - ordering / visibility / materialization requirement
+- `Placement / ResourceIntent`
+  - execution / communication / phase-boundary obligation
+  - state residency target
+  - fragment / pipeline / lowering support contract
+
+约束：
+
+- display 字段继续保留，但只能承担 debug / identity /日志职责
+- downstream consumer 的主链接一律走 typed payload / index linkage
+- 若当前 schema 仍不足以稳定表达这些 truth，就先扩 schema，再写 builder / validator
+
+## 5.3 收尾算法
+
+### 5.3.1 Task Formation
+
+- 以 `state_defs / state_uses / state_joins` 构成的 update-state 图为主输入
+- mandatory cut 至少由以下事实驱动：
+  - materialized state/version boundary
+  - incompatible law class
+  - incompatible domain transform / partition requirement
+  - incompatible placement / communication domain
+  - reduction completion / selection-index handoff / recurrence carry 的 ordering boundary
+- 只有在 phase、flow locality、layout/partition 与 capability 都兼容时才允许 fuse
+- `Task.kind` 与 execution role 必须来自 update signature / boundary requirement，
+  不允许从 workload 名字、kernel 名字或固定 family 模板恢复
+
+### 5.3.2 Flow Shaping
+
+- 从 `state_defs / state_uses / state_joins` 派生 producer-consumer relation
+- 显式区分：
+  - `point_to_point`
+  - `broadcast`
+  - `gather`
+  - `scatter`
+  - `reduce_merge`
+  - `carry`
+- `selection_state / index_state / reduction_accumulator / carry`
+  的 version handoff 必须显式进入 `Channel` contract
+- capability 不支持的 flow family 直接 fail-fast，不做 generic collapse
+
+### 5.3.3 Domain Realization
+
+- 以 `Domain + UpdateLaw.access_maps + state role + supplement payload`
+  为 domain realization 主输入
+- 必须把下列 transform family 稳定表达进 `Layout / WorkPartition` contract：
+  - derived
+  - filtered
+  - grouped
+  - routed
+  - paged
+  - chunked
+- 不允许继续靠“轴数 + `derived_indices` trait”二分出
+  `regular/indexed` 与 `replicated/blocked`
+
+### 5.3.4 Phase / Ordering Synthesis
+
+- 先构造 task graph，再从 ordering-critical edge 合成 phase closure
+- 需要进入 ordering synthesis 的 edge 至少包括：
+  - carry
+  - reduction completion
+  - selection/index handoff
+  - phase-boundary materialization
+- `ProgramPhase / SyncEdge / phase_boundary_materialization`
+  必须由 graph synthesis 冻结，不允许靠固定 `phase0_compute / phase1_stateful`
+  模板命名来凑 phase
+
+### 5.3.5 Validator Hardening
+
+- `ValidateSpatialProgram` 必须把 stronger contract 当主真源
+- validator 负责：
+  - coherence
+  - completeness
+  - semantic alignment
+  - ordering / phase closure legality
+- validator 不负责 capability legality solver；
+  capability 选择仍由 builder 在合法空间内完成
+
+## 5.4 实施顺序
+
+本轮实现顺序固定为：
+
+1. 先补 failing tests，锁住 stronger contract 与 synthesis behavior
+2. 再补 builder / schema，使 generic path 成为主 synthesis owner
+3. 再补 `ValidateSpatialProgram` fail-fast 校验
+4. 再验证 `LowerSpatialProgramToTTTargetProbe` 与 `LowerBlackholeOps`
+   不再依赖 non-TT-specific spatial 补洞
+5. 最后跑 shared zero-regression baseline
+
+这一步之后，`Phase C` 的前置输入边界应收敛为：
+
+```text
+SemanticProgram
+  -> LowerToSpatialProgram
+  -> ValidateSpatialProgram
+  -> LowerSpatialProgramToTTTargetProbe
+```
+
+probe 只能继续暴露 TT-specific demand，不能再回收 generic spatial truth。
 
 ## 6. 完成判定
 
@@ -171,13 +314,16 @@
 
 当前结论：
 
-- contract-hardening 子阶段已完成
-- `Phase B` 整体未完成
+- contract-hardening 与 execution-bearing 收尾已完成
+- `Phase B` 已完成
+- `Phase C` 可以正式把 `SpatialProgram` 当成单一上游真源，
+  启动 `TTProgram / MaterializeTTExecutableSpec` cutover
 
 ## 7. Shared Zero-Regression Baseline
 
 ```bash
 pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -q
+pytest tilelang_repo/testing/python/transform/test_blackhole_tt_target_probe.py -q
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime.py -q
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q

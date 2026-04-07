@@ -9,8 +9,8 @@
 默认按下面顺序进入：
 
 1. `final_blackhole_backend_redesign.md`
-2. `stage4_phase_b_spatial_ir.md`
-3. `stage4_phase_c_tt_target_ir.md`
+2. `stage4_phase_c_tt_target_ir.md`
+3. `stage4_phase_b_spatial_ir.md`
 4. `tasks/progress.md`
 
 ## 2. 当前活动文档
@@ -18,8 +18,8 @@
 | 文档 | 角色 | 当前状态 |
 |------|------|----------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计 | 常青总纲 |
-| `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 当前主实施文档 | contract-hardening 子阶段已完成；整体未完成 |
-| `stage4_phase_c_tt_target_ir.md` | `TT Target IR` 当前设计与 cutover 文档 | 准备轨已完成；正式 cutover 未开始 |
+| `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 已完成阶段文档 | 已完成；作为 `Phase C` 输入边界保留 |
+| `stage4_phase_c_tt_target_ir.md` | `TT Target IR` 当前设计与 cutover 文档 | 准备轨已完成；当前主实施入口 |
 | `stage4_phase_a_semantic_ir.md` | `Phase A` 已落地语义边界 | 已完成；作为 `Phase B` 输入参考保留 |
 | `stage4_semantic_manifest.md` | `Phase A` 信息源边界 | 已完成；作为 ownership 参考保留 |
 

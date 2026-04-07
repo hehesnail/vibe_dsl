@@ -57,6 +57,10 @@ enum class SpatialPartitionKind {
   kBlocked,
   kIndexed,
   kFiltered,
+  kGrouped,
+  kRouted,
+  kPaged,
+  kChunked,
 };
 
 enum class SpatialPlacementKind {

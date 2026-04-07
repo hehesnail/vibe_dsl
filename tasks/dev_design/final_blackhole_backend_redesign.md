@@ -121,12 +121,11 @@ Stateful Semantic IR
 
 ### 4.2 `Phase B`
 
-- 当前仍在进行中
+- 已完成
 - 已完成子阶段：
   - boundary cleanup
   - capability intake
   - read-only translator demand probe 对接所需的最小 contract hardening
-- 仍未完成：
   - task formation
   - flow shaping
   - domain realization
@@ -136,7 +135,7 @@ Stateful Semantic IR
 结论：
 
 - `SpatialProgram` 已成为当前唯一 spatial 主链
-- 但 `Phase B` 整体仍未完成
+- `Phase B` 已完成
 
 ### 4.3 `Phase C`
 
@@ -151,15 +150,13 @@ Stateful Semantic IR
 结论：
 
 - `Phase C` 当前不能写成“已开始正式 cutover”
-- 当前主 blocker 仍先落在剩余 `Phase B`
+- `Phase B` 前置输入已满足；当前 blocker 已转到正式 cutover 本身
 
 ## 5. 当前主 blocker
 
-当前总体 blocker 只有两件事：
+当前总体 blocker 只有一件事：
 
-1. `SpatialProgram` 还只达到 probe intake 的最小上游 contract，
-   还不是完整的 execution-bearing virtual spatial program
-2. `TTProgram / MaterializeTTExecutableSpec` 还不存在，
+1. `TTProgram / MaterializeTTExecutableSpec` 还不存在，
    target/runtime 仍主要停留在旧 planning 主链
 
 这也是当前 `blackhole.acc` correctness payoff 还没有完全兑现的根因。

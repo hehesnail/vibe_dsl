@@ -141,3 +141,6 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - compile / launch 已经通过时，优先查 CB 生命周期、同步协议和 runtime arg materialization
 - copy 跑通只证明字节路径可用，不证明 matmul / tile layout contract 正确
 - execution hang 优先配合 Watcher 看状态组合，而不是先堆日志
+- 如果开 `TT_METAL_WATCHER` 后症状从 hang 变成 `SIGABRT` 或只在 dump 期间卡住，
+  先抓 native backtrace；问题可能在 `WatcherServer` 线程，而不是 direct runtime 主链
+- 需要保留 watcher 现场但避免立即 abort 时，可临时开 `TT_METAL_WATCHER_TEST_MODE=1`

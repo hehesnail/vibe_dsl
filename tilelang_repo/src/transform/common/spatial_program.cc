@@ -164,8 +164,12 @@ SpatialCapabilityModel::SpatialCapabilityModel(
     int64_t dram_view_size, ffi::Array<ffi::String> supported_flow_kinds,
     ffi::Array<ffi::String> supported_payload_kinds,
     ffi::Array<ffi::String> supported_delivery_kinds,
+    ffi::Array<ffi::String> supported_sync_kinds,
+    ffi::Array<ffi::String> supported_ordering_kinds,
+    ffi::Array<ffi::String> supported_materialization_kinds,
     ffi::Array<ffi::String> supported_layout_kinds,
-    ffi::Array<ffi::String> supported_partition_kinds) {
+    ffi::Array<ffi::String> supported_partition_kinds,
+    ffi::Array<ffi::String> supported_resource_intent_kinds) {
   auto n = ffi::make_object<SpatialCapabilityModelNode>();
   n->arch_name = std::move(arch_name);
   n->topology_class = std::move(topology_class);
@@ -180,8 +184,12 @@ SpatialCapabilityModel::SpatialCapabilityModel(
   n->supported_flow_kinds = std::move(supported_flow_kinds);
   n->supported_payload_kinds = std::move(supported_payload_kinds);
   n->supported_delivery_kinds = std::move(supported_delivery_kinds);
+  n->supported_sync_kinds = std::move(supported_sync_kinds);
+  n->supported_ordering_kinds = std::move(supported_ordering_kinds);
+  n->supported_materialization_kinds = std::move(supported_materialization_kinds);
   n->supported_layout_kinds = std::move(supported_layout_kinds);
   n->supported_partition_kinds = std::move(supported_partition_kinds);
+  n->supported_resource_intent_kinds = std::move(supported_resource_intent_kinds);
   data_ = std::move(n);
 }
 
@@ -313,8 +321,12 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                            ffi::Array<ffi::String> supported_flow_kinds,
                            ffi::Array<ffi::String> supported_payload_kinds,
                            ffi::Array<ffi::String> supported_delivery_kinds,
+                           ffi::Array<ffi::String> supported_sync_kinds,
+                           ffi::Array<ffi::String> supported_ordering_kinds,
+                           ffi::Array<ffi::String> supported_materialization_kinds,
                            ffi::Array<ffi::String> supported_layout_kinds,
-                           ffi::Array<ffi::String> supported_partition_kinds) {
+                           ffi::Array<ffi::String> supported_partition_kinds,
+                           ffi::Array<ffi::String> supported_resource_intent_kinds) {
                           return SpatialCapabilityModel(
                               std::move(arch_name), std::move(topology_class),
                               std::move(placement_domain), logical_worker_grid_x,
@@ -323,8 +335,12 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                               std::move(supported_flow_kinds),
                               std::move(supported_payload_kinds),
                               std::move(supported_delivery_kinds),
+                              std::move(supported_sync_kinds),
+                              std::move(supported_ordering_kinds),
+                              std::move(supported_materialization_kinds),
                               std::move(supported_layout_kinds),
-                              std::move(supported_partition_kinds));
+                              std::move(supported_partition_kinds),
+                              std::move(supported_resource_intent_kinds));
                         });
 }
 

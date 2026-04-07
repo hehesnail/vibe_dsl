@@ -367,8 +367,12 @@ class SpatialCapabilityModelNode : public GlobalInfoNode {
   ffi::Array<ffi::String> supported_flow_kinds;
   ffi::Array<ffi::String> supported_payload_kinds;
   ffi::Array<ffi::String> supported_delivery_kinds;
+  ffi::Array<ffi::String> supported_sync_kinds;
+  ffi::Array<ffi::String> supported_ordering_kinds;
+  ffi::Array<ffi::String> supported_materialization_kinds;
   ffi::Array<ffi::String> supported_layout_kinds;
   ffi::Array<ffi::String> supported_partition_kinds;
+  ffi::Array<ffi::String> supported_resource_intent_kinds;
 
   static void RegisterReflection() {
     namespace refl = tvm::ffi::reflection;
@@ -386,9 +390,15 @@ class SpatialCapabilityModelNode : public GlobalInfoNode {
         .def_ro("supported_flow_kinds", &SpatialCapabilityModelNode::supported_flow_kinds)
         .def_ro("supported_payload_kinds", &SpatialCapabilityModelNode::supported_payload_kinds)
         .def_ro("supported_delivery_kinds", &SpatialCapabilityModelNode::supported_delivery_kinds)
+        .def_ro("supported_sync_kinds", &SpatialCapabilityModelNode::supported_sync_kinds)
+        .def_ro("supported_ordering_kinds", &SpatialCapabilityModelNode::supported_ordering_kinds)
+        .def_ro("supported_materialization_kinds",
+                &SpatialCapabilityModelNode::supported_materialization_kinds)
         .def_ro("supported_layout_kinds", &SpatialCapabilityModelNode::supported_layout_kinds)
         .def_ro("supported_partition_kinds",
-                &SpatialCapabilityModelNode::supported_partition_kinds);
+                &SpatialCapabilityModelNode::supported_partition_kinds)
+        .def_ro("supported_resource_intent_kinds",
+                &SpatialCapabilityModelNode::supported_resource_intent_kinds);
   }
 
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.SpatialCapabilityModel", SpatialCapabilityModelNode,
@@ -405,8 +415,12 @@ class SpatialCapabilityModel : public GlobalInfo {
                                  ffi::Array<ffi::String> supported_flow_kinds,
                                  ffi::Array<ffi::String> supported_payload_kinds,
                                  ffi::Array<ffi::String> supported_delivery_kinds,
+                                 ffi::Array<ffi::String> supported_sync_kinds,
+                                 ffi::Array<ffi::String> supported_ordering_kinds,
+                                 ffi::Array<ffi::String> supported_materialization_kinds,
                                  ffi::Array<ffi::String> supported_layout_kinds,
-                                 ffi::Array<ffi::String> supported_partition_kinds);
+                                 ffi::Array<ffi::String> supported_partition_kinds,
+                                 ffi::Array<ffi::String> supported_resource_intent_kinds);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SpatialCapabilityModel, GlobalInfo,
                                              SpatialCapabilityModelNode);
 };

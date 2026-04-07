@@ -1,3 +1,4 @@
+import re
 import sys
 from pathlib import Path
 
@@ -445,11 +446,7 @@ def test_flash_attention_forward_pipeline_attaches_multi_phase_spatial_program()
     assert "phase_boundary_materialization" in {str(intent.kind) for intent in program.resource_intents}
     assert int(lowering_requirements["spatial_phase_count"]) >= 2
     assert int(lowering_requirements["spatial_channel_count"]) >= 1
-    assert set(lowering_requirements["spatial_phase_boundary_states"]) >= {
-        "O_shared_local_cast",
-        "acc_o",
-        "scores_sum",
-    }
+    assert set(lowering_requirements["spatial_phase_boundary_states"]) == {"scores_max"}
 
 
 def test_flash_attention_forward_lowers_gqa_pipeline_for_supported_stage_count():
@@ -747,14 +744,23 @@ def test_flash_attention_compute_source_publishes_acc_s_cast_cb_before_second_ma
     compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
     compute_source = str(compute["source_code"])
 
-    cast_pos = compute_source.find("tilelang_cast_fragment_slice(dst, src, dst_offset, src_offset, num_elements);")
-    publish_pos = compute_source.find("cb_push_back(23, 4);")
-    second_mm_pos = compute_source.find("mm_init(23, 2, 17);")
+    acc_s_cb_match = re.search(
+        r"half\* acc_s_cast = reinterpret_cast<half\*>\(tilelang_get_cb_write_ptr_bytes\((\d+)\)\);",
+        compute_source,
+    )
+    cast_pos = compute_source.find(
+        "{ half* dst = reinterpret_cast<half*>(acc_s_cast);"
+    )
+    assert acc_s_cb_match is not None
+    acc_s_cb_id = acc_s_cb_match.group(1)
+
+    publish_match = re.search(rf"cb_push_back\({acc_s_cb_id}, 4\);", compute_source)
+    second_mm_match = re.search(rf"mm_init\({acc_s_cb_id}, \d+, \d+\);", compute_source)
 
     assert cast_pos != -1
-    assert publish_pos != -1
-    assert second_mm_pos != -1
-    assert cast_pos < publish_pos < second_mm_pos
+    assert publish_match is not None
+    assert second_mm_match is not None
+    assert cast_pos < publish_match.start() < second_mm_match.start()
 
 
 def test_flash_attention_compute_source_does_not_rereserve_blackhole_acc_gemm_outputs():

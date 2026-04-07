@@ -121,6 +121,10 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
   return {};
 }
 
+bool HasNoCBArgs(const std::string& op_name) {
+  return op_name == "tl.blackhole.cast_fragment_slice";
+}
+
 }  // namespace
 
 // Main entry point
@@ -162,6 +166,7 @@ PrimFunc PlanBlackholeCB::Transform(const PrimFunc& func) {
         if (!call->op->IsInstance<OpNode>()) return;
         const std::string op_name = Downcast<Op>(call->op)->name;
         if (op_name.rfind("tl.blackhole.", 0) != 0) return;
+        if (HasNoCBArgs(op_name)) return;
         // Skip builtins that are known to have no cb_id args
         if (GetCBArgPositions(op_name).empty()) {
           // Scan all IntImm args: if any value falls in [0, max_requirement_index] and is

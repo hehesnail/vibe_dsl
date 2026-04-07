@@ -61,6 +61,10 @@ std::optional<SpatialPartitionKind> ParseSpatialPartitionKind(const std::string&
   if (value == "blocked") return SpatialPartitionKind::kBlocked;
   if (value == "indexed") return SpatialPartitionKind::kIndexed;
   if (value == "filtered") return SpatialPartitionKind::kFiltered;
+  if (value == "grouped") return SpatialPartitionKind::kGrouped;
+  if (value == "routed") return SpatialPartitionKind::kRouted;
+  if (value == "paged") return SpatialPartitionKind::kPaged;
+  if (value == "chunked") return SpatialPartitionKind::kChunked;
   return std::nullopt;
 }
 
@@ -181,6 +185,14 @@ const char* ToString(SpatialPartitionKind kind) {
       return "indexed";
     case SpatialPartitionKind::kFiltered:
       return "filtered";
+    case SpatialPartitionKind::kGrouped:
+      return "grouped";
+    case SpatialPartitionKind::kRouted:
+      return "routed";
+    case SpatialPartitionKind::kPaged:
+      return "paged";
+    case SpatialPartitionKind::kChunked:
+      return "chunked";
   }
   LOG(FATAL) << "Unknown SpatialPartitionKind";
   return "unknown";

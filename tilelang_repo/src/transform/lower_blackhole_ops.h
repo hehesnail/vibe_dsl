@@ -372,6 +372,9 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   std::map<tvm::tir::Buffer, int, std::less<>> buffer_to_req_;
   // Secondary lookup by backing storage identity for aliased Buffer objects.
   std::unordered_map<const tvm::tir::VarNode*, int> buffer_data_to_req_index_;
+  // Tertiary lookup by logical buffer identity for cases like C_local where
+  // the same physical resource can appear as distinct Buffer/Var objects.
+  std::unordered_map<std::string, int> buffer_identity_to_req_index_;
   std::vector<CBRequirement> cb_requirements_;
   bool saw_copy_op_ = false;
   bool needs_copy_runtime_args_ = false;

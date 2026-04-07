@@ -939,6 +939,7 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   current_func_ = func;
   buffer_to_req_.clear();
   buffer_data_to_req_index_.clear();
+  buffer_identity_to_req_index_.clear();
   cb_requirements_.clear();
   accessor_descriptors_.clear();
   next_requirement_index_ = 0;
@@ -1103,22 +1104,50 @@ LowerBlackholeOps::CBConfig LowerBlackholeOps::GetCBConfig() const {
 }
 
 int LowerBlackholeOps::AllocateRequirementIndex(const Buffer& buffer, CBType type) {
+  const std::string buffer_identity = BufferIdentityName(buffer);
+  auto bind_existing_requirement = [&](int requirement_index) {
+    buffer_to_req_[buffer] = requirement_index;
+    buffer_data_to_req_index_[buffer->data.get()] = requirement_index;
+    buffer_identity_to_req_index_[buffer_identity] = requirement_index;
+
+    auto& req = cb_requirements_.at(requirement_index);
+    if (req.type == type) {
+      return requirement_index;
+    }
+    if (req.type == CBType::kIntermediate && type != CBType::kIntermediate) {
+      req.type = type;
+      return requirement_index;
+    }
+    if (type == CBType::kIntermediate) {
+      return requirement_index;
+    }
+    ICHECK(req.type == type)
+        << "LowerBlackholeOps requires one CB type per logical buffer identity; "
+        << buffer_identity << " was assigned both " << static_cast<int>(req.type)
+        << " and " << static_cast<int>(type);
+    return requirement_index;
+  };
+
   auto it = buffer_to_req_.find(buffer);
   if (it != buffer_to_req_.end()) {
-    return it->second;
+    return bind_existing_requirement(it->second);
   }
   auto by_data = buffer_data_to_req_index_.find(buffer->data.get());
   if (by_data != buffer_data_to_req_index_.end()) {
-    buffer_to_req_[buffer] = by_data->second;
-    return by_data->second;
+    return bind_existing_requirement(by_data->second);
+  }
+  auto by_identity = buffer_identity_to_req_index_.find(buffer_identity);
+  if (by_identity != buffer_identity_to_req_index_.end()) {
+    return bind_existing_requirement(by_identity->second);
   }
 
   const int requirement_index = next_requirement_index_++;
   buffer_to_req_[buffer] = requirement_index;
   buffer_data_to_req_index_[buffer->data.get()] = requirement_index;
+  buffer_identity_to_req_index_[buffer_identity] = requirement_index;
 
   CBRequirement req;
-  req.name = BufferIdentityName(buffer);
+  req.name = buffer_identity;
   req.type = type;
   req.lifetime_begin = requirement_index;
   req.lifetime_end = req.lifetime_begin;

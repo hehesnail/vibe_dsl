@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档角色**: `Phase C` 当前设计边界与 cutover 文档
-- **当前状态**: `2026-04-07` 只有准备轨已落地；正式 cutover 尚未开始
+- **当前状态**: `2026-04-07` 准备轨已落地，`Phase B` 前置已满足；正式 cutover 尚未开始
 - **已完成子阶段**: read-only translator demand probe、`TTHardwareModel` intake
 - **仍未完成**: `TTProgram`、`MaterializeTTExecutableSpec`、旧主链删除
 - **上游输入**: 冻结后的 `SpatialProgram`
@@ -153,6 +153,7 @@
 当前结论：
 
 - `Phase C` 准备轨已完成
+- `Phase B` 前置输入已满足
 - 这不等于正式 `TTProgram` cutover 已开始或已完成
 
 ## 6. 当前仍未完成的部分
@@ -166,7 +167,7 @@
 - compatibility writer / fallback reader 还没有按 deletion gate 删除
 - `flash-attn` 的 `blackhole.acc` correctness payoff 仍归属 `Phase C2`
 
-因此当前 `Phase C` 还不能判定为开始正式 cutover。
+因此当前 `Phase C` 还不能判定为已开始正式 cutover，但前置阶段已不再阻塞。
 
 ## 7. 完成判定
 
@@ -187,7 +188,7 @@
 
 - `Phase C0` 已完成
 - `Phase C1 / C2 / C3` 未完成
-- 当前 blocker 仍先落在剩余 `Phase B`
+- 当前 blocker 已转到 `TTProgram / MaterializeTTExecutableSpec` 正式 cutover
 
 ## 8. Shared Zero-Regression Baseline
 

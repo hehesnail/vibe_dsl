@@ -23,14 +23,14 @@
 
 - **Stage 0**: 已完成
 - **Phase A**: 已完成
-- **Phase B**: 仍在进行中
-  - 已完成：boundary cleanup、capability intake、probe、最小 contract hardening
-  - 未完成：spatial synthesis algorithm 本体与 stronger execution-bearing contract
-- **Phase C**: 已定义；当前只有准备轨落地
+- **Phase B**: 已完成
+  - 已完成：execution-bearing `SpatialProgram` contract、stronger validator、
+    TT probe intake 与 shared zero-regression baseline
+- **Phase C**: 已定义；准备轨已完成
   - 已完成：read-only translator demand probe、hardware intake
   - 未开始：正式 `TTProgram / MaterializeTTExecutableSpec` cutover
 
-## `Phase B` 当前已完成
+## `Phase B` 收尾结果
 
 - `Spatial*` object/vocab/shared key 已从 semantic infra 拆出
 - `LowerToSpatialProgram -> ValidateSpatialProgram` 已接入主线，
@@ -40,37 +40,41 @@
 - `Channel.kind + payload_kind + delivery_kind` 与 `placement.affinity_kind`
   已收成当前 probe intake 所需的最小 contract
 - `LowerSpatialProgramToTTTargetProbe` 已落地，并且不会恢复 non-TT-specific spatial semantics
-- `ValidateSpatialProgram` 已收正为 coherence / completeness gate
-
-## `Phase B` 当前未完成
-
-- `Task` formation / abstract execution role
-- `Flow shaping`
-- `Domain realization`
-- `Phase / ordering synthesis`
-- `ValidateSpatialProgram` 对 stronger contract 的 fail-fast 校验
+- `ValidateSpatialProgram` 已收正为 coherence / completeness / semantic alignment /
+  ordering legality gate
+- generic builder 已把 `Task` formation、flow shaping、domain realization、
+  phase / ordering synthesis 收进稳定主链
+- `phase_boundary_materialization` 已收窄为真实跨 phase state handoff，
+  不再把“任意后续 phase 读取的 state”过度记为边界物化
 
 结论：
 
-- 当前 `SpatialProgram` 只达到 read-only probe intake 的最小上游 contract
-- `Phase B` 整体不能判定为完成
+- `SpatialProgram` 已达到 execution-bearing spatial program 的完成判定
+- `Phase C` 现在可以把 `SpatialProgram` 当成单一上游真源继续 cutover
 
 ## 当前 blocker
 
-- 主 blocker 仍先落在剩余 `Phase B`
 - `TTProgram / MaterializeTTExecutableSpec` 仍不存在
-- target/runtime 仍主要停留在
+- target/runtime 正式 cutover 仍主要停留在
   `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores -> rt_mod_blackhole`
   的旧主链
 - `flash-attn` 的 `blackhole.acc` correctness payoff 仍归属 `Phase C2`
 
+## 独立已知问题
+
+- `TT_METAL_WATCHER=10` 调试 multicore GEMM direct path 时，`tt_metal`
+  的 watcher 线程可能在 `WatcherServer::Impl::poll_watcher_data()` 里抛
+  `std::runtime_error` 并触发 `SIGABRT`，或在 `TT_METAL_WATCHER_TEST_MODE=1`
+  下停在 `Dump #2`
+- 当前结论是 watcher-side bug，不是 `BlackholeModule` direct runtime 主链回归；
+  direct runtime baseline 需在 `TT_METAL_WATCHER` unset 的正式环境下判断
+
 ## 下一步
 
-1. 完成 `Phase B` 正文定义的 spatial synthesis algorithm
-2. 补强 `Task / Layout / WorkPartition / ProgramPhase / SyncEdge` 的 stronger contract
-3. 补强 `ValidateSpatialProgram`
-4. 只有在 `Phase B` 整体完成后，再启动正式 `TTProgram / MaterializeTTExecutableSpec`
-   cutover
+1. 启动正式 `Phase C` cutover：
+   `SpatialProgram -> TT Target IR -> TTProgram / MaterializeTTExecutableSpec`
+2. 在 cutover 期间保持当前 direct host path 和 `tvm_ffi` export 支持面不回退
+3. 把 `flash-attn` 的 `blackhole.acc` correctness payoff 继续放在 `Phase C2`
 
 ## 当前主设备链
 
@@ -97,15 +101,15 @@ LowerDeviceStorageAccessInfo
 
 ## 最新验证摘要
 
+- build:
+  - `cmake --build tilelang_repo/build -j32`
 - transform:
-  - `test_blackhole_semantic_ir.py`: `40 passed`
-  - `test_blackhole_flash_attention_analysis.py`: `7 passed`
-  - `test_blackhole_spatial_ir.py`: `44 passed`
-  - `test_blackhole_tt_target_probe.py`: `6 passed`
+  - `test_blackhole_spatial_ir.py -q`: `68 passed`
+  - `test_blackhole_tt_target_probe.py -q`: `17 passed`
 - target:
-  - `test_blackhole_copy_pipeline.py -q`: `41 passed, 10 skipped, 1 xfailed`
+  - `test_blackhole_copy_pipeline.py -q`: `50 passed, 1 skipped, 1 xfailed`
   - `test_blackhole_copy_runtime.py -q`: `12 passed`
-  - `test_blackhole_gemm.py -q`: `26 passed, 11 skipped`
+  - `test_blackhole_gemm.py -q`: `38 passed`
   - `test_blackhole_tvm_ffi_export.py -q`: `1 passed`
   - `test_blackhole_flash_attention_pipeline.py -q`: `27 passed`
 
