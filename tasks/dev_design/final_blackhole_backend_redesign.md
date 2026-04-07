@@ -3,44 +3,33 @@
 ## 基本信息
 
 - **文档 ID**: `final_blackhole_backend_redesign`
-- **日期**: 2026-03-19（创建），2026-04-03（重写并收敛为当前版本），2026-04-06（在 `Phase A` 完成后按当前分阶段结构再次精简，并完成一轮状态对齐审计），2026-04-07（按 `Phase B` compile-path 收口、contract hardening 持续进行与 `Phase C` 边界再次同步），2026-04-07（按 translator demand-probe、SoC-derived capability model 与 spatial/semantic boundary cleanup 再次校正），2026-04-07（按 `Phase B` 正文职责重新校正完成判定与阶段排序）
+- **日期**: `2026-04-07`
 - **状态**: 当前唯一权威总体设计文档
-- **定位**: 常青总纲；只保留长期架构、层间边界、单一真源与 cutover 原则
-- **阶段文档**:
+- **定位**: 轻量总纲；只保留长期架构、层间边界、真源规则与当前阶段判断
+- **活动阶段文档**:
   - `tasks/dev_design/stage4_stage0_guardrails.md`
   - `tasks/dev_design/stage4_phase_a_semantic_ir.md`
-  - `tasks/dev_design/stage4_phase_a_formalization_note.md`
   - `tasks/dev_design/stage4_phase_b_spatial_ir.md`
   - `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
 
 ## 1. 问题定义
 
-Blackhole 当前面对的核心问题，不是“再打印一个 TT-Metal kernel 字符串”，而是：
+Blackhole 当前的核心问题不是“还差一个 kernel emitter”，而是三类 truth
+长期混在一层里：
 
-- 复杂前端计算语义
+- 算法语义
 - spatial/dataflow 程序结构
 - TT target 资源与 ABI
 
-这三类 truth 长期混在一个层里。
-
-这个问题已经被多类 workload family 共同暴露出来：
+这已经被多类 family 共同暴露出来：
 
 - `flash-attn / online softmax / attention_sink`
-  - `carry / normalized recurrence / reduction-update`
 - `topk / selection`
-  - `selection / index generation / selected subset`
 - `fusedmoe / grouped dispatch`
-  - `routed / grouped / ragged dispatch`
 - `paged decode / sparse decode`
-  - `paged / indexed / sparse access`
 - `chunk recurrence / scan`
-  - `cross-step carry / ordered recurrence / chunk state`
 
-因此当前总论点非常简单：
-
-> 编译器不能继续在一个层里同时做 semantic recovery、spatial organization 和 TT target planning。
-
-必须改成三层 compiler-internal IR：
+因此当前总体结论只有一条：
 
 ```text
 Stateful Semantic IR
@@ -48,383 +37,154 @@ Stateful Semantic IR
   -> TT Target IR
 ```
 
-每层只承接自己的语义真相，下层只能消费上层冻结后的事实，不能反向猜测上层。
+每层只承接自己的语义真相。
+下层只能消费上层冻结后的事实，不能反向猜测上层。
 
-## 2. 设计目标与非目标
+## 2. 目标与硬约束
 
 ### 2.1 目标
 
-1. 保持 TileLang Python DSL 主体写法基本稳定。
-2. 结束 late target-specific semantic guessing。
-3. 让 domain、state、update、task、layout、sync、TT resource、ABI 各自在正确层里成为一等对象。
-4. 让 codegen/runtime 回到 materialization 与 execution，而不是继续承担语义重建。
-5. 让这套设计不仅服务 `flash-attn`，也能覆盖 selection、routing、paged decode、chunk recurrence 等 workload family。
+1. 保持 TileLang Python DSL 主体写法基本稳定
+2. 结束 late target-specific semantic guessing
+3. 让 domain、state、update、task、layout、sync、TT resource、ABI
+   各自在正确层里成为一等对象
+4. 让 codegen/runtime 回到 materialization 与 execution，
+   不再承担语义恢复
+5. 让主链同时面向 attention、selection、routing、paged decode、
+   chunk recurrence 等 family
 
-### 2.2 可证明性边界
+### 2.2 当前硬约束
 
-本设计不承诺下面这个强命题：
+- `BlackholeModule` 进程内 direct host path 仍是唯一正式执行路径
+- `ExecutableSpec` 仍是 runtime 消费的最终物化产物
+- copy / GEMM / export 当前支持面不能回退
+- 不引入第二条正式执行路径
+- 不允许名字匹配、位置猜测、单 case matcher 进入长期协议
+- 当前重设计必须建立在现有 Blackhole 主链上完成，不是 greenfield compiler
 
-- 固定不变的 `Stateful Semantic IR` vocabulary 足以覆盖任意未来 workload family
+## 3. 权威架构
 
-本设计只追求更弱、也更正确的命题：
+### 3.1 三层分工
 
-- 对一个有限的 semantic core，如果某类 workload 的算法语义可以归约到这套 core，
-  则 `Stateful Semantic IR` 可以作为该 workload family 的有界抽象域
+- `Stateful Semantic IR`
+  - 只回答：程序在逻辑域上如何更新算法状态
+  - 真源：算法语义
+  - 稳态产物：`SemanticProgram`
+- `Spatial Program IR`
+  - 只回答：这个算法如何组织成 virtual spatial/dataflow program
+  - 真源：task/channel/layout/sync/work truth
+    与 abstract hardware capability constraints
+  - 稳态产物：`SpatialProgram`
+- `TT Target IR`
+  - 只回答：这个 spatial program 如何变成合法 TT contract
+  - 真源：TT resource 与 ABI contract
+  - 稳态产物：`TTProgram`
+- `ExecutableSpec / runtime`
+  - 只回答：冻结后的 TT contract 如何被物化并执行
+  - 真源：materialized target schema
+  - 稳态产物：`ExecutableSpec` 与 host-side objects
 
-因此这里的“通用性”指的是：
-
-1. 长期 vocabulary 保持小闭集
-2. 新增 workload 时先证明是否可归约到现有 core
-3. 只有跨 family 复用、且无法归约到现有 core 的新语义轴，才允许扩 semantic core
-4. task/layout/sync/placement/transport/ABI 这类信息必须进入 `Spatial Program IR` 或 `TT Target IR`
-
-### 2.3 非目标
-
-1. 不设计 TT-Metal 专用用户 DSL。
-2. 不把 `task / channel / CB / semaphore / runtime_args` 暴露成 Python 前端一等概念。
-3. 不把全部复杂度重新塞回一个 super IR。
-4. 不引入第二条正式执行路径；当前正式路径仍是 direct host path。
-5. 不为了单个 consumer 固化协议或 matcher。
-
-## 3. 当前硬约束
-
-这次重设计不是 greenfield compiler，而是在现有 Blackhole 主链上重构边界。
-
-1. `BlackholeModule` 进程内 direct host path 仍是唯一正式执行路径。
-2. `ExecutableSpec` 仍是 runtime 消费的最终物化产物。
-3. copy / GEMM / export 当前支持面必须保持不回退。
-4. 现有 recovery-oriented analysis pass 与 manifest capture 路径仍然是 semantic recovery 的起点：
-   - `AnalyzeBlackholeWorkDecomposition`
-   - `AnalyzeBlackholeFragmentRegions`（当前已退化为 compatibility fallback / residual reduction evidence）
-   - `AnalyzeBlackholePipelineStages`
-   - `CollectSemanticManifestSeeds -> ProjectSemanticManifest -> AugmentSemanticManifest`
-5. `PlanBlackholeCB`、`AssignBlackholeCores`、`rt_mod_blackhole` 在迁移期间仍保留，但它们的长期职责必须收回到 target/runtime 边界。
-
-## 4. 权威架构
-
-### 4.1 总流程
-
-```text
-TileLang DSL / Python
-  -> PrimFunc / TIR
-  -> Semantic Recovery
-  -> Stateful Semantic IR
-  -> Spatialization
-  -> Spatial Program IR
-  -> Hardware-Aware Mapping
-  -> TT Target IR
-  -> MaterializeTTExecutableSpec
-  -> Codegen / rt_mod_blackhole / BlackholeModule
-```
-
-### 4.2 各层回答的问题
-
-| 层 | 它回答的问题 | 真源 | 稳态产物 |
-|----|--------------|------|----------|
-| `PrimFunc / TIR` | 用户和通用 lowering 表达了什么计算结构？ | 通用 TileLang / TVM IR | 规范化 TIR |
-| `Stateful Semantic IR` | 程序在逻辑域上如何更新算法状态？ | 算法语义 | `SemanticProgram` |
-| `Spatial Program IR` | 这个算法如何在抽象空间机器上组织成 spatial/dataflow 程序？ | task/channel/layout/sync/work truth + abstract hardware capability constraints | `SpatialProgram` |
-| `TT Target IR` | 这个 spatial program 如何变成合法 TT contract？ | TT 资源与 ABI 合约 | `TTProgram` |
-| `ExecutableSpec / runtime` | 冻结后的 TT contract 如何被物化并执行？ | 目标物化 schema | `ExecutableSpec` / host objects |
-
-### 4.3 工作负载覆盖边界
-
-当前总体设计面向的 family 是：
-
-| family | Semantic 层必须表达 | Spatial 层必须表达 | TT 层必须冻结 |
-|--------|----------------------|--------------------|---------------|
-| Dense tiled compute | tile domain、tensor state、map/reduce update | load/compute/store task、layout、partition | reader/compute/writer、CB、ABI、placement |
-| Selection / indexing | selection update、index-valued state | select task、index channel、selected-subset partition | index scratch、selector runtime ABI |
-| Routed / grouped / ragged dispatch | remapped domain、segmented/indirect access、expert/index state | route/compute/combine task、grouped layout、expert partition | routed buffer、dispatch ABI、core-group mapping |
-| Paged / indexed sparse decode | paged access、carry state、merge update | page-stream task、paged layout、split/merge boundary | page/index descriptors、transport、execution plan |
-| Stateful reduction-update | carry state、normalized recurrence、predicate-bound domain | update task、carry channel、ordered completion sync | dst layout、persistent carry、kernel contract |
-| Chunked recurrence / scan | cross-step state、chunk domain、ordered recurrence | chunk task graph、chunk partition、state carry | persistent carry、dst/CB realization、runtime chunk descriptors |
-
-这张表是总设计的覆盖声明；具体 gate 和分阶段实现以阶段文档为准。
-
-这里的 “Spatial 层必须表达” 指的是虚拟空间程序 contract，而不是 TT-specific 资源分配。
-它必须强到足以在抽象硬件能力约束下完成 virtual mapping、communication shaping 与
-ordering synthesis，然后再交给 `Phase C` 做具体 target materialization。
-
-## 5. 三层 IR 的核心合同
-
-### 5.1 `Stateful Semantic IR`
-
-这一层只回答：
-
-- 程序在逻辑域上如何更新算法状态
-
-长期 core 只保留：
-
-- `SemanticProgram`
-- `Domain`
-- `State`
-- `Update`
-- `AccessMap`
-- `UpdateLaw`
-- `SemanticSupplement`
-
-关键纪律：
-
-1. semantic core 必须保持小闭集
-2. analysis evidence 不是 vocabulary
-3. evidence 必须可归约到 core
-4. 不允许名字匹配恢复语义
-5. 这一层不承接 task/layout/sync/placement/transport/ABI
-
-`Phase A` 当前已经完成；实现边界和当前状态见：
-
-- `tasks/dev_design/stage4_phase_a_semantic_ir.md`
-- `tasks/dev_design/stage4_phase_a_formalization_note.md`
-
-### 5.2 `Spatial Program IR`
-
-这一层只回答：
-
-- 这个算法应该如何组织成 spatial/dataflow 程序
-
-长期 core 只保留：
-
-- `SpatialProgram`
-- `ProgramPhase`
-- `Task`
-- `Channel`
-- `Layout`
-- `WorkPartition`
-- `Placement`
-- `SyncEdge`
-- `ResourceIntent`
-
-关键纪律：
-
-1. 只消费冻结后的 semantic truth
-2. `ProgramPhase` 的 cross-function 真相固定挂在 `tl.device_programs`
-3. analysis 决定 legality，policy 只在合法空间内选择
-4. 不允许回头发明 semantic truth
-5. 不允许让 `Task:TTKernel = 1:1` 退化成隐式默认
-6. 这层必须是 execution-bearing contract，不允许退化成结构化 summary
-7. `Task / Channel / Layout / WorkPartition / ProgramPhase / SyncEdge` 必须冻结
-   task formation、state/data flow、domain remap/partition、phase boundary 与 ordering
-   这些执行相关但非 TT-specific 的 truth
-8. 如果 `Phase C` 需要某个 non-TT-specific truth 才能合法 mapping，
-   那个 truth 必须先进入 `Spatial Program IR`，不能在 target translator 里临时恢复
-9. 这层不是“完全硬件无关”的；它必须读取抽象 hardware capability constraints，
-   但不能提前物化成 TT resource / ABI / kernel noun
-10. `Spatial*` object/vocab 定义必须与 `Semantic*` object/vocab 物理分离；
-    共享 attr key 可以进入 neutral companion header，但 semantic layer 不能继续拥有 spatial schema
-
-### 5.2.1 Abstract Spatial Hardware Interface
-
-`Spatial Program IR` 不是在真空中生成的。
-它需要一个 target-provided、但仍然 non-TT-specific 的抽象能力视图，本文称为
-`SpatialCapabilityModel`。
-
-它至少要表达：
-
-- topology class / neighborhood relation
-- 可用的 placement domain 与 communication domain
-- 支持的 flow family：point-to-point、broadcast、reduce、gather/scatter、carry
-- 支持的 ordering / synchronization family：dependency、completion、barrier、async arrival
-- residency / persistence / transport class
-- partition / replication / sharding 的合法空间
-
-规则是：
-
-- `Phase B` 只能消费这类 abstract capability，不消费 TT kernel / CB / semaphore / ABI noun
-- `Phase C` 持有 concrete `TTHardwareModel`
-- `SpatialCapabilityModel` 由具体 target model 导出，是 `Phase B` legality / policy 的输入，
-  不是 target materialization 的输出
-- 当前它已作为 module-scope global info 落地，但这只代表 `Phase B`
-  contract-hardening 子阶段已收口；不能据此把 `Phase B` 整体写成已完成
-- 对 Blackhole，第一版 capability producer 应优先来自 TT-Metal SoC descriptor，
-  而不是继续散落在 `AssignBlackholeCores` / `rt_mod_blackhole` / planner 的硬编码常量
-- `ValidateSpatialProgram` 的职责是 contract coherence / completeness gate，
-  不是 capability-informed legality solver
-
-`Phase B` 的详细对象边界和实施计划见：
-
-- `tasks/dev_design/stage4_phase_b_spatial_ir.md`
-
-### 5.3 `TT Target IR`
-
-这一层只回答：
-
-- 这个 spatial program 如何变成合法且稳定的 TT contract
-
-长期 core 只保留：
-
-- `TTProgram`
-- `TTKernel`
-- `TTCoreGroup`
-- `TTCBPlan`
-- `TTTransportPlan`
-- `TTSemaphorePlan`
-- `TTComputeSyncPlan`
-- `TTDstLayoutPlan`
-- `TTABIPlan`
-- `TTExecutionPlan`
-- `TTHardwareModel`
-
-关键纪律：
-
-1. `TTProgram` 是 target contract 真源
-2. common-runtime ABI 必须是一等对象
-3. hardware model 必须是 typed object，而不是散落常量
-4. `MaterializeTTExecutableSpec` 是唯一稳态 writer
-5. runtime/codegen 不得继续补 target contract
-
-`Phase C` 的详细对象边界、cutover 与 deletion gates 见：
-
-- `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
-
-## 6. 层间不变量
-
-### 6.1 真源规则
+### 3.2 长期真源规则
 
 1. 算法语义只存在于 `Stateful Semantic IR`
 2. 空间组织只存在于 `Spatial Program IR`
 3. TT 资源与 ABI 只存在于 `TT Target IR`
 4. `ExecutableSpec` 只由 `TT Target IR` 物化，不是第二真源
 
-### 6.2 交接契约
+### 3.3 交接纪律
 
-| From | To | 必须交付的契约 | 允许做的决策 | 明确禁止 |
-|------|----|----------------|--------------|----------|
-| `Semantic Recovery` | `Stateful Semantic IR` | `Domain / State / Update / AccessMap / UpdateLaw` 事实 | 对象化与冻结 | 泄漏 TT resource 事实 |
-| `Stateful Semantic IR` | `Spatial Program IR` | 冻结后的算法语义 | 构造 task/channel/layout/sync/work | 改变语义含义 |
-| `Spatial Program IR` | `TT Target IR` | 冻结后的空间结构 | TT mapping、resource planning、ABI 定义 | 发明新的 task graph 或 semantic update/access law |
-| `TT Target IR` | `ExecutableSpec / runtime` | 冻结后的 TT contract | API materialization 与 launch emission | semantic recovery 或 protocol patching |
+- `Stateful Semantic IR -> Spatial Program IR`
+  - 允许：task/channel/layout/sync/work synthesis
+  - 禁止：改变语义含义、泄漏 TT noun
+- `Spatial Program IR -> TT Target IR`
+  - 允许：target mapping、resource planning、ABI 定义
+  - 禁止：发明新的 task graph、phase truth、update/access law
+- `TT Target IR -> ExecutableSpec / runtime`
+  - 允许：materialization 与 launch emission
+  - 禁止：semantic recovery、protocol patching、target fallback guessing
 
-### 6.3 Companion 生命周期
+### 3.4 明确禁止
 
-1. semantic lift 之后，companion IR 默认进入 hard-freeze 管理
-2. post-lift pass 只能显式属于：
-   - `preserve`
-   - `typed_rebind`
-   - `invalidate`
-3. unsafe mutation 后必须整体删除并重建：
-   - `tl.semantic_structure`
-   - `tl.semantic_witnesses`
-   - `tl.semantic_program`
-   - `tl.spatial_program`
-   - `tl.tt_program`
-4. materialized `blackhole.*` attrs 不是上游 IR 的真源；它们只能整体重建，不能被下游 patch 成第二真源
+- 用 `CB / dst layout / runtime args` 反推 algorithm state semantics
+- 用 TT kernel 名字反推 task graph
+- 让 runtime/codegen 补缺失的 sync、carry、route 或 ABI contract
+- 把 materialized `blackhole.*` attrs 当成与 typed IR 并列的第二真源
+- 因为 backend 需要某个对象，就把它直接暴露成 Python DSL 表面概念
 
-### 6.4 禁止反向推断
+## 4. 各层当前完成度
 
-下面这些行为明确禁止：
+### 4.1 `Phase A`
 
-1. 用 `CB / dst layout / runtime args` 反推 state semantics
-2. 用 TT kernel 名字反推 task graph
-3. 让 runtime 补丢失的 sync 或 carry strategy
-4. 因为 backend 需要 `task / channel / semaphore`，就把它们直接暴露成 Python DSL 表面概念
+- 已完成
+- `AnalyzeSemanticStructure` 已采用 manifest-first 消费
+- `fragment_regions` 只剩 residual reduction evidence 与 lowering compatibility
 
-## 7. 当前执行状态
+### 4.2 `Phase B`
 
-### 7.1 阶段状态
+- 当前仍在进行中
+- 已完成子阶段：
+  - boundary cleanup
+  - capability intake
+  - read-only translator demand probe 对接所需的最小 contract hardening
+- 仍未完成：
+  - task formation
+  - flow shaping
+  - domain realization
+  - phase / ordering synthesis
+  - stronger execution-bearing contract 与 validator
 
-- **Stage 0**: 已完成
-- **Phase A**: 已完成
-- **Phase B**: 仍在进行中
-  - 已完成：主链接入、`Spatial*` 拆分、capability intake、probe、最小 contract hardening
-  - 未完成：task formation / flow shaping / domain realization /
-    phase-order synthesis / stronger validator
-- **Phase C**: 已定义；当前只有准备轨落地
-  - 已完成：read-only translator demand probe、hardware intake
-  - 未开始：正式 `TTProgram / MaterializeTTExecutableSpec` cutover
+结论：
 
-### 7.2 当前主 blocker
+- `SpatialProgram` 已成为当前唯一 spatial 主链
+- 但 `Phase B` 整体仍未完成
 
-当前 blocker 仍先落在剩余 `Phase B`：
+### 4.3 `Phase C`
 
-- `SpatialProgram` 只达到当前 probe intake 的最小上游 contract，
-  还不是最终形态的 virtual spatial program
-- `TTProgram / MaterializeTTExecutableSpec` 仍不存在
-- target/runtime 仍主要停留在
-  `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores` 的旧 planning 主链
+- 已定义；当前只有准备轨已落地
+- 已完成：
+  - `TTHardwareModel` intake
+  - `LowerSpatialProgramToTTTargetProbe`
+- 未开始：
+  - 正式 `TTProgram / MaterializeTTExecutableSpec` cutover
+  - 旧 planning 主链删除
 
-这也是当前 `blackhole.acc` correctness payoff 仍未完全兑现的根因。
+结论：
 
-### 7.3 当前主设备链事实
+- `Phase C` 当前不能写成“已开始正式 cutover”
+- 当前主 blocker 仍先落在剩余 `Phase B`
 
-当前 Blackhole 设备侧 pass 主线：
+## 5. 当前主 blocker
 
-```text
-LowerDeviceStorageAccessInfo
-  -> AugmentSemanticManifest
-  -> LowerIntrin
-  -> Simplify
-  -> HoistBroadcastValues
-  -> SplitBlackholeKernel
-  -> AnalyzeBlackholeWorkDecomposition
-  -> AnalyzeBlackholeFragmentRegions
-  -> AnalyzeBlackholePipelineStages
-  -> AnalyzeSemanticStructure
-  -> LiftStatefulSemanticIR
-  -> ValidateStatefulSemanticIR
-  -> ValidateSemanticRefinement
-  -> LowerToSpatialProgram
-  -> ValidateSpatialProgram
-  -> LowerBlackholeOps
-  -> PlanBlackholeCB
-  -> AssignBlackholeCores
-```
+当前总体 blocker 只有两件事：
 
-当前稳定事实：
+1. `SpatialProgram` 还只达到 probe intake 的最小上游 contract，
+   还不是完整的 execution-bearing virtual spatial program
+2. `TTProgram / MaterializeTTExecutableSpec` 还不存在，
+   target/runtime 仍主要停留在旧 planning 主链
 
-- `AnalyzeSemanticStructure` 采用 manifest-first 消费
-- `fragment_regions` 只剩 residual reduction evidence 与 compatibility fallback
-- `LowerToSpatialProgram -> ValidateSpatialProgram` 已成为正式主链的一部分
-- `ValidateSpatialProgram` 当前仍只是 coherence / completeness gate
+这也是当前 `blackhole.acc` correctness payoff 还没有完全兑现的根因。
 
-`Phase B / C` 的具体状态与实施细节以下沉到阶段文档为准。
+## 6. 当前稳定基线
 
-## 8. 文档分工
+- `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule`
+  仍是唯一正式 direct host path
+- copy / GEMM 当前支持面保持不回退
+- `tilelang.compile(..., execution_backend="tvm_ffi")`
+  的 Blackhole wrapper/export path 已恢复
+- `flash-attn` forward subset 已打通当前支持的 compile-path，
+  但其 `blackhole.acc` correctness payoff 归属 `Phase C2`
 
-当前文档分工固定为：
+## 7. 当前文档分工
 
 - `final_blackhole_backend_redesign.md`
   - 唯一总体设计
-  - 只保留长期架构、层间边界、真源规则、cutover 原则
-- `stage4_stage0_guardrails.md`
-  - Stage 0 护栏与前置 contract
-- `stage4_phase_a_semantic_ir.md`
-  - `Phase A` 工程边界与已完成状态
-- `stage4_phase_a_formalization_note.md`
-  - `Phase A` 理论化 / 证明化并行文档
+  - 只保留长期架构、层间边界、真源规则、阶段判断
 - `stage4_phase_b_spatial_ir.md`
-  - `Phase B` 核心设计边界与实施计划
+  - `Spatial Program IR` 的当前主实施文档
 - `stage4_phase_c_tt_target_ir.md`
-  - `Phase C` 核心设计边界、cutover 与实施计划
+  - `TT Target IR` 的当前设计与 cutover 文档
+- `tasks/progress.md`
+  - 当前执行状态、验证摘要、下一步
 
-## 9. 历史文档
-
-下面这些文档只作为历史记录或实现历史参考，不再作为当前实现依据：
-
-- `tasks/dev_design/archive/legacy_blackhole_runtime_architecture.md`
-- `tasks/dev_design/archive/2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`
-
-## 10. 参考论文
-
-下面这些论文影响了本文档中的分层、validation 与 target-mapping 方向。它们是设计输入，不是协议真源。
-
-- `Dato: A Task-Based Programming Model for Dataflow Accelerators` (2025)
-  - https://arxiv.org/abs/2509.06794
-  - 设计输入：task / stream / sharding / virtual mapping 必须是一等对象；
-    先构造 virtual spatial graph，再做 target-specific physical mapping
-- `TL: Automatic End-to-End Compiler of Tile-Based Languages for Spatial Dataflow Architectures` (2025)
-  - https://arxiv.org/abs/2512.22168
-  - 设计输入：spatialization 必须读取 topology / memory / capability 这类 hardware representation，
-    但这些输入不应直接污染 virtual spatial IR 为 target noun
-- `SPADA: A Spatial Dataflow Architecture Programming Language` (2025)
-  - https://arxiv.org/abs/2511.09447
-  - 设计输入：routing / async / ordering 需要进入 legality contract，
-    而不是留给 backend ad-hoc 恢复
-- `Revet: A Language and Compiler for Dataflow Threads` (2023/2024)
-  - https://arxiv.org/abs/2302.06124
-  - 设计输入：rich program model 应先落到 generic dataflow/spatial program，
-    再进入 backend-specific materialization
-- `Programmatic Control of a Compiler for Generating High-performance Spatial Hardware` (`T2S`, 2017)
-  - https://arxiv.org/abs/1711.07606
-  - 设计输入：temporal definition 与 spatial mapping 分离；
-    spatial layer 必须显式承载 loop/data transform 与 mapping 语义
+阶段细节、完成条件和基线命令默认下沉到对应阶段文档，
+总纲不再重复维护 backlog 级别的文件清单或子阶段脚本。

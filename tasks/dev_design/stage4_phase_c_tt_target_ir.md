@@ -2,81 +2,43 @@
 
 ## 基本信息
 
-- **文档角色**: `Phase C` 实施与设计边界文档
-- **当前状态**: `2026-04-07` read-only translator demand probe 与 hardware intake
-  已落地：
-  `LowerSpatialProgramToTTTargetProbe` 已能消费
-  `SpatialProgram + TTHardwareModel + SpatialCapabilityModel` 并对缺失 contract
-  发出明确诊断。
-  这部分只代表 `Phase C` 准备轨已就绪；
-  正式 `TTProgram / MaterializeTTExecutableSpec` typed target cutover
-  仍以前置的 `Phase B` 正文职责完成为前提。
+- **文档角色**: `Phase C` 当前设计边界与 cutover 文档
+- **当前状态**: `2026-04-07` 只有准备轨已落地；正式 cutover 尚未开始
+- **已完成子阶段**: read-only translator demand probe、`TTHardwareModel` intake
+- **仍未完成**: `TTProgram`、`MaterializeTTExecutableSpec`、旧主链删除
 - **上游输入**: 冻结后的 `SpatialProgram`
-- **下游输出**: `TTProgram` 与 `MaterializeTTExecutableSpec` 物化结果
+- **下游输出**: 冻结后的 `TTProgram` 与 `ExecutableSpec` 物化结果
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
 
-## 1. Phase C 的职责
+## 1. 作用域
 
 `Phase C` 只负责一件事：
 
-- 把冻结后的 spatial structure 映射成合法且稳定的 TT target contract
+- 把冻结后的 virtual spatial program 物化成稳定的 TT target contract
 
-它回答的问题是：
+它必须回答：
 
-- `Task / Channel / Layout / SyncEdge / ResourceIntent` 如何落成 TT program object
-- 哪些 kernel、CB、transport、semaphore、dst layout、ABI 和 execution plan 必须显式存在
-- 哪些 legacy `blackhole.*` attrs 还能保留为 compatibility projection，哪些必须删除
+- 哪些 `Task / Channel / Layout / WorkPartition / SyncEdge / ResourceIntent`
+  会落成哪些 TT object
+- 哪些 kernel、CB、transport、semaphore、dst layout、ABI、execution plan
+  必须显式存在
+- 哪些 materialized `blackhole.*` attrs 还能临时保留为 projection，哪些必须删除
 
 它不负责：
 
-- 重新理解 semantic truth
-- 重新发明 task graph 或 `ProgramPhase`
-- 让 runtime/codegen 继续补 target contract
+- 重新恢复 semantic truth
+- 重新发明 task graph、phase truth、domain transform 或 flow semantics
+- 让 runtime/codegen 再补 target contract
 
-当前 `Phase C` translator 可以依赖的上游边界已经明确收紧到：
+如果 `Phase C` 发现仅靠当前 `SpatialProgram` 还无法合法决定 target mapping，
+结论只能是 `Phase B` contract 还不够。
+`Phase C` 不允许自己再补一层 non-TT-specific 语义恢复。
 
-- `SpatialLayout / WorkPartition` 的 `domain_index`
-- `ResourceIntent` 的 `target_kind / target_index`
-- `Task / Channel / Placement / SyncEdge / ProgramPhase`
-  的第一轮 `*_index / *_indices` linkage payload
+## 2. 必须交付的 TT Contract
 
-也就是说，`Phase C` 不能再把
-`phase_name / task_name / source_task / target_task / channel_names`
-当 primary linkage source；这些字段现在只保留 display/identity 职责。
+### 2.1 Core Objects
 
-如果 `Phase C` 发现仅靠当前 `SpatialProgram` 还无法合法确定：
-
-- task formation
-- state/data flow semantics
-- domain remap / partition semantics
-- phase boundary / ordering semantics
-
-那结论只能是 `Phase B` contract 还不够，必须回去扩 `SpatialProgram` schema / validator；
-`Phase C` 不允许自己补一层恢复逻辑。
-
-这条约束也决定了 `Phase C` 的第一步不应该是“直接开始写正式 translator 并在里面补洞”，
-而应该是：
-
-- 先写 read-only translator demand probe
-- 让它把缺失的 non-TT-specific truth 明确报出来
-- 再回到 `Phase B` 补 contract
-- 只有 `Phase B` 的整体完成条件达成、probe 不再要求恢复 spatial semantics 时，
-  才进入正式 `TTProgram` cutover
-
-这也意味着 `Phase C` 和硬件模型的关系要分成两层：
-
-- `Phase B` 读取 abstract `SpatialCapabilityModel`
-- `Phase C` 读取 concrete `TTHardwareModel`
-
-`Phase C` 不负责把 concrete target capability “翻译回” spatial semantics；
-它只负责把已经 capability-informed 的 virtual spatial program
-物化成具体 TT resource / ABI / execution contract。
-
-## 2. Core Design Boundary
-
-### 2.1 核心对象
-
-`Phase C` 的长期 core object set 是：
+`Phase C` 的长期 core object set 只保留：
 
 - `TTProgram`
 - `TTKernel`
@@ -90,103 +52,71 @@
 - `TTExecutionPlan`
 - `TTHardwareModel`
 
-### 2.2 小闭集 target family
+### 2.2 TTProgram 必须显式承载的 truth
 
-TT 层仍然遵守 small-closed family 设计：
+- `TTKernel`: kernel role、core-group membership、kernel-local binding
+- `TTCBPlan`: CB purpose、buffer class、producer-consumer binding
+- `TTTransportPlan`: transport family、route / fanout / merge requirement
+- `TTSemaphorePlan / TTComputeSyncPlan`: dependency、completion、barrier、
+  multicast arrival 等 target sync contract
+- `TTDstLayoutPlan`: dst/register legality、carry / reduction / output realization
+- `TTABIPlan`: compile-time / common-runtime / per-work 三层 ABI
+- `TTExecutionPlan`: launch order、phase cut、host/runtime materialization requirement
 
-- `TTKernel.kind`
-  - `data_movement`
-  - `compute`
-  - `collective`
-  - `control`
-- `TTCBPlan.resource_class`
-  - `transport`
-  - `scratch`
-  - `carry`
-  - `output`
-- `TTSemaphorePlan.kind`
-  - `local`
-  - `remote`
-  - `multicast`
-  - `barrier`
-- `TTTransportPlan.kind`
-  - `unicast`
-  - `multicast`
-  - `tree`
-  - `ring`
-  - `line`
-  - `fabric_mux`
+### 2.3 基本纪律
 
-更细 specialization 通过 typed traits、bindings 和 ABI schema 表达，不通过 target noun 爆炸。
+- `TTProgram` 是唯一 target truth；`ExecutableSpec` 不是第二真源
+- `Phase C` 只消费冻结后的 spatial truth，不消费 display 字段当主链接
+- `TTHardwareModel` 必须是 typed object，不允许散落常量继续主导 legality
+- `MaterializeTTExecutableSpec` 必须成为唯一稳态 writer
+- runtime/codegen 只能读 target truth，不得再补 CB / semaphore / ABI / route contract
+- materialized `blackhole.*` attrs 只能是 compatibility projection，不能回升为主协议
 
-### 2.3 Common-Runtime ABI 是一等对象
+### 2.4 小闭集 target family
 
-`Phase C` 必须把 ABI 固定成三层：
+`Phase C` 继续遵守 small-closed family：
 
-- `compile-time`
-- `common-runtime`
-- `per-work runtime`
+- `TTKernel.kind`: `data_movement / compute / collective / control`
+- `TTCBPlan.resource_class`: `transport / scratch / carry / output`
+- `TTTransportPlan.kind`: `unicast / multicast / tree / ring / line / fabric_mux`
+- `TTSemaphorePlan.kind`: `local / remote / multicast / barrier`
 
-因此：
+更细 specialization 通过 typed traits、bindings 和 ABI schema 表达，
+不靠 target noun 爆炸。
 
-- `TTKernel` 必须显式拥有 common-runtime bindings
-- `TTABIPlan` 必须显式拥有 `common_runtime_arg_specs`
-- `MaterializeTTExecutableSpec` 必须把这层稳定物化到 per-kernel schema
+## 3. `Phase C` 的前置输入约束
 
-顶层 `blackhole.common_runtime_args` 只允许作为 compatibility aggregate view 过渡存在。
+正式 translator 只能把下面这些东西当成主输入：
 
-### 2.4 Hardware Model 不是附属品
+- `Task / Channel / Layout / WorkPartition / Placement / SyncEdge / ProgramPhase`
+  的 typed contract
+- `*_index / *_indices / state_index / domain_index` 这类正式 linkage
+- `SpatialCapabilityModel` 已经裁过合法空间后的结果
+- `TTHardwareModel` 提供的 concrete target capability
 
-`TTProgram` 的合法性不能建立在裸常量和 ad-hoc 判断上。
-`Phase C` 至少需要一个 typed `TTHardwareModel`，覆盖：
+正式 translator 不能把下面这些字段当主语义：
 
-- topology
-- memory / CB / L1 bounds
-- semaphore / sync capabilities
-- dst / register legality
-- ABI limits
-- compute-unit hazard rules
+- `task_name`
+- `phase_name`
+- `source_task`
+- `target_task`
+- `channel_names`
 
-### 2.5 Materialization 是唯一 writer
+这些字段只保留 display / debug / identity 职责。
 
-`MaterializeTTExecutableSpec` 是唯一允许把 `TTProgram` 物化成：
+## 4. Cutover 规则
 
-- `ExecutableSpec`
-- `KernelSpec`
-- materialized `blackhole.*` attrs
-- target-lowered executable `PrimFunc`
+### 4.1 真源切换顺序
 
-因此：
-
-- `LowerBlackholeOps`
-- `PlanBlackholeCB`
-- `AssignBlackholeCores`
-- `codegen_blackhole`
-- `rt_mod_blackhole`
-
-都不能继续作为 target contract 的第二真源 writer。
-
-### 2.6 不能回退的约束
-
-`Phase C` 不允许：
-
-- 重新发明 semantic/spatial truth
-- 继续把 `ExecutableSpec` 当第二真源
-- 让 runtime 通过 fallback 补齐缺失的 CB / semaphore / ABI / route contract
-- 因为当前样例方便，就把 TT 层重新写成 monolithic attr bag
-
-## 3. Cutover And Deletion Gates
-
-`Phase C` 的核心不是“再加一层对象”，而是完成真源切换。
-
-切换规则是：
-
-1. 上游 `TTProgram` / `TTABIPlan` / `TTExecutionPlan` 先成为稳态真源
+1. `TTProgram / TTABIPlan / TTExecutionPlan` 先成为稳定真源
 2. `MaterializeTTExecutableSpec` 成为唯一 writer
-3. 只有当稳态字段齐备、验证器已能 fail-fast、runtime/codegen 已切到只读消费后，
-   对应 compatibility writer / reader / fallback 才允许删除
+3. runtime/codegen 切到只读消费
+4. 只有在上面三步稳定后，compatibility writer / reader / fallback 才允许删除
 
-典型待切对象包括：
+### 4.2 待切对象
+
+下面这些当前还是旧主链 materialization 的字段，后续只能降为 projection，
+最终按 deletion gate 删除：
 
 - `blackhole.segment_plan`
 - `blackhole.runtime_args`
@@ -196,18 +126,70 @@ TT 层仍然遵守 small-closed family 设计：
 - `blackhole.semaphore_plan`
 - `blackhole.core_plan`
 
-## 4. 当前实施重点
+### 4.3 不能做的事
 
-当前 `Phase C` 的实施重点是：
+- 让 `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
+  继续当 target contract writer
+- 用 TT kernel 名字或 runtime object 反推 spatial semantics
+- 因为当前样例方便，就把 `TTProgram` 退化成大号 attr bag
+- 把 `ExecutableSpec` 当作与 `TTProgram` 并列的双真源
 
-1. 建立最小 `TTHardwareModel` / SoC snapshot intake
-2. 建立 read-only translator demand probe
-3. 用 probe 的缺口清单驱动 `Phase B` contract hardening 与剩余 spatial synthesis 工作
-4. 只有在 `Phase B` 整体完成、probe 不再恢复 spatial semantics 后，再启动正式
-   `TTProgram` cutover
-5. copy / GEMM / `flash-attn` correctness payoff 与 family expansion 都排在这之后
+## 5. 当前已完成的部分
 
-## 5. Shared Zero-Regression Baseline
+- `TTHardwareModel` 已作为 module-scope global info 进入主线
+- `LowerSpatialProgramToTTTargetProbe` 已落地
+- probe 已能消费
+  `SpatialProgram + TTHardwareModel + SpatialCapabilityModel`
+- probe 不写 `TTProgram`
+- probe 不写 `ExecutableSpec`
+- probe 不恢复 non-TT-specific spatial semantics
+- probe 已把当前最小 demand 面收成显式诊断：
+  - `Task.kind + placement.affinity_kind`
+  - `Channel.kind + payload_kind + delivery_kind`
+  - `Channel` linkage contract：`source_task_index / target_task_index / state_index`
+  - `Layout / WorkPartition.domain_index`
+  - `ProgramPhase / SyncEdge` 的基本 ordering closure
+
+当前结论：
+
+- `Phase C` 准备轨已完成
+- 这不等于正式 `TTProgram` cutover 已开始或已完成
+
+## 6. 当前仍未完成的部分
+
+- `TTProgram` 还不存在
+- 正式 `LowerSpatialProgramToTTTarget` translator 还不存在
+- `ValidateTTTargetProgram` 还不存在
+- `MaterializeTTExecutableSpec` 还不存在
+- copy / GEMM 还没有从 TT truth 重新物化成 `ExecutableSpec`
+- runtime/codegen 还没有切到只读消费 `TTProgram`
+- compatibility writer / fallback reader 还没有按 deletion gate 删除
+- `flash-attn` 的 `blackhole.acc` correctness payoff 仍归属 `Phase C2`
+
+因此当前 `Phase C` 还不能判定为开始正式 cutover。
+
+## 7. 完成判定
+
+只有在下面这些条件全部成立后，`Phase C` 才能算完成：
+
+1. `TTProgram` core object set 已进入稳定主链
+2. `TTProgram` 已显式承载第 2.2 节列出的 target truth
+3. `MaterializeTTExecutableSpec` 已成为唯一稳态 writer
+4. copy / GEMM / `flash-attn` 的 target truth 都从 `TTProgram` 物化，
+   不再依赖旧 planning 主链补洞
+5. compatibility writer / reader / fallback 已按 cutover 规则删除
+6. 新 family 进入主链时走
+   `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
+   的统一路径，而不是新增 case-by-case matcher
+7. shared zero-regression baseline 与 `Phase C2` 的 runtime gate 持续通过
+
+当前结论：
+
+- `Phase C0` 已完成
+- `Phase C1 / C2 / C3` 未完成
+- 当前 blocker 仍先落在剩余 `Phase B`
+
+## 8. Shared Zero-Regression Baseline
 
 ```bash
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q
@@ -217,7 +199,7 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_expo
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q
 ```
 
-## 6. TT-Sim Runtime Gate
+## 9. `Phase C2` Runtime Gate
 
 ```bash
 source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh
@@ -225,149 +207,3 @@ export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo
 cd /root/dev/vibe_dsl/tilelang_repo
 pytest testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py -k 'mha or gqa' -q
 ```
-
-## 7. Phase C0: Translator Demand Probe And Hardware Intake
-
-### 7.1 主要文件
-
-- Create:
-  - `tilelang_repo/src/transform/common/tt_hardware_model.h`
-  - `tilelang_repo/src/transform/common/tt_hardware_model.cc`
-  - `tilelang_repo/src/transform/lower_spatial_program_to_tt_target_probe.cc`
-  - `tilelang_repo/testing/python/transform/test_blackhole_tt_target_probe.py`
-- Modify:
-  - `tasks/dev_design/stage4_phase_b_spatial_ir.md`
-  - `tasks/progress.md`
-
-### 7.2 交付物
-
-- 最小 `TTHardwareModelStub`，其第一版输入直接来自 TT-Metal SoC descriptor
-- module-scope global info：
-  - `IRModule.global_infos["tl.tt_hardware_model"]`
-  - `IRModule.global_infos["tl.spatial_capability_model"]`
-- read-only translator probe：
-  - 只消费 `SpatialProgram + TTHardwareModelStub`
-  - 不写 `TTProgram`
-  - 不写 `ExecutableSpec`
-  - 不恢复 non-TT-specific spatial semantics
-- 对 copy / GEMM / 一个 multi-phase representative path 产出明确的 missing-contract 诊断
-
-**当前 probe 的最小 demand 面**
-
-- `Task.kind + abstract placement affinity`
-- `Channel.kind(flow_kind) + payload.payload_kind + payload.delivery_kind`
-- `Channel` linkage contract：`source_task_index / target_task_index / state_index`
-- `Layout / WorkPartition` 的 `domain_index`
-- `ProgramPhase / SyncEdge` 的 ordering closure
-
-### 7.3 退出条件
-
-- probe 不再从 `phase_name / task_name / source_task / target_task` 这类 display 字段恢复主语义
-- probe 的失败若存在，只能是：
-  - `Phase B` 尚未显式提供的 non-TT-specific contract
-  - 或已经进入 TT-specific 的真实 target legality blocker
-- `11x10 / 110 / worker_l1_size / dram-view` 这类当前散落常量开始收口到 `TTHardwareModelStub`
-
-## 8. Phase C1: Minimal TT Target Core And Materialization Cutover
-
-### 8.1 主要文件
-
-- Create:
-  - `tilelang_repo/src/transform/common/tt_target_program.h`
-  - `tilelang_repo/src/transform/common/tt_target_program.cc`
-  - `tilelang_repo/src/transform/lower_spatial_program_to_tt_target.cc`
-  - `tilelang_repo/src/transform/validate_tt_target_program.cc`
-  - `tilelang_repo/src/transform/materialize_tt_executable_spec.cc`
-  - `tilelang_repo/testing/python/transform/test_blackhole_tt_target_ir.py`
-- Modify:
-  - `tilelang_repo/src/transform/plan_blackhole_cb.cc`
-  - `tilelang_repo/src/transform/assign_blackhole_cores.cc`
-  - `tilelang_repo/src/target/rt_mod_blackhole.cc`
-  - `tilelang_repo/src/target/blackhole_module.cc`
-  - `tilelang_repo/src/target/codegen_blackhole.cc`
-  - `tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
-  - `tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py`
-
-### 8.2 交付物
-
-- 最小 TT target object set：
-  - `TTProgram`
-  - `TTKernel`
-  - `TTCBPlan`
-  - `TTTransportPlan`
-  - `TTSemaphorePlan`
-  - `TTComputeSyncPlan`
-  - `TTDstLayoutPlan`
-  - `TTABIPlan`
-  - `TTExecutionPlan`
-  - `TTHardwareModelStub`
-- copy / GEMM 的 target materialization 改由 `MaterializeTTExecutableSpec` 接管
-- `ExecutableSpec / KernelSpec` 只从 TT target truth 物化
-- `blackhole.runtime_args / common_runtime_args / cb_configs / core_plan`
-  降为 compatibility projection
-
-### 8.3 退出条件
-
-- `TTABIPlan` 已拥有 compile-time / common-runtime / per-work 三层 ABI
-- `TTTransportPlan / TTHardwareModelStub` 已接入 legality 检查
-- copy / GEMM spec/runtime 已经由 `MaterializeTTExecutableSpec` 接管
-- Shared zero-regression baseline 继续全绿
-
-## 9. Phase C2: Compatibility Deletion And Flash-Attn Correctness
-
-### 9.1 主要文件
-
-- Modify:
-  - `tilelang_repo/src/transform/lower_blackhole_ops.cc`
-  - `tilelang_repo/src/transform/plan_blackhole_cb.cc`
-  - `tilelang_repo/src/transform/assign_blackhole_cores.cc`
-  - `tilelang_repo/src/target/rt_mod_blackhole.cc`
-  - `tilelang_repo/src/target/blackhole_module.cc`
-  - `tilelang_repo/src/target/codegen_blackhole.cc`
-  - `tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
-  - `tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`
-
-### 9.2 交付物
-
-- 按 deletion gate 删除 compatibility writer / fallback reader：
-  - `blackhole.segment_plan`
-  - `blackhole.runtime_args`
-  - `blackhole.common_runtime_args`
-  - `blackhole.accessors`
-  - `blackhole.cb_configs`
-  - `blackhole.semaphore_plan`
-  - `blackhole.core_plan`
-- `flash-attn` compile-path 不再依赖 late target-specific semantic guessing
-- `blackhole.acc` 不再同时承载 algorithm state 与 TT scratch 两类真语义
-- MHA / GQA direct runtime correctness 在 TT-Sim 下闭环
-
-### 9.3 退出条件
-
-- `flash-attn` MHA/GQA direct runtime correctness 通过
-- 基线 copy / GEMM / export / pipeline 全绿
-- compatibility writer / reader / fallback 已按 deletion gates 收掉
-
-## 10. Phase C3: Family Expansion Under The New Mainline
-
-### 10.1 主要文件
-
-- Modify:
-  - `tilelang_repo/testing/python/transform/test_blackhole_semantic_ir.py`
-  - `tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
-  - `tilelang_repo/testing/python/transform/test_blackhole_tt_target_ir.py`
-  - consumer-specific tests alongside selected workloads
-  - `tasks/progress.md`
-
-### 10.2 推荐顺序
-
-1. `topk`
-2. paged decode
-3. `fusedmoe`
-4. chunk recurrence
-
-### 10.3 退出条件
-
-- 新增 family 不引入 case-by-case matcher
-- 每个 family 都先通过 semantic / spatial / TT compile gate
-- 只有进入正式 direct runtime 支持面后，才新增 TT-Sim runtime gate
-- Shared zero-regression baseline 继续全绿
