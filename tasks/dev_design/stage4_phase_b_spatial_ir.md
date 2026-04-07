@@ -3,14 +3,16 @@
 ## 基本信息
 
 - **文档角色**: `Phase B` 实施与设计边界文档
-- **当前状态**: `2026-04-07` 已完成：
+- **当前状态**: `2026-04-07` 仍在进行中：
   `Spatial*` object/vocab/shared key 已从 semantic infra 拆出；
   `SpatialCapabilityModel / TTHardwareModel` 已作为 module-scope global info 落地；
   `LowerToSpatialProgram` 已消费 capability model，
   `Channel.kind + payload_kind + delivery_kind` 与 `placement.affinity_kind`
-  已收成 translator intake 所需的最小 execution-bearing contract；
+  已收成当前 translator intake 所需的最小 execution-bearing contract；
   `LowerSpatialProgramToTTTargetProbe` 也已作为 read-only translator demand probe 落地。
-  当前文档保留为 `Phase C` 上游边界与退出条件记录，不再承担持续中的主实施角色。
+  但这些只代表 `Phase B` 的 contract-hardening 子阶段已完成；
+  本文第 3 节定义的 spatial synthesis algorithm 与第 6 节剩余 stronger contract
+  仍未收实，因此 `Phase B` 整体不能判定为已完成。
 - **上游输入**: 冻结后的 `SemanticProgram`
 - **下游输出**: 冻结后的 `SpatialProgram`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -477,11 +479,13 @@
 
 当前 `Phase B` 的实施重点是：
 
-1. 保住已经完成的 compile-path hardening，不回退到 legacy attr 主链
-2. 先把 `Spatial*` types / vocab / schema key 从 semantic infra 中拆出来
-3. 落地来自 SoC descriptor 的最小 `SpatialCapabilityModel`
-4. 用 read-only translator demand probe 反推 `SpatialProgram` 还缺什么 non-TT-specific truth
-5. 只补 probe 真正需要的 contract，保证 `Phase C` 只能做 TT mapping/materialization
+1. 保住已经完成的 compile-path hardening 与最小 contract 基线，不回退到 legacy attr 主链
+2. 把第 3.4 节定义的 spatial synthesis algorithm 收进 builder 主链，而不再停在
+   “typed objects + probe intake” 这一步
+3. 把 `Task / Channel / Layout / WorkPartition / ProgramPhase / SyncEdge`
+   的 execution-bearing truth 补到 `Phase C` 不需要回头追问的程度
+4. 按第 6.5 / 6.6 节继续增强 `SpatialProgram` contract 与 `ValidateSpatialProgram`
+5. 只有在本文规范性职责收实后，才进入 `Phase C` 的正式 `TTProgram` cutover
 
 ## 5. 当前稳定边界
 
@@ -602,7 +606,7 @@
 
 ### 6.3 Translator Demand Probe
 
-`Phase B` 当前已经按这个顺序完成：
+`Phase B` 当前已经按这个顺序完成的，是 contract-hardening 子阶段：
 先建立只读 translator probe，再用 probe 驱动 contract 补强。
 
 **这个 probe 必须做到**
@@ -716,19 +720,51 @@ validator 要继续变强，但方向必须收正：
 - 在 validator 里补 translator 缺的 spatial meaning
 - 让 `Phase C` 发现 legality 问题后再反向修正 `SpatialProgram`
 
-## 7. 当前退出条件
+## 7. 当前阶段判定
 
-`Phase B` 不再以“compile-path 已打通”作为完成标准。
-当前真正的退出条件是：
+### 7.1 已达成的 contract-hardening 子阶段 gate
+
+当前已经达成的是下面这组子阶段收口条件：
 
 1. `Spatial*` types / vocab / schema key 已从 semantic infra 中拆出
 2. `SpatialCapabilityModel` 落地，并由 builder 主链消费；Blackhole 第一版来自 SoC descriptor
 3. translator demand probe 已经存在，并且不会恢复 non-TT-specific spatial semantics
-4. `Channel` contract 已足够区分 `Phase C` 当前需要的 flow mapping 决策
+4. `Channel` contract 已足够区分 `Phase C` 当前 demand probe 所需的 flow mapping 决策
 5. `ValidateSpatialProgram` 已收正为 coherence/completeness gate，而不是 capability legality pass
 
-在这五条未达成前，`Phase B` 的 compile-path 虽然已完成，
-但 `SpatialProgram` 还不能视为最终形态的 virtual spatial program。
+这五条只说明：
+
+- `Phase B` 已走完 contract-hardening 子阶段
+- `SpatialProgram` 已达到当前 read-only translator probe intake 的最小上游 contract
+
+它们不等于 `Phase B` 整体完成。
+
+### 7.2 `Phase B` 整体完成条件
+
+只有在下面这些条件全部达成后，`Phase B` 才能判定为完成：
+
+1. 第 3.4 节定义的 task formation、flow shaping、domain realization、
+   phase/order synthesis、capability-informed legality/policy
+   已进入稳定 builder 主链，而不是只停留在文档定义或 fast-path/模板化近似
+2. 第 3.1 节要求的 execution-bearing truth
+   已显式进入 `Task / Channel / Layout / WorkPartition / ProgramPhase / SyncEdge /
+   Placement / ResourceIntent`，`Phase C` 不再需要 probe 驱动的非 TT 语义补洞
+3. 第 6.5 节列出的剩余 spatial contract 补强已收实：
+   - `Task` 具备 formation basis 与 abstract execution role
+   - `Layout / WorkPartition` 不再把 grouped / paged / routed / chunked
+     拍平成 axis-count / `derived_indices` 启发式
+   - `ProgramPhase / SyncEdge` 具备 closure / ordering / visibility /
+     materialization basis
+4. 第 6.6 节要求的 validator 职责已落实到
+   `ValidateSpatialProgram`，并对 phase truth、layout/access basis、ordering/visibility
+   contract 做 fail-fast 校验
+5. `Phase B` 不再依赖本文第 3.4 节明确禁止的 shortcut：
+   workload-name tasking、generic flow collapse、axis-count-only partition/layout、
+   固定 phase 模板、以及 policy 先行再让 validator 兜底
+6. Shared zero-regression baseline 持续通过
+
+在这些条件达成前，`Phase B` 的 compile-path 和最小 contract 子阶段即便已完成，
+`SpatialProgram` 仍不能视为最终形态的 virtual spatial program。
 
 ## 8. Shared Zero-Regression Baseline
 

@@ -37,58 +37,70 @@
     `CollectSemanticManifestSeeds -> ProjectSemanticManifest -> AugmentSemanticManifest`
   - `AnalyzeSemanticStructure` 已改成对 manifest structural evidence 的 manifest-first 消费，
     `fragment_regions` 退化为 compatibility fallback
-- **Phase B**: 已完成
-  - `Spatial*` object/vocab/shared key 已从 semantic infra 中拆出：
-    - `companion_base.{h,cc}`
-    - `spatial_vocab.{h,cc}`
-    - `spatial_program.{h,cc}`
-  - `LowerToSpatialProgram -> ValidateSpatialProgram` 已接入 Blackhole 主线，
-    `LowerBlackholeOps` 已硬要求 `tl.spatial_program`
-  - `IRModule.global_infos` 现已正式发布：
-    - `tl.tt_hardware_model`
-    - `tl.spatial_capability_model`
-  - `LowerToSpatialProgram` 已消费来自 SoC descriptor 的最小 capability snapshot：
-    - layout / partition / flow family 选择经 capability model 收口
-    - placement 不再泄漏 `brisc / trisc / ncrisc`，改用 neutral `affinity_kind`
-    - `Channel.kind` 已收正为 flow family；`payload_kind / delivery_kind`
-      成为显式 contract
-  - `ValidateSpatialProgram` 当前口径已收正为：
-    structure/coherence/completeness gate，而不是 capability legality pass
-  - read-only translator demand probe 已落地：
-    `LowerSpatialProgramToTTTargetProbe`
-- **Phase C**: 已定义；以 `Phase B` contract hardening 达标为实现前提
+- **Phase B**: 仍在进行中
+  - 已完成的 contract-hardening 子阶段：
+    - `Spatial*` object/vocab/shared key 已从 semantic infra 中拆出：
+      - `companion_base.{h,cc}`
+      - `spatial_vocab.{h,cc}`
+      - `spatial_program.{h,cc}`
+    - `LowerToSpatialProgram -> ValidateSpatialProgram` 已接入 Blackhole 主线，
+      `LowerBlackholeOps` 已硬要求 `tl.spatial_program`
+    - `IRModule.global_infos` 现已正式发布：
+      - `tl.tt_hardware_model`
+      - `tl.spatial_capability_model`
+    - `LowerToSpatialProgram` 已消费来自 SoC descriptor 的最小 capability snapshot：
+      - layout / partition / flow family 选择经 capability model 收口
+      - placement 不再泄漏 `brisc / trisc / ncrisc`，改用 neutral `affinity_kind`
+      - `Channel.kind` 已收正为 flow family；`payload_kind / delivery_kind`
+        成为显式 contract
+    - `ValidateSpatialProgram` 当前口径已收正为：
+      structure/coherence/completeness gate，而不是 capability legality pass
+    - read-only translator demand probe 已落地：
+      `LowerSpatialProgramToTTTargetProbe`
+  - 仍未完成的核心职责：
+    - `Task` formation / abstract execution role
+    - `Flow shaping`
+    - `Domain realization`
+    - `Phase / ordering synthesis`
+    - `ValidateSpatialProgram` 对这些 stronger contract 的 fail-fast 校验
+- **Phase C**: 已定义；当前只有准备轨落地
   - `TT Target IR` 已定义
   - read-only translator demand probe 与 hardware intake 已落地
-  - 正式 `TTProgram / MaterializeTTExecutableSpec` cutover 还没有开始
+  - 正式 `TTProgram / MaterializeTTExecutableSpec` cutover
+    仍受剩余 `Phase B` 工作阻塞
 
 ## 当前主 blocker
 
-当前 blocker 已经收敛到：
+当前 blocker 先落在剩余 `Phase B`，然后才是正式 `Phase C` cutover：
 
-- `Phase B` contract hardening 已完成，但 `TTProgram / MaterializeTTExecutableSpec`
-  仍不存在
+- `Phase B` 的 contract-hardening 子阶段虽然已经完成，但正文定义的
+  spatial synthesis algorithm 与 stronger execution-bearing contract 仍未收实
+- `SpatialProgram` 因而还不能视为最终形态的 virtual spatial program
 - `LowerSpatialProgramToTTTargetProbe` 已能消费
   `SpatialProgram + TTHardwareModel + SpatialCapabilityModel`，
   但这条路径还只是 read-only intake 验真，不负责物化 target object
+- `TTProgram / MaterializeTTExecutableSpec` 仍不存在
 - 当前 target/runtime contract 仍主要停留在
   `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores -> rt_mod_blackhole`
   的旧主链上
-- 因此 `Spatial Program IR -> TT Target IR -> ExecutableSpec`
-  的单一真源切换尚未真正开始
 
 这也是当前 `blackhole.acc` correctness payoff 仍未完全兑现的根因：主 blocker
-已经转成 spatial / target 层的 contract materialization，而不是继续补 semantic matcher
-或继续在 `Phase B` 保留 legacy attr fallback。
+依然包含 `Phase B` 的 spatial synthesis 本体，而不只是 target materialization。
 
 ## 下一步
 
-1. 以 `tasks/dev_design/stage4_phase_c_tt_target_ir.md` 启动正式 `TTProgram` object set
-   - 复用当前 `tl.tt_hardware_model` / `tl.spatial_capability_model`
-   - 把 probe 当前验证的 intake contract 物化成 typed target objects
-2. 启动 `MaterializeTTExecutableSpec` 单一真源 cutover
-   - 让 `ExecutableSpec` 不再从 `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores`
-     的旧 planning attr 链间接恢复真语义
-3. 在 `TTProgram` 主链建立后，再推进 `Phase C2`
+1. 继续完成 `Phase B` 正文定义的 spatial synthesis algorithm
+   - `Task` formation
+   - `Flow shaping`
+   - `Domain realization`
+   - `Phase / ordering synthesis`
+   - capability-informed legality / policy
+2. 按 `stage4_phase_b_spatial_ir.md` 第 6.5 / 6.6 节继续补强 stronger contract 与 validator
+   - 收实 formation / ordering / visibility / materialization basis
+   - 让 grouped / paged / routed / chunked 不再被拍平成最小启发式 contract
+3. 只有在 `Phase B` 整体完成后，再启动正式 `TTProgram / MaterializeTTExecutableSpec`
+   cutover
+4. 在 `TTProgram` 主链建立后，再推进 `Phase C2`
    - `flash-attn` `blackhole.acc` correctness payoff
    - 更宽 workload family expansion
 
@@ -141,8 +153,12 @@
     intake 诊断，不恢复 non-TT-specific spatial semantics
   - representative family gate 当前覆盖
     `copy / GEMM / flash-attn / topk / chunk_o / fusedmoe_routed / mla_decode_paged`
-  - `SpatialProgram` 现在可以视为 `Phase C` translator intake 的稳定 virtual spatial contract
 - 当前仍未完成的事实：
+  - `Phase B` 正文定义的 spatial synthesis algorithm 仍未整体收实
+  - `Task / Layout / WorkPartition / ProgramPhase / SyncEdge` 的 stronger execution-bearing
+    contract 仍未完成
+  - `SpatialProgram` 当前只达到了 read-only probe intake 的最小上游 contract，
+    还不能视为最终形态的 virtual spatial program
   - `TTProgram / MaterializeTTExecutableSpec` 仍不存在
   - `Phase C` 还没有启动正式 cutover 实现，也还没有证明
     `SpatialProgram -> TTProgram` 的单一真源切换
@@ -179,6 +195,7 @@
 
 - `Phase A` compile-path 和 semantic gate 当前稳定
 - `Phase B` contract hardening / probe / hardware intake 当前稳定
+- `Phase B` 整体仍未完成；当前主工作仍是 spatial synthesis 本体与 stronger contract
 - `flash-attn` correctness 仍不应被写成已完成稳定基线
 
 ## 当前文档入口
@@ -198,9 +215,9 @@
 - 详细逐步实现记录、历史 checklist 和理论证明草稿分别留在阶段文档、git history 与 formalization note 中。
 - `2026-04-07` 已再次完成一轮活动文档状态审计：
   `README.md`、`AGENTS.md`、`CLAUDE.md`、active stage docs 已统一到
-  `Phase A` 完成、`Phase B` compile-path cutover 收口但整体未结束、
-  当前主实施重点仍在 `Phase B` contract hardening、以及 manifest-first、
-  正式 pass 链与 `fragment_regions` 残余职责的当前口径。
+  `Phase A` 完成、`Phase B` contract-hardening 子阶段已收口但整体仍未完成、
+  当前主实施重点回到 `Phase B` 正文定义的 spatial synthesis algorithm、
+  以及 manifest-first、正式 pass 链与 `fragment_regions` 残余职责的当前口径。
   同一轮也已把 `Stage 0 / Phase A / Phase C` 文档里的旧 checklist、
   一次性验证数字和 task/step 计划体压回长期有效的边界描述。
 - `stage4_semantic_manifest.md` 当前作为 `Phase A` 信息源重构文档保留：

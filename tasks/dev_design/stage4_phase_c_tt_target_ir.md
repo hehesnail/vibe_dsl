@@ -7,8 +7,10 @@
   已落地：
   `LowerSpatialProgramToTTTargetProbe` 已能消费
   `SpatialProgram + TTHardwareModel + SpatialCapabilityModel` 并对缺失 contract
-  发出明确诊断。当前下一步是进入 `TTProgram / MaterializeTTExecutableSpec`
-  的正式 typed target cutover
+  发出明确诊断。
+  这部分只代表 `Phase C` 准备轨已就绪；
+  正式 `TTProgram / MaterializeTTExecutableSpec` typed target cutover
+  仍以前置的 `Phase B` 正文职责完成为前提。
 - **上游输入**: 冻结后的 `SpatialProgram`
 - **下游输出**: `TTProgram` 与 `MaterializeTTExecutableSpec` 物化结果
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -58,7 +60,8 @@
 - 先写 read-only translator demand probe
 - 让它把缺失的 non-TT-specific truth 明确报出来
 - 再回到 `Phase B` 补 contract
-- 只有 probe 不再要求恢复 spatial semantics 时，才进入正式 `TTProgram` cutover
+- 只有 `Phase B` 的整体完成条件达成、probe 不再要求恢复 spatial semantics 时，
+  才进入正式 `TTProgram` cutover
 
 这也意味着 `Phase C` 和硬件模型的关系要分成两层：
 
@@ -199,8 +202,9 @@ TT 层仍然遵守 small-closed family 设计：
 
 1. 建立最小 `TTHardwareModel` / SoC snapshot intake
 2. 建立 read-only translator demand probe
-3. 用 probe 的缺口清单驱动 `Phase B` contract hardening
-4. 只有在 probe 不再恢复 spatial semantics 后，再启动正式 `TTProgram` cutover
+3. 用 probe 的缺口清单驱动 `Phase B` contract hardening 与剩余 spatial synthesis 工作
+4. 只有在 `Phase B` 整体完成、probe 不再恢复 spatial semantics 后，再启动正式
+   `TTProgram` cutover
 5. copy / GEMM / `flash-attn` correctness payoff 与 family expansion 都排在这之后
 
 ## 5. Shared Zero-Regression Baseline
