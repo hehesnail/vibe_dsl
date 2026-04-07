@@ -141,25 +141,29 @@ Stateful Semantic IR
 
 ### 4.3 `Phase C`
 
-- 已定义；当前只有准备轨已落地
+- 正式 cutover bridge 已落地
 - 已完成：
   - `TTHardwareModel` intake
   - `LowerSpatialProgramToTTTargetProbe`
-- 未开始：
-  - 正式 `TTProgram / MaterializeTTExecutableSpec` cutover
-  - 旧 planning 主链删除
+  - `TTProgram` core object set
+  - `LowerSpatialProgramToTTTarget`
+  - `ValidateTTTargetProgram`
+  - `MaterializeTTExecutableSpec`
+- 未完成：
+  - legacy target attr reader / fallback 删除
 
 结论：
 
-- `Phase C` 当前不能写成“已开始正式 cutover”
-- `Phase B` 前置输入已满足；当前 blocker 已转到正式 cutover 本身
+- `Phase C` 已开始并打通正式 cutover 主链
+- 当前 blocker 已转到 reader-side deletion gate 与 `Phase C2` correctness payoff
 
 ## 5. 当前主 blocker
 
 当前总体 blocker 只有一件事：
 
-1. `TTProgram / MaterializeTTExecutableSpec` 还不存在，
-   target/runtime 仍主要停留在旧 planning 主链
+1. reader-side deletion gate 尚未完成，
+   `rt_mod_blackhole / codegen_blackhole` 仍消费
+   `MaterializeTTExecutableSpec` 反写的 projection
 
 这也是当前 `blackhole.acc` correctness payoff 还没有完全兑现的根因。
 

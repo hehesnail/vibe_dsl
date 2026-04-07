@@ -234,6 +234,9 @@ def blackhole_codegen(
     device_mod = tilelang.transform.LowerBlackholeOps()(device_mod)
     device_mod = tilelang.transform.PlanBlackholeCB()(device_mod)
     device_mod = tilelang.transform.AssignBlackholeCores()(device_mod)
+    device_mod = tilelang.transform.LowerSpatialProgramToTTTarget()(device_mod)
+    device_mod = tilelang.transform.ValidateTTTargetProgram()(device_mod)
+    device_mod = tilelang.transform.MaterializeTTExecutableSpec()(device_mod)
 
     if not enable_device_compile:
         device_mod = tilelang.transform.LowerOpaqueBlock()(device_mod)

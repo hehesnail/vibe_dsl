@@ -52,6 +52,19 @@ def _replace_spatial_program(mod, program):
 
 def test_tt_target_probe_pass_is_registered():
     assert hasattr(tilelang.transform, "LowerSpatialProgramToTTTargetProbe")
+    assert hasattr(tilelang.transform, "LowerSpatialProgramToTTTarget")
+    assert hasattr(tilelang.transform, "ValidateTTTargetProgram")
+    assert hasattr(tilelang.transform, "MaterializeTTExecutableSpec")
+
+
+def _prepare_blackhole_phase_c_module(prim_func):
+    mod = _prepare_blackhole_phase_b_module(prim_func)
+    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = tilelang.transform.PlanBlackholeCB()(mod)
+    mod = tilelang.transform.AssignBlackholeCores()(mod)
+    mod = tilelang.transform.LowerSpatialProgramToTTTarget()(mod)
+    mod = tilelang.transform.ValidateTTTargetProgram()(mod)
+    return mod
 
 
 def test_tt_target_probe_accepts_copy_and_publishes_hardware_snapshot():
@@ -65,6 +78,44 @@ def test_tt_target_probe_accepts_copy_and_publishes_hardware_snapshot():
     assert int(hardware.logical_worker_grid_x) == 11
     assert int(hardware.logical_worker_grid_y) == 10
     assert int(hardware.worker_l1_size) > 0
+
+
+def test_tt_target_lowering_materializes_tt_program_for_copy():
+    mod = _prepare_blackhole_phase_c_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+
+    tt_program = mod["main"].attrs["tl.tt_program"]
+    assert str(tt_program.entry_name) == "main"
+    assert len(tt_program.kernels) == 1
+    assert len(tt_program.cb_plans) > 0
+    assert len(tt_program.core_groups) == 1
+    assert len(tt_program.abi_plans) == 1
+    assert len(tt_program.execution_plans) == 1
+    assert str(tt_program.kernels[0].kind) == "fused_dataflow"
+    assert str(tt_program.kernels[0].core_type) == "brisc"
+
+
+def test_materialize_tt_executable_spec_rebuilds_legacy_projection_from_tt_program():
+    mod = _prepare_blackhole_phase_c_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    func = mod["main"]
+    for key in (
+        "blackhole.segment_plan",
+        "blackhole.runtime_args",
+        "blackhole.common_runtime_args",
+        "blackhole.cb_configs",
+        "blackhole.semaphore_plan",
+        "blackhole.core_plan",
+    ):
+        if func.attrs and key in func.attrs:
+            func = func.without_attr(key)
+    mod = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
+
+    rematerialized = tilelang.transform.MaterializeTTExecutableSpec()(mod)
+    attrs = rematerialized["main"].attrs
+    assert "tl.tt_program" in attrs
+    assert "blackhole.segment_plan" in attrs
+    assert "blackhole.runtime_args" in attrs
+    assert "blackhole.cb_configs" in attrs
+    assert "blackhole.core_plan" in attrs
 
 
 def test_tt_target_probe_accepts_gemm_fast_path():

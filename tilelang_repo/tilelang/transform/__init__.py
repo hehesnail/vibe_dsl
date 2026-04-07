@@ -764,6 +764,21 @@ def LowerSpatialProgramToTTTargetProbe():
     return tvm.ffi.get_global_func("tl.transform.LowerSpatialProgramToTTTargetProbe")()
 
 
+def LowerSpatialProgramToTTTarget():
+    """Materialize TTProgram from frozen SpatialProgram for Blackhole Phase C."""
+    return tvm.ffi.get_global_func("tl.transform.LowerSpatialProgramToTTTarget")()
+
+
+def ValidateTTTargetProgram():
+    """Validate TTProgram invariants before materializing ExecutableSpec."""
+    return tvm.ffi.get_global_func("tl.transform.ValidateTTTargetProgram")()
+
+
+def MaterializeTTExecutableSpec():
+    """Project TTProgram back into the current direct-runtime/codegen attr schema."""
+    return tvm.ffi.get_global_func("tl.transform.MaterializeTTExecutableSpec")()
+
+
 def LowerBlackholeOps():
     """Lower TileLang high-level operations to TT-Metal builtins for Blackhole backend.
 

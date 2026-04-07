@@ -56,6 +56,10 @@
 - evidence carrier 不是 truth owner
 - 兼容 attr 的删除顺序固定为：
   先移走 semantic consumer，再移走 lowering consumer，最后删 attr 本身
+- 当新的 typed truth 需要 bridge 回 legacy projection 时，必须显式区分
+  “节点原生拥有该字段” 和 “只是借用 top-level fallback”；
+  否则 materializer 会把 fallback 意外下沉成 per-node 真相，
+  破坏旧测试和 reader contract
 
 ## 5. Schema / ABI 模式
 

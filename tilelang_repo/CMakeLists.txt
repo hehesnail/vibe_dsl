@@ -267,6 +267,9 @@ elseif(USE_BLACKHOLE)
     src/transform/spatial_program_builder.cc
     src/transform/validate_spatial_program.cc
     src/transform/lower_spatial_program_to_tt_target_probe.cc
+    src/transform/lower_spatial_program_to_tt_target.cc
+    src/transform/validate_tt_target_program.cc
+    src/transform/materialize_tt_executable_spec.cc
     src/transform/lower_blackhole_ops.cc
     src/transform/split_blackhole_kernel.cc
     src/transform/plan_blackhole_cb.cc

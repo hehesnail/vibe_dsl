@@ -32,9 +32,12 @@
   - 已完成审计收口：
     shared helper 去重、typed field 上提、index canonical linkage、
     validator 收窄、fast path contract 共构、capability model 前置发布
-- **Phase C**: 已定义；准备轨已完成
-  - 已完成：read-only translator demand probe、hardware intake
-  - 未开始：正式 `TTProgram / MaterializeTTExecutableSpec` cutover
+- **Phase C**: 正式 cutover 主链已接入
+  - 已完成：read-only translator demand probe、hardware intake、
+    `TTProgram` core object set、`LowerSpatialProgramToTTTarget`、
+    `ValidateTTTargetProgram`、`MaterializeTTExecutableSpec`
+  - 当前保留：legacy target attrs reader 仍作为 projection consumer 存在，
+    但 steady-state writer 已切到 `TTProgram -> MaterializeTTExecutableSpec`
 
 ## `Phase B` 收尾结果
 
@@ -75,10 +78,8 @@
 
 ## 当前 blocker
 
-- `TTProgram / MaterializeTTExecutableSpec` 仍不存在
-- target/runtime 正式 cutover 仍主要停留在
-  `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores -> rt_mod_blackhole`
-  的旧主链
+- legacy target attr reader / fallback 删除尚未完全收口；
+  codegen/runtime 仍消费 `MaterializeTTExecutableSpec` 反写的 projection
 - `flash-attn` 的 `blackhole.acc` correctness payoff 仍归属 `Phase C2`
 
 ## 独立已知问题
@@ -92,9 +93,8 @@
 
 ## 下一步
 
-1. 启动正式 `Phase C` cutover：
-   `SpatialProgram -> TT Target IR -> TTProgram / MaterializeTTExecutableSpec`
-2. 在 cutover 期间保持当前 direct host path 和 `tvm_ffi` export 支持面不回退
+1. 收掉 legacy target attr reader / fallback，完成 `TTProgram` single-truth reader cutover
+2. 在新主链上继续扩大 direct host path/runtime gate 覆盖
 3. 把 `flash-attn` 的 `blackhole.acc` correctness payoff 继续放在 `Phase C2`
 
 ## 当前主设备链
@@ -120,6 +120,9 @@ LowerDeviceStorageAccessInfo
   -> LowerBlackholeOps
   -> PlanBlackholeCB
   -> AssignBlackholeCores
+  -> LowerSpatialProgramToTTTarget
+  -> ValidateTTTargetProgram
+  -> MaterializeTTExecutableSpec
 ```
 
 ## 最新验证摘要
@@ -128,15 +131,12 @@ LowerDeviceStorageAccessInfo
   - `cmake -S tilelang_repo -B tilelang_repo/build`
   - `cmake --build tilelang_repo/build -j32`
 - transform:
-  - `test_blackhole_spatial_ir.py -q`: `71 passed`
-  - `test_blackhole_tt_target_probe.py -q`: `17 passed`
-  - `test_blackhole_spatial_ir.py -k "typed_linkage_fields or spatial_capability_model_snapshot" -q`:
-    `3 passed`
+  - `test_blackhole_tt_target_probe.py -q`: `19 passed`
 - target:
-  - `test_blackhole_copy_pipeline.py -q test_blackhole_gemm.py -q`:
-    `68 passed, 21 skipped, 1 xfailed`
-  - `test_blackhole_tvm_ffi_export.py -q`: `1 passed`
-  - `test_blackhole_flash_attention_pipeline.py -q`: `27 passed`
+  - `test_blackhole_copy_pipeline.py test_blackhole_gemm.py test_blackhole_tvm_ffi_export.py test_blackhole_flash_attention_pipeline.py -x`:
+    `96 passed, 21 skipped, 1 xfailed`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`:
+    `12 passed`
 
 ## 当前文档入口
 

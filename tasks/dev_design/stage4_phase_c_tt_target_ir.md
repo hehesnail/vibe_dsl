@@ -3,9 +3,12 @@
 ## 基本信息
 
 - **文档角色**: `Phase C` 当前设计边界与 cutover 文档
-- **当前状态**: `2026-04-08` 准备轨已落地，`Phase B` 前置已满足；正式 cutover 尚未开始
-- **已完成子阶段**: read-only translator demand probe、`TTHardwareModel` intake
-- **仍未完成**: `TTProgram`、`MaterializeTTExecutableSpec`、旧主链删除
+- **当前状态**: `2026-04-08` 正式 cutover bridge 已落地；`TTProgram`
+  已接入稳定主链，legacy projection reader 清理仍在收尾
+- **已完成子阶段**: read-only translator demand probe、`TTHardwareModel` intake、
+  `TTProgram` core object set、`LowerSpatialProgramToTTTarget`、
+  `ValidateTTTargetProgram`、`MaterializeTTExecutableSpec`
+- **仍未完成**: legacy target attr reader / fallback 删除
 - **上游输入**: 冻结后的 `SpatialProgram`
 - **下游输出**: 冻结后的 `TTProgram` 与 `ExecutableSpec` 物化结果
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -173,13 +176,10 @@
 
 ## 6. 当前仍未完成的部分
 
-- `TTProgram` 还不存在
-- 正式 `LowerSpatialProgramToTTTarget` translator 还不存在
-- `ValidateTTTargetProgram` 还不存在
-- `MaterializeTTExecutableSpec` 还不存在
-- copy / GEMM 还没有从 TT truth 重新物化成 `ExecutableSpec`
-- runtime/codegen 还没有切到只读消费 `TTProgram`
-- compatibility writer / fallback reader 还没有按 deletion gate 删除
+- compatibility projection reader 仍存在：
+  `rt_mod_blackhole` / `codegen_blackhole` 仍消费
+  `MaterializeTTExecutableSpec` 反写出的 legacy attrs
+- legacy reader / fallback 还没有按 deletion gate 删除
 - `flash-attn` 的 `blackhole.acc` correctness payoff 仍归属 `Phase C2`
 - `SpatialCapabilityModel` 的 quantitative hardware fields
   还没有进入正式 planning / mapping 主链
@@ -188,7 +188,45 @@
 - 部分 spatial node 仍保留 payload-backed truth；
   更彻底的 typed schema 分化仍属于 `Phase C` 演进内容
 
-因此当前 `Phase C` 还不能判定为已开始正式 cutover，但前置阶段已不再阻塞。
+因此当前 `Phase C` 已开始并打通正式 cutover 主链，但 reader-side deletion gate
+尚未完成。
+
+## 6.1 本次正式 cutover 的实现策略
+
+本次 `Phase C` 落地按下面的 bridge discipline 执行：
+
+1. 先把 `TTProgram` core object set 落成 companion truth，并注册成
+   `tl.tt_program`
+2. `LowerSpatialProgramToTTTarget` 负责生成 `TTProgram`
+3. `ValidateTTTargetProgram` 负责做 target-truth 完整性与 object-boundary 校验
+4. `MaterializeTTExecutableSpec` 负责从 `TTProgram` 反写当前 direct runtime /
+   codegen 仍需消费的 materialized attrs
+
+桥接期纪律：
+
+- 正式 runtime/codegen 稳态 writer 只能是 `MaterializeTTExecutableSpec`
+- `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores` 在 bridge 期仍可保留为
+  target planning helper，但它们写出的 legacy attrs 只能当 translator 输入，
+  不能继续当最终协议真源
+- `MaterializeTTExecutableSpec` 必须先清理再反写
+  `blackhole.segment_plan / runtime_args / common_runtime_args / accessors /
+  cb_configs / semaphore_plan / core_plan`
+  等 projection，避免旧 attrs 与 `TTProgram` 并存成双真源
+- `rt_mod_blackhole` / `codegen_blackhole` 在 bridge 期允许继续消费
+  materialized projection，但 `ExecutableSpec` 的稳态来源必须改成
+  `TTProgram -> MaterializeTTExecutableSpec`
+
+当前实现结果：
+
+- `TTProgram` 已成为 target truth owner
+- `MaterializeTTExecutableSpec` 已成为 steady-state projection writer
+- `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
+  已降为 bridge planning helper
+
+当前仍未完成：
+
+- reader-side deletion gate 尚未收口；
+  `rt_mod_blackhole` / `codegen_blackhole` 仍读 projection，不是直接读 `TTProgram`
 
 ## 7. 完成判定
 

@@ -19,7 +19,7 @@
 |------|------|----------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计 | 常青总纲 |
 | `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 已完成阶段文档 | 已完成；作为 `Phase C` 输入边界保留，并记录完成后设计审计结论 |
-| `stage4_phase_c_tt_target_ir.md` | `TT Target IR` 当前设计与 cutover 文档 | 准备轨已完成；当前主实施入口 |
+| `stage4_phase_c_tt_target_ir.md` | `TT Target IR` 当前设计与 cutover 文档 | 正式 cutover bridge 已落地；reader-side deletion gate 仍在收尾 |
 | `stage4_phase_a_semantic_ir.md` | `Phase A` 已落地语义边界 | 已完成；作为 `Phase B` 输入参考保留 |
 | `stage4_semantic_manifest.md` | `Phase A` 信息源边界 | 已完成；作为 ownership 参考保留 |
 
