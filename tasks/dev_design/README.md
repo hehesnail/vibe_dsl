@@ -27,6 +27,8 @@
 
 按需要再读：
 
+- `layered_ir_references.md`
+  - 分层 IR 设计的研究参考与跨论文启发；仅作设计输入，不承担协议真源职责
 - `stage4_stage0_guardrails.md`
   - Stage 0 护栏与 cutover 前提
 - `stage4_phase_a_formalization_note.md`

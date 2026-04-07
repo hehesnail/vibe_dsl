@@ -182,6 +182,8 @@ Stateful Semantic IR
   - `TT Target IR` 的当前设计与 cutover 文档
 - `tasks/progress.md`
   - 当前执行状态、验证摘要、下一步
+- `layered_ir_references.md`
+  - 研究参考与分层启发；仅作设计输入，不承担当前协议真源职责
 
 阶段细节、完成条件和基线命令默认下沉到对应阶段文档，
 总纲不再重复维护 backlog 级别的文件清单或子阶段脚本。
