@@ -94,6 +94,15 @@
 - `SpatialCapabilityModel` 已经裁过合法空间后的结果
 - `TTHardwareModel` 提供的 concrete target capability
 
+并且要带着 `Phase B` 完成后设计审计的风险清单进入 cutover：
+
+- `Placement` 只有在能被稳定消费成 target mapping constraint 时，
+  才证明其长期 object boundary 站得住
+- `SpatialCapabilityModel` 的 quantitative hardware fields
+  只有在 planning / mapping 真正消费后，才证明其长期存在价值
+- `ResourceIntent` 必须继续保持 small-closed kind discipline；
+  `Phase C` 不应把更多杂项支持信息重新塞回这一层
+
 正式 translator 不能把下面这些字段当主语义：
 
 - `task_name`

@@ -136,6 +136,8 @@ Stateful Semantic IR
 
 - `SpatialProgram` 已成为当前唯一 spatial 主链
 - `Phase B` 已完成
+- `Phase B` 完成后设计审计已落入阶段文档；当前 object-boundary 风险
+  继续在 `Phase C` 中验证，而不重新打开 `Phase B`
 
 ### 4.3 `Phase C`
 

@@ -52,6 +52,15 @@
 - `SpatialProgram` 已达到 execution-bearing spatial program 的完成判定
 - `Phase C` 现在可以把 `SpatialProgram` 当成单一上游真源继续 cutover
 
+补充：
+
+- `Phase B` 已完成一轮完成后设计审计；当前不重新打开 `Phase B`，
+  而是带着 object-boundary 风险清单进入 `Phase C`
+- 当前最值得在 `Phase C` 中继续验证的边界包括：
+  - `Placement` 是否会被消费成真实 target mapping constraint
+  - `SpatialCapabilityModel` 的 quantitative hardware fields 是否会进入 planning / mapping
+  - `ResourceIntent` 是否能继续保持 small-closed kind discipline
+
 ## 当前 blocker
 
 - `TTProgram / MaterializeTTExecutableSpec` 仍不存在

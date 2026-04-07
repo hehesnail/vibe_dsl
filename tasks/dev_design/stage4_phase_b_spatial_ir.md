@@ -319,6 +319,31 @@ probe 只能继续暴露 TT-specific demand，不能再回收 generic spatial tr
 - `Phase C` 可以正式把 `SpatialProgram` 当成单一上游真源，
   启动 `TTProgram / MaterializeTTExecutableSpec` cutover
 
+## 6.1 完成后设计审计结论
+
+`Phase B` 判定为已完成，不等于当前 object boundary 已经没有继续收敛空间。
+
+本轮设计审计的结论是：
+
+- 三层主分层本身成立：`Semantic -> Spatial -> TT Target`
+  仍然是被现有 family 与旧主链 truth 混层问题共同逼出来的，不属于 cargo-cult 分层
+- `ProgramPhase / SyncEdge / phase_boundary_materialization`
+  当前仍有明确工程必要性；`Phase C` 应消费它们冻结后的 truth，
+  不应重新发明 phase / ordering 语义
+- `Placement` 是当前 `Phase B` object set 里最值得继续警惕的过度设计风险点；
+  其长期保留价值取决于 `Phase C` 是否会把它消费成真实 target mapping constraint，
+  而不只是停留在 builder / validator / probe contract
+- `SpatialCapabilityModel` 的 categorical legality 面当前是成立的；
+  其中 quantitative hardware fields 的长期价值，取决于
+  `Phase C` 是否会把它们真正消费进 planning / mapping
+- `ResourceIntent` 当前有真实 consumer，
+  但后续必须继续保持 small-closed kind discipline；
+  如果持续吸收“支持性信息”，它会重新退化成 attr bag
+
+因此，`Phase B` 当前的正确处理方式不是重新打开返工，
+而是带着这份风险清单进入 `Phase C`，
+并在 target cutover 中继续验证这些边界是否真的必要、是否被下游稳定消费。
+
 ## 7. Shared Zero-Regression Baseline
 
 ```bash
