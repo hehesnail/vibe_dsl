@@ -2,59 +2,45 @@
 
 > 当前唯一总体设计文档: `final_blackhole_backend_redesign.md`
 
-> 入口规则: 根目录只保留当前需要持续引用的文档；`archive/` 下的文档一律视为历史记录、完成记录，或已被后续设计取代。
+> 入口规则: 根目录只保留当前需要持续引用的文档；`archive/` 下的内容一律视为历史记录，不再作为当前任务安排入口。
 
-## 1. 当前实施入口
+## 1. 当前入口
 
-当前工程推进默认从下面三份文档进入：
-
-| 文档 | 角色 | 状态 |
-|------|------|------|
-| `final_blackhole_backend_redesign.md` | 唯一总体设计 | 常青 |
-| `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 当前主实施文档 | contract-hardening 子阶段已完成；整体仍在进行中 |
-| `stage4_phase_c_tt_target_ir.md` | `TT Target IR` 设计与 cutover 文档 | 准备轨已落地；正式 cutover 仍受剩余 `Phase B` 工作阻塞 |
-
-## 2. 当前阶段文档
-
-| 文档 | 角色 | 状态 |
-|------|------|------|
-| `stage4_stage0_guardrails.md` | Stage 0 护栏与 cutover 前提 | 已落地；作为边界参考保留 |
-| `stage4_phase_a_semantic_ir.md` | `Phase A` 工程边界、已落地对象与 `Phase B` 输入约束 | 已完成；作为实现参考保留 |
-| `stage4_phase_a_formalization_note.md` | `Phase A` 理论化 / 证明化并行文档 | 并行 research track；非工程 blocker |
-| `stage4_semantic_manifest.md` | Phase A 信息源重构：正向语义传递替代反向恢复 | Phase 1-2 已落地；作为边界参考保留 |
-| `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 边界、剩余 contract 与回归文档 | contract-hardening 子阶段已完成；当前主实施入口 |
-| `stage4_phase_c_tt_target_ir.md` | `TT Target IR`、probe、cutover、family expansion | 准备轨已落地；当前为参考文档 |
-
-## 3. 支撑与审计文档
-
-| 文档 | 角色 | 状态 |
-|------|------|------|
-| `review_final_blackhole_backend_redesign.md` | 总设计的系统性 review 与代码交叉审计记录 | 已完成；作为设计审计快照保留，不承担当前状态跟踪 |
-
-## 4. 当前任务安排
-
-当前默认执行顺序：
+默认按下面顺序进入：
 
 1. `final_blackhole_backend_redesign.md`
 2. `stage4_phase_b_spatial_ir.md`
 3. `stage4_phase_c_tt_target_ir.md`
+4. `tasks/progress.md`
 
-在需要回看前置边界时，再引用：
+## 2. 当前活动文档
+
+| 文档 | 角色 | 当前状态 |
+|------|------|----------|
+| `final_blackhole_backend_redesign.md` | 唯一总体设计 | 常青总纲 |
+| `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 当前主实施文档 | contract-hardening 子阶段已完成；整体未完成 |
+| `stage4_phase_c_tt_target_ir.md` | `TT Target IR` 当前设计与 cutover 文档 | 准备轨已完成；正式 cutover 未开始 |
+| `stage4_phase_a_semantic_ir.md` | `Phase A` 已落地语义边界 | 已完成；作为 `Phase B` 输入参考保留 |
+| `stage4_semantic_manifest.md` | `Phase A` 信息源边界 | 已完成；作为 ownership 参考保留 |
+
+## 3. 参考文档
+
+按需要再读：
 
 - `stage4_stage0_guardrails.md`
-- `stage4_phase_a_semantic_ir.md`
-
-只有在做理论化 / refinement validator 研究项时，才默认进入：
-
+  - Stage 0 护栏与 cutover 前提
 - `stage4_phase_a_formalization_note.md`
+  - `Phase A` 并行理论化 / 证明化说明
+- `review_final_blackhole_backend_redesign.md`
+  - 总设计审计快照，不承担当前状态跟踪
 
-## 5. 清理规则
+## 4. 清理规则
 
-- 根目录不再保留额外的总 implementation plan。
-- `final_blackhole_backend_redesign.md` 现在保持为轻量总纲；阶段细节默认下沉到对应 stage 文档。
-- 已完成专项设计、历史 implementation plan、早期阶段记录、legacy 架构说明，全部移动到 `archive/`。
-- `archive/README.md` 说明了归档区的使用规则。
+- 总纲只保留长期架构、层间边界、真源规则与阶段判断
+- 阶段细节、完成条件和基线命令下沉到对应阶段文档
+- 进度、验证摘要与下一步统一放在 `tasks/progress.md`
+- 已完成专项设计、历史实现计划和 legacy 架构说明全部放入 `archive/`
 
-## 6. Archive
+## 5. Archive
 
 查看 `archive/README.md`。
