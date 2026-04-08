@@ -24,56 +24,17 @@
 - **Stage 0**: 已完成
 - **Phase A**: 已完成
 - **Phase B**: 已完成
-  - 已完成：execution-bearing `SpatialProgram` contract、stronger validator、
-    TT probe intake 与 shared zero-regression baseline
-  - 已完成后续代码重构：
-    `AnalyzeSpatialDomainPlan -> AnalyzeSpatialExecutionPlan -> MaterializeSpatialProgram`
-    已拆出，`LowerToSpatialProgram` 退化为兼容 wrapper
-  - 已完成审计收口：
-    shared helper 去重、typed field 上提、index canonical linkage、
-    validator 收窄、fast path contract 共构、capability model 前置发布
+  - `SpatialProgram` 已成为 execution-bearing 上游真源
+  - 交接边界、审计结论与完成后 contract 统一维护在
+    `tasks/dev_design/stage4_phase_b_spatial_ir.md`
 - **Phase C**: 进行中
-  - 已完成：read-only translator demand probe、hardware intake、
-    `TTProgram` core object set、`LowerSpatialProgramToTTTarget`、
-    `ValidateTTTargetProgram`、`MaterializeTTExecutableSpec`
-  - 已完成 reader-side cutover：
-    `rt_mod_blackhole` / `codegen_blackhole` 已通过共享
-    `tt_program_projection` 直接读取
-    `TTProgram` 承载的 `segment/runtime/common-runtime/cb/semaphore/core`
-    truth；function-level `gemm_contract / compute_contract` 与
-    `direct_runtime_unsupported_reasons` 也已提升到 `TTProgram.payload`
-  - 已完成 shared decoder 收口：
-    `tt_program_projection` 的 generic legacy fallback 已拆成
-    `TTProgram`-only reader；原始 device func 与 synthetic segment
-    都不再通过 shared getter 静默回退到 `blackhole.*`
-  - 已完成 synthetic segment typed 化：
-    `MakeSegmentPrimFunc` 现在会给 segment kernel 挂最小单-kernel `TTProgram`，
-    internal codegen/spec extraction 也只消费 typed target truth
-  - 已完成 fail-fast 收口：
-    原始 Blackhole device build 输入若缺少 `tl.tt_program`，
-    现在会在 build 入口直接失败，不再靠 legacy attrs 继续推进
-  - 已完成 regression 断言面迁移：
-    copy / GEMM / `flash-attn` 的核心 target-truth 断言已切到
-    `tl.tt_program` / `ExecutableSpec`
-  - 已完成 typed companion test ingress：
-    `TTProgram / TTKernel / TTCoreGroup / TTABIPlan / TTSemaphorePlan`
-    等 target companion object 现在已有 Python/FFI constructor，
-    `tt_target_probe` 的 validator 负例和 `copy_runtime` 的核心 mutation helper
-    已改成直接重建 `TTProgram`，不再先改 bridge attrs 再重跑 translator
-  - 已完成 producer-side bridge attr 清理：
-    `LowerBlackholeOps` 现在发布
-    `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload`
-    并在 seed materialization 后剥离
-    `blackhole.segment_plan / runtime_args / common_runtime_args /
-    gemm_contract / compute_contract / direct_runtime_unsupported_reasons`
-    等 projection attrs；
-    `PlanBlackholeCB / AssignBlackholeCores`
-    只再发布 `tl.tt_cb_plans / tl.tt_core_groups`
-  - 已完成 runtime gate 收口：
-    `flash-attn` multi-GEMM compute kernel 当前通过
-    `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
-    显式 unsupported 并在 runtime test 中 skip；
-    这只算 gate 收敛，不算 `Phase C2` payoff 完成
+  - 当前已完成：`TTProgram` cutover 子线
+    - `TTProgram` translator / validator / materializer 已进入正式主链
+    - runtime/codegen 已切到 `TTProgram` direct reader，
+      reader-side deletion gate 已收口
+    - regression 主断言面与 producer-side translator 输入
+      已切到 typed companion truth
+    - shared zero-regression baseline 与当前 `Phase C2` runtime gate 持续通过
   - 仍未完成：
     - `flash-attn` `Phase C2` runtime / correctness payoff
     - `topk / fusedmoe / paged decode / chunk recurrence`
@@ -83,47 +44,10 @@
     - `Placement / SpatialCapabilityModel / payload-backed node schema`
       的剩余 typed uplift 与真实 consumer 验证
 
-## `Phase B` 收尾结果
-
-- `Spatial*` object/vocab/shared key 已从 semantic infra 拆出
-- `AnalyzeSpatialDomainPlan -> AnalyzeSpatialExecutionPlan -> MaterializeSpatialProgram
-  -> ValidateSpatialProgram` 已接入主线，`LowerToSpatialProgram`
-  仅保留兼容 wrapper，`LowerBlackholeOps` 已硬要求 `tl.spatial_program`
-- `tl.tt_hardware_model` / `tl.spatial_capability_model` 已发布为 module-scope global info
-- `LowerToSpatialProgram` 已消费来自 SoC descriptor 的最小 capability snapshot
-- `Channel.kind + payload_kind + delivery_kind` 与 `placement.affinity_kind`
-  已收成当前 probe intake 所需的最小 contract
-- `LowerSpatialProgramToTTTargetProbe` 已落地，并且不会恢复 non-TT-specific spatial semantics
-- `ValidateSpatialProgram` 已收正为 coherence / completeness / semantic alignment /
-  ordering legality gate
-- generic builder 已把 `Task` formation、flow shaping、domain realization、
-  phase / ordering synthesis 收进稳定主链
-- `SpatialDomainPlan` / `SpatialExecutionPlan` 已成为 `Phase B` 内部 typed 中间契约，
-  不再把 domain/layout 与 task/channel/phase 收敛在单个 lowering 入口
-- `phase_boundary_materialization` 已收窄为真实跨 phase state handoff，
-  不再把“任意后续 phase 读取的 state”过度记为边界物化
-
-结论：
-
-- `SpatialProgram` 已达到 execution-bearing spatial program 的完成判定
-- `Phase C` 现在可以把 `SpatialProgram` 当成单一上游真源继续 cutover
-
-补充：
-
-- `Phase B` 已完成一轮完成后设计审计；当前不重新打开 `Phase B`，
-  而是带着 object-boundary 风险清单进入 `Phase C`
-- `tasks/dev_design/phase_b_code_audit.md` 中点名的结构性问题已按当前
-  `Phase C` 前置范围收口：monolith 已拆分、关键 payload truth 已提升为
-  typed field、name 退回 display/debug、consumer 主链接走 typed/index truth
-- 当前最值得在 `Phase C` 中继续验证的边界包括：
-  - `Placement` 是否会被消费成真实 target mapping constraint
-  - `SpatialCapabilityModel` 的 quantitative hardware fields 是否会进入 planning / mapping
-  - `ResourceIntent` 是否能继续保持 small-closed kind discipline
-
 ## 当前 blocker
 
-`Phase C` 当前不再卡在 `TTProgram` cutover，
-但仍然卡在阶段剩余支持面没有兑现：
+`Phase C` 当前已经不再卡在 `TTProgram` cutover，
+而是卡在剩余支持面还没有兑现：
 
 - 为 `flash-attn` multi-GEMM compute kernel 补真正的 direct runtime /
   correctness contract，而不是长期停留在 unsupported gate
@@ -185,19 +109,12 @@ LowerDeviceStorageAccessInfo
 ## 最新验证摘要
 
 - build:
-  - `cmake -S tilelang_repo -B tilelang_repo/build`
   - `cmake --build tilelang_repo/build -j32`
 - transform:
   - `test_blackhole_tt_target_probe.py -q`: `25 passed`
 - target:
   - `test_blackhole_copy_pipeline.py test_blackhole_gemm.py test_blackhole_tvm_ffi_export.py test_blackhole_flash_attention_pipeline.py test_blackhole_tt_target_probe.py -q`:
     `129 passed, 21 skipped, 1 xfailed`
+- runtime:
   - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest testing/python/target/blackhole/test_blackhole_copy_runtime.py testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py -q`:
     `13 passed, 2 skipped`
-
-## 当前文档入口
-
-- `tasks/dev_design/final_blackhole_backend_redesign.md`
-- `tasks/dev_design/stage4_phase_b_spatial_ir.md`
-- `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
-- `tasks/dev_design/README.md`

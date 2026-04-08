@@ -2,7 +2,7 @@
 
 ## 基本信息
 
-- **文档角色**: `Phase C` 当前设计边界与 cutover 文档
+- **文档角色**: `Phase C` 当前设计边界、剩余项与完成判定文档
 - **当前状态**: `2026-04-08` `Phase C` 进行中；
   `TTProgram` cutover 主链已完成，runtime/codegen 已切到 `TTProgram` direct reader，
   shared generic fallback 已删除，synthetic segment 也已切到最小 `TTProgram`；

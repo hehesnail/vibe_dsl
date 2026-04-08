@@ -6,12 +6,12 @@
 
 ## 1. 当前入口
 
-默认按下面顺序进入：
+按仓库当前工作规则，默认按下面顺序进入：
 
 1. `final_blackhole_backend_redesign.md`
-2. `stage4_phase_c_tt_target_ir.md`
-3. `stage4_phase_b_spatial_ir.md`
-4. `tasks/progress.md`
+2. `tasks/progress.md`
+3. `stage4_phase_c_tt_target_ir.md`
+4. `stage4_phase_b_spatial_ir.md`
 
 ## 2. 当前活动文档
 
@@ -19,7 +19,7 @@
 |------|------|----------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计 | 常青总纲 |
 | `stage4_phase_b_spatial_ir.md` | `Spatial Program IR` 已完成阶段文档 | 已完成；作为 `Phase C` 输入边界保留，并记录完成后设计审计结论 |
-| `stage4_phase_c_tt_target_ir.md` | `TT Target IR` 当前设计与 cutover 文档 | 进行中；`TTProgram` cutover 已完成，但 `flash-attn` `Phase C2` payoff、wider family / copy-dataflow / sync 支持面仍属 `Phase C` 剩余范围 |
+| `stage4_phase_c_tt_target_ir.md` | `TT Target IR` 当前设计与完成判定文档 | 进行中；`Phase C` 细节、剩余项、完成判定与 gate 统一维护在这里 |
 | `stage4_phase_a_semantic_ir.md` | `Phase A` 已落地语义边界 | 已完成；作为 `Phase B` 输入参考保留 |
 | `stage4_semantic_manifest.md` | `Phase A` 信息源边界 | 已完成；作为 ownership 参考保留 |
 
@@ -39,8 +39,9 @@
 ## 4. 清理规则
 
 - 总纲只保留长期架构、层间边界、真源规则与阶段判断
-- 阶段细节、完成条件和基线命令下沉到对应阶段文档
+- 阶段细节、完成条件和基线命令只维护在对应阶段文档
 - 进度、验证摘要与下一步统一放在 `tasks/progress.md`
+- `README` 只做索引和分工说明，不重复维护阶段 backlog
 - 已完成专项设计、历史实现计划和 legacy 架构说明全部放入 `archive/`
 
 ## 5. Archive

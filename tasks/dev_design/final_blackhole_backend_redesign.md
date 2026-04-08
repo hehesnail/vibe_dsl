@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档 ID**: `final_blackhole_backend_redesign`
-- **日期**: `2026-04-07`
+- **日期**: `2026-04-08`
 - **状态**: 当前唯一权威总体设计文档
 - **定位**: 轻量总纲；只保留长期架构、层间边界、真源规则与当前阶段判断
 - **活动阶段文档**:
@@ -142,32 +142,12 @@ Stateful Semantic IR
 ### 4.3 `Phase C`
 
 - 进行中
-- 已完成：
-  - `TTHardwareModel` intake
-  - `LowerSpatialProgramToTTTargetProbe`
-  - `TTProgram` core object set
-  - `LowerSpatialProgramToTTTarget`
-  - `ValidateTTTargetProgram`
-  - `MaterializeTTExecutableSpec`
-  - runtime/codegen 的 `TTProgram` direct reader
-  - `TTProgram` companion object 的 Python/FFI constructor
-  - `tt_target_probe` validator 负例与 `copy_runtime`
-    核心 mutation helper 的 typed `TTProgram` rebuild
-  - copy / GEMM / `flash-attn` regression 主断言面迁到
-    `TTProgram` / `ExecutableSpec`
-  - producer-side bridge 输出切到 typed companion truth：
-    `LowerBlackholeOps` 现在发布
-    `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload`
-    并在 seed materialization 后剥离
-    `blackhole.segment_plan / runtime_args / gemm_contract / compute_contract`
-    等 legacy projection attrs；
-    `PlanBlackholeCB / AssignBlackholeCores`
-    只再发布 `tl.tt_cb_plans / tl.tt_core_groups`
-  - shared zero-regression baseline 与 `Phase C2` runtime gate 持续通过；
-    `flash-attn` multi-GEMM compute kernel 当前通过
-    `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
-    显式 unsupported 并在 runtime test 中 skip
-- 仍未完成：
+- 当前已经完成的只是 `TTProgram` cutover 子线：
+  - `TTProgram` core object set、translator、validator、materializer 已进入正式主链
+  - runtime/codegen 已切到 `TTProgram` direct reader，reader-side deletion gate 已收口
+  - regression 主断言面与 producer-side translator 输入已切到 typed companion truth
+  - shared zero-regression baseline 与当前 `Phase C2` runtime gate 持续通过
+- 但 `Phase C` 总体仍未完成；剩余交付仍包括：
   - `flash-attn` 的 `Phase C2` runtime / correctness payoff；
     当前只有 explicit unsupported gate，不算功能完成
   - `topk / fusedmoe / paged decode / chunk recurrence`
@@ -176,25 +156,15 @@ Stateful Semantic IR
   - 更宽 synchronization 支持面
   - `Placement / SpatialCapabilityModel / payload-backed node schema`
     的剩余 typed uplift 与真实 consumer 验证
-
-结论：
-
-- `TTProgram` cutover 主链已完成
-- 但 `Phase C` 总体仍未完成；
-  当前仅是把 target-truth 主链收正到可继续扩支持面的状态
+- `Phase C` 细节、完成判定、基线命令与 runtime gate
+  统一维护在 `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
 
 ## 5. 当前主 blocker
 
-当前总体 blocker 不再是 target-truth cutover，
-而是 `Phase C` 剩余支持面还没有兑现：
-
-1. 为 `flash-attn` 的 multi-GEMM compute kernel 补真正的
-   runtime/correctness contract，而不是长期停留在 unsupported gate
-2. 在新主链上继续接 wider family：
-   `topk / fusedmoe / paged decode / chunk recurrence`
-3. 继续扩大 copy/dataflow 与 synchronization 支持面
-4. 把 `Placement / SpatialCapabilityModel / payload-backed node schema`
-   的剩余边界继续收成长期 typed contract
+当前总体 blocker 已不再是 target-truth cutover，
+而是 `Phase C` 剩余支持面还没有兑现。
+具体剩余项、完成判定与 gate 统一以
+`tasks/dev_design/stage4_phase_c_tt_target_ir.md` 为准。
 
 ## 6. 当前稳定基线
 
@@ -215,11 +185,11 @@ Stateful Semantic IR
 - `stage4_phase_b_spatial_ir.md`
   - `Spatial Program IR` 的当前主实施文档
 - `stage4_phase_c_tt_target_ir.md`
-  - `TT Target IR` 的当前设计与 cutover 文档
+  - `TT Target IR` 的当前设计、剩余项与完成判定文档
 - `tasks/progress.md`
   - 当前执行状态、验证摘要、下一步
 - `layered_ir_references.md`
   - 研究参考与分层启发；仅作设计输入，不承担当前协议真源职责
 
-阶段细节、完成条件和基线命令默认下沉到对应阶段文档，
-总纲不再重复维护 backlog 级别的文件清单或子阶段脚本。
+阶段细节、完成条件和基线命令统一下沉到对应阶段文档，
+总纲不再重复维护 backlog 级别的实现细节。
