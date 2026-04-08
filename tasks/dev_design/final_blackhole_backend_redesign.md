@@ -141,7 +141,7 @@ Stateful Semantic IR
 
 ### 4.3 `Phase C`
 
-- 已完成
+- 进行中
 - 已完成：
   - `TTHardwareModel` intake
   - `LowerSpatialProgramToTTTargetProbe`
@@ -167,24 +167,34 @@ Stateful Semantic IR
     `flash-attn` multi-GEMM compute kernel 当前通过
     `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
     显式 unsupported 并在 runtime test 中 skip
+- 仍未完成：
+  - `flash-attn` 的 `Phase C2` runtime / correctness payoff；
+    当前只有 explicit unsupported gate，不算功能完成
+  - `topk / fusedmoe / paged decode / chunk recurrence`
+    等 family 在新主链下的统一承接
+  - 更宽 copy/dataflow 支持面
+  - 更宽 synchronization 支持面
+  - `Placement / SpatialCapabilityModel / payload-backed node schema`
+    的剩余 typed uplift 与真实 consumer 验证
 
 结论：
 
-- `Phase C` 已完成
-- 后续工作转入 post-Phase-C 支持面扩展：
-  `flash-attn` multi-GEMM runtime/correctness enablement、
-  更宽 family adoption，以及剩余 payload-backed typed schema 上提
+- `TTProgram` cutover 主链已完成
+- 但 `Phase C` 总体仍未完成；
+  当前仅是把 target-truth 主链收正到可继续扩支持面的状态
 
-## 5. 当前主后续工作
+## 5. 当前主 blocker
 
-`Phase C` 当前已无架构 blocker；后续主线转为：
+当前总体 blocker 不再是 target-truth cutover，
+而是 `Phase C` 剩余支持面还没有兑现：
 
 1. 为 `flash-attn` 的 multi-GEMM compute kernel 补真正的
    runtime/correctness contract，而不是长期停留在 unsupported gate
-2. 把 `Placement / SpatialCapabilityModel / payload-backed node schema`
-   的剩余边界继续收成长期 typed contract
-3. 在新主链上继续接 wider family：
+2. 在新主链上继续接 wider family：
    `topk / fusedmoe / paged decode / chunk recurrence`
+3. 继续扩大 copy/dataflow 与 synchronization 支持面
+4. 把 `Placement / SpatialCapabilityModel / payload-backed node schema`
+   的剩余边界继续收成长期 typed contract
 
 ## 6. 当前稳定基线
 
@@ -194,8 +204,8 @@ Stateful Semantic IR
 - `tilelang.compile(..., execution_backend="tvm_ffi")`
   的 Blackhole wrapper/export path 已恢复
 - `flash-attn` forward subset 已打通当前支持的 compile-path，
-  direct runtime gate 以显式 unsupported / skip 形式稳定通过；
-  真正的 multi-GEMM runtime enablement 进入 post-Phase-C
+  但 direct runtime 当前仍只是显式 unsupported / skip；
+  真正的 multi-GEMM runtime enablement 仍属于 `Phase C`
 
 ## 7. 当前文档分工
 

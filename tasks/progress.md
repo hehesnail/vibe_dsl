@@ -32,7 +32,7 @@
   - 已完成审计收口：
     shared helper 去重、typed field 上提、index canonical linkage、
     validator 收窄、fast path contract 共构、capability model 前置发布
-- **Phase C**: 已完成
+- **Phase C**: 进行中
   - 已完成：read-only translator demand probe、hardware intake、
     `TTProgram` core object set、`LowerSpatialProgramToTTTarget`、
     `ValidateTTTargetProgram`、`MaterializeTTExecutableSpec`
@@ -73,8 +73,15 @@
     `flash-attn` multi-GEMM compute kernel 当前通过
     `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
     显式 unsupported 并在 runtime test 中 skip；
-    这算 `Phase C2` gate 通过，真正的 multi-GEMM runtime enablement
-    转入 post-Phase-C 支持面扩展
+    这只算 gate 收敛，不算 `Phase C2` payoff 完成
+  - 仍未完成：
+    - `flash-attn` `Phase C2` runtime / correctness payoff
+    - `topk / fusedmoe / paged decode / chunk recurrence`
+      等 family 在新主链下的统一承接
+    - 更宽 copy/dataflow 支持面
+    - 更宽 synchronization 支持面
+    - `Placement / SpatialCapabilityModel / payload-backed node schema`
+      的剩余 typed uplift 与真实 consumer 验证
 
 ## `Phase B` 收尾结果
 
@@ -113,17 +120,19 @@
   - `SpatialCapabilityModel` 的 quantitative hardware fields 是否会进入 planning / mapping
   - `ResourceIntent` 是否能继续保持 small-closed kind discipline
 
-## 当前后续工作
+## 当前 blocker
 
-`Phase C` 当前已无 cutover blocker；后续主线转入 post-Phase-C：
+`Phase C` 当前不再卡在 `TTProgram` cutover，
+但仍然卡在阶段剩余支持面没有兑现：
 
 - 为 `flash-attn` multi-GEMM compute kernel 补真正的 direct runtime /
   correctness contract，而不是长期停留在 unsupported gate
-- 继续把 `Placement / SpatialCapabilityModel / payload-backed node schema`
-  的剩余边界收成长期 typed contract
 - 在当前稳定主链上继续承接
   `topk / fusedmoe / paged decode / chunk recurrence`
   等 family
+- 继续扩大 copy/dataflow 与 synchronization 支持面
+- 继续把 `Placement / SpatialCapabilityModel / payload-backed node schema`
+  的剩余边界收成长期 typed contract
 
 ## 独立已知问题
 
@@ -138,11 +147,12 @@
 
 1. 为 `flash-attn` multi-GEMM compute kernel 设计正式 target contract /
    runtime schema，把当前 explicit unsupported gate 推进成真正可执行的主链
-2. 把 `Placement / SpatialCapabilityModel / payload-backed node schema`
-   中仍未完全站稳的边界继续做 typed uplift 和真实 consumer 验证
-3. 在当前 `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
+2. 在当前 `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
    主链上继续接 wider family：
    `topk / fusedmoe / paged decode / chunk recurrence`
+3. 继续扩大 copy/dataflow 与 synchronization 支持面
+4. 把 `Placement / SpatialCapabilityModel / payload-backed node schema`
+   中仍未完全站稳的边界继续做 typed uplift 和真实 consumer 验证
 
 ## 当前主设备链
 

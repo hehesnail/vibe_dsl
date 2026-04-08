@@ -3,15 +3,20 @@
 ## 基本信息
 
 - **文档角色**: `Phase C` 当前设计边界与 cutover 文档
-- **当前状态**: `2026-04-08` `Phase C` 已完成；
-  `TTProgram` 已接入稳定主链；runtime/codegen 已切到 `TTProgram` direct reader，
+- **当前状态**: `2026-04-08` `Phase C` 进行中；
+  `TTProgram` cutover 主链已完成，runtime/codegen 已切到 `TTProgram` direct reader，
   shared generic fallback 已删除，synthetic segment 也已切到最小 `TTProgram`；
-  regression 主断言面与 producer-side translator 输入也已切到 typed companion truth
+  regression 主断言面与 producer-side translator 输入也已切到 typed companion truth，
+  但 `Phase C2` runtime payoff 与 wider support surface 仍未完成
 - **已完成子阶段**: read-only translator demand probe、`TTHardwareModel` intake、
   `TTProgram` core object set、`LowerSpatialProgramToTTTarget`、
   `ValidateTTTargetProgram`、`MaterializeTTExecutableSpec`
-- **post-Phase-C 后续**: `flash-attn` multi-GEMM runtime/correctness enablement、
-  quantitative capability field consumption、payload-backed node schema 继续上提
+- **仍未完成**:
+  - `flash-attn` `Phase C2` runtime / correctness payoff
+  - `topk / fusedmoe / paged decode / chunk recurrence` family
+  - 更宽 copy/dataflow 支持面
+  - 更宽 synchronization 支持面
+  - quantitative capability field consumption 与 payload-backed node schema 继续上提
 - **上游输入**: 冻结后的 `SpatialProgram`
 - **下游输出**: 冻结后的 `TTProgram` 与 `ExecutableSpec` 物化结果
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -175,9 +180,10 @@
 
 - `Phase C` 准备轨已完成
 - `Phase B` 前置输入已满足
-- 正式 `TTProgram` cutover 现已完成；本节保留为完成后设计记录
+- 正式 `TTProgram` cutover 已完成
+- 但 `Phase C` 总体仍未完成；后续支持面扩展仍算本阶段工作
 
-## 6. 本次收口结果
+## 6. 当前已完成的部分
 
 - shared generic reader fallback 已删除：
   `tt_program_projection` 现在已经收成
@@ -212,8 +218,7 @@
   multi-GEMM compute kernel 会带
   `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
   并在 direct runtime test 中 skip；
-  这现在算 `Phase C2` gate 通过；真正的 runtime/correctness enablement
-  转入 post-Phase-C family 扩展
+  但这只算 gate 收敛，不算 `Phase C2` payoff 完成
 - `SpatialCapabilityModel` 的 quantitative hardware fields
   还没有进入正式 planning / mapping 主链
 - `Placement / ResourceIntent / Layout / WorkPartition` 的长期 object boundary
@@ -225,8 +230,8 @@
   但仍未把 runtime/codegen 真正消费的 ABI / accessor / launch / core-group
   全量细节全部收进最终 validator gate
 
-因此当前 `Phase C` 已完成；剩余工作不再属于 `TTProgram` cutover 本体，
-而是 post-Phase-C 的支持面扩展与 schema 继续上提。
+因此当前 `Phase C` 的 `TTProgram` cutover 本体已完成，
+但阶段总目标仍未完成；剩余工作继续留在 `Phase C` 范围内推进。
 
 ## 6.2 当前 deletion gate 的真实拓扑
 
@@ -249,7 +254,7 @@ SpatialProgram
   -> internal codegen / ExecutableSpec assembly
 ```
 
-当前收口后的含义是：
+当前实现的含义是：
 
 - `rt_mod_blackhole` / `codegen_blackhole`
   已经通过共享 decoder 读取 `TTProgram` truth，
@@ -264,7 +269,7 @@ SpatialProgram
   legacy projection 只剩 `SplitBlackholeKernel -> LowerBlackholeOps`
   之间的内部 planning 过渡职责
 
-因此当前 deletion gate 已经收口。
+因此当前 deletion gate 已经收口，但这不等于 `Phase C` 整体收口。
 
 ## 6.3 Reader-Side Deletion Gate 的执行顺序
 
@@ -332,9 +337,12 @@ SpatialProgram
   现在分别只发布 `tl.tt_cb_plans / tl.tt_core_groups`
 - `LowerSpatialProgramToTTTarget` 现在以 typed upstream truth materialize `TTProgram`
 
-当前剩余的相关工作已经转入 post-Phase-C：
+当前仍未完成并且属于 `Phase C` 的工作包括：
 
-- `flash-attn` multi-GEMM direct runtime 的真正 enablement
+- `flash-attn` multi-GEMM direct runtime 的真正 enablement 与 correctness payoff
+- `topk / fusedmoe / paged decode / chunk recurrence` 等 family 在新主链上的统一承接
+- 更宽 copy/dataflow 支持面
+- 更宽 synchronization 支持面
 - quantitative capability field 与 object-boundary 的继续验证
 - 部分 payload-backed node schema 的继续 typed uplift
 
@@ -353,12 +361,19 @@ SpatialProgram
 7. 新 family 进入主链时走
    `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
    的统一路径，而不是新增 case-by-case matcher
-8. shared zero-regression baseline 与 `Phase C2` 的 runtime gate 持续通过
+8. `flash-attn` 的 `Phase C2` runtime / correctness payoff 已完成，
+   不再停留在 explicit unsupported gate
+9. `topk / fusedmoe / paged decode / chunk recurrence`
+   等 family 已按新主链统一承接
+10. 更宽 copy/dataflow 支持面已按新 target-truth 主链落地
+11. 更宽 synchronization 支持面已按新 target-truth 主链落地
+12. shared zero-regression baseline 与 `Phase C2` 的 runtime gate 持续通过
 
 当前结论：
 
-- `Phase C` 已完成
-- post-Phase-C 主线转入 family/runtime 支持面扩展
+- `TTProgram` cutover 子线已完成
+- `Phase C` 总体仍未完成
+- 当前 blocker 已转到 `Phase C2` runtime/correctness payoff 与 wider support surface
 
 ## 8. Shared Zero-Regression Baseline
 
@@ -379,12 +394,13 @@ cd /root/dev/vibe_dsl/tilelang_repo
 pytest testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py -k 'mha or gqa' -q
 ```
 
-`Phase C2` gate 的判定是：
+`Phase C2` 当前已达到的 gate 是：
 
 - copy direct runtime 正常通过
 - `flash-attn` multi-GEMM compute kernel 显式暴露
   `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
   并在 runtime test 中 skip
 
-这代表 gate 已通过；真正的 multi-GEMM direct runtime enablement
-不再阻塞 `Phase C` 完成，而是 post-Phase-C 的支持面扩展任务。
+这只代表“不会再 hang，unsupported 行为可诊断”。
+真正的 multi-GEMM direct runtime enablement 与 correctness payoff
+仍然阻塞 `Phase C` 完成。
