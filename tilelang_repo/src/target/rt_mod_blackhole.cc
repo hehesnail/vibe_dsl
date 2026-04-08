@@ -45,6 +45,7 @@
 
 #include "codegen_blackhole.h"
 #include "blackhole_module.h"
+#include "tt_program_projection.h"
 #include "../tir/builtin_blackhole.h"
 
 namespace tvm {
@@ -200,15 +201,17 @@ TVM_REGISTER_TARGET_KIND("blackhole", kDLExtDev)
  */
 static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
   std::vector<CBConfig> cb_configs;
-
-  auto cb_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.cb_configs");
-  if (!cb_attr) {
+  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
+  ICHECK(maybe_program)
+      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
+  auto cb_attr = tl::tt_program_projection::EncodeCBPlans(maybe_program.value()->cb_plans);
+  if (cb_attr.empty()) {
     // Use default CB config for simple kernels
     cb_configs.push_back({0, "default_cb", "intermediate", 1, 2048, "Float16_b"});
     return cb_configs;
   }
 
-  for (const auto& item : cb_attr.value()) {
+  for (const auto& item : cb_attr) {
     CBConfig config;
     auto cb_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
         ffi::Map<ffi::String, ffi::Any>());
@@ -251,12 +254,17 @@ static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
 
 static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
   CorePlan plan;
-  auto core_plan_attr = f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.core_plan");
-  if (!core_plan_attr) {
+  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
+  ICHECK(maybe_program)
+      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
+  auto core_plan = maybe_program.value()->core_groups.empty()
+                       ? ffi::Map<ffi::String, ffi::Any>()
+                       : tl::tt_program_projection::EncodeCoreGroup(
+                             maybe_program.value()->core_groups[0]);
+  if (core_plan.empty()) {
     return plan;
   }
 
-  const auto& core_plan = core_plan_attr.value();
   if (auto v = core_plan.Get("logical_grid_x")) {
     plan.logical_grid_x = Downcast<Integer>(v.value()).IntValue();
   } else if (auto v = core_plan.Get("grid_x")) {
@@ -321,12 +329,16 @@ static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
 
 static std::vector<SemaphoreSpec> ExtractSemaphorePlan(const tir::PrimFunc& f) {
   std::vector<SemaphoreSpec> semaphores;
-  auto semaphore_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.semaphore_plan");
-  if (!semaphore_attr) {
+  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
+  ICHECK(maybe_program)
+      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
+  auto semaphore_attr =
+      tl::tt_program_projection::EncodeSemaphorePlans(maybe_program.value()->semaphore_plans);
+  if (semaphore_attr.empty()) {
     return semaphores;
   }
 
-  for (const auto& item : semaphore_attr.value()) {
+  for (const auto& item : semaphore_attr) {
     auto semaphore_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
         ffi::Map<ffi::String, ffi::Any>());
     if (semaphore_info.empty()) {
@@ -381,12 +393,18 @@ static std::vector<SemaphoreSpec> ExtractSemaphorePlan(const tir::PrimFunc& f) {
 
 static GemmContractSpec ExtractGemmContract(const tir::PrimFunc& f) {
   GemmContractSpec contract;
-  auto gemm_attr = f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.gemm_contract");
-  if (!gemm_attr) {
+  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
+  ICHECK(maybe_program)
+      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
+  auto attrs = maybe_program.value()->payload.Get("gemm_contract")
+                   ? maybe_program.value()->payload.Get("gemm_contract")
+                         .value()
+                         .as<ffi::Map<ffi::String, ffi::Any>>()
+                         .value_or(ffi::Map<ffi::String, ffi::Any>())
+                   : ffi::Map<ffi::String, ffi::Any>();
+  if (attrs.empty()) {
     return contract;
   }
-
-  const auto& attrs = gemm_attr.value();
   if (auto v = attrs.Get("a_buffer")) {
     contract.a_buffer = Downcast<String>(v.value());
   }
@@ -491,12 +509,18 @@ static ComputeContractSpec ComputeContractFromLegacyGemm(const GemmContractSpec&
 static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
                                                   const GemmContractSpec& gemm_contract) {
   ComputeContractSpec contract;
-  auto compute_attr = f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.compute_contract");
-  if (!compute_attr) {
+  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
+  ICHECK(maybe_program)
+      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
+  auto attrs = maybe_program.value()->payload.Get("compute_contract")
+                   ? maybe_program.value()->payload.Get("compute_contract")
+                         .value()
+                         .as<ffi::Map<ffi::String, ffi::Any>>()
+                         .value_or(ffi::Map<ffi::String, ffi::Any>())
+                   : ffi::Map<ffi::String, ffi::Any>();
+  if (attrs.empty()) {
     return ComputeContractFromLegacyGemm(gemm_contract);
   }
-
-  const auto& attrs = compute_attr.value();
   if (auto v = attrs.Get("enabled")) {
     contract.enabled = Downcast<Bool>(v.value());
   }
@@ -1005,10 +1029,13 @@ static bool ExtractLaunchSpec(const ffi::Map<ffi::String, ffi::Any>& spec_info,
 }
 
 static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
-  if (auto segment_plan_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.segment_plan")) {
+  auto program = tl::tt_program_projection::RequireTTProgram(
+      f, "Blackhole executable spec extraction");
+  auto segment_plan = tl::tt_program_projection::EncodeSegmentPlan(program);
+  if (!segment_plan.empty()) {
     std::vector<KernelArgSpec> aggregated;
     std::unordered_set<std::string> seen;
-    for (const auto& item : segment_plan_attr.value()) {
+    for (const auto& item : segment_plan) {
       auto segment = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
           ffi::Map<ffi::String, ffi::Any>());
       if (segment.empty()) {
@@ -1034,30 +1061,34 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
     }
   }
 
-  auto runtime_args_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.runtime_args");
-  if (!runtime_args_attr) {
+  auto runtime_args_attr =
+      tl::tt_program_projection::AggregateABIArgs(program, /*common=*/false);
+  if (runtime_args_attr.empty()) {
     ICHECK(!HasCopyBuiltins(f))
         << "Blackhole runtime arg schema is required for copy/dataflow kernels; "
-           "blackhole.runtime_args or segment_plan[*].runtime_args is missing";
+           "TTProgram ABI runtime args are missing";
     return {};
   }
 
-  std::vector<KernelArgSpec> runtime_args = ExtractRuntimeArgsFromArray(runtime_args_attr.value());
+  std::vector<KernelArgSpec> runtime_args = ExtractRuntimeArgsFromArray(runtime_args_attr);
 
   if (runtime_args.empty()) {
     ICHECK(!HasCopyBuiltins(f))
         << "Blackhole runtime arg schema is required for copy/dataflow kernels; "
-           "blackhole.runtime_args or segment_plan[*].runtime_args is empty";
+           "TTProgram ABI runtime args are empty";
     return {};
   }
   return runtime_args;
 }
 
 static std::vector<KernelArgSpec> ExtractCommonRuntimeArgs(const tir::PrimFunc& f) {
-  if (auto segment_plan_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.segment_plan")) {
+  auto program = tl::tt_program_projection::RequireTTProgram(
+      f, "Blackhole executable spec extraction");
+  auto segment_plan = tl::tt_program_projection::EncodeSegmentPlan(program);
+  if (!segment_plan.empty()) {
     std::vector<KernelArgSpec> aggregated;
     std::unordered_set<std::string> seen;
-    for (const auto& item : segment_plan_attr.value()) {
+    for (const auto& item : segment_plan) {
       auto segment = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
           ffi::Map<ffi::String, ffi::Any>());
       if (segment.empty()) {
@@ -1083,11 +1114,30 @@ static std::vector<KernelArgSpec> ExtractCommonRuntimeArgs(const tir::PrimFunc& 
     }
   }
 
-  auto runtime_args_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.common_runtime_args");
-  if (!runtime_args_attr) {
+  auto runtime_args_attr =
+      tl::tt_program_projection::AggregateABIArgs(program, /*common=*/true);
+  if (runtime_args_attr.empty()) {
     return {};
   }
-  return ExtractRuntimeArgsFromArray(runtime_args_attr.value());
+  return ExtractRuntimeArgsFromArray(runtime_args_attr);
+}
+
+static std::vector<std::string> ExtractDirectRuntimeUnsupportedReasons(const tir::PrimFunc& f) {
+  std::vector<std::string> reasons;
+  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
+  ICHECK(maybe_program)
+      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
+  auto reason_items = maybe_program.value()->payload.Get("direct_runtime_unsupported_reasons")
+                          ? Downcast<ffi::Array<ffi::Any>>(
+                                maybe_program.value()->payload.Get("direct_runtime_unsupported_reasons")
+                                    .value())
+                          : ffi::Array<ffi::Any>();
+  for (const auto& item : reason_items) {
+    if (auto reason = item.as<ffi::String>()) {
+      reasons.emplace_back(reason.value());
+    }
+  }
+  return reasons;
 }
 
 struct SegmentInfo {
@@ -1145,12 +1195,10 @@ static std::vector<RemoteCoreDescriptorSpec> ExtractRemoteCoreDescriptors(
 
 static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, ExecutableSpec* spec) {
   std::vector<SegmentInfo> segments_out;
-  auto segment_plan_attr = f->GetAttr<ffi::Array<ffi::Any>>("blackhole.segment_plan");
-  if (!segment_plan_attr) {
-    return segments_out;
-  }
-
-  const auto& segments = segment_plan_attr.value();
+  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
+  ICHECK(maybe_program)
+      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
+  auto segments = tl::tt_program_projection::EncodeSegmentPlan(maybe_program.value());
   if (segments.empty()) {
     return segments_out;
   }
@@ -1227,8 +1275,7 @@ static bool IsBlackholeDeviceKernel(const tir::PrimFunc& f) {
   if (calling_conv.defined()) {
     return calling_conv == CallingConv::kDeviceKernelLaunch;
   }
-  return static_cast<bool>(f->GetAttr<ffi::Array<ffi::Any>>("blackhole.segment_plan")) ||
-         static_cast<bool>(f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.core_plan"));
+  return static_cast<bool>(tl::tt_program_projection::GetTTProgram(f));
 }
 
 static bool IsBlackholeHostEntry(const tir::PrimFunc& f) {
@@ -1313,6 +1360,7 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   spec.common_runtime_args = ExtractCommonRuntimeArgs(f);
   spec.gemm_contract = ExtractGemmContract(f);
   spec.compute_contract = ExtractComputeContract(f, spec.gemm_contract);
+  spec.direct_runtime_unsupported_reasons = ExtractDirectRuntimeUnsupportedReasons(f);
   ExtractSegmentPlan(f, &spec);
   return spec;
 }
@@ -1515,6 +1563,19 @@ static ffi::Array<ffi::Any> EncodeCompileTimeArgSpecs(
   return encoded;
 }
 
+static ffi::Array<ffi::Any> EncodeSemaphoreBindings(
+    const std::vector<SemaphoreBindingSpec>& bindings) {
+  ffi::Array<ffi::Any> encoded;
+  for (const auto& binding : bindings) {
+    ffi::Map<ffi::String, ffi::Any> binding_info;
+    binding_info.Set("name", ffi::String(binding.name));
+    binding_info.Set("semaphore_id", Integer(static_cast<int>(binding.semaphore_id)));
+    binding_info.Set("arg_kind", ffi::String(binding.arg_kind));
+    encoded.push_back(binding_info);
+  }
+  return encoded;
+}
+
 static bool IsInputBufferArgKind(const std::string& kind) {
   return kind == "input_buffer_addr32" || kind == "input_buffer_addr";
 }
@@ -1693,42 +1754,41 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
       select_runtime_args(segment.common_runtime_args, ExtractCommonRuntimeArgs(f),
                           fallback_arg_allowed);
 
-  ffi::Map<ffi::String, ffi::Any> attrs;
-  if (f->attrs.defined()) {
-    attrs = f->attrs->dict;
-  }
-  attrs.Set("blackhole.core_type", ffi::String(segment.core_type));
-  if (!merged_runtime_args.empty()) {
-    attrs.Set("blackhole.runtime_args", EncodeRuntimeArgs(merged_runtime_args));
-  }
-  if (!merged_common_runtime_args.empty()) {
-    attrs.Set("blackhole.common_runtime_args", EncodeRuntimeArgs(merged_common_runtime_args));
-  }
-  if (!segment.accessors.empty()) {
-    attrs.Set("blackhole.accessors", EncodeAccessors(segment.accessors));
-  }
+  const tvm::tl::TTProgram original_program = tl::tt_program_projection::RequireTTProgram(
+      f, "Blackhole segment materialization");
+  const ffi::String kernel_name =
+      segment.name.empty() ? ffi::String(segment.kind) : ffi::String(segment.name);
+  const ffi::String kernel_kind =
+      segment.kind.empty() ? ffi::String("fused_dataflow") : ffi::String(segment.kind);
+  const ffi::String kernel_core_type =
+      segment.core_type.empty() ? ffi::String("brisc") : ffi::String(segment.core_type);
+  const ffi::Array<ffi::Any> encoded_runtime_args = EncodeRuntimeArgs(merged_runtime_args);
+  const ffi::Array<ffi::Any> encoded_common_runtime_args =
+      EncodeRuntimeArgs(merged_common_runtime_args);
+  const ffi::Array<ffi::Any> encoded_accessors = EncodeAccessors(segment.accessors);
+  const ffi::Array<ffi::Any> encoded_compile_time_arg_specs =
+      EncodeCompileTimeArgSpecs(segment.compile_time_arg_specs);
+  const ffi::Array<ffi::Any> encoded_semaphore_bindings =
+      EncodeSemaphoreBindings(segment.semaphore_bindings);
+
   ffi::Map<ffi::String, ffi::Any> encoded_segment;
-  if (!segment.name.empty()) {
-    encoded_segment.Set("name", ffi::String(segment.name));
+  encoded_segment.Set("name", kernel_name);
+  encoded_segment.Set("kind", kernel_kind);
+  encoded_segment.Set("core_type", kernel_core_type);
+  if (!encoded_runtime_args.empty()) {
+    encoded_segment.Set("runtime_args", encoded_runtime_args);
   }
-  if (!segment.kind.empty()) {
-    encoded_segment.Set("kind", ffi::String(segment.kind));
+  if (!encoded_common_runtime_args.empty()) {
+    encoded_segment.Set("common_runtime_args", encoded_common_runtime_args);
   }
-  if (!segment.core_type.empty()) {
-    encoded_segment.Set("core_type", ffi::String(segment.core_type));
+  if (!encoded_accessors.empty()) {
+    encoded_segment.Set("accessors", encoded_accessors);
   }
-  if (!merged_runtime_args.empty()) {
-    encoded_segment.Set("runtime_args", EncodeRuntimeArgs(merged_runtime_args));
+  if (!encoded_compile_time_arg_specs.empty()) {
+    encoded_segment.Set("compile_time_arg_specs", encoded_compile_time_arg_specs);
   }
-  if (!merged_common_runtime_args.empty()) {
-    encoded_segment.Set("common_runtime_args", EncodeRuntimeArgs(merged_common_runtime_args));
-  }
-  if (!segment.accessors.empty()) {
-    encoded_segment.Set("accessors", EncodeAccessors(segment.accessors));
-  }
-  if (!segment.compile_time_arg_specs.empty()) {
-    encoded_segment.Set("compile_time_arg_specs",
-                        EncodeCompileTimeArgSpecs(segment.compile_time_arg_specs));
+  if (!encoded_semaphore_bindings.empty()) {
+    encoded_segment.Set("semaphore_bindings", encoded_semaphore_bindings);
   }
   if (segment.has_launch_spec) {
     ffi::Map<ffi::String, ffi::Any> launch_spec;
@@ -1751,9 +1811,55 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
     compute_config.Set("policy_name", ffi::String(segment.compute_config.policy_name));
     encoded_segment.Set("compute_config", compute_config);
   }
-  ffi::Array<ffi::Any> segment_plan;
-  segment_plan.push_back(encoded_segment);
-  attrs.Set("blackhole.segment_plan", segment_plan);
+
+  ffi::Array<tvm::tl::TTKernel> kernels;
+  kernels.push_back(
+      tvm::tl::TTKernel(kernel_name, kernel_kind, kernel_core_type, /*abi_plan_index=*/0,
+                        encoded_segment));
+  ffi::Array<tvm::tl::TTABIPlan> abi_plans;
+  abi_plans.push_back(tvm::tl::TTABIPlan(
+      ffi::String("abi_0"), kernel_name, encoded_runtime_args, encoded_common_runtime_args,
+      encoded_compile_time_arg_specs, encoded_accessors, encoded_semaphore_bindings,
+      encoded_segment));
+  ffi::Array<ffi::String> execution_kernel_names;
+  execution_kernel_names.push_back(kernel_name);
+  ffi::Array<Integer> execution_phase_indices;
+  execution_phase_indices.push_back(Integer(0));
+  ffi::Array<tvm::tl::TTExecutionPlan> execution_plans;
+  execution_plans.push_back(tvm::tl::TTExecutionPlan(
+      ffi::String("segment_execution"), execution_kernel_names, execution_phase_indices,
+      ffi::Map<ffi::String, ffi::Any>()));
+  const tvm::tl::TTProgram segment_program =
+      tvm::tl::TTProgram(original_program->entry_name, original_program->member_func, kernels,
+                         original_program->core_groups, original_program->cb_plans,
+                         original_program->transport_plans, original_program->semaphore_plans,
+                         original_program->compute_sync_plans, original_program->dst_layout_plans,
+                         abi_plans, execution_plans, original_program->payload);
+
+  ffi::Map<ffi::String, ffi::Any> attrs;
+  static const std::unordered_set<std::string> kSyntheticProjectionAttrs = {
+      tvm::tl::attr::kTLTTProgram,
+      "blackhole.segment_plan",
+      "blackhole.runtime_args",
+      "blackhole.common_runtime_args",
+      "blackhole.accessors",
+      "blackhole.cb_configs",
+      "blackhole.semaphore_plan",
+      "blackhole.core_plan",
+      "blackhole.core_type",
+      "blackhole.gemm_contract",
+      "blackhole.compute_contract",
+      "blackhole.direct_runtime_unsupported_reasons",
+  };
+  if (f->attrs.defined()) {
+    for (const auto& kv : f->attrs->dict) {
+      if (kSyntheticProjectionAttrs.count(static_cast<std::string>(kv.first))) {
+        continue;
+      }
+      attrs.Set(kv.first, kv.second);
+    }
+  }
+  attrs.Set(tvm::tl::attr::kTLTTProgram, segment_program);
   segment_func.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
   return segment_func;
 }
@@ -1933,6 +2039,13 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
         << "CodeGenBlackhole: Can only take PrimFunc";
     auto gvar = Downcast<GlobalVar>(kv.first);
     auto f = Downcast<tir::PrimFunc>(kv.second);
+    auto prim_target = f->GetAttr<Target>(tvm::attr::kTarget);
+    const bool is_blackhole_prim_func =
+        prim_target && prim_target.value()->kind->name == "blackhole";
+    if (is_blackhole_prim_func && !IsBlackholeHostEntry(f) &&
+        !tl::tt_program_projection::GetTTProgram(f)) {
+      ICHECK(false) << "Blackhole build requires tl.tt_program on device PrimFunc " << gvar->name_hint;
+    }
     const std::string func_name = GetPrimFuncName(gvar, f);
     if (IsBlackholeDeviceKernel(f)) {
       device_kernel_symbols.insert(func_name);
@@ -2034,6 +2147,13 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
         << "CodeGenBlackhole: Can only take PrimFunc";
     auto gvar = Downcast<GlobalVar>(kv.first);
     auto f = Downcast<tir::PrimFunc>(kv.second);
+    auto prim_target = f->GetAttr<Target>(tvm::attr::kTarget);
+    const bool is_blackhole_prim_func =
+        prim_target && prim_target.value()->kind->name == "blackhole";
+    if (is_blackhole_prim_func && !IsBlackholeHostEntry(f) &&
+        !tl::tt_program_projection::GetTTProgram(f)) {
+      ICHECK(false) << "Blackhole build requires tl.tt_program on device PrimFunc " << gvar->name_hint;
+    }
     const std::string func_name = GetPrimFuncName(gvar, f);
     if (IsBlackholeDeviceKernel(f)) {
       device_kernel_symbols.insert(func_name);

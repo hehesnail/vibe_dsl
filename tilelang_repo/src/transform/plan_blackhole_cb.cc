@@ -29,6 +29,8 @@
  */
 
 #include "plan_blackhole_cb.h"
+#include "common/companion_base.h"
+#include "common/tt_target_program.h"
 
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/tir/builtin.h>
@@ -122,7 +124,18 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
 }
 
 bool HasNoCBArgs(const std::string& op_name) {
-  return op_name == "tl.blackhole.cast_fragment_slice";
+  return op_name == "tl.blackhole.cast_fragment_slice" ||
+         op_name == "tl.blackhole.fill_fragment" ||
+         op_name == "tl.blackhole.scalar_max" ||
+         op_name == "tl.blackhole.reduce_row" ||
+         op_name == "tl.blackhole.mul_row_bcast" ||
+         op_name == "tl.blackhole.mul_grouped_row_bcast" ||
+         op_name == "tl.blackhole.div_row_bcast" ||
+         op_name == "tl.blackhole.div_grouped_row_bcast" ||
+         op_name == "tl.blackhole.scalar_fma" ||
+         op_name == "tl.blackhole.exp2_row_bcast_affine" ||
+         op_name == "tl.blackhole.exp2_grouped_row_bcast_affine" ||
+         op_name == "tl.blackhole.scalar_exp2_affine";
 }
 
 }  // namespace
@@ -362,9 +375,7 @@ void PlanBlackholeCB::StoreCBConfig(PrimFunc& func, const std::vector<CBConfig>&
   }
 
   // Build CB configs array
-  Array<Any> cb_configs;
-  Array<Any> cb_bindings;
-  int total_l1 = 0;
+  Array<TTCBPlan> tt_cb_plans;
 
   for (size_t config_index = 0; config_index < configs.size(); ++config_index) {
     const auto& config = configs[config_index];
@@ -379,30 +390,23 @@ void PlanBlackholeCB::StoreCBConfig(PrimFunc& func, const std::vector<CBConfig>&
     cb_attr.Set("lifetime_begin", Integer(config.lifetime_begin));
     cb_attr.Set("lifetime_end", Integer(config.lifetime_end));
     Array<Any> requirement_names;
+    Array<Any> requirement_indices;
     for (const auto& req_name : config.requirement_names) {
       requirement_names.push_back(String(req_name));
     }
-    cb_attr.Set("requirement_names", requirement_names);
-
-    cb_configs.push_back(cb_attr);
-    total_l1 += config.total_size;
-
-    for (size_t binding_index = 0; binding_index < config.requirement_names.size(); ++binding_index) {
-      Map<String, Any> binding_attr;
-      binding_attr.Set("requirement_index", Integer(config.requirement_indices[binding_index]));
-      binding_attr.Set("requirement_name", String(config.requirement_names[binding_index]));
-      binding_attr.Set("cb_id", Integer(config.cb_id));
-      binding_attr.Set("cb_config_index", Integer(static_cast<int>(config_index)));
-      binding_attr.Set("memory_object_name", String(config.name));
-      cb_bindings.push_back(binding_attr);
+    for (int req_index : config.requirement_indices) {
+      requirement_indices.push_back(Integer(req_index));
     }
+    cb_attr.Set("requirement_names", requirement_names);
+    cb_attr.Set("requirement_indices", requirement_indices);
+
+    tt_cb_plans.push_back(TTCBPlan(String(config.name), config.cb_id, String(config.role),
+                                   config.num_pages, config.page_size, String(config.data_format),
+                                   cb_attr));
   }
 
   // Store in function attributes
-  attrs.Set("blackhole.cb_configs", cb_configs);
-  attrs.Set("blackhole.cb_bindings", cb_bindings);
-  attrs.Set("blackhole.total_l1_bytes", Integer(total_l1));
-  attrs.Set("blackhole.num_cbs", Integer(static_cast<int>(configs.size())));
+  attrs.Set(attr::kTLTTCBPlans, tt_cb_plans);
 
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }

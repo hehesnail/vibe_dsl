@@ -32,17 +32,49 @@
   - 已完成审计收口：
     shared helper 去重、typed field 上提、index canonical linkage、
     validator 收窄、fast path contract 共构、capability model 前置发布
-- **Phase C**: 正式 cutover 主链已接入
+- **Phase C**: 已完成
   - 已完成：read-only translator demand probe、hardware intake、
     `TTProgram` core object set、`LowerSpatialProgramToTTTarget`、
     `ValidateTTTargetProgram`、`MaterializeTTExecutableSpec`
-  - 当前保留：legacy target attrs reader 仍作为 projection consumer 存在，
-    但 steady-state writer 已切到 `TTProgram -> MaterializeTTExecutableSpec`
-  - 当前 bridge 实态：
-    `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
-    仍写 legacy bridge attrs，`LowerSpatialProgramToTTTarget`
-    仍从这些 attrs 构造 `TTProgram`；
-    当前 immediate gate 是 reader-side cutover，不是先删 producer-side bridge 输入
+  - 已完成 reader-side cutover：
+    `rt_mod_blackhole` / `codegen_blackhole` 已通过共享
+    `tt_program_projection` 直接读取
+    `TTProgram` 承载的 `segment/runtime/common-runtime/cb/semaphore/core`
+    truth；function-level `gemm_contract / compute_contract` 与
+    `direct_runtime_unsupported_reasons` 也已提升到 `TTProgram.payload`
+  - 已完成 shared decoder 收口：
+    `tt_program_projection` 的 generic legacy fallback 已拆成
+    `TTProgram`-only reader；原始 device func 与 synthetic segment
+    都不再通过 shared getter 静默回退到 `blackhole.*`
+  - 已完成 synthetic segment typed 化：
+    `MakeSegmentPrimFunc` 现在会给 segment kernel 挂最小单-kernel `TTProgram`，
+    internal codegen/spec extraction 也只消费 typed target truth
+  - 已完成 fail-fast 收口：
+    原始 Blackhole device build 输入若缺少 `tl.tt_program`，
+    现在会在 build 入口直接失败，不再靠 legacy attrs 继续推进
+  - 已完成 regression 断言面迁移：
+    copy / GEMM / `flash-attn` 的核心 target-truth 断言已切到
+    `tl.tt_program` / `ExecutableSpec`
+  - 已完成 typed companion test ingress：
+    `TTProgram / TTKernel / TTCoreGroup / TTABIPlan / TTSemaphorePlan`
+    等 target companion object 现在已有 Python/FFI constructor，
+    `tt_target_probe` 的 validator 负例和 `copy_runtime` 的核心 mutation helper
+    已改成直接重建 `TTProgram`，不再先改 bridge attrs 再重跑 translator
+  - 已完成 producer-side bridge attr 清理：
+    `LowerBlackholeOps` 现在发布
+    `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload`
+    并在 seed materialization 后剥离
+    `blackhole.segment_plan / runtime_args / common_runtime_args /
+    gemm_contract / compute_contract / direct_runtime_unsupported_reasons`
+    等 projection attrs；
+    `PlanBlackholeCB / AssignBlackholeCores`
+    只再发布 `tl.tt_cb_plans / tl.tt_core_groups`
+  - 已完成 runtime gate 收口：
+    `flash-attn` multi-GEMM compute kernel 当前通过
+    `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
+    显式 unsupported 并在 runtime test 中 skip；
+    这算 `Phase C2` gate 通过，真正的 multi-GEMM runtime enablement
+    转入 post-Phase-C 支持面扩展
 
 ## `Phase B` 收尾结果
 
@@ -81,25 +113,17 @@
   - `SpatialCapabilityModel` 的 quantitative hardware fields 是否会进入 planning / mapping
   - `ResourceIntent` 是否能继续保持 small-closed kind discipline
 
-## 当前 blocker
+## 当前后续工作
 
-- legacy target attr reader / fallback 删除尚未完全收口；
-  `rt_mod_blackhole` / `codegen_blackhole`
-  仍消费 `MaterializeTTExecutableSpec` 反写的 projection
-- 当前 reader-side gate 的直接范围是：
-  - `rt_mod_blackhole` 仍直接解码
-    `blackhole.segment_plan / runtime_args / common_runtime_args /
-    accessors / cb_configs / semaphore_plan / core_plan`
-  - `codegen_blackhole` 仍直接消费
-    `blackhole.segment_plan / runtime_args / cb_configs / core_plan`
-- `TTProgram` 已具备
-  `TTABIPlan / TTCBPlan / TTCoreGroup / TTSemaphorePlan / TTExecutionPlan`
-  这些 direct-read 所需的主要 typed object，
-  但 runtime/codegen 侧仍未接入 direct reader
-- `ValidateTTTargetProgram` 当前主要覆盖结构完整性与 linkage；
-  reader-side cutover 之后还需要更强的 ABI / accessor / launch
-  validator gate
-- `flash-attn` 的 `blackhole.acc` correctness payoff 仍归属 `Phase C2`
+`Phase C` 当前已无 cutover blocker；后续主线转入 post-Phase-C：
+
+- 为 `flash-attn` multi-GEMM compute kernel 补真正的 direct runtime /
+  correctness contract，而不是长期停留在 unsupported gate
+- 继续把 `Placement / SpatialCapabilityModel / payload-backed node schema`
+  的剩余边界收成长期 typed contract
+- 在当前稳定主链上继续承接
+  `topk / fusedmoe / paged decode / chunk recurrence`
+  等 family
 
 ## 独立已知问题
 
@@ -112,15 +136,13 @@
 
 ## 下一步
 
-1. 在 `rt_mod_blackhole` / `codegen_blackhole`
-   引入共享的 `TTProgram` direct reader / decoder，
-   先完成 reader-side single-truth cutover
-2. 把 transform / target regression 的主断言面从
-   `blackhole.*` projection 迁到 `tl.tt_program` 或最终 `ExecutableSpec`，
-   然后删除 reader-side fallback
-3. reader-side gate 收口后，再继续 translator 输入侧的 producer-side bridge attr 清理
-4. 在新主链上继续扩大 direct host path/runtime gate 覆盖，
-   并把 `flash-attn` 的 `blackhole.acc` correctness payoff 继续放在 `Phase C2`
+1. 为 `flash-attn` multi-GEMM compute kernel 设计正式 target contract /
+   runtime schema，把当前 explicit unsupported gate 推进成真正可执行的主链
+2. 把 `Placement / SpatialCapabilityModel / payload-backed node schema`
+   中仍未完全站稳的边界继续做 typed uplift 和真实 consumer 验证
+3. 在当前 `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
+   主链上继续接 wider family：
+   `topk / fusedmoe / paged decode / chunk recurrence`
 
 ## 当前主设备链
 
@@ -156,12 +178,12 @@ LowerDeviceStorageAccessInfo
   - `cmake -S tilelang_repo -B tilelang_repo/build`
   - `cmake --build tilelang_repo/build -j32`
 - transform:
-  - `test_blackhole_tt_target_probe.py -q`: `19 passed`
+  - `test_blackhole_tt_target_probe.py -q`: `25 passed`
 - target:
-  - `test_blackhole_copy_pipeline.py test_blackhole_gemm.py test_blackhole_tvm_ffi_export.py test_blackhole_flash_attention_pipeline.py -x`:
-    `96 passed, 21 skipped, 1 xfailed`
-  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest testing/python/target/blackhole/test_blackhole_copy_runtime.py -q`:
-    `12 passed`
+  - `test_blackhole_copy_pipeline.py test_blackhole_gemm.py test_blackhole_tvm_ffi_export.py test_blackhole_flash_attention_pipeline.py test_blackhole_tt_target_probe.py -q`:
+    `129 passed, 21 skipped, 1 xfailed`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest testing/python/target/blackhole/test_blackhole_copy_runtime.py testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py -q`:
+    `13 passed, 2 skipped`
 
 ## 当前文档入口
 

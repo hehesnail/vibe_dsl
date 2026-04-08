@@ -108,6 +108,455 @@ def lower_blackhole_ops_through_phase_b(mod):
     return tilelang.transform.LowerBlackholeOps()(mod)
 
 
+def lower_blackhole_to_tt_target(mod):
+    """Lower a Blackhole module through the validated TTProgram target contract."""
+    mod = lower_blackhole_ops_through_phase_b(mod)
+    mod = tilelang.transform.PlanBlackholeCB()(mod)
+    mod = tilelang.transform.AssignBlackholeCores()(mod)
+    mod = tilelang.transform.LowerSpatialProgramToTTTarget()(mod)
+    mod = tilelang.transform.ValidateTTTargetProgram()(mod)
+    return mod
+
+
+def require_tt_program(func):
+    """Return the materialized TTProgram attached to a PrimFunc."""
+    if not (func.attrs and "tl.tt_program" in func.attrs):
+        pytest.fail("Expected PrimFunc to carry tl.tt_program")
+    return func.attrs["tl.tt_program"]
+
+
+def _require_legacy_attr(func, key):
+    if not (func.attrs and key in func.attrs):
+        pytest.fail(f"Expected PrimFunc to carry {key}")
+    return func.attrs[key]
+
+
+def has_tt_target_seed_truth(func):
+    return bool(
+        func.attrs
+        and (
+            "tl.tt_program" in func.attrs
+            or (
+                "tl.tt_kernel_seeds" in func.attrs
+                and "tl.tt_abi_plans" in func.attrs
+            )
+        )
+    )
+
+
+def extract_tt_program_segments(func):
+    """Extract segment-like kernel/ABI records from TTProgram for regression tests."""
+    tt_program = require_tt_program(func)
+    abi_plans = list(tt_program.abi_plans)
+    segments = []
+    for kernel in tt_program.kernels:
+        payload = dict(kernel.payload)
+        payload.setdefault("name", str(kernel.name))
+        payload.setdefault("kind", str(kernel.kind))
+        payload.setdefault("core_type", str(kernel.core_type))
+        abi_plan_index = int(kernel.abi_plan_index)
+        if 0 <= abi_plan_index < len(abi_plans):
+            abi = abi_plans[abi_plan_index]
+            payload.setdefault("runtime_args", list(abi.runtime_args))
+            payload.setdefault("common_runtime_args", list(abi.common_runtime_args))
+            payload.setdefault("compile_time_arg_specs", list(abi.compile_time_arg_specs))
+            payload.setdefault("accessors", list(abi.accessors))
+            payload.setdefault("semaphore_bindings", list(abi.semaphore_bindings))
+        segments.append(payload)
+    return segments
+
+
+def extract_tt_seed_segments(func):
+    """Extract segment-like kernel/ABI records from typed TT seed attrs."""
+    if not (
+        func.attrs
+        and "tl.tt_kernel_seeds" in func.attrs
+        and "tl.tt_abi_plans" in func.attrs
+    ):
+        pytest.fail("Expected PrimFunc to carry tl.tt_kernel_seeds and tl.tt_abi_plans")
+
+    kernels = list(func.attrs["tl.tt_kernel_seeds"])
+    abi_plans = list(func.attrs["tl.tt_abi_plans"])
+    if len(kernels) != len(abi_plans):
+        pytest.fail("Expected tl.tt_kernel_seeds and tl.tt_abi_plans to stay cardinality-aligned")
+
+    segments = []
+    for kernel, abi in zip(kernels, abi_plans):
+        payload = dict(kernel.payload)
+        payload.setdefault("name", str(kernel.name))
+        payload.setdefault("kind", str(kernel.kind))
+        payload.setdefault("core_type", str(kernel.core_type))
+        payload.setdefault("runtime_args", list(abi.runtime_args))
+        payload.setdefault("common_runtime_args", list(abi.common_runtime_args))
+        payload.setdefault("compile_time_arg_specs", list(abi.compile_time_arg_specs))
+        payload.setdefault("accessors", list(abi.accessors))
+        payload.setdefault("semaphore_bindings", list(abi.semaphore_bindings))
+        segments.append(payload)
+    return segments
+
+
+def extract_blackhole_segment_plan(func):
+    """Return segment-like target truth from TTProgram when present, else legacy attrs."""
+    if func.attrs and "tl.tt_program" in func.attrs:
+        return extract_tt_program_segments(func)
+    if func.attrs and "tl.tt_kernel_seeds" in func.attrs and "tl.tt_abi_plans" in func.attrs:
+        return extract_tt_seed_segments(func)
+    return list(_require_legacy_attr(func, "blackhole.segment_plan"))
+
+
+def extract_blackhole_runtime_args(func, *, kind=None, core_type=None, common=False):
+    """Return TTProgram ABI runtime args when present, else legacy attrs."""
+    if func.attrs and "tl.tt_program" in func.attrs:
+        tt_program = require_tt_program(func)
+        if kind is not None or core_type is not None:
+            kernel = require_tt_kernel(tt_program, kind=kind, core_type=core_type)
+            abi = tt_abi_for_kernel(tt_program, kernel)
+            return list(abi.common_runtime_args if common else abi.runtime_args)
+
+        aggregated = []
+        seen = set()
+        for abi in tt_program.abi_plans:
+            args = abi.common_runtime_args if common else abi.runtime_args
+            for arg in args:
+                identity = str(arg["identity"]) if "identity" in arg else None
+                key = identity or (
+                    str(arg["name"]) if "name" in arg else repr(dict(arg))
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                aggregated.append(arg)
+        return aggregated
+
+    if func.attrs and "tl.tt_kernel_seeds" in func.attrs and "tl.tt_abi_plans" in func.attrs:
+        if kind is not None or core_type is not None:
+            matches = []
+            for segment in extract_tt_seed_segments(func):
+                if kind is not None and str(segment.get("kind")) != kind:
+                    continue
+                if core_type is not None and str(segment.get("core_type")) != core_type:
+                    continue
+                matches.append(segment)
+
+            if not matches:
+                available = [
+                    f"{str(segment.get('name'))}:{str(segment.get('kind'))}:{str(segment.get('core_type'))}"
+                    for segment in extract_tt_seed_segments(func)
+                ]
+                pytest.fail(
+                    f"Missing typed TT seed segment kind={kind!r} core_type={core_type!r}; "
+                    f"available segments: {available}"
+                )
+            if len(matches) > 1:
+                matched = [
+                    f"{str(segment.get('name'))}:{str(segment.get('kind'))}:{str(segment.get('core_type'))}"
+                    for segment in matches
+                ]
+                pytest.fail(
+                    f"Ambiguous typed TT seed segment kind={kind!r} core_type={core_type!r}; "
+                    f"matched segments: {matched}"
+                )
+            return list(matches[0]["common_runtime_args" if common else "runtime_args"])
+
+        aggregated = []
+        seen = set()
+        for segment in extract_tt_seed_segments(func):
+            args = segment["common_runtime_args" if common else "runtime_args"]
+            for arg in args:
+                identity = str(arg["identity"]) if "identity" in arg else None
+                key = identity or (
+                    str(arg["name"]) if "name" in arg else repr(dict(arg))
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                aggregated.append(arg)
+        return aggregated
+
+    attr_key = "blackhole.common_runtime_args" if common else "blackhole.runtime_args"
+    return list(_require_legacy_attr(func, attr_key))
+
+
+def extract_blackhole_core_plan(func):
+    """Return TTProgram core-group truth when present, else legacy attrs."""
+    if func.attrs and "tl.tt_program" in func.attrs:
+        tt_program = require_tt_program(func)
+        if not tt_program.core_groups:
+            pytest.fail("Expected TTProgram to carry a TTCoreGroup")
+        core_group = tt_program.core_groups[0]
+        core_plan = dict(core_group.payload)
+        core_plan.setdefault("logical_grid_x", int(core_group.logical_grid_x))
+        core_plan.setdefault("logical_grid_y", int(core_group.logical_grid_y))
+        core_plan.setdefault("linearization", str(core_group.linearization))
+        core_plan.setdefault("physical_cores", list(core_group.physical_cores))
+        core_plan.setdefault("work_packets", list(core_group.work_packets))
+        return core_plan
+
+    if func.attrs and "tl.tt_core_groups" in func.attrs:
+        core_groups = list(func.attrs["tl.tt_core_groups"])
+        if not core_groups:
+            pytest.fail("Expected tl.tt_core_groups to carry a TTCoreGroup")
+        core_group = core_groups[0]
+        core_plan = dict(core_group.payload)
+        core_plan.setdefault("logical_grid_x", int(core_group.logical_grid_x))
+        core_plan.setdefault("logical_grid_y", int(core_group.logical_grid_y))
+        core_plan.setdefault("linearization", str(core_group.linearization))
+        core_plan.setdefault("physical_cores", list(core_group.physical_cores))
+        core_plan.setdefault("work_packets", list(core_group.work_packets))
+        return core_plan
+
+    return dict(_require_legacy_attr(func, "blackhole.core_plan"))
+
+
+def extract_blackhole_work_per_core(func):
+    """Return the max work-count assigned to any core."""
+    if func.attrs and (
+        "tl.tt_program" in func.attrs or "tl.tt_core_groups" in func.attrs
+    ):
+        core_plan = extract_blackhole_core_plan(func)
+        return max((int(packet["work_count"]) for packet in core_plan["work_packets"]), default=0)
+    return int(_require_legacy_attr(func, "blackhole.work_per_core"))
+
+
+def extract_blackhole_cb_configs(func):
+    """Return TTProgram CB-plan payloads when present, else legacy attrs."""
+    if func.attrs and "tl.tt_program" in func.attrs:
+        cb_plans = list(require_tt_program(func).cb_plans)
+        configs = []
+        for cb_plan in cb_plans:
+            config = dict(cb_plan.payload)
+            config.setdefault("cb_id", int(cb_plan.cb_id))
+            config.setdefault("name", str(cb_plan.name))
+            config.setdefault("role", str(cb_plan.resource_class))
+            config.setdefault("num_pages", int(cb_plan.num_pages))
+            config.setdefault("page_size", int(cb_plan.page_size_bytes))
+            config.setdefault(
+                "total_size_bytes", int(cb_plan.num_pages) * int(cb_plan.page_size_bytes)
+            )
+            config.setdefault("data_format", str(cb_plan.data_format))
+            configs.append(config)
+        return configs
+
+    if func.attrs and "tl.tt_cb_plans" in func.attrs:
+        configs = []
+        for cb_plan in list(func.attrs["tl.tt_cb_plans"]):
+            config = dict(cb_plan.payload)
+            config.setdefault("cb_id", int(cb_plan.cb_id))
+            config.setdefault("name", str(cb_plan.name))
+            config.setdefault("role", str(cb_plan.resource_class))
+            config.setdefault("num_pages", int(cb_plan.num_pages))
+            config.setdefault("page_size", int(cb_plan.page_size_bytes))
+            config.setdefault(
+                "total_size_bytes", int(cb_plan.num_pages) * int(cb_plan.page_size_bytes)
+            )
+            config.setdefault("data_format", str(cb_plan.data_format))
+            configs.append(config)
+        return configs
+
+    return list(_require_legacy_attr(func, "blackhole.cb_configs"))
+
+
+def extract_blackhole_total_l1_bytes(func):
+    """Return total L1 bytes consumed by CB plans."""
+    if func.attrs and ("tl.tt_program" in func.attrs or "tl.tt_cb_plans" in func.attrs):
+        return sum(int(config["total_size_bytes"]) for config in extract_blackhole_cb_configs(func))
+    return int(_require_legacy_attr(func, "blackhole.total_l1_bytes"))
+
+
+def extract_tt_program_payload_map(func):
+    """Return TTProgram payload as a Python dict for regression tests."""
+    if func.attrs and "tl.tt_program" in func.attrs:
+        return dict(require_tt_program(func).payload)
+    if func.attrs and "tl.tt_program_payload" in func.attrs:
+        return dict(func.attrs["tl.tt_program_payload"])
+    pytest.fail("Expected PrimFunc to carry tl.tt_program or tl.tt_program_payload")
+
+
+def extract_blackhole_compute_contract(func):
+    """Return compute contract from TTProgram payload when present, else legacy attrs."""
+    if func.attrs and ("tl.tt_program" in func.attrs or "tl.tt_program_payload" in func.attrs):
+        payload = extract_tt_program_payload_map(func)
+        if "compute_contract" not in payload:
+            pytest.fail("Expected TTProgram payload to carry compute_contract")
+        return dict(payload["compute_contract"])
+    return dict(_require_legacy_attr(func, "blackhole.compute_contract"))
+
+
+def extract_blackhole_gemm_contract(func):
+    """Return GEMM contract from TTProgram payload when present, else legacy attrs."""
+    if func.attrs and ("tl.tt_program" in func.attrs or "tl.tt_program_payload" in func.attrs):
+        payload = extract_tt_program_payload_map(func)
+        if "gemm_contract" not in payload:
+            pytest.fail("Expected TTProgram payload to carry gemm_contract")
+        return dict(payload["gemm_contract"])
+    return dict(_require_legacy_attr(func, "blackhole.gemm_contract"))
+
+
+def rebuild_tt_kernel(kernel, *, name=None, kind=None, core_type=None, abi_plan_index=None, payload=None):
+    """Rebuild a TTKernel with optional field overrides."""
+    make_tt_kernel = tilelang.tvm.get_global_func("tl.TTKernel")
+    return make_tt_kernel(
+        str(kernel.name) if name is None else name,
+        str(kernel.kind) if kind is None else kind,
+        str(kernel.core_type) if core_type is None else core_type,
+        int(kernel.abi_plan_index) if abi_plan_index is None else abi_plan_index,
+        dict(kernel.payload) if payload is None else payload,
+    )
+
+
+def rebuild_tt_core_group(
+    core_group,
+    *,
+    name=None,
+    logical_grid_x=None,
+    logical_grid_y=None,
+    linearization=None,
+    physical_cores=None,
+    work_packets=None,
+    payload=None,
+):
+    """Rebuild a TTCoreGroup with optional field overrides."""
+    make_tt_core_group = tilelang.tvm.get_global_func("tl.TTCoreGroup")
+    return make_tt_core_group(
+        str(core_group.name) if name is None else name,
+        int(core_group.logical_grid_x) if logical_grid_x is None else logical_grid_x,
+        int(core_group.logical_grid_y) if logical_grid_y is None else logical_grid_y,
+        str(core_group.linearization) if linearization is None else linearization,
+        list(core_group.physical_cores) if physical_cores is None else physical_cores,
+        list(core_group.work_packets) if work_packets is None else work_packets,
+        dict(core_group.payload) if payload is None else payload,
+    )
+
+
+def rebuild_tt_semaphore_plan(
+    semaphore_plan,
+    *,
+    name=None,
+    kind=None,
+    semaphore_id=None,
+    initial_value=None,
+    core_type=None,
+    source_task_index=None,
+    target_task_index=None,
+    core_ranges=None,
+    payload=None,
+):
+    """Rebuild a TTSemaphorePlan with optional field overrides."""
+    make_tt_semaphore_plan = tilelang.tvm.get_global_func("tl.TTSemaphorePlan")
+    return make_tt_semaphore_plan(
+        str(semaphore_plan.name) if name is None else name,
+        str(semaphore_plan.kind) if kind is None else kind,
+        int(semaphore_plan.semaphore_id) if semaphore_id is None else semaphore_id,
+        int(semaphore_plan.initial_value) if initial_value is None else initial_value,
+        str(semaphore_plan.core_type) if core_type is None else core_type,
+        int(semaphore_plan.source_task_index) if source_task_index is None else source_task_index,
+        int(semaphore_plan.target_task_index) if target_task_index is None else target_task_index,
+        list(semaphore_plan.core_ranges) if core_ranges is None else core_ranges,
+        dict(semaphore_plan.payload) if payload is None else payload,
+    )
+
+
+def rebuild_tt_abi_plan(
+    abi_plan,
+    *,
+    name=None,
+    kernel_name=None,
+    runtime_args=None,
+    common_runtime_args=None,
+    compile_time_arg_specs=None,
+    accessors=None,
+    semaphore_bindings=None,
+    payload=None,
+):
+    """Rebuild a TTABIPlan with optional field overrides."""
+    make_tt_abi_plan = tilelang.tvm.get_global_func("tl.TTABIPlan")
+    return make_tt_abi_plan(
+        str(abi_plan.name) if name is None else name,
+        str(abi_plan.kernel_name) if kernel_name is None else kernel_name,
+        list(abi_plan.runtime_args) if runtime_args is None else runtime_args,
+        list(abi_plan.common_runtime_args)
+        if common_runtime_args is None
+        else common_runtime_args,
+        list(abi_plan.compile_time_arg_specs)
+        if compile_time_arg_specs is None
+        else compile_time_arg_specs,
+        list(abi_plan.accessors) if accessors is None else accessors,
+        list(abi_plan.semaphore_bindings) if semaphore_bindings is None else semaphore_bindings,
+        dict(abi_plan.payload) if payload is None else payload,
+    )
+
+
+def rebuild_tt_program(
+    program,
+    *,
+    entry_name=None,
+    member_func=None,
+    kernels=None,
+    core_groups=None,
+    cb_plans=None,
+    transport_plans=None,
+    semaphore_plans=None,
+    compute_sync_plans=None,
+    dst_layout_plans=None,
+    abi_plans=None,
+    execution_plans=None,
+    payload=None,
+):
+    """Rebuild a TTProgram with optional field overrides."""
+    make_tt_program = tilelang.tvm.get_global_func("tl.TTProgram")
+    return make_tt_program(
+        str(program.entry_name) if entry_name is None else entry_name,
+        str(program.member_func) if member_func is None else member_func,
+        list(program.kernels) if kernels is None else kernels,
+        list(program.core_groups) if core_groups is None else core_groups,
+        list(program.cb_plans) if cb_plans is None else cb_plans,
+        list(program.transport_plans) if transport_plans is None else transport_plans,
+        list(program.semaphore_plans) if semaphore_plans is None else semaphore_plans,
+        list(program.compute_sync_plans) if compute_sync_plans is None else compute_sync_plans,
+        list(program.dst_layout_plans) if dst_layout_plans is None else dst_layout_plans,
+        list(program.abi_plans) if abi_plans is None else abi_plans,
+        list(program.execution_plans) if execution_plans is None else execution_plans,
+        dict(program.payload) if payload is None else payload,
+    )
+
+
+def require_tt_kernel(tt_program, *, kind, core_type=None, name=None):
+    """Require a unique TTProgram kernel matching the requested target role."""
+    matches = []
+    for kernel in tt_program.kernels:
+        if str(kernel.kind) != kind:
+            continue
+        if core_type is not None and str(kernel.core_type) != core_type:
+            continue
+        if name is not None and str(kernel.name) != name:
+            continue
+        matches.append(kernel)
+
+    if not matches:
+        available = [
+            f"{str(kernel.name)}:{str(kernel.kind)}:{str(kernel.core_type)}"
+            for kernel in tt_program.kernels
+        ]
+        pytest.fail(
+            f"Missing TTProgram kernel kind={kind!r} core_type={core_type!r} name={name!r}; "
+            f"available kernels: {available}"
+        )
+    if len(matches) > 1:
+        matched = [f"{str(kernel.name)}:{str(kernel.kind)}:{str(kernel.core_type)}" for kernel in matches]
+        pytest.fail(
+            f"Ambiguous TTProgram kernel kind={kind!r} core_type={core_type!r} name={name!r}; "
+            f"matched kernels: {matched}"
+        )
+    return matches[0]
+
+
+def tt_abi_for_kernel(tt_program, kernel):
+    """Return the ABI plan referenced by a TTProgram kernel."""
+    abi_plan_index = int(kernel.abi_plan_index)
+    assert abi_plan_index >= 0
+    return tt_program.abi_plans[abi_plan_index]
+
+
 def staged_copy_kernel(tile_rows: int, tile_cols: int = 1, tile_m: int = 32, tile_n: int = 32):
     """Define an explicit TileLang T.copy(global->shared->global) kernel."""
     m = tile_rows * tile_m

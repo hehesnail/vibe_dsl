@@ -60,6 +60,29 @@
   “节点原生拥有该字段” 和 “只是借用 top-level fallback”；
   否则 materializer 会把 fallback 意外下沉成 per-node 真相，
   破坏旧测试和 reader contract
+- function-level target contract（如
+  `gemm_contract / compute_contract / direct_runtime_unsupported_reasons`）
+  一旦进入 runtime/codegen 正式消费面，就应提升进 `TTProgram.payload`；
+  bridge attr 只能留作 compatibility fallback
+- 一旦原始 device func 已切到 typed target truth，
+  shared projection helper 就不能再同时承担
+  “`TTProgram` reader” 和 “legacy attr fallback” 两种职责；
+  必须拆成 `TTProgram`-only reader 与本地 materialization helper，
+  否则会把单一真源再次偷偷变成双真源
+- synthetic segment / internal kernel emission 也应遵守同一规则：
+  如果内部还需要重建 target-truth，就直接挂最小单-kernel `TTProgram`，
+  不要再把 `segment/runtime/cb/core` 重新降回局部 `blackhole.*` attrs
+- Python 侧若需要做 companion IR mutation regression，
+  优先通过 `tl.TT*` constructor 直接重建
+  `TTProgram / TTKernel / TTCoreGroup / TTABIPlan / TTSemaphorePlan`
+  并重新跑 `ValidateTTTargetProgram`；
+  不要先改 bridge attrs 再依赖 translator 刷新 typed truth
+- bridge-stage 若还没 materialize `tl.tt_program`，
+  regression/helper 也应优先读取
+  `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload`；
+  一旦这些 typed seeds 已发布，`LowerBlackholeOps` 输出就应立即剥离
+  `blackhole.segment_plan / runtime_args / gemm_contract` 等 projection attrs，
+  不要让 producer-side cleanup 被测试层 fallback 反向卡住
 
 ## 5. Schema / ABI 模式
 
@@ -77,6 +100,11 @@
 - schema-only 路径一旦成立，派生物也必须能从 schema 单独重建
 - 未正式支持的 ABI / accessor / transport 组合，要 build-time fail-fast
 - 不保留默认 ABI、默认 core、默认 packet 这类补洞
+- direct runtime 对 multi-GEMM compute kernel 的 unsupported gate
+  不能按原始 `matmul_tiles` 调用次数判定；同一个 logical GEMM 会因为 K 分块
+  产生多次调用，正式判定必须按 distinct GEMM contract 去重
+- 一旦 reader-side cutover 成立，原始 device build 输入就应硬要求
+  `tl.tt_program`；不要让 build 在缺失 TT truth 时再悄悄回退到 legacy attrs
 
 ## 6. analysis / lowering / planner / codegen 模式
 

@@ -1306,25 +1306,24 @@ static bool TryAppendPerWorkRuntimeArg(const KernelSpec& kernel,
     return true;
   }
   if (arg_spec.kind == "b_tile_start_id") {
-    ICHECK(context.has_gemm_compute_contract && kernel.kind == "reader")
-        << "b_tile_start_id is only supported for GEMM reader kernels in Blackhole direct runtime";
-    args->push_back(context.bx);
+    args->push_back(context.has_gemm_compute_contract && kernel.kind == "reader" ? context.bx
+                                                                                  : 0U);
     return true;
   }
   if (arg_spec.kind == "b_tile_num_tiles") {
     ICHECK(kernel_requests_kind("b_tile_start_id"))
         << "b_tile_num_tiles requires b_tile_start_id in Blackhole direct runtime";
-    ICHECK(context.has_gemm_compute_contract && kernel.kind == "reader")
-        << "b_tile_num_tiles is only supported for GEMM reader kernels in Blackhole direct runtime";
-    args->push_back(context.num_k_tiles);
+    args->push_back(context.has_gemm_compute_contract && kernel.kind == "reader"
+                        ? context.num_k_tiles
+                        : 1U);
     return true;
   }
   if (arg_spec.kind == "b_tile_stride") {
     ICHECK(kernel_requests_kind("b_tile_start_id"))
         << "b_tile_stride requires b_tile_start_id in Blackhole direct runtime";
-    ICHECK(context.has_gemm_compute_contract && kernel.kind == "reader")
-        << "b_tile_stride is only supported for GEMM reader kernels in Blackhole direct runtime";
-    args->push_back(context.logical_n_tiles);
+    args->push_back(context.has_gemm_compute_contract && kernel.kind == "reader"
+                        ? context.logical_n_tiles
+                        : 1U);
     return true;
   }
   if (arg_spec.kind == "output_tile_start_id") {
@@ -1344,18 +1343,13 @@ static bool TryAppendPerWorkRuntimeArg(const KernelSpec& kernel,
     return true;
   }
   if (arg_spec.kind == "k_tile_start_id") {
-    ICHECK(context.has_gemm_compute_contract)
-        << "k_tile_start_id is only supported for GEMM kernels in Blackhole direct runtime";
     ICHECK(kernel_requests_kind("num_k_tiles"))
         << "k_tile_start_id requires num_k_tiles in Blackhole direct runtime";
-    args->push_back(0);
+    args->push_back(0U);
     return true;
   }
   if (arg_spec.kind == "num_k_tiles") {
-    ICHECK_GT(context.num_k_tiles, 0)
-        << "num_k_tiles requested by runtime schema, but direct runtime could not derive a "
-           "supported value from ExecutableSpec";
-    args->push_back(context.num_k_tiles);
+    args->push_back(context.has_gemm_compute_contract ? context.num_k_tiles : 1U);
     return true;
   }
   if (arg_spec.kind == "scalar_u32") {
@@ -1540,6 +1534,17 @@ void BlackholeModuleNode::ExecuteDirect(
   const ExecutableSpec& spec = fit->second;
   if (spec.kernels.empty()) {
     LOG(FATAL) << "ExecutableSpec has no kernels for function: " << func_name;
+  }
+  if (!spec.direct_runtime_unsupported_reasons.empty()) {
+    std::ostringstream os;
+    for (size_t i = 0; i < spec.direct_runtime_unsupported_reasons.size(); ++i) {
+      if (i != 0) {
+        os << ", ";
+      }
+      os << spec.direct_runtime_unsupported_reasons[i];
+    }
+    LOG(FATAL) << "Blackhole direct runtime is not supported for " << func_name << ": "
+               << os.str();
   }
   ValidateComputeContractDirectRuntimeConstraints(spec);
   for (const auto& kernel_spec : spec.kernels) {

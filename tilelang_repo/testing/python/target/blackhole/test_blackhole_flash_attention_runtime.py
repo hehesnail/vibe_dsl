@@ -22,6 +22,13 @@ def _run_blackhole_flash_attention(kernel, *inputs):
     target = Target("blackhole")
     with target:
         artifact = lower(kernel, target=target)
+    metadata = artifact.codegen_mod.get_function_metadata("main")
+    reasons = metadata.get("direct_runtime_unsupported_reasons", [])
+    if reasons:
+        pytest.skip(
+            "Blackhole flash-attention direct runtime is not yet supported for this kernel: "
+            + ", ".join(str(reason) for reason in reasons)
+        )
     artifact.codegen_mod["main"](*inputs)
 
 

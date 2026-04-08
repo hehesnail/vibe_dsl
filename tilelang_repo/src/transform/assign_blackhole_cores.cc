@@ -23,6 +23,8 @@
  */
 
 #include "assign_blackhole_cores.h"
+#include "common/companion_base.h"
+#include "common/tt_target_program.h"
 
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/ir/attrs.h>
@@ -50,6 +52,8 @@ using tir::as_const_int;
 using tvm::DictAttrs;
 using tvm::DictAttrsNode;
 using tvm::Integer;
+using tvm::ffi::Array;
+using tvm::ffi::String;
 
 // Main entry point
 PrimFunc AssignBlackholeCores::Transform(const PrimFunc& func) {
@@ -204,12 +208,12 @@ void AssignBlackholeCores::StoreAssignment(PrimFunc& func,
   core_plan.Set("physical_cores", physical_cores);
   core_plan.Set("work_packets", work_packets);
 
-  attrs.Set("blackhole.grid_shape", Integer(assignment.grid_x * assignment.grid_y));
-  attrs.Set("blackhole.grid_x", Integer(assignment.grid_x));
-  attrs.Set("blackhole.grid_y", Integer(assignment.grid_y));
-  attrs.Set("blackhole.cores_needed", Integer(assignment.cores_needed));
-  attrs.Set("blackhole.work_per_core", Integer(assignment.work_per_core));
-  attrs.Set("blackhole.core_plan", core_plan);
+  Array<TTCoreGroup> tt_core_groups;
+  tt_core_groups.push_back(TTCoreGroup(String("main_core_group"), assignment.grid_x,
+                                       assignment.grid_y, String("row_major"),
+                                       physical_cores, work_packets, core_plan));
+
+  attrs.Set(attr::kTLTTCoreGroups, tt_core_groups);
 
   // Update function attributes
   func.CopyOnWrite()->attrs = DictAttrs(attrs);

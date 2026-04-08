@@ -5,18 +5,25 @@
 
 ## 1. 当前未解决
 
-### `blackhole.acc` 混合语义会在 flash-attn runtime 上稳定制造 correctness mismatch
+### flash-attn direct runtime 目前对 multi-GEMM compute kernel 明确不支持
 
 - **现象**:
-  - flash-attention direct runtime 已不再 hang
-  - 当前剩余失败主要表现为 softmax / accumulate 链上的数值错误、`nan` 或明显偏差
+  - `flash-attn` 的 MHA / GQA direct runtime case 当前不会再在 enqueue 后无提示挂死
+  - lowered metadata 会显式暴露
+    `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
+  - runtime test 会按 unsupported reason skip
 - **根因**:
-  - `blackhole.acc` 在部分路径里仍同时承担两种不兼容语义：
-    - TT compute 主路径里的 tile scratch / matmul destination
-    - 线性 fragment helper 眼中的数组 scratch
+  - 当前 direct runtime / compute ABI 只稳定覆盖 single-GEMM compute contract
+  - flash-attn compute kernel 在同一个 kernel 里承载多套不同的 GEMM contract；
+    把它误当成 single-GEMM 会导致 runtime 在 `EnqueueMeshWorkload(..., blocking=true)`
+    后挂死
+  - TT-Metal 原生 SDPA 路径使用的是专门的 compute kernel / compile-arg contract，
+    不是当前 generic GEMM ABI 的直接延长
 - **当前结论**:
-  - 这不是单个 emitter bug，而是分层未彻底收正后的结构性问题
-  - 正式 payoff 归属 `Phase C2`
+  - 当前最佳行为是显式 unsupported，而不是继续尝试 generic direct runtime
+  - 真正的 correctness/runtime payoff 仍归属 `Phase C2`
+  - 后续要么补 multi-GEMM compute contract / runtime schema，
+    要么为该 family 落专门 target contract；不能靠再调 compile args 硬顶过去
 
 ## 2. 已解决但值得记住的模式
 
@@ -56,6 +63,30 @@
 - **根因**: 保留了 `input0/output0` 这类默认 runtime-arg fallback
 - **修法**: 删除默认 fallback；schema 缺失 build-time 直接失败
 - **教训**: 正式 ABI 不应该靠默认名字兜底
+
+#### typed target truth reader 不能和 legacy projection fallback 共用同一套 getter
+
+- **症状**: 原始 device build / codegen 看似已切到 `tl.tt_program`，
+  但仍能因为 shared getter 的 fallback 静默吃到 `blackhole.*` attrs
+- **根因**: `tt_program_projection` 同时承担了
+  `TTProgram` direct reader 和 legacy attr fallback 两种职责
+- **修法**: 拆成 `TTProgram`-only reader 与 synthetic/local attr helper，
+  并让原始 device build 输入硬要求 `tl.tt_program`
+- **教训**: 一旦 typed target truth 建立，generic projection helper
+  不能再偷偷 multiplex 两套真源
+
+#### bridge-stage typed seeds 一旦发布，helper 和 pass 输出都不能再依赖 legacy projection attrs
+
+- **症状**: 想删除 `LowerBlackholeOps` 输出上的
+  `blackhole.segment_plan / runtime_args / gemm_contract`，
+  却被 regression helper 仍只认 projection attrs 卡住
+- **根因**: helper 只会读最终 `tl.tt_program`，不会读
+  `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload` 这类
+  pre-`TTProgram` typed truth
+- **修法**: helper 先学会从 typed seed attrs 重建 segment / ABI / contract 视图，
+  然后让 `LowerBlackholeOps` 在 seed materialization 后立即 strip legacy projections
+- **教训**: producer-side 清理的真正前提不是“删代码”，而是
+  bridge-stage 的 typed truth 已经可独立被测试和 validator 消费
 
 ### 2.2 planner / runtime contract
 

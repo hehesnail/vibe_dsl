@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "../tir/builtin_blackhole.h"
+#include "tt_program_projection.h"
 #include "tvm/tir/builtin.h"
 #include "tvm/tir/op.h"
 #include "tvm/tir/stmt_functor.h"
@@ -91,13 +92,14 @@ void ValidateNoUnsupportedFragmentRequirementsForCodegen(const tvm::tir::PrimFun
 
 ffi::Array<ffi::Any> AggregateSegmentRuntimeArgsForCodegen(const tvm::tir::PrimFunc& f) {
   ffi::Array<ffi::Any> aggregated;
-  auto segment_plan_attr = f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.segment_plan");
-  if (!segment_plan_attr) {
+  auto segment_plan =
+      tt_program_projection::GetSegmentPlanFromTTProgram(f, "Blackhole codegen");
+  if (segment_plan.empty()) {
     return aggregated;
   }
 
   std::unordered_set<std::string> seen_runtime_args;
-  for (const auto& item : segment_plan_attr.value()) {
+  for (const auto& item : segment_plan) {
     auto segment = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
         tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
     if (segment.empty()) {
@@ -132,8 +134,28 @@ ffi::Array<ffi::Any> AggregateSegmentRuntimeArgsForCodegen(const tvm::tir::PrimF
   return aggregated;
 }
 
+ffi::Array<ffi::Any> GetRuntimeArgsForCodegen(const tvm::tir::PrimFunc& f) {
+  return tt_program_projection::GetRuntimeArgsFromTTProgram(f, "Blackhole codegen");
+}
+
+ffi::Array<ffi::Any> GetCBConfigsForCodegen(const tvm::tir::PrimFunc& f) {
+  return tt_program_projection::GetCBConfigsFromTTProgram(f, "Blackhole codegen");
+}
+
+ffi::Map<ffi::String, ffi::Any> GetCorePlanForCodegen(const tvm::tir::PrimFunc& f) {
+  return tt_program_projection::GetCorePlanFromTTProgram(f, "Blackhole codegen");
+}
+
+std::string GetCoreTypeForCodegen(const tvm::tir::PrimFunc& f) {
+  auto program = tt_program_projection::RequireTTProgram(f, "Blackhole codegen");
+  if (!program->kernels.empty()) {
+    return program->kernels[0]->core_type;
+  }
+  return "";
+}
+
 bool HasRuntimeArgsForCodegen(const tvm::tir::PrimFunc& f) {
-  if (f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.runtime_args")) {
+  if (!GetRuntimeArgsForCodegen(f).empty()) {
     return true;
   }
   return !AggregateSegmentRuntimeArgsForCodegen(f).empty();
@@ -197,16 +219,13 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
     decl_stream << "\n";
 
     // Detect core type from function attributes (IR-driven, not function name)
-    auto core_type_attr = f->GetAttr<tvm::ffi::String>("blackhole.core_type");
-    if (core_type_attr) {
-      std::string core_type_str = core_type_attr.value();
-      if (core_type_str == "brisc") {
-        core_type_ = CoreType::kBRISC;
-      } else if (core_type_str == "ncrisc") {
-        core_type_ = CoreType::kNCRISC;
-      } else if (core_type_str == "trisc") {
-        core_type_ = CoreType::kTRISC;
-      }
+    std::string core_type_str = GetCoreTypeForCodegen(f);
+    if (core_type_str == "brisc") {
+      core_type_ = CoreType::kBRISC;
+    } else if (core_type_str == "ncrisc") {
+      core_type_ = CoreType::kNCRISC;
+    } else if (core_type_str == "trisc") {
+      core_type_ = CoreType::kTRISC;
     }
 
     // Include appropriate API header based on core type
@@ -379,12 +398,11 @@ void CodeGenBlackhole::LoadCorePlan(const tvm::tir::PrimFunc &f) {
   logical_grid_y_ = 1;
   linearization_ = "row_major";
 
-  auto core_plan_attr = f->GetAttr<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>("blackhole.core_plan");
-  if (!core_plan_attr) {
+  auto core_plan = GetCorePlanForCodegen(f);
+  if (core_plan.empty()) {
     return;
   }
 
-  const auto &core_plan = core_plan_attr.value();
   if (auto v = core_plan.Get("logical_grid_x")) {
     logical_grid_x_ = Downcast<tvm::Integer>(v.value()).IntValue();
   } else if (auto v = core_plan.Get("grid_x")) {
@@ -410,8 +428,9 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   cb_id_by_requirement_name_.clear();
   cb_num_pages_by_requirement_name_.clear();
 
-  if (auto cb_configs_attr = f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.cb_configs")) {
-    for (const auto &item : cb_configs_attr.value()) {
+  auto cb_configs = GetCBConfigsForCodegen(f);
+  if (!cb_configs.empty()) {
+    for (const auto &item : cb_configs) {
       auto cb_info = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
           tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
       if (cb_info.empty()) {
@@ -445,15 +464,12 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
     }
   }
 
-  auto runtime_args_attr = f->GetAttr<tvm::ffi::Array<tvm::ffi::Any>>("blackhole.runtime_args");
-  ffi::Array<ffi::Any> runtime_args;
-  if (runtime_args_attr) {
-    runtime_args = runtime_args_attr.value();
-  } else {
+  ffi::Array<ffi::Any> runtime_args = GetRuntimeArgsForCodegen(f);
+  if (runtime_args.empty()) {
     runtime_args = AggregateSegmentRuntimeArgsForCodegen(f);
   }
   ICHECK(!runtime_args.empty())
-      << "blackhole.runtime_args must be present when emitting runtime args";
+      << "Blackhole codegen requires TTProgram ABI runtime args";
 
   std::unordered_map<std::string, const tvm::tir::VarNode *> buffer_vars_by_name;
   std::vector<std::string> ordered_handle_buffer_names;

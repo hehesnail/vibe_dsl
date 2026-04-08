@@ -11,7 +11,14 @@ from tilelang.engine.phase import OptimizeForTarget
 from tilelang import tvm
 from tvm.target import Target
 
-from .common import check_blackhole_codegen_requirements, lower_blackhole_ops_through_phase_b
+from .common import (
+    check_blackhole_codegen_requirements,
+    lower_blackhole_ops_through_phase_b,
+    lower_blackhole_to_tt_target,
+    require_tt_kernel,
+    require_tt_program,
+    tt_abi_for_kernel,
+)
 from .test_blackhole_copy_pipeline import (
     _extract_blackhole_executable_spec,
     _require_blackhole_kernel,
@@ -64,6 +71,15 @@ def _run_flash_attention_lower_blackhole_ops_after_optimize(example_module, *arg
         mod = LowerAndLegalize(mod, target)
         mod = OptimizeForTarget(mod, target)
     return lower_blackhole_ops_through_phase_b(mod)
+
+
+def _run_flash_attention_tt_target_after_optimize(example_module, *args, **kwargs):
+    target = Target("blackhole")
+    mod = tvm.IRModule({"main": example_module.flashattn.jit_impl.get_tir(*args, **kwargs)})
+    with target:
+        mod = LowerAndLegalize(mod, target)
+        mod = OptimizeForTarget(mod, target)
+    return lower_blackhole_to_tt_target(mod)
 
 
 def test_flash_attention_forward_lower_blackhole_ops_emits_generic_lowering_requirements():
@@ -256,7 +272,7 @@ def test_flash_attention_forward_optimized_path_lowers_local_to_cb_staging():
     assert "O_shared_1[tx" not in script
 
 
-def test_flash_attention_forward_runtime_shape_lowers_local_to_cb_without_thread_offset():
+def test_flash_attention_forward_runtime_shape_lowers_local_to_cb_with_thread_offset():
     lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
         mha_example,
         1,
@@ -272,7 +288,7 @@ def test_flash_attention_forward_runtime_shape_lowers_local_to_cb_without_thread
     script = lowered.script()
 
     assert "tl.blackhole.write_local_slice_to_cb" in script
-    assert "tx *" not in script
+    assert "tx * 128" in script
 
 
 def test_flash_attention_gqa_optimized_path_lowers_grouped_row_broadcasts():
@@ -299,7 +315,7 @@ def test_flash_attention_gqa_optimized_path_lowers_grouped_row_broadcasts():
 
 
 def test_flash_attention_gqa_reader_runtime_args_cover_all_accessor_buffers():
-    lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
+    lowered = _run_flash_attention_tt_target_after_optimize(
         gqa_example,
         1,
         16,
@@ -313,14 +329,13 @@ def test_flash_attention_gqa_reader_runtime_args_cover_all_accessor_buffers():
         threads=128,
     )["main"]
 
-    reader_segments = [seg for seg in lowered.attrs["blackhole.segment_plan"] if seg["kind"] == "reader"]
-    assert len(reader_segments) == 1
-    reader = reader_segments[0]
+    tt_program = require_tt_program(lowered)
+    reader_abi = tt_abi_for_kernel(tt_program, require_tt_kernel(tt_program, kind="reader", core_type="brisc"))
 
-    accessor_buffers = [acc["buffer"] for acc in reader["accessors"]]
+    accessor_buffers = [acc["buffer"] for acc in reader_abi.accessors]
     runtime_arg_buffers = [
         arg["buffer"]
-        for arg in reader["runtime_args"]
+        for arg in reader_abi.runtime_args
         if arg["kind"] == "input_buffer_addr32"
     ]
 
@@ -329,7 +344,7 @@ def test_flash_attention_gqa_reader_runtime_args_cover_all_accessor_buffers():
 
 
 def test_flash_attention_gqa_top_level_runtime_args_aggregate_segment_buffers():
-    lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
+    lowered = _run_flash_attention_tt_target_after_optimize(
         gqa_example,
         1,
         16,
@@ -343,19 +358,23 @@ def test_flash_attention_gqa_top_level_runtime_args_aggregate_segment_buffers():
         threads=128,
     )["main"]
 
-    assert "blackhole.runtime_args" in lowered.attrs
+    tt_program = require_tt_program(lowered)
+    seen_runtime_arg_identities = set()
+    top_level_runtime_arg_buffers = []
+    for abi in tt_program.abi_plans:
+        for arg in abi.runtime_args:
+            if arg["kind"] != "input_buffer_addr32":
+                continue
+            identity = str(arg["identity"]) if "identity" in arg else ""
+            dedupe_key = f"{identity}:{str(arg['kind'])}"
+            if dedupe_key in seen_runtime_arg_identities:
+                continue
+            seen_runtime_arg_identities.add(dedupe_key)
+            top_level_runtime_arg_buffers.append(arg["buffer"])
 
-    top_level_runtime_arg_buffers = [
-        arg["buffer"]
-        for arg in lowered.attrs["blackhole.runtime_args"]
-        if arg["kind"] == "input_buffer_addr32"
-    ]
-    reader_segments = [seg for seg in lowered.attrs["blackhole.segment_plan"] if seg["kind"] == "reader"]
-    assert len(reader_segments) == 1
+    reader_abi = tt_abi_for_kernel(tt_program, require_tt_kernel(tt_program, kind="reader", core_type="brisc"))
     reader_runtime_arg_buffers = [
-        arg["buffer"]
-        for arg in reader_segments[0]["runtime_args"]
-        if arg["kind"] == "input_buffer_addr32"
+        arg["buffer"] for arg in reader_abi.runtime_args if arg["kind"] == "input_buffer_addr32"
     ]
 
     assert len(reader_runtime_arg_buffers) == 3
@@ -597,6 +616,122 @@ def test_flash_attention_gqa_executable_spec_materializes_all_reader_inputs():
     assert runtime_arg_buffers.issubset(materialized_buffers)
 
 
+@pytest.mark.parametrize(
+    ("example_module", "args", "kwargs"),
+    [
+        (
+            mha_example,
+            (1, 32, 128, 128, False),
+            {"block_M": 128, "block_N": 128, "num_stages": 1, "threads": 128},
+        ),
+        (
+            gqa_example,
+            (1, 16, 128, 128, False),
+            {
+                "groups": 16,
+                "block_M": 64,
+                "block_N": 64,
+                "num_stages": 2,
+                "threads": 128,
+            },
+        ),
+    ],
+)
+def test_flash_attention_executable_spec_reports_multi_gemm_direct_runtime_blocker(
+    example_module, args, kwargs
+):
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(example_module.flashattn.jit_impl.get_tir(*args, **kwargs), target=target)
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    assert [str(reason) for reason in spec.get("direct_runtime_unsupported_reasons", [])] == [
+        "multi_gemm_compute_kernel"
+    ]
+
+
+def test_flash_attention_segment_kernels_preserve_runtime_work_index_in_tile_transport():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                128,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    reader = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "reader")
+    writer = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "writer")
+
+    reader_tile_index_lines = [
+        line for line in str(reader["source_code"]).splitlines() if "tile_index =" in line
+    ]
+    writer_tile_index_lines = [
+        line for line in str(writer["source_code"]).splitlines() if "tile_index =" in line
+    ]
+
+    assert reader_tile_index_lines
+    assert writer_tile_index_lines
+    assert any("work_linear_id" in line for line in reader_tile_index_lines)
+    assert any("work_linear_id" in line for line in writer_tile_index_lines)
+
+
+def test_flash_attention_segment_reader_tile_transport_matches_compute_input_contract():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                128,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    reader = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "reader")
+    compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
+
+    reader_source = str(reader["source_code"])
+    compute_source = str(compute["source_code"])
+
+    def count_reader_reads(cb_id: int) -> int:
+        return len(re.findall(rf"get_write_ptr\({cb_id}\)", reader_source))
+
+    def count_compute_waits(cb_id: int) -> int:
+        return len(re.findall(rf"cb_wait_front\({cb_id},\s*1\);", compute_source))
+
+    for cb_id in (0, 1, 3):
+        assert count_reader_reads(cb_id) == count_compute_waits(cb_id)
+
+
 def test_flash_attention_segment_kernels_keep_buffer_runtime_args_role_local():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
@@ -716,6 +851,40 @@ def test_flash_attention_compute_source_does_not_materialize_fragment_arrays():
     assert "half* acc_s_cast = reinterpret_cast<half*>(get_local_cb_interface(" not in compute_source
     assert " = exp2f(" not in compute_source
     assert "std::exp2" not in compute_source
+
+
+def test_flash_attention_compute_preserves_thread_row_offset_in_local_to_cb_materialization():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                128,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
+    compute_source = str(compute["source_code"])
+
+    dst_offset_lines = [
+        line for line in compute_source.splitlines() if "dst_offset_elements =" in line
+    ]
+
+    assert dst_offset_lines
+    assert any(re.search(r"dst_offset_elements = .*tx.*128", line) for line in dst_offset_lines)
 
 
 def test_flash_attention_compute_source_publishes_acc_s_cast_cb_before_second_matmul():

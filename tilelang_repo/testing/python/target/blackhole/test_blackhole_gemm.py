@@ -12,17 +12,31 @@ from .common import (
     assert_tensors_close_or_dump,
     check_blackhole_codegen_requirements,
     check_blackhole_direct_execution_requirements,
+    extract_blackhole_compute_contract,
+    extract_blackhole_core_plan,
+    extract_blackhole_segment_plan,
     gemm_kernel,
     gemm_kernel_with_compute_config_extras,
     gemm_kernel_with_compute_abi,
     gemm_kernel_with_mbar,
     gemm_kernel_with_policy,
     gemm_kernel_with_transpose_flags,
+    has_tt_target_seed_truth,
+    lower_blackhole_to_tt_target,
     lower_blackhole_ops_through_phase_b,
+    rebuild_tt_core_group,
+    rebuild_tt_kernel,
+    rebuild_tt_program,
+    require_tt_kernel,
+    require_tt_program,
+    tt_abi_for_kernel,
 )
 from .test_blackhole_copy_pipeline import (
     _extract_blackhole_executable_spec,
     _expected_launch_spec_for_core_type,
+    _rebuild_codegen_module_with_tt_program,
+    _rebuild_tt_program_with_segment_plan,
+    _refresh_tt_program_after_bridge_attr_mutation,
     _with_compile_time_abi_schema,
     _require_blackhole_kernel,
     _require_spec_entry,
@@ -31,7 +45,7 @@ from .test_blackhole_copy_pipeline import (
 
 def _with_richer_accessor_schema(func, common_runtime_args=None):
     richer_segments = []
-    for segment in func.attrs["blackhole.segment_plan"]:
+    for segment in extract_blackhole_segment_plan(func):
         richer_segment = dict(segment)
         richer_segment["common_runtime_args"] = list(common_runtime_args or [])
         richer_accessors = []
@@ -55,12 +69,17 @@ def _with_richer_accessor_schema(func, common_runtime_args=None):
             richer_accessors.append(richer_accessor)
         richer_segment["accessors"] = richer_accessors
         richer_segments.append(richer_segment)
+    if func.attrs and "tl.tt_program" in func.attrs:
+        return func.with_attr(
+            "tl.tt_program",
+            _rebuild_tt_program_with_segment_plan(require_tt_program(func), richer_segments),
+        )
     return func.with_attr("blackhole.segment_plan", richer_segments)
 
 
 def _with_sharded_accessor_schema(func):
     richer_segments = []
-    for segment in func.attrs["blackhole.segment_plan"]:
+    for segment in extract_blackhole_segment_plan(func):
         richer_segment = dict(segment)
         richer_segment["common_runtime_args"] = list(segment["common_runtime_args"])
         richer_accessors = []
@@ -85,53 +104,102 @@ def _with_sharded_accessor_schema(func):
             richer_accessors.append(richer_accessor)
         richer_segment["accessors"] = richer_accessors
         richer_segments.append(richer_segment)
+    if func.attrs and "tl.tt_program" in func.attrs:
+        return func.with_attr(
+            "tl.tt_program",
+            _rebuild_tt_program_with_segment_plan(require_tt_program(func), richer_segments),
+        )
     return func.with_attr("blackhole.segment_plan", richer_segments)
 
 
 def _with_mutated_segment_plan(func, segment_mutator):
     mutated_segments = []
-    for segment in func.attrs["blackhole.segment_plan"]:
+    for segment in extract_blackhole_segment_plan(func):
         mutated_segments.append(segment_mutator(dict(segment)))
+    if func.attrs and "tl.tt_program" in func.attrs:
+        return func.with_attr(
+            "tl.tt_program",
+            _rebuild_tt_program_with_segment_plan(require_tt_program(func), mutated_segments),
+        )
     return func.with_attr("blackhole.segment_plan", mutated_segments)
 
 
 def _rebuild_codegen_module_with_segment_plan(artifact, segment_plan):
-    rewritten = {}
-    for gvar, func in artifact.device_mod.functions.items():
-        if func.attrs and "blackhole.segment_plan" in func.attrs:
-            func = func.with_attr("blackhole.segment_plan", segment_plan)
-        rewritten[gvar] = func
-    target = Target("blackhole")
-    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
-    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
-        build_mod, target
+    return _rebuild_codegen_module_with_tt_program(
+        artifact,
+        tt_program_mutator=lambda tt_program: _rebuild_tt_program_with_segment_plan(
+            tt_program, segment_plan
+        ),
     )
 
 
 def _rebuild_codegen_module_with_compute_contract(artifact, compute_contract):
+    def mutate(tt_program):
+        payload = dict(tt_program.payload)
+        payload["compute_contract"] = compute_contract
+        rebuilt_kernels = []
+        for kernel in tt_program.kernels:
+            kernel_payload = dict(kernel.payload)
+            if str(kernel.kind) == "compute" or str(kernel.core_type) == "trisc":
+                kernel_payload["compute_config"] = {
+                    "math_fidelity": compute_contract.get("math_fidelity", "HiFi4"),
+                    "fp32_dest_acc_en": compute_contract.get("fp32_dest_acc_en", True),
+                    "dst_full_sync_en": compute_contract.get("dst_full_sync_en", False),
+                    "math_approx_mode": compute_contract.get("math_approx_mode", False),
+                    "unpack_to_dest_mode": list(
+                        compute_contract.get("unpack_to_dest_mode", [])
+                    ),
+                    "bfp8_pack_precise": compute_contract.get("bfp8_pack_precise", False),
+                    "defines": list(compute_contract.get("defines", [])),
+                    "named_compile_args": list(
+                        compute_contract.get("named_compile_args", [])
+                    ),
+                    "clear_accum": compute_contract.get("clear_accum", True),
+                    "k_pack": compute_contract.get("k_pack", 1),
+                    "wg_wait": compute_contract.get("wg_wait", 0),
+                    "policy_type": compute_contract.get("policy_type", 0),
+                    "policy_name": compute_contract.get("policy_name", "Square"),
+                }
+            rebuilt_kernels.append(rebuild_tt_kernel(kernel, payload=kernel_payload))
+        return rebuild_tt_program(tt_program, kernels=rebuilt_kernels, payload=payload)
+
+    return _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)
+
+
+def _rebuild_codegen_module_without_legacy_contract_attrs(artifact):
+    device_mod = artifact.device_mod
     rewritten = {}
-    for gvar, func in artifact.device_mod.functions.items():
+    for gvar, func in device_mod.functions.items():
+        if func.attrs and "blackhole.gemm_contract" in func.attrs:
+            func = func.without_attr("blackhole.gemm_contract")
         if func.attrs and "blackhole.compute_contract" in func.attrs:
-            func = func.with_attr("blackhole.compute_contract", compute_contract)
+            func = func.without_attr("blackhole.compute_contract")
         rewritten[gvar] = func
     target = Target("blackhole")
-    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
+    build_mod = merge_ir_modules(
+        artifact.host_mod,
+        tvm.IRModule(rewritten, global_infos=device_mod.global_infos),
+    )
     return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
         build_mod, target
     )
 
 
 def _rebuild_codegen_module_with_core_plan(artifact, core_plan):
-    rewritten = {}
-    for gvar, func in artifact.device_mod.functions.items():
-        if func.attrs and "blackhole.core_plan" in func.attrs:
-            func = func.with_attr("blackhole.core_plan", core_plan)
-        rewritten[gvar] = func
-    target = Target("blackhole")
-    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
-    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
-        build_mod, target
-    )
+    def mutate(tt_program):
+        core_group = tt_program.core_groups[0]
+        rebuilt_core_group = rebuild_tt_core_group(
+            core_group,
+            logical_grid_x=int(core_plan["logical_grid_x"]),
+            logical_grid_y=int(core_plan["logical_grid_y"]),
+            linearization=str(core_plan["linearization"]),
+            physical_cores=list(core_plan["physical_cores"]),
+            work_packets=list(core_plan["work_packets"]),
+            payload=dict(core_plan),
+        )
+        return rebuild_tt_program(tt_program, core_groups=[rebuilt_core_group])
+
+    return _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)
 
 
 def multicore_gemm_kernel(
@@ -299,7 +367,7 @@ def test_blackhole_gemm_arg_identity_drives_cross_segment_dedupe():
         return arg
 
     mutated_segments = []
-    for segment in device_main.attrs["blackhole.segment_plan"]:
+    for segment in extract_blackhole_segment_plan(device_main):
         mutated_segment = dict(segment)
         runtime_args = [_with_identity(arg) for arg in segment["runtime_args"]]
         for arg in runtime_args:
@@ -441,11 +509,11 @@ def test_blackhole_gemm_contract_attr_is_materialized():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = lower_blackhole_ops_through_phase_b(mod)
+    mod = lower_blackhole_to_tt_target(mod)
 
     func = mod["main"]
-    assert func.attrs and "blackhole.gemm_contract" in func.attrs
-    contract = func.attrs["blackhole.gemm_contract"]
+    tt_program = require_tt_program(func)
+    contract = tt_program.payload["gemm_contract"]
     assert str(contract["a_buffer"]) == "A"
     assert str(contract["b_buffer"]) == "B"
     assert str(contract["c_buffer"]) == "C"
@@ -461,28 +529,27 @@ def test_blackhole_gemm_contract_attr_is_materialized():
     assert str(contract["c_cb_dtype"]) == "Float32"
     assert str(contract["accumulator_dtype"]) == "Float32"
 
-    segment_plan = func.attrs["blackhole.segment_plan"]
-    reader = _require_blackhole_kernel(segment_plan, kind="reader", core_type="brisc")
-    writer = _require_blackhole_kernel(segment_plan, kind="writer", core_type="ncrisc")
-    assert [(str(item["buffer"]), int(item["compile_time_arg_offset"])) for item in reader["accessors"]] == [
+    reader_abi = tt_abi_for_kernel(tt_program, require_tt_kernel(tt_program, kind="reader", core_type="brisc"))
+    writer_abi = tt_abi_for_kernel(tt_program, require_tt_kernel(tt_program, kind="writer", core_type="ncrisc"))
+    assert [(str(item["buffer"]), int(item["compile_time_arg_offset"])) for item in reader_abi.accessors] == [
         ("A", 0),
         ("B", 2),
     ]
-    assert [int(item["compile_time_arg_count"]) for item in reader["accessors"]] == [2, 2]
-    assert [int(item["common_runtime_arg_offset"]) for item in reader["accessors"]] == [0, 0]
-    assert [int(item["common_runtime_arg_count"]) for item in reader["accessors"]] == [0, 0]
-    assert [int(item["args_config_bits"]) for item in reader["accessors"]] == [2, 2]
-    assert [(str(item["buffer"]), int(item["compile_time_arg_offset"])) for item in writer["accessors"]] == [
+    assert [int(item["compile_time_arg_count"]) for item in reader_abi.accessors] == [2, 2]
+    assert [int(item["common_runtime_arg_offset"]) for item in reader_abi.accessors] == [0, 0]
+    assert [int(item["common_runtime_arg_count"]) for item in reader_abi.accessors] == [0, 0]
+    assert [int(item["args_config_bits"]) for item in reader_abi.accessors] == [2, 2]
+    assert [(str(item["buffer"]), int(item["compile_time_arg_offset"])) for item in writer_abi.accessors] == [
         ("C", 0)
     ]
-    assert [int(item["compile_time_arg_count"]) for item in writer["accessors"]] == [2]
-    assert [int(item["common_runtime_arg_offset"]) for item in writer["accessors"]] == [0]
-    assert [int(item["common_runtime_arg_count"]) for item in writer["accessors"]] == [0]
-    assert [int(item["args_config_bits"]) for item in writer["accessors"]] == [2]
-    assert all(str(item["layout"]) == "interleaved" for item in reader["accessors"])
-    assert all(str(item["memory_space"]) == "dram" for item in reader["accessors"])
-    assert len(reader["common_runtime_args"]) == 0
-    assert len(writer["common_runtime_args"]) == 0
+    assert [int(item["compile_time_arg_count"]) for item in writer_abi.accessors] == [2]
+    assert [int(item["common_runtime_arg_offset"]) for item in writer_abi.accessors] == [0]
+    assert [int(item["common_runtime_arg_count"]) for item in writer_abi.accessors] == [0]
+    assert [int(item["args_config_bits"]) for item in writer_abi.accessors] == [2]
+    assert all(str(item["layout"]) == "interleaved" for item in reader_abi.accessors)
+    assert all(str(item["memory_space"]) == "dram" for item in reader_abi.accessors)
+    assert len(reader_abi.common_runtime_args) == 0
+    assert len(writer_abi.common_runtime_args) == 0
 
 
 def test_blackhole_compute_contract_attr_is_materialized():
@@ -493,11 +560,9 @@ def test_blackhole_compute_contract_attr_is_materialized():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = lower_blackhole_ops_through_phase_b(mod)
+    mod = lower_blackhole_to_tt_target(mod)
 
-    func = mod["main"]
-    assert func.attrs and "blackhole.compute_contract" in func.attrs
-    contract = func.attrs["blackhole.compute_contract"]
+    contract = require_tt_program(mod["main"]).payload["compute_contract"]
     assert str(contract["kind"]) == "gemm"
     assert bool(contract["enabled"]) is True
     assert str(contract["a_buffer"]) == "A"
@@ -545,7 +610,7 @@ def test_blackhole_compute_contract_attr_materializes_nondefault_compute_abi():
     mod = lower_blackhole_ops_through_phase_b(mod)
 
     func = mod["main"]
-    contract = func.attrs["blackhole.compute_contract"]
+    contract = extract_blackhole_compute_contract(func)
     assert bool(contract["clear_accum"]) is True
     assert int(contract["k_pack"]) == 2
     assert int(contract["wg_wait"]) == 3
@@ -562,7 +627,7 @@ def test_blackhole_compute_contract_attr_materializes_richer_compute_config_extr
     mod = lower_blackhole_ops_through_phase_b(mod)
 
     func = mod["main"]
-    contract = func.attrs["blackhole.compute_contract"]
+    contract = extract_blackhole_compute_contract(func)
     assert bool(contract["dst_full_sync_en"]) is True
     assert bool(contract["bfp8_pack_precise"]) is True
     assert [(str(item["name"]), str(item["value"])) for item in contract["defines"]] == [
@@ -588,8 +653,8 @@ def test_blackhole_compute_segment_compute_config_follows_compute_contract():
     mod = lower_blackhole_ops_through_phase_b(mod)
 
     func = mod["main"]
-    contract = func.attrs["blackhole.compute_contract"]
-    plan = func.attrs["blackhole.segment_plan"]
+    contract = extract_blackhole_compute_contract(func)
+    plan = extract_blackhole_segment_plan(func)
     compute = next(segment for segment in plan if str(segment["kind"]) == "compute")
     compute_config = compute["compute_config"]
 
@@ -616,7 +681,7 @@ def test_blackhole_compute_contract_attr_materializes_nondefault_policy():
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = lower_blackhole_ops_through_phase_b(mod)
 
-    contract = mod["main"].attrs["blackhole.compute_contract"]
+    contract = extract_blackhole_compute_contract(mod["main"])
     assert int(contract["policy_type"]) == 1
     assert str(contract["policy_name"]) == "FullRow"
 
@@ -631,7 +696,7 @@ def test_blackhole_compute_contract_attr_materializes_mbar_binding():
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = lower_blackhole_ops_through_phase_b(mod)
 
-    contract = mod["main"].attrs["blackhole.compute_contract"]
+    contract = extract_blackhole_compute_contract(mod["main"])
     assert bool(contract["has_mbarrier"]) is True
     assert str(contract["mbarrier_buffer"]) == "mbar"
     assert str(contract["mbarrier_scope"]) == "shared.barrier"
@@ -863,6 +928,25 @@ def test_blackhole_gemm_kernel_compute_config_follows_compute_contract_in_spec()
     assert str(compute_config["policy_name"]) == str(compute_contract["policy_name"])
 
 
+def test_blackhole_gemm_spec_survives_without_legacy_contract_attrs():
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    stripped_mod = _rebuild_codegen_module_without_legacy_contract_attrs(artifact)
+    executable_spec = stripped_mod.get_function_metadata("main")
+
+    assert "compute_contract" in executable_spec
+    compute_contract = executable_spec["compute_contract"]
+    assert str(compute_contract["kind"]) == "gemm"
+    assert bool(compute_contract["enabled"]) is True
+    assert int(compute_contract["M"]) == 32
+    assert int(compute_contract["N"]) == 32
+    assert int(compute_contract["K"]) == 128
+
+
 def test_blackhole_gemm_compile_time_abi_materializes_nondefault_compute_abi():
     kernel = gemm_kernel_with_compute_abi()
     target = Target("blackhole")
@@ -1086,7 +1170,7 @@ def test_blackhole_gemm_direct_runtime_rejects_sharded_accessor_schema():
         compile_time_arg_spec_mutator=mutate_sharded_compile_time_spec,
     )
     mutated_mod = _rebuild_codegen_module_with_segment_plan(
-        artifact, richer_func.attrs["blackhole.segment_plan"]
+        artifact, extract_blackhole_segment_plan(richer_func)
     )
 
     a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
@@ -1111,7 +1195,7 @@ def test_blackhole_gemm_direct_runtime_rejects_accessor_common_runtime_arg_count
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
     mutated_segments = []
-    for segment in device_main.attrs["blackhole.segment_plan"]:
+    for segment in extract_blackhole_segment_plan(device_main):
         mutated_segment = dict(segment)
         if "accessors" in segment:
             mutated_accessors = []
@@ -1158,7 +1242,7 @@ def test_blackhole_gemm_direct_runtime_rejects_accessor_runtime_crta_bits():
         compile_time_arg_spec_mutator=mutate_runtime_crta_bits,
     )
     mutated_mod = _rebuild_codegen_module_with_segment_plan(
-        artifact, mutated_func.attrs["blackhole.segment_plan"]
+        artifact, extract_blackhole_segment_plan(mutated_func)
     )
 
     a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
@@ -1183,7 +1267,7 @@ def test_blackhole_gemm_direct_runtime_rejects_mismatched_launch_spec_core_type(
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
     mutated_segments = []
-    for segment in device_main.attrs["blackhole.segment_plan"]:
+    for segment in extract_blackhole_segment_plan(device_main):
         mutated_segment = dict(segment)
         if str(mutated_segment["kind"]) == "reader":
             launch_spec = dict(mutated_segment["launch_spec"])
@@ -1272,7 +1356,7 @@ def test_blackhole_gemm_direct_runtime_materializes_compile_time_abi_schema():
     device_main = device_funcs['I.GlobalVar("main_kernel")']
     stripped_func = _with_compile_time_abi_schema(device_main, strip_accessors=True)
     mutated_mod = _rebuild_codegen_module_with_segment_plan(
-        artifact, stripped_func.attrs["blackhole.segment_plan"]
+        artifact, extract_blackhole_segment_plan(stripped_func)
     )
 
     mutated_mod["main"](a_torch, b_torch, c_output)
@@ -1383,7 +1467,7 @@ def test_blackhole_gemm_richer_accessor_schema_roundtrip():
 
     rewritten = {}
     for gvar, func in artifact.device_mod.functions.items():
-        if func.attrs and "blackhole.segment_plan" in func.attrs:
+        if has_tt_target_seed_truth(func) or (func.attrs and "blackhole.segment_plan" in func.attrs):
             richer_common_runtime_args = [
                 {
                     "name": "rank",
@@ -1476,7 +1560,7 @@ def test_blackhole_gemm_multicore_direct_call():
         str(gvar): func for gvar, func in artifact.device_mod.functions.items()
     }
     device_main = device_funcs['I.GlobalVar("main_kernel")']
-    core_plan = device_main.attrs["blackhole.core_plan"]
+    core_plan = extract_blackhole_core_plan(device_main)
     assert int(core_plan["logical_grid_x"]) == 2
     assert int(core_plan["logical_grid_y"]) == 2
     assert str(core_plan["linearization"]) == "row_major"
@@ -1514,9 +1598,12 @@ def test_blackhole_gemm_rejects_empty_work_packets_at_build_time():
 
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
-    core_plan = dict(device_main.attrs["blackhole.core_plan"])
+    core_plan = dict(extract_blackhole_core_plan(device_main))
     assert list(core_plan["work_packets"])
     core_plan["work_packets"] = []
 
-    with pytest.raises(tvm.error.InternalError, match="core_plan.work_packets|planner/runtime"):
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="core_plan.work_packets|planner/runtime|TTCoreGroup requires work_packets",
+    ):
         _rebuild_codegen_module_with_core_plan(artifact, core_plan)

@@ -1,6 +1,6 @@
 /*!
  * \file lower_spatial_program_to_tt_target.cc
- * \brief Materialize TTProgram from frozen SpatialProgram and bridge target attrs.
+ * \brief Materialize TTProgram from frozen SpatialProgram and typed target companion attrs.
  */
 
 #include <tvm/ffi/reflection/registry.h>
@@ -30,6 +30,34 @@ using tvm::ffi::Map;
 using tvm::ffi::String;
 
 namespace {
+
+tir::PrimFunc StripLegacyTTProjectionAttrs(tir::PrimFunc func) {
+  static const char* kLegacyProjectionAttrs[] = {
+      "blackhole.segment_plan",
+      "blackhole.runtime_args",
+      "blackhole.common_runtime_args",
+      "blackhole.accessors",
+      "blackhole.cb_configs",
+      "blackhole.cb_bindings",
+      "blackhole.total_l1_bytes",
+      "blackhole.num_cbs",
+      "blackhole.semaphore_plan",
+      "blackhole.core_plan",
+      "blackhole.grid_shape",
+      "blackhole.grid_x",
+      "blackhole.grid_y",
+      "blackhole.cores_needed",
+      "blackhole.work_per_core",
+      "blackhole.core_type",
+      "blackhole.gemm_contract",
+      "blackhole.compute_contract",
+      "blackhole.direct_runtime_unsupported_reasons",
+  };
+  for (const char* key : kLegacyProjectionAttrs) {
+    func = tvm::WithoutAttr(std::move(func), key);
+  }
+  return func;
+}
 
 std::optional<Target> FindBlackholeTarget(const IRModule& mod) {
   for (const auto& [gvar, base_func] : mod->functions) {
@@ -80,42 +108,19 @@ Map<String, Any> AsMap(const Any& any) {
 }
 
 Array<TTCBPlan> BuildCBPlans(const tir::PrimFunc& func) {
-  Array<TTCBPlan> cb_plans;
-  auto maybe_cb_configs = func->GetAttr<Array<Any>>("blackhole.cb_configs");
-  if (!maybe_cb_configs) {
-    return cb_plans;
-  }
-  for (const Any& item : maybe_cb_configs.value()) {
-    Map<String, Any> cb = AsMap(item);
-    if (cb.empty()) {
-      continue;
-    }
-    cb_plans.push_back(TTCBPlan(GetStringOrDefault(cb, "name"),
-                                GetIntOrDefault(cb, "cb_id"),
-                                GetStringOrDefault(cb, "role"),
-                                GetIntOrDefault(cb, "num_pages", 0),
-                                GetIntOrDefault(cb, "page_size", 0),
-                                GetStringOrDefault(cb, "data_format"),
-                                cb));
-  }
-  return cb_plans;
+  auto maybe_cb_plans = func->GetAttr<Array<TTCBPlan>>(attr::kTLTTCBPlans);
+  ICHECK(maybe_cb_plans)
+      << "LowerSpatialProgramToTTTarget requires " << attr::kTLTTCBPlans
+      << " on Blackhole device PrimFunc";
+  return maybe_cb_plans.value();
 }
 
 Array<TTCoreGroup> BuildCoreGroups(const tir::PrimFunc& func) {
-  Array<TTCoreGroup> core_groups;
-  auto maybe_core_plan = func->GetAttr<Map<String, Any>>("blackhole.core_plan");
-  if (!maybe_core_plan) {
-    return core_groups;
-  }
-  Map<String, Any> core_plan = maybe_core_plan.value();
-  core_groups.push_back(TTCoreGroup(String("main_core_group"),
-                                    GetIntOrDefault(core_plan, "logical_grid_x", 1),
-                                    GetIntOrDefault(core_plan, "logical_grid_y", 1),
-                                    GetStringOrDefault(core_plan, "linearization", String("row_major")),
-                                    GetArrayOrEmpty(core_plan, "physical_cores"),
-                                    GetArrayOrEmpty(core_plan, "work_packets"),
-                                    core_plan));
-  return core_groups;
+  auto maybe_core_groups = func->GetAttr<Array<TTCoreGroup>>(attr::kTLTTCoreGroups);
+  ICHECK(maybe_core_groups)
+      << "LowerSpatialProgramToTTTarget requires " << attr::kTLTTCoreGroups
+      << " on Blackhole device PrimFunc";
+  return maybe_core_groups.value();
 }
 
 Array<TTTransportPlan> BuildTransportPlans(const SpatialProgram& program) {
@@ -130,30 +135,10 @@ Array<TTTransportPlan> BuildTransportPlans(const SpatialProgram& program) {
 }
 
 Array<TTSemaphorePlan> BuildSemaphorePlans(const tir::PrimFunc& func, const SpatialProgram& program) {
-  Array<TTSemaphorePlan> semaphore_plans;
-  auto maybe_semaphore_plan = func->GetAttr<Array<Any>>("blackhole.semaphore_plan");
-  if (maybe_semaphore_plan) {
-    int edge_index = 0;
-    for (const Any& item : maybe_semaphore_plan.value()) {
-      Map<String, Any> sem = AsMap(item);
-      if (sem.empty()) {
-        continue;
-      }
-      int64_t source_task_index = -1;
-      int64_t target_task_index = -1;
-      if (edge_index < program->sync_edges.size()) {
-        source_task_index = program->sync_edges[edge_index]->source_task_index;
-        target_task_index = program->sync_edges[edge_index]->target_task_index;
-      }
-      semaphore_plans.push_back(TTSemaphorePlan(
-          GetStringOrDefault(sem, "name", String("semaphore_" + std::to_string(edge_index))),
-          String("barrier"), GetIntOrDefault(sem, "id"), GetIntOrDefault(sem, "initial_value", 0),
-          GetStringOrDefault(sem, "core_type", String("worker")), source_task_index,
-          target_task_index, GetArrayOrEmpty(sem, "core_ranges"), sem));
-      ++edge_index;
-    }
+  if (auto maybe_semaphore_plans = func->GetAttr<Array<TTSemaphorePlan>>(attr::kTLTTSemaphorePlans)) {
+    return maybe_semaphore_plans.value();
   }
-  return semaphore_plans;
+  return Array<TTSemaphorePlan>();
 }
 
 Array<TTComputeSyncPlan> BuildComputeSyncPlans(const SpatialProgram& program) {
@@ -198,62 +183,19 @@ Array<TTDstLayoutPlan> BuildDstLayoutPlans(const SpatialProgram& program, const 
   return dst_layouts;
 }
 
-Array<TTABIPlan> BuildABIPlans(const tir::PrimFunc& func, const Array<Any>& segment_plan,
-                               Array<TTKernel>* kernels_out) {
-  Array<TTABIPlan> abi_plans;
-  Array<TTKernel> kernels;
-  Array<Any> top_runtime_args =
-      func->GetAttr<Array<Any>>("blackhole.runtime_args").value_or(Array<Any>());
-  Array<Any> top_common_runtime_args =
-      func->GetAttr<Array<Any>>("blackhole.common_runtime_args").value_or(Array<Any>());
-  if (!segment_plan.empty()) {
-    int index = 0;
-    for (const Any& item : segment_plan) {
-      Map<String, Any> segment = AsMap(item);
-      if (segment.empty()) {
-        continue;
-      }
-      String kernel_name = GetStringOrDefault(segment, "name",
-                                              String("kernel_" + std::to_string(index)));
-      String kernel_kind = GetStringOrDefault(segment, "kind", String("fused_dataflow"));
-      String core_type = GetStringOrDefault(segment, "core_type", String("brisc"));
-      Array<Any> runtime_args = GetArrayOrEmpty(segment, "runtime_args");
-      Array<Any> common_runtime_args = GetArrayOrEmpty(segment, "common_runtime_args");
-      const bool uses_top_level_runtime_args = runtime_args.empty() && !top_runtime_args.empty();
-      const bool uses_top_level_common_runtime_args =
-          common_runtime_args.empty() && !top_common_runtime_args.empty();
-      if (runtime_args.empty()) {
-        runtime_args = top_runtime_args;
-      }
-      if (common_runtime_args.empty()) {
-        common_runtime_args = top_common_runtime_args;
-      }
-      segment.Set("tt_uses_top_level_runtime_args", Bool(uses_top_level_runtime_args));
-      segment.Set("tt_uses_top_level_common_runtime_args",
-                  Bool(uses_top_level_common_runtime_args));
-      abi_plans.push_back(TTABIPlan(
-          String("abi_" + std::to_string(index)), kernel_name, runtime_args,
-          common_runtime_args,
-          GetArrayOrEmpty(segment, "compile_time_arg_specs"), GetArrayOrEmpty(segment, "accessors"),
-          GetArrayOrEmpty(segment, "semaphore_bindings"), segment));
-      kernels.push_back(TTKernel(kernel_name, kernel_kind, core_type, index, segment));
-      ++index;
-    }
-  } else {
-    Map<String, Any> payload;
-    payload.Set("runtime_args", func->GetAttr<Array<Any>>("blackhole.runtime_args").value_or(Array<Any>()));
-    payload.Set("common_runtime_args",
-                func->GetAttr<Array<Any>>("blackhole.common_runtime_args").value_or(Array<Any>()));
-    payload.Set("compile_time_arg_specs",
-                func->GetAttr<Array<Any>>("blackhole.compile_time_arg_specs").value_or(Array<Any>()));
-    payload.Set("accessors", func->GetAttr<Array<Any>>("blackhole.accessors").value_or(Array<Any>()));
-    String kernel_name = GetStringOrDefault(payload, "name", String("main"));
-    abi_plans.push_back(TTABIPlan(String("abi_0"), kernel_name, GetArrayOrEmpty(payload, "runtime_args"),
-                                  GetArrayOrEmpty(payload, "common_runtime_args"),
-                                  GetArrayOrEmpty(payload, "compile_time_arg_specs"),
-                                  GetArrayOrEmpty(payload, "accessors"), Array<Any>(), payload));
-    kernels.push_back(TTKernel(kernel_name, String("fused_dataflow"), String("brisc"), 0, payload));
-  }
+Array<TTABIPlan> BuildABIPlans(const tir::PrimFunc& func, Array<TTKernel>* kernels_out) {
+  auto maybe_kernels = func->GetAttr<Array<TTKernel>>(attr::kTLTTKernelSeeds);
+  auto maybe_abi_plans = func->GetAttr<Array<TTABIPlan>>(attr::kTLTTABIPlans);
+  ICHECK(maybe_kernels)
+      << "LowerSpatialProgramToTTTarget requires " << attr::kTLTTKernelSeeds
+      << " on Blackhole device PrimFunc";
+  ICHECK(maybe_abi_plans)
+      << "LowerSpatialProgramToTTTarget requires " << attr::kTLTTABIPlans
+      << " on Blackhole device PrimFunc";
+  const Array<TTKernel>& kernels = maybe_kernels.value();
+  const Array<TTABIPlan>& abi_plans = maybe_abi_plans.value();
+  ICHECK_EQ(kernels.size(), abi_plans.size())
+      << "TT target typed companion seeds must keep kernel/ABI cardinality aligned";
   *kernels_out = kernels;
   return abi_plans;
 }
@@ -277,10 +219,10 @@ Array<TTExecutionPlan> BuildExecutionPlans(const SpatialProgram& program, const 
 TTProgram BuildTTProgramForFunc(const tir::PrimFunc& func, const String& entry_name,
                                 const SpatialProgram& program,
                                 const TTHardwareModel& hardware_model) {
-  Array<Any> segment_plan = func->GetAttr<Array<Any>>("blackhole.segment_plan").value_or(Array<Any>());
   Array<TTKernel> kernels;
-  Array<TTABIPlan> abi_plans = BuildABIPlans(func, segment_plan, &kernels);
-  Map<String, Any> payload;
+  Array<TTABIPlan> abi_plans = BuildABIPlans(func, &kernels);
+  Map<String, Any> payload =
+      func->GetAttr<Map<String, Any>>(attr::kTLTTProgramPayload).value_or(Map<String, Any>());
   payload.Set("arch_name", hardware_model->arch_name);
   payload.Set("logical_worker_grid_x", Integer(hardware_model->logical_worker_grid_x));
   payload.Set("logical_worker_grid_y", Integer(hardware_model->logical_worker_grid_y));
@@ -322,6 +264,7 @@ tvm::transform::Pass LowerSpatialProgramToTTTarget() {
                 BuildTTProgramForFunc(func.value(), gvar->name_hint, maybe_spatial_program.value(),
                                       maybe_hardware_model.value()));
       rewritten.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
+      rewritten = StripLegacyTTProjectionAttrs(std::move(rewritten));
       updated->Add(gvar, rewritten, true);
     }
     return updated;

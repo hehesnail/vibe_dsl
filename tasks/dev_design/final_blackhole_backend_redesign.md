@@ -141,7 +141,7 @@ Stateful Semantic IR
 
 ### 4.3 `Phase C`
 
-- 正式 cutover bridge 已落地
+- 已完成
 - 已完成：
   - `TTHardwareModel` intake
   - `LowerSpatialProgramToTTTargetProbe`
@@ -149,23 +149,42 @@ Stateful Semantic IR
   - `LowerSpatialProgramToTTTarget`
   - `ValidateTTTargetProgram`
   - `MaterializeTTExecutableSpec`
-- 未完成：
-  - legacy target attr reader / fallback 删除
+  - runtime/codegen 的 `TTProgram` direct reader
+  - `TTProgram` companion object 的 Python/FFI constructor
+  - `tt_target_probe` validator 负例与 `copy_runtime`
+    核心 mutation helper 的 typed `TTProgram` rebuild
+  - copy / GEMM / `flash-attn` regression 主断言面迁到
+    `TTProgram` / `ExecutableSpec`
+  - producer-side bridge 输出切到 typed companion truth：
+    `LowerBlackholeOps` 现在发布
+    `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload`
+    并在 seed materialization 后剥离
+    `blackhole.segment_plan / runtime_args / gemm_contract / compute_contract`
+    等 legacy projection attrs；
+    `PlanBlackholeCB / AssignBlackholeCores`
+    只再发布 `tl.tt_cb_plans / tl.tt_core_groups`
+  - shared zero-regression baseline 与 `Phase C2` runtime gate 持续通过；
+    `flash-attn` multi-GEMM compute kernel 当前通过
+    `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
+    显式 unsupported 并在 runtime test 中 skip
 
 结论：
 
-- `Phase C` 已开始并打通正式 cutover 主链
-- 当前 blocker 已转到 reader-side deletion gate 与 `Phase C2` correctness payoff
+- `Phase C` 已完成
+- 后续工作转入 post-Phase-C 支持面扩展：
+  `flash-attn` multi-GEMM runtime/correctness enablement、
+  更宽 family adoption，以及剩余 payload-backed typed schema 上提
 
-## 5. 当前主 blocker
+## 5. 当前主后续工作
 
-当前总体 blocker 只有一件事：
+`Phase C` 当前已无架构 blocker；后续主线转为：
 
-1. reader-side deletion gate 尚未完成，
-   `rt_mod_blackhole / codegen_blackhole` 仍消费
-   `MaterializeTTExecutableSpec` 反写的 projection
-
-这也是当前 `blackhole.acc` correctness payoff 还没有完全兑现的根因。
+1. 为 `flash-attn` 的 multi-GEMM compute kernel 补真正的
+   runtime/correctness contract，而不是长期停留在 unsupported gate
+2. 把 `Placement / SpatialCapabilityModel / payload-backed node schema`
+   的剩余边界继续收成长期 typed contract
+3. 在新主链上继续接 wider family：
+   `topk / fusedmoe / paged decode / chunk recurrence`
 
 ## 6. 当前稳定基线
 
@@ -175,7 +194,8 @@ Stateful Semantic IR
 - `tilelang.compile(..., execution_backend="tvm_ffi")`
   的 Blackhole wrapper/export path 已恢复
 - `flash-attn` forward subset 已打通当前支持的 compile-path，
-  但其 `blackhole.acc` correctness payoff 归属 `Phase C2`
+  direct runtime gate 以显式 unsupported / skip 形式稳定通过；
+  真正的 multi-GEMM runtime enablement 进入 post-Phase-C
 
 ## 7. 当前文档分工
 

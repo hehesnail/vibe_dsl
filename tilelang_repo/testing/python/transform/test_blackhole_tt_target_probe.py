@@ -14,7 +14,15 @@ if str(BLACKHOLE_TARGET_TEST_DIR) not in sys.path:
 if str(THIS_DIR) not in sys.path:
     sys.path.append(str(THIS_DIR))
 
-from common import gemm_kernel, staged_copy_kernel
+from common import (
+    gemm_kernel,
+    lower_blackhole_ops_through_phase_b,
+    rebuild_tt_core_group,
+    rebuild_tt_kernel,
+    rebuild_tt_program,
+    require_tt_program,
+    staged_copy_kernel,
+)
 from test_blackhole_flash_attention_analysis import _lower_flash_attention_example, mha_example
 
 
@@ -50,6 +58,32 @@ def _replace_spatial_program(mod, program):
     return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
 
+def _replace_tt_program(mod, program):
+    func = mod["main"].with_attr("tl.tt_program", program)
+    return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
+
+
+def _strip_legacy_tt_bridge_attrs(mod):
+    rewritten = {}
+    for gvar, func in mod.functions.items():
+        for key in (
+            "blackhole.segment_plan",
+            "blackhole.runtime_args",
+            "blackhole.common_runtime_args",
+            "blackhole.accessors",
+            "blackhole.cb_configs",
+            "blackhole.semaphore_plan",
+            "blackhole.core_plan",
+            "blackhole.gemm_contract",
+            "blackhole.compute_contract",
+            "blackhole.direct_runtime_unsupported_reasons",
+        ):
+            if func.attrs and key in func.attrs:
+                func = func.without_attr(key)
+        rewritten[gvar] = func
+    return tvm.IRModule(rewritten, global_infos=mod.global_infos)
+
+
 def test_tt_target_probe_pass_is_registered():
     assert hasattr(tilelang.transform, "LowerSpatialProgramToTTTargetProbe")
     assert hasattr(tilelang.transform, "LowerSpatialProgramToTTTarget")
@@ -65,6 +99,21 @@ def _prepare_blackhole_phase_c_module(prim_func):
     mod = tilelang.transform.LowerSpatialProgramToTTTarget()(mod)
     mod = tilelang.transform.ValidateTTTargetProgram()(mod)
     return mod
+
+
+def _prepare_blackhole_tt_bridge_module(prim_func):
+    mod = _prepare_blackhole_phase_b_module(prim_func)
+    return tilelang.transform.AssignBlackholeCores()(
+        tilelang.transform.PlanBlackholeCB()(
+            tilelang.transform.LowerBlackholeOps()(mod)
+        )
+    )
+
+
+def _rerun_validator_from_tt_program(mod, program_mutator):
+    tt_program = require_tt_program(mod["main"])
+    rebuilt = _replace_tt_program(mod, program_mutator(tt_program))
+    return tilelang.transform.ValidateTTTargetProgram()(rebuilt)
 
 
 def test_tt_target_probe_accepts_copy_and_publishes_hardware_snapshot():
@@ -94,7 +143,47 @@ def test_tt_target_lowering_materializes_tt_program_for_copy():
     assert str(tt_program.kernels[0].core_type) == "brisc"
 
 
-def test_materialize_tt_executable_spec_rebuilds_legacy_projection_from_tt_program():
+def test_tt_target_bridge_copy_module_uses_typed_seed_attrs_without_legacy_projections():
+    mod = _prepare_blackhole_tt_bridge_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    attrs = mod["main"].attrs
+
+    assert "tl.tt_kernel_seeds" in attrs
+    assert "tl.tt_abi_plans" in attrs
+    assert "tl.tt_cb_plans" in attrs
+    assert "tl.tt_core_groups" in attrs
+
+    for key in (
+        "blackhole.segment_plan",
+        "blackhole.runtime_args",
+        "blackhole.common_runtime_args",
+        "blackhole.cb_configs",
+        "blackhole.core_plan",
+    ):
+        assert key not in attrs
+
+
+def test_tt_target_bridge_gemm_module_promotes_contracts_into_typed_payload_only():
+    mod = _prepare_blackhole_tt_bridge_module(gemm_kernel())
+    attrs = mod["main"].attrs
+    payload = dict(attrs["tl.tt_program_payload"])
+
+    assert "tl.tt_kernel_seeds" in attrs
+    assert "tl.tt_abi_plans" in attrs
+    assert "gemm_contract" in payload
+    assert "compute_contract" in payload
+
+    for key in (
+        "blackhole.segment_plan",
+        "blackhole.runtime_args",
+        "blackhole.common_runtime_args",
+        "blackhole.gemm_contract",
+        "blackhole.compute_contract",
+        "blackhole.direct_runtime_unsupported_reasons",
+    ):
+        assert key not in attrs
+
+
+def test_materialize_tt_executable_spec_keeps_tt_program_as_single_target_truth():
     mod = _prepare_blackhole_phase_c_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
     func = mod["main"]
     for key in (
@@ -112,15 +201,70 @@ def test_materialize_tt_executable_spec_rebuilds_legacy_projection_from_tt_progr
     rematerialized = tilelang.transform.MaterializeTTExecutableSpec()(mod)
     attrs = rematerialized["main"].attrs
     assert "tl.tt_program" in attrs
-    assert "blackhole.segment_plan" in attrs
-    assert "blackhole.runtime_args" in attrs
-    assert "blackhole.cb_configs" in attrs
-    assert "blackhole.core_plan" in attrs
+    assert "blackhole.segment_plan" not in attrs
+    assert "blackhole.runtime_args" not in attrs
+    assert "blackhole.cb_configs" not in attrs
+    assert "blackhole.core_plan" not in attrs
+
+
+def test_validate_tt_target_program_rejects_missing_launch_spec():
+    mod = _prepare_blackhole_phase_c_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+
+    def mutate(tt_program):
+        rebuilt_kernels = []
+        for i, kernel in enumerate(tt_program.kernels):
+            if i == 0:
+                payload = dict(kernel.payload)
+                payload.pop("launch_spec", None)
+                rebuilt_kernels.append(rebuild_tt_kernel(kernel, payload=payload))
+            else:
+                rebuilt_kernels.append(kernel)
+        return rebuild_tt_program(tt_program, kernels=rebuilt_kernels)
+
+    with pytest.raises(Exception, match="launch_spec"):
+        _rerun_validator_from_tt_program(mod, mutate)
+
+
+def test_validate_tt_target_program_rejects_empty_core_group_work_packets():
+    mod = _prepare_blackhole_phase_c_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+
+    def mutate(tt_program):
+        rebuilt_groups = []
+        for i, core_group in enumerate(tt_program.core_groups):
+            if i == 0:
+                rebuilt_groups.append(rebuild_tt_core_group(core_group, work_packets=[]))
+            else:
+                rebuilt_groups.append(core_group)
+        return rebuild_tt_program(tt_program, core_groups=rebuilt_groups)
+
+    with pytest.raises(Exception, match="work_packets"):
+        _rerun_validator_from_tt_program(mod, mutate)
 
 
 def test_tt_target_probe_accepts_gemm_fast_path():
     mod = _prepare_blackhole_phase_b_module(gemm_kernel())
     tilelang.transform.LowerSpatialProgramToTTTargetProbe()(mod)
+
+
+def test_tt_target_lowering_promotes_gemm_contracts_into_tt_program_payload():
+    mod = _prepare_blackhole_phase_c_module(gemm_kernel())
+
+    tt_program = mod["main"].attrs["tl.tt_program"]
+    payload = dict(tt_program.payload)
+    assert "gemm_contract" in payload
+    assert "compute_contract" in payload
+    assert str(payload["gemm_contract"]["a_buffer"]) == "A"
+    assert str(payload["compute_contract"]["kind"]) == "gemm"
+
+
+def test_tt_target_lowering_no_longer_requires_legacy_bridge_attrs():
+    mod = _prepare_blackhole_tt_bridge_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    stripped = _strip_legacy_tt_bridge_attrs(mod)
+
+    lowered = tilelang.transform.LowerSpatialProgramToTTTarget()(stripped)
+    validated = tilelang.transform.ValidateTTTargetProgram()(lowered)
+
+    assert "tl.tt_program" in validated["main"].attrs
 
 
 def test_tt_target_probe_accepts_multi_phase_flash_attention_subset():

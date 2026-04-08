@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+import tilelang
 from tilelang.engine.lower import lower
 from tilelang.engine.lower import merge_ir_modules
 from tvm.target import Target
@@ -11,56 +12,168 @@ from tvm.tir import stmt_functor
 from .common import (
     assert_tensors_close_or_dump,
     check_blackhole_direct_execution_requirements,
+    extract_blackhole_cb_configs,
+    extract_blackhole_total_l1_bytes,
+    extract_blackhole_work_per_core,
     grid_indexed_staged_copy_kernel,
+    rebuild_tt_abi_plan,
+    rebuild_tt_core_group,
+    rebuild_tt_program,
+    rebuild_tt_semaphore_plan,
+    require_tt_program,
     staged_copy_kernel,
     staged_stick_copy_kernel,
 )
+from .test_blackhole_copy_pipeline import (
+    _extract_blackhole_executable_spec,
+)
 
 
-def _rebuild_direct_runtime_module_with_runtime_args(artifact, runtime_args):
+def _rebuild_direct_runtime_module_with_tt_program(
+    artifact, *, tt_program_mutator=None, body_mutator=None
+):
     rewritten = {}
     for gvar, func in artifact.device_mod.functions.items():
-        if func.attrs and "blackhole.runtime_args" in func.attrs:
-            func = func.with_attr("blackhole.runtime_args", runtime_args)
+        if func.attrs and "tl.tt_program" in func.attrs:
+            if body_mutator is not None:
+                func = func.with_body(body_mutator(func.body))
+            if tt_program_mutator is not None:
+                func = func.with_attr("tl.tt_program", tt_program_mutator(require_tt_program(func)))
         rewritten[gvar] = func
-    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
+    device_mod = tvm.IRModule(rewritten, global_infos=artifact.device_mod.global_infos)
+    device_mod = tilelang.transform.ValidateTTTargetProgram()(device_mod)
+    build_mod = merge_ir_modules(artifact.host_mod, device_mod)
     target = Target("blackhole")
     return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
         build_mod, target
     )
+
+
+def _rebuild_direct_runtime_module_with_runtime_args(artifact, runtime_args):
+    def mutate(tt_program):
+        abi_plans = [
+            rebuild_tt_abi_plan(abi_plan, runtime_args=runtime_args)
+            for abi_plan in tt_program.abi_plans
+        ]
+        return rebuild_tt_program(tt_program, abi_plans=abi_plans)
+
+    return _rebuild_direct_runtime_module_with_tt_program(artifact, tt_program_mutator=mutate)
+
+
+def _normalize_semaphore_plan_for_tt_program(semaphore_plan):
+    normalized = []
+    for i, plan in enumerate(semaphore_plan):
+        normalized.append(
+            {
+                "name": plan.get("name", f"semaphore_{i}"),
+                "kind": plan.get("kind", "local"),
+                "semaphore_id": int(plan["id"]),
+                "initial_value": int(plan.get("initial_value", 0)),
+                "core_type": plan["core_type"],
+                "source_task_index": int(plan.get("source_task_index", -1)),
+                "target_task_index": int(plan.get("target_task_index", -1)),
+                "core_ranges": list(plan.get("core_ranges", [])),
+                "payload": dict(plan.get("payload", {})),
+            }
+        )
+    return normalized
+
+
+def _rebuild_semaphore_plans(tt_program, semaphore_plan):
+    make_tt_semaphore_plan = tvm.get_global_func("tl.TTSemaphorePlan")
+    normalized = _normalize_semaphore_plan_for_tt_program(semaphore_plan)
+    existing = list(tt_program.semaphore_plans)
+    rebuilt = []
+    for i, plan in enumerate(normalized):
+        if i < len(existing):
+            rebuilt.append(
+                rebuild_tt_semaphore_plan(
+                    existing[i],
+                    name=plan["name"],
+                    kind=plan["kind"],
+                    semaphore_id=plan["semaphore_id"],
+                    initial_value=plan["initial_value"],
+                    core_type=plan["core_type"],
+                    source_task_index=plan["source_task_index"],
+                    target_task_index=plan["target_task_index"],
+                    core_ranges=plan["core_ranges"],
+                    payload=plan["payload"],
+                )
+            )
+        else:
+            rebuilt.append(
+                make_tt_semaphore_plan(
+                    plan["name"],
+                    plan["kind"],
+                    plan["semaphore_id"],
+                    plan["initial_value"],
+                    plan["core_type"],
+                    plan["source_task_index"],
+                    plan["target_task_index"],
+                    plan["core_ranges"],
+                    plan["payload"],
+                )
+            )
+    return rebuilt
 
 
 def _rebuild_direct_runtime_module_with_body_and_attrs(
     artifact, *, body_mutator=None, semaphore_plan=None, runtime_args=None
 ):
-    rewritten = {}
-    for gvar, func in artifact.device_mod.functions.items():
-        if func.attrs and "blackhole.segment_plan" in func.attrs:
-            if body_mutator is not None:
-                func = func.with_body(body_mutator(func.body))
-            if semaphore_plan is not None:
-                func = func.with_attr("blackhole.semaphore_plan", semaphore_plan)
-            if runtime_args is not None:
-                func = func.with_attr("blackhole.runtime_args", runtime_args)
-        rewritten[gvar] = func
-    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
-    target = Target("blackhole")
-    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
-        build_mod, target
+    def mutate(tt_program):
+        kwargs = {}
+        if semaphore_plan is not None:
+            kwargs["semaphore_plans"] = _rebuild_semaphore_plans(tt_program, semaphore_plan)
+        if runtime_args is not None:
+            kwargs["abi_plans"] = [
+                rebuild_tt_abi_plan(abi_plan, runtime_args=runtime_args)
+                for abi_plan in tt_program.abi_plans
+            ]
+        return rebuild_tt_program(tt_program, **kwargs)
+
+    return _rebuild_direct_runtime_module_with_tt_program(
+        artifact, tt_program_mutator=mutate, body_mutator=body_mutator
     )
 
 
 def _rebuild_direct_runtime_module_with_core_plan(artifact, core_plan):
-    rewritten = {}
-    for gvar, func in artifact.device_mod.functions.items():
-        if func.attrs and "blackhole.core_plan" in func.attrs:
-            func = func.with_attr("blackhole.core_plan", core_plan)
-        rewritten[gvar] = func
-    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
-    target = Target("blackhole")
-    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
-        build_mod, target
-    )
+    def mutate(tt_program):
+        core_groups = list(tt_program.core_groups)
+        if not core_groups:
+            pytest.fail("Expected TTProgram to carry a TTCoreGroup")
+        core_groups[0] = rebuild_tt_core_group(
+            core_groups[0],
+            logical_grid_x=int(core_plan["logical_grid_x"]),
+            logical_grid_y=int(core_plan["logical_grid_y"]),
+            linearization=str(core_plan["linearization"]),
+            physical_cores=list(core_plan["physical_cores"]),
+            work_packets=list(core_plan["work_packets"]),
+            payload=dict(core_groups[0].payload),
+        )
+        return rebuild_tt_program(tt_program, core_groups=core_groups)
+
+    return _rebuild_direct_runtime_module_with_tt_program(artifact, tt_program_mutator=mutate)
+
+
+def _extract_tt_program_core_plan(device_main):
+    tt_program = require_tt_program(device_main)
+    if not tt_program.core_groups:
+        pytest.fail("Expected TTProgram to carry a TTCoreGroup")
+    core_group = tt_program.core_groups[0]
+    return {
+        "logical_grid_x": int(core_group.logical_grid_x),
+        "logical_grid_y": int(core_group.logical_grid_y),
+        "linearization": str(core_group.linearization),
+        "physical_cores": list(core_group.physical_cores),
+        "work_packets": list(core_group.work_packets),
+    }
+
+
+def _extract_tt_program_runtime_args(device_main):
+    tt_program = require_tt_program(device_main)
+    if not tt_program.abi_plans:
+        pytest.fail("Expected TTProgram to carry a TTABIPlan")
+    return list(tt_program.abi_plans[0].runtime_args)
 
 
 def _inject_worker_semaphore_handshake(remote_core_x, remote_core_y):
@@ -277,9 +390,8 @@ def test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch():
     with target:
         artifact = lower(kernel, target=target)
 
-    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
-    device_main = device_funcs['I.GlobalVar("main_kernel")']
-    core_plan = device_main.attrs["blackhole.core_plan"]
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    core_plan = executable_spec["core_plan"]
     assert int(core_plan["logical_grid_x"]) == grid_x
     assert int(core_plan["logical_grid_y"]) == grid_y
     assert len(core_plan["physical_cores"]) == 6
@@ -312,9 +424,8 @@ def test_blackhole_module_direct_call_grid_indexed_copy_worker_semaphore_handsha
     with target:
         artifact = lower(kernel, target=target)
 
-    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
-    device_main = device_funcs['I.GlobalVar("main_kernel")']
-    core_plan = device_main.attrs["blackhole.core_plan"]
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    core_plan = executable_spec["core_plan"]
     producer_core = core_plan["physical_cores"][0]
     consumer_core = core_plan["physical_cores"][1]
     assert int(producer_core["core_x"]) == 0
@@ -322,7 +433,7 @@ def test_blackhole_module_direct_call_grid_indexed_copy_worker_semaphore_handsha
     assert int(consumer_core["core_x"]) == 1
     assert int(consumer_core["core_y"]) == 0
 
-    runtime_args = list(device_main.attrs["blackhole.runtime_args"])
+    runtime_args = list(executable_spec["runtime_args"])
     runtime_args.extend(
         [
             {
@@ -386,10 +497,10 @@ def test_blackhole_module_direct_call_rejects_oversubscribed_multi_core_launch()
 
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
-    core_plan = device_main.attrs["blackhole.core_plan"]
+    core_plan = _extract_tt_program_core_plan(device_main)
     assert int(core_plan["logical_grid_x"]) == 15
     assert int(core_plan["logical_grid_y"]) == 10
-    assert int(device_main.attrs["blackhole.work_per_core"]) == 2
+    assert int(extract_blackhole_work_per_core(device_main)) == 2
 
     m, n = 10 * 32, 15 * 32
     a_torch = torch.randn(m, n, dtype=torch.float16)
@@ -406,13 +517,15 @@ def test_blackhole_module_direct_call_rejects_empty_work_packets_at_build_time()
     with target:
         artifact = lower(kernel, target=target)
 
-    device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
-    device_main = device_funcs['I.GlobalVar("main_kernel")']
-    core_plan = dict(device_main.attrs["blackhole.core_plan"])
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    core_plan = dict(executable_spec["core_plan"])
     assert list(core_plan["work_packets"])
     core_plan["work_packets"] = []
 
-    with pytest.raises(tvm.error.InternalError, match="core_plan.work_packets|planner/runtime"):
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="core_plan.work_packets|planner/runtime|TTCoreGroup requires work_packets",
+    ):
         _rebuild_direct_runtime_module_with_core_plan(artifact, core_plan)
 
 
@@ -426,14 +539,16 @@ def test_blackhole_large_shape_copy_keeps_per_core_l1_small():
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
 
-    assert int(device_main.attrs["blackhole.total_l1_bytes"]) == 4096
-    cb_configs = device_main.attrs["blackhole.cb_configs"]
+    assert int(extract_blackhole_total_l1_bytes(device_main)) == 4096
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    cb_configs = executable_spec["cb_configs"]
     assert len(cb_configs) == 1
     assert int(cb_configs[0]["page_size"]) == 2048
     assert int(cb_configs[0]["num_pages"]) == 2
-    assert int(cb_configs[0]["total_size_bytes"]) == 4096
-    assert int(cb_configs[0]["lifetime_begin"]) == 0
-    assert int(cb_configs[0]["lifetime_end"]) == 0
+    planner_cb_configs = extract_blackhole_cb_configs(device_main)
+    assert int(planner_cb_configs[0]["total_size_bytes"]) == 4096
+    assert int(planner_cb_configs[0]["lifetime_begin"]) == 0
+    assert int(planner_cb_configs[0]["lifetime_end"]) == 0
 
 
 def test_blackhole_module_direct_call_large_shape_copy():
@@ -462,7 +577,7 @@ def test_blackhole_module_direct_call_large_shape_copy():
     )
 
 
-def test_blackhole_module_direct_call_rejects_unsupported_richer_copy_schema():
+def test_blackhole_module_direct_call_accepts_richer_copy_schema():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -488,5 +603,11 @@ def test_blackhole_module_direct_call_rejects_unsupported_richer_copy_schema():
 
     a_torch = torch.randn(32, 32, dtype=torch.float16)
     b_output = torch.zeros_like(a_torch)
-    with pytest.raises(Exception, match="b_tile_start_id|unsupported richer schema"):
-        mutated_mod["main"](a_torch, b_output)
+    mutated_mod["main"](a_torch, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        a_torch,
+        atol=0.0,
+        rtol=0.0,
+        failure_message="Richer copy-schema direct-call output mismatch",
+    )

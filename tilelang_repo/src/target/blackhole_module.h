@@ -596,6 +596,7 @@ struct ExecutableSpec {
   std::vector<KernelSpec> kernels;
   GemmContractSpec gemm_contract;
   ComputeContractSpec compute_contract;
+  std::vector<std::string> direct_runtime_unsupported_reasons;
 
   // TVM runtime invocation metadata retained during Stage 0.
   std::vector<std::string> tvm_arg_names;
@@ -628,6 +629,10 @@ struct ExecutableSpec {
     }
     writer->WriteObjectKeyValue("gemm_contract", gemm_contract);
     writer->WriteObjectKeyValue("compute_contract", compute_contract);
+    if (!direct_runtime_unsupported_reasons.empty()) {
+      writer->WriteObjectKeyValue("direct_runtime_unsupported_reasons",
+                                  direct_runtime_unsupported_reasons);
+    }
     if (!tvm_arg_names.empty()) {
       writer->WriteObjectKeyValue("tvm_arg_names", tvm_arg_names);
     }

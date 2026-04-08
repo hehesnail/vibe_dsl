@@ -29,10 +29,13 @@
 
 #include "../op/utils.h"
 #include "common/blackhole_utils.h"
+#include "common/companion_base.h"
 #include "common/semantic_program.h"
 #include "common/spatial_program.h"
+#include "common/tt_target_program.h"
 
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/attrs.h>
 #include "runtime/thread_storage_scope.h"
 #include <tvm/arith/analyzer.h>
 #include <tvm/tir/builtin.h>
@@ -71,6 +74,31 @@ static std::string GemmWarpPolicyTypeToStringForBlackhole(int policy_type) {
 static std::string PrimExprToCompactString(const PrimExpr& expr) {
   std::ostringstream os;
   os << expr;
+  return os.str();
+}
+
+static std::string EncodeGemmContractSignature(
+    const std::string& a_buffer, const std::string& b_buffer, const std::string& c_buffer, int m,
+    int n, int k, bool transpose_a, bool transpose_b, int policy_type, bool clear_accum,
+    int k_pack, int wg_wait, bool dst_full_sync_en, bool bfp8_pack_precise,
+    const std::vector<std::pair<std::string, std::string>>& defines,
+    const std::vector<std::pair<std::string, uint32_t>>& named_compile_args,
+    const std::string& mbarrier_buffer, const std::string& mbarrier_scope,
+    const std::vector<std::string>& mbarrier_index_exprs) {
+  std::ostringstream os;
+  os << a_buffer << "|" << b_buffer << "|" << c_buffer << "|" << m << "|" << n << "|" << k
+     << "|" << transpose_a << "|" << transpose_b << "|" << policy_type << "|" << clear_accum
+     << "|" << k_pack << "|" << wg_wait << "|" << dst_full_sync_en << "|"
+     << bfp8_pack_precise << "|" << mbarrier_buffer << "|" << mbarrier_scope;
+  for (const auto& [name, value] : defines) {
+    os << "|define:" << name << "=" << value;
+  }
+  for (const auto& [name, value] : named_compile_args) {
+    os << "|arg:" << name << "=" << value;
+  }
+  for (const auto& expr : mbarrier_index_exprs) {
+    os << "|mbar:" << expr;
+  }
   return os.str();
 }
 
@@ -338,6 +366,83 @@ static Map<String, Any> MakeLaunchSpec(const std::string& core_type,
   return spec;
 }
 
+static void BuildTTKernelAndABISeeds(const Array<Any>& segment_plan,
+                                     const Array<Any>& top_runtime_args,
+                                     const Array<Any>& top_common_runtime_args,
+                                     Array<TTKernel>* kernels_out,
+                                     Array<TTABIPlan>* abi_plans_out) {
+  Array<TTKernel> kernels;
+  Array<TTABIPlan> abi_plans;
+  int index = 0;
+  for (const Any& item : segment_plan) {
+    Map<String, Any> segment = item.as<Map<String, Any>>().value_or(Map<String, Any>());
+    if (segment.empty()) {
+      continue;
+    }
+    String kernel_name =
+        segment.Get("name") ? Downcast<String>(segment.Get("name").value())
+                            : String("kernel_" + std::to_string(index));
+    String kernel_kind =
+        segment.Get("kind") ? Downcast<String>(segment.Get("kind").value())
+                            : String("fused_dataflow");
+    String core_type =
+        segment.Get("core_type") ? Downcast<String>(segment.Get("core_type").value())
+                                 : String("brisc");
+    Array<Any> runtime_args =
+        segment.Get("runtime_args") ? Downcast<Array<Any>>(segment.Get("runtime_args").value())
+                                    : Array<Any>();
+    Array<Any> common_runtime_args =
+        segment.Get("common_runtime_args")
+            ? Downcast<Array<Any>>(segment.Get("common_runtime_args").value())
+            : Array<Any>();
+    const bool uses_top_level_runtime_args = runtime_args.empty() && !top_runtime_args.empty();
+    const bool uses_top_level_common_runtime_args =
+        common_runtime_args.empty() && !top_common_runtime_args.empty();
+    if (runtime_args.empty()) {
+      runtime_args = top_runtime_args;
+    }
+    if (common_runtime_args.empty()) {
+      common_runtime_args = top_common_runtime_args;
+    }
+    segment.Set("tt_uses_top_level_runtime_args", Bool(uses_top_level_runtime_args));
+    segment.Set("tt_uses_top_level_common_runtime_args",
+                Bool(uses_top_level_common_runtime_args));
+    Array<Any> compile_time_arg_specs =
+        segment.Get("compile_time_arg_specs")
+            ? Downcast<Array<Any>>(segment.Get("compile_time_arg_specs").value())
+            : Array<Any>();
+    Array<Any> accessors =
+        segment.Get("accessors") ? Downcast<Array<Any>>(segment.Get("accessors").value())
+                                 : Array<Any>();
+    Array<Any> semaphore_bindings =
+        segment.Get("semaphore_bindings")
+            ? Downcast<Array<Any>>(segment.Get("semaphore_bindings").value())
+            : Array<Any>();
+    abi_plans.push_back(TTABIPlan(String("abi_" + std::to_string(index)), kernel_name, runtime_args,
+                                  common_runtime_args, compile_time_arg_specs, accessors,
+                                  semaphore_bindings, segment));
+    kernels.push_back(TTKernel(kernel_name, kernel_kind, core_type, index, segment));
+    ++index;
+  }
+  *kernels_out = kernels;
+  *abi_plans_out = abi_plans;
+}
+
+static tir::PrimFunc StripLegacyTTBridgeProjectionAttrs(tir::PrimFunc func) {
+  static const char* kLegacyBridgeAttrs[] = {
+      "blackhole.segment_plan",
+      "blackhole.runtime_args",
+      "blackhole.common_runtime_args",
+      "blackhole.gemm_contract",
+      "blackhole.compute_contract",
+      "blackhole.direct_runtime_unsupported_reasons",
+  };
+  for (const char* key : kLegacyBridgeAttrs) {
+    func = tvm::WithoutAttr(std::move(func), key);
+  }
+  return func;
+}
+
 static PrimExpr ScalarizeVectorizedIndex(const PrimExpr& index) {
   if (const auto* ramp = index.as<tir::RampNode>()) {
     return ramp->base;
@@ -351,6 +456,7 @@ constexpr int kBlackholeTileCols = 32;
 struct StagedCopyTransportGeometry {
   int64_t shared_rows = 0;
   int64_t shared_cols = 0;
+  int64_t global_rows = 0;
   int64_t global_cols = 0;
   bool use_page_transport = false;
   int subtile_rows = 0;
@@ -364,6 +470,7 @@ struct StagedCopyTransportGeometry {
 struct StagedCopyGlobalIndexInfo {
   PrimExpr base_row;
   PrimExpr base_col;
+  PrimExpr outer_slice_index{IntImm(DataType::Int(32), 0)};
   int64_t global_rows = 0;
   int64_t global_cols = 0;
 };
@@ -401,10 +508,25 @@ static std::pair<int64_t, int64_t> ResolveStaticShape2DFromBufferAxesOrMetadata(
   return {fallback_shape[0]->value, fallback_shape[1]->value};
 }
 
+static int64_t ResolveStaticExtentForAxisFromBufferOrMetadata(
+    const Buffer& buffer,
+    const Array<Integer>& fallback_shape,
+    int axis,
+    const char* static_shape_message) {
+  if (buffer->shape.size() > static_cast<size_t>(axis)) {
+    const auto* extent_imm = buffer->shape[axis].as<IntImmNode>();
+    ICHECK(extent_imm) << static_shape_message;
+    return extent_imm->value;
+  }
+  ICHECK(fallback_shape.size() > static_cast<size_t>(axis)) << static_shape_message;
+  return fallback_shape[axis]->value;
+}
+
 static StagedCopyTransportGeometry BuildStagedCopyTransportGeometry(
     const Buffer& shared_buffer,
     int64_t shared_rows,
     int64_t shared_cols,
+    int64_t global_rows,
     int64_t global_cols,
     bool use_page_transport) {
   ICHECK_EQ(shared_rows % kBlackholeTileRows, 0)
@@ -419,6 +541,7 @@ static StagedCopyTransportGeometry BuildStagedCopyTransportGeometry(
   StagedCopyTransportGeometry geometry;
   geometry.shared_rows = shared_rows;
   geometry.shared_cols = shared_cols;
+  geometry.global_rows = global_rows;
   geometry.global_cols = global_cols;
   geometry.use_page_transport = use_page_transport;
   geometry.subtile_rows = static_cast<int>(shared_rows / kBlackholeTileRows);
@@ -475,6 +598,25 @@ static StagedCopyGlobalIndexInfo ResolveStagedCopyGlobalIndexInfo(
   std::tie(info.global_rows, info.global_cols) = ResolveStaticShape2DFromBufferAxesOrMetadata(
       global_buffer, fallback_shape, row_axis, col_axis, static_shape_message, rank2_message);
   if (global_indices.size() > static_cast<size_t>(std::max(row_axis, col_axis))) {
+    PrimExpr outer_slice_index = IntImm(DataType::Int(32), 0);
+    bool has_outer_axis = false;
+    for (size_t axis = 0; axis < global_indices.size(); ++axis) {
+      if (static_cast<int>(axis) == row_axis || static_cast<int>(axis) == col_axis) {
+        continue;
+      }
+      const int64_t axis_extent = ResolveStaticExtentForAxisFromBufferOrMetadata(
+          global_buffer, fallback_shape, static_cast<int>(axis), static_shape_message);
+      PrimExpr axis_index = zero_index(global_indices[axis]);
+      if (!has_outer_axis) {
+        outer_slice_index = axis_index;
+        has_outer_axis = true;
+      } else {
+        outer_slice_index =
+            analyzer->Simplify(outer_slice_index * IntImm32(static_cast<int>(axis_extent)) +
+                               axis_index);
+      }
+    }
+    info.outer_slice_index = outer_slice_index;
     info.base_row = zero_index(global_indices[row_axis]);
     info.base_col = zero_index(global_indices[col_axis]);
     return info;
@@ -495,7 +637,9 @@ static StagedCopyGlobalIndexInfo ResolveStagedCopyGlobalIndexInfo(
 static PrimExpr LinearizeStagedCopyTransportIndex(Analyzer* analyzer,
                                                   const PrimExpr& transport_row,
                                                   const PrimExpr& transport_col,
+                                                  const PrimExpr& outer_slice_index,
                                                   const StagedCopyTransportGeometry& geometry) {
+  PrimExpr slice_offset = IntImm(DataType::Int(32), 0);
   if (geometry.use_page_transport) {
     ValidateStagedStickCopyPageAlignedOffset(analyzer, transport_col, geometry.shared_cols);
     ValidateStagedStickCopyGlobalWidthDivisible(geometry.global_cols, geometry.shared_cols);
@@ -503,7 +647,10 @@ static PrimExpr LinearizeStagedCopyTransportIndex(Analyzer* analyzer,
         analyzer->Simplify(tir::FloorDiv(transport_col, IntImm32(geometry.shared_cols)));
     PrimExpr pages_per_row =
         IntImm32(static_cast<int>(geometry.global_cols / geometry.shared_cols));
-    return analyzer->Simplify(transport_row * pages_per_row + page_col);
+    PrimExpr pages_per_slice =
+        IntImm32(static_cast<int>(geometry.global_rows * (geometry.global_cols / geometry.shared_cols)));
+    slice_offset = analyzer->Simplify(outer_slice_index * pages_per_slice);
+    return analyzer->Simplify(slice_offset + transport_row * pages_per_row + page_col);
   }
 
   PrimExpr tile_row =
@@ -512,7 +659,11 @@ static PrimExpr LinearizeStagedCopyTransportIndex(Analyzer* analyzer,
       analyzer->Simplify(tir::FloorDiv(transport_col, IntImm32(kBlackholeTileCols)));
   PrimExpr tiles_per_row =
       IntImm32(static_cast<int>(geometry.global_cols / kBlackholeTileCols));
-  return analyzer->Simplify(tile_row * tiles_per_row + tile_col);
+  PrimExpr tiles_per_slice =
+      IntImm32(static_cast<int>((geometry.global_rows / kBlackholeTileRows) *
+                                (geometry.global_cols / kBlackholeTileCols)));
+  slice_offset = analyzer->Simplify(outer_slice_index * tiles_per_slice);
+  return analyzer->Simplify(slice_offset + tile_row * tiles_per_row + tile_col);
 }
 
 static bool IsUnsupportedResidualLocalScope(const Buffer& buffer) {
@@ -935,6 +1086,8 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   copy_intermediate_shape_.clear();
   thread_index_vars_.clear();
   thread_index_var_names_.clear();
+  block_index_vars_.clear();
+  block_index_var_names_.clear();
   cb_consumed_fragment_data_names_.clear();
   cb_consumed_fragment_pages_by_data_name_.clear();
   tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
@@ -946,6 +1099,9 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
         if (std::string(iv->thread_tag).rfind("threadIdx.", 0) == 0) {
           thread_index_vars_.insert(iv->var.get());
           thread_index_var_names_.insert(iv->var->name_hint);
+        } else if (std::string(iv->thread_tag).rfind("blockIdx.", 0) == 0) {
+          block_index_vars_.insert(iv->var.get());
+          block_index_var_names_.insert(iv->var->name_hint);
         }
       }
     }
@@ -971,6 +1127,8 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   gemm_m_ = 0;
   gemm_n_ = 0;
   gemm_k_ = 0;
+  gemm_contract_signatures_.clear();
+  gemm_input_buffer_num_k_tiles_.clear();
   gemm_transpose_a_ = false;
   gemm_transpose_b_ = false;
   gemm_policy_type_ = 0;
@@ -1014,6 +1172,23 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
     if (const auto* k_imm = call->args[7].as<IntImmNode>()) {
       num_k_tiles = std::max(1, static_cast<int>(k_imm->value) / kBlackholeTileCols);
     }
+    auto record_gemm_input_tiles = [&](const PrimExpr& expr) {
+      if (!IsBufferLikeExpr(expr)) {
+        return;
+      }
+      tir::BufferRegion region = NormalizeToBufferRegion(expr);
+      const std::string buffer_identity = BufferIdentityName(region->buffer);
+      auto it = gemm_input_buffer_num_k_tiles_.find(buffer_identity);
+      if (it == gemm_input_buffer_num_k_tiles_.end()) {
+        gemm_input_buffer_num_k_tiles_[buffer_identity] = num_k_tiles;
+        return;
+      }
+      ICHECK_EQ(it->second, num_k_tiles)
+          << "LowerBlackholeOps requires a stable GEMM input K-tile contract per logical "
+             "buffer identity; "
+          << buffer_identity << " was seen with both " << it->second << " and " << num_k_tiles
+          << " K tiles";
+    };
     auto record_if_cb_consumed_fragment = [&](const PrimExpr& expr) {
       if (!IsBufferLikeExpr(expr)) {
         return;
@@ -1030,6 +1205,8 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
         }
       }
     };
+    record_gemm_input_tiles(call->args[0]);
+    record_gemm_input_tiles(call->args[1]);
     record_if_cb_consumed_fragment(call->args[0]);
     record_if_cb_consumed_fragment(call->args[1]);
   });
@@ -1329,6 +1506,20 @@ void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
   if (func->attrs.defined()) {
     attrs = func->attrs->dict;
   }
+  Map<String, Any> tt_program_payload =
+      func->GetAttr<Map<String, Any>>(attr::kTLTTProgramPayload).value_or(Map<String, Any>());
+
+  if (gemm_contract_signatures_.size() > 1) {
+    Array<Any> direct_runtime_unsupported_reasons{
+        String("multi_gemm_compute_kernel")};
+    tt_program_payload.Set("direct_runtime_unsupported_reasons",
+                           direct_runtime_unsupported_reasons);
+    attrs.Set("blackhole.direct_runtime_unsupported_reasons",
+              direct_runtime_unsupported_reasons);
+    attrs.Set(attr::kTLTTProgramPayload, tt_program_payload);
+    func.CopyOnWrite()->attrs = DictAttrs(attrs);
+    return;
+  }
 
   std::string a_buffer = gemm_a_buffer_name_;
   std::string b_buffer = gemm_b_buffer_name_;
@@ -1435,6 +1626,9 @@ void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
 
   attrs.Set("blackhole.gemm_contract", gemm_contract);
   attrs.Set("blackhole.compute_contract", compute_contract);
+  tt_program_payload.Set("gemm_contract", gemm_contract);
+  tt_program_payload.Set("compute_contract", compute_contract);
+  attrs.Set(attr::kTLTTProgramPayload, tt_program_payload);
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 
@@ -1737,9 +1931,11 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
       Array<Any> runtime_args = EnsureSegmentBufferRuntimeArgs(kind, accessors, segment.Get("runtime_args"));
       compile_time_arg_specs = make_accessor_cta_specs(kind, accessors);
       if (kind == "compute") {
-        auto gemm_compile_time_arg_specs = make_gemm_compute_cta_specs();
-        for (const auto& spec : gemm_compile_time_arg_specs) {
-          compile_time_arg_specs.push_back(spec);
+        if (gemm_contract_signatures_.size() == 1) {
+          auto gemm_compile_time_arg_specs = make_gemm_compute_cta_specs();
+          for (const auto& spec : gemm_compile_time_arg_specs) {
+            compile_time_arg_specs.push_back(spec);
+          }
         }
         segment.Set("compute_config", make_compute_config_from_contract());
       }
@@ -1798,9 +1994,27 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
     if (!aggregated_common_runtime_args.empty()) {
       attrs.Set("blackhole.common_runtime_args", aggregated_common_runtime_args);
     }
+    Array<Any> top_level_runtime_args =
+        attrs.Get("blackhole.runtime_args")
+            ? Downcast<Array<Any>>(attrs.Get("blackhole.runtime_args").value())
+            : Array<Any>();
+    Array<Any> top_level_common_runtime_args =
+        attrs.Get("blackhole.common_runtime_args")
+            ? Downcast<Array<Any>>(attrs.Get("blackhole.common_runtime_args").value())
+            : Array<Any>();
+    Array<TTKernel> tt_kernels;
+    Array<TTABIPlan> tt_abi_plans;
+    BuildTTKernelAndABISeeds(rewritten_segments, top_level_runtime_args,
+                             top_level_common_runtime_args, &tt_kernels, &tt_abi_plans);
+    attrs.Set(attr::kTLTTKernelSeeds, tt_kernels);
+    attrs.Set(attr::kTLTTABIPlans, tt_abi_plans);
   }
 
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
+  if (func->GetAttr<Array<TTKernel>>(attr::kTLTTKernelSeeds).has_value() &&
+      func->GetAttr<Array<TTABIPlan>>(attr::kTLTTABIPlans).has_value()) {
+    func = StripLegacyTTBridgeProjectionAttrs(std::move(func));
+  }
 }
 
 Array<Any> LowerBlackholeOps::EncodeAccessorDescriptors(const std::string& segment_kind) const {
@@ -1939,11 +2153,23 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
     for (const auto& range : mbar_region->region) {
       gemm_mbarrier_index_exprs_.push_back(PrimExprToCompactString(range->min));
     }
+  } else {
+    gemm_has_mbarrier_ = false;
+    gemm_mbarrier_buffer_ = Buffer();
+    gemm_mbarrier_buffer_name_.clear();
+    gemm_mbarrier_scope_.clear();
+    gemm_mbarrier_index_exprs_.clear();
   }
 
   if (const auto* imm = args[5].as<IntImmNode>()) gemm_m_ = static_cast<int>(imm->value);
   if (const auto* imm = args[6].as<IntImmNode>()) gemm_n_ = static_cast<int>(imm->value);
   if (const auto* imm = args[7].as<IntImmNode>()) gemm_k_ = static_cast<int>(imm->value);
+  gemm_contract_signatures_.insert(EncodeGemmContractSignature(
+      gemm_a_buffer_name_, gemm_b_buffer_name_, gemm_c_buffer_name_, gemm_m_, gemm_n_, gemm_k_,
+      gemm_transpose_a_, gemm_transpose_b_, gemm_policy_type_, gemm_clear_accum_, gemm_k_pack_,
+      gemm_wg_wait_, gemm_dst_full_sync_en_, gemm_bfp8_pack_precise_, gemm_defines_,
+      gemm_named_compile_args_, gemm_mbarrier_buffer_name_, gemm_mbarrier_scope_,
+      gemm_mbarrier_index_exprs_));
 
   // Register GEMM requirements.  The final cb_id is a planner decision and must
   // be consumed later from blackhole.cb_bindings rather than assumed here.
@@ -2105,6 +2331,14 @@ bool LowerBlackholeOps::ExprUsesTransportVar(const PrimExpr& expr,
         uses_transport_var = true;
         return;
       }
+      if (block_index_vars_.count(var)) {
+        uses_transport_var = true;
+        return;
+      }
+      if (block_index_var_names_.count(var->name_hint)) {
+        uses_transport_var = true;
+        return;
+      }
       for (const auto& loop_var : loop_vars) {
         if (loop_var.defined() && var == loop_var.get()) {
           uses_transport_var = true;
@@ -2167,9 +2401,11 @@ PrimExpr LowerBlackholeOps::InferCopyTileIndex(const BufferStoreNode* op,
       shared_buffer, copy_intermediate_shape_, segmented_gemm, transpose_b_reader,
       accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
   const StagedCopyTransportGeometry geometry = BuildStagedCopyTransportGeometry(
-      shared_buffer, shared_rows, shared_cols, global_info.global_cols, use_page_transport);
+      shared_buffer, shared_rows, shared_cols, global_info.global_rows, global_info.global_cols,
+      use_page_transport);
   return LinearizeStagedCopyTransportIndex(
-      &analyzer, global_info.base_row, global_info.base_col, geometry);
+      &analyzer, global_info.base_row, global_info.base_col, global_info.outer_slice_index,
+      geometry);
 }
 
 PrimExpr LowerBlackholeOps::InferStagedCopyBaseTileIndex(
@@ -2212,14 +2448,17 @@ PrimExpr LowerBlackholeOps::InferStagedCopyBaseTileIndex(
   std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
       shared_buffer, copy_intermediate_shape_, segmented_gemm, transpose_b_reader,
       accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
+  const int64_t effective_global_rows =
+      transpose_b_reader ? global_info.global_cols : global_info.global_rows;
   const int64_t effective_global_cols =
       transpose_b_reader ? global_info.global_rows : global_info.global_cols;
   const StagedCopyTransportGeometry geometry = BuildStagedCopyTransportGeometry(
-      shared_buffer, shared_rows, shared_cols, effective_global_cols,
+      shared_buffer, shared_rows, shared_cols, effective_global_rows, effective_global_cols,
       UseStagedCopyPageTransport(shared_buffer));
   const PrimExpr transport_row = transpose_b_reader ? global_info.base_col : global_info.base_row;
   const PrimExpr transport_col = transpose_b_reader ? global_info.base_row : global_info.base_col;
-  return LinearizeStagedCopyTransportIndex(&analyzer, transport_row, transport_col, geometry);
+  return LinearizeStagedCopyTransportIndex(&analyzer, transport_row, transport_col,
+                                           global_info.outer_slice_index, geometry);
 }
 
 const BufferStoreNode* LowerBlackholeOps::FindNestedCopyStore(
@@ -2244,9 +2483,12 @@ const BufferStoreNode* LowerBlackholeOps::FindNestedCopyStore(
     return nullptr;
   }
   if (const auto* loop = stmt.as<ForNode>()) {
-    nested_loop_vars->push_back(loop->loop_var);
+    const bool zero_loop_var = !loop->thread_binding.defined();
+    if (zero_loop_var) {
+      nested_loop_vars->push_back(loop->loop_var);
+    }
     const BufferStoreNode* store = FindNestedCopyStore(loop->body, nested_loop_vars);
-    if (!store) {
+    if (!store && zero_loop_var) {
       nested_loop_vars->pop_back();
     }
     return store;
@@ -2278,9 +2520,14 @@ void LowerBlackholeOps::CollectNestedCopyStores(const Stmt& stmt,
     return;
   }
   if (const auto* loop = stmt.as<ForNode>()) {
-    loop_stack->push_back(loop->loop_var);
+    const bool zero_loop_var = !loop->thread_binding.defined();
+    if (zero_loop_var) {
+      loop_stack->push_back(loop->loop_var);
+    }
     CollectNestedCopyStores(loop->body, loop_stack, matches);
-    loop_stack->pop_back();
+    if (zero_loop_var) {
+      loop_stack->pop_back();
+    }
   }
 }
 
@@ -2729,13 +2976,23 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
       global_buffer, global_shape, row_axis, col_axis,
       "Blackhole staged copy currently expects static global buffer shape",
       "Blackhole staged copy requires rank-2 global shape metadata after FlattenBuffer");
+  int64_t effective_global_rows = global_rows;
   if (transpose_b_reader) {
+    effective_global_rows = global_cols;
     global_cols = global_rows;
   }
   const StagedCopyTransportGeometry geometry = BuildStagedCopyTransportGeometry(
-      shared_buffer, shared_rows, shared_cols, global_cols, use_page_transport);
+      shared_buffer, shared_rows, shared_cols, effective_global_rows, global_cols,
+      use_page_transport);
   if (geometry.use_page_transport) {
     ValidateStagedStickCopyGlobalWidthDivisible(geometry.global_cols, geometry.shared_cols);
+  }
+  int segmented_reader_tile_limit = -1;
+  if (direction == CopyDirection::kDramToCB && segmented_gemm && !geometry.use_page_transport) {
+    auto it = gemm_input_buffer_num_k_tiles_.find(BufferIdentityName(shared_buffer));
+    if (it != gemm_input_buffer_num_k_tiles_.end()) {
+      segmented_reader_tile_limit = it->second;
+    }
   }
   const int tiles_per_row = static_cast<int>(geometry.global_cols / kBlackholeTileCols);
   const int pages_per_row =
@@ -2793,20 +3050,29 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
       return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
     }
-    for (int subtile_row = 0; subtile_row < geometry.subtile_rows; ++subtile_row) {
-      for (int subtile_col = 0; subtile_col < geometry.subtile_cols; ++subtile_col) {
-        PrimExpr tile_index = make_tile_index(subtile_row, subtile_col);
-        stmts.push_back(MakeBlackholeCall(
-            blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(1)}));
-        stmts.push_back(MakeBlackholeCall(
-            blackhole_read_tile_to_cb(),
-            {load->buffer->data, tile_index, IntImm32(cb_id), IntImm32(geometry.tile_bytes),
-             IntImm32(accessor_slot)}));
-        RegisterAccessor(segment_kind, load->buffer,
-                         accessor_slot, 2, 0, 0, 2);
-        stmts.push_back(MakeBlackholeCall(
-            blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
-      }
+    const int total_subtiles = geometry.subtile_rows * geometry.subtile_cols;
+    int tile_emit_count = total_subtiles;
+    if (segmented_reader_tile_limit > 0) {
+      ICHECK_LE(segmented_reader_tile_limit, total_subtiles)
+          << "LowerBlackholeOps segmented reader transport exceeds staged copy shape for buffer "
+          << BufferIdentityName(shared_buffer);
+      tile_emit_count = segmented_reader_tile_limit;
+    }
+    ICHECK_GT(geometry.subtile_cols, 0);
+    for (int subtile_ordinal = 0; subtile_ordinal < tile_emit_count; ++subtile_ordinal) {
+      const int subtile_row = subtile_ordinal / geometry.subtile_cols;
+      const int subtile_col = subtile_ordinal % geometry.subtile_cols;
+      PrimExpr tile_index = make_tile_index(subtile_row, subtile_col);
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(1)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_read_tile_to_cb(),
+          {load->buffer->data, tile_index, IntImm32(cb_id), IntImm32(geometry.tile_bytes),
+           IntImm32(accessor_slot)}));
+      RegisterAccessor(segment_kind, load->buffer,
+                       accessor_slot, 2, 0, 0, 2);
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
     }
     return maybe_wrap_segment_stmt(SeqStmt::Flatten(stmts));
   }
@@ -2876,13 +3142,14 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
       shared_buffer, copy_intermediate_shape_, /*segmented_gemm=*/false,
       /*transpose_b_reader=*/false, /*accumulator_like_src=*/false, gemm_m_, gemm_n_, gemm_k_);
   const bool use_page_transport = UseStagedCopyPageTransport(shared_buffer);
+  int64_t global_rows = 0;
   int64_t global_cols = 0;
-  std::tie(std::ignore, global_cols) = ResolveStaticShape2DFromBufferOrMetadata(
+  std::tie(global_rows, global_cols) = ResolveStaticShape2DFromBufferOrMetadata(
       dram_load->buffer, copy_input_shape_,
       "Blackhole staged copy currently expects static global buffer shape",
       "Blackhole staged copy requires rank-2 global shape metadata after FlattenBuffer");
   const StagedCopyTransportGeometry geometry = BuildStagedCopyTransportGeometry(
-      shared_buffer, shared_rows, shared_cols, global_cols, use_page_transport);
+      shared_buffer, shared_rows, shared_cols, global_rows, global_cols, use_page_transport);
   if (geometry.use_page_transport) {
     ValidateStagedStickCopyGlobalWidthDivisible(geometry.global_cols, geometry.shared_cols);
   }
@@ -4211,7 +4478,9 @@ bool LowerBlackholeOps::MatchDirectLocalToCBSliceLoop(const ForNode* op,
     PrimExpr row_extent = store->buffer->shape[1];
     PrimExpr dst_linear =
         analyzer.Simplify(store->indices[0] * row_extent + store->indices[1]);
-    PrimExpr base_offset = ZeroThreadAndLoopVars(dst_linear - vector_var, {vector_var});
+    Map<Var, PrimExpr> slice_subst;
+    slice_subst.Set(vector_var, IntImm(vector_var.dtype(), 0));
+    PrimExpr base_offset = analyzer.Simplify(tir::Substitute(dst_linear - vector_var, slice_subst));
     if (ExprUsesVar(base_offset, vector_var)) {
       return false;
     }
@@ -4295,14 +4564,21 @@ Stmt LowerBlackholeOps::VisitStmt_(const AttrStmtNode* op) {
     IterVar iv = Downcast<IterVar>(op->node);
     const std::string thread_tag = iv->thread_tag;
     const bool zero_thread_var = thread_tag.rfind("threadIdx.", 0) == 0;
+    const bool transport_thread_var = thread_tag.rfind("blockIdx.", 0) == 0;
     if (zero_thread_var) {
       thread_index_vars_.insert(iv->var.get());
       thread_index_var_names_.insert(iv->var->name_hint);
+    } else if (transport_thread_var) {
+      block_index_vars_.insert(iv->var.get());
+      block_index_var_names_.insert(iv->var->name_hint);
     }
     Stmt body = VisitStmt(op->body);
     if (zero_thread_var) {
       thread_index_vars_.erase(iv->var.get());
       thread_index_var_names_.erase(iv->var->name_hint);
+    } else if (transport_thread_var) {
+      block_index_vars_.erase(iv->var.get());
+      block_index_var_names_.erase(iv->var->name_hint);
     }
     if (body.same_as(op->body)) {
       return GetRef<Stmt>(op);
@@ -4391,6 +4667,8 @@ Stmt LowerBlackholeOps::VisitStmt_(const SeqStmtNode* op) {
 }
 
 Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
+  const bool zero_loop_var = !op->thread_binding.defined();
+  const Var transport_loop_var = zero_loop_var ? op->loop_var : Var();
   if (auto ann = op->annotations.Get(String("blackhole.copy_semantics"))) {
     Map<String, Any> sem = ann->as<Map<String, Any>>().value_or(Map<String, Any>());
 
@@ -4501,7 +4779,10 @@ Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
           all_staged_single_direction = false;
           break;
         }
-        std::vector<Var> loop_vars_to_zero{op->loop_var};
+        std::vector<Var> loop_vars_to_zero;
+        if (transport_loop_var.defined()) {
+          loop_vars_to_zero.push_back(transport_loop_var);
+        }
         loop_vars_to_zero.insert(loop_vars_to_zero.end(), match.loop_vars.begin(),
                                  match.loop_vars.end());
         PrimExpr base_tile_index =
@@ -4519,7 +4800,10 @@ Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
       CopyDirection direction = GetCopyDirection(nested_store);
       if (direction == CopyDirection::kDramToCB || direction == CopyDirection::kCBToDram) {
         saw_copy_op_ = true;
-        std::vector<Var> loop_vars_to_zero{op->loop_var};
+        std::vector<Var> loop_vars_to_zero;
+        if (transport_loop_var.defined()) {
+          loop_vars_to_zero.push_back(transport_loop_var);
+        }
         loop_vars_to_zero.insert(loop_vars_to_zero.end(), nested_loop_vars.begin(),
                                  nested_loop_vars.end());
         PrimExpr base_tile_index =
@@ -4532,7 +4816,7 @@ Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
         CopyDirection direction = GetCopyDirection(store);
         if (direction == CopyDirection::kDramToCB || direction == CopyDirection::kCBToDram) {
           saw_copy_op_ = true;
-          PrimExpr tile_index = InferCopyTileIndex(store, op->loop_var);
+          PrimExpr tile_index = InferCopyTileIndex(store, transport_loop_var);
           return GenerateCopySequence(store, tile_index);
         }
       }

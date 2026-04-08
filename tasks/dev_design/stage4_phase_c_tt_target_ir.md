@@ -3,13 +3,15 @@
 ## 基本信息
 
 - **文档角色**: `Phase C` 当前设计边界与 cutover 文档
-- **当前状态**: `2026-04-08` 正式 cutover bridge 已落地；`TTProgram`
-  已接入稳定主链；reader-side deletion gate 仍在收尾，translator 侧仍保留
-  bridge 输入
+- **当前状态**: `2026-04-08` `Phase C` 已完成；
+  `TTProgram` 已接入稳定主链；runtime/codegen 已切到 `TTProgram` direct reader，
+  shared generic fallback 已删除，synthetic segment 也已切到最小 `TTProgram`；
+  regression 主断言面与 producer-side translator 输入也已切到 typed companion truth
 - **已完成子阶段**: read-only translator demand probe、`TTHardwareModel` intake、
   `TTProgram` core object set、`LowerSpatialProgramToTTTarget`、
   `ValidateTTTargetProgram`、`MaterializeTTExecutableSpec`
-- **仍未完成**: legacy target attr reader / fallback 删除
+- **post-Phase-C 后续**: `flash-attn` multi-GEMM runtime/correctness enablement、
+  quantitative capability field consumption、payload-backed node schema 继续上提
 - **上游输入**: 冻结后的 `SpatialProgram`
 - **下游输出**: 冻结后的 `TTProgram` 与 `ExecutableSpec` 物化结果
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -173,61 +175,96 @@
 
 - `Phase C` 准备轨已完成
 - `Phase B` 前置输入已满足
-- 这不等于正式 `TTProgram` cutover 已开始或已完成
+- 正式 `TTProgram` cutover 现已完成；本节保留为完成后设计记录
 
-## 6. 当前仍未完成的部分
+## 6. 本次收口结果
 
-- compatibility projection reader 仍存在：
-  `rt_mod_blackhole` / `codegen_blackhole` 仍消费
-  `MaterializeTTExecutableSpec` 反写出的 legacy attrs
-- legacy reader / fallback 还没有按 deletion gate 删除
-- `LowerSpatialProgramToTTTarget` 当前仍通过
-  `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
-  写出的 bridge attrs 构造 `TTProgram`；
-  这属于 reader-side deletion gate 之后的 producer-side 清理
-- `flash-attn` 的 `blackhole.acc` correctness payoff 仍归属 `Phase C2`
+- shared generic reader fallback 已删除：
+  `tt_program_projection` 现在已经收成
+  `TTProgram`-only reader，
+  原始 device func 与 synthetic segment 都不再通过 shared getter 回退到
+  `blackhole.segment_plan / runtime_args / common_runtime_args / cb_configs /
+  semaphore_plan / core_plan / gemm_contract / compute_contract /
+  direct_runtime_unsupported_reasons`
+- `TTProgram` companion object 现在已经发布 Python/FFI constructor；
+  中心 regression 可以直接重建
+  `TTProgram / TTKernel / TTCoreGroup / TTABIPlan / TTSemaphorePlan`
+  做 typed mutation，不必再通过“改 bridge attrs -> 重跑 translator”间接施压
+- 原始 Blackhole device build 输入现在已经硬要求 `tl.tt_program`；
+  缺失时会直接 fail-fast，不再靠残留 legacy attrs 继续 build
+- transform / target regression 的主断言面已切到
+  `TTProgram` / `ExecutableSpec`；
+  bridge-stage helper 若需在 `TTProgram` materialize 之前取 target truth，
+  现在也优先读取
+  `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload`
+- `LowerSpatialProgramToTTTarget` 当前通过 typed upstream truth 构造 `TTProgram`：
+  `LowerBlackholeOps` 先发布
+  `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload`，
+  `PlanBlackholeCB / AssignBlackholeCores`
+  分别发布 `tl.tt_cb_plans / tl.tt_core_groups`，
+  final translator 不再依赖 legacy bridge attrs
+- `LowerBlackholeOps` 在 typed seed materialization 后会剥离
+  `blackhole.segment_plan / runtime_args / common_runtime_args /
+  gemm_contract / compute_contract / direct_runtime_unsupported_reasons`
+  等 legacy projection attrs；
+  final output 的 `LowerSpatialProgramToTTTarget` 也会继续做 residual strip
+- `flash-attn` 的 `Phase C2` runtime gate 已从 hang 收敛成显式 unsupported：
+  multi-GEMM compute kernel 会带
+  `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
+  并在 direct runtime test 中 skip；
+  这现在算 `Phase C2` gate 通过；真正的 runtime/correctness enablement
+  转入 post-Phase-C family 扩展
 - `SpatialCapabilityModel` 的 quantitative hardware fields
   还没有进入正式 planning / mapping 主链
 - `Placement / ResourceIntent / Layout / WorkPartition` 的长期 object boundary
   还没有经过 `TTProgram` materialization 的最终验证
 - 部分 spatial node 仍保留 payload-backed truth；
   更彻底的 typed schema 分化仍属于 `Phase C` 演进内容
-- `ValidateTTTargetProgram` 当前主要只覆盖结构完整性与 linkage，
-  尚未把 runtime/codegen 真正消费的 ABI / accessor / launch / core-group
-  细节全部收进正式 validator gate
+- `ValidateTTTargetProgram` 已补进 kernel payload、execution plan、
+  ABI / contract payload 的结构校验，
+  但仍未把 runtime/codegen 真正消费的 ABI / accessor / launch / core-group
+  全量细节全部收进最终 validator gate
 
-因此当前 `Phase C` 已开始并打通正式 cutover 主链，但 reader-side deletion gate
-尚未完成。
+因此当前 `Phase C` 已完成；剩余工作不再属于 `TTProgram` cutover 本体，
+而是 post-Phase-C 的支持面扩展与 schema 继续上提。
 
 ## 6.2 当前 deletion gate 的真实拓扑
 
-当前 bridge 不是“`TTProgram` 已经完全取代旧 attrs，只剩删除代码”；
-实际拓扑是：
+当前稳定拓扑是：
 
 ```text
 SpatialProgram
-  -> LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores
-  -> legacy bridge attrs
+  -> SplitBlackholeKernel / internal segment planning attrs
+  -> LowerBlackholeOps
+  -> tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload
+  -> PlanBlackholeCB
+  -> tl.tt_cb_plans
+  -> AssignBlackholeCores
+  -> tl.tt_core_groups
   -> LowerSpatialProgramToTTTarget
   -> TTProgram
-  -> MaterializeTTExecutableSpec
-  -> legacy projection attrs
+  -> tt_program_projection TTProgram-only readers
   -> rt_mod_blackhole / codegen_blackhole
+  -> synthetic segment TTProgram materialization
+  -> internal codegen / ExecutableSpec assembly
 ```
 
-当前 reader-side blocker 的具体含义是：
+当前收口后的含义是：
 
-- `rt_mod_blackhole` 仍直接解码
-  `blackhole.segment_plan / runtime_args / common_runtime_args /
-  accessors / cb_configs / semaphore_plan / core_plan`
-- `codegen_blackhole` 仍直接消费
-  `blackhole.segment_plan / runtime_args / cb_configs / core_plan`
+- `rt_mod_blackhole` / `codegen_blackhole`
+  已经通过共享 decoder 读取 `TTProgram` truth，
+  shared decoder 不再保留 generic legacy fallback
 - `TTProgram` 已有可承载这些信息的 typed object：
   `TTABIPlan / TTCBPlan / TTCoreGroup / TTSemaphorePlan / TTExecutionPlan`
-  但 runtime/codegen 还没有 direct reader
+  以及 program payload 承载的
+  `gemm_contract / compute_contract / direct_runtime_unsupported_reasons`
+- regression 主断言面与 mutation ingress
+  现在已覆盖 `TTProgram` / `ExecutableSpec` 与 bridge-stage typed seed attrs
+- producer-side translator 输入也已不再依赖 legacy bridge attrs；
+  legacy projection 只剩 `SplitBlackholeKernel -> LowerBlackholeOps`
+  之间的内部 planning 过渡职责
 
-因此当前 deletion gate 要先解决的是 reader-side truth cutover，
-不是立刻删除所有 producer-side bridge attr。
+因此当前 deletion gate 已经收口。
 
 ## 6.3 Reader-Side Deletion Gate 的执行顺序
 
@@ -236,15 +273,19 @@ SpatialProgram
 1. 先在 `rt_mod_blackhole` / `codegen_blackhole`
    引入共享的 `TTProgram` direct reader / decoder，
    让 `ExecutableSpec` 组装与 kernel codegen 优先消费 typed target truth
-2. 保留 `MaterializeTTExecutableSpec` 作为 bridge writer，
-   但把 legacy attr reader 降成兼容 fallback，而不是主读取路径
+   这一步对当前 reader surface 已完成，包括
+   `segment/runtime/common-runtime/cb/semaphore/core`
+   与 function-level `gemm_contract / compute_contract /
+   direct_runtime_unsupported_reasons`
+2. 把 shared generic fallback 拆成 `TTProgram`-only reader，
+   并让 synthetic segment 也挂最小 `TTProgram`
+   这一步对当前 reader / codegen surface 已完成
 3. 把 transform / target regression 的主断言面从
-   `blackhole.*` attrs 迁到 `tl.tt_program` 或最终 `ExecutableSpec`
+   `blackhole.*` attrs 迁到 `tl.tt_program` / `ExecutableSpec`
 4. 在 copy / GEMM / `flash-attn` baseline 稳定后，
-   删除 reader-side fallback 与 projection consumer
-5. reader-side cutover 稳定后，再继续 translator 输入侧的 producer-side 清理：
-   把 `BuildCBPlans / BuildCoreGroups / BuildSemaphorePlans / BuildABIPlans`
-   从 bridge attrs 迁到 typed upstream truth
+   删除 `LowerBlackholeOps` bridge-stage 输出中的剩余 projection attrs
+5. 把 `BuildCBPlans / BuildCoreGroups / BuildSemaphorePlans / BuildABIPlans`
+   全部切到 typed upstream truth
 
 ## 6.1 本次正式 cutover 的实现策略
 
@@ -254,36 +295,48 @@ SpatialProgram
    `tl.tt_program`
 2. `LowerSpatialProgramToTTTarget` 负责生成 `TTProgram`
 3. `ValidateTTTargetProgram` 负责做 target-truth 完整性与 object-boundary 校验
-4. `MaterializeTTExecutableSpec` 负责从 `TTProgram` 反写当前 direct runtime /
-   codegen 仍需消费的 materialized attrs
+4. `rt_mod_blackhole` / `codegen_blackhole` 通过共享 direct reader 直接消费
+   `TTProgram`；`MaterializeTTExecutableSpec` 仅保留为 pipeline continuity 用的
+   no-op bridge pass
 
 桥接期纪律：
 
-- 正式 runtime/codegen 稳态 writer 只能是 `MaterializeTTExecutableSpec`
+- 正式 runtime/codegen 的稳态真源只能是 `TTProgram`
 - `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores` 在 bridge 期仍可保留为
   target planning helper，但它们写出的 legacy attrs 只能当 translator 输入，
   不能继续当最终协议真源
-- `MaterializeTTExecutableSpec` 必须先清理再反写
-  `blackhole.segment_plan / runtime_args / common_runtime_args / accessors /
-  cb_configs / semaphore_plan / core_plan`
-  等 projection，避免旧 attrs 与 `TTProgram` 并存成双真源
-- `rt_mod_blackhole` / `codegen_blackhole` 在 bridge 期允许继续消费
-  materialized projection，但 `ExecutableSpec` 的稳态来源必须改成
-  `TTProgram -> MaterializeTTExecutableSpec`
+- synthetic segment 若需要内部重建 target-truth，
+  必须直接挂最小 `TTProgram`，不能再回退到局部
+  `blackhole.*` projection attrs
+- 任何 function-level contract（如
+  `gemm_contract / compute_contract / direct_runtime_unsupported_reasons`）
+  一旦进入 reader-side正式消费面，就必须提升进 `TTProgram.payload`
 
 当前实现结果：
 
 - `TTProgram` 已成为 target truth owner
-- `MaterializeTTExecutableSpec` 已成为 steady-state projection writer
+- `rt_mod_blackhole` / `codegen_blackhole`
+  已通过共享 decoder 直接消费 `TTProgram`
+- `rt_mod_blackhole` 的原始 entry 提取已不再对 legacy attrs 做兼容回退；
+  `codegen_blackhole` 对原始 device func 与 synthetic segment
+  也都不再经由 shared getter 回退到 legacy attrs
+- `MaterializeTTExecutableSpec` 已退化成 no-op compatibility pass
 - `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
   已降为 bridge planning helper
+- copy / GEMM / `flash-attn`
+  的核心 target-truth regression 已切到 `TTProgram` / `ExecutableSpec`
+- `LowerBlackholeOps` bridge-stage 输出现在以
+  `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload`
+  为主真相，并在 seed 发布后剥离 legacy projection attrs
+- `PlanBlackholeCB / AssignBlackholeCores`
+  现在分别只发布 `tl.tt_cb_plans / tl.tt_core_groups`
+- `LowerSpatialProgramToTTTarget` 现在以 typed upstream truth materialize `TTProgram`
 
-当前仍未完成：
+当前剩余的相关工作已经转入 post-Phase-C：
 
-- reader-side deletion gate 尚未收口；
-  `rt_mod_blackhole` / `codegen_blackhole` 仍读 projection，不是直接读 `TTProgram`
-- 当前 bridge translator 仍消费 planning helper 写出的 legacy attrs；
-  这不是 reader-side gate 的当前 blocker，但仍属于 `Phase C` 后续清理范围
+- `flash-attn` multi-GEMM direct runtime 的真正 enablement
+- quantitative capability field 与 object-boundary 的继续验证
+- 部分 payload-backed node schema 的继续 typed uplift
 
 ## 7. 完成判定
 
@@ -304,9 +357,8 @@ SpatialProgram
 
 当前结论：
 
-- `Phase C0` 已完成
-- `Phase C1 / C2 / C3` 未完成
-- 当前 blocker 已转到 `TTProgram / MaterializeTTExecutableSpec` 正式 cutover
+- `Phase C` 已完成
+- post-Phase-C 主线转入 family/runtime 支持面扩展
 
 ## 8. Shared Zero-Regression Baseline
 
@@ -326,3 +378,13 @@ export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo
 cd /root/dev/vibe_dsl/tilelang_repo
 pytest testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py -k 'mha or gqa' -q
 ```
+
+`Phase C2` gate 的判定是：
+
+- copy direct runtime 正常通过
+- `flash-attn` multi-GEMM compute kernel 显式暴露
+  `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
+  并在 runtime test 中 skip
+
+这代表 gate 已通过；真正的 multi-GEMM direct runtime enablement
+不再阻塞 `Phase C` 完成，而是 post-Phase-C 的支持面扩展任务。

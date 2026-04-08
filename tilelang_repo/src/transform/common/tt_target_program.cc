@@ -304,5 +304,100 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   RegisterNodeReflection<TTProgramNode>();
 }
 
+TVM_FFI_STATIC_INIT_BLOCK() {
+  namespace refl = tvm::ffi::reflection;
+  refl::GlobalDef().def(
+      "tl.TTKernel",
+      [](ffi::String name, ffi::String kind, ffi::String core_type, int64_t abi_plan_index,
+         ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTKernel(std::move(name), std::move(kind), std::move(core_type), abi_plan_index,
+                        std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTCoreGroup",
+      [](ffi::String name, int64_t logical_grid_x, int64_t logical_grid_y,
+         ffi::String linearization, ffi::Array<ffi::Any> physical_cores,
+         ffi::Array<ffi::Any> work_packets, ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTCoreGroup(std::move(name), logical_grid_x, logical_grid_y,
+                           std::move(linearization), std::move(physical_cores),
+                           std::move(work_packets), std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTCBPlan",
+      [](ffi::String name, int64_t cb_id, ffi::String resource_class, int64_t num_pages,
+         int64_t page_size_bytes, ffi::String data_format,
+         ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTCBPlan(std::move(name), cb_id, std::move(resource_class), num_pages,
+                        page_size_bytes, std::move(data_format), std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTTransportPlan",
+      [](ffi::String name, ffi::String kind, int64_t source_task_index, int64_t target_task_index,
+         ffi::String payload_kind, ffi::String delivery_kind,
+         ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTTransportPlan(std::move(name), std::move(kind), source_task_index,
+                               target_task_index, std::move(payload_kind),
+                               std::move(delivery_kind), std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTSemaphorePlan",
+      [](ffi::String name, ffi::String kind, int64_t semaphore_id, int64_t initial_value,
+         ffi::String core_type, int64_t source_task_index, int64_t target_task_index,
+         ffi::Array<ffi::Any> core_ranges, ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTSemaphorePlan(std::move(name), std::move(kind), semaphore_id, initial_value,
+                               std::move(core_type), source_task_index, target_task_index,
+                               std::move(core_ranges), std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTComputeSyncPlan",
+      [](ffi::String name, ffi::String kind, int64_t source_task_index, int64_t target_task_index,
+         ffi::String ordering_kind, ffi::String materialization_kind,
+         ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTComputeSyncPlan(std::move(name), std::move(kind), source_task_index,
+                                 target_task_index, std::move(ordering_kind),
+                                 std::move(materialization_kind), std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTDstLayoutPlan",
+      [](ffi::String name, ffi::String buffer, ffi::String layout, ffi::String memory_space,
+         ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTDstLayoutPlan(std::move(name), std::move(buffer), std::move(layout),
+                               std::move(memory_space), std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTABIPlan",
+      [](ffi::String name, ffi::String kernel_name, ffi::Array<ffi::Any> runtime_args,
+         ffi::Array<ffi::Any> common_runtime_args, ffi::Array<ffi::Any> compile_time_arg_specs,
+         ffi::Array<ffi::Any> accessors, ffi::Array<ffi::Any> semaphore_bindings,
+         ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTABIPlan(std::move(name), std::move(kernel_name), std::move(runtime_args),
+                         std::move(common_runtime_args), std::move(compile_time_arg_specs),
+                         std::move(accessors), std::move(semaphore_bindings),
+                         std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTExecutionPlan",
+      [](ffi::String name, ffi::Array<ffi::String> kernel_names, ffi::Array<Integer> phase_indices,
+         ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTExecutionPlan(std::move(name), std::move(kernel_names),
+                               std::move(phase_indices), std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTProgram",
+      [](ffi::String entry_name, ffi::String member_func, ffi::Array<TTKernel> kernels,
+         ffi::Array<TTCoreGroup> core_groups, ffi::Array<TTCBPlan> cb_plans,
+         ffi::Array<TTTransportPlan> transport_plans, ffi::Array<TTSemaphorePlan> semaphore_plans,
+         ffi::Array<TTComputeSyncPlan> compute_sync_plans,
+         ffi::Array<TTDstLayoutPlan> dst_layout_plans, ffi::Array<TTABIPlan> abi_plans,
+         ffi::Array<TTExecutionPlan> execution_plans, ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTProgram(std::move(entry_name), std::move(member_func), std::move(kernels),
+                         std::move(core_groups), std::move(cb_plans),
+                         std::move(transport_plans), std::move(semaphore_plans),
+                         std::move(compute_sync_plans), std::move(dst_layout_plans),
+                         std::move(abi_plans), std::move(execution_plans),
+                         std::move(payload));
+      });
+}
+
 }  // namespace tl
 }  // namespace tvm

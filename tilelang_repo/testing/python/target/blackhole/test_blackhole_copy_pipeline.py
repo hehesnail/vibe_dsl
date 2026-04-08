@@ -13,12 +13,27 @@ from .common import (
     assert_tensors_close_or_dump,
     check_blackhole_codegen_requirements,
     check_blackhole_direct_execution_requirements,
+    extract_blackhole_cb_configs,
+    extract_blackhole_core_plan,
+    extract_blackhole_runtime_args,
+    extract_blackhole_segment_plan,
+    extract_blackhole_total_l1_bytes,
+    extract_blackhole_work_per_core,
     find_loop_annotation,
     grid_indexed_staged_copy_kernel,
+    has_tt_target_seed_truth,
+    lower_blackhole_to_tt_target,
     lower_blackhole_ops_through_phase_b,
     make_blackhole_cb_requirements_mod,
+    rebuild_tt_abi_plan,
+    rebuild_tt_kernel,
+    rebuild_tt_program,
+    rebuild_tt_semaphore_plan,
+    require_tt_kernel,
+    require_tt_program,
     staged_copy_kernel,
     staged_stick_copy_kernel,
+    tt_abi_for_kernel,
 )
 
 EXPECTED_UNIFIED_COPY_RUNTIME_ARG_KINDS = [
@@ -59,103 +74,24 @@ def _rewrite_copy_semantics_annotations(func, annotation_mutator):
     return func.with_body(new_body)
 
 
-def _rebuild_codegen_module_with_runtime_args(artifact, runtime_args):
-    device_mod = artifact.device_mod
+def _refresh_tt_program_after_bridge_attr_mutation(device_mod):
     rewritten = {}
     for gvar, func in device_mod.functions.items():
-        if func.attrs and "blackhole.runtime_args" in func.attrs:
-            func = func.with_attr("blackhole.runtime_args", runtime_args)
+        if func.attrs and "tl.tt_program" in func.attrs:
+            func = func.without_attr("tl.tt_program")
         rewritten[gvar] = func
-    target = Target("blackhole")
-    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
-    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
-        build_mod, target
-    )
+    refreshed = tvm.IRModule(rewritten, global_infos=device_mod.global_infos)
+    refreshed = tilelang.transform.LowerSpatialProgramToTTTarget()(refreshed)
+    refreshed = tilelang.transform.ValidateTTTargetProgram()(refreshed)
+    return refreshed
 
 
-def _rebuild_codegen_module_with_segment_plan(artifact, segment_plan):
-    device_mod = artifact.device_mod
-    rewritten = {}
-    for gvar, func in device_mod.functions.items():
-        if func.attrs and "blackhole.segment_plan" in func.attrs:
-            func = func.with_attr("blackhole.segment_plan", segment_plan)
-        rewritten[gvar] = func
-    target = Target("blackhole")
-    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
-    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
-        build_mod, target
-    )
-
-
-def _rebuild_codegen_module_without_copy_runtime_args(artifact):
-    device_mod = artifact.device_mod
-    rewritten = {}
-    for gvar, func in device_mod.functions.items():
-        if func.attrs and "blackhole.segment_plan" in func.attrs:
-            stripped_segments = []
-            for segment in func.attrs["blackhole.segment_plan"]:
-                stripped_segment = dict(segment)
-                stripped_segment.pop("runtime_args", None)
-                stripped_segments.append(stripped_segment)
-            func = func.with_attr("blackhole.segment_plan", stripped_segments)
-            if func.attrs and "blackhole.runtime_args" in func.attrs:
-                func = func.without_attr("blackhole.runtime_args")
-        rewritten[gvar] = func
-    target = Target("blackhole")
-    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
-    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
-        build_mod, target
-    )
-
-
-def _rebuild_codegen_module_with_semaphore_plan(artifact, semaphore_plan):
-    device_mod = artifact.device_mod
-    rewritten = {}
-    for gvar, func in device_mod.functions.items():
-        if func.attrs and "blackhole.segment_plan" in func.attrs:
-            func = func.with_attr("blackhole.semaphore_plan", semaphore_plan)
-        rewritten[gvar] = func
-    target = Target("blackhole")
-    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
-    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
-        build_mod, target
-    )
-
-
-def _rebuild_codegen_module_with_semaphore_binding(
-    artifact, *, semaphore_plan=None, segment_mutator=None, runtime_args_mutator=None
+def _rebuild_codegen_module_with_tt_program(
+    artifact, *, tt_program_mutator=None, body_mutator=None
 ):
-    device_mod = artifact.device_mod
     rewritten = {}
-    for gvar, func in device_mod.functions.items():
-        if func.attrs and "blackhole.segment_plan" in func.attrs:
-            if semaphore_plan is not None:
-                func = func.with_attr("blackhole.semaphore_plan", semaphore_plan)
-            if runtime_args_mutator is not None and "blackhole.runtime_args" in func.attrs:
-                func = func.with_attr(
-                    "blackhole.runtime_args",
-                    runtime_args_mutator(func.attrs["blackhole.runtime_args"]),
-                )
-            if segment_mutator is not None:
-                func = func.with_attr(
-                    "blackhole.segment_plan",
-                    segment_mutator(func.attrs["blackhole.segment_plan"]),
-                )
-        rewritten[gvar] = func
-    target = Target("blackhole")
-    build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
-    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
-        build_mod, target
-    )
-
-
-def _rebuild_codegen_module_with_body_and_segment_plan(
-    artifact, *, body_mutator=None, segment_mutator=None
-):
-    device_mod = artifact.device_mod
-    rewritten = {}
-    for gvar, func in device_mod.functions.items():
-        if func.attrs and "blackhole.segment_plan" in func.attrs:
+    for gvar, func in artifact.device_mod.functions.items():
+        if func.attrs and "tl.tt_program" in func.attrs:
             if body_mutator is not None:
                 func = tir.PrimFunc(
                     func.params,
@@ -165,16 +101,267 @@ def _rebuild_codegen_module_with_body_and_segment_plan(
                     func.attrs,
                     func.span,
                 )
-            if segment_mutator is not None:
-                func = func.with_attr(
-                    "blackhole.segment_plan",
-                    segment_mutator(func.attrs["blackhole.segment_plan"]),
+            if tt_program_mutator is not None:
+                func = func.with_attr("tl.tt_program", tt_program_mutator(require_tt_program(func)))
+        rewritten[gvar] = func
+    device_mod = tvm.IRModule(rewritten, global_infos=artifact.device_mod.global_infos)
+    device_mod = tilelang.transform.ValidateTTTargetProgram()(device_mod)
+    build_mod = merge_ir_modules(artifact.host_mod, device_mod)
+    target = Target("blackhole")
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
+
+
+def _rebuild_tt_program_with_segment_plan(tt_program, segment_plan):
+    kernels = list(tt_program.kernels)
+    abi_plans = list(tt_program.abi_plans)
+    rebuilt_kernels = []
+    rebuilt_abi_plans = []
+
+    for index, segment in enumerate(segment_plan):
+        kernel = kernels[index]
+        abi = abi_plans[int(kernel.abi_plan_index)]
+        payload = dict(kernel.payload)
+        for key in (
+            "runtime_args",
+            "common_runtime_args",
+            "accessors",
+            "compile_time_arg_specs",
+            "semaphore_bindings",
+        ):
+            payload.pop(key, None)
+        payload.update(dict(segment))
+
+        runtime_args = (
+            list(segment["runtime_args"])
+            if "runtime_args" in segment
+            else list(abi.runtime_args)
+        )
+        common_runtime_args = (
+            list(segment["common_runtime_args"])
+            if "common_runtime_args" in segment
+            else list(abi.common_runtime_args)
+        )
+        accessors = list(segment["accessors"]) if "accessors" in segment else []
+        compile_time_arg_specs = (
+            list(segment["compile_time_arg_specs"])
+            if "compile_time_arg_specs" in segment
+            else []
+        )
+        semaphore_bindings = (
+            list(segment["semaphore_bindings"]) if "semaphore_bindings" in segment else []
+        )
+
+        rebuilt_abi_plans.append(
+            rebuild_tt_abi_plan(
+                abi,
+                name=f"abi_{index}",
+                kernel_name=str(segment.get("name", kernel.name)),
+                runtime_args=runtime_args,
+                common_runtime_args=common_runtime_args,
+                compile_time_arg_specs=compile_time_arg_specs,
+                accessors=accessors,
+                semaphore_bindings=semaphore_bindings,
+                payload=payload,
+            )
+        )
+        rebuilt_kernels.append(
+            rebuild_tt_kernel(
+                kernel,
+                name=str(segment.get("name", kernel.name)),
+                kind=str(segment.get("kind", kernel.kind)),
+                core_type=str(segment.get("core_type", kernel.core_type)),
+                abi_plan_index=index,
+                payload=payload,
+            )
+        )
+
+    return rebuild_tt_program(tt_program, kernels=rebuilt_kernels, abi_plans=rebuilt_abi_plans)
+
+
+def _normalize_semaphore_plan_for_tt_program(semaphore_plan):
+    normalized = []
+    for i, plan in enumerate(semaphore_plan):
+        normalized.append(
+            {
+                "name": plan.get("name", f"semaphore_{i}"),
+                "kind": plan.get("kind", "local"),
+                "semaphore_id": int(plan["id"]),
+                "initial_value": int(plan.get("initial_value", 0)),
+                "core_type": plan["core_type"],
+                "source_task_index": int(plan.get("source_task_index", -1)),
+                "target_task_index": int(plan.get("target_task_index", -1)),
+                "core_ranges": list(plan.get("core_ranges", [])),
+                "payload": dict(plan.get("payload", {})),
+            }
+        )
+    return normalized
+
+
+def _rebuild_tt_program_with_semaphore_plan(tt_program, semaphore_plan):
+    normalized = _normalize_semaphore_plan_for_tt_program(semaphore_plan)
+    rebuilt = []
+    existing = list(tt_program.semaphore_plans)
+    for i, plan in enumerate(normalized):
+        if i < len(existing):
+            rebuilt.append(
+                rebuild_tt_semaphore_plan(
+                    existing[i],
+                    name=plan["name"],
+                    kind=plan["kind"],
+                    semaphore_id=plan["semaphore_id"],
+                    initial_value=plan["initial_value"],
+                    core_type=plan["core_type"],
+                    source_task_index=plan["source_task_index"],
+                    target_task_index=plan["target_task_index"],
+                    core_ranges=plan["core_ranges"],
+                    payload=plan["payload"],
                 )
+            )
+        else:
+            make_tt_semaphore_plan = tvm.get_global_func("tl.TTSemaphorePlan")
+            rebuilt.append(
+                make_tt_semaphore_plan(
+                    plan["name"],
+                    plan["kind"],
+                    plan["semaphore_id"],
+                    plan["initial_value"],
+                    plan["core_type"],
+                    plan["source_task_index"],
+                    plan["target_task_index"],
+                    plan["core_ranges"],
+                    plan["payload"],
+                )
+            )
+    return rebuild_tt_program(tt_program, semaphore_plans=rebuilt)
+
+
+def _rebuild_codegen_module_with_runtime_args(artifact, runtime_args):
+    def mutate(tt_program):
+        abi_plans = [
+            rebuild_tt_abi_plan(abi_plan, runtime_args=runtime_args)
+            for abi_plan in tt_program.abi_plans
+        ]
+        return rebuild_tt_program(tt_program, abi_plans=abi_plans)
+
+    return _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)
+
+
+def _rebuild_codegen_module_with_segment_plan(artifact, segment_plan):
+    return _rebuild_codegen_module_with_tt_program(
+        artifact,
+        tt_program_mutator=lambda tt_program: _rebuild_tt_program_with_segment_plan(
+            tt_program, segment_plan
+        ),
+    )
+
+
+def _rebuild_codegen_module_without_tt_projection_attrs(artifact):
+    device_mod = artifact.device_mod
+    rewritten = {}
+    for gvar, func in device_mod.functions.items():
+        for key in (
+            "blackhole.segment_plan",
+            "blackhole.runtime_args",
+            "blackhole.common_runtime_args",
+            "blackhole.accessors",
+            "blackhole.cb_configs",
+            "blackhole.semaphore_plan",
+            "blackhole.core_plan",
+        ):
+            if func.attrs and key in func.attrs:
+                func = func.without_attr(key)
         rewritten[gvar] = func
     target = Target("blackhole")
     build_mod = merge_ir_modules(artifact.host_mod, tvm.IRModule(rewritten))
     return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
         build_mod, target
+    )
+
+
+def _rebuild_codegen_module_without_tt_program(artifact):
+    device_mod = artifact.device_mod
+    rewritten = {}
+    for gvar, func in device_mod.functions.items():
+        if func.attrs and "tl.tt_program" in func.attrs:
+            func = func.without_attr("tl.tt_program")
+        rewritten[gvar] = func
+    target = Target("blackhole")
+    build_mod = merge_ir_modules(
+        artifact.host_mod,
+        tvm.IRModule(rewritten, global_infos=device_mod.global_infos),
+    )
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
+
+
+def _rebuild_codegen_module_without_copy_runtime_args(artifact):
+    def mutate(tt_program):
+        rebuilt_kernels = []
+        rebuilt_abi_plans = []
+        for index, kernel in enumerate(tt_program.kernels):
+            abi = tt_program.abi_plans[index]
+            payload = dict(kernel.payload)
+            payload.pop("runtime_args", None)
+            payload["tt_uses_top_level_runtime_args"] = False
+            rebuilt_abi_plans.append(rebuild_tt_abi_plan(abi, runtime_args=[], payload=payload))
+            rebuilt_kernels.append(
+                rebuild_tt_kernel(kernel, abi_plan_index=index, payload=payload)
+            )
+        return rebuild_tt_program(tt_program, kernels=rebuilt_kernels, abi_plans=rebuilt_abi_plans)
+
+    return _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)
+
+
+def _rebuild_codegen_module_with_semaphore_plan(artifact, semaphore_plan):
+    return _rebuild_codegen_module_with_tt_program(
+        artifact,
+        tt_program_mutator=lambda tt_program: _rebuild_tt_program_with_semaphore_plan(
+            tt_program, semaphore_plan
+        ),
+    )
+
+
+def _rebuild_codegen_module_with_semaphore_binding(
+    artifact, *, semaphore_plan=None, segment_mutator=None, runtime_args_mutator=None
+):
+    def mutate(tt_program):
+        payload = dict(tt_program.payload)
+        current_segment_plan = [dict(segment) for segment in payload.get("segment_plan", [])]
+        if not current_segment_plan:
+            current_segment_plan = [
+                dict(kernel.payload) for kernel in tt_program.kernels
+            ]
+        if runtime_args_mutator is not None:
+            runtime_args = runtime_args_mutator(
+                [dict(arg) for arg in tt_program.abi_plans[0].runtime_args]
+            )
+            for segment in current_segment_plan:
+                if "runtime_args" in segment or len(current_segment_plan) == 1:
+                    segment["runtime_args"] = runtime_args
+        if segment_mutator is not None:
+            current_segment_plan = segment_mutator(current_segment_plan)
+        rebuilt = _rebuild_tt_program_with_segment_plan(tt_program, current_segment_plan)
+        if semaphore_plan is not None:
+            rebuilt = _rebuild_tt_program_with_semaphore_plan(rebuilt, semaphore_plan)
+        return rebuilt
+
+    return _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)
+
+
+def _rebuild_codegen_module_with_body_and_segment_plan(
+    artifact, *, body_mutator=None, segment_mutator=None
+):
+    def mutate(tt_program):
+        current_segment_plan = [dict(kernel.payload) for kernel in tt_program.kernels]
+        if segment_mutator is not None:
+            current_segment_plan = segment_mutator(current_segment_plan)
+        return _rebuild_tt_program_with_segment_plan(tt_program, current_segment_plan)
+
+    return _rebuild_codegen_module_with_tt_program(
+        artifact, tt_program_mutator=mutate, body_mutator=body_mutator
     )
 
 
@@ -265,7 +452,7 @@ def _expected_launch_spec_for_core_type(core_type):
 
 def _with_richer_accessor_schema(func, common_runtime_args=None, layout_override=None):
     richer_segments = []
-    for segment in func.attrs["blackhole.segment_plan"]:
+    for segment in extract_blackhole_segment_plan(func):
         richer_segment = dict(segment)
         richer_segment["common_runtime_args"] = list(common_runtime_args or [])
         richer_accessors = []
@@ -293,12 +480,17 @@ def _with_richer_accessor_schema(func, common_runtime_args=None, layout_override
             richer_accessors.append(richer_accessor)
         richer_segment["accessors"] = richer_accessors
         richer_segments.append(richer_segment)
+    if func.attrs and "tl.tt_program" in func.attrs:
+        return func.with_attr(
+            "tl.tt_program",
+            _rebuild_tt_program_with_segment_plan(require_tt_program(func), richer_segments),
+        )
     return func.with_attr("blackhole.segment_plan", richer_segments)
 
 
 def _with_compile_time_abi_schema(func, *, strip_accessors=False, compile_time_arg_spec_mutator=None):
     richer_segments = []
-    for segment in func.attrs["blackhole.segment_plan"]:
+    for segment in extract_blackhole_segment_plan(func):
         richer_segment = dict(segment)
         if strip_accessors:
             richer_segment.pop("accessors", None)
@@ -308,6 +500,11 @@ def _with_compile_time_abi_schema(func, *, strip_accessors=False, compile_time_a
                 for spec in segment["compile_time_arg_specs"]
             ]
         richer_segments.append(richer_segment)
+    if func.attrs and "tl.tt_program" in func.attrs:
+        return func.with_attr(
+            "tl.tt_program",
+            _rebuild_tt_program_with_segment_plan(require_tt_program(func), richer_segments),
+        )
     return func.with_attr("blackhole.segment_plan", richer_segments)
 
 
@@ -353,47 +550,43 @@ def test_blackhole_copy_pass_attrs():
     target = Target("blackhole")
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
-    mod = lower_blackhole_ops_through_phase_b(mod)
-    mod = tilelang.transform.PlanBlackholeCB()(mod)
-    mod = tilelang.transform.AssignBlackholeCores()(mod)
+    mod = lower_blackhole_to_tt_target(mod)
 
     func = mod["main"]
     assert "blackhole.target_mode" not in func.attrs
+    tt_program = require_tt_program(func)
 
-    cb_configs = func.attrs["blackhole.cb_configs"]
-    assert [str(cfg["role"]) for cfg in cb_configs] == ["intermediate"]
-    assert int(cb_configs[0]["total_size_bytes"]) == 4096
-    assert int(cb_configs[0]["lifetime_begin"]) == 0
-    assert int(cb_configs[0]["lifetime_end"]) == 0
+    cb_plans = tt_program.cb_plans
+    assert [str(cb.resource_class) for cb in cb_plans] == ["intermediate"]
+    assert int(cb_plans[0].payload["total_size_bytes"]) == 4096
+    assert int(cb_plans[0].payload["lifetime_begin"]) == 0
+    assert int(cb_plans[0].payload["lifetime_end"]) == 0
+    assert [str(name) for name in cb_plans[0].payload["requirement_names"]] == [
+        str(cb_plans[0].name)
+    ]
+    assert int(cb_plans[0].cb_id) == 16
 
-    cb_bindings = func.attrs["blackhole.cb_bindings"]
-    assert len(cb_bindings) == 1
-    assert int(cb_bindings[0]["requirement_index"]) == 0
-    assert int(cb_bindings[0]["cb_id"]) == int(cb_configs[0]["cb_id"])
-    assert int(cb_bindings[0]["cb_config_index"]) == 0
-    assert str(cb_bindings[0]["memory_object_name"]) == str(cb_configs[0]["name"])
-
-    runtime_args = func.attrs["blackhole.runtime_args"]
+    fused_dataflow = require_tt_kernel(tt_program, kind="fused_dataflow", core_type="brisc")
+    abi = tt_abi_for_kernel(tt_program, fused_dataflow)
+    runtime_args = abi.runtime_args
     assert [str(arg["kind"]) for arg in runtime_args] == EXPECTED_UNIFIED_COPY_RUNTIME_ARG_KINDS
     assert str(runtime_args[0]["buffer"]) == "A"
     assert str(runtime_args[1]["buffer"]) == "B"
 
-    core_plan = func.attrs["blackhole.core_plan"]
-    assert int(core_plan["logical_grid_x"]) == 1
-    assert int(core_plan["logical_grid_y"]) == 1
-    assert str(core_plan["linearization"]) == "row_major"
-    assert len(core_plan["physical_cores"]) == 1
-    assert int(core_plan["physical_cores"][0]["core_x"]) == 0
-    assert int(core_plan["physical_cores"][0]["core_y"]) == 0
-    assert len(core_plan["work_packets"]) == 1
-    assert int(core_plan["work_packets"][0]["work_offset"]) == 0
-    assert int(core_plan["work_packets"][0]["work_count"]) == 1
+    core_group = tt_program.core_groups[0]
+    assert int(core_group.logical_grid_x) == 1
+    assert int(core_group.logical_grid_y) == 1
+    assert str(core_group.linearization) == "row_major"
+    assert len(core_group.physical_cores) == 1
+    assert int(core_group.physical_cores[0]["core_x"]) == 0
+    assert int(core_group.physical_cores[0]["core_y"]) == 0
+    assert len(core_group.work_packets) == 1
+    assert int(core_group.work_packets[0]["work_offset"]) == 0
+    assert int(core_group.work_packets[0]["work_count"]) == 1
 
-    segment_plan = func.attrs["blackhole.segment_plan"]
-    assert len(segment_plan) == 1
-    assert str(segment_plan[0]["kind"]) == "fused_dataflow"
-    assert str(segment_plan[0]["core_type"]) == "brisc"
-    accessors = segment_plan[0]["accessors"]
+    assert str(fused_dataflow.kind) == "fused_dataflow"
+    assert str(fused_dataflow.core_type) == "brisc"
+    accessors = abi.accessors
     assert [(str(item["buffer"]), int(item["compile_time_arg_offset"])) for item in accessors] == [
         ("A", 0),
         ("B", 2),
@@ -404,7 +597,7 @@ def test_blackhole_copy_pass_attrs():
     assert [int(item["args_config_bits"]) for item in accessors] == [2, 2]
     assert all(str(item["layout"]) == "interleaved" for item in accessors)
     assert all(str(item["memory_space"]) == "dram" for item in accessors)
-    assert len(segment_plan[0]["common_runtime_args"]) == 0
+    assert len(abi.common_runtime_args) == 0
 
     body_script = func.body.script()
     assert "tl.blackhole.read_tile_to_cb" in body_script
@@ -521,6 +714,50 @@ def test_blackhole_copy_buffer_materialization_specs_are_exposed():
         "A": ("replicated", "interleaved", "dram", 2048),
         "B": ("replicated", "interleaved", "dram", 2048),
     }
+
+
+def test_blackhole_copy_build_reads_tt_program_without_legacy_projection_attrs():
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = artifact.device_mod["main_kernel"]
+    for key in (
+        "blackhole.segment_plan",
+        "blackhole.runtime_args",
+        "blackhole.common_runtime_args",
+        "blackhole.accessors",
+        "blackhole.cb_configs",
+        "blackhole.semaphore_plan",
+        "blackhole.core_plan",
+        "blackhole.gemm_contract",
+        "blackhole.compute_contract",
+        "blackhole.direct_runtime_unsupported_reasons",
+    ):
+        assert key not in device_main.attrs
+
+    stripped_mod = _rebuild_codegen_module_without_tt_projection_attrs(artifact)
+    executable_spec = stripped_mod.get_function_metadata("main")
+    kernel_spec = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+
+    assert kernel_spec["runtime_args"]
+    assert executable_spec["cb_configs"]
+    assert executable_spec["core_plan"]
+
+
+def test_blackhole_copy_build_rejects_missing_tt_program_even_with_legacy_attrs():
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    with pytest.raises(Exception, match="requires tl.tt_program"):
+        _rebuild_codegen_module_without_tt_program(artifact)
 
 
 def test_blackhole_copy_semaphore_plan_is_materialized():
@@ -707,7 +944,7 @@ def test_blackhole_copy_lowering_prefers_buffer_handles_over_annotation_names():
     mod = tilelang.tvm.IRModule({"main": func})
     mod = lower_blackhole_ops_through_phase_b(mod)
 
-    runtime_args = mod["main"].attrs["blackhole.runtime_args"]
+    runtime_args = extract_blackhole_runtime_args(mod["main"])
     buffers = [str(arg["buffer"]) for arg in runtime_args if "buffer" in arg]
     assert buffers == ["A", "B"]
 
@@ -726,7 +963,7 @@ def test_blackhole_copy_semantics_survives_flatten_and_vectorize():
     mod = tilelang.transform.AssignBlackholeCores()(mod)
 
     func = mod["main"]
-    runtime_args = func.attrs["blackhole.runtime_args"]
+    runtime_args = extract_blackhole_runtime_args(func)
     assert [str(arg["kind"]) for arg in runtime_args] == EXPECTED_UNIFIED_COPY_RUNTIME_ARG_KINDS
     assert str(runtime_args[0]["buffer"]) == "A"
     assert str(runtime_args[1]["buffer"]) == "B"
@@ -745,7 +982,7 @@ def test_blackhole_copy_richer_accessor_schema_roundtrip():
 
     rewritten = {}
     for gvar, func in artifact.device_mod.functions.items():
-        if func.attrs and "blackhole.segment_plan" in func.attrs:
+        if has_tt_target_seed_truth(func) or (func.attrs and "blackhole.segment_plan" in func.attrs):
             func = _with_richer_accessor_schema(func)
         rewritten[gvar] = func
 
@@ -780,7 +1017,7 @@ def test_blackhole_copy_direct_runtime_rejects_common_runtime_accessor_schema():
     ]
     stripped_func = _with_compile_time_abi_schema(device_main, strip_accessors=True)
     mutated_segments = []
-    for segment in stripped_func.attrs["blackhole.segment_plan"]:
+    for segment in extract_blackhole_segment_plan(stripped_func):
         richer_segment = dict(segment)
         richer_segment["common_runtime_args"] = richer_common_runtime_args
         mutated_segments.append(richer_segment)
@@ -823,7 +1060,7 @@ def test_blackhole_copy_direct_runtime_materializes_shared_common_runtime_buffer
         },
     ]
     mutated_segments = []
-    for segment in device_main.attrs["blackhole.segment_plan"]:
+    for segment in extract_blackhole_segment_plan(device_main):
         mutated_segment = dict(segment)
         mutated_segment["common_runtime_args"] = common_runtime_args
         mutated_segments.append(mutated_segment)
@@ -852,7 +1089,7 @@ def test_blackhole_copy_direct_runtime_rejects_accessor_common_runtime_arg_count
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
     mutated_segments = []
-    for segment in device_main.attrs["blackhole.segment_plan"]:
+    for segment in extract_blackhole_segment_plan(device_main):
         mutated_segment = dict(segment)
         mutated_accessors = []
         for accessor in segment["accessors"]:
@@ -886,7 +1123,7 @@ def test_blackhole_copy_direct_runtime_rejects_work_linear_id_in_common_runtime_
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
     mutated_segments = []
-    for segment in device_main.attrs["blackhole.segment_plan"]:
+    for segment in extract_blackhole_segment_plan(device_main):
         mutated_segment = dict(segment)
         mutated_segment["common_runtime_args"] = [
             {
@@ -921,7 +1158,7 @@ def test_blackhole_copy_direct_runtime_materializes_compile_time_abi_schema():
     device_main = device_funcs['I.GlobalVar("main_kernel")']
     stripped_func = _with_compile_time_abi_schema(device_main, strip_accessors=True)
     mutated_mod = _rebuild_codegen_module_with_segment_plan(
-        artifact, stripped_func.attrs["blackhole.segment_plan"]
+        artifact, extract_blackhole_segment_plan(stripped_func)
     )
 
     a_torch = torch.randn(32, 32, dtype=torch.float16)
@@ -958,7 +1195,7 @@ def test_blackhole_copy_direct_runtime_rejects_unknown_compile_time_abi_kind():
         compile_time_arg_spec_mutator=mutate_unknown_kind,
     )
     mutated_mod = _rebuild_codegen_module_with_segment_plan(
-        artifact, mutated_func.attrs["blackhole.segment_plan"]
+        artifact, extract_blackhole_segment_plan(mutated_func)
     )
 
     a_torch = torch.randn(32, 32, dtype=torch.float16)
@@ -993,7 +1230,7 @@ def test_blackhole_copy_direct_runtime_rejects_accessor_runtime_crta_bits():
         compile_time_arg_spec_mutator=mutate_runtime_crta_bits,
     )
     mutated_mod = _rebuild_codegen_module_with_segment_plan(
-        artifact, mutated_func.attrs["blackhole.segment_plan"]
+        artifact, extract_blackhole_segment_plan(mutated_func)
     )
 
     a_torch = torch.randn(32, 32, dtype=torch.float16)
@@ -1049,7 +1286,7 @@ def test_blackhole_copy_direct_runtime_accepts_semaphore_id_runtime_arg():
 
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
-    base_runtime_args = list(device_main.attrs["blackhole.runtime_args"])
+    base_runtime_args = list(extract_blackhole_runtime_args(device_main))
 
     semaphore_plan = [
         {
@@ -1114,7 +1351,7 @@ def test_blackhole_copy_build_rejects_unbound_semaphore_runtime_arg():
 
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
-    base_runtime_args = list(device_main.attrs["blackhole.runtime_args"])
+    base_runtime_args = list(extract_blackhole_runtime_args(device_main))
 
     def runtime_args_mutator(runtime_args):
         return list(runtime_args) + [
@@ -1144,8 +1381,8 @@ def test_blackhole_copy_build_rejects_unpaired_logical_core_noc_runtime_arg():
 
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
-    consumer_core = device_main.attrs["blackhole.core_plan"]["physical_cores"][1]
-    base_runtime_args = list(device_main.attrs["blackhole.runtime_args"])
+    consumer_core = extract_blackhole_core_plan(device_main)["physical_cores"][1]
+    base_runtime_args = list(extract_blackhole_runtime_args(device_main))
 
     def runtime_args_mutator(runtime_args):
         return list(runtime_args) + [
@@ -1175,8 +1412,8 @@ def test_blackhole_copy_remote_core_descriptor_is_materialized():
 
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
-    consumer_core = device_main.attrs["blackhole.core_plan"]["physical_cores"][1]
-    runtime_args = list(device_main.attrs["blackhole.runtime_args"])
+    consumer_core = extract_blackhole_core_plan(device_main)["physical_cores"][1]
+    runtime_args = list(extract_blackhole_runtime_args(device_main))
     runtime_args.extend(
         [
             {
@@ -1272,14 +1509,14 @@ def test_blackhole_cb_planner_reuses_non_overlapping_requirements():
     )
     mod = tilelang.transform.PlanBlackholeCB()(mod)
     func = mod["main"]
-    cb_configs = func.attrs["blackhole.cb_configs"]
-    cb_bindings = func.attrs["blackhole.cb_bindings"]
+    cb_configs = extract_blackhole_cb_configs(func)
 
     assert len(cb_configs) == 1
-    assert int(func.attrs["blackhole.num_cbs"]) == 1
-    assert int(func.attrs["blackhole.total_l1_bytes"]) == 1048576
+    assert int(extract_blackhole_total_l1_bytes(func)) == 1048576
     assert int(cb_configs[0]["cb_id"]) == 16
     assert int(cb_configs[0]["lifetime_begin"]) == 0
+    assert [int(index) for index in cb_configs[0]["requirement_indices"]] == [0, 1]
+    assert [str(name) for name in cb_configs[0]["requirement_names"]] == ["stage0", "stage1"]
 
 
 def test_blackhole_cb_planner_requires_explicit_cb_requirements():
@@ -1527,7 +1764,7 @@ def test_blackhole_copy_codegen_rejects_common_runtime_arg_without_identity():
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
     mutated_segments = []
-    for segment in device_main.attrs["blackhole.segment_plan"]:
+    for segment in extract_blackhole_segment_plan(device_main):
         mutated_segment = dict(segment)
         mutated_segment["common_runtime_args"] = [
             {
@@ -1580,7 +1817,7 @@ def test_blackhole_core_plan_preserves_logical_block_launch():
 
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
-    core_plan = device_main.attrs["blackhole.core_plan"]
+    core_plan = extract_blackhole_core_plan(device_main)
 
     assert int(core_plan["logical_grid_x"]) == 2
     assert int(core_plan["logical_grid_y"]) == 3
@@ -1618,7 +1855,7 @@ def test_blackhole_core_plan_preserves_axis_order():
 
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
-    core_plan = device_main.attrs["blackhole.core_plan"]
+    core_plan = extract_blackhole_core_plan(device_main)
 
     assert int(core_plan["logical_grid_x"]) == 3
     assert int(core_plan["logical_grid_y"]) == 2
@@ -1644,7 +1881,7 @@ def test_blackhole_core_plan_covers_oversubscribed_work():
 
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
-    core_plan = device_main.attrs["blackhole.core_plan"]
+    core_plan = extract_blackhole_core_plan(device_main)
 
     assert int(core_plan["logical_grid_x"]) == 15
     assert int(core_plan["logical_grid_y"]) == 10
@@ -1653,7 +1890,7 @@ def test_blackhole_core_plan_covers_oversubscribed_work():
     assert len(
         {(int(core["core_x"]), int(core["core_y"])) for core in core_plan["physical_cores"]}
     ) == 110
-    assert int(device_main.attrs["blackhole.work_per_core"]) == 2
+    assert int(extract_blackhole_work_per_core(device_main)) == 2
 
     covered = []
     for packet in core_plan["work_packets"]:
@@ -1693,7 +1930,7 @@ def test_blackhole_copy_tracks_rectangular_tile_shapes(
 
     device_funcs = {str(gvar): func for gvar, func in artifact.device_mod.functions.items()}
     device_main = device_funcs['I.GlobalVar("main_kernel")']
-    cb_configs = device_main.attrs["blackhole.cb_configs"]
+    cb_configs = extract_blackhole_cb_configs(device_main)
 
     assert int(cb_configs[0]["page_size"]) == 2048
     assert int(cb_configs[0]["num_pages"]) == 2

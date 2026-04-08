@@ -402,6 +402,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   int gemm_m_ = 0;
   int gemm_n_ = 0;
   int gemm_k_ = 0;
+  std::unordered_set<std::string> gemm_contract_signatures_;
+  std::unordered_map<std::string, int> gemm_input_buffer_num_k_tiles_;
   bool gemm_transpose_a_ = false;
   bool gemm_transpose_b_ = false;
   int gemm_policy_type_ = 0;
@@ -420,6 +422,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   tvm::ffi::Array<tvm::Integer> copy_intermediate_shape_;
   std::unordered_set<const tvm::tir::VarNode*> thread_index_vars_;
   std::unordered_set<std::string> thread_index_var_names_;
+  std::unordered_set<const tvm::tir::VarNode*> block_index_vars_;
+  std::unordered_set<std::string> block_index_var_names_;
   std::vector<AccessorDescriptor> accessor_descriptors_;
   std::string current_segment_kind_;
   std::unordered_map<std::string, int> read_accessor_slots_;
