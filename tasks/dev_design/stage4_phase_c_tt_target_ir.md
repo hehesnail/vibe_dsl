@@ -160,80 +160,31 @@
 - 因为当前样例方便，就把 `TTProgram` 退化成大号 attr bag
 - 把 `ExecutableSpec` 当作与 `TTProgram` 并列的双真源
 
-## 5. 当前已完成的部分
+## 5. `TTProgram` Cutover 已完成的部分
+
+`Phase C` 当前已经完成的是 target-truth cutover 本体，而不是整个阶段。
+这部分的完成边界如下：
 
 - `TTHardwareModel` 已作为 module-scope global info 进入主线
-- `LowerSpatialProgramToTTTargetProbe` 已落地
-- probe 已能消费
+- `LowerSpatialProgramToTTTargetProbe` 已落地，并且只消费
   `SpatialProgram + TTHardwareModel + SpatialCapabilityModel`
-- probe 不写 `TTProgram`
-- probe 不写 `ExecutableSpec`
-- probe 不恢复 non-TT-specific spatial semantics
-- probe 已把当前最小 demand 面收成显式诊断：
-  - `Task.kind + placement.affinity_kind`
-  - `Channel.kind + payload_kind + delivery_kind`
-  - `Channel` linkage contract：`source_task_index / target_task_index / state_index`
-  - `Layout / WorkPartition.domain_index`
-  - `ProgramPhase / SyncEdge` 的基本 ordering closure
-
-当前结论：
-
-- `Phase C` 准备轨已完成
-- `Phase B` 前置输入已满足
-- 正式 `TTProgram` cutover 已完成
-- 但 `Phase C` 总体仍未完成；后续支持面扩展仍算本阶段工作
-
-## 6. 当前已完成的部分
-
-- shared generic reader fallback 已删除：
-  `tt_program_projection` 现在已经收成
-  `TTProgram`-only reader，
-  原始 device func 与 synthetic segment 都不再通过 shared getter 回退到
-  `blackhole.segment_plan / runtime_args / common_runtime_args / cb_configs /
-  semaphore_plan / core_plan / gemm_contract / compute_contract /
-  direct_runtime_unsupported_reasons`
-- `TTProgram` companion object 现在已经发布 Python/FFI constructor；
-  中心 regression 可以直接重建
-  `TTProgram / TTKernel / TTCoreGroup / TTABIPlan / TTSemaphorePlan`
-  做 typed mutation，不必再通过“改 bridge attrs -> 重跑 translator”间接施压
-- 原始 Blackhole device build 输入现在已经硬要求 `tl.tt_program`；
-  缺失时会直接 fail-fast，不再靠残留 legacy attrs 继续 build
+- `TTProgram` core object set 已落地，
+  `LowerSpatialProgramToTTTarget / ValidateTTTargetProgram /
+  MaterializeTTExecutableSpec` 已进入正式主链
+- runtime/codegen 已切到 `TTProgram` direct reader；
+  shared generic fallback 已删除
+- synthetic segment 已改成挂最小单-kernel `TTProgram`
+- 原始 Blackhole device build 输入已硬要求 `tl.tt_program`
 - transform / target regression 的主断言面已切到
-  `TTProgram` / `ExecutableSpec`；
-  bridge-stage helper 若需在 `TTProgram` materialize 之前取 target truth，
-  现在也优先读取
-  `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload`
-- `LowerSpatialProgramToTTTarget` 当前通过 typed upstream truth 构造 `TTProgram`：
-  `LowerBlackholeOps` 先发布
+  `TTProgram` / `ExecutableSpec`
+- producer-side translator 输入也已切到 typed companion truth：
+  `LowerBlackholeOps` 发布
   `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload`，
   `PlanBlackholeCB / AssignBlackholeCores`
-  分别发布 `tl.tt_cb_plans / tl.tt_core_groups`，
-  final translator 不再依赖 legacy bridge attrs
-- `LowerBlackholeOps` 在 typed seed materialization 后会剥离
-  `blackhole.segment_plan / runtime_args / common_runtime_args /
-  gemm_contract / compute_contract / direct_runtime_unsupported_reasons`
-  等 legacy projection attrs；
-  final output 的 `LowerSpatialProgramToTTTarget` 也会继续做 residual strip
-- `flash-attn` 的 `Phase C2` runtime gate 已从 hang 收敛成显式 unsupported：
-  multi-GEMM compute kernel 会带
-  `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
-  并在 direct runtime test 中 skip；
-  但这只算 gate 收敛，不算 `Phase C2` payoff 完成
-- `SpatialCapabilityModel` 的 quantitative hardware fields
-  还没有进入正式 planning / mapping 主链
-- `Placement / ResourceIntent / Layout / WorkPartition` 的长期 object boundary
-  还没有经过 `TTProgram` materialization 的最终验证
-- 部分 spatial node 仍保留 payload-backed truth；
-  更彻底的 typed schema 分化仍属于 `Phase C` 演进内容
-- `ValidateTTTargetProgram` 已补进 kernel payload、execution plan、
-  ABI / contract payload 的结构校验，
-  但仍未把 runtime/codegen 真正消费的 ABI / accessor / launch / core-group
-  全量细节全部收进最终 validator gate
-
-因此当前 `Phase C` 的 `TTProgram` cutover 本体已完成，
-但阶段总目标仍未完成；剩余工作继续留在 `Phase C` 范围内推进。
-
-## 6.2 当前 deletion gate 的真实拓扑
+  发布 `tl.tt_cb_plans / tl.tt_core_groups`
+- `TTProgram` companion object 已有 Python/FFI constructor；
+  regression 可直接重建
+  `TTProgram / TTKernel / TTCoreGroup / TTABIPlan / TTSemaphorePlan`
 
 当前稳定拓扑是：
 
@@ -254,126 +205,136 @@ SpatialProgram
   -> internal codegen / ExecutableSpec assembly
 ```
 
-当前实现的含义是：
+这意味着：
 
-- `rt_mod_blackhole` / `codegen_blackhole`
-  已经通过共享 decoder 读取 `TTProgram` truth，
-  shared decoder 不再保留 generic legacy fallback
-- `TTProgram` 已有可承载这些信息的 typed object：
-  `TTABIPlan / TTCBPlan / TTCoreGroup / TTSemaphorePlan / TTExecutionPlan`
-  以及 program payload 承载的
-  `gemm_contract / compute_contract / direct_runtime_unsupported_reasons`
-- regression 主断言面与 mutation ingress
-  现在已覆盖 `TTProgram` / `ExecutableSpec` 与 bridge-stage typed seed attrs
-- producer-side translator 输入也已不再依赖 legacy bridge attrs；
-  legacy projection 只剩 `SplitBlackholeKernel -> LowerBlackholeOps`
+- reader-side deletion gate 已收口
+- final translator 已不再依赖 legacy bridge attrs
+- legacy projection 只剩
+  `SplitBlackholeKernel -> LowerBlackholeOps`
   之间的内部 planning 过渡职责
 
-因此当前 deletion gate 已经收口，但这不等于 `Phase C` 整体收口。
+## 6. 当前仍属于 `Phase C` 的工作
 
-## 6.3 Reader-Side Deletion Gate 的执行顺序
+下面这些不是“后续可选优化”，而是当前 `Phase C` 仍然必须完成的工作。
 
-当前收口顺序固定为：
+### 6.1 `Phase C2`: `flash-attn` runtime / correctness payoff
 
-1. 先在 `rt_mod_blackhole` / `codegen_blackhole`
-   引入共享的 `TTProgram` direct reader / decoder，
-   让 `ExecutableSpec` 组装与 kernel codegen 优先消费 typed target truth
-   这一步对当前 reader surface 已完成，包括
-   `segment/runtime/common-runtime/cb/semaphore/core`
-   与 function-level `gemm_contract / compute_contract /
-   direct_runtime_unsupported_reasons`
-2. 把 shared generic fallback 拆成 `TTProgram`-only reader，
-   并让 synthetic segment 也挂最小 `TTProgram`
-   这一步对当前 reader / codegen surface 已完成
-3. 把 transform / target regression 的主断言面从
-   `blackhole.*` attrs 迁到 `tl.tt_program` / `ExecutableSpec`
-4. 在 copy / GEMM / `flash-attn` baseline 稳定后，
-   删除 `LowerBlackholeOps` bridge-stage 输出中的剩余 projection attrs
-5. 把 `BuildCBPlans / BuildCoreGroups / BuildSemaphorePlans / BuildABIPlans`
-   全部切到 typed upstream truth
+当前状态：
 
-## 6.1 本次正式 cutover 的实现策略
+- `flash-attn` forward subset 已打通 compile-path
+- `flash-attn` multi-GEMM compute kernel 不再 hang
+- 当前 direct runtime 行为是显式 unsupported：
+  `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
+  并在 runtime test 中 skip
 
-本次 `Phase C` 落地按下面的 bridge discipline 执行：
+这还不算完成。
+`Phase C2` 完成必须同时满足：
 
-1. 先把 `TTProgram` core object set 落成 companion truth，并注册成
-   `tl.tt_program`
-2. `LowerSpatialProgramToTTTarget` 负责生成 `TTProgram`
-3. `ValidateTTTargetProgram` 负责做 target-truth 完整性与 object-boundary 校验
-4. `rt_mod_blackhole` / `codegen_blackhole` 通过共享 direct reader 直接消费
-   `TTProgram`；`MaterializeTTExecutableSpec` 仅保留为 pipeline continuity 用的
-   no-op bridge pass
+1. 支持的 `MHA / GQA` subset 不再依赖 skip；
+   runtime case 必须真实执行而不是走 unsupported gate
+2. multi-GEMM compute contract 必须成为显式 target truth，
+   进入 `TTProgram` / `ExecutableSpec`；
+   不能靠 legacy attrs、名字匹配或 codegen heuristics 侧推
+3. TT-Sim runtime 结果必须和 reference 数值对齐，
+   而不是只证明“不挂死”
+4. 对仍未支持的 shape / variant，必须继续 fail-fast 并给出明确诊断，
+   不能退回 silent fallback 或 late runtime failure
 
-桥接期纪律：
+### 6.2 Wider Family 承接
 
-- 正式 runtime/codegen 的稳态真源只能是 `TTProgram`
-- `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores` 在 bridge 期仍可保留为
-  target planning helper，但它们写出的 legacy attrs 只能当 translator 输入，
-  不能继续当最终协议真源
-- synthetic segment 若需要内部重建 target-truth，
-  必须直接挂最小 `TTProgram`，不能再回退到局部
-  `blackhole.*` projection attrs
-- 任何 function-level contract（如
-  `gemm_contract / compute_contract / direct_runtime_unsupported_reasons`）
-  一旦进入 reader-side正式消费面，就必须提升进 `TTProgram.payload`
+`Phase C` 不是只为 copy / GEMM / 当前 `flash-attn` subset 服务。
+以下 family 仍在本阶段范围内：
 
-当前实现结果：
+- `topk`
+- `fusedmoe`
+- `paged decode`
+- `chunk recurrence`
 
-- `TTProgram` 已成为 target truth owner
-- `rt_mod_blackhole` / `codegen_blackhole`
-  已通过共享 decoder 直接消费 `TTProgram`
-- `rt_mod_blackhole` 的原始 entry 提取已不再对 legacy attrs 做兼容回退；
-  `codegen_blackhole` 对原始 device func 与 synthetic segment
-  也都不再经由 shared getter 回退到 legacy attrs
-- `MaterializeTTExecutableSpec` 已退化成 no-op compatibility pass
-- `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
-  已降为 bridge planning helper
-- copy / GEMM / `flash-attn`
-  的核心 target-truth regression 已切到 `TTProgram` / `ExecutableSpec`
-- `LowerBlackholeOps` bridge-stage 输出现在以
-  `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload`
-  为主真相，并在 seed 发布后剥离 legacy projection attrs
-- `PlanBlackholeCB / AssignBlackholeCores`
-  现在分别只发布 `tl.tt_cb_plans / tl.tt_core_groups`
-- `LowerSpatialProgramToTTTarget` 现在以 typed upstream truth materialize `TTProgram`
+对每个 family，完成的最低标准不是“能 lower 一点点”，而是：
 
-当前仍未完成并且属于 `Phase C` 的工作包括：
+1. 走完整主链：
+   `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
+2. target truth 从 `TTProgram` / `ExecutableSpec` 物化，
+   不靠 family-specific fallback 或 runtime/codegen 补洞
+3. 至少有一组明确支持的 subset，
+   带有对应的 transform / target regression
+4. 对未支持部分有显式 unsupported / fail-fast 边界，
+   而不是晚到 codegen/runtime 才炸
 
-- `flash-attn` multi-GEMM direct runtime 的真正 enablement 与 correctness payoff
-- `topk / fusedmoe / paged decode / chunk recurrence` 等 family 在新主链上的统一承接
-- 更宽 copy/dataflow 支持面
-- 更宽 synchronization 支持面
-- quantitative capability field 与 object-boundary 的继续验证
-- 部分 payload-backed node schema 的继续 typed uplift
+### 6.3 Wider Copy / Dataflow 支持面
+
+当前稳定支持面仍然很窄：
+
+- copy：equal source/dest range，且 stride = 1
+- GEMM：A/B-separated reader range + writer output range
+- accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
+
+因此“更宽 copy/dataflow 支持面”必须明确理解为：
+
+1. 新 admitted shape 要通过 typed ABI / accessor / transport contract 表达，
+   不允许再靠 ad-hoc attrs 或 runtime 猜测
+2. `ValidateTTTargetProgram`、runtime 和 codegen
+   必须共享同一套 legality gate
+3. 每个新增支持形态都要有
+   pipeline/spec regression，必要时再加 direct runtime regression
+4. 不能把“unsupported 但可诊断”误算成支持面完成
+
+### 6.4 Wider Synchronization 支持面
+
+当前 `TTSemaphorePlan / TTComputeSyncPlan` 对象已经在位，
+但“对象存在”不等于同步支持面已经完成。
+
+本工作流的完成标准是：
+
+1. 需要承接的 barrier / multicast arrival / phase handoff /
+   compute-sync 模式，必须成为显式 target object，
+   而不是散在 runtime/codegen 的特殊分支
+2. host-side materialization 必须只从
+   `TTProgram` / `ExecutableSpec` 读取同步 truth
+3. validator、runtime 和 codegen 对同步协议的合法性判断必须一致
+4. 新同步模式进入支持面时，必须有对应 regression；
+   不能靠“当前 case 没挂”代替协议闭环
+
+### 6.5 Object-Boundary / Typed Uplift 后续
+
+下面这些还不能长期停留在“payload 里先放着”的状态：
+
+- `Placement`
+- `SpatialCapabilityModel` 的 quantitative fields
+- 部分 payload-backed spatial / target node truth
+
+这个工作流的完成标准是：
+
+1. 真正被 planning / mapping / legality consumer 使用，
+   并对 target decision 有可见影响
+2. 或者被明确收窄、移出当前 active contract，
+   不再伪装成“将来可能有用”的长期字段
+
+换句话说，`Phase C` 结束时，这些字段不能继续只是“挂着但没人消费”的 metadata。
 
 ## 7. 完成判定
 
-只有在下面这些条件全部成立后，`Phase C` 才能算完成：
+只有下面这些条件全部成立，`Phase C` 才能算完成：
 
-1. `TTProgram` core object set 已进入稳定主链
-2. `TTProgram` 已显式承载第 2.2 节列出的 target truth
-3. `MaterializeTTExecutableSpec` 已成为唯一稳态 writer
-4. copy / GEMM / `flash-attn` 的 target truth 都从 `TTProgram` 物化，
-   不再依赖旧 planning 主链补洞
-5. runtime/codegen 与核心回归的主断言面已切到
-   `TTProgram` / `ExecutableSpec`，不再以 `blackhole.*` projection 为主真相
-6. compatibility writer / reader / fallback 已按 cutover 规则删除
-7. 新 family 进入主链时走
-   `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
-   的统一路径，而不是新增 case-by-case matcher
-8. `flash-attn` 的 `Phase C2` runtime / correctness payoff 已完成，
+1. `TTProgram` cutover 主链已稳定：
+   `TTProgram` 是唯一 target truth，
+   reader-side deletion gate 已收口
+2. `flash-attn` 的 `Phase C2` runtime / correctness payoff 已完成，
    不再停留在 explicit unsupported gate
-9. `topk / fusedmoe / paged decode / chunk recurrence`
-   等 family 已按新主链统一承接
-10. 更宽 copy/dataflow 支持面已按新 target-truth 主链落地
-11. 更宽 synchronization 支持面已按新 target-truth 主链落地
-12. shared zero-regression baseline 与 `Phase C2` 的 runtime gate 持续通过
+3. `topk / fusedmoe / paged decode / chunk recurrence`
+   等 family 已按新主链统一承接，并具备明确支持 subset 与 regression
+4. copy/dataflow 支持面已超出当前窄 baseline，
+   并通过 typed contract + validator + regression 落地
+5. synchronization 支持面已通过
+   `TTSemaphorePlan / TTComputeSyncPlan` 等显式对象稳定承接
+6. `Placement / SpatialCapabilityModel / payload-backed truth`
+   不再只是悬空 metadata，而是被真实消费或被明确收窄
+7. shared zero-regression baseline 与 `Phase C2` runtime gate 持续通过
 
-当前结论：
+当前状态是：
 
-- `TTProgram` cutover 子线已完成
-- `Phase C` 总体仍未完成
-- 当前 blocker 已转到 `Phase C2` runtime/correctness payoff 与 wider support surface
+- 条件 1 已满足
+- 条件 2-7 仍未满足
 
 ## 8. Shared Zero-Regression Baseline
 
@@ -383,6 +344,7 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_runtime
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -q
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py -q
 pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q
+pytest tilelang_repo/testing/python/transform/test_blackhole_tt_target_probe.py -q
 ```
 
 ## 9. `Phase C2` Runtime Gate
@@ -391,16 +353,18 @@ pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attent
 source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh
 export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo
 cd /root/dev/vibe_dsl/tilelang_repo
-pytest testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py -k 'mha or gqa' -q
+pytest testing/python/target/blackhole/test_blackhole_copy_runtime.py \
+       testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py -q
 ```
 
-`Phase C2` 当前已达到的 gate 是：
+当前 gate 只证明两件事：
 
 - copy direct runtime 正常通过
-- `flash-attn` multi-GEMM compute kernel 显式暴露
-  `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
-  并在 runtime test 中 skip
+- `flash-attn` multi-GEMM compute kernel 会显式 unsupported，
+  不会再 silent hang
 
-这只代表“不会再 hang，unsupported 行为可诊断”。
-真正的 multi-GEMM direct runtime enablement 与 correctness payoff
-仍然阻塞 `Phase C` 完成。
+它不证明：
+
+- multi-GEMM compute contract 已经落成
+- `flash-attn` runtime correctness 已经完成
+- `Phase C2` 已完成
