@@ -38,6 +38,11 @@
     `ValidateTTTargetProgram`、`MaterializeTTExecutableSpec`
   - 当前保留：legacy target attrs reader 仍作为 projection consumer 存在，
     但 steady-state writer 已切到 `TTProgram -> MaterializeTTExecutableSpec`
+  - 当前 bridge 实态：
+    `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
+    仍写 legacy bridge attrs，`LowerSpatialProgramToTTTarget`
+    仍从这些 attrs 构造 `TTProgram`；
+    当前 immediate gate 是 reader-side cutover，不是先删 producer-side bridge 输入
 
 ## `Phase B` 收尾结果
 
@@ -79,7 +84,21 @@
 ## 当前 blocker
 
 - legacy target attr reader / fallback 删除尚未完全收口；
-  codegen/runtime 仍消费 `MaterializeTTExecutableSpec` 反写的 projection
+  `rt_mod_blackhole` / `codegen_blackhole`
+  仍消费 `MaterializeTTExecutableSpec` 反写的 projection
+- 当前 reader-side gate 的直接范围是：
+  - `rt_mod_blackhole` 仍直接解码
+    `blackhole.segment_plan / runtime_args / common_runtime_args /
+    accessors / cb_configs / semaphore_plan / core_plan`
+  - `codegen_blackhole` 仍直接消费
+    `blackhole.segment_plan / runtime_args / cb_configs / core_plan`
+- `TTProgram` 已具备
+  `TTABIPlan / TTCBPlan / TTCoreGroup / TTSemaphorePlan / TTExecutionPlan`
+  这些 direct-read 所需的主要 typed object，
+  但 runtime/codegen 侧仍未接入 direct reader
+- `ValidateTTTargetProgram` 当前主要覆盖结构完整性与 linkage；
+  reader-side cutover 之后还需要更强的 ABI / accessor / launch
+  validator gate
 - `flash-attn` 的 `blackhole.acc` correctness payoff 仍归属 `Phase C2`
 
 ## 独立已知问题
@@ -93,9 +112,15 @@
 
 ## 下一步
 
-1. 收掉 legacy target attr reader / fallback，完成 `TTProgram` single-truth reader cutover
-2. 在新主链上继续扩大 direct host path/runtime gate 覆盖
-3. 把 `flash-attn` 的 `blackhole.acc` correctness payoff 继续放在 `Phase C2`
+1. 在 `rt_mod_blackhole` / `codegen_blackhole`
+   引入共享的 `TTProgram` direct reader / decoder，
+   先完成 reader-side single-truth cutover
+2. 把 transform / target regression 的主断言面从
+   `blackhole.*` projection 迁到 `tl.tt_program` 或最终 `ExecutableSpec`，
+   然后删除 reader-side fallback
+3. reader-side gate 收口后，再继续 translator 输入侧的 producer-side bridge attr 清理
+4. 在新主链上继续扩大 direct host path/runtime gate 覆盖，
+   并把 `flash-attn` 的 `blackhole.acc` correctness payoff 继续放在 `Phase C2`
 
 ## 当前主设备链
 

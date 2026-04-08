@@ -4,7 +4,8 @@
 
 - **文档角色**: `Phase C` 当前设计边界与 cutover 文档
 - **当前状态**: `2026-04-08` 正式 cutover bridge 已落地；`TTProgram`
-  已接入稳定主链，legacy projection reader 清理仍在收尾
+  已接入稳定主链；reader-side deletion gate 仍在收尾，translator 侧仍保留
+  bridge 输入
 - **已完成子阶段**: read-only translator demand probe、`TTHardwareModel` intake、
   `TTProgram` core object set、`LowerSpatialProgramToTTTarget`、
   `ValidateTTTargetProgram`、`MaterializeTTExecutableSpec`
@@ -180,6 +181,10 @@
   `rt_mod_blackhole` / `codegen_blackhole` 仍消费
   `MaterializeTTExecutableSpec` 反写出的 legacy attrs
 - legacy reader / fallback 还没有按 deletion gate 删除
+- `LowerSpatialProgramToTTTarget` 当前仍通过
+  `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
+  写出的 bridge attrs 构造 `TTProgram`；
+  这属于 reader-side deletion gate 之后的 producer-side 清理
 - `flash-attn` 的 `blackhole.acc` correctness payoff 仍归属 `Phase C2`
 - `SpatialCapabilityModel` 的 quantitative hardware fields
   还没有进入正式 planning / mapping 主链
@@ -187,9 +192,59 @@
   还没有经过 `TTProgram` materialization 的最终验证
 - 部分 spatial node 仍保留 payload-backed truth；
   更彻底的 typed schema 分化仍属于 `Phase C` 演进内容
+- `ValidateTTTargetProgram` 当前主要只覆盖结构完整性与 linkage，
+  尚未把 runtime/codegen 真正消费的 ABI / accessor / launch / core-group
+  细节全部收进正式 validator gate
 
 因此当前 `Phase C` 已开始并打通正式 cutover 主链，但 reader-side deletion gate
 尚未完成。
+
+## 6.2 当前 deletion gate 的真实拓扑
+
+当前 bridge 不是“`TTProgram` 已经完全取代旧 attrs，只剩删除代码”；
+实际拓扑是：
+
+```text
+SpatialProgram
+  -> LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores
+  -> legacy bridge attrs
+  -> LowerSpatialProgramToTTTarget
+  -> TTProgram
+  -> MaterializeTTExecutableSpec
+  -> legacy projection attrs
+  -> rt_mod_blackhole / codegen_blackhole
+```
+
+当前 reader-side blocker 的具体含义是：
+
+- `rt_mod_blackhole` 仍直接解码
+  `blackhole.segment_plan / runtime_args / common_runtime_args /
+  accessors / cb_configs / semaphore_plan / core_plan`
+- `codegen_blackhole` 仍直接消费
+  `blackhole.segment_plan / runtime_args / cb_configs / core_plan`
+- `TTProgram` 已有可承载这些信息的 typed object：
+  `TTABIPlan / TTCBPlan / TTCoreGroup / TTSemaphorePlan / TTExecutionPlan`
+  但 runtime/codegen 还没有 direct reader
+
+因此当前 deletion gate 要先解决的是 reader-side truth cutover，
+不是立刻删除所有 producer-side bridge attr。
+
+## 6.3 Reader-Side Deletion Gate 的执行顺序
+
+当前收口顺序固定为：
+
+1. 先在 `rt_mod_blackhole` / `codegen_blackhole`
+   引入共享的 `TTProgram` direct reader / decoder，
+   让 `ExecutableSpec` 组装与 kernel codegen 优先消费 typed target truth
+2. 保留 `MaterializeTTExecutableSpec` 作为 bridge writer，
+   但把 legacy attr reader 降成兼容 fallback，而不是主读取路径
+3. 把 transform / target regression 的主断言面从
+   `blackhole.*` attrs 迁到 `tl.tt_program` 或最终 `ExecutableSpec`
+4. 在 copy / GEMM / `flash-attn` baseline 稳定后，
+   删除 reader-side fallback 与 projection consumer
+5. reader-side cutover 稳定后，再继续 translator 输入侧的 producer-side 清理：
+   把 `BuildCBPlans / BuildCoreGroups / BuildSemaphorePlans / BuildABIPlans`
+   从 bridge attrs 迁到 typed upstream truth
 
 ## 6.1 本次正式 cutover 的实现策略
 
@@ -227,6 +282,8 @@
 
 - reader-side deletion gate 尚未收口；
   `rt_mod_blackhole` / `codegen_blackhole` 仍读 projection，不是直接读 `TTProgram`
+- 当前 bridge translator 仍消费 planning helper 写出的 legacy attrs；
+  这不是 reader-side gate 的当前 blocker，但仍属于 `Phase C` 后续清理范围
 
 ## 7. 完成判定
 
@@ -237,11 +294,13 @@
 3. `MaterializeTTExecutableSpec` 已成为唯一稳态 writer
 4. copy / GEMM / `flash-attn` 的 target truth 都从 `TTProgram` 物化，
    不再依赖旧 planning 主链补洞
-5. compatibility writer / reader / fallback 已按 cutover 规则删除
-6. 新 family 进入主链时走
+5. runtime/codegen 与核心回归的主断言面已切到
+   `TTProgram` / `ExecutableSpec`，不再以 `blackhole.*` projection 为主真相
+6. compatibility writer / reader / fallback 已按 cutover 规则删除
+7. 新 family 进入主链时走
    `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
    的统一路径，而不是新增 case-by-case matcher
-7. shared zero-regression baseline 与 `Phase C2` 的 runtime gate 持续通过
+8. shared zero-regression baseline 与 `Phase C2` 的 runtime gate 持续通过
 
 当前结论：
 
