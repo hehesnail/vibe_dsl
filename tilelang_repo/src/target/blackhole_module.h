@@ -167,6 +167,7 @@ struct CompileTimeArgSpec {
   std::string segment_role;
   std::vector<uint32_t> values;
   uint32_t args_config_bits = 0;
+  uint32_t transport_page_size_bytes = 0;
   std::string layout;
   std::string memory_space;
 
@@ -193,6 +194,10 @@ struct CompileTimeArgSpec {
     }
     if (args_config_bits != 0) {
       writer->WriteObjectKeyValue("args_config_bits", static_cast<int64_t>(args_config_bits));
+    }
+    if (transport_page_size_bytes != 0) {
+      writer->WriteObjectKeyValue("transport_page_size",
+                                  static_cast<int64_t>(transport_page_size_bytes));
     }
     if (!layout.empty()) {
       writer->WriteObjectKeyValue("layout", layout);
@@ -299,6 +304,8 @@ struct AccessorSpec {
   uint32_t transport_page_size_bytes = 0;
   std::string layout;
   std::string memory_space;
+  std::vector<int64_t> host_axis_order;
+  bool transpose_2d = false;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -319,6 +326,12 @@ struct AccessorSpec {
     }
     writer->WriteObjectKeyValue("layout", layout);
     writer->WriteObjectKeyValue("memory_space", memory_space);
+    if (!host_axis_order.empty()) {
+      writer->WriteObjectKeyValue("host_axis_order", host_axis_order);
+    }
+    if (transpose_2d) {
+      writer->WriteObjectKeyValue("transpose_2d", transpose_2d);
+    }
     writer->EndObject();
   }
 };
@@ -357,6 +370,8 @@ struct BufferMaterializationSpec {
   std::string layout;
   std::string memory_space;
   uint32_t transport_page_size_bytes = 0;
+  std::vector<int64_t> host_axis_order;
+  bool transpose_2d = false;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -366,6 +381,12 @@ struct BufferMaterializationSpec {
     writer->WriteObjectKeyValue("memory_space", memory_space);
     writer->WriteObjectKeyValue("transport_page_size",
                                 static_cast<int64_t>(transport_page_size_bytes));
+    if (!host_axis_order.empty()) {
+      writer->WriteObjectKeyValue("host_axis_order", host_axis_order);
+    }
+    if (transpose_2d) {
+      writer->WriteObjectKeyValue("transpose_2d", transpose_2d);
+    }
     writer->EndObject();
   }
 };
@@ -473,6 +494,56 @@ struct GemmContractSpec {
 };
 
 struct ComputeContractSpec {
+  struct EpilogueOpSpec {
+    std::string kind;
+    std::string dst_buffer;
+    std::string src_buffer;
+    std::string scalar_buffer;
+    std::string lhs_buffer;
+    std::string rhs_buffer;
+    std::string add_buffer;
+    std::string reduce_kind;
+    std::string num_elements_expr;
+    std::string row_width_expr;
+    std::string dst_offset_expr;
+    std::string src_offset_expr;
+    std::string dst_scale_expr;
+    std::string scalar_scale_expr;
+    std::string lhs_scale_expr;
+    std::string rhs_scale_expr;
+    bool grouped = false;
+    bool clear = false;
+    bool publish_cb = false;
+
+    void Save(dmlc::JSONWriter* writer) const {
+      writer->BeginObject();
+      writer->WriteObjectKeyValue("kind", kind);
+      if (!dst_buffer.empty()) writer->WriteObjectKeyValue("dst_buffer", dst_buffer);
+      if (!src_buffer.empty()) writer->WriteObjectKeyValue("src_buffer", src_buffer);
+      if (!scalar_buffer.empty()) writer->WriteObjectKeyValue("scalar_buffer", scalar_buffer);
+      if (!lhs_buffer.empty()) writer->WriteObjectKeyValue("lhs_buffer", lhs_buffer);
+      if (!rhs_buffer.empty()) writer->WriteObjectKeyValue("rhs_buffer", rhs_buffer);
+      if (!add_buffer.empty()) writer->WriteObjectKeyValue("add_buffer", add_buffer);
+      if (!reduce_kind.empty()) writer->WriteObjectKeyValue("reduce_kind", reduce_kind);
+      if (!num_elements_expr.empty()) {
+        writer->WriteObjectKeyValue("num_elements_expr", num_elements_expr);
+      }
+      if (!row_width_expr.empty()) writer->WriteObjectKeyValue("row_width_expr", row_width_expr);
+      if (!dst_offset_expr.empty()) writer->WriteObjectKeyValue("dst_offset_expr", dst_offset_expr);
+      if (!src_offset_expr.empty()) writer->WriteObjectKeyValue("src_offset_expr", src_offset_expr);
+      if (!dst_scale_expr.empty()) writer->WriteObjectKeyValue("dst_scale_expr", dst_scale_expr);
+      if (!scalar_scale_expr.empty()) {
+        writer->WriteObjectKeyValue("scalar_scale_expr", scalar_scale_expr);
+      }
+      if (!lhs_scale_expr.empty()) writer->WriteObjectKeyValue("lhs_scale_expr", lhs_scale_expr);
+      if (!rhs_scale_expr.empty()) writer->WriteObjectKeyValue("rhs_scale_expr", rhs_scale_expr);
+      if (grouped) writer->WriteObjectKeyValue("grouped", grouped);
+      if (clear) writer->WriteObjectKeyValue("clear", clear);
+      if (publish_cb) writer->WriteObjectKeyValue("publish_cb", publish_cb);
+      writer->EndObject();
+    }
+  };
+
   bool enabled = false;
   std::string kind;
   std::string a_buffer;
@@ -515,6 +586,7 @@ struct ComputeContractSpec {
   std::string mbarrier_buffer;
   std::string mbarrier_scope;
   std::vector<std::string> mbarrier_index_exprs;
+  std::vector<EpilogueOpSpec> epilogue_ops;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -576,6 +648,9 @@ struct ComputeContractSpec {
     } else {
       writer->WriteObjectKeyValue("unpack_to_dest_mode", std::vector<std::string>{});
     }
+    if (!epilogue_ops.empty()) {
+      writer->WriteObjectKeyValue("epilogue_ops", epilogue_ops);
+    }
     writer->EndObject();
   }
 };
@@ -596,6 +671,9 @@ struct ExecutableSpec {
   std::vector<KernelSpec> kernels;
   GemmContractSpec gemm_contract;
   ComputeContractSpec compute_contract;
+  std::vector<GemmContractSpec> multi_gemm_contracts;
+  std::vector<ComputeContractSpec> multi_compute_contracts;
+  std::vector<ComputeContractSpec::EpilogueOpSpec> compute_epilogue_ops;
   std::vector<std::string> direct_runtime_unsupported_reasons;
 
   // TVM runtime invocation metadata retained during Stage 0.
@@ -629,6 +707,15 @@ struct ExecutableSpec {
     }
     writer->WriteObjectKeyValue("gemm_contract", gemm_contract);
     writer->WriteObjectKeyValue("compute_contract", compute_contract);
+    if (!multi_gemm_contracts.empty()) {
+      writer->WriteObjectKeyValue("multi_gemm_contracts", multi_gemm_contracts);
+    }
+    if (!multi_compute_contracts.empty()) {
+      writer->WriteObjectKeyValue("multi_compute_contracts", multi_compute_contracts);
+    }
+    if (!compute_epilogue_ops.empty()) {
+      writer->WriteObjectKeyValue("compute_epilogue_ops", compute_epilogue_ops);
+    }
     if (!direct_runtime_unsupported_reasons.empty()) {
       writer->WriteObjectKeyValue("direct_runtime_unsupported_reasons",
                                   direct_runtime_unsupported_reasons);

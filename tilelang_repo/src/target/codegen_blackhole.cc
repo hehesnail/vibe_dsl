@@ -50,6 +50,129 @@ const tvm::tir::VarNode* AsHandleVar(const tvm::PrimExpr& expr) {
   return nullptr;
 }
 
+std::vector<tvm::tir::Stmt> FlattenTopLevelSeq(const tvm::tir::Stmt& stmt) {
+  if (const auto* seq = stmt.as<tvm::tir::SeqStmtNode>()) {
+    return std::vector<tvm::tir::Stmt>(seq->seq.begin(), seq->seq.end());
+  }
+  return {stmt};
+}
+
+bool ExtractThreadScopedCBStaging(const tvm::tir::Stmt& stmt,
+                                  const tvm::tir::VarNode* thread_var,
+                                  tvm::tir::Stmt* once_prefix,
+                                  tvm::tir::Stmt* threaded_body,
+                                  tvm::tir::Stmt* once_suffix) {
+  auto is_blackhole_builtin = [](const tvm::tir::CallNode* call, const tvm::Op& builtin,
+                                 const char* op_name) {
+    if (!call) {
+      return false;
+    }
+    if (call->op.same_as(builtin)) {
+      return true;
+    }
+    if (const auto* op = call->op.as<tvm::OpNode>()) {
+      return op->name == op_name;
+    }
+    return false;
+  };
+
+  tvm::tir::Stmt current = stmt;
+  while (true) {
+    if (const auto* attr = current.as<tvm::tir::AttrStmtNode>()) {
+      current = attr->body;
+      continue;
+    }
+    if (const auto* let = current.as<tvm::tir::LetStmtNode>()) {
+      current = let->body;
+      continue;
+    }
+    if (const auto* decl = current.as<tvm::tir::DeclBufferNode>()) {
+      current = decl->body;
+      continue;
+    }
+    if (const auto* alloc = current.as<tvm::tir::AllocateNode>()) {
+      current = alloc->body;
+      continue;
+    }
+    break;
+  }
+
+  const auto* seq = current.as<tvm::tir::SeqStmtNode>();
+  if (!seq || seq->seq.size() < 3) {
+    return false;
+  }
+  const auto* reserve_eval = seq->seq.front().as<tvm::tir::EvaluateNode>();
+  const auto* push_eval = seq->seq.back().as<tvm::tir::EvaluateNode>();
+  if (!reserve_eval || !push_eval) {
+    return false;
+  }
+  const auto* reserve_call = reserve_eval->value.as<tvm::tir::CallNode>();
+  const auto* push_call = push_eval->value.as<tvm::tir::CallNode>();
+  if (!is_blackhole_builtin(reserve_call, tir::builtin::blackhole_cb_reserve_back(),
+                            "tl.blackhole.cb_reserve_back") ||
+      !is_blackhole_builtin(push_call, tir::builtin::blackhole_cb_push_back(),
+                            "tl.blackhole.cb_push_back")) {
+    return false;
+  }
+
+  std::vector<tvm::tir::Stmt> middle(seq->seq.begin() + 1, seq->seq.end() - 1);
+  if (middle.empty()) {
+    return false;
+  }
+  tvm::tir::Stmt middle_stmt =
+      middle.size() == 1 ? middle.front() : tvm::tir::SeqStmt::Flatten(middle);
+  const bool uses_thread_var = tir::UsesVar(
+      middle_stmt, [thread_var](const tvm::tir::VarNode* var) { return var == thread_var; });
+  if (!uses_thread_var) {
+    return false;
+  }
+
+  *once_prefix = seq->seq.front();
+  *threaded_body = middle_stmt;
+  *once_suffix = seq->seq.back();
+  return true;
+}
+
+struct ThreadEmissionPiece {
+  tvm::tir::Stmt stmt;
+  bool uses_thread_var{false};
+};
+
+std::vector<ThreadEmissionPiece> BuildThreadEmissionPieces(const tvm::tir::Stmt& stmt,
+                                                           const tvm::tir::VarNode* thread_var) {
+  auto add_piece = [](std::vector<ThreadEmissionPiece>* pieces, const tvm::tir::Stmt& piece,
+                      bool uses_thread_var) {
+    if (!piece.defined()) {
+      return;
+    }
+    if (const auto* seq = piece.as<tvm::tir::SeqStmtNode>()) {
+      if (seq->seq.empty()) {
+        return;
+      }
+    }
+    pieces->push_back(ThreadEmissionPiece{piece, uses_thread_var});
+  };
+
+  std::vector<ThreadEmissionPiece> pieces;
+  for (const auto& top_level_stmt : FlattenTopLevelSeq(stmt)) {
+    tvm::tir::Stmt once_prefix;
+    tvm::tir::Stmt threaded_body;
+    tvm::tir::Stmt once_suffix;
+    if (ExtractThreadScopedCBStaging(top_level_stmt, thread_var, &once_prefix, &threaded_body,
+                                     &once_suffix)) {
+      add_piece(&pieces, once_prefix, /*uses_thread_var=*/false);
+      add_piece(&pieces, threaded_body, /*uses_thread_var=*/true);
+      add_piece(&pieces, once_suffix, /*uses_thread_var=*/false);
+      continue;
+    }
+
+    const bool uses_thread_var = tir::UsesVar(
+        top_level_stmt, [thread_var](const tvm::tir::VarNode* var) { return var == thread_var; });
+    add_piece(&pieces, top_level_stmt, uses_thread_var);
+  }
+  return pieces;
+}
+
 void ValidateNoUnsupportedFragmentRequirementsForCodegen(const tvm::tir::PrimFunc& f) {
   auto lowering_requirements =
       f->GetAttr<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>("blackhole.lowering_requirements");
@@ -244,6 +367,55 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         decl_stream << "#include \"hostdevcommon/kernel_structs.h\"\n";
         decl_stream << "using half = _Float16;\n";
         decl_stream << "static constexpr float inff = std::numeric_limits<float>::infinity();\n";
+        decl_stream << "ALWI uint32_t tilelang_bitcast_float_to_u32(float value) {\n";
+        decl_stream << "  union { float f; uint32_t u; } bits{value};\n";
+        decl_stream << "  return bits.u;\n";
+        decl_stream << "}\n";
+        decl_stream << "ALWI uint16_t tilelang_float_to_half_bits(float value) {\n";
+        decl_stream << "  const uint32_t bits = tilelang_bitcast_float_to_u32(value);\n";
+        decl_stream << "  const uint32_t sign = (bits >> 16) & 0x8000u;\n";
+        decl_stream << "  const uint32_t exponent = (bits >> 23) & 0xffu;\n";
+        decl_stream << "  uint32_t mantissa = bits & 0x7fffffu;\n";
+        decl_stream << "  if (exponent == 0xffu) {\n";
+        decl_stream << "    if (mantissa == 0u) {\n";
+        decl_stream << "      return static_cast<uint16_t>(sign | 0x7c00u);\n";
+        decl_stream << "    }\n";
+        decl_stream << "    mantissa >>= 13;\n";
+        decl_stream << "    return static_cast<uint16_t>(sign | 0x7c00u | mantissa | (mantissa == 0u));\n";
+        decl_stream << "  }\n";
+        decl_stream << "  int32_t half_exponent = static_cast<int32_t>(exponent) - 127 + 15;\n";
+        decl_stream << "  if (half_exponent >= 31) {\n";
+        decl_stream << "    return static_cast<uint16_t>(sign | 0x7c00u);\n";
+        decl_stream << "  }\n";
+        decl_stream << "  if (half_exponent <= 0) {\n";
+        decl_stream << "    if (half_exponent < -10) {\n";
+        decl_stream << "      return static_cast<uint16_t>(sign);\n";
+        decl_stream << "    }\n";
+        decl_stream << "    mantissa |= 0x800000u;\n";
+        decl_stream << "    const uint32_t shift = static_cast<uint32_t>(14 - half_exponent);\n";
+        decl_stream << "    uint32_t half_mantissa = mantissa >> shift;\n";
+        decl_stream << "    const uint32_t round_bit = 1u << (shift - 1);\n";
+        decl_stream << "    const uint32_t remainder = mantissa & (round_bit - 1u);\n";
+        decl_stream << "    const bool round_up = (mantissa & round_bit) != 0u && (remainder != 0u || (half_mantissa & 1u) != 0u);\n";
+        decl_stream << "    if (round_up) {\n";
+        decl_stream << "      ++half_mantissa;\n";
+        decl_stream << "    }\n";
+        decl_stream << "    return static_cast<uint16_t>(sign | half_mantissa);\n";
+        decl_stream << "  }\n";
+        decl_stream << "  uint32_t half_mantissa = mantissa >> 13;\n";
+        decl_stream << "  const uint32_t remainder = mantissa & 0x1fffu;\n";
+        decl_stream << "  if (remainder > 0x1000u || (remainder == 0x1000u && (half_mantissa & 1u) != 0u)) {\n";
+        decl_stream << "    ++half_mantissa;\n";
+        decl_stream << "    if (half_mantissa == 0x400u) {\n";
+        decl_stream << "      half_mantissa = 0u;\n";
+        decl_stream << "      ++half_exponent;\n";
+        decl_stream << "      if (half_exponent >= 31) {\n";
+        decl_stream << "        return static_cast<uint16_t>(sign | 0x7c00u);\n";
+        decl_stream << "      }\n";
+        decl_stream << "    }\n";
+        decl_stream << "  }\n";
+        decl_stream << "  return static_cast<uint16_t>(sign | (static_cast<uint32_t>(half_exponent) << 10) | (half_mantissa & 0x3ffu));\n";
+        decl_stream << "}\n";
         decl_stream << "ALWI float tilelang_fast_exp2f(float x) {\n";
         decl_stream << "  if (x <= -126.0f) { return 0.0f; }\n";
         decl_stream << "  if (x >= 126.0f) { x = 126.0f; }\n";
@@ -261,6 +433,53 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         decl_stream << "template <typename DstT, typename SrcT>\n";
         decl_stream << "__attribute__((noinline, noclone)) void tilelang_cast_fragment_slice(DstT* dst, const SrcT* src, uint32_t dst_offset, uint32_t src_offset, uint32_t num_elements) {\n";
         decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { dst[dst_offset + i] = static_cast<DstT>(src[src_offset + i]); }\n";
+        decl_stream << "}\n";
+        decl_stream << "ALWI bool tilelang_fragment_uses_nfaces_layout(uint32_t num_elements, uint32_t row_width) {\n";
+        decl_stream << "  return row_width != 0 && (row_width % 32u) == 0u && (num_elements % row_width) == 0u && (((num_elements / row_width) % 32u) == 0u);\n";
+        decl_stream << "}\n";
+        decl_stream << "ALWI uint32_t tilelang_nfaces_logical_index(uint32_t row, uint32_t col, uint32_t row_width) {\n";
+        decl_stream << "  const uint32_t tile_row = row / 32u;\n";
+        decl_stream << "  const uint32_t tile_col = col / 32u;\n";
+        decl_stream << "  const uint32_t in_tile_row = row % 32u;\n";
+        decl_stream << "  const uint32_t in_tile_col = col % 32u;\n";
+        decl_stream << "  const uint32_t face_row = in_tile_row / 16u;\n";
+        decl_stream << "  const uint32_t face_col = in_tile_col / 16u;\n";
+        decl_stream << "  const uint32_t face_index = face_row * 2u + face_col;\n";
+        decl_stream << "  const uint32_t in_face_row = in_tile_row % 16u;\n";
+        decl_stream << "  const uint32_t in_face_col = in_tile_col % 16u;\n";
+        decl_stream << "  const uint32_t tile_cols = row_width / 32u;\n";
+        decl_stream << "  const uint32_t tile_index = tile_row * tile_cols + tile_col;\n";
+        decl_stream << "  return tile_index * 1024u + face_index * 256u + in_face_row * 16u + in_face_col;\n";
+        decl_stream << "}\n";
+        decl_stream << "template <typename SrcT, typename DstT>\n";
+        decl_stream << "__attribute__((noinline, noclone)) void tilelang_reduce_grouped_row_sum(const SrcT* src, DstT* dst, uint32_t num_elements, uint32_t row_width, bool clear) {\n";
+        decl_stream << "  if (row_width == 0 || (num_elements % row_width) != 0) { return; }\n";
+        decl_stream << "  const uint32_t num_rows = num_elements / row_width;\n";
+        decl_stream << "  const bool use_nfaces = tilelang_fragment_uses_nfaces_layout(num_elements, row_width);\n";
+        decl_stream << "  for (uint32_t row = 0; row < num_rows; ++row) {\n";
+        decl_stream << "    DstT value = clear ? static_cast<DstT>(0) : dst[row];\n";
+        decl_stream << "    for (uint32_t col = 0; col < row_width; ++col) {\n";
+        decl_stream << "      const uint32_t idx = use_nfaces ? tilelang_nfaces_logical_index(row, col, row_width) : (row * row_width + col);\n";
+        decl_stream << "      value = static_cast<DstT>(value + static_cast<DstT>(src[idx]));\n";
+        decl_stream << "    }\n";
+        decl_stream << "    dst[row] = value;\n";
+        decl_stream << "  }\n";
+        decl_stream << "}\n";
+        decl_stream << "template <typename SrcT, typename DstT>\n";
+        decl_stream << "__attribute__((noinline, noclone)) void tilelang_reduce_grouped_row_max(const SrcT* src, DstT* dst, uint32_t num_elements, uint32_t row_width, bool clear) {\n";
+        decl_stream << "  if (row_width == 0 || (num_elements % row_width) != 0) { return; }\n";
+        decl_stream << "  const uint32_t num_rows = num_elements / row_width;\n";
+        decl_stream << "  const bool use_nfaces = tilelang_fragment_uses_nfaces_layout(num_elements, row_width);\n";
+        decl_stream << "  for (uint32_t row = 0; row < num_rows; ++row) {\n";
+        decl_stream << "    const uint32_t first_idx = use_nfaces ? tilelang_nfaces_logical_index(row, 0u, row_width) : (row * row_width);\n";
+        decl_stream << "    DstT value = clear ? static_cast<DstT>(src[first_idx]) : dst[row];\n";
+        decl_stream << "    for (uint32_t col = clear ? 1u : 0u; col < row_width; ++col) {\n";
+        decl_stream << "      const uint32_t idx = use_nfaces ? tilelang_nfaces_logical_index(row, col, row_width) : (row * row_width + col);\n";
+        decl_stream << "      const DstT src_value = static_cast<DstT>(src[idx]);\n";
+        decl_stream << "      value = (src_value > value) ? src_value : value;\n";
+        decl_stream << "    }\n";
+        decl_stream << "    dst[row] = value;\n";
+        decl_stream << "  }\n";
         decl_stream << "}\n";
         decl_stream << "template <typename DstT, typename SrcT>\n";
         decl_stream << "__attribute__((noinline, noclone)) void tilelang_scalar_max(DstT* dst, const SrcT* src, uint32_t num_elements) {\n";
@@ -283,8 +502,34 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = static_cast<DstT>(dst[i] * static_cast<DstT>(scalar[0])); }\n";
         decl_stream << "}\n";
         decl_stream << "template <typename DstT, typename ScalarT>\n";
+        decl_stream << "__attribute__((noinline, noclone)) void tilelang_mul_grouped_row_bcast(DstT* dst, const ScalarT* scalar, uint32_t num_elements, uint32_t row_width) {\n";
+        decl_stream << "  if (row_width == 0 || (num_elements % row_width) != 0) { return; }\n";
+        decl_stream << "  const uint32_t num_rows = num_elements / row_width;\n";
+        decl_stream << "  const bool use_nfaces = tilelang_fragment_uses_nfaces_layout(num_elements, row_width);\n";
+        decl_stream << "  for (uint32_t row = 0; row < num_rows; ++row) {\n";
+        decl_stream << "    const DstT scalar_value = static_cast<DstT>(scalar[row]);\n";
+        decl_stream << "    for (uint32_t col = 0; col < row_width; ++col) {\n";
+        decl_stream << "      const uint32_t idx = use_nfaces ? tilelang_nfaces_logical_index(row, col, row_width) : (row * row_width + col);\n";
+        decl_stream << "      dst[idx] = static_cast<DstT>(dst[idx] * scalar_value);\n";
+        decl_stream << "    }\n";
+        decl_stream << "  }\n";
+        decl_stream << "}\n";
+        decl_stream << "template <typename DstT, typename ScalarT>\n";
         decl_stream << "__attribute__((noinline, noclone)) void tilelang_div_row_bcast(DstT* dst, const ScalarT* scalar, uint32_t num_elements) {\n";
         decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = static_cast<DstT>(dst[i] / static_cast<DstT>(scalar[0])); }\n";
+        decl_stream << "}\n";
+        decl_stream << "template <typename DstT, typename ScalarT>\n";
+        decl_stream << "__attribute__((noinline, noclone)) void tilelang_div_grouped_row_bcast(DstT* dst, const ScalarT* scalar, uint32_t num_elements, uint32_t row_width) {\n";
+        decl_stream << "  if (row_width == 0 || (num_elements % row_width) != 0) { return; }\n";
+        decl_stream << "  const uint32_t num_rows = num_elements / row_width;\n";
+        decl_stream << "  const bool use_nfaces = tilelang_fragment_uses_nfaces_layout(num_elements, row_width);\n";
+        decl_stream << "  for (uint32_t row = 0; row < num_rows; ++row) {\n";
+        decl_stream << "    const DstT scalar_value = static_cast<DstT>(scalar[row]);\n";
+        decl_stream << "    for (uint32_t col = 0; col < row_width; ++col) {\n";
+        decl_stream << "      const uint32_t idx = use_nfaces ? tilelang_nfaces_logical_index(row, col, row_width) : (row * row_width + col);\n";
+        decl_stream << "      dst[idx] = static_cast<DstT>(dst[idx] / scalar_value);\n";
+        decl_stream << "    }\n";
+        decl_stream << "  }\n";
         decl_stream << "}\n";
         decl_stream << "template <typename DstT, typename LhsT, typename RhsT, typename AddT>\n";
         decl_stream << "__attribute__((noinline, noclone)) void tilelang_scalar_fma(DstT* dst, const LhsT* lhs, const RhsT* rhs, const AddT* add, uint32_t num_elements) {\n";
@@ -294,9 +539,23 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         decl_stream << "__attribute__((noinline, noclone)) void tilelang_exp2_row_bcast_affine(DstT* dst, const ScalarT* scalar, uint32_t num_elements, float dst_scale, float scalar_scale) {\n";
         decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { const float expr = static_cast<float>(dst[i]) * dst_scale + static_cast<float>(scalar[0]) * scalar_scale; dst[i] = static_cast<DstT>(tilelang_fast_exp2f(expr)); }\n";
         decl_stream << "}\n";
+        decl_stream << "template <typename DstT, typename ScalarT>\n";
+        decl_stream << "__attribute__((noinline, noclone)) void tilelang_exp2_grouped_row_bcast_affine(DstT* dst, const ScalarT* scalar, uint32_t num_elements, uint32_t row_width, float dst_scale, float scalar_scale) {\n";
+        decl_stream << "  if (row_width == 0 || (num_elements % row_width) != 0) { return; }\n";
+        decl_stream << "  const uint32_t num_rows = num_elements / row_width;\n";
+        decl_stream << "  const bool use_nfaces = tilelang_fragment_uses_nfaces_layout(num_elements, row_width);\n";
+        decl_stream << "  for (uint32_t row = 0; row < num_rows; ++row) {\n";
+        decl_stream << "    const float scalar_value = static_cast<float>(scalar[row]) * scalar_scale;\n";
+        decl_stream << "    for (uint32_t col = 0; col < row_width; ++col) {\n";
+        decl_stream << "      const uint32_t idx = use_nfaces ? tilelang_nfaces_logical_index(row, col, row_width) : (row * row_width + col);\n";
+        decl_stream << "      const float expr = static_cast<float>(dst[idx]) * dst_scale + scalar_value;\n";
+        decl_stream << "      dst[idx] = static_cast<DstT>(tilelang_fast_exp2f(expr));\n";
+        decl_stream << "    }\n";
+        decl_stream << "  }\n";
+        decl_stream << "}\n";
         decl_stream << "template <typename DstT, typename LhsT, typename RhsT>\n";
-        decl_stream << "__attribute__((noinline, noclone)) void tilelang_scalar_exp2_affine(DstT* dst, const LhsT* lhs, const RhsT* rhs, float lhs_scale, float rhs_scale) {\n";
-        decl_stream << "  dst[0] = static_cast<DstT>(tilelang_fast_exp2f(static_cast<float>(lhs[0]) * lhs_scale + static_cast<float>(rhs[0]) * rhs_scale));\n";
+        decl_stream << "__attribute__((noinline, noclone)) void tilelang_scalar_exp2_affine(DstT* dst, const LhsT* lhs, const RhsT* rhs, float lhs_scale, float rhs_scale, uint32_t num_elements) {\n";
+        decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = static_cast<DstT>(tilelang_fast_exp2f(static_cast<float>(lhs[i]) * lhs_scale + static_cast<float>(rhs[i]) * rhs_scale)); }\n";
         decl_stream << "}\n";
         decl_stream << "ALWI uint32_t tilelang_get_cb_write_ptr_bytes(uint32_t cb_id) {\n";
         decl_stream << "  uint32_t address = 0;\n";
@@ -971,9 +1230,122 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AttrStmtNode *op) {
     // This is similar to CUDA but maps to Blackhole core/thread model
     auto iv = Downcast<tvm::tir::IterVar>(op->node);
     if (iv->thread_tag.length() != 0) {
-      if (!var_idmap_.count(iv->var.get())) {
-        BindThreadIndex(iv);
+      const std::string thread_tag = iv->thread_tag;
+      const bool is_thread_idx = thread_tag.rfind("threadIdx.", 0) == 0;
+      if (is_thread_idx) {
+        const bool thread_var_used = tir::UsesVar(
+            op->body, [thread_var = iv->var.get()](const tir::VarNode* var) {
+              return var == thread_var;
+            });
+        std::optional<std::string> prev_var_id;
+        if (auto it = var_idmap_.find(iv->var.get()); it != var_idmap_.end()) {
+          prev_var_id = it->second;
+        }
+        auto restore_thread_var = [&]() {
+          if (prev_var_id) {
+            var_idmap_[iv->var.get()] = *prev_var_id;
+          } else {
+            var_idmap_.erase(iv->var.get());
+          }
+        };
+        std::vector<std::pair<const tvm::tir::VarNode*, std::optional<std::string>>>
+            nested_thread_prev_ids;
+        auto restore_nested_thread_vars = [&]() {
+          for (auto it = nested_thread_prev_ids.rbegin(); it != nested_thread_prev_ids.rend();
+               ++it) {
+            if (it->second) {
+              var_idmap_[it->first] = *(it->second);
+            } else {
+              var_idmap_.erase(it->first);
+            }
+          }
+        };
+        auto emit_with_thread_binding = [&](const std::string& binding,
+                                            const tvm::tir::Stmt& stmt) {
+          var_idmap_[iv->var.get()] = binding;
+          this->VisitStmt(stmt);
+        };
+        tvm::tir::Stmt partition_body = op->body;
+        while (const auto* nested_attr = partition_body.as<tvm::tir::AttrStmtNode>()) {
+          if (nested_attr->attr_key != tir::attr::thread_extent) {
+            break;
+          }
+          auto nested_iv = Downcast<tvm::tir::IterVar>(nested_attr->node);
+          const std::string nested_tag = nested_iv->thread_tag;
+          const bool nested_is_unit_thread =
+              nested_tag.rfind("threadIdx.", 0) == 0 && tir::is_one(nested_attr->value);
+          if (!nested_is_unit_thread) {
+            break;
+          }
+          std::optional<std::string> nested_prev_var_id;
+          if (auto it = var_idmap_.find(nested_iv->var.get()); it != var_idmap_.end()) {
+            nested_prev_var_id = it->second;
+          }
+          nested_thread_prev_ids.push_back({nested_iv->var.get(), nested_prev_var_id});
+          var_idmap_[nested_iv->var.get()] = "0";
+          partition_body = nested_attr->body;
+        }
+        if (!thread_var_used || tir::is_one(op->value)) {
+          emit_with_thread_binding("0", partition_body);
+          restore_nested_thread_vars();
+          restore_thread_var();
+          return;
+        } else {
+          const std::vector<ThreadEmissionPiece> pieces =
+              BuildThreadEmissionPieces(partition_body, iv->var.get());
+          const bool has_threaded_piece =
+              std::any_of(pieces.begin(), pieces.end(), [](const ThreadEmissionPiece& piece) {
+                return piece.uses_thread_var;
+              });
+          if (!has_threaded_piece) {
+            emit_with_thread_binding("0", partition_body);
+            restore_nested_thread_vars();
+            restore_thread_var();
+            return;
+          }
+
+          auto emit_thread_loop = [&](const std::vector<tvm::tir::Stmt>& loop_body_stmts) {
+            if (loop_body_stmts.empty()) {
+              return;
+            }
+            std::ostringstream dtype_os;
+            PrintType(iv->var.dtype(), dtype_os);
+            const std::string loop_var = iv->var->name_hint;
+            var_idmap_[iv->var.get()] = loop_var;
+            PrintIndent();
+            stream << "for (" << dtype_os.str() << " " << loop_var << " = 0; " << loop_var
+                   << " < ";
+            PrintExpr(op->value, stream);
+            stream << "; ++" << loop_var << ") {\n";
+            int scope_id = BeginScope();
+            tvm::tir::Stmt loop_body =
+                loop_body_stmts.size() == 1 ? loop_body_stmts.front()
+                                            : tvm::tir::SeqStmt::Flatten(loop_body_stmts);
+            this->VisitStmt(loop_body);
+            EndScope(scope_id);
+            PrintIndent();
+            stream << "}\n";
+          };
+
+          std::vector<tvm::tir::Stmt> pending_threaded_stmts;
+          for (const auto& piece : pieces) {
+            if (piece.uses_thread_var) {
+              pending_threaded_stmts.push_back(piece.stmt);
+              continue;
+            }
+            emit_thread_loop(pending_threaded_stmts);
+            pending_threaded_stmts.clear();
+            emit_with_thread_binding("0", piece.stmt);
+          }
+          emit_thread_loop(pending_threaded_stmts);
+          restore_nested_thread_vars();
+          restore_thread_var();
+          return;
+        }
       }
+    }
+    if (!var_idmap_.count(iv->var.get())) {
+      BindThreadIndex(iv);
     }
     this->VisitStmt(op->body);
   } else if (op->attr_key == tir::attr::virtual_thread ||
@@ -1403,6 +1775,20 @@ void CodeGenBlackhole::PrintWriteLocalSliceToCB(const tvm::tir::CallNode* op,
   PrintType(src_dtype_it->second, src_dtype_os);
 
   const int cb_id = ResolveCBId(op->args[1]);
+  const bool raw_fp16_copy = src_dtype_it->second.is_float16();
+  if (raw_fp16_copy) {
+    os << "{ const uint16_t* src_bits = reinterpret_cast<const uint16_t*>(";
+    PrintExpr(op->args[0], os);
+    os << "); const uint32_t dst_offset_elements = ";
+    PrintExpr(op->args[2], os);
+    os << "; const uint32_t num_elements = ";
+    PrintExpr(op->args[3], os);
+    os << "; PACK({ uint16_t* dst_bits = reinterpret_cast<uint16_t*>((get_local_cb_interface("
+       << cb_id << ").fifo_wr_ptr << 4) + dst_offset_elements * sizeof(uint16_t)); "
+       << "for (uint32_t i = 0; i < num_elements; ++i) { dst_bits[i] = src_bits[i]; } }); }";
+    return;
+  }
+
   os << "{ const " << src_dtype_os.str() << "* src = reinterpret_cast<const "
      << src_dtype_os.str() << "*>(";
   PrintExpr(op->args[0], os);
@@ -1467,6 +1853,24 @@ void CodeGenBlackhole::PrintCastFragmentSlice(const tvm::tir::CallNode* op,
   std::ostringstream src_dtype_os;
   PrintType(dst_dtype_it->second, dst_dtype_os);
   PrintType(src_dtype_it->second, src_dtype_os);
+  const bool fp32_to_fp16_cast =
+      dst_dtype_it->second.is_float16() && src_dtype_it->second.is_float() &&
+      src_dtype_it->second.bits() == 32;
+  if (fp32_to_fp16_cast) {
+    os << "{ uint16_t* dst_bits = reinterpret_cast<uint16_t*>(";
+    PrintExpr(op->args[0], os);
+    os << "); const float* src = reinterpret_cast<const float*>(";
+    PrintExpr(op->args[1], os);
+    os << "); const uint32_t dst_offset = ";
+    PrintExpr(op->args[2], os);
+    os << "; const uint32_t src_offset = ";
+    PrintExpr(op->args[3], os);
+    os << "; const uint32_t num_elements = ";
+    PrintExpr(op->args[4], os);
+    os << "; for (uint32_t i = 0; i < num_elements; ++i) { "
+       << "dst_bits[dst_offset + i] = tilelang_float_to_half_bits(src[src_offset + i]); } }";
+    return;
+  }
 
   os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
   PrintExpr(op->args[0], os);
@@ -1509,26 +1913,17 @@ void CodeGenBlackhole::PrintReduceRow(const tvm::tir::CallNode* op,
   PrintExpr(op->args[1], os);
   os << "); ";
   if (grouped) {
-    os << "const uint32_t num_rows = ";
+    os << "const uint32_t num_elements = ";
     PrintExpr(op->args[2], os);
     os << "; const uint32_t row_width = ";
     PrintExpr(op->args[3], os);
-    os << "; for (uint32_t row = 0; row < num_rows; ++row) { ";
+    os << "; ";
     if (reduce_kind->value == "sum") {
-      os << dst_dtype_os.str() << " value = "
-         << (clear->value ? "static_cast<" + dst_dtype_os.str() + ">(0)"
-                          : "dst[row]")
-         << "; for (uint32_t i = 0; i < row_width; ++i) { const uint32_t idx = row * row_width + i; "
-         << "value = static_cast<" << dst_dtype_os.str() << ">(value + static_cast<"
-         << dst_dtype_os.str() << ">(src[idx])); } dst[row] = value; }";
+      os << "tilelang_reduce_grouped_row_sum(src, dst, num_elements, row_width, "
+         << (clear->value ? "true" : "false") << ");";
     } else if (reduce_kind->value == "max") {
-      os << "if (row_width > 0) { " << dst_dtype_os.str() << " value = "
-         << (clear->value ? "static_cast<" + dst_dtype_os.str() + ">(src[row * row_width])"
-                          : "dst[row]")
-         << "; for (uint32_t i = " << (clear->value ? "1" : "0")
-         << "; i < row_width; ++i) { const uint32_t idx = row * row_width + i; const "
-         << dst_dtype_os.str() << " src_value = static_cast<" << dst_dtype_os.str()
-         << ">(src[idx]); value = (src_value > value) ? src_value : value; } dst[row] = value; } }";
+      os << "tilelang_reduce_grouped_row_max(src, dst, num_elements, row_width, "
+         << (clear->value ? "true" : "false") << ");";
     } else {
       ICHECK(false) << "Unsupported tl.blackhole.reduce_row kind: " << reduce_kind->value;
     }
@@ -1595,9 +1990,7 @@ void CodeGenBlackhole::PrintMulGroupedRowBcast(const tvm::tir::CallNode* op,
   PrintExpr(op->args[2], os);
   os << "; const uint32_t row_width = ";
   PrintExpr(op->args[3], os);
-  os << "; for (uint32_t i = 0; i < num_elements; ++i) { const uint32_t row = i / row_width; "
-     << "dst[i] = static_cast<" << dst_dtype_os.str() << ">(dst[i] * static_cast<"
-     << dst_dtype_os.str() << ">(scalar[row])); } }";
+  os << "; tilelang_mul_grouped_row_bcast(dst, scalar, num_elements, row_width); }";
 }
 
 void CodeGenBlackhole::PrintDivRowBcast(const tvm::tir::CallNode* op,
@@ -1648,9 +2041,7 @@ void CodeGenBlackhole::PrintDivGroupedRowBcast(const tvm::tir::CallNode* op,
   PrintExpr(op->args[2], os);
   os << "; const uint32_t row_width = ";
   PrintExpr(op->args[3], os);
-  os << "; for (uint32_t i = 0; i < num_elements; ++i) { const uint32_t row = i / row_width; "
-     << "dst[i] = static_cast<" << dst_dtype_os.str() << ">(dst[i] / static_cast<"
-     << dst_dtype_os.str() << ">(scalar[row])); } }";
+  os << "; tilelang_div_grouped_row_bcast(dst, scalar, num_elements, row_width); }";
 }
 
 void CodeGenBlackhole::PrintScalarFma(const tvm::tir::CallNode* op,
@@ -1758,10 +2149,8 @@ void CodeGenBlackhole::PrintExp2GroupedRowBcastAffine(const tvm::tir::CallNode* 
   PrintExpr(op->args[4], os);
   os << "; const float scalar_scale = ";
   PrintExpr(op->args[5], os);
-  os << "; for (uint32_t i = 0; i < num_elements; ++i) { const uint32_t row = i / row_width; "
-     << "const float expr = static_cast<float>(dst[i]) * dst_scale + "
-     << "static_cast<float>(scalar[row]) * scalar_scale; "
-     << "dst[i] = static_cast<" << dst_dtype_os.str() << ">(tilelang_fast_exp2f(expr)); } }";
+  os << "; tilelang_exp2_grouped_row_bcast_affine(dst, scalar, num_elements, row_width, "
+     << "dst_scale, scalar_scale); }";
 }
 
 void CodeGenBlackhole::PrintScalarExp2Affine(const tvm::tir::CallNode* op,
@@ -1797,7 +2186,13 @@ void CodeGenBlackhole::PrintScalarExp2Affine(const tvm::tir::CallNode* op,
   PrintExpr(op->args[3], os);
   os << "; const float rhs_scale = ";
   PrintExpr(op->args[4], os);
-  os << "; tilelang_scalar_exp2_affine(dst, lhs, rhs, lhs_scale, rhs_scale); }";
+  os << "; const uint32_t num_elements = ";
+  if (op->args.size() >= 6) {
+    PrintExpr(op->args[5], os);
+  } else {
+    os << "1";
+  }
+  os << "; tilelang_scalar_exp2_affine(dst, lhs, rhs, lhs_scale, rhs_scale, num_elements); }";
 }
 
 void CodeGenBlackhole::PrintKernelAttributes() {

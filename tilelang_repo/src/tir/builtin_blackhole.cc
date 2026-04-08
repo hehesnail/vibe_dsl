@@ -316,13 +316,15 @@ TVM_REGISTER_OP("tl.blackhole.exp2_grouped_row_bcast_affine")
     .add_argument("scalar_scale", "float", "Scale applied to the scalar broadcast term");
 
 TVM_REGISTER_OP("tl.blackhole.scalar_exp2_affine")
-    .set_num_inputs(5)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("dst_buffer", "handle", "Destination scalar local fragment buffer handle")
     .add_argument("lhs_buffer", "handle", "Left scalar local fragment buffer handle")
     .add_argument("rhs_buffer", "handle", "Right scalar local fragment buffer handle")
     .add_argument("lhs_scale", "float", "Scale applied to lhs")
-    .add_argument("rhs_scale", "float", "Scale applied to rhs");
+    .add_argument("rhs_scale", "float", "Scale applied to rhs")
+    .add_argument("num_elements", "int",
+                  "Optional logical scalar fragment vector length");
 
 TVM_REGISTER_OP("tl.blackhole.fill_fragment")
     .set_num_inputs(3)

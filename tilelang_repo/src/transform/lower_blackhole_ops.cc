@@ -126,6 +126,123 @@ static Array<Any> EncodeNamedUint32Pairs(
   return encoded_entries;
 }
 
+static std::string DataTypeToDataFormatForBlackhole(DataType dtype) {
+  if (dtype.is_bfloat16()) return "Float16_b";
+  if (dtype.is_float16()) return "Float16";
+  if (dtype.is_float() && dtype.bits() == 32) return "Float32";
+  if (dtype.is_float() && dtype.bits() == 8) return "Bfp8";
+  if (dtype.is_uint() && dtype.bits() == 32) return "UInt32";
+  if (dtype.is_uint() && dtype.bits() == 16) return "UInt16";
+  if (dtype.is_int() && dtype.bits() == 32) return "Int32";
+  if (dtype.is_int() && dtype.bits() == 16) return "Int16";
+  return "Float16_b";
+}
+
+static Map<String, Any> BuildGemmContractPayload(
+    const std::string& a_buffer, const std::string& b_buffer, const std::string& c_buffer, int m,
+    int n, int k, bool transpose_a, bool transpose_b, DataType a_dtype, DataType b_dtype,
+    DataType c_dtype) {
+  Map<String, Any> gemm_contract;
+  gemm_contract.Set("a_buffer", String(a_buffer));
+  gemm_contract.Set("b_buffer", String(b_buffer));
+  gemm_contract.Set("c_buffer", String(c_buffer));
+  gemm_contract.Set("M", Integer(m));
+  gemm_contract.Set("N", Integer(n));
+  gemm_contract.Set("K", Integer(k));
+  gemm_contract.Set("transpose_A", Bool(transpose_a));
+  gemm_contract.Set("transpose_B", Bool(transpose_b));
+  gemm_contract.Set("a_tensor_dtype", String(DataTypeToDataFormatForBlackhole(a_dtype)));
+  gemm_contract.Set("b_tensor_dtype", String(DataTypeToDataFormatForBlackhole(b_dtype)));
+  gemm_contract.Set("c_tensor_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
+  gemm_contract.Set("a_cb_dtype", String(DataTypeToDataFormatForBlackhole(a_dtype)));
+  gemm_contract.Set("b_cb_dtype", String(DataTypeToDataFormatForBlackhole(b_dtype)));
+  gemm_contract.Set("c_cb_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
+  gemm_contract.Set("accumulator_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
+  return gemm_contract;
+}
+
+static Map<String, Any> BuildComputeContractPayload(
+    const std::string& a_buffer, const std::string& b_buffer, const std::string& c_buffer, int m,
+    int n, int k, bool transpose_a, bool transpose_b, int policy_type, bool clear_accum,
+    int k_pack, int wg_wait, bool dst_full_sync_en, bool bfp8_pack_precise,
+    const std::vector<std::pair<std::string, std::string>>& defines,
+    const std::vector<std::pair<std::string, uint32_t>>& named_compile_args,
+    const std::string& mbarrier_buffer, const std::string& mbarrier_scope,
+    const std::vector<std::string>& mbarrier_index_exprs, DataType a_dtype, DataType b_dtype,
+    DataType c_dtype) {
+  Map<String, Any> compute_contract;
+  compute_contract.Set("enabled", Bool(true));
+  compute_contract.Set("kind", String("gemm"));
+  compute_contract.Set("a_buffer", String(a_buffer));
+  compute_contract.Set("b_buffer", String(b_buffer));
+  compute_contract.Set("c_buffer", String(c_buffer));
+  compute_contract.Set("M", Integer(m));
+  compute_contract.Set("N", Integer(n));
+  compute_contract.Set("K", Integer(k));
+  compute_contract.Set("Mt", Integer(m / 32));
+  compute_contract.Set("Nt", Integer(n / 32));
+  compute_contract.Set("Kt", Integer(k / 32));
+  compute_contract.Set("block_m_tiles", Integer(m / 32));
+  compute_contract.Set("block_n_tiles", Integer(n / 32));
+  compute_contract.Set("block_k_tiles", Integer(k / 32));
+  compute_contract.Set("subblock_m_tiles", Integer(m / 32));
+  compute_contract.Set("subblock_n_tiles", Integer(n / 32));
+  compute_contract.Set("transpose_A", Bool(transpose_a));
+  compute_contract.Set("transpose_B", Bool(transpose_b));
+  compute_contract.Set("policy_type", Integer(policy_type));
+  compute_contract.Set("policy_name", String(GemmWarpPolicyTypeToStringForBlackhole(policy_type)));
+  compute_contract.Set("has_mbarrier", Bool(!mbarrier_buffer.empty()));
+  compute_contract.Set("mbarrier_buffer", String(mbarrier_buffer));
+  compute_contract.Set("mbarrier_scope", String(mbarrier_scope));
+  Array<Any> encoded_mbarrier_index_exprs;
+  for (const auto& expr : mbarrier_index_exprs) {
+    encoded_mbarrier_index_exprs.push_back(String(expr));
+  }
+  compute_contract.Set("mbarrier_index_exprs", encoded_mbarrier_index_exprs);
+  compute_contract.Set("a_tensor_dtype", String(DataTypeToDataFormatForBlackhole(a_dtype)));
+  compute_contract.Set("b_tensor_dtype", String(DataTypeToDataFormatForBlackhole(b_dtype)));
+  compute_contract.Set("c_tensor_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
+  compute_contract.Set("a_cb_dtype", String(DataTypeToDataFormatForBlackhole(a_dtype)));
+  compute_contract.Set("b_cb_dtype", String(DataTypeToDataFormatForBlackhole(b_dtype)));
+  compute_contract.Set("c_cb_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
+  compute_contract.Set("accumulator_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
+  compute_contract.Set("math_fidelity", String("HiFi4"));
+  compute_contract.Set("fp32_dest_acc_en", Bool(true));
+  compute_contract.Set("dst_full_sync_en", Bool(dst_full_sync_en));
+  compute_contract.Set("math_approx_mode", Bool(false));
+  compute_contract.Set("unpack_to_dest_mode", Array<Any>{});
+  compute_contract.Set("bfp8_pack_precise", Bool(bfp8_pack_precise));
+  compute_contract.Set("defines", EncodeNamedStringPairs(defines));
+  compute_contract.Set("named_compile_args", EncodeNamedUint32Pairs(named_compile_args));
+  compute_contract.Set("clear_accum", Bool(clear_accum));
+  compute_contract.Set("k_pack", Integer(k_pack));
+  compute_contract.Set("wg_wait", Integer(wg_wait));
+  return compute_contract;
+}
+
+static Map<String, Any> MakeComputeEpilogueOpPayload(const char* kind,
+                                                     const std::string& dst_buffer) {
+  Map<String, Any> op_payload;
+  op_payload.Set("kind", String(kind));
+  if (!dst_buffer.empty()) {
+    op_payload.Set("dst_buffer", String(dst_buffer));
+  }
+  return op_payload;
+}
+
+static void SetOptionalBufferField(Map<String, Any>* payload, const char* key,
+                                   const Buffer& buffer) {
+  if (buffer.defined()) {
+    payload->Set(String(key), String(BufferIdentityName(buffer)));
+  }
+}
+
+static void SetOptionalExprField(Map<String, Any>* payload, const char* key, const PrimExpr& expr) {
+  if (expr.defined()) {
+    payload->Set(String(key), String(PrimExprToCompactString(expr)));
+  }
+}
+
 static std::string MakeBlackholeRuntimeArgIdentity(const std::string& kind, const std::string& name,
                                                    const std::string& buffer_name = "") {
   if (!buffer_name.empty()) {
@@ -302,6 +419,35 @@ static PrimExpr IntImm32(int value) {
   return IntImm(DataType::Int(32), value);
 }
 
+static std::optional<std::vector<int64_t>> ExtractStaticShape(const Array<PrimExpr>& shape) {
+  std::vector<int64_t> dims;
+  dims.reserve(shape.size());
+  for (const PrimExpr& dim : shape) {
+    const auto* imm = dim.as<IntImmNode>();
+    if (!imm) {
+      return std::nullopt;
+    }
+    dims.push_back(imm->value);
+  }
+  return dims;
+}
+
+static int64_t ComputeStaticElementCount(const std::vector<int64_t>& shape) {
+  int64_t total_elements = 1;
+  for (int64_t dim : shape) {
+    total_elements *= dim;
+  }
+  return total_elements;
+}
+
+static int CeilDivToInt(int64_t value, int64_t divisor) {
+  ICHECK_GT(divisor, 0);
+  if (value <= 0) {
+    return 1;
+  }
+  return static_cast<int>((value + divisor - 1) / divisor);
+}
+
 static Map<String, Any> MakeCompileTimeArgSpec(const std::string& name,
                                                const std::string& kind,
                                                const std::string& dtype,
@@ -311,6 +457,7 @@ static Map<String, Any> MakeCompileTimeArgSpec(const std::string& name,
                                                const std::string& buffer = "",
                                                const std::vector<uint32_t>& values = {},
                                                int args_config_bits = 0,
+                                               int transport_page_size_bytes = 0,
                                                const std::string& layout = "",
                                                const std::string& memory_space = "") {
   Map<String, Any> spec;
@@ -334,6 +481,9 @@ static Map<String, Any> MakeCompileTimeArgSpec(const std::string& name,
   }
   if (args_config_bits != 0) {
     spec.Set("args_config_bits", Integer(args_config_bits));
+  }
+  if (transport_page_size_bytes > 0) {
+    spec.Set("transport_page_size", Integer(transport_page_size_bytes));
   }
   if (!layout.empty()) {
     spec.Set("layout", String(layout));
@@ -1067,6 +1217,200 @@ static std::string GetStorageScope(const Buffer& buffer) {
 
 LowerBlackholeOps::LowerBlackholeOps() : next_requirement_index_(0) {}
 
+void LowerBlackholeOps::LoadLogicalBufferShapes(const PrimFunc& func) {
+  logical_buffer_shapes_.clear();
+  auto manifest = func->GetAttr<Map<String, Any>>(attr::kTLSemanticManifest);
+  if (!manifest.has_value()) {
+    return;
+  }
+  std::unordered_map<std::string, std::vector<int64_t>> canonical_shapes;
+  auto register_shape = [&](const std::string& name, const std::vector<int64_t>& shape) {
+    if (name.empty() || shape.empty()) {
+      return;
+    }
+    logical_buffer_shapes_[name] = shape;
+    canonical_shapes[name] = shape;
+  };
+  auto buffers_it = manifest.value().find(manifest_key::kBuffers);
+  if (buffers_it != manifest.value().end()) {
+    for (const Any& buffer_any : Downcast<Array<Any>>((*buffers_it).second)) {
+      auto descriptor = Downcast<Map<String, Any>>(buffer_any);
+      auto name = descriptor.Get(String(schema_key::kName));
+      auto shape = descriptor.Get(String(schema_key::kShape));
+      if (!name.has_value() || !shape.has_value()) {
+        continue;
+      }
+      auto static_shape = ExtractStaticShape(Downcast<Array<PrimExpr>>(shape.value()));
+      if (!static_shape.has_value()) {
+        continue;
+      }
+      register_shape(static_cast<std::string>(Downcast<String>(name.value())),
+                     static_shape.value());
+    }
+  }
+
+  auto structural_regions_it = manifest.value().find(manifest_key::kStructuralRegions);
+  if (structural_regions_it == manifest.value().end()) {
+    return;
+  }
+
+  auto infer_shape_from_names = [&](const Array<Any>& names) -> std::vector<int64_t> {
+    for (const Any& name_any : names) {
+      const std::string name = static_cast<std::string>(Downcast<String>(name_any));
+      auto it = canonical_shapes.find(name);
+      if (it != canonical_shapes.end()) {
+        return it->second;
+      }
+    }
+    return {};
+  };
+
+  auto infer_shape_from_buffers = [&](const Array<Any>& buffers) -> std::vector<int64_t> {
+    for (const Any& buffer_any : buffers) {
+      auto buffer = buffer_any.try_cast<Buffer>();
+      if (!buffer.has_value()) {
+        continue;
+      }
+      const std::string identity = BufferIdentityName(buffer.value());
+      auto it = logical_buffer_shapes_.find(identity);
+      if (it != logical_buffer_shapes_.end()) {
+        return it->second;
+      }
+    }
+    return {};
+  };
+
+  const Array<Any> structural_regions = Downcast<Array<Any>>((*structural_regions_it).second);
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const Any& region_any : structural_regions) {
+      auto region = Downcast<Map<String, Any>>(region_any);
+      auto update_sources_it = region.find(manifest_key::kUpdateSources);
+      if (update_sources_it == region.end()) {
+        continue;
+      }
+      for (const Any& update_any : Downcast<Array<Any>>((*update_sources_it).second)) {
+        auto update = Downcast<Map<String, Any>>(update_any);
+        auto target_it = update.find(schema_key::kTarget);
+        if (target_it == update.end()) {
+          continue;
+        }
+        const std::string target_name =
+            static_cast<std::string>(Downcast<String>((*target_it).second));
+        if (target_name.empty() || canonical_shapes.count(target_name)) {
+          continue;
+        }
+        std::vector<int64_t> inferred_shape;
+        auto sources_it = update.find(schema_key::kSources);
+        if (sources_it != update.end()) {
+          inferred_shape = infer_shape_from_names(Downcast<Array<Any>>((*sources_it).second));
+        }
+        if (inferred_shape.empty()) {
+          auto source_states_it = update.find(schema_key::kSourceStates);
+          if (source_states_it != update.end()) {
+            inferred_shape =
+                infer_shape_from_names(Downcast<Array<Any>>((*source_states_it).second));
+          }
+        }
+        if (inferred_shape.empty()) {
+          auto source_buffers_it = update.find(schema_key::kSourceBuffers);
+          if (source_buffers_it != update.end()) {
+            inferred_shape =
+                infer_shape_from_buffers(Downcast<Array<Any>>((*source_buffers_it).second));
+          }
+        }
+        if (!inferred_shape.empty()) {
+          canonical_shapes[target_name] = inferred_shape;
+          logical_buffer_shapes_[target_name] = inferred_shape;
+          changed = true;
+        }
+      }
+    }
+  }
+
+  for (const Any& region_any : structural_regions) {
+    auto region = Downcast<Map<String, Any>>(region_any);
+    auto fragment_buffers_it = region.find(manifest_key::kFragmentBuffers);
+    if (fragment_buffers_it == region.end()) {
+      continue;
+    }
+    for (const Any& fragment_any : Downcast<Array<Any>>((*fragment_buffers_it).second)) {
+      auto fragment = Downcast<Map<String, Any>>(fragment_any);
+      auto name_it = fragment.find(schema_key::kName);
+      auto buffer_it = fragment.find(schema_key::kBuffer);
+      if (name_it == fragment.end() || buffer_it == fragment.end()) {
+        continue;
+      }
+      const std::string canonical_name =
+          static_cast<std::string>(Downcast<String>((*name_it).second));
+      auto shape_it = canonical_shapes.find(canonical_name);
+      auto buffer = (*buffer_it).second.try_cast<Buffer>();
+      if (shape_it == canonical_shapes.end() || !buffer.has_value()) {
+        continue;
+      }
+      logical_buffer_shapes_[BufferIdentityName(buffer.value())] = shape_it->second;
+    }
+  }
+}
+
+std::vector<int64_t> LowerBlackholeOps::GetLogicalBufferShape(const Buffer& buffer) const {
+  const std::string buffer_identity = BufferIdentityName(buffer);
+  auto it = logical_buffer_shapes_.find(buffer_identity);
+  if (it != logical_buffer_shapes_.end()) {
+    return it->second;
+  }
+  auto static_shape = ExtractStaticShape(buffer->shape);
+  if (static_shape.has_value()) {
+    return static_shape.value();
+  }
+  return {};
+}
+
+int64_t LowerBlackholeOps::GetLogicalBufferElementCount(const Buffer& buffer) const {
+  const std::vector<int64_t> shape = GetLogicalBufferShape(buffer);
+  if (!shape.empty()) {
+    return ComputeStaticElementCount(shape);
+  }
+
+  int64_t total_elements = 1;
+  for (const PrimExpr& shape_dim : buffer->shape) {
+    const auto* int_imm = shape_dim.as<IntImmNode>();
+    if (!int_imm) {
+      return 1;
+    }
+    total_elements *= int_imm->value;
+  }
+  return total_elements;
+}
+
+int LowerBlackholeOps::GetLogicalBufferTileCount(const Buffer& buffer) const {
+  const std::vector<int64_t> shape = GetLogicalBufferShape(buffer);
+  if (shape.size() >= 2U) {
+    const int mt = CeilDivToInt(shape[shape.size() - 2], kBlackholeTileRows);
+    const int nt = CeilDivToInt(shape[shape.size() - 1], kBlackholeTileCols);
+    return std::max(1, mt * nt);
+  }
+  constexpr int64_t kTileElements = kBlackholeTileRows * kBlackholeTileCols;
+  return std::max(1, CeilDivToInt(GetLogicalBufferElementCount(buffer), kTileElements));
+}
+
+int64_t LowerBlackholeOps::GetLogicalVectorLength(const Buffer& buffer) const {
+  const std::vector<int64_t> shape = GetLogicalBufferShape(buffer);
+  if (shape.size() == 1U) {
+    return shape.front();
+  }
+  return -1;
+}
+
+std::pair<int64_t, int64_t> LowerBlackholeOps::GetLogicalMatrixShape(const Buffer& buffer) const {
+  const std::vector<int64_t> shape = GetLogicalBufferShape(buffer);
+  if (shape.size() >= 2U) {
+    return {shape[shape.size() - 2], shape[shape.size() - 1]};
+  }
+  return {-1, -1};
+}
+
 PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   current_func_ = func;
   buffer_to_req_.clear();
@@ -1086,10 +1430,12 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   copy_intermediate_shape_.clear();
   thread_index_vars_.clear();
   thread_index_var_names_.clear();
+  thread_index_var_static_extents_.clear();
   block_index_vars_.clear();
   block_index_var_names_.clear();
-  cb_consumed_fragment_data_names_.clear();
-  cb_consumed_fragment_pages_by_data_name_.clear();
+  cb_consumed_fragment_pages_by_buffer_identity_.clear();
+  logical_buffer_shapes_.clear();
+  LoadLogicalBufferShapes(func);
   tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
     if (const auto* attr = node.as<AttrStmtNode>()) {
       if (attr->attr_key != tir::attr::thread_extent) {
@@ -1099,6 +1445,9 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
         if (std::string(iv->thread_tag).rfind("threadIdx.", 0) == 0) {
           thread_index_vars_.insert(iv->var.get());
           thread_index_var_names_.insert(iv->var->name_hint);
+          if (const auto* extent = attr->value.as<IntImmNode>()) {
+            thread_index_var_static_extents_[iv->var.get()] = extent->value;
+          }
         } else if (std::string(iv->thread_tag).rfind("blockIdx.", 0) == 0) {
           block_index_vars_.insert(iv->var.get());
           block_index_var_names_.insert(iv->var->name_hint);
@@ -1128,7 +1477,13 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   gemm_n_ = 0;
   gemm_k_ = 0;
   gemm_contract_signatures_.clear();
-  gemm_input_buffer_num_k_tiles_.clear();
+  compute_contract_payload_index_by_signature_.clear();
+  multi_gemm_contract_payloads_.clear();
+  multi_compute_contract_payloads_.clear();
+  compute_epilogue_payloads_.clear();
+  active_compute_contract_payload_index_ = -1;
+  compute_epilogue_payloads_flat_.clear();
+  gemm_input_buffer_num_tiles_.clear();
   gemm_transpose_a_ = false;
   gemm_transpose_b_ = false;
   gemm_policy_type_ = 0;
@@ -1168,48 +1523,69 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
     if (!call || !IsMatmulCall(call) || call->args.size() < 8) {
       return;
     }
-    int num_k_tiles = 1;
-    if (const auto* k_imm = call->args[7].as<IntImmNode>()) {
-      num_k_tiles = std::max(1, static_cast<int>(k_imm->value) / kBlackholeTileCols);
+    int m_tiles = 1;
+    int n_tiles = 1;
+    int k_tiles = 1;
+    if (const auto* m_imm = call->args[5].as<IntImmNode>()) {
+      m_tiles = CeilDivToInt(m_imm->value, kBlackholeTileRows);
     }
-    auto record_gemm_input_tiles = [&](const PrimExpr& expr) {
+    if (const auto* n_imm = call->args[6].as<IntImmNode>()) {
+      n_tiles = CeilDivToInt(n_imm->value, kBlackholeTileCols);
+    }
+    if (const auto* k_imm = call->args[7].as<IntImmNode>()) {
+      k_tiles = CeilDivToInt(k_imm->value, kBlackholeTileCols);
+    }
+    auto record_gemm_input_tiles = [&](const PrimExpr& expr, int tile_count) {
       if (!IsBufferLikeExpr(expr)) {
         return;
       }
       tir::BufferRegion region = NormalizeToBufferRegion(expr);
       const std::string buffer_identity = BufferIdentityName(region->buffer);
-      auto it = gemm_input_buffer_num_k_tiles_.find(buffer_identity);
-      if (it == gemm_input_buffer_num_k_tiles_.end()) {
-        gemm_input_buffer_num_k_tiles_[buffer_identity] = num_k_tiles;
+      auto it = gemm_input_buffer_num_tiles_.find(buffer_identity);
+      if (it == gemm_input_buffer_num_tiles_.end()) {
+        gemm_input_buffer_num_tiles_[buffer_identity] = tile_count;
         return;
       }
-      ICHECK_EQ(it->second, num_k_tiles)
-          << "LowerBlackholeOps requires a stable GEMM input K-tile contract per logical "
+      ICHECK_EQ(it->second, tile_count)
+          << "LowerBlackholeOps requires a stable GEMM input tile contract per logical "
              "buffer identity; "
-          << buffer_identity << " was seen with both " << it->second << " and " << num_k_tiles
-          << " K tiles";
+          << buffer_identity << " was seen with both " << it->second << " and " << tile_count
+          << " tiles";
     };
-    auto record_if_cb_consumed_fragment = [&](const PrimExpr& expr) {
+    auto record_if_cb_consumed_fragment = [&](const PrimExpr& expr, int tile_count) {
       if (!IsBufferLikeExpr(expr)) {
         return;
       }
       tir::BufferRegion region = NormalizeToBufferRegion(expr);
       if (GetStorageScope(region->buffer) == "blackhole.acc") {
-        const std::string data_name = region->buffer->data->name_hint;
-        cb_consumed_fragment_data_names_.insert(data_name);
-        auto it = cb_consumed_fragment_pages_by_data_name_.find(data_name);
-        if (it == cb_consumed_fragment_pages_by_data_name_.end()) {
-          cb_consumed_fragment_pages_by_data_name_[data_name] = num_k_tiles;
+        const std::string buffer_identity = BufferIdentityName(region->buffer);
+        auto it = cb_consumed_fragment_pages_by_buffer_identity_.find(buffer_identity);
+        if (it == cb_consumed_fragment_pages_by_buffer_identity_.end()) {
+          cb_consumed_fragment_pages_by_buffer_identity_[buffer_identity] = tile_count;
         } else {
-          it->second = std::max(it->second, num_k_tiles);
+          it->second = std::max(it->second, tile_count);
         }
       }
     };
-    record_gemm_input_tiles(call->args[0]);
-    record_gemm_input_tiles(call->args[1]);
-    record_if_cb_consumed_fragment(call->args[0]);
-    record_if_cb_consumed_fragment(call->args[1]);
+    record_gemm_input_tiles(call->args[0], m_tiles * k_tiles);
+    record_gemm_input_tiles(call->args[1], k_tiles * n_tiles);
+    record_if_cb_consumed_fragment(call->args[0], m_tiles * k_tiles);
+    record_if_cb_consumed_fragment(call->args[1], k_tiles * n_tiles);
   });
+
+  compute_epilogue_payloads_.assign(multi_compute_contract_payloads_.size(), {});
+  compute_contract_known_buffers_.assign(multi_compute_contract_payloads_.size(), {});
+  for (size_t i = 0; i < multi_compute_contract_payloads_.size(); ++i) {
+    auto maybe_insert = [&](const char* key) {
+      if (auto value = multi_compute_contract_payloads_[i].Get(String(key))) {
+        compute_contract_known_buffers_[i].insert(
+            static_cast<std::string>(Downcast<String>(value.value())));
+      }
+    };
+    maybe_insert("a_buffer");
+    maybe_insert("b_buffer");
+    maybe_insert("c_buffer");
+  }
 
   // Transform the function body
   Stmt body = VisitStmt(func->body);
@@ -1310,52 +1686,27 @@ int LowerBlackholeOps::AllocateRequirementIndex(const Buffer& buffer, CBType typ
   req.lifetime_begin = requirement_index;
   req.lifetime_end = req.lifetime_begin;
 
-  // Calculate page size from buffer shape
-  int64_t total_elements = 1;
-  for (const auto& shape_dim : buffer->shape) {
-    if (const auto* int_imm = shape_dim.as<IntImmNode>()) {
-      total_elements *= int_imm->value;
-    }
-  }
+  // Calculate page size from the logical buffer shape. This preserves fragment
+  // tile counts even when the lowered TIR buffer handle has been scalarized or
+  // flattened for pointwise codegen.
+  const int64_t total_elements = GetLogicalBufferElementCount(buffer);
   const int total_bytes = static_cast<int>(total_elements * buffer->dtype.bytes());
   req.page_size = EstimateCopyPageSize(buffer);
   req.num_pages = std::max(
       2, req.page_size > 0 ? (total_bytes + req.page_size - 1) / req.page_size : 2);
 
-  // Determine data format
-  if (buffer->dtype.is_float()) {
-    if (buffer->dtype.bits() == 16) {
-      req.data_format = "Float16";
-    } else if (buffer->dtype.bits() == 32) {
-      req.data_format = "Float32";
-    } else if (buffer->dtype.bits() == 8) {
-      req.data_format = "Bfp8";
-    }
-  } else if (buffer->dtype.is_int()) {
-    if (buffer->dtype.bits() == 32) {
-      req.data_format = "Int32";
-    } else if (buffer->dtype.bits() == 16) {
-      req.data_format = "Int16";
-    }
-  }
+  // Keep generic CB requirements on the same dtype->format contract as the
+  // contract-specialized paths so bfloat16/uint payloads do not inherit the
+  // CBRequirement default format by accident.
+  req.data_format = DataTypeToDataFormatForBlackhole(buffer->dtype);
 
   cb_requirements_.push_back(req);
   return requirement_index;
 }
 
 int LowerBlackholeOps::EstimateCopyPageSize(const Buffer& buffer) const {
-  int64_t total_elements = 1;
-  bool all_static = true;
-  for (const auto& shape_dim : buffer->shape) {
-    if (const auto* int_imm = shape_dim.as<IntImmNode>()) {
-      total_elements *= int_imm->value;
-    } else {
-      all_static = false;
-      break;
-    }
-  }
-
-  if (!all_static || total_elements <= 0) {
+  const int64_t total_elements = GetLogicalBufferElementCount(buffer);
+  if (total_elements <= 0) {
     return 2048;
   }
 
@@ -1498,7 +1849,7 @@ void LowerBlackholeOps::StoreSegmentPlan(PrimFunc& func) {
 }
 
 void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
-  if (!gemm_a_buffer_.defined() || !gemm_b_buffer_.defined() || !gemm_c_buffer_.defined()) {
+  if (multi_gemm_contract_payloads_.empty() || multi_compute_contract_payloads_.empty()) {
     return;
   }
 
@@ -1510,12 +1861,23 @@ void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
       func->GetAttr<Map<String, Any>>(attr::kTLTTProgramPayload).value_or(Map<String, Any>());
 
   if (gemm_contract_signatures_.size() > 1) {
-    Array<Any> direct_runtime_unsupported_reasons{
-        String("multi_gemm_compute_kernel")};
-    tt_program_payload.Set("direct_runtime_unsupported_reasons",
-                           direct_runtime_unsupported_reasons);
-    attrs.Set("blackhole.direct_runtime_unsupported_reasons",
-              direct_runtime_unsupported_reasons);
+    Array<Any> multi_gemm_contracts;
+    for (const auto& contract : multi_gemm_contract_payloads_) {
+      multi_gemm_contracts.push_back(contract);
+    }
+    Array<Any> multi_compute_contracts;
+    for (const auto& contract : multi_compute_contract_payloads_) {
+      multi_compute_contracts.push_back(contract);
+    }
+    tt_program_payload.Set("multi_gemm_contracts", multi_gemm_contracts);
+    tt_program_payload.Set("multi_compute_contracts", multi_compute_contracts);
+    if (!compute_epilogue_payloads_flat_.empty()) {
+      Array<Any> compute_epilogue_ops;
+      for (const auto& op_payload : compute_epilogue_payloads_flat_) {
+        compute_epilogue_ops.push_back(op_payload);
+      }
+      tt_program_payload.Set("compute_epilogue_ops", compute_epilogue_ops);
+    }
     attrs.Set(attr::kTLTTProgramPayload, tt_program_payload);
     func.CopyOnWrite()->attrs = DictAttrs(attrs);
     return;
@@ -1559,75 +1921,27 @@ void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
     }
   }
 
-  Map<String, Any> gemm_contract;
-  gemm_contract.Set("a_buffer", String(a_buffer));
-  gemm_contract.Set("b_buffer", String(b_buffer));
-  gemm_contract.Set("c_buffer", String(c_buffer));
-  gemm_contract.Set("M", Integer(gemm_m_));
-  gemm_contract.Set("N", Integer(gemm_n_));
-  gemm_contract.Set("K", Integer(gemm_k_));
-  gemm_contract.Set("transpose_A", Bool(gemm_transpose_a_));
-  gemm_contract.Set("transpose_B", Bool(gemm_transpose_b_));
-  gemm_contract.Set("a_tensor_dtype", String(DataTypeToDataFormat(gemm_a_dtype_)));
-  gemm_contract.Set("b_tensor_dtype", String(DataTypeToDataFormat(gemm_b_dtype_)));
-  gemm_contract.Set("c_tensor_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
-  gemm_contract.Set("a_cb_dtype", String(DataTypeToDataFormat(gemm_a_dtype_)));
-  gemm_contract.Set("b_cb_dtype", String(DataTypeToDataFormat(gemm_b_dtype_)));
-  gemm_contract.Set("c_cb_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
-  gemm_contract.Set("accumulator_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
-
-  Map<String, Any> compute_contract;
-  compute_contract.Set("enabled", Bool(true));
-  compute_contract.Set("kind", String("gemm"));
-  compute_contract.Set("a_buffer", String(a_buffer));
-  compute_contract.Set("b_buffer", String(b_buffer));
-  compute_contract.Set("c_buffer", String(c_buffer));
-  compute_contract.Set("M", Integer(gemm_m_));
-  compute_contract.Set("N", Integer(gemm_n_));
-  compute_contract.Set("K", Integer(gemm_k_));
-  compute_contract.Set("Mt", Integer(gemm_m_ / kBlackholeTileRows));
-  compute_contract.Set("Nt", Integer(gemm_n_ / kBlackholeTileCols));
-  compute_contract.Set("Kt", Integer(gemm_k_ / kBlackholeTileCols));
-  compute_contract.Set("block_m_tiles", Integer(gemm_m_ / kBlackholeTileRows));
-  compute_contract.Set("block_n_tiles", Integer(gemm_n_ / kBlackholeTileCols));
-  compute_contract.Set("block_k_tiles", Integer(gemm_k_ / kBlackholeTileCols));
-  compute_contract.Set("subblock_m_tiles", Integer(gemm_m_ / kBlackholeTileRows));
-  compute_contract.Set("subblock_n_tiles", Integer(gemm_n_ / kBlackholeTileCols));
-  compute_contract.Set("transpose_A", Bool(gemm_transpose_a_));
-  compute_contract.Set("transpose_B", Bool(gemm_transpose_b_));
-  compute_contract.Set("policy_type", Integer(gemm_policy_type_));
-  compute_contract.Set("policy_name", String(GemmWarpPolicyTypeToStringForBlackhole(gemm_policy_type_)));
-  compute_contract.Set("has_mbarrier", Bool(gemm_has_mbarrier_));
-  compute_contract.Set("mbarrier_buffer", String(gemm_mbarrier_buffer_name_));
-  compute_contract.Set("mbarrier_scope", String(gemm_mbarrier_scope_));
-  Array<Any> mbarrier_index_exprs;
-  for (const auto& expr : gemm_mbarrier_index_exprs_) {
-    mbarrier_index_exprs.push_back(String(expr));
-  }
-  compute_contract.Set("mbarrier_index_exprs", mbarrier_index_exprs);
-  compute_contract.Set("a_tensor_dtype", String(DataTypeToDataFormat(gemm_a_dtype_)));
-  compute_contract.Set("b_tensor_dtype", String(DataTypeToDataFormat(gemm_b_dtype_)));
-  compute_contract.Set("c_tensor_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
-  compute_contract.Set("a_cb_dtype", String(DataTypeToDataFormat(gemm_a_dtype_)));
-  compute_contract.Set("b_cb_dtype", String(DataTypeToDataFormat(gemm_b_dtype_)));
-  compute_contract.Set("c_cb_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
-  compute_contract.Set("accumulator_dtype", String(DataTypeToDataFormat(gemm_c_dtype_)));
-  compute_contract.Set("math_fidelity", String("HiFi4"));
-  compute_contract.Set("fp32_dest_acc_en", Bool(true));
-  compute_contract.Set("dst_full_sync_en", Bool(gemm_dst_full_sync_en_));
-  compute_contract.Set("math_approx_mode", Bool(false));
-  compute_contract.Set("unpack_to_dest_mode", Array<Any>{});
-  compute_contract.Set("bfp8_pack_precise", Bool(gemm_bfp8_pack_precise_));
-  compute_contract.Set("defines", EncodeNamedStringPairs(gemm_defines_));
-  compute_contract.Set("named_compile_args", EncodeNamedUint32Pairs(gemm_named_compile_args_));
-  compute_contract.Set("clear_accum", Bool(gemm_clear_accum_));
-  compute_contract.Set("k_pack", Integer(gemm_k_pack_));
-  compute_contract.Set("wg_wait", Integer(gemm_wg_wait_));
+  Map<String, Any> gemm_contract = BuildGemmContractPayload(
+      a_buffer, b_buffer, c_buffer, gemm_m_, gemm_n_, gemm_k_, gemm_transpose_a_,
+      gemm_transpose_b_, gemm_a_dtype_, gemm_b_dtype_, gemm_c_dtype_);
+  Map<String, Any> compute_contract = BuildComputeContractPayload(
+      a_buffer, b_buffer, c_buffer, gemm_m_, gemm_n_, gemm_k_, gemm_transpose_a_,
+      gemm_transpose_b_, gemm_policy_type_, gemm_clear_accum_, gemm_k_pack_, gemm_wg_wait_,
+      gemm_dst_full_sync_en_, gemm_bfp8_pack_precise_, gemm_defines_, gemm_named_compile_args_,
+      gemm_mbarrier_buffer_name_, gemm_mbarrier_scope_, gemm_mbarrier_index_exprs_, gemm_a_dtype_,
+      gemm_b_dtype_, gemm_c_dtype_);
 
   attrs.Set("blackhole.gemm_contract", gemm_contract);
   attrs.Set("blackhole.compute_contract", compute_contract);
   tt_program_payload.Set("gemm_contract", gemm_contract);
   tt_program_payload.Set("compute_contract", compute_contract);
+  if (!compute_epilogue_payloads_flat_.empty()) {
+    Array<Any> compute_epilogue_ops;
+    for (const auto& op_payload : compute_epilogue_payloads_flat_) {
+      compute_epilogue_ops.push_back(op_payload);
+    }
+    tt_program_payload.Set("compute_epilogue_ops", compute_epilogue_ops);
+  }
   attrs.Set(attr::kTLTTProgramPayload, tt_program_payload);
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
@@ -1701,6 +2015,10 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
           accessor.Get("args_config_bits")
               ? Downcast<Integer>(accessor.Get("args_config_bits").value()).IntValue()
               : MakeAccessorArgsConfigBits(layout, memory_space);
+      const int transport_page_size =
+          accessor.Get("transport_page_size")
+              ? Downcast<Integer>(accessor.Get("transport_page_size").value()).IntValue()
+              : 0;
 
       compile_time_arg_specs.push_back(MakeCompileTimeArgSpec(
           buffer,
@@ -1712,6 +2030,7 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
           buffer,
           {},
           args_config_bits,
+          transport_page_size,
           layout,
           memory_space));
     }
@@ -2035,6 +2354,16 @@ Array<Any> LowerBlackholeOps::EncodeAccessorDescriptors(const std::string& segme
     }
     accessor.Set("layout", String(desc.layout));
     accessor.Set("memory_space", String(desc.memory_space));
+    if (!desc.host_axis_order.empty()) {
+      Array<Any> axis_order;
+      for (int64_t axis : desc.host_axis_order) {
+        axis_order.push_back(Integer(axis));
+      }
+      accessor.Set("host_axis_order", axis_order);
+    }
+    if (desc.transpose_2d) {
+      accessor.Set("transpose_2d", Bool(true));
+    }
     accessors.push_back(accessor);
   }
   return accessors;
@@ -2054,13 +2383,7 @@ bool LowerBlackholeOps::IsMatmulCall(const CallNode* op) const {
 }
 
 std::string LowerBlackholeOps::DataTypeToDataFormat(DataType dtype) {
-  if (dtype.is_bfloat16()) return "Float16_b";
-  if (dtype.is_float16()) return "Float16";
-  if (dtype.is_float() && dtype.bits() == 32) return "Float32";
-  if (dtype.is_float() && dtype.bits() == 8) return "Bfp8";
-  if (dtype.is_int() && dtype.bits() == 32) return "Int32";
-  if (dtype.is_int() && dtype.bits() == 16) return "Int16";
-  return "Float16_b";  // safe fallback
+  return DataTypeToDataFormatForBlackhole(dtype);
 }
 
 void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
@@ -2164,12 +2487,25 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
   if (const auto* imm = args[5].as<IntImmNode>()) gemm_m_ = static_cast<int>(imm->value);
   if (const auto* imm = args[6].as<IntImmNode>()) gemm_n_ = static_cast<int>(imm->value);
   if (const auto* imm = args[7].as<IntImmNode>()) gemm_k_ = static_cast<int>(imm->value);
-  gemm_contract_signatures_.insert(EncodeGemmContractSignature(
+  const std::string signature = EncodeGemmContractSignature(
       gemm_a_buffer_name_, gemm_b_buffer_name_, gemm_c_buffer_name_, gemm_m_, gemm_n_, gemm_k_,
       gemm_transpose_a_, gemm_transpose_b_, gemm_policy_type_, gemm_clear_accum_, gemm_k_pack_,
       gemm_wg_wait_, gemm_dst_full_sync_en_, gemm_bfp8_pack_precise_, gemm_defines_,
       gemm_named_compile_args_, gemm_mbarrier_buffer_name_, gemm_mbarrier_scope_,
-      gemm_mbarrier_index_exprs_));
+      gemm_mbarrier_index_exprs_);
+  if (gemm_contract_signatures_.insert(signature).second) {
+    compute_contract_payload_index_by_signature_[signature] =
+        static_cast<int>(multi_compute_contract_payloads_.size());
+    multi_gemm_contract_payloads_.push_back(BuildGemmContractPayload(
+        gemm_a_buffer_name_, gemm_b_buffer_name_, gemm_c_buffer_name_, gemm_m_, gemm_n_, gemm_k_,
+        gemm_transpose_a_, gemm_transpose_b_, gemm_a_dtype_, gemm_b_dtype_, gemm_c_dtype_));
+    multi_compute_contract_payloads_.push_back(BuildComputeContractPayload(
+        gemm_a_buffer_name_, gemm_b_buffer_name_, gemm_c_buffer_name_, gemm_m_, gemm_n_, gemm_k_,
+        gemm_transpose_a_, gemm_transpose_b_, gemm_policy_type_, gemm_clear_accum_, gemm_k_pack_,
+        gemm_wg_wait_, gemm_dst_full_sync_en_, gemm_bfp8_pack_precise_, gemm_defines_,
+        gemm_named_compile_args_, gemm_mbarrier_buffer_name_, gemm_mbarrier_scope_,
+        gemm_mbarrier_index_exprs_, gemm_a_dtype_, gemm_b_dtype_, gemm_c_dtype_));
+  }
 
   // Register GEMM requirements.  The final cb_id is a planner decision and must
   // be consumed later from blackhole.cb_bindings rather than assumed here.
@@ -2177,7 +2513,9 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
       << "Blackhole GEMM currently requires matching A/B tensor dtypes";
   const int ab_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_a_dtype_.bytes();
   const int c_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_c_dtype_.bytes();
-  const int num_k_tiles = std::max(1, gemm_k_ / kBlackholeTileCols);
+  const int num_m_tiles = CeilDivToInt(gemm_m_, kBlackholeTileRows);
+  const int num_n_tiles = CeilDivToInt(gemm_n_, kBlackholeTileCols);
+  const int num_k_tiles = CeilDivToInt(gemm_k_, kBlackholeTileCols);
 
   gemm_a_req_index_ = AllocateRequirementIndex(a_region->buffer, CBType::kInput);
   gemm_b_req_index_ = AllocateRequirementIndex(b_region->buffer, CBType::kInput);
@@ -2193,11 +2531,12 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
     req.data_format = data_format;
   };
 
-  set_requirement_fields(gemm_a_req_index_, ab_tile_bytes, num_k_tiles,
+  set_requirement_fields(gemm_a_req_index_, ab_tile_bytes, num_m_tiles * num_k_tiles,
                          DataTypeToDataFormat(gemm_a_dtype_));
-  set_requirement_fields(gemm_b_req_index_, ab_tile_bytes, num_k_tiles,
+  set_requirement_fields(gemm_b_req_index_, ab_tile_bytes, num_k_tiles * num_n_tiles,
                          DataTypeToDataFormat(gemm_b_dtype_));
-  set_requirement_fields(gemm_c_req_index_, c_tile_bytes, 1, DataTypeToDataFormat(gemm_c_dtype_));
+  set_requirement_fields(gemm_c_req_index_, c_tile_bytes, num_m_tiles * num_n_tiles,
+                         DataTypeToDataFormat(gemm_c_dtype_));
   cb_requirements_[gemm_a_req_index_].lifetime_begin = 0;
   cb_requirements_[gemm_a_req_index_].lifetime_end = 0;
   cb_requirements_[gemm_b_req_index_].lifetime_begin = 0;
@@ -2350,6 +2689,33 @@ bool LowerBlackholeOps::ExprUsesTransportVar(const PrimExpr& expr,
   return uses_transport_var;
 }
 
+Var LowerBlackholeOps::SelectLogicalRowThreadVar(int64_t logical_rows) const {
+  std::vector<Var> exact_extent_matches;
+  std::vector<Var> non_unit_matches;
+  for (const auto* thread_var : thread_index_vars_) {
+    auto extent_it = thread_index_var_static_extents_.find(thread_var);
+    if (extent_it == thread_index_var_static_extents_.end()) {
+      continue;
+    }
+    const int64_t extent = extent_it->second;
+    if (extent <= 1) {
+      continue;
+    }
+    Var var = GetRef<Var>(thread_var);
+    non_unit_matches.push_back(var);
+    if (logical_rows > 0 && extent == logical_rows) {
+      exact_extent_matches.push_back(var);
+    }
+  }
+  if (exact_extent_matches.size() == 1) {
+    return exact_extent_matches.front();
+  }
+  if (non_unit_matches.size() == 1) {
+    return non_unit_matches.front();
+  }
+  return Var();
+}
+
 std::pair<int, int> LowerBlackholeOps::SelectStagedCopyTransportAxes(
     const Array<PrimExpr>& global_indices, const std::vector<Var>& loop_vars) const {
   std::vector<int> transport_axes;
@@ -2362,6 +2728,29 @@ std::pair<int, int> LowerBlackholeOps::SelectStagedCopyTransportAxes(
     return {transport_axes.front(), transport_axes.back()};
   }
   return {0, 1};
+}
+
+std::vector<int64_t> LowerBlackholeOps::BuildStagedCopyHostAxisOrder(
+    const Array<PrimExpr>& global_indices, const Array<Integer>& global_shape, int row_axis,
+    int col_axis) const {
+  const size_t ndim = !global_shape.empty() ? global_shape.size() : global_indices.size();
+  if (ndim < 2 || row_axis < 0 || col_axis < 0 ||
+      row_axis >= static_cast<int>(ndim) || col_axis >= static_cast<int>(ndim) ||
+      row_axis == col_axis) {
+    return {};
+  }
+
+  std::vector<int64_t> axis_order;
+  axis_order.reserve(ndim);
+  for (size_t axis = 0; axis < ndim; ++axis) {
+    if (static_cast<int>(axis) == row_axis || static_cast<int>(axis) == col_axis) {
+      continue;
+    }
+    axis_order.push_back(static_cast<int64_t>(axis));
+  }
+  axis_order.push_back(static_cast<int64_t>(row_axis));
+  axis_order.push_back(static_cast<int64_t>(col_axis));
+  return axis_order;
 }
 
 PrimExpr LowerBlackholeOps::InferCopyTileIndex(const BufferStoreNode* op,
@@ -2586,15 +2975,7 @@ void LowerBlackholeOps::RecordDramToDramCopy(const BufferStoreNode* op) {
     const int requirement_index = AllocateRequirementIndex(buffer, type);
     auto& req = cb_requirements_.at(requirement_index);
     req.num_pages = 1;
-    if (buffer->dtype.is_float()) {
-      req.data_format = buffer->dtype.bits() == 16 ? "Float16_b" : "Float32";
-    } else if (buffer->dtype.is_uint()) {
-      req.data_format = buffer->dtype.bits() == 16 ? "UInt16" : "UInt32";
-    } else if (buffer->dtype.is_int()) {
-      req.data_format = buffer->dtype.bits() == 16 ? "UInt16" : "UInt32";
-    } else {
-      req.data_format = "Float16_b";
-    }
+    req.data_format = DataTypeToDataFormatForBlackhole(buffer->dtype);
   };
 
   ensure_requirement(load->buffer, CBType::kInput);
@@ -2613,7 +2994,9 @@ void LowerBlackholeOps::RegisterAccessor(const std::string& segment_kind,
                                          int common_runtime_arg_offset,
                                          int common_runtime_arg_count,
                                          int args_config_bits,
-                                         int transport_page_size_bytes) {
+                                         int transport_page_size_bytes,
+                                         std::vector<int64_t> host_axis_order,
+                                         bool transpose_2d) {
   auto it = std::find_if(accessor_descriptors_.begin(), accessor_descriptors_.end(),
                          [&](const AccessorDescriptor& desc) {
                            return desc.segment_kind == segment_kind &&
@@ -2623,7 +3006,9 @@ void LowerBlackholeOps::RegisterAccessor(const std::string& segment_kind,
                                   desc.common_runtime_arg_offset == common_runtime_arg_offset &&
                                   desc.common_runtime_arg_count == common_runtime_arg_count &&
                                   desc.args_config_bits == args_config_bits &&
-                                  desc.transport_page_size_bytes == transport_page_size_bytes;
+                                  desc.transport_page_size_bytes == transport_page_size_bytes &&
+                                  desc.host_axis_order == host_axis_order &&
+                                  desc.transpose_2d == transpose_2d;
                          });
   if (it != accessor_descriptors_.end()) {
     return;
@@ -2638,7 +3023,9 @@ void LowerBlackholeOps::RegisterAccessor(const std::string& segment_kind,
                                                      args_config_bits,
                                                      transport_page_size_bytes,
                                                      "interleaved",
-                                                     "dram"});
+                                                     "dram",
+                                                     std::move(host_axis_order),
+                                                     transpose_2d});
 }
 
 std::string LowerBlackholeOps::ResolveAccessorSegmentKind(CopyDirection direction) const {
@@ -2700,15 +3087,111 @@ int LowerBlackholeOps::GetWriteAccessorSlot(const std::string& segment_kind, con
   return 0;
 }
 
+void LowerBlackholeOps::ActivateCurrentComputeContractPayload() {
+  const std::string signature = EncodeGemmContractSignature(
+      gemm_a_buffer_name_, gemm_b_buffer_name_, gemm_c_buffer_name_, gemm_m_, gemm_n_, gemm_k_,
+      gemm_transpose_a_, gemm_transpose_b_, gemm_policy_type_, gemm_clear_accum_, gemm_k_pack_,
+      gemm_wg_wait_, gemm_dst_full_sync_en_, gemm_bfp8_pack_precise_, gemm_defines_,
+      gemm_named_compile_args_, gemm_mbarrier_buffer_name_, gemm_mbarrier_scope_,
+      gemm_mbarrier_index_exprs_);
+  auto it = compute_contract_payload_index_by_signature_.find(signature);
+  if (it == compute_contract_payload_index_by_signature_.end()) {
+    active_compute_contract_payload_index_ = -1;
+    return;
+  }
+  active_compute_contract_payload_index_ = it->second;
+}
+
+void LowerBlackholeOps::RecordComputeEpilogueOp(Map<String, Any> op_payload) {
+  compute_epilogue_payloads_flat_.push_back(op_payload);
+  if (compute_epilogue_payloads_.empty()) {
+    return;
+  }
+
+  std::vector<std::string> candidate_buffers;
+  auto collect_buffer = [&](const char* key) {
+    if (auto value = op_payload.Get(String(key))) {
+      std::string buffer = Downcast<String>(value.value());
+      if (!buffer.empty()) {
+        candidate_buffers.push_back(std::move(buffer));
+      }
+    }
+  };
+  collect_buffer("dst_buffer");
+  collect_buffer("src_buffer");
+  collect_buffer("scalar_buffer");
+  collect_buffer("lhs_buffer");
+  collect_buffer("rhs_buffer");
+  collect_buffer("add_buffer");
+
+  int best_index = -1;
+  int best_score = -1;
+  for (size_t i = 0; i < multi_compute_contract_payloads_.size(); ++i) {
+    const auto& contract = multi_compute_contract_payloads_[i];
+    const std::string a_buffer =
+        contract.Get(String("a_buffer"))
+            ? static_cast<std::string>(Downcast<String>(contract.Get(String("a_buffer")).value()))
+            : std::string();
+    const std::string b_buffer =
+        contract.Get(String("b_buffer"))
+            ? static_cast<std::string>(Downcast<String>(contract.Get(String("b_buffer")).value()))
+            : std::string();
+    const std::string c_buffer =
+        contract.Get(String("c_buffer"))
+            ? static_cast<std::string>(Downcast<String>(contract.Get(String("c_buffer")).value()))
+            : std::string();
+    int score = 0;
+    for (const auto& buffer : candidate_buffers) {
+      if (!c_buffer.empty() && buffer == c_buffer) {
+        score += 8;
+      } else if ((!a_buffer.empty() && buffer == a_buffer) ||
+                 (!b_buffer.empty() && buffer == b_buffer)) {
+        score += 4;
+      } else if (i < compute_contract_known_buffers_.size() &&
+                 compute_contract_known_buffers_[i].count(buffer)) {
+        score += 2;
+      }
+    }
+    if (score > best_score) {
+      best_score = score;
+      best_index = static_cast<int>(i);
+    }
+  }
+
+  if (best_score <= 0) {
+    best_index = active_compute_contract_payload_index_;
+  }
+  if (best_index < 0 || best_index >= static_cast<int>(compute_epilogue_payloads_.size())) {
+    return;
+  }
+  if (best_index < static_cast<int>(compute_contract_known_buffers_.size())) {
+    if (auto value = op_payload.Get(String("dst_buffer"))) {
+      compute_contract_known_buffers_[static_cast<size_t>(best_index)].insert(
+          static_cast<std::string>(Downcast<String>(value.value())));
+    }
+  }
+  compute_epilogue_payloads_[static_cast<size_t>(best_index)].push_back(std::move(op_payload));
+}
+
 Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op) {
   ICHECK_GE(gemm_a_req_index_, 0);
   ICHECK_GE(gemm_b_req_index_, 0);
   ICHECK_GE(gemm_c_req_index_, 0);
+  ActivateCurrentComputeContractPayload();
+  (void)op;
   const int in0_id = gemm_a_req_index_;
   const int in1_id = gemm_b_req_index_;
   const int out_id = gemm_c_req_index_;
-  // num_k_tiles: how many 32-element K-tiles to accumulate
-  const int num_k_tiles = (gemm_k_ > 0) ? (gemm_k_ / kBlackholeTileCols) : 1;
+  const int num_m_tiles = CeilDivToInt(gemm_m_, kBlackholeTileRows);
+  const int num_n_tiles = CeilDivToInt(gemm_n_, kBlackholeTileCols);
+  const int num_k_tiles = CeilDivToInt(gemm_k_, kBlackholeTileCols);
+  const int num_a_tiles = num_m_tiles * num_k_tiles;
+  const int num_b_tiles = num_k_tiles * num_n_tiles;
+  const int num_c_tiles = num_m_tiles * num_n_tiles;
+  ICHECK_LE(num_c_tiles, 16)
+      << "Blackhole matmul lowering currently supports at most 16 output tiles per GEMM, but "
+         "saw "
+      << num_c_tiles << " for " << gemm_c_buffer_name_;
 
   std::vector<Stmt> stmts;
 
@@ -2720,47 +3203,47 @@ Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op) {
   // 2. Acquire tile registers
   stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
 
-  // 3. Generate K-tile loop (statically unrolled for fixed-shape GEMM)
-  for (int kt = 0; kt < num_k_tiles; ++kt) {
-    // Wait for input tiles
-    stmts.push_back(MakeBlackholeCall(
-        blackhole_cb_wait_front(),
-        {IntImm32(in0_id), IntImm32(1)}));
-    stmts.push_back(MakeBlackholeCall(
-        blackhole_cb_wait_front(),
-        {IntImm32(in1_id), IntImm32(1)}));
+  // 3. Wait for the full staged tile sets and execute the logical tile grid.
+  stmts.push_back(MakeBlackholeCall(
+      blackhole_cb_wait_front(),
+      {IntImm32(in0_id), IntImm32(num_a_tiles)}));
+  stmts.push_back(MakeBlackholeCall(
+      blackhole_cb_wait_front(),
+      {IntImm32(in1_id), IntImm32(num_b_tiles)}));
 
-    // Perform matmul
-    stmts.push_back(MakeBlackholeCall(
-        blackhole_matmul_tiles(),
-        {IntImm32(in0_id), IntImm32(in1_id),
-         IntImm32(0), IntImm32(0), IntImm32(0)}));
-
-    // Pop input tiles
-    stmts.push_back(MakeBlackholeCall(
-        blackhole_cb_pop_front(),
-        {IntImm32(in0_id), IntImm32(1)}));
-    stmts.push_back(MakeBlackholeCall(
-        blackhole_cb_pop_front(),
-        {IntImm32(in1_id), IntImm32(1)}));
+  for (int mt = 0; mt < num_m_tiles; ++mt) {
+    for (int nt = 0; nt < num_n_tiles; ++nt) {
+      for (int kt = 0; kt < num_k_tiles; ++kt) {
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_matmul_tiles(),
+            {IntImm32(in0_id), IntImm32(in1_id), IntImm32(mt * num_k_tiles + kt),
+             IntImm32(kt * num_n_tiles + nt), IntImm32(mt * num_n_tiles + nt)}));
+      }
+    }
   }
+  stmts.push_back(MakeBlackholeCall(
+      blackhole_cb_pop_front(),
+      {IntImm32(in0_id), IntImm32(num_a_tiles)}));
+  stmts.push_back(MakeBlackholeCall(
+      blackhole_cb_pop_front(),
+      {IntImm32(in1_id), IntImm32(num_b_tiles)}));
 
   // 4-5. Commit and wait
   stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
   stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
 
   // 6-8. Pack and push output
-  if (gemm_c_scope_ != "blackhole.acc") {
+  stmts.push_back(MakeBlackholeCall(
+      blackhole_cb_reserve_back(),
+      {IntImm32(out_id), IntImm32(num_c_tiles)}));
+  for (int out_tile = 0; out_tile < num_c_tiles; ++out_tile) {
     stmts.push_back(MakeBlackholeCall(
-        blackhole_cb_reserve_back(),
-        {IntImm32(out_id), IntImm32(1)}));
+        blackhole_pack_tile(),
+        {IntImm32(out_tile), IntImm32(out_id)}));
   }
   stmts.push_back(MakeBlackholeCall(
-      blackhole_pack_tile(),
-      {IntImm32(0), IntImm32(out_id)}));
-  stmts.push_back(MakeBlackholeCall(
       blackhole_cb_push_back(),
-      {IntImm32(out_id), IntImm32(1)}));
+      {IntImm32(out_id), IntImm32(num_c_tiles)}));
 
   // 9. Release tile registers
   stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
@@ -2810,7 +3293,8 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
           blackhole_read_tile_to_cb(),
           {load->buffer->data, IntImm32(0), IntImm32(src_cb_id), IntImm32(tile_bytes),
            IntImm32(input_accessor_slot)}));
-      RegisterAccessor("fused_dataflow", load->buffer, input_accessor_slot, 2, 0, 0, 2);
+      RegisterAccessor("fused_dataflow", load->buffer, input_accessor_slot, 2, 0, 0, 2,
+                       tile_bytes);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(src_cb_id), IntImm32(1)}));
 
@@ -2822,7 +3306,8 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
           blackhole_write_tile_from_cb(),
           {IntImm32(src_cb_id), op->buffer->data, IntImm32(0), IntImm32(tile_bytes),
            IntImm32(output_accessor_slot)}));
-      RegisterAccessor("fused_dataflow", op->buffer, output_accessor_slot, 2, 0, 0, 2);
+      RegisterAccessor("fused_dataflow", op->buffer, output_accessor_slot, 2, 0, 0, 2,
+                       tile_bytes);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_pop_front(), {IntImm32(src_cb_id), IntImm32(1)}));
 
@@ -2891,6 +3376,12 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
           op->buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
       int tile_bytes = EstimateCopyPageSize(op->buffer);
       RecordStagedCopyBufferBinding(op, direction);
+      const Array<PrimExpr>& global_indices = load->indices;
+      const Array<Integer>& global_shape = copy_input_shape_;
+      const auto [row_axis, col_axis] =
+          SelectStagedCopyTransportAxes(global_indices, {});
+      const std::vector<int64_t> host_axis_order =
+          BuildStagedCopyHostAxisOrder(global_indices, global_shape, row_axis, col_axis);
       const int accessor_slot = GetReadAccessorSlot(segment_kind, load->buffer, direction);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_reserve_back(), {IntImm32(cb_id), IntImm32(1)}));
@@ -2899,7 +3390,7 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
           {load->buffer->data, tile_index, IntImm32(cb_id), IntImm32(tile_bytes),
            IntImm32(accessor_slot)}));
       RegisterAccessor(segment_kind, load->buffer,
-                       accessor_slot, 2, 0, 0, 2);
+                       accessor_slot, 2, 0, 0, 2, tile_bytes, host_axis_order);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
       return maybe_wrap_segment_stmt(segment_kind, SeqStmt::Flatten(stmts));
@@ -2916,6 +3407,12 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
           (segmented_gemm && accumulator_like_src) ? CBType::kOutput : CBType::kIntermediate);
       int tile_bytes = EstimateCopyPageSize(load->buffer);
       RecordStagedCopyBufferBinding(op, direction);
+      const Array<PrimExpr>& global_indices = op->indices;
+      const Array<Integer>& global_shape = copy_output_shape_;
+      const auto [row_axis, col_axis] =
+          SelectStagedCopyTransportAxes(global_indices, {});
+      const std::vector<int64_t> host_axis_order =
+          BuildStagedCopyHostAxisOrder(global_indices, global_shape, row_axis, col_axis);
       const int accessor_slot = GetWriteAccessorSlot(segment_kind, op->buffer, direction);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(1)}));
@@ -2924,7 +3421,7 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
           {IntImm32(cb_id), op->buffer->data, tile_index, IntImm32(tile_bytes),
            IntImm32(accessor_slot)}));
       RegisterAccessor(segment_kind, op->buffer,
-                       accessor_slot, 2, 0, 0, 2);
+                       accessor_slot, 2, 0, 0, 2, tile_bytes, host_axis_order);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
       return maybe_wrap_segment_stmt(segment_kind, SeqStmt::Flatten(stmts));
@@ -2970,6 +3467,8 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
       direction == CopyDirection::kDramToCB ? copy_input_shape_ : copy_output_shape_;
   const auto [row_axis, col_axis] =
       SelectStagedCopyTransportAxes(global_indices, {});
+  const std::vector<int64_t> host_axis_order =
+      BuildStagedCopyHostAxisOrder(global_indices, global_shape, row_axis, col_axis);
   int64_t global_rows = 0;
   int64_t global_cols = 0;
   std::tie(global_rows, global_cols) = ResolveStaticShape2DFromBufferAxesOrMetadata(
@@ -2989,8 +3488,8 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
   }
   int segmented_reader_tile_limit = -1;
   if (direction == CopyDirection::kDramToCB && segmented_gemm && !geometry.use_page_transport) {
-    auto it = gemm_input_buffer_num_k_tiles_.find(BufferIdentityName(shared_buffer));
-    if (it != gemm_input_buffer_num_k_tiles_.end()) {
+    auto it = gemm_input_buffer_num_tiles_.find(BufferIdentityName(shared_buffer));
+    if (it != gemm_input_buffer_num_tiles_.end()) {
       segmented_reader_tile_limit = it->second;
     }
   }
@@ -3042,7 +3541,8 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
                                           IntImm32(geometry.page_bytes), IntImm32(accessor_slot),
                                           IntImm32(page_row * geometry.l1_stick_stride)}));
         RegisterAccessor(segment_kind, load->buffer,
-                         accessor_slot, 2, 0, 0, 2, geometry.page_bytes);
+                         accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order,
+                         transpose_b_reader);
       }
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_read_barrier(), {}));
@@ -3070,7 +3570,8 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
           {load->buffer->data, tile_index, IntImm32(cb_id), IntImm32(geometry.tile_bytes),
            IntImm32(accessor_slot)}));
       RegisterAccessor(segment_kind, load->buffer,
-                       accessor_slot, 2, 0, 0, 2);
+                       accessor_slot, 2, 0, 0, 2, geometry.tile_bytes, host_axis_order,
+                       transpose_b_reader);
       stmts.push_back(MakeBlackholeCall(
           blackhole_cb_push_back(), {IntImm32(cb_id), IntImm32(1)}));
     }
@@ -3095,7 +3596,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
                                              IntImm32(accessor_slot),
                                              IntImm32(page_row * geometry.l1_stick_stride)}));
         RegisterAccessor(segment_kind, op->buffer,
-                         accessor_slot, 2, 0, 0, 2, geometry.page_bytes);
+                         accessor_slot, 2, 0, 0, 2, geometry.page_bytes, host_axis_order);
       }
       stmts.push_back(MakeBlackholeCall(
           blackhole_noc_async_write_barrier(), {}));
@@ -3113,7 +3614,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
             {IntImm32(cb_id), op->buffer->data, tile_index, IntImm32(geometry.tile_bytes),
              IntImm32(accessor_slot)}));
         RegisterAccessor(segment_kind, op->buffer,
-                         accessor_slot, 2, 0, 0, 2);
+                         accessor_slot, 2, 0, 0, 2, geometry.tile_bytes, host_axis_order);
         stmts.push_back(MakeBlackholeCall(
             blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(1)}));
       }
@@ -3599,17 +4100,36 @@ bool MatchGroupedScalarFragmentLoad(const PrimExpr& expr,
   if (!load || load->indices.size() != 1 || !IsRowScalarLocalFragmentBuffer(load->buffer)) {
     return false;
   }
-  const auto* floordiv = load->indices[0].as<FloorDivNode>();
-  if (!floordiv || !floordiv->a.same_as(loop_var)) {
-    return false;
+  if (const auto* floordiv = load->indices[0].as<FloorDivNode>()) {
+    if (!floordiv->a.same_as(loop_var)) {
+      return false;
+    }
+    const auto* width_imm = floordiv->b.as<IntImmNode>();
+    if (!width_imm || width_imm->value <= 0) {
+      return false;
+    }
+    *scalar_buffer = load->buffer;
+    *row_width = floordiv->b;
+    return true;
   }
-  const auto* width_imm = floordiv->b.as<IntImmNode>();
-  if (!width_imm || width_imm->value <= 0) {
-    return false;
+  if (const auto* shift = load->indices[0].as<CallNode>()) {
+    if (!shift->op->IsInstance<OpNode>()) {
+      return false;
+    }
+    const Op shift_op = Downcast<Op>(shift->op);
+    if (shift_op->name != "tir.shift_right" || shift->args.size() != 2 ||
+        !shift->args[0].same_as(loop_var)) {
+      return false;
+    }
+    const auto* shift_imm = shift->args[1].as<IntImmNode>();
+    if (!shift_imm || shift_imm->value < 0 || shift_imm->value >= 31) {
+      return false;
+    }
+    *scalar_buffer = load->buffer;
+    *row_width = IntImm(DataType::Int(32), 1 << shift_imm->value);
+    return true;
   }
-  *scalar_buffer = load->buffer;
-  *row_width = floordiv->b;
-  return true;
+  return false;
 }
 
 bool MatchScalarBufferLoadFrom(const PrimExpr& expr, const Buffer& buffer) {
@@ -3626,15 +4146,40 @@ bool MatchIndexedRowStateLoad(const PrimExpr& expr, const Buffer& buffer, const 
 
 bool MatchExp2Call(const PrimExpr& expr, PrimExpr* arg) {
   const auto* call = expr.as<CallNode>();
-  if (!call || !call->op->IsInstance<OpNode>() || call->args.size() != 1) {
+  if (!call || !call->op->IsInstance<OpNode>()) {
     return false;
   }
   const Op op = Downcast<Op>(call->op);
-  if (op->name != "tir.exp2") {
+  if (op->name == "tir.exp2") {
+    if (call->args.size() != 1) {
+      return false;
+    }
+    if (arg != nullptr) {
+      *arg = call->args[0];
+    }
+    return true;
+  }
+
+  const bool is_extern_exp2 =
+      (op.same_as(tir::builtin::call_pure_extern()) || op.same_as(tir::builtin::call_extern())) &&
+      call->args.size() == 2;
+  if (!is_extern_exp2) {
     return false;
   }
+
+  const auto* callee = call->args[0].as<StringImmNode>();
+  if (!callee) {
+    return false;
+  }
+
+  const std::string extern_name = callee->value;
+  if (extern_name != "exp2" && extern_name != "exp2f" && extern_name != "exp2l" &&
+      extern_name != "__exp2f") {
+    return false;
+  }
+
   if (arg != nullptr) {
-    *arg = call->args[0];
+    *arg = call->args[1];
   }
   return true;
 }
@@ -3918,14 +4463,34 @@ bool LowerBlackholeOps::MatchGroupedRowReduction(const ForNode* op,
 }
 
 Stmt LowerBlackholeOps::GenerateRowReductionSequence(const RowReductionMatch& match) {
-  if (match.grouped) {
+  RowReductionMatch lowered_match = match;
+  const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.src);
+  const int64_t logical_dst_extent = GetLogicalVectorLength(match.dst);
+  if (logical_rows > 0 && logical_cols > 0 && logical_dst_extent == logical_rows) {
+    lowered_match.grouped = true;
+    lowered_match.num_elements = IntImm(DataType::Int(32), logical_rows * logical_cols);
+    lowered_match.row_width = IntImm(DataType::Int(32), logical_cols);
+  }
+
+  Map<String, Any> op_payload =
+      MakeComputeEpilogueOpPayload("reduce_row", BufferIdentityName(lowered_match.dst));
+  op_payload.Set("src_buffer", String(BufferIdentityName(lowered_match.src)));
+  op_payload.Set("reduce_kind", String(lowered_match.kind));
+  op_payload.Set("grouped", Bool(lowered_match.grouped));
+  op_payload.Set("clear", Bool(lowered_match.clear));
+  SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
+  SetOptionalExprField(&op_payload, "row_width_expr", lowered_match.row_width);
+  RecordComputeEpilogueOp(std::move(op_payload));
+  if (lowered_match.grouped) {
     return MakeBlackholeCall(tir::builtin::blackhole_reduce_row(),
-                             {match.src->data, match.dst->data, match.num_elements,
-                              match.row_width, StringImm(match.kind), Bool(match.clear)});
+                             {lowered_match.src->data, lowered_match.dst->data,
+                              lowered_match.num_elements, lowered_match.row_width,
+                              StringImm(lowered_match.kind), Bool(lowered_match.clear)});
   }
   return MakeBlackholeCall(tir::builtin::blackhole_reduce_row(),
-                           {match.src->data, match.dst->data, match.num_elements,
-                            StringImm(match.kind), Bool(match.clear)});
+                           {lowered_match.src->data, lowered_match.dst->data,
+                            lowered_match.num_elements, StringImm(lowered_match.kind),
+                            Bool(lowered_match.clear)});
 }
 
 bool LowerBlackholeOps::MatchDirectRowBroadcast(const ForNode* op,
@@ -3974,19 +4539,40 @@ bool LowerBlackholeOps::MatchDirectRowBroadcast(const ForNode* op,
 }
 
 Stmt LowerBlackholeOps::GenerateRowBroadcastSequence(const RowBroadcastMatch& match) {
+  RowBroadcastMatch lowered_match = match;
+  const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.dst);
+  const int64_t logical_scalar_extent = GetLogicalVectorLength(match.scalar);
+  if (logical_rows > 0 && logical_cols > 0 && logical_scalar_extent == logical_rows) {
+    lowered_match.grouped = true;
+    lowered_match.num_elements = IntImm(DataType::Int(32), logical_rows * logical_cols);
+    lowered_match.row_width = IntImm(DataType::Int(32), logical_cols);
+  }
+
+  const char* op_kind = nullptr;
   Op op;
-  if (match.kind == "mul") {
-    op = match.grouped ? tir::builtin::blackhole_mul_grouped_row_bcast()
+  if (lowered_match.kind == "mul") {
+    op = lowered_match.grouped ? tir::builtin::blackhole_mul_grouped_row_bcast()
                        : tir::builtin::blackhole_mul_row_bcast();
+    op_kind = lowered_match.grouped ? "mul_grouped_row_bcast" : "mul_row_bcast";
   } else {
-    op = match.grouped ? tir::builtin::blackhole_div_grouped_row_bcast()
+    op = lowered_match.grouped ? tir::builtin::blackhole_div_grouped_row_bcast()
                        : tir::builtin::blackhole_div_row_bcast();
+    op_kind = lowered_match.grouped ? "div_grouped_row_bcast" : "div_row_bcast";
   }
-  if (match.grouped) {
+  Map<String, Any> op_payload =
+      MakeComputeEpilogueOpPayload(op_kind, BufferIdentityName(lowered_match.dst));
+  op_payload.Set("scalar_buffer", String(BufferIdentityName(lowered_match.scalar)));
+  op_payload.Set("grouped", Bool(lowered_match.grouped));
+  SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
+  SetOptionalExprField(&op_payload, "row_width_expr", lowered_match.row_width);
+  RecordComputeEpilogueOp(std::move(op_payload));
+  if (lowered_match.grouped) {
     return MakeBlackholeCall(
-        op, {match.dst->data, match.scalar->data, match.num_elements, match.row_width});
+        op, {lowered_match.dst->data, lowered_match.scalar->data, lowered_match.num_elements,
+             lowered_match.row_width});
   }
-  return MakeBlackholeCall(op, {match.dst->data, match.scalar->data, match.num_elements});
+  return MakeBlackholeCall(
+      op, {lowered_match.dst->data, lowered_match.scalar->data, lowered_match.num_elements});
 }
 
 bool LowerBlackholeOps::MatchScalarFmaStore(const BufferStoreNode* op,
@@ -4069,7 +4655,7 @@ bool LowerBlackholeOps::MatchGroupedScalarFmaLoop(const ForNode* op,
     match->lhs = mul_lhs;
     match->rhs = mul_rhs;
     match->add = add_buffer;
-    match->num_elements = op->extent;
+    match->num_elements = PrimExpr();
     return true;
   };
 
@@ -4077,13 +4663,28 @@ bool LowerBlackholeOps::MatchGroupedScalarFmaLoop(const ForNode* op,
 }
 
 Stmt LowerBlackholeOps::GenerateScalarFmaSequence(const ScalarFmaMatch& match) {
-  if (match.num_elements.defined()) {
+  ScalarFmaMatch lowered_match = match;
+  const int64_t logical_extent = GetLogicalVectorLength(match.dst);
+  if (!lowered_match.num_elements.defined() && logical_extent > 1) {
+    lowered_match.num_elements = IntImm(DataType::Int(32), logical_extent);
+  }
+
+  Map<String, Any> op_payload =
+      MakeComputeEpilogueOpPayload("scalar_fma", BufferIdentityName(lowered_match.dst));
+  op_payload.Set("lhs_buffer", String(BufferIdentityName(lowered_match.lhs)));
+  op_payload.Set("rhs_buffer", String(BufferIdentityName(lowered_match.rhs)));
+  op_payload.Set("add_buffer", String(BufferIdentityName(lowered_match.add)));
+  SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
+  RecordComputeEpilogueOp(std::move(op_payload));
+  if (lowered_match.num_elements.defined()) {
     return MakeBlackholeCall(tir::builtin::blackhole_scalar_fma(),
-                             {match.dst->data, match.lhs->data, match.rhs->data, match.add->data,
-                              match.num_elements});
+                             {lowered_match.dst->data, lowered_match.lhs->data,
+                              lowered_match.rhs->data, lowered_match.add->data,
+                              lowered_match.num_elements});
   }
   return MakeBlackholeCall(tir::builtin::blackhole_scalar_fma(),
-                           {match.dst->data, match.lhs->data, match.rhs->data, match.add->data});
+                           {lowered_match.dst->data, lowered_match.lhs->data,
+                            lowered_match.rhs->data, lowered_match.add->data});
 }
 
 bool LowerBlackholeOps::MatchExp2RowBroadcastAffine(const ForNode* op,
@@ -4138,14 +4739,35 @@ bool LowerBlackholeOps::MatchExp2RowBroadcastAffine(const ForNode* op,
 
 Stmt LowerBlackholeOps::GenerateExp2RowBroadcastAffineSequence(
     const Exp2RowBroadcastAffineMatch& match) {
-  if (match.grouped) {
+  Exp2RowBroadcastAffineMatch lowered_match = match;
+  const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.dst);
+  const int64_t logical_scalar_extent = GetLogicalVectorLength(match.scalar);
+  if (logical_rows > 0 && logical_cols > 0 && logical_scalar_extent == logical_rows) {
+    lowered_match.grouped = true;
+    lowered_match.num_elements = IntImm(DataType::Int(32), logical_rows * logical_cols);
+    lowered_match.row_width = IntImm(DataType::Int(32), logical_cols);
+  }
+
+  Map<String, Any> op_payload = MakeComputeEpilogueOpPayload(
+      lowered_match.grouped ? "exp2_grouped_row_bcast_affine" : "exp2_row_bcast_affine",
+      BufferIdentityName(lowered_match.dst));
+  op_payload.Set("scalar_buffer", String(BufferIdentityName(lowered_match.scalar)));
+  op_payload.Set("grouped", Bool(lowered_match.grouped));
+  SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
+  SetOptionalExprField(&op_payload, "row_width_expr", lowered_match.row_width);
+  SetOptionalExprField(&op_payload, "dst_scale_expr", lowered_match.dst_scale);
+  SetOptionalExprField(&op_payload, "scalar_scale_expr", lowered_match.scalar_scale);
+  RecordComputeEpilogueOp(std::move(op_payload));
+  if (lowered_match.grouped) {
     return MakeBlackholeCall(tir::builtin::blackhole_exp2_grouped_row_bcast_affine(),
-                             {match.dst->data, match.scalar->data, match.num_elements,
-                              match.row_width, match.dst_scale, match.scalar_scale});
+                             {lowered_match.dst->data, lowered_match.scalar->data,
+                              lowered_match.num_elements, lowered_match.row_width,
+                              lowered_match.dst_scale, lowered_match.scalar_scale});
   }
   return MakeBlackholeCall(tir::builtin::blackhole_exp2_row_bcast_affine(),
-                           {match.dst->data, match.scalar->data, match.num_elements,
-                            match.dst_scale, match.scalar_scale});
+                           {lowered_match.dst->data, lowered_match.scalar->data,
+                            lowered_match.num_elements, lowered_match.dst_scale,
+                            lowered_match.scalar_scale});
 }
 
 bool LowerBlackholeOps::MatchScalarExp2AffineStore(const BufferStoreNode* op,
@@ -4182,7 +4804,93 @@ bool LowerBlackholeOps::MatchScalarExp2AffineStore(const BufferStoreNode* op,
   return true;
 }
 
+bool LowerBlackholeOps::MatchGroupedScalarExp2AffineLoop(const ForNode* op,
+                                                         ScalarExp2AffineMatch* match) const {
+  if (!op || !match) {
+    return false;
+  }
+  const auto* store = AsUnwrappedBufferStore(op->body);
+  if (!store || !IsRowScalarLocalFragmentBuffer(store->buffer) || store->indices.size() != 1 ||
+      !store->indices[0].same_as(op->loop_var)) {
+    return false;
+  }
+
+  PrimExpr exp2_arg;
+  if (!MatchExp2Call(store->value, &exp2_arg)) {
+    return false;
+  }
+  const auto* sub = exp2_arg.as<SubNode>();
+  if (!sub) {
+    return false;
+  }
+
+  auto match_scaled_row_state_load = [&](const PrimExpr& expr, Buffer* buffer, PrimExpr* scale) {
+    if (MatchIndexedRowStateLoad(expr, store->buffer, op->loop_var)) {
+      *buffer = store->buffer;
+      *scale = make_const(expr.dtype(), 1.0);
+      return true;
+    }
+    const auto* load = expr.as<BufferLoadNode>();
+    if (load && load->indices.size() == 1 && load->indices[0].same_as(op->loop_var) &&
+        IsRowScalarLocalFragmentBuffer(load->buffer)) {
+      *buffer = load->buffer;
+      *scale = make_const(expr.dtype(), 1.0);
+      return true;
+    }
+    const auto* mul = expr.as<MulNode>();
+    if (!mul || !IsScalarLiteralValue(mul->a) && !IsScalarLiteralValue(mul->b)) {
+      return false;
+    }
+    const PrimExpr& maybe_load = IsScalarLiteralValue(mul->a) ? mul->b : mul->a;
+    const PrimExpr& maybe_scale = IsScalarLiteralValue(mul->a) ? mul->a : mul->b;
+    const auto* load_expr = maybe_load.as<BufferLoadNode>();
+    if (!load_expr || load_expr->indices.size() != 1 ||
+        !load_expr->indices[0].same_as(op->loop_var) ||
+        !IsRowScalarLocalFragmentBuffer(load_expr->buffer)) {
+      return false;
+    }
+    *buffer = load_expr->buffer;
+    *scale = maybe_scale;
+    return true;
+  };
+
+  Buffer lhs;
+  Buffer rhs;
+  PrimExpr lhs_scale;
+  PrimExpr rhs_scale;
+  if (!match_scaled_row_state_load(sub->a, &lhs, &lhs_scale) ||
+      !match_scaled_row_state_load(sub->b, &rhs, &rhs_scale)) {
+    return false;
+  }
+
+  Analyzer analyzer;
+  match->dst = store->buffer;
+  match->lhs = lhs;
+  match->rhs = rhs;
+  match->lhs_scale = lhs_scale;
+  match->rhs_scale = analyzer.Simplify(-rhs_scale);
+  return true;
+}
+
 Stmt LowerBlackholeOps::GenerateScalarExp2AffineSequence(const ScalarExp2AffineMatch& match) {
+  const int64_t logical_extent = GetLogicalVectorLength(match.dst);
+  Map<String, Any> op_payload =
+      MakeComputeEpilogueOpPayload("scalar_exp2_affine", BufferIdentityName(match.dst));
+  op_payload.Set("lhs_buffer", String(BufferIdentityName(match.lhs)));
+  op_payload.Set("rhs_buffer", String(BufferIdentityName(match.rhs)));
+  SetOptionalExprField(&op_payload, "lhs_scale_expr", match.lhs_scale);
+  SetOptionalExprField(&op_payload, "rhs_scale_expr", match.rhs_scale);
+  if (logical_extent > 1) {
+    SetOptionalExprField(&op_payload, "num_elements_expr",
+                         IntImm(DataType::Int(32), logical_extent));
+  }
+  RecordComputeEpilogueOp(std::move(op_payload));
+  if (logical_extent > 1) {
+    return MakeBlackholeCall(tir::builtin::blackhole_scalar_exp2_affine(),
+                             {match.dst->data, match.lhs->data, match.rhs->data,
+                              match.lhs_scale, match.rhs_scale,
+                              IntImm(DataType::Int(32), logical_extent)});
+  }
   return MakeBlackholeCall(tir::builtin::blackhole_scalar_exp2_affine(),
                            {match.dst->data, match.lhs->data, match.rhs->data,
                             match.lhs_scale, match.rhs_scale});
@@ -4234,8 +4942,19 @@ bool LowerBlackholeOps::MatchScalarFragmentFillStore(const BufferStoreNode* op,
 }
 
 Stmt LowerBlackholeOps::GenerateFragmentFillSequence(const FragmentFillMatch& match) {
+  PrimExpr num_elements = match.num_elements;
+  const int64_t logical_extent = GetLogicalBufferElementCount(match.dst);
+  if (logical_extent > 1) {
+    bool should_promote_extent = !num_elements.defined();
+    if (const auto* int_imm = num_elements.as<IntImmNode>()) {
+      should_promote_extent = int_imm->value < logical_extent;
+    }
+    if (should_promote_extent) {
+      num_elements = IntImm(DataType::Int(32), logical_extent);
+    }
+  }
   return MakeBlackholeCall(tir::builtin::blackhole_fill_fragment(),
-                           {match.dst->data, match.num_elements, match.value});
+                           {match.dst->data, num_elements, match.value});
 }
 
 bool LowerBlackholeOps::MatchScalarMaxStore(const BufferStoreNode* op,
@@ -4288,7 +5007,7 @@ bool LowerBlackholeOps::MatchGroupedScalarMaxLoop(const ForNode* op,
     }
     match->dst = store->buffer;
     match->src = other_load->buffer;
-    match->num_elements = op->extent;
+    match->num_elements = PrimExpr();
     return true;
   };
 
@@ -4296,12 +5015,89 @@ bool LowerBlackholeOps::MatchGroupedScalarMaxLoop(const ForNode* op,
 }
 
 Stmt LowerBlackholeOps::GenerateScalarMaxSequence(const ScalarMaxMatch& match) {
-  if (match.num_elements.defined()) {
+  ScalarMaxMatch lowered_match = match;
+  const int64_t logical_extent = GetLogicalVectorLength(match.dst);
+  if (!lowered_match.num_elements.defined() && logical_extent > 1) {
+    lowered_match.num_elements = IntImm(DataType::Int(32), logical_extent);
+  }
+
+  Map<String, Any> op_payload =
+      MakeComputeEpilogueOpPayload("scalar_max", BufferIdentityName(lowered_match.dst));
+  op_payload.Set("src_buffer", String(BufferIdentityName(lowered_match.src)));
+  SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
+  RecordComputeEpilogueOp(std::move(op_payload));
+  if (lowered_match.num_elements.defined()) {
     return MakeBlackholeCall(tir::builtin::blackhole_scalar_max(),
-                             {match.dst->data, match.src->data, match.num_elements});
+                             {lowered_match.dst->data, lowered_match.src->data,
+                              lowered_match.num_elements});
   }
   return MakeBlackholeCall(tir::builtin::blackhole_scalar_max(),
-                           {match.dst->data, match.src->data});
+                           {lowered_match.dst->data, lowered_match.src->data});
+}
+
+bool LowerBlackholeOps::MatchScalarFragmentCopyStore(const BufferStoreNode* op,
+                                                     ScalarFragmentCopyMatch* match) const {
+  if (!op || !match || !IsScalarLocalFragmentBuffer(op->buffer) || op->indices.size() != 1 ||
+      !tir::is_zero(op->indices[0])) {
+    return false;
+  }
+  const auto* load = op->value.as<BufferLoadNode>();
+  if (!load || load->indices.size() != 1 || !tir::is_zero(load->indices[0]) ||
+      !IsScalarLocalFragmentBuffer(load->buffer) || SameBufferIdentity(op->buffer, load->buffer) ||
+      op->buffer->dtype != load->buffer->dtype) {
+    return false;
+  }
+  const int64_t logical_extent = GetLogicalVectorLength(op->buffer);
+  if (logical_extent <= 1) {
+    return false;
+  }
+  match->dst = op->buffer;
+  match->src = load->buffer;
+  match->num_elements = IntImm(DataType::Int(32), logical_extent);
+  return true;
+}
+
+bool LowerBlackholeOps::MatchGroupedScalarFragmentCopyLoop(const ForNode* op,
+                                                           ScalarFragmentCopyMatch* match) const {
+  if (!op || !match) {
+    return false;
+  }
+  const auto* store = AsUnwrappedBufferStore(op->body);
+  if (!store || !IsRowScalarLocalFragmentBuffer(store->buffer) || store->indices.size() != 1 ||
+      !store->indices[0].same_as(op->loop_var)) {
+    return false;
+  }
+  const auto* load = store->value.as<BufferLoadNode>();
+  if (!load || load->indices.size() != 1 || !load->indices[0].same_as(op->loop_var) ||
+      !IsRowScalarLocalFragmentBuffer(load->buffer) ||
+      SameBufferIdentity(store->buffer, load->buffer) ||
+      store->buffer->dtype != load->buffer->dtype) {
+    return false;
+  }
+  const int64_t logical_extent = GetLogicalVectorLength(store->buffer);
+  if (logical_extent <= 1) {
+    return false;
+  }
+  match->dst = store->buffer;
+  match->src = load->buffer;
+  match->num_elements = IntImm(DataType::Int(32), logical_extent);
+  return true;
+}
+
+Stmt LowerBlackholeOps::GenerateScalarFragmentCopySequence(const ScalarFragmentCopyMatch& match) {
+  FragmentCastMatch cast_match;
+  cast_match.dst = match.dst;
+  cast_match.src = match.src;
+  cast_match.dst_offset = IntImm(DataType::Int(32), 0);
+  cast_match.src_offset = IntImm(DataType::Int(32), 0);
+  cast_match.num_elements = match.num_elements;
+  if (!cast_match.num_elements.defined()) {
+    const int64_t logical_extent = GetLogicalVectorLength(match.dst);
+    if (logical_extent > 1) {
+      cast_match.num_elements = IntImm(DataType::Int(32), logical_extent);
+    }
+  }
+  return GenerateFragmentCastSequence(cast_match, /*publish_cb=*/false);
 }
 
 bool LowerBlackholeOps::MatchDirectFragmentCast(const ForNode* op,
@@ -4352,11 +5148,40 @@ bool LowerBlackholeOps::MatchDirectFragmentCast(const ForNode* op,
   match->dst_offset = dst_offset;
   match->src_offset = src_offset;
   match->num_elements = num_elements;
+  const auto [logical_src_rows, logical_src_cols] = GetLogicalMatrixShape(load->buffer);
+  const auto [logical_dst_rows, logical_dst_cols] = GetLogicalMatrixShape(inner_store->buffer);
+  const int64_t logical_dst_extent = GetLogicalVectorLength(inner_store->buffer);
+  const int64_t logical_src_extent = logical_src_rows > 0 && logical_src_cols > 0
+                                         ? logical_src_rows * logical_src_cols
+                                         : -1;
+  const int64_t logical_matrix_cast_extent =
+      logical_dst_rows > 0 && logical_dst_cols > 0 ? logical_dst_rows * logical_dst_cols : -1;
+  if (logical_src_extent > 0 && logical_matrix_cast_extent > 0 &&
+      logical_src_extent == logical_matrix_cast_extent && logical_src_extent > logical_dst_extent &&
+      tir::is_zero(match->src_offset) && tir::is_zero(match->dst_offset)) {
+    match->num_elements = IntImm(DataType::Int(32), logical_src_extent);
+    return true;
+  }
+  if (logical_src_rows > 0 && logical_src_cols > 0 && logical_dst_extent > 0) {
+    Var thread_row_var = SelectLogicalRowThreadVar(logical_src_rows);
+    if (thread_row_var.defined() && !ExprUsesVar(match->src_offset, thread_row_var)) {
+      match->src_offset = analyzer.Simplify(thread_row_var * IntImm(DataType::Int(32), logical_src_cols) +
+                                            match->src_offset);
+    }
+  }
   return true;
 }
 
 Stmt LowerBlackholeOps::GenerateFragmentCastSequence(const FragmentCastMatch& match,
                                                     bool publish_cb) {
+  Map<String, Any> op_payload =
+      MakeComputeEpilogueOpPayload("cast_fragment_slice", BufferIdentityName(match.dst));
+  op_payload.Set("src_buffer", String(BufferIdentityName(match.src)));
+  op_payload.Set("publish_cb", Bool(publish_cb || GetStorageScope(match.dst) == "blackhole.acc"));
+  SetOptionalExprField(&op_payload, "dst_offset_expr", match.dst_offset);
+  SetOptionalExprField(&op_payload, "src_offset_expr", match.src_offset);
+  SetOptionalExprField(&op_payload, "num_elements_expr", match.num_elements);
+  RecordComputeEpilogueOp(std::move(op_payload));
   std::vector<Stmt> stmts;
   stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cast_fragment_slice(),
                                     {match.dst->data, match.src->data, match.dst_offset,
@@ -4367,9 +5192,10 @@ Stmt LowerBlackholeOps::GenerateFragmentCastSequence(const FragmentCastMatch& ma
     ICHECK_GE(cb_id, 0);
     ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
     int num_pages = std::max(1, cb_requirements_[cb_id].num_pages);
-    auto it = cb_consumed_fragment_pages_by_data_name_.find(match.dst->data->name_hint);
-    if (it != cb_consumed_fragment_pages_by_data_name_.end()) {
-      num_pages = std::max(num_pages, it->second);
+    const std::string buffer_identity = BufferIdentityName(match.dst);
+    auto it = cb_consumed_fragment_pages_by_buffer_identity_.find(buffer_identity);
+    if (it != cb_consumed_fragment_pages_by_buffer_identity_.end()) {
+      num_pages = std::max(1, it->second);
     }
     stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cb_push_back(),
                                       {IntImm32(cb_id), IntImm32(num_pages)}));
@@ -4522,8 +5348,38 @@ bool LowerBlackholeOps::MatchDirectLocalToCBSliceLoop(const ForNode* op,
                      direct_wrapped_src_allocation, prefix);
 }
 
+namespace {
+
+class LocalSliceCastSourceOffsetRewriter : public tir::StmtExprMutator {
+ public:
+  LocalSliceCastSourceOffsetRewriter(const Var& local_slice_data, const PrimExpr& src_offset)
+      : local_slice_data_(local_slice_data), src_offset_(src_offset) {}
+
+ private:
+  PrimExpr VisitExpr_(const CallNode* op) final {
+    if (op->op.same_as(tir::builtin::blackhole_cast_fragment_slice()) && op->args.size() == 5 &&
+        op->args[0].same_as(local_slice_data_)) {
+      Array<PrimExpr> args = op->args;
+      args.Set(3, src_offset_);
+      return Call(op->dtype, op->op, args, op->annotations, op->span);
+    }
+    return tir::StmtExprMutator::VisitExpr_(op);
+  }
+
+  Var local_slice_data_;
+  PrimExpr src_offset_;
+};
+
+}  // namespace
+
 Stmt LowerBlackholeOps::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
                                                            const LocalToCBSliceMatch& match) {
+  Map<String, Any> op_payload =
+      MakeComputeEpilogueOpPayload("write_local_slice_to_cb", BufferIdentityName(match.dst));
+  op_payload.Set("src_buffer", String(BufferIdentityName(match.src)));
+  SetOptionalExprField(&op_payload, "dst_offset_expr", match.dst_offset_elements);
+  SetOptionalExprField(&op_payload, "num_elements_expr", match.num_elements);
+  RecordComputeEpilogueOp(std::move(op_payload));
   const int cb_id = AllocateRequirementIndex(match.dst, CBType::kIntermediate);
   ICHECK_GE(cb_id, 0);
   ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
@@ -4534,7 +5390,10 @@ Stmt LowerBlackholeOps::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
                                     {IntImm32(cb_id), IntImm32(num_pages)}));
   std::vector<Stmt> loop_stmts;
   if (match.lowered_loop_body.defined()) {
-    loop_stmts.push_back(VisitStmt(match.lowered_loop_body));
+    Stmt lowered_prefix = VisitStmt(match.lowered_loop_body);
+    lowered_prefix =
+        LocalSliceCastSourceOffsetRewriter(match.src->data, match.dst_offset_elements)(lowered_prefix);
+    loop_stmts.push_back(lowered_prefix);
   }
   loop_stmts.push_back(MakeBlackholeCall(blackhole_write_local_slice_to_cb(),
                                          {match.src->data, IntImm32(cb_id),
@@ -4568,6 +5427,9 @@ Stmt LowerBlackholeOps::VisitStmt_(const AttrStmtNode* op) {
     if (zero_thread_var) {
       thread_index_vars_.insert(iv->var.get());
       thread_index_var_names_.insert(iv->var->name_hint);
+      if (const auto* extent = op->value.as<IntImmNode>()) {
+        thread_index_var_static_extents_[iv->var.get()] = extent->value;
+      }
     } else if (transport_thread_var) {
       block_index_vars_.insert(iv->var.get());
       block_index_var_names_.insert(iv->var->name_hint);
@@ -4611,6 +5473,10 @@ Stmt LowerBlackholeOps::VisitStmt_(const DeclBufferNode* op) {
 }
 
 Stmt LowerBlackholeOps::VisitStmt_(const AllocateNode* op) {
+  RowReductionMatch pre_lower_match;
+  if (MatchAllocatedRowReduction(op, &pre_lower_match)) {
+    return GenerateRowReductionSequence(pre_lower_match);
+  }
   Stmt lowered = StmtExprMutator::VisitStmt_(op);
   if (const auto* allocate = lowered.as<AllocateNode>()) {
     RowReductionMatch match;
@@ -4834,9 +5700,17 @@ Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
   if (MatchDirectFragmentFill(op, &direct_fill_match)) {
     return GenerateFragmentFillSequence(direct_fill_match);
   }
+  ScalarFragmentCopyMatch grouped_scalar_copy_match;
+  if (MatchGroupedScalarFragmentCopyLoop(op, &grouped_scalar_copy_match)) {
+    return GenerateScalarFragmentCopySequence(grouped_scalar_copy_match);
+  }
   ScalarMaxMatch grouped_scalar_max_match;
   if (MatchGroupedScalarMaxLoop(op, &grouped_scalar_max_match)) {
     return GenerateScalarMaxSequence(grouped_scalar_max_match);
+  }
+  ScalarExp2AffineMatch grouped_scalar_exp2_affine_match;
+  if (MatchGroupedScalarExp2AffineLoop(op, &grouped_scalar_exp2_affine_match)) {
+    return GenerateScalarExp2AffineSequence(grouped_scalar_exp2_affine_match);
   }
   ScalarFmaMatch grouped_scalar_fma_match;
   if (MatchGroupedScalarFmaLoop(op, &grouped_scalar_fma_match)) {
@@ -4886,6 +5760,10 @@ Stmt LowerBlackholeOps::VisitStmt_(const BufferStoreNode* op) {
   FragmentFillMatch fill_match;
   if (MatchScalarFragmentFillStore(op, &fill_match)) {
     return GenerateFragmentFillSequence(fill_match);
+  }
+  ScalarFragmentCopyMatch scalar_copy_match;
+  if (MatchScalarFragmentCopyStore(op, &scalar_copy_match)) {
+    return GenerateScalarFragmentCopySequence(scalar_copy_match);
   }
   ScalarMaxMatch scalar_max_match;
   if (MatchScalarMaxStore(op, &scalar_max_match)) {

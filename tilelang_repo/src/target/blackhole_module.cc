@@ -192,11 +192,17 @@ static ComputeContractSpec GetComputeContract(const ExecutableSpec& spec);
 
 static void ValidateComputeContractDirectRuntimeConstraints(const ExecutableSpec& spec) {
   const auto contract = GetComputeContract(spec);
-  if (!contract.enabled || contract.kind != "gemm") {
-    return;
+  if (contract.enabled && contract.kind == "gemm") {
+    ICHECK(!contract.has_mbarrier)
+        << "Blackhole direct runtime does not yet support GEMM compute_contract.mbarrier bindings";
   }
-  ICHECK(!contract.has_mbarrier)
-      << "Blackhole direct runtime does not yet support GEMM compute_contract.mbarrier bindings";
+  for (const auto& multi_contract : spec.multi_compute_contracts) {
+    if (!multi_contract.enabled || multi_contract.kind != "gemm") {
+      continue;
+    }
+    ICHECK(!multi_contract.has_mbarrier)
+        << "Blackhole direct runtime does not yet support GEMM multi_compute_contracts.mbarrier bindings";
+  }
 }
 
 static ComputeContractSpec GetComputeContract(const ExecutableSpec& spec) {
@@ -279,6 +285,315 @@ static void ValidateGemmOutputShape(const ExecutableSpec& spec,
       << ") for logical grid " << logical_grid_x << "x" << logical_grid_y;
 }
 
+static const BufferMaterializationSpec& ResolveBufferMaterializationSpec(
+    const ExecutableSpec& spec,
+    const std::string& buffer_name);
+
+template <typename T>
+static const T* GetTensorData(const DLTensor* tensor) {
+  const uint8_t* base = static_cast<const uint8_t*>(tensor->data);
+  return reinterpret_cast<const T*>(base + tensor->byte_offset);
+}
+
+template <typename T>
+static T* GetTensorData(DLTensor* tensor) {
+  uint8_t* base = static_cast<uint8_t*>(tensor->data);
+  return reinterpret_cast<T*>(base + tensor->byte_offset);
+}
+
+static bool HasCompactRowMajorLayout(const DLTensor* tensor) {
+  if (tensor == nullptr || tensor->ndim <= 0) {
+    return false;
+  }
+  if (tensor->strides == nullptr) {
+    return true;
+  }
+  int64_t expected_stride = 1;
+  for (int i = tensor->ndim - 1; i >= 0; --i) {
+    if (tensor->strides[i] != expected_stride) {
+      return false;
+    }
+    expected_stride *= tensor->shape[i];
+  }
+  return true;
+}
+
+static std::vector<int64_t> GetTensorShape(const DLTensor* tensor) {
+  std::vector<int64_t> shape;
+  shape.reserve(tensor->ndim);
+  for (int i = 0; i < tensor->ndim; ++i) {
+    shape.push_back(tensor->shape[i]);
+  }
+  return shape;
+}
+
+static int64_t ShapeProduct(const std::vector<int64_t>& shape, size_t begin, size_t end) {
+  int64_t product = 1;
+  for (size_t i = begin; i < end; ++i) {
+    product *= shape[i];
+  }
+  return product;
+}
+
+static std::vector<int64_t> MakeIdentityAxisOrder(int ndim) {
+  std::vector<int64_t> axis_order;
+  axis_order.reserve(ndim);
+  for (int i = 0; i < ndim; ++i) {
+    axis_order.push_back(i);
+  }
+  return axis_order;
+}
+
+static std::vector<int64_t> InvertAxisOrder(const std::vector<int64_t>& axis_order) {
+  std::vector<int64_t> inverse(axis_order.size(), -1);
+  for (size_t i = 0; i < axis_order.size(); ++i) {
+    inverse[static_cast<size_t>(axis_order[i])] = static_cast<int64_t>(i);
+  }
+  return inverse;
+}
+
+static std::vector<int64_t> PermuteShape(const std::vector<int64_t>& shape,
+                                         const std::vector<int64_t>& axis_order) {
+  std::vector<int64_t> permuted_shape;
+  permuted_shape.reserve(axis_order.size());
+  for (int64_t axis : axis_order) {
+    permuted_shape.push_back(shape[static_cast<size_t>(axis)]);
+  }
+  return permuted_shape;
+}
+
+static std::vector<int64_t> ComputeRowMajorStrides(const std::vector<int64_t>& shape) {
+  std::vector<int64_t> strides(shape.size(), 1);
+  int64_t running = 1;
+  for (int i = static_cast<int>(shape.size()) - 1; i >= 0; --i) {
+    strides[static_cast<size_t>(i)] = running;
+    running *= shape[static_cast<size_t>(i)];
+  }
+  return strides;
+}
+
+static int AxisOrderDisplacementScore(const std::vector<int64_t>& axis_order) {
+  int score = 0;
+  for (size_t i = 0; i < axis_order.size(); ++i) {
+    score += std::abs(static_cast<int>(axis_order[i]) - static_cast<int>(i));
+  }
+  return score;
+}
+
+static uint32_t GetTotalLogicalWorkItems(const ExecutableSpec& spec) {
+  uint32_t total = 0;
+  for (const auto& packet : spec.core_plan.work_packets) {
+    total += packet.work_count;
+  }
+  return std::max<uint32_t>(1, total);
+}
+
+static std::vector<int64_t> InferWorkMajorAxisOrder(const DLTensor* tensor,
+                                                    uint32_t total_work_items,
+                                                    uint32_t tile_rows) {
+  const std::vector<int64_t> identity = MakeIdentityAxisOrder(tensor->ndim);
+  if (tensor->ndim <= 2 || total_work_items <= 1) {
+    return identity;
+  }
+
+  const std::vector<int64_t> shape = GetTensorShape(tensor);
+  const int64_t total_rows = ShapeProduct(shape, 0, shape.size() - 1);
+  if (total_rows <= 0 || total_rows % total_work_items != 0) {
+    return identity;
+  }
+  const int64_t rows_per_work_item = total_rows / total_work_items;
+  if (rows_per_work_item <= 0 || rows_per_work_item % tile_rows != 0) {
+    return identity;
+  }
+
+  std::vector<int64_t> row_axes;
+  row_axes.reserve(static_cast<size_t>(tensor->ndim - 1));
+  for (int i = 0; i < tensor->ndim - 1; ++i) {
+    row_axes.push_back(i);
+  }
+
+  std::vector<int64_t> best_axis_order;
+  int best_score = std::numeric_limits<int>::max();
+  do {
+    int64_t leading_product = 1;
+    for (size_t split = 1; split <= row_axes.size(); ++split) {
+      leading_product *= shape[static_cast<size_t>(row_axes[split - 1])];
+      if (leading_product > total_work_items) {
+        break;
+      }
+      if (leading_product != total_work_items) {
+        continue;
+      }
+      const int64_t trailing_product =
+          split == row_axes.size()
+              ? 1
+              : [&]() {
+                  int64_t product = 1;
+                  for (size_t i = split; i < row_axes.size(); ++i) {
+                    product *= shape[static_cast<size_t>(row_axes[i])];
+                  }
+                  return product;
+                }();
+      if (trailing_product != rows_per_work_item) {
+        continue;
+      }
+      std::vector<int64_t> candidate = row_axes;
+      candidate.push_back(tensor->ndim - 1);
+      const int score = AxisOrderDisplacementScore(candidate);
+      if (score < best_score) {
+        best_score = score;
+        best_axis_order = std::move(candidate);
+      }
+    }
+  } while (std::next_permutation(row_axes.begin(), row_axes.end()));
+
+  return best_axis_order.empty() ? identity : best_axis_order;
+}
+
+static bool IsValidAxisOrder(const std::vector<int64_t>& axis_order, int ndim) {
+  if (static_cast<int>(axis_order.size()) != ndim) {
+    return false;
+  }
+  std::vector<bool> seen(static_cast<size_t>(ndim), false);
+  for (int64_t axis : axis_order) {
+    if (axis < 0 || axis >= ndim || seen[static_cast<size_t>(axis)]) {
+      return false;
+    }
+    seen[static_cast<size_t>(axis)] = true;
+  }
+  return true;
+}
+
+template <typename T>
+static std::vector<T> PermuteContiguousTensorAxes(const T* src,
+                                                  const std::vector<int64_t>& shape,
+                                                  const std::vector<int64_t>& axis_order) {
+  const std::vector<int64_t> permuted_shape = PermuteShape(shape, axis_order);
+  const std::vector<int64_t> input_strides = ComputeRowMajorStrides(shape);
+  const std::vector<int64_t> output_strides = ComputeRowMajorStrides(permuted_shape);
+  const size_t numel = static_cast<size_t>(ShapeProduct(shape, 0, shape.size()));
+  std::vector<T> output(numel);
+  for (size_t out_linear = 0; out_linear < numel; ++out_linear) {
+    size_t remainder = out_linear;
+    int64_t input_linear = 0;
+    for (size_t i = 0; i < axis_order.size(); ++i) {
+      const int64_t stride = output_strides[i];
+      const int64_t coord =
+          stride == 0 ? 0 : static_cast<int64_t>(remainder / static_cast<size_t>(stride));
+      remainder %= static_cast<size_t>(stride);
+      input_linear += coord * input_strides[static_cast<size_t>(axis_order[i])];
+    }
+    output[out_linear] = src[static_cast<size_t>(input_linear)];
+  }
+  return output;
+}
+
+struct InterleavedTilePlan {
+  bool enabled = false;
+  uint32_t tile_rows = 0;
+  uint32_t tile_cols = 0;
+  std::vector<int64_t> axis_order;
+  bool transpose_2d = false;
+};
+
+static InterleavedTilePlan BuildInterleavedTilePlan(const ExecutableSpec& spec,
+                                                    const BufferMaterializationSpec& materialization,
+                                                    const DLTensor* tensor) {
+  InterleavedTilePlan plan;
+  if (tensor == nullptr || tensor->ndim < 2 || !HasCompactRowMajorLayout(tensor)) {
+    return plan;
+  }
+  if (tensor->dtype.lanes != 1 || tensor->dtype.bits == 0) {
+    return plan;
+  }
+
+  const uint32_t element_size_bytes = static_cast<uint32_t>((tensor->dtype.bits + 7) / 8);
+  if (element_size_bytes == 0 || materialization.transport_page_size_bytes == 0 ||
+      materialization.transport_page_size_bytes % element_size_bytes != 0) {
+    return plan;
+  }
+
+  constexpr uint32_t kBlackholeTileCols = 32;
+  const uint32_t tile_elements = materialization.transport_page_size_bytes / element_size_bytes;
+  const uint32_t tile_rows = tile_elements / kBlackholeTileCols;
+  if (tile_elements == 0 || tile_elements % kBlackholeTileCols != 0) {
+    return plan;
+  }
+
+  if (!materialization.host_axis_order.empty()) {
+    ICHECK(IsValidAxisOrder(materialization.host_axis_order, tensor->ndim))
+        << "Invalid Blackhole host_axis_order materialization contract for buffer "
+        << materialization.buffer;
+    plan.axis_order = materialization.host_axis_order;
+  } else {
+    plan.axis_order = InferWorkMajorAxisOrder(tensor, GetTotalLogicalWorkItems(spec), tile_rows);
+  }
+  const std::vector<int64_t> host_shape = GetTensorShape(tensor);
+  const std::vector<int64_t> device_shape = PermuteShape(host_shape, plan.axis_order);
+  int64_t total_rows = ShapeProduct(device_shape, 0, device_shape.size() - 1);
+  int64_t cols = device_shape.back();
+  if (materialization.transpose_2d) {
+    std::swap(total_rows, cols);
+  }
+  if (tile_rows == 0 || cols <= 0 || cols % kBlackholeTileCols != 0 || total_rows <= 0 ||
+      total_rows % tile_rows != 0) {
+    return plan;
+  }
+
+  plan.enabled = true;
+  plan.tile_rows = tile_rows;
+  plan.tile_cols = kBlackholeTileCols;
+  plan.transpose_2d = materialization.transpose_2d;
+  return plan;
+}
+
+template <typename T>
+static std::vector<uint8_t> BuildInterleavedTiledTransferData(const DLTensor* tensor,
+                                                              const InterleavedTilePlan& plan) {
+  const std::vector<int64_t> host_shape = GetTensorShape(tensor);
+  const std::vector<T> permuted = PermuteContiguousTensorAxes(
+      GetTensorData<T>(tensor), host_shape, plan.axis_order);
+  const std::vector<int64_t> device_shape = PermuteShape(host_shape, plan.axis_order);
+  uint32_t rows = static_cast<uint32_t>(ShapeProduct(device_shape, 0, device_shape.size() - 1));
+  uint32_t cols = static_cast<uint32_t>(device_shape.back());
+  std::vector<T> row_major = permuted;
+  if (plan.transpose_2d) {
+    row_major = TransposeRowMajor2D(permuted.data(), rows, cols);
+    std::swap(rows, cols);
+  }
+  std::vector<T> tiled = tilize_nfaces(row_major, rows, cols);
+  std::vector<uint8_t> bytes(tiled.size() * sizeof(T));
+  std::memcpy(bytes.data(), tiled.data(), bytes.size());
+  return bytes;
+}
+
+template <typename T>
+static void CopyInterleavedTiledOutputToTensor(DLTensor* tensor,
+                                               const InterleavedTilePlan& plan,
+                                               const std::vector<uint8_t>& output_data) {
+  const std::vector<int64_t> host_shape = GetTensorShape(tensor);
+  const std::vector<int64_t> device_shape = PermuteShape(host_shape, plan.axis_order);
+  uint32_t rows = static_cast<uint32_t>(ShapeProduct(device_shape, 0, device_shape.size() - 1));
+  uint32_t cols = static_cast<uint32_t>(device_shape.back());
+  if (plan.transpose_2d) {
+    std::swap(rows, cols);
+  }
+  const size_t numel = static_cast<size_t>(ShapeProduct(device_shape, 0, device_shape.size()));
+  ICHECK_EQ(output_data.size(), numel * sizeof(T))
+      << "Unexpected interleaved tiled output buffer size: got " << output_data.size()
+      << " bytes, expected " << (numel * sizeof(T)) << " bytes";
+  const auto* tiled = reinterpret_cast<const T*>(output_data.data());
+  std::vector<T> tiled_vec(tiled, tiled + numel);
+  std::vector<T> device_row_major = untilize_nfaces(tiled_vec, rows, cols);
+  if (plan.transpose_2d) {
+    device_row_major = TransposeRowMajor2D(device_row_major.data(), rows, cols);
+  }
+  const std::vector<int64_t> inverse_axis_order = InvertAxisOrder(plan.axis_order);
+  std::vector<T> host_row_major =
+      PermuteContiguousTensorAxes(device_row_major.data(), device_shape, inverse_axis_order);
+  std::memcpy(GetTensorData<T>(tensor), host_row_major.data(), host_row_major.size() * sizeof(T));
+}
+
 static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
                                                    const RuntimeTensorBinding& binding) {
   const DLTensor* tensor = binding.tensor;
@@ -287,14 +602,25 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
   const auto gemm = GetComputeContract(spec);
 
   if (!gemm.enabled || gemm.kind != "gemm" || !IsTwoDimTensor(tensor)) {
+    const auto& materialization = ResolveBufferMaterializationSpec(spec, binding.name);
+    const InterleavedTilePlan tile_plan =
+        BuildInterleavedTilePlan(spec, materialization, tensor);
+    if (tile_plan.enabled) {
+      if (tensor->dtype.bits == 16) {
+        return BuildInterleavedTiledTransferData<uint16_t>(tensor, tile_plan);
+      }
+      if (tensor->dtype.bits == 32) {
+        return BuildInterleavedTiledTransferData<uint32_t>(tensor, tile_plan);
+      }
+    }
     std::vector<uint8_t> raw(tensor_size);
-    std::memcpy(raw.data(), tensor->data, tensor_size);
+    std::memcpy(raw.data(), GetTensorData<uint8_t>(tensor), tensor_size);
     return raw;
   }
 
   if (binding.name != gemm.a_buffer && binding.name != gemm.b_buffer) {
     std::vector<uint8_t> raw(tensor_size);
-    std::memcpy(raw.data(), tensor->data, tensor_size);
+    std::memcpy(raw.data(), GetTensorData<uint8_t>(tensor), tensor_size);
     return raw;
   }
 
@@ -309,7 +635,7 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
   ICHECK_EQ(expected_tensor_dtype, "Float16_b")
       << "Blackhole direct GEMM currently supports only bfloat16 inputs, but " << binding.name
       << " requested " << expected_tensor_dtype;
-  const auto* raw = static_cast<const uint16_t*>(tensor->data);
+  const auto* raw = GetTensorData<uint16_t>(tensor);
   const auto [rows, cols] = GetTensorShape2D(tensor);
   ValidateGemmInputShape(spec, binding, rows, cols);
 
@@ -338,7 +664,20 @@ static void CopyOutputFromDeviceBuffer(const ExecutableSpec& spec,
 
   if (!gemm.enabled || gemm.kind != "gemm" || binding.name != gemm.c_buffer ||
       !IsTwoDimTensor(binding.tensor)) {
-    std::memcpy(binding.tensor->data, output_data.data(), tensor_size);
+    const auto& materialization = ResolveBufferMaterializationSpec(spec, binding.name);
+    const InterleavedTilePlan tile_plan =
+        BuildInterleavedTilePlan(spec, materialization, binding.tensor);
+    if (tile_plan.enabled) {
+      if (binding.tensor->dtype.bits == 16) {
+        CopyInterleavedTiledOutputToTensor<uint16_t>(binding.tensor, tile_plan, output_data);
+        return;
+      }
+      if (binding.tensor->dtype.bits == 32) {
+        CopyInterleavedTiledOutputToTensor<uint32_t>(binding.tensor, tile_plan, output_data);
+        return;
+      }
+    }
+    std::memcpy(GetTensorData<uint8_t>(binding.tensor), output_data.data(), tensor_size);
     return;
   }
 
@@ -360,11 +699,13 @@ static void CopyOutputFromDeviceBuffer(const ExecutableSpec& spec,
   const auto* tiled = reinterpret_cast<const float*>(output_data.data());
   std::vector<float> tiled_vec(tiled, tiled + numel);
   std::vector<float> row_major = untilize_nfaces(tiled_vec, rows, cols);
-  std::memcpy(binding.tensor->data, row_major.data(), row_major.size() * sizeof(float));
+  std::memcpy(GetTensorData<float>(binding.tensor), row_major.data(),
+              row_major.size() * sizeof(float));
 }
 
 static tt::DataFormat ParseDataFormat(const std::string& value) {
-  if (value == "Float16" || value == "Float16_b") return tt::DataFormat::Float16_b;
+  if (value == "Float16") return tt::DataFormat::Float16;
+  if (value == "Float16_b") return tt::DataFormat::Float16_b;
   if (value == "Float32") return tt::DataFormat::Float32;
   if (value == "UInt16") return tt::DataFormat::UInt16;
   if (value == "UInt32") return tt::DataFormat::UInt32;
@@ -1651,19 +1992,33 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
   // legacy paths that do not materialize buffer names in runtime_args.
   std::unordered_map<std::string, bool> buffer_is_output_by_name;
   std::vector<bool> buffer_is_output;
-  for (const auto& arg : info_.runtime_args) {
-    if (arg.kind == "input_buffer_addr32" || arg.kind == "input_buffer_addr") {
-      if (!arg.buffer.empty()) {
-        buffer_is_output_by_name.emplace(normalize_buffer_name(arg.buffer), false);
+  std::vector<std::string> ordered_buffer_names;
+  std::unordered_set<std::string> seen_buffer_names;
+  auto append_buffer_contract = [&](const std::vector<KernelArgSpec>& runtime_args) {
+    for (const auto& arg : runtime_args) {
+      if (arg.kind == "input_buffer_addr32" || arg.kind == "input_buffer_addr") {
+        if (!arg.buffer.empty()) {
+          const std::string normalized_buffer_name = normalize_buffer_name(arg.buffer);
+          buffer_is_output_by_name.emplace(normalized_buffer_name, false);
+          if (seen_buffer_names.insert(normalized_buffer_name).second) {
+            ordered_buffer_names.push_back(normalized_buffer_name);
+          }
+        }
+        buffer_is_output.push_back(false);
+      } else if (arg.kind == "output_buffer_addr32" || arg.kind == "output_buffer_addr") {
+        if (!arg.buffer.empty()) {
+          const std::string normalized_buffer_name = normalize_buffer_name(arg.buffer);
+          buffer_is_output_by_name.emplace(normalized_buffer_name, true);
+          if (seen_buffer_names.insert(normalized_buffer_name).second) {
+            ordered_buffer_names.push_back(normalized_buffer_name);
+          }
+        }
+        buffer_is_output.push_back(true);
       }
-      buffer_is_output.push_back(false);
-    } else if (arg.kind == "output_buffer_addr32" || arg.kind == "output_buffer_addr") {
-      if (!arg.buffer.empty()) {
-        buffer_is_output_by_name.emplace(normalize_buffer_name(arg.buffer), true);
-      }
-      buffer_is_output.push_back(true);
     }
-  }
+  };
+  append_buffer_contract(info_.runtime_args);
+  append_buffer_contract(info_.common_runtime_args);
   // Fallback: if runtime_args carries no buffer kind info, treat last buffer as output.
   const bool use_position_fallback = buffer_is_output.empty();
   size_t n_buffer_args = 0;
@@ -1681,9 +2036,11 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
     if (info_.tvm_is_buffer_arg[i]) {
       DLTensor* tensor = ExtractTensorArg(args[i], void_args != nullptr ? void_args[i] : nullptr);
       const std::string buffer_name =
-          (i < info_.tvm_arg_names.size() && !info_.tvm_arg_names[i].empty())
-              ? info_.tvm_arg_names[i]
-              : ("arg" + std::to_string(i));
+          (buf_idx < ordered_buffer_names.size())
+              ? ordered_buffer_names[buf_idx]
+              : ((i < info_.tvm_arg_names.size() && !info_.tvm_arg_names[i].empty())
+                     ? info_.tvm_arg_names[i]
+                     : ("arg" + std::to_string(i)));
       const std::string normalized_buffer_name = normalize_buffer_name(buffer_name);
       auto role_it = buffer_is_output_by_name.find(normalized_buffer_name);
       bool is_out = false;

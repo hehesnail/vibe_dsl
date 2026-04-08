@@ -35,6 +35,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -391,17 +392,8 @@ static std::vector<SemaphoreSpec> ExtractSemaphorePlan(const tir::PrimFunc& f) {
   return semaphores;
 }
 
-static GemmContractSpec ExtractGemmContract(const tir::PrimFunc& f) {
+static GemmContractSpec ParseGemmContract(const ffi::Map<ffi::String, ffi::Any>& attrs) {
   GemmContractSpec contract;
-  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
-  ICHECK(maybe_program)
-      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
-  auto attrs = maybe_program.value()->payload.Get("gemm_contract")
-                   ? maybe_program.value()->payload.Get("gemm_contract")
-                         .value()
-                         .as<ffi::Map<ffi::String, ffi::Any>>()
-                         .value_or(ffi::Map<ffi::String, ffi::Any>())
-                   : ffi::Map<ffi::String, ffi::Any>();
   if (attrs.empty()) {
     return contract;
   }
@@ -457,6 +449,39 @@ static GemmContractSpec ExtractGemmContract(const tir::PrimFunc& f) {
   return contract;
 }
 
+static GemmContractSpec ExtractGemmContract(const tir::PrimFunc& f) {
+  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
+  ICHECK(maybe_program)
+      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
+  auto attrs = maybe_program.value()->payload.Get("gemm_contract")
+                   ? maybe_program.value()->payload.Get("gemm_contract")
+                         .value()
+                         .as<ffi::Map<ffi::String, ffi::Any>>()
+                         .value_or(ffi::Map<ffi::String, ffi::Any>())
+                   : ffi::Map<ffi::String, ffi::Any>();
+  return ParseGemmContract(attrs);
+}
+
+static std::vector<GemmContractSpec> ExtractMultiGemmContracts(const tir::PrimFunc& f) {
+  std::vector<GemmContractSpec> contracts;
+  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
+  ICHECK(maybe_program)
+      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
+  auto maybe_items = maybe_program.value()->payload.Get("multi_gemm_contracts");
+  if (!maybe_items) {
+    return contracts;
+  }
+  for (const auto& item : Downcast<ffi::Array<ffi::Any>>(maybe_items.value())) {
+    auto attrs =
+        item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(ffi::Map<ffi::String, ffi::Any>());
+    GemmContractSpec contract = ParseGemmContract(attrs);
+    if (contract.enabled) {
+      contracts.push_back(std::move(contract));
+    }
+  }
+  return contracts;
+}
+
 static ComputeContractSpec ComputeContractFromLegacyGemm(const GemmContractSpec& gemm) {
   ComputeContractSpec contract;
   if (!gemm.enabled) {
@@ -506,20 +531,66 @@ static ComputeContractSpec ComputeContractFromLegacyGemm(const GemmContractSpec&
   return contract;
 }
 
-static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
-                                                  const GemmContractSpec& gemm_contract) {
+static std::vector<ComputeContractSpec::EpilogueOpSpec> ParseComputeEpilogueOps(
+    const ffi::Map<ffi::String, ffi::Any>& attrs, const char* key = "epilogue_ops") {
+  std::vector<ComputeContractSpec::EpilogueOpSpec> epilogue_ops;
+  if (auto v = attrs.Get(key)) {
+    for (const auto& item : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+      auto op =
+          item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(ffi::Map<ffi::String, ffi::Any>());
+      if (op.empty()) {
+        continue;
+      }
+      ComputeContractSpec::EpilogueOpSpec entry;
+      if (auto value = op.Get("kind")) entry.kind = Downcast<String>(value.value());
+      if (auto value = op.Get("dst_buffer")) entry.dst_buffer = Downcast<String>(value.value());
+      if (auto value = op.Get("src_buffer")) entry.src_buffer = Downcast<String>(value.value());
+      if (auto value = op.Get("scalar_buffer")) {
+        entry.scalar_buffer = Downcast<String>(value.value());
+      }
+      if (auto value = op.Get("lhs_buffer")) entry.lhs_buffer = Downcast<String>(value.value());
+      if (auto value = op.Get("rhs_buffer")) entry.rhs_buffer = Downcast<String>(value.value());
+      if (auto value = op.Get("add_buffer")) entry.add_buffer = Downcast<String>(value.value());
+      if (auto value = op.Get("reduce_kind")) entry.reduce_kind = Downcast<String>(value.value());
+      if (auto value = op.Get("num_elements_expr")) {
+        entry.num_elements_expr = Downcast<String>(value.value());
+      }
+      if (auto value = op.Get("row_width_expr")) {
+        entry.row_width_expr = Downcast<String>(value.value());
+      }
+      if (auto value = op.Get("dst_offset_expr")) {
+        entry.dst_offset_expr = Downcast<String>(value.value());
+      }
+      if (auto value = op.Get("src_offset_expr")) {
+        entry.src_offset_expr = Downcast<String>(value.value());
+      }
+      if (auto value = op.Get("dst_scale_expr")) {
+        entry.dst_scale_expr = Downcast<String>(value.value());
+      }
+      if (auto value = op.Get("scalar_scale_expr")) {
+        entry.scalar_scale_expr = Downcast<String>(value.value());
+      }
+      if (auto value = op.Get("lhs_scale_expr")) {
+        entry.lhs_scale_expr = Downcast<String>(value.value());
+      }
+      if (auto value = op.Get("rhs_scale_expr")) {
+        entry.rhs_scale_expr = Downcast<String>(value.value());
+      }
+      if (auto value = op.Get("grouped")) entry.grouped = Downcast<Bool>(value.value());
+      if (auto value = op.Get("clear")) entry.clear = Downcast<Bool>(value.value());
+      if (auto value = op.Get("publish_cb")) entry.publish_cb = Downcast<Bool>(value.value());
+      if (!entry.kind.empty()) {
+        epilogue_ops.push_back(std::move(entry));
+      }
+    }
+  }
+  return epilogue_ops;
+}
+
+static ComputeContractSpec ParseComputeContract(const ffi::Map<ffi::String, ffi::Any>& attrs) {
   ComputeContractSpec contract;
-  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
-  ICHECK(maybe_program)
-      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
-  auto attrs = maybe_program.value()->payload.Get("compute_contract")
-                   ? maybe_program.value()->payload.Get("compute_contract")
-                         .value()
-                         .as<ffi::Map<ffi::String, ffi::Any>>()
-                         .value_or(ffi::Map<ffi::String, ffi::Any>())
-                   : ffi::Map<ffi::String, ffi::Any>();
   if (attrs.empty()) {
-    return ComputeContractFromLegacyGemm(gemm_contract);
+    return contract;
   }
   if (auto v = attrs.Get("enabled")) {
     contract.enabled = Downcast<Bool>(v.value());
@@ -683,6 +754,7 @@ static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
       contract.unpack_to_dest_mode.push_back(Downcast<String>(mode));
     }
   }
+  contract.epilogue_ops = ParseComputeEpilogueOps(attrs);
 
   contract.enabled = contract.enabled || (!contract.kind.empty() && contract.kind == "gemm" &&
                                           !contract.a_buffer.empty() &&
@@ -701,6 +773,52 @@ static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
     if (contract.math_fidelity.empty()) contract.math_fidelity = "HiFi4";
   }
   return contract;
+}
+
+static std::vector<ComputeContractSpec::EpilogueOpSpec> ExtractComputeEpilogueOps(
+    const tir::PrimFunc& f) {
+  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
+  ICHECK(maybe_program)
+      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
+  auto payload = maybe_program.value()->payload;
+  return ParseComputeEpilogueOps(payload, "compute_epilogue_ops");
+}
+
+static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
+                                                  const GemmContractSpec& gemm_contract) {
+  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
+  ICHECK(maybe_program)
+      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
+  auto attrs = maybe_program.value()->payload.Get("compute_contract")
+                   ? maybe_program.value()->payload.Get("compute_contract")
+                         .value()
+                         .as<ffi::Map<ffi::String, ffi::Any>>()
+                         .value_or(ffi::Map<ffi::String, ffi::Any>())
+                   : ffi::Map<ffi::String, ffi::Any>();
+  if (attrs.empty()) {
+    return ComputeContractFromLegacyGemm(gemm_contract);
+  }
+  return ParseComputeContract(attrs);
+}
+
+static std::vector<ComputeContractSpec> ExtractMultiComputeContracts(const tir::PrimFunc& f) {
+  std::vector<ComputeContractSpec> contracts;
+  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
+  ICHECK(maybe_program)
+      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
+  auto maybe_items = maybe_program.value()->payload.Get("multi_compute_contracts");
+  if (!maybe_items) {
+    return contracts;
+  }
+  for (const auto& item : Downcast<ffi::Array<ffi::Any>>(maybe_items.value())) {
+    auto attrs =
+        item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(ffi::Map<ffi::String, ffi::Any>());
+    ComputeContractSpec contract = ParseComputeContract(attrs);
+    if (contract.enabled) {
+      contracts.push_back(std::move(contract));
+    }
+  }
+  return contracts;
 }
 
 static bool ExtractComputeConfig(const ffi::Map<ffi::String, ffi::Any>& spec_info,
@@ -910,6 +1028,14 @@ static std::vector<AccessorSpec> ExtractAccessorsFromArray(const ffi::Array<ffi:
     if (auto v = accessor_info.Get("memory_space")) {
       accessor.memory_space = Downcast<String>(v.value());
     }
+    if (auto v = accessor_info.Get("host_axis_order")) {
+      for (const auto& axis : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+        accessor.host_axis_order.push_back(Downcast<Integer>(axis).IntValue());
+      }
+    }
+    if (auto v = accessor_info.Get("transpose_2d")) {
+      accessor.transpose_2d = Downcast<Bool>(v.value());
+    }
     if (!accessor.buffer.empty()) {
       if (accessor.compile_time_arg_offset == 0 && accessor.slot != 0) {
         accessor.compile_time_arg_offset = accessor.slot;
@@ -991,6 +1117,10 @@ static std::vector<CompileTimeArgSpec> ExtractCompileTimeArgSpecsFromArray(
     }
     if (auto v = spec_info.Get("args_config_bits")) {
       spec.args_config_bits =
+          static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+    }
+    if (auto v = spec_info.Get("transport_page_size")) {
+      spec.transport_page_size_bytes =
           static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
     }
     if (auto v = spec_info.Get("layout")) {
@@ -1140,6 +1270,177 @@ static std::vector<std::string> ExtractDirectRuntimeUnsupportedReasons(const tir
   return reasons;
 }
 
+struct StaticBufferInfo {
+  std::vector<int64_t> shape;
+  DLDataType dtype{};
+};
+
+static bool TryExtractStaticBufferInfo(const tir::Buffer& buffer, StaticBufferInfo* info) {
+  if (!buffer.defined() || buffer->shape.empty()) {
+    return false;
+  }
+  std::vector<int64_t> shape;
+  shape.reserve(buffer->shape.size());
+  for (const PrimExpr& extent : buffer->shape) {
+    const auto* int_imm = extent.as<IntImmNode>();
+    if (int_imm == nullptr || int_imm->value <= 0) {
+      return false;
+    }
+    shape.push_back(int_imm->value);
+  }
+  info->shape = std::move(shape);
+  info->dtype = buffer->dtype;
+  return true;
+}
+
+static void RecordStaticBufferInfo(std::unordered_map<std::string, StaticBufferInfo>* by_name,
+                                   const std::unordered_set<std::string>& target_buffers,
+                                   const tir::Buffer& buffer) {
+  if (!buffer.defined() || buffer->name.empty()) {
+    return;
+  }
+  if (!target_buffers.empty() && !target_buffers.count(buffer->name)) {
+    return;
+  }
+  StaticBufferInfo info;
+  if (!TryExtractStaticBufferInfo(buffer, &info)) {
+    return;
+  }
+  auto [it, inserted] = by_name->emplace(buffer->name, std::move(info));
+  if (inserted) {
+    return;
+  }
+  if (it->second.shape != info.shape || it->second.dtype.code != info.dtype.code ||
+      it->second.dtype.bits != info.dtype.bits || it->second.dtype.lanes != info.dtype.lanes) {
+    return;
+  }
+}
+
+static std::unordered_map<std::string, StaticBufferInfo> CollectStaticBufferInfo(
+    const tir::PrimFunc& f, const std::unordered_set<std::string>& target_buffers) {
+  std::unordered_map<std::string, StaticBufferInfo> by_name;
+  for (const auto& kv : f->buffer_map) {
+    RecordStaticBufferInfo(&by_name, target_buffers, kv.second);
+  }
+  tir::PostOrderVisit(f->body, [&](const ObjectRef& node) {
+    if (const auto* load = node.as<tir::BufferLoadNode>()) {
+      RecordStaticBufferInfo(&by_name, target_buffers, load->buffer);
+      return;
+    }
+    if (const auto* store = node.as<tir::BufferStoreNode>()) {
+      RecordStaticBufferInfo(&by_name, target_buffers, store->buffer);
+    }
+  });
+  return by_name;
+}
+
+static int64_t ShapeProduct(const std::vector<int64_t>& shape, size_t begin, size_t end) {
+  int64_t product = 1;
+  for (size_t i = begin; i < end; ++i) {
+    product *= shape[i];
+  }
+  return product;
+}
+
+static std::vector<int64_t> MakeIdentityAxisOrder(size_t ndim) {
+  std::vector<int64_t> axis_order;
+  axis_order.reserve(ndim);
+  for (size_t i = 0; i < ndim; ++i) {
+    axis_order.push_back(static_cast<int64_t>(i));
+  }
+  return axis_order;
+}
+
+static int AxisOrderDisplacementScore(const std::vector<int64_t>& axis_order) {
+  int score = 0;
+  for (size_t i = 0; i < axis_order.size(); ++i) {
+    score += std::abs(static_cast<int>(axis_order[i]) - static_cast<int>(i));
+  }
+  return score;
+}
+
+static uint32_t GetTotalLogicalWorkItems(const CorePlan& core_plan) {
+  uint32_t total = 0;
+  for (const auto& packet : core_plan.work_packets) {
+    total += packet.work_count;
+  }
+  return std::max<uint32_t>(1, total);
+}
+
+static std::unordered_set<std::string> CollectMaterializedBufferNames(const ExecutableSpec& spec) {
+  std::unordered_set<std::string> buffers;
+  auto record = [&](const std::string& buffer) {
+    if (!buffer.empty()) {
+      buffers.insert(buffer);
+    }
+  };
+  for (const auto& kernel : spec.kernels) {
+    for (const auto& accessor : kernel.accessors) {
+      record(accessor.buffer);
+    }
+    for (const auto& compile_time_arg_spec : kernel.compile_time_arg_specs) {
+      if (!compile_time_arg_spec.layout.empty() && !compile_time_arg_spec.memory_space.empty()) {
+        record(compile_time_arg_spec.buffer);
+      }
+    }
+  }
+  return buffers;
+}
+
+static std::vector<int64_t> InferStaticWorkMajorAxisOrder(
+    const std::vector<int64_t>& shape, uint32_t total_work_items, uint32_t tile_rows) {
+  const std::vector<int64_t> identity = MakeIdentityAxisOrder(shape.size());
+  if (shape.size() <= 2 || total_work_items <= 1) {
+    return identity;
+  }
+
+  const int64_t total_rows = ShapeProduct(shape, 0, shape.size() - 1);
+  if (total_rows <= 0 || total_rows % total_work_items != 0) {
+    return identity;
+  }
+  const int64_t rows_per_work_item = total_rows / total_work_items;
+  if (rows_per_work_item <= 0 || rows_per_work_item % tile_rows != 0) {
+    return identity;
+  }
+
+  std::vector<int64_t> row_axes;
+  row_axes.reserve(shape.size() - 1);
+  for (size_t i = 0; i + 1 < shape.size(); ++i) {
+    row_axes.push_back(static_cast<int64_t>(i));
+  }
+
+  std::vector<int64_t> best_axis_order;
+  int best_score = std::numeric_limits<int>::max();
+  do {
+    int64_t leading_product = 1;
+    for (size_t split = 1; split <= row_axes.size(); ++split) {
+      leading_product *= shape[static_cast<size_t>(row_axes[split - 1])];
+      if (leading_product > total_work_items) {
+        break;
+      }
+      if (leading_product != total_work_items) {
+        continue;
+      }
+      int64_t trailing_product = 1;
+      for (size_t i = split; i < row_axes.size(); ++i) {
+        trailing_product *= shape[static_cast<size_t>(row_axes[i])];
+      }
+      if (trailing_product != rows_per_work_item) {
+        continue;
+      }
+      std::vector<int64_t> candidate = row_axes;
+      candidate.push_back(static_cast<int64_t>(shape.size() - 1));
+      const int score = AxisOrderDisplacementScore(candidate);
+      if (score < best_score) {
+        best_score = score;
+        best_axis_order = std::move(candidate);
+      }
+    }
+  } while (std::next_permutation(row_axes.begin(), row_axes.end()));
+
+  return best_axis_order.empty() ? identity : best_axis_order;
+}
+
 struct SegmentInfo {
   std::string name;
   std::string kind;
@@ -1155,6 +1456,10 @@ struct SegmentInfo {
   std::vector<SemaphoreBindingSpec> semaphore_bindings;
   std::vector<RemoteCoreDescriptorSpec> remote_core_descriptors;
 };
+
+static void PopulateBufferMaterializationSpecs(
+    const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name,
+    ExecutableSpec* spec);
 
 static std::vector<RemoteCoreDescriptorSpec> ExtractRemoteCoreDescriptors(
     const std::vector<KernelArgSpec>& runtime_args) {
@@ -1360,6 +1665,9 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   spec.common_runtime_args = ExtractCommonRuntimeArgs(f);
   spec.gemm_contract = ExtractGemmContract(f);
   spec.compute_contract = ExtractComputeContract(f, spec.gemm_contract);
+  spec.multi_gemm_contracts = ExtractMultiGemmContracts(f);
+  spec.multi_compute_contracts = ExtractMultiComputeContracts(f);
+  spec.compute_epilogue_ops = ExtractComputeEpilogueOps(f);
   spec.direct_runtime_unsupported_reasons = ExtractDirectRuntimeUnsupportedReasons(f);
   ExtractSegmentPlan(f, &spec);
   return spec;
@@ -1525,8 +1833,22 @@ static ffi::Array<ffi::Any> EncodeAccessors(const std::vector<AccessorSpec>& acc
     accessor_info.Set("common_runtime_arg_count",
                       Integer(static_cast<int>(accessor.common_runtime_arg_count)));
     accessor_info.Set("args_config_bits", Integer(static_cast<int>(accessor.args_config_bits)));
+    if (accessor.transport_page_size_bytes != 0) {
+      accessor_info.Set("transport_page_size",
+                        Integer(static_cast<int>(accessor.transport_page_size_bytes)));
+    }
     accessor_info.Set("layout", ffi::String(accessor.layout));
     accessor_info.Set("memory_space", ffi::String(accessor.memory_space));
+    if (!accessor.host_axis_order.empty()) {
+      ffi::Array<ffi::Any> axis_order;
+      for (int64_t axis : accessor.host_axis_order) {
+        axis_order.push_back(Integer(axis));
+      }
+      accessor_info.Set("host_axis_order", axis_order);
+    }
+    if (accessor.transpose_2d) {
+      accessor_info.Set("transpose_2d", Bool(true));
+    }
     encoded.push_back(accessor_info);
   }
   return encoded;
@@ -1557,6 +1879,16 @@ static ffi::Array<ffi::Any> EncodeCompileTimeArgSpecs(
     }
     if (spec.args_config_bits != 0) {
       spec_info.Set("args_config_bits", Integer(static_cast<int>(spec.args_config_bits)));
+    }
+    if (spec.transport_page_size_bytes != 0) {
+      spec_info.Set("transport_page_size",
+                    Integer(static_cast<int>(spec.transport_page_size_bytes)));
+    }
+    if (!spec.layout.empty()) {
+      spec_info.Set("layout", ffi::String(spec.layout));
+    }
+    if (!spec.memory_space.empty()) {
+      spec_info.Set("memory_space", ffi::String(spec.memory_space));
     }
     encoded.push_back(spec_info);
   }
@@ -1616,20 +1948,32 @@ static std::string ResolveBufferRole(const ExecutableSpec& spec, const std::stri
 static uint32_t ChooseBufferMaterializationPageSize(const ExecutableSpec& spec,
                                                     const std::string& buffer_name) {
   uint32_t inferred_page_size = 0;
+  auto record_page_size = [&](uint32_t candidate_page_size, const char* source_name) {
+    if (candidate_page_size == 0) {
+      return;
+    }
+    if (inferred_page_size == 0) {
+      inferred_page_size = candidate_page_size;
+      return;
+    }
+    ICHECK_EQ(inferred_page_size, candidate_page_size)
+        << "Blackhole buffer materialization requires a single transport page size per buffer; "
+        << buffer_name << " used both " << inferred_page_size << " and " << candidate_page_size
+        << " from " << source_name;
+  };
   for (const auto& kernel : spec.kernels) {
     for (const auto& accessor : kernel.accessors) {
-      if (accessor.buffer != buffer_name || accessor.transport_page_size_bytes == 0) {
+      if (accessor.buffer != buffer_name) {
         continue;
       }
-      if (inferred_page_size == 0) {
-        inferred_page_size = accessor.transport_page_size_bytes;
-      } else {
-        ICHECK_EQ(inferred_page_size, accessor.transport_page_size_bytes)
-            << "Blackhole buffer materialization requires a single transport page size per "
-               "buffer; "
-            << buffer_name << " used both " << inferred_page_size << " and "
-            << accessor.transport_page_size_bytes;
+      record_page_size(accessor.transport_page_size_bytes, "accessor");
+    }
+    for (const auto& compile_time_arg_spec : kernel.compile_time_arg_specs) {
+      if (compile_time_arg_spec.buffer != buffer_name) {
+        continue;
       }
+      record_page_size(compile_time_arg_spec.transport_page_size_bytes,
+                       "compile_time_arg_spec");
     }
   }
   if (inferred_page_size != 0) {
@@ -1648,12 +1992,51 @@ static uint32_t ChooseBufferMaterializationPageSize(const ExecutableSpec& spec,
   return 2048;
 }
 
-static void PopulateBufferMaterializationSpecs(ExecutableSpec* spec) {
+static std::vector<int64_t> ChooseBufferMaterializationAxisOrder(
+    const ExecutableSpec& spec, const BufferMaterializationSpec& materialization,
+    const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name) {
+  auto info_it = buffer_info_by_name.find(materialization.buffer);
+  if (info_it == buffer_info_by_name.end()) {
+    return {};
+  }
+  const StaticBufferInfo& info = info_it->second;
+  if (materialization.layout != "interleaved" || materialization.memory_space != "dram" ||
+      info.shape.size() < 2 || info.dtype.lanes != 1 || info.dtype.bits == 0) {
+    return {};
+  }
+
+  constexpr uint32_t kBlackholeTileCols = 32;
+  const uint32_t element_size_bytes = static_cast<uint32_t>((info.dtype.bits + 7) / 8);
+  if (element_size_bytes == 0 || materialization.transport_page_size_bytes == 0 ||
+      materialization.transport_page_size_bytes % element_size_bytes != 0) {
+    return {};
+  }
+
+  const uint32_t tile_elements = materialization.transport_page_size_bytes / element_size_bytes;
+  if (tile_elements == 0 || tile_elements % kBlackholeTileCols != 0) {
+    return {};
+  }
+  const uint32_t tile_rows = tile_elements / kBlackholeTileCols;
+  const int64_t total_rows = ShapeProduct(info.shape, 0, info.shape.size() - 1);
+  const int64_t cols = info.shape.back();
+  if (tile_rows == 0 || total_rows <= 0 || cols <= 0 || cols % kBlackholeTileCols != 0 ||
+      total_rows % tile_rows != 0) {
+    return {};
+  }
+  return InferStaticWorkMajorAxisOrder(info.shape, GetTotalLogicalWorkItems(spec.core_plan),
+                                       tile_rows);
+}
+
+static void PopulateBufferMaterializationSpecs(
+    const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name,
+    ExecutableSpec* spec) {
   std::unordered_map<std::string, BufferMaterializationSpec> by_buffer;
   std::vector<std::string> order;
 
   auto register_buffer = [&](const std::string& buffer_name, const std::string& layout,
-                             const std::string& memory_space) {
+                             const std::string& memory_space,
+                             const std::vector<int64_t>& host_axis_order = std::vector<int64_t>{},
+                             bool transpose_2d = false) {
     if (buffer_name.empty()) {
       return;
     }
@@ -1664,6 +2047,8 @@ static void PopulateBufferMaterializationSpecs(ExecutableSpec* spec) {
       materialization.materialization_kind = "replicated";
       materialization.layout = layout;
       materialization.memory_space = memory_space;
+      materialization.host_axis_order = host_axis_order;
+      materialization.transpose_2d = transpose_2d;
       order.push_back(buffer_name);
       return;
     }
@@ -1673,6 +2058,18 @@ static void PopulateBufferMaterializationSpecs(ExecutableSpec* spec) {
     ICHECK_EQ(materialization.memory_space, memory_space)
         << "Blackhole buffer materialization requires a single memory_space per buffer; "
         << buffer_name << " used both " << materialization.memory_space << " and " << memory_space;
+    if (!host_axis_order.empty()) {
+      ICHECK(materialization.host_axis_order.empty() ||
+             materialization.host_axis_order == host_axis_order)
+          << "Blackhole buffer materialization requires a single host_axis_order per buffer; "
+          << buffer_name;
+      if (materialization.host_axis_order.empty()) {
+        materialization.host_axis_order = host_axis_order;
+      }
+    }
+    if (transpose_2d) {
+      materialization.transpose_2d = true;
+    }
   };
 
   for (const auto& kernel : spec->kernels) {
@@ -1680,7 +2077,8 @@ static void PopulateBufferMaterializationSpecs(ExecutableSpec* spec) {
       if (accessor.buffer.empty()) {
         continue;
       }
-      register_buffer(accessor.buffer, accessor.layout, accessor.memory_space);
+      register_buffer(accessor.buffer, accessor.layout, accessor.memory_space,
+                      accessor.host_axis_order, accessor.transpose_2d);
     }
     for (const auto& compile_time_arg_spec : kernel.compile_time_arg_specs) {
       if (compile_time_arg_spec.buffer.empty() || compile_time_arg_spec.layout.empty() ||
@@ -1698,6 +2096,10 @@ static void PopulateBufferMaterializationSpecs(ExecutableSpec* spec) {
     auto materialization = by_buffer.at(buffer_name);
     materialization.transport_page_size_bytes =
         ChooseBufferMaterializationPageSize(*spec, buffer_name);
+    if (materialization.host_axis_order.empty()) {
+      materialization.host_axis_order =
+          ChooseBufferMaterializationAxisOrder(*spec, materialization, buffer_info_by_name);
+    }
     spec->buffer_materializations.push_back(std::move(materialization));
   }
 }
@@ -2096,7 +2498,9 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     PopulateKernelSpecsForDeviceFunc(kv.second, kv.first, target, /*kernel_code_only=*/false,
                                      source,
                                      &spec_it->second);
-    PopulateBufferMaterializationSpecs(&spec_it->second);
+    PopulateBufferMaterializationSpecs(
+        CollectStaticBufferInfo(kv.second, CollectMaterializedBufferNames(spec_it->second)),
+        &spec_it->second);
   }
   for (const auto& kv : host_to_device) {
     auto host_it = func_info_map.find(kv.first);
@@ -2205,7 +2609,9 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     PopulateKernelSpecsForDeviceFunc(kv.second, kv.first, target, /*kernel_code_only=*/true,
                                      source,
                                      &spec_it->second);
-    PopulateBufferMaterializationSpecs(&spec_it->second);
+    PopulateBufferMaterializationSpecs(
+        CollectStaticBufferInfo(kv.second, CollectMaterializedBufferNames(spec_it->second)),
+        &spec_it->second);
   }
   for (const auto& kv : host_to_device) {
     auto host_it = func_info_map.find(kv.first);

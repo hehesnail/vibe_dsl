@@ -208,12 +208,91 @@ def merge_ir_modules(*mods: tvm.IRModule) -> tvm.IRModule:
     return merged
 
 
+_BLACKHOLE_PROJECTED_HOST_ATTR_KEYS = (
+    "blackhole.resource_plan",
+    "tl.semantic_seeds",
+    "tl.semantic_manifest_seeds",
+    "tl.semantic_manifest",
+    "tl.semantic_hard_freeze",
+    "tl.semantic_structure",
+    "tl.semantic_witnesses",
+    "tl.semantic_program",
+    "tl.spatial_domain_plan",
+    "tl.spatial_execution_plan",
+    "tl.spatial_program",
+)
+
+
+def _project_blackhole_host_attrs_to_device(
+    host_mod: tvm.IRModule,
+    device_mod: tvm.IRModule,
+) -> tvm.IRModule:
+    """Project host-side semantic attrs onto launched device kernels.
+
+    After `OptimizeForTarget`, the Blackhole host entry retains semantic-manifest
+    attrs while the filtered `main_kernel` PrimFunc keeps only launch metadata.
+    The `tl.semantic_seeds.device_kernel_regions` attr explicitly names the
+    launched kernels, so use that schema to project the semantic attrs instead of
+    recovering them from names or recompiling the full host module through the
+    device pipeline.
+    """
+
+    if not host_mod.functions or not device_mod.functions:
+        return device_mod
+
+    device_funcs_by_symbol: dict[str, tuple[tvm.ir.GlobalVar, tir.PrimFunc]] = {}
+    for gvar, func in device_mod.functions.items():
+        symbol = str(func.attrs["global_symbol"]) if func.attrs and "global_symbol" in func.attrs else gvar.name_hint
+        device_funcs_by_symbol[symbol] = (gvar, func)
+        device_funcs_by_symbol.setdefault(gvar.name_hint, (gvar, func))
+
+    rewritten = dict(device_mod.functions.items())
+    changed = False
+
+    for _, host_func in host_mod.functions.items():
+        attrs = host_func.attrs
+        if not attrs or "tl.semantic_seeds" not in attrs:
+            continue
+        semantic_seeds = attrs["tl.semantic_seeds"]
+        if "device_kernel_regions" not in semantic_seeds:
+            continue
+
+        projected_attrs = {
+            key: attrs[key]
+            for key in _BLACKHOLE_PROJECTED_HOST_ATTR_KEYS
+            if key in attrs
+        }
+        if not projected_attrs:
+            continue
+
+        for region in semantic_seeds["device_kernel_regions"]:
+            lookup = device_funcs_by_symbol.get(str(region))
+            if lookup is None:
+                continue
+            gvar, device_func = lookup
+            device_attrs = dict(device_func.attrs.items()) if device_func.attrs else {}
+            updated = False
+            for key, value in projected_attrs.items():
+                if key in device_attrs:
+                    continue
+                device_attrs[key] = value
+                updated = True
+            if updated:
+                rewritten[gvar] = device_func.with_attr(device_attrs)
+                changed = True
+
+    if not changed:
+        return device_mod
+    return tvm.IRModule(rewritten, global_infos=device_mod.global_infos)
+
+
 def blackhole_codegen(
     host_mod: tvm.IRModule,
     device_mod: tvm.IRModule,
     target: Target,
     enable_device_compile: bool,
 ) -> tuple[tvm.IRModule, tvm.runtime.Module]:
+    device_mod = _project_blackhole_host_attrs_to_device(host_mod, device_mod)
     device_mod = tilelang.transform.LowerDeviceStorageAccessInfo()(device_mod)
     device_mod = tilelang.transform.AugmentSemanticManifest()(device_mod)
     device_mod = tilelang.transform.LowerIntrin()(device_mod)
@@ -237,10 +316,6 @@ def blackhole_codegen(
     device_mod = tilelang.transform.LowerSpatialProgramToTTTarget()(device_mod)
     device_mod = tilelang.transform.ValidateTTTargetProgram()(device_mod)
     device_mod = tilelang.transform.MaterializeTTExecutableSpec()(device_mod)
-
-    if not enable_device_compile:
-        device_mod = tilelang.transform.LowerOpaqueBlock()(device_mod)
-        device_mod = tir.transform.Simplify()(device_mod)
 
     build_mod = merge_ir_modules(host_mod, device_mod)
     build_func_name = (

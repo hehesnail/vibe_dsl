@@ -5,25 +5,20 @@
 
 ## 1. 当前未解决
 
-### flash-attn direct runtime 目前对 multi-GEMM compute kernel 明确不支持
+### TT-Sim 上的较大 `float16` flash-attn runtime 仍受 simulator fp16 能力限制
 
 - **现象**:
-  - `flash-attn` 的 MHA / GQA direct runtime case 当前不会再在 enqueue 后无提示挂死
-  - lowered metadata 会显式暴露
-    `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
-  - runtime test 会按 unsupported reason skip
+  - `flash-attn` small bf16 MHA direct runtime 已能真实执行并和 reference 对齐
+  - 但较大 `float16` MHA case 在当前 TT-Sim 上仍会命中
+    `UntestedFunctionality: tensix_execute_unpacr: fp16`
 - **根因**:
-  - 当前 direct runtime / compute ABI 只稳定覆盖 single-GEMM compute contract
-  - flash-attn compute kernel 在同一个 kernel 里承载多套不同的 GEMM contract；
-    把它误当成 single-GEMM 会导致 runtime 在 `EnqueueMeshWorkload(..., blocking=true)`
-    后挂死
-  - TT-Metal 原生 SDPA 路径使用的是专门的 compute kernel / compile-arg contract，
-    不是当前 generic GEMM ABI 的直接延长
+  - 当前 blocker 已经不是本次修掉的 `K` transpose correctness bug
+  - 失败点来自 simulator 自身对该 `fp16` 执行路径的能力边界，
+    不是 `direct_runtime_unsupported_reasons`
 - **当前结论**:
-  - 当前最佳行为是显式 unsupported，而不是继续尝试 generic direct runtime
-  - 真正的 correctness/runtime payoff 仍归属 `Phase C2`
-  - 后续要么补 multi-GEMM compute contract / runtime schema，
-    要么为该 family 落专门 target contract；不能靠再调 compile args 硬顶过去
+  - 现阶段应把 small bf16 runtime case 当作 correctness gate
+  - 不要把 TT-Sim `float16` 能力边界直接误判成 TileLang target contract 回归
+  - 更宽 `MHA / GQA` / 大 shape runtime payoff 仍归属 `Phase C2`
 
 ## 2. 已解决但值得记住的模式
 
@@ -74,6 +69,25 @@
   并让原始 device build 输入硬要求 `tl.tt_program`
 - **教训**: 一旦 typed target truth 建立，generic projection helper
   不能再偷偷 multiplex 两套真源
+
+#### staged-copy 的 transpose truth 不能只留在 GEMM contract；host materialization 也必须显式消费
+
+- **症状**: `flash-attn` direct runtime 能执行但数值明显不对，
+  实际结果更接近 `softmax(Q @ K) @ V` 而不是 `softmax(Q @ K^T) @ V`
+- **根因**:
+  - `multi_gemm_contracts` 已经知道 reader 侧 `transpose_B=1`
+  - 但 host staged-copy / tilize materialization 只看 `host_axis_order`，
+    没有显式的 tile 内 2D transpose truth
+  - 对单 tile `K` 来说，只改 tile 索引顺序不会做 tile 内转置，
+    最终仍会按未转置的内容喂给 compute
+- **修法**:
+  - 在 accessor/materialization schema 增加 typed `transpose_2d`
+  - lowering 在 staged-copy reader 注册该 truth
+  - runtime host tilize / readback 按 `transpose_2d` 做 2D transpose
+- **教训**:
+  - compute contract 里的 transpose 若还影响 host 传输/布局，
+    就必须成为 accessor/materialization 的显式 schema 字段；
+    不能指望 host 从 GEMM contract 侧推
 
 #### bridge-stage typed seeds 一旦发布，helper 和 pass 输出都不能再依赖 legacy projection attrs
 

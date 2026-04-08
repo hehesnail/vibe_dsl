@@ -35,8 +35,14 @@
     - regression 主断言面与 producer-side translator 输入
       已切到 typed companion truth
     - shared zero-regression baseline 与当前 `Phase C2` runtime gate 持续通过
+    - `flash-attn` direct runtime 已补上 `K` staged-copy transpose truth：
+      `transpose_2d` 现在会从 accessor/materialization schema
+      进入 host tilize / readback materialization，small bf16 MHA TT-Sim
+      direct runtime 已和 reference 数值对齐
   - 仍未完成：
-    - `flash-attn` `Phase C2` runtime / correctness payoff
+    - `flash-attn` `Phase C2` 的 wider runtime / correctness payoff：
+      当前只验证了 small bf16 MHA 子集；更宽 `MHA / GQA`、更大 shape
+      与 TT-Sim `float16` 路径仍未完成
     - `topk / fusedmoe / paged decode / chunk recurrence`
       等 family 在新主链下的统一承接
     - 更宽 copy/dataflow 支持面
@@ -47,10 +53,12 @@
 ## 当前 blocker
 
 `Phase C` 当前已经不再卡在 `TTProgram` cutover，
-而是卡在剩余支持面还没有兑现：
+也不再卡在 `flash-attn` direct runtime 的 `K` transpose 丢失；
+当前 blocker 是剩余支持面还没有兑现：
 
-- 为 `flash-attn` multi-GEMM compute kernel 补真正的 direct runtime /
-  correctness contract，而不是长期停留在 unsupported gate
+- 把 `flash-attn` 当前 small bf16 correctness milestone
+  扩成更宽 `MHA / GQA` runtime / correctness 支持面，
+  并把剩余 multi-GEMM compute contract 继续收成长期 typed truth
 - 在当前稳定主链上继续承接
   `topk / fusedmoe / paged decode / chunk recurrence`
   等 family
@@ -69,8 +77,10 @@
 
 ## 下一步
 
-1. 为 `flash-attn` multi-GEMM compute kernel 设计正式 target contract /
-   runtime schema，把当前 explicit unsupported gate 推进成真正可执行的主链
+1. 在当前已打通的小 bf16 MHA correctness 基线上，
+   继续扩大 `flash-attn` `Phase C2` 支持面：
+   收完整 multi-GEMM target contract，补更宽 `MHA / GQA` 与大 shape case，
+   并和 TT-Sim `float16` 能力边界分开判断
 2. 在当前 `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
    主链上继续接 wider family：
    `topk / fusedmoe / paged decode / chunk recurrence`
@@ -110,11 +120,12 @@ LowerDeviceStorageAccessInfo
 
 - build:
   - `cmake --build tilelang_repo/build -j32`
-- transform:
-  - `test_blackhole_tt_target_probe.py -q`: `25 passed`
-- target:
-  - `test_blackhole_copy_pipeline.py test_blackhole_gemm.py test_blackhole_tvm_ffi_export.py test_blackhole_flash_attention_pipeline.py test_blackhole_tt_target_probe.py -q`:
-    `129 passed, 21 skipped, 1 xfailed`
 - runtime:
-  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest testing/python/target/blackhole/test_blackhole_copy_runtime.py testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py -q`:
-    `13 passed, 2 skipped`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && export PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo:/root/dev/vibe_dsl/tilelang_repo/3rdparty/tvm/python && export TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib && export LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -k 'small_bf16_compute_source_keeps_acc_s_cast_cb_pages_consistent or small_bf16_metadata_marks_k_materialization_as_transposed'`:
+    `2 passed, 46 deselected`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && export PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo:/root/dev/vibe_dsl/tilelang_repo/3rdparty/tvm/python && export TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib && export LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py -k 'small_bf16_forward_direct_runtime'`:
+    `1 passed, 6 deselected`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && export PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo:/root/dev/vibe_dsl/tilelang_repo/3rdparty/tvm/python && export TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib && export LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH && cd /root/dev/vibe_dsl/tilelang_repo && pytest testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py -k 'mha_forward_direct_runtime' -vv -s`:
+    失败于 `UntestedFunctionality: tensix_execute_unpacr: fp16`
+  - 上述较大 `float16` MHA 失败
+    这属于 simulator 能力边界，不能和本次 `K` transpose correctness 修复混为一谈

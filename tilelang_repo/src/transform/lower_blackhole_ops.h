@@ -84,6 +84,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
     int transport_page_size_bytes = 0;
     std::string layout = "interleaved";
     std::string memory_space = "dram";
+    std::vector<int64_t> host_axis_order;
+    bool transpose_2d = false;
   };
 
   struct NestedCopyMatch {
@@ -157,6 +159,12 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
     tvm::PrimExpr num_elements;
   };
 
+  struct ScalarFragmentCopyMatch {
+    tvm::tir::Buffer dst;
+    tvm::tir::Buffer src;
+    tvm::PrimExpr num_elements;
+  };
+
   struct LocalToCBSliceMatch {
     tvm::tir::Buffer dst;
     tvm::tir::Buffer src;
@@ -206,6 +214,24 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Encode empty or richer common-runtime args for a segment */
   tvm::ffi::Array<tvm::ffi::Any> EncodeCommonRuntimeArgs(const std::string& segment_kind) const;
 
+  /*! \brief Load logical buffer shapes from the semantic manifest when present. */
+  void LoadLogicalBufferShapes(const tvm::tir::PrimFunc& func);
+
+  /*! \brief Return manifest-backed logical shape for a buffer when available. */
+  std::vector<int64_t> GetLogicalBufferShape(const tvm::tir::Buffer& buffer) const;
+
+  /*! \brief Return static logical element count, falling back to the lowered buffer shape. */
+  int64_t GetLogicalBufferElementCount(const tvm::tir::Buffer& buffer) const;
+
+  /*! \brief Return the logical 32x32 tile/page count for a buffer. */
+  int GetLogicalBufferTileCount(const tvm::tir::Buffer& buffer) const;
+
+  /*! \brief Return the manifest-backed 1-D logical vector length for a row/state buffer. */
+  int64_t GetLogicalVectorLength(const tvm::tir::Buffer& buffer) const;
+
+  /*! \brief Return the manifest-backed logical matrix shape for a fragment buffer. */
+  std::pair<int64_t, int64_t> GetLogicalMatrixShape(const tvm::tir::Buffer& buffer) const;
+
   /*! \brief Detect matmul call using Op comparison (not string matching) */
   bool IsMatmulCall(const tvm::tir::CallNode* op) const;
 
@@ -245,10 +271,20 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   bool ExprUsesTransportVar(const tvm::PrimExpr& expr,
                             const std::vector<tvm::tir::Var>& loop_vars) const;
 
+  /*! \brief Pick the active thread var that indexes logical matrix rows, when unique. */
+  tvm::tir::Var SelectLogicalRowThreadVar(int64_t logical_rows) const;
+
   /*! \brief Select the 2-D transport axes for a possibly higher-rank global buffer view. */
   std::pair<int, int> SelectStagedCopyTransportAxes(
       const tvm::ffi::Array<tvm::PrimExpr>& global_indices,
       const std::vector<tvm::tir::Var>& loop_vars) const;
+
+  /*! \brief Build explicit host-axis order matching staged-copy transport linearization. */
+  std::vector<int64_t> BuildStagedCopyHostAxisOrder(
+      const tvm::ffi::Array<tvm::PrimExpr>& global_indices,
+      const tvm::ffi::Array<tvm::Integer>& global_shape,
+      int row_axis,
+      int col_axis) const;
 
   /*! \brief Find a staged copy BufferStore inside a loop nest and collect nested loop vars */
   const tvm::tir::BufferStoreNode* FindNestedCopyStore(
@@ -275,7 +311,9 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
                         int common_runtime_arg_offset,
                         int common_runtime_arg_count,
                         int args_config_bits,
-                        int transport_page_size_bytes = 0);
+                        int transport_page_size_bytes = 0,
+                        std::vector<int64_t> host_axis_order = {},
+                        bool transpose_2d = false);
 
   std::string ResolveAccessorSegmentKind(CopyDirection direction) const;
 
@@ -338,6 +376,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
       const Exp2RowBroadcastAffineMatch& match);
   bool MatchScalarExp2AffineStore(const tvm::tir::BufferStoreNode* op,
                                   ScalarExp2AffineMatch* match) const;
+  bool MatchGroupedScalarExp2AffineLoop(const tvm::tir::ForNode* op,
+                                        ScalarExp2AffineMatch* match) const;
   tvm::tir::Stmt GenerateScalarExp2AffineSequence(const ScalarExp2AffineMatch& match);
   bool MatchDirectFragmentFill(const tvm::tir::ForNode* op, FragmentFillMatch* match) const;
   bool MatchScalarFragmentFillStore(const tvm::tir::BufferStoreNode* op, FragmentFillMatch* match) const;
@@ -348,6 +388,11 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   bool MatchDirectFragmentCast(const tvm::tir::ForNode* op, FragmentCastMatch* match) const;
   tvm::tir::Stmt GenerateFragmentCastSequence(const FragmentCastMatch& match,
                                               bool publish_cb = false);
+  bool MatchScalarFragmentCopyStore(const tvm::tir::BufferStoreNode* op,
+                                    ScalarFragmentCopyMatch* match) const;
+  bool MatchGroupedScalarFragmentCopyLoop(const tvm::tir::ForNode* op,
+                                          ScalarFragmentCopyMatch* match) const;
+  tvm::tir::Stmt GenerateScalarFragmentCopySequence(const ScalarFragmentCopyMatch& match);
   bool StmtConsumesBufferViaMatmul(const tvm::tir::Stmt& stmt,
                                    const tvm::tir::Buffer& buffer) const;
   bool StmtWritesBuffer(const tvm::tir::Stmt& stmt, const tvm::tir::Buffer& buffer) const;
@@ -357,6 +402,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   bool MatchDirectLocalToCBSliceLoop(const tvm::tir::ForNode* op, LocalToCBSliceMatch* match) const;
   tvm::tir::Stmt GenerateLocalToCBSliceLoopSequence(const tvm::tir::ForNode* op,
                                                     const LocalToCBSliceMatch& match);
+  void ActivateCurrentComputeContractPayload();
+  void RecordComputeEpilogueOp(tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> op_payload);
 
   // StmtExprMutator overrides
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;
@@ -403,7 +450,14 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   int gemm_n_ = 0;
   int gemm_k_ = 0;
   std::unordered_set<std::string> gemm_contract_signatures_;
-  std::unordered_map<std::string, int> gemm_input_buffer_num_k_tiles_;
+  std::unordered_map<std::string, int> compute_contract_payload_index_by_signature_;
+  std::vector<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>> multi_gemm_contract_payloads_;
+  std::vector<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>> multi_compute_contract_payloads_;
+  std::vector<std::vector<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>> compute_epilogue_payloads_;
+  std::vector<std::unordered_set<std::string>> compute_contract_known_buffers_;
+  std::vector<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>> compute_epilogue_payloads_flat_;
+  int active_compute_contract_payload_index_ = -1;
+  std::unordered_map<std::string, int> gemm_input_buffer_num_tiles_;
   bool gemm_transpose_a_ = false;
   bool gemm_transpose_b_ = false;
   int gemm_policy_type_ = 0;
@@ -422,14 +476,15 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   tvm::ffi::Array<tvm::Integer> copy_intermediate_shape_;
   std::unordered_set<const tvm::tir::VarNode*> thread_index_vars_;
   std::unordered_set<std::string> thread_index_var_names_;
+  std::unordered_map<const tvm::tir::VarNode*, int64_t> thread_index_var_static_extents_;
   std::unordered_set<const tvm::tir::VarNode*> block_index_vars_;
   std::unordered_set<std::string> block_index_var_names_;
   std::vector<AccessorDescriptor> accessor_descriptors_;
   std::string current_segment_kind_;
   std::unordered_map<std::string, int> read_accessor_slots_;
   std::unordered_map<std::string, int> write_accessor_slots_;
-  std::unordered_set<std::string> cb_consumed_fragment_data_names_;
-  std::unordered_map<std::string, int> cb_consumed_fragment_pages_by_data_name_;
+  std::unordered_map<std::string, int> cb_consumed_fragment_pages_by_buffer_identity_;
+  std::unordered_map<std::string, std::vector<int64_t>> logical_buffer_shapes_;
 
   // Requirement index counter (sequential, 0-based)
   int next_requirement_index_ = 0;

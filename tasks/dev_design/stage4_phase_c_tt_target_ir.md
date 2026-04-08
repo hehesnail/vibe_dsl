@@ -7,7 +7,8 @@
   `TTProgram` cutover 主链已完成，runtime/codegen 已切到 `TTProgram` direct reader，
   shared generic fallback 已删除，synthetic segment 也已切到最小 `TTProgram`；
   regression 主断言面与 producer-side translator 输入也已切到 typed companion truth，
-  但 `Phase C2` runtime payoff 与 wider support surface 仍未完成
+  `flash-attn` small bf16 MHA direct runtime correctness 已兑现，
+  但 `Phase C2` wider runtime payoff 与 wider support surface 仍未完成
 - **已完成子阶段**: read-only translator demand probe、`TTHardwareModel` intake、
   `TTProgram` core object set、`LowerSpatialProgramToTTTarget`、
   `ValidateTTTargetProgram`、`MaterializeTTExecutableSpec`
@@ -223,9 +224,14 @@ SpatialProgram
 
 - `flash-attn` forward subset 已打通 compile-path
 - `flash-attn` multi-GEMM compute kernel 不再 hang
-- 当前 direct runtime 行为是显式 unsupported：
-  `direct_runtime_unsupported_reasons = ["multi_gemm_compute_kernel"]`
-  并在 runtime test 中 skip
+- supported small bf16 MHA 子集现在会真实执行 direct runtime，
+  并在 TT-Sim 上和 reference 数值对齐
+- `K` staged-copy reader 的 transpose truth 已从
+  `TTProgram -> ExecutableSpec -> accessor/materialization schema`
+  显式下沉为 `transpose_2d`，host tilize / readback 会按该 truth 做 2D transpose
+- 但更宽 `MHA / GQA` 子集、较大 shape 与 TT-Sim `float16` 路径仍未完成；
+  当前大 shape `float16` case 在 simulator 上仍会命中
+  `UntestedFunctionality: tensix_execute_unpacr: fp16`
 
 这还不算完成。
 `Phase C2` 完成必须同时满足：
@@ -334,7 +340,8 @@ SpatialProgram
 当前状态是：
 
 - 条件 1 已满足
-- 条件 2-7 仍未满足
+- 条件 2 已取得 small bf16 correctness milestone，但整体仍未满足
+- 条件 3-7 仍未满足
 
 ## 8. Shared Zero-Regression Baseline
 
@@ -352,19 +359,27 @@ pytest tilelang_repo/testing/python/transform/test_blackhole_tt_target_probe.py 
 ```bash
 source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh
 export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo
+export PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo:/root/dev/vibe_dsl/tilelang_repo/3rdparty/tvm/python
+export TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib
+export LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH
 cd /root/dev/vibe_dsl/tilelang_repo
-pytest testing/python/target/blackhole/test_blackhole_copy_runtime.py \
-       testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py -q
+pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py \
+       -k 'small_bf16_compute_source_keeps_acc_s_cast_cb_pages_consistent or \
+           small_bf16_metadata_marks_k_materialization_as_transposed'
+pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py \
+       -k 'small_bf16_forward_direct_runtime'
 ```
 
-当前 gate 只证明两件事：
+当前 gate 证明三件事：
 
-- copy direct runtime 正常通过
-- `flash-attn` multi-GEMM compute kernel 会显式 unsupported，
-  不会再 silent hang
+- `flash-attn` small bf16 lowering 仍保持
+  grouped reduce/cast page contract 与 `K.transpose_2d` metadata
+- supported small bf16 MHA direct runtime 会真实执行，
+  而不是依赖 unsupported skip
+- small bf16 TT-Sim runtime 输出和 reference 数值对齐
 
 它不证明：
 
-- multi-GEMM compute contract 已经落成
-- `flash-attn` runtime correctness 已经完成
+- 更宽 `MHA / GQA` runtime correctness 已经完成
+- 大 shape `float16` TT-Sim runtime 已经可作为正式 correctness gate
 - `Phase C2` 已完成

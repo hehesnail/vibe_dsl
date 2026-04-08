@@ -100,9 +100,10 @@
 - schema-only 路径一旦成立，派生物也必须能从 schema 单独重建
 - 未正式支持的 ABI / accessor / transport 组合，要 build-time fail-fast
 - 不保留默认 ABI、默认 core、默认 packet 这类补洞
-- direct runtime 对 multi-GEMM compute kernel 的 unsupported gate
-  不能按原始 `matmul_tiles` 调用次数判定；同一个 logical GEMM 会因为 K 分块
-  产生多次调用，正式判定必须按 distinct GEMM contract 去重
+- multi-GEMM / staged-copy reader 的 transpose truth
+  不能只留在 compute contract；如果 host materialization 也要配合，
+  就必须显式进 accessor/materialization schema
+  （例如 `transpose_2d`），并由 host tilize / readback 真正执行
 - 一旦 reader-side cutover 成立，原始 device build 输入就应硬要求
   `tl.tt_program`；不要让 build 在缺失 TT truth 时再悄悄回退到 legacy attrs
 
@@ -156,6 +157,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - `TT_METAL_SLOW_DISPATCH_MODE=1` 对 TT-Sim 很关键
 - direct path kernel 临时目录必须每次执行唯一化
 - 优先消费 TT-Metal local install tree，不要把 `.cpmcache` 整片塞进 include path
+- TT-Sim `float16` 路径是否可用要和 target contract 问题分开判断；
+  如果 small bf16 correctness 已过、但大 shape `float16` 命中
+  `UntestedFunctionality: tensix_execute_unpacr: fp16`，
+  优先视为 simulator 能力边界，而不是先回退刚验证过的 target contract 修复
 
 稳定 host-side 抽象：
 

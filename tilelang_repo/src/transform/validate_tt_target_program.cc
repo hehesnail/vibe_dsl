@@ -74,6 +74,28 @@ void ValidateCompileTimeArgSpec(const Map<String, Any>& spec) {
   ICHECK(HasKey(spec, "count")) << "TTABIPlan compile_time_arg_spec requires count";
 }
 
+void ValidateComputeEpilogueOps(const Map<String, Any>& compute, const char* context) {
+  if (auto epilogue_any = compute.Get(String("epilogue_ops"))) {
+    Array<Any> epilogue_ops = Downcast<Array<Any>>(epilogue_any.value());
+    for (const Any& op_any : epilogue_ops) {
+      Map<String, Any> op = AsMap(op_any);
+      ICHECK(!op.empty()) << context << " epilogue_ops entries must be maps";
+      ICHECK(HasKey(op, "kind")) << context << " epilogue_ops requires kind";
+    }
+  }
+}
+
+void ValidateProgramEpilogueOps(const Map<String, Any>& payload, const char* key, const char* context) {
+  if (auto epilogue_any = payload.Get(String(key))) {
+    Array<Any> epilogue_ops = Downcast<Array<Any>>(epilogue_any.value());
+    for (const Any& op_any : epilogue_ops) {
+      Map<String, Any> op = AsMap(op_any);
+      ICHECK(!op.empty()) << context << " entries must be maps";
+      ICHECK(HasKey(op, "kind")) << context << " requires kind";
+    }
+  }
+}
+
 void ValidateKernelPayload(const TTKernel& kernel) {
   Map<String, Any> payload = kernel->payload;
   ICHECK(HasKey(payload, "launch_spec"))
@@ -128,8 +150,58 @@ void ValidateProgramPayload(const TTProgram& program) {
       ICHECK(HasKey(compute, "clear_accum"))
           << "TTProgram payload compute_contract requires clear_accum";
       ICHECK(HasKey(compute, "k_pack")) << "TTProgram payload compute_contract requires k_pack";
+      ValidateComputeEpilogueOps(compute, "TTProgram payload compute_contract");
     }
   }
+  if (auto multi_gemm_any = payload.Get(String("multi_gemm_contracts"))) {
+    Array<Any> contracts = Downcast<Array<Any>>(multi_gemm_any.value());
+    ICHECK(!contracts.empty()) << "TTProgram payload multi_gemm_contracts must be non-empty";
+    for (const Any& contract_any : contracts) {
+      Map<String, Any> gemm = AsMap(contract_any);
+      ICHECK(!gemm.empty()) << "TTProgram payload multi_gemm_contracts entries must be maps";
+      ICHECK(HasKey(gemm, "a_buffer"))
+          << "TTProgram payload multi_gemm_contracts requires a_buffer";
+      ICHECK(HasKey(gemm, "b_buffer"))
+          << "TTProgram payload multi_gemm_contracts requires b_buffer";
+      ICHECK(HasKey(gemm, "c_buffer"))
+          << "TTProgram payload multi_gemm_contracts requires c_buffer";
+      ICHECK(HasKey(gemm, "M")) << "TTProgram payload multi_gemm_contracts requires M";
+      ICHECK(HasKey(gemm, "N")) << "TTProgram payload multi_gemm_contracts requires N";
+      ICHECK(HasKey(gemm, "K")) << "TTProgram payload multi_gemm_contracts requires K";
+    }
+  }
+  if (auto multi_compute_any = payload.Get(String("multi_compute_contracts"))) {
+    Array<Any> contracts = Downcast<Array<Any>>(multi_compute_any.value());
+    ICHECK(!contracts.empty()) << "TTProgram payload multi_compute_contracts must be non-empty";
+    for (const Any& contract_any : contracts) {
+      Map<String, Any> compute = AsMap(contract_any);
+      ICHECK(!compute.empty())
+          << "TTProgram payload multi_compute_contracts entries must be maps";
+      ICHECK(HasKey(compute, "enabled"))
+          << "TTProgram payload multi_compute_contracts requires enabled";
+      ICHECK(HasKey(compute, "kind"))
+          << "TTProgram payload multi_compute_contracts requires kind";
+      ICHECK(HasKey(compute, "a_buffer"))
+          << "TTProgram payload multi_compute_contracts requires a_buffer";
+      ICHECK(HasKey(compute, "b_buffer"))
+          << "TTProgram payload multi_compute_contracts requires b_buffer";
+      ICHECK(HasKey(compute, "c_buffer"))
+          << "TTProgram payload multi_compute_contracts requires c_buffer";
+      ICHECK(HasKey(compute, "M")) << "TTProgram payload multi_compute_contracts requires M";
+      ICHECK(HasKey(compute, "N")) << "TTProgram payload multi_compute_contracts requires N";
+      ICHECK(HasKey(compute, "K")) << "TTProgram payload multi_compute_contracts requires K";
+      ICHECK(HasKey(compute, "math_fidelity"))
+          << "TTProgram payload multi_compute_contracts requires math_fidelity";
+      ICHECK(HasKey(compute, "fp32_dest_acc_en"))
+          << "TTProgram payload multi_compute_contracts requires fp32_dest_acc_en";
+      ICHECK(HasKey(compute, "clear_accum"))
+          << "TTProgram payload multi_compute_contracts requires clear_accum";
+      ICHECK(HasKey(compute, "k_pack"))
+          << "TTProgram payload multi_compute_contracts requires k_pack";
+      ValidateComputeEpilogueOps(compute, "TTProgram payload multi_compute_contracts");
+    }
+  }
+  ValidateProgramEpilogueOps(payload, "compute_epilogue_ops", "TTProgram payload compute_epilogue_ops");
 }
 
 void ValidateTTProgram(const TTProgram& program) {

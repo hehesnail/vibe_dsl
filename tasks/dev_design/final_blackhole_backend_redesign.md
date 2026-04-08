@@ -148,8 +148,9 @@ Stateful Semantic IR
   - regression 主断言面与 producer-side translator 输入已切到 typed companion truth
   - shared zero-regression baseline 与当前 `Phase C2` runtime gate 持续通过
 - 但 `Phase C` 总体仍未完成；剩余交付仍包括：
-  - `flash-attn` 的 `Phase C2` runtime / correctness payoff；
-    当前只有 explicit unsupported gate，不算功能完成
+  - `flash-attn` 的 `Phase C2` wider runtime / correctness payoff；
+    当前已经兑现 small bf16 MHA direct runtime 数值对齐，
+    但更宽 `MHA / GQA` 子集与大 shape `float16` TT-Sim 仍未完成
   - `topk / fusedmoe / paged decode / chunk recurrence`
     等 family 在新主链下的统一承接
   - 更宽 copy/dataflow 支持面
@@ -174,8 +175,9 @@ Stateful Semantic IR
 - `tilelang.compile(..., execution_backend="tvm_ffi")`
   的 Blackhole wrapper/export path 已恢复
 - `flash-attn` forward subset 已打通当前支持的 compile-path，
-  但 direct runtime 当前仍只是显式 unsupported / skip；
-  真正的 multi-GEMM runtime enablement 仍属于 `Phase C`
+  且当前支持的 small bf16 MHA 子集已经过 TT-Sim direct runtime
+  数值对齐；但更宽 multi-GEMM runtime enablement
+  仍属于 `Phase C`
 
 ## 7. 当前文档分工
 

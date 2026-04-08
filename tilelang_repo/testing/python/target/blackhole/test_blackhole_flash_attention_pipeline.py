@@ -1,5 +1,6 @@
 import re
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -80,6 +81,15 @@ def _run_flash_attention_tt_target_after_optimize(example_module, *args, **kwarg
         mod = LowerAndLegalize(mod, target)
         mod = OptimizeForTarget(mod, target)
     return lower_blackhole_to_tt_target(mod)
+
+
+def _load_flash_attention_module_with_dtype(module_path, dtype_expr):
+    source = Path(module_path).read_text()
+    source = source.replace("dtype = T.float16", f"dtype = {dtype_expr}", 1)
+    mutated = types.ModuleType(f"{Path(module_path).stem}_{dtype_expr.replace('.', '_')}")
+    mutated.__file__ = str(module_path)
+    exec(compile(source, str(module_path), "exec"), mutated.__dict__)
+    return mutated
 
 
 def test_flash_attention_forward_lower_blackhole_ops_emits_generic_lowering_requirements():
@@ -637,7 +647,7 @@ def test_flash_attention_gqa_executable_spec_materializes_all_reader_inputs():
         ),
     ],
 )
-def test_flash_attention_executable_spec_reports_multi_gemm_direct_runtime_blocker(
+def test_flash_attention_tile_transport_metadata_preserves_tensor_page_size(
     example_module, args, kwargs
 ):
     can_run, msg = check_blackhole_codegen_requirements()
@@ -649,9 +659,236 @@ def test_flash_attention_executable_spec_reports_multi_gemm_direct_runtime_block
         artifact = lower(example_module.flashattn.jit_impl.get_tir(*args, **kwargs), target=target)
 
     spec = _extract_blackhole_executable_spec(artifact)
-    assert [str(reason) for reason in spec.get("direct_runtime_unsupported_reasons", [])] == [
-        "multi_gemm_compute_kernel"
-    ]
+    buffer_materializations = {
+        str(entry["buffer"]): int(entry["transport_page_size"])
+        for entry in spec["buffer_materializations"]
+    }
+    assert buffer_materializations == {
+        "Q": 2048,
+        "K": 2048,
+        "V": 2048,
+        "Output": 2048,
+    }
+
+    reader = _require_blackhole_kernel(spec["kernels"], kind="reader")
+    writer = _require_blackhole_kernel(spec["kernels"], kind="writer")
+    for accessor in reader["accessors"]:
+        assert int(accessor["transport_page_size"]) == 2048
+    for accessor in writer["accessors"]:
+        assert int(accessor["transport_page_size"]) == 2048
+
+
+def test_flash_attention_executable_spec_keeps_tile_transport_page_sizes_consistent():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                128,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    writer = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "writer")
+    output_accessor = next(
+        accessor for accessor in writer["accessors"] if str(accessor["buffer"]) == "Output"
+    )
+    output_materialization = next(
+        entry for entry in spec["buffer_materializations"] if str(entry["buffer"]) == "Output"
+    )
+
+    assert int(output_accessor["transport_page_size"]) == 2048
+    assert int(output_materialization["transport_page_size"]) == 2048
+
+
+@pytest.mark.parametrize(
+    ("example_module", "args", "kwargs", "required_axis_orders"),
+    [
+        (
+            mha_example,
+            (1, 32, 128, 128, False),
+            {"block_M": 128, "block_N": 128, "num_stages": 1, "threads": 128},
+            {
+                "Q": [0, 2, 1, 3],
+                "K": [0, 2, 1, 3],
+                "V": [0, 2, 1, 3],
+                "Output": [0, 2, 1, 3],
+            },
+        ),
+        (
+            gqa_example,
+            (1, 16, 128, 128, False),
+            {
+                "groups": 16,
+                "block_M": 64,
+                "block_N": 64,
+                "num_stages": 2,
+                "threads": 128,
+            },
+            {
+                "Q": [0, 2, 1, 3],
+                "Output": [0, 2, 1, 3],
+            },
+        ),
+    ],
+)
+def test_flash_attention_buffer_materialization_emits_explicit_host_axis_order(
+    example_module, args, kwargs, required_axis_orders
+):
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(example_module.flashattn.jit_impl.get_tir(*args, **kwargs), target=target)
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    actual_axis_orders = {
+        str(entry["buffer"]): [int(axis) for axis in entry["host_axis_order"]]
+        for entry in spec["buffer_materializations"]
+    }
+    for buffer, axis_order in required_axis_orders.items():
+        assert actual_axis_orders[buffer] == axis_order
+
+
+def test_flash_attention_bf16_variant_keeps_shared_bridge_cbs_in_bfloat16():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    bf16_mha_example = _load_flash_attention_module_with_dtype(
+        mha_example.__file__, "T.bfloat16"
+    )
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            bf16_mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                128,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    cb_formats = {str(cb["name"]): str(cb["data_format"]) for cb in spec["cb_configs"]}
+    assert cb_formats["Q_shared"] == "Float16_b"
+    assert cb_formats["K_shared"] == "Float16_b"
+    assert cb_formats["acc_s_cast"] == "Float16_b"
+    assert cb_formats["V_shared"] == "Float16_b"
+    assert cb_formats["O_shared"] == "Float16_b"
+
+
+@pytest.mark.parametrize(
+    ("example_module", "args", "kwargs"),
+    [
+        (
+            mha_example,
+            (1, 32, 128, 128, False),
+            {"block_M": 128, "block_N": 128, "num_stages": 1, "threads": 128},
+        ),
+        (
+            gqa_example,
+            (1, 16, 128, 128, False),
+            {
+                "groups": 16,
+                "block_M": 64,
+                "block_N": 64,
+                "num_stages": 2,
+                "threads": 128,
+            },
+        ),
+    ],
+)
+def test_flash_attention_executable_spec_materializes_multi_gemm_contracts_without_runtime_blocker(
+    example_module, args, kwargs
+):
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(example_module.flashattn.jit_impl.get_tir(*args, **kwargs), target=target)
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    assert [str(reason) for reason in spec.get("direct_runtime_unsupported_reasons", [])] == []
+
+    multi_gemm_contracts = spec.get("multi_gemm_contracts", [])
+    multi_compute_contracts = spec.get("multi_compute_contracts", [])
+    assert len(multi_gemm_contracts) == 2
+    assert len(multi_compute_contracts) == 2
+    assert all(str(contract.get("kind", "")) == "gemm" for contract in multi_compute_contracts)
+    for contract in [*multi_gemm_contracts, *multi_compute_contracts]:
+        for field in ("a_buffer", "b_buffer", "c_buffer", "M", "N", "K"):
+            assert field in contract
+
+
+def test_flash_attention_executable_spec_exposes_compute_epilogue_ops():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                128,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    epilogue_ops = {
+        (
+            str(op["kind"]),
+            str(op.get("reduce_kind", "")),
+        )
+        for op in spec.get("compute_epilogue_ops", [])
+    }
+
+    assert {
+        ("scalar_max", ""),
+        ("reduce_row", "max"),
+        ("reduce_row", "sum"),
+        ("exp2_row_bcast_affine", ""),
+        ("scalar_exp2_affine", ""),
+        ("cast_fragment_slice", ""),
+    }.issubset(epilogue_ops)
+    assert {
+        ("mul_row_bcast", ""),
+        ("div_row_bcast", ""),
+        ("scalar_fma", ""),
+        ("cast_fragment_slice", ""),
+        ("write_local_slice_to_cb", ""),
+    }.issubset(epilogue_ops)
 
 
 def test_flash_attention_segment_kernels_preserve_runtime_work_index_in_tile_transport():
@@ -725,11 +962,14 @@ def test_flash_attention_segment_reader_tile_transport_matches_compute_input_con
     def count_reader_reads(cb_id: int) -> int:
         return len(re.findall(rf"get_write_ptr\({cb_id}\)", reader_source))
 
-    def count_compute_waits(cb_id: int) -> int:
-        return len(re.findall(rf"cb_wait_front\({cb_id},\s*1\);", compute_source))
+    def count_compute_waited_tiles(cb_id: int) -> int:
+        return sum(
+            int(tile_count)
+            for tile_count in re.findall(rf"cb_wait_front\({cb_id},\s*(\d+)\);", compute_source)
+        )
 
     for cb_id in (0, 1, 3):
-        assert count_reader_reads(cb_id) == count_compute_waits(cb_id)
+        assert count_reader_reads(cb_id) == count_compute_waited_tiles(cb_id)
 
 
 def test_flash_attention_segment_kernels_keep_buffer_runtime_args_role_local():
@@ -853,7 +1093,7 @@ def test_flash_attention_compute_source_does_not_materialize_fragment_arrays():
     assert "std::exp2" not in compute_source
 
 
-def test_flash_attention_compute_preserves_thread_row_offset_in_local_to_cb_materialization():
+def test_flash_attention_compute_serializes_thread_row_offset_in_local_to_cb_materialization():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -882,9 +1122,153 @@ def test_flash_attention_compute_preserves_thread_row_offset_in_local_to_cb_mate
     dst_offset_lines = [
         line for line in compute_source.splitlines() if "dst_offset_elements =" in line
     ]
+    tx_loop_lines = [
+        line for line in compute_source.splitlines() if "for (int32_t tx = 0;" in line
+    ]
 
     assert dst_offset_lines
+    assert tx_loop_lines
     assert any(re.search(r"dst_offset_elements = .*tx.*128", line) for line in dst_offset_lines)
+
+
+def test_flash_attention_compute_source_derives_grouped_reduce_rows_from_num_elements():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                128,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
+    compute_source = str(compute["source_code"])
+
+    assert "const uint32_t num_elements = 16384;" in compute_source
+    assert "const uint32_t row_width = 128;" in compute_source
+    assert "const uint32_t num_rows = row_width == 0 ? 0 : (num_elements / row_width);" in compute_source
+    assert "const uint32_t num_rows = 16384;" not in compute_source
+
+
+def test_flash_attention_compute_source_fills_full_matrix_fragments():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                128,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
+    compute_source = str(compute["source_code"])
+
+    assert (
+        "{ float* dst = reinterpret_cast<float*>(acc_o); const uint32_t num_elements = 16384;"
+        in compute_source
+    )
+    assert (
+        "{ float* dst = reinterpret_cast<float*>(acc_s); const uint32_t num_elements = 16384;"
+        in compute_source
+    )
+    assert (
+        "{ float* dst = reinterpret_cast<float*>(logsum); const uint32_t num_elements = 128;"
+        in compute_source
+    )
+    assert (
+        "{ float* dst = reinterpret_cast<float*>(scores_max); const uint32_t num_elements = 128;"
+        in compute_source
+    )
+
+
+def test_flash_attention_compute_source_casts_full_acc_s_matrix_before_second_matmul():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                128,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
+    compute_source = str(compute["source_code"])
+
+    assert (
+        "{ uint16_t* dst_bits = reinterpret_cast<uint16_t*>(acc_s_cast);"
+        in compute_source
+    )
+    assert "const uint32_t num_elements = 16384;" in compute_source
+
+
+def test_flash_attention_compute_source_preserves_thread_row_offset_in_cast_fragment_slice():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                128,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
+    compute_source = str(compute["source_code"])
+
+    assert (
+        "const uint32_t src_offset = ((tx * 128) + (i_1 * 8));" in compute_source
+    )
 
 
 def test_flash_attention_compute_source_publishes_acc_s_cast_cb_before_second_matmul():
@@ -923,13 +1307,105 @@ def test_flash_attention_compute_source_publishes_acc_s_cast_cb_before_second_ma
     assert acc_s_cb_match is not None
     acc_s_cb_id = acc_s_cb_match.group(1)
 
-    publish_match = re.search(rf"cb_push_back\({acc_s_cb_id}, 4\);", compute_source)
+    reserve_match = re.search(rf"cb_reserve_back\({acc_s_cb_id}, (\d+)\);", compute_source)
+    assert reserve_match is not None
+    acc_s_tiles = reserve_match.group(1)
+
+    publish_match = re.search(rf"cb_push_back\({acc_s_cb_id}, {acc_s_tiles}\);", compute_source)
     second_mm_match = re.search(rf"mm_init\({acc_s_cb_id}, \d+, \d+\);", compute_source)
+    wait_match = re.search(rf"cb_wait_front\({acc_s_cb_id},\s*{acc_s_tiles}\);", compute_source)
 
     assert cast_pos != -1
     assert publish_match is not None
     assert second_mm_match is not None
+    assert wait_match is not None
     assert cast_pos < publish_match.start() < second_mm_match.start()
+
+
+def test_flash_attention_small_bf16_compute_source_keeps_acc_s_cast_cb_pages_consistent():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    bf16_mha_example = _load_flash_attention_module_with_dtype(
+        mha_example.__file__, "T.bfloat16"
+    )
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            bf16_mha_example.flashattn.jit_impl.get_tir(
+                1,
+                1,
+                32,
+                32,
+                False,
+                block_M=32,
+                block_N=32,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
+    compute_source = str(compute["source_code"])
+
+    acc_s_cb_match = re.search(
+        r"__bf16\* acc_s_cast = reinterpret_cast<__bf16\*>\(tilelang_get_cb_write_ptr_bytes\((\d+)\)\);",
+        compute_source,
+    )
+    assert acc_s_cb_match is not None
+    acc_s_cb_id = acc_s_cb_match.group(1)
+
+    reserve_match = re.search(rf"cb_reserve_back\({acc_s_cb_id}, (\d+)\);", compute_source)
+    push_match = re.search(rf"cb_push_back\({acc_s_cb_id}, (\d+)\);", compute_source)
+    second_mm_match = re.search(rf"mm_init\({acc_s_cb_id}, \d+, \d+\);", compute_source)
+
+    assert reserve_match is not None
+    assert push_match is not None
+    assert second_mm_match is not None
+    assert reserve_match.group(1) == push_match.group(1)
+    assert push_match.start() < second_mm_match.start()
+
+
+def test_flash_attention_small_bf16_metadata_marks_k_materialization_as_transposed():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    bf16_mha_example = _load_flash_attention_module_with_dtype(
+        mha_example.__file__, "T.bfloat16"
+    )
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            bf16_mha_example.flashattn.jit_impl.get_tir(
+                1,
+                1,
+                32,
+                32,
+                False,
+                block_M=32,
+                block_N=32,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    by_buffer = {str(item["buffer"]): item for item in spec["buffer_materializations"]}
+    assert int(by_buffer["K"].get("transpose_2d", 0)) == 1
+    assert int(by_buffer["Q"].get("transpose_2d", 0)) == 0
+    assert int(by_buffer["V"].get("transpose_2d", 0)) == 0
+    assert int(by_buffer["Output"].get("transpose_2d", 0)) == 0
+
+    reader = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "reader")
+    reader_accessors = {str(item["buffer"]): item for item in reader["accessors"]}
+    assert int(reader_accessors["K"].get("transpose_2d", 0)) == 1
+    assert int(reader_accessors["Q"].get("transpose_2d", 0)) == 0
+    assert int(reader_accessors["V"].get("transpose_2d", 0)) == 0
 
 
 def test_flash_attention_compute_source_does_not_rereserve_blackhole_acc_gemm_outputs():
@@ -960,6 +1436,125 @@ def test_flash_attention_compute_source_does_not_rereserve_blackhole_acc_gemm_ou
 
     assert "tile_regs_wait();\ncb_reserve_back(16, 1);\npack_tile(0, 16);" not in compute_source
     assert "tile_regs_wait();\ncb_reserve_back(17, 1);\npack_tile(0, 17);" not in compute_source
+
+
+def test_flash_attention_compute_source_hoists_output_cb_staging_around_thread_row_loop():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                128,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
+    compute_source = str(compute["source_code"])
+
+    reserve_pos = compute_source.find("cb_reserve_back(23, 16);")
+    tx_loop_pos = compute_source.find("for (int32_t tx = 0; tx < 128; ++tx)")
+    push_pos = compute_source.find("cb_push_back(23, 16);")
+
+    assert reserve_pos != -1
+    assert tx_loop_pos != -1
+    assert push_pos != -1
+    assert reserve_pos < tx_loop_pos < push_pos
+    assert "cb_reserve_back(0, 1);" not in compute_source
+
+
+def test_flash_attention_compute_source_hoists_thread_invariant_matmul_pipeline_outside_thread_row_loop():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                128,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
+    compute_source = str(compute["source_code"])
+
+    tx_loop_pos = compute_source.find("for (int32_t tx = 0; tx < 128; ++tx)")
+    first_mm_pos = compute_source.find("mm_init(0, 1, 16);")
+    second_mm_pos = compute_source.find("mm_init(2, 3, 17);")
+    acc_s_publish_match = re.search(r"cb_push_back\(2,\s*\d+\);", compute_source)
+    acc_s_publish_pos = -1 if acc_s_publish_match is None else acc_s_publish_match.start()
+
+    assert tx_loop_pos != -1
+    assert first_mm_pos != -1
+    assert second_mm_pos != -1
+    assert acc_s_publish_pos != -1
+    assert first_mm_pos < tx_loop_pos
+    assert second_mm_pos < tx_loop_pos
+    assert acc_s_publish_pos < tx_loop_pos
+    assert compute_source.find("mm_init(0, 1, 16);", tx_loop_pos) == -1
+    assert compute_source.find("mm_init(2, 3, 17);", tx_loop_pos) == -1
+    assert re.search(r"cb_wait_front\(0,\s*\d+\);", compute_source[tx_loop_pos:]) is None
+    assert re.search(r"cb_wait_front\(2,\s*\d+\);", compute_source[tx_loop_pos:]) is None
+    assert re.search(r"cb_push_back\(2,\s*\d+\);", compute_source[tx_loop_pos:]) is None
+
+
+def test_flash_attention_compute_source_keeps_multitile_blackhole_acc_cb_layout_for_multiphase_mha():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                256,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
+    compute_source = str(compute["source_code"])
+
+    assert "cb_reserve_back(16, 16);" in compute_source
+    assert "cb_reserve_back(17, 16);" in compute_source
+    assert "cb_push_back(16, 16);" in compute_source
+    assert "cb_push_back(17, 16);" in compute_source
+    assert "cb_reserve_back(16, 1);" not in compute_source
+    assert "cb_reserve_back(17, 1);" not in compute_source
+    assert "cb_push_back(16, 1);" not in compute_source
+    assert "cb_push_back(17, 1);" not in compute_source
 
 
 def test_flash_attention_forward_rejects_unsupported_pipeline_stage_count():
