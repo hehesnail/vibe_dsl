@@ -52,6 +52,13 @@
   仍未完整 formalize；
   现有 runtime gate 只是把这个缺口诚实暴露出来，
   不是新的长期 owner
+- owner-side `fragment_buffer_flow_contracts`
+  已开始在 `AnalyzeSemanticStructure -> SpatialProgram`
+  显式 materialize，并由 `LowerBlackholeOps` 直接消费；
+  这一步已经覆盖 fragment/local intermediate buffer
+  与 compute kernel 内同一 producer-consumer 协议下的 CB-backed input buffer，
+  不再允许 lower 侧本地扫 `SeqStmt` 恢复
+  `write / compute_consume / transport_consume / republish` 语义
 - 人为移除 `compute_epilogue_ops` gate 后，
   small `bf16` MHA direct runtime 仍会明显错算
   （当前采样：`max diff=1.2265625`, `mean diff=0.2021484375`），
@@ -100,7 +107,12 @@
 
 1. 先补齐 `SpatialProgram` 对跨-op intermediate edge 的
    `dataflow contract` 与 per-buffer `work/access contract`，
-   再据此继续兑现 `flash-attn` `Phase C2`
+   再据此继续兑现 `flash-attn` `Phase C2`；
+   当前下一步重点是把这组 contract 从
+   `fragment_buffer_flow_contracts`
+   扩成更完整的 edge/access schema，
+   并继续把 runtime gate 对应的 fragment materialization/merge protocol
+   执行化
 2. 在当前 layered mainline 上继续承接
    `topk / fusedmoe / paged decode / chunk recurrence`
 3. 继续扩大 copy/dataflow 与 synchronization 支持面
@@ -111,8 +123,11 @@
 - `tilelang_repo/build` fresh rebuild 通过
 - 所有 runtime 检查均在标准 TT-Sim 环境入口下完成
 - 本轮 `flash-attn` regression 通过：
-  `test_blackhole_flash_attention_pipeline.py` -> `61 passed`
+  `test_blackhole_flash_attention_pipeline.py` -> `62 passed`
   `test_blackhole_flash_attention_runtime.py` -> `9 passed, 5 skipped`
+- 本轮 copy regression 通过：
+  `test_blackhole_copy_pipeline.py` -> `43 passed, 10 skipped, 1 xfailed`
+  `test_blackhole_copy_runtime.py` -> `12 passed`
 - 本轮 copy baseline 也通过：
   `test_blackhole_copy_pipeline.py` -> `52 passed, 1 skipped, 1 xfailed`
   `test_blackhole_copy_runtime.py` -> `12 passed`

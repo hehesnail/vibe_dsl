@@ -9,15 +9,18 @@
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "../op/utils.h"
 #include "common/blackhole_utils.h"
 #include "common/semantic_program.h"
 #include "common/semantic_vocab.h"
 #include "common/semantic_witness_payloads.h"
+#include "runtime/thread_storage_scope.h"
 
 namespace tvm {
 namespace tl {
@@ -190,6 +193,289 @@ Array<Any> CollectFragmentMaterializationContractsFromBody(const tir::Stmt& body
     }
     contracts.push_back(contract.value());
   });
+  return contracts;
+}
+
+enum class FragmentBufferFlowEventKind {
+  kWrite,
+  kComputeConsume,
+  kTransportConsume,
+  kReference,
+};
+
+struct FragmentBufferFlowEvent {
+  int order_index = -1;
+  FragmentBufferFlowEventKind kind = FragmentBufferFlowEventKind::kReference;
+};
+
+struct FragmentBufferFlowContract {
+  std::string buffer_name;
+  std::string scope;
+  std::string flow_class = fragment_flow::kState;
+  int publish_granule = 1;
+  int consume_granule = 1;
+  std::vector<FragmentBufferFlowEvent> events;
+};
+
+std::string FragmentBufferFlowEventKindToString(FragmentBufferFlowEventKind kind) {
+  switch (kind) {
+    case FragmentBufferFlowEventKind::kWrite:
+      return fragment_flow::kWrite;
+    case FragmentBufferFlowEventKind::kComputeConsume:
+      return fragment_flow::kComputeConsume;
+    case FragmentBufferFlowEventKind::kTransportConsume:
+      return fragment_flow::kTransportConsume;
+    case FragmentBufferFlowEventKind::kReference:
+    default:
+      return fragment_flow::kReference;
+  }
+}
+
+bool IsCBScope(const std::string& scope) {
+  if (scope.rfind("shared", 0) == 0) {
+    return true;
+  }
+  auto parsed = runtime::StorageScope::Create(scope);
+  return parsed.rank == runtime::StorageRank::kBlackholeCB;
+}
+
+bool IsTrackedBufferFlowScope(const std::string& scope) {
+  return IsTrackedStateScope(scope) || IsCBScope(scope);
+}
+
+bool IsDRAMScope(const std::string& scope) { return scope.empty() || scope == "global"; }
+
+bool IsAccumulatorLikeScope(const std::string& scope) {
+  if (scope.rfind("local", 0) == 0) {
+    return true;
+  }
+  auto parsed = runtime::StorageScope::Create(scope);
+  return parsed.rank == runtime::StorageRank::kBlackholeAccumulator;
+}
+
+bool IsCopyOperation(const BufferStoreNode* store) {
+  const auto* load = store ? store->value.as<BufferLoadNode>() : nullptr;
+  return load != nullptr && !SameBufferIdentity(store->buffer, load->buffer);
+}
+
+bool IsTransportConsumerDirection(const BufferStoreNode* store) {
+  const auto* load = store ? store->value.as<BufferLoadNode>() : nullptr;
+  if (load == nullptr) {
+    return false;
+  }
+  const std::string dst_scope = load ? str(store->buffer.scope()) : std::string();
+  const std::string src_scope = str(load->buffer.scope());
+  return (IsCBScope(src_scope) && IsDRAMScope(dst_scope)) ||
+         (IsCBScope(src_scope) && IsCBScope(dst_scope)) ||
+         (IsAccumulatorLikeScope(src_scope) && IsCBScope(dst_scope));
+}
+
+bool StmtWritesBuffer(const tir::Stmt& stmt, const Buffer& buffer) {
+  const std::string target_identity = BufferIdentityName(buffer);
+  bool writes = false;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    if (writes) {
+      return;
+    }
+    const auto* store = node.as<BufferStoreNode>();
+    writes = store != nullptr && BufferIdentityName(store->buffer) == target_identity;
+  });
+  return writes;
+}
+
+bool StmtReferencesBuffer(const tir::Stmt& stmt, const Buffer& buffer) {
+  const std::string target_identity = BufferIdentityName(buffer);
+  bool referenced = false;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    if (referenced) {
+      return;
+    }
+    if (const auto* store = node.as<BufferStoreNode>()) {
+      referenced = BufferIdentityName(store->buffer) == target_identity;
+      return;
+    }
+    if (const auto* load = node.as<BufferLoadNode>()) {
+      referenced = BufferIdentityName(load->buffer) == target_identity;
+      return;
+    }
+    const auto* call = node.as<CallNode>();
+    if (call == nullptr) {
+      return;
+    }
+    for (const PrimExpr& arg : call->args) {
+      if (!IsBufferLikeExpr(arg)) {
+        continue;
+      }
+      tir::BufferRegion region = NormalizeToBufferRegion(arg);
+      if (BufferIdentityName(region->buffer) == target_identity) {
+        referenced = true;
+        return;
+      }
+    }
+  });
+  return referenced;
+}
+
+bool StmtConsumesBufferViaTransport(const tir::Stmt& stmt, const Buffer& buffer) {
+  const std::string target_identity = BufferIdentityName(buffer);
+  bool consumed = false;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    if (consumed) {
+      return;
+    }
+    const auto* store = node.as<BufferStoreNode>();
+    if (!IsCopyOperation(store) || !IsTransportConsumerDirection(store)) {
+      return;
+    }
+    const auto* load = store->value.as<BufferLoadNode>();
+    consumed = load != nullptr && BufferIdentityName(load->buffer) == target_identity;
+  });
+  return consumed;
+}
+
+std::unordered_set<std::string> CollectComputeConsumedBuffers(const tir::Stmt& stmt) {
+  std::unordered_set<std::string> consumed_buffers;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    const auto* call = node.as<CallNode>();
+    if (call == nullptr || !call->op->IsInstance<OpNode>()) {
+      return;
+    }
+    TileOperator tile_op = ParseOperator(GetRef<Call>(call));
+    if (!tile_op.defined()) {
+      return;
+    }
+    for (const DataflowAccessInfo& access : tile_op->GetDataflowAccessInfo()) {
+      if (access.kind != DataflowAccessKind::kComputeConsume) {
+        continue;
+      }
+      const std::string name = BufferIdentityName(access.buffer);
+      if (!name.empty()) {
+        consumed_buffers.insert(name);
+      }
+    }
+  });
+  return consumed_buffers;
+}
+
+std::string DeriveFragmentFlowClassLabel(const std::vector<FragmentBufferFlowEvent>& events) {
+  int first_consume_order = std::numeric_limits<int>::max();
+  bool has_consume = false;
+  for (const FragmentBufferFlowEvent& event : events) {
+    if (event.kind == FragmentBufferFlowEventKind::kComputeConsume ||
+        event.kind == FragmentBufferFlowEventKind::kTransportConsume) {
+      has_consume = true;
+      first_consume_order = std::min(first_consume_order, event.order_index);
+    }
+  }
+  if (!has_consume) {
+    return fragment_flow::kState;
+  }
+  for (const FragmentBufferFlowEvent& event : events) {
+    if (event.kind == FragmentBufferFlowEventKind::kWrite &&
+        event.order_index > first_consume_order) {
+      return fragment_flow::kRepublish;
+    }
+  }
+  return fragment_flow::kStream;
+}
+
+Array<Any> CollectFragmentBufferFlowContractsFromBody(const tir::Stmt& body) {
+  std::unordered_map<std::string, Buffer> tracked_buffers;
+  const std::vector<tir::Stmt> ordered_stmts = CollectExecutionOrderedStmts(body);
+  for (const tir::Stmt& stmt : ordered_stmts) {
+    tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+      auto remember_buffer = [&](const Buffer& buffer) {
+        if (!buffer.defined()) {
+          return;
+        }
+        const std::string scope = str(buffer.scope());
+        if (!IsTrackedBufferFlowScope(scope)) {
+          return;
+        }
+        const std::string name = BufferIdentityName(buffer);
+        if (!name.empty()) {
+          tracked_buffers.emplace(name, buffer);
+        }
+      };
+      if (const auto* store = node.as<BufferStoreNode>()) {
+        remember_buffer(store->buffer);
+        return;
+      }
+      if (const auto* load = node.as<BufferLoadNode>()) {
+        remember_buffer(load->buffer);
+        return;
+      }
+      const auto* call = node.as<CallNode>();
+      if (call == nullptr) {
+        return;
+      }
+      TileOperator tile_op = ParseOperator(GetRef<Call>(call));
+      if (tile_op.defined()) {
+        for (const DataflowAccessInfo& access : tile_op->GetDataflowAccessInfo()) {
+          remember_buffer(access.buffer);
+        }
+      }
+      for (const PrimExpr& arg : call->args) {
+        if (!IsBufferLikeExpr(arg)) {
+          continue;
+        }
+        remember_buffer(NormalizeToBufferRegion(arg)->buffer);
+      }
+    });
+  }
+
+  std::unordered_map<std::string, FragmentBufferFlowContract> contracts_by_buffer;
+  for (int order_index = 0; order_index < static_cast<int>(ordered_stmts.size()); ++order_index) {
+    const tir::Stmt& stmt = ordered_stmts[order_index];
+    const std::unordered_set<std::string> compute_consumed_buffers =
+        CollectComputeConsumedBuffers(stmt);
+    for (const auto& [buffer_name, buffer] : tracked_buffers) {
+      if (!StmtReferencesBuffer(stmt, buffer)) {
+        continue;
+      }
+      FragmentBufferFlowContract& contract = contracts_by_buffer[buffer_name];
+      contract.buffer_name = buffer_name;
+      contract.scope = str(buffer.scope());
+
+      FragmentBufferFlowEvent event;
+      event.order_index = order_index;
+      if (StmtWritesBuffer(stmt, buffer)) {
+        event.kind = FragmentBufferFlowEventKind::kWrite;
+      } else if (compute_consumed_buffers.count(buffer_name)) {
+        event.kind = FragmentBufferFlowEventKind::kComputeConsume;
+      } else if (StmtConsumesBufferViaTransport(stmt, buffer)) {
+        event.kind = FragmentBufferFlowEventKind::kTransportConsume;
+      } else {
+        event.kind = FragmentBufferFlowEventKind::kReference;
+      }
+      contract.events.push_back(event);
+    }
+  }
+
+  Array<Any> contracts;
+  for (auto& [buffer_name, contract] : contracts_by_buffer) {
+    if (contract.events.empty()) {
+      continue;
+    }
+    contract.flow_class = DeriveFragmentFlowClassLabel(contract.events);
+    Map<String, Any> encoded_contract;
+    encoded_contract.Set(String(schema_key::kBuffer), String(buffer_name));
+    encoded_contract.Set(String(schema_key::kScope), String(contract.scope));
+    encoded_contract.Set(String(schema_key::kFlowClass), String(contract.flow_class));
+    encoded_contract.Set(String(schema_key::kGranuleKind), String(fragment_flow::kLogicalTile));
+    encoded_contract.Set(String(schema_key::kPublishGranule), Integer(contract.publish_granule));
+    encoded_contract.Set(String(schema_key::kConsumeGranule), Integer(contract.consume_granule));
+    Array<Any> events;
+    for (const FragmentBufferFlowEvent& event : contract.events) {
+      Map<String, Any> encoded_event;
+      encoded_event.Set(String(schema_key::kKind),
+                        String(FragmentBufferFlowEventKindToString(event.kind)));
+      encoded_event.Set(String(schema_key::kOrderIndex), Integer(event.order_index));
+      events.push_back(encoded_event);
+    }
+    encoded_contract.Set(String(schema_key::kEvents), events);
+    contracts.push_back(encoded_contract);
+  }
   return contracts;
 }
 
@@ -865,6 +1151,8 @@ void CollectSeedsAndSupplements(const tir::PrimFunc& func,
     std::unordered_set<std::string> seen_loop_carried_state;
     Array<Any> fragment_materialization_contracts =
         CollectFragmentMaterializationContractsFromBody(func->body);
+    Array<Any> fragment_buffer_flow_contracts =
+        CollectFragmentBufferFlowContractsFromBody(func->body);
     for (const Any& region_any : fragment_regions.value()) {
       auto region = tvm::Downcast<Map<String, Any>>(region_any);
       CollectUniqueStringField(&fragment_op_kinds, &seen_fragment_ops, region, "ops");
@@ -898,6 +1186,10 @@ void CollectSeedsAndSupplements(const tir::PrimFunc& func,
       if (!fragment_materialization_contracts.empty()) {
         supplement_payload.Set(String(schema_key::kFragmentMaterializationContracts),
                                fragment_materialization_contracts);
+      }
+      if (!fragment_buffer_flow_contracts.empty()) {
+        supplement_payload.Set(String(schema_key::kFragmentBufferFlowContracts),
+                               fragment_buffer_flow_contracts);
       }
       Map<String, Any> supplement;
       supplement.Set("kind", String(ToString(SupplementKind::kFragmentLoweringStructure)));

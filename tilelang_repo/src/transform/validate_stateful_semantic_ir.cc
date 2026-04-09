@@ -167,6 +167,40 @@ tir::transform::Pass ValidateStatefulSemanticIR() {
                 << "fragment_materialization_contract must carry merge_kind";
           }
         }
+        if (auto maybe_flow_contracts =
+                supplement->payload.Get(String(schema_key::kFragmentBufferFlowContracts))) {
+          Array<Any> contracts = tvm::Downcast<Array<Any>>(maybe_flow_contracts.value());
+          ICHECK(!contracts.empty())
+              << "fragment_lowering_structure fragment_buffer_flow_contracts must be non-empty";
+          for (const Any& contract_any : contracts) {
+            Map<String, Any> contract = tvm::Downcast<Map<String, Any>>(contract_any);
+            ICHECK(contract.count(String(schema_key::kBuffer)))
+                << "fragment_buffer_flow_contract must carry buffer";
+            ICHECK(contract.count(String(schema_key::kScope)))
+                << "fragment_buffer_flow_contract must carry scope";
+            ICHECK(contract.count(String(schema_key::kFlowClass)))
+                << "fragment_buffer_flow_contract must carry flow_class";
+            ICHECK(contract.count(String(schema_key::kGranuleKind)))
+                << "fragment_buffer_flow_contract must carry granule_kind";
+            ICHECK(contract.count(String(schema_key::kPublishGranule)))
+                << "fragment_buffer_flow_contract must carry publish_granule";
+            ICHECK(contract.count(String(schema_key::kConsumeGranule)))
+                << "fragment_buffer_flow_contract must carry consume_granule";
+            auto maybe_events = contract.Get(String(schema_key::kEvents));
+            ICHECK(maybe_events)
+                << "fragment_buffer_flow_contract must carry events";
+            Array<Any> events = tvm::Downcast<Array<Any>>(maybe_events.value());
+            ICHECK(!events.empty())
+                << "fragment_buffer_flow_contract events must be non-empty";
+            for (const Any& event_any : events) {
+              Map<String, Any> event = tvm::Downcast<Map<String, Any>>(event_any);
+              ICHECK(event.count(String(schema_key::kKind)))
+                  << "fragment_buffer_flow_contract event must carry kind";
+              ICHECK(event.count(String(schema_key::kOrderIndex)))
+                  << "fragment_buffer_flow_contract event must carry order_index";
+            }
+          }
+        }
       } else if (*kind == SupplementKind::kPipelineStructure) {
         auto maybe_pipeline_stages = supplement->payload.Get(String(schema_key::kPipelineStages));
         ICHECK(maybe_pipeline_stages)

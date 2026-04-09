@@ -759,6 +759,47 @@ void ValidateResourceIntents(const SpatialProgram& program,
               << "ValidateSpatialProgram requires fragment_materialization_contract entries to carry merge_kind";
         }
       }
+      if (auto maybe_fragment_flow_contracts =
+              intent->payload.Get(String(schema_key::kFragmentBufferFlowContracts))) {
+        Array<Any> flow_contracts = Downcast<Array<Any>>(maybe_fragment_flow_contracts.value());
+        ICHECK(!flow_contracts.empty())
+            << "ValidateSpatialProgram requires fragment_buffer_flow_contracts to be non-empty";
+        for (const Any& contract_any : flow_contracts) {
+          Map<String, Any> contract = Downcast<Map<String, Any>>(contract_any);
+          ICHECK(contract.count(String(schema_key::kBuffer)))
+              << "ValidateSpatialProgram requires fragment_buffer_flow_contract entries to carry buffer";
+          ICHECK(contract.count(String(schema_key::kScope)))
+              << "ValidateSpatialProgram requires fragment_buffer_flow_contract entries to carry scope";
+          ICHECK(contract.count(String(schema_key::kFlowClass)))
+              << "ValidateSpatialProgram requires fragment_buffer_flow_contract entries to carry flow_class";
+          ICHECK(contract.count(String(schema_key::kGranuleKind)))
+              << "ValidateSpatialProgram requires fragment_buffer_flow_contract entries to carry granule_kind";
+          ICHECK(contract.count(String(schema_key::kPublishGranule)))
+              << "ValidateSpatialProgram requires fragment_buffer_flow_contract entries to carry publish_granule";
+          ICHECK(contract.count(String(schema_key::kConsumeGranule)))
+              << "ValidateSpatialProgram requires fragment_buffer_flow_contract entries to carry consume_granule";
+          auto maybe_events = contract.Get(String(schema_key::kEvents));
+          ICHECK(maybe_events)
+              << "ValidateSpatialProgram requires fragment_buffer_flow_contract entries to carry events";
+          Array<Any> events = Downcast<Array<Any>>(maybe_events.value());
+          ICHECK(!events.empty())
+              << "ValidateSpatialProgram requires fragment_buffer_flow_contract events to be non-empty";
+          int previous_order_index = -1;
+          for (const Any& event_any : events) {
+            Map<String, Any> event = Downcast<Map<String, Any>>(event_any);
+            ICHECK(event.count(String(schema_key::kKind)))
+                << "ValidateSpatialProgram requires fragment_buffer_flow_contract events to carry kind";
+            ICHECK(event.count(String(schema_key::kOrderIndex)))
+                << "ValidateSpatialProgram requires fragment_buffer_flow_contract events to carry order_index";
+            const int order_index = Downcast<Integer>(event.at(String(schema_key::kOrderIndex)))->value;
+            ICHECK(order_index >= 0)
+                << "ValidateSpatialProgram requires fragment_buffer_flow_contract order_index to be non-negative";
+            ICHECK(order_index >= previous_order_index)
+                << "ValidateSpatialProgram requires fragment_buffer_flow_contract events to be ordered";
+            previous_order_index = order_index;
+          }
+        }
+      }
     }
     if (IsPipelineContractIntent(intent)) {
       has_pipeline_contract = true;

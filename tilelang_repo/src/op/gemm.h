@@ -168,6 +168,7 @@ public:
                         InferLevel level) const override;
 
   TileOperator Clone() const;
+  std::vector<DataflowAccessInfo> GetDataflowAccessInfo() const override;
 
 private:
   GemmInst getGemmInst(int block_size, Target target) const;

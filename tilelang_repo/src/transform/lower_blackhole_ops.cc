@@ -143,13 +143,26 @@ static std::string DataTypeToDataFormatForBlackhole(DataType dtype) {
 static std::string CBFlowClassToString(CBFlowClass flow_class) {
   switch (flow_class) {
     case CBFlowClass::kStream:
-      return "stream";
+      return fragment_flow::kStream;
     case CBFlowClass::kRepublish:
-      return "republish";
+      return fragment_flow::kRepublish;
     case CBFlowClass::kState:
     default:
-      return "state";
+      return fragment_flow::kState;
   }
+}
+
+static std::optional<CBFlowClass> ParseCBFlowClass(const std::string& flow_class) {
+  if (flow_class == fragment_flow::kState) {
+    return CBFlowClass::kState;
+  }
+  if (flow_class == fragment_flow::kStream) {
+    return CBFlowClass::kStream;
+  }
+  if (flow_class == fragment_flow::kRepublish) {
+    return CBFlowClass::kRepublish;
+  }
+  return std::nullopt;
 }
 
 static Map<String, Any> BuildGemmContractPayload(
@@ -1378,6 +1391,12 @@ static void CollectFragmentRequirementsFromSpatialProgram(const SpatialProgram& 
                                    String(schema_key::kFragmentMaterializationContracts),
                                    Downcast<Array<Any>>(materialization_contracts.value()));
     }
+    if (auto flow_contracts =
+            intent->payload.Get(String(schema_key::kFragmentBufferFlowContracts))) {
+      SetArrayRequirementIfMissing(lowering_requirements,
+                                   String(schema_key::kFragmentBufferFlowContracts),
+                                   Downcast<Array<Any>>(flow_contracts.value()));
+    }
   }
 }
 
@@ -1469,6 +1488,62 @@ BuildFragmentMaterializationContractMap(const Map<String, Any>& lowering_require
     }
   }
   return contracts_by_target_buffer;
+}
+
+void LowerBlackholeOps::LoadBufferFlowContracts(const Map<String, Any>& lowering_requirements) {
+  buffer_flow_contracts_.clear();
+  auto maybe_contracts =
+      lowering_requirements.Get(String(schema_key::kFragmentBufferFlowContracts));
+  if (!maybe_contracts) {
+    return;
+  }
+  for (const Any& contract_any : Downcast<Array<Any>>(maybe_contracts.value())) {
+    Map<String, Any> encoded_contract = Downcast<Map<String, Any>>(contract_any);
+    auto buffer_it = encoded_contract.find(String(schema_key::kBuffer));
+    auto flow_class_it = encoded_contract.find(String(schema_key::kFlowClass));
+    if (buffer_it == encoded_contract.end() || flow_class_it == encoded_contract.end()) {
+      continue;
+    }
+    const std::string buffer_name = Downcast<String>((*buffer_it).second);
+    auto parsed_flow_class = ParseCBFlowClass(Downcast<String>((*flow_class_it).second));
+    ICHECK(parsed_flow_class.has_value())
+        << "LowerBlackholeOps requires a known fragment buffer flow_class for " << buffer_name;
+
+    BufferFlowContract contract;
+    contract.flow_class = parsed_flow_class.value();
+    if (auto publish = encoded_contract.Get(String(schema_key::kPublishGranule))) {
+      contract.publish_pages_per_event =
+          std::max(1, static_cast<int>(Downcast<Integer>(publish.value())->value));
+    }
+    if (auto consume = encoded_contract.Get(String(schema_key::kConsumeGranule))) {
+      contract.consume_pages_per_event =
+          std::max(1, static_cast<int>(Downcast<Integer>(consume.value())->value));
+    }
+    if (auto events = encoded_contract.Get(String(schema_key::kEvents))) {
+      for (const Any& event_any : Downcast<Array<Any>>(events.value())) {
+        Map<String, Any> encoded_event = Downcast<Map<String, Any>>(event_any);
+        auto maybe_kind = encoded_event.Get(String(schema_key::kKind));
+        auto maybe_order_index = encoded_event.Get(String(schema_key::kOrderIndex));
+        if (!maybe_kind || !maybe_order_index) {
+          continue;
+        }
+        BufferFlowEvent event;
+        event.order_index = Downcast<Integer>(maybe_order_index.value())->value;
+        const std::string kind = Downcast<String>(maybe_kind.value());
+        if (kind == fragment_flow::kWrite) {
+          event.kind = BufferFlowEventKind::kWrite;
+        } else if (kind == fragment_flow::kComputeConsume) {
+          event.kind = BufferFlowEventKind::kComputeConsume;
+        } else if (kind == fragment_flow::kTransportConsume) {
+          event.kind = BufferFlowEventKind::kTransportConsume;
+        } else {
+          event.kind = BufferFlowEventKind::kReference;
+        }
+        contract.events.push_back(event);
+      }
+    }
+    buffer_flow_contracts_.emplace(buffer_name, std::move(contract));
+  }
 }
 
 // Helper to get storage scope from buffer
@@ -1701,7 +1776,8 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   block_index_var_names_.clear();
   cb_consumed_fragment_pages_by_buffer_identity_.clear();
   cb_consumed_fragment_use_count_by_buffer_identity_.clear();
-  seq_buffer_flow_contracts_.clear();
+  buffer_flow_contracts_.clear();
+  stmt_order_index_by_node_.clear();
   logical_buffer_shapes_.clear();
   LoadLogicalBufferShapes(func);
   tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
@@ -1770,6 +1846,8 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   Map<String, Any> lowering_requirements = BuildLoweringRequirementsFromAnalysis(func);
   fragment_materialization_contracts_by_target_buffer_ =
       BuildFragmentMaterializationContractMap(lowering_requirements);
+  LoadBufferFlowContracts(lowering_requirements);
+  stmt_order_index_by_node_ = BuildExecutionOrderIndexByStmtNode(func->body);
   if (!lowering_requirements.empty()) {
     ValidateFragmentPipelineLegality(lowering_requirements);
   }
@@ -2985,26 +3063,27 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
       return;
     }
     const std::string buffer_identity = BufferIdentityName(buffer);
-    auto it = cb_consumed_fragment_use_count_by_buffer_identity_.find(buffer_identity);
-    if (it == cb_consumed_fragment_use_count_by_buffer_identity_.end() || it->second <= 1) {
-      auto& req = cb_requirements_[requirement_index];
-      req.flow_class = CBFlowClass::kStream;
-      req.publish_pages_per_event =
-          std::max(req.publish_pages_per_event, std::max(1, consumed_pages));
-      req.consume_pages_per_event =
-          std::max(req.consume_pages_per_event, std::max(1, consumed_pages));
-      return;
+    CBFlowClass flow_class = CBFlowClass::kStream;
+    if (auto contract_it = buffer_flow_contracts_.find(buffer_identity);
+        contract_it != buffer_flow_contracts_.end()) {
+      flow_class = contract_it->second.flow_class;
+    } else if (auto use_count_it =
+                   cb_consumed_fragment_use_count_by_buffer_identity_.find(buffer_identity);
+               use_count_it != cb_consumed_fragment_use_count_by_buffer_identity_.end() &&
+               use_count_it->second > 1) {
+      flow_class = CBFlowClass::kRepublish;
     }
     auto& req = cb_requirements_[requirement_index];
-    req.flow_class = CBFlowClass::kRepublish;
+    req.flow_class = flow_class;
     req.publish_pages_per_event = std::max(req.publish_pages_per_event, std::max(1, consumed_pages));
     req.consume_pages_per_event = std::max(req.consume_pages_per_event, std::max(1, consumed_pages));
-    // Compute-produced matmul inputs can be published, consumed, and then
-    // republished later in the same kernel. Keep a second page set resident so
-    // the later reserve_back rotates onto fresh storage instead of reusing the
-    // just-consumed page.
-    req.num_pages = std::max(req.num_pages, 2 * std::max(1, consumed_pages));
-    req.initial_reserve_pages = std::max(1, consumed_pages);
+    if (flow_class == CBFlowClass::kRepublish) {
+      // Compute-produced inputs that are republished later in the same kernel
+      // keep a second page set resident so the later reserve_back rotates onto
+      // fresh storage instead of reusing the just-consumed page.
+      req.num_pages = std::max(req.num_pages, 2 * std::max(1, consumed_pages));
+      req.initial_reserve_pages = std::max(1, consumed_pages);
+    }
   };
 
   set_requirement_fields(gemm_a_req_index_, ab_tile_bytes, num_m_tiles * num_k_tiles,
@@ -5937,207 +6016,18 @@ Stmt LowerBlackholeOps::GenerateFragmentCastSequence(const FragmentCastMatch& ma
   return stmts.size() == 1 ? stmts.front() : SeqStmt::Flatten(stmts);
 }
 
-void LowerBlackholeOps::AnalyzeSeqBufferFlowContracts(const tvm::ffi::Array<tvm::tir::Stmt>& seq) {
-  seq_buffer_flow_contracts_.clear();
-
-  std::unordered_map<std::string, Buffer> candidate_buffers;
-  auto remember_buffer = [&](const Buffer& buffer) {
-    if (!buffer.defined()) {
-      return;
-    }
-    candidate_buffers.emplace(BufferIdentityName(buffer), buffer);
-  };
-
-  for (const Stmt& stmt : seq) {
-    tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
-      if (const auto* store = node.as<BufferStoreNode>()) {
-        remember_buffer(store->buffer);
-        return;
-      }
-      if (const auto* load = node.as<BufferLoadNode>()) {
-        remember_buffer(load->buffer);
-        return;
-      }
-      const auto* call = node.as<CallNode>();
-      if (!call) {
-        return;
-      }
-      for (const PrimExpr& arg : call->args) {
-        if (!IsBufferLikeExpr(arg)) {
-          continue;
-        }
-        remember_buffer(NormalizeToBufferRegion(arg)->buffer);
-      }
-    });
-  }
-
-  for (int i = 0; i < static_cast<int>(seq.size()); ++i) {
-    const Stmt& stmt = seq[static_cast<size_t>(i)];
-    for (const auto& kv : candidate_buffers) {
-      const Buffer& buffer = kv.second;
-      if (!StmtReferencesBuffer(stmt, buffer)) {
-        continue;
-      }
-
-      BufferFlowEvent event;
-      event.stmt_index = i;
-      if (StmtWritesBuffer(stmt, buffer)) {
-        event.kind = BufferFlowEventKind::kWrite;
-      } else if (StmtConsumesBufferViaMatmul(stmt, buffer)) {
-        event.kind = BufferFlowEventKind::kMatmulConsume;
-      } else if (StmtConsumesBufferViaTransport(stmt, buffer)) {
-        event.kind = BufferFlowEventKind::kTransportConsume;
-      } else {
-        event.kind = BufferFlowEventKind::kReference;
-      }
-      seq_buffer_flow_contracts_[kv.first].events.push_back(event);
-    }
-  }
-
-  for (auto& kv : seq_buffer_flow_contracts_) {
-    auto& contract = kv.second;
-    int first_consume_index = std::numeric_limits<int>::max();
-    bool has_consume = false;
-    for (const BufferFlowEvent& event : contract.events) {
-      if (event.kind == BufferFlowEventKind::kMatmulConsume ||
-          event.kind == BufferFlowEventKind::kTransportConsume) {
-        has_consume = true;
-        first_consume_index = std::min(first_consume_index, event.stmt_index);
-      }
-    }
-
-    if (!has_consume) {
-      contract.flow_class = CBFlowClass::kState;
-      continue;
-    }
-
-    contract.flow_class = CBFlowClass::kStream;
-    for (const BufferFlowEvent& event : contract.events) {
-      if (event.kind == BufferFlowEventKind::kWrite && event.stmt_index > first_consume_index) {
-        contract.flow_class = CBFlowClass::kRepublish;
-        break;
-      }
-    }
-
-    int granule_pages = 1;
-    if (auto it = cb_consumed_fragment_pages_by_buffer_identity_.find(kv.first);
-        it != cb_consumed_fragment_pages_by_buffer_identity_.end()) {
-      granule_pages = std::max(1, it->second);
-    }
-    contract.publish_pages_per_event = granule_pages;
-    contract.consume_pages_per_event = granule_pages;
-  }
-}
-
-bool LowerBlackholeOps::StmtConsumesBufferViaMatmul(const Stmt& stmt, const Buffer& buffer) const {
-  const std::string target_identity = BufferIdentityName(buffer);
-  bool consumed = false;
-  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
-    if (consumed) {
-      return;
-    }
-    const auto* call = node.as<CallNode>();
-    if (!call || !IsMatmulCall(call) || call->args.size() < 2) {
-      return;
-    }
-    auto matches_buffer = [&](const PrimExpr& expr) {
-      tir::BufferRegion region = NormalizeToBufferRegion(expr);
-      return BufferIdentityName(region->buffer) == target_identity;
-    };
-    consumed = matches_buffer(call->args[0]) || matches_buffer(call->args[1]);
-  });
-  return consumed;
-}
-
-bool LowerBlackholeOps::StmtConsumesBufferViaTransport(const Stmt& stmt,
-                                                       const Buffer& buffer) const {
-  const std::string target_identity = BufferIdentityName(buffer);
-  bool consumed = false;
-  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
-    if (consumed) {
-      return;
-    }
-    const auto* store = node.as<BufferStoreNode>();
-    if (!store || !IsCopyOperation(store)) {
-      return;
-    }
-    const auto* load = store->value.as<BufferLoadNode>();
-    if (!load || BufferIdentityName(load->buffer) != target_identity) {
-      return;
-    }
-    CopyDirection direction = GetCopyDirection(store);
-    consumed = direction == CopyDirection::kCBToDram || direction == CopyDirection::kCBToCB ||
-               direction == CopyDirection::kLocalToCB;
-  });
-  return consumed;
-}
-
-bool LowerBlackholeOps::StmtReferencesBuffer(const Stmt& stmt, const Buffer& buffer) const {
-  const std::string target_identity = BufferIdentityName(buffer);
-  bool referenced = false;
-  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
-    if (referenced) {
-      return;
-    }
-    if (const auto* store = node.as<BufferStoreNode>()) {
-      if (BufferIdentityName(store->buffer) == target_identity) {
-        referenced = true;
-        return;
-      }
-    }
-    if (const auto* load = node.as<BufferLoadNode>()) {
-      if (BufferIdentityName(load->buffer) == target_identity) {
-        referenced = true;
-        return;
-      }
-    }
-    const auto* call = node.as<CallNode>();
-    if (!call) {
-      return;
-    }
-    for (const PrimExpr& arg : call->args) {
-      if (!IsBufferLikeExpr(arg)) {
-        continue;
-      }
-      tir::BufferRegion region = NormalizeToBufferRegion(arg);
-      if (BufferIdentityName(region->buffer) == target_identity) {
-        referenced = true;
-        return;
-      }
-    }
-  });
-  return referenced;
-}
-
-bool LowerBlackholeOps::StmtWritesBuffer(const Stmt& stmt, const Buffer& buffer) const {
-  const std::string target_identity = BufferIdentityName(buffer);
-  bool writes = false;
-  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
-    if (writes) {
-      return;
-    }
-    const auto* store = node.as<BufferStoreNode>();
-    if (store && BufferIdentityName(store->buffer) == target_identity) {
-      writes = true;
-    }
-  });
-  return writes;
-}
-
-bool LowerBlackholeOps::ShouldRetainMatmulInputBuffer(const tvm::ffi::Array<Stmt>& seq,
-                                                      size_t start_idx,
-                                                      const Buffer& buffer) const {
-  static_cast<void>(seq);
+bool LowerBlackholeOps::ShouldRetainComputeInputBuffer(const Buffer& buffer,
+                                                       int current_order_index) const {
   const std::string buffer_identity = BufferIdentityName(buffer);
-  auto it = seq_buffer_flow_contracts_.find(buffer_identity);
-  if (it == seq_buffer_flow_contracts_.end()) {
+  auto it = buffer_flow_contracts_.find(buffer_identity);
+  if (it == buffer_flow_contracts_.end()) {
     return false;
   }
   for (const BufferFlowEvent& event : it->second.events) {
-    if (event.stmt_index < static_cast<int>(start_idx)) {
+    if (event.order_index <= current_order_index) {
       continue;
     }
-    if (event.kind == BufferFlowEventKind::kMatmulConsume) {
+    if (event.kind == BufferFlowEventKind::kComputeConsume) {
       return true;
     }
     if (event.kind == BufferFlowEventKind::kWrite) {
@@ -6147,20 +6037,18 @@ bool LowerBlackholeOps::ShouldRetainMatmulInputBuffer(const tvm::ffi::Array<Stmt
   return false;
 }
 
-bool LowerBlackholeOps::ShouldReacquireMatmulInputBuffer(const tvm::ffi::Array<Stmt>& seq,
-                                                         size_t start_idx,
-                                                         const Buffer& buffer) const {
-  static_cast<void>(seq);
+bool LowerBlackholeOps::ShouldReacquireComputeInputBuffer(const Buffer& buffer,
+                                                          int current_order_index) const {
   if (GetStorageScope(buffer) != "blackhole.acc") {
     return false;
   }
   const std::string buffer_identity = BufferIdentityName(buffer);
-  auto it = seq_buffer_flow_contracts_.find(buffer_identity);
-  if (it == seq_buffer_flow_contracts_.end()) {
+  auto it = buffer_flow_contracts_.find(buffer_identity);
+  if (it == buffer_flow_contracts_.end()) {
     return false;
   }
   for (const BufferFlowEvent& event : it->second.events) {
-    if (event.stmt_index < static_cast<int>(start_idx)) {
+    if (event.order_index <= current_order_index) {
       continue;
     }
     return event.kind == BufferFlowEventKind::kWrite;
@@ -6168,20 +6056,18 @@ bool LowerBlackholeOps::ShouldReacquireMatmulInputBuffer(const tvm::ffi::Array<S
   return false;
 }
 
-bool LowerBlackholeOps::ShouldPublishBufferResult(const tvm::ffi::Array<Stmt>& seq,
-                                                  size_t start_idx,
-                                                  const Buffer& buffer) const {
-  static_cast<void>(seq);
+bool LowerBlackholeOps::ShouldPublishBufferResult(const Buffer& buffer,
+                                                  int current_order_index) const {
   const std::string buffer_identity = BufferIdentityName(buffer);
-  auto it = seq_buffer_flow_contracts_.find(buffer_identity);
-  if (it == seq_buffer_flow_contracts_.end()) {
+  auto it = buffer_flow_contracts_.find(buffer_identity);
+  if (it == buffer_flow_contracts_.end()) {
     return false;
   }
   for (const BufferFlowEvent& event : it->second.events) {
-    if (event.stmt_index < static_cast<int>(start_idx)) {
+    if (event.order_index <= current_order_index) {
       continue;
     }
-    if (event.kind == BufferFlowEventKind::kMatmulConsume ||
+    if (event.kind == BufferFlowEventKind::kComputeConsume ||
         event.kind == BufferFlowEventKind::kTransportConsume) {
       return true;
     }
@@ -6431,10 +6317,11 @@ Stmt LowerBlackholeOps::VisitStmt_(const AllocateNode* op) {
 }
 
 Stmt LowerBlackholeOps::VisitStmt_(const SeqStmtNode* op) {
-  const auto saved_flow_contracts = seq_buffer_flow_contracts_;
-  AnalyzeSeqBufferFlowContracts(op->seq);
   Array<Stmt> rewritten;
   for (size_t i = 0; i < op->seq.size(); ++i) {
+    const auto order_it = stmt_order_index_by_node_.find(op->seq[i].get());
+    const int current_order_index =
+        order_it != stmt_order_index_by_node_.end() ? order_it->second : static_cast<int>(i);
     auto try_lower_retained_matmul = [&](const Stmt& stmt, Stmt* lowered) -> bool {
       std::vector<std::function<Stmt(Stmt)>> rewrap_stack;
       Stmt current = stmt;
@@ -6485,22 +6372,24 @@ Stmt LowerBlackholeOps::VisitStmt_(const SeqStmtNode* op) {
           bool reacquire_in1 = false;
           if (IsBufferLikeExpr(call->args[0])) {
             const Buffer in0_buffer = NormalizeToBufferRegion(call->args[0])->buffer;
-            retain_in0 = ShouldRetainMatmulInputBuffer(op->seq, i + 1, in0_buffer);
+            retain_in0 = ShouldRetainComputeInputBuffer(in0_buffer, current_order_index);
             if (!retain_in0) {
-              reacquire_in0 = ShouldReacquireMatmulInputBuffer(op->seq, i + 1, in0_buffer);
+              reacquire_in0 =
+                  ShouldReacquireComputeInputBuffer(in0_buffer, current_order_index);
             }
           }
           if (IsBufferLikeExpr(call->args[1])) {
             const Buffer in1_buffer = NormalizeToBufferRegion(call->args[1])->buffer;
-            retain_in1 = ShouldRetainMatmulInputBuffer(op->seq, i + 1, in1_buffer);
+            retain_in1 = ShouldRetainComputeInputBuffer(in1_buffer, current_order_index);
             if (!retain_in1) {
-              reacquire_in1 = ShouldReacquireMatmulInputBuffer(op->seq, i + 1, in1_buffer);
+              reacquire_in1 =
+                  ShouldReacquireComputeInputBuffer(in1_buffer, current_order_index);
             }
           }
           bool publish_out = true;
           if (IsBufferLikeExpr(call->args[2])) {
             publish_out = ShouldPublishBufferResult(
-                op->seq, i + 1, NormalizeToBufferRegion(call->args[2])->buffer);
+                NormalizeToBufferRegion(call->args[2])->buffer, current_order_index);
           }
           Stmt matmul = GenerateMatmulSequence(call, retain_in0, retain_in1, publish_out,
                                                reacquire_in0, reacquire_in1);
@@ -6522,7 +6411,7 @@ Stmt LowerBlackholeOps::VisitStmt_(const SeqStmtNode* op) {
     if (const auto* direct_cast_loop = AsUnwrappedFor(op->seq[i])) {
       FragmentCastMatch cast_match;
       if (MatchDirectFragmentCast(direct_cast_loop, &cast_match)) {
-        const bool publish_cb = ShouldPublishBufferResult(op->seq, i + 1, cast_match.dst);
+        const bool publish_cb = ShouldPublishBufferResult(cast_match.dst, current_order_index);
         rewritten.push_back(GenerateFragmentCastSequence(cast_match, publish_cb));
         continue;
       }
@@ -6557,8 +6446,6 @@ Stmt LowerBlackholeOps::VisitStmt_(const SeqStmtNode* op) {
     }
     rewritten.push_back(VisitStmt(op->seq[i]));
   }
-
-  seq_buffer_flow_contracts_ = saved_flow_contracts;
   return SeqStmt::Flatten(rewritten);
 }
 

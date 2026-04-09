@@ -16,6 +16,7 @@
 #include <tvm/tir/stmt.h>
 
 #include <optional>
+#include <vector>
 
 #include "../layout/layout.h"
 
@@ -87,6 +88,15 @@ struct FragmentMaterializationInfo {
   ffi::String merge_kind;
 };
 
+enum class DataflowAccessKind : uint8_t {
+  kComputeConsume = 0,
+};
+
+struct DataflowAccessInfo {
+  Buffer buffer;
+  DataflowAccessKind kind{DataflowAccessKind::kComputeConsume};
+};
+
 class TileOperatorNode : public Object {
 public:
   virtual Stmt Lower(const LowerArgs &T, arith::Analyzer *analyzer) const = 0;
@@ -99,6 +109,10 @@ public:
   virtual std::optional<FragmentMaterializationInfo>
   GetFragmentMaterializationInfo() const {
     return std::nullopt;
+  }
+
+  virtual std::vector<DataflowAccessInfo> GetDataflowAccessInfo() const {
+    return {};
   }
 
   TVM_FFI_DECLARE_OBJECT_INFO("tl.TileOperator", TileOperatorNode, Object);

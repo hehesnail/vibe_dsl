@@ -177,6 +177,15 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 优先消费 TT-Metal local install tree，不要把 `.cpmcache` 整片塞进 include path
 - 现阶段 Blackhole runtime/direct-runtime regression 默认统一用 `bf16` 输入；
   不要再把 `fp16` 当成 TT-Sim 上的正式 runtime baseline
+- 对 `flash-attn` / multi-op compute kernel 的
+  producer-consumer / republish 判断，
+  owner 应该是上游 `fragment_lowering_structure -> SpatialProgram`
+  的 typed `fragment_buffer_flow_contracts`；
+  `LowerBlackholeOps` 不应再本地扫 `SeqStmt`
+  恢复 `write / compute_consume / transport_consume` 语义
+- 这组 flow contract 不能只覆盖 fragment/local intermediate buffer；
+  还要覆盖 compute kernel 内参与同一 producer-consumer 协议的 CB-backed input buffer，
+  否则 retain/pop 策略会在 lower 侧退回成“缺 contract 默认即时 pop”
 - TT-Sim `float16` 路径是否可用要和 target contract 问题分开判断；
   如果 small bf16 correctness 已过、但大 shape `float16` 命中
   `UntestedFunctionality: tensix_execute_unpacr: fp16`，

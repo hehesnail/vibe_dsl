@@ -127,6 +127,13 @@ TileOperator GemmSPNode::Clone() const {
   return GemmSP(op);
 }
 
+std::vector<DataflowAccessInfo> GemmSPNode::GetDataflowAccessInfo() const {
+  return {
+      DataflowAccessInfo{a_, DataflowAccessKind::kComputeConsume},
+      DataflowAccessInfo{b_, DataflowAccessKind::kComputeConsume},
+  };
+}
+
 /**
  * @brief Lower this GemmSP node to a TL (tensile-like) intrinsic call.
  *

@@ -103,6 +103,13 @@ TileOperator GemmNode::Clone() const {
   return Gemm(op);
 }
 
+std::vector<DataflowAccessInfo> GemmNode::GetDataflowAccessInfo() const {
+  return {
+      DataflowAccessInfo{a_, DataflowAccessKind::kComputeConsume},
+      DataflowAccessInfo{b_, DataflowAccessKind::kComputeConsume},
+  };
+}
+
 bool GemmNode::allowTcgen5Mma(Target target) const {
   return TargetIsSm100(target) &&
          ((a_.scope() == "shared.dyn" || a_.scope() == "shared" ||

@@ -183,6 +183,12 @@ Stateful Semantic IR
 和 per-buffer `work/access contract` 仍未完整 formalize。
 只要这层 owner 还不完整，下游 runtime/codegen
 就只能继续 gate 或暴露缺口，不能被当成主问题 owner。
+当前已经前移的一步是：
+`fragment_buffer_flow_contract` 已开始在
+`AnalyzeSemanticStructure -> SpatialProgram` 显式物化，
+并由 `LowerBlackholeOps` 直接消费；
+这条链不再允许 lower 自己从局部 `SeqStmt`
+恢复 `stream / state / republish` 语义。
 具体剩余项、完成判定与 gate 统一以
 `tasks/dev_design/stage4_phase_c_tt_target_ir.md` 为准。
 

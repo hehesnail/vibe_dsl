@@ -72,8 +72,15 @@ constexpr const char* kExecutionRole = "execution_role";
 constexpr const char* kFormationBasis = "formation_basis";
 constexpr const char* kFragmentMaterializationContracts = "fragment_materialization_contracts";
 constexpr const char* kFragmentMaterializationContract = "fragment_materialization_contract";
+constexpr const char* kFragmentBufferFlowContracts = "fragment_buffer_flow_contracts";
 constexpr const char* kFragmentLoopCarriedState = "fragment_loop_carried_state";
 constexpr const char* kFragmentOpKinds = "fragment_op_kinds";
+constexpr const char* kFlowClass = "flow_class";
+constexpr const char* kGranuleKind = "granule_kind";
+constexpr const char* kPublishGranule = "publish_granule";
+constexpr const char* kConsumeGranule = "consume_granule";
+constexpr const char* kEvents = "events";
+constexpr const char* kOrderIndex = "order_index";
 constexpr const char* kIsInteger = "is_integer";
 constexpr const char* kKind = "kind";
 constexpr const char* kMaterializationKind = "materialization_kind";
@@ -130,6 +137,19 @@ constexpr const char* kLoopVar = "loop_var";
 constexpr const char* kLoopCarriedState = "loop_carried_state";
 constexpr const char* kWorkDependentLoopBounds = "work_dependent_loop_bounds";
 }  // namespace schema_key
+
+namespace fragment_flow {
+constexpr const char* kState = "state";
+constexpr const char* kStream = "stream";
+constexpr const char* kRepublish = "republish";
+
+constexpr const char* kLogicalTile = "logical_tile";
+
+constexpr const char* kWrite = "write";
+constexpr const char* kComputeConsume = "compute_consume";
+constexpr const char* kTransportConsume = "transport_consume";
+constexpr const char* kReference = "reference";
+}  // namespace fragment_flow
 
 namespace spatial_contract {
 constexpr const char* kSemanticStateTarget = "semantic_state";

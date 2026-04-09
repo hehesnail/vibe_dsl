@@ -963,6 +963,46 @@ def test_flash_attention_spatial_program_exposes_fragment_materialization_contra
     assert all(str(contract["scope"]) == "blackhole.acc" for contract in materialization_contracts)
 
 
+def test_flash_attention_spatial_program_exposes_fragment_buffer_flow_contracts():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                4,
+                64,
+                32,
+                False,
+                block_M=32,
+                block_N=32,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    program = artifact.device_mod["main_kernel"].attrs["tl.spatial_program"]
+    fragment_contract = next(
+        intent for intent in program.resource_intents if "fragment_contract" in {str(trait) for trait in intent.traits}
+    )
+    flow_contracts = list(fragment_contract.payload["fragment_buffer_flow_contracts"])
+    by_buffer = {str(contract["buffer"]): contract for contract in flow_contracts}
+
+    assert "acc_s_cast" in by_buffer
+    assert str(by_buffer["acc_s_cast"]["flow_class"]) == "republish"
+    assert int(by_buffer["acc_s_cast"]["publish_granule"]) == 1
+    assert int(by_buffer["acc_s_cast"]["consume_granule"]) == 1
+    assert str(by_buffer["acc_s_cast"]["granule_kind"]) == "logical_tile"
+
+    event_kinds = [str(event["kind"]) for event in by_buffer["acc_s_cast"]["events"]]
+    assert event_kinds.count("write") >= 2
+    assert "compute_consume" in event_kinds
+
+
 def test_flash_attention_segment_kernels_prefer_explicit_tile_descriptors_over_work_id():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:

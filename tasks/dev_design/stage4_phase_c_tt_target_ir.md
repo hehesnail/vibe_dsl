@@ -61,6 +61,16 @@
 - 因此后续修复方向必须是把 edge-level flow contract 回填到
   `Phase B` / `SpatialProgram`，再让 `TTProgram` 只做 target-specific materialization
 
+当前已落地的一步是：
+
+- `AnalyzeSemanticStructure -> fragment_lowering_structure -> SpatialProgram`
+  已开始显式 materialize generic `fragment_buffer_flow_contracts`
+- 这组 contract 统一覆盖 fragment/local intermediate buffer
+  和 compute kernel 内同样参与 producer-consumer 协议的 CB-backed input buffer
+- `LowerBlackholeOps` 现在只消费这份 contract 的
+  `flow_class / event order / publish-consume granule` truth，
+  不再在本地重新扫 `SeqStmt` 推断 `write / consume / republish`
+
 同时，`Phase C2` 也再次证明：
 
 - `work_linear_id` 只能是 logical work identity，不该继续兼任 per-buffer access truth

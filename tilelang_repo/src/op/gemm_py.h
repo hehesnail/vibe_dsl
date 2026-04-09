@@ -72,6 +72,7 @@ public:
   TileOperator Clone() const;
   std::optional<FragmentMaterializationInfo>
   GetFragmentMaterializationInfo() const override;
+  std::vector<DataflowAccessInfo> GetDataflowAccessInfo() const override;
 
   // Target GEMM instruction
   GemmInst getGemmInst(int block_size, Target target) const;

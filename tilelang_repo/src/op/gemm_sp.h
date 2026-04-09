@@ -79,6 +79,7 @@ public:
                         InferLevel level) const override;
 
   TileOperator Clone() const;
+  std::vector<DataflowAccessInfo> GetDataflowAccessInfo() const override;
 
   static void RegisterReflection() {
     namespace refl = tvm::ffi::reflection;
