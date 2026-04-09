@@ -317,16 +317,23 @@ planner 的基本流程固定为：
 第二阶段不推翻第一阶段，
 而是在相同 owner discipline 下扩展 hierarchy。
 
-### 7.1 扩展目标
+### 7.1 交付目标
 
-- 表达 chip 内多级 scale
+`Phase 2` 的目标不是一句“支持 hierarchy”，
+而是把 `Phase 1` 的单设备 spatial/dataflow program，
+扩成“多级 spatial/dataflow 系统”上的同一套模型。
+
+第一批明确交付包括：
+
+- 表达 chip 内多级 scale 与跨 chip / node 的 scale domain
 - 表达 inter-core / inter-die / inter-chip / inter-node 的通信域
-- 表达分层 memory 和 network 资源
+- 表达分层 memory、network 与可见性边界
 - 表达分层 collective、task specialization 与 remote placement
+- 在不推翻 `Phase 1` 对象边界的前提下，增加跨 scale planner 与 materialization
 
-### 7.2 新增抽象方向
+### 7.2 新对象与 schema 扩展
 
-第二阶段需要在第一阶段模型上继续增加：
+第二阶段需要在第一阶段模型上继续增加下面这些方向：
 
 - hierarchical `Placement` scope
 - scale-aware `TransportIntent`
@@ -334,12 +341,68 @@ planner 的基本流程固定为：
 - 跨 scale 的 synchronization / phase ownership
 - 分层 virtual device / capability model
 
+更具体地说，第一批需要落成的新增 truth 是：
+
+- `SpatialProgram`
+  - `ScaleDomain`
+  - scope-aware `Placement`
+  - remote / collective-aware `TransportIntent`
+  - cross-scale `SyncIntent`
+- `TTProgram`
+  - scale-aware `TTBlockPlan`
+  - remote / collective-capable `TTTransportPlan`
+  - cross-scale `TTExecutionPlan`
+  - hierarchical capability-aware planning 输入
+
+这些对象不要求第一版就把所有 target family 全铺满，
+但 schema 必须允许：
+
+- local vs remote movement
+- p2p vs collective
+- compact vs spread placement
+- one-scale vs multi-scale synchronization
+
 但这些新增抽象仍然遵守相同边界：
 
 - `SpatialProgram` 只表达 hierarchy intent 与 legality
 - `TTProgram` 决定某个具体 target family 上的 concrete mapping / routing / buffering
 
-### 7.3 与第一阶段的关系
+### 7.3 planner 变化
+
+相对 `Phase 1`，`Phase 2` 的 planner 需要新增 4 类能力：
+
+1. scale selection
+   决定某个 partition / task 是停留在本地 scale，
+   还是提升到 cluster / die / chip / node 等更高一级 scale
+2. remote transport selection
+   决定 local reuse、p2p remote movement、collective
+   之间该选哪种 transport family
+3. hierarchical placement
+   决定哪些 producer-consumer 应共置，
+   哪些 partition 应 spread 到更高一级 scale
+4. cross-scale synchronization planning
+   决定哪些 dependency 是 local completion，
+   哪些需要 remote arrival / collective completion
+
+也就是说，`Phase 2` 的 planner 不只是“块更大一点”，
+而是开始回答：
+
+- 这段 work 落在哪一级 scale
+- 数据在这一层是 local、remote 还是 collective
+- 哪些 memory 层是真正可见的
+- 哪个 synchronization contract 跨越了 scale boundary
+
+### 7.4 非目标
+
+`Phase 2` 明确不做下面这些事：
+
+- 不要求第一版就做完整 distributed runtime
+- 不要求第一版就暴露 MPI 风格 DSL 表面
+- 不把物理 topology 细节、具体 route path、具体 link id
+  直接暴露成稳定用户 API
+- 不推翻 `Phase 1` 的对象和 planner 边界
+
+### 7.5 与第一阶段的关系
 
 第一阶段的所有 object boundary 都应按可扩展方式命名和组织，
 避免把 single-device 假设写死进 schema 名字。
@@ -350,6 +413,68 @@ planner 的基本流程固定为：
 - `k_block` 不是
 - `TransportIntent` / `TTTransportPlan` 应允许从单设备 reuse
   自然扩展到 remote / collective 场景
+
+`Phase 2` 因此不是一套新模型，
+而是对 `Phase 1` 的同一套 owner discipline 做层次化扩展。
+
+### 7.6 Show Cases
+
+#### Showcase A: Tensor-Parallel GEMM / AllReduce
+
+这是最典型、也最贴近 `TileScale` 风格的例子。
+
+逻辑程序仍然只是一次 GEMM，
+但输出张量被按某个高一级 scale 分片，
+局部 GEMM 完成后还需要做一次 cross-scale reduction。
+
+在这套模型里，它会被表达成：
+
+- `SpatialProgram`
+  - `WorkPartition` 先定义局部 `M/N/reduction` 切分是否合法
+  - `Placement` 决定 GEMM block 是 compact 在本地 scale，
+    还是 spread 到更高一级 scale
+  - `TransportIntent` 表达输入张量哪部分是 local shard，
+    哪部分需要 remote visibility
+  - `SyncIntent` 表达局部 GEMM 完成后要进入 collective completion
+- `TTProgram`
+  - 本地 GEMM 生成 local `TTBlockPlan`
+  - reduction realization 选择 `TTTransportPlan`
+    是 p2p tree、ring 还是 collective primitive
+  - `TTExecutionPlan` 定义 local GEMM phase 与 cross-scale reduce phase 的顺序
+
+这说明 `Phase 2` 不是“再加个 allreduce API”，
+而是让 local compute、remote transport、collective sync
+进入同一条 owner 链。
+
+#### Showcase B: Sharded Paged Decode / Remote KV Access
+
+第二个例子更贴近我们自己的 family。
+
+设想后续 paged decode / sparse decode 的 KV state
+不再都在单设备本地，而是按更高一级 scale 分片。
+这时 decode kernel 的关键问题已经不只是 local block size，
+而是：
+
+- 当前 token 对应的 page 在本地还是 remote
+- remote page 是按 p2p 拉取，还是先做某级缓存 / regroup
+- attention/update 完成后哪些状态写回需要跨 scale 可见
+
+在这套模型里，它会被表达成：
+
+- `SpatialProgram`
+  - `WorkPartition` 表达 token/page/head 这些轴的合法切分
+  - `Placement` 表达 decode worker 与 KV shard 的 affinity
+  - `TransportIntent` 表达 page fetch 是 local、remote copy
+    还是更高一级 gather
+  - `SyncIntent` 表达 page arrival 与 compute phase 的依赖
+- `TTProgram`
+  - 选择 local staging 还是 remote-aware transport plan
+  - 选择 page fetch 与 compute 是否 overlap
+  - 选择 local completion 还是 remote-visible completion
+
+这个例子能说明：
+`Phase 2` 真正新增的是 scale-aware placement/transport/sync，
+不是把 `Phase 1` 的 block planner 简单复制到更大设备上。
 
 ## 8. 对现有 IR 与实现栈的影响
 
