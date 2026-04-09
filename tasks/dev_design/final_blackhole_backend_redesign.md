@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档 ID**: `final_blackhole_backend_redesign`
-- **日期**: `2026-04-08`
+- **日期**: `2026-04-09`
 - **状态**: 当前唯一权威总体设计文档
 - **定位**: 轻量总纲；只保留长期架构、层间边界、真源规则与当前阶段判断
 - **活动阶段文档**:
@@ -142,15 +142,17 @@ Stateful Semantic IR
 ### 4.3 `Phase C`
 
 - 进行中
-- 当前已经完成的只是 `TTProgram` cutover 子线：
-  - `TTProgram` core object set、translator、validator、materializer 已进入正式主链
+- 当前已完成：
+  - `TTProgram` core object set、translator、validator、materializer
+    已进入正式主链
   - runtime/codegen 已切到 `TTProgram` direct reader，reader-side deletion gate 已收口
   - regression 主断言面与 producer-side translator 输入已切到 typed companion truth
-  - shared zero-regression baseline 与当前 `Phase C2` runtime gate 持续通过
+  - 当前支持的 `flash-attn` subset 与无显式同步 contract 的
+    oversubscribed `work_packets` direct runtime
+    已分别拿到当前阶段所需的 correctness / execution milestone
 - 但 `Phase C` 总体仍未完成；剩余交付仍包括：
   - `flash-attn` 的 `Phase C2` wider runtime / correctness payoff；
-    当前已经兑现 small bf16 MHA direct runtime 数值对齐，
-    但更宽 `MHA / GQA` 子集与大 shape `float16` TT-Sim 仍未完成
+    更宽 `MHA / GQA` 子集与较大 shape runtime 仍未完成
   - `topk / fusedmoe / paged decode / chunk recurrence`
     等 family 在新主链下的统一承接
   - 更宽 copy/dataflow 支持面
@@ -174,13 +176,11 @@ Stateful Semantic IR
 - copy / GEMM 当前支持面保持不回退
 - `tilelang.compile(..., execution_backend="tvm_ffi")`
   的 Blackhole wrapper/export path 已恢复
-- `flash-attn` forward subset 已打通当前支持的 compile-path，
-  且当前支持的 small bf16 MHA 子集已经过 TT-Sim direct runtime
-  数值对齐；但更宽 multi-GEMM runtime enablement
-  仍属于 `Phase C`
-- GEMM direct runtime 现在已能按 `core_plan.work_packets`
+- 当前支持的 `flash-attn` subset 已拿到 direct runtime correctness milestone，
+  但更宽 multi-GEMM runtime enablement 仍属于 `Phase C`
+- direct runtime 现在已能按 `core_plan.work_packets`
   执行无显式同步 contract 的 oversubscribed launch；
-  `512x512x512 bf16` pure GEMM 已在 TT-Sim direct runtime 上数值对齐
+  带显式同步 truth 的 oversubscribed executable 仍不在当前支持面内
 
 ## 7. 当前文档分工
 

@@ -2,148 +2,72 @@
 
 > 当前唯一总体设计文档: `tasks/dev_design/final_blackhole_backend_redesign.md`
 > `tasks/dev_design/archive/` 下的文档全部视为历史记录，不再作为当前任务安排入口。
+> `Phase C` 的详细完成判定、runtime gate 与支持面边界统一维护在
+> `tasks/dev_design/stage4_phase_c_tt_target_ir.md`；这里只保留当前状态摘要。
 
 ## 当前阶段
 
 - **日期**: `2026-04-09`
 - **总阶段**: Stage 4
 - **当前主线**: `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
+- **阶段状态**:
+  - `Stage 0 / Phase A / Phase B` 已完成
+  - `Phase C` 进行中；`TTProgram` cutover 已完成，剩余工作集中在 `Phase C2`
+    与更宽支持面兑现
 
-## 当前稳定基线
+## 当前状态摘要
 
 - `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path 仍是唯一正式执行路径
-- copy / GEMM 当前支持面不回退
 - `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复
-- direct runtime 当前正式支持面：
+- `TTProgram` translator / validator / materializer 已进入正式主链；
+  runtime/codegen 已切到 `TTProgram` direct reader
+- 当前支持的 `flash-attn` forward 子集已经拿到 direct runtime correctness milestone
+- 无显式 `semaphore / remote-core` synchronization contract 的
+  oversubscribed `work_packets` executable 已可按 packet truth 做 host-side
+  wave scheduling
+- 当前 admitted support surface 仍然偏窄：
   - copy：equal source/dest range 且 stride = 1
-  - GEMM：A/B-separated reader range + writer output range；
-    当 `core_plan.work_packets` oversubscribe physical cores 时，
-    direct runtime 会按 packet truth 做 multi-wave launch scheduling，
-    前提是 executable 没有显式 `semaphore / remote-core` synchronization contract
+  - GEMM：A/B-separated reader range + writer output range
   - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
 
-## 阶段状态
+## 当前未完成项
 
-- **Stage 0**: 已完成
-- **Phase A**: 已完成
-- **Phase B**: 已完成
-  - `SpatialProgram` 已成为 execution-bearing 上游真源
-  - 交接边界、审计结论与完成后 contract 统一维护在
-    `tasks/dev_design/stage4_phase_b_spatial_ir.md`
-- **Phase C**: 进行中
-  - 当前已完成：`TTProgram` cutover 子线
-    - `TTProgram` translator / validator / materializer 已进入正式主链
-    - runtime/codegen 已切到 `TTProgram` direct reader，
-      reader-side deletion gate 已收口
-    - regression 主断言面与 producer-side translator 输入
-      已切到 typed companion truth
-    - shared zero-regression baseline 与当前 `Phase C2` runtime gate 持续通过
-    - `flash-attn` direct runtime 已补上 `K` staged-copy transpose truth：
-      `transpose_2d` 现在会从 accessor/materialization schema
-      进入 host tilize / readback materialization，small bf16 MHA TT-Sim
-      direct runtime 已和 reference 数值对齐
-    - GEMM direct runtime 已补上 oversubscribed `work_packets` host scheduling：
-      runtime 不再把 packet 扁平成单波次 unique-core launch；
-      无显式同步 contract 的 oversubscribed case 会按 packet truth 分 wave 执行，
-      `352x352x128` oversubscribed regression 与 `512x512x512 bf16`
-      direct runtime 数值对齐都已通过
-  - 仍未完成：
-    - `flash-attn` `Phase C2` 的 wider runtime / correctness payoff：
-      当前只验证了 small bf16 MHA 子集；更宽 `MHA / GQA`、更大 shape
-      与 TT-Sim `float16` 路径仍未完成
-    - `topk / fusedmoe / paged decode / chunk recurrence`
-      等 family 在新主链下的统一承接
-    - 更宽 copy/dataflow 支持面
-    - 更宽 synchronization 支持面
-    - `Placement / SpatialCapabilityModel / payload-backed node schema`
-      的剩余 typed uplift 与真实 consumer 验证
-
-## 当前 blocker
-
-`Phase C` 当前已经不再卡在 `TTProgram` cutover，
-也不再卡在 `flash-attn` direct runtime 的 `K` transpose 丢失；
-当前 blocker 是剩余支持面还没有兑现：
-
-- 把 `flash-attn` 当前 small bf16 correctness milestone
-  扩成更宽 `MHA / GQA` runtime / correctness 支持面，
-  并把剩余 multi-GEMM compute contract 继续收成长期 typed truth
-- 在当前稳定主链上继续承接
-  `topk / fusedmoe / paged decode / chunk recurrence`
-  等 family
+- 完成 `flash-attn` `Phase C2`：
+  把当前 correctness milestone 扩成更宽 `MHA / GQA` runtime / correctness 支持面，
+  并继续把剩余 multi-GEMM compute contract 收成 typed target truth
+- 在当前主链上继续承接
+  `topk / fusedmoe / paged decode / chunk recurrence` 等 family
 - 继续扩大 copy/dataflow 与 synchronization 支持面
-- 继续把 `Placement / SpatialCapabilityModel / payload-backed node schema`
-  的剩余边界收成长期 typed contract
+- 继续完成 `Placement / SpatialCapabilityModel / payload-backed node schema`
+  的 typed uplift 与真实 consumer 验证
 
-## 独立已知问题
+## 当前边界
 
-- `TT_METAL_WATCHER=10` 调试 multicore GEMM direct path 时，`tt_metal`
-  的 watcher 线程可能在 `WatcherServer::Impl::poll_watcher_data()` 里抛
-  `std::runtime_error` 并触发 `SIGABRT`，或在 `TT_METAL_WATCHER_TEST_MODE=1`
-  下停在 `Dump #2`
-- 当前结论是 watcher-side bug，不是 `BlackholeModule` direct runtime 主链回归；
-  direct runtime baseline 需在 `TT_METAL_WATCHER` unset 的正式环境下判断
+- oversubscribed direct runtime 目前不是通用同步执行模型；
+  一旦 executable 带显式 `TTSemaphorePlan`、`semaphore_bindings`
+  或 `remote_core_descriptors`，仍应 fail-fast
+- 较大 `float16` `flash-attn` 在当前 TT-Sim 上仍会命中
+  `UntestedFunctionality: tensix_execute_unpacr: fp16`；
+  目前按 simulator 能力边界处理，不视为本轮 target contract 回归
+- `TT_METAL_WATCHER=10` 调试 multicore direct path 时，
+  watcher 线程仍可能自己抛错或卡在 dump；
+  正式 baseline 应在标准 watcher-off 环境下判断
 
 ## 下一步
 
-1. 在当前已打通的小 bf16 MHA correctness 基线上，
-   继续扩大 `flash-attn` `Phase C2` 支持面：
-   收完整 multi-GEMM target contract，补更宽 `MHA / GQA` 与大 shape case，
-   并和 TT-Sim `float16` 能力边界分开判断
-2. 在当前 `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
-   主链上继续接 wider family：
+1. 扩大 `flash-attn` `Phase C2` 支持面，并把 runtime correctness
+   和 TT-Sim `float16` 能力边界继续分开判断
+2. 在当前 layered mainline 上继续承接
    `topk / fusedmoe / paged decode / chunk recurrence`
 3. 继续扩大 copy/dataflow 与 synchronization 支持面
-4. 把 `Placement / SpatialCapabilityModel / payload-backed node schema`
-   中仍未完全站稳的边界继续做 typed uplift 和真实 consumer 验证
-
-## 当前主设备链
-
-```text
-LowerDeviceStorageAccessInfo
-  -> AugmentSemanticManifest
-  -> LowerIntrin
-  -> Simplify
-  -> HoistBroadcastValues
-  -> SplitBlackholeKernel
-  -> AnalyzeBlackholeWorkDecomposition
-  -> AnalyzeBlackholeFragmentRegions
-  -> AnalyzeBlackholePipelineStages
-  -> AnalyzeSemanticStructure
-  -> LiftStatefulSemanticIR
-  -> ValidateStatefulSemanticIR
-  -> ValidateSemanticRefinement
-  -> AnalyzeSpatialDomainPlan
-  -> AnalyzeSpatialExecutionPlan
-  -> MaterializeSpatialProgram
-  -> ValidateSpatialProgram
-  -> LowerBlackholeOps
-  -> PlanBlackholeCB
-  -> AssignBlackholeCores
-  -> LowerSpatialProgramToTTTarget
-  -> ValidateTTTargetProgram
-  -> MaterializeTTExecutableSpec
-```
+4. 继续完成剩余 object-boundary typed uplift
 
 ## 最新验证摘要
 
-- build:
-  - `tilelang_repo/build` fresh rebuild 通过
-- runtime:
-  - 所有 runtime 检查均在标准 TT-Sim 环境入口
-    `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh`
-    下完成
-  - `flash-attn` pipeline regression：
-    `small_bf16_compute_source_keeps_acc_s_cast_cb_pages_consistent`
-    与 `small_bf16_metadata_marks_k_materialization_as_transposed`
-    通过，结果 `2 passed, 46 deselected`
-  - GEMM direct runtime regression：
-    `gemm_basic` 与 `oversubscribed_work_packets`
-    通过，结果 `2 passed, 38 deselected`
-  - `flash-attn` small bf16 direct runtime regression：
-    `small_bf16_forward_direct_runtime`
-    通过，结果 `1 passed, 6 deselected`
-  - `512x512x512 bf16` pure GEMM direct runtime：
-    `max_abs=4.58e-05, mean_abs=2.72e-06, allclose=True`
-  - 较大 `float16` MHA direct runtime：
-    仍失败于 `UntestedFunctionality: tensix_execute_unpacr: fp16`；
-    这是 simulator 能力边界，不是本次 target contract 回归
+- `tilelang_repo/build` fresh rebuild 通过
+- 所有 runtime 检查均在标准 TT-Sim 环境入口下完成
+- `flash-attn` pipeline regressions 通过：`2 passed, 46 deselected`
+- GEMM direct runtime regressions 通过：`2 passed, 38 deselected`
+- `flash-attn` 当前支持 runtime regression 通过：`1 passed, 6 deselected`
+- 手工 `512x512x512` `bf16` pure GEMM direct runtime 已数值对齐
+- 较大 `float16` MHA direct runtime 仍命中 simulator `fp16` 能力边界
