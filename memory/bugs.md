@@ -125,6 +125,27 @@
 - **修法**: 删掉默认值；空 `work_packets` 直接 fail-fast
 - **教训**: host/runtime 计划缺失时必须显式报错，不能补“最小可运行默认值”
 
+#### `work_packets` 一旦允许 `work_count > 1`，direct runtime 不能再假设单波次 one-work-per-core
+
+- **症状**: `512x512x512` pure GEMM 在 direct runtime launch 前就报
+  `oversubscribed direct launch is not supported`
+- **根因**:
+  - planner 已经合法产出 `work_offset/work_count`
+  - 但 runtime 先把 packet 扁平成多个 logical work item，
+    再强制 `launch_cores.size() == work_items.size()`
+  - 如果只是去掉这个检查，同一 core 的多次 `SetRuntimeArgs(...)`
+    也只会留下最后一份参数，仍然不对
+- **修法**:
+  - direct runtime 改为按 `work_packets` 建 `launch wave`
+  - 对无显式 `semaphore / remote-core` synchronization contract 的 executable，
+    以 repeated launch 串行执行各 wave
+  - 对带显式同步 truth 的 oversubscribed executable，继续 fail-fast
+- **教训**:
+  - `work_packets` 是正式调度 truth，不是展示用 metadata
+  - 若 device kernel 还没有 per-core serial packet loop contract，
+    runtime 至少要尊重 packet truth 做 wave scheduling，
+    不能回退成“默认每 core 只跑一个 logical work item”的隐式假设
+
 #### logical core 坐标和 physical / NOC 坐标不能混用
 
 - **症状**: core lookup 失败、range 越界、launch/core 映射错位

@@ -104,6 +104,11 @@
   不能只留在 compute contract；如果 host materialization 也要配合，
   就必须显式进 accessor/materialization schema
   （例如 `transpose_2d`），并由 host tilize / readback 真正执行
+- 如果 planner 已正式产出 `core_plan.work_packets` 且允许
+  `work_count > 1`，direct runtime 不能再把 packet 扁平成
+  “单波次 one-work-per-core” 假设；对还没把 `work_count`
+  下沉成 device-side loop contract 的 executable，至少要按 packet truth
+  做 repeated launch / wave scheduling，避免同一 core 的 runtime args 被后写覆盖
 - 一旦 reader-side cutover 成立，原始 device build 输入就应硬要求
   `tl.tt_program`；不要让 build 在缺失 TT truth 时再悄悄回退到 legacy attrs
 

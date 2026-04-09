@@ -5,7 +5,7 @@
 
 ## 当前阶段
 
-- **日期**: `2026-04-08`
+- **日期**: `2026-04-09`
 - **总阶段**: Stage 4
 - **当前主线**: `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
 
@@ -16,7 +16,10 @@
 - `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复
 - direct runtime 当前正式支持面：
   - copy：equal source/dest range 且 stride = 1
-  - GEMM：A/B-separated reader range + writer output range
+  - GEMM：A/B-separated reader range + writer output range；
+    当 `core_plan.work_packets` oversubscribe physical cores 时，
+    direct runtime 会按 packet truth 做 multi-wave launch scheduling，
+    前提是 executable 没有显式 `semaphore / remote-core` synchronization contract
   - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
 
 ## 阶段状态
@@ -39,6 +42,11 @@
       `transpose_2d` 现在会从 accessor/materialization schema
       进入 host tilize / readback materialization，small bf16 MHA TT-Sim
       direct runtime 已和 reference 数值对齐
+    - GEMM direct runtime 已补上 oversubscribed `work_packets` host scheduling：
+      runtime 不再把 packet 扁平成单波次 unique-core launch；
+      无显式同步 contract 的 oversubscribed case 会按 packet truth 分 wave 执行，
+      `352x352x128` oversubscribed regression 与 `512x512x512 bf16`
+      direct runtime 数值对齐都已通过
   - 仍未完成：
     - `flash-attn` `Phase C2` 的 wider runtime / correctness payoff：
       当前只验证了 small bf16 MHA 子集；更宽 `MHA / GQA`、更大 shape
@@ -123,8 +131,12 @@ LowerDeviceStorageAccessInfo
 - runtime:
   - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && export PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo:/root/dev/vibe_dsl/tilelang_repo/3rdparty/tvm/python && export TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib && export LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -k 'small_bf16_compute_source_keeps_acc_s_cast_cb_pages_consistent or small_bf16_metadata_marks_k_materialization_as_transposed'`:
     `2 passed, 46 deselected`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && export PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo:/root/dev/vibe_dsl/tilelang_repo/3rdparty/tvm/python && export TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib && export LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_gemm.py -k 'gemm_basic or oversubscribed_work_packets'`:
+    `2 passed, 38 deselected`
   - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && export PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo:/root/dev/vibe_dsl/tilelang_repo/3rdparty/tvm/python && export TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib && export LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py -k 'small_bf16_forward_direct_runtime'`:
     `1 passed, 6 deselected`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && export PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo:/root/dev/vibe_dsl/tilelang_repo/3rdparty/tvm/python && export TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib && export LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH && cd /root/dev/vibe_dsl/tilelang_repo && timeout 300s python -u - <<'PY'` 直接运行 `multicore_gemm_kernel(M=512, N=512, K=512)` 的 `bf16` direct runtime 数值对比：
+    `max_abs=4.58e-05, mean_abs=2.72e-06, allclose=True`
   - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && export PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo:/root/dev/vibe_dsl/tilelang_repo/3rdparty/tvm/python && export TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib && export LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH && cd /root/dev/vibe_dsl/tilelang_repo && pytest testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py -k 'mha_forward_direct_runtime' -vv -s`:
     失败于 `UntestedFunctionality: tensix_execute_unpacr: fp16`
   - 上述较大 `float16` MHA 失败

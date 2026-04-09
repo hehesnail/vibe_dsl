@@ -840,6 +840,11 @@ struct DirectWorkItem {
   CoreCoord core;
 };
 
+struct DirectLaunchWave {
+  std::vector<DirectWorkItem> work_items;
+  std::vector<CoreCoord> launch_cores;
+};
+
 struct DirectRuntimeBufferState {
   std::unordered_map<std::string, RuntimeBufferBinding> runtime_buffers;
   std::vector<std::string> input_names;
@@ -851,38 +856,74 @@ struct SynchronizationRuntimeContext {
   const std::unordered_map<uint32_t, uint32_t>* semaphore_ids{nullptr};
 };
 
-static std::vector<DirectWorkItem> BuildDirectWorkItems(const ExecutableSpec& spec,
-                                                        const std::string& func_name) {
-  std::vector<DirectWorkItem> work_items;
-  for (const auto& packet : spec.core_plan.work_packets) {
-    CoreCoord packet_core{packet.core_x, packet.core_y};
-    for (uint32_t i = 0; i < packet.work_count; ++i) {
-      work_items.push_back({packet.work_offset + i, packet_core});
-    }
-  }
-  ICHECK(!work_items.empty())
-      << "Blackhole planner/runtime contract requires non-empty work_items derived from "
-         "core_plan.work_packets for "
-      << func_name;
-  return work_items;
+static uint64_t EncodeDirectLaunchCoreKey(const CoreCoord& core) {
+  return (static_cast<uint64_t>(core.x) << 32) | static_cast<uint64_t>(core.y);
 }
 
-static std::vector<CoreCoord> BuildDirectLaunchCores(const std::vector<DirectWorkItem>& work_items,
-                                                     const std::string& func_name) {
-  std::vector<CoreCoord> launch_cores;
-  launch_cores.reserve(work_items.size());
-  for (const auto& item : work_items) {
-    launch_cores.push_back(item.core);
+static bool HasDirectLaunchSynchronizationContract(const ExecutableSpec& spec) {
+  if (!spec.semaphores.empty()) {
+    return true;
   }
-  std::sort(launch_cores.begin(), launch_cores.end());
-  launch_cores.erase(std::unique(launch_cores.begin(), launch_cores.end()), launch_cores.end());
-  ICHECK(!launch_cores.empty()) << "No launch cores resolved for direct execution";
-  ICHECK(launch_cores.size() == work_items.size())
-      << "Blackhole direct runtime supports only one logical work item per physical core in a "
-         "single launch. Function "
-      << func_name << " maps " << work_items.size() << " logical work items onto "
-      << launch_cores.size() << " unique cores; oversubscribed direct launch is not supported.";
-  return launch_cores;
+  return std::any_of(spec.kernels.begin(), spec.kernels.end(), [](const KernelSpec& kernel) {
+    return !kernel.semaphore_bindings.empty() || !kernel.remote_core_descriptors.empty();
+  });
+}
+
+static std::vector<DirectLaunchWave> BuildDirectLaunchWaves(const ExecutableSpec& spec,
+                                                            const std::string& func_name) {
+  const auto& work_packets = spec.core_plan.work_packets;
+  uint64_t total_work_items = 0;
+  uint32_t max_work_count = 0;
+  for (const auto& packet : work_packets) {
+    total_work_items += packet.work_count;
+    max_work_count = std::max(max_work_count, packet.work_count);
+  }
+  ICHECK_GT(total_work_items, 0U)
+      << "Blackhole planner/runtime contract requires at least one logical work item for "
+      << func_name;
+  ICHECK_GT(max_work_count, 0U)
+      << "Blackhole planner/runtime contract requires positive work_count in core_plan.work_packets "
+         "for "
+      << func_name;
+
+  const bool oversubscribed = total_work_items > work_packets.size();
+  if (oversubscribed) {
+    ICHECK(!HasDirectLaunchSynchronizationContract(spec))
+        << "Blackhole direct runtime oversubscribed launch currently wave-schedules logical work "
+           "items across repeated program launches. This is only supported when the executable "
+           "has no explicit semaphore or remote-core synchronization contract. Function "
+        << func_name << " maps " << total_work_items << " logical work items onto "
+        << work_packets.size() << " physical-core packets.";
+  }
+
+  std::vector<DirectLaunchWave> waves;
+  waves.reserve(max_work_count);
+  for (uint32_t wave_index = 0; wave_index < max_work_count; ++wave_index) {
+    DirectLaunchWave wave;
+    wave.work_items.reserve(work_packets.size());
+    wave.launch_cores.reserve(work_packets.size());
+    std::unordered_set<uint64_t> seen_cores;
+    seen_cores.reserve(work_packets.size());
+    for (const auto& packet : work_packets) {
+      if (wave_index >= packet.work_count) {
+        continue;
+      }
+      const CoreCoord packet_core{packet.core_x, packet.core_y};
+      ICHECK(seen_cores.insert(EncodeDirectLaunchCoreKey(packet_core)).second)
+          << "Blackhole planner/runtime contract requires each launch wave to map at most one "
+             "logical work item to a physical core. Function "
+          << func_name << " duplicates core (" << packet_core.x << "," << packet_core.y
+          << ") within wave " << wave_index;
+      wave.work_items.push_back({packet.work_offset + wave_index, packet_core});
+      wave.launch_cores.push_back(packet_core);
+    }
+    if (!wave.work_items.empty()) {
+      waves.push_back(std::move(wave));
+    }
+  }
+
+  ICHECK(!waves.empty()) << "No launch waves resolved for direct execution";
+  return waves;
 }
 
 static DirectRuntimeBufferState MaterializeRuntimeBuffers(
@@ -980,17 +1021,11 @@ static void ApplyWorkItemRuntimeArgs(
     const std::vector<std::string>& ordered_output_names,
     const std::vector<uint32_t>& scalar_args) {
   for (const auto& item : work_items) {
-    LOG(INFO) << "Direct path: configure work_id=" << item.work_id
-              << " core=(" << item.core.x << "," << item.core.y << ")";
     for (size_t ki = 0; ki < spec.kernels.size(); ++ki) {
       const auto& kernel_spec = spec.kernels[ki];
       auto runtime_args = BuildRuntimeArgsFromSpec(
           kernel_spec, spec, item.work_id, device, runtime_buffers, semaphore_ids, input_names,
           ordered_output_names, scalar_args);
-
-      LOG(INFO) << "Direct path: set runtime args kernel[" << ki
-                << "] core=(" << item.core.x << "," << item.core.y
-                << ") count=" << runtime_args.size();
       SetRuntimeArgs(program, kernels[ki], item.core, runtime_args);
     }
   }
@@ -1892,7 +1927,11 @@ void BlackholeModuleNode::ExecuteDirect(
     ValidateKernelDirectRuntimeConstraints(kernel_spec);
   }
 
-  const std::vector<DirectWorkItem> work_items = BuildDirectWorkItems(spec, func_name);
+  const std::vector<DirectLaunchWave> launch_waves = BuildDirectLaunchWaves(spec, func_name);
+  uint64_t total_work_items = 0;
+  for (const auto& wave : launch_waves) {
+    total_work_items += wave.work_items.size();
+  }
 
   // Keep direct execution hermetic per call. Reusing a persistent MeshDevice across
   // multiple Python direct-call tests can leave simulator/device state behind and
@@ -1907,9 +1946,6 @@ void BlackholeModuleNode::ExecuteDirect(
   ICHECK(mesh_device != nullptr);
   LOG(INFO) << "Blackhole device initialized successfully";
 
-  const std::vector<CoreCoord> launch_cores = BuildDirectLaunchCores(work_items, func_name);
-  const CoreRangeSet launch_core_ranges(launch_cores);
-
   distributed::MeshCommandQueue& cq = mesh_device->mesh_command_queue();
 
   DirectRuntimeBufferState runtime_buffer_state =
@@ -1919,33 +1955,38 @@ void BlackholeModuleNode::ExecuteDirect(
   std::string tmp_dir = MakeUniqueTempDir("tilelang_bh_direct_");
   std::vector<std::string> kernel_paths = WriteKernelSourceFiles(spec, func_name, tmp_dir);
 
-  LOG(INFO) << "Direct path: executing " << work_items.size()
-            << " logical work items across " << launch_cores.size()
-            << " launch cores for " << func_name;
+  LOG(INFO) << "Direct path: executing " << total_work_items << " logical work items across "
+            << launch_waves.size() << " launch wave(s) for " << func_name;
 
-  Program program = CreateProgram();
-  const std::unordered_map<uint32_t, uint32_t> semaphore_ids =
-      CreateSemaphoresFromSpec(program, spec);
+  for (size_t wave_index = 0; wave_index < launch_waves.size(); ++wave_index) {
+    const auto& launch_wave = launch_waves[wave_index];
+    const CoreRangeSet launch_core_ranges(launch_wave.launch_cores);
+    LOG(INFO) << "Direct path: launch wave " << (wave_index + 1) << "/" << launch_waves.size()
+              << " with " << launch_wave.work_items.size() << " logical work items across "
+              << launch_wave.launch_cores.size() << " launch cores for " << func_name;
 
-  // Materialize shared CBs and kernels once for the full launch core set.
-  CreateCircularBuffersFromSpec(program, launch_core_ranges, spec);
+    Program program = CreateProgram();
+    const std::unordered_map<uint32_t, uint32_t> semaphore_ids =
+        CreateSemaphoresFromSpec(program, spec);
 
-  std::vector<KernelHandle> kernels = CreateProgramKernelsFromSpec(
-      program, launch_core_ranges, spec, runtime_buffer_state.runtime_buffers, semaphore_ids,
-      runtime_buffer_state.input_names, runtime_buffer_state.ordered_output_names, kernel_paths);
+    CreateCircularBuffersFromSpec(program, launch_core_ranges, spec);
 
-  // Keep runtime args per core/work-item so each logical work item sees its own ID.
-  ApplyWorkItemRuntimeArgs(program, spec, kernels, work_items, *mesh_device,
-                           runtime_buffer_state.runtime_buffers, semaphore_ids,
-                           runtime_buffer_state.input_names,
-                           runtime_buffer_state.ordered_output_names, scalar_args);
+    std::vector<KernelHandle> kernels = CreateProgramKernelsFromSpec(
+        program, launch_core_ranges, spec, runtime_buffer_state.runtime_buffers, semaphore_ids,
+        runtime_buffer_state.input_names, runtime_buffer_state.ordered_output_names, kernel_paths);
 
-  // Execute the full program once across the multi-core launch set.
-  distributed::MeshWorkload workload;
-  distributed::MeshCoordinateRange device_range(mesh_device->shape());
-  workload.add_program(device_range, std::move(program));
-  LOG(INFO) << "Direct path: enqueue multi-core workload for " << func_name;
-  distributed::EnqueueMeshWorkload(cq, workload, /*blocking=*/true);
+    ApplyWorkItemRuntimeArgs(program, spec, kernels, launch_wave.work_items, *mesh_device,
+                             runtime_buffer_state.runtime_buffers, semaphore_ids,
+                             runtime_buffer_state.input_names,
+                             runtime_buffer_state.ordered_output_names, scalar_args);
+
+    distributed::MeshWorkload workload;
+    distributed::MeshCoordinateRange device_range(mesh_device->shape());
+    workload.add_program(device_range, std::move(program));
+    LOG(INFO) << "Direct path: enqueue multi-core workload for " << func_name << " wave "
+              << (wave_index + 1) << "/" << launch_waves.size();
+    distributed::EnqueueMeshWorkload(cq, workload, /*blocking=*/true);
+  }
 
   // Read back results
   for (const auto& binding : buffer_args) {

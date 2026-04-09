@@ -3,11 +3,12 @@
 ## 基本信息
 
 - **文档角色**: `Phase C` 当前设计边界、剩余项与完成判定文档
-- **当前状态**: `2026-04-08` `Phase C` 进行中；
+- **当前状态**: `2026-04-09` `Phase C` 进行中；
   `TTProgram` cutover 主链已完成，runtime/codegen 已切到 `TTProgram` direct reader，
   shared generic fallback 已删除，synthetic segment 也已切到最小 `TTProgram`；
   regression 主断言面与 producer-side translator 输入也已切到 typed companion truth，
   `flash-attn` small bf16 MHA direct runtime correctness 已兑现，
+  GEMM oversubscribed `work_packets` host scheduling 已兑现，
   但 `Phase C2` wider runtime payoff 与 wider support surface 仍未完成
 - **已完成子阶段**: read-only translator demand probe、`TTHardwareModel` intake、
   `TTProgram` core object set、`LowerSpatialProgramToTTTarget`、
@@ -272,7 +273,10 @@ SpatialProgram
 当前稳定支持面仍然很窄：
 
 - copy：equal source/dest range，且 stride = 1
-- GEMM：A/B-separated reader range + writer output range
+- GEMM：A/B-separated reader range + writer output range；
+  当 `core_plan.work_packets` oversubscribe physical cores 时，
+  direct runtime 现在会按 packet truth 分 wave 发射，
+  但仅限没有显式 `semaphore / remote-core` synchronization contract 的 executable
 - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
 
 因此“更宽 copy/dataflow 支持面”必须明确理解为：
@@ -284,6 +288,15 @@ SpatialProgram
 3. 每个新增支持形态都要有
    pipeline/spec regression，必要时再加 direct runtime regression
 4. 不能把“unsupported 但可诊断”误算成支持面完成
+
+补充边界：
+
+- current direct runtime 还没有把 `work_packets.work_count`
+  下沉成 device-side per-core serial loop contract；
+  对 oversubscribed executable 的当前正式实现是 host-side wave scheduling
+- 一旦 executable 带显式 `TTSemaphorePlan`、`semaphore_bindings`
+  或 `remote_core_descriptors`，oversubscribed launch 仍应 fail-fast，
+  不能假设 repeated launch 和单次并发 launch 语义等价
 
 ### 6.4 Wider Synchronization 支持面
 

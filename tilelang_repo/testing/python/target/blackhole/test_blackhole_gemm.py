@@ -1589,6 +1589,45 @@ def test_blackhole_gemm_multicore_direct_call():
     )
 
 
+def test_blackhole_gemm_multicore_direct_call_supports_oversubscribed_work_packets():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    m, n, k = 352, 352, 128
+    torch.manual_seed(0)
+    a_torch = torch.randn(m, k, dtype=torch.bfloat16)
+    b_torch = torch.randn(n, k, dtype=torch.bfloat16)
+    c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
+
+    kernel = multicore_gemm_kernel(M=m, N=n, K=k)
+    target = Target("blackhole")
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_funcs = {
+        str(gvar): func for gvar, func in artifact.device_mod.functions.items()
+    }
+    device_main = device_funcs['I.GlobalVar("main_kernel")']
+    core_plan = extract_blackhole_core_plan(device_main)
+    assert int(core_plan["logical_grid_x"]) == 11
+    assert int(core_plan["logical_grid_y"]) == 11
+    assert len(core_plan["physical_cores"]) == 110
+    assert len(core_plan["work_packets"]) == 110
+    assert sum(int(packet["work_count"]) for packet in core_plan["work_packets"]) == 121
+    assert max(int(packet["work_count"]) for packet in core_plan["work_packets"]) == 2
+
+    c_output = torch.zeros(m, n, dtype=torch.float32)
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+    assert_tensors_close_or_dump(
+        c_output,
+        c_ref,
+        atol=2e-1,
+        rtol=2e-1,
+        failure_message="Oversubscribed multicore GEMM direct-call output mismatch",
+    )
+
+
 def test_blackhole_gemm_rejects_empty_work_packets_at_build_time():
     target = Target("blackhole")
     kernel = multicore_gemm_kernel()

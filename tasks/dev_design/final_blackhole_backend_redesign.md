@@ -178,6 +178,9 @@ Stateful Semantic IR
   且当前支持的 small bf16 MHA 子集已经过 TT-Sim direct runtime
   数值对齐；但更宽 multi-GEMM runtime enablement
   仍属于 `Phase C`
+- GEMM direct runtime 现在已能按 `core_plan.work_packets`
+  执行无显式同步 contract 的 oversubscribed launch；
+  `512x512x512 bf16` pure GEMM 已在 TT-Sim direct runtime 上数值对齐
 
 ## 7. 当前文档分工
 
