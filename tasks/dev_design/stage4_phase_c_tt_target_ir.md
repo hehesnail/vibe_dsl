@@ -288,6 +288,12 @@ SpatialProgram
 
 - `flash-attn` forward subset 已打通 compile-path
 - `flash-attn` multi-GEMM compute kernel 不再 hang
+- 当前这条线的第一 blocker
+  已明确不是 direct runtime 缺某个 case-specific 执行分支，
+  而是上游 `SpatialProgram`
+  对跨-op intermediate edge 的显式 `dataflow contract`
+  与 per-buffer `work/access contract` 仍未完整 formalize；
+  runtime gate 只是暴露该缺口，不是 owner
 - direct runtime 当前会对两类缺口显式 fail-fast：
   - multi-work kernel 若仍缺显式 per-work access descriptor，
     不允许再从 `work_linear_id` 重建 tile access

@@ -177,6 +177,12 @@ Stateful Semantic IR
 
 当前总体 blocker 已不再是 target-truth cutover，
 而是 `Phase C` 剩余支持面还没有兑现。
+其中当前第一 blocker 不是某个后段 runtime protocol
+“还差最后执行实现”，而是上游 `SpatialProgram`
+对跨-op intermediate edge 的 `dataflow contract`
+和 per-buffer `work/access contract` 仍未完整 formalize。
+只要这层 owner 还不完整，下游 runtime/codegen
+就只能继续 gate 或暴露缺口，不能被当成主问题 owner。
 具体剩余项、完成判定与 gate 统一以
 `tasks/dev_design/stage4_phase_c_tt_target_ir.md` 为准。
 

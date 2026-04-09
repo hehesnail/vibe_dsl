@@ -45,6 +45,13 @@
   前移到 tile-op typed metadata；
   analysis pass 现在只把上游暴露的事实归约成 generic contract，
   不再自己按 family 名字判断协议
+- 当前这条线的第一 blocker
+  已明确回到上游 owner：
+  `SpatialProgram` 对跨-op intermediate edge 的
+  `dataflow contract` 和 per-buffer `work/access contract`
+  仍未完整 formalize；
+  现有 runtime gate 只是把这个缺口诚实暴露出来，
+  不是新的长期 owner
 - 人为移除 `compute_epilogue_ops` gate 后，
   small `bf16` MHA direct runtime 仍会明显错算
   （当前采样：`max diff=1.2265625`, `mean diff=0.2021484375`），
@@ -63,7 +70,10 @@
 
 - 完成 `flash-attn` `Phase C2`：
   把当前 correctness milestone 扩成更宽 `MHA / GQA` runtime / correctness 支持面，
-  并继续把剩余 multi-GEMM compute contract 收成 typed target truth
+  并继续把剩余 multi-GEMM compute contract 收成 typed target truth；
+  当前优先级最高的是把跨-op intermediate edge 的
+  `dataflow contract` 和 per-buffer `work/access contract`
+  前移成 `SpatialProgram` 正式 schema
 - 在当前主链上继续承接
   `topk / fusedmoe / paged decode / chunk recurrence` 等 family
 - 继续扩大 copy/dataflow 与 synchronization 支持面
@@ -88,7 +98,9 @@
 
 ## 下一步
 
-1. 扩大 `flash-attn` `Phase C2` 支持面，并在当前 `bf16` runtime baseline 上继续兑现更宽 correctness
+1. 先补齐 `SpatialProgram` 对跨-op intermediate edge 的
+   `dataflow contract` 与 per-buffer `work/access contract`，
+   再据此继续兑现 `flash-attn` `Phase C2`
 2. 在当前 layered mainline 上继续承接
    `topk / fusedmoe / paged decode / chunk recurrence`
 3. 继续扩大 copy/dataflow 与 synchronization 支持面

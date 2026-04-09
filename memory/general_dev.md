@@ -140,6 +140,10 @@
 - gate 应按具体 contract / op family 报错，不要长期用黑盒总括词
 - 需要的信息优先从 typed IR / schema 拿；拿不到就扩 IR / schema，
   不要把猜测沉淀成长期协议
+- 如果某条 runtime/codegen 路径持续需要 gate
+  才能避免错跑，先回头判断它是否其实在暴露
+  上游 `SpatialProgram` 的 `dataflow/work-access contract` 缺口；
+  不要把“后段还没实现协议执行”误判成第一 blocker
 
 ## 7. Resource / storage 模式
 
