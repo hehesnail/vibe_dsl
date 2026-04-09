@@ -25,6 +25,9 @@
   已独立收口到 `tasks/dev_design/spatial_dataflow_program_model.md`，
   后续 literal semantics、planner owner 链与 expert hint API
   统一以该文档为设计入口
+- TT-Sim fatal simulator taxonomy / hard-gate 扫描
+  已独立记录到 `memory/tt_simulator_constraints.md`，
+  后续 triage 先按 simulator capability boundary 与 target contract 回归分流
 - 当前支持的 `flash-attn` forward 子集已经拿到 direct runtime correctness milestone
 - 无显式 `semaphore / remote-core` synchronization contract 的
   oversubscribed `work_packets` executable 已可按 packet truth 做 host-side

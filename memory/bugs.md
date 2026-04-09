@@ -5,6 +5,23 @@
 
 ## 1. 当前未解决
 
+### TT-Sim 的 fatal taxonomy 需要先按 simulator 约束判断，不要直接误判成 target contract 回归
+
+- **现象**:
+  - direct runtime / TT-Sim 运行时可能直接报
+    `UntestedFunctionality`、`UnimplementedFunctionality`
+    或 `UnsupportedFunctionality`
+- **根因**:
+  - 当前 `libttsim_bh.so` 二进制里有公共 fatal helper，
+    这三类 taxonomy 都会直接打印并 `_Exit(1)`
+  - 也就是说，这些不是普通 warning，而是 simulator-side hard gate
+- **当前结论**:
+  - 首次命中这三类错误时，先查
+    `memory/tt_simulator_constraints.md`
+  - 先把问题分类成 simulator capability boundary
+    还是 TileLang target contract 回归，再继续分析
+  - 当前已确认 `fp16` unpack 只是其中一个显式 gate，不是唯一约束面
+
 ### TT-Sim 上的较大 `float16` flash-attn runtime 仍受 simulator fp16 能力限制
 
 - **现象**:
@@ -19,6 +36,8 @@
   - 现阶段应把 small bf16 runtime case 当作 correctness gate
   - 不要把 TT-Sim `float16` 能力边界直接误判成 TileLang target contract 回归
   - 更宽 `MHA / GQA` / 大 shape runtime payoff 仍归属 `Phase C2`
+  - 该问题的 simulator-side 旁证和更宽 fatal taxonomy 扫描，
+    统一见 `memory/tt_simulator_constraints.md`
 
 ## 2. 已解决但值得记住的模式
 
