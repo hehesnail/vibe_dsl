@@ -500,6 +500,9 @@ pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime
   而不是依赖 unsupported skip
 - small bf16 TT-Sim runtime 输出和 reference 数值对齐
 
+当前 Blackhole runtime/direct-runtime regression baseline 统一使用 `bf16` 输入；
+`fp16` 不再作为当前 TT-Sim 上的正式 runtime gate。
+
 它不证明：
 
 - 更宽 `MHA / GQA` runtime correctness 已经完成

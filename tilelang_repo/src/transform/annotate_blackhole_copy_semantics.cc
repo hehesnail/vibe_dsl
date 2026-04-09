@@ -74,6 +74,7 @@ static std::string GetStorageScopeStr(const Buffer& buf) {
 }
 
 static std::string DataTypeStr(const DataType& dt) {
+  if (dt.is_bfloat16()) return "bfloat16";
   if (dt.is_float()) {
     if (dt.bits() == 16) return "float16";
     if (dt.bits() == 32) return "float32";

@@ -919,7 +919,7 @@ def test_blackhole_copy_semantics_annotation_schema():
     assert str(sem["dst_buffer_ref"].name) == "B"
     assert str(sem["src_scope"]) == "global"
     assert str(sem["dst_scope"]) == "global"
-    assert str(sem["dtype"]) == "float16"
+    assert str(sem["dtype"]) == "bfloat16"
     assert [int(x) for x in sem["src_shape"]] == [64, 32]
     assert [int(x) for x in sem["dst_shape"]] == [64, 32]
     assert [int(x) for x in sem["mid_shape"]] == [32, 32]
@@ -1023,7 +1023,7 @@ def test_blackhole_copy_direct_runtime_rejects_common_runtime_accessor_schema():
         mutated_segments.append(richer_segment)
     mutated_mod = _rebuild_codegen_module_with_segment_plan(artifact, mutated_segments)
 
-    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
 
     with pytest.raises(tvm.error.InternalError, match="common runtime args|interleaved"):
@@ -1066,7 +1066,7 @@ def test_blackhole_copy_direct_runtime_materializes_shared_common_runtime_buffer
         mutated_segments.append(mutated_segment)
     mutated_mod = _rebuild_codegen_module_with_segment_plan(artifact, mutated_segments)
 
-    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
 
     mutated_mod["main"](a_torch, b_output)
@@ -1102,7 +1102,7 @@ def test_blackhole_copy_direct_runtime_rejects_accessor_common_runtime_arg_count
         mutated_segments.append(mutated_segment)
     mutated_mod = _rebuild_codegen_module_with_segment_plan(artifact, mutated_segments)
 
-    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
 
     with pytest.raises(tvm.error.InternalError, match="common runtime args|interleaved"):
@@ -1136,7 +1136,7 @@ def test_blackhole_copy_direct_runtime_rejects_work_linear_id_in_common_runtime_
         mutated_segments.append(mutated_segment)
     mutated_mod = _rebuild_codegen_module_with_segment_plan(artifact, mutated_segments)
 
-    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
 
     with pytest.raises(tvm.error.InternalError, match="common runtime args|shared|Unsupported"):
@@ -1161,7 +1161,7 @@ def test_blackhole_copy_direct_runtime_materializes_compile_time_abi_schema():
         artifact, extract_blackhole_segment_plan(stripped_func)
     )
 
-    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
 
     mutated_mod["main"](a_torch, b_output)
@@ -1198,7 +1198,7 @@ def test_blackhole_copy_direct_runtime_rejects_unknown_compile_time_abi_kind():
         artifact, extract_blackhole_segment_plan(mutated_func)
     )
 
-    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
 
     with pytest.raises(Exception, match="Unsupported Blackhole compile-time ABI kind"):
@@ -1233,7 +1233,7 @@ def test_blackhole_copy_direct_runtime_rejects_accessor_runtime_crta_bits():
         artifact, extract_blackhole_segment_plan(mutated_func)
     )
 
-    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
 
     with pytest.raises(tvm.error.InternalError, match="common runtime args|args_config_bits == 2"):
@@ -1266,7 +1266,7 @@ def test_blackhole_copy_direct_runtime_rejects_unknown_semaphore_core_type():
     ]
     mutated_mod = _rebuild_codegen_module_with_semaphore_plan(artifact, semaphore_plan)
 
-    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
 
     with pytest.raises(tvm.error.InternalError, match="semaphore core_type|Unsupported Blackhole semaphore core_type"):
@@ -1330,7 +1330,7 @@ def test_blackhole_copy_direct_runtime_accepts_semaphore_id_runtime_arg():
         runtime_args_mutator=runtime_args_mutator,
     )
 
-    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
     mutated_mod["main"](a_torch, b_output)
     assert_tensors_close_or_dump(

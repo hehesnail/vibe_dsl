@@ -249,7 +249,7 @@ def test_blackhole_module_direct_call():
 
     m, n = 32, 32
     torch.manual_seed(42)
-    a_torch = torch.randn(m, n, dtype=torch.float16)
+    a_torch = torch.randn(m, n, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
     b_ref = a_torch.clone()
 
@@ -271,7 +271,7 @@ def test_blackhole_module_direct_call_rectangular_tiles():
 
     m, n = 64, 64
     torch.manual_seed(42)
-    a_torch = torch.randn(m, n, dtype=torch.float16)
+    a_torch = torch.randn(m, n, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
     b_ref = a_torch.clone()
 
@@ -381,7 +381,7 @@ def test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch():
     grid_x, grid_y = 2, 3
     m, n = grid_y * 32, grid_x * 32
     torch.manual_seed(42)
-    a_torch = torch.randn(m, n, dtype=torch.float16)
+    a_torch = torch.randn(m, n, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
     b_ref = a_torch.clone()
 
@@ -415,7 +415,7 @@ def test_blackhole_module_direct_call_grid_indexed_copy_worker_semaphore_handsha
     grid_x, grid_y = 2, 1
     m, n = grid_y * 32, grid_x * 32
     torch.manual_seed(42)
-    a_torch = torch.randn(m, n, dtype=torch.float16)
+    a_torch = torch.randn(m, n, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
     b_ref = a_torch.clone()
 
@@ -488,7 +488,7 @@ def test_blackhole_module_direct_call_grid_indexed_copy_worker_semaphore_handsha
     )
 
 
-def test_blackhole_module_direct_call_rejects_oversubscribed_multi_core_launch():
+def test_blackhole_module_direct_call_accepts_oversubscribed_multi_core_launch():
     kernel = grid_indexed_staged_copy_kernel(grid_x=15, grid_y=10)
     target = Target("blackhole")
 
@@ -503,11 +503,18 @@ def test_blackhole_module_direct_call_rejects_oversubscribed_multi_core_launch()
     assert int(extract_blackhole_work_per_core(device_main)) == 2
 
     m, n = 10 * 32, 15 * 32
-    a_torch = torch.randn(m, n, dtype=torch.float16)
+    a_torch = torch.randn(m, n, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
+    b_ref = a_torch.clone()
 
-    with pytest.raises(Exception, match="oversubscribed direct launch is not supported"):
-        artifact.codegen_mod["main"](a_torch, b_output)
+    artifact.codegen_mod["main"](a_torch, b_output)
+    assert_tensors_close_or_dump(
+        b_output,
+        b_ref,
+        atol=0.0,
+        rtol=0.0,
+        failure_message="Oversubscribed multi-core copy output mismatch",
+    )
 
 
 def test_blackhole_module_direct_call_rejects_empty_work_packets_at_build_time():
@@ -558,7 +565,7 @@ def test_blackhole_module_direct_call_large_shape_copy():
 
     m, n = 25 * 32, 32 * 32
     torch.manual_seed(42)
-    a_torch = torch.randn(m, n, dtype=torch.float16)
+    a_torch = torch.randn(m, n, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
     b_ref = a_torch.clone()
 
@@ -601,7 +608,7 @@ def test_blackhole_module_direct_call_accepts_richer_copy_schema():
     ]
     mutated_mod = _rebuild_direct_runtime_module_with_runtime_args(artifact, unsupported_runtime_args)
 
-    a_torch = torch.randn(32, 32, dtype=torch.float16)
+    a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)
     mutated_mod["main"](a_torch, b_output)
     assert_tensors_close_or_dump(

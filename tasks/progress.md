@@ -29,6 +29,8 @@
   已独立记录到 `memory/tt_simulator_constraints.md`，
   后续 triage 先按 simulator capability boundary 与 target contract 回归分流
 - 当前支持的 `flash-attn` forward 子集已经拿到 direct runtime correctness milestone
+- Blackhole runtime / direct-runtime 回归基线已统一到 `bf16` 输入；
+  `fp16` 不再作为当前 TT-Sim 上的正式 runtime 测试基线
 - 无显式 `semaphore / remote-core` synchronization contract 的
   oversubscribed `work_packets` executable 已可按 packet truth 做 host-side
   wave scheduling
@@ -73,6 +75,8 @@
 
 - `tilelang_repo/build` fresh rebuild 通过
 - 所有 runtime 检查均在标准 TT-Sim 环境入口下完成
+- Blackhole copy/runtime + flash-attn runtime `bf16` baseline regressions 通过：
+  `71 passed, 1 skipped, 1 xfailed`
 - `flash-attn` pipeline regressions 通过：`2 passed, 46 deselected`
 - GEMM direct runtime regressions 通过：`2 passed, 38 deselected`
 - `flash-attn` 当前支持 runtime regression 通过：`1 passed, 6 deselected`

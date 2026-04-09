@@ -557,43 +557,90 @@ def tt_abi_for_kernel(tt_program, kernel):
     return tt_program.abi_plans[abi_plan_index]
 
 
-def staged_copy_kernel(tile_rows: int, tile_cols: int = 1, tile_m: int = 32, tile_n: int = 32):
+def staged_copy_kernel(
+    tile_rows: int,
+    tile_cols: int = 1,
+    tile_m: int = 32,
+    tile_n: int = 32,
+    dtype: str = "bfloat16",
+):
     """Define an explicit TileLang T.copy(global->shared->global) kernel."""
     m = tile_rows * tile_m
     n = tile_cols * tile_n
 
-    @T.prim_func
-    def main(
-        A: T.Tensor((m, n), "float16"),
-        B: T.Tensor((m, n), "float16"),
-    ):
-        with T.Kernel(1, 1) as (bx, by):
-            A_shared = T.alloc_shared((tile_m, tile_n), "float16")
-            for tile_idx in T.serial(tile_rows * tile_cols):
-                tile_row = tile_idx // tile_cols
-                tile_col = tile_idx % tile_cols
-                T.copy(A[tile_row * tile_m, tile_col * tile_n], A_shared)
-                T.copy(A_shared, B[tile_row * tile_m, tile_col * tile_n])
+    if dtype == "bfloat16":
+        @T.prim_func
+        def main(
+            A: T.Tensor((m, n), "bfloat16"),
+            B: T.Tensor((m, n), "bfloat16"),
+        ):
+            with T.Kernel(1, 1) as (bx, by):
+                A_shared = T.alloc_shared((tile_m, tile_n), "bfloat16")
+                for tile_idx in T.serial(tile_rows * tile_cols):
+                    tile_row = tile_idx // tile_cols
+                    tile_col = tile_idx % tile_cols
+                    T.copy(A[tile_row * tile_m, tile_col * tile_n], A_shared)
+                    T.copy(A_shared, B[tile_row * tile_m, tile_col * tile_n])
 
-    return main
+        return main
+
+    if dtype == "float16":
+        @T.prim_func
+        def main(
+            A: T.Tensor((m, n), "float16"),
+            B: T.Tensor((m, n), "float16"),
+        ):
+            with T.Kernel(1, 1) as (bx, by):
+                A_shared = T.alloc_shared((tile_m, tile_n), "float16")
+                for tile_idx in T.serial(tile_rows * tile_cols):
+                    tile_row = tile_idx // tile_cols
+                    tile_col = tile_idx % tile_cols
+                    T.copy(A[tile_row * tile_m, tile_col * tile_n], A_shared)
+                    T.copy(A_shared, B[tile_row * tile_m, tile_col * tile_n])
+
+        return main
+
+    raise ValueError(f"Unsupported staged_copy_kernel dtype: {dtype}")
 
 
-def grid_indexed_staged_copy_kernel(grid_x: int, grid_y: int, tile_m: int = 32, tile_n: int = 32):
+def grid_indexed_staged_copy_kernel(
+    grid_x: int,
+    grid_y: int,
+    tile_m: int = 32,
+    tile_n: int = 32,
+    dtype: str = "bfloat16",
+):
     """Define a copy kernel whose indices depend on bx/by logical block coordinates."""
     m = grid_y * tile_m
     n = grid_x * tile_n
 
-    @T.prim_func
-    def main(
-        A: T.Tensor((m, n), "float16"),
-        B: T.Tensor((m, n), "float16"),
-    ):
-        with T.Kernel(grid_x, grid_y) as (bx, by):
-            A_shared = T.alloc_shared((tile_m, tile_n), "float16")
-            T.copy(A[by * tile_m, bx * tile_n], A_shared)
-            T.copy(A_shared, B[by * tile_m, bx * tile_n])
+    if dtype == "bfloat16":
+        @T.prim_func
+        def main(
+            A: T.Tensor((m, n), "bfloat16"),
+            B: T.Tensor((m, n), "bfloat16"),
+        ):
+            with T.Kernel(grid_x, grid_y) as (bx, by):
+                A_shared = T.alloc_shared((tile_m, tile_n), "bfloat16")
+                T.copy(A[by * tile_m, bx * tile_n], A_shared)
+                T.copy(A_shared, B[by * tile_m, bx * tile_n])
 
-    return main
+        return main
+
+    if dtype == "float16":
+        @T.prim_func
+        def main(
+            A: T.Tensor((m, n), "float16"),
+            B: T.Tensor((m, n), "float16"),
+        ):
+            with T.Kernel(grid_x, grid_y) as (bx, by):
+                A_shared = T.alloc_shared((tile_m, tile_n), "float16")
+                T.copy(A[by * tile_m, bx * tile_n], A_shared)
+                T.copy(A_shared, B[by * tile_m, bx * tile_n])
+
+        return main
+
+    raise ValueError(f"Unsupported grid_indexed_staged_copy_kernel dtype: {dtype}")
 
 
 def staged_stick_copy_kernel(

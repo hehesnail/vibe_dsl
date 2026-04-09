@@ -162,6 +162,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - `TT_METAL_SLOW_DISPATCH_MODE=1` 对 TT-Sim 很关键
 - direct path kernel 临时目录必须每次执行唯一化
 - 优先消费 TT-Metal local install tree，不要把 `.cpmcache` 整片塞进 include path
+- 现阶段 Blackhole runtime/direct-runtime regression 默认统一用 `bf16` 输入；
+  不要再把 `fp16` 当成 TT-Sim 上的正式 runtime baseline
 - TT-Sim `float16` 路径是否可用要和 target contract 问题分开判断；
   如果 small bf16 correctness 已过、但大 shape `float16` 命中
   `UntestedFunctionality: tensix_execute_unpacr: fp16`，
