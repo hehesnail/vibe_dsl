@@ -21,6 +21,10 @@
 - `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复
 - `TTProgram` translator / validator / materializer 已进入正式主链；
   runtime/codegen 已切到 `TTProgram` direct reader
+- spatial/dataflow program model 的 cross-layer feature 设计
+  已独立收口到 `tasks/dev_design/spatial_dataflow_program_model.md`，
+  后续 literal semantics、planner owner 链与 expert hint API
+  统一以该文档为设计入口
 - 当前支持的 `flash-attn` forward 子集已经拿到 direct runtime correctness milestone
 - 无显式 `semaphore / remote-core` synchronization contract 的
   oversubscribed `work_packets` executable 已可按 packet truth 做 host-side

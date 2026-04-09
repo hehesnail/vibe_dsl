@@ -22,6 +22,7 @@
 - **上游输入**: 冻结后的 `SpatialProgram`
 - **下游输出**: 冻结后的 `TTProgram` 与 `ExecutableSpec` 物化结果
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
+- **相关 cross-layer feature 文档**: `tasks/dev_design/spatial_dataflow_program_model.md`
 
 ## 1. 作用域
 
@@ -217,6 +218,10 @@ SpatialProgram
 - legacy projection 只剩
   `SplitBlackholeKernel -> LowerBlackholeOps`
   之间的内部 planning 过渡职责
+- 后续 `TTBlockPlan`、literal taxonomy、validated hint intake、
+  SRAM/L1/CB-aware planning 的跨层 owner 链统一以上面的
+  cross-layer feature 文档为准；本阶段文档只保留 `Phase C` 的
+  target-side 落地、完成判定与 runtime gate
 
 ## 6. 当前仍属于 `Phase C` 的工作
 

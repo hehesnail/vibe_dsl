@@ -7,6 +7,7 @@
 - **状态**: 当前唯一权威总体设计文档
 - **定位**: 轻量总纲；只保留长期架构、层间边界、真源规则与当前阶段判断
 - **活动阶段文档**:
+  - `tasks/dev_design/spatial_dataflow_program_model.md`
   - `tasks/dev_design/stage4_stage0_guardrails.md`
   - `tasks/dev_design/stage4_phase_a_semantic_ir.md`
   - `tasks/dev_design/stage4_phase_b_spatial_ir.md`
@@ -187,6 +188,10 @@ Stateful Semantic IR
 - `final_blackhole_backend_redesign.md`
   - 唯一总体设计
   - 只保留长期架构、层间边界、真源规则、阶段判断
+- `spatial_dataflow_program_model.md`
+  - spatial/dataflow program model 的跨层 feature 设计；
+    统一维护字面量语义分层、intent/planner owner 链、
+    SRAM/L1/CB-aware planning 与 expert hint API
 - `stage4_phase_b_spatial_ir.md`
   - `Spatial Program IR` 的当前主实施文档
 - `stage4_phase_c_tt_target_ir.md`
