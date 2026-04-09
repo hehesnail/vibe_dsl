@@ -52,6 +52,7 @@
 
 #include "../../3rdparty/tvm/src/runtime/thread_storage_scope.h"
 #include "common/blackhole_utils.h"
+#include "common/blackhole_runtime_arg_schema.h"
 #include "common/semantic_program.h"
 
 namespace tvm {
@@ -82,6 +83,25 @@ static std::string MakeBlackholeRuntimeArgIdentity(const std::string& kind, cons
     return kind + ":" + buffer_name;
   }
   return !kind.empty() ? kind : name;
+}
+
+static Map<String, Any> MakePerWorkArgSpec(const std::string& arg_kind,
+                                           const std::string& value_kind,
+                                           const std::string& buffer_name = "",
+                                           uint32_t constant_value = 0) {
+  Map<String, Any> spec;
+  spec.Set(String(blackhole_runtime_arg_schema::kArgKind), String(arg_kind));
+  spec.Set(String(blackhole_runtime_arg_schema::kArgIdentity),
+           String(MakeBlackholeRuntimeArgIdentity(arg_kind, arg_kind, buffer_name)));
+  if (!buffer_name.empty()) {
+    spec.Set(String(blackhole_runtime_arg_schema::kBuffer), String(buffer_name));
+  }
+  spec.Set(String(blackhole_runtime_arg_schema::kValueKind), String(value_kind));
+  if (value_kind == blackhole_runtime_arg_schema::kValueConstant) {
+    spec.Set(String(blackhole_runtime_arg_schema::kConstantValue),
+             Integer(static_cast<int64_t>(constant_value)));
+  }
+  return spec;
 }
 
 // ------------------------------------------------------------------
@@ -314,6 +334,31 @@ static void StoreGemmSegmentPlan(PrimFunc& func,
   reader_args.push_back(make_arg("k_tile_start_id", "k_tile_start_id"));
   reader_args.push_back(make_arg("num_k_tiles", "num_k_tiles"));
   reader.Set("runtime_args", reader_args);
+  Array<Any> reader_per_work_arg_specs;
+  if (!input_buf_names.empty()) {
+    reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
+        "a_tile_start_id", blackhole_runtime_arg_schema::kValueLogicalBlockY, input_buf_names[0]));
+    reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
+        "a_tile_num_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles,
+        input_buf_names[0]));
+    reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
+        "a_tile_stride", blackhole_runtime_arg_schema::kValueConstant, input_buf_names[0], 1));
+  }
+  if (input_buf_names.size() > 1) {
+    reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
+        "b_tile_start_id", blackhole_runtime_arg_schema::kValueLogicalBlockX, input_buf_names[1]));
+    reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
+        "b_tile_num_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles,
+        input_buf_names[1]));
+    reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
+        "b_tile_stride", blackhole_runtime_arg_schema::kValueGemmLogicalNTiles,
+        input_buf_names[1]));
+  }
+  reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
+      "k_tile_start_id", blackhole_runtime_arg_schema::kValueConstant, "", 0));
+  reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
+      "num_k_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles));
+  reader.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs), reader_per_work_arg_specs);
 
   // Compute kernel (TRISC)
   Map<String, Any> compute;
@@ -324,6 +369,12 @@ static void StoreGemmSegmentPlan(PrimFunc& func,
   compute_args.push_back(make_arg("k_tile_start_id", "k_tile_start_id"));
   compute_args.push_back(make_arg("num_k_tiles", "num_k_tiles"));
   compute.Set("runtime_args", compute_args);
+  Array<Any> compute_per_work_arg_specs;
+  compute_per_work_arg_specs.push_back(MakePerWorkArgSpec(
+      "k_tile_start_id", blackhole_runtime_arg_schema::kValueConstant, "", 0));
+  compute_per_work_arg_specs.push_back(MakePerWorkArgSpec(
+      "num_k_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles));
+  compute.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs), compute_per_work_arg_specs);
 
   // Writer kernel (NCRISC/RISCV_1)
   Map<String, Any> writer;
@@ -340,6 +391,15 @@ static void StoreGemmSegmentPlan(PrimFunc& func,
   writer_args.push_back(make_arg("output_tile_num_tiles", "output_tile_num_tiles"));
   writer_args.push_back(make_arg("output_tile_stride", "output_tile_stride"));
   writer.Set("runtime_args", writer_args);
+  Array<Any> writer_per_work_arg_specs;
+  writer_per_work_arg_specs.push_back(MakePerWorkArgSpec(
+      "output_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
+      output_buf_name));
+  writer_per_work_arg_specs.push_back(MakePerWorkArgSpec(
+      "output_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant, output_buf_name, 1));
+  writer_per_work_arg_specs.push_back(MakePerWorkArgSpec(
+      "output_tile_stride", blackhole_runtime_arg_schema::kValueConstant, output_buf_name, 1));
+  writer.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs), writer_per_work_arg_specs);
 
   Array<Any> kernels;
   kernels.push_back(reader);

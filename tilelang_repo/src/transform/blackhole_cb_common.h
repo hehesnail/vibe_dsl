@@ -40,6 +40,15 @@ enum class CBType {
 };
 
 /*!
+ * \brief Cross-op dataflow contract for a CB-backed resource.
+ */
+enum class CBFlowClass {
+  kState,      // Long-lived state, not published as a producer-consumer stream
+  kStream,     // Published once and consumed as a stream
+  kRepublish,  // Produced, consumed, and later produced again in the same kernel
+};
+
+/*!
  * \brief CB requirement description shared between extraction and planning.
  */
 struct CBRequirement {
@@ -47,6 +56,10 @@ struct CBRequirement {
   CBType type;             // CB classification
   int page_size;           // Size of each page in bytes
   int num_pages;           // Number of pages (for double buffering)
+  int initial_reserve_pages;  // Pages to reserve when materializing compute-local storage
+  CBFlowClass flow_class;  // Stream/state/republish contract
+  int publish_pages_per_event;  // Page granule for each publish event
+  int consume_pages_per_event;  // Page granule for each consume event
   std::string data_format; // Data format string (e.g., "Float16", "Float32")
   int lifetime_begin;      // First requirement slot where this CB is live
   int lifetime_end;        // Last requirement slot where this CB is live
@@ -55,6 +68,10 @@ struct CBRequirement {
       : type(CBType::kIntermediate),
         page_size(2048),
         num_pages(2),
+        initial_reserve_pages(0),
+        flow_class(CBFlowClass::kState),
+        publish_pages_per_event(0),
+        consume_pages_per_event(0),
         data_format("Float16"),
         lifetime_begin(0),
         lifetime_end(0) {}

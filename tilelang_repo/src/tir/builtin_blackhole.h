@@ -184,6 +184,28 @@ TVM_DLL const Op& blackhole_semaphore_set_remote();
 TVM_DLL const Op& blackhole_mm_init();
 
 /*!
+ * \brief Reconfigure SrcA/SrcB data formats for a TT-Metal compute op.
+ * \param in0_cb_id New SrcA CB id
+ * \param in1_cb_id New SrcB CB id
+ */
+TVM_DLL const Op& blackhole_reconfig_data_format();
+
+/*!
+ * \brief Reconfigure the compute engine back to matmul mode after a DST reload.
+ * \param in0_cb_id Input CB 0 (A matrix)
+ * \param in1_cb_id Input CB 1 (B matrix)
+ */
+TVM_DLL const Op& blackhole_mm_init_short();
+
+/*!
+ * \brief Reconfigure the compute engine back to matmul mode after a mixed-dtype DST reload.
+ * \param in0_cb_id Input CB 0 (A matrix)
+ * \param in1_cb_id Input CB 1 (B matrix)
+ * \param old_srca_cb_id Previous SrcA CB used during the reload step
+ */
+TVM_DLL const Op& blackhole_mm_init_short_with_dt();
+
+/*!
  * \brief Perform tile-wise matrix multiplication
  * \param in0_cb_id Input CB 0 (A matrix)
  * \param in1_cb_id Input CB 1 (B matrix)
@@ -217,8 +239,38 @@ TVM_DLL const Op& blackhole_tile_regs_release();
  * \brief Pack tile from destination register to CB
  * \param src_tile_index Source tile index in DST
  * \param dst_cb_id Destination CB
+ * \param dst_tile_index Optional destination tile index within the currently
+ *        reserved CB write window. When omitted, TT-Metal advances the CB
+ *        write-tile cursor implicitly.
  */
 TVM_DLL const Op& blackhole_pack_tile();
+
+/*!
+ * \brief Reconfigure packer data format for the destination CB.
+ * \param dst_cb_id Destination CB id
+ */
+TVM_DLL const Op& blackhole_pack_reconfig_data_format();
+
+/*!
+ * \brief Initialize TT-Metal tile reload from a CB into DST registers.
+ * \param src_cb_id Source CB whose front tiles will be copied into DST
+ */
+TVM_DLL const Op& blackhole_copy_tile_to_dst_init_short();
+
+/*!
+ * \brief Initialize TT-Metal tile reload from a CB into DST registers with SrcA dtype reconfiguration.
+ * \param old_srca_cb_id Previously configured SrcA CB
+ * \param src_cb_id Source CB whose front tiles will be copied into DST
+ */
+TVM_DLL const Op& blackhole_copy_tile_to_dst_init_short_with_dt();
+
+/*!
+ * \brief Copy a single tile from a CB into a DST register slot.
+ * \param src_cb_id Source CB
+ * \param src_tile_index Tile index within the CB front window
+ * \param dst_tile_index Destination tile index within DST registers
+ */
+TVM_DLL const Op& blackhole_copy_tile_from_cb();
 
 /*!
  * \brief Copy a contiguous local fragment slice into the currently reserved CB write window.
@@ -296,6 +348,22 @@ TVM_DLL const Op& blackhole_scalar_exp2_affine();
  * \param value Scalar literal fill value
  */
 TVM_DLL const Op& blackhole_fill_fragment();
+
+/*!
+ * \brief Add a contiguous local fragment slice into another local fragment buffer in-place.
+ * \param dst_buffer Destination/source local fragment buffer handle
+ * \param src_buffer Source local fragment buffer handle
+ * \param num_elements Number of contiguous destination elements
+ */
+TVM_DLL const Op& blackhole_add_fragment();
+
+/*!
+ * \brief Add the front page(s) of a CB-backed scratch fragment into a local fragment buffer.
+ * \param dst_buffer Destination/source local fragment buffer handle
+ * \param src_cb_id Source CB id whose current front page(s) contain the packed fragment
+ * \param num_elements Number of contiguous destination elements
+ */
+TVM_DLL const Op& blackhole_add_fragment_from_cb_front();
 
 /*!
  * \brief Update a scalar fragment buffer in-place with max(dst, src).

@@ -53,6 +53,10 @@ struct CBConfig {
   int cb_id;               // Assigned CB identifier (0-63)
   int page_size;           // Size of each page in bytes
   int num_pages;           // Number of pages
+  int initial_reserve_pages;  // Pages to reserve when compute-local storage is materialized
+  CBFlowClass flow_class;  // Stream/state/republish contract
+  int publish_pages_per_event;  // Page granule for each publish event
+  int consume_pages_per_event;  // Page granule for each consume event
   int total_size;          // Total size = num_pages * page_size
   std::string data_format; // Data format string
   int lifetime_begin;      // First requirement slot covered by this memory object
@@ -65,6 +69,10 @@ struct CBConfig {
         cb_id(0),
         page_size(2048),
         num_pages(2),
+        initial_reserve_pages(0),
+        flow_class(CBFlowClass::kState),
+        publish_pages_per_event(0),
+        consume_pages_per_event(0),
         total_size(4096),
         data_format("Float16"),
         lifetime_begin(0),

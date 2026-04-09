@@ -396,6 +396,17 @@ def test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch():
     assert int(core_plan["logical_grid_y"]) == grid_y
     assert len(core_plan["physical_cores"]) == 6
     assert len(core_plan["work_packets"]) == 6
+    per_work_arg_specs = {
+        spec["arg_kind"]: spec["value_kind"]
+        for spec in executable_spec["per_work_arg_specs"]
+    }
+    assert per_work_arg_specs["a_tile_start_id"] == "current_work_linear_id"
+    assert per_work_arg_specs["output_tile_start_id"] == "current_work_linear_id"
+    kernel_per_work_arg_specs = {
+        spec["arg_kind"]: spec["value_kind"]
+        for spec in executable_spec["kernels"][0]["per_work_arg_specs"]
+    }
+    assert kernel_per_work_arg_specs == per_work_arg_specs
 
     artifact.codegen_mod["main"](a_torch, b_output)
     assert_tensors_close_or_dump(
@@ -584,7 +595,7 @@ def test_blackhole_module_direct_call_large_shape_copy():
     )
 
 
-def test_blackhole_module_direct_call_accepts_richer_copy_schema():
+def test_blackhole_module_direct_call_accepts_richer_copy_schema_with_explicit_per_work_spec():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -594,7 +605,7 @@ def test_blackhole_module_direct_call_accepts_richer_copy_schema():
     with target:
         artifact = lower(kernel, target=target)
 
-    unsupported_runtime_args = [
+    richer_runtime_args = [
         {"name": "A_addr", "kind": "input_buffer_addr32", "identity": "input_buffer_addr32:A", "dtype": "uint32", "buffer": "A"},
         {"name": "B_addr", "kind": "output_buffer_addr32", "identity": "output_buffer_addr32:B", "dtype": "uint32", "buffer": "B"},
         {"name": "work_linear_id", "kind": "work_linear_id", "identity": "work_linear_id", "dtype": "uint32"},
@@ -606,7 +617,27 @@ def test_blackhole_module_direct_call_accepts_richer_copy_schema():
         {"name": "output_tile_num_tiles", "kind": "output_tile_num_tiles", "identity": "output_tile_num_tiles", "dtype": "uint32"},
         {"name": "output_tile_stride", "kind": "output_tile_stride", "identity": "output_tile_stride", "dtype": "uint32"},
     ]
-    mutated_mod = _rebuild_direct_runtime_module_with_runtime_args(artifact, unsupported_runtime_args)
+
+    def mutate(tt_program):
+        abi_plans = [
+            rebuild_tt_abi_plan(abi_plan, runtime_args=richer_runtime_args)
+            for abi_plan in tt_program.abi_plans
+        ]
+        payload = dict(tt_program.payload)
+        per_work_arg_specs = list(payload["per_work_arg_specs"])
+        per_work_arg_specs.append(
+            {
+                "arg_kind": "b_tile_start_id",
+                "arg_identity": "b_tile_start_id",
+                "value_kind": "logical_block_x",
+            }
+        )
+        payload["per_work_arg_specs"] = per_work_arg_specs
+        return rebuild_tt_program(tt_program, abi_plans=abi_plans, payload=payload)
+
+    mutated_mod = _rebuild_direct_runtime_module_with_tt_program(
+        artifact, tt_program_mutator=mutate
+    )
 
     a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_output = torch.zeros_like(a_torch)

@@ -138,13 +138,22 @@ class CodeGenBlackhole : public CodeGenCHost {
 
   // Print compute operations
   void PrintMMInit(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintReconfigDataFormat(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintMMInitShort(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintMMInitShortWithDT(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintMatmulTiles(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintTileRegsAcquire(std::ostream &os);
   void PrintTileRegsCommit(std::ostream &os);
   void PrintTileRegsWait(std::ostream &os);
   void PrintTileRegsRelease(std::ostream &os);
   void PrintPackTile(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintPackReconfigDataFormat(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintCopyTileToDstInitShort(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintCopyTileToDstInitShortWithDT(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintCopyTileFromCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintFillFragment(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintAddFragment(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintAddFragmentFromCBFront(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintWriteLocalSliceToCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintScalarMax(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintCastFragmentSlice(const tvm::tir::CallNode *op, std::ostream &os);
@@ -184,8 +193,27 @@ class CodeGenBlackhole : public CodeGenCHost {
   int GetCBNumPages(int cb_id) const;
   std::string GetCBHeadVar(int cb_id) const;
   std::string GetCBTailVar(int cb_id) const;
+  void RegisterActiveCBWritePtrBinding(int cb_id, const std::string& var_name,
+                                       const std::string& type_name);
+  void UnregisterActiveCBWritePtrBinding(int cb_id, const std::string& var_name);
+  void EmitActiveCBWritePtrRefreshes(int cb_id);
+  void MaybeEmitMathWaypoint(std::ostream& os, const char* code);
+  void MaybeEmitPackWaypoint(std::ostream& os, const char* code);
+  void MaybeEmitUnpackWaypoint(std::ostream& os, const char* code);
+  std::string GetCBRequirementName(int cb_id) const;
 
  private:
+  struct ActiveCBWritePtrBinding {
+    std::string var_name;
+    std::string type_name;
+  };
+
+  struct PerWorkArgSpecBinding {
+    std::string arg_identity;
+    std::string value_kind;
+    uint32_t constant_value{0};
+  };
+
   // Per-instance header emission flag (replaces static variable)
   bool headers_emitted_{false};
 
@@ -196,6 +224,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   bool need_tt_metal_h_{false};
   bool need_dataflow_api_h_{false};
   bool need_compute_api_h_{false};
+  bool emit_debug_waypoints_{false};
 
   // Whether to emit kernel entry point wrapper
   bool emit_kernel_wrapper_{true};
@@ -206,10 +235,14 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_map<std::string, std::string> buffer_runtime_arg_map_by_name_;
   std::unordered_map<std::string, std::string> runtime_arg_vars_by_kind_;
   std::unordered_map<std::string, std::string> runtime_arg_vars_by_name_;
+  std::unordered_map<std::string, PerWorkArgSpecBinding> per_work_arg_bindings_by_kind_;
   std::unordered_map<int, int> cb_page_size_by_id_;
   std::unordered_map<int, int> cb_num_pages_by_id_;
   std::unordered_map<std::string, int> cb_id_by_requirement_name_;
+  std::unordered_map<int, std::string> cb_requirement_name_by_id_;
   std::unordered_map<std::string, int> cb_num_pages_by_requirement_name_;
+  std::unordered_map<std::string, int> cb_initial_reserve_pages_by_requirement_name_;
+  std::unordered_map<int, std::vector<ActiveCBWritePtrBinding>> active_cb_write_ptr_bindings_;
   int logical_grid_x_{1};
   int logical_grid_y_{1};
   std::string linearization_{"row_major"};

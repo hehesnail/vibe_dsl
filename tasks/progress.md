@@ -7,7 +7,7 @@
 
 ## 当前阶段
 
-- **日期**: `2026-04-09`
+- **日期**: `2026-04-10`
 - **总阶段**: Stage 4
 - **当前主线**: `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
 - **阶段状态**:
@@ -21,6 +21,10 @@
 - `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复
 - `TTProgram` translator / validator / materializer 已进入正式主链；
   runtime/codegen 已切到 `TTProgram` direct reader
+- `per_work_arg_specs` 已收成 kernel-local `TTKernel / ExecutableSpec` truth；
+  synthetic segment codegen、direct runtime arg materialization
+  与 direct runtime launch 统一消费同一套 `value_kind` contract，
+  不再按 arg kind 出现情况或 `work_linear_id -> blockIdx` 猜语义
 - spatial/dataflow program model 的 cross-layer feature 设计
   已独立收口到 `tasks/dev_design/spatial_dataflow_program_model.md`，
   后续 literal semantics、planner owner 链与 expert hint API
@@ -31,7 +35,20 @@
 - TT-Sim fatal simulator taxonomy / hard-gate 扫描
   已独立记录到 `memory/tt_simulator_constraints.md`，
   后续 triage 先按 simulator capability boundary 与 target contract 回归分流
-- 当前支持的 `flash-attn` forward 子集已经拿到 direct runtime correctness milestone
+- `flash-attn` compile-path / metadata / pipeline 主链保持可用；
+  direct runtime 当前会对缺失显式 per-work contract
+  或 typed fragment materialization/merge protocol 尚未执行化的 kernel 显式 fail-fast；
+  在当前 regression 子集上，显式 per-work contract 已 materialize 完整，
+  剩余 skip/gate 主要来自 typed fragment materialization contract
+- fragment materialization contract 的 owner-side 识别
+  已从 `AnalyzeSemanticStructure` 里的 `gemm_py` family matcher
+  前移到 tile-op typed metadata；
+  analysis pass 现在只把上游暴露的事实归约成 generic contract，
+  不再自己按 family 名字判断协议
+- 人为移除 `compute_epilogue_ops` gate 后，
+  small `bf16` MHA direct runtime 仍会明显错算
+  （当前采样：`max diff=1.2265625`, `mean diff=0.2021484375`），
+  说明 fragment materialization/merge 问题不是 gate 过严，而是执行语义本身还没闭环
 - Blackhole runtime / direct-runtime 回归基线已统一到 `bf16` 输入；
   `fp16` 不再作为当前 TT-Sim 上的正式 runtime 测试基线
 - 无显式 `semaphore / remote-core` synchronization contract 的
@@ -58,6 +75,10 @@
 - oversubscribed direct runtime 目前不是通用同步执行模型；
   一旦 executable 带显式 `TTSemaphorePlan`、`semaphore_bindings`
   或 `remote_core_descriptors`，仍应 fail-fast
+- `flash-attn` direct runtime 当前也不是已恢复支持面；
+  对缺失显式 per-work contract 或 typed fragment materialization/merge protocol
+  的 kernel，应继续通过 `direct_runtime_unsupported_reasons` skip / fail-fast，
+  而不是回退到后段语义恢复
 - TT-Sim `fp16` 路径当前仍可能命中 simulator fatal taxonomy；
   该路径不属于当前 Blackhole runtime 的正式 correctness baseline，
   统一按 simulator capability boundary 处理
@@ -77,9 +98,13 @@
 
 - `tilelang_repo/build` fresh rebuild 通过
 - 所有 runtime 检查均在标准 TT-Sim 环境入口下完成
-- Blackhole copy/runtime + flash-attn runtime `bf16` baseline regressions 通过：
-  `71 passed, 1 skipped, 1 xfailed`
-- `flash-attn` pipeline regressions 通过：`2 passed, 46 deselected`
-- GEMM direct runtime regressions 通过：`2 passed, 38 deselected`
-- `flash-attn` 当前支持 runtime regression 通过：`1 passed, 6 deselected`
-- 手工 `512x512x512` `bf16` pure GEMM direct runtime 已数值对齐
+- 本轮 `flash-attn` regression 通过：
+  `test_blackhole_flash_attention_pipeline.py` -> `61 passed`
+  `test_blackhole_flash_attention_runtime.py` -> `9 passed, 5 skipped`
+- 本轮 copy baseline 也通过：
+  `test_blackhole_copy_pipeline.py` -> `52 passed, 1 skipped, 1 xfailed`
+  `test_blackhole_copy_runtime.py` -> `12 passed`
+- 当前 `flash-attn` runtime skip 均来自显式 `direct_runtime_unsupported_reasons`，
+  当前 regression 子集里不再出现缺失 explicit per-work descriptor 的 skip；
+  剩余 skip 来自 typed fragment materialization contract 已存在、
+  但 direct runtime 尚未执行 fragment materialization/merge protocol 的边界

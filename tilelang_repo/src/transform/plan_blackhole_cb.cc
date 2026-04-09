@@ -79,7 +79,33 @@ std::string RoleForType(CBType type) {
   }
 }
 
+std::string CBFlowClassToString(CBFlowClass flow_class) {
+  switch (flow_class) {
+    case CBFlowClass::kStream:
+      return "stream";
+    case CBFlowClass::kRepublish:
+      return "republish";
+    case CBFlowClass::kState:
+    default:
+      return "state";
+  }
+}
+
+CBFlowClass CBFlowClassFromString(const std::string& flow_class) {
+  if (flow_class == "stream") {
+    return CBFlowClass::kStream;
+  }
+  if (flow_class == "republish") {
+    return CBFlowClass::kRepublish;
+  }
+  return CBFlowClass::kState;
+}
+
 bool IsCompatibleForReuse(const CBRequirement& req, const CBConfig& config) {
+  if ((req.initial_reserve_pages > 0 && req.flow_class == CBFlowClass::kState) ||
+      (config.initial_reserve_pages > 0 && config.flow_class == CBFlowClass::kState)) {
+    return false;
+  }
   if (config.role != RoleForType(req.type)) {
     return false;
   }
@@ -87,6 +113,18 @@ bool IsCompatibleForReuse(const CBRequirement& req, const CBConfig& config) {
     return false;
   }
   if (config.num_pages != req.num_pages) {
+    return false;
+  }
+  if (config.initial_reserve_pages != req.initial_reserve_pages) {
+    return false;
+  }
+  if (config.flow_class != req.flow_class) {
+    return false;
+  }
+  if (config.publish_pages_per_event != req.publish_pages_per_event) {
+    return false;
+  }
+  if (config.consume_pages_per_event != req.consume_pages_per_event) {
     return false;
   }
   if (config.data_format != req.data_format) {
@@ -111,20 +149,42 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
   if (op_name == "tl.blackhole.mm_init") {
     return {0, 1, 2};
   }
+  if (op_name == "tl.blackhole.reconfig_data_format") {
+    return {0, 1};
+  }
+  if (op_name == "tl.blackhole.mm_init_short") {
+    return {0, 1};
+  }
+  if (op_name == "tl.blackhole.mm_init_short_with_dt") {
+    return {0, 1, 2};
+  }
   if (op_name == "tl.blackhole.matmul_tiles") {
     return {0, 1};
   }
   if (op_name == "tl.blackhole.pack_tile") {
     return {1};
   }
+  if (op_name == "tl.blackhole.pack_reconfig_data_format") {
+    return {0};
+  }
+  if (op_name == "tl.blackhole.copy_tile_to_dst_init_short" ||
+      op_name == "tl.blackhole.copy_tile_to_dst_init_short_with_dt" ||
+      op_name == "tl.blackhole.copy_tile_from_cb") {
+    return op_name == "tl.blackhole.copy_tile_to_dst_init_short_with_dt" ? std::vector<int>{0, 1}
+                                                                          : std::vector<int>{0};
+  }
   if (op_name == "tl.blackhole.write_local_slice_to_cb") {
     return {1};  // args: (src_handle, cb_id, dst_offset, num_elements)
+  }
+  if (op_name == "tl.blackhole.add_fragment_from_cb_front") {
+    return {1};  // args: (dst_handle, src_cb_id, num_elements)
   }
   return {};
 }
 
 bool HasNoCBArgs(const std::string& op_name) {
   return op_name == "tl.blackhole.cast_fragment_slice" ||
+         op_name == "tl.blackhole.add_fragment" ||
          op_name == "tl.blackhole.fill_fragment" ||
          op_name == "tl.blackhole.scalar_max" ||
          op_name == "tl.blackhole.reduce_row" ||
@@ -240,6 +300,20 @@ std::vector<CBRequirement> PlanBlackholeCB::GetCBRequirements(
         if (auto num_pages = req_map.Get("num_pages")) {
           cb_req.num_pages = Downcast<Integer>(num_pages.value())->value;
         }
+        if (auto initial_reserve_pages = req_map.Get("initial_reserve_pages")) {
+          cb_req.initial_reserve_pages =
+              Downcast<Integer>(initial_reserve_pages.value())->value;
+        }
+        if (auto flow_class = req_map.Get("flow_class")) {
+          cb_req.flow_class = CBFlowClassFromString(
+              std::string(Downcast<String>(flow_class.value()).c_str()));
+        }
+        if (auto publish_pages = req_map.Get("publish_pages_per_event")) {
+          cb_req.publish_pages_per_event = Downcast<Integer>(publish_pages.value())->value;
+        }
+        if (auto consume_pages = req_map.Get("consume_pages_per_event")) {
+          cb_req.consume_pages_per_event = Downcast<Integer>(consume_pages.value())->value;
+        }
         if (auto data_format = req_map.Get("data_format")) {
           cb_req.data_format = Downcast<String>(data_format.value()).c_str();
         }
@@ -297,6 +371,10 @@ std::vector<CBConfig> PlanBlackholeCB::AssignCBIds(
     config.role = RoleForType(req.type);
     config.page_size = req.page_size;
     config.num_pages = req.num_pages;
+    config.initial_reserve_pages = req.initial_reserve_pages;
+    config.flow_class = req.flow_class;
+    config.publish_pages_per_event = req.publish_pages_per_event;
+    config.consume_pages_per_event = req.consume_pages_per_event;
     config.data_format = req.data_format;
     config.lifetime_begin = req.lifetime_begin;
     config.lifetime_end = req.lifetime_end;
@@ -383,6 +461,16 @@ void PlanBlackholeCB::StoreCBConfig(PrimFunc& func, const std::vector<CBConfig>&
     cb_attr.Set("cb_id", Integer(config.cb_id));
     cb_attr.Set("page_size", Integer(config.page_size));
     cb_attr.Set("num_pages", Integer(config.num_pages));
+    if (config.initial_reserve_pages > 0) {
+      cb_attr.Set("initial_reserve_pages", Integer(config.initial_reserve_pages));
+    }
+    cb_attr.Set("flow_class", String(CBFlowClassToString(config.flow_class)));
+    if (config.publish_pages_per_event > 0) {
+      cb_attr.Set("publish_pages_per_event", Integer(config.publish_pages_per_event));
+    }
+    if (config.consume_pages_per_event > 0) {
+      cb_attr.Set("consume_pages_per_event", Integer(config.consume_pages_per_event));
+    }
     cb_attr.Set("total_size_bytes", Integer(config.total_size));
     cb_attr.Set("data_format", String(config.data_format));
     cb_attr.Set("name", String(config.name));

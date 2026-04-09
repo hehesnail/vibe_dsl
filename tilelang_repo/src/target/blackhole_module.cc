@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <unistd.h>
 #include <filesystem>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -55,6 +56,41 @@ static std::string EncodeExecutableSpecMetadata(const ExecutableSpec& spec) {
   std::ostringstream os;
   dmlc::JSONWriter writer(&os);
   spec.Save(&writer);
+  return os.str();
+}
+
+static bool BlackholeDebugIOEnabled() {
+  const char* value = std::getenv("TILELANG_BLACKHOLE_DEBUG_IO");
+  return value != nullptr && value[0] != '\0' && !(value[0] == '0' && value[1] == '\0');
+}
+
+static float BFloat16BitsToFloat(uint16_t bits) {
+  union {
+    uint32_t i;
+    float f;
+  } value{static_cast<uint32_t>(bits) << 16};
+  return value.f;
+}
+
+template <typename T>
+static std::string PreviewTensorValues(const std::vector<T>& values, size_t limit = 8) {
+  std::ostringstream os;
+  os << "[";
+  const size_t count = std::min(limit, values.size());
+  for (size_t i = 0; i < count; ++i) {
+    if (i != 0) {
+      os << ", ";
+    }
+    if constexpr (std::is_same_v<T, uint16_t>) {
+      os << BFloat16BitsToFloat(values[i]);
+    } else {
+      os << values[i];
+    }
+  }
+  if (values.size() > count) {
+    os << ", ...";
+  }
+  os << "]";
   return os.str();
 }
 
@@ -190,7 +226,39 @@ static void ValidateGemmTensorDType(const RuntimeTensorBinding& binding,
 
 static ComputeContractSpec GetComputeContract(const ExecutableSpec& spec);
 
+static void ValidateMultiComputeContractsShareDirectRuntimeWorkDecomposition(
+    const ExecutableSpec& spec) {
+  if (spec.compute_contract.enabled || spec.multi_compute_contracts.size() <= 1) {
+    return;
+  }
+
+  const auto& reference = spec.multi_compute_contracts.front();
+  if (!reference.enabled || reference.kind != "gemm") {
+    return;
+  }
+
+  for (size_t i = 1; i < spec.multi_compute_contracts.size(); ++i) {
+    const auto& contract = spec.multi_compute_contracts[i];
+    if (!contract.enabled || contract.kind != "gemm") {
+      continue;
+    }
+    ICHECK_EQ(contract.M, reference.M)
+        << "Blackhole direct runtime requires multi_compute_contracts to agree on M";
+    ICHECK_EQ(contract.N, reference.N)
+        << "Blackhole direct runtime requires multi_compute_contracts to agree on N";
+    ICHECK_EQ(contract.K, reference.K)
+        << "Blackhole direct runtime requires multi_compute_contracts to agree on K";
+    ICHECK_EQ(contract.Mt, reference.Mt)
+        << "Blackhole direct runtime requires multi_compute_contracts to agree on Mt";
+    ICHECK_EQ(contract.Nt, reference.Nt)
+        << "Blackhole direct runtime requires multi_compute_contracts to agree on Nt";
+    ICHECK_EQ(contract.Kt, reference.Kt)
+        << "Blackhole direct runtime requires multi_compute_contracts to agree on Kt";
+  }
+}
+
 static void ValidateComputeContractDirectRuntimeConstraints(const ExecutableSpec& spec) {
+  ValidateMultiComputeContractsShareDirectRuntimeWorkDecomposition(spec);
   const auto contract = GetComputeContract(spec);
   if (contract.enabled && contract.kind == "gemm") {
     ICHECK(!contract.has_mbarrier)
@@ -208,6 +276,9 @@ static void ValidateComputeContractDirectRuntimeConstraints(const ExecutableSpec
 static ComputeContractSpec GetComputeContract(const ExecutableSpec& spec) {
   if (spec.compute_contract.enabled) {
     return spec.compute_contract;
+  }
+  if (!spec.multi_compute_contracts.empty()) {
+    return spec.multi_compute_contracts.front();
   }
   if (!spec.gemm_contract.enabled) {
     return ComputeContractSpec();
@@ -584,6 +655,9 @@ static void CopyInterleavedTiledOutputToTensor(DLTensor* tensor,
       << " bytes, expected " << (numel * sizeof(T)) << " bytes";
   const auto* tiled = reinterpret_cast<const T*>(output_data.data());
   std::vector<T> tiled_vec(tiled, tiled + numel);
+  if (BlackholeDebugIOEnabled()) {
+    LOG(INFO) << "Blackhole debug output: tiled preview=" << PreviewTensorValues(tiled_vec);
+  }
   std::vector<T> device_row_major = untilize_nfaces(tiled_vec, rows, cols);
   if (plan.transpose_2d) {
     device_row_major = TransposeRowMajor2D(device_row_major.data(), rows, cols);
@@ -591,6 +665,9 @@ static void CopyInterleavedTiledOutputToTensor(DLTensor* tensor,
   const std::vector<int64_t> inverse_axis_order = InvertAxisOrder(plan.axis_order);
   std::vector<T> host_row_major =
       PermuteContiguousTensorAxes(device_row_major.data(), device_shape, inverse_axis_order);
+  if (BlackholeDebugIOEnabled()) {
+    LOG(INFO) << "Blackhole debug output: host preview=" << PreviewTensorValues(host_row_major);
+  }
   std::memcpy(GetTensorData<T>(tensor), host_row_major.data(), host_row_major.size() * sizeof(T));
 }
 
@@ -607,10 +684,24 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
         BuildInterleavedTilePlan(spec, materialization, tensor);
     if (tile_plan.enabled) {
       if (tensor->dtype.bits == 16) {
-        return BuildInterleavedTiledTransferData<uint16_t>(tensor, tile_plan);
+        auto tiled = BuildInterleavedTiledTransferData<uint16_t>(tensor, tile_plan);
+        if (BlackholeDebugIOEnabled()) {
+          const auto* values = reinterpret_cast<const uint16_t*>(tiled.data());
+          std::vector<uint16_t> preview(values, values + tiled.size() / sizeof(uint16_t));
+          LOG(INFO) << "Blackhole debug input " << binding.name
+                    << ": tiled preview=" << PreviewTensorValues(preview);
+        }
+        return tiled;
       }
       if (tensor->dtype.bits == 32) {
-        return BuildInterleavedTiledTransferData<uint32_t>(tensor, tile_plan);
+        auto tiled = BuildInterleavedTiledTransferData<uint32_t>(tensor, tile_plan);
+        if (BlackholeDebugIOEnabled()) {
+          const auto* values = reinterpret_cast<const uint32_t*>(tiled.data());
+          std::vector<uint32_t> preview(values, values + tiled.size() / sizeof(uint32_t));
+          LOG(INFO) << "Blackhole debug input " << binding.name
+                    << ": tiled preview=" << PreviewTensorValues(preview);
+        }
+        return tiled;
       }
     }
     std::vector<uint8_t> raw(tensor_size);
@@ -1629,6 +1720,7 @@ struct DirectRuntimeWorkContext {
 static DirectRuntimeWorkContext BuildDirectRuntimeWorkContext(const KernelSpec& kernel,
                                                              const ExecutableSpec& spec,
                                                              uint32_t current_work_linear_id) {
+  (void)kernel;
   DirectRuntimeWorkContext context;
   context.logical_grid_x = GetRuntimeLogicalGridX(spec);
   context.work_linear_id = current_work_linear_id;
@@ -1644,88 +1736,69 @@ static DirectRuntimeWorkContext BuildDirectRuntimeWorkContext(const KernelSpec& 
   return context;
 }
 
+static const PerWorkArgSpec* FindPerWorkArgSpec(const std::vector<PerWorkArgSpec>& per_work_arg_specs,
+                                                const KernelArgSpec& arg_spec) {
+  if (!arg_spec.identity.empty()) {
+    auto it = std::find_if(
+        per_work_arg_specs.begin(), per_work_arg_specs.end(),
+        [&](const PerWorkArgSpec& spec) { return spec.arg_identity == arg_spec.identity; });
+    if (it != per_work_arg_specs.end()) {
+      return &(*it);
+    }
+  }
+  auto it = std::find_if(per_work_arg_specs.begin(), per_work_arg_specs.end(),
+                         [&](const PerWorkArgSpec& spec) {
+                           return spec.arg_kind == arg_spec.kind;
+                         });
+  return it == per_work_arg_specs.end() ? nullptr : &(*it);
+}
+
+static uint32_t EvaluatePerWorkArgSpec(const PerWorkArgSpec& spec,
+                                       const DirectRuntimeWorkContext& context) {
+  if (spec.value_kind == tl::blackhole_runtime_arg_schema::kValueCurrentWorkLinearId) {
+    return context.work_linear_id;
+  }
+  if (spec.value_kind == tl::blackhole_runtime_arg_schema::kValueLogicalBlockX) {
+    return context.bx;
+  }
+  if (spec.value_kind == tl::blackhole_runtime_arg_schema::kValueLogicalBlockY) {
+    return context.by;
+  }
+  if (spec.value_kind == tl::blackhole_runtime_arg_schema::kValueGemmNumKTiles) {
+    ICHECK(context.has_gemm_compute_contract)
+        << "Blackhole direct runtime per_work_arg_spec requires GEMM compute contract for "
+        << spec.arg_kind;
+    return context.num_k_tiles;
+  }
+  if (spec.value_kind == tl::blackhole_runtime_arg_schema::kValueGemmLogicalNTiles) {
+    ICHECK(context.has_gemm_compute_contract)
+        << "Blackhole direct runtime per_work_arg_spec requires GEMM compute contract for "
+        << spec.arg_kind;
+    return context.logical_n_tiles;
+  }
+  if (spec.value_kind == tl::blackhole_runtime_arg_schema::kValueConstant) {
+    return spec.constant_value;
+  }
+  LOG(FATAL) << "Unsupported Blackhole per_work_arg_spec value_kind " << spec.value_kind
+             << " for arg " << spec.arg_kind;
+  return 0;
+}
+
 static bool TryAppendPerWorkRuntimeArg(const KernelSpec& kernel,
                                        const KernelArgSpec& arg_spec,
+                                       const std::vector<PerWorkArgSpec>& per_work_arg_specs,
                                        const DirectRuntimeWorkContext& context,
                                        size_t* scalar_index,
                                        const std::vector<uint32_t>& scalar_args,
                                        std::vector<uint32_t>* args) {
-  const auto kernel_requests_kind = [&](const char* kind) {
-    return std::any_of(kernel.runtime_args.begin(), kernel.runtime_args.end(),
-                       [&](const KernelArgSpec& runtime_arg) {
-                         return runtime_arg.kind == kind;
-                       });
-  };
+  (void)kernel;
 
   if (arg_spec.kind == "work_linear_id" || arg_spec.kind == "current_work_linear_id") {
     args->push_back(context.work_linear_id);
     return true;
   }
-  if (arg_spec.kind == "a_tile_start_id") {
-    args->push_back(context.has_gemm_compute_contract && kernel.kind == "reader"
-                        ? context.by
-                        : context.work_linear_id);
-    return true;
-  }
-  if (arg_spec.kind == "a_tile_num_tiles") {
-    ICHECK(kernel_requests_kind("a_tile_start_id"))
-        << "a_tile_num_tiles requires a_tile_start_id in Blackhole direct runtime";
-    args->push_back(context.has_gemm_compute_contract && kernel.kind == "reader"
-                        ? context.num_k_tiles
-                        : 1);
-    return true;
-  }
-  if (arg_spec.kind == "a_tile_stride") {
-    ICHECK(kernel_requests_kind("a_tile_start_id"))
-        << "a_tile_stride requires a_tile_start_id in Blackhole direct runtime";
-    args->push_back(1);
-    return true;
-  }
-  if (arg_spec.kind == "b_tile_start_id") {
-    args->push_back(context.has_gemm_compute_contract && kernel.kind == "reader" ? context.bx
-                                                                                  : 0U);
-    return true;
-  }
-  if (arg_spec.kind == "b_tile_num_tiles") {
-    ICHECK(kernel_requests_kind("b_tile_start_id"))
-        << "b_tile_num_tiles requires b_tile_start_id in Blackhole direct runtime";
-    args->push_back(context.has_gemm_compute_contract && kernel.kind == "reader"
-                        ? context.num_k_tiles
-                        : 1U);
-    return true;
-  }
-  if (arg_spec.kind == "b_tile_stride") {
-    ICHECK(kernel_requests_kind("b_tile_start_id"))
-        << "b_tile_stride requires b_tile_start_id in Blackhole direct runtime";
-    args->push_back(context.has_gemm_compute_contract && kernel.kind == "reader"
-                        ? context.logical_n_tiles
-                        : 1U);
-    return true;
-  }
-  if (arg_spec.kind == "output_tile_start_id") {
-    args->push_back(context.work_linear_id);
-    return true;
-  }
-  if (arg_spec.kind == "output_tile_num_tiles") {
-    ICHECK(kernel_requests_kind("output_tile_start_id"))
-        << "output_tile_num_tiles requires output_tile_start_id in Blackhole direct runtime";
-    args->push_back(1);
-    return true;
-  }
-  if (arg_spec.kind == "output_tile_stride") {
-    ICHECK(kernel_requests_kind("output_tile_start_id"))
-        << "output_tile_stride requires output_tile_start_id in Blackhole direct runtime";
-    args->push_back(1);
-    return true;
-  }
-  if (arg_spec.kind == "k_tile_start_id") {
-    ICHECK(kernel_requests_kind("num_k_tiles"))
-        << "k_tile_start_id requires num_k_tiles in Blackhole direct runtime";
-    args->push_back(0U);
-    return true;
-  }
-  if (arg_spec.kind == "num_k_tiles") {
-    args->push_back(context.has_gemm_compute_contract ? context.num_k_tiles : 1U);
+  if (const PerWorkArgSpec* spec = FindPerWorkArgSpec(per_work_arg_specs, arg_spec)) {
+    args->push_back(EvaluatePerWorkArgSpec(*spec, context));
     return true;
   }
   if (arg_spec.kind == "scalar_u32") {
@@ -1779,7 +1852,8 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
     if (TryAppendSharedRuntimeArg(arg_spec, buffer_bindings, input_names, output_names, &args)) {
       continue;
     }
-    if (!TryAppendPerWorkRuntimeArg(kernel, arg_spec, context, &scalar_index, scalar_args,
+    if (!TryAppendPerWorkRuntimeArg(kernel, arg_spec, kernel.per_work_arg_specs, context,
+                                    &scalar_index, scalar_args,
                                     &args)) {
       LOG(FATAL) << "Unsupported runtime arg kind: " << arg_spec.kind;
     }

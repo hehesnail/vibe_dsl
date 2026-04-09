@@ -265,6 +265,7 @@ def _rebuild_codegen_module_without_tt_projection_attrs(artifact):
             "blackhole.segment_plan",
             "blackhole.runtime_args",
             "blackhole.common_runtime_args",
+            "blackhole.per_work_arg_specs",
             "blackhole.accessors",
             "blackhole.cb_configs",
             "blackhole.semaphore_plan",
@@ -728,6 +729,7 @@ def test_blackhole_copy_build_reads_tt_program_without_legacy_projection_attrs()
         "blackhole.segment_plan",
         "blackhole.runtime_args",
         "blackhole.common_runtime_args",
+        "blackhole.per_work_arg_specs",
         "blackhole.accessors",
         "blackhole.cb_configs",
         "blackhole.semaphore_plan",
@@ -1709,7 +1711,7 @@ def test_blackhole_copy_codegen_uses_runtime_schema():
     assert "cb_pop_front(" in source
 
 
-def test_blackhole_copy_codegen_rejects_schema_without_work_linear_id():
+def test_blackhole_copy_codegen_accepts_explicit_per_work_schema_without_work_linear_id():
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     target = Target("blackhole")
 
@@ -1727,8 +1729,14 @@ def test_blackhole_copy_codegen_rejects_schema_without_work_linear_id():
         {"name": "output_tile_stride", "kind": "output_tile_stride", "identity": "output_tile_stride", "dtype": "uint32"},
     ]
 
-    with pytest.raises(Exception, match="work_linear_id|copy fallback|stride"):
-        _rebuild_codegen_module_with_runtime_args(artifact, unsupported_runtime_args)
+    rebuilt = _rebuild_codegen_module_with_runtime_args(artifact, unsupported_runtime_args)
+    executable_spec = rebuilt.get_function_metadata("main")
+    kernel_spec = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+    source = str(kernel_spec["source_code"])
+    assert "uint32_t work_linear_id = get_arg_val<uint32_t>" not in source
+    assert "uint32_t output_tile_start_id = get_arg_val<uint32_t>" in source
 
 
 def test_blackhole_copy_codegen_rejects_runtime_arg_without_identity():

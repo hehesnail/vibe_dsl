@@ -103,6 +103,20 @@ TileOperator GemmPyNode::Clone() const {
   return GemmPy(op);
 }
 
+std::optional<FragmentMaterializationInfo>
+GemmPyNode::GetFragmentMaterializationInfo() const {
+  const auto* clear_accum = clearAccum_.as<IntImmNode>();
+  if (!clear_accum || clear_accum->value != 0) {
+    return std::nullopt;
+  }
+  return FragmentMaterializationInfo{
+      c_,
+      ffi::String("intermediate_buffer"),
+      ffi::String("fragment_delta"),
+      ffi::String("fragment_add"),
+  };
+}
+
 bool GemmPyNode::allowTcgen5Mma(Target target) const {
   bool scope_ok = (a_.scope() == "shared.dyn" || a_.scope() == "shared" ||
                    a_.scope() == "shared.tmem") &&

@@ -171,6 +171,47 @@
 - **修法**: planner/runtime 统一到 logical worker grid；logical -> NOC 由 host materialize
 - **教训**: core descriptor 必须明确语义，不能让两端各自猜
 
+#### 缺失 typed access / accumulation contract 时，flash-attn direct runtime 必须 gate，而不是继续猜
+
+- **症状**:
+  - multi-work `flash-attn` case 会非法从错误 tile/page 地址读数据
+  - single-work small `bf16` case 可能直接跑出全零或明显错误结果
+- **根因**:
+  - reader / writer 虽然已有 `a_tile_start_id / b_tile_start_id / output_tile_start_id`
+    这类 ABI 描述符，但后段仍在按 `work_linear_id -> blockIdx`
+    或“arg kind 恰好出现了”的局部规则重建访问语义
+  - compute epilogue 仍含 `add_fragment_from_cb_front` scratch accumulation，
+    且若没有对应的 typed fragment materialization truth，
+    runtime 就会被迫在 lower 后的 builtin 序列上猜
+- **修法**:
+  - 在 `TTProgram -> ExecutableSpec` materialization 阶段
+    把 `per_work_arg_specs` canonicalize 成 kernel-local truth，
+    并让 codegen/runtime 都按 `value_kind` 消费
+  - 在 `AnalyzeSemanticStructure -> SpatialProgram.fragment_contract ->
+    compute_epilogue_ops` 这条主链上，
+    显式 materialize generic `fragment_materialization_contract`
+    （`intermediate_fragment_merge / intermediate_buffer /
+    fragment_delta / fragment_add`），
+    不再把 `matmul` 这类 family 名字编码进 contract
+  - 在 `ExecutableSpec` build 阶段追加
+    `direct_runtime_unsupported_reasons`
+  - 对缺失 kernel-local explicit per-work spec 的组合，
+    报缺失 explicit per-work access descriptor
+  - 对已 materialize fragment materialization contract、
+    但 runtime 还未实现对应 materialize-then-merge protocol 的 kernel，
+    显式报 unsupported；不要静默错跑
+  - 同时把这些 unsupported reason 从 device spec 透传回 host metadata，
+    让 Python/runtime gate 真正看得到
+- **教训**:
+  - 一旦 typed IR / ABI 已经暴露出 access 或 materialization/merge contract 的缺口，
+    codegen/runtime 的正确动作就是 fail-fast 并把需求前移到上层 IR，
+    不能继续执行会错跑的 heuristic path
+  - 当前这条 gate 也不是“过度保守”：
+    人为清空 `compute_epilogue_ops` 后，small `bf16` MHA 仍然错算
+    （`max diff=1.2265625`, `mean diff=0.2021484375`），
+    说明 fragment materialization/merge 的执行语义本身
+    还没和真实 device protocol 对齐
+
 ### 2.3 CB / synchronization / compute lifecycle
 
 #### GEMM output / writer bridge CB 去重不能只看 `Buffer` 对象或 `buffer->data`

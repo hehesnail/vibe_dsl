@@ -165,6 +165,7 @@ DSL 不负责拥有：
 
 - `WorkPartition`
 - `Placement`
+- `DataflowContract`
 - `TransportIntent`
 - `SyncIntent`
 - `ProgramPhase`
@@ -180,6 +181,76 @@ DSL 不负责拥有：
 
 它回答的是“哪些切分合法、哪些复用和 closure 必须保留”，
 而不是“在这块硬件上最终切多大”。
+
+`DataflowContract` 的长期职责是表达跨 op / phase 边上的协议，
+而不是把这些信息留给 target 侧从局部 builtin 序列里恢复。
+
+它至少需要回答：
+
+- producer / consumer 的角色绑定
+- buffer / edge 属于 `stream`、`state` 还是 `republish` flow class
+- 每次 publish / consume 的 page 或 tile 粒度
+- retain / pop / reacquire policy
+- sync completion point 与 ownership
+
+这里的关键纪律是：
+
+- `SpatialProgram` 不能只知道“有 transport / sync intent”，
+  却不知道一个中间 buffer 在多个算子之间到底是队列型流、长寿命状态，
+  还是“同核内生产 -> 消费 -> 再生产”的 republish buffer
+- 如果这种 edge-level contract 缺失，
+  `Phase C` 就会退化成从 `cb_reserve_back / cb_wait_front / cb_pop_front / cb_push_back`
+  的局部排列顺序恢复语义，重新落回 case-driven heuristic
+- `flash-attn`、`paged decode`、`topk`、`chunk recurrence`
+  这类多算子交互 workload 的稳定支持面，
+  依赖的是这层 contract，而不是再补更多 backend lookahead
+
+同样重要的是，`SpatialProgram` 不能只保留“哪个 logical work 在运行”，
+却不保留“这个 work 对每个 producer / consumer buffer 实际访问哪段 tile/page range”。
+
+否则就会出现另一种伪 contract：
+
+- ABI 上已经声明了 `a_tile_start_id / b_tile_start_id / output_tile_start_id`
+  这类 per-work 描述符
+- 但真正的 reader / writer 访问表达式仍然退化成
+  “先拿 `work_linear_id` 重建 `blockIdx`，再从原 sample 索引公式里猜”
+- 结果是显式 work descriptor 变成 dead metadata，
+  target 侧继续隐式耦合 sample-level index formula
+
+因此长期模型里，`work_linear_id` 只能保留 identity 职责；
+真正的 per-buffer work/access contract 必须是显式 schema，
+并且要沿 `SpatialProgram -> TTProgram -> ExecutableSpec` 被实际消费，
+不能只写进 payload 再被 codegen/runtime 忽略。
+
+在当前 `Phase C2` 的过渡落地里，
+`TTProgram / TTABIPlan` 会先把这部分 contract 物化成
+typed `per_work_arg_specs`：
+
+- 它们属于 per-work ABI truth，不属于 runtime 自由推导逻辑
+- 它们回答的是“某个 runtime arg 的值从哪类 work/block fact 求得”
+- 它们只是 target-side materialization，不改变长期 owner 链：
+  缺失这组 spec 时，结论仍然是上游 work/access contract 不够，
+  而不是允许 direct runtime 回退到 `work_linear_id` 猜测
+- 一旦进入 target-side materialization，
+  这组 spec 还必须被 canonicalize 成 kernel-local truth，
+  由 synthetic segment codegen/runtime 直接消费；
+  不能再退回“看见某个 arg kind 就按约定俗成解释”
+
+同一原则也适用于 fragment-side cross-op intermediate edge。
+当前 `flash-attn` `Phase C2` 已经把这类 truth 先收成
+generic `fragment_materialization_contract`：
+
+- `kind = intermediate_fragment_merge`
+- `materialization_kind = intermediate_buffer`
+- `value_role = fragment_delta`
+- `merge_kind = fragment_add`
+
+这里不允许把 `matmul / flash-attn / paged decode` 之类的 family 名字编码进 contract；
+family-specific extractor 只能在 owner 上游把结构证据归约成同一份 contract，
+并且这类事实应由 operator/semantic owner 暴露 typed metadata，
+而不是让 `AnalyzeSemanticStructure` 之类的下游 pass
+直接按 `gemm_py` 等 family 名字做协议判断；
+下游 `TTProgram / ExecutableSpec / runtime` 只能消费这份 generic truth。
 
 ### 5.3 `TTProgram`
 

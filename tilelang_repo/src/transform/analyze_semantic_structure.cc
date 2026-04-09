@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "../op/utils.h"
 #include "common/blackhole_utils.h"
 #include "common/semantic_program.h"
 #include "common/semantic_vocab.h"
@@ -25,6 +26,7 @@ using tvm::DictAttrs;
 using tvm::ffi::Any;
 using tvm::ffi::Array;
 using tvm::ffi::Map;
+using tvm::ffi::Optional;
 using tvm::ffi::String;
 using tvm::Integer;
 using namespace tvm::tl::semantic;
@@ -125,6 +127,70 @@ void CollectUniqueStringField(Array<Any>* values, std::unordered_set<std::string
 
 bool IsTrackedStateScope(const std::string& scope) {
   return scope == "local" || scope == "local.fragment" || scope == "blackhole.acc";
+}
+
+bool IsFragmentMaterializationCandidate(const CallNode* call) {
+  if (call == nullptr || !call->op->IsInstance<OpNode>()) {
+    return false;
+  }
+  TileOperator tile_op = ParseOperator(GetRef<Call>(call));
+  if (!tile_op.defined()) {
+    return false;
+  }
+  return tile_op->GetFragmentMaterializationInfo().has_value();
+}
+
+Optional<Map<String, Any>> TryBuildFragmentMaterializationContract(const CallNode* call) {
+  if (call == nullptr) {
+    return Optional<Map<String, Any>>();
+  }
+  TileOperator tile_op = ParseOperator(GetRef<Call>(call));
+  if (!tile_op.defined()) {
+    return Optional<Map<String, Any>>();
+  }
+  auto materialization_info = tile_op->GetFragmentMaterializationInfo();
+  if (!materialization_info.has_value()) {
+    return Optional<Map<String, Any>>();
+  }
+  const Buffer& target = materialization_info->target_buffer;
+  const std::string target_buffer = BufferIdentityName(target);
+  const std::string scope = target.scope();
+  if (target_buffer.empty() || !IsTrackedStateScope(scope)) {
+    return Optional<Map<String, Any>>();
+  }
+  Map<String, Any> contract;
+  contract.Set(String(schema_key::kKind), String("intermediate_fragment_merge"));
+  contract.Set(String(schema_key::kTargetBuffer), String(target_buffer));
+  contract.Set(String(schema_key::kScope), String(scope));
+  contract.Set(String(schema_key::kMaterializationKind),
+               materialization_info->materialization_kind);
+  contract.Set(String(schema_key::kValueRole), materialization_info->value_role);
+  contract.Set(String(schema_key::kMergeKind), materialization_info->merge_kind);
+  return contract;
+}
+
+Array<Any> CollectFragmentMaterializationContractsFromBody(const tir::Stmt& body) {
+  Array<Any> contracts;
+  std::unordered_set<std::string> seen;
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* call = node.as<CallNode>();
+    if (call == nullptr || !IsFragmentMaterializationCandidate(call)) {
+      return;
+    }
+    auto contract = TryBuildFragmentMaterializationContract(call);
+    if (!contract.has_value()) {
+      return;
+    }
+    const std::string target_buffer =
+        Downcast<String>(contract.value().at(String(schema_key::kTargetBuffer)));
+    const std::string scope = Downcast<String>(contract.value().at(String(schema_key::kScope)));
+    const std::string key = target_buffer + "|" + scope;
+    if (!seen.insert(key).second) {
+      return;
+    }
+    contracts.push_back(contract.value());
+  });
+  return contracts;
 }
 
 class LocalBufferCollector : public tir::StmtExprVisitor {
@@ -797,6 +863,8 @@ void CollectSeedsAndSupplements(const tir::PrimFunc& func,
     std::unordered_set<std::string> seen_pointwise_ops;
     Array<Any> fragment_loop_carried_state;
     std::unordered_set<std::string> seen_loop_carried_state;
+    Array<Any> fragment_materialization_contracts =
+        CollectFragmentMaterializationContractsFromBody(func->body);
     for (const Any& region_any : fragment_regions.value()) {
       auto region = tvm::Downcast<Map<String, Any>>(region_any);
       CollectUniqueStringField(&fragment_op_kinds, &seen_fragment_ops, region, "ops");
@@ -826,6 +894,10 @@ void CollectSeedsAndSupplements(const tir::PrimFunc& func,
       if (!fragment_loop_carried_state.empty()) {
         supplement_payload.Set(String(schema_key::kFragmentLoopCarriedState),
                                fragment_loop_carried_state);
+      }
+      if (!fragment_materialization_contracts.empty()) {
+        supplement_payload.Set(String(schema_key::kFragmentMaterializationContracts),
+                               fragment_materialization_contracts);
       }
       Map<String, Any> supplement;
       supplement.Set("kind", String(ToString(SupplementKind::kFragmentLoweringStructure)));

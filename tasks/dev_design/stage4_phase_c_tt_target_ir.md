@@ -7,7 +7,10 @@
   `TTProgram` cutover 主链已完成，runtime/codegen 已切到 `TTProgram` direct reader，
   shared generic fallback 已删除，synthetic segment 也已切到最小 `TTProgram`；
   regression 主断言面与 producer-side translator 输入也已切到 typed companion truth，
-  `flash-attn` small bf16 MHA direct runtime correctness 已兑现，
+  `flash-attn` compile-path / metadata 主链仍可用，
+  但 direct runtime 已对缺失显式 per-work access descriptor
+  或 typed fragment materialization/merge protocol 尚未执行化的 kernel
+  收成 explicit unsupported gate，
   GEMM oversubscribed `work_packets` host scheduling 已兑现，
   但 `Phase C2` wider runtime payoff 与 wider support surface 仍未完成
 - **已完成子阶段**: read-only translator demand probe、`TTHardwareModel` intake、
@@ -47,6 +50,58 @@
 如果 `Phase C` 发现仅靠当前 `SpatialProgram` 还无法合法决定 target mapping，
 结论只能是 `Phase B` contract 还不够。
 `Phase C` 不允许自己再补一层 non-TT-specific 语义恢复。
+
+当前 `flash-attn` `Phase C2` 暴露出的核心缺口就是这一条：
+
+- 现有 `SpatialProgram` 已能表达 placement / transport / sync 的大框架，
+  但对某些跨-op intermediate edge 仍缺少显式 dataflow contract
+- target 侧如果只能从局部 `cb_*` builtin 排列去猜
+  “这是 stream、state，还是 republish buffer”，
+  就已经越过了 `Phase C` owner boundary
+- 因此后续修复方向必须是把 edge-level flow contract 回填到
+  `Phase B` / `SpatialProgram`，再让 `TTProgram` 只做 target-specific materialization
+
+同时，`Phase C2` 也再次证明：
+
+- `work_linear_id` 只能是 logical work identity，不该继续兼任 per-buffer access truth
+- 如果 `a_tile_start_id / b_tile_start_id / output_tile_start_id`
+  这类显式 work descriptor 已经进入 ABI，
+  但 reader / writer 仍然主要靠 `work_linear_id -> blockIdx` 重建访问式，
+  那么 `Phase C` 实际上仍在消费隐式 sample formula，而不是冻结后的 typed contract
+
+因此本阶段的另一条纪律是：
+
+- target translator、runtime arg materialization 和 codegen
+  必须以显式 work/access descriptor 为真源
+- 不能把它们降格成“metadata 留着，但真正访问地址还是按 `work_linear_id` 猜”
+- 这条 contract 一旦进入 `TTProgram`，
+  就必须先 canonicalize 成 kernel-local `per_work_arg_specs`，
+  再由 synthetic segment codegen / direct runtime 统一消费；
+  不能一边读 kernel payload，一边再按 top-level payload 或 arg kind 特判
+
+当前 `Phase C2` 的直接落地点是：
+
+- 对 direct runtime 正式建立 typed `per_work_arg_specs`
+  作为 per-work ABI contract
+- 该 contract 明确声明
+  `a_tile_start_id / b_tile_start_id / output_tile_start_id /
+  *_tile_num_tiles / *_tile_stride / num_k_tiles / k_tile_start_id`
+  各自如何从
+  `logical work identity / logical block coordinate / concrete TT block facts`
+  求值
+- runtime 只允许解释这组显式 spec，不再从
+  “某个 arg kind 恰好出现了” 或 `work_linear_id -> blockIdx`
+  反推访问语义
+- codegen 也必须解释同一组 spec：
+  `blockIdx` 绑定只能来自 `per_work_arg_specs.value_kind`，
+  不能再因为看见 `output_tile_start_id / a_tile_start_id / b_tile_start_id`
+  就默认假设其含义
+
+这不是长期终点：
+
+- 长期 owner 仍然是上游 `SpatialProgram` 的 work/access contract
+- `per_work_arg_specs` 只是 `Phase C` 里对该 contract 的 target-side materialization
+- 但在当前阶段，它必须成为 codegen/runtime 共同消费的唯一 per-work access truth
 
 ## 2. 必须交付的 TT Contract
 
@@ -233,8 +288,23 @@ SpatialProgram
 
 - `flash-attn` forward subset 已打通 compile-path
 - `flash-attn` multi-GEMM compute kernel 不再 hang
-- supported small bf16 MHA 子集现在会真实执行 direct runtime，
-  并在 TT-Sim 上和 reference 数值对齐
+- direct runtime 当前会对两类缺口显式 fail-fast：
+  - multi-work kernel 若仍缺显式 per-work access descriptor，
+    不允许再从 `work_linear_id` 重建 tile access
+  - compute epilogue 若已经 materialize 出
+    `fragment_materialization_contract`，
+    但 direct runtime 还没实现对应 fragment materialization/merge protocol，
+    不允许再退回 builtin 序列猜语义
+- 当前 generic `fragment_materialization_contract`
+  已统一收成 `intermediate_fragment_merge / intermediate_buffer /
+  fragment_delta / fragment_add`；
+  这类 contract 的 owner-side 识别也已从
+  `AnalyzeSemanticStructure` 的 family 名字匹配
+  前移到 tile-op typed metadata，
+  下游 pass 只消费 generic contract；
+  下一步缺的不是“再识别它是什么”，而是把
+  `dst_init / pack-or-L1-accumulate / data-format reconfig / source ownership`
+  这些执行协议字段继续 typed 化
 - `K` staged-copy reader 的 transpose truth 已从
   `TTProgram -> ExecutableSpec -> accessor/materialization schema`
   显式下沉为 `transpose_2d`，host tilize / readback 会按该 truth 做 2D transpose
@@ -251,6 +321,9 @@ SpatialProgram
 2. multi-GEMM compute contract 必须成为显式 target truth，
    进入 `TTProgram` / `ExecutableSpec`；
    不能靠 legacy attrs、名字匹配或 codegen heuristics 侧推
+   对需要跨多算子共享 / 重发布的中间 buffer，
+   上游还必须提供显式 dataflow contract，
+   不能只把 `cb_*` 动作留给 target 侧事后恢复
 3. TT-Sim runtime 结果必须和 reference 数值对齐，
    而不是只证明“不挂死”
 4. 对仍未支持的 shape / variant，必须继续 fail-fast 并给出明确诊断，
@@ -463,7 +536,8 @@ WorkPartition intent
 当前状态是：
 
 - 条件 1 已满足
-- 条件 2 已取得 small bf16 correctness milestone，但整体仍未满足
+- 条件 2 仍未满足；此前会 silent wrong-result 的 `flash-attn`
+  runtime 路径已被显式 gate 收口，等待 typed access/dataflow contract 回填
 - 条件 3-7 仍未满足
 
 ## 8. Shared Zero-Regression Baseline
@@ -487,25 +561,39 @@ export TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib
 export LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH
 cd /root/dev/vibe_dsl/tilelang_repo
 pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py \
-       -k 'small_bf16_compute_source_keeps_acc_s_cast_cb_pages_consistent or \
+       -k 'segment_kernels_prefer_explicit_tile_descriptors_over_work_id or \
+           executable_spec_exposes_compute_epilogue_ops or \
+           small_bf16_compute_source_keeps_acc_s_cast_cb_pages_consistent or \
            small_bf16_metadata_marks_k_materialization_as_transposed'
-pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py \
-       -k 'small_bf16_forward_direct_runtime'
+pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py
 ```
 
 当前 gate 证明三件事：
 
 - `flash-attn` small bf16 lowering 仍保持
-  grouped reduce/cast page contract 与 `K.transpose_2d` metadata
-- supported small bf16 MHA direct runtime 会真实执行，
-  而不是依赖 unsupported skip
-- small bf16 TT-Sim runtime 输出和 reference 数值对齐
+  grouped reduce/cast page contract、compute epilogue metadata
+  与 `K.transpose_2d` metadata
+- `flash-attn` direct runtime 当前未支持的 kernel
+  若缺少 kernel-local `per_work_arg_specs`，
+  仍会通过 `direct_runtime_unsupported_reasons`
+  显式报出“缺失 explicit per-work access descriptor”；
+  而在当前 regression 子集上，剩余 gate 主要来自
+  “typed fragment materialization contract 已存在，
+  但 direct runtime 尚未执行 fragment materialization/merge protocol”
+- runtime 不再静默执行会错跑的 heuristic path
+- 即便人为清空 `compute_epilogue_ops` 让 gate 不触发，
+  small `bf16` MHA direct runtime 当前仍会错算
+  （当前采样：`max diff=1.2265625`, `mean diff=0.2021484375`）；
+  因此 `typed fragment materialization contract` 还必须把
+  compute epilogue 的真实 materialize-then-merge protocol
+  以前段 typed truth 形式收住，再让 codegen/runtime 消费
 
 当前 Blackhole runtime/direct-runtime regression baseline 统一使用 `bf16` 输入；
 `fp16` 不再作为当前 TT-Sim 上的正式 runtime gate。
 
 它不证明：
 
+- 当前已有任何 `flash-attn` direct runtime 支持子集重新恢复执行
 - 更宽 `MHA / GQA` runtime correctness 已经完成
 - TT-Sim `fp16` 路径已进入当前正式 correctness gate
 - `Phase C2` 已完成

@@ -208,7 +208,14 @@ static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
   auto cb_attr = tl::tt_program_projection::EncodeCBPlans(maybe_program.value()->cb_plans);
   if (cb_attr.empty()) {
     // Use default CB config for simple kernels
-    cb_configs.push_back({0, "default_cb", "intermediate", 1, 2048, "Float16_b"});
+    CBConfig config;
+    config.cb_id = 0;
+    config.name = "default_cb";
+    config.role = "intermediate";
+    config.num_pages = 1;
+    config.page_size_bytes = 2048;
+    config.data_format = "Float16_b";
+    cb_configs.push_back(std::move(config));
     return cb_configs;
   }
 
@@ -232,6 +239,19 @@ static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
     }
     if (auto page_size = cb_info.Get("page_size")) {
       config.page_size_bytes = Downcast<Integer>(page_size.value()).IntValue();
+    }
+    if (auto initial_reserve_pages = cb_info.Get("initial_reserve_pages")) {
+      config.initial_reserve_pages =
+          Downcast<Integer>(initial_reserve_pages.value()).IntValue();
+    }
+    if (auto flow_class = cb_info.Get("flow_class")) {
+      config.flow_class = Downcast<String>(flow_class.value());
+    }
+    if (auto publish_pages = cb_info.Get("publish_pages_per_event")) {
+      config.publish_pages_per_event = Downcast<Integer>(publish_pages.value()).IntValue();
+    }
+    if (auto consume_pages = cb_info.Get("consume_pages_per_event")) {
+      config.consume_pages_per_event = Downcast<Integer>(consume_pages.value()).IntValue();
     }
     if (auto data_format = cb_info.Get("data_format")) {
       config.data_format = Downcast<String>(data_format.value());
@@ -579,6 +599,32 @@ static std::vector<ComputeContractSpec::EpilogueOpSpec> ParseComputeEpilogueOps(
       if (auto value = op.Get("grouped")) entry.grouped = Downcast<Bool>(value.value());
       if (auto value = op.Get("clear")) entry.clear = Downcast<Bool>(value.value());
       if (auto value = op.Get("publish_cb")) entry.publish_cb = Downcast<Bool>(value.value());
+      if (auto value = op.Get("fragment_materialization_contract")) {
+        auto contract =
+            value.value()
+                .as<ffi::Map<ffi::String, ffi::Any>>()
+                .value_or(ffi::Map<ffi::String, ffi::Any>());
+        if (auto field = contract.Get("kind")) {
+          entry.fragment_materialization_contract.kind = Downcast<String>(field.value());
+        }
+        if (auto field = contract.Get("target_buffer")) {
+          entry.fragment_materialization_contract.target_buffer =
+              Downcast<String>(field.value());
+        }
+        if (auto field = contract.Get("scope")) {
+          entry.fragment_materialization_contract.scope = Downcast<String>(field.value());
+        }
+        if (auto field = contract.Get("materialization_kind")) {
+          entry.fragment_materialization_contract.materialization_kind =
+              Downcast<String>(field.value());
+        }
+        if (auto field = contract.Get("value_role")) {
+          entry.fragment_materialization_contract.value_role = Downcast<String>(field.value());
+        }
+        if (auto field = contract.Get("merge_kind")) {
+          entry.fragment_materialization_contract.merge_kind = Downcast<String>(field.value());
+        }
+      }
       if (!entry.kind.empty()) {
         epilogue_ops.push_back(std::move(entry));
       }
@@ -1140,6 +1186,39 @@ static std::vector<CompileTimeArgSpec> ExtractCompileTimeArgSpecsFromArray(
   return compile_time_arg_specs;
 }
 
+static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
+    const ffi::Array<ffi::Any>& items) {
+  std::vector<PerWorkArgSpec> per_work_arg_specs;
+  for (const auto& item : items) {
+    auto spec_info = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+        ffi::Map<ffi::String, ffi::Any>());
+    if (spec_info.empty()) {
+      continue;
+    }
+
+    PerWorkArgSpec spec;
+    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kArgKind)) {
+      spec.arg_kind = Downcast<String>(v.value());
+    }
+    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kArgIdentity)) {
+      spec.arg_identity = Downcast<String>(v.value());
+    }
+    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kBuffer)) {
+      spec.buffer = Downcast<String>(v.value());
+    }
+    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kValueKind)) {
+      spec.value_kind = Downcast<String>(v.value());
+    }
+    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue)) {
+      spec.constant_value = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+    }
+    if (!spec.arg_kind.empty() && !spec.value_kind.empty()) {
+      per_work_arg_specs.push_back(std::move(spec));
+    }
+  }
+  return per_work_arg_specs;
+}
+
 static bool ExtractLaunchSpec(const ffi::Map<ffi::String, ffi::Any>& spec_info,
                               KernelLaunchSpec* launch_spec) {
   if (spec_info.empty()) {
@@ -1268,6 +1347,18 @@ static std::vector<std::string> ExtractDirectRuntimeUnsupportedReasons(const tir
     }
   }
   return reasons;
+}
+
+static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecs(const tir::PrimFunc& f) {
+  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
+  ICHECK(maybe_program)
+      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
+  auto maybe_items =
+      maybe_program.value()->payload.Get(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs);
+  if (!maybe_items.has_value()) {
+    return {};
+  }
+  return ExtractPerWorkArgSpecsFromArray(Downcast<ffi::Array<ffi::Any>>(maybe_items.value()));
 }
 
 struct StaticBufferInfo {
@@ -1448,6 +1539,7 @@ struct SegmentInfo {
   std::vector<KernelArgSpec> runtime_args;
   std::vector<KernelArgSpec> common_runtime_args;
   std::vector<CompileTimeArgSpec> compile_time_arg_specs;
+  std::vector<PerWorkArgSpec> per_work_arg_specs;
   bool has_launch_spec = false;
   KernelLaunchSpec launch_spec;
   bool has_compute_config = false;
@@ -1544,6 +1636,10 @@ static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, Execu
       info.compile_time_arg_specs =
           ExtractCompileTimeArgSpecsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
     }
+    if (auto v = segment.Get(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs)) {
+      info.per_work_arg_specs =
+          ExtractPerWorkArgSpecsFromArray(Downcast<ffi::Array<ffi::Any>>(v.value()));
+    }
     if (auto v = segment.Get("launch_spec")) {
       auto launch_spec = v.value().as<ffi::Map<ffi::String, ffi::Any>>().value_or(
           ffi::Map<ffi::String, ffi::Any>());
@@ -1553,6 +1649,9 @@ static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, Execu
       auto compute_config = v.value().as<ffi::Map<ffi::String, ffi::Any>>().value_or(
           ffi::Map<ffi::String, ffi::Any>());
       info.has_compute_config = ExtractComputeConfig(compute_config, &info.compute_config);
+    }
+    if (info.per_work_arg_specs.empty() && !spec->per_work_arg_specs.empty()) {
+      info.per_work_arg_specs = spec->per_work_arg_specs;
     }
 
     if (segments_out.empty()) {
@@ -1663,6 +1762,7 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   spec.semaphores = ExtractSemaphorePlan(f);
   spec.runtime_args = ExtractRuntimeArgs(f);
   spec.common_runtime_args = ExtractCommonRuntimeArgs(f);
+  spec.per_work_arg_specs = ExtractPerWorkArgSpecs(f);
   spec.gemm_contract = ExtractGemmContract(f);
   spec.compute_contract = ExtractComputeContract(f, spec.gemm_contract);
   spec.multi_gemm_contracts = ExtractMultiGemmContracts(f);
@@ -1895,6 +1995,28 @@ static ffi::Array<ffi::Any> EncodeCompileTimeArgSpecs(
   return encoded;
 }
 
+static ffi::Array<ffi::Any> EncodePerWorkArgSpecs(
+    const std::vector<PerWorkArgSpec>& per_work_arg_specs) {
+  ffi::Array<ffi::Any> encoded;
+  for (const auto& spec : per_work_arg_specs) {
+    ffi::Map<ffi::String, ffi::Any> spec_info;
+    spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kArgKind, ffi::String(spec.arg_kind));
+    if (!spec.arg_identity.empty()) {
+      spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kArgIdentity, ffi::String(spec.arg_identity));
+    }
+    if (!spec.buffer.empty()) {
+      spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kBuffer, ffi::String(spec.buffer));
+    }
+    spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueKind, ffi::String(spec.value_kind));
+    if (spec.value_kind == ::tvm::tl::blackhole_runtime_arg_schema::kValueConstant) {
+      spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue,
+                    Integer(static_cast<int>(spec.constant_value)));
+    }
+    encoded.push_back(spec_info);
+  }
+  return encoded;
+}
+
 static ffi::Array<ffi::Any> EncodeSemaphoreBindings(
     const std::vector<SemaphoreBindingSpec>& bindings) {
   ffi::Array<ffi::Any> encoded;
@@ -1990,6 +2112,148 @@ static uint32_t ChooseBufferMaterializationPageSize(const ExecutableSpec& spec,
     return spec.cb_configs.front().page_size_bytes;
   }
   return 2048;
+}
+
+static bool KernelArgsContainKind(const std::vector<KernelArgSpec>& args,
+                                  std::string_view kind) {
+  return std::any_of(args.begin(), args.end(), [&](const KernelArgSpec& arg) {
+    return arg.kind == kind;
+  });
+}
+
+static bool PerWorkArgSpecsContainKind(const std::vector<PerWorkArgSpec>& specs,
+                                       std::string_view kind) {
+  return std::any_of(specs.begin(), specs.end(), [&](const PerWorkArgSpec& spec) {
+    return spec.arg_kind == kind;
+  });
+}
+
+static bool MaterializationNeedsExplicitPerWorkAccessDescriptor(
+    const BufferMaterializationSpec& materialization,
+    const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name) {
+  auto it = buffer_info_by_name.find(materialization.buffer);
+  if (it != buffer_info_by_name.end() && it->second.shape.size() > 2) {
+    return true;
+  }
+  if (materialization.host_axis_order.size() > 2) {
+    return true;
+  }
+  if (materialization.transpose_2d && materialization.host_axis_order.size() > 2) {
+    return true;
+  }
+  return false;
+}
+
+static void AppendDirectRuntimeUnsupportedReason(ExecutableSpec* spec,
+                                                 const std::string& reason) {
+  ICHECK(spec != nullptr);
+  if (std::find(spec->direct_runtime_unsupported_reasons.begin(),
+                spec->direct_runtime_unsupported_reasons.end(),
+                reason) != spec->direct_runtime_unsupported_reasons.end()) {
+    return;
+  }
+  spec->direct_runtime_unsupported_reasons.push_back(reason);
+}
+
+static void EnforceExplicitPerWorkAccessDescriptorGate(
+    const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name,
+    ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  const uint32_t total_logical_work_items = GetTotalLogicalWorkItems(spec->core_plan);
+  if (total_logical_work_items <= 1) {
+    return;
+  }
+
+  const bool has_multidim_materialized_buffer = std::any_of(
+      spec->buffer_materializations.begin(), spec->buffer_materializations.end(),
+      [&](const BufferMaterializationSpec& materialization) {
+        return MaterializationNeedsExplicitPerWorkAccessDescriptor(materialization,
+                                                                   buffer_info_by_name);
+      });
+  if (!has_multidim_materialized_buffer) {
+    return;
+  }
+
+  auto kernel_is_missing_explicit_access_descriptor =
+      [](const std::vector<KernelArgSpec>& runtime_args,
+         const std::vector<PerWorkArgSpec>& per_work_arg_specs) {
+        const bool has_reader_tile_coords =
+            KernelArgsContainKind(runtime_args, "a_tile_start_id") &&
+            KernelArgsContainKind(runtime_args, "b_tile_start_id");
+        const bool has_writer_tile_coord =
+            KernelArgsContainKind(runtime_args, "output_tile_start_id");
+        if (!(has_reader_tile_coords || has_writer_tile_coord)) {
+          return false;
+        }
+
+        for (const auto& arg : runtime_args) {
+          if (arg.kind == "a_tile_start_id" || arg.kind == "a_tile_num_tiles" ||
+              arg.kind == "a_tile_stride" || arg.kind == "b_tile_start_id" ||
+              arg.kind == "b_tile_num_tiles" || arg.kind == "b_tile_stride" ||
+              arg.kind == "output_tile_start_id" || arg.kind == "output_tile_num_tiles" ||
+              arg.kind == "output_tile_stride" || arg.kind == "k_tile_start_id" ||
+              arg.kind == "num_k_tiles") {
+            if (!PerWorkArgSpecsContainKind(per_work_arg_specs, arg.kind)) {
+              return true;
+            }
+          }
+        }
+        return false;
+      };
+
+  bool missing_explicit_descriptor = false;
+  if (!spec->kernels.empty()) {
+    for (const auto& kernel : spec->kernels) {
+      if (kernel_is_missing_explicit_access_descriptor(kernel.runtime_args,
+                                                       kernel.per_work_arg_specs)) {
+        missing_explicit_descriptor = true;
+        break;
+      }
+    }
+  } else {
+    missing_explicit_descriptor = kernel_is_missing_explicit_access_descriptor(
+        spec->runtime_args, spec->per_work_arg_specs);
+  }
+
+  if (!missing_explicit_descriptor) {
+    return;
+  }
+
+  AppendDirectRuntimeUnsupportedReason(
+      spec,
+      "missing explicit per-work access descriptor; direct runtime must not "
+      "reconstruct tile access from work_linear_id when total logical work "
+      "items > 1 for materialized buffers with rank > 2");
+}
+
+static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  bool has_fragment_materialization_contract = false;
+  bool missing_fragment_materialization_contract = false;
+  for (const ComputeContractSpec::EpilogueOpSpec& op : spec->compute_epilogue_ops) {
+    if (op.fragment_materialization_contract.defined()) {
+      has_fragment_materialization_contract = true;
+    }
+    if (op.kind == "add_fragment_from_cb_front" &&
+        !op.fragment_materialization_contract.defined()) {
+      missing_fragment_materialization_contract = true;
+    }
+  }
+  if (!has_fragment_materialization_contract && !missing_fragment_materialization_contract) {
+    return;
+  }
+  if (missing_fragment_materialization_contract) {
+    AppendDirectRuntimeUnsupportedReason(
+        spec,
+        "missing typed fragment materialization contract; direct runtime must "
+        "not execute add_fragment_from_cb_front scratch accumulation without "
+        "upstream fragment materialization truth");
+    return;
+  }
+  AppendDirectRuntimeUnsupportedReason(
+      spec,
+      "typed fragment materialization contract is present, but direct runtime "
+      "does not yet execute fragment materialization/merge protocols");
 }
 
 static std::vector<int64_t> ChooseBufferMaterializationAxisOrder(
@@ -2170,6 +2434,8 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
   const ffi::Array<ffi::Any> encoded_accessors = EncodeAccessors(segment.accessors);
   const ffi::Array<ffi::Any> encoded_compile_time_arg_specs =
       EncodeCompileTimeArgSpecs(segment.compile_time_arg_specs);
+  const ffi::Array<ffi::Any> encoded_per_work_arg_specs =
+      EncodePerWorkArgSpecs(segment.per_work_arg_specs);
   const ffi::Array<ffi::Any> encoded_semaphore_bindings =
       EncodeSemaphoreBindings(segment.semaphore_bindings);
 
@@ -2188,6 +2454,10 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
   }
   if (!encoded_compile_time_arg_specs.empty()) {
     encoded_segment.Set("compile_time_arg_specs", encoded_compile_time_arg_specs);
+  }
+  if (!encoded_per_work_arg_specs.empty()) {
+    encoded_segment.Set(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs,
+                        encoded_per_work_arg_specs);
   }
   if (!encoded_semaphore_bindings.empty()) {
     encoded_segment.Set("semaphore_bindings", encoded_semaphore_bindings);
@@ -2244,6 +2514,7 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
       "blackhole.segment_plan",
       "blackhole.runtime_args",
       "blackhole.common_runtime_args",
+      "blackhole.per_work_arg_specs",
       "blackhole.accessors",
       "blackhole.cb_configs",
       "blackhole.semaphore_plan",
@@ -2297,6 +2568,7 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
     kernel.core_type = spec->default_kernel_core_type;
     kernel.runtime_args = spec->runtime_args;
     kernel.common_runtime_args = ExtractCommonRuntimeArgs(f);
+    kernel.per_work_arg_specs = spec->per_work_arg_specs;
     kernel.source_code = legacy_code;
     ICHECK(!kernel.source_code.empty())
         << "Blackhole build produced no kernel source and no copy fallback was applicable for "
@@ -2313,6 +2585,7 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
     kernel.core_type = segment.core_type;
     kernel.runtime_args = ExtractRuntimeArgs(segment_func);
     kernel.common_runtime_args = ExtractCommonRuntimeArgs(segment_func);
+    kernel.per_work_arg_specs = segment.per_work_arg_specs;
     kernel.remote_core_descriptors = segment.remote_core_descriptors.empty()
                                          ? ExtractRemoteCoreDescriptors(kernel.runtime_args)
                                          : segment.remote_core_descriptors;
@@ -2498,9 +2771,11 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     PopulateKernelSpecsForDeviceFunc(kv.second, kv.first, target, /*kernel_code_only=*/false,
                                      source,
                                      &spec_it->second);
-    PopulateBufferMaterializationSpecs(
-        CollectStaticBufferInfo(kv.second, CollectMaterializedBufferNames(spec_it->second)),
-        &spec_it->second);
+    const auto buffer_info =
+        CollectStaticBufferInfo(kv.second, CollectMaterializedBufferNames(spec_it->second));
+    PopulateBufferMaterializationSpecs(buffer_info, &spec_it->second);
+    EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
+    EnforceTypedDstCbAccumulationGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {
     auto host_it = func_info_map.find(kv.first);
@@ -2508,6 +2783,9 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     if (host_it != func_info_map.end() && device_it != func_info_map.end()) {
       host_it->second.kernels = device_it->second.kernels;
       host_it->second.buffer_materializations = device_it->second.buffer_materializations;
+      host_it->second.per_work_arg_specs = device_it->second.per_work_arg_specs;
+      host_it->second.direct_runtime_unsupported_reasons =
+          device_it->second.direct_runtime_unsupported_reasons;
     }
   }
 
@@ -2609,9 +2887,11 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     PopulateKernelSpecsForDeviceFunc(kv.second, kv.first, target, /*kernel_code_only=*/true,
                                      source,
                                      &spec_it->second);
-    PopulateBufferMaterializationSpecs(
-        CollectStaticBufferInfo(kv.second, CollectMaterializedBufferNames(spec_it->second)),
-        &spec_it->second);
+    const auto buffer_info =
+        CollectStaticBufferInfo(kv.second, CollectMaterializedBufferNames(spec_it->second));
+    PopulateBufferMaterializationSpecs(buffer_info, &spec_it->second);
+    EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
+    EnforceTypedDstCbAccumulationGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {
     auto host_it = func_info_map.find(kv.first);
@@ -2619,6 +2899,9 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     if (host_it != func_info_map.end() && device_it != func_info_map.end()) {
       host_it->second.kernels = device_it->second.kernels;
       host_it->second.buffer_materializations = device_it->second.buffer_materializations;
+      host_it->second.per_work_arg_specs = device_it->second.per_work_arg_specs;
+      host_it->second.direct_runtime_unsupported_reasons =
+          device_it->second.direct_runtime_unsupported_reasons;
     }
   }
 

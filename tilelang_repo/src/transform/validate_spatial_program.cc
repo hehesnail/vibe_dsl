@@ -501,6 +501,7 @@ void ValidatePhaseTaskChannelCoherence(const SpatialProgram& program,
 struct SemanticRequirements {
   bool requires_pipeline_contract = false;
   bool requires_fragment_contract = false;
+  bool requires_fragment_materialization_contract = false;
   bool requires_work_dependent_payload = false;
   int stateful_state_count = 0;
   std::unordered_set<int> stateful_state_indices;
@@ -610,6 +611,11 @@ void ValidateSemanticAlignment(const SpatialProgram& program,
       auto maybe_fragment_ops = supplement->payload.Get(String(schema_key::kFragmentOpKinds));
       reqs->requires_fragment_contract =
           maybe_fragment_ops && !Downcast<Array<Any>>(maybe_fragment_ops.value()).empty();
+      auto maybe_fragment_materialization =
+          supplement->payload.Get(String(schema_key::kFragmentMaterializationContracts));
+      reqs->requires_fragment_materialization_contract =
+          maybe_fragment_materialization &&
+          !Downcast<Array<Any>>(maybe_fragment_materialization.value()).empty();
       continue;
     }
     if (supplement_kind != ToString(SupplementKind::kPipelineStructure)) {
@@ -658,6 +664,7 @@ void ValidateResourceIntents(const SpatialProgram& program,
 
   std::unordered_set<std::string> resource_intent_kinds;
   bool has_fragment_contract = false;
+  bool has_fragment_materialization_contract = false;
   bool has_pipeline_contract = false;
   int state_residency_count = 0;
   std::unordered_set<int> state_residency_state_indices;
@@ -729,6 +736,29 @@ void ValidateResourceIntents(const SpatialProgram& program,
         ICHECK(!Downcast<Array<Any>>(maybe_row_broadcast_sources.value()).empty())
             << "ValidateSpatialProgram requires fragment row_broadcast_sources to be non-empty";
       }
+      if (auto maybe_fragment_materialization =
+              intent->payload.Get(String(schema_key::kFragmentMaterializationContracts))) {
+        Array<Any> materialization_contracts =
+            Downcast<Array<Any>>(maybe_fragment_materialization.value());
+        ICHECK(!materialization_contracts.empty())
+            << "ValidateSpatialProgram requires fragment_materialization_contracts to be non-empty";
+        has_fragment_materialization_contract = true;
+        for (const Any& contract_any : materialization_contracts) {
+          Map<String, Any> contract = Downcast<Map<String, Any>>(contract_any);
+          ICHECK(contract.count(String(schema_key::kKind)))
+              << "ValidateSpatialProgram requires fragment_materialization_contract entries to carry kind";
+          ICHECK(contract.count(String(schema_key::kTargetBuffer)))
+              << "ValidateSpatialProgram requires fragment_materialization_contract entries to carry target_buffer";
+          ICHECK(contract.count(String(schema_key::kScope)))
+              << "ValidateSpatialProgram requires fragment_materialization_contract entries to carry scope";
+          ICHECK(contract.count(String(schema_key::kMaterializationKind)))
+              << "ValidateSpatialProgram requires fragment_materialization_contract entries to carry materialization_kind";
+          ICHECK(contract.count(String(schema_key::kValueRole)))
+              << "ValidateSpatialProgram requires fragment_materialization_contract entries to carry value_role";
+          ICHECK(contract.count(String(schema_key::kMergeKind)))
+              << "ValidateSpatialProgram requires fragment_materialization_contract entries to carry merge_kind";
+        }
+      }
     }
     if (IsPipelineContractIntent(intent)) {
       has_pipeline_contract = true;
@@ -781,6 +811,11 @@ void ValidateResourceIntents(const SpatialProgram& program,
     ICHECK(has_fragment_contract)
         << "ValidateSpatialProgram requires fragment programs to materialize at least one "
            "fragment contract";
+  }
+  if (reqs.requires_fragment_materialization_contract) {
+    ICHECK(has_fragment_materialization_contract)
+        << "ValidateSpatialProgram requires fragment programs with materialization truth to "
+           "materialize fragment_materialization_contracts in fragment contracts";
   }
 }
 

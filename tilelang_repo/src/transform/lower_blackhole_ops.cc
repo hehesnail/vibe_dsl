@@ -29,6 +29,7 @@
 
 #include "../op/utils.h"
 #include "common/blackhole_utils.h"
+#include "common/blackhole_runtime_arg_schema.h"
 #include "common/companion_base.h"
 #include "common/semantic_program.h"
 #include "common/spatial_program.h"
@@ -48,6 +49,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <sstream>
 
@@ -136,6 +138,18 @@ static std::string DataTypeToDataFormatForBlackhole(DataType dtype) {
   if (dtype.is_int() && dtype.bits() == 32) return "Int32";
   if (dtype.is_int() && dtype.bits() == 16) return "Int16";
   return "Float16_b";
+}
+
+static std::string CBFlowClassToString(CBFlowClass flow_class) {
+  switch (flow_class) {
+    case CBFlowClass::kStream:
+      return "stream";
+    case CBFlowClass::kRepublish:
+      return "republish";
+    case CBFlowClass::kState:
+    default:
+      return "state";
+  }
 }
 
 static Map<String, Any> BuildGemmContractPayload(
@@ -358,6 +372,201 @@ static void ValidateStagedStickCopyTransportPageAlignment(int page_bytes) {
       << page_bytes << " bytes";
 }
 
+struct CBDepthEffect {
+  explicit CBDepthEffect(size_t num_requirements = 0)
+      : peak_extra_pages(num_requirements, 0), net_page_delta(num_requirements, 0) {}
+
+  std::vector<int64_t> peak_extra_pages;
+  std::vector<int64_t> net_page_delta;
+};
+
+static bool IsBlackholeBuiltinCall(const tir::CallNode* call,
+                                   const tvm::Op& builtin,
+                                   const char* op_name) {
+  if (!call) {
+    return false;
+  }
+  if (call->op.same_as(builtin)) {
+    return true;
+  }
+  if (const auto* op = call->op.as<OpNode>()) {
+    return op->name == op_name;
+  }
+  return false;
+}
+
+static CBDepthEffect CombineCBDepthEffectSequential(const CBDepthEffect& lhs,
+                                                    const CBDepthEffect& rhs) {
+  ICHECK_EQ(lhs.peak_extra_pages.size(), rhs.peak_extra_pages.size());
+  CBDepthEffect combined(lhs.peak_extra_pages.size());
+  for (size_t i = 0; i < lhs.peak_extra_pages.size(); ++i) {
+    combined.peak_extra_pages[i] =
+        std::max(lhs.peak_extra_pages[i],
+                 std::max<int64_t>(0, lhs.net_page_delta[i] + rhs.peak_extra_pages[i]));
+    combined.net_page_delta[i] = lhs.net_page_delta[i] + rhs.net_page_delta[i];
+  }
+  return combined;
+}
+
+static CBDepthEffect RepeatCBDepthEffect(const CBDepthEffect& body, int64_t extent) {
+  CBDepthEffect repeated(body.peak_extra_pages.size());
+  if (extent <= 0) {
+    return repeated;
+  }
+  for (size_t i = 0; i < body.peak_extra_pages.size(); ++i) {
+    repeated.net_page_delta[i] = body.net_page_delta[i] * extent;
+    repeated.peak_extra_pages[i] = body.peak_extra_pages[i];
+    if (body.net_page_delta[i] > 0 && extent > 1) {
+      repeated.peak_extra_pages[i] += (extent - 1) * body.net_page_delta[i];
+    }
+  }
+  return repeated;
+}
+
+static CBDepthEffect MergeCBDepthEffectBranches(const CBDepthEffect& then_effect,
+                                                const CBDepthEffect& else_effect) {
+  ICHECK_EQ(then_effect.peak_extra_pages.size(), else_effect.peak_extra_pages.size());
+  CBDepthEffect merged(then_effect.peak_extra_pages.size());
+  for (size_t i = 0; i < then_effect.peak_extra_pages.size(); ++i) {
+    merged.peak_extra_pages[i] =
+        std::max(then_effect.peak_extra_pages[i], else_effect.peak_extra_pages[i]);
+    merged.net_page_delta[i] =
+        std::max(then_effect.net_page_delta[i], else_effect.net_page_delta[i]);
+  }
+  return merged;
+}
+
+static CBDepthEffect AnalyzeCBDepthEffect(const tir::Stmt& stmt,
+                                          size_t num_requirements,
+                                          const std::string& requested_segment_kind = "",
+                                          const std::string& default_segment_kind = "compute",
+                                          const std::string& active_segment_kind = "") {
+  CBDepthEffect empty(num_requirements);
+  if (!stmt.defined()) {
+    return empty;
+  }
+
+  if (const auto* seq = stmt.as<tir::SeqStmtNode>()) {
+    CBDepthEffect effect(num_requirements);
+    for (const tir::Stmt& child : seq->seq) {
+      effect = CombineCBDepthEffectSequential(
+          effect, AnalyzeCBDepthEffect(child, num_requirements, requested_segment_kind,
+                                       default_segment_kind, active_segment_kind));
+    }
+    return effect;
+  }
+  if (const auto* attr = stmt.as<tir::AttrStmtNode>()) {
+    if (attr->attr_key == "blackhole.segment_kind") {
+      if (const auto* kind = attr->value.as<StringImmNode>()) {
+        return AnalyzeCBDepthEffect(attr->body, num_requirements, requested_segment_kind,
+                                    default_segment_kind, kind->value);
+      }
+    }
+    return AnalyzeCBDepthEffect(attr->body, num_requirements, requested_segment_kind,
+                                default_segment_kind, active_segment_kind);
+  }
+  if (const auto* let = stmt.as<tir::LetStmtNode>()) {
+    return AnalyzeCBDepthEffect(let->body, num_requirements, requested_segment_kind,
+                                default_segment_kind, active_segment_kind);
+  }
+  if (const auto* decl = stmt.as<tir::DeclBufferNode>()) {
+    return AnalyzeCBDepthEffect(decl->body, num_requirements, requested_segment_kind,
+                                default_segment_kind, active_segment_kind);
+  }
+  if (const auto* alloc = stmt.as<tir::AllocateNode>()) {
+    return AnalyzeCBDepthEffect(alloc->body, num_requirements, requested_segment_kind,
+                                default_segment_kind, active_segment_kind);
+  }
+  if (const auto* if_then_else = stmt.as<tir::IfThenElseNode>()) {
+    CBDepthEffect then_effect =
+        AnalyzeCBDepthEffect(if_then_else->then_case, num_requirements, requested_segment_kind,
+                             default_segment_kind, active_segment_kind);
+    CBDepthEffect else_effect = AnalyzeCBDepthEffect(
+        if_then_else->else_case.value_or(tir::Stmt()), num_requirements, requested_segment_kind,
+        default_segment_kind, active_segment_kind);
+    return MergeCBDepthEffectBranches(then_effect, else_effect);
+  }
+  if (const auto* loop = stmt.as<tir::ForNode>()) {
+    CBDepthEffect body_effect =
+        AnalyzeCBDepthEffect(loop->body, num_requirements, requested_segment_kind,
+                             default_segment_kind, active_segment_kind);
+    if (const auto* extent = loop->extent.as<IntImmNode>()) {
+      return RepeatCBDepthEffect(body_effect, extent->value);
+    }
+    return body_effect;
+  }
+  if (const auto* eval = stmt.as<tir::EvaluateNode>()) {
+    const auto* call = eval->value.as<tir::CallNode>();
+    if (!call || call->args.size() < 2) {
+      return empty;
+    }
+
+    int64_t delta_sign = 0;
+    if (IsBlackholeBuiltinCall(call, tir::builtin::blackhole_cb_reserve_back(),
+                               "tl.blackhole.cb_reserve_back")) {
+      delta_sign = 1;
+    } else if (IsBlackholeBuiltinCall(call, tir::builtin::blackhole_cb_pop_front(),
+                                      "tl.blackhole.cb_pop_front")) {
+      delta_sign = -1;
+    } else {
+      return empty;
+    }
+
+    const std::string effective_segment_kind =
+        active_segment_kind.empty() ? default_segment_kind : active_segment_kind;
+    if (!requested_segment_kind.empty() && effective_segment_kind != requested_segment_kind) {
+      return empty;
+    }
+
+    const auto* cb_id = call->args[0].as<IntImmNode>();
+    const auto* page_count = call->args[1].as<IntImmNode>();
+    if (!cb_id || !page_count || cb_id->value < 0 ||
+        static_cast<size_t>(cb_id->value) >= num_requirements) {
+      return empty;
+    }
+
+    CBDepthEffect effect(num_requirements);
+    const int requirement_index = static_cast<int>(cb_id->value);
+    const int64_t delta = delta_sign * page_count->value;
+    effect.net_page_delta[requirement_index] = delta;
+    if (delta > 0) {
+      effect.peak_extra_pages[requirement_index] = delta;
+    }
+    return effect;
+  }
+
+  return empty;
+}
+
+static void UpdateCBRequirementDepthsFromLoweredBody(std::vector<CBRequirement>* requirements,
+                                                     const tir::Stmt& body,
+                                                     const std::string& default_segment_kind) {
+  ICHECK(requirements != nullptr);
+  if (requirements->empty()) {
+    return;
+  }
+  std::vector<CBDepthEffect> effects;
+  effects.push_back(AnalyzeCBDepthEffect(body, requirements->size(), "",
+                                         default_segment_kind));
+  effects.push_back(AnalyzeCBDepthEffect(body, requirements->size(), default_segment_kind,
+                                         default_segment_kind));
+  if (default_segment_kind != "fused_dataflow") {
+    effects.push_back(AnalyzeCBDepthEffect(body, requirements->size(), "reader",
+                                           default_segment_kind));
+    effects.push_back(AnalyzeCBDepthEffect(body, requirements->size(), "compute",
+                                           default_segment_kind));
+    effects.push_back(AnalyzeCBDepthEffect(body, requirements->size(), "writer",
+                                           default_segment_kind));
+  }
+  for (size_t i = 0; i < requirements->size(); ++i) {
+    int max_num_pages = (*requirements)[i].num_pages;
+    for (const CBDepthEffect& effect : effects) {
+      max_num_pages = std::max(max_num_pages, static_cast<int>(effect.peak_extra_pages[i]));
+    }
+    (*requirements)[i].num_pages = max_num_pages;
+  }
+}
+
 using tir::PrimFunc;
 using tir::PrimFuncNode;
 using tir::Stmt;
@@ -378,6 +587,9 @@ using tir::AttrStmtNode;
 using tir::IterVar;
 using tir::Buffer;
 using tir::builtin::blackhole_mm_init;
+using tir::builtin::blackhole_reconfig_data_format;
+using tir::builtin::blackhole_mm_init_short;
+using tir::builtin::blackhole_mm_init_short_with_dt;
 using tir::builtin::blackhole_cb_wait_front;
 using tir::builtin::blackhole_matmul_tiles;
 using tir::builtin::blackhole_cb_pop_front;
@@ -385,9 +597,15 @@ using tir::builtin::blackhole_tile_regs_commit;
 using tir::builtin::blackhole_tile_regs_wait;
 using tir::builtin::blackhole_cb_reserve_back;
 using tir::builtin::blackhole_pack_tile;
+using tir::builtin::blackhole_pack_reconfig_data_format;
+using tir::builtin::blackhole_copy_tile_to_dst_init_short;
+using tir::builtin::blackhole_copy_tile_to_dst_init_short_with_dt;
+using tir::builtin::blackhole_copy_tile_from_cb;
 using tir::builtin::blackhole_cb_push_back;
 using tir::builtin::blackhole_tile_regs_acquire;
 using tir::builtin::blackhole_tile_regs_release;
+using tir::builtin::blackhole_add_fragment;
+using tir::builtin::blackhole_add_fragment_from_cb_front;
 using tir::builtin::blackhole_noc_async_read;
 using tir::builtin::blackhole_noc_async_write;
 using tir::builtin::blackhole_noc_async_read_barrier;
@@ -494,6 +712,25 @@ static Map<String, Any> MakeCompileTimeArgSpec(const std::string& name,
   return spec;
 }
 
+static Map<String, Any> MakePerWorkArgSpec(const std::string& arg_kind,
+                                           const std::string& value_kind,
+                                           const std::string& buffer = "",
+                                           uint32_t constant_value = 0) {
+  Map<String, Any> spec;
+  spec.Set(String(blackhole_runtime_arg_schema::kArgKind), String(arg_kind));
+  spec.Set(String(blackhole_runtime_arg_schema::kArgIdentity),
+           String(MakeBlackholeRuntimeArgIdentity(arg_kind, arg_kind, buffer)));
+  if (!buffer.empty()) {
+    spec.Set(String(blackhole_runtime_arg_schema::kBuffer), String(buffer));
+  }
+  spec.Set(String(blackhole_runtime_arg_schema::kValueKind), String(value_kind));
+  if (value_kind == blackhole_runtime_arg_schema::kValueConstant) {
+    spec.Set(String(blackhole_runtime_arg_schema::kConstantValue),
+             Integer(static_cast<int64_t>(constant_value)));
+  }
+  return spec;
+}
+
 static int MakeAccessorArgsConfigBits(const std::string& layout,
                                       const std::string& memory_space) {
   int bits = 0;
@@ -583,6 +820,7 @@ static tir::PrimFunc StripLegacyTTBridgeProjectionAttrs(tir::PrimFunc func) {
       "blackhole.segment_plan",
       "blackhole.runtime_args",
       "blackhole.common_runtime_args",
+      "blackhole.per_work_arg_specs",
       "blackhole.gemm_contract",
       "blackhole.compute_contract",
       "blackhole.direct_runtime_unsupported_reasons",
@@ -1134,6 +1372,12 @@ static void CollectFragmentRequirementsFromSpatialProgram(const SpatialProgram& 
                                    String(schema_key::kFragmentLoopCarriedState),
                                    Downcast<Array<Any>>(loop_carried.value()));
     }
+    if (auto materialization_contracts =
+            intent->payload.Get(String(schema_key::kFragmentMaterializationContracts))) {
+      SetArrayRequirementIfMissing(lowering_requirements,
+                                   String(schema_key::kFragmentMaterializationContracts),
+                                   Downcast<Array<Any>>(materialization_contracts.value()));
+    }
   }
 }
 
@@ -1203,6 +1447,28 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
   CollectFragmentRequirementsFromSpatialProgram(program, &lowering_requirements);
 
   return lowering_requirements;
+}
+
+static std::unordered_map<std::string, Map<String, Any>>
+BuildFragmentMaterializationContractMap(const Map<String, Any>& lowering_requirements) {
+  std::unordered_map<std::string, Map<String, Any>> contracts_by_target_buffer;
+  auto maybe_contracts =
+      lowering_requirements.Get(String(schema_key::kFragmentMaterializationContracts));
+  if (!maybe_contracts) {
+    return contracts_by_target_buffer;
+  }
+  for (const Any& contract_any : Downcast<Array<Any>>(maybe_contracts.value())) {
+    Map<String, Any> contract = Downcast<Map<String, Any>>(contract_any);
+    auto target_it = contract.find(String(schema_key::kTargetBuffer));
+    if (target_it == contract.end()) {
+      continue;
+    }
+    const std::string target_buffer = Downcast<String>((*target_it).second);
+    if (!target_buffer.empty()) {
+      contracts_by_target_buffer.emplace(target_buffer, contract);
+    }
+  }
+  return contracts_by_target_buffer;
 }
 
 // Helper to get storage scope from buffer
@@ -1434,6 +1700,8 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   block_index_vars_.clear();
   block_index_var_names_.clear();
   cb_consumed_fragment_pages_by_buffer_identity_.clear();
+  cb_consumed_fragment_use_count_by_buffer_identity_.clear();
+  seq_buffer_flow_contracts_.clear();
   logical_buffer_shapes_.clear();
   LoadLogicalBufferShapes(func);
   tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
@@ -1483,6 +1751,7 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   compute_epilogue_payloads_.clear();
   active_compute_contract_payload_index_ = -1;
   compute_epilogue_payloads_flat_.clear();
+  fragment_materialization_contracts_by_target_buffer_.clear();
   gemm_input_buffer_num_tiles_.clear();
   gemm_transpose_a_ = false;
   gemm_transpose_b_ = false;
@@ -1499,6 +1768,8 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   gemm_c_dtype_ = DataType::Void();
   ValidateFragmentPipelineLegalityFromBody(func->body);
   Map<String, Any> lowering_requirements = BuildLoweringRequirementsFromAnalysis(func);
+  fragment_materialization_contracts_by_target_buffer_ =
+      BuildFragmentMaterializationContractMap(lowering_requirements);
   if (!lowering_requirements.empty()) {
     ValidateFragmentPipelineLegality(lowering_requirements);
   }
@@ -1565,6 +1836,7 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
         } else {
           it->second = std::max(it->second, tile_count);
         }
+        cb_consumed_fragment_use_count_by_buffer_identity_[buffer_identity] += 1;
       }
     };
     record_gemm_input_tiles(call->args[0], m_tiles * k_tiles);
@@ -1589,6 +1861,8 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
 
   // Transform the function body
   Stmt body = VisitStmt(func->body);
+  UpdateCBRequirementDepthsFromLoweredBody(
+      &cb_requirements_, body, gemm_a_buffer_name_.empty() ? "fused_dataflow" : "compute");
   lowering_requirements = PruneSatisfiedLoweringRequirements(lowering_requirements, body);
 
   // Create new function with transformed body
@@ -1762,6 +2036,16 @@ void LowerBlackholeOps::StoreCBRequirements(PrimFunc& func) {
                                req.type == CBType::kOutput ? "output" : "intermediate"));
     req_map.Set("page_size", Integer(req.page_size));
     req_map.Set("num_pages", Integer(req.num_pages));
+    if (req.initial_reserve_pages > 0) {
+      req_map.Set("initial_reserve_pages", Integer(req.initial_reserve_pages));
+    }
+    req_map.Set("flow_class", String(CBFlowClassToString(req.flow_class)));
+    if (req.publish_pages_per_event > 0) {
+      req_map.Set("publish_pages_per_event", Integer(req.publish_pages_per_event));
+    }
+    if (req.consume_pages_per_event > 0) {
+      req_map.Set("consume_pages_per_event", Integer(req.consume_pages_per_event));
+    }
     req_map.Set("data_format", String(req.data_format));
     req_map.Set("lifetime_begin", Integer(req.lifetime_begin));
     req_map.Set("lifetime_end", Integer(std::max(req.lifetime_begin, req.lifetime_end)));
@@ -1787,6 +2071,7 @@ void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
   }
 
   Array<Any> runtime_args;
+  Array<Any> per_work_arg_specs;
   auto push_arg = [&](const std::string& name, const char* kind, const char* dtype,
                       const std::string& buffer_name = "") {
     Map<String, Any> arg_map;
@@ -1819,8 +2104,31 @@ void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
   push_arg("output_tile_start_id", "output_tile_start_id", "uint32");
   push_arg("output_tile_num_tiles", "output_tile_num_tiles", "uint32");
   push_arg("output_tile_stride", "output_tile_stride", "uint32");
+  per_work_arg_specs.push_back(MakePerWorkArgSpec(
+      "a_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
+      input_buffer_name));
+  per_work_arg_specs.push_back(MakePerWorkArgSpec(
+      "a_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant, input_buffer_name, 1));
+  per_work_arg_specs.push_back(MakePerWorkArgSpec(
+      "a_tile_stride", blackhole_runtime_arg_schema::kValueConstant, input_buffer_name, 1));
+  per_work_arg_specs.push_back(MakePerWorkArgSpec(
+      "output_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
+      output_buffer_name));
+  per_work_arg_specs.push_back(MakePerWorkArgSpec(
+      "output_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant, output_buffer_name,
+      1));
+  per_work_arg_specs.push_back(MakePerWorkArgSpec(
+      "output_tile_stride", blackhole_runtime_arg_schema::kValueConstant, output_buffer_name, 1));
 
   attrs.Set("blackhole.runtime_args", runtime_args);
+  attrs.Set("blackhole.per_work_arg_specs", per_work_arg_specs);
+  Map<String, Any> tt_program_payload =
+      attrs.Get(attr::kTLTTProgramPayload)
+          ? Downcast<Map<String, Any>>(attrs.Get(attr::kTLTTProgramPayload).value())
+          : Map<String, Any>();
+  tt_program_payload.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs),
+                         per_work_arg_specs);
+  attrs.Set(attr::kTLTTProgramPayload, tt_program_payload);
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 
@@ -2149,6 +2457,97 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
     return compile_time_arg_specs;
   };
 
+  auto make_segment_per_work_arg_specs = [&](const std::string& kind,
+                                             const Array<Any>& runtime_args,
+                                             const Optional<Any>& existing_specs_opt) {
+    Array<Any> per_work_arg_specs =
+        existing_specs_opt ? Downcast<Array<Any>>(existing_specs_opt.value()) : Array<Any>();
+
+    auto runtime_args_contain_kind = [&](const char* arg_kind) {
+      return std::any_of(runtime_args.begin(), runtime_args.end(), [&](const Any& arg_item) {
+        auto arg = arg_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+        return arg.Get("kind") &&
+               static_cast<std::string>(Downcast<String>(arg.Get("kind").value())) == arg_kind;
+      });
+    };
+    auto has_spec = [&](const char* arg_kind) {
+      return std::any_of(per_work_arg_specs.begin(), per_work_arg_specs.end(), [&](const Any& item) {
+        auto spec = item.as<Map<String, Any>>().value_or(Map<String, Any>());
+        return spec.Get(String(blackhole_runtime_arg_schema::kArgKind)) &&
+               static_cast<std::string>(Downcast<String>(
+                   spec.Get(String(blackhole_runtime_arg_schema::kArgKind)).value())) == arg_kind;
+      });
+    };
+    auto push_if_needed = [&](const Map<String, Any>& spec) {
+      const std::string arg_kind = static_cast<std::string>(
+          Downcast<String>(spec.Get(String(blackhole_runtime_arg_schema::kArgKind)).value()));
+      if (!has_spec(arg_kind.c_str())) {
+        per_work_arg_specs.push_back(spec);
+      }
+    };
+
+    if (kind == "reader") {
+      if (runtime_args_contain_kind("a_tile_start_id")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "a_tile_start_id", blackhole_runtime_arg_schema::kValueLogicalBlockY,
+            gemm_a_buffer_name_));
+      }
+      if (runtime_args_contain_kind("a_tile_num_tiles")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "a_tile_num_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles,
+            gemm_a_buffer_name_));
+      }
+      if (runtime_args_contain_kind("a_tile_stride")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "a_tile_stride", blackhole_runtime_arg_schema::kValueConstant, gemm_a_buffer_name_,
+            1));
+      }
+      if (runtime_args_contain_kind("b_tile_start_id")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "b_tile_start_id", blackhole_runtime_arg_schema::kValueLogicalBlockX,
+            gemm_b_buffer_name_));
+      }
+      if (runtime_args_contain_kind("b_tile_num_tiles")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "b_tile_num_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles,
+            gemm_b_buffer_name_));
+      }
+      if (runtime_args_contain_kind("b_tile_stride")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "b_tile_stride", blackhole_runtime_arg_schema::kValueGemmLogicalNTiles,
+            gemm_b_buffer_name_));
+      }
+    }
+    if (kind == "reader" || kind == "compute") {
+      if (runtime_args_contain_kind("k_tile_start_id")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "k_tile_start_id", blackhole_runtime_arg_schema::kValueConstant, "", 0));
+      }
+      if (runtime_args_contain_kind("num_k_tiles")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "num_k_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles));
+      }
+    }
+    if (kind == "writer") {
+      if (runtime_args_contain_kind("output_tile_start_id")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "output_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
+            gemm_c_buffer_name_));
+      }
+      if (runtime_args_contain_kind("output_tile_num_tiles")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "output_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant,
+            gemm_c_buffer_name_, 1));
+      }
+      if (runtime_args_contain_kind("output_tile_stride")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "output_tile_stride", blackhole_runtime_arg_schema::kValueConstant,
+            gemm_c_buffer_name_, 1));
+      }
+    }
+    return per_work_arg_specs;
+  };
+
   if (auto segment_plan = func->GetAttr<Array<Any>>("blackhole.segment_plan")) {
     Array<Any> rewritten_segments;
     for (const auto& item : segment_plan.value()) {
@@ -2248,6 +2647,8 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
         accessors = EncodeAccessorDescriptors(kind);
       }
       Array<Any> runtime_args = EnsureSegmentBufferRuntimeArgs(kind, accessors, segment.Get("runtime_args"));
+      Array<Any> per_work_arg_specs = make_segment_per_work_arg_specs(
+          kind, runtime_args, segment.Get(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs)));
       compile_time_arg_specs = make_accessor_cta_specs(kind, accessors);
       if (kind == "compute") {
         if (gemm_contract_signatures_.size() == 1) {
@@ -2261,6 +2662,9 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
       segment.Set("accessors", accessors);
       if (!runtime_args.empty()) {
         segment.Set("runtime_args", runtime_args);
+      }
+      if (!per_work_arg_specs.empty()) {
+        segment.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs), per_work_arg_specs);
       }
       segment.Set("compile_time_arg_specs", compile_time_arg_specs);
       Map<String, Any> launch_spec =
@@ -2312,6 +2716,50 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
     Array<Any> aggregated_common_runtime_args = aggregate_runtime_args("common_runtime_args");
     if (!aggregated_common_runtime_args.empty()) {
       attrs.Set("blackhole.common_runtime_args", aggregated_common_runtime_args);
+    }
+    auto aggregate_per_work_arg_specs = [&]() {
+      Array<Any> aggregated;
+      std::unordered_set<std::string> seen_identities;
+      for (const auto& segment_item : rewritten_segments) {
+        auto segment = segment_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+        if (segment.empty()) {
+          continue;
+        }
+        auto specs_it = segment.Get(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs));
+        if (!specs_it) {
+          continue;
+        }
+        for (const auto& spec_item : Downcast<Array<Any>>(specs_it.value())) {
+          auto spec = spec_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+          if (spec.empty()) {
+            continue;
+          }
+          const std::string identity =
+              spec.Get(String(blackhole_runtime_arg_schema::kArgIdentity))
+                  ? static_cast<std::string>(Downcast<String>(
+                        spec.Get(String(blackhole_runtime_arg_schema::kArgIdentity)).value()))
+                  : (spec.Get(String(blackhole_runtime_arg_schema::kArgKind))
+                         ? static_cast<std::string>(Downcast<String>(
+                               spec.Get(String(blackhole_runtime_arg_schema::kArgKind)).value()))
+                         : std::string());
+          if (!identity.empty() && !seen_identities.insert(identity).second) {
+            continue;
+          }
+          aggregated.push_back(spec_item);
+        }
+      }
+      return aggregated;
+    };
+    Array<Any> aggregated_per_work_arg_specs = aggregate_per_work_arg_specs();
+    if (!aggregated_per_work_arg_specs.empty()) {
+      attrs.Set("blackhole.per_work_arg_specs", aggregated_per_work_arg_specs);
+      Map<String, Any> tt_program_payload =
+          attrs.Get(attr::kTLTTProgramPayload)
+              ? Downcast<Map<String, Any>>(attrs.Get(attr::kTLTTProgramPayload).value())
+              : Map<String, Any>();
+      tt_program_payload.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs),
+                             aggregated_per_work_arg_specs);
+      attrs.Set(attr::kTLTTProgramPayload, tt_program_payload);
     }
     Array<Any> top_level_runtime_args =
         attrs.Get("blackhole.runtime_args")
@@ -2530,6 +2978,34 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
     req.num_pages = num_pages;
     req.data_format = data_format;
   };
+  auto maybe_double_buffer_republished_fragment_input = [&](int requirement_index,
+                                                            const Buffer& buffer,
+                                                            int consumed_pages) {
+    if (!buffer.defined() || GetStorageScope(buffer) != "blackhole.acc") {
+      return;
+    }
+    const std::string buffer_identity = BufferIdentityName(buffer);
+    auto it = cb_consumed_fragment_use_count_by_buffer_identity_.find(buffer_identity);
+    if (it == cb_consumed_fragment_use_count_by_buffer_identity_.end() || it->second <= 1) {
+      auto& req = cb_requirements_[requirement_index];
+      req.flow_class = CBFlowClass::kStream;
+      req.publish_pages_per_event =
+          std::max(req.publish_pages_per_event, std::max(1, consumed_pages));
+      req.consume_pages_per_event =
+          std::max(req.consume_pages_per_event, std::max(1, consumed_pages));
+      return;
+    }
+    auto& req = cb_requirements_[requirement_index];
+    req.flow_class = CBFlowClass::kRepublish;
+    req.publish_pages_per_event = std::max(req.publish_pages_per_event, std::max(1, consumed_pages));
+    req.consume_pages_per_event = std::max(req.consume_pages_per_event, std::max(1, consumed_pages));
+    // Compute-produced matmul inputs can be published, consumed, and then
+    // republished later in the same kernel. Keep a second page set resident so
+    // the later reserve_back rotates onto fresh storage instead of reusing the
+    // just-consumed page.
+    req.num_pages = std::max(req.num_pages, 2 * std::max(1, consumed_pages));
+    req.initial_reserve_pages = std::max(1, consumed_pages);
+  };
 
   set_requirement_fields(gemm_a_req_index_, ab_tile_bytes, num_m_tiles * num_k_tiles,
                          DataTypeToDataFormat(gemm_a_dtype_));
@@ -2537,6 +3013,10 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
                          DataTypeToDataFormat(gemm_b_dtype_));
   set_requirement_fields(gemm_c_req_index_, c_tile_bytes, num_m_tiles * num_n_tiles,
                          DataTypeToDataFormat(gemm_c_dtype_));
+  maybe_double_buffer_republished_fragment_input(gemm_a_req_index_, a_region->buffer,
+                                                 num_m_tiles * num_k_tiles);
+  maybe_double_buffer_republished_fragment_input(gemm_b_req_index_, b_region->buffer,
+                                                 num_k_tiles * num_n_tiles);
   cb_requirements_[gemm_a_req_index_].lifetime_begin = 0;
   cb_requirements_[gemm_a_req_index_].lifetime_end = 0;
   cb_requirements_[gemm_b_req_index_].lifetime_begin = 0;
@@ -3173,15 +3653,35 @@ void LowerBlackholeOps::RecordComputeEpilogueOp(Map<String, Any> op_payload) {
   compute_epilogue_payloads_[static_cast<size_t>(best_index)].push_back(std::move(op_payload));
 }
 
-Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op) {
+Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op,
+                                              bool retain_in0,
+                                              bool retain_in1,
+                                              bool publish_out,
+                                              bool reacquire_in0,
+                                              bool reacquire_in1) {
   ICHECK_GE(gemm_a_req_index_, 0);
   ICHECK_GE(gemm_b_req_index_, 0);
   ICHECK_GE(gemm_c_req_index_, 0);
   ActivateCurrentComputeContractPayload();
-  (void)op;
+  if (!gemm_clear_accum_) {
+    return GenerateAccumulatingMatmulSequence(op, retain_in0, retain_in1,
+                                              reacquire_in0, reacquire_in1);
+  }
+  return GenerateMatmulSequenceForOutputRequirement(gemm_c_req_index_, retain_in0, retain_in1,
+                                                    publish_out, publish_out, reacquire_in0,
+                                                    reacquire_in1);
+}
+
+Stmt LowerBlackholeOps::GenerateMatmulSequenceForOutputRequirement(int out_req_index,
+                                                                  bool retain_in0,
+                                                                  bool retain_in1,
+                                                                  bool reserve_out,
+                                                                  bool publish_out,
+                                                                  bool reacquire_in0,
+                                                                  bool reacquire_in1) {
   const int in0_id = gemm_a_req_index_;
   const int in1_id = gemm_b_req_index_;
-  const int out_id = gemm_c_req_index_;
+  const int out_id = out_req_index;
   const int num_m_tiles = CeilDivToInt(gemm_m_, kBlackholeTileRows);
   const int num_n_tiles = CeilDivToInt(gemm_n_, kBlackholeTileCols);
   const int num_k_tiles = CeilDivToInt(gemm_k_, kBlackholeTileCols);
@@ -3194,8 +3694,11 @@ Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op) {
       << num_c_tiles << " for " << gemm_c_buffer_name_;
 
   std::vector<Stmt> stmts;
+  std::vector<Stmt> deferred_reacquire_stmts;
 
   // 1. Initialize MM engine
+  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
+                                    {IntImm32(in0_id), IntImm32(in1_id)}));
   stmts.push_back(MakeBlackholeCall(
       blackhole_mm_init(),
       {IntImm32(in0_id), IntImm32(in1_id), IntImm32(out_id)}));
@@ -3221,32 +3724,262 @@ Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op) {
       }
     }
   }
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_cb_pop_front(),
-      {IntImm32(in0_id), IntImm32(num_a_tiles)}));
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_cb_pop_front(),
-      {IntImm32(in1_id), IntImm32(num_b_tiles)}));
+  if (!retain_in0) {
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_cb_pop_front(),
+        {IntImm32(in0_id), IntImm32(num_a_tiles)}));
+    if (reacquire_in0) {
+      deferred_reacquire_stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_reserve_back(),
+          {IntImm32(in0_id), IntImm32(num_a_tiles)}));
+    }
+  }
+  if (!retain_in1) {
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_cb_pop_front(),
+        {IntImm32(in1_id), IntImm32(num_b_tiles)}));
+    if (reacquire_in1) {
+      deferred_reacquire_stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_reserve_back(),
+          {IntImm32(in1_id), IntImm32(num_b_tiles)}));
+    }
+  }
 
   // 4-5. Commit and wait
   stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
   stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
 
   // 6-8. Pack and push output
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_cb_reserve_back(),
-      {IntImm32(out_id), IntImm32(num_c_tiles)}));
-  for (int out_tile = 0; out_tile < num_c_tiles; ++out_tile) {
+  if (reserve_out) {
     stmts.push_back(MakeBlackholeCall(
-        blackhole_pack_tile(),
-        {IntImm32(out_tile), IntImm32(out_id)}));
+        blackhole_cb_reserve_back(),
+        {IntImm32(out_id), IntImm32(num_c_tiles)}));
   }
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_cb_push_back(),
-      {IntImm32(out_id), IntImm32(num_c_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out_id)}));
+  for (int out_tile = 0; out_tile < num_c_tiles; ++out_tile) {
+    std::vector<PrimExpr> pack_args = {IntImm32(out_tile), IntImm32(out_id)};
+    if (!publish_out) {
+      pack_args.push_back(IntImm32(out_tile));
+    }
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(), pack_args));
+  }
+  if (publish_out) {
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_cb_push_back(),
+        {IntImm32(out_id), IntImm32(num_c_tiles)}));
+  }
 
   // 9. Release tile registers
   stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+  for (const Stmt& reacquire : deferred_reacquire_stmts) {
+    stmts.push_back(reacquire);
+  }
+
+  return SeqStmt::Flatten(stmts);
+}
+
+Buffer LowerBlackholeOps::CreateClearAccumPartialsBuffer(const Buffer& buffer) {
+  const std::string partials_name =
+      BufferIdentityName(buffer) + "_clear_accum_partials_" + std::to_string(next_requirement_index_);
+  return tir::decl_buffer(buffer->shape, buffer->dtype, partials_name, GetStorageScope(buffer));
+}
+
+bool LowerBlackholeOps::ClearAccumReloadNeedsDataFormatReconfig() const {
+  return gemm_c_dtype_ != gemm_b_dtype_;
+}
+
+Stmt LowerBlackholeOps::GenerateAddFragmentSequence(const Buffer& dst,
+                                                    const Buffer& src,
+                                                    const PrimExpr& num_elements) {
+  Map<String, Any> op_payload =
+      MakeComputeEpilogueOpPayload("add_fragment", BufferIdentityName(dst));
+  op_payload.Set("src_buffer", String(BufferIdentityName(src)));
+  SetOptionalExprField(&op_payload, "num_elements_expr", num_elements);
+  RecordComputeEpilogueOp(std::move(op_payload));
+  return MakeBlackholeCall(blackhole_add_fragment(), {dst->data, src->data, num_elements});
+}
+
+Stmt LowerBlackholeOps::GenerateAddFragmentFromCBFrontSequence(const Buffer& dst,
+                                                               int src_cb_id,
+                                                               const PrimExpr& num_elements,
+                                                               const Buffer& src_buffer) {
+  const std::string dst_buffer_name = BufferIdentityName(dst);
+  Map<String, Any> op_payload =
+      MakeComputeEpilogueOpPayload("add_fragment_from_cb_front", dst_buffer_name);
+  op_payload.Set("src_buffer", String(BufferIdentityName(src_buffer)));
+  auto contract_it = fragment_materialization_contracts_by_target_buffer_.find(dst_buffer_name);
+  ICHECK(contract_it != fragment_materialization_contracts_by_target_buffer_.end())
+      << "LowerBlackholeOps requires fragment_materialization_contract in SpatialProgram for "
+         "add_fragment_from_cb_front destination "
+      << dst_buffer_name;
+  op_payload.Set(String(schema_key::kFragmentMaterializationContract), contract_it->second);
+  SetOptionalExprField(&op_payload, "num_elements_expr", num_elements);
+  RecordComputeEpilogueOp(std::move(op_payload));
+  return MakeBlackholeCall(blackhole_add_fragment_from_cb_front(),
+                           {dst->data, IntImm32(src_cb_id), num_elements});
+}
+
+Stmt LowerBlackholeOps::GenerateMatmulSequenceWithPartialReload(int out_req_index,
+                                                                int partials_cb_id,
+                                                                bool retain_in0,
+                                                                bool retain_in1,
+                                                                bool reserve_out,
+                                                                bool publish_out,
+                                                                bool reacquire_in0,
+                                                                bool reacquire_in1) {
+  const int in0_id = gemm_a_req_index_;
+  const int in1_id = gemm_b_req_index_;
+  const int out_id = out_req_index;
+  const int num_m_tiles = CeilDivToInt(gemm_m_, kBlackholeTileRows);
+  const int num_n_tiles = CeilDivToInt(gemm_n_, kBlackholeTileCols);
+  const int num_k_tiles = CeilDivToInt(gemm_k_, kBlackholeTileCols);
+  const int num_a_tiles = num_m_tiles * num_k_tiles;
+  const int num_b_tiles = num_k_tiles * num_n_tiles;
+  const int num_c_tiles = num_m_tiles * num_n_tiles;
+  ICHECK_LE(num_c_tiles, 16)
+      << "Blackhole matmul lowering currently supports at most 16 output tiles per GEMM, but "
+         "saw "
+      << num_c_tiles << " for " << gemm_c_buffer_name_;
+
+  std::vector<Stmt> stmts;
+  std::vector<Stmt> deferred_reacquire_stmts;
+
+  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
+                                    {IntImm32(in0_id), IntImm32(in1_id)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_mm_init(),
+                                    {IntImm32(in0_id), IntImm32(in1_id), IntImm32(out_id)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(partials_cb_id), IntImm32(num_c_tiles)}));
+  if (ClearAccumReloadNeedsDataFormatReconfig()) {
+    stmts.push_back(MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short_with_dt(),
+                                      {IntImm32(in1_id), IntImm32(partials_cb_id)}));
+  } else {
+    stmts.push_back(MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(),
+                                      {IntImm32(partials_cb_id)}));
+  }
+  for (int tile = 0; tile < num_c_tiles; ++tile) {
+    stmts.push_back(MakeBlackholeCall(blackhole_copy_tile_from_cb(),
+                                      {IntImm32(partials_cb_id), IntImm32(tile), IntImm32(tile)}));
+  }
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                    {IntImm32(partials_cb_id), IntImm32(num_c_tiles)}));
+  if (ClearAccumReloadNeedsDataFormatReconfig()) {
+    stmts.push_back(MakeBlackholeCall(blackhole_mm_init_short_with_dt(),
+                                      {IntImm32(in0_id), IntImm32(in1_id), IntImm32(partials_cb_id)}));
+  } else {
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_mm_init_short(), {IntImm32(in0_id), IntImm32(in1_id)}));
+  }
+
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(in0_id), IntImm32(num_a_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(in1_id), IntImm32(num_b_tiles)}));
+
+  for (int mt = 0; mt < num_m_tiles; ++mt) {
+    for (int nt = 0; nt < num_n_tiles; ++nt) {
+      for (int kt = 0; kt < num_k_tiles; ++kt) {
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_matmul_tiles(),
+            {IntImm32(in0_id), IntImm32(in1_id), IntImm32(mt * num_k_tiles + kt),
+             IntImm32(kt * num_n_tiles + nt), IntImm32(mt * num_n_tiles + nt)}));
+      }
+    }
+  }
+  if (!retain_in0) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                      {IntImm32(in0_id), IntImm32(num_a_tiles)}));
+    if (reacquire_in0) {
+      deferred_reacquire_stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_reserve_back(), {IntImm32(in0_id), IntImm32(num_a_tiles)}));
+    }
+  }
+  if (!retain_in1) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                      {IntImm32(in1_id), IntImm32(num_b_tiles)}));
+    if (reacquire_in1) {
+      deferred_reacquire_stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_reserve_back(), {IntImm32(in1_id), IntImm32(num_b_tiles)}));
+    }
+  }
+
+  stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+  stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+  if (reserve_out) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                      {IntImm32(out_id), IntImm32(num_c_tiles)}));
+  }
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out_id)}));
+  for (int out_tile = 0; out_tile < num_c_tiles; ++out_tile) {
+    std::vector<PrimExpr> pack_args = {IntImm32(out_tile), IntImm32(out_id)};
+    if (!publish_out) {
+      pack_args.push_back(IntImm32(out_tile));
+    }
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(), pack_args));
+  }
+  if (publish_out) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                      {IntImm32(out_id), IntImm32(num_c_tiles)}));
+  }
+
+  stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+  for (const Stmt& reacquire : deferred_reacquire_stmts) {
+    stmts.push_back(reacquire);
+  }
+  return SeqStmt::Flatten(stmts);
+}
+
+Stmt LowerBlackholeOps::GenerateAccumulatingMatmulSequence(const CallNode* op,
+                                                           bool retain_in0,
+                                                           bool retain_in1,
+                                                           bool reacquire_in0,
+                                                           bool reacquire_in1) {
+  ICHECK(op != nullptr);
+  ICHECK(IsUnsupportedResidualLocalScope(gemm_c_buffer_))
+      << "Blackhole clear_accum=false lowering currently requires a local fragment destination, "
+         "but "
+      << gemm_c_buffer_name_ << " uses scope " << GetStorageScope(gemm_c_buffer_);
+
+  const int num_m_tiles = CeilDivToInt(gemm_m_, kBlackholeTileRows);
+  const int num_n_tiles = CeilDivToInt(gemm_n_, kBlackholeTileCols);
+  const int num_c_tiles = num_m_tiles * num_n_tiles;
+  const int c_tile_bytes = kBlackholeTileRows * kBlackholeTileCols * gemm_c_dtype_.bytes();
+
+  Buffer scratch_buffer = CreateClearAccumPartialsBuffer(gemm_c_buffer_);
+  const int scratch_req_index = AllocateRequirementIndex(scratch_buffer, CBType::kIntermediate);
+  SetRequirementPageLayout(scratch_req_index, c_tile_bytes, num_c_tiles);
+  auto& scratch_req = cb_requirements_.at(scratch_req_index);
+  scratch_req.data_format = DataTypeToDataFormat(gemm_c_dtype_);
+  scratch_req.flow_class = CBFlowClass::kStream;
+  scratch_req.publish_pages_per_event =
+      std::max(scratch_req.publish_pages_per_event, num_c_tiles);
+  scratch_req.consume_pages_per_event =
+      std::max(scratch_req.consume_pages_per_event, num_c_tiles);
+
+  const int64_t num_elements = GetLogicalBufferElementCount(gemm_c_buffer_);
+  ICHECK_GT(num_elements, 0)
+      << "Blackhole clear_accum=false lowering requires a static logical element count for "
+      << gemm_c_buffer_name_;
+  ICHECK_LE(num_elements, std::numeric_limits<int>::max())
+      << "Blackhole clear_accum=false lowering requires num_elements to fit in int32 for "
+      << gemm_c_buffer_name_;
+
+  std::vector<Stmt> stmts;
+  stmts.push_back(
+      GenerateMatmulSequenceForOutputRequirement(scratch_req_index, retain_in0, retain_in1,
+                                                 /*reserve_out=*/true, /*publish_out=*/true,
+                                                 reacquire_in0, reacquire_in1));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(),
+                        {IntImm32(scratch_req_index), IntImm32(num_c_tiles)}));
+  stmts.push_back(GenerateAddFragmentFromCBFrontSequence(
+      gemm_c_buffer_, scratch_req_index, IntImm32(static_cast<int>(num_elements)), scratch_buffer));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(),
+                        {IntImm32(scratch_req_index), IntImm32(num_c_tiles)}));
 
   return SeqStmt::Flatten(stmts);
 }
@@ -5177,7 +5910,7 @@ Stmt LowerBlackholeOps::GenerateFragmentCastSequence(const FragmentCastMatch& ma
   Map<String, Any> op_payload =
       MakeComputeEpilogueOpPayload("cast_fragment_slice", BufferIdentityName(match.dst));
   op_payload.Set("src_buffer", String(BufferIdentityName(match.src)));
-  op_payload.Set("publish_cb", Bool(publish_cb || GetStorageScope(match.dst) == "blackhole.acc"));
+  op_payload.Set("publish_cb", Bool(publish_cb));
   SetOptionalExprField(&op_payload, "dst_offset_expr", match.dst_offset);
   SetOptionalExprField(&op_payload, "src_offset_expr", match.src_offset);
   SetOptionalExprField(&op_payload, "num_elements_expr", match.num_elements);
@@ -5187,7 +5920,7 @@ Stmt LowerBlackholeOps::GenerateFragmentCastSequence(const FragmentCastMatch& ma
                                     {match.dst->data, match.src->data, match.dst_offset,
                                      match.src_offset, match.num_elements}));
 
-  if (publish_cb || GetStorageScope(match.dst) == "blackhole.acc") {
+  if (publish_cb) {
     const int cb_id = AllocateRequirementIndex(match.dst, CBType::kIntermediate);
     ICHECK_GE(cb_id, 0);
     ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
@@ -5204,7 +5937,100 @@ Stmt LowerBlackholeOps::GenerateFragmentCastSequence(const FragmentCastMatch& ma
   return stmts.size() == 1 ? stmts.front() : SeqStmt::Flatten(stmts);
 }
 
+void LowerBlackholeOps::AnalyzeSeqBufferFlowContracts(const tvm::ffi::Array<tvm::tir::Stmt>& seq) {
+  seq_buffer_flow_contracts_.clear();
+
+  std::unordered_map<std::string, Buffer> candidate_buffers;
+  auto remember_buffer = [&](const Buffer& buffer) {
+    if (!buffer.defined()) {
+      return;
+    }
+    candidate_buffers.emplace(BufferIdentityName(buffer), buffer);
+  };
+
+  for (const Stmt& stmt : seq) {
+    tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+      if (const auto* store = node.as<BufferStoreNode>()) {
+        remember_buffer(store->buffer);
+        return;
+      }
+      if (const auto* load = node.as<BufferLoadNode>()) {
+        remember_buffer(load->buffer);
+        return;
+      }
+      const auto* call = node.as<CallNode>();
+      if (!call) {
+        return;
+      }
+      for (const PrimExpr& arg : call->args) {
+        if (!IsBufferLikeExpr(arg)) {
+          continue;
+        }
+        remember_buffer(NormalizeToBufferRegion(arg)->buffer);
+      }
+    });
+  }
+
+  for (int i = 0; i < static_cast<int>(seq.size()); ++i) {
+    const Stmt& stmt = seq[static_cast<size_t>(i)];
+    for (const auto& kv : candidate_buffers) {
+      const Buffer& buffer = kv.second;
+      if (!StmtReferencesBuffer(stmt, buffer)) {
+        continue;
+      }
+
+      BufferFlowEvent event;
+      event.stmt_index = i;
+      if (StmtWritesBuffer(stmt, buffer)) {
+        event.kind = BufferFlowEventKind::kWrite;
+      } else if (StmtConsumesBufferViaMatmul(stmt, buffer)) {
+        event.kind = BufferFlowEventKind::kMatmulConsume;
+      } else if (StmtConsumesBufferViaTransport(stmt, buffer)) {
+        event.kind = BufferFlowEventKind::kTransportConsume;
+      } else {
+        event.kind = BufferFlowEventKind::kReference;
+      }
+      seq_buffer_flow_contracts_[kv.first].events.push_back(event);
+    }
+  }
+
+  for (auto& kv : seq_buffer_flow_contracts_) {
+    auto& contract = kv.second;
+    int first_consume_index = std::numeric_limits<int>::max();
+    bool has_consume = false;
+    for (const BufferFlowEvent& event : contract.events) {
+      if (event.kind == BufferFlowEventKind::kMatmulConsume ||
+          event.kind == BufferFlowEventKind::kTransportConsume) {
+        has_consume = true;
+        first_consume_index = std::min(first_consume_index, event.stmt_index);
+      }
+    }
+
+    if (!has_consume) {
+      contract.flow_class = CBFlowClass::kState;
+      continue;
+    }
+
+    contract.flow_class = CBFlowClass::kStream;
+    for (const BufferFlowEvent& event : contract.events) {
+      if (event.kind == BufferFlowEventKind::kWrite && event.stmt_index > first_consume_index) {
+        contract.flow_class = CBFlowClass::kRepublish;
+        break;
+      }
+    }
+
+    int granule_pages = 1;
+    if (auto it = cb_consumed_fragment_pages_by_buffer_identity_.find(kv.first);
+        it != cb_consumed_fragment_pages_by_buffer_identity_.end()) {
+      granule_pages = std::max(1, it->second);
+    }
+    contract.publish_pages_per_event = granule_pages;
+    contract.consume_pages_per_event = granule_pages;
+  }
+}
+
 bool LowerBlackholeOps::StmtConsumesBufferViaMatmul(const Stmt& stmt, const Buffer& buffer) const {
+  const std::string target_identity = BufferIdentityName(buffer);
   bool consumed = false;
   tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
     if (consumed) {
@@ -5216,38 +6042,150 @@ bool LowerBlackholeOps::StmtConsumesBufferViaMatmul(const Stmt& stmt, const Buff
     }
     auto matches_buffer = [&](const PrimExpr& expr) {
       tir::BufferRegion region = NormalizeToBufferRegion(expr);
-      return region->buffer->data.same_as(buffer->data);
+      return BufferIdentityName(region->buffer) == target_identity;
     };
     consumed = matches_buffer(call->args[0]) || matches_buffer(call->args[1]);
   });
   return consumed;
 }
 
+bool LowerBlackholeOps::StmtConsumesBufferViaTransport(const Stmt& stmt,
+                                                       const Buffer& buffer) const {
+  const std::string target_identity = BufferIdentityName(buffer);
+  bool consumed = false;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    if (consumed) {
+      return;
+    }
+    const auto* store = node.as<BufferStoreNode>();
+    if (!store || !IsCopyOperation(store)) {
+      return;
+    }
+    const auto* load = store->value.as<BufferLoadNode>();
+    if (!load || BufferIdentityName(load->buffer) != target_identity) {
+      return;
+    }
+    CopyDirection direction = GetCopyDirection(store);
+    consumed = direction == CopyDirection::kCBToDram || direction == CopyDirection::kCBToCB ||
+               direction == CopyDirection::kLocalToCB;
+  });
+  return consumed;
+}
+
+bool LowerBlackholeOps::StmtReferencesBuffer(const Stmt& stmt, const Buffer& buffer) const {
+  const std::string target_identity = BufferIdentityName(buffer);
+  bool referenced = false;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    if (referenced) {
+      return;
+    }
+    if (const auto* store = node.as<BufferStoreNode>()) {
+      if (BufferIdentityName(store->buffer) == target_identity) {
+        referenced = true;
+        return;
+      }
+    }
+    if (const auto* load = node.as<BufferLoadNode>()) {
+      if (BufferIdentityName(load->buffer) == target_identity) {
+        referenced = true;
+        return;
+      }
+    }
+    const auto* call = node.as<CallNode>();
+    if (!call) {
+      return;
+    }
+    for (const PrimExpr& arg : call->args) {
+      if (!IsBufferLikeExpr(arg)) {
+        continue;
+      }
+      tir::BufferRegion region = NormalizeToBufferRegion(arg);
+      if (BufferIdentityName(region->buffer) == target_identity) {
+        referenced = true;
+        return;
+      }
+    }
+  });
+  return referenced;
+}
+
 bool LowerBlackholeOps::StmtWritesBuffer(const Stmt& stmt, const Buffer& buffer) const {
+  const std::string target_identity = BufferIdentityName(buffer);
   bool writes = false;
   tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
     if (writes) {
       return;
     }
     const auto* store = node.as<BufferStoreNode>();
-    if (store && store->buffer->data.same_as(buffer->data)) {
+    if (store && BufferIdentityName(store->buffer) == target_identity) {
       writes = true;
     }
   });
   return writes;
 }
 
-bool LowerBlackholeOps::ShouldPublishFragmentCastResult(const tvm::ffi::Array<Stmt>& seq,
-                                                       size_t start_idx,
-                                                       const Buffer& buffer) const {
+bool LowerBlackholeOps::ShouldRetainMatmulInputBuffer(const tvm::ffi::Array<Stmt>& seq,
+                                                      size_t start_idx,
+                                                      const Buffer& buffer) const {
+  static_cast<void>(seq);
+  const std::string buffer_identity = BufferIdentityName(buffer);
+  auto it = seq_buffer_flow_contracts_.find(buffer_identity);
+  if (it == seq_buffer_flow_contracts_.end()) {
+    return false;
+  }
+  for (const BufferFlowEvent& event : it->second.events) {
+    if (event.stmt_index < static_cast<int>(start_idx)) {
+      continue;
+    }
+    if (event.kind == BufferFlowEventKind::kMatmulConsume) {
+      return true;
+    }
+    if (event.kind == BufferFlowEventKind::kWrite) {
+      return false;
+    }
+  }
+  return false;
+}
+
+bool LowerBlackholeOps::ShouldReacquireMatmulInputBuffer(const tvm::ffi::Array<Stmt>& seq,
+                                                         size_t start_idx,
+                                                         const Buffer& buffer) const {
+  static_cast<void>(seq);
   if (GetStorageScope(buffer) != "blackhole.acc") {
     return false;
   }
-  for (size_t i = start_idx; i < seq.size(); ++i) {
-    if (StmtConsumesBufferViaMatmul(seq[i], buffer)) {
+  const std::string buffer_identity = BufferIdentityName(buffer);
+  auto it = seq_buffer_flow_contracts_.find(buffer_identity);
+  if (it == seq_buffer_flow_contracts_.end()) {
+    return false;
+  }
+  for (const BufferFlowEvent& event : it->second.events) {
+    if (event.stmt_index < static_cast<int>(start_idx)) {
+      continue;
+    }
+    return event.kind == BufferFlowEventKind::kWrite;
+  }
+  return false;
+}
+
+bool LowerBlackholeOps::ShouldPublishBufferResult(const tvm::ffi::Array<Stmt>& seq,
+                                                  size_t start_idx,
+                                                  const Buffer& buffer) const {
+  static_cast<void>(seq);
+  const std::string buffer_identity = BufferIdentityName(buffer);
+  auto it = seq_buffer_flow_contracts_.find(buffer_identity);
+  if (it == seq_buffer_flow_contracts_.end()) {
+    return false;
+  }
+  for (const BufferFlowEvent& event : it->second.events) {
+    if (event.stmt_index < static_cast<int>(start_idx)) {
+      continue;
+    }
+    if (event.kind == BufferFlowEventKind::kMatmulConsume ||
+        event.kind == BufferFlowEventKind::kTransportConsume) {
       return true;
     }
-    if (StmtWritesBuffer(seq[i], buffer)) {
+    if (event.kind == BufferFlowEventKind::kWrite) {
       return false;
     }
   }
@@ -5383,7 +6321,12 @@ Stmt LowerBlackholeOps::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
   const int cb_id = AllocateRequirementIndex(match.dst, CBType::kIntermediate);
   ICHECK_GE(cb_id, 0);
   ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
-  const int num_pages = std::max(1, cb_requirements_[cb_id].num_pages);
+  const int page_size = std::max(1, cb_requirements_[cb_id].page_size);
+  const int64_t total_elements = GetLogicalBufferElementCount(match.dst);
+  const int64_t total_bytes = total_elements > 0
+                                  ? total_elements * match.dst->dtype.bytes()
+                                  : static_cast<int64_t>(page_size);
+  const int num_pages = std::max(1, static_cast<int>((total_bytes + page_size - 1) / page_size));
 
   std::vector<Stmt> stmts;
   stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
@@ -5488,12 +6431,98 @@ Stmt LowerBlackholeOps::VisitStmt_(const AllocateNode* op) {
 }
 
 Stmt LowerBlackholeOps::VisitStmt_(const SeqStmtNode* op) {
+  const auto saved_flow_contracts = seq_buffer_flow_contracts_;
+  AnalyzeSeqBufferFlowContracts(op->seq);
   Array<Stmt> rewritten;
   for (size_t i = 0; i < op->seq.size(); ++i) {
+    auto try_lower_retained_matmul = [&](const Stmt& stmt, Stmt* lowered) -> bool {
+      std::vector<std::function<Stmt(Stmt)>> rewrap_stack;
+      Stmt current = stmt;
+      while (true) {
+        if (const auto* attr = current.as<AttrStmtNode>()) {
+          rewrap_stack.push_back(
+              [node = attr->node, attr_key = attr->attr_key, value = attr->value](Stmt body) {
+                return AttrStmt(node, attr_key, value, body);
+              });
+          current = attr->body;
+          continue;
+        }
+        if (const auto* let = current.as<LetStmtNode>()) {
+          rewrap_stack.push_back([var = let->var, value = let->value](Stmt body) {
+            return LetStmt(var, value, body);
+          });
+          current = let->body;
+          continue;
+        }
+        if (const auto* decl = current.as<DeclBufferNode>()) {
+          rewrap_stack.push_back([buffer = decl->buffer](Stmt body) {
+            return DeclBuffer(buffer, body);
+          });
+          current = decl->body;
+          continue;
+        }
+        if (const auto* allocate = current.as<AllocateNode>()) {
+          rewrap_stack.push_back([buffer_var = allocate->buffer_var, dtype = allocate->dtype,
+                                  extents = allocate->extents, condition = allocate->condition,
+                                  annotations = allocate->annotations](Stmt body) {
+            return Allocate(buffer_var, dtype, extents, condition, body, annotations);
+          });
+          current = allocate->body;
+          continue;
+        }
+        break;
+      }
+      const auto* eval = current.as<EvaluateNode>();
+      if (!eval) {
+        return false;
+      }
+      if (const auto* call = eval->value.as<CallNode>()) {
+        if (IsMatmulCall(call)) {
+          ExtractGemmInfo(call);
+          bool retain_in0 = false;
+          bool retain_in1 = false;
+          bool reacquire_in0 = false;
+          bool reacquire_in1 = false;
+          if (IsBufferLikeExpr(call->args[0])) {
+            const Buffer in0_buffer = NormalizeToBufferRegion(call->args[0])->buffer;
+            retain_in0 = ShouldRetainMatmulInputBuffer(op->seq, i + 1, in0_buffer);
+            if (!retain_in0) {
+              reacquire_in0 = ShouldReacquireMatmulInputBuffer(op->seq, i + 1, in0_buffer);
+            }
+          }
+          if (IsBufferLikeExpr(call->args[1])) {
+            const Buffer in1_buffer = NormalizeToBufferRegion(call->args[1])->buffer;
+            retain_in1 = ShouldRetainMatmulInputBuffer(op->seq, i + 1, in1_buffer);
+            if (!retain_in1) {
+              reacquire_in1 = ShouldReacquireMatmulInputBuffer(op->seq, i + 1, in1_buffer);
+            }
+          }
+          bool publish_out = true;
+          if (IsBufferLikeExpr(call->args[2])) {
+            publish_out = ShouldPublishBufferResult(
+                op->seq, i + 1, NormalizeToBufferRegion(call->args[2])->buffer);
+          }
+          Stmt matmul = GenerateMatmulSequence(call, retain_in0, retain_in1, publish_out,
+                                               reacquire_in0, reacquire_in1);
+          for (auto it = rewrap_stack.rbegin(); it != rewrap_stack.rend(); ++it) {
+            matmul = (*it)(matmul);
+          }
+          *lowered = matmul;
+          return true;
+        }
+      }
+      return false;
+    };
+
+    Stmt retained_matmul;
+    if (try_lower_retained_matmul(op->seq[i], &retained_matmul)) {
+      rewritten.push_back(retained_matmul);
+      continue;
+    }
     if (const auto* direct_cast_loop = AsUnwrappedFor(op->seq[i])) {
       FragmentCastMatch cast_match;
       if (MatchDirectFragmentCast(direct_cast_loop, &cast_match)) {
-        const bool publish_cb = ShouldPublishFragmentCastResult(op->seq, i + 1, cast_match.dst);
+        const bool publish_cb = ShouldPublishBufferResult(op->seq, i + 1, cast_match.dst);
         rewritten.push_back(GenerateFragmentCastSequence(cast_match, publish_cb));
         continue;
       }
@@ -5529,6 +6558,7 @@ Stmt LowerBlackholeOps::VisitStmt_(const SeqStmtNode* op) {
     rewritten.push_back(VisitStmt(op->seq[i]));
   }
 
+  seq_buffer_flow_contracts_ = saved_flow_contracts;
   return SeqStmt::Flatten(rewritten);
 }
 

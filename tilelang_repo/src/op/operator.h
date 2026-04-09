@@ -15,6 +15,8 @@
 #include <tvm/tir/op_attr_types.h>
 #include <tvm/tir/stmt.h>
 
+#include <optional>
+
 #include "../layout/layout.h"
 
 namespace tvm {
@@ -78,6 +80,13 @@ struct LayoutInferArgs {
 
 class TileOperator;
 
+struct FragmentMaterializationInfo {
+  Buffer target_buffer;
+  ffi::String materialization_kind;
+  ffi::String value_role;
+  ffi::String merge_kind;
+};
+
 class TileOperatorNode : public Object {
 public:
   virtual Stmt Lower(const LowerArgs &T, arith::Analyzer *analyzer) const = 0;
@@ -86,6 +95,11 @@ public:
                                 InferLevel level) const = 0;
 
   virtual TileOperator Clone() const = 0;
+
+  virtual std::optional<FragmentMaterializationInfo>
+  GetFragmentMaterializationInfo() const {
+    return std::nullopt;
+  }
 
   TVM_FFI_DECLARE_OBJECT_INFO("tl.TileOperator", TileOperatorNode, Object);
 };

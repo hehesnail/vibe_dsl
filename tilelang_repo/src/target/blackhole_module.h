@@ -15,6 +15,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "../transform/common/blackhole_runtime_arg_schema.h"
+
 namespace tvm {
 namespace runtime {
 
@@ -30,6 +32,10 @@ struct CBConfig {
   std::string role;
   uint32_t num_pages;
   uint32_t page_size_bytes;
+  uint32_t initial_reserve_pages = 0;
+  std::string flow_class = "state";
+  uint32_t publish_pages_per_event = 0;
+  uint32_t consume_pages_per_event = 0;
   std::string data_format;
 
   void Save(dmlc::JSONWriter* writer) const {
@@ -39,6 +45,13 @@ struct CBConfig {
     writer->WriteObjectKeyValue("role", role);
     writer->WriteObjectKeyValue("num_pages", static_cast<int64_t>(num_pages));
     writer->WriteObjectKeyValue("page_size", static_cast<int64_t>(page_size_bytes));
+    writer->WriteObjectKeyValue("initial_reserve_pages",
+                                static_cast<int64_t>(initial_reserve_pages));
+    writer->WriteObjectKeyValue("flow_class", flow_class);
+    writer->WriteObjectKeyValue("publish_pages_per_event",
+                                static_cast<int64_t>(publish_pages_per_event));
+    writer->WriteObjectKeyValue("consume_pages_per_event",
+                                static_cast<int64_t>(consume_pages_per_event));
     writer->WriteObjectKeyValue("data_format", data_format);
     writer->EndObject();
   }
@@ -204,6 +217,36 @@ struct CompileTimeArgSpec {
     }
     if (!memory_space.empty()) {
       writer->WriteObjectKeyValue("memory_space", memory_space);
+    }
+    writer->EndObject();
+  }
+};
+
+struct PerWorkArgSpec {
+  std::string arg_kind;
+  std::string arg_identity;
+  std::string buffer;
+  std::string value_kind;
+  uint32_t constant_value = 0;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue(
+        tl::blackhole_runtime_arg_schema::kArgKind, arg_kind);
+    if (!arg_identity.empty()) {
+      writer->WriteObjectKeyValue(
+          tl::blackhole_runtime_arg_schema::kArgIdentity, arg_identity);
+    }
+    if (!buffer.empty()) {
+      writer->WriteObjectKeyValue(
+          tl::blackhole_runtime_arg_schema::kBuffer, buffer);
+    }
+    writer->WriteObjectKeyValue(
+        tl::blackhole_runtime_arg_schema::kValueKind, value_kind);
+    if (value_kind == tl::blackhole_runtime_arg_schema::kValueConstant) {
+      writer->WriteObjectKeyValue(
+          tl::blackhole_runtime_arg_schema::kConstantValue,
+          static_cast<int64_t>(constant_value));
     }
     writer->EndObject();
   }
@@ -403,6 +446,7 @@ struct KernelSpec {
   std::vector<KernelArgSpec> runtime_args;
   std::vector<KernelArgSpec> common_runtime_args;
   std::vector<CompileTimeArgSpec> compile_time_arg_specs;
+  std::vector<PerWorkArgSpec> per_work_arg_specs;
   bool has_launch_spec = false;
   KernelLaunchSpec launch_spec;
   bool has_compute_config = false;
@@ -433,6 +477,10 @@ struct KernelSpec {
     }
     if (!compile_time_arg_specs.empty()) {
       writer->WriteObjectKeyValue("compile_time_arg_specs", compile_time_arg_specs);
+    }
+    if (!per_work_arg_specs.empty()) {
+      writer->WriteObjectKeyValue(
+          tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs, per_work_arg_specs);
     }
     if (has_launch_spec) {
       writer->WriteObjectKeyValue("launch_spec", launch_spec);
@@ -495,6 +543,30 @@ struct GemmContractSpec {
 
 struct ComputeContractSpec {
   struct EpilogueOpSpec {
+    struct FragmentMaterializationContractSpec {
+      std::string kind;
+      std::string target_buffer;
+      std::string scope;
+      std::string materialization_kind;
+      std::string value_role;
+      std::string merge_kind;
+
+      bool defined() const { return !kind.empty(); }
+
+      void Save(dmlc::JSONWriter* writer) const {
+        writer->BeginObject();
+        writer->WriteObjectKeyValue("kind", kind);
+        if (!target_buffer.empty()) writer->WriteObjectKeyValue("target_buffer", target_buffer);
+        if (!scope.empty()) writer->WriteObjectKeyValue("scope", scope);
+        if (!materialization_kind.empty()) {
+          writer->WriteObjectKeyValue("materialization_kind", materialization_kind);
+        }
+        if (!value_role.empty()) writer->WriteObjectKeyValue("value_role", value_role);
+        if (!merge_kind.empty()) writer->WriteObjectKeyValue("merge_kind", merge_kind);
+        writer->EndObject();
+      }
+    };
+
     std::string kind;
     std::string dst_buffer;
     std::string src_buffer;
@@ -514,6 +586,7 @@ struct ComputeContractSpec {
     bool grouped = false;
     bool clear = false;
     bool publish_cb = false;
+    FragmentMaterializationContractSpec fragment_materialization_contract;
 
     void Save(dmlc::JSONWriter* writer) const {
       writer->BeginObject();
@@ -540,6 +613,10 @@ struct ComputeContractSpec {
       if (grouped) writer->WriteObjectKeyValue("grouped", grouped);
       if (clear) writer->WriteObjectKeyValue("clear", clear);
       if (publish_cb) writer->WriteObjectKeyValue("publish_cb", publish_cb);
+      if (fragment_materialization_contract.defined()) {
+        writer->WriteObjectKeyValue("fragment_materialization_contract",
+                                    fragment_materialization_contract);
+      }
       writer->EndObject();
     }
   };
@@ -668,6 +745,7 @@ struct ExecutableSpec {
   std::string default_kernel_core_type = "brisc";
   std::vector<KernelArgSpec> runtime_args;
   std::vector<KernelArgSpec> common_runtime_args;
+  std::vector<PerWorkArgSpec> per_work_arg_specs;
   std::vector<KernelSpec> kernels;
   GemmContractSpec gemm_contract;
   ComputeContractSpec compute_contract;
@@ -701,6 +779,10 @@ struct ExecutableSpec {
     }
     if (!common_runtime_args.empty()) {
       writer->WriteObjectKeyValue("common_runtime_args", common_runtime_args);
+    }
+    if (!per_work_arg_specs.empty()) {
+      writer->WriteObjectKeyValue(
+          tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs, per_work_arg_specs);
     }
     if (!kernels.empty()) {
       writer->WriteObjectKeyValue("kernels", kernels);

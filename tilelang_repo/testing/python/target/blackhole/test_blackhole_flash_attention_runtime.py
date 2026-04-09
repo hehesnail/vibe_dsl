@@ -60,18 +60,66 @@ def test_blackhole_flash_attention_runtime_gate_is_queryable():
     assert isinstance(msg, str)
 
 
+def test_blackhole_flash_attention_single_work_item_metadata_preserves_contracts():
+    kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
+        1,
+        1,
+        32,
+        32,
+        False,
+        block_M=32,
+        block_N=32,
+        num_stages=1,
+        threads=128,
+    )
+    _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+    assert len(metadata.get("multi_gemm_contracts", [])) == 2
+    assert len(metadata.get("multi_compute_contracts", [])) == 2
+
+
+def test_blackhole_flash_attention_single_work_item_runtime_gate_reports_unimplemented_fragment_materialization():
+    kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
+        1,
+        1,
+        32,
+        32,
+        False,
+        block_M=32,
+        block_N=32,
+        num_stages=1,
+        threads=128,
+    )
+    _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+    reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
+    assert any("typed fragment materialization contract is present" in reason for reason in reasons)
+
+
 @pytest.mark.parametrize(
     ("kernel",),
     [
         (
             blackhole_mha_example.flashattn.jit_impl.get_tir(
                 1,
+                4,
                 32,
-                128,
-                128,
+                32,
                 False,
-                block_M=128,
-                block_N=128,
+                block_M=32,
+                block_N=32,
+                num_stages=1,
+                threads=128,
+            ),
+        ),
+        (
+            blackhole_gqa_example.flashattn.jit_impl.get_tir(
+                1,
+                4,
+                32,
+                32,
+                False,
+                groups=4,
+                block_M=32,
+                block_N=32,
                 num_stages=1,
                 threads=128,
             ),
@@ -90,13 +138,60 @@ def test_blackhole_flash_attention_runtime_gate_is_queryable():
                 threads=128,
             ),
         ),
+        (
+            blackhole_mha_example.flashattn.jit_impl.get_tir(
+                1,
+                4,
+                64,
+                32,
+                False,
+                block_M=32,
+                block_N=32,
+                num_stages=1,
+                threads=128,
+            ),
+        ),
+        (
+            blackhole_gqa_example.flashattn.jit_impl.get_tir(
+                1,
+                4,
+                64,
+                32,
+                False,
+                groups=4,
+                block_M=32,
+                block_N=32,
+                num_stages=1,
+                threads=128,
+            ),
+        ),
     ],
 )
-def test_blackhole_flash_attention_supported_subset_has_no_runtime_blocker(kernel):
-    _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
-    assert [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])] == []
-    assert len(metadata.get("multi_gemm_contracts", [])) == 2
-    assert len(metadata.get("multi_compute_contracts", [])) == 2
+def test_blackhole_flash_attention_multi_work_item_metadata_exposes_explicit_per_work_access_descriptors(
+    kernel,
+):
+    _, metadata = _lower_blackhole_flash_attention_metadata(
+        kernel
+    )
+
+    reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
+    assert not any("missing explicit per-work access descriptor" in reason for reason in reasons)
+    assert any("typed fragment materialization contract is present" in reason for reason in reasons)
+
+    reader_kernel = next(kernel for kernel in metadata["kernels"] if kernel["kind"] == "reader")
+    writer_kernel = next(kernel for kernel in metadata["kernels"] if kernel["kind"] == "writer")
+    reader_per_work = {
+        spec["arg_kind"]: spec["value_kind"]
+        for spec in reader_kernel["per_work_arg_specs"]
+    }
+    writer_per_work = {
+        spec["arg_kind"]: spec["value_kind"]
+        for spec in writer_kernel["per_work_arg_specs"]
+    }
+    assert reader_per_work["a_tile_start_id"] == "logical_block_y"
+    assert reader_per_work["b_tile_start_id"] == "logical_block_x"
+    assert reader_per_work["num_k_tiles"] == "gemm_num_k_tiles"
+    assert writer_per_work["output_tile_start_id"] == "current_work_linear_id"
 
 
 def test_blackhole_flash_attention_runtime_metadata_preserves_buffer_abi_order():
@@ -212,6 +307,99 @@ def test_blackhole_flash_attention_gqa_bf16_forward_direct_runtime():
         atol=5e-2,
         rtol=5e-2,
         failure_message="Blackhole GQA bf16 flash-attention forward mismatch",
+    )
+
+
+def test_blackhole_flash_attention_seq64_mha_bf16_forward_direct_runtime():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    batch = 1
+    heads = 4
+    seq_len = 64
+    dim = 32
+    is_causal = False
+    block_M = 32
+    block_N = 32
+    num_stages = 1
+    threads = 128
+
+    torch.manual_seed(0)
+    q = torch.randn(batch, seq_len, heads, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+    k = torch.randn(batch, seq_len, heads, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+    v = torch.randn(batch, seq_len, heads, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+    out = torch.zeros_like(q)
+
+    kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
+        batch,
+        heads,
+        seq_len,
+        dim,
+        is_causal,
+        block_M=block_M,
+        block_N=block_N,
+        num_stages=num_stages,
+        threads=threads,
+    )
+    _run_blackhole_flash_attention(kernel, q, k, v, out)
+
+    ref = blackhole_mha_example.ref_program(q, k, v, is_causal=is_causal).to(dtype=out.dtype)
+    assert_tensors_close_or_dump(
+        out,
+        ref,
+        atol=5e-2,
+        rtol=5e-2,
+        failure_message="Blackhole seq64 MHA bf16 flash-attention forward mismatch",
+    )
+
+
+def test_blackhole_flash_attention_seq64_gqa_bf16_forward_direct_runtime():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    batch = 1
+    heads = 4
+    seq_len = 64
+    dim = 32
+    is_causal = False
+    groups = 4
+    block_M = 32
+    block_N = 32
+    num_stages = 1
+    threads = 128
+
+    head_kv = heads // groups
+    torch.manual_seed(0)
+    q = torch.randn(batch, seq_len, heads, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+    k = torch.randn(batch, seq_len, head_kv, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+    v = torch.randn(batch, seq_len, head_kv, dim, dtype=BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE)
+    out = torch.zeros_like(q)
+
+    kernel = blackhole_gqa_example.flashattn.jit_impl.get_tir(
+        batch,
+        heads,
+        seq_len,
+        dim,
+        is_causal,
+        groups=groups,
+        block_M=block_M,
+        block_N=block_N,
+        num_stages=num_stages,
+        threads=threads,
+    )
+    _run_blackhole_flash_attention(kernel, q, k, v, out)
+
+    ref = blackhole_gqa_example.ref_program(q, k, v, is_causal=is_causal, groups=groups).to(
+        dtype=out.dtype
+    )
+    assert_tensors_close_or_dump(
+        out,
+        ref,
+        atol=5e-2,
+        rtol=5e-2,
+        failure_message="Blackhole seq64 GQA bf16 flash-attention forward mismatch",
     )
 
 

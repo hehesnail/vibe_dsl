@@ -72,6 +72,25 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   tvm::tir::PrimFunc Transform(const tvm::tir::PrimFunc& func);
 
  private:
+  enum class BufferFlowEventKind {
+    kWrite,
+    kMatmulConsume,
+    kTransportConsume,
+    kReference,
+  };
+
+  struct BufferFlowEvent {
+    int stmt_index = -1;
+    BufferFlowEventKind kind = BufferFlowEventKind::kReference;
+  };
+
+  struct BufferFlowContract {
+    CBFlowClass flow_class = CBFlowClass::kState;
+    int publish_pages_per_event = 0;
+    int consume_pages_per_event = 0;
+    std::vector<BufferFlowEvent> events;
+  };
+
   struct AccessorDescriptor {
     std::string segment_kind;
     tvm::tir::Buffer buffer;
@@ -339,7 +358,41 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   bool UseStagedCopyPageTransport(const tvm::tir::Buffer& shared_buffer) const;
 
   /*! \brief Generate matmul builtin sequence */
-  tvm::tir::Stmt GenerateMatmulSequence(const tvm::tir::CallNode* op);
+  tvm::tir::Stmt GenerateMatmulSequence(const tvm::tir::CallNode* op,
+                                        bool retain_in0 = false,
+                                        bool retain_in1 = false,
+                                        bool publish_out = true,
+                                        bool reacquire_in0 = false,
+                                        bool reacquire_in1 = false);
+  tvm::tir::Stmt GenerateMatmulSequenceForOutputRequirement(int out_req_index,
+                                                            bool retain_in0,
+                                                            bool retain_in1,
+                                                            bool reserve_out,
+                                                            bool publish_out,
+                                                            bool reacquire_in0,
+                                                            bool reacquire_in1);
+  tvm::tir::Buffer CreateClearAccumPartialsBuffer(const tvm::tir::Buffer& buffer);
+  bool ClearAccumReloadNeedsDataFormatReconfig() const;
+  tvm::tir::Stmt GenerateMatmulSequenceWithPartialReload(int out_req_index,
+                                                         int partials_cb_id,
+                                                         bool retain_in0,
+                                                         bool retain_in1,
+                                                         bool reserve_out,
+                                                         bool publish_out,
+                                                         bool reacquire_in0,
+                                                         bool reacquire_in1);
+  tvm::tir::Stmt GenerateAccumulatingMatmulSequence(const tvm::tir::CallNode* op,
+                                                    bool retain_in0,
+                                                    bool retain_in1,
+                                                    bool reacquire_in0,
+                                                    bool reacquire_in1);
+  tvm::tir::Stmt GenerateAddFragmentSequence(const tvm::tir::Buffer& dst,
+                                             const tvm::tir::Buffer& src,
+                                             const tvm::PrimExpr& num_elements);
+  tvm::tir::Stmt GenerateAddFragmentFromCBFrontSequence(const tvm::tir::Buffer& dst,
+                                                        int src_cb_id,
+                                                        const tvm::PrimExpr& num_elements,
+                                                        const tvm::tir::Buffer& src_buffer);
 
   /*! \brief Generate copy builtin sequence (DRAM->CB, CB->DRAM, CB->CB) */
   tvm::tir::Stmt GenerateCopySequence(const tvm::tir::BufferStoreNode* op);
@@ -393,12 +446,23 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   bool MatchGroupedScalarFragmentCopyLoop(const tvm::tir::ForNode* op,
                                           ScalarFragmentCopyMatch* match) const;
   tvm::tir::Stmt GenerateScalarFragmentCopySequence(const ScalarFragmentCopyMatch& match);
+  void AnalyzeSeqBufferFlowContracts(const tvm::ffi::Array<tvm::tir::Stmt>& seq);
   bool StmtConsumesBufferViaMatmul(const tvm::tir::Stmt& stmt,
                                    const tvm::tir::Buffer& buffer) const;
+  bool StmtConsumesBufferViaTransport(const tvm::tir::Stmt& stmt,
+                                      const tvm::tir::Buffer& buffer) const;
+  bool StmtReferencesBuffer(const tvm::tir::Stmt& stmt,
+                            const tvm::tir::Buffer& buffer) const;
   bool StmtWritesBuffer(const tvm::tir::Stmt& stmt, const tvm::tir::Buffer& buffer) const;
-  bool ShouldPublishFragmentCastResult(const tvm::ffi::Array<tvm::tir::Stmt>& seq,
-                                       size_t start_idx,
-                                       const tvm::tir::Buffer& buffer) const;
+  bool ShouldRetainMatmulInputBuffer(const tvm::ffi::Array<tvm::tir::Stmt>& seq,
+                                     size_t start_idx,
+                                     const tvm::tir::Buffer& buffer) const;
+  bool ShouldReacquireMatmulInputBuffer(const tvm::ffi::Array<tvm::tir::Stmt>& seq,
+                                        size_t start_idx,
+                                        const tvm::tir::Buffer& buffer) const;
+  bool ShouldPublishBufferResult(const tvm::ffi::Array<tvm::tir::Stmt>& seq,
+                                 size_t start_idx,
+                                 const tvm::tir::Buffer& buffer) const;
   bool MatchDirectLocalToCBSliceLoop(const tvm::tir::ForNode* op, LocalToCBSliceMatch* match) const;
   tvm::tir::Stmt GenerateLocalToCBSliceLoopSequence(const tvm::tir::ForNode* op,
                                                     const LocalToCBSliceMatch& match);
@@ -456,6 +520,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   std::vector<std::vector<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>> compute_epilogue_payloads_;
   std::vector<std::unordered_set<std::string>> compute_contract_known_buffers_;
   std::vector<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>> compute_epilogue_payloads_flat_;
+  std::unordered_map<std::string, tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>
+      fragment_materialization_contracts_by_target_buffer_;
   int active_compute_contract_payload_index_ = -1;
   std::unordered_map<std::string, int> gemm_input_buffer_num_tiles_;
   bool gemm_transpose_a_ = false;
@@ -484,6 +550,8 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   std::unordered_map<std::string, int> read_accessor_slots_;
   std::unordered_map<std::string, int> write_accessor_slots_;
   std::unordered_map<std::string, int> cb_consumed_fragment_pages_by_buffer_identity_;
+  std::unordered_map<std::string, int> cb_consumed_fragment_use_count_by_buffer_identity_;
+  std::unordered_map<std::string, BufferFlowContract> seq_buffer_flow_contracts_;
   std::unordered_map<std::string, std::vector<int64_t>> logical_buffer_shapes_;
 
   // Requirement index counter (sequential, 0-based)

@@ -45,6 +45,9 @@
 - cross-pass schema 一律 handle-first；字符串只保留 display / debug / compatibility 角色
 - semantic truth 属于 `Phase A`，spatial truth 属于 `Phase B`，TT target truth 属于 `Phase C`
 - 下游 consumer 优先读最近的 typed IR，不要回头把 legacy attrs 当 primary truth
+- 如果 analysis 需要某类 operator-specific 事实，
+  让 operator/semantic owner 暴露 typed metadata；
+  不要把 `Analyze...` pass 写成 op family 名字匹配器
 
 当前稳定 companion 习惯：
 
@@ -64,6 +67,9 @@
   `gemm_contract / compute_contract / direct_runtime_unsupported_reasons`）
   一旦进入 runtime/codegen 正式消费面，就应提升进 `TTProgram.payload`；
   bridge attr 只能留作 compatibility fallback
+- 这类 function-level contract 若先在 device `ExecutableSpec` 上补充，
+  host entry metadata 也必须同步拷回；否则 Python/runtime gate 仍会看见过时视图，
+  以为 kernel 没有 unsupported reason
 - 一旦原始 device func 已切到 typed target truth，
   shared projection helper 就不能再同时承担
   “`TTProgram` reader” 和 “legacy attr fallback” 两种职责；
@@ -72,6 +78,9 @@
 - synthetic segment / internal kernel emission 也应遵守同一规则：
   如果内部还需要重建 target-truth，就直接挂最小单-kernel `TTProgram`，
   不要再把 `segment/runtime/cb/core` 重新降回局部 `blackhole.*` attrs
+- per-work/access truth 一旦 formalize 成 `per_work_arg_specs`，
+  就要先 canonicalize 成 kernel-local `TTKernel / ExecutableSpec` contract；
+  codegen/runtime 只能解释 `value_kind`，不能再按 arg kind 名字推语义
 - Python 侧若需要做 companion IR mutation regression，
   优先通过 `tl.TT*` constructor 直接重建
   `TTProgram / TTKernel / TTCoreGroup / TTABIPlan / TTSemaphorePlan`

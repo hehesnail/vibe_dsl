@@ -25,12 +25,14 @@
 #include "codegen_blackhole.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <unordered_set>
 #include <vector>
 
+#include "../transform/common/blackhole_runtime_arg_schema.h"
 #include "../tir/builtin_blackhole.h"
 #include "tt_program_projection.h"
 #include "tvm/tir/builtin.h"
@@ -261,6 +263,22 @@ ffi::Array<ffi::Any> GetRuntimeArgsForCodegen(const tvm::tir::PrimFunc& f) {
   return tt_program_projection::GetRuntimeArgsFromTTProgram(f, "Blackhole codegen");
 }
 
+ffi::Array<ffi::Any> GetPerWorkArgSpecsForCodegen(const tvm::tir::PrimFunc& f) {
+  auto program = tt_program_projection::RequireTTProgram(f, "Blackhole codegen");
+  if (program->kernels.size() == 1) {
+    const auto& kernel_payload = program->kernels[0]->payload;
+    if (auto v = kernel_payload.Get(
+            ffi::String(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs))) {
+      return Downcast<ffi::Array<ffi::Any>>(v.value());
+    }
+  }
+  if (auto v = program->payload.Get(
+          ffi::String(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs))) {
+    return Downcast<ffi::Array<ffi::Any>>(v.value());
+  }
+  return ffi::Array<ffi::Any>();
+}
+
 ffi::Array<ffi::Any> GetCBConfigsForCodegen(const tvm::tir::PrimFunc& f) {
   return tt_program_projection::GetCBConfigsFromTTProgram(f, "Blackhole codegen");
 }
@@ -290,7 +308,8 @@ CodeGenBlackhole::CodeGenBlackhole()
     : headers_emitted_(false),
       core_type_(CoreType::kBRISC),  // Default to BRISC for TT-Sim compatibility
       need_dataflow_api_h_(false),
-      need_compute_api_h_(false) {}
+      need_compute_api_h_(false),
+      emit_debug_waypoints_(false) {}
 
 void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
                             bool emit_fwd_func_decl, std::string target_str,
@@ -303,14 +322,18 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   core_type_ = CoreType::kBRISC;
   need_dataflow_api_h_ = false;
   need_compute_api_h_ = false;
+  emit_debug_waypoints_ = std::getenv("TILELANG_BLACKHOLE_DEBUG_WAYPOINTS") != nullptr;
   buffer_runtime_arg_map_.clear();
   buffer_runtime_arg_map_by_name_.clear();
   runtime_arg_vars_by_kind_.clear();
   runtime_arg_vars_by_name_.clear();
+  per_work_arg_bindings_by_kind_.clear();
   cb_page_size_by_id_.clear();
   cb_num_pages_by_id_.clear();
   cb_id_by_requirement_name_.clear();
+  cb_requirement_name_by_id_.clear();
   cb_num_pages_by_requirement_name_.clear();
+  cb_initial_reserve_pages_by_requirement_name_.clear();
   logical_grid_x_ = 1;
   logical_grid_y_ = 1;
   linearization_ = "row_major";
@@ -362,8 +385,12 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         break;
       case CoreType::kTRISC:
         decl_stream << "// Compute kernel API (TRISC)\n";
+        decl_stream << "#include \"api/compute/pack.h\"\n";
+        decl_stream << "#include \"api/compute/reconfig_data_format.h\"\n";
         decl_stream << "#include \"api/compute/tile_move_copy.h\"\n";
         decl_stream << "#include \"api/compute/matmul.h\"\n";
+        decl_stream << "#include \"api/debug/waypoint.h\"\n";
+        decl_stream << "#include \"experimental/circular_buffer.h\"\n";
         decl_stream << "#include \"hostdevcommon/kernel_structs.h\"\n";
         decl_stream << "using half = _Float16;\n";
         decl_stream << "static constexpr float inff = std::numeric_limits<float>::infinity();\n";
@@ -416,6 +443,12 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         decl_stream << "  }\n";
         decl_stream << "  return static_cast<uint16_t>(sign | (static_cast<uint32_t>(half_exponent) << 10) | (half_mantissa & 0x3ffu));\n";
         decl_stream << "}\n";
+        decl_stream << "ALWI uint16_t tilelang_float_to_bfloat_bits(float value) {\n";
+        decl_stream << "  union { float f; uint32_t i; } bits{value};\n";
+        decl_stream << "  const uint32_t lsb = (bits.i >> 16) & 1u;\n";
+        decl_stream << "  const uint32_t rounding_bias = 0x7fffu + lsb;\n";
+        decl_stream << "  return static_cast<uint16_t>((bits.i + rounding_bias) >> 16);\n";
+        decl_stream << "}\n";
         decl_stream << "ALWI float tilelang_fast_exp2f(float x) {\n";
         decl_stream << "  if (x <= -126.0f) { return 0.0f; }\n";
         decl_stream << "  if (x >= 126.0f) { x = 126.0f; }\n";
@@ -429,6 +462,10 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         decl_stream << "template <typename T>\n";
         decl_stream << "__attribute__((noinline, noclone)) void tilelang_fill_fragment(T* dst, uint32_t num_elements, T value) {\n";
         decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = value; }\n";
+        decl_stream << "}\n";
+        decl_stream << "template <typename DstT, typename SrcT>\n";
+        decl_stream << "__attribute__((noinline, noclone)) void tilelang_add_fragment(DstT* dst, const SrcT* src, uint32_t num_elements) {\n";
+        decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = static_cast<DstT>(dst[i] + static_cast<DstT>(src[i])); }\n";
         decl_stream << "}\n";
         decl_stream << "template <typename DstT, typename SrcT>\n";
         decl_stream << "__attribute__((noinline, noclone)) void tilelang_cast_fragment_slice(DstT* dst, const SrcT* src, uint32_t dst_offset, uint32_t src_offset, uint32_t num_elements) {\n";
@@ -682,10 +719,13 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   buffer_runtime_arg_map_by_name_.clear();
   runtime_arg_vars_by_kind_.clear();
   runtime_arg_vars_by_name_.clear();
+  per_work_arg_bindings_by_kind_.clear();
   cb_page_size_by_id_.clear();
   cb_num_pages_by_id_.clear();
   cb_id_by_requirement_name_.clear();
+  cb_requirement_name_by_id_.clear();
   cb_num_pages_by_requirement_name_.clear();
+  cb_initial_reserve_pages_by_requirement_name_.clear();
 
   auto cb_configs = GetCBConfigsForCodegen(f);
   if (!cb_configs.empty()) {
@@ -698,6 +738,7 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
       int cb_id = -1;
       int page_size = 0;
       int num_pages = 1;
+      int initial_reserve_pages = 0;
       if (auto v = cb_info.Get("cb_id")) {
         cb_id = Downcast<tvm::Integer>(v.value()).IntValue();
       }
@@ -706,6 +747,9 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
       }
       if (auto v = cb_info.Get("num_pages")) {
         num_pages = Downcast<tvm::Integer>(v.value()).IntValue();
+      }
+      if (auto v = cb_info.Get("initial_reserve_pages")) {
+        initial_reserve_pages = Downcast<tvm::Integer>(v.value()).IntValue();
       }
       if (cb_id >= 0) {
         cb_page_size_by_id_[cb_id] = page_size;
@@ -716,7 +760,12 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
             const std::string requirement_name =
                 Downcast<tvm::ffi::String>(requirement_name_any);
             cb_id_by_requirement_name_[requirement_name] = cb_id;
+            cb_requirement_name_by_id_[cb_id] = requirement_name;
             cb_num_pages_by_requirement_name_[requirement_name] = std::max(1, num_pages);
+            if (initial_reserve_pages > 0) {
+              cb_initial_reserve_pages_by_requirement_name_[requirement_name] =
+                  std::max(1, initial_reserve_pages);
+            }
           }
         }
       }
@@ -726,6 +775,32 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   ffi::Array<ffi::Any> runtime_args = GetRuntimeArgsForCodegen(f);
   if (runtime_args.empty()) {
     runtime_args = AggregateSegmentRuntimeArgsForCodegen(f);
+  }
+  ffi::Array<ffi::Any> per_work_arg_specs = GetPerWorkArgSpecsForCodegen(f);
+  for (const auto& item : per_work_arg_specs) {
+    auto spec = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
+        tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
+    if (spec.empty()) {
+      continue;
+    }
+    std::string arg_kind;
+    if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kArgKind)) {
+      arg_kind = Downcast<tvm::ffi::String>(v.value());
+    }
+    if (arg_kind.empty()) {
+      continue;
+    }
+    PerWorkArgSpecBinding binding;
+    if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kArgIdentity)) {
+      binding.arg_identity = Downcast<tvm::ffi::String>(v.value());
+    }
+    if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kValueKind)) {
+      binding.value_kind = Downcast<tvm::ffi::String>(v.value());
+    }
+    if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue)) {
+      binding.constant_value = Downcast<tvm::Integer>(v.value()).IntValue();
+    }
+    per_work_arg_bindings_by_kind_[arg_kind] = std::move(binding);
   }
   ICHECK(!runtime_args.empty())
       << "Blackhole codegen requires TTProgram ABI runtime args";
@@ -966,6 +1041,78 @@ std::string CodeGenBlackhole::GetCBTailVar(int cb_id) const {
   return "cb_tail_" + std::to_string(cb_id);
 }
 
+void CodeGenBlackhole::MaybeEmitMathWaypoint(std::ostream& os, const char* code) {
+  if (!emit_debug_waypoints_ || core_type_ != CoreType::kTRISC || code == nullptr) {
+    return;
+  }
+  os << "; MATH({ WAYPOINT(\"" << code << "\"); })";
+}
+
+void CodeGenBlackhole::MaybeEmitPackWaypoint(std::ostream& os, const char* code) {
+  if (!emit_debug_waypoints_ || core_type_ != CoreType::kTRISC || code == nullptr) {
+    return;
+  }
+  os << "; PACK({ WAYPOINT(\"" << code << "\"); })";
+}
+
+void CodeGenBlackhole::MaybeEmitUnpackWaypoint(std::ostream& os, const char* code) {
+  if (!emit_debug_waypoints_ || core_type_ != CoreType::kTRISC || code == nullptr) {
+    return;
+  }
+  os << "; UNPACK({ WAYPOINT(\"" << code << "\"); })";
+}
+
+std::string CodeGenBlackhole::GetCBRequirementName(int cb_id) const {
+  auto it = cb_requirement_name_by_id_.find(cb_id);
+  if (it == cb_requirement_name_by_id_.end()) {
+    return "";
+  }
+  return it->second;
+}
+
+void CodeGenBlackhole::RegisterActiveCBWritePtrBinding(int cb_id, const std::string& var_name,
+                                                       const std::string& type_name) {
+  auto& bindings = active_cb_write_ptr_bindings_[cb_id];
+  auto it = std::find_if(bindings.begin(), bindings.end(),
+                         [&](const ActiveCBWritePtrBinding& binding) {
+                           return binding.var_name == var_name;
+                         });
+  if (it == bindings.end()) {
+    bindings.push_back(ActiveCBWritePtrBinding{var_name, type_name});
+    return;
+  }
+  it->type_name = type_name;
+}
+
+void CodeGenBlackhole::UnregisterActiveCBWritePtrBinding(int cb_id,
+                                                         const std::string& var_name) {
+  auto it = active_cb_write_ptr_bindings_.find(cb_id);
+  if (it == active_cb_write_ptr_bindings_.end()) {
+    return;
+  }
+  auto& bindings = it->second;
+  bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
+                                [&](const ActiveCBWritePtrBinding& binding) {
+                                  return binding.var_name == var_name;
+                                }),
+                 bindings.end());
+  if (bindings.empty()) {
+    active_cb_write_ptr_bindings_.erase(it);
+  }
+}
+
+void CodeGenBlackhole::EmitActiveCBWritePtrRefreshes(int cb_id) {
+  auto it = active_cb_write_ptr_bindings_.find(cb_id);
+  if (it == active_cb_write_ptr_bindings_.end()) {
+    return;
+  }
+  for (const ActiveCBWritePtrBinding& binding : it->second) {
+    PrintIndent();
+    stream << binding.var_name << " = reinterpret_cast<" << binding.type_name
+           << "*>(tilelang_get_cb_write_ptr_bytes(" << cb_id << "));\n";
+  }
+}
+
 // ============================================================================
 // Visitor Implementation for TT-Metal Builtin Calls
 // ============================================================================
@@ -1019,6 +1166,15 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::EvaluateNode *op) {
       // This is a Blackhole builtin - print it as a statement
       PrintIndent();
       stream << os.str() << ";\n";
+      bool is_cb_reserve_back = call->op.same_as(tir::builtin::blackhole_cb_reserve_back());
+      if (!is_cb_reserve_back) {
+        if (const auto* builtin = call->op.as<OpNode>()) {
+          is_cb_reserve_back = builtin->name == "tl.blackhole.cb_reserve_back";
+        }
+      }
+      if (is_cb_reserve_back) {
+        EmitActiveCBWritePtrRefreshes(ResolveCBId(call->args[0]));
+      }
       return;
     }
   }
@@ -1058,12 +1214,16 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
     const int num_pages = cb_num_pages_by_requirement_name_.count(op->buffer_var->name_hint)
                               ? cb_num_pages_by_requirement_name_.at(op->buffer_var->name_hint)
                               : GetCBNumPages(cb_id);
+    const int initial_reserve_pages =
+        cb_initial_reserve_pages_by_requirement_name_.count(op->buffer_var->name_hint)
+            ? cb_initial_reserve_pages_by_requirement_name_.at(op->buffer_var->name_hint)
+            : num_pages;
 
     std::ostringstream dtype_os;
     PrintType(op->dtype, dtype_os);
 
     PrintIndent();
-    stream << "cb_reserve_back(" << cb_id << ", " << num_pages << ");\n";
+    stream << "cb_reserve_back(" << cb_id << ", " << initial_reserve_pages << ");\n";
     PrintIndent();
     stream << dtype_os.str() << "* " << vid << " = reinterpret_cast<" << dtype_os.str()
            << "*>(tilelang_get_cb_write_ptr_bytes(" << cb_id << "));\n";
@@ -1073,7 +1233,9 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
       prev_var_id = it->second;
     }
     var_idmap_[op->buffer_var.get()] = vid;
+    RegisterActiveCBWritePtrBinding(cb_id, vid, dtype_os.str());
     this->PrintStmt(op->body);
+    UnregisterActiveCBWritePtrBinding(cb_id, vid);
     if (prev_var_id) {
       var_idmap_[op->buffer_var.get()] = *prev_var_id;
     } else {
@@ -1138,6 +1300,64 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
   }
 
   std::string thread_tag = iv->thread_tag;
+  auto lookup_runtime_arg = [&](const char* kind) -> std::optional<std::string> {
+    auto it = runtime_arg_vars_by_kind_.find(kind);
+    if (it == runtime_arg_vars_by_kind_.end()) {
+      return std::nullopt;
+    }
+    return it->second;
+  };
+  const bool row_major_grid = linearization_ == "row_major" && logical_grid_x_ > 0;
+  auto resolve_explicit_axis = [&](const char* kind, bool want_x) -> std::optional<std::string> {
+    auto binding_it = per_work_arg_bindings_by_kind_.find(kind);
+    if (binding_it == per_work_arg_bindings_by_kind_.end()) {
+      return std::nullopt;
+    }
+    auto arg_var = lookup_runtime_arg(kind);
+    if (!arg_var.has_value()) {
+      return std::nullopt;
+    }
+    const auto& binding = binding_it->second;
+    if (binding.value_kind == ::tvm::tl::blackhole_runtime_arg_schema::kValueCurrentWorkLinearId) {
+      if (want_x) {
+        if (row_major_grid) {
+          return "(" + arg_var.value() + " % " + std::to_string(logical_grid_x_) + ")";
+        }
+        return arg_var;
+      }
+      if (row_major_grid) {
+        return "(" + arg_var.value() + " / " + std::to_string(logical_grid_x_) + ")";
+      }
+      return std::string("0 /* explicit_linear_work_descriptor_y */");
+    }
+    if (binding.value_kind == ::tvm::tl::blackhole_runtime_arg_schema::kValueLogicalBlockX) {
+      return want_x ? arg_var : std::nullopt;
+    }
+    if (binding.value_kind == ::tvm::tl::blackhole_runtime_arg_schema::kValueLogicalBlockY) {
+      return want_x ? std::nullopt : arg_var;
+    }
+    return std::nullopt;
+  };
+  const auto explicit_block_x = [&]() -> std::optional<std::string> {
+    if (auto expr = resolve_explicit_axis("output_tile_start_id", /*want_x=*/true)) {
+      return expr;
+    }
+    if (auto expr = resolve_explicit_axis("b_tile_start_id", /*want_x=*/true)) {
+      return expr;
+    }
+    return resolve_explicit_axis("a_tile_start_id", /*want_x=*/true);
+  }();
+  const auto explicit_block_y = [&]() -> std::optional<std::string> {
+    if (auto expr = resolve_explicit_axis("output_tile_start_id", /*want_x=*/false)) {
+      return expr;
+    }
+    if (auto expr = resolve_explicit_axis("a_tile_start_id", /*want_x=*/false)) {
+      return expr;
+    }
+    return resolve_explicit_axis("b_tile_start_id", /*want_x=*/false);
+  }();
+  const bool has_explicit_work_descriptor =
+      explicit_block_x.has_value() || explicit_block_y.has_value();
   std::optional<std::string> work_id_var;
   auto work_id_it = runtime_arg_vars_by_kind_.find("work_linear_id");
   if (work_id_it != runtime_arg_vars_by_kind_.end()) {
@@ -1145,31 +1365,31 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
   } else if ((work_id_it = runtime_arg_vars_by_kind_.find("current_work_linear_id")) !=
              runtime_arg_vars_by_kind_.end()) {
     work_id_var = work_id_it->second;
-  } else {
-    const bool requests_copy_work_descriptor =
-        runtime_arg_vars_by_kind_.count("a_tile_start_id") ||
-        runtime_arg_vars_by_kind_.count("output_tile_start_id");
-    if (requests_copy_work_descriptor) {
-      ICHECK(false)
-          << "Blackhole blockIdx reconstruction requires explicit work_linear_id for the richer "
-             "copy work schema; copy fallback without work_linear_id is unsupported";
-    }
   }
-  const bool has_runtime_work_id =
-      work_id_var.has_value() && linearization_ == "row_major" && logical_grid_x_ > 0;
+  const bool has_runtime_work_id = work_id_var.has_value() && row_major_grid;
 
   // Map CUDA-style thread indices to Blackhole concepts
-  // For staged single-core execution, logical block indices are reconstructed
-  // from the execution-plan runtime arg instead of being constantized.
+  // For staged single-core execution, block coordinates must come from the
+  // strongest explicit work contract available. If the ABI already carries a
+  // buffer-specific tile descriptor, consume that descriptor instead of
+  // re-deriving transport semantics from work_linear_id.
   if (thread_tag == "blockIdx.x") {
-    if (has_runtime_work_id) {
+    if (explicit_block_x.has_value()) {
+      var_idmap_[iv->var.get()] = explicit_block_x.value();
+    } else if (has_runtime_work_id) {
       var_idmap_[iv->var.get()] =
           "(" + work_id_var.value() + " % " + std::to_string(logical_grid_x_) + ")";
+    } else if (has_explicit_work_descriptor) {
+      var_idmap_[iv->var.get()] = "0 /* explicit_work_descriptor_x */";
     } else {
       var_idmap_[iv->var.get()] = "0 /* core_x */";
     }
   } else if (thread_tag == "blockIdx.y") {
-    if (has_runtime_work_id) {
+    if (explicit_block_y.has_value()) {
+      var_idmap_[iv->var.get()] = explicit_block_y.value();
+    } else if (has_explicit_work_descriptor) {
+      var_idmap_[iv->var.get()] = "0 /* explicit_work_descriptor_y */";
+    } else if (has_runtime_work_id) {
       var_idmap_[iv->var.get()] =
           "(" + work_id_var.value() + " / " + std::to_string(logical_grid_x_) + ")";
     } else {
@@ -1443,6 +1663,15 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   } else if (builtin_name == "mm_init") {
     PrintMMInit(op, os);
     return true;
+  } else if (builtin_name == "reconfig_data_format") {
+    PrintReconfigDataFormat(op, os);
+    return true;
+  } else if (builtin_name == "mm_init_short") {
+    PrintMMInitShort(op, os);
+    return true;
+  } else if (builtin_name == "mm_init_short_with_dt") {
+    PrintMMInitShortWithDT(op, os);
+    return true;
   } else if (builtin_name == "matmul_tiles") {
     PrintMatmulTiles(op, os);
     return true;
@@ -1461,8 +1690,26 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   } else if (builtin_name == "pack_tile") {
     PrintPackTile(op, os);
     return true;
+  } else if (builtin_name == "pack_reconfig_data_format") {
+    PrintPackReconfigDataFormat(op, os);
+    return true;
+  } else if (builtin_name == "copy_tile_to_dst_init_short") {
+    PrintCopyTileToDstInitShort(op, os);
+    return true;
+  } else if (builtin_name == "copy_tile_to_dst_init_short_with_dt") {
+    PrintCopyTileToDstInitShortWithDT(op, os);
+    return true;
+  } else if (builtin_name == "copy_tile_from_cb") {
+    PrintCopyTileFromCB(op, os);
+    return true;
   } else if (builtin_name == "fill_fragment") {
     PrintFillFragment(op, os);
+    return true;
+  } else if (builtin_name == "add_fragment") {
+    PrintAddFragment(op, os);
+    return true;
+  } else if (builtin_name == "add_fragment_from_cb_front") {
+    PrintAddFragmentFromCBFront(op, os);
     return true;
   } else if (builtin_name == "write_local_slice_to_cb") {
     PrintWriteLocalSliceToCB(op, os);
@@ -1522,11 +1769,18 @@ void CodeGenBlackhole::PrintCBReserveBack(const tvm::tir::CallNode *op,
 void CodeGenBlackhole::PrintCBPushBack(const tvm::tir::CallNode *op,
                                        std::ostream &os) {
   need_dataflow_api_h_ = true;
+  const int cb_id = ResolveCBId(op->args[0]);
   os << "cb_push_back(";
-  PrintResolvedCBId(op->args[0], os);
+  os << cb_id;
   os << ", ";
   PrintExpr(op->args[1], os);
   os << ")";
+  const std::string requirement_name = GetCBRequirementName(cb_id);
+  if (requirement_name == "acc_s_cast") {
+    MaybeEmitMathWaypoint(os, "CAST");
+  } else if (requirement_name == "O_shared") {
+    MaybeEmitPackWaypoint(os, "OPUB");
+  }
 }
 
 void CodeGenBlackhole::PrintCBWaitFront(const tvm::tir::CallNode *op,
@@ -1542,11 +1796,16 @@ void CodeGenBlackhole::PrintCBWaitFront(const tvm::tir::CallNode *op,
 void CodeGenBlackhole::PrintCBPopFront(const tvm::tir::CallNode *op,
                                        std::ostream &os) {
   need_dataflow_api_h_ = true;
+  const int cb_id = ResolveCBId(op->args[0]);
   os << "cb_pop_front(";
-  PrintResolvedCBId(op->args[0], os);
+  os << cb_id;
   os << ", ";
   PrintExpr(op->args[1], os);
   os << ")";
+  const std::string requirement_name = GetCBRequirementName(cb_id);
+  if (requirement_name.find("clear_accum_tmp_") != std::string::npos) {
+    MaybeEmitUnpackWaypoint(os, "QPOP");
+  }
 }
 
 void CodeGenBlackhole::PrintNOCAsyncRead(const tvm::tir::CallNode *op,
@@ -1697,6 +1956,41 @@ void CodeGenBlackhole::PrintMMInit(const tvm::tir::CallNode *op,
   os << ")";
 }
 
+void CodeGenBlackhole::PrintReconfigDataFormat(const tvm::tir::CallNode* op,
+                                               std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 2) << "tl.blackhole.reconfig_data_format expects 2 arguments";
+  os << "reconfig_data_format(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintMMInitShort(const tvm::tir::CallNode* op,
+                                        std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 2) << "tl.blackhole.mm_init_short expects 2 arguments";
+  os << "mm_init_short(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintMMInitShortWithDT(const tvm::tir::CallNode* op,
+                                              std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 3) << "tl.blackhole.mm_init_short_with_dt expects 3 arguments";
+  os << "mm_init_short_with_dt(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[2], os);
+  os << ")";
+}
+
 void CodeGenBlackhole::PrintMatmulTiles(const tvm::tir::CallNode *op,
                                         std::ostream &os) {
   need_compute_api_h_ = true;
@@ -1736,10 +2030,60 @@ void CodeGenBlackhole::PrintTileRegsRelease(std::ostream &os) {
 void CodeGenBlackhole::PrintPackTile(const tvm::tir::CallNode *op,
                                      std::ostream &os) {
   need_compute_api_h_ = true;
+  ICHECK(op->args.size() == 2 || op->args.size() == 3)
+      << "tl.blackhole.pack_tile expects 2 or 3 arguments";
   os << "pack_tile(";
   PrintExpr(op->args[0], os);  // src_tile_index
   os << ", ";
   PrintResolvedCBId(op->args[1], os);
+  if (op->args.size() == 3) {
+    os << ", ";
+    PrintExpr(op->args[2], os);  // dst_tile_index
+  }
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintPackReconfigDataFormat(const tvm::tir::CallNode* op,
+                                                   std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 1)
+      << "tl.blackhole.pack_reconfig_data_format expects 1 argument";
+  os << "pack_reconfig_data_format(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintCopyTileToDstInitShort(const tvm::tir::CallNode* op,
+                                                   std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 1) << "tl.blackhole.copy_tile_to_dst_init_short expects 1 argument";
+  os << "copy_tile_to_dst_init_short(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintCopyTileToDstInitShortWithDT(const tvm::tir::CallNode* op,
+                                                         std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 2)
+      << "tl.blackhole.copy_tile_to_dst_init_short_with_dt expects 2 arguments";
+  os << "copy_tile_to_dst_init_short_with_dt(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintCopyTileFromCB(const tvm::tir::CallNode* op,
+                                           std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 3) << "tl.blackhole.copy_tile_from_cb expects 3 arguments";
+  os << "copy_tile(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintExpr(op->args[1], os);
+  os << ", ";
+  PrintExpr(op->args[2], os);
   os << ")";
 }
 
@@ -1754,13 +2098,74 @@ void CodeGenBlackhole::PrintFillFragment(const tvm::tir::CallNode* op,
   std::ostringstream dtype_os;
   PrintType(dtype_it->second, dtype_os);
 
-  os << "{ " << dtype_os.str() << "* dst = reinterpret_cast<" << dtype_os.str() << "*>(";
+  os << "MATH({ " << dtype_os.str() << "* dst = reinterpret_cast<" << dtype_os.str() << "*>(";
   PrintExpr(op->args[0], os);
   os << "); const uint32_t num_elements = ";
   PrintExpr(op->args[1], os);
   os << "; const " << dtype_os.str() << " value = static_cast<" << dtype_os.str() << ">(";
   PrintExpr(op->args[2], os);
-  os << "); tilelang_fill_fragment(dst, num_elements, value); }";
+  os << "); tilelang_fill_fragment(dst, num_elements, value); })";
+  if (dst_var->name_hint == "scores_max") {
+    MaybeEmitMathWaypoint(os, "MCLR");
+  }
+}
+
+void CodeGenBlackhole::PrintAddFragment(const tvm::tir::CallNode* op,
+                                        std::ostream& os) {
+  const auto* dst_var = AsHandleVar(op->args[0]);
+  const auto* src_var = AsHandleVar(op->args[1]);
+  ICHECK(dst_var && src_var)
+      << "tl.blackhole.add_fragment expects direct source/destination handle vars";
+
+  auto dst_dtype_it = handle_data_type_.find(dst_var);
+  auto src_dtype_it = handle_data_type_.find(src_var);
+  ICHECK(dst_dtype_it != handle_data_type_.end())
+      << "Missing destination handle dtype for tl.blackhole.add_fragment";
+  ICHECK(src_dtype_it != handle_data_type_.end())
+      << "Missing source handle dtype for tl.blackhole.add_fragment";
+
+  std::ostringstream dst_dtype_os;
+  std::ostringstream src_dtype_os;
+  PrintType(dst_dtype_it->second, dst_dtype_os);
+  PrintType(src_dtype_it->second, src_dtype_os);
+
+  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
+     << "*>(";
+  PrintExpr(op->args[0], os);
+  os << "); const " << src_dtype_os.str() << "* src = reinterpret_cast<const "
+     << src_dtype_os.str() << "*>(";
+  PrintExpr(op->args[1], os);
+  os << "); const uint32_t num_elements = ";
+  PrintExpr(op->args[2], os);
+  os << "; tilelang_add_fragment(dst, src, num_elements); })";
+}
+
+void CodeGenBlackhole::PrintAddFragmentFromCBFront(const tvm::tir::CallNode* op,
+                                                   std::ostream& os) {
+  const auto* dst_var = AsHandleVar(op->args[0]);
+  ICHECK(dst_var) << "tl.blackhole.add_fragment_from_cb_front expects a direct destination handle var";
+
+  auto dst_dtype_it = handle_data_type_.find(dst_var);
+  ICHECK(dst_dtype_it != handle_data_type_.end())
+      << "Missing destination handle dtype for tl.blackhole.add_fragment_from_cb_front";
+
+  std::ostringstream dst_dtype_os;
+  PrintType(dst_dtype_it->second, dst_dtype_os);
+  const int cb_id = ResolveCBId(op->args[1]);
+  os << "{ experimental::CircularBuffer cb_front_" << cb_id << "(" << cb_id
+     << "); const " << dst_dtype_os.str() << "* src = reinterpret_cast<const "
+     << dst_dtype_os.str() << "*>(cb_front_" << cb_id << ".get_tile_address(0)); "
+     << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
+     << "*>(";
+  PrintExpr(op->args[0], os);
+  os << "); const uint32_t num_elements = ";
+  PrintExpr(op->args[2], os);
+  os << "; tilelang_add_fragment(dst, src, num_elements); }) }";
+  if (dst_var->name_hint == "acc_s") {
+    MaybeEmitMathWaypoint(os, "QKAD");
+  } else if (dst_var->name_hint == "acc_o") {
+    MaybeEmitMathWaypoint(os, "QVAD");
+  }
 }
 
 void CodeGenBlackhole::PrintWriteLocalSliceToCB(const tvm::tir::CallNode* op,
@@ -1775,31 +2180,37 @@ void CodeGenBlackhole::PrintWriteLocalSliceToCB(const tvm::tir::CallNode* op,
   PrintType(src_dtype_it->second, src_dtype_os);
 
   const int cb_id = ResolveCBId(op->args[1]);
-  const bool raw_fp16_copy = src_dtype_it->second.is_float16();
-  if (raw_fp16_copy) {
+  const bool raw_16bit_float_copy =
+      src_dtype_it->second.is_float16() || src_dtype_it->second.is_bfloat16();
+  if (raw_16bit_float_copy) {
     os << "{ const uint16_t* src_bits = reinterpret_cast<const uint16_t*>(";
     PrintExpr(op->args[0], os);
-    os << "); const uint32_t dst_offset_elements = ";
+    os << "); uint16_t* dst_bits = reinterpret_cast<uint16_t*>(tilelang_get_cb_write_ptr_bytes("
+       << cb_id << ")); const uint32_t dst_offset_elements = ";
     PrintExpr(op->args[2], os);
     os << "; const uint32_t num_elements = ";
     PrintExpr(op->args[3], os);
-    os << "; PACK({ uint16_t* dst_bits = reinterpret_cast<uint16_t*>((get_local_cb_interface("
-       << cb_id << ").fifo_wr_ptr << 4) + dst_offset_elements * sizeof(uint16_t)); "
-       << "for (uint32_t i = 0; i < num_elements; ++i) { dst_bits[i] = src_bits[i]; } }); }";
+    os << "; MATH({ for (uint32_t i = 0; i < num_elements; ++i) { "
+       << "dst_bits[dst_offset_elements + i] = src_bits[i]; } }) }";
+    if (GetCBRequirementName(cb_id) == "O_shared") {
+      MaybeEmitMathWaypoint(os, "OWRT");
+    }
     return;
   }
 
   os << "{ const " << src_dtype_os.str() << "* src = reinterpret_cast<const "
      << src_dtype_os.str() << "*>(";
   PrintExpr(op->args[0], os);
-  os << "); const uint32_t dst_offset_elements = ";
+  os << "); " << src_dtype_os.str() << "* dst = reinterpret_cast<" << src_dtype_os.str()
+     << "*>(tilelang_get_cb_write_ptr_bytes(" << cb_id << ")); const uint32_t dst_offset_elements = ";
   PrintExpr(op->args[2], os);
   os << "; const uint32_t num_elements = ";
   PrintExpr(op->args[3], os);
-  os << "; PACK({ " << src_dtype_os.str() << "* dst = reinterpret_cast<" << src_dtype_os.str()
-     << "*>((get_local_cb_interface(" << cb_id << ").fifo_wr_ptr << 4) + dst_offset_elements * sizeof("
-     << src_dtype_os.str() << ")); "
-     << "for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = src[i]; } }); }";
+  os << "; MATH({ for (uint32_t i = 0; i < num_elements; ++i) { "
+     << "dst[dst_offset_elements + i] = src[i]; } }) }";
+  if (GetCBRequirementName(cb_id) == "O_shared") {
+    MaybeEmitMathWaypoint(os, "OWRT");
+  }
 }
 
 void CodeGenBlackhole::PrintScalarMax(const tvm::tir::CallNode* op,
@@ -1821,7 +2232,7 @@ void CodeGenBlackhole::PrintScalarMax(const tvm::tir::CallNode* op,
   std::ostringstream dtype_os;
   PrintType(dst_dtype_it->second, dtype_os);
 
-  os << "{ " << dtype_os.str() << "* dst = reinterpret_cast<" << dtype_os.str() << "*>(";
+  os << "MATH({ " << dtype_os.str() << "* dst = reinterpret_cast<" << dtype_os.str() << "*>(";
   PrintExpr(op->args[0], os);
   os << "); const " << dtype_os.str() << "* src = reinterpret_cast<const " << dtype_os.str()
      << "*>(";
@@ -1832,7 +2243,10 @@ void CodeGenBlackhole::PrintScalarMax(const tvm::tir::CallNode* op,
   } else {
     os << "1";
   }
-  os << "; tilelang_scalar_max(dst, src, num_elements); }";
+  os << "; tilelang_scalar_max(dst, src, num_elements); })";
+  if (dst_var->name_hint == "scores_max") {
+    MaybeEmitMathWaypoint(os, "SMAX");
+  }
 }
 
 void CodeGenBlackhole::PrintCastFragmentSlice(const tvm::tir::CallNode* op,
@@ -1853,11 +2267,14 @@ void CodeGenBlackhole::PrintCastFragmentSlice(const tvm::tir::CallNode* op,
   std::ostringstream src_dtype_os;
   PrintType(dst_dtype_it->second, dst_dtype_os);
   PrintType(src_dtype_it->second, src_dtype_os);
-  const bool fp32_to_fp16_cast =
-      dst_dtype_it->second.is_float16() && src_dtype_it->second.is_float() &&
-      src_dtype_it->second.bits() == 32;
-  if (fp32_to_fp16_cast) {
-    os << "{ uint16_t* dst_bits = reinterpret_cast<uint16_t*>(";
+  const bool fp32_to_16bit_float_cast =
+      (dst_dtype_it->second.is_float16() || dst_dtype_it->second.is_bfloat16()) &&
+      src_dtype_it->second.is_float() && src_dtype_it->second.bits() == 32;
+  if (fp32_to_16bit_float_cast) {
+    const char* cast_bits_helper =
+        dst_dtype_it->second.is_bfloat16() ? "tilelang_float_to_bfloat_bits"
+                                           : "tilelang_float_to_half_bits";
+    os << "MATH({ uint16_t* dst_bits = reinterpret_cast<uint16_t*>(";
     PrintExpr(op->args[0], os);
     os << "); const float* src = reinterpret_cast<const float*>(";
     PrintExpr(op->args[1], os);
@@ -1868,11 +2285,18 @@ void CodeGenBlackhole::PrintCastFragmentSlice(const tvm::tir::CallNode* op,
     os << "; const uint32_t num_elements = ";
     PrintExpr(op->args[4], os);
     os << "; for (uint32_t i = 0; i < num_elements; ++i) { "
-       << "dst_bits[dst_offset + i] = tilelang_float_to_half_bits(src[src_offset + i]); } }";
+       << "dst_bits[dst_offset + i] = " << cast_bits_helper
+       << "(src[src_offset + i]); } })";
+    if (dst_var->name_hint == "acc_s_cast") {
+      MaybeEmitMathWaypoint(os, "ACST");
+    } else if (dst_var->name_hint == "O_shared_local_cast") {
+      MaybeEmitMathWaypoint(os, "OCST");
+    }
     return;
   }
 
-  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
+     << "*>(";
   PrintExpr(op->args[0], os);
   os << "); const " << src_dtype_os.str() << "* src = reinterpret_cast<const "
      << src_dtype_os.str() << "*>(";
@@ -1883,7 +2307,14 @@ void CodeGenBlackhole::PrintCastFragmentSlice(const tvm::tir::CallNode* op,
   PrintExpr(op->args[3], os);
   os << "; const uint32_t num_elements = ";
   PrintExpr(op->args[4], os);
-  os << "; tilelang_cast_fragment_slice(dst, src, dst_offset, src_offset, num_elements); }";
+  os << "; tilelang_cast_fragment_slice(dst, src, dst_offset, src_offset, num_elements); })";
+  if (dst_var->name_hint == "acc_s_cast") {
+    MaybeEmitMathWaypoint(os, "ACST");
+  } else if (dst_var->name_hint == "scores_max_prev") {
+    MaybeEmitMathWaypoint(os, "MXPV");
+  } else if (dst_var->name_hint == "O_shared_local_cast") {
+    MaybeEmitMathWaypoint(os, "OCST");
+  }
 }
 
 void CodeGenBlackhole::PrintReduceRow(const tvm::tir::CallNode* op,
@@ -1906,7 +2337,7 @@ void CodeGenBlackhole::PrintReduceRow(const tvm::tir::CallNode* op,
   PrintType(src_dtype_it->second, src_dtype_os);
   PrintType(dst_dtype_it->second, dst_dtype_os);
 
-  os << "{ const " << src_dtype_os.str() << "* src = reinterpret_cast<const "
+  os << "MATH({ const " << src_dtype_os.str() << "* src = reinterpret_cast<const "
      << src_dtype_os.str() << "*>(";
   PrintExpr(op->args[0], os);
   os << "); " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
@@ -1939,7 +2370,12 @@ void CodeGenBlackhole::PrintReduceRow(const tvm::tir::CallNode* op,
       ICHECK(false) << "Unsupported tl.blackhole.reduce_row kind: " << reduce_kind->value;
     }
   }
-  os << " }";
+  os << " })";
+  if (grouped && reduce_kind->value == "max" && dst_var->name_hint == "scores_max") {
+    MaybeEmitMathWaypoint(os, "RMAX");
+  } else if (grouped && reduce_kind->value == "sum" && dst_var->name_hint == "scores_sum") {
+    MaybeEmitMathWaypoint(os, "RSUM");
+  }
 }
 
 void CodeGenBlackhole::PrintMulRowBcast(const tvm::tir::CallNode* op,
@@ -1956,14 +2392,15 @@ void CodeGenBlackhole::PrintMulRowBcast(const tvm::tir::CallNode* op,
   std::ostringstream scalar_dtype_os;
   PrintType(dst_dtype_it->second, dst_dtype_os);
   PrintType(scalar_dtype_it->second, scalar_dtype_os);
-  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
+     << "*>(";
   PrintExpr(op->args[0], os);
   os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
      << scalar_dtype_os.str() << "*>(";
   PrintExpr(op->args[1], os);
   os << "); const uint32_t num_elements = ";
   PrintExpr(op->args[2], os);
-  os << "; tilelang_mul_row_bcast(dst, scalar, num_elements); }";
+  os << "; tilelang_mul_row_bcast(dst, scalar, num_elements); })";
 }
 
 void CodeGenBlackhole::PrintMulGroupedRowBcast(const tvm::tir::CallNode* op,
@@ -1981,7 +2418,8 @@ void CodeGenBlackhole::PrintMulGroupedRowBcast(const tvm::tir::CallNode* op,
   std::ostringstream scalar_dtype_os;
   PrintType(dst_dtype_it->second, dst_dtype_os);
   PrintType(scalar_dtype_it->second, scalar_dtype_os);
-  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
+     << "*>(";
   PrintExpr(op->args[0], os);
   os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
      << scalar_dtype_os.str() << "*>(";
@@ -1990,7 +2428,7 @@ void CodeGenBlackhole::PrintMulGroupedRowBcast(const tvm::tir::CallNode* op,
   PrintExpr(op->args[2], os);
   os << "; const uint32_t row_width = ";
   PrintExpr(op->args[3], os);
-  os << "; tilelang_mul_grouped_row_bcast(dst, scalar, num_elements, row_width); }";
+  os << "; tilelang_mul_grouped_row_bcast(dst, scalar, num_elements, row_width); })";
 }
 
 void CodeGenBlackhole::PrintDivRowBcast(const tvm::tir::CallNode* op,
@@ -2007,14 +2445,15 @@ void CodeGenBlackhole::PrintDivRowBcast(const tvm::tir::CallNode* op,
   std::ostringstream scalar_dtype_os;
   PrintType(dst_dtype_it->second, dst_dtype_os);
   PrintType(scalar_dtype_it->second, scalar_dtype_os);
-  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
+     << "*>(";
   PrintExpr(op->args[0], os);
   os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
      << scalar_dtype_os.str() << "*>(";
   PrintExpr(op->args[1], os);
   os << "); const uint32_t num_elements = ";
   PrintExpr(op->args[2], os);
-  os << "; tilelang_div_row_bcast(dst, scalar, num_elements); }";
+  os << "; tilelang_div_row_bcast(dst, scalar, num_elements); })";
 }
 
 void CodeGenBlackhole::PrintDivGroupedRowBcast(const tvm::tir::CallNode* op,
@@ -2032,7 +2471,8 @@ void CodeGenBlackhole::PrintDivGroupedRowBcast(const tvm::tir::CallNode* op,
   std::ostringstream scalar_dtype_os;
   PrintType(dst_dtype_it->second, dst_dtype_os);
   PrintType(scalar_dtype_it->second, scalar_dtype_os);
-  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
+     << "*>(";
   PrintExpr(op->args[0], os);
   os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
      << scalar_dtype_os.str() << "*>(";
@@ -2041,7 +2481,10 @@ void CodeGenBlackhole::PrintDivGroupedRowBcast(const tvm::tir::CallNode* op,
   PrintExpr(op->args[2], os);
   os << "; const uint32_t row_width = ";
   PrintExpr(op->args[3], os);
-  os << "; tilelang_div_grouped_row_bcast(dst, scalar, num_elements, row_width); }";
+  os << "; tilelang_div_grouped_row_bcast(dst, scalar, num_elements, row_width); })";
+  if (dst_var->name_hint == "acc_o") {
+    MaybeEmitMathWaypoint(os, "NORM");
+  }
 }
 
 void CodeGenBlackhole::PrintScalarFma(const tvm::tir::CallNode* op,
@@ -2070,7 +2513,8 @@ void CodeGenBlackhole::PrintScalarFma(const tvm::tir::CallNode* op,
   PrintType(rhs_dtype_it->second, rhs_dtype_os);
   PrintType(add_dtype_it->second, add_dtype_os);
 
-  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
+     << "*>(";
   PrintExpr(op->args[0], os);
   os << "); const " << lhs_dtype_os.str() << "* lhs = reinterpret_cast<const "
      << lhs_dtype_os.str() << "*>(";
@@ -2087,7 +2531,10 @@ void CodeGenBlackhole::PrintScalarFma(const tvm::tir::CallNode* op,
   } else {
     os << "1";
   }
-  os << "; tilelang_scalar_fma(dst, lhs, rhs, add, num_elements); }";
+  os << "; tilelang_scalar_fma(dst, lhs, rhs, add, num_elements); })";
+  if (dst_var->name_hint == "logsum") {
+    MaybeEmitMathWaypoint(os, "LFMA");
+  }
 }
 
 void CodeGenBlackhole::PrintExp2RowBcastAffine(const tvm::tir::CallNode* op,
@@ -2106,7 +2553,8 @@ void CodeGenBlackhole::PrintExp2RowBcastAffine(const tvm::tir::CallNode* op,
   PrintType(dst_dtype_it->second, dst_dtype_os);
   PrintType(scalar_dtype_it->second, scalar_dtype_os);
 
-  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
+     << "*>(";
   PrintExpr(op->args[0], os);
   os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
      << scalar_dtype_os.str() << "*>(";
@@ -2117,7 +2565,7 @@ void CodeGenBlackhole::PrintExp2RowBcastAffine(const tvm::tir::CallNode* op,
   PrintExpr(op->args[3], os);
   os << "; const float scalar_scale = ";
   PrintExpr(op->args[4], os);
-  os << "; tilelang_exp2_row_bcast_affine(dst, scalar, num_elements, dst_scale, scalar_scale); }";
+  os << "; tilelang_exp2_row_bcast_affine(dst, scalar, num_elements, dst_scale, scalar_scale); })";
 }
 
 void CodeGenBlackhole::PrintExp2GroupedRowBcastAffine(const tvm::tir::CallNode* op,
@@ -2136,7 +2584,8 @@ void CodeGenBlackhole::PrintExp2GroupedRowBcastAffine(const tvm::tir::CallNode* 
   PrintType(dst_dtype_it->second, dst_dtype_os);
   PrintType(scalar_dtype_it->second, scalar_dtype_os);
 
-  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
+     << "*>(";
   PrintExpr(op->args[0], os);
   os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
      << scalar_dtype_os.str() << "*>(";
@@ -2150,7 +2599,10 @@ void CodeGenBlackhole::PrintExp2GroupedRowBcastAffine(const tvm::tir::CallNode* 
   os << "; const float scalar_scale = ";
   PrintExpr(op->args[5], os);
   os << "; tilelang_exp2_grouped_row_bcast_affine(dst, scalar, num_elements, row_width, "
-     << "dst_scale, scalar_scale); }";
+     << "dst_scale, scalar_scale); })";
+  if (dst_var->name_hint == "acc_s") {
+    MaybeEmitMathWaypoint(os, "AEXP");
+  }
 }
 
 void CodeGenBlackhole::PrintScalarExp2Affine(const tvm::tir::CallNode* op,
@@ -2174,7 +2626,8 @@ void CodeGenBlackhole::PrintScalarExp2Affine(const tvm::tir::CallNode* op,
   PrintType(lhs_dtype_it->second, lhs_dtype_os);
   PrintType(rhs_dtype_it->second, rhs_dtype_os);
 
-  os << "{ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
+  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
+     << "*>(";
   PrintExpr(op->args[0], os);
   os << "); const " << lhs_dtype_os.str() << "* lhs = reinterpret_cast<const "
      << lhs_dtype_os.str() << "*>(";
@@ -2192,7 +2645,10 @@ void CodeGenBlackhole::PrintScalarExp2Affine(const tvm::tir::CallNode* op,
   } else {
     os << "1";
   }
-  os << "; tilelang_scalar_exp2_affine(dst, lhs, rhs, lhs_scale, rhs_scale, num_elements); }";
+  os << "; tilelang_scalar_exp2_affine(dst, lhs, rhs, lhs_scale, rhs_scale, num_elements); })";
+  if (dst_var->name_hint == "scores_scale") {
+    MaybeEmitMathWaypoint(os, "SEXP");
+  }
 }
 
 void CodeGenBlackhole::PrintKernelAttributes() {

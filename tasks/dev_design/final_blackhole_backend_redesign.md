@@ -112,6 +112,9 @@ Stateful Semantic IR
 - 让 runtime/codegen 补缺失的 sync、carry、route 或 ABI contract
 - 把 materialized `blackhole.*` attrs 当成与 typed IR 并列的第二真源
 - 因为 backend 需要某个对象，就把它直接暴露成 Python DSL 表面概念
+- 在 analysis pass 里按 op/buffer/var 名字恢复 family 语义；
+  若 generic contract 需要额外事实，必须由 owner 上游
+  通过 typed schema 或 operator metadata 显式提供
 
 ## 4. 各层当前完成度
 
@@ -149,9 +152,15 @@ Stateful Semantic IR
     已进入正式主链
   - runtime/codegen 已切到 `TTProgram` direct reader，reader-side deletion gate 已收口
   - regression 主断言面与 producer-side translator 输入已切到 typed companion truth
-  - 当前支持的 `flash-attn` subset 与无显式同步 contract 的
-    oversubscribed `work_packets` direct runtime
-    已分别拿到当前阶段所需的 correctness / execution milestone
+  - `per_work_arg_specs` 已收成 kernel-local target truth；
+    codegen/runtime 都改为消费同一套 `value_kind` contract，
+    不再按 arg kind 或 `work_linear_id` 猜 `blockIdx` / per-work access
+  - `flash-attn` compile-path 与 typed metadata 主链保持可用；
+    direct runtime 已对缺失显式 per-work access descriptor
+    或已 materialize 但尚未执行的 typed fragment materialization contract 的 kernel
+    收成 explicit unsupported gate，停止在后段猜语义
+  - 无显式同步 contract 的 oversubscribed `work_packets`
+    direct runtime execution milestone 已兑现
 - 但 `Phase C` 总体仍未完成；剩余交付仍包括：
   - `flash-attn` 的 `Phase C2` wider runtime / correctness payoff；
     更宽 `MHA / GQA` 子集与较大 shape runtime 仍未完成
@@ -178,8 +187,11 @@ Stateful Semantic IR
 - copy / GEMM 当前支持面保持不回退
 - `tilelang.compile(..., execution_backend="tvm_ffi")`
   的 Blackhole wrapper/export path 已恢复
-- 当前支持的 `flash-attn` subset 已拿到 direct runtime correctness milestone，
-  但更宽 multi-GEMM runtime enablement 仍属于 `Phase C`
+- `flash-attn` 当前保持 compile-path / metadata / pipeline 支持，
+  但 direct runtime 会对缺失显式 per-work access descriptor
+  或 typed fragment materialization/merge protocol 尚未执行化的 kernel fail-fast；
+  当前 regression 子集里前者已 materialize 完整，剩余 gate 主要来自后者；
+  更宽 runtime enablement 仍属于 `Phase C`
 - direct runtime 现在已能按 `core_plan.work_packets`
   执行无显式同步 contract 的 oversubscribed launch；
   带显式同步 truth 的 oversubscribed executable 仍不在当前支持面内

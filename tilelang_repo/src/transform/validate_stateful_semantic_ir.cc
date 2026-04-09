@@ -146,6 +146,27 @@ tir::transform::Pass ValidateStatefulSemanticIR() {
           ICHECK(!tvm::Downcast<Array<Any>>(maybe_row_broadcast_sources.value()).empty())
               << "fragment_lowering_structure row_broadcast_sources must be non-empty";
         }
+        if (auto maybe_materialization_contracts =
+                supplement->payload.Get(String(schema_key::kFragmentMaterializationContracts))) {
+          Array<Any> contracts = tvm::Downcast<Array<Any>>(maybe_materialization_contracts.value());
+          ICHECK(!contracts.empty())
+              << "fragment_lowering_structure fragment_materialization_contracts must be non-empty";
+          for (const Any& contract_any : contracts) {
+            Map<String, Any> contract = tvm::Downcast<Map<String, Any>>(contract_any);
+            ICHECK(contract.count(String(schema_key::kKind)))
+                << "fragment_materialization_contract must carry kind";
+            ICHECK(contract.count(String(schema_key::kTargetBuffer)))
+                << "fragment_materialization_contract must carry target_buffer";
+            ICHECK(contract.count(String(schema_key::kScope)))
+                << "fragment_materialization_contract must carry scope";
+            ICHECK(contract.count(String(schema_key::kMaterializationKind)))
+                << "fragment_materialization_contract must carry materialization_kind";
+            ICHECK(contract.count(String(schema_key::kValueRole)))
+                << "fragment_materialization_contract must carry value_role";
+            ICHECK(contract.count(String(schema_key::kMergeKind)))
+                << "fragment_materialization_contract must carry merge_kind";
+          }
+        }
       } else if (*kind == SupplementKind::kPipelineStructure) {
         auto maybe_pipeline_stages = supplement->payload.Get(String(schema_key::kPipelineStages));
         ICHECK(maybe_pipeline_stages)
