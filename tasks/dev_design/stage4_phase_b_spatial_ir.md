@@ -174,7 +174,7 @@
 
 ## 5.1 审计收口结论
 
-对 `tasks/dev_design/phase_b_code_audit.md` 中列出的问题，`Phase C` 之前需要收口的部分已完成：
+对 `tasks/dev_design/archive/phase_b_code_audit.md` 中列出的问题，`Phase C` 之前需要收口的部分已完成：
 
 - 大规模重复 helper 已集中到 `spatial_analysis.h/cc`
 - `lower_to_spatial_program.cc` monolith 已拆分

@@ -198,17 +198,16 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - 第一批复杂 consumer 已打通的 compile-path 子集
 2. 文档、任务安排和实现边界统一以 `tasks/dev_design/final_blackhole_backend_redesign.md` 为准
 3. 当前 Stage 4 直接按分阶段文档执行，不再保留单一总 implementation plan 入口：
-   - `tasks/dev_design/stage4_stage0_guardrails.md`
-   - `tasks/dev_design/stage4_phase_a_semantic_ir.md`
+   - `tasks/progress.md`
+   - `tasks/dev_design/README.md`
+   - `tasks/dev_design/spatial_dataflow_program_model.md`
    - `tasks/dev_design/stage4_phase_b_spatial_ir.md`
    - `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
 4. 当前执行重点：
    - `Phase A` 已完成
-   - `Phase B`：contract-hardening 子阶段已完成，但整体仍未完成；
-     当前主实施重点是把 `SpatialProgram` 做成正文定义的 execution-bearing spatial program，
-     并收实对应的 synthesis algorithm / validator contract
-   - `Phase C`：准备轨已落地，但正式 `TTProgram / MaterializeTTExecutableSpec`
-     cutover 仍以前置的 `Phase B` 整体完成为前提
+   - `Phase B` 已完成；`SpatialProgram` 已成为 execution-bearing spatial 主链
+   - `Phase C` 进行中；`TTProgram / MaterializeTTExecutableSpec` cutover 已完成，
+     当前工作集中在 `Phase C2` 和更宽支持面兑现
 5. 在新分层下继续推进：
    - `Phase C2` 承接 `flash-attn` `blackhole.acc` correctness payoff
    - `topk / fusedmoe / paged decode / chunk recurrence` 等 family 在新主链下统一承接
@@ -254,7 +253,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 默认开发构建目录固定为 `tilelang_repo/build/`
 - 默认并行编译线程数按 `-j32` 执行
 - `build_blackhole/` 和 legacy runner 都已删除
-- `tasks/dev_design/` 根目录只保留活动文档；`tasks/dev_design/archive/` 下内容全部视为历史记录，不再作为当前入口
+- `tasks/dev_design/` 根目录只保留当前入口文档与完成阶段边界文档；
+  `tasks/dev_design/archive/` 下内容全部视为历史记录，不再作为当前入口
 - `Phase A` 与 semantic manifest 已完成；`AnalyzeSemanticStructure` 已全面改成 manifest-first
 - 当前 Blackhole 设备侧主链：
   `LowerDeviceStorageAccessInfo -> AugmentSemanticManifest -> LowerIntrin -> Simplify -> HoistBroadcastValues -> SplitBlackholeKernel -> AnalyzeBlackholeWorkDecomposition -> AnalyzeBlackholeFragmentRegions -> AnalyzeBlackholePipelineStages -> AnalyzeSemanticStructure -> LiftStatefulSemanticIR -> ValidateStatefulSemanticIR -> ValidateSemanticRefinement -> LowerToSpatialProgram -> ValidateSpatialProgram -> LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores`
@@ -264,7 +264,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   - GEMM：A/B-separated reader range + writer output range
   - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
 - `flash-attn` forward subset 当前已打通 compile-path；其 `blackhole.acc` correctness payoff 当前归属 `Phase C2`
-- 当前总体架构 blocker 先是 `Phase B` 正文定义的 spatial synthesis 尚未完成，
-  然后才是 `Spatial Program IR -> TT Target IR` 的单一真源切换
+- 当前总体架构 blocker 已不再是 target-truth cutover，
+  而是 `Phase C` 剩余支持面尚未兑现
 - 后续所有架构推进以 layered IR 为准：
   `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`

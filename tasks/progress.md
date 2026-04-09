@@ -25,6 +25,9 @@
   已独立收口到 `tasks/dev_design/spatial_dataflow_program_model.md`，
   后续 literal semantics、planner owner 链与 expert hint API
   统一以该文档为设计入口
+- 活动设计入口、完成阶段边界文档与 archive 历史记录
+  已重新对齐；根目录只保留当前入口与完成阶段边界，
+  审计快照与过时评审文档已回收到 `tasks/dev_design/archive/`
 - TT-Sim fatal simulator taxonomy / hard-gate 扫描
   已独立记录到 `memory/tt_simulator_constraints.md`，
   后续 triage 先按 simulator capability boundary 与 target contract 回归分流

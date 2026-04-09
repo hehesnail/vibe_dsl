@@ -6,12 +6,13 @@
 - **日期**: `2026-04-09`
 - **状态**: 当前唯一权威总体设计文档
 - **定位**: 轻量总纲；只保留长期架构、层间边界、真源规则与当前阶段判断
-- **活动阶段文档**:
+- **当前设计入口**:
   - `tasks/dev_design/spatial_dataflow_program_model.md`
-  - `tasks/dev_design/stage4_stage0_guardrails.md`
-  - `tasks/dev_design/stage4_phase_a_semantic_ir.md`
-  - `tasks/dev_design/stage4_phase_b_spatial_ir.md`
   - `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
+- **完成阶段参考**:
+  - `tasks/dev_design/stage4_phase_b_spatial_ir.md`
+  - `tasks/dev_design/stage4_phase_a_semantic_ir.md`
+  - `tasks/dev_design/stage4_stage0_guardrails.md`
 
 ## 1. 问题定义
 
@@ -193,13 +194,16 @@ Stateful Semantic IR
     统一维护字面量语义分层、intent/planner owner 链、
     SRAM/L1/CB-aware planning 与 expert hint API
 - `stage4_phase_b_spatial_ir.md`
-  - `Spatial Program IR` 的当前主实施文档
+  - `Spatial Program IR` 的已完成边界文档；
+    作为 `Phase C` 输入边界和审计结论保留
 - `stage4_phase_c_tt_target_ir.md`
   - `TT Target IR` 的当前设计、剩余项与完成判定文档
 - `tasks/progress.md`
   - 当前执行状态、验证摘要、下一步
 - `layered_ir_references.md`
   - 研究参考与分层启发；仅作设计输入，不承担当前协议真源职责
+- `archive/`
+  - 历史审计快照、旧实施计划与已退场叙述；不再作为当前任务入口
 
 阶段细节、完成条件和基线命令统一下沉到对应阶段文档，
 总纲不再重复维护 backlog 级别的实现细节。
