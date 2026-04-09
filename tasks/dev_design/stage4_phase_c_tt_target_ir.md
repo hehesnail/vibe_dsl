@@ -238,9 +238,10 @@ SpatialProgram
 - `K` staged-copy reader 的 transpose truth 已从
   `TTProgram -> ExecutableSpec -> accessor/materialization schema`
   显式下沉为 `transpose_2d`，host tilize / readback 会按该 truth 做 2D transpose
-- 但更宽 `MHA / GQA` 子集、较大 shape 与 TT-Sim `float16` 路径仍未完成；
-  当前大 shape `float16` case 在 simulator 上仍会命中
-  `UntestedFunctionality: tensix_execute_unpacr: fp16`
+- 更宽 `MHA / GQA` 子集与较大 shape 的已支持 `bf16` runtime/correctness
+  仍未完成
+- TT-Sim `fp16` 路径继续视为 simulator capability boundary，
+  不属于当前 `Phase C2` 的正式 runtime gate
 
 这还不算完成。
 `Phase C2` 完成必须同时满足：
@@ -506,5 +507,5 @@ pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime
 它不证明：
 
 - 更宽 `MHA / GQA` runtime correctness 已经完成
-- 大 shape `float16` TT-Sim runtime 已经可作为正式 correctness gate
+- TT-Sim `fp16` 路径已进入当前正式 correctness gate
 - `Phase C2` 已完成

@@ -22,14 +22,13 @@
     还是 TileLang target contract 回归，再继续分析
   - 当前已确认 `fp16` unpack 只是其中一个显式 gate，不是唯一约束面
 
-### TT-Sim 上的较大 `float16` flash-attn runtime 仍受 simulator fp16 能力限制
+### TT-Sim 上的较大 `float16` flash-attn runtime 属于 simulator fp16 boundary
 
 - **现象**:
   - `flash-attn` small bf16 MHA direct runtime 已能真实执行并和 reference 对齐
   - 但较大 `float16` MHA case 在当前 TT-Sim 上仍会命中
     `UntestedFunctionality: tensix_execute_unpacr: fp16`
 - **根因**:
-  - 当前 blocker 已经不是本次修掉的 `K` transpose correctness bug
   - 失败点来自 simulator 自身对该 `fp16` 执行路径的能力边界，
     不是 `direct_runtime_unsupported_reasons`
 - **当前结论**:

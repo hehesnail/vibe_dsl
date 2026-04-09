@@ -55,17 +55,16 @@
 - oversubscribed direct runtime 目前不是通用同步执行模型；
   一旦 executable 带显式 `TTSemaphorePlan`、`semaphore_bindings`
   或 `remote_core_descriptors`，仍应 fail-fast
-- 较大 `float16` `flash-attn` 在当前 TT-Sim 上仍会命中
-  `UntestedFunctionality: tensix_execute_unpacr: fp16`；
-  目前按 simulator 能力边界处理，不视为本轮 target contract 回归
+- TT-Sim `fp16` 路径当前仍可能命中 simulator fatal taxonomy；
+  该路径不属于当前 Blackhole runtime 的正式 correctness baseline，
+  统一按 simulator capability boundary 处理
 - `TT_METAL_WATCHER=10` 调试 multicore direct path 时，
   watcher 线程仍可能自己抛错或卡在 dump；
   正式 baseline 应在标准 watcher-off 环境下判断
 
 ## 下一步
 
-1. 扩大 `flash-attn` `Phase C2` 支持面，并把 runtime correctness
-   和 TT-Sim `float16` 能力边界继续分开判断
+1. 扩大 `flash-attn` `Phase C2` 支持面，并在当前 `bf16` runtime baseline 上继续兑现更宽 correctness
 2. 在当前 layered mainline 上继续承接
    `topk / fusedmoe / paged decode / chunk recurrence`
 3. 继续扩大 copy/dataflow 与 synchronization 支持面
@@ -81,4 +80,3 @@
 - GEMM direct runtime regressions 通过：`2 passed, 38 deselected`
 - `flash-attn` 当前支持 runtime regression 通过：`1 passed, 6 deselected`
 - 手工 `512x512x512` `bf16` pure GEMM direct runtime 已数值对齐
-- 较大 `float16` MHA direct runtime 仍命中 simulator `fp16` 能力边界

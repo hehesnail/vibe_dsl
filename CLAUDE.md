@@ -110,6 +110,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - source 完 TT-Sim 脚本后，再把 `TILELANG_HOME` 显式指回当前 checkout/worktree 的 `tilelang_repo`
 - 具体跑哪个 `pytest` case/selector，按当前 task / design / progress 文档决定，不要在这里硬编码成单个 case
 - 一旦进入 TT-Sim / runtime debug，先看 `memory/general_dev.md` 和 `memory/bugs.md`，优先复用已记录的环境、watcher、runtime 边界经验，不要从头试错
+- Blackhole runtime / direct-runtime 的正式测试基线统一使用 `bf16` 输入；
+  不要再把 `fp16` 当成当前 TT-Sim 上的 correctness gate
+- TT-Sim `fp16` 路径命中的 `UntestedFunctionality` / simulator fatal taxonomy
+  属于 simulator capability boundary；
+  记录到 `memory/tt_simulator_constraints.md` / `memory/bugs.md`，不要把它表述成当前主任务 blocker
 
 ---
 
