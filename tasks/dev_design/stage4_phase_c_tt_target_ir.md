@@ -11,7 +11,7 @@
   GEMM oversubscribed `work_packets` host scheduling 已兑现，
   但 `Phase C2` wider runtime payoff 与 wider support surface 仍未完成
 - **已完成子阶段**: read-only translator demand probe、`TTHardwareModel` intake、
-  `TTProgram` core object set、`LowerSpatialProgramToTTTarget`、
+  当前已落地的 `TTProgram` core object set、`LowerSpatialProgramToTTTarget`、
   `ValidateTTTargetProgram`、`MaterializeTTExecutableSpec`
 - **仍未完成**:
   - `flash-attn` `Phase C2` runtime / correctness payoff
@@ -56,6 +56,7 @@
 - `TTProgram`
 - `TTKernel`
 - `TTCoreGroup`
+- `TTBlockPlan`
 - `TTCBPlan`
 - `TTTransportPlan`
 - `TTSemaphorePlan`
@@ -68,6 +69,8 @@
 ### 2.2 TTProgram 必须显式承载的 truth
 
 - `TTKernel`: kernel role、core-group membership、kernel-local binding
+- `TTBlockPlan`: target-side block sizing、reduction slicing、subblock、
+  buffering 与 block-to-core decomposition truth
 - `TTCBPlan`: CB purpose、buffer class、producer-consumer binding
 - `TTTransportPlan`: transport family、route / fanout / merge requirement
 - `TTSemaphorePlan / TTComputeSyncPlan`: dependency、completion、barrier、
@@ -170,7 +173,7 @@
 - `TTHardwareModel` 已作为 module-scope global info 进入主线
 - `LowerSpatialProgramToTTTargetProbe` 已落地，并且只消费
   `SpatialProgram + TTHardwareModel + SpatialCapabilityModel`
-- `TTProgram` core object set 已落地，
+- 除本轮新增的 `TTBlockPlan` 扩展外，`TTProgram` core object set 已落地，
   `LowerSpatialProgramToTTTarget / ValidateTTTargetProgram /
   MaterializeTTExecutableSpec` 已进入正式主链
 - runtime/codegen 已切到 `TTProgram` direct reader；
@@ -268,7 +271,108 @@ SpatialProgram
 4. 对未支持部分有显式 unsupported / fail-fast 边界，
    而不是晚到 codegen/runtime 才炸
 
-### 6.3 Wider Copy / Dataflow 支持面
+### 6.3 Target-Side Block Planning And Partition Intent
+
+当前 GEMM / multi-GEMM 主链暴露出的问题，不是“还差一个更大的 test tile”，
+而是三层 truth 仍然混在一起：
+
+- case / lowering 里的 staging shape
+- target-side block sizing
+- `TTCoreGroup.work_packets` 调度结果
+
+长期设计必须把三者拆开。
+
+#### `SpatialProgram` 负责什么
+
+`SpatialProgram.work_partitions` 只负责抽象切分空间，而不负责 exact target size。
+它的长期职责是表达：
+
+- 哪些轴属于 parallel partition space
+- 哪些轴属于 reduction / serial partition space
+- tail 是否允许、如何处理
+- overlap / halo 是否允许
+- producer-consumer reuse / closure 约束
+
+换句话说，前面各层“写什么”只应该通过这些 abstract partition intent
+影响后端；它们不应该直接决定 Blackhole 上每块具体有多大。
+
+#### `TTProgram` 负责什么
+
+具体 block 大小必须在 `Phase C` 里由 target planner 决定，
+因为这一步显式依赖 `TTHardwareModel`：
+
+- tile atom / legal divisibility
+- L1 / CB 容量
+- buffering policy
+- subblock legality
+- family-specific compute / transport constraints
+
+因此 `TTProgram` 需要新增 `TTBlockPlan`，作为 target-side concrete sizing truth。
+`TTBlockPlan` 的最小职责是承接：
+
+- 绑定哪个 `work_partition`
+- 绑定哪个 `kernel / core_group`
+- `parallel_block_shape`
+- `reduction_slice_shape`
+- `subblock_shape`
+- `buffering_policy`
+- `tail_policy`
+- 必要的 target-local traits / payload
+
+这里的 `reduction_slice_shape` 是 general 数据切分概念；
+GEMM 里的 `K` 只是其中一个实例，不应把长期抽象命名绑死在 GEMM noun 上。
+
+#### Planner 与下游对象的职责
+
+`TTBlockPlan` 一旦存在，后续对象的 owner 关系必须改成：
+
+```text
+WorkPartition intent
+  + TT local compute / transport truth
+  + TTHardwareModel
+  -> TTBlockPlan
+  -> TTCBPlan
+  -> TTCoreGroup.work_packets
+```
+
+其中：
+
+- `TTCBPlan` 只承接 block plan 的资源后果，不再从 case-local shared shape
+  直接抄大小
+- `TTCoreGroup.work_packets` 只表示最终调度，
+  不再承担 decomposition truth owner 职责
+- `AssignBlackholeCores` 只负责把已决定好的 block work
+  分配到 physical cores；它不是 first-principles block planner
+
+#### 对前面各层的影响边界
+
+这套设计不会要求 `Stateful Semantic IR` 或 `SpatialProgram`
+提前知道硬件上的“合适大小”。
+前面各层只会在下面两类信息缺失时影响我们：
+
+1. 没有把 partition legality / reuse / tail truth 表达清楚，
+   导致 target planner 被迫重新猜测“哪些切分是合法的”
+2. 没有把 op-local compute / transport truth 表达清楚，
+   导致 target planner 无法正确估算 target-local legality和资源成本
+
+反过来，前面各层写下的 case-local staging shape、
+单个 sample 的 shared-buffer 维度、或 ad-hoc loop carving，
+都不应该继续作为长期 target block size owner。
+
+这意味着：
+
+- migration 期间它们可以暂时作为 lowering hint 存在
+- 但 `Phase C` 结束前，typed `TTBlockPlan` 必须成为唯一稳定真源
+
+完成标准：
+
+1. 支持的 GEMM / multi-GEMM family 已显式物化 `TTBlockPlan`
+2. `PlanBlackholeCB` 与 core assignment 只消费 `TTBlockPlan`，
+   不再从 case-local shape 或松散 payload 猜 sizing
+3. validator、runtime、codegen 对 block legality 的判断共享同一套 truth
+4. 未支持 family / shape 继续 fail-fast，而不是退回 ad-hoc fallback
+
+### 6.4 Wider Copy / Dataflow 支持面
 
 当前稳定支持面仍然很窄：
 
@@ -298,7 +402,7 @@ SpatialProgram
   或 `remote_core_descriptors`，oversubscribed launch 仍应 fail-fast，
   不能假设 repeated launch 和单次并发 launch 语义等价
 
-### 6.4 Wider Synchronization 支持面
+### 6.5 Wider Synchronization 支持面
 
 当前 `TTSemaphorePlan / TTComputeSyncPlan` 对象已经在位，
 但“对象存在”不等于同步支持面已经完成。
@@ -314,7 +418,7 @@ SpatialProgram
 4. 新同步模式进入支持面时，必须有对应 regression；
    不能靠“当前 case 没挂”代替协议闭环
 
-### 6.5 Object-Boundary / Typed Uplift 后续
+### 6.6 Object-Boundary / Typed Uplift 后续
 
 下面这些还不能长期停留在“payload 里先放着”的状态：
 
