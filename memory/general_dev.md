@@ -186,6 +186,14 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 这组 flow contract 不能只覆盖 fragment/local intermediate buffer；
   还要覆盖 compute kernel 内参与同一 producer-consumer 协议的 CB-backed input buffer，
   否则 retain/pop 策略会在 lower 侧退回成“缺 contract 默认即时 pop”
+- fragment-side 生命周期要拆成两层看：
+  上游 owner 负责语义生命周期
+  （`live_form_kind / execution_topology_kind / physical_local_extent`，
+  即一个值当前是 thread-distributed fragment、cb-live tile、
+  dst-live fragment，还是 materialized local fragment）；
+  target 侧再负责 CB overlap、reserve/push/pop、page sizing
+  这些物理资源生命周期。
+  不要把这两类分析混成“CB 分析都放后段做”
 - TT-Sim `float16` 路径是否可用要和 target contract 问题分开判断；
   如果 small bf16 correctness 已过、但大 shape `float16` 命中
   `UntestedFunctionality: tensix_execute_unpacr: fp16`，

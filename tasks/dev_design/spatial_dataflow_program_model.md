@@ -245,6 +245,31 @@ generic `fragment_materialization_contract`：
 - `value_role = fragment_delta`
 - `merge_kind = fragment_add`
 
+但当前回溯也表明，
+只描述“它要不要 materialize / merge”还不够。
+对于 thread-distributed fragment，
+owner-side contract 还必须继续补齐：
+
+- `live_form_kind`
+  例如 `thread_distributed_fragment`、
+  `materialized_local_fragment`、
+  `cb_live_tile`、
+  `dst_live_fragment`
+- `execution_topology_kind`
+  即 materialize/consume 这份值时依赖哪类 execution lane truth，
+  不能默认等同于“当前 codegen 恰好拿得到某个 `threadIdx.x`”
+- `physical_local_extent`
+  用来区分 logical element count
+  与当前 live form 在 device-side physical buffer
+  实际持有的 per-lane slice extent
+
+这几项属于语义生命周期 truth，
+owner 仍然是 `StatefulSemanticIR / SpatialProgram`。
+相对地，CB overlap、reserve/push/pop、page sizing
+仍属于 target-side 物理资源生命周期分析；
+不能因为 target 侧要做这些事，
+就把 fragment live form 也留给 lower/codegen 去猜
+
 这里不允许把 `matmul / flash-attn / paged decode` 之类的 family 名字编码进 contract；
 family-specific extractor 只能在 owner 上游把结构证据归约成同一份 contract，
 并且这类事实应由 operator/semantic owner 暴露 typed metadata，

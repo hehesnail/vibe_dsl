@@ -59,6 +59,24 @@
   与 compute kernel 内同一 producer-consumer 协议下的 CB-backed input buffer，
   不再允许 lower 侧本地扫 `SeqStmt` 恢复
   `write / compute_consume / transport_consume / republish` 语义
+- real `lower()` 主链里原先会在
+  `OptimizeForTarget -> SplitHostDevice` 之后丢掉
+  `layout_map / tl.Fragment` truth；
+  当前已把这部分 truth 投影成 device-side
+  `tl.fragment_layout_seeds`，
+  并由 `AnalyzeBlackholeFragmentRegions`
+  重新 materialize 成 typed `fragment_layout_contracts`
+- 但这次回溯也证明当前 blocker 不只是 post-merge case：
+  `blackhole.acc` fragment 的真实 live form 仍未被上游 contract 说清。
+  当前 device-side physical buffer 只保留 per-lane local extent
+  （典型 case：逻辑 `32x32` fragment，physical local extent 只有 `8`），
+  但 `LowerBlackholeOps / codegen` 仍会把它当成
+  已 materialized 的线性 logical fragment 使用。
+  结果是：
+  `fragment_fill -> cast -> publish` direct runtime 输出全零，
+  `clear_accum=false` merge 后继续 cast consumer 时只覆盖一小条 slice，
+  说明问题是通用的 thread-distributed fragment live-form /
+  execution-lane contract 缺口，而不是单个 post-merge 特例
 - 人为移除 `compute_epilogue_ops` gate 后，
   small `bf16` MHA direct runtime 仍会明显错算
   （当前采样：`max diff=1.2265625`, `mean diff=0.2021484375`），
@@ -80,7 +98,12 @@
   并继续把剩余 multi-GEMM compute contract 收成 typed target truth；
   当前优先级最高的是把跨-op intermediate edge 的
   `dataflow contract` 和 per-buffer `work/access contract`
-  前移成 `SpatialProgram` 正式 schema
+  前移成 `SpatialProgram` 正式 schema。
+  当前新增的第一 blocker 是把 fragment-side
+  `live_form_kind / execution_topology_kind / physical_local_extent`
+  也前移成 owner-side contract；
+  否则 lower/codegen 仍会在 `blackhole.acc` 这种
+  per-lane physical slice 上误用 logical extent 或默认 lane-0
 - 在当前主链上继续承接
   `topk / fusedmoe / paged decode / chunk recurrence` 等 family
 - 继续扩大 copy/dataflow 与 synchronization 支持面

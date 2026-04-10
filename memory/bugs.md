@@ -212,6 +212,46 @@
     说明 fragment materialization/merge 的执行语义本身
     还没和真实 device protocol 对齐
 
+#### thread-distributed fragment 的 layout truth 不等于 live-form truth
+
+- **症状**:
+  - real `lower()` 主链里把 fragment layout truth 投影回 device side 之后，
+    `fragment_fill -> cast -> publish` direct runtime 仍输出全零
+  - `clear_accum=false` merge 后继续给 cast consumer 的 case
+    只会覆盖一小条 slice，当前采样
+    `max diff=37.25`, `mean diff=8.8125`
+- **根因**:
+  - `OptimizeForTarget -> SplitHostDevice` 之后，
+    `layout_map / tl.Fragment` 原始 truth 会消失；
+    当前虽然已用 `tl.fragment_layout_seeds`
+    把 layout truth 投影回 device side，
+    但这只能说明 logical layout
+  - 对 thread-distributed fragment，
+    device-side `blackhole.acc` buffer 仍只是 per-lane physical slice，
+    不是已经 materialized 的 full logical fragment。
+    典型 case：逻辑 `32x32`，physical local extent 只有 `8`
+  - 如果上游 contract 没有显式给出
+    `live_form / execution_lane / physical_local_extent`，
+    lower/codegen 就会继续犯两类错误：
+    1. 按 logical extent 误用 per-lane physical buffer
+       （例如 `fill_fragment` 把 `1024` 当作 `blackhole.acc[8]` 的 fill extent）
+    2. 在 republish/cast bridge 里默认 lane-0，
+       最终只 materialize 出单 lane slice
+- **修法**:
+  - 把 `fragment_layout_contract` 扩成 owner-side fragment live-form contract，
+    至少显式带出
+    `live_form_kind / execution_topology_kind / physical_local_extent`
+  - 这层 truth 的 owner 应该是
+    `StatefulSemanticIR / SpatialProgram`
+  - `TTProgram / LowerBlackholeOps / codegen`
+    只消费这份 typed truth 做 target materialization；
+    `CB` overlap / reserve / push / pop 之类物理资源分析仍留在 target 侧
+- **教训**:
+  - `layout truth restored` 不代表
+    `fragment materialization protocol closed`
+  - 只要 device-side live form 还是 per-lane distributed，
+    就不能把 `blackhole.acc` 指针直接当成 full logical fragment 去线性读写
+
 ### 2.3 CB / synchronization / compute lifecycle
 
 #### GEMM output / writer bridge CB 去重不能只看 `Buffer` 对象或 `buffer->data`

@@ -71,6 +71,33 @@
   `flow_class / event order / publish-consume granule` truth，
   不再在本地重新扫 `SeqStmt` 推断 `write / consume / republish`
 
+这轮回溯又补上了一条更具体的证据：
+
+- real `lower()` 主链里，
+  `OptimizeForTarget -> SplitHostDevice` 之后
+  原始 `layout_map / tl.Fragment` truth 会消失；
+  当前已经通过 device-side `tl.fragment_layout_seeds`
+  把这份 truth 投影回来，
+  并由 `AnalyzeBlackholeFragmentRegions`
+  重新 materialize 成 `fragment_layout_contracts`
+- 但 projected layout truth 本身还不够。
+  对 thread-distributed fragment 来说，
+  device-side `blackhole.acc` buffer 仍只是 per-lane physical slice，
+  不是已经 materialized 的 full logical fragment。
+  典型 case 是逻辑 `32x32` fragment，
+  物理 local extent 只有 `8`
+- 因此当前真正缺的不是“再补一个 cast builtin 细节”，
+  而是 owner-side fragment live-form contract：
+  merge / fill / republish 之后的值到底还是
+  `thread_distributed_fragment`、
+  还是已经变成 `materialized_local_fragment`、
+  `cb_live_tile` 或 `dst_live_fragment`
+- 如果这层 truth 不上移，
+  后段就会继续犯两类同型错误：
+  一类是按 logical extent 误用 per-lane physical buffer；
+  另一类是把 execution lane 默认成 lane-0
+  再去 materialize republish/cast bridge
+
 同时，`Phase C2` 也再次证明：
 
 - `work_linear_id` 只能是 logical work identity，不该继续兼任 per-buffer access truth
@@ -106,6 +133,20 @@
   `blockIdx` 绑定只能来自 `per_work_arg_specs.value_kind`，
   不能再因为看见 `output_tile_start_id / a_tile_start_id / b_tile_start_id`
   就默认假设其含义
+
+对 fragment-side contract 也必须执行同样纪律：
+
+- `fragment_layout_contract` 不能只回答 logical layout；
+  还必须回答 live form / execution topology / physical local extent
+- 这属于 `Phase B -> SpatialProgram` 的 owner truth，
+  不是 `LowerBlackholeOps / codegen` 可以从
+  `blackhole.acc` buffer shape、局部 builtin 排列，
+  或某个当前 kernel 恰好没有 `threadIdx.x` attr
+  就去猜出来的东西
+- `CB` overlap / reserve / push / pop 的物理生命周期分析
+  仍然留在 target 侧；
+  但“一个 fragment 值当前活成什么形态、谁可以继续消费它”
+  这类语义生命周期必须上移
 
 这不是长期终点：
 
@@ -603,6 +644,16 @@ pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime
   因此 `typed fragment materialization contract` 还必须把
   compute epilogue 的真实 materialize-then-merge protocol
   以前段 typed truth 形式收住，再让 codegen/runtime 消费
+- 当前回归里又新增了一条更通用的证据：
+  即使 layout truth 已投影回 device side，
+  `fragment_fill -> cast -> publish` 和
+  `clear_accum=false` merge 后继续 cast consumer
+  仍会在 direct runtime 上错算；
+  当前现象分别是“整 tile 全零”和“只覆盖单 lane slice”。
+  这说明剩余缺口已经不是单个 post-merge builtin，
+  而是 thread-distributed fragment 的
+  `live_form / execution_lane / physical_local_extent`
+  尚未成为前段 typed truth
 
 当前 Blackhole runtime/direct-runtime regression baseline 统一使用 `bf16` 输入；
 `fp16` 不再作为当前 TT-Sim 上的正式 runtime gate。
