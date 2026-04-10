@@ -9,15 +9,23 @@
 
 - **日期**: `2026-04-10`
 - **总阶段**: Stage 4
-- **当前主线**: `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
+- **目标主线**: `Normalized Tile TIR -> SpatialGraph -> TTProgram -> ExecutableSpec`
+- **当前代码基线**: 仍为旧 `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
 - **阶段状态**:
-  - `Stage 0 / Phase A / Phase B` 已完成
-  - `Phase C` 进行中；`TTProgram` cutover 已完成，剩余工作集中在 `Phase C2`
-    与更宽支持面兑现
+  - 当前执行基线仍是旧 `Phase C` 主链
+  - 两层 IR 总设计已 ratify；下一阶段进入 architecture cutover
+  - `Stage 0 / Phase A / Phase B` 文档保留为历史实现边界，不再代表长期总设计
 
 ## 当前状态摘要
 
 - `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path 仍是唯一正式执行路径
+- `tasks/dev_design/final_blackhole_backend_redesign.md`
+  已改写为新的唯一总设计：
+  `Normalized Tile TIR -> SpatialGraph -> TTProgram -> ExecutableSpec`
+- 从当前设计起：
+  - `SemanticProgram` 与旧 `SpatialProgram` 只代表当前代码基线/历史实现边界
+  - 后续所有架构推进以 `SpatialGraph / VirtualTask / TTBlockPlan`
+    为 owner 链
 - `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复
 - `TTProgram` translator / validator / materializer 已进入正式主链；
   runtime/codegen 已切到 `TTProgram` direct reader
@@ -46,12 +54,28 @@
   analysis pass 现在只把上游暴露的事实归约成 generic contract，
   不再自己按 family 名字判断协议
 - 当前这条线的第一 blocker
-  已明确回到上游 owner：
-  `SpatialProgram` 对跨-op intermediate edge 的
-  `dataflow contract` 和 per-buffer `work/access contract`
-  仍未完整 formalize；
-  现有 runtime gate 只是把这个缺口诚实暴露出来，
-  不是新的长期 owner
+  已从“补一个 runtime protocol”
+  收敛为“把 active owner 链从 recovery 主链切到两层主链”：
+  旧 `SpatialProgram` 对跨-op intermediate edge 的
+  `dataflow contract`、per-buffer `work/access contract`
+  和 fragment live-form 问题，只是这条根因在当前代码基线上的暴露形式；
+  长期解法不再是继续给旧链补 `*_kind` 或 matcher，
+  而是直接落 `SpatialGraph -> TTProgram` cutover
+- 对这组 blocker 的根因判定已独立沉淀到
+  `tasks/dev_design/ir_layering_root_cause_and_direction.md`：
+  `destroy-then-recover`（`Fragment` 在
+  `OptimizeForTarget / SplitHostDevice` 被丢弃后靠 `fragment_layout_seeds`
+  反补；tile 算子在 `LowerTileOp` 被拆成 scalar loop 后靠
+  `LowerBlackholeOps` 的 17 个 `Match*` 反推）和
+  `enum-of-forms`（`FragmentMaterializationInfo` 6 个 `ffi::String`
+  字段、`companion_base.h` 6 个 stringly-typed 命名空间、
+  `SpatialProgram` 节点 `Map<String, Any> payload`）是同一条根因在不同层的
+  投影；后续任何“再加一个 `*_kind` 字符串”的修补都会继续喂这条根因
+- 新的总设计已经把这组根因收敛为两条明确决策：
+  - 第一层 stable IR 必须前移到 `Simplify` 后、`LayoutReducer/LayoutInference`
+    前，从 normalized tile TIR 直接抽 `SpatialGraph`
+  - 第二层 stable IR 必须补齐 `TTBlockPlan`，让 block/resource/ABI/execution
+    直接从 graph truth 派生，不再通过 lowered TIR matcher 恢复
 - owner-side `fragment_buffer_flow_contracts`
   已开始在 `AnalyzeSemanticStructure -> SpatialProgram`
   显式 materialize，并由 `LowerBlackholeOps` 直接消费；
@@ -93,22 +117,20 @@
 
 ## 当前未完成项
 
-- 完成 `flash-attn` `Phase C2`：
-  把当前 correctness milestone 扩成更宽 `MHA / GQA` runtime / correctness 支持面，
-  并继续把剩余 multi-GEMM compute contract 收成 typed target truth；
-  当前优先级最高的是把跨-op intermediate edge 的
-  `dataflow contract` 和 per-buffer `work/access contract`
-  前移成 `SpatialProgram` 正式 schema。
-  当前新增的第一 blocker 是把 fragment-side
-  `live_form_kind / execution_topology_kind / physical_local_extent`
-  也前移成 owner-side contract；
-  否则 lower/codegen 仍会在 `blackhole.acc` 这种
-  per-lane physical slice 上误用 logical extent 或默认 lane-0
-- 在当前主链上继续承接
-  `topk / fusedmoe / paged decode / chunk recurrence` 等 family
-- 继续扩大 copy/dataflow 与 synchronization 支持面
-- 继续完成 `Placement / SpatialCapabilityModel / payload-backed node schema`
-  的 typed uplift 与真实 consumer 验证
+- 按新总设计切出并实现两层主链：
+  - `ExtractSpatialGraph`
+  - `NormalizeSpatialGraph`
+  - `PlanSpatialTasks`
+  - `PlanTTBlocks / PlanTTResources / PlanTTABI / PlanTTExecution`
+  - `MaterializeBlackholeExecutable`
+- 在同一轮 cutover 中退场旧 recovery 主链：
+  `semantic_manifest / SemanticProgram / 旧 SpatialProgram /
+  LowerBlackholeOps matcher 路线`
+- 用新主链重新承接
+  `flash-attn / topk / fusedmoe / paged decode / chunk recurrence`
+- 在 `TTProgram` 层补齐 `TTBlockPlan`，
+  收正 SRAM/CB/semaphore/runtime arg/work packet owner
+- 在 cutover 完成前，继续保持 copy / GEMM / export 当前正式支持面不回退
 
 ## 当前边界
 
@@ -128,18 +150,17 @@
 
 ## 下一步
 
-1. 先补齐 `SpatialProgram` 对跨-op intermediate edge 的
-   `dataflow contract` 与 per-buffer `work/access contract`，
-   再据此继续兑现 `flash-attn` `Phase C2`；
-   当前下一步重点是把这组 contract 从
-   `fragment_buffer_flow_contracts`
-   扩成更完整的 edge/access schema，
-   并继续把 runtime gate 对应的 fragment materialization/merge protocol
-   执行化
-2. 在当前 layered mainline 上继续承接
-   `topk / fusedmoe / paged decode / chunk recurrence`
-3. 继续扩大 copy/dataflow 与 synchronization 支持面
-4. 继续完成剩余 object-boundary typed uplift
+1. 先把 supporting design 文档按新总设计收正：
+   `spatial_dataflow_program_model.md`
+   需要改写为 `SpatialGraph / VirtualTask / TTBlockPlan` owner 链
+2. 在 `Simplify` 后实现 `ExtractSpatialGraph`，
+   直接替掉 `LayoutInference -> semantic_manifest -> SemanticProgram`
+   这条 recovery 入口
+3. 实现 `PlanSpatialTasks`，把 `Task / Channel`
+   退回 derived execution grouping
+4. 实现带 `TTBlockPlan` 的 `TTProgram` cutover，
+   吸收 `SplitBlackholeKernel / PlanBlackholeCB / AssignBlackholeCores`
+   的 owner 职责
 
 ## 最新验证摘要
 
