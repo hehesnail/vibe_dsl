@@ -6,7 +6,6 @@ from tilelang import language as T
 from tilelang.engine.lower import lower, merge_ir_modules
 from tilelang import tvm
 from tvm.target import Target
-from tvm.tir import stmt_functor
 
 from .common import (
     assert_tensors_close_or_dump,
@@ -18,6 +17,8 @@ from .common import (
     gemm_kernel,
     gemm_kernel_with_compute_config_extras,
     gemm_kernel_with_compute_abi,
+    fragment_fill_cast_publish_kernel,
+    gemm_kernel_with_post_merge_cast_consumer,
     gemm_kernel_with_mbar,
     gemm_kernel_with_policy,
     gemm_kernel_with_transpose_flags,
@@ -67,12 +68,10 @@ def _with_richer_accessor_schema(func, common_runtime_args=None):
             richer_accessors.append(richer_accessor)
         richer_segment["accessors"] = richer_accessors
         richer_segments.append(richer_segment)
-    if func.attrs and "tl.tt_program" in func.attrs:
-        return func.with_attr(
-            "tl.tt_program",
-            _rebuild_tt_program_with_segment_plan(require_tt_program(func), richer_segments),
-        )
-    return func.with_attr("blackhole.segment_plan", richer_segments)
+    return func.with_attr(
+        "tl.tt_program",
+        _rebuild_tt_program_with_segment_plan(require_tt_program(func), richer_segments),
+    )
 
 
 def _with_sharded_accessor_schema(func):
@@ -102,24 +101,20 @@ def _with_sharded_accessor_schema(func):
             richer_accessors.append(richer_accessor)
         richer_segment["accessors"] = richer_accessors
         richer_segments.append(richer_segment)
-    if func.attrs and "tl.tt_program" in func.attrs:
-        return func.with_attr(
-            "tl.tt_program",
-            _rebuild_tt_program_with_segment_plan(require_tt_program(func), richer_segments),
-        )
-    return func.with_attr("blackhole.segment_plan", richer_segments)
+    return func.with_attr(
+        "tl.tt_program",
+        _rebuild_tt_program_with_segment_plan(require_tt_program(func), richer_segments),
+    )
 
 
 def _with_mutated_segment_plan(func, segment_mutator):
     mutated_segments = []
     for segment in extract_blackhole_segment_plan(func):
         mutated_segments.append(segment_mutator(dict(segment)))
-    if func.attrs and "tl.tt_program" in func.attrs:
-        return func.with_attr(
-            "tl.tt_program",
-            _rebuild_tt_program_with_segment_plan(require_tt_program(func), mutated_segments),
-        )
-    return func.with_attr("blackhole.segment_plan", mutated_segments)
+    return func.with_attr(
+        "tl.tt_program",
+        _rebuild_tt_program_with_segment_plan(require_tt_program(func), mutated_segments),
+    )
 
 
 def _rebuild_codegen_module_with_segment_plan(artifact, segment_plan):
@@ -226,107 +221,6 @@ def multicore_gemm_kernel(
             )
 
     return main
-
-
-def test_blackhole_split_kernel_gemm_segment_plan():
-    kernel = gemm_kernel()
-    mod = tilelang.tvm.IRModule({"main": kernel})
-    target = Target("blackhole")
-    with target:
-        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-
-    plan = None
-    for _, func in mod.functions.items():
-        if func.attrs and "blackhole.segment_plan" in func.attrs:
-            plan = func.attrs["blackhole.segment_plan"]
-            break
-
-    assert plan is not None
-    assert len(plan) == 3
-    assert str(plan[0]["kind"]) == "reader"
-    assert str(plan[1]["kind"]) == "compute"
-    assert str(plan[2]["kind"]) == "writer"
-    assert str(plan[0]["core_type"]) == "brisc"
-    assert str(plan[1]["core_type"]) == "trisc"
-    assert str(plan[2]["core_type"]) == "ncrisc"
-
-    reader_args = plan[0]["runtime_args"]
-    assert [str(arg["buffer"]) for arg in reader_args if "buffer" in arg] == ["A", "B"]
-    assert [str(arg["kind"]) for arg in reader_args] == [
-        "input_buffer_addr32",
-        "input_buffer_addr32",
-        "work_linear_id",
-        "a_tile_start_id",
-        "a_tile_num_tiles",
-        "a_tile_stride",
-        "b_tile_start_id",
-        "b_tile_num_tiles",
-        "b_tile_stride",
-        "k_tile_start_id",
-        "num_k_tiles",
-    ]
-
-    compute_args = plan[1]["runtime_args"]
-    assert [str(arg["kind"]) for arg in compute_args] == [
-        "k_tile_start_id",
-        "num_k_tiles",
-    ]
-
-    writer_args = plan[2]["runtime_args"]
-    assert [str(arg["buffer"]) for arg in writer_args if "buffer" in arg] == ["C"]
-    assert [str(arg["kind"]) for arg in writer_args if "buffer" not in arg] == [
-        "work_linear_id",
-        "output_tile_start_id",
-        "output_tile_num_tiles",
-        "output_tile_stride",
-    ]
-
-
-def test_blackhole_split_kernel_prefers_copy_buffer_handles_over_annotation_names():
-    kernel = gemm_kernel()
-    mod = tilelang.tvm.IRModule({"main": kernel})
-    target = Target("blackhole")
-    with target:
-        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-
-    def mutate(stmt):
-        if not isinstance(stmt, tvm.tir.For):
-            return stmt
-        sem = stmt.annotations.get("blackhole.copy_semantics")
-        if sem is None:
-            return stmt
-        annotations = dict(stmt.annotations)
-        annotations["blackhole.copy_semantics"] = {
-            **dict(sem),
-            "src_buffer": "WRONG_INPUT_BUFFER",
-            "mid_buffer": "WRONG_INTERMEDIATE_BUFFER",
-            "dst_buffer": "WRONG_OUTPUT_BUFFER",
-        }
-        return tvm.tir.For(
-            stmt.loop_var,
-            stmt.min,
-            stmt.extent,
-            stmt.kind,
-            stmt.body,
-            stmt.thread_binding,
-            annotations,
-            stmt.step,
-            getattr(stmt, "span", None),
-        )
-
-    mutated_body = stmt_functor.ir_transform(mod["main"].body, None, mutate, ["tir.For"])
-    mod.update_func(mod.get_global_var("main"), mod["main"].with_body(mutated_body))
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-
-    plan = mod["main"].attrs["blackhole.segment_plan"]
-    reader_args = plan[0]["runtime_args"]
-    writer_args = plan[2]["runtime_args"]
-
-    assert [str(arg["buffer"]) for arg in reader_args if "buffer" in arg] == ["A", "B"]
-    assert [str(arg["buffer"]) for arg in writer_args if "buffer" in arg] == ["C"]
 
 
 def test_blackhole_gemm_pipeline_attaches_spatial_program():
@@ -1325,6 +1219,179 @@ def test_blackhole_gemm_direct_runtime_preserves_richer_compute_config_correctne
     )
 
 
+def test_blackhole_gemm_direct_runtime_supports_clear_accum_false_merge_protocol():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    torch.manual_seed(0)
+    a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    c_output = torch.zeros(32, 32, dtype=torch.float32)
+    c_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1))
+
+    kernel = gemm_kernel_with_compute_abi(
+        clear_accum=False, k_pack=1, wg_wait=0, preclear_output_fragment=True
+    )
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    compute_contract = executable_spec["compute_contract"]
+    assert bool(compute_contract["clear_accum"]) is False
+    assert int(compute_contract["k_pack"]) == 1
+    assert int(compute_contract["wg_wait"]) == 0
+    output_cb = next(
+        cfg for cfg in executable_spec["cb_configs"] if cfg["role"] == "output" and cfg["name"] == "C_local"
+    )
+    compute_source = next(
+        kernel["source_code"] for kernel in executable_spec["kernels"] if kernel["kind"] == "compute"
+    )
+    assert f"pack_tile(0, {int(output_cb['cb_id'])});" in compute_source
+    assert f"cb_push_back({int(output_cb['cb_id'])}, 1);" in compute_source
+
+    artifact.codegen_mod["main"](a_torch, b_torch, c_output)
+    assert_tensors_close_or_dump(
+        c_output,
+        c_ref,
+        atol=2e-1,
+        rtol=2e-1,
+        failure_message="GEMM clear-accum-false direct-call output mismatch",
+    )
+
+
+def test_blackhole_gemm_post_merge_cast_consumer_exposes_republish_contract():
+    kernel = gemm_kernel_with_post_merge_cast_consumer()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    cast_op = next(
+        op
+        for op in spec.get("compute_epilogue_ops", [])
+        if str(op.get("kind", "")) == "cast_fragment_slice" and str(op.get("dst_buffer", "")) == "D_local"
+    )
+    contract = cast_op["fragment_materialization_contract"]
+    assert str(contract["kind"]) == "republished_logical_tile"
+    assert str(contract["materialization_kind"]) == "republished_buffer"
+    assert str(contract["bridge_kind"]) == "tile_nfaces_materialization"
+    assert str(contract["value_role"]) == "consumer_input"
+    assert str(contract["merge_kind"]) == "direct_write"
+    assert str(contract["execution_protocol"]) == "tiled_cb_republish"
+    assert str(contract["result_live_form"]) == "tiled_cb"
+    assert str(contract["source_buffer"]) == "C_local"
+    assert int(contract["logical_row_width"]) == 32
+    assert int(contract["logical_element_count"]) == 32 * 32
+
+    merge_op = next(
+        op
+        for op in spec.get("compute_epilogue_ops", [])
+        if str(op.get("kind", "")) == "merge_fragment_tiles"
+        and str(op.get("dst_buffer", "")) == "C_local"
+    )
+    merge_contract = merge_op["fragment_materialization_contract"]
+    assert str(merge_contract["result_live_form"]) == "tiled_cb"
+
+
+def test_blackhole_gemm_direct_runtime_preserves_clear_accum_false_fragment_for_cast_consumer():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    torch.manual_seed(0)
+    a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    d_output = torch.zeros(32, 32, dtype=torch.bfloat16)
+    d_ref = torch.matmul(a_torch.float(), b_torch.float().transpose(0, 1)).to(torch.bfloat16)
+
+    kernel = gemm_kernel_with_post_merge_cast_consumer()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    compute_contract = executable_spec["compute_contract"]
+    assert bool(compute_contract["clear_accum"]) is False
+
+    artifact.codegen_mod["main"](a_torch, b_torch, d_output)
+    assert_tensors_close_or_dump(
+        d_output,
+        d_ref,
+        atol=2e-1,
+        rtol=2e-1,
+        failure_message=(
+            "GEMM clear-accum-false preserve-for-cast-consumer direct-call output mismatch"
+        ),
+    )
+
+
+def test_blackhole_fragment_fill_cast_publish_runtime():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    d_output = torch.zeros(32, 32, dtype=torch.bfloat16)
+    d_ref = torch.full((32, 32), 3.5, dtype=torch.bfloat16)
+
+    kernel = fragment_fill_cast_publish_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    artifact.codegen_mod["main"](d_output)
+    assert_tensors_close_or_dump(
+        d_output,
+        d_ref,
+        atol=0,
+        rtol=0,
+        failure_message=(
+            "Fragment fill->cast->publish direct-call output mismatch"
+        ),
+    )
+
+
+def test_blackhole_fragment_fill_cast_publish_materializes_generic_compute_writer_segments():
+    kernel = fragment_fill_cast_publish_kernel()
+    target = Target("blackhole")
+
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+    mod = lower_blackhole_to_tt_target(mod)
+
+    lowering_requirements = mod["main"].attrs["blackhole.lowering_requirements"]
+    layout_contracts = list(lowering_requirements["fragment_layout_contracts"])
+    by_buffer = {str(contract["buffer"]): contract for contract in layout_contracts}
+
+    assert {"C_local", "D_local"}.issubset(by_buffer)
+    for name in ("C_local", "D_local"):
+        contract = by_buffer[name]
+        assert str(contract["distribution_kind"]) == "thread_distributed"
+        assert tuple(int(dim) for dim in contract["shape"]) == (32, 32)
+        assert tuple(int(dim) for dim in contract["local_shape"]) == (8,)
+        assert int(contract["thread_extent"]) == 128
+        assert int(contract["replicate_extent"]) == 1
+        assert len(contract["inverse_logical_index_exprs"]) == 3
+
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+
+    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+    lowered = lower_blackhole_to_tt_target(mod)
+
+    func = lowered["main"]
+    segments = extract_blackhole_segment_plan(func)
+    assert [str(segment["kind"]) for segment in segments] == ["compute", "writer"]
+    assert [str(segment["core_type"]) for segment in segments] == ["trisc", "ncrisc"]
+
+
 def test_blackhole_gemm_direct_runtime_supports_transpose_a_compute_contract():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
@@ -1388,7 +1455,7 @@ def test_blackhole_gemm_richer_accessor_schema_roundtrip():
 
     rewritten = {}
     for gvar, func in artifact.device_mod.functions.items():
-        if func.attrs and ("tl.tt_program" in func.attrs or "blackhole.segment_plan" in func.attrs):
+        if func.attrs and "tl.tt_program" in func.attrs:
             richer_common_runtime_args = [
                 {
                     "name": "rank",

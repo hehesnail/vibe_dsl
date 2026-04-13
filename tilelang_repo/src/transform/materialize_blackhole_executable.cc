@@ -1,6 +1,6 @@
 /*!
- * \file materialize_tt_executable_spec.cc
- * \brief Phase C bridge pass retained for pipeline continuity after reader cutover.
+ * \file materialize_blackhole_executable.cc
+ * \brief Canonical Blackhole executable writer boundary.
  */
 
 #include <tvm/ffi/reflection/registry.h>
@@ -30,15 +30,10 @@ tvm::transform::Pass MaterializeBlackholeExecutable() {
                                           "tl.transform.MaterializeBlackholeExecutable", {});
 }
 
-tvm::transform::Pass MaterializeTTExecutableSpec() {
-  return MaterializeBlackholeExecutable();
-}
-
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("tl.transform.MaterializeBlackholeExecutable",
                         MaterializeBlackholeExecutable);
-  refl::GlobalDef().def("tl.transform.MaterializeTTExecutableSpec", MaterializeTTExecutableSpec);
 }
 
 }  // namespace tl

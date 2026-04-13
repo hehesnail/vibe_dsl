@@ -613,6 +613,8 @@ using tir::builtin::blackhole_pack_reconfig_data_format;
 using tir::builtin::blackhole_copy_tile_to_dst_init_short;
 using tir::builtin::blackhole_copy_tile_to_dst_init_short_with_dt;
 using tir::builtin::blackhole_copy_tile_from_cb;
+using tir::builtin::blackhole_add_tiles_init;
+using tir::builtin::blackhole_add_tiles;
 using tir::builtin::blackhole_cb_push_back;
 using tir::builtin::blackhole_tile_regs_acquire;
 using tir::builtin::blackhole_tile_regs_release;
@@ -627,6 +629,11 @@ using tir::builtin::blackhole_read_page_to_cb;
 using tir::builtin::blackhole_write_tile_from_cb;
 using tir::builtin::blackhole_write_page_from_cb;
 using tir::builtin::blackhole_write_local_slice_to_cb;
+using tir::builtin::blackhole_write_local_fragment_tile_to_cb;
+using tir::builtin::blackhole_write_local_fragment_slice_to_tiled_cb;
+using tir::builtin::blackhole_cast_fragment_slice_to_tiled_cb;
+using tir::builtin::blackhole_read_cb_front_tile_to_local;
+using tir::builtin::blackhole_read_cb_front_tile_to_local_fragment;
 using tvm::Integer;
 using tvm::DataType;
 using tvm::IntImm;
@@ -827,22 +834,6 @@ static void BuildTTKernelAndABISeeds(const Array<Any>& segment_plan,
   *abi_plans_out = abi_plans;
 }
 
-static tir::PrimFunc StripLegacyTTBridgeProjectionAttrs(tir::PrimFunc func) {
-  static const char* kLegacyBridgeAttrs[] = {
-      "blackhole.segment_plan",
-      "blackhole.runtime_args",
-      "blackhole.common_runtime_args",
-      "blackhole.per_work_arg_specs",
-      "blackhole.gemm_contract",
-      "blackhole.compute_contract",
-      "blackhole.direct_runtime_unsupported_reasons",
-  };
-  for (const char* key : kLegacyBridgeAttrs) {
-    func = tvm::WithoutAttr(std::move(func), key);
-  }
-  return func;
-}
-
 static PrimExpr ScalarizeVectorizedIndex(const PrimExpr& index) {
   if (const auto* ramp = index.as<tir::RampNode>()) {
     return ramp->base;
@@ -961,6 +952,7 @@ static StagedCopyTransportGeometry BuildStagedCopyTransportGeometry(
 static std::pair<int64_t, int64_t> ResolveStagedCopySharedShape(
     const Buffer& shared_buffer,
     const Array<Integer>& fallback_shape,
+    std::pair<int64_t, int64_t> logical_matrix_shape,
     bool segmented_gemm,
     bool transpose_b_reader,
     bool accumulator_like_src,
@@ -976,6 +968,9 @@ static std::pair<int64_t, int64_t> ResolveStagedCopySharedShape(
     ICHECK_GT(gemm_m, 0);
     ICHECK_GT(gemm_n, 0);
     return {gemm_m, gemm_n};
+  }
+  if (logical_matrix_shape.first > 0 && logical_matrix_shape.second > 0) {
+    return logical_matrix_shape;
   }
   return ResolveStaticShape2DFromBufferOrMetadata(
       shared_buffer, fallback_shape,
@@ -1353,6 +1348,14 @@ static void SetArrayRequirementIfMissing(Map<String, Any>* lowering_requirements
   }
 }
 
+static bool HasFragmentComputeContract(const Map<String, Any>& lowering_requirements) {
+  auto maybe_fragment_ops = lowering_requirements.Get(String(schema_key::kFragmentOpKinds));
+  if (!maybe_fragment_ops) {
+    return false;
+  }
+  return !Downcast<Array<Any>>(maybe_fragment_ops.value()).empty();
+}
+
 static void CollectFragmentRequirementsFromSpatialProgram(const SpatialProgram& program,
                                                          Map<String, Any>* lowering_requirements) {
   for (const ResourceIntent& intent : program->resource_intents) {
@@ -1395,6 +1398,12 @@ static void CollectFragmentRequirementsFromSpatialProgram(const SpatialProgram& 
       SetArrayRequirementIfMissing(lowering_requirements,
                                    String(schema_key::kFragmentBufferFlowContracts),
                                    Downcast<Array<Any>>(flow_contracts.value()));
+    }
+    if (auto layout_contracts =
+            intent->payload.Get(String(schema_key::kFragmentLayoutContracts))) {
+      SetArrayRequirementIfMissing(lowering_requirements,
+                                   String(schema_key::kFragmentLayoutContracts),
+                                   Downcast<Array<Any>>(layout_contracts.value()));
     }
   }
 }
@@ -1489,6 +1498,283 @@ BuildFragmentMaterializationContractMap(const Map<String, Any>& lowering_require
   return contracts_by_target_buffer;
 }
 
+static std::unordered_map<std::string, Map<String, Any>> BuildFragmentLayoutContractMap(
+    const Map<String, Any>& lowering_requirements) {
+  std::unordered_map<std::string, Map<String, Any>> contracts_by_buffer;
+  auto maybe_contracts = lowering_requirements.Get(String(schema_key::kFragmentLayoutContracts));
+  if (!maybe_contracts) {
+    return contracts_by_buffer;
+  }
+  for (const Any& contract_any : Downcast<Array<Any>>(maybe_contracts.value())) {
+    Map<String, Any> contract = Downcast<Map<String, Any>>(contract_any);
+    auto buffer_it = contract.find(String(schema_key::kBuffer));
+    if (buffer_it == contract.end()) {
+      continue;
+    }
+    const std::string buffer_name = Downcast<String>((*buffer_it).second);
+    if (!buffer_name.empty()) {
+      contracts_by_buffer.emplace(buffer_name, contract);
+    }
+  }
+  return contracts_by_buffer;
+}
+
+static std::vector<std::string> CollectSegmentKindsFromBody(const Stmt& body) {
+  class SegmentKindCollector : public tir::StmtVisitor {
+   public:
+    void VisitStmt_(const tir::AttrStmtNode* op) final {
+      if (op->attr_key == "blackhole.segment_kind") {
+        if (const auto* kind = op->value.as<tir::StringImmNode>()) {
+          const std::string segment_kind = kind->value;
+          if (seen_.insert(segment_kind).second) {
+            segment_kinds_.push_back(segment_kind);
+          }
+        }
+      }
+      tir::StmtVisitor::VisitStmt_(op);
+    }
+
+    const std::vector<std::string>& segment_kinds() const { return segment_kinds_; }
+
+   private:
+    std::unordered_set<std::string> seen_;
+    std::vector<std::string> segment_kinds_;
+  };
+
+  SegmentKindCollector collector;
+  collector(body);
+  return collector.segment_kinds();
+}
+
+static std::string CoreTypeForSegmentKind(const std::string& segment_kind) {
+  if (segment_kind == "reader") {
+    return "brisc";
+  }
+  if (segment_kind == "compute") {
+    return "trisc";
+  }
+  if (segment_kind == "writer") {
+    return "ncrisc";
+  }
+  return "brisc";
+}
+
+static Stmt WrapSegmentStmtIfNeeded(const std::string& current_segment_kind,
+                                    const std::string& segment_kind,
+                                    const Stmt& stmt) {
+  if (!stmt.defined() || !current_segment_kind.empty() || segment_kind == "fused_dataflow") {
+    return stmt;
+  }
+  auto wrap_one = [&](const Stmt& inner) {
+    return AttrStmt(StringImm("blackhole.segment_kind"), "blackhole.segment_kind",
+                    StringImm(segment_kind), inner);
+  };
+  if (const auto* seq = stmt.as<SeqStmtNode>()) {
+    ffi::Array<Stmt> wrapped;
+    wrapped.reserve(seq->seq.size());
+    for (const Stmt& child : seq->seq) {
+      wrapped.push_back(wrap_one(child));
+    }
+    return tir::SeqStmt(wrapped);
+  }
+  return wrap_one(stmt);
+}
+
+void PlanTTKernelABI::LoadFragmentLayoutContracts(
+    const Map<String, Any>& lowering_requirements) {
+  fragment_layout_contracts_by_buffer_ = BuildFragmentLayoutContractMap(lowering_requirements);
+}
+
+Stmt PlanTTKernelABI::MaybeWrapComputeSegment(const Stmt& stmt) const {
+  if (!requires_fragment_compute_segment_ || !current_segment_kind_.empty()) {
+    return stmt;
+  }
+  if (const auto* attr = stmt.as<tir::AttrStmtNode>()) {
+    if (attr->attr_key == "blackhole.segment_kind") {
+      return stmt;
+    }
+  }
+  return AttrStmt(StringImm("blackhole.segment_kind"), "blackhole.segment_kind",
+                  StringImm("compute"), stmt);
+}
+
+const Map<String, Any>* PlanTTKernelABI::FindFragmentLayoutContract(const Buffer& buffer) const {
+  const std::string buffer_name = BufferIdentityName(buffer);
+  auto it = fragment_layout_contracts_by_buffer_.find(buffer_name);
+  if (it == fragment_layout_contracts_by_buffer_.end()) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
+const Map<String, Any>* PlanTTKernelABI::FindFragmentMaterializationContract(
+    const Buffer& buffer) const {
+  const std::string buffer_name = BufferIdentityName(buffer);
+  auto it = fragment_materialization_contracts_by_target_buffer_.find(buffer_name);
+  if (it == fragment_materialization_contracts_by_target_buffer_.end()) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
+bool PlanTTKernelABI::BufferUsesTiledCBLiveForm(const Buffer& buffer) const {
+  const Map<String, Any>* contract = FindFragmentMaterializationContract(buffer);
+  if (contract == nullptr) {
+    return false;
+  }
+  auto result_live_form_it = contract->find(String(schema_key::kResultLiveForm));
+  return result_live_form_it != contract->end() &&
+         Downcast<String>((*result_live_form_it).second) == fragment_live_form::kTiledCB;
+}
+
+void PlanTTKernelABI::ValidatePublishedFragmentSourceEdge(const Buffer& src,
+                                                            const Buffer& dst) const {
+  const std::string src_name = BufferIdentityName(src);
+  const std::string dst_name = BufferIdentityName(dst);
+  auto live_form_it = fragment_live_form_cb_by_buffer_identity_.find(src_name);
+  if (live_form_it == fragment_live_form_cb_by_buffer_identity_.end()) {
+    return;
+  }
+  const Map<String, Any>* dst_contract = FindFragmentMaterializationContract(dst);
+  ICHECK(dst_contract != nullptr)
+      << "PlanTTKernelABI requires fragment_materialization_contract for consumer "
+      << dst_name << " when source " << src_name << " is carried via explicit live-form CB";
+  auto source_buffer_it = dst_contract->find(String(schema_key::kSourceBuffer));
+  ICHECK(source_buffer_it != dst_contract->end())
+      << "PlanTTKernelABI requires explicit source_buffer in fragment_materialization_contract "
+         "for consumer "
+      << dst_name << " when source " << src_name << " is carried via explicit live-form CB";
+  ICHECK_EQ(Downcast<String>((*source_buffer_it).second), src_name)
+      << "PlanTTKernelABI requires fragment_materialization_contract source_buffer to match "
+         "consumer source "
+      << src_name << " for " << dst_name;
+}
+
+void PlanTTKernelABI::AppendPublishedFragmentSourceMaterialization(
+    const Buffer& src, int current_order_index, std::vector<Stmt>* prefix,
+    std::vector<Stmt>* suffix) {
+  ICHECK(prefix != nullptr);
+  ICHECK(suffix != nullptr);
+  const std::string src_name = BufferIdentityName(src);
+  auto live_form_it = fragment_live_form_cb_by_buffer_identity_.find(src_name);
+  if (live_form_it == fragment_live_form_cb_by_buffer_identity_.end()) {
+    return;
+  }
+  ICHECK(BufferUsesTiledCBLiveForm(src))
+      << "PlanTTKernelABI requires explicit tiled_cb result_live_form for source " << src_name;
+  const int cb_id = live_form_it->second;
+  ICHECK_GE(cb_id, 0);
+  ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
+  const CBRequirement& requirement = cb_requirements_.at(cb_id);
+  const int num_tiles = std::max(
+      1, requirement.consume_pages_per_event > 0 ? requirement.consume_pages_per_event
+                                                 : requirement.num_pages);
+  ICHECK_GT(requirement.page_size, 0)
+      << "PlanTTKernelABI requires a positive page_size for live-form source " << src_name;
+  ICHECK_GT(src->dtype.bytes(), 0)
+      << "PlanTTKernelABI requires a valid dtype for live-form source " << src_name;
+  const int tile_elements = requirement.page_size / src->dtype.bytes();
+  ICHECK_GT(tile_elements, 0)
+      << "PlanTTKernelABI requires positive tile element count for live-form source "
+      << src_name;
+  const Buffer physical_src = ResolvePhysicalFragmentBuffer(src);
+  prefix->push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(num_tiles)}));
+  for (int tile = 0; tile < num_tiles; ++tile) {
+    prefix->push_back(MakeBlackholeCall(blackhole_read_cb_front_tile_to_local_fragment(),
+                                        {physical_src->data, IntImm32(cb_id), IntImm32(tile),
+                                         IntImm32(tile * tile_elements)}));
+  }
+
+  const FutureBufferUses future_uses = ClassifyFutureBufferUses(src, current_order_index);
+  if (!future_uses.has_compute_consume && !future_uses.has_transport_consume &&
+      !future_uses.has_reference) {
+    suffix->push_back(
+        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(num_tiles)}));
+    fragment_live_form_cb_by_buffer_identity_.erase(live_form_it);
+  }
+}
+
+void PlanTTKernelABI::LoadFragmentPhysicalBufferBindings(const PrimFunc& func) {
+  fragment_physical_buffers_by_data_.clear();
+  fragment_physical_buffers_by_identity_.clear();
+
+  auto fragment_regions = func->GetAttr<Array<Any>>("blackhole.fragment_regions");
+  if (!fragment_regions.has_value()) {
+    return;
+  }
+
+  for (const Any& region_any : fragment_regions.value()) {
+    auto region = Downcast<Map<String, Any>>(region_any);
+    auto fragment_buffers_it = region.find(manifest_key::kFragmentBuffers);
+    if (fragment_buffers_it == region.end()) {
+      continue;
+    }
+
+    Optional<Buffer> preferred_buffer;
+    for (const Any& fragment_any : Downcast<Array<Any>>((*fragment_buffers_it).second)) {
+      auto fragment = Downcast<Map<String, Any>>(fragment_any);
+      auto scope_it = fragment.find(schema_key::kScope);
+      auto buffer_it = fragment.find(schema_key::kBuffer);
+      if (scope_it == fragment.end() || buffer_it == fragment.end()) {
+        continue;
+      }
+      auto buffer = (*buffer_it).second.try_cast<Buffer>();
+      if (!buffer.has_value()) {
+        continue;
+      }
+      const std::string scope = static_cast<std::string>(Downcast<String>((*scope_it).second));
+      if (scope == "blackhole.acc") {
+        preferred_buffer = buffer.value();
+        break;
+      }
+    }
+    if (!preferred_buffer.has_value()) {
+      continue;
+    }
+
+    for (const Any& fragment_any : Downcast<Array<Any>>((*fragment_buffers_it).second)) {
+      auto fragment = Downcast<Map<String, Any>>(fragment_any);
+      auto buffer_it = fragment.find(schema_key::kBuffer);
+      if (buffer_it == fragment.end()) {
+        continue;
+      }
+      auto buffer = (*buffer_it).second.try_cast<Buffer>();
+      if (!buffer.has_value()) {
+        continue;
+      }
+      if (const auto* data = BufferDataIdentity(buffer.value())) {
+        fragment_physical_buffers_by_data_[data] = preferred_buffer.value();
+      }
+      const std::string identity = BufferIdentityName(buffer.value());
+      if (!identity.empty()) {
+        fragment_physical_buffers_by_identity_[identity] = preferred_buffer.value();
+      }
+    }
+  }
+}
+
+Buffer PlanTTKernelABI::ResolvePhysicalFragmentBuffer(const Buffer& buffer) const {
+  if (!buffer.defined()) {
+    return buffer;
+  }
+  if (buffer.scope() == "blackhole.acc") {
+    return buffer;
+  }
+  if (const auto* data = BufferDataIdentity(buffer)) {
+    auto by_data = fragment_physical_buffers_by_data_.find(data);
+    if (by_data != fragment_physical_buffers_by_data_.end()) {
+      return by_data->second;
+    }
+  }
+  const std::string identity = BufferIdentityName(buffer);
+  auto by_identity = fragment_physical_buffers_by_identity_.find(identity);
+  if (by_identity != fragment_physical_buffers_by_identity_.end()) {
+    return by_identity->second;
+  }
+  return buffer;
+}
+
 void PlanTTKernelABI::LoadBufferFlowContracts(const Map<String, Any>& lowering_requirements) {
   buffer_flow_contracts_.clear();
   auto maybe_contracts =
@@ -1560,7 +1846,8 @@ PlanTTKernelABI::PlanTTKernelABI() : next_requirement_index_(0) {}
 void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func) {
   logical_buffer_shapes_.clear();
   auto manifest = func->GetAttr<Map<String, Any>>(attr::kTLSemanticManifest);
-  if (!manifest.has_value()) {
+  auto manifest_seeds = func->GetAttr<Map<String, Any>>(attr::kTLSemanticManifestSeeds);
+  if (!manifest.has_value() && !manifest_seeds.has_value()) {
     return;
   }
   std::unordered_map<std::string, std::vector<int64_t>> canonical_shapes;
@@ -1571,8 +1858,14 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func) {
     logical_buffer_shapes_[name] = shape;
     canonical_shapes[name] = shape;
   };
-  auto buffers_it = manifest.value().find(manifest_key::kBuffers);
-  if (buffers_it != manifest.value().end()) {
+  auto ingest_buffer_descriptors = [&](const Optional<Map<String, Any>>& maybe_payload) {
+    if (!maybe_payload.has_value()) {
+      return;
+    }
+    auto buffers_it = maybe_payload.value().find(manifest_key::kBuffers);
+    if (buffers_it == maybe_payload.value().end()) {
+      return;
+    }
     for (const Any& buffer_any : Downcast<Array<Any>>((*buffers_it).second)) {
       auto descriptor = Downcast<Map<String, Any>>(buffer_any);
       auto name = descriptor.Get(String(schema_key::kName));
@@ -1587,8 +1880,13 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func) {
       register_shape(static_cast<std::string>(Downcast<String>(name.value())),
                      static_shape.value());
     }
-  }
+  };
+  ingest_buffer_descriptors(manifest);
+  ingest_buffer_descriptors(manifest_seeds);
 
+  if (!manifest.has_value()) {
+    return;
+  }
   auto structural_regions_it = manifest.value().find(manifest_key::kStructuralRegions);
   if (structural_regions_it == manifest.value().end()) {
     return;
@@ -1761,6 +2059,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   next_requirement_index_ = 0;
   saw_copy_op_ = false;
   needs_copy_runtime_args_ = false;
+  requires_fragment_compute_segment_ = false;
   copy_input_buffer_ = Buffer();
   copy_output_buffer_ = Buffer();
   copy_input_buffer_name_.clear();
@@ -1776,9 +2075,19 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   cb_consumed_fragment_pages_by_buffer_identity_.clear();
   cb_consumed_fragment_use_count_by_buffer_identity_.clear();
   buffer_flow_contracts_.clear();
+  fragment_live_form_cb_by_buffer_identity_.clear();
   stmt_order_index_by_node_.clear();
+  segment_plan_.clear();
+  top_level_runtime_args_ = Array<Any>();
+  top_level_common_runtime_args_ = Array<Any>();
+  tt_kernels_.clear();
+  tt_abi_plans_.clear();
+  tt_program_payload_ = Map<String, Any>();
   logical_buffer_shapes_.clear();
+  fragment_physical_buffers_by_data_.clear();
+  fragment_physical_buffers_by_identity_.clear();
   LoadLogicalBufferShapes(func);
+  LoadFragmentPhysicalBufferBindings(func);
   tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
     if (const auto* attr = node.as<AttrStmtNode>()) {
       if (attr->attr_key != tir::attr::thread_extent) {
@@ -1826,6 +2135,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   compute_epilogue_payloads_.clear();
   active_compute_contract_payload_index_ = -1;
   compute_epilogue_payloads_flat_.clear();
+  fragment_layout_contracts_by_buffer_.clear();
   fragment_materialization_contracts_by_target_buffer_.clear();
   gemm_input_buffer_num_tiles_.clear();
   gemm_transpose_a_ = false;
@@ -1843,6 +2153,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   gemm_c_dtype_ = DataType::Void();
   ValidateFragmentPipelineLegalityFromBody(func->body);
   Map<String, Any> lowering_requirements = BuildLoweringRequirementsFromAnalysis(func);
+  requires_fragment_compute_segment_ = HasFragmentComputeContract(lowering_requirements);
+  LoadFragmentLayoutContracts(lowering_requirements);
   fragment_materialization_contracts_by_target_buffer_ =
       BuildFragmentMaterializationContractMap(lowering_requirements);
   LoadBufferFlowContracts(lowering_requirements);
@@ -1950,8 +2262,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   StoreCBRequirements(new_func);
   StoreRuntimeArgs(new_func);
   StoreSegmentPlan(new_func);
-  StoreGemmContract(new_func);
   StoreAccessorDescriptors(new_func);
+  StoreGemmContract(new_func);
 
   if (!lowering_requirements.empty()) {
     Map<String, Any> attrs =
@@ -2051,6 +2363,23 @@ int PlanTTKernelABI::AllocateRequirementIndex(const Buffer& buffer, CBType type)
   // CBRequirement default format by accident.
   req.data_format = DataTypeToDataFormatForBlackhole(buffer->dtype);
 
+  if (!buffer_identity.empty()) {
+    auto flow_contract_it = buffer_flow_contracts_.find(buffer_identity);
+    if (flow_contract_it != buffer_flow_contracts_.end()) {
+      req.flow_class = flow_contract_it->second.flow_class;
+      if (flow_contract_it->second.publish_pages_per_event > 0) {
+        req.publish_pages_per_event =
+            std::max(req.publish_pages_per_event,
+                     flow_contract_it->second.publish_pages_per_event);
+      }
+      if (flow_contract_it->second.consume_pages_per_event > 0) {
+        req.consume_pages_per_event =
+            std::max(req.consume_pages_per_event,
+                     flow_contract_it->second.consume_pages_per_event);
+      }
+    }
+  }
+
   cb_requirements_.push_back(req);
   return requirement_index;
 }
@@ -2074,6 +2403,22 @@ void PlanTTKernelABI::SetRequirementPageLayout(int requirement_index, int page_s
   auto& req = cb_requirements_[requirement_index];
   req.page_size = page_size;
   req.num_pages = num_pages;
+}
+
+void PlanTTKernelABI::MarkRequirementLifetimeOverlap(int lhs_requirement_index,
+                                                       int rhs_requirement_index) {
+  ICHECK_GE(lhs_requirement_index, 0);
+  ICHECK_LT(lhs_requirement_index, static_cast<int>(cb_requirements_.size()));
+  ICHECK_GE(rhs_requirement_index, 0);
+  ICHECK_LT(rhs_requirement_index, static_cast<int>(cb_requirements_.size()));
+  const int overlap_begin = std::min(cb_requirements_[lhs_requirement_index].lifetime_begin,
+                                     cb_requirements_[rhs_requirement_index].lifetime_begin);
+  const int overlap_end = std::max(cb_requirements_[lhs_requirement_index].lifetime_end,
+                                   cb_requirements_[rhs_requirement_index].lifetime_end);
+  cb_requirements_[lhs_requirement_index].lifetime_begin = overlap_begin;
+  cb_requirements_[lhs_requirement_index].lifetime_end = overlap_end;
+  cb_requirements_[rhs_requirement_index].lifetime_begin = overlap_begin;
+  cb_requirements_[rhs_requirement_index].lifetime_end = overlap_end;
 }
 
 bool PlanTTKernelABI::UseStagedCopyPageTransport(const Buffer& shared_buffer) const {
@@ -2135,16 +2480,9 @@ void PlanTTKernelABI::StoreCBRequirements(PrimFunc& func) {
 }
 
 void PlanTTKernelABI::StoreRuntimeArgs(PrimFunc& func) {
+  (void)func;
   if (!needs_copy_runtime_args_) {
     return;
-  }
-  if (func->GetAttr<Array<Any>>("blackhole.segment_plan")) {
-    return;
-  }
-
-  Map<String, Any> attrs;
-  if (func->attrs.defined()) {
-    attrs = func->attrs->dict;
   }
 
   Array<Any> runtime_args;
@@ -2171,79 +2509,86 @@ void PlanTTKernelABI::StoreRuntimeArgs(PrimFunc& func) {
       input_buffer_name.empty() ? "input_addr" : input_buffer_name + "_addr";
   const std::string output_arg_name =
       output_buffer_name.empty() ? "output_addr" : output_buffer_name + "_addr";
+  const bool has_input_transport = !input_buffer_name.empty();
+  const bool has_output_transport = !output_buffer_name.empty();
 
-  push_arg(input_arg_name, "input_buffer_addr32", "uint32", input_buffer_name);
-  push_arg(output_arg_name, "output_buffer_addr32", "uint32", output_buffer_name);
-  push_arg("work_linear_id", "work_linear_id", "uint32");
-  push_arg("a_tile_start_id", "a_tile_start_id", "uint32");
-  push_arg("a_tile_num_tiles", "a_tile_num_tiles", "uint32");
-  push_arg("a_tile_stride", "a_tile_stride", "uint32");
-  push_arg("output_tile_start_id", "output_tile_start_id", "uint32");
-  push_arg("output_tile_num_tiles", "output_tile_num_tiles", "uint32");
-  push_arg("output_tile_stride", "output_tile_stride", "uint32");
-  per_work_arg_specs.push_back(MakePerWorkArgSpec(
-      "a_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
-      input_buffer_name));
-  per_work_arg_specs.push_back(MakePerWorkArgSpec(
-      "a_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant, input_buffer_name, 1));
-  per_work_arg_specs.push_back(MakePerWorkArgSpec(
-      "a_tile_stride", blackhole_runtime_arg_schema::kValueConstant, input_buffer_name, 1));
-  per_work_arg_specs.push_back(MakePerWorkArgSpec(
-      "output_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
-      output_buffer_name));
-  per_work_arg_specs.push_back(MakePerWorkArgSpec(
-      "output_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant, output_buffer_name,
-      1));
-  per_work_arg_specs.push_back(MakePerWorkArgSpec(
-      "output_tile_stride", blackhole_runtime_arg_schema::kValueConstant, output_buffer_name, 1));
+  if (has_input_transport) {
+    push_arg(input_arg_name, "input_buffer_addr32", "uint32", input_buffer_name);
+  }
+  if (has_output_transport) {
+    push_arg(output_arg_name, "output_buffer_addr32", "uint32", output_buffer_name);
+  }
+  if (has_input_transport || has_output_transport) {
+    push_arg("work_linear_id", "work_linear_id", "uint32");
+  }
+  if (has_input_transport) {
+    push_arg("a_tile_start_id", "a_tile_start_id", "uint32");
+    push_arg("a_tile_num_tiles", "a_tile_num_tiles", "uint32");
+    push_arg("a_tile_stride", "a_tile_stride", "uint32");
+    per_work_arg_specs.push_back(MakePerWorkArgSpec(
+        "a_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
+        input_buffer_name));
+    per_work_arg_specs.push_back(MakePerWorkArgSpec(
+        "a_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant, input_buffer_name, 1));
+    per_work_arg_specs.push_back(MakePerWorkArgSpec(
+        "a_tile_stride", blackhole_runtime_arg_schema::kValueConstant, input_buffer_name, 1));
+  }
+  if (has_output_transport) {
+    push_arg("output_tile_start_id", "output_tile_start_id", "uint32");
+    push_arg("output_tile_num_tiles", "output_tile_num_tiles", "uint32");
+    push_arg("output_tile_stride", "output_tile_stride", "uint32");
+    per_work_arg_specs.push_back(MakePerWorkArgSpec(
+        "output_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
+        output_buffer_name));
+    per_work_arg_specs.push_back(MakePerWorkArgSpec(
+        "output_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant, output_buffer_name,
+        1));
+    per_work_arg_specs.push_back(MakePerWorkArgSpec(
+        "output_tile_stride", blackhole_runtime_arg_schema::kValueConstant, output_buffer_name,
+        1));
+  }
 
-  attrs.Set("blackhole.runtime_args", runtime_args);
-  attrs.Set("blackhole.per_work_arg_specs", per_work_arg_specs);
-  Map<String, Any> tt_program_payload =
-      attrs.Get(attr::kTLTTProgramPayload)
-          ? Downcast<Map<String, Any>>(attrs.Get(attr::kTLTTProgramPayload).value())
-          : Map<String, Any>();
-  tt_program_payload.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs),
-                         per_work_arg_specs);
-  attrs.Set(attr::kTLTTProgramPayload, tt_program_payload);
-  func.CopyOnWrite()->attrs = DictAttrs(attrs);
+  top_level_runtime_args_ = runtime_args;
+  top_level_common_runtime_args_ = Array<Any>();
+  tt_program_payload_.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs),
+                          per_work_arg_specs);
 }
 
 void PlanTTKernelABI::StoreSegmentPlan(PrimFunc& func) {
-  // If SplitBlackholeKernels already wrote the segment plan, do not overwrite.
-  if (func->GetAttr<Array<Any>>("blackhole.segment_plan")) return;
-
-  if (!needs_copy_runtime_args_) {
+  const std::vector<std::string> segment_kinds = CollectSegmentKindsFromBody(func->body);
+  if (segment_kinds.empty() && !needs_copy_runtime_args_ && !requires_fragment_compute_segment_) {
+    segment_plan_ = Array<Any>();
     return;
   }
-
-  Map<String, Any> attrs;
-  if (func->attrs.defined()) {
-    attrs = func->attrs->dict;
-  }
+  ICHECK(!requires_fragment_compute_segment_ || !segment_kinds.empty())
+      << "PlanTTKernelABI requires explicit segment_kind truth for compute-bearing fragment "
+         "workloads; do not recover them as fused_dataflow";
 
   Array<Any> kernels;
-  Map<String, Any> kernel;
-  kernel.Set("name", String("main"));
-  kernel.Set("kind", String("fused_dataflow"));
-  kernel.Set("core_type", String("brisc"));
-  kernels.push_back(kernel);
-
-  attrs.Set("blackhole.segment_plan", kernels);
-  func.CopyOnWrite()->attrs = DictAttrs(attrs);
+  if (segment_kinds.empty()) {
+    Map<String, Any> kernel;
+    kernel.Set("name", String("main"));
+    kernel.Set("kind", String("fused_dataflow"));
+    kernel.Set("core_type", String("brisc"));
+    kernels.push_back(kernel);
+  } else {
+    for (const std::string& kind : segment_kinds) {
+      Map<String, Any> kernel;
+      kernel.Set("name", String(kind));
+      kernel.Set("kind", String(kind));
+      kernel.Set("core_type", String(CoreTypeForSegmentKind(kind)));
+      kernels.push_back(kernel);
+    }
+  }
+  segment_plan_ = kernels;
 }
 
 void PlanTTKernelABI::StoreGemmContract(PrimFunc& func) {
+  (void)func;
   if (multi_gemm_contract_payloads_.empty() || multi_compute_contract_payloads_.empty()) {
     return;
   }
-
-  Map<String, Any> attrs;
-  if (func->attrs.defined()) {
-    attrs = func->attrs->dict;
-  }
-  Map<String, Any> tt_program_payload =
-      func->GetAttr<Map<String, Any>>(attr::kTLTTProgramPayload).value_or(Map<String, Any>());
+  Map<String, Any> tt_program_payload = tt_program_payload_;
 
   if (gemm_contract_signatures_.size() > 1) {
     Array<Any> multi_gemm_contracts;
@@ -2263,16 +2608,25 @@ void PlanTTKernelABI::StoreGemmContract(PrimFunc& func) {
       }
       tt_program_payload.Set("compute_epilogue_ops", compute_epilogue_ops);
     }
-    attrs.Set(attr::kTLTTProgramPayload, tt_program_payload);
-    func.CopyOnWrite()->attrs = DictAttrs(attrs);
+    tt_program_payload_ = tt_program_payload;
     return;
   }
 
   std::string a_buffer = gemm_a_buffer_name_;
   std::string b_buffer = gemm_b_buffer_name_;
   std::string c_buffer = gemm_c_buffer_name_;
-  if (auto segment_plan = func->GetAttr<Array<Any>>("blackhole.segment_plan")) {
-    for (const auto& item : segment_plan.value()) {
+  bool writer_output_directly_materializes_gemm_accumulator = true;
+  for (const auto& op_payload : compute_epilogue_payloads_flat_) {
+    if (auto value = op_payload.Get(String("dst_buffer"))) {
+      const std::string dst_buffer = Downcast<String>(value.value());
+      if (!dst_buffer.empty() && dst_buffer != gemm_c_buffer_name_) {
+        writer_output_directly_materializes_gemm_accumulator = false;
+        break;
+      }
+    }
+  }
+  if (!segment_plan_.empty()) {
+    for (const auto& item : segment_plan_) {
       auto segment = item.as<Map<String, Any>>().value_or(Map<String, Any>());
       if (segment.empty()) {
         continue;
@@ -2299,7 +2653,8 @@ void PlanTTKernelABI::StoreGemmContract(PrimFunc& func) {
           } else if (b_buffer == gemm_b_buffer_name_) {
             b_buffer = buffer_name;
           }
-        } else if (kind == "writer" && arg_kind == "output_buffer_addr32") {
+        } else if (kind == "writer" && arg_kind == "output_buffer_addr32" &&
+                   writer_output_directly_materializes_gemm_accumulator) {
           c_buffer = buffer_name;
         }
       }
@@ -2316,8 +2671,6 @@ void PlanTTKernelABI::StoreGemmContract(PrimFunc& func) {
       gemm_mbarrier_buffer_name_, gemm_mbarrier_scope_, gemm_mbarrier_index_exprs_, gemm_a_dtype_,
       gemm_b_dtype_, gemm_c_dtype_);
 
-  attrs.Set("blackhole.gemm_contract", gemm_contract);
-  attrs.Set("blackhole.compute_contract", compute_contract);
   tt_program_payload.Set("gemm_contract", gemm_contract);
   tt_program_payload.Set("compute_contract", compute_contract);
   if (!compute_epilogue_payloads_flat_.empty()) {
@@ -2327,16 +2680,10 @@ void PlanTTKernelABI::StoreGemmContract(PrimFunc& func) {
     }
     tt_program_payload.Set("compute_epilogue_ops", compute_epilogue_ops);
   }
-  attrs.Set(attr::kTLTTProgramPayload, tt_program_payload);
-  func.CopyOnWrite()->attrs = DictAttrs(attrs);
+  tt_program_payload_ = tt_program_payload;
 }
 
 void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
-  Map<String, Any> attrs;
-  if (func->attrs.defined()) {
-    attrs = func->attrs->dict;
-  }
-
   auto make_compute_config_from_contract = [&]() -> Map<String, Any> {
     Map<String, Any> compute_config;
     compute_config.Set("math_fidelity", String("HiFi4"));
@@ -2625,9 +2972,9 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
     return per_work_arg_specs;
   };
 
-  if (auto segment_plan = func->GetAttr<Array<Any>>("blackhole.segment_plan")) {
+  if (!segment_plan_.empty()) {
     Array<Any> rewritten_segments;
-    for (const auto& item : segment_plan.value()) {
+    for (const auto& item : segment_plan_) {
       auto segment = item.as<Map<String, Any>>().value_or(Map<String, Any>());
       if (segment.empty()) {
         rewritten_segments.push_back(item);
@@ -2754,7 +3101,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
       segment.Set("common_runtime_args", EncodeCommonRuntimeArgs(kind));
       rewritten_segments.push_back(segment);
     }
-    attrs.Set("blackhole.segment_plan", rewritten_segments);
+    segment_plan_ = rewritten_segments;
 
     auto aggregate_runtime_args = [&](const char* field_name) {
       Array<Any> aggregated;
@@ -2788,11 +3135,11 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
 
     Array<Any> aggregated_runtime_args = aggregate_runtime_args("runtime_args");
     if (!aggregated_runtime_args.empty()) {
-      attrs.Set("blackhole.runtime_args", aggregated_runtime_args);
+      top_level_runtime_args_ = aggregated_runtime_args;
     }
     Array<Any> aggregated_common_runtime_args = aggregate_runtime_args("common_runtime_args");
     if (!aggregated_common_runtime_args.empty()) {
-      attrs.Set("blackhole.common_runtime_args", aggregated_common_runtime_args);
+      top_level_common_runtime_args_ = aggregated_common_runtime_args;
     }
     auto aggregate_per_work_arg_specs = [&]() {
       Array<Any> aggregated;
@@ -2829,35 +3176,11 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
     };
     Array<Any> aggregated_per_work_arg_specs = aggregate_per_work_arg_specs();
     if (!aggregated_per_work_arg_specs.empty()) {
-      attrs.Set("blackhole.per_work_arg_specs", aggregated_per_work_arg_specs);
-      Map<String, Any> tt_program_payload =
-          attrs.Get(attr::kTLTTProgramPayload)
-              ? Downcast<Map<String, Any>>(attrs.Get(attr::kTLTTProgramPayload).value())
-              : Map<String, Any>();
-      tt_program_payload.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs),
-                             aggregated_per_work_arg_specs);
-      attrs.Set(attr::kTLTTProgramPayload, tt_program_payload);
+      tt_program_payload_.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs),
+                              aggregated_per_work_arg_specs);
     }
-    Array<Any> top_level_runtime_args =
-        attrs.Get("blackhole.runtime_args")
-            ? Downcast<Array<Any>>(attrs.Get("blackhole.runtime_args").value())
-            : Array<Any>();
-    Array<Any> top_level_common_runtime_args =
-        attrs.Get("blackhole.common_runtime_args")
-            ? Downcast<Array<Any>>(attrs.Get("blackhole.common_runtime_args").value())
-            : Array<Any>();
-    Array<TTKernel> tt_kernels;
-    Array<TTABIPlan> tt_abi_plans;
-    BuildTTKernelAndABISeeds(rewritten_segments, top_level_runtime_args,
-                             top_level_common_runtime_args, &tt_kernels, &tt_abi_plans);
-    attrs.Set(attr::kTLTTKernelSeeds, tt_kernels);
-    attrs.Set(attr::kTLTTABIPlans, tt_abi_plans);
-  }
-
-  func.CopyOnWrite()->attrs = DictAttrs(attrs);
-  if (func->GetAttr<Array<TTKernel>>(attr::kTLTTKernelSeeds).has_value() &&
-      func->GetAttr<Array<TTABIPlan>>(attr::kTLTTABIPlans).has_value()) {
-    func = StripLegacyTTBridgeProjectionAttrs(std::move(func));
+    BuildTTKernelAndABISeeds(segment_plan_, top_level_runtime_args_,
+                             top_level_common_runtime_args_, &tt_kernels_, &tt_abi_plans_);
   }
 }
 
@@ -2926,17 +3249,18 @@ void PlanTTKernelABI::ExtractGemmInfo(const CallNode* op) {
   tir::BufferRegion a_region = NormalizeToBufferRegion(args[0]);
   tir::BufferRegion b_region = NormalizeToBufferRegion(args[1]);
   tir::BufferRegion c_region = NormalizeToBufferRegion(args[2]);
+  Buffer physical_c_buffer = ResolvePhysicalFragmentBuffer(c_region->buffer);
 
   gemm_a_buffer_ = a_region->buffer;
   gemm_b_buffer_ = b_region->buffer;
-  gemm_c_buffer_ = c_region->buffer;
+  gemm_c_buffer_ = physical_c_buffer;
   gemm_a_buffer_name_ = BufferIdentityName(a_region->buffer);
   gemm_b_buffer_name_ = BufferIdentityName(b_region->buffer);
-  gemm_c_buffer_name_ = BufferIdentityName(c_region->buffer);
-  gemm_c_scope_ = GetStorageScope(c_region->buffer);
+  gemm_c_buffer_name_ = BufferIdentityName(physical_c_buffer);
+  gemm_c_scope_ = GetStorageScope(physical_c_buffer);
   gemm_a_dtype_ = a_region->buffer->dtype;
   gemm_b_dtype_ = b_region->buffer->dtype;
-  gemm_c_dtype_ = c_region->buffer->dtype;
+  gemm_c_dtype_ = physical_c_buffer->dtype;
   if (const auto* imm = args[3].as<IntImmNode>()) gemm_transpose_a_ = imm->value != 0;
   if (const auto* imm = args[4].as<IntImmNode>()) gemm_transpose_b_ = imm->value != 0;
   if (const auto* imm = args[8].as<IntImmNode>()) gemm_policy_type_ = static_cast<int>(imm->value);
@@ -3146,9 +3470,20 @@ CopyDirection PlanTTKernelABI::GetCopyDirection(const BufferStoreNode* op) const
     return s.rank == runtime::StorageRank::kBlackholeAccumulator;
   };
 
-  if (current_func_->GetAttr<Array<Any>>("blackhole.segment_plan").has_value() &&
-      isAccumulatorLikeScope(src_scope) && isDRAMScope(dst_scope)) {
-    return CopyDirection::kCBToDram;
+  if (isAccumulatorLikeScope(src_scope) && isDRAMScope(dst_scope)) {
+    const std::string src_name = BufferIdentityName(load->buffer);
+    const bool has_flow_contract =
+        !src_name.empty() && buffer_flow_contracts_.count(src_name) != 0U;
+    const bool has_materialization_contract =
+        FindFragmentMaterializationContract(load->buffer) != nullptr;
+    const bool has_explicit_tiled_live_form =
+        !src_name.empty() &&
+        fragment_live_form_cb_by_buffer_identity_.count(src_name) != 0U;
+    const bool has_multi_element_logical_shape = GetLogicalBufferElementCount(load->buffer) > 1;
+    if (has_flow_contract || has_materialization_contract || has_explicit_tiled_live_form ||
+        has_multi_element_logical_shape) {
+      return CopyDirection::kCBToDram;
+    }
   }
 
   // DRAM -> CB (global -> shared)
@@ -3344,9 +3679,10 @@ PrimExpr PlanTTKernelABI::InferCopyTileIndex(const BufferStoreNode* op,
   const bool use_page_transport = UseStagedCopyPageTransport(shared_buffer);
   int64_t shared_rows = 0;
   int64_t shared_cols = 0;
+  const auto logical_shared_shape = GetLogicalMatrixShape(shared_buffer);
   std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
-      shared_buffer, copy_intermediate_shape_, segmented_gemm, transpose_b_reader,
-      accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
+      shared_buffer, copy_intermediate_shape_, logical_shared_shape, segmented_gemm,
+      transpose_b_reader, accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
   const StagedCopyTransportGeometry geometry = BuildStagedCopyTransportGeometry(
       shared_buffer, shared_rows, shared_cols, global_info.global_rows, global_info.global_cols,
       use_page_transport);
@@ -3392,9 +3728,10 @@ PrimExpr PlanTTKernelABI::InferStagedCopyBaseTileIndex(
       &analyzer);
   int64_t shared_rows = 0;
   int64_t shared_cols = 0;
+  const auto logical_shared_shape = GetLogicalMatrixShape(shared_buffer);
   std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
-      shared_buffer, copy_intermediate_shape_, segmented_gemm, transpose_b_reader,
-      accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
+      shared_buffer, copy_intermediate_shape_, logical_shared_shape, segmented_gemm,
+      transpose_b_reader, accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
   const int64_t effective_global_rows =
       transpose_b_reader ? global_info.global_cols : global_info.global_rows;
   const int64_t effective_global_cols =
@@ -3590,6 +3927,15 @@ std::string PlanTTKernelABI::ResolveAccessorSegmentKind(CopyDirection direction)
   if (!current_segment_kind_.empty()) {
     return current_segment_kind_;
   }
+  if (requires_fragment_compute_segment_) {
+    if (direction == CopyDirection::kDramToCB) {
+      return "reader";
+    }
+    if (direction == CopyDirection::kCBToDram) {
+      return "writer";
+    }
+    return "fused_dataflow";
+  }
   if (direction == CopyDirection::kDramToCB) {
     return !gemm_a_buffer_name_.empty() ? "reader" : "fused_dataflow";
   }
@@ -3634,8 +3980,12 @@ int PlanTTKernelABI::GetReadAccessorSlot(const std::string& segment_kind, const 
 int PlanTTKernelABI::GetWriteAccessorSlot(const std::string& segment_kind, const Buffer& buffer,
                                             CopyDirection direction) {
   if (segment_kind == "fused_dataflow") {
-    if (copy_output_buffer_.defined() && SameBufferIdentity(buffer, copy_output_buffer_)) {
-      return 2;
+    const bool has_input_transport =
+        copy_input_buffer_.defined() || !copy_input_buffer_name_.empty();
+    if ((copy_output_buffer_.defined() && SameBufferIdentity(buffer, copy_output_buffer_)) ||
+        (!copy_output_buffer_name_.empty() &&
+         BufferIdentityName(buffer) == copy_output_buffer_name_)) {
+      return has_input_transport ? 2 : 0;
     }
     return 0;
   }
@@ -3732,22 +4082,26 @@ void PlanTTKernelABI::RecordComputeEpilogueOp(Map<String, Any> op_payload) {
 }
 
 Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
-                                              bool retain_in0,
-                                              bool retain_in1,
-                                              bool publish_out,
-                                              bool reacquire_in0,
-                                              bool reacquire_in1) {
+                                               bool retain_in0,
+                                               bool retain_in1,
+                                               bool publish_out,
+                                               bool publish_transport_out,
+                                               bool preserve_out_local_state,
+                                               bool reacquire_in0,
+                                               bool reacquire_in1) {
   ICHECK_GE(gemm_a_req_index_, 0);
   ICHECK_GE(gemm_b_req_index_, 0);
   ICHECK_GE(gemm_c_req_index_, 0);
   ActivateCurrentComputeContractPayload();
   if (!gemm_clear_accum_) {
-    return GenerateAccumulatingMatmulSequence(op, retain_in0, retain_in1,
-                                              reacquire_in0, reacquire_in1);
+    return MaybeWrapComputeSegment(
+        GenerateAccumulatingMatmulSequence(op, retain_in0, retain_in1, publish_transport_out,
+                                           preserve_out_local_state, reacquire_in0, reacquire_in1));
   }
-  return GenerateMatmulSequenceForOutputRequirement(gemm_c_req_index_, retain_in0, retain_in1,
-                                                    publish_out, publish_out, reacquire_in0,
-                                                    reacquire_in1);
+  return MaybeWrapComputeSegment(
+      GenerateMatmulSequenceForOutputRequirement(gemm_c_req_index_, retain_in0, retain_in1,
+                                                 publish_out, publish_out, reacquire_in0,
+                                                 reacquire_in1));
 }
 
 Stmt PlanTTKernelABI::GenerateMatmulSequenceForOutputRequirement(int out_req_index,
@@ -3863,6 +4217,12 @@ Buffer PlanTTKernelABI::CreateClearAccumPartialsBuffer(const Buffer& buffer) {
   return tir::decl_buffer(buffer->shape, buffer->dtype, partials_name, GetStorageScope(buffer));
 }
 
+Buffer PlanTTKernelABI::CreateFragmentMergeReloadBuffer(const Buffer& buffer) {
+  const std::string reload_name = BufferIdentityName(buffer) + "_fragment_merge_reload_" +
+                                  std::to_string(next_requirement_index_);
+  return tir::decl_buffer(buffer->shape, buffer->dtype, reload_name, GetStorageScope(buffer));
+}
+
 bool PlanTTKernelABI::ClearAccumReloadNeedsDataFormatReconfig() const {
   return gemm_c_dtype_ != gemm_b_dtype_;
 }
@@ -3875,7 +4235,10 @@ Stmt PlanTTKernelABI::GenerateAddFragmentSequence(const Buffer& dst,
   op_payload.Set("src_buffer", String(BufferIdentityName(src)));
   SetOptionalExprField(&op_payload, "num_elements_expr", num_elements);
   RecordComputeEpilogueOp(std::move(op_payload));
-  return MakeBlackholeCall(blackhole_add_fragment(), {dst->data, src->data, num_elements});
+  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(dst);
+  const Buffer physical_src = ResolvePhysicalFragmentBuffer(src);
+  return MaybeWrapComputeSegment(MakeBlackholeCall(
+      blackhole_add_fragment(), {physical_dst->data, physical_src->data, num_elements}));
 }
 
 Stmt PlanTTKernelABI::GenerateAddFragmentFromCBFrontSequence(const Buffer& dst,
@@ -3894,8 +4257,136 @@ Stmt PlanTTKernelABI::GenerateAddFragmentFromCBFrontSequence(const Buffer& dst,
   op_payload.Set(String(schema_key::kFragmentMaterializationContract), contract_it->second);
   SetOptionalExprField(&op_payload, "num_elements_expr", num_elements);
   RecordComputeEpilogueOp(std::move(op_payload));
-  return MakeBlackholeCall(blackhole_add_fragment_from_cb_front(),
-                           {dst->data, IntImm32(src_cb_id), num_elements});
+  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(dst);
+  return MaybeWrapComputeSegment(MakeBlackholeCall(
+      blackhole_add_fragment_from_cb_front(),
+      {physical_dst->data, IntImm32(src_cb_id), num_elements}));
+}
+
+Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
+                                                           int partials_cb_id,
+                                                           const Buffer& partials_buffer,
+                                                           int reload_cb_id,
+                                                           const Buffer& reload_buffer,
+                                                           int live_form_cb_id,
+                                                           const Buffer& live_form_buffer,
+                                                           const PrimExpr& num_elements,
+                                                           int num_c_tiles,
+                                                           bool materialize_live_form_to_local_state,
+                                                           int publish_cb_id) {
+  const std::string dst_buffer_name = BufferIdentityName(dst);
+  Map<String, Any> op_payload =
+      MakeComputeEpilogueOpPayload("merge_fragment_tiles", dst_buffer_name);
+  op_payload.Set("src_buffer", String(BufferIdentityName(partials_buffer)));
+  op_payload.Set("reload_buffer", String(BufferIdentityName(reload_buffer)));
+  if (live_form_buffer.defined()) {
+    op_payload.Set("live_form_buffer", String(BufferIdentityName(live_form_buffer)));
+  }
+  auto contract_it = fragment_materialization_contracts_by_target_buffer_.find(dst_buffer_name);
+  ICHECK(contract_it != fragment_materialization_contracts_by_target_buffer_.end())
+      << "PlanTTKernelABI requires fragment_materialization_contract in SpatialProgram for "
+         "merge_fragment_tiles destination "
+      << dst_buffer_name;
+  auto bridge_it = contract_it->second.find(String(schema_key::kBridgeKind));
+  ICHECK(bridge_it != contract_it->second.end())
+      << "PlanTTKernelABI requires bridge_kind in fragment_materialization_contract for "
+      << dst_buffer_name;
+  const std::string bridge_kind = Downcast<String>((*bridge_it).second);
+  auto protocol_it = contract_it->second.find(String(schema_key::kExecutionProtocol));
+  ICHECK(protocol_it != contract_it->second.end())
+      << "PlanTTKernelABI requires execution_protocol in fragment_materialization_contract for "
+      << dst_buffer_name;
+  const std::string execution_protocol = Downcast<String>((*protocol_it).second);
+  ICHECK_EQ(bridge_kind, "tile_nfaces_materialization")
+      << "PlanTTKernelABI does not support fragment materialization bridge_kind " << bridge_kind
+      << " for " << dst_buffer_name;
+  ICHECK_EQ(execution_protocol, "dst_cb_binary_pack")
+      << "PlanTTKernelABI does not support fragment materialization execution_protocol "
+      << execution_protocol << " for " << dst_buffer_name;
+  op_payload.Set(String(schema_key::kFragmentMaterializationContract), contract_it->second);
+  SetOptionalExprField(&op_payload, "num_elements_expr", num_elements);
+  RecordComputeEpilogueOp(std::move(op_payload));
+
+  ICHECK_GT(gemm_c_dtype_.bytes(), 0)
+      << "Blackhole fragment merge lowering requires a valid destination dtype for "
+      << dst_buffer_name;
+  const int tile_elements = (kBlackholeTileRows * kBlackholeTileCols * gemm_c_dtype_.bytes()) /
+                            gemm_c_dtype_.bytes();
+  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(dst);
+
+  std::vector<Stmt> stmts;
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                    {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
+  for (int tile = 0; tile < num_c_tiles; ++tile) {
+    stmts.push_back(MakeBlackholeCall(blackhole_write_local_fragment_tile_to_cb(),
+                                      {physical_dst->data, IntImm32(reload_cb_id), IntImm32(tile),
+                                       IntImm32(tile * tile_elements)}));
+  }
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                    {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_init(),
+                                    {IntImm32(reload_cb_id), IntImm32(partials_cb_id)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
+                                    {IntImm32(reload_cb_id), IntImm32(partials_cb_id)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(partials_cb_id), IntImm32(num_c_tiles)}));
+  if (live_form_cb_id >= 0) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                      {IntImm32(live_form_cb_id), IntImm32(num_c_tiles)}));
+  }
+  if (materialize_live_form_to_local_state) {
+    ICHECK_GE(live_form_cb_id, 0)
+        << "PlanTTKernelABI requires explicit live_form_cb_id when materializing merged "
+           "fragment local state for "
+        << dst_buffer_name;
+  }
+  for (int tile = 0; tile < num_c_tiles; ++tile) {
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_add_tiles(),
+                                      {IntImm32(reload_cb_id), IntImm32(partials_cb_id),
+                                       IntImm32(tile), IntImm32(tile), IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    if (live_form_cb_id >= 0) {
+      stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
+                                        {IntImm32(live_form_cb_id)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                        {IntImm32(0), IntImm32(live_form_cb_id)}));
+    }
+    if (publish_cb_id >= 0) {
+      stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
+                                        {IntImm32(publish_cb_id)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                        {IntImm32(0), IntImm32(publish_cb_id)}));
+    }
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+  }
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                    {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                    {IntImm32(partials_cb_id), IntImm32(num_c_tiles)}));
+  if (live_form_cb_id >= 0) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                      {IntImm32(live_form_cb_id), IntImm32(num_c_tiles)}));
+  }
+  if (materialize_live_form_to_local_state) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                      {IntImm32(live_form_cb_id), IntImm32(num_c_tiles)}));
+    for (int tile = 0; tile < num_c_tiles; ++tile) {
+      stmts.push_back(MakeBlackholeCall(blackhole_read_cb_front_tile_to_local_fragment(),
+                                        {physical_dst->data, IntImm32(live_form_cb_id), IntImm32(tile),
+                                         IntImm32(tile * tile_elements)}));
+    }
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                      {IntImm32(live_form_cb_id), IntImm32(num_c_tiles)}));
+  }
+  if (publish_cb_id >= 0) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                      {IntImm32(publish_cb_id), IntImm32(num_c_tiles)}));
+  }
+  return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
 }
 
 Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
@@ -4013,6 +4504,8 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
 Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
                                                            bool retain_in0,
                                                            bool retain_in1,
+                                                           bool publish_transport_out,
+                                                           bool preserve_out_local_state,
                                                            bool reacquire_in0,
                                                            bool reacquire_in1) {
   ICHECK(op != nullptr);
@@ -4037,6 +4530,44 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
   scratch_req.consume_pages_per_event =
       std::max(scratch_req.consume_pages_per_event, num_c_tiles);
 
+  Buffer reload_buffer = CreateFragmentMergeReloadBuffer(gemm_c_buffer_);
+  const int reload_req_index = AllocateRequirementIndex(reload_buffer, CBType::kIntermediate);
+  SetRequirementPageLayout(reload_req_index, c_tile_bytes, num_c_tiles);
+  auto& reload_req = cb_requirements_.at(reload_req_index);
+  reload_req.data_format = DataTypeToDataFormat(gemm_c_dtype_);
+  reload_req.flow_class = CBFlowClass::kStream;
+  reload_req.publish_pages_per_event =
+      std::max(reload_req.publish_pages_per_event, num_c_tiles);
+  reload_req.consume_pages_per_event =
+      std::max(reload_req.consume_pages_per_event, num_c_tiles);
+  MarkRequirementLifetimeOverlap(scratch_req_index, reload_req_index);
+
+  Buffer live_form_buffer;
+  int live_form_req_index = -1;
+  bool materialize_live_form_to_local_state = false;
+  const bool use_tiled_cb_live_form =
+      preserve_out_local_state && BufferUsesTiledCBLiveForm(gemm_c_buffer_);
+  if (preserve_out_local_state) {
+    const std::string live_form_name =
+        BufferIdentityName(gemm_c_buffer_) + "_fragment_merge_live_form_" +
+        std::to_string(next_requirement_index_);
+    live_form_buffer =
+        tir::decl_buffer(gemm_c_buffer_->shape, gemm_c_buffer_->dtype, live_form_name,
+                         GetStorageScope(gemm_c_buffer_));
+    live_form_req_index = AllocateRequirementIndex(live_form_buffer, CBType::kIntermediate);
+    SetRequirementPageLayout(live_form_req_index, c_tile_bytes, num_c_tiles);
+    auto& live_form_req = cb_requirements_.at(live_form_req_index);
+    live_form_req.data_format = DataTypeToDataFormat(gemm_c_dtype_);
+    live_form_req.flow_class = CBFlowClass::kStream;
+    live_form_req.publish_pages_per_event =
+        std::max(live_form_req.publish_pages_per_event, num_c_tiles);
+    live_form_req.consume_pages_per_event =
+        std::max(live_form_req.consume_pages_per_event, num_c_tiles);
+    MarkRequirementLifetimeOverlap(scratch_req_index, live_form_req_index);
+    MarkRequirementLifetimeOverlap(reload_req_index, live_form_req_index);
+    materialize_live_form_to_local_state = !use_tiled_cb_live_form;
+  }
+
   const int64_t num_elements = GetLogicalBufferElementCount(gemm_c_buffer_);
   ICHECK_GT(num_elements, 0)
       << "Blackhole clear_accum=false lowering requires a static logical element count for "
@@ -4044,20 +4575,20 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
   ICHECK_LE(num_elements, std::numeric_limits<int>::max())
       << "Blackhole clear_accum=false lowering requires num_elements to fit in int32 for "
       << gemm_c_buffer_name_;
-
   std::vector<Stmt> stmts;
   stmts.push_back(
       GenerateMatmulSequenceForOutputRequirement(scratch_req_index, retain_in0, retain_in1,
                                                  /*reserve_out=*/true, /*publish_out=*/true,
                                                  reacquire_in0, reacquire_in1));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(),
-                        {IntImm32(scratch_req_index), IntImm32(num_c_tiles)}));
-  stmts.push_back(GenerateAddFragmentFromCBFrontSequence(
-      gemm_c_buffer_, scratch_req_index, IntImm32(static_cast<int>(num_elements)), scratch_buffer));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_pop_front(),
-                        {IntImm32(scratch_req_index), IntImm32(num_c_tiles)}));
+  stmts.push_back(GenerateMergeFragmentTilesSequence(
+      gemm_c_buffer_, scratch_req_index, scratch_buffer, reload_req_index, reload_buffer,
+      live_form_req_index, live_form_buffer, IntImm32(static_cast<int>(num_elements)),
+      num_c_tiles, materialize_live_form_to_local_state,
+      publish_transport_out ? gemm_c_req_index_ : -1));
+  if (use_tiled_cb_live_form) {
+    fragment_live_form_cb_by_buffer_identity_[BufferIdentityName(gemm_c_buffer_)] =
+        live_form_req_index;
+  }
 
   return SeqStmt::Flatten(stmts);
 }
@@ -4173,16 +4704,12 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
 
   std::vector<Stmt> stmts;
   auto maybe_wrap_segment_stmt = [&](const std::string& segment_kind, Stmt stmt) -> Stmt {
-    if (current_segment_kind_.empty() && segment_kind != "fused_dataflow") {
-      return AttrStmt(StringImm("blackhole.segment_kind"), "blackhole.segment_kind",
-                      StringImm(segment_kind), stmt);
-    }
-    return stmt;
+    return WrapSegmentStmtIfNeeded(current_segment_kind_, segment_kind, stmt);
   };
   switch (direction) {
     case CopyDirection::kDramToCB: {
       const std::string segment_kind = ResolveAccessorSegmentKind(direction);
-      const bool segmented_gemm = segment_kind == "reader";
+      const bool segmented_gemm = !gemm_a_buffer_name_.empty() && segment_kind == "reader";
       int cb_id = AllocateRequirementIndex(
           op->buffer, segmented_gemm ? CBType::kInput : CBType::kIntermediate);
       int tile_bytes = EstimateCopyPageSize(op->buffer);
@@ -4208,7 +4735,7 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
     }
     case CopyDirection::kCBToDram: {
       const std::string segment_kind = ResolveAccessorSegmentKind(direction);
-      const bool segmented_gemm = segment_kind == "writer";
+      const bool segmented_gemm = !gemm_a_buffer_name_.empty() && segment_kind == "writer";
       const bool accumulator_like_src =
           GetStorageScope(load->buffer).rfind("local", 0) == 0 ||
           runtime::StorageScope::Create(GetStorageScope(load->buffer)).rank ==
@@ -4251,7 +4778,8 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(const BufferStoreNode* op,
   }
 
   const std::string segment_kind = ResolveAccessorSegmentKind(direction);
-  const bool segmented_gemm = segment_kind == "reader" || segment_kind == "writer";
+  const bool segmented_gemm =
+      !gemm_a_buffer_name_.empty() && (segment_kind == "reader" || segment_kind == "writer");
   const bool accumulator_like_src =
       direction == CopyDirection::kCBToDram &&
       (GetStorageScope(load->buffer).rfind("local", 0) == 0 ||
@@ -4266,9 +4794,10 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(const BufferStoreNode* op,
       direction == CopyDirection::kDramToCB ? op->buffer : load->buffer;
   int64_t shared_rows = 0;
   int64_t shared_cols = 0;
+  const auto logical_shared_shape = GetLogicalMatrixShape(shared_buffer);
   std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
-      shared_buffer, copy_intermediate_shape_, segmented_gemm, transpose_b_reader,
-      accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
+      shared_buffer, copy_intermediate_shape_, logical_shared_shape, segmented_gemm,
+      transpose_b_reader, accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
 
   const bool use_page_transport = UseStagedCopyPageTransport(shared_buffer);
   const Buffer& global_buffer = direction == CopyDirection::kDramToCB ? load->buffer : op->buffer;
@@ -4311,11 +4840,7 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(const BufferStoreNode* op,
 
   std::vector<Stmt> stmts;
   auto maybe_wrap_segment_stmt = [&](Stmt stmt) -> Stmt {
-    if (current_segment_kind_.empty() && segment_kind != "fused_dataflow") {
-      return AttrStmt(StringImm("blackhole.segment_kind"), "blackhole.segment_kind",
-                      StringImm(segment_kind), stmt);
-    }
-    return stmt;
+    return WrapSegmentStmtIfNeeded(current_segment_kind_, segment_kind, stmt);
   };
   auto make_tile_index = [&](int subtile_row, int subtile_col) -> PrimExpr {
     PrimExpr tile_index = base_tile_index;
@@ -4450,8 +4975,9 @@ Stmt PlanTTKernelABI::GenerateFusedStagedCopySequence(const BufferStoreNode* dra
       << "Fused staged copy expects DRAM->shared and shared->DRAM to use the same shared buffer";
   int64_t shared_rows = 0;
   int64_t shared_cols = 0;
+  const auto logical_shared_shape = GetLogicalMatrixShape(shared_buffer);
   std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
-      shared_buffer, copy_intermediate_shape_, /*segmented_gemm=*/false,
+      shared_buffer, copy_intermediate_shape_, logical_shared_shape, /*segmented_gemm=*/false,
       /*transpose_b_reader=*/false, /*accumulator_like_src=*/false, gemm_m_, gemm_n_, gemm_k_);
   const bool use_page_transport = UseStagedCopyPageTransport(shared_buffer);
   int64_t global_rows = 0;
@@ -4573,7 +5099,7 @@ Stmt PlanTTKernelABI::GenerateFusedStagedCopySequence(const BufferStoreNode* dra
 Stmt PlanTTKernelABI::GenerateClearSequence(const CallNode* op) {
   // Clear operation: tile_regs_acquire() to zero DST registers
   // In full implementation, would also zero-fill
-  return MakeBlackholeCall(blackhole_tile_regs_acquire(), {});
+  return MaybeWrapComputeSegment(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
 }
 
 namespace {
@@ -5291,17 +5817,27 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
   op_payload.Set("clear", Bool(lowered_match.clear));
   SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
   SetOptionalExprField(&op_payload, "row_width_expr", lowered_match.row_width);
-  RecordComputeEpilogueOp(std::move(op_payload));
   if (lowered_match.grouped) {
-    return MakeBlackholeCall(tir::builtin::blackhole_reduce_row(),
-                             {lowered_match.src->data, lowered_match.dst->data,
-                              lowered_match.num_elements, lowered_match.row_width,
-                              StringImm(lowered_match.kind), Bool(lowered_match.clear)});
+    const Map<String, Any>* layout_contract = FindFragmentLayoutContract(lowered_match.src);
+    ICHECK(layout_contract != nullptr)
+        << "PlanTTKernelABI requires fragment_layout_contract in SpatialProgram for grouped "
+           "row reduction source "
+        << BufferIdentityName(lowered_match.src);
+    op_payload.Set(String(schema_key::kFragmentLayoutContract), *layout_contract);
   }
-  return MakeBlackholeCall(tir::builtin::blackhole_reduce_row(),
-                           {lowered_match.src->data, lowered_match.dst->data,
-                            lowered_match.num_elements, StringImm(lowered_match.kind),
-                            Bool(lowered_match.clear)});
+  RecordComputeEpilogueOp(std::move(op_payload));
+  const Buffer physical_src = ResolvePhysicalFragmentBuffer(lowered_match.src);
+  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(lowered_match.dst);
+  if (lowered_match.grouped) {
+    return MaybeWrapComputeSegment(MakeBlackholeCall(
+        tir::builtin::blackhole_reduce_row(),
+        {physical_src->data, physical_dst->data, lowered_match.num_elements,
+         lowered_match.row_width, StringImm(lowered_match.kind), Bool(lowered_match.clear)}));
+  }
+  return MaybeWrapComputeSegment(MakeBlackholeCall(
+      tir::builtin::blackhole_reduce_row(),
+      {physical_src->data, physical_dst->data, lowered_match.num_elements,
+       StringImm(lowered_match.kind), Bool(lowered_match.clear)}));
 }
 
 bool PlanTTKernelABI::MatchDirectRowBroadcast(const ForNode* op,
@@ -5376,14 +5912,24 @@ Stmt PlanTTKernelABI::GenerateRowBroadcastSequence(const RowBroadcastMatch& matc
   op_payload.Set("grouped", Bool(lowered_match.grouped));
   SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
   SetOptionalExprField(&op_payload, "row_width_expr", lowered_match.row_width);
-  RecordComputeEpilogueOp(std::move(op_payload));
   if (lowered_match.grouped) {
-    return MakeBlackholeCall(
-        op, {lowered_match.dst->data, lowered_match.scalar->data, lowered_match.num_elements,
-             lowered_match.row_width});
+    const Map<String, Any>* layout_contract = FindFragmentLayoutContract(lowered_match.dst);
+    ICHECK(layout_contract != nullptr)
+        << "PlanTTKernelABI requires fragment_layout_contract in SpatialProgram for grouped "
+           "row broadcast destination "
+        << BufferIdentityName(lowered_match.dst);
+    op_payload.Set(String(schema_key::kFragmentLayoutContract), *layout_contract);
   }
-  return MakeBlackholeCall(
-      op, {lowered_match.dst->data, lowered_match.scalar->data, lowered_match.num_elements});
+  RecordComputeEpilogueOp(std::move(op_payload));
+  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(lowered_match.dst);
+  const Buffer physical_scalar = ResolvePhysicalFragmentBuffer(lowered_match.scalar);
+  if (lowered_match.grouped) {
+    return MaybeWrapComputeSegment(MakeBlackholeCall(
+        op, {physical_dst->data, physical_scalar->data, lowered_match.num_elements,
+             lowered_match.row_width}));
+  }
+  return MaybeWrapComputeSegment(
+      MakeBlackholeCall(op, {physical_dst->data, physical_scalar->data, lowered_match.num_elements}));
 }
 
 bool PlanTTKernelABI::MatchScalarFmaStore(const BufferStoreNode* op,
@@ -5487,15 +6033,19 @@ Stmt PlanTTKernelABI::GenerateScalarFmaSequence(const ScalarFmaMatch& match) {
   op_payload.Set("add_buffer", String(BufferIdentityName(lowered_match.add)));
   SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
   RecordComputeEpilogueOp(std::move(op_payload));
+  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(lowered_match.dst);
+  const Buffer physical_lhs = ResolvePhysicalFragmentBuffer(lowered_match.lhs);
+  const Buffer physical_rhs = ResolvePhysicalFragmentBuffer(lowered_match.rhs);
+  const Buffer physical_add = ResolvePhysicalFragmentBuffer(lowered_match.add);
   if (lowered_match.num_elements.defined()) {
-    return MakeBlackholeCall(tir::builtin::blackhole_scalar_fma(),
-                             {lowered_match.dst->data, lowered_match.lhs->data,
-                              lowered_match.rhs->data, lowered_match.add->data,
-                              lowered_match.num_elements});
+    return MaybeWrapComputeSegment(MakeBlackholeCall(
+        tir::builtin::blackhole_scalar_fma(),
+        {physical_dst->data, physical_lhs->data, physical_rhs->data, physical_add->data,
+         lowered_match.num_elements}));
   }
-  return MakeBlackholeCall(tir::builtin::blackhole_scalar_fma(),
-                           {lowered_match.dst->data, lowered_match.lhs->data,
-                            lowered_match.rhs->data, lowered_match.add->data});
+  return MaybeWrapComputeSegment(MakeBlackholeCall(
+      tir::builtin::blackhole_scalar_fma(),
+      {physical_dst->data, physical_lhs->data, physical_rhs->data, physical_add->data}));
 }
 
 bool PlanTTKernelABI::MatchExp2RowBroadcastAffine(const ForNode* op,
@@ -5568,17 +6118,27 @@ Stmt PlanTTKernelABI::GenerateExp2RowBroadcastAffineSequence(
   SetOptionalExprField(&op_payload, "row_width_expr", lowered_match.row_width);
   SetOptionalExprField(&op_payload, "dst_scale_expr", lowered_match.dst_scale);
   SetOptionalExprField(&op_payload, "scalar_scale_expr", lowered_match.scalar_scale);
-  RecordComputeEpilogueOp(std::move(op_payload));
   if (lowered_match.grouped) {
-    return MakeBlackholeCall(tir::builtin::blackhole_exp2_grouped_row_bcast_affine(),
-                             {lowered_match.dst->data, lowered_match.scalar->data,
-                              lowered_match.num_elements, lowered_match.row_width,
-                              lowered_match.dst_scale, lowered_match.scalar_scale});
+    const Map<String, Any>* layout_contract = FindFragmentLayoutContract(lowered_match.dst);
+    ICHECK(layout_contract != nullptr)
+        << "PlanTTKernelABI requires fragment_layout_contract in SpatialProgram for grouped "
+           "exp2 row broadcast destination "
+        << BufferIdentityName(lowered_match.dst);
+    op_payload.Set(String(schema_key::kFragmentLayoutContract), *layout_contract);
   }
-  return MakeBlackholeCall(tir::builtin::blackhole_exp2_row_bcast_affine(),
-                           {lowered_match.dst->data, lowered_match.scalar->data,
-                            lowered_match.num_elements, lowered_match.dst_scale,
-                            lowered_match.scalar_scale});
+  RecordComputeEpilogueOp(std::move(op_payload));
+  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(lowered_match.dst);
+  const Buffer physical_scalar = ResolvePhysicalFragmentBuffer(lowered_match.scalar);
+  if (lowered_match.grouped) {
+    return MaybeWrapComputeSegment(MakeBlackholeCall(
+        tir::builtin::blackhole_exp2_grouped_row_bcast_affine(),
+        {physical_dst->data, physical_scalar->data, lowered_match.num_elements,
+         lowered_match.row_width, lowered_match.dst_scale, lowered_match.scalar_scale}));
+  }
+  return MaybeWrapComputeSegment(MakeBlackholeCall(
+      tir::builtin::blackhole_exp2_row_bcast_affine(),
+      {physical_dst->data, physical_scalar->data, lowered_match.num_elements,
+       lowered_match.dst_scale, lowered_match.scalar_scale}));
 }
 
 bool PlanTTKernelABI::MatchScalarExp2AffineStore(const BufferStoreNode* op,
@@ -5696,15 +6256,19 @@ Stmt PlanTTKernelABI::GenerateScalarExp2AffineSequence(const ScalarExp2AffineMat
                          IntImm(DataType::Int(32), logical_extent));
   }
   RecordComputeEpilogueOp(std::move(op_payload));
+  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(match.dst);
+  const Buffer physical_lhs = ResolvePhysicalFragmentBuffer(match.lhs);
+  const Buffer physical_rhs = ResolvePhysicalFragmentBuffer(match.rhs);
   if (logical_extent > 1) {
-    return MakeBlackholeCall(tir::builtin::blackhole_scalar_exp2_affine(),
-                             {match.dst->data, match.lhs->data, match.rhs->data,
-                              match.lhs_scale, match.rhs_scale,
-                              IntImm(DataType::Int(32), logical_extent)});
+    return MaybeWrapComputeSegment(MakeBlackholeCall(
+        tir::builtin::blackhole_scalar_exp2_affine(),
+        {physical_dst->data, physical_lhs->data, physical_rhs->data, match.lhs_scale,
+         match.rhs_scale, IntImm(DataType::Int(32), logical_extent)}));
   }
-  return MakeBlackholeCall(tir::builtin::blackhole_scalar_exp2_affine(),
-                           {match.dst->data, match.lhs->data, match.rhs->data,
-                            match.lhs_scale, match.rhs_scale});
+  return MaybeWrapComputeSegment(MakeBlackholeCall(
+      tir::builtin::blackhole_scalar_exp2_affine(),
+      {physical_dst->data, physical_lhs->data, physical_rhs->data, match.lhs_scale,
+       match.rhs_scale}));
 }
 
 bool PlanTTKernelABI::MatchDirectFragmentFill(const ForNode* op,
@@ -5764,8 +6328,9 @@ Stmt PlanTTKernelABI::GenerateFragmentFillSequence(const FragmentFillMatch& matc
       num_elements = IntImm(DataType::Int(32), logical_extent);
     }
   }
-  return MakeBlackholeCall(tir::builtin::blackhole_fill_fragment(),
-                           {match.dst->data, num_elements, match.value});
+  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(match.dst);
+  return MaybeWrapComputeSegment(MakeBlackholeCall(
+      tir::builtin::blackhole_fill_fragment(), {physical_dst->data, num_elements, match.value}));
 }
 
 bool PlanTTKernelABI::MatchScalarMaxStore(const BufferStoreNode* op,
@@ -5837,13 +6402,15 @@ Stmt PlanTTKernelABI::GenerateScalarMaxSequence(const ScalarMaxMatch& match) {
   op_payload.Set("src_buffer", String(BufferIdentityName(lowered_match.src)));
   SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
   RecordComputeEpilogueOp(std::move(op_payload));
+  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(lowered_match.dst);
+  const Buffer physical_src = ResolvePhysicalFragmentBuffer(lowered_match.src);
   if (lowered_match.num_elements.defined()) {
-    return MakeBlackholeCall(tir::builtin::blackhole_scalar_max(),
-                             {lowered_match.dst->data, lowered_match.src->data,
-                              lowered_match.num_elements});
+    return MaybeWrapComputeSegment(MakeBlackholeCall(
+        tir::builtin::blackhole_scalar_max(),
+        {physical_dst->data, physical_src->data, lowered_match.num_elements}));
   }
-  return MakeBlackholeCall(tir::builtin::blackhole_scalar_max(),
-                           {lowered_match.dst->data, lowered_match.src->data});
+  return MaybeWrapComputeSegment(MakeBlackholeCall(
+      tir::builtin::blackhole_scalar_max(), {physical_dst->data, physical_src->data}));
 }
 
 bool PlanTTKernelABI::MatchScalarFragmentCopyStore(const BufferStoreNode* op,
@@ -5959,25 +6526,31 @@ bool PlanTTKernelABI::MatchDirectFragmentCast(const ForNode* op,
   match->dst_offset = dst_offset;
   match->src_offset = src_offset;
   match->num_elements = num_elements;
+  match->row_width = PrimExpr();
   const auto [logical_src_rows, logical_src_cols] = GetLogicalMatrixShape(load->buffer);
   const auto [logical_dst_rows, logical_dst_cols] = GetLogicalMatrixShape(inner_store->buffer);
-  const int64_t logical_dst_extent = GetLogicalVectorLength(inner_store->buffer);
   const int64_t logical_src_extent = logical_src_rows > 0 && logical_src_cols > 0
                                          ? logical_src_rows * logical_src_cols
                                          : -1;
-  const int64_t logical_matrix_cast_extent =
+  const int64_t logical_dst_matrix_extent =
       logical_dst_rows > 0 && logical_dst_cols > 0 ? logical_dst_rows * logical_dst_cols : -1;
-  if (logical_src_extent > 0 && logical_matrix_cast_extent > 0 &&
-      logical_src_extent == logical_matrix_cast_extent && logical_src_extent > logical_dst_extent &&
-      tir::is_zero(match->src_offset) && tir::is_zero(match->dst_offset)) {
+  const int64_t logical_dst_vector_extent = GetLogicalVectorLength(inner_store->buffer);
+  if (logical_src_extent > 0 && logical_dst_matrix_extent > 0 &&
+      logical_src_extent == logical_dst_matrix_extent && tir::is_zero(match->src_offset) &&
+      tir::is_zero(match->dst_offset)) {
     match->num_elements = IntImm(DataType::Int(32), logical_src_extent);
+    match->row_width = IntImm(DataType::Int(32), logical_src_cols);
     return true;
   }
-  if (logical_src_rows > 0 && logical_src_cols > 0 && logical_dst_extent > 0) {
-    Var thread_row_var = SelectLogicalRowThreadVar(logical_src_rows);
-    if (thread_row_var.defined() && !ExprUsesVar(match->src_offset, thread_row_var)) {
-      match->src_offset = analyzer.Simplify(thread_row_var * IntImm(DataType::Int(32), logical_src_cols) +
-                                            match->src_offset);
+  if (logical_src_rows > 0 && logical_src_cols > 0 &&
+      (logical_dst_vector_extent > 0 || logical_dst_matrix_extent > 0)) {
+    match->row_width = IntImm(DataType::Int(32), logical_src_cols);
+    if (logical_dst_vector_extent > 0 && logical_dst_matrix_extent <= 0) {
+      Var thread_row_var = SelectLogicalRowThreadVar(logical_src_rows);
+      if (thread_row_var.defined() && !ExprUsesVar(match->src_offset, thread_row_var)) {
+        match->src_offset = analyzer.Simplify(
+            thread_row_var * IntImm(DataType::Int(32), logical_src_cols) + match->src_offset);
+      }
     }
   }
   return true;
@@ -5985,55 +6558,146 @@ bool PlanTTKernelABI::MatchDirectFragmentCast(const ForNode* op,
 
 Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& match,
                                                     bool publish_cb) {
+  PrimExpr num_elements_expr = match.num_elements;
   Map<String, Any> op_payload =
       MakeComputeEpilogueOpPayload("cast_fragment_slice", BufferIdentityName(match.dst));
   op_payload.Set("src_buffer", String(BufferIdentityName(match.src)));
   op_payload.Set("publish_cb", Bool(publish_cb));
   SetOptionalExprField(&op_payload, "dst_offset_expr", match.dst_offset);
   SetOptionalExprField(&op_payload, "src_offset_expr", match.src_offset);
-  SetOptionalExprField(&op_payload, "num_elements_expr", match.num_elements);
-  RecordComputeEpilogueOp(std::move(op_payload));
   std::vector<Stmt> stmts;
-  stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cast_fragment_slice(),
-                                    {match.dst->data, match.src->data, match.dst_offset,
-                                     match.src_offset, match.num_elements}));
-
+  bool use_tiled_republish_materialization = false;
+  PrimExpr tiled_republish_row_width;
+  int cb_id = -1;
+  int num_pages = 0;
+  const std::string dst_buffer_name = BufferIdentityName(match.dst);
+  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(match.dst);
+  const Buffer physical_src = ResolvePhysicalFragmentBuffer(match.src);
   if (publish_cb) {
-    const int cb_id = AllocateRequirementIndex(match.dst, CBType::kIntermediate);
+    cb_id = AllocateRequirementIndex(match.dst, CBType::kIntermediate);
     ICHECK_GE(cb_id, 0);
     ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
-    int num_pages = std::max(1, cb_requirements_[cb_id].num_pages);
+    num_pages = std::max(
+        1, cb_requirements_[cb_id].publish_pages_per_event > 0
+               ? cb_requirements_[cb_id].publish_pages_per_event
+               : cb_requirements_[cb_id].num_pages);
     const std::string buffer_identity = BufferIdentityName(match.dst);
     auto it = cb_consumed_fragment_pages_by_buffer_identity_.find(buffer_identity);
-    if (it != cb_consumed_fragment_pages_by_buffer_identity_.end()) {
+    if (it != cb_consumed_fragment_pages_by_buffer_identity_.end() &&
+        cb_requirements_[cb_id].publish_pages_per_event <= 0) {
       num_pages = std::max(1, it->second);
     }
+    auto contract_it = fragment_materialization_contracts_by_target_buffer_.find(dst_buffer_name);
+    if (contract_it != fragment_materialization_contracts_by_target_buffer_.end()) {
+      const auto& contract = contract_it->second;
+      auto kind_it = contract.find(String(schema_key::kKind));
+      auto bridge_it = contract.find(String(schema_key::kBridgeKind));
+      auto protocol_it = contract.find(String(schema_key::kExecutionProtocol));
+      use_tiled_republish_materialization =
+          kind_it != contract.end() && bridge_it != contract.end() &&
+          protocol_it != contract.end() &&
+          Downcast<String>((*kind_it).second) ==
+              fragment_materialization::kRepublishedLogicalTile &&
+          Downcast<String>((*bridge_it).second) ==
+              fragment_materialization::kTileNFacesMaterialization &&
+          Downcast<String>((*protocol_it).second) ==
+              fragment_materialization::kTiledCBRepublish;
+      if (use_tiled_republish_materialization) {
+        auto row_width_it = contract.find(String(schema_key::kLogicalRowWidth));
+        if (row_width_it != contract.end()) {
+          tiled_republish_row_width = IntImm(
+              DataType::Int(32),
+              static_cast<int>(Downcast<Integer>((*row_width_it).second)->value));
+        } else {
+          tiled_republish_row_width = match.row_width;
+          if (!tiled_republish_row_width.defined()) {
+            const auto [logical_src_rows, logical_src_cols] = GetLogicalMatrixShape(match.src);
+            if (logical_src_rows > 0 && logical_src_cols > 0) {
+              tiled_republish_row_width = IntImm(DataType::Int(32), logical_src_cols);
+            }
+          }
+          if (!tiled_republish_row_width.defined()) {
+            const auto [logical_dst_rows, logical_dst_cols] = GetLogicalMatrixShape(match.dst);
+            if (logical_dst_rows > 0 && logical_dst_cols > 0) {
+              tiled_republish_row_width = IntImm(DataType::Int(32), logical_dst_cols);
+            }
+          }
+        }
+        ICHECK(tiled_republish_row_width.defined())
+            << "PlanTTKernelABI requires logical_row_width contract or structural row_width "
+               "for tiled republish materialization of "
+            << dst_buffer_name;
+        auto logical_element_count_it = contract.find(String(schema_key::kLogicalElementCount));
+        if (logical_element_count_it != contract.end()) {
+          num_elements_expr = IntImm(
+              DataType::Int(32),
+              static_cast<int>(Downcast<Integer>((*logical_element_count_it).second)->value));
+        }
+        op_payload.Set(String(schema_key::kFragmentMaterializationContract), contract);
+        SetOptionalExprField(&op_payload, "row_width_expr", tiled_republish_row_width);
+      }
+    }
+  }
+  SetOptionalExprField(&op_payload, "num_elements_expr", num_elements_expr);
+  RecordComputeEpilogueOp(std::move(op_payload));
+  if (use_tiled_republish_materialization) {
+    // The republish contract says the result becomes cb-live. Whether the logical
+    // buffer also happens to use blackhole.acc storage does not imply a page has
+    // already been reserved for the publish event.
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                      {IntImm32(cb_id), IntImm32(num_pages)}));
+    stmts.push_back(
+        MakeBlackholeCall(tir::builtin::blackhole_cast_fragment_slice_to_tiled_cb(),
+                          {physical_dst->data, physical_src->data, IntImm32(cb_id), match.dst_offset,
+                           match.src_offset, num_elements_expr, tiled_republish_row_width}));
+    fragment_live_form_cb_by_buffer_identity_[dst_buffer_name] = cb_id;
+  } else {
+    stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cast_fragment_slice(),
+                                      {physical_dst->data, physical_src->data, match.dst_offset,
+                                       match.src_offset, num_elements_expr}));
+  }
+
+  if (publish_cb) {
     stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cb_push_back(),
                                       {IntImm32(cb_id), IntImm32(num_pages)}));
   }
 
-  return stmts.size() == 1 ? stmts.front() : SeqStmt::Flatten(stmts);
+  return MaybeWrapComputeSegment(stmts.size() == 1 ? stmts.front() : SeqStmt::Flatten(stmts));
 }
 
-bool PlanTTKernelABI::ShouldRetainComputeInputBuffer(const Buffer& buffer,
-                                                       int current_order_index) const {
+PlanTTKernelABI::FutureBufferUses PlanTTKernelABI::ClassifyFutureBufferUses(
+    const Buffer& buffer, int current_order_index) const {
+  FutureBufferUses uses;
   const std::string buffer_identity = BufferIdentityName(buffer);
   auto it = buffer_flow_contracts_.find(buffer_identity);
   if (it == buffer_flow_contracts_.end()) {
-    return false;
+    return uses;
   }
   for (const BufferFlowEvent& event : it->second.events) {
     if (event.order_index <= current_order_index) {
       continue;
     }
-    if (event.kind == BufferFlowEventKind::kComputeConsume) {
-      return true;
-    }
     if (event.kind == BufferFlowEventKind::kWrite) {
-      return false;
+      break;
+    }
+    if (event.kind == BufferFlowEventKind::kComputeConsume) {
+      uses.has_compute_consume = true;
+      continue;
+    }
+    if (event.kind == BufferFlowEventKind::kTransportConsume) {
+      uses.has_transport_consume = true;
+      continue;
+    }
+    if (event.kind == BufferFlowEventKind::kReference) {
+      uses.has_reference = true;
     }
   }
-  return false;
+  return uses;
+}
+
+bool PlanTTKernelABI::ShouldRetainComputeInputBuffer(const Buffer& buffer,
+                                                       int current_order_index) const {
+  return ClassifyFutureBufferUses(buffer, current_order_index).has_compute_consume;
 }
 
 bool PlanTTKernelABI::ShouldReacquireComputeInputBuffer(const Buffer& buffer,
@@ -6057,24 +6721,8 @@ bool PlanTTKernelABI::ShouldReacquireComputeInputBuffer(const Buffer& buffer,
 
 bool PlanTTKernelABI::ShouldPublishBufferResult(const Buffer& buffer,
                                                   int current_order_index) const {
-  const std::string buffer_identity = BufferIdentityName(buffer);
-  auto it = buffer_flow_contracts_.find(buffer_identity);
-  if (it == buffer_flow_contracts_.end()) {
-    return false;
-  }
-  for (const BufferFlowEvent& event : it->second.events) {
-    if (event.order_index <= current_order_index) {
-      continue;
-    }
-    if (event.kind == BufferFlowEventKind::kComputeConsume ||
-        event.kind == BufferFlowEventKind::kTransportConsume) {
-      return true;
-    }
-    if (event.kind == BufferFlowEventKind::kWrite) {
-      return false;
-    }
-  }
-  return false;
+  const FutureBufferUses uses = ClassifyFutureBufferUses(buffer, current_order_index);
+  return uses.has_compute_consume || uses.has_transport_consume;
 }
 
 bool PlanTTKernelABI::MatchDirectLocalToCBSliceLoop(const ForNode* op,
@@ -6139,6 +6787,7 @@ bool PlanTTKernelABI::MatchDirectLocalToCBSliceLoop(const ForNode* op,
     match->src = load->buffer;
     match->dst_offset_elements = base_offset;
     match->num_elements = vector_extent;
+    match->row_width = row_extent;
     match->wrap_src_allocation = wrap_src_allocation;
     if (rewritten.empty()) {
       match->lowered_loop_body = Stmt();
@@ -6198,10 +6847,12 @@ class LocalSliceCastSourceOffsetRewriter : public tir::StmtExprMutator {
 Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
                                                            const LocalToCBSliceMatch& match) {
   Map<String, Any> op_payload =
-      MakeComputeEpilogueOpPayload("write_local_slice_to_cb", BufferIdentityName(match.dst));
+      MakeComputeEpilogueOpPayload("write_local_fragment_slice_to_tiled_cb",
+                                   BufferIdentityName(match.dst));
   op_payload.Set("src_buffer", String(BufferIdentityName(match.src)));
   SetOptionalExprField(&op_payload, "dst_offset_expr", match.dst_offset_elements);
   SetOptionalExprField(&op_payload, "num_elements_expr", match.num_elements);
+  SetOptionalExprField(&op_payload, "row_width_expr", match.row_width);
   RecordComputeEpilogueOp(std::move(op_payload));
   const int cb_id = AllocateRequirementIndex(match.dst, CBType::kIntermediate);
   ICHECK_GE(cb_id, 0);
@@ -6223,9 +6874,10 @@ Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
         LocalSliceCastSourceOffsetRewriter(match.src->data, match.dst_offset_elements)(lowered_prefix);
     loop_stmts.push_back(lowered_prefix);
   }
-  loop_stmts.push_back(MakeBlackholeCall(blackhole_write_local_slice_to_cb(),
-                                         {match.src->data, IntImm32(cb_id),
-                                          match.dst_offset_elements, match.num_elements}));
+  loop_stmts.push_back(
+      MakeBlackholeCall(blackhole_write_local_fragment_slice_to_tiled_cb(),
+                        {match.src->data, IntImm32(cb_id), match.dst_offset_elements,
+                         match.num_elements, match.row_width}));
   Stmt loop_body =
       loop_stmts.size() == 1 ? loop_stmts.front() : SeqStmt::Flatten(loop_stmts);
   if (match.wrap_src_allocation) {
@@ -6242,7 +6894,7 @@ Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
                       op->annotations));
   stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
                                     {IntImm32(cb_id), IntImm32(num_pages)}));
-  return SeqStmt::Flatten(stmts);
+  return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
 }
 
 // Parse a colon-separated string into fields
@@ -6370,7 +7022,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
           bool reacquire_in0 = false;
           bool reacquire_in1 = false;
           if (IsBufferLikeExpr(call->args[0])) {
-            const Buffer in0_buffer = NormalizeToBufferRegion(call->args[0])->buffer;
+            const Buffer in0_buffer =
+                ResolvePhysicalFragmentBuffer(NormalizeToBufferRegion(call->args[0])->buffer);
             retain_in0 = ShouldRetainComputeInputBuffer(in0_buffer, current_order_index);
             if (!retain_in0) {
               reacquire_in0 =
@@ -6378,7 +7031,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
             }
           }
           if (IsBufferLikeExpr(call->args[1])) {
-            const Buffer in1_buffer = NormalizeToBufferRegion(call->args[1])->buffer;
+            const Buffer in1_buffer =
+                ResolvePhysicalFragmentBuffer(NormalizeToBufferRegion(call->args[1])->buffer);
             retain_in1 = ShouldRetainComputeInputBuffer(in1_buffer, current_order_index);
             if (!retain_in1) {
               reacquire_in1 =
@@ -6386,12 +7040,22 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
             }
           }
           bool publish_out = true;
+          bool publish_transport_out = true;
+          bool preserve_out_local_state = false;
           if (IsBufferLikeExpr(call->args[2])) {
-            publish_out = ShouldPublishBufferResult(
-                NormalizeToBufferRegion(call->args[2])->buffer, current_order_index);
+            const Buffer out_buffer =
+                ResolvePhysicalFragmentBuffer(NormalizeToBufferRegion(call->args[2])->buffer);
+            const FutureBufferUses future_uses =
+                ClassifyFutureBufferUses(out_buffer, current_order_index);
+            publish_out = future_uses.has_compute_consume || future_uses.has_transport_consume;
+            publish_transport_out = future_uses.has_transport_consume;
+            preserve_out_local_state =
+                future_uses.has_compute_consume || future_uses.has_reference;
           }
-          Stmt matmul = GenerateMatmulSequence(call, retain_in0, retain_in1, publish_out,
-                                               reacquire_in0, reacquire_in1);
+          Stmt matmul =
+              GenerateMatmulSequence(call, retain_in0, retain_in1, publish_out,
+                                     publish_transport_out, preserve_out_local_state,
+                                     reacquire_in0, reacquire_in1);
           for (auto it = rewrap_stack.rbegin(); it != rewrap_stack.rend(); ++it) {
             matmul = (*it)(matmul);
           }
@@ -6410,8 +7074,15 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
     if (const auto* direct_cast_loop = AsUnwrappedFor(op->seq[i])) {
       FragmentCastMatch cast_match;
       if (MatchDirectFragmentCast(direct_cast_loop, &cast_match)) {
+        std::vector<Stmt> prefix;
+        std::vector<Stmt> suffix;
+        ValidatePublishedFragmentSourceEdge(cast_match.src, cast_match.dst);
+        AppendPublishedFragmentSourceMaterialization(cast_match.src, current_order_index, &prefix,
+                                                    &suffix);
         const bool publish_cb = ShouldPublishBufferResult(cast_match.dst, current_order_index);
-        rewritten.push_back(GenerateFragmentCastSequence(cast_match, publish_cb));
+        prefix.push_back(GenerateFragmentCastSequence(cast_match, publish_cb));
+        prefix.insert(prefix.end(), suffix.begin(), suffix.end());
+        rewritten.push_back(SeqStmt::Flatten(prefix));
         continue;
       }
     }

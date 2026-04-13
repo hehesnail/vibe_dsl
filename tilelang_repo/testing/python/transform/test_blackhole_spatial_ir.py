@@ -1158,9 +1158,8 @@ def test_spatial_program_layout_kind_comes_from_semantic_domain_traits_not_work_
     assert str(program.work_partitions[0].kind) == "indexed"
 
 
-def test_gemm_spatial_program_uses_segment_kind_ir_not_segment_plan():
+def test_gemm_spatial_program_uses_segment_kind_ir():
     mod = _prepare_blackhole_phase_b_module(gemm_kernel())
-    mod = _strip_attr(mod, "blackhole.segment_plan")
     mod = _drop_existing_spatial_program(mod)
     mod = tilelang.transform.LowerToSpatialProgram()(mod)
     mod = tilelang.transform.ValidateSpatialProgram()(mod)

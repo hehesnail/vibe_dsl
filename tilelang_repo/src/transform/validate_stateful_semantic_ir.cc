@@ -125,10 +125,13 @@ tir::transform::Pass ValidateStatefulSemanticIR() {
             << "fragment_lowering_structure supplement must carry at least one fragment op";
         bool requires_pointwise_payload = false;
         bool requires_row_broadcast_payload = false;
+        bool requires_fragment_layout_payload = false;
         for (const Any& op_any : fragment_ops) {
           const std::string op_name = tvm::Downcast<String>(op_any);
           requires_pointwise_payload |= op_name == "pointwise_chain";
           requires_row_broadcast_payload |= op_name == "row_broadcast";
+          requires_fragment_layout_payload |=
+              op_name == "row_reduction" || op_name == "row_broadcast";
         }
         if (requires_pointwise_payload) {
           auto maybe_pointwise_ops =
@@ -146,6 +149,39 @@ tir::transform::Pass ValidateStatefulSemanticIR() {
           ICHECK(!tvm::Downcast<Array<Any>>(maybe_row_broadcast_sources.value()).empty())
               << "fragment_lowering_structure row_broadcast_sources must be non-empty";
         }
+        if (requires_fragment_layout_payload) {
+          auto maybe_layout_contracts =
+              supplement->payload.Get(String(schema_key::kFragmentLayoutContracts));
+          ICHECK(maybe_layout_contracts)
+              << "fragment_lowering_structure row_reduction/row_broadcast must carry "
+                 "fragment_layout_contracts";
+          Array<Any> contracts = tvm::Downcast<Array<Any>>(maybe_layout_contracts.value());
+          ICHECK(!contracts.empty())
+              << "fragment_lowering_structure fragment_layout_contracts must be non-empty";
+          for (const Any& contract_any : contracts) {
+            Map<String, Any> contract = tvm::Downcast<Map<String, Any>>(contract_any);
+            ICHECK(contract.count(String(schema_key::kBuffer)))
+                << "fragment_layout_contract must carry buffer";
+            ICHECK(contract.count(String(schema_key::kScope)))
+                << "fragment_layout_contract must carry scope";
+            ICHECK(contract.count(String(schema_key::kShape)))
+                << "fragment_layout_contract must carry shape";
+            ICHECK(contract.count(String(schema_key::kLocalShape)))
+                << "fragment_layout_contract must carry local_shape";
+            ICHECK(contract.count(String(schema_key::kDistributionKind)))
+                << "fragment_layout_contract must carry distribution_kind";
+            ICHECK(contract.count(String(schema_key::kStorageTopologyKind)))
+                << "fragment_layout_contract must carry storage_topology_kind";
+            ICHECK(contract.count(String(schema_key::kThreadExtent)))
+                << "fragment_layout_contract must carry thread_extent";
+            ICHECK(contract.count(String(schema_key::kReplicateExtent)))
+                << "fragment_layout_contract must carry replicate_extent";
+            ICHECK(contract.count(String(schema_key::kInverseLogicalIndexVars)))
+                << "fragment_layout_contract must carry inverse_logical_index_vars";
+            ICHECK(contract.count(String(schema_key::kInverseLogicalIndexExprs)))
+                << "fragment_layout_contract must carry inverse_logical_index_exprs";
+          }
+        }
         if (auto maybe_materialization_contracts =
                 supplement->payload.Get(String(schema_key::kFragmentMaterializationContracts))) {
           Array<Any> contracts = tvm::Downcast<Array<Any>>(maybe_materialization_contracts.value());
@@ -161,10 +197,21 @@ tir::transform::Pass ValidateStatefulSemanticIR() {
                 << "fragment_materialization_contract must carry scope";
             ICHECK(contract.count(String(schema_key::kMaterializationKind)))
                 << "fragment_materialization_contract must carry materialization_kind";
+            ICHECK(contract.count(String(schema_key::kBridgeKind)))
+                << "fragment_materialization_contract must carry bridge_kind";
             ICHECK(contract.count(String(schema_key::kValueRole)))
                 << "fragment_materialization_contract must carry value_role";
             ICHECK(contract.count(String(schema_key::kMergeKind)))
                 << "fragment_materialization_contract must carry merge_kind";
+            ICHECK(contract.count(String(schema_key::kExecutionProtocol)))
+                << "fragment_materialization_contract must carry execution_protocol";
+            ICHECK(contract.count(String(schema_key::kResultLiveForm)))
+                << "fragment_materialization_contract must carry result_live_form";
+            if (auto maybe_source_buffer = contract.Get(String(schema_key::kSourceBuffer))) {
+              ICHECK(!Downcast<String>(maybe_source_buffer.value()).empty())
+                  << "fragment_materialization_contract source_buffer must be non-empty when "
+                     "present";
+            }
           }
         }
         if (auto maybe_flow_contracts =

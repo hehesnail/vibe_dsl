@@ -273,13 +273,83 @@ TVM_DLL const Op& blackhole_copy_tile_to_dst_init_short_with_dt();
 TVM_DLL const Op& blackhole_copy_tile_from_cb();
 
 /*!
+ * \brief Initialize TT-Metal elementwise add for two CB-backed tile streams.
+ * \param lhs_cb_id Left-hand-side CB id
+ * \param rhs_cb_id Right-hand-side CB id
+ */
+TVM_DLL const Op& blackhole_add_tiles_init();
+
+/*!
+ * \brief Add one tile from two CBs into a DST register slot.
+ * \param lhs_cb_id Left-hand-side CB id
+ * \param rhs_cb_id Right-hand-side CB id
+ * \param lhs_tile_index Tile index in the left-hand-side CB front window
+ * \param rhs_tile_index Tile index in the right-hand-side CB front window
+ * \param dst_tile_index Destination tile index within DST registers
+ */
+TVM_DLL const Op& blackhole_add_tiles();
+
+/*!
  * \brief Copy a contiguous local fragment slice into the currently reserved CB write window.
  * \param src_buffer Source local fragment buffer handle
  * \param dst_cb_id Destination CB id
  * \param dst_offset_elements Element offset from the beginning of the reserved CB write window
  * \param num_elements Number of contiguous elements to copy
+ * \param src_offset_elements Optional element offset from the beginning of the local fragment slice
  */
 TVM_DLL const Op& blackhole_write_local_slice_to_cb();
+
+/*!
+ * \brief Materialize one 32x32 local fragment tile into tiled-nfaces layout in the reserved CB write window.
+ * \param src_buffer Source local fragment buffer handle
+ * \param dst_cb_id Destination CB id
+ * \param dst_tile_index Destination tile index in the reserved CB write window
+ * \param src_offset_elements Element offset from the beginning of the local fragment tile
+ */
+TVM_DLL const Op& blackhole_write_local_fragment_tile_to_cb();
+
+/*!
+ * \brief Materialize a row-major local fragment slice into tiled-nfaces layout in the reserved CB write window.
+ * \param src_buffer Source local fragment buffer handle
+ * \param dst_cb_id Destination CB id
+ * \param dst_offset_elements Logical element offset within the destination tensor view
+ * \param num_elements Number of contiguous source elements to materialize
+ * \param row_width Logical row width of the destination tiled tensor view
+ * \param src_offset_elements Optional source element offset from the beginning of the local fragment slice
+ */
+TVM_DLL const Op& blackhole_write_local_fragment_slice_to_tiled_cb();
+
+/*!
+ * \brief Cast a row-major local fragment slice and materialize it into tiled-nfaces layout in
+ * the reserved CB write window.
+ * \param dst_buffer Destination CB-backed fragment buffer handle (dtype/source-of-truth only)
+ * \param src_buffer Source local fragment buffer handle
+ * \param dst_cb_id Destination CB id
+ * \param dst_offset_elements Logical destination element offset within the tiled tensor view
+ * \param src_offset_elements Source element offset within the local fragment
+ * \param num_elements Number of contiguous source elements to cast/materialize
+ * \param row_width Logical row width of the destination tiled tensor view
+ */
+TVM_DLL const Op& blackhole_cast_fragment_slice_to_tiled_cb();
+
+/*!
+ * \brief Copy a tile from the current CB front window into a contiguous local fragment slice.
+ * \param dst_buffer Destination local fragment buffer handle
+ * \param src_cb_id Source CB id
+ * \param src_tile_index Source tile index in the current CB front window
+ * \param dst_offset_elements Element offset from the beginning of the destination local fragment
+ * \param num_elements Number of contiguous elements to copy from the source tile
+ */
+TVM_DLL const Op& blackhole_read_cb_front_tile_to_local();
+
+/*!
+ * \brief Materialize one 32x32 tile from the current CB front window into row-major local fragment layout.
+ * \param dst_buffer Destination local fragment buffer handle
+ * \param src_cb_id Source CB id
+ * \param src_tile_index Source tile index in the current CB front window
+ * \param dst_offset_elements Element offset from the beginning of the destination local fragment tile
+ */
+TVM_DLL const Op& blackhole_read_cb_front_tile_to_local_fragment();
 
 /*!
  * \brief Reduce a contiguous 1-D local fragment row into a scalar local fragment target.

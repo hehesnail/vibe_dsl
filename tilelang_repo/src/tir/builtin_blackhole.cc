@@ -72,7 +72,14 @@ TIR_DEFINE_BUILTIN(pack_reconfig_data_format)
 TIR_DEFINE_BUILTIN(copy_tile_to_dst_init_short)
 TIR_DEFINE_BUILTIN(copy_tile_to_dst_init_short_with_dt)
 TIR_DEFINE_BUILTIN(copy_tile_from_cb)
+TIR_DEFINE_BUILTIN(add_tiles_init)
+TIR_DEFINE_BUILTIN(add_tiles)
 TIR_DEFINE_BUILTIN(write_local_slice_to_cb)
+TIR_DEFINE_BUILTIN(write_local_fragment_tile_to_cb)
+TIR_DEFINE_BUILTIN(write_local_fragment_slice_to_tiled_cb)
+TIR_DEFINE_BUILTIN(cast_fragment_slice_to_tiled_cb)
+TIR_DEFINE_BUILTIN(read_cb_front_tile_to_local)
+TIR_DEFINE_BUILTIN(read_cb_front_tile_to_local_fragment)
 TIR_DEFINE_BUILTIN(reduce_row)
 TIR_DEFINE_BUILTIN(mul_row_bcast)
 TIR_DEFINE_BUILTIN(mul_grouped_row_bcast)
@@ -294,13 +301,77 @@ TVM_REGISTER_OP("tl.blackhole.copy_tile_from_cb")
     .add_argument("src_tile_index", "int", "Source tile index in the CB front window")
     .add_argument("dst_tile_index", "int", "Destination tile index in DST");
 
+TVM_REGISTER_OP("tl.blackhole.add_tiles_init")
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
+    .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID");
+
+TVM_REGISTER_OP("tl.blackhole.add_tiles")
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
+    .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID")
+    .add_argument("lhs_tile_index", "int", "Left-hand-side tile index in the CB front window")
+    .add_argument("rhs_tile_index", "int", "Right-hand-side tile index in the CB front window")
+    .add_argument("dst_tile_index", "int", "Destination tile index in DST");
+
 TVM_REGISTER_OP("tl.blackhole.write_local_slice_to_cb")
-    .set_num_inputs(4)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("src_buffer", "handle", "Source local fragment buffer handle")
     .add_argument("dst_cb_id", "int", "Destination CB ID")
     .add_argument("dst_offset_elements", "int", "Destination element offset within the reserved CB write window")
+    .add_argument("num_elements", "int", "Number of contiguous elements to copy")
+    .add_argument("src_offset_elements", "int",
+                  "Optional source element offset within the local fragment");
+
+TVM_REGISTER_OP("tl.blackhole.write_local_fragment_tile_to_cb")
+    .set_num_inputs(4)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("src_buffer", "handle", "Source local fragment buffer handle")
+    .add_argument("dst_cb_id", "int", "Destination CB ID")
+    .add_argument("dst_tile_index", "int", "Destination tile index within the reserved CB write window")
+    .add_argument("src_offset_elements", "int", "Source element offset within the local fragment");
+
+TVM_REGISTER_OP("tl.blackhole.write_local_fragment_slice_to_tiled_cb")
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("src_buffer", "handle", "Source local fragment buffer handle")
+    .add_argument("dst_cb_id", "int", "Destination CB ID")
+    .add_argument("dst_offset_elements", "int", "Logical destination element offset")
+    .add_argument("num_elements", "int", "Number of contiguous elements to materialize")
+    .add_argument("row_width", "int", "Logical row width of the destination tiled tensor")
+    .add_argument("src_offset_elements", "int",
+                  "Optional source element offset within the local fragment");
+
+TVM_REGISTER_OP("tl.blackhole.cast_fragment_slice_to_tiled_cb")
+    .set_num_inputs(7)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("dst_buffer", "handle", "Destination CB-backed fragment buffer handle")
+    .add_argument("src_buffer", "handle", "Source local fragment buffer handle")
+    .add_argument("dst_cb_id", "int", "Destination CB ID")
+    .add_argument("dst_offset_elements", "int", "Logical destination element offset")
+    .add_argument("src_offset_elements", "int", "Source element offset within the local fragment")
+    .add_argument("num_elements", "int", "Number of contiguous elements to materialize")
+    .add_argument("row_width", "int", "Logical row width of the destination tiled tensor");
+
+TVM_REGISTER_OP("tl.blackhole.read_cb_front_tile_to_local")
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("dst_buffer", "handle", "Destination local fragment buffer handle")
+    .add_argument("src_cb_id", "int", "Source CB ID")
+    .add_argument("src_tile_index", "int", "Source tile index in the current CB front window")
+    .add_argument("dst_offset_elements", "int", "Destination element offset in the local fragment")
     .add_argument("num_elements", "int", "Number of contiguous elements to copy");
+
+TVM_REGISTER_OP("tl.blackhole.read_cb_front_tile_to_local_fragment")
+    .set_num_inputs(4)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("dst_buffer", "handle", "Destination local fragment buffer handle")
+    .add_argument("src_cb_id", "int", "Source CB ID")
+    .add_argument("src_tile_index", "int", "Source tile index in the current CB front window")
+    .add_argument("dst_offset_elements", "int", "Destination element offset in the local fragment");
 
 TVM_REGISTER_OP("tl.blackhole.reduce_row")
     .set_num_inputs(5)

@@ -116,14 +116,14 @@
 - Python 侧若需要做 companion IR mutation regression，
   优先通过 `tl.TT*` constructor 直接重建
   `TTProgram / TTKernel / TTCoreGroup / TTABIPlan / TTSemaphorePlan`
-  并重新跑 `ValidateTTTargetProgram`；
+  并重新跑 `ValidateTTProgram`；
   不要先改 bridge attrs 再依赖 translator 刷新 typed truth
-- bridge-stage 若还没 materialize `tl.tt_program`，
-  regression/helper 也应优先读取
-  `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload`；
-  一旦这些 typed seeds 已发布，`PlanTTKernelABI` 输出就应立即剥离
-  `blackhole.segment_plan / runtime_args / gemm_contract` 等 projection attrs，
-  不要让 producer-side cleanup 被测试层 fallback 反向卡住
+- `BuildTTProgram` 不应再经由
+  `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_cb_plans /
+  tl.tt_core_groups / tl.tt_program_payload`
+  这组 bridge attrs 传递 target truth；
+  planner object 一旦可直接聚合成 `TTProgram`，
+  中间 attr 就应该停产，helper/test 也不能再把它们当作回退面
 
 ## 5. Schema / ABI 模式
 
@@ -171,8 +171,8 @@
 - 当 canonical pass 命名切换完成后，
   旧 `LowerSpatialProgramToTTTarget / ValidateTTTargetProgram /
   MaterializeTTExecutableSpec`
-  这类名字可以继续保留，但只应作为 compatibility shell；
-  active path 和 helper 不要继续把旧名当入口
+  这类名字应直接删除；
+  不要再保留 compatibility shell、probe 或测试入口
 - unsupported subset gate 应在所有后端出口共享
 - gate 应按具体 contract / op family 报错，不要长期用黑盒总括词
 - 需要的信息优先从 typed IR / schema 拿；拿不到就扩 IR / schema，
@@ -238,7 +238,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 清理旧 target 链时要从外往里收：
   先删 projection / side-channel，
   再删最终 Phase C 输出上的 seed bridge attr，
-  再把 canonical bundle 上的显式 legacy pass 链内收到单一入口；
+  再删 active path 上的 `blackhole.*` compatibility attr synthesis，
+  最后再把 canonical bundle 上的显式 legacy pass 链内收到单一入口；
   canonical `LowerToBlackholeTTProgram` 产物应只保留 `tl.tt_program`，
   不应再把 `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_cb_plans /
   tl.tt_core_groups / tl.tt_program_payload` 当作稳定输出面

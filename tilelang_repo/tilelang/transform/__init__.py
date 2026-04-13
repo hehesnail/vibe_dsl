@@ -672,8 +672,7 @@ def SplitBlackholeKernel():
 
     Scans each device PrimFunc for compute ops (tl.tileop.gemm_py).
     If found, wraps each top-level statement with an AttrStmt carrying
-    "reader", "compute", or "writer" segment kind, and writes
-    blackhole.segment_plan (3-kernel schema) to function attrs.
+    "reader", "compute", or "writer" segment kind.
 
     Pure-copy functions are left unchanged.
 
@@ -769,34 +768,14 @@ def ValidateSpatialProgram():
     return tvm.ffi.get_global_func("tl.transform.ValidateSpatialProgram")()
 
 
-def LowerSpatialProgramToTTTargetProbe():
-    """Probe SpatialProgram against TT target intake contracts without materializing TTProgram."""
-    return tvm.ffi.get_global_func("tl.transform.LowerSpatialProgramToTTTargetProbe")()
-
-
-def LowerSpatialProgramToTTTarget():
-    """Compatibility wrapper for TTProgram materialization from frozen SpatialProgram."""
-    return tvm.ffi.get_global_func("tl.transform.LowerSpatialProgramToTTTarget")()
-
-
 def BuildTTProgram():
     """Canonical Task 2 wrapper for TTProgram materialization from SpatialProgram."""
     return tvm.ffi.get_global_func("tl.transform.BuildTTProgram")()
 
 
-def ValidateTTTargetProgram():
-    """Compatibility wrapper for TTProgram validation before executable materialization."""
-    return tvm.ffi.get_global_func("tl.transform.ValidateTTTargetProgram")()
-
-
 def ValidateTTProgram():
     """Canonical Task 2 wrapper for TTProgram validation."""
     return tvm.ffi.get_global_func("tl.transform.ValidateTTProgram")()
-
-
-def MaterializeTTExecutableSpec():
-    """Compatibility wrapper for the canonical Blackhole executable writer boundary."""
-    return tvm.ffi.get_global_func("tl.transform.MaterializeTTExecutableSpec")()
 
 
 def MaterializeBlackholeExecutable():

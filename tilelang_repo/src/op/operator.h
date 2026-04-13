@@ -84,8 +84,11 @@ class TileOperator;
 struct FragmentMaterializationInfo {
   Buffer target_buffer;
   ffi::String materialization_kind;
+  ffi::String bridge_kind;
   ffi::String value_role;
   ffi::String merge_kind;
+  ffi::String execution_protocol;
+  ffi::String result_live_form;
 };
 
 enum class DataflowAccessKind : uint8_t {

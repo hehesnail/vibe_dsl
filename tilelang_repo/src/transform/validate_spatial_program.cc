@@ -714,10 +714,13 @@ void ValidateResourceIntents(const SpatialProgram& program,
           << "ValidateSpatialProgram requires fragment contracts to carry at least one fragment op";
       bool requires_pointwise_payload = false;
       bool requires_row_broadcast_payload = false;
+      bool requires_fragment_layout_payload = false;
       for (const Any& op_any : fragment_ops) {
         const std::string op_name = Downcast<String>(op_any);
         requires_pointwise_payload |= op_name == "pointwise_chain";
         requires_row_broadcast_payload |= op_name == "row_broadcast";
+        requires_fragment_layout_payload |=
+            op_name == "row_reduction" || op_name == "row_broadcast";
       }
       if (requires_pointwise_payload) {
         auto maybe_pointwise_ops = intent->payload.Get(String(schema_key::kPointwiseOpKinds));
@@ -736,6 +739,39 @@ void ValidateResourceIntents(const SpatialProgram& program,
         ICHECK(!Downcast<Array<Any>>(maybe_row_broadcast_sources.value()).empty())
             << "ValidateSpatialProgram requires fragment row_broadcast_sources to be non-empty";
       }
+      if (requires_fragment_layout_payload) {
+        auto maybe_fragment_layout =
+            intent->payload.Get(String(schema_key::kFragmentLayoutContracts));
+        ICHECK(maybe_fragment_layout)
+            << "ValidateSpatialProgram requires row_reduction/row_broadcast fragment "
+               "contracts to carry fragment_layout_contracts";
+        Array<Any> layout_contracts = Downcast<Array<Any>>(maybe_fragment_layout.value());
+        ICHECK(!layout_contracts.empty())
+            << "ValidateSpatialProgram requires fragment_layout_contracts to be non-empty";
+        for (const Any& contract_any : layout_contracts) {
+          Map<String, Any> contract = Downcast<Map<String, Any>>(contract_any);
+          ICHECK(contract.count(String(schema_key::kBuffer)))
+              << "ValidateSpatialProgram requires fragment_layout_contract entries to carry buffer";
+          ICHECK(contract.count(String(schema_key::kScope)))
+              << "ValidateSpatialProgram requires fragment_layout_contract entries to carry scope";
+          ICHECK(contract.count(String(schema_key::kShape)))
+              << "ValidateSpatialProgram requires fragment_layout_contract entries to carry shape";
+          ICHECK(contract.count(String(schema_key::kLocalShape)))
+              << "ValidateSpatialProgram requires fragment_layout_contract entries to carry local_shape";
+          ICHECK(contract.count(String(schema_key::kDistributionKind)))
+              << "ValidateSpatialProgram requires fragment_layout_contract entries to carry distribution_kind";
+          ICHECK(contract.count(String(schema_key::kStorageTopologyKind)))
+              << "ValidateSpatialProgram requires fragment_layout_contract entries to carry storage_topology_kind";
+          ICHECK(contract.count(String(schema_key::kThreadExtent)))
+              << "ValidateSpatialProgram requires fragment_layout_contract entries to carry thread_extent";
+          ICHECK(contract.count(String(schema_key::kReplicateExtent)))
+              << "ValidateSpatialProgram requires fragment_layout_contract entries to carry replicate_extent";
+          ICHECK(contract.count(String(schema_key::kInverseLogicalIndexVars)))
+              << "ValidateSpatialProgram requires fragment_layout_contract entries to carry inverse_logical_index_vars";
+          ICHECK(contract.count(String(schema_key::kInverseLogicalIndexExprs)))
+              << "ValidateSpatialProgram requires fragment_layout_contract entries to carry inverse_logical_index_exprs";
+        }
+      }
       if (auto maybe_fragment_materialization =
               intent->payload.Get(String(schema_key::kFragmentMaterializationContracts))) {
         Array<Any> materialization_contracts =
@@ -753,10 +789,20 @@ void ValidateResourceIntents(const SpatialProgram& program,
               << "ValidateSpatialProgram requires fragment_materialization_contract entries to carry scope";
           ICHECK(contract.count(String(schema_key::kMaterializationKind)))
               << "ValidateSpatialProgram requires fragment_materialization_contract entries to carry materialization_kind";
+          ICHECK(contract.count(String(schema_key::kBridgeKind)))
+              << "ValidateSpatialProgram requires fragment_materialization_contract entries to carry bridge_kind";
           ICHECK(contract.count(String(schema_key::kValueRole)))
               << "ValidateSpatialProgram requires fragment_materialization_contract entries to carry value_role";
           ICHECK(contract.count(String(schema_key::kMergeKind)))
               << "ValidateSpatialProgram requires fragment_materialization_contract entries to carry merge_kind";
+          ICHECK(contract.count(String(schema_key::kExecutionProtocol)))
+              << "ValidateSpatialProgram requires fragment_materialization_contract entries to carry execution_protocol";
+          ICHECK(contract.count(String(schema_key::kResultLiveForm)))
+              << "ValidateSpatialProgram requires fragment_materialization_contract entries to carry result_live_form";
+          if (auto maybe_source_buffer = contract.Get(String(schema_key::kSourceBuffer))) {
+            ICHECK(!Downcast<String>(maybe_source_buffer.value()).empty())
+                << "ValidateSpatialProgram requires fragment_materialization_contract source_buffer to be non-empty when present";
+          }
         }
       }
       if (auto maybe_fragment_flow_contracts =

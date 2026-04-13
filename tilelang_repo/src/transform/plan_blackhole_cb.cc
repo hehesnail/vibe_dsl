@@ -172,8 +172,26 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
     return op_name == "tl.blackhole.copy_tile_to_dst_init_short_with_dt" ? std::vector<int>{0, 1}
                                                                           : std::vector<int>{0};
   }
+  if (op_name == "tl.blackhole.add_tiles_init" || op_name == "tl.blackhole.add_tiles") {
+    return {0, 1};
+  }
   if (op_name == "tl.blackhole.write_local_slice_to_cb") {
     return {1};  // args: (src_handle, cb_id, dst_offset, num_elements)
+  }
+  if (op_name == "tl.blackhole.write_local_fragment_tile_to_cb") {
+    return {1};  // args: (src_handle, cb_id, dst_tile_index, src_offset)
+  }
+  if (op_name == "tl.blackhole.write_local_fragment_slice_to_tiled_cb") {
+    return {1};  // args: (src_handle, cb_id, dst_offset, num_elements, row_width, src_offset)
+  }
+  if (op_name == "tl.blackhole.cast_fragment_slice_to_tiled_cb") {
+    return {2};  // args: (dst_handle, src_handle, cb_id, dst_offset, src_offset, num_elements, row_width)
+  }
+  if (op_name == "tl.blackhole.read_cb_front_tile_to_local") {
+    return {1};  // args: (dst_handle, src_cb_id, src_tile_index, dst_offset, num_elements)
+  }
+  if (op_name == "tl.blackhole.read_cb_front_tile_to_local_fragment") {
+    return {1};  // args: (dst_handle, src_cb_id, src_tile_index, dst_offset)
   }
   if (op_name == "tl.blackhole.add_fragment_from_cb_front") {
     return {1};  // args: (dst_handle, src_cb_id, num_elements)
@@ -445,57 +463,8 @@ bool PlanTTCBAlloc::Validate(const std::vector<CBConfig>& configs) const {
 
 // Store CB configuration in function attributes
 void PlanTTCBAlloc::StoreCBConfig(PrimFunc& func, const std::vector<CBConfig>& configs) {
-  // Get existing attributes
-  Map<String, Any> attrs;
-  if (func->attrs.defined()) {
-    attrs = func->attrs->dict;
-  }
-
-  // Build CB configs array
-  Array<TTCBPlan> tt_cb_plans;
-
-  for (size_t config_index = 0; config_index < configs.size(); ++config_index) {
-    const auto& config = configs[config_index];
-    Map<String, Any> cb_attr;
-    cb_attr.Set("cb_id", Integer(config.cb_id));
-    cb_attr.Set("page_size", Integer(config.page_size));
-    cb_attr.Set("num_pages", Integer(config.num_pages));
-    if (config.initial_reserve_pages > 0) {
-      cb_attr.Set("initial_reserve_pages", Integer(config.initial_reserve_pages));
-    }
-    cb_attr.Set("flow_class", String(CBFlowClassToString(config.flow_class)));
-    if (config.publish_pages_per_event > 0) {
-      cb_attr.Set("publish_pages_per_event", Integer(config.publish_pages_per_event));
-    }
-    if (config.consume_pages_per_event > 0) {
-      cb_attr.Set("consume_pages_per_event", Integer(config.consume_pages_per_event));
-    }
-    cb_attr.Set("total_size_bytes", Integer(config.total_size));
-    cb_attr.Set("data_format", String(config.data_format));
-    cb_attr.Set("name", String(config.name));
-    cb_attr.Set("role", String(config.role));
-    cb_attr.Set("lifetime_begin", Integer(config.lifetime_begin));
-    cb_attr.Set("lifetime_end", Integer(config.lifetime_end));
-    Array<Any> requirement_names;
-    Array<Any> requirement_indices;
-    for (const auto& req_name : config.requirement_names) {
-      requirement_names.push_back(String(req_name));
-    }
-    for (int req_index : config.requirement_indices) {
-      requirement_indices.push_back(Integer(req_index));
-    }
-    cb_attr.Set("requirement_names", requirement_names);
-    cb_attr.Set("requirement_indices", requirement_indices);
-
-    tt_cb_plans.push_back(TTCBPlan(String(config.name), config.cb_id, String(config.role),
-                                   config.num_pages, config.page_size, String(config.data_format),
-                                   cb_attr));
-  }
-
-  // Store in function attributes
-  attrs.Set(attr::kTLTTCBPlans, tt_cb_plans);
-
-  func.CopyOnWrite()->attrs = DictAttrs(attrs);
+  (void)func;
+  (void)configs;
 }
 
 tvm::tir::Stmt PlanTTCBAlloc::RewriteCBIdsInIR(

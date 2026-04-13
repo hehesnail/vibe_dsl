@@ -103,13 +103,6 @@ def require_tt_program(func):
         pytest.fail("Expected PrimFunc to carry tl.tt_program")
     return func.attrs["tl.tt_program"]
 
-
-def _require_legacy_attr(func, key):
-    if not (func.attrs and key in func.attrs):
-        pytest.fail(f"Expected PrimFunc to carry {key}")
-    return func.attrs[key]
-
-
 def extract_tt_program_segments(func):
     """Extract segment-like kernel/ABI records from TTProgram for regression tests."""
     tt_program = require_tt_program(func)
@@ -133,153 +126,96 @@ def extract_tt_program_segments(func):
 
 
 def extract_blackhole_segment_plan(func):
-    """Return segment-like target truth from TTProgram when present, else legacy attrs."""
-    if func.attrs and "tl.tt_program" in func.attrs:
-        return extract_tt_program_segments(func)
-    return list(_require_legacy_attr(func, "blackhole.segment_plan"))
+    """Return segment-like target truth from TTProgram."""
+    return extract_tt_program_segments(func)
 
 
 def extract_blackhole_runtime_args(func, *, kind=None, core_type=None, common=False):
-    """Return TTProgram ABI runtime args when present, else legacy attrs."""
-    if func.attrs and "tl.tt_program" in func.attrs:
-        tt_program = require_tt_program(func)
-        if kind is not None or core_type is not None:
-            kernel = require_tt_kernel(tt_program, kind=kind, core_type=core_type)
-            abi = tt_abi_for_kernel(tt_program, kernel)
-            return list(abi.common_runtime_args if common else abi.runtime_args)
+    """Return TTProgram ABI runtime args."""
+    tt_program = require_tt_program(func)
+    if kind is not None or core_type is not None:
+        kernel = require_tt_kernel(tt_program, kind=kind, core_type=core_type)
+        abi = tt_abi_for_kernel(tt_program, kernel)
+        return list(abi.common_runtime_args if common else abi.runtime_args)
 
-        aggregated = []
-        seen = set()
-        for abi in tt_program.abi_plans:
-            args = abi.common_runtime_args if common else abi.runtime_args
-            for arg in args:
-                identity = str(arg["identity"]) if "identity" in arg else None
-                key = identity or (
-                    str(arg["name"]) if "name" in arg else repr(dict(arg))
-                )
-                if key in seen:
-                    continue
-                seen.add(key)
-                aggregated.append(arg)
-        return aggregated
-
-    attr_key = "blackhole.common_runtime_args" if common else "blackhole.runtime_args"
-    return list(_require_legacy_attr(func, attr_key))
+    aggregated = []
+    seen = set()
+    for abi in tt_program.abi_plans:
+        args = abi.common_runtime_args if common else abi.runtime_args
+        for arg in args:
+            identity = str(arg["identity"]) if "identity" in arg else None
+            key = identity or (str(arg["name"]) if "name" in arg else repr(dict(arg)))
+            if key in seen:
+                continue
+            seen.add(key)
+            aggregated.append(arg)
+    return aggregated
 
 
 def extract_blackhole_core_plan(func):
-    """Return TTProgram core-group truth when present, else legacy attrs."""
-    if func.attrs and "tl.tt_program" in func.attrs:
-        tt_program = require_tt_program(func)
-        if not tt_program.core_groups:
-            pytest.fail("Expected TTProgram to carry a TTCoreGroup")
-        core_group = tt_program.core_groups[0]
-        core_plan = dict(core_group.payload)
-        core_plan.setdefault("logical_grid_x", int(core_group.logical_grid_x))
-        core_plan.setdefault("logical_grid_y", int(core_group.logical_grid_y))
-        core_plan.setdefault("linearization", str(core_group.linearization))
-        core_plan.setdefault("physical_cores", list(core_group.physical_cores))
-        core_plan.setdefault("work_packets", list(core_group.work_packets))
-        return core_plan
-
-    if func.attrs and "tl.tt_core_groups" in func.attrs:
-        core_groups = list(func.attrs["tl.tt_core_groups"])
-        if not core_groups:
-            pytest.fail("Expected tl.tt_core_groups to carry a TTCoreGroup")
-        core_group = core_groups[0]
-        core_plan = dict(core_group.payload)
-        core_plan.setdefault("logical_grid_x", int(core_group.logical_grid_x))
-        core_plan.setdefault("logical_grid_y", int(core_group.logical_grid_y))
-        core_plan.setdefault("linearization", str(core_group.linearization))
-        core_plan.setdefault("physical_cores", list(core_group.physical_cores))
-        core_plan.setdefault("work_packets", list(core_group.work_packets))
-        return core_plan
-
-    return dict(_require_legacy_attr(func, "blackhole.core_plan"))
+    """Return TTProgram core-group truth."""
+    tt_program = require_tt_program(func)
+    if not tt_program.core_groups:
+        pytest.fail("Expected TTProgram to carry a TTCoreGroup")
+    core_group = tt_program.core_groups[0]
+    core_plan = dict(core_group.payload)
+    core_plan.setdefault("logical_grid_x", int(core_group.logical_grid_x))
+    core_plan.setdefault("logical_grid_y", int(core_group.logical_grid_y))
+    core_plan.setdefault("linearization", str(core_group.linearization))
+    core_plan.setdefault("physical_cores", list(core_group.physical_cores))
+    core_plan.setdefault("work_packets", list(core_group.work_packets))
+    return core_plan
 
 
 def extract_blackhole_work_per_core(func):
     """Return the max work-count assigned to any core."""
-    if func.attrs and (
-        "tl.tt_program" in func.attrs or "tl.tt_core_groups" in func.attrs
-    ):
-        core_plan = extract_blackhole_core_plan(func)
-        return max((int(packet["work_count"]) for packet in core_plan["work_packets"]), default=0)
-    return int(_require_legacy_attr(func, "blackhole.work_per_core"))
+    core_plan = extract_blackhole_core_plan(func)
+    return max((int(packet["work_count"]) for packet in core_plan["work_packets"]), default=0)
 
 
 def extract_blackhole_cb_configs(func):
-    """Return TTProgram CB-plan payloads when present, else legacy attrs."""
-    if func.attrs and "tl.tt_program" in func.attrs:
-        cb_plans = list(require_tt_program(func).cb_plans)
-        configs = []
-        for cb_plan in cb_plans:
-            config = dict(cb_plan.payload)
-            config.setdefault("cb_id", int(cb_plan.cb_id))
-            config.setdefault("name", str(cb_plan.name))
-            config.setdefault("role", str(cb_plan.resource_class))
-            config.setdefault("num_pages", int(cb_plan.num_pages))
-            config.setdefault("page_size", int(cb_plan.page_size_bytes))
-            config.setdefault(
-                "total_size_bytes", int(cb_plan.num_pages) * int(cb_plan.page_size_bytes)
-            )
-            config.setdefault("data_format", str(cb_plan.data_format))
-            configs.append(config)
-        return configs
-
-    if func.attrs and "tl.tt_cb_plans" in func.attrs:
-        configs = []
-        for cb_plan in list(func.attrs["tl.tt_cb_plans"]):
-            config = dict(cb_plan.payload)
-            config.setdefault("cb_id", int(cb_plan.cb_id))
-            config.setdefault("name", str(cb_plan.name))
-            config.setdefault("role", str(cb_plan.resource_class))
-            config.setdefault("num_pages", int(cb_plan.num_pages))
-            config.setdefault("page_size", int(cb_plan.page_size_bytes))
-            config.setdefault(
-                "total_size_bytes", int(cb_plan.num_pages) * int(cb_plan.page_size_bytes)
-            )
-            config.setdefault("data_format", str(cb_plan.data_format))
-            configs.append(config)
-        return configs
-
-    return list(_require_legacy_attr(func, "blackhole.cb_configs"))
+    """Return TTProgram CB-plan payloads."""
+    cb_plans = list(require_tt_program(func).cb_plans)
+    configs = []
+    for cb_plan in cb_plans:
+        config = dict(cb_plan.payload)
+        config.setdefault("cb_id", int(cb_plan.cb_id))
+        config.setdefault("name", str(cb_plan.name))
+        config.setdefault("role", str(cb_plan.resource_class))
+        config.setdefault("num_pages", int(cb_plan.num_pages))
+        config.setdefault("page_size", int(cb_plan.page_size_bytes))
+        config.setdefault(
+            "total_size_bytes", int(cb_plan.num_pages) * int(cb_plan.page_size_bytes)
+        )
+        config.setdefault("data_format", str(cb_plan.data_format))
+        configs.append(config)
+    return configs
 
 
 def extract_blackhole_total_l1_bytes(func):
     """Return total L1 bytes consumed by CB plans."""
-    if func.attrs and ("tl.tt_program" in func.attrs or "tl.tt_cb_plans" in func.attrs):
-        return sum(int(config["total_size_bytes"]) for config in extract_blackhole_cb_configs(func))
-    return int(_require_legacy_attr(func, "blackhole.total_l1_bytes"))
+    return sum(int(config["total_size_bytes"]) for config in extract_blackhole_cb_configs(func))
 
 
 def extract_tt_program_payload_map(func):
     """Return TTProgram payload as a Python dict for regression tests."""
-    if func.attrs and "tl.tt_program" in func.attrs:
-        return dict(require_tt_program(func).payload)
-    if func.attrs and "tl.tt_program_payload" in func.attrs:
-        return dict(func.attrs["tl.tt_program_payload"])
-    pytest.fail("Expected PrimFunc to carry tl.tt_program or tl.tt_program_payload")
+    return dict(require_tt_program(func).payload)
 
 
 def extract_blackhole_compute_contract(func):
-    """Return compute contract from TTProgram payload when present, else legacy attrs."""
-    if func.attrs and ("tl.tt_program" in func.attrs or "tl.tt_program_payload" in func.attrs):
-        payload = extract_tt_program_payload_map(func)
-        if "compute_contract" not in payload:
-            pytest.fail("Expected TTProgram payload to carry compute_contract")
-        return dict(payload["compute_contract"])
-    return dict(_require_legacy_attr(func, "blackhole.compute_contract"))
+    """Return compute contract from TTProgram payload."""
+    payload = extract_tt_program_payload_map(func)
+    if "compute_contract" not in payload:
+        pytest.fail("Expected TTProgram payload to carry compute_contract")
+    return dict(payload["compute_contract"])
 
 
 def extract_blackhole_gemm_contract(func):
-    """Return GEMM contract from TTProgram payload when present, else legacy attrs."""
-    if func.attrs and ("tl.tt_program" in func.attrs or "tl.tt_program_payload" in func.attrs):
-        payload = extract_tt_program_payload_map(func)
-        if "gemm_contract" not in payload:
-            pytest.fail("Expected TTProgram payload to carry gemm_contract")
-        return dict(payload["gemm_contract"])
-    return dict(_require_legacy_attr(func, "blackhole.gemm_contract"))
+    """Return GEMM contract from TTProgram payload."""
+    payload = extract_tt_program_payload_map(func)
+    if "gemm_contract" not in payload:
+        pytest.fail("Expected TTProgram payload to carry gemm_contract")
+    return dict(payload["gemm_contract"])
 
 
 def rebuild_tt_kernel(kernel, *, name=None, kind=None, core_type=None, abi_plan_index=None, payload=None):
@@ -624,6 +560,7 @@ def gemm_kernel_with_compute_abi(
     clear_accum: bool = True,
     k_pack: int = 2,
     wg_wait: int = 3,
+    preclear_output_fragment: bool = False,
 ):
     """GEMM kernel with non-default compute ABI knobs."""
 
@@ -639,6 +576,8 @@ def gemm_kernel_with_compute_abi(
             C_local = T.alloc_fragment((M, N), "float32")
             T.copy(A[0:M, 0:K], A_shared)
             T.copy(B[0:N, 0:K], B_shared)
+            if preclear_output_fragment:
+                T.clear(C_local)
             T.gemm(
                 A_shared,
                 B_shared,
@@ -649,6 +588,71 @@ def gemm_kernel_with_compute_abi(
                 wg_wait=wg_wait,
             )
             T.copy(C_local, C[0:M, 0:N])
+
+    return main
+
+
+def gemm_kernel_with_post_merge_cast_consumer(
+    M: int = 32,
+    N: int = 32,
+    K: int = 128,
+    *,
+    clear_accum: bool = False,
+    k_pack: int = 1,
+    wg_wait: int = 0,
+    preclear_output_fragment: bool = True,
+):
+    """GEMM kernel whose accumulated fragment stays live for a later fragment-cast consumer."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), "bfloat16"),
+        B: T.Tensor((N, K), "bfloat16"),
+        D: T.Tensor((M, N), "bfloat16"),
+    ):
+        with T.Kernel(1, 1) as (bx, by):
+            A_shared = T.alloc_shared((M, K), "bfloat16")
+            B_shared = T.alloc_shared((N, K), "bfloat16")
+            C_local = T.alloc_fragment((M, N), "float32")
+            D_local = T.alloc_fragment((M, N), "bfloat16")
+            T.copy(A[0:M, 0:K], A_shared)
+            T.copy(B[0:N, 0:K], B_shared)
+            if preclear_output_fragment:
+                T.clear(C_local)
+            T.gemm(
+                A_shared,
+                B_shared,
+                C_local,
+                transpose_B=True,
+                clear_accum=clear_accum,
+                k_pack=k_pack,
+                wg_wait=wg_wait,
+            )
+            for i, j in T.Parallel(M, N):
+                D_local[i, j] = T.cast(C_local[i, j], "bfloat16")
+            T.copy(D_local, D[0:M, 0:N])
+
+    return main
+
+
+def fragment_fill_cast_publish_kernel(
+    M: int = 32,
+    N: int = 32,
+    *,
+    fill_value: float = 3.5,
+):
+    """Kernel that isolates local-fragment -> tiled-CB cast publication."""
+
+    @T.prim_func
+    def main(D: T.Tensor((M, N), "bfloat16")):
+        with T.Kernel(1, 1) as (bx, by):
+            C_local = T.alloc_fragment((M, N), "float32")
+            D_local = T.alloc_fragment((M, N), "bfloat16")
+            for i, j in T.Parallel(M, N):
+                C_local[i, j] = T.float32(fill_value)
+            for i, j in T.Parallel(M, N):
+                D_local[i, j] = T.cast(C_local[i, j], "bfloat16")
+            T.copy(D_local, D[0:M, 0:N])
 
     return main
 

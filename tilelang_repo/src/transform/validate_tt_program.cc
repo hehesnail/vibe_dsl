@@ -1,5 +1,5 @@
 /*!
- * \file validate_tt_target_program.cc
+ * \file validate_tt_program.cc
  * \brief Validate TTProgram invariants for Phase C cutover.
  */
 
@@ -204,7 +204,7 @@ void ValidateProgramPayload(const TTProgram& program) {
   ValidateProgramEpilogueOps(payload, "compute_epilogue_ops", "TTProgram payload compute_epilogue_ops");
 }
 
-void ValidateTTProgram(const TTProgram& program) {
+void CheckTTProgram(const TTProgram& program) {
   ICHECK(!program->entry_name.empty()) << "TTProgram requires entry_name";
   ICHECK(!program->kernels.empty()) << "TTProgram requires at least one TTKernel";
   ICHECK(!program->core_groups.empty()) << "TTProgram requires at least one TTCoreGroup";
@@ -283,7 +283,7 @@ void ValidateTTProgram(const TTProgram& program) {
 
 }  // namespace
 
-tvm::transform::Pass ValidateTTTargetProgram() {
+tvm::transform::Pass ValidateTTProgram() {
   auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
     for (const auto& [gvar, base_func] : mod->functions) {
       auto func = base_func.as<tir::PrimFunc>();
@@ -294,17 +294,16 @@ tvm::transform::Pass ValidateTTTargetProgram() {
       if (!maybe_program) {
         continue;
       }
-      ValidateTTProgram(maybe_program.value());
+      CheckTTProgram(maybe_program.value());
     }
     return mod;
   };
-  return tvm::transform::CreateModulePass(pass_func, 0, "tl.transform.ValidateTTTargetProgram", {});
+  return tvm::transform::CreateModulePass(pass_func, 0, "tl.transform.ValidateTTProgram", {});
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
-  refl::GlobalDef().def("tl.transform.ValidateTTTargetProgram", ValidateTTTargetProgram);
-  refl::GlobalDef().def("tl.transform.ValidateTTProgram", ValidateTTTargetProgram);
+  refl::GlobalDef().def("tl.transform.ValidateTTProgram", ValidateTTProgram);
 }
 
 }  // namespace tl

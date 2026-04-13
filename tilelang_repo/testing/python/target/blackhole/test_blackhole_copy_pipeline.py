@@ -78,8 +78,8 @@ def _refresh_tt_program_after_bridge_attr_mutation(device_mod):
             func = func.without_attr("tl.tt_program")
         rewritten[gvar] = func
     refreshed = tvm.IRModule(rewritten, global_infos=device_mod.global_infos)
-    refreshed = tilelang.transform.LowerSpatialProgramToTTTarget()(refreshed)
-    refreshed = tilelang.transform.ValidateTTTargetProgram()(refreshed)
+    refreshed = tilelang.transform.BuildTTProgram()(refreshed)
+    refreshed = tilelang.transform.ValidateTTProgram()(refreshed)
     return refreshed
 
 
@@ -102,7 +102,7 @@ def _rebuild_codegen_module_with_tt_program(
                 func = func.with_attr("tl.tt_program", tt_program_mutator(require_tt_program(func)))
         rewritten[gvar] = func
     device_mod = tvm.IRModule(rewritten, global_infos=artifact.device_mod.global_infos)
-    device_mod = tilelang.transform.ValidateTTTargetProgram()(device_mod)
+    device_mod = tilelang.transform.ValidateTTProgram()(device_mod)
     build_mod = merge_ir_modules(artifact.host_mod, device_mod)
     target = Target("blackhole")
     return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
@@ -478,12 +478,10 @@ def _with_richer_accessor_schema(func, common_runtime_args=None, layout_override
             richer_accessors.append(richer_accessor)
         richer_segment["accessors"] = richer_accessors
         richer_segments.append(richer_segment)
-    if func.attrs and "tl.tt_program" in func.attrs:
-        return func.with_attr(
-            "tl.tt_program",
-            _rebuild_tt_program_with_segment_plan(require_tt_program(func), richer_segments),
-        )
-    return func.with_attr("blackhole.segment_plan", richer_segments)
+    return func.with_attr(
+        "tl.tt_program",
+        _rebuild_tt_program_with_segment_plan(require_tt_program(func), richer_segments),
+    )
 
 
 def _with_compile_time_abi_schema(func, *, strip_accessors=False, compile_time_arg_spec_mutator=None):
@@ -498,12 +496,10 @@ def _with_compile_time_abi_schema(func, *, strip_accessors=False, compile_time_a
                 for spec in segment["compile_time_arg_specs"]
             ]
         richer_segments.append(richer_segment)
-    if func.attrs and "tl.tt_program" in func.attrs:
-        return func.with_attr(
-            "tl.tt_program",
-            _rebuild_tt_program_with_segment_plan(require_tt_program(func), richer_segments),
-        )
-    return func.with_attr("blackhole.segment_plan", richer_segments)
+    return func.with_attr(
+        "tl.tt_program",
+        _rebuild_tt_program_with_segment_plan(require_tt_program(func), richer_segments),
+    )
 
 
 def test_blackhole_codegen_only():
@@ -979,7 +975,7 @@ def test_blackhole_copy_richer_accessor_schema_roundtrip():
 
     rewritten = {}
     for gvar, func in artifact.device_mod.functions.items():
-        if func.attrs and ("tl.tt_program" in func.attrs or "blackhole.segment_plan" in func.attrs):
+        if func.attrs and "tl.tt_program" in func.attrs:
             func = _with_richer_accessor_schema(func)
         rewritten[gvar] = func
 

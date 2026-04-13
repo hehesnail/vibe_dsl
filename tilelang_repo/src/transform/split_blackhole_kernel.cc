@@ -20,7 +20,7 @@
 /*!
  * \file split_blackhole_kernel.cc
  * \brief SplitBlackholeKernels: annotate statements with segment kind
- *        and emit blackhole.segment_plan for 3-kernel (reader/compute/writer) GEMM.
+ *        for 3-kernel (reader/compute/writer) GEMM.
  *
  * Only activates when the function body contains a compute op.
  * Pure-copy functions are returned unchanged.
@@ -203,7 +203,7 @@ static bool HasComputeOp(const Stmt& body) {
 }
 
 // ------------------------------------------------------------------
-// Collect info about compute ops (for segment plan)
+// Collect info about compute ops so the annotator can distinguish segment kinds.
 // ------------------------------------------------------------------
 
 // ------------------------------------------------------------------
@@ -294,122 +294,15 @@ static std::string ClassifyStmt(const Stmt& stmt,
 }
 
 // ------------------------------------------------------------------
-// Build and store the 3-kernel segment_plan attribute
+// Build the canonical reader/compute/writer segment payloads for GEMM.
 // ------------------------------------------------------------------
 
 static void StoreGemmSegmentPlan(PrimFunc& func,
-                                  const std::vector<std::string>& input_buf_names,
-                                  const std::string& output_buf_name) {
-  auto make_arg = [](const std::string& name, const char* kind,
-                     const std::string& buffer_name = "") -> Map<String, Any> {
-    Map<String, Any> arg;
-    arg.Set("name", String(name));
-    arg.Set("kind", String(kind));
-    arg.Set("dtype", String("uint32"));
-    if (!buffer_name.empty()) {
-      arg.Set("buffer", String(buffer_name));
-    }
-    arg.Set("identity", String(MakeBlackholeRuntimeArgIdentity(kind, name, buffer_name)));
-    return arg;
-  };
-
-  // Reader kernel (BRISC/RISCV_0)
-  Map<String, Any> reader;
-  reader.Set("name", String("reader"));
-  reader.Set("kind", String("reader"));
-  reader.Set("core_type", String("brisc"));
-  Array<Any> reader_args;
-  for (const auto& buf_name : input_buf_names) {
-    if (!buf_name.empty()) {
-      reader_args.push_back(make_arg(buf_name + "_addr", "input_buffer_addr32", buf_name));
-    }
-  }
-  reader_args.push_back(make_arg("work_linear_id", "work_linear_id"));
-  reader_args.push_back(make_arg("a_tile_start_id", "a_tile_start_id"));
-  reader_args.push_back(make_arg("a_tile_num_tiles", "a_tile_num_tiles"));
-  reader_args.push_back(make_arg("a_tile_stride", "a_tile_stride"));
-  reader_args.push_back(make_arg("b_tile_start_id", "b_tile_start_id"));
-  reader_args.push_back(make_arg("b_tile_num_tiles", "b_tile_num_tiles"));
-  reader_args.push_back(make_arg("b_tile_stride", "b_tile_stride"));
-  reader_args.push_back(make_arg("k_tile_start_id", "k_tile_start_id"));
-  reader_args.push_back(make_arg("num_k_tiles", "num_k_tiles"));
-  reader.Set("runtime_args", reader_args);
-  Array<Any> reader_per_work_arg_specs;
-  if (!input_buf_names.empty()) {
-    reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
-        "a_tile_start_id", blackhole_runtime_arg_schema::kValueLogicalBlockY, input_buf_names[0]));
-    reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
-        "a_tile_num_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles,
-        input_buf_names[0]));
-    reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
-        "a_tile_stride", blackhole_runtime_arg_schema::kValueConstant, input_buf_names[0], 1));
-  }
-  if (input_buf_names.size() > 1) {
-    reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
-        "b_tile_start_id", blackhole_runtime_arg_schema::kValueLogicalBlockX, input_buf_names[1]));
-    reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
-        "b_tile_num_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles,
-        input_buf_names[1]));
-    reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
-        "b_tile_stride", blackhole_runtime_arg_schema::kValueGemmLogicalNTiles,
-        input_buf_names[1]));
-  }
-  reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
-      "k_tile_start_id", blackhole_runtime_arg_schema::kValueConstant, "", 0));
-  reader_per_work_arg_specs.push_back(MakePerWorkArgSpec(
-      "num_k_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles));
-  reader.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs), reader_per_work_arg_specs);
-
-  // Compute kernel (TRISC)
-  Map<String, Any> compute;
-  compute.Set("name", String("compute"));
-  compute.Set("kind", String("compute"));
-  compute.Set("core_type", String("trisc"));
-  Array<Any> compute_args;
-  compute_args.push_back(make_arg("k_tile_start_id", "k_tile_start_id"));
-  compute_args.push_back(make_arg("num_k_tiles", "num_k_tiles"));
-  compute.Set("runtime_args", compute_args);
-  Array<Any> compute_per_work_arg_specs;
-  compute_per_work_arg_specs.push_back(MakePerWorkArgSpec(
-      "k_tile_start_id", blackhole_runtime_arg_schema::kValueConstant, "", 0));
-  compute_per_work_arg_specs.push_back(MakePerWorkArgSpec(
-      "num_k_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles));
-  compute.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs), compute_per_work_arg_specs);
-
-  // Writer kernel (NCRISC/RISCV_1)
-  Map<String, Any> writer;
-  writer.Set("name", String("writer"));
-  writer.Set("kind", String("writer"));
-  writer.Set("core_type", String("ncrisc"));
-  Array<Any> writer_args;
-  if (!output_buf_name.empty()) {
-    writer_args.push_back(make_arg(output_buf_name + "_addr", "output_buffer_addr32",
-                                   output_buf_name));
-  }
-  writer_args.push_back(make_arg("work_linear_id", "work_linear_id"));
-  writer_args.push_back(make_arg("output_tile_start_id", "output_tile_start_id"));
-  writer_args.push_back(make_arg("output_tile_num_tiles", "output_tile_num_tiles"));
-  writer_args.push_back(make_arg("output_tile_stride", "output_tile_stride"));
-  writer.Set("runtime_args", writer_args);
-  Array<Any> writer_per_work_arg_specs;
-  writer_per_work_arg_specs.push_back(MakePerWorkArgSpec(
-      "output_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
-      output_buf_name));
-  writer_per_work_arg_specs.push_back(MakePerWorkArgSpec(
-      "output_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant, output_buf_name, 1));
-  writer_per_work_arg_specs.push_back(MakePerWorkArgSpec(
-      "output_tile_stride", blackhole_runtime_arg_schema::kValueConstant, output_buf_name, 1));
-  writer.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs), writer_per_work_arg_specs);
-
-  Array<Any> kernels;
-  kernels.push_back(reader);
-  kernels.push_back(compute);
-  kernels.push_back(writer);
-
-  Map<String, Any> attrs;
-  if (func->attrs.defined()) attrs = func->attrs->dict;
-  attrs.Set("blackhole.segment_plan", kernels);
-  func.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
+                                 const std::vector<std::string>& input_buf_names,
+                                 const std::string& output_buf_name) {
+  (void)func;
+  (void)input_buf_names;
+  (void)output_buf_name;
 }
 
 // ------------------------------------------------------------------

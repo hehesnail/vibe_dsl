@@ -127,18 +127,21 @@
     就必须成为 accessor/materialization 的显式 schema 字段；
     不能指望 host 从 GEMM contract 侧推
 
-#### bridge-stage typed seeds 一旦发布，helper 和 pass 输出都不能再依赖 legacy projection attrs
+#### bridge-stage target truth 不应再落成过渡 attrs
 
 - **症状**: 想删除 `PlanTTKernelABI` 输出上的
   `blackhole.segment_plan / runtime_args / gemm_contract`，
-  却被 regression helper 仍只认 projection attrs 卡住
-- **根因**: helper 只会读最终 `tl.tt_program`，不会读
-  `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload` 这类
-  pre-`TTProgram` typed truth
-- **修法**: helper 先学会从 typed seed attrs 重建 segment / ABI / contract 视图，
-  然后让 `PlanTTKernelABI` 在 seed materialization 后立即 strip legacy projections
+  却被中间 bridge attr 或测试 fallback 卡住
+- **根因**: target truth 先被落成
+  `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload`
+  这类过渡 attrs，后续清理就会被 attr 兼容面反向绑定
+- **修法**: `BuildTTProgram` 直接聚合 planner result，
+  不再物化 `tl.tt_*` seed attrs；随后继续把
+  `blackhole.segment_plan / runtime_args / gemm_contract`
+  这组 compatibility attr synthesis 一并删掉，
+  helper/test 也只验证 `tl.tt_program`
 - **教训**: producer-side 清理的真正前提不是“删代码”，而是
-  bridge-stage 的 typed truth 已经可独立被测试和 validator 消费
+  bridge-stage 的 typed truth 已经能脱离 attrs 被独立消费
 
 ### 2.2 planner / runtime contract
 

@@ -10,6 +10,7 @@
 #include <tvm/tir/transform.h>
 
 #include <limits>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -39,6 +40,208 @@ namespace {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+std::optional<std::vector<int64_t>> ExtractStaticShape(const Array<PrimExpr>& shape) {
+  std::vector<int64_t> dims;
+  dims.reserve(shape.size());
+  for (const PrimExpr& dim : shape) {
+    const auto* imm = dim.as<IntImmNode>();
+    if (!imm) {
+      return std::nullopt;
+    }
+    dims.push_back(imm->value);
+  }
+  return dims;
+}
+
+std::unordered_map<std::string, std::vector<int64_t>> BuildLogicalBufferShapes(
+    const tir::PrimFunc& func) {
+  std::unordered_map<std::string, std::vector<int64_t>> logical_buffer_shapes;
+  auto manifest = func->GetAttr<Map<String, Any>>(attr::kTLSemanticManifest);
+  auto manifest_seeds = func->GetAttr<Map<String, Any>>(attr::kTLSemanticManifestSeeds);
+  if (!manifest.has_value() && !manifest_seeds.has_value()) {
+    return logical_buffer_shapes;
+  }
+
+  std::unordered_map<std::string, std::vector<int64_t>> canonical_shapes;
+  auto register_shape = [&](const std::string& name, const std::vector<int64_t>& shape) {
+    if (name.empty() || shape.empty()) {
+      return;
+    }
+    logical_buffer_shapes[name] = shape;
+    canonical_shapes[name] = shape;
+  };
+
+  auto ingest_buffer_descriptors = [&](const Optional<Map<String, Any>>& maybe_payload) {
+    if (!maybe_payload.has_value()) {
+      return;
+    }
+    auto buffers_it = maybe_payload.value().find(manifest_key::kBuffers);
+    if (buffers_it == maybe_payload.value().end()) {
+      return;
+    }
+    for (const Any& buffer_any : Downcast<Array<Any>>((*buffers_it).second)) {
+      auto descriptor = Downcast<Map<String, Any>>(buffer_any);
+      auto name = descriptor.Get(String(schema_key::kName));
+      auto shape = descriptor.Get(String(schema_key::kShape));
+      if (!name.has_value() || !shape.has_value()) {
+        continue;
+      }
+      auto static_shape = ExtractStaticShape(Downcast<Array<PrimExpr>>(shape.value()));
+      if (!static_shape.has_value()) {
+        continue;
+      }
+      register_shape(static_cast<std::string>(Downcast<String>(name.value())),
+                     static_shape.value());
+    }
+  };
+  ingest_buffer_descriptors(manifest);
+  ingest_buffer_descriptors(manifest_seeds);
+
+  if (!manifest.has_value()) {
+    return logical_buffer_shapes;
+  }
+  auto structural_regions_it = manifest.value().find(manifest_key::kStructuralRegions);
+  if (structural_regions_it == manifest.value().end()) {
+    return logical_buffer_shapes;
+  }
+
+  auto infer_shape_from_names = [&](const Array<Any>& names) -> std::vector<int64_t> {
+    for (const Any& name_any : names) {
+      const std::string name = static_cast<std::string>(Downcast<String>(name_any));
+      auto it = canonical_shapes.find(name);
+      if (it != canonical_shapes.end()) {
+        return it->second;
+      }
+    }
+    return {};
+  };
+
+  auto infer_shape_from_buffers = [&](const Array<Any>& buffers) -> std::vector<int64_t> {
+    for (const Any& buffer_any : buffers) {
+      auto buffer = buffer_any.try_cast<Buffer>();
+      if (!buffer.has_value()) {
+        continue;
+      }
+      const std::string identity = BufferIdentityName(buffer.value());
+      auto it = logical_buffer_shapes.find(identity);
+      if (it != logical_buffer_shapes.end()) {
+        return it->second;
+      }
+    }
+    return {};
+  };
+
+  const Array<Any> structural_regions = Downcast<Array<Any>>((*structural_regions_it).second);
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const Any& region_any : structural_regions) {
+      auto region = Downcast<Map<String, Any>>(region_any);
+      auto update_sources_it = region.find(manifest_key::kUpdateSources);
+      if (update_sources_it == region.end()) {
+        continue;
+      }
+      for (const Any& update_any : Downcast<Array<Any>>((*update_sources_it).second)) {
+        auto update = Downcast<Map<String, Any>>(update_any);
+        auto target_it = update.find(schema_key::kTarget);
+        if (target_it == update.end()) {
+          continue;
+        }
+        const std::string target_name =
+            static_cast<std::string>(Downcast<String>((*target_it).second));
+        if (target_name.empty() || canonical_shapes.count(target_name)) {
+          continue;
+        }
+        std::vector<int64_t> inferred_shape;
+        auto sources_it = update.find(schema_key::kSources);
+        if (sources_it != update.end()) {
+          inferred_shape = infer_shape_from_names(Downcast<Array<Any>>((*sources_it).second));
+        }
+        if (inferred_shape.empty()) {
+          auto source_states_it = update.find(schema_key::kSourceStates);
+          if (source_states_it != update.end()) {
+            inferred_shape =
+                infer_shape_from_names(Downcast<Array<Any>>((*source_states_it).second));
+          }
+        }
+        if (inferred_shape.empty()) {
+          auto source_buffers_it = update.find(schema_key::kSourceBuffers);
+          if (source_buffers_it != update.end()) {
+            inferred_shape =
+                infer_shape_from_buffers(Downcast<Array<Any>>((*source_buffers_it).second));
+          }
+        }
+        if (!inferred_shape.empty()) {
+          canonical_shapes[target_name] = inferred_shape;
+          logical_buffer_shapes[target_name] = inferred_shape;
+          changed = true;
+        }
+      }
+    }
+  }
+
+  for (const Any& region_any : structural_regions) {
+    auto region = Downcast<Map<String, Any>>(region_any);
+    auto fragment_buffers_it = region.find(manifest_key::kFragmentBuffers);
+    if (fragment_buffers_it == region.end()) {
+      continue;
+    }
+    for (const Any& fragment_any : Downcast<Array<Any>>((*fragment_buffers_it).second)) {
+      auto fragment = Downcast<Map<String, Any>>(fragment_any);
+      auto name_it = fragment.find(schema_key::kName);
+      auto buffer_it = fragment.find(schema_key::kBuffer);
+      if (name_it == fragment.end() || buffer_it == fragment.end()) {
+        continue;
+      }
+      const std::string canonical_name =
+          static_cast<std::string>(Downcast<String>((*name_it).second));
+      auto shape_it = canonical_shapes.find(canonical_name);
+      auto buffer = (*buffer_it).second.try_cast<Buffer>();
+      if (shape_it == canonical_shapes.end() || !buffer.has_value()) {
+        continue;
+      }
+      logical_buffer_shapes[BufferIdentityName(buffer.value())] = shape_it->second;
+    }
+  }
+
+  return logical_buffer_shapes;
+}
+
+int64_t GetLogicalElementCount(const std::string& buffer_name,
+                              const std::unordered_map<std::string, std::vector<int64_t>>&
+                                  logical_buffer_shapes) {
+  auto it = logical_buffer_shapes.find(buffer_name);
+  if (it == logical_buffer_shapes.end() || it->second.empty()) {
+    return -1;
+  }
+  int64_t logical_element_count = 1;
+  for (int64_t dim : it->second) {
+    if (dim <= 0) {
+      return -1;
+    }
+    if (logical_element_count > std::numeric_limits<int64_t>::max() / dim) {
+      return -1;
+    }
+    logical_element_count *= dim;
+  }
+  return logical_element_count;
+}
+
+int64_t GetLogicalRowWidth(
+    const Buffer& buffer,
+    const std::unordered_map<std::string, std::vector<int64_t>>& logical_buffer_shapes) {
+  const std::string buffer_identity = BufferIdentityName(buffer);
+  auto logical_it = logical_buffer_shapes.find(buffer_identity);
+  if (logical_it != logical_buffer_shapes.end() && logical_it->second.size() >= 2U) {
+    return logical_it->second.back();
+  }
+  auto static_shape = ExtractStaticShape(buffer->shape);
+  if (static_shape.has_value() && static_shape.value().size() >= 2U) {
+    return static_shape.value().back();
+  }
+  return -1;
+}
 
 std::string ResolveStateNameFromMap(const Map<String, Any>& entry, const char* name_key,
                                     const char* buffer_key) {
@@ -128,6 +331,30 @@ void CollectUniqueStringField(Array<Any>* values, std::unordered_set<std::string
   }
 }
 
+void CollectUniqueNestedMapField(Array<Any>* values, std::unordered_set<std::string>* seen,
+                                 const Map<String, Any>& region, const char* field_name,
+                                 const char* nested_field_name) {
+  auto it = region.find(field_name);
+  if (it == region.end()) {
+    return;
+  }
+  for (const Any& item : tvm::Downcast<Array<Any>>((*it).second)) {
+    auto nested = item.try_cast<Map<String, Any>>();
+    if (!nested.has_value()) {
+      continue;
+    }
+    auto field_it = nested.value().find(nested_field_name);
+    if (field_it == nested.value().end()) {
+      continue;
+    }
+    const std::string identity = ResolveStateName((*field_it).second);
+    if (identity.empty() || !seen->insert(identity).second) {
+      continue;
+    }
+    values->push_back(nested.value());
+  }
+}
+
 bool IsTrackedStateScope(const std::string& scope) {
   return scope == "local" || scope == "local.fragment" || scope == "blackhole.acc";
 }
@@ -162,14 +389,355 @@ Optional<Map<String, Any>> TryBuildFragmentMaterializationContract(const CallNod
     return Optional<Map<String, Any>>();
   }
   Map<String, Any> contract;
-  contract.Set(String(schema_key::kKind), String("intermediate_fragment_merge"));
+  contract.Set(String(schema_key::kKind),
+               String(fragment_materialization::kIntermediateFragmentMerge));
   contract.Set(String(schema_key::kTargetBuffer), String(target_buffer));
   contract.Set(String(schema_key::kScope), String(scope));
   contract.Set(String(schema_key::kMaterializationKind),
                materialization_info->materialization_kind);
+  contract.Set(String(schema_key::kBridgeKind), materialization_info->bridge_kind);
   contract.Set(String(schema_key::kValueRole), materialization_info->value_role);
   contract.Set(String(schema_key::kMergeKind), materialization_info->merge_kind);
+  contract.Set(String(schema_key::kExecutionProtocol), materialization_info->execution_protocol);
+  contract.Set(String(schema_key::kResultLiveForm), materialization_info->result_live_form);
   return contract;
+}
+
+Optional<Map<String, Any>> TryBuildRepublishFragmentMaterializationContract(
+    const Map<String, Any>& flow_contract) {
+  auto buffer_it = flow_contract.find(String(schema_key::kBuffer));
+  auto scope_it = flow_contract.find(String(schema_key::kScope));
+  auto flow_class_it = flow_contract.find(String(schema_key::kFlowClass));
+  auto granule_kind_it = flow_contract.find(String(schema_key::kGranuleKind));
+  auto events_it = flow_contract.find(String(schema_key::kEvents));
+  if (buffer_it == flow_contract.end() || scope_it == flow_contract.end() ||
+      flow_class_it == flow_contract.end() || granule_kind_it == flow_contract.end() ||
+      events_it == flow_contract.end()) {
+    return Optional<Map<String, Any>>();
+  }
+
+  const std::string buffer_name = Downcast<String>((*buffer_it).second);
+  const std::string scope = Downcast<String>((*scope_it).second);
+  const std::string flow_class = Downcast<String>((*flow_class_it).second);
+  const std::string granule_kind = Downcast<String>((*granule_kind_it).second);
+  if (buffer_name.empty() || !IsTrackedStateScope(scope) ||
+      flow_class != fragment_flow::kRepublish ||
+      granule_kind != fragment_flow::kLogicalTile) {
+    return Optional<Map<String, Any>>();
+  }
+
+  bool has_compute_consume = false;
+  bool has_transport_consume = false;
+  for (const Any& event_any : Downcast<Array<Any>>((*events_it).second)) {
+    Map<String, Any> event = Downcast<Map<String, Any>>(event_any);
+    auto kind_it = event.find(String(schema_key::kKind));
+    if (kind_it == event.end()) {
+      continue;
+    }
+    const std::string kind = Downcast<String>((*kind_it).second);
+    if (kind == fragment_flow::kComputeConsume) {
+      has_compute_consume = true;
+    } else if (kind == fragment_flow::kTransportConsume) {
+      has_transport_consume = true;
+    }
+  }
+  if (!has_compute_consume && !has_transport_consume) {
+    return Optional<Map<String, Any>>();
+  }
+
+  Map<String, Any> contract;
+  contract.Set(String(schema_key::kKind),
+               String(fragment_materialization::kRepublishedLogicalTile));
+  contract.Set(String(schema_key::kTargetBuffer), String(buffer_name));
+  contract.Set(String(schema_key::kScope), String(scope));
+  contract.Set(String(schema_key::kMaterializationKind),
+               String(fragment_materialization::kRepublishedBuffer));
+  contract.Set(String(schema_key::kBridgeKind),
+               String(fragment_materialization::kTileNFacesMaterialization));
+  contract.Set(String(schema_key::kValueRole),
+               String(fragment_materialization::kConsumerInput));
+  contract.Set(String(schema_key::kMergeKind),
+               String(fragment_materialization::kDirectWrite));
+  contract.Set(String(schema_key::kExecutionProtocol),
+               String(fragment_materialization::kTiledCBRepublish));
+  contract.Set(String(schema_key::kResultLiveForm),
+               String(fragment_live_form::kTiledCB));
+  return contract;
+}
+
+Map<String, Any> MakeRepublishedLogicalTileMaterializationContract(const std::string& buffer_name,
+                                                                  const std::string& scope,
+                                                                  const std::string& source_buffer =
+                                                                      std::string(),
+                                                                  int64_t logical_row_width = -1,
+                                                                  int64_t logical_element_count =
+                                                                      -1) {
+  Map<String, Any> contract;
+  contract.Set(String(schema_key::kKind),
+               String(fragment_materialization::kRepublishedLogicalTile));
+  contract.Set(String(schema_key::kTargetBuffer), String(buffer_name));
+  contract.Set(String(schema_key::kScope), String(scope));
+  contract.Set(String(schema_key::kMaterializationKind),
+               String(fragment_materialization::kRepublishedBuffer));
+  contract.Set(String(schema_key::kBridgeKind),
+               String(fragment_materialization::kTileNFacesMaterialization));
+  contract.Set(String(schema_key::kValueRole),
+               String(fragment_materialization::kConsumerInput));
+  contract.Set(String(schema_key::kMergeKind),
+               String(fragment_materialization::kDirectWrite));
+  contract.Set(String(schema_key::kExecutionProtocol),
+               String(fragment_materialization::kTiledCBRepublish));
+  contract.Set(String(schema_key::kResultLiveForm),
+               String(fragment_live_form::kTiledCB));
+  if (!source_buffer.empty()) {
+    contract.Set(String(schema_key::kSourceBuffer), String(source_buffer));
+  }
+  if (logical_row_width > 0) {
+    contract.Set(String(schema_key::kLogicalRowWidth),
+                 Integer(static_cast<int>(logical_row_width)));
+  }
+  if (logical_element_count > 0) {
+    contract.Set(String(schema_key::kLogicalElementCount),
+                 Integer(static_cast<int64_t>(logical_element_count)));
+  }
+  return contract;
+}
+
+bool FlowContractHasEventKind(const Map<String, Any>& flow_contract, const char* kind) {
+  auto events_it = flow_contract.find(String(schema_key::kEvents));
+  if (events_it == flow_contract.end()) {
+    return false;
+  }
+  for (const Any& event_any : Downcast<Array<Any>>((*events_it).second)) {
+    Map<String, Any> event = Downcast<Map<String, Any>>(event_any);
+    auto kind_it = event.find(String(schema_key::kKind));
+    if (kind_it == event.end()) {
+      continue;
+    }
+    if (Downcast<String>((*kind_it).second) == kind) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool IsVectorLocalFragmentBuffer(const Buffer& buffer) {
+  const std::string scope = buffer.scope();
+  return IsTrackedStateScope(scope) && buffer->shape.size() == 1 && !buffer->shape.empty() &&
+         !tir::is_one(buffer->shape[0]);
+}
+
+const ForNode* AsUnwrappedFor(const tir::Stmt& stmt) {
+  tir::Stmt current = stmt;
+  while (true) {
+    if (const auto* attr = current.as<tir::AttrStmtNode>()) {
+      current = attr->body;
+      continue;
+    }
+    if (const auto* decl = current.as<tir::DeclBufferNode>()) {
+      current = decl->body;
+      continue;
+    }
+    if (const auto* alloc = current.as<tir::AllocateNode>()) {
+      current = alloc->body;
+      continue;
+    }
+    break;
+  }
+  return current.as<tir::ForNode>();
+}
+
+const BufferStoreNode* AsUnwrappedBufferStore(const tir::Stmt& stmt) {
+  tir::Stmt current = stmt;
+  while (true) {
+    if (const auto* attr = current.as<tir::AttrStmtNode>()) {
+      current = attr->body;
+      continue;
+    }
+    if (const auto* decl = current.as<tir::DeclBufferNode>()) {
+      current = decl->body;
+      continue;
+    }
+    if (const auto* alloc = current.as<tir::AllocateNode>()) {
+      current = alloc->body;
+      continue;
+    }
+    break;
+  }
+  return current.as<BufferStoreNode>();
+}
+
+bool ExprUsesVar(const PrimExpr& expr, const tir::Var& var) {
+  if (!var.defined()) {
+    return false;
+  }
+  bool uses_var = false;
+  tir::PostOrderVisit(expr, [&](const ObjectRef& node) {
+    if (uses_var) {
+      return;
+    }
+    if (const auto* candidate = node.as<tir::VarNode>()) {
+      uses_var = candidate == var.get();
+    }
+  });
+  return uses_var;
+}
+
+bool MatchDirectFragmentCastTarget(const ForNode* op, Buffer* src_buffer, Buffer* dst_buffer) {
+  if (!op || !src_buffer || !dst_buffer) {
+    return false;
+  }
+
+  const auto* store = AsUnwrappedBufferStore(op->body);
+  const ForNode* inner_loop = nullptr;
+  const auto* inner_store = store;
+  PrimExpr linear_index = op->loop_var;
+  if (!store) {
+    inner_loop = AsUnwrappedFor(op->body);
+    inner_store = inner_loop ? AsUnwrappedBufferStore(inner_loop->body) : nullptr;
+    if (!inner_loop || !inner_store || inner_store->indices.size() != 1) {
+      return false;
+    }
+    linear_index = op->loop_var * inner_loop->extent + inner_loop->loop_var;
+  } else if (store->indices.size() != 1) {
+    return false;
+  }
+
+  if (!inner_store || !IsVectorLocalFragmentBuffer(inner_store->buffer)) {
+    return false;
+  }
+  const auto* cast = inner_store->value.as<CastNode>();
+  const auto* load = cast ? cast->value.as<BufferLoadNode>() : nullptr;
+  if (!cast || !load || load->indices.size() != 1 || !IsVectorLocalFragmentBuffer(load->buffer) ||
+      SameBufferIdentity(inner_store->buffer, load->buffer)) {
+    return false;
+  }
+
+  arith::Analyzer analyzer;
+  PrimExpr dst_offset = analyzer.Simplify(inner_store->indices[0] - linear_index);
+  PrimExpr src_offset = analyzer.Simplify(load->indices[0] - linear_index);
+  if (ExprUsesVar(dst_offset, op->loop_var) || ExprUsesVar(src_offset, op->loop_var)) {
+    return false;
+  }
+  if (inner_loop &&
+      (ExprUsesVar(dst_offset, inner_loop->loop_var) ||
+       ExprUsesVar(src_offset, inner_loop->loop_var))) {
+    return false;
+  }
+
+  *src_buffer = load->buffer;
+  *dst_buffer = inner_store->buffer;
+  return true;
+}
+
+std::unordered_set<std::string> CollectGroupedRowsFragmentBuffers(
+    const Array<Any>& fragment_layout_contracts) {
+  std::unordered_set<std::string> grouped_rows_buffers;
+  for (const Any& contract_any : fragment_layout_contracts) {
+    Map<String, Any> contract = Downcast<Map<String, Any>>(contract_any);
+    auto buffer_it = contract.find(String(schema_key::kBuffer));
+    auto distribution_it = contract.find(String(schema_key::kDistributionKind));
+    if (buffer_it == contract.end() || distribution_it == contract.end()) {
+      continue;
+    }
+    if (Downcast<String>((*distribution_it).second) != fragment_layout::kGroupedRows) {
+      continue;
+    }
+    grouped_rows_buffers.insert(Downcast<String>((*buffer_it).second));
+  }
+  return grouped_rows_buffers;
+}
+
+void AppendUniqueCastDrivenFragmentMaterializationContractsFromBody(
+    const tir::Stmt& body, const Array<Any>& flow_contracts,
+    const std::unordered_map<std::string, std::vector<int64_t>>& logical_buffer_shapes,
+    Array<Any>* materialization_contracts) {
+  auto upsert_materialization_contract = [&](const Map<String, Any>& contract) {
+    auto target_it = contract.find(String(schema_key::kTargetBuffer));
+    auto scope_it = contract.find(String(schema_key::kScope));
+    if (target_it == contract.end() || scope_it == contract.end()) {
+      return;
+    }
+    const std::string key = Downcast<String>((*target_it).second) + "|" +
+                            Downcast<String>((*scope_it).second);
+    for (int i = 0; i < materialization_contracts->size(); ++i) {
+      Map<String, Any> existing = Downcast<Map<String, Any>>((*materialization_contracts)[i]);
+      auto existing_target_it = existing.find(String(schema_key::kTargetBuffer));
+      auto existing_scope_it = existing.find(String(schema_key::kScope));
+      if (existing_target_it == existing.end() || existing_scope_it == existing.end()) {
+        continue;
+      }
+      const std::string existing_key =
+          Downcast<String>((*existing_target_it).second) + "|" +
+          Downcast<String>((*existing_scope_it).second);
+      if (existing_key == key) {
+        (*materialization_contracts).Set(i, contract);
+        return;
+      }
+    }
+    materialization_contracts->push_back(contract);
+  };
+
+  std::unordered_map<std::string, Map<String, Any>> flow_contracts_by_buffer;
+  for (const Any& flow_contract_any : flow_contracts) {
+    Map<String, Any> flow_contract = Downcast<Map<String, Any>>(flow_contract_any);
+    auto buffer_it = flow_contract.find(String(schema_key::kBuffer));
+    if (buffer_it == flow_contract.end()) {
+      continue;
+    }
+    flow_contracts_by_buffer.emplace(Downcast<String>((*buffer_it).second), flow_contract);
+  }
+
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* loop = node.as<ForNode>();
+    if (!loop) {
+      return;
+    }
+    Buffer src_buffer;
+    Buffer dst_buffer;
+    if (!MatchDirectFragmentCastTarget(loop, &src_buffer, &dst_buffer)) {
+      return;
+    }
+    const std::string src_name = BufferIdentityName(src_buffer);
+    const std::string dst_name = BufferIdentityName(dst_buffer);
+    if (src_name.empty() || dst_name.empty()) {
+      return;
+    }
+    auto flow_it = flow_contracts_by_buffer.find(dst_name);
+    if (flow_it == flow_contracts_by_buffer.end()) {
+      return;
+    }
+    const Map<String, Any>& flow_contract = flow_it->second;
+    auto scope_it = flow_contract.find(String(schema_key::kScope));
+    auto granule_it = flow_contract.find(String(schema_key::kGranuleKind));
+    if (scope_it == flow_contract.end() || granule_it == flow_contract.end()) {
+      return;
+    }
+    const std::string scope = Downcast<String>((*scope_it).second);
+    const std::string granule_kind = Downcast<String>((*granule_it).second);
+    if (!IsTrackedStateScope(scope) || granule_kind != fragment_flow::kLogicalTile ||
+        (!FlowContractHasEventKind(flow_contract, fragment_flow::kComputeConsume) &&
+         !FlowContractHasEventKind(flow_contract, fragment_flow::kTransportConsume))) {
+      return;
+    }
+    int64_t logical_row_width = GetLogicalRowWidth(src_buffer, logical_buffer_shapes);
+    if (logical_row_width <= 0) {
+      logical_row_width = GetLogicalRowWidth(dst_buffer, logical_buffer_shapes);
+    }
+    if (logical_row_width <= 0) {
+      if (const auto* inner_loop = AsUnwrappedFor(loop->body)) {
+        if (const auto* extent_imm = inner_loop->extent.as<IntImmNode>()) {
+          logical_row_width = extent_imm->value;
+        }
+      }
+    }
+    int64_t logical_element_count = GetLogicalElementCount(dst_name, logical_buffer_shapes);
+    if (logical_element_count <= 0) {
+      logical_element_count = GetLogicalElementCount(src_name, logical_buffer_shapes);
+    }
+    upsert_materialization_contract(MakeRepublishedLogicalTileMaterializationContract(
+        dst_name, scope, src_name, logical_row_width, logical_element_count));
+  });
 }
 
 Array<Any> CollectFragmentMaterializationContractsFromBody(const tir::Stmt& body) {
@@ -267,6 +835,7 @@ bool IsTransportConsumerDirection(const BufferStoreNode* store) {
   const std::string src_scope = str(load->buffer.scope());
   return (IsCBScope(src_scope) && IsDRAMScope(dst_scope)) ||
          (IsCBScope(src_scope) && IsCBScope(dst_scope)) ||
+         (IsAccumulatorLikeScope(src_scope) && IsDRAMScope(dst_scope)) ||
          (IsAccumulatorLikeScope(src_scope) && IsCBScope(dst_scope));
 }
 
@@ -314,6 +883,35 @@ bool StmtReferencesBuffer(const tir::Stmt& stmt, const Buffer& buffer) {
     }
   });
   return referenced;
+}
+
+bool StmtReadsBuffer(const tir::Stmt& stmt, const Buffer& buffer) {
+  const std::string target_identity = BufferIdentityName(buffer);
+  bool reads = false;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    if (reads) {
+      return;
+    }
+    if (const auto* load = node.as<BufferLoadNode>()) {
+      reads = BufferIdentityName(load->buffer) == target_identity;
+      return;
+    }
+    const auto* call = node.as<CallNode>();
+    if (call == nullptr || !call->op->IsInstance<OpNode>()) {
+      return;
+    }
+    TileOperator tile_op = ParseOperator(GetRef<Call>(call));
+    if (!tile_op.defined()) {
+      return;
+    }
+    for (const DataflowAccessInfo& access : tile_op->GetDataflowAccessInfo()) {
+      if (BufferIdentityName(access.buffer) == target_identity) {
+        reads = true;
+        return;
+      }
+    }
+  });
+  return reads;
 }
 
 bool StmtConsumesBufferViaTransport(const tir::Stmt& stmt, const Buffer& buffer) {
@@ -436,19 +1034,31 @@ Array<Any> CollectFragmentBufferFlowContractsFromBody(const tir::Stmt& body) {
       FragmentBufferFlowContract& contract = contracts_by_buffer[buffer_name];
       contract.buffer_name = buffer_name;
       contract.scope = str(buffer.scope());
-
-      FragmentBufferFlowEvent event;
-      event.order_index = order_index;
-      if (StmtWritesBuffer(stmt, buffer)) {
-        event.kind = FragmentBufferFlowEventKind::kWrite;
-      } else if (compute_consumed_buffers.count(buffer_name)) {
-        event.kind = FragmentBufferFlowEventKind::kComputeConsume;
-      } else if (StmtConsumesBufferViaTransport(stmt, buffer)) {
-        event.kind = FragmentBufferFlowEventKind::kTransportConsume;
-      } else {
-        event.kind = FragmentBufferFlowEventKind::kReference;
+      const bool compute_consumed = compute_consumed_buffers.count(buffer_name);
+      const bool transport_consumed = StmtConsumesBufferViaTransport(stmt, buffer);
+      const bool reads_buffer = StmtReadsBuffer(stmt, buffer);
+      const bool writes_buffer = StmtWritesBuffer(stmt, buffer);
+      auto append_event = [&](FragmentBufferFlowEventKind kind) {
+        FragmentBufferFlowEvent event;
+        event.order_index = order_index;
+        event.kind = kind;
+        contract.events.push_back(event);
+      };
+      if (compute_consumed) {
+        append_event(FragmentBufferFlowEventKind::kComputeConsume);
       }
-      contract.events.push_back(event);
+      if (!compute_consumed && reads_buffer && !transport_consumed) {
+        append_event(FragmentBufferFlowEventKind::kReference);
+      }
+      if (transport_consumed) {
+        append_event(FragmentBufferFlowEventKind::kTransportConsume);
+      }
+      if (writes_buffer) {
+        append_event(FragmentBufferFlowEventKind::kWrite);
+      }
+      if (!compute_consumed && !reads_buffer && !transport_consumed && !writes_buffer) {
+        append_event(FragmentBufferFlowEventKind::kReference);
+      }
     }
   }
 
@@ -477,6 +1087,36 @@ Array<Any> CollectFragmentBufferFlowContractsFromBody(const tir::Stmt& body) {
     contracts.push_back(encoded_contract);
   }
   return contracts;
+}
+
+void AppendUniqueFragmentMaterializationContractsFromFlowContracts(
+    const Array<Any>& flow_contracts, Array<Any>* materialization_contracts) {
+  std::unordered_set<std::string> seen;
+  for (const Any& contract_any : *materialization_contracts) {
+    Map<String, Any> contract = Downcast<Map<String, Any>>(contract_any);
+    auto target_it = contract.find(String(schema_key::kTargetBuffer));
+    auto scope_it = contract.find(String(schema_key::kScope));
+    if (target_it == contract.end() || scope_it == contract.end()) {
+      continue;
+    }
+    seen.insert(Downcast<String>((*target_it).second) + "|" +
+                Downcast<String>((*scope_it).second));
+  }
+
+  for (const Any& flow_contract_any : flow_contracts) {
+    Map<String, Any> flow_contract = Downcast<Map<String, Any>>(flow_contract_any);
+    auto maybe_contract = TryBuildRepublishFragmentMaterializationContract(flow_contract);
+    if (!maybe_contract.has_value()) {
+      continue;
+    }
+    const std::string key =
+        Downcast<String>(maybe_contract.value().at(String(schema_key::kTargetBuffer))) + "|" +
+        Downcast<String>(maybe_contract.value().at(String(schema_key::kScope)));
+    if (!seen.insert(key).second) {
+      continue;
+    }
+    materialization_contracts->push_back(maybe_contract.value());
+  }
 }
 
 class LocalBufferCollector : public tir::StmtExprVisitor {
@@ -1139,6 +1779,7 @@ void CollectSeedsAndSupplements(const tir::PrimFunc& func,
     supplements->push_back(supplement);
   }
   if (auto fragment_regions = func->GetAttr<Array<Any>>("blackhole.fragment_regions")) {
+    const auto logical_buffer_shapes = BuildLogicalBufferShapes(func);
     Array<Any> fragment_op_kinds;
     std::unordered_set<std::string> seen_fragment_ops;
     Array<Any> row_reduction_targets;
@@ -1149,10 +1790,8 @@ void CollectSeedsAndSupplements(const tir::PrimFunc& func,
     std::unordered_set<std::string> seen_pointwise_ops;
     Array<Any> fragment_loop_carried_state;
     std::unordered_set<std::string> seen_loop_carried_state;
-    Array<Any> fragment_materialization_contracts =
-        CollectFragmentMaterializationContractsFromBody(func->body);
-    Array<Any> fragment_buffer_flow_contracts =
-        CollectFragmentBufferFlowContractsFromBody(func->body);
+    Array<Any> fragment_layout_contracts;
+    std::unordered_set<std::string> seen_fragment_layout_contracts;
     for (const Any& region_any : fragment_regions.value()) {
       auto region = tvm::Downcast<Map<String, Any>>(region_any);
       CollectUniqueStringField(&fragment_op_kinds, &seen_fragment_ops, region, "ops");
@@ -1164,7 +1803,20 @@ void CollectSeedsAndSupplements(const tir::PrimFunc& func,
                                "pointwise_ops");
       CollectUniqueStringField(&fragment_loop_carried_state, &seen_loop_carried_state, region,
                                manifest_key::kLoopCarriedState, schema_key::kName);
+      CollectUniqueNestedMapField(&fragment_layout_contracts,
+                                  &seen_fragment_layout_contracts, region,
+                                  schema_key::kFragmentLayoutContracts,
+                                  schema_key::kBuffer);
     }
+    Array<Any> fragment_materialization_contracts =
+        CollectFragmentMaterializationContractsFromBody(func->body);
+    Array<Any> fragment_buffer_flow_contracts =
+        CollectFragmentBufferFlowContractsFromBody(func->body);
+    AppendUniqueFragmentMaterializationContractsFromFlowContracts(
+        fragment_buffer_flow_contracts, &fragment_materialization_contracts);
+    AppendUniqueCastDrivenFragmentMaterializationContractsFromBody(
+        func->body, fragment_buffer_flow_contracts, logical_buffer_shapes,
+        &fragment_materialization_contracts);
     if (!fragment_op_kinds.empty()) {
       PushStringUnique(seeds, &seen_seed_markers, "fragment_region_analysis");
       Map<String, Any> supplement_payload;
@@ -1182,6 +1834,10 @@ void CollectSeedsAndSupplements(const tir::PrimFunc& func,
       if (!fragment_loop_carried_state.empty()) {
         supplement_payload.Set(String(schema_key::kFragmentLoopCarriedState),
                                fragment_loop_carried_state);
+      }
+      if (!fragment_layout_contracts.empty()) {
+        supplement_payload.Set(String(schema_key::kFragmentLayoutContracts),
+                               fragment_layout_contracts);
       }
       if (!fragment_materialization_contracts.empty()) {
         supplement_payload.Set(String(schema_key::kFragmentMaterializationContracts),

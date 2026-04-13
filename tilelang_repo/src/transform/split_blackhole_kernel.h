@@ -20,7 +20,7 @@
 /*!
  * \file split_blackhole_kernel.h
  * \brief SplitBlackholeKernels pass: annotate statements with segment kind
- *        and emit blackhole.segment_plan for 3-kernel GEMM.
+ *        for 3-kernel GEMM.
  */
 
 #ifndef TVM_TL_SPLIT_BLACKHOLE_KERNEL_H_
@@ -40,7 +40,7 @@ namespace tl {
  * Scans each device PrimFunc for compute ops (tl.tileop.gemm_py).
  * If found, wraps each top-level statement with:
  *   AttrStmt("blackhole.segment_kind", "reader"|"compute"|"writer", stmt)
- * and writes blackhole.segment_plan (3-kernel schema) to the function attrs.
+ * so downstream TT planning can recover segment truth directly from the body.
  *
  * Pure-copy functions (no compute op) are left unchanged; they continue
  * through the existing fused_dataflow single-kernel path.

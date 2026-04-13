@@ -61,6 +61,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   // Override visitor to handle TT-Metal builtin calls
   void VisitExpr_(const tvm::tir::CallNode *op,
                   std::ostream &os) override;
+  void VisitExpr_(const tvm::tir::VarNode* op, std::ostream& os) override;
 
   // Override to handle FloorDiv/FloorMod (not implemented in base CodeGenC)
   void VisitExpr_(const tvm::tir::FloorDivNode *op,
@@ -108,6 +109,18 @@ class CodeGenBlackhole : public CodeGenCHost {
   // that transform the TIR before it reaches the CodeGen stage.
 
  protected:
+  struct FragmentLayoutBinding {
+    std::string buffer_name;
+    std::string distribution_kind;
+    std::string storage_topology_kind;
+    tvm::ffi::Array<tvm::PrimExpr> logical_shape;
+    tvm::ffi::Array<tvm::PrimExpr> local_shape;
+    tvm::ffi::Array<tvm::PrimExpr> inverse_logical_index_vars;
+    tvm::ffi::Array<tvm::PrimExpr> inverse_logical_index_exprs;
+    tvm::PrimExpr thread_extent;
+    tvm::PrimExpr replicate_extent;
+  };
+
   // Print TT-Metal specific function attributes
   void PrintKernelAttributes();
 
@@ -151,10 +164,17 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintCopyTileToDstInitShort(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintCopyTileToDstInitShortWithDT(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintCopyTileFromCB(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintAddTilesInit(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintAddTiles(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintFillFragment(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddFragment(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddFragmentFromCBFront(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintWriteLocalSliceToCB(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintWriteLocalFragmentTileToCB(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintWriteLocalFragmentSliceToTiledCB(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintCastFragmentSliceToTiledCB(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintReadCBFrontTileToLocal(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintReadCBFrontTileToLocalFragment(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintScalarMax(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintCastFragmentSlice(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintReduceRow(const tvm::tir::CallNode *op, std::ostream &os);
@@ -193,7 +213,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   int GetCBNumPages(int cb_id) const;
   std::string GetCBHeadVar(int cb_id) const;
   std::string GetCBTailVar(int cb_id) const;
-  void RegisterActiveCBWritePtrBinding(int cb_id, const std::string& var_name,
+ void RegisterActiveCBWritePtrBinding(int cb_id, const std::string& var_name,
                                        const std::string& type_name);
   void UnregisterActiveCBWritePtrBinding(int cb_id, const std::string& var_name);
   void EmitActiveCBWritePtrRefreshes(int cb_id);
@@ -201,6 +221,13 @@ class CodeGenBlackhole : public CodeGenCHost {
   void MaybeEmitPackWaypoint(std::ostream& os, const char* code);
   void MaybeEmitUnpackWaypoint(std::ostream& os, const char* code);
   std::string GetCBRequirementName(int cb_id) const;
+  void LoadFragmentLayoutContracts(const tvm::tir::PrimFunc& f);
+  const FragmentLayoutBinding* FindFragmentLayoutBinding(const tvm::tir::VarNode* var) const;
+  bool FragmentLayoutRequiresGenericBridge(const FragmentLayoutBinding& binding) const;
+  std::optional<DataType> TryResolveHandleDataType(const tvm::tir::VarNode* var) const;
+  DataType ResolveHandleDataType(const tvm::tir::VarNode* var, const char* op_name,
+                                 const char* role) const;
+  bool TryPrintCBBackedHandleVar(const tvm::tir::VarNode* var, std::ostream& os) const;
 
  private:
   struct ActiveCBWritePtrBinding {
@@ -241,8 +268,11 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_map<std::string, int> cb_id_by_requirement_name_;
   std::unordered_map<int, std::string> cb_requirement_name_by_id_;
   std::unordered_map<std::string, int> cb_num_pages_by_requirement_name_;
+  std::unordered_map<std::string, int> cb_publish_pages_by_requirement_name_;
   std::unordered_map<std::string, int> cb_initial_reserve_pages_by_requirement_name_;
   std::unordered_map<int, std::vector<ActiveCBWritePtrBinding>> active_cb_write_ptr_bindings_;
+  std::unordered_map<std::string, FragmentLayoutBinding> fragment_layout_bindings_by_buffer_name_;
+  std::string thread_idx_x_expr_;
   int logical_grid_x_{1};
   int logical_grid_y_{1};
   std::string linearization_{"row_major"};

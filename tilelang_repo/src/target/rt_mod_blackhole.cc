@@ -618,11 +618,35 @@ static std::vector<ComputeContractSpec::EpilogueOpSpec> ParseComputeEpilogueOps(
           entry.fragment_materialization_contract.materialization_kind =
               Downcast<String>(field.value());
         }
+        if (auto field = contract.Get("bridge_kind")) {
+          entry.fragment_materialization_contract.bridge_kind =
+              Downcast<String>(field.value());
+        }
         if (auto field = contract.Get("value_role")) {
           entry.fragment_materialization_contract.value_role = Downcast<String>(field.value());
         }
         if (auto field = contract.Get("merge_kind")) {
           entry.fragment_materialization_contract.merge_kind = Downcast<String>(field.value());
+        }
+        if (auto field = contract.Get("execution_protocol")) {
+          entry.fragment_materialization_contract.execution_protocol =
+              Downcast<String>(field.value());
+        }
+        if (auto field = contract.Get("result_live_form")) {
+          entry.fragment_materialization_contract.result_live_form =
+              Downcast<String>(field.value());
+        }
+        if (auto field = contract.Get("source_buffer")) {
+          entry.fragment_materialization_contract.source_buffer =
+              Downcast<String>(field.value());
+        }
+        if (auto field = contract.Get("logical_row_width")) {
+          entry.fragment_materialization_contract.logical_row_width =
+              static_cast<int>(Downcast<Integer>(field.value())->value);
+        }
+        if (auto field = contract.Get("logical_element_count")) {
+          entry.fragment_materialization_contract.logical_element_count =
+              static_cast<int>(Downcast<Integer>(field.value())->value);
         }
       }
       if (!entry.kind.empty()) {
@@ -2230,9 +2254,14 @@ static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
   bool has_fragment_materialization_contract = false;
   bool missing_fragment_materialization_contract = false;
+  bool missing_fragment_execution_protocol = false;
   for (const ComputeContractSpec::EpilogueOpSpec& op : spec->compute_epilogue_ops) {
     if (op.fragment_materialization_contract.defined()) {
       has_fragment_materialization_contract = true;
+      if (op.kind == "merge_fragment_tiles" &&
+          op.fragment_materialization_contract.execution_protocol.empty()) {
+        missing_fragment_execution_protocol = true;
+      }
     }
     if (op.kind == "add_fragment_from_cb_front" &&
         !op.fragment_materialization_contract.defined()) {
@@ -2250,10 +2279,14 @@ static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
         "upstream fragment materialization truth");
     return;
   }
-  AppendDirectRuntimeUnsupportedReason(
-      spec,
-      "typed fragment materialization contract is present, but direct runtime "
-      "does not yet execute fragment materialization/merge protocols");
+  if (missing_fragment_execution_protocol) {
+    AppendDirectRuntimeUnsupportedReason(
+        spec,
+        "missing fragment materialization execution protocol; direct runtime "
+        "must not choose merge execution sequence without typed upstream "
+        "contract");
+    return;
+  }
 }
 
 static std::vector<int64_t> ChooseBufferMaterializationAxisOrder(
@@ -2511,18 +2544,6 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
   ffi::Map<ffi::String, ffi::Any> attrs;
   static const std::unordered_set<std::string> kSyntheticProjectionAttrs = {
       tvm::tl::attr::kTLTTProgram,
-      "blackhole.segment_plan",
-      "blackhole.runtime_args",
-      "blackhole.common_runtime_args",
-      "blackhole.per_work_arg_specs",
-      "blackhole.accessors",
-      "blackhole.cb_configs",
-      "blackhole.semaphore_plan",
-      "blackhole.core_plan",
-      "blackhole.core_type",
-      "blackhole.gemm_contract",
-      "blackhole.compute_contract",
-      "blackhole.direct_runtime_unsupported_reasons",
   };
   if (f->attrs.defined()) {
     for (const auto& kv : f->attrs->dict) {

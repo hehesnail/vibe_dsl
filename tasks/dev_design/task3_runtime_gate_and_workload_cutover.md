@@ -106,17 +106,20 @@ runtime / codegen 的消费纪律固定为：
    - 当前 active path 已不再暴露 legacy pass 名字；
      `BuildTTProgram` 内部暂时通过
      `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
-     helper bridge 物化 typed seeds
-   - 这组 helper 仍先写
+     helper chain 直接产出 planning object
+   - `BuildTTProgram` 直接把 planner result 聚合成 `TTProgram`，
+     不再经由
      `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_cb_plans /
      tl.tt_core_groups / tl.tt_program_payload`
-   - `BuildTTProgram` 再把这些 seed 聚合成 `TTProgram`
+     这组中间 attrs
 3. **legacy attr synthesis**
-   - `SplitBlackholeKernel` 仍写 `blackhole.segment_plan`
-   - `PlanTTKernelABI` 仍写
+   - `SplitBlackholeKernel` 已退回成纯 IR annotation pass，
+     不再写 `blackhole.segment_plan`
+   - `PlanTTKernelABI` 已不再写
      `blackhole.runtime_args / blackhole.gemm_contract /
      blackhole.compute_contract`
-     等 legacy attr，再同步写入 typed payload
+     这组 legacy attr；target truth 直接留在
+     `TTKernel / TTABIPlan / TTProgram payload`
 4. **matcher / recovery owner residue**
    - `PlanTTKernelABI` 仍承担 target planning 的一部分恢复责任
    - 尤其是 phase-boundary / fragment / runtime arg /
@@ -174,7 +177,8 @@ runtime / codegen 的消费纪律固定为：
   只做 plan object 聚合，
   不再读 seed bridge attr
 - 当前状态：
-  已进入前段清理；`BuildTTProgram` 末端已经剥离
+  已完成中间 seed attr 退场；`BuildTTProgram`
+  不再物化/读取
   `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_cb_plans /
   tl.tt_core_groups / tl.tt_program_payload`
   这组中间 attrs，最终 Phase C 输出只保留 `tl.tt_program`
@@ -186,7 +190,7 @@ runtime / codegen 的消费纪律固定为：
   当前剩余残留是 `BuildTTProgram`
   内部仍临时复用
   `PlanTTKernelABI -> PlanTTCBAlloc -> PlanTTCoreGroups`
-  这组 helper 完成 planning attr 物化
+  这组 helper 直接承担 planning owner 责任
   - public `tilelang.transform` wrapper、
     FFI `tl.transform.*` global registration
     以及测试层
@@ -204,14 +208,18 @@ runtime / codegen 的消费纪律固定为：
 - runtime / codegen / tests 全部只读
   `TTProgram / ExecutableSpec`
 - 当前状态：
-  已完成测试层 typed-seed fallback 删除；
-  `common.py` 与相关 pipeline/gemm/flash-attn 回归
-  不再读取
-  `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_cb_plans /
-  tl.tt_core_groups / tl.tt_program_payload`
-  这组旧中间 attrs。
-  `blackhole.*` compatibility attr synthesis 的彻底退场，
-  仍需等 `PlanTT*` owner pass 完整落地后继续推进
+  已完成 active path / helper / test fallback 删除；
+  `SplitBlackholeKernel` 不再写 `blackhole.segment_plan`，
+  `PlanTTKernelABI` 不再综合
+  `blackhole.segment_plan / blackhole.runtime_args /
+  blackhole.common_runtime_args / blackhole.cb_configs /
+  blackhole.core_plan / blackhole.gemm_contract /
+  blackhole.compute_contract`
+  这组 compatibility attrs。
+  runtime / codegen 与相关回归当前只依赖
+  `TTProgram / ExecutableSpec`；
+  剩余未完成项已经从 attr synthesis 切换成
+  `PlanTT*` owner pass 的真实拆分
 
 每一批删除前都必须满足：
 

@@ -28,12 +28,7 @@ constexpr const char* kTLSpatialDomainPlan = "tl.spatial_domain_plan";
 constexpr const char* kTLSpatialExecutionPlan = "tl.spatial_execution_plan";
 constexpr const char* kTLSpatialProgram = "tl.spatial_program";
 constexpr const char* kTLTTProgram = "tl.tt_program";
-constexpr const char* kTLTTKernelSeeds = "tl.tt_kernel_seeds";
-constexpr const char* kTLTTABIPlans = "tl.tt_abi_plans";
-constexpr const char* kTLTTCBPlans = "tl.tt_cb_plans";
-constexpr const char* kTLTTCoreGroups = "tl.tt_core_groups";
 constexpr const char* kTLTTSemaphorePlans = "tl.tt_semaphore_plans";
-constexpr const char* kTLTTProgramPayload = "tl.tt_program_payload";
 constexpr const char* kTLSpatialCapabilityModel = "tl.spatial_capability_model";
 constexpr const char* kTLTTHardwareModel = "tl.tt_hardware_model";
 constexpr const char* kTLCompanionInvalidationReason = "tl.companion_invalidation_reason";
@@ -71,13 +66,18 @@ constexpr const char* kDomainTransformKind = "domain_transform_kind";
 constexpr const char* kDomainIndex = "domain_index";
 constexpr const char* kDType = "dtype";
 constexpr const char* kExecutionRole = "execution_role";
+constexpr const char* kExecutionProtocol = "execution_protocol";
 constexpr const char* kFormationBasis = "formation_basis";
 constexpr const char* kFragmentMaterializationContracts = "fragment_materialization_contracts";
 constexpr const char* kFragmentMaterializationContract = "fragment_materialization_contract";
+constexpr const char* kFragmentLayoutContracts = "fragment_layout_contracts";
+constexpr const char* kFragmentLayoutContract = "fragment_layout_contract";
 constexpr const char* kFragmentBufferFlowContracts = "fragment_buffer_flow_contracts";
 constexpr const char* kFragmentLoopCarriedState = "fragment_loop_carried_state";
 constexpr const char* kFragmentOpKinds = "fragment_op_kinds";
+constexpr const char* kDistributionKind = "distribution_kind";
 constexpr const char* kFlowClass = "flow_class";
+constexpr const char* kBridgeKind = "bridge_kind";
 constexpr const char* kGranuleKind = "granule_kind";
 constexpr const char* kPublishGranule = "publish_granule";
 constexpr const char* kConsumeGranule = "consume_granule";
@@ -105,10 +105,15 @@ constexpr const char* kPhaseIndex = "phase_index";
 constexpr const char* kPointwiseOpKinds = "pointwise_op_kinds";
 constexpr const char* kRowBroadcastSources = "row_broadcast_sources";
 constexpr const char* kRowReductionTargets = "row_reduction_targets";
+constexpr const char* kResultLiveForm = "result_live_form";
 constexpr const char* kScope = "scope";
 constexpr const char* kShape = "shape";
 constexpr const char* kSource = "source";
+constexpr const char* kSourceBuffer = "source_buffer";
 constexpr const char* kSourceBuffers = "source_buffers";
+constexpr const char* kLogicalRowWidth = "logical_row_width";
+constexpr const char* kLogicalElementCount = "logical_element_count";
+constexpr const char* kLocalShape = "local_shape";
 constexpr const char* kSourceDomainIndex = "source_domain_index";
 constexpr const char* kSourceStates = "source_states";
 constexpr const char* kSourceTaskIndex = "source_task_index";
@@ -117,6 +122,11 @@ constexpr const char* kSources = "sources";
 constexpr const char* kSrcBuffer = "src_buffer";
 constexpr const char* kSrcBufferRef = "src_buffer_ref";
 constexpr const char* kSrcShape = "src_shape";
+constexpr const char* kStorageTopologyKind = "storage_topology_kind";
+constexpr const char* kThreadExtent = "thread_extent";
+constexpr const char* kReplicateExtent = "replicate_extent";
+constexpr const char* kInverseLogicalIndexVars = "inverse_logical_index_vars";
+constexpr const char* kInverseLogicalIndexExprs = "inverse_logical_index_exprs";
 constexpr const char* kStateIndex = "state_index";
 constexpr const char* kStageLocalBuffers = "stage_local_buffers";
 constexpr const char* kTarget = "target";
@@ -152,6 +162,37 @@ constexpr const char* kComputeConsume = "compute_consume";
 constexpr const char* kTransportConsume = "transport_consume";
 constexpr const char* kReference = "reference";
 }  // namespace fragment_flow
+
+namespace fragment_materialization {
+constexpr const char* kIntermediateFragmentMerge = "intermediate_fragment_merge";
+constexpr const char* kRepublishedLogicalTile = "republished_logical_tile";
+
+constexpr const char* kIntermediateBuffer = "intermediate_buffer";
+constexpr const char* kRepublishedBuffer = "republished_buffer";
+
+constexpr const char* kTileNFacesMaterialization = "tile_nfaces_materialization";
+
+constexpr const char* kFragmentDelta = "fragment_delta";
+constexpr const char* kConsumerInput = "consumer_input";
+
+constexpr const char* kFragmentAdd = "fragment_add";
+constexpr const char* kDirectWrite = "direct_write";
+
+constexpr const char* kDstCbBinaryPack = "dst_cb_binary_pack";
+constexpr const char* kTiledCBRepublish = "tiled_cb_republish";
+}  // namespace fragment_materialization
+
+namespace fragment_live_form {
+constexpr const char* kTiledCB = "tiled_cb";
+constexpr const char* kLocalFragment = "local_fragment";
+}  // namespace fragment_live_form
+
+namespace fragment_layout {
+constexpr const char* kLinear = "linear";
+constexpr const char* kGroupedRows = "grouped_rows";
+constexpr const char* kRowState = "row_state";
+constexpr const char* kThreadDistributed = "thread_distributed";
+}  // namespace fragment_layout
 
 namespace spatial_contract {
 constexpr const char* kSemanticStateTarget = "semantic_state";

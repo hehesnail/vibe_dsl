@@ -58,15 +58,7 @@ def is_device_call(func: tir.PrimFunc):
                 return attrs["calling_conv"] == CallingConv.DEVICE_KERNEL_LAUNCH
             if attrs.get("tir.is_entry_func", False):
                 return True
-            return any(
-                key in attrs
-                for key in (
-                    "blackhole.cb_configs",
-                    "blackhole.core_plan",
-                    "blackhole.runtime_args",
-                    "blackhole.segment_plan",
-                )
-            )
+            return "tl.tt_program" in attrs
 
     return False
 

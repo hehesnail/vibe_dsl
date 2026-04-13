@@ -173,49 +173,8 @@ bool PlanTTCoreGroups::IsValidCoreCoord(const CoreCoord& coord) const {
 // Store assignment in function attributes
 void PlanTTCoreGroups::StoreAssignment(PrimFunc& func,
                                            const CoreAssignment& assignment) {
-  // Get existing attributes (if any)
-  tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> attrs;
-  if (func->attrs.defined()) {
-    attrs = func->attrs->dict;
-  }
-
-  // Store core assignment values (merge with existing)
-  tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> core_plan;
-  core_plan.Set("logical_grid_x", Integer(assignment.grid_x));
-  core_plan.Set("logical_grid_y", Integer(assignment.grid_y));
-  core_plan.Set("linearization", ffi::String("row_major"));
-
-  tvm::ffi::Array<tvm::ffi::Any> physical_cores;
-  tvm::ffi::Array<tvm::ffi::Any> work_packets;
-
-  for (int core_idx = 0; core_idx < assignment.cores_needed; ++core_idx) {
-    const CoreCoord coord = GetCoreCoord(core_idx);
-    tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> core_info;
-    core_info.Set("core_x", Integer(coord.x));
-    core_info.Set("core_y", Integer(coord.y));
-    physical_cores.push_back(core_info);
-
-    const RuntimeArgs runtime_args = GetRuntimeArgs(core_idx);
-    tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> packet_info;
-    packet_info.Set("core_x", Integer(coord.x));
-    packet_info.Set("core_y", Integer(coord.y));
-    packet_info.Set("work_offset", Integer(runtime_args.work_offset_linear));
-    packet_info.Set("work_count", Integer(runtime_args.work_count));
-    work_packets.push_back(packet_info);
-  }
-
-  core_plan.Set("physical_cores", physical_cores);
-  core_plan.Set("work_packets", work_packets);
-
-  Array<TTCoreGroup> tt_core_groups;
-  tt_core_groups.push_back(TTCoreGroup(String("main_core_group"), assignment.grid_x,
-                                       assignment.grid_y, String("row_major"),
-                                       physical_cores, work_packets, core_plan));
-
-  attrs.Set(attr::kTLTTCoreGroups, tt_core_groups);
-
-  // Update function attributes
-  func.CopyOnWrite()->attrs = DictAttrs(attrs);
+  (void)func;
+  (void)assignment;
 }
 
 }  // namespace tl

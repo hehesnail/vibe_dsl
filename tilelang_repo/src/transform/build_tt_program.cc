@@ -1,6 +1,6 @@
 /*!
- * \file lower_spatial_program_to_tt_target.cc
- * \brief Materialize TTProgram from frozen SpatialProgram and typed target companion attrs.
+ * \file build_tt_program.cc
+ * \brief Materialize TTProgram from frozen SpatialProgram and planner results.
  */
 
 #include <tvm/ffi/reflection/registry.h>
@@ -36,33 +36,13 @@ namespace {
 
 tir::PrimFunc StripTTIntermediateAttrs(tir::PrimFunc func) {
   static const char* kLegacyProjectionAttrs[] = {
-      "blackhole.segment_plan",
-      "blackhole.runtime_args",
-      "blackhole.common_runtime_args",
-      "blackhole.per_work_arg_specs",
-      "blackhole.accessors",
-      "blackhole.cb_configs",
-      "blackhole.cb_bindings",
-      "blackhole.total_l1_bytes",
-      "blackhole.num_cbs",
-      "blackhole.semaphore_plan",
-      "blackhole.core_plan",
-      "blackhole.grid_shape",
-      "blackhole.grid_x",
-      "blackhole.grid_y",
-      "blackhole.cores_needed",
-      "blackhole.work_per_core",
-      "blackhole.core_type",
-      "blackhole.gemm_contract",
-      "blackhole.compute_contract",
-      "blackhole.direct_runtime_unsupported_reasons",
+      "blackhole.cb_requirements",
   };
   for (const char* key : kLegacyProjectionAttrs) {
     func = tvm::WithoutAttr(std::move(func), key);
   }
   static const char* kIntermediateSeedAttrs[] = {
-      attr::kTLTTKernelSeeds, attr::kTLTTABIPlans,  attr::kTLTTCBPlans,
-      attr::kTLTTCoreGroups,  attr::kTLTTSemaphorePlans, attr::kTLTTProgramPayload,
+      attr::kTLTTSemaphorePlans,
   };
   for (const char* key : kIntermediateSeedAttrs) {
     func = tvm::WithoutAttr(std::move(func), key);
@@ -84,13 +64,6 @@ std::optional<Target> FindBlackholeTarget(const IRModule& mod) {
   return std::nullopt;
 }
 
-int64_t GetIntOrDefault(const Map<String, Any>& dict, const char* key, int64_t default_value = -1) {
-  if (auto value = dict.Get(String(key))) {
-    return Downcast<Integer>(value.value())->value;
-  }
-  return default_value;
-}
-
 String GetStringOrDefault(const Map<String, Any>& dict, const char* key, String default_value = String()) {
   if (auto value = dict.Get(String(key))) {
     return Downcast<String>(value.value());
@@ -98,57 +71,124 @@ String GetStringOrDefault(const Map<String, Any>& dict, const char* key, String 
   return default_value;
 }
 
-Array<Any> GetArrayOrEmpty(const Map<String, Any>& dict, const char* key) {
-  if (auto value = dict.Get(String(key))) {
-    return Downcast<Array<Any>>(value.value());
-  }
-  return Array<Any>();
-}
-
-Map<String, Any> GetMapOrEmpty(const Map<String, Any>& dict, const char* key) {
-  if (auto value = dict.Get(String(key))) {
-    return Downcast<Map<String, Any>>(value.value());
-  }
-  return Map<String, Any>();
-}
-
-bool HasAny(const Map<String, Any>& dict, const char* key) { return dict.Get(String(key)).has_value(); }
-
 Map<String, Any> AsMap(const Any& any) {
   return any.as<Map<String, Any>>().value_or(Map<String, Any>());
 }
 
-bool HasTTSeedBundle(const tir::PrimFunc& func) {
-  return func->GetAttr<Array<TTKernel>>(attr::kTLTTKernelSeeds).has_value() &&
-         func->GetAttr<Array<TTABIPlan>>(attr::kTLTTABIPlans).has_value() &&
-         func->GetAttr<Array<TTCBPlan>>(attr::kTLTTCBPlans).has_value() &&
-         func->GetAttr<Array<TTCoreGroup>>(attr::kTLTTCoreGroups).has_value();
-}
+struct MaterializedTTPlanning {
+  tir::PrimFunc func;
+  Array<TTKernel> kernels;
+  Array<TTABIPlan> abi_plans;
+  Array<TTCBPlan> cb_plans;
+  Array<TTCoreGroup> core_groups;
+  Map<String, Any> payload;
+};
 
-tir::PrimFunc MaterializeTTPlanningAttrs(tir::PrimFunc func) {
-  if (HasTTSeedBundle(func)) {
-    return func;
+const char* CBFlowClassToString(CBFlowClass flow_class) {
+  switch (flow_class) {
+    case CBFlowClass::kStream:
+      return "stream";
+    case CBFlowClass::kRepublish:
+      return "republish";
+    case CBFlowClass::kState:
+    default:
+      return "state";
   }
-  func = PlanTTKernelABI().Transform(func);
-  func = PlanTTCBAlloc().Transform(func);
-  func = PlanTTCoreGroups().Transform(func);
-  return func;
 }
 
-Array<TTCBPlan> BuildCBPlans(const tir::PrimFunc& func) {
-  auto maybe_cb_plans = func->GetAttr<Array<TTCBPlan>>(attr::kTLTTCBPlans);
-  ICHECK(maybe_cb_plans)
-      << "LowerSpatialProgramToTTTarget requires " << attr::kTLTTCBPlans
-      << " on Blackhole device PrimFunc";
-  return maybe_cb_plans.value();
+Array<TTCBPlan> BuildCBPlans(const std::vector<CBConfig>& configs) {
+  Array<TTCBPlan> tt_cb_plans;
+  for (const auto& config : configs) {
+    Map<String, Any> cb_attr;
+    cb_attr.Set("cb_id", Integer(config.cb_id));
+    cb_attr.Set("page_size", Integer(config.page_size));
+    cb_attr.Set("num_pages", Integer(config.num_pages));
+    if (config.initial_reserve_pages > 0) {
+      cb_attr.Set("initial_reserve_pages", Integer(config.initial_reserve_pages));
+    }
+    cb_attr.Set("flow_class", String(CBFlowClassToString(config.flow_class)));
+    if (config.publish_pages_per_event > 0) {
+      cb_attr.Set("publish_pages_per_event", Integer(config.publish_pages_per_event));
+    }
+    if (config.consume_pages_per_event > 0) {
+      cb_attr.Set("consume_pages_per_event", Integer(config.consume_pages_per_event));
+    }
+    cb_attr.Set("total_size_bytes", Integer(config.total_size));
+    cb_attr.Set("data_format", String(config.data_format));
+    cb_attr.Set("name", String(config.name));
+    cb_attr.Set("role", String(config.role));
+    cb_attr.Set("lifetime_begin", Integer(config.lifetime_begin));
+    cb_attr.Set("lifetime_end", Integer(config.lifetime_end));
+    Array<Any> requirement_names;
+    Array<Any> requirement_indices;
+    for (const auto& req_name : config.requirement_names) {
+      requirement_names.push_back(String(req_name));
+    }
+    for (int req_index : config.requirement_indices) {
+      requirement_indices.push_back(Integer(req_index));
+    }
+    cb_attr.Set("requirement_names", requirement_names);
+    cb_attr.Set("requirement_indices", requirement_indices);
+    tt_cb_plans.push_back(TTCBPlan(String(config.name), config.cb_id, String(config.role),
+                                   config.num_pages, config.page_size, String(config.data_format),
+                                   cb_attr));
+  }
+  return tt_cb_plans;
 }
 
-Array<TTCoreGroup> BuildCoreGroups(const tir::PrimFunc& func) {
-  auto maybe_core_groups = func->GetAttr<Array<TTCoreGroup>>(attr::kTLTTCoreGroups);
-  ICHECK(maybe_core_groups)
-      << "LowerSpatialProgramToTTTarget requires " << attr::kTLTTCoreGroups
-      << " on Blackhole device PrimFunc";
-  return maybe_core_groups.value();
+Array<TTCoreGroup> BuildCoreGroups(const PlanTTCoreGroups& planner) {
+  const CoreAssignment assignment = planner.GetCoreAssignment();
+  Map<String, Any> core_plan;
+  core_plan.Set("logical_grid_x", Integer(assignment.grid_x));
+  core_plan.Set("logical_grid_y", Integer(assignment.grid_y));
+  core_plan.Set("linearization", String("row_major"));
+
+  Array<Any> physical_cores;
+  Array<Any> work_packets;
+  for (int core_idx = 0; core_idx < assignment.cores_needed; ++core_idx) {
+    const CoreCoord coord = planner.GetCoreCoord(core_idx);
+    Map<String, Any> core_info;
+    core_info.Set("core_x", Integer(coord.x));
+    core_info.Set("core_y", Integer(coord.y));
+    physical_cores.push_back(core_info);
+
+    const RuntimeArgs runtime_args = planner.GetRuntimeArgs(core_idx);
+    Map<String, Any> packet_info;
+    packet_info.Set("core_x", Integer(coord.x));
+    packet_info.Set("core_y", Integer(coord.y));
+    packet_info.Set("work_offset", Integer(runtime_args.work_offset_linear));
+    packet_info.Set("work_count", Integer(runtime_args.work_count));
+    work_packets.push_back(packet_info);
+  }
+
+  core_plan.Set("physical_cores", physical_cores);
+  core_plan.Set("work_packets", work_packets);
+
+  Array<TTCoreGroup> tt_core_groups;
+  tt_core_groups.push_back(TTCoreGroup(String("main_core_group"), assignment.grid_x,
+                                       assignment.grid_y, String("row_major"),
+                                       physical_cores, work_packets, core_plan));
+  return tt_core_groups;
+}
+
+MaterializedTTPlanning MaterializeTTPlanning(tir::PrimFunc func) {
+  PlanTTKernelABI kernel_abi_planner;
+  func = kernel_abi_planner.Transform(func);
+
+  PlanTTCBAlloc cb_planner;
+  func = cb_planner.Transform(func);
+
+  PlanTTCoreGroups core_group_planner;
+  func = core_group_planner.Transform(func);
+
+  MaterializedTTPlanning planning;
+  planning.func = std::move(func);
+  planning.kernels = kernel_abi_planner.GetTTKernels();
+  planning.abi_plans = kernel_abi_planner.GetTTABIPlans();
+  planning.cb_plans = BuildCBPlans(cb_planner.GetCBConfigs());
+  planning.core_groups = BuildCoreGroups(core_group_planner);
+  planning.payload = kernel_abi_planner.GetTTProgramPayload();
+  return planning;
 }
 
 Array<TTTransportPlan> BuildTransportPlans(const SpatialProgram& program) {
@@ -211,23 +251,6 @@ Array<TTDstLayoutPlan> BuildDstLayoutPlans(const SpatialProgram& program, const 
   return dst_layouts;
 }
 
-Array<TTABIPlan> BuildABIPlans(const tir::PrimFunc& func, Array<TTKernel>* kernels_out) {
-  auto maybe_kernels = func->GetAttr<Array<TTKernel>>(attr::kTLTTKernelSeeds);
-  auto maybe_abi_plans = func->GetAttr<Array<TTABIPlan>>(attr::kTLTTABIPlans);
-  ICHECK(maybe_kernels)
-      << "LowerSpatialProgramToTTTarget requires " << attr::kTLTTKernelSeeds
-      << " on Blackhole device PrimFunc";
-  ICHECK(maybe_abi_plans)
-      << "LowerSpatialProgramToTTTarget requires " << attr::kTLTTABIPlans
-      << " on Blackhole device PrimFunc";
-  const Array<TTKernel>& kernels = maybe_kernels.value();
-  const Array<TTABIPlan>& abi_plans = maybe_abi_plans.value();
-  ICHECK_EQ(kernels.size(), abi_plans.size())
-      << "TT target typed companion seeds must keep kernel/ABI cardinality aligned";
-  *kernels_out = kernels;
-  return abi_plans;
-}
-
 Array<TTExecutionPlan> BuildExecutionPlans(const SpatialProgram& program, const Array<TTKernel>& kernels) {
   Array<ffi::String> kernel_names;
   for (const TTKernel& kernel : kernels) {
@@ -244,31 +267,34 @@ Array<TTExecutionPlan> BuildExecutionPlans(const SpatialProgram& program, const 
   return execution_plans;
 }
 
-TTProgram BuildTTProgramForFunc(const tir::PrimFunc& func, const String& entry_name,
+TTProgram BuildTTProgramForFunc(const MaterializedTTPlanning& planning, const String& entry_name,
                                 const SpatialProgram& program,
                                 const TTHardwareModel& hardware_model) {
-  Array<TTKernel> kernels;
-  Array<TTABIPlan> abi_plans = BuildABIPlans(func, &kernels);
-  Map<String, Any> payload =
-      func->GetAttr<Map<String, Any>>(attr::kTLTTProgramPayload).value_or(Map<String, Any>());
+  const Array<TTKernel>& kernels = planning.kernels;
+  const Array<TTABIPlan>& abi_plans = planning.abi_plans;
+  ICHECK(!kernels.empty()) << "BuildTTProgram requires TT kernels from PlanTTKernelABI";
+  ICHECK_EQ(kernels.size(), abi_plans.size())
+      << "BuildTTProgram requires aligned TT kernel and ABI planning";
+  Map<String, Any> payload = planning.payload;
   payload.Set("arch_name", hardware_model->arch_name);
   payload.Set("logical_worker_grid_x", Integer(hardware_model->logical_worker_grid_x));
   payload.Set("logical_worker_grid_y", Integer(hardware_model->logical_worker_grid_y));
   payload.Set("worker_l1_size", Integer(hardware_model->worker_l1_size));
-  return TTProgram(entry_name, program->member_func, kernels, BuildCoreGroups(func), BuildCBPlans(func),
-                   BuildTransportPlans(program), BuildSemaphorePlans(func, program),
+  return TTProgram(entry_name, program->member_func, kernels, planning.core_groups,
+                   planning.cb_plans, BuildTransportPlans(program),
+                   BuildSemaphorePlans(planning.func, program),
                    BuildComputeSyncPlans(program), BuildDstLayoutPlans(program, abi_plans), abi_plans,
                    BuildExecutionPlans(program, kernels), payload);
 }
 
 }  // namespace
 
-tvm::transform::Pass LowerSpatialProgramToTTTarget() {
+tvm::transform::Pass BuildTTProgram() {
   auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
     auto maybe_hardware_model = GetModuleTTHardwareModel(mod);
     if (!maybe_hardware_model) {
       auto maybe_target = FindBlackholeTarget(mod);
-      ICHECK(maybe_target) << "LowerSpatialProgramToTTTarget requires blackhole target";
+      ICHECK(maybe_target) << "BuildTTProgram requires blackhole target";
       maybe_hardware_model = BuildBlackholeTTHardwareModel(maybe_target.value());
       mod = mod->ShallowCopy();
       mod->UpdateGlobalInfo(attr::kTLTTHardwareModel, Array<GlobalInfo>{maybe_hardware_model.value()});
@@ -279,31 +305,30 @@ tvm::transform::Pass LowerSpatialProgramToTTTarget() {
       if (!func || !IsBlackholePrimFunc(func.value())) {
         continue;
       }
-      tir::PrimFunc rewritten = MaterializeTTPlanningAttrs(func.value());
-      auto maybe_spatial_program = rewritten->GetAttr<SpatialProgram>(attr::kTLSpatialProgram);
+      MaterializedTTPlanning planning = MaterializeTTPlanning(func.value());
+      auto maybe_spatial_program = planning.func->GetAttr<SpatialProgram>(attr::kTLSpatialProgram);
       if (!maybe_spatial_program) {
         continue;
       }
       Map<String, Any> attrs;
-      if (rewritten->attrs.defined()) {
-        attrs = rewritten->attrs->dict;
+      if (planning.func->attrs.defined()) {
+        attrs = planning.func->attrs->dict;
       }
-      attrs.Set(attr::kTLTTProgram,
-                BuildTTProgramForFunc(rewritten, gvar->name_hint, maybe_spatial_program.value(),
-                                      maybe_hardware_model.value()));
-      rewritten.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
-      rewritten = StripTTIntermediateAttrs(std::move(rewritten));
-      updated->Add(gvar, rewritten, true);
+      attrs.Set(attr::kTLTTProgram, BuildTTProgramForFunc(planning, gvar->name_hint,
+                                                          maybe_spatial_program.value(),
+                                                          maybe_hardware_model.value()));
+      planning.func.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
+      planning.func = StripTTIntermediateAttrs(std::move(planning.func));
+      updated->Add(gvar, planning.func, true);
     }
     return updated;
   };
-  return tvm::transform::CreateModulePass(pass_func, 0, "tl.transform.LowerSpatialProgramToTTTarget", {});
+  return tvm::transform::CreateModulePass(pass_func, 0, "tl.transform.BuildTTProgram", {});
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
-  refl::GlobalDef().def("tl.transform.LowerSpatialProgramToTTTarget", LowerSpatialProgramToTTTarget);
-  refl::GlobalDef().def("tl.transform.BuildTTProgram", LowerSpatialProgramToTTTarget);
+  refl::GlobalDef().def("tl.transform.BuildTTProgram", BuildTTProgram);
 }
 
 }  // namespace tl

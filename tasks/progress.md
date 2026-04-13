@@ -22,12 +22,12 @@
   - 当前工作从 `Task 2` cutover 转入 `Task 3` runtime/workload payoff
   - `Task 3` 已进入旧链删除批次：
     projection bridge、fragment-layout side-channel 已删除，
-    `BuildTTProgram` 末端也开始剥离中间 `tl.tt_*` seed attrs
+    `BuildTTProgram` 也已不再物化/读取中间 `tl.tt_*` seed attrs
   - canonical `LowerToBlackholeTTProgram` 已不再显式串
     任何 legacy pass 名字；剩余 planning 兼容逻辑已内收到
-    `BuildTTProgram` 的
+    `BuildTTProgram` 内部的
     `PlanTTKernelABI -> PlanTTCBAlloc -> PlanTTCoreGroups`
-    helper bridge
+    helper chain
   - 旧 pass 的 public/test surface 已继续收口：
     `tilelang.transform` Python wrapper、
     FFI global registration、
@@ -70,7 +70,7 @@
     `LowerToBlackholePhaseB -> LowerToBlackholeTTProgram -> LowerToBlackholeExecutable`
 - 旧 `LowerSpatialProgramToTTTarget / ValidateTTTargetProgram /
   MaterializeTTExecutableSpec`
-  仍保留为 compatibility shell，不再承担当前入口语义
+  兼容 shell 已删除，不再保留公开入口
 - `per_work_arg_specs` 已收成 kernel-local `TTKernel / ExecutableSpec` truth；
   synthetic segment codegen、direct runtime arg materialization
   与 direct runtime launch 已统一消费同一套 `value_kind` contract
@@ -95,10 +95,20 @@
   `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_cb_plans /
   tl.tt_core_groups / tl.tt_program_payload`
   这组中间 seed attrs
+- `SplitBlackholeKernel` 已退回成纯 IR annotation pass；
+  不再写 `blackhole.segment_plan`
+- `PlanTTKernelABI` 已不再综合
+  `blackhole.segment_plan / runtime_args / gemm_contract /
+  compute_contract`
+  这组 compatibility attr；
+  target truth 只在 pass 内部聚合为 `TTKernel / TTABIPlan / TTProgram payload`
+- 过渡 probe / test surface 已继续删除；
+  不再保留 `LowerSpatialProgramToTTTargetProbe`
+  这类非正式入口
 - 当前剩余的结构性 blocker 是
   `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
-  这组内部 helper bridge
-  仍在 `BuildTTProgram` 内部承担 seed bridge owner 责任；
+  这组内部 helper chain
+  仍在 `BuildTTProgram` 内承担 planning owner 责任；
   legacy pass 名字、公开入口和测试入口已删除，
   尚未被真实 `PlanTTBlocks / PlanTTTransport / PlanTTSync /
   PlanTTABI / PlanTTExecution` 取代
@@ -161,61 +171,45 @@
 
 ## 最新验证摘要
 
-- `tilelang_repo/build` fresh rebuild 通过
-- 旧链删除本轮验证：
+- `2026-04-13` staged-only clean verification
+  （`git stash --keep-index --include-untracked`）通过；
+  本轮只验证已暂存的旧链删除面，不把 dirty 主线上无关 WIP 混进结果
+- 构建：
   - `cmake --build tilelang_repo/build -j32`
     -> `built target tilelang`
-  - `test_blackhole_tt_target_probe.py -k tt_target_probe_pass_is_registered`
-    -> `1 passed`
-  - `test_blackhole_copy_pipeline.py -k 'blackhole_copy_lowering_prefers_buffer_handles_over_annotation_names or blackhole_copy_semantics_survives_flatten_and_vectorize or build_reads_tt_program_without_legacy_projection_attrs or buffer_materialization_specs_are_exposed'`
-    -> `4 passed`
-  - `test_blackhole_gemm.py -k 'compute_contract_attr_materializes_nondefault_compute_abi or compute_contract_attr_materializes_richer_compute_config_extras or compute_segment_compute_config_follows_compute_contract or compute_contract_attr_materializes_nondefault_policy or compute_contract_attr_materializes_mbar_binding or fragment_fill_cast_publish_materializes_generic_compute_writer_segments or multicore_gemm_lowering_respects_transposed_b_layout or gemm_richer_accessor_schema_roundtrip'`
-    -> `8 passed`
-  - `test_blackhole_flash_attention_pipeline.py -k 'forward_tt_target_emits_generic_lowering_requirements or forward_tt_target_lowers_row_reductions_to_builtins'`
-    -> `2 passed`
-- `Task 2` canonical bundle / compatibility shell 回归：
-  - `test_blackhole_tt_target_probe.py -k tt_target_probe_pass_is_registered`
-    -> `1 passed`
-  - `test_blackhole_copy_pipeline.py -k 'blackhole_codegen_only or build_reads_tt_program_without_legacy_projection_attrs or buffer_materialization_specs_are_exposed'`
-    -> `3 passed`
-  - `test_blackhole_gemm.py -k 'split_kernel_gemm_segment_plan or gemm_contract or executable_spec or blackhole_codegen'`
-    -> `2 passed`
-- `Task 1` 结构回归：
-  - `test_blackhole_spatial_ir.py -k 'task1 or spatial_passes_are_registered'`
-    -> `4 passed`
-  - `test_blackhole_semantic_ir.py -k hard_freeze_invalidates_companion_programs_after_unsafe_mutation`
-    -> `1 passed`
-- 旧稳定面 smoke：
-  - `test_blackhole_spatial_ir.py -k 'spatial_pass_pipeline_materializes or copy_spatial_program_uses_single_transfer_fast_path or gemm_spatial_program_uses_reader_compute_writer_fast_path'`
-    -> `3 passed`
-  - `test_blackhole_semantic_ir.py -k 'copy_semantic_program_lifts_minimal_domain_and_map_update or gemm_semantic_program_lifts_fragment_state_and_map_update or hard_freeze_invalidates_companion_programs_after_unsafe_mutation'`
-    -> `3 passed`
-- `tilelang.lower(..., target="blackhole", enable_device_compile=False)` smoke：
-  staged copy / GEMM 均能经过 `blackhole_codegen` 主链并同时产出
-  `tl.spatial_structure_facts + tl.spatial_plan + tl.spatial_program`
+- compile / codegen / IR 回归：
+  - `python -m pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -k 'build_reads_tt_program_without_legacy_projection_attrs or buffer_materialization_specs_are_exposed'`
+    -> `2 passed, 49 deselected`
+  - `python -m pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py -k 'spec_survives_without_legacy_contract_attrs or contract_attr_is_materialized or executable_spec or blackhole_codegen'`
+    -> `3 passed, 39 deselected`
+  - `python -m pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -k gemm_spatial_program_uses_segment_kind_ir`
+    -> `1 passed, 66 deselected`
+- TT-Sim direct-runtime baseline：
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && python -m pytest testing/python/target/blackhole/test_blackhole_copy_runtime.py -k 'large_shape_copy_keeps_per_core_l1_small or explicit_per_work_spec or oversubscribed_multi_core_launch'`
+    -> `3 passed, 9 deselected`
+- 旧链收口确认：
+  - `LowerSpatialProgramToTTTargetProbe` 与其测试已删除
+  - active path 不再暴露
+    `LowerSpatialProgramToTTTarget / ValidateTTTargetProgram /
+    MaterializeTTExecutableSpec`
+    这组旧入口
+  - `src/` 与 `tilelang/` 范围内已确认不再存在
+    `blackhole.segment_plan / runtime_args / common_runtime_args /
+    per_work_arg_specs / gemm_contract / compute_contract`
+    以及
+    `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_cb_plans /
+    tl.tt_core_groups / tl.tt_program_payload`
+    这组旧桥接 attrs
 - `Task 3` 当前残留：
   - `BuildTTProgram` 内部仍直接调用
     `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
-    helper bridge；当前已把 legacy pass 名字和 public/test/FFI
-    surface 清掉，但真正的 `PlanTT*` owner 替换仍属于后续 `Task 3`
-  - `flash-attn` GQA executable-spec / codegen probe 仍会命中
-    grouped `reduce_row` 需要 `grouped_rows` fragment layout contract，
-    当前 `acc_s` 仍拿到 `thread_distributed`；
-    该问题归属 `Task 3` flash-attn payoff，不作为 `Task 2` 关闭条件
-  - `test_blackhole_spatial_ir.py -k registry_phase_closure_basis_mismatch`
-    当前在既有
-    `ValidateStatefulSemanticIR: fragment_layout_contract must carry local_shape`
-    处失败；该失败发生在本轮删除块之外，不作为旧链清理回退理由
-- 当前 dirty 主线上，完整
+    helper chain；当前已把 legacy pass 名字、compatibility attr、
+    public/test/FFI surface 清掉，但真正的 `PlanTT*` owner 替换
+    仍属于后续 `Task 3`
+  - `flash-attn` / wider workload payoff 仍未关闭；
+    grouped-row fragment contract 与更宽 sync/dataflow 支持面
+    继续归属后续 `Task 3A/3B`
+- dirty 主线上完整
   `test_blackhole_spatial_ir.py + test_blackhole_semantic_ir.py`
-  仍有既有失败，集中在 flash/topk/fusedmoe/chunk recurrence 旧链分析；
-  本轮未把这批已有失败当成 `Task 1` 关闭条件
-- `2026-04-13` 旧链清理增量验证：
-  - `cmake --build tilelang_repo/build -j32`
-    -> `built target tilelang`
-  - `python -m pytest tilelang_repo/testing/python/transform/test_blackhole_tt_target_probe.py`
-    -> `20 passed`
-  - `python -m pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -k 'oversubscription or core_plan_covers_oversubscribed_work'`
-    -> `2 passed`
-  - `python -m pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_contract_attr_is_materialized`
-    -> `1 passed`
+  仍有既有失败，集中在 flash/topk/fusedmoe/chunk recurrence
+  相关旧链分析/WIP；本轮未把这批无关失败当成旧链删除回退理由

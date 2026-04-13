@@ -548,8 +548,14 @@ struct ComputeContractSpec {
       std::string target_buffer;
       std::string scope;
       std::string materialization_kind;
+      std::string bridge_kind;
       std::string value_role;
       std::string merge_kind;
+      std::string execution_protocol;
+      std::string result_live_form;
+      std::string source_buffer;
+      int logical_row_width = 0;
+      int logical_element_count = 0;
 
       bool defined() const { return !kind.empty(); }
 
@@ -561,8 +567,24 @@ struct ComputeContractSpec {
         if (!materialization_kind.empty()) {
           writer->WriteObjectKeyValue("materialization_kind", materialization_kind);
         }
+        if (!bridge_kind.empty()) writer->WriteObjectKeyValue("bridge_kind", bridge_kind);
         if (!value_role.empty()) writer->WriteObjectKeyValue("value_role", value_role);
         if (!merge_kind.empty()) writer->WriteObjectKeyValue("merge_kind", merge_kind);
+        if (!execution_protocol.empty()) {
+          writer->WriteObjectKeyValue("execution_protocol", execution_protocol);
+        }
+        if (!result_live_form.empty()) {
+          writer->WriteObjectKeyValue("result_live_form", result_live_form);
+        }
+        if (!source_buffer.empty()) {
+          writer->WriteObjectKeyValue("source_buffer", source_buffer);
+        }
+        if (logical_row_width > 0) {
+          writer->WriteObjectKeyValue("logical_row_width", logical_row_width);
+        }
+        if (logical_element_count > 0) {
+          writer->WriteObjectKeyValue("logical_element_count", logical_element_count);
+        }
         writer->EndObject();
       }
     };

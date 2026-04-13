@@ -119,8 +119,11 @@ GemmPyNode::GetFragmentMaterializationInfo() const {
   return FragmentMaterializationInfo{
       c_,
       ffi::String("intermediate_buffer"),
+      ffi::String("tile_nfaces_materialization"),
       ffi::String("fragment_delta"),
       ffi::String("fragment_add"),
+      ffi::String("dst_cb_binary_pack"),
+      ffi::String("tiled_cb"),
   };
 }
 

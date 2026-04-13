@@ -26,6 +26,7 @@
 #define TVM_TL_LOWER_BLACKHOLE_OPS_H_
 
 #include "blackhole_cb_common.h"
+#include "common/tt_target_program.h"
 
 #include <tvm/tir/expr.h>
 #include <tvm/tir/function.h>
@@ -71,6 +72,17 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Main entry point */
   tvm::tir::PrimFunc Transform(const tvm::tir::PrimFunc& func);
 
+  /*! \brief Get TT kernels synthesized during Transform. */
+  tvm::ffi::Array<TTKernel> GetTTKernels() const { return tt_kernels_; }
+
+  /*! \brief Get TT ABI plans synthesized during Transform. */
+  tvm::ffi::Array<TTABIPlan> GetTTABIPlans() const { return tt_abi_plans_; }
+
+  /*! \brief Get TT program payload synthesized during Transform. */
+  tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> GetTTProgramPayload() const {
+    return tt_program_payload_;
+  }
+
  private:
   enum class BufferFlowEventKind {
     kWrite,
@@ -89,6 +101,12 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     int publish_pages_per_event = 0;
     int consume_pages_per_event = 0;
     std::vector<BufferFlowEvent> events;
+  };
+
+  struct FutureBufferUses {
+    bool has_compute_consume = false;
+    bool has_transport_consume = false;
+    bool has_reference = false;
   };
 
   struct AccessorDescriptor {
@@ -176,6 +194,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     tvm::PrimExpr dst_offset;
     tvm::PrimExpr src_offset;
     tvm::PrimExpr num_elements;
+    tvm::PrimExpr row_width;
   };
 
   struct ScalarFragmentCopyMatch {
@@ -189,6 +208,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     tvm::tir::Buffer src;
     tvm::PrimExpr dst_offset_elements;
     tvm::PrimExpr num_elements;
+    tvm::PrimExpr row_width;
     tvm::tir::Stmt lowered_loop_body;
     bool wrap_src_allocation = false;
   };
@@ -250,6 +270,20 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Return the manifest-backed logical matrix shape for a fragment buffer. */
   std::pair<int64_t, int64_t> GetLogicalMatrixShape(const tvm::tir::Buffer& buffer) const;
+
+  /*! \brief Load fragment layout contracts exported by SpatialProgram fragment intents. */
+  void LoadFragmentLayoutContracts(
+      const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>& lowering_requirements);
+
+  /*! \brief Return the fragment layout contract for a buffer, or nullptr if absent. */
+  const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>* FindFragmentLayoutContract(
+      const tvm::tir::Buffer& buffer) const;
+
+  /*! \brief Load logical fragment-view to physical accumulator bindings from fragment regions. */
+  void LoadFragmentPhysicalBufferBindings(const tvm::tir::PrimFunc& func);
+
+  /*! \brief Resolve the physical accumulator/backing buffer for a fragment view when known. */
+  tvm::tir::Buffer ResolvePhysicalFragmentBuffer(const tvm::tir::Buffer& buffer) const;
 
   /*! \brief Detect matmul call using Op comparison (not string matching) */
   bool IsMatmulCall(const tvm::tir::CallNode* op) const;
@@ -335,6 +369,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                         bool transpose_2d = false);
 
   std::string ResolveAccessorSegmentKind(CopyDirection direction) const;
+  tvm::tir::Stmt MaybeWrapComputeSegment(const tvm::tir::Stmt& stmt) const;
 
   /*! \brief Return compile-time accessor slot for a reader/source buffer */
   int GetReadAccessorSlot(const std::string& segment_kind, const tvm::tir::Buffer& buffer,
@@ -354,6 +389,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Override CB requirement page sizing after a more specific contract is known. */
   void SetRequirementPageLayout(int requirement_index, int page_size, int num_pages);
 
+  /*! \brief Mark two CB requirements as overlapping so planner cannot reuse one CB for both. */
+  void MarkRequirementLifetimeOverlap(int lhs_requirement_index, int rhs_requirement_index);
+
   /*! \brief Determine whether a staged copy should use page/stick transport. */
   bool UseStagedCopyPageTransport(const tvm::tir::Buffer& shared_buffer) const;
 
@@ -362,6 +400,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                         bool retain_in0 = false,
                                         bool retain_in1 = false,
                                         bool publish_out = true,
+                                        bool publish_transport_out = true,
+                                        bool preserve_out_local_state = false,
                                         bool reacquire_in0 = false,
                                         bool reacquire_in1 = false);
   tvm::tir::Stmt GenerateMatmulSequenceForOutputRequirement(int out_req_index,
@@ -372,6 +412,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                             bool reacquire_in0,
                                                             bool reacquire_in1);
   tvm::tir::Buffer CreateClearAccumPartialsBuffer(const tvm::tir::Buffer& buffer);
+  tvm::tir::Buffer CreateFragmentMergeReloadBuffer(const tvm::tir::Buffer& buffer);
   bool ClearAccumReloadNeedsDataFormatReconfig() const;
   tvm::tir::Stmt GenerateMatmulSequenceWithPartialReload(int out_req_index,
                                                          int partials_cb_id,
@@ -384,6 +425,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::tir::Stmt GenerateAccumulatingMatmulSequence(const tvm::tir::CallNode* op,
                                                     bool retain_in0,
                                                     bool retain_in1,
+                                                    bool publish_transport_out,
+                                                    bool preserve_out_local_state,
                                                     bool reacquire_in0,
                                                     bool reacquire_in1);
   tvm::tir::Stmt GenerateAddFragmentSequence(const tvm::tir::Buffer& dst,
@@ -393,6 +436,17 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                         int src_cb_id,
                                                         const tvm::PrimExpr& num_elements,
                                                         const tvm::tir::Buffer& src_buffer);
+  tvm::tir::Stmt GenerateMergeFragmentTilesSequence(const tvm::tir::Buffer& dst,
+                                                    int partials_cb_id,
+                                                    const tvm::tir::Buffer& partials_buffer,
+                                                    int reload_cb_id,
+                                                    const tvm::tir::Buffer& reload_buffer,
+                                                    int live_form_cb_id,
+                                                    const tvm::tir::Buffer& live_form_buffer,
+                                                    const tvm::PrimExpr& num_elements,
+                                                    int num_c_tiles,
+                                                    bool materialize_live_form_to_local_state,
+                                                    int publish_cb_id);
 
   /*! \brief Generate copy builtin sequence (DRAM->CB, CB->DRAM, CB->CB) */
   tvm::tir::Stmt GenerateCopySequence(const tvm::tir::BufferStoreNode* op);
@@ -447,6 +501,17 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                           ScalarFragmentCopyMatch* match) const;
   tvm::tir::Stmt GenerateScalarFragmentCopySequence(const ScalarFragmentCopyMatch& match);
   void LoadBufferFlowContracts(const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>& lowering_requirements);
+  FutureBufferUses ClassifyFutureBufferUses(const tvm::tir::Buffer& buffer,
+                                            int current_order_index) const;
+  const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>* FindFragmentMaterializationContract(
+      const tvm::tir::Buffer& buffer) const;
+  bool BufferUsesTiledCBLiveForm(const tvm::tir::Buffer& buffer) const;
+  void ValidatePublishedFragmentSourceEdge(const tvm::tir::Buffer& src,
+                                           const tvm::tir::Buffer& dst) const;
+  void AppendPublishedFragmentSourceMaterialization(const tvm::tir::Buffer& src,
+                                                    int current_order_index,
+                                                    std::vector<tvm::tir::Stmt>* prefix,
+                                                    std::vector<tvm::tir::Stmt>* suffix);
   bool ShouldRetainComputeInputBuffer(const tvm::tir::Buffer& buffer,
                                       int current_order_index) const;
   bool ShouldReacquireComputeInputBuffer(const tvm::tir::Buffer& buffer,
@@ -479,6 +544,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::vector<CBRequirement> cb_requirements_;
   bool saw_copy_op_ = false;
   bool needs_copy_runtime_args_ = false;
+  bool requires_fragment_compute_segment_ = false;
   tvm::tir::Buffer copy_input_buffer_;
   tvm::tir::Buffer copy_output_buffer_;
   std::string copy_input_buffer_name_;
@@ -511,7 +577,11 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::vector<std::unordered_set<std::string>> compute_contract_known_buffers_;
   std::vector<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>> compute_epilogue_payloads_flat_;
   std::unordered_map<std::string, tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>
+      fragment_layout_contracts_by_buffer_;
+  std::unordered_map<std::string, tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>
       fragment_materialization_contracts_by_target_buffer_;
+  std::unordered_map<const tvm::tir::VarNode*, tvm::tir::Buffer> fragment_physical_buffers_by_data_;
+  std::unordered_map<std::string, tvm::tir::Buffer> fragment_physical_buffers_by_identity_;
   int active_compute_contract_payload_index_ = -1;
   std::unordered_map<std::string, int> gemm_input_buffer_num_tiles_;
   bool gemm_transpose_a_ = false;
@@ -542,8 +612,15 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<std::string, int> cb_consumed_fragment_pages_by_buffer_identity_;
   std::unordered_map<std::string, int> cb_consumed_fragment_use_count_by_buffer_identity_;
   std::unordered_map<std::string, BufferFlowContract> buffer_flow_contracts_;
+  std::unordered_map<std::string, int> fragment_live_form_cb_by_buffer_identity_;
   std::unordered_map<std::string, std::vector<int64_t>> logical_buffer_shapes_;
   std::unordered_map<const Object*, int> stmt_order_index_by_node_;
+  tvm::ffi::Array<tvm::ffi::Any> segment_plan_;
+  tvm::ffi::Array<tvm::ffi::Any> top_level_runtime_args_;
+  tvm::ffi::Array<tvm::ffi::Any> top_level_common_runtime_args_;
+  tvm::ffi::Array<TTKernel> tt_kernels_;
+  tvm::ffi::Array<TTABIPlan> tt_abi_plans_;
+  tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> tt_program_payload_;
 
   // Requirement index counter (sequential, 0-based)
   int next_requirement_index_ = 0;
