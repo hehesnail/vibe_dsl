@@ -1,14 +1,17 @@
 /*!
- * \file lower_to_spatial_program.cc
- * \brief Materialize typed SpatialProgram companion IR from frozen SemanticProgram.
+ * \file spatial_program_builder.cc
+ * \brief Materialize SpatialExecutionPlan directly from TIR + SpatialPlan facts.
  */
 
+#include "spatial_program_builder.h"
+
+#include <tvm/arith/analyzer.h>
 #include <tvm/ffi/reflection/registry.h>
-#include <tvm/ir/attrs.h>
-#include <tvm/ir/transform.h>
-#include <tvm/target/target.h>
+#include <tvm/ir/op.h>
+#include <tvm/tir/stmt_functor.h>
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -16,194 +19,880 @@
 #include <utility>
 #include <vector>
 
+#include "../op/utils.h"
 #include "common/blackhole_utils.h"
 #include "common/spatial_analysis.h"
-#include "common/spatial_program.h"
 #include "common/spatial_vocab.h"
-#include "common/semantic_program.h"
-#include "common/semantic_vocab.h"
-#include "common/tt_hardware_model.h"
-#include "spatial_program_builder.h"
+#include "runtime/thread_storage_scope.h"
 
 namespace tvm {
 namespace tl {
 
-using tvm::DictAttrs;
-using tvm::GlobalInfo;
 using tvm::Integer;
 using tvm::ffi::Any;
 using tvm::ffi::Array;
 using tvm::ffi::Map;
+using tvm::ffi::Optional;
 using tvm::ffi::String;
-using namespace tvm::tl::semantic;
 namespace sp = tvm::tl::spatial;
-using tvm::tl::str;
-
-// Cross-pass entry points.
-tvm::transform::Pass AnalyzeSpatialDomainPlan();
-tvm::transform::Pass AnalyzeSpatialExecutionPlan();
-tvm::transform::Pass MaterializeSpatialProgram();
 
 namespace {
 
-struct SpatialProgramBundle {
-  SpatialProgram program;
-  Array<ProgramPhase> phases;
-};
-
-struct TaskSynthesisRecord {
-  std::string task_name;
-  std::string task_kind;
-  std::string phase_name;
-  int phase_rank = 0;
-  std::string execution_role;
-  std::string formation_basis;
-  std::vector<std::string> update_names;
-  std::vector<std::string> task_traits;
-};
-
-struct ChannelSynthesisRecord {
-  std::string channel_name;
-  sp::SpatialChannelKind flow_kind;
-  sp::SpatialChannelPayloadKind payload_kind;
-  sp::SpatialChannelDeliveryKind delivery_kind;
-  bool ordering_critical = false;
-  int source_task_index;
-  int target_task_index;
-  std::optional<int> state_index;
-  std::optional<std::string> source_version;
-  std::optional<std::string> target_version;
-};
-
-struct UpdateTaskFacts {
-  std::optional<UpdateLawKind> law_kind;
-  std::optional<StateRole> target_state_role;
-  std::string update_result_version;
-  std::string access_requirement_signature = "direct";
-  std::string domain_transform_kind = "identity";
+struct DomainContract {
+  std::string transform_kind = "identity";
   std::string partition_family = "regular";
-  std::string placement_domain = "logical_worker_grid";
-  bool consumes_join_output = false;
-  bool has_carried_input = false;
-  bool has_companion_input = false;
-  bool has_multi_consumer_input = false;
-  bool output_feeds_join = false;
+  sp::SpatialLayoutKind layout_kind = sp::SpatialLayoutKind::kRegular;
+  sp::SpatialPartitionKind partition_kind = sp::SpatialPartitionKind::kReplicated;
 };
 
-struct TaskFormationCandidate {
-  std::string update_name;
-  std::string task_kind;
+struct TaskRecord {
+  std::string name;
+  std::string kind;
+  std::string phase_name;
   std::string execution_role;
   std::string formation_basis;
-  std::vector<std::string> task_traits;
-  UpdateTaskFacts facts;
+  std::vector<std::string> traits;
 };
 
-struct TaskFormationResult {
-  std::vector<TaskSynthesisRecord> task_records;
-};
-
-struct UpdateGraph {
-  std::vector<std::string> topo_order;
-  std::unordered_map<std::string, std::vector<std::string>> predecessors;
-  std::unordered_map<std::string, std::vector<std::string>> successors;
-};
-
-struct PhaseSynthesisResult {
-  std::vector<std::string> phase_order;
-  std::unordered_map<std::string, int> phase_index_by_name;
-};
-
-struct PhaseSyncSynthesisRecord {
-  std::string source_phase_name;
-  std::string target_phase_name;
+struct ChannelRecord {
+  std::string name;
+  sp::SpatialChannelKind kind = sp::SpatialChannelKind::kPointToPoint;
+  sp::SpatialChannelPayloadKind payload_kind = sp::SpatialChannelPayloadKind::kTensor;
+  sp::SpatialChannelDeliveryKind delivery_kind = sp::SpatialChannelDeliveryKind::kOrdered;
   int source_task_index = -1;
   int target_task_index = -1;
-  std::string ordering_kind = "must_happen_before";
-  std::string materialization_kind = "phase_boundary";
+  std::string source_task_name;
+  std::string target_task_name;
+  std::string subject;
+  std::vector<std::string> traits;
 };
 
-std::string JoinSortedUniqueLabels(std::vector<std::string> labels,
-                                   const char* empty_fallback) {
-  if (labels.empty()) {
-    return empty_fallback;
-  }
-  std::sort(labels.begin(), labels.end());
-  labels.erase(std::unique(labels.begin(), labels.end()), labels.end());
-  if (labels.size() == 1) {
-    return labels.front();
-  }
-  std::string summary = "multi(";
-  for (int i = 0; i < static_cast<int>(labels.size()); ++i) {
-    if (i != 0) {
-      summary += ",";
-    }
-    summary += labels[i];
-  }
-  summary += ")";
-  return summary;
-}
-
-std::string BuildDomainTransformSignature(
-    const std::vector<DomainRealizationContract>& domain_contracts,
-    const std::vector<int>& domain_indices) {
-  std::vector<std::string> labels;
-  labels.reserve(domain_indices.empty() ? domain_contracts.size() : domain_indices.size());
-  if (domain_indices.empty()) {
-    for (const DomainRealizationContract& contract : domain_contracts) {
-      labels.push_back(contract.domain_transform_kind);
-    }
-  } else {
-    for (int domain_index : domain_indices) {
-      ICHECK_GE(domain_index, 0);
-      ICHECK_LT(domain_index, static_cast<int>(domain_contracts.size()));
-      labels.push_back(domain_contracts[domain_index].domain_transform_kind);
-    }
-  }
-  return JoinSortedUniqueLabels(std::move(labels), "identity");
-}
-
-std::string BuildPartitionFamilySignature(
-    const std::vector<DomainRealizationContract>& domain_contracts,
-    const std::vector<int>& domain_indices) {
-  std::vector<std::string> labels;
-  labels.reserve(domain_indices.empty() ? domain_contracts.size() : domain_indices.size());
-  if (domain_indices.empty()) {
-    for (const DomainRealizationContract& contract : domain_contracts) {
-      labels.push_back(contract.partition_family);
-    }
-  } else {
-    for (int domain_index : domain_indices) {
-      ICHECK_GE(domain_index, 0);
-      ICHECK_LT(domain_index, static_cast<int>(domain_contracts.size()));
-      labels.push_back(domain_contracts[domain_index].partition_family);
-    }
-  }
-  return JoinSortedUniqueLabels(std::move(labels), "regular");
-}
-
-std::vector<int> BuildUpdateDomainIndices(const Update& update, const Array<Domain>& domains) {
-  std::vector<int> domain_indices;
-  domain_indices.reserve(domains.size());
-  for (int domain_index = 0; domain_index < domains.size(); ++domain_index) {
-    if (UpdateTouchesDomain(update, domains[domain_index])) {
-      domain_indices.push_back(domain_index);
-    }
-  }
-  if (domain_indices.empty()) {
-    for (int domain_index = 0; domain_index < domains.size(); ++domain_index) {
-      domain_indices.push_back(domain_index);
-    }
-  }
-  return domain_indices;
-}
+struct FragmentFacts {
+  std::unordered_set<std::string> selection_subjects;
+  std::unordered_set<std::string> recurrence_subjects;
+  std::unordered_set<std::string> reduction_subjects;
+  Map<String, Any> fragment_payload;
+};
 
 template <typename T>
 void PushBackUnique(std::vector<T>* values, const T& value) {
-  ICHECK(values != nullptr);
   if (std::find(values->begin(), values->end(), value) == values->end()) {
     values->push_back(value);
   }
+}
+
+void PushBackUnique(Array<Any>* values, std::unordered_set<std::string>* seen, const Any& value,
+                    const std::string& key) {
+  if (!key.empty() && seen->insert(key).second) {
+    values->push_back(value);
+  }
+}
+
+std::optional<std::vector<int64_t>> ExtractStaticShape(const Array<PrimExpr>& shape) {
+  std::vector<int64_t> dims;
+  dims.reserve(shape.size());
+  for (const PrimExpr& dim : shape) {
+    const auto* imm = dim.as<tir::IntImmNode>();
+    if (!imm) {
+      return std::nullopt;
+    }
+    dims.push_back(imm->value);
+  }
+  return dims;
+}
+
+std::unordered_map<std::string, std::vector<int64_t>> BuildLogicalBufferShapes(
+    const tir::PrimFunc& func) {
+  std::unordered_map<std::string, std::vector<int64_t>> shapes;
+  auto remember = [&](const tir::Buffer& buffer) {
+    const std::string name = BufferIdentityName(buffer);
+    if (name.empty()) {
+      return;
+    }
+    auto static_shape = ExtractStaticShape(buffer->shape);
+    if (static_shape) {
+      shapes[name] = static_shape.value();
+    }
+  };
+  for (const auto& [_, buffer] : func->buffer_map) {
+    remember(buffer);
+  }
+  tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
+    if (const auto* block = node.as<tir::BlockNode>()) {
+      for (const tir::Buffer& buffer : block->alloc_buffers) {
+        remember(buffer);
+      }
+      return;
+    }
+    if (const auto* store = node.as<tir::BufferStoreNode>()) {
+      remember(store->buffer);
+      return;
+    }
+    if (const auto* load = node.as<tir::BufferLoadNode>()) {
+      remember(load->buffer);
+    }
+  });
+  return shapes;
+}
+
+int64_t GetLogicalElementCount(
+    const std::string& buffer_name,
+    const std::unordered_map<std::string, std::vector<int64_t>>& logical_buffer_shapes) {
+  auto it = logical_buffer_shapes.find(buffer_name);
+  if (it == logical_buffer_shapes.end() || it->second.empty()) {
+    return -1;
+  }
+  int64_t count = 1;
+  for (int64_t dim : it->second) {
+    if (dim <= 0 || count > std::numeric_limits<int64_t>::max() / dim) {
+      return -1;
+    }
+    count *= dim;
+  }
+  return count;
+}
+
+int64_t GetLogicalRowWidth(
+    const tir::Buffer& buffer,
+    const std::unordered_map<std::string, std::vector<int64_t>>& logical_buffer_shapes) {
+  const std::string name = BufferIdentityName(buffer);
+  auto it = logical_buffer_shapes.find(name);
+  if (it != logical_buffer_shapes.end() && it->second.size() >= 2U) {
+    return it->second.back();
+  }
+  auto shape = ExtractStaticShape(buffer->shape);
+  if (shape && shape.value().size() >= 2U) {
+    return shape.value().back();
+  }
+  return -1;
+}
+
+bool IsTrackedStateScope(const std::string& scope) {
+  return scope == "local" || scope == "local.fragment" || scope == "blackhole.acc";
+}
+
+bool IsCBScope(const std::string& scope) {
+  if (scope.rfind("shared", 0) == 0) {
+    return true;
+  }
+  auto parsed = runtime::StorageScope::Create(scope);
+  return parsed.rank == runtime::StorageRank::kBlackholeCB;
+}
+
+bool IsTrackedBufferFlowScope(const std::string& scope) {
+  return IsTrackedStateScope(scope) || IsCBScope(scope);
+}
+
+bool IsDRAMScope(const std::string& scope) { return scope.empty() || scope == "global"; }
+
+bool IsAccumulatorLikeScope(const std::string& scope) {
+  if (scope.rfind("local", 0) == 0) {
+    return true;
+  }
+  auto parsed = runtime::StorageScope::Create(scope);
+  return parsed.rank == runtime::StorageRank::kBlackholeAccumulator;
+}
+
+bool IsFragmentMaterializationCandidate(const tir::CallNode* call) {
+  if (call == nullptr || !call->op->IsInstance<OpNode>()) {
+    return false;
+  }
+  TileOperator tile_op = ParseOperator(GetRef<tir::Call>(call));
+  return tile_op.defined() && tile_op->GetFragmentMaterializationInfo().has_value();
+}
+
+Optional<Map<String, Any>> TryBuildFragmentMaterializationContract(const tir::CallNode* call) {
+  if (!call) {
+    return Optional<Map<String, Any>>();
+  }
+  TileOperator tile_op = ParseOperator(GetRef<tir::Call>(call));
+  if (!tile_op.defined()) {
+    return Optional<Map<String, Any>>();
+  }
+  auto info = tile_op->GetFragmentMaterializationInfo();
+  if (!info.has_value()) {
+    return Optional<Map<String, Any>>();
+  }
+  const tir::Buffer& target = info->target_buffer;
+  const std::string target_buffer = BufferIdentityName(target);
+  const std::string scope = target.scope();
+  if (target_buffer.empty() || !IsTrackedStateScope(scope)) {
+    return Optional<Map<String, Any>>();
+  }
+  Map<String, Any> contract;
+  contract.Set(String(schema_key::kKind),
+               String(fragment_materialization::kIntermediateFragmentMerge));
+  contract.Set(String(schema_key::kTargetBuffer), String(target_buffer));
+  contract.Set(String(schema_key::kScope), String(scope));
+  contract.Set(String(schema_key::kMaterializationKind), info->materialization_kind);
+  contract.Set(String(schema_key::kBridgeKind), info->bridge_kind);
+  contract.Set(String(schema_key::kValueRole), info->value_role);
+  contract.Set(String(schema_key::kMergeKind), info->merge_kind);
+  contract.Set(String(schema_key::kExecutionProtocol), info->execution_protocol);
+  contract.Set(String(schema_key::kResultLiveForm), info->result_live_form);
+  return contract;
+}
+
+bool FlowContractHasEventKind(const Map<String, Any>& flow_contract, const char* kind) {
+  auto events_it = flow_contract.find(String(schema_key::kEvents));
+  if (events_it == flow_contract.end()) {
+    return false;
+  }
+  for (const Any& event_any : Downcast<Array<Any>>((*events_it).second)) {
+    Map<String, Any> event = Downcast<Map<String, Any>>(event_any);
+    auto kind_it = event.find(String(schema_key::kKind));
+    if (kind_it != event.end() && Downcast<String>((*kind_it).second) == kind) {
+      return true;
+    }
+  }
+  return false;
+}
+
+Optional<Map<String, Any>> TryBuildRepublishFragmentMaterializationContract(
+    const Map<String, Any>& flow_contract) {
+  auto buffer_it = flow_contract.find(String(schema_key::kBuffer));
+  auto scope_it = flow_contract.find(String(schema_key::kScope));
+  auto flow_class_it = flow_contract.find(String(schema_key::kFlowClass));
+  auto granule_kind_it = flow_contract.find(String(schema_key::kGranuleKind));
+  if (buffer_it == flow_contract.end() || scope_it == flow_contract.end() ||
+      flow_class_it == flow_contract.end() || granule_kind_it == flow_contract.end()) {
+    return Optional<Map<String, Any>>();
+  }
+  const std::string buffer_name = Downcast<String>((*buffer_it).second);
+  const std::string scope = Downcast<String>((*scope_it).second);
+  const std::string flow_class = Downcast<String>((*flow_class_it).second);
+  const std::string granule_kind = Downcast<String>((*granule_kind_it).second);
+  if (buffer_name.empty() || !IsTrackedStateScope(scope) ||
+      flow_class != fragment_flow::kRepublish ||
+      granule_kind != fragment_flow::kLogicalTile ||
+      (!FlowContractHasEventKind(flow_contract, fragment_flow::kComputeConsume) &&
+       !FlowContractHasEventKind(flow_contract, fragment_flow::kTransportConsume))) {
+    return Optional<Map<String, Any>>();
+  }
+  Map<String, Any> contract;
+  contract.Set(String(schema_key::kKind),
+               String(fragment_materialization::kRepublishedLogicalTile));
+  contract.Set(String(schema_key::kTargetBuffer), String(buffer_name));
+  contract.Set(String(schema_key::kScope), String(scope));
+  contract.Set(String(schema_key::kMaterializationKind),
+               String(fragment_materialization::kRepublishedBuffer));
+  contract.Set(String(schema_key::kBridgeKind),
+               String(fragment_materialization::kTileNFacesMaterialization));
+  contract.Set(String(schema_key::kValueRole),
+               String(fragment_materialization::kConsumerInput));
+  contract.Set(String(schema_key::kMergeKind),
+               String(fragment_materialization::kDirectWrite));
+  contract.Set(String(schema_key::kExecutionProtocol),
+               String(fragment_materialization::kTiledCBRepublish));
+  contract.Set(String(schema_key::kResultLiveForm), String(fragment_live_form::kTiledCB));
+  return contract;
+}
+
+Map<String, Any> MakeRepublishedLogicalTileMaterializationContract(
+    const std::string& buffer_name, const std::string& scope,
+    const std::string& source_buffer = std::string(), int64_t logical_row_width = -1,
+    int64_t logical_element_count = -1) {
+  Map<String, Any> contract;
+  contract.Set(String(schema_key::kKind),
+               String(fragment_materialization::kRepublishedLogicalTile));
+  contract.Set(String(schema_key::kTargetBuffer), String(buffer_name));
+  contract.Set(String(schema_key::kScope), String(scope));
+  contract.Set(String(schema_key::kMaterializationKind),
+               String(fragment_materialization::kRepublishedBuffer));
+  contract.Set(String(schema_key::kBridgeKind),
+               String(fragment_materialization::kTileNFacesMaterialization));
+  contract.Set(String(schema_key::kValueRole),
+               String(fragment_materialization::kConsumerInput));
+  contract.Set(String(schema_key::kMergeKind),
+               String(fragment_materialization::kDirectWrite));
+  contract.Set(String(schema_key::kExecutionProtocol),
+               String(fragment_materialization::kTiledCBRepublish));
+  contract.Set(String(schema_key::kResultLiveForm), String(fragment_live_form::kTiledCB));
+  if (!source_buffer.empty()) {
+    contract.Set(String(schema_key::kSourceBuffer), String(source_buffer));
+  }
+  if (logical_row_width > 0) {
+    contract.Set(String(schema_key::kLogicalRowWidth), Integer(logical_row_width));
+  }
+  if (logical_element_count > 0) {
+    contract.Set(String(schema_key::kLogicalElementCount), Integer(logical_element_count));
+  }
+  return contract;
+}
+
+bool IsVectorLocalFragmentBuffer(const tir::Buffer& buffer) {
+  const std::string scope = buffer.scope();
+  return IsTrackedStateScope(scope) && buffer->shape.size() == 1 && !buffer->shape.empty() &&
+         !tir::is_one(buffer->shape[0]);
+}
+
+const tir::ForNode* AsUnwrappedFor(const tir::Stmt& stmt) {
+  tir::Stmt current = stmt;
+  while (true) {
+    if (const auto* attr = current.as<tir::AttrStmtNode>()) {
+      current = attr->body;
+      continue;
+    }
+    if (const auto* decl = current.as<tir::DeclBufferNode>()) {
+      current = decl->body;
+      continue;
+    }
+    if (const auto* alloc = current.as<tir::AllocateNode>()) {
+      current = alloc->body;
+      continue;
+    }
+    break;
+  }
+  return current.as<tir::ForNode>();
+}
+
+const tir::BufferStoreNode* AsUnwrappedBufferStore(const tir::Stmt& stmt) {
+  tir::Stmt current = stmt;
+  while (true) {
+    if (const auto* attr = current.as<tir::AttrStmtNode>()) {
+      current = attr->body;
+      continue;
+    }
+    if (const auto* decl = current.as<tir::DeclBufferNode>()) {
+      current = decl->body;
+      continue;
+    }
+    if (const auto* alloc = current.as<tir::AllocateNode>()) {
+      current = alloc->body;
+      continue;
+    }
+    break;
+  }
+  return current.as<tir::BufferStoreNode>();
+}
+
+bool ExprUsesVar(const PrimExpr& expr, const tir::Var& var) {
+  if (!var.defined()) {
+    return false;
+  }
+  bool uses_var = false;
+  tir::PostOrderVisit(expr, [&](const ObjectRef& node) {
+    if (const auto* candidate = node.as<tir::VarNode>()) {
+      uses_var = uses_var || candidate == var.get();
+    }
+  });
+  return uses_var;
+}
+
+bool MatchDirectFragmentCastTarget(const tir::ForNode* op, tir::Buffer* src_buffer,
+                                   tir::Buffer* dst_buffer) {
+  if (!op || !src_buffer || !dst_buffer) {
+    return false;
+  }
+  const auto* store = AsUnwrappedBufferStore(op->body);
+  const tir::ForNode* inner_loop = nullptr;
+  const auto* inner_store = store;
+  PrimExpr linear_index = op->loop_var;
+  if (!store) {
+    inner_loop = AsUnwrappedFor(op->body);
+    inner_store = inner_loop ? AsUnwrappedBufferStore(inner_loop->body) : nullptr;
+    if (!inner_loop || !inner_store || inner_store->indices.size() != 1) {
+      return false;
+    }
+    linear_index = op->loop_var * inner_loop->extent + inner_loop->loop_var;
+  } else if (store->indices.size() != 1) {
+    return false;
+  }
+  if (!inner_store || !IsVectorLocalFragmentBuffer(inner_store->buffer)) {
+    return false;
+  }
+  const auto* cast = inner_store->value.as<tir::CastNode>();
+  const auto* load = cast ? cast->value.as<tir::BufferLoadNode>() : nullptr;
+  if (!cast || !load || load->indices.size() != 1 || !IsVectorLocalFragmentBuffer(load->buffer) ||
+      SameBufferIdentity(inner_store->buffer, load->buffer)) {
+    return false;
+  }
+  arith::Analyzer analyzer;
+  PrimExpr dst_offset = analyzer.Simplify(inner_store->indices[0] - linear_index);
+  PrimExpr src_offset = analyzer.Simplify(load->indices[0] - linear_index);
+  if (ExprUsesVar(dst_offset, op->loop_var) || ExprUsesVar(src_offset, op->loop_var)) {
+    return false;
+  }
+  if (inner_loop &&
+      (ExprUsesVar(dst_offset, inner_loop->loop_var) ||
+       ExprUsesVar(src_offset, inner_loop->loop_var))) {
+    return false;
+  }
+  *src_buffer = load->buffer;
+  *dst_buffer = inner_store->buffer;
+  return true;
+}
+
+bool IsCopyOperation(const tir::BufferStoreNode* store) {
+  const auto* load = store ? store->value.as<tir::BufferLoadNode>() : nullptr;
+  return load != nullptr && !SameBufferIdentity(store->buffer, load->buffer);
+}
+
+bool IsTransportConsumerDirection(const tir::BufferStoreNode* store) {
+  const auto* load = store ? store->value.as<tir::BufferLoadNode>() : nullptr;
+  if (!load) {
+    return false;
+  }
+  const std::string dst_scope = store->buffer.scope();
+  const std::string src_scope = load->buffer.scope();
+  return (IsCBScope(src_scope) && IsDRAMScope(dst_scope)) ||
+         (IsCBScope(src_scope) && IsCBScope(dst_scope)) ||
+         (IsAccumulatorLikeScope(src_scope) && IsDRAMScope(dst_scope)) ||
+         (IsAccumulatorLikeScope(src_scope) && IsCBScope(dst_scope));
+}
+
+bool StmtWritesBuffer(const tir::Stmt& stmt, const tir::Buffer& buffer) {
+  const std::string identity = BufferIdentityName(buffer);
+  bool writes = false;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    if (const auto* store = node.as<tir::BufferStoreNode>()) {
+      writes = writes || BufferIdentityName(store->buffer) == identity;
+    }
+  });
+  return writes;
+}
+
+bool StmtReadsBuffer(const tir::Stmt& stmt, const tir::Buffer& buffer) {
+  const std::string identity = BufferIdentityName(buffer);
+  bool reads = false;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    if (const auto* load = node.as<tir::BufferLoadNode>()) {
+      reads = reads || BufferIdentityName(load->buffer) == identity;
+      return;
+    }
+    const auto* call = node.as<tir::CallNode>();
+    if (!call || !call->op->IsInstance<OpNode>()) {
+      return;
+    }
+    TileOperator tile_op = ParseOperator(GetRef<tir::Call>(call));
+    if (!tile_op.defined()) {
+      return;
+    }
+    for (const DataflowAccessInfo& access : tile_op->GetDataflowAccessInfo()) {
+      if (BufferIdentityName(access.buffer) == identity) {
+        reads = true;
+        return;
+      }
+    }
+  });
+  return reads;
+}
+
+bool StmtReferencesBuffer(const tir::Stmt& stmt, const tir::Buffer& buffer) {
+  const std::string identity = BufferIdentityName(buffer);
+  bool referenced = false;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    if (const auto* store = node.as<tir::BufferStoreNode>()) {
+      referenced = referenced || BufferIdentityName(store->buffer) == identity;
+      return;
+    }
+    if (const auto* load = node.as<tir::BufferLoadNode>()) {
+      referenced = referenced || BufferIdentityName(load->buffer) == identity;
+      return;
+    }
+    const auto* call = node.as<tir::CallNode>();
+    if (!call) {
+      return;
+    }
+    for (const PrimExpr& arg : call->args) {
+      if (!IsBufferLikeExpr(arg)) {
+        continue;
+      }
+      referenced =
+          referenced || BufferIdentityName(NormalizeToBufferRegion(arg)->buffer) == identity;
+    }
+  });
+  return referenced;
+}
+
+bool StmtConsumesBufferViaTransport(const tir::Stmt& stmt, const tir::Buffer& buffer) {
+  const std::string identity = BufferIdentityName(buffer);
+  bool consumed = false;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    const auto* store = node.as<tir::BufferStoreNode>();
+    if (!IsCopyOperation(store) || !IsTransportConsumerDirection(store)) {
+      return;
+    }
+    const auto* load = store->value.as<tir::BufferLoadNode>();
+    consumed = consumed || (load && BufferIdentityName(load->buffer) == identity);
+  });
+  return consumed;
+}
+
+std::unordered_set<std::string> CollectComputeConsumedBuffers(const tir::Stmt& stmt) {
+  std::unordered_set<std::string> buffers;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    const auto* call = node.as<tir::CallNode>();
+    if (!call || !call->op->IsInstance<OpNode>()) {
+      return;
+    }
+    TileOperator tile_op = ParseOperator(GetRef<tir::Call>(call));
+    if (!tile_op.defined()) {
+      return;
+    }
+    for (const DataflowAccessInfo& access : tile_op->GetDataflowAccessInfo()) {
+      if (access.kind == DataflowAccessKind::kComputeConsume) {
+        const std::string name = BufferIdentityName(access.buffer);
+        if (!name.empty()) {
+          buffers.insert(name);
+        }
+      }
+    }
+  });
+  return buffers;
+}
+
+enum class FragmentBufferFlowEventKind {
+  kWrite,
+  kComputeConsume,
+  kTransportConsume,
+  kReference,
+};
+
+struct FragmentBufferFlowEvent {
+  int order_index = -1;
+  FragmentBufferFlowEventKind kind = FragmentBufferFlowEventKind::kReference;
+};
+
+struct FragmentBufferFlowContract {
+  std::string buffer_name;
+  std::string scope;
+  std::string flow_class = fragment_flow::kState;
+  int publish_granule = 1;
+  int consume_granule = 1;
+  std::vector<FragmentBufferFlowEvent> events;
+};
+
+std::string FragmentBufferFlowEventKindToString(FragmentBufferFlowEventKind kind) {
+  switch (kind) {
+    case FragmentBufferFlowEventKind::kWrite:
+      return fragment_flow::kWrite;
+    case FragmentBufferFlowEventKind::kComputeConsume:
+      return fragment_flow::kComputeConsume;
+    case FragmentBufferFlowEventKind::kTransportConsume:
+      return fragment_flow::kTransportConsume;
+    default:
+      return fragment_flow::kReference;
+  }
+}
+
+std::string DeriveFragmentFlowClassLabel(const std::vector<FragmentBufferFlowEvent>& events) {
+  int first_consume = std::numeric_limits<int>::max();
+  bool has_consume = false;
+  for (const FragmentBufferFlowEvent& event : events) {
+    if (event.kind == FragmentBufferFlowEventKind::kComputeConsume ||
+        event.kind == FragmentBufferFlowEventKind::kTransportConsume) {
+      has_consume = true;
+      first_consume = std::min(first_consume, event.order_index);
+    }
+  }
+  if (!has_consume) {
+    return fragment_flow::kState;
+  }
+  for (const FragmentBufferFlowEvent& event : events) {
+    if (event.kind == FragmentBufferFlowEventKind::kWrite &&
+        event.order_index > first_consume) {
+      return fragment_flow::kRepublish;
+    }
+  }
+  return fragment_flow::kStream;
+}
+
+Array<Any> CollectFragmentBufferFlowContractsFromBody(const tir::Stmt& body) {
+  std::unordered_map<std::string, tir::Buffer> tracked_buffers;
+  const std::vector<tir::Stmt> ordered_stmts = CollectExecutionOrderedStmts(body);
+  for (const tir::Stmt& stmt : ordered_stmts) {
+    tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+      auto remember = [&](const tir::Buffer& buffer) {
+        if (!buffer.defined()) {
+          return;
+        }
+        const std::string scope = buffer.scope();
+        if (!IsTrackedBufferFlowScope(scope)) {
+          return;
+        }
+        const std::string name = BufferIdentityName(buffer);
+        if (!name.empty()) {
+          tracked_buffers.emplace(name, buffer);
+        }
+      };
+      if (const auto* store = node.as<tir::BufferStoreNode>()) {
+        remember(store->buffer);
+        return;
+      }
+      if (const auto* load = node.as<tir::BufferLoadNode>()) {
+        remember(load->buffer);
+        return;
+      }
+      const auto* call = node.as<tir::CallNode>();
+      if (!call) {
+        return;
+      }
+      TileOperator tile_op = ParseOperator(GetRef<tir::Call>(call));
+      if (tile_op.defined()) {
+        for (const DataflowAccessInfo& access : tile_op->GetDataflowAccessInfo()) {
+          remember(access.buffer);
+        }
+      }
+      for (const PrimExpr& arg : call->args) {
+        if (IsBufferLikeExpr(arg)) {
+          remember(NormalizeToBufferRegion(arg)->buffer);
+        }
+      }
+    });
+  }
+
+  std::unordered_map<std::string, FragmentBufferFlowContract> contracts_by_buffer;
+  for (int order_index = 0; order_index < static_cast<int>(ordered_stmts.size()); ++order_index) {
+    const tir::Stmt& stmt = ordered_stmts[order_index];
+    const auto compute_consumed = CollectComputeConsumedBuffers(stmt);
+    for (const auto& [buffer_name, buffer] : tracked_buffers) {
+      if (!StmtReferencesBuffer(stmt, buffer)) {
+        continue;
+      }
+      FragmentBufferFlowContract& contract = contracts_by_buffer[buffer_name];
+      contract.buffer_name = buffer_name;
+      contract.scope = buffer.scope();
+      const bool compute_consume = compute_consumed.count(buffer_name);
+      const bool transport_consume = StmtConsumesBufferViaTransport(stmt, buffer);
+      const bool reads = StmtReadsBuffer(stmt, buffer);
+      const bool writes = StmtWritesBuffer(stmt, buffer);
+      auto append = [&](FragmentBufferFlowEventKind kind) {
+        contract.events.push_back(FragmentBufferFlowEvent{order_index, kind});
+      };
+      if (compute_consume) {
+        append(FragmentBufferFlowEventKind::kComputeConsume);
+      }
+      if (!compute_consume && reads && !transport_consume) {
+        append(FragmentBufferFlowEventKind::kReference);
+      }
+      if (transport_consume) {
+        append(FragmentBufferFlowEventKind::kTransportConsume);
+      }
+      if (writes) {
+        append(FragmentBufferFlowEventKind::kWrite);
+      }
+      if (!compute_consume && !reads && !transport_consume && !writes) {
+        append(FragmentBufferFlowEventKind::kReference);
+      }
+    }
+  }
+
+  Array<Any> contracts;
+  for (auto& [buffer_name, contract] : contracts_by_buffer) {
+    if (contract.events.empty()) {
+      continue;
+    }
+    contract.flow_class = DeriveFragmentFlowClassLabel(contract.events);
+    Map<String, Any> encoded;
+    encoded.Set(String(schema_key::kBuffer), String(buffer_name));
+    encoded.Set(String(schema_key::kScope), String(contract.scope));
+    encoded.Set(String(schema_key::kFlowClass), String(contract.flow_class));
+    encoded.Set(String(schema_key::kGranuleKind), String(fragment_flow::kLogicalTile));
+    encoded.Set(String(schema_key::kPublishGranule), Integer(contract.publish_granule));
+    encoded.Set(String(schema_key::kConsumeGranule), Integer(contract.consume_granule));
+    Array<Any> events;
+    for (const FragmentBufferFlowEvent& event : contract.events) {
+      Map<String, Any> encoded_event;
+      encoded_event.Set(String(schema_key::kKind),
+                        String(FragmentBufferFlowEventKindToString(event.kind)));
+      encoded_event.Set(String(schema_key::kOrderIndex), Integer(event.order_index));
+      events.push_back(encoded_event);
+    }
+    encoded.Set(String(schema_key::kEvents), events);
+    contracts.push_back(encoded);
+  }
+  return contracts;
+}
+
+void AppendUniqueFragmentMaterializationContractsFromFlowContracts(
+    const Array<Any>& flow_contracts, Array<Any>* materialization_contracts) {
+  std::unordered_set<std::string> seen;
+  for (const Any& contract_any : *materialization_contracts) {
+    Map<String, Any> contract = Downcast<Map<String, Any>>(contract_any);
+    seen.insert(Downcast<String>(contract.at(String(schema_key::kTargetBuffer))) + "|" +
+                Downcast<String>(contract.at(String(schema_key::kScope))));
+  }
+  for (const Any& flow_contract_any : flow_contracts) {
+    Map<String, Any> flow_contract = Downcast<Map<String, Any>>(flow_contract_any);
+    auto maybe_contract = TryBuildRepublishFragmentMaterializationContract(flow_contract);
+    if (!maybe_contract) {
+      continue;
+    }
+    const std::string key =
+        Downcast<String>(maybe_contract.value().at(String(schema_key::kTargetBuffer))) + "|" +
+        Downcast<String>(maybe_contract.value().at(String(schema_key::kScope)));
+    if (seen.insert(key).second) {
+      materialization_contracts->push_back(maybe_contract.value());
+    }
+  }
+}
+
+void AppendUniqueCastDrivenFragmentMaterializationContractsFromBody(
+    const tir::Stmt& body, const Array<Any>& flow_contracts,
+    const std::unordered_map<std::string, std::vector<int64_t>>& logical_buffer_shapes,
+    Array<Any>* materialization_contracts) {
+  std::unordered_map<std::string, Map<String, Any>> flow_by_buffer;
+  for (const Any& flow_any : flow_contracts) {
+    Map<String, Any> flow = Downcast<Map<String, Any>>(flow_any);
+    auto buffer_it = flow.find(String(schema_key::kBuffer));
+    if (buffer_it != flow.end()) {
+      flow_by_buffer.emplace(Downcast<String>((*buffer_it).second), flow);
+    }
+  }
+  auto upsert = [&](const Map<String, Any>& contract) {
+    const std::string key = Downcast<String>(contract.at(String(schema_key::kTargetBuffer))) + "|" +
+                            Downcast<String>(contract.at(String(schema_key::kScope)));
+    for (int i = 0; i < materialization_contracts->size(); ++i) {
+      Map<String, Any> existing = Downcast<Map<String, Any>>((*materialization_contracts)[i]);
+      const std::string existing_key =
+          Downcast<String>(existing.at(String(schema_key::kTargetBuffer))) + "|" +
+          Downcast<String>(existing.at(String(schema_key::kScope)));
+      if (existing_key == key) {
+        materialization_contracts->Set(i, contract);
+        return;
+      }
+    }
+    materialization_contracts->push_back(contract);
+  };
+
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* loop = node.as<tir::ForNode>();
+    if (!loop) {
+      return;
+    }
+    tir::Buffer src_buffer;
+    tir::Buffer dst_buffer;
+    if (!MatchDirectFragmentCastTarget(loop, &src_buffer, &dst_buffer)) {
+      return;
+    }
+    const std::string src_name = BufferIdentityName(src_buffer);
+    const std::string dst_name = BufferIdentityName(dst_buffer);
+    auto flow_it = flow_by_buffer.find(dst_name);
+    if (src_name.empty() || dst_name.empty() || flow_it == flow_by_buffer.end()) {
+      return;
+    }
+    const Map<String, Any>& flow_contract = flow_it->second;
+    const std::string scope = Downcast<String>(flow_contract.at(String(schema_key::kScope)));
+    const std::string granule_kind =
+        Downcast<String>(flow_contract.at(String(schema_key::kGranuleKind)));
+    if (!IsTrackedStateScope(scope) || granule_kind != fragment_flow::kLogicalTile ||
+        (!FlowContractHasEventKind(flow_contract, fragment_flow::kComputeConsume) &&
+         !FlowContractHasEventKind(flow_contract, fragment_flow::kTransportConsume))) {
+      return;
+    }
+    int64_t logical_row_width = GetLogicalRowWidth(src_buffer, logical_buffer_shapes);
+    if (logical_row_width <= 0) {
+      logical_row_width = GetLogicalRowWidth(dst_buffer, logical_buffer_shapes);
+    }
+    int64_t logical_element_count = GetLogicalElementCount(dst_name, logical_buffer_shapes);
+    if (logical_element_count <= 0) {
+      logical_element_count = GetLogicalElementCount(src_name, logical_buffer_shapes);
+    }
+    upsert(MakeRepublishedLogicalTileMaterializationContract(
+        dst_name, scope, src_name, logical_row_width, logical_element_count));
+  });
+}
+
+Array<Any> CollectFragmentMaterializationContractsFromBody(const tir::Stmt& body) {
+  Array<Any> contracts;
+  std::unordered_set<std::string> seen;
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* call = node.as<tir::CallNode>();
+    if (!IsFragmentMaterializationCandidate(call)) {
+      return;
+    }
+    auto maybe_contract = TryBuildFragmentMaterializationContract(call);
+    if (!maybe_contract) {
+      return;
+    }
+    const std::string key =
+        Downcast<String>(maybe_contract.value().at(String(schema_key::kTargetBuffer))) + "|" +
+        Downcast<String>(maybe_contract.value().at(String(schema_key::kScope)));
+    if (seen.insert(key).second) {
+      contracts.push_back(maybe_contract.value());
+    }
+  });
+  return contracts;
+}
+
+Array<String> GetAxesFromWorkDecomposition(const tir::PrimFunc& func) {
+  Array<String> axes;
+  auto work = func->GetAttr<Map<String, Any>>("blackhole.work_decomposition");
+  if (!work) {
+    return axes;
+  }
+  auto maybe_axes = work.value().Get(String("axes"));
+  if (!maybe_axes) {
+    return axes;
+  }
+  for (const Any& axis_any : Downcast<Array<Any>>(maybe_axes.value())) {
+    axes.push_back(Downcast<String>(axis_any));
+  }
+  return axes;
+}
+
+bool HasNonEmptyArrayField(const Map<String, Any>& payload, const char* key) {
+  auto maybe_value = payload.Get(String(key));
+  return maybe_value && !Downcast<Array<Any>>(maybe_value.value()).empty();
+}
+
+bool WorkDecompositionHasDerivedIndices(const tir::PrimFunc& func) {
+  auto work = func->GetAttr<Map<String, Any>>("blackhole.work_decomposition");
+  return work && HasNonEmptyArrayField(work.value(), "derived_index_exprs");
+}
+
+bool WorkDecompositionHasWorkDependentBounds(const tir::PrimFunc& func) {
+  auto work = func->GetAttr<Map<String, Any>>("blackhole.work_decomposition");
+  return work && HasNonEmptyArrayField(work.value(), "work_dependent_loop_bounds");
+}
+
+Array<Any> GetPipelineStages(const tir::PrimFunc& func) {
+  return func->GetAttr<Array<Any>>("blackhole.pipeline_stages").value_or(Array<Any>());
+}
+
+Array<Any> GetFragmentRegions(const tir::PrimFunc& func) {
+  return func->GetAttr<Array<Any>>("blackhole.fragment_regions").value_or(Array<Any>());
+}
+
+std::string GetCopySemanticsField(const Map<String, Any>& ann, const char* key,
+                                  const std::string& default_value = "") {
+  if (auto value = ann.Get(String(key))) {
+    if (auto maybe_string = value.value().try_cast<String>()) {
+      return maybe_string.value();
+    }
+  }
+  return default_value;
+}
+
+std::vector<std::string> CollectSegmentKindsFromBody(const tir::Stmt& body) {
+  class SegmentKindCollector : public tir::StmtVisitor {
+   public:
+    void VisitStmt_(const tir::AttrStmtNode* op) final {
+      if (op->attr_key == "blackhole.segment_kind") {
+        if (const auto* kind = op->value.as<tir::StringImmNode>()) {
+          const std::string segment_kind = kind->value;
+          if (seen_.insert(segment_kind).second) {
+            segment_kinds_.push_back(segment_kind);
+          }
+        }
+      }
+      tir::StmtVisitor::VisitStmt_(op);
+    }
+
+    const std::vector<std::string>& segment_kinds() const { return segment_kinds_; }
+
+   private:
+    std::unordered_set<std::string> seen_;
+    std::vector<std::string> segment_kinds_;
+  };
+  SegmentKindCollector collector;
+  collector(body);
+  return collector.segment_kinds();
+}
+
+bool FragmentFlowContractHasEventKind(const Map<String, Any>& flow_contract, const char* kind) {
+  return FlowContractHasEventKind(flow_contract, kind);
 }
 
 Map<String, Any> EmptyPayload() { return Map<String, Any>(); }
@@ -216,691 +905,122 @@ Array<Any> ToIntegerAnyArray(const std::vector<int>& values) {
   return result;
 }
 
-bool ContainsKind(const Array<String>& supported_kinds, const char* kind) {
-  for (const String& supported_kind : supported_kinds) {
-    if (str(supported_kind) == kind) {
-      return true;
-    }
-  }
-  return false;
-}
-
-void RequireCapabilitySupport(const Array<String>& supported_kinds, const char* kind,
-                              const char* contract_label) {
-  ICHECK(ContainsKind(supported_kinds, kind))
-      << "LowerToSpatialProgram requires SpatialCapabilityModel support for " << contract_label
-      << " kind " << kind;
-}
-
-const char* SelectLayoutKind(const SpatialCapabilityModel& capability_model,
-                             const DomainRealizationContract& contract) {
-  const char* layout_kind = sp::ToString(contract.layout_kind);
-  RequireCapabilitySupport(capability_model->supported_layout_kinds, layout_kind, "layout");
-  return layout_kind;
-}
-
-const char* SelectPartitionKind(const SpatialCapabilityModel& capability_model,
-                                const DomainRealizationContract& contract) {
-  const char* partition_kind = sp::ToString(contract.partition_kind);
-  RequireCapabilitySupport(capability_model->supported_partition_kinds, partition_kind,
-                           "partition");
-  return partition_kind;
-}
-
 const char* SelectChannelKind(const SpatialCapabilityModel& capability_model,
                               sp::SpatialChannelKind channel_kind) {
   const char* kind = sp::ToString(channel_kind);
-  RequireCapabilitySupport(capability_model->supported_flow_kinds, kind, "channel flow");
+  ICHECK(ContainsKind(capability_model->supported_flow_kinds, kind));
   return kind;
 }
 
 const char* SelectChannelPayloadKind(const SpatialCapabilityModel& capability_model,
                                      sp::SpatialChannelPayloadKind payload_kind) {
   const char* kind = sp::ToString(payload_kind);
-  RequireCapabilitySupport(capability_model->supported_payload_kinds, kind, "channel payload");
+  ICHECK(ContainsKind(capability_model->supported_payload_kinds, kind));
   return kind;
 }
 
 const char* SelectChannelDeliveryKind(const SpatialCapabilityModel& capability_model,
                                       sp::SpatialChannelDeliveryKind delivery_kind) {
   const char* kind = sp::ToString(delivery_kind);
-  RequireCapabilitySupport(capability_model->supported_delivery_kinds, kind, "channel delivery");
+  ICHECK(ContainsKind(capability_model->supported_delivery_kinds, kind));
   return kind;
 }
 
-const char* NeutralPlacementAffinityForSegmentKind(const std::string& segment_kind) {
-  if (segment_kind == "reader") {
+const char* SelectLayoutKind(const SpatialCapabilityModel& capability_model,
+                             const DomainContract& contract) {
+  const char* kind = sp::ToString(contract.layout_kind);
+  ICHECK(ContainsKind(capability_model->supported_layout_kinds, kind));
+  return kind;
+}
+
+const char* SelectPartitionKind(const SpatialCapabilityModel& capability_model,
+                                const DomainContract& contract) {
+  const char* kind = sp::ToString(contract.partition_kind);
+  ICHECK(ContainsKind(capability_model->supported_partition_kinds, kind));
+  return kind;
+}
+
+const char* NeutralPlacementAffinityForExecutionRole(const std::string& execution_role) {
+  if (execution_role == "ingress" || execution_role == "tile_ingress") {
     return "ingress";
   }
-  if (segment_kind == "compute") {
-    return "compute";
-  }
-  if (segment_kind == "writer") {
+  if (execution_role == "egress" || execution_role == "tile_egress") {
     return "egress";
   }
   return "compute";
 }
 
-const char* NeutralPlacementAffinityForTask(const Task& task) {
-  auto maybe_task_kind = sp::ParseSpatialTaskKind(str(task->kind));
-  if (!maybe_task_kind) {
-    return "compute";
+DomainContract DeriveDomainContract(const tir::PrimFunc& func, const Array<String>& axes,
+                                    const FragmentFacts& fragment_facts) {
+  const bool has_derived = WorkDecompositionHasDerivedIndices(func);
+  const bool has_bounds = WorkDecompositionHasWorkDependentBounds(func);
+  const bool has_selection = !fragment_facts.selection_subjects.empty();
+  const bool multi_axis = axes.size() > 1;
+  DomainContract contract;
+  if (has_derived) {
+    contract.transform_kind = has_bounds ? "paged" : "derived";
+    contract.partition_family = has_bounds ? "paged" : "derived";
+    contract.layout_kind = sp::SpatialLayoutKind::kIndexed;
+    contract.partition_kind = sp::SpatialPartitionKind::kIndexed;
+    return contract;
   }
-  switch (*maybe_task_kind) {
-    case sp::SpatialTaskKind::kTransfer:
-      return "ingress";
-    case sp::SpatialTaskKind::kCompute:
-    case sp::SpatialTaskKind::kCollective:
-    case sp::SpatialTaskKind::kControl:
-      return "compute";
+  if (has_selection) {
+    contract.transform_kind = "filtered";
+    contract.partition_family = "filtered";
+    contract.partition_kind = sp::SpatialPartitionKind::kFiltered;
+    return contract;
   }
-  return "compute";
+  contract.partition_kind =
+      multi_axis ? sp::SpatialPartitionKind::kBlocked : sp::SpatialPartitionKind::kReplicated;
+  return contract;
 }
 
-std::string StateRoleLabel(const std::optional<StateRole>& maybe_role) {
-  return maybe_role ? std::string(ToString(*maybe_role)) : std::string("stateless");
-}
-
-bool IsStatefulRole(const std::optional<StateRole>& maybe_role) {
-  return maybe_role &&
-         (*maybe_role == StateRole::kCarry ||
-          *maybe_role == StateRole::kReductionAccumulator ||
-          *maybe_role == StateRole::kSelectionState ||
-          *maybe_role == StateRole::kIndexState);
-}
-
-std::unordered_set<std::string> CollectJoinOutputVersions(const Array<StateJoin>& state_joins) {
-  std::unordered_set<std::string> join_output_versions;
-  for (const StateJoin& join : state_joins) {
-    join_output_versions.insert(str(join->output_version));
-  }
-  return join_output_versions;
-}
-
-std::unordered_set<std::string> CollectJoinInputVersions(const Array<StateJoin>& state_joins) {
-  std::unordered_set<std::string> join_input_versions;
-  for (const StateJoin& join : state_joins) {
-    for (const String& input_version : join->input_versions) {
-      join_input_versions.insert(str(input_version));
-    }
-  }
-  return join_input_versions;
-}
-
-
-std::string BuildAccessRequirementSignature(const Update& update) {
-  std::vector<std::string> access_requirements;
-  for (const AccessMap& access_map : update->law->access_maps) {
-    std::vector<std::string> traits;
-    for (const String& trait : access_map->traits) {
-      traits.push_back(str(trait));
-    }
-    std::sort(traits.begin(), traits.end());
-    std::string entry = str(access_map->kind);
-    if (!traits.empty()) {
-      entry += "(";
-      for (int i = 0; i < static_cast<int>(traits.size()); ++i) {
-        if (i != 0) {
-          entry += ",";
-        }
-        entry += traits[i];
-      }
-      entry += ")";
-    }
-    access_requirements.push_back(std::move(entry));
-  }
-  if (access_requirements.empty()) {
-    return "direct";
-  }
-  std::sort(access_requirements.begin(), access_requirements.end());
-  std::string result;
-  for (int i = 0; i < static_cast<int>(access_requirements.size()); ++i) {
-    if (i != 0) {
-      result += ";";
-    }
-    result += access_requirements[i];
-  }
-  return result;
-}
-
-std::unordered_map<std::string, UpdateTaskFacts> BuildUpdateTaskFacts(
-    const SemanticProgram& program,
-    const std::unordered_map<std::string, std::optional<StateRole>>& state_role_by_name,
-    const std::vector<DomainRealizationContract>& domain_contracts,
-    const SpatialCapabilityModel& capability_model) {
-  const auto update_result_version_by_update =
-      BuildUniqueUpdateResultVersionByUpdate(program->state_defs);
-  const auto join_output_versions = CollectJoinOutputVersions(program->state_joins);
-  const auto join_input_versions = CollectJoinInputVersions(program->state_joins);
-  const auto consumer_count_by_version = BuildDistinctConsumerCountByVersion(program->state_uses);
-
-  std::unordered_map<std::string, UpdateTaskFacts> facts_by_update;
-  for (const Update& update : program->updates) {
-    const std::string update_name = str(update->name);
-    const std::vector<int> update_domain_indices =
-        BuildUpdateDomainIndices(update, program->domains);
-    UpdateTaskFacts facts;
-    facts.law_kind = ParseUpdateLawKind(str(update->law->kind));
-    const std::string state_name = str(update->state_name);
-    auto state_role_it = state_role_by_name.find(state_name);
-    if (state_role_it != state_role_by_name.end()) {
-      facts.target_state_role = state_role_it->second;
-    }
-    facts.access_requirement_signature = BuildAccessRequirementSignature(update);
-    facts.domain_transform_kind =
-        BuildDomainTransformSignature(domain_contracts, update_domain_indices);
-    facts.partition_family =
-        BuildPartitionFamilySignature(domain_contracts, update_domain_indices);
-    facts.placement_domain = str(capability_model->placement_domain);
-    auto version_it = update_result_version_by_update.find(update_name);
-    if (version_it != update_result_version_by_update.end()) {
-      facts.update_result_version = version_it->second;
-      facts.output_feeds_join = join_input_versions.count(version_it->second);
-    }
-    facts_by_update.emplace(update_name, std::move(facts));
-  }
-
-  for (const StateUse& use : program->state_uses) {
-    const std::string consumer_update = str(use->consumer_update);
-    auto fact_it = facts_by_update.find(consumer_update);
-    if (fact_it == facts_by_update.end()) {
-      continue;
-    }
-    fact_it->second.consumes_join_output |= join_output_versions.count(str(use->version_name));
-    auto consumer_count_it = consumer_count_by_version.find(str(use->version_name));
-    if (consumer_count_it != consumer_count_by_version.end() && consumer_count_it->second > 1) {
-      fact_it->second.has_multi_consumer_input = true;
-    }
-    auto use_kind = ParseStateUseKind(str(use->kind));
-    if (!use_kind) {
-      continue;
-    }
-    fact_it->second.has_carried_input |= *use_kind == StateUseKind::kCarriedState;
-    fact_it->second.has_companion_input |= *use_kind == StateUseKind::kCompanionState;
-  }
-
-  return facts_by_update;
-}
-
-std::string DeriveExecutionRole(const UpdateTaskFacts& facts) {
-  const std::string role_label = StateRoleLabel(facts.target_state_role);
-  if (!facts.law_kind) {
-    return role_label + "_compute";
-  }
-  switch (*facts.law_kind) {
-    case UpdateLawKind::kMap:
-      return facts.target_state_role ? role_label + "_materialize" : "bootstrap";
-    case UpdateLawKind::kReduce:
-      return facts.target_state_role &&
-                     *facts.target_state_role == StateRole::kReductionAccumulator
-                 ? "reduction"
-                 : role_label + "_reduce";
-    case UpdateLawKind::kSelect:
-      if (facts.target_state_role &&
-          *facts.target_state_role == StateRole::kSelectionState) {
-        return "selection";
-      }
-      if (facts.target_state_role && *facts.target_state_role == StateRole::kIndexState) {
-        return "index_selection";
-      }
-      return role_label + "_selection";
-    case UpdateLawKind::kRecurrence:
-      if (facts.target_state_role && *facts.target_state_role == StateRole::kCarry) {
-        return "carry_refresh";
-      }
-      if (facts.target_state_role &&
-          *facts.target_state_role == StateRole::kReductionAccumulator) {
-        return "reduction_refresh";
-      }
-      if (facts.target_state_role &&
-          *facts.target_state_role == StateRole::kSelectionState) {
-        return "selection_refresh";
-      }
-      if (facts.target_state_role && *facts.target_state_role == StateRole::kIndexState) {
-        return "index_refresh";
-      }
-      return "recurrence_refresh";
-  }
-  return role_label + "_compute";
-}
-
-std::string DeriveFormationBasis(const UpdateTaskFacts& facts) {
-  const std::string law_label =
-      facts.law_kind ? std::string(ToString(*facts.law_kind)) : std::string("unknown");
-  const std::string role_label = StateRoleLabel(facts.target_state_role);
-  std::string boundary_label = "direct_state_boundary";
-  if (!facts.target_state_role) {
-    boundary_label = "stateless_boundary";
-  } else if (facts.consumes_join_output || facts.has_carried_input || facts.output_feeds_join) {
-    boundary_label = "loop_carried_boundary";
-  } else if (facts.has_multi_consumer_input) {
-    boundary_label = "fanout_boundary";
-  } else if (facts.law_kind && *facts.law_kind == UpdateLawKind::kReduce) {
-    boundary_label = "reduction_boundary";
-  } else if ((facts.law_kind && *facts.law_kind == UpdateLawKind::kSelect) ||
-             (facts.target_state_role &&
-              (*facts.target_state_role == StateRole::kSelectionState ||
-               *facts.target_state_role == StateRole::kIndexState))) {
-    boundary_label = facts.has_companion_input ? "selection_companion_boundary"
-                                               : "selection_boundary";
-  } else if (facts.target_state_role &&
-             *facts.target_state_role == StateRole::kCarry) {
-    boundary_label = "carry_boundary";
-  }
-
-  return "single_update|law=" + law_label + "|target_role=" + role_label +
-         "|boundary=" + boundary_label +
-         "|access=" + facts.access_requirement_signature +
-         "|domain=" + facts.domain_transform_kind +
-         "|partition=" + facts.partition_family;
-}
-
-std::string DeriveTaskKindFromFacts(const UpdateTaskFacts& facts) {
-  if (!facts.law_kind) {
-    return sp::ToString(sp::SpatialTaskKind::kCompute);
-  }
-  switch (*facts.law_kind) {
-    case UpdateLawKind::kMap:
-      return sp::ToString(sp::SpatialTaskKind::kCompute);
-    case UpdateLawKind::kReduce:
-      return sp::ToString(sp::SpatialTaskKind::kCollective);
-    case UpdateLawKind::kSelect:
-    case UpdateLawKind::kRecurrence:
-      return sp::ToString(sp::SpatialTaskKind::kControl);
-  }
-  return sp::ToString(sp::SpatialTaskKind::kCompute);
-}
-
-bool HasMandatoryTaskBoundary(const UpdateTaskFacts& facts) {
-  return facts.has_carried_input || facts.has_companion_input || facts.consumes_join_output ||
-         facts.has_multi_consumer_input || facts.output_feeds_join ||
-         (facts.law_kind &&
-          (*facts.law_kind == UpdateLawKind::kReduce || *facts.law_kind == UpdateLawKind::kSelect ||
-           *facts.law_kind == UpdateLawKind::kRecurrence)) ||
-         (facts.target_state_role &&
-          (*facts.target_state_role == StateRole::kCarry ||
-           *facts.target_state_role == StateRole::kReductionAccumulator ||
-           *facts.target_state_role == StateRole::kSelectionState ||
-           *facts.target_state_role == StateRole::kIndexState));
-}
-
-int DeriveOrderingStageHint(const UpdateTaskFacts& facts) {
-  if ((facts.law_kind && *facts.law_kind == UpdateLawKind::kRecurrence) ||
-      facts.has_carried_input || facts.has_companion_input || facts.consumes_join_output) {
-    return 1;
-  }
-  return 0;
-}
-
-TaskFormationCandidate BuildTaskFormationCandidate(const Update& update,
-                                                   const UpdateTaskFacts& facts) {
-  TaskFormationCandidate candidate;
-  candidate.update_name = str(update->name);
-  candidate.task_kind = DeriveTaskKindFromFacts(facts);
-  candidate.execution_role = DeriveExecutionRole(facts);
-  candidate.formation_basis = DeriveFormationBasis(facts);
-  candidate.task_traits = {"phase_b", str(update->law->kind)};
-  candidate.facts = facts;
-  return candidate;
-}
-
-bool CanFuseTaskFormationCandidates(const TaskFormationCandidate& lhs,
-                                    const TaskFormationCandidate& rhs) {
-  if (lhs.task_kind != rhs.task_kind || lhs.execution_role != rhs.execution_role ||
-      lhs.facts.law_kind != rhs.facts.law_kind ||
-      lhs.facts.target_state_role != rhs.facts.target_state_role ||
-      lhs.facts.access_requirement_signature != rhs.facts.access_requirement_signature ||
-      lhs.facts.domain_transform_kind != rhs.facts.domain_transform_kind ||
-      lhs.facts.partition_family != rhs.facts.partition_family ||
-      lhs.facts.placement_domain != rhs.facts.placement_domain) {
-    return false;
-  }
-  if (HasMandatoryTaskBoundary(lhs.facts) || HasMandatoryTaskBoundary(rhs.facts)) {
-    return false;
-  }
-  return lhs.facts.law_kind && *lhs.facts.law_kind == UpdateLawKind::kMap &&
-         !lhs.facts.target_state_role && !rhs.facts.target_state_role;
-}
-
-TaskSynthesisRecord MaterializeTaskRecord(const std::vector<TaskFormationCandidate>& group) {
-  ICHECK(!group.empty());
-  const TaskFormationCandidate& leader = group.front();
-  TaskSynthesisRecord record;
-  record.task_name = group.size() == 1 ? leader.update_name : "task_" + leader.update_name;
-  record.task_kind = leader.task_kind;
-  record.phase_rank = DeriveOrderingStageHint(leader.facts);
-  record.execution_role =
-      group.size() == 1 ? leader.execution_role : leader.execution_role + "_fused";
-  record.formation_basis =
-      group.size() == 1 ? leader.formation_basis
-                        : "fused_updates|execution_role=" + leader.execution_role;
-  record.task_traits = leader.task_traits;
-  if (group.size() > 1) {
-    record.task_traits.push_back("fused");
-  }
-  for (const TaskFormationCandidate& candidate : group) {
-    record.update_names.push_back(candidate.update_name);
-  }
-  return record;
-}
-
-UpdateGraph BuildUpdateGraph(const SemanticProgram& program) {
-  UpdateGraph graph;
-  const auto known_updates = CollectKnownUpdateNames(program);
-  const auto version_to_producer_edges = BuildVersionProducerEdges(program, known_updates);
-
-  std::unordered_map<std::string, int> update_order_index;
-  std::vector<std::string> update_names;
-  update_names.reserve(program->updates.size());
-  for (int i = 0; i < program->updates.size(); ++i) {
-    const std::string update_name = str(program->updates[i]->name);
-    update_order_index[update_name] = i;
-    update_names.push_back(update_name);
-    graph.predecessors[update_name] = {};
-    graph.successors[update_name] = {};
-  }
-
-  auto add_edge = [&](const std::string& source_update, const std::string& target_update) {
-    if (source_update == target_update || !known_updates.count(source_update) ||
-        !known_updates.count(target_update)) {
-      return;
-    }
-    PushBackUnique(&graph.successors[source_update], target_update);
-    PushBackUnique(&graph.predecessors[target_update], source_update);
-  };
-
-  for (const StateUse& use : program->state_uses) {
-    const std::string consumer_update = str(use->consumer_update);
-    auto producer_edges_it = version_to_producer_edges.find(str(use->version_name));
-    if (!known_updates.count(consumer_update) || producer_edges_it == version_to_producer_edges.end()) {
-      continue;
-    }
-    for (const ProducerVersionEdge& edge : producer_edges_it->second) {
-      add_edge(edge.producer_update, consumer_update);
-    }
-  }
-
-  std::unordered_map<std::string, int> indegree;
-  for (const std::string& update_name : update_names) {
-    indegree[update_name] = static_cast<int>(graph.predecessors[update_name].size());
-  }
-  std::vector<std::string> ready;
-  for (const std::string& update_name : update_names) {
-    if (indegree[update_name] == 0) {
-      ready.push_back(update_name);
-    }
-  }
-  auto ready_less = [&](const std::string& lhs, const std::string& rhs) {
-    return update_order_index.at(lhs) < update_order_index.at(rhs);
-  };
-  std::sort(ready.begin(), ready.end(), ready_less);
-
-  while (!ready.empty()) {
-    const std::string current = ready.front();
-    ready.erase(ready.begin());
-    graph.topo_order.push_back(current);
-    for (const std::string& successor : graph.successors[current]) {
-      int& successor_indegree = indegree[successor];
-      --successor_indegree;
-      if (successor_indegree == 0) {
-        ready.push_back(successor);
-        std::sort(ready.begin(), ready.end(), ready_less);
-      }
-    }
-  }
-
-  if (graph.topo_order.size() != update_names.size()) {
-    std::unordered_set<std::string> emitted(graph.topo_order.begin(), graph.topo_order.end());
-    std::vector<std::string> unresolved_updates;
-    for (const std::string& update_name : update_names) {
-      if (!emitted.count(update_name)) {
-        unresolved_updates.push_back(update_name);
-      }
-    }
-    std::sort(unresolved_updates.begin(), unresolved_updates.end(), ready_less);
-    std::string unresolved_summary;
-    for (int i = 0; i < static_cast<int>(unresolved_updates.size()); ++i) {
-      if (i != 0) {
-        unresolved_summary += ", ";
-      }
-      unresolved_summary += unresolved_updates[i];
-    }
-    ICHECK_EQ(graph.topo_order.size(), update_names.size())
-        << "LowerToSpatialProgram requires semantic update graph to be a DAG; "
-        << "unresolved updates: " << unresolved_summary;
-  }
-
-  return graph;
-}
-
-TaskFormationResult BuildTaskRecords(
-    const SemanticProgram& program,
-    const std::unordered_map<std::string, std::optional<StateRole>>& state_role_by_name,
-    const std::vector<DomainRealizationContract>& domain_contracts,
-    const SpatialCapabilityModel& capability_model) {
-  const auto update_task_facts_by_name =
-      BuildUpdateTaskFacts(program, state_role_by_name, domain_contracts, capability_model);
-  const UpdateGraph update_graph = BuildUpdateGraph(program);
-  ICHECK_EQ(update_graph.topo_order.size(), static_cast<size_t>(program->updates.size()))
-      << "LowerToSpatialProgram requires task formation graph to cover all semantic updates";
-
-  std::unordered_map<std::string, Update> update_by_name;
-  for (int i = 0; i < program->updates.size(); ++i) {
-    update_by_name[str(program->updates[i]->name)] = program->updates[i];
-  }
-
-  std::vector<TaskFormationCandidate> candidates;
-  candidates.reserve(program->updates.size());
-  std::unordered_map<std::string, TaskFormationCandidate> candidate_by_update;
-  for (const std::string& update_name : update_graph.topo_order) {
-    auto fact_it = update_task_facts_by_name.find(update_name);
-    ICHECK(fact_it != update_task_facts_by_name.end())
-        << "LowerToSpatialProgram missing task synthesis facts for update " << update_name;
-    auto update_it = update_by_name.find(update_name);
-    ICHECK(update_it != update_by_name.end())
-        << "LowerToSpatialProgram missing semantic update definition for " << update_name;
-    TaskFormationCandidate candidate =
-        BuildTaskFormationCandidate(update_it->second, fact_it->second);
-    candidate_by_update[update_name] = candidate;
-    candidates.push_back(std::move(candidate));
-  }
-
-  TaskFormationResult result;
-  std::unordered_set<std::string> grouped_updates;
-  for (const std::string& update_name : update_graph.topo_order) {
-    if (grouped_updates.count(update_name)) {
-      continue;
-    }
-    std::vector<TaskFormationCandidate> group{candidate_by_update.at(update_name)};
-    grouped_updates.insert(update_name);
-
-    std::string current_update = update_name;
-    while (true) {
-      auto successor_it = update_graph.successors.find(current_update);
-      if (successor_it == update_graph.successors.end() || successor_it->second.size() != 1) {
-        break;
-      }
-      const std::string& next_update = successor_it->second.front();
-      auto predecessor_it = update_graph.predecessors.find(next_update);
-      if (predecessor_it == update_graph.predecessors.end() || predecessor_it->second.size() != 1 ||
-          grouped_updates.count(next_update)) {
-        break;
-      }
-      if (!CanFuseTaskFormationCandidates(candidate_by_update.at(current_update),
-                                          candidate_by_update.at(next_update))) {
-        break;
-      }
-      group.push_back(candidate_by_update.at(next_update));
-      grouped_updates.insert(next_update);
-      current_update = next_update;
-    }
-
-    TaskSynthesisRecord record = MaterializeTaskRecord(group);
-    result.task_records.push_back(std::move(record));
-  }
-  return result;
-}
-
-sp::SpatialChannelKind DeriveStateVersionBaseFlowKind(const StateUse& use,
-                                                      const std::optional<StateRole>& maybe_role,
-                                                      const std::optional<StateJoinKind>& join_kind,
-                                                      int version_consumer_count) {
-  if (maybe_role) {
-    switch (*maybe_role) {
-      case StateRole::kCarry:
-        return sp::SpatialChannelKind::kCarry;
-      case StateRole::kReductionAccumulator:
-        return sp::SpatialChannelKind::kReduceMerge;
-      case StateRole::kSelectionState:
-        return sp::SpatialChannelKind::kGather;
-      case StateRole::kIndexState:
-        return sp::SpatialChannelKind::kScatter;
-      default:
-        break;
-    }
-  }
-  auto use_kind = ParseStateUseKind(str(use->kind));
-  if (version_consumer_count > 1 && !join_kind.has_value() &&
-      !(use_kind && *use_kind == StateUseKind::kCarriedState) &&
-      !(use_kind && *use_kind == StateUseKind::kCompanionState)) {
-    return sp::SpatialChannelKind::kBroadcast;
-  }
-  if ((join_kind && *join_kind == StateJoinKind::kLoopCarried) ||
-      (use_kind && *use_kind == StateUseKind::kCarriedState)) {
-    return sp::SpatialChannelKind::kCarry;
-  }
-  return sp::SpatialChannelKind::kPointToPoint;
-}
-
-sp::SpatialChannelDeliveryKind DeriveStateVersionDeliveryKind(sp::SpatialChannelKind flow_kind,
-                                                              bool cross_phase) {
-  if (cross_phase) {
-    return sp::SpatialChannelDeliveryKind::kPhaseBoundaryMaterialized;
-  }
-  if (flow_kind == sp::SpatialChannelKind::kReduceMerge) {
-    return sp::SpatialChannelDeliveryKind::kCompletionVisible;
-  }
-  return sp::SpatialChannelDeliveryKind::kOrdered;
-}
-
-bool IsOrderingCriticalChannel(const ChannelSynthesisRecord& record) {
-  if (record.delivery_kind == sp::SpatialChannelDeliveryKind::kPhaseBoundaryMaterialized) {
-    return true;
-  }
-  return record.flow_kind == sp::SpatialChannelKind::kCarry ||
-         record.flow_kind == sp::SpatialChannelKind::kReduceMerge ||
-         record.flow_kind == sp::SpatialChannelKind::kGather ||
-         record.flow_kind == sp::SpatialChannelKind::kScatter;
-}
-
-bool IsOrderingCriticalFlowKind(sp::SpatialChannelKind flow_kind) {
-  return flow_kind == sp::SpatialChannelKind::kCarry ||
-         flow_kind == sp::SpatialChannelKind::kReduceMerge ||
-         flow_kind == sp::SpatialChannelKind::kGather ||
-         flow_kind == sp::SpatialChannelKind::kScatter;
-}
-
-std::string DeriveOrderingKindForChannelRecord(const ChannelSynthesisRecord& record) {
-  switch (record.flow_kind) {
-    case sp::SpatialChannelKind::kCarry:
-      return "carry_handoff";
-    case sp::SpatialChannelKind::kReduceMerge:
-      return "reduction_completion";
-    case sp::SpatialChannelKind::kGather:
-    case sp::SpatialChannelKind::kScatter:
-      return "selection_index_handoff";
-    default:
-      return record.delivery_kind == sp::SpatialChannelDeliveryKind::kPhaseBoundaryMaterialized
-                 ? "phase_boundary_materialization"
-                 : "must_happen_before";
-  }
-}
-
-std::string DeriveMaterializationKindForChannelRecord(const ChannelSynthesisRecord& record) {
-  if (record.delivery_kind == sp::SpatialChannelDeliveryKind::kPhaseBoundaryMaterialized) {
-    return "phase_boundary_materialization";
-  }
-  if (record.flow_kind == sp::SpatialChannelKind::kReduceMerge) {
-    return "completion_visibility";
-  }
-  return "phase_boundary";
-}
-
-
-Map<String, Any> BuildDomainPayload(int domain_index,
-                                    const DomainRealizationContract& contract) {
+Map<String, Any> BuildDomainPayload(int domain_index, const DomainContract& contract) {
   Map<String, Any> payload;
   payload.Set(String(schema_key::kDomainIndex), Integer(domain_index));
-  payload.Set(String(schema_key::kDomainTransformKind), String(contract.domain_transform_kind));
+  payload.Set(String(schema_key::kDomainTransformKind), String(contract.transform_kind));
   return payload;
 }
 
-Map<String, Any> BuildTargetPayload(const char* target_kind, int target_index) {
-  Map<String, Any> payload;
-  payload.Set(String(schema_key::kTargetKind), String(target_kind));
-  payload.Set(String(schema_key::kTargetIndex), Integer(target_index));
+Map<String, Any> BuildWorkPartitionPayload(const tir::PrimFunc& func, int domain_index,
+                                           const DomainContract& contract) {
+  Map<String, Any> payload = BuildDomainPayload(domain_index, contract);
+  payload.Set(String(schema_key::kPartitionFamily), String(contract.partition_family));
+  auto work = func->GetAttr<Map<String, Any>>("blackhole.work_decomposition");
+  if (work) {
+    auto maybe_loop_bounds = work.value().Get(String("work_dependent_loop_bounds"));
+    if (maybe_loop_bounds) {
+      payload.Set(String(schema_key::kWorkDependentLoopBounds),
+                  Downcast<Array<Any>>(maybe_loop_bounds.value()));
+    }
+  }
   return payload;
 }
 
-Map<String, Any> BuildMemberFuncTargetPayload() {
-  Map<String, Any> payload;
-  payload.Set(String(schema_key::kTargetKind), String(spatial_contract::kMemberFuncTarget));
-  return payload;
-}
-
-Map<String, Any> BuildTaskPayload(int phase_index) {
+Map<String, Any> BuildTaskPayload(int phase_index, const TaskRecord& record) {
   Map<String, Any> payload;
   payload.Set(String(schema_key::kPhaseIndex), Integer(phase_index));
+  payload.Set(String(schema_key::kExecutionRole), String(record.execution_role));
+  payload.Set(String(schema_key::kFormationBasis), String(record.formation_basis));
   return payload;
 }
 
-Map<String, Any> BuildTaskPayload(int phase_index, const TaskSynthesisRecord& record) {
-  Map<String, Any> payload = BuildTaskPayload(phase_index);
-  if (!record.execution_role.empty()) {
-    payload.Set(String(schema_key::kExecutionRole), String(record.execution_role));
-  }
-  if (!record.formation_basis.empty()) {
-    payload.Set(String(schema_key::kFormationBasis), String(record.formation_basis));
-  }
-  return payload;
-}
-
-Map<String, Any> BuildChannelPayload(int source_task_index, int target_task_index,
-                                     const char* payload_kind, const char* delivery_kind,
-                                     std::optional<int> state_index = std::nullopt) {
+Map<String, Any> BuildChannelPayload(const ChannelRecord& record, const char* payload_kind,
+                                     const char* delivery_kind) {
   Map<String, Any> payload;
-  payload.Set(String(schema_key::kSourceTaskIndex), Integer(source_task_index));
-  payload.Set(String(schema_key::kTargetTaskIndex), Integer(target_task_index));
+  payload.Set(String(schema_key::kSourceTaskIndex), Integer(record.source_task_index));
+  payload.Set(String(schema_key::kTargetTaskIndex), Integer(record.target_task_index));
   payload.Set(String(schema_key::kPayloadKind), String(payload_kind));
   payload.Set(String(schema_key::kDeliveryKind), String(delivery_kind));
-  if (state_index.has_value()) {
-    payload.Set(String(schema_key::kStateIndex), Integer(state_index.value()));
-  }
   return payload;
 }
 
-Map<String, Any> BuildChannelPayload(const ChannelSynthesisRecord& record, const char* payload_kind,
-                                     const char* delivery_kind) {
-  Map<String, Any> payload =
-      BuildChannelPayload(record.source_task_index, record.target_task_index, payload_kind,
-                          delivery_kind, record.state_index);
-  if (record.source_version.has_value()) {
-    payload.Set(String(schema_key::kSourceVersion), String(record.source_version.value()));
-  }
-  if (record.target_version.has_value()) {
-    payload.Set(String(schema_key::kTargetVersion), String(record.target_version.value()));
-  }
-  return payload;
-}
-
-Map<String, Any> BuildPlacementPayload(int task_index, const char* affinity_kind,
-                                       const char* obligation_kind,
-                                       const char* placement_domain) {
+Map<String, Any> BuildPlacementPayload(int task_index, const char* affinity_kind) {
   Map<String, Any> payload;
   payload.Set(String(schema_key::kTaskIndex), Integer(task_index));
   payload.Set(String(schema_key::kAffinityKind), String(affinity_kind));
-  payload.Set(String(schema_key::kObligationKind), String(obligation_kind));
-  payload.Set(String(schema_key::kPlacementDomain), String(placement_domain));
+  payload.Set(String(schema_key::kObligationKind), String("execution"));
+  payload.Set(String(schema_key::kPlacementDomain), String("logical_worker_grid"));
   return payload;
 }
 
@@ -926,88 +1046,342 @@ Map<String, Any> BuildProgramPhasePayload(int phase_index, const std::vector<int
   return payload;
 }
 
-Array<TIRAnchor> MakeAnchors(const std::string& kind, const std::string& value);
-
-Task MakeSpatialTask(const TaskSynthesisRecord& record, int phase_index,
-                     const std::string& anchor_name) {
-  return Task(String(record.task_name), String(record.task_kind), String(record.phase_name),
-              ToStringArray(record.update_names), ToStringArray(record.task_traits),
-              BuildTaskPayload(phase_index, record), MakeAnchors("spatial_task", anchor_name));
+Map<String, Any> BuildMemberFuncTargetPayload() {
+  Map<String, Any> payload;
+  payload.Set(String(schema_key::kTargetKind), String(spatial_contract::kMemberFuncTarget));
+  return payload;
 }
 
-Placement MakeExecutionPlacement(const std::string& placement_name, const std::string& task_name,
-                                 int task_index, const std::string& member_func,
-                                 const char* affinity_kind, const char* obligation_kind,
-                                 const char* placement_domain,
-                                 Array<String> traits = MakeTraits({"phase_b"})) {
-  return Placement(String(placement_name), String(sp::ToString(sp::SpatialPlacementKind::kExecution)),
-                   String(task_name), String(member_func), std::move(traits),
-                   BuildPlacementPayload(task_index, affinity_kind, obligation_kind,
-                                        placement_domain),
-                   MakeAnchors("spatial_placement", task_name));
+Map<String, Any> BuildBufferTargetPayload() {
+  Map<String, Any> payload;
+  payload.Set(String(schema_key::kTargetKind), String(spatial_contract::kBufferTarget));
+  return payload;
 }
 
-Channel MakeSpatialChannel(const std::string& channel_name, sp::SpatialChannelKind channel_kind,
-                           const std::string& source_task_name,
-                           const std::string& target_task_name,
-                           const std::string& state_name, Array<String> traits,
-                           Map<String, Any> payload) {
-  return Channel(String(channel_name), String(sp::ToString(channel_kind)),
-                 String(source_task_name), String(target_task_name), String(state_name),
-                 std::move(traits), std::move(payload),
-                 MakeAnchors("spatial_channel", channel_name));
+Task MakeSpatialTask(const TaskRecord& record, int phase_index) {
+  return Task(String(record.name), String(record.kind), String(record.phase_name), Array<String>{},
+              ToStringArray(record.traits), BuildTaskPayload(phase_index, record),
+              MakeAnchors("spatial_task", record.name));
+}
+
+Placement MakeExecutionPlacement(const TaskRecord& record, int task_index,
+                                 const std::string& member_func) {
+  const char* affinity = NeutralPlacementAffinityForExecutionRole(record.execution_role);
+  return Placement(String("place_" + record.name),
+                   String(sp::ToString(sp::SpatialPlacementKind::kExecution)),
+                   String(record.name), String(member_func), MakeTraits({"phase_b"}),
+                   BuildPlacementPayload(task_index, affinity),
+                   MakeAnchors("spatial_placement", record.name));
+}
+
+Channel MakeSpatialChannel(const ChannelRecord& record, const SpatialCapabilityModel& capability_model) {
+  const char* channel_kind = SelectChannelKind(capability_model, record.kind);
+  const char* payload_kind = SelectChannelPayloadKind(capability_model, record.payload_kind);
+  const char* delivery_kind = SelectChannelDeliveryKind(capability_model, record.delivery_kind);
+  Array<String> traits = ToStringArray(record.traits);
+  return Channel(String(record.name), String(channel_kind), String(record.source_task_name),
+                 String(record.target_task_name), String(record.subject), std::move(traits),
+                 BuildChannelPayload(record, payload_kind, delivery_kind),
+                 MakeAnchors("spatial_channel", record.name));
 }
 
 ProgramPhase MakeProgramPhaseNode(const std::string& phase_name,
                                   const std::vector<std::string>& task_names,
                                   const std::vector<std::string>& channel_names,
-                                  Array<String> traits, Map<String, Any> payload) {
+                                  int phase_index, const std::vector<int>& task_indices,
+                                  const std::vector<int>& channel_indices,
+                                  const std::string& closure_basis) {
   return ProgramPhase(String(phase_name), ToStringArray(task_names), ToStringArray(channel_names),
-                      std::move(traits), std::move(payload), MakeAnchors("spatial_phase", phase_name));
+                      MakeTraits({"phase_b"}),
+                      BuildProgramPhasePayload(phase_index, task_indices, channel_indices,
+                                               closure_basis),
+                      MakeAnchors("spatial_phase", phase_name));
 }
 
-SyncEdge MakeCompletionSyncEdge(const std::string& sync_name, const std::string& source_task_name,
-                                const std::string& target_task_name, int source_task_index,
+SyncEdge MakeCompletionSyncEdge(const std::string& name, const std::string& source,
+                                const std::string& target, int source_task_index,
                                 int target_task_index, const std::string& ordering_kind,
-                                const std::string& materialization_kind,
-                                Array<String> traits = MakeTraits({"phase_boundary", "graph_ordered"})) {
-  return SyncEdge(String(sync_name), String(sp::ToString(sp::SpatialSyncKind::kCompletion)),
-                  String(source_task_name), String(target_task_name), std::move(traits),
+                                const std::string& materialization_kind) {
+  return SyncEdge(String(name), String(sp::ToString(sp::SpatialSyncKind::kCompletion)),
+                  String(source), String(target),
+                  MakeTraits({"phase_boundary", "graph_ordered"}),
                   BuildSyncEdgePayload(source_task_index, target_task_index, ordering_kind,
                                        materialization_kind),
-                  MakeAnchors("spatial_sync", sync_name));
+                  MakeAnchors("spatial_sync", name));
 }
 
-Array<TIRAnchor> MakeAnchors(const std::string& kind, const std::string& value) {
-  return Array<TIRAnchor>{TIRAnchor(String(kind), String(value))};
+std::string KeyForAnyMap(const Map<String, Any>& map, const char* primary_key,
+                         const char* secondary_key = nullptr) {
+  if (auto value = map.Get(String(primary_key))) {
+    if (auto maybe_string = value.value().try_cast<String>()) {
+      return maybe_string.value();
+    }
+  }
+  if (secondary_key != nullptr) {
+    if (auto value = map.Get(String(secondary_key))) {
+      if (auto maybe_string = value.value().try_cast<String>()) {
+        return maybe_string.value();
+      }
+    }
+  }
+  return "";
 }
 
-std::string GetMemberFuncName(const GlobalVar& gvar, const tir::PrimFunc& func) {
-  return func->GetAttr<String>(tvm::attr::kGlobalSymbol).value_or(gvar->name_hint);
+FragmentFacts AnalyzeFragmentFacts(const tir::PrimFunc& func) {
+  FragmentFacts facts;
+  Array<Any> fragment_ops;
+  Array<Any> pointwise_ops;
+  Array<Any> row_reduction_targets;
+  Array<Any> row_broadcast_sources;
+  Array<Any> fragment_loop_carried_state;
+  Array<Any> fragment_layout_contracts;
+  std::unordered_set<std::string> seen_fragment_ops;
+  std::unordered_set<std::string> seen_pointwise_ops;
+  std::unordered_set<std::string> seen_reduction_targets;
+  std::unordered_set<std::string> seen_row_broadcasts;
+  std::unordered_set<std::string> seen_loop_carried;
+  std::unordered_set<std::string> seen_layout_contracts;
+
+  for (const Any& region_any : GetFragmentRegions(func)) {
+    Map<String, Any> region = Downcast<Map<String, Any>>(region_any);
+    if (auto maybe_ops = region.Get(String("ops"))) {
+      for (const Any& op_any : Downcast<Array<Any>>(maybe_ops.value())) {
+        const std::string name = Downcast<String>(op_any);
+        PushBackUnique(&fragment_ops, &seen_fragment_ops, String(name), name);
+      }
+    }
+    if (auto maybe_ops = region.Get(String("pointwise_ops"))) {
+      for (const Any& op_any : Downcast<Array<Any>>(maybe_ops.value())) {
+        const std::string name = Downcast<String>(op_any);
+        PushBackUnique(&pointwise_ops, &seen_pointwise_ops, String(name), name);
+      }
+    }
+    if (auto maybe_targets = region.Get(String(manifest_key::kRowReductions))) {
+      for (const Any& target_any : Downcast<Array<Any>>(maybe_targets.value())) {
+        Map<String, Any> target = Downcast<Map<String, Any>>(target_any);
+        const std::string name = KeyForAnyMap(target, schema_key::kTarget);
+        if (!name.empty()) {
+          facts.reduction_subjects.insert(name);
+          PushBackUnique(&row_reduction_targets, &seen_reduction_targets, target, name);
+        }
+      }
+    }
+    if (auto maybe_sources = region.Get(String("row_broadcasts"))) {
+      for (const Any& source_any : Downcast<Array<Any>>(maybe_sources.value())) {
+        Map<String, Any> source = Downcast<Map<String, Any>>(source_any);
+        const std::string name = KeyForAnyMap(source, schema_key::kSource);
+        PushBackUnique(&row_broadcast_sources, &seen_row_broadcasts, source, name);
+      }
+    }
+    if (auto maybe_targets = region.Get(String(manifest_key::kSelectionTargets))) {
+      for (const Any& target_any : Downcast<Array<Any>>(maybe_targets.value())) {
+        Map<String, Any> target = Downcast<Map<String, Any>>(target_any);
+        const std::string name = KeyForAnyMap(target, schema_key::kName);
+        if (!name.empty()) {
+          facts.selection_subjects.insert(name);
+        }
+      }
+    }
+    if (auto maybe_state = region.Get(String(manifest_key::kLoopCarriedState))) {
+      for (const Any& state_any : Downcast<Array<Any>>(maybe_state.value())) {
+        Map<String, Any> state = Downcast<Map<String, Any>>(state_any);
+        const std::string name = KeyForAnyMap(state, schema_key::kName);
+        if (!name.empty()) {
+          facts.recurrence_subjects.insert(name);
+          PushBackUnique(&fragment_loop_carried_state, &seen_loop_carried, state, name);
+        }
+      }
+    }
+    if (auto maybe_recurrence = region.Get(String(manifest_key::kRecurrenceEdges))) {
+      for (const Any& edge_any : Downcast<Array<Any>>(maybe_recurrence.value())) {
+        Map<String, Any> edge = Downcast<Map<String, Any>>(edge_any);
+        const std::string target = KeyForAnyMap(edge, schema_key::kTarget);
+        if (!target.empty()) {
+          facts.recurrence_subjects.insert(target);
+        }
+      }
+    }
+    if (auto maybe_layouts = region.Get(String(schema_key::kFragmentLayoutContracts))) {
+      for (const Any& layout_any : Downcast<Array<Any>>(maybe_layouts.value())) {
+        Map<String, Any> layout = Downcast<Map<String, Any>>(layout_any);
+        const std::string buffer = KeyForAnyMap(layout, schema_key::kBuffer);
+        PushBackUnique(&fragment_layout_contracts, &seen_layout_contracts, layout, buffer);
+      }
+    }
+  }
+
+  Array<Any> flow_contracts = CollectFragmentBufferFlowContractsFromBody(func->body);
+  Array<Any> materialization_contracts = CollectFragmentMaterializationContractsFromBody(func->body);
+  AppendUniqueFragmentMaterializationContractsFromFlowContracts(flow_contracts,
+                                                                &materialization_contracts);
+  AppendUniqueCastDrivenFragmentMaterializationContractsFromBody(
+      func->body, flow_contracts, BuildLogicalBufferShapes(func), &materialization_contracts);
+
+  if (!fragment_ops.empty()) {
+    facts.fragment_payload.Set(String(schema_key::kFragmentOpKinds), fragment_ops);
+  }
+  if (!pointwise_ops.empty()) {
+    facts.fragment_payload.Set(String(schema_key::kPointwiseOpKinds), pointwise_ops);
+  }
+  if (!row_reduction_targets.empty()) {
+    facts.fragment_payload.Set(String(schema_key::kRowReductionTargets), row_reduction_targets);
+  }
+  if (!row_broadcast_sources.empty()) {
+    facts.fragment_payload.Set(String(schema_key::kRowBroadcastSources), row_broadcast_sources);
+  }
+  if (!fragment_loop_carried_state.empty()) {
+    facts.fragment_payload.Set(String(schema_key::kFragmentLoopCarriedState),
+                               fragment_loop_carried_state);
+  }
+  if (!fragment_layout_contracts.empty()) {
+    facts.fragment_payload.Set(String(schema_key::kFragmentLayoutContracts),
+                               fragment_layout_contracts);
+  }
+  if (!materialization_contracts.empty()) {
+    facts.fragment_payload.Set(String(schema_key::kFragmentMaterializationContracts),
+                               materialization_contracts);
+  }
+  if (!flow_contracts.empty()) {
+    facts.fragment_payload.Set(String(schema_key::kFragmentBufferFlowContracts), flow_contracts);
+  }
+  return facts;
 }
 
-void AppendPipelineResourceIntent(const std::string& member_func, const SemanticProgram& program,
+bool HasFragmentContract(const FragmentFacts& fragment_facts) {
+  auto maybe_fragment_ops = fragment_facts.fragment_payload.Get(String(schema_key::kFragmentOpKinds));
+  return maybe_fragment_ops && !Downcast<Array<Any>>(maybe_fragment_ops.value()).empty();
+}
+
+std::vector<std::string> DeriveFragmentFastPathSegmentKinds(const tir::PrimFunc& func,
+                                                            const FragmentFacts& fragment_facts) {
+  std::vector<std::string> kinds = CollectSegmentKindsFromBody(func->body);
+  if (std::find(kinds.begin(), kinds.end(), "compute") != kinds.end()) {
+    return kinds;
+  }
+  if (!HasFragmentContract(fragment_facts)) {
+    return {};
+  }
+  bool has_reader = false;
+  bool has_writer = false;
+  tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
+    const auto* loop = node.as<tir::ForNode>();
+    if (!loop) {
+      return;
+    }
+    auto ann = loop->annotations.Get(String("blackhole.copy_semantics"));
+    if (!ann) {
+      return;
+    }
+    Map<String, Any> ann_map = ann.value().as<Map<String, Any>>().value_or(Map<String, Any>());
+    const std::string direction = GetCopySemanticsField(ann_map, schema_key::kDirection);
+    const std::string kind = GetCopySemanticsField(ann_map, schema_key::kKind);
+    has_reader = has_reader || direction == "dram_to_cb" || kind == "fused_staged_copy";
+    has_writer = has_writer || direction == "cb_to_dram";
+  });
+  if (auto maybe_flows =
+          fragment_facts.fragment_payload.Get(String(schema_key::kFragmentBufferFlowContracts))) {
+    for (const Any& flow_any : Downcast<Array<Any>>(maybe_flows.value())) {
+      Map<String, Any> flow = Downcast<Map<String, Any>>(flow_any);
+      const std::string scope = KeyForAnyMap(flow, schema_key::kScope);
+      if (!has_reader && !IsTrackedStateScope(scope) &&
+          FragmentFlowContractHasEventKind(flow, fragment_flow::kComputeConsume)) {
+        has_reader = true;
+      }
+      if (!has_writer &&
+          FragmentFlowContractHasEventKind(flow, fragment_flow::kTransportConsume)) {
+        has_writer = true;
+      }
+    }
+  }
+  std::vector<std::string> result;
+  if (has_reader) result.push_back("reader");
+  result.push_back("compute");
+  if (has_writer) result.push_back("writer");
+  return result;
+}
+
+bool HasSimpleSegmentKinds(const tir::PrimFunc& func, const std::vector<std::string>& expected) {
+  return CollectSegmentKindsFromBody(func->body) == expected;
+}
+
+bool IsSimpleCopyFastPath(const SpatialPlan& plan, const tir::PrimFunc& func,
+                          const FragmentFacts& fragment_facts) {
+  if (HasFragmentContract(fragment_facts) || HasSimpleSegmentKinds(func, {"reader", "compute", "writer"})) {
+    return false;
+  }
+  return plan->closures.size() == 2 && plan->boundaries.size() <= 2;
+}
+
+bool IsSimpleGemmFastPath(const SpatialPlan& plan, const tir::PrimFunc& func) {
+  if (!HasSimpleSegmentKinds(func, {"reader", "compute", "writer"})) {
+    return false;
+  }
+  if (plan->closures.size() != 4 || plan->boundaries.size() != 4) {
+    return false;
+  }
+  int ingress_count = 0;
+  int compute_count = 0;
+  int egress_count = 0;
+  for (const ExecutionClosure& closure : plan->closures) {
+    const std::string role = closure->execution_role;
+    ingress_count += role == "ingress";
+    compute_count += role == "compute";
+    egress_count += role == "egress";
+  }
+  return ingress_count == 2 && compute_count == 1 && egress_count == 1;
+}
+
+bool IsSimpleFragmentComputeFastPath(const SpatialPlan& plan, const tir::PrimFunc& func,
+                                     const FragmentFacts& fragment_facts) {
+  if (IsSimpleGemmFastPath(plan, func)) {
+    return false;
+  }
+  if (plan->closures.size() > 4 || plan->boundaries.size() > 6) {
+    return false;
+  }
+  return !DeriveFragmentFastPathSegmentKinds(func, fragment_facts).empty();
+}
+
+void BuildCommonSpatialScaffolding(const std::string& member_func, const tir::PrimFunc& func,
+                                   const SpatialCapabilityModel& capability_model,
+                                   const FragmentFacts& fragment_facts,
+                                   Array<SpatialLayout>* layouts,
+                                   Array<WorkPartition>* work_partitions) {
+  const Array<String> axes = GetAxesFromWorkDecomposition(func);
+  const DomainContract contract = DeriveDomainContract(func, axes, fragment_facts);
+  layouts->push_back(SpatialLayout(
+      String("layout_" + member_func), String(SelectLayoutKind(capability_model, contract)),
+      String(member_func), axes, MakeTraits({"phase_b"}),
+      BuildDomainPayload(0, contract), MakeAnchors("spatial_layout", member_func)));
+  work_partitions->push_back(WorkPartition(
+      String("partition_" + member_func), String(SelectPartitionKind(capability_model, contract)),
+      String(member_func), axes, MakeTraits({"phase_b"}),
+      BuildWorkPartitionPayload(func, 0, contract),
+      MakeAnchors("spatial_partition", member_func)));
+}
+
+void AppendPipelineResourceIntent(const std::string& member_func, const tir::PrimFunc& func,
                                   Array<ResourceIntent>* resource_intents) {
-  auto pipeline_stages = GetPipelineStagesFromSupplements(program);
-  if (!pipeline_stages.has_value() || pipeline_stages->empty()) {
+  Array<Any> stages = GetPipelineStages(func);
+  if (stages.empty()) {
     return;
   }
   Map<String, Any> payload = BuildMemberFuncTargetPayload();
-  payload.Set(String(schema_key::kPipelineStages), pipeline_stages.value());
+  payload.Set(String(schema_key::kPipelineStages), stages);
   resource_intents->push_back(ResourceIntent(
       String("pipeline_contract_" + member_func),
       String(sp::ToString(sp::SpatialResourceIntentKind::kSynchronizationSupport)),
-      String(member_func), MakeTraits({"phase_b", "pipeline_contract"}), std::move(payload),
+      String(member_func), MakeTraits({"phase_b", "pipeline_contract"}), payload,
       MakeAnchors("spatial_resource_intent", "pipeline_contract_" + member_func)));
 }
 
-void AppendFragmentResourceIntent(const std::string& member_func, const SemanticProgram& program,
+void AppendFragmentResourceIntent(const std::string& member_func,
+                                  const FragmentFacts& fragment_facts,
                                   Array<ResourceIntent>* resource_intents) {
-  auto fragment_payload = GetFragmentLoweringPayloadFromSupplements(program);
-  if (!fragment_payload.has_value()) {
+  if (fragment_facts.fragment_payload.empty()) {
     return;
   }
-  Map<String, Any> payload = fragment_payload.value();
+  Map<String, Any> payload = fragment_facts.fragment_payload;
   payload.Set(String(schema_key::kTargetKind), String(spatial_contract::kMemberFuncTarget));
   resource_intents->push_back(ResourceIntent(
       String("fragment_contract_" + member_func),
@@ -1016,712 +1390,366 @@ void AppendFragmentResourceIntent(const std::string& member_func, const Semantic
       MakeAnchors("spatial_resource_intent", "fragment_contract_" + member_func)));
 }
 
-Map<String, Any> BuildWorkPartitionPayload(const SemanticProgram& program, int domain_index,
-                                           const DomainRealizationContract& contract) {
-  Map<String, Any> payload = BuildDomainPayload(domain_index, contract);
-  payload.Set(String(schema_key::kPartitionFamily), String(contract.partition_family));
-  if (auto loop_bounds = GetWorkDependentLoopBoundsFromSupplements(program)) {
-    payload.Set(String(schema_key::kWorkDependentLoopBounds), loop_bounds.value());
-  }
-  return payload;
-}
-
-std::vector<std::string> CollectSegmentKindsFromBody(const tir::Stmt& body) {
-  class SegmentKindCollector : public tir::StmtVisitor {
-   public:
-    void VisitStmt_(const tir::AttrStmtNode* op) final {
-      if (op->attr_key == "blackhole.segment_kind") {
-        if (const auto* kind = op->value.as<tir::StringImmNode>()) {
-          const std::string segment_kind = kind->value;
-          if (seen_.insert(segment_kind).second) {
-            segment_kinds_.push_back(segment_kind);
-          }
-        }
-      }
-      tir::StmtVisitor::VisitStmt_(op);
-    }
-
-    const std::vector<std::string>& segment_kinds() const { return segment_kinds_; }
-
-   private:
-    std::unordered_set<std::string> seen_;
-    std::vector<std::string> segment_kinds_;
-  };
-
-  SegmentKindCollector collector;
-  collector(body);
-  return collector.segment_kinds();
-}
-
-bool HasSimpleSegmentKinds(const tir::PrimFunc& func, const std::vector<std::string>& expected_kinds) {
-  return CollectSegmentKindsFromBody(func->body) == expected_kinds;
-}
-
-bool IsSimpleCopyFastPath(const SemanticProgram& program, const tir::PrimFunc& func) {
-  if (HasSimpleSegmentKinds(func, {"reader", "compute", "writer"})) {
-    return false;
-  }
-  if (!program->states.empty() || program->updates.size() != 1) {
-    return false;
-  }
-  auto kind = ParseUpdateLawKind(str(program->updates[0]->law->kind));
-  return kind && *kind == UpdateLawKind::kMap;
-}
-
-bool IsSimpleGemmFastPath(const SemanticProgram& program, const tir::PrimFunc& func) {
-  if (!HasSimpleSegmentKinds(func, {"reader", "compute", "writer"})) {
-    return false;
-  }
-  if (program->updates.size() != 1 || program->states.size() > 1) {
-    return false;
-  }
-  if (program->states.size() == 1) {
-    auto role = ParseStateRole(str(program->states[0]->role));
-    if (!role || *role != StateRole::kTransient) {
-      return false;
-    }
-  }
-  return true;
-}
-
-void BuildCommonSpatialScaffolding(const std::string& member_func, const SemanticProgram& program,
-                                   const SpatialCapabilityModel& capability_model,
-                                   Array<SpatialLayout>* layouts,
-                                   Array<WorkPartition>* work_partitions) {
-  const std::vector<DomainRealizationContract> domain_contracts =
-      DeriveDomainRealizationContracts(program);
-  const bool multi_domain = program->domains.size() > 1;
-  for (int domain_index = 0; domain_index < program->domains.size(); ++domain_index) {
-    const Domain& domain = program->domains[domain_index];
-    const DomainRealizationContract& domain_contract = domain_contracts[domain_index];
-    const char* layout_kind = SelectLayoutKind(capability_model, domain_contract);
-    const char* partition_kind = SelectPartitionKind(capability_model, domain_contract);
-    const std::string domain_suffix =
-        multi_domain ? "_" + str(domain->name) : std::string("");
-    layouts->push_back(SpatialLayout(
-        String("layout_" + member_func + domain_suffix), String(layout_kind), String(member_func),
-        domain->axes, MakeTraits({"phase_b"}), BuildDomainPayload(domain_index, domain_contract),
-        MakeAnchors("spatial_layout", member_func + domain_suffix)));
-    work_partitions->push_back(WorkPartition(
-        String("partition_" + member_func + domain_suffix), String(partition_kind),
-        String(member_func), domain->axes, MakeTraits({"phase_b"}),
-        BuildWorkPartitionPayload(program, domain_index, domain_contract),
-        MakeAnchors("spatial_partition", member_func + domain_suffix)));
-  }
-}
-
-std::string BuildPhaseClosureBasis(const std::string& phase_name,
-                                   const std::vector<int>& task_indices,
-                                   const std::vector<ChannelSynthesisRecord>& channel_records,
-                                   const std::vector<TaskSynthesisRecord>& task_records) {
-  int internal_edges = 0;
-  int incoming_edges = 0;
-  int outgoing_edges = 0;
-  std::vector<std::string> closure_bases;
-  for (const ChannelSynthesisRecord& record : channel_records) {
-    const std::string& source_phase = task_records[record.source_task_index].phase_name;
-    const std::string& target_phase = task_records[record.target_task_index].phase_name;
-    if (source_phase == phase_name && target_phase == phase_name) {
-      ++internal_edges;
-    } else if (target_phase == phase_name) {
-      ++incoming_edges;
-    } else if (source_phase == phase_name) {
-      ++outgoing_edges;
-    }
-    if (source_phase == phase_name || target_phase == phase_name) {
-      PushBackUnique(&closure_bases, DeriveOrderingKindForChannelRecord(record));
-    }
-  }
-  std::string basis_summary;
-  for (int i = 0; i < static_cast<int>(closure_bases.size()); ++i) {
-    if (i != 0) {
-      basis_summary += ",";
-    }
-    basis_summary += closure_bases[i];
-  }
-  return "task_graph_closure|phase=" + phase_name + "|task_count=" +
-         std::to_string(task_indices.size()) + "|internal_edges=" +
-         std::to_string(internal_edges) + "|incoming_edges=" +
-         std::to_string(incoming_edges) + "|outgoing_edges=" +
-         std::to_string(outgoing_edges) + "|ordering_basis=" + basis_summary;
-}
-
-PhaseSynthesisResult SynthesizeProgramPhases(std::vector<TaskSynthesisRecord>* task_records,
-                                             const std::vector<ChannelSynthesisRecord>& channel_records) {
-  ICHECK(task_records != nullptr);
-  std::vector<int> phase_rank;
-  phase_rank.reserve(task_records->size());
-  for (const TaskSynthesisRecord& record : *task_records) {
-    phase_rank.push_back(record.phase_rank);
-  }
-  std::unordered_set<std::string> seen_ordering_edges;
-  std::vector<std::vector<int>> successors(task_records->size());
-  std::vector<int> indegree(task_records->size(), 0);
-  for (const ChannelSynthesisRecord& record : channel_records) {
-    if (!record.ordering_critical || record.source_task_index == record.target_task_index) {
+void AppendPhaseBoundaryResourceIntents(const std::vector<ChannelRecord>& channel_records,
+                                        Array<ResourceIntent>* resource_intents) {
+  std::unordered_set<std::string> seen_subjects;
+  for (const ChannelRecord& record : channel_records) {
+    if (record.delivery_kind != sp::SpatialChannelDeliveryKind::kPhaseBoundaryMaterialized ||
+        record.subject.empty() || !seen_subjects.insert(record.subject).second) {
       continue;
     }
-    const std::string edge_key = std::to_string(record.source_task_index) + "->" +
-                                 std::to_string(record.target_task_index);
-    if (!seen_ordering_edges.insert(edge_key).second) {
-      continue;
-    }
-    successors[record.source_task_index].push_back(record.target_task_index);
-    ++indegree[record.target_task_index];
+    resource_intents->push_back(ResourceIntent(
+        String("phase_boundary_" + record.subject),
+        String(sp::ToString(sp::SpatialResourceIntentKind::kPhaseBoundaryMaterialization)),
+        String(record.subject), MakeTraits({"phase_boundary"}), BuildBufferTargetPayload(),
+        MakeAnchors("spatial_resource_intent", "phase_boundary_" + record.subject)));
   }
-
-  std::vector<int> ready;
-  ready.reserve(task_records->size());
-  for (int task_index = 0; task_index < static_cast<int>(task_records->size()); ++task_index) {
-    if (indegree[task_index] == 0) {
-      ready.push_back(task_index);
-    }
-  }
-  std::sort(ready.begin(), ready.end());
-
-  int processed = 0;
-  while (!ready.empty()) {
-    const int task_index = ready.front();
-    ready.erase(ready.begin());
-    ++processed;
-    for (int successor : successors[task_index]) {
-      phase_rank[successor] = std::max(phase_rank[successor], phase_rank[task_index] + 1);
-      --indegree[successor];
-      if (indegree[successor] == 0) {
-        ready.push_back(successor);
-        std::sort(ready.begin(), ready.end());
-      }
-    }
-  }
-  ICHECK_EQ(processed, static_cast<int>(task_records->size()))
-      << "LowerToSpatialProgram requires ordering-critical task graph to be acyclic";
-
-  std::unordered_map<int, int> compact_rank_by_rank;
-  for (int rank : phase_rank) {
-    if (!compact_rank_by_rank.count(rank)) {
-      compact_rank_by_rank[rank] = static_cast<int>(compact_rank_by_rank.size());
-    }
-  }
-
-  PhaseSynthesisResult result;
-  for (int i = 0; i < static_cast<int>(task_records->size()); ++i) {
-    TaskSynthesisRecord& record = (*task_records)[i];
-    record.phase_rank = compact_rank_by_rank.at(phase_rank[i]);
-    record.phase_name = "phase_" + std::to_string(record.phase_rank);
-    if (!result.phase_index_by_name.count(record.phase_name)) {
-      result.phase_index_by_name[record.phase_name] = record.phase_rank;
-      result.phase_order.push_back(record.phase_name);
-    }
-  }
-  std::stable_sort(result.phase_order.begin(), result.phase_order.end(),
-                   [&](const std::string& lhs, const std::string& rhs) {
-                     return result.phase_index_by_name.at(lhs) <
-                            result.phase_index_by_name.at(rhs);
-                   });
-  return result;
 }
 
-std::vector<PhaseSyncSynthesisRecord> BuildPhaseSyncRecords(
-    const std::unordered_map<std::string, int>& phase_index_by_name,
-    const std::vector<TaskSynthesisRecord>& task_records,
-    const std::vector<ChannelSynthesisRecord>& channel_records) {
-  std::vector<PhaseSyncSynthesisRecord> records;
-  std::unordered_set<std::string> seen_phase_edges;
-  auto add_record = [&](const std::string& source_phase_name, const std::string& target_phase_name,
-                        int source_task_index, int target_task_index,
-                        const std::string& ordering_kind,
-                        const std::string& materialization_kind) {
-    if (source_phase_name == target_phase_name || source_task_index < 0 || target_task_index < 0) {
-      return;
-    }
-    std::string key = source_phase_name + "->" + target_phase_name + "|" + ordering_kind + "|" +
-                      materialization_kind;
-    if (!seen_phase_edges.insert(key).second) {
-      return;
-    }
-    records.push_back(PhaseSyncSynthesisRecord{
-        source_phase_name,
-        target_phase_name,
-        source_task_index,
-        target_task_index,
-        ordering_kind,
-        materialization_kind,
-    });
-  };
-
-  for (const ChannelSynthesisRecord& record : channel_records) {
-    if (!IsOrderingCriticalChannel(record)) {
-      continue;
-    }
-    const std::string& source_phase_name = task_records[record.source_task_index].phase_name;
-    const std::string& target_phase_name = task_records[record.target_task_index].phase_name;
-    if (source_phase_name == target_phase_name) {
-      continue;
-    }
-    add_record(source_phase_name, target_phase_name, record.source_task_index,
-               record.target_task_index, DeriveOrderingKindForChannelRecord(record),
-               DeriveMaterializationKindForChannelRecord(record));
-  }
-
-  std::stable_sort(records.begin(), records.end(),
-                   [&](const PhaseSyncSynthesisRecord& lhs,
-                       const PhaseSyncSynthesisRecord& rhs) {
-                     if (lhs.source_phase_name != rhs.source_phase_name) {
-                       return phase_index_by_name.at(lhs.source_phase_name) <
-                              phase_index_by_name.at(rhs.source_phase_name);
-                     }
-                     return phase_index_by_name.at(lhs.target_phase_name) <
-                            phase_index_by_name.at(rhs.target_phase_name);
-                   });
-  return records;
-}
-
-SpatialProgramBundle BuildCopyFastPath(const std::string& member_func,
-                                       const SemanticProgram& program,
-                                       const SpatialCapabilityModel& capability_model) {
-  const char* task_kind = sp::ToString(sp::SpatialTaskKind::kTransfer);
-  const char* channel_kind =
-      SelectChannelKind(capability_model, sp::SpatialChannelKind::kPointToPoint);
-  const char* payload_kind =
-      SelectChannelPayloadKind(capability_model, sp::SpatialChannelPayloadKind::kTensor);
-  const char* delivery_kind =
-      SelectChannelDeliveryKind(capability_model, sp::SpatialChannelDeliveryKind::kBufferedAsync);
-  TaskSynthesisRecord copy_record;
-  copy_record.task_name = "copy";
-  copy_record.task_kind = task_kind;
-  copy_record.phase_name = "phase0_copy";
-  copy_record.execution_role = "transfer_copy";
-  copy_record.formation_basis = "fast_path|segment=copy|boundary=tensor_transfer";
-  copy_record.update_names = {str(program->updates[0]->name)};
-  copy_record.task_traits = {"fast_path", "copy"};
-  Array<Task> tasks{MakeSpatialTask(copy_record, 0, "copy")};
-  Array<Channel> channels{MakeSpatialChannel(
-      "copy_tensor", sp::SpatialChannelKind::kPointToPoint, "copy", "copy", "",
-      MakeTraits({"fast_path", "copy"}), BuildChannelPayload(0, 0, payload_kind, delivery_kind))};
-  Array<ProgramPhase> phases{MakeProgramPhaseNode(
-      "phase0_copy", {"copy"}, {"copy_tensor"}, MakeTraits({"fast_path", "copy"}),
-      BuildProgramPhasePayload(0, {0}, {0}, "single_phase_fast_path|task_graph_closure"))};
+SpatialExecutionPlan BuildCopyFastPath(const std::string& member_func, const tir::PrimFunc& func,
+                                       const SpatialCapabilityModel& capability_model,
+                                       const FragmentFacts& fragment_facts) {
+  TaskRecord record{"copy", sp::ToString(sp::SpatialTaskKind::kTransfer), "phase0_copy",
+                    "transfer_copy", "fast_path|segment=copy|boundary=tensor_transfer",
+                    {"fast_path", "copy"}};
+  Array<Task> tasks{MakeSpatialTask(record, 0)};
+  ChannelRecord channel_record{"copy_tensor", sp::SpatialChannelKind::kPointToPoint,
+                               sp::SpatialChannelPayloadKind::kTensor,
+                               sp::SpatialChannelDeliveryKind::kBufferedAsync, 0, 0, "copy",
+                               "copy", "tensor_transfer", {"fast_path", "copy"}};
+  Array<Channel> channels{MakeSpatialChannel(channel_record, capability_model)};
+  Array<ProgramPhase> phases{MakeProgramPhaseNode("phase0_copy", {"copy"}, {"copy_tensor"}, 0, {0},
+                                                  {0}, "single_phase_fast_path|closure_copy")};
+  Array<Placement> placements{MakeExecutionPlacement(record, 0, member_func)};
+  Array<SyncEdge> sync_edges;
+  Array<ResourceIntent> resource_intents;
+  AppendFragmentResourceIntent(member_func, fragment_facts, &resource_intents);
+  AppendPipelineResourceIntent(member_func, func, &resource_intents);
   Array<SpatialLayout> layouts;
   Array<WorkPartition> work_partitions;
-  Array<Placement> placements{MakeExecutionPlacement(
-      "place_copy", "copy", 0, member_func, "ingress", "execution",
-      str(capability_model->placement_domain).c_str(), MakeTraits({"fast_path", "copy"}))};
-  Array<SyncEdge> sync_edges;
-  Array<ResourceIntent> resource_intents{
-      ResourceIntent(String("copy_buffer"),
-                     String(sp::ToString(sp::SpatialResourceIntentKind::kBuffer)), String("copy"),
-                     MakeTraits({"fast_path", "copy"}), EmptyPayload(),
-                     MakeAnchors("spatial_resource_intent", "copy_buffer"))};
-  AppendFragmentResourceIntent(member_func, program, &resource_intents);
-  AppendPipelineResourceIntent(member_func, program, &resource_intents);
-  BuildCommonSpatialScaffolding(member_func, program, capability_model, &layouts,
+  BuildCommonSpatialScaffolding(member_func, func, capability_model, fragment_facts, &layouts,
                                 &work_partitions);
-  return {SpatialProgram(String(member_func), phases, tasks, channels, layouts,
-                         work_partitions, placements, sync_edges, resource_intents,
-                         MakeAnchors("spatial_program", member_func)),
-          phases};
+  return SpatialExecutionPlan(String(member_func), phases, tasks, channels, placements, sync_edges,
+                              resource_intents, MakeAnchors("spatial_execution_plan", member_func));
 }
 
-SpatialProgramBundle BuildGemmFastPath(const std::string& member_func,
-                                       const SemanticProgram& program,
-                                       const tir::PrimFunc& func,
-                                       const SpatialCapabilityModel& capability_model) {
+SpatialExecutionPlan BuildSegmentFastPath(const std::string& member_func, const tir::PrimFunc& func,
+                                          const SpatialCapabilityModel& capability_model,
+                                          const FragmentFacts& fragment_facts,
+                                          const std::vector<std::string>& segment_kinds,
+                                          const std::vector<std::string>& task_traits,
+                                          const std::string& phase_name,
+                                          const std::string& compute_role) {
   Array<Task> tasks;
   Array<Placement> placements;
-  Array<String> task_names;
-  for (const std::string& segment_name : CollectSegmentKindsFromBody(func->body)) {
-    const char* task_kind = segment_name == "compute"
-                                ? sp::ToString(sp::SpatialTaskKind::kCompute)
-                                : sp::ToString(sp::SpatialTaskKind::kTransfer);
+  std::vector<TaskRecord> task_records;
+  for (const std::string& segment_name : segment_kinds) {
     const std::string execution_role =
         segment_name == "reader" ? "tile_ingress"
         : segment_name == "writer" ? "tile_egress"
-                                   : "gemm_compute";
+                                   : compute_role;
     const std::string formation_basis =
-        segment_name == "reader" ? "fast_path|segment=reader|boundary=tensor_transfer"
-        : segment_name == "writer" ? "fast_path|segment=writer|boundary=completion_handoff"
-                                   : "fast_path|segment=compute|boundary=accumulator_update";
-    TaskSynthesisRecord record;
-    record.task_name = segment_name;
-    record.task_kind = task_kind;
-    record.phase_name = "phase0_gemm";
-    record.execution_role = execution_role;
-    record.formation_basis = formation_basis;
-    record.update_names = program->updates.empty()
-                              ? std::vector<std::string>{}
-                              : std::vector<std::string>{str(program->updates[0]->name)};
-    record.task_traits = {"fast_path", "gemm"};
-    tasks.push_back(MakeSpatialTask(record, 0, segment_name));
-    task_names.push_back(String(segment_name));
-    placements.push_back(MakeExecutionPlacement(
-        "place_" + segment_name, segment_name, task_names.size() - 1, member_func,
-        NeutralPlacementAffinityForSegmentKind(segment_name), "execution",
-        str(capability_model->placement_domain).c_str(), MakeTraits({"fast_path", "gemm"})));
+        "fast_path|segment=" + segment_name + "|boundary=" +
+        (segment_name == "reader" ? "tensor_transfer"
+         : segment_name == "writer" ? "completion_handoff"
+                                    : "fragment_dataflow");
+    TaskRecord record{segment_name,
+                      segment_name == "compute" ? sp::ToString(sp::SpatialTaskKind::kCompute)
+                                                : sp::ToString(sp::SpatialTaskKind::kTransfer),
+                      phase_name,
+                      execution_role,
+                      formation_basis,
+                      task_traits};
+    task_records.push_back(record);
+    tasks.push_back(MakeSpatialTask(record, 0));
+    placements.push_back(MakeExecutionPlacement(record, task_records.size() - 1, member_func));
   }
-  const char* tensor_flow =
-      SelectChannelKind(capability_model, sp::SpatialChannelKind::kPointToPoint);
-  const char* tensor_payload =
-      SelectChannelPayloadKind(capability_model, sp::SpatialChannelPayloadKind::kTensor);
-  const char* state_payload =
-      SelectChannelPayloadKind(capability_model, sp::SpatialChannelPayloadKind::kStateVersion);
-  const char* buffered_async =
-      SelectChannelDeliveryKind(capability_model, sp::SpatialChannelDeliveryKind::kBufferedAsync);
-  const char* completion_visible = SelectChannelDeliveryKind(
-      capability_model, sp::SpatialChannelDeliveryKind::kCompletionVisible);
-  const char* output_payload = program->states.empty() ? tensor_payload : state_payload;
-  std::optional<std::string> output_version;
-  if (!program->states.empty()) {
-    const auto update_result_version_by_update =
-        BuildUniqueUpdateResultVersionByUpdate(program->state_defs);
-    if (!program->updates.empty()) {
-      auto version_it = update_result_version_by_update.find(str(program->updates[0]->name));
-      ICHECK(version_it != update_result_version_by_update.end())
-          << "LowerToSpatialProgram requires GEMM fast path state payload to have an "
-             "update-result version";
-      output_version = version_it->second;
-    }
+
+  Array<Channel> channels;
+  Array<SyncEdge> sync_edges;
+  std::vector<std::string> channel_names;
+  for (size_t i = 0; i + 1 < task_records.size(); ++i) {
+    ChannelRecord record{task_records[i].name + "_to_" + task_records[i + 1].name,
+                         sp::SpatialChannelKind::kPointToPoint,
+                         sp::SpatialChannelPayloadKind::kTensor,
+                         task_records[i].name == "compute"
+                             ? sp::SpatialChannelDeliveryKind::kCompletionVisible
+                             : sp::SpatialChannelDeliveryKind::kBufferedAsync,
+                         static_cast<int>(i),
+                         static_cast<int>(i + 1),
+                         task_records[i].name,
+                         task_records[i + 1].name,
+                         task_records[i].name + "_boundary",
+                         task_traits};
+    channel_names.push_back(record.name);
+    channels.push_back(MakeSpatialChannel(record, capability_model));
+    sync_edges.push_back(MakeCompletionSyncEdge(
+        record.name + "_sync", record.source_task_name, record.target_task_name,
+        record.source_task_index, record.target_task_index,
+        DeriveOrderingKindForChannel(record.kind, record.delivery_kind),
+        DeriveMaterializationKindForChannel(record.kind, record.delivery_kind)));
   }
-  Map<String, Any> c_tiles_payload =
-      program->states.empty()
-          ? BuildChannelPayload(1, 2, output_payload, completion_visible)
-          : BuildChannelPayload(1, 2, output_payload, completion_visible, 0);
-  if (output_version.has_value()) {
-    c_tiles_payload.Set(String(schema_key::kSourceVersion), String(output_version.value()));
-    c_tiles_payload.Set(String(schema_key::kTargetVersion), String(output_version.value()));
-  }
-  Array<Channel> channels{
-      MakeSpatialChannel("a_tiles", sp::SpatialChannelKind::kPointToPoint, "reader", "compute",
-                         "A", MakeTraits({"fast_path", "gemm"}),
-                         BuildChannelPayload(0, 1, tensor_payload, buffered_async)),
-      MakeSpatialChannel("b_tiles", sp::SpatialChannelKind::kPointToPoint, "reader", "compute",
-                         "B", MakeTraits({"fast_path", "gemm"}),
-                         BuildChannelPayload(0, 1, tensor_payload, buffered_async)),
-      MakeSpatialChannel("c_tiles", sp::SpatialChannelKind::kPointToPoint, "compute", "writer",
-                         program->states.empty() ? "" : str(program->states[0]->name),
-                         MakeTraits({"fast_path", "gemm"}), c_tiles_payload)};
   Array<ProgramPhase> phases{MakeProgramPhaseNode(
-      "phase0_gemm", {"reader", "compute", "writer"}, {"a_tiles", "b_tiles", "c_tiles"},
-      MakeTraits({"fast_path", "gemm"}),
-      BuildProgramPhasePayload(0, {0, 1, 2}, {0, 1, 2},
-                               "segment_graph_closure|single_phase_fast_path"))};
+      phase_name, [&]() {
+        std::vector<std::string> names;
+        for (const TaskRecord& record : task_records) names.push_back(record.name);
+        return names;
+      }(), channel_names, 0, [&]() {
+        std::vector<int> indices;
+        for (int i = 0; i < static_cast<int>(task_records.size()); ++i) indices.push_back(i);
+        return indices;
+      }(), [&]() {
+        std::vector<int> indices;
+        for (int i = 0; i < static_cast<int>(channel_names.size()); ++i) indices.push_back(i);
+        return indices;
+      }(), "segment_graph_closure|single_phase_fast_path")};
+  Array<ResourceIntent> resource_intents;
+  AppendFragmentResourceIntent(member_func, fragment_facts, &resource_intents);
+  AppendPipelineResourceIntent(member_func, func, &resource_intents);
   Array<SpatialLayout> layouts;
   Array<WorkPartition> work_partitions;
-  Array<SyncEdge> sync_edges{
-      MakeCompletionSyncEdge("reader_to_compute", "reader", "compute", 0, 1,
-                             "must_happen_before", "buffer_visibility",
-                             MakeTraits({"fast_path", "gemm"})),
-      MakeCompletionSyncEdge("compute_to_writer", "compute", "writer", 1, 2,
-                             "must_happen_before", "completion_visibility",
-                             MakeTraits({"fast_path", "gemm"}))};
-  Array<ResourceIntent> resource_intents{
-      ResourceIntent(String("gemm_input_buffers"),
-                     String(sp::ToString(sp::SpatialResourceIntentKind::kBuffer)),
-                     String("reader"),
-                     MakeTraits({"fast_path", "gemm"}), EmptyPayload(),
-                     MakeAnchors("spatial_resource_intent", "gemm_input_buffers"))};
-  if (!program->states.empty()) {
-    resource_intents.push_back(ResourceIntent(
-        String("gemm_accumulator"),
-        String(sp::ToString(sp::SpatialResourceIntentKind::kStateResidency)),
-        String(str(program->states[0]->name)), MakeTraits({"fast_path", "gemm"}),
-        BuildTargetPayload(spatial_contract::kSemanticStateTarget, 0),
-        MakeAnchors("spatial_resource_intent", "gemm_accumulator")));
-  }
-  AppendFragmentResourceIntent(member_func, program, &resource_intents);
-  AppendPipelineResourceIntent(member_func, program, &resource_intents);
-  BuildCommonSpatialScaffolding(member_func, program, capability_model, &layouts,
+  BuildCommonSpatialScaffolding(member_func, func, capability_model, fragment_facts, &layouts,
                                 &work_partitions);
-  return {SpatialProgram(String(member_func), phases, tasks, channels, layouts,
-                         work_partitions, placements, sync_edges, resource_intents,
-                         MakeAnchors("spatial_program", member_func)),
-          phases};
+  return SpatialExecutionPlan(String(member_func), phases, tasks, channels, placements, sync_edges,
+                              resource_intents, MakeAnchors("spatial_execution_plan", member_func));
 }
 
-SpatialProgramBundle BuildGenericSpatialProgram(const std::string& member_func,
-                                                const SemanticProgram& program,
-                                                const SpatialCapabilityModel& capability_model) {
-  std::unordered_map<std::string, int> state_index_by_name;
-  std::unordered_map<std::string, std::optional<StateRole>> state_role_by_name =
-      BuildStateRoleByName(program);
-  for (int i = 0; i < program->states.size(); ++i) {
-    const std::string state_name = str(program->states[i]->name);
-    state_index_by_name[state_name] = i;
-  }
-
-  const std::vector<DomainRealizationContract> domain_contracts =
-      DeriveDomainRealizationContracts(program);
-  TaskFormationResult task_formation =
-      BuildTaskRecords(program, state_role_by_name, domain_contracts, capability_model);
-  std::vector<TaskSynthesisRecord> task_records = task_formation.task_records;
-  std::unordered_map<std::string, int> task_index_by_update_name;
-  for (int i = 0; i < static_cast<int>(task_records.size()); ++i) {
-    for (const std::string& record_update_name : task_records[i].update_names) {
-      task_index_by_update_name[record_update_name] = i;
-    }
-  }
-
-  std::vector<ChannelSynthesisRecord> channel_records;
-  const std::unordered_set<std::string> known_updates = CollectKnownUpdateNames(program);
-  const auto version_to_producer_edges = BuildVersionProducerEdges(program, known_updates);
-  const auto join_by_output_version = BuildStateJoinByOutputVersion(program->state_joins);
-  const auto update_result_version_by_update =
-      BuildUniqueUpdateResultVersionByUpdate(program->state_defs);
-  const auto version_consumer_count_by_version =
-      BuildDistinctConsumerCountByVersion(program->state_uses);
-  std::unordered_set<std::string> seen_channel_keys;
-  for (const StateUse& use : program->state_uses) {
-    const std::string consumer_update = str(use->consumer_update);
-    const std::string version_name = str(use->version_name);
-    if (!task_index_by_update_name.count(consumer_update)) {
+std::vector<int> ComputeTaskPhases(const SpatialPlan& plan) {
+  const int n = static_cast<int>(plan->closures.size());
+  std::vector<std::vector<int>> preds(n);
+  for (const ClosureBoundary& boundary : plan->boundaries) {
+    if (boundary->source_closure_index < 0 || boundary->target_closure_index < 0 ||
+        boundary->source_closure_index == boundary->target_closure_index) {
       continue;
     }
-    const std::string state_name = str(use->state_name);
-    auto state_index_it = state_index_by_name.find(state_name);
-    ICHECK(state_index_it != state_index_by_name.end())
-        << "LowerToSpatialProgram requires StateUse.state_name to reference a known state";
-    auto consumer_target_version_it = update_result_version_by_update.find(consumer_update);
-    ICHECK(consumer_target_version_it != update_result_version_by_update.end())
-        << "LowerToSpatialProgram could not derive a unique consumer target_version for update "
-        << consumer_update;
-    auto producer_edges_it = version_to_producer_edges.find(version_name);
-    std::optional<StateJoinKind> join_kind;
-    auto join_it = join_by_output_version.find(version_name);
-    if (join_it != join_by_output_version.end()) {
-      join_kind = ParseStateJoinKind(str(join_it->second->kind));
+    preds[boundary->target_closure_index].push_back(boundary->source_closure_index);
+  }
+  std::vector<int> phase(n, 0);
+  for (int i = 0; i < n; ++i) {
+    for (int pred : preds[i]) {
+      phase[i] = std::max(phase[i], phase[pred] + 1);
     }
-    if (producer_edges_it == version_to_producer_edges.end()) {
-      ICHECK(!join_kind.has_value())
-          << "LowerToSpatialProgram missing producer task linkage for join output version "
-          << version_name;
+  }
+  return phase;
+}
+
+std::unordered_map<std::string, int> CountSubjectConsumers(const SpatialPlan& plan) {
+  std::unordered_map<std::string, std::unordered_set<int64_t>> consumers;
+  for (const ClosureBoundary& boundary : plan->boundaries) {
+    if (boundary->target_closure_index >= 0) {
+      consumers[boundary->subject].insert(boundary->target_closure_index);
+    }
+  }
+  std::unordered_map<std::string, int> counts;
+  for (const auto& [subject, targets] : consumers) {
+    counts[subject] = static_cast<int>(targets.size());
+  }
+  return counts;
+}
+
+std::string BuildPhaseClosureBasis(const std::string& phase_name, int task_count,
+                                   const std::vector<std::string>& ordering_kinds) {
+  std::string basis = "spatial_boundary_graph|phase=" + phase_name +
+                      "|task_count=" + std::to_string(task_count) + "|ordering_basis=";
+  for (int i = 0; i < static_cast<int>(ordering_kinds.size()); ++i) {
+    if (i != 0) basis += ",";
+    basis += ordering_kinds[i];
+  }
+  return basis;
+}
+
+SpatialExecutionPlan BuildGenericSpatialProgram(const std::string& member_func, const SpatialPlan& plan,
+                                                const tir::PrimFunc& func,
+                                                const SpatialCapabilityModel& capability_model,
+                                                const FragmentFacts& fragment_facts) {
+  const std::vector<int> task_phase = ComputeTaskPhases(plan);
+  const auto subject_consumer_count = CountSubjectConsumers(plan);
+
+  std::vector<TaskRecord> task_records;
+  task_records.reserve(plan->closures.size());
+  for (int i = 0; i < plan->closures.size(); ++i) {
+    const ExecutionClosure& closure = plan->closures[i];
+    std::vector<std::string> traits{"phase_b"};
+    for (const String& trait : closure->traits) {
+      PushBackUnique(&traits, static_cast<std::string>(trait));
+    }
+    for (const ClosureBoundary& boundary : plan->boundaries) {
+      if (boundary->source_closure_index != i && boundary->target_closure_index != i) {
+        continue;
+      }
+      const std::string subject = boundary->subject;
+      if (fragment_facts.selection_subjects.count(subject)) {
+        PushBackUnique(&traits, std::string("select"));
+      }
+      if (str(boundary->kind) == "carry" || fragment_facts.recurrence_subjects.count(subject)) {
+        PushBackUnique(&traits, std::string("recurrence"));
+      }
+      if (str(boundary->kind) == "join" || fragment_facts.reduction_subjects.count(subject)) {
+        PushBackUnique(&traits, std::string("reduce"));
+      }
+    }
+    std::string task_kind = sp::ToString(sp::SpatialTaskKind::kTransfer);
+    if (closure->execution_role == "compute") {
+      task_kind = HasTrait(ToStringArray(traits), "reduce")
+                      ? sp::ToString(sp::SpatialTaskKind::kCollective)
+                      : HasTrait(ToStringArray(traits), "select") ||
+                                HasTrait(ToStringArray(traits), "recurrence")
+                            ? sp::ToString(sp::SpatialTaskKind::kControl)
+                            : sp::ToString(sp::SpatialTaskKind::kCompute);
+    }
+    task_records.push_back(TaskRecord{
+        static_cast<std::string>(closure->name),
+        task_kind,
+        "phase_" + std::to_string(task_phase[i]),
+        static_cast<std::string>(closure->execution_role),
+        "spatial_plan_closure|basis=" + static_cast<std::string>(closure->closure_basis),
+        std::move(traits),
+    });
+  }
+
+  std::vector<ChannelRecord> channel_records;
+  channel_records.reserve(plan->boundaries.size());
+  for (const ClosureBoundary& boundary : plan->boundaries) {
+    if (boundary->source_closure_index < 0 || boundary->target_closure_index < 0) {
       continue;
     }
-    const auto maybe_role = state_role_by_name.count(state_name) ? state_role_by_name.at(state_name)
-                                                                 : std::optional<StateRole>();
-    for (const ProducerVersionEdge& producer_edge : producer_edges_it->second) {
-      if (!task_index_by_update_name.count(producer_edge.producer_update)) {
-        continue;
-      }
-      std::string channel_key =
-          producer_edge.producer_update + "|" + consumer_update + "|" + state_name + "|" +
-          version_name + "|" + consumer_target_version_it->second + "|" + str(use->kind);
-      if (!seen_channel_keys.insert(channel_key).second) {
-        continue;
-      }
-      const int source_task_index = task_index_by_update_name.at(producer_edge.producer_update);
-      const int target_task_index = task_index_by_update_name.at(consumer_update);
-      const int version_consumer_count =
-          version_consumer_count_by_version.count(version_name)
-              ? version_consumer_count_by_version.at(version_name)
-              : 0;
-      const sp::SpatialChannelKind flow_kind =
-          DeriveStateVersionBaseFlowKind(use, maybe_role, join_kind,
-                                         version_consumer_count);
-      const std::string channel_name =
-          "channel_" + state_name + "_" + version_name + "_" + str(use->kind) + "_" +
-          producer_edge.producer_update + "_to_" + consumer_update;
-      channel_records.push_back(ChannelSynthesisRecord{
-          channel_name,
-          flow_kind,
-          sp::SpatialChannelPayloadKind::kStateVersion,
-          DeriveStateVersionDeliveryKind(flow_kind, false),
-          IsOrderingCriticalFlowKind(flow_kind),
-          source_task_index,
-          target_task_index,
-          state_index_it->second,
-          version_name,
-          consumer_target_version_it->second,
-      });
+    const std::string subject = boundary->subject;
+    sp::SpatialChannelKind kind = sp::SpatialChannelKind::kPointToPoint;
+    if (str(boundary->kind) == "carry" || fragment_facts.recurrence_subjects.count(subject)) {
+      kind = sp::SpatialChannelKind::kCarry;
+    } else if (str(boundary->kind) == "join" || fragment_facts.reduction_subjects.count(subject)) {
+      kind = sp::SpatialChannelKind::kReduceMerge;
+    } else if (fragment_facts.selection_subjects.count(subject)) {
+      kind = sp::SpatialChannelKind::kGather;
+    } else if (subject_consumer_count.count(subject) && subject_consumer_count.at(subject) > 1) {
+      kind = sp::SpatialChannelKind::kBroadcast;
     }
+    const bool cross_phase = task_phase[boundary->source_closure_index] !=
+                             task_phase[boundary->target_closure_index];
+    sp::SpatialChannelDeliveryKind delivery_kind =
+        cross_phase ? sp::SpatialChannelDeliveryKind::kPhaseBoundaryMaterialized
+                    : kind == sp::SpatialChannelKind::kReduceMerge
+                          ? sp::SpatialChannelDeliveryKind::kCompletionVisible
+                          : sp::SpatialChannelDeliveryKind::kOrdered;
+    channel_records.push_back(ChannelRecord{
+        static_cast<std::string>(boundary->name),
+        kind,
+        kind == sp::SpatialChannelKind::kGather || kind == sp::SpatialChannelKind::kScatter
+            ? sp::SpatialChannelPayloadKind::kIndex
+            : sp::SpatialChannelPayloadKind::kTensor,
+        delivery_kind,
+        static_cast<int>(boundary->source_closure_index),
+        static_cast<int>(boundary->target_closure_index),
+        task_records[boundary->source_closure_index].name,
+        task_records[boundary->target_closure_index].name,
+        subject,
+        cross_phase ? std::vector<std::string>{"phase_b", "phase_boundary"}
+                    : std::vector<std::string>{"phase_b"},
+    });
   }
 
-  PhaseSynthesisResult phase_synthesis = SynthesizeProgramPhases(&task_records, channel_records);
-  const std::vector<std::string>& phase_order = phase_synthesis.phase_order;
-  ICHECK(!phase_order.empty())
-      << "LowerToSpatialProgram requires at least one synthesized program phase";
-  const bool multi_phase = phase_order.size() > 1;
-  const std::unordered_map<std::string, int>& phase_index_by_name =
-      phase_synthesis.phase_index_by_name;
-  for (ChannelSynthesisRecord& record : channel_records) {
-    const bool cross_phase =
-        task_records[record.source_task_index].phase_name !=
-        task_records[record.target_task_index].phase_name;
-    record.delivery_kind = DeriveStateVersionDeliveryKind(record.flow_kind, cross_phase);
-    record.ordering_critical =
-        record.ordering_critical ||
-        record.delivery_kind == sp::SpatialChannelDeliveryKind::kPhaseBoundaryMaterialized;
-  }
-
-  std::unordered_map<std::string, int> task_index_by_name;
   Array<Task> tasks;
   Array<Placement> placements;
-  std::unordered_map<std::string, std::vector<std::string>> phase_to_tasks;
   for (int i = 0; i < static_cast<int>(task_records.size()); ++i) {
-    const TaskSynthesisRecord& record = task_records[i];
-    task_index_by_name[record.task_name] = i;
-    Task task = MakeSpatialTask(record, phase_index_by_name.at(record.phase_name),
-                                record.task_name);
-    tasks.push_back(task);
-    placements.push_back(MakeExecutionPlacement(
-        "place_" + record.task_name, record.task_name, i, member_func,
-        NeutralPlacementAffinityForTask(task), "execution",
-        str(capability_model->placement_domain).c_str()));
-    phase_to_tasks[record.phase_name].push_back(record.task_name);
+    tasks.push_back(MakeSpatialTask(task_records[i], task_phase[i]));
+    placements.push_back(MakeExecutionPlacement(task_records[i], i, member_func));
   }
 
-  std::unordered_map<std::string, std::vector<std::string>> phase_to_channels;
   Array<Channel> channels;
-  std::unordered_map<std::string, int> channel_index_by_name;
-  for (const ChannelSynthesisRecord& record : channel_records) {
-    const char* channel_kind = SelectChannelKind(capability_model, record.flow_kind);
-    const char* payload_kind = SelectChannelPayloadKind(capability_model, record.payload_kind);
-    const char* delivery_kind = SelectChannelDeliveryKind(capability_model, record.delivery_kind);
-    const std::string& source_task_name =
-        task_records[record.source_task_index].task_name;
-    const std::string& target_task_name =
-        task_records[record.target_task_index].task_name;
-    const std::string state_name =
-        record.state_index.has_value() ? str(program->states[record.state_index.value()]->name) : "";
-    const bool cross_phase =
-        task_records[record.source_task_index].phase_name !=
-        task_records[record.target_task_index].phase_name;
-    Array<String> channel_traits =
-        cross_phase ? MakeTraits({"phase_b", "phase_boundary"}) : MakeTraits({"phase_b"});
-    channels.push_back(MakeSpatialChannel(
-        record.channel_name, record.flow_kind, source_task_name, target_task_name, state_name,
-        channel_traits, BuildChannelPayload(record, payload_kind, delivery_kind)));
-    const int channel_index = static_cast<int>(channels.size()) - 1;
-    channel_index_by_name[record.channel_name] = channel_index;
-    phase_to_channels[task_records[record.target_task_index].phase_name].push_back(
-        record.channel_name);
+  for (const ChannelRecord& record : channel_records) {
+    channels.push_back(MakeSpatialChannel(record, capability_model));
+  }
+
+  std::unordered_map<int, std::vector<int>> task_indices_by_phase;
+  std::unordered_map<int, std::vector<int>> channel_indices_by_phase;
+  std::unordered_map<int, std::vector<std::string>> task_names_by_phase;
+  std::unordered_map<int, std::vector<std::string>> channel_names_by_phase;
+  for (int i = 0; i < static_cast<int>(task_records.size()); ++i) {
+    task_indices_by_phase[task_phase[i]].push_back(i);
+    task_names_by_phase[task_phase[i]].push_back(task_records[i].name);
+  }
+  for (int i = 0; i < static_cast<int>(channel_records.size()); ++i) {
+    channel_indices_by_phase[task_phase[channel_records[i].target_task_index]].push_back(i);
+    channel_names_by_phase[task_phase[channel_records[i].target_task_index]].push_back(
+        channel_records[i].name);
   }
 
   Array<ProgramPhase> phases;
-  for (const auto& phase_name : phase_order) {
-    auto task_it = phase_to_tasks.find(phase_name);
-    if (task_it == phase_to_tasks.end() || task_it->second.empty()) {
-      continue;
-    }
-    std::vector<int> task_indices;
-    for (const auto& task_name : task_it->second) {
-      task_indices.push_back(task_index_by_name.at(task_name));
-    }
-    auto channel_it = phase_to_channels.find(phase_name);
-    std::vector<int> channel_indices;
-    if (channel_it != phase_to_channels.end()) {
-      for (const auto& channel_name : channel_it->second) {
-        channel_indices.push_back(channel_index_by_name.at(channel_name));
+  for (const auto& [phase_index, task_indices] : task_indices_by_phase) {
+    std::vector<std::string> ordering_kinds;
+    for (const ChannelRecord& record : channel_records) {
+      if (task_phase[record.source_task_index] == phase_index ||
+          task_phase[record.target_task_index] == phase_index) {
+        ordering_kinds.push_back(
+            DeriveOrderingKindForChannel(record.kind, record.delivery_kind));
       }
     }
+    std::sort(ordering_kinds.begin(), ordering_kinds.end());
+    ordering_kinds.erase(std::unique(ordering_kinds.begin(), ordering_kinds.end()),
+                         ordering_kinds.end());
+    const std::string phase_name = "phase_" + std::to_string(phase_index);
     phases.push_back(MakeProgramPhaseNode(
-        phase_name, task_it->second,
-        channel_it == phase_to_channels.end() ? std::vector<std::string>{} : channel_it->second,
-        ToStringArray(multi_phase ? std::vector<std::string>{"phase_b", "multi_phase"}
-                                  : std::vector<std::string>{"phase_b"}),
-        BuildProgramPhasePayload(phase_index_by_name.at(phase_name), task_indices, channel_indices,
-                                 BuildPhaseClosureBasis(phase_name, task_indices, channel_records,
-                                                        task_records))));
+        phase_name, task_names_by_phase[phase_index], channel_names_by_phase[phase_index],
+        phase_index, task_indices, channel_indices_by_phase[phase_index],
+        BuildPhaseClosureBasis(phase_name, task_indices.size(), ordering_kinds)));
   }
-
-  Array<SpatialLayout> layouts;
-  Array<WorkPartition> work_partitions;
-  BuildCommonSpatialScaffolding(member_func, program, capability_model, &layouts,
-                                &work_partitions);
 
   Array<SyncEdge> sync_edges;
-  if (multi_phase) {
-    const std::vector<PhaseSyncSynthesisRecord> phase_sync_records = BuildPhaseSyncRecords(
-        phase_index_by_name, task_records, channel_records);
-    for (const PhaseSyncSynthesisRecord& record : phase_sync_records) {
-      const std::string sync_name = "sync_" + record.source_phase_name + "_to_" +
-                                    record.target_phase_name;
-      sync_edges.push_back(MakeCompletionSyncEdge(
-          sync_name, task_records[record.source_task_index].task_name,
-          task_records[record.target_task_index].task_name, record.source_task_index,
-          record.target_task_index, record.ordering_kind, record.materialization_kind));
-    }
-  }
-
-  std::unordered_set<int> phase_boundary_state_indices;
-  for (const ChannelSynthesisRecord& record : channel_records) {
-    if (record.delivery_kind != sp::SpatialChannelDeliveryKind::kPhaseBoundaryMaterialized ||
-        !record.state_index.has_value()) {
+  std::unordered_set<std::string> seen_sync_keys;
+  for (const ChannelRecord& record : channel_records) {
+    if (record.source_task_index == record.target_task_index) {
       continue;
     }
-    const std::string state_name = str(program->states[record.state_index.value()]->name);
-    auto role_it = state_role_by_name.find(state_name);
-    if (role_it != state_role_by_name.end() && IsStatefulRole(role_it->second)) {
-      phase_boundary_state_indices.insert(record.state_index.value());
+    const std::string ordering_kind =
+        DeriveOrderingKindForChannel(record.kind, record.delivery_kind);
+    const std::string materialization_kind =
+        DeriveMaterializationKindForChannel(record.kind, record.delivery_kind);
+    const std::string key = std::to_string(record.source_task_index) + "->" +
+                            std::to_string(record.target_task_index) + "|" + ordering_kind + "|" +
+                            materialization_kind;
+    if (!seen_sync_keys.insert(key).second) {
+      continue;
     }
+    sync_edges.push_back(MakeCompletionSyncEdge(
+        "sync_" + record.name, record.source_task_name, record.target_task_name,
+        record.source_task_index, record.target_task_index, ordering_kind,
+        materialization_kind));
   }
 
   Array<ResourceIntent> resource_intents;
-  for (const State& state : program->states) {
-    const auto role = ParseStateRole(str(state->role));
-    const std::string state_name = str(state->name);
-    auto state_index_it = state_index_by_name.find(state_name);
-    ICHECK(state_index_it != state_index_by_name.end())
-        << "LowerToSpatialProgram requires semantic state indices for state-targeted intents";
-    const bool is_stateful = role && (*role == StateRole::kCarry ||
-                                      *role == StateRole::kReductionAccumulator ||
-                                      *role == StateRole::kSelectionState ||
-                                      *role == StateRole::kIndexState);
-    const char* intent_kind = is_stateful
-        ? sp::ToString(sp::SpatialResourceIntentKind::kStateResidency)
-        : sp::ToString(sp::SpatialResourceIntentKind::kBuffer);
-    resource_intents.push_back(ResourceIntent(
-        String("intent_" + state_name), String(intent_kind), state->name,
-        Array<String>{String(str(state->role)),
-                      String(str(state->storage_scope))},
-        BuildTargetPayload(spatial_contract::kSemanticStateTarget, state_index_it->second),
-        MakeAnchors("spatial_resource_intent", state_name)));
-    if (phase_boundary_state_indices.count(state_index_it->second)) {
-      resource_intents.push_back(ResourceIntent(
-          String("phase_boundary_" + state_name),
-          String(sp::ToString(sp::SpatialResourceIntentKind::kPhaseBoundaryMaterialization)),
-          state->name, MakeTraits({"phase_boundary"}),
-          BuildTargetPayload(spatial_contract::kSemanticStateTarget, state_index_it->second),
-          MakeAnchors("spatial_resource_intent", "phase_boundary_" + state_name)));
-    }
-  }
-  AppendFragmentResourceIntent(member_func, program, &resource_intents);
-  AppendPipelineResourceIntent(member_func, program, &resource_intents);
+  AppendFragmentResourceIntent(member_func, fragment_facts, &resource_intents);
+  AppendPipelineResourceIntent(member_func, func, &resource_intents);
+  AppendPhaseBoundaryResourceIntents(channel_records, &resource_intents);
 
-  return {SpatialProgram(String(member_func), phases, tasks, channels, layouts,
-                         work_partitions, placements, sync_edges, resource_intents,
-                         MakeAnchors("spatial_program", member_func)),
-          phases};
-}
-
-SpatialProgramBundle BuildSpatialProgramForFunc(const std::string& member_func,
-                                                const SemanticProgram& program,
-                                                const tir::PrimFunc& func,
-                                                const SpatialCapabilityModel& capability_model) {
-  if (IsSimpleCopyFastPath(program, func)) {
-    return BuildCopyFastPath(member_func, program, capability_model);
-  }
-  if (IsSimpleGemmFastPath(program, func)) {
-    return BuildGemmFastPath(member_func, program, func, capability_model);
-  }
-  return BuildGenericSpatialProgram(member_func, program, capability_model);
-}
-
-SpatialExecutionPlan BuildSpatialExecutionPlanForFuncImpl(
-    const std::string& member_func, const SemanticProgram& program, const tir::PrimFunc& func,
-    const SpatialCapabilityModel& capability_model) {
-  const SpatialProgramBundle bundle =
-      BuildSpatialProgramForFunc(member_func, program, func, capability_model);
-  return SpatialExecutionPlan(String(member_func), bundle.program->phases, bundle.program->tasks,
-                              bundle.program->channels, bundle.program->placements,
-                              bundle.program->sync_edges, bundle.program->resource_intents,
-                              MakeAnchors("spatial_execution_plan", member_func));
+  Array<SpatialLayout> layouts;
+  Array<WorkPartition> work_partitions;
+  BuildCommonSpatialScaffolding(member_func, func, capability_model, fragment_facts, &layouts,
+                                &work_partitions);
+  return SpatialExecutionPlan(String(member_func), phases, tasks, channels, placements, sync_edges,
+                              resource_intents, MakeAnchors("spatial_execution_plan", member_func));
 }
 
 }  // namespace
 
 TVM_DLL SpatialExecutionPlan BuildSpatialExecutionPlanForFunc(
-    const std::string& member_func, const SemanticProgram& program, const tir::PrimFunc& func,
+    const std::string& member_func, const SpatialPlan& plan, const tir::PrimFunc& func,
     const SpatialCapabilityModel& capability_model) {
-  return BuildSpatialExecutionPlanForFuncImpl(member_func, program, func, capability_model);
+  const FragmentFacts fragment_facts = AnalyzeFragmentFacts(func);
+  if (IsSimpleGemmFastPath(plan, func)) {
+    return BuildSegmentFastPath(member_func, func, capability_model, fragment_facts,
+                                {"reader", "compute", "writer"}, {"fast_path", "gemm"},
+                                "phase0_gemm", "gemm_compute");
+  }
+  if (IsSimpleFragmentComputeFastPath(plan, func, fragment_facts)) {
+    return BuildSegmentFastPath(member_func, func, capability_model, fragment_facts,
+                                DeriveFragmentFastPathSegmentKinds(func, fragment_facts),
+                                {"fast_path", "fragment_compute"}, "phase0_fragment",
+                                "fragment_compute");
+  }
+  if (IsSimpleCopyFastPath(plan, func, fragment_facts)) {
+    return BuildCopyFastPath(member_func, func, capability_model, fragment_facts);
+  }
+  return BuildGenericSpatialProgram(member_func, plan, func, capability_model, fragment_facts);
 }
 
 }  // namespace tl

@@ -53,7 +53,7 @@
 #include "../../3rdparty/tvm/src/runtime/thread_storage_scope.h"
 #include "common/blackhole_utils.h"
 #include "common/blackhole_runtime_arg_schema.h"
-#include "common/semantic_program.h"
+#include "common/companion_base.h"
 
 namespace tvm {
 namespace tl {

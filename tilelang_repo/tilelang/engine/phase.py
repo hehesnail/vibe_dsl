@@ -193,8 +193,6 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     mod = tilelang.transform.LayoutInference()(mod)
     # Visualize the layout
     LayoutVisual(mod)
-    # Capture explicit-op evidence that LowerTileOp will destroy on Blackhole.
-    mod = tilelang.transform.CollectSemanticManifestSeeds()(mod)
     # Lower high-level tile operations to low-level operations
     mod = tilelang.transform.LowerTileOp()(mod)
     # Lower l2 persistent map
@@ -254,10 +252,8 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
         if allow_global_thread_synchronization():
             mod = tilelang.transform.ThreadSync("global")(mod)
         mod = tilelang.transform.AnnotateDeviceRegions()(mod)
-        mod = tilelang.transform.ProjectSemanticSeeds()(mod)
         mod = tilelang.transform.CollectDevicePrograms()(mod)
         mod = tilelang.transform.SplitHostDevice()(mod)
-        mod = tilelang.transform.ProjectSemanticManifest()(mod)
         mod = tilelang.transform.AnnotateReadOnlyParams()(mod)
         enable_aggressive_merge = should_enable_aggressive_merge(pass_ctx=pass_ctx, target=target)
         mod = tilelang.transform.MergeSharedMemoryAllocations(enable_aggressive_merge=enable_aggressive_merge)(mod)
@@ -371,11 +367,12 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
 
 def LowerToBlackholePhaseB(mod: IRModule) -> IRModule:
     """Run the stabilized Blackhole Phase B companion pipeline on a device module."""
+    mod = tilelang.transform.AnalyzeSpatialStructureFacts()(mod)
+    mod = tilelang.transform.BuildSpatialPlanCompanion()(mod)
     mod = tilelang.transform.SplitBlackholeKernel()(mod)
     mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
     mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
     mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
-    mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
     mod = tilelang.transform.AnalyzeSpatialDomainPlan()(mod)
     mod = tilelang.transform.AnalyzeSpatialExecutionPlan()(mod)
     mod = tilelang.transform.MaterializeSpatialProgram()(mod)

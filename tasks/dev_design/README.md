@@ -43,6 +43,11 @@
 
 - `Task 2A / 2B / 2C` 已完成
 - `Task 3A` 的 persistent/public 删除批次已完成
+- active path 已不再保留 `tl.semantic_*` 主协议或独立 semantic companion；
+  当前统一按
+  `Normalized Tile TIR -> SpatialPlan companion + Blackhole analysis facts ->
+  Spatial Program IR -> TTProgram companion`
+  推进
 - 当前入口从 `Task 2` 切到 `Task 3B`
 
 当前明确不作为优先项：

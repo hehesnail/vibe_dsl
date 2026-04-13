@@ -386,7 +386,7 @@ def test_flash_attention_forward_lowers_mha_pipeline_end_to_end():
     assert artifact is not None
 
 
-def test_flash_attention_forward_pipeline_lifts_semantic_roles_without_workload_specific_schema():
+def test_flash_attention_forward_pipeline_omits_legacy_semantic_attrs():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -408,12 +408,12 @@ def test_flash_attention_forward_pipeline_lifts_semantic_roles_without_workload_
             target=target,
         )
 
-    structure = artifact.device_mod["main_kernel"].attrs["tl.semantic_structure"]
-    state_roles = {str(state["role"]) for state in structure["states"]}
-    law_kinds = {str(update["kind"]) for update in structure["updates"]}
-
-    assert {"carry", "reduction_accumulator", "transient"}.issubset(state_roles)
-    assert "recurrence" in law_kinds
+    attrs = artifact.device_mod["main_kernel"].attrs
+    assert attrs.get("tl.semantic_seeds") is None
+    assert attrs.get("tl.semantic_manifest_seeds") is None
+    assert attrs.get("tl.semantic_manifest") is None
+    assert attrs.get("tl.semantic_structure") is None
+    assert attrs.get("tl.semantic_witnesses") is None
 
 
 def test_flash_attention_forward_pipeline_attaches_multi_phase_spatial_program():
@@ -446,7 +446,7 @@ def test_flash_attention_forward_pipeline_attaches_multi_phase_spatial_program()
     assert "phase_boundary_materialization" in {str(intent.kind) for intent in program.resource_intents}
     assert int(lowering_requirements["spatial_phase_count"]) >= 2
     assert int(lowering_requirements["spatial_channel_count"]) >= 1
-    assert set(lowering_requirements["spatial_phase_boundary_states"]) == {"scores_max"}
+    assert "scores_max" in set(lowering_requirements["spatial_phase_boundary_buffers"])
 
 
 def test_flash_attention_forward_lowers_gqa_pipeline_for_supported_stage_count():
@@ -804,12 +804,12 @@ def test_flash_attention_executable_spec_materializes_multi_gemm_contracts_and_r
     spec = _extract_blackhole_executable_spec(artifact)
     reasons = [str(reason) for reason in spec.get("direct_runtime_unsupported_reasons", [])]
     assert not any("missing explicit per-work access descriptor" in reason for reason in reasons)
-    assert any("typed fragment materialization contract is present" in reason for reason in reasons)
+    assert not reasons
 
     multi_gemm_contracts = spec.get("multi_gemm_contracts", [])
     multi_compute_contracts = spec.get("multi_compute_contracts", [])
     fragment_merge_ops = [
-        op for op in spec.get("compute_epilogue_ops", []) if str(op.get("kind", "")) == "add_fragment_from_cb_front"
+        op for op in spec.get("compute_epilogue_ops", []) if str(op.get("kind", "")) == "merge_fragment_tiles"
     ]
     projected_contracts = [op["fragment_materialization_contract"] for op in fragment_merge_ops]
     assert len(multi_gemm_contracts) == 2
@@ -819,8 +819,13 @@ def test_flash_attention_executable_spec_materializes_multi_gemm_contracts_and_r
     assert {str(contract["target_buffer"]) for contract in projected_contracts} == {"acc_s", "acc_o"}
     assert all(str(contract["kind"]) == "intermediate_fragment_merge" for contract in projected_contracts)
     assert all(str(contract["materialization_kind"]) == "intermediate_buffer" for contract in projected_contracts)
+    assert all(
+        str(contract["bridge_kind"]) == "tile_nfaces_materialization"
+        for contract in projected_contracts
+    )
     assert all(str(contract["value_role"]) == "fragment_delta" for contract in projected_contracts)
     assert all(str(contract["merge_kind"]) == "fragment_add" for contract in projected_contracts)
+    assert all(str(contract["execution_protocol"]) == "dst_cb_binary_pack" for contract in projected_contracts)
     reader_kernel = _require_blackhole_kernel(spec["kernels"], kind="reader", core_type="brisc")
     writer_kernel = _require_blackhole_kernel(spec["kernels"], kind="writer", core_type="ncrisc")
     reader_per_work = {
@@ -881,9 +886,9 @@ def test_flash_attention_executable_spec_exposes_compute_epilogue_ops():
         ("mul_grouped_row_bcast", ""),
         ("div_grouped_row_bcast", ""),
         ("scalar_fma", ""),
-        ("add_fragment_from_cb_front", ""),
+        ("merge_fragment_tiles", ""),
         ("cast_fragment_slice", ""),
-        ("write_local_slice_to_cb", ""),
+        ("write_local_fragment_slice_to_tiled_cb", ""),
     }.issubset(epilogue_ops)
 
 
@@ -915,19 +920,37 @@ def test_flash_attention_spatial_program_exposes_fragment_materialization_contra
     )
     materialization_contracts = list(fragment_contract.payload["fragment_materialization_contracts"])
     by_buffer = {str(contract["target_buffer"]): contract for contract in materialization_contracts}
+    merge_contracts = [by_buffer[name] for name in ("acc_s", "acc_o")]
 
     assert {"acc_s", "acc_o"}.issubset(by_buffer)
-    assert all(
-        str(contract["kind"]) == "intermediate_fragment_merge"
-        for contract in materialization_contracts
-    )
+    assert all(str(contract["kind"]) == "intermediate_fragment_merge" for contract in merge_contracts)
     assert all(
         str(contract["materialization_kind"]) == "intermediate_buffer"
-        for contract in materialization_contracts
+        for contract in merge_contracts
     )
-    assert all(str(contract["value_role"]) == "fragment_delta" for contract in materialization_contracts)
-    assert all(str(contract["merge_kind"]) == "fragment_add" for contract in materialization_contracts)
-    assert all(str(contract["scope"]) == "blackhole.acc" for contract in materialization_contracts)
+    assert all(
+        str(contract["bridge_kind"]) == "tile_nfaces_materialization"
+        for contract in merge_contracts
+    )
+    assert all(str(contract["value_role"]) == "fragment_delta" for contract in merge_contracts)
+    assert all(str(contract["merge_kind"]) == "fragment_add" for contract in merge_contracts)
+    assert all(
+        str(contract["execution_protocol"]) == "dst_cb_binary_pack"
+        for contract in merge_contracts
+    )
+    assert all(str(contract["result_live_form"]) == "tiled_cb" for contract in merge_contracts)
+    assert all(str(contract["scope"]) == "blackhole.acc" for contract in merge_contracts)
+    republish_contract = by_buffer["acc_s_cast"]
+    assert str(republish_contract["kind"]) == "republished_logical_tile"
+    assert str(republish_contract["materialization_kind"]) == "republished_buffer"
+    assert str(republish_contract["bridge_kind"]) == "tile_nfaces_materialization"
+    assert str(republish_contract["value_role"]) == "consumer_input"
+    assert str(republish_contract["merge_kind"]) == "direct_write"
+    assert str(republish_contract["execution_protocol"]) == "tiled_cb_republish"
+    assert str(republish_contract["result_live_form"]) == "tiled_cb"
+    assert str(republish_contract["source_buffer"]) == "acc_s"
+    assert int(republish_contract["logical_row_width"]) == 128
+    assert str(republish_contract["scope"]) == "blackhole.acc"
 
 
 def test_flash_attention_spatial_program_exposes_fragment_buffer_flow_contracts():
@@ -960,7 +983,7 @@ def test_flash_attention_spatial_program_exposes_fragment_buffer_flow_contracts(
     by_buffer = {str(contract["buffer"]): contract for contract in flow_contracts}
 
     assert "acc_s_cast" in by_buffer
-    assert str(by_buffer["acc_s_cast"]["flow_class"]) == "republish"
+    assert str(by_buffer["acc_s_cast"]["flow_class"]) == "stream"
     assert int(by_buffer["acc_s_cast"]["publish_granule"]) == 1
     assert int(by_buffer["acc_s_cast"]["consume_granule"]) == 1
     assert str(by_buffer["acc_s_cast"]["granule_kind"]) == "logical_tile"
@@ -968,6 +991,62 @@ def test_flash_attention_spatial_program_exposes_fragment_buffer_flow_contracts(
     event_kinds = [str(event["kind"]) for event in by_buffer["acc_s_cast"]["events"]]
     assert event_kinds.count("write") >= 2
     assert "compute_consume" in event_kinds
+
+
+def test_flash_attention_spatial_program_exposes_fragment_layout_contracts():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                128,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    program = artifact.device_mod["main_kernel"].attrs["tl.spatial_program"]
+    fragment_contract = next(
+        intent for intent in program.resource_intents if "fragment_contract" in {str(trait) for trait in intent.traits}
+    )
+    layout_contracts = list(fragment_contract.payload["fragment_layout_contracts"])
+    by_buffer = {str(contract["buffer"]): contract for contract in layout_contracts}
+
+    assert {"acc_s", "acc_o", "scores_max", "scores_sum", "logsum", "scores_scale"}.issubset(
+        by_buffer
+    )
+
+    for name in ("acc_s", "acc_o"):
+        contract = by_buffer[name]
+        assert str(contract["scope"]) == "blackhole.acc"
+        assert str(contract["distribution_kind"]) == "grouped_rows"
+        assert str(contract["storage_topology_kind"]) == "linear"
+        assert tuple(int(dim) for dim in contract["shape"]) == (128,)
+        assert tuple(int(dim) for dim in contract["local_shape"]) == (128,)
+        assert int(contract["thread_extent"]) == 128
+        assert int(contract["replicate_extent"]) == 1
+        assert len(contract["inverse_logical_index_exprs"]) >= 2
+
+    for name in ("scores_max", "scores_sum", "logsum", "scores_scale"):
+        contract = by_buffer[name]
+        assert str(contract["scope"]) == "blackhole.acc"
+        assert str(contract["distribution_kind"]) == "row_state"
+        assert str(contract["storage_topology_kind"]) == "linear"
+        assert tuple(int(dim) for dim in contract["shape"]) == (1,)
+        assert tuple(int(dim) for dim in contract["local_shape"]) == (1,)
+        assert int(contract["thread_extent"]) == 128
+        assert int(contract["replicate_extent"]) == 1
+        assert len(contract["inverse_logical_index_exprs"]) >= 1
 
 
 def test_flash_attention_segment_kernels_prefer_explicit_tile_descriptors_over_work_id():
@@ -1342,7 +1421,7 @@ def test_flash_attention_compute_source_fills_full_matrix_fragments():
     )
 
 
-def test_flash_attention_compute_source_casts_full_acc_s_matrix_before_second_matmul():
+def test_flash_attention_compute_source_materializes_full_acc_s_matrix_into_tiled_cb_before_second_matmul():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1369,7 +1448,7 @@ def test_flash_attention_compute_source_casts_full_acc_s_matrix_before_second_ma
     compute_source = str(compute["source_code"])
 
     assert (
-        "MATH({ uint16_t* dst_bits = reinterpret_cast<uint16_t*>(acc_s_cast);"
+        "dst_bits[tiled_index] = tilelang_float_to_half_bits(static_cast<float>(src[src_offset_elements + i]));"
         in compute_source
     )
     assert "const uint32_t num_elements = 16384;" in compute_source
@@ -1528,7 +1607,10 @@ def test_flash_attention_small_bf16_compute_source_uses_explicit_fp32_to_bf16_bi
     )
 
     assert "tilelang_float_to_bfloat_bits" in compute_source
-    assert "MATH({ uint16_t* dst_bits = reinterpret_cast<uint16_t*>(acc_s_cast);" in compute_source
+    assert (
+        "dst_bits[tiled_index] = tilelang_float_to_bfloat_bits(static_cast<float>(src[src_offset_elements + i]));"
+        in compute_source
+    )
     assert (
         "MATH({ uint16_t* dst_bits = reinterpret_cast<uint16_t*>(O_shared_local_cast);"
         in compute_source
@@ -1767,9 +1849,7 @@ def test_flash_attention_seq64_bf16_compute_source_refreshes_acc_s_cast_write_pt
     cb_by_name = {str(cb["name"]): int(cb["cb_id"]) for cb in spec["cb_configs"]}
 
     acc_s_cast_cb = cb_by_name["acc_s_cast"]
-    refresh = (
-        f"acc_s_cast = reinterpret_cast<__bf16*>(tilelang_get_cb_write_ptr_bytes({acc_s_cast_cb}));"
-    )
+    refresh = f"tilelang_get_cb_write_ptr_bytes({acc_s_cast_cb})"
 
     reserve_matches = list(
         re.finditer(rf"cb_reserve_back\({acc_s_cast_cb}, (\d+)\);", compute_source)
@@ -1954,7 +2034,7 @@ def test_flash_attention_seq64_bf16_compute_source_does_not_republish_loop_carri
         assert f"tilelang_get_cb_write_ptr_bytes({cb_id})" in compute_source
 
 
-def test_flash_attention_seq64_bf16_compute_source_accumulates_clear_accum_false_gemm_via_scratch_logical_add():
+def test_flash_attention_seq64_bf16_compute_source_accumulates_clear_accum_false_gemm_via_tiled_merge_protocol():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1982,28 +2062,32 @@ def test_flash_attention_seq64_bf16_compute_source_accumulates_clear_accum_false
     spec = _extract_blackhole_executable_spec(artifact)
     compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
     compute_source = str(compute["source_code"])
-    cb_by_name = {str(cb["name"]): int(cb["cb_id"]) for cb in spec["cb_configs"]}
-    reload_cb_names = [str(cb["name"]) for cb in spec["cb_configs"] if "tile_reload_tmp" in str(cb["name"])]
+    assert "tilelang_add_fragment(dst, src, num_elements);" not in compute_source
+    assert "add_tiles_init(" in compute_source
+    assert "add_tiles(" in compute_source
 
-    acc_o_cb = cb_by_name["acc_o"]
-    assert not reload_cb_names
-    assert "tilelang_add_fragment(dst, src, num_elements);" in compute_source
-    assert "mm_init_short(" not in compute_source
-    assert "mm_init_short_with_dt(" not in compute_source
-    assert "copy_tile_to_dst_init_short(" not in compute_source
-    assert "copy_tile_to_dst_init_short_with_dt(" not in compute_source
+    merge_pairs = re.findall(r"add_tiles_init\((\d+), (\d+)\);", compute_source)
+    assert merge_pairs
+    assert all(reload_cb != scratch_cb for reload_cb, scratch_cb in merge_pairs)
+    reload_cb, scratch_cb = merge_pairs[0]
 
-    scratch_match = re.search(r"mm_init\(2, 3, (\d+)\);", compute_source)
-    assert scratch_match is not None
-    scratch_cb = scratch_match.group(1)
+    merge_window_pattern = re.compile(
+        r"add_tiles_init\(\d+, \d+\);.*?add_tiles\(\d+, \d+, 0, 0, 0\);.*?pack_tile\(0, \d+\);",
+        re.DOTALL,
+    )
+    merge_windows = merge_window_pattern.findall(compute_source)
+    assert merge_windows
+    assert all("tile_regs_commit()" in window for window in merge_windows)
+    assert all("tile_regs_wait()" in window for window in merge_windows)
 
-    assert f"cb_push_back({scratch_cb}, 1);" in compute_source
+    assert f"cb_reserve_back({reload_cb}, 1);" in compute_source
+    assert f"cb_push_back({reload_cb}, 1);" in compute_source
+    assert f"cb_wait_front({reload_cb}, 1);" in compute_source
+    assert f"cb_pop_front({reload_cb}, 1);" in compute_source
     assert f"cb_wait_front({scratch_cb}, 1);" in compute_source
     assert f"cb_pop_front({scratch_cb}, 1);" in compute_source
-    assert f"experimental::CircularBuffer cb_front_{scratch_cb}({scratch_cb});" in compute_source
-    assert f"cb_front_{scratch_cb}.get_tile_address(0)" in compute_source
-    assert f"pack_tile(0, {scratch_cb});" in compute_source or f"pack_tile(0, {scratch_cb}, 0);" in compute_source
-    assert f"pack_tile(0, {acc_o_cb}, 0);" not in compute_source
+    assert f"pack_tile(0, {reload_cb});" in compute_source or f"pack_tile(0, {reload_cb}, 0);" in compute_source
+    assert "get_tile_address(0)" in compute_source
 
 
 def test_flash_attention_small_bf16_metadata_marks_k_materialization_as_transposed():

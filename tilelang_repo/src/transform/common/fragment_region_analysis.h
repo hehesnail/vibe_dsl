@@ -8,8 +8,6 @@
 
 #include <tvm/tir/function.h>
 
-#include "semantic_program.h"
-
 namespace tvm {
 namespace tl {
 

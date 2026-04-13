@@ -15,11 +15,6 @@ namespace tl {
 
 namespace attr {
 constexpr const char* kTLDevicePrograms = "tl.device_programs";
-constexpr const char* kTLSemanticSeeds = "tl.semantic_seeds";
-constexpr const char* kTLSemanticManifestSeeds = "tl.semantic_manifest_seeds";
-constexpr const char* kTLSemanticManifest = "tl.semantic_manifest";
-constexpr const char* kTLSemanticStructure = "tl.semantic_structure";
-constexpr const char* kTLSemanticWitnesses = "tl.semantic_witnesses";
 constexpr const char* kTLSpatialStructureFacts = "tl.spatial_structure_facts";
 constexpr const char* kTLSpatialPlan = "tl.spatial_plan";
 constexpr const char* kTLSpatialDomainPlan = "tl.spatial_domain_plan";
@@ -192,9 +187,9 @@ constexpr const char* kThreadDistributed = "thread_distributed";
 }  // namespace fragment_layout
 
 namespace spatial_contract {
-constexpr const char* kSemanticStateTarget = "semantic_state";
 constexpr const char* kTaskTarget = "task";
 constexpr const char* kMemberFuncTarget = "member_func";
+constexpr const char* kBufferTarget = "buffer";
 }  // namespace spatial_contract
 
 class TIRAnchorNode : public Object {

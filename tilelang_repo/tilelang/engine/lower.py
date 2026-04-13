@@ -208,11 +208,8 @@ def blackhole_codegen(
     enable_device_compile: bool,
 ) -> tuple[tvm.IRModule, tvm.runtime.Module]:
     device_mod = tilelang.transform.LowerDeviceStorageAccessInfo()(device_mod)
-    device_mod = tilelang.transform.AugmentSemanticManifest()(device_mod)
     device_mod = tilelang.transform.LowerIntrin()(device_mod)
     device_mod = tir.transform.Simplify()(device_mod)
-    device_mod = tilelang.transform.AnalyzeSpatialStructureFacts()(device_mod)
-    device_mod = tilelang.transform.BuildSpatialPlanCompanion()(device_mod)
     device_mod = tilelang.transform.HoistBroadcastValues()(device_mod)
     device_mod = LowerToBlackholeExecutable(device_mod)
 

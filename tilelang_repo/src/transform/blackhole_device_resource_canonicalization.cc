@@ -60,6 +60,8 @@
 #include <vector>
 
 #include "../layout/layout.h"
+#include "common/companion_base.h"
+#include "common/fragment_layout_contract_utils.h"
 #include "runtime/thread_storage_scope.h"
 #include "tir/transforms/ir_utils.h"
 
@@ -155,7 +157,6 @@ class BlackholeResourceClassifier : public StmtExprVisitor {
  public:
   // Final results: buffer var name → resource info
   std::unordered_map<std::string, ResourceInfo> resource_map;
-
   void Run(const PrimFunc& func) {
     // Scan 1: collect gemm C buffer names and copy direction info
     VisitStmt(func->body);
@@ -213,6 +214,7 @@ class BlackholeResourceClassifier : public StmtExprVisitor {
     auto layout_map = layout_map_any->as<Map<Buffer, Layout>>();
     if (!layout_map || !layout_map.value().defined()) return;
     for (const auto& [buffer, _layout] : layout_map.value()) {
+      const Layout& layout = _layout;
       std::string scope = GetScope(buffer->data);
       if (scope == "local" || scope == "local.fragment") {
         std::string name = std::string(buffer->name);

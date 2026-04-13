@@ -6,14 +6,16 @@
 #ifndef TVM_TL_TRANSFORM_SPATIAL_PROGRAM_BUILDER_H_
 #define TVM_TL_TRANSFORM_SPATIAL_PROGRAM_BUILDER_H_
 
-#include "common/semantic_program.h"
+#include <tvm/tir/function.h>
+
+#include "common/spatial_plan.h"
 #include "common/spatial_program.h"
 
 namespace tvm {
 namespace tl {
 
 TVM_DLL SpatialExecutionPlan BuildSpatialExecutionPlanForFunc(
-    const std::string& member_func, const SemanticProgram& program, const tir::PrimFunc& func,
+    const std::string& member_func, const SpatialPlan& plan, const tir::PrimFunc& func,
     const SpatialCapabilityModel& capability_model);
 
 }  // namespace tl

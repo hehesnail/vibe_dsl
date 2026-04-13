@@ -30,6 +30,7 @@
 #include <tvm/tir/transform.h>
 
 #include <sstream>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -38,8 +39,8 @@
 
 #include "../layout/layout.h"
 #include "common/blackhole_utils.h"
+#include "common/fragment_layout_contract_utils.h"
 #include "common/fragment_region_analysis.h"
-#include "common/semantic_program.h"
 
 namespace tvm {
 namespace tl {
@@ -93,6 +94,10 @@ bool IsFragmentLikeScope(const std::string& scope) {
   return scope == "local" || scope == "local.fragment" || scope == "blackhole.acc";
 }
 
+bool IsStageLocalScope(const std::string& scope) {
+  return scope.rfind("shared", 0) == 0 || scope.rfind("blackhole.cb.", 0) == 0;
+}
+
 bool ExprUsesFloorDivLikeIndex(const PrimExpr& expr) {
   bool found = false;
   tir::PostOrderVisit(expr, [&found](const ObjectRef& node) {
@@ -140,11 +145,14 @@ bool IsLoadFromFragmentBuffer(const PrimExpr& expr,
 
 class FragmentRegionAnalyzer final : public StmtExprVisitor {
  public:
-  void Analyze(const PrimFunc& func) { AnalyzeTopLevel(func->body); }
+  void Analyze(const PrimFunc& func) {
+    AnalyzeTopLevel(func->body);
+  }
 
   bool HasRegion() const { return !fragment_buffer_order_.empty() || !seen_ops_.empty(); }
 
   Map<String, Any> EncodeSingleRegion() const {
+    MaterializeFragmentLayoutContractsFromRegionEvidence();
     Map<String, Any> region;
 
     Array<Any> fragment_buffers;
@@ -163,6 +171,18 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       fragment_buffers.push_back(entry);
     }
     region.Set(manifest_key::kFragmentBuffers, fragment_buffers);
+
+    Array<Any> fragment_layout_contracts;
+    for (const auto* key : fragment_buffer_order_) {
+      auto contract_it = fragment_layout_contracts_.find(key);
+      if (contract_it == fragment_layout_contracts_.end()) {
+        continue;
+      }
+      fragment_layout_contracts.push_back(contract_it->second);
+    }
+    if (!fragment_layout_contracts.empty()) {
+      region.Set(String(schema_key::kFragmentLayoutContracts), fragment_layout_contracts);
+    }
 
     Array<Any> ops;
     for (const auto& op_name : op_order_) {
@@ -384,14 +404,20 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     if (const auto* seq = body.as<tir::SeqStmtNode>()) {
       bool seen_pipeline_loop = false;
       for (const auto& stmt : seq->seq) {
-        if (!seen_pipeline_loop && stmt.as<ForNode>()) {
-          seen_pipeline_loop = true;
-          inside_pipeline_loop_ = true;
-          VisitStmt(stmt);
-          inside_pipeline_loop_ = false;
-          continue;
-        }
         if (!seen_pipeline_loop) {
+          if (const auto* loop = stmt.as<ForNode>()) {
+            std::optional<int64_t> maybe_num_stages = GetNumStages(loop);
+            if (!maybe_num_stages.has_value()) {
+              maybe_num_stages = InferStageCountFromStmt(stmt);
+            }
+            if (maybe_num_stages.has_value()) {
+              seen_pipeline_loop = true;
+              inside_pipeline_loop_ = true;
+              VisitStmt(stmt);
+              inside_pipeline_loop_ = false;
+              continue;
+            }
+          }
           pre_loop_stmt_ = true;
           VisitStmt(stmt);
           pre_loop_stmt_ = false;
@@ -412,11 +438,14 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       if (layout_map_any) {
         auto layout_map = layout_map_any->as<Map<Buffer, Layout>>();
         if (layout_map && layout_map.value().defined()) {
-          for (const auto& [buffer, _layout] : layout_map.value()) {
+          for (const auto& [buffer, layout] : layout_map.value()) {
             const std::string scope = buffer.scope();
             if (scope == "local" || scope == "local.fragment" || scope == "blackhole.acc") {
               if (const auto* key = BufferKey(buffer); key != nullptr) {
                 layout_fragment_buffers_.insert(key);
+                if (auto contract = TryBuildFragmentLayoutContract(buffer, layout)) {
+                  fragment_layout_contracts_[key] = contract.value();
+                }
               }
             }
           }
@@ -435,9 +464,54 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
 
   void VisitStmt_(const ForNode* op) final {
     const bool prev_inside = inside_pipeline_loop_;
-    inside_pipeline_loop_ = true;
+    if (!inside_pipeline_loop_) {
+      std::optional<int64_t> maybe_num_stages = GetNumStages(op);
+      if (!maybe_num_stages.has_value()) {
+        maybe_num_stages = InferStageCountFromStmt(GetRef<Stmt>(op));
+      }
+      if (maybe_num_stages.has_value()) {
+        inside_pipeline_loop_ = true;
+      }
+    }
     StmtExprVisitor::VisitStmt_(op);
     inside_pipeline_loop_ = prev_inside;
+  }
+
+  std::optional<int64_t> GetNumStages(const ForNode* loop) const {
+    if (!loop->annotations.defined()) {
+      return std::nullopt;
+    }
+    for (const char* key : {"num_stages", "tl_pipelined_num_stages"}) {
+      if (auto value = loop->annotations.Get(key)) {
+        if (const auto* imm = value.value().as<tir::IntImmNode>()) {
+          return imm->value;
+        }
+      }
+    }
+    return std::nullopt;
+  }
+
+  std::optional<int64_t> InferStageCountFromStmt(const Stmt& stmt) const {
+    std::optional<int64_t> inferred;
+    tir::PostOrderVisit(stmt, [&inferred](const ObjectRef& node) {
+      auto update_from_buffer = [&inferred](const Buffer& buffer) {
+        const std::string scope = buffer.scope();
+        if (!IsStageLocalScope(scope) || buffer->shape.size() < 3) {
+          return;
+        }
+        if (const auto* imm = buffer->shape[0].as<tir::IntImmNode>()) {
+          if (imm->value > 0) {
+            inferred = imm->value;
+          }
+        }
+      };
+      if (const auto* store = node.as<BufferStoreNode>()) {
+        update_from_buffer(store->buffer);
+      } else if (const auto* load = node.as<BufferLoadNode>()) {
+        update_from_buffer(load->buffer);
+      }
+    });
+    return inferred;
   }
 
   void VisitStmt_(const BufferStoreNode* op) final {
@@ -671,11 +745,21 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
               ? "max"
               : "sum";
       AddRowReduction(target_key, reduction_kind);
+      for (const auto* source_key : local_sources) {
+        if (!fragment_buffers_.count(source_key)) {
+          continue;
+        }
+        const int64_t source_elements = StaticNumElements(fragment_buffers_.at(source_key).buffer);
+        if (source_elements > target_elements) {
+          AddRowReductionSource(source_key);
+        }
+      }
     }
 
     if (!local_sources.empty() &&
         (saw_floor_div_broadcast || saw_rank_broadcast || saw_scalar_fragment_broadcast)) {
       AddOp("row_broadcast");
+      AddRowBroadcastDestination(target_key);
       for (const auto* source_key : local_sources) {
         if (seen_row_broadcast_sources_.insert(source_key).second) {
           row_broadcast_sources_.push_back(source_key);
@@ -713,6 +797,18 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
   void AddSelectionTarget(const tir::VarNode* target_key) {
     if (seen_selection_targets_.insert(target_key).second) {
       selection_target_order_.push_back(target_key);
+    }
+  }
+
+  void AddRowReductionSource(const tir::VarNode* source_key) {
+    if (seen_row_reduction_sources_.insert(source_key).second) {
+      row_reduction_sources_.push_back(source_key);
+    }
+  }
+
+  void AddRowBroadcastDestination(const tir::VarNode* target_key) {
+    if (seen_row_broadcast_destinations_.insert(target_key).second) {
+      row_broadcast_destinations_.push_back(target_key);
     }
   }
 
@@ -806,9 +902,44 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     return targets;
   }
 
+  void MaterializeFragmentLayoutContractsFromRegionEvidence() const {
+    auto set_contract = [&](const tir::VarNode* key, const char* distribution_kind) {
+      if (key == nullptr || fragment_layout_contracts_.count(key) || !fragment_buffers_.count(key)) {
+        return;
+      }
+      const Buffer& buffer = fragment_buffers_.at(key).buffer;
+      const std::string buffer_name = BufferName(buffer);
+      const std::string scope = buffer.scope();
+      if (buffer_name.empty() || !IsFragmentLikeScope(scope)) {
+        return;
+      }
+      Map<String, Any> contract;
+      contract.Set(String(schema_key::kBuffer), String(buffer_name));
+      contract.Set(String(schema_key::kScope), String(scope));
+      contract.Set(String(schema_key::kShape), EncodeFragmentContractShape(buffer->shape));
+      contract.Set(String(schema_key::kDistributionKind), String(distribution_kind));
+      contract.Set(String(schema_key::kStorageTopologyKind), String(fragment_layout::kLinear));
+      fragment_layout_contracts_[key] = contract;
+    };
+
+    for (const auto* key : row_reduction_targets_) {
+      set_contract(key, fragment_layout::kRowState);
+    }
+    for (const auto* key : row_broadcast_sources_) {
+      set_contract(key, fragment_layout::kRowState);
+    }
+    for (const auto* key : row_reduction_sources_) {
+      set_contract(key, fragment_layout::kGroupedRows);
+    }
+    for (const auto* key : row_broadcast_destinations_) {
+      set_contract(key, fragment_layout::kGroupedRows);
+    }
+  }
+
   std::unordered_map<const tir::VarNode*, BufferInfo> fragment_buffers_;
   std::vector<const tir::VarNode*> fragment_buffer_order_;
   std::unordered_set<const tir::VarNode*> layout_fragment_buffers_;
+  mutable std::unordered_map<const tir::VarNode*, Map<String, Any>> fragment_layout_contracts_;
 
   std::unordered_set<std::string> seen_ops_;
   std::vector<std::string> op_order_;
@@ -818,8 +949,12 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
   std::vector<const tir::VarNode*> row_reduction_targets_;
   std::unordered_set<const tir::VarNode*> seen_row_reductions_;
   std::unordered_map<const tir::VarNode*, std::string> row_reduction_kind_;
+  std::vector<const tir::VarNode*> row_reduction_sources_;
+  std::unordered_set<const tir::VarNode*> seen_row_reduction_sources_;
   std::unordered_set<const tir::VarNode*> seen_row_broadcast_sources_;
   std::vector<const tir::VarNode*> row_broadcast_sources_;
+  std::unordered_set<const tir::VarNode*> seen_row_broadcast_destinations_;
+  std::vector<const tir::VarNode*> row_broadcast_destinations_;
   std::unordered_set<const tir::VarNode*> seen_selection_targets_;
   std::vector<const tir::VarNode*> selection_target_order_;
   std::unordered_map<const tir::VarNode*, std::unordered_set<const tir::VarNode*>> update_sources_;

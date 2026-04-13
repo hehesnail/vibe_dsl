@@ -10,8 +10,8 @@
   `final_blackhole_backend_redesign.md` 里 layered IR discipline
   的一次具体落地审计，产出的是“接下来应往哪改”的决策
 - **适用范围**:
-  - 诊断对象：当前代码基线
-    （`Stateful Semantic IR -> Spatial Program IR -> TT Target IR -> ExecutableSpec`）
+- 诊断对象：cutover 前的历史代码基线
+  （`Stateful Semantic IR -> Spatial Program IR -> TT Target IR -> ExecutableSpec`）
   - 结论去向：新的长期总设计
     （`Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion -> ExecutableSpec`）
 - **非目标**:

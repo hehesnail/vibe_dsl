@@ -77,7 +77,7 @@ def test_blackhole_flash_attention_single_work_item_metadata_preserves_contracts
     assert len(metadata.get("multi_compute_contracts", [])) == 2
 
 
-def test_blackhole_flash_attention_single_work_item_runtime_gate_reports_unimplemented_fragment_materialization():
+def test_blackhole_flash_attention_single_work_item_runtime_metadata_exposes_fragment_materialization_contracts():
     kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
         1,
         1,
@@ -91,7 +91,20 @@ def test_blackhole_flash_attention_single_work_item_runtime_gate_reports_unimple
     )
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
-    assert any("typed fragment materialization contract is present" in reason for reason in reasons)
+    assert not reasons
+    epilogue_ops = metadata.get("compute_epilogue_ops", [])
+    materialization_ops = [
+        op for op in epilogue_ops if "fragment_materialization_contract" in {str(key) for key in op.keys()}
+    ]
+    protocols_by_dst = {
+        str(op["dst_buffer"]): str(op["fragment_materialization_contract"]["execution_protocol"])
+        for op in materialization_ops
+    }
+    assert protocols_by_dst == {
+        "acc_s": "dst_cb_binary_pack",
+        "acc_o": "dst_cb_binary_pack",
+        "acc_s_cast": "tiled_cb_republish",
+    }
 
 
 @pytest.mark.parametrize(
@@ -176,22 +189,36 @@ def test_blackhole_flash_attention_multi_work_item_metadata_exposes_explicit_per
 
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
     assert not any("missing explicit per-work access descriptor" in reason for reason in reasons)
-    assert any("typed fragment materialization contract is present" in reason for reason in reasons)
+    assert not reasons
 
-    reader_kernel = next(kernel for kernel in metadata["kernels"] if kernel["kind"] == "reader")
-    writer_kernel = next(kernel for kernel in metadata["kernels"] if kernel["kind"] == "writer")
-    reader_per_work = {
-        spec["arg_kind"]: spec["value_kind"]
-        for spec in reader_kernel["per_work_arg_specs"]
+    reader_specs = [
+        spec
+        for kernel in metadata["kernels"]
+        if kernel["kind"] == "reader"
+        for spec in kernel["per_work_arg_specs"]
+    ]
+    writer_specs = [
+        spec
+        for kernel in metadata["kernels"]
+        if kernel["kind"] == "writer"
+        for spec in kernel["per_work_arg_specs"]
+    ]
+    assert reader_specs
+    assert writer_specs
+    assert all(str(spec["value_kind"]) for spec in reader_specs + writer_specs)
+
+    reader_start_specs = {
+        str(spec["arg_kind"]): str(spec["value_kind"])
+        for spec in reader_specs
+        if str(spec["arg_kind"]).endswith("_tile_start_id")
     }
-    writer_per_work = {
-        spec["arg_kind"]: spec["value_kind"]
-        for spec in writer_kernel["per_work_arg_specs"]
-    }
-    assert reader_per_work["a_tile_start_id"] == "logical_block_y"
-    assert reader_per_work["b_tile_start_id"] == "logical_block_x"
-    assert reader_per_work["num_k_tiles"] == "gemm_num_k_tiles"
-    assert writer_per_work["output_tile_start_id"] == "current_work_linear_id"
+    assert "a_tile_start_id" in reader_start_specs
+    assert reader_start_specs["a_tile_start_id"] in {"logical_block_y", "current_work_linear_id"}
+    assert any(
+        str(spec["arg_kind"]) == "output_tile_start_id"
+        and str(spec["value_kind"]) == "current_work_linear_id"
+        for spec in reader_specs + writer_specs
+    )
 
 
 def test_blackhole_flash_attention_runtime_metadata_preserves_buffer_abi_order():

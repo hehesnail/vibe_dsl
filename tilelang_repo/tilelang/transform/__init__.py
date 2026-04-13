@@ -632,26 +632,6 @@ def BlackholeDeviceResourceCanonicalization():
     return _ffi_api.BlackholeDeviceResourceCanonicalization()  # type: ignore
 
 
-def ProjectSemanticSeeds():
-    """Project lightweight pre-lift semantic seeds for Stage 4 semantic recovery."""
-    return tvm.ffi.get_global_func("tl.transform.ProjectSemanticSeeds")()
-
-
-def CollectSemanticManifestSeeds():
-    """Capture explicit-op evidence before LowerTileOp destroys it on Blackhole."""
-    return tvm.ffi.get_global_func("tl.transform.CollectSemanticManifestSeeds")()
-
-
-def ProjectSemanticManifest():
-    """Project early explicit-op manifest seeds onto the post-split Blackhole PrimFunc."""
-    return tvm.ffi.get_global_func("tl.transform.ProjectSemanticManifest")()
-
-
-def AugmentSemanticManifest():
-    """Augment the projected semantic manifest with residual device-side explicit ops."""
-    return tvm.ffi.get_global_func("tl.transform.AugmentSemanticManifest")()
-
-
 def CollectDevicePrograms():
     """Collect module-scope device-program registry before SplitHostDevice."""
     return tvm.ffi.get_global_func("tl.transform.CollectDevicePrograms")()
@@ -702,11 +682,6 @@ def AnalyzeBlackholePipelineStages():
     return tvm.ffi.get_global_func("tl.transform.AnalyzeBlackholePipelineStages")()
 
 
-def AnalyzeSemanticStructure():
-    """Analyze minimal Stage 4 semantic structure from Blackhole analysis attrs."""
-    return tvm.ffi.get_global_func("tl.transform.AnalyzeSemanticStructure")()
-
-
 def AnalyzeSpatialStructureFacts():
     """Analyze normalized TIR into Task 1 spatial structure facts."""
     return tvm.ffi.get_global_func("tl.transform.AnalyzeSpatialStructureFacts")()
@@ -718,17 +693,17 @@ def BuildSpatialPlanCompanion():
 
 
 def LowerToSpatialProgram():
-    """Lower frozen semantic-structure truth into a typed SpatialProgram."""
+    """Lower frozen spatial companion facts into a typed SpatialProgram."""
     return tvm.ffi.get_global_func("tl.transform.LowerToSpatialProgram")()
 
 
 def AnalyzeSpatialDomainPlan():
-    """Derive typed Spatial domain contracts from semantic structure facts."""
+    """Derive typed Spatial domain contracts from SpatialPlan and Blackhole analysis facts."""
     return tvm.ffi.get_global_func("tl.transform.AnalyzeSpatialDomainPlan")()
 
 
 def AnalyzeSpatialExecutionPlan():
-    """Derive typed Spatial execution contracts from semantic structure facts."""
+    """Derive typed Spatial execution contracts from SpatialPlan and Blackhole analysis facts."""
     return tvm.ffi.get_global_func("tl.transform.AnalyzeSpatialExecutionPlan")()
 
 

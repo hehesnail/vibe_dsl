@@ -42,7 +42,7 @@
 #include <string>
 #include <vector>
 
-#include "common/semantic_program.h"
+#include "common/companion_base.h"
 
 namespace tvm {
 namespace tl {

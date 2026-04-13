@@ -31,8 +31,6 @@
 #include "common/blackhole_utils.h"
 #include "common/blackhole_runtime_arg_schema.h"
 #include "common/companion_base.h"
-#include "common/semantic_program.h"
-#include "common/semantic_structure_decoder.h"
 #include "common/spatial_program.h"
 #include "common/tt_target_program.h"
 
@@ -1415,7 +1413,6 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
   ICHECK(spatial_program)
       << "PlanTTKernelABI requires tl.spatial_program; run LowerToSpatialProgram and "
          "ValidateSpatialProgram before lowering";
-  auto maybe_semantic_program = semantic::MaybeDecodeSemanticProgramFromFunc(func);
 
   const SpatialProgram& program = spatial_program.value();
   if (auto axes = GetSpatialWorkAxesFromProgram(program)) {
@@ -1438,30 +1435,22 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
     lowering_requirements.Set("spatial_channel_count",
                               Integer(static_cast<int>(program->channels.size())));
   }
-  Array<Any> phase_boundary_states;
-  std::unordered_set<std::string> seen_phase_boundary_states;
+  Array<Any> phase_boundary_buffers;
+  std::unordered_set<std::string> seen_phase_boundary_buffers;
   for (const ResourceIntent& intent : program->resource_intents) {
     if (static_cast<std::string>(intent->kind) != "phase_boundary_materialization") {
       continue;
     }
-    ICHECK(str(intent->target_kind) == spatial_contract::kSemanticStateTarget &&
-           intent->target_index >= 0)
-        << "PlanTTKernelABI requires phase-boundary intents to carry semantic_state "
-           "target_kind/target_index contract";
-    ICHECK(maybe_semantic_program.has_value())
-        << "PlanTTKernelABI requires semantic structure when consuming phase-boundary "
-           "state contracts";
-    ICHECK_LT(intent->target_index, maybe_semantic_program.value()->states.size())
-        << "PlanTTKernelABI found phase-boundary intent with invalid target_index";
-    const std::string state_name =
-        static_cast<std::string>(maybe_semantic_program.value()->states[intent->target_index]->name);
-    if (state_name.empty() || !seen_phase_boundary_states.insert(state_name).second) {
+    ICHECK(str(intent->target_kind) == spatial_contract::kBufferTarget)
+        << "PlanTTKernelABI requires phase-boundary intents to target buffers";
+    const std::string buffer_name = static_cast<std::string>(intent->target_name);
+    if (buffer_name.empty() || !seen_phase_boundary_buffers.insert(buffer_name).second) {
       continue;
     }
-    phase_boundary_states.push_back(String(state_name));
+    phase_boundary_buffers.push_back(String(buffer_name));
   }
-  if (!phase_boundary_states.empty()) {
-    lowering_requirements.Set("spatial_phase_boundary_states", phase_boundary_states);
+  if (!phase_boundary_buffers.empty()) {
+    lowering_requirements.Set("spatial_phase_boundary_buffers", phase_boundary_buffers);
   }
   Array<Any> stage_counts;
   Array<Any> loop_vars;
@@ -1846,11 +1835,6 @@ PlanTTKernelABI::PlanTTKernelABI() : next_requirement_index_(0) {}
 
 void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func) {
   logical_buffer_shapes_.clear();
-  auto manifest = func->GetAttr<Map<String, Any>>(attr::kTLSemanticManifest);
-  auto manifest_seeds = func->GetAttr<Map<String, Any>>(attr::kTLSemanticManifestSeeds);
-  if (!manifest.has_value() && !manifest_seeds.has_value()) {
-    return;
-  }
   std::unordered_map<std::string, std::vector<int64_t>> canonical_shapes;
   auto register_shape = [&](const std::string& name, const std::vector<int64_t>& shape) {
     if (name.empty() || shape.empty()) {
@@ -1859,37 +1843,34 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func) {
     logical_buffer_shapes_[name] = shape;
     canonical_shapes[name] = shape;
   };
-  auto ingest_buffer_descriptors = [&](const Optional<Map<String, Any>>& maybe_payload) {
-    if (!maybe_payload.has_value()) {
+  auto ingest_buffer = [&](const Buffer& buffer) {
+    auto static_shape = ExtractStaticShape(buffer->shape);
+    if (!static_shape.has_value()) {
       return;
     }
-    auto buffers_it = maybe_payload.value().find(manifest_key::kBuffers);
-    if (buffers_it == maybe_payload.value().end()) {
-      return;
-    }
-    for (const Any& buffer_any : Downcast<Array<Any>>((*buffers_it).second)) {
-      auto descriptor = Downcast<Map<String, Any>>(buffer_any);
-      auto name = descriptor.Get(String(schema_key::kName));
-      auto shape = descriptor.Get(String(schema_key::kShape));
-      if (!name.has_value() || !shape.has_value()) {
-        continue;
-      }
-      auto static_shape = ExtractStaticShape(Downcast<Array<PrimExpr>>(shape.value()));
-      if (!static_shape.has_value()) {
-        continue;
-      }
-      register_shape(static_cast<std::string>(Downcast<String>(name.value())),
-                     static_shape.value());
-    }
+    register_shape(BufferIdentityName(buffer), static_shape.value());
   };
-  ingest_buffer_descriptors(manifest);
-  ingest_buffer_descriptors(manifest_seeds);
-
-  if (!manifest.has_value()) {
-    return;
+  for (const auto& [_, buffer] : func->buffer_map) {
+    ingest_buffer(buffer);
   }
-  auto structural_regions_it = manifest.value().find(manifest_key::kStructuralRegions);
-  if (structural_regions_it == manifest.value().end()) {
+  tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
+    if (const auto* block = node.as<tir::BlockNode>()) {
+      for (const Buffer& buffer : block->alloc_buffers) {
+        ingest_buffer(buffer);
+      }
+      return;
+    }
+    if (const auto* store = node.as<tir::BufferStoreNode>()) {
+      ingest_buffer(store->buffer);
+      return;
+    }
+    if (const auto* load = node.as<tir::BufferLoadNode>()) {
+      ingest_buffer(load->buffer);
+    }
+  });
+
+  auto fragment_regions = func->GetAttr<Array<Any>>("blackhole.fragment_regions");
+  if (!fragment_regions.has_value()) {
     return;
   }
 
@@ -1919,11 +1900,10 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func) {
     return {};
   };
 
-  const Array<Any> structural_regions = Downcast<Array<Any>>((*structural_regions_it).second);
   bool changed = true;
   while (changed) {
     changed = false;
-    for (const Any& region_any : structural_regions) {
+    for (const Any& region_any : fragment_regions.value()) {
       auto region = Downcast<Map<String, Any>>(region_any);
       auto update_sources_it = region.find(manifest_key::kUpdateSources);
       if (update_sources_it == region.end()) {
@@ -1968,7 +1948,7 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func) {
     }
   }
 
-  for (const Any& region_any : structural_regions) {
+  for (const Any& region_any : fragment_regions.value()) {
     auto region = Downcast<Map<String, Any>>(region_any);
     auto fragment_buffers_it = region.find(manifest_key::kFragmentBuffers);
     if (fragment_buffers_it == region.end()) {

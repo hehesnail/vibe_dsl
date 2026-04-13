@@ -183,7 +183,7 @@ BindTarget
 也就是当前活跃主链里：
 
 - 在 `LayoutReducer / LayoutInference` 之前
-- 在 `CollectSemanticManifestSeeds / LowerTileOp` 之前
+- 在 `SplitBlackholeKernel / device-side realization` 之前
 
 原因：
 
@@ -236,8 +236,12 @@ Frontend Tile TIR
 - 当前落地状态：
   `AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion`
   已接入 active Blackhole compile path；
-  `TTProgram` 仍暂时消费旧 `SemanticProgram / SpatialProgram` 主链，
-  直到 `Task 2` cutover
+  `Task 2` cutover 与 `Task 3A` semantic-layer deletion
+  均已完成，当前 active path 直接从
+  `Normalized Tile TIR + SpatialPlan companion +
+  blackhole.work_decomposition / blackhole.fragment_regions /
+  blackhole.pipeline_stages`
+  进入 `SpatialProgram / TTProgram` owner 链
 
 ### `Task 2`: `TTProgram companion` cutover
 
@@ -263,27 +267,17 @@ Frontend Tile TIR
 
 当前设计结论下，执行优先级固定为：
 
-1. `Task 2A`: 先把 `TTProgram companion` owner chain
-   真正切进 `Blackhole` active compile path
-   - 重点是 internal pass owner、typed object 与 active path reader 切换
-   - 非目标：non-Blackhole backend 统一、public API 改名
-2. `Task 2B`: 再让旧 `Phase C` owner 退位
-   - `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores /
-     LowerSpatialProgramToTTTarget / MaterializeTTExecutableSpec`
-     失去主 owner 身份
-   - `MaterializeBlackholeExecutable` 成为唯一 writer
-3. `Task 2C`: 固化 phase bundle 与测试入口
-   - 不再让测试/调试代码手写长 pass 链充当事实标准
-4. `Task 3A`: 删除 persistent
+1. `Task 3A`: 删除 persistent
    `SemanticProgram / Stateful Semantic IR`
    这一层旧 companion
-   - active path 已直接从 `semantic_structure`
-     进入 `SpatialPlan / TTProgram` owner 链
+   - 已完成；active path 已直接从
+     `Normalized Tile TIR + SpatialPlan companion + Blackhole analysis facts`
+     进入 `SpatialProgram / TTProgram` owner 链
    - semantic pass / wrapper / 过期测试 / dead code
      已完成删除
-5. `Task 3B`: 在新主链上收 runtime gate，
+2. `Task 3B`: 在新主链上收 runtime gate，
    再兑现 `flash-attn` admitted subset payoff
-6. `Task 3C`: 再扩 wider family / support surface
+3. `Task 3C`: 再扩 wider family / support surface
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
    - wider copy/dataflow
    - wider sync 最后进入 admitted surface

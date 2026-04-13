@@ -24,8 +24,8 @@
 
 `Task 3` 只负责三件事：
 
-- 先删除 persistent `SemanticProgram / Stateful Semantic IR`
-  这一层旧 companion
+- 保持 persistent `SemanticProgram / Stateful Semantic IR`
+  这一层旧 companion 已经删除，且不再回流
 - 在新主链上兑现 runtime / correctness payoff
 - 在新主链上重新承接 workload family 与更宽 support surface
 
@@ -102,8 +102,9 @@ runtime / codegen 的消费纪律固定为：
      ValidateSemanticRefinement`
    - `tl.semantic_program`
      这层 typed attr
-   - 这条链当前仍把 `semantic_structure`
-     再包装成一层持久 companion，属于应优先删除的旧链
+   - 这条链已经从 active path 删除；
+     当前约束是不得再把 TIR/SpatialPlan 已有信息
+     包装回独立 semantic companion
 
 1. **projection bridge**
    - `tilelang/engine/lower.py::_project_blackhole_host_attrs_to_device`
@@ -145,7 +146,9 @@ runtime / codegen 的消费纪律固定为：
   然后把缺口重新塞回 projection / payload / runtime fallback
 - 旧链路的删除顺序必须从**最外层 bridge**往里收：
   1. 先删 persistent semantic layer，
-     让 active path 直接消费 `tl.semantic_structure`
+     让 active path 直接消费
+     `Normalized Tile TIR + SpatialPlan companion +
+     Blackhole analysis facts`
   2. 再删 projection bridge
   3. 再删 fragment-layout / semantic seed 这类 side-channel
   4. 再把 typed seed bridge 替换成真正的 `PlanTT*` owner pass
@@ -161,17 +164,20 @@ runtime / codegen 的消费纪律固定为：
   这组 pass 的 active-path owner 责任
 - `AnalyzeSpatialDomainPlan / AnalyzeSpatialExecutionPlan /
   MaterializeSpatialProgram / ValidateSpatialProgram /
-  PlanTTKernelABI`
+  LowerBlackholeOps / PlanTTKernelABI`
   必须直接从
-  `tl.semantic_structure + tl.semantic_witnesses`
+  `Normalized Tile TIR + SpatialPlan companion +
+  blackhole.work_decomposition / blackhole.fragment_regions /
+  blackhole.pipeline_stages`
   读取所需 truth
-- `tl.semantic_program`
+- `tl.semantic_*`
   不再作为 active path 上的稳定 attr
 - 删除依赖这层 attr 的 wrapper、helper 与过期测试
 - 当前状态：
-  进行中；当前 active path 仍保留
+  已完成；当前 active path 已不再保留
   `Stateful Semantic IR`
-  这一层，已提升为 `Task 3` 的最高优先级删除项
+  这一层，相关 decoder / witness / vocab / refinement /
+  state-effect graph 实现也已删除
 
 ### Batch A: 删除 projection bridge
 

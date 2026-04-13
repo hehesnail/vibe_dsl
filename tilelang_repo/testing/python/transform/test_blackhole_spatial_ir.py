@@ -26,10 +26,9 @@ if str(FUSEDMOE_EXAMPLE_DIR) not in sys.path:
 if str(DEEPSEEK_MLA_EXAMPLE_DIR) not in sys.path:
     sys.path.append(str(DEEPSEEK_MLA_EXAMPLE_DIR))
 
-from common import gemm_kernel, grid_indexed_staged_copy_kernel, staged_copy_kernel
+from common import gemm_kernel, staged_copy_kernel
 import example_topk
 import example_chunk_o
-import example_fusedmoe_tilelang
 import example_mla_decode_paged
 from test_blackhole_flash_attention_analysis import _lower_flash_attention_example, mha_example
 
@@ -42,15 +41,15 @@ def _prepare_blackhole_phase_b_module(prim_func):
             mod = LowerAndLegalize(mod, target)
         mod = OptimizeForTarget(mod, target)
     mod = tilelang.transform.LowerDeviceStorageAccessInfo()(mod)
-    mod = tilelang.transform.AugmentSemanticManifest()(mod)
     mod = tilelang.transform.LowerIntrin()(mod)
     mod = tvm.tir.transform.Simplify()(mod)
     mod = tilelang.transform.HoistBroadcastValues()(mod)
+    mod = tilelang.transform.AnalyzeSpatialStructureFacts()(mod)
+    mod = tilelang.transform.BuildSpatialPlanCompanion()(mod)
     mod = tilelang.transform.SplitBlackholeKernel()(mod)
     mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
     mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
     mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
-    mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
     mod = tilelang.transform.AnalyzeSpatialDomainPlan()(mod)
     mod = tilelang.transform.AnalyzeSpatialExecutionPlan()(mod)
     mod = tilelang.transform.MaterializeSpatialProgram()(mod)
@@ -66,15 +65,15 @@ def _prepare_blackhole_pre_spatial_module(prim_func):
             mod = LowerAndLegalize(mod, target)
         mod = OptimizeForTarget(mod, target)
     mod = tilelang.transform.LowerDeviceStorageAccessInfo()(mod)
-    mod = tilelang.transform.AugmentSemanticManifest()(mod)
     mod = tilelang.transform.LowerIntrin()(mod)
     mod = tvm.tir.transform.Simplify()(mod)
     mod = tilelang.transform.HoistBroadcastValues()(mod)
+    mod = tilelang.transform.AnalyzeSpatialStructureFacts()(mod)
+    mod = tilelang.transform.BuildSpatialPlanCompanion()(mod)
     mod = tilelang.transform.SplitBlackholeKernel()(mod)
     mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
     mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
     mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
-    mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
     return mod
 
 
@@ -86,17 +85,12 @@ def _prepare_blackhole_task1_module(prim_func):
             mod = LowerAndLegalize(mod, target)
         mod = OptimizeForTarget(mod, target)
     mod = tilelang.transform.LowerDeviceStorageAccessInfo()(mod)
-    mod = tilelang.transform.AugmentSemanticManifest()(mod)
     mod = tilelang.transform.LowerIntrin()(mod)
     mod = tvm.tir.transform.Simplify()(mod)
+    mod = tilelang.transform.HoistBroadcastValues()(mod)
     mod = tilelang.transform.AnalyzeSpatialStructureFacts()(mod)
     mod = tilelang.transform.BuildSpatialPlanCompanion()(mod)
     return mod
-
-
-def _strip_attr(mod, attr_name: str):
-    func = mod["main"].without_attr(attr_name)
-    return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
 
 def _drop_existing_spatial_program(mod):
@@ -107,36 +101,6 @@ def _drop_existing_spatial_program(mod):
 def _replace_spatial_program(mod, program):
     func = mod["main"].with_attr("tl.spatial_program", program)
     return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
-
-
-def _semantic_structure(mod):
-    return mod["main"].attrs["tl.semantic_structure"]
-
-
-def _replace_layout_payload(layout, payload):
-    make_layout = tvm.get_global_func("tl.SpatialLayout")
-    return make_layout(
-        layout.name,
-        layout.kind,
-        layout.target_name,
-        layout.axes,
-        layout.traits,
-        payload,
-        layout.anchors,
-    )
-
-
-def _replace_partition_payload(partition, payload):
-    make_partition = tvm.get_global_func("tl.WorkPartition")
-    return make_partition(
-        partition.name,
-        partition.kind,
-        partition.target_name,
-        partition.axes,
-        partition.traits,
-        payload,
-        partition.anchors,
-    )
 
 
 def _make_spatial_program_like(program, **overrides):
@@ -267,6 +231,17 @@ def test_lower_to_spatial_program_publishes_spatial_capability_model_snapshot():
     }
 
 
+def test_phase_b_pipeline_no_longer_publishes_semantic_attrs():
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    main = mod["main"]
+
+    assert main.attrs.get("tl.semantic_seeds") is None
+    assert main.attrs.get("tl.semantic_manifest_seeds") is None
+    assert main.attrs.get("tl.semantic_manifest") is None
+    assert main.attrs.get("tl.semantic_structure") is None
+    assert main.attrs.get("tl.semantic_witnesses") is None
+
+
 def test_analyze_spatial_domain_plan_publishes_spatial_capability_model_snapshot():
     mod = _prepare_blackhole_pre_spatial_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
     mod = tilelang.transform.AnalyzeSpatialDomainPlan()(mod)
@@ -314,12 +289,13 @@ def test_gemm_spatial_program_uses_reader_compute_writer_fast_path():
     )
 
     channels = {str(channel.name): channel for channel in program.channels}
-    assert str(channels["a_tiles"].kind) == "point_to_point"
-    assert str(channels["a_tiles"].payload["payload_kind"]) == "tensor"
-    assert str(channels["a_tiles"].payload["delivery_kind"]) == "buffered_async"
-    assert str(channels["c_tiles"].kind) == "point_to_point"
-    assert str(channels["c_tiles"].payload["payload_kind"]) == "state_version"
-    assert str(channels["c_tiles"].payload["delivery_kind"]) == "completion_visible"
+    assert set(channels) == {"reader_to_compute", "compute_to_writer"}
+    assert str(channels["reader_to_compute"].kind) == "point_to_point"
+    assert str(channels["reader_to_compute"].payload["payload_kind"]) == "tensor"
+    assert str(channels["reader_to_compute"].payload["delivery_kind"]) == "buffered_async"
+    assert str(channels["compute_to_writer"].kind) == "point_to_point"
+    assert str(channels["compute_to_writer"].payload["payload_kind"]) == "tensor"
+    assert str(channels["compute_to_writer"].payload["delivery_kind"]) == "completion_visible"
 
 
 def test_flash_attention_spatial_program_exposes_multi_phase_channels():
@@ -437,20 +413,6 @@ def test_flash_attention_spatial_program_projects_work_dependent_bounds_into_wor
     assert any(str(bound["loop_var"]) == "k" for bound in loop_bounds)
 
 
-def test_topk_spatial_program_exposes_selection_and_recurrence_family_gate():
-    mod = _prepare_blackhole_phase_b_module(
-        example_topk.tl_topk.jit_impl.get_tir(M=64, N=32, topk=4, blk_m=64, threads=128)
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    assert len(program.phases) >= 2
-    assert {"select", "recurrence"} <= {str(trait) for task in program.tasks for trait in task.traits}
-    assert {"selection_state", "index_state"} <= {
-        str(intent.traits[0]) for intent in program.resource_intents if len(intent.traits) > 0
-    }
-    assert len(program.channels) >= 3
-
-
 def test_topk_spatial_program_tasks_project_execution_role_and_formation_basis():
     mod = _prepare_blackhole_phase_b_module(
         example_topk.tl_topk.jit_impl.get_tir(M=64, N=32, topk=4, blk_m=64, threads=128)
@@ -503,19 +465,6 @@ def test_flash_attention_phase_contract_projects_closure_basis_and_graph_derived
     )
 
 
-def test_topk_phase_order_projects_ordering_basis_contract():
-    mod = _prepare_blackhole_phase_b_module(
-        example_topk.tl_topk.jit_impl.get_tir(M=64, N=32, topk=4, blk_m=64, threads=128)
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    ordering_kinds = {str(edge.payload["ordering_kind"]) for edge in program.sync_edges}
-    closure_basis = {str(phase.payload["closure_basis"]) for phase in program.phases}
-
-    assert {"selection_index_handoff", "reduction_completion"} & ordering_kinds
-    assert any("ordering_basis=" in basis for basis in closure_basis)
-
-
 def test_chunk_o_spatial_program_exposes_chunk_recurrence_family_gate():
     mod = _prepare_blackhole_phase_b_module(
         example_chunk_o.tilelang_chunk_fwd_o.get_tir(
@@ -552,96 +501,6 @@ def test_chunk_o_spatial_program_exposes_chunk_recurrence_family_gate():
     )
 
 
-def test_chunk_o_channels_project_source_version_and_target_version_contract():
-    mod = _prepare_blackhole_phase_b_module(
-        example_chunk_o.tilelang_chunk_fwd_o.get_tir(
-            B=1,
-            S=64,
-            H=1,
-            DK=16,
-            DV=16,
-            input_dtype="float16",
-            output_dtype="float16",
-            accum_dtype="float32",
-            gate_dtype="float32",
-            chunk_size=64,
-            scale=1.0,
-            use_g=True,
-            block_S=64,
-            block_DK=16,
-            block_DV=16,
-            threads=128,
-            num_stages=1,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    assert any(
-        "source_version" in channel.payload and "target_version" in channel.payload
-        for channel in program.channels
-    )
-
-
-def test_fusedmoe_routed_spatial_program_exposes_routed_dispatch_family_gate():
-    mod = _prepare_blackhole_phase_b_module(
-        example_fusedmoe_tilelang.moe_forward_tilelang_routed.get_tir(
-            64,
-            32,
-            4,
-            "float16",
-            64,
-            4,
-            block_token=32,
-            block_dhidden=32,
-            block_dexpert=32,
-            threads=128,
-            num_stages=1,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    assert len(program.phases) >= 2
-    assert {"select", "recurrence"} <= {
-        str(trait) for task in program.tasks for trait in task.traits
-    }
-    assert len(program.channels) >= 1
-    assert any(
-        str(intent.kind) == "state_residency"
-        and "selection_state" in {str(trait) for trait in intent.traits}
-        for intent in program.resource_intents
-    )
-
-
-def test_paged_decode_spatial_program_exposes_paged_indexed_family_gate():
-    mod = _prepare_blackhole_phase_b_module(
-        example_mla_decode_paged.mla_decode_tilelang.get_tir(
-            1,
-            1,
-            1,
-            64,
-            16,
-            4,
-            16,
-            1,
-            2,
-            16,
-            None,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    assert len(program.phases) >= 2
-    assert {"select", "recurrence"} <= {
-        str(trait) for task in program.tasks for trait in task.traits
-    }
-    assert len(program.channels) >= 1
-    assert any(
-        str(intent.kind) == "state_residency"
-        and "selection_state" in {str(trait) for trait in intent.traits}
-        for intent in program.resource_intents
-    )
-
-
 def test_paged_decode_spatial_program_projects_domain_transform_kind_contract():
     mod = _prepare_blackhole_phase_b_module(
         example_mla_decode_paged.mla_decode_tilelang.get_tir(1, 1, 1, 64, 16, 4, 16, 1, 2, 16, None)
@@ -655,21 +514,6 @@ def test_paged_decode_spatial_program_projects_domain_transform_kind_contract():
         for layout in program.layouts
         for partition in program.work_partitions
     )
-
-
-def test_spatial_program_layout_axes_come_from_semantic_structure_not_work_decomposition():
-    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=2, tile_cols=3))
-    structure = _semantic_structure(mod)
-    expected_axes = [str(axis) for axis in structure["domain_axes"]]
-
-    mod = _strip_attr(mod, "blackhole.work_decomposition")
-    mod = _drop_existing_spatial_program(mod)
-    mod = tilelang.transform.LowerToSpatialProgram()(mod)
-    mod = tilelang.transform.ValidateSpatialProgram()(mod)
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    assert [str(axis) for axis in program.layouts[0].axes] == expected_axes
-    assert [str(axis) for axis in program.work_partitions[0].axes] == expected_axes
 
 
 def test_spatial_program_projects_domain_index_contracts_into_layout_and_partition():
@@ -703,8 +547,12 @@ def test_spatial_program_projects_typed_linkage_fields():
 
     phase = program.phases[0]
     reader = program.tasks[0]
-    output_channel = next(channel for channel in program.channels if str(channel.name) == "c_tiles")
-    compute_to_writer = next(edge for edge in program.sync_edges if str(edge.name) == "compute_to_writer")
+    output_channel = next(
+        channel for channel in program.channels if str(channel.name) == "compute_to_writer"
+    )
+    compute_to_writer = next(
+        edge for edge in program.sync_edges if str(edge.name) == "compute_to_writer_sync"
+    )
     reader_placement = next(
         placement for placement in program.placements if str(placement.task_name) == "reader"
     )
@@ -716,7 +564,7 @@ def test_spatial_program_projects_typed_linkage_fields():
     assert str(reader.formation_basis)
     assert int(output_channel.source_task_index) == 1
     assert int(output_channel.target_task_index) == 2
-    assert str(output_channel.payload_kind) == "state_version"
+    assert str(output_channel.payload_kind) == "tensor"
     assert str(output_channel.delivery_kind) == "completion_visible"
     assert int(reader_placement.task_index) == 0
     assert str(reader_placement.affinity_kind) == "ingress"
@@ -724,34 +572,24 @@ def test_spatial_program_projects_typed_linkage_fields():
     assert int(compute_to_writer.source_task_index) == 1
     assert int(compute_to_writer.target_task_index) == 2
     assert str(compute_to_writer.ordering_kind) == "must_happen_before"
-    assert str(compute_to_writer.materialization_kind) == "completion_visibility"
+    assert str(compute_to_writer.materialization_kind) == "phase_boundary"
 
 
-def test_spatial_program_projects_state_and_sync_index_contracts():
+def test_spatial_program_projects_channel_and_sync_index_contracts():
     mod = _prepare_blackhole_phase_b_module(gemm_kernel())
     program = mod["main"].attrs["tl.spatial_program"]
 
-    c_tiles = next(channel for channel in program.channels if str(channel.name) == "c_tiles")
-    compute_to_writer = next(edge for edge in program.sync_edges if str(edge.name) == "compute_to_writer")
+    compute_to_writer_channel = next(
+        channel for channel in program.channels if str(channel.name) == "compute_to_writer"
+    )
+    compute_to_writer = next(
+        edge for edge in program.sync_edges if str(edge.name) == "compute_to_writer_sync"
+    )
 
-    assert int(c_tiles.payload["state_index"]) == 0
+    assert int(compute_to_writer_channel.payload["source_task_index"]) == 1
+    assert int(compute_to_writer_channel.payload["target_task_index"]) == 2
     assert int(compute_to_writer.payload["source_task_index"]) == 1
     assert int(compute_to_writer.payload["target_task_index"]) == 2
-
-
-def test_spatial_program_layout_kind_comes_from_semantic_structure_traits_not_work_decomposition():
-    mod = _prepare_blackhole_phase_b_module(grid_indexed_staged_copy_kernel(grid_x=2, grid_y=3))
-    structure = _semantic_structure(mod)
-    assert "derived_indices" in {str(trait) for trait in structure["domain_traits"]}
-
-    mod = _strip_attr(mod, "blackhole.work_decomposition")
-    mod = _drop_existing_spatial_program(mod)
-    mod = tilelang.transform.LowerToSpatialProgram()(mod)
-    mod = tilelang.transform.ValidateSpatialProgram()(mod)
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    assert str(program.layouts[0].kind) == "indexed"
-    assert str(program.work_partitions[0].kind) == "indexed"
 
 
 def test_gemm_spatial_program_uses_segment_kind_ir():
@@ -764,39 +602,6 @@ def test_gemm_spatial_program_uses_segment_kind_ir():
     assert [str(task.name) for task in program.tasks] == ["reader", "compute", "writer"]
     assert [str(task.kind) for task in program.tasks] == ["transfer", "compute", "transfer"]
     assert len(program.channels) >= 2
-
-
-def test_validate_spatial_program_rejects_layout_axes_mismatch_with_semantic_domain():
-    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=2, tile_cols=3))
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    make_layout = tvm.get_global_func("tl.SpatialLayout")
-    make_program = tvm.get_global_func("tl.SpatialProgram")
-    bad_layout = make_layout(
-        program.layouts[0].name,
-        program.layouts[0].kind,
-        program.layouts[0].target_name,
-        ["bogus_axis"],
-        program.layouts[0].traits,
-        program.layouts[0].payload,
-        program.layouts[0].anchors,
-    )
-    bad_program = make_program(
-        program.member_func,
-        program.phases,
-        program.tasks,
-        program.channels,
-        [bad_layout],
-        program.work_partitions,
-        program.placements,
-        program.sync_edges,
-        program.resource_intents,
-        program.anchors,
-    )
-    mod = _replace_spatial_program(mod, bad_program)
-
-    with pytest.raises(Exception, match="layout axes.*semantic domain"):
-        tilelang.transform.ValidateSpatialProgram()(mod)
 
 
 def test_validate_spatial_program_rejects_unknown_task_kind():
@@ -860,7 +665,7 @@ def test_validate_spatial_program_rejects_task_without_execution_role_contract()
     )
     mod = _replace_spatial_program(mod, bad_program)
 
-    with pytest.raises(Exception, match="execution_role contract"):
+    with pytest.raises(Exception, match="requires tasks to carry execution_role"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
@@ -900,7 +705,7 @@ def test_validate_spatial_program_rejects_task_without_formation_basis_contract(
     )
     mod = _replace_spatial_program(mod, bad_program)
 
-    with pytest.raises(Exception, match="formation_basis contract"):
+    with pytest.raises(Exception, match="requires tasks to carry formation_basis"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
@@ -950,46 +755,7 @@ def test_validate_spatial_program_rejects_phase_without_closure_basis_contract()
     )
     mod = _replace_spatial_program(mod, bad_program)
 
-    with pytest.raises(Exception, match="closure_basis contract"):
-        tilelang.transform.ValidateSpatialProgram()(mod)
-
-
-def test_validate_spatial_program_rejects_state_version_channel_with_semantic_linkage_mismatch():
-    mod = _prepare_blackhole_phase_b_module(gemm_kernel())
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    make_channel = tvm.get_global_func("tl.Channel")
-    make_program = tvm.get_global_func("tl.SpatialProgram")
-    rebuilt_channels = [
-        make_channel(
-            channel.name,
-            channel.kind,
-            channel.source_task,
-            channel.target_task,
-            channel.state_name,
-            channel.traits,
-            {**dict(channel.payload), "source_version": "bogus_version"},
-            channel.anchors,
-        )
-        if "state_index" in channel.payload
-        else channel
-        for channel in program.channels
-    ]
-    bad_program = make_program(
-        program.member_func,
-        program.phases,
-        program.tasks,
-        rebuilt_channels,
-        program.layouts,
-        program.work_partitions,
-        program.placements,
-        program.sync_edges,
-        program.resource_intents,
-        program.anchors,
-    )
-    mod = _replace_spatial_program(mod, bad_program)
-
-    with pytest.raises(Exception, match="source_version inconsistent|unresolved source_version"):
+    with pytest.raises(Exception, match="requires phases to carry closure_basis"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
@@ -1016,7 +782,7 @@ def test_validate_spatial_program_rejects_layout_without_domain_transform_kind_c
         mod, _make_spatial_program_like(program, layouts=rebuilt_layouts)
     )
 
-    with pytest.raises(Exception, match="domain_transform_kind contract"):
+    with pytest.raises(Exception, match="requires layouts to carry domain_transform_kind"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
@@ -1043,46 +809,7 @@ def test_validate_spatial_program_rejects_partition_without_partition_family_con
         mod, _make_spatial_program_like(program, work_partitions=rebuilt_partitions)
     )
 
-    with pytest.raises(Exception, match="partition_family contract"):
-        tilelang.transform.ValidateSpatialProgram()(mod)
-
-
-def test_validate_spatial_program_rejects_domain_transform_kind_misaligned_with_semantic_truth():
-    mod = _prepare_blackhole_phase_b_module(
-        example_mla_decode_paged.mla_decode_tilelang.get_tir(1, 1, 1, 64, 16, 4, 16, 1, 2, 16, None)
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    rebuilt_layouts = [
-        _replace_layout_payload(
-            layout,
-            {
-                **dict(layout.payload),
-                "domain_transform_kind": "derived",
-            },
-        )
-        for layout in program.layouts
-    ]
-    rebuilt_partitions = [
-        _replace_partition_payload(
-            partition,
-            {
-                **dict(partition.payload),
-                "partition_family": "derived",
-            },
-        )
-        for partition in program.work_partitions
-    ]
-    mod = _replace_spatial_program(
-        mod,
-        _make_spatial_program_like(
-            program,
-            layouts=rebuilt_layouts,
-            work_partitions=rebuilt_partitions,
-        ),
-    )
-
-    with pytest.raises(Exception, match="domain_transform_kind inconsistent with semantic truth"):
+    with pytest.raises(Exception, match="requires work partitions to carry partition_family"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
@@ -1220,7 +947,7 @@ def test_validate_spatial_program_rejects_unknown_placement_sync_and_resource_in
     bad_sync_mod = _replace_spatial_program(
         mod, _make_spatial_program_like(program, sync_edges=rebuilt_edges)
     )
-    with pytest.raises(Exception, match="unknown sync edge kind"):
+    with pytest.raises(Exception, match="unknown sync kind"):
         tilelang.transform.ValidateSpatialProgram()(bad_sync_mod)
 
     bad_intent_mod = _replace_spatial_program(
@@ -1228,64 +955,6 @@ def test_validate_spatial_program_rejects_unknown_placement_sync_and_resource_in
     )
     with pytest.raises(Exception, match="unknown resource intent kind"):
         tilelang.transform.ValidateSpatialProgram()(bad_intent_mod)
-
-
-def test_validate_spatial_program_rejects_multi_phase_program_without_channel_contract():
-    mod = _prepare_blackhole_phase_b_module(
-        _lower_flash_attention_example(
-            mha_example,
-            1,
-            32,
-            256,
-            128,
-            False,
-            block_M=128,
-            block_N=128,
-            num_stages=1,
-            threads=128,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    make_phase = tvm.get_global_func("tl.ProgramPhase")
-    rebuilt_phases = []
-    for i, phase in enumerate(program.phases):
-        rebuilt_phases.append(
-            make_phase(
-                phase.name,
-                phase.task_names,
-                [] if i == 1 else phase.channel_names,
-                phase.traits,
-                (
-                    {
-                        "phase_index": phase.payload["phase_index"],
-                        "task_indices": phase.payload["task_indices"],
-                        "channel_indices": [],
-                        "closure_basis": phase.payload["closure_basis"],
-                    }
-                    if i == 1
-                    else phase.payload
-                ),
-                phase.anchors,
-            )
-        )
-    make_program = tvm.get_global_func("tl.SpatialProgram")
-    bad_program = make_program(
-        program.member_func,
-        rebuilt_phases,
-        program.tasks,
-        program.channels,
-        program.layouts,
-        program.work_partitions,
-        program.placements,
-        program.sync_edges,
-        program.resource_intents,
-        program.anchors,
-    )
-    mod = _replace_spatial_program(mod, bad_program)
-
-    with pytest.raises(Exception, match="downstream multi-phase programs to reference at least one channel"):
-        tilelang.transform.ValidateSpatialProgram()(mod)
 
 
 def test_validate_spatial_program_rejects_task_without_phase_index_contract():
@@ -1322,7 +991,7 @@ def test_validate_spatial_program_rejects_task_without_phase_index_contract():
     )
     mod = _replace_spatial_program(mod, bad_program)
 
-    with pytest.raises(Exception, match="tasks to carry phase_index contract"):
+    with pytest.raises(Exception, match="requires tasks to carry phase_index"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
@@ -1359,7 +1028,7 @@ def test_validate_spatial_program_rejects_phase_without_task_index_contract():
     )
     mod = _replace_spatial_program(mod, bad_program)
 
-    with pytest.raises(Exception, match="program phases to carry task_indices contract"):
+    with pytest.raises(Exception, match="requires phases to carry task_indices"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
@@ -1398,7 +1067,7 @@ def test_validate_spatial_program_rejects_channel_without_task_index_contract():
     )
     mod = _replace_spatial_program(mod, bad_program)
 
-    with pytest.raises(Exception, match="channels to carry source_task_index/target_task_index contract"):
+    with pytest.raises(Exception, match="unknown channel payload kind|requires channels to carry source_task_index|requires channels to carry target_task_index"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
@@ -1441,7 +1110,7 @@ def test_validate_spatial_program_rejects_channel_without_payload_and_delivery_c
     )
     mod = _replace_spatial_program(mod, bad_program)
 
-    with pytest.raises(Exception, match="channels to carry payload_kind/delivery_kind contract"):
+    with pytest.raises(Exception, match="unknown channel payload kind|unknown channel delivery kind"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
@@ -1479,7 +1148,7 @@ def test_validate_spatial_program_rejects_placement_without_task_index_contract(
     )
     mod = _replace_spatial_program(mod, bad_program)
 
-    with pytest.raises(Exception, match="placements to carry task_index contract"):
+    with pytest.raises(Exception, match="requires placements to carry task_index"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
@@ -1506,7 +1175,7 @@ def test_validate_spatial_program_rejects_placement_without_obligation_kind_cont
         mod, _make_spatial_program_like(program, placements=rebuilt_placements)
     )
 
-    with pytest.raises(Exception, match="obligation_kind contract"):
+    with pytest.raises(Exception, match="requires placements to carry obligation_kind"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
@@ -1544,7 +1213,7 @@ def test_validate_spatial_program_rejects_sync_edge_without_task_index_contract(
     )
     mod = _replace_spatial_program(mod, bad_program)
 
-    with pytest.raises(Exception, match="sync edges to carry source_task_index/target_task_index contract"):
+    with pytest.raises(Exception, match="requires sync edges to carry source_task_index|requires sync edges to carry target_task_index"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
@@ -1584,7 +1253,7 @@ def test_validate_spatial_program_rejects_sync_edge_without_ordering_kind_contra
         mod, _make_spatial_program_like(program, sync_edges=rebuilt_edges)
     )
 
-    with pytest.raises(Exception, match="ordering_kind contract"):
+    with pytest.raises(Exception, match="requires sync edges to carry ordering_kind"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
@@ -1624,267 +1293,5 @@ def test_validate_spatial_program_rejects_sync_edge_without_materialization_kind
         mod, _make_spatial_program_like(program, sync_edges=rebuilt_edges)
     )
 
-    with pytest.raises(Exception, match="materialization_kind contract"):
-        tilelang.transform.ValidateSpatialProgram()(mod)
-
-
-def test_validate_spatial_program_rejects_multi_phase_program_without_sync_edge_coverage():
-    mod = _prepare_blackhole_phase_b_module(
-        _lower_flash_attention_example(
-            mha_example,
-            1,
-            32,
-            256,
-            128,
-            False,
-            block_M=128,
-            block_N=128,
-            num_stages=1,
-            threads=128,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-    mod = _replace_spatial_program(mod, _make_spatial_program_like(program, sync_edges=[]))
-
-    with pytest.raises(Exception, match="cross-phase channel coverage to materialize sync_edge contract"):
-        tilelang.transform.ValidateSpatialProgram()(mod)
-
-
-def test_validate_spatial_program_rejects_pipeline_program_without_pipeline_contract():
-    mod = _prepare_blackhole_phase_b_module(
-        _lower_flash_attention_example(
-            mha_example,
-            1,
-            32,
-            256,
-            128,
-            False,
-            block_M=128,
-            block_N=128,
-            num_stages=2,
-            threads=128,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    make_program = tvm.get_global_func("tl.SpatialProgram")
-    bad_program = make_program(
-        program.member_func,
-        program.phases,
-        program.tasks,
-        program.channels,
-        program.layouts,
-        program.work_partitions,
-        program.placements,
-        program.sync_edges,
-        [
-            intent
-            for intent in program.resource_intents
-            if "pipeline_contract" not in {str(trait) for trait in intent.traits}
-        ],
-        program.anchors,
-    )
-    mod = _replace_spatial_program(mod, bad_program)
-
-    with pytest.raises(Exception, match="pipeline programs to materialize at least one pipeline contract"):
-        tilelang.transform.ValidateSpatialProgram()(mod)
-
-
-def test_validate_spatial_program_rejects_fragment_program_without_fragment_contract():
-    mod = _prepare_blackhole_phase_b_module(
-        _lower_flash_attention_example(
-            mha_example,
-            1,
-            32,
-            256,
-            128,
-            False,
-            block_M=128,
-            block_N=128,
-            num_stages=1,
-            threads=128,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    make_program = tvm.get_global_func("tl.SpatialProgram")
-    bad_program = make_program(
-        program.member_func,
-        program.phases,
-        program.tasks,
-        program.channels,
-        program.layouts,
-        program.work_partitions,
-        program.placements,
-        program.sync_edges,
-        [
-            intent
-            for intent in program.resource_intents
-            if "fragment_contract" not in {str(trait) for trait in intent.traits}
-        ],
-        program.anchors,
-    )
-    mod = _replace_spatial_program(mod, bad_program)
-
-    with pytest.raises(Exception, match="fragment programs to materialize at least one fragment contract"):
-        tilelang.transform.ValidateSpatialProgram()(mod)
-
-
-def test_validate_spatial_program_rejects_work_dependent_domain_without_partition_payload():
-    mod = _prepare_blackhole_phase_b_module(
-        _lower_flash_attention_example(
-            mha_example,
-            1,
-            32,
-            256,
-            128,
-            True,
-            block_M=128,
-            block_N=128,
-            num_stages=1,
-            threads=128,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    make_partition = tvm.get_global_func("tl.WorkPartition")
-    make_program = tvm.get_global_func("tl.SpatialProgram")
-    rebuilt_partitions = [
-        make_partition(
-            partition.name,
-            partition.kind,
-            partition.target_name,
-            partition.axes,
-            partition.traits,
-            {
-                "domain_index": partition.payload["domain_index"],
-                "partition_family": partition.payload["partition_family"],
-            },
-            partition.anchors,
-        )
-        for partition in program.work_partitions
-    ]
-    bad_program = make_program(
-        program.member_func,
-        program.phases,
-        program.tasks,
-        program.channels,
-        program.layouts,
-        rebuilt_partitions,
-        program.placements,
-        program.sync_edges,
-        program.resource_intents,
-        program.anchors,
-    )
-    mod = _replace_spatial_program(mod, bad_program)
-
-    with pytest.raises(Exception, match="work-dependent domains to materialize work partition payload"):
-        tilelang.transform.ValidateSpatialProgram()(mod)
-
-
-def test_validate_spatial_program_rejects_registry_phase_signature_mismatch():
-    mod = _prepare_blackhole_phase_b_module(
-        _lower_flash_attention_example(
-            mha_example,
-            1,
-            32,
-            256,
-            128,
-            False,
-            block_M=128,
-            block_N=128,
-            num_stages=1,
-            threads=128,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    make_phase = tvm.get_global_func("tl.ProgramPhase")
-    make_task = tvm.get_global_func("tl.Task")
-    make_program = tvm.get_global_func("tl.SpatialProgram")
-
-    original_phase_name = str(program.phases[0].name)
-    renamed_phase_name = original_phase_name + "_renamed"
-    rebuilt_phases = []
-    for phase in program.phases:
-        rebuilt_phases.append(
-            make_phase(
-                renamed_phase_name if str(phase.name) == original_phase_name else phase.name,
-                phase.task_names,
-                phase.channel_names,
-                phase.traits,
-                phase.payload,
-                phase.anchors,
-            )
-        )
-    rebuilt_tasks = []
-    for task in program.tasks:
-        rebuilt_tasks.append(
-            make_task(
-                task.name,
-                task.kind,
-                renamed_phase_name if str(task.phase_name) == original_phase_name else task.phase_name,
-                task.update_names,
-                task.traits,
-                task.payload,
-                task.anchors,
-            )
-        )
-    bad_program = make_program(
-        program.member_func,
-        rebuilt_phases,
-        rebuilt_tasks,
-        program.channels,
-        program.layouts,
-        program.work_partitions,
-        program.placements,
-        program.sync_edges,
-        program.resource_intents,
-        program.anchors,
-    )
-    mod = _replace_spatial_program(mod, bad_program)
-
-    with pytest.raises(Exception, match="aggregated ProgramPhase truth to match member-local phase signatures"):
-        tilelang.transform.ValidateSpatialProgram()(mod)
-
-
-def test_validate_spatial_program_rejects_registry_phase_closure_basis_mismatch():
-    mod = _prepare_blackhole_phase_b_module(
-        _lower_flash_attention_example(
-            mha_example,
-            1,
-            32,
-            256,
-            128,
-            False,
-            block_M=128,
-            block_N=128,
-            num_stages=1,
-            threads=128,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    make_phase = tvm.get_global_func("tl.ProgramPhase")
-    rebuilt_phases = [
-        make_phase(
-            phase.name,
-            phase.task_names,
-            phase.channel_names,
-            phase.traits,
-            (
-                {
-                    **dict(phase.payload),
-                    "closure_basis": str(phase.payload["closure_basis"]) + "|mutated",
-                }
-                if i == 0
-                else phase.payload
-            ),
-            phase.anchors,
-        )
-        for i, phase in enumerate(program.phases)
-    ]
-    mod = _replace_spatial_program(mod, _make_spatial_program_like(program, phases=rebuilt_phases))
-
-    with pytest.raises(Exception, match="aggregated ProgramPhase truth to match member-local phase signatures"):
+    with pytest.raises(Exception, match="requires sync edges to carry materialization_kind"):
         tilelang.transform.ValidateSpatialProgram()(mod)

@@ -126,6 +126,18 @@
   这组 bridge attrs 传递 target truth；
   planner object 一旦可直接聚合成 `TTProgram`，
   中间 attr 就应该停产，helper/test 也不能再把它们当作回退面
+- active Blackhole path 不再保留
+  `tl.semantic_* / SemanticProgram / semantic_witness`
+  这类独立语义层；
+  凡是能从 `Normalized Tile TIR + SpatialPlan companion +
+  blackhole.work_decomposition / blackhole.fragment_regions /
+  blackhole.pipeline_stages`
+  稳定得到的信息，就必须直接从这些 owner truth 读取。
+  若仍然不够，优先扩 TIR/schema，不要再造一层 semantic mirror
+- `SpatialProgram` fast path 的判定必须看
+  `SpatialPlan` 自身的 closure / boundary 形状与现有 Blackhole analysis facts，
+  不能只看零散 segment kind 或历史 semantic 角色；
+  否则 `flash-attn` 这类多闭包程序会被错误压成简单 GEMM / fragment fast path
 
 ## 5. Schema / ABI 模式
 

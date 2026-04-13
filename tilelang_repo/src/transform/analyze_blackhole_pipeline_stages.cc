@@ -163,7 +163,7 @@ class PipelineStageAnalyzer final : public StmtExprVisitor {
         if (!saw_pipeline_loop) {
           if (const auto* loop = stmt.as<ForNode>()) {
             std::optional<int64_t> maybe_num_stages = GetNumStages(loop);
-            if (!maybe_num_stages.has_value() && LooksLikePipelineLoop(stmt)) {
+            if (!maybe_num_stages.has_value()) {
               maybe_num_stages = InferStageCountFromStmt(stmt);
             }
             if (maybe_num_stages.has_value()) {
@@ -205,7 +205,7 @@ class PipelineStageAnalyzer final : public StmtExprVisitor {
   void VisitStmt_(const ForNode* op) final {
     if (!current_stage_.has_value()) {
       std::optional<int64_t> maybe_num_stages = GetNumStages(op);
-      if (!maybe_num_stages.has_value() && LooksLikePipelineLoop(GetRef<Stmt>(op))) {
+      if (!maybe_num_stages.has_value()) {
         maybe_num_stages = InferStageCountFromStmt(GetRef<Stmt>(op));
       }
       if (maybe_num_stages.has_value()) {
@@ -274,20 +274,6 @@ class PipelineStageAnalyzer final : public StmtExprVisitor {
     return std::nullopt;
   }
 
-  bool LooksLikePipelineLoop(const Stmt& stmt) const {
-    bool has_gemm = false;
-    tir::PostOrderVisit(stmt, [&has_gemm](const ObjectRef& node) {
-      if (const auto* call = node.as<CallNode>()) {
-        if (const auto* op_node = call->op.as<tvm::OpNode>()) {
-          if (op_node->name == "tl.tileop.gemm_py") {
-            has_gemm = true;
-          }
-        }
-      }
-    });
-    return has_gemm;
-  }
-
   std::optional<int64_t> InferStageCountFromStmt(const Stmt& stmt) const {
     std::optional<int64_t> inferred;
     tir::PostOrderVisit(stmt, [&inferred](const ObjectRef& node) {
@@ -297,7 +283,7 @@ class PipelineStageAnalyzer final : public StmtExprVisitor {
           return;
         }
         if (const auto* imm = buffer->shape[0].as<IntImmNode>()) {
-          if (imm->value > 1) {
+          if (imm->value > 0) {
             inferred = imm->value;
           }
         }
