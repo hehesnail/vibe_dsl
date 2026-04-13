@@ -51,6 +51,18 @@
 
 当前稳定 companion 习惯：
 
+- `Normalized Tile TIR` 是唯一 semantic body；
+  `SpatialPlan companion / TTProgram companion`
+  只保存 TIR 没有对象化、但后续 planning 必须跨 pass 持久化的事实
+- `Task / Channel` 继续可以存在，
+  但只能作为
+  `ExecutionClosure / ClosureBoundary`
+  的 derived execution/materialization view；
+  不能再当 primary truth owner
+- 两层 companion 新主链固定从 `Simplify` 后进入：
+  `AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion ->
+  PlanTTBlocks -> PlanTTTransport -> PlanTTSync -> PlanTTABI ->
+  PlanTTExecution -> MaterializeBlackholeExecutable`
 - seed / manifest / witness / program 分层存放
 - intermediate typed plan 只要进入 pass 链，就要和最终 companion truth 一起纳入
   invalidation；只删 `tl.spatial_program` 而保留 `tl.spatial_domain_plan` /

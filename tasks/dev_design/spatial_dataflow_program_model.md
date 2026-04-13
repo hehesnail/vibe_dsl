@@ -2,653 +2,499 @@
 
 ## 基本信息
 
-- **文档角色**: spatial/dataflow 架构导向的 cross-layer feature 设计
-- **当前状态**: `2026-04-09` 活动设计文档
-- **定位**: 不替代总体设计；只定义本 feature 的问题边界、owner 链、
-  两阶段落地方式与对现有 IR/program model 的影响
-- **适用范围**: 面向 spatial/dataflow 类后端；当前以 Blackhole 为第一落地点
-- **非目标**: 不把本文档定义成 GPU/CPU 等所有 target 的统一 schedule 框架
+- **文档角色**: spatial/dataflow program model 的 companion 设计文档
+- **当前状态**: `2026-04-13` 活动设计文档，已按两层 redesign 收正
+- **定位**: 不替代总体设计；只回答
+  `Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion`
+  这条主链里，哪些 truth 留在 TIR，哪些只是 analysis facts，
+  哪些必须持久化进 companion
+- **适用范围**: spatial/dataflow 类后端；当前以 Blackhole 为第一落地点
+- **非目标**:
+  - 不把本文档变成第二份总体设计文档
+  - 不独立于 TIR 发明一套完整的新语义表示
+  - 不把 GPU/CPU 等所有 target 的 leaf lowering 统一进同一套表面 API
 
-## 1. 问题定义
+## 1. 设计原则
 
-当前 TileLang 的大量用户可写字面量与 sample-level schedule 写法，
-主要来自 GPU-first 语境：
+这轮设计最重要的约束只有一条：
 
-- `T.Kernel(...)` grid / threads
-- `T.Parallel(...)`
-- `alloc_shared / alloc_fragment` 的显式 shape
-- `block_M / block_N / block_K / pipeline_stage` 等调优字面量
+> **TIR 已经完整表达的东西，不允许再在 Spatial/TT 层重复编码。**
 
-这些信息在当前主链里经常同时承担三种不同职责：
-
-- 算法语义的真实硬约束
-- 可移植的 schedule 提示
-- 某个样例或某个 target 的局部实现细节
-
-对 spatial/dataflow 后端来说，这种混写会导致三类问题：
-
-1. 后端被迫把 GPU-first 字面量直接当成 target truth，
-   无法根据 SRAM/L1/CB、通信和 placement 重新做 capacity-aware planning
-2. `SpatialProgram` 和 `TTProgram` 的 owner boundary 被 case-local shape 穿透，
-   迫使 target 侧从 sample 代码和 payload 反推真正的 block / transport / sync contract
-3. 一旦需要跨 family 支持更复杂的 partition、communication、pipeline 或 sync，
-   就会不断回退成 case-driven 特判
-
-因此本文档定义的 feature 目标不是“再加几个 Blackhole knob”，
-而是收正一个面向 spatial/dataflow 架构的 program model：
-
-- 把用户字面量的语义层次分开
-- 把 abstract partition/placement/transport intent 与 target concrete plan 分开
-- 让 memory/pipeline/sync 成为一等 planning truth
-- 让专家控制通过显式 target namespace 暴露，而不是继续借用 GPU-first 字面量
-
-## 2. 设计输入与研究结论
-
-本文档吸收的主要输入不是单篇论文，而是一致的结构性结论：
-
-- `T2S` 把 temporal definition 与 spatial mapping 分离，
-  说明 mapping 应是独立、可验证、可组合的一层，而不是散落在 kernel 字面量中
-- `Spatial` 把片上内存、流水与 controller 视为一等对象，
-  说明 compute 之外的 memory/pipeline truth 不能继续当成 schedule 副产物
-- `Allo` 把 compute / memory / communication customization 解耦成可组合 primitive，
-  说明 program model 必须允许不同类 intent 分开表达
-- `Revet`、`Ripple`、`SAM`、`Dato` 都在强调：
-  partition、channel、streaming/async、layout、virtual mapping
-  如果不沿 IR 栈显式保留，下游就只能靠恢复语义和 late patching 勉强工作
-- `TileScale` 进一步说明：
-  计算、内存、通信最好共享统一的层次化视角；
-  即便第一阶段只做单设备，也应给 hierarchy 留出显式扩展位
-
-这些工作并不要求我们复刻它们的语言表面，
-但共同支持下面这条 owner discipline：
+因此主链现在应当理解为：
 
 ```text
-DSL literal semantics
-  -> Spatial partition / placement / transport / sync intent
-  -> TT concrete block / memory / execution plan
-  -> ExecutableSpec materialization
+Normalized Tile TIR
+  -> SpatialPlan companion
+  -> TTProgram companion
+  -> ExecutableSpec / BlackholeModule
 ```
 
-## 3. Feature 目标与非目标
+这里：
 
-### 3.1 目标
+- `Normalized Tile TIR`
+  是唯一语义本体
+- `SpatialPlan companion`
+  不是第二份 semantic IR；
+  它只是从 TIR 中提炼出的最小 planning projection
+- `TTProgram companion`
+  不是第二份 compute IR；
+  它只是 target block/resource/ABI/execution 的 companion
 
-1. 为 spatial/dataflow 类后端建立统一的字面量语义分层
-2. 让 `SpatialProgram` 成为 abstract spatial intent 的真源，
-   而不是让 target 从 case-local staging shape 反推意图
-3. 让 `TTProgram` 成为 concrete block / memory / execution planning 的真源
-4. 让 SRAM/L1/CB-aware sizing、buffering、transport、sync 成为 typed planning truth
-5. 给 expert 用户提供显式 target namespace 的 validated hint API
-6. 第一阶段先服务单设备 spatial/dataflow program；
-   第二阶段在同一模型下扩展 hierarchy / multi-scale / inter-chip
+也就是说，后续不该再以“构造一张图来重新表示 TIR”作为目标，
+而应以“只把 TIR 没有对象化、但 planning 必须跨 pass 共享的事实提出来”
+作为目标。
 
-### 3.2 非目标
+## 2. 三类信息
 
-- 不把本文档改写成第二份总体设计文档
-- 不把 GPU/CPU 执行模型强行塞进同一套统一 API
-- 不把物理 core 坐标、具体 CB id、具体 semaphore id 直接暴露为稳定 DSL 表面
-- 不要求第一阶段就完成 multi-chip 运行时、collective 库或全层次 cost model
+### 2.1 留在 `Normalized Tile TIR` 的
 
-## 4. 字面量语义分层
+这些东西本来就在 TIR 里完整表达，不能重复抬成 companion schema：
 
-本文档把用户可写的 schedule 相关字面量分成三类：
+- loop/domain 结构
+- index expr
+- predicate / mask
+- indirect address / page-table 风格访问
+- tile-op 参数
+- region/subscript 形态
+- `actual_rows`、`group_idx_for_bx`、`block_table[...]`
+  这类 sample-local expr
 
-### 4.1 `semantic constraint`
+一句话说：
+**TIR 继续拥有程序“怎么访问、怎么算”的全部细节。**
 
-真正改变程序可观察语义或合法域的约束。
+### 2.2 只存在于 analysis pass 内部的
 
-示例：
+这些是从 TIR 上临时推出来的事实，默认不持久化：
 
-- 真实 loop/domain bound
-- 真实 buffer extent
-- 因果 / layout / state update / aliasing 等硬约束
+- def-use 追踪细节
+- exact region overlap 证明
+- predicate simplification 结果
+- indirect access dependence 证明
+- loop-carried recurrence 检测过程
+- closure 候选枚举过程
+- footprint 估算中间结果
 
-这类信息不能被后端静默放大、缩小或改写；
-若需要变换，必须由显式 rewrite / retile / legality-preserving transform 完成。
+这些都是算法材料，不是长期 schema。
 
-### 4.2 `portable hint`
+### 2.3 必须进入 companion 的
 
-面向 spatial/dataflow family 的可移植调度意图，
-不直接等于 target 最终 block / pipeline 结果。
+只有一类东西需要进入 companion：
 
-示例：
+- 后续 planning 仍然要消费
+- 但在进一步 lowering 后就无法再稳定恢复
+- 并且它不是某一个 expr，而是跨 pass 共享的 planning truth
 
-- 倾向怎样切 parallel axes
-- 是否偏好沿 reduction 方向分片
-- 是否偏好 producer-consumer reuse
-- 是否偏好较少 tail 或较粗 block
+这类 truth 才应该进入 `SpatialPlan companion`
+或 `TTProgram companion`。
 
-它们可以影响 planner，但不拥有最终 concrete size。
+## 3. `SpatialPlan companion`
 
-### 4.3 `target-specific validated hint`
+### 3.1 角色
 
-显式写给某个 target family 的专家控制。
-这类 hint 允许更强地影响 planner，但仍然要经过 legality 和 capability 验证。
+`SpatialPlan companion` 只负责回答 4 个问题：
 
-第一批形式统一为：
+1. 哪些 anchored sub-TIR 天然构成局部执行闭包
+2. 闭包之间有哪些稳定 boundary
+3. 哪些 frontier 允许 cut，哪些不允许
+4. 用户 hints 在空间/dataflow 语义下经过验证后，变成了哪些 planner input
 
-- `T.blackhole.schedule(...)`
-- `T.blackhole.place(...)`
-- `T.blackhole.transport(...)`
-- `T.blackhole.memory(...)`
-- `T.blackhole.sync(...)`
+它**不**负责：
 
-这些都是 `validated hint`，不是 hard override：
+- 重复表达访问模式
+- 重复表达 tile-op 语义
+- 直接决定最终 block 大小
+- 直接决定 CB/semaphore/kernel/runtime args
 
-- planner 优先 obey
-- 若可合法降级，则 shrink / adjust 并给出诊断
-- 只有与 semantic constraint 冲突，或 target 明确不支持时才 fail-fast
+### 3.2 最小持久对象
 
-## 5. Owner 链与对象边界
+`SpatialPlan companion` 只保留 3 类持久对象。
 
-### 5.1 DSL 层
+#### `ExecutionClosure`
 
-DSL 负责表达：
+表示一个局部执行闭包。
 
-- 算法语义
-- 通用 spatial/dataflow intent
-- 显式 target-specific expert hints
+它必须回答：
 
-DSL 不负责拥有：
+- 哪些 `TIRAnchor` 属于这个闭包
+- 哪些 frontier 允许 cut
+- 这个闭包的 symbolic footprint summary
+- 这个闭包是否带 locality / carry / aggregation obligation
 
-- 最终 block size
-- 最终 CB 页数
-- 最终 per-core decomposition
-- 最终 route / semaphore / execution packet
+它不需要重复存：
 
-### 5.2 `SpatialProgram`
+- index expr
+- predicate
+- access formula
+- tile-op 参数
 
-`SpatialProgram` 负责 abstract spatial intent，
-不负责 exact target sizing。
+这些都在 anchored sub-TIR 里。
 
-长期需要显式承载的类目包括：
+#### `ClosureBoundary`
 
-- `WorkPartition`
-- `Placement`
-- `DataflowContract`
-- `TransportIntent`
-- `SyncIntent`
-- `ProgramPhase`
+表示两个闭包之间的稳定 planning boundary。
 
-其中 `WorkPartition` 的长期职责是表达：
+它只保留极少数正交关系：
 
-- `parallel_axes`
-- `reduction_axes`
-- `partition_constraints`
-- `tail_policy`
-- `overlap_policy`
-- `reuse_policy`
+- `source_closure`
+- `target_closure`
+- `subject`
+  例如某个 logical state / logical buffer identity
+- `boundary_kind`
+  只允许最小集合：
+  - `flow`
+  - `carry`
+  - `join`
 
-它回答的是“哪些切分合法、哪些复用和 closure 必须保留”，
-而不是“在这块硬件上最终切多大”。
+这里故意不把 workload-specific 访问模式做成新 kind。
+`topk`、`fusedmoe`、`paged decode`、`retention`
+的访问细节继续留在 TIR expr 里；
+boundary 只表达 planning 需要的关系。
 
-`DataflowContract` 的长期职责是表达跨 op / phase 边上的协议，
-而不是把这些信息留给 target 侧从局部 builtin 序列里恢复。
+#### `ValidatedHintSet`
 
-它至少需要回答：
+表示从 DSL literal / imported hint / target-specific hint
+收正后的 planner 输入。
 
-- producer / consumer 的角色绑定
-- buffer / edge 属于 `stream`、`state` 还是 `republish` flow class
-- 每次 publish / consume 的 page 或 tile 粒度
-- retain / pop / reacquire policy
-- sync completion point 与 ownership
+它只负责记录：
 
-这里的关键纪律是：
+- 哪些 imported hints 被接纳
+- 哪些 portable hints 被 canonicalize
+- 哪些 target-specific hints 被 validate 成功
+- 哪些 hint 被 shrink / reject，以及诊断理由
 
-- `SpatialProgram` 不能只知道“有 transport / sync intent”，
-  却不知道一个中间 buffer 在多个算子之间到底是队列型流、长寿命状态，
-  还是“同核内生产 -> 消费 -> 再生产”的 republish buffer
-- 如果这种 edge-level contract 缺失，
-  `Phase C` 就会退化成从 `cb_reserve_back / cb_wait_front / cb_pop_front / cb_push_back`
-  的局部排列顺序恢复语义，重新落回 case-driven heuristic
-- `flash-attn`、`paged decode`、`topk`、`chunk recurrence`
-  这类多算子交互 workload 的稳定支持面，
-  依赖的是这层 contract，而不是再补更多 backend lookahead
+它不替代 TIR，也不替代 target plan。
 
-同样重要的是，`SpatialProgram` 不能只保留“哪个 logical work 在运行”，
-却不保留“这个 work 对每个 producer / consumer buffer 实际访问哪段 tile/page range”。
+### 3.3 `Task / Channel` 的新地位
 
-否则就会出现另一种伪 contract：
+`Task / Channel` 仍然可以存在，但只作为 derived view：
 
-- ABI 上已经声明了 `a_tile_start_id / b_tile_start_id / output_tile_start_id`
-  这类 per-work 描述符
-- 但真正的 reader / writer 访问表达式仍然退化成
-  “先拿 `work_linear_id` 重建 `blockIdx`，再从原 sample 索引公式里猜”
-- 结果是显式 work descriptor 变成 dead metadata，
-  target 侧继续隐式耦合 sample-level index formula
+- `Task`
+  是 `ExecutionClosure` 的粗粒度展示/调试名词
+- `Channel`
+  是 `ClosureBoundary` 在 transport/materialization 视角下的展示/调试名词
 
-因此长期模型里，`work_linear_id` 只能保留 identity 职责；
-真正的 per-buffer work/access contract 必须是显式 schema，
-并且要沿 `SpatialProgram -> TTProgram -> ExecutableSpec` 被实际消费，
-不能只写进 payload 再被 codegen/runtime 忽略。
+它们不再是 primary truth owner。
 
-在当前 `Phase C2` 的过渡落地里，
-`TTProgram / TTABIPlan` 会先把这部分 contract 物化成
-typed `per_work_arg_specs`：
+### 3.4 为什么这已经够用
 
-- 它们属于 per-work ABI truth，不属于 runtime 自由推导逻辑
-- 它们回答的是“某个 runtime arg 的值从哪类 work/block fact 求得”
-- 它们只是 target-side materialization，不改变长期 owner 链：
-  缺失这组 spec 时，结论仍然是上游 work/access contract 不够，
-  而不是允许 direct runtime 回退到 `work_linear_id` 猜测
-- 一旦进入 target-side materialization，
-  这组 spec 还必须被 canonicalize 成 kernel-local truth，
-  由 synthetic segment codegen/runtime 直接消费；
-  不能再退回“看见某个 arg kind 就按约定俗成解释”
+对我们已经核过的 workload：
 
-同一原则也适用于 fragment-side cross-op intermediate edge。
-当前 `flash-attn` `Phase C2` 已经把这类 truth 先收成
-generic `fragment_materialization_contract`：
+- [example_topk.py](/root/dev/vibe_dsl/tilelang_repo/examples/topk/example_topk.py)
+  需要的是 closure、flow boundary 和 join/carry 判断；
+  predicate/index 细节本来就在 TIR 里
+- [example_fusedmoe_tilelang.py](/root/dev/vibe_dsl/tilelang_repo/examples/fusedmoe/example_fusedmoe_tilelang.py)
+  需要的是 irregular work closure 与 boundary；
+  `actual_rows` 和 grouped offsets 继续留在 expr 里
+- [example_mla_decode_paged.py](/root/dev/vibe_dsl/tilelang_repo/examples/deepseek_mla/example_mla_decode_paged.py)
+  需要的是 split/join closure 边界；
+  page-table 寻址继续留在 expr 里
+- [example_retention_fwd.py](/root/dev/vibe_dsl/tilelang_repo/examples/linear_attention/example_retention_fwd.py)
+  需要的是 carry boundary；
+  `h` 的具体访问与更新公式继续留在 TIR 里
 
-- `kind = intermediate_fragment_merge`
-- `materialization_kind = intermediate_buffer`
-- `value_role = fragment_delta`
-- `merge_kind = fragment_add`
+所以 `SpatialPlan companion` 真正需要补出来的不是“访问模式 schema”，
+而是 **closure/boundary/cut/hint** 这几个 planning truth。
 
-但当前回溯也表明，
-只描述“它要不要 materialize / merge”还不够。
-对于 thread-distributed fragment，
-owner-side contract 还必须继续补齐：
+## 4. `TTProgram companion`
 
-- `live_form_kind`
-  例如 `thread_distributed_fragment`、
-  `materialized_local_fragment`、
-  `cb_live_tile`、
-  `dst_live_fragment`
-- `execution_topology_kind`
-  即 materialize/consume 这份值时依赖哪类 execution lane truth，
-  不能默认等同于“当前 codegen 恰好拿得到某个 `threadIdx.x`”
-- `physical_local_extent`
-  用来区分 logical element count
-  与当前 live form 在 device-side physical buffer
-  实际持有的 per-lane slice extent
+### 4.1 角色
 
-这几项属于语义生命周期 truth，
-owner 仍然是 `StatefulSemanticIR / SpatialProgram`。
-相对地，CB overlap、reserve/push/pop、page sizing
-仍属于 target-side 物理资源生命周期分析；
-不能因为 target 侧要做这些事，
-就把 fragment live form 也留给 lower/codegen 去猜
+`TTProgram companion` 只负责承接 target owner：
 
-这里不允许把 `matmul / flash-attn / paged decode` 之类的 family 名字编码进 contract；
-family-specific extractor 只能在 owner 上游把结构证据归约成同一份 contract，
-并且这类事实应由 operator/semantic owner 暴露 typed metadata，
-而不是让 `AnalyzeSemanticStructure` 之类的下游 pass
-直接按 `gemm_py` 等 family 名字做协议判断；
-下游 `TTProgram / ExecutableSpec / runtime` 只能消费这份 generic truth。
+- block sizing / slicing
+- kernel grouping
+- transport realization
+- synchronization realization
+- ABI/runtime args
+- execution order / wave scheduling
 
-同一块 payload 现在还会显式带出
-generic `fragment_buffer_flow_contracts`：
+它不再承担：
 
-- 它们表达的是 buffer-level producer / consumer flow truth，
-  而不是某个后段 pass 对 `SeqStmt` 的局部 lookahead
-- 该 contract 统一覆盖 fragment/local intermediate buffer
-  与 compute kernel 内参与同一 producer-consumer 协议的 CB-backed input buffer
-- event 顺序按 statement execution order 编码，
-  lower/codegen 只能按这份 typed truth 判断 retain / pop / republish，
-  不能再从局部 `cb_wait_front / cb_pop_front / cb_push_back`
-  的排列关系恢复语义
-- 这层 contract 仍然是 generic dataflow truth，
-  不允许编码 `flash-attn` / `matmul` 之类 family-specific 名字
+- semantic recovery
+- task graph recovery
+- 从 lowered loop matcher 恢复 compute/transport intent
 
-### 5.3 `TTProgram`
+### 4.2 最小持久对象
 
-`TTProgram` 负责把 spatial intent 与 `TTHardwareModel` 一起收敛成 concrete target plan。
-
-第一批长期 owner 包括：
+`TTProgram companion` 长期只保留 6 类对象：
 
 - `TTBlockPlan`
-- `TTCBPlan`
+- `TTKernelPlan`
 - `TTTransportPlan`
-- `TTSemaphorePlan`
-- `TTComputeSyncPlan`
+- `TTSyncPlan`
+- `TTABIPlan`
 - `TTExecutionPlan`
 
-其中新增 `TTBlockPlan`，作为 concrete sizing 真源，长期负责：
+其中：
 
-- `parallel_block_shape`
-- `reduction_slice_shape`
-- `subblock_shape`
-- `buffering_policy`
-- `block_linearization`
-- `block_to_core_decomposition`
-- 与 block 相关的 tail 处理和 diagnostics
+- `TTBlockPlan`
+  是当前缺失的核心 owner，
+  负责 slice、容量、buffering、work packet 形成
+- `TTTransportPlan`
+  负责把 boundary realization 成 local handoff、CB、multicast、
+  cross-core exchange 等 target primitive
+- `TTSyncPlan`
+  负责 barrier / semaphore / completion relation
 
-`TTCBPlan` 只承接资源后果，
-不再直接从 case-local shared shape 成为 decomposition owner。
+像 `CB`、`Semaphore`、`CoreGroup`
+都更接近这些 plan 的 realization detail，
+不应再和 target truth owner 混为一谈。
 
-### 5.4 `TTCoreGroup.work_packets`
+### 4.3 与 TT-Metal 的对应关系
 
-`work_packets` 继续只表示调度结果：
+这和 TT-Metal 当前真实编程模型是对齐的：
 
-- 哪些 logical block id 分配到哪些 core
-- 每个 core 消费哪些 packet / wave
+- [host_api.hpp](/root/dev/vibe_dsl/tt_metal_repo/tt_metal/api/tt-metalium/host_api.hpp)
+  表明 host 侧长期稳定原语就是
+  `Program / Kernel / CircularBuffer / Semaphore / RuntimeArgs`
+- [program_descriptors.hpp](/root/dev/vibe_dsl/tt_metal_repo/tt_metal/api/tt-metalium/program_descriptors.hpp)
+  表明最终 program descriptor 也是
+  `kernels / cbs / semaphores`
+- [lab_multicast.cpp](/root/dev/vibe_dsl/tt_metal_repo/ttnn/examples/lab_multicast/lab_multicast.cpp)
+  和
+  [sort_program_factory.cpp](/root/dev/vibe_dsl/tt_metal_repo/ttnn/cpp/ttnn/operations/data_movement/sort/device/sort_program_factory.cpp)
+  说明 multicast、cross-core exchange 也不是新语义层，
+  而是 kernel/CB/semaphore/runtime args 的组合
 
-它不能再承担 decomposition owner，
-也不应再被迫反推出更早层的 partition / block truth。
+所以 `TTProgram companion` 不需要发明更大的 ontology，
+只需要把这些 target owner 收正。
 
-### 5.5 `ExecutableSpec`
+## 5. Pass 设计
 
-`ExecutableSpec` 只物化冻结后的 target truth：
+这套模型下，pass 不再围绕“构造另一份 IR”组织，
+而是围绕“analysis -> companion -> target plan”组织。
 
-- buffer / CB / runtime args
-- host transfer / accessor materialization
-- direct launch / wave launch / synchronization materialization
+### 5.1 `NormalizeTileFrontend`
 
-它不是第二真源。
+保留现有真正属于 frontend 规范化的 pass：
 
-## 6. Phase 1: Single-Device Spatial/Dataflow Program Model
+- `BindTarget`
+- `AddWrapperForSingleBufStore`
+- `LegalizeNegativeIndex`
+- `VerifyParallelLoop`
+- `InjectAssumes`
+- `Simplify`
 
-第一阶段的目标不是 hierarchy，而是先把单设备 spatial/dataflow program 写扎实。
+这一步结束后：
 
-### 6.1 交付范围
+- TIR 仍然保留 tile-op、loop、expr、predicate、region truth
+- 还没有进入 GPU realization
 
-第一阶段必须覆盖：
+### 5.2 `AnalyzeSpatialStructureFacts`
 
-- 字面量语义分层
-- `SpatialProgram` 中的 partition / placement / transport / sync intent
-- `TTProgram` 中的 `TTBlockPlan`
-- SRAM/L1/CB-aware block and memory planning
-- validated hint diagnostics
-- 对现有 GPU-first 字面量的 compatibility intake
+纯 analysis pass。
 
-### 6.2 `TTBlockPlan` 生成算法
+职责：
 
-`TTBlockPlan` 是 target-side planning pass 的产物，
-输入为：
+- 从 normalized TIR 中识别 closure candidates
+- 识别 carry / join / flow boundary candidates
+- 推导 admissible cut frontiers
+- 估算 symbolic footprint
+- 读取并验证 imported / portable / target-specific hints
 
-- `SpatialProgram` 中冻结后的 intent
-- op-local compute / transport truth
+它不写长期协议 attrs，
+只产出 analysis facts。
+
+### 5.3 `BuildSpatialPlanCompanion`
+
+把上一步 analysis facts 压缩成最小持久 companion：
+
+- `ExecutionClosure`
+- `ClosureBoundary`
+- `ValidatedHintSet`
+
+它的职责不是“重写 TIR”，
+而是把 planning 所需、又不能留给后面再恢复的事实冻结下来。
+
+### 5.4 `PlanTTBlocks`
+
+输入：
+
+- normalized TIR
+- spatial companion
 - `TTHardwareModel`
 
-planner 的基本流程固定为：
+职责：
 
-1. 生成 target-legal candidate space  
-   从 abstract intent 推出合法的 parallel block / reduction slice / subblock 候选
-2. 做容量裁剪  
-   估算 staging、carry、output、intermediate、buffering 成本；
-   超出 SRAM/L1/CB 预算的候选直接丢弃
-3. 选择最优合法 plan  
-   优先最大化 block volume、减少 tail 和 wave，
-   再综合 reuse / transport / buffering 偏好
-4. 把 chosen plan 投影成 `TTCBPlan` 与 `work_packets`
+- 选择 closure 的合法 slice
+- 做 SRAM/L1/CB/buffering feasibility
+- 形成 `TTBlockPlan`
 
-这条链必须替代当前“上层 case 写了多大 shared shape，下游就照单全收”的模式。
+这里才决定：
 
-### 6.3 SRAM/L1/CB-aware Planning
+- 真正的 task/block 大小
+- 是否沿某些 frontier 再切
+- 每个 slice 的 symbolic footprint 如何落成 target 尺寸
 
-单设备第一阶段必须把 memory/pipeline 作为一等 planning truth。
+### 5.5 `PlanTTTransport`
 
-长期至少要显式考虑：
+职责：
 
-- input staging footprint
-- output / carry footprint
-- intermediate / dst footprint
-- buffering depth
-- page size / page count / data format
-- transport-local reuse 是否能减少 staging
+- 根据 `ClosureBoundary + TTBlockPlan`
+  选择 local handoff / CB / cross-core exchange / multicast 等 realization
+- 形成 `TTTransportPlan`
 
-也就是说，“能不能吃满 SRAM、该不该 double buffer、该不该缩 block”
-都不再由 sample 手调决定，而由 target planner 在 typed truth 上决定。
+它不再从 lowered TIR 的 builtin 排列顺序恢复 transport intent。
 
-### 6.4 Expert Hint API
+### 5.6 `PlanTTSync`
 
-第一阶段的 Blackhole expert hint family 定为：
+职责：
 
-- `T.blackhole.schedule(...)`
-- `T.blackhole.place(...)`
-- `T.blackhole.transport(...)`
-- `T.blackhole.memory(...)`
-- `T.blackhole.sync(...)`
+- 根据 closure/boundary 和 transport choice
+  形成 barrier / semaphore / completion relation
+- 产出 `TTSyncPlan`
 
-其共同语义为：
+### 5.7 `PlanTTABI`
 
-- 局部作用域，默认作用在当前 `T.Kernel`
-- 只提供 target-specific validated hint，不承载算法语义
-- planner 必须产出“obey / shrink / reject”的诊断结果
+职责：
 
-这些 API 是专家通道，不替代 portable hints；
-也不允许把 GPU-first 字面量继续当成隐式 Blackhole override。
+- 从 anchored TIR + `TTBlockPlan / TTTransportPlan / TTSyncPlan`
+  推导 runtime args、accessors、compile-time args
+- 形成 `TTABIPlan`
 
-### 6.5 Compatibility 策略
+这里不允许再通过 `work_linear_id` 或 arg kind 去猜语义。
 
-第一阶段不要求立刻删除现有 GPU-first 写法，
-但要明确它们在 spatial/dataflow 路径中的新身份：
+### 5.8 `PlanTTExecution`
 
-- 通用 `block_* / threads / stage` 类字面量默认作为 imported hint intake
-- 如果其中某项已经是语义可观察约束，则必须显式标成 semantic constraint
-- 未标注的 imported hints 不拥有最终 target size
+职责：
 
-这样可以在不破坏大量现有样例的情况下，
-把 ownership 从 sample-local schedule 字面量迁回 planner。
+- 形成 kernel grouping
+- 形成 launch / wave / order
+- 形成 `TTKernelPlan` 与 `TTExecutionPlan`
 
-## 7. Phase 2: Hierarchical / Multi-Scale Extension
+### 5.9 `MaterializeBlackholeExecutable`
 
-第二阶段不推翻第一阶段，
-而是在相同 owner discipline 下扩展 hierarchy。
+职责：
 
-### 7.1 交付目标
+- 消费 `TTProgram companion`
+- 物化 leaf device kernels、Program/Kernel/CB/Semaphore descriptors、
+  host/device packaging 与 `ExecutableSpec`
 
-`Phase 2` 的目标不是一句“支持 hierarchy”，
-而是把 `Phase 1` 的单设备 spatial/dataflow program，
-扩成“多级 spatial/dataflow 系统”上的同一套模型。
+这里才允许使用 target leaf lowering。
 
-第一批明确交付包括：
+## 6. 现有 pass 的长期归位
 
-- 表达 chip 内多级 scale 与跨 chip / node 的 scale domain
-- 表达 inter-core / inter-die / inter-chip / inter-node 的通信域
-- 表达分层 memory、network 与可见性边界
-- 表达分层 collective、task specialization 与 remote placement
-- 在不推翻 `Phase 1` 对象边界的前提下，增加跨 scale planner 与 materialization
+### 6.1 退出 active owner 链的
 
-### 7.2 新对象与 schema 扩展
+下面这些 pass 在长期主链里都不该再承担 owner-building 职责：
 
-第二阶段需要在第一阶段模型上继续增加下面这些方向：
+- `LayoutReducer`
+- `LayoutInference`
+- `CollectSemanticManifestSeeds`
+- `LowerTileOp`
+- `ProjectSemanticSeeds`
+- `ProjectSemanticManifest`
+- `AugmentSemanticManifest`
+- `AnalyzeBlackholeWorkDecomposition`
+- `AnalyzeBlackholeFragmentRegions`
+- `AnalyzeBlackholePipelineStages`
+- `AnalyzeSemanticStructure`
+- `LiftStatefulSemanticIR`
+- `AnalyzeSpatialDomainPlan`
+- `AnalyzeSpatialExecutionPlan`
+- `MaterializeSpatialProgram`
+- `LowerBlackholeOps`
 
-- hierarchical `Placement` scope
-- scale-aware `TransportIntent`
-- collectives 与 remote data movement 的 typed intent
-- 跨 scale 的 synchronization / phase ownership
-- 分层 virtual device / capability model
+这些 pass 的问题域要么：
 
-更具体地说，第一批需要落成的新增 truth 是：
+- 被新的 analysis/companion/TT planning 吸收
 
-- `SpatialProgram`
-  - `ScaleDomain`
-  - scope-aware `Placement`
-  - remote / collective-aware `TransportIntent`
-  - cross-scale `SyncIntent`
-- `TTProgram`
-  - scale-aware `TTBlockPlan`
-  - remote / collective-capable `TTTransportPlan`
-  - cross-scale `TTExecutionPlan`
-  - hierarchical capability-aware planning 输入
+要么：
 
-这些对象不要求第一版就把所有 target family 全铺满，
-但 schema 必须允许：
+- 退成 leaf materialization 工具
 
-- local vs remote movement
-- p2p vs collective
-- compact vs spread placement
-- one-scale vs multi-scale synchronization
+### 6.2 被新主链吸收的问题域
 
-但这些新增抽象仍然遵守相同边界：
+- `PlanAndUpdateBufferAllocationLocation`
+  的 lifetime / placement 问题域
+  -> `PlanTTBlocks`
+- `PipelinePlanning`
+  的 overlap / buffering 问题域
+  -> `AnalyzeSpatialStructureFacts + PlanTTBlocks`
+- `SplitBlackholeKernel`
+  的 kernel grouping 问题域
+  -> `PlanTTExecution`
+- `PlanBlackholeCB`
+  的 CB 资源问题域
+  -> `PlanTTTransport`
+- `AssignBlackholeCores`
+  的 mapping 问题域
+  -> `PlanTTBlocks + PlanTTExecution`
 
-- `SpatialProgram` 只表达 hierarchy intent 与 legality
-- `TTProgram` 决定某个具体 target family 上的 concrete mapping / routing / buffering
+### 6.3 后移到最终物化阶段的
 
-### 7.3 planner 变化
+- `AnnotateDeviceRegions`
+- `CollectDevicePrograms`
+- `SplitHostDevice`
+- `AnnotateReadOnlyParams`
+- `MakePackedAPI`
+- `LowerDeviceKernelLaunch`
 
-相对 `Phase 1`，`Phase 2` 的 planner 需要新增 4 类能力：
+这些仍然有工程价值，
+但只应该消费冻结后的 TT truth。
 
-1. scale selection
-   决定某个 partition / task 是停留在本地 scale，
-   还是提升到 cluster / die / chip / node 等更高一级 scale
-2. remote transport selection
-   决定 local reuse、p2p remote movement、collective
-   之间该选哪种 transport family
-3. hierarchical placement
-   决定哪些 producer-consumer 应共置，
-   哪些 partition 应 spread 到更高一级 scale
-4. cross-scale synchronization planning
-   决定哪些 dependency 是 local completion，
-   哪些需要 remote arrival / collective completion
+## 7. Sufficiency 结论
 
-也就是说，`Phase 2` 的 planner 不只是“块更大一点”，
-而是开始回答：
+基于当前工作负载和 TT-Metal 能力面，
+我现在的结论是：
 
-- 这段 work 落在哪一级 scale
-- 数据在这一层是 local、remote 还是 collective
-- 哪些 memory 层是真正可见的
-- 哪个 synchronization contract 跨越了 scale boundary
+1. 不需要再新增第三层 stable IR
+2. 不需要独立于 TIR 再造一份 graph 语义体
+3. 需要的只是：
+   - minimal `SpatialPlan companion`
+   - minimal `TTProgram companion`
+   - analysis-first 的 pass 主链
 
-### 7.4 非目标
+换句话说：
 
-`Phase 2` 明确不做下面这些事：
+- 当前设计的风险不在“层数不够”
+- 而在“如果 companion 开始重复 TIR，就会重新膨胀”
 
-- 不要求第一版就做完整 distributed runtime
-- 不要求第一版就暴露 MPI 风格 DSL 表面
-- 不把物理 topology 细节、具体 route path、具体 link id
-  直接暴露成稳定用户 API
-- 不推翻 `Phase 1` 的对象和 planner 边界
+所以后续所有 schema 和 pass 设计都必须继续 obey：
 
-### 7.5 与第一阶段的关系
+> **TIR 是 semantic body；companions 只保存 planning 必需但 TIR 没有对象化的事实。**
 
-第一阶段的所有 object boundary 都应按可扩展方式命名和组织，
-避免把 single-device 假设写死进 schema 名字。
-
-例如：
-
-- `reduction_slice_shape` 是合法的长期名字
-- `k_block` 不是
-- `TransportIntent` / `TTTransportPlan` 应允许从单设备 reuse
-  自然扩展到 remote / collective 场景
-
-`Phase 2` 因此不是一套新模型，
-而是对 `Phase 1` 的同一套 owner discipline 做层次化扩展。
-
-### 7.6 Show Cases
-
-#### Showcase A: Tensor-Parallel GEMM / AllReduce
-
-这是最典型、也最贴近 `TileScale` 风格的例子。
-
-逻辑程序仍然只是一次 GEMM，
-但输出张量被按某个高一级 scale 分片，
-局部 GEMM 完成后还需要做一次 cross-scale reduction。
-
-在这套模型里，它会被表达成：
-
-- `SpatialProgram`
-  - `WorkPartition` 先定义局部 `M/N/reduction` 切分是否合法
-  - `Placement` 决定 GEMM block 是 compact 在本地 scale，
-    还是 spread 到更高一级 scale
-  - `TransportIntent` 表达输入张量哪部分是 local shard，
-    哪部分需要 remote visibility
-  - `SyncIntent` 表达局部 GEMM 完成后要进入 collective completion
-- `TTProgram`
-  - 本地 GEMM 生成 local `TTBlockPlan`
-  - reduction realization 选择 `TTTransportPlan`
-    是 p2p tree、ring 还是 collective primitive
-  - `TTExecutionPlan` 定义 local GEMM phase 与 cross-scale reduce phase 的顺序
-
-这说明 `Phase 2` 不是“再加个 allreduce API”，
-而是让 local compute、remote transport、collective sync
-进入同一条 owner 链。
-
-#### Showcase B: Sharded Paged Decode / Remote KV Access
-
-第二个例子更贴近我们自己的 family。
-
-设想后续 paged decode / sparse decode 的 KV state
-不再都在单设备本地，而是按更高一级 scale 分片。
-这时 decode kernel 的关键问题已经不只是 local block size，
-而是：
-
-- 当前 token 对应的 page 在本地还是 remote
-- remote page 是按 p2p 拉取，还是先做某级缓存 / regroup
-- attention/update 完成后哪些状态写回需要跨 scale 可见
-
-在这套模型里，它会被表达成：
-
-- `SpatialProgram`
-  - `WorkPartition` 表达 token/page/head 这些轴的合法切分
-  - `Placement` 表达 decode worker 与 KV shard 的 affinity
-  - `TransportIntent` 表达 page fetch 是 local、remote copy
-    还是更高一级 gather
-  - `SyncIntent` 表达 page arrival 与 compute phase 的依赖
-- `TTProgram`
-  - 选择 local staging 还是 remote-aware transport plan
-  - 选择 page fetch 与 compute 是否 overlap
-  - 选择 local completion 还是 remote-visible completion
-
-这个例子能说明：
-`Phase 2` 真正新增的是 scale-aware placement/transport/sync，
-不是把 `Phase 1` 的 block planner 简单复制到更大设备上。
-
-## 8. 对现有 IR 与实现栈的影响
-
-### 8.1 对 `Phase B`
-
-`Phase B` 不需要重新打开，
-但 `SpatialProgram` 的 object boundary 需要继续按本文档验证和扩展：
-
-- `WorkPartition` 继续上提 typed fields
-- `Placement` 从“仅有对象名义”继续走向稳定 consumer
-- `TransportIntent` / `SyncIntent` 逐步减少 payload-only truth
-
-### 8.2 对 `Phase C`
-
-`Phase C` 是本文档第一阶段的当前主要落地点。
-具体体现为：
-
-- 新增 `TTBlockPlan`
-- 让 `TTProgram` 成为 concrete sizing / memory / execution planning 真源
-- 把 `TTCBPlan` 和 `work_packets` 降回正确 owner 边界
-- 后续 family 扩展都应优先复用同一条 owner 链，
-  而不是继续添加 case-local planner 特判
-
-### 8.3 对运行时和 codegen
-
-runtime / codegen 的长期角色不变：
-
-- 只消费冻结后的 target truth
-- 不负责恢复 partition / placement / transport / sync 语义
-- 只负责物化、执行和诊断
-
-## 9. 验证与推进方式
-
-这份 feature 的实现推进分三类验证：
-
-1. schema / validator 验证  
-   确保 literal taxonomy、intent objects、`TTBlockPlan`
-   与 diagnostics schema 自洽且可构造
-2. planner 验证  
-   确保 planner 会根据 `TTHardwareModel`、
-   SRAM/L1/CB 预算和 validated hints 选择合法 concrete plan
-3. runtime/correctness 验证  
-   确保 target truth 的 owner 链最终能支撑 direct runtime、
-   wider family 与更复杂 support surface
+## 8. 验证与推进
 
 推进顺序固定为：
 
-1. 先建 object/schema 边界
-2. 再建 planner
-3. 再让 family 逐步切到这条主链
+1. 先按本文件收正 total design 和 supporting docs
+2. 再实现：
+   - `AnalyzeSpatialStructureFacts`
+   - `BuildSpatialPlanCompanion`
+3. 再实现：
+   - `PlanTTBlocks`
+   - `PlanTTTransport`
+   - `PlanTTSync`
+   - `PlanTTABI`
+   - `PlanTTExecution`
+4. 最后切掉旧 recovery 主链
 
-## 10. 与现有文档的分工
+验证口径至少覆盖：
+
+- `flash-attn`
+- `topk`
+- `fusedmoe`
+- `paged decode`
+- `chunk recurrence`
+
+判断标准不是“是不是能重建更多 payload”，
+而是：
+
+- 是否不再重复 TIR
+- 是否不再依赖 late recovery
+- 是否能支撑 TT target planning 与最终 runtime materialization
+
+## 9. 与现有文档的分工
 
 - `final_blackhole_backend_redesign.md`
-  继续是唯一总体设计；只保留长期分层架构与阶段判断
-- `stage4_phase_b_spatial_ir.md`
-  继续负责 `SpatialProgram` 当前阶段边界
-- `stage4_phase_c_tt_target_ir.md`
-  继续负责 `Phase C` 当前剩余项与完成判定
+  - 唯一总体设计
+  - 只保留长期分层、主链、真源规则与 cutover 结论
+- `ir_layering_root_cause_and_direction.md`
+  - 根因诊断与方向收敛
 - 本文档
-  负责跨 `SpatialProgram -> TTProgram` 的
-  spatial/dataflow program model feature 设计，
-  尤其是 literal semantics、planner owner 链、
-  memory/pipeline planning 与 expert hint API
-
-本文档不承担 `Phase C` backlog 跟踪，
-阶段状态与验证摘要仍分别维护在阶段文档与 `tasks/progress.md`。
+  - 只负责 companion 边界、analysis/pass owner 与 schema 最小化原则
+- `stage4_phase_c_tt_target_ir.md`
+  - 继续记录当前已落地 `TTProgram` 基线与支持面
+- `tasks/progress.md`
+  - 继续记录当前切换状态与下一步

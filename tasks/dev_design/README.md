@@ -19,9 +19,9 @@
 
 | 文档 | 角色 | 当前状态 |
 |------|------|----------|
-| `final_blackhole_backend_redesign.md` | 唯一总体设计 | 已切到两层主链：`Normalized Tile TIR -> SpatialGraph -> TTProgram -> ExecutableSpec` |
+| `final_blackhole_backend_redesign.md` | 唯一总体设计 | 已切到两层主链：`Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion -> ExecutableSpec` |
 | `ir_layering_root_cause_and_direction.md` | IR layering 根因诊断与整改方向 | 已形成当前架构收敛依据；保留为两层 IR redesign 的问题诊断入口 |
-| `spatial_dataflow_program_model.md` | spatial/dataflow program model 细化设计 | 仍为活动文档，但后续需按 `SpatialGraph / VirtualTask / TTBlockPlan` 边界重写 |
+| `spatial_dataflow_program_model.md` | spatial/dataflow program model 细化设计 | 已按 `TIR body / SpatialPlan companion / TTProgram companion` 边界重写，并明确新 pass owner 链与旧 pass 归位 |
 | `stage4_phase_c_tt_target_ir.md` | 当前已落地 `TTProgram` 基线与支持面文档 | 仍为活动文档，但角色降为当前代码基线/支持面参考，不再承担总体 layering 权威 |
 
 ## 3. 已完成但仍保留的边界文档
@@ -45,7 +45,7 @@
 
 - 总纲只保留长期架构、层间边界、真源规则与阶段判断
 - 当前代码基线、支持面和 gate 继续维护在对应阶段文档
-- 新两层主链的长期 owner 以总纲为准；旧 `SemanticProgram / SpatialProgram` 阶段文档不再回升为总体权威
+- 新两层 companion 主链的长期 owner 以总纲为准；旧 `SemanticProgram / SpatialProgram` 阶段文档不再回升为总体权威
 - 进度、验证摘要与下一步统一放在 `tasks/progress.md`
 - `README` 只做索引和分工说明，不重复维护阶段 backlog
 - 已完成审计快照、历史实现计划和 legacy 架构说明全部放入 `archive/`
