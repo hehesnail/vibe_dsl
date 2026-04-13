@@ -5,6 +5,26 @@
 
 ## 1. 当前未解决
 
+### `flash-attn` GQA grouped reduce_row 仍缺 `grouped_rows` fragment layout contract
+
+- **现象**:
+  - `flash-attn` GQA executable-spec / codegen probe 当前仍会在
+    grouped `reduce_row` lower 时失败
+  - 典型报错：
+    `grouped reduce_row requires grouped_rows distribution contract for acc_s`
+- **根因**:
+  - codegen 侧对 grouped row reduction 已经要求
+    `fragment_layout_contract.distribution_kind == grouped_rows`
+  - 但当前 GQA path 上 `acc_s` 仍可能被 materialize 成
+    `thread_distributed`
+- **当前结论**:
+  - 该问题属于 `Task 3` 的 `flash-attn` payoff / admitted subset 收口
+  - 不应回退 `Task 2` 的 TT owner cutover / bundle 固化
+  - 继续沿
+    `AnalyzeSemanticStructure -> SpatialProgram.fragment_layout_contracts ->
+    codegen/runtime gate`
+    主链修，不要加 case-local fallback
+
 ### TT-Sim 的 fatal taxonomy 需要先按 simulator 约束判断，不要直接误判成 target contract 回归
 
 - **现象**:

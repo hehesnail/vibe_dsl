@@ -16,8 +16,10 @@
 - **当前代码基线**: `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
 - **阶段状态**:
   - `Task 1` 已落地到当前 active Blackhole compile path
-  - 当前执行基线仍由旧 `Phase C` consumer 链承接
-  - 当前工作从 architecture cut-in 转入 `Task 2` cutover
+  - `Task 2` 已落地到当前 active Blackhole compile path
+  - 当前执行基线已固定为 canonical `TTProgram` bundle +
+    `MaterializeBlackholeExecutable` writer boundary
+  - 当前工作从 `Task 2` cutover 转入 `Task 3` runtime/workload payoff
 
 ## 当前任务链
 
@@ -28,7 +30,7 @@
   - 目标：
     `AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion`
 - `Task 2`: `TTProgram companion` cutover
-  - 状态：未开始
+  - 状态：已完成
   - 目标：
     `PlanTTBlocks -> PlanTTTransport -> PlanTTSync -> PlanTTABI ->
     PlanTTExecution -> MaterializeBlackholeExecutable`
@@ -47,6 +49,14 @@
   的 Blackhole wrapper/export path 已恢复
 - `TTProgram` translator / validator / materializer
   已进入当前正式主链；runtime/codegen 已切到 `TTProgram` direct reader
+- canonical Python/engine bundle 已固定为：
+  - transform alias:
+    `BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable`
+  - engine bundle:
+    `LowerToBlackholePhaseB -> LowerToBlackholeTTProgram -> LowerToBlackholeExecutable`
+- 旧 `LowerSpatialProgramToTTTarget / ValidateTTTargetProgram /
+  MaterializeTTExecutableSpec`
+  仍保留为 compatibility shell，不再承担当前入口语义
 - `per_work_arg_specs` 已收成 kernel-local `TTKernel / ExecutableSpec` truth；
   synthetic segment codegen、direct runtime arg materialization
   与 direct runtime launch 已统一消费同一套 `value_kind` contract
@@ -60,13 +70,12 @@
 
 ## 当前 blocker
 
-- 第一 blocker 已经不是“再补一个 runtime protocol”，
-  而是把 target owner 链从旧 recovery 主链切到 `TTProgram companion` 主链
-- `SpatialPlan companion` 已经 cut-in，
-  但当前 active consumer 仍然是
-  `semantic_manifest / SemanticProgram / 旧 SpatialProgram /
-  matcher-driven LowerBlackholeOps`
-  这条旧路线
+- 第一 blocker 已经从 `Task 2` owner cutover 切换到 `Task 3`
+  runtime/workload payoff
+- 当前主要压力点不再是
+  `TTProgram companion` 是否进入 active path，
+  而是 `flash-attn / topk / fusedmoe / paged decode / chunk recurrence`
+  在新主链上的 correctness payoff 与 admitted support surface
 - 详细根因、旧链问题域和切入层次判断，
   统一见 `tasks/dev_design/task0_ir_layering_root_cause.md`
 - `flash-attn` 的 direct-runtime correctness payoff、
@@ -79,39 +88,21 @@
 
 ## 当前优先级
 
-1. **P0: `Task 2A` internal owner cutover**
-   - 让 `Blackhole` active compile path
-     先真实切到新的 owner chain
-   - 重点是 typed owner object、pass owner 与 active reader 切换
-2. **P1: `Task 2B` writer / owner 收口**
-   - `MaterializeBlackholeExecutable`
-     成为唯一 writer
-   - 旧 `Phase C` owner pass
-     失去主协议地位
-3. **P2: `Task 2C` phase bundle / test helper 固化**
-   - 不再让测试手写长 pass 链充当事实标准
-4. **P3: `Task 3A` runtime gate + `flash-attn` payoff**
+1. **P0: `Task 3A` runtime gate + `flash-attn` payoff**
    - 在新主链上兑现 admitted subset correctness
-5. **P4: `Task 3B` wider family / support surface**
+2. **P1: `Task 3B` wider family / support surface**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
    - wider copy/dataflow
    - wider sync 最后进入 admitted surface
 
 ## 当前未完成项
 
-- 完成 `Task 2`
-  - `PlanTTBlocks`
-  - `PlanTTTransport`
-  - `PlanTTSync`
-  - `PlanTTABI`
-  - `PlanTTExecution`
-  - `MaterializeBlackholeExecutable`
 - 完成 `Task 3`
   - 退场旧 recovery 主链
   - 让 `flash-attn / topk / fusedmoe / paged decode / chunk recurrence`
     在新主链下重新承接
   - 兑现更宽 copy/dataflow/sync 支持面
-- 在 cutover 完成前，保持 copy / GEMM / export 当前正式支持面不回退
+- 在 `Task 3` 收口前，保持 copy / GEMM / export 当前正式支持面不回退
 
 ## 当前边界
 
@@ -130,20 +121,22 @@
 
 ## 下一步
 
-1. 先做 `Task 2A / 2B`
-   - internal owner cutover
-   - `MaterializeBlackholeExecutable` writer cutover
-   - 旧 `Phase C` owner 退位
-2. 再做 `Task 2C`
-   - phase bundle / test helper 固化
-3. 最后进入 `Task 3`
+1. 做 `Task 3A`
    - runtime gate
    - `flash-attn`
+2. 再做 `Task 3B`
    - wider family / support surface
 
 ## 最新验证摘要
 
 - `tilelang_repo/build` fresh rebuild 通过
+- `Task 2` canonical bundle / compatibility shell 回归：
+  - `test_blackhole_tt_target_probe.py -k tt_target_probe_pass_is_registered`
+    -> `1 passed`
+  - `test_blackhole_copy_pipeline.py -k 'blackhole_codegen_only or build_reads_tt_program_without_legacy_projection_attrs or buffer_materialization_specs_are_exposed'`
+    -> `3 passed`
+  - `test_blackhole_gemm.py -k 'split_kernel_gemm_segment_plan or gemm_contract or executable_spec or blackhole_codegen'`
+    -> `2 passed`
 - `Task 1` 结构回归：
   - `test_blackhole_spatial_ir.py -k 'task1 or spatial_passes_are_registered'`
     -> `4 passed`
@@ -157,6 +150,11 @@
 - `tilelang.lower(..., target="blackhole", enable_device_compile=False)` smoke：
   staged copy / GEMM 均能经过 `blackhole_codegen` 主链并同时产出
   `tl.spatial_structure_facts + tl.spatial_plan + tl.spatial_program`
+- `Task 3` 当前残留：
+  - `flash-attn` GQA executable-spec / codegen probe 仍会命中
+    grouped `reduce_row` 需要 `grouped_rows` fragment layout contract，
+    当前 `acc_s` 仍拿到 `thread_distributed`；
+    该问题归属 `Task 3` flash-attn payoff，不作为 `Task 2` 关闭条件
 - 当前 dirty 主线上，完整
   `test_blackhole_spatial_ir.py + test_blackhole_semantic_ir.py`
   仍有既有失败，集中在 flash/topk/fusedmoe/chunk recurrence 旧链分析；

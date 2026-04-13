@@ -18,6 +18,7 @@ from tilelang.utils.target import determine_target
 from tilelang.engine.phase import (
     PreLowerSemanticCheck,
     LowerAndLegalize,
+    LowerToBlackholeExecutable,
     OptimizeForTarget,
 )
 
@@ -300,24 +301,7 @@ def blackhole_codegen(
     device_mod = tilelang.transform.AnalyzeSpatialStructureFacts()(device_mod)
     device_mod = tilelang.transform.BuildSpatialPlanCompanion()(device_mod)
     device_mod = tilelang.transform.HoistBroadcastValues()(device_mod)
-    device_mod = tilelang.transform.SplitBlackholeKernel()(device_mod)
-    device_mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(device_mod)
-    device_mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(device_mod)
-    device_mod = tilelang.transform.AnalyzeBlackholePipelineStages()(device_mod)
-    device_mod = tilelang.transform.AnalyzeSemanticStructure()(device_mod)
-    device_mod = tilelang.transform.LiftStatefulSemanticIR()(device_mod)
-    device_mod = tilelang.transform.ValidateStatefulSemanticIR()(device_mod)
-    device_mod = tilelang.transform.ValidateSemanticRefinement()(device_mod)
-    device_mod = tilelang.transform.AnalyzeSpatialDomainPlan()(device_mod)
-    device_mod = tilelang.transform.AnalyzeSpatialExecutionPlan()(device_mod)
-    device_mod = tilelang.transform.MaterializeSpatialProgram()(device_mod)
-    device_mod = tilelang.transform.ValidateSpatialProgram()(device_mod)
-    device_mod = tilelang.transform.LowerBlackholeOps()(device_mod)
-    device_mod = tilelang.transform.PlanBlackholeCB()(device_mod)
-    device_mod = tilelang.transform.AssignBlackholeCores()(device_mod)
-    device_mod = tilelang.transform.LowerSpatialProgramToTTTarget()(device_mod)
-    device_mod = tilelang.transform.ValidateTTTargetProgram()(device_mod)
-    device_mod = tilelang.transform.MaterializeTTExecutableSpec()(device_mod)
+    device_mod = LowerToBlackholeExecutable(device_mod)
 
     build_mod = merge_ir_modules(host_mod, device_mod)
     build_func_name = (

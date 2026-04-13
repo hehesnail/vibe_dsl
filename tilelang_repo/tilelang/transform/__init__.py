@@ -775,18 +775,33 @@ def LowerSpatialProgramToTTTargetProbe():
 
 
 def LowerSpatialProgramToTTTarget():
-    """Materialize TTProgram from frozen SpatialProgram for Blackhole Phase C."""
+    """Compatibility wrapper for TTProgram materialization from frozen SpatialProgram."""
     return tvm.ffi.get_global_func("tl.transform.LowerSpatialProgramToTTTarget")()
 
 
+def BuildTTProgram():
+    """Canonical Task 2 wrapper for TTProgram materialization from SpatialProgram."""
+    return tvm.ffi.get_global_func("tl.transform.BuildTTProgram")()
+
+
 def ValidateTTTargetProgram():
-    """Validate TTProgram invariants before materializing ExecutableSpec."""
+    """Compatibility wrapper for TTProgram validation before executable materialization."""
     return tvm.ffi.get_global_func("tl.transform.ValidateTTTargetProgram")()
 
 
+def ValidateTTProgram():
+    """Canonical Task 2 wrapper for TTProgram validation."""
+    return tvm.ffi.get_global_func("tl.transform.ValidateTTProgram")()
+
+
 def MaterializeTTExecutableSpec():
-    """Project TTProgram back into the current direct-runtime/codegen attr schema."""
+    """Compatibility wrapper for the canonical Blackhole executable writer boundary."""
     return tvm.ffi.get_global_func("tl.transform.MaterializeTTExecutableSpec")()
+
+
+def MaterializeBlackholeExecutable():
+    """Canonical Task 2 writer boundary for Blackhole executable materialization."""
+    return tvm.ffi.get_global_func("tl.transform.MaterializeBlackholeExecutable")()
 
 
 def LowerBlackholeOps():

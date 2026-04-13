@@ -13,7 +13,7 @@
 namespace tvm {
 namespace tl {
 
-tvm::transform::Pass MaterializeTTExecutableSpec() {
+tvm::transform::Pass MaterializeBlackholeExecutable() {
   auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
     for (const auto& [gvar, base_func] : mod->functions) {
       auto func = base_func.as<tir::PrimFunc>();
@@ -26,11 +26,18 @@ tvm::transform::Pass MaterializeTTExecutableSpec() {
     }
     return mod;
   };
-  return tvm::transform::CreateModulePass(pass_func, 0, "tl.transform.MaterializeTTExecutableSpec", {});
+  return tvm::transform::CreateModulePass(pass_func, 0,
+                                          "tl.transform.MaterializeBlackholeExecutable", {});
+}
+
+tvm::transform::Pass MaterializeTTExecutableSpec() {
+  return MaterializeBlackholeExecutable();
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
+  refl::GlobalDef().def("tl.transform.MaterializeBlackholeExecutable",
+                        MaterializeBlackholeExecutable);
   refl::GlobalDef().def("tl.transform.MaterializeTTExecutableSpec", MaterializeTTExecutableSpec);
 }
 

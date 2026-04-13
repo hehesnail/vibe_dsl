@@ -89,17 +89,7 @@ def check_blackhole_direct_execution_requirements():
 
 def prepare_blackhole_phase_b_module(mod):
     """Run the Blackhole Phase B mainline up to a validated SpatialProgram."""
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
-    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
-    mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
-    mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
-    mod = tilelang.transform.LiftStatefulSemanticIR()(mod)
-    mod = tilelang.transform.ValidateStatefulSemanticIR()(mod)
-    mod = tilelang.transform.ValidateSemanticRefinement()(mod)
-    mod = tilelang.transform.LowerToSpatialProgram()(mod)
-    mod = tilelang.transform.ValidateSpatialProgram()(mod)
-    return mod
+    return tilelang.engine.phase.LowerToBlackholePhaseB(mod)
 
 
 def lower_blackhole_ops_through_phase_b(mod):
@@ -110,12 +100,7 @@ def lower_blackhole_ops_through_phase_b(mod):
 
 def lower_blackhole_to_tt_target(mod):
     """Lower a Blackhole module through the validated TTProgram target contract."""
-    mod = lower_blackhole_ops_through_phase_b(mod)
-    mod = tilelang.transform.PlanBlackholeCB()(mod)
-    mod = tilelang.transform.AssignBlackholeCores()(mod)
-    mod = tilelang.transform.LowerSpatialProgramToTTTarget()(mod)
-    mod = tilelang.transform.ValidateTTTargetProgram()(mod)
-    return mod
+    return tilelang.engine.phase.LowerToBlackholeTTProgram(mod)
 
 
 def require_tt_program(func):

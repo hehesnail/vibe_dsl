@@ -58,6 +58,14 @@
   第一版 `ExecutionClosure / ClosureBoundary`
   直接按 normalized TIR top-level executable statements 和 buffer def-use 建立，
   不在 companion 中重复编码 expr / tile-op 参数
+- 一旦某层 companion / target bundle 成为当前正式入口，
+  要同时发布两层 surface：
+  - canonical transform alias（例如
+    `BuildTTProgram / ValidateTTProgram / MaterializeBlackholeExecutable`）
+  - engine/pytest bundle helper（例如
+    `LowerToBlackholePhaseB / LowerToBlackholeTTProgram / LowerToBlackholeExecutable`）
+  否则 active path、测试 helper 和设计文档会继续各自手写不同 pass 链，
+  很快再次漂移
 - `Task / Channel` 继续可以存在，
   但只能作为
   `ExecutionClosure / ClosureBoundary`
@@ -155,6 +163,11 @@
   phase ordering 和 final materialization，应优先拆成
   `Analyze... -> Analyze... -> Materialize...` 的 pass 链，让 analysis facts
   先以 typed plan 落地，再由 materialize pass 组装最终 companion IR
+- 当 canonical pass 命名切换完成后，
+  旧 `LowerSpatialProgramToTTTarget / ValidateTTTargetProgram /
+  MaterializeTTExecutableSpec`
+  这类名字可以继续保留，但只应作为 compatibility shell；
+  active path 和 helper 不要继续把旧名当入口
 - unsupported subset gate 应在所有后端出口共享
 - gate 应按具体 contract / op family 报错，不要长期用黑盒总括词
 - 需要的信息优先从 typed IR / schema 拿；拿不到就扩 IR / schema，

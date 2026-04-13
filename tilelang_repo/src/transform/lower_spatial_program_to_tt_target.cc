@@ -275,6 +275,7 @@ tvm::transform::Pass LowerSpatialProgramToTTTarget() {
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("tl.transform.LowerSpatialProgramToTTTarget", LowerSpatialProgramToTTTarget);
+  refl::GlobalDef().def("tl.transform.BuildTTProgram", LowerSpatialProgramToTTTarget);
 }
 
 }  // namespace tl

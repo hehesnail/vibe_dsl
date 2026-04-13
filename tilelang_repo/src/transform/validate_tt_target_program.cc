@@ -304,6 +304,7 @@ tvm::transform::Pass ValidateTTTargetProgram() {
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("tl.transform.ValidateTTTargetProgram", ValidateTTTargetProgram);
+  refl::GlobalDef().def("tl.transform.ValidateTTProgram", ValidateTTTargetProgram);
 }
 
 }  // namespace tl

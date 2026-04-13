@@ -367,3 +367,38 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
     check_target(mod, "PersistThreadblock")
 
     return mod
+
+
+def LowerToBlackholePhaseB(mod: IRModule) -> IRModule:
+    """Run the stabilized Blackhole Phase B companion pipeline on a device module."""
+    mod = tilelang.transform.SplitBlackholeKernel()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
+    mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
+    mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
+    mod = tilelang.transform.LiftStatefulSemanticIR()(mod)
+    mod = tilelang.transform.ValidateStatefulSemanticIR()(mod)
+    mod = tilelang.transform.ValidateSemanticRefinement()(mod)
+    mod = tilelang.transform.AnalyzeSpatialDomainPlan()(mod)
+    mod = tilelang.transform.AnalyzeSpatialExecutionPlan()(mod)
+    mod = tilelang.transform.MaterializeSpatialProgram()(mod)
+    mod = tilelang.transform.ValidateSpatialProgram()(mod)
+    return mod
+
+
+def LowerToBlackholeTTProgram(mod: IRModule) -> IRModule:
+    """Run the canonical Task 2 Blackhole target bundle through validated TTProgram."""
+    mod = LowerToBlackholePhaseB(mod)
+    mod = tilelang.transform.LowerBlackholeOps()(mod)
+    mod = tilelang.transform.PlanBlackholeCB()(mod)
+    mod = tilelang.transform.AssignBlackholeCores()(mod)
+    mod = tilelang.transform.BuildTTProgram()(mod)
+    mod = tilelang.transform.ValidateTTProgram()(mod)
+    return mod
+
+
+def LowerToBlackholeExecutable(mod: IRModule) -> IRModule:
+    """Run the canonical Blackhole target bundle through executable materialization."""
+    mod = LowerToBlackholeTTProgram(mod)
+    mod = tilelang.transform.MaterializeBlackholeExecutable()(mod)
+    return mod

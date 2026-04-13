@@ -3,8 +3,8 @@
 ## 基本信息
 
 - **文档角色**: `Task 2` 的 target owner cutover 设计文档
-- **当前状态**: `2026-04-13` 活动设计文档；按 `tasks/progress.md`，
-  当前 `Task 2` 仍未开始
+- **当前状态**: `2026-04-13` 活动设计文档；`Task 2` 已完成，
+  当前文档保留完成判定与 compatibility shell 约束
 - **任务链位置**:
   `Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion ->
   ExecutableSpec` 中第二层 companion 的 owner 设计
@@ -286,3 +286,20 @@ AnalyzeSpatialStructureFacts
 在这五条同时成立之前，
 `TTProgram` 已进入主链
 不等于 `Task 2` 已完成。
+
+## 8. 落地结果
+
+`Task 2` 当前已经按下面方式落地：
+
+- active Blackhole compile path 已固定使用 canonical TT bundle：
+  `BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable`
+- Python / engine 侧已经固化 canonical bundle helper：
+  `LowerToBlackholePhaseB -> LowerToBlackholeTTProgram -> LowerToBlackholeExecutable`
+- `LowerSpatialProgramToTTTarget / ValidateTTTargetProgram /
+  MaterializeTTExecutableSpec`
+  继续保留为 compatibility shell，
+  但不再作为当前入口命名
+- 测试 helper 已切到 bundle helper，
+  不再把长 pass 链手写成事实标准
+- 当前未收口项已经移交给 `Task 3`
+  （runtime gate、`flash-attn` payoff、wider family/support surface）

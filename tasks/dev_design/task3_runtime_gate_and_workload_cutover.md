@@ -4,8 +4,8 @@
 
 - **文档角色**: `Task 3` 的 runtime gate、support surface
   与 workload re-enable 设计文档
-- **当前状态**: `2026-04-13` 活动设计文档；按 `tasks/progress.md`，
-  当前 `Task 3` 仍未开始
+- **当前状态**: `2026-04-13` 活动设计文档；`Task 2` 已完成，
+  当前工作进入 `Task 3`
 - **任务链位置**:
   `Task 2` owner cutover 完成之后，
   负责 runtime/correctness payoff 与 wider family 承接

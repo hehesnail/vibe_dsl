@@ -38,19 +38,7 @@ def _prepare_blackhole_phase_b_module(prim_func):
     mod = tilelang.transform.LowerIntrin()(mod)
     mod = tvm.tir.transform.Simplify()(mod)
     mod = tilelang.transform.HoistBroadcastValues()(mod)
-    mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
-    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
-    mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
-    mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
-    mod = tilelang.transform.LiftStatefulSemanticIR()(mod)
-    mod = tilelang.transform.ValidateStatefulSemanticIR()(mod)
-    mod = tilelang.transform.ValidateSemanticRefinement()(mod)
-    mod = tilelang.transform.AnalyzeSpatialDomainPlan()(mod)
-    mod = tilelang.transform.AnalyzeSpatialExecutionPlan()(mod)
-    mod = tilelang.transform.MaterializeSpatialProgram()(mod)
-    mod = tilelang.transform.ValidateSpatialProgram()(mod)
-    return mod
+    return tilelang.engine.phase.LowerToBlackholePhaseB(mod)
 
 
 def _replace_spatial_program(mod, program):
@@ -89,16 +77,26 @@ def test_tt_target_probe_pass_is_registered():
     assert hasattr(tilelang.transform, "LowerSpatialProgramToTTTarget")
     assert hasattr(tilelang.transform, "ValidateTTTargetProgram")
     assert hasattr(tilelang.transform, "MaterializeTTExecutableSpec")
+    assert hasattr(tilelang.transform, "BuildTTProgram")
+    assert hasattr(tilelang.transform, "ValidateTTProgram")
+    assert hasattr(tilelang.transform, "MaterializeBlackholeExecutable")
+    assert hasattr(tilelang.engine.phase, "LowerToBlackholePhaseB")
+    assert hasattr(tilelang.engine.phase, "LowerToBlackholeTTProgram")
 
 
 def _prepare_blackhole_phase_c_module(prim_func):
-    mod = _prepare_blackhole_phase_b_module(prim_func)
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
-    mod = tilelang.transform.PlanBlackholeCB()(mod)
-    mod = tilelang.transform.AssignBlackholeCores()(mod)
-    mod = tilelang.transform.LowerSpatialProgramToTTTarget()(mod)
-    mod = tilelang.transform.ValidateTTTargetProgram()(mod)
-    return mod
+    mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
+    target = Target("blackhole")
+    with target:
+        if not (mod["main"].attrs and mod["main"].attrs.get("target") is not None):
+            mod = LowerAndLegalize(mod, target)
+        mod = OptimizeForTarget(mod, target)
+    mod = tilelang.transform.LowerDeviceStorageAccessInfo()(mod)
+    mod = tilelang.transform.AugmentSemanticManifest()(mod)
+    mod = tilelang.transform.LowerIntrin()(mod)
+    mod = tvm.tir.transform.Simplify()(mod)
+    mod = tilelang.transform.HoistBroadcastValues()(mod)
+    return tilelang.engine.phase.LowerToBlackholeTTProgram(mod)
 
 
 def _prepare_blackhole_tt_bridge_module(prim_func):
@@ -183,7 +181,7 @@ def test_tt_target_bridge_gemm_module_promotes_contracts_into_typed_payload_only
         assert key not in attrs
 
 
-def test_materialize_tt_executable_spec_keeps_tt_program_as_single_target_truth():
+def test_materialize_blackhole_executable_keeps_tt_program_as_single_target_truth():
     mod = _prepare_blackhole_phase_c_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
     func = mod["main"]
     for key in (
@@ -198,7 +196,7 @@ def test_materialize_tt_executable_spec_keeps_tt_program_as_single_target_truth(
             func = func.without_attr(key)
     mod = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
-    rematerialized = tilelang.transform.MaterializeTTExecutableSpec()(mod)
+    rematerialized = tilelang.transform.MaterializeBlackholeExecutable()(mod)
     attrs = rematerialized["main"].attrs
     assert "tl.tt_program" in attrs
     assert "blackhole.segment_plan" not in attrs

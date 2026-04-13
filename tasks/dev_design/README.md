@@ -34,17 +34,15 @@
 
 当前按下面顺序推进：
 
-1. `Task 2A`
-   - `Blackhole` active compile path 的 internal owner cutover
-2. `Task 2B`
-   - `MaterializeBlackholeExecutable` writer cutover
-   - 旧 `Phase C` owner 退位
-3. `Task 2C`
-   - phase bundle / test helper 固化
-4. `Task 3A`
+1. `Task 3A`
    - runtime gate 与 `flash-attn` payoff
-5. `Task 3B`
+2. `Task 3B`
    - wider family / support surface
+
+当前状态补充：
+
+- `Task 2A / 2B / 2C` 已完成
+- 当前入口从 `Task 2` 切到 `Task 3A`
 
 当前明确不作为优先项：
 
