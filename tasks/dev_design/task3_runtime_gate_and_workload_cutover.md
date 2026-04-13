@@ -182,6 +182,12 @@ runtime / codegen 的消费纪律固定为：
   这条旧 pass 链；
   当前剩余残留是 `BuildTTProgram`
   内部仍临时复用这组 helper 完成 planning attr 物化
+  - public `tilelang.transform` wrapper、
+    FFI `tl.transform.*` global registration
+    以及测试层
+    `lower_blackhole_ops_through_phase_b` /
+    typed-seed helper
+    已删除，不再允许从公开面重走这条链
 
 ### Batch D: 删除 legacy attr synthesis / fallback
 
@@ -192,6 +198,15 @@ runtime / codegen 的消费纪律固定为：
   的生成、helper fallback 和测试 fallback
 - runtime / codegen / tests 全部只读
   `TTProgram / ExecutableSpec`
+- 当前状态：
+  已完成测试层 typed-seed fallback 删除；
+  `common.py` 与相关 pipeline/gemm/flash-attn 回归
+  不再读取
+  `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_cb_plans /
+  tl.tt_core_groups / tl.tt_program_payload`
+  这组旧中间 attrs。
+  `blackhole.*` compatibility attr synthesis 的彻底退场，
+  仍需等 `PlanTT*` owner pass 完整落地后继续推进
 
 每一批删除前都必须满足：
 

@@ -26,6 +26,12 @@
   - canonical `LowerToBlackholeTTProgram` 已不再显式串
     `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores`
     这条旧 pass 链；剩余 planning 兼容逻辑已内收到 `BuildTTProgram`
+  - 旧 pass 的 public/test surface 已继续收口：
+    `tilelang.transform` Python wrapper、
+    FFI global registration、
+    `lower_blackhole_ops_through_phase_b` /
+    typed-seed 测试 helper
+    与纯旧链回归 case 已删除
 
 ## 当前任务链
 
@@ -90,7 +96,8 @@
 - 当前剩余的结构性 blocker 是
   `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
   不再作为 active path 上的显式阶段，
-  但仍在 `BuildTTProgram` 内部承担 seed bridge owner 责任，
+ 公开入口和测试入口已删除，
+ 但实现仍在 `BuildTTProgram` 内部承担 seed bridge owner 责任，
   尚未被真实 `PlanTTBlocks / PlanTTTransport / PlanTTSync /
   PlanTTABI / PlanTTExecution` 取代
 - 详细根因、旧链问题域和切入层次判断，
@@ -154,12 +161,16 @@
 
 - `tilelang_repo/build` fresh rebuild 通过
 - 旧链删除本轮验证：
-  - `test_blackhole_tt_target_probe.py`
-    -> `20 passed`
-  - `test_blackhole_copy_pipeline.py -k 'blackhole_codegen_only or build_reads_tt_program_without_legacy_projection_attrs or buffer_materialization_specs_are_exposed'`
-    -> `3 passed`
-  - `test_blackhole_gemm.py -k 'gemm_contract or executable_spec or blackhole_codegen'`
+  - `cmake --build tilelang_repo/build -j32`
+    -> `built target tilelang`
+  - `test_blackhole_tt_target_probe.py -k tt_target_probe_pass_is_registered`
     -> `1 passed`
+  - `test_blackhole_copy_pipeline.py -k 'blackhole_copy_lowering_prefers_buffer_handles_over_annotation_names or blackhole_copy_semantics_survives_flatten_and_vectorize or build_reads_tt_program_without_legacy_projection_attrs or buffer_materialization_specs_are_exposed'`
+    -> `4 passed`
+  - `test_blackhole_gemm.py -k 'compute_contract_attr_materializes_nondefault_compute_abi or compute_contract_attr_materializes_richer_compute_config_extras or compute_segment_compute_config_follows_compute_contract or compute_contract_attr_materializes_nondefault_policy or compute_contract_attr_materializes_mbar_binding or fragment_fill_cast_publish_materializes_generic_compute_writer_segments or multicore_gemm_lowering_respects_transposed_b_layout or gemm_richer_accessor_schema_roundtrip'`
+    -> `8 passed`
+  - `test_blackhole_flash_attention_pipeline.py -k 'forward_tt_target_emits_generic_lowering_requirements or forward_tt_target_lowers_row_reductions_to_builtins'`
+    -> `2 passed`
 - `Task 2` canonical bundle / compatibility shell 回归：
   - `test_blackhole_tt_target_probe.py -k tt_target_probe_pass_is_registered`
     -> `1 passed`
@@ -181,10 +192,18 @@
   staged copy / GEMM 均能经过 `blackhole_codegen` 主链并同时产出
   `tl.spatial_structure_facts + tl.spatial_plan + tl.spatial_program`
 - `Task 3` 当前残留：
+  - `BuildTTProgram` 内部仍直接调用
+    `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
+    实现；当前只是把 public/test/FFI surface 清掉，
+    真正的 `PlanTT*` owner 替换仍属于后续 `Task 3`
   - `flash-attn` GQA executable-spec / codegen probe 仍会命中
     grouped `reduce_row` 需要 `grouped_rows` fragment layout contract，
     当前 `acc_s` 仍拿到 `thread_distributed`；
     该问题归属 `Task 3` flash-attn payoff，不作为 `Task 2` 关闭条件
+  - `test_blackhole_spatial_ir.py -k registry_phase_closure_basis_mismatch`
+    当前在既有
+    `ValidateStatefulSemanticIR: fragment_layout_contract must carry local_shape`
+    处失败；该失败发生在本轮删除块之外，不作为旧链清理回退理由
 - 当前 dirty 主线上，完整
   `test_blackhole_spatial_ir.py + test_blackhole_semantic_ir.py`
   仍有既有失败，集中在 flash/topk/fusedmoe/chunk recurrence 旧链分析；

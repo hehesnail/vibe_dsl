@@ -90,6 +90,11 @@
   “节点原生拥有该字段” 和 “只是借用 top-level fallback”；
   否则 materializer 会把 fallback 意外下沉成 per-node 真相，
   破坏旧测试和 reader contract
+- 旧 pass/link 清理要三层一起删：
+  Python wrapper、FFI global registration、测试 helper/fallback；
+  只删其中一层会留下可达旧入口，active path 很快又会漂回去。
+  做“入口已经不存在”的回归时，优先显式断言查询抛错，
+  不要把“允许缺失”本身再写成一层兼容语义
 - function-level target contract（如
   `gemm_contract / compute_contract / direct_runtime_unsupported_reasons`）
   一旦进入 runtime/codegen 正式消费面，就应提升进 `TTProgram.payload`；

@@ -130,12 +130,6 @@ class PlanBlackholeCB : public tvm::tir::StmtExprMutator {
   std::vector<CBConfig> cb_configs_;
 };
 
-/*!
- * \brief Create the PlanBlackholeCB pass
- * \return The pass function
- */
-tir::transform::Pass PlanBlackholeCBPass();
-
 }  // namespace tl
 }  // namespace tvm
 

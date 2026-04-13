@@ -35,7 +35,6 @@
 #include "common/spatial_program.h"
 #include "common/tt_target_program.h"
 
-#include <tvm/ffi/reflection/registry.h>
 #include <tvm/ir/attrs.h>
 #include "runtime/thread_storage_scope.h"
 #include <tvm/arith/analyzer.h>
@@ -6700,20 +6699,6 @@ Stmt LowerBlackholeOps::VisitStmt_(const BufferStoreNode* op) {
   }
   // Return original statement without recursion
   return GetRef<Stmt>(op);
-}
-
-// Modern TVM pass registration using CreatePrimFuncPass
-tir::transform::Pass LowerBlackholeOpsPass() {
-  auto fpass = [](PrimFunc func, IRModule m, tir::transform::PassContext ctx) -> PrimFunc {
-    return LowerBlackholeOps().Transform(func);
-  };
-  return tir::transform::CreatePrimFuncPass(fpass, 0, "tl.transform.LowerBlackholeOps", {});
-}
-
-TVM_FFI_STATIC_INIT_BLOCK() {
-  namespace refl = tvm::ffi::reflection;
-  refl::GlobalDef()
-      .def("tl.transform.LowerBlackholeOps", LowerBlackholeOpsPass);
 }
 
 }  // namespace tl

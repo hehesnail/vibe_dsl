@@ -17,7 +17,6 @@ if str(THIS_DIR) not in sys.path:
 
 from common import (
     gemm_kernel,
-    lower_blackhole_ops_through_phase_b,
     rebuild_tt_core_group,
     rebuild_tt_kernel,
     rebuild_tt_program,
@@ -82,6 +81,15 @@ def test_tt_target_probe_pass_is_registered():
     assert hasattr(tilelang.transform, "MaterializeBlackholeExecutable")
     assert hasattr(tilelang.engine.phase, "LowerToBlackholePhaseB")
     assert hasattr(tilelang.engine.phase, "LowerToBlackholeTTProgram")
+    assert not hasattr(tilelang.transform, "LowerBlackholeOps")
+    assert not hasattr(tilelang.transform, "PlanBlackholeCB")
+    assert not hasattr(tilelang.transform, "AssignBlackholeCores")
+    with pytest.raises(ValueError, match="Cannot find global function tl.transform.LowerBlackholeOps"):
+        tvm.ffi.get_global_func("tl.transform.LowerBlackholeOps")
+    with pytest.raises(ValueError, match="Cannot find global function tl.transform.PlanBlackholeCB"):
+        tvm.ffi.get_global_func("tl.transform.PlanBlackholeCB")
+    with pytest.raises(ValueError, match="Cannot find global function tl.transform.AssignBlackholeCores"):
+        tvm.ffi.get_global_func("tl.transform.AssignBlackholeCores")
 
 
 def _prepare_blackhole_phase_c_module(prim_func):

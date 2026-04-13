@@ -21,10 +21,7 @@ from .common import (
     extract_blackhole_work_per_core,
     find_loop_annotation,
     grid_indexed_staged_copy_kernel,
-    has_tt_target_seed_truth,
     lower_blackhole_to_tt_target,
-    lower_blackhole_ops_through_phase_b,
-    make_blackhole_cb_requirements_mod,
     rebuild_tt_abi_plan,
     rebuild_tt_kernel,
     rebuild_tt_program,
@@ -944,7 +941,7 @@ def test_blackhole_copy_lowering_prefers_buffer_handles_over_annotation_names():
         },
     )
     mod = tilelang.tvm.IRModule({"main": func})
-    mod = lower_blackhole_ops_through_phase_b(mod)
+    mod = lower_blackhole_to_tt_target(mod)
 
     runtime_args = extract_blackhole_runtime_args(mod["main"])
     buffers = [str(arg["buffer"]) for arg in runtime_args if "buffer" in arg]
@@ -960,9 +957,7 @@ def test_blackhole_copy_semantics_survives_flatten_and_vectorize():
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = tilelang.transform.FlattenBuffer()(mod)
     mod = tilelang.transform.VectorizeLoop()(mod)
-    mod = lower_blackhole_ops_through_phase_b(mod)
-    mod = tilelang.transform.PlanBlackholeCB()(mod)
-    mod = tilelang.transform.AssignBlackholeCores()(mod)
+    mod = lower_blackhole_to_tt_target(mod)
 
     func = mod["main"]
     runtime_args = extract_blackhole_runtime_args(func)
@@ -984,7 +979,7 @@ def test_blackhole_copy_richer_accessor_schema_roundtrip():
 
     rewritten = {}
     for gvar, func in artifact.device_mod.functions.items():
-        if has_tt_target_seed_truth(func) or (func.attrs and "blackhole.segment_plan" in func.attrs):
+        if func.attrs and ("tl.tt_program" in func.attrs or "blackhole.segment_plan" in func.attrs):
             func = _with_richer_accessor_schema(func)
         rewritten[gvar] = func
 
@@ -1486,52 +1481,6 @@ def test_blackhole_storage_rewrite_incompatible_with_cb_model():
     tilelang.transform.StorageRewrite()(mod)
 
 
-def test_blackhole_cb_planner_reuses_non_overlapping_requirements():
-    mod = make_blackhole_cb_requirements_mod(
-        [
-            {
-                "name": "stage0",
-                "type": "intermediate",
-                "page_size": 524288,
-                "num_pages": 2,
-                "data_format": "Float16",
-                "lifetime_begin": 0,
-                "lifetime_end": 0,
-            },
-            {
-                "name": "stage1",
-                "type": "intermediate",
-                "page_size": 524288,
-                "num_pages": 2,
-                "data_format": "Float16",
-                "lifetime_begin": 1,
-                "lifetime_end": 1,
-            },
-        ]
-    )
-    mod = tilelang.transform.PlanBlackholeCB()(mod)
-    func = mod["main"]
-    cb_configs = extract_blackhole_cb_configs(func)
-
-    assert len(cb_configs) == 1
-    assert int(extract_blackhole_total_l1_bytes(func)) == 1048576
-    assert int(cb_configs[0]["cb_id"]) == 16
-    assert int(cb_configs[0]["lifetime_begin"]) == 0
-    assert [int(index) for index in cb_configs[0]["requirement_indices"]] == [0, 1]
-    assert [str(name) for name in cb_configs[0]["requirement_names"]] == ["stage0", "stage1"]
-
-
-def test_blackhole_cb_planner_requires_explicit_cb_requirements():
-    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
-    mod = tilelang.tvm.IRModule({"main": kernel})
-    target = Target("blackhole")
-    with target:
-        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
-
-    with pytest.raises(Exception, match="explicit blackhole.cb_requirements|PlanBlackholeCB"):
-        tilelang.transform.PlanBlackholeCB()(mod)
-
-
 def test_blackhole_stick_copy_pipeline_formalizes_page_transport():
     target = Target("blackhole")
     kernel = staged_stick_copy_kernel(tile_m=32, tile_n=16, global_n=32, dtype="float32")
@@ -1656,33 +1605,6 @@ def test_blackhole_stick_copy_pipeline_reports_direct_path_boundary_context():
     ):
         with target:
             lower(kernel, target=target)
-
-
-def test_blackhole_cb_planner_rejects_overlapping_large_requirements():
-    mod = make_blackhole_cb_requirements_mod(
-        [
-            {
-                "name": "stage0",
-                "type": "intermediate",
-                "page_size": 524288,
-                "num_pages": 2,
-                "data_format": "Float16",
-                "lifetime_begin": 0,
-                "lifetime_end": 1,
-            },
-            {
-                "name": "stage1",
-                "type": "intermediate",
-                "page_size": 524288,
-                "num_pages": 2,
-                "data_format": "Float16",
-                "lifetime_begin": 1,
-                "lifetime_end": 2,
-            },
-        ]
-    )
-    with pytest.raises(Exception, match="PlanBlackholeCB|1572864|1.5MB|per-core constraints"):
-        tilelang.transform.PlanBlackholeCB()(mod)
 
 
 def test_blackhole_copy_codegen_uses_runtime_schema():

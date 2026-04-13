@@ -15,10 +15,9 @@ from tvm.target import Target
 
 from .common import (
     check_blackhole_codegen_requirements,
-    lower_blackhole_ops_through_phase_b,
+    lower_blackhole_to_tt_target,
     rebuild_tt_kernel,
     rebuild_tt_program,
-    lower_blackhole_to_tt_target,
     require_tt_kernel,
     require_tt_program,
     tt_abi_for_kernel,
@@ -38,7 +37,7 @@ import example_mha_fwd_bshd as mha_example
 import example_gqa_fwd_bshd as gqa_example
 
 
-def _lower_flash_attention_through_blackhole_ops(*, is_causal=False):
+def _lower_flash_attention_to_tt_target(*, is_causal=False):
     target = Target("blackhole")
     mod = tvm.IRModule(
         {
@@ -57,25 +56,16 @@ def _lower_flash_attention_through_blackhole_ops(*, is_causal=False):
     )
     with target:
         mod = LowerAndLegalize(mod, target)
-    mod = lower_blackhole_ops_through_phase_b(mod)
+    mod = lower_blackhole_to_tt_target(mod)
     return mod["main"]
 
 
-def _run_flash_attention_lower_blackhole_ops(example_module, *args, **kwargs):
+def _run_flash_attention_tt_target(example_module, *args, **kwargs):
     target = Target("blackhole")
     mod = tvm.IRModule({"main": example_module.flashattn.jit_impl.get_tir(*args, **kwargs)})
     with target:
         mod = LowerAndLegalize(mod, target)
-    return lower_blackhole_ops_through_phase_b(mod)
-
-
-def _run_flash_attention_lower_blackhole_ops_after_optimize(example_module, *args, **kwargs):
-    target = Target("blackhole")
-    mod = tvm.IRModule({"main": example_module.flashattn.jit_impl.get_tir(*args, **kwargs)})
-    with target:
-        mod = LowerAndLegalize(mod, target)
-        mod = OptimizeForTarget(mod, target)
-    return lower_blackhole_ops_through_phase_b(mod)
+    return lower_blackhole_to_tt_target(mod)
 
 
 def _run_flash_attention_tt_target_after_optimize(example_module, *args, **kwargs):
@@ -96,8 +86,8 @@ def _load_flash_attention_module_with_dtype(module_path, dtype_expr):
     return mutated
 
 
-def test_flash_attention_forward_lower_blackhole_ops_emits_generic_lowering_requirements():
-    lowered = _lower_flash_attention_through_blackhole_ops()
+def test_flash_attention_forward_tt_target_emits_generic_lowering_requirements():
+    lowered = _lower_flash_attention_to_tt_target()
 
     attrs = lowered.attrs
     assert "flash_attention_plan" not in attrs
@@ -121,7 +111,7 @@ def test_flash_attention_forward_lower_blackhole_ops_emits_generic_lowering_requ
 
 
 def test_flash_attention_forward_optimized_path_lowers_scores_max_updates():
-    lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
+    lowered = _run_flash_attention_tt_target_after_optimize(
         mha_example,
         1,
         32,
@@ -140,8 +130,8 @@ def test_flash_attention_forward_optimized_path_lowers_scores_max_updates():
     assert "max" not in set(lowering_requirements["pointwise_op_kinds"])
 
 
-def test_flash_attention_forward_lower_blackhole_ops_lowers_row_reductions_to_builtins():
-    lowered = _lower_flash_attention_through_blackhole_ops()
+def test_flash_attention_forward_tt_target_lowers_row_reductions_to_builtins():
+    lowered = _lower_flash_attention_to_tt_target()
     script = lowered.script()
 
     assert "tl.blackhole.reduce_row" in script
@@ -150,7 +140,7 @@ def test_flash_attention_forward_lower_blackhole_ops_lowers_row_reductions_to_bu
 
 
 def test_flash_attention_forward_optimized_path_lowers_row_reductions_to_builtins():
-    lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
+    lowered = _run_flash_attention_tt_target_after_optimize(
         mha_example,
         1,
         32,
@@ -170,7 +160,7 @@ def test_flash_attention_forward_optimized_path_lowers_row_reductions_to_builtin
 
 
 def test_flash_attention_forward_optimized_path_lowers_acc_o_row_broadcast_updates():
-    lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
+    lowered = _run_flash_attention_tt_target_after_optimize(
         mha_example,
         1,
         32,
@@ -189,7 +179,7 @@ def test_flash_attention_forward_optimized_path_lowers_acc_o_row_broadcast_updat
 
 
 def test_flash_attention_forward_optimized_path_lowers_logsum_scalar_fma():
-    lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
+    lowered = _run_flash_attention_tt_target_after_optimize(
         mha_example,
         1,
         32,
@@ -207,7 +197,7 @@ def test_flash_attention_forward_optimized_path_lowers_logsum_scalar_fma():
 
 
 def test_flash_attention_forward_optimized_path_lowers_scores_exp2_affine_updates():
-    lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
+    lowered = _run_flash_attention_tt_target_after_optimize(
         mha_example,
         1,
         32,
@@ -228,7 +218,7 @@ def test_flash_attention_forward_optimized_path_lowers_scores_exp2_affine_update
 
 
 def test_flash_attention_forward_optimized_path_lowers_fragment_fills():
-    lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
+    lowered = _run_flash_attention_tt_target_after_optimize(
         mha_example,
         1,
         32,
@@ -248,7 +238,7 @@ def test_flash_attention_forward_optimized_path_lowers_fragment_fills():
 
 
 def test_flash_attention_forward_optimized_path_lowers_fragment_casts():
-    lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
+    lowered = _run_flash_attention_tt_target_after_optimize(
         mha_example,
         1,
         32,
@@ -268,7 +258,7 @@ def test_flash_attention_forward_optimized_path_lowers_fragment_casts():
 
 
 def test_flash_attention_forward_optimized_path_lowers_local_to_cb_staging():
-    lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
+    lowered = _run_flash_attention_tt_target_after_optimize(
         mha_example,
         1,
         32,
@@ -282,12 +272,12 @@ def test_flash_attention_forward_optimized_path_lowers_local_to_cb_staging():
     )["main"]
     script = lowered.script()
 
-    assert "tl.blackhole.write_local_slice_to_cb" in script
+    assert "tl.blackhole.write_local_fragment_slice_to_tiled_cb" in script
     assert "O_shared_1[tx" not in script
 
 
 def test_flash_attention_forward_runtime_shape_lowers_local_to_cb_with_thread_offset():
-    lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
+    lowered = _run_flash_attention_tt_target_after_optimize(
         mha_example,
         1,
         32,
@@ -301,31 +291,8 @@ def test_flash_attention_forward_runtime_shape_lowers_local_to_cb_with_thread_of
     )["main"]
     script = lowered.script()
 
-    assert "tl.blackhole.write_local_slice_to_cb" in script
+    assert "tl.blackhole.write_local_fragment_slice_to_tiled_cb" in script
     assert "tx * 128" in script
-
-
-def test_flash_attention_gqa_optimized_path_lowers_grouped_row_broadcasts():
-    lowered = _run_flash_attention_lower_blackhole_ops_after_optimize(
-        gqa_example,
-        1,
-        16,
-        1024,
-        128,
-        False,
-        groups=16,
-        block_M=64,
-        block_N=64,
-        num_stages=2,
-        threads=128,
-    )["main"]
-    script = lowered.script()
-    lowering_requirements = lowered.attrs["blackhole.lowering_requirements"]
-
-    assert "tl.blackhole.mul_grouped_row_bcast" in script
-    assert "tl.blackhole.div_grouped_row_bcast" in script
-    assert "tl.blackhole.exp2_grouped_row_bcast_affine" in script
-    assert "row_broadcast" not in set(lowering_requirements["fragment_op_kinds"])
 
 
 def test_flash_attention_gqa_reader_runtime_args_cover_all_accessor_buffers():

@@ -32,7 +32,6 @@
 #include "common/companion_base.h"
 #include "common/tt_target_program.h"
 
-#include <tvm/ffi/reflection/registry.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
 #include <tvm/tir/stmt_functor.h>
@@ -543,20 +542,6 @@ tvm::tir::Stmt PlanBlackholeCB::RewriteCBIdsInIR(
   };
 
   return CBIdRewriter(cb_id_by_requirement_index)(body);
-}
-
-// Modern TVM pass registration
-tir::transform::Pass PlanBlackholeCBPass() {
-  auto fpass = [](PrimFunc func, IRModule m, tir::transform::PassContext ctx) -> PrimFunc {
-    return PlanBlackholeCB().Transform(func);
-  };
-  return tir::transform::CreatePrimFuncPass(fpass, 0, "tl.transform.PlanBlackholeCB", {});
-}
-
-TVM_FFI_STATIC_INIT_BLOCK() {
-  namespace refl = tvm::ffi::reflection;
-  refl::GlobalDef()
-      .def("tl.transform.PlanBlackholeCB", PlanBlackholeCBPass);
 }
 
 }  // namespace tl

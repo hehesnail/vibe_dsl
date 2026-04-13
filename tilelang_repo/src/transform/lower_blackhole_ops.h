@@ -549,12 +549,6 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   int next_requirement_index_ = 0;
 };
 
-/*!
- * \brief Create the LowerBlackholeOps pass
- * \return The pass function
- */
-tvm::tir::transform::Pass LowerBlackholeOpsPass();
-
 }  // namespace tl
 }  // namespace tvm
 

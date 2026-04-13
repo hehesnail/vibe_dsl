@@ -21,9 +21,7 @@ from .common import (
     gemm_kernel_with_mbar,
     gemm_kernel_with_policy,
     gemm_kernel_with_transpose_flags,
-    has_tt_target_seed_truth,
     lower_blackhole_to_tt_target,
-    lower_blackhole_ops_through_phase_b,
     rebuild_tt_core_group,
     rebuild_tt_kernel,
     rebuild_tt_program,
@@ -404,83 +402,6 @@ def test_blackhole_gemm_arg_identity_drives_cross_segment_dedupe():
     ]
 
 
-def test_blackhole_gemm_cb_ids_are_rewritten_by_planner():
-    kernel = gemm_kernel()
-    mod = tilelang.tvm.IRModule({"main": kernel})
-    target = Target("blackhole")
-    with target:
-        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
-
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    lower_mod = lower_blackhole_ops_through_phase_b(mod)
-    planned_mod = tilelang.transform.PlanBlackholeCB()(lower_mod)
-
-    lower_func = lower_mod["main"]
-    func = planned_mod["main"]
-    assert "blackhole.gemm_cb_placeholders" not in func.attrs
-
-    def collect_cb_ids(stmt):
-        cb_ids = set()
-
-        def visit(node):
-            if not isinstance(node, tilelang.tvm.tir.Call):
-                return
-            if not hasattr(node.op, "name"):
-                return
-            op_name = node.op.name
-            if op_name in {
-                "tl.blackhole.cb_reserve_back",
-                "tl.blackhole.cb_push_back",
-                "tl.blackhole.cb_wait_front",
-                "tl.blackhole.cb_pop_front",
-                "tl.blackhole.write_tile_from_cb",
-            }:
-                cb_ids.add(int(node.args[0]))
-            elif op_name == "tl.blackhole.read_tile_to_cb":
-                cb_ids.add(int(node.args[2]))
-            elif op_name == "tl.blackhole.mm_init":
-                cb_ids.update(int(arg) for arg in node.args[:3])
-            elif op_name == "tl.blackhole.matmul_tiles":
-                cb_ids.update(int(arg) for arg in node.args[:2])
-            elif op_name == "tl.blackhole.pack_tile":
-                cb_ids.add(int(node.args[1]))
-
-        stmt_functor.post_order_visit(stmt, visit)
-        return cb_ids
-
-    assert collect_cb_ids(lower_func.body) == {0, 1, 2}
-    assert collect_cb_ids(func.body) == {0, 1, 16}
-    func_text = func.body.script()
-    assert func_text.count("tl.blackhole.pack_tile") == 1
-    assert func_text.count("tl.blackhole.write_tile_from_cb") == 1
-    assert "T.tl.blackhole.pack_tile(0, 16)" in func_text
-    assert "T.tl.blackhole.cb_wait_front(16, 1)" in func_text
-
-    can_run, msg = check_blackhole_codegen_requirements()
-    if not can_run:
-        pytest.skip(f"Blackhole requirements not met: {msg}")
-
-    try:
-        with target:
-            artifact = lower(kernel, target=target)
-    except Exception as e:
-        pytest.skip(f"Blackhole lowering not yet fully implemented: {e}")
-
-    source = getattr(artifact, "kernel_source", None)
-    if source is None and hasattr(artifact, "mod"):
-        try:
-            source = artifact.mod.imported_modules[0].get_source()
-        except Exception:
-            source = None
-    if not source and hasattr(artifact, "code"):
-        source = artifact.code
-
-    assert source
-    assert "mm_init(-" not in source
-    assert "cb_wait_front(-" not in source
-    assert "cb_reserve_back(-" not in source
-
-
 def test_blackhole_gemm_accumulator_scope_canonicalized():
     kernel = gemm_kernel()
     target = Target("blackhole")
@@ -607,7 +528,7 @@ def test_blackhole_compute_contract_attr_materializes_nondefault_compute_abi():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = lower_blackhole_ops_through_phase_b(mod)
+    mod = lower_blackhole_to_tt_target(mod)
 
     func = mod["main"]
     contract = extract_blackhole_compute_contract(func)
@@ -624,7 +545,7 @@ def test_blackhole_compute_contract_attr_materializes_richer_compute_config_extr
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = lower_blackhole_ops_through_phase_b(mod)
+    mod = lower_blackhole_to_tt_target(mod)
 
     func = mod["main"]
     contract = extract_blackhole_compute_contract(func)
@@ -650,7 +571,7 @@ def test_blackhole_compute_segment_compute_config_follows_compute_contract():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = lower_blackhole_ops_through_phase_b(mod)
+    mod = lower_blackhole_to_tt_target(mod)
 
     func = mod["main"]
     contract = extract_blackhole_compute_contract(func)
@@ -679,7 +600,7 @@ def test_blackhole_compute_contract_attr_materializes_nondefault_policy():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = lower_blackhole_ops_through_phase_b(mod)
+    mod = lower_blackhole_to_tt_target(mod)
 
     contract = extract_blackhole_compute_contract(mod["main"])
     assert int(contract["policy_type"]) == 1
@@ -694,7 +615,7 @@ def test_blackhole_compute_contract_attr_materializes_mbar_binding():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = lower_blackhole_ops_through_phase_b(mod)
+    mod = lower_blackhole_to_tt_target(mod)
 
     contract = extract_blackhole_compute_contract(mod["main"])
     assert bool(contract["has_mbarrier"]) is True
@@ -1448,7 +1369,7 @@ def test_blackhole_multicore_gemm_lowering_respects_transposed_b_layout():
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    mod = lower_blackhole_ops_through_phase_b(mod)
+    mod = lower_blackhole_to_tt_target(mod)
 
     func_text = mod["main"].script()
     assert func_text.count("tl.blackhole.write_tile_from_cb") == 1
@@ -1467,7 +1388,7 @@ def test_blackhole_gemm_richer_accessor_schema_roundtrip():
 
     rewritten = {}
     for gvar, func in artifact.device_mod.functions.items():
-        if has_tt_target_seed_truth(func) or (func.attrs and "blackhole.segment_plan" in func.attrs):
+        if func.attrs and ("tl.tt_program" in func.attrs or "blackhole.segment_plan" in func.attrs):
             richer_common_runtime_args = [
                 {
                     "name": "rank",

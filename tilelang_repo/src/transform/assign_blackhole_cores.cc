@@ -26,7 +26,6 @@
 #include "common/companion_base.h"
 #include "common/tt_target_program.h"
 
-#include <tvm/ffi/reflection/registry.h>
 #include <tvm/ir/attrs.h>
 #include <tvm/ir/module.h>
 #include <tvm/tir/builtin.h>
@@ -217,20 +216,6 @@ void AssignBlackholeCores::StoreAssignment(PrimFunc& func,
 
   // Update function attributes
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
-}
-
-// Modern TVM pass registration
-tir::transform::Pass AssignBlackholeCoresPass() {
-  auto fpass = [](PrimFunc func, IRModule m, tir::transform::PassContext ctx) -> PrimFunc {
-    return AssignBlackholeCores().Transform(func);
-  };
-  return tir::transform::CreatePrimFuncPass(fpass, 0, "tl.transform.AssignBlackholeCores", {});
-}
-
-TVM_FFI_STATIC_INIT_BLOCK() {
-  namespace refl = tvm::ffi::reflection;
-  refl::GlobalDef()
-      .def("tl.transform.AssignBlackholeCores", AssignBlackholeCoresPass);
 }
 
 }  // namespace tl

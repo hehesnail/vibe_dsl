@@ -92,12 +92,6 @@ def prepare_blackhole_phase_b_module(mod):
     return tilelang.engine.phase.LowerToBlackholePhaseB(mod)
 
 
-def lower_blackhole_ops_through_phase_b(mod):
-    """Lower via the SemanticProgram -> SpatialProgram mainline before LowerBlackholeOps."""
-    mod = prepare_blackhole_phase_b_module(mod)
-    return tilelang.transform.LowerBlackholeOps()(mod)
-
-
 def lower_blackhole_to_tt_target(mod):
     """Lower a Blackhole module through the validated TTProgram target contract."""
     return tilelang.engine.phase.LowerToBlackholeTTProgram(mod)
@@ -114,19 +108,6 @@ def _require_legacy_attr(func, key):
     if not (func.attrs and key in func.attrs):
         pytest.fail(f"Expected PrimFunc to carry {key}")
     return func.attrs[key]
-
-
-def has_tt_target_seed_truth(func):
-    return bool(
-        func.attrs
-        and (
-            "tl.tt_program" in func.attrs
-            or (
-                "tl.tt_kernel_seeds" in func.attrs
-                and "tl.tt_abi_plans" in func.attrs
-            )
-        )
-    )
 
 
 def extract_tt_program_segments(func):
@@ -151,41 +132,10 @@ def extract_tt_program_segments(func):
     return segments
 
 
-def extract_tt_seed_segments(func):
-    """Extract segment-like kernel/ABI records from typed TT seed attrs."""
-    if not (
-        func.attrs
-        and "tl.tt_kernel_seeds" in func.attrs
-        and "tl.tt_abi_plans" in func.attrs
-    ):
-        pytest.fail("Expected PrimFunc to carry tl.tt_kernel_seeds and tl.tt_abi_plans")
-
-    kernels = list(func.attrs["tl.tt_kernel_seeds"])
-    abi_plans = list(func.attrs["tl.tt_abi_plans"])
-    if len(kernels) != len(abi_plans):
-        pytest.fail("Expected tl.tt_kernel_seeds and tl.tt_abi_plans to stay cardinality-aligned")
-
-    segments = []
-    for kernel, abi in zip(kernels, abi_plans):
-        payload = dict(kernel.payload)
-        payload.setdefault("name", str(kernel.name))
-        payload.setdefault("kind", str(kernel.kind))
-        payload.setdefault("core_type", str(kernel.core_type))
-        payload.setdefault("runtime_args", list(abi.runtime_args))
-        payload.setdefault("common_runtime_args", list(abi.common_runtime_args))
-        payload.setdefault("compile_time_arg_specs", list(abi.compile_time_arg_specs))
-        payload.setdefault("accessors", list(abi.accessors))
-        payload.setdefault("semaphore_bindings", list(abi.semaphore_bindings))
-        segments.append(payload)
-    return segments
-
-
 def extract_blackhole_segment_plan(func):
     """Return segment-like target truth from TTProgram when present, else legacy attrs."""
     if func.attrs and "tl.tt_program" in func.attrs:
         return extract_tt_program_segments(func)
-    if func.attrs and "tl.tt_kernel_seeds" in func.attrs and "tl.tt_abi_plans" in func.attrs:
-        return extract_tt_seed_segments(func)
     return list(_require_legacy_attr(func, "blackhole.segment_plan"))
 
 
@@ -202,51 +152,6 @@ def extract_blackhole_runtime_args(func, *, kind=None, core_type=None, common=Fa
         seen = set()
         for abi in tt_program.abi_plans:
             args = abi.common_runtime_args if common else abi.runtime_args
-            for arg in args:
-                identity = str(arg["identity"]) if "identity" in arg else None
-                key = identity or (
-                    str(arg["name"]) if "name" in arg else repr(dict(arg))
-                )
-                if key in seen:
-                    continue
-                seen.add(key)
-                aggregated.append(arg)
-        return aggregated
-
-    if func.attrs and "tl.tt_kernel_seeds" in func.attrs and "tl.tt_abi_plans" in func.attrs:
-        if kind is not None or core_type is not None:
-            matches = []
-            for segment in extract_tt_seed_segments(func):
-                if kind is not None and str(segment.get("kind")) != kind:
-                    continue
-                if core_type is not None and str(segment.get("core_type")) != core_type:
-                    continue
-                matches.append(segment)
-
-            if not matches:
-                available = [
-                    f"{str(segment.get('name'))}:{str(segment.get('kind'))}:{str(segment.get('core_type'))}"
-                    for segment in extract_tt_seed_segments(func)
-                ]
-                pytest.fail(
-                    f"Missing typed TT seed segment kind={kind!r} core_type={core_type!r}; "
-                    f"available segments: {available}"
-                )
-            if len(matches) > 1:
-                matched = [
-                    f"{str(segment.get('name'))}:{str(segment.get('kind'))}:{str(segment.get('core_type'))}"
-                    for segment in matches
-                ]
-                pytest.fail(
-                    f"Ambiguous typed TT seed segment kind={kind!r} core_type={core_type!r}; "
-                    f"matched segments: {matched}"
-                )
-            return list(matches[0]["common_runtime_args" if common else "runtime_args"])
-
-        aggregated = []
-        seen = set()
-        for segment in extract_tt_seed_segments(func):
-            args = segment["common_runtime_args" if common else "runtime_args"]
             for arg in args:
                 identity = str(arg["identity"]) if "identity" in arg else None
                 key = identity or (
@@ -652,18 +557,6 @@ def staged_stick_copy_kernel(
             T.copy(A_shared, B[0:tile_m, dst_col : dst_col + tile_n])
 
     return main
-
-
-def make_blackhole_cb_requirements_mod(cb_requirements):
-    """Build a split/lowered Blackhole module with an explicit CB requirement list."""
-    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
-    mod = tilelang.tvm.IRModule({"main": kernel})
-    target = tilelang.tvm.target.Target("blackhole")
-    with target:
-        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
-    mod = lower_blackhole_ops_through_phase_b(mod)
-    func = mod["main"].with_attr("blackhole.cb_requirements", cb_requirements)
-    return tilelang.tvm.IRModule({"main": func})
 
 
 def gemm_kernel(M: int = 32, N: int = 32, K: int = 128):

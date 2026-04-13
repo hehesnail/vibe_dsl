@@ -107,12 +107,6 @@ class AssignBlackholeCores : public tvm::tir::StmtExprMutator {
   CoreAssignment assignment_;
 };
 
-/*!
- * \brief Create the AssignBlackholeCores pass
- * \return The pass function
- */
-tir::transform::Pass AssignBlackholeCoresPass();
-
 } // namespace tl
 } // namespace tvm
 
