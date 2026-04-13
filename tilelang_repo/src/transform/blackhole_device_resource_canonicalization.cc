@@ -344,7 +344,7 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
   // the physical allocation var but are different Var objects with different scopes)
   std::unordered_map<std::string, Var> name_to_new_var_;
   // buffer remapping cache: old Buffer → new Buffer (same object across all call sites)
-  // Critical for LowerBlackholeOps.buffer_to_cb_ deduplication which uses Buffer pointer equality.
+  // Critical for PlanTTKernelABI.buffer_to_cb_ deduplication which uses Buffer pointer equality.
   std::unordered_map<const BufferNode*, Buffer> buf_remap_;
   // collected wrappers stripped from above thread_extent, to inject inside it
   std::vector<WrapperInfo> wrappers_;

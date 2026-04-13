@@ -970,7 +970,7 @@ private:
       return IRMutatorWithAnalyzer::VisitStmt_(op);
 
     // Blackhole does not use MMA/WGMMA/MFMA. Preserve the tl.gemm call as-is
-    // so that LowerBlackholeOps can recognise and lower it later.
+    // so that PlanTTKernelABI can recognise and lower it later.
     if (TargetIsBlackhole(target_) && tile_op->IsInstance<GemmPyNode>()) {
       return tvm::ffi::GetRef<Stmt>(op);
     }

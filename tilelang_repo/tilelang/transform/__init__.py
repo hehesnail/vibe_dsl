@@ -605,7 +605,7 @@ def AnnotateBlackholeCopySemantics():
     Runs in the split-before phase (after LowerTileOp, before AnnotateDeviceRegions).
     Finds BufferStore(BufferLoad) copy loop patterns and wraps the outermost
     copy-containing For loop with an AttrStmt annotation carrying structured
-    copy semantics metadata.  This gives LowerBlackholeOps stable metadata
+    copy semantics metadata.  This gives PlanTTKernelABI stable metadata
     without requiring fragile pattern-matching on the loop body.
 
     Returns

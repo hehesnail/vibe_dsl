@@ -55,7 +55,7 @@ using tvm::ffi::Array;
 using tvm::ffi::String;
 
 // Main entry point
-PrimFunc AssignBlackholeCores::Transform(const PrimFunc& func) {
+PrimFunc PlanTTCoreGroups::Transform(const PrimFunc& func) {
   // Analyze grid dimensions
   assignment_ = AnalyzeGrid(func);
 
@@ -72,7 +72,7 @@ PrimFunc AssignBlackholeCores::Transform(const PrimFunc& func) {
 }
 
 // Analyze T.Kernel grid dimensions from the function
-CoreAssignment AssignBlackholeCores::AnalyzeGrid(const PrimFunc& func) {
+CoreAssignment PlanTTCoreGroups::AnalyzeGrid(const PrimFunc& func) {
   CoreAssignment assignment;
 
   // Look for thread extent attributes that define grid dimensions
@@ -122,7 +122,7 @@ CoreAssignment AssignBlackholeCores::AnalyzeGrid(const PrimFunc& func) {
 }
 
 // Calculate work distribution across cores
-void AssignBlackholeCores::CalculateWorkDistribution(CoreAssignment& assignment) {
+void PlanTTCoreGroups::CalculateWorkDistribution(CoreAssignment& assignment) {
   const int total_work = std::max(1, assignment.grid_x * assignment.grid_y);
   const int available_cores = kBlackholeGridX * kBlackholeGridY;
 
@@ -133,7 +133,7 @@ void AssignBlackholeCores::CalculateWorkDistribution(CoreAssignment& assignment)
 }
 
 // Calculate runtime args for a specific core
-RuntimeArgs AssignBlackholeCores::GetRuntimeArgs(int core_idx) const {
+RuntimeArgs PlanTTCoreGroups::GetRuntimeArgs(int core_idx) const {
   RuntimeArgs args;
 
   const int total_work = std::max(1, assignment_.grid_x * assignment_.grid_y);
@@ -153,7 +153,7 @@ RuntimeArgs AssignBlackholeCores::GetRuntimeArgs(int core_idx) const {
 }
 
 // Get logical worker core coordinate for a logical core index
-CoreCoord AssignBlackholeCores::GetCoreCoord(int core_idx) const {
+CoreCoord PlanTTCoreGroups::GetCoreCoord(int core_idx) const {
   CoreCoord coord;
 
   coord.x = core_idx % kBlackholeGridX;
@@ -163,7 +163,7 @@ CoreCoord AssignBlackholeCores::GetCoreCoord(int core_idx) const {
 }
 
 // Check if a core coordinate is valid
-bool AssignBlackholeCores::IsValidCoreCoord(const CoreCoord& coord) const {
+bool PlanTTCoreGroups::IsValidCoreCoord(const CoreCoord& coord) const {
   bool valid_x = coord.x >= 0 && coord.x < kBlackholeGridX;
   bool valid_y = coord.y >= 0 && coord.y < kBlackholeGridY;
 
@@ -171,7 +171,7 @@ bool AssignBlackholeCores::IsValidCoreCoord(const CoreCoord& coord) const {
 }
 
 // Store assignment in function attributes
-void AssignBlackholeCores::StoreAssignment(PrimFunc& func,
+void PlanTTCoreGroups::StoreAssignment(PrimFunc& func,
                                            const CoreAssignment& assignment) {
   // Get existing attributes (if any)
   tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> attrs;

@@ -67,12 +67,12 @@ struct RuntimeArgs {
 };
 
 /*!
- * \brief AssignBlackholeCores Pass
+ * \brief PlanTTCoreGroups Pass
  *
  * This pass analyzes T.Kernel grid dimensions and assigns work items
  * to Blackhole's 11x10 logical worker core grid.
  */
-class AssignBlackholeCores : public tvm::tir::StmtExprMutator {
+class PlanTTCoreGroups : public tvm::tir::StmtExprMutator {
  public:
   /*! \brief Main entry point */
   tvm::tir::PrimFunc Transform(const tvm::tir::PrimFunc& func);

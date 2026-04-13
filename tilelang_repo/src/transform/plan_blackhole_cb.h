@@ -22,7 +22,7 @@
  * \brief Plan Circular Buffer (CB) allocation for Blackhole backend
  *
  * MVP Implementation (Phase 1):
- * - Read CB requirements from function attributes (written by LowerBlackholeOps)
+ * - Read CB requirements from function attributes (written by PlanTTKernelABI)
  * - Validate constraints (CB count <= 64, total L1 <= 1.5MB)
  * - Assign CB IDs following TT-Metal convention: 0-15 input, 16-31 output
  * - Store CB configuration in function attributes
@@ -80,7 +80,7 @@ struct CBConfig {
 };
 
 /*!
- * \brief PlanBlackholeCB Pass
+ * \brief PlanTTCBAlloc Pass
  *
  * This pass analyzes CB requirements and plans CB allocation
  * respecting Blackhole constraints:
@@ -92,7 +92,7 @@ struct CBConfig {
  * - CB 16-31: Output buffers (Compute -> Writer)
  * - CB 32-63: Intermediate / overflow
  */
-class PlanBlackholeCB : public tvm::tir::StmtExprMutator {
+class PlanTTCBAlloc : public tvm::tir::StmtExprMutator {
  public:
   /*! \brief Main entry point */
   tvm::tir::PrimFunc Transform(const tvm::tir::PrimFunc& func);

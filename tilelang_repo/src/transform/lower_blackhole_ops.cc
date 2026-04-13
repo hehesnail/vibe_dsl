@@ -19,7 +19,7 @@
 
 /*!
  * \file lower_blackhole_ops.cc
- * \brief Implementation of LowerBlackholeOps pass.
+ * \brief Implementation of PlanTTKernelABI pass.
  *
  * Transforms TileLang high-level operations (T.copy, T.gemm, T.clear)
  * into TT-Metal builtin sequences.
@@ -1403,7 +1403,7 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
   Map<String, Any> lowering_requirements;
   auto spatial_program = func->GetAttr<SpatialProgram>(attr::kTLSpatialProgram);
   ICHECK(spatial_program)
-      << "LowerBlackholeOps requires tl.spatial_program; run LowerToSpatialProgram and "
+      << "PlanTTKernelABI requires tl.spatial_program; run LowerToSpatialProgram and "
          "ValidateSpatialProgram before lowering";
   auto semantic_program = func->GetAttr<SemanticProgram>(attr::kTLSemanticProgram);
 
@@ -1436,13 +1436,13 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
     }
     ICHECK(str(intent->target_kind) == spatial_contract::kSemanticStateTarget &&
            intent->target_index >= 0)
-        << "LowerBlackholeOps requires phase-boundary intents to carry semantic_state "
+        << "PlanTTKernelABI requires phase-boundary intents to carry semantic_state "
            "target_kind/target_index contract";
     ICHECK(semantic_program)
-        << "LowerBlackholeOps requires tl.semantic_program when consuming phase-boundary "
+        << "PlanTTKernelABI requires tl.semantic_program when consuming phase-boundary "
            "state contracts";
     ICHECK_LT(intent->target_index, semantic_program.value()->states.size())
-        << "LowerBlackholeOps found phase-boundary intent with invalid target_index";
+        << "PlanTTKernelABI found phase-boundary intent with invalid target_index";
     const std::string state_name =
         static_cast<std::string>(semantic_program.value()->states[intent->target_index]->name);
     if (state_name.empty() || !seen_phase_boundary_states.insert(state_name).second) {
@@ -1489,7 +1489,7 @@ BuildFragmentMaterializationContractMap(const Map<String, Any>& lowering_require
   return contracts_by_target_buffer;
 }
 
-void LowerBlackholeOps::LoadBufferFlowContracts(const Map<String, Any>& lowering_requirements) {
+void PlanTTKernelABI::LoadBufferFlowContracts(const Map<String, Any>& lowering_requirements) {
   buffer_flow_contracts_.clear();
   auto maybe_contracts =
       lowering_requirements.Get(String(schema_key::kFragmentBufferFlowContracts));
@@ -1506,7 +1506,7 @@ void LowerBlackholeOps::LoadBufferFlowContracts(const Map<String, Any>& lowering
     const std::string buffer_name = Downcast<String>((*buffer_it).second);
     auto parsed_flow_class = ParseCBFlowClass(Downcast<String>((*flow_class_it).second));
     ICHECK(parsed_flow_class.has_value())
-        << "LowerBlackholeOps requires a known fragment buffer flow_class for " << buffer_name;
+        << "PlanTTKernelABI requires a known fragment buffer flow_class for " << buffer_name;
 
     BufferFlowContract contract;
     contract.flow_class = parsed_flow_class.value();
@@ -1555,9 +1555,9 @@ static std::string GetStorageScope(const Buffer& buffer) {
   return "";
 }
 
-LowerBlackholeOps::LowerBlackholeOps() : next_requirement_index_(0) {}
+PlanTTKernelABI::PlanTTKernelABI() : next_requirement_index_(0) {}
 
-void LowerBlackholeOps::LoadLogicalBufferShapes(const PrimFunc& func) {
+void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func) {
   logical_buffer_shapes_.clear();
   auto manifest = func->GetAttr<Map<String, Any>>(attr::kTLSemanticManifest);
   if (!manifest.has_value()) {
@@ -1694,7 +1694,7 @@ void LowerBlackholeOps::LoadLogicalBufferShapes(const PrimFunc& func) {
   }
 }
 
-std::vector<int64_t> LowerBlackholeOps::GetLogicalBufferShape(const Buffer& buffer) const {
+std::vector<int64_t> PlanTTKernelABI::GetLogicalBufferShape(const Buffer& buffer) const {
   const std::string buffer_identity = BufferIdentityName(buffer);
   auto it = logical_buffer_shapes_.find(buffer_identity);
   if (it != logical_buffer_shapes_.end()) {
@@ -1707,7 +1707,7 @@ std::vector<int64_t> LowerBlackholeOps::GetLogicalBufferShape(const Buffer& buff
   return {};
 }
 
-int64_t LowerBlackholeOps::GetLogicalBufferElementCount(const Buffer& buffer) const {
+int64_t PlanTTKernelABI::GetLogicalBufferElementCount(const Buffer& buffer) const {
   const std::vector<int64_t> shape = GetLogicalBufferShape(buffer);
   if (!shape.empty()) {
     return ComputeStaticElementCount(shape);
@@ -1724,7 +1724,7 @@ int64_t LowerBlackholeOps::GetLogicalBufferElementCount(const Buffer& buffer) co
   return total_elements;
 }
 
-int LowerBlackholeOps::GetLogicalBufferTileCount(const Buffer& buffer) const {
+int PlanTTKernelABI::GetLogicalBufferTileCount(const Buffer& buffer) const {
   const std::vector<int64_t> shape = GetLogicalBufferShape(buffer);
   if (shape.size() >= 2U) {
     const int mt = CeilDivToInt(shape[shape.size() - 2], kBlackholeTileRows);
@@ -1735,7 +1735,7 @@ int LowerBlackholeOps::GetLogicalBufferTileCount(const Buffer& buffer) const {
   return std::max(1, CeilDivToInt(GetLogicalBufferElementCount(buffer), kTileElements));
 }
 
-int64_t LowerBlackholeOps::GetLogicalVectorLength(const Buffer& buffer) const {
+int64_t PlanTTKernelABI::GetLogicalVectorLength(const Buffer& buffer) const {
   const std::vector<int64_t> shape = GetLogicalBufferShape(buffer);
   if (shape.size() == 1U) {
     return shape.front();
@@ -1743,7 +1743,7 @@ int64_t LowerBlackholeOps::GetLogicalVectorLength(const Buffer& buffer) const {
   return -1;
 }
 
-std::pair<int64_t, int64_t> LowerBlackholeOps::GetLogicalMatrixShape(const Buffer& buffer) const {
+std::pair<int64_t, int64_t> PlanTTKernelABI::GetLogicalMatrixShape(const Buffer& buffer) const {
   const std::vector<int64_t> shape = GetLogicalBufferShape(buffer);
   if (shape.size() >= 2U) {
     return {shape[shape.size() - 2], shape[shape.size() - 1]};
@@ -1751,7 +1751,7 @@ std::pair<int64_t, int64_t> LowerBlackholeOps::GetLogicalMatrixShape(const Buffe
   return {-1, -1};
 }
 
-PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
+PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   current_func_ = func;
   buffer_to_req_.clear();
   buffer_data_to_req_index_.clear();
@@ -1895,7 +1895,7 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
         return;
       }
       ICHECK_EQ(it->second, tile_count)
-          << "LowerBlackholeOps requires a stable GEMM input tile contract per logical "
+          << "PlanTTKernelABI requires a stable GEMM input tile contract per logical "
              "buffer identity; "
           << buffer_identity << " was seen with both " << it->second << " and " << tile_count
           << " tiles";
@@ -1946,7 +1946,7 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
   PrimFunc new_func = func;
   new_func.CopyOnWrite()->body = body;
 
-  // Store CB requirements in function attributes for PlanBlackholeCB
+  // Store CB requirements in function attributes for PlanTTCBAlloc
   StoreCBRequirements(new_func);
   StoreRuntimeArgs(new_func);
   StoreSegmentPlan(new_func);
@@ -1968,7 +1968,7 @@ PrimFunc LowerBlackholeOps::Transform(const PrimFunc& func) {
 }
 
 // Get CB configuration from function attributes
-LowerBlackholeOps::CBConfig LowerBlackholeOps::GetCBConfig() const {
+PlanTTKernelABI::CBConfig PlanTTKernelABI::GetCBConfig() const {
   CBConfig config;
 
   // Try to get CB configuration from function attributes
@@ -1988,7 +1988,7 @@ LowerBlackholeOps::CBConfig LowerBlackholeOps::GetCBConfig() const {
   return config;
 }
 
-int LowerBlackholeOps::AllocateRequirementIndex(const Buffer& buffer, CBType type) {
+int PlanTTKernelABI::AllocateRequirementIndex(const Buffer& buffer, CBType type) {
   const std::string buffer_identity = BufferIdentityName(buffer);
   auto bind_existing_requirement = [&](int requirement_index) {
     buffer_to_req_[buffer] = requirement_index;
@@ -2007,7 +2007,7 @@ int LowerBlackholeOps::AllocateRequirementIndex(const Buffer& buffer, CBType typ
       return requirement_index;
     }
     ICHECK(req.type == type)
-        << "LowerBlackholeOps requires one CB type per logical buffer identity; "
+        << "PlanTTKernelABI requires one CB type per logical buffer identity; "
         << buffer_identity << " was assigned both " << static_cast<int>(req.type)
         << " and " << static_cast<int>(type);
     return requirement_index;
@@ -2055,7 +2055,7 @@ int LowerBlackholeOps::AllocateRequirementIndex(const Buffer& buffer, CBType typ
   return requirement_index;
 }
 
-int LowerBlackholeOps::EstimateCopyPageSize(const Buffer& buffer) const {
+int PlanTTKernelABI::EstimateCopyPageSize(const Buffer& buffer) const {
   const int64_t total_elements = GetLogicalBufferElementCount(buffer);
   if (total_elements <= 0) {
     return 2048;
@@ -2067,7 +2067,7 @@ int LowerBlackholeOps::EstimateCopyPageSize(const Buffer& buffer) const {
   return static_cast<int>(std::max<int64_t>(dtype_bytes, std::min(total_bytes, default_tile_bytes)));
 }
 
-void LowerBlackholeOps::SetRequirementPageLayout(int requirement_index, int page_size,
+void PlanTTKernelABI::SetRequirementPageLayout(int requirement_index, int page_size,
                                                  int num_pages) {
   ICHECK_GE(requirement_index, 0);
   ICHECK_LT(requirement_index, static_cast<int>(cb_requirements_.size()));
@@ -2076,7 +2076,7 @@ void LowerBlackholeOps::SetRequirementPageLayout(int requirement_index, int page
   req.num_pages = num_pages;
 }
 
-bool LowerBlackholeOps::UseStagedCopyPageTransport(const Buffer& shared_buffer) const {
+bool PlanTTKernelABI::UseStagedCopyPageTransport(const Buffer& shared_buffer) const {
   if (shared_buffer->shape.size() < 2U) {
     return false;
   }
@@ -2091,7 +2091,7 @@ bool LowerBlackholeOps::UseStagedCopyPageTransport(const Buffer& shared_buffer) 
 }
 
 // Store CB requirements in function attributes
-void LowerBlackholeOps::StoreCBRequirements(PrimFunc& func) {
+void PlanTTKernelABI::StoreCBRequirements(PrimFunc& func) {
   if (cb_requirements_.empty()) {
     return;
   }
@@ -2134,7 +2134,7 @@ void LowerBlackholeOps::StoreCBRequirements(PrimFunc& func) {
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 
-void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
+void PlanTTKernelABI::StoreRuntimeArgs(PrimFunc& func) {
   if (!needs_copy_runtime_args_) {
     return;
   }
@@ -2209,7 +2209,7 @@ void LowerBlackholeOps::StoreRuntimeArgs(PrimFunc& func) {
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 
-void LowerBlackholeOps::StoreSegmentPlan(PrimFunc& func) {
+void PlanTTKernelABI::StoreSegmentPlan(PrimFunc& func) {
   // If SplitBlackholeKernels already wrote the segment plan, do not overwrite.
   if (func->GetAttr<Array<Any>>("blackhole.segment_plan")) return;
 
@@ -2233,7 +2233,7 @@ void LowerBlackholeOps::StoreSegmentPlan(PrimFunc& func) {
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 
-void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
+void PlanTTKernelABI::StoreGemmContract(PrimFunc& func) {
   if (multi_gemm_contract_payloads_.empty() || multi_compute_contract_payloads_.empty()) {
     return;
   }
@@ -2331,7 +2331,7 @@ void LowerBlackholeOps::StoreGemmContract(PrimFunc& func) {
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 
-void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
+void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
   Map<String, Any> attrs;
   if (func->attrs.defined()) {
     attrs = func->attrs->dict;
@@ -2861,7 +2861,7 @@ void LowerBlackholeOps::StoreAccessorDescriptors(PrimFunc& func) {
   }
 }
 
-Array<Any> LowerBlackholeOps::EncodeAccessorDescriptors(const std::string& segment_kind) const {
+Array<Any> PlanTTKernelABI::EncodeAccessorDescriptors(const std::string& segment_kind) const {
   Array<Any> accessors;
   for (const auto& desc : accessor_descriptors_) {
     if (desc.segment_kind != segment_kind) {
@@ -2894,24 +2894,24 @@ Array<Any> LowerBlackholeOps::EncodeAccessorDescriptors(const std::string& segme
   return accessors;
 }
 
-Array<Any> LowerBlackholeOps::EncodeCommonRuntimeArgs(const std::string& segment_kind) const {
+Array<Any> PlanTTKernelABI::EncodeCommonRuntimeArgs(const std::string& segment_kind) const {
   (void)segment_kind;
   return Array<Any>{};
 }
 
 // Detect matmul operation using Op comparison
-bool LowerBlackholeOps::IsMatmulCall(const CallNode* op) const {
+bool PlanTTKernelABI::IsMatmulCall(const CallNode* op) const {
   if (!op->op->IsInstance<OpNode>()) return false;
 
   Op call_op = Downcast<Op>(op->op);
   return call_op->name == "tl.tileop.gemm_py";
 }
 
-std::string LowerBlackholeOps::DataTypeToDataFormat(DataType dtype) {
+std::string PlanTTKernelABI::DataTypeToDataFormat(DataType dtype) {
   return DataTypeToDataFormatForBlackhole(dtype);
 }
 
-void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
+void PlanTTKernelABI::ExtractGemmInfo(const CallNode* op) {
   // tl.tileop.gemm_py args layout (from gemm_op.py _gemm_impl):
   //   [0]=A_region, [1]=B_region, [2]=C_region,
   //   [3]=transA, [4]=transB, [5]=M, [6]=N, [7]=K, ...
@@ -3104,7 +3104,7 @@ void LowerBlackholeOps::ExtractGemmInfo(const CallNode* op) {
 }
 
 // Detect clear operation using Op comparison
-bool LowerBlackholeOps::IsClearOperation(const CallNode* op) const {
+bool PlanTTKernelABI::IsClearOperation(const CallNode* op) const {
   if (!op->op->IsInstance<OpNode>()) return false;
 
   Op call_op = Downcast<Op>(op->op);
@@ -3112,7 +3112,7 @@ bool LowerBlackholeOps::IsClearOperation(const CallNode* op) const {
 }
 
 // Detect copy operation using buffer scopes
-bool LowerBlackholeOps::IsCopyOperation(const BufferStoreNode* op) const {
+bool PlanTTKernelABI::IsCopyOperation(const BufferStoreNode* op) const {
   // Check if this is a BufferStore where value is a BufferLoad from another buffer
   if (const auto* load = op->value.as<BufferLoadNode>()) {
     return !op->buffer.same_as(load->buffer);
@@ -3121,7 +3121,7 @@ bool LowerBlackholeOps::IsCopyOperation(const BufferStoreNode* op) const {
 }
 
 // Determine copy direction
-CopyDirection LowerBlackholeOps::GetCopyDirection(const BufferStoreNode* op) const {
+CopyDirection PlanTTKernelABI::GetCopyDirection(const BufferStoreNode* op) const {
   const auto* load = op->value.as<BufferLoadNode>();
   if (!load) return CopyDirection::kUnknown;
 
@@ -3179,7 +3179,7 @@ CopyDirection LowerBlackholeOps::GetCopyDirection(const BufferStoreNode* op) con
   return CopyDirection::kUnknown;
 }
 
-PrimExpr LowerBlackholeOps::ZeroThreadAndLoopVars(const PrimExpr& expr,
+PrimExpr PlanTTKernelABI::ZeroThreadAndLoopVars(const PrimExpr& expr,
                                                   const Var& loop_var) const {
   if (!loop_var.defined()) {
     return ZeroThreadAndLoopVars(expr, std::vector<Var>{});
@@ -3187,7 +3187,7 @@ PrimExpr LowerBlackholeOps::ZeroThreadAndLoopVars(const PrimExpr& expr,
   return ZeroThreadAndLoopVars(expr, std::vector<Var>{loop_var});
 }
 
-PrimExpr LowerBlackholeOps::ZeroThreadAndLoopVars(const PrimExpr& expr,
+PrimExpr PlanTTKernelABI::ZeroThreadAndLoopVars(const PrimExpr& expr,
                                                   const std::vector<Var>& loop_vars) const {
   Map<Var, PrimExpr> subst_map;
   for (const auto& loop_var : loop_vars) {
@@ -3215,7 +3215,7 @@ PrimExpr LowerBlackholeOps::ZeroThreadAndLoopVars(const PrimExpr& expr,
   return analyzer.Simplify(tir::Substitute(expr, subst_map));
 }
 
-bool LowerBlackholeOps::ExprUsesTransportVar(const PrimExpr& expr,
+bool PlanTTKernelABI::ExprUsesTransportVar(const PrimExpr& expr,
                                              const std::vector<Var>& loop_vars) const {
   bool uses_transport_var = false;
   tir::PostOrderVisit(expr, [&](const ObjectRef& node) {
@@ -3247,7 +3247,7 @@ bool LowerBlackholeOps::ExprUsesTransportVar(const PrimExpr& expr,
   return uses_transport_var;
 }
 
-Var LowerBlackholeOps::SelectLogicalRowThreadVar(int64_t logical_rows) const {
+Var PlanTTKernelABI::SelectLogicalRowThreadVar(int64_t logical_rows) const {
   std::vector<Var> exact_extent_matches;
   std::vector<Var> non_unit_matches;
   for (const auto* thread_var : thread_index_vars_) {
@@ -3274,7 +3274,7 @@ Var LowerBlackholeOps::SelectLogicalRowThreadVar(int64_t logical_rows) const {
   return Var();
 }
 
-std::pair<int, int> LowerBlackholeOps::SelectStagedCopyTransportAxes(
+std::pair<int, int> PlanTTKernelABI::SelectStagedCopyTransportAxes(
     const Array<PrimExpr>& global_indices, const std::vector<Var>& loop_vars) const {
   std::vector<int> transport_axes;
   for (size_t i = 0; i < global_indices.size(); ++i) {
@@ -3288,7 +3288,7 @@ std::pair<int, int> LowerBlackholeOps::SelectStagedCopyTransportAxes(
   return {0, 1};
 }
 
-std::vector<int64_t> LowerBlackholeOps::BuildStagedCopyHostAxisOrder(
+std::vector<int64_t> PlanTTKernelABI::BuildStagedCopyHostAxisOrder(
     const Array<PrimExpr>& global_indices, const Array<Integer>& global_shape, int row_axis,
     int col_axis) const {
   const size_t ndim = !global_shape.empty() ? global_shape.size() : global_indices.size();
@@ -3311,7 +3311,7 @@ std::vector<int64_t> LowerBlackholeOps::BuildStagedCopyHostAxisOrder(
   return axis_order;
 }
 
-PrimExpr LowerBlackholeOps::InferCopyTileIndex(const BufferStoreNode* op,
+PrimExpr PlanTTKernelABI::InferCopyTileIndex(const BufferStoreNode* op,
                                                const Var& loop_var) const {
   const auto* load = op->value.as<BufferLoadNode>();
   ICHECK(load) << "InferCopyTileIndex requires BufferLoad copy source";
@@ -3355,7 +3355,7 @@ PrimExpr LowerBlackholeOps::InferCopyTileIndex(const BufferStoreNode* op,
       geometry);
 }
 
-PrimExpr LowerBlackholeOps::InferStagedCopyBaseTileIndex(
+PrimExpr PlanTTKernelABI::InferStagedCopyBaseTileIndex(
     const BufferStoreNode* op, const std::vector<Var>& loop_vars_to_zero) const {
   const auto* load = op->value.as<BufferLoadNode>();
   ICHECK(load) << "InferStagedCopyBaseTileIndex requires BufferLoad copy source";
@@ -3408,7 +3408,7 @@ PrimExpr LowerBlackholeOps::InferStagedCopyBaseTileIndex(
                                            global_info.outer_slice_index, geometry);
 }
 
-const BufferStoreNode* LowerBlackholeOps::FindNestedCopyStore(
+const BufferStoreNode* PlanTTKernelABI::FindNestedCopyStore(
     const Stmt& stmt, std::vector<Var>* nested_loop_vars) const {
   if (const auto* store = stmt.as<BufferStoreNode>()) {
     return IsCopyOperation(store) ? store : nullptr;
@@ -3443,7 +3443,7 @@ const BufferStoreNode* LowerBlackholeOps::FindNestedCopyStore(
   return nullptr;
 }
 
-void LowerBlackholeOps::CollectNestedCopyStores(const Stmt& stmt,
+void PlanTTKernelABI::CollectNestedCopyStores(const Stmt& stmt,
                                                 std::vector<Var>* loop_stack,
                                                 std::vector<NestedCopyMatch>* matches) const {
   if (const auto* store = stmt.as<BufferStoreNode>()) {
@@ -3505,7 +3505,7 @@ static bool IsPureCopyLoopNest(const Stmt& stmt) {
   return false;
 }
 
-void LowerBlackholeOps::RecordStagedCopyBufferBinding(const BufferStoreNode* op,
+void PlanTTKernelABI::RecordStagedCopyBufferBinding(const BufferStoreNode* op,
                                                       CopyDirection direction) {
   const auto* load = op->value.as<BufferLoadNode>();
   if (!load) {
@@ -3521,7 +3521,7 @@ void LowerBlackholeOps::RecordStagedCopyBufferBinding(const BufferStoreNode* op,
   }
 }
 
-void LowerBlackholeOps::RecordDramToDramCopy(const BufferStoreNode* op) {
+void PlanTTKernelABI::RecordDramToDramCopy(const BufferStoreNode* op) {
   const auto* load = op->value.as<BufferLoadNode>();
   if (!load) return;
 
@@ -3545,7 +3545,7 @@ void LowerBlackholeOps::RecordDramToDramCopy(const BufferStoreNode* op) {
   copy_output_buffer_name_ = BufferIdentityName(op->buffer);
 }
 
-void LowerBlackholeOps::RegisterAccessor(const std::string& segment_kind,
+void PlanTTKernelABI::RegisterAccessor(const std::string& segment_kind,
                                          const Buffer& buffer,
                                          int compile_time_arg_offset,
                                          int compile_time_arg_count,
@@ -3586,7 +3586,7 @@ void LowerBlackholeOps::RegisterAccessor(const std::string& segment_kind,
                                                      transpose_2d});
 }
 
-std::string LowerBlackholeOps::ResolveAccessorSegmentKind(CopyDirection direction) const {
+std::string PlanTTKernelABI::ResolveAccessorSegmentKind(CopyDirection direction) const {
   if (!current_segment_kind_.empty()) {
     return current_segment_kind_;
   }
@@ -3599,7 +3599,7 @@ std::string LowerBlackholeOps::ResolveAccessorSegmentKind(CopyDirection directio
   return "fused_dataflow";
 }
 
-int LowerBlackholeOps::GetOrAllocateSegmentAccessorSlot(
+int PlanTTKernelABI::GetOrAllocateSegmentAccessorSlot(
     std::unordered_map<std::string, int>* slot_map, const std::string& segment_kind,
     const Buffer& buffer) {
   const std::string key = MakeSegmentBufferKey(segment_kind, buffer);
@@ -3617,7 +3617,7 @@ int LowerBlackholeOps::GetOrAllocateSegmentAccessorSlot(
   return next_slot;
 }
 
-int LowerBlackholeOps::GetReadAccessorSlot(const std::string& segment_kind, const Buffer& buffer,
+int PlanTTKernelABI::GetReadAccessorSlot(const std::string& segment_kind, const Buffer& buffer,
                                            CopyDirection direction) {
   if (segment_kind == "fused_dataflow") {
     if (copy_input_buffer_.defined() && SameBufferIdentity(buffer, copy_input_buffer_)) {
@@ -3631,7 +3631,7 @@ int LowerBlackholeOps::GetReadAccessorSlot(const std::string& segment_kind, cons
   return 0;
 }
 
-int LowerBlackholeOps::GetWriteAccessorSlot(const std::string& segment_kind, const Buffer& buffer,
+int PlanTTKernelABI::GetWriteAccessorSlot(const std::string& segment_kind, const Buffer& buffer,
                                             CopyDirection direction) {
   if (segment_kind == "fused_dataflow") {
     if (copy_output_buffer_.defined() && SameBufferIdentity(buffer, copy_output_buffer_)) {
@@ -3645,7 +3645,7 @@ int LowerBlackholeOps::GetWriteAccessorSlot(const std::string& segment_kind, con
   return 0;
 }
 
-void LowerBlackholeOps::ActivateCurrentComputeContractPayload() {
+void PlanTTKernelABI::ActivateCurrentComputeContractPayload() {
   const std::string signature = EncodeGemmContractSignature(
       gemm_a_buffer_name_, gemm_b_buffer_name_, gemm_c_buffer_name_, gemm_m_, gemm_n_, gemm_k_,
       gemm_transpose_a_, gemm_transpose_b_, gemm_policy_type_, gemm_clear_accum_, gemm_k_pack_,
@@ -3660,7 +3660,7 @@ void LowerBlackholeOps::ActivateCurrentComputeContractPayload() {
   active_compute_contract_payload_index_ = it->second;
 }
 
-void LowerBlackholeOps::RecordComputeEpilogueOp(Map<String, Any> op_payload) {
+void PlanTTKernelABI::RecordComputeEpilogueOp(Map<String, Any> op_payload) {
   compute_epilogue_payloads_flat_.push_back(op_payload);
   if (compute_epilogue_payloads_.empty()) {
     return;
@@ -3731,7 +3731,7 @@ void LowerBlackholeOps::RecordComputeEpilogueOp(Map<String, Any> op_payload) {
   compute_epilogue_payloads_[static_cast<size_t>(best_index)].push_back(std::move(op_payload));
 }
 
-Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op,
+Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
                                               bool retain_in0,
                                               bool retain_in1,
                                               bool publish_out,
@@ -3750,7 +3750,7 @@ Stmt LowerBlackholeOps::GenerateMatmulSequence(const CallNode* op,
                                                     reacquire_in1);
 }
 
-Stmt LowerBlackholeOps::GenerateMatmulSequenceForOutputRequirement(int out_req_index,
+Stmt PlanTTKernelABI::GenerateMatmulSequenceForOutputRequirement(int out_req_index,
                                                                   bool retain_in0,
                                                                   bool retain_in1,
                                                                   bool reserve_out,
@@ -3857,17 +3857,17 @@ Stmt LowerBlackholeOps::GenerateMatmulSequenceForOutputRequirement(int out_req_i
   return SeqStmt::Flatten(stmts);
 }
 
-Buffer LowerBlackholeOps::CreateClearAccumPartialsBuffer(const Buffer& buffer) {
+Buffer PlanTTKernelABI::CreateClearAccumPartialsBuffer(const Buffer& buffer) {
   const std::string partials_name =
       BufferIdentityName(buffer) + "_clear_accum_partials_" + std::to_string(next_requirement_index_);
   return tir::decl_buffer(buffer->shape, buffer->dtype, partials_name, GetStorageScope(buffer));
 }
 
-bool LowerBlackholeOps::ClearAccumReloadNeedsDataFormatReconfig() const {
+bool PlanTTKernelABI::ClearAccumReloadNeedsDataFormatReconfig() const {
   return gemm_c_dtype_ != gemm_b_dtype_;
 }
 
-Stmt LowerBlackholeOps::GenerateAddFragmentSequence(const Buffer& dst,
+Stmt PlanTTKernelABI::GenerateAddFragmentSequence(const Buffer& dst,
                                                     const Buffer& src,
                                                     const PrimExpr& num_elements) {
   Map<String, Any> op_payload =
@@ -3878,7 +3878,7 @@ Stmt LowerBlackholeOps::GenerateAddFragmentSequence(const Buffer& dst,
   return MakeBlackholeCall(blackhole_add_fragment(), {dst->data, src->data, num_elements});
 }
 
-Stmt LowerBlackholeOps::GenerateAddFragmentFromCBFrontSequence(const Buffer& dst,
+Stmt PlanTTKernelABI::GenerateAddFragmentFromCBFrontSequence(const Buffer& dst,
                                                                int src_cb_id,
                                                                const PrimExpr& num_elements,
                                                                const Buffer& src_buffer) {
@@ -3888,7 +3888,7 @@ Stmt LowerBlackholeOps::GenerateAddFragmentFromCBFrontSequence(const Buffer& dst
   op_payload.Set("src_buffer", String(BufferIdentityName(src_buffer)));
   auto contract_it = fragment_materialization_contracts_by_target_buffer_.find(dst_buffer_name);
   ICHECK(contract_it != fragment_materialization_contracts_by_target_buffer_.end())
-      << "LowerBlackholeOps requires fragment_materialization_contract in SpatialProgram for "
+      << "PlanTTKernelABI requires fragment_materialization_contract in SpatialProgram for "
          "add_fragment_from_cb_front destination "
       << dst_buffer_name;
   op_payload.Set(String(schema_key::kFragmentMaterializationContract), contract_it->second);
@@ -3898,7 +3898,7 @@ Stmt LowerBlackholeOps::GenerateAddFragmentFromCBFrontSequence(const Buffer& dst
                            {dst->data, IntImm32(src_cb_id), num_elements});
 }
 
-Stmt LowerBlackholeOps::GenerateMatmulSequenceWithPartialReload(int out_req_index,
+Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
                                                                 int partials_cb_id,
                                                                 bool retain_in0,
                                                                 bool retain_in1,
@@ -4010,7 +4010,7 @@ Stmt LowerBlackholeOps::GenerateMatmulSequenceWithPartialReload(int out_req_inde
   return SeqStmt::Flatten(stmts);
 }
 
-Stmt LowerBlackholeOps::GenerateAccumulatingMatmulSequence(const CallNode* op,
+Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
                                                            bool retain_in0,
                                                            bool retain_in1,
                                                            bool reacquire_in0,
@@ -4062,11 +4062,11 @@ Stmt LowerBlackholeOps::GenerateAccumulatingMatmulSequence(const CallNode* op,
   return SeqStmt::Flatten(stmts);
 }
 
-Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
+Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op) {
   CopyDirection direction = GetCopyDirection(op);
 
   if (direction == CopyDirection::kUnknown) {
-    LOG(WARNING) << "LowerBlackholeOps: Unknown copy direction, falling back";
+    LOG(WARNING) << "PlanTTKernelABI: Unknown copy direction, falling back";
     return StmtExprMutator::VisitStmt_(op);
   }
 
@@ -4163,7 +4163,7 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op) {
   return SeqStmt::Flatten(stmts);
 }
 
-Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
+Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
                                              const PrimExpr& tile_index) {
   CopyDirection direction = GetCopyDirection(op);
   const auto* load = op->value.as<BufferLoadNode>();
@@ -4242,7 +4242,7 @@ Stmt LowerBlackholeOps::GenerateCopySequence(const BufferStoreNode* op,
   }
 }
 
-Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op,
+Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(const BufferStoreNode* op,
                                                        const PrimExpr& base_tile_index) {
   CopyDirection direction = GetCopyDirection(op);
   const auto* load = op->value.as<BufferLoadNode>();
@@ -4365,7 +4365,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
     int tile_emit_count = total_subtiles;
     if (segmented_reader_tile_limit > 0) {
       ICHECK_LE(segmented_reader_tile_limit, total_subtiles)
-          << "LowerBlackholeOps segmented reader transport exceeds staged copy shape for buffer "
+          << "PlanTTKernelABI segmented reader transport exceeds staged copy shape for buffer "
           << BufferIdentityName(shared_buffer);
       tile_emit_count = segmented_reader_tile_limit;
     }
@@ -4436,7 +4436,7 @@ Stmt LowerBlackholeOps::GenerateStagedCopyLoopSequence(const BufferStoreNode* op
   return GenerateCopySequence(op);
 }
 
-Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* dram_to_cb,
+Stmt PlanTTKernelABI::GenerateFusedStagedCopySequence(const BufferStoreNode* dram_to_cb,
                                                         const BufferStoreNode* cb_to_dram,
                                                         const PrimExpr& base_tile_index) {
   const auto* dram_load = dram_to_cb->value.as<BufferLoadNode>();
@@ -4570,7 +4570,7 @@ Stmt LowerBlackholeOps::GenerateFusedStagedCopySequence(const BufferStoreNode* d
   return SeqStmt::Flatten(stmts);
 }
 
-Stmt LowerBlackholeOps::GenerateClearSequence(const CallNode* op) {
+Stmt PlanTTKernelABI::GenerateClearSequence(const CallNode* op) {
   // Clear operation: tile_regs_acquire() to zero DST registers
   // In full implementation, would also zero-fill
   return MakeBlackholeCall(blackhole_tile_regs_acquire(), {});
@@ -5071,7 +5071,7 @@ bool MatchScaledGroupedScalarFragmentLoad(const PrimExpr& expr,
 
 }  // namespace
 
-bool LowerBlackholeOps::MatchDirectRowReduction(const ForNode* op, RowReductionMatch* match) const {
+bool PlanTTKernelABI::MatchDirectRowReduction(const ForNode* op, RowReductionMatch* match) const {
   if (!op || !match || !tir::is_one(op->extent)) {
     return false;
   }
@@ -5110,7 +5110,7 @@ bool LowerBlackholeOps::MatchDirectRowReduction(const ForNode* op, RowReductionM
   return true;
 }
 
-bool LowerBlackholeOps::MatchAllocatedRowReduction(const AllocateNode* op,
+bool PlanTTKernelABI::MatchAllocatedRowReduction(const AllocateNode* op,
                                                    RowReductionMatch* match) const {
   if (!op || !match || op->extents.size() != 1 || !tir::is_one(op->extents[0])) {
     return false;
@@ -5157,7 +5157,7 @@ bool LowerBlackholeOps::MatchAllocatedRowReduction(const AllocateNode* op,
   return true;
 }
 
-bool LowerBlackholeOps::MatchGroupedRowReduction(const ForNode* op,
+bool PlanTTKernelABI::MatchGroupedRowReduction(const ForNode* op,
                                                  RowReductionMatch* match) const {
   if (!op || !match) {
     return false;
@@ -5273,7 +5273,7 @@ bool LowerBlackholeOps::MatchGroupedRowReduction(const ForNode* op,
   return true;
 }
 
-Stmt LowerBlackholeOps::GenerateRowReductionSequence(const RowReductionMatch& match) {
+Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& match) {
   RowReductionMatch lowered_match = match;
   const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.src);
   const int64_t logical_dst_extent = GetLogicalVectorLength(match.dst);
@@ -5304,7 +5304,7 @@ Stmt LowerBlackholeOps::GenerateRowReductionSequence(const RowReductionMatch& ma
                             Bool(lowered_match.clear)});
 }
 
-bool LowerBlackholeOps::MatchDirectRowBroadcast(const ForNode* op,
+bool PlanTTKernelABI::MatchDirectRowBroadcast(const ForNode* op,
                                                 RowBroadcastMatch* match) const {
   if (!op || !match) {
     return false;
@@ -5349,7 +5349,7 @@ bool LowerBlackholeOps::MatchDirectRowBroadcast(const ForNode* op,
   return false;
 }
 
-Stmt LowerBlackholeOps::GenerateRowBroadcastSequence(const RowBroadcastMatch& match) {
+Stmt PlanTTKernelABI::GenerateRowBroadcastSequence(const RowBroadcastMatch& match) {
   RowBroadcastMatch lowered_match = match;
   const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.dst);
   const int64_t logical_scalar_extent = GetLogicalVectorLength(match.scalar);
@@ -5386,7 +5386,7 @@ Stmt LowerBlackholeOps::GenerateRowBroadcastSequence(const RowBroadcastMatch& ma
       op, {lowered_match.dst->data, lowered_match.scalar->data, lowered_match.num_elements});
 }
 
-bool LowerBlackholeOps::MatchScalarFmaStore(const BufferStoreNode* op,
+bool PlanTTKernelABI::MatchScalarFmaStore(const BufferStoreNode* op,
                                             ScalarFmaMatch* match) const {
   if (!op || !match || !IsScalarLocalFragmentBuffer(op->buffer) || op->indices.size() != 1 ||
       !tir::is_zero(op->indices[0])) {
@@ -5422,7 +5422,7 @@ bool LowerBlackholeOps::MatchScalarFmaStore(const BufferStoreNode* op,
   return try_match(add->a, add->b) || try_match(add->b, add->a);
 }
 
-bool LowerBlackholeOps::MatchGroupedScalarFmaLoop(const ForNode* op,
+bool PlanTTKernelABI::MatchGroupedScalarFmaLoop(const ForNode* op,
                                                   ScalarFmaMatch* match) const {
   if (!op || !match) {
     return false;
@@ -5473,7 +5473,7 @@ bool LowerBlackholeOps::MatchGroupedScalarFmaLoop(const ForNode* op,
   return try_match(add->a, add->b) || try_match(add->b, add->a);
 }
 
-Stmt LowerBlackholeOps::GenerateScalarFmaSequence(const ScalarFmaMatch& match) {
+Stmt PlanTTKernelABI::GenerateScalarFmaSequence(const ScalarFmaMatch& match) {
   ScalarFmaMatch lowered_match = match;
   const int64_t logical_extent = GetLogicalVectorLength(match.dst);
   if (!lowered_match.num_elements.defined() && logical_extent > 1) {
@@ -5498,7 +5498,7 @@ Stmt LowerBlackholeOps::GenerateScalarFmaSequence(const ScalarFmaMatch& match) {
                             lowered_match.rhs->data, lowered_match.add->data});
 }
 
-bool LowerBlackholeOps::MatchExp2RowBroadcastAffine(const ForNode* op,
+bool PlanTTKernelABI::MatchExp2RowBroadcastAffine(const ForNode* op,
                                                     Exp2RowBroadcastAffineMatch* match) const {
   if (!op || !match) {
     return false;
@@ -5548,7 +5548,7 @@ bool LowerBlackholeOps::MatchExp2RowBroadcastAffine(const ForNode* op,
   return false;
 }
 
-Stmt LowerBlackholeOps::GenerateExp2RowBroadcastAffineSequence(
+Stmt PlanTTKernelABI::GenerateExp2RowBroadcastAffineSequence(
     const Exp2RowBroadcastAffineMatch& match) {
   Exp2RowBroadcastAffineMatch lowered_match = match;
   const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.dst);
@@ -5581,7 +5581,7 @@ Stmt LowerBlackholeOps::GenerateExp2RowBroadcastAffineSequence(
                             lowered_match.scalar_scale});
 }
 
-bool LowerBlackholeOps::MatchScalarExp2AffineStore(const BufferStoreNode* op,
+bool PlanTTKernelABI::MatchScalarExp2AffineStore(const BufferStoreNode* op,
                                                    ScalarExp2AffineMatch* match) const {
   if (!op || !match || !IsScalarLocalFragmentBuffer(op->buffer) || op->indices.size() != 1 ||
       !tir::is_zero(op->indices[0])) {
@@ -5615,7 +5615,7 @@ bool LowerBlackholeOps::MatchScalarExp2AffineStore(const BufferStoreNode* op,
   return true;
 }
 
-bool LowerBlackholeOps::MatchGroupedScalarExp2AffineLoop(const ForNode* op,
+bool PlanTTKernelABI::MatchGroupedScalarExp2AffineLoop(const ForNode* op,
                                                          ScalarExp2AffineMatch* match) const {
   if (!op || !match) {
     return false;
@@ -5683,7 +5683,7 @@ bool LowerBlackholeOps::MatchGroupedScalarExp2AffineLoop(const ForNode* op,
   return true;
 }
 
-Stmt LowerBlackholeOps::GenerateScalarExp2AffineSequence(const ScalarExp2AffineMatch& match) {
+Stmt PlanTTKernelABI::GenerateScalarExp2AffineSequence(const ScalarExp2AffineMatch& match) {
   const int64_t logical_extent = GetLogicalVectorLength(match.dst);
   Map<String, Any> op_payload =
       MakeComputeEpilogueOpPayload("scalar_exp2_affine", BufferIdentityName(match.dst));
@@ -5707,7 +5707,7 @@ Stmt LowerBlackholeOps::GenerateScalarExp2AffineSequence(const ScalarExp2AffineM
                             match.lhs_scale, match.rhs_scale});
 }
 
-bool LowerBlackholeOps::MatchDirectFragmentFill(const ForNode* op,
+bool PlanTTKernelABI::MatchDirectFragmentFill(const ForNode* op,
                                                 FragmentFillMatch* match) const {
   if (!op || !match) {
     return false;
@@ -5740,7 +5740,7 @@ bool LowerBlackholeOps::MatchDirectFragmentFill(const ForNode* op,
   return true;
 }
 
-bool LowerBlackholeOps::MatchScalarFragmentFillStore(const BufferStoreNode* op,
+bool PlanTTKernelABI::MatchScalarFragmentFillStore(const BufferStoreNode* op,
                                                      FragmentFillMatch* match) const {
   if (!op || !match || !IsScalarLocalFragmentBuffer(op->buffer) || op->indices.size() != 1 ||
       !tir::is_zero(op->indices[0]) || !IsFragmentFillValue(op->value)) {
@@ -5752,7 +5752,7 @@ bool LowerBlackholeOps::MatchScalarFragmentFillStore(const BufferStoreNode* op,
   return true;
 }
 
-Stmt LowerBlackholeOps::GenerateFragmentFillSequence(const FragmentFillMatch& match) {
+Stmt PlanTTKernelABI::GenerateFragmentFillSequence(const FragmentFillMatch& match) {
   PrimExpr num_elements = match.num_elements;
   const int64_t logical_extent = GetLogicalBufferElementCount(match.dst);
   if (logical_extent > 1) {
@@ -5768,7 +5768,7 @@ Stmt LowerBlackholeOps::GenerateFragmentFillSequence(const FragmentFillMatch& ma
                            {match.dst->data, num_elements, match.value});
 }
 
-bool LowerBlackholeOps::MatchScalarMaxStore(const BufferStoreNode* op,
+bool PlanTTKernelABI::MatchScalarMaxStore(const BufferStoreNode* op,
                                             ScalarMaxMatch* match) const {
   if (!op || !match || !IsScalarLocalFragmentBuffer(op->buffer) || op->indices.size() != 1 ||
       !tir::is_zero(op->indices[0])) {
@@ -5794,7 +5794,7 @@ bool LowerBlackholeOps::MatchScalarMaxStore(const BufferStoreNode* op,
   return try_match(max->a, max->b) || try_match(max->b, max->a);
 }
 
-bool LowerBlackholeOps::MatchGroupedScalarMaxLoop(const ForNode* op,
+bool PlanTTKernelABI::MatchGroupedScalarMaxLoop(const ForNode* op,
                                                   ScalarMaxMatch* match) const {
   if (!op || !match) {
     return false;
@@ -5825,7 +5825,7 @@ bool LowerBlackholeOps::MatchGroupedScalarMaxLoop(const ForNode* op,
   return try_match(max->a, max->b) || try_match(max->b, max->a);
 }
 
-Stmt LowerBlackholeOps::GenerateScalarMaxSequence(const ScalarMaxMatch& match) {
+Stmt PlanTTKernelABI::GenerateScalarMaxSequence(const ScalarMaxMatch& match) {
   ScalarMaxMatch lowered_match = match;
   const int64_t logical_extent = GetLogicalVectorLength(match.dst);
   if (!lowered_match.num_elements.defined() && logical_extent > 1) {
@@ -5846,7 +5846,7 @@ Stmt LowerBlackholeOps::GenerateScalarMaxSequence(const ScalarMaxMatch& match) {
                            {lowered_match.dst->data, lowered_match.src->data});
 }
 
-bool LowerBlackholeOps::MatchScalarFragmentCopyStore(const BufferStoreNode* op,
+bool PlanTTKernelABI::MatchScalarFragmentCopyStore(const BufferStoreNode* op,
                                                      ScalarFragmentCopyMatch* match) const {
   if (!op || !match || !IsScalarLocalFragmentBuffer(op->buffer) || op->indices.size() != 1 ||
       !tir::is_zero(op->indices[0])) {
@@ -5868,7 +5868,7 @@ bool LowerBlackholeOps::MatchScalarFragmentCopyStore(const BufferStoreNode* op,
   return true;
 }
 
-bool LowerBlackholeOps::MatchGroupedScalarFragmentCopyLoop(const ForNode* op,
+bool PlanTTKernelABI::MatchGroupedScalarFragmentCopyLoop(const ForNode* op,
                                                            ScalarFragmentCopyMatch* match) const {
   if (!op || !match) {
     return false;
@@ -5895,7 +5895,7 @@ bool LowerBlackholeOps::MatchGroupedScalarFragmentCopyLoop(const ForNode* op,
   return true;
 }
 
-Stmt LowerBlackholeOps::GenerateScalarFragmentCopySequence(const ScalarFragmentCopyMatch& match) {
+Stmt PlanTTKernelABI::GenerateScalarFragmentCopySequence(const ScalarFragmentCopyMatch& match) {
   FragmentCastMatch cast_match;
   cast_match.dst = match.dst;
   cast_match.src = match.src;
@@ -5911,7 +5911,7 @@ Stmt LowerBlackholeOps::GenerateScalarFragmentCopySequence(const ScalarFragmentC
   return GenerateFragmentCastSequence(cast_match, /*publish_cb=*/false);
 }
 
-bool LowerBlackholeOps::MatchDirectFragmentCast(const ForNode* op,
+bool PlanTTKernelABI::MatchDirectFragmentCast(const ForNode* op,
                                                 FragmentCastMatch* match) const {
   if (!op || !match) {
     return false;
@@ -5983,7 +5983,7 @@ bool LowerBlackholeOps::MatchDirectFragmentCast(const ForNode* op,
   return true;
 }
 
-Stmt LowerBlackholeOps::GenerateFragmentCastSequence(const FragmentCastMatch& match,
+Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& match,
                                                     bool publish_cb) {
   Map<String, Any> op_payload =
       MakeComputeEpilogueOpPayload("cast_fragment_slice", BufferIdentityName(match.dst));
@@ -6015,7 +6015,7 @@ Stmt LowerBlackholeOps::GenerateFragmentCastSequence(const FragmentCastMatch& ma
   return stmts.size() == 1 ? stmts.front() : SeqStmt::Flatten(stmts);
 }
 
-bool LowerBlackholeOps::ShouldRetainComputeInputBuffer(const Buffer& buffer,
+bool PlanTTKernelABI::ShouldRetainComputeInputBuffer(const Buffer& buffer,
                                                        int current_order_index) const {
   const std::string buffer_identity = BufferIdentityName(buffer);
   auto it = buffer_flow_contracts_.find(buffer_identity);
@@ -6036,7 +6036,7 @@ bool LowerBlackholeOps::ShouldRetainComputeInputBuffer(const Buffer& buffer,
   return false;
 }
 
-bool LowerBlackholeOps::ShouldReacquireComputeInputBuffer(const Buffer& buffer,
+bool PlanTTKernelABI::ShouldReacquireComputeInputBuffer(const Buffer& buffer,
                                                           int current_order_index) const {
   if (GetStorageScope(buffer) != "blackhole.acc") {
     return false;
@@ -6055,7 +6055,7 @@ bool LowerBlackholeOps::ShouldReacquireComputeInputBuffer(const Buffer& buffer,
   return false;
 }
 
-bool LowerBlackholeOps::ShouldPublishBufferResult(const Buffer& buffer,
+bool PlanTTKernelABI::ShouldPublishBufferResult(const Buffer& buffer,
                                                   int current_order_index) const {
   const std::string buffer_identity = BufferIdentityName(buffer);
   auto it = buffer_flow_contracts_.find(buffer_identity);
@@ -6077,7 +6077,7 @@ bool LowerBlackholeOps::ShouldPublishBufferResult(const Buffer& buffer,
   return false;
 }
 
-bool LowerBlackholeOps::MatchDirectLocalToCBSliceLoop(const ForNode* op,
+bool PlanTTKernelABI::MatchDirectLocalToCBSliceLoop(const ForNode* op,
                                                       LocalToCBSliceMatch* match) const {
   if (!op || !match) {
     return false;
@@ -6195,7 +6195,7 @@ class LocalSliceCastSourceOffsetRewriter : public tir::StmtExprMutator {
 
 }  // namespace
 
-Stmt LowerBlackholeOps::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
+Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
                                                            const LocalToCBSliceMatch& match) {
   Map<String, Any> op_payload =
       MakeComputeEpilogueOpPayload("write_local_slice_to_cb", BufferIdentityName(match.dst));
@@ -6246,7 +6246,7 @@ Stmt LowerBlackholeOps::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
 }
 
 // Parse a colon-separated string into fields
-Stmt LowerBlackholeOps::VisitStmt_(const AttrStmtNode* op) {
+Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
   if (op->attr_key == tir::attr::thread_extent) {
     IterVar iv = Downcast<IterVar>(op->node);
     const std::string thread_tag = iv->thread_tag;
@@ -6290,7 +6290,7 @@ Stmt LowerBlackholeOps::VisitStmt_(const AttrStmtNode* op) {
   return StmtExprMutator::VisitStmt_(op);
 }
 
-Stmt LowerBlackholeOps::VisitStmt_(const DeclBufferNode* op) {
+Stmt PlanTTKernelABI::VisitStmt_(const DeclBufferNode* op) {
   if (GetStorageScope(op->buffer) == "blackhole.acc") {
     const int requirement_index = AllocateRequirementIndex(op->buffer, CBType::kIntermediate);
     auto& req = cb_requirements_.at(requirement_index);
@@ -6300,7 +6300,7 @@ Stmt LowerBlackholeOps::VisitStmt_(const DeclBufferNode* op) {
   return StmtExprMutator::VisitStmt_(op);
 }
 
-Stmt LowerBlackholeOps::VisitStmt_(const AllocateNode* op) {
+Stmt PlanTTKernelABI::VisitStmt_(const AllocateNode* op) {
   RowReductionMatch pre_lower_match;
   if (MatchAllocatedRowReduction(op, &pre_lower_match)) {
     return GenerateRowReductionSequence(pre_lower_match);
@@ -6315,7 +6315,7 @@ Stmt LowerBlackholeOps::VisitStmt_(const AllocateNode* op) {
   return lowered;
 }
 
-Stmt LowerBlackholeOps::VisitStmt_(const SeqStmtNode* op) {
+Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
   Array<Stmt> rewritten;
   for (size_t i = 0; i < op->seq.size(); ++i) {
     const auto order_it = stmt_order_index_by_node_.find(op->seq[i].get());
@@ -6448,7 +6448,7 @@ Stmt LowerBlackholeOps::VisitStmt_(const SeqStmtNode* op) {
   return SeqStmt::Flatten(rewritten);
 }
 
-Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
+Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
   const bool zero_loop_var = !op->thread_binding.defined();
   const Var transport_loop_var = zero_loop_var ? op->loop_var : Var();
   if (auto ann = op->annotations.Get(String("blackhole.copy_semantics"))) {
@@ -6656,7 +6656,7 @@ Stmt LowerBlackholeOps::VisitStmt_(const ForNode* op) {
 // StmtExprMutator overrides
 // Note: We only override specific node types and return the original node
 // for unmatched patterns to avoid deep recursion that causes stack overflow.
-Stmt LowerBlackholeOps::VisitStmt_(const EvaluateNode* op) {
+Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
   if (const auto* call = op->value.as<CallNode>()) {
     if (IsMatmulCall(call)) {
       ExtractGemmInfo(call);
@@ -6672,7 +6672,7 @@ Stmt LowerBlackholeOps::VisitStmt_(const EvaluateNode* op) {
   return GetRef<Stmt>(op);
 }
 
-Stmt LowerBlackholeOps::VisitStmt_(const BufferStoreNode* op) {
+Stmt PlanTTKernelABI::VisitStmt_(const BufferStoreNode* op) {
   FragmentFillMatch fill_match;
   if (MatchScalarFragmentFillStore(op, &fill_match)) {
     return GenerateFragmentFillSequence(fill_match);

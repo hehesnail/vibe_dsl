@@ -27,7 +27,7 @@
  *
  *   For(..., annotations={"blackhole.copy_semantics": Map<String, Any>{...}})
  *
- * This gives LowerBlackholeOps stable metadata without requiring pattern-matching
+ * This gives PlanTTKernelABI stable metadata without requiring pattern-matching
  * on the loop body, which is fragile after FlattenBuffer / VectorizeLoop / StorageRewrite.
  */
 
@@ -58,7 +58,7 @@ using tvm::ffi::String;
 // Attr key used to mark copy-containing For loops
 static constexpr const char* kBlackholeCopySemantics = "blackhole.copy_semantics";
 
-// Storage scope helpers (same logic as LowerBlackholeOps)
+// Storage scope helpers (same logic as PlanTTKernelABI)
 static bool IsDramScope(const std::string& scope) {
   return scope.empty() || scope == "global";
 }

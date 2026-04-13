@@ -24,8 +24,10 @@
     projection bridge、fragment-layout side-channel 已删除，
     `BuildTTProgram` 末端也开始剥离中间 `tl.tt_*` seed attrs
   - canonical `LowerToBlackholeTTProgram` 已不再显式串
-    `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores`
-    这条旧 pass 链；剩余 planning 兼容逻辑已内收到 `BuildTTProgram`
+    任何 legacy pass 名字；剩余 planning 兼容逻辑已内收到
+    `BuildTTProgram` 的
+    `PlanTTKernelABI -> PlanTTCBAlloc -> PlanTTCoreGroups`
+    helper bridge
   - 旧 pass 的 public/test surface 已继续收口：
     `tilelang.transform` Python wrapper、
     FFI global registration、
@@ -94,10 +96,10 @@
   tl.tt_core_groups / tl.tt_program_payload`
   这组中间 seed attrs
 - 当前剩余的结构性 blocker 是
-  `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
-  不再作为 active path 上的显式阶段，
- 公开入口和测试入口已删除，
- 但实现仍在 `BuildTTProgram` 内部承担 seed bridge owner 责任，
+  `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
+  这组内部 helper bridge
+  仍在 `BuildTTProgram` 内部承担 seed bridge owner 责任；
+  legacy pass 名字、公开入口和测试入口已删除，
   尚未被真实 `PlanTTBlocks / PlanTTTransport / PlanTTSync /
   PlanTTABI / PlanTTExecution` 取代
 - 详细根因、旧链问题域和切入层次判断，
@@ -193,9 +195,9 @@
   `tl.spatial_structure_facts + tl.spatial_plan + tl.spatial_program`
 - `Task 3` 当前残留：
   - `BuildTTProgram` 内部仍直接调用
-    `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
-    实现；当前只是把 public/test/FFI surface 清掉，
-    真正的 `PlanTT*` owner 替换仍属于后续 `Task 3`
+    `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
+    helper bridge；当前已把 legacy pass 名字和 public/test/FFI
+    surface 清掉，但真正的 `PlanTT*` owner 替换仍属于后续 `Task 3`
   - `flash-attn` GQA executable-spec / codegen probe 仍会命中
     grouped `reduce_row` 需要 `grouped_rows` fragment layout contract，
     当前 `acc_s` 仍拿到 `thread_distributed`；
@@ -208,3 +210,12 @@
   `test_blackhole_spatial_ir.py + test_blackhole_semantic_ir.py`
   仍有既有失败，集中在 flash/topk/fusedmoe/chunk recurrence 旧链分析；
   本轮未把这批已有失败当成 `Task 1` 关闭条件
+- `2026-04-13` 旧链清理增量验证：
+  - `cmake --build tilelang_repo/build -j32`
+    -> `built target tilelang`
+  - `python -m pytest tilelang_repo/testing/python/transform/test_blackhole_tt_target_probe.py`
+    -> `20 passed`
+  - `python -m pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -k 'oversubscription or core_plan_covers_oversubscribed_work'`
+    -> `2 passed`
+  - `python -m pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_contract_attr_is_materialized`
+    -> `1 passed`

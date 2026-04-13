@@ -22,7 +22,7 @@
  * \brief Plan Circular Buffer (CB) allocation for Blackhole backend
  *
  * MVP Implementation (Phase 1):
- * - Read CB requirements from function attributes (written by LowerBlackholeOps)
+ * - Read CB requirements from function attributes (written by PlanTTKernelABI)
  * - Validate constraints (CB count <= 64, total L1 <= 1.5MB)
  * - Assign CB IDs following TT-Metal convention: 0-15 input, 16-31 output
  * - Store CB configuration in function attributes
@@ -200,7 +200,7 @@ bool HasNoCBArgs(const std::string& op_name) {
 }  // namespace
 
 // Main entry point
-PrimFunc PlanBlackholeCB::Transform(const PrimFunc& func) {
+PrimFunc PlanTTCBAlloc::Transform(const PrimFunc& func) {
   // Get CB requirements from function attributes
   std::vector<CBRequirement> requirements = GetCBRequirements(func);
 
@@ -214,7 +214,7 @@ PrimFunc PlanBlackholeCB::Transform(const PrimFunc& func) {
 
   // Validate the allocation
   ICHECK(Validate(configs))
-      << "PlanBlackholeCB: CB allocation exceeds Blackhole per-core constraints";
+      << "PlanTTCBAlloc: CB allocation exceeds Blackhole per-core constraints";
 
   // Create mutable copy and store CB configuration
   PrimFunc new_func = func;
@@ -249,7 +249,7 @@ PrimFunc PlanBlackholeCB::Transform(const PrimFunc& func) {
               int val = static_cast<int>(imm->value);
               auto it = cb_id_by_requirement_index.find(val);
               if (it != cb_id_by_requirement_index.end() && it->second != val) {
-                LOG(WARNING) << "PlanBlackholeCB post-condition: builtin " << op_name
+                LOG(WARNING) << "PlanTTCBAlloc post-condition: builtin " << op_name
                              << " arg[" << i << "]=" << val
                              << " looks like an unrewritten requirement_index"
                              << " (expected cb_id=" << it->second << ")."
@@ -267,11 +267,11 @@ PrimFunc PlanBlackholeCB::Transform(const PrimFunc& func) {
 }
 
 // Get CB requirements from function attributes
-std::vector<CBRequirement> PlanBlackholeCB::GetCBRequirements(
+std::vector<CBRequirement> PlanTTCBAlloc::GetCBRequirements(
     const PrimFunc& func) {
   std::vector<CBRequirement> requirements;
 
-  // Read from function attributes (set by LowerBlackholeOps)
+  // Read from function attributes (set by PlanTTKernelABI)
   // Attribute format: "blackhole.cb_requirements" = [cb0_info, cb1_info, ...]
   if (auto cb_req_attr = func->GetAttr<Array<Any>>("blackhole.cb_requirements")) {
     Array<Any> cb_reqs = cb_req_attr.value();
@@ -333,14 +333,14 @@ std::vector<CBRequirement> PlanBlackholeCB::GetCBRequirements(
   }
 
   ICHECK(!requirements.empty())
-      << "PlanBlackholeCB requires explicit blackhole.cb_requirements; "
+      << "PlanTTCBAlloc requires explicit blackhole.cb_requirements; "
          "alloc_shared inference is no longer part of the formal planner contract";
 
   return requirements;
 }
 
 // Assign CB IDs to requirements
-std::vector<CBConfig> PlanBlackholeCB::AssignCBIds(
+std::vector<CBConfig> PlanTTCBAlloc::AssignCBIds(
     const std::vector<CBRequirement>& requirements) {
   std::vector<CBConfig> configs;
 
@@ -416,10 +416,10 @@ std::vector<CBConfig> PlanBlackholeCB::AssignCBIds(
 }
 
 // Validate CB allocation constraints
-bool PlanBlackholeCB::Validate(const std::vector<CBConfig>& configs) const {
+bool PlanTTCBAlloc::Validate(const std::vector<CBConfig>& configs) const {
   // Check CB count
   if (configs.size() > kMaxCBs) {
-    LOG(ERROR) << "PlanBlackholeCB: Too many CBs requested: " << configs.size()
+    LOG(ERROR) << "PlanTTCBAlloc: Too many CBs requested: " << configs.size()
                << " (max " << kMaxCBs << ")";
     return false;
   }
@@ -431,12 +431,12 @@ bool PlanBlackholeCB::Validate(const std::vector<CBConfig>& configs) const {
   }
 
   if (total_l1 > kMaxL1Size) {
-    LOG(ERROR) << "PlanBlackholeCB: Total L1 usage exceeds limit: " << total_l1
+    LOG(ERROR) << "PlanTTCBAlloc: Total L1 usage exceeds limit: " << total_l1
                << " bytes (max " << kMaxL1Size << " bytes = 1.5MB)";
     return false;
   }
 
-  LOG(INFO) << "PlanBlackholeCB: Allocated " << configs.size() << " CBs, "
+  LOG(INFO) << "PlanTTCBAlloc: Allocated " << configs.size() << " CBs, "
             << "total L1 usage: " << total_l1 << " bytes ("
             << (total_l1 * 100 / kMaxL1Size) << "% of 1.5MB)";
 
@@ -444,7 +444,7 @@ bool PlanBlackholeCB::Validate(const std::vector<CBConfig>& configs) const {
 }
 
 // Store CB configuration in function attributes
-void PlanBlackholeCB::StoreCBConfig(PrimFunc& func, const std::vector<CBConfig>& configs) {
+void PlanTTCBAlloc::StoreCBConfig(PrimFunc& func, const std::vector<CBConfig>& configs) {
   // Get existing attributes
   Map<String, Any> attrs;
   if (func->attrs.defined()) {
@@ -498,7 +498,7 @@ void PlanBlackholeCB::StoreCBConfig(PrimFunc& func, const std::vector<CBConfig>&
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
 }
 
-tvm::tir::Stmt PlanBlackholeCB::RewriteCBIdsInIR(
+tvm::tir::Stmt PlanTTCBAlloc::RewriteCBIdsInIR(
     const tvm::tir::Stmt& body, const std::unordered_map<int, int>& cb_id_by_requirement_index) {
   class CBIdRewriter : public tir::StmtExprMutator {
    public:
@@ -521,7 +521,7 @@ tvm::tir::Stmt PlanBlackholeCB::RewriteCBIdsInIR(
       for (int pos : positions) {
         ICHECK_LT(pos, static_cast<int>(args.size()));
         const auto* imm = args[pos].as<IntImmNode>();
-        ICHECK(imm) << "PlanBlackholeCB expects constant requirement_index before IR rewrite";
+        ICHECK(imm) << "PlanTTCBAlloc expects constant requirement_index before IR rewrite";
         auto it = mapping_.find(static_cast<int>(imm->value));
         ICHECK(it != mapping_.end())
             << "Missing final cb_id for requirement_index=" << imm->value;

@@ -129,14 +129,14 @@
 
 #### bridge-stage typed seeds 一旦发布，helper 和 pass 输出都不能再依赖 legacy projection attrs
 
-- **症状**: 想删除 `LowerBlackholeOps` 输出上的
+- **症状**: 想删除 `PlanTTKernelABI` 输出上的
   `blackhole.segment_plan / runtime_args / gemm_contract`，
   却被 regression helper 仍只认 projection attrs 卡住
 - **根因**: helper 只会读最终 `tl.tt_program`，不会读
   `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload` 这类
   pre-`TTProgram` typed truth
 - **修法**: helper 先学会从 typed seed attrs 重建 segment / ABI / contract 视图，
-  然后让 `LowerBlackholeOps` 在 seed materialization 后立即 strip legacy projections
+  然后让 `PlanTTKernelABI` 在 seed materialization 后立即 strip legacy projections
 - **教训**: producer-side 清理的真正前提不是“删代码”，而是
   bridge-stage 的 typed truth 已经可独立被测试和 validator 消费
 
@@ -263,7 +263,7 @@
     `live_form_kind / execution_topology_kind / physical_local_extent`
   - 这层 truth 的 owner 应该是
     `StatefulSemanticIR / SpatialProgram`
-  - `TTProgram / LowerBlackholeOps / codegen`
+  - `TTProgram / PlanTTKernelABI / codegen`
     只消费这份 typed truth 做 target materialization；
     `CB` overlap / reserve / push / pop 之类物理资源分析仍留在 target 侧
 - **教训**:
@@ -284,7 +284,7 @@
 #### 新 builtin 只要带 cb_id，就必须注册回写位置
 
 - **症状**: compute kernel 写错 CB，consumer 永远等不到数据
-- **根因**: `PlanBlackholeCB::GetCBArgPositions` 漏注册 cb_id 参数位置
+- **根因**: `PlanTTCBAlloc::GetCBArgPositions` 漏注册 cb_id 参数位置
 - **修法**: 补注册，并加 post-condition guard
 - **教训**: “新增 builtin -> 必须声明 cb_id 回写位置” 是正式协议，不是习惯
 

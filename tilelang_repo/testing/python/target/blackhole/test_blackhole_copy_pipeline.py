@@ -1835,7 +1835,7 @@ def test_blackhole_core_plan_covers_oversubscribed_work():
 def test_blackhole_copy_oversubscription_fails_compile_time():
     kernel = staged_copy_kernel(tile_rows=1, tile_cols=1, tile_m=1024, tile_n=1024)
     target = Target("blackhole")
-    with pytest.raises(Exception, match="PlanBlackholeCB|1572864|1.5MB|per-core constraints"):
+    with pytest.raises(Exception, match="PlanTTCBAlloc|1572864|1.5MB|per-core constraints"):
         with target:
             lower(kernel, target=target)
 

@@ -121,7 +121,7 @@
 - bridge-stage 若还没 materialize `tl.tt_program`，
   regression/helper 也应优先读取
   `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_program_payload`；
-  一旦这些 typed seeds 已发布，`LowerBlackholeOps` 输出就应立即剥离
+  一旦这些 typed seeds 已发布，`PlanTTKernelABI` 输出就应立即剥离
   `blackhole.segment_plan / runtime_args / gemm_contract` 等 projection attrs，
   不要让 producer-side cleanup 被测试层 fallback 反向卡住
 
@@ -218,7 +218,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   producer-consumer / republish 判断，
   owner 应该是上游 `fragment_lowering_structure -> SpatialProgram`
   的 typed `fragment_buffer_flow_contracts`；
-  `LowerBlackholeOps` 不应再本地扫 `SeqStmt`
+  `PlanTTKernelABI` 不应再本地扫 `SeqStmt`
   恢复 `write / compute_consume / transport_consume` 语义
 - 这组 flow contract 不能只覆盖 fragment/local intermediate buffer；
   还要覆盖 compute kernel 内参与同一 producer-consumer 协议的 CB-backed input buffer，

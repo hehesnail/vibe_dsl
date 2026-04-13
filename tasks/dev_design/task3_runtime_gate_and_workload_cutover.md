@@ -103,20 +103,22 @@ runtime / codegen 的消费纪律固定为：
    - 这类桥接属于典型 side-channel；
      只允许收缩，不允许继续扩张
 2. **typed seed bridge**
-   - `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
-     当前并未直接产出最终 `TTProgram`
-   - 它们仍先写
+   - 当前 active path 已不再暴露 legacy pass 名字；
+     `BuildTTProgram` 内部暂时通过
+     `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
+     helper bridge 物化 typed seeds
+   - 这组 helper 仍先写
      `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_cb_plans /
      tl.tt_core_groups / tl.tt_program_payload`
    - `BuildTTProgram` 再把这些 seed 聚合成 `TTProgram`
 3. **legacy attr synthesis**
    - `SplitBlackholeKernel` 仍写 `blackhole.segment_plan`
-   - `LowerBlackholeOps` 仍写
+   - `PlanTTKernelABI` 仍写
      `blackhole.runtime_args / blackhole.gemm_contract /
      blackhole.compute_contract`
      等 legacy attr，再同步写入 typed payload
 4. **matcher / recovery owner residue**
-   - `LowerBlackholeOps` 仍承担 target planning 的一部分恢复责任
+   - `PlanTTKernelABI` 仍承担 target planning 的一部分恢复责任
    - 尤其是 phase-boundary / fragment / runtime arg /
      compute contract 这组 target truth
    - 这说明真正的
@@ -164,7 +166,9 @@ runtime / codegen 的消费纪律固定为：
   `PlanTTBlocks / PlanTTTransport / PlanTTSync /
   PlanTTABI / PlanTTExecution`
   取代
-  `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
+  当前内部
+  `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
+  helper bridge
   在 owner 链上的兼职责任
 - `BuildTTProgram`
   只做 plan object 聚合，
@@ -178,10 +182,11 @@ runtime / codegen 的消费纪律固定为：
 - 补充：
   canonical `LowerToBlackholeTTProgram`
   已不再显式串
-  `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores`
-  这条旧 pass 链；
+  任何 legacy pass 名字；
   当前剩余残留是 `BuildTTProgram`
-  内部仍临时复用这组 helper 完成 planning attr 物化
+  内部仍临时复用
+  `PlanTTKernelABI -> PlanTTCBAlloc -> PlanTTCoreGroups`
+  这组 helper 完成 planning attr 物化
   - public `tilelang.transform` wrapper、
     FFI `tl.transform.*` global registration
     以及测试层

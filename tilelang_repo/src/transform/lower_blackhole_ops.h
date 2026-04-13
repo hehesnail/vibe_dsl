@@ -55,18 +55,18 @@ enum class CopyDirection {
 };
 
 /*!
- * \brief LowerBlackholeOps Pass
+ * \brief PlanTTKernelABI Pass
  *
  * This pass transforms TileLang high-level operations:
  * - T.copy(A, B) -> CB reserve + NOC read/write + push/pop sequence
  * - T.gemm(A, B, C) -> MM init + tile_regs_acquire + matmul_tiles + pack_tile
  * - T.clear(C) -> tile_regs_acquire (zero DST)
  *
- * Also records CB requirements in function attributes for PlanBlackholeCB.
+ * Also records CB requirements in function attributes for PlanTTCBAlloc.
  */
-class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
+class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
  public:
-  LowerBlackholeOps();
+  PlanTTKernelABI();
 
   /*! \brief Main entry point */
   tvm::tir::PrimFunc Transform(const tvm::tir::PrimFunc& func);
@@ -207,7 +207,7 @@ class LowerBlackholeOps : public tvm::tir::StmtExprMutator {
   /*! \brief Register a CB requirement for a buffer and return its requirement_index.
    *
    * The returned index is the position of this requirement in cb_requirements_.
-   * It is used as the cb_id placeholder in the IR body.  PlanBlackholeCB will
+   * It is used as the cb_id placeholder in the IR body.  PlanTTCBAlloc will
    * replace all requirement_index placeholders with the final hardware cb_id.
    */
   int AllocateRequirementIndex(const tvm::tir::Buffer& buffer, CBType type);

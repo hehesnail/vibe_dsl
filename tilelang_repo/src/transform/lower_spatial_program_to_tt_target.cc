@@ -129,9 +129,9 @@ tir::PrimFunc MaterializeTTPlanningAttrs(tir::PrimFunc func) {
   if (HasTTSeedBundle(func)) {
     return func;
   }
-  func = LowerBlackholeOps().Transform(func);
-  func = PlanBlackholeCB().Transform(func);
-  func = AssignBlackholeCores().Transform(func);
+  func = PlanTTKernelABI().Transform(func);
+  func = PlanTTCBAlloc().Transform(func);
+  func = PlanTTCoreGroups().Transform(func);
   return func;
 }
 
