@@ -2,20 +2,23 @@
 
 ## 基本信息
 
-- **文档角色**: `Phase C` 当前设计边界、剩余项与完成判定文档
-- **当前状态**: `2026-04-09` `Phase C` 进行中；
-  `TTProgram` cutover 主链已完成，runtime/codegen 已切到 `TTProgram` direct reader，
-  shared generic fallback 已删除，synthetic segment 也已切到最小 `TTProgram`；
-  regression 主断言面与 producer-side translator 输入也已切到 typed companion truth，
+- **文档角色**: `Phase C` 当前设计边界、当前 TT baseline、
+  runtime gate 与完成判定文档；任务链状态以 `tasks/progress.md` 为准
+- **当前状态**: `2026-04-13` `Phase C` 进行中；
+  按 `tasks/progress.md`，
+  当前正式任务状态仍是 `Task 2` 未开始、`Task 3` 未开始。
+  当前代码基线已经具备
+  `TTProgram` translator / validator / materializer
+  和 runtime/codegen direct reader，
+  但这只表示 target-side baseline 已落地，
+  不表示 `TTProgram companion` cutover 已完成；
+  当前 active consumer 仍主要承接旧 `Phase C` consumer 链，
   `flash-attn` compile-path / metadata 主链仍可用，
-  但 direct runtime 已对缺失显式 per-work access descriptor
-  或 typed fragment materialization/merge protocol 尚未执行化的 kernel
-  收成 explicit unsupported gate，
-  GEMM oversubscribed `work_packets` host scheduling 已兑现，
-  但 `Phase C2` wider runtime payoff 与 wider support surface 仍未完成
-- **已完成子阶段**: read-only translator demand probe、`TTHardwareModel` intake、
-  当前已落地的 `TTProgram` core object set、`LowerSpatialProgramToTTTarget`、
-  `ValidateTTTargetProgram`、`MaterializeTTExecutableSpec`
+  但 wider runtime payoff 与 wider support surface 仍未完成
+- **当前已落地 baseline**: read-only translator demand probe、
+  `TTHardwareModel` intake、当前已落地的 `TTProgram` core object set、
+  `LowerSpatialProgramToTTTarget`、`ValidateTTTargetProgram`、
+  `MaterializeTTExecutableSpec`
 - **仍未完成**:
   - `flash-attn` `Phase C2` runtime / correctness payoff
   - `topk / fusedmoe / paged decode / chunk recurrence` family
@@ -23,7 +26,8 @@
   - 更宽 synchronization 支持面
   - quantitative capability field consumption 与 payload-backed node schema 继续上提
 - **任务链位置**: 新任务链下对应 `Task 2 / Task 3` 的当前 TT baseline、
-  runtime gate 与 support surface 参考；不是总体任务源
+  runtime gate 与 support surface 参考；
+  任务状态、当前 blocker 与下一步一律以 `tasks/progress.md` 为准
 - **上游输入**: 冻结后的 `SpatialProgram`
 - **下游输出**: 冻结后的 `TTProgram` 与 `ExecutableSpec` 物化结果
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -274,10 +278,15 @@
 - 因为当前样例方便，就把 `TTProgram` 退化成大号 attr bag
 - 把 `ExecutableSpec` 当作与 `TTProgram` 并列的双真源
 
-## 5. `TTProgram` Cutover 已完成的部分
+## 5. 当前已落地的 TT Baseline（不等于 `Task 2` 完成）
 
-`Phase C` 当前已经完成的是 target-truth cutover 本体，而不是整个阶段。
-这部分的完成边界如下：
+这里记录的是当前代码基线里已经落地的 target-side 组成部分，
+不是任务链意义上的“`TTProgram companion` cutover 已完成”。
+按 `tasks/progress.md`，
+当前 target owner 链仍未从旧 recovery 主链切到
+`TTProgram companion` 主链。
+
+当前已落地的 baseline 边界如下：
 
 - `TTHardwareModel` 已作为 module-scope global info 进入主线
 - `LowerSpatialProgramToTTTargetProbe` 已落地，并且只消费
@@ -300,7 +309,7 @@
   regression 可直接重建
   `TTProgram / TTKernel / TTCoreGroup / TTABIPlan / TTSemaphorePlan`
 
-当前稳定拓扑是：
+当前 baseline 拓扑是：
 
 ```text
 SpatialProgram
@@ -321,11 +330,13 @@ SpatialProgram
 
 这意味着：
 
-- reader-side deletion gate 已收口
-- final translator 已不再依赖 legacy bridge attrs
-- legacy projection 只剩
-  `SplitBlackholeKernel -> LowerBlackholeOps`
-  之间的内部 planning 过渡职责
+- runtime/codegen 的 reader-side target truth
+  已经收口到 `TTProgram` / `ExecutableSpec`
+- 但这还不等于 `Task 2` 已完成；
+  当前 active consumer / owner 链
+  仍然没有从旧 recovery 主链整体切走
+- legacy projection 与旧 consumer 链
+  仍然是当前任务状态判断里的未完成部分
 - 后续 `TTBlockPlan`、literal taxonomy、validated hint intake、
   SRAM/L1/CB-aware planning 的跨层 owner 链统一以上面的
   cross-layer feature 文档为准；本阶段文档只保留 `Phase C` 的
@@ -594,7 +605,10 @@ WorkPartition intent
 
 当前状态是：
 
-- 条件 1 已满足
+- 条件 1 仍未满足；
+  当前代码基线虽然已有 `TTProgram` reader-side truth，
+  但按 `tasks/progress.md`，
+  `Task 2` 尚未开始，target owner 链仍未整体 cutover
 - 条件 2 仍未满足；此前会 silent wrong-result 的 `flash-attn`
   runtime 路径已被显式 gate 收口，等待 typed access/dataflow contract 回填
 - 条件 3-7 仍未满足
