@@ -19,8 +19,7 @@
 
 /*!
  * \file project_semantic_seeds.cc
- * \brief Project lightweight pre-lift semantic seeds, explicit-op manifest evidence, and
- * companion invalidation.
+ * \brief Project lightweight semantic seeds and explicit-op manifest evidence.
  */
 
 #include <tvm/ffi/reflection/registry.h>
@@ -42,7 +41,6 @@
 #include "../op/reduce.h"
 #include "common/blackhole_utils.h"
 #include "common/fragment_region_analysis.h"
-#include "common/semantic_program.h"
 #include "common/semantic_vocab.h"
 
 namespace tvm {
@@ -443,28 +441,6 @@ class SemanticManifestCollector : public tir::StmtVisitor {
   std::unordered_set<std::string> buffer_names_;
 };
 
-tir::PrimFunc StripCompanionAttrs(const tir::PrimFunc& func, const ffi::String& reason) {
-  tir::PrimFunc updated = func;
-  updated = tvm::WithoutAttr(std::move(updated), attr::kTLSemanticStructure);
-  updated = tvm::WithoutAttr(std::move(updated), attr::kTLSemanticWitnesses);
-  updated = tvm::WithoutAttr(std::move(updated), attr::kTLSemanticProgram);
-  updated = tvm::WithoutAttr(std::move(updated), attr::kTLSpatialStructureFacts);
-  updated = tvm::WithoutAttr(std::move(updated), attr::kTLSpatialPlan);
-  updated = tvm::WithoutAttr(std::move(updated), attr::kTLSpatialDomainPlan);
-  updated = tvm::WithoutAttr(std::move(updated), attr::kTLSpatialExecutionPlan);
-  updated = tvm::WithoutAttr(std::move(updated), attr::kTLSpatialProgram);
-  updated = tvm::WithoutAttr(std::move(updated), attr::kTLTTProgram);
-  updated = WithAttrs(
-      std::move(updated),
-      {{attr::kTLCompanionInvalidationReason, reason},
-       {attr::kTLSemanticHardFreeze,
-        Map<String, Any>{{"state", ffi::String("invalidated")},
-                         {"contract_mode", ffi::String(ToString(ContractMode::kInvalidate))},
-                         {"unsafe_mutation_policy", ffi::String("require_relift")},
-                         {"invalidation_reason", reason}}}});
-  return updated;
-}
-
 }  // namespace
 
 tir::transform::Pass CollectSemanticManifestSeeds() {
@@ -499,10 +475,6 @@ tir::transform::Pass ProjectSemanticSeeds() {
 
     Map<String, Any> attrs = func->attrs.defined() ? func->attrs->dict : Map<String, Any>();
     attrs.Set(attr::kTLSemanticSeeds, seeds);
-    attrs.Set(attr::kTLSemanticHardFreeze,
-              Map<String, Any>{{"state", ffi::String("pre_lift_seeded")},
-                               {"unsafe_mutation_policy",
-                                ffi::String("invalidate_companion_programs")}});
     tir::PrimFunc updated = func;
     updated.CopyOnWrite()->attrs = DictAttrs(attrs);
     return updated;
@@ -561,26 +533,12 @@ tir::transform::Pass AugmentSemanticManifest() {
       fpass, 0, "tl.transform.AugmentSemanticManifest", {});
 }
 
-tir::transform::Pass InvalidateBlackholeCompanionPrograms(ffi::String reason) {
-  auto fpass = [reason](tir::PrimFunc func, IRModule,
-                        tvm::transform::PassContext) -> tir::PrimFunc {
-    if (!IsBlackholePrimFunc(func)) {
-      return func;
-    }
-    return StripCompanionAttrs(func, reason);
-  };
-  return tir::transform::CreatePrimFuncPass(
-      fpass, 0, "tl.transform.InvalidateBlackholeCompanionPrograms", {});
-}
-
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("tl.transform.CollectSemanticManifestSeeds", CollectSemanticManifestSeeds);
   refl::GlobalDef().def("tl.transform.ProjectSemanticSeeds", ProjectSemanticSeeds);
   refl::GlobalDef().def("tl.transform.ProjectSemanticManifest", ProjectSemanticManifest);
   refl::GlobalDef().def("tl.transform.AugmentSemanticManifest", AugmentSemanticManifest);
-  refl::GlobalDef().def("tl.transform.InvalidateBlackholeCompanionPrograms",
-                        InvalidateBlackholeCompanionPrograms);
 }
 
 }  // namespace tl

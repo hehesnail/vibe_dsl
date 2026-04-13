@@ -18,6 +18,8 @@
 - 当前 `tilelang_repo/CMakeLists.txt` 的 Blackhole 源列表不是“目录自动全量收集”；
   split 新 `.cc` 文件后，必须把它显式接进 `TILE_LANG_BLACKHOLE_SRCS`，
   然后重新执行一次 CMake 并重链 `libtilelang.so`
+- 当前顶层 `file(GLOB ...)` 删除/改名 `.cc` 文件后也需要重新执行一次 CMake；
+  否则现有 `build.make` 仍会尝试编译已删除源文件
 - 同一个 `tilelang_repo/build/` 不要并行跑 `cmake --build` 和 pytest
 - `pip install -e .` 不是默认开发路径；更稳的是用 `.pth` 指向本地构建产物
 - `3rdparty/` 和 `build/` 不进主仓库
@@ -76,9 +78,9 @@
   PlanTTBlocks -> PlanTTTransport -> PlanTTSync -> PlanTTABI ->
   PlanTTExecution -> MaterializeBlackholeExecutable`
 - seed / manifest / witness / program 分层存放
-- `InvalidateBlackholeCompanionPrograms` 一旦扩 companion 层级，
-  要同步 strip 新 analysis facts 和冻结后的 plan attr；
-  只清老 `semantic/spatial/tt_program` 会留下 stale companion truth
+- companion truth 一旦扩层级，
+  unsafe TIR mutation 侧也要同步 strip 新 analysis facts / plan attr；
+  只清旧层会留下 stale companion truth
 - intermediate typed plan 只要进入 pass 链，就要和最终 companion truth 一起纳入
   invalidation；只删 `tl.spatial_program` 而保留 `tl.spatial_domain_plan` /
   `tl.spatial_execution_plan` 会制造 stale plan

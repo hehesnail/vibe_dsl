@@ -32,6 +32,7 @@
 #include "common/blackhole_runtime_arg_schema.h"
 #include "common/companion_base.h"
 #include "common/semantic_program.h"
+#include "common/semantic_structure_decoder.h"
 #include "common/spatial_program.h"
 #include "common/tt_target_program.h"
 
@@ -1414,7 +1415,7 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
   ICHECK(spatial_program)
       << "PlanTTKernelABI requires tl.spatial_program; run LowerToSpatialProgram and "
          "ValidateSpatialProgram before lowering";
-  auto semantic_program = func->GetAttr<SemanticProgram>(attr::kTLSemanticProgram);
+  auto maybe_semantic_program = semantic::MaybeDecodeSemanticProgramFromFunc(func);
 
   const SpatialProgram& program = spatial_program.value();
   if (auto axes = GetSpatialWorkAxesFromProgram(program)) {
@@ -1447,13 +1448,13 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
            intent->target_index >= 0)
         << "PlanTTKernelABI requires phase-boundary intents to carry semantic_state "
            "target_kind/target_index contract";
-    ICHECK(semantic_program)
-        << "PlanTTKernelABI requires tl.semantic_program when consuming phase-boundary "
+    ICHECK(maybe_semantic_program.has_value())
+        << "PlanTTKernelABI requires semantic structure when consuming phase-boundary "
            "state contracts";
-    ICHECK_LT(intent->target_index, semantic_program.value()->states.size())
+    ICHECK_LT(intent->target_index, maybe_semantic_program.value()->states.size())
         << "PlanTTKernelABI found phase-boundary intent with invalid target_index";
     const std::string state_name =
-        static_cast<std::string>(semantic_program.value()->states[intent->target_index]->name);
+        static_cast<std::string>(maybe_semantic_program.value()->states[intent->target_index]->name);
     if (state_name.empty() || !seen_phase_boundary_states.insert(state_name).second) {
       continue;
     }

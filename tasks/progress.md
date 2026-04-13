@@ -10,16 +10,21 @@
 
 ## 当前阶段
 
-- **日期**: `2026-04-13`
+- **日期**: `2026-04-14`
 - **总阶段**: Stage 4
 - **目标主线**: `Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion -> ExecutableSpec`
-- **当前代码基线**: `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
+- **当前代码基线**:
+  `Semantic Structure -> Spatial Program IR -> TT Target IR`
+  （active path 已删掉 persistent `tl.semantic_program`）
+- **当前目标基线**:
+  `Semantic Structure -> Spatial Program IR -> TT Target IR`
+  （剩余工作回到 runtime gate / workload payoff）
 - **阶段状态**:
   - `Task 1` 已落地到当前 active Blackhole compile path
   - `Task 2` 已落地到当前 active Blackhole compile path
   - 当前执行基线已固定为 canonical `TTProgram` bundle +
     `MaterializeBlackholeExecutable` writer boundary
-  - 当前工作从 `Task 2` cutover 转入 `Task 3` runtime/workload payoff
+  - 当前工作从 `Task 2` cutover 转入 `Task 3` 旧链彻底删除
   - `Task 3` 已进入旧链删除批次：
     projection bridge、fragment-layout side-channel 已删除，
     `BuildTTProgram` 也已不再物化/读取中间 `tl.tt_*` seed attrs
@@ -34,6 +39,12 @@
     `lower_blackhole_ops_through_phase_b` /
     typed-seed 测试 helper
     与纯旧链回归 case 已删除
+  - `Task 3A` 的 persistent/public 删除批次已完成：
+    `tl.semantic_program` attr、semantic pass public surface、
+    Python wrapper、FFI registration 与纯旧链测试已删除
+  - active path 当前直接消费
+    `tl.semantic_structure + tl.semantic_witnesses`
+    并在 pass 内局部解码需要的 semantic facts
 
 ## 当前任务链
 
@@ -85,11 +96,10 @@
 ## 当前 blocker
 
 - 第一 blocker 已经从 `Task 2` owner cutover 切换到 `Task 3`
-  runtime/workload payoff
-- 当前主要压力点不再是
-  `TTProgram companion` 是否进入 active path，
-  而是 `flash-attn / topk / fusedmoe / paged decode / chunk recurrence`
-  在新主链上的 correctness payoff 与 admitted support surface
+  旧链彻底删除
+- `Task 3A` 的 persistent semantic layer 已从 active path 退场；
+  当前主要压力点回到 `Task 3B / 3C`
+  的 runtime gate 与 wider workload payoff
 - 旧链清理当前已完成外层桥接删除：
   final Phase C 输出不再暴露
   `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_cb_plans /
@@ -124,10 +134,10 @@
 
 ## 当前优先级
 
-1. **P0: `Task 3A` runtime gate + `flash-attn` payoff**
+1. **P0: `Task 3B` runtime gate + `flash-attn` payoff**
   - 在新主链上兑现 admitted subset correctness
-  - 继续把旧 seed bridge owner 从 canonical pipeline 中清掉
-2. **P1: `Task 3B` wider family / support surface**
+  - 继续把剩余 internal helper bridge owner 从 canonical pipeline 中清掉
+2. **P1: `Task 3C` wider family / support surface**
   - `topk -> fusedmoe -> paged decode -> chunk recurrence`
   - wider copy/dataflow
    - wider sync 最后进入 admitted surface
@@ -162,14 +172,32 @@
 
 ## 下一步
 
-1. 做 `Task 3A`
+1. 做 `Task 3B`
   - runtime gate
   - `flash-attn`
   - `PlanTT*` owner pass 替换 seed bridge
-2. 再做 `Task 3B`
+2. 再做 `Task 3C`
   - wider family / support surface
 
 ## 最新验证摘要
+
+- `2026-04-14` old-chain cleanup verification
+- 旧 semantic public surface / attr grep：
+  - `rg -n "tl\.semantic_program|LiftStatefulSemanticIR|ValidateStatefulSemanticIR|ValidateSemanticRefinement|TypedRebindBlackholeCompanionPrograms|semantic_hard_freeze|companion_invalidation_reason" tilelang_repo/src tilelang_repo/tilelang tilelang_repo/testing/python -g '!tilelang_repo/build/**'`
+    -> 无匹配
+- 构建：
+  - `cmake -S tilelang_repo -B tilelang_repo/build`
+  - `cmake --build tilelang_repo/build -j32`
+    -> `Built target tilelang`
+- 定向 pytest：
+  - `python -m pytest testing/python/transform/test_blackhole_spatial_ir.py -q -k 'spatial_passes_are_registered or task1_spatial_plan_pipeline_materializes_from_normalized_tir or task1_copy_spatial_plan_emits_flow_boundary_from_tir or task1_gemm_spatial_plan_emits_compute_closure or spatial_pass_pipeline_materializes_from_typed_intermediate_contracts or lower_to_spatial_program_publishes_spatial_capability_model_snapshot or analyze_spatial_domain_plan_publishes_spatial_capability_model_snapshot or copy_spatial_program_uses_single_transfer_fast_path or gemm_spatial_program_uses_reader_compute_writer_fast_path or spatial_program_layout_axes_come_from_semantic_structure_not_work_decomposition or spatial_program_layout_kind_comes_from_semantic_structure_traits_not_work_decomposition or validate_spatial_program_rejects_layout_axes_mismatch_with_semantic_domain or validate_spatial_program_rejects_layout_without_domain_transform_kind_contract or validate_spatial_program_rejects_partition_without_partition_family_contract or validate_spatial_program_rejects_unknown_channel_kind or validate_spatial_program_rejects_unknown_layout_and_partition_kinds or validate_spatial_program_rejects_unknown_placement_sync_and_resource_intent_kinds or validate_spatial_program_rejects_task_without_phase_index_contract'`
+    -> `18 passed, 39 deselected`
+- 当前 dirty worktree 上的全量 `test_blackhole_spatial_ir.py`
+  与 flash-attn pipeline case 仍会被已有 fragment/WIP 卡住：
+  `ValidateSpatialProgram requires fragment_layout_contract entries to carry local_shape`
+ ；根因来自已存在的
+  `analyze_blackhole_fragment_regions.cc / spatial_program_builder.cc`
+  这组未收口改动，不属于本轮旧链删除本身
 
 - `2026-04-13` staged-only clean verification
   （`git stash --keep-index --include-untracked`）通过；

@@ -656,17 +656,6 @@ def CollectDevicePrograms():
     """Collect module-scope device-program registry before SplitHostDevice."""
     return tvm.ffi.get_global_func("tl.transform.CollectDevicePrograms")()
 
-
-def InvalidateBlackholeCompanionPrograms(reason: str):
-    """Drop frozen companion IR attrs after an unsafe mutator changes TIR structure."""
-    return tvm.ffi.get_global_func("tl.transform.InvalidateBlackholeCompanionPrograms")(reason)
-
-
-def TypedRebindBlackholeCompanionPrograms(plan: dict):
-    """Apply a typed rebind contract to live Blackhole semantic companion attrs."""
-    return tvm.ffi.get_global_func("tl.transform.TypedRebindBlackholeCompanionPrograms")(plan)
-
-
 def SplitBlackholeKernel():
     """Annotate statements with blackhole.segment_kind for 3-kernel GEMM split.
 
@@ -728,33 +717,18 @@ def BuildSpatialPlanCompanion():
     return tvm.ffi.get_global_func("tl.transform.BuildSpatialPlanCompanion")()
 
 
-def LiftStatefulSemanticIR():
-    """Lift the minimal Stage 4 semantic structure into a typed SemanticProgram."""
-    return tvm.ffi.get_global_func("tl.transform.LiftStatefulSemanticIR")()
-
-
-def ValidateStatefulSemanticIR():
-    """Validate the A1 minimal SemanticProgram invariants."""
-    return tvm.ffi.get_global_func("tl.transform.ValidateStatefulSemanticIR")()
-
-
-def ValidateSemanticRefinement():
-    """Validate that SemanticProgram is a legal refinement of generic semantic witnesses."""
-    return tvm.ffi.get_global_func("tl.transform.ValidateSemanticRefinement")()
-
-
 def LowerToSpatialProgram():
-    """Lower frozen SemanticProgram truth into a typed SpatialProgram."""
+    """Lower frozen semantic-structure truth into a typed SpatialProgram."""
     return tvm.ffi.get_global_func("tl.transform.LowerToSpatialProgram")()
 
 
 def AnalyzeSpatialDomainPlan():
-    """Derive typed Spatial domain contracts from SemanticProgram."""
+    """Derive typed Spatial domain contracts from semantic structure facts."""
     return tvm.ffi.get_global_func("tl.transform.AnalyzeSpatialDomainPlan")()
 
 
 def AnalyzeSpatialExecutionPlan():
-    """Derive typed Spatial execution contracts from SemanticProgram."""
+    """Derive typed Spatial execution contracts from semantic structure facts."""
     return tvm.ffi.get_global_func("tl.transform.AnalyzeSpatialExecutionPlan")()
 
 

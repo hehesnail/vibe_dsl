@@ -274,9 +274,16 @@ Frontend Tile TIR
    - `MaterializeBlackholeExecutable` 成为唯一 writer
 3. `Task 2C`: 固化 phase bundle 与测试入口
    - 不再让测试/调试代码手写长 pass 链充当事实标准
-4. `Task 3A`: 在新主链上收 runtime gate，
-   先兑现 `flash-attn` admitted subset payoff
-5. `Task 3B`: 再扩 wider family / support surface
+4. `Task 3A`: 删除 persistent
+   `SemanticProgram / Stateful Semantic IR`
+   这一层旧 companion
+   - active path 已直接从 `semantic_structure`
+     进入 `SpatialPlan / TTProgram` owner 链
+   - semantic pass / wrapper / 过期测试 / dead code
+     已完成删除
+5. `Task 3B`: 在新主链上收 runtime gate，
+   再兑现 `flash-attn` admitted subset payoff
+6. `Task 3C`: 再扩 wider family / support surface
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
    - wider copy/dataflow
    - wider sync 最后进入 admitted surface

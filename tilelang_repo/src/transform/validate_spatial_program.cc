@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "common/blackhole_utils.h"
+#include "common/semantic_structure_decoder.h"
 #include "common/spatial_analysis.h"
 #include "common/spatial_program.h"
 #include "common/spatial_vocab.h"
@@ -973,11 +974,10 @@ tvm::transform::Pass ValidateSpatialProgram() {
           << "ValidateSpatialProgram requires at least one work partition";
 
       // Build validation context
-      auto maybe_semantic_program =
-          func.value()->GetAttr<SemanticProgram>(attr::kTLSemanticProgram);
-      ICHECK(maybe_semantic_program)
+      auto maybe_semantic_program = MaybeDecodeSemanticProgramFromFunc(func.value());
+      ICHECK(maybe_semantic_program.has_value())
           << "ValidateSpatialProgram requires SpatialProgram-bearing PrimFuncs to carry "
-             "SemanticProgram truth";
+             "semantic_structure truth";
       ValidationContext ctx;
       ValidatePhases(program, &ctx);
       ValidateTasks(program, &ctx);
@@ -987,7 +987,7 @@ tvm::transform::Pass ValidateSpatialProgram() {
 
       // Semantic alignment
       SemanticRequirements reqs;
-      if (maybe_semantic_program && !maybe_semantic_program.value()->domains.empty()) {
+      if (maybe_semantic_program.has_value() && !maybe_semantic_program.value()->domains.empty()) {
         ValidateSemanticAlignment(program, maybe_semantic_program.value(), &reqs);
       }
       if (reqs.requires_work_dependent_payload) {
@@ -995,7 +995,8 @@ tvm::transform::Pass ValidateSpatialProgram() {
       }
 
       // Resource intents
-      ValidateResourceIntents(program, maybe_semantic_program, reqs, ctx);
+      Optional<SemanticProgram> semantic_program = maybe_semantic_program.value();
+      ValidateResourceIntents(program, semantic_program, reqs, ctx);
 
       phases_by_member_func[member_func] = program->phases;
     }

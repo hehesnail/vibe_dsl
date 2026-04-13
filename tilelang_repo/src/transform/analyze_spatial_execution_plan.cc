@@ -10,7 +10,7 @@
 
 #include <optional>
 
-#include "common/semantic_program.h"
+#include "common/semantic_structure_decoder.h"
 #include "common/spatial_analysis.h"
 #include "common/spatial_program.h"
 #include "common/blackhole_utils.h"
@@ -24,6 +24,7 @@ using tvm::DictAttrs;
 using tvm::ffi::Any;
 using tvm::ffi::Map;
 using tvm::ffi::String;
+using namespace tvm::tl::semantic;
 
 tvm::transform::Pass AnalyzeSpatialExecutionPlan() {
   auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
@@ -35,8 +36,8 @@ tvm::transform::Pass AnalyzeSpatialExecutionPlan() {
       if (!func || !IsBlackholePrimFunc(func.value())) {
         continue;
       }
-      auto maybe_semantic = func.value()->GetAttr<SemanticProgram>(attr::kTLSemanticProgram);
-      if (!maybe_semantic) {
+      auto maybe_semantic = MaybeDecodeSemanticProgramFromFunc(func.value());
+      if (!maybe_semantic.has_value()) {
         continue;
       }
       ICHECK(func.value()->GetAttr<SpatialDomainPlan>(attr::kTLSpatialDomainPlan))

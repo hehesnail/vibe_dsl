@@ -51,9 +51,6 @@ def _prepare_blackhole_phase_b_module(prim_func):
     mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
     mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
     mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
-    mod = tilelang.transform.LiftStatefulSemanticIR()(mod)
-    mod = tilelang.transform.ValidateStatefulSemanticIR()(mod)
-    mod = tilelang.transform.ValidateSemanticRefinement()(mod)
     mod = tilelang.transform.AnalyzeSpatialDomainPlan()(mod)
     mod = tilelang.transform.AnalyzeSpatialExecutionPlan()(mod)
     mod = tilelang.transform.MaterializeSpatialProgram()(mod)
@@ -78,9 +75,6 @@ def _prepare_blackhole_pre_spatial_module(prim_func):
     mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
     mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
     mod = tilelang.transform.AnalyzeSemanticStructure()(mod)
-    mod = tilelang.transform.LiftStatefulSemanticIR()(mod)
-    mod = tilelang.transform.ValidateStatefulSemanticIR()(mod)
-    mod = tilelang.transform.ValidateSemanticRefinement()(mod)
     return mod
 
 
@@ -115,9 +109,8 @@ def _replace_spatial_program(mod, program):
     return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
 
-def _replace_semantic_program(mod, program):
-    func = mod["main"].with_attr("tl.semantic_program", program)
-    return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
+def _semantic_structure(mod):
+    return mod["main"].attrs["tl.semantic_structure"]
 
 
 def _replace_layout_payload(layout, payload):
@@ -143,299 +136,6 @@ def _replace_partition_payload(partition, payload):
         partition.traits,
         payload,
         partition.anchors,
-    )
-
-
-def _make_broadcast_fanout_semantic_program():
-    make_domain = tvm.get_global_func("tl.Domain")
-    make_state = tvm.get_global_func("tl.State")
-    make_access_map = tvm.get_global_func("tl.AccessMap")
-    make_update_law = tvm.get_global_func("tl.UpdateLaw")
-    make_update = tvm.get_global_func("tl.Update")
-    make_state_version = tvm.get_global_func("tl.StateVersion")
-    make_state_def = tvm.get_global_func("tl.StateDef")
-    make_state_use = tvm.get_global_func("tl.StateUse")
-    make_program = tvm.get_global_func("tl.SemanticProgram")
-
-    domain = make_domain("fanout_domain", ["bx"], [], [])
-    shared_state = make_state("shared_value", "transient", "local", [])
-    left_state = make_state("left_value", "transient", "local", [])
-    right_state = make_state("right_value", "transient", "local", [])
-    scaffold = make_update("root_map", "", make_update_law("map", "", [], []), [], [])
-    producer = make_update(
-        "produce_shared",
-        "shared_value",
-        make_update_law("map", "shared_value", [], []),
-        [],
-        [],
-    )
-    shared_access = [make_access_map("source_state", [], [])]
-    consumer_left = make_update(
-        "consume_left",
-        "left_value",
-        make_update_law("map", "left_value", ["shared_value"], shared_access),
-        [],
-        [],
-    )
-    consumer_right = make_update(
-        "consume_right",
-        "right_value",
-        make_update_law("map", "right_value", ["shared_value"], shared_access),
-        [],
-        [],
-    )
-    produced_version = make_state_version(
-        "produce_shared_out",
-        "shared_value",
-        "produce_shared",
-        "update_result",
-        [],
-        [],
-    )
-    produced_def = make_state_def(
-        "def_produce_shared",
-        "shared_value",
-        "produce_shared_out",
-        "produce_shared",
-        "update_result",
-        [],
-    )
-    left_version = make_state_version(
-        "consume_left_out",
-        "left_value",
-        "consume_left",
-        "update_result",
-        [],
-        [],
-    )
-    right_version = make_state_version(
-        "consume_right_out",
-        "right_value",
-        "consume_right",
-        "update_result",
-        [],
-        [],
-    )
-    left_def = make_state_def(
-        "def_consume_left",
-        "left_value",
-        "consume_left_out",
-        "consume_left",
-        "update_result",
-        [],
-    )
-    right_def = make_state_def(
-        "def_consume_right",
-        "right_value",
-        "consume_right_out",
-        "consume_right",
-        "update_result",
-        [],
-    )
-    left_use = make_state_use(
-        "use_consume_left",
-        "consume_left",
-        "shared_value",
-        "produce_shared_out",
-        "source_state",
-        [],
-    )
-    right_use = make_state_use(
-        "use_consume_right",
-        "consume_right",
-        "shared_value",
-        "produce_shared_out",
-        "source_state",
-        [],
-    )
-    return make_program(
-        [domain],
-        [shared_state, left_state, right_state],
-        [scaffold, producer, consumer_left, consumer_right],
-        [],
-        [],
-        [],
-        [produced_version, left_version, right_version],
-        [produced_def, left_def, right_def],
-        [left_use, right_use],
-        [],
-    )
-
-
-def _make_multi_domain_semantic_program():
-    make_domain = tvm.get_global_func("tl.Domain")
-    make_update_law = tvm.get_global_func("tl.UpdateLaw")
-    make_update = tvm.get_global_func("tl.Update")
-    make_program = tvm.get_global_func("tl.SemanticProgram")
-
-    base_domain = make_domain("base_domain", ["bx"], [], [])
-    indexed_domain = make_domain("indexed_domain", ["tx"], ["derived_indices"], [])
-    update = make_update(
-        "multi_domain_compute",
-        "",
-        make_update_law("map", "", [], []),
-        [],
-        [],
-    )
-
-    return make_program(
-        [base_domain, indexed_domain],
-        [],
-        [update],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-    )
-
-
-def _make_routed_multi_domain_semantic_program():
-    make_domain = tvm.get_global_func("tl.Domain")
-    make_state = tvm.get_global_func("tl.State")
-    make_access_map = tvm.get_global_func("tl.AccessMap")
-    make_update_law = tvm.get_global_func("tl.UpdateLaw")
-    make_update = tvm.get_global_func("tl.Update")
-    make_program = tvm.get_global_func("tl.SemanticProgram")
-
-    base_domain = make_domain("base_domain", ["bx"], [], [])
-    routed_domain = make_domain("routed_domain", ["tx"], ["derived_indices"], [])
-    selection_state = make_state("selection_gate", "selection_state", "local", [])
-    routed_state = make_state("routed_value", "transient", "local", [])
-    routed_access = [
-        make_access_map(
-            "source_state",
-            [tvm.tir.Var("tx", "int32")],
-            ["selected", "indexed"],
-        )
-    ]
-    route_output = make_update(
-        "route_output",
-        "routed_value",
-        make_update_law("map", "routed_value", ["selection_gate"], routed_access),
-        [],
-        [],
-    )
-
-    return make_program(
-        [base_domain, routed_domain],
-        [selection_state, routed_state],
-        [route_output],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-    )
-
-
-def _make_transitive_phase_chain_semantic_program():
-    make_domain = tvm.get_global_func("tl.Domain")
-    make_state = tvm.get_global_func("tl.State")
-    make_access_map = tvm.get_global_func("tl.AccessMap")
-    make_update_law = tvm.get_global_func("tl.UpdateLaw")
-    make_update = tvm.get_global_func("tl.Update")
-    make_state_version = tvm.get_global_func("tl.StateVersion")
-    make_state_def = tvm.get_global_func("tl.StateDef")
-    make_state_use = tvm.get_global_func("tl.StateUse")
-    make_program = tvm.get_global_func("tl.SemanticProgram")
-
-    domain = make_domain("phase_chain_domain", ["bx"], [], [])
-    carry_a = make_state("carry_a", "carry", "local", [])
-    carry_b = make_state("carry_b", "carry", "local", [])
-    carry_c = make_state("carry_c", "carry", "local", [])
-    source_access = [make_access_map("source_state", [tvm.tir.Var("bx", "int32")], [])]
-    seed_a = make_update(
-        "seed_a",
-        "carry_a",
-        make_update_law("recurrence", "carry_a", [], []),
-        [],
-        [],
-    )
-    step_b = make_update(
-        "step_b",
-        "carry_b",
-        make_update_law("recurrence", "carry_b", ["carry_a"], source_access),
-        [],
-        [],
-    )
-    step_c = make_update(
-        "step_c",
-        "carry_c",
-        make_update_law("recurrence", "carry_c", ["carry_b"], source_access),
-        [],
-        [],
-    )
-    seed_a_out = make_state_version("seed_a_out", "carry_a", "seed_a", "update_result", [], [])
-    step_b_out = make_state_version("step_b_out", "carry_b", "step_b", "update_result", [], [])
-    step_c_out = make_state_version("step_c_out", "carry_c", "step_c", "update_result", [], [])
-    seed_a_def = make_state_def("def_seed_a", "carry_a", "seed_a_out", "seed_a", "update_result", [])
-    step_b_def = make_state_def("def_step_b", "carry_b", "step_b_out", "step_b", "update_result", [])
-    step_c_def = make_state_def("def_step_c", "carry_c", "step_c_out", "step_c", "update_result", [])
-    use_step_c = make_state_use("use_step_c", "step_c", "carry_b", "step_b_out", "carried_state", [])
-    use_step_b = make_state_use("use_step_b", "step_b", "carry_a", "seed_a_out", "carried_state", [])
-
-    return make_program(
-        [domain],
-        [carry_a, carry_b, carry_c],
-        [seed_a, step_b, step_c],
-        [],
-        [],
-        [],
-        [seed_a_out, step_b_out, step_c_out],
-        [seed_a_def, step_b_def, step_c_def],
-        [use_step_c, use_step_b],
-        [],
-    )
-
-
-def _make_zero_state_gemm_semantic_program():
-    make_domain = tvm.get_global_func("tl.Domain")
-    make_update_law = tvm.get_global_func("tl.UpdateLaw")
-    make_update = tvm.get_global_func("tl.Update")
-    make_program = tvm.get_global_func("tl.SemanticProgram")
-
-    domain = make_domain("gemm_domain", ["bx"], [], [])
-    update = make_update(
-        "gemm_compute",
-        "",
-        make_update_law("map", "", [], []),
-        [],
-        [],
-    )
-
-    return make_program(
-        [domain],
-        [],
-        [update],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-    )
-
-
-def _expected_phase_boundary_state_indices(program, semantic_program):
-    stateful_state_indices = {
-        str(state.name): i
-        for i, state in enumerate(semantic_program.states)
-        if str(state.role) in {"carry", "reduction_accumulator", "selection_state", "index_state"}
-    }
-    return sorted(
-        {
-            int(channel.payload["state_index"])
-            for channel in program.channels
-            if str(channel.payload.get("delivery_kind", "")) == "phase_boundary_materialized"
-            and "state_index" in channel.payload
-            and str(channel.state_name) in stateful_state_indices
-        }
     )
 
 
@@ -480,7 +180,7 @@ def test_task1_spatial_plan_pipeline_materializes_from_normalized_tir():
 
     assert main.attrs.get("tl.spatial_structure_facts") is not None
     assert main.attrs.get("tl.spatial_plan") is not None
-    assert main.attrs.get("tl.semantic_program") is None
+    assert main.attrs.get("tl.semantic_structure") is None
     assert main.attrs.get("tl.spatial_program") is None
 
     facts = main.attrs["tl.spatial_structure_facts"]
@@ -882,68 +582,6 @@ def test_chunk_o_channels_project_source_version_and_target_version_contract():
     )
 
 
-def test_chunk_o_join_consumers_preserve_join_version_and_dependency_multiplicity():
-    mod = _prepare_blackhole_phase_b_module(
-        example_chunk_o.tilelang_chunk_fwd_o.get_tir(
-            B=1,
-            S=64,
-            H=1,
-            DK=16,
-            DV=16,
-            input_dtype="float16",
-            output_dtype="float16",
-            accum_dtype="float32",
-            gate_dtype="float32",
-            chunk_size=64,
-            scale=1.0,
-            use_g=True,
-            block_S=64,
-            block_DK=16,
-            block_DV=16,
-            threads=128,
-            num_stages=1,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-    semantic_program = mod["main"].attrs["tl.semantic_program"]
-
-    join_output_versions = {str(join.output_version) for join in semantic_program.state_joins}
-    expected_join_use_kinds = {}
-    for use in semantic_program.state_uses:
-        version_name = str(use.version_name)
-        if version_name not in join_output_versions:
-            continue
-        key = (str(use.consumer_update), str(use.state_name), version_name)
-        expected_join_use_kinds.setdefault(key, set()).add(str(use.kind))
-
-    actual_channels_by_key = {}
-    for channel in program.channels:
-        source_version = str(channel.payload.get("source_version", ""))
-        key = (str(channel.target_task), str(channel.state_name), source_version)
-        actual_channels_by_key.setdefault(key, []).append(str(channel.name))
-
-    assert any(len(use_kinds) > 1 for use_kinds in expected_join_use_kinds.values())
-    for key, use_kinds in expected_join_use_kinds.items():
-        assert len(actual_channels_by_key.get(key, [])) >= len(use_kinds)
-
-
-def test_spatial_program_projects_broadcast_flow_for_multi_consumer_transient_state():
-    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
-    mod = _replace_semantic_program(_drop_existing_spatial_program(mod), _make_broadcast_fanout_semantic_program())
-    mod = tilelang.transform.LowerToSpatialProgram()(mod)
-    mod = tilelang.transform.ValidateSpatialProgram()(mod)
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    broadcast_channels = [channel for channel in program.channels if str(channel.kind) == "broadcast"]
-
-    assert len(broadcast_channels) == 2
-    assert {str(channel.target_task) for channel in broadcast_channels} == {
-        "consume_left",
-        "consume_right",
-    }
-    assert all(str(channel.source_task) == "produce_shared" for channel in broadcast_channels)
-
-
 def test_fusedmoe_routed_spatial_program_exposes_routed_dispatch_family_gate():
     mod = _prepare_blackhole_phase_b_module(
         example_fusedmoe_tilelang.moe_forward_tilelang_routed.get_tir(
@@ -1019,52 +657,10 @@ def test_paged_decode_spatial_program_projects_domain_transform_kind_contract():
     )
 
 
-def test_spatial_program_materializes_layout_and_partition_for_each_semantic_domain():
-    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
-    mod = _replace_semantic_program(_drop_existing_spatial_program(mod), _make_multi_domain_semantic_program())
-    mod = tilelang.transform.LowerToSpatialProgram()(mod)
-    mod = tilelang.transform.ValidateSpatialProgram()(mod)
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    layout_by_domain_index = {int(layout.payload["domain_index"]): layout for layout in program.layouts}
-    partition_by_domain_index = {
-        int(partition.payload["domain_index"]): partition for partition in program.work_partitions
-    }
-
-    assert set(layout_by_domain_index) == {0, 1}
-    assert set(partition_by_domain_index) == {0, 1}
-    assert str(layout_by_domain_index[0].kind) == "regular"
-    assert str(layout_by_domain_index[0].payload["domain_transform_kind"]) == "identity"
-    assert str(layout_by_domain_index[1].kind) == "indexed"
-    assert str(layout_by_domain_index[1].payload["domain_transform_kind"]) == "derived"
-    assert str(partition_by_domain_index[0].kind) == "replicated"
-    assert str(partition_by_domain_index[0].payload["partition_family"]) == "regular"
-    assert str(partition_by_domain_index[1].kind) == "indexed"
-    assert str(partition_by_domain_index[1].payload["partition_family"]) == "derived"
-
-
-def test_spatial_program_derives_domain_contracts_per_semantic_domain():
-    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
-    mod = _replace_semantic_program(_drop_existing_spatial_program(mod), _make_routed_multi_domain_semantic_program())
-    mod = tilelang.transform.LowerToSpatialProgram()(mod)
-    mod = tilelang.transform.ValidateSpatialProgram()(mod)
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    layout_by_domain_index = {int(layout.payload["domain_index"]): layout for layout in program.layouts}
-    partition_by_domain_index = {
-        int(partition.payload["domain_index"]): partition for partition in program.work_partitions
-    }
-
-    assert str(layout_by_domain_index[0].payload["domain_transform_kind"]) == "identity"
-    assert str(partition_by_domain_index[0].payload["partition_family"]) == "regular"
-    assert str(layout_by_domain_index[1].payload["domain_transform_kind"]) == "routed"
-    assert str(partition_by_domain_index[1].payload["partition_family"]) == "routed"
-
-
-def test_spatial_program_layout_axes_come_from_semantic_program_not_work_decomposition():
+def test_spatial_program_layout_axes_come_from_semantic_structure_not_work_decomposition():
     mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=2, tile_cols=3))
-    semantic_program = mod["main"].attrs["tl.semantic_program"]
-    expected_axes = [str(axis) for axis in semantic_program.domains[0].axes]
+    structure = _semantic_structure(mod)
+    expected_axes = [str(axis) for axis in structure["domain_axes"]]
 
     mod = _strip_attr(mod, "blackhole.work_decomposition")
     mod = _drop_existing_spatial_program(mod)
@@ -1143,10 +739,10 @@ def test_spatial_program_projects_state_and_sync_index_contracts():
     assert int(compute_to_writer.payload["target_task_index"]) == 2
 
 
-def test_spatial_program_layout_kind_comes_from_semantic_domain_traits_not_work_decomposition():
+def test_spatial_program_layout_kind_comes_from_semantic_structure_traits_not_work_decomposition():
     mod = _prepare_blackhole_phase_b_module(grid_indexed_staged_copy_kernel(grid_x=2, grid_y=3))
-    semantic_program = mod["main"].attrs["tl.semantic_program"]
-    assert "derived_indices" in {str(trait) for trait in semantic_program.domains[0].traits}
+    structure = _semantic_structure(mod)
+    assert "derived_indices" in {str(trait) for trait in structure["domain_traits"]}
 
     mod = _strip_attr(mod, "blackhole.work_decomposition")
     mod = _drop_existing_spatial_program(mod)
@@ -1168,64 +764,6 @@ def test_gemm_spatial_program_uses_segment_kind_ir():
     assert [str(task.name) for task in program.tasks] == ["reader", "compute", "writer"]
     assert [str(task.kind) for task in program.tasks] == ["transfer", "compute", "transfer"]
     assert len(program.channels) >= 2
-
-
-def test_spatial_program_builder_does_not_branch_on_root_map_update_name():
-    mod = _prepare_blackhole_phase_b_module(
-        _lower_flash_attention_example(
-            mha_example,
-            1,
-            32,
-            256,
-            128,
-            False,
-            block_M=128,
-            block_N=128,
-            num_stages=1,
-            threads=128,
-        )
-    )
-    semantic_program = mod["main"].attrs["tl.semantic_program"]
-    scaffold_index = next(
-        i
-        for i, update in enumerate(semantic_program.updates)
-        if str(update.law.kind) == "map"
-        and str(update.state_name) == ""
-        and str(update.law.target_state) == ""
-        and len(update.law.source_states) == 0
-    )
-
-    make_update = tvm.get_global_func("tl.Update")
-    make_program = tvm.get_global_func("tl.SemanticProgram")
-    rebuilt_updates = list(semantic_program.updates)
-    scaffold_update = rebuilt_updates[scaffold_index]
-    rebuilt_updates[scaffold_index] = make_update(
-        "renamed_scaffold_map",
-        scaffold_update.state_name,
-        scaffold_update.law,
-        scaffold_update.anchors,
-        scaffold_update.bindings,
-    )
-    rebuilt_program = make_program(
-        list(semantic_program.domains),
-        list(semantic_program.states),
-        rebuilt_updates,
-        list(semantic_program.supplements),
-        list(semantic_program.seeds),
-        list(semantic_program.anchors),
-        list(semantic_program.state_versions),
-        list(semantic_program.state_defs),
-        list(semantic_program.state_uses),
-        list(semantic_program.state_joins),
-    )
-
-    mod = _replace_semantic_program(_drop_existing_spatial_program(mod), rebuilt_program)
-    mod = tilelang.transform.LowerToSpatialProgram()(mod)
-    mod = tilelang.transform.ValidateSpatialProgram()(mod)
-    rebuilt_task_names = [str(task.name) for task in mod["main"].attrs["tl.spatial_program"].tasks]
-
-    assert "renamed_scaffold_map" in rebuilt_task_names
-    assert "root_map" not in rebuilt_task_names
 
 
 def test_validate_spatial_program_rejects_layout_axes_mismatch_with_semantic_domain():
@@ -1479,22 +1017,6 @@ def test_validate_spatial_program_rejects_layout_without_domain_transform_kind_c
     )
 
     with pytest.raises(Exception, match="domain_transform_kind contract"):
-        tilelang.transform.ValidateSpatialProgram()(mod)
-
-
-def test_validate_spatial_program_rejects_missing_semantic_domain_layout_coverage():
-    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
-    mod = _replace_semantic_program(_drop_existing_spatial_program(mod), _make_multi_domain_semantic_program())
-    mod = tilelang.transform.LowerToSpatialProgram()(mod)
-    mod = tilelang.transform.ValidateSpatialProgram()(mod)
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    mod = _replace_spatial_program(
-        mod,
-        _make_spatial_program_like(program, layouts=[program.layouts[0]]),
-    )
-
-    with pytest.raises(Exception, match="layout contract to cover every semantic domain index"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
@@ -1763,51 +1285,6 @@ def test_validate_spatial_program_rejects_multi_phase_program_without_channel_co
     mod = _replace_spatial_program(mod, bad_program)
 
     with pytest.raises(Exception, match="downstream multi-phase programs to reference at least one channel"):
-        tilelang.transform.ValidateSpatialProgram()(mod)
-
-
-def test_validate_spatial_program_rejects_insufficient_phase_boundary_materialization():
-    mod = _prepare_blackhole_phase_b_module(
-        _lower_flash_attention_example(
-            mha_example,
-            1,
-            32,
-            256,
-            128,
-            False,
-            block_M=128,
-            block_N=128,
-            num_stages=1,
-            threads=128,
-        )
-    )
-    semantic_program = mod["main"].attrs["tl.semantic_program"]
-
-    program = mod["main"].attrs["tl.spatial_program"]
-    expected_state_indices = set(_expected_phase_boundary_state_indices(program, semantic_program))
-    assert len(expected_state_indices) > 0
-    make_program = tvm.get_global_func("tl.SpatialProgram")
-    rebuilt_intents = []
-    for intent in program.resource_intents:
-        if str(intent.kind) == "phase_boundary_materialization":
-            continue
-        rebuilt_intents.append(intent)
-
-    bad_program = make_program(
-        program.member_func,
-        program.phases,
-        program.tasks,
-        program.channels,
-        program.layouts,
-        program.work_partitions,
-        program.placements,
-        program.sync_edges,
-        rebuilt_intents,
-        program.anchors,
-    )
-    mod = _replace_spatial_program(mod, bad_program)
-
-    with pytest.raises(Exception, match="phase-boundary resource intents|phase-boundary intents to cover every cross-phase materialized state index"):
         tilelang.transform.ValidateSpatialProgram()(mod)
 
 
@@ -2171,57 +1648,6 @@ def test_validate_spatial_program_rejects_multi_phase_program_without_sync_edge_
 
     with pytest.raises(Exception, match="cross-phase channel coverage to materialize sync_edge contract"):
         tilelang.transform.ValidateSpatialProgram()(mod)
-
-
-def test_spatial_program_phase_boundary_intents_project_state_index_contract():
-    mod = _prepare_blackhole_phase_b_module(
-        _lower_flash_attention_example(
-            mha_example,
-            1,
-            32,
-            256,
-            128,
-            False,
-            block_M=128,
-            block_N=128,
-            num_stages=1,
-            threads=128,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-    phase_boundary_intents = [
-        intent for intent in program.resource_intents if str(intent.kind) == "phase_boundary_materialization"
-    ]
-    semantic_program = mod["main"].attrs["tl.semantic_program"]
-    expected_state_indices = _expected_phase_boundary_state_indices(program, semantic_program)
-
-    assert len(phase_boundary_intents) > 0
-    assert all(str(intent.payload["target_kind"]) == "semantic_state" for intent in phase_boundary_intents)
-    assert sorted(int(intent.payload["target_index"]) for intent in phase_boundary_intents) == expected_state_indices
-
-
-def test_spatial_program_phase_synthesis_propagates_transitive_ordering_chain():
-    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
-    mod = _replace_semantic_program(
-        _drop_existing_spatial_program(mod), _make_transitive_phase_chain_semantic_program()
-    )
-    mod = tilelang.transform.LowerToSpatialProgram()(mod)
-    mod = tilelang.transform.ValidateSpatialProgram()(mod)
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    phase_index_by_task = {str(task.name): int(task.payload["phase_index"]) for task in program.tasks}
-    assert phase_index_by_task["seed_a"] < phase_index_by_task["step_b"] < phase_index_by_task["step_c"]
-
-
-def test_gemm_fast_path_zero_state_program_omits_state_residency_intent():
-    mod = _prepare_blackhole_phase_b_module(gemm_kernel())
-    mod = _replace_semantic_program(_drop_existing_spatial_program(mod), _make_zero_state_gemm_semantic_program())
-    mod = tilelang.transform.LowerToSpatialProgram()(mod)
-    mod = tilelang.transform.ValidateSpatialProgram()(mod)
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    assert [str(task.name) for task in program.tasks] == ["reader", "compute", "writer"]
-    assert all(str(intent.kind) != "state_residency" for intent in program.resource_intents)
 
 
 def test_validate_spatial_program_rejects_pipeline_program_without_pipeline_contract():

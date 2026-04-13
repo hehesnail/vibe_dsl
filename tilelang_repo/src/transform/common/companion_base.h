@@ -18,10 +18,8 @@ constexpr const char* kTLDevicePrograms = "tl.device_programs";
 constexpr const char* kTLSemanticSeeds = "tl.semantic_seeds";
 constexpr const char* kTLSemanticManifestSeeds = "tl.semantic_manifest_seeds";
 constexpr const char* kTLSemanticManifest = "tl.semantic_manifest";
-constexpr const char* kTLSemanticHardFreeze = "tl.semantic_hard_freeze";
 constexpr const char* kTLSemanticStructure = "tl.semantic_structure";
 constexpr const char* kTLSemanticWitnesses = "tl.semantic_witnesses";
-constexpr const char* kTLSemanticProgram = "tl.semantic_program";
 constexpr const char* kTLSpatialStructureFacts = "tl.spatial_structure_facts";
 constexpr const char* kTLSpatialPlan = "tl.spatial_plan";
 constexpr const char* kTLSpatialDomainPlan = "tl.spatial_domain_plan";
@@ -31,7 +29,6 @@ constexpr const char* kTLTTProgram = "tl.tt_program";
 constexpr const char* kTLTTSemaphorePlans = "tl.tt_semaphore_plans";
 constexpr const char* kTLSpatialCapabilityModel = "tl.spatial_capability_model";
 constexpr const char* kTLTTHardwareModel = "tl.tt_hardware_model";
-constexpr const char* kTLCompanionInvalidationReason = "tl.companion_invalidation_reason";
 }  // namespace attr
 
 namespace manifest_key {

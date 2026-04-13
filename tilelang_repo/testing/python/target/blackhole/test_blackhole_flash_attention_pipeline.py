@@ -408,9 +408,9 @@ def test_flash_attention_forward_pipeline_lifts_semantic_roles_without_workload_
             target=target,
         )
 
-    program = artifact.device_mod["main_kernel"].attrs["tl.semantic_program"]
-    state_roles = {str(state.role) for state in program.states}
-    law_kinds = {str(update.law.kind) for update in program.updates}
+    structure = artifact.device_mod["main_kernel"].attrs["tl.semantic_structure"]
+    state_roles = {str(state["role"]) for state in structure["states"]}
+    law_kinds = {str(update["kind"]) for update in structure["updates"]}
 
     assert {"carry", "reduction_accumulator", "transient"}.issubset(state_roles)
     assert "recurrence" in law_kinds

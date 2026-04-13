@@ -1,6 +1,6 @@
 /*!
  * \file analyze_spatial_domain_plan.cc
- * \brief Derive typed Phase B domain contracts from SemanticProgram.
+ * \brief Derive typed Phase B domain contracts from semantic structure facts.
  */
 
 #include <tvm/ffi/reflection/registry.h>
@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "common/blackhole_utils.h"
+#include "common/semantic_structure_decoder.h"
 #include "common/spatial_analysis.h"
 #include "common/spatial_program.h"
 #include "common/spatial_vocab.h"
@@ -110,8 +111,8 @@ tvm::transform::Pass AnalyzeSpatialDomainPlan() {
       if (!func || !IsBlackholePrimFunc(func.value())) {
         continue;
       }
-      auto maybe_semantic = func.value()->GetAttr<SemanticProgram>(attr::kTLSemanticProgram);
-      if (!maybe_semantic) {
+      auto maybe_semantic = MaybeDecodeSemanticProgramFromFunc(func.value());
+      if (!maybe_semantic.has_value()) {
         continue;
       }
       auto maybe_target = func.value()->GetAttr<Target>(tvm::attr::kTarget);

@@ -34,15 +34,16 @@
 
 当前按下面顺序推进：
 
-1. `Task 3A`
+1. `Task 3B`
    - runtime gate 与 `flash-attn` payoff
-2. `Task 3B`
+2. `Task 3C`
    - wider family / support surface
 
 当前状态补充：
 
 - `Task 2A / 2B / 2C` 已完成
-- 当前入口从 `Task 2` 切到 `Task 3A`
+- `Task 3A` 的 persistent/public 删除批次已完成
+- 当前入口从 `Task 2` 切到 `Task 3B`
 
 当前明确不作为优先项：
 

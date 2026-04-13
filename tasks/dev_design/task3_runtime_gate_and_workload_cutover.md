@@ -1,11 +1,11 @@
-# Task 3: Runtime Gate 与 Workload Cutover
+# Task 3: 旧 Recovery 链退场、Runtime Gate 与 Workload Cutover
 
 ## 基本信息
 
 - **文档角色**: `Task 3` 的 runtime gate、support surface
   与 workload re-enable 设计文档
-- **当前状态**: `2026-04-13` 活动设计文档；`Task 2` 已完成，
-  当前工作进入 `Task 3`
+- **当前状态**: `2026-04-14` 活动设计文档；`Task 2` 已完成，
+  `Task 3A` persistent/public 删除批次已完成，当前工作进入 `Task 3B`
 - **任务链位置**:
   `Task 2` owner cutover 完成之后，
   负责 runtime/correctness payoff 与 wider family 承接
@@ -22,8 +22,10 @@
 
 ## 1. 作用域
 
-`Task 3` 只负责两件事：
+`Task 3` 只负责三件事：
 
+- 先删除 persistent `SemanticProgram / Stateful Semantic IR`
+  这一层旧 companion
 - 在新主链上兑现 runtime / correctness payoff
 - 在新主链上重新承接 workload family 与更宽 support surface
 
@@ -93,7 +95,15 @@ runtime / codegen 的消费纪律固定为：
 
 ## 3.1 Legacy Chain Inventory 与删除顺序
 
-当前仓库中的“旧链路”不是单一 pass，而是 4 类残留叠加：
+当前仓库中的“旧链路”不是单一 pass，而是 5 类残留叠加：
+
+0. **persistent semantic layer**
+   - `LiftStatefulSemanticIR / ValidateStatefulSemanticIR /
+     ValidateSemanticRefinement`
+   - `tl.semantic_program`
+     这层 typed attr
+   - 这条链当前仍把 `semantic_structure`
+     再包装成一层持久 companion，属于应优先删除的旧链
 
 1. **projection bridge**
    - `tilelang/engine/lower.py::_project_blackhole_host_attrs_to_device`
@@ -134,12 +144,34 @@ runtime / codegen 的消费纪律固定为：
 - 不允许直接硬删当前仍在承担 owner 职责的 pass，
   然后把缺口重新塞回 projection / payload / runtime fallback
 - 旧链路的删除顺序必须从**最外层 bridge**往里收：
-  1. 先删 projection bridge
-  2. 再删 fragment-layout / semantic seed 这类 side-channel
-  3. 再把 typed seed bridge 替换成真正的 `PlanTT*` owner pass
-  4. 最后删 legacy attr synthesis 与 matcher/recovery owner residue
+  1. 先删 persistent semantic layer，
+     让 active path 直接消费 `tl.semantic_structure`
+  2. 再删 projection bridge
+  3. 再删 fragment-layout / semantic seed 这类 side-channel
+  4. 再把 typed seed bridge 替换成真正的 `PlanTT*` owner pass
+  5. 最后删 legacy attr synthesis 与 matcher/recovery owner residue
 
 当前明确的删除批次：
+
+### Batch 0: 删除 persistent semantic layer
+
+- 删除
+  `LiftStatefulSemanticIR / ValidateStatefulSemanticIR /
+  ValidateSemanticRefinement`
+  这组 pass 的 active-path owner 责任
+- `AnalyzeSpatialDomainPlan / AnalyzeSpatialExecutionPlan /
+  MaterializeSpatialProgram / ValidateSpatialProgram /
+  PlanTTKernelABI`
+  必须直接从
+  `tl.semantic_structure + tl.semantic_witnesses`
+  读取所需 truth
+- `tl.semantic_program`
+  不再作为 active path 上的稳定 attr
+- 删除依赖这层 attr 的 wrapper、helper 与过期测试
+- 当前状态：
+  进行中；当前 active path 仍保留
+  `Stateful Semantic IR`
+  这一层，已提升为 `Task 3` 的最高优先级删除项
 
 ### Batch A: 删除 projection bridge
 
@@ -278,17 +310,20 @@ runtime / codegen 的消费纪律固定为：
 
 `Task 3` 的推进顺序固定为：
 
-1. **P0: runtime gate 收口**
+1. **P0: 删 persistent semantic layer**
+   - active path 不再保留 `tl.semantic_program`
+   - 删除 Semantic IR pass / wrapper / 过期测试
+2. **P1: runtime gate 收口**
    - 先确保新主链上的 copy / GEMM / export
      仍维持当前 zero-regression baseline
-2. **P1: `flash-attn` payoff**
-   - 先拿它验证 multi-op / multi-work /
+3. **P2: `flash-attn` payoff**
+   - 再拿它验证 multi-op / multi-work /
      intermediate dataflow 的 admitted subset
-3. **P2: wider family cutover**
+4. **P3: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-4. **P3: wider copy / dataflow**
+5. **P4: wider copy / dataflow**
    - 在 admitted subset 内逐步放宽 range / stride / staged-dataflow
-5. **P4: wider sync**
+6. **P5: wider sync**
    - 只在 `TTSyncPlan + executable binding + runtime semantics`
      三者都稳定后进入 admitted surface
 
