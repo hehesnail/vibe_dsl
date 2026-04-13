@@ -15,6 +15,8 @@
   - 不在 `Task 2` 里兑现 runtime/correctness payoff
   - 不在 `Task 2` 里承接 workload family 回归
   - 不把 `TTProgram companion` 退化成 payload-backed attr bag
+  - 不把 non-Blackhole backend 一并收口到同一套 target contract
+  - 不把 public Python `transform` API 改名当作 cutover 前置
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
 - **上游设计输入**:
   - `tasks/dev_design/task0_ir_layering_root_cause.md`
@@ -42,6 +44,8 @@
 - 重新定义 `SpatialPlan companion`
 - 在 target 侧补 non-TT-specific semantic recovery
 - 处理 `Task 3` 的 runtime gate、support surface 和 workload family 回归
+- 统一 non-Blackhole backend 的 runtime / artifact contract
+- 先行清理 public `tilelang.transform` 命名
 
 ## 2. 合法输入边界
 
@@ -170,6 +174,29 @@ AnalyzeSpatialStructureFacts
   - 只消费经过验证的 `TTProgram`
   - 物化最终 `ExecutableSpec`
 
+## 4.1 当前执行优先级
+
+基于当前 review 结论，`Task 2` 内部继续拆成下面的优先级：
+
+1. **P0: internal owner cutover**
+   - 让 `Blackhole` active compile path
+     先真实经过新的 owner chain
+   - 重点是 pass owner、typed plan object、active reader 切换
+   - 旧 public API 名字可暂时保留为 compatibility shell
+2. **P1: target truth object set 收口**
+   - 落实 `TTBlockPlan / TTKernelPlan / TTTransportPlan /
+     TTSyncPlan / TTABIPlan / TTExecutionPlan`
+   - 旧 `TTCoreGroup / TTCBPlan / ... / payload bag`
+     退出 primary owner 角色
+3. **P2: writer cutover**
+   - `MaterializeBlackholeExecutable`
+     成为唯一 writer
+   - `MaterializeTTExecutableSpec`
+     退为 compatibility bridge 或直接退出
+4. **P3: phase bundle 固化**
+   - 为编译、测试、probe 建立 canonical bundle/helper
+   - 不再让测试手写长 pass 链充当事实标准
+
 ## 5. `ExecutableSpec` 的物化边界
 
 `ExecutableSpec` 的地位固定为：
@@ -230,6 +257,12 @@ AnalyzeSpatialStructureFacts
 
 不能被 runtime/codegen 当主真源消费。
 
+补充纪律：
+
+- `Task 2` 的完成判定基于 internal owner chain 是否切进 active path
+- 不要求 non-Blackhole backend 同期收口
+- 不要求 public Python `transform` API 同期改名
+
 ## 7. 完成判定
 
 `Task 2` 完成必须同时满足：
@@ -244,6 +277,11 @@ AnalyzeSpatialStructureFacts
 5. 发现缺口时，只能通过
    `补 TIR/DSL / 补 analysis / explicit unsupported`
    解决
+
+不额外要求：
+
+- non-Blackhole backend 采用同一套 target/object 边界
+- public Python `transform` API 已完成命名清理
 
 在这五条同时成立之前，
 `TTProgram` 已进入主链

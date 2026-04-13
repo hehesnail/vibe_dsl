@@ -77,6 +77,10 @@ Normalized Tile TIR
 - 不引入第二条正式执行路径
 - 不允许名字匹配、位置猜测、单 case matcher 进入长期协议
 - 当前重设计必须建立在现有 Blackhole 主链上完成，不是 greenfield compiler
+- 当前收口范围只针对 `Blackhole` active compile/runtime path；
+  non-Blackhole backend 的统一化不属于当前 blocker
+- 当前 cutover 以 internal owner chain / active path 的真实切换为完成标准；
+  不把 public Python `transform` API 改名当作前置目标
 
 ## 3. 权威架构
 
@@ -204,6 +208,12 @@ Frontend Tile TIR
   -> MaterializeBlackholeExecutable
 ```
 
+这条 canonical chain 的语义是：
+
+- 它是 `Blackhole` 的长期 internal owner chain
+- 它不要求当前仓库同步完成 repo-wide frontend 统一
+- 它也不要求 public pass API 先一步改名才能推进 cutover
+
 详细 pass owner、旧 pass 归位与 supporting schema，
 统一维护在 `tasks/dev_design/task1_spatial_plan_companion.md`。
 
@@ -248,6 +258,28 @@ Frontend Tile TIR
 - 用新主链重新承接
   `flash-attn / topk / fusedmoe / paged decode / chunk recurrence`
 - 兑现 runtime gate、wider family 与更宽 copy/dataflow/sync 支持面
+
+### 当前优先级
+
+当前设计结论下，执行优先级固定为：
+
+1. `Task 2A`: 先把 `TTProgram companion` owner chain
+   真正切进 `Blackhole` active compile path
+   - 重点是 internal pass owner、typed object 与 active path reader 切换
+   - 非目标：non-Blackhole backend 统一、public API 改名
+2. `Task 2B`: 再让旧 `Phase C` owner 退位
+   - `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores /
+     LowerSpatialProgramToTTTarget / MaterializeTTExecutableSpec`
+     失去主 owner 身份
+   - `MaterializeBlackholeExecutable` 成为唯一 writer
+3. `Task 2C`: 固化 phase bundle 与测试入口
+   - 不再让测试/调试代码手写长 pass 链充当事实标准
+4. `Task 3A`: 在新主链上收 runtime gate，
+   先兑现 `flash-attn` admitted subset payoff
+5. `Task 3B`: 再扩 wider family / support surface
+   - `topk -> fusedmoe -> paged decode -> chunk recurrence`
+   - wider copy/dataflow
+   - wider sync 最后进入 admitted surface
 
 ## 7. Cutover invariant
 

@@ -13,6 +13,8 @@
   - 不重新定义 `SpatialPlan` / `TTProgram` 的 owner 边界
   - 不在 runtime/codegen 里补 planning contract
   - 不恢复旧 recovery 主链
+  - 不把 non-Blackhole backend 一并收口到同一套 runtime / artifact contract
+  - 不把 public Python `transform` API 改名当作本任务目标
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
 - **上游设计输入**:
   - `tasks/dev_design/task1_spatial_plan_companion.md`
@@ -42,6 +44,11 @@ Normalized Tile TIR
 - `Task 2` owner cutover 还没完成
 - 上游 `TIR/DSL` 或 analysis 还缺 truth
 - 当前 variant 必须显式 `unsupported`
+
+补充边界：
+
+- `Task 3` 默认只讨论 `Blackhole` active runtime / codegen path
+- non-Blackhole backend 的统一化不进入当前 backlog
 
 ## 2. Shared Zero-Regression Baseline
 
@@ -121,6 +128,24 @@ runtime / codegen 的消费纪律固定为：
 3. 至少有一组明确支持的 subset，
    带有对应的 transform / target regression
 4. 对未支持部分有显式 unsupported / fail-fast 边界
+
+## 5.1 当前执行优先级
+
+`Task 3` 的推进顺序固定为：
+
+1. **P0: runtime gate 收口**
+   - 先确保新主链上的 copy / GEMM / export
+     仍维持当前 zero-regression baseline
+2. **P1: `flash-attn` payoff**
+   - 先拿它验证 multi-op / multi-work /
+     intermediate dataflow 的 admitted subset
+3. **P2: wider family cutover**
+   - `topk -> fusedmoe -> paged decode -> chunk recurrence`
+4. **P3: wider copy / dataflow**
+   - 在 admitted subset 内逐步放宽 range / stride / staged-dataflow
+5. **P4: wider sync**
+   - 只在 `TTSyncPlan + executable binding + runtime semantics`
+     三者都稳定后进入 admitted surface
 
 ## 6. Wider Copy / Dataflow / Sync 支持面
 

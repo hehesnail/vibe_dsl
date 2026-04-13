@@ -30,6 +30,28 @@
 | `Task 2` | `task2_ttprogram_companion_cutover.md` | `TTProgram companion` cutover、target owner 边界、materialization 规则与完成判定文档 |
 | `Task 3` | `task3_runtime_gate_and_workload_cutover.md` | runtime gate、support surface 与 workload re-enable 文档 |
 
+## 2.1 当前执行优先级
+
+当前按下面顺序推进：
+
+1. `Task 2A`
+   - `Blackhole` active compile path 的 internal owner cutover
+2. `Task 2B`
+   - `MaterializeBlackholeExecutable` writer cutover
+   - 旧 `Phase C` owner 退位
+3. `Task 2C`
+   - phase bundle / test helper 固化
+4. `Task 3A`
+   - runtime gate 与 `flash-attn` payoff
+5. `Task 3B`
+   - wider family / support surface
+
+当前明确不作为优先项：
+
+- non-Blackhole backend 统一收口
+- repo-wide frontend 统一
+- public Python `transform` API 改名
+
 ## 3. 已归档文档
 
 | 文档 | 角色 | 当前状态 |

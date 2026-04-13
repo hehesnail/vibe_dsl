@@ -72,6 +72,30 @@
 - `flash-attn` 的 direct-runtime correctness payoff、
   wider support surface 与 target-side gate，
   统一见 `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
+- 当前不把下面这些当 blocker：
+  - non-Blackhole backend 的统一收口
+  - repo-wide frontend 统一
+  - public Python `transform` API 改名
+
+## 当前优先级
+
+1. **P0: `Task 2A` internal owner cutover**
+   - 让 `Blackhole` active compile path
+     先真实切到新的 owner chain
+   - 重点是 typed owner object、pass owner 与 active reader 切换
+2. **P1: `Task 2B` writer / owner 收口**
+   - `MaterializeBlackholeExecutable`
+     成为唯一 writer
+   - 旧 `Phase C` owner pass
+     失去主协议地位
+3. **P2: `Task 2C` phase bundle / test helper 固化**
+   - 不再让测试手写长 pass 链充当事实标准
+4. **P3: `Task 3A` runtime gate + `flash-attn` payoff**
+   - 在新主链上兑现 admitted subset correctness
+5. **P4: `Task 3B` wider family / support surface**
+   - `topk -> fusedmoe -> paged decode -> chunk recurrence`
+   - wider copy/dataflow
+   - wider sync 最后进入 admitted surface
 
 ## 当前未完成项
 
@@ -106,13 +130,16 @@
 
 ## 下一步
 
-1. 实现 `TTProgram companion` cutover：
-   `PlanTTBlocks / PlanTTTransport / PlanTTSync / PlanTTABI /
-   PlanTTExecution / MaterializeBlackholeExecutable`
-2. 让 `Task / Channel` 在新主链里只保留 derived-view 角色，
-   不再继续扩张旧 `SpatialProgram` truth
-3. 在同一轮 cutover 中退场旧 recovery 主链，
-   然后把 workload family 重新接到新主链
+1. 先做 `Task 2A / 2B`
+   - internal owner cutover
+   - `MaterializeBlackholeExecutable` writer cutover
+   - 旧 `Phase C` owner 退位
+2. 再做 `Task 2C`
+   - phase bundle / test helper 固化
+3. 最后进入 `Task 3`
+   - runtime gate
+   - `flash-attn`
+   - wider family / support surface
 
 ## 最新验证摘要
 
