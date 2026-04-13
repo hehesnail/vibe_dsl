@@ -426,7 +426,7 @@ boundary 只表达 planning 需要的关系。
 - `ProjectSemanticManifest`
 - `AugmentSemanticManifest`
 - `AnalyzeBlackholeWorkDecomposition`
-- `AnalyzeBlackholeFragmentRegions`
+- `AnalyzeBlackholeComputeRegions`
 - `AnalyzeBlackholePipelineStages`
 - `AnalyzeSemanticStructure`
 - `LiftStatefulSemanticIR`

@@ -77,7 +77,7 @@ def test_blackhole_flash_attention_single_work_item_metadata_preserves_contracts
     assert len(metadata.get("multi_compute_contracts", [])) == 2
 
 
-def test_blackhole_flash_attention_single_work_item_runtime_metadata_exposes_fragment_materialization_contracts():
+def test_blackhole_flash_attention_single_work_item_runtime_metadata_exposes_buffer_materialization_contracts():
     kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
         1,
         1,
@@ -94,10 +94,10 @@ def test_blackhole_flash_attention_single_work_item_runtime_metadata_exposes_fra
     assert not reasons
     epilogue_ops = metadata.get("compute_epilogue_ops", [])
     materialization_ops = [
-        op for op in epilogue_ops if "fragment_materialization_contract" in {str(key) for key in op.keys()}
+        op for op in epilogue_ops if "buffer_materialization_contract" in {str(key) for key in op.keys()}
     ]
     protocols_by_dst = {
-        str(op["dst_buffer"]): str(op["fragment_materialization_contract"]["execution_protocol"])
+        str(op["dst_buffer"]): str(op["buffer_materialization_contract"]["execution_protocol"])
         for op in materialization_ops
     }
     assert protocols_by_dst == {

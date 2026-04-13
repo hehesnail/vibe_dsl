@@ -204,13 +204,33 @@ void ValidateResourceIntents(const SpatialProgram& program,
           << "ValidateSpatialProgram requires pipeline_contract intents to be non-empty";
     }
     if (*parsed == sp::SpatialResourceIntentKind::kLoweringSupport &&
-        HasTrait(intent->traits, "fragment_contract")) {
-      const bool has_fragment_ops =
-          intent->payload.Get(String(schema_key::kFragmentOpKinds)).has_value() ||
-          intent->payload.Get(String(schema_key::kFragmentMaterializationContracts)).has_value() ||
-          intent->payload.Get(String(schema_key::kFragmentBufferFlowContracts)).has_value();
-      ICHECK(has_fragment_ops)
-          << "ValidateSpatialProgram requires fragment_contract intents to carry lowering facts";
+        HasTrait(intent->traits, "compute_support")) {
+      const bool has_compute_facts =
+          intent->payload.Get(String(schema_key::kComputeOpKinds)).has_value() ||
+          intent->payload.Get(String(schema_key::kPointwiseOpKinds)).has_value() ||
+          intent->payload.Get(String(schema_key::kRowReductionTargets)).has_value() ||
+          intent->payload.Get(String(schema_key::kRowBroadcastSources)).has_value() ||
+          intent->payload.Get(String(schema_key::kLoopCarriedState)).has_value();
+      ICHECK(has_compute_facts)
+          << "ValidateSpatialProgram requires compute_support intents to carry compute facts";
+    }
+    if (*parsed == sp::SpatialResourceIntentKind::kLoweringSupport &&
+        HasTrait(intent->traits, "buffer_distribution_support")) {
+      ICHECK(intent->payload.Get(String(schema_key::kBufferDistributionContracts)).has_value())
+          << "ValidateSpatialProgram requires buffer_distribution_support intents to carry "
+             "buffer_distribution_contracts";
+    }
+    if (*parsed == sp::SpatialResourceIntentKind::kLoweringSupport &&
+        HasTrait(intent->traits, "buffer_materialization_support")) {
+      ICHECK(intent->payload.Get(String(schema_key::kBufferMaterializationContracts)).has_value())
+          << "ValidateSpatialProgram requires buffer_materialization_support intents to carry "
+             "buffer_materialization_contracts";
+    }
+    if (*parsed == sp::SpatialResourceIntentKind::kLoweringSupport &&
+        HasTrait(intent->traits, "buffer_flow_support")) {
+      ICHECK(intent->payload.Get(String(schema_key::kBufferFlowContracts)).has_value())
+          << "ValidateSpatialProgram requires buffer_flow_support intents to carry "
+             "buffer_flow_contracts";
     }
   }
   for (const std::string& subject : phase_boundary_subjects) {

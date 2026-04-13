@@ -167,7 +167,7 @@ runtime / codegen 的消费纪律固定为：
   LowerBlackholeOps / PlanTTKernelABI`
   必须直接从
   `Normalized Tile TIR + SpatialPlan companion +
-  blackhole.work_decomposition / blackhole.fragment_regions /
+  blackhole.work_decomposition / blackhole.compute_regions /
   blackhole.pipeline_stages`
   读取所需 truth
 - `tl.semantic_*`
@@ -194,12 +194,45 @@ runtime / codegen 的消费纪律固定为：
 
 - 删除 `tl.fragment_layout_seeds`
   的生产与消费
-- `AnalyzeBlackholeFragmentRegions`
+- `AnalyzeBlackholeComputeRegions`
   只能从 TIR 结构与已冻结 companion contract 取事实
 - grouped row / fragment distribution 缺口只能进入
-  `SpatialProgram.fragment_layout_contracts`
+  `SpatialProgram.buffer_distribution_contracts`
+- `buffer_distribution_contract.shape`
+  只保留 logical distribution shape：
+  `grouped_rows -> [row_width]`，
+  `row_state -> [1]`；
+  需要完整 logical tile 计数时，
+  由
+  `logical_row_width / logical_element_count`
+  或 logical buffer shape 显式推导
 - 当前状态：
   已完成；当前 admitted 基线不再依赖 fragment-layout projection seed
+  且 `AnalyzeBlackholeComputeRegions`
+  已成为当前 active 文件/测试入口，
+  不再保留旧 `FragmentRegions` 文件名和 side-channel helper
+
+### Batch B1: resource canonicalization 不再制造双真源
+
+- `BlackholeDeviceResourceCanonicalization`
+  必须在
+  `LowerToBlackholeExecutable`
+  之后运行；
+  先让 `TTProgram / ExecutableSpec` owner 链 materialize companion truth，
+  再 canonicalize device-private physical resource class
+- canonicalize 之后，
+  必须同步改写
+  `blackhole.lowering_requirements / blackhole.compute_regions /
+  tl.spatial_program / tl.tt_program`
+  中的 `scope`
+- 不允许出现
+  “TIR body 已经是 `blackhole.acc` /
+  `blackhole.cb.*`，companion contract 还写 `local` /
+  `shared`”
+  这种双真源状态
+- 当前状态：
+  已完成；resource canonicalization 当前已和 companion scope
+  rewrite 一起收口
 
 ### Batch C: typed seed bridge -> owner pass
 

@@ -110,18 +110,18 @@ std::vector<DataflowAccessInfo> GemmPyNode::GetDataflowAccessInfo() const {
   };
 }
 
-std::optional<FragmentMaterializationInfo>
-GemmPyNode::GetFragmentMaterializationInfo() const {
+std::optional<BufferMaterializationInfo>
+GemmPyNode::GetBufferMaterializationInfo() const {
   const auto* clear_accum = clearAccum_.as<IntImmNode>();
   if (!clear_accum || clear_accum->value != 0) {
     return std::nullopt;
   }
-  return FragmentMaterializationInfo{
+  return BufferMaterializationInfo{
       c_,
       ffi::String("intermediate_buffer"),
       ffi::String("tile_nfaces_materialization"),
-      ffi::String("fragment_delta"),
-      ffi::String("fragment_add"),
+      ffi::String("accumulator_delta"),
+      ffi::String("accumulator_add"),
       ffi::String("dst_cb_binary_pack"),
       ffi::String("tiled_cb"),
   };

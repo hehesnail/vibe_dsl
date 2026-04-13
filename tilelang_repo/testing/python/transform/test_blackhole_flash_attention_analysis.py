@@ -39,10 +39,10 @@ def _analyze_blackhole_work_decomposition(prim_func):
     return mod["main"]
 
 
-def _analyze_blackhole_fragment_regions(prim_func):
+def _analyze_blackhole_compute_regions(prim_func):
     mod = tvm.IRModule({"main": prim_func})
     mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeComputeRegions()(mod)
     return mod["main"]
 
 
@@ -65,7 +65,7 @@ def _analyze_blackhole_after_device_prepasses(prim_func):
     mod = tilelang.transform.HoistBroadcastValues()(mod)
     mod = tilelang.transform.SplitBlackholeKernel()(mod)
     mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
-    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeComputeRegions()(mod)
     mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
     return mod["main"]
 
@@ -127,8 +127,8 @@ def test_mha_forward_exposes_work_decomposition_attrs():
     assert str(k_loop_bound["extent"]) == "bx + 1"
 
 
-def test_gqa_forward_exposes_fragment_region_attrs():
-    lowered = _analyze_blackhole_fragment_regions(
+def test_gqa_forward_exposes_compute_region_attrs():
+    lowered = _analyze_blackhole_compute_regions(
         _lower_flash_attention_example(
             gqa_example,
             1,
@@ -143,11 +143,11 @@ def test_gqa_forward_exposes_fragment_region_attrs():
             threads=128,
         )
     )
-    regions = lowered.attrs["blackhole.fragment_regions"]
+    regions = lowered.attrs["blackhole.compute_regions"]
     assert len(regions) == 1
 
     region = regions[0]
-    fragment_buffer_names = {entry["name"] for entry in region["fragment_buffers"]}
+    region_buffer_names = {entry["name"] for entry in region["region_buffers"]}
     assert {
         "acc_s",
         "acc_s_cast",
@@ -157,7 +157,7 @@ def test_gqa_forward_exposes_fragment_region_attrs():
         "scores_scale",
         "scores_sum",
         "logsum",
-    }.issubset(fragment_buffer_names)
+    }.issubset(region_buffer_names)
 
     assert {
         "gemm",
@@ -179,7 +179,7 @@ def test_gqa_forward_exposes_fragment_region_attrs():
 
 
 def test_gqa_forward_wider_pipeline_still_exposes_row_broadcast_roles():
-    lowered = _analyze_blackhole_fragment_regions(
+    lowered = _analyze_blackhole_compute_regions(
         _lower_flash_attention_example(
             gqa_example,
             1,
@@ -194,7 +194,7 @@ def test_gqa_forward_wider_pipeline_still_exposes_row_broadcast_roles():
             threads=128,
         )
     )
-    regions = lowered.attrs["blackhole.fragment_regions"]
+    regions = lowered.attrs["blackhole.compute_regions"]
     assert len(regions) == 1
 
     region = regions[0]
@@ -204,8 +204,8 @@ def test_gqa_forward_wider_pipeline_still_exposes_row_broadcast_roles():
     assert _COMMON_POINTWISE_OPS.issubset(set(region["pointwise_ops"]))
 
 
-def test_mha_forward_exposes_fragment_region_roles():
-    lowered = _analyze_blackhole_fragment_regions(
+def test_mha_forward_exposes_compute_region_roles():
+    lowered = _analyze_blackhole_compute_regions(
         _lower_flash_attention_example(
             mha_example,
             1,
@@ -219,11 +219,11 @@ def test_mha_forward_exposes_fragment_region_roles():
             threads=128,
         )
     )
-    regions = lowered.attrs["blackhole.fragment_regions"]
+    regions = lowered.attrs["blackhole.compute_regions"]
     assert len(regions) == 1
 
     region = regions[0]
-    fragment_buffer_names = {entry["name"] for entry in region["fragment_buffers"]}
+    region_buffer_names = {entry["name"] for entry in region["region_buffers"]}
     assert {
         "acc_s",
         "acc_s_cast",
@@ -233,7 +233,7 @@ def test_mha_forward_exposes_fragment_region_roles():
         "scores_scale",
         "scores_sum",
         "logsum",
-    }.issubset(fragment_buffer_names)
+    }.issubset(region_buffer_names)
 
     assert {
         "gemm",
@@ -255,7 +255,7 @@ def test_mha_forward_exposes_fragment_region_roles():
 
 
 def test_causal_mha_forward_exposes_mask_pointwise_op():
-    lowered = _analyze_blackhole_fragment_regions(
+    lowered = _analyze_blackhole_compute_regions(
         _lower_flash_attention_example(
             mha_example,
             1,
@@ -269,7 +269,7 @@ def test_causal_mha_forward_exposes_mask_pointwise_op():
             threads=128,
         )
     )
-    regions = lowered.attrs["blackhole.fragment_regions"]
+    regions = lowered.attrs["blackhole.compute_regions"]
     assert len(regions) == 1
     region = regions[0]
     pointwise_ops = set(region["pointwise_ops"])
@@ -323,7 +323,7 @@ def test_gqa_forward_optimized_device_ir_still_exposes_fragment_and_pipeline_att
         )
     )
 
-    regions = lowered.attrs["blackhole.fragment_regions"]
+    regions = lowered.attrs["blackhole.compute_regions"]
     assert len(regions) == 1
     region = regions[0]
     assert {"gemm", "row_reduction", "row_broadcast", "pointwise_chain"}.issubset(set(region["ops"]))

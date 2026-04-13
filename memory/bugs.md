@@ -5,26 +5,6 @@
 
 ## 1. 当前未解决
 
-### `flash-attn` GQA grouped reduce_row 仍缺 `grouped_rows` fragment layout contract
-
-- **现象**:
-  - `flash-attn` GQA executable-spec / codegen probe 当前仍会在
-    grouped `reduce_row` lower 时失败
-  - 典型报错：
-    `grouped reduce_row requires grouped_rows distribution contract for acc_s`
-- **根因**:
-  - codegen 侧对 grouped row reduction 已经要求
-    `fragment_layout_contract.distribution_kind == grouped_rows`
-  - 但当前 GQA path 上 `acc_s` 仍可能被 materialize 成
-    `thread_distributed`
-- **当前结论**:
-  - 该问题属于 `Task 3` 的 `flash-attn` payoff / admitted subset 收口
-  - 不应回退 `Task 2` 的 TT owner cutover / bundle 固化
-  - 继续沿
-    `AnalyzeSemanticStructure -> SpatialProgram.fragment_layout_contracts ->
-    codegen/runtime gate`
-    主链修，不要加 case-local fallback
-
 ### TT-Sim 的 fatal taxonomy 需要先按 simulator 约束判断，不要直接误判成 target contract 回归
 
 - **现象**:
@@ -59,6 +39,40 @@
     统一见 `memory/tt_simulator_constraints.md`
 
 ## 2. 已解决但值得记住的模式
+
+### 2.0 grouped row / row-state distribution contract 不能让 generic layout 覆盖专用语义
+
+- **症状**:
+  - `flash-attn` / GQA 的 grouped `reduce_row` 会报
+    `grouped_rows distribution contract` 缺失
+  - companion contract 的 `scope` / `shape`
+    可能仍停在 generic `thread_distributed` /
+    完整二维 tile 形状
+- **根因**:
+  - layout-derived generic distribution contract
+    比 row reduction / row broadcast 的结构化证据更早落表，
+    后面的专用语义没有覆盖前面的 generic truth
+  - 资源 canonicalization 只改了 TIR body，
+    没同步改 companion contract 的 `scope`
+- **修法**:
+  - `AnalyzeBlackholeComputeRegions`
+    允许 row-reduction / row-broadcast evidence
+    覆盖 generic `thread_distributed`
+    为 `grouped_rows / row_state`
+  - `buffer_distribution_contract.shape`
+    只保留 logical distribution shape：
+    `grouped_rows -> [row_width]`，
+    `row_state -> [1]`
+  - `BlackholeDeviceResourceCanonicalization`
+    同步回写
+    `blackhole.lowering_requirements / blackhole.compute_regions /
+    tl.spatial_program / tl.tt_program`
+    的 `scope`
+- **教训**:
+  - 专用结构化证据必须能覆盖 generic layout truth，
+    否则后段会重新掉回 matcher / fallback 思维
+  - companion attr 只要保留旧 scope，
+    就等于还在系统里保留一条旧链
 
 ### 2.1 ABI / schema
 
@@ -210,11 +224,11 @@
   - 在 `TTProgram -> ExecutableSpec` materialization 阶段
     把 `per_work_arg_specs` canonicalize 成 kernel-local truth，
     并让 codegen/runtime 都按 `value_kind` 消费
-  - 在 `AnalyzeSemanticStructure -> SpatialProgram.fragment_contract ->
+  - 在 `AnalyzeSemanticStructure -> SpatialProgram.buffer_materialization_contract ->
     compute_epilogue_ops` 这条主链上，
-    显式 materialize generic `fragment_materialization_contract`
-    （`intermediate_fragment_merge / intermediate_buffer /
-    fragment_delta / fragment_add`），
+    显式 materialize generic `buffer_materialization_contract`
+    （`intermediate_accumulator_merge / intermediate_buffer /
+    accumulator_delta / accumulator_add`），
     不再把 `matmul` 这类 family 名字编码进 contract
   - 在 `ExecutableSpec` build 阶段追加
     `direct_runtime_unsupported_reasons`
@@ -261,7 +275,7 @@
     2. 在 republish/cast bridge 里默认 lane-0，
        最终只 materialize 出单 lane slice
 - **修法**:
-  - 把 `fragment_layout_contract` 扩成 owner-side fragment live-form contract，
+  - 把 `buffer_distribution_contract` 扩成 owner-side live-form contract，
     至少显式带出
     `live_form_kind / execution_topology_kind / physical_local_extent`
   - 这层 truth 的 owner 应该是

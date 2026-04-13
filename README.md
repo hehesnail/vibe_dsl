@@ -18,7 +18,7 @@
   - `TT Target IR`
 - `Phase A` 与 `stage4_semantic_manifest` `Phase 1-2` 已完成：
   - `AnalyzeSemanticStructure` 已是 manifest-first
-  - `blackhole.fragment_regions` 只剩 residual reduction evidence 与 lowering compatibility 职责
+  - `blackhole.compute_regions` 只剩 residual reduction evidence 与 lowering compatibility 职责
 - `Phase B / Spatial Program IR` 的 compile-path cutover 已收口，当前作为
   `Phase C` 的活跃输入边界保留
 - 当前主实施阶段是 `Phase B / Spatial Program IR` 的 contract hardening

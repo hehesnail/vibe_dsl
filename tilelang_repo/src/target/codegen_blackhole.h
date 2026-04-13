@@ -109,7 +109,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   // that transform the TIR before it reaches the CodeGen stage.
 
  protected:
-  struct FragmentLayoutBinding {
+  struct BufferDistributionBinding {
     std::string buffer_name;
     std::string distribution_kind;
     std::string storage_topology_kind;
@@ -221,9 +221,9 @@ class CodeGenBlackhole : public CodeGenCHost {
   void MaybeEmitPackWaypoint(std::ostream& os, const char* code);
   void MaybeEmitUnpackWaypoint(std::ostream& os, const char* code);
   std::string GetCBRequirementName(int cb_id) const;
-  void LoadFragmentLayoutContracts(const tvm::tir::PrimFunc& f);
-  const FragmentLayoutBinding* FindFragmentLayoutBinding(const tvm::tir::VarNode* var) const;
-  bool FragmentLayoutRequiresGenericBridge(const FragmentLayoutBinding& binding) const;
+  void LoadBufferDistributionContracts(const tvm::tir::PrimFunc& f);
+  const BufferDistributionBinding* FindBufferDistributionBinding(const tvm::tir::VarNode* var) const;
+  bool BufferDistributionRequiresGenericBridge(const BufferDistributionBinding& binding) const;
   std::optional<DataType> TryResolveHandleDataType(const tvm::tir::VarNode* var) const;
   DataType ResolveHandleDataType(const tvm::tir::VarNode* var, const char* op_name,
                                  const char* role) const;
@@ -271,7 +271,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_map<std::string, int> cb_publish_pages_by_requirement_name_;
   std::unordered_map<std::string, int> cb_initial_reserve_pages_by_requirement_name_;
   std::unordered_map<int, std::vector<ActiveCBWritePtrBinding>> active_cb_write_ptr_bindings_;
-  std::unordered_map<std::string, FragmentLayoutBinding> fragment_layout_bindings_by_buffer_name_;
+  std::unordered_map<std::string, BufferDistributionBinding> buffer_distribution_bindings_by_buffer_name_;
   std::string thread_idx_x_expr_;
   int logical_grid_x_{1};
   int logical_grid_y_{1};

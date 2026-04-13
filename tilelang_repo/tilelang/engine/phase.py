@@ -371,7 +371,7 @@ def LowerToBlackholePhaseB(mod: IRModule) -> IRModule:
     mod = tilelang.transform.BuildSpatialPlanCompanion()(mod)
     mod = tilelang.transform.SplitBlackholeKernel()(mod)
     mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
-    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeComputeRegions()(mod)
     mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
     mod = tilelang.transform.AnalyzeSpatialDomainPlan()(mod)
     mod = tilelang.transform.AnalyzeSpatialExecutionPlan()(mod)

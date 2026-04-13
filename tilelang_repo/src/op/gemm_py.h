@@ -70,8 +70,8 @@ public:
                         InferLevel level) const override;
 
   TileOperator Clone() const;
-  std::optional<FragmentMaterializationInfo>
-  GetFragmentMaterializationInfo() const override;
+  std::optional<BufferMaterializationInfo>
+  GetBufferMaterializationInfo() const override;
   std::vector<DataflowAccessInfo> GetDataflowAccessInfo() const override;
 
   // Target GEMM instruction

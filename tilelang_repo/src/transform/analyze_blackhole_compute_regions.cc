@@ -18,8 +18,8 @@
  */
 
 /*!
- * \file analyze_blackhole_fragment_regions.cc
- * \brief Analyze split-after Blackhole fragment compute regions and emit a structured IR attr.
+ * \file analyze_blackhole_compute_regions.cc
+ * \brief Analyze split-after Blackhole compute regions and emit a structured IR attr.
  */
 
 #include <tvm/ffi/reflection/registry.h>
@@ -39,8 +39,8 @@
 
 #include "../layout/layout.h"
 #include "common/blackhole_utils.h"
-#include "common/fragment_layout_contract_utils.h"
-#include "common/fragment_region_analysis.h"
+#include "common/buffer_distribution_contract_utils.h"
+#include "common/compute_region_analysis.h"
 
 namespace tvm {
 namespace tl {
@@ -90,7 +90,7 @@ int64_t StaticNumElements(const Buffer& buffer) {
   return num_elements;
 }
 
-bool IsFragmentLikeScope(const std::string& scope) {
+bool IsComputeRegionScope(const std::string& scope) {
   return scope == "local" || scope == "local.fragment" || scope == "blackhole.acc";
 }
 
@@ -123,42 +123,42 @@ bool IsLoadFromBuffer(const PrimExpr& expr, const Buffer& buffer) {
   return false;
 }
 
-bool IsLoadFromNonFragmentLocal(const PrimExpr& expr,
+bool IsLoadFromNonRegionLocal(const PrimExpr& expr,
                                 const std::unordered_map<const tir::VarNode*, BufferInfo>&
-                                    fragment_buffers) {
+                                    region_buffers) {
   if (const auto* load = expr.as<BufferLoadNode>()) {
     const auto* key = BufferKey(load->buffer);
-    return load->buffer.scope() == "local" && key != nullptr && !fragment_buffers.count(key);
+    return load->buffer.scope() == "local" && key != nullptr && !region_buffers.count(key);
   }
   return false;
 }
 
-bool IsLoadFromFragmentBuffer(const PrimExpr& expr,
+bool IsLoadFromRegionBuffer(const PrimExpr& expr,
                               const std::unordered_map<const tir::VarNode*, BufferInfo>&
-                                  fragment_buffers) {
+                                  region_buffers) {
   if (const auto* load = expr.as<BufferLoadNode>()) {
     const auto* key = BufferKey(load->buffer);
-    return key != nullptr && fragment_buffers.count(key);
+    return key != nullptr && region_buffers.count(key);
   }
   return false;
 }
 
-class FragmentRegionAnalyzer final : public StmtExprVisitor {
+class ComputeRegionAnalyzer final : public StmtExprVisitor {
  public:
   void Analyze(const PrimFunc& func) {
     AnalyzeTopLevel(func->body);
   }
 
-  bool HasRegion() const { return !fragment_buffer_order_.empty() || !seen_ops_.empty(); }
+  bool HasRegion() const { return !region_buffer_order_.empty() || !seen_ops_.empty(); }
 
   Map<String, Any> EncodeSingleRegion() const {
-    MaterializeFragmentLayoutContractsFromRegionEvidence();
+    MaterializeBufferDistributionContractsFromRegionEvidence();
     Map<String, Any> region;
 
-    Array<Any> fragment_buffers;
-    for (const auto* key : fragment_buffer_order_) {
-      auto info_it = fragment_buffers_.find(key);
-      if (info_it == fragment_buffers_.end()) {
+    Array<Any> region_buffers;
+    for (const auto* key : region_buffer_order_) {
+      auto info_it = region_buffers_.find(key);
+      if (info_it == region_buffers_.end()) {
         continue;
       }
       const auto& info = info_it->second;
@@ -168,20 +168,20 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       entry.Set(schema_key::kScope, String(info.scope));
       entry.Set(schema_key::kIsInteger,
                 Integer(info.buffer->dtype.is_int() || info.buffer->dtype.is_uint()));
-      fragment_buffers.push_back(entry);
+      region_buffers.push_back(entry);
     }
-    region.Set(manifest_key::kFragmentBuffers, fragment_buffers);
+    region.Set(manifest_key::kRegionBuffers, region_buffers);
 
-    Array<Any> fragment_layout_contracts;
-    for (const auto* key : fragment_buffer_order_) {
-      auto contract_it = fragment_layout_contracts_.find(key);
-      if (contract_it == fragment_layout_contracts_.end()) {
+    Array<Any> buffer_distribution_contracts;
+    for (const auto* key : region_buffer_order_) {
+      auto contract_it = buffer_distribution_contracts_.find(key);
+      if (contract_it == buffer_distribution_contracts_.end()) {
         continue;
       }
-      fragment_layout_contracts.push_back(contract_it->second);
+      buffer_distribution_contracts.push_back(contract_it->second);
     }
-    if (!fragment_layout_contracts.empty()) {
-      region.Set(String(schema_key::kFragmentLayoutContracts), fragment_layout_contracts);
+    if (!buffer_distribution_contracts.empty()) {
+      region.Set(String(schema_key::kBufferDistributionContracts), buffer_distribution_contracts);
     }
 
     Array<Any> ops;
@@ -198,8 +198,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
 
     Array<Any> row_reductions;
     for (const auto* target_key : row_reduction_targets_) {
-      auto buffer_it = fragment_buffers_.find(target_key);
-      if (buffer_it == fragment_buffers_.end()) {
+      auto buffer_it = region_buffers_.find(target_key);
+      if (buffer_it == region_buffers_.end()) {
         continue;
       }
       const Buffer& buffer = buffer_it->second.buffer;
@@ -216,8 +216,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
 
     Array<Any> arg_reduce_targets;
     for (const auto* key : BuildArgReduceTargets()) {
-      auto buffer_it = fragment_buffers_.find(key);
-      if (buffer_it == fragment_buffers_.end()) {
+      auto buffer_it = region_buffers_.find(key);
+      if (buffer_it == region_buffers_.end()) {
         continue;
       }
       const Buffer& buffer = buffer_it->second.buffer;
@@ -230,8 +230,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
 
     Array<Any> row_broadcasts;
     for (const auto* key : row_broadcast_sources_) {
-      auto buffer_it = fragment_buffers_.find(key);
-      if (buffer_it == fragment_buffers_.end()) {
+      auto buffer_it = region_buffers_.find(key);
+      if (buffer_it == region_buffers_.end()) {
         continue;
       }
       const Buffer& buffer = buffer_it->second.buffer;
@@ -244,8 +244,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
 
     Array<Any> selection_targets;
     for (const auto* key : selection_target_order_) {
-      auto buffer_it = fragment_buffers_.find(key);
-      if (buffer_it == fragment_buffers_.end()) {
+      auto buffer_it = region_buffers_.find(key);
+      if (buffer_it == region_buffers_.end()) {
         continue;
       }
       const Buffer& buffer = buffer_it->second.buffer;
@@ -258,9 +258,9 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
 
     Array<Any> selection_pairs;
     for (const auto& pair : BuildSelectionPairs()) {
-      auto value_it = fragment_buffers_.find(pair.value_target);
-      auto companion_it = fragment_buffers_.find(pair.companion_target);
-      if (value_it == fragment_buffers_.end() || companion_it == fragment_buffers_.end()) {
+      auto value_it = region_buffers_.find(pair.value_target);
+      auto companion_it = region_buffers_.find(pair.companion_target);
+      if (value_it == region_buffers_.end() || companion_it == region_buffers_.end()) {
         continue;
       }
       const Buffer& value_buffer = value_it->second.buffer;
@@ -273,8 +273,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       Array<Any> sources;
       Array<Any> source_buffers;
       for (const auto& source : pair.shared_sources) {
-        auto source_it = fragment_buffers_.find(source);
-        if (source_it == fragment_buffers_.end()) {
+        auto source_it = region_buffers_.find(source);
+        if (source_it == region_buffers_.end()) {
           continue;
         }
         const Buffer& source_buffer = source_it->second.buffer;
@@ -289,8 +289,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
 
     Array<Any> update_sources;
     for (const auto* target : update_source_target_order_) {
-      auto target_it = fragment_buffers_.find(target);
-      if (target_it == fragment_buffers_.end()) {
+      auto target_it = region_buffers_.find(target);
+      if (target_it == region_buffers_.end()) {
         continue;
       }
       const Buffer& target_buffer = target_it->second.buffer;
@@ -300,8 +300,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       Array<Any> sources;
       Array<Any> source_buffers;
       for (const auto* source : update_source_order_.at(target)) {
-        auto source_it = fragment_buffers_.find(source);
-        if (source_it == fragment_buffers_.end()) {
+        auto source_it = region_buffers_.find(source);
+        if (source_it == region_buffers_.end()) {
           continue;
         }
         const Buffer& source_buffer = source_it->second.buffer;
@@ -316,8 +316,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
 
     Array<Any> loop_carried_state;
     for (const auto* key : loop_carried_order_) {
-      auto buffer_it = fragment_buffers_.find(key);
-      if (buffer_it == fragment_buffers_.end()) {
+      auto buffer_it = region_buffers_.find(key);
+      if (buffer_it == region_buffers_.end()) {
         continue;
       }
       const Buffer& buffer = buffer_it->second.buffer;
@@ -334,8 +334,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       if (it == update_source_order_.end() || it->second.empty()) {
         continue;
       }
-      auto target_it = fragment_buffers_.find(target);
-      if (target_it == fragment_buffers_.end()) {
+      auto target_it = region_buffers_.find(target);
+      if (target_it == region_buffers_.end()) {
         continue;
       }
       const Buffer& target_buffer = target_it->second.buffer;
@@ -345,8 +345,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       Array<Any> sources;
       Array<Any> source_buffers;
       for (const auto* source : it->second) {
-        auto source_it = fragment_buffers_.find(source);
-        if (source_it == fragment_buffers_.end()) {
+        auto source_it = region_buffers_.find(source);
+        if (source_it == region_buffers_.end()) {
           continue;
         }
         const Buffer& source_buffer = source_it->second.buffer;
@@ -363,10 +363,10 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
   }
 
  private:
-  void RegisterFragmentBuffer(const Buffer& buffer, bool allow_plain_local = false) {
+  void RegisterRegionBuffer(const Buffer& buffer, bool allow_plain_local = false) {
     (void)allow_plain_local;
     const std::string scope = buffer.scope();
-    if (!IsFragmentLikeScope(scope)) {
+    if (!IsComputeRegionScope(scope)) {
       return;
     }
     const auto* key = BufferKey(buffer);
@@ -376,26 +376,26 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     if (temp_reduction_buffers_.count(key)) {
       return;
     }
-    if (fragment_buffers_.emplace(key, BufferInfo{buffer, scope}).second) {
-      fragment_buffer_order_.push_back(key);
+    if (region_buffers_.emplace(key, BufferInfo{buffer, scope}).second) {
+      region_buffer_order_.push_back(key);
     }
   }
 
-  void UnregisterFragmentBuffer(const tir::VarNode* key) {
+  void UnregisterRegionBuffer(const tir::VarNode* key) {
     if (key == nullptr) {
       return;
     }
-    fragment_buffers_.erase(key);
-    fragment_buffer_order_.erase(
-        std::remove(fragment_buffer_order_.begin(), fragment_buffer_order_.end(), key),
-        fragment_buffer_order_.end());
+    region_buffers_.erase(key);
+    region_buffer_order_.erase(
+        std::remove(region_buffer_order_.begin(), region_buffer_order_.end(), key),
+        region_buffer_order_.end());
   }
 
   void AnalyzeTopLevel(const Stmt& body) {
     if (const auto* block = body.as<BlockNode>()) {
       if (block->name_hint == "tilelang_root") {
         for (const Buffer& buffer : block->alloc_buffers) {
-          RegisterFragmentBuffer(buffer, true);
+          RegisterRegionBuffer(buffer, true);
         }
         AnalyzeTopLevel(block->body);
         return;
@@ -442,9 +442,9 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
             const std::string scope = buffer.scope();
             if (scope == "local" || scope == "local.fragment" || scope == "blackhole.acc") {
               if (const auto* key = BufferKey(buffer); key != nullptr) {
-                layout_fragment_buffers_.insert(key);
-                if (auto contract = TryBuildFragmentLayoutContract(buffer, layout)) {
-                  fragment_layout_contracts_[key] = contract.value();
+                layout_region_buffers_.insert(key);
+                if (auto contract = TryBuildBufferDistributionContract(buffer, layout)) {
+                  buffer_distribution_contracts_[key] = contract.value();
                 }
               }
             }
@@ -454,7 +454,7 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     }
     if (op->name_hint == "tilelang_root") {
       for (const Buffer& buffer : op->alloc_buffers) {
-        RegisterFragmentBuffer(buffer);
+        RegisterRegionBuffer(buffer);
       }
       AnalyzeTopLevel(op->body);
       return;
@@ -517,14 +517,14 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
   void VisitStmt_(const BufferStoreNode* op) final {
     const auto* target_key = BufferKey(op->buffer);
     if (op->buffer.scope() == "local" && target_key != nullptr &&
-        !layout_fragment_buffers_.count(target_key) &&
+        !layout_region_buffers_.count(target_key) &&
         DetectTempReductionBuffer(op->buffer, op->value)) {
-      UnregisterFragmentBuffer(BufferKey(op->buffer));
+      UnregisterRegionBuffer(BufferKey(op->buffer));
       StmtExprVisitor::VisitStmt_(op);
       return;
     }
-    RegisterFragmentBuffer(op->buffer);
-    if (target_key != nullptr && fragment_buffers_.count(target_key)) {
+    RegisterRegionBuffer(op->buffer);
+    if (target_key != nullptr && region_buffers_.count(target_key)) {
       if (pre_loop_stmt_) {
         pre_loop_writes_.insert(target_key);
       }
@@ -541,9 +541,9 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
   }
 
   void VisitExpr_(const BufferLoadNode* op) final {
-    RegisterFragmentBuffer(op->buffer);
+    RegisterRegionBuffer(op->buffer);
     const auto* source_key = BufferKey(op->buffer);
-    if (source_key != nullptr && fragment_buffers_.count(source_key)) {
+    if (source_key != nullptr && region_buffers_.count(source_key)) {
       if (pre_loop_stmt_) {
         pre_loop_reads_.insert(source_key);
       }
@@ -578,9 +578,9 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
                                     const char* kind) {
       const bool lhs_self = IsLoadFromBuffer(lhs, target_buffer);
       const bool rhs_self = IsLoadFromBuffer(rhs, target_buffer);
-      const bool lhs_fragment = IsLoadFromFragmentBuffer(lhs, fragment_buffers_);
-      const bool rhs_fragment = IsLoadFromFragmentBuffer(rhs, fragment_buffers_);
-      if (!((lhs_self && rhs_fragment) || (rhs_self && lhs_fragment))) {
+      const bool lhs_region_buffer = IsLoadFromRegionBuffer(lhs, region_buffers_);
+      const bool rhs_region_buffer = IsLoadFromRegionBuffer(rhs, region_buffers_);
+      if (!((lhs_self && rhs_region_buffer) || (rhs_self && lhs_region_buffer))) {
         return;
       }
       if (std::string(kind) == "max") {
@@ -627,24 +627,24 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     bool saw_pointwise = false;
     bool saw_floor_div_broadcast = false;
     bool saw_rank_broadcast = false;
-    bool saw_scalar_fragment_broadcast = false;
-    bool saw_direct_fragment_max_reduction = false;
-    bool saw_direct_fragment_sum_reduction = false;
+    bool saw_scalar_region_broadcast = false;
+    bool saw_direct_region_max_reduction = false;
+    bool saw_direct_region_sum_reduction = false;
     std::unordered_set<const tir::VarNode*> local_sources;
     bool has_self_max_with_temp = false;
     std::string temp_reduction_kind;
-    const int64_t target_elements = StaticNumElements(fragment_buffers_.at(target_key).buffer);
-    auto is_self_reduce_from_larger_fragment = [&](const PrimExpr& self_expr,
-                                                   const PrimExpr& fragment_expr) {
-      const auto* fragment_load = fragment_expr.as<BufferLoadNode>();
-      if (!IsLoadFromBuffer(self_expr, target_buffer) || fragment_load == nullptr) {
+    const int64_t target_elements = StaticNumElements(region_buffers_.at(target_key).buffer);
+    auto is_self_reduce_from_larger_region_buffer = [&](const PrimExpr& self_expr,
+                                                        const PrimExpr& region_expr) {
+      const auto* region_load = region_expr.as<BufferLoadNode>();
+      if (!IsLoadFromBuffer(self_expr, target_buffer) || region_load == nullptr) {
         return false;
       }
-      const auto* source_key = BufferKey(fragment_load->buffer);
-      if (source_key == nullptr || !fragment_buffers_.count(source_key)) {
+      const auto* source_key = BufferKey(region_load->buffer);
+      if (source_key == nullptr || !region_buffers_.count(source_key)) {
         return false;
       }
-      const int64_t source_elements = StaticNumElements(fragment_buffers_.at(source_key).buffer);
+      const int64_t source_elements = StaticNumElements(region_buffers_.at(source_key).buffer);
       return source_elements > target_elements;
     };
 
@@ -668,28 +668,28 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
         AddPointwiseOp("max");
         const bool lhs_self_rhs_temp =
             IsLoadFromBuffer(max->a, target_buffer) &&
-            IsLoadFromNonFragmentLocal(max->b, fragment_buffers_);
+            IsLoadFromNonRegionLocal(max->b, region_buffers_);
         const bool rhs_self_lhs_temp =
             IsLoadFromBuffer(max->b, target_buffer) &&
-            IsLoadFromNonFragmentLocal(max->a, fragment_buffers_);
+            IsLoadFromNonRegionLocal(max->a, region_buffers_);
         has_self_max_with_temp |= lhs_self_rhs_temp || rhs_self_lhs_temp;
 
-        const bool lhs_self_rhs_fragment =
+        const bool lhs_self_rhs_region =
             IsLoadFromBuffer(max->a, target_buffer) &&
-            IsLoadFromFragmentBuffer(max->b, fragment_buffers_);
-        const bool rhs_self_lhs_fragment =
+            IsLoadFromRegionBuffer(max->b, region_buffers_);
+        const bool rhs_self_lhs_region =
             IsLoadFromBuffer(max->b, target_buffer) &&
-            IsLoadFromFragmentBuffer(max->a, fragment_buffers_);
-        saw_direct_fragment_max_reduction |=
-            is_self_reduce_from_larger_fragment(max->a, max->b) ||
-            is_self_reduce_from_larger_fragment(max->b, max->a) ||
-            ((target_elements == 1) && (lhs_self_rhs_fragment || rhs_self_lhs_fragment));
+            IsLoadFromRegionBuffer(max->a, region_buffers_);
+        saw_direct_region_max_reduction |=
+            is_self_reduce_from_larger_region_buffer(max->a, max->b) ||
+            is_self_reduce_from_larger_region_buffer(max->b, max->a) ||
+            ((target_elements == 1) && (lhs_self_rhs_region || rhs_self_lhs_region));
       } else if (const auto* add = node.as<AddNode>()) {
         saw_pointwise = true;
         AddPointwiseOp("add");
-        saw_direct_fragment_sum_reduction |=
-            is_self_reduce_from_larger_fragment(add->a, add->b) ||
-            is_self_reduce_from_larger_fragment(add->b, add->a);
+        saw_direct_region_sum_reduction |=
+            is_self_reduce_from_larger_region_buffer(add->a, add->b) ||
+            is_self_reduce_from_larger_region_buffer(add->b, add->a);
       } else if (node.as<MulNode>()) {
         saw_pointwise = true;
         AddPointwiseOp("mul");
@@ -698,7 +698,7 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
         AddPointwiseOp("div");
       } else if (const auto* load = node.as<BufferLoadNode>()) {
         const auto* source_key = BufferKey(load->buffer);
-        if (source_key == nullptr || source_key == target_key || !fragment_buffers_.count(source_key)) {
+        if (source_key == nullptr || source_key == target_key || !region_buffers_.count(source_key)) {
           if (const auto it = temp_reduction_buffers_.find(source_key);
               it != temp_reduction_buffers_.end()) {
             temp_reduction_kind = it->second;
@@ -709,9 +709,9 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
         if (load->indices.size() < store_indices.size()) {
           saw_rank_broadcast = true;
         }
-        const int64_t source_elements = StaticNumElements(fragment_buffers_.at(source_key).buffer);
+        const int64_t source_elements = StaticNumElements(region_buffers_.at(source_key).buffer);
         if (source_elements == 1 && target_elements > 1) {
-          saw_scalar_fragment_broadcast = true;
+          saw_scalar_region_broadcast = true;
         }
         for (const PrimExpr& index : load->indices) {
           if (ExprUsesFloorDivLikeIndex(index)) {
@@ -736,20 +736,20 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
       AddOp("pointwise_chain");
     }
 
-    if (has_self_max_with_temp || temp_reduction_kind == "max" || saw_direct_fragment_max_reduction ||
-        temp_reduction_kind == "sum" || saw_direct_fragment_sum_reduction) {
+    if (has_self_max_with_temp || temp_reduction_kind == "max" || saw_direct_region_max_reduction ||
+        temp_reduction_kind == "sum" || saw_direct_region_sum_reduction) {
       AddOp("row_reduction");
       const std::string reduction_kind =
           (has_self_max_with_temp || temp_reduction_kind == "max" ||
-           saw_direct_fragment_max_reduction)
+           saw_direct_region_max_reduction)
               ? "max"
               : "sum";
       AddRowReduction(target_key, reduction_kind);
       for (const auto* source_key : local_sources) {
-        if (!fragment_buffers_.count(source_key)) {
+        if (!region_buffers_.count(source_key)) {
           continue;
         }
-        const int64_t source_elements = StaticNumElements(fragment_buffers_.at(source_key).buffer);
+        const int64_t source_elements = StaticNumElements(region_buffers_.at(source_key).buffer);
         if (source_elements > target_elements) {
           AddRowReductionSource(source_key);
         }
@@ -757,7 +757,7 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     }
 
     if (!local_sources.empty() &&
-        (saw_floor_div_broadcast || saw_rank_broadcast || saw_scalar_fragment_broadcast)) {
+        (saw_floor_div_broadcast || saw_rank_broadcast || saw_scalar_region_broadcast)) {
       AddOp("row_broadcast");
       AddRowBroadcastDestination(target_key);
       for (const auto* source_key : local_sources) {
@@ -902,44 +902,71 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     return targets;
   }
 
-  void MaterializeFragmentLayoutContractsFromRegionEvidence() const {
+  void MaterializeBufferDistributionContractsFromRegionEvidence() const {
     auto set_contract = [&](const tir::VarNode* key, const char* distribution_kind) {
-      if (key == nullptr || fragment_layout_contracts_.count(key) || !fragment_buffers_.count(key)) {
+      if (key == nullptr || !region_buffers_.count(key)) {
         return;
       }
-      const Buffer& buffer = fragment_buffers_.at(key).buffer;
+      const Buffer& buffer = region_buffers_.at(key).buffer;
       const std::string buffer_name = BufferName(buffer);
       const std::string scope = buffer.scope();
-      if (buffer_name.empty() || !IsFragmentLikeScope(scope)) {
+      if (buffer_name.empty() || !IsComputeRegionScope(scope)) {
+        return;
+      }
+      auto it = buffer_distribution_contracts_.find(key);
+      if (it != buffer_distribution_contracts_.end()) {
+        auto existing_kind_it = it->second.find(String(schema_key::kDistributionKind));
+        if (existing_kind_it != it->second.end()) {
+          const std::string existing_kind =
+              static_cast<std::string>(Downcast<String>((*existing_kind_it).second));
+          if (existing_kind == distribution_kind) {
+            return;
+          }
+          if (existing_kind != buffer_distribution_kind::kThreadDistributed) {
+            return;
+          }
+        }
+        Map<String, Any> refined = it->second;
+        refined.Set(String(schema_key::kScope), String(scope));
+        refined.Set(String(schema_key::kDistributionKind), String(distribution_kind));
+        refined.Set(String(schema_key::kStorageTopologyKind),
+                    String(buffer_topology_kind::kLinear));
+        if (refined.find(String(schema_key::kShape)) == refined.end()) {
+          refined.Set(String(schema_key::kShape),
+                      EncodeLogicalDistributionShape(buffer->shape, distribution_kind));
+        }
+        it->second = refined;
         return;
       }
       Map<String, Any> contract;
       contract.Set(String(schema_key::kBuffer), String(buffer_name));
       contract.Set(String(schema_key::kScope), String(scope));
-      contract.Set(String(schema_key::kShape), EncodeFragmentContractShape(buffer->shape));
+      contract.Set(String(schema_key::kShape),
+                   EncodeLogicalDistributionShape(buffer->shape, distribution_kind));
       contract.Set(String(schema_key::kDistributionKind), String(distribution_kind));
-      contract.Set(String(schema_key::kStorageTopologyKind), String(fragment_layout::kLinear));
-      fragment_layout_contracts_[key] = contract;
+      contract.Set(String(schema_key::kStorageTopologyKind),
+                   String(buffer_topology_kind::kLinear));
+      buffer_distribution_contracts_[key] = contract;
     };
 
     for (const auto* key : row_reduction_targets_) {
-      set_contract(key, fragment_layout::kRowState);
+      set_contract(key, buffer_distribution_kind::kRowState);
     }
     for (const auto* key : row_broadcast_sources_) {
-      set_contract(key, fragment_layout::kRowState);
+      set_contract(key, buffer_distribution_kind::kRowState);
     }
     for (const auto* key : row_reduction_sources_) {
-      set_contract(key, fragment_layout::kGroupedRows);
+      set_contract(key, buffer_distribution_kind::kGroupedRows);
     }
     for (const auto* key : row_broadcast_destinations_) {
-      set_contract(key, fragment_layout::kGroupedRows);
+      set_contract(key, buffer_distribution_kind::kGroupedRows);
     }
   }
 
-  std::unordered_map<const tir::VarNode*, BufferInfo> fragment_buffers_;
-  std::vector<const tir::VarNode*> fragment_buffer_order_;
-  std::unordered_set<const tir::VarNode*> layout_fragment_buffers_;
-  mutable std::unordered_map<const tir::VarNode*, Map<String, Any>> fragment_layout_contracts_;
+  std::unordered_map<const tir::VarNode*, BufferInfo> region_buffers_;
+  std::vector<const tir::VarNode*> region_buffer_order_;
+  std::unordered_set<const tir::VarNode*> layout_region_buffers_;
+  mutable std::unordered_map<const tir::VarNode*, Map<String, Any>> buffer_distribution_contracts_;
 
   std::unordered_set<std::string> seen_ops_;
   std::vector<std::string> op_order_;
@@ -979,7 +1006,7 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
     if (!loop_carried_order_.empty()) {
       return;
     }
-    for (const auto* key : fragment_buffer_order_) {
+    for (const auto* key : region_buffer_order_) {
       const bool carried = in_loop_writes_.count(key) &&
                            (pre_loop_writes_.count(key) || in_loop_reads_.count(key) ||
                             post_loop_reads_.count(key));
@@ -1003,8 +1030,8 @@ class FragmentRegionAnalyzer final : public StmtExprVisitor {
 
 }  // namespace
 
-Map<String, Any> AnalyzeBlackholeFragmentRegionEvidence(const PrimFunc& func) {
-  FragmentRegionAnalyzer analyzer;
+Map<String, Any> AnalyzeBlackholeComputeRegionEvidence(const PrimFunc& func) {
+  ComputeRegionAnalyzer analyzer;
   analyzer.Analyze(func);
   if (!analyzer.HasRegion()) {
     return {};
@@ -1012,27 +1039,27 @@ Map<String, Any> AnalyzeBlackholeFragmentRegionEvidence(const PrimFunc& func) {
   return analyzer.Encode();
 }
 
-tir::transform::Pass AnalyzeBlackholeFragmentRegionsPass() {
+tir::transform::Pass AnalyzeBlackholeComputeRegionsPass() {
   auto fpass = [](PrimFunc func, IRModule, tir::transform::PassContext) -> PrimFunc {
-    Map<String, Any> encoded = AnalyzeBlackholeFragmentRegionEvidence(func);
+    Map<String, Any> encoded = AnalyzeBlackholeComputeRegionEvidence(func);
     if (encoded.empty()) {
       return func;
     }
 
     Map<String, Any> attrs = func->attrs.defined() ? func->attrs->dict : Map<String, Any>();
-    attrs.Set("blackhole.fragment_regions", encoded["regions"]);
+    attrs.Set("blackhole.compute_regions", encoded["regions"]);
     PrimFunc updated = func;
     updated.CopyOnWrite()->attrs = DictAttrs(attrs);
     return updated;
   };
   return tir::transform::CreatePrimFuncPass(
-      fpass, 0, "tl.transform.AnalyzeBlackholeFragmentRegions", {});
+      fpass, 0, "tl.transform.AnalyzeBlackholeComputeRegions", {});
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
-  refl::GlobalDef().def("tl.transform.AnalyzeBlackholeFragmentRegions",
-                        AnalyzeBlackholeFragmentRegionsPass);
+  refl::GlobalDef().def("tl.transform.AnalyzeBlackholeComputeRegions",
+                        AnalyzeBlackholeComputeRegionsPass);
 }
 
 }  // namespace tl

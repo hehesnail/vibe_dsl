@@ -268,22 +268,22 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Return the manifest-backed 1-D logical vector length for a row/state buffer. */
   int64_t GetLogicalVectorLength(const tvm::tir::Buffer& buffer) const;
 
-  /*! \brief Return the manifest-backed logical matrix shape for a fragment buffer. */
+  /*! \brief Return the manifest-backed logical matrix shape for a compute-region buffer. */
   std::pair<int64_t, int64_t> GetLogicalMatrixShape(const tvm::tir::Buffer& buffer) const;
 
-  /*! \brief Load fragment layout contracts exported by SpatialProgram fragment intents. */
-  void LoadFragmentLayoutContracts(
+  /*! \brief Load buffer-distribution contracts exported by SpatialProgram lowering support. */
+  void LoadBufferDistributionContracts(
       const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>& lowering_requirements);
 
-  /*! \brief Return the fragment layout contract for a buffer, or nullptr if absent. */
-  const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>* FindFragmentLayoutContract(
+  /*! \brief Return the buffer-distribution contract for a buffer, or nullptr if absent. */
+  const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>* FindBufferDistributionContract(
       const tvm::tir::Buffer& buffer) const;
 
-  /*! \brief Load logical fragment-view to physical accumulator bindings from fragment regions. */
-  void LoadFragmentPhysicalBufferBindings(const tvm::tir::PrimFunc& func);
+  /*! \brief Load compute-region buffer to physical accumulator bindings from compute regions. */
+  void LoadComputeRegionPhysicalBufferBindings(const tvm::tir::PrimFunc& func);
 
-  /*! \brief Resolve the physical accumulator/backing buffer for a fragment view when known. */
-  tvm::tir::Buffer ResolvePhysicalFragmentBuffer(const tvm::tir::Buffer& buffer) const;
+  /*! \brief Resolve the physical accumulator/backing buffer for a compute-region buffer. */
+  tvm::tir::Buffer ResolvePhysicalComputeBuffer(const tvm::tir::Buffer& buffer) const;
 
   /*! \brief Detect matmul call using Op comparison (not string matching) */
   bool IsMatmulCall(const tvm::tir::CallNode* op) const;
@@ -503,15 +503,15 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   void LoadBufferFlowContracts(const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>& lowering_requirements);
   FutureBufferUses ClassifyFutureBufferUses(const tvm::tir::Buffer& buffer,
                                             int current_order_index) const;
-  const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>* FindFragmentMaterializationContract(
+  const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>* FindBufferMaterializationContract(
       const tvm::tir::Buffer& buffer) const;
   bool BufferUsesTiledCBLiveForm(const tvm::tir::Buffer& buffer) const;
-  void ValidatePublishedFragmentSourceEdge(const tvm::tir::Buffer& src,
-                                           const tvm::tir::Buffer& dst) const;
-  void AppendPublishedFragmentSourceMaterialization(const tvm::tir::Buffer& src,
-                                                    int current_order_index,
-                                                    std::vector<tvm::tir::Stmt>* prefix,
-                                                    std::vector<tvm::tir::Stmt>* suffix);
+  void ValidatePublishedBufferSourceEdge(const tvm::tir::Buffer& src,
+                                         const tvm::tir::Buffer& dst) const;
+  void AppendPublishedBufferSourceMaterialization(const tvm::tir::Buffer& src,
+                                                  int current_order_index,
+                                                  std::vector<tvm::tir::Stmt>* prefix,
+                                                  std::vector<tvm::tir::Stmt>* suffix);
   bool ShouldRetainComputeInputBuffer(const tvm::tir::Buffer& buffer,
                                       int current_order_index) const;
   bool ShouldReacquireComputeInputBuffer(const tvm::tir::Buffer& buffer,
@@ -544,7 +544,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::vector<CBRequirement> cb_requirements_;
   bool saw_copy_op_ = false;
   bool needs_copy_runtime_args_ = false;
-  bool requires_fragment_compute_segment_ = false;
+  bool requires_compute_segment_ = false;
   tvm::tir::Buffer copy_input_buffer_;
   tvm::tir::Buffer copy_output_buffer_;
   std::string copy_input_buffer_name_;
@@ -577,11 +577,11 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::vector<std::unordered_set<std::string>> compute_contract_known_buffers_;
   std::vector<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>> compute_epilogue_payloads_flat_;
   std::unordered_map<std::string, tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>
-      fragment_layout_contracts_by_buffer_;
+      buffer_distribution_contracts_by_buffer_;
   std::unordered_map<std::string, tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>
-      fragment_materialization_contracts_by_target_buffer_;
-  std::unordered_map<const tvm::tir::VarNode*, tvm::tir::Buffer> fragment_physical_buffers_by_data_;
-  std::unordered_map<std::string, tvm::tir::Buffer> fragment_physical_buffers_by_identity_;
+      buffer_materialization_contracts_by_target_buffer_;
+  std::unordered_map<const tvm::tir::VarNode*, tvm::tir::Buffer> compute_physical_buffers_by_data_;
+  std::unordered_map<std::string, tvm::tir::Buffer> compute_physical_buffers_by_identity_;
   int active_compute_contract_payload_index_ = -1;
   std::unordered_map<std::string, int> gemm_input_buffer_num_tiles_;
   bool gemm_transpose_a_ = false;
@@ -609,10 +609,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::string current_segment_kind_;
   std::unordered_map<std::string, int> read_accessor_slots_;
   std::unordered_map<std::string, int> write_accessor_slots_;
-  std::unordered_map<std::string, int> cb_consumed_fragment_pages_by_buffer_identity_;
-  std::unordered_map<std::string, int> cb_consumed_fragment_use_count_by_buffer_identity_;
+  std::unordered_map<std::string, int> cb_consumed_compute_input_pages_by_buffer_identity_;
+  std::unordered_map<std::string, int> cb_consumed_compute_input_use_count_by_buffer_identity_;
   std::unordered_map<std::string, BufferFlowContract> buffer_flow_contracts_;
-  std::unordered_map<std::string, int> fragment_live_form_cb_by_buffer_identity_;
+  std::unordered_map<std::string, int> buffer_live_form_cb_by_buffer_identity_;
   std::unordered_map<std::string, std::vector<int64_t>> logical_buffer_shapes_;
   std::unordered_map<const Object*, int> stmt_order_index_by_node_;
   tvm::ffi::Array<tvm::ffi::Any> segment_plan_;

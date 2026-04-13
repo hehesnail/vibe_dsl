@@ -662,14 +662,14 @@ def AnalyzeBlackholeWorkDecomposition():
     return _ffi_api.AnalyzeBlackholeWorkDecomposition()  # type: ignore
 
 
-def AnalyzeBlackholeFragmentRegions():
-    """Analyze split-after Blackhole fragment compute regions.
+def AnalyzeBlackholeComputeRegions():
+    """Analyze split-after Blackhole compute regions.
 
-    Emits a structured `blackhole.fragment_regions` PrimFunc attr capturing
-    fragment buffers, row reductions, row broadcasts, pointwise chains,
-    and loop-carried fragment state.
+    Emits a structured `blackhole.compute_regions` PrimFunc attr capturing
+    compute-region buffers, row reductions, row broadcasts, pointwise chains,
+    and loop-carried region state.
     """
-    return tvm.ffi.get_global_func("tl.transform.AnalyzeBlackholeFragmentRegions")()
+    return tvm.ffi.get_global_func("tl.transform.AnalyzeBlackholeComputeRegions")()
 
 
 def AnalyzeBlackholePipelineStages():

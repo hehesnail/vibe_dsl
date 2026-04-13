@@ -141,23 +141,23 @@ static std::string DataTypeToDataFormatForBlackhole(DataType dtype) {
 static std::string CBFlowClassToString(CBFlowClass flow_class) {
   switch (flow_class) {
     case CBFlowClass::kStream:
-      return fragment_flow::kStream;
+      return buffer_flow::kStream;
     case CBFlowClass::kRepublish:
-      return fragment_flow::kRepublish;
+      return buffer_flow::kRepublish;
     case CBFlowClass::kState:
     default:
-      return fragment_flow::kState;
+      return buffer_flow::kState;
   }
 }
 
 static std::optional<CBFlowClass> ParseCBFlowClass(const std::string& flow_class) {
-  if (flow_class == fragment_flow::kState) {
+  if (flow_class == buffer_flow::kState) {
     return CBFlowClass::kState;
   }
-  if (flow_class == fragment_flow::kStream) {
+  if (flow_class == buffer_flow::kStream) {
     return CBFlowClass::kStream;
   }
-  if (flow_class == fragment_flow::kRepublish) {
+  if (flow_class == buffer_flow::kRepublish) {
     return CBFlowClass::kRepublish;
   }
   return std::nullopt;
@@ -1070,12 +1070,12 @@ static bool IsVectorLocalFragmentBuffer(const Buffer& buffer) {
          !buffer->shape.empty() && !tir::is_one(buffer->shape[0]);
 }
 
-static void ValidateNoResidualFragmentCompute(const Stmt& body) {
+static void ValidateNoResidualComputeRegionStores(const Stmt& body) {
   tir::PostOrderVisit(body, [&](const ObjectRef& node) {
     if (const auto* store = node.as<BufferStoreNode>()) {
       if (IsUnsupportedResidualLocalScope(store->buffer)) {
         ICHECK(false)
-            << "Blackhole fragment compute subset lowering is not implemented; residual local "
+            << "Blackhole compute subset lowering is not implemented; residual local "
                "store remains for buffer "
             << store->buffer->name;
       }
@@ -1083,9 +1083,9 @@ static void ValidateNoResidualFragmentCompute(const Stmt& body) {
   });
 }
 
-static bool HasUnsupportedFragmentOpsInRequirements(const Map<String, Any>& lowering_requirements) {
-  if (auto fragment_ops = lowering_requirements.Get("fragment_op_kinds")) {
-    for (const auto& item : Downcast<Array<Any>>(fragment_ops.value())) {
+static bool HasUnsupportedComputeOpsInRequirements(const Map<String, Any>& lowering_requirements) {
+  if (auto compute_ops = lowering_requirements.Get("compute_op_kinds")) {
+    for (const auto& item : Downcast<Array<Any>>(compute_ops.value())) {
       const std::string op_name = Downcast<String>(item);
       if (op_name == "row_reduction" || op_name == "row_broadcast" ||
           op_name == "pointwise_chain") {
@@ -1184,7 +1184,7 @@ static Map<String, Any> PruneSatisfiedLoweringRequirements(const Map<String, Any
     if (key == "row_broadcast_sources" && row_broadcast_satisfied) {
       continue;
     }
-    if (key == "fragment_op_kinds") {
+    if (key == "compute_op_kinds") {
       Array<Any> kept_ops;
       for (const auto& item : Downcast<Array<Any>>(value)) {
         const std::string op_name = Downcast<String>(item);
@@ -1221,17 +1221,17 @@ static Map<String, Any> PruneSatisfiedLoweringRequirements(const Map<String, Any
   return pruned;
 }
 
-static void ValidateFragmentPipelineLegality(const Map<String, Any>& lowering_requirements) {
+static void ValidateComputePipelineLegality(const Map<String, Any>& lowering_requirements) {
   if (auto pipeline_stage_counts = lowering_requirements.Get("pipeline_stage_counts")) {
     for (const auto& item : Downcast<Array<Any>>(pipeline_stage_counts.value())) {
       const int stage_count = Downcast<Integer>(item)->value;
       ICHECK_LE(stage_count, 2)
-          << "Blackhole fragment pipeline legality: unsupported stage count " << stage_count;
+          << "Blackhole compute pipeline legality: unsupported stage count " << stage_count;
     }
   }
 }
 
-static void ValidateFragmentPipelineLegalityFromBody(const Stmt& body) {
+static void ValidateComputePipelineLegalityFromBody(const Stmt& body) {
   tir::PostOrderVisit(body, [&](const ObjectRef& node) {
     const auto* loop = node.as<ForNode>();
     if (!loop || !loop->annotations.defined()) {
@@ -1243,7 +1243,7 @@ static void ValidateFragmentPipelineLegalityFromBody(const Stmt& body) {
     }
     const int64_t stages = Downcast<Integer>(stage_count.value())->value;
     ICHECK_LE(stages, 2)
-        << "Blackhole fragment pipeline legality: unsupported stage count " << stages;
+        << "Blackhole compute pipeline legality: unsupported stage count " << stages;
   });
 }
 
@@ -1347,62 +1347,71 @@ static void SetArrayRequirementIfMissing(Map<String, Any>* lowering_requirements
   }
 }
 
-static bool HasFragmentComputeContract(const Map<String, Any>& lowering_requirements) {
-  auto maybe_fragment_ops = lowering_requirements.Get(String(schema_key::kFragmentOpKinds));
-  if (!maybe_fragment_ops) {
+static bool HasComputeSupportContract(const Map<String, Any>& lowering_requirements) {
+  auto maybe_compute_ops = lowering_requirements.Get(String(schema_key::kComputeOpKinds));
+  if (!maybe_compute_ops) {
     return false;
   }
-  return !Downcast<Array<Any>>(maybe_fragment_ops.value()).empty();
+  return !Downcast<Array<Any>>(maybe_compute_ops.value()).empty();
 }
 
-static void CollectFragmentRequirementsFromSpatialProgram(const SpatialProgram& program,
+static void CollectLoweringSupportRequirementsFromSpatialProgram(const SpatialProgram& program,
                                                          Map<String, Any>* lowering_requirements) {
   for (const ResourceIntent& intent : program->resource_intents) {
-    if (static_cast<std::string>(intent->kind) != "lowering_support" ||
-        !HasTrait(intent->traits, "fragment_contract")) {
+    if (static_cast<std::string>(intent->kind) != "lowering_support") {
       continue;
     }
-    if (auto fragment_ops = intent->payload.Get(String(schema_key::kFragmentOpKinds))) {
-      SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kFragmentOpKinds),
-                                   Downcast<Array<Any>>(fragment_ops.value()));
+    if (HasTrait(intent->traits, "compute_support")) {
+      if (auto compute_ops = intent->payload.Get(String(schema_key::kComputeOpKinds))) {
+        SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kComputeOpKinds),
+                                     Downcast<Array<Any>>(compute_ops.value()));
+      }
+      if (auto row_targets = intent->payload.Get(String(schema_key::kRowReductionTargets))) {
+        SetArrayRequirementIfMissing(lowering_requirements,
+                                     String(schema_key::kRowReductionTargets),
+                                     Downcast<Array<Any>>(row_targets.value()));
+      }
+      if (auto row_broadcasts =
+              intent->payload.Get(String(schema_key::kRowBroadcastSources))) {
+        SetArrayRequirementIfMissing(lowering_requirements,
+                                     String(schema_key::kRowBroadcastSources),
+                                     Downcast<Array<Any>>(row_broadcasts.value()));
+      }
+      if (auto pointwise_ops = intent->payload.Get(String(schema_key::kPointwiseOpKinds))) {
+        SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kPointwiseOpKinds),
+                                     Downcast<Array<Any>>(pointwise_ops.value()));
+      }
+      if (auto loop_carried = intent->payload.Get(String(schema_key::kLoopCarriedState))) {
+        SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kLoopCarriedState),
+                                     Downcast<Array<Any>>(loop_carried.value()));
+      }
+      continue;
     }
-    if (auto row_targets = intent->payload.Get(String(schema_key::kRowReductionTargets))) {
-      SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kRowReductionTargets),
-                                   Downcast<Array<Any>>(row_targets.value()));
+    if (HasTrait(intent->traits, "buffer_materialization_support")) {
+      if (auto materialization_contracts =
+              intent->payload.Get(String(schema_key::kBufferMaterializationContracts))) {
+        SetArrayRequirementIfMissing(lowering_requirements,
+                                     String(schema_key::kBufferMaterializationContracts),
+                                     Downcast<Array<Any>>(materialization_contracts.value()));
+      }
+      continue;
     }
-    if (auto row_broadcasts =
-            intent->payload.Get(String(schema_key::kRowBroadcastSources))) {
-      SetArrayRequirementIfMissing(lowering_requirements,
-                                   String(schema_key::kRowBroadcastSources),
-                                   Downcast<Array<Any>>(row_broadcasts.value()));
+    if (HasTrait(intent->traits, "buffer_flow_support")) {
+      if (auto flow_contracts = intent->payload.Get(String(schema_key::kBufferFlowContracts))) {
+        SetArrayRequirementIfMissing(lowering_requirements,
+                                     String(schema_key::kBufferFlowContracts),
+                                     Downcast<Array<Any>>(flow_contracts.value()));
+      }
+      continue;
     }
-    if (auto pointwise_ops = intent->payload.Get(String(schema_key::kPointwiseOpKinds))) {
-      SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kPointwiseOpKinds),
-                                   Downcast<Array<Any>>(pointwise_ops.value()));
-    }
-    if (auto loop_carried =
-            intent->payload.Get(String(schema_key::kFragmentLoopCarriedState))) {
-      SetArrayRequirementIfMissing(lowering_requirements,
-                                   String(schema_key::kFragmentLoopCarriedState),
-                                   Downcast<Array<Any>>(loop_carried.value()));
-    }
-    if (auto materialization_contracts =
-            intent->payload.Get(String(schema_key::kFragmentMaterializationContracts))) {
-      SetArrayRequirementIfMissing(lowering_requirements,
-                                   String(schema_key::kFragmentMaterializationContracts),
-                                   Downcast<Array<Any>>(materialization_contracts.value()));
-    }
-    if (auto flow_contracts =
-            intent->payload.Get(String(schema_key::kFragmentBufferFlowContracts))) {
-      SetArrayRequirementIfMissing(lowering_requirements,
-                                   String(schema_key::kFragmentBufferFlowContracts),
-                                   Downcast<Array<Any>>(flow_contracts.value()));
-    }
-    if (auto layout_contracts =
-            intent->payload.Get(String(schema_key::kFragmentLayoutContracts))) {
-      SetArrayRequirementIfMissing(lowering_requirements,
-                                   String(schema_key::kFragmentLayoutContracts),
-                                   Downcast<Array<Any>>(layout_contracts.value()));
+    if (HasTrait(intent->traits, "buffer_distribution_support")) {
+      if (auto layout_contracts =
+              intent->payload.Get(String(schema_key::kBufferDistributionContracts))) {
+        SetArrayRequirementIfMissing(lowering_requirements,
+                                     String(schema_key::kBufferDistributionContracts),
+                                     Downcast<Array<Any>>(layout_contracts.value()));
+      }
+      continue;
     }
   }
 }
@@ -1461,16 +1470,35 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
   if (!loop_vars.empty()) {
     lowering_requirements.Set("pipeline_loop_vars", loop_vars);
   }
-  CollectFragmentRequirementsFromSpatialProgram(program, &lowering_requirements);
+  CollectLoweringSupportRequirementsFromSpatialProgram(program, &lowering_requirements);
 
   return lowering_requirements;
 }
 
+static bool BufferMaterializationContractHasField(const Map<String, Any>& contract,
+                                                  const char* key) {
+  return contract.find(String(key)) != contract.end();
+}
+
+static int BufferMaterializationContractSpecificityScore(const Map<String, Any>& contract) {
+  int score = 0;
+  if (BufferMaterializationContractHasField(contract, schema_key::kLogicalRowWidth)) {
+    score += 4;
+  }
+  if (BufferMaterializationContractHasField(contract, schema_key::kLogicalElementCount)) {
+    score += 2;
+  }
+  if (BufferMaterializationContractHasField(contract, schema_key::kSourceBuffer)) {
+    score += 1;
+  }
+  return score;
+}
+
 static std::unordered_map<std::string, Map<String, Any>>
-BuildFragmentMaterializationContractMap(const Map<String, Any>& lowering_requirements) {
+BuildBufferMaterializationContractMap(const Map<String, Any>& lowering_requirements) {
   std::unordered_map<std::string, Map<String, Any>> contracts_by_target_buffer;
   auto maybe_contracts =
-      lowering_requirements.Get(String(schema_key::kFragmentMaterializationContracts));
+      lowering_requirements.Get(String(schema_key::kBufferMaterializationContracts));
   if (!maybe_contracts) {
     return contracts_by_target_buffer;
   }
@@ -1482,16 +1510,23 @@ BuildFragmentMaterializationContractMap(const Map<String, Any>& lowering_require
     }
     const std::string target_buffer = Downcast<String>((*target_it).second);
     if (!target_buffer.empty()) {
-      contracts_by_target_buffer.emplace(target_buffer, contract);
+      auto existing_it = contracts_by_target_buffer.find(target_buffer);
+      if (existing_it == contracts_by_target_buffer.end() ||
+          BufferMaterializationContractSpecificityScore(contract) >=
+              BufferMaterializationContractSpecificityScore(existing_it->second)) {
+        // Keep the most specific contract for each target buffer so later
+        // cast-/publish-driven contracts can override generic seed entries.
+        contracts_by_target_buffer[target_buffer] = std::move(contract);
+      }
     }
   }
   return contracts_by_target_buffer;
 }
 
-static std::unordered_map<std::string, Map<String, Any>> BuildFragmentLayoutContractMap(
+static std::unordered_map<std::string, Map<String, Any>> BuildBufferDistributionContractMap(
     const Map<String, Any>& lowering_requirements) {
   std::unordered_map<std::string, Map<String, Any>> contracts_by_buffer;
-  auto maybe_contracts = lowering_requirements.Get(String(schema_key::kFragmentLayoutContracts));
+  auto maybe_contracts = lowering_requirements.Get(String(schema_key::kBufferDistributionContracts));
   if (!maybe_contracts) {
     return contracts_by_buffer;
   }
@@ -1570,13 +1605,13 @@ static Stmt WrapSegmentStmtIfNeeded(const std::string& current_segment_kind,
   return wrap_one(stmt);
 }
 
-void PlanTTKernelABI::LoadFragmentLayoutContracts(
+void PlanTTKernelABI::LoadBufferDistributionContracts(
     const Map<String, Any>& lowering_requirements) {
-  fragment_layout_contracts_by_buffer_ = BuildFragmentLayoutContractMap(lowering_requirements);
+  buffer_distribution_contracts_by_buffer_ = BuildBufferDistributionContractMap(lowering_requirements);
 }
 
 Stmt PlanTTKernelABI::MaybeWrapComputeSegment(const Stmt& stmt) const {
-  if (!requires_fragment_compute_segment_ || !current_segment_kind_.empty()) {
+  if (!requires_compute_segment_ || !current_segment_kind_.empty()) {
     return stmt;
   }
   if (const auto* attr = stmt.as<tir::AttrStmtNode>()) {
@@ -1588,66 +1623,66 @@ Stmt PlanTTKernelABI::MaybeWrapComputeSegment(const Stmt& stmt) const {
                   StringImm("compute"), stmt);
 }
 
-const Map<String, Any>* PlanTTKernelABI::FindFragmentLayoutContract(const Buffer& buffer) const {
+const Map<String, Any>* PlanTTKernelABI::FindBufferDistributionContract(const Buffer& buffer) const {
   const std::string buffer_name = BufferIdentityName(buffer);
-  auto it = fragment_layout_contracts_by_buffer_.find(buffer_name);
-  if (it == fragment_layout_contracts_by_buffer_.end()) {
+  auto it = buffer_distribution_contracts_by_buffer_.find(buffer_name);
+  if (it == buffer_distribution_contracts_by_buffer_.end()) {
     return nullptr;
   }
   return &it->second;
 }
 
-const Map<String, Any>* PlanTTKernelABI::FindFragmentMaterializationContract(
+const Map<String, Any>* PlanTTKernelABI::FindBufferMaterializationContract(
     const Buffer& buffer) const {
   const std::string buffer_name = BufferIdentityName(buffer);
-  auto it = fragment_materialization_contracts_by_target_buffer_.find(buffer_name);
-  if (it == fragment_materialization_contracts_by_target_buffer_.end()) {
+  auto it = buffer_materialization_contracts_by_target_buffer_.find(buffer_name);
+  if (it == buffer_materialization_contracts_by_target_buffer_.end()) {
     return nullptr;
   }
   return &it->second;
 }
 
 bool PlanTTKernelABI::BufferUsesTiledCBLiveForm(const Buffer& buffer) const {
-  const Map<String, Any>* contract = FindFragmentMaterializationContract(buffer);
+  const Map<String, Any>* contract = FindBufferMaterializationContract(buffer);
   if (contract == nullptr) {
     return false;
   }
   auto result_live_form_it = contract->find(String(schema_key::kResultLiveForm));
   return result_live_form_it != contract->end() &&
-         Downcast<String>((*result_live_form_it).second) == fragment_live_form::kTiledCB;
+         Downcast<String>((*result_live_form_it).second) == buffer_live_form::kTiledCB;
 }
 
-void PlanTTKernelABI::ValidatePublishedFragmentSourceEdge(const Buffer& src,
-                                                            const Buffer& dst) const {
+void PlanTTKernelABI::ValidatePublishedBufferSourceEdge(const Buffer& src,
+                                                        const Buffer& dst) const {
   const std::string src_name = BufferIdentityName(src);
   const std::string dst_name = BufferIdentityName(dst);
-  auto live_form_it = fragment_live_form_cb_by_buffer_identity_.find(src_name);
-  if (live_form_it == fragment_live_form_cb_by_buffer_identity_.end()) {
+  auto live_form_it = buffer_live_form_cb_by_buffer_identity_.find(src_name);
+  if (live_form_it == buffer_live_form_cb_by_buffer_identity_.end()) {
     return;
   }
-  const Map<String, Any>* dst_contract = FindFragmentMaterializationContract(dst);
+  const Map<String, Any>* dst_contract = FindBufferMaterializationContract(dst);
   ICHECK(dst_contract != nullptr)
-      << "PlanTTKernelABI requires fragment_materialization_contract for consumer "
+      << "PlanTTKernelABI requires buffer_materialization_contract for consumer "
       << dst_name << " when source " << src_name << " is carried via explicit live-form CB";
   auto source_buffer_it = dst_contract->find(String(schema_key::kSourceBuffer));
   ICHECK(source_buffer_it != dst_contract->end())
-      << "PlanTTKernelABI requires explicit source_buffer in fragment_materialization_contract "
+      << "PlanTTKernelABI requires explicit source_buffer in buffer_materialization_contract "
          "for consumer "
       << dst_name << " when source " << src_name << " is carried via explicit live-form CB";
   ICHECK_EQ(Downcast<String>((*source_buffer_it).second), src_name)
-      << "PlanTTKernelABI requires fragment_materialization_contract source_buffer to match "
+      << "PlanTTKernelABI requires buffer_materialization_contract source_buffer to match "
          "consumer source "
       << src_name << " for " << dst_name;
 }
 
-void PlanTTKernelABI::AppendPublishedFragmentSourceMaterialization(
+void PlanTTKernelABI::AppendPublishedBufferSourceMaterialization(
     const Buffer& src, int current_order_index, std::vector<Stmt>* prefix,
     std::vector<Stmt>* suffix) {
   ICHECK(prefix != nullptr);
   ICHECK(suffix != nullptr);
   const std::string src_name = BufferIdentityName(src);
-  auto live_form_it = fragment_live_form_cb_by_buffer_identity_.find(src_name);
-  if (live_form_it == fragment_live_form_cb_by_buffer_identity_.end()) {
+  auto live_form_it = buffer_live_form_cb_by_buffer_identity_.find(src_name);
+  if (live_form_it == buffer_live_form_cb_by_buffer_identity_.end()) {
     return;
   }
   ICHECK(BufferUsesTiledCBLiveForm(src))
@@ -1667,7 +1702,7 @@ void PlanTTKernelABI::AppendPublishedFragmentSourceMaterialization(
   ICHECK_GT(tile_elements, 0)
       << "PlanTTKernelABI requires positive tile element count for live-form source "
       << src_name;
-  const Buffer physical_src = ResolvePhysicalFragmentBuffer(src);
+  const Buffer physical_src = ResolvePhysicalComputeBuffer(src);
   prefix->push_back(
       MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(num_tiles)}));
   for (int tile = 0; tile < num_tiles; ++tile) {
@@ -1681,70 +1716,92 @@ void PlanTTKernelABI::AppendPublishedFragmentSourceMaterialization(
       !future_uses.has_reference) {
     suffix->push_back(
         MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(num_tiles)}));
-    fragment_live_form_cb_by_buffer_identity_.erase(live_form_it);
+    buffer_live_form_cb_by_buffer_identity_.erase(live_form_it);
   }
 }
 
-void PlanTTKernelABI::LoadFragmentPhysicalBufferBindings(const PrimFunc& func) {
-  fragment_physical_buffers_by_data_.clear();
-  fragment_physical_buffers_by_identity_.clear();
+void PlanTTKernelABI::LoadComputeRegionPhysicalBufferBindings(const PrimFunc& func) {
+  compute_physical_buffers_by_data_.clear();
+  compute_physical_buffers_by_identity_.clear();
 
-  auto fragment_regions = func->GetAttr<Array<Any>>("blackhole.fragment_regions");
-  if (!fragment_regions.has_value()) {
+  auto compute_regions = func->GetAttr<Array<Any>>("blackhole.compute_regions");
+  if (!compute_regions.has_value()) {
     return;
   }
 
-  for (const Any& region_any : fragment_regions.value()) {
+  for (const Any& region_any : compute_regions.value()) {
     auto region = Downcast<Map<String, Any>>(region_any);
-    auto fragment_buffers_it = region.find(manifest_key::kFragmentBuffers);
-    if (fragment_buffers_it == region.end()) {
+    auto region_buffers_it = region.find(manifest_key::kRegionBuffers);
+    if (region_buffers_it == region.end()) {
       continue;
     }
 
     Optional<Buffer> preferred_buffer;
-    for (const Any& fragment_any : Downcast<Array<Any>>((*fragment_buffers_it).second)) {
-      auto fragment = Downcast<Map<String, Any>>(fragment_any);
-      auto scope_it = fragment.find(schema_key::kScope);
-      auto buffer_it = fragment.find(schema_key::kBuffer);
-      if (scope_it == fragment.end() || buffer_it == fragment.end()) {
+    std::string preferred_name;
+    Optional<Buffer> fragment_backing_buffer;
+    std::string fragment_backing_name;
+    for (const Any& region_buffer_any : Downcast<Array<Any>>((*region_buffers_it).second)) {
+      auto region_buffer = Downcast<Map<String, Any>>(region_buffer_any);
+      auto name_it = region_buffer.find(schema_key::kName);
+      auto scope_it = region_buffer.find(schema_key::kScope);
+      auto buffer_it = region_buffer.find(schema_key::kBuffer);
+      if (name_it == region_buffer.end() || scope_it == region_buffer.end() ||
+          buffer_it == region_buffer.end()) {
         continue;
       }
       auto buffer = (*buffer_it).second.try_cast<Buffer>();
       if (!buffer.has_value()) {
         continue;
       }
+      const std::string canonical_name =
+          static_cast<std::string>(Downcast<String>((*name_it).second));
       const std::string scope = static_cast<std::string>(Downcast<String>((*scope_it).second));
       if (scope == "blackhole.acc") {
         preferred_buffer = buffer.value();
+        preferred_name = canonical_name;
         break;
       }
+      if (!fragment_backing_buffer.has_value() && scope == "local.fragment") {
+        fragment_backing_buffer = buffer.value();
+        fragment_backing_name = canonical_name;
+      }
+    }
+    if (!preferred_buffer.has_value()) {
+      preferred_buffer = fragment_backing_buffer;
+      preferred_name = fragment_backing_name;
     }
     if (!preferred_buffer.has_value()) {
       continue;
     }
 
-    for (const Any& fragment_any : Downcast<Array<Any>>((*fragment_buffers_it).second)) {
-      auto fragment = Downcast<Map<String, Any>>(fragment_any);
-      auto buffer_it = fragment.find(schema_key::kBuffer);
-      if (buffer_it == fragment.end()) {
+    for (const Any& region_buffer_any : Downcast<Array<Any>>((*region_buffers_it).second)) {
+      auto region_buffer = Downcast<Map<String, Any>>(region_buffer_any);
+      auto name_it = region_buffer.find(schema_key::kName);
+      auto buffer_it = region_buffer.find(schema_key::kBuffer);
+      if (name_it == region_buffer.end() || buffer_it == region_buffer.end()) {
         continue;
       }
       auto buffer = (*buffer_it).second.try_cast<Buffer>();
       if (!buffer.has_value()) {
         continue;
       }
+      const std::string canonical_name =
+          static_cast<std::string>(Downcast<String>((*name_it).second));
+      if (canonical_name != preferred_name) {
+        continue;
+      }
       if (const auto* data = BufferDataIdentity(buffer.value())) {
-        fragment_physical_buffers_by_data_[data] = preferred_buffer.value();
+        compute_physical_buffers_by_data_[data] = preferred_buffer.value();
       }
       const std::string identity = BufferIdentityName(buffer.value());
       if (!identity.empty()) {
-        fragment_physical_buffers_by_identity_[identity] = preferred_buffer.value();
+        compute_physical_buffers_by_identity_[identity] = preferred_buffer.value();
       }
     }
   }
 }
 
-Buffer PlanTTKernelABI::ResolvePhysicalFragmentBuffer(const Buffer& buffer) const {
+Buffer PlanTTKernelABI::ResolvePhysicalComputeBuffer(const Buffer& buffer) const {
   if (!buffer.defined()) {
     return buffer;
   }
@@ -1752,14 +1809,14 @@ Buffer PlanTTKernelABI::ResolvePhysicalFragmentBuffer(const Buffer& buffer) cons
     return buffer;
   }
   if (const auto* data = BufferDataIdentity(buffer)) {
-    auto by_data = fragment_physical_buffers_by_data_.find(data);
-    if (by_data != fragment_physical_buffers_by_data_.end()) {
+    auto by_data = compute_physical_buffers_by_data_.find(data);
+    if (by_data != compute_physical_buffers_by_data_.end()) {
       return by_data->second;
     }
   }
   const std::string identity = BufferIdentityName(buffer);
-  auto by_identity = fragment_physical_buffers_by_identity_.find(identity);
-  if (by_identity != fragment_physical_buffers_by_identity_.end()) {
+  auto by_identity = compute_physical_buffers_by_identity_.find(identity);
+  if (by_identity != compute_physical_buffers_by_identity_.end()) {
     return by_identity->second;
   }
   return buffer;
@@ -1768,7 +1825,7 @@ Buffer PlanTTKernelABI::ResolvePhysicalFragmentBuffer(const Buffer& buffer) cons
 void PlanTTKernelABI::LoadBufferFlowContracts(const Map<String, Any>& lowering_requirements) {
   buffer_flow_contracts_.clear();
   auto maybe_contracts =
-      lowering_requirements.Get(String(schema_key::kFragmentBufferFlowContracts));
+      lowering_requirements.Get(String(schema_key::kBufferFlowContracts));
   if (!maybe_contracts) {
     return;
   }
@@ -1782,7 +1839,8 @@ void PlanTTKernelABI::LoadBufferFlowContracts(const Map<String, Any>& lowering_r
     const std::string buffer_name = Downcast<String>((*buffer_it).second);
     auto parsed_flow_class = ParseCBFlowClass(Downcast<String>((*flow_class_it).second));
     ICHECK(parsed_flow_class.has_value())
-        << "PlanTTKernelABI requires a known fragment buffer flow_class for " << buffer_name;
+        << "PlanTTKernelABI requires a known compute-region buffer flow_class for "
+        << buffer_name;
 
     BufferFlowContract contract;
     contract.flow_class = parsed_flow_class.value();
@@ -1805,11 +1863,11 @@ void PlanTTKernelABI::LoadBufferFlowContracts(const Map<String, Any>& lowering_r
         BufferFlowEvent event;
         event.order_index = Downcast<Integer>(maybe_order_index.value())->value;
         const std::string kind = Downcast<String>(maybe_kind.value());
-        if (kind == fragment_flow::kWrite) {
+        if (kind == buffer_flow::kWrite) {
           event.kind = BufferFlowEventKind::kWrite;
-        } else if (kind == fragment_flow::kComputeConsume) {
+        } else if (kind == buffer_flow::kComputeConsume) {
           event.kind = BufferFlowEventKind::kComputeConsume;
-        } else if (kind == fragment_flow::kTransportConsume) {
+        } else if (kind == buffer_flow::kTransportConsume) {
           event.kind = BufferFlowEventKind::kTransportConsume;
         } else {
           event.kind = BufferFlowEventKind::kReference;
@@ -1869,8 +1927,66 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func) {
     }
   });
 
-  auto fragment_regions = func->GetAttr<Array<Any>>("blackhole.fragment_regions");
-  if (!fragment_regions.has_value()) {
+  auto spatial_program = func->GetAttr<SpatialProgram>(attr::kTLSpatialProgram);
+  if (spatial_program.has_value()) {
+    auto decode_shape = [&](const Any& shape_any) -> std::vector<int64_t> {
+      std::vector<int64_t> shape;
+      for (const Integer& dim : Downcast<Array<Integer>>(shape_any)) {
+        shape.push_back(dim->value);
+      }
+      return shape;
+    };
+    auto register_distribution_contract_shape = [&](const Map<String, Any>& contract) {
+      auto buffer_it = contract.find(String(schema_key::kBuffer));
+      auto shape_it = contract.find(String(schema_key::kShape));
+      if (buffer_it == contract.end() || shape_it == contract.end()) {
+        return;
+      }
+      register_shape(Downcast<String>((*buffer_it).second), decode_shape((*shape_it).second));
+    };
+    auto register_materialization_contract_shape = [&](const Map<String, Any>& contract) {
+      auto target_it = contract.find(String(schema_key::kTargetBuffer));
+      auto row_width_it = contract.find(String(schema_key::kLogicalRowWidth));
+      auto element_count_it = contract.find(String(schema_key::kLogicalElementCount));
+      if (target_it == contract.end() || row_width_it == contract.end() ||
+          element_count_it == contract.end()) {
+        return;
+      }
+      const std::string target_name = Downcast<String>((*target_it).second);
+      const int64_t row_width = Downcast<Integer>((*row_width_it).second)->value;
+      const int64_t element_count = Downcast<Integer>((*element_count_it).second)->value;
+      if (target_name.empty() || row_width <= 0 || element_count <= 0 ||
+          element_count % row_width != 0) {
+        return;
+      }
+      register_shape(target_name, {element_count / row_width, row_width});
+    };
+
+    for (const ResourceIntent& intent : spatial_program.value()->resource_intents) {
+      if (static_cast<std::string>(intent->kind) != "lowering_support") {
+        continue;
+      }
+      if (HasTrait(intent->traits, "buffer_distribution_support")) {
+        if (auto contracts = intent->payload.Get(String(schema_key::kBufferDistributionContracts))) {
+          for (const Any& contract_any : Downcast<Array<Any>>(contracts.value())) {
+            register_distribution_contract_shape(Downcast<Map<String, Any>>(contract_any));
+          }
+        }
+        continue;
+      }
+      if (HasTrait(intent->traits, "buffer_materialization_support")) {
+        if (auto contracts =
+                intent->payload.Get(String(schema_key::kBufferMaterializationContracts))) {
+          for (const Any& contract_any : Downcast<Array<Any>>(contracts.value())) {
+            register_materialization_contract_shape(Downcast<Map<String, Any>>(contract_any));
+          }
+        }
+      }
+    }
+  }
+
+  auto compute_regions = func->GetAttr<Array<Any>>("blackhole.compute_regions");
+  if (!compute_regions.has_value()) {
     return;
   }
 
@@ -1903,7 +2019,7 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func) {
   bool changed = true;
   while (changed) {
     changed = false;
-    for (const Any& region_any : fragment_regions.value()) {
+    for (const Any& region_any : compute_regions.value()) {
       auto region = Downcast<Map<String, Any>>(region_any);
       auto update_sources_it = region.find(manifest_key::kUpdateSources);
       if (update_sources_it == region.end()) {
@@ -1948,17 +2064,17 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func) {
     }
   }
 
-  for (const Any& region_any : fragment_regions.value()) {
+  for (const Any& region_any : compute_regions.value()) {
     auto region = Downcast<Map<String, Any>>(region_any);
-    auto fragment_buffers_it = region.find(manifest_key::kFragmentBuffers);
-    if (fragment_buffers_it == region.end()) {
+    auto region_buffers_it = region.find(manifest_key::kRegionBuffers);
+    if (region_buffers_it == region.end()) {
       continue;
     }
-    for (const Any& fragment_any : Downcast<Array<Any>>((*fragment_buffers_it).second)) {
-      auto fragment = Downcast<Map<String, Any>>(fragment_any);
-      auto name_it = fragment.find(schema_key::kName);
-      auto buffer_it = fragment.find(schema_key::kBuffer);
-      if (name_it == fragment.end() || buffer_it == fragment.end()) {
+    for (const Any& region_buffer_any : Downcast<Array<Any>>((*region_buffers_it).second)) {
+      auto region_buffer = Downcast<Map<String, Any>>(region_buffer_any);
+      auto name_it = region_buffer.find(schema_key::kName);
+      auto buffer_it = region_buffer.find(schema_key::kBuffer);
+      if (name_it == region_buffer.end() || buffer_it == region_buffer.end()) {
         continue;
       }
       const std::string canonical_name =
@@ -1978,6 +2094,18 @@ std::vector<int64_t> PlanTTKernelABI::GetLogicalBufferShape(const Buffer& buffer
   auto it = logical_buffer_shapes_.find(buffer_identity);
   if (it != logical_buffer_shapes_.end()) {
     return it->second;
+  }
+  if (const Map<String, Any>* contract = FindBufferDistributionContract(buffer)) {
+    auto shape_it = contract->find(String(schema_key::kShape));
+    if (shape_it != contract->end()) {
+      std::vector<int64_t> shape;
+      for (const Integer& dim : Downcast<Array<Integer>>((*shape_it).second)) {
+        shape.push_back(dim->value);
+      }
+      if (!shape.empty()) {
+        return shape;
+      }
+    }
   }
   auto static_shape = ExtractStaticShape(buffer->shape);
   if (static_shape.has_value()) {
@@ -2040,7 +2168,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   next_requirement_index_ = 0;
   saw_copy_op_ = false;
   needs_copy_runtime_args_ = false;
-  requires_fragment_compute_segment_ = false;
+  requires_compute_segment_ = false;
   copy_input_buffer_ = Buffer();
   copy_output_buffer_ = Buffer();
   copy_input_buffer_name_.clear();
@@ -2053,10 +2181,10 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   thread_index_var_static_extents_.clear();
   block_index_vars_.clear();
   block_index_var_names_.clear();
-  cb_consumed_fragment_pages_by_buffer_identity_.clear();
-  cb_consumed_fragment_use_count_by_buffer_identity_.clear();
+  cb_consumed_compute_input_pages_by_buffer_identity_.clear();
+  cb_consumed_compute_input_use_count_by_buffer_identity_.clear();
   buffer_flow_contracts_.clear();
-  fragment_live_form_cb_by_buffer_identity_.clear();
+  buffer_live_form_cb_by_buffer_identity_.clear();
   stmt_order_index_by_node_.clear();
   segment_plan_.clear();
   top_level_runtime_args_ = Array<Any>();
@@ -2065,10 +2193,10 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   tt_abi_plans_.clear();
   tt_program_payload_ = Map<String, Any>();
   logical_buffer_shapes_.clear();
-  fragment_physical_buffers_by_data_.clear();
-  fragment_physical_buffers_by_identity_.clear();
+  compute_physical_buffers_by_data_.clear();
+  compute_physical_buffers_by_identity_.clear();
   LoadLogicalBufferShapes(func);
-  LoadFragmentPhysicalBufferBindings(func);
+  LoadComputeRegionPhysicalBufferBindings(func);
   tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
     if (const auto* attr = node.as<AttrStmtNode>()) {
       if (attr->attr_key != tir::attr::thread_extent) {
@@ -2116,8 +2244,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   compute_epilogue_payloads_.clear();
   active_compute_contract_payload_index_ = -1;
   compute_epilogue_payloads_flat_.clear();
-  fragment_layout_contracts_by_buffer_.clear();
-  fragment_materialization_contracts_by_target_buffer_.clear();
+  buffer_distribution_contracts_by_buffer_.clear();
+  buffer_materialization_contracts_by_target_buffer_.clear();
   gemm_input_buffer_num_tiles_.clear();
   gemm_transpose_a_ = false;
   gemm_transpose_b_ = false;
@@ -2132,16 +2260,16 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   gemm_a_dtype_ = DataType::Void();
   gemm_b_dtype_ = DataType::Void();
   gemm_c_dtype_ = DataType::Void();
-  ValidateFragmentPipelineLegalityFromBody(func->body);
+  ValidateComputePipelineLegalityFromBody(func->body);
   Map<String, Any> lowering_requirements = BuildLoweringRequirementsFromAnalysis(func);
-  requires_fragment_compute_segment_ = HasFragmentComputeContract(lowering_requirements);
-  LoadFragmentLayoutContracts(lowering_requirements);
-  fragment_materialization_contracts_by_target_buffer_ =
-      BuildFragmentMaterializationContractMap(lowering_requirements);
+  requires_compute_segment_ = HasComputeSupportContract(lowering_requirements);
+  LoadBufferDistributionContracts(lowering_requirements);
+  buffer_materialization_contracts_by_target_buffer_ =
+      BuildBufferMaterializationContractMap(lowering_requirements);
   LoadBufferFlowContracts(lowering_requirements);
   stmt_order_index_by_node_ = BuildExecutionOrderIndexByStmtNode(func->body);
   if (!lowering_requirements.empty()) {
-    ValidateFragmentPipelineLegality(lowering_requirements);
+    ValidateComputePipelineLegality(lowering_requirements);
   }
 
   // Pre-scan: register GEMM CB requirements first so their indices are stable
@@ -2200,13 +2328,13 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
       tir::BufferRegion region = NormalizeToBufferRegion(expr);
       if (GetStorageScope(region->buffer) == "blackhole.acc") {
         const std::string buffer_identity = BufferIdentityName(region->buffer);
-        auto it = cb_consumed_fragment_pages_by_buffer_identity_.find(buffer_identity);
-        if (it == cb_consumed_fragment_pages_by_buffer_identity_.end()) {
-          cb_consumed_fragment_pages_by_buffer_identity_[buffer_identity] = tile_count;
+        auto it = cb_consumed_compute_input_pages_by_buffer_identity_.find(buffer_identity);
+        if (it == cb_consumed_compute_input_pages_by_buffer_identity_.end()) {
+          cb_consumed_compute_input_pages_by_buffer_identity_[buffer_identity] = tile_count;
         } else {
           it->second = std::max(it->second, tile_count);
         }
-        cb_consumed_fragment_use_count_by_buffer_identity_[buffer_identity] += 1;
+        cb_consumed_compute_input_use_count_by_buffer_identity_[buffer_identity] += 1;
       }
     };
     record_gemm_input_tiles(call->args[0], m_tiles * k_tiles);
@@ -2253,8 +2381,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
     new_func.CopyOnWrite()->attrs = DictAttrs(attrs);
   }
 
-  if (!HasUnsupportedFragmentOpsInRequirements(lowering_requirements)) {
-    ValidateNoResidualFragmentCompute(body);
+  if (!HasUnsupportedComputeOpsInRequirements(lowering_requirements)) {
+    ValidateNoResidualComputeRegionStores(body);
   }
 
   return new_func;
@@ -2537,11 +2665,11 @@ void PlanTTKernelABI::StoreRuntimeArgs(PrimFunc& func) {
 
 void PlanTTKernelABI::StoreSegmentPlan(PrimFunc& func) {
   const std::vector<std::string> segment_kinds = CollectSegmentKindsFromBody(func->body);
-  if (segment_kinds.empty() && !needs_copy_runtime_args_ && !requires_fragment_compute_segment_) {
+  if (segment_kinds.empty() && !needs_copy_runtime_args_ && !requires_compute_segment_) {
     segment_plan_ = Array<Any>();
     return;
   }
-  ICHECK(!requires_fragment_compute_segment_ || !segment_kinds.empty())
+  ICHECK(!requires_compute_segment_ || !segment_kinds.empty())
       << "PlanTTKernelABI requires explicit segment_kind truth for compute-bearing fragment "
          "workloads; do not recover them as fused_dataflow";
 
@@ -3230,7 +3358,7 @@ void PlanTTKernelABI::ExtractGemmInfo(const CallNode* op) {
   tir::BufferRegion a_region = NormalizeToBufferRegion(args[0]);
   tir::BufferRegion b_region = NormalizeToBufferRegion(args[1]);
   tir::BufferRegion c_region = NormalizeToBufferRegion(args[2]);
-  Buffer physical_c_buffer = ResolvePhysicalFragmentBuffer(c_region->buffer);
+  Buffer physical_c_buffer = ResolvePhysicalComputeBuffer(c_region->buffer);
 
   gemm_a_buffer_ = a_region->buffer;
   gemm_b_buffer_ = b_region->buffer;
@@ -3372,8 +3500,8 @@ void PlanTTKernelABI::ExtractGemmInfo(const CallNode* op) {
         contract_it != buffer_flow_contracts_.end()) {
       flow_class = contract_it->second.flow_class;
     } else if (auto use_count_it =
-                   cb_consumed_fragment_use_count_by_buffer_identity_.find(buffer_identity);
-               use_count_it != cb_consumed_fragment_use_count_by_buffer_identity_.end() &&
+                   cb_consumed_compute_input_use_count_by_buffer_identity_.find(buffer_identity);
+               use_count_it != cb_consumed_compute_input_use_count_by_buffer_identity_.end() &&
                use_count_it->second > 1) {
       flow_class = CBFlowClass::kRepublish;
     }
@@ -3456,10 +3584,10 @@ CopyDirection PlanTTKernelABI::GetCopyDirection(const BufferStoreNode* op) const
     const bool has_flow_contract =
         !src_name.empty() && buffer_flow_contracts_.count(src_name) != 0U;
     const bool has_materialization_contract =
-        FindFragmentMaterializationContract(load->buffer) != nullptr;
+        FindBufferMaterializationContract(load->buffer) != nullptr;
     const bool has_explicit_tiled_live_form =
         !src_name.empty() &&
-        fragment_live_form_cb_by_buffer_identity_.count(src_name) != 0U;
+        buffer_live_form_cb_by_buffer_identity_.count(src_name) != 0U;
     const bool has_multi_element_logical_shape = GetLogicalBufferElementCount(load->buffer) > 1;
     if (has_flow_contract || has_materialization_contract || has_explicit_tiled_live_form ||
         has_multi_element_logical_shape) {
@@ -3908,7 +4036,7 @@ std::string PlanTTKernelABI::ResolveAccessorSegmentKind(CopyDirection direction)
   if (!current_segment_kind_.empty()) {
     return current_segment_kind_;
   }
-  if (requires_fragment_compute_segment_) {
+  if (requires_compute_segment_) {
     if (direction == CopyDirection::kDramToCB) {
       return "reader";
     }
@@ -4216,8 +4344,8 @@ Stmt PlanTTKernelABI::GenerateAddFragmentSequence(const Buffer& dst,
   op_payload.Set("src_buffer", String(BufferIdentityName(src)));
   SetOptionalExprField(&op_payload, "num_elements_expr", num_elements);
   RecordComputeEpilogueOp(std::move(op_payload));
-  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(dst);
-  const Buffer physical_src = ResolvePhysicalFragmentBuffer(src);
+  const Buffer physical_dst = ResolvePhysicalComputeBuffer(dst);
+  const Buffer physical_src = ResolvePhysicalComputeBuffer(src);
   return MaybeWrapComputeSegment(MakeBlackholeCall(
       blackhole_add_fragment(), {physical_dst->data, physical_src->data, num_elements}));
 }
@@ -4230,15 +4358,15 @@ Stmt PlanTTKernelABI::GenerateAddFragmentFromCBFrontSequence(const Buffer& dst,
   Map<String, Any> op_payload =
       MakeComputeEpilogueOpPayload("add_fragment_from_cb_front", dst_buffer_name);
   op_payload.Set("src_buffer", String(BufferIdentityName(src_buffer)));
-  auto contract_it = fragment_materialization_contracts_by_target_buffer_.find(dst_buffer_name);
-  ICHECK(contract_it != fragment_materialization_contracts_by_target_buffer_.end())
-      << "PlanTTKernelABI requires fragment_materialization_contract in SpatialProgram for "
+  const Map<String, Any>* contract = FindBufferMaterializationContract(dst);
+  ICHECK(contract != nullptr)
+      << "PlanTTKernelABI requires buffer_materialization_contract in SpatialProgram for "
          "add_fragment_from_cb_front destination "
       << dst_buffer_name;
-  op_payload.Set(String(schema_key::kFragmentMaterializationContract), contract_it->second);
+  op_payload.Set(String(schema_key::kBufferMaterializationContract), *contract);
   SetOptionalExprField(&op_payload, "num_elements_expr", num_elements);
   RecordComputeEpilogueOp(std::move(op_payload));
-  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(dst);
+  const Buffer physical_dst = ResolvePhysicalComputeBuffer(dst);
   return MaybeWrapComputeSegment(MakeBlackholeCall(
       blackhole_add_fragment_from_cb_front(),
       {physical_dst->data, IntImm32(src_cb_id), num_elements}));
@@ -4263,37 +4391,37 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
   if (live_form_buffer.defined()) {
     op_payload.Set("live_form_buffer", String(BufferIdentityName(live_form_buffer)));
   }
-  auto contract_it = fragment_materialization_contracts_by_target_buffer_.find(dst_buffer_name);
-  ICHECK(contract_it != fragment_materialization_contracts_by_target_buffer_.end())
-      << "PlanTTKernelABI requires fragment_materialization_contract in SpatialProgram for "
+  const Map<String, Any>* contract = FindBufferMaterializationContract(dst);
+  ICHECK(contract != nullptr)
+      << "PlanTTKernelABI requires buffer_materialization_contract in SpatialProgram for "
          "merge_fragment_tiles destination "
       << dst_buffer_name;
-  auto bridge_it = contract_it->second.find(String(schema_key::kBridgeKind));
-  ICHECK(bridge_it != contract_it->second.end())
-      << "PlanTTKernelABI requires bridge_kind in fragment_materialization_contract for "
+  auto bridge_it = contract->find(String(schema_key::kBridgeKind));
+  ICHECK(bridge_it != contract->end())
+      << "PlanTTKernelABI requires bridge_kind in buffer_materialization_contract for "
       << dst_buffer_name;
   const std::string bridge_kind = Downcast<String>((*bridge_it).second);
-  auto protocol_it = contract_it->second.find(String(schema_key::kExecutionProtocol));
-  ICHECK(protocol_it != contract_it->second.end())
-      << "PlanTTKernelABI requires execution_protocol in fragment_materialization_contract for "
+  auto protocol_it = contract->find(String(schema_key::kExecutionProtocol));
+  ICHECK(protocol_it != contract->end())
+      << "PlanTTKernelABI requires execution_protocol in buffer_materialization_contract for "
       << dst_buffer_name;
   const std::string execution_protocol = Downcast<String>((*protocol_it).second);
   ICHECK_EQ(bridge_kind, "tile_nfaces_materialization")
-      << "PlanTTKernelABI does not support fragment materialization bridge_kind " << bridge_kind
+      << "PlanTTKernelABI does not support buffer-materialization bridge_kind " << bridge_kind
       << " for " << dst_buffer_name;
   ICHECK_EQ(execution_protocol, "dst_cb_binary_pack")
-      << "PlanTTKernelABI does not support fragment materialization execution_protocol "
+      << "PlanTTKernelABI does not support buffer-materialization execution_protocol "
       << execution_protocol << " for " << dst_buffer_name;
-  op_payload.Set(String(schema_key::kFragmentMaterializationContract), contract_it->second);
+  op_payload.Set(String(schema_key::kBufferMaterializationContract), *contract);
   SetOptionalExprField(&op_payload, "num_elements_expr", num_elements);
   RecordComputeEpilogueOp(std::move(op_payload));
 
   ICHECK_GT(gemm_c_dtype_.bytes(), 0)
-      << "Blackhole fragment merge lowering requires a valid destination dtype for "
+      << "Blackhole accumulator-merge lowering requires a valid destination dtype for "
       << dst_buffer_name;
   const int tile_elements = (kBlackholeTileRows * kBlackholeTileCols * gemm_c_dtype_.bytes()) /
                             gemm_c_dtype_.bytes();
-  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(dst);
+  const Buffer physical_dst = ResolvePhysicalComputeBuffer(dst);
 
   std::vector<Stmt> stmts;
   stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
@@ -4491,8 +4619,8 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
                                                            bool reacquire_in1) {
   ICHECK(op != nullptr);
   ICHECK(IsUnsupportedResidualLocalScope(gemm_c_buffer_))
-      << "Blackhole clear_accum=false lowering currently requires a local fragment destination, "
-         "but "
+      << "Blackhole clear_accum=false lowering currently requires a compute-local accumulator "
+         "destination, but "
       << gemm_c_buffer_name_ << " uses scope " << GetStorageScope(gemm_c_buffer_);
 
   const int num_m_tiles = CeilDivToInt(gemm_m_, kBlackholeTileRows);
@@ -4567,7 +4695,7 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
       num_c_tiles, materialize_live_form_to_local_state,
       publish_transport_out ? gemm_c_req_index_ : -1));
   if (use_tiled_cb_live_form) {
-    fragment_live_form_cb_by_buffer_identity_[BufferIdentityName(gemm_c_buffer_)] =
+    buffer_live_form_cb_by_buffer_identity_[BufferIdentityName(gemm_c_buffer_)] =
         live_form_req_index;
   }
 
@@ -5799,16 +5927,16 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
   SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
   SetOptionalExprField(&op_payload, "row_width_expr", lowered_match.row_width);
   if (lowered_match.grouped) {
-    const Map<String, Any>* layout_contract = FindFragmentLayoutContract(lowered_match.src);
+    const Map<String, Any>* layout_contract = FindBufferDistributionContract(lowered_match.src);
     ICHECK(layout_contract != nullptr)
-        << "PlanTTKernelABI requires fragment_layout_contract in SpatialProgram for grouped "
+        << "PlanTTKernelABI requires buffer_distribution_contract in SpatialProgram for grouped "
            "row reduction source "
         << BufferIdentityName(lowered_match.src);
-    op_payload.Set(String(schema_key::kFragmentLayoutContract), *layout_contract);
+    op_payload.Set(String(schema_key::kBufferDistributionContract), *layout_contract);
   }
   RecordComputeEpilogueOp(std::move(op_payload));
-  const Buffer physical_src = ResolvePhysicalFragmentBuffer(lowered_match.src);
-  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(lowered_match.dst);
+  const Buffer physical_src = ResolvePhysicalComputeBuffer(lowered_match.src);
+  const Buffer physical_dst = ResolvePhysicalComputeBuffer(lowered_match.dst);
   if (lowered_match.grouped) {
     return MaybeWrapComputeSegment(MakeBlackholeCall(
         tir::builtin::blackhole_reduce_row(),
@@ -5894,16 +6022,16 @@ Stmt PlanTTKernelABI::GenerateRowBroadcastSequence(const RowBroadcastMatch& matc
   SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
   SetOptionalExprField(&op_payload, "row_width_expr", lowered_match.row_width);
   if (lowered_match.grouped) {
-    const Map<String, Any>* layout_contract = FindFragmentLayoutContract(lowered_match.dst);
+    const Map<String, Any>* layout_contract = FindBufferDistributionContract(lowered_match.dst);
     ICHECK(layout_contract != nullptr)
-        << "PlanTTKernelABI requires fragment_layout_contract in SpatialProgram for grouped "
+        << "PlanTTKernelABI requires buffer_distribution_contract in SpatialProgram for grouped "
            "row broadcast destination "
         << BufferIdentityName(lowered_match.dst);
-    op_payload.Set(String(schema_key::kFragmentLayoutContract), *layout_contract);
+    op_payload.Set(String(schema_key::kBufferDistributionContract), *layout_contract);
   }
   RecordComputeEpilogueOp(std::move(op_payload));
-  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(lowered_match.dst);
-  const Buffer physical_scalar = ResolvePhysicalFragmentBuffer(lowered_match.scalar);
+  const Buffer physical_dst = ResolvePhysicalComputeBuffer(lowered_match.dst);
+  const Buffer physical_scalar = ResolvePhysicalComputeBuffer(lowered_match.scalar);
   if (lowered_match.grouped) {
     return MaybeWrapComputeSegment(MakeBlackholeCall(
         op, {physical_dst->data, physical_scalar->data, lowered_match.num_elements,
@@ -6014,10 +6142,10 @@ Stmt PlanTTKernelABI::GenerateScalarFmaSequence(const ScalarFmaMatch& match) {
   op_payload.Set("add_buffer", String(BufferIdentityName(lowered_match.add)));
   SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
   RecordComputeEpilogueOp(std::move(op_payload));
-  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(lowered_match.dst);
-  const Buffer physical_lhs = ResolvePhysicalFragmentBuffer(lowered_match.lhs);
-  const Buffer physical_rhs = ResolvePhysicalFragmentBuffer(lowered_match.rhs);
-  const Buffer physical_add = ResolvePhysicalFragmentBuffer(lowered_match.add);
+  const Buffer physical_dst = ResolvePhysicalComputeBuffer(lowered_match.dst);
+  const Buffer physical_lhs = ResolvePhysicalComputeBuffer(lowered_match.lhs);
+  const Buffer physical_rhs = ResolvePhysicalComputeBuffer(lowered_match.rhs);
+  const Buffer physical_add = ResolvePhysicalComputeBuffer(lowered_match.add);
   if (lowered_match.num_elements.defined()) {
     return MaybeWrapComputeSegment(MakeBlackholeCall(
         tir::builtin::blackhole_scalar_fma(),
@@ -6100,16 +6228,16 @@ Stmt PlanTTKernelABI::GenerateExp2RowBroadcastAffineSequence(
   SetOptionalExprField(&op_payload, "dst_scale_expr", lowered_match.dst_scale);
   SetOptionalExprField(&op_payload, "scalar_scale_expr", lowered_match.scalar_scale);
   if (lowered_match.grouped) {
-    const Map<String, Any>* layout_contract = FindFragmentLayoutContract(lowered_match.dst);
+    const Map<String, Any>* layout_contract = FindBufferDistributionContract(lowered_match.dst);
     ICHECK(layout_contract != nullptr)
-        << "PlanTTKernelABI requires fragment_layout_contract in SpatialProgram for grouped "
+        << "PlanTTKernelABI requires buffer_distribution_contract in SpatialProgram for grouped "
            "exp2 row broadcast destination "
         << BufferIdentityName(lowered_match.dst);
-    op_payload.Set(String(schema_key::kFragmentLayoutContract), *layout_contract);
+    op_payload.Set(String(schema_key::kBufferDistributionContract), *layout_contract);
   }
   RecordComputeEpilogueOp(std::move(op_payload));
-  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(lowered_match.dst);
-  const Buffer physical_scalar = ResolvePhysicalFragmentBuffer(lowered_match.scalar);
+  const Buffer physical_dst = ResolvePhysicalComputeBuffer(lowered_match.dst);
+  const Buffer physical_scalar = ResolvePhysicalComputeBuffer(lowered_match.scalar);
   if (lowered_match.grouped) {
     return MaybeWrapComputeSegment(MakeBlackholeCall(
         tir::builtin::blackhole_exp2_grouped_row_bcast_affine(),
@@ -6237,9 +6365,9 @@ Stmt PlanTTKernelABI::GenerateScalarExp2AffineSequence(const ScalarExp2AffineMat
                          IntImm(DataType::Int(32), logical_extent));
   }
   RecordComputeEpilogueOp(std::move(op_payload));
-  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(match.dst);
-  const Buffer physical_lhs = ResolvePhysicalFragmentBuffer(match.lhs);
-  const Buffer physical_rhs = ResolvePhysicalFragmentBuffer(match.rhs);
+  const Buffer physical_dst = ResolvePhysicalComputeBuffer(match.dst);
+  const Buffer physical_lhs = ResolvePhysicalComputeBuffer(match.lhs);
+  const Buffer physical_rhs = ResolvePhysicalComputeBuffer(match.rhs);
   if (logical_extent > 1) {
     return MaybeWrapComputeSegment(MakeBlackholeCall(
         tir::builtin::blackhole_scalar_exp2_affine(),
@@ -6309,7 +6437,7 @@ Stmt PlanTTKernelABI::GenerateFragmentFillSequence(const FragmentFillMatch& matc
       num_elements = IntImm(DataType::Int(32), logical_extent);
     }
   }
-  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(match.dst);
+  const Buffer physical_dst = ResolvePhysicalComputeBuffer(match.dst);
   return MaybeWrapComputeSegment(MakeBlackholeCall(
       tir::builtin::blackhole_fill_fragment(), {physical_dst->data, num_elements, match.value}));
 }
@@ -6383,8 +6511,8 @@ Stmt PlanTTKernelABI::GenerateScalarMaxSequence(const ScalarMaxMatch& match) {
   op_payload.Set("src_buffer", String(BufferIdentityName(lowered_match.src)));
   SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
   RecordComputeEpilogueOp(std::move(op_payload));
-  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(lowered_match.dst);
-  const Buffer physical_src = ResolvePhysicalFragmentBuffer(lowered_match.src);
+  const Buffer physical_dst = ResolvePhysicalComputeBuffer(lowered_match.dst);
+  const Buffer physical_src = ResolvePhysicalComputeBuffer(lowered_match.src);
   if (lowered_match.num_elements.defined()) {
     return MaybeWrapComputeSegment(MakeBlackholeCall(
         tir::builtin::blackhole_scalar_max(),
@@ -6552,8 +6680,8 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
   int cb_id = -1;
   int num_pages = 0;
   const std::string dst_buffer_name = BufferIdentityName(match.dst);
-  const Buffer physical_dst = ResolvePhysicalFragmentBuffer(match.dst);
-  const Buffer physical_src = ResolvePhysicalFragmentBuffer(match.src);
+  const Buffer physical_dst = ResolvePhysicalComputeBuffer(match.dst);
+  const Buffer physical_src = ResolvePhysicalComputeBuffer(match.src);
   if (publish_cb) {
     cb_id = AllocateRequirementIndex(match.dst, CBType::kIntermediate);
     ICHECK_GE(cb_id, 0);
@@ -6563,33 +6691,44 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
                ? cb_requirements_[cb_id].publish_pages_per_event
                : cb_requirements_[cb_id].num_pages);
     const std::string buffer_identity = BufferIdentityName(match.dst);
-    auto it = cb_consumed_fragment_pages_by_buffer_identity_.find(buffer_identity);
-    if (it != cb_consumed_fragment_pages_by_buffer_identity_.end() &&
+    auto it = cb_consumed_compute_input_pages_by_buffer_identity_.find(buffer_identity);
+    if (it != cb_consumed_compute_input_pages_by_buffer_identity_.end() &&
         cb_requirements_[cb_id].publish_pages_per_event <= 0) {
       num_pages = std::max(1, it->second);
     }
-    auto contract_it = fragment_materialization_contracts_by_target_buffer_.find(dst_buffer_name);
-    if (contract_it != fragment_materialization_contracts_by_target_buffer_.end()) {
-      const auto& contract = contract_it->second;
-      auto kind_it = contract.find(String(schema_key::kKind));
-      auto bridge_it = contract.find(String(schema_key::kBridgeKind));
-      auto protocol_it = contract.find(String(schema_key::kExecutionProtocol));
+    const Map<String, Any>* contract = FindBufferMaterializationContract(match.dst);
+    if (contract != nullptr) {
+      auto kind_it = contract->find(String(schema_key::kKind));
+      auto bridge_it = contract->find(String(schema_key::kBridgeKind));
+      auto protocol_it = contract->find(String(schema_key::kExecutionProtocol));
       use_tiled_republish_materialization =
-          kind_it != contract.end() && bridge_it != contract.end() &&
-          protocol_it != contract.end() &&
+          kind_it != contract->end() && bridge_it != contract->end() &&
+          protocol_it != contract->end() &&
           Downcast<String>((*kind_it).second) ==
-              fragment_materialization::kRepublishedLogicalTile &&
+              buffer_materialization::kRepublishedLogicalTile &&
           Downcast<String>((*bridge_it).second) ==
-              fragment_materialization::kTileNFacesMaterialization &&
+              buffer_materialization::kTileNFacesMaterialization &&
           Downcast<String>((*protocol_it).second) ==
-              fragment_materialization::kTiledCBRepublish;
+              buffer_materialization::kTiledCBRepublish;
       if (use_tiled_republish_materialization) {
-        auto row_width_it = contract.find(String(schema_key::kLogicalRowWidth));
-        if (row_width_it != contract.end()) {
+        auto distribution_contract_it =
+            buffer_distribution_contracts_by_buffer_.find(dst_buffer_name);
+        auto row_width_it = contract->find(String(schema_key::kLogicalRowWidth));
+        if (row_width_it != contract->end()) {
           tiled_republish_row_width = IntImm(
               DataType::Int(32),
               static_cast<int>(Downcast<Integer>((*row_width_it).second)->value));
-        } else {
+        } else if (distribution_contract_it != buffer_distribution_contracts_by_buffer_.end()) {
+          auto shape_it = distribution_contract_it->second.find(String(schema_key::kShape));
+          if (shape_it != distribution_contract_it->second.end()) {
+            const Array<Integer> logical_shape = Downcast<Array<Integer>>((*shape_it).second);
+            if (logical_shape.size() >= 2U) {
+              tiled_republish_row_width =
+                  IntImm(DataType::Int(32), static_cast<int>(logical_shape.back()->value));
+            }
+          }
+        }
+        if (!tiled_republish_row_width.defined()) {
           tiled_republish_row_width = match.row_width;
           if (!tiled_republish_row_width.defined()) {
             const auto [logical_src_rows, logical_src_cols] = GetLogicalMatrixShape(match.src);
@@ -6608,13 +6747,24 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
             << "PlanTTKernelABI requires logical_row_width contract or structural row_width "
                "for tiled republish materialization of "
             << dst_buffer_name;
-        auto logical_element_count_it = contract.find(String(schema_key::kLogicalElementCount));
-        if (logical_element_count_it != contract.end()) {
+        auto logical_element_count_it = contract->find(String(schema_key::kLogicalElementCount));
+        if (logical_element_count_it != contract->end()) {
           num_elements_expr = IntImm(
               DataType::Int(32),
               static_cast<int>(Downcast<Integer>((*logical_element_count_it).second)->value));
+        } else if (distribution_contract_it != buffer_distribution_contracts_by_buffer_.end()) {
+          auto shape_it = distribution_contract_it->second.find(String(schema_key::kShape));
+          if (shape_it != distribution_contract_it->second.end()) {
+            int64_t logical_element_count = 1;
+            for (const Integer& dim : Downcast<Array<Integer>>((*shape_it).second)) {
+              logical_element_count *= dim->value;
+            }
+            if (logical_element_count > 0) {
+              num_elements_expr = IntImm(DataType::Int(32), static_cast<int>(logical_element_count));
+            }
+          }
         }
-        op_payload.Set(String(schema_key::kFragmentMaterializationContract), contract);
+        op_payload.Set(String(schema_key::kBufferMaterializationContract), *contract);
         SetOptionalExprField(&op_payload, "row_width_expr", tiled_republish_row_width);
       }
     }
@@ -6631,7 +6781,7 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
         MakeBlackholeCall(tir::builtin::blackhole_cast_fragment_slice_to_tiled_cb(),
                           {physical_dst->data, physical_src->data, IntImm32(cb_id), match.dst_offset,
                            match.src_offset, num_elements_expr, tiled_republish_row_width}));
-    fragment_live_form_cb_by_buffer_identity_[dst_buffer_name] = cb_id;
+    buffer_live_form_cb_by_buffer_identity_[dst_buffer_name] = cb_id;
   } else {
     stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cast_fragment_slice(),
                                       {physical_dst->data, physical_src->data, match.dst_offset,
@@ -7004,7 +7154,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
           bool reacquire_in1 = false;
           if (IsBufferLikeExpr(call->args[0])) {
             const Buffer in0_buffer =
-                ResolvePhysicalFragmentBuffer(NormalizeToBufferRegion(call->args[0])->buffer);
+                ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(call->args[0])->buffer);
             retain_in0 = ShouldRetainComputeInputBuffer(in0_buffer, current_order_index);
             if (!retain_in0) {
               reacquire_in0 =
@@ -7013,7 +7163,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
           }
           if (IsBufferLikeExpr(call->args[1])) {
             const Buffer in1_buffer =
-                ResolvePhysicalFragmentBuffer(NormalizeToBufferRegion(call->args[1])->buffer);
+                ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(call->args[1])->buffer);
             retain_in1 = ShouldRetainComputeInputBuffer(in1_buffer, current_order_index);
             if (!retain_in1) {
               reacquire_in1 =
@@ -7025,7 +7175,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
           bool preserve_out_local_state = false;
           if (IsBufferLikeExpr(call->args[2])) {
             const Buffer out_buffer =
-                ResolvePhysicalFragmentBuffer(NormalizeToBufferRegion(call->args[2])->buffer);
+                ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(call->args[2])->buffer);
             const FutureBufferUses future_uses =
                 ClassifyFutureBufferUses(out_buffer, current_order_index);
             publish_out = future_uses.has_compute_consume || future_uses.has_transport_consume;
@@ -7057,9 +7207,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       if (MatchDirectFragmentCast(direct_cast_loop, &cast_match)) {
         std::vector<Stmt> prefix;
         std::vector<Stmt> suffix;
-        ValidatePublishedFragmentSourceEdge(cast_match.src, cast_match.dst);
-        AppendPublishedFragmentSourceMaterialization(cast_match.src, current_order_index, &prefix,
-                                                    &suffix);
+        ValidatePublishedBufferSourceEdge(cast_match.src, cast_match.dst);
+        AppendPublishedBufferSourceMaterialization(cast_match.src, current_order_index, &prefix,
+                                                   &suffix);
         const bool publish_cb = ShouldPublishBufferResult(cast_match.dst, current_order_index);
         prefix.push_back(GenerateFragmentCastSequence(cast_match, publish_cb));
         prefix.insert(prefix.end(), suffix.begin(), suffix.end());

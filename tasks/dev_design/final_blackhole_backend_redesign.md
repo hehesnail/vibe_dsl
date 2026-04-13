@@ -23,7 +23,7 @@ Blackhole 当前的核心问题不是“还差一个 kernel emitter”，
   - 后段再靠 `semantic_manifest`、`fragment_layout_seeds`、
     `LowerBlackholeOps::Match*` 恢复语义
 - `enum-of-forms`
-  - `FragmentMaterializationInfo`、`companion_base.h`、
+  - `BufferMaterializationInfo`、`companion_base.h`、
     `SpatialProgram.payload` 这类 stringly-typed schema
     让每扩一种 family 就多一轮 kind 字符串、reader 特判和 matcher
 - `GPU realization leakage`
@@ -239,7 +239,7 @@ Frontend Tile TIR
   `Task 2` cutover 与 `Task 3A` semantic-layer deletion
   均已完成，当前 active path 直接从
   `Normalized Tile TIR + SpatialPlan companion +
-  blackhole.work_decomposition / blackhole.fragment_regions /
+  blackhole.work_decomposition / blackhole.compute_regions /
   blackhole.pipeline_stages`
   进入 `SpatialProgram / TTProgram` owner 链
 

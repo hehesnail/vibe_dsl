@@ -185,8 +185,8 @@ void ValidateNoUnsupportedFragmentRequirementsForCodegen(const tvm::tir::PrimFun
 
   std::vector<std::string> unsupported_ops;
   std::unordered_set<std::string> seen_ops;
-  if (auto fragment_ops = lowering_requirements.value().Get("fragment_op_kinds")) {
-    for (const auto& item : Downcast<tvm::ffi::Array<tvm::ffi::Any>>(fragment_ops.value())) {
+  if (auto compute_ops = lowering_requirements.value().Get("compute_op_kinds")) {
+    for (const auto& item : Downcast<tvm::ffi::Array<tvm::ffi::Any>>(compute_ops.value())) {
       const std::string op_name = Downcast<tvm::ffi::String>(item);
       if ((op_name == "row_reduction" || op_name == "row_broadcast") &&
           seen_ops.insert(op_name).second) {
@@ -211,7 +211,7 @@ void ValidateNoUnsupportedFragmentRequirementsForCodegen(const tvm::tir::PrimFun
       }
       os << unsupported_ops[i];
     }
-    ICHECK(false) << "Blackhole fragment compute subset lowering is not implemented for ops ["
+    ICHECK(false) << "Blackhole compute subset lowering is not implemented for ops ["
                   << os.str() << "]";
   }
 }
@@ -679,7 +679,7 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   // TT-Metal kernels use get_arg_val<uint32_t>(arg_index) to read arguments
   stream << "  // Load kernel arguments from runtime\n";
   LoadCorePlan(f);
-  LoadFragmentLayoutContracts(f);
+  LoadBufferDistributionContracts(f);
   if (HasRuntimeArgsForCodegen(f)) {
     EmitRuntimeArgLoads(f);
     this->VisitStmt(f->body);
@@ -765,8 +765,8 @@ void CodeGenBlackhole::LoadCorePlan(const tvm::tir::PrimFunc &f) {
   }
 }
 
-void CodeGenBlackhole::LoadFragmentLayoutContracts(const tvm::tir::PrimFunc& f) {
-  fragment_layout_bindings_by_buffer_name_.clear();
+void CodeGenBlackhole::LoadBufferDistributionContracts(const tvm::tir::PrimFunc& f) {
+  buffer_distribution_bindings_by_buffer_name_.clear();
   auto ingest_contract = [&](const ffi::Map<ffi::String, ffi::Any>& contract) {
     auto maybe_buffer = contract.Get(ffi::String(schema_key::kBuffer));
     auto maybe_distribution = contract.Get(ffi::String(schema_key::kDistributionKind));
@@ -774,7 +774,7 @@ void CodeGenBlackhole::LoadFragmentLayoutContracts(const tvm::tir::PrimFunc& f) 
     if (!maybe_buffer || !maybe_distribution || !maybe_topology) {
       return;
     }
-    FragmentLayoutBinding binding;
+    BufferDistributionBinding binding;
     binding.buffer_name = Downcast<ffi::String>(maybe_buffer.value());
     binding.distribution_kind = Downcast<ffi::String>(maybe_distribution.value());
     binding.storage_topology_kind = Downcast<ffi::String>(maybe_topology.value());
@@ -800,13 +800,13 @@ void CodeGenBlackhole::LoadFragmentLayoutContracts(const tvm::tir::PrimFunc& f) 
       return;
     }
     auto [it, inserted] =
-        fragment_layout_bindings_by_buffer_name_.emplace(binding.buffer_name, binding);
+        buffer_distribution_bindings_by_buffer_name_.emplace(binding.buffer_name, binding);
     if (!inserted) {
       ICHECK_EQ(it->second.distribution_kind, binding.distribution_kind)
-          << "Blackhole codegen requires a single fragment distribution_kind per buffer; "
+          << "Blackhole codegen requires a single buffer distribution_kind per buffer; "
           << binding.buffer_name;
       ICHECK_EQ(it->second.storage_topology_kind, binding.storage_topology_kind)
-          << "Blackhole codegen requires a single fragment storage_topology_kind per buffer; "
+          << "Blackhole codegen requires a single buffer storage_topology_kind per buffer; "
           << binding.buffer_name;
     }
   };
@@ -814,7 +814,7 @@ void CodeGenBlackhole::LoadFragmentLayoutContracts(const tvm::tir::PrimFunc& f) 
   if (auto lowering_requirements =
           f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.lowering_requirements")) {
     if (auto maybe_contracts =
-            lowering_requirements.value().Get(ffi::String(schema_key::kFragmentLayoutContracts))) {
+            lowering_requirements.value().Get(ffi::String(schema_key::kBufferDistributionContracts))) {
       for (const ffi::Any& contract_any : Downcast<ffi::Array<ffi::Any>>(maybe_contracts.value())) {
         auto contract = contract_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
             ffi::Map<ffi::String, ffi::Any>());
@@ -831,7 +831,7 @@ void CodeGenBlackhole::LoadFragmentLayoutContracts(const tvm::tir::PrimFunc& f) 
     if (op.empty()) {
       continue;
     }
-    auto maybe_layout_contract = op.Get(ffi::String(schema_key::kFragmentLayoutContract));
+    auto maybe_layout_contract = op.Get(ffi::String(schema_key::kBufferDistributionContract));
     if (!maybe_layout_contract) {
       continue;
     }
@@ -843,20 +843,20 @@ void CodeGenBlackhole::LoadFragmentLayoutContracts(const tvm::tir::PrimFunc& f) 
   }
 }
 
-const CodeGenBlackhole::FragmentLayoutBinding* CodeGenBlackhole::FindFragmentLayoutBinding(
+const CodeGenBlackhole::BufferDistributionBinding* CodeGenBlackhole::FindBufferDistributionBinding(
     const tvm::tir::VarNode* var) const {
   if (var == nullptr) {
     return nullptr;
   }
-  auto it = fragment_layout_bindings_by_buffer_name_.find(var->name_hint);
-  if (it == fragment_layout_bindings_by_buffer_name_.end()) {
+  auto it = buffer_distribution_bindings_by_buffer_name_.find(var->name_hint);
+  if (it == buffer_distribution_bindings_by_buffer_name_.end()) {
     return nullptr;
   }
   return &it->second;
 }
 
-bool CodeGenBlackhole::FragmentLayoutRequiresGenericBridge(
-    const FragmentLayoutBinding& binding) const {
+bool CodeGenBlackhole::BufferDistributionRequiresGenericBridge(
+    const BufferDistributionBinding& binding) const {
   return !binding.inverse_logical_index_exprs.empty() && !binding.local_shape.empty();
 }
 
@@ -1421,12 +1421,16 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
       scope.rfind("blackhole.cb", 0) == 0;
   const bool compute_local_fragment_storage =
       scope == "blackhole.acc" && core_type_ == CoreType::kTRISC;
+  const bool cb_backed_accumulator =
+      compute_local_fragment_storage &&
+      cb_id_by_requirement_name_.find(op->buffer_var->name_hint) != cb_id_by_requirement_name_.end();
 
   if (runtime_managed_storage || (scope == "blackhole.acc" && !compute_local_fragment_storage)) {
     // Blackhole shared / CB allocations are runtime/device-managed
     // resources, not C arrays inside the generated kernel body.  The
-    // blackhole.acc scope is compute-local and only materializes inside TRISC
-    // kernels as L1-backed buffers addressed through synchronized CB pointers.
+    // blackhole.acc scope only materializes inside TRISC kernels, where it can
+    // be either CB-backed accumulator storage or ordinary compute-local stack
+    // storage depending on whether TT planning assigned a CB requirement.
     this->PrintStmt(op->body);
     return;
   }
@@ -1434,10 +1438,8 @@ void CodeGenBlackhole::VisitStmt_(const tvm::tir::AllocateNode *op) {
   ICHECK(!tvm::tir::is_zero(op->condition));
   std::string vid = AllocVarID(op->buffer_var.get());
 
-  if (compute_local_fragment_storage) {
+  if (cb_backed_accumulator) {
     auto cb_it = cb_id_by_requirement_name_.find(op->buffer_var->name_hint);
-    ICHECK(cb_it != cb_id_by_requirement_name_.end())
-        << "Missing CB binding for blackhole.acc buffer " << op->buffer_var->name_hint;
     const int cb_id = cb_it->second;
     const int num_pages = cb_num_pages_by_requirement_name_.count(op->buffer_var->name_hint)
                               ? cb_num_pages_by_requirement_name_.at(op->buffer_var->name_hint)
@@ -2531,8 +2533,8 @@ void CodeGenBlackhole::PrintWriteLocalFragmentSliceToTiledCB(const tvm::tir::Cal
       << "tl.blackhole.write_local_fragment_slice_to_tiled_cb requires 16-bit or 32-bit element dtype";
   const char* bits_type = bit_width == 16 ? "uint16_t" : "uint32_t";
   const PrimExpr src_offset = op->args.size() >= 6 ? op->args[5] : IntImm(DataType::Int(32), 0);
-  if (const FragmentLayoutBinding* binding = FindFragmentLayoutBinding(src_var);
-      binding != nullptr && FragmentLayoutRequiresGenericBridge(*binding)) {
+  if (const BufferDistributionBinding* binding = FindBufferDistributionBinding(src_var);
+      binding != nullptr && BufferDistributionRequiresGenericBridge(*binding)) {
     ICHECK_EQ(binding->local_shape.size(), 1)
         << "Blackhole codegen generic fragment->tiled CB bridge currently requires a 1-D "
            "local_shape for "
@@ -2685,8 +2687,8 @@ void CodeGenBlackhole::PrintCastFragmentSliceToTiledCB(const tvm::tir::CallNode*
         << "tl.blackhole.cast_fragment_slice_to_tiled_cb currently supports only float16, "
            "bfloat16, or float32 destination dtypes";
   }
-  if (const FragmentLayoutBinding* binding = FindFragmentLayoutBinding(src_var);
-      binding != nullptr && FragmentLayoutRequiresGenericBridge(*binding)) {
+  if (const BufferDistributionBinding* binding = FindBufferDistributionBinding(src_var);
+      binding != nullptr && BufferDistributionRequiresGenericBridge(*binding)) {
     ICHECK_EQ(binding->local_shape.size(), 1)
         << "Blackhole codegen generic cast-fragment->tiled CB bridge currently requires a 1-D "
            "local_shape for "
@@ -2876,8 +2878,8 @@ void CodeGenBlackhole::PrintReadCBFrontTileToLocalFragment(const tvm::tir::CallN
   ICHECK(bit_width == 16 || bit_width == 32)
       << "tl.blackhole.read_cb_front_tile_to_local_fragment requires 16-bit or 32-bit element dtype";
   const char* bits_type = bit_width == 16 ? "uint16_t" : "uint32_t";
-  if (const FragmentLayoutBinding* binding = FindFragmentLayoutBinding(dst_var);
-      binding != nullptr && FragmentLayoutRequiresGenericBridge(*binding)) {
+  if (const BufferDistributionBinding* binding = FindBufferDistributionBinding(dst_var);
+      binding != nullptr && BufferDistributionRequiresGenericBridge(*binding)) {
     ICHECK_EQ(binding->local_shape.size(), 1)
         << "Blackhole codegen generic tiled CB->fragment bridge currently requires a 1-D "
            "local_shape for "
@@ -3108,14 +3110,14 @@ void CodeGenBlackhole::PrintReduceRow(const tvm::tir::CallNode* op,
   os << "); ";
   if (grouped) {
     const std::string src_buffer_name = src_var->name_hint;
-    auto layout_it = fragment_layout_bindings_by_buffer_name_.find(src_buffer_name);
-    ICHECK(layout_it != fragment_layout_bindings_by_buffer_name_.end())
-        << "Blackhole codegen requires fragment_layout_contract for grouped reduce_row source "
+    auto layout_it = buffer_distribution_bindings_by_buffer_name_.find(src_buffer_name);
+    ICHECK(layout_it != buffer_distribution_bindings_by_buffer_name_.end())
+        << "Blackhole codegen requires buffer_distribution_contract for grouped reduce_row source "
         << src_buffer_name;
-    ICHECK_EQ(layout_it->second.distribution_kind, fragment_layout::kGroupedRows)
+    ICHECK_EQ(layout_it->second.distribution_kind, buffer_distribution_kind::kGroupedRows)
         << "Blackhole codegen grouped reduce_row requires grouped_rows distribution contract for "
         << src_buffer_name;
-    ICHECK_EQ(layout_it->second.storage_topology_kind, fragment_layout::kLinear)
+    ICHECK_EQ(layout_it->second.storage_topology_kind, buffer_topology_kind::kLinear)
         << "Blackhole codegen grouped reduce_row only supports linear fragment storage topology for "
         << src_buffer_name;
     os << "const uint32_t num_elements = ";
@@ -3203,14 +3205,14 @@ void CodeGenBlackhole::PrintMulGroupedRowBcast(const tvm::tir::CallNode* op,
   os << "; const uint32_t row_width = ";
   PrintExpr(op->args[3], os);
   const std::string dst_buffer_name = dst_var->name_hint;
-  auto layout_it = fragment_layout_bindings_by_buffer_name_.find(dst_buffer_name);
-  ICHECK(layout_it != fragment_layout_bindings_by_buffer_name_.end())
-      << "Blackhole codegen requires fragment_layout_contract for grouped row broadcast destination "
+  auto layout_it = buffer_distribution_bindings_by_buffer_name_.find(dst_buffer_name);
+  ICHECK(layout_it != buffer_distribution_bindings_by_buffer_name_.end())
+      << "Blackhole codegen requires buffer_distribution_contract for grouped row broadcast destination "
       << dst_buffer_name;
-  ICHECK_EQ(layout_it->second.distribution_kind, fragment_layout::kGroupedRows)
+  ICHECK_EQ(layout_it->second.distribution_kind, buffer_distribution_kind::kGroupedRows)
       << "Blackhole codegen grouped row broadcast requires grouped_rows distribution contract for "
       << dst_buffer_name;
-  ICHECK_EQ(layout_it->second.storage_topology_kind, fragment_layout::kLinear)
+  ICHECK_EQ(layout_it->second.storage_topology_kind, buffer_topology_kind::kLinear)
       << "Blackhole codegen grouped row broadcast only supports linear fragment storage topology for "
       << dst_buffer_name;
   os << "; tilelang_mul_grouped_row_bcast(dst, scalar, num_elements, row_width); })";
@@ -3267,14 +3269,14 @@ void CodeGenBlackhole::PrintDivGroupedRowBcast(const tvm::tir::CallNode* op,
   os << "; const uint32_t row_width = ";
   PrintExpr(op->args[3], os);
   const std::string dst_buffer_name = dst_var->name_hint;
-  auto layout_it = fragment_layout_bindings_by_buffer_name_.find(dst_buffer_name);
-  ICHECK(layout_it != fragment_layout_bindings_by_buffer_name_.end())
-      << "Blackhole codegen requires fragment_layout_contract for grouped row broadcast destination "
+  auto layout_it = buffer_distribution_bindings_by_buffer_name_.find(dst_buffer_name);
+  ICHECK(layout_it != buffer_distribution_bindings_by_buffer_name_.end())
+      << "Blackhole codegen requires buffer_distribution_contract for grouped row broadcast destination "
       << dst_buffer_name;
-  ICHECK_EQ(layout_it->second.distribution_kind, fragment_layout::kGroupedRows)
+  ICHECK_EQ(layout_it->second.distribution_kind, buffer_distribution_kind::kGroupedRows)
       << "Blackhole codegen grouped row broadcast requires grouped_rows distribution contract for "
       << dst_buffer_name;
-  ICHECK_EQ(layout_it->second.storage_topology_kind, fragment_layout::kLinear)
+  ICHECK_EQ(layout_it->second.storage_topology_kind, buffer_topology_kind::kLinear)
       << "Blackhole codegen grouped row broadcast only supports linear fragment storage topology for "
       << dst_buffer_name;
   os << "; tilelang_div_grouped_row_bcast(dst, scalar, num_elements, row_width); })";
@@ -3392,14 +3394,14 @@ void CodeGenBlackhole::PrintExp2GroupedRowBcastAffine(const tvm::tir::CallNode* 
   os << "; const uint32_t row_width = ";
   PrintExpr(op->args[3], os);
   const std::string dst_buffer_name = dst_var->name_hint;
-  auto layout_it = fragment_layout_bindings_by_buffer_name_.find(dst_buffer_name);
-  ICHECK(layout_it != fragment_layout_bindings_by_buffer_name_.end())
-      << "Blackhole codegen requires fragment_layout_contract for grouped exp2 row broadcast destination "
+  auto layout_it = buffer_distribution_bindings_by_buffer_name_.find(dst_buffer_name);
+  ICHECK(layout_it != buffer_distribution_bindings_by_buffer_name_.end())
+      << "Blackhole codegen requires buffer_distribution_contract for grouped exp2 row broadcast destination "
       << dst_buffer_name;
-  ICHECK_EQ(layout_it->second.distribution_kind, fragment_layout::kGroupedRows)
+  ICHECK_EQ(layout_it->second.distribution_kind, buffer_distribution_kind::kGroupedRows)
       << "Blackhole codegen grouped exp2 row broadcast requires grouped_rows distribution contract for "
       << dst_buffer_name;
-  ICHECK_EQ(layout_it->second.storage_topology_kind, fragment_layout::kLinear)
+  ICHECK_EQ(layout_it->second.storage_topology_kind, buffer_topology_kind::kLinear)
       << "Blackhole codegen grouped exp2 row broadcast only supports linear fragment storage topology for "
       << dst_buffer_name;
   os << "; const float dst_scale = ";

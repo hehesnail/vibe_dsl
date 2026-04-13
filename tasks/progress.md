@@ -46,10 +46,18 @@
     Python wrapper、FFI registration、死代码与纯旧链测试已删除
   - active path 当前直接消费
     `Normalized Tile TIR + SpatialPlan companion +
-    blackhole.work_decomposition / blackhole.fragment_regions /
+    blackhole.work_decomposition / blackhole.compute_regions /
     blackhole.pipeline_stages`
     这组当前 owner truth；
     不再保留独立 semantic companion / semantic witness 通道
+  - `AnalyzeBlackholeComputeRegions` 的 pass / 文件名切换已完成；
+    旧 compute-region 命名与对应 helper 文件已删除
+  - `BlackholeDeviceResourceCanonicalization` 当前同时 canonicalize
+    TIR body 与
+    `blackhole.lowering_requirements / blackhole.compute_regions /
+    tl.spatial_program / tl.tt_program`
+    中的 buffer `scope`；
+    不再允许 body truth 与 companion contract 漂移
 
 ## 当前任务链
 

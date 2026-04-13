@@ -1275,7 +1275,7 @@ def test_blackhole_gemm_post_merge_cast_consumer_exposes_republish_contract():
         for op in spec.get("compute_epilogue_ops", [])
         if str(op.get("kind", "")) == "cast_fragment_slice" and str(op.get("dst_buffer", "")) == "D_local"
     )
-    contract = cast_op["fragment_materialization_contract"]
+    contract = cast_op["buffer_materialization_contract"]
     assert str(contract["kind"]) == "republished_logical_tile"
     assert str(contract["materialization_kind"]) == "republished_buffer"
     assert str(contract["bridge_kind"]) == "tile_nfaces_materialization"
@@ -1293,7 +1293,7 @@ def test_blackhole_gemm_post_merge_cast_consumer_exposes_republish_contract():
         if str(op.get("kind", "")) == "merge_fragment_tiles"
         and str(op.get("dst_buffer", "")) == "C_local"
     )
-    merge_contract = merge_op["fragment_materialization_contract"]
+    merge_contract = merge_op["buffer_materialization_contract"]
     assert str(merge_contract["result_live_form"]) == "tiled_cb"
 
 
@@ -1366,7 +1366,7 @@ def test_blackhole_fragment_fill_cast_publish_materializes_generic_compute_write
     mod = lower_blackhole_to_tt_target(mod)
 
     lowering_requirements = mod["main"].attrs["blackhole.lowering_requirements"]
-    layout_contracts = list(lowering_requirements["fragment_layout_contracts"])
+    layout_contracts = list(lowering_requirements["buffer_distribution_contracts"])
     by_buffer = {str(contract["buffer"]): contract for contract in layout_contracts}
 
     assert {"C_local", "D_local"}.issubset(by_buffer)

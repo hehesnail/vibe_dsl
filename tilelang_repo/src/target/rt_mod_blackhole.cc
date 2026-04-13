@@ -599,53 +599,53 @@ static std::vector<ComputeContractSpec::EpilogueOpSpec> ParseComputeEpilogueOps(
       if (auto value = op.Get("grouped")) entry.grouped = Downcast<Bool>(value.value());
       if (auto value = op.Get("clear")) entry.clear = Downcast<Bool>(value.value());
       if (auto value = op.Get("publish_cb")) entry.publish_cb = Downcast<Bool>(value.value());
-      if (auto value = op.Get("fragment_materialization_contract")) {
+      if (auto value = op.Get("buffer_materialization_contract")) {
         auto contract =
             value.value()
                 .as<ffi::Map<ffi::String, ffi::Any>>()
                 .value_or(ffi::Map<ffi::String, ffi::Any>());
         if (auto field = contract.Get("kind")) {
-          entry.fragment_materialization_contract.kind = Downcast<String>(field.value());
+          entry.buffer_materialization_contract.kind = Downcast<String>(field.value());
         }
         if (auto field = contract.Get("target_buffer")) {
-          entry.fragment_materialization_contract.target_buffer =
+          entry.buffer_materialization_contract.target_buffer =
               Downcast<String>(field.value());
         }
         if (auto field = contract.Get("scope")) {
-          entry.fragment_materialization_contract.scope = Downcast<String>(field.value());
+          entry.buffer_materialization_contract.scope = Downcast<String>(field.value());
         }
         if (auto field = contract.Get("materialization_kind")) {
-          entry.fragment_materialization_contract.materialization_kind =
+          entry.buffer_materialization_contract.materialization_kind =
               Downcast<String>(field.value());
         }
         if (auto field = contract.Get("bridge_kind")) {
-          entry.fragment_materialization_contract.bridge_kind =
+          entry.buffer_materialization_contract.bridge_kind =
               Downcast<String>(field.value());
         }
         if (auto field = contract.Get("value_role")) {
-          entry.fragment_materialization_contract.value_role = Downcast<String>(field.value());
+          entry.buffer_materialization_contract.value_role = Downcast<String>(field.value());
         }
         if (auto field = contract.Get("merge_kind")) {
-          entry.fragment_materialization_contract.merge_kind = Downcast<String>(field.value());
+          entry.buffer_materialization_contract.merge_kind = Downcast<String>(field.value());
         }
         if (auto field = contract.Get("execution_protocol")) {
-          entry.fragment_materialization_contract.execution_protocol =
+          entry.buffer_materialization_contract.execution_protocol =
               Downcast<String>(field.value());
         }
         if (auto field = contract.Get("result_live_form")) {
-          entry.fragment_materialization_contract.result_live_form =
+          entry.buffer_materialization_contract.result_live_form =
               Downcast<String>(field.value());
         }
         if (auto field = contract.Get("source_buffer")) {
-          entry.fragment_materialization_contract.source_buffer =
+          entry.buffer_materialization_contract.source_buffer =
               Downcast<String>(field.value());
         }
         if (auto field = contract.Get("logical_row_width")) {
-          entry.fragment_materialization_contract.logical_row_width =
+          entry.buffer_materialization_contract.logical_row_width =
               static_cast<int>(Downcast<Integer>(field.value())->value);
         }
         if (auto field = contract.Get("logical_element_count")) {
-          entry.fragment_materialization_contract.logical_element_count =
+          entry.buffer_materialization_contract.logical_element_count =
               static_cast<int>(Downcast<Integer>(field.value())->value);
         }
       }
@@ -1734,8 +1734,8 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
           f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.lowering_requirements")) {
     std::vector<std::string> unsupported_ops;
     std::unordered_set<std::string> seen_ops;
-    if (auto fragment_ops = lowering_requirements.value().Get("fragment_op_kinds")) {
-      for (const auto& item : Downcast<ffi::Array<ffi::Any>>(fragment_ops.value())) {
+    if (auto compute_ops = lowering_requirements.value().Get("compute_op_kinds")) {
+      for (const auto& item : Downcast<ffi::Array<ffi::Any>>(compute_ops.value())) {
         const std::string op_name = Downcast<String>(item);
         if ((op_name == "row_reduction" || op_name == "row_broadcast") &&
             seen_ops.insert(op_name).second) {
@@ -1761,7 +1761,7 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
         }
         os << unsupported_ops[i];
       }
-      ICHECK(false) << "Blackhole fragment compute subset lowering is not implemented for ops ["
+      ICHECK(false) << "Blackhole compute subset lowering is not implemented for ops ["
                     << os.str() << "]";
     }
   }
@@ -2252,37 +2252,37 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
 
 static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
-  bool has_fragment_materialization_contract = false;
-  bool missing_fragment_materialization_contract = false;
-  bool missing_fragment_execution_protocol = false;
+  bool has_buffer_materialization_contract = false;
+  bool missing_buffer_materialization_contract = false;
+  bool missing_accumulator_execution_protocol = false;
   for (const ComputeContractSpec::EpilogueOpSpec& op : spec->compute_epilogue_ops) {
-    if (op.fragment_materialization_contract.defined()) {
-      has_fragment_materialization_contract = true;
+    if (op.buffer_materialization_contract.defined()) {
+      has_buffer_materialization_contract = true;
       if (op.kind == "merge_fragment_tiles" &&
-          op.fragment_materialization_contract.execution_protocol.empty()) {
-        missing_fragment_execution_protocol = true;
+          op.buffer_materialization_contract.execution_protocol.empty()) {
+        missing_accumulator_execution_protocol = true;
       }
     }
     if (op.kind == "add_fragment_from_cb_front" &&
-        !op.fragment_materialization_contract.defined()) {
-      missing_fragment_materialization_contract = true;
+        !op.buffer_materialization_contract.defined()) {
+      missing_buffer_materialization_contract = true;
     }
   }
-  if (!has_fragment_materialization_contract && !missing_fragment_materialization_contract) {
+  if (!has_buffer_materialization_contract && !missing_buffer_materialization_contract) {
     return;
   }
-  if (missing_fragment_materialization_contract) {
+  if (missing_buffer_materialization_contract) {
     AppendDirectRuntimeUnsupportedReason(
         spec,
-        "missing typed fragment materialization contract; direct runtime must "
+        "missing typed accumulator materialization contract; direct runtime must "
         "not execute add_fragment_from_cb_front scratch accumulation without "
-        "upstream fragment materialization truth");
+        "upstream accumulator materialization truth");
     return;
   }
-  if (missing_fragment_execution_protocol) {
+  if (missing_accumulator_execution_protocol) {
     AppendDirectRuntimeUnsupportedReason(
         spec,
-        "missing fragment materialization execution protocol; direct runtime "
+        "missing accumulator materialization execution protocol; direct runtime "
         "must not choose merge execution sequence without typed upstream "
         "contract");
     return;

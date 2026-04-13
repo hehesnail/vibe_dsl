@@ -258,7 +258,7 @@ elseif(USE_BLACKHOLE)
     src/transform/annotate_blackhole_copy_semantics.cc
     src/transform/blackhole_device_resource_canonicalization.cc
     src/transform/analyze_blackhole_work_decomposition.cc
-    src/transform/analyze_blackhole_fragment_regions.cc
+    src/transform/analyze_blackhole_compute_regions.cc
     src/transform/analyze_blackhole_pipeline_stages.cc
     src/transform/analyze_spatial_structure_facts.cc
     src/transform/build_spatial_plan_companion.cc

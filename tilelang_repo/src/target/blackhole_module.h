@@ -543,7 +543,7 @@ struct GemmContractSpec {
 
 struct ComputeContractSpec {
   struct EpilogueOpSpec {
-    struct FragmentMaterializationContractSpec {
+    struct BufferMaterializationContractSpec {
       std::string kind;
       std::string target_buffer;
       std::string scope;
@@ -608,7 +608,7 @@ struct ComputeContractSpec {
     bool grouped = false;
     bool clear = false;
     bool publish_cb = false;
-    FragmentMaterializationContractSpec fragment_materialization_contract;
+    BufferMaterializationContractSpec buffer_materialization_contract;
 
     void Save(dmlc::JSONWriter* writer) const {
       writer->BeginObject();
@@ -635,9 +635,9 @@ struct ComputeContractSpec {
       if (grouped) writer->WriteObjectKeyValue("grouped", grouped);
       if (clear) writer->WriteObjectKeyValue("clear", clear);
       if (publish_cb) writer->WriteObjectKeyValue("publish_cb", publish_cb);
-      if (fragment_materialization_contract.defined()) {
-        writer->WriteObjectKeyValue("fragment_materialization_contract",
-                                    fragment_materialization_contract);
+      if (buffer_materialization_contract.defined()) {
+        writer->WriteObjectKeyValue("buffer_materialization_contract",
+                                    buffer_materialization_contract);
       }
       writer->EndObject();
     }

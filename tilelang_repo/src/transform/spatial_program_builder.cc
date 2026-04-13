@@ -67,11 +67,14 @@ struct ChannelRecord {
   std::vector<std::string> traits;
 };
 
-struct FragmentFacts {
+struct LoweringSupportFacts {
   std::unordered_set<std::string> selection_subjects;
   std::unordered_set<std::string> recurrence_subjects;
   std::unordered_set<std::string> reduction_subjects;
-  Map<String, Any> fragment_payload;
+  Map<String, Any> compute_support_payload;
+  Array<Any> buffer_distribution_contracts;
+  Array<Any> buffer_materialization_contracts;
+  Array<Any> buffer_flow_contracts;
 };
 
 template <typename T>
@@ -152,16 +155,47 @@ int64_t GetLogicalElementCount(
   return count;
 }
 
+std::unordered_map<std::string, std::vector<int64_t>> BuildDistributionContractShapes(
+    const Array<Any>& buffer_distribution_contracts) {
+  std::unordered_map<std::string, std::vector<int64_t>> shapes;
+  for (const Any& contract_any : buffer_distribution_contracts) {
+    Map<String, Any> contract = Downcast<Map<String, Any>>(contract_any);
+    auto buffer_it = contract.find(String(schema_key::kBuffer));
+    auto shape_it = contract.find(String(schema_key::kShape));
+    if (buffer_it == contract.end() || shape_it == contract.end()) {
+      continue;
+    }
+    const std::string buffer_name = Downcast<String>((*buffer_it).second);
+    if (buffer_name.empty()) {
+      continue;
+    }
+    std::vector<int64_t> dims;
+    bool valid = true;
+    for (const Any& dim_any : Downcast<Array<Any>>((*shape_it).second)) {
+      if (auto dim = dim_any.try_cast<Integer>()) {
+        dims.push_back(dim.value()->value);
+      } else {
+        valid = false;
+        break;
+      }
+    }
+    if (valid && !dims.empty()) {
+      shapes[buffer_name] = std::move(dims);
+    }
+  }
+  return shapes;
+}
+
 int64_t GetLogicalRowWidth(
     const tir::Buffer& buffer,
     const std::unordered_map<std::string, std::vector<int64_t>>& logical_buffer_shapes) {
   const std::string name = BufferIdentityName(buffer);
   auto it = logical_buffer_shapes.find(name);
-  if (it != logical_buffer_shapes.end() && it->second.size() >= 2U) {
+  if (it != logical_buffer_shapes.end() && !it->second.empty()) {
     return it->second.back();
   }
   auto shape = ExtractStaticShape(buffer->shape);
-  if (shape && shape.value().size() >= 2U) {
+  if (shape && !shape.value().empty()) {
     return shape.value().back();
   }
   return -1;
@@ -193,15 +227,15 @@ bool IsAccumulatorLikeScope(const std::string& scope) {
   return parsed.rank == runtime::StorageRank::kBlackholeAccumulator;
 }
 
-bool IsFragmentMaterializationCandidate(const tir::CallNode* call) {
+bool IsBufferMaterializationCandidate(const tir::CallNode* call) {
   if (call == nullptr || !call->op->IsInstance<OpNode>()) {
     return false;
   }
   TileOperator tile_op = ParseOperator(GetRef<tir::Call>(call));
-  return tile_op.defined() && tile_op->GetFragmentMaterializationInfo().has_value();
+  return tile_op.defined() && tile_op->GetBufferMaterializationInfo().has_value();
 }
 
-Optional<Map<String, Any>> TryBuildFragmentMaterializationContract(const tir::CallNode* call) {
+Optional<Map<String, Any>> TryBuildBufferMaterializationContract(const tir::CallNode* call) {
   if (!call) {
     return Optional<Map<String, Any>>();
   }
@@ -209,7 +243,7 @@ Optional<Map<String, Any>> TryBuildFragmentMaterializationContract(const tir::Ca
   if (!tile_op.defined()) {
     return Optional<Map<String, Any>>();
   }
-  auto info = tile_op->GetFragmentMaterializationInfo();
+  auto info = tile_op->GetBufferMaterializationInfo();
   if (!info.has_value()) {
     return Optional<Map<String, Any>>();
   }
@@ -221,7 +255,7 @@ Optional<Map<String, Any>> TryBuildFragmentMaterializationContract(const tir::Ca
   }
   Map<String, Any> contract;
   contract.Set(String(schema_key::kKind),
-               String(fragment_materialization::kIntermediateFragmentMerge));
+               String(buffer_materialization::kIntermediateAccumulatorMerge));
   contract.Set(String(schema_key::kTargetBuffer), String(target_buffer));
   contract.Set(String(schema_key::kScope), String(scope));
   contract.Set(String(schema_key::kMaterializationKind), info->materialization_kind);
@@ -248,7 +282,7 @@ bool FlowContractHasEventKind(const Map<String, Any>& flow_contract, const char*
   return false;
 }
 
-Optional<Map<String, Any>> TryBuildRepublishFragmentMaterializationContract(
+Optional<Map<String, Any>> TryBuildRepublishBufferMaterializationContract(
     const Map<String, Any>& flow_contract) {
   auto buffer_it = flow_contract.find(String(schema_key::kBuffer));
   auto scope_it = flow_contract.find(String(schema_key::kScope));
@@ -263,28 +297,28 @@ Optional<Map<String, Any>> TryBuildRepublishFragmentMaterializationContract(
   const std::string flow_class = Downcast<String>((*flow_class_it).second);
   const std::string granule_kind = Downcast<String>((*granule_kind_it).second);
   if (buffer_name.empty() || !IsTrackedStateScope(scope) ||
-      flow_class != fragment_flow::kRepublish ||
-      granule_kind != fragment_flow::kLogicalTile ||
-      (!FlowContractHasEventKind(flow_contract, fragment_flow::kComputeConsume) &&
-       !FlowContractHasEventKind(flow_contract, fragment_flow::kTransportConsume))) {
+      flow_class != buffer_flow::kRepublish ||
+      granule_kind != buffer_flow::kLogicalTile ||
+      (!FlowContractHasEventKind(flow_contract, buffer_flow::kComputeConsume) &&
+       !FlowContractHasEventKind(flow_contract, buffer_flow::kTransportConsume))) {
     return Optional<Map<String, Any>>();
   }
   Map<String, Any> contract;
   contract.Set(String(schema_key::kKind),
-               String(fragment_materialization::kRepublishedLogicalTile));
+               String(buffer_materialization::kRepublishedLogicalTile));
   contract.Set(String(schema_key::kTargetBuffer), String(buffer_name));
   contract.Set(String(schema_key::kScope), String(scope));
   contract.Set(String(schema_key::kMaterializationKind),
-               String(fragment_materialization::kRepublishedBuffer));
+               String(buffer_materialization::kRepublishedBuffer));
   contract.Set(String(schema_key::kBridgeKind),
-               String(fragment_materialization::kTileNFacesMaterialization));
+               String(buffer_materialization::kTileNFacesMaterialization));
   contract.Set(String(schema_key::kValueRole),
-               String(fragment_materialization::kConsumerInput));
+               String(buffer_materialization::kConsumerInput));
   contract.Set(String(schema_key::kMergeKind),
-               String(fragment_materialization::kDirectWrite));
+               String(buffer_materialization::kDirectWrite));
   contract.Set(String(schema_key::kExecutionProtocol),
-               String(fragment_materialization::kTiledCBRepublish));
-  contract.Set(String(schema_key::kResultLiveForm), String(fragment_live_form::kTiledCB));
+               String(buffer_materialization::kTiledCBRepublish));
+  contract.Set(String(schema_key::kResultLiveForm), String(buffer_live_form::kTiledCB));
   return contract;
 }
 
@@ -294,20 +328,20 @@ Map<String, Any> MakeRepublishedLogicalTileMaterializationContract(
     int64_t logical_element_count = -1) {
   Map<String, Any> contract;
   contract.Set(String(schema_key::kKind),
-               String(fragment_materialization::kRepublishedLogicalTile));
+               String(buffer_materialization::kRepublishedLogicalTile));
   contract.Set(String(schema_key::kTargetBuffer), String(buffer_name));
   contract.Set(String(schema_key::kScope), String(scope));
   contract.Set(String(schema_key::kMaterializationKind),
-               String(fragment_materialization::kRepublishedBuffer));
+               String(buffer_materialization::kRepublishedBuffer));
   contract.Set(String(schema_key::kBridgeKind),
-               String(fragment_materialization::kTileNFacesMaterialization));
+               String(buffer_materialization::kTileNFacesMaterialization));
   contract.Set(String(schema_key::kValueRole),
-               String(fragment_materialization::kConsumerInput));
+               String(buffer_materialization::kConsumerInput));
   contract.Set(String(schema_key::kMergeKind),
-               String(fragment_materialization::kDirectWrite));
+               String(buffer_materialization::kDirectWrite));
   contract.Set(String(schema_key::kExecutionProtocol),
-               String(fragment_materialization::kTiledCBRepublish));
-  contract.Set(String(schema_key::kResultLiveForm), String(fragment_live_form::kTiledCB));
+               String(buffer_materialization::kTiledCBRepublish));
+  contract.Set(String(schema_key::kResultLiveForm), String(buffer_live_form::kTiledCB));
   if (!source_buffer.empty()) {
     contract.Set(String(schema_key::kSourceBuffer), String(source_buffer));
   }
@@ -542,63 +576,63 @@ std::unordered_set<std::string> CollectComputeConsumedBuffers(const tir::Stmt& s
   return buffers;
 }
 
-enum class FragmentBufferFlowEventKind {
+enum class BufferFlowEventKind {
   kWrite,
   kComputeConsume,
   kTransportConsume,
   kReference,
 };
 
-struct FragmentBufferFlowEvent {
+struct BufferFlowEvent {
   int order_index = -1;
-  FragmentBufferFlowEventKind kind = FragmentBufferFlowEventKind::kReference;
+  BufferFlowEventKind kind = BufferFlowEventKind::kReference;
 };
 
-struct FragmentBufferFlowContract {
+struct BufferFlowContract {
   std::string buffer_name;
   std::string scope;
-  std::string flow_class = fragment_flow::kState;
+  std::string flow_class = buffer_flow::kState;
   int publish_granule = 1;
   int consume_granule = 1;
-  std::vector<FragmentBufferFlowEvent> events;
+  std::vector<BufferFlowEvent> events;
 };
 
-std::string FragmentBufferFlowEventKindToString(FragmentBufferFlowEventKind kind) {
+std::string BufferFlowEventKindToString(BufferFlowEventKind kind) {
   switch (kind) {
-    case FragmentBufferFlowEventKind::kWrite:
-      return fragment_flow::kWrite;
-    case FragmentBufferFlowEventKind::kComputeConsume:
-      return fragment_flow::kComputeConsume;
-    case FragmentBufferFlowEventKind::kTransportConsume:
-      return fragment_flow::kTransportConsume;
+    case BufferFlowEventKind::kWrite:
+      return buffer_flow::kWrite;
+    case BufferFlowEventKind::kComputeConsume:
+      return buffer_flow::kComputeConsume;
+    case BufferFlowEventKind::kTransportConsume:
+      return buffer_flow::kTransportConsume;
     default:
-      return fragment_flow::kReference;
+      return buffer_flow::kReference;
   }
 }
 
-std::string DeriveFragmentFlowClassLabel(const std::vector<FragmentBufferFlowEvent>& events) {
+std::string DeriveBufferFlowClassLabel(const std::vector<BufferFlowEvent>& events) {
   int first_consume = std::numeric_limits<int>::max();
   bool has_consume = false;
-  for (const FragmentBufferFlowEvent& event : events) {
-    if (event.kind == FragmentBufferFlowEventKind::kComputeConsume ||
-        event.kind == FragmentBufferFlowEventKind::kTransportConsume) {
+  for (const BufferFlowEvent& event : events) {
+    if (event.kind == BufferFlowEventKind::kComputeConsume ||
+        event.kind == BufferFlowEventKind::kTransportConsume) {
       has_consume = true;
       first_consume = std::min(first_consume, event.order_index);
     }
   }
   if (!has_consume) {
-    return fragment_flow::kState;
+    return buffer_flow::kState;
   }
-  for (const FragmentBufferFlowEvent& event : events) {
-    if (event.kind == FragmentBufferFlowEventKind::kWrite &&
+  for (const BufferFlowEvent& event : events) {
+    if (event.kind == BufferFlowEventKind::kWrite &&
         event.order_index > first_consume) {
-      return fragment_flow::kRepublish;
+      return buffer_flow::kRepublish;
     }
   }
-  return fragment_flow::kStream;
+  return buffer_flow::kStream;
 }
 
-Array<Any> CollectFragmentBufferFlowContractsFromBody(const tir::Stmt& body) {
+Array<Any> CollectBufferFlowContractsFromBody(const tir::Stmt& body) {
   std::unordered_map<std::string, tir::Buffer> tracked_buffers;
   const std::vector<tir::Stmt> ordered_stmts = CollectExecutionOrderedStmts(body);
   for (const tir::Stmt& stmt : ordered_stmts) {
@@ -642,7 +676,7 @@ Array<Any> CollectFragmentBufferFlowContractsFromBody(const tir::Stmt& body) {
     });
   }
 
-  std::unordered_map<std::string, FragmentBufferFlowContract> contracts_by_buffer;
+  std::unordered_map<std::string, BufferFlowContract> contracts_by_buffer;
   for (int order_index = 0; order_index < static_cast<int>(ordered_stmts.size()); ++order_index) {
     const tir::Stmt& stmt = ordered_stmts[order_index];
     const auto compute_consumed = CollectComputeConsumedBuffers(stmt);
@@ -650,30 +684,30 @@ Array<Any> CollectFragmentBufferFlowContractsFromBody(const tir::Stmt& body) {
       if (!StmtReferencesBuffer(stmt, buffer)) {
         continue;
       }
-      FragmentBufferFlowContract& contract = contracts_by_buffer[buffer_name];
+      BufferFlowContract& contract = contracts_by_buffer[buffer_name];
       contract.buffer_name = buffer_name;
       contract.scope = buffer.scope();
       const bool compute_consume = compute_consumed.count(buffer_name);
       const bool transport_consume = StmtConsumesBufferViaTransport(stmt, buffer);
       const bool reads = StmtReadsBuffer(stmt, buffer);
       const bool writes = StmtWritesBuffer(stmt, buffer);
-      auto append = [&](FragmentBufferFlowEventKind kind) {
-        contract.events.push_back(FragmentBufferFlowEvent{order_index, kind});
+      auto append = [&](BufferFlowEventKind kind) {
+        contract.events.push_back(BufferFlowEvent{order_index, kind});
       };
       if (compute_consume) {
-        append(FragmentBufferFlowEventKind::kComputeConsume);
+        append(BufferFlowEventKind::kComputeConsume);
       }
       if (!compute_consume && reads && !transport_consume) {
-        append(FragmentBufferFlowEventKind::kReference);
+        append(BufferFlowEventKind::kReference);
       }
       if (transport_consume) {
-        append(FragmentBufferFlowEventKind::kTransportConsume);
+        append(BufferFlowEventKind::kTransportConsume);
       }
       if (writes) {
-        append(FragmentBufferFlowEventKind::kWrite);
+        append(BufferFlowEventKind::kWrite);
       }
       if (!compute_consume && !reads && !transport_consume && !writes) {
-        append(FragmentBufferFlowEventKind::kReference);
+        append(BufferFlowEventKind::kReference);
       }
     }
   }
@@ -683,19 +717,19 @@ Array<Any> CollectFragmentBufferFlowContractsFromBody(const tir::Stmt& body) {
     if (contract.events.empty()) {
       continue;
     }
-    contract.flow_class = DeriveFragmentFlowClassLabel(contract.events);
+    contract.flow_class = DeriveBufferFlowClassLabel(contract.events);
     Map<String, Any> encoded;
     encoded.Set(String(schema_key::kBuffer), String(buffer_name));
     encoded.Set(String(schema_key::kScope), String(contract.scope));
     encoded.Set(String(schema_key::kFlowClass), String(contract.flow_class));
-    encoded.Set(String(schema_key::kGranuleKind), String(fragment_flow::kLogicalTile));
+    encoded.Set(String(schema_key::kGranuleKind), String(buffer_flow::kLogicalTile));
     encoded.Set(String(schema_key::kPublishGranule), Integer(contract.publish_granule));
     encoded.Set(String(schema_key::kConsumeGranule), Integer(contract.consume_granule));
     Array<Any> events;
-    for (const FragmentBufferFlowEvent& event : contract.events) {
+    for (const BufferFlowEvent& event : contract.events) {
       Map<String, Any> encoded_event;
       encoded_event.Set(String(schema_key::kKind),
-                        String(FragmentBufferFlowEventKindToString(event.kind)));
+                        String(BufferFlowEventKindToString(event.kind)));
       encoded_event.Set(String(schema_key::kOrderIndex), Integer(event.order_index));
       events.push_back(encoded_event);
     }
@@ -705,7 +739,7 @@ Array<Any> CollectFragmentBufferFlowContractsFromBody(const tir::Stmt& body) {
   return contracts;
 }
 
-void AppendUniqueFragmentMaterializationContractsFromFlowContracts(
+void AppendUniqueBufferMaterializationContractsFromFlowContracts(
     const Array<Any>& flow_contracts, Array<Any>* materialization_contracts) {
   std::unordered_set<std::string> seen;
   for (const Any& contract_any : *materialization_contracts) {
@@ -715,7 +749,7 @@ void AppendUniqueFragmentMaterializationContractsFromFlowContracts(
   }
   for (const Any& flow_contract_any : flow_contracts) {
     Map<String, Any> flow_contract = Downcast<Map<String, Any>>(flow_contract_any);
-    auto maybe_contract = TryBuildRepublishFragmentMaterializationContract(flow_contract);
+    auto maybe_contract = TryBuildRepublishBufferMaterializationContract(flow_contract);
     if (!maybe_contract) {
       continue;
     }
@@ -728,8 +762,9 @@ void AppendUniqueFragmentMaterializationContractsFromFlowContracts(
   }
 }
 
-void AppendUniqueCastDrivenFragmentMaterializationContractsFromBody(
+void AppendUniqueCastDrivenBufferMaterializationContractsFromBody(
     const tir::Stmt& body, const Array<Any>& flow_contracts,
+    const std::unordered_map<std::string, std::vector<int64_t>>& distribution_contract_shapes,
     const std::unordered_map<std::string, std::vector<int64_t>>& logical_buffer_shapes,
     Array<Any>* materialization_contracts) {
   std::unordered_map<std::string, Map<String, Any>> flow_by_buffer;
@@ -776,33 +811,55 @@ void AppendUniqueCastDrivenFragmentMaterializationContractsFromBody(
     const std::string scope = Downcast<String>(flow_contract.at(String(schema_key::kScope)));
     const std::string granule_kind =
         Downcast<String>(flow_contract.at(String(schema_key::kGranuleKind)));
-    if (!IsTrackedStateScope(scope) || granule_kind != fragment_flow::kLogicalTile ||
-        (!FlowContractHasEventKind(flow_contract, fragment_flow::kComputeConsume) &&
-         !FlowContractHasEventKind(flow_contract, fragment_flow::kTransportConsume))) {
+    if (!IsTrackedStateScope(scope) || granule_kind != buffer_flow::kLogicalTile ||
+        (!FlowContractHasEventKind(flow_contract, buffer_flow::kComputeConsume) &&
+         !FlowContractHasEventKind(flow_contract, buffer_flow::kTransportConsume))) {
       return;
     }
-    int64_t logical_row_width = GetLogicalRowWidth(src_buffer, logical_buffer_shapes);
+    auto lookup_row_width = [&](const tir::Buffer& buffer) {
+      const std::string name = BufferIdentityName(buffer);
+      auto shape_it = distribution_contract_shapes.find(name);
+      if (shape_it != distribution_contract_shapes.end() && !shape_it->second.empty()) {
+        return shape_it->second.back();
+      }
+      return GetLogicalRowWidth(buffer, logical_buffer_shapes);
+    };
+    auto lookup_element_count = [&](const std::string& buffer_name) {
+      auto shape_it = distribution_contract_shapes.find(buffer_name);
+      if (shape_it == distribution_contract_shapes.end() || shape_it->second.empty()) {
+        return GetLogicalElementCount(buffer_name, logical_buffer_shapes);
+      }
+      int64_t count = 1;
+      for (int64_t dim : shape_it->second) {
+        if (dim <= 0 || count > std::numeric_limits<int64_t>::max() / dim) {
+          return int64_t{-1};
+        }
+        count *= dim;
+      }
+      return count;
+    };
+    int64_t logical_row_width = lookup_row_width(src_buffer);
     if (logical_row_width <= 0) {
-      logical_row_width = GetLogicalRowWidth(dst_buffer, logical_buffer_shapes);
+      logical_row_width = lookup_row_width(dst_buffer);
     }
-    int64_t logical_element_count = GetLogicalElementCount(dst_name, logical_buffer_shapes);
+    int64_t logical_element_count = lookup_element_count(dst_name);
     if (logical_element_count <= 0) {
-      logical_element_count = GetLogicalElementCount(src_name, logical_buffer_shapes);
+      logical_element_count = lookup_element_count(src_name);
     }
     upsert(MakeRepublishedLogicalTileMaterializationContract(
         dst_name, scope, src_name, logical_row_width, logical_element_count));
   });
 }
 
-Array<Any> CollectFragmentMaterializationContractsFromBody(const tir::Stmt& body) {
+Array<Any> CollectBufferMaterializationContractsFromBody(const tir::Stmt& body) {
   Array<Any> contracts;
   std::unordered_set<std::string> seen;
   tir::PostOrderVisit(body, [&](const ObjectRef& node) {
     const auto* call = node.as<tir::CallNode>();
-    if (!IsFragmentMaterializationCandidate(call)) {
+    if (!IsBufferMaterializationCandidate(call)) {
       return;
     }
-    auto maybe_contract = TryBuildFragmentMaterializationContract(call);
+    auto maybe_contract = TryBuildBufferMaterializationContract(call);
     if (!maybe_contract) {
       return;
     }
@@ -851,8 +908,8 @@ Array<Any> GetPipelineStages(const tir::PrimFunc& func) {
   return func->GetAttr<Array<Any>>("blackhole.pipeline_stages").value_or(Array<Any>());
 }
 
-Array<Any> GetFragmentRegions(const tir::PrimFunc& func) {
-  return func->GetAttr<Array<Any>>("blackhole.fragment_regions").value_or(Array<Any>());
+Array<Any> GetComputeRegions(const tir::PrimFunc& func) {
+  return func->GetAttr<Array<Any>>("blackhole.compute_regions").value_or(Array<Any>());
 }
 
 std::string GetCopySemanticsField(const Map<String, Any>& ann, const char* key,
@@ -891,7 +948,7 @@ std::vector<std::string> CollectSegmentKindsFromBody(const tir::Stmt& body) {
   return collector.segment_kinds();
 }
 
-bool FragmentFlowContractHasEventKind(const Map<String, Any>& flow_contract, const char* kind) {
+bool BufferFlowContractHasEventKind(const Map<String, Any>& flow_contract, const char* kind) {
   return FlowContractHasEventKind(flow_contract, kind);
 }
 
@@ -951,10 +1008,10 @@ const char* NeutralPlacementAffinityForExecutionRole(const std::string& executio
 }
 
 DomainContract DeriveDomainContract(const tir::PrimFunc& func, const Array<String>& axes,
-                                    const FragmentFacts& fragment_facts) {
+                                    const LoweringSupportFacts& lowering_support_facts) {
   const bool has_derived = WorkDecompositionHasDerivedIndices(func);
   const bool has_bounds = WorkDecompositionHasWorkDependentBounds(func);
-  const bool has_selection = !fragment_facts.selection_subjects.empty();
+  const bool has_selection = !lowering_support_facts.selection_subjects.empty();
   const bool multi_axis = axes.size() > 1;
   DomainContract contract;
   if (has_derived) {
@@ -1127,27 +1184,26 @@ std::string KeyForAnyMap(const Map<String, Any>& map, const char* primary_key,
   return "";
 }
 
-FragmentFacts AnalyzeFragmentFacts(const tir::PrimFunc& func) {
-  FragmentFacts facts;
-  Array<Any> fragment_ops;
+LoweringSupportFacts AnalyzeLoweringSupportFacts(const tir::PrimFunc& func) {
+  LoweringSupportFacts facts;
+  Array<Any> compute_op_kinds;
   Array<Any> pointwise_ops;
   Array<Any> row_reduction_targets;
   Array<Any> row_broadcast_sources;
-  Array<Any> fragment_loop_carried_state;
-  Array<Any> fragment_layout_contracts;
-  std::unordered_set<std::string> seen_fragment_ops;
+  Array<Any> loop_carried_state;
+  std::unordered_set<std::string> seen_compute_ops;
   std::unordered_set<std::string> seen_pointwise_ops;
   std::unordered_set<std::string> seen_reduction_targets;
   std::unordered_set<std::string> seen_row_broadcasts;
   std::unordered_set<std::string> seen_loop_carried;
   std::unordered_set<std::string> seen_layout_contracts;
 
-  for (const Any& region_any : GetFragmentRegions(func)) {
+  for (const Any& region_any : GetComputeRegions(func)) {
     Map<String, Any> region = Downcast<Map<String, Any>>(region_any);
     if (auto maybe_ops = region.Get(String("ops"))) {
       for (const Any& op_any : Downcast<Array<Any>>(maybe_ops.value())) {
         const std::string name = Downcast<String>(op_any);
-        PushBackUnique(&fragment_ops, &seen_fragment_ops, String(name), name);
+        PushBackUnique(&compute_op_kinds, &seen_compute_ops, String(name), name);
       }
     }
     if (auto maybe_ops = region.Get(String("pointwise_ops"))) {
@@ -1188,7 +1244,7 @@ FragmentFacts AnalyzeFragmentFacts(const tir::PrimFunc& func) {
         const std::string name = KeyForAnyMap(state, schema_key::kName);
         if (!name.empty()) {
           facts.recurrence_subjects.insert(name);
-          PushBackUnique(&fragment_loop_carried_state, &seen_loop_carried, state, name);
+          PushBackUnique(&loop_carried_state, &seen_loop_carried, state, name);
         }
       }
     }
@@ -1201,64 +1257,64 @@ FragmentFacts AnalyzeFragmentFacts(const tir::PrimFunc& func) {
         }
       }
     }
-    if (auto maybe_layouts = region.Get(String(schema_key::kFragmentLayoutContracts))) {
+    if (auto maybe_layouts = region.Get(String(schema_key::kBufferDistributionContracts))) {
       for (const Any& layout_any : Downcast<Array<Any>>(maybe_layouts.value())) {
         Map<String, Any> layout = Downcast<Map<String, Any>>(layout_any);
         const std::string buffer = KeyForAnyMap(layout, schema_key::kBuffer);
-        PushBackUnique(&fragment_layout_contracts, &seen_layout_contracts, layout, buffer);
+        PushBackUnique(&facts.buffer_distribution_contracts, &seen_layout_contracts, layout, buffer);
       }
     }
   }
 
-  Array<Any> flow_contracts = CollectFragmentBufferFlowContractsFromBody(func->body);
-  Array<Any> materialization_contracts = CollectFragmentMaterializationContractsFromBody(func->body);
-  AppendUniqueFragmentMaterializationContractsFromFlowContracts(flow_contracts,
+  Array<Any> flow_contracts = CollectBufferFlowContractsFromBody(func->body);
+  Array<Any> materialization_contracts = CollectBufferMaterializationContractsFromBody(func->body);
+  AppendUniqueBufferMaterializationContractsFromFlowContracts(flow_contracts,
                                                                 &materialization_contracts);
-  AppendUniqueCastDrivenFragmentMaterializationContractsFromBody(
-      func->body, flow_contracts, BuildLogicalBufferShapes(func), &materialization_contracts);
+  const auto distribution_contract_shapes =
+      BuildDistributionContractShapes(facts.buffer_distribution_contracts);
+  AppendUniqueCastDrivenBufferMaterializationContractsFromBody(
+      func->body, flow_contracts, distribution_contract_shapes, BuildLogicalBufferShapes(func),
+      &materialization_contracts);
 
-  if (!fragment_ops.empty()) {
-    facts.fragment_payload.Set(String(schema_key::kFragmentOpKinds), fragment_ops);
+  if (!compute_op_kinds.empty()) {
+    facts.compute_support_payload.Set(String(schema_key::kComputeOpKinds), compute_op_kinds);
   }
   if (!pointwise_ops.empty()) {
-    facts.fragment_payload.Set(String(schema_key::kPointwiseOpKinds), pointwise_ops);
+    facts.compute_support_payload.Set(String(schema_key::kPointwiseOpKinds), pointwise_ops);
   }
   if (!row_reduction_targets.empty()) {
-    facts.fragment_payload.Set(String(schema_key::kRowReductionTargets), row_reduction_targets);
+    facts.compute_support_payload.Set(String(schema_key::kRowReductionTargets),
+                                      row_reduction_targets);
   }
   if (!row_broadcast_sources.empty()) {
-    facts.fragment_payload.Set(String(schema_key::kRowBroadcastSources), row_broadcast_sources);
+    facts.compute_support_payload.Set(String(schema_key::kRowBroadcastSources),
+                                      row_broadcast_sources);
   }
-  if (!fragment_loop_carried_state.empty()) {
-    facts.fragment_payload.Set(String(schema_key::kFragmentLoopCarriedState),
-                               fragment_loop_carried_state);
-  }
-  if (!fragment_layout_contracts.empty()) {
-    facts.fragment_payload.Set(String(schema_key::kFragmentLayoutContracts),
-                               fragment_layout_contracts);
+  if (!loop_carried_state.empty()) {
+    facts.compute_support_payload.Set(String(schema_key::kLoopCarriedState), loop_carried_state);
   }
   if (!materialization_contracts.empty()) {
-    facts.fragment_payload.Set(String(schema_key::kFragmentMaterializationContracts),
-                               materialization_contracts);
+    facts.buffer_materialization_contracts = materialization_contracts;
   }
   if (!flow_contracts.empty()) {
-    facts.fragment_payload.Set(String(schema_key::kFragmentBufferFlowContracts), flow_contracts);
+    facts.buffer_flow_contracts = flow_contracts;
   }
   return facts;
 }
 
-bool HasFragmentContract(const FragmentFacts& fragment_facts) {
-  auto maybe_fragment_ops = fragment_facts.fragment_payload.Get(String(schema_key::kFragmentOpKinds));
-  return maybe_fragment_ops && !Downcast<Array<Any>>(maybe_fragment_ops.value()).empty();
+bool HasComputeSupportContract(const LoweringSupportFacts& lowering_support_facts) {
+  auto maybe_compute_ops =
+      lowering_support_facts.compute_support_payload.Get(String(schema_key::kComputeOpKinds));
+  return maybe_compute_ops && !Downcast<Array<Any>>(maybe_compute_ops.value()).empty();
 }
 
-std::vector<std::string> DeriveFragmentFastPathSegmentKinds(const tir::PrimFunc& func,
-                                                            const FragmentFacts& fragment_facts) {
+std::vector<std::string> DeriveComputeFastPathSegmentKinds(
+    const tir::PrimFunc& func, const LoweringSupportFacts& lowering_support_facts) {
   std::vector<std::string> kinds = CollectSegmentKindsFromBody(func->body);
   if (std::find(kinds.begin(), kinds.end(), "compute") != kinds.end()) {
     return kinds;
   }
-  if (!HasFragmentContract(fragment_facts)) {
+  if (!HasComputeSupportContract(lowering_support_facts)) {
     return {};
   }
   bool has_reader = false;
@@ -1278,17 +1334,16 @@ std::vector<std::string> DeriveFragmentFastPathSegmentKinds(const tir::PrimFunc&
     has_reader = has_reader || direction == "dram_to_cb" || kind == "fused_staged_copy";
     has_writer = has_writer || direction == "cb_to_dram";
   });
-  if (auto maybe_flows =
-          fragment_facts.fragment_payload.Get(String(schema_key::kFragmentBufferFlowContracts))) {
-    for (const Any& flow_any : Downcast<Array<Any>>(maybe_flows.value())) {
+  if (!lowering_support_facts.buffer_flow_contracts.empty()) {
+    for (const Any& flow_any : lowering_support_facts.buffer_flow_contracts) {
       Map<String, Any> flow = Downcast<Map<String, Any>>(flow_any);
       const std::string scope = KeyForAnyMap(flow, schema_key::kScope);
       if (!has_reader && !IsTrackedStateScope(scope) &&
-          FragmentFlowContractHasEventKind(flow, fragment_flow::kComputeConsume)) {
+          BufferFlowContractHasEventKind(flow, buffer_flow::kComputeConsume)) {
         has_reader = true;
       }
       if (!has_writer &&
-          FragmentFlowContractHasEventKind(flow, fragment_flow::kTransportConsume)) {
+          BufferFlowContractHasEventKind(flow, buffer_flow::kTransportConsume)) {
         has_writer = true;
       }
     }
@@ -1305,8 +1360,9 @@ bool HasSimpleSegmentKinds(const tir::PrimFunc& func, const std::vector<std::str
 }
 
 bool IsSimpleCopyFastPath(const SpatialPlan& plan, const tir::PrimFunc& func,
-                          const FragmentFacts& fragment_facts) {
-  if (HasFragmentContract(fragment_facts) || HasSimpleSegmentKinds(func, {"reader", "compute", "writer"})) {
+                          const LoweringSupportFacts& lowering_support_facts) {
+  if (HasComputeSupportContract(lowering_support_facts) ||
+      HasSimpleSegmentKinds(func, {"reader", "compute", "writer"})) {
     return false;
   }
   return plan->closures.size() == 2 && plan->boundaries.size() <= 2;
@@ -1331,24 +1387,24 @@ bool IsSimpleGemmFastPath(const SpatialPlan& plan, const tir::PrimFunc& func) {
   return ingress_count == 2 && compute_count == 1 && egress_count == 1;
 }
 
-bool IsSimpleFragmentComputeFastPath(const SpatialPlan& plan, const tir::PrimFunc& func,
-                                     const FragmentFacts& fragment_facts) {
+bool IsSimpleComputeFastPath(const SpatialPlan& plan, const tir::PrimFunc& func,
+                                     const LoweringSupportFacts& lowering_support_facts) {
   if (IsSimpleGemmFastPath(plan, func)) {
     return false;
   }
   if (plan->closures.size() > 4 || plan->boundaries.size() > 6) {
     return false;
   }
-  return !DeriveFragmentFastPathSegmentKinds(func, fragment_facts).empty();
+  return !DeriveComputeFastPathSegmentKinds(func, lowering_support_facts).empty();
 }
 
 void BuildCommonSpatialScaffolding(const std::string& member_func, const tir::PrimFunc& func,
                                    const SpatialCapabilityModel& capability_model,
-                                   const FragmentFacts& fragment_facts,
+                                   const LoweringSupportFacts& lowering_support_facts,
                                    Array<SpatialLayout>* layouts,
                                    Array<WorkPartition>* work_partitions) {
   const Array<String> axes = GetAxesFromWorkDecomposition(func);
-  const DomainContract contract = DeriveDomainContract(func, axes, fragment_facts);
+  const DomainContract contract = DeriveDomainContract(func, axes, lowering_support_facts);
   layouts->push_back(SpatialLayout(
       String("layout_" + member_func), String(SelectLayoutKind(capability_model, contract)),
       String(member_func), axes, MakeTraits({"phase_b"}),
@@ -1375,19 +1431,49 @@ void AppendPipelineResourceIntent(const std::string& member_func, const tir::Pri
       MakeAnchors("spatial_resource_intent", "pipeline_contract_" + member_func)));
 }
 
-void AppendFragmentResourceIntent(const std::string& member_func,
-                                  const FragmentFacts& fragment_facts,
-                                  Array<ResourceIntent>* resource_intents) {
-  if (fragment_facts.fragment_payload.empty()) {
+void AppendLoweringSupportIntent(const std::string& intent_name, const std::string& member_func,
+                                 const std::string& trait, const Map<String, Any>& raw_payload,
+                                 Array<ResourceIntent>* resource_intents) {
+  if (raw_payload.empty()) {
     return;
   }
-  Map<String, Any> payload = fragment_facts.fragment_payload;
+  Map<String, Any> payload = raw_payload;
   payload.Set(String(schema_key::kTargetKind), String(spatial_contract::kMemberFuncTarget));
+  Array<String> traits = MakeTraits({"phase_b"});
+  traits.push_back(String(trait));
   resource_intents->push_back(ResourceIntent(
-      String("fragment_contract_" + member_func),
+      String(intent_name + "_" + member_func),
       String(sp::ToString(sp::SpatialResourceIntentKind::kLoweringSupport)),
-      String(member_func), MakeTraits({"phase_b", "fragment_contract"}), payload,
-      MakeAnchors("spatial_resource_intent", "fragment_contract_" + member_func)));
+      String(member_func), traits, payload,
+      MakeAnchors("spatial_resource_intent", intent_name + "_" + member_func)));
+}
+
+void AppendLoweringSupportResourceIntents(const std::string& member_func,
+                                          const LoweringSupportFacts& lowering_support_facts,
+                                          Array<ResourceIntent>* resource_intents) {
+  AppendLoweringSupportIntent("compute_support", member_func, "compute_support",
+                              lowering_support_facts.compute_support_payload, resource_intents);
+  if (!lowering_support_facts.buffer_distribution_contracts.empty()) {
+    Map<String, Any> payload;
+    payload.Set(String(schema_key::kBufferDistributionContracts),
+                lowering_support_facts.buffer_distribution_contracts);
+    AppendLoweringSupportIntent("buffer_distribution_support", member_func,
+                                "buffer_distribution_support", payload, resource_intents);
+  }
+  if (!lowering_support_facts.buffer_materialization_contracts.empty()) {
+    Map<String, Any> payload;
+    payload.Set(String(schema_key::kBufferMaterializationContracts),
+                lowering_support_facts.buffer_materialization_contracts);
+    AppendLoweringSupportIntent("buffer_materialization_support", member_func,
+                                "buffer_materialization_support", payload, resource_intents);
+  }
+  if (!lowering_support_facts.buffer_flow_contracts.empty()) {
+    Map<String, Any> payload;
+    payload.Set(String(schema_key::kBufferFlowContracts),
+                lowering_support_facts.buffer_flow_contracts);
+    AppendLoweringSupportIntent("buffer_flow_support", member_func, "buffer_flow_support", payload,
+                                resource_intents);
+  }
 }
 
 void AppendPhaseBoundaryResourceIntents(const std::vector<ChannelRecord>& channel_records,
@@ -1408,7 +1494,7 @@ void AppendPhaseBoundaryResourceIntents(const std::vector<ChannelRecord>& channe
 
 SpatialExecutionPlan BuildCopyFastPath(const std::string& member_func, const tir::PrimFunc& func,
                                        const SpatialCapabilityModel& capability_model,
-                                       const FragmentFacts& fragment_facts) {
+                                       const LoweringSupportFacts& lowering_support_facts) {
   TaskRecord record{"copy", sp::ToString(sp::SpatialTaskKind::kTransfer), "phase0_copy",
                     "transfer_copy", "fast_path|segment=copy|boundary=tensor_transfer",
                     {"fast_path", "copy"}};
@@ -1423,19 +1509,19 @@ SpatialExecutionPlan BuildCopyFastPath(const std::string& member_func, const tir
   Array<Placement> placements{MakeExecutionPlacement(record, 0, member_func)};
   Array<SyncEdge> sync_edges;
   Array<ResourceIntent> resource_intents;
-  AppendFragmentResourceIntent(member_func, fragment_facts, &resource_intents);
+  AppendLoweringSupportResourceIntents(member_func, lowering_support_facts, &resource_intents);
   AppendPipelineResourceIntent(member_func, func, &resource_intents);
   Array<SpatialLayout> layouts;
   Array<WorkPartition> work_partitions;
-  BuildCommonSpatialScaffolding(member_func, func, capability_model, fragment_facts, &layouts,
-                                &work_partitions);
+  BuildCommonSpatialScaffolding(member_func, func, capability_model, lowering_support_facts,
+                                &layouts, &work_partitions);
   return SpatialExecutionPlan(String(member_func), phases, tasks, channels, placements, sync_edges,
                               resource_intents, MakeAnchors("spatial_execution_plan", member_func));
 }
 
 SpatialExecutionPlan BuildSegmentFastPath(const std::string& member_func, const tir::PrimFunc& func,
                                           const SpatialCapabilityModel& capability_model,
-                                          const FragmentFacts& fragment_facts,
+                                          const LoweringSupportFacts& lowering_support_facts,
                                           const std::vector<std::string>& segment_kinds,
                                           const std::vector<std::string>& task_traits,
                                           const std::string& phase_name,
@@ -1452,7 +1538,7 @@ SpatialExecutionPlan BuildSegmentFastPath(const std::string& member_func, const 
         "fast_path|segment=" + segment_name + "|boundary=" +
         (segment_name == "reader" ? "tensor_transfer"
          : segment_name == "writer" ? "completion_handoff"
-                                    : "fragment_dataflow");
+                                    : "compute_dataflow");
     TaskRecord record{segment_name,
                       segment_name == "compute" ? sp::ToString(sp::SpatialTaskKind::kCompute)
                                                 : sp::ToString(sp::SpatialTaskKind::kTransfer),
@@ -1504,12 +1590,12 @@ SpatialExecutionPlan BuildSegmentFastPath(const std::string& member_func, const 
         return indices;
       }(), "segment_graph_closure|single_phase_fast_path")};
   Array<ResourceIntent> resource_intents;
-  AppendFragmentResourceIntent(member_func, fragment_facts, &resource_intents);
+  AppendLoweringSupportResourceIntents(member_func, lowering_support_facts, &resource_intents);
   AppendPipelineResourceIntent(member_func, func, &resource_intents);
   Array<SpatialLayout> layouts;
   Array<WorkPartition> work_partitions;
-  BuildCommonSpatialScaffolding(member_func, func, capability_model, fragment_facts, &layouts,
-                                &work_partitions);
+  BuildCommonSpatialScaffolding(member_func, func, capability_model, lowering_support_facts,
+                                &layouts, &work_partitions);
   return SpatialExecutionPlan(String(member_func), phases, tasks, channels, placements, sync_edges,
                               resource_intents, MakeAnchors("spatial_execution_plan", member_func));
 }
@@ -1561,7 +1647,7 @@ std::string BuildPhaseClosureBasis(const std::string& phase_name, int task_count
 SpatialExecutionPlan BuildGenericSpatialProgram(const std::string& member_func, const SpatialPlan& plan,
                                                 const tir::PrimFunc& func,
                                                 const SpatialCapabilityModel& capability_model,
-                                                const FragmentFacts& fragment_facts) {
+                                                const LoweringSupportFacts& lowering_support_facts) {
   const std::vector<int> task_phase = ComputeTaskPhases(plan);
   const auto subject_consumer_count = CountSubjectConsumers(plan);
 
@@ -1578,13 +1664,15 @@ SpatialExecutionPlan BuildGenericSpatialProgram(const std::string& member_func, 
         continue;
       }
       const std::string subject = boundary->subject;
-      if (fragment_facts.selection_subjects.count(subject)) {
+      if (lowering_support_facts.selection_subjects.count(subject)) {
         PushBackUnique(&traits, std::string("select"));
       }
-      if (str(boundary->kind) == "carry" || fragment_facts.recurrence_subjects.count(subject)) {
+      if (str(boundary->kind) == "carry" ||
+          lowering_support_facts.recurrence_subjects.count(subject)) {
         PushBackUnique(&traits, std::string("recurrence"));
       }
-      if (str(boundary->kind) == "join" || fragment_facts.reduction_subjects.count(subject)) {
+      if (str(boundary->kind) == "join" ||
+          lowering_support_facts.reduction_subjects.count(subject)) {
         PushBackUnique(&traits, std::string("reduce"));
       }
     }
@@ -1615,11 +1703,13 @@ SpatialExecutionPlan BuildGenericSpatialProgram(const std::string& member_func, 
     }
     const std::string subject = boundary->subject;
     sp::SpatialChannelKind kind = sp::SpatialChannelKind::kPointToPoint;
-    if (str(boundary->kind) == "carry" || fragment_facts.recurrence_subjects.count(subject)) {
+    if (str(boundary->kind) == "carry" ||
+        lowering_support_facts.recurrence_subjects.count(subject)) {
       kind = sp::SpatialChannelKind::kCarry;
-    } else if (str(boundary->kind) == "join" || fragment_facts.reduction_subjects.count(subject)) {
+    } else if (str(boundary->kind) == "join" ||
+               lowering_support_facts.reduction_subjects.count(subject)) {
       kind = sp::SpatialChannelKind::kReduceMerge;
-    } else if (fragment_facts.selection_subjects.count(subject)) {
+    } else if (lowering_support_facts.selection_subjects.count(subject)) {
       kind = sp::SpatialChannelKind::kGather;
     } else if (subject_consumer_count.count(subject) && subject_consumer_count.at(subject) > 1) {
       kind = sp::SpatialChannelKind::kBroadcast;
@@ -1717,14 +1807,14 @@ SpatialExecutionPlan BuildGenericSpatialProgram(const std::string& member_func, 
   }
 
   Array<ResourceIntent> resource_intents;
-  AppendFragmentResourceIntent(member_func, fragment_facts, &resource_intents);
+  AppendLoweringSupportResourceIntents(member_func, lowering_support_facts, &resource_intents);
   AppendPipelineResourceIntent(member_func, func, &resource_intents);
   AppendPhaseBoundaryResourceIntents(channel_records, &resource_intents);
 
   Array<SpatialLayout> layouts;
   Array<WorkPartition> work_partitions;
-  BuildCommonSpatialScaffolding(member_func, func, capability_model, fragment_facts, &layouts,
-                                &work_partitions);
+  BuildCommonSpatialScaffolding(member_func, func, capability_model, lowering_support_facts,
+                                &layouts, &work_partitions);
   return SpatialExecutionPlan(String(member_func), phases, tasks, channels, placements, sync_edges,
                               resource_intents, MakeAnchors("spatial_execution_plan", member_func));
 }
@@ -1734,22 +1824,23 @@ SpatialExecutionPlan BuildGenericSpatialProgram(const std::string& member_func, 
 TVM_DLL SpatialExecutionPlan BuildSpatialExecutionPlanForFunc(
     const std::string& member_func, const SpatialPlan& plan, const tir::PrimFunc& func,
     const SpatialCapabilityModel& capability_model) {
-  const FragmentFacts fragment_facts = AnalyzeFragmentFacts(func);
+  const LoweringSupportFacts lowering_support_facts = AnalyzeLoweringSupportFacts(func);
   if (IsSimpleGemmFastPath(plan, func)) {
-    return BuildSegmentFastPath(member_func, func, capability_model, fragment_facts,
+    return BuildSegmentFastPath(member_func, func, capability_model, lowering_support_facts,
                                 {"reader", "compute", "writer"}, {"fast_path", "gemm"},
                                 "phase0_gemm", "gemm_compute");
   }
-  if (IsSimpleFragmentComputeFastPath(plan, func, fragment_facts)) {
-    return BuildSegmentFastPath(member_func, func, capability_model, fragment_facts,
-                                DeriveFragmentFastPathSegmentKinds(func, fragment_facts),
-                                {"fast_path", "fragment_compute"}, "phase0_fragment",
-                                "fragment_compute");
+  if (IsSimpleComputeFastPath(plan, func, lowering_support_facts)) {
+    return BuildSegmentFastPath(member_func, func, capability_model, lowering_support_facts,
+                                DeriveComputeFastPathSegmentKinds(func, lowering_support_facts),
+                                {"fast_path", "compute"}, "phase0_compute",
+                                "compute");
   }
-  if (IsSimpleCopyFastPath(plan, func, fragment_facts)) {
-    return BuildCopyFastPath(member_func, func, capability_model, fragment_facts);
+  if (IsSimpleCopyFastPath(plan, func, lowering_support_facts)) {
+    return BuildCopyFastPath(member_func, func, capability_model, lowering_support_facts);
   }
-  return BuildGenericSpatialProgram(member_func, plan, func, capability_model, fragment_facts);
+  return BuildGenericSpatialProgram(member_func, plan, func, capability_model,
+                                    lowering_support_facts);
 }
 
 }  // namespace tl

@@ -48,7 +48,7 @@ def _prepare_blackhole_phase_b_module(prim_func):
     mod = tilelang.transform.BuildSpatialPlanCompanion()(mod)
     mod = tilelang.transform.SplitBlackholeKernel()(mod)
     mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
-    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeComputeRegions()(mod)
     mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
     mod = tilelang.transform.AnalyzeSpatialDomainPlan()(mod)
     mod = tilelang.transform.AnalyzeSpatialExecutionPlan()(mod)
@@ -72,7 +72,7 @@ def _prepare_blackhole_pre_spatial_module(prim_func):
     mod = tilelang.transform.BuildSpatialPlanCompanion()(mod)
     mod = tilelang.transform.SplitBlackholeKernel()(mod)
     mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
-    mod = tilelang.transform.AnalyzeBlackholeFragmentRegions()(mod)
+    mod = tilelang.transform.AnalyzeBlackholeComputeRegions()(mod)
     mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
     return mod
 
@@ -360,7 +360,7 @@ def test_flash_attention_spatial_program_projects_pipeline_contract_resource_int
     assert [str(stage["loop_var"]) for stage in stage_records] == ["k", "k"]
 
 
-def test_flash_attention_spatial_program_projects_fragment_contract_resource_intent():
+def test_flash_attention_spatial_program_projects_split_lowering_support_intents():
     mod = _prepare_blackhole_phase_b_module(
         _lower_flash_attention_example(
             mha_example,
@@ -377,16 +377,23 @@ def test_flash_attention_spatial_program_projects_fragment_contract_resource_int
     )
     program = mod["main"].attrs["tl.spatial_program"]
 
-    fragment_contracts = [
+    lowering_supports = [
         intent
         for intent in program.resource_intents
         if str(intent.kind) == "lowering_support"
-        and "fragment_contract" in {str(trait) for trait in intent.traits}
     ]
 
-    assert len(fragment_contracts) == 1
-    payload = fragment_contracts[0].payload
-    assert "pointwise_chain" in {str(item) for item in payload["fragment_op_kinds"]}
+    traits_by_intent = [{str(trait) for trait in intent.traits} for intent in lowering_supports]
+    assert any("compute_support" in traits for traits in traits_by_intent)
+    assert any("buffer_distribution_support" in traits for traits in traits_by_intent)
+    assert any("buffer_materialization_support" in traits for traits in traits_by_intent)
+    assert any("buffer_flow_support" in traits for traits in traits_by_intent)
+
+    compute_intent = next(
+        intent for intent in lowering_supports if "compute_support" in {str(trait) for trait in intent.traits}
+    )
+    payload = compute_intent.payload
+    assert "pointwise_chain" in {str(item) for item in payload["compute_op_kinds"]}
     assert {"mul", "div"} <= {str(item) for item in payload["pointwise_op_kinds"]}
     assert len(payload["row_reduction_targets"]) > 0
 
@@ -496,7 +503,7 @@ def test_chunk_o_spatial_program_exposes_chunk_recurrence_family_gate():
     assert len(program.channels) >= 1
     assert any(
         str(intent.kind) == "lowering_support"
-        and "fragment_contract" in {str(trait) for trait in intent.traits}
+        and "compute_support" in {str(trait) for trait in intent.traits}
         for intent in program.resource_intents
     )
 

@@ -32,7 +32,7 @@ constexpr const char* kOperations = "operations";
 constexpr const char* kOrderedRegions = "ordered_regions";
 constexpr const char* kAnchors = "anchors";
 constexpr const char* kStructuralRegions = "structural_regions";
-constexpr const char* kFragmentBuffers = "fragment_buffers";
+constexpr const char* kRegionBuffers = "region_buffers";
 constexpr const char* kSelectionTargets = "selection_targets";
 constexpr const char* kSelectionPairs = "selection_pairs";
 constexpr const char* kArgReduceTargets = "arg_reduce_targets";
@@ -60,13 +60,12 @@ constexpr const char* kDType = "dtype";
 constexpr const char* kExecutionRole = "execution_role";
 constexpr const char* kExecutionProtocol = "execution_protocol";
 constexpr const char* kFormationBasis = "formation_basis";
-constexpr const char* kFragmentMaterializationContracts = "fragment_materialization_contracts";
-constexpr const char* kFragmentMaterializationContract = "fragment_materialization_contract";
-constexpr const char* kFragmentLayoutContracts = "fragment_layout_contracts";
-constexpr const char* kFragmentLayoutContract = "fragment_layout_contract";
-constexpr const char* kFragmentBufferFlowContracts = "fragment_buffer_flow_contracts";
-constexpr const char* kFragmentLoopCarriedState = "fragment_loop_carried_state";
-constexpr const char* kFragmentOpKinds = "fragment_op_kinds";
+constexpr const char* kBufferMaterializationContracts = "buffer_materialization_contracts";
+constexpr const char* kBufferMaterializationContract = "buffer_materialization_contract";
+constexpr const char* kBufferDistributionContracts = "buffer_distribution_contracts";
+constexpr const char* kBufferDistributionContract = "buffer_distribution_contract";
+constexpr const char* kBufferFlowContracts = "buffer_flow_contracts";
+constexpr const char* kComputeOpKinds = "compute_op_kinds";
 constexpr const char* kDistributionKind = "distribution_kind";
 constexpr const char* kFlowClass = "flow_class";
 constexpr const char* kBridgeKind = "bridge_kind";
@@ -142,7 +141,7 @@ constexpr const char* kLoopCarriedState = "loop_carried_state";
 constexpr const char* kWorkDependentLoopBounds = "work_dependent_loop_bounds";
 }  // namespace schema_key
 
-namespace fragment_flow {
+namespace buffer_flow {
 constexpr const char* kState = "state";
 constexpr const char* kStream = "stream";
 constexpr const char* kRepublish = "republish";
@@ -153,10 +152,10 @@ constexpr const char* kWrite = "write";
 constexpr const char* kComputeConsume = "compute_consume";
 constexpr const char* kTransportConsume = "transport_consume";
 constexpr const char* kReference = "reference";
-}  // namespace fragment_flow
+}  // namespace buffer_flow
 
-namespace fragment_materialization {
-constexpr const char* kIntermediateFragmentMerge = "intermediate_fragment_merge";
+namespace buffer_materialization {
+constexpr const char* kIntermediateAccumulatorMerge = "intermediate_accumulator_merge";
 constexpr const char* kRepublishedLogicalTile = "republished_logical_tile";
 
 constexpr const char* kIntermediateBuffer = "intermediate_buffer";
@@ -164,27 +163,29 @@ constexpr const char* kRepublishedBuffer = "republished_buffer";
 
 constexpr const char* kTileNFacesMaterialization = "tile_nfaces_materialization";
 
-constexpr const char* kFragmentDelta = "fragment_delta";
+constexpr const char* kAccumulatorDelta = "accumulator_delta";
 constexpr const char* kConsumerInput = "consumer_input";
 
-constexpr const char* kFragmentAdd = "fragment_add";
+constexpr const char* kAccumulatorAdd = "accumulator_add";
 constexpr const char* kDirectWrite = "direct_write";
 
 constexpr const char* kDstCbBinaryPack = "dst_cb_binary_pack";
 constexpr const char* kTiledCBRepublish = "tiled_cb_republish";
-}  // namespace fragment_materialization
+}  // namespace buffer_materialization
 
-namespace fragment_live_form {
+namespace buffer_live_form {
 constexpr const char* kTiledCB = "tiled_cb";
-constexpr const char* kLocalFragment = "local_fragment";
-}  // namespace fragment_live_form
+}  // namespace buffer_live_form
 
-namespace fragment_layout {
-constexpr const char* kLinear = "linear";
+namespace buffer_distribution_kind {
 constexpr const char* kGroupedRows = "grouped_rows";
 constexpr const char* kRowState = "row_state";
 constexpr const char* kThreadDistributed = "thread_distributed";
-}  // namespace fragment_layout
+}  // namespace buffer_distribution_kind
+
+namespace buffer_topology_kind {
+constexpr const char* kLinear = "linear";
+}  // namespace buffer_topology_kind
 
 namespace spatial_contract {
 constexpr const char* kTaskTarget = "task";

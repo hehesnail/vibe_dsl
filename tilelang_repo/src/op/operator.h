@@ -81,7 +81,7 @@ struct LayoutInferArgs {
 
 class TileOperator;
 
-struct FragmentMaterializationInfo {
+struct BufferMaterializationInfo {
   Buffer target_buffer;
   ffi::String materialization_kind;
   ffi::String bridge_kind;
@@ -109,8 +109,8 @@ public:
 
   virtual TileOperator Clone() const = 0;
 
-  virtual std::optional<FragmentMaterializationInfo>
-  GetFragmentMaterializationInfo() const {
+  virtual std::optional<BufferMaterializationInfo>
+  GetBufferMaterializationInfo() const {
     return std::nullopt;
   }
 

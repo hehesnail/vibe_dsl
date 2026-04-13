@@ -1,10 +1,10 @@
 /*!
- * \file fragment_layout_contract_utils.h
- * \brief Shared helpers for typed fragment-layout contracts.
+ * \file buffer_distribution_contract_utils.h
+ * \brief Shared helpers for typed buffer-distribution contracts.
  */
 
-#ifndef TVM_TL_TRANSFORM_COMMON_FRAGMENT_LAYOUT_CONTRACT_UTILS_H_
-#define TVM_TL_TRANSFORM_COMMON_FRAGMENT_LAYOUT_CONTRACT_UTILS_H_
+#ifndef TVM_TL_TRANSFORM_COMMON_BUFFER_DISTRIBUTION_CONTRACT_UTILS_H_
+#define TVM_TL_TRANSFORM_COMMON_BUFFER_DISTRIBUTION_CONTRACT_UTILS_H_
 
 #include <tvm/ir/expr.h>
 #include <tvm/tir/expr.h>
@@ -18,7 +18,7 @@
 namespace tvm {
 namespace tl {
 
-inline tvm::ffi::Array<tvm::ffi::Any> EncodeFragmentContractShape(
+inline tvm::ffi::Array<tvm::ffi::Any> EncodeBufferDistributionShape(
     const tvm::ffi::Array<tvm::PrimExpr>& shape) {
   tvm::ffi::Array<tvm::ffi::Any> encoded;
   for (const tvm::PrimExpr& dim : shape) {
@@ -31,22 +31,38 @@ inline tvm::ffi::Array<tvm::ffi::Any> EncodeFragmentContractShape(
   return encoded;
 }
 
-inline bool MatchRowStateFragmentLayout(const Fragment& fragment) {
+inline tvm::ffi::Array<tvm::ffi::Any> EncodeLogicalDistributionShape(
+    const tvm::ffi::Array<tvm::PrimExpr>& shape,
+    const std::string& distribution_kind) {
+  if (distribution_kind == buffer_distribution_kind::kGroupedRows && !shape.empty()) {
+    tvm::ffi::Array<tvm::PrimExpr> row_shape;
+    row_shape.push_back(shape[shape.size() - 1]);
+    return EncodeBufferDistributionShape(row_shape);
+  }
+  if (distribution_kind == buffer_distribution_kind::kRowState) {
+    tvm::ffi::Array<tvm::PrimExpr> row_state_shape;
+    row_state_shape.push_back(tvm::IntImm(tvm::DataType::Int(32), 1));
+    return EncodeBufferDistributionShape(row_state_shape);
+  }
+  return EncodeBufferDistributionShape(shape);
+}
+
+inline bool MatchRowStateDistribution(const Fragment& fragment) {
   return fragment->InputShape().size() == 1 && fragment->GetForwardIndex().size() == 1 &&
          StructuralEqual()(fragment->GetForwardIndex()[0],
                            tvm::IntImm(DataType::Int(32), 0)) &&
          StructuralEqual()(fragment->GetForwardThread(), InputPlaceholder(0));
 }
 
-inline bool MatchGroupedRowsFragmentLayout(const Fragment& fragment) {
+inline bool MatchGroupedRowsDistribution(const Fragment& fragment) {
   return fragment->InputShape().size() == 2 && fragment->GetForwardIndex().size() == 1 &&
          StructuralEqual()(fragment->GetForwardIndex()[0], InputPlaceholder(1)) &&
          StructuralEqual()(fragment->GetForwardThread(), InputPlaceholder(0));
 }
 
 inline tvm::ffi::Optional<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>
-TryBuildFragmentLayoutContract(const tvm::tir::Buffer& buffer, const Layout& layout,
-                               const std::string& scope_override = std::string()) {
+TryBuildBufferDistributionContract(const tvm::tir::Buffer& buffer, const Layout& layout,
+                                   const std::string& scope_override = std::string()) {
   auto fragment = layout.as<Fragment>();
   if (!fragment.has_value()) {
     return tvm::ffi::Optional<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>();
@@ -59,25 +75,25 @@ TryBuildFragmentLayoutContract(const tvm::tir::Buffer& buffer, const Layout& lay
   }
 
   std::string distribution_kind;
-  if (MatchGroupedRowsFragmentLayout(fragment.value())) {
-    distribution_kind = fragment_layout::kGroupedRows;
-  } else if (MatchRowStateFragmentLayout(fragment.value())) {
-    distribution_kind = fragment_layout::kRowState;
+  if (MatchGroupedRowsDistribution(fragment.value())) {
+    distribution_kind = buffer_distribution_kind::kGroupedRows;
+  } else if (MatchRowStateDistribution(fragment.value())) {
+    distribution_kind = buffer_distribution_kind::kRowState;
   } else {
-    distribution_kind = fragment_layout::kThreadDistributed;
+    distribution_kind = buffer_distribution_kind::kThreadDistributed;
   }
 
   tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> contract;
   contract.Set(tvm::ffi::String(schema_key::kBuffer), tvm::ffi::String(buffer_name));
   contract.Set(tvm::ffi::String(schema_key::kScope), tvm::ffi::String(scope));
   contract.Set(tvm::ffi::String(schema_key::kShape),
-               EncodeFragmentContractShape(fragment.value()->InputShape()));
+               EncodeLogicalDistributionShape(fragment.value()->InputShape(), distribution_kind));
   contract.Set(tvm::ffi::String(schema_key::kLocalShape),
-               EncodeFragmentContractShape(fragment.value()->OutputShape()));
+               EncodeBufferDistributionShape(fragment.value()->OutputShape()));
   contract.Set(tvm::ffi::String(schema_key::kDistributionKind),
                tvm::ffi::String(distribution_kind));
   contract.Set(tvm::ffi::String(schema_key::kStorageTopologyKind),
-               tvm::ffi::String(fragment_layout::kLinear));
+               tvm::ffi::String(buffer_topology_kind::kLinear));
   contract.Set(tvm::ffi::String(schema_key::kThreadExtent), fragment.value()->ThreadExtent());
   contract.Set(tvm::ffi::String(schema_key::kReplicateExtent), fragment.value()->ReplicateExtent());
   Layout inverse = fragment.value()->Inverse();
@@ -89,4 +105,4 @@ TryBuildFragmentLayoutContract(const tvm::tir::Buffer& buffer, const Layout& lay
 }  // namespace tl
 }  // namespace tvm
 
-#endif  // TVM_TL_TRANSFORM_COMMON_FRAGMENT_LAYOUT_CONTRACT_UTILS_H_
+#endif  // TVM_TL_TRANSFORM_COMMON_BUFFER_DISTRIBUTION_CONTRACT_UTILS_H_

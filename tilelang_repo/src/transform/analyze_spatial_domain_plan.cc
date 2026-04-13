@@ -69,8 +69,8 @@ bool WorkDecompositionHasWorkDependentBounds(const tir::PrimFunc& func) {
   return work && HasNonEmptyArrayField(work.value(), "work_dependent_loop_bounds");
 }
 
-bool FragmentRegionsHaveSelectionTargets(const tir::PrimFunc& func) {
-  auto regions = func->GetAttr<Array<Any>>("blackhole.fragment_regions");
+bool ComputeRegionsHaveSelectionTargets(const tir::PrimFunc& func) {
+  auto regions = func->GetAttr<Array<Any>>("blackhole.compute_regions");
   if (!regions) {
     return false;
   }
@@ -129,7 +129,7 @@ const char* SelectPartitionKind(const SpatialCapabilityModel& capability_model,
 DomainContract DeriveDomainContract(const tir::PrimFunc& func, const Array<String>& axes) {
   const bool has_derived = WorkDecompositionHasDerivedIndices(func);
   const bool has_work_dependent_bounds = WorkDecompositionHasWorkDependentBounds(func);
-  const bool has_selection_targets = FragmentRegionsHaveSelectionTargets(func);
+  const bool has_selection_targets = ComputeRegionsHaveSelectionTargets(func);
   const bool multi_axis = axes.size() > 1;
 
   DomainContract contract;

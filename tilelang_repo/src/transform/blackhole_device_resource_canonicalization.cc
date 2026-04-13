@@ -60,8 +60,10 @@
 #include <vector>
 
 #include "../layout/layout.h"
+#include "common/spatial_program.h"
+#include "common/tt_target_program.h"
 #include "common/companion_base.h"
-#include "common/fragment_layout_contract_utils.h"
+#include "common/buffer_distribution_contract_utils.h"
 #include "runtime/thread_storage_scope.h"
 #include "tir/transforms/ir_utils.h"
 
@@ -359,6 +361,190 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
     return &it->second;
   }
 
+  std::string CanonicalScopeForBuffer(const std::string& name) const {
+    if (const auto* info = GetInfo(name)) {
+      return info->new_scope;
+    }
+    return "";
+  }
+
+  Map<String, Any> RewriteScopedRecord(const Map<String, Any>& record,
+                                       const char* name_key) const {
+    auto maybe_name = record.Get(String(name_key));
+    if (!maybe_name.has_value()) {
+      return record;
+    }
+    auto name = maybe_name.value().as<String>();
+    if (!name.has_value()) {
+      return record;
+    }
+    const std::string scope =
+        CanonicalScopeForBuffer(static_cast<std::string>(name.value()));
+    if (scope.empty()) {
+      return record;
+    }
+    Map<String, Any> rewritten = record;
+    rewritten.Set(String(schema_key::kScope), String(scope));
+    return rewritten;
+  }
+
+  Array<Any> RewriteScopedRecordArray(const Array<Any>& records,
+                                      const char* name_key) const {
+    Array<Any> rewritten;
+    for (const Any& record_any : records) {
+      auto record = record_any.as<Map<String, Any>>();
+      if (!record.has_value()) {
+        rewritten.push_back(record_any);
+        continue;
+      }
+      rewritten.push_back(RewriteScopedRecord(record.value(), name_key));
+    }
+    return rewritten;
+  }
+
+  Map<String, Any> RewriteLoweringRequirements(const Map<String, Any>& requirements) const {
+    Map<String, Any> rewritten = requirements;
+    if (auto contracts = requirements.Get(String(schema_key::kBufferDistributionContracts))) {
+      rewritten.Set(String(schema_key::kBufferDistributionContracts),
+                    RewriteScopedRecordArray(Downcast<Array<Any>>(contracts.value()),
+                                             schema_key::kBuffer));
+    }
+    if (auto contracts = requirements.Get(String(schema_key::kBufferMaterializationContracts))) {
+      rewritten.Set(String(schema_key::kBufferMaterializationContracts),
+                    RewriteScopedRecordArray(Downcast<Array<Any>>(contracts.value()),
+                                             schema_key::kTargetBuffer));
+    }
+    if (auto contracts = requirements.Get(String(schema_key::kBufferFlowContracts))) {
+      rewritten.Set(String(schema_key::kBufferFlowContracts),
+                    RewriteScopedRecordArray(Downcast<Array<Any>>(contracts.value()),
+                                             schema_key::kBuffer));
+    }
+    return rewritten;
+  }
+
+  Map<String, Any> RewriteComputeRegion(const Map<String, Any>& region) const {
+    Map<String, Any> rewritten = region;
+    if (auto buffers = region.Get(String(manifest_key::kRegionBuffers))) {
+      rewritten.Set(String(manifest_key::kRegionBuffers),
+                    RewriteScopedRecordArray(Downcast<Array<Any>>(buffers.value()),
+                                             schema_key::kName));
+    }
+    if (auto contracts = region.Get(String(schema_key::kBufferDistributionContracts))) {
+      rewritten.Set(String(schema_key::kBufferDistributionContracts),
+                    RewriteScopedRecordArray(Downcast<Array<Any>>(contracts.value()),
+                                             schema_key::kBuffer));
+    }
+    return rewritten;
+  }
+
+  Array<Any> RewriteComputeRegions(const Array<Any>& regions) const {
+    Array<Any> rewritten;
+    for (const Any& region_any : regions) {
+      auto region = region_any.as<Map<String, Any>>();
+      if (!region.has_value()) {
+        rewritten.push_back(region_any);
+        continue;
+      }
+      rewritten.push_back(RewriteComputeRegion(region.value()));
+    }
+    return rewritten;
+  }
+
+  Map<String, Any> RewritePipelineStage(const Map<String, Any>& stage) const {
+    Map<String, Any> rewritten = stage;
+    if (auto buffers = stage.Get(String(schema_key::kStageLocalBuffers))) {
+      rewritten.Set(String(schema_key::kStageLocalBuffers),
+                    RewriteScopedRecordArray(Downcast<Array<Any>>(buffers.value()),
+                                             schema_key::kName));
+    }
+    return rewritten;
+  }
+
+  Array<Any> RewritePipelineStages(const Array<Any>& stages) const {
+    Array<Any> rewritten;
+    for (const Any& stage_any : stages) {
+      auto stage = stage_any.as<Map<String, Any>>();
+      if (!stage.has_value()) {
+        rewritten.push_back(stage_any);
+        continue;
+      }
+      rewritten.push_back(RewritePipelineStage(stage.value()));
+    }
+    return rewritten;
+  }
+
+  Map<String, Any> RewriteResourceIntentPayload(const Map<String, Any>& payload) const {
+    return RewriteLoweringRequirements(payload);
+  }
+
+  ResourceIntent RewriteResourceIntent(const ResourceIntent& intent) const {
+    return ResourceIntent(intent->name, intent->kind, intent->target_name, intent->traits,
+                          RewriteResourceIntentPayload(intent->payload), intent->anchors);
+  }
+
+  SpatialExecutionPlan RewriteSpatialExecutionPlan(
+      const SpatialExecutionPlan& plan) const {
+    Array<ResourceIntent> resource_intents;
+    for (const ResourceIntent& intent : plan->resource_intents) {
+      resource_intents.push_back(RewriteResourceIntent(intent));
+    }
+    return SpatialExecutionPlan(plan->member_func, plan->phases, plan->tasks,
+                                plan->channels, plan->placements, plan->sync_edges,
+                                resource_intents, plan->anchors);
+  }
+
+  SpatialProgram RewriteSpatialProgram(const SpatialProgram& program) const {
+    Array<ResourceIntent> resource_intents;
+    for (const ResourceIntent& intent : program->resource_intents) {
+      resource_intents.push_back(RewriteResourceIntent(intent));
+    }
+    return SpatialProgram(program->member_func, program->phases, program->tasks,
+                          program->channels, program->layouts, program->work_partitions,
+                          program->placements, program->sync_edges, resource_intents,
+                          program->anchors);
+  }
+
+  Map<String, Any> RewriteComputeEpilogueOp(const Map<String, Any>& op) const {
+    Map<String, Any> rewritten = op;
+    if (auto contract = op.Get(String(schema_key::kBufferDistributionContract))) {
+      rewritten.Set(String(schema_key::kBufferDistributionContract),
+                    RewriteScopedRecord(Downcast<Map<String, Any>>(contract.value()),
+                                        schema_key::kBuffer));
+    }
+    if (auto contract = op.Get(String(schema_key::kBufferMaterializationContract))) {
+      rewritten.Set(String(schema_key::kBufferMaterializationContract),
+                    RewriteScopedRecord(Downcast<Map<String, Any>>(contract.value()),
+                                        schema_key::kTargetBuffer));
+    }
+    return rewritten;
+  }
+
+  Array<Any> RewriteComputeEpilogueOps(const Array<Any>& ops) const {
+    Array<Any> rewritten;
+    for (const Any& op_any : ops) {
+      auto op = op_any.as<Map<String, Any>>();
+      if (!op.has_value()) {
+        rewritten.push_back(op_any);
+        continue;
+      }
+      rewritten.push_back(RewriteComputeEpilogueOp(op.value()));
+    }
+    return rewritten;
+  }
+
+  TTProgram RewriteTTProgram(const TTProgram& program) const {
+    Map<String, Any> payload = program->payload;
+    if (auto ops = payload.Get(String("compute_epilogue_ops"))) {
+      payload.Set(String("compute_epilogue_ops"),
+                  RewriteComputeEpilogueOps(Downcast<Array<Any>>(ops.value())));
+    }
+    return TTProgram(program->entry_name, program->member_func, program->kernels,
+                     program->core_groups, program->cb_plans, program->transport_plans,
+                     program->semaphore_plans, program->compute_sync_plans,
+                     program->dst_layout_plans, program->abi_plans,
+                     program->execution_plans, payload);
+  }
+
   const ResourceInfo* GetOrInferInfo(const std::string& name,
                                      const std::string& scope) {
     if (const auto* info = GetInfo(name)) return info;
@@ -617,6 +803,38 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
     Map<String, Any> new_attrs;
     if (old_attrs.defined()) {
       for (const auto& [k, v] : old_attrs->dict) {
+        if (k == String("blackhole.lowering_requirements")) {
+          auto requirements = v.as<Map<String, Any>>();
+          new_attrs.Set(k, requirements.has_value()
+                               ? Any(RewriteLoweringRequirements(requirements.value()))
+                               : v);
+          continue;
+        }
+        if (k == String("blackhole.compute_regions")) {
+          auto regions = v.as<Array<Any>>();
+          new_attrs.Set(k, regions.has_value() ? Any(RewriteComputeRegions(regions.value())) : v);
+          continue;
+        }
+        if (k == String("blackhole.pipeline_stages")) {
+          auto stages = v.as<Array<Any>>();
+          new_attrs.Set(k, stages.has_value() ? Any(RewritePipelineStages(stages.value())) : v);
+          continue;
+        }
+        if (k == String(attr::kTLSpatialExecutionPlan)) {
+          auto plan = v.as<SpatialExecutionPlan>();
+          new_attrs.Set(k, plan.has_value() ? Any(RewriteSpatialExecutionPlan(plan.value())) : v);
+          continue;
+        }
+        if (k == String(attr::kTLSpatialProgram)) {
+          auto program = v.as<SpatialProgram>();
+          new_attrs.Set(k, program.has_value() ? Any(RewriteSpatialProgram(program.value())) : v);
+          continue;
+        }
+        if (k == String(attr::kTLTTProgram)) {
+          auto program = v.as<TTProgram>();
+          new_attrs.Set(k, program.has_value() ? Any(RewriteTTProgram(program.value())) : v);
+          continue;
+        }
         new_attrs.Set(k, v);
       }
     }

@@ -130,14 +130,34 @@
   `tl.semantic_* / SemanticProgram / semantic_witness`
   这类独立语义层；
   凡是能从 `Normalized Tile TIR + SpatialPlan companion +
-  blackhole.work_decomposition / blackhole.fragment_regions /
+  blackhole.work_decomposition / blackhole.compute_regions /
   blackhole.pipeline_stages`
   稳定得到的信息，就必须直接从这些 owner truth 读取。
   若仍然不够，优先扩 TIR/schema，不要再造一层 semantic mirror
 - `SpatialProgram` fast path 的判定必须看
   `SpatialPlan` 自身的 closure / boundary 形状与现有 Blackhole analysis facts，
   不能只看零散 segment kind 或历史 semantic 角色；
-  否则 `flash-attn` 这类多闭包程序会被错误压成简单 GEMM / fragment fast path
+  否则 `flash-attn` 这类多闭包程序会被错误压成简单 GEMM / compute fast path
+- `BlackholeDeviceResourceCanonicalization`
+  不能只回写 TIR body。
+  一旦它把 `local.fragment / local` canonicalize 成 `blackhole.acc`
+  或把 shared canonicalize 成 `blackhole.cb.*`，
+  就必须同步改写
+  `blackhole.lowering_requirements / blackhole.compute_regions /
+  tl.spatial_program / tl.tt_program`
+  里对应 contract 的 `scope`；
+  否则 planning / codegen 会命中
+  “IR 已经切到新资源类，companion 还停在旧 scope” 的双真源裂缝
+- `buffer_distribution_contract.shape`
+  只表达 logical distribution truth，
+  不表达完整 tile 形状：
+  `grouped_rows -> [row_width]`，
+  `row_state -> [1]`。
+  需要完整 logical tile element count / row width 时，
+  应从显式
+  `logical_row_width / logical_element_count`
+  或 logical buffer shape 推导，
+  不要把完整二维 tile 重新塞回 distribution contract
 
 ## 5. Schema / ABI 模式
 

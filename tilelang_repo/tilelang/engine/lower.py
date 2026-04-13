@@ -201,6 +201,35 @@ def merge_ir_modules(*mods: tvm.IRModule) -> tvm.IRModule:
     return merged
 
 
+def _blackhole_prim_funcs(mod: tvm.IRModule) -> list[tuple[object, tir.PrimFunc]]:
+    funcs = []
+    for gvar, func in mod.functions.items():
+        if isinstance(func, tir.PrimFunc):
+            funcs.append((gvar, func))
+    return funcs
+
+
+def _prim_func_symbol(gvar, func: tir.PrimFunc) -> str:
+    attrs = func.attrs or {}
+    return str(attrs["global_symbol"]) if "global_symbol" in attrs else gvar.name_hint
+
+
+def _align_blackhole_device_symbol(
+    source_mod: tvm.IRModule,
+    optimized_device_mod: tvm.IRModule,
+) -> tvm.IRModule:
+    source_funcs = _blackhole_prim_funcs(source_mod)
+    optimized_funcs = _blackhole_prim_funcs(optimized_device_mod)
+    if len(source_funcs) != 1 or len(optimized_funcs) != 1:
+        return source_mod
+
+    _, source_func = source_funcs[0]
+    optimized_gvar, optimized_func = optimized_funcs[0]
+    target_symbol = _prim_func_symbol(optimized_gvar, optimized_func)
+    aligned_func = source_func.with_attr("global_symbol", target_symbol)
+    return tvm.IRModule({target_symbol: aligned_func}, global_infos=source_mod.global_infos)
+
+
 def blackhole_codegen(
     host_mod: tvm.IRModule,
     device_mod: tvm.IRModule,
@@ -212,6 +241,11 @@ def blackhole_codegen(
     device_mod = tir.transform.Simplify()(device_mod)
     device_mod = tilelang.transform.HoistBroadcastValues()(device_mod)
     device_mod = LowerToBlackholeExecutable(device_mod)
+    device_mod = tilelang.transform.BlackholeDeviceResourceCanonicalization()(device_mod)
+    device_mod = tilelang.transform.LowerOpaqueBlock()(device_mod)
+    device_mod = tir.transform.Simplify()(device_mod)
+    device_mod = tilelang.transform.FlattenBuffer()(device_mod)
+    device_mod = tir.transform.Simplify()(device_mod)
 
     build_mod = merge_ir_modules(host_mod, device_mod)
     build_func_name = (
@@ -307,9 +341,12 @@ def lower(
     # the explicit `target` argument. Run the lowering phases under the target
     # context so canonicalized targets (for example Blackhole + host target)
     # observe the same semantics as manual `with target:` debugging flows.
+    blackhole_analysis_mod = None
     with target:
         # Phase 1: Lower and legalize the IR
         mod = LowerAndLegalize(mod, target)
+        if target.kind.name == "blackhole":
+            blackhole_analysis_mod = mod
 
         # Phase 2: Optimize the IR for the target
         mod = OptimizeForTarget(mod, target)
@@ -318,9 +355,9 @@ def lower(
     device_mod = tir.transform.Filter(_is_device_call)(mod)
 
     if target.kind.name == "blackhole":
-        device_mod, codegen_mod = blackhole_codegen(
-            host_mod, device_mod, target, enable_device_compile
-        )
+        if blackhole_analysis_mod is not None:
+            device_mod = _align_blackhole_device_symbol(blackhole_analysis_mod, device_mod)
+        device_mod, codegen_mod = blackhole_codegen(host_mod, device_mod, target, enable_device_compile)
     else:
         codegen_mod = (
             device_codegen(device_mod, target)
