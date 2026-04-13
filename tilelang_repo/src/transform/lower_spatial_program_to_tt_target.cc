@@ -31,11 +31,12 @@ using tvm::ffi::String;
 
 namespace {
 
-tir::PrimFunc StripLegacyTTProjectionAttrs(tir::PrimFunc func) {
+tir::PrimFunc StripTTIntermediateAttrs(tir::PrimFunc func) {
   static const char* kLegacyProjectionAttrs[] = {
       "blackhole.segment_plan",
       "blackhole.runtime_args",
       "blackhole.common_runtime_args",
+      "blackhole.per_work_arg_specs",
       "blackhole.accessors",
       "blackhole.cb_configs",
       "blackhole.cb_bindings",
@@ -54,6 +55,13 @@ tir::PrimFunc StripLegacyTTProjectionAttrs(tir::PrimFunc func) {
       "blackhole.direct_runtime_unsupported_reasons",
   };
   for (const char* key : kLegacyProjectionAttrs) {
+    func = tvm::WithoutAttr(std::move(func), key);
+  }
+  static const char* kIntermediateSeedAttrs[] = {
+      attr::kTLTTKernelSeeds, attr::kTLTTABIPlans,  attr::kTLTTCBPlans,
+      attr::kTLTTCoreGroups,  attr::kTLTTSemaphorePlans, attr::kTLTTProgramPayload,
+  };
+  for (const char* key : kIntermediateSeedAttrs) {
     func = tvm::WithoutAttr(std::move(func), key);
   }
   return func;
@@ -264,7 +272,7 @@ tvm::transform::Pass LowerSpatialProgramToTTTarget() {
                 BuildTTProgramForFunc(func.value(), gvar->name_hint, maybe_spatial_program.value(),
                                       maybe_hardware_model.value()));
       rewritten.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
-      rewritten = StripLegacyTTProjectionAttrs(std::move(rewritten));
+      rewritten = StripTTIntermediateAttrs(std::move(rewritten));
       updated->Add(gvar, rewritten, true);
     }
     return updated;

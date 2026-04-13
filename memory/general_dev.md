@@ -230,6 +230,16 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   如果 small bf16 correctness 已过、但大 shape `float16` 命中
   `UntestedFunctionality: tensix_execute_unpacr: fp16`，
   优先视为 simulator 能力边界，而不是先回退刚验证过的 target contract 修复
+- 清理旧 target 链时要从外往里收：
+  先删 projection / side-channel，
+  再删最终 Phase C 输出上的 seed bridge attr；
+  canonical `LowerToBlackholeTTProgram` 产物应只保留 `tl.tt_program`，
+  不应再把 `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_cb_plans /
+  tl.tt_core_groups / tl.tt_program_payload` 当作稳定输出面
+- 与之对应的 regression 也要同步收口：
+  probe/test 只能验证当前 admitted 的 canonical 输出，
+  不要把中间 bridge attrs 或未 admitted 的 `flash-attn` 前提
+  固化成长期绿测
 
 稳定 host-side 抽象：
 

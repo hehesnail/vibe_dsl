@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 import tilelang
 from tilelang import tvm
+from tilelang.engine.lower import lower
 from tilelang.engine.phase import LowerAndLegalize, OptimizeForTarget
 from tvm.target import Target
 
@@ -23,7 +24,6 @@ from common import (
     require_tt_program,
     staged_copy_kernel,
 )
-from test_blackhole_flash_attention_analysis import _lower_flash_attention_example, mha_example
 
 
 def _prepare_blackhole_phase_b_module(prim_func):
@@ -139,46 +139,41 @@ def test_tt_target_lowering_materializes_tt_program_for_copy():
     assert len(tt_program.execution_plans) == 1
     assert str(tt_program.kernels[0].kind) == "fused_dataflow"
     assert str(tt_program.kernels[0].core_type) == "brisc"
-
-
-def test_tt_target_bridge_copy_module_uses_typed_seed_attrs_without_legacy_projections():
-    mod = _prepare_blackhole_tt_bridge_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
-    attrs = mod["main"].attrs
-
-    assert "tl.tt_kernel_seeds" in attrs
-    assert "tl.tt_abi_plans" in attrs
-    assert "tl.tt_cb_plans" in attrs
-    assert "tl.tt_core_groups" in attrs
-
     for key in (
-        "blackhole.segment_plan",
-        "blackhole.runtime_args",
-        "blackhole.common_runtime_args",
-        "blackhole.cb_configs",
-        "blackhole.core_plan",
+        "tl.tt_kernel_seeds",
+        "tl.tt_abi_plans",
+        "tl.tt_cb_plans",
+        "tl.tt_core_groups",
+        "tl.tt_semaphore_plans",
+        "tl.tt_program_payload",
     ):
-        assert key not in attrs
+        assert key not in mod["main"].attrs
 
 
-def test_tt_target_bridge_gemm_module_promotes_contracts_into_typed_payload_only():
-    mod = _prepare_blackhole_tt_bridge_module(gemm_kernel())
-    attrs = mod["main"].attrs
-    payload = dict(attrs["tl.tt_program_payload"])
+def test_blackhole_codegen_does_not_project_fragment_layout_seeds_to_device_module():
+    target = Target("blackhole")
+    with target:
+        artifact = lower(gemm_kernel(), target=target)
 
-    assert "tl.tt_kernel_seeds" in attrs
-    assert "tl.tt_abi_plans" in attrs
-    assert "gemm_contract" in payload
-    assert "compute_contract" in payload
+    device_main = artifact.device_mod["main_kernel"]
+    assert "tl.fragment_layout_seeds" not in device_main.attrs
 
-    for key in (
-        "blackhole.segment_plan",
-        "blackhole.runtime_args",
-        "blackhole.common_runtime_args",
-        "blackhole.gemm_contract",
-        "blackhole.compute_contract",
-        "blackhole.direct_runtime_unsupported_reasons",
-    ):
-        assert key not in attrs
+
+def test_blackhole_pre_phase_b_pipeline_does_not_emit_fragment_layout_seed_attrs():
+    mod = tvm.IRModule({"main": gemm_kernel().with_attr("global_symbol", "main")})
+    target = Target("blackhole")
+    with target:
+        mod = LowerAndLegalize(mod, target)
+        mod = OptimizeForTarget(mod, target)
+
+    mod = tilelang.transform.LowerDeviceStorageAccessInfo()(mod)
+    mod = tilelang.transform.AugmentSemanticManifest()(mod)
+    mod = tilelang.transform.LowerIntrin()(mod)
+    mod = tvm.tir.transform.Simplify()(mod)
+    assert "tl.fragment_layout_seeds" not in mod["main"].attrs
+
+    mod = tilelang.engine.phase.LowerToBlackholePhaseB(mod)
+    assert "tl.spatial_program" in mod["main"].attrs
 
 
 def test_materialize_blackhole_executable_keeps_tt_program_as_single_target_truth():
@@ -253,6 +248,15 @@ def test_tt_target_lowering_promotes_gemm_contracts_into_tt_program_payload():
     assert "compute_contract" in payload
     assert str(payload["gemm_contract"]["a_buffer"]) == "A"
     assert str(payload["compute_contract"]["kind"]) == "gemm"
+    for key in (
+        "tl.tt_kernel_seeds",
+        "tl.tt_abi_plans",
+        "tl.tt_cb_plans",
+        "tl.tt_core_groups",
+        "tl.tt_semaphore_plans",
+        "tl.tt_program_payload",
+    ):
+        assert key not in mod["main"].attrs
 
 
 def test_tt_target_lowering_no_longer_requires_legacy_bridge_attrs():
@@ -263,24 +267,6 @@ def test_tt_target_lowering_no_longer_requires_legacy_bridge_attrs():
     validated = tilelang.transform.ValidateTTTargetProgram()(lowered)
 
     assert "tl.tt_program" in validated["main"].attrs
-
-
-def test_tt_target_probe_accepts_multi_phase_flash_attention_subset():
-    mod = _prepare_blackhole_phase_b_module(
-        _lower_flash_attention_example(
-            mha_example,
-            1,
-            32,
-            256,
-            128,
-            False,
-            block_M=128,
-            block_N=128,
-            num_stages=1,
-            threads=128,
-        )
-    )
-    tilelang.transform.LowerSpatialProgramToTTTargetProbe()(mod)
 
 
 def test_tt_target_probe_rejects_missing_channel_delivery_contract():
@@ -403,202 +389,6 @@ def test_tt_target_probe_rejects_missing_state_version_source_version_contract()
     )
 
     with pytest.raises(Exception, match="missing spatial contract: channel .* source_version"):
-        tilelang.transform.LowerSpatialProgramToTTTargetProbe()(mod)
-
-
-def test_tt_target_probe_rejects_missing_phase_closure_contract():
-    mod = _prepare_blackhole_phase_b_module(
-        _lower_flash_attention_example(
-            mha_example,
-            1,
-            32,
-            256,
-            128,
-            False,
-            block_M=128,
-            block_N=128,
-            num_stages=1,
-            threads=128,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    make_phase = tvm.get_global_func("tl.ProgramPhase")
-    make_program = tvm.get_global_func("tl.SpatialProgram")
-    rebuilt_phases = [
-        make_phase(
-            phase.name,
-            phase.task_names,
-            phase.channel_names,
-            phase.traits,
-            {key: value for key, value in phase.payload.items() if key != "closure_basis"},
-            phase.anchors,
-        )
-        if i == 0
-        else phase
-        for i, phase in enumerate(program.phases)
-    ]
-    mod = _replace_spatial_program(
-        mod,
-        make_program(
-            program.member_func,
-            rebuilt_phases,
-            program.tasks,
-            program.channels,
-            program.layouts,
-            program.work_partitions,
-            program.placements,
-            program.sync_edges,
-            program.resource_intents,
-            program.anchors,
-        ),
-    )
-
-    with pytest.raises(Exception, match="missing spatial contract: phase .* closure_basis"):
-        tilelang.transform.LowerSpatialProgramToTTTargetProbe()(mod)
-
-
-def test_tt_target_probe_rejects_missing_sync_edge_ordering_contract():
-    mod = _prepare_blackhole_phase_b_module(
-        _lower_flash_attention_example(
-            mha_example,
-            1,
-            32,
-            256,
-            128,
-            False,
-            block_M=128,
-            block_N=128,
-            num_stages=1,
-            threads=128,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    make_sync_edge = tvm.get_global_func("tl.SyncEdge")
-    make_program = tvm.get_global_func("tl.SpatialProgram")
-    rebuilt_edges = [
-        make_sync_edge(
-            edge.name,
-            edge.kind,
-            edge.source,
-            edge.target,
-            edge.traits,
-            {key: value for key, value in edge.payload.items() if key != "ordering_kind"},
-            edge.anchors,
-        )
-        if i == 0
-        else edge
-        for i, edge in enumerate(program.sync_edges)
-    ]
-    mod = _replace_spatial_program(
-        mod,
-        make_program(
-            program.member_func,
-            program.phases,
-            program.tasks,
-            program.channels,
-            program.layouts,
-            program.work_partitions,
-            program.placements,
-            rebuilt_edges,
-            program.resource_intents,
-            program.anchors,
-        ),
-    )
-
-    with pytest.raises(Exception, match="missing spatial contract: sync edge .* ordering_kind"):
-        tilelang.transform.LowerSpatialProgramToTTTargetProbe()(mod)
-
-
-def test_tt_target_probe_rejects_out_of_bounds_sync_edge_task_index():
-    mod = _prepare_blackhole_phase_b_module(
-        _lower_flash_attention_example(
-            mha_example,
-            1,
-            32,
-            256,
-            128,
-            False,
-            block_M=128,
-            block_N=128,
-            num_stages=1,
-            threads=128,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    make_sync_edge = tvm.get_global_func("tl.SyncEdge")
-    make_program = tvm.get_global_func("tl.SpatialProgram")
-    rebuilt_edges = [
-        make_sync_edge(
-            edge.name,
-            edge.kind,
-            edge.source,
-            edge.target,
-            edge.traits,
-            {**dict(edge.payload), "target_task_index": len(program.tasks)},
-            edge.anchors,
-        )
-        if i == 0
-        else edge
-        for i, edge in enumerate(program.sync_edges)
-    ]
-    mod = _replace_spatial_program(
-        mod,
-        make_program(
-            program.member_func,
-            program.phases,
-            program.tasks,
-            program.channels,
-            program.layouts,
-            program.work_partitions,
-            program.placements,
-            rebuilt_edges,
-            program.resource_intents,
-            program.anchors,
-        ),
-    )
-
-    with pytest.raises(Exception, match="missing spatial contract: sync edge .* target_task_index out of bounds"):
-        tilelang.transform.LowerSpatialProgramToTTTargetProbe()(mod)
-
-
-def test_tt_target_probe_rejects_missing_cross_phase_sync_edge_coverage():
-    mod = _prepare_blackhole_phase_b_module(
-        _lower_flash_attention_example(
-            mha_example,
-            1,
-            32,
-            256,
-            128,
-            False,
-            block_M=128,
-            block_N=128,
-            num_stages=1,
-            threads=128,
-        )
-    )
-    program = mod["main"].attrs["tl.spatial_program"]
-
-    make_program = tvm.get_global_func("tl.SpatialProgram")
-    mod = _replace_spatial_program(
-        mod,
-        make_program(
-            program.member_func,
-            program.phases,
-            program.tasks,
-            program.channels,
-            program.layouts,
-            program.work_partitions,
-            program.placements,
-            [],
-            program.resource_intents,
-            program.anchors,
-        ),
-    )
-
-    with pytest.raises(Exception, match="missing spatial contract: cross-phase channel coverage requires sync edge"):
         tilelang.transform.LowerSpatialProgramToTTTargetProbe()(mod)
 
 

@@ -20,6 +20,9 @@
   - 当前执行基线已固定为 canonical `TTProgram` bundle +
     `MaterializeBlackholeExecutable` writer boundary
   - 当前工作从 `Task 2` cutover 转入 `Task 3` runtime/workload payoff
+  - `Task 3` 已进入旧链删除批次：
+    projection bridge、fragment-layout side-channel 已删除，
+    `BuildTTProgram` 末端也开始剥离中间 `tl.tt_*` seed attrs
 
 ## 当前任务链
 
@@ -35,7 +38,7 @@
     `PlanTTBlocks -> PlanTTTransport -> PlanTTSync -> PlanTTABI ->
     PlanTTExecution -> MaterializeBlackholeExecutable`
 - `Task 3`: 旧 recovery 链退场与 workload 回归
-  - 状态：未开始
+  - 状态：进行中
   - 目标：
     退场旧 recovery 主链，并让
     `flash-attn / topk / fusedmoe / paged decode / chunk recurrence`
@@ -76,6 +79,16 @@
   `TTProgram companion` 是否进入 active path，
   而是 `flash-attn / topk / fusedmoe / paged decode / chunk recurrence`
   在新主链上的 correctness payoff 与 admitted support surface
+- 旧链清理当前已完成外层桥接删除：
+  final Phase C 输出不再暴露
+  `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_cb_plans /
+  tl.tt_core_groups / tl.tt_program_payload`
+  这组中间 seed attrs
+- 当前剩余的结构性 blocker 是
+  `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
+  仍在内部承担 seed bridge owner 责任，
+  尚未被真实 `PlanTTBlocks / PlanTTTransport / PlanTTSync /
+  PlanTTABI / PlanTTExecution` 取代
 - 详细根因、旧链问题域和切入层次判断，
   统一见 `tasks/dev_design/task0_ir_layering_root_cause.md`
 - `flash-attn` 的 direct-runtime correctness payoff、
@@ -89,10 +102,11 @@
 ## 当前优先级
 
 1. **P0: `Task 3A` runtime gate + `flash-attn` payoff**
-   - 在新主链上兑现 admitted subset correctness
+  - 在新主链上兑现 admitted subset correctness
+  - 继续把旧 seed bridge owner 从 canonical pipeline 中清掉
 2. **P1: `Task 3B` wider family / support surface**
-   - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-   - wider copy/dataflow
+  - `topk -> fusedmoe -> paged decode -> chunk recurrence`
+  - wider copy/dataflow
    - wider sync 最后进入 admitted surface
 
 ## 当前未完成项
@@ -102,6 +116,8 @@
   - 让 `flash-attn / topk / fusedmoe / paged decode / chunk recurrence`
     在新主链下重新承接
   - 兑现更宽 copy/dataflow/sync 支持面
+- 用真实 `PlanTTBlocks / PlanTTTransport / PlanTTSync / PlanTTABI /
+  PlanTTExecution` 取代当前内部 seed bridge
 - 在 `Task 3` 收口前，保持 copy / GEMM / export 当前正式支持面不回退
 
 ## 当前边界
@@ -113,6 +129,8 @@
 - `flash-attn` direct runtime 当前不是 admitted support surface；
   对缺失显式 per-work contract 或 typed fragment materialization/merge protocol
   的 kernel，继续通过 `direct_runtime_unsupported_reasons` skip / fail-fast
+- grouped-row / fragment-layout contract 仍是 `flash-attn` 当前主要缺口；
+  相关 probe 已不再把未 admitted 的前提固化成稳定绿测
 - TT-Sim `fp16` 路径当前仍可能命中 simulator fatal taxonomy；
   该路径按 simulator capability boundary 处理，不作为当前 correctness gate
 - `TT_METAL_WATCHER=10` 调试 multicore direct path 时，
@@ -122,14 +140,22 @@
 ## 下一步
 
 1. 做 `Task 3A`
-   - runtime gate
-   - `flash-attn`
+  - runtime gate
+  - `flash-attn`
+  - `PlanTT*` owner pass 替换 seed bridge
 2. 再做 `Task 3B`
-   - wider family / support surface
+  - wider family / support surface
 
 ## 最新验证摘要
 
 - `tilelang_repo/build` fresh rebuild 通过
+- 旧链删除本轮验证：
+  - `test_blackhole_tt_target_probe.py`
+    -> `20 passed`
+  - `test_blackhole_copy_pipeline.py -k 'blackhole_codegen_only or build_reads_tt_program_without_legacy_projection_attrs or buffer_materialization_specs_are_exposed'`
+    -> `3 passed`
+  - `test_blackhole_gemm.py -k 'gemm_contract or executable_spec or blackhole_codegen'`
+    -> `1 passed`
 - `Task 2` canonical bundle / compatibility shell 回归：
   - `test_blackhole_tt_target_probe.py -k tt_target_probe_pass_is_registered`
     -> `1 passed`
