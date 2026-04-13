@@ -22,6 +22,8 @@
   - 更宽 copy/dataflow 支持面
   - 更宽 synchronization 支持面
   - quantitative capability field consumption 与 payload-backed node schema 继续上提
+- **任务链位置**: 新任务链下对应 `Task 2 / Task 3` 的当前 TT baseline、
+  runtime gate 与 support surface 参考；不是总体任务源
 - **上游输入**: 冻结后的 `SpatialProgram`
 - **下游输出**: 冻结后的 `TTProgram` 与 `ExecutableSpec` 物化结果
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`

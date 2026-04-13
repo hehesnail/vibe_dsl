@@ -4,6 +4,7 @@
 
 - **文档角色**: spatial/dataflow program model 的 companion 设计文档
 - **当前状态**: `2026-04-13` 活动设计文档，已按两层 redesign 收正
+- **任务链位置**: `Task 1` 和 `Task 2` 的 schema / pass owner 设计文档
 - **定位**: 不替代总体设计；只回答
   `Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion`
   这条主链里，哪些 truth 留在 TIR，哪些只是 analysis facts，

@@ -5,6 +5,7 @@
 - **文档角色**: 诊断当前 Blackhole 后端 layered IR 出现的共同 blocker 模式，
   并给出后续整改方向
 - **当前状态**: `2026-04-10` 新活动设计文档
+- **任务链位置**: `Task 0` 的根因诊断输入；解释为什么必须切到 companion 主链
 - **定位**: 不是第二份总体设计；是对
   `final_blackhole_backend_redesign.md` 里 layered IR discipline
   的一次具体落地审计，产出的是“接下来应往哪改”的决策
