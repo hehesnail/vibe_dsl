@@ -260,6 +260,8 @@ elseif(USE_BLACKHOLE)
     src/transform/analyze_blackhole_work_decomposition.cc
     src/transform/analyze_blackhole_fragment_regions.cc
     src/transform/analyze_blackhole_pipeline_stages.cc
+    src/transform/analyze_spatial_structure_facts.cc
+    src/transform/build_spatial_plan_companion.cc
     src/transform/analyze_spatial_domain_plan.cc
     src/transform/analyze_spatial_execution_plan.cc
     src/transform/lower_to_spatial_program.cc

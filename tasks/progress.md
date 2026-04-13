@@ -13,16 +13,16 @@
 - **目标主线**: `Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion -> ExecutableSpec`
 - **当前代码基线**: `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
 - **阶段状态**:
-  - 当前执行基线仍是旧 `Phase C` 主链
-  - companion-based 总设计与任务链已锁定
-  - 当前工作转入 architecture cutover
+  - `Task 1` 已落地到当前 active Blackhole compile path
+  - 当前执行基线仍由旧 `Phase C` consumer 链承接
+  - 当前工作从 architecture cut-in 转入 `Task 2` cutover
 
 ## 当前任务链
 
 - `Task 0`: 文档与 owner 链收口
   - 状态：已完成
 - `Task 1`: `SpatialPlan companion` cut-in
-  - 状态：未开始
+  - 状态：已完成
   - 目标：
     `AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion`
 - `Task 2`: `TTProgram companion` cutover
@@ -59,12 +59,12 @@
 ## 当前 blocker
 
 - 第一 blocker 已经不是“再补一个 runtime protocol”，
-  而是把 active owner 链从旧 recovery 主链切到 companion 主链
-- 当前需要切掉的不是单个 matcher，
-  而是整条
+  而是把 target owner 链从旧 recovery 主链切到 `TTProgram companion` 主链
+- `SpatialPlan companion` 已经 cut-in，
+  但当前 active consumer 仍然是
   `semantic_manifest / SemanticProgram / 旧 SpatialProgram /
   matcher-driven LowerBlackholeOps`
-  主路线
+  这条旧路线
 - 详细根因、旧链问题域和切入层次判断，
   统一见 `tasks/dev_design/ir_layering_root_cause_and_direction.md`
 - `flash-attn` 的 direct-runtime correctness payoff、
@@ -73,9 +73,6 @@
 
 ## 当前未完成项
 
-- 完成 `Task 1`
-  - `AnalyzeSpatialStructureFacts`
-  - `BuildSpatialPlanCompanion`
 - 完成 `Task 2`
   - `PlanTTBlocks`
   - `PlanTTTransport`
@@ -107,24 +104,31 @@
 
 ## 下一步
 
-1. 在 `Simplify` 后实现 `AnalyzeSpatialStructureFacts`
-2. 实现 `BuildSpatialPlanCompanion`，把 `Task / Channel` 退回 derived view
-3. 实现 `TTProgram companion` cutover：
+1. 实现 `TTProgram companion` cutover：
    `PlanTTBlocks / PlanTTTransport / PlanTTSync / PlanTTABI /
    PlanTTExecution / MaterializeBlackholeExecutable`
-4. 在同一轮 cutover 中退场旧 recovery 主链，
+2. 让 `Task / Channel` 在新主链里只保留 derived-view 角色，
+   不再继续扩张旧 `SpatialProgram` truth
+3. 在同一轮 cutover 中退场旧 recovery 主链，
    然后把 workload family 重新接到新主链
 
 ## 最新验证摘要
 
 - `tilelang_repo/build` fresh rebuild 通过
-- 所有 runtime 检查均在标准 TT-Sim 环境入口下完成
-- `flash-attn` regression：
-  `test_blackhole_flash_attention_pipeline.py` -> `62 passed`
-  `test_blackhole_flash_attention_runtime.py` -> `9 passed, 5 skipped`
-- copy regression：
-  `test_blackhole_copy_pipeline.py` -> `43 passed, 10 skipped, 1 xfailed`
-  `test_blackhole_copy_runtime.py` -> `12 passed`
-- copy baseline：
-  `test_blackhole_copy_pipeline.py` -> `52 passed, 1 skipped, 1 xfailed`
-  `test_blackhole_copy_runtime.py` -> `12 passed`
+- `Task 1` 结构回归：
+  - `test_blackhole_spatial_ir.py -k 'task1 or spatial_passes_are_registered'`
+    -> `4 passed`
+  - `test_blackhole_semantic_ir.py -k hard_freeze_invalidates_companion_programs_after_unsafe_mutation`
+    -> `1 passed`
+- 旧稳定面 smoke：
+  - `test_blackhole_spatial_ir.py -k 'spatial_pass_pipeline_materializes or copy_spatial_program_uses_single_transfer_fast_path or gemm_spatial_program_uses_reader_compute_writer_fast_path'`
+    -> `3 passed`
+  - `test_blackhole_semantic_ir.py -k 'copy_semantic_program_lifts_minimal_domain_and_map_update or gemm_semantic_program_lifts_fragment_state_and_map_update or hard_freeze_invalidates_companion_programs_after_unsafe_mutation'`
+    -> `3 passed`
+- `tilelang.lower(..., target="blackhole", enable_device_compile=False)` smoke：
+  staged copy / GEMM 均能经过 `blackhole_codegen` 主链并同时产出
+  `tl.spatial_structure_facts + tl.spatial_plan + tl.spatial_program`
+- 当前 dirty 主线上，完整
+  `test_blackhole_spatial_ir.py + test_blackhole_semantic_ir.py`
+  仍有既有失败，集中在 flash/topk/fusedmoe/chunk recurrence 旧链分析；
+  本轮未把这批已有失败当成 `Task 1` 关闭条件

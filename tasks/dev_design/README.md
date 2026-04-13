@@ -22,7 +22,7 @@
 |------|------|----------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计 | 已收回为轻量总纲；只保留长期主链、真源规则、任务链与 cutover invariant |
 | `ir_layering_root_cause_and_direction.md` | IR layering 根因诊断与整改方向 | 已形成当前架构收敛依据；保留为两层 IR redesign 的问题诊断入口 |
-| `spatial_dataflow_program_model.md` | spatial/dataflow program model 细化设计 | 已按 `TIR body / SpatialPlan companion / TTProgram companion` 边界重写；负责 companion schema、pass owner 与旧 pass 归位 |
+| `spatial_dataflow_program_model.md` | spatial/dataflow program model 细化设计 | `Task 1` 已落地；当前负责 `SpatialPlan companion` 已实现边界、`TTProgram companion` 后续 cutover owner 与旧 pass 归位 |
 | `stage4_phase_c_tt_target_ir.md` | 当前已落地 `TTProgram` 基线与支持面文档 | 负责当前 TT baseline、runtime gate、support surface 与 `Phase C2` payoff，不承担总体 layering 权威 |
 
 ## 3. 已完成但仍保留的边界文档

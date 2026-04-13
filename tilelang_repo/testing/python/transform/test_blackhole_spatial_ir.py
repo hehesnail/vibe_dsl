@@ -84,6 +84,22 @@ def _prepare_blackhole_pre_spatial_module(prim_func):
     return mod
 
 
+def _prepare_blackhole_task1_module(prim_func):
+    mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
+    target = Target("blackhole")
+    with target:
+        if not (mod["main"].attrs and mod["main"].attrs.get("target") is not None):
+            mod = LowerAndLegalize(mod, target)
+        mod = OptimizeForTarget(mod, target)
+    mod = tilelang.transform.LowerDeviceStorageAccessInfo()(mod)
+    mod = tilelang.transform.AugmentSemanticManifest()(mod)
+    mod = tilelang.transform.LowerIntrin()(mod)
+    mod = tvm.tir.transform.Simplify()(mod)
+    mod = tilelang.transform.AnalyzeSpatialStructureFacts()(mod)
+    mod = tilelang.transform.BuildSpatialPlanCompanion()(mod)
+    return mod
+
+
 def _strip_attr(mod, attr_name: str):
     func = mod["main"].without_attr(attr_name)
     return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
@@ -449,11 +465,60 @@ def _strip_attr_from_all_functions(mod, attr_name: str):
 
 
 def test_spatial_passes_are_registered():
+    assert hasattr(tilelang.transform, "AnalyzeSpatialStructureFacts")
+    assert hasattr(tilelang.transform, "BuildSpatialPlanCompanion")
     assert hasattr(tilelang.transform, "AnalyzeSpatialDomainPlan")
     assert hasattr(tilelang.transform, "AnalyzeSpatialExecutionPlan")
     assert hasattr(tilelang.transform, "MaterializeSpatialProgram")
     assert hasattr(tilelang.transform, "LowerToSpatialProgram")
     assert hasattr(tilelang.transform, "ValidateSpatialProgram")
+
+
+def test_task1_spatial_plan_pipeline_materializes_from_normalized_tir():
+    mod = _prepare_blackhole_task1_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    main = mod["main"]
+
+    assert main.attrs.get("tl.spatial_structure_facts") is not None
+    assert main.attrs.get("tl.spatial_plan") is not None
+    assert main.attrs.get("tl.semantic_program") is None
+    assert main.attrs.get("tl.spatial_program") is None
+
+    facts = main.attrs["tl.spatial_structure_facts"]
+    plan = main.attrs["tl.spatial_plan"]
+
+    assert str(facts.member_func) == "main"
+    assert str(plan.member_func) == "main"
+    assert len(facts.closure_candidates) >= 2
+    assert len(plan.closures) == len(facts.closure_candidates)
+    assert len(plan.validated_hints.accepted_hints) == 0
+    assert len(plan.validated_hints.rejected_hints) == 0
+
+
+def test_task1_copy_spatial_plan_emits_flow_boundary_from_tir():
+    mod = _prepare_blackhole_task1_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    plan = mod["main"].attrs["tl.spatial_plan"]
+
+    closures = {str(closure.name): closure for closure in plan.closures}
+    assert len(closures) == 2
+    assert {str(closure.execution_role) for closure in closures.values()} == {"ingress", "egress"}
+
+    flow_boundaries = [boundary for boundary in plan.boundaries if str(boundary.kind) == "flow"]
+    assert len(flow_boundaries) == 1
+    boundary = flow_boundaries[0]
+    assert str(boundary.source_closure) in closures
+    assert str(boundary.target_closure) in closures
+    assert str(boundary.subject) == "A_shared"
+
+
+def test_task1_gemm_spatial_plan_emits_compute_closure():
+    mod = _prepare_blackhole_task1_module(gemm_kernel())
+    plan = mod["main"].attrs["tl.spatial_plan"]
+
+    roles = {str(closure.execution_role) for closure in plan.closures}
+    assert "compute" in roles
+    assert "ingress" in roles
+    assert "egress" in roles
+    assert any(str(boundary.kind) == "flow" for boundary in plan.boundaries)
 
 
 def test_spatial_pass_pipeline_materializes_from_typed_intermediate_contracts():

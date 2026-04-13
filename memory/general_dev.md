@@ -54,6 +54,10 @@
 - `Normalized Tile TIR` 是唯一 semantic body；
   `SpatialPlan companion / TTProgram companion`
   只保存 TIR 没有对象化、但后续 planning 必须跨 pass 持久化的事实
+- `Task 1` 的 `SpatialPlan companion` 现在已在 `Simplify` 后落地；
+  第一版 `ExecutionClosure / ClosureBoundary`
+  直接按 normalized TIR top-level executable statements 和 buffer def-use 建立，
+  不在 companion 中重复编码 expr / tile-op 参数
 - `Task / Channel` 继续可以存在，
   但只能作为
   `ExecutionClosure / ClosureBoundary`
@@ -64,6 +68,9 @@
   PlanTTBlocks -> PlanTTTransport -> PlanTTSync -> PlanTTABI ->
   PlanTTExecution -> MaterializeBlackholeExecutable`
 - seed / manifest / witness / program 分层存放
+- `InvalidateBlackholeCompanionPrograms` 一旦扩 companion 层级，
+  要同步 strip 新 analysis facts 和冻结后的 plan attr；
+  只清老 `semantic/spatial/tt_program` 会留下 stale companion truth
 - intermediate typed plan 只要进入 pass 链，就要和最终 companion truth 一起纳入
   invalidation；只删 `tl.spatial_program` 而保留 `tl.spatial_domain_plan` /
   `tl.spatial_execution_plan` 会制造 stale plan

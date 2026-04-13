@@ -567,6 +567,8 @@ def test_hard_freeze_invalidates_companion_programs_after_unsafe_mutation():
     mod = _prepare_blackhole_stage0_module()
     mod = tilelang.transform.ProjectSemanticSeeds()(mod)
     main = mod["main"].with_attr("tl.semantic_program", {"frozen": True})
+    main = main.with_attr("tl.spatial_structure_facts", {"frozen": True})
+    main = main.with_attr("tl.spatial_plan", {"frozen": True})
     main = main.with_attr("tl.spatial_program", {"frozen": True})
     main = main.with_attr("tl.tt_program", {"frozen": True})
     mod.update_func(mod.get_global_var("main"), main)
@@ -575,6 +577,8 @@ def test_hard_freeze_invalidates_companion_programs_after_unsafe_mutation():
 
     attrs = mod["main"].attrs
     assert "tl.semantic_program" not in attrs
+    assert "tl.spatial_structure_facts" not in attrs
+    assert "tl.spatial_plan" not in attrs
     assert "tl.spatial_program" not in attrs
     assert "tl.tt_program" not in attrs
     assert str(attrs["tl.companion_invalidation_reason"]) == "unit_test_unsafe_mutation"

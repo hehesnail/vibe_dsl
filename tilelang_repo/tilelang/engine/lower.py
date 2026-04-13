@@ -297,6 +297,8 @@ def blackhole_codegen(
     device_mod = tilelang.transform.AugmentSemanticManifest()(device_mod)
     device_mod = tilelang.transform.LowerIntrin()(device_mod)
     device_mod = tir.transform.Simplify()(device_mod)
+    device_mod = tilelang.transform.AnalyzeSpatialStructureFacts()(device_mod)
+    device_mod = tilelang.transform.BuildSpatialPlanCompanion()(device_mod)
     device_mod = tilelang.transform.HoistBroadcastValues()(device_mod)
     device_mod = tilelang.transform.SplitBlackholeKernel()(device_mod)
     device_mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(device_mod)

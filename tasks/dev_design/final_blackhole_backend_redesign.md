@@ -216,6 +216,11 @@ Frontend Tile TIR
   `AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion`
 - 建立 `ExecutionClosure / ClosureBoundary / ValidatedHintSet`
 - 让 `Task / Channel` 退回 derived view
+- 当前落地状态：
+  `AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion`
+  已接入 active Blackhole compile path；
+  `TTProgram` 仍暂时消费旧 `SemanticProgram / SpatialProgram` 主链，
+  直到 `Task 2` cutover
 
 ### `Task 2`: `TTProgram companion` cutover
 

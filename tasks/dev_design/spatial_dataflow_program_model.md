@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档角色**: spatial/dataflow program model 的 companion 设计文档
-- **当前状态**: `2026-04-13` 活动设计文档，已按两层 redesign 收正
+- **当前状态**: `2026-04-13` 活动设计文档；`Task 1` 已落地，当前继续承接 `Task 2`
 - **任务链位置**: `Task 1` 和 `Task 2` 的 schema / pass owner 设计文档
 - **定位**: 不替代总体设计；只回答
   `Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion`
@@ -296,6 +296,17 @@ boundary 只表达 planning 需要的关系。
 它不写长期协议 attrs，
 只产出 analysis facts。
 
+当前已落地边界：
+
+- 直接从 `Simplify` 后 normalized TIR 的 top-level executable statements
+  提取 closure candidates
+- 当前冻结的最小 summary 包括：
+  `stmt_indices / read_buffers / write_buffers / execution_role / cut_frontiers`
+- `ValidatedHintSet` 当前先以空集合落地；
+  hint canonicalization / reject diagnostics 留给后续 widening
+- `flow / carry / join` boundary 当前按 buffer identity def-use 关系建立，
+  不在 companion 中重复编码 expr 细节
+
 ### 5.3 `BuildSpatialPlanCompanion`
 
 把上一步 analysis facts 压缩成最小持久 companion：
@@ -306,6 +317,14 @@ boundary 只表达 planning 需要的关系。
 
 它的职责不是“重写 TIR”，
 而是把 planning 所需、又不能留给后面再恢复的事实冻结下来。
+
+当前已落地边界：
+
+- 把 `SpatialStructureFacts`
+  压成 `tl.spatial_plan`
+- 不改写 TIR body
+- 当前只建立 primary truth，
+  不在这里再派生新的 `Task / Channel` owner
 
 ### 5.4 `PlanTTBlocks`
 
@@ -463,6 +482,7 @@ boundary 只表达 planning 需要的关系。
 2. 再实现：
    - `AnalyzeSpatialStructureFacts`
    - `BuildSpatialPlanCompanion`
+   - 当前状态：已完成
 3. 再实现：
    - `PlanTTBlocks`
    - `PlanTTTransport`

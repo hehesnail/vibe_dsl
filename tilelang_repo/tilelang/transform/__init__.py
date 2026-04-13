@@ -719,6 +719,16 @@ def AnalyzeSemanticStructure():
     return tvm.ffi.get_global_func("tl.transform.AnalyzeSemanticStructure")()
 
 
+def AnalyzeSpatialStructureFacts():
+    """Analyze normalized TIR into Task 1 spatial structure facts."""
+    return tvm.ffi.get_global_func("tl.transform.AnalyzeSpatialStructureFacts")()
+
+
+def BuildSpatialPlanCompanion():
+    """Freeze Task 1 SpatialPlan companion from analyzed spatial structure facts."""
+    return tvm.ffi.get_global_func("tl.transform.BuildSpatialPlanCompanion")()
+
+
 def LiftStatefulSemanticIR():
     """Lift the minimal Stage 4 semantic structure into a typed SemanticProgram."""
     return tvm.ffi.get_global_func("tl.transform.LiftStatefulSemanticIR")()
