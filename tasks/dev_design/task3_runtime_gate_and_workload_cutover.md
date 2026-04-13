@@ -175,6 +175,13 @@ runtime / codegen 的消费纪律固定为：
   tl.tt_core_groups / tl.tt_program_payload`
   这组中间 attrs，最终 Phase C 输出只保留 `tl.tt_program`
   作为 target truth
+- 补充：
+  canonical `LowerToBlackholeTTProgram`
+  已不再显式串
+  `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores`
+  这条旧 pass 链；
+  当前剩余残留是 `BuildTTProgram`
+  内部仍临时复用这组 helper 完成 planning attr 物化
 
 ### Batch D: 删除 legacy attr synthesis / fallback
 

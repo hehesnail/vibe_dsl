@@ -23,6 +23,9 @@
   - `Task 3` 已进入旧链删除批次：
     projection bridge、fragment-layout side-channel 已删除，
     `BuildTTProgram` 末端也开始剥离中间 `tl.tt_*` seed attrs
+  - canonical `LowerToBlackholeTTProgram` 已不再显式串
+    `LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores`
+    这条旧 pass 链；剩余 planning 兼容逻辑已内收到 `BuildTTProgram`
 
 ## 当前任务链
 
@@ -86,7 +89,8 @@
   这组中间 seed attrs
 - 当前剩余的结构性 blocker 是
   `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores`
-  仍在内部承担 seed bridge owner 责任，
+  不再作为 active path 上的显式阶段，
+  但仍在 `BuildTTProgram` 内部承担 seed bridge owner 责任，
   尚未被真实 `PlanTTBlocks / PlanTTTransport / PlanTTSync /
   PlanTTABI / PlanTTExecution` 取代
 - 详细根因、旧链问题域和切入层次判断，

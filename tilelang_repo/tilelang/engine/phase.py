@@ -389,9 +389,6 @@ def LowerToBlackholePhaseB(mod: IRModule) -> IRModule:
 def LowerToBlackholeTTProgram(mod: IRModule) -> IRModule:
     """Run the canonical Task 2 Blackhole target bundle through validated TTProgram."""
     mod = LowerToBlackholePhaseB(mod)
-    mod = tilelang.transform.LowerBlackholeOps()(mod)
-    mod = tilelang.transform.PlanBlackholeCB()(mod)
-    mod = tilelang.transform.AssignBlackholeCores()(mod)
     mod = tilelang.transform.BuildTTProgram()(mod)
     mod = tilelang.transform.ValidateTTProgram()(mod)
     return mod

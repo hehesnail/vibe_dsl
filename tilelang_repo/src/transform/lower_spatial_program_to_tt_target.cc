@@ -13,11 +13,14 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "assign_blackhole_cores.h"
 #include "common/blackhole_utils.h"
 #include "common/companion_base.h"
 #include "common/spatial_program.h"
 #include "common/tt_hardware_model.h"
 #include "common/tt_target_program.h"
+#include "lower_blackhole_ops.h"
+#include "plan_blackhole_cb.h"
 
 namespace tvm {
 namespace tl {
@@ -113,6 +116,23 @@ bool HasAny(const Map<String, Any>& dict, const char* key) { return dict.Get(Str
 
 Map<String, Any> AsMap(const Any& any) {
   return any.as<Map<String, Any>>().value_or(Map<String, Any>());
+}
+
+bool HasTTSeedBundle(const tir::PrimFunc& func) {
+  return func->GetAttr<Array<TTKernel>>(attr::kTLTTKernelSeeds).has_value() &&
+         func->GetAttr<Array<TTABIPlan>>(attr::kTLTTABIPlans).has_value() &&
+         func->GetAttr<Array<TTCBPlan>>(attr::kTLTTCBPlans).has_value() &&
+         func->GetAttr<Array<TTCoreGroup>>(attr::kTLTTCoreGroups).has_value();
+}
+
+tir::PrimFunc MaterializeTTPlanningAttrs(tir::PrimFunc func) {
+  if (HasTTSeedBundle(func)) {
+    return func;
+  }
+  func = LowerBlackholeOps().Transform(func);
+  func = PlanBlackholeCB().Transform(func);
+  func = AssignBlackholeCores().Transform(func);
+  return func;
 }
 
 Array<TTCBPlan> BuildCBPlans(const tir::PrimFunc& func) {
@@ -259,17 +279,17 @@ tvm::transform::Pass LowerSpatialProgramToTTTarget() {
       if (!func || !IsBlackholePrimFunc(func.value())) {
         continue;
       }
-      auto maybe_spatial_program = func.value()->GetAttr<SpatialProgram>(attr::kTLSpatialProgram);
+      tir::PrimFunc rewritten = MaterializeTTPlanningAttrs(func.value());
+      auto maybe_spatial_program = rewritten->GetAttr<SpatialProgram>(attr::kTLSpatialProgram);
       if (!maybe_spatial_program) {
         continue;
       }
-      tir::PrimFunc rewritten = func.value();
       Map<String, Any> attrs;
       if (rewritten->attrs.defined()) {
         attrs = rewritten->attrs->dict;
       }
       attrs.Set(attr::kTLTTProgram,
-                BuildTTProgramForFunc(func.value(), gvar->name_hint, maybe_spatial_program.value(),
+                BuildTTProgramForFunc(rewritten, gvar->name_hint, maybe_spatial_program.value(),
                                       maybe_hardware_model.value()));
       rewritten.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
       rewritten = StripTTIntermediateAttrs(std::move(rewritten));

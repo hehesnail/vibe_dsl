@@ -99,15 +99,6 @@ def _prepare_blackhole_phase_c_module(prim_func):
     return tilelang.engine.phase.LowerToBlackholeTTProgram(mod)
 
 
-def _prepare_blackhole_tt_bridge_module(prim_func):
-    mod = _prepare_blackhole_phase_b_module(prim_func)
-    return tilelang.transform.AssignBlackholeCores()(
-        tilelang.transform.PlanBlackholeCB()(
-            tilelang.transform.LowerBlackholeOps()(mod)
-        )
-    )
-
-
 def _rerun_validator_from_tt_program(mod, program_mutator):
     tt_program = require_tt_program(mod["main"])
     rebuilt = _replace_tt_program(mod, program_mutator(tt_program))
@@ -260,7 +251,7 @@ def test_tt_target_lowering_promotes_gemm_contracts_into_tt_program_payload():
 
 
 def test_tt_target_lowering_no_longer_requires_legacy_bridge_attrs():
-    mod = _prepare_blackhole_tt_bridge_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
     stripped = _strip_legacy_tt_bridge_attrs(mod)
 
     lowered = tilelang.transform.LowerSpatialProgramToTTTarget()(stripped)
