@@ -1,8 +1,8 @@
-# Spatial/Dataflow Program Model Feature
+# Task 1: SpatialPlan Companion 与 Pass Owner 边界
 
 ## 基本信息
 
-- **文档角色**: spatial/dataflow program model 的 companion 设计文档
+- **文档角色**: `Task 1` 的 `SpatialPlan companion` 与 pass owner 设计文档
 - **当前状态**: `2026-04-13` 活动设计文档；`Task 1` 已落地，当前继续承接 `Task 2`
 - **任务链位置**: `Task 1` 和 `Task 2` 的 schema / pass owner 设计文档
 - **定位**: 不替代总体设计；只回答
@@ -511,11 +511,11 @@ boundary 只表达 planning 需要的关系。
 - `final_blackhole_backend_redesign.md`
   - 唯一总体设计
   - 只保留长期分层、主链、真源规则与 cutover 结论
-- `ir_layering_root_cause_and_direction.md`
+- `task0_ir_layering_root_cause.md`
   - 根因诊断与方向收敛
 - 本文档
   - 只负责 companion 边界、analysis/pass owner 与 schema 最小化原则
-- `stage4_phase_c_tt_target_ir.md`
+- `task2_task3_tt_target_cutover.md`
   - 继续记录当前已落地 `TTProgram` 基线与支持面
 - `tasks/progress.md`
   - 继续记录当前切换状态与下一步

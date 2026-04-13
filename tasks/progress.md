@@ -1,10 +1,10 @@
 # TileLang Blackhole Backend Progress
 
 > 当前唯一总体设计文档: `tasks/dev_design/final_blackhole_backend_redesign.md`
-> 根因诊断统一维护在 `tasks/dev_design/ir_layering_root_cause_and_direction.md`
-> companion/pass 细节统一维护在 `tasks/dev_design/spatial_dataflow_program_model.md`
+> 根因诊断统一维护在 `tasks/dev_design/task0_ir_layering_root_cause.md`
+> companion/pass 细节统一维护在 `tasks/dev_design/task1_spatial_plan_companion.md`
 > `Phase C` 当前 TT baseline、runtime gate 与支持面边界统一维护在
-> `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
+> `tasks/dev_design/task2_task3_tt_target_cutover.md`
 
 ## 当前阶段
 
@@ -66,10 +66,10 @@
   matcher-driven LowerBlackholeOps`
   这条旧路线
 - 详细根因、旧链问题域和切入层次判断，
-  统一见 `tasks/dev_design/ir_layering_root_cause_and_direction.md`
+  统一见 `tasks/dev_design/task0_ir_layering_root_cause.md`
 - `flash-attn` 的 direct-runtime correctness payoff、
   wider support surface 与 target-side gate，
-  统一见 `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
+  统一见 `tasks/dev_design/task2_task3_tt_target_cutover.md`
 
 ## 当前未完成项
 

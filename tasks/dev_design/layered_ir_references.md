@@ -13,10 +13,11 @@
 当前仓库的真源仍然是：
 
 - `tasks/dev_design/final_blackhole_backend_redesign.md`
-- `tasks/dev_design/stage4_phase_a_semantic_ir.md`
-- `tasks/dev_design/stage4_phase_b_spatial_ir.md`
-- `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
+- `tasks/dev_design/task1_spatial_plan_companion.md`
+- `tasks/dev_design/task2_task3_tt_target_cutover.md`
 - `tasks/progress.md`
+
+已完成阶段文档已归档到 `tasks/dev_design/archive/`，只保留历史参考角色。
 
 因此，这份文档适合回答的问题是：
 
@@ -61,7 +62,7 @@
 - 如何让这个抽象层可验证、可拒绝、可做 refinement
 - 如何避免后段继续从压碎后的 IR 反向猜语义
 
-这部分最直接对应 [`stage4_phase_a_formalization_note.md`](/root/dev/vibe_dsl/tasks/dev_design/stage4_phase_a_formalization_note.md) 里的理论轨。
+这部分最直接对应 [`stage4_phase_a_formalization_note.md`](/root/dev/vibe_dsl/tasks/dev_design/archive/stage4_phase_a_formalization_note.md) 里的理论轨。
 
 ### 3.1 Abstract Interpretation
 

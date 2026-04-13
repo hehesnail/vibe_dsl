@@ -7,9 +7,9 @@
 - **状态**: 当前唯一权威总体设计文档
 - **定位**: 轻量总纲；只保留长期架构、层间边界、真源规则、任务链与 cutover invariant
 - **详细设计入口**:
-  - `tasks/dev_design/ir_layering_root_cause_and_direction.md`
-  - `tasks/dev_design/spatial_dataflow_program_model.md`
-  - `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
+  - `tasks/dev_design/task0_ir_layering_root_cause.md`
+  - `tasks/dev_design/task1_spatial_plan_companion.md`
+  - `tasks/dev_design/task2_task3_tt_target_cutover.md`
 
 ## 1. 问题定义
 
@@ -198,7 +198,7 @@ Frontend Tile TIR
 ```
 
 详细 pass owner、旧 pass 归位与 supporting schema，
-统一维护在 `tasks/dev_design/spatial_dataflow_program_model.md`。
+统一维护在 `tasks/dev_design/task1_spatial_plan_companion.md`。
 
 ## 6. 任务链
 

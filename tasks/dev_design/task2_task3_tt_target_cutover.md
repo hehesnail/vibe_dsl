@@ -1,8 +1,8 @@
-# Stage 4 Phase C: TT Target IR And New-Mainline Cutover
+# Task 2-3: TT Target Cutover、Runtime Gate 与支持面
 
 ## 基本信息
 
-- **文档角色**: `Phase C` 当前设计边界、当前 TT baseline、
+- **文档角色**: `Task 2 / Task 3` 当前设计边界、TT baseline、
   runtime gate 与完成判定文档；任务链状态以 `tasks/progress.md` 为准
 - **当前状态**: `2026-04-13` `Phase C` 进行中；
   按 `tasks/progress.md`，
@@ -31,7 +31,7 @@
 - **上游输入**: 冻结后的 `SpatialProgram`
 - **下游输出**: 冻结后的 `TTProgram` 与 `ExecutableSpec` 物化结果
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
-- **相关 cross-layer feature 文档**: `tasks/dev_design/spatial_dataflow_program_model.md`
+- **相关 cross-layer feature 文档**: `tasks/dev_design/task1_spatial_plan_companion.md`
 
 ## 1. 作用域
 

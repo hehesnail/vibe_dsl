@@ -1,4 +1,4 @@
-# IR Layering 根因分析与整改方向
+# Task 0: IR Layering 根因分析与整改方向
 
 ## 基本信息
 
@@ -16,7 +16,7 @@
     （`Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion -> ExecutableSpec`）
 - **非目标**:
   - 不在本文档里敲定最终的 C++ class 层次
-  - 不替代 `spatial_dataflow_program_model.md` 已经圈定的 feature 边界
+  - 不替代 `task1_spatial_plan_companion.md` 已经圈定的 feature 边界
   - 不重开 `Phase A / Phase B / Phase C` 的 stage 判定
 
 ## 1. 当前症状
@@ -361,13 +361,13 @@ BindTarget
   - 这里已经收敛为唯一总设计：
     `Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion -> ExecutableSpec`
   - 本文档负责说明为什么必须这么切，以及当前旧主链具体错在哪里
-- `spatial_dataflow_program_model.md`
+- `task1_spatial_plan_companion.md`
   - 已按
     `TIR body / SpatialPlan companion / TTProgram companion`
     边界重写
   - 旧的 `live_form_kind / execution_topology_kind /
     physical_local_extent` 一类提案不再作为独立方向推进
-- `stage4_phase_c_tt_target_ir.md`
+- `task2_task3_tt_target_cutover.md`
   - 继续记录当前已落地 `TTProgram` 基线、支持面与 gate
   - 不再承担总体 layering 权威
 - `memory/general_dev.md`
@@ -377,7 +377,7 @@ BindTarget
 ## 6. 下一步
 
 1. 把 supporting design 文档收正到两层总设计：
-   - `spatial_dataflow_program_model.md`
+   - `task1_spatial_plan_companion.md`
 2. 在 `Simplify` 后建立新入口：
    - `AnalyzeSpatialStructureFacts`
    - `BuildSpatialPlanCompanion`
