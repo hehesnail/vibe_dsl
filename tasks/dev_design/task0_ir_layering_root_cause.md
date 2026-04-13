@@ -303,20 +303,22 @@ Normalized Tile TIR
 而是补齐正确的 target owner：
 
 - `TTBlockPlan`
-- `TTKernel`
-- `TTCoreGroup`
-- `TTCBPlan`
+- `TTKernelPlan`
 - `TTTransportPlan`
-- `TTSemaphorePlan`
+- `TTSyncPlan`
 - `TTABIPlan`
 - `TTExecutionPlan`
 
 其中 `TTBlockPlan` 是当前缺失的核心：
 
-- `work_packets`
-  不能继续挂在 `TTCoreGroup` 上兼职 decomposition owner
-- `CB / semaphore / runtime args`
+- decomposition / block sizing truth
+  不能继续挂在 realization detail 上兼职 owner
+- `CB / semaphore / core-group / runtime args`
+  都只能作为 plan realization 或最终物化结果，
   不能继续从 lowered loop matcher 反推
+
+`TTProgram` 本身则应退回到这组 owner object 的稳定聚合结果，
+而不是再和它们并列形成第二套真源。
 
 ### 4.5 Pass 介入点与主链替换
 
@@ -367,9 +369,11 @@ BindTarget
     边界重写
   - 旧的 `live_form_kind / execution_topology_kind /
     physical_local_extent` 一类提案不再作为独立方向推进
-- `task2_task3_tt_target_cutover.md`
-  - 继续记录当前已落地 `TTProgram` 基线、支持面与 gate
-  - 不再承担总体 layering 权威
+- `task2_ttprogram_companion_cutover.md`
+  - 记录 `Task 2` 的 target owner cutover、
+    `TTProgram companion` 边界与 materialization 规则
+- `task3_runtime_gate_and_workload_cutover.md`
+  - 记录 `Task 3` 的 runtime gate、支持面与 workload 重新承接
 - `memory/general_dev.md`
   - 本文档与其纪律一致：analysis 不再做名字/结构 recovery，
     所需信息优先从 owner-side typed IR/schema 提供

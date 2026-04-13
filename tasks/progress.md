@@ -3,8 +3,10 @@
 > 当前唯一总体设计文档: `tasks/dev_design/final_blackhole_backend_redesign.md`
 > 根因诊断统一维护在 `tasks/dev_design/task0_ir_layering_root_cause.md`
 > companion/pass 细节统一维护在 `tasks/dev_design/task1_spatial_plan_companion.md`
-> `Phase C` 当前 TT baseline、runtime gate 与支持面边界统一维护在
-> `tasks/dev_design/task2_task3_tt_target_cutover.md`
+> `Task 2` 的 `TTProgram companion` cutover 统一维护在
+> `tasks/dev_design/task2_ttprogram_companion_cutover.md`
+> `Task 3` 的 runtime gate 与支持面边界统一维护在
+> `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
 
 ## 当前阶段
 
@@ -69,7 +71,7 @@
   统一见 `tasks/dev_design/task0_ir_layering_root_cause.md`
 - `flash-attn` 的 direct-runtime correctness payoff、
   wider support surface 与 target-side gate，
-  统一见 `tasks/dev_design/task2_task3_tt_target_cutover.md`
+  统一见 `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
 
 ## 当前未完成项
 

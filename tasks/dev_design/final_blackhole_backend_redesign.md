@@ -9,7 +9,8 @@
 - **详细设计入口**:
   - `tasks/dev_design/task0_ir_layering_root_cause.md`
   - `tasks/dev_design/task1_spatial_plan_companion.md`
-  - `tasks/dev_design/task2_task3_tt_target_cutover.md`
+  - `tasks/dev_design/task2_ttprogram_companion_cutover.md`
+  - `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
 
 ## 1. 问题定义
 
@@ -125,7 +126,8 @@ Normalized Tile TIR
 
 ### 3.4 `TTProgram companion` 的 primary truth
 
-`TTProgram companion` 的长期 object set 以 target owner 为准：
+`TTProgram companion` 的长期 primary owner object set
+以 target owner 为准：
 
 - `TTBlockPlan`
 - `TTKernelPlan`
@@ -142,6 +144,9 @@ Normalized Tile TIR
   不能再从 lowered TIR matcher 恢复
 - `TTProgram companion`
   必须直接从 spatial closure/boundary truth 派生
+- `TTProgram`
+  则是这组 owner object 的稳定聚合结果，
+  不是第二层并列真源
 
 ## 4. 真源规则
 
@@ -194,6 +199,8 @@ Frontend Tile TIR
   -> PlanTTSync
   -> PlanTTABI
   -> PlanTTExecution
+  -> BuildTTProgram
+  -> ValidateTTProgram
   -> MaterializeBlackholeExecutable
 ```
 
@@ -226,8 +233,11 @@ Frontend Tile TIR
 
 - 建立
   `PlanTTBlocks -> PlanTTTransport -> PlanTTSync -> PlanTTABI ->
-  PlanTTExecution -> MaterializeBlackholeExecutable`
+  PlanTTExecution -> BuildTTProgram -> ValidateTTProgram ->
+  MaterializeBlackholeExecutable`
 - 补齐 `TTBlockPlan`
+- 让 `TTProgram companion` 成为唯一 target truth
+- 让 `MaterializeBlackholeExecutable` 成为唯一 writer
 - 让 target owner 从旧 recovery/materialization 路线切到 companion 主链
 
 ### `Task 3`: 旧 recovery 链退场与 workload 回归
@@ -237,7 +247,7 @@ Frontend Tile TIR
   matcher-driven LowerBlackholeOps` 主路线
 - 用新主链重新承接
   `flash-attn / topk / fusedmoe / paged decode / chunk recurrence`
-- 兑现更宽 copy/dataflow/sync 支持面
+- 兑现 runtime gate、wider family 与更宽 copy/dataflow/sync 支持面
 
 ## 7. Cutover invariant
 

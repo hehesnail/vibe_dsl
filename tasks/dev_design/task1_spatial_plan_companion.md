@@ -217,7 +217,7 @@ boundary 只表达 planning 需要的关系。
 
 ### 4.2 最小持久对象
 
-`TTProgram companion` 长期只保留 6 类对象：
+`TTProgram companion` 长期只保留 6 类 primary owner object：
 
 - `TTBlockPlan`
 - `TTKernelPlan`
@@ -240,6 +240,8 @@ boundary 只表达 planning 需要的关系。
 像 `CB`、`Semaphore`、`CoreGroup`
 都更接近这些 plan 的 realization detail，
 不应再和 target truth owner 混为一谈。
+
+`TTProgram` 本身则是这 6 类 owner object 的稳定聚合结果。
 
 ### 4.3 与 TT-Metal 的对应关系
 
@@ -382,13 +384,31 @@ boundary 只表达 planning 需要的关系。
 - 形成 launch / wave / order
 - 形成 `TTKernelPlan` 与 `TTExecutionPlan`
 
-### 5.9 `MaterializeBlackholeExecutable`
+### 5.9 `BuildTTProgram`
 
 职责：
 
-- 消费 `TTProgram companion`
+- 聚合 `TTBlockPlan / TTKernelPlan / TTTransportPlan /
+  TTSyncPlan / TTABIPlan / TTExecutionPlan`
+- 构造稳定 `TTProgram companion`
+- 不重新恢复 spatial semantics
+
+### 5.10 `ValidateTTProgram`
+
+职责：
+
+- 检查 `TTProgram companion` 的 completeness / consistency
+- 明确拒绝 legacy attrs、seed attrs、payload bag
+  重新回升为 target truth
+
+### 5.11 `MaterializeBlackholeExecutable`
+
+职责：
+
+- 只消费经过验证的 `TTProgram companion`
 - 物化 leaf device kernels、Program/Kernel/CB/Semaphore descriptors、
   host/device packaging 与 `ExecutableSpec`
+- 成为唯一稳态 writer
 
 这里才允许使用 target leaf lowering。
 
@@ -414,6 +434,10 @@ boundary 只表达 planning 需要的关系。
 - `AnalyzeSpatialExecutionPlan`
 - `MaterializeSpatialProgram`
 - `LowerBlackholeOps`
+- `PlanBlackholeCB`
+- `AssignBlackholeCores`
+- `LowerSpatialProgramToTTTarget`
+- `MaterializeTTExecutableSpec`
 
 这些 pass 的问题域要么：
 
@@ -515,7 +539,9 @@ boundary 只表达 planning 需要的关系。
   - 根因诊断与方向收敛
 - 本文档
   - 只负责 companion 边界、analysis/pass owner 与 schema 最小化原则
-- `task2_task3_tt_target_cutover.md`
-  - 继续记录当前已落地 `TTProgram` 基线与支持面
+- `task2_ttprogram_companion_cutover.md`
+  - 记录 `Task 2` 的 target owner cutover、materialization 边界与完成判定
+- `task3_runtime_gate_and_workload_cutover.md`
+  - 记录 `Task 3` 的 runtime gate、support surface 与 workload cutover
 - `tasks/progress.md`
   - 继续记录当前切换状态与下一步
