@@ -102,6 +102,7 @@ Normalized Tile TIR
 它**不**负责：
 
 - 重复表达访问模式
+- 重复表达 `index map / access pattern / data movement protocol`
 - 重复表达 tile-op 语义
 - 直接决定最终 block 大小
 - 直接决定 CB/semaphore/kernel/runtime args
@@ -150,6 +151,13 @@ Normalized Tile TIR
 `topk`、`fusedmoe`、`paged decode`、`retention`
 的访问细节继续留在 TIR expr 里；
 boundary 只表达 planning 需要的关系。
+
+target-facing 的 transport 类型
+例如 local handoff / remote write / multicast / gather
+不在 `SpatialPlan companion` 层持久化，
+而是在 `TTProgram companion` 层由
+`ClosureBoundary + anchored sub-TIR + TTBlockPlan`
+联合决定。
 
 #### `ValidatedHintSet`
 
@@ -231,9 +239,12 @@ boundary 只表达 planning 需要的关系。
 - `TTBlockPlan`
   是当前缺失的核心 owner，
   负责 slice、容量、buffering、work packet 形成
+- `TTKernelPlan`
+  负责 reader / compute / writer kernel role
+  以及 kernel 内 target builtin family 的稳定承接
 - `TTTransportPlan`
-  负责把 boundary realization 成 local handoff、CB、multicast、
-  cross-core exchange 等 target primitive
+  负责把 boundary realization 成 `TensorAccessor / CB / NoC /
+  semaphore / multicast` 这组 target data movement protocol
 - `TTSyncPlan`
   负责 barrier / semaphore / completion relation
 
@@ -243,7 +254,35 @@ boundary 只表达 planning 需要的关系。
 
 `TTProgram` 本身则是这 6 类 owner object 的稳定聚合结果。
 
-### 4.3 与 TT-Metal 的对应关系
+### 4.3 TT builtin mapping discipline
+
+`SpatialPlan companion` 的长期设计前提是：
+
+- tile-op、layout、load/store、address expr
+  继续留在 anchored sub-TIR
+- `SpatialPlan companion`
+  只提供 closure/boundary/cut/hint 这组 planning truth
+- 真正的 TT builtin 选择在 `TTProgram companion` 层完成，
+  而不是在更晚的 lowered loop / matcher 边界恢复
+
+具体分工：
+
+- `PlanTTTransport`
+  从 `BufferLoad / BufferStore + ClosureBoundary + TTBlockPlan`
+  选择 data movement protocol
+- `PlanTTCompute`
+  从 tile-op、layout、operand/result region
+  选择 compute builtin family
+
+因此长期不再保留下面这些名词作为独立 planning schema：
+
+- `row_*`
+- `broadcast_sources`
+- `index map`
+- `access pattern`
+- 其它为 late matcher 服务的 side contract
+
+### 4.4 与 TT-Metal 的对应关系
 
 这和 TT-Metal 当前真实编程模型是对齐的：
 

@@ -136,8 +136,8 @@ runtime / codegen 的消费纪律固定为：
    - 尤其是 phase-boundary / fragment / runtime arg /
      compute contract 这组 target truth
    - 这说明真正的
-     `PlanTTBlocks / PlanTTTransport / PlanTTSync /
-     PlanTTABI / PlanTTExecution`
+     `PlanTTBlocks / PlanTTTransport / PlanTTCompute /
+     PlanTTSync / PlanTTABI / PlanTTExecution`
      还没有完全落地为独立 owner pass
 
 删除纪律：
@@ -196,16 +196,11 @@ runtime / codegen 的消费纪律固定为：
   的生产与消费
 - `AnalyzeBlackholeComputeRegions`
   只能从 TIR 结构与已冻结 companion contract 取事实
-- grouped row / fragment distribution 缺口只能进入
-  `SpatialProgram.buffer_distribution_contracts`
-- `buffer_distribution_contract.shape`
-  只保留 logical distribution shape：
-  `grouped_rows -> [row_width]`，
-  `row_state -> [1]`；
-  需要完整 logical tile 计数时，
-  由
-  `logical_row_width / logical_element_count`
-  或 logical buffer shape 显式推导
+- grouped row / fragment distribution 这类缺口
+  不能再落进新的 side contract；
+  只能通过
+  `补 analysis / 补 TIR-schema / 补 TTTransportPlan/TTABIPlan owner`
+  或 `explicit unsupported` 解决
 - 当前状态：
   已完成；当前 admitted 基线不再依赖 fragment-layout projection seed
   且 `AnalyzeBlackholeComputeRegions`
@@ -237,8 +232,8 @@ runtime / codegen 的消费纪律固定为：
 ### Batch C: typed seed bridge -> owner pass
 
 - 用真实的
-  `PlanTTBlocks / PlanTTTransport / PlanTTSync /
-  PlanTTABI / PlanTTExecution`
+  `PlanTTBlocks / PlanTTTransport / PlanTTCompute /
+  PlanTTSync / PlanTTABI / PlanTTExecution`
   取代
   当前内部
   `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`

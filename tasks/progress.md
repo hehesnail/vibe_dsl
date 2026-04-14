@@ -70,7 +70,7 @@
 - `Task 2`: `TTProgram companion` cutover
   - 状态：已完成
   - 目标：
-    `PlanTTBlocks -> PlanTTTransport -> PlanTTSync -> PlanTTABI ->
+    `PlanTTBlocks -> PlanTTTransport -> PlanTTCompute -> PlanTTSync -> PlanTTABI ->
     PlanTTExecution -> MaterializeBlackholeExecutable`
 - `Task 3`: 旧 recovery 链退场与 workload 回归
   - 状态：进行中
@@ -134,8 +134,17 @@
   这组内部 helper chain
   仍在 `BuildTTProgram` 内承担 planning owner 责任；
   legacy pass 名字、公开入口和测试入口已删除，
-  尚未被真实 `PlanTTBlocks / PlanTTTransport / PlanTTSync /
-  PlanTTABI / PlanTTExecution` 取代
+  尚未被真实 `PlanTTBlocks / PlanTTTransport / PlanTTCompute /
+  PlanTTSync / PlanTTABI / PlanTTExecution` 取代
+- `2026-04-14` 设计边界已进一步收敛：
+  target builtin 选择必须前移到 anchored sub-TIR 仍保留
+  tile-op / layout / load-store truth 的边界；
+  后续实现将按
+  `PlanTTTransport + PlanTTCompute`
+  替换 late matcher 路线，
+  并继续删除 `row_* / broadcast_sources /
+  index map / access pattern`
+  这类 side contract
 - 详细根因、旧链问题域和切入层次判断，
   统一见 `tasks/dev_design/task0_ir_layering_root_cause.md`
 - `flash-attn` 的 direct-runtime correctness payoff、
@@ -148,7 +157,13 @@
 
 ## 当前优先级
 
-1. **P5: `Task 3C` wider family / support surface**
+1. **P0: 真实 `PlanTTTransport + PlanTTCompute` cut-in**
+  - 用 anchored sub-TIR 上的
+    data movement / compute builtin 选择
+    取代 `BuildTTProgram` 内部 late matcher/helper bridge
+  - 清理 `row_* / broadcast_sources / index map / access pattern`
+    一类 side contract
+2. **P5: `Task 3C` wider family / support surface**
   - `topk -> fusedmoe -> paged decode -> chunk recurrence`
   - wider copy/dataflow
   - wider sync 最后进入 admitted surface
@@ -182,8 +197,8 @@
   - 让 `flash-attn / topk / fusedmoe / paged decode / chunk recurrence`
     在新主链下重新承接
   - 兑现更宽 copy/dataflow/sync 支持面
-- 用真实 `PlanTTBlocks / PlanTTTransport / PlanTTSync / PlanTTABI /
-  PlanTTExecution` 取代当前 `BuildTTProgram` 内部
+- 用真实 `PlanTTBlocks / PlanTTTransport / PlanTTCompute /
+  PlanTTSync / PlanTTABI / PlanTTExecution` 取代当前 `BuildTTProgram` 内部
   `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
   helper bridge
 - 在 `Task 3` 收口前，保持 copy / GEMM / export 当前正式支持面不回退
@@ -207,10 +222,12 @@
 
 ## 下一步
 
-1. 推进 `flash-attn` correctness payoff
-2. 进入 `Task 3C`
+1. 推进 `PlanTTTransport + PlanTTCompute` 的真实 cut-in，
+   删除 late matcher / side contract
+2. 推进 `flash-attn` correctness payoff
+3. 进入 `Task 3C`
   - wider family / support surface
-3. 在更宽 admitted surface 上继续兑现 copy/dataflow/sync 支持面
+4. 在更宽 admitted surface 上继续兑现 copy/dataflow/sync 支持面
 
 ## 最新验证摘要
 

@@ -26,6 +26,12 @@ Blackhole 当前的核心问题不是“还差一个 kernel emitter”，
   - `BufferMaterializationInfo`、`companion_base.h`、
     `SpatialProgram.payload` 这类 stringly-typed schema
     让每扩一种 family 就多一轮 kind 字符串、reader 特判和 matcher
+- `late builtin selection`
+  - Blackhole 当前仍有一部分 target builtin 选择落在
+    lowered loop / bridge attr / matcher 之后
+  - 等 tile-op、layout、真实 load/store 关系被打散后，
+    后段只能继续补 `row_*`、`broadcast_sources`、
+    `index map / access pattern` 一类 side contract 来恢复语义
 - `GPU realization leakage`
   - `fragment/shared/layout_map/blackhole.acc/blackhole.cb`
     这类对象本质上是 TileLang 现有 GPU realization noun
@@ -152,6 +158,18 @@ Normalized Tile TIR
   则是这组 owner object 的稳定聚合结果，
   不是第二层并列真源
 
+对象边界补充：
+
+- `TTKernelPlan`
+  - owner：reader / compute / writer kernel role
+  - owner：kernel 内部的 target builtin family 选择结果
+  - 不再把 compute 语义恢复留给 late matcher
+- `TTTransportPlan`
+  - owner：`TensorAccessor / CB / NoC / semaphore / multicast`
+    这一组 data movement protocol
+  - 不再用独立 `access pattern`、`index map`
+    当作长期 target owner noun
+
 ## 4. 真源规则
 
 1. 语义 body 只存在于 `Normalized Tile TIR`
@@ -162,6 +180,12 @@ Normalized Tile TIR
 6. 若某类 truth 无法从现有结构稳定获得，
    要么扩 IR/schema，要么 explicit unsupported；
    不允许回退到 late recovery
+7. `direct / indirect / paged / sharded`
+   这类差异默认视为 load/store 地址表达与 transport protocol 的问题，
+   不是独立 semantic IR 层
+8. `reduce / broadcast / eltwise / matmul`
+   只在最终 target builtin 选择处落成具体 TT-Metal family；
+   不允许用 `row_*` 这类问题导向命名回灌主设计
 
 ## 5. 介入层次与 canonical 主链
 
@@ -200,6 +224,7 @@ Frontend Tile TIR
   -> BuildSpatialPlanCompanion
   -> PlanTTBlocks
   -> PlanTTTransport
+  -> PlanTTCompute
   -> PlanTTSync
   -> PlanTTABI
   -> PlanTTExecution
@@ -216,6 +241,35 @@ Frontend Tile TIR
 
 详细 pass owner、旧 pass 归位与 supporting schema，
 统一维护在 `tasks/dev_design/task1_spatial_plan_companion.md`。
+
+### 5.3 TT builtin mapping 原则
+
+Blackhole/TT target 的 builtin mapping 固定遵守下面的分工：
+
+- `PlanTTTransport`
+  - 直接消费 anchored sub-TIR 中仍然可见的
+    `BufferLoad / BufferStore / region / address expr`
+    以及 `ClosureBoundary + TTBlockPlan`
+  - 选择的是真实 TT-Metal data movement protocol：
+    `TensorAccessor + CB reserve/push/wait/pop +
+    noc_async_read/write/(multicast) + semaphore`
+- `PlanTTCompute`
+  - 直接消费 anchored sub-TIR 中仍然可见的
+    tile-op、layout、operand/result region
+  - 选择的是真实 TT-Metal compute family：
+    `matmul / eltwise / reduce / sfpu / copy / pack`
+- `PlanTTSync`
+  - 只负责 ordering / completion / barrier / semaphore relation
+  - 不再兼职 compute/transport 语义恢复
+
+设计纪律：
+
+- target builtin 选择必须发生在 tile-op 与真实 load/store 关系
+  仍然存活的边界上
+- 不新增独立 `index map / access pattern / semantic contract` 层
+- `row`、`col`、`face` 这类方向/局部变体
+  只能出现在最终 leaf builtin 选择处，
+  不能回流成长期 planning ontology
 
 ## 6. 任务链
 
@@ -246,7 +300,7 @@ Frontend Tile TIR
 ### `Task 2`: `TTProgram companion` cutover
 
 - 建立
-  `PlanTTBlocks -> PlanTTTransport -> PlanTTSync -> PlanTTABI ->
+  `PlanTTBlocks -> PlanTTTransport -> PlanTTCompute -> PlanTTSync -> PlanTTABI ->
   PlanTTExecution -> BuildTTProgram -> ValidateTTProgram ->
   MaterializeBlackholeExecutable`
 - 补齐 `TTBlockPlan`

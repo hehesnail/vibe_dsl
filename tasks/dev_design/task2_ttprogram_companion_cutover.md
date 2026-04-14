@@ -3,8 +3,8 @@
 ## 基本信息
 
 - **文档角色**: `Task 2` 的 target owner cutover 设计文档
-- **当前状态**: `2026-04-13` 活动设计文档；`Task 2` 已完成，
-  当前文档保留完成判定与 compatibility shell 约束
+- **当前状态**: `2026-04-14` 活动设计文档；`Task 2` owner cutover 已完成，
+  当前文档继续保留 builtin mapping 边界与 compatibility shell 约束
 - **任务链位置**:
   `Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion ->
   ExecutableSpec` 中第二层 companion 的 owner 设计
@@ -58,6 +58,14 @@
 - `ValidatedHintSet` 中已经验证成功的 target hints
 - `TTHardwareModel`
 
+补充说明：
+
+- anchored sub-TIR 中仍然存活的
+  tile-op、layout、`BufferLoad / BufferStore`、region、address expr
+  都属于合法 planner 输入
+- 这些输入必须在 target builtin 选择发生前被直接消费，
+  不能等到 lowered loop / bridge attr / matcher 之后再恢复
+
 不允许回升为 target owner 输入的东西：
 
 - `SemanticProgram`
@@ -78,6 +86,9 @@
 
 - 在 target 侧继续补 semantic recovery
 - 再造一层 payload bag 或 seed attrs 充当主协议
+- 引入 `row_*`、`broadcast_sources`、
+  `index map / access pattern` 这类 side contract
+  充当 target owner truth
 
 ## 3. `TTProgram companion` 的最小 owner object set
 
@@ -101,8 +112,11 @@
     decomposition truth
 - `TTKernelPlan`
   - owner：kernel grouping、kernel role、core-type-facing execution view
+  - owner：reader / compute / writer kernel 内的 target builtin family
 - `TTTransportPlan`
   - owner：boundary 的 target transport realization
+  - owner：`TensorAccessor / CB / NoC / semaphore / multicast`
+    这组 data movement protocol
 - `TTSyncPlan`
   - owner：transport / completion / ordering 的 target sync realization
 - `TTABIPlan`
@@ -138,6 +152,7 @@ AnalyzeSpatialStructureFacts
   -> BuildSpatialPlanCompanion
   -> PlanTTBlocks
   -> PlanTTTransport
+  -> PlanTTCompute
   -> PlanTTSync
   -> PlanTTABI
   -> PlanTTExecution
@@ -156,6 +171,12 @@ AnalyzeSpatialStructureFacts
   - 根据 `ClosureBoundary + TTBlockPlan + anchored sub-TIR`
     做 transport realization
   - 不再从 builtin 排列或 matcher 恢复 transport intent
+- `PlanTTCompute`
+  - 根据 anchored sub-TIR 中仍然可见的
+    tile-op、layout、operand/result region
+    做 compute builtin family 选择
+  - 不再从 lowered loop / `row_*` / side contract
+    恢复 compute intent
 - `PlanTTSync`
   - 根据 dependency / boundary / transport result
     做 target sync realization

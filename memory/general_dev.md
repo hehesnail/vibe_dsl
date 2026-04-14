@@ -75,8 +75,16 @@
   不能再当 primary truth owner
 - 两层 companion 新主链固定从 `Simplify` 后进入：
   `AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion ->
-  PlanTTBlocks -> PlanTTTransport -> PlanTTSync -> PlanTTABI ->
+  PlanTTBlocks -> PlanTTTransport -> PlanTTCompute -> PlanTTSync -> PlanTTABI ->
   PlanTTExecution -> MaterializeBlackholeExecutable`
+- TT target builtin 选择必须发生在 anchored sub-TIR
+  仍保留 tile-op、layout、load/store、address expr 的边界；
+  不要在 late matcher / bridge attr 层恢复 compute 或 transport 语义
+- `PlanTTTransport` 负责 `TensorAccessor / CB / NoC / semaphore / multicast`
+  这组 data movement protocol，
+  `PlanTTCompute` 负责 TT-Metal compute family；
+  不要再引入 `row_* / broadcast_sources / index map / access pattern`
+  这类 side contract 当长期 owner truth
 - seed / manifest / witness / program 分层存放
 - companion truth 一旦扩层级，
   unsafe TIR mutation 侧也要同步 strip 新 analysis facts / plan attr；
@@ -153,16 +161,10 @@
   里对应 contract 的 `scope`；
   否则 planning / codegen 会命中
   “IR 已经切到新资源类，companion 还停在旧 scope” 的双真源裂缝
-- `buffer_distribution_contract.shape`
-  只表达 logical distribution truth，
-  不表达完整 tile 形状：
-  `grouped_rows -> [row_width]`，
-  `row_state -> [1]`。
-  需要完整 logical tile element count / row width 时，
-  应从显式
-  `logical_row_width / logical_element_count`
-  或 logical buffer shape 推导，
-  不要把完整二维 tile 重新塞回 distribution contract
+- transport / layout / logical distribution 如果已经要进入正式 target truth，
+  直接进入 `TTTransportPlan / TTABIPlan`；
+  不要再额外造 `buffer_distribution_contract`
+  一类中间 side contract 承接这类信息
 
 ## 5. Schema / ABI 模式
 
