@@ -50,10 +50,12 @@
 2. **计算**
    - 在 tile 上执行什么 compute builtin
    - 需要什么输入 tile / 输出 tile / tile register 语义
-3. **通信 / 同步**
-   - 数据什么时候可见
-   - 谁等谁
-   - 何时需要 barrier / semaphore / completion relation
+3. **通信**
+   - 数据在哪些 core 间流动
+   - 走哪条 NoC / multicast / remote path
+   - 谁等谁、何时可见
+   - 何时需要 barrier / semaphore / global semaphore /
+     completion / topology truth
 
 因此，对 Blackhole 的长期分层，必须正对这三类事实：
 
@@ -85,32 +87,52 @@ Blackhole 需要吸收的不是 GPU 的 noun，
 
 ## 4. 从 TT-Metal 得到的直接约束
 
-TT-Metal 本地 repo 和官方 API 都说明了同一件事：
+TT-Metal 本地 repo 里的 API、example 和 program factory
+指向的是同一套语义面：
 
-- **Compute** 是一组明确的 builtin family
-  - `matmul`
-  - `eltwise`
-  - `reduce`
-  - `sfpu`
-  - `copy / pack / untilize`
-- **Data Movement** 不是一个抽象 pattern，
-  而是一组协议组合
-  - `TensorAccessorArgs / TensorAccessor`
-  - `cb_reserve_back / cb_push_back / cb_wait_front / cb_pop_front`
-  - `noc_async_read/write/(multicast)`
-  - `semaphore`
+- **Host truth**
+  - `tt_metal/api/tt-metalium/host_api.hpp`
+  - `Program / Kernel / CircularBuffer / Buffer / Semaphore /
+    RuntimeArgs / Core placement`
+    是稳定 host object，
+    不是 late payload bag
+- **Compute**
+  - `tt_metal/programming_examples/hello_world_compute_kernel/`
+  - `ttnn/.../compute/bmm_large_block_zm_fused_bias_activation.cpp`
+  - 说明 compute 是 builtin family +
+    operand/result CB binding +
+    tile-reg / pack-unpack / reduction protocol
+- **Memory access / data movement**
+  - `tt_metal/programming_examples/hello_world_datamovement_kernel/`
+  - `tt_metal/programming_examples/matmul/matmul_multicore_reuse_mcast/`
+  - 说明访存不是抽象 pattern，
+    而是 `TensorAccessorArgs / Buffer / CB / NoC / runtime args`
+    这组协议组合
+- **Communication**
+  - `tt_metal/programming_examples/NoC_tile_transfer/noc_tile_transfer.cpp`
+  - `tt_metal/programming_examples/contributed/multicast/multicast.cpp`
+  - `ttnn/.../ccl/broadcast/device/broadcast_program_factory.cpp`
+  - `ttnn/.../experimental/ccl/all_reduce_async/device/all_reduce_async_program_factory.cpp`
+  - 说明 communication 不是只剩 `sync`；
+    它还包括 logical/physical core coord、
+    peer routing、multicast sender/receiver、
+    topology / num_links / packet sizing / fabric channel
 
 所以对我们来说：
 
 - `reduce` 就是 `reduce`
-- `broadcast` 就是 `broadcast`
+- `broadcast` / `multicast` / `all-reduce`
+  不是“后段自己猜出来的 sync”，
+  而是 communication truth 的不同 realization
 - `direct / indirect / paged / sharded`
   也不是独立 semantic class，
   而是地址表达式和 transport protocol 的不同 realization
 
 这意味着：
 
-> **不能再把 data movement 另抽成 `access pattern / index map` 一层，也不能把 compute 另抽成 `row_*` 一层。**
+> **不能再把 data movement 另抽成 `access pattern / index map` 一层，**
+> **也不能把 compute 另抽成 `row_*` 一层，**
+> **更不能把 communication 压缩成“只剩 semaphore / sync”。**
 
 ## 5. 旧路线为什么一定会膨胀
 
@@ -190,6 +212,21 @@ TT-Metal 本地 repo 和官方 API 都说明了同一件事：
   - 从 tile op、layout、operand/result region
     选择 compute builtin family
 
+communication 语义也必须显式拆 owner：
+
+- `PlanTTTransport`
+  - 负责 peer path / multicast / remote endpoint
+    这组 routing truth
+- `PlanTTSync`
+  - 负责 ordering / completion /
+    barrier / semaphore relation
+- `PlanTTExecution`
+  - 负责 core placement / launch order /
+    wave scheduling 这组 execution truth
+
+不能再把第三类语义整体塞进一个
+“sync pass 会解决”的模糊口径。
+
 ## 7. 新路线下什么必须删除
 
 下面这些都不再是长期设计对象：
@@ -235,7 +272,7 @@ TT-Metal 本地 repo 和官方 API 都说明了同一件事：
 而是：
 
 1. 把 target builtin mapping 边界前移
-2. 把 transport / compute / sync 的 owner 拆实
+2. 把 compute / memory-access / communication 的 owner 拆实
 3. 把 side contract 和 late matcher 逐批删除
 
 补充：
@@ -243,9 +280,10 @@ TT-Metal 本地 repo 和官方 API 都说明了同一件事：
 - 当前 rewrite 的完成判定
   不能只看 transport / compute cut-in
 - 还要同时看：
-  1. sync truth
+  1. communication truth
      是否稳定落到
-     `PlanTTSync + runtime semantics`
+     `PlanTTTransport + PlanTTSync + PlanTTExecution +
+     runtime semantics`
   2. 真源位置
      是否回到
      `TIR / SpatialPlan / TTProgram / ExecutableSpec`

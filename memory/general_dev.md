@@ -285,8 +285,16 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   或单个 owner pass cut-in；
   要同时检查：
   - mapping 边界是否放回 anchored sub-TIR
-  - transport / compute / sync
-    是否各有 owner
+  - compute semantics
+    是否由 `PlanTTCompute`
+    收口 builtin family / operand-result binding /
+    tile-reg protocol
+  - memory-access semantics
+    是否由 `PlanTTTransport + PlanTTABI`
+    收口 buffer / accessor / CB / runtime-arg truth
+  - communication semantics
+    是否由 `PlanTTTransport + PlanTTSync + PlanTTExecution`
+    收口 routing / multicast / completion truth
   - truth 是否回到
     `TIR / SpatialPlan / TTProgram / ExecutableSpec`
     各自边界

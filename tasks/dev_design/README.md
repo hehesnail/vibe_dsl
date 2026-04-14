@@ -45,7 +45,7 @@
    - target builtin mapping 前移到
      anchored sub-TIR 真正持有 truth 的边界
 2. 当前 active 重点：
-   - `R1/R2/R3`：runtime gate / admitted-scope sync /
+   - `R1/R2/R3`：runtime gate / admitted-scope communication semantics /
      `flash-attn` payoff 收口
 3. 后续：
    - `R4/R5`：wider family / support surface
@@ -57,7 +57,9 @@
   而是一组 invariant
 - 当前用 `R0-R2`
   去完成这组 invariant：
-  mapping 边界、三类事实 owner、真源位置、后段不补语义
+  mapping 边界、
+  TT-Metal 的 compute / memory-access / communication 语义面 owner、
+  真源位置、后段不补语义
 - `R3-R5`
   是 payoff 与 admitted surface 扩张
 

@@ -77,8 +77,8 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
 1. mapping 边界正确：
    target builtin mapping
    回到 anchored sub-TIR
-2. 三类事实都有 owner：
-   transport / compute / sync
+2. TT-Metal 三类语义面都有 owner：
+   compute / memory-access / communication
 3. 真源位置收紧：
    `Normalized Tile TIR / SpatialPlan / TTProgram / ExecutableSpec`
    各守边界
@@ -88,9 +88,10 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
 
 当前 roadmap 与这 4 条的对应关系是：
 
-- `R0`：mapping 边界 + transport/compute owner cut-in
-- `R1`：真源 reader/gate 收口
-- `R2`：sync owner/runtime semantics 收口
+- `R0`：mapping 边界 + compute/memory-access owner cut-in
+- `R1`：`TTProgram / ExecutableSpec`
+  reader-gate / host-truth 收口
+- `R2`：communication owner/runtime semantics 收口
 - `R3-R5`：payoff / wider family / support surface
 
 ## 已完成
@@ -135,15 +136,16 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
    只消费 owner-side typed truth 的边界
 3. 完成 `R2`：
    在 admitted scope 内把
-   `PlanTTSync`
-   的 `ordering / completion / barrier / semaphore`
-   语义收口到 owner/runtime semantics
+   communication semantics
+   的 `routing / multicast / semaphore / completion`
+   收口到 owner/runtime semantics，
+   不再把第三类语义压缩成 sync-only
 4. 在第一性原理目标完成之后，
    再在当前 `TTProgram / ExecutableSpec` 真源下完成
    `flash-attn` admitted subset payoff / correctness 收口
 5. 在新 route 上承接
    `topk / fusedmoe / paged decode / chunk recurrence`
-6. 扩更宽的 copy / data movement / wider sync 支持面
+6. 扩更宽的 copy / data movement / wider communication 支持面
 
 ## 当前优先级
 
@@ -153,12 +155,15 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
    - active path 仍残留
      `blackhole.*` analysis facts 和
      `BuildTTProgram` helper bridge
-2. **R1: runtime gate 收口**
+2. **R1: runtime gate / host truth 收口**
    - 继续把当前新主链上的 gate 收到
      明确的 admitted / unsupported 边界
-3. **R2: admitted-scope `PlanTTSync` 收口**
+   - `Program / Kernel / CB / Buffer / RuntimeArgs / Core placement`
+     这组 TT-Metal host truth
+     只允许从 `TTProgram / ExecutableSpec` 物化
+3. **R2: admitted-scope communication semantics 收口**
    - 第一性原理目标里的
-     sync owner/runtime semantics
+     communication owner/runtime semantics
      不能留到更宽 support surface 再处理
 4. **R3: `flash-attn` payoff**
    - 在当前新 route 上兑现 multi-phase transport / reduction / broadcast
@@ -166,7 +171,7 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
 5. **R4: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
 6. **R5: wider support surface**
-   - copy / dataflow / wider sync
+   - copy / dataflow / wider communication
 
 最近完成的局部批次：
 
@@ -199,7 +204,7 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
 ## 当前边界
 
 - oversubscribed direct runtime
-  还不是通用同步执行模型；
+  还不是通用 communication 执行模型；
   带显式 `TTSemaphorePlan` / remote descriptors 的 executable
   仍应 fail-fast
 - `flash-attn` direct runtime

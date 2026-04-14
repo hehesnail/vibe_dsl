@@ -47,10 +47,12 @@ Normalized Tile TIR
    - 是否跨 core / multicast / gather / remote write
 2. **计算**
    - 在 tile 上执行什么 compute builtin
-3. **通信 / 同步**
-   - 谁等谁
-   - 何时可见
-   - 哪些 barrier / semaphore / completion relation 生效
+3. **通信**
+   - 哪些 core 之间交换数据
+   - 走哪条 NoC / multicast / remote path
+   - 谁等谁、何时可见
+   - 哪些 barrier / semaphore / global semaphore / completion relation 生效
+   - 哪些 topology / packet / launch-order truth 需要冻结
 
 所以我们的编译链也必须按这三类事实组织，
 而不是按历史补丁名词组织。
@@ -102,8 +104,9 @@ Normalized Tile TIR
 
 - block
 - kernel
+- buffer / CB / runtime-arg-carried accessor truth
 - transport
-- sync
+- communication / completion
 - ABI
 - execution
 
@@ -149,8 +152,12 @@ Normalized Tile TIR
 
 输出：
 
-- `TensorAccessor / CB / NoC / semaphore / multicast`
-  这组 data movement protocol
+- `TensorAccessor / Buffer / CB / NoC / multicast`
+  这组 memory-access / transport protocol
+- reader / writer kernel 需要消费的
+  地址、页粒度、runtime-arg-carried accessor truth
+- peer core / remote endpoint / routing 这组
+  communication transport truth
 
 ### 4.2 `PlanTTCompute`
 
@@ -167,24 +174,33 @@ Normalized Tile TIR
   - `eltwise`
   - `reduce`
   - `sfpu`
-  - `copy / pack`
+  - `copy / pack / untilize`
+- operand/result CB binding
+- tile register / pack-unpack / accumulation /
+  reduction 这组 compute protocol
 
 ### 4.3 `PlanTTSync`
 
-只负责：
+只负责 communication 里的 completion slice：
 
 - ordering
 - completion
-- barrier / semaphore relation
+- barrier / semaphore / global-semaphore relation
 
-不再兼职恢复 compute 或 transport 语义。
+它不再兼职恢复 compute 或 transport 语义，
+也不单独承担全部 communication truth。
 
 补充：
 
-- 这里只定义 sync 这第三类事实
-  该由谁负责
+- `NoC / multicast / remote write / peer core / topology`
+  这组 communication routing truth
+  属于 `PlanTTTransport + PlanTTExecution`
+- `PlanTTSync`
+  只收口 communication 的
+  ordering / visibility / completion 语义
 - 第一性原理目标是否完成，
   还要同时看 mapping 边界、
+  TT-Metal 三类语义面的 owner、
   真源位置和后段 gate
 
 ## 5. 真源规则
@@ -212,10 +228,17 @@ Normalized Tile TIR
      仍保留
      `tile-op / layout / load-store truth`
      的边界
-2. **三类事实各有 owner**
-   - transport 由 `PlanTTTransport`
-   - compute 由 `PlanTTCompute`
-   - sync 由 `PlanTTSync`
+2. **TT-Metal 三类语义面都有 owner**
+   - compute semantics
+     由 `PlanTTCompute`
+     负责 builtin family、operand/result binding、
+     tile-reg / pack / reduce protocol
+   - memory-access semantics
+     由 `PlanTTTransport + PlanTTABI`
+     负责 buffer / accessor / CB / runtime-arg truth
+   - communication semantics
+     由 `PlanTTTransport + PlanTTSync + PlanTTExecution`
+     负责 routing / topology / multicast / completion truth
 3. **真源位置收紧**
    - 语义 body 只在 `Normalized Tile TIR`
    - `SpatialPlan companion`
@@ -231,6 +254,12 @@ Normalized Tile TIR
 
 补充约束：
 
+- 不能把第三类语义压缩成
+  “只剩 sync”
+  或“只剩 semaphore”
+  这会把
+  `NoC / peer-core / multicast / topology / packetization`
+  重新挤回后段恢复逻辑
 - `direct / indirect / paged / sharded`
   都不是独立 semantic layer，
   而是地址表达式与 transport realization 的问题
@@ -304,12 +333,15 @@ BindTarget
 
 - `PlanTTTransport`
 - `PlanTTCompute`
+- admitted-scope communication truth
+  通过 `PlanTTTransport + PlanTTSync + PlanTTExecution`
+  明确落位
 
 但第一性原理目标的完成判定
 不止这两项；
 还要求：
 
-- admitted scope 内的 `PlanTTSync`
+- admitted scope 内的 communication semantics
   进入稳定 owner/runtime semantics
 - runtime / codegen
   严格退回到
@@ -331,19 +363,26 @@ BindTarget
    - 删除 helper bridge
    - 删除 late matcher
    - 删除 side contract
-2. **R1: runtime gate 收口**
+   - 先把 compute / memory-access semantics
+     放回 anchored sub-TIR 边界完成 mapping
+2. **R1: runtime gate / host truth 收口**
    - runtime / codegen 不再补 target planning
+   - `Program / Kernel / CB / Buffer / RuntimeArgs / Core placement`
+     这组 TT-Metal host truth
+     只从 `TTProgram / ExecutableSpec` reader 落地
    - admitted / unsupported 边界要和 owner truth 对齐
-3. **R2: admitted-scope `PlanTTSync` 收口**
-   - `ordering / completion / barrier / semaphore`
+3. **R2: admitted-scope communication semantics 收口**
+   - `routing / multicast / semaphore / completion`
      进入稳定 owner/runtime semantics
+   - unsupported collective / fabric / remote case
+     明确 fail-fast
    - 这是第一性原理目标的一部分，
      不是后置支持面
 4. **R3: `flash-attn` payoff**
 5. **R4: wider family cutover**
    - `topk / fusedmoe / paged decode / chunk recurrence`
 6. **R5: wider support surface**
-   - copy / data movement / wider sync
+   - copy / data movement / wider communication
 
 其中：
 

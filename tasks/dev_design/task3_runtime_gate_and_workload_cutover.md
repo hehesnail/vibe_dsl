@@ -68,7 +68,7 @@ Normalized Tile TIR
 按总设计，
 `Task 3` 当前目标不是
 “`R0` cut-in 以后再挑一个 workload 跑通”，
-也不是只把 sync 补进去。
+也不是只把 communication 里的 completion slice 补进去。
 
 要满足第一性原理，
 下面 4 条必须同时成立：
@@ -77,23 +77,28 @@ Normalized Tile TIR
    - `R0`
      把 target builtin mapping
      放回 anchored sub-TIR
-2. **三类事实各有 owner**
+2. **TT-Metal 三类语义面各有 owner**
    - `R0`
-     完成 transport / compute owner cut-in
+     完成 compute / memory-access owner cut-in
    - `R2`
-     完成 admitted-scope sync owner/runtime semantics
+     完成 admitted-scope communication owner/runtime semantics
 3. **真源位置收紧**
    - `R1`
      把 runtime / codegen
      收回 `TTProgram / ExecutableSpec`
      reader 角色
+   - `R1`
+     同时把 `Program / Kernel / CB / Buffer /
+     RuntimeArgs / Core placement`
+     这组 host truth
+     收回 owner-side typed truth
 4. **后段不再补语义**
    - `R0`
      继续删除 helper bridge / late matcher / side contract
    - `R1`
      用 gate 禁止 runtime/codegen 补洞
    - `R2`
-     对 sync truth 缺口显式 fail-fast 或收口语义
+     对 communication truth 缺口显式 fail-fast 或收口语义
 
 所以：
 
@@ -131,13 +136,15 @@ runtime / codegen 的消费纪律固定为：
 1. **per-work access truth 缺失**
    - 如果 executable 没有显式 per-work access descriptor，
      runtime 不允许再从 `work_linear_id` 重建 tile access
-2. **transport / compute protocol 缺失**
+2. **transport / compute / communication protocol 缺失**
    - 如果 executable 还缺显式
-     data movement / compute / materialization
-     相关 protocol truth，
-     runtime 不允许再从 builtin 序列猜语义
-3. **target sync truth 缺失**
-   - 一旦 executable 带显式同步对象或绑定，
+     data movement / compute / communication /
+     materialization 相关 protocol truth，
+     runtime 不允许再从 builtin 序列、
+     core role 或 payload bag 猜语义
+3. **target communication truth 缺失**
+   - 一旦 executable 带显式 remote endpoint /
+     multicast / semaphore / completion binding，
      但 runtime 还没有对应执行语义，
      必须 fail-fast
 
@@ -407,11 +414,15 @@ runtime / codegen 的消费纪律固定为：
      tile-op / layout / `load/store`
      完成 target builtin mapping
    - 取代 `BuildTTProgram` 内部 helper bridge
-2. **R1: runtime gate 收口**
+   - 先把 compute / memory-access semantics
+     站回 owner 边界
+2. **R1: runtime gate / host truth 收口**
    - 先确保新主链上的 copy / GEMM / export
      仍维持当前 zero-regression baseline
-3. **R2: admitted-scope `PlanTTSync` 收口**
-   - `ordering / completion / barrier / semaphore`
+   - `Program / Kernel / CB / Buffer / RuntimeArgs / Core placement`
+     只允许从 `TTProgram / ExecutableSpec` 物化
+3. **R2: admitted-scope communication semantics 收口**
+   - `routing / multicast / semaphore / completion`
      进入稳定 owner/runtime semantics
    - 这是第一性原理目标的一部分
 4. **R3: `flash-attn` payoff**
@@ -421,7 +432,7 @@ runtime / codegen 的消费纪律固定为：
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
 6. **R5: wider support surface**
    - 在 admitted subset 内逐步放宽
-     copy / dataflow / wider sync
+     copy / dataflow / wider communication
 
 ## 5.2 `Task 3B` 已完成的旧链清理批次
 
@@ -485,12 +496,12 @@ runtime / codegen 的消费纪律固定为：
 roadmap：
 
 - 真实 `PlanTTTransport + PlanTTCompute` cut-in
-- runtime gate 收口
-- admitted-scope `PlanTTSync` 收口
+- runtime gate / host truth 收口
+- admitted-scope communication semantics 收口
 - `flash-attn` correctness payoff
 - `Task 3C` wider family / support surface
 
-## 6. Wider Copy / Dataflow / Sync 支持面
+## 6. Wider Copy / Dataflow / Communication 支持面
 
 支持面扩张也必须服从同一条 owner 纪律。
 
@@ -509,18 +520,20 @@ roadmap：
 - `TTProgram / ExecutableSpec`
   已把对应 target truth 冻结下来
 
-### 6.2 Synchronization
+### 6.2 Communication / Completion
 
 后续可以扩张：
 
 - 显式 semaphore / compute sync / barrier admitted subset
-- 更多 local / remote / multicast synchronization case
+- 更多 local / remote / multicast communication case
+- 更宽的 peer route / topology / collective admitted subset
 
-但所有同步支持都必须满足：
+但所有 communication 支持都必须满足：
 
-- `TTSyncPlan` 已成为稳定 target truth
-- executable 已能稳定承载对应 binding / ordering
-- runtime 对该 sync family 有明确执行语义
+- `TTTransportPlan / TTSyncPlan / TTExecutionPlan`
+  已成为稳定 target truth
+- executable 已能稳定承载对应 binding / ordering / routing
+- runtime 对该 communication family 有明确执行语义
 
 在这之前，一律 fail-fast。
 
@@ -532,7 +545,7 @@ roadmap：
    在新主链上真实通过 runtime/correctness gate
 2. `topk / fusedmoe / paged decode / chunk recurrence`
    至少各有一组支持 subset
-3. wider copy / dataflow / sync 支持面
+3. wider copy / dataflow / communication 支持面
    通过 `TTProgram / ExecutableSpec` 扩张，
    不靠 fallback
 4. 对未支持部分仍保持显式 unsupported / fail-fast

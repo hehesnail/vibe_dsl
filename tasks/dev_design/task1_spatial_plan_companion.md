@@ -295,15 +295,20 @@ target-facing 的 transport 类型
 
 - [host_api.hpp](/root/dev/vibe_dsl/tt_metal_repo/tt_metal/api/tt-metalium/host_api.hpp)
   表明 host 侧长期稳定原语就是
-  `Program / Kernel / CircularBuffer / Semaphore / RuntimeArgs`
+  `Program / Kernel / CircularBuffer / Buffer / Semaphore / RuntimeArgs`
+- [hello_world_compute.md](/root/dev/vibe_dsl/tt_metal_repo/tt_metal/programming_examples/hello_world_compute_kernel/hello_world_compute.md)
+  和
+  [hello_world_data_movement.md](/root/dev/vibe_dsl/tt_metal_repo/tt_metal/programming_examples/hello_world_datamovement_kernel/hello_world_data_movement.md)
+  说明 compute 与 data movement
+  本来就是两组不同的 target protocol
 - [program_descriptors.hpp](/root/dev/vibe_dsl/tt_metal_repo/tt_metal/api/tt-metalium/program_descriptors.hpp)
   表明最终 program descriptor 也是
   `kernels / cbs / semaphores`
 - [lab_multicast.cpp](/root/dev/vibe_dsl/tt_metal_repo/ttnn/examples/lab_multicast/lab_multicast.cpp)
   和
   [sort_program_factory.cpp](/root/dev/vibe_dsl/tt_metal_repo/ttnn/cpp/ttnn/operations/data_movement/sort/device/sort_program_factory.cpp)
-  说明 multicast、cross-core exchange 也不是新语义层，
-  而是 kernel/CB/semaphore/runtime args 的组合
+  说明 communication 也不是单独新语义层，
+  而是 kernel/CB/semaphore/runtime args/routing truth 的组合
 
 所以 `TTProgram companion` 不需要发明更大的 ontology，
 只需要把这些 target owner 收正。

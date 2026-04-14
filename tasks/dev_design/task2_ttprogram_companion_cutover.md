@@ -177,6 +177,8 @@ AnalyzeSpatialStructureFacts
 - `PlanTTTransport`
   - 根据 `ClosureBoundary + TTBlockPlan + anchored sub-TIR`
     做 transport realization
+  - 同时承接 memory-access truth
+    和 communication 里的 routing / multicast / remote endpoint truth
   - 不再从 builtin 排列或 matcher 恢复 transport intent
 - `PlanTTCompute`
   - 根据 anchored sub-TIR 中仍然可见的
@@ -186,12 +188,13 @@ AnalyzeSpatialStructureFacts
     恢复 compute intent
 - `PlanTTSync`
   - 根据 dependency / boundary / transport result
-    做 target sync realization
+    做 communication 的 completion / visibility realization
 - `PlanTTABI`
   - 把 owner-side access truth 物化成 target ABI
   - 不再从 lowered loop、arg kind、runtime heuristics 反推
 - `PlanTTExecution`
   - 形成 kernel grouping / launch order / wave scheduling
+  - 承接 communication 里的 core placement / execution order truth
 - `BuildTTProgram`
   - 聚合 target owner plan
   - 不重新恢复 target truth
