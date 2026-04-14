@@ -14,12 +14,15 @@
 - **总阶段**: Stage 4
 - **目标主线**: `Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion -> ExecutableSpec`
 - **当前代码基线**:
-  `Normalized Tile TIR -> SpatialPlan companion + Blackhole analysis facts ->
-  Spatial Program IR -> TTProgram companion -> ExecutableSpec`
+  `Normalized Tile TIR -> SpatialPlan companion ->
+  residual Blackhole analysis facts / BuildTTProgram helper bridge ->
+  TTProgram companion -> ExecutableSpec`
 - **当前目标基线**:
-  `Normalized Tile TIR -> SpatialPlan companion + Blackhole analysis facts ->
-  Spatial Program IR -> TTProgram companion -> ExecutableSpec`
-  （剩余工作集中在 runtime gate / workload payoff）
+  `Normalized Tile TIR -> SpatialPlan companion ->
+  PlanTTBlocks -> PlanTTTransport -> PlanTTCompute ->
+  PlanTTSync -> PlanTTABI -> PlanTTExecution ->
+  TTProgram companion -> ExecutableSpec`
+  （当前主要缺口是 target builtin mapping 仍未完全前移）
 - **阶段状态**:
   - `Task 1` 已落地到当前 active Blackhole compile path
   - `Task 2` 已落地到当前 active Blackhole compile path
@@ -27,6 +30,12 @@
     `MaterializeBlackholeExecutable` writer boundary
   - 当前工作从 `Task 2` cutover 转入 `Task 3`
     runtime gate / workload payoff
+  - 当前最重要的结构性事实：
+    **代码仍处于过渡实现**，
+    还没有完全站到最终设计的 owner 链上；
+    `blackhole.*` analysis facts 与
+    `BuildTTProgram` 内部 helper bridge
+    仍在承担一部分旧路线职责
   - `Task 3` 已进入旧链删除批次：
     projection bridge、fragment-layout side-channel 已删除，
     `BuildTTProgram` 也已不再物化/读取中间 `tl.tt_*` seed attrs
@@ -44,12 +53,11 @@
   - `Task 3A` 的 persistent/public 删除批次已完成：
     `tl.semantic_*` attrs、semantic pass public surface、
     Python wrapper、FFI registration、死代码与纯旧链测试已删除
-  - active path 当前直接消费
-    `Normalized Tile TIR + SpatialPlan companion +
-    blackhole.work_decomposition / blackhole.compute_regions /
+  - active path 当前已经不保留独立 semantic companion /
+    semantic witness 通道；
+    但 `blackhole.work_decomposition / blackhole.compute_regions /
     blackhole.pipeline_stages`
-    这组当前 owner truth；
-    不再保留独立 semantic companion / semantic witness 通道
+    仍是过渡残留，不是长期 owner truth
   - `AnalyzeBlackholeComputeRegions` 的 pass / 文件名切换已完成；
     旧 compute-region 命名与对应 helper 文件已删除
   - `BlackholeDeviceResourceCanonicalization` 当前同时 canonicalize
@@ -110,6 +118,9 @@
 
 - 第一 blocker 已经从 `Task 2` owner cutover 切换到 `Task 3`
   runtime gate / wider support surface
+- 当前第一结构性 blocker 不是“再补某个 workload case”，
+  而是 target builtin mapping 仍未完全切到
+  `PlanTTTransport + PlanTTCompute`
 - `Task 3A` 的 persistent semantic layer 与 `tl.semantic_*`
   主协议已从 active path 退场；
   当前主要压力点回到 `Task 3B / 3C`
@@ -139,12 +150,9 @@
 - `2026-04-14` 设计边界已进一步收敛：
   target builtin 选择必须前移到 anchored sub-TIR 仍保留
   tile-op / layout / load-store truth 的边界；
-  后续实现将按
-  `PlanTTTransport + PlanTTCompute`
-  替换 late matcher 路线，
-  并继续删除 `row_* / broadcast_sources /
-  index map / access pattern`
-  这类 side contract
+  所有 `row_* / broadcast_sources / index map / access pattern /
+  buffer_distribution_contract`
+  一类 side contract 都不再是长期设计对象
 - 详细根因、旧链问题域和切入层次判断，
   统一见 `tasks/dev_design/task0_ir_layering_root_cause.md`
 - `flash-attn` 的 direct-runtime correctness payoff、
@@ -210,9 +218,12 @@
   `semaphore_bindings` 或 `remote_core_descriptors`，
   仍应 fail-fast
 - `flash-attn` direct runtime 当前不是 admitted support surface；
-  对缺失显式 per-work contract 或 typed fragment materialization/merge protocol
+  对缺失显式 per-work contract 或
+  transport/compute protocol truth
   的 kernel，继续通过 `direct_runtime_unsupported_reasons` skip / fail-fast
-- grouped-row / fragment-layout contract 仍是 `flash-attn` 当前主要缺口；
+- `flash-attn` 当前主要缺口
+  仍是 multi-phase transport / reduction / broadcast
+  在新 route 上的完整承接；
   相关 probe 已不再把未 admitted 的前提固化成稳定绿测
 - TT-Sim `fp16` 路径当前仍可能命中 simulator fatal taxonomy；
   该路径按 simulator capability boundary 处理，不作为当前 correctness gate
@@ -273,7 +284,7 @@
     public/test/FFI surface 清掉，但真正的 `PlanTT*` owner 替换
     仍属于后续 `Task 3`
   - `flash-attn` / wider workload payoff 仍未关闭；
-    grouped-row fragment contract 与更宽 sync/dataflow 支持面
+    multi-phase transport/compute payoff 与更宽 sync/dataflow 支持面
     继续归属后续 `Task 3A/3B`
 - dirty 主线上完整
   `test_blackhole_spatial_ir.py + test_blackhole_semantic_ir.py`

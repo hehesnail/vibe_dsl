@@ -292,10 +292,13 @@ Blackhole/TT target 的 builtin mapping 固定遵守下面的分工：
   已接入 active Blackhole compile path；
   `Task 2` cutover 与 `Task 3A` semantic-layer deletion
   均已完成，当前 active path 直接从
-  `Normalized Tile TIR + SpatialPlan companion +
-  blackhole.work_decomposition / blackhole.compute_regions /
+  `Normalized Tile TIR + SpatialPlan companion`
+  进入过渡中的 TT target path；
+  当前残留的
+  `blackhole.work_decomposition / blackhole.compute_regions /
   blackhole.pipeline_stages`
-  进入 `SpatialProgram / TTProgram` owner 链
+  以及 `BuildTTProgram` 内部 helper chain
+  只被视为迁移残留，不属于长期架构
 
 ### `Task 2`: `TTProgram companion` cutover
 
@@ -321,14 +324,11 @@ Blackhole/TT target 的 builtin mapping 固定遵守下面的分工：
 
 当前设计结论下，执行优先级固定为：
 
-1. `Task 3A`: 删除 persistent
-   `SemanticProgram / Stateful Semantic IR`
-   这一层旧 companion
-   - 已完成；active path 已直接从
-     `Normalized Tile TIR + SpatialPlan companion + Blackhole analysis facts`
-     进入 `SpatialProgram / TTProgram` owner 链
-   - semantic pass / wrapper / 过期测试 / dead code
-     已完成删除
+1. `P0`: 真实 `PlanTTTransport + PlanTTCompute` cut-in
+   - 用 anchored sub-TIR 上仍然保留的
+     tile-op / layout / `BufferLoad / BufferStore`
+     完成 target builtin mapping
+   - 删除 late matcher / side contract / helper bridge
 2. `Task 3B`: 在新主链上收 runtime gate，
    再兑现 `flash-attn` admitted subset payoff
 3. `Task 3C`: 再扩 wider family / support surface

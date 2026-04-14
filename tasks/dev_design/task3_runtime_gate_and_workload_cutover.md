@@ -81,9 +81,10 @@ runtime / codegen 的消费纪律固定为：
 1. **per-work access truth 缺失**
    - 如果 executable 没有显式 per-work access descriptor，
      runtime 不允许再从 `work_linear_id` 重建 tile access
-2. **fragment / intermediate execution protocol 缺失**
-   - 如果 executable 还缺显式 materialization / merge /
-     republish / transport truth，
+2. **transport / compute protocol 缺失**
+   - 如果 executable 还缺显式
+     data movement / compute / materialization
+     相关 protocol truth，
      runtime 不允许再从 builtin 序列猜语义
 3. **target sync truth 缺失**
    - 一旦 executable 带显式同步对象或绑定，
@@ -314,8 +315,10 @@ runtime / codegen 的消费纪律固定为：
 
 当前补充约束：
 
-- grouped-row / fragment-layout contract
-  仍然是 `flash-attn` admitted surface 之外的缺口
+- `flash-attn` 当前主要缺口
+  仍然是 multi-phase data movement / reduction / broadcast
+  在新 `PlanTTTransport + PlanTTCompute`
+  路线上的完整承接
 - 因此前一轮把这类前提当作稳定绿测的 probe case
   已从 canonical TT target probe 文件中移除，
   不再把未 admitted 的前提固化成当前基线
@@ -344,15 +347,17 @@ runtime / codegen 的消费纪律固定为：
 
 `Task 3` 的推进顺序固定为：
 
-1. **P0: 删 persistent semantic layer**
-   - active path 不再保留 `tl.semantic_program`
-   - 删除 Semantic IR pass / wrapper / 过期测试
+1. **P0: 真实 `PlanTTTransport + PlanTTCompute` cut-in**
+   - 用 anchored sub-TIR 上仍保留的
+     tile-op / layout / `load/store`
+     完成 target builtin mapping
+   - 取代 `BuildTTProgram` 内部 helper bridge
 2. **P1: runtime gate 收口**
    - 先确保新主链上的 copy / GEMM / export
      仍维持当前 zero-regression baseline
 3. **P2: `flash-attn` payoff**
    - 再拿它验证 multi-op / multi-work /
-     intermediate dataflow 的 admitted subset
+     multi-phase data movement 的 admitted subset
 4. **P3: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
 5. **P4: wider copy / dataflow**
@@ -418,6 +423,7 @@ runtime / codegen 的消费纪律固定为：
 
 因此当前剩余重点已转到 `P5`：
 
+- 真实 `PlanTTTransport + PlanTTCompute` cut-in
 - `flash-attn` correctness payoff
 - `Task 3C` wider family / support surface
 

@@ -2,11 +2,13 @@
 
 ## 1. 文档角色
 
-这份文档收拢的是 **TileLang Blackhole 分层 IR 设计的研究参考**。
+这份文档收拢的是 **TileLang Blackhole 分层设计的研究参考**。
 
 它的作用只有一个：
 
-- 说明当前 `Semantic -> Spatial -> TT Target` 分层方向背后的研究输入和方法论来源
+- 说明当前
+  `TIR body -> SpatialPlan companion -> TTProgram companion -> ExecutableSpec`
+  这条路线背后的研究输入和方法论来源
 
 它**不是**当前协议真源，也**不是**状态文档。
 
@@ -20,12 +22,19 @@
 
 已完成阶段文档已归档到 `tasks/dev_design/archive/`，只保留历史参考角色。
 
+补充约束：
+
+- 文中若出现旧 `Phase A / Phase B / Phase C`、
+  `SemanticProgram / SpatialProgram`
+  之类名词，默认按**历史研究输入**理解，
+  不是当前活动设计的协议边界
+
 因此，这份文档适合回答的问题是：
 
-- 为什么要把算法语义、空间组织、目标资源分成三层
-- 为什么 `Task / Channel / Layout / ProgramPhase / SyncEdge` 要在 target mapping 之前成为一等对象
+- 为什么要把语义 body、空间切分、目标 realization 分开
+- 为什么 target builtin mapping 不能放到 tile-op / layout / load-store truth 被打碎之后
 - 为什么 validator 不能只放在最后一层
-- 为什么 `virtual spatial program` 和 `physical target mapping` 不能混在一起
+- 为什么 planning companion 和 target companion 不能混成一层 attr bag
 
 它不适合回答的问题是：
 

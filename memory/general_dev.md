@@ -145,10 +145,12 @@
   凡是能从 `Normalized Tile TIR + SpatialPlan companion +
   blackhole.work_decomposition / blackhole.compute_regions /
   blackhole.pipeline_stages`
-  稳定得到的信息，就必须直接从这些 owner truth 读取。
+  稳定得到的信息，就必须直接从这些**过渡残留 + 当前 owner truth**
+  读取，并持续把这批残留往真正的 `PlanTT*` owner 上迁移。
   若仍然不够，优先扩 TIR/schema，不要再造一层 semantic mirror
-- `SpatialProgram` fast path 的判定必须看
-  `SpatialPlan` 自身的 closure / boundary 形状与现有 Blackhole analysis facts，
+- TT fast path / short path 的判定必须看
+  `SpatialPlan` 自身的 closure / boundary 形状和
+  当前 target plan 能否直接承接，
   不能只看零散 segment kind 或历史 semantic 角色；
   否则 `flash-attn` 这类多闭包程序会被错误压成简单 GEMM / compute fast path
 - `BlackholeDeviceResourceCanonicalization`
@@ -220,7 +222,7 @@
   不要把猜测沉淀成长期协议
 - 如果某条 runtime/codegen 路径持续需要 gate
   才能避免错跑，先回头判断它是否其实在暴露
-  上游 `SpatialProgram` 的 `dataflow/work-access contract` 缺口；
+  上游 `TT transport / compute / ABI` owner truth 的缺口；
   不要把“后段还没实现协议执行”误判成第一 blocker
 
 ## 7. Resource / storage 模式
@@ -255,23 +257,18 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 优先消费 TT-Metal local install tree，不要把 `.cpmcache` 整片塞进 include path
 - 现阶段 Blackhole runtime/direct-runtime regression 默认统一用 `bf16` 输入；
   不要再把 `fp16` 当成 TT-Sim 上的正式 runtime baseline
-- 对 `flash-attn` / multi-op compute kernel 的
-  producer-consumer / republish 判断，
-  owner 应该是上游 `fragment_lowering_structure -> SpatialProgram`
-  的 typed `fragment_buffer_flow_contracts`；
-  `PlanTTKernelABI` 不应再本地扫 `SeqStmt`
-  恢复 `write / compute_consume / transport_consume` 语义
-- 这组 flow contract 不能只覆盖 fragment/local intermediate buffer；
-  还要覆盖 compute kernel 内参与同一 producer-consumer 协议的 CB-backed input buffer，
-  否则 retain/pop 策略会在 lower 侧退回成“缺 contract 默认即时 pop”
-- fragment-side 生命周期要拆成两层看：
-  上游 owner 负责语义生命周期
-  （`live_form_kind / execution_topology_kind / physical_local_extent`，
-  即一个值当前是 thread-distributed fragment、cb-live tile、
-  dst-live fragment，还是 materialized local fragment）；
-  target 侧再负责 CB overlap、reserve/push/pop、page sizing
-  这些物理资源生命周期。
-  不要把这两类分析混成“CB 分析都放后段做”
+- 对 `flash-attn` / multi-op compute kernel，
+  不要再靠后段从 `SeqStmt`、builtin 序列或 buffer 形态
+  恢复 producer-consumer / republish / reduce / broadcast 语义；
+  这些都必须在
+  `PlanTTTransport + PlanTTCompute`
+  能直接消费的 owner truth 上落地
+- Data movement 与 compute 的边界要保持明确：
+  `TensorAccessor / CB / NoC / semaphore`
+  属于 transport protocol；
+  `matmul / eltwise / reduce / sfpu / pack`
+  属于 compute family；
+  不要再发明介于两者之间的 side contract
 - TT-Sim `float16` 路径是否可用要和 target contract 问题分开判断；
   如果 small bf16 correctness 已过、但大 shape `float16` 命中
   `UntestedFunctionality: tensix_execute_unpacr: fp16`，

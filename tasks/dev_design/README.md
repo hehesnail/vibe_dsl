@@ -34,9 +34,14 @@
 
 当前按下面顺序推进：
 
-1. `Task 3B`
-   - runtime gate 与 `flash-attn` payoff
-2. `Task 3C`
+1. `P0`: 真实 `PlanTTTransport + PlanTTCompute` cut-in
+   - 用 anchored sub-TIR 上仍保留的
+     tile-op / layout / `load/store`
+     完成 target builtin mapping
+   - 取代当前 `BuildTTProgram` 内部的 late matcher/helper bridge
+2. `Task 3B`
+   - 在新 route 上收 runtime gate 与 `flash-attn` payoff
+3. `Task 3C`
    - wider family / support surface
 
 当前状态补充：
@@ -44,11 +49,11 @@
 - `Task 2A / 2B / 2C` 已完成
 - `Task 3A` 的 persistent/public 删除批次已完成
 - active path 已不再保留 `tl.semantic_*` 主协议或独立 semantic companion；
-  当前统一按
-  `Normalized Tile TIR -> SpatialPlan companion + Blackhole analysis facts ->
-  Spatial Program IR -> TTProgram companion`
-  推进
-- 当前入口从 `Task 2` 切到 `Task 3B`
+  但当前代码基线仍是**过渡实现**，
+  还残留 `blackhole.*` analysis facts 与
+  `BuildTTProgram` 内部 helper bridge
+- 当前入口已经从“旧 semantic 层清理”
+  转到“真实 TT transport/compute planning 替代旧 helper”
 
 当前明确不作为优先项：
 
