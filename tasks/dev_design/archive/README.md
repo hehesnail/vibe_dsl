@@ -8,6 +8,11 @@ Rules:
 2. They may still contain useful implementation history, debugging context, or completed design details.
 3. They must not be treated as the current architecture or current task plan.
 4. Internal links, task names, and file paths inside archived documents may intentionally remain historical rather than fully rewritten.
+4.1 Archived docs may still use historical `P0 / P1 / ...` labels.
+    These are legacy milestone names, not the current active numbering.
+    Current active docs use:
+    - `R0 / R1 / ...` for roadmap priorities
+    - `Tn.x` for task-local or batch-local sequence
 5. Current work should start from:
    - `tasks/dev_design/final_blackhole_backend_redesign.md`
    - `tasks/progress.md`

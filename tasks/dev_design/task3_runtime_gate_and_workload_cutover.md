@@ -6,9 +6,10 @@
   与 workload re-enable 设计文档
 - **当前状态**: `2026-04-14` 活动设计文档；`Task 2` 已完成，
   `Task 3A` persistent/public 删除批次与
-  `Task 3B cleanup C0-C4`
+  `Task 3B cleanup`
+  （`T3B.0-T3B.4`）
   已完成，当前工作回到 `Task 3`
-  总优先级 `P0 / P1 / P2`
+  roadmap `R0 / R1 / R2`
 - **任务链位置**:
   `Task 2` owner cutover 完成之后，
   负责 runtime/correctness payoff 与 wider family 承接
@@ -357,41 +358,41 @@ runtime / codegen 的消费纪律固定为：
 
 `Task 3` 的推进顺序固定为：
 
-- 这里的 `P0 / P1 / ...`
-  只保留给 `Task 3` 总优先级
-- `Task 3B` 的旧链清理子项
-  改用 `C0 / C1 / ...`
-  避免和总任务优先级冲突
+- 这里的 `R0 / R1 / ...`
+  只保留给 `Task 3` roadmap 总优先级
+- `Task 3B` 这类局部 batch
+  统一用 `Tn.x`
 
-1. **P0: 真实 `PlanTTTransport + PlanTTCompute` cut-in**
+1. **R0: 真实 `PlanTTTransport + PlanTTCompute` cut-in**
    - 用 anchored sub-TIR 上仍保留的
      tile-op / layout / `load/store`
      完成 target builtin mapping
    - 取代 `BuildTTProgram` 内部 helper bridge
-2. **P1: runtime gate 收口**
+2. **R1: runtime gate 收口**
    - 先确保新主链上的 copy / GEMM / export
      仍维持当前 zero-regression baseline
-3. **P2: `flash-attn` payoff**
+3. **R2: `flash-attn` payoff**
    - 再拿它验证 multi-op / multi-work /
      multi-phase data movement 的 admitted subset
-4. **P3: wider family cutover**
+4. **R3: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-5. **P4: wider copy / dataflow**
+5. **R4: wider copy / dataflow**
    - 在 admitted subset 内逐步放宽 range / stride / staged-dataflow
-6. **P5: wider sync**
+6. **R5: wider sync**
    - 只在 `TTSyncPlan + executable binding + runtime semantics`
      三者都稳定后进入 admitted surface
 
 ## 5.2 `Task 3B` 已完成的旧链清理批次
 
-`Task 3B` 的旧链清理子项统一记为 `C0-C4`：
+`Task 3B` 的旧链清理子项统一记为
+`T3B.0-T3B.4`：
 
-1. **C0: 删除 runtime/build 的 legacy single-kernel fallback**
+1. **T3B.0: 删除 runtime/build 的 legacy single-kernel fallback**
    - `rt_mod_blackhole` 不再接受
      “`TTProgram` 缺 segment truth 时退回单 kernel codegen”
    - `fused_dataflow` 也必须走显式 `TTKernel/TTABIPlan`
      物化后的 segment codegen
-2. **C1: 删除 segment ABI 的 top-level runtime-args 回填**
+2. **T3B.1: 删除 segment ABI 的 top-level runtime-args 回填**
    - 不再使用
      `tt_uses_top_level_runtime_args /
      tt_uses_top_level_common_runtime_args`
@@ -399,47 +400,48 @@ runtime / codegen 的消费纪律固定为：
    - segment 需要的 runtime/common runtime args
      必须直接作为 segment ABI truth 冻结在
      `TTABIPlan`
-3. **C2: 删除 runtime 里的 positional buffer-role fallback**
+3. **T3B.2: 删除 runtime 里的 positional buffer-role fallback**
    - `BlackholeModule` 不再从“最后一个 buffer 是 output”
      这类位置约定恢复输入输出角色
    - 缺显式 buffer role/buffer name schema 时直接 fail-fast
-4. **C3: 收紧 `BuildTTProgram` helper bridge**
+4. **T3B.3: 收紧 `BuildTTProgram` helper bridge**
    - `BuildTTProgram` 继续往纯聚合器收
    - 不再在 helper chain 里保留 top-level 汇总 truth，
      需要的 truth 直接下沉到对应 owner object
-5. **C4: 拆 `PlanTTKernelABI` 的 matcher / recovery owner residue**
+5. **T3B.4: 拆 `PlanTTKernelABI` 的 matcher / recovery owner residue**
    - 把仍然混在一起的 block/transport/sync/ABI/execution owner
      责任继续拆开
    - 目标不是系统性换名，而是让每层只持有它自己的 target truth
 
 ### 5.2.1 `2026-04-14` 当前状态
 
-`Task 3B cleanup C0-C4`
+`Task 3B cleanup`
+（`T3B.0-T3B.4`）
 这 5 项旧链清理已完成：
 
-- **C0**
+- **T3B.0**
   - `rt_mod_blackhole` 已删除 legacy single-kernel/fused-dataflow codegen fallback
   - device build 现在硬要求显式 `TTProgram` segment truth
-- **C1**
+- **T3B.1**
   - `tt_uses_top_level_runtime_args /
     tt_uses_top_level_common_runtime_args`
     已删除
   - `fused_dataflow` copy 的 runtime/common-runtime/per-work truth
     已直接冻结到 segment ABI
-- **C2**
+- **T3B.2**
   - direct runtime 已删除 positional buffer-role fallback
   - 缺显式 buffer binding/schema 的 executable
     直接在 build/gate 边界 fail-fast
-- **C3**
+- **T3B.3**
   - segment materialization helper
     已删除 top-level runtime/common-runtime 回填
-- **C4**
+- **T3B.4**
   - `PlanTTKernelABI` copy classifier
     现在只接受 explicit direction truth
   - `unknown -> fallback` 的恢复分支已去掉
 
 因此当前剩余重点回到 `Task 3`
-总优先级：
+roadmap：
 
 - 真实 `PlanTTTransport + PlanTTCompute` cut-in
 - runtime gate 收口

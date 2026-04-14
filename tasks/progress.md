@@ -11,15 +11,16 @@
 
 命名约定：
 
-- `P0 / P1 / ...` 只保留给当前总任务优先级
-- 已完成的 `Task 3B` 旧链清理批次统一写作
-  `Task 3B cleanup C0-C4`，不再复用 `P*`
+- `R0 / R1 / ...` 表示当前 roadmap 总优先级
+- `Tn.x` 表示 task / batch 内部顺序
+  （例如 `T2.0`、`T3B.0`）
 
 ## 当前代码现实
 
-当前代码已经完成 `Task 3B cleanup C0-C4`
+当前代码已经完成 `Task 3B cleanup`
+（`T3B.0-T3B.4`）
 这批旧 side-contract 清理，
-但总任务 `P0`
+但当前 roadmap `R0`
 还没有完全站到最终 planner 主链上。
 
 当前实际链路是：
@@ -83,7 +84,8 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
   中间 seed attr 的公开 surface 已删除
 - runtime / codegen 当前只读 `TTProgram / ExecutableSpec`
   的正式 reader 路线，不再保留公开 legacy entry
-- `Task 3B cleanup C0-C4`
+- `Task 3B cleanup`
+  （`T3B.0-T3B.4`）
   旧 side-contract 清理批次已完成：
   - `SpatialProgram` pass / companion / 相关测试入口
     已从 active path 删除
@@ -99,7 +101,7 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
 
 ## 当前未完成
 
-1. 完成总任务 `P0`：
+1. 完成当前 roadmap `R0`：
    把 target builtin mapping 真正前移到
    anchored sub-TIR 仍保留
    `tile-op / layout / load-store` truth 的边界，
@@ -113,24 +115,28 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
 
 ## 当前优先级
 
-1. **P0: 真实 `PlanTTTransport + PlanTTCompute` cut-in**
+1. **R0: 真实 `PlanTTTransport + PlanTTCompute` cut-in**
    - target builtin mapping 还没有完全前移到
      anchored sub-TIR 边界
    - active path 仍残留
      `blackhole.*` analysis facts 和
      `BuildTTProgram` helper bridge
-2. **P1: `flash-attn` payoff**
+2. **R1: runtime gate 收口**
+   - 继续把当前新主链上的 gate 收到
+     明确的 admitted / unsupported 边界
+3. **R2: `flash-attn` payoff**
    - 在当前新 route 上兑现 multi-phase transport / reduction / broadcast
    - 继续把 compile-path 稳定性兑现成 correctness/admitted subset
-3. **P2: wider family cutover**
+4. **R3: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-4. **P3: wider support surface**
+5. **R4: wider support surface**
    - copy / dataflow / sync
 
 最近完成的局部批次：
 
-- `Task 3B cleanup C0-C4`
-  已完成；对应的是旧链清理，不等于总任务 `P0` 完成
+- `Task 3B cleanup`
+  （`T3B.0-T3B.4`）已完成；
+  对应的是旧链清理，不等于当前 roadmap `R0` 完成
 
 ## 当前稳定基线
 
@@ -182,6 +188,6 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
 
 ## 下一步
 
-1. 先完成总任务 `P0`
-2. 再推进 `P1` 的 `flash-attn` correctness / admitted subset payoff
-3. 然后进入 wider family / support surface
+1. 先完成 `R0`
+2. 再推进 `R1/R2`
+3. 然后进入 `R3/R4`

@@ -204,24 +204,27 @@ AnalyzeSpatialStructureFacts
 
 ## 4.1 当前执行优先级
 
-基于当前 review 结论，`Task 2` 内部继续拆成下面的优先级：
+基于当前 review 结论，`Task 2` 内部继续拆成下面的顺序：
 
-1. **P0: internal owner cutover**
+- active roadmap 统一使用 `R0 / R1 / ...`
+- `Task 2` 内部顺序统一使用 `T2.x`
+
+1. **T2.0: internal owner cutover**
    - 让 `Blackhole` active compile path
      先真实经过新的 owner chain
    - 重点是 pass owner、typed plan object、active reader 切换
    - 旧 public API 名字可暂时保留为 compatibility shell
-2. **P1: target truth object set 收口**
+2. **T2.1: target truth object set 收口**
    - 落实 `TTBlockPlan / TTKernelPlan / TTTransportPlan /
      TTSyncPlan / TTABIPlan / TTExecutionPlan`
    - 旧 `TTCoreGroup / TTCBPlan / ... / payload bag`
      退出 primary owner 角色
-3. **P2: writer cutover**
+3. **T2.2: writer cutover**
    - `MaterializeBlackholeExecutable`
      成为唯一 writer
    - `MaterializeTTExecutableSpec`
      退为 compatibility bridge 或直接退出
-4. **P3: phase bundle 固化**
+4. **T2.3: phase bundle 固化**
    - 为编译、测试、probe 建立 canonical bundle/helper
    - 不再让测试手写长 pass 链充当事实标准
 

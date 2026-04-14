@@ -229,9 +229,10 @@ Normalized Tile TIR
 - `SpatialProgram` 已退出 active compile/runtime path
 - `buffer_distribution_contract`
   已从 active lowering/codegen/probe surface 删除
-- 最近完成的是 `Task 3B cleanup C0-C4`
+- 最近完成的是 `Task 3B cleanup`
+  （`T3B.0-T3B.4`）
   这批旧链清理，
-  不是总任务 `P0` 的完成信号
+  不是当前 roadmap `R0` 的完成信号
 - 当前剩余架构债不再是旧 side-contract public surface，
   而是 `BuildTTProgram` 内部 helper bridge
   还没有完全拆成真实
@@ -270,18 +271,20 @@ BindTarget
 
 当前优先级固定为：
 
-- 这里的 `P0 / P1 / ...`
-  只表示总任务优先级；
-  局部 cleanup batch 不再复用这套编号
+- 这里的 `R0 / R1 / ...`
+  只表示当前 roadmap 总优先级
+- task 内部或 cleanup batch
+  统一用 `Tn.x`
 
-1. **P0: 真实 `PlanTTTransport + PlanTTCompute` cut-in**
+1. **R0: 真实 `PlanTTTransport + PlanTTCompute` cut-in**
    - 删除 helper bridge
    - 删除 late matcher
    - 删除 side contract
-2. **P1: `flash-attn` payoff**
-3. **P2: wider family cutover**
+2. **R1: runtime gate 收口**
+3. **R2: `flash-attn` payoff**
+4. **R3: wider family cutover**
    - `topk / fusedmoe / paged decode / chunk recurrence`
-4. **P3: wider support surface**
+5. **R4: wider support surface**
    - copy / data movement / sync
 
 ## 9. 硬约束

@@ -34,26 +34,27 @@
 
 命名约定：
 
-- `P0 / P1 / ...` 只指当前总任务优先级
-- 局部清理批次统一用 `C0 / C1 / ...`
-  这类局部编号，避免和总任务优先级混淆
+- `R0 / R1 / ...` 只指当前 roadmap 总优先级
+- `Tn.x` 表示 task / batch 内部顺序，
+  例如 `T2.0`、`T3B.0`
 
 当前按下面顺序推进：
 
-1. 总任务 `P0` 尚未完成：
+1. 当前 roadmap `R0` 尚未完成：
    - 真实 `PlanTTTransport + PlanTTCompute` cut-in
    - target builtin mapping 前移到
      anchored sub-TIR 真正持有 truth 的边界
 2. 当前 active 重点：
-   - `flash-attn` payoff / runtime gate / correctness 收口
+   - `R1/R2`：runtime gate / `flash-attn` payoff / correctness 收口
 3. 后续：
-   - wider family / support surface
+   - `R3/R4`：wider family / support surface
 
 当前状态补充：
 
 - `Task 2A / 2B / 2C` 已完成
 - `Task 3A` 的 persistent/public 删除批次已完成
-- `Task 3B cleanup C0-C4`
+- `Task 3B cleanup`
+  （`T3B.0-T3B.4`）
   旧 side-contract 清理批次已完成；
   `SpatialProgram` 和
   `buffer_distribution_contract`
@@ -63,7 +64,7 @@
   还残留 `blackhole.*` analysis facts 与
   `BuildTTProgram` 内部 helper bridge
 - 当前入口已经从“旧 semantic / side-contract 清理”
-  转回“总任务 `P0` cut-in + `P1` `flash-attn` payoff”
+  转回“`R0` cut-in + `R1/R2` 收口”
 
 当前明确不作为优先项：
 
