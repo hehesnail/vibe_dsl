@@ -38,33 +38,33 @@
   - 该问题的 simulator-side 旁证和更宽 fatal taxonomy 扫描，
     统一见 `memory/tt_simulator_constraints.md`
 
-### TT-Sim 上的 GEMM compile-time-ABI-only direct runtime 仍会命中 NOC 对齐 fatal
+### direct cast consumer 的 direct-runtime 仍属于旧 merge/live-form bridge 边界
 
 - **现象**:
-  - `test_blackhole_gemm_direct_runtime_materializes_compile_time_abi_schema`
-    在 TT-Sim 上仍会直接报
-    `UndefinedBehavior: noc_cmd_ctrl: read: alignment of src_addr=0x1 and dst_addr=... does not match`
-  - 触发前的 executable metadata
-    已经正确物化出
-    `compile_time_arg_specs`
-    和 `tl.blackhole_executable`
-    writer attr
+  - `gemm + post-merge cast consumer`
+    的 build/source contract
+    已能稳定物化出
+    `republished_logical_tile`
+    consumer contract
+  - 但 direct runtime / TT-Sim
+    真执行仍会命中
+    `t_tile_mmio_wr32`
+    这类旧 merge/live-form bridge
+    的 simulator/runtime 边界
 - **当前结论**:
-  - 现阶段更像
-    direct-runtime / TT-Sim
-    在“只保留 compile-time ABI、不保留 accessor object”
-    这条 GEMM 执行路径上的运行时边界，
-    不是 `T2.4` writer-boundary 回归
-  - 遇到这条 fatal 时，
-    先看 executable metadata
-    是否已经正确 materialize；
-    如果 schema 正常，
-    不要先把锅扣到
-    `MaterializeBlackholeExecutable`
-  - 后续若要继续收这条 correctness，
-    应直接调试
-    GEMM direct-runtime 的 accessor/compile-time ABI materialization
-    与 TT-Sim 执行边界
+  - 当前 admitted 主链只把
+    fresh fragment /
+    preclear zero-init GEMM
+    收到 `clear_accum=true`
+    direct path
+  - direct cast consumer
+    仍保留 build/source contract gate，
+    但不进入当前 TT-Sim correctness gate
+  - 后续若要继续收这条 runtime，
+    应补
+    source live-form bridge
+    的主链 owner，
+    而不是继续在尾部堆 merge fallback
 
 ## 2. 已解决但值得记住的模式
 
@@ -103,6 +103,36 @@
     就等于还在系统里保留一条旧链
 
 ### 2.1 ABI / schema
+
+#### GEMM reader 的 buffer 绑定不能让 stride runtime arg 覆盖 buffer address
+
+- **症状**:
+  - `test_blackhole_gemm_basic`
+    和
+    `test_blackhole_gemm_direct_runtime_materializes_compile_time_abi_schema`
+    在 TT-Sim 上直接报
+    `UndefinedBehavior: noc_cmd_ctrl ... src_addr=0x1`
+- **根因**:
+  - codegen 侧
+    `buffer_runtime_arg_map`
+    之前按
+    `bound_buffer_name`
+    盲收所有 runtime arg，
+    后写入的
+    `a_tile_stride / b_tile_stride`
+    覆盖了真正的
+    `A_addr / B_addr`
+- **修法**:
+  - 只让
+    `input_buffer_addr{,32} / output_buffer_addr{,32}`
+    这类 buffer-address runtime arg
+    进入
+    `buffer_runtime_arg_map`
+- **教训**:
+  - buffer identity 到 runtime arg 的绑定
+    必须由 typed arg kind 决定，
+    不能把同一 buffer 上的 stride / shape / address
+    混成同一槽位
 
 #### schema-only ABI 一旦成立，派生物也必须能从 schema 重建
 
@@ -207,6 +237,43 @@
   bridge-stage 的 typed truth 已经能脱离 attrs 被独立消费
 
 ### 2.2 planner / runtime contract
+
+#### `clear_accum=false` 不能直接等价成“必须走 merge path”
+
+- **症状**:
+  - fresh fragment 和 preclear zero-init GEMM
+    明明没有真实 live-in accumulator state，
+    却仍被物化成
+    `intermediate_accumulator_merge`
+    并在 TT-Sim 上打到旧 merge/live-form 桥
+- **根因**:
+  - lowering 之前直接从
+    `gemm_py(clear_accum=False)`
+    落 merge contract，
+    没有结合
+    `TIR execution order`
+    去区分
+    “真实 live-in state”
+    和
+    “只是 zero-init / fresh fragment”
+- **修法**:
+  - `buffer_materialization_contract`
+    改为基于
+    `TIR execution order + recurrence facts + future cast-consumer relation`
+    生成
+  - 只有
+    recurrence/live consumer
+    或真正的 prior live-in state
+    才保留 merge contract；
+    fresh / preclear-only
+    统一 canonicalize 到
+    `clear_accum=true`
+- **教训**:
+  - accumulator merge
+    是 producer/consumer 关系问题，
+    应从 IR 事实推导；
+    不能把 op flag
+    直接当最终 lowering contract
 
 #### partial-write output 必须先把 host 初值同步到 device
 

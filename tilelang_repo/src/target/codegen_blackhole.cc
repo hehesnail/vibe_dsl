@@ -46,6 +46,11 @@ namespace tl {
 
 namespace {
 
+bool IsBufferAddressRuntimeArgKind(const std::string& kind) {
+  return kind == "input_buffer_addr32" || kind == "input_buffer_addr" ||
+         kind == "output_buffer_addr32" || kind == "output_buffer_addr";
+}
+
 const tvm::tir::VarNode* AsHandleVar(const tvm::PrimExpr& expr) {
   if (const auto* var = expr.as<tvm::tir::VarNode>()) {
     return var;
@@ -1103,7 +1108,7 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
       }
     }
 
-    if (bound_buffer_name.has_value()) {
+    if (bound_buffer_name.has_value() && IsBufferAddressRuntimeArgKind(arg_kind)) {
       std::vector<std::string> candidate_names{bound_buffer_name.value()};
       candidate_names.push_back(bound_buffer_name.value() + "_handle");
       for (const auto& candidate_name : candidate_names) {

@@ -163,6 +163,19 @@ static std::optional<CBFlowClass> ParseCBFlowClass(const std::string& flow_class
   return std::nullopt;
 }
 
+static bool IsLiteralZeroValue(const PrimExpr& expr) {
+  if (const auto* imm = expr.as<IntImmNode>()) {
+    return imm->value == 0;
+  }
+  if (const auto* imm = expr.as<FloatImmNode>()) {
+    return imm->value == 0.0;
+  }
+  if (const auto* cast = expr.as<CastNode>()) {
+    return IsLiteralZeroValue(cast->value);
+  }
+  return false;
+}
+
 static Map<String, Any> BuildGemmContractPayload(
     const std::string& a_buffer, const std::string& b_buffer, const std::string& c_buffer, int m,
     int n, int k, bool transpose_a, bool transpose_b, DataType a_dtype, DataType b_dtype,
@@ -1603,13 +1616,32 @@ const Map<String, Any>* PlanTTKernelABI::FindBufferMaterializationContract(
 }
 
 bool PlanTTKernelABI::BufferUsesTiledCBLiveForm(const Buffer& buffer) const {
-  const Map<String, Any>* contract = FindBufferMaterializationContract(buffer);
-  if (contract == nullptr) {
+  auto contract_uses_tiled_cb = [](const Map<String, Any>& contract) {
+    auto result_live_form_it = contract.find(String(schema_key::kResultLiveForm));
+    return result_live_form_it != contract.end() &&
+           Downcast<String>((*result_live_form_it).second) == buffer_live_form::kTiledCB;
+  };
+
+  if (const Map<String, Any>* contract = FindBufferMaterializationContract(buffer);
+      contract != nullptr && contract_uses_tiled_cb(*contract)) {
+    return true;
+  }
+
+  const std::string buffer_name = BufferIdentityName(buffer);
+  if (buffer_name.empty()) {
     return false;
   }
-  auto result_live_form_it = contract->find(String(schema_key::kResultLiveForm));
-  return result_live_form_it != contract->end() &&
-         Downcast<String>((*result_live_form_it).second) == buffer_live_form::kTiledCB;
+  for (const auto& [_, contract] : buffer_materialization_contracts_by_target_buffer_) {
+    auto source_buffer_it = contract.find(String(schema_key::kSourceBuffer));
+    if (source_buffer_it == contract.end() ||
+        Downcast<String>((*source_buffer_it).second) != buffer_name) {
+      continue;
+    }
+    if (contract_uses_tiled_cb(contract)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void PlanTTKernelABI::ValidatePublishedBufferSourceEdge(const Buffer& src,
@@ -4042,10 +4074,17 @@ Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
         GenerateAccumulatingMatmulSequence(op, retain_in0, retain_in1, publish_transport_out,
                                            preserve_out_local_state, reacquire_in0, reacquire_in1));
   }
+  const bool publish_live_form_cb =
+      preserve_out_local_state && BufferUsesTiledCBLiveForm(gemm_c_buffer_);
+  if (publish_live_form_cb) {
+    buffer_live_form_cb_by_buffer_identity_[BufferIdentityName(gemm_c_buffer_)] =
+        gemm_c_req_index_;
+  }
   return MaybeWrapComputeSegment(
       GenerateMatmulSequenceForOutputRequirement(gemm_c_req_index_, retain_in0, retain_in1,
-                                                 publish_out, publish_out, reacquire_in0,
-                                                 reacquire_in1));
+                                                 publish_out || publish_live_form_cb,
+                                                 publish_out || publish_live_form_cb,
+                                                 reacquire_in0, reacquire_in1));
 }
 
 Stmt PlanTTKernelABI::GenerateMatmulSequenceForOutputRequirement(int out_req_index,
@@ -7008,6 +7047,11 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
           if (IsBufferLikeExpr(call->args[2])) {
             const Buffer out_buffer =
                 ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(call->args[2])->buffer);
+            const bool needs_accumulator_merge =
+                FindBufferMaterializationContract(out_buffer) != nullptr;
+            if (!gemm_clear_accum_ && !needs_accumulator_merge) {
+              gemm_clear_accum_ = true;
+            }
             const FutureBufferUses future_uses =
                 ClassifyFutureBufferUses(out_buffer, current_order_index);
             publish_out = future_uses.has_compute_consume || future_uses.has_transport_consume;
@@ -7029,9 +7073,58 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       return false;
     };
 
+    auto is_redundant_zero_fill_before_full_overwrite_matmul =
+        [&](const Stmt& fill_stmt, const Stmt& next_stmt) -> bool {
+      FragmentFillMatch fill_match;
+      const auto* fill_loop = AsUnwrappedFor(fill_stmt);
+      if (!fill_loop || !MatchDirectFragmentFill(fill_loop, &fill_match) ||
+          !IsLiteralZeroValue(fill_match.value)) {
+        return false;
+      }
+
+      Stmt current = next_stmt;
+      while (true) {
+        if (const auto* attr = current.as<AttrStmtNode>()) {
+          current = attr->body;
+          continue;
+        }
+        if (const auto* let = current.as<LetStmtNode>()) {
+          current = let->body;
+          continue;
+        }
+        if (const auto* decl = current.as<DeclBufferNode>()) {
+          current = decl->body;
+          continue;
+        }
+        if (const auto* allocate = current.as<AllocateNode>()) {
+          current = allocate->body;
+          continue;
+        }
+        break;
+      }
+
+      const auto* eval = current.as<EvaluateNode>();
+      const auto* call = eval ? eval->value.as<CallNode>() : nullptr;
+      if (!call || !IsMatmulCall(call) || !IsBufferLikeExpr(call->args[2])) {
+        return false;
+      }
+
+      const Buffer fill_buffer = ResolvePhysicalComputeBuffer(fill_match.dst);
+      const Buffer out_buffer =
+          ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(call->args[2])->buffer);
+      if (!SameBufferIdentity(fill_buffer, out_buffer)) {
+        return false;
+      }
+      return FindBufferMaterializationContract(out_buffer) == nullptr;
+    };
+
     Stmt retained_matmul;
     if (try_lower_retained_matmul(op->seq[i], &retained_matmul)) {
       rewritten.push_back(retained_matmul);
+      continue;
+    }
+    if (i + 1 < static_cast<int>(op->seq.size()) &&
+        is_redundant_zero_fill_before_full_overwrite_matmul(op->seq[i], op->seq[i + 1])) {
       continue;
     }
     if (const auto* direct_cast_loop = AsUnwrappedFor(op->seq[i])) {

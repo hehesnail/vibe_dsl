@@ -218,6 +218,21 @@
 - lowering 消费事实并改写 IR
 - planner 只消费显式 requirement schema
 - codegen 只打印已确定 contract
+- 像
+  `clear_accum=false`
+  这种 op-level flag
+  不能直接当最终 lowering contract；
+  是否真的需要
+  accumulator merge /
+  live-form bridge
+  要由
+  `TIR execution order + recurrence/live consumer facts`
+  共同决定。
+  fresh fragment /
+  preclear zero-init
+  这类 case
+  应优先 canonicalize 到主链，
+  不要默认续到旧 merge path
 
 稳定做法：
 

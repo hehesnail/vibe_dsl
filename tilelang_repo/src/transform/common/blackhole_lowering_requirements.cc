@@ -224,7 +224,8 @@ bool IsBufferMaterializationCandidate(const tir::CallNode* call) {
   return tile_op.defined() && tile_op->GetBufferMaterializationInfo().has_value();
 }
 
-Optional<Map<String, Any>> TryBuildBufferMaterializationContract(const tir::CallNode* call) {
+Optional<Map<String, Any>> TryBuildBufferMaterializationContract(const tir::CallNode* call,
+                                                                tir::Buffer* target_buffer_out) {
   if (!call) {
     return Optional<Map<String, Any>>();
   }
@@ -237,15 +238,18 @@ Optional<Map<String, Any>> TryBuildBufferMaterializationContract(const tir::Call
     return Optional<Map<String, Any>>();
   }
   const tir::Buffer& target = info->target_buffer;
-  const std::string target_buffer = BufferIdentityName(target);
+  const std::string target_buffer_name = BufferIdentityName(target);
   const std::string scope = target.scope();
-  if (target_buffer.empty() || !IsTrackedStateScope(scope)) {
+  if (target_buffer_name.empty() || !IsTrackedStateScope(scope)) {
     return Optional<Map<String, Any>>();
+  }
+  if (target_buffer_out != nullptr) {
+    *target_buffer_out = target;
   }
   Map<String, Any> contract;
   contract.Set(String(schema_key::kKind),
                String(buffer_materialization::kIntermediateAccumulatorMerge));
-  contract.Set(String(schema_key::kTargetBuffer), String(target_buffer));
+  contract.Set(String(schema_key::kTargetBuffer), String(target_buffer_name));
   contract.Set(String(schema_key::kScope), String(scope));
   contract.Set(String(schema_key::kMaterializationKind), info->materialization_kind);
   contract.Set(String(schema_key::kBridgeKind), info->bridge_kind);
@@ -271,6 +275,99 @@ bool FlowContractHasEventKind(const Map<String, Any>& flow_contract, const char*
   return false;
 }
 
+bool ExprIsLiteralZero(const PrimExpr& expr) {
+  arith::Analyzer analyzer;
+  const PrimExpr simplified = analyzer.Simplify(expr);
+  if (const auto* imm = simplified.as<tir::IntImmNode>()) {
+    return imm->value == 0;
+  }
+  if (const auto* imm = simplified.as<tir::FloatImmNode>()) {
+    return imm->value == 0.0;
+  }
+  if (const auto* cast = simplified.as<tir::CastNode>()) {
+    return ExprIsLiteralZero(cast->value);
+  }
+  return false;
+}
+
+bool StmtWritesBuffer(const tir::Stmt& stmt, const tir::Buffer& buffer);
+const tir::ForNode* AsUnwrappedFor(const tir::Stmt& stmt);
+bool MatchDirectFragmentCastTarget(const tir::ForNode* op, tir::Buffer* src_buffer,
+                                   tir::Buffer* dst_buffer);
+
+bool StmtWritesOnlyZeroToBuffer(const tir::Stmt& stmt, const tir::Buffer& buffer) {
+  const std::string identity = BufferIdentityName(buffer);
+  bool saw_write = false;
+  bool only_zero_writes = true;
+  tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
+    const auto* store = node.as<tir::BufferStoreNode>();
+    if (!store || BufferIdentityName(store->buffer) != identity) {
+      return;
+    }
+    saw_write = true;
+    if (!ExprIsLiteralZero(store->value)) {
+      only_zero_writes = false;
+    }
+  });
+  return saw_write && only_zero_writes;
+}
+
+bool BufferHasLiveInStateBeforeOrderIndex(const tir::Buffer& buffer,
+                                          const std::vector<tir::Stmt>& ordered_stmts,
+                                          const std::unordered_set<std::string>& recurrence_subjects,
+                                          int order_index) {
+  const std::string buffer_name = BufferIdentityName(buffer);
+  if (buffer_name.empty()) {
+    return true;
+  }
+  if (recurrence_subjects.count(buffer_name) != 0U) {
+    return true;
+  }
+  for (int i = 0; i < order_index; ++i) {
+    if (!StmtWritesBuffer(ordered_stmts[i], buffer)) {
+      continue;
+    }
+    if (!StmtWritesOnlyZeroToBuffer(ordered_stmts[i], buffer)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool BufferFeedsDirectFragmentCastConsumerAfterOrderIndex(
+    const tir::Buffer& buffer, const std::vector<tir::Stmt>& ordered_stmts, int order_index) {
+  for (int i = order_index + 1; i < static_cast<int>(ordered_stmts.size()); ++i) {
+    tir::Buffer src_buffer;
+    tir::Buffer dst_buffer;
+    const auto* loop = AsUnwrappedFor(ordered_stmts[i]);
+    if (loop && MatchDirectFragmentCastTarget(loop, &src_buffer, &dst_buffer) &&
+        SameBufferIdentity(src_buffer, buffer)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ShouldKeepBufferMaterializationContract(
+    const Map<String, Any>& contract, const tir::Buffer& target_buffer,
+    const std::vector<tir::Stmt>& ordered_stmts,
+    const std::unordered_set<std::string>& recurrence_subjects, int order_index) {
+  auto kind_it = contract.find(String(schema_key::kKind));
+  if (kind_it == contract.end() || !target_buffer.defined()) {
+    return true;
+  }
+  if (Downcast<String>((*kind_it).second) !=
+      buffer_materialization::kIntermediateAccumulatorMerge) {
+    return true;
+  }
+  if (BufferFeedsDirectFragmentCastConsumerAfterOrderIndex(target_buffer, ordered_stmts,
+                                                           order_index)) {
+    return true;
+  }
+  return BufferHasLiveInStateBeforeOrderIndex(target_buffer, ordered_stmts, recurrence_subjects,
+                                              order_index);
+}
+
 Optional<Map<String, Any>> TryBuildRepublishBufferMaterializationContract(
     const Map<String, Any>& flow_contract) {
   auto buffer_it = flow_contract.find(String(schema_key::kBuffer));
@@ -288,8 +385,7 @@ Optional<Map<String, Any>> TryBuildRepublishBufferMaterializationContract(
   if (buffer_name.empty() || !IsTrackedStateScope(scope) ||
       flow_class != buffer_flow::kRepublish ||
       granule_kind != buffer_flow::kLogicalTile ||
-      (!FlowContractHasEventKind(flow_contract, buffer_flow::kComputeConsume) &&
-       !FlowContractHasEventKind(flow_contract, buffer_flow::kTransportConsume))) {
+      !FlowContractHasEventKind(flow_contract, buffer_flow::kComputeConsume)) {
     return Optional<Map<String, Any>>();
   }
   Map<String, Any> contract;
@@ -444,6 +540,58 @@ bool MatchDirectFragmentCastTarget(const tir::ForNode* op, tir::Buffer* src_buff
   *src_buffer = load->buffer;
   *dst_buffer = inner_store->buffer;
   return true;
+}
+
+std::vector<tir::Stmt> CollectMaterializationOrderedStmts(const tir::Stmt& root) {
+  class OrderedLeafStmtCollector : public tir::StmtVisitor {
+   public:
+    explicit OrderedLeafStmtCollector(std::vector<tir::Stmt>* ordered_stmts)
+        : ordered_stmts_(ordered_stmts) {}
+
+    void Collect(const tir::Stmt& stmt) {
+      if (stmt.defined()) {
+        VisitStmt(stmt);
+      }
+    }
+
+    void VisitStmt_(const tir::SeqStmtNode* op) final {
+      for (const tir::Stmt& child : op->seq) {
+        VisitStmt(child);
+      }
+    }
+
+    void VisitStmt_(const tir::BlockRealizeNode* op) final { VisitStmt(op->block); }
+
+    void VisitStmt_(const tir::BlockNode* op) final { VisitStmt(op->body); }
+
+    void VisitStmt_(const tir::AttrStmtNode* op) final { VisitStmt(op->body); }
+
+    void VisitStmt_(const tir::AllocateNode* op) final { VisitStmt(op->body); }
+
+    void VisitStmt_(const tir::DeclBufferNode* op) final { VisitStmt(op->body); }
+
+    void VisitStmt_(const tir::LetStmtNode* op) final { VisitStmt(op->body); }
+
+    void VisitStmt_(const tir::ForNode* op) final {
+      ordered_stmts_->push_back(GetRef<tir::Stmt>(op));
+    }
+
+    void VisitStmt_(const tir::BufferStoreNode* op) final {
+      ordered_stmts_->push_back(GetRef<tir::Stmt>(op));
+    }
+
+    void VisitStmt_(const tir::EvaluateNode* op) final {
+      ordered_stmts_->push_back(GetRef<tir::Stmt>(op));
+    }
+
+   private:
+    std::vector<tir::Stmt>* ordered_stmts_;
+  };
+
+  std::vector<tir::Stmt> ordered_stmts;
+  OrderedLeafStmtCollector collector(&ordered_stmts);
+  collector.Collect(root);
+  return ordered_stmts;
 }
 
 bool IsCopyOperation(const tir::BufferStoreNode* store) {
@@ -825,25 +973,32 @@ void AppendUniqueCastDrivenBufferMaterializationContractsFromBody(
   });
 }
 
-Array<Any> CollectBufferMaterializationContractsFromBody(const tir::Stmt& body) {
+Array<Any> CollectBufferMaterializationContractsFromBody(
+    const tir::PrimFunc& func, const std::unordered_set<std::string>& recurrence_subjects) {
   Array<Any> contracts;
   std::unordered_set<std::string> seen;
-  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
-    const auto* call = node.as<tir::CallNode>();
-    if (!IsBufferMaterializationCandidate(call)) {
-      return;
-    }
-    auto maybe_contract = TryBuildBufferMaterializationContract(call);
-    if (!maybe_contract) {
-      return;
-    }
-    const std::string key =
-        Downcast<String>(maybe_contract.value().at(String(schema_key::kTargetBuffer))) + "|" +
-        Downcast<String>(maybe_contract.value().at(String(schema_key::kScope)));
-    if (seen.insert(key).second) {
-      contracts.push_back(maybe_contract.value());
-    }
-  });
+  const std::vector<tir::Stmt> ordered_stmts = CollectMaterializationOrderedStmts(func->body);
+  for (int order_index = 0; order_index < static_cast<int>(ordered_stmts.size()); ++order_index) {
+    tir::PostOrderVisit(ordered_stmts[order_index], [&](const ObjectRef& node) {
+      const auto* call = node.as<tir::CallNode>();
+      if (!IsBufferMaterializationCandidate(call)) {
+        return;
+      }
+      tir::Buffer target_buffer;
+      auto maybe_contract = TryBuildBufferMaterializationContract(call, &target_buffer);
+      if (!maybe_contract || !ShouldKeepBufferMaterializationContract(
+                                 maybe_contract.value(), target_buffer, ordered_stmts,
+                                 recurrence_subjects, order_index)) {
+        return;
+      }
+      const std::string key =
+          Downcast<String>(maybe_contract.value().at(String(schema_key::kTargetBuffer))) + "|" +
+          Downcast<String>(maybe_contract.value().at(String(schema_key::kScope)));
+      if (seen.insert(key).second) {
+        contracts.push_back(maybe_contract.value());
+      }
+    });
+  }
   return contracts;
 }
 
@@ -975,7 +1130,8 @@ LoweringSupportFacts AnalyzeLoweringSupportFacts(const tir::PrimFunc& func) {
   }
 
   Array<Any> flow_contracts = CollectBufferFlowContractsFromBody(func->body);
-  Array<Any> materialization_contracts = CollectBufferMaterializationContractsFromBody(func->body);
+  Array<Any> materialization_contracts =
+      CollectBufferMaterializationContractsFromBody(func, facts.recurrence_subjects);
   AppendUniqueBufferMaterializationContractsFromFlowContracts(flow_contracts,
                                                               &materialization_contracts);
   AppendUniqueCastDrivenBufferMaterializationContractsFromBody(

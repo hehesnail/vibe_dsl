@@ -279,6 +279,31 @@ Normalized Tile TIR
   （`T3B.0-T3B.4`）已完成；
   对应的是旧链清理，
   不等于第一性原理目标完成
+- `2026-04-15` 的 `T2.4` follow-up
+  已收口到主链语义：
+  - GEMM reader runtime-arg 绑定
+    不再让
+    `a_tile_stride / b_tile_stride`
+    覆盖
+    `A_addr / B_addr`
+  - fresh fragment / preclear zero-init
+    不再因为
+    `clear_accum=False`
+    自动落到
+    `intermediate_accumulator_merge`
+    旧链；
+    当前统一按
+    `TIR execution order + recurrence/live consumer`
+    判定是否真的需要 merge
+  - preclear-only GEMM
+    已 canonicalize 到
+    `clear_accum=true`
+    direct path
+  - direct cast consumer
+    的 build/source contract
+    仍保留，
+    但其 runtime 执行
+    还不纳入当前 TT-Sim correctness gate
 
 ## 当前稳定基线
 
@@ -297,7 +322,11 @@ Normalized Tile TIR
 - copy：
   equal source/dest range，stride = 1
 - GEMM：
-  A/B-separated reader range + writer output range
+  A/B-separated reader range + writer output range；
+  fresh fragment / preclear zero-init
+  已统一走
+  `clear_accum=true`
+  direct path
 - accessor：
   interleaved + DRAM + `common_runtime_arg_count = 0`
 - communication：
@@ -326,6 +355,10 @@ Normalized Tile TIR
 - `flash-attn` direct runtime
   compile-path / source/spec baseline 已稳定，
   但 runtime correctness 还不是 admitted support surface
+- direct cast consumer
+  仍依赖旧的 merge/live-form bridge；
+  当前只保留 build/source contract gate，
+  不作为 TT-Sim direct-runtime correctness gate
 - TT-Sim `fp16`
   仍按 simulator capability boundary 处理，
   不作为当前 correctness gate
@@ -333,6 +366,10 @@ Normalized Tile TIR
 ## 最新验证摘要
 
 - `tilelang` 构建通过
+- `pytest /root/dev/vibe_dsl/tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_compute_contract_attr_is_materialized /root/dev/vibe_dsl/tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fresh_fragment_gemm_does_not_materialize_accumulator_merge_contract /root/dev/vibe_dsl/tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_precleared_fragment_gemm_does_not_materialize_accumulator_merge_contract /root/dev/vibe_dsl/tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_compile_time_abi_is_materialized /root/dev/vibe_dsl/tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_reader_binds_tensor_accessor_to_buffer_addrs /root/dev/vibe_dsl/tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_post_merge_cast_consumer_exposes_republish_contract -q`
+  `6 passed`
+- `bash -lc 'source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_basic testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_direct_runtime_materializes_compile_time_abi_schema testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_precleared_fragment_gemm_canonicalizes_to_clear_accum_true testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_direct_runtime_preserves_clear_accum_false_fragment_for_cast_consumer testing/python/target/blackhole/test_blackhole_copy_pipeline.py::test_blackhole_copy_direct_runtime_materializes_compile_time_abi_schema -q'`
+  `4 passed, 1 skipped`
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
   `133 passed, 25 skipped, 1 xfailed`
 - `bash -lc 'source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && pytest testing/python/target/blackhole/test_blackhole_copy_runtime.py::test_blackhole_module_direct_call_grid_indexed_copy_worker_semaphore_handshake testing/python/target/blackhole/test_blackhole_copy_runtime.py::test_blackhole_module_direct_call_accepts_oversubscribed_multi_core_launch testing/python/target/blackhole/test_blackhole_copy_runtime.py::test_blackhole_module_direct_call_rejects_oversubscribed_communication_contract testing/python/target/blackhole/test_blackhole_copy_pipeline.py::test_blackhole_copy_direct_runtime_accepts_semaphore_id_runtime_arg -q'`
