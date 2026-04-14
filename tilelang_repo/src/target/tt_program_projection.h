@@ -9,8 +9,6 @@
 #include <tvm/ir/expr.h>
 
 #include <string>
-#include <unordered_set>
-
 #include "../transform/common/blackhole_runtime_arg_schema.h"
 #include "../transform/common/companion_base.h"
 #include "../transform/common/tt_target_program.h"
@@ -37,34 +35,6 @@ inline TTProgram RequireTTProgram(const tir::PrimFunc& func, const char* consume
   auto maybe_program = GetTTProgram(func);
   ICHECK(maybe_program) << consumer << " requires tl.tt_program for target-truth cutover";
   return maybe_program.value();
-}
-
-inline Array<Any> AggregateABIArgs(const TTProgram& program, bool common) {
-  Array<Any> aggregated;
-  std::unordered_set<std::string> seen;
-  for (const TTABIPlan& abi : program->abi_plans) {
-    const Array<Any>& args = common ? abi->common_runtime_args : abi->runtime_args;
-    for (const Any& item : args) {
-      Map<String, Any> arg = AsMap(item);
-      if (arg.empty()) {
-        continue;
-      }
-      std::string identity;
-      std::string kind;
-      if (auto v = arg.Get("identity")) {
-        identity = Downcast<String>(v.value());
-      }
-      if (auto v = arg.Get("kind")) {
-        kind = Downcast<String>(v.value());
-      }
-      std::string dedupe_key = !identity.empty() && !kind.empty() ? identity + ":" + kind : identity;
-      if (!dedupe_key.empty() && !seen.insert(dedupe_key).second) {
-        continue;
-      }
-      aggregated.push_back(arg);
-    }
-  }
-  return aggregated;
 }
 
 inline Array<Any> EncodeCBPlans(const Array<TTCBPlan>& cb_plans) {
@@ -135,10 +105,6 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram& program) {
             String(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs))) {
       segment.Set(String(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs),
                   v.value());
-    } else if (auto v = abi->payload.Get(
-                   String(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs))) {
-      segment.Set(String(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs),
-                  v.value());
     }
     segments.push_back(segment);
   }
@@ -151,23 +117,6 @@ inline Array<Any> GetSegmentPlanFromTTProgram(const TTProgram& program) {
 
 inline Array<Any> GetSegmentPlanFromTTProgram(const tir::PrimFunc& func, const char* consumer) {
   return EncodeSegmentPlan(RequireTTProgram(func, consumer));
-}
-
-inline Array<Any> GetRuntimeArgsFromTTProgram(const TTProgram& program) {
-  return AggregateABIArgs(program, /*common=*/false);
-}
-
-inline Array<Any> GetRuntimeArgsFromTTProgram(const tir::PrimFunc& func, const char* consumer) {
-  return AggregateABIArgs(RequireTTProgram(func, consumer), /*common=*/false);
-}
-
-inline Array<Any> GetCommonRuntimeArgsFromTTProgram(const TTProgram& program) {
-  return AggregateABIArgs(program, /*common=*/true);
-}
-
-inline Array<Any> GetCommonRuntimeArgsFromTTProgram(const tir::PrimFunc& func,
-                                                    const char* consumer) {
-  return AggregateABIArgs(RequireTTProgram(func, consumer), /*common=*/true);
 }
 
 inline Array<Any> GetCBConfigsFromTTProgram(const TTProgram& program) {

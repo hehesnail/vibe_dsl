@@ -17,6 +17,7 @@ from .common import (
     extract_blackhole_work_per_core,
     grid_indexed_staged_copy_kernel,
     rebuild_tt_abi_plan,
+    rebuild_tt_kernel,
     rebuild_tt_core_group,
     rebuild_tt_program,
     rebuild_tt_semaphore_plan,
@@ -623,17 +624,20 @@ def test_blackhole_module_direct_call_accepts_richer_copy_schema_with_explicit_p
             rebuild_tt_abi_plan(abi_plan, runtime_args=richer_runtime_args)
             for abi_plan in tt_program.abi_plans
         ]
-        payload = dict(tt_program.payload)
-        per_work_arg_specs = list(payload["per_work_arg_specs"])
-        per_work_arg_specs.append(
-            {
-                "arg_kind": "b_tile_start_id",
-                "arg_identity": "b_tile_start_id",
-                "value_kind": "logical_block_x",
-            }
-        )
-        payload["per_work_arg_specs"] = per_work_arg_specs
-        return rebuild_tt_program(tt_program, abi_plans=abi_plans, payload=payload)
+        rebuilt_kernels = []
+        for kernel in tt_program.kernels:
+            payload = dict(kernel.payload)
+            per_work_arg_specs = list(payload["per_work_arg_specs"])
+            per_work_arg_specs.append(
+                {
+                    "arg_kind": "b_tile_start_id",
+                    "arg_identity": "b_tile_start_id",
+                    "value_kind": "logical_block_x",
+                }
+            )
+            payload["per_work_arg_specs"] = per_work_arg_specs
+            rebuilt_kernels.append(rebuild_tt_kernel(kernel, payload=payload))
+        return rebuild_tt_program(tt_program, abi_plans=abi_plans, kernels=rebuilt_kernels)
 
     mutated_mod = _rebuild_direct_runtime_module_with_tt_program(
         artifact, tt_program_mutator=mutate

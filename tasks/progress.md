@@ -71,9 +71,8 @@ Normalized Tile TIR
 ```
 
 当前第一缺口不再是 target builtin mapping 边界，
-而是 **runtime gate / host truth**
-和 **communication owner/runtime semantics**
-还没有像 `R0` 一样显式站成主链。
+而是 **communication owner/runtime semantics**
+还没有像 `R0 / R1` 一样显式站成主链。
 
 按总设计的第一性原理，
 当前目标不是单一 workload 绿测，
@@ -95,7 +94,7 @@ Normalized Tile TIR
 
 - `R0`：mapping 边界 + compute/memory-access owner cut-in
 - `R1`：`TTProgram / ExecutableSpec`
-  reader-gate / host-truth 收口
+  reader-gate / host-truth 收口（已完成）
 - `R2`：communication owner/runtime semantics 收口
 - `R3-R5`：payoff / wider family / support surface
 
@@ -127,43 +126,51 @@ Normalized Tile TIR
     `flash-attn` 不再回退到 top-level stale copy descriptor
   - `flash-attn` compile-path 回归基线
     已在新 ABI truth 下重新稳定
+- `R1` 已完成：
+  - runtime/codegen 现在只接受
+    kernel-local `per_work_arg_specs`
+    作为 per-work/access truth；
+    不再从 top-level `TTProgram.payload`
+    或 `ABI payload`
+    回填
+  - build/codegen 已显式禁止
+    从 `work_linear_id`
+    恢复 block/tile 语义；
+    多 work kernel 缺显式 per-work binding
+    直接 fail-fast
+  - `PlanTTKernelABI`
+    写 top-level `per_work_arg_specs`
+    的旧 payload bag 已删除；
+    相关过期 regression
+    已改成 kernel-local mutation
 
 ## 当前未完成
 
-1. 完成 `R1`：
-   把 runtime gate 收到
-   只消费 owner-side typed truth 的边界
-2. 完成 `R2`：
+1. 完成 `R2`：
    在 admitted scope 内把
    communication semantics
    的 `routing / multicast / semaphore / completion`
    收口到 owner/runtime semantics，
    不再把第三类语义压缩成 sync-only
-3. 在第一性原理目标完成之后，
+2. 在第一性原理目标完成之后，
    再在当前 `TTProgram / ExecutableSpec` 真源下完成
    `flash-attn` admitted subset payoff / correctness 收口
-4. 在新 route 上承接
+3. 在新 route 上承接
    `topk / fusedmoe / paged decode / chunk recurrence`
-5. 扩更宽的 copy / data movement / wider communication 支持面
+4. 扩更宽的 copy / data movement / wider communication 支持面
 
 ## 当前优先级
 
-1. **R1: runtime gate / host truth 收口**
-   - 继续把当前新主链上的 gate 收到
-     明确的 admitted / unsupported 边界
-   - `Program / Kernel / CB / Buffer / RuntimeArgs / Core placement`
-     这组 TT-Metal host truth
-     只允许从 `TTProgram / ExecutableSpec` 物化
-2. **R2: admitted-scope communication semantics 收口**
+1. **R2: admitted-scope communication semantics 收口**
    - 第一性原理目标里的
      communication owner/runtime semantics
      不能留到更宽 support surface 再处理
-3. **R3: `flash-attn` payoff**
+2. **R3: `flash-attn` payoff**
    - 在当前新 route 上兑现 multi-phase transport / reduction / broadcast
    - 继续把 compile-path 稳定性兑现成 correctness/admitted subset
-4. **R4: wider family cutover**
+3. **R4: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-5. **R5: wider support surface**
+4. **R5: wider support surface**
    - copy / dataflow / wider communication
 
 最近完成的局部批次：
@@ -210,13 +217,13 @@ Normalized Tile TIR
 ## 最新验证摘要
 
 - `tilelang` 构建通过
-- `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
-  `6 passed`
-- `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
-  `143 passed, 25 skipped, 1 xfailed`
+- `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
+  `131 passed, 25 skipped, 1 xfailed`
+- `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && pytest testing/python/target/blackhole/test_blackhole_copy_runtime.py -k 'grid_indexed_copy_multicore_launch or accepts_oversubscribed_multi_core_launch or richer_copy_schema_with_explicit_per_work_spec' -q`
+  `3 passed`
 
 ## 下一步
 
-1. 先完成 `R1/R2`
+1. 先完成 `R2`
 2. 再推进 `R3`
 3. 然后进入 `R4/R5`

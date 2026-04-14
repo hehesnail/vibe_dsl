@@ -261,19 +261,16 @@ ffi::Array<ffi::Any> AggregateSegmentRuntimeArgsForCodegen(const tvm::tir::PrimF
 }
 
 ffi::Array<ffi::Any> GetRuntimeArgsForCodegen(const tvm::tir::PrimFunc& f) {
-  return tt_program_projection::GetRuntimeArgsFromTTProgram(f, "Blackhole codegen");
+  return AggregateSegmentRuntimeArgsForCodegen(f);
 }
 
 ffi::Array<ffi::Any> GetPerWorkArgSpecsForCodegen(const tvm::tir::PrimFunc& f) {
   auto program = tt_program_projection::RequireTTProgram(f, "Blackhole codegen");
-  if (program->kernels.size() == 1) {
-    const auto& kernel_payload = program->kernels[0]->payload;
-    if (auto v = kernel_payload.Get(
-            ffi::String(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs))) {
-      return Downcast<ffi::Array<ffi::Any>>(v.value());
-    }
+  if (program->kernels.size() != 1) {
+    return ffi::Array<ffi::Any>();
   }
-  if (auto v = program->payload.Get(
+  const auto& kernel_payload = program->kernels[0]->payload;
+  if (auto v = kernel_payload.Get(
           ffi::String(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs))) {
     return Downcast<ffi::Array<ffi::Any>>(v.value());
   }
@@ -305,10 +302,7 @@ std::string GetCoreTypeForCodegen(const tvm::tir::PrimFunc& f) {
 }
 
 bool HasRuntimeArgsForCodegen(const tvm::tir::PrimFunc& f) {
-  if (!GetRuntimeArgsForCodegen(f).empty()) {
-    return true;
-  }
-  return !AggregateSegmentRuntimeArgsForCodegen(f).empty();
+  return !GetRuntimeArgsForCodegen(f).empty();
 }
 
 }  // namespace
@@ -924,9 +918,6 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   }
 
   ffi::Array<ffi::Any> runtime_args = GetRuntimeArgsForCodegen(f);
-  if (runtime_args.empty()) {
-    runtime_args = AggregateSegmentRuntimeArgsForCodegen(f);
-  }
   ffi::Array<ffi::Any> per_work_arg_specs = GetPerWorkArgSpecsForCodegen(f);
   for (const auto& item : per_work_arg_specs) {
     auto spec = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
@@ -955,6 +946,33 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   }
   ICHECK(!runtime_args.empty())
       << "Blackhole codegen requires TTProgram ABI runtime args";
+  if (logical_grid_x_ > 1 || logical_grid_y_ > 1) {
+    for (const auto& item : runtime_args) {
+      auto arg = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
+          tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
+      if (arg.empty()) {
+        continue;
+      }
+      std::string arg_kind;
+      if (auto v = arg.Get("kind")) {
+        arg_kind = Downcast<tvm::ffi::String>(v.value());
+      }
+      const bool requires_explicit_per_work_binding =
+          arg_kind == "a_tile_start_id" || arg_kind == "a_tile_num_tiles" ||
+          arg_kind == "a_tile_stride" || arg_kind == "b_tile_start_id" ||
+          arg_kind == "b_tile_num_tiles" || arg_kind == "b_tile_stride" ||
+          arg_kind == "output_tile_start_id" || arg_kind == "output_tile_num_tiles" ||
+          arg_kind == "output_tile_stride" || arg_kind == "k_tile_start_id" ||
+          arg_kind == "num_k_tiles";
+      if (!requires_explicit_per_work_binding) {
+        continue;
+      }
+      ICHECK(per_work_arg_bindings_by_kind_.count(arg_kind))
+          << "Blackhole codegen requires explicit per-work arg binding for runtime arg kind '"
+          << arg_kind << "' on multi-work kernels; codegen must not recover block/tile semantics "
+          << "from work_linear_id or TTProgram payload fallback";
+    }
+  }
 
   std::unordered_map<std::string, const tvm::tir::VarNode *> buffer_vars_by_name;
   std::vector<std::string> ordered_handle_buffer_names;
@@ -1586,27 +1604,14 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
   }();
   const bool has_explicit_work_descriptor =
       explicit_block_x.has_value() || explicit_block_y.has_value();
-  std::optional<std::string> work_id_var;
-  auto work_id_it = runtime_arg_vars_by_kind_.find("work_linear_id");
-  if (work_id_it != runtime_arg_vars_by_kind_.end()) {
-    work_id_var = work_id_it->second;
-  } else if ((work_id_it = runtime_arg_vars_by_kind_.find("current_work_linear_id")) !=
-             runtime_arg_vars_by_kind_.end()) {
-    work_id_var = work_id_it->second;
-  }
-  const bool has_runtime_work_id = work_id_var.has_value() && row_major_grid;
 
   // Map CUDA-style thread indices to Blackhole concepts
   // For staged single-core execution, block coordinates must come from the
   // strongest explicit work contract available. If the ABI already carries a
-  // buffer-specific tile descriptor, consume that descriptor instead of
-  // re-deriving transport semantics from work_linear_id.
+  // buffer-specific tile descriptor, consume that descriptor directly.
   if (thread_tag == "blockIdx.x") {
     if (explicit_block_x.has_value()) {
       var_idmap_[iv->var.get()] = explicit_block_x.value();
-    } else if (has_runtime_work_id) {
-      var_idmap_[iv->var.get()] =
-          "(" + work_id_var.value() + " % " + std::to_string(logical_grid_x_) + ")";
     } else if (has_explicit_work_descriptor) {
       var_idmap_[iv->var.get()] = "0 /* explicit_work_descriptor_x */";
     } else {
@@ -1617,9 +1622,6 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
       var_idmap_[iv->var.get()] = explicit_block_y.value();
     } else if (has_explicit_work_descriptor) {
       var_idmap_[iv->var.get()] = "0 /* explicit_work_descriptor_y */";
-    } else if (has_runtime_work_id) {
-      var_idmap_[iv->var.get()] =
-          "(" + work_id_var.value() + " / " + std::to_string(logical_grid_x_) + ")";
     } else {
       var_idmap_[iv->var.get()] = "0 /* core_y */";
     }

@@ -371,30 +371,37 @@
 - **修法**: spec 提取层和 codegen 入口共享同一套 gate
 - **教训**: 只要仓库里有多条后端出口，shared lowering boundary 就要双边同时守住
 
-#### multi-segment `TTProgram` 若漏掉 segment-local `per_work_arg_specs`，reader/writer 会退回 stale top-level descriptor
+#### kernel-local `per_work_arg_specs` 一旦漏掉，runtime/codegen 会重新吃 top-level stale descriptor 或 `work_linear_id` 反推语义
 
 - **症状**:
   - `flash-attn` reader/writer 的
     `a_tile_start_id / b_tile_start_id / output_tile_start_id`
     重新掉回 `current_work_linear_id`
   - segment source 里的 block index 又开始从线性 work id 反推
+  - grid-indexed copy
+    即使删掉 kernel-local `per_work_arg_specs`
+    也还能构建通过
   - `flash-attn` pipeline 多条 regression 一起变红
 - **根因**:
   - `tt_program_projection::EncodeSegmentPlan`
     没有把 segment-local `per_work_arg_specs`
     round-trip 给 runtime/codegen reader
-  - 同时 reader/writer segment ABI
-    没显式冻结 tile runtime args，
-    导致后段只能捡 top-level stale copy descriptor 当 fallback
+  - runtime/codegen 仍接受
+    top-level `TTProgram.payload`
+    或 `work_linear_id`
+    作为兜底语义来源
 - **修法**:
-  - segment projection 必须保留
+  - 只保留 kernel-local
     `per_work_arg_specs`
-  - reader/writer segment ABI
-    显式冻结 `a/b/output_tile_*`
-    这组 tile runtime args
+    reader 路线
+  - multi-work kernel
+    缺显式 per-work binding
+    直接在 build/codegen fail-fast
 - **教训**:
-  - multi-kernel ABI truth 必须留在 segment 本地；
-    top-level aggregate 只能做摘要，不能再当 fallback 真源
+  - multi-kernel 和 single-kernel
+    都要守同一条 host-truth 纪律；
+    top-level aggregate/payload
+    最多做摘要，不能再当 fallback 真源
 
 #### fragment analysis 必须按结构 / 数据流识别，不能靠全局 op 扫描或名字匹配
 

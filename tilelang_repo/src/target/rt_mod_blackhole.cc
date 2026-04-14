@@ -995,24 +995,6 @@ static KernelComputeConfigSpec ComputeConfigFromContract(const ComputeContractSp
   return compute_config;
 }
 
-static bool HasCopyBuiltins(const tir::PrimFunc& f) {
-  bool found = false;
-  tir::PostOrderVisit(f->body, [&](const ObjectRef& node) {
-    if (found) {
-      return;
-    }
-    const auto* call = node.as<tir::CallNode>();
-    if (!call) {
-      return;
-    }
-    found = call->op.same_as(tir::builtin::blackhole_read_tile_to_cb()) ||
-            call->op.same_as(tir::builtin::blackhole_write_tile_from_cb()) ||
-            call->op.same_as(tir::builtin::blackhole_read_page_to_cb()) ||
-            call->op.same_as(tir::builtin::blackhole_write_page_from_cb());
-  });
-  return found;
-}
-
 static std::vector<KernelArgSpec> ExtractRuntimeArgsFromArray(const ffi::Array<ffi::Any>& items) {
   std::vector<KernelArgSpec> runtime_args;
   for (const auto& item : items) {
@@ -1243,6 +1225,63 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
   return per_work_arg_specs;
 }
 
+static std::vector<KernelArgSpec> AggregateSegmentRuntimeArgs(
+    const ffi::Array<ffi::Any>& segment_plan, const char* field_name) {
+  std::vector<KernelArgSpec> aggregated;
+  std::unordered_set<std::string> seen;
+  for (const auto& item : segment_plan) {
+    auto segment = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+        ffi::Map<ffi::String, ffi::Any>());
+    if (segment.empty()) {
+      continue;
+    }
+    auto args_it = segment.Get(field_name);
+    if (!args_it.has_value()) {
+      continue;
+    }
+    std::vector<KernelArgSpec> segment_args =
+        ExtractRuntimeArgsFromArray(Downcast<ffi::Array<ffi::Any>>(args_it.value()));
+    for (const auto& arg : segment_args) {
+      const std::string dedupe_key = arg.identity + ":" + arg.kind;
+      if (arg.kind.empty() || seen.count(dedupe_key)) {
+        continue;
+      }
+      aggregated.push_back(arg);
+      seen.insert(dedupe_key);
+    }
+  }
+  return aggregated;
+}
+
+static std::vector<PerWorkArgSpec> AggregateSegmentPerWorkArgSpecs(
+    const ffi::Array<ffi::Any>& segment_plan) {
+  std::vector<PerWorkArgSpec> aggregated;
+  std::unordered_set<std::string> seen;
+  for (const auto& item : segment_plan) {
+    auto segment = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+        ffi::Map<ffi::String, ffi::Any>());
+    if (segment.empty()) {
+      continue;
+    }
+    auto specs_it = segment.Get(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs);
+    if (!specs_it.has_value()) {
+      continue;
+    }
+    std::vector<PerWorkArgSpec> segment_specs =
+        ExtractPerWorkArgSpecsFromArray(Downcast<ffi::Array<ffi::Any>>(specs_it.value()));
+    for (const auto& spec : segment_specs) {
+      const std::string dedupe_key =
+          !spec.arg_identity.empty() ? spec.arg_identity : spec.arg_kind;
+      if (dedupe_key.empty() || seen.count(dedupe_key)) {
+        continue;
+      }
+      aggregated.push_back(spec);
+      seen.insert(dedupe_key);
+    }
+  }
+  return aggregated;
+}
+
 static bool ExtractLaunchSpec(const ffi::Map<ffi::String, ffi::Any>& spec_info,
                               KernelLaunchSpec* launch_spec) {
   if (spec_info.empty()) {
@@ -1265,94 +1304,14 @@ static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
   auto program = tl::tt_program_projection::RequireTTProgram(
       f, "Blackhole executable spec extraction");
   auto segment_plan = tl::tt_program_projection::EncodeSegmentPlan(program);
-  if (!segment_plan.empty()) {
-    std::vector<KernelArgSpec> aggregated;
-    std::unordered_set<std::string> seen;
-    for (const auto& item : segment_plan) {
-      auto segment = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-          ffi::Map<ffi::String, ffi::Any>());
-      if (segment.empty()) {
-        continue;
-      }
-      auto runtime_args_it = segment.Get("runtime_args");
-      if (!runtime_args_it.has_value()) {
-        continue;
-      }
-      std::vector<KernelArgSpec> segment_args =
-          ExtractRuntimeArgsFromArray(Downcast<ffi::Array<ffi::Any>>(runtime_args_it.value()));
-      for (const auto& arg : segment_args) {
-        const std::string dedupe_key = arg.identity + ":" + arg.kind;
-        if (seen.count(dedupe_key)) {
-          continue;
-        }
-        aggregated.push_back(arg);
-        seen.insert(dedupe_key);
-      }
-    }
-    if (!aggregated.empty()) {
-      return aggregated;
-    }
-  }
-
-  auto runtime_args_attr =
-      tl::tt_program_projection::AggregateABIArgs(program, /*common=*/false);
-  if (runtime_args_attr.empty()) {
-    ICHECK(!HasCopyBuiltins(f))
-        << "Blackhole runtime arg schema is required for copy/dataflow kernels; "
-           "TTProgram ABI runtime args are missing";
-    return {};
-  }
-
-  std::vector<KernelArgSpec> runtime_args = ExtractRuntimeArgsFromArray(runtime_args_attr);
-
-  if (runtime_args.empty()) {
-    ICHECK(!HasCopyBuiltins(f))
-        << "Blackhole runtime arg schema is required for copy/dataflow kernels; "
-           "TTProgram ABI runtime args are empty";
-    return {};
-  }
-  return runtime_args;
+  return AggregateSegmentRuntimeArgs(segment_plan, "runtime_args");
 }
 
 static std::vector<KernelArgSpec> ExtractCommonRuntimeArgs(const tir::PrimFunc& f) {
   auto program = tl::tt_program_projection::RequireTTProgram(
       f, "Blackhole executable spec extraction");
   auto segment_plan = tl::tt_program_projection::EncodeSegmentPlan(program);
-  if (!segment_plan.empty()) {
-    std::vector<KernelArgSpec> aggregated;
-    std::unordered_set<std::string> seen;
-    for (const auto& item : segment_plan) {
-      auto segment = item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-          ffi::Map<ffi::String, ffi::Any>());
-      if (segment.empty()) {
-        continue;
-      }
-      auto common_runtime_args_it = segment.Get("common_runtime_args");
-      if (!common_runtime_args_it.has_value()) {
-        continue;
-      }
-      std::vector<KernelArgSpec> segment_args = ExtractRuntimeArgsFromArray(
-          Downcast<ffi::Array<ffi::Any>>(common_runtime_args_it.value()));
-      for (const auto& arg : segment_args) {
-        const std::string dedupe_key = arg.identity + ":" + arg.kind;
-        if (arg.kind.empty() || seen.count(dedupe_key)) {
-          continue;
-        }
-        aggregated.push_back(arg);
-        seen.insert(dedupe_key);
-      }
-    }
-    if (!aggregated.empty()) {
-      return aggregated;
-    }
-  }
-
-  auto runtime_args_attr =
-      tl::tt_program_projection::AggregateABIArgs(program, /*common=*/true);
-  if (runtime_args_attr.empty()) {
-    return {};
-  }
-  return ExtractRuntimeArgsFromArray(runtime_args_attr);
+  return AggregateSegmentRuntimeArgs(segment_plan, "common_runtime_args");
 }
 
 static std::vector<std::string> ExtractDirectRuntimeUnsupportedReasons(const tir::PrimFunc& f) {
@@ -1374,15 +1333,10 @@ static std::vector<std::string> ExtractDirectRuntimeUnsupportedReasons(const tir
 }
 
 static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecs(const tir::PrimFunc& f) {
-  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
-  ICHECK(maybe_program)
-      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
-  auto maybe_items =
-      maybe_program.value()->payload.Get(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs);
-  if (!maybe_items.has_value()) {
-    return {};
-  }
-  return ExtractPerWorkArgSpecsFromArray(Downcast<ffi::Array<ffi::Any>>(maybe_items.value()));
+  auto program = tl::tt_program_projection::RequireTTProgram(
+      f, "Blackhole executable spec extraction");
+  auto segment_plan = tl::tt_program_projection::EncodeSegmentPlan(program);
+  return AggregateSegmentPerWorkArgSpecs(segment_plan);
 }
 
 struct StaticBufferInfo {
@@ -1673,9 +1627,6 @@ static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, Execu
       auto compute_config = v.value().as<ffi::Map<ffi::String, ffi::Any>>().value_or(
           ffi::Map<ffi::String, ffi::Any>());
       info.has_compute_config = ExtractComputeConfig(compute_config, &info.compute_config);
-    }
-    if (info.per_work_arg_specs.empty() && !spec->per_work_arg_specs.empty()) {
-      info.per_work_arg_specs = spec->per_work_arg_specs;
     }
 
     if (segments_out.empty()) {
@@ -2162,6 +2113,47 @@ static bool PerWorkArgSpecsContainKind(const std::vector<PerWorkArgSpec>& specs,
   });
 }
 
+static bool RuntimeArgKindRequiresExplicitPerWorkBinding(std::string_view kind) {
+  return kind == "a_tile_start_id" || kind == "a_tile_num_tiles" ||
+         kind == "a_tile_stride" || kind == "b_tile_start_id" ||
+         kind == "b_tile_num_tiles" || kind == "b_tile_stride" ||
+         kind == "output_tile_start_id" || kind == "output_tile_num_tiles" ||
+         kind == "output_tile_stride" || kind == "k_tile_start_id" ||
+         kind == "num_k_tiles";
+}
+
+static void ValidateKernelExplicitPerWorkBindingSchema(const CorePlan& core_plan,
+                                                       const KernelSpec& kernel,
+                                                       const std::string& func_name) {
+  if (GetTotalLogicalWorkItems(core_plan) <= 1) {
+    return;
+  }
+  for (const auto& arg : kernel.runtime_args) {
+    if (!RuntimeArgKindRequiresExplicitPerWorkBinding(arg.kind)) {
+      continue;
+    }
+    ICHECK(PerWorkArgSpecsContainKind(kernel.per_work_arg_specs, arg.kind))
+        << "Blackhole build requires explicit per-work arg binding for runtime arg kind '"
+        << arg.kind << "' on kernel " << kernel.name << " of " << func_name
+        << "; runtime/codegen must not recover block/tile semantics from work_linear_id or "
+        << "top-level TTProgram payload fallback";
+  }
+}
+
+static void ValidateKernelRuntimeArgSchema(const KernelSpec& kernel,
+                                           const std::string& func_name) {
+  const bool is_copy_or_dataflow_kernel =
+      kernel.kind == "fused_dataflow" || kernel.kind == "reader" || kernel.kind == "writer" ||
+      !kernel.accessors.empty();
+  if (!is_copy_or_dataflow_kernel) {
+    return;
+  }
+  ICHECK(!kernel.runtime_args.empty())
+      << "Blackhole runtime arg schema is required for copy/dataflow kernels; "
+      << "TTProgram segment runtime args are missing for kernel " << kernel.name
+      << " of " << func_name;
+}
+
 static bool MaterializationNeedsExplicitPerWorkAccessDescriptor(
     const BufferMaterializationSpec& materialization,
     const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name) {
@@ -2634,6 +2626,8 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
     }
     kernel.accessors = segment.accessors;
     kernel.semaphore_bindings = segment.semaphore_bindings;
+    ValidateKernelRuntimeArgSchema(kernel, func_name);
+    ValidateKernelExplicitPerWorkBindingSchema(spec->core_plan, kernel, func_name);
     kernel.source_code = EmitKernelSourceForPrimFunc(segment_func, kernel.name, target,
                                                      kernel_code_only);
     ICHECK(!kernel.source_code.empty())

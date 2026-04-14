@@ -2313,7 +2313,6 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
 
   // Store CB requirements in function attributes for PlanTTCBAlloc
   StoreCBRequirements(new_func);
-  StoreRuntimeArgs(new_func);
   StoreSegmentPlan(new_func);
   StoreAccessorDescriptors(new_func);
   StoreGemmContract(new_func);
@@ -2530,46 +2529,6 @@ void PlanTTKernelABI::StoreCBRequirements(PrimFunc& func) {
 
   attrs.Set("blackhole.cb_requirements", cb_reqs);
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
-}
-
-void PlanTTKernelABI::StoreRuntimeArgs(PrimFunc& func) {
-  (void)func;
-  if (!needs_copy_runtime_args_) {
-    return;
-  }
-
-  Array<Any> per_work_arg_specs;
-
-  const std::string input_buffer_name =
-      copy_input_buffer_.defined() ? BufferIdentityName(copy_input_buffer_) : copy_input_buffer_name_;
-  const std::string output_buffer_name = copy_output_buffer_.defined()
-                                             ? BufferIdentityName(copy_output_buffer_)
-                                             : copy_output_buffer_name_;
-  const bool has_input_transport = !input_buffer_name.empty();
-  const bool has_output_transport = !output_buffer_name.empty();
-  if (has_input_transport) {
-    per_work_arg_specs.push_back(MakePerWorkArgSpec(
-        "a_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
-        input_buffer_name));
-    per_work_arg_specs.push_back(MakePerWorkArgSpec(
-        "a_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant, input_buffer_name, 1));
-    per_work_arg_specs.push_back(MakePerWorkArgSpec(
-        "a_tile_stride", blackhole_runtime_arg_schema::kValueConstant, input_buffer_name, 1));
-  }
-  if (has_output_transport) {
-    per_work_arg_specs.push_back(MakePerWorkArgSpec(
-        "output_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
-        output_buffer_name));
-    per_work_arg_specs.push_back(MakePerWorkArgSpec(
-        "output_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant, output_buffer_name,
-        1));
-    per_work_arg_specs.push_back(MakePerWorkArgSpec(
-        "output_tile_stride", blackhole_runtime_arg_schema::kValueConstant, output_buffer_name,
-        1));
-  }
-
-  tt_program_payload_.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs),
-                          per_work_arg_specs);
 }
 
 void PlanTTKernelABI::StoreSegmentPlan(PrimFunc& func) {
@@ -3163,45 +3122,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
       rewritten_segments.push_back(segment);
     }
     segment_plan_ = rewritten_segments;
-
-    auto aggregate_per_work_arg_specs = [&]() {
-      Array<Any> aggregated;
-      std::unordered_set<std::string> seen_identities;
-      for (const auto& segment_item : rewritten_segments) {
-        auto segment = segment_item.as<Map<String, Any>>().value_or(Map<String, Any>());
-        if (segment.empty()) {
-          continue;
-        }
-        auto specs_it = segment.Get(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs));
-        if (!specs_it) {
-          continue;
-        }
-        for (const auto& spec_item : Downcast<Array<Any>>(specs_it.value())) {
-          auto spec = spec_item.as<Map<String, Any>>().value_or(Map<String, Any>());
-          if (spec.empty()) {
-            continue;
-          }
-          const std::string identity =
-              spec.Get(String(blackhole_runtime_arg_schema::kArgIdentity))
-                  ? static_cast<std::string>(Downcast<String>(
-                        spec.Get(String(blackhole_runtime_arg_schema::kArgIdentity)).value()))
-                  : (spec.Get(String(blackhole_runtime_arg_schema::kArgKind))
-                         ? static_cast<std::string>(Downcast<String>(
-                               spec.Get(String(blackhole_runtime_arg_schema::kArgKind)).value()))
-                         : std::string());
-          if (!identity.empty() && !seen_identities.insert(identity).second) {
-            continue;
-          }
-          aggregated.push_back(spec_item);
-        }
-      }
-      return aggregated;
-    };
-    Array<Any> aggregated_per_work_arg_specs = aggregate_per_work_arg_specs();
-    if (!aggregated_per_work_arg_specs.empty()) {
-      tt_program_payload_.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs),
-                              aggregated_per_work_arg_specs);
-    }
     BuildTTKernelAndABISeeds(segment_plan_, &tt_kernels_, &tt_abi_plans_);
   }
 }

@@ -235,9 +235,6 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Store CB requirements in function attributes */
   void StoreCBRequirements(tvm::tir::PrimFunc& func);
 
-  /*! \brief Store runtime argument schema inferred during lowering */
-  void StoreRuntimeArgs(tvm::tir::PrimFunc& func);
-
   /*! \brief Store minimal segment/kernel plan inferred during lowering */
   void StoreSegmentPlan(tvm::tir::PrimFunc& func);
 

@@ -757,6 +757,25 @@ def test_blackhole_copy_build_rejects_missing_tt_program_even_with_legacy_attrs(
         _rebuild_codegen_module_without_tt_program(artifact)
 
 
+def test_blackhole_grid_indexed_copy_build_rejects_top_level_per_work_payload_fallback():
+    target = Target("blackhole")
+    with target:
+        artifact = lower(grid_indexed_staged_copy_kernel(grid_x=2, grid_y=2), target=target)
+
+    def segment_mutator(segment_plan):
+        mutated_segments = []
+        for segment in segment_plan:
+            mutated = dict(segment)
+            mutated["per_work_arg_specs"] = []
+            mutated_segments.append(mutated)
+        return mutated_segments
+
+    with pytest.raises(Exception, match="explicit per-work|per_work_arg_specs|work_linear_id"):
+        _rebuild_codegen_module_with_body_and_segment_plan(
+            artifact, segment_mutator=segment_mutator
+        )
+
+
 def test_blackhole_copy_semaphore_plan_is_materialized():
     kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
     target = Target("blackhole")

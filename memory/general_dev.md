@@ -133,6 +133,12 @@
 - per-work/access truth 一旦 formalize 成 `per_work_arg_specs`，
   就要先 canonicalize 成 kernel-local `TTKernel / ExecutableSpec` contract；
   codegen/runtime 只能解释 `value_kind`，不能再按 arg kind 名字推语义
+- `per_work_arg_specs`
+  一旦完成 kernel-local canonicalization，
+  就不要再保留 top-level `TTProgram.payload`
+  版本给 reader 当 fallback；
+  否则 single-kernel/multi-kernel 两条 host path
+  会重新出现“segment truth 缺了但 top-level bag 还能兜住”的双真源
 - 只做 device `global_symbol` 对齐时，必须保留优化后的 device `PrimFunc`
   和对应 `global_infos`；
   不能把 source func 重新 `with_attr("global_symbol", ...)` 后塞回去。

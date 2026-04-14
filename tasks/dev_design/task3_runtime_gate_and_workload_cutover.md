@@ -409,21 +409,16 @@ runtime / codegen 的消费纪律固定为：
 - `Task 3B` 这类局部 batch
   统一用 `Tn.x`
 
-1. **R1: runtime gate / host truth 收口**
-   - 先确保新主链上的 copy / GEMM / export
-     仍维持当前 zero-regression baseline
-   - `Program / Kernel / CB / Buffer / RuntimeArgs / Core placement`
-     只允许从 `TTProgram / ExecutableSpec` 物化
-2. **R2: admitted-scope communication semantics 收口**
+1. **R2: admitted-scope communication semantics 收口**
    - `routing / multicast / semaphore / completion`
      进入稳定 owner/runtime semantics
    - 这是第一性原理目标的一部分
-3. **R3: `flash-attn` payoff**
+2. **R3: `flash-attn` payoff**
    - 再拿它验证 multi-op / multi-work /
      multi-phase data movement 的 admitted subset
-4. **R4: wider family cutover**
+3. **R4: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-5. **R5: wider support surface**
+4. **R5: wider support surface**
    - 在 admitted subset 内逐步放宽
      copy / dataflow / wider communication
 
@@ -488,10 +483,37 @@ runtime / codegen 的消费纪律固定为：
 因此当前剩余重点回到 `Task 3`
 roadmap：
 
-- runtime gate / host truth 收口
 - admitted-scope communication semantics 收口
 - `flash-attn` correctness payoff
 - `Task 3C` wider family / support surface
+
+### 5.2.2 `2026-04-15` `R1` runtime gate / host truth 收口完成
+
+本轮 `R1` 收口的统一口径是：
+
+- runtime/codegen 只接受
+  kernel-local `per_work_arg_specs`
+  作为 per-work/access truth
+- 不再从 top-level `TTProgram.payload`
+  或 `TTABIPlan.payload`
+  回填 per-work descriptor
+- 不再从 `work_linear_id`
+  反推 block/tile 语义
+
+具体落点：
+
+1. `tt_program_projection / rt_mod_blackhole / codegen_blackhole`
+   统一删除 top-level payload fallback，
+   segment/kernel truth 成为唯一 reader 来源
+2. multi-work kernel 若缺显式 per-work binding，
+   build/codegen 直接 fail-fast，
+   不再晚到 runtime 或 source emission
+3. `PlanTTKernelABI`
+   写 top-level `per_work_arg_specs`
+   的旧 payload bag 已删除
+4. 依赖 top-level `TTProgram.payload["per_work_arg_specs"]`
+   的过期 regression
+   已迁到 kernel-local mutation
 
 ## 6. Wider Copy / Dataflow / Communication 支持面
 
