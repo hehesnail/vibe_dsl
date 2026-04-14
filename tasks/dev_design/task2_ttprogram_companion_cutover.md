@@ -8,9 +8,7 @@
   已切进主链，
   但 owner cutover 还没有完成；
   当前未收口项是
-  `MaterializeBlackholeExecutable`
-  仍是 no-op shell，
-  以及 build/codegen/executable extraction
+  build/codegen/executable extraction
   仍消费
   `blackhole.lowering_requirements`
 - **任务链位置**:
@@ -367,9 +365,17 @@ AnalyzeSpatialStructureFacts
 `Task 2`
 还不能写成已完成：
 
-- `MaterializeBlackholeExecutable`
-  仍是 no-op shell，
-  不是当前真实 executable writer
+- `T2.4`
+  已完成：
+  `MaterializeBlackholeExecutable`
+  不再是 no-op shell；
+  当前显式把
+  已验证 `TTProgram`
+  物化成
+  `tl.blackhole_executable`
+  writer attr，
+  build 缺失该 writer attr
+  直接 fail-fast
 - codegen / executable extraction
   仍消费
   `blackhole.lowering_requirements`
@@ -384,20 +390,15 @@ AnalyzeSpatialStructureFacts
 
 在当前审计口径下，
 `Task 2`
-还需要完成下面 3 项 closeout：
+还需要完成下面 2 项 closeout：
 
-1. **`T2.4`: 收口 executable writer 边界**
-   - 让 `MaterializeBlackholeExecutable`
-     真正承担 writer 职责，
-     或者把 canonical bundle / 文档口径
-     改成与当前 extractor-based reality 一致
-2. **`T2.5`: 去掉 build/codegen/executable extraction 对 `blackhole.lowering_requirements` 的依赖**
+1. **`T2.5`: 去掉 build/codegen/executable extraction 对 `blackhole.lowering_requirements` 的依赖**
    - unsupported-compute /
      bridge-spec /
      materialization gate
      收回 `TTProgram / ExecutableSpec`
      typed truth
-3. **`T2.6`: 收紧 `blackhole.*` 过渡 attr 的公开地位**
+2. **`T2.6`: 收紧 `blackhole.*` 过渡 attr 的公开地位**
    - probe/debug 可保留，
      但不能继续被文档和 regression
      当作正式 target owner surface

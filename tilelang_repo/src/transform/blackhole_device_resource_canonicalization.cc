@@ -59,6 +59,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "../target/tt_program_projection.h"
 #include "../layout/layout.h"
 #include "common/tt_target_program.h"
 #include "common/companion_base.h"
@@ -788,7 +789,18 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
           new_attrs.Set(k, program.has_value() ? Any(RewriteTTProgram(program.value())) : v);
           continue;
         }
+        if (k == String(attr::kTLBlackholeExecutable)) {
+          continue;
+        }
         new_attrs.Set(k, v);
+      }
+    }
+    if (auto program_any = new_attrs.Get(String(attr::kTLTTProgram))) {
+      auto program = program_any.value().as<TTProgram>();
+      if (program.has_value()) {
+        new_attrs.Set(attr::kTLBlackholeExecutable,
+                      tt_program_projection::MaterializeBlackholeExecutableProjection(
+                          program.value()));
       }
     }
     new_attrs.Set("blackhole.resource_plan", plan);

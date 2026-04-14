@@ -83,6 +83,7 @@ def _refresh_tt_program_after_bridge_attr_mutation(device_mod):
     refreshed = tilelang.transform.PlanTTTransport()(refreshed)
     refreshed = tilelang.transform.BuildTTProgram()(refreshed)
     refreshed = tilelang.transform.ValidateTTProgram()(refreshed)
+    refreshed = tilelang.transform.MaterializeBlackholeExecutable()(refreshed)
     return refreshed
 
 
@@ -106,6 +107,7 @@ def _rebuild_codegen_module_with_tt_program(
         rewritten[gvar] = func
     device_mod = tvm.IRModule(rewritten, global_infos=artifact.device_mod.global_infos)
     device_mod = tilelang.transform.ValidateTTProgram()(device_mod)
+    device_mod = tilelang.transform.MaterializeBlackholeExecutable()(device_mod)
     build_mod = merge_ir_modules(artifact.host_mod, device_mod)
     target = Target("blackhole")
     return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
@@ -281,6 +283,23 @@ def _rebuild_codegen_module_without_tt_projection_attrs(artifact):
     )
 
 
+def _rebuild_codegen_module_without_materialized_executable(artifact):
+    device_mod = artifact.device_mod
+    rewritten = {}
+    for gvar, func in device_mod.functions.items():
+        if func.attrs and "tl.blackhole_executable" in func.attrs:
+            func = func.without_attr("tl.blackhole_executable")
+        rewritten[gvar] = func
+    target = Target("blackhole")
+    build_mod = merge_ir_modules(
+        artifact.host_mod,
+        tvm.IRModule(rewritten, global_infos=device_mod.global_infos),
+    )
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
+
+
 def _rebuild_codegen_module_without_tt_program(artifact):
     device_mod = artifact.device_mod
     rewritten = {}
@@ -385,6 +404,12 @@ def _extract_blackhole_executable_spec(artifact, function_names=("main", "main_k
         "Blackhole executable spec metadata is not exposed by the built runtime module; "
         + "; ".join(failures)
     )
+
+
+def _extract_materialized_blackhole_executable(func):
+    if not (func.attrs and "tl.blackhole_executable" in func.attrs):
+        pytest.fail("Expected PrimFunc to carry tl.blackhole_executable")
+    return func.attrs["tl.blackhole_executable"]
 
 
 def _require_blackhole_kernel(kernels, *, kind, core_type=None, name=None):
@@ -643,6 +668,27 @@ def test_blackhole_copy_compile_time_abi_is_materialized():
     assert str(launch_spec["noc"]) == expected_launch_spec["noc"]
 
 
+def test_blackhole_copy_materializes_executable_writer_attr():
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = artifact.device_mod["main_kernel"]
+    executable = _extract_materialized_blackhole_executable(device_main)
+    assert int(executable["schema_version"]) == 1
+    assert str(executable["source"]) == "tl.tt_program"
+    assert str(executable["entry_name"]) == str(device_main.attrs["global_symbol"])
+
+    segment_plan = executable["segment_plan"]
+    assert len(segment_plan) == 1
+    kernel_spec = _require_blackhole_kernel(segment_plan, kind="fused_dataflow", core_type="brisc")
+    assert kernel_spec["runtime_args"]
+    assert executable["cb_configs"]
+    assert executable["core_plan"]
+
+
 def test_blackhole_copy_runtime_arg_identities_are_materialized():
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     target = Target("blackhole")
@@ -686,6 +732,17 @@ def test_blackhole_copy_build_rejects_missing_runtime_arg_schema():
         match="Blackhole runtime arg schema is required for copy/dataflow kernels",
     ):
         _rebuild_codegen_module_without_copy_runtime_args(artifact)
+
+
+def test_blackhole_copy_build_rejects_missing_materialized_executable():
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    with pytest.raises(Exception, match="requires tl.blackhole_executable"):
+        _rebuild_codegen_module_without_materialized_executable(artifact)
 
 
 def test_blackhole_copy_buffer_materialization_specs_are_exposed():

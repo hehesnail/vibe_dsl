@@ -39,7 +39,7 @@ Normalized Tile TIR
   -> BuildTTProgram
   -> TTProgram companion
   -> ValidateTTProgram
-  -> MaterializeBlackholeExecutable(no-op shell)
+  -> MaterializeBlackholeExecutable(writer attr: tl.blackhole_executable)
   -> executable extraction / codegen / BlackholeModule
 ```
 
@@ -58,8 +58,12 @@ Normalized Tile TIR
   `BuildTTProgram`
   仍直接合成 sync / execution 结果
 - `MaterializeBlackholeExecutable`
-  仍是 compatibility shell，
-  不是当前真实 executable writer
+  已成为显式 writer boundary：
+  负责把已验证的 `TTProgram`
+  物化成
+  `tl.blackhole_executable`
+  companion attr，
+  build 侧显式要求该 attr
 
 都只视为**迁移残留**，不属于长期架构。
 
@@ -155,6 +159,18 @@ Normalized Tile TIR
   - `buffer_distribution_contract`
     已退出 active lowering/codegen/regression surface
 - `R1` 已完成的部分：
+  - `T2.4`
+    已完成：
+    `MaterializeBlackholeExecutable`
+    不再是 no-op shell；
+    现在显式写出
+    `tl.blackhole_executable`
+    writer attr，
+    `rt_mod_blackhole` /
+    executable extraction
+    直接读取该 writer projection，
+    build 缺失该 attr
+    直接 fail-fast
   - runtime/codegen 现在只接受
     kernel-local `per_work_arg_specs`
     作为 per-work/access truth；
@@ -211,10 +227,6 @@ Normalized Tile TIR
      这组 helper residue，
      避免继续被文档误写成“已完成 owner pass”
 2. **`R1-close`**
-   - 让 `MaterializeBlackholeExecutable`
-     成为真实 executable writer，
-     或者把 canonical bundle / 文档口径
-     改成和代码现实一致
    - 让 build/codegen/executable extraction
      停止消费
      `blackhole.lowering_requirements`
@@ -241,27 +253,28 @@ Normalized Tile TIR
 
 ## 当前优先级
 
-1. **`T2.4 / R1-close`: 收口 executable writer 边界**
-   - 明确 `MaterializeBlackholeExecutable`
-     的真实职责；
-     不再把 no-op shell 记成唯一 writer
-2. **`T2.5 / R1-close`: 去掉 build/codegen 对 `blackhole.lowering_requirements` 的依赖**
+1. **`T2.5 / R1-close`: 去掉 build/codegen 对 `blackhole.lowering_requirements` 的依赖**
    - unsupported-compute / bridge-spec /
      materialization gate
      回收到 `TTProgram / ExecutableSpec`
-3. **`T3C.0 / R0-close`: 退役 `blackhole.*` analysis facts 的 active 协议角色**
+2. **`T3C.0 / R0-close`: 退役 `blackhole.*` analysis facts 的 active 协议角色**
    - 保留 probe/debug 可以，
      但不能继续作为 owner planning 主协议
-4. **`T3C.1 / R2-close`: 显式化 sync / ABI / execution owner**
+3. **`T3C.1 / R2-close`: 显式化 sync / ABI / execution owner**
    - `PlanTTSync -> PlanTTABI -> PlanTTExecution`
      要么落地成 pass，
      要么在文档和 gate 里明确仍属过渡实现
-5. **`R3`: `flash-attn` payoff**
-6. **`R4`: wider family cutover**
-7. **`R5`: wider support surface**
+4. **`R3`: `flash-attn` payoff**
+5. **`R4`: wider family cutover**
+6. **`R5`: wider support surface**
 
 最近完成的局部批次：
 
+- `T2.4`
+  已完成：
+  executable writer boundary
+  收口到
+  `MaterializeBlackholeExecutable -> tl.blackhole_executable`
 - `Task 3B cleanup`
   （`T3B.0-T3B.4`）已完成；
   对应的是旧链清理，

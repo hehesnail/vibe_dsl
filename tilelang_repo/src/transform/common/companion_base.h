@@ -18,6 +18,7 @@ constexpr const char* kTLDevicePrograms = "tl.device_programs";
 constexpr const char* kTLSpatialStructureFacts = "tl.spatial_structure_facts";
 constexpr const char* kTLSpatialPlan = "tl.spatial_plan";
 constexpr const char* kTLTTProgram = "tl.tt_program";
+constexpr const char* kTLBlackholeExecutable = "tl.blackhole_executable";
 constexpr const char* kTLTTSemaphorePlans = "tl.tt_semaphore_plans";
 constexpr const char* kTLTTHardwareModel = "tl.tt_hardware_model";
 constexpr const char* kTLInternalTTKernels = "tl.internal_tt_kernels";

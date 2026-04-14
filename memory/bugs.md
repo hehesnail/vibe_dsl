@@ -38,6 +38,34 @@
   - 该问题的 simulator-side 旁证和更宽 fatal taxonomy 扫描，
     统一见 `memory/tt_simulator_constraints.md`
 
+### TT-Sim 上的 GEMM compile-time-ABI-only direct runtime 仍会命中 NOC 对齐 fatal
+
+- **现象**:
+  - `test_blackhole_gemm_direct_runtime_materializes_compile_time_abi_schema`
+    在 TT-Sim 上仍会直接报
+    `UndefinedBehavior: noc_cmd_ctrl: read: alignment of src_addr=0x1 and dst_addr=... does not match`
+  - 触发前的 executable metadata
+    已经正确物化出
+    `compile_time_arg_specs`
+    和 `tl.blackhole_executable`
+    writer attr
+- **当前结论**:
+  - 现阶段更像
+    direct-runtime / TT-Sim
+    在“只保留 compile-time ABI、不保留 accessor object”
+    这条 GEMM 执行路径上的运行时边界，
+    不是 `T2.4` writer-boundary 回归
+  - 遇到这条 fatal 时，
+    先看 executable metadata
+    是否已经正确 materialize；
+    如果 schema 正常，
+    不要先把锅扣到
+    `MaterializeBlackholeExecutable`
+  - 后续若要继续收这条 correctness，
+    应直接调试
+    GEMM direct-runtime 的 accessor/compile-time ABI materialization
+    与 TT-Sim 执行边界
+
 ## 2. 已解决但值得记住的模式
 
 ### 2.0 grouped row / row-state distribution contract 不能让 generic layout 覆盖专用语义

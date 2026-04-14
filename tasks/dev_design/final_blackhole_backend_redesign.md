@@ -313,8 +313,13 @@ Normalized Tile TIR
   `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
   这组 helper residue
 - `MaterializeBlackholeExecutable`
-  当前仍是 compatibility shell，
-  还不是可按文档宣告完成的 executable writer
+  的 writer boundary
+  已收口：
+  当前显式写出
+  `tl.blackhole_executable`
+  companion attr，
+  build / executable extraction
+  显式要求该 writer projection
 - 当前剩余架构债仍包括
   `R0-R2` 的 closure，
   不是只剩 `R3` 之后的 payoff

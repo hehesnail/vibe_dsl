@@ -43,6 +43,7 @@ def _rebuild_direct_runtime_module_with_tt_program(
         rewritten[gvar] = func
     device_mod = tvm.IRModule(rewritten, global_infos=artifact.device_mod.global_infos)
     device_mod = tilelang.transform.ValidateTTProgram()(device_mod)
+    device_mod = tilelang.transform.MaterializeBlackholeExecutable()(device_mod)
     build_mod = merge_ir_modules(artifact.host_mod, device_mod)
     target = Target("blackhole")
     return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(

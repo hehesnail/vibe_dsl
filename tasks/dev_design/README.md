@@ -93,8 +93,11 @@
   以及尚未独立 owner-pass 化的
   `PlanTTSync / PlanTTABI / PlanTTExecution`
 - `MaterializeBlackholeExecutable`
-  目前仍是 compatibility shell，
-  不能再被文档写成“唯一 writer 已完成”
+  已完成 writer-boundary 收口：
+  当前显式写出
+  `tl.blackhole_executable`
+  companion attr，
+  build 侧显式要求该 writer attr
 - 当前入口已经从“旧 semantic / side-contract 清理”
   转回“`R0-R2` closure
   + `R3` 第一批 payoff”

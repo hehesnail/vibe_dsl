@@ -7,6 +7,7 @@
 #define TVM_TL_TARGET_TT_PROGRAM_PROJECTION_H_
 
 #include <tvm/ir/expr.h>
+#include <tvm/tir/function.h>
 
 #include <string>
 #include "../transform/common/blackhole_runtime_arg_schema.h"
@@ -22,6 +23,23 @@ using tvm::ffi::Any;
 using tvm::ffi::Array;
 using tvm::ffi::Map;
 using tvm::ffi::String;
+
+namespace executable_key {
+constexpr const char* kSchemaVersion = "schema_version";
+constexpr const char* kSource = "source";
+constexpr const char* kEntryName = "entry_name";
+constexpr const char* kMemberFunc = "member_func";
+constexpr const char* kSegmentPlan = "segment_plan";
+constexpr const char* kCBConfigs = "cb_configs";
+constexpr const char* kCorePlan = "core_plan";
+constexpr const char* kSemaphorePlan = "semaphore_plan";
+constexpr const char* kGemmContract = "gemm_contract";
+constexpr const char* kComputeContract = "compute_contract";
+constexpr const char* kMultiGemmContracts = "multi_gemm_contracts";
+constexpr const char* kMultiComputeContracts = "multi_compute_contracts";
+constexpr const char* kComputeEpilogueOps = "compute_epilogue_ops";
+constexpr const char* kDirectRuntimeUnsupportedReasons = "direct_runtime_unsupported_reasons";
+}  // namespace executable_key
 
 inline Map<String, Any> AsMap(const Any& any) {
   return any.as<Map<String, Any>>().value_or(Map<String, Any>());
@@ -181,6 +199,71 @@ inline Map<String, Any> GetComputeContractFromTTProgram(const TTProgram& program
 inline Map<String, Any> GetComputeContractFromTTProgram(const tir::PrimFunc& func,
                                                         const char* consumer) {
   return GetComputeContractFromTTProgram(RequireTTProgram(func, consumer));
+}
+
+inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram& program) {
+  Map<String, Any> executable;
+  executable.Set(String(executable_key::kSchemaVersion), Integer(1));
+  executable.Set(String(executable_key::kSource), String(attr::kTLTTProgram));
+  executable.Set(String(executable_key::kEntryName), program->entry_name);
+  if (!program->member_func.empty()) {
+    executable.Set(String(executable_key::kMemberFunc), program->member_func);
+  }
+
+  Array<Any> segment_plan = EncodeSegmentPlan(program);
+  if (!segment_plan.empty()) {
+    executable.Set(String(executable_key::kSegmentPlan), segment_plan);
+  }
+
+  Array<Any> cb_configs = EncodeCBPlans(program->cb_plans);
+  if (!cb_configs.empty()) {
+    executable.Set(String(executable_key::kCBConfigs), cb_configs);
+  }
+
+  Map<String, Any> core_plan = GetCorePlanFromTTProgram(program);
+  if (!core_plan.empty()) {
+    executable.Set(String(executable_key::kCorePlan), core_plan);
+  }
+
+  Array<Any> semaphore_plan = EncodeSemaphorePlans(program->semaphore_plans);
+  if (!semaphore_plan.empty()) {
+    executable.Set(String(executable_key::kSemaphorePlan), semaphore_plan);
+  }
+
+  auto copy_payload_field = [&](const char* key) {
+    if (auto value = program->payload.Get(String(key))) {
+      executable.Set(String(key), value.value());
+    }
+  };
+  copy_payload_field(executable_key::kGemmContract);
+  copy_payload_field(executable_key::kComputeContract);
+  copy_payload_field(executable_key::kMultiGemmContracts);
+  copy_payload_field(executable_key::kMultiComputeContracts);
+  copy_payload_field(executable_key::kComputeEpilogueOps);
+  copy_payload_field(executable_key::kDirectRuntimeUnsupportedReasons);
+  return executable;
+}
+
+inline tir::PrimFunc MaterializeBlackholeExecutableProjectionAttr(const tir::PrimFunc& func) {
+  auto maybe_program = GetTTProgram(func);
+  if (!maybe_program) {
+    return func;
+  }
+  return WithAttr(std::move(func), attr::kTLBlackholeExecutable,
+                  MaterializeBlackholeExecutableProjection(maybe_program.value()));
+}
+
+inline Map<String, Any> GetBlackholeExecutableProjection(const tir::PrimFunc& func) {
+  return func->GetAttr<Map<String, Any>>(attr::kTLBlackholeExecutable)
+      .value_or(Map<String, Any>());
+}
+
+inline Map<String, Any> RequireBlackholeExecutableProjection(const tir::PrimFunc& func,
+                                                             const char* consumer) {
+  Map<String, Any> executable = GetBlackholeExecutableProjection(func);
+  ICHECK(!executable.empty())
+      << consumer << " requires tl.blackhole_executable for executable-writer cutover";
+  return executable;
 }
 
 }  // namespace tt_program_projection

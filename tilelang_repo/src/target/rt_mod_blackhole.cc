@@ -202,10 +202,13 @@ TVM_REGISTER_TARGET_KIND("blackhole", kDLExtDev)
  */
 static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
   std::vector<CBConfig> cb_configs;
-  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
-  ICHECK(maybe_program)
-      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
-  auto cb_attr = tl::tt_program_projection::EncodeCBPlans(maybe_program.value()->cb_plans);
+  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
+      f, "Blackhole executable spec extraction");
+  auto cb_attr = executable.Get(String(tl::tt_program_projection::executable_key::kCBConfigs))
+                     ? Downcast<ffi::Array<ffi::Any>>(executable.Get(
+                           String(tl::tt_program_projection::executable_key::kCBConfigs))
+                                                           .value())
+                     : ffi::Array<ffi::Any>();
   if (cb_attr.empty()) {
     // Use default CB config for simple kernels
     CBConfig config;
@@ -275,13 +278,15 @@ static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
 
 static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
   CorePlan plan;
-  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
-  ICHECK(maybe_program)
-      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
-  auto core_plan = maybe_program.value()->core_groups.empty()
-                       ? ffi::Map<ffi::String, ffi::Any>()
-                       : tl::tt_program_projection::EncodeCoreGroup(
-                             maybe_program.value()->core_groups[0]);
+  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
+      f, "Blackhole executable spec extraction");
+  auto core_plan =
+      executable.Get(String(tl::tt_program_projection::executable_key::kCorePlan))
+          ? executable.Get(String(tl::tt_program_projection::executable_key::kCorePlan))
+                .value()
+                .as<ffi::Map<ffi::String, ffi::Any>>()
+                .value_or(ffi::Map<ffi::String, ffi::Any>())
+          : ffi::Map<ffi::String, ffi::Any>();
   if (core_plan.empty()) {
     return plan;
   }
@@ -350,11 +355,14 @@ static CorePlan ExtractCorePlan(const tir::PrimFunc& f) {
 
 static std::vector<SemaphoreSpec> ExtractSemaphorePlan(const tir::PrimFunc& f) {
   std::vector<SemaphoreSpec> semaphores;
-  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
-  ICHECK(maybe_program)
-      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
+  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
+      f, "Blackhole executable spec extraction");
   auto semaphore_attr =
-      tl::tt_program_projection::EncodeSemaphorePlans(maybe_program.value()->semaphore_plans);
+      executable.Get(String(tl::tt_program_projection::executable_key::kSemaphorePlan))
+          ? Downcast<ffi::Array<ffi::Any>>(
+                executable.Get(String(tl::tt_program_projection::executable_key::kSemaphorePlan))
+                    .value())
+          : ffi::Array<ffi::Any>();
   if (semaphore_attr.empty()) {
     return semaphores;
   }
@@ -470,24 +478,24 @@ static GemmContractSpec ParseGemmContract(const ffi::Map<ffi::String, ffi::Any>&
 }
 
 static GemmContractSpec ExtractGemmContract(const tir::PrimFunc& f) {
-  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
-  ICHECK(maybe_program)
-      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
-  auto attrs = maybe_program.value()->payload.Get("gemm_contract")
-                   ? maybe_program.value()->payload.Get("gemm_contract")
-                         .value()
-                         .as<ffi::Map<ffi::String, ffi::Any>>()
-                         .value_or(ffi::Map<ffi::String, ffi::Any>())
-                   : ffi::Map<ffi::String, ffi::Any>();
+  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
+      f, "Blackhole executable spec extraction");
+  auto attrs =
+      executable.Get(String(tl::tt_program_projection::executable_key::kGemmContract))
+          ? executable.Get(String(tl::tt_program_projection::executable_key::kGemmContract))
+                .value()
+                .as<ffi::Map<ffi::String, ffi::Any>>()
+                .value_or(ffi::Map<ffi::String, ffi::Any>())
+          : ffi::Map<ffi::String, ffi::Any>();
   return ParseGemmContract(attrs);
 }
 
 static std::vector<GemmContractSpec> ExtractMultiGemmContracts(const tir::PrimFunc& f) {
   std::vector<GemmContractSpec> contracts;
-  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
-  ICHECK(maybe_program)
-      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
-  auto maybe_items = maybe_program.value()->payload.Get("multi_gemm_contracts");
+  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
+      f, "Blackhole executable spec extraction");
+  auto maybe_items =
+      executable.Get(String(tl::tt_program_projection::executable_key::kMultiGemmContracts));
   if (!maybe_items) {
     return contracts;
   }
@@ -847,24 +855,23 @@ static ComputeContractSpec ParseComputeContract(const ffi::Map<ffi::String, ffi:
 
 static std::vector<ComputeContractSpec::EpilogueOpSpec> ExtractComputeEpilogueOps(
     const tir::PrimFunc& f) {
-  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
-  ICHECK(maybe_program)
-      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
-  auto payload = maybe_program.value()->payload;
-  return ParseComputeEpilogueOps(payload, "compute_epilogue_ops");
+  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
+      f, "Blackhole executable spec extraction");
+  return ParseComputeEpilogueOps(executable,
+                                 tl::tt_program_projection::executable_key::kComputeEpilogueOps);
 }
 
 static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
                                                   const GemmContractSpec& gemm_contract) {
-  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
-  ICHECK(maybe_program)
-      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
-  auto attrs = maybe_program.value()->payload.Get("compute_contract")
-                   ? maybe_program.value()->payload.Get("compute_contract")
-                         .value()
-                         .as<ffi::Map<ffi::String, ffi::Any>>()
-                         .value_or(ffi::Map<ffi::String, ffi::Any>())
-                   : ffi::Map<ffi::String, ffi::Any>();
+  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
+      f, "Blackhole executable spec extraction");
+  auto attrs =
+      executable.Get(String(tl::tt_program_projection::executable_key::kComputeContract))
+          ? executable.Get(String(tl::tt_program_projection::executable_key::kComputeContract))
+                .value()
+                .as<ffi::Map<ffi::String, ffi::Any>>()
+                .value_or(ffi::Map<ffi::String, ffi::Any>())
+          : ffi::Map<ffi::String, ffi::Any>();
   if (attrs.empty()) {
     return ComputeContractFromLegacyGemm(gemm_contract);
   }
@@ -873,10 +880,10 @@ static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
 
 static std::vector<ComputeContractSpec> ExtractMultiComputeContracts(const tir::PrimFunc& f) {
   std::vector<ComputeContractSpec> contracts;
-  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
-  ICHECK(maybe_program)
-      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
-  auto maybe_items = maybe_program.value()->payload.Get("multi_compute_contracts");
+  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
+      f, "Blackhole executable spec extraction");
+  auto maybe_items =
+      executable.Get(String(tl::tt_program_projection::executable_key::kMultiComputeContracts));
   if (!maybe_items) {
     return contracts;
   }
@@ -1301,27 +1308,40 @@ static bool ExtractLaunchSpec(const ffi::Map<ffi::String, ffi::Any>& spec_info,
 }
 
 static std::vector<KernelArgSpec> ExtractRuntimeArgs(const tir::PrimFunc& f) {
-  auto program = tl::tt_program_projection::RequireTTProgram(
+  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
       f, "Blackhole executable spec extraction");
-  auto segment_plan = tl::tt_program_projection::EncodeSegmentPlan(program);
+  auto segment_plan =
+      executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
+          ? Downcast<ffi::Array<ffi::Any>>(
+                executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
+                    .value())
+          : ffi::Array<ffi::Any>();
   return AggregateSegmentRuntimeArgs(segment_plan, "runtime_args");
 }
 
 static std::vector<KernelArgSpec> ExtractCommonRuntimeArgs(const tir::PrimFunc& f) {
-  auto program = tl::tt_program_projection::RequireTTProgram(
+  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
       f, "Blackhole executable spec extraction");
-  auto segment_plan = tl::tt_program_projection::EncodeSegmentPlan(program);
+  auto segment_plan =
+      executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
+          ? Downcast<ffi::Array<ffi::Any>>(
+                executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
+                    .value())
+          : ffi::Array<ffi::Any>();
   return AggregateSegmentRuntimeArgs(segment_plan, "common_runtime_args");
 }
 
 static std::vector<std::string> ExtractDirectRuntimeUnsupportedReasons(const tir::PrimFunc& f) {
   std::vector<std::string> reasons;
-  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
-  ICHECK(maybe_program)
-      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
-  auto reason_items = maybe_program.value()->payload.Get("direct_runtime_unsupported_reasons")
+  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
+      f, "Blackhole executable spec extraction");
+  auto reason_items = executable.Get(
+                          String(tl::tt_program_projection::executable_key::
+                                     kDirectRuntimeUnsupportedReasons))
                           ? Downcast<ffi::Array<ffi::Any>>(
-                                maybe_program.value()->payload.Get("direct_runtime_unsupported_reasons")
+                                executable.Get(String(
+                                                  tl::tt_program_projection::executable_key::
+                                                      kDirectRuntimeUnsupportedReasons))
                                     .value())
                           : ffi::Array<ffi::Any>();
   for (const auto& item : reason_items) {
@@ -1333,9 +1353,14 @@ static std::vector<std::string> ExtractDirectRuntimeUnsupportedReasons(const tir
 }
 
 static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecs(const tir::PrimFunc& f) {
-  auto program = tl::tt_program_projection::RequireTTProgram(
+  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
       f, "Blackhole executable spec extraction");
-  auto segment_plan = tl::tt_program_projection::EncodeSegmentPlan(program);
+  auto segment_plan =
+      executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
+          ? Downcast<ffi::Array<ffi::Any>>(
+                executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
+                    .value())
+          : ffi::Array<ffi::Any>();
   return AggregateSegmentPerWorkArgSpecs(segment_plan);
 }
 
@@ -1570,10 +1595,14 @@ static std::vector<RemoteCoreDescriptorSpec> ExtractRemoteCoreDescriptors(
 
 static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, ExecutableSpec* spec) {
   std::vector<SegmentInfo> segments_out;
-  auto maybe_program = tl::tt_program_projection::GetTTProgram(f);
-  ICHECK(maybe_program)
-      << "Blackhole executable spec extraction requires tl.tt_program for target-truth cutover";
-  auto segments = tl::tt_program_projection::EncodeSegmentPlan(maybe_program.value());
+  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
+      f, "Blackhole executable spec extraction");
+  auto segments =
+      executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
+          ? Downcast<ffi::Array<ffi::Any>>(
+                executable.Get(String(tl::tt_program_projection::executable_key::kSegmentPlan))
+                    .value())
+          : ffi::Array<ffi::Any>();
   if (segments.empty()) {
     return segments_out;
   }
@@ -1654,7 +1683,8 @@ static bool IsBlackholeDeviceKernel(const tir::PrimFunc& f) {
   if (calling_conv.defined()) {
     return calling_conv == CallingConv::kDeviceKernelLaunch;
   }
-  return static_cast<bool>(tl::tt_program_projection::GetTTProgram(f));
+  return !tl::tt_program_projection::GetBlackholeExecutableProjection(f).empty() ||
+         static_cast<bool>(tl::tt_program_projection::GetTTProgram(f));
 }
 
 static bool IsBlackholeHostEntry(const tir::PrimFunc& f) {
@@ -2793,6 +2823,7 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
   ffi::Map<ffi::String, ffi::Any> attrs;
   static const std::unordered_set<std::string> kSyntheticProjectionAttrs = {
       tvm::tl::attr::kTLTTProgram,
+      tvm::tl::attr::kTLBlackholeExecutable,
   };
   if (f->attrs.defined()) {
     for (const auto& kv : f->attrs->dict) {
@@ -2803,6 +2834,8 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
     }
   }
   attrs.Set(tvm::tl::attr::kTLTTProgram, segment_program);
+  attrs.Set(tvm::tl::attr::kTLBlackholeExecutable,
+            tl::tt_program_projection::MaterializeBlackholeExecutableProjection(segment_program));
   segment_func.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
   return segment_func;
 }
@@ -2978,9 +3011,15 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     auto prim_target = f->GetAttr<Target>(tvm::attr::kTarget);
     const bool is_blackhole_prim_func =
         prim_target && prim_target.value()->kind->name == "blackhole";
-    if (is_blackhole_prim_func && !IsBlackholeHostEntry(f) &&
-        !tl::tt_program_projection::GetTTProgram(f)) {
-      ICHECK(false) << "Blackhole build requires tl.tt_program on device PrimFunc " << gvar->name_hint;
+    if (is_blackhole_prim_func && !IsBlackholeHostEntry(f)) {
+      if (tl::tt_program_projection::GetBlackholeExecutableProjection(f).empty()) {
+        ICHECK(false) << "Blackhole build requires tl.blackhole_executable on device PrimFunc "
+                      << gvar->name_hint;
+      }
+      if (!tl::tt_program_projection::GetTTProgram(f)) {
+        ICHECK(false) << "Blackhole build requires tl.tt_program on device PrimFunc "
+                      << gvar->name_hint;
+      }
     }
     const std::string func_name = GetPrimFuncName(gvar, f);
     if (IsBlackholeDeviceKernel(f)) {
@@ -3068,9 +3107,15 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     auto prim_target = f->GetAttr<Target>(tvm::attr::kTarget);
     const bool is_blackhole_prim_func =
         prim_target && prim_target.value()->kind->name == "blackhole";
-    if (is_blackhole_prim_func && !IsBlackholeHostEntry(f) &&
-        !tl::tt_program_projection::GetTTProgram(f)) {
-      ICHECK(false) << "Blackhole build requires tl.tt_program on device PrimFunc " << gvar->name_hint;
+    if (is_blackhole_prim_func && !IsBlackholeHostEntry(f)) {
+      if (tl::tt_program_projection::GetBlackholeExecutableProjection(f).empty()) {
+        ICHECK(false) << "Blackhole build requires tl.blackhole_executable on device PrimFunc "
+                      << gvar->name_hint;
+      }
+      if (!tl::tt_program_projection::GetTTProgram(f)) {
+        ICHECK(false) << "Blackhole build requires tl.tt_program on device PrimFunc "
+                      << gvar->name_hint;
+      }
     }
     const std::string func_name = GetPrimFuncName(gvar, f);
     if (IsBlackholeDeviceKernel(f)) {
