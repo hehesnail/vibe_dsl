@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-- **日期**: `2026-04-14`
+- **日期**: `2026-04-15`
 - **总阶段**: Stage 4
 - **目标主线**:
   `Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion -> ExecutableSpec`
@@ -70,6 +70,29 @@ Normalized Tile TIR
 而是 **target builtin mapping 还没有完全前移到
 anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
 
+按总设计的第一性原理，
+当前目标不是单一 workload 绿测，
+而是下面 4 条同时成立：
+
+1. mapping 边界正确：
+   target builtin mapping
+   回到 anchored sub-TIR
+2. 三类事实都有 owner：
+   transport / compute / sync
+3. 真源位置收紧：
+   `Normalized Tile TIR / SpatialPlan / TTProgram / ExecutableSpec`
+   各守边界
+4. 后段不再补语义：
+   runtime / codegen
+   不再做 late recovery
+
+当前 roadmap 与这 4 条的对应关系是：
+
+- `R0`：mapping 边界 + transport/compute owner cut-in
+- `R1`：真源 reader/gate 收口
+- `R2`：sync owner/runtime semantics 收口
+- `R3-R5`：payoff / wider family / support surface
+
 ## 已完成
 
 - `Task 1` 已完成：
@@ -107,11 +130,20 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
    `tile-op / layout / load-store` truth 的边界，
    由真实 `PlanTTTransport + PlanTTCompute`
    取代 `BuildTTProgram` helper bridge
-2. 在当前 `TTProgram / ExecutableSpec` 真源下完成
+2. 完成 `R1`：
+   把 runtime gate 收到
+   只消费 owner-side typed truth 的边界
+3. 完成 `R2`：
+   在 admitted scope 内把
+   `PlanTTSync`
+   的 `ordering / completion / barrier / semaphore`
+   语义收口到 owner/runtime semantics
+4. 在第一性原理目标完成之后，
+   再在当前 `TTProgram / ExecutableSpec` 真源下完成
    `flash-attn` admitted subset payoff / correctness 收口
-3. 在新 route 上承接
+5. 在新 route 上承接
    `topk / fusedmoe / paged decode / chunk recurrence`
-4. 扩更宽的 copy / data movement / sync 支持面
+6. 扩更宽的 copy / data movement / wider sync 支持面
 
 ## 当前优先级
 
@@ -124,19 +156,24 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
 2. **R1: runtime gate 收口**
    - 继续把当前新主链上的 gate 收到
      明确的 admitted / unsupported 边界
-3. **R2: `flash-attn` payoff**
+3. **R2: admitted-scope `PlanTTSync` 收口**
+   - 第一性原理目标里的
+     sync owner/runtime semantics
+     不能留到更宽 support surface 再处理
+4. **R3: `flash-attn` payoff**
    - 在当前新 route 上兑现 multi-phase transport / reduction / broadcast
    - 继续把 compile-path 稳定性兑现成 correctness/admitted subset
-4. **R3: wider family cutover**
+5. **R4: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-5. **R4: wider support surface**
-   - copy / dataflow / sync
+6. **R5: wider support surface**
+   - copy / dataflow / wider sync
 
 最近完成的局部批次：
 
 - `Task 3B cleanup`
   （`T3B.0-T3B.4`）已完成；
-  对应的是旧链清理，不等于当前 roadmap `R0` 完成
+  对应的是旧链清理，
+  不等于第一性原理目标完成
 
 ## 当前稳定基线
 
@@ -190,4 +227,4 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
 
 1. 先完成 `R0`
 2. 再推进 `R1/R2`
-3. 然后进入 `R3/R4`
+3. 然后进入 `R3-R5`

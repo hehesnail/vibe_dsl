@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档 ID**: `final_blackhole_backend_redesign`
-- **日期**: `2026-04-14`
+- **日期**: `2026-04-15`
 - **状态**: 当前唯一权威总体设计文档
 - **定位**: 只保留长期架构、层间边界、真源规则和当前 rewrite 方向
 
@@ -179,6 +179,14 @@ Normalized Tile TIR
 
 不再兼职恢复 compute 或 transport 语义。
 
+补充：
+
+- 这里只定义 sync 这第三类事实
+  该由谁负责
+- 第一性原理目标是否完成，
+  还要同时看 mapping 边界、
+  真源位置和后段 gate
+
 ## 5. 真源规则
 
 1. 语义 body 只存在于 `Normalized Tile TIR`
@@ -190,6 +198,36 @@ Normalized Tile TIR
    - 补更早层 analysis
    - `explicit unsupported`
 6. 不允许回退到 late matcher / late recovery
+
+### 5.1 第一性原理目标的完成判定
+
+当前 rewrite 的第一性原理目标，
+不是“跑通一个 workload”
+或者“把某个 pass 名字切过去”，
+而是下面 4 条必须同时成立：
+
+1. **mapping 边界正确**
+   - TT builtin mapping
+     发生在 anchored sub-TIR
+     仍保留
+     `tile-op / layout / load-store truth`
+     的边界
+2. **三类事实各有 owner**
+   - transport 由 `PlanTTTransport`
+   - compute 由 `PlanTTCompute`
+   - sync 由 `PlanTTSync`
+3. **真源位置收紧**
+   - 语义 body 只在 `Normalized Tile TIR`
+   - `SpatialPlan companion`
+     只保留 planning 必须持久化的 truth
+   - target truth 只在 `TTProgram companion`
+   - `ExecutableSpec`
+     只负责物化，不是第二真源
+4. **后段不再补语义**
+   - runtime / codegen
+     不再做 planning recovery
+   - late matcher / side contract / payload bag
+     不再承担 owner 职责
 
 补充约束：
 
@@ -224,7 +262,7 @@ Normalized Tile TIR
 
 它们不能继续扩张，也不能再被文档写成长期架构。
 
-`2026-04-14` 当前状态补充：
+`2026-04-15` 当前状态补充：
 
 - `SpatialProgram` 已退出 active compile/runtime path
 - `buffer_distribution_contract`
@@ -267,6 +305,19 @@ BindTarget
 - `PlanTTTransport`
 - `PlanTTCompute`
 
+但第一性原理目标的完成判定
+不止这两项；
+还要求：
+
+- admitted scope 内的 `PlanTTSync`
+  进入稳定 owner/runtime semantics
+- runtime / codegen
+  严格退回到
+  `TTProgram / ExecutableSpec`
+  reader 角色
+- late matcher / side contract / helper bridge
+  不再承担主协议职责
+
 ## 8. 当前执行重点
 
 当前优先级固定为：
@@ -281,11 +332,26 @@ BindTarget
    - 删除 late matcher
    - 删除 side contract
 2. **R1: runtime gate 收口**
-3. **R2: `flash-attn` payoff**
-4. **R3: wider family cutover**
+   - runtime / codegen 不再补 target planning
+   - admitted / unsupported 边界要和 owner truth 对齐
+3. **R2: admitted-scope `PlanTTSync` 收口**
+   - `ordering / completion / barrier / semaphore`
+     进入稳定 owner/runtime semantics
+   - 这是第一性原理目标的一部分，
+     不是后置支持面
+4. **R3: `flash-attn` payoff**
+5. **R4: wider family cutover**
    - `topk / fusedmoe / paged decode / chunk recurrence`
-5. **R4: wider support surface**
-   - copy / data movement / sync
+6. **R5: wider support surface**
+   - copy / data movement / wider sync
+
+其中：
+
+- `R0-R2`
+  用来完成第一性原理目标本身
+- `R3-R5`
+  用来验证这套分层不是纸面方案，
+  并把 admitted support surface 继续扩出去
 
 ## 9. 硬约束
 

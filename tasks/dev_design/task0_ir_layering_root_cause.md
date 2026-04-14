@@ -238,6 +238,22 @@ TT-Metal 本地 repo 和官方 API 都说明了同一件事：
 2. 把 transport / compute / sync 的 owner 拆实
 3. 把 side contract 和 late matcher 逐批删除
 
+补充：
+
+- 当前 rewrite 的完成判定
+  不能只看 transport / compute cut-in
+- 还要同时看：
+  1. sync truth
+     是否稳定落到
+     `PlanTTSync + runtime semantics`
+  2. 真源位置
+     是否回到
+     `TIR / SpatialPlan / TTProgram / ExecutableSpec`
+     各自边界
+  3. runtime / codegen
+     是否已经退回 reader，
+     不再补 planning truth
+
 ## 9. Rewrite Direction
 
 当前 rewrite 路线固定为：

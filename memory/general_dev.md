@@ -279,6 +279,20 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   （如 `T2.0`、`T3B.0`）；
   不要再把局部 batch 的完成
   写成当前 roadmap `R0` 完成
+- 对当前 Blackhole rewrite，
+  “第一性原理目标”不能被缩写成
+  单个 workload payoff
+  或单个 owner pass cut-in；
+  要同时检查：
+  - mapping 边界是否放回 anchored sub-TIR
+  - transport / compute / sync
+    是否各有 owner
+  - truth 是否回到
+    `TIR / SpatialPlan / TTProgram / ExecutableSpec`
+    各自边界
+  - runtime / codegen
+    是否已经退回 reader/gate，
+    不再补 planning truth
 - 清理旧 target 链时要从外往里收：
   先删 projection / side-channel，
   再删最终 Phase C 输出上的 seed bridge attr，

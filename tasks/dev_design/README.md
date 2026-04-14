@@ -45,9 +45,21 @@
    - target builtin mapping 前移到
      anchored sub-TIR 真正持有 truth 的边界
 2. 当前 active 重点：
-   - `R1/R2`：runtime gate / `flash-attn` payoff / correctness 收口
+   - `R1/R2/R3`：runtime gate / admitted-scope sync /
+     `flash-attn` payoff 收口
 3. 后续：
-   - `R3/R4`：wider family / support surface
+   - `R4/R5`：wider family / support surface
+
+补充口径：
+
+- 第一性原理目标本身
+  不是单一 roadmap 条目，
+  而是一组 invariant
+- 当前用 `R0-R2`
+  去完成这组 invariant：
+  mapping 边界、三类事实 owner、真源位置、后段不补语义
+- `R3-R5`
+  是 payoff 与 admitted surface 扩张
 
 当前状态补充：
 
@@ -64,7 +76,8 @@
   还残留 `blackhole.*` analysis facts 与
   `BuildTTProgram` 内部 helper bridge
 - 当前入口已经从“旧 semantic / side-contract 清理”
-  转回“`R0` cut-in + `R1/R2` 收口”
+  转回“`R0-R2` 第一性原理目标收口
+  + `R3` 第一批 payoff”
 
 当前明确不作为优先项：
 

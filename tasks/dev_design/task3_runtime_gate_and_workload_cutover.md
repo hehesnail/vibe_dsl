@@ -4,12 +4,12 @@
 
 - **文档角色**: `Task 3` 的 runtime gate、support surface
   与 workload re-enable 设计文档
-- **当前状态**: `2026-04-14` 活动设计文档；`Task 2` 已完成，
+- **当前状态**: `2026-04-15` 活动设计文档；`Task 2` 已完成，
   `Task 3A` persistent/public 删除批次与
   `Task 3B cleanup`
   （`T3B.0-T3B.4`）
   已完成，当前工作回到 `Task 3`
-  roadmap `R0 / R1 / R2`
+  roadmap `R0 / R1 / R2 / R3`
 - **任务链位置**:
   `Task 2` owner cutover 完成之后，
   负责 runtime/correctness payoff 与 wider family 承接
@@ -62,6 +62,45 @@ Normalized Tile TIR
 
 - `Task 3` 默认只讨论 `Blackhole` active runtime / codegen path
 - non-Blackhole backend 的统一化不进入当前 backlog
+
+### 1.1 第一性原理目标与 `Task 3` 映射
+
+按总设计，
+`Task 3` 当前目标不是
+“`R0` cut-in 以后再挑一个 workload 跑通”，
+也不是只把 sync 补进去。
+
+要满足第一性原理，
+下面 4 条必须同时成立：
+
+1. **mapping 边界正确**
+   - `R0`
+     把 target builtin mapping
+     放回 anchored sub-TIR
+2. **三类事实各有 owner**
+   - `R0`
+     完成 transport / compute owner cut-in
+   - `R2`
+     完成 admitted-scope sync owner/runtime semantics
+3. **真源位置收紧**
+   - `R1`
+     把 runtime / codegen
+     收回 `TTProgram / ExecutableSpec`
+     reader 角色
+4. **后段不再补语义**
+   - `R0`
+     继续删除 helper bridge / late matcher / side contract
+   - `R1`
+     用 gate 禁止 runtime/codegen 补洞
+   - `R2`
+     对 sync truth 缺口显式 fail-fast 或收口语义
+
+所以：
+
+- `R0-R2`
+  共同完成第一性原理目标
+- `R3-R5`
+  才是验证与扩张
 
 ## 2. Shared Zero-Regression Baseline
 
@@ -371,16 +410,18 @@ runtime / codegen 的消费纪律固定为：
 2. **R1: runtime gate 收口**
    - 先确保新主链上的 copy / GEMM / export
      仍维持当前 zero-regression baseline
-3. **R2: `flash-attn` payoff**
+3. **R2: admitted-scope `PlanTTSync` 收口**
+   - `ordering / completion / barrier / semaphore`
+     进入稳定 owner/runtime semantics
+   - 这是第一性原理目标的一部分
+4. **R3: `flash-attn` payoff**
    - 再拿它验证 multi-op / multi-work /
      multi-phase data movement 的 admitted subset
-4. **R3: wider family cutover**
+5. **R4: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-5. **R4: wider copy / dataflow**
-   - 在 admitted subset 内逐步放宽 range / stride / staged-dataflow
-6. **R5: wider sync**
-   - 只在 `TTSyncPlan + executable binding + runtime semantics`
-     三者都稳定后进入 admitted surface
+6. **R5: wider support surface**
+   - 在 admitted subset 内逐步放宽
+     copy / dataflow / wider sync
 
 ## 5.2 `Task 3B` 已完成的旧链清理批次
 
@@ -413,7 +454,7 @@ runtime / codegen 的消费纪律固定为：
      责任继续拆开
    - 目标不是系统性换名，而是让每层只持有它自己的 target truth
 
-### 5.2.1 `2026-04-14` 当前状态
+### 5.2.1 `2026-04-15` 当前状态
 
 `Task 3B cleanup`
 （`T3B.0-T3B.4`）
@@ -445,6 +486,7 @@ roadmap：
 
 - 真实 `PlanTTTransport + PlanTTCompute` cut-in
 - runtime gate 收口
+- admitted-scope `PlanTTSync` 收口
 - `flash-attn` correctness payoff
 - `Task 3C` wider family / support surface
 
