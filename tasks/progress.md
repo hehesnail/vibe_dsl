@@ -95,7 +95,7 @@ Normalized Tile TIR
 - `R0`：mapping 边界 + compute/memory-access owner cut-in
 - `R1`：`TTProgram / ExecutableSpec`
   reader-gate / host-truth 收口（已完成）
-- `R2`：communication owner/runtime semantics 收口
+- `R2`：communication owner/runtime semantics 收口（已完成）
 - `R3-R5`：payoff / wider family / support surface
 
 ## 已完成
@@ -143,34 +143,50 @@ Normalized Tile TIR
     的旧 payload bag 已删除；
     相关过期 regression
     已改成 kernel-local mutation
+- `R2` 已完成：
+  - runtime/build 现在把
+    `get_semaphore` / remote semaphore builtin
+    收回 explicit communication schema，
+    不再接受“先写 builtin，
+    再让后段补协议”
+  - `get_semaphore(<id>)`
+    必须引用已计划的 `TTSemaphorePlan`
+    或显式绑定的 `semaphore_id_u32`
+    runtime arg；
+    缺 planned semaphore truth
+    直接 fail-fast
+  - remote semaphore routing
+    必须来自显式
+    `logical_core_noc_x / logical_core_noc_y`
+    runtime arg 与
+    `remote_core_descriptors`；
+    不再接受 literal/body-recovered NOC 坐标
+  - non-oversubscribed direct runtime
+    已承认显式 semaphore / remote-endpoint
+    communication subset；
+    oversubscribed 显式 communication contract
+    继续 fail-fast
+  - 旧的 source-only semaphore regression
+    已改成显式携带 owner truth；
+    新增 communication gate / oversubscribed boundary regression
 
 ## 当前未完成
 
-1. 完成 `R2`：
-   在 admitted scope 内把
-   communication semantics
-   的 `routing / multicast / semaphore / completion`
-   收口到 owner/runtime semantics，
-   不再把第三类语义压缩成 sync-only
-2. 在第一性原理目标完成之后，
+1. 在第一性原理目标完成之后，
    再在当前 `TTProgram / ExecutableSpec` 真源下完成
    `flash-attn` admitted subset payoff / correctness 收口
-3. 在新 route 上承接
+2. 在新 route 上承接
    `topk / fusedmoe / paged decode / chunk recurrence`
-4. 扩更宽的 copy / data movement / wider communication 支持面
+3. 扩更宽的 copy / data movement / wider communication 支持面
 
 ## 当前优先级
 
-1. **R2: admitted-scope communication semantics 收口**
-   - 第一性原理目标里的
-     communication owner/runtime semantics
-     不能留到更宽 support surface 再处理
-2. **R3: `flash-attn` payoff**
+1. **R3: `flash-attn` payoff**
    - 在当前新 route 上兑现 multi-phase transport / reduction / broadcast
    - 继续把 compile-path 稳定性兑现成 correctness/admitted subset
-3. **R4: wider family cutover**
+2. **R4: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-4. **R5: wider support surface**
+3. **R5: wider support surface**
    - copy / dataflow / wider communication
 
 最近完成的局部批次：
@@ -200,6 +216,13 @@ Normalized Tile TIR
   A/B-separated reader range + writer output range
 - accessor：
   interleaved + DRAM + `common_runtime_arg_count = 0`
+- communication：
+  non-oversubscribed direct runtime
+  已承认显式
+  `TTSemaphorePlan` /
+  `semaphore_id_u32` binding /
+  `logical_core_noc_x/y + remote_core_descriptors`
+  的 local/remote semaphore subset
 
 ## 当前边界
 
@@ -207,6 +230,15 @@ Normalized Tile TIR
   还不是通用 communication 执行模型；
   带显式 `TTSemaphorePlan` / remote descriptors 的 executable
   仍应 fail-fast
+- communication builtin
+  不能单独充当协议真源；
+  缺 planned semaphore truth
+  或缺显式 remote endpoint schema
+  一律 build-time fail-fast
+- remote / collective / fabric communication
+  目前只承认 explicit semaphore + remote endpoint subset；
+  multicast / 更宽 topology / collective
+  仍未 admitted
 - `flash-attn` direct runtime
   compile-path / source/spec baseline 已稳定，
   但 runtime correctness 还不是 admitted support surface
@@ -218,12 +250,12 @@ Normalized Tile TIR
 
 - `tilelang` 构建通过
 - `pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
-  `131 passed, 25 skipped, 1 xfailed`
-- `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && pytest testing/python/target/blackhole/test_blackhole_copy_runtime.py -k 'grid_indexed_copy_multicore_launch or accepts_oversubscribed_multi_core_launch or richer_copy_schema_with_explicit_per_work_spec' -q`
-  `3 passed`
+  `133 passed, 25 skipped, 1 xfailed`
+- `bash -lc 'source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && pytest testing/python/target/blackhole/test_blackhole_copy_runtime.py::test_blackhole_module_direct_call_grid_indexed_copy_worker_semaphore_handshake testing/python/target/blackhole/test_blackhole_copy_runtime.py::test_blackhole_module_direct_call_accepts_oversubscribed_multi_core_launch testing/python/target/blackhole/test_blackhole_copy_runtime.py::test_blackhole_module_direct_call_rejects_oversubscribed_communication_contract testing/python/target/blackhole/test_blackhole_copy_pipeline.py::test_blackhole_copy_direct_runtime_accepts_semaphore_id_runtime_arg -q'`
+  `4 passed`
 
 ## 下一步
 
-1. 先完成 `R2`
-2. 再推进 `R3`
-3. 然后进入 `R4/R5`
+1. 先推进 `R3`
+2. 再进入 `R4`
+3. 然后继续放宽 `R5`

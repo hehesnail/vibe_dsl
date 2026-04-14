@@ -862,6 +862,114 @@ def test_blackhole_copy_kernel_semaphore_binding_is_materialized():
     assert str(binding["arg_kind"]) == "semaphore_id_u32"
 
 
+def _worker_semaphore_plan(semaphore_id=0):
+    return [
+        {
+            "id": semaphore_id,
+            "initial_value": 0,
+            "core_type": "worker",
+            "core_ranges": [
+                {
+                    "start": {"core_x": 1, "core_y": 2},
+                    "end": {"core_x": 1, "core_y": 2},
+                }
+            ],
+        }
+    ]
+
+
+def _inject_device_semaphore_builtins(*, remote_coord_source=None):
+    def body_mutator(original_body):
+        del original_body
+        semaphore_id = tir.Var("copy_sem", "uint32")
+        semaphore_addr = tir.Var("copy_sem_addr", "uint32")
+        ops = [
+            tir.Evaluate(
+                tir.call_intrin(
+                    "handle",
+                    tir.op.Op.get("tl.blackhole.semaphore_wait"),
+                    semaphore_addr,
+                    tir.IntImm("uint32", 1),
+                )
+            ),
+            tir.Evaluate(
+                tir.call_intrin(
+                    "handle",
+                    tir.op.Op.get("tl.blackhole.semaphore_set"),
+                    semaphore_addr,
+                    tir.IntImm("uint32", 0),
+                )
+            ),
+        ]
+        if remote_coord_source is not None:
+            remote_noc_x, remote_noc_y = remote_coord_source
+            ops.append(
+                tir.Evaluate(
+                    tir.call_intrin(
+                        "handle",
+                        tir.op.Op.get("tl.blackhole.semaphore_inc_remote"),
+                        semaphore_addr,
+                        remote_noc_x,
+                        remote_noc_y,
+                        tir.IntImm("uint32", 1),
+                    )
+                )
+            )
+        return tir.LetStmt(
+            semaphore_id,
+            tir.call_intrin(
+                "uint32",
+                tir.op.Op.get("tl.blackhole.get_semaphore"),
+                tir.IntImm("uint32", 0),
+            ),
+            tir.LetStmt(semaphore_addr, semaphore_id, tir.SeqStmt(ops)),
+        )
+
+    return body_mutator
+
+
+def test_blackhole_copy_build_rejects_device_semaphore_builtin_without_planned_semaphore():
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="planned semaphore|communication protocol|get_semaphore",
+    ):
+        _rebuild_codegen_module_with_body_and_segment_plan(
+            artifact,
+            body_mutator=_inject_device_semaphore_builtins(),
+        )
+
+
+def test_blackhole_copy_build_rejects_remote_semaphore_builtin_without_endpoint_schema():
+    kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="remote endpoint|logical_core_noc|communication routing",
+    ):
+        _rebuild_codegen_module_with_tt_program(
+            artifact,
+            tt_program_mutator=lambda tt_program: _rebuild_tt_program_with_semaphore_plan(
+                tt_program, _worker_semaphore_plan()
+            ),
+            body_mutator=_inject_device_semaphore_builtins(
+                remote_coord_source=(
+                    tir.IntImm("uint32", 1),
+                    tir.IntImm("uint32", 0),
+                )
+            ),
+        )
+
+
 def test_blackhole_codegen_emits_device_semaphore_builtins():
     kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
     target = Target("blackhole")
@@ -869,40 +977,12 @@ def test_blackhole_codegen_emits_device_semaphore_builtins():
     with target:
         artifact = lower(kernel, target=target)
 
-    def body_mutator(original_body):
-        semaphore_id = tir.Var("copy_sem", "uint32")
-        semaphore_addr = tir.Var("copy_sem_addr", "uint32")
-        return tir.LetStmt(
-            semaphore_id,
-            tir.call_intrin("uint32", tir.op.Op.get("tl.blackhole.get_semaphore"), tir.IntImm("uint32", 0)),
-            tir.LetStmt(
-                semaphore_addr,
-                semaphore_id,
-                tir.SeqStmt(
-                    [
-                        tir.Evaluate(
-                            tir.call_intrin(
-                                "handle",
-                                tir.op.Op.get("tl.blackhole.semaphore_wait"),
-                                semaphore_addr,
-                                tir.IntImm("uint32", 1),
-                            )
-                        ),
-                        tir.Evaluate(
-                            tir.call_intrin(
-                                "handle",
-                                tir.op.Op.get("tl.blackhole.semaphore_set"),
-                                semaphore_addr,
-                                tir.IntImm("uint32", 0),
-                            )
-                        ),
-                    ]
-                ),
-            ),
-        )
-
-    mutated_mod = _rebuild_codegen_module_with_body_and_segment_plan(
-        artifact, body_mutator=body_mutator
+    mutated_mod = _rebuild_codegen_module_with_tt_program(
+        artifact,
+        tt_program_mutator=lambda tt_program: _rebuild_tt_program_with_semaphore_plan(
+            tt_program, _worker_semaphore_plan()
+        ),
+        body_mutator=_inject_device_semaphore_builtins(),
     )
 
     executable_spec = mutated_mod.get_function_metadata("main")

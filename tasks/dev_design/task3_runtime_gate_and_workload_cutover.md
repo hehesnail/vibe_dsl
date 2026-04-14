@@ -409,16 +409,12 @@ runtime / codegen 的消费纪律固定为：
 - `Task 3B` 这类局部 batch
   统一用 `Tn.x`
 
-1. **R2: admitted-scope communication semantics 收口**
-   - `routing / multicast / semaphore / completion`
-     进入稳定 owner/runtime semantics
-   - 这是第一性原理目标的一部分
-2. **R3: `flash-attn` payoff**
+1. **R3: `flash-attn` payoff**
    - 再拿它验证 multi-op / multi-work /
      multi-phase data movement 的 admitted subset
-3. **R4: wider family cutover**
+2. **R4: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-4. **R5: wider support surface**
+3. **R5: wider support surface**
    - 在 admitted subset 内逐步放宽
      copy / dataflow / wider communication
 
@@ -483,7 +479,6 @@ runtime / codegen 的消费纪律固定为：
 因此当前剩余重点回到 `Task 3`
 roadmap：
 
-- admitted-scope communication semantics 收口
 - `flash-attn` correctness payoff
 - `Task 3C` wider family / support surface
 
@@ -515,6 +510,50 @@ roadmap：
    的过期 regression
    已迁到 kernel-local mutation
 
+### 5.2.3 `2026-04-15` `R2` communication owner/runtime semantics 收口完成
+
+本轮 `R2` 收口的统一口径是：
+
+- communication builtin
+  不能单独充当协议真源；
+  只能消费 explicit owner-side communication truth
+- `get_semaphore`
+  必须绑定 planned semaphore truth，
+  不再接受“先写 builtin，
+  再让 runtime/codegen 补 semaphore protocol”
+- remote semaphore routing
+  必须来自显式
+  `logical_core_noc_x / logical_core_noc_y`
+  runtime arg 与
+  `remote_core_descriptors`；
+  不再接受 literal/body-recovered NOC 坐标
+- admitted direct-runtime subset
+  明确收敛为
+  **non-oversubscribed explicit semaphore/remote-endpoint communication**
+- oversubscribed direct runtime
+  仍不是通用 communication 执行模型；
+  显式 communication contract 继续 fail-fast
+
+具体落点：
+
+1. build/codegen 新增 communication protocol gate：
+   - `get_semaphore(<id>)`
+     必须命中 `TTSemaphorePlan`
+     或显式绑定的 `semaphore_id_u32`
+   - remote semaphore builtin
+     的 route source
+     必须命中 `logical_core_noc_x/y`
+     schema
+2. source-only semaphore regression
+   已改成显式携带 owner truth
+3. direct-runtime regression
+   新增 oversubscribed explicit communication
+   fail-fast case
+4. TT-Sim 正例已覆盖：
+   explicit worker semaphore handshake /
+   `semaphore_id_u32` runtime arg /
+   oversubscribed 无 communication contract baseline
+
 ## 6. Wider Copy / Dataflow / Communication 支持面
 
 支持面扩张也必须服从同一条 owner 纪律。
@@ -535,6 +574,13 @@ roadmap：
   已把对应 target truth 冻结下来
 
 ### 6.2 Communication / Completion
+
+当前 admitted subset：
+
+- non-oversubscribed explicit semaphore subset
+- explicit remote-endpoint semaphore routing subset
+- oversubscribed explicit communication contract
+  继续保持 fail-fast
 
 后续可以扩张：
 

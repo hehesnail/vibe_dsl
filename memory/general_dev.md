@@ -355,6 +355,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - CB 既需要地址共享，也需要同步原语
 - semaphore 在 host/runtime 侧的正式对象是 id，不是地址
 - remote worker core 的 logical -> NOC 坐标转换由 host materialize
+- communication builtin 只能消费显式 schema truth：
+  `get_semaphore` 必须命中 planned semaphore id /
+  bound `semaphore_id_u32`，
+  remote semaphore route 必须命中
+  `logical_core_noc_x/y + remote_core_descriptors`；
+  不要再让后段从 literal 坐标、
+  裸地址或 builtin 序列补协议
 
 ## 9. 调试模式
 

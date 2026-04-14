@@ -347,6 +347,31 @@
 - **修法**: host 用 `worker_core_from_logical_core(...)` 求真实 NOC 坐标后下发
 - **教训**: remote route 信息必须 host-materialized，不能让 device 代码猜
 
+#### communication builtin 不能单独携带 semaphore / routing 协议
+
+- **症状**:
+  - `get_semaphore(0)` 在没有 `TTSemaphorePlan` 时仍能 build/source
+  - remote semaphore builtin 可以直接吃 literal NOC 坐标
+- **根因**:
+  - runtime/codegen 只看到了 builtin 序列，
+    但没有把 communication protocol
+    收回 explicit owner truth
+- **修法**:
+  - `get_semaphore`
+    必须命中 planned semaphore id
+    或显式绑定的 `semaphore_id_u32`
+  - remote semaphore route
+    必须命中
+    `logical_core_noc_x/y + remote_core_descriptors`
+  - oversubscribed direct runtime
+    若带显式 communication contract，
+    继续 fail-fast
+- **教训**:
+  communication builtin 只是执行表达，
+  不是协议真源；
+  不能让 literal 坐标、裸地址或 source-only builtin
+  绕过 owner/runtime schema
+
 ### 2.4 analysis / lowering / gate
 
 #### semantic-owned truth 缺失时，要回补 `Phase A`，不要让 `Phase B` 借旧 attrs 自救

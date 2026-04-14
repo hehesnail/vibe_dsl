@@ -364,24 +364,23 @@ BindTarget
 - task 内部或 cleanup batch
   统一用 `Tn.x`
 
-1. **R1: runtime gate / host truth 收口**
-   - runtime / codegen 不再补 target planning
-   - `Program / Kernel / CB / Buffer / RuntimeArgs / Core placement`
-     这组 TT-Metal host truth
-     只从 `TTProgram / ExecutableSpec` reader 落地
-   - admitted / unsupported 边界要和 owner truth 对齐
-2. **R2: admitted-scope communication semantics 收口**
-   - `routing / multicast / semaphore / completion`
-     进入稳定 owner/runtime semantics
-   - unsupported collective / fabric / remote case
-     明确 fail-fast
-   - 这是第一性原理目标的一部分，
-     不是后置支持面
-3. **R3: `flash-attn` payoff**
-4. **R4: wider family cutover**
+1. **R3: `flash-attn` payoff**
+2. **R4: wider family cutover**
    - `topk / fusedmoe / paged decode / chunk recurrence`
-5. **R5: wider support surface**
+3. **R5: wider support surface**
    - copy / data movement / wider communication
+
+`2026-04-15` 当前状态补充：
+
+- `R0-R2`
+  已完成第一性原理目标本身
+- admitted communication subset
+  当前明确收敛为
+  non-oversubscribed explicit
+  semaphore / remote-endpoint communication
+- oversubscribed explicit communication contract、
+  multicast / wider collective / fabric route
+  仍保持 fail-fast / unsupported
 
 其中：
 

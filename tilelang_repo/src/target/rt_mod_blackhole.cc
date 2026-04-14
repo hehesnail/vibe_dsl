@@ -2154,6 +2154,245 @@ static void ValidateKernelRuntimeArgSchema(const KernelSpec& kernel,
       << " of " << func_name;
 }
 
+static const KernelArgSpec* FindKernelArgSpecByName(const KernelSpec& kernel,
+                                                    const std::string& name) {
+  auto find_in_args = [&](const std::vector<KernelArgSpec>& args) -> const KernelArgSpec* {
+    for (const auto& arg : args) {
+      if (arg.name == name) {
+        return &arg;
+      }
+    }
+    return nullptr;
+  };
+  if (const auto* arg = find_in_args(kernel.runtime_args)) {
+    return arg;
+  }
+  return find_in_args(kernel.common_runtime_args);
+}
+
+static const SemaphoreBindingSpec* FindSemaphoreBindingSpec(const KernelSpec& kernel,
+                                                            const std::string& name,
+                                                            const std::string& arg_kind) {
+  for (const auto& binding : kernel.semaphore_bindings) {
+    if (binding.name == name && binding.arg_kind == arg_kind) {
+      return &binding;
+    }
+  }
+  return nullptr;
+}
+
+static bool KernelHasRemoteCoreDescriptorIdentity(const KernelSpec& kernel,
+                                                  const std::string& identity) {
+  return std::any_of(kernel.remote_core_descriptors.begin(), kernel.remote_core_descriptors.end(),
+                     [&](const RemoteCoreDescriptorSpec& descriptor) {
+                       return descriptor.identity == identity;
+                     });
+}
+
+class CommunicationBuiltinSchemaValidator final : public tir::StmtExprVisitor {
+ public:
+  CommunicationBuiltinSchemaValidator(const tir::PrimFunc& func, const KernelSpec& kernel,
+                                      const std::unordered_set<uint32_t>& planned_semaphore_ids)
+      : func_name_(kernel.name),
+        kernel_(kernel),
+        planned_semaphore_ids_(planned_semaphore_ids) {
+    VisitStmt(func->body);
+    if (saw_semaphore_builtin_ && !saw_semaphore_source_) {
+      ICHECK(false)
+          << "Blackhole communication protocol for kernel " << func_name_
+          << " requires semaphore builtins to consume explicit owner truth via "
+             "get_semaphore(planned_id) or get_semaphore(runtime_arg_u32(bound_semaphore)); "
+             "raw semaphore address recovery is not admitted";
+    }
+  }
+
+ private:
+  using tir::StmtExprVisitor::VisitExpr_;
+  using tir::StmtExprVisitor::VisitStmt_;
+
+  const tir::CallNode* ResolveCall(const PrimExpr& expr) const {
+    PrimExpr resolved = ResolveExpr(expr);
+    return resolved.as<tir::CallNode>();
+  }
+
+  PrimExpr ResolveExpr(PrimExpr expr) const {
+    for (int depth = 0; depth < 16; ++depth) {
+      if (const auto* var = expr.as<tir::VarNode>()) {
+        auto it = let_bindings_.find(var);
+        if (it == let_bindings_.end()) {
+          return expr;
+        }
+        expr = it->second;
+        continue;
+      }
+      if (const auto* cast = expr.as<tir::CastNode>()) {
+        expr = cast->value;
+        continue;
+      }
+      return expr;
+    }
+    return expr;
+  }
+
+  static const tir::StringImmNode* ResolveRuntimeArgNameLiteral(const tir::CallNode* call) {
+    if (call == nullptr || !call->op.defined()) {
+      return nullptr;
+    }
+    const auto* op = call->op.as<OpNode>();
+    if (op == nullptr || op->name != "tl.blackhole.runtime_arg_u32" || call->args.size() != 1) {
+      return nullptr;
+    }
+    return call->args[0].as<tir::StringImmNode>();
+  }
+
+  void ValidateGetSemaphoreCall(const tir::CallNode* call) {
+    ICHECK_EQ(call->args.size(), 1U)
+        << "tl.blackhole.get_semaphore expects exactly one argument in kernel " << func_name_;
+    const PrimExpr semaphore_expr = ResolveExpr(call->args[0]);
+    if (const auto* imm = semaphore_expr.as<tir::IntImmNode>()) {
+      const uint32_t semaphore_id = static_cast<uint32_t>(imm->value);
+      ICHECK(planned_semaphore_ids_.count(semaphore_id))
+          << "Blackhole communication protocol for kernel " << func_name_
+          << " requires get_semaphore(" << semaphore_id
+          << ") to reference a planned semaphore id";
+      saw_semaphore_source_ = true;
+      return;
+    }
+
+    const auto* runtime_arg_call = ResolveCall(semaphore_expr);
+    const auto* arg_name = ResolveRuntimeArgNameLiteral(runtime_arg_call);
+    ICHECK(arg_name != nullptr)
+        << "Blackhole communication protocol for kernel " << func_name_
+        << " requires get_semaphore to consume either a literal planned semaphore id or "
+           "runtime_arg_u32(bound_semaphore)";
+    const auto* arg_spec = FindKernelArgSpecByName(kernel_, arg_name->value);
+    ICHECK(arg_spec != nullptr)
+        << "Blackhole communication protocol for kernel " << func_name_
+        << " references unknown runtime arg " << arg_name->value << " in get_semaphore";
+    ICHECK(arg_spec->kind == "semaphore_id_u32")
+        << "Blackhole communication protocol for kernel " << func_name_
+        << " requires get_semaphore(runtime_arg_u32(" << arg_name->value
+        << ")) to bind a semaphore_id_u32 runtime arg";
+    const auto* binding = FindSemaphoreBindingSpec(kernel_, arg_spec->name, arg_spec->kind);
+    ICHECK(binding != nullptr)
+        << "Blackhole communication protocol for kernel " << func_name_
+        << " requires semaphore_id_u32 runtime arg " << arg_spec->name
+        << " to carry an explicit semaphore binding";
+    ICHECK(planned_semaphore_ids_.count(binding->semaphore_id))
+        << "Blackhole communication protocol for kernel " << func_name_
+        << " requires bound semaphore " << binding->name
+        << " to reference a planned semaphore id";
+    saw_semaphore_source_ = true;
+  }
+
+  void ValidateRemoteCoordPair(const tir::CallNode* call, size_t x_index, size_t y_index,
+                               const char* builtin_name) {
+    ICHECK_GT(call->args.size(), std::max(x_index, y_index))
+        << "Blackhole communication protocol for kernel " << func_name_ << " expects "
+        << builtin_name << " to carry remote_noc_x/y coordinates";
+    const auto* x_call = ResolveCall(call->args[x_index]);
+    const auto* y_call = ResolveCall(call->args[y_index]);
+    const auto* x_name = ResolveRuntimeArgNameLiteral(x_call);
+    const auto* y_name = ResolveRuntimeArgNameLiteral(y_call);
+    ICHECK(x_name != nullptr && y_name != nullptr)
+        << "Blackhole communication routing for kernel " << func_name_ << " requires "
+        << builtin_name
+        << " remote coordinates to come from logical_core_noc runtime args, not literal or "
+           "body-recovered coordinates";
+    const auto* x_arg = FindKernelArgSpecByName(kernel_, x_name->value);
+    const auto* y_arg = FindKernelArgSpecByName(kernel_, y_name->value);
+    ICHECK(x_arg != nullptr && y_arg != nullptr)
+        << "Blackhole communication routing for kernel " << func_name_
+        << " references unknown logical_core_noc runtime arg in " << builtin_name;
+    ICHECK(x_arg->kind == "logical_core_noc_x")
+        << "Blackhole communication routing for kernel " << func_name_ << " requires "
+        << builtin_name << " x-coordinate to bind logical_core_noc_x";
+    ICHECK(y_arg->kind == "logical_core_noc_y")
+        << "Blackhole communication routing for kernel " << func_name_ << " requires "
+        << builtin_name << " y-coordinate to bind logical_core_noc_y";
+    ICHECK(!x_arg->identity.empty() && x_arg->identity == y_arg->identity)
+        << "Blackhole communication routing for kernel " << func_name_ << " requires "
+        << builtin_name << " logical_core_noc_x/y to reference one remote endpoint identity";
+    ICHECK(KernelHasRemoteCoreDescriptorIdentity(kernel_, x_arg->identity))
+        << "Blackhole communication routing for kernel " << func_name_
+        << " requires remote endpoint " << x_arg->identity
+        << " to be materialized in KernelSpec.remote_core_descriptors";
+  }
+
+  void VisitStmt_(const tir::LetStmtNode* op) final {
+    VisitExpr(op->value);
+    auto it = let_bindings_.find(op->var.get());
+    const bool had_binding = it != let_bindings_.end();
+    PrimExpr old_binding;
+    if (had_binding) {
+      old_binding = it->second;
+    }
+    let_bindings_[op->var.get()] = op->value;
+    VisitStmt(op->body);
+    if (had_binding) {
+      let_bindings_[op->var.get()] = old_binding;
+    } else {
+      let_bindings_.erase(op->var.get());
+    }
+  }
+
+  void VisitExpr_(const tir::LetNode* op) final {
+    VisitExpr(op->value);
+    auto it = let_bindings_.find(op->var.get());
+    const bool had_binding = it != let_bindings_.end();
+    PrimExpr old_binding;
+    if (had_binding) {
+      old_binding = it->second;
+    }
+    let_bindings_[op->var.get()] = op->value;
+    VisitExpr(op->body);
+    if (had_binding) {
+      let_bindings_[op->var.get()] = old_binding;
+    } else {
+      let_bindings_.erase(op->var.get());
+    }
+  }
+
+  void VisitExpr_(const tir::CallNode* op) final {
+    const auto* builtin = op->op.as<OpNode>();
+    if (builtin != nullptr) {
+      const std::string& builtin_name = builtin->name;
+      if (builtin_name == "tl.blackhole.get_semaphore") {
+        saw_semaphore_builtin_ = true;
+        ValidateGetSemaphoreCall(op);
+      } else if (builtin_name == "tl.blackhole.semaphore_wait" ||
+                 builtin_name == "tl.blackhole.semaphore_set") {
+        saw_semaphore_builtin_ = true;
+      } else if (builtin_name == "tl.blackhole.semaphore_inc_remote") {
+        saw_semaphore_builtin_ = true;
+        ValidateRemoteCoordPair(op, 1, 2, "semaphore_inc_remote");
+      } else if (builtin_name == "tl.blackhole.semaphore_set_remote") {
+        saw_semaphore_builtin_ = true;
+        ValidateRemoteCoordPair(op, 1, 2, "semaphore_set_remote");
+      }
+    }
+    tir::StmtExprVisitor::VisitExpr_(op);
+  }
+
+  std::string func_name_;
+  const KernelSpec& kernel_;
+  const std::unordered_set<uint32_t>& planned_semaphore_ids_;
+  std::unordered_map<const tir::VarNode*, PrimExpr> let_bindings_;
+  bool saw_semaphore_builtin_{false};
+  bool saw_semaphore_source_{false};
+};
+
+static void ValidateKernelCommunicationProtocolSchema(const tir::PrimFunc& func,
+                                                      const KernelSpec& kernel,
+                                                      const ExecutableSpec& spec) {
+  std::unordered_set<uint32_t> planned_semaphore_ids;
+  for (const auto& semaphore : spec.semaphores) {
+    planned_semaphore_ids.insert(semaphore.id);
+  }
+  CommunicationBuiltinSchemaValidator validator(func, kernel, planned_semaphore_ids);
+  (void)validator;
+}
+
 static bool MaterializationNeedsExplicitPerWorkAccessDescriptor(
     const BufferMaterializationSpec& materialization,
     const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name) {
@@ -2628,6 +2867,7 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
     kernel.semaphore_bindings = segment.semaphore_bindings;
     ValidateKernelRuntimeArgSchema(kernel, func_name);
     ValidateKernelExplicitPerWorkBindingSchema(spec->core_plan, kernel, func_name);
+    ValidateKernelCommunicationProtocolSchema(segment_func, kernel, *spec);
     kernel.source_code = EmitKernelSourceForPrimFunc(segment_func, kernel.name, target,
                                                      kernel_code_only);
     ICHECK(!kernel.source_code.empty())

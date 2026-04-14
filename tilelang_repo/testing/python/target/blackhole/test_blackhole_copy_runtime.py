@@ -529,6 +529,46 @@ def test_blackhole_module_direct_call_accepts_oversubscribed_multi_core_launch()
     )
 
 
+def test_blackhole_module_direct_call_rejects_oversubscribed_communication_contract():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = grid_indexed_staged_copy_kernel(grid_x=15, grid_y=10)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    semaphore_plan = [
+        {
+            "id": 0,
+            "initial_value": 0,
+            "core_type": "worker",
+            "core_ranges": [
+                {
+                    "start": {"core_x": 1, "core_y": 2},
+                    "end": {"core_x": 1, "core_y": 2},
+                }
+            ],
+        }
+    ]
+    mutated_mod = _rebuild_direct_runtime_module_with_body_and_attrs(
+        artifact,
+        semaphore_plan=semaphore_plan,
+    )
+
+    m, n = 10 * 32, 15 * 32
+    a_torch = torch.randn(m, n, dtype=torch.bfloat16)
+    b_output = torch.zeros_like(a_torch)
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="oversubscribed launch|no explicit semaphore or remote-core synchronization contract",
+    ):
+        mutated_mod["main"](a_torch, b_output)
+
+
 def test_blackhole_module_direct_call_rejects_empty_work_packets_at_build_time():
     target = Target("blackhole")
     kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
