@@ -254,7 +254,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::ffi::Array<tvm::ffi::Any> EncodeCommonRuntimeArgs(const std::string& segment_kind) const;
 
   /*! \brief Load logical buffer shapes from the semantic manifest when present. */
-  void LoadLogicalBufferShapes(const tvm::tir::PrimFunc& func);
+  void LoadLogicalBufferShapes(const tvm::tir::PrimFunc& func,
+                               const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>&
+                                   lowering_requirements);
 
   /*! \brief Return manifest-backed logical shape for a buffer when available. */
   std::vector<int64_t> GetLogicalBufferShape(const tvm::tir::Buffer& buffer) const;
@@ -271,12 +273,12 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Return the manifest-backed logical matrix shape for a compute-region buffer. */
   std::pair<int64_t, int64_t> GetLogicalMatrixShape(const tvm::tir::Buffer& buffer) const;
 
-  /*! \brief Load buffer-distribution contracts exported by SpatialProgram lowering support. */
-  void LoadBufferDistributionContracts(
+  /*! \brief Load buffer-distribution contracts exported by lowering requirements. */
+  void LoadBufferTileBridgeSpecs(
       const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>& lowering_requirements);
 
   /*! \brief Return the buffer-distribution contract for a buffer, or nullptr if absent. */
-  const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>* FindBufferDistributionContract(
+  const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>* FindBufferTileBridgeSpec(
       const tvm::tir::Buffer& buffer) const;
 
   /*! \brief Load compute-region buffer to physical accumulator bindings from compute regions. */
@@ -577,7 +579,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::vector<std::unordered_set<std::string>> compute_contract_known_buffers_;
   std::vector<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>> compute_epilogue_payloads_flat_;
   std::unordered_map<std::string, tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>
-      buffer_distribution_contracts_by_buffer_;
+      buffer_tile_bridge_specs_by_buffer_;
   std::unordered_map<std::string, tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>
       buffer_materialization_contracts_by_target_buffer_;
   std::unordered_map<const tvm::tir::VarNode*, tvm::tir::Buffer> compute_physical_buffers_by_data_;

@@ -28,10 +28,10 @@
 #include "lower_blackhole_ops.h"
 
 #include "../op/utils.h"
+#include "common/blackhole_lowering_requirements.h"
 #include "common/blackhole_utils.h"
 #include "common/blackhole_runtime_arg_schema.h"
 #include "common/companion_base.h"
-#include "common/spatial_program.h"
 #include "common/tt_target_program.h"
 
 #include <tvm/ir/attrs.h>
@@ -469,6 +469,68 @@ static Array<Any> EnsureSegmentBufferRuntimeArgs(const std::string& segment_kind
   Array<Any> runtime_args;
   for (const auto& item : buffer_args) {
     runtime_args.push_back(item);
+  }
+  auto append_runtime_arg_if_missing = [&](const std::string& name, const std::string& kind,
+                                           const std::string& buffer_name = "") {
+    if (FindRuntimeArgIndex(runtime_args, kind, buffer_name) >= 0) {
+      return;
+    }
+    runtime_args.push_back(MakeRuntimeArg(name, kind, "uint32", buffer_name));
+  };
+  if (is_reader) {
+    std::vector<std::string> input_buffers;
+    for (const auto& item : buffer_args) {
+      auto arg = item.as<Map<String, Any>>().value_or(Map<String, Any>());
+      if (arg.empty() || !arg.Get("kind")) {
+        continue;
+      }
+      const std::string arg_kind =
+          static_cast<std::string>(Downcast<String>(arg.Get("kind").value()));
+      if (arg_kind != "input_buffer_addr32" && arg_kind != "input_buffer_addr") {
+        continue;
+      }
+      input_buffers.push_back(
+          arg.Get("buffer") ? static_cast<std::string>(Downcast<String>(arg.Get("buffer").value()))
+                            : std::string());
+    }
+    if (!input_buffers.empty()) {
+      append_runtime_arg_if_missing("a_tile_start_id", "a_tile_start_id", input_buffers[0]);
+      append_runtime_arg_if_missing("a_tile_num_tiles", "a_tile_num_tiles", input_buffers[0]);
+      append_runtime_arg_if_missing("a_tile_stride", "a_tile_stride", input_buffers[0]);
+    }
+    if (input_buffers.size() > 1) {
+      append_runtime_arg_if_missing("b_tile_start_id", "b_tile_start_id", input_buffers[1]);
+      append_runtime_arg_if_missing("b_tile_num_tiles", "b_tile_num_tiles", input_buffers[1]);
+      append_runtime_arg_if_missing("b_tile_stride", "b_tile_stride", input_buffers[1]);
+    }
+    append_runtime_arg_if_missing("k_tile_start_id", "k_tile_start_id");
+    append_runtime_arg_if_missing("num_k_tiles", "num_k_tiles");
+  } else if (is_writer) {
+    std::string resolved_output_buffer_name = !output_buffer_name.empty() ? output_buffer_name : "";
+    if (resolved_output_buffer_name.empty()) {
+      for (const auto& item : buffer_args) {
+        auto arg = item.as<Map<String, Any>>().value_or(Map<String, Any>());
+        if (arg.empty() || !arg.Get("kind")) {
+          continue;
+        }
+        const std::string arg_kind =
+            static_cast<std::string>(Downcast<String>(arg.Get("kind").value()));
+        if (arg_kind != "output_buffer_addr32" && arg_kind != "output_buffer_addr") {
+          continue;
+        }
+        if (arg.Get("buffer")) {
+          resolved_output_buffer_name =
+              static_cast<std::string>(Downcast<String>(arg.Get("buffer").value()));
+        }
+        break;
+      }
+    }
+    append_runtime_arg_if_missing("output_tile_start_id", "output_tile_start_id",
+                                  resolved_output_buffer_name);
+    append_runtime_arg_if_missing("output_tile_num_tiles", "output_tile_num_tiles",
+                                  resolved_output_buffer_name);
+    append_runtime_arg_if_missing("output_tile_stride", "output_tile_stride",
+                                  resolved_output_buffer_name);
   }
   for (const auto& item : other_args) {
     runtime_args.push_back(item);
@@ -1190,8 +1252,7 @@ static bool HasUnsupportedComputeOpsInRequirements(const Map<String, Any>& lower
   if (auto compute_ops = lowering_requirements.Get("compute_op_kinds")) {
     for (const auto& item : Downcast<Array<Any>>(compute_ops.value())) {
       const std::string op_name = Downcast<String>(item);
-      if (op_name == "row_reduction" || op_name == "row_broadcast" ||
-          op_name == "pointwise_chain") {
+      if (op_name == "reduction" || op_name == "broadcast" || op_name == "pointwise_chain") {
         return true;
       }
     }
@@ -1252,47 +1313,48 @@ static int CountLoweredRowBroadcastBuiltins(const Stmt& body) {
 
 static Map<String, Any> PruneSatisfiedLoweringRequirements(const Map<String, Any>& lowering_requirements,
                                                            const Stmt& body) {
-  auto row_targets_opt = lowering_requirements.Get("row_reduction_targets");
-  auto row_broadcast_sources_opt = lowering_requirements.Get("row_broadcast_sources");
+  auto reduction_targets_opt = lowering_requirements.Get("reduction_targets");
+  auto broadcast_sources_opt = lowering_requirements.Get("broadcast_sources");
   auto pointwise_ops_opt = lowering_requirements.Get("pointwise_op_kinds");
-  if (!row_targets_opt.has_value() && !row_broadcast_sources_opt.has_value() &&
+  if (!reduction_targets_opt.has_value() && !broadcast_sources_opt.has_value() &&
       !pointwise_ops_opt.has_value()) {
     return lowering_requirements;
   }
 
-  bool row_reduction_satisfied = !row_targets_opt.has_value();
-  if (row_targets_opt.has_value()) {
-    const int target_count = static_cast<int>(Downcast<Array<Any>>(row_targets_opt.value()).size());
-    row_reduction_satisfied =
+  bool reduction_satisfied = !reduction_targets_opt.has_value();
+  if (reduction_targets_opt.has_value()) {
+    const int target_count =
+        static_cast<int>(Downcast<Array<Any>>(reduction_targets_opt.value()).size());
+    reduction_satisfied =
         target_count == 0 || CountLoweredRowReductionBuiltins(body) >= target_count;
   }
 
-  bool row_broadcast_satisfied = !row_broadcast_sources_opt.has_value();
-  if (row_broadcast_sources_opt.has_value()) {
+  bool broadcast_satisfied = !broadcast_sources_opt.has_value();
+  if (broadcast_sources_opt.has_value()) {
     const int source_count =
-        static_cast<int>(Downcast<Array<Any>>(row_broadcast_sources_opt.value()).size());
-    row_broadcast_satisfied =
+        static_cast<int>(Downcast<Array<Any>>(broadcast_sources_opt.value()).size());
+    broadcast_satisfied =
         source_count == 0 || !HasResidualRowBroadcast(body);
   }
 
-  if (!row_reduction_satisfied && !row_broadcast_satisfied) {
+  if (!reduction_satisfied && !broadcast_satisfied) {
     return lowering_requirements;
   }
 
   Map<String, Any> pruned;
   for (const auto& [key, value] : lowering_requirements) {
-    if (key == "row_reduction_targets" && row_reduction_satisfied) {
+    if (key == "reduction_targets" && reduction_satisfied) {
       continue;
     }
-    if (key == "row_broadcast_sources" && row_broadcast_satisfied) {
+    if (key == "broadcast_sources" && broadcast_satisfied) {
       continue;
     }
     if (key == "compute_op_kinds") {
       Array<Any> kept_ops;
       for (const auto& item : Downcast<Array<Any>>(value)) {
         const std::string op_name = Downcast<String>(item);
-        if (op_name == "row_reduction" && row_reduction_satisfied) continue;
-        if (op_name == "row_broadcast" && row_broadcast_satisfied) continue;
+        if (op_name == "reduction" && reduction_satisfied) continue;
+        if (op_name == "broadcast" && broadcast_satisfied) continue;
         kept_ops.push_back(item);
       }
       pruned.Set(key, kept_ops);
@@ -1350,99 +1412,6 @@ static void ValidateComputePipelineLegalityFromBody(const Stmt& body) {
   });
 }
 
-static std::optional<Array<Any>> GetSpatialWorkAxesFromProgram(const SpatialProgram& program) {
-  if (!program.defined()) {
-    return std::nullopt;
-  }
-  for (const SpatialLayout& layout : program->layouts) {
-    if (!layout->axes.empty()) {
-      Array<Any> axes;
-      for (const String& axis : layout->axes) {
-        axes.push_back(axis);
-      }
-      return axes;
-    }
-  }
-  for (const WorkPartition& partition : program->work_partitions) {
-    if (!partition->axes.empty()) {
-      Array<Any> axes;
-      for (const String& axis : partition->axes) {
-        axes.push_back(axis);
-      }
-      return axes;
-    }
-  }
-  return std::nullopt;
-}
-
-static int GetSpatialDerivedIndexExprCountFromProgram(const SpatialProgram& program) {
-  if (!program.defined()) {
-    return 0;
-  }
-  for (const SpatialLayout& layout : program->layouts) {
-    if (static_cast<std::string>(layout->kind) == "indexed") {
-      return 1;
-    }
-    for (const String& trait : layout->traits) {
-      if (static_cast<std::string>(trait) == "derived_indices") {
-        return 1;
-      }
-    }
-  }
-  return 0;
-}
-
-static int GetWorkDependentLoopBoundCountFromProgram(const SpatialProgram& program) {
-  if (!program.defined()) {
-    return 0;
-  }
-  for (const WorkPartition& partition : program->work_partitions) {
-    auto maybe_loop_bounds = partition->payload.Get(String(schema_key::kWorkDependentLoopBounds));
-    if (!maybe_loop_bounds) {
-      continue;
-    }
-    return static_cast<int>(Downcast<Array<Any>>(maybe_loop_bounds.value()).size());
-  }
-  return 0;
-}
-
-static bool HasTrait(const Array<String>& traits, const char* expected) {
-  for (const String& trait : traits) {
-    if (static_cast<std::string>(trait) == expected) {
-      return true;
-    }
-  }
-  return false;
-}
-
-static void CollectPipelineStageInfoFromSpatialProgram(const SpatialProgram& program,
-                                                       Array<Any>* stage_counts,
-                                                       Array<Any>* loop_vars) {
-  std::unordered_set<std::string> seen_loop_vars;
-  for (const ResourceIntent& intent : program->resource_intents) {
-    if (static_cast<std::string>(intent->kind) != "synchronization_support" ||
-        !HasTrait(intent->traits, "pipeline_contract")) {
-      continue;
-    }
-    auto maybe_pipeline_stages = intent->payload.Get(String(schema_key::kPipelineStages));
-    if (!maybe_pipeline_stages) {
-      continue;
-    }
-    for (const Any& stage_any : Downcast<Array<Any>>(maybe_pipeline_stages.value())) {
-      auto stage = stage_any.as<Map<String, Any>>().value_or(Map<String, Any>());
-      if (auto num_stages = stage.Get(String(schema_key::kNumStages))) {
-        stage_counts->push_back(Downcast<Integer>(num_stages.value()));
-      }
-      if (auto loop_var = stage.Get(String(schema_key::kLoopVar))) {
-        const std::string loop_var_name = Downcast<String>(loop_var.value());
-        if (!loop_var_name.empty() && seen_loop_vars.insert(loop_var_name).second) {
-          loop_vars->push_back(loop_var.value());
-        }
-      }
-    }
-  }
-}
-
 static void SetArrayRequirementIfMissing(Map<String, Any>* lowering_requirements,
                                          const String& key, const Array<Any>& values) {
   if (!values.empty() && !lowering_requirements->count(key)) {
@@ -1458,124 +1427,12 @@ static bool HasComputeSupportContract(const Map<String, Any>& lowering_requireme
   return !Downcast<Array<Any>>(maybe_compute_ops.value()).empty();
 }
 
-static void CollectLoweringSupportRequirementsFromSpatialProgram(const SpatialProgram& program,
-                                                         Map<String, Any>* lowering_requirements) {
-  for (const ResourceIntent& intent : program->resource_intents) {
-    if (static_cast<std::string>(intent->kind) != "lowering_support") {
-      continue;
-    }
-    if (HasTrait(intent->traits, "compute_support")) {
-      if (auto compute_ops = intent->payload.Get(String(schema_key::kComputeOpKinds))) {
-        SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kComputeOpKinds),
-                                     Downcast<Array<Any>>(compute_ops.value()));
-      }
-      if (auto row_targets = intent->payload.Get(String(schema_key::kRowReductionTargets))) {
-        SetArrayRequirementIfMissing(lowering_requirements,
-                                     String(schema_key::kRowReductionTargets),
-                                     Downcast<Array<Any>>(row_targets.value()));
-      }
-      if (auto row_broadcasts =
-              intent->payload.Get(String(schema_key::kRowBroadcastSources))) {
-        SetArrayRequirementIfMissing(lowering_requirements,
-                                     String(schema_key::kRowBroadcastSources),
-                                     Downcast<Array<Any>>(row_broadcasts.value()));
-      }
-      if (auto pointwise_ops = intent->payload.Get(String(schema_key::kPointwiseOpKinds))) {
-        SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kPointwiseOpKinds),
-                                     Downcast<Array<Any>>(pointwise_ops.value()));
-      }
-      if (auto loop_carried = intent->payload.Get(String(schema_key::kLoopCarriedState))) {
-        SetArrayRequirementIfMissing(lowering_requirements, String(schema_key::kLoopCarriedState),
-                                     Downcast<Array<Any>>(loop_carried.value()));
-      }
-      continue;
-    }
-    if (HasTrait(intent->traits, "buffer_materialization_support")) {
-      if (auto materialization_contracts =
-              intent->payload.Get(String(schema_key::kBufferMaterializationContracts))) {
-        SetArrayRequirementIfMissing(lowering_requirements,
-                                     String(schema_key::kBufferMaterializationContracts),
-                                     Downcast<Array<Any>>(materialization_contracts.value()));
-      }
-      continue;
-    }
-    if (HasTrait(intent->traits, "buffer_flow_support")) {
-      if (auto flow_contracts = intent->payload.Get(String(schema_key::kBufferFlowContracts))) {
-        SetArrayRequirementIfMissing(lowering_requirements,
-                                     String(schema_key::kBufferFlowContracts),
-                                     Downcast<Array<Any>>(flow_contracts.value()));
-      }
-      continue;
-    }
-    if (HasTrait(intent->traits, "buffer_distribution_support")) {
-      if (auto layout_contracts =
-              intent->payload.Get(String(schema_key::kBufferDistributionContracts))) {
-        SetArrayRequirementIfMissing(lowering_requirements,
-                                     String(schema_key::kBufferDistributionContracts),
-                                     Downcast<Array<Any>>(layout_contracts.value()));
-      }
-      continue;
-    }
-  }
-}
-
 static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& func) {
-  Map<String, Any> lowering_requirements;
-  auto spatial_program = func->GetAttr<SpatialProgram>(attr::kTLSpatialProgram);
-  ICHECK(spatial_program)
-      << "PlanTTKernelABI requires tl.spatial_program; run LowerToSpatialProgram and "
-         "ValidateSpatialProgram before lowering";
-
-  const SpatialProgram& program = spatial_program.value();
-  if (auto axes = GetSpatialWorkAxesFromProgram(program)) {
-    lowering_requirements.Set("work_axes", axes.value());
-  }
-  const int derived_index_expr_count = GetSpatialDerivedIndexExprCountFromProgram(program);
-  if (derived_index_expr_count > 0) {
-    lowering_requirements.Set("derived_index_expr_count", Integer(derived_index_expr_count));
-  }
-  const int work_dependent_loop_bound_count = GetWorkDependentLoopBoundCountFromProgram(program);
-  if (work_dependent_loop_bound_count > 0) {
-    lowering_requirements.Set("work_dependent_loop_bound_count",
-                              Integer(work_dependent_loop_bound_count));
-  }
-  if (!program->phases.empty()) {
-    lowering_requirements.Set("spatial_phase_count",
-                              Integer(static_cast<int>(program->phases.size())));
-  }
-  if (!program->channels.empty()) {
-    lowering_requirements.Set("spatial_channel_count",
-                              Integer(static_cast<int>(program->channels.size())));
-  }
-  Array<Any> phase_boundary_buffers;
-  std::unordered_set<std::string> seen_phase_boundary_buffers;
-  for (const ResourceIntent& intent : program->resource_intents) {
-    if (static_cast<std::string>(intent->kind) != "phase_boundary_materialization") {
-      continue;
-    }
-    ICHECK(str(intent->target_kind) == spatial_contract::kBufferTarget)
-        << "PlanTTKernelABI requires phase-boundary intents to target buffers";
-    const std::string buffer_name = static_cast<std::string>(intent->target_name);
-    if (buffer_name.empty() || !seen_phase_boundary_buffers.insert(buffer_name).second) {
-      continue;
-    }
-    phase_boundary_buffers.push_back(String(buffer_name));
-  }
-  if (!phase_boundary_buffers.empty()) {
-    lowering_requirements.Set("spatial_phase_boundary_buffers", phase_boundary_buffers);
-  }
-  Array<Any> stage_counts;
-  Array<Any> loop_vars;
-  CollectPipelineStageInfoFromSpatialProgram(program, &stage_counts, &loop_vars);
-  if (!stage_counts.empty()) {
-    lowering_requirements.Set("pipeline_stage_counts", stage_counts);
-  }
-  if (!loop_vars.empty()) {
-    lowering_requirements.Set("pipeline_loop_vars", loop_vars);
-  }
-  CollectLoweringSupportRequirementsFromSpatialProgram(program, &lowering_requirements);
-
-  return lowering_requirements;
+  auto spatial_plan = func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
+  ICHECK(spatial_plan)
+      << "PlanTTKernelABI requires tl.spatial_plan; run AnalyzeSpatialStructureFacts and "
+         "BuildSpatialPlanCompanion before lowering";
+  return BuildBlackholeLoweringRequirements(func, spatial_plan.value());
 }
 
 static bool BufferMaterializationContractHasField(const Map<String, Any>& contract,
@@ -1626,25 +1483,25 @@ BuildBufferMaterializationContractMap(const Map<String, Any>& lowering_requireme
   return contracts_by_target_buffer;
 }
 
-static std::unordered_map<std::string, Map<String, Any>> BuildBufferDistributionContractMap(
+static std::unordered_map<std::string, Map<String, Any>> BuildBufferTileBridgeSpecMap(
     const Map<String, Any>& lowering_requirements) {
-  std::unordered_map<std::string, Map<String, Any>> contracts_by_buffer;
-  auto maybe_contracts = lowering_requirements.Get(String(schema_key::kBufferDistributionContracts));
-  if (!maybe_contracts) {
-    return contracts_by_buffer;
+  std::unordered_map<std::string, Map<String, Any>> specs_by_buffer;
+  auto maybe_specs = lowering_requirements.Get(String(schema_key::kBufferTileBridgeSpecs));
+  if (!maybe_specs) {
+    return specs_by_buffer;
   }
-  for (const Any& contract_any : Downcast<Array<Any>>(maybe_contracts.value())) {
-    Map<String, Any> contract = Downcast<Map<String, Any>>(contract_any);
-    auto buffer_it = contract.find(String(schema_key::kBuffer));
-    if (buffer_it == contract.end()) {
+  for (const Any& spec_any : Downcast<Array<Any>>(maybe_specs.value())) {
+    Map<String, Any> spec = Downcast<Map<String, Any>>(spec_any);
+    auto buffer_it = spec.find(String(schema_key::kBuffer));
+    if (buffer_it == spec.end()) {
       continue;
     }
     const std::string buffer_name = Downcast<String>((*buffer_it).second);
     if (!buffer_name.empty()) {
-      contracts_by_buffer.emplace(buffer_name, contract);
+      specs_by_buffer.emplace(buffer_name, spec);
     }
   }
-  return contracts_by_buffer;
+  return specs_by_buffer;
 }
 
 static std::vector<std::string> CollectSegmentKindsFromBody(const Stmt& body) {
@@ -1708,9 +1565,9 @@ static Stmt WrapSegmentStmtIfNeeded(const std::string& current_segment_kind,
   return wrap_one(stmt);
 }
 
-void PlanTTKernelABI::LoadBufferDistributionContracts(
+void PlanTTKernelABI::LoadBufferTileBridgeSpecs(
     const Map<String, Any>& lowering_requirements) {
-  buffer_distribution_contracts_by_buffer_ = BuildBufferDistributionContractMap(lowering_requirements);
+  buffer_tile_bridge_specs_by_buffer_ = BuildBufferTileBridgeSpecMap(lowering_requirements);
 }
 
 Stmt PlanTTKernelABI::MaybeWrapComputeSegment(const Stmt& stmt) const {
@@ -1726,10 +1583,10 @@ Stmt PlanTTKernelABI::MaybeWrapComputeSegment(const Stmt& stmt) const {
                   StringImm("compute"), stmt);
 }
 
-const Map<String, Any>* PlanTTKernelABI::FindBufferDistributionContract(const Buffer& buffer) const {
+const Map<String, Any>* PlanTTKernelABI::FindBufferTileBridgeSpec(const Buffer& buffer) const {
   const std::string buffer_name = BufferIdentityName(buffer);
-  auto it = buffer_distribution_contracts_by_buffer_.find(buffer_name);
-  if (it == buffer_distribution_contracts_by_buffer_.end()) {
+  auto it = buffer_tile_bridge_specs_by_buffer_.find(buffer_name);
+  if (it == buffer_tile_bridge_specs_by_buffer_.end()) {
     return nullptr;
   }
   return &it->second;
@@ -1994,7 +1851,8 @@ static std::string GetStorageScope(const Buffer& buffer) {
 
 PlanTTKernelABI::PlanTTKernelABI() : next_requirement_index_(0) {}
 
-void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func) {
+void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func,
+                                              const Map<String, Any>& lowering_requirements) {
   logical_buffer_shapes_.clear();
   std::unordered_map<std::string, std::vector<int64_t>> canonical_shapes;
   auto register_shape = [&](const std::string& name, const std::vector<int64_t>& shape) {
@@ -2030,61 +1888,46 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func) {
     }
   });
 
-  auto spatial_program = func->GetAttr<SpatialProgram>(attr::kTLSpatialProgram);
-  if (spatial_program.has_value()) {
-    auto decode_shape = [&](const Any& shape_any) -> std::vector<int64_t> {
-      std::vector<int64_t> shape;
-      for (const Integer& dim : Downcast<Array<Integer>>(shape_any)) {
-        shape.push_back(dim->value);
-      }
-      return shape;
-    };
-    auto register_distribution_contract_shape = [&](const Map<String, Any>& contract) {
-      auto buffer_it = contract.find(String(schema_key::kBuffer));
-      auto shape_it = contract.find(String(schema_key::kShape));
-      if (buffer_it == contract.end() || shape_it == contract.end()) {
-        return;
-      }
-      register_shape(Downcast<String>((*buffer_it).second), decode_shape((*shape_it).second));
-    };
-    auto register_materialization_contract_shape = [&](const Map<String, Any>& contract) {
-      auto target_it = contract.find(String(schema_key::kTargetBuffer));
-      auto row_width_it = contract.find(String(schema_key::kLogicalRowWidth));
-      auto element_count_it = contract.find(String(schema_key::kLogicalElementCount));
-      if (target_it == contract.end() || row_width_it == contract.end() ||
-          element_count_it == contract.end()) {
-        return;
-      }
-      const std::string target_name = Downcast<String>((*target_it).second);
-      const int64_t row_width = Downcast<Integer>((*row_width_it).second)->value;
-      const int64_t element_count = Downcast<Integer>((*element_count_it).second)->value;
-      if (target_name.empty() || row_width <= 0 || element_count <= 0 ||
-          element_count % row_width != 0) {
-        return;
-      }
-      register_shape(target_name, {element_count / row_width, row_width});
-    };
-
-    for (const ResourceIntent& intent : spatial_program.value()->resource_intents) {
-      if (static_cast<std::string>(intent->kind) != "lowering_support") {
-        continue;
-      }
-      if (HasTrait(intent->traits, "buffer_distribution_support")) {
-        if (auto contracts = intent->payload.Get(String(schema_key::kBufferDistributionContracts))) {
-          for (const Any& contract_any : Downcast<Array<Any>>(contracts.value())) {
-            register_distribution_contract_shape(Downcast<Map<String, Any>>(contract_any));
-          }
-        }
-        continue;
-      }
-      if (HasTrait(intent->traits, "buffer_materialization_support")) {
-        if (auto contracts =
-                intent->payload.Get(String(schema_key::kBufferMaterializationContracts))) {
-          for (const Any& contract_any : Downcast<Array<Any>>(contracts.value())) {
-            register_materialization_contract_shape(Downcast<Map<String, Any>>(contract_any));
-          }
-        }
-      }
+  auto decode_shape = [&](const Any& shape_any) -> std::vector<int64_t> {
+    std::vector<int64_t> shape;
+    for (const Integer& dim : Downcast<Array<Integer>>(shape_any)) {
+      shape.push_back(dim->value);
+    }
+    return shape;
+  };
+  auto register_tile_bridge_shape = [&](const Map<String, Any>& spec) {
+    auto buffer_it = spec.find(String(schema_key::kBuffer));
+    auto shape_it = spec.find(String(schema_key::kShape));
+    if (buffer_it == spec.end() || shape_it == spec.end()) {
+      return;
+    }
+    register_shape(Downcast<String>((*buffer_it).second), decode_shape((*shape_it).second));
+  };
+  auto register_materialization_contract_shape = [&](const Map<String, Any>& contract) {
+    auto target_it = contract.find(String(schema_key::kTargetBuffer));
+    auto row_width_it = contract.find(String(schema_key::kLogicalRowWidth));
+    auto element_count_it = contract.find(String(schema_key::kLogicalElementCount));
+    if (target_it == contract.end() || row_width_it == contract.end() ||
+        element_count_it == contract.end()) {
+      return;
+    }
+    const std::string target_name = Downcast<String>((*target_it).second);
+    const int64_t row_width = Downcast<Integer>((*row_width_it).second)->value;
+    const int64_t element_count = Downcast<Integer>((*element_count_it).second)->value;
+    if (target_name.empty() || row_width <= 0 || element_count <= 0 ||
+        element_count % row_width != 0) {
+      return;
+    }
+    register_shape(target_name, {element_count / row_width, row_width});
+  };
+  if (auto specs = lowering_requirements.Get(String(schema_key::kBufferTileBridgeSpecs))) {
+    for (const Any& spec_any : Downcast<Array<Any>>(specs.value())) {
+      register_tile_bridge_shape(Downcast<Map<String, Any>>(spec_any));
+    }
+  }
+  if (auto contracts = lowering_requirements.Get(String(schema_key::kBufferMaterializationContracts))) {
+    for (const Any& contract_any : Downcast<Array<Any>>(contracts.value())) {
+      register_materialization_contract_shape(Downcast<Map<String, Any>>(contract_any));
     }
   }
 
@@ -2198,9 +2041,9 @@ std::vector<int64_t> PlanTTKernelABI::GetLogicalBufferShape(const Buffer& buffer
   if (it != logical_buffer_shapes_.end()) {
     return it->second;
   }
-  if (const Map<String, Any>* contract = FindBufferDistributionContract(buffer)) {
-    auto shape_it = contract->find(String(schema_key::kShape));
-    if (shape_it != contract->end()) {
+  if (const Map<String, Any>* spec = FindBufferTileBridgeSpec(buffer)) {
+    auto shape_it = spec->find(String(schema_key::kShape));
+    if (shape_it != spec->end()) {
       std::vector<int64_t> shape;
       for (const Integer& dim : Downcast<Array<Integer>>((*shape_it).second)) {
         shape.push_back(dim->value);
@@ -2296,7 +2139,6 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   logical_buffer_shapes_.clear();
   compute_physical_buffers_by_data_.clear();
   compute_physical_buffers_by_identity_.clear();
-  LoadLogicalBufferShapes(func);
   LoadComputeRegionPhysicalBufferBindings(func);
   tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
     if (const auto* attr = node.as<AttrStmtNode>()) {
@@ -2345,7 +2187,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   compute_epilogue_payloads_.clear();
   active_compute_contract_payload_index_ = -1;
   compute_epilogue_payloads_flat_.clear();
-  buffer_distribution_contracts_by_buffer_.clear();
+  buffer_tile_bridge_specs_by_buffer_.clear();
   buffer_materialization_contracts_by_target_buffer_.clear();
   gemm_input_buffer_num_tiles_.clear();
   gemm_transpose_a_ = false;
@@ -2361,10 +2203,11 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   gemm_a_dtype_ = DataType::Void();
   gemm_b_dtype_ = DataType::Void();
   gemm_c_dtype_ = DataType::Void();
-  ValidateComputePipelineLegalityFromBody(func->body);
   Map<String, Any> lowering_requirements = BuildLoweringRequirementsFromAnalysis(func);
+  LoadLogicalBufferShapes(func, lowering_requirements);
+  ValidateComputePipelineLegalityFromBody(func->body);
   requires_compute_segment_ = HasComputeSupportContract(lowering_requirements);
-  LoadBufferDistributionContracts(lowering_requirements);
+  LoadBufferTileBridgeSpecs(lowering_requirements);
   buffer_materialization_contracts_by_target_buffer_ =
       BuildBufferMaterializationContractMap(lowering_requirements);
   LoadBufferFlowContracts(lowering_requirements);
@@ -3074,109 +2917,111 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
                static_cast<std::string>(Downcast<String>(arg.Get("kind").value())) == arg_kind;
       });
     };
-    auto has_spec = [&](const char* arg_kind) {
-      return std::any_of(per_work_arg_specs.begin(), per_work_arg_specs.end(), [&](const Any& item) {
-        auto spec = item.as<Map<String, Any>>().value_or(Map<String, Any>());
-        return spec.Get(String(blackhole_runtime_arg_schema::kArgKind)) &&
-               static_cast<std::string>(Downcast<String>(
-                   spec.Get(String(blackhole_runtime_arg_schema::kArgKind)).value())) == arg_kind;
-      });
-    };
-    auto push_if_needed = [&](const Map<String, Any>& spec) {
+    auto upsert_spec = [&](const Map<String, Any>& spec) {
       const std::string arg_kind = static_cast<std::string>(
           Downcast<String>(spec.Get(String(blackhole_runtime_arg_schema::kArgKind)).value()));
-      if (!has_spec(arg_kind.c_str())) {
-        per_work_arg_specs.push_back(spec);
+      for (int i = 0; i < per_work_arg_specs.size(); ++i) {
+        auto existing = per_work_arg_specs[i].as<Map<String, Any>>().value_or(Map<String, Any>());
+        if (existing.empty() || !existing.Get(String(blackhole_runtime_arg_schema::kArgKind))) {
+          continue;
+        }
+        const std::string existing_arg_kind = static_cast<std::string>(Downcast<String>(
+            existing.Get(String(blackhole_runtime_arg_schema::kArgKind)).value()));
+        if (existing_arg_kind == arg_kind) {
+          per_work_arg_specs.Set(i, spec);
+          return;
+        }
       }
+      per_work_arg_specs.push_back(spec);
     };
 
     if (kind == "fused_dataflow") {
       if (runtime_args_contain_kind("a_tile_start_id")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "a_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
             copy_input_buffer_name));
       }
       if (runtime_args_contain_kind("a_tile_num_tiles")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "a_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant,
             copy_input_buffer_name, 1));
       }
       if (runtime_args_contain_kind("a_tile_stride")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "a_tile_stride", blackhole_runtime_arg_schema::kValueConstant,
             copy_input_buffer_name, 1));
       }
       if (runtime_args_contain_kind("output_tile_start_id")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "output_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
             copy_output_buffer_name));
       }
       if (runtime_args_contain_kind("output_tile_num_tiles")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "output_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant,
             copy_output_buffer_name, 1));
       }
       if (runtime_args_contain_kind("output_tile_stride")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "output_tile_stride", blackhole_runtime_arg_schema::kValueConstant,
             copy_output_buffer_name, 1));
       }
     }
     if (kind == "reader") {
       if (runtime_args_contain_kind("a_tile_start_id")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "a_tile_start_id", blackhole_runtime_arg_schema::kValueLogicalBlockY,
             gemm_a_buffer_name_));
       }
       if (runtime_args_contain_kind("a_tile_num_tiles")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "a_tile_num_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles,
             gemm_a_buffer_name_));
       }
       if (runtime_args_contain_kind("a_tile_stride")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "a_tile_stride", blackhole_runtime_arg_schema::kValueConstant, gemm_a_buffer_name_,
             1));
       }
       if (runtime_args_contain_kind("b_tile_start_id")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "b_tile_start_id", blackhole_runtime_arg_schema::kValueLogicalBlockX,
             gemm_b_buffer_name_));
       }
       if (runtime_args_contain_kind("b_tile_num_tiles")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "b_tile_num_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles,
             gemm_b_buffer_name_));
       }
       if (runtime_args_contain_kind("b_tile_stride")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "b_tile_stride", blackhole_runtime_arg_schema::kValueGemmLogicalNTiles,
             gemm_b_buffer_name_));
       }
     }
     if (kind == "reader" || kind == "compute") {
       if (runtime_args_contain_kind("k_tile_start_id")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "k_tile_start_id", blackhole_runtime_arg_schema::kValueConstant, "", 0));
       }
       if (runtime_args_contain_kind("num_k_tiles")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "num_k_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles));
       }
     }
     if (kind == "writer") {
       if (runtime_args_contain_kind("output_tile_start_id")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "output_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
             gemm_c_buffer_name_));
       }
       if (runtime_args_contain_kind("output_tile_num_tiles")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "output_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant,
             gemm_c_buffer_name_, 1));
       }
       if (runtime_args_contain_kind("output_tile_stride")) {
-        push_if_needed(MakePerWorkArgSpec(
+        upsert_spec(MakePerWorkArgSpec(
             "output_tile_stride", blackhole_runtime_arg_schema::kValueConstant,
             gemm_c_buffer_name_, 1));
       }
@@ -4430,7 +4275,7 @@ Stmt PlanTTKernelABI::GenerateAddFragmentFromCBFrontSequence(const Buffer& dst,
   op_payload.Set("src_buffer", String(BufferIdentityName(src_buffer)));
   const Map<String, Any>* contract = FindBufferMaterializationContract(dst);
   ICHECK(contract != nullptr)
-      << "PlanTTKernelABI requires buffer_materialization_contract in SpatialProgram for "
+      << "PlanTTKernelABI requires buffer_materialization_contract in lowering_requirements for "
          "add_fragment_from_cb_front destination "
       << dst_buffer_name;
   op_payload.Set(String(schema_key::kBufferMaterializationContract), *contract);
@@ -4463,7 +4308,7 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
   }
   const Map<String, Any>* contract = FindBufferMaterializationContract(dst);
   ICHECK(contract != nullptr)
-      << "PlanTTKernelABI requires buffer_materialization_contract in SpatialProgram for "
+      << "PlanTTKernelABI requires buffer_materialization_contract in lowering_requirements for "
          "merge_fragment_tiles destination "
       << dst_buffer_name;
   auto bridge_it = contract->find(String(schema_key::kBridgeKind));
@@ -5995,12 +5840,12 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
   SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
   SetOptionalExprField(&op_payload, "row_width_expr", lowered_match.row_width);
   if (lowered_match.grouped) {
-    const Map<String, Any>* layout_contract = FindBufferDistributionContract(lowered_match.src);
-    ICHECK(layout_contract != nullptr)
-        << "PlanTTKernelABI requires buffer_distribution_contract in SpatialProgram for grouped "
+    const Map<String, Any>* bridge_spec = FindBufferTileBridgeSpec(lowered_match.src);
+    ICHECK(bridge_spec != nullptr)
+        << "PlanTTKernelABI requires buffer_tile_bridge_spec in lowering_requirements for grouped "
            "row reduction source "
         << BufferIdentityName(lowered_match.src);
-    op_payload.Set(String(schema_key::kBufferDistributionContract), *layout_contract);
+    op_payload.Set(String(schema_key::kBufferTileBridgeSpec), *bridge_spec);
   }
   RecordComputeEpilogueOp(std::move(op_payload));
   const Buffer physical_src = ResolvePhysicalComputeBuffer(lowered_match.src);
@@ -6090,12 +5935,12 @@ Stmt PlanTTKernelABI::GenerateRowBroadcastSequence(const RowBroadcastMatch& matc
   SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
   SetOptionalExprField(&op_payload, "row_width_expr", lowered_match.row_width);
   if (lowered_match.grouped) {
-    const Map<String, Any>* layout_contract = FindBufferDistributionContract(lowered_match.dst);
-    ICHECK(layout_contract != nullptr)
-        << "PlanTTKernelABI requires buffer_distribution_contract in SpatialProgram for grouped "
+    const Map<String, Any>* bridge_spec = FindBufferTileBridgeSpec(lowered_match.dst);
+    ICHECK(bridge_spec != nullptr)
+        << "PlanTTKernelABI requires buffer_tile_bridge_spec in lowering_requirements for grouped "
            "row broadcast destination "
         << BufferIdentityName(lowered_match.dst);
-    op_payload.Set(String(schema_key::kBufferDistributionContract), *layout_contract);
+    op_payload.Set(String(schema_key::kBufferTileBridgeSpec), *bridge_spec);
   }
   RecordComputeEpilogueOp(std::move(op_payload));
   const Buffer physical_dst = ResolvePhysicalComputeBuffer(lowered_match.dst);
@@ -6296,12 +6141,12 @@ Stmt PlanTTKernelABI::GenerateExp2RowBroadcastAffineSequence(
   SetOptionalExprField(&op_payload, "dst_scale_expr", lowered_match.dst_scale);
   SetOptionalExprField(&op_payload, "scalar_scale_expr", lowered_match.scalar_scale);
   if (lowered_match.grouped) {
-    const Map<String, Any>* layout_contract = FindBufferDistributionContract(lowered_match.dst);
-    ICHECK(layout_contract != nullptr)
-        << "PlanTTKernelABI requires buffer_distribution_contract in SpatialProgram for grouped "
+    const Map<String, Any>* bridge_spec = FindBufferTileBridgeSpec(lowered_match.dst);
+    ICHECK(bridge_spec != nullptr)
+        << "PlanTTKernelABI requires buffer_tile_bridge_spec in lowering_requirements for grouped "
            "exp2 row broadcast destination "
         << BufferIdentityName(lowered_match.dst);
-    op_payload.Set(String(schema_key::kBufferDistributionContract), *layout_contract);
+    op_payload.Set(String(schema_key::kBufferTileBridgeSpec), *bridge_spec);
   }
   RecordComputeEpilogueOp(std::move(op_payload));
   const Buffer physical_dst = ResolvePhysicalComputeBuffer(lowered_match.dst);
@@ -6779,16 +6624,15 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
           Downcast<String>((*protocol_it).second) ==
               buffer_materialization::kTiledCBRepublish;
       if (use_tiled_republish_materialization) {
-        auto distribution_contract_it =
-            buffer_distribution_contracts_by_buffer_.find(dst_buffer_name);
+        auto bridge_spec_it = buffer_tile_bridge_specs_by_buffer_.find(dst_buffer_name);
         auto row_width_it = contract->find(String(schema_key::kLogicalRowWidth));
         if (row_width_it != contract->end()) {
           tiled_republish_row_width = IntImm(
               DataType::Int(32),
               static_cast<int>(Downcast<Integer>((*row_width_it).second)->value));
-        } else if (distribution_contract_it != buffer_distribution_contracts_by_buffer_.end()) {
-          auto shape_it = distribution_contract_it->second.find(String(schema_key::kShape));
-          if (shape_it != distribution_contract_it->second.end()) {
+        } else if (bridge_spec_it != buffer_tile_bridge_specs_by_buffer_.end()) {
+          auto shape_it = bridge_spec_it->second.find(String(schema_key::kShape));
+          if (shape_it != bridge_spec_it->second.end()) {
             const Array<Integer> logical_shape = Downcast<Array<Integer>>((*shape_it).second);
             if (logical_shape.size() >= 2U) {
               tiled_republish_row_width =
@@ -6820,9 +6664,9 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
           num_elements_expr = IntImm(
               DataType::Int(32),
               static_cast<int>(Downcast<Integer>((*logical_element_count_it).second)->value));
-        } else if (distribution_contract_it != buffer_distribution_contracts_by_buffer_.end()) {
-          auto shape_it = distribution_contract_it->second.find(String(schema_key::kShape));
-          if (shape_it != distribution_contract_it->second.end()) {
+        } else if (bridge_spec_it != buffer_tile_bridge_specs_by_buffer_.end()) {
+          auto shape_it = bridge_spec_it->second.find(String(schema_key::kShape));
+          if (shape_it != bridge_spec_it->second.end()) {
             int64_t logical_element_count = 1;
             for (const Integer& dim : Downcast<Array<Integer>>((*shape_it).second)) {
               logical_element_count *= dim->value;

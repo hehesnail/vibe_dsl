@@ -85,12 +85,21 @@ SpatialPlan::SpatialPlan(ffi::String member_func, ffi::Array<ExecutionClosure> c
   data_ = std::move(n);
 }
 
+TLDeviceProgramInfo::TLDeviceProgramInfo(ffi::String root_symbol,
+                                         ffi::Array<ffi::String> member_funcs) {
+  auto n = ffi::make_object<TLDeviceProgramInfoNode>();
+  n->root_symbol = std::move(root_symbol);
+  n->member_funcs = std::move(member_funcs);
+  data_ = std::move(n);
+}
+
 TVM_FFI_STATIC_INIT_BLOCK() {
   ExecutionClosureNode::RegisterReflection();
   ClosureBoundaryNode::RegisterReflection();
   ValidatedHintSetNode::RegisterReflection();
   SpatialStructureFactsNode::RegisterReflection();
   SpatialPlanNode::RegisterReflection();
+  TLDeviceProgramInfoNode::RegisterReflection();
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
@@ -141,6 +150,11 @@ TVM_FFI_STATIC_INIT_BLOCK() {
         return SpatialPlan(std::move(member_func), std::move(closures),
                            std::move(boundaries), std::move(validated_hints),
                            std::move(anchors));
+      });
+  refl::GlobalDef().def(
+      "tl.TLDeviceProgramInfo",
+      [](ffi::String root_symbol, ffi::Array<ffi::String> member_funcs) {
+        return TLDeviceProgramInfo(std::move(root_symbol), std::move(member_funcs));
       });
 }
 

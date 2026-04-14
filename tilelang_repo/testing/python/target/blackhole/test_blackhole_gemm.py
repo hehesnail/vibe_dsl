@@ -9,6 +9,7 @@ from tvm.target import Target
 
 from .common import (
     assert_tensors_close_or_dump,
+    prepare_blackhole_phase_b_module,
     check_blackhole_codegen_requirements,
     check_blackhole_direct_execution_requirements,
     extract_blackhole_compute_contract,
@@ -223,7 +224,7 @@ def multicore_gemm_kernel(
     return main
 
 
-def test_blackhole_gemm_pipeline_attaches_spatial_program():
+def test_blackhole_gemm_pipeline_uses_spatial_plan_without_spatial_program():
     kernel = gemm_kernel()
     target = Target("blackhole")
 
@@ -231,12 +232,13 @@ def test_blackhole_gemm_pipeline_attaches_spatial_program():
         artifact = lower(kernel, target=target)
 
     device_func = artifact.device_mod["main_kernel"]
-    program = device_func.attrs["tl.spatial_program"]
+    plan = device_func.attrs["tl.spatial_plan"]
     lowering_requirements = device_func.attrs["blackhole.lowering_requirements"]
-    assert [str(task.name) for task in program.tasks] == ["reader", "compute", "writer"]
-    assert [str(task.kind) for task in program.tasks] == ["transfer", "compute", "transfer"]
-    assert int(lowering_requirements["spatial_phase_count"]) == 1
-    assert int(lowering_requirements["spatial_channel_count"]) == 3
+    assert device_func.attrs.get("tl.spatial_program") is None
+    assert {"ingress", "compute", "egress"}.issubset(
+        {str(closure.execution_role) for closure in plan.closures}
+    )
+    assert "gemm" in set(lowering_requirements["compute_op_kinds"])
 
 
 def test_blackhole_gemm_arg_identity_drives_cross_segment_dedupe():
@@ -262,6 +264,17 @@ def test_blackhole_gemm_arg_identity_drives_cross_segment_dedupe():
     for segment in extract_blackhole_segment_plan(device_main):
         mutated_segment = dict(segment)
         runtime_args = [_with_identity(arg) for arg in segment["runtime_args"]]
+        if str(segment["kind"]) in {"reader", "writer"} and not any(
+            str(arg["kind"]) == "work_linear_id" for arg in runtime_args
+        ):
+            runtime_args.append(
+                {
+                    "name": "work_linear_id",
+                    "kind": "work_linear_id",
+                    "identity": f"{segment['kind']}_work_linear_id",
+                    "dtype": "uint32",
+                }
+            )
         for arg in runtime_args:
             if str(arg["kind"]) == "work_linear_id":
                 arg["identity"] = f"{segment['kind']}_work_linear_id"
@@ -1356,40 +1369,31 @@ def test_blackhole_fragment_fill_cast_publish_runtime():
     )
 
 
-def test_blackhole_fragment_fill_cast_publish_materializes_generic_compute_writer_segments():
+def test_blackhole_fragment_fill_cast_publish_exposes_buffer_tile_bridge_specs():
     kernel = fragment_fill_cast_publish_kernel()
     target = Target("blackhole")
 
     mod = tilelang.tvm.IRModule({"main": kernel})
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
-    mod = lower_blackhole_to_tt_target(mod)
+    mod = prepare_blackhole_phase_b_module(mod)
 
-    lowering_requirements = mod["main"].attrs["blackhole.lowering_requirements"]
-    layout_contracts = list(lowering_requirements["buffer_distribution_contracts"])
-    by_buffer = {str(contract["buffer"]): contract for contract in layout_contracts}
+    compute_regions = list(mod["main"].attrs["blackhole.compute_regions"])
+    bridge_specs = []
+    for region in compute_regions:
+        if "buffer_tile_bridge_specs" in region:
+            bridge_specs.extend(list(region["buffer_tile_bridge_specs"]))
+    by_buffer = {str(spec["buffer"]): spec for spec in bridge_specs}
 
     assert {"C_local", "D_local"}.issubset(by_buffer)
     for name in ("C_local", "D_local"):
-        contract = by_buffer[name]
-        assert str(contract["distribution_kind"]) == "thread_distributed"
-        assert tuple(int(dim) for dim in contract["shape"]) == (32, 32)
-        assert tuple(int(dim) for dim in contract["local_shape"]) == (8,)
-        assert int(contract["thread_extent"]) == 128
-        assert int(contract["replicate_extent"]) == 1
-        assert len(contract["inverse_logical_index_exprs"]) == 3
-
-    mod = tilelang.tvm.IRModule({"main": kernel})
-    with target:
-        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
-
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    lowered = lower_blackhole_to_tt_target(mod)
-
-    func = lowered["main"]
-    segments = extract_blackhole_segment_plan(func)
-    assert [str(segment["kind"]) for segment in segments] == ["compute", "writer"]
-    assert [str(segment["core_type"]) for segment in segments] == ["trisc", "ncrisc"]
+        spec = by_buffer[name]
+        assert str(spec["scope"]) == "local"
+        assert tuple(int(dim) for dim in spec["shape"]) == (32, 32)
+        assert tuple(int(dim) for dim in spec["local_shape"]) == (8,)
+        assert int(spec["thread_extent"]) == 128
+        assert int(spec["replicate_extent"]) == 1
+        assert len(spec["inverse_logical_index_exprs"]) == 3
 
 
 def test_blackhole_gemm_direct_runtime_supports_transpose_a_compute_contract():

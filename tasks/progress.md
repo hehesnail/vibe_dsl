@@ -11,14 +11,15 @@
 
 ## 当前代码现实
 
-当前代码还没有完全站到最终主链上。
+当前代码已经完成本轮 `P0` 旧 side-contract 清理，
+但还没有完全站到最终 planner 主链上。
 
 当前实际链路是：
 
 ```text
 Normalized Tile TIR
   -> SpatialPlan companion
-  -> residual Blackhole analysis facts
+  -> residual Blackhole analysis facts / lowering requirements helper
   -> BuildTTProgram helper bridge
   -> TTProgram companion
   -> ExecutableSpec
@@ -31,6 +32,13 @@ Normalized Tile TIR
   `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
 
 都只视为**迁移残留**，不属于长期架构。
+
+已经退出 active path 的旧对象：
+
+- `SpatialProgram` 作为 execution-bearing IR
+- `buffer_distribution_contract`
+- runtime/codegen 侧把 top-level stale per-work payload
+  当成 multi-segment ABI 真源的 fallback
 
 ## 当前目标
 
@@ -67,33 +75,48 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
   中间 seed attr 的公开 surface 已删除
 - runtime / codegen 当前只读 `TTProgram / ExecutableSpec`
   的正式 reader 路线，不再保留公开 legacy entry
+- 本轮 `P0` 旧 side-contract 清理已完成：
+  - `SpatialProgram` pass / companion / 相关测试入口
+    已从 active path 删除
+  - `buffer_distribution_contract`
+    已从 lowering / codegen / regression surface 删除，
+    统一收敛到 `buffer_tile_bridge_specs`
+  - multi-segment `TTProgram` 的
+    segment-local `per_work_arg_specs`
+    已成为 reader/writer ABI 真源，
+    `flash-attn` 不再回退到 top-level stale copy descriptor
+  - `flash-attn` compile-path 回归基线
+    已在新 ABI truth 下重新稳定
 
 ## 当前未完成
 
-1. 用真实的
-   `PlanTTTransport + PlanTTCompute`
-   替掉 `BuildTTProgram` 内部 helper bridge
-2. 删除剩余 late matcher / side contract
-3. 在新 route 上完成 `flash-attn` admitted subset payoff
-4. 在新 route 上承接
+1. 在当前 `TTProgram / ExecutableSpec` 真源下完成
+   `flash-attn` admitted subset payoff / correctness 收口
+2. 在新 route 上承接
    `topk / fusedmoe / paged decode / chunk recurrence`
-5. 扩更宽的 copy / data movement / sync 支持面
+3. 扩更宽的 copy / data movement / sync 支持面
+4. 继续把 `BuildTTProgram` 内部 helper bridge
+   拆向真实的
+   `PlanTTTransport + PlanTTCompute`
+   owner pass
 
 ## 当前优先级
 
-1. **P0: 真实 `PlanTTTransport + PlanTTCompute` cut-in**
-   - 用 anchored sub-TIR 上仍保留的
-     tile-op / layout / `BufferLoad / BufferStore`
-     完成 target builtin mapping
-   - 删除 `row_* / broadcast_sources / index map / access pattern /
-     buffer_distribution_contract`
-     这类旧 side contract
+1. **P0 清理批次已完成**
+   - `SpatialProgram` / `buffer_distribution_contract`
+     已退出 active path
+   - segment-local per-work ABI truth
+     已在 `TTProgram / ExecutableSpec` 收口
 2. **P1: `flash-attn` payoff**
-   - 在新 route 上兑现 multi-phase transport / reduction / broadcast
+   - 在当前新 route 上兑现 multi-phase transport / reduction / broadcast
+   - 继续把 compile-path 稳定性兑现成 correctness/admitted subset
 3. **P2: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
 4. **P3: wider support surface**
    - copy / dataflow / sync
+5. **架构债收口**
+   - 继续把 `BuildTTProgram` helper bridge
+     拆向真实 `PlanTTTransport + PlanTTCompute`
 
 ## 当前稳定基线
 
@@ -123,9 +146,8 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
   带显式 `TTSemaphorePlan` / remote descriptors 的 executable
   仍应 fail-fast
 - `flash-attn` direct runtime
-  当前还不是 admitted support surface；
-  缺显式 per-work contract 或 transport/compute protocol truth
-  的 kernel 继续 unsupported
+  compile-path / source/spec baseline 已稳定，
+  但 runtime correctness 还不是 admitted support surface
 - TT-Sim `fp16`
   仍按 simulator capability boundary 处理，
   不作为当前 correctness gate
@@ -133,15 +155,20 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
 ## 最新验证摘要
 
 - `tilelang` 构建通过
+- `test_blackhole_copy_pipeline.py`
+  `41 passed, 10 skipped, 1 xfailed`
+- `test_blackhole_gemm.py`
+  `27 passed, 15 skipped`
 - `test_blackhole_spatial_ir.py`
-  当前基线通过
-- copy pipeline 定向回归当前基线通过
-- selected `flash-attn` pipeline regression
-  当前文档与 active path 对齐通过
+  `5 passed`
+- `test_blackhole_flash_attention_analysis.py`
+  `7 passed`
+- `test_blackhole_flash_attention_pipeline.py`
+  `62 passed`
 
 ## 下一步
 
-1. 落地 `PlanTTTransport + PlanTTCompute`
-2. 删除剩余 helper bridge / old side contract
-3. 推进 `flash-attn` payoff
-4. 再进 wider family / support surface
+1. 推进 `flash-attn` correctness / admitted subset payoff
+2. 再进 wider family / support surface
+3. 继续把 `BuildTTProgram` helper bridge
+   拆向真实 `PlanTTTransport + PlanTTCompute`

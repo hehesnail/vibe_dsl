@@ -285,6 +285,19 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   probe/test 只能验证当前 admitted 的 canonical 输出，
   不要把中间 bridge attrs 或未 admitted 的 `flash-attn` 前提
   固化成长期绿测
+- multi-segment `TTProgram`
+  的 per-work ABI truth 必须留在 segment 本地并能经
+  `tt_program_projection::EncodeSegmentPlan`
+  完整 round-trip；
+  top-level aggregate/per-work payload
+  不能再给 reader/writer multi-kernel path 充当 fallback 真源
+- `flash-attn` 这类 optimized path 如果会在后续 pass 里
+  canonicalize 资源或折叠 compute region，
+  需要显式保留一份 pre-canonical logical compute-region truth
+  （例如 `blackhole.logical_compute_regions`），
+  让 lowering requirements 还能恢复
+  row-state / grouped-row / fragment logical shape；
+  否则后段会被迫重新猜 shape 或回退到旧 contract
 
 稳定 host-side 抽象：
 

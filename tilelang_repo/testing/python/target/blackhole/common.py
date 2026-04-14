@@ -88,7 +88,7 @@ def check_blackhole_direct_execution_requirements():
 
 
 def prepare_blackhole_phase_b_module(mod):
-    """Run the Blackhole Phase B mainline up to a validated SpatialProgram."""
+    """Run the Blackhole Phase B mainline up to SpatialPlan plus lowering facts."""
     return tilelang.engine.phase.LowerToBlackholePhaseB(mod)
 
 

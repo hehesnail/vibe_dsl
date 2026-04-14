@@ -1,6 +1,6 @@
 /*!
  * \file build_tt_program.cc
- * \brief Materialize TTProgram from frozen SpatialProgram and planner results.
+ * \brief Materialize TTProgram from SpatialPlan and planner results.
  */
 
 #include <tvm/ffi/reflection/registry.h>
@@ -16,7 +16,7 @@
 #include "assign_blackhole_cores.h"
 #include "common/blackhole_utils.h"
 #include "common/companion_base.h"
-#include "common/spatial_program.h"
+#include "common/spatial_plan.h"
 #include "common/tt_hardware_model.h"
 #include "common/tt_target_program.h"
 #include "lower_blackhole_ops.h"
@@ -191,46 +191,121 @@ MaterializedTTPlanning MaterializeTTPlanning(tir::PrimFunc func) {
   return planning;
 }
 
-Array<TTTransportPlan> BuildTransportPlans(const SpatialProgram& program) {
+std::vector<int> ComputeClosurePhases(const SpatialPlan& plan) {
+  const int n = static_cast<int>(plan->closures.size());
+  std::vector<std::vector<int>> preds(n);
+  for (const ClosureBoundary& boundary : plan->boundaries) {
+    if (boundary->source_closure_index < 0 || boundary->target_closure_index < 0 ||
+        boundary->source_closure_index == boundary->target_closure_index) {
+      continue;
+    }
+    preds[boundary->target_closure_index].push_back(boundary->source_closure_index);
+  }
+  std::vector<int> phase(n, 0);
+  for (int i = 0; i < n; ++i) {
+    for (int pred : preds[i]) {
+      phase[i] = std::max(phase[i], phase[pred] + 1);
+    }
+  }
+  return phase;
+}
+
+String DeriveTransportDeliveryKind(const ClosureBoundary& boundary,
+                                   const std::vector<int>& closure_phases) {
+  const bool cross_phase = boundary->source_closure_index >= 0 &&
+                           boundary->target_closure_index >= 0 &&
+                           closure_phases[boundary->source_closure_index] !=
+                               closure_phases[boundary->target_closure_index];
+  if (cross_phase) {
+    return String("phase_boundary_materialized");
+  }
+  if (boundary->kind == "join") {
+    return String("completion_visible");
+  }
+  return String("ordered");
+}
+
+String DeriveSyncOrderingKind(const ClosureBoundary& boundary,
+                              const std::vector<int>& closure_phases) {
+  const bool cross_phase = boundary->source_closure_index >= 0 &&
+                           boundary->target_closure_index >= 0 &&
+                           closure_phases[boundary->source_closure_index] !=
+                               closure_phases[boundary->target_closure_index];
+  if (cross_phase) {
+    return String("phase_boundary_materialization");
+  }
+  if (boundary->kind == "carry") {
+    return String("carry_handoff");
+  }
+  if (boundary->kind == "join") {
+    return String("reduction_completion");
+  }
+  return String("must_happen_before");
+}
+
+String DeriveSyncMaterializationKind(const ClosureBoundary& boundary,
+                                     const std::vector<int>& closure_phases) {
+  const bool cross_phase = boundary->source_closure_index >= 0 &&
+                           boundary->target_closure_index >= 0 &&
+                           closure_phases[boundary->source_closure_index] !=
+                               closure_phases[boundary->target_closure_index];
+  if (cross_phase) {
+    return String("phase_boundary_materialization");
+  }
+  if (boundary->kind == "join") {
+    return String("completion_visibility");
+  }
+  return String("phase_boundary");
+}
+
+Array<TTTransportPlan> BuildTransportPlans(const SpatialPlan& plan) {
   Array<TTTransportPlan> transport_plans;
-  for (const Channel& channel : program->channels) {
-    transport_plans.push_back(TTTransportPlan(channel->name, channel->kind,
-                                              channel->source_task_index, channel->target_task_index,
-                                              channel->payload_kind, channel->delivery_kind,
-                                              channel->payload));
+  const std::vector<int> closure_phases = ComputeClosurePhases(plan);
+  for (const ClosureBoundary& boundary : plan->boundaries) {
+    if (boundary->source_closure_index < 0 || boundary->target_closure_index < 0) {
+      continue;
+    }
+    Map<String, Any> payload;
+    payload.Set("subject", boundary->subject);
+    payload.Set("boundary_kind", boundary->kind);
+    transport_plans.push_back(
+        TTTransportPlan(boundary->name, boundary->kind, boundary->source_closure_index,
+                        boundary->target_closure_index, String("tensor"),
+                        DeriveTransportDeliveryKind(boundary, closure_phases), payload));
   }
   return transport_plans;
 }
 
-Array<TTSemaphorePlan> BuildSemaphorePlans(const tir::PrimFunc& func, const SpatialProgram& program) {
+Array<TTSemaphorePlan> BuildSemaphorePlans(const tir::PrimFunc& func) {
   if (auto maybe_semaphore_plans = func->GetAttr<Array<TTSemaphorePlan>>(attr::kTLTTSemaphorePlans)) {
     return maybe_semaphore_plans.value();
   }
   return Array<TTSemaphorePlan>();
 }
 
-Array<TTComputeSyncPlan> BuildComputeSyncPlans(const SpatialProgram& program) {
+Array<TTComputeSyncPlan> BuildComputeSyncPlans(const SpatialPlan& plan) {
   Array<TTComputeSyncPlan> sync_plans;
-  for (const SyncEdge& edge : program->sync_edges) {
-    sync_plans.push_back(TTComputeSyncPlan(edge->name, edge->kind, edge->source_task_index,
-                                           edge->target_task_index, edge->ordering_kind,
-                                           edge->materialization_kind, edge->payload));
+  const std::vector<int> closure_phases = ComputeClosurePhases(plan);
+  for (const ClosureBoundary& boundary : plan->boundaries) {
+    if (boundary->source_closure_index < 0 || boundary->target_closure_index < 0 ||
+        boundary->source_closure_index == boundary->target_closure_index) {
+      continue;
+    }
+    Map<String, Any> payload;
+    payload.Set("subject", boundary->subject);
+    payload.Set("boundary_kind", boundary->kind);
+    sync_plans.push_back(TTComputeSyncPlan(
+        String("sync_" + std::string(boundary->name)), boundary->kind,
+        boundary->source_closure_index, boundary->target_closure_index,
+        DeriveSyncOrderingKind(boundary, closure_phases),
+        DeriveSyncMaterializationKind(boundary, closure_phases), payload));
   }
   return sync_plans;
 }
 
-Array<TTDstLayoutPlan> BuildDstLayoutPlans(const SpatialProgram& program, const Array<TTABIPlan>& abi_plans) {
+Array<TTDstLayoutPlan> BuildDstLayoutPlans(const Array<TTABIPlan>& abi_plans) {
   Array<TTDstLayoutPlan> dst_layouts;
   std::unordered_set<std::string> seen;
-  for (const SpatialLayout& layout : program->layouts) {
-    std::string dedupe = str(layout->target_name) + "|" + str(layout->kind) + "|" +
-                         str(layout->domain_transform_kind);
-    if (!seen.insert(dedupe).second) {
-      continue;
-    }
-    dst_layouts.push_back(TTDstLayoutPlan(layout->name, layout->target_name, layout->kind,
-                                          String("dram"), layout->payload));
-  }
   for (const TTABIPlan& abi : abi_plans) {
     for (const Any& item : abi->compile_time_arg_specs) {
       Map<String, Any> spec = AsMap(item);
@@ -251,24 +326,32 @@ Array<TTDstLayoutPlan> BuildDstLayoutPlans(const SpatialProgram& program, const 
   return dst_layouts;
 }
 
-Array<TTExecutionPlan> BuildExecutionPlans(const SpatialProgram& program, const Array<TTKernel>& kernels) {
+Array<TTExecutionPlan> BuildExecutionPlans(const SpatialPlan& plan, const Array<TTKernel>& kernels) {
   Array<ffi::String> kernel_names;
   for (const TTKernel& kernel : kernels) {
     kernel_names.push_back(kernel->name);
   }
+  std::unordered_set<int> seen;
   Array<Integer> phase_indices;
-  for (const ProgramPhase& phase : program->phases) {
-    phase_indices.push_back(Integer(phase->phase_index));
+  for (int phase : ComputeClosurePhases(plan)) {
+    if (seen.insert(phase).second) {
+      phase_indices.push_back(Integer(phase));
+    }
+  }
+  if (phase_indices.empty()) {
+    phase_indices.push_back(Integer(0));
   }
   Map<String, Any> payload;
-  payload.Set("phase_count", Integer(static_cast<int>(program->phases.size())));
+  payload.Set("phase_count", Integer(static_cast<int>(phase_indices.size())));
+  payload.Set("closure_count", Integer(static_cast<int>(plan->closures.size())));
+  payload.Set("boundary_count", Integer(static_cast<int>(plan->boundaries.size())));
   Array<TTExecutionPlan> execution_plans;
   execution_plans.push_back(TTExecutionPlan(String("main_execution"), kernel_names, phase_indices, payload));
   return execution_plans;
 }
 
 TTProgram BuildTTProgramForFunc(const MaterializedTTPlanning& planning, const String& entry_name,
-                                const SpatialProgram& program,
+                                const SpatialPlan& plan,
                                 const TTHardwareModel& hardware_model) {
   const Array<TTKernel>& kernels = planning.kernels;
   const Array<TTABIPlan>& abi_plans = planning.abi_plans;
@@ -280,11 +363,11 @@ TTProgram BuildTTProgramForFunc(const MaterializedTTPlanning& planning, const St
   payload.Set("logical_worker_grid_x", Integer(hardware_model->logical_worker_grid_x));
   payload.Set("logical_worker_grid_y", Integer(hardware_model->logical_worker_grid_y));
   payload.Set("worker_l1_size", Integer(hardware_model->worker_l1_size));
-  return TTProgram(entry_name, program->member_func, kernels, planning.core_groups,
-                   planning.cb_plans, BuildTransportPlans(program),
-                   BuildSemaphorePlans(planning.func, program),
-                   BuildComputeSyncPlans(program), BuildDstLayoutPlans(program, abi_plans), abi_plans,
-                   BuildExecutionPlans(program, kernels), payload);
+  return TTProgram(entry_name, plan->member_func, kernels, planning.core_groups,
+                   planning.cb_plans, BuildTransportPlans(plan),
+                   BuildSemaphorePlans(planning.func),
+                   BuildComputeSyncPlans(plan), BuildDstLayoutPlans(abi_plans), abi_plans,
+                   BuildExecutionPlans(plan, kernels), payload);
 }
 
 }  // namespace
@@ -306,8 +389,8 @@ tvm::transform::Pass BuildTTProgram() {
         continue;
       }
       MaterializedTTPlanning planning = MaterializeTTPlanning(func.value());
-      auto maybe_spatial_program = planning.func->GetAttr<SpatialProgram>(attr::kTLSpatialProgram);
-      if (!maybe_spatial_program) {
+      auto maybe_spatial_plan = planning.func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
+      if (!maybe_spatial_plan) {
         continue;
       }
       Map<String, Any> attrs;
@@ -315,7 +398,7 @@ tvm::transform::Pass BuildTTProgram() {
         attrs = planning.func->attrs->dict;
       }
       attrs.Set(attr::kTLTTProgram, BuildTTProgramForFunc(planning, gvar->name_hint,
-                                                          maybe_spatial_program.value(),
+                                                          maybe_spatial_plan.value(),
                                                           maybe_hardware_model.value()));
       planning.func.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
       planning.func = StripTTIntermediateAttrs(std::move(planning.func));

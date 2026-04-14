@@ -17,12 +17,8 @@ namespace attr {
 constexpr const char* kTLDevicePrograms = "tl.device_programs";
 constexpr const char* kTLSpatialStructureFacts = "tl.spatial_structure_facts";
 constexpr const char* kTLSpatialPlan = "tl.spatial_plan";
-constexpr const char* kTLSpatialDomainPlan = "tl.spatial_domain_plan";
-constexpr const char* kTLSpatialExecutionPlan = "tl.spatial_execution_plan";
-constexpr const char* kTLSpatialProgram = "tl.spatial_program";
 constexpr const char* kTLTTProgram = "tl.tt_program";
 constexpr const char* kTLTTSemaphorePlans = "tl.tt_semaphore_plans";
-constexpr const char* kTLSpatialCapabilityModel = "tl.spatial_capability_model";
 constexpr const char* kTLTTHardwareModel = "tl.tt_hardware_model";
 }  // namespace attr
 
@@ -39,7 +35,8 @@ constexpr const char* kArgReduceTargets = "arg_reduce_targets";
 constexpr const char* kUpdateSources = "update_sources";
 constexpr const char* kLoopCarriedState = "loop_carried_state";
 constexpr const char* kRecurrenceEdges = "recurrence_edges";
-constexpr const char* kRowReductions = "row_reductions";
+constexpr const char* kReductions = "reductions";
+constexpr const char* kBroadcasts = "broadcasts";
 }  // namespace manifest_key
 
 namespace schema_key {
@@ -62,11 +59,10 @@ constexpr const char* kExecutionProtocol = "execution_protocol";
 constexpr const char* kFormationBasis = "formation_basis";
 constexpr const char* kBufferMaterializationContracts = "buffer_materialization_contracts";
 constexpr const char* kBufferMaterializationContract = "buffer_materialization_contract";
-constexpr const char* kBufferDistributionContracts = "buffer_distribution_contracts";
-constexpr const char* kBufferDistributionContract = "buffer_distribution_contract";
+constexpr const char* kBufferTileBridgeSpecs = "buffer_tile_bridge_specs";
+constexpr const char* kBufferTileBridgeSpec = "buffer_tile_bridge_spec";
 constexpr const char* kBufferFlowContracts = "buffer_flow_contracts";
 constexpr const char* kComputeOpKinds = "compute_op_kinds";
-constexpr const char* kDistributionKind = "distribution_kind";
 constexpr const char* kFlowClass = "flow_class";
 constexpr const char* kBridgeKind = "bridge_kind";
 constexpr const char* kGranuleKind = "granule_kind";
@@ -94,8 +90,8 @@ constexpr const char* kPlacementDomain = "placement_domain";
 constexpr const char* kPipelineStages = "pipeline_stages";
 constexpr const char* kPhaseIndex = "phase_index";
 constexpr const char* kPointwiseOpKinds = "pointwise_op_kinds";
-constexpr const char* kRowBroadcastSources = "row_broadcast_sources";
-constexpr const char* kRowReductionTargets = "row_reduction_targets";
+constexpr const char* kBroadcastSources = "broadcast_sources";
+constexpr const char* kReductionTargets = "reduction_targets";
 constexpr const char* kResultLiveForm = "result_live_form";
 constexpr const char* kScope = "scope";
 constexpr const char* kShape = "shape";
@@ -113,7 +109,6 @@ constexpr const char* kSources = "sources";
 constexpr const char* kSrcBuffer = "src_buffer";
 constexpr const char* kSrcBufferRef = "src_buffer_ref";
 constexpr const char* kSrcShape = "src_shape";
-constexpr const char* kStorageTopologyKind = "storage_topology_kind";
 constexpr const char* kThreadExtent = "thread_extent";
 constexpr const char* kReplicateExtent = "replicate_extent";
 constexpr const char* kInverseLogicalIndexVars = "inverse_logical_index_vars";
@@ -176,16 +171,6 @@ constexpr const char* kTiledCBRepublish = "tiled_cb_republish";
 namespace buffer_live_form {
 constexpr const char* kTiledCB = "tiled_cb";
 }  // namespace buffer_live_form
-
-namespace buffer_distribution_kind {
-constexpr const char* kGroupedRows = "grouped_rows";
-constexpr const char* kRowState = "row_state";
-constexpr const char* kThreadDistributed = "thread_distributed";
-}  // namespace buffer_distribution_kind
-
-namespace buffer_topology_kind {
-constexpr const char* kLinear = "linear";
-}  // namespace buffer_topology_kind
 
 namespace spatial_contract {
 constexpr const char* kTaskTarget = "task";

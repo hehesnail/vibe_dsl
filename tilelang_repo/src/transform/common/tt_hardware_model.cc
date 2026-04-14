@@ -1,6 +1,6 @@
 /*!
  * \file tt_hardware_model.cc
- * \brief Minimal TT hardware snapshot intake and SpatialCapabilityModel derivation.
+ * \brief Minimal TT hardware snapshot intake for Blackhole lowering.
  */
 
 #include "tt_hardware_model.h"
@@ -16,16 +16,12 @@
 #include <string>
 #include <vector>
 
-#include "spatial_vocab.h"
-
 namespace tvm {
 namespace tl {
 
 namespace {
 
-using tvm::ffi::Array;
 using tvm::ffi::String;
-using namespace tvm::tl::spatial;
 
 std::string ReadFileIfExists(const std::filesystem::path& path) {
   if (path.empty() || !std::filesystem::exists(path) || !std::filesystem::is_regular_file(path)) {
@@ -123,14 +119,6 @@ int64_t GetTargetIntAttr(const Target& target, const char* key, int64_t fallback
   return fallback;
 }
 
-Array<String> MakeStringArray(std::initializer_list<const char*> values) {
-  Array<String> result;
-  for (const char* value : values) {
-    result.push_back(String(value));
-  }
-  return result;
-}
-
 }  // namespace
 
 TTHardwareModel::TTHardwareModel(ffi::String arch_name, ffi::String descriptor_path,
@@ -198,68 +186,12 @@ TTHardwareModel BuildBlackholeTTHardwareModel(const Target& target) {
                          overlay_version);
 }
 
-SpatialCapabilityModel DeriveSpatialCapabilityModel(const TTHardwareModel& hardware_model) {
-  return SpatialCapabilityModel(
-      hardware_model->arch_name, String("grid"), String("logical_worker_grid"),
-      hardware_model->logical_worker_grid_x, hardware_model->logical_worker_grid_y,
-      hardware_model->functional_worker_count, hardware_model->router_only_count,
-      hardware_model->dram_view_count, hardware_model->worker_l1_size,
-      hardware_model->dram_view_size,
-      MakeStringArray({ToString(SpatialChannelKind::kPointToPoint),
-                       ToString(SpatialChannelKind::kBroadcast),
-                       ToString(SpatialChannelKind::kCarry),
-                       ToString(SpatialChannelKind::kReduceMerge),
-                       ToString(SpatialChannelKind::kGather),
-                       ToString(SpatialChannelKind::kScatter)}),
-      MakeStringArray({ToString(SpatialChannelPayloadKind::kTensor),
-                       ToString(SpatialChannelPayloadKind::kStateVersion),
-                       ToString(SpatialChannelPayloadKind::kIndex),
-                       ToString(SpatialChannelPayloadKind::kPredicate),
-                       ToString(SpatialChannelPayloadKind::kToken)}),
-      MakeStringArray({ToString(SpatialChannelDeliveryKind::kOrdered),
-                       ToString(SpatialChannelDeliveryKind::kCompletionVisible),
-                       ToString(SpatialChannelDeliveryKind::kBufferedAsync),
-                       ToString(SpatialChannelDeliveryKind::kPhaseBoundaryMaterialized)}),
-      MakeStringArray({ToString(SpatialSyncKind::kDependency),
-                       ToString(SpatialSyncKind::kBarrier),
-                       ToString(SpatialSyncKind::kCompletion)}),
-      MakeStringArray({"must_happen_before",
-                       "carry_handoff",
-                       "reduction_completion",
-                       "selection_index_handoff",
-                       "phase_boundary_materialization"}),
-      MakeStringArray({"buffer_visibility",
-                       "completion_visibility",
-                       "phase_boundary",
-                       "phase_boundary_materialization"}),
-      MakeStringArray({ToString(SpatialLayoutKind::kRegular),
-                       ToString(SpatialLayoutKind::kPacked),
-                       ToString(SpatialLayoutKind::kIndexed)}),
-      MakeStringArray({ToString(SpatialPartitionKind::kReplicated),
-                       ToString(SpatialPartitionKind::kBlocked),
-                       ToString(SpatialPartitionKind::kIndexed),
-                       ToString(SpatialPartitionKind::kFiltered)}),
-      MakeStringArray({ToString(SpatialResourceIntentKind::kBuffer),
-                       ToString(SpatialResourceIntentKind::kStateResidency),
-                       ToString(SpatialResourceIntentKind::kSynchronizationSupport),
-                       ToString(SpatialResourceIntentKind::kPhaseBoundaryMaterialization),
-                       ToString(SpatialResourceIntentKind::kLoweringSupport)}));
-}
-
 std::optional<TTHardwareModel> GetModuleTTHardwareModel(const IRModule& mod) {
   auto maybe_items = mod->global_infos.Get(attr::kTLTTHardwareModel);
   if (!maybe_items || maybe_items.value().empty()) {
     return std::nullopt;
   }
   return Downcast<TTHardwareModel>(maybe_items.value()[0]);
-}
-
-std::optional<SpatialCapabilityModel> GetModuleSpatialCapabilityModel(const IRModule& mod) {
-  auto maybe_items = mod->global_infos.Get(attr::kTLSpatialCapabilityModel);
-  if (!maybe_items || maybe_items.value().empty()) {
-    return std::nullopt;
-  }
-  return Downcast<SpatialCapabilityModel>(maybe_items.value()[0]);
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() { TTHardwareModelNode::RegisterReflection(); }

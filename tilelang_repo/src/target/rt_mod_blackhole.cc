@@ -1737,7 +1737,7 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
     if (auto compute_ops = lowering_requirements.value().Get("compute_op_kinds")) {
       for (const auto& item : Downcast<ffi::Array<ffi::Any>>(compute_ops.value())) {
         const std::string op_name = Downcast<String>(item);
-        if ((op_name == "row_reduction" || op_name == "row_broadcast") &&
+        if ((op_name == "reduction" || op_name == "broadcast") &&
             seen_ops.insert(op_name).second) {
           unsupported_ops.push_back(op_name);
         }

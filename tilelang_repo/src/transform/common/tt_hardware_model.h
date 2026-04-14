@@ -1,6 +1,6 @@
 /*!
  * \file tt_hardware_model.h
- * \brief Minimal TT hardware snapshot intake and SpatialCapabilityModel derivation.
+ * \brief Minimal TT hardware snapshot intake for Blackhole lowering.
  */
 
 #ifndef TVM_TL_TRANSFORM_COMMON_TT_HARDWARE_MODEL_H_
@@ -11,7 +11,7 @@
 #include <tvm/ir/module.h>
 #include <tvm/target/target.h>
 
-#include "spatial_program.h"
+#include "companion_base.h"
 
 namespace tvm {
 namespace tl {
@@ -67,9 +67,7 @@ class TTHardwareModel : public GlobalInfo {
 };
 
 TVM_DLL TTHardwareModel BuildBlackholeTTHardwareModel(const Target& target);
-TVM_DLL SpatialCapabilityModel DeriveSpatialCapabilityModel(const TTHardwareModel& hardware_model);
 TVM_DLL std::optional<TTHardwareModel> GetModuleTTHardwareModel(const IRModule& mod);
-TVM_DLL std::optional<SpatialCapabilityModel> GetModuleSpatialCapabilityModel(const IRModule& mod);
 
 }  // namespace tl
 }  // namespace tvm

@@ -98,6 +98,42 @@ def should_enable_race_check(pass_ctx: PassContext | None = None) -> bool:
     return enabled
 
 
+def _merge_blackhole_logical_compute_regions(
+    source_mod: IRModule,
+    optimized_mod: IRModule,
+) -> IRModule:
+    source_regions_by_symbol = {}
+    for gvar, func in source_mod.functions.items():
+        if not isinstance(func, tir.PrimFunc):
+            continue
+        attrs = func.attrs or {}
+        if "blackhole.compute_regions" not in attrs:
+            continue
+        symbol = str(attrs["global_symbol"]) if "global_symbol" in attrs else gvar.name_hint
+        source_regions_by_symbol[symbol] = attrs["blackhole.compute_regions"]
+
+    if not source_regions_by_symbol:
+        return optimized_mod
+
+    rewritten = {}
+    changed = False
+    for gvar, func in optimized_mod.functions.items():
+        if not isinstance(func, tir.PrimFunc):
+            rewritten[gvar] = func
+            continue
+        attrs = func.attrs or {}
+        symbol = str(attrs["global_symbol"]) if "global_symbol" in attrs else gvar.name_hint
+        logical_regions = source_regions_by_symbol.get(symbol)
+        if logical_regions is not None:
+            func = func.with_attr("blackhole.logical_compute_regions", logical_regions)
+            changed = True
+        rewritten[gvar] = func
+
+    if not changed:
+        return optimized_mod
+    return IRModule(rewritten, global_infos=optimized_mod.global_infos)
+
+
 def get_layout_visual_formats(pass_ctx: PassContext | None = None) -> list[str]:
     if pass_ctx is None:
         pass_ctx = tilelang.transform.get_pass_context()
@@ -234,6 +270,7 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
     mod = tilelang.transform.LowerSharedTmem()(mod)
     check_target(mod, "LowerSharedTmem")
     if target.kind.name == "blackhole":
+        logical_analysis_mod = LowerToBlackholePhaseB(mod)
         # Blackhole should reuse the generic TIR and host/device mainline while
         # still skipping CUDA/Hopper-only passes that do not map to TT-Metal.
         mod = tilelang.transform.IfStmtBinding()(mod)
@@ -264,6 +301,7 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
         mod = tilelang.transform.Simplify()(mod)
         mod = tilelang.transform.LowerDeviceKernelLaunch()(mod)
         check_target(mod, "LowerDeviceKernelLaunch")
+        mod = _merge_blackhole_logical_compute_regions(logical_analysis_mod, mod)
         return mod
     # which may be introduced by the LegalizeSafeMemoryAccess
     # Note: The WarpSpecialized + InjectTmaBarrier pipeline is required for correct TMA lowering
@@ -373,10 +411,6 @@ def LowerToBlackholePhaseB(mod: IRModule) -> IRModule:
     mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
     mod = tilelang.transform.AnalyzeBlackholeComputeRegions()(mod)
     mod = tilelang.transform.AnalyzeBlackholePipelineStages()(mod)
-    mod = tilelang.transform.AnalyzeSpatialDomainPlan()(mod)
-    mod = tilelang.transform.AnalyzeSpatialExecutionPlan()(mod)
-    mod = tilelang.transform.MaterializeSpatialProgram()(mod)
-    mod = tilelang.transform.ValidateSpatialProgram()(mod)
     return mod
 
 

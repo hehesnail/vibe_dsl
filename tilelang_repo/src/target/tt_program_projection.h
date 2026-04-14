@@ -11,6 +11,7 @@
 #include <string>
 #include <unordered_set>
 
+#include "../transform/common/blackhole_runtime_arg_schema.h"
 #include "../transform/common/companion_base.h"
 #include "../transform/common/tt_target_program.h"
 
@@ -129,6 +130,15 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram& program) {
     }
     if (!abi->semaphore_bindings.empty()) {
       segment.Set("semaphore_bindings", abi->semaphore_bindings);
+    }
+    if (auto v = kernel->payload.Get(
+            String(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs))) {
+      segment.Set(String(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs),
+                  v.value());
+    } else if (auto v = abi->payload.Get(
+                   String(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs))) {
+      segment.Set(String(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs),
+                  v.value());
     }
     segments.push_back(segment);
   }

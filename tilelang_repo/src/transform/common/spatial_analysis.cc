@@ -100,33 +100,5 @@ bool SameIntegerAnyArray(const Array<Any>& lhs, const Array<Any>& rhs) {
   return true;
 }
 
-std::string DeriveOrderingKindForChannel(sp::SpatialChannelKind channel_kind,
-                                         sp::SpatialChannelDeliveryKind delivery_kind) {
-  switch (channel_kind) {
-    case sp::SpatialChannelKind::kCarry:
-      return "carry_handoff";
-    case sp::SpatialChannelKind::kReduceMerge:
-      return "reduction_completion";
-    case sp::SpatialChannelKind::kGather:
-    case sp::SpatialChannelKind::kScatter:
-      return "selection_index_handoff";
-    default:
-      return delivery_kind == sp::SpatialChannelDeliveryKind::kPhaseBoundaryMaterialized
-                 ? "phase_boundary_materialization"
-                 : "must_happen_before";
-  }
-}
-
-std::string DeriveMaterializationKindForChannel(sp::SpatialChannelKind channel_kind,
-                                                sp::SpatialChannelDeliveryKind delivery_kind) {
-  if (delivery_kind == sp::SpatialChannelDeliveryKind::kPhaseBoundaryMaterialized) {
-    return "phase_boundary_materialization";
-  }
-  if (channel_kind == sp::SpatialChannelKind::kReduceMerge) {
-    return "completion_visibility";
-  }
-  return "phase_boundary";
-}
-
 }  // namespace tl
 }  // namespace tvm

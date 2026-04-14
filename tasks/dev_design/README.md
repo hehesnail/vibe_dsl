@@ -34,26 +34,34 @@
 
 当前按下面顺序推进：
 
-1. `P0`: 真实 `PlanTTTransport + PlanTTCompute` cut-in
-   - 用 anchored sub-TIR 上仍保留的
-     tile-op / layout / `load/store`
-     完成 target builtin mapping
-   - 取代当前 `BuildTTProgram` 内部的 late matcher/helper bridge
-2. `Task 3B`
-   - 在新 route 上收 runtime gate 与 `flash-attn` payoff
-3. `Task 3C`
+1. `Task 3B` 的旧 side-contract 清理批次已完成
+   - `SpatialProgram` active path 已删除
+   - `buffer_distribution_contract`
+     已从 active protocol surface 删除
+   - segment-local per-work ABI truth
+     已收敛到 `TTProgram / ExecutableSpec`
+2. 当前 active 重点：
+   - `flash-attn` payoff / runtime gate / correctness 收口
+3. 后续：
    - wider family / support surface
+4. 并行架构债：
+   - 把 `BuildTTProgram` helper bridge
+     继续拆向真实 `PlanTTTransport + PlanTTCompute`
 
 当前状态补充：
 
 - `Task 2A / 2B / 2C` 已完成
 - `Task 3A` 的 persistent/public 删除批次已完成
+- `Task 3B` 的旧 side-contract 清理批次已完成；
+  `SpatialProgram` 和
+  `buffer_distribution_contract`
+  都已退出 active path
 - active path 已不再保留 `tl.semantic_*` 主协议或独立 semantic companion；
   但当前代码基线仍是**过渡实现**，
   还残留 `blackhole.*` analysis facts 与
   `BuildTTProgram` 内部 helper bridge
-- 当前入口已经从“旧 semantic 层清理”
-  转到“真实 TT transport/compute planning 替代旧 helper”
+- 当前入口已经从“旧 semantic / side-contract 清理”
+  转到“`flash-attn` payoff + helper bridge 继续内收”
 
 当前明确不作为优先项：
 

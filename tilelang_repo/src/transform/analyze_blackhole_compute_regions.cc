@@ -39,7 +39,7 @@
 
 #include "../layout/layout.h"
 #include "common/blackhole_utils.h"
-#include "common/buffer_distribution_contract_utils.h"
+#include "common/buffer_tile_bridge_spec_utils.h"
 #include "common/compute_region_analysis.h"
 
 namespace tvm {
@@ -152,7 +152,6 @@ class ComputeRegionAnalyzer final : public StmtExprVisitor {
   bool HasRegion() const { return !region_buffer_order_.empty() || !seen_ops_.empty(); }
 
   Map<String, Any> EncodeSingleRegion() const {
-    MaterializeBufferDistributionContractsFromRegionEvidence();
     Map<String, Any> region;
 
     Array<Any> region_buffers;
@@ -172,16 +171,16 @@ class ComputeRegionAnalyzer final : public StmtExprVisitor {
     }
     region.Set(manifest_key::kRegionBuffers, region_buffers);
 
-    Array<Any> buffer_distribution_contracts;
+    Array<Any> buffer_tile_bridge_specs;
     for (const auto* key : region_buffer_order_) {
-      auto contract_it = buffer_distribution_contracts_.find(key);
-      if (contract_it == buffer_distribution_contracts_.end()) {
+      auto spec_it = buffer_tile_bridge_specs_.find(key);
+      if (spec_it == buffer_tile_bridge_specs_.end()) {
         continue;
       }
-      buffer_distribution_contracts.push_back(contract_it->second);
+      buffer_tile_bridge_specs.push_back(spec_it->second);
     }
-    if (!buffer_distribution_contracts.empty()) {
-      region.Set(String(schema_key::kBufferDistributionContracts), buffer_distribution_contracts);
+    if (!buffer_tile_bridge_specs.empty()) {
+      region.Set(String(schema_key::kBufferTileBridgeSpecs), buffer_tile_bridge_specs);
     }
 
     Array<Any> ops;
@@ -196,8 +195,8 @@ class ComputeRegionAnalyzer final : public StmtExprVisitor {
     }
     region.Set("pointwise_ops", pointwise_ops);
 
-    Array<Any> row_reductions;
-    for (const auto* target_key : row_reduction_targets_) {
+    Array<Any> reductions;
+    for (const auto* target_key : reduction_targets_) {
       auto buffer_it = region_buffers_.find(target_key);
       if (buffer_it == region_buffers_.end()) {
         continue;
@@ -206,13 +205,13 @@ class ComputeRegionAnalyzer final : public StmtExprVisitor {
       Map<String, Any> entry;
       entry.Set(schema_key::kTarget, String(BufferName(buffer)));
       entry.Set(schema_key::kTargetBuffer, buffer);
-      if (auto kind_it = row_reduction_kind_.find(target_key);
-          kind_it != row_reduction_kind_.end() && !kind_it->second.empty()) {
+      if (auto kind_it = reduction_kind_.find(target_key);
+          kind_it != reduction_kind_.end() && !kind_it->second.empty()) {
         entry.Set(schema_key::kKind, String(kind_it->second));
       }
-      row_reductions.push_back(entry);
+      reductions.push_back(entry);
     }
-    region.Set(manifest_key::kRowReductions, row_reductions);
+    region.Set(manifest_key::kReductions, reductions);
 
     Array<Any> arg_reduce_targets;
     for (const auto* key : BuildArgReduceTargets()) {
@@ -228,8 +227,8 @@ class ComputeRegionAnalyzer final : public StmtExprVisitor {
     }
     region.Set(manifest_key::kArgReduceTargets, arg_reduce_targets);
 
-    Array<Any> row_broadcasts;
-    for (const auto* key : row_broadcast_sources_) {
+    Array<Any> broadcasts;
+    for (const auto* key : broadcast_sources_) {
       auto buffer_it = region_buffers_.find(key);
       if (buffer_it == region_buffers_.end()) {
         continue;
@@ -238,9 +237,9 @@ class ComputeRegionAnalyzer final : public StmtExprVisitor {
       Map<String, Any> entry;
       entry.Set(schema_key::kSource, String(BufferName(buffer)));
       entry.Set(schema_key::kBuffer, buffer);
-      row_broadcasts.push_back(entry);
+      broadcasts.push_back(entry);
     }
-    region.Set("row_broadcasts", row_broadcasts);
+    region.Set(manifest_key::kBroadcasts, broadcasts);
 
     Array<Any> selection_targets;
     for (const auto* key : selection_target_order_) {
@@ -443,8 +442,8 @@ class ComputeRegionAnalyzer final : public StmtExprVisitor {
             if (scope == "local" || scope == "local.fragment" || scope == "blackhole.acc") {
               if (const auto* key = BufferKey(buffer); key != nullptr) {
                 layout_region_buffers_.insert(key);
-                if (auto contract = TryBuildBufferDistributionContract(buffer, layout)) {
-                  buffer_distribution_contracts_[key] = contract.value();
+                if (auto spec = TryBuildBufferTileBridgeSpec(buffer, layout)) {
+                  buffer_tile_bridge_specs_[key] = spec.value();
                 }
               }
             }
@@ -738,7 +737,7 @@ class ComputeRegionAnalyzer final : public StmtExprVisitor {
 
     if (has_self_max_with_temp || temp_reduction_kind == "max" || saw_direct_region_max_reduction ||
         temp_reduction_kind == "sum" || saw_direct_region_sum_reduction) {
-      AddOp("row_reduction");
+      AddOp("reduction");
       const std::string reduction_kind =
           (has_self_max_with_temp || temp_reduction_kind == "max" ||
            saw_direct_region_max_reduction)
@@ -758,11 +757,11 @@ class ComputeRegionAnalyzer final : public StmtExprVisitor {
 
     if (!local_sources.empty() &&
         (saw_floor_div_broadcast || saw_rank_broadcast || saw_scalar_region_broadcast)) {
-      AddOp("row_broadcast");
+      AddOp("broadcast");
       AddRowBroadcastDestination(target_key);
       for (const auto* source_key : local_sources) {
-        if (seen_row_broadcast_sources_.insert(source_key).second) {
-          row_broadcast_sources_.push_back(source_key);
+        if (seen_broadcast_sources_.insert(source_key).second) {
+          broadcast_sources_.push_back(source_key);
         }
       }
     }
@@ -785,12 +784,12 @@ class ComputeRegionAnalyzer final : public StmtExprVisitor {
   }
 
   void AddRowReduction(const tir::VarNode* target_key, const std::string& kind) {
-    if (seen_row_reductions_.insert(target_key).second) {
-      row_reduction_targets_.push_back(target_key);
+    if (seen_reductions_.insert(target_key).second) {
+      reduction_targets_.push_back(target_key);
     }
-    if (auto it = row_reduction_kind_.find(target_key);
-        it == row_reduction_kind_.end() || it->second.empty()) {
-      row_reduction_kind_[target_key] = kind;
+    if (auto it = reduction_kind_.find(target_key);
+        it == reduction_kind_.end() || it->second.empty()) {
+      reduction_kind_[target_key] = kind;
     }
   }
 
@@ -801,14 +800,14 @@ class ComputeRegionAnalyzer final : public StmtExprVisitor {
   }
 
   void AddRowReductionSource(const tir::VarNode* source_key) {
-    if (seen_row_reduction_sources_.insert(source_key).second) {
-      row_reduction_sources_.push_back(source_key);
+    if (seen_reduction_sources_.insert(source_key).second) {
+      reduction_sources_.push_back(source_key);
     }
   }
 
   void AddRowBroadcastDestination(const tir::VarNode* target_key) {
-    if (seen_row_broadcast_destinations_.insert(target_key).second) {
-      row_broadcast_destinations_.push_back(target_key);
+    if (seen_broadcast_destinations_.insert(target_key).second) {
+      broadcast_destinations_.push_back(target_key);
     }
   }
 
@@ -843,7 +842,7 @@ class ComputeRegionAnalyzer final : public StmtExprVisitor {
       const tir::VarNode* best_value_target = nullptr;
       std::vector<const tir::VarNode*> best_shared_sources;
       bool ambiguous = false;
-      for (const auto* value_target : row_reduction_targets_) {
+      for (const auto* value_target : reduction_targets_) {
         if (value_target == companion_target) {
           continue;
         }
@@ -887,7 +886,7 @@ class ComputeRegionAnalyzer final : public StmtExprVisitor {
     for (const auto& pair : BuildSelectionPairs()) {
       selection_like_sources.insert(pair.companion_target);
     }
-    for (const auto* target : row_reduction_targets_) {
+    for (const auto* target : reduction_targets_) {
       auto it = update_source_order_.find(target);
       if (it == update_source_order_.end()) {
         continue;
@@ -902,86 +901,25 @@ class ComputeRegionAnalyzer final : public StmtExprVisitor {
     return targets;
   }
 
-  void MaterializeBufferDistributionContractsFromRegionEvidence() const {
-    auto set_contract = [&](const tir::VarNode* key, const char* distribution_kind) {
-      if (key == nullptr || !region_buffers_.count(key)) {
-        return;
-      }
-      const Buffer& buffer = region_buffers_.at(key).buffer;
-      const std::string buffer_name = BufferName(buffer);
-      const std::string scope = buffer.scope();
-      if (buffer_name.empty() || !IsComputeRegionScope(scope)) {
-        return;
-      }
-      auto it = buffer_distribution_contracts_.find(key);
-      if (it != buffer_distribution_contracts_.end()) {
-        auto existing_kind_it = it->second.find(String(schema_key::kDistributionKind));
-        if (existing_kind_it != it->second.end()) {
-          const std::string existing_kind =
-              static_cast<std::string>(Downcast<String>((*existing_kind_it).second));
-          if (existing_kind == distribution_kind) {
-            return;
-          }
-          if (existing_kind != buffer_distribution_kind::kThreadDistributed) {
-            return;
-          }
-        }
-        Map<String, Any> refined = it->second;
-        refined.Set(String(schema_key::kScope), String(scope));
-        refined.Set(String(schema_key::kDistributionKind), String(distribution_kind));
-        refined.Set(String(schema_key::kStorageTopologyKind),
-                    String(buffer_topology_kind::kLinear));
-        if (refined.find(String(schema_key::kShape)) == refined.end()) {
-          refined.Set(String(schema_key::kShape),
-                      EncodeLogicalDistributionShape(buffer->shape, distribution_kind));
-        }
-        it->second = refined;
-        return;
-      }
-      Map<String, Any> contract;
-      contract.Set(String(schema_key::kBuffer), String(buffer_name));
-      contract.Set(String(schema_key::kScope), String(scope));
-      contract.Set(String(schema_key::kShape),
-                   EncodeLogicalDistributionShape(buffer->shape, distribution_kind));
-      contract.Set(String(schema_key::kDistributionKind), String(distribution_kind));
-      contract.Set(String(schema_key::kStorageTopologyKind),
-                   String(buffer_topology_kind::kLinear));
-      buffer_distribution_contracts_[key] = contract;
-    };
-
-    for (const auto* key : row_reduction_targets_) {
-      set_contract(key, buffer_distribution_kind::kRowState);
-    }
-    for (const auto* key : row_broadcast_sources_) {
-      set_contract(key, buffer_distribution_kind::kRowState);
-    }
-    for (const auto* key : row_reduction_sources_) {
-      set_contract(key, buffer_distribution_kind::kGroupedRows);
-    }
-    for (const auto* key : row_broadcast_destinations_) {
-      set_contract(key, buffer_distribution_kind::kGroupedRows);
-    }
-  }
-
   std::unordered_map<const tir::VarNode*, BufferInfo> region_buffers_;
   std::vector<const tir::VarNode*> region_buffer_order_;
   std::unordered_set<const tir::VarNode*> layout_region_buffers_;
-  mutable std::unordered_map<const tir::VarNode*, Map<String, Any>> buffer_distribution_contracts_;
+  mutable std::unordered_map<const tir::VarNode*, Map<String, Any>> buffer_tile_bridge_specs_;
 
   std::unordered_set<std::string> seen_ops_;
   std::vector<std::string> op_order_;
   std::unordered_set<std::string> seen_pointwise_ops_;
   std::vector<std::string> pointwise_op_order_;
 
-  std::vector<const tir::VarNode*> row_reduction_targets_;
-  std::unordered_set<const tir::VarNode*> seen_row_reductions_;
-  std::unordered_map<const tir::VarNode*, std::string> row_reduction_kind_;
-  std::vector<const tir::VarNode*> row_reduction_sources_;
-  std::unordered_set<const tir::VarNode*> seen_row_reduction_sources_;
-  std::unordered_set<const tir::VarNode*> seen_row_broadcast_sources_;
-  std::vector<const tir::VarNode*> row_broadcast_sources_;
-  std::unordered_set<const tir::VarNode*> seen_row_broadcast_destinations_;
-  std::vector<const tir::VarNode*> row_broadcast_destinations_;
+  std::vector<const tir::VarNode*> reduction_targets_;
+  std::unordered_set<const tir::VarNode*> seen_reductions_;
+  std::unordered_map<const tir::VarNode*, std::string> reduction_kind_;
+  std::vector<const tir::VarNode*> reduction_sources_;
+  std::unordered_set<const tir::VarNode*> seen_reduction_sources_;
+  std::unordered_set<const tir::VarNode*> seen_broadcast_sources_;
+  std::vector<const tir::VarNode*> broadcast_sources_;
+  std::unordered_set<const tir::VarNode*> seen_broadcast_destinations_;
+  std::vector<const tir::VarNode*> broadcast_destinations_;
   std::unordered_set<const tir::VarNode*> seen_selection_targets_;
   std::vector<const tir::VarNode*> selection_target_order_;
   std::unordered_map<const tir::VarNode*, std::unordered_set<const tir::VarNode*>> update_sources_;

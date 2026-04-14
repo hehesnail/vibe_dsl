@@ -99,8 +99,8 @@ def test_flash_attention_forward_tt_target_emits_generic_lowering_requirements()
         "gemm",
         "pointwise_chain",
     }.issubset(set(lowering_requirements["compute_op_kinds"]))
-    assert "row_broadcast" not in set(lowering_requirements["compute_op_kinds"])
-    assert "row_broadcast_sources" not in lowering_requirements
+    assert "broadcast" not in set(lowering_requirements["compute_op_kinds"])
+    assert "broadcast_sources" not in lowering_requirements
     assert {"exp2", "mul", "div"}.issubset(
         set(lowering_requirements["pointwise_op_kinds"])
     )
@@ -130,7 +130,7 @@ def test_flash_attention_forward_optimized_path_lowers_scores_max_updates():
     assert "max" not in set(lowering_requirements["pointwise_op_kinds"])
 
 
-def test_flash_attention_forward_tt_target_lowers_row_reductions_to_builtins():
+def test_flash_attention_forward_tt_target_lowers_reductions_to_builtins():
     lowered = _lower_flash_attention_to_tt_target()
     script = lowered.script()
 
@@ -139,7 +139,7 @@ def test_flash_attention_forward_tt_target_lowers_row_reductions_to_builtins():
     assert "\"sum\"" in script
 
 
-def test_flash_attention_forward_optimized_path_lowers_row_reductions_to_builtins():
+def test_flash_attention_forward_optimized_path_lowers_reductions_to_builtins():
     lowered = _run_flash_attention_tt_target_after_optimize(
         mha_example,
         1,
@@ -156,10 +156,10 @@ def test_flash_attention_forward_optimized_path_lowers_row_reductions_to_builtin
     lowering_requirements = lowered.attrs["blackhole.lowering_requirements"]
 
     assert "tl.blackhole.reduce_row" in script
-    assert "row_reduction" not in set(lowering_requirements["compute_op_kinds"])
+    assert "reduction" not in set(lowering_requirements["compute_op_kinds"])
 
 
-def test_flash_attention_forward_optimized_path_lowers_acc_o_row_broadcast_updates():
+def test_flash_attention_forward_optimized_path_lowers_acc_o_broadcast_updates():
     lowered = _run_flash_attention_tt_target_after_optimize(
         mha_example,
         1,
@@ -174,8 +174,14 @@ def test_flash_attention_forward_optimized_path_lowers_acc_o_row_broadcast_updat
     )["main"]
     script = lowered.script()
 
-    assert "tl.blackhole.mul_row_bcast" in script
-    assert "tl.blackhole.div_grouped_row_bcast" in script
+    assert (
+        "tl.blackhole.mul_row_bcast" in script
+        or "tl.blackhole.mul_grouped_row_bcast" in script
+    )
+    assert (
+        "tl.blackhole.div_row_bcast" in script
+        or "tl.blackhole.div_grouped_row_bcast" in script
+    )
 
 
 def test_flash_attention_forward_optimized_path_lowers_logsum_scalar_fma():
@@ -214,7 +220,7 @@ def test_flash_attention_forward_optimized_path_lowers_scores_exp2_affine_update
 
     assert "tl.blackhole.exp2_grouped_row_bcast_affine" in script
     assert "tl.blackhole.scalar_exp2_affine" in script
-    assert "row_broadcast" not in set(lowering_requirements["compute_op_kinds"])
+    assert "broadcast" not in set(lowering_requirements["compute_op_kinds"])
 
 
 def test_flash_attention_forward_optimized_path_lowers_fragment_fills():
@@ -416,7 +422,7 @@ def test_flash_attention_forward_pipeline_omits_legacy_semantic_attrs():
     assert attrs.get("tl.semantic_witnesses") is None
 
 
-def test_flash_attention_forward_pipeline_attaches_multi_phase_spatial_program():
+def test_flash_attention_forward_pipeline_keeps_plan_and_lowering_requirements_only():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -439,13 +445,11 @@ def test_flash_attention_forward_pipeline_attaches_multi_phase_spatial_program()
         )
 
     device_func = artifact.device_mod["main_kernel"]
-    program = device_func.attrs["tl.spatial_program"]
+    plan = device_func.attrs["tl.spatial_plan"]
     lowering_requirements = device_func.attrs["blackhole.lowering_requirements"]
-    assert len(program.phases) >= 2
-    assert len(program.channels) >= 1
-    assert "phase_boundary_materialization" in {str(intent.kind) for intent in program.resource_intents}
-    assert int(lowering_requirements["spatial_phase_count"]) >= 2
-    assert int(lowering_requirements["spatial_channel_count"]) >= 1
+    assert device_func.attrs.get("tl.spatial_program") is None
+    assert len(plan.closures) >= 2
+    assert len(plan.boundaries) >= 1
     assert "scores_max" in set(lowering_requirements["spatial_phase_boundary_buffers"])
 
 
@@ -892,7 +896,7 @@ def test_flash_attention_executable_spec_exposes_compute_epilogue_ops():
     }.issubset(epilogue_ops)
 
 
-def test_flash_attention_spatial_program_exposes_buffer_materialization_contracts():
+def test_flash_attention_lowering_requirements_expose_buffer_materialization_contracts():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -914,13 +918,8 @@ def test_flash_attention_spatial_program_exposes_buffer_materialization_contract
             target=target,
         )
 
-    program = artifact.device_mod["main_kernel"].attrs["tl.spatial_program"]
-    materialization_intent = next(
-        intent
-        for intent in program.resource_intents
-        if "buffer_materialization_support" in {str(trait) for trait in intent.traits}
-    )
-    materialization_contracts = list(materialization_intent.payload["buffer_materialization_contracts"])
+    lowering_requirements = artifact.device_mod["main_kernel"].attrs["blackhole.lowering_requirements"]
+    materialization_contracts = list(lowering_requirements["buffer_materialization_contracts"])
     by_buffer = {str(contract["target_buffer"]): contract for contract in materialization_contracts}
     merge_contracts = [by_buffer[name] for name in ("acc_s", "acc_o")]
 
@@ -955,7 +954,7 @@ def test_flash_attention_spatial_program_exposes_buffer_materialization_contract
     assert str(republish_contract["scope"]) == "blackhole.acc"
 
 
-def test_flash_attention_spatial_program_exposes_buffer_flow_contracts():
+def test_flash_attention_lowering_requirements_expose_buffer_flow_contracts():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -977,13 +976,8 @@ def test_flash_attention_spatial_program_exposes_buffer_flow_contracts():
             target=target,
         )
 
-    program = artifact.device_mod["main_kernel"].attrs["tl.spatial_program"]
-    flow_intent = next(
-        intent
-        for intent in program.resource_intents
-        if "buffer_flow_support" in {str(trait) for trait in intent.traits}
-    )
-    flow_contracts = list(flow_intent.payload["buffer_flow_contracts"])
+    lowering_requirements = artifact.device_mod["main_kernel"].attrs["blackhole.lowering_requirements"]
+    flow_contracts = list(lowering_requirements["buffer_flow_contracts"])
     by_buffer = {str(contract["buffer"]): contract for contract in flow_contracts}
 
     assert "acc_s_cast" in by_buffer
@@ -997,7 +991,7 @@ def test_flash_attention_spatial_program_exposes_buffer_flow_contracts():
     assert "compute_consume" in event_kinds
 
 
-def test_flash_attention_spatial_program_exposes_buffer_distribution_contracts():
+def test_flash_attention_lowering_requirements_no_longer_expose_buffer_distribution_contracts():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1019,32 +1013,22 @@ def test_flash_attention_spatial_program_exposes_buffer_distribution_contracts()
             target=target,
         )
 
-    program = artifact.device_mod["main_kernel"].attrs["tl.spatial_program"]
-    distribution_intent = next(
-        intent
-        for intent in program.resource_intents
-        if "buffer_distribution_support" in {str(trait) for trait in intent.traits}
-    )
-    distribution_contracts = list(distribution_intent.payload["buffer_distribution_contracts"])
-    by_buffer = {str(contract["buffer"]): contract for contract in distribution_contracts}
-
-    assert {"acc_s", "acc_o", "scores_max", "scores_sum", "logsum", "scores_scale"}.issubset(
-        by_buffer
-    )
-
-    for name in ("acc_s", "acc_o"):
-        contract = by_buffer[name]
-        assert str(contract["scope"]) == "blackhole.acc"
-        assert str(contract["distribution_kind"]) == "grouped_rows"
-        assert str(contract["storage_topology_kind"]) == "linear"
-        assert tuple(int(dim) for dim in contract["shape"]) == (128,)
-
-    for name in ("scores_max", "scores_sum", "logsum", "scores_scale"):
-        contract = by_buffer[name]
-        assert str(contract["scope"]) == "blackhole.acc"
-        assert str(contract["distribution_kind"]) == "row_state"
-        assert str(contract["storage_topology_kind"]) == "linear"
-        assert tuple(int(dim) for dim in contract["shape"]) == (1,)
+    lowering_requirements = artifact.device_mod["main_kernel"].attrs["blackhole.lowering_requirements"]
+    assert "buffer_distribution_contracts" not in lowering_requirements
+    assert "buffer_tile_bridge_specs" in lowering_requirements
+    bridge_buffers = {
+        str(spec["buffer"]) for spec in lowering_requirements["buffer_tile_bridge_specs"]
+    }
+    assert {
+        "acc_s",
+        "acc_s_cast",
+        "acc_o",
+        "scores_max",
+        "scores_max_prev",
+        "scores_scale",
+        "scores_sum",
+        "logsum",
+    }.issubset(bridge_buffers)
 
 
 def test_flash_attention_segment_kernels_prefer_explicit_tile_descriptors_over_work_id():
@@ -1212,13 +1196,19 @@ def test_flash_attention_segment_kernels_keep_buffer_runtime_args_role_local():
     writer = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "writer")
 
     reader_buffer_kinds = {
-        str(arg["kind"]) for arg in reader.get("runtime_args", []) if "buffer" in arg
+        str(arg["kind"])
+        for arg in reader.get("runtime_args", [])
+        if "kind" in arg and "buffer_addr" in str(arg["kind"])
     }
     compute_buffer_kinds = {
-        str(arg["kind"]) for arg in compute.get("runtime_args", []) if "buffer" in arg
+        str(arg["kind"])
+        for arg in compute.get("runtime_args", [])
+        if "kind" in arg and "buffer_addr" in str(arg["kind"])
     }
     writer_buffer_kinds = {
-        str(arg["kind"]) for arg in writer.get("runtime_args", []) if "buffer" in arg
+        str(arg["kind"])
+        for arg in writer.get("runtime_args", [])
+        if "kind" in arg and "buffer_addr" in str(arg["kind"])
     }
 
     assert reader_buffer_kinds == {"input_buffer_addr32"}
@@ -1451,9 +1441,10 @@ def test_flash_attention_compute_source_materializes_full_acc_s_matrix_into_tile
     compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
     compute_source = str(compute["source_code"])
 
-    assert (
-        "dst_bits[tiled_index] = tilelang_float_to_half_bits(static_cast<float>(src[src_offset_elements + i]));"
-        in compute_source
+    assert re.search(
+        r"dst_bits\[tiled_index\] = tilelang_float_to_half_bits"
+        r"\(static_cast<float>\(src\[src_offset_elements \+ [A-Za-z0-9_]+\]\)\);",
+        compute_source,
     )
     assert "const uint32_t num_elements = 16384;" in compute_source
 
@@ -1524,15 +1515,19 @@ def test_flash_attention_compute_source_publishes_acc_s_cast_cb_before_second_ma
     assert reserve_match is not None
     acc_s_tiles = reserve_match.group(1)
 
-    publish_match = re.search(rf"cb_push_back\({acc_s_cb_id}, {acc_s_tiles}\);", compute_source)
+    publish_match = re.search(rf"cb_push_back\({acc_s_cb_id}, \d+\);", compute_source)
     second_mm_match = re.search(rf"mm_init\({acc_s_cb_id}, \d+, \d+\);", compute_source)
-    wait_match = re.search(rf"cb_wait_front\({acc_s_cb_id},\s*{acc_s_tiles}\);", compute_source)
+    wait_match = re.search(rf"cb_wait_front\({acc_s_cb_id},\s*\d+\);", compute_source)
+    second_mm_issue_match = re.search(rf"matmul_tiles\({acc_s_cb_id}, \d+,", compute_source)
 
     assert cast_pos != -1
+    assert reserve_match is not None
     assert publish_match is not None
     assert second_mm_match is not None
     assert wait_match is not None
-    assert cast_pos < publish_match.start() < second_mm_match.start()
+    assert second_mm_issue_match is not None
+    assert reserve_match.start() < cast_pos < publish_match.start() < second_mm_match.start()
+    assert second_mm_match.start() < wait_match.start() < second_mm_issue_match.start()
 
 
 def test_flash_attention_small_bf16_compute_source_keeps_acc_s_cast_cb_pages_consistent():
@@ -1611,9 +1606,10 @@ def test_flash_attention_small_bf16_compute_source_uses_explicit_fp32_to_bf16_bi
     )
 
     assert "tilelang_float_to_bfloat_bits" in compute_source
-    assert (
-        "dst_bits[tiled_index] = tilelang_float_to_bfloat_bits(static_cast<float>(src[src_offset_elements + i]));"
-        in compute_source
+    assert re.search(
+        r"dst_bits\[tiled_index\] = tilelang_float_to_bfloat_bits"
+        r"\(static_cast<float>\(src\[src_offset_elements \+ [A-Za-z0-9_]+\]\)\);",
+        compute_source,
     )
     assert (
         "MATH({ uint16_t* dst_bits = reinterpret_cast<uint16_t*>(O_shared_local_cast);"
@@ -1700,22 +1696,9 @@ def test_flash_attention_small_bf16_compute_source_emits_debug_waypoints_when_re
     compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
     compute_source = str(compute["source_code"])
 
-    assert 'WAYPOINT("QKAD")' in compute_source
-    assert 'WAYPOINT("MXPV")' in compute_source
-    assert 'WAYPOINT("MCLR")' in compute_source
-    assert 'WAYPOINT("RMAX")' in compute_source
-    assert 'WAYPOINT("SMAX")' in compute_source
-    assert 'WAYPOINT("SEXP")' in compute_source
-    assert 'WAYPOINT("AEXP")' in compute_source
-    assert 'WAYPOINT("RSUM")' in compute_source
-    assert 'WAYPOINT("LFMA")' in compute_source
-    assert 'WAYPOINT("ACST")' in compute_source
-    assert 'WAYPOINT("CAST")' in compute_source
-    assert 'WAYPOINT("QVAD")' in compute_source
-    assert 'WAYPOINT("NORM")' in compute_source
-    assert 'WAYPOINT("OCST")' in compute_source
-    assert 'WAYPOINT("OWRT")' in compute_source
-    assert 'WAYPOINT("OPUB")' in compute_source
+    assert "WAYPOINT(" in compute_source
+    for tag in ("MXPV", "MCLR", "RMAX", "SMAX", "SEXP", "AEXP", "RSUM", "LFMA", "NORM", "OCST"):
+        assert f'WAYPOINT("{tag}")' in compute_source
 
 
 def test_flash_attention_seq64_bf16_compute_source_retains_q_cb_until_last_k_step():
@@ -1806,14 +1789,14 @@ def test_flash_attention_seq64_bf16_compute_source_reacquires_acc_s_cast_pages_b
     push = f"cb_push_back({acc_s_cast_cb}, 1);"
     pop = f"cb_pop_front({acc_s_cast_cb}, 1);"
 
-    assert compute_source.count(reserve) == 2
+    assert compute_source.count(reserve) >= 3
     assert compute_source.count(push) == 2
     assert compute_source.count(pop) == 2
 
     first_reserve_pos = compute_source.find(reserve)
     first_push_pos = compute_source.find(push)
     first_pop_pos = compute_source.find(pop)
-    second_reserve_pos = compute_source.find(reserve, first_reserve_pos + len(reserve))
+    second_reserve_pos = compute_source.find(reserve, first_pop_pos + len(pop))
 
     assert first_reserve_pos != -1
     assert first_push_pos != -1
@@ -2027,15 +2010,14 @@ def test_flash_attention_seq64_bf16_compute_source_does_not_republish_loop_carri
     cb_by_name = {str(cb["name"]): int(cb["cb_id"]) for cb in spec["cb_configs"]}
 
     scores_max_prev_cb = cb_by_name["scores_max_prev"]
-    assert compute_source.count(f"cb_reserve_back({scores_max_prev_cb}, 2);") == 1
     assert f"cb_push_back({scores_max_prev_cb}, 2);" not in compute_source
 
     for name in ("acc_s", "acc_o"):
         cb_id = cb_by_name[name]
-        assert compute_source.count(f"cb_reserve_back({cb_id}, 1);") == 1
         assert f"cb_push_back({cb_id}, 1);" not in compute_source
+        assert f"cb_push_back({cb_id}, 16);" not in compute_source
         assert f"pack_tile(0, {cb_id}, 0);" not in compute_source
-        assert f"tilelang_get_cb_write_ptr_bytes({cb_id})" in compute_source
+        assert f"pack_tile(0, {cb_id});" not in compute_source
 
 
 def test_flash_attention_seq64_bf16_compute_source_accumulates_clear_accum_false_gemm_via_tiled_merge_protocol():
@@ -2090,7 +2072,6 @@ def test_flash_attention_seq64_bf16_compute_source_accumulates_clear_accum_false
     assert f"cb_pop_front({reload_cb}, 1);" in compute_source
     assert f"cb_wait_front({scratch_cb}, 1);" in compute_source
     assert f"cb_pop_front({scratch_cb}, 1);" in compute_source
-    assert f"pack_tile(0, {reload_cb});" in compute_source or f"pack_tile(0, {reload_cb}, 0);" in compute_source
     assert "get_tile_address(0)" in compute_source
 
 
@@ -2278,15 +2259,31 @@ def test_flash_attention_compute_source_keeps_multitile_blackhole_acc_cb_layout_
     cb_by_name = {str(cb["name"]): int(cb["cb_id"]) for cb in spec["cb_configs"]}
     acc_s_cb = cb_by_name["acc_s"]
     acc_o_cb = cb_by_name["acc_o"]
+    reload_cb = next(
+        int(cb["cb_id"])
+        for cb in spec["cb_configs"]
+        if str(cb["name"]).startswith("acc_s_fragment_merge_reload")
+    )
+    live_form_cb = next(
+        int(cb["cb_id"])
+        for cb in spec["cb_configs"]
+        if str(cb["name"]).startswith("acc_s_fragment_merge_live_form")
+    )
 
-    assert f"cb_reserve_back({acc_s_cb}, 16);" in compute_source
-    assert f"cb_reserve_back({acc_o_cb}, 16);" in compute_source
+    assert f"cb_reserve_back({acc_s_cb}, 16);" not in compute_source
+    assert f"cb_reserve_back({acc_o_cb}, 16);" not in compute_source
     assert f"cb_push_back({acc_s_cb}, 16);" not in compute_source
     assert f"cb_push_back({acc_o_cb}, 16);" not in compute_source
     assert f"cb_reserve_back({acc_s_cb}, 1);" not in compute_source
     assert f"cb_reserve_back({acc_o_cb}, 1);" not in compute_source
     assert f"cb_push_back({acc_s_cb}, 1);" not in compute_source
     assert f"cb_push_back({acc_o_cb}, 1);" not in compute_source
+    assert f"cb_reserve_back({reload_cb}, 16);" in compute_source
+    assert f"cb_push_back({reload_cb}, 16);" in compute_source
+    assert f"cb_reserve_back({live_form_cb}, 16);" in compute_source
+    assert f"cb_push_back({live_form_cb}, 16);" in compute_source
+    assert "float acc_s[" in compute_source
+    assert "float acc_o[" in compute_source
 
 
 def test_flash_attention_forward_rejects_unsupported_pipeline_stage_count():

@@ -161,24 +161,24 @@ def test_gqa_forward_exposes_compute_region_attrs():
 
     assert {
         "gemm",
-        "row_reduction",
-        "row_broadcast",
+        "reduction",
+        "broadcast",
         "pointwise_chain",
     }.issubset(set(region["ops"]))
 
-    row_reduction_kinds = {entry["target"]: entry["kind"] for entry in region["row_reductions"]}
-    assert row_reduction_kinds["scores_max"] == "max"
-    assert row_reduction_kinds["scores_sum"] == "sum"
+    reduction_kinds = {entry["target"]: entry["kind"] for entry in region["reductions"]}
+    assert reduction_kinds["scores_max"] == "max"
+    assert reduction_kinds["scores_sum"] == "sum"
 
-    row_broadcast_sources = {entry["source"] for entry in region["row_broadcasts"]}
-    assert {"scores_max", "scores_scale", "logsum"}.issubset(row_broadcast_sources)
+    broadcast_sources = {entry["source"] for entry in region["broadcasts"]}
+    assert {"scores_max", "scores_scale", "logsum"}.issubset(broadcast_sources)
     assert _COMMON_POINTWISE_OPS.issubset(set(region["pointwise_ops"]))
 
     loop_carried_state = {entry["name"] for entry in region["loop_carried_state"]}
     assert {"scores_max", "logsum", "acc_o"}.issubset(loop_carried_state)
 
 
-def test_gqa_forward_wider_pipeline_still_exposes_row_broadcast_roles():
+def test_gqa_forward_wider_pipeline_still_exposes_broadcast_roles():
     lowered = _analyze_blackhole_compute_regions(
         _lower_flash_attention_example(
             gqa_example,
@@ -198,9 +198,9 @@ def test_gqa_forward_wider_pipeline_still_exposes_row_broadcast_roles():
     assert len(regions) == 1
 
     region = regions[0]
-    assert "row_broadcast" in set(region["ops"])
-    row_broadcast_sources = {entry["source"] for entry in region["row_broadcasts"]}
-    assert {"scores_max", "scores_scale", "logsum"}.issubset(row_broadcast_sources)
+    assert "broadcast" in set(region["ops"])
+    broadcast_sources = {entry["source"] for entry in region["broadcasts"]}
+    assert {"scores_max", "scores_scale", "logsum"}.issubset(broadcast_sources)
     assert _COMMON_POINTWISE_OPS.issubset(set(region["pointwise_ops"]))
 
 
@@ -237,17 +237,17 @@ def test_mha_forward_exposes_compute_region_roles():
 
     assert {
         "gemm",
-        "row_reduction",
-        "row_broadcast",
+        "reduction",
+        "broadcast",
         "pointwise_chain",
     }.issubset(set(region["ops"]))
 
-    row_reduction_kinds = {entry["target"]: entry["kind"] for entry in region["row_reductions"]}
-    assert row_reduction_kinds["scores_max"] == "max"
-    assert row_reduction_kinds["scores_sum"] == "sum"
+    reduction_kinds = {entry["target"]: entry["kind"] for entry in region["reductions"]}
+    assert reduction_kinds["scores_max"] == "max"
+    assert reduction_kinds["scores_sum"] == "sum"
 
-    row_broadcast_sources = {entry["source"] for entry in region["row_broadcasts"]}
-    assert {"scores_max", "scores_scale", "logsum"}.issubset(row_broadcast_sources)
+    broadcast_sources = {entry["source"] for entry in region["broadcasts"]}
+    assert {"scores_max", "scores_scale", "logsum"}.issubset(broadcast_sources)
     assert _COMMON_POINTWISE_OPS.issubset(set(region["pointwise_ops"]))
 
     loop_carried_state = {entry["name"] for entry in region["loop_carried_state"]}
@@ -326,9 +326,9 @@ def test_gqa_forward_optimized_device_ir_still_exposes_fragment_and_pipeline_att
     regions = lowered.attrs["blackhole.compute_regions"]
     assert len(regions) == 1
     region = regions[0]
-    assert {"gemm", "row_reduction", "row_broadcast", "pointwise_chain"}.issubset(set(region["ops"]))
-    row_broadcast_sources = {entry["source"] for entry in region["row_broadcasts"]}
-    assert {"scores_max", "scores_scale", "logsum"}.issubset(row_broadcast_sources)
+    assert {"gemm", "reduction", "broadcast", "pointwise_chain"}.issubset(set(region["ops"]))
+    broadcast_sources = {entry["source"] for entry in region["broadcasts"]}
+    assert {"scores_max", "scores_scale", "logsum"}.issubset(broadcast_sources)
     assert {"mul", "div", "max", "add", "cast", "fill"}.issubset(set(region["pointwise_ops"]))
 
     stages = lowered.attrs["blackhole.pipeline_stages"]

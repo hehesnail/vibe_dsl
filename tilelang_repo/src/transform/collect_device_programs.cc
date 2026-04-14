@@ -28,7 +28,7 @@
 #include <tvm/target/target.h>
 #include <tvm/tir/stmt_functor.h>
 
-#include "common/spatial_program.h"
+#include "common/spatial_plan.h"
 
 namespace tvm {
 namespace tl {

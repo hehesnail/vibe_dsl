@@ -18,6 +18,7 @@ from tilelang.utils.target import determine_target
 from tilelang.engine.phase import (
     PreLowerSemanticCheck,
     LowerAndLegalize,
+    LowerToBlackholePhaseB,
     LowerToBlackholeExecutable,
     OptimizeForTarget,
 )
@@ -223,9 +224,16 @@ def _align_blackhole_device_symbol(
     if len(source_funcs) != 1 or len(optimized_funcs) != 1:
         return optimized_device_mod
 
+    _, source_func = source_funcs[0]
     optimized_gvar, optimized_func = optimized_funcs[0]
     target_symbol = _prim_func_symbol(optimized_gvar, optimized_func)
     aligned_func = optimized_func.with_attr("global_symbol", target_symbol)
+    source_attrs = source_func.attrs or {}
+    if "blackhole.compute_regions" in source_attrs:
+        aligned_func = aligned_func.with_attr(
+            "blackhole.logical_compute_regions",
+            source_attrs["blackhole.compute_regions"],
+        )
     return tvm.IRModule(
         {target_symbol: aligned_func},
         global_infos=optimized_device_mod.global_infos,
@@ -348,7 +356,7 @@ def lower(
         # Phase 1: Lower and legalize the IR
         mod = LowerAndLegalize(mod, target)
         if target.kind.name == "blackhole":
-            blackhole_analysis_mod = mod
+            blackhole_analysis_mod = LowerToBlackholePhaseB(mod)
 
         # Phase 2: Optimize the IR for the target
         mod = OptimizeForTarget(mod, target)

@@ -7,6 +7,7 @@
 #define TVM_TL_TRANSFORM_COMMON_SPATIAL_PLAN_H_
 
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/global_info.h>
 
 #include "companion_base.h"
 
@@ -179,6 +180,29 @@ class SpatialPlan : public ObjectRef {
                       ffi::Array<ClosureBoundary> boundaries,
                       ValidatedHintSet validated_hints, ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SpatialPlan, ObjectRef, SpatialPlanNode);
+};
+
+class TLDeviceProgramInfoNode : public GlobalInfoNode {
+ public:
+  ffi::String root_symbol;
+  ffi::Array<ffi::String> member_funcs;
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<TLDeviceProgramInfoNode>()
+        .def_ro("root_symbol", &TLDeviceProgramInfoNode::root_symbol)
+        .def_ro("member_funcs", &TLDeviceProgramInfoNode::member_funcs);
+  }
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TLDeviceProgramInfo", TLDeviceProgramInfoNode,
+                                    GlobalInfoNode);
+};
+
+class TLDeviceProgramInfo : public GlobalInfo {
+ public:
+  TVM_DLL TLDeviceProgramInfo(ffi::String root_symbol, ffi::Array<ffi::String> member_funcs);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TLDeviceProgramInfo, GlobalInfo,
+                                             TLDeviceProgramInfoNode);
 };
 
 }  // namespace tl

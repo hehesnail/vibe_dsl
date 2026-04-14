@@ -224,6 +224,16 @@ Normalized Tile TIR
 
 它们不能继续扩张，也不能再被文档写成长期架构。
 
+`2026-04-14` 当前状态补充：
+
+- `SpatialProgram` 已退出 active compile/runtime path
+- `buffer_distribution_contract`
+  已从 active lowering/codegen/probe surface 删除
+- 当前剩余架构债不再是旧 side-contract public surface，
+  而是 `BuildTTProgram` 内部 helper bridge
+  还没有完全拆成真实
+  `PlanTTTransport + PlanTTCompute`
+
 ## 7. Canonical Pass Chain
 
 长期主链固定为：

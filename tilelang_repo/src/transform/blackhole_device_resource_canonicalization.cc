@@ -60,10 +60,9 @@
 #include <vector>
 
 #include "../layout/layout.h"
-#include "common/spatial_program.h"
 #include "common/tt_target_program.h"
 #include "common/companion_base.h"
-#include "common/buffer_distribution_contract_utils.h"
+#include "common/buffer_tile_bridge_spec_utils.h"
 #include "runtime/thread_storage_scope.h"
 #include "tir/transforms/ir_utils.h"
 
@@ -404,11 +403,6 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
 
   Map<String, Any> RewriteLoweringRequirements(const Map<String, Any>& requirements) const {
     Map<String, Any> rewritten = requirements;
-    if (auto contracts = requirements.Get(String(schema_key::kBufferDistributionContracts))) {
-      rewritten.Set(String(schema_key::kBufferDistributionContracts),
-                    RewriteScopedRecordArray(Downcast<Array<Any>>(contracts.value()),
-                                             schema_key::kBuffer));
-    }
     if (auto contracts = requirements.Get(String(schema_key::kBufferMaterializationContracts))) {
       rewritten.Set(String(schema_key::kBufferMaterializationContracts),
                     RewriteScopedRecordArray(Downcast<Array<Any>>(contracts.value()),
@@ -429,8 +423,8 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
                     RewriteScopedRecordArray(Downcast<Array<Any>>(buffers.value()),
                                              schema_key::kName));
     }
-    if (auto contracts = region.Get(String(schema_key::kBufferDistributionContracts))) {
-      rewritten.Set(String(schema_key::kBufferDistributionContracts),
+    if (auto contracts = region.Get(String(schema_key::kBufferTileBridgeSpecs))) {
+      rewritten.Set(String(schema_key::kBufferTileBridgeSpecs),
                     RewriteScopedRecordArray(Downcast<Array<Any>>(contracts.value()),
                                              schema_key::kBuffer));
     }
@@ -473,41 +467,10 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
     return rewritten;
   }
 
-  Map<String, Any> RewriteResourceIntentPayload(const Map<String, Any>& payload) const {
-    return RewriteLoweringRequirements(payload);
-  }
-
-  ResourceIntent RewriteResourceIntent(const ResourceIntent& intent) const {
-    return ResourceIntent(intent->name, intent->kind, intent->target_name, intent->traits,
-                          RewriteResourceIntentPayload(intent->payload), intent->anchors);
-  }
-
-  SpatialExecutionPlan RewriteSpatialExecutionPlan(
-      const SpatialExecutionPlan& plan) const {
-    Array<ResourceIntent> resource_intents;
-    for (const ResourceIntent& intent : plan->resource_intents) {
-      resource_intents.push_back(RewriteResourceIntent(intent));
-    }
-    return SpatialExecutionPlan(plan->member_func, plan->phases, plan->tasks,
-                                plan->channels, plan->placements, plan->sync_edges,
-                                resource_intents, plan->anchors);
-  }
-
-  SpatialProgram RewriteSpatialProgram(const SpatialProgram& program) const {
-    Array<ResourceIntent> resource_intents;
-    for (const ResourceIntent& intent : program->resource_intents) {
-      resource_intents.push_back(RewriteResourceIntent(intent));
-    }
-    return SpatialProgram(program->member_func, program->phases, program->tasks,
-                          program->channels, program->layouts, program->work_partitions,
-                          program->placements, program->sync_edges, resource_intents,
-                          program->anchors);
-  }
-
   Map<String, Any> RewriteComputeEpilogueOp(const Map<String, Any>& op) const {
     Map<String, Any> rewritten = op;
-    if (auto contract = op.Get(String(schema_key::kBufferDistributionContract))) {
-      rewritten.Set(String(schema_key::kBufferDistributionContract),
+    if (auto contract = op.Get(String(schema_key::kBufferTileBridgeSpec))) {
+      rewritten.Set(String(schema_key::kBufferTileBridgeSpec),
                     RewriteScopedRecord(Downcast<Map<String, Any>>(contract.value()),
                                         schema_key::kBuffer));
     }
@@ -818,16 +781,6 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
         if (k == String("blackhole.pipeline_stages")) {
           auto stages = v.as<Array<Any>>();
           new_attrs.Set(k, stages.has_value() ? Any(RewritePipelineStages(stages.value())) : v);
-          continue;
-        }
-        if (k == String(attr::kTLSpatialExecutionPlan)) {
-          auto plan = v.as<SpatialExecutionPlan>();
-          new_attrs.Set(k, plan.has_value() ? Any(RewriteSpatialExecutionPlan(plan.value())) : v);
-          continue;
-        }
-        if (k == String(attr::kTLSpatialProgram)) {
-          auto program = v.as<SpatialProgram>();
-          new_attrs.Set(k, program.has_value() ? Any(RewriteSpatialProgram(program.value())) : v);
           continue;
         }
         if (k == String(attr::kTLTTProgram)) {

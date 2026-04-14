@@ -10,10 +10,10 @@
 #include <string>
 #include <vector>
 
+#include <tvm/ir/module.h>
 #include <tvm/tir/function.h>
 
-#include "spatial_program.h"
-#include "spatial_vocab.h"
+#include "companion_base.h"
 
 namespace tvm {
 namespace tl {
@@ -22,7 +22,6 @@ using tvm::ffi::Any;
 using tvm::ffi::Array;
 using tvm::ffi::Map;
 using tvm::ffi::String;
-namespace sp = tvm::tl::spatial;
 
 std::optional<int64_t> GetPayloadIndex(const Map<String, Any>& payload, const char* key);
 std::optional<std::string> GetPayloadString(const Map<String, Any>& payload, const char* key);
@@ -39,11 +38,6 @@ bool HasTrait(const Array<String>& traits, const char* trait);
 
 bool SameStringArray(const Array<String>& lhs, const Array<String>& rhs);
 bool SameIntegerAnyArray(const Array<Any>& lhs, const Array<Any>& rhs);
-
-std::string DeriveOrderingKindForChannel(sp::SpatialChannelKind channel_kind,
-                                         sp::SpatialChannelDeliveryKind delivery_kind);
-std::string DeriveMaterializationKindForChannel(sp::SpatialChannelKind channel_kind,
-                                                sp::SpatialChannelDeliveryKind delivery_kind);
 
 }  // namespace tl
 }  // namespace tvm

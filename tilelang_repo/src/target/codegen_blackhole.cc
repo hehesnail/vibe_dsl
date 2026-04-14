@@ -188,7 +188,7 @@ void ValidateNoUnsupportedFragmentRequirementsForCodegen(const tvm::tir::PrimFun
   if (auto compute_ops = lowering_requirements.value().Get("compute_op_kinds")) {
     for (const auto& item : Downcast<tvm::ffi::Array<tvm::ffi::Any>>(compute_ops.value())) {
       const std::string op_name = Downcast<tvm::ffi::String>(item);
-      if ((op_name == "row_reduction" || op_name == "row_broadcast") &&
+      if ((op_name == "reduction" || op_name == "broadcast") &&
           seen_ops.insert(op_name).second) {
         unsupported_ops.push_back(op_name);
       }
@@ -679,7 +679,7 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   // TT-Metal kernels use get_arg_val<uint32_t>(arg_index) to read arguments
   stream << "  // Load kernel arguments from runtime\n";
   LoadCorePlan(f);
-  LoadBufferDistributionContracts(f);
+  LoadBufferTileBridgeSpecs(f);
   if (HasRuntimeArgsForCodegen(f)) {
     EmitRuntimeArgLoads(f);
     this->VisitStmt(f->body);
@@ -765,61 +765,57 @@ void CodeGenBlackhole::LoadCorePlan(const tvm::tir::PrimFunc &f) {
   }
 }
 
-void CodeGenBlackhole::LoadBufferDistributionContracts(const tvm::tir::PrimFunc& f) {
-  buffer_distribution_bindings_by_buffer_name_.clear();
-  auto ingest_contract = [&](const ffi::Map<ffi::String, ffi::Any>& contract) {
-    auto maybe_buffer = contract.Get(ffi::String(schema_key::kBuffer));
-    auto maybe_distribution = contract.Get(ffi::String(schema_key::kDistributionKind));
-    auto maybe_topology = contract.Get(ffi::String(schema_key::kStorageTopologyKind));
-    if (!maybe_buffer || !maybe_distribution || !maybe_topology) {
+void CodeGenBlackhole::LoadBufferTileBridgeSpecs(const tvm::tir::PrimFunc& f) {
+  buffer_tile_bridge_bindings_by_buffer_name_.clear();
+  auto ingest_spec = [&](const ffi::Map<ffi::String, ffi::Any>& spec) {
+    auto maybe_buffer = spec.Get(ffi::String(schema_key::kBuffer));
+    if (!maybe_buffer) {
       return;
     }
-    BufferDistributionBinding binding;
+    BufferTileBridgeBinding binding;
     binding.buffer_name = Downcast<ffi::String>(maybe_buffer.value());
-    binding.distribution_kind = Downcast<ffi::String>(maybe_distribution.value());
-    binding.storage_topology_kind = Downcast<ffi::String>(maybe_topology.value());
-    if (auto v = contract.Get(ffi::String(schema_key::kShape))) {
+    if (auto v = spec.Get(ffi::String(schema_key::kShape))) {
       binding.logical_shape = Downcast<ffi::Array<tvm::PrimExpr>>(v.value());
     }
-    if (auto v = contract.Get(ffi::String(schema_key::kLocalShape))) {
+    if (auto v = spec.Get(ffi::String(schema_key::kLocalShape))) {
       binding.local_shape = Downcast<ffi::Array<tvm::PrimExpr>>(v.value());
     }
-    if (auto v = contract.Get(ffi::String(schema_key::kInverseLogicalIndexVars))) {
+    if (auto v = spec.Get(ffi::String(schema_key::kInverseLogicalIndexVars))) {
       binding.inverse_logical_index_vars = Downcast<ffi::Array<tvm::PrimExpr>>(v.value());
     }
-    if (auto v = contract.Get(ffi::String(schema_key::kInverseLogicalIndexExprs))) {
+    if (auto v = spec.Get(ffi::String(schema_key::kInverseLogicalIndexExprs))) {
       binding.inverse_logical_index_exprs = Downcast<ffi::Array<tvm::PrimExpr>>(v.value());
     }
-    if (auto v = contract.Get(ffi::String(schema_key::kThreadExtent))) {
+    if (auto v = spec.Get(ffi::String(schema_key::kThreadExtent))) {
       binding.thread_extent = Downcast<tvm::PrimExpr>(v.value());
     }
-    if (auto v = contract.Get(ffi::String(schema_key::kReplicateExtent))) {
+    if (auto v = spec.Get(ffi::String(schema_key::kReplicateExtent))) {
       binding.replicate_extent = Downcast<tvm::PrimExpr>(v.value());
     }
     if (binding.buffer_name.empty()) {
       return;
     }
     auto [it, inserted] =
-        buffer_distribution_bindings_by_buffer_name_.emplace(binding.buffer_name, binding);
+        buffer_tile_bridge_bindings_by_buffer_name_.emplace(binding.buffer_name, binding);
     if (!inserted) {
-      ICHECK_EQ(it->second.distribution_kind, binding.distribution_kind)
-          << "Blackhole codegen requires a single buffer distribution_kind per buffer; "
+      ICHECK(StructuralEqual()(it->second.logical_shape, binding.logical_shape))
+          << "Blackhole codegen requires a single logical bridge shape per buffer; "
           << binding.buffer_name;
-      ICHECK_EQ(it->second.storage_topology_kind, binding.storage_topology_kind)
-          << "Blackhole codegen requires a single buffer storage_topology_kind per buffer; "
+      ICHECK(StructuralEqual()(it->second.local_shape, binding.local_shape))
+          << "Blackhole codegen requires a single local bridge shape per buffer; "
           << binding.buffer_name;
     }
   };
 
   if (auto lowering_requirements =
           f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.lowering_requirements")) {
-    if (auto maybe_contracts =
-            lowering_requirements.value().Get(ffi::String(schema_key::kBufferDistributionContracts))) {
-      for (const ffi::Any& contract_any : Downcast<ffi::Array<ffi::Any>>(maybe_contracts.value())) {
-        auto contract = contract_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+    if (auto maybe_specs =
+            lowering_requirements.value().Get(ffi::String(schema_key::kBufferTileBridgeSpecs))) {
+      for (const ffi::Any& spec_any : Downcast<ffi::Array<ffi::Any>>(maybe_specs.value())) {
+        auto spec = spec_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
             ffi::Map<ffi::String, ffi::Any>());
-        if (!contract.empty()) {
-          ingest_contract(contract);
+        if (!spec.empty()) {
+          ingest_spec(spec);
         }
       }
     }
@@ -831,32 +827,32 @@ void CodeGenBlackhole::LoadBufferDistributionContracts(const tvm::tir::PrimFunc&
     if (op.empty()) {
       continue;
     }
-    auto maybe_layout_contract = op.Get(ffi::String(schema_key::kBufferDistributionContract));
-    if (!maybe_layout_contract) {
+    auto maybe_bridge_spec = op.Get(ffi::String(schema_key::kBufferTileBridgeSpec));
+    if (!maybe_bridge_spec) {
       continue;
     }
-    auto contract = maybe_layout_contract.value().as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+    auto spec = maybe_bridge_spec.value().as<ffi::Map<ffi::String, ffi::Any>>().value_or(
         ffi::Map<ffi::String, ffi::Any>());
-    if (!contract.empty()) {
-      ingest_contract(contract);
+    if (!spec.empty()) {
+      ingest_spec(spec);
     }
   }
 }
 
-const CodeGenBlackhole::BufferDistributionBinding* CodeGenBlackhole::FindBufferDistributionBinding(
+const CodeGenBlackhole::BufferTileBridgeBinding* CodeGenBlackhole::FindBufferTileBridgeBinding(
     const tvm::tir::VarNode* var) const {
   if (var == nullptr) {
     return nullptr;
   }
-  auto it = buffer_distribution_bindings_by_buffer_name_.find(var->name_hint);
-  if (it == buffer_distribution_bindings_by_buffer_name_.end()) {
+  auto it = buffer_tile_bridge_bindings_by_buffer_name_.find(var->name_hint);
+  if (it == buffer_tile_bridge_bindings_by_buffer_name_.end()) {
     return nullptr;
   }
   return &it->second;
 }
 
-bool CodeGenBlackhole::BufferDistributionRequiresGenericBridge(
-    const BufferDistributionBinding& binding) const {
+bool CodeGenBlackhole::BufferTileBridgeRequiresGenericBridge(
+    const BufferTileBridgeBinding& binding) const {
   return !binding.inverse_logical_index_exprs.empty() && !binding.local_shape.empty();
 }
 
@@ -2533,8 +2529,8 @@ void CodeGenBlackhole::PrintWriteLocalFragmentSliceToTiledCB(const tvm::tir::Cal
       << "tl.blackhole.write_local_fragment_slice_to_tiled_cb requires 16-bit or 32-bit element dtype";
   const char* bits_type = bit_width == 16 ? "uint16_t" : "uint32_t";
   const PrimExpr src_offset = op->args.size() >= 6 ? op->args[5] : IntImm(DataType::Int(32), 0);
-  if (const BufferDistributionBinding* binding = FindBufferDistributionBinding(src_var);
-      binding != nullptr && BufferDistributionRequiresGenericBridge(*binding)) {
+  if (const BufferTileBridgeBinding* binding = FindBufferTileBridgeBinding(src_var);
+      binding != nullptr && BufferTileBridgeRequiresGenericBridge(*binding)) {
     ICHECK_EQ(binding->local_shape.size(), 1)
         << "Blackhole codegen generic fragment->tiled CB bridge currently requires a 1-D "
            "local_shape for "
@@ -2687,8 +2683,8 @@ void CodeGenBlackhole::PrintCastFragmentSliceToTiledCB(const tvm::tir::CallNode*
         << "tl.blackhole.cast_fragment_slice_to_tiled_cb currently supports only float16, "
            "bfloat16, or float32 destination dtypes";
   }
-  if (const BufferDistributionBinding* binding = FindBufferDistributionBinding(src_var);
-      binding != nullptr && BufferDistributionRequiresGenericBridge(*binding)) {
+  if (const BufferTileBridgeBinding* binding = FindBufferTileBridgeBinding(src_var);
+      binding != nullptr && BufferTileBridgeRequiresGenericBridge(*binding)) {
     ICHECK_EQ(binding->local_shape.size(), 1)
         << "Blackhole codegen generic cast-fragment->tiled CB bridge currently requires a 1-D "
            "local_shape for "
@@ -2878,8 +2874,8 @@ void CodeGenBlackhole::PrintReadCBFrontTileToLocalFragment(const tvm::tir::CallN
   ICHECK(bit_width == 16 || bit_width == 32)
       << "tl.blackhole.read_cb_front_tile_to_local_fragment requires 16-bit or 32-bit element dtype";
   const char* bits_type = bit_width == 16 ? "uint16_t" : "uint32_t";
-  if (const BufferDistributionBinding* binding = FindBufferDistributionBinding(dst_var);
-      binding != nullptr && BufferDistributionRequiresGenericBridge(*binding)) {
+  if (const BufferTileBridgeBinding* binding = FindBufferTileBridgeBinding(dst_var);
+      binding != nullptr && BufferTileBridgeRequiresGenericBridge(*binding)) {
     ICHECK_EQ(binding->local_shape.size(), 1)
         << "Blackhole codegen generic tiled CB->fragment bridge currently requires a 1-D "
            "local_shape for "
@@ -3109,17 +3105,6 @@ void CodeGenBlackhole::PrintReduceRow(const tvm::tir::CallNode* op,
   PrintExpr(op->args[1], os);
   os << "); ";
   if (grouped) {
-    const std::string src_buffer_name = src_var->name_hint;
-    auto layout_it = buffer_distribution_bindings_by_buffer_name_.find(src_buffer_name);
-    ICHECK(layout_it != buffer_distribution_bindings_by_buffer_name_.end())
-        << "Blackhole codegen requires buffer_distribution_contract for grouped reduce_row source "
-        << src_buffer_name;
-    ICHECK_EQ(layout_it->second.distribution_kind, buffer_distribution_kind::kGroupedRows)
-        << "Blackhole codegen grouped reduce_row requires grouped_rows distribution contract for "
-        << src_buffer_name;
-    ICHECK_EQ(layout_it->second.storage_topology_kind, buffer_topology_kind::kLinear)
-        << "Blackhole codegen grouped reduce_row only supports linear fragment storage topology for "
-        << src_buffer_name;
     os << "const uint32_t num_elements = ";
     PrintExpr(op->args[2], os);
     os << "; const uint32_t row_width = ";
@@ -3204,17 +3189,6 @@ void CodeGenBlackhole::PrintMulGroupedRowBcast(const tvm::tir::CallNode* op,
   PrintExpr(op->args[2], os);
   os << "; const uint32_t row_width = ";
   PrintExpr(op->args[3], os);
-  const std::string dst_buffer_name = dst_var->name_hint;
-  auto layout_it = buffer_distribution_bindings_by_buffer_name_.find(dst_buffer_name);
-  ICHECK(layout_it != buffer_distribution_bindings_by_buffer_name_.end())
-      << "Blackhole codegen requires buffer_distribution_contract for grouped row broadcast destination "
-      << dst_buffer_name;
-  ICHECK_EQ(layout_it->second.distribution_kind, buffer_distribution_kind::kGroupedRows)
-      << "Blackhole codegen grouped row broadcast requires grouped_rows distribution contract for "
-      << dst_buffer_name;
-  ICHECK_EQ(layout_it->second.storage_topology_kind, buffer_topology_kind::kLinear)
-      << "Blackhole codegen grouped row broadcast only supports linear fragment storage topology for "
-      << dst_buffer_name;
   os << "; tilelang_mul_grouped_row_bcast(dst, scalar, num_elements, row_width); })";
 }
 
@@ -3268,17 +3242,6 @@ void CodeGenBlackhole::PrintDivGroupedRowBcast(const tvm::tir::CallNode* op,
   PrintExpr(op->args[2], os);
   os << "; const uint32_t row_width = ";
   PrintExpr(op->args[3], os);
-  const std::string dst_buffer_name = dst_var->name_hint;
-  auto layout_it = buffer_distribution_bindings_by_buffer_name_.find(dst_buffer_name);
-  ICHECK(layout_it != buffer_distribution_bindings_by_buffer_name_.end())
-      << "Blackhole codegen requires buffer_distribution_contract for grouped row broadcast destination "
-      << dst_buffer_name;
-  ICHECK_EQ(layout_it->second.distribution_kind, buffer_distribution_kind::kGroupedRows)
-      << "Blackhole codegen grouped row broadcast requires grouped_rows distribution contract for "
-      << dst_buffer_name;
-  ICHECK_EQ(layout_it->second.storage_topology_kind, buffer_topology_kind::kLinear)
-      << "Blackhole codegen grouped row broadcast only supports linear fragment storage topology for "
-      << dst_buffer_name;
   os << "; tilelang_div_grouped_row_bcast(dst, scalar, num_elements, row_width); })";
   if (dst_var->name_hint == "acc_o") {
     MaybeEmitMathWaypoint(os, "NORM");
@@ -3393,17 +3356,6 @@ void CodeGenBlackhole::PrintExp2GroupedRowBcastAffine(const tvm::tir::CallNode* 
   PrintExpr(op->args[2], os);
   os << "; const uint32_t row_width = ";
   PrintExpr(op->args[3], os);
-  const std::string dst_buffer_name = dst_var->name_hint;
-  auto layout_it = buffer_distribution_bindings_by_buffer_name_.find(dst_buffer_name);
-  ICHECK(layout_it != buffer_distribution_bindings_by_buffer_name_.end())
-      << "Blackhole codegen requires buffer_distribution_contract for grouped exp2 row broadcast destination "
-      << dst_buffer_name;
-  ICHECK_EQ(layout_it->second.distribution_kind, buffer_distribution_kind::kGroupedRows)
-      << "Blackhole codegen grouped exp2 row broadcast requires grouped_rows distribution contract for "
-      << dst_buffer_name;
-  ICHECK_EQ(layout_it->second.storage_topology_kind, buffer_topology_kind::kLinear)
-      << "Blackhole codegen grouped exp2 row broadcast only supports linear fragment storage topology for "
-      << dst_buffer_name;
   os << "; const float dst_scale = ";
   PrintExpr(op->args[4], os);
   os << "; const float scalar_scale = ";

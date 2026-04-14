@@ -692,33 +692,8 @@ def BuildSpatialPlanCompanion():
     return tvm.ffi.get_global_func("tl.transform.BuildSpatialPlanCompanion")()
 
 
-def LowerToSpatialProgram():
-    """Lower frozen spatial companion facts into a typed SpatialProgram."""
-    return tvm.ffi.get_global_func("tl.transform.LowerToSpatialProgram")()
-
-
-def AnalyzeSpatialDomainPlan():
-    """Derive typed Spatial domain contracts from SpatialPlan and Blackhole analysis facts."""
-    return tvm.ffi.get_global_func("tl.transform.AnalyzeSpatialDomainPlan")()
-
-
-def AnalyzeSpatialExecutionPlan():
-    """Derive typed Spatial execution contracts from SpatialPlan and Blackhole analysis facts."""
-    return tvm.ffi.get_global_func("tl.transform.AnalyzeSpatialExecutionPlan")()
-
-
-def MaterializeSpatialProgram():
-    """Assemble SpatialProgram from typed Spatial domain and execution plans."""
-    return tvm.ffi.get_global_func("tl.transform.MaterializeSpatialProgram")()
-
-
-def ValidateSpatialProgram():
-    """Validate minimal Phase B SpatialProgram invariants."""
-    return tvm.ffi.get_global_func("tl.transform.ValidateSpatialProgram")()
-
-
 def BuildTTProgram():
-    """Canonical Task 2 wrapper for TTProgram materialization from SpatialProgram."""
+    """Canonical Task 2 wrapper for TTProgram materialization from SpatialPlan and analysis facts."""
     return tvm.ffi.get_global_func("tl.transform.BuildTTProgram")()
 
 

@@ -371,6 +371,31 @@
 - **修法**: spec 提取层和 codegen 入口共享同一套 gate
 - **教训**: 只要仓库里有多条后端出口，shared lowering boundary 就要双边同时守住
 
+#### multi-segment `TTProgram` 若漏掉 segment-local `per_work_arg_specs`，reader/writer 会退回 stale top-level descriptor
+
+- **症状**:
+  - `flash-attn` reader/writer 的
+    `a_tile_start_id / b_tile_start_id / output_tile_start_id`
+    重新掉回 `current_work_linear_id`
+  - segment source 里的 block index 又开始从线性 work id 反推
+  - `flash-attn` pipeline 多条 regression 一起变红
+- **根因**:
+  - `tt_program_projection::EncodeSegmentPlan`
+    没有把 segment-local `per_work_arg_specs`
+    round-trip 给 runtime/codegen reader
+  - 同时 reader/writer segment ABI
+    没显式冻结 tile runtime args，
+    导致后段只能捡 top-level stale copy descriptor 当 fallback
+- **修法**:
+  - segment projection 必须保留
+    `per_work_arg_specs`
+  - reader/writer segment ABI
+    显式冻结 `a/b/output_tile_*`
+    这组 tile runtime args
+- **教训**:
+  - multi-kernel ABI truth 必须留在 segment 本地；
+    top-level aggregate 只能做摘要，不能再当 fallback 真源
+
 #### fragment analysis 必须按结构 / 数据流识别，不能靠全局 op 扫描或名字匹配
 
 - **症状**: copy/GEMM 被误伤成 `pointwise_chain`，或 MHA/GQA 的 row reduction / row broadcast 被漏掉
