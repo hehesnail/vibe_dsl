@@ -20,8 +20,8 @@
 当前代码已经完成 `Task 3B cleanup`
 （`T3B.0-T3B.4`）
 这批旧 side-contract 清理，
-但当前 roadmap `R0`
-还没有完全站到最终 planner 主链上。
+并且当前 roadmap `R0`
+已经把 owner cut-in 站回 active path。
 
 当前实际链路是：
 
@@ -29,16 +29,20 @@
 Normalized Tile TIR
   -> SpatialPlan companion
   -> residual Blackhole analysis facts / lowering requirements helper
-  -> BuildTTProgram helper bridge
+  -> PlanTTBlocks
+  -> PlanTTCompute
+  -> PlanTTTransport
+  -> BuildTTProgram
   -> TTProgram companion
   -> ExecutableSpec
 ```
 
-这里的两类残留：
+这里当前剩下的两类残留：
 
 - `blackhole.work_decomposition / blackhole.compute_regions / blackhole.pipeline_stages`
-- `BuildTTProgram` 内部的
-  `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
+  这批过渡分析 facts
+- `PlanTTSync / PlanTTABI / PlanTTExecution`
+  还没有独立站成和 `R0` 同等级的显式 owner pass
 
 都只视为**迁移残留**，不属于长期架构。
 
@@ -57,8 +61,8 @@ Normalized Tile TIR
 Normalized Tile TIR
   -> SpatialPlan companion
   -> PlanTTBlocks
-  -> PlanTTTransport
   -> PlanTTCompute
+  -> PlanTTTransport
   -> PlanTTSync
   -> PlanTTABI
   -> PlanTTExecution
@@ -66,9 +70,10 @@ Normalized Tile TIR
   -> ExecutableSpec
 ```
 
-当前第一缺口不是某个单独 workload case，
-而是 **target builtin mapping 还没有完全前移到
-anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
+当前第一缺口不再是 target builtin mapping 边界，
+而是 **runtime gate / host truth**
+和 **communication owner/runtime semantics**
+还没有像 `R0` 一样显式站成主链。
 
 按总设计的第一性原理，
 当前目标不是单一 workload 绿测，
@@ -125,52 +130,40 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
 
 ## 当前未完成
 
-1. 完成当前 roadmap `R0`：
-   把 target builtin mapping 真正前移到
-   anchored sub-TIR 仍保留
-   `tile-op / layout / load-store` truth 的边界，
-   由真实 `PlanTTTransport + PlanTTCompute`
-   取代 `BuildTTProgram` helper bridge
-2. 完成 `R1`：
+1. 完成 `R1`：
    把 runtime gate 收到
    只消费 owner-side typed truth 的边界
-3. 完成 `R2`：
+2. 完成 `R2`：
    在 admitted scope 内把
    communication semantics
    的 `routing / multicast / semaphore / completion`
    收口到 owner/runtime semantics，
    不再把第三类语义压缩成 sync-only
-4. 在第一性原理目标完成之后，
+3. 在第一性原理目标完成之后，
    再在当前 `TTProgram / ExecutableSpec` 真源下完成
    `flash-attn` admitted subset payoff / correctness 收口
-5. 在新 route 上承接
+4. 在新 route 上承接
    `topk / fusedmoe / paged decode / chunk recurrence`
-6. 扩更宽的 copy / data movement / wider communication 支持面
+5. 扩更宽的 copy / data movement / wider communication 支持面
 
 ## 当前优先级
 
-1. **R0: 真实 `PlanTTTransport + PlanTTCompute` cut-in**
-   - target builtin mapping 还没有完全前移到
-     anchored sub-TIR 边界
-   - active path 仍残留
-     `blackhole.*` analysis facts 和
-     `BuildTTProgram` helper bridge
-2. **R1: runtime gate / host truth 收口**
+1. **R1: runtime gate / host truth 收口**
    - 继续把当前新主链上的 gate 收到
      明确的 admitted / unsupported 边界
    - `Program / Kernel / CB / Buffer / RuntimeArgs / Core placement`
      这组 TT-Metal host truth
      只允许从 `TTProgram / ExecutableSpec` 物化
-3. **R2: admitted-scope communication semantics 收口**
+2. **R2: admitted-scope communication semantics 收口**
    - 第一性原理目标里的
      communication owner/runtime semantics
      不能留到更宽 support surface 再处理
-4. **R3: `flash-attn` payoff**
+3. **R3: `flash-attn` payoff**
    - 在当前新 route 上兑现 multi-phase transport / reduction / broadcast
    - 继续把 compile-path 稳定性兑现成 correctness/admitted subset
-5. **R4: wider family cutover**
+4. **R4: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-6. **R5: wider support surface**
+5. **R5: wider support surface**
    - copy / dataflow / wider communication
 
 最近完成的局部批次：
@@ -217,19 +210,13 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
 ## 最新验证摘要
 
 - `tilelang` 构建通过
-- `test_blackhole_copy_pipeline.py`
-  `41 passed, 10 skipped, 1 xfailed`
-- `test_blackhole_gemm.py`
-  `27 passed, 15 skipped`
-- `test_blackhole_spatial_ir.py`
-  `5 passed`
-- `test_blackhole_flash_attention_analysis.py`
-  `7 passed`
-- `test_blackhole_flash_attention_pipeline.py`
-  `62 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
+  `6 passed`
+- `pytest tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q`
+  `143 passed, 25 skipped, 1 xfailed`
 
 ## 下一步
 
-1. 先完成 `R0`
-2. 再推进 `R1/R2`
-3. 然后进入 `R3-R5`
+1. 先完成 `R1/R2`
+2. 再推进 `R3`
+3. 然后进入 `R4/R5`

@@ -40,10 +40,11 @@
 
 当前按下面顺序推进：
 
-1. 当前 roadmap `R0` 尚未完成：
-   - 真实 `PlanTTTransport + PlanTTCompute` cut-in
-   - target builtin mapping 前移到
-     anchored sub-TIR 真正持有 truth 的边界
+1. 当前 `R0` 已完成：
+   - active path 已显式经过
+     `PlanTTBlocks -> PlanTTCompute -> PlanTTTransport -> BuildTTProgram`
+   - `BuildTTProgram`
+     不再内部承担 helper bridge owner 责任
 2. 当前 active 重点：
    - `R1/R2/R3`：runtime gate / admitted-scope communication semantics /
      `flash-attn` payoff 收口
@@ -75,10 +76,11 @@
   都已退出 active path
 - active path 已不再保留 `tl.semantic_*` 主协议或独立 semantic companion；
   但当前代码基线仍是**过渡实现**，
-  还残留 `blackhole.*` analysis facts 与
-  `BuildTTProgram` 内部 helper bridge
+  还残留 `blackhole.*` analysis facts，
+  以及尚未独立 owner-pass 化的
+  `PlanTTSync / PlanTTABI / PlanTTExecution`
 - 当前入口已经从“旧 semantic / side-contract 清理”
-  转回“`R0-R2` 第一性原理目标收口
+  转回“`R1-R2` 第一性原理目标收口
   + `R3` 第一批 payoff”
 
 当前明确不作为优先项：

@@ -300,10 +300,15 @@ Normalized Tile TIR
   （`T3B.0-T3B.4`）
   这批旧链清理，
   不是当前 roadmap `R0` 的完成信号
-- 当前剩余架构债不再是旧 side-contract public surface，
-  而是 `BuildTTProgram` 内部 helper bridge
-  还没有完全拆成真实
-  `PlanTTTransport + PlanTTCompute`
+- 当前 active path 已显式经过
+  `PlanTTBlocks -> PlanTTCompute -> PlanTTTransport -> BuildTTProgram`
+- `BuildTTProgram`
+  不再内部实例化
+  `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
+  这组 helper bridge
+- 当前剩余架构债不再是 `R0`，
+  而是 admitted-scope communication / runtime gate
+  和 `blackhole.*` 过渡分析 facts
 
 ## 7. Canonical Pass Chain
 
@@ -319,8 +324,8 @@ BindTarget
   -> AnalyzeSpatialStructureFacts
   -> BuildSpatialPlanCompanion
   -> PlanTTBlocks
-  -> PlanTTTransport
   -> PlanTTCompute
+  -> PlanTTTransport
   -> PlanTTSync
   -> PlanTTABI
   -> PlanTTExecution
@@ -359,29 +364,23 @@ BindTarget
 - task 内部或 cleanup batch
   统一用 `Tn.x`
 
-1. **R0: 真实 `PlanTTTransport + PlanTTCompute` cut-in**
-   - 删除 helper bridge
-   - 删除 late matcher
-   - 删除 side contract
-   - 先把 compute / memory-access semantics
-     放回 anchored sub-TIR 边界完成 mapping
-2. **R1: runtime gate / host truth 收口**
+1. **R1: runtime gate / host truth 收口**
    - runtime / codegen 不再补 target planning
    - `Program / Kernel / CB / Buffer / RuntimeArgs / Core placement`
      这组 TT-Metal host truth
      只从 `TTProgram / ExecutableSpec` reader 落地
    - admitted / unsupported 边界要和 owner truth 对齐
-3. **R2: admitted-scope communication semantics 收口**
+2. **R2: admitted-scope communication semantics 收口**
    - `routing / multicast / semaphore / completion`
      进入稳定 owner/runtime semantics
    - unsupported collective / fabric / remote case
      明确 fail-fast
    - 这是第一性原理目标的一部分，
      不是后置支持面
-4. **R3: `flash-attn` payoff**
-5. **R4: wider family cutover**
+3. **R3: `flash-attn` payoff**
+4. **R4: wider family cutover**
    - `topk / fusedmoe / paged decode / chunk recurrence`
-6. **R5: wider support surface**
+5. **R5: wider support surface**
    - copy / data movement / wider communication
 
 其中：

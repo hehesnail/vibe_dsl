@@ -194,7 +194,7 @@ runtime / codegen 的消费纪律固定为：
    - 尤其是 phase-boundary / fragment / runtime arg /
      compute contract 这组 target truth
    - 这说明真正的
-     `PlanTTBlocks / PlanTTTransport / PlanTTCompute /
+     `PlanTTBlocks / PlanTTCompute / PlanTTTransport /
      PlanTTSync / PlanTTABI / PlanTTExecution`
      还没有完全落地为独立 owner pass
 
@@ -290,7 +290,7 @@ runtime / codegen 的消费纪律固定为：
 ### Batch C: typed seed bridge -> owner pass
 
 - 用真实的
-  `PlanTTBlocks / PlanTTTransport / PlanTTCompute /
+  `PlanTTBlocks / PlanTTCompute / PlanTTTransport /
   PlanTTSync / PlanTTABI / PlanTTExecution`
   取代
   当前内部
@@ -409,28 +409,21 @@ runtime / codegen 的消费纪律固定为：
 - `Task 3B` 这类局部 batch
   统一用 `Tn.x`
 
-1. **R0: 真实 `PlanTTTransport + PlanTTCompute` cut-in**
-   - 用 anchored sub-TIR 上仍保留的
-     tile-op / layout / `load/store`
-     完成 target builtin mapping
-   - 取代 `BuildTTProgram` 内部 helper bridge
-   - 先把 compute / memory-access semantics
-     站回 owner 边界
-2. **R1: runtime gate / host truth 收口**
+1. **R1: runtime gate / host truth 收口**
    - 先确保新主链上的 copy / GEMM / export
      仍维持当前 zero-regression baseline
    - `Program / Kernel / CB / Buffer / RuntimeArgs / Core placement`
      只允许从 `TTProgram / ExecutableSpec` 物化
-3. **R2: admitted-scope communication semantics 收口**
+2. **R2: admitted-scope communication semantics 收口**
    - `routing / multicast / semaphore / completion`
      进入稳定 owner/runtime semantics
    - 这是第一性原理目标的一部分
-4. **R3: `flash-attn` payoff**
+3. **R3: `flash-attn` payoff**
    - 再拿它验证 multi-op / multi-work /
      multi-phase data movement 的 admitted subset
-5. **R4: wider family cutover**
+4. **R4: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-6. **R5: wider support surface**
+5. **R5: wider support surface**
    - 在 admitted subset 内逐步放宽
      copy / dataflow / wider communication
 
@@ -495,7 +488,6 @@ runtime / codegen 的消费纪律固定为：
 因此当前剩余重点回到 `Task 3`
 roadmap：
 
-- 真实 `PlanTTTransport + PlanTTCompute` cut-in
 - runtime gate / host truth 收口
 - admitted-scope communication semantics 收口
 - `flash-attn` correctness payoff

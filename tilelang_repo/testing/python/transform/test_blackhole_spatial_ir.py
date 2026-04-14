@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+import pytest
 import tilelang
 from tilelang import tvm
 from tilelang.engine.phase import (
@@ -50,6 +51,9 @@ def _drop_legacy_spatial_attrs(mod):
 def test_spatial_pass_surface_exposes_only_structure_and_plan_companions():
     assert hasattr(tilelang.transform, "AnalyzeSpatialStructureFacts")
     assert hasattr(tilelang.transform, "BuildSpatialPlanCompanion")
+    assert hasattr(tilelang.transform, "PlanTTBlocks")
+    assert hasattr(tilelang.transform, "PlanTTCompute")
+    assert hasattr(tilelang.transform, "PlanTTTransport")
     assert not hasattr(tilelang.transform, "AnalyzeSpatialDomainPlan")
     assert not hasattr(tilelang.transform, "AnalyzeSpatialExecutionPlan")
     assert not hasattr(tilelang.transform, "MaterializeSpatialProgram")
@@ -121,6 +125,9 @@ def test_phase_b_pipeline_keeps_blackhole_analysis_attrs_without_spatial_program
 def test_build_tt_program_consumes_plan_and_analysis_attrs_without_spatial_program():
     mod = _prepare_blackhole_phase_b_module(gemm_kernel())
     mod = _drop_legacy_spatial_attrs(mod)
+    mod = tilelang.transform.PlanTTBlocks()(mod)
+    mod = tilelang.transform.PlanTTCompute()(mod)
+    mod = tilelang.transform.PlanTTTransport()(mod)
     mod = tilelang.transform.BuildTTProgram()(mod)
 
     tt_program = mod["main"].attrs["tl.tt_program"]
@@ -129,3 +136,11 @@ def test_build_tt_program_consumes_plan_and_analysis_attrs_without_spatial_progr
         int(plan.source_task_index) >= 0 and int(plan.target_task_index) >= 0
         for plan in tt_program.transport_plans
     )
+
+
+def test_build_tt_program_requires_explicit_tt_owner_plan_attrs():
+    mod = _prepare_blackhole_phase_b_module(gemm_kernel())
+    mod = _drop_legacy_spatial_attrs(mod)
+
+    with pytest.raises(Exception, match="requires explicit TT owner planning attrs"):
+        tilelang.transform.BuildTTProgram()(mod)

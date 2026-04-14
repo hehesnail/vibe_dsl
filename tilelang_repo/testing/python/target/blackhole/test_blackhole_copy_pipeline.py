@@ -78,6 +78,9 @@ def _refresh_tt_program_after_bridge_attr_mutation(device_mod):
             func = func.without_attr("tl.tt_program")
         rewritten[gvar] = func
     refreshed = tvm.IRModule(rewritten, global_infos=device_mod.global_infos)
+    refreshed = tilelang.transform.PlanTTBlocks()(refreshed)
+    refreshed = tilelang.transform.PlanTTCompute()(refreshed)
+    refreshed = tilelang.transform.PlanTTTransport()(refreshed)
     refreshed = tilelang.transform.BuildTTProgram()(refreshed)
     refreshed = tilelang.transform.ValidateTTProgram()(refreshed)
     return refreshed

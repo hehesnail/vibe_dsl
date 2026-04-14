@@ -691,6 +691,20 @@ def BuildSpatialPlanCompanion():
     """Freeze Task 1 SpatialPlan companion from analyzed spatial structure facts."""
     return tvm.ffi.get_global_func("tl.transform.BuildSpatialPlanCompanion")()
 
+def PlanTTBlocks():
+    """Freeze Blackhole block/core assignment owner truth for TTProgram planning."""
+    return tvm.ffi.get_global_func("tl.transform.PlanTTBlocks")()
+
+
+def PlanTTCompute():
+    """Freeze Blackhole compute owner truth at the anchored sub-TIR mapping boundary."""
+    return tvm.ffi.get_global_func("tl.transform.PlanTTCompute")()
+
+
+def PlanTTTransport():
+    """Freeze Blackhole transport owner truth and CB allocation before TTProgram aggregation."""
+    return tvm.ffi.get_global_func("tl.transform.PlanTTTransport")()
+
 
 def BuildTTProgram():
     """Canonical Task 2 wrapper for TTProgram materialization from SpatialPlan and analysis facts."""

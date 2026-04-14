@@ -158,8 +158,8 @@
 AnalyzeSpatialStructureFacts
   -> BuildSpatialPlanCompanion
   -> PlanTTBlocks
-  -> PlanTTTransport
   -> PlanTTCompute
+  -> PlanTTTransport
   -> PlanTTSync
   -> PlanTTABI
   -> PlanTTExecution
@@ -198,6 +198,18 @@ AnalyzeSpatialStructureFacts
 - `BuildTTProgram`
   - 聚合 target owner plan
   - 不重新恢复 target truth
+
+当前 `2026-04-15` active path 补充：
+
+- 代码已经显式经过
+  `PlanTTBlocks -> PlanTTCompute -> PlanTTTransport -> BuildTTProgram`
+- 其中 `PlanTTTransport`
+  当前消费 `PlanTTCompute`
+  发布的 CB/accessor requirement schema
+  来完成 CB allocation / transport materialization
+- `BuildTTProgram`
+  已退回聚合器；不再内部直接实例化
+  `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
 - `ValidateTTProgram`
   - 检查 completeness / consistency
   - 禁止 legacy attrs、seed attrs、payload bag 回升为主协议

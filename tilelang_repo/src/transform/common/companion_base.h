@@ -20,6 +20,12 @@ constexpr const char* kTLSpatialPlan = "tl.spatial_plan";
 constexpr const char* kTLTTProgram = "tl.tt_program";
 constexpr const char* kTLTTSemaphorePlans = "tl.tt_semaphore_plans";
 constexpr const char* kTLTTHardwareModel = "tl.tt_hardware_model";
+constexpr const char* kTLInternalTTKernels = "tl.internal_tt_kernels";
+constexpr const char* kTLInternalTTABIPlans = "tl.internal_tt_abi_plans";
+constexpr const char* kTLInternalTTCBPlans = "tl.internal_tt_cb_plans";
+constexpr const char* kTLInternalTTCoreGroups = "tl.internal_tt_core_groups";
+constexpr const char* kTLInternalTTTransportPlans = "tl.internal_tt_transport_plans";
+constexpr const char* kTLInternalTTProgramPayload = "tl.internal_tt_program_payload";
 }  // namespace attr
 
 namespace manifest_key {

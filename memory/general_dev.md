@@ -75,8 +75,18 @@
   不能再当 primary truth owner
 - 两层 companion 新主链固定从 `Simplify` 后进入：
   `AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion ->
-  PlanTTBlocks -> PlanTTTransport -> PlanTTCompute -> PlanTTSync -> PlanTTABI ->
+  PlanTTBlocks -> PlanTTCompute -> PlanTTTransport -> PlanTTSync -> PlanTTABI ->
   PlanTTExecution -> MaterializeBlackholeExecutable`
+- 当前 R0 cut-in 已把
+  `BuildTTProgram`
+  退回成 reader/aggregator；
+  owner planning 通过
+  `PlanTTBlocks / PlanTTCompute / PlanTTTransport`
+  显式进入 active path。
+  现阶段 transport 在 pass 顺序上晚于 compute，
+  是因为它消费 compute 发布的 CB/accessor requirement schema
+  完成 CB allocation / transport materialization；
+  这不改变 compute / memory-access 的 owner 边界
 - TT target builtin 选择必须发生在 anchored sub-TIR
   仍保留 tile-op、layout、load/store、address expr 的边界；
   不要在 late matcher / bridge attr 层恢复 compute 或 transport 语义

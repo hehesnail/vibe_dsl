@@ -43,6 +43,12 @@ tir::PrimFunc StripTTIntermediateAttrs(tir::PrimFunc func) {
   }
   static const char* kIntermediateSeedAttrs[] = {
       attr::kTLTTSemaphorePlans,
+      attr::kTLInternalTTKernels,
+      attr::kTLInternalTTABIPlans,
+      attr::kTLInternalTTCBPlans,
+      attr::kTLInternalTTCoreGroups,
+      attr::kTLInternalTTTransportPlans,
+      attr::kTLInternalTTProgramPayload,
   };
   for (const char* key : kIntermediateSeedAttrs) {
     func = tvm::WithoutAttr(std::move(func), key);
@@ -83,6 +89,10 @@ struct MaterializedTTPlanning {
   Array<TTCoreGroup> core_groups;
   Map<String, Any> payload;
 };
+
+Map<String, Any> CopyAttrs(const tir::PrimFunc& func) {
+  return func->attrs.defined() ? func->attrs->dict : Map<String, Any>();
+}
 
 const char* CBFlowClassToString(CBFlowClass flow_class) {
   switch (flow_class) {
@@ -169,26 +179,6 @@ Array<TTCoreGroup> BuildCoreGroups(const PlanTTCoreGroups& planner) {
                                        assignment.grid_y, String("row_major"),
                                        physical_cores, work_packets, core_plan));
   return tt_core_groups;
-}
-
-MaterializedTTPlanning MaterializeTTPlanning(tir::PrimFunc func) {
-  PlanTTKernelABI kernel_abi_planner;
-  func = kernel_abi_planner.Transform(func);
-
-  PlanTTCBAlloc cb_planner;
-  func = cb_planner.Transform(func);
-
-  PlanTTCoreGroups core_group_planner;
-  func = core_group_planner.Transform(func);
-
-  MaterializedTTPlanning planning;
-  planning.func = std::move(func);
-  planning.kernels = kernel_abi_planner.GetTTKernels();
-  planning.abi_plans = kernel_abi_planner.GetTTABIPlans();
-  planning.cb_plans = BuildCBPlans(cb_planner.GetCBConfigs());
-  planning.core_groups = BuildCoreGroups(core_group_planner);
-  planning.payload = kernel_abi_planner.GetTTProgramPayload();
-  return planning;
 }
 
 std::vector<int> ComputeClosurePhases(const SpatialPlan& plan) {
@@ -350,27 +340,83 @@ Array<TTExecutionPlan> BuildExecutionPlans(const SpatialPlan& plan, const Array<
   return execution_plans;
 }
 
-TTProgram BuildTTProgramForFunc(const MaterializedTTPlanning& planning, const String& entry_name,
-                                const SpatialPlan& plan,
-                                const TTHardwareModel& hardware_model) {
-  const Array<TTKernel>& kernels = planning.kernels;
-  const Array<TTABIPlan>& abi_plans = planning.abi_plans;
-  ICHECK(!kernels.empty()) << "BuildTTProgram requires TT kernels from PlanTTKernelABI";
-  ICHECK_EQ(kernels.size(), abi_plans.size())
-      << "BuildTTProgram requires aligned TT kernel and ABI planning";
-  Map<String, Any> payload = planning.payload;
-  payload.Set("arch_name", hardware_model->arch_name);
-  payload.Set("logical_worker_grid_x", Integer(hardware_model->logical_worker_grid_x));
-  payload.Set("logical_worker_grid_y", Integer(hardware_model->logical_worker_grid_y));
-  payload.Set("worker_l1_size", Integer(hardware_model->worker_l1_size));
-  return TTProgram(entry_name, plan->member_func, kernels, planning.core_groups,
-                   planning.cb_plans, BuildTransportPlans(plan),
-                   BuildSemaphorePlans(planning.func),
-                   BuildComputeSyncPlans(plan), BuildDstLayoutPlans(abi_plans), abi_plans,
-                   BuildExecutionPlans(plan, kernels), payload);
+template <typename T>
+T RequireOwnerPlanningAttr(const tir::PrimFunc& func, const char* attr_key) {
+  auto maybe_value = func->GetAttr<T>(attr_key);
+  ICHECK(maybe_value)
+      << "BuildTTProgram requires explicit TT owner planning attrs; missing " << attr_key
+      << ". Run PlanTTBlocks, PlanTTCompute, and PlanTTTransport before BuildTTProgram";
+  return maybe_value.value();
 }
 
 }  // namespace
+
+tvm::transform::Pass PlanTTBlocks() {
+  auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
+    IRModule updated = mod;
+    for (const auto& [gvar, base_func] : mod->functions) {
+      auto func = base_func.as<tir::PrimFunc>();
+      if (!func || !IsBlackholePrimFunc(func.value())) {
+        continue;
+      }
+      PlanTTCoreGroups planner;
+      tir::PrimFunc planned = planner.Transform(func.value());
+      Map<String, Any> attrs = CopyAttrs(planned);
+      attrs.Set(attr::kTLInternalTTCoreGroups, BuildCoreGroups(planner));
+      planned.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
+      updated->Add(gvar, planned, true);
+    }
+    return updated;
+  };
+  return tvm::transform::CreateModulePass(pass_func, 0, "tl.transform.PlanTTBlocks", {});
+}
+
+tvm::transform::Pass PlanTTCompute() {
+  auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
+    IRModule updated = mod;
+    for (const auto& [gvar, base_func] : mod->functions) {
+      auto func = base_func.as<tir::PrimFunc>();
+      if (!func || !IsBlackholePrimFunc(func.value())) {
+        continue;
+      }
+      PlanTTKernelABI planner;
+      tir::PrimFunc planned = planner.Transform(func.value());
+      Map<String, Any> attrs = CopyAttrs(planned);
+      attrs.Set(attr::kTLInternalTTKernels, planner.GetTTKernels());
+      attrs.Set(attr::kTLInternalTTABIPlans, planner.GetTTABIPlans());
+      attrs.Set(attr::kTLInternalTTProgramPayload, planner.GetTTProgramPayload());
+      planned.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
+      updated->Add(gvar, planned, true);
+    }
+    return updated;
+  };
+  return tvm::transform::CreateModulePass(pass_func, 0, "tl.transform.PlanTTCompute", {});
+}
+
+tvm::transform::Pass PlanTTTransport() {
+  auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
+    IRModule updated = mod;
+    for (const auto& [gvar, base_func] : mod->functions) {
+      auto func = base_func.as<tir::PrimFunc>();
+      if (!func || !IsBlackholePrimFunc(func.value())) {
+        continue;
+      }
+      auto maybe_spatial_plan = func.value()->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
+      ICHECK(maybe_spatial_plan)
+          << "PlanTTTransport requires tl.spatial_plan; run AnalyzeSpatialStructureFacts and "
+             "BuildSpatialPlanCompanion before target planning";
+      PlanTTCBAlloc planner;
+      tir::PrimFunc planned = planner.Transform(func.value());
+      Map<String, Any> attrs = CopyAttrs(planned);
+      attrs.Set(attr::kTLInternalTTCBPlans, BuildCBPlans(planner.GetCBConfigs()));
+      attrs.Set(attr::kTLInternalTTTransportPlans, BuildTransportPlans(maybe_spatial_plan.value()));
+      planned.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
+      updated->Add(gvar, planned, true);
+    }
+    return updated;
+  };
+  return tvm::transform::CreateModulePass(pass_func, 0, "tl.transform.PlanTTTransport", {});
+}
 
 tvm::transform::Pass BuildTTProgram() {
   auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
@@ -388,18 +434,43 @@ tvm::transform::Pass BuildTTProgram() {
       if (!func || !IsBlackholePrimFunc(func.value())) {
         continue;
       }
-      MaterializedTTPlanning planning = MaterializeTTPlanning(func.value());
-      auto maybe_spatial_plan = planning.func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
+      auto maybe_spatial_plan = func.value()->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
       if (!maybe_spatial_plan) {
         continue;
       }
-      Map<String, Any> attrs;
-      if (planning.func->attrs.defined()) {
-        attrs = planning.func->attrs->dict;
-      }
-      attrs.Set(attr::kTLTTProgram, BuildTTProgramForFunc(planning, gvar->name_hint,
-                                                          maybe_spatial_plan.value(),
-                                                          maybe_hardware_model.value()));
+      MaterializedTTPlanning planning;
+      planning.func = func.value();
+      planning.kernels = RequireOwnerPlanningAttr<Array<TTKernel>>(func.value(), attr::kTLInternalTTKernels);
+      planning.abi_plans =
+          RequireOwnerPlanningAttr<Array<TTABIPlan>>(func.value(), attr::kTLInternalTTABIPlans);
+      planning.cb_plans =
+          RequireOwnerPlanningAttr<Array<TTCBPlan>>(func.value(), attr::kTLInternalTTCBPlans);
+      planning.core_groups =
+          RequireOwnerPlanningAttr<Array<TTCoreGroup>>(func.value(), attr::kTLInternalTTCoreGroups);
+      planning.payload = RequireOwnerPlanningAttr<Map<String, Any>>(func.value(),
+                                                                   attr::kTLInternalTTProgramPayload);
+      const Array<TTTransportPlan> transport_plans =
+          RequireOwnerPlanningAttr<Array<TTTransportPlan>>(func.value(),
+                                                           attr::kTLInternalTTTransportPlans);
+
+      Map<String, Any> attrs = CopyAttrs(planning.func);
+      Map<String, Any> payload = planning.payload;
+      payload.Set("arch_name", maybe_hardware_model.value()->arch_name);
+      payload.Set("logical_worker_grid_x", Integer(maybe_hardware_model.value()->logical_worker_grid_x));
+      payload.Set("logical_worker_grid_y", Integer(maybe_hardware_model.value()->logical_worker_grid_y));
+      payload.Set("worker_l1_size", Integer(maybe_hardware_model.value()->worker_l1_size));
+
+      const Array<TTKernel>& kernels = planning.kernels;
+      const Array<TTABIPlan>& abi_plans = planning.abi_plans;
+      ICHECK(!kernels.empty()) << "BuildTTProgram requires TT kernels from PlanTTCompute";
+      ICHECK_EQ(kernels.size(), abi_plans.size())
+          << "BuildTTProgram requires aligned TT kernel and ABI planning";
+      attrs.Set(attr::kTLTTProgram,
+                TTProgram(gvar->name_hint, maybe_spatial_plan.value()->member_func, kernels,
+                          planning.core_groups, planning.cb_plans, transport_plans,
+                          BuildSemaphorePlans(planning.func), BuildComputeSyncPlans(maybe_spatial_plan.value()),
+                          BuildDstLayoutPlans(abi_plans), abi_plans,
+                          BuildExecutionPlans(maybe_spatial_plan.value(), kernels), payload));
       planning.func.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
       planning.func = StripTTIntermediateAttrs(std::move(planning.func));
       updated->Add(gvar, planning.func, true);
@@ -411,6 +482,9 @@ tvm::transform::Pass BuildTTProgram() {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
+  refl::GlobalDef().def("tl.transform.PlanTTBlocks", PlanTTBlocks);
+  refl::GlobalDef().def("tl.transform.PlanTTCompute", PlanTTCompute);
+  refl::GlobalDef().def("tl.transform.PlanTTTransport", PlanTTTransport);
   refl::GlobalDef().def("tl.transform.BuildTTProgram", BuildTTProgram);
 }
 
