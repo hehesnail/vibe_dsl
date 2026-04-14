@@ -20,6 +20,13 @@
   - `tasks/dev_design/task1_spatial_plan_companion.md`
   - `tasks/dev_design/task2_ttprogram_companion_cutover.md`
 
+读法说明：
+
+- 本文档只记录当前 `Task 3` 的 gate、cutover 和 workload 承接
+- 若文中出现旧 pass / 旧链清理条目，
+  默认按**迁移 inventory**理解，
+  不是当前长期设计骨架
+
 ## 1. 作用域
 
 `Task 3` 只负责三件事：

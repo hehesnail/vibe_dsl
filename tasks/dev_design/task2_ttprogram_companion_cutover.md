@@ -22,6 +22,13 @@
   - `tasks/dev_design/task0_ir_layering_root_cause.md`
   - `tasks/dev_design/task1_spatial_plan_companion.md`
 
+读法说明：
+
+- 本文档只定义当前有效的 `TTProgram` owner 边界
+- 若文中出现旧 pass / 兼容 shell / bridge attr，
+  默认按**迁移 inventory**理解，
+  不是当前长期架构对象
+
 ## 1. 作用域
 
 `Task 2` 只负责一件事：
