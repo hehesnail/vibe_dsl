@@ -40,16 +40,28 @@
 
 当前按下面顺序推进：
 
-1. 当前 `R0` 已完成：
+1. 当前 `R0`
+   已完成 active-path cut-in，
+   但还没有完成 owner closure：
    - active path 已显式经过
      `PlanTTBlocks -> PlanTTCompute -> PlanTTTransport -> BuildTTProgram`
-   - `BuildTTProgram`
-     不再内部承担 helper bridge owner 责任
+   - 但 `LowerToBlackholePhaseB`
+     仍跑
+     `AnalyzeBlackholeWorkDecomposition /
+      AnalyzeBlackholeComputeRegions /
+      AnalyzeBlackholePipelineStages`
+   - `PlanTTCompute / PlanTTTransport / PlanTTBlocks`
+     下面仍有
+     `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
+     helper residue
 2. 当前 active 重点：
-   - `R1/R2/R3`：runtime gate / admitted-scope communication semantics /
-     `flash-attn` payoff 收口
+   - 先完成
+     `R0-close / R1-close / R2-close`
+   - 再进入 `R3`
+     `flash-attn` payoff
 3. 后续：
-   - `R4/R5`：wider family / support surface
+   - `R4/R5`
+     wider family / support surface
 
 补充口径：
 
@@ -57,7 +69,7 @@
   不是单一 roadmap 条目，
   而是一组 invariant
 - 当前用 `R0-R2`
-  去完成这组 invariant：
+  去收口这组 invariant：
   mapping 边界、
   TT-Metal 的 compute / memory-access / communication 语义面 owner、
   真源位置、后段不补语义
@@ -77,10 +89,14 @@
 - active path 已不再保留 `tl.semantic_*` 主协议或独立 semantic companion；
   但当前代码基线仍是**过渡实现**，
   还残留 `blackhole.*` analysis facts，
+  `blackhole.lowering_requirements` build/codegen gate，
   以及尚未独立 owner-pass 化的
   `PlanTTSync / PlanTTABI / PlanTTExecution`
+- `MaterializeBlackholeExecutable`
+  目前仍是 compatibility shell，
+  不能再被文档写成“唯一 writer 已完成”
 - 当前入口已经从“旧 semantic / side-contract 清理”
-  转回“`R1-R2` 第一性原理目标收口
+  转回“`R0-R2` closure
   + `R3` 第一批 payoff”
 
 当前明确不作为优先项：

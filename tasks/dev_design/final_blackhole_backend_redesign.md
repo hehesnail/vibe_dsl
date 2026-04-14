@@ -302,13 +302,22 @@ Normalized Tile TIR
   不是当前 roadmap `R0` 的完成信号
 - 当前 active path 已显式经过
   `PlanTTBlocks -> PlanTTCompute -> PlanTTTransport -> BuildTTProgram`
-- `BuildTTProgram`
-  不再内部实例化
+- 但 `LowerToBlackholePhaseB`
+  仍显式产出
+  `blackhole.work_decomposition /
+   blackhole.compute_regions /
+   blackhole.pipeline_stages`
+  这组过渡 facts
+- `PlanTTCompute / PlanTTTransport / PlanTTBlocks`
+  目前仍分别 front
   `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
-  这组 helper bridge
-- 当前剩余架构债不再是 `R0`，
-  而是 admitted-scope communication / runtime gate
-  和 `blackhole.*` 过渡分析 facts
+  这组 helper residue
+- `MaterializeBlackholeExecutable`
+  当前仍是 compatibility shell，
+  还不是可按文档宣告完成的 executable writer
+- 当前剩余架构债仍包括
+  `R0-R2` 的 closure，
+  不是只剩 `R3` 之后的 payoff
 
 ## 7. Canonical Pass Chain
 
@@ -364,16 +373,21 @@ BindTarget
 - task 内部或 cleanup batch
   统一用 `Tn.x`
 
-1. **R3: `flash-attn` payoff**
-2. **R4: wider family cutover**
+1. **`R0-close / R1-close / R2-close`**
+   - 先让第一性原理目标
+     在代码和文档里同时成立
+2. **R3: `flash-attn` payoff**
+3. **R4: wider family cutover**
    - `topk / fusedmoe / paged decode / chunk recurrence`
-3. **R5: wider support surface**
+4. **R5: wider support surface**
    - copy / data movement / wider communication
 
 `2026-04-15` 当前状态补充：
 
 - `R0-R2`
-  已完成第一性原理目标本身
+  仍是当前需要收口的 closure set；
+  代码现实还没有同时满足
+  第一性原理目标本身
 - admitted communication subset
   当前明确收敛为
   non-oversubscribed explicit

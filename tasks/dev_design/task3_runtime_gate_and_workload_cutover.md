@@ -4,14 +4,20 @@
 
 - **文档角色**: `Task 3` 的 runtime gate、support surface
   与 workload re-enable 设计文档
-- **当前状态**: `2026-04-15` 活动设计文档；`Task 2` 已完成，
+- **当前状态**: `2026-04-15` 活动设计文档；
+  `Task 2`
+  的 active TT bundle 已切入主链，
+  但 owner cutover 还没有完全完成；
   `Task 3A` persistent/public 删除批次与
   `Task 3B cleanup`
   （`T3B.0-T3B.4`）
   已完成，当前工作回到 `Task 3`
-  roadmap `R0 / R1 / R2 / R3`
+  roadmap `R0 / R1 / R2`
+  的 closure，
+  然后才进入 `R3`
 - **任务链位置**:
-  `Task 2` owner cutover 完成之后，
+  `Task 2` active cutover
+  已切进主链之后，
   负责 runtime/correctness payoff 与 wider family 承接
 - **非目标**:
   - 不重新定义 `SpatialPlan` / `TTProgram` 的 owner 边界
@@ -100,12 +106,13 @@ Normalized Tile TIR
    - `R2`
      对 communication truth 缺口显式 fail-fast 或收口语义
 
-所以：
+所以当前口径固定为：
 
 - `R0-R2`
-  共同完成第一性原理目标
-- `R3-R5`
-  才是验证与扩张
+  是当前需要继续收口的 closure set
+- 在它们没有同时完成之前，
+  `R3-R5`
+  不能再被写成当前主优先级
 
 ## 2. Shared Zero-Regression Baseline
 
@@ -123,13 +130,30 @@ Normalized Tile TIR
 
 ## 3. Runtime Gate
 
-runtime / codegen 的消费纪律固定为：
+长期目标里的消费纪律是：
 
-- 只读 `ExecutableSpec`
+- 只读 typed target truth
+  （`TTProgram / ExecutableSpec`）
 - 不读 legacy attrs
 - 不补 target planning
 - 不从 `work_linear_id`、arg kind、builtin 序列、
   payload bag 恢复语义
+
+`2026-04-15` 当前审计到的现实是：
+
+- `BlackholeModule`
+  消费的是抽取后的 `ExecutableSpec`
+- build/codegen/executable extraction
+  已经主要从 `TTProgram`
+  的 segment/kernel truth 读取 ABI / core / semaphore / per-work 信息
+- 但 codegen 和 executable extraction
+  仍会读取
+  `blackhole.lowering_requirements`
+  作为 unsupported-compute /
+  bridge-spec / materialization gate
+
+所以当前任务不是再把 gate 说得更强，
+而是把这段现实继续收口到目标边界。
 
 当前及后续 gate 一律按同一原则收口：
 
@@ -409,12 +433,29 @@ runtime / codegen 的消费纪律固定为：
 - `Task 3B` 这类局部 batch
   统一用 `Tn.x`
 
-1. **R3: `flash-attn` payoff**
+1. **`T3C.0 / R0-close`: 退役 `blackhole.*` analysis facts 的 active 协议角色**
+   - `AnalyzeBlackholeWorkDecomposition /
+     AnalyzeBlackholeComputeRegions /
+     AnalyzeBlackholePipelineStages`
+     可以继续存在为 probe/debug，
+     但不能继续充当 owner planning 主协议
+2. **`T3C.1 / R1-close`: 去掉 build/codegen 对 `blackhole.lowering_requirements` 的依赖**
+   - 让 unsupported / bridge-spec /
+     materialization gate
+     回到 `TTProgram / ExecutableSpec`
+     typed truth
+3. **`T3C.2 / R2-close`: 显式化 sync / ABI / execution owner**
+   - `PlanTTSync / PlanTTABI / PlanTTExecution`
+     要么落地成 pass，
+     要么把当前 helper owner contract
+     明确冻结下来，
+     不再继续隐身在 `BuildTTProgram`
+4. **R3: `flash-attn` payoff**
    - 再拿它验证 multi-op / multi-work /
      multi-phase data movement 的 admitted subset
-2. **R4: wider family cutover**
+5. **R4: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-3. **R5: wider support surface**
+6. **R5: wider support surface**
    - 在 admitted subset 内逐步放宽
      copy / dataflow / wider communication
 
@@ -482,9 +523,10 @@ roadmap：
 - `flash-attn` correctness payoff
 - `Task 3C` wider family / support surface
 
-### 5.2.2 `2026-04-15` `R1` runtime gate / host truth 收口完成
+### 5.2.2 `2026-04-15` `R1` runtime gate / host truth 部分收口
 
-本轮 `R1` 收口的统一口径是：
+本轮 `R1`
+已经完成的部分是：
 
 - runtime/codegen 只接受
   kernel-local `per_work_arg_specs`
@@ -510,9 +552,21 @@ roadmap：
    的过期 regression
    已迁到 kernel-local mutation
 
-### 5.2.3 `2026-04-15` `R2` communication owner/runtime semantics 收口完成
+当前剩余 gap：
 
-本轮 `R2` 收口的统一口径是：
+1. codegen / executable extraction
+   仍消费
+   `blackhole.lowering_requirements`
+   这类过渡 attr
+2. `MaterializeBlackholeExecutable`
+   仍是 no-op shell，
+   当前 writer/readers 边界
+   还没有和文档口径一致
+
+### 5.2.3 `2026-04-15` `R2` communication gate 部分收口
+
+本轮 `R2`
+已经完成的部分是：
 
 - communication builtin
   不能单独充当协议真源；
@@ -553,6 +607,21 @@ roadmap：
    explicit worker semaphore handshake /
    `semaphore_id_u32` runtime arg /
    oversubscribed 无 communication contract baseline
+
+当前剩余 gap：
+
+1. `PlanTTSync / PlanTTABI / PlanTTExecution`
+   还没有独立站成 owner pass
+2. `BuildTTProgram`
+   仍直接 synthesize
+   sync / execution 结果，
+   `TTSemaphorePlan`
+   也仍通过 attr 输入带入
+3. 所以当前还只能说
+   communication consumer-side gate
+   已基本收口，
+   不能说 communication owner
+   已完全收口
 
 ## 6. Wider Copy / Dataflow / Communication 支持面
 

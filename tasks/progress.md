@@ -21,28 +21,45 @@
 （`T3B.0-T3B.4`）
 这批旧 side-contract 清理，
 并且当前 roadmap `R0`
-已经把 owner cut-in 站回 active path。
+已经把 owner cut-in
+站回 active path，
+但 `R0-R2`
+都还没有到“可按总设计宣告完成”的程度。
 
 当前实际链路是：
 
 ```text
 Normalized Tile TIR
   -> SpatialPlan companion
-  -> residual Blackhole analysis facts / lowering requirements helper
+  -> SplitBlackholeKernel
+  -> blackhole.work_decomposition / compute_regions / pipeline_stages
   -> PlanTTBlocks
-  -> PlanTTCompute
-  -> PlanTTTransport
+  -> PlanTTCompute(PlanTTKernelABI wrapper)
+  -> PlanTTTransport(PlanTTCBAlloc wrapper)
   -> BuildTTProgram
   -> TTProgram companion
-  -> ExecutableSpec
+  -> ValidateTTProgram
+  -> MaterializeBlackholeExecutable(no-op shell)
+  -> executable extraction / codegen / BlackholeModule
 ```
 
-这里当前剩下的两类残留：
+这里当前剩下的是几类迁移残留：
 
 - `blackhole.work_decomposition / blackhole.compute_regions / blackhole.pipeline_stages`
   这批过渡分析 facts
+- `blackhole.lowering_requirements`
+  仍被 build/codegen/executable extraction
+  当作 active gate 输入
+- `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
+  仍在 `PlanTTCompute / PlanTTTransport / PlanTTBlocks`
+  名字下面承担 owner residue
 - `PlanTTSync / PlanTTABI / PlanTTExecution`
-  还没有独立站成和 `R0` 同等级的显式 owner pass
+  还没有独立站成显式 owner pass；
+  `BuildTTProgram`
+  仍直接合成 sync / execution 结果
+- `MaterializeBlackholeExecutable`
+  仍是 compatibility shell，
+  不是当前真实 executable writer
 
 都只视为**迁移残留**，不属于长期架构。
 
@@ -70,9 +87,9 @@ Normalized Tile TIR
   -> ExecutableSpec
 ```
 
-当前第一缺口不再是 target builtin mapping 边界，
-而是 **communication owner/runtime semantics**
-还没有像 `R0 / R1` 一样显式站成主链。
+当前第一缺口不是单一 workload payoff，
+而是 `R0-R2`
+本身还没有同时收口。
 
 按总设计的第一性原理，
 当前目标不是单一 workload 绿测，
@@ -94,24 +111,28 @@ Normalized Tile TIR
 
 - `R0`：mapping 边界 + compute/memory-access owner cut-in
 - `R1`：`TTProgram / ExecutableSpec`
-  reader-gate / host-truth 收口（已完成）
-- `R2`：communication owner/runtime semantics 收口（已完成）
+  reader-gate / host-truth 收口
+- `R2`：communication owner/runtime semantics 收口
 - `R3-R5`：payoff / wider family / support surface
+
+当前审计后的状态口径：
+
+- `R0`：**active-path cut-in 已完成，owner closure 未完成**
+- `R1`：**per-work/access gate 大体完成，reader/writer 边界未完成**
+- `R2`：**communication gate / admitted subset 大体完成，owner-pass 化未完成**
 
 ## 已完成
 
 - `Task 1` 已完成：
   `AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion`
   已进入 active path
-- `Task 2` 的外层 owner cutover 已完成：
+- `Task 2` 的外层 owner cutover 已进入 active path：
   canonical bundle 已固定为
   `BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable`
 - 独立 semantic companion / semantic witness / `tl.semantic_*`
   主协议已从 active path 删除
 - projection bridge、fragment-layout side-channel、
   中间 seed attr 的公开 surface 已删除
-- runtime / codegen 当前只读 `TTProgram / ExecutableSpec`
-  的正式 reader 路线，不再保留公开 legacy entry
 - `Task 3B cleanup`
   （`T3B.0-T3B.4`）
   旧 side-contract 清理批次已完成：
@@ -126,7 +147,14 @@ Normalized Tile TIR
     `flash-attn` 不再回退到 top-level stale copy descriptor
   - `flash-attn` compile-path 回归基线
     已在新 ABI truth 下重新稳定
-- `R1` 已完成：
+- `R0` 已完成的部分：
+  - active path 已显式经过
+    `PlanTTBlocks -> PlanTTCompute -> PlanTTTransport -> BuildTTProgram`
+  - `SpatialProgram`
+    已退出 active compile/runtime path
+  - `buffer_distribution_contract`
+    已退出 active lowering/codegen/regression surface
+- `R1` 已完成的部分：
   - runtime/codegen 现在只接受
     kernel-local `per_work_arg_specs`
     作为 per-work/access truth；
@@ -143,7 +171,7 @@ Normalized Tile TIR
     的旧 payload bag 已删除；
     相关过期 regression
     已改成 kernel-local mutation
-- `R2` 已完成：
+- `R2` 已完成的部分：
   - runtime/build 现在把
     `get_semaphore` / remote semaphore builtin
     收回 explicit communication schema，
@@ -172,22 +200,65 @@ Normalized Tile TIR
 
 ## 当前未完成
 
-1. 在第一性原理目标完成之后，
+1. **`R0-close`**
+   - 让 active owner planning
+     不再依赖
+     `blackhole.work_decomposition /
+      blackhole.compute_regions /
+      blackhole.pipeline_stages`
+     作为正式协议输入
+   - 收紧 `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
+     这组 helper residue，
+     避免继续被文档误写成“已完成 owner pass”
+2. **`R1-close`**
+   - 让 `MaterializeBlackholeExecutable`
+     成为真实 executable writer，
+     或者把 canonical bundle / 文档口径
+     改成和代码现实一致
+   - 让 build/codegen/executable extraction
+     停止消费
+     `blackhole.lowering_requirements`
+     这类过渡 attr，
+     把剩余 gate 收回
+     `TTProgram / ExecutableSpec`
+     的 typed truth
+3. **`R2-close`**
+   - 把 `PlanTTSync / PlanTTABI / PlanTTExecution`
+     站成显式 owner pass，
+     或至少把当前 helper owner contract
+     明确冻结下来，
+     不再继续藏在 `BuildTTProgram`
+     的临时 synthesis 里
+   - 让 communication owner
+     不只停在 consumer-side gate，
+     还要在 planner/builder 侧有独立边界
+4. 在 `R0-R2` 真正收口之后，
    再在当前 `TTProgram / ExecutableSpec` 真源下完成
    `flash-attn` admitted subset payoff / correctness 收口
-2. 在新 route 上承接
+5. 在新 route 上承接
    `topk / fusedmoe / paged decode / chunk recurrence`
-3. 扩更宽的 copy / data movement / wider communication 支持面
+6. 扩更宽的 copy / data movement / wider communication 支持面
 
 ## 当前优先级
 
-1. **R3: `flash-attn` payoff**
-   - 在当前新 route 上兑现 multi-phase transport / reduction / broadcast
-   - 继续把 compile-path 稳定性兑现成 correctness/admitted subset
-2. **R4: wider family cutover**
-   - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-3. **R5: wider support surface**
-   - copy / dataflow / wider communication
+1. **`T2.4 / R1-close`: 收口 executable writer 边界**
+   - 明确 `MaterializeBlackholeExecutable`
+     的真实职责；
+     不再把 no-op shell 记成唯一 writer
+2. **`T2.5 / R1-close`: 去掉 build/codegen 对 `blackhole.lowering_requirements` 的依赖**
+   - unsupported-compute / bridge-spec /
+     materialization gate
+     回收到 `TTProgram / ExecutableSpec`
+3. **`T3C.0 / R0-close`: 退役 `blackhole.*` analysis facts 的 active 协议角色**
+   - 保留 probe/debug 可以，
+     但不能继续作为 owner planning 主协议
+4. **`T3C.1 / R2-close`: 显式化 sync / ABI / execution owner**
+   - `PlanTTSync -> PlanTTABI -> PlanTTExecution`
+     要么落地成 pass，
+     要么在文档和 gate 里明确仍属过渡实现
+5. **`R3`: `flash-attn` payoff**
+6. **`R4`: wider family cutover**
+7. **`R5`: wider support surface**
 
 最近完成的局部批次：
 

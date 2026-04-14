@@ -3,14 +3,23 @@
 ## 基本信息
 
 - **文档角色**: `Task 2` 的 target owner cutover 设计文档
-- **当前状态**: `2026-04-14` 活动设计文档；`Task 2` owner cutover 已完成，
-  当前文档继续保留 builtin mapping 边界与 compatibility shell 约束
+- **当前状态**: `2026-04-15` 活动设计文档；
+  `Task 2` 的 active TT bundle / helper shell
+  已切进主链，
+  但 owner cutover 还没有完成；
+  当前未收口项是
+  `MaterializeBlackholeExecutable`
+  仍是 no-op shell，
+  以及 build/codegen/executable extraction
+  仍消费
+  `blackhole.lowering_requirements`
 - **任务链位置**:
   `Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion ->
   ExecutableSpec` 中第二层 companion 的 owner 设计
 - **目标**:
   让 `TTProgram companion` 成为唯一 target truth，
-  让 `MaterializeBlackholeExecutable` 成为唯一 writer
+  让 executable writer/readers 的边界
+  和代码现实重新一致
 - **非目标**:
   - 不在 `Task 2` 里兑现 runtime/correctness payoff
   - 不在 `Task 2` 里承接 workload family 回归
@@ -315,8 +324,10 @@ AnalyzeSpatialStructureFacts
 
 1. `TTProgram companion` 成为唯一 target truth owner
 2. `MaterializeBlackholeExecutable` 成为唯一 writer
-3. runtime / codegen / `BlackholeModule`
-   只读 `ExecutableSpec`
+3. build/runtime side consumers
+   只读 typed target truth
+   （`TTProgram / ExecutableSpec`），
+   不读 legacy attrs
 4. `LowerBlackholeOps / PlanBlackholeCB / AssignBlackholeCores /
    LowerSpatialProgramToTTTarget / MaterializeTTExecutableSpec`
    不再承担 planning owner
@@ -333,19 +344,60 @@ AnalyzeSpatialStructureFacts
 `TTProgram` 已进入主链
 不等于 `Task 2` 已完成。
 
-## 8. 落地结果
+## 8. 当前落地到的程度
 
-`Task 2` 当前已经按下面方式落地：
+`Task 2` 当前已经按下面方式切入主链：
 
 - active Blackhole compile path 已固定使用 canonical TT bundle：
   `BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable`
 - Python / engine 侧已经固化 canonical bundle helper：
   `LowerToBlackholePhaseB -> LowerToBlackholeTTProgram -> LowerToBlackholeExecutable`
+- `TTProgram`
+  已成为 active target-truth carrier；
+  `tt_program_projection`
+  当前也已成为 runtime/build 侧的正式读取入口
 - `LowerSpatialProgramToTTTarget / ValidateTTTargetProgram /
   MaterializeTTExecutableSpec`
   继续保留为 compatibility shell，
   但不再作为当前入口命名
 - 测试 helper 已切到 bundle helper，
   不再把长 pass 链手写成事实标准
-- 当前未收口项已经移交给 `Task 3`
-  （runtime gate、`flash-attn` payoff、wider family/support surface）
+
+但下面这些 gap 说明
+`Task 2`
+还不能写成已完成：
+
+- `MaterializeBlackholeExecutable`
+  仍是 no-op shell，
+  不是当前真实 executable writer
+- codegen / executable extraction
+  仍消费
+  `blackhole.lowering_requirements`
+  这类过渡 attr，
+  不能宣称已经只读
+  `TTProgram / ExecutableSpec`
+- `blackhole.*`
+  过渡 analysis/projection attr
+  仍在 active path / test surface 中可见
+
+## 8.1 当前 closeout tasks
+
+在当前审计口径下，
+`Task 2`
+还需要完成下面 3 项 closeout：
+
+1. **`T2.4`: 收口 executable writer 边界**
+   - 让 `MaterializeBlackholeExecutable`
+     真正承担 writer 职责，
+     或者把 canonical bundle / 文档口径
+     改成与当前 extractor-based reality 一致
+2. **`T2.5`: 去掉 build/codegen/executable extraction 对 `blackhole.lowering_requirements` 的依赖**
+   - unsupported-compute /
+     bridge-spec /
+     materialization gate
+     收回 `TTProgram / ExecutableSpec`
+     typed truth
+3. **`T2.6`: 收紧 `blackhole.*` 过渡 attr 的公开地位**
+   - probe/debug 可保留，
+     但不能继续被文档和 regression
+     当作正式 target owner surface
