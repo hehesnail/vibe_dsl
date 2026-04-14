@@ -324,7 +324,7 @@ def test_flash_attention_gqa_reader_runtime_args_cover_all_accessor_buffers():
     assert runtime_arg_buffers == accessor_buffers
 
 
-def test_flash_attention_gqa_top_level_runtime_args_aggregate_segment_buffers():
+def test_flash_attention_gqa_aggregated_runtime_args_cover_segment_buffers():
     lowered = _run_flash_attention_tt_target_after_optimize(
         gqa_example,
         1,
@@ -1211,9 +1211,15 @@ def test_flash_attention_segment_kernels_keep_buffer_runtime_args_role_local():
     compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
     writer = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "writer")
 
-    reader_buffer_kinds = {str(arg["kind"]) for arg in reader["runtime_args"] if "buffer" in arg}
-    compute_buffer_kinds = {str(arg["kind"]) for arg in compute["runtime_args"] if "buffer" in arg}
-    writer_buffer_kinds = {str(arg["kind"]) for arg in writer["runtime_args"] if "buffer" in arg}
+    reader_buffer_kinds = {
+        str(arg["kind"]) for arg in reader.get("runtime_args", []) if "buffer" in arg
+    }
+    compute_buffer_kinds = {
+        str(arg["kind"]) for arg in compute.get("runtime_args", []) if "buffer" in arg
+    }
+    writer_buffer_kinds = {
+        str(arg["kind"]) for arg in writer.get("runtime_args", []) if "buffer" in arg
+    }
 
     assert reader_buffer_kinds == {"input_buffer_addr32"}
     assert compute_buffer_kinds == set()

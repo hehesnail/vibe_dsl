@@ -221,13 +221,15 @@ def _align_blackhole_device_symbol(
     source_funcs = _blackhole_prim_funcs(source_mod)
     optimized_funcs = _blackhole_prim_funcs(optimized_device_mod)
     if len(source_funcs) != 1 or len(optimized_funcs) != 1:
-        return source_mod
+        return optimized_device_mod
 
-    _, source_func = source_funcs[0]
     optimized_gvar, optimized_func = optimized_funcs[0]
     target_symbol = _prim_func_symbol(optimized_gvar, optimized_func)
-    aligned_func = source_func.with_attr("global_symbol", target_symbol)
-    return tvm.IRModule({target_symbol: aligned_func}, global_infos=source_mod.global_infos)
+    aligned_func = optimized_func.with_attr("global_symbol", target_symbol)
+    return tvm.IRModule(
+        {target_symbol: aligned_func},
+        global_infos=optimized_device_mod.global_infos,
+    )
 
 
 def blackhole_codegen(

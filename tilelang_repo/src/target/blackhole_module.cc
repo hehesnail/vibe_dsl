@@ -912,9 +912,7 @@ static KernelHandle CreateKernelFromSpec(
 static std::vector<uint32_t> BuildCommonRuntimeArgsFromSpec(
     const KernelSpec& kernel,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
-    const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
-    const std::vector<std::string>& input_names,
-    const std::vector<std::string>& output_names);
+    const std::unordered_map<uint32_t, uint32_t>& semaphore_ids);
 static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
     const KernelSpec& kernel,
     const ExecutableSpec& spec,
@@ -922,8 +920,6 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
     const IDevice& device,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
     const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
-    const std::vector<std::string>& input_names,
-    const std::vector<std::string>& output_names,
     const std::vector<uint32_t>& scalar_args);
 
 struct DirectWorkItem {
@@ -1078,8 +1074,6 @@ static std::vector<KernelHandle> CreateProgramKernelsFromSpec(
     const ExecutableSpec& spec,
     const std::unordered_map<std::string, RuntimeBufferBinding>& runtime_buffers,
     const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
-    const std::vector<std::string>& input_names,
-    const std::vector<std::string>& ordered_output_names,
     const std::vector<std::string>& kernel_paths) {
   std::vector<KernelHandle> kernels;
   kernels.reserve(spec.kernels.size());
@@ -1089,8 +1083,8 @@ static std::vector<KernelHandle> CreateProgramKernelsFromSpec(
               << " core_type=" << kernel_spec.core_type;
     kernels.push_back(CreateKernelFromSpec(program, launch_core_ranges, kernel_spec,
                                            runtime_buffers, kernel_paths[ki]));
-    const auto common_runtime_args = BuildCommonRuntimeArgsFromSpec(
-        kernel_spec, runtime_buffers, semaphore_ids, input_names, ordered_output_names);
+    const auto common_runtime_args =
+        BuildCommonRuntimeArgsFromSpec(kernel_spec, runtime_buffers, semaphore_ids);
     if (!common_runtime_args.empty()) {
       LOG(INFO) << "Direct path: set common runtime args kernel[" << ki
                 << "] count=" << common_runtime_args.size();
@@ -1108,15 +1102,12 @@ static void ApplyWorkItemRuntimeArgs(
     const IDevice& device,
     const std::unordered_map<std::string, RuntimeBufferBinding>& runtime_buffers,
     const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
-    const std::vector<std::string>& input_names,
-    const std::vector<std::string>& ordered_output_names,
     const std::vector<uint32_t>& scalar_args) {
   for (const auto& item : work_items) {
     for (size_t ki = 0; ki < spec.kernels.size(); ++ki) {
       const auto& kernel_spec = spec.kernels[ki];
       auto runtime_args = BuildRuntimeArgsFromSpec(
-          kernel_spec, spec, item.work_id, device, runtime_buffers, semaphore_ids, input_names,
-          ordered_output_names, scalar_args);
+          kernel_spec, spec, item.work_id, device, runtime_buffers, semaphore_ids, scalar_args);
       SetRuntimeArgs(program, kernels[ki], item.core, runtime_args);
     }
   }
@@ -1579,23 +1570,15 @@ static std::vector<uint32_t> BuildKernelCompileTimeArgs(
 static const RuntimeBufferBinding& ResolveRuntimeBufferBinding(
     const KernelArgSpec& arg_spec,
     bool expect_output,
-    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
-    const std::vector<std::string>& ordered_names) {
-  if (!arg_spec.buffer.empty()) {
-    auto it = buffer_bindings.find(arg_spec.buffer);
-    ICHECK(it != buffer_bindings.end())
-        << "Missing runtime buffer binding for " << arg_spec.buffer;
-    ICHECK(it->second.is_output == expect_output)
-        << "Runtime buffer role mismatch for " << arg_spec.buffer
-        << ": expected output=" << expect_output;
-    return it->second;
-  }
-
-  ICHECK(!ordered_names.empty())
-      << "No runtime buffer binding available for arg kind " << arg_spec.kind;
-  auto it = buffer_bindings.find(ordered_names.front());
+    const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings) {
+  ICHECK(!arg_spec.buffer.empty())
+      << "Direct runtime requires explicit buffer binding for arg kind " << arg_spec.kind;
+  auto it = buffer_bindings.find(arg_spec.buffer);
   ICHECK(it != buffer_bindings.end())
-      << "Missing fallback runtime buffer binding for " << ordered_names.front();
+      << "Missing runtime buffer binding for " << arg_spec.buffer;
+  ICHECK(it->second.is_output == expect_output)
+      << "Runtime buffer role mismatch for " << arg_spec.buffer
+      << ": expected output=" << expect_output;
   return it->second;
 }
 
@@ -1667,10 +1650,9 @@ static void AppendRuntimeBufferAddressArg(
     bool expect_output,
     bool use_32bit_addr,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
-    const std::vector<std::string>& ordered_names,
     std::vector<uint32_t>* args) {
-  const auto& binding = ResolveRuntimeBufferBinding(arg_spec, expect_output, buffer_bindings,
-                                                    ordered_names);
+  const auto& binding =
+      ResolveRuntimeBufferBinding(arg_spec, expect_output, buffer_bindings);
   const uint64_t addr = binding.mesh_buffer->address();
   args->push_back(static_cast<uint32_t>(addr & 0xFFFFFFFF));
   if (!use_32bit_addr) {
@@ -1681,27 +1663,25 @@ static void AppendRuntimeBufferAddressArg(
 static bool TryAppendSharedRuntimeArg(
     const KernelArgSpec& arg_spec,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
-    const std::vector<std::string>& input_names,
-    const std::vector<std::string>& output_names,
     std::vector<uint32_t>* args) {
   if (arg_spec.kind == "input_buffer_addr") {
     AppendRuntimeBufferAddressArg(arg_spec, /*expect_output=*/false, /*use_32bit_addr=*/false,
-                                  buffer_bindings, input_names, args);
+                                  buffer_bindings, args);
     return true;
   }
   if (arg_spec.kind == "input_buffer_addr32") {
     AppendRuntimeBufferAddressArg(arg_spec, /*expect_output=*/false, /*use_32bit_addr=*/true,
-                                  buffer_bindings, input_names, args);
+                                  buffer_bindings, args);
     return true;
   }
   if (arg_spec.kind == "output_buffer_addr") {
     AppendRuntimeBufferAddressArg(arg_spec, /*expect_output=*/true, /*use_32bit_addr=*/false,
-                                  buffer_bindings, output_names, args);
+                                  buffer_bindings, args);
     return true;
   }
   if (arg_spec.kind == "output_buffer_addr32") {
     AppendRuntimeBufferAddressArg(arg_spec, /*expect_output=*/true, /*use_32bit_addr=*/true,
-                                  buffer_bindings, output_names, args);
+                                  buffer_bindings, args);
     return true;
   }
   return false;
@@ -1813,16 +1793,14 @@ static bool TryAppendPerWorkRuntimeArg(const KernelSpec& kernel,
 static std::vector<uint32_t> BuildCommonRuntimeArgsFromSpec(
     const KernelSpec& kernel,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
-    const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
-    const std::vector<std::string>& input_names,
-    const std::vector<std::string>& output_names) {
+    const std::unordered_map<uint32_t, uint32_t>& semaphore_ids) {
   std::vector<uint32_t> args;
   const auto sync_context = BuildCommonSynchronizationRuntimeContext(semaphore_ids);
   for (const auto& arg_spec : kernel.common_runtime_args) {
     if (TryAppendSynchronizationRuntimeArg(kernel, arg_spec, sync_context, &args)) {
       continue;
     }
-    if (!TryAppendSharedRuntimeArg(arg_spec, buffer_bindings, input_names, output_names, &args)) {
+    if (!TryAppendSharedRuntimeArg(arg_spec, buffer_bindings, &args)) {
       LOG(FATAL) << "Unsupported common runtime arg kind: " << arg_spec.kind;
     }
   }
@@ -1836,8 +1814,6 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
     const IDevice& device,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
     const std::unordered_map<uint32_t, uint32_t>& semaphore_ids,
-    const std::vector<std::string>& input_names,
-    const std::vector<std::string>& output_names,
     const std::vector<uint32_t>& scalar_args) {
   std::vector<uint32_t> args;
   size_t scalar_index = 0;
@@ -1849,7 +1825,7 @@ static std::vector<uint32_t> BuildRuntimeArgsFromSpec(
     if (TryAppendSynchronizationRuntimeArg(kernel, arg_spec, sync_context, &args)) {
       continue;
     }
-    if (TryAppendSharedRuntimeArg(arg_spec, buffer_bindings, input_names, output_names, &args)) {
+    if (TryAppendSharedRuntimeArg(arg_spec, buffer_bindings, &args)) {
       continue;
     }
     if (!TryAppendPerWorkRuntimeArg(kernel, arg_spec, kernel.per_work_arg_specs, context,
@@ -2047,12 +2023,10 @@ void BlackholeModuleNode::ExecuteDirect(
 
     std::vector<KernelHandle> kernels = CreateProgramKernelsFromSpec(
         program, launch_core_ranges, spec, runtime_buffer_state.runtime_buffers, semaphore_ids,
-        runtime_buffer_state.input_names, runtime_buffer_state.ordered_output_names, kernel_paths);
+        kernel_paths);
 
     ApplyWorkItemRuntimeArgs(program, spec, kernels, launch_wave.work_items, *mesh_device,
-                             runtime_buffer_state.runtime_buffers, semaphore_ids,
-                             runtime_buffer_state.input_names,
-                             runtime_buffer_state.ordered_output_names, scalar_args);
+                             runtime_buffer_state.runtime_buffers, semaphore_ids, scalar_args);
 
     distributed::MeshWorkload workload;
     distributed::MeshCoordinateRange device_range(mesh_device->shape());
@@ -2103,10 +2077,8 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
     return name;
   };
 
-  // Prefer explicit schema-derived name->role bindings. Positional fallback remains only for
-  // legacy paths that do not materialize buffer names in runtime_args.
+  // Direct runtime requires explicit schema-derived name->role bindings.
   std::unordered_map<std::string, bool> buffer_is_output_by_name;
-  std::vector<bool> buffer_is_output;
   std::vector<std::string> ordered_buffer_names;
   std::unordered_set<std::string> seen_buffer_names;
   auto append_buffer_contract = [&](const std::vector<KernelArgSpec>& runtime_args) {
@@ -2119,7 +2091,6 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
             ordered_buffer_names.push_back(normalized_buffer_name);
           }
         }
-        buffer_is_output.push_back(false);
       } else if (arg.kind == "output_buffer_addr32" || arg.kind == "output_buffer_addr") {
         if (!arg.buffer.empty()) {
           const std::string normalized_buffer_name = normalize_buffer_name(arg.buffer);
@@ -2128,18 +2099,13 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
             ordered_buffer_names.push_back(normalized_buffer_name);
           }
         }
-        buffer_is_output.push_back(true);
       }
     }
   };
   append_buffer_contract(info_.runtime_args);
   append_buffer_contract(info_.common_runtime_args);
-  // Fallback: if runtime_args carries no buffer kind info, treat last buffer as output.
-  const bool use_position_fallback = buffer_is_output.empty();
-  size_t n_buffer_args = 0;
-  for (bool is_buf : info_.tvm_is_buffer_arg) {
-    if (is_buf) ++n_buffer_args;
-  }
+  ICHECK(!buffer_is_output_by_name.empty())
+      << "Blackhole direct runtime requires explicit buffer role schema";
 
   // Collect arguments
   std::vector<RuntimeTensorBinding> buffer_args;
@@ -2158,14 +2124,10 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
                      : ("arg" + std::to_string(i)));
       const std::string normalized_buffer_name = normalize_buffer_name(buffer_name);
       auto role_it = buffer_is_output_by_name.find(normalized_buffer_name);
-      bool is_out = false;
-      if (role_it != buffer_is_output_by_name.end()) {
-        is_out = role_it->second;
-      } else {
-        is_out = use_position_fallback
-                     ? (buf_idx == n_buffer_args - 1)
-                     : (buf_idx < buffer_is_output.size() && buffer_is_output[buf_idx]);
-      }
+      ICHECK(role_it != buffer_is_output_by_name.end())
+          << "Blackhole direct runtime requires explicit buffer role binding for "
+          << normalized_buffer_name;
+      bool is_out = role_it->second;
       buffer_args.push_back(RuntimeTensorBinding{normalized_buffer_name, tensor, is_out});
       if (is_out) {
         output_names.push_back(normalized_buffer_name);

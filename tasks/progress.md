@@ -148,13 +148,33 @@
 
 ## 当前优先级
 
-1. **P0: `Task 3B` runtime gate + `flash-attn` payoff**
-  - 在新主链上兑现 admitted subset correctness
-  - 继续把剩余 internal helper bridge owner 从 canonical pipeline 中清掉
-2. **P1: `Task 3C` wider family / support surface**
+1. **P5: `Task 3C` wider family / support surface**
   - `topk -> fusedmoe -> paged decode -> chunk recurrence`
   - wider copy/dataflow
-   - wider sync 最后进入 admitted surface
+  - wider sync 最后进入 admitted surface
+
+## 已完成的旧链清理
+
+- **P0: 删除 runtime/build 的 legacy single-kernel fallback**
+  - `rt_mod_blackhole` 已不再允许
+    `segments.empty()` 或单 `fused_dataflow`
+    退回 legacy codegen
+  - device build 现在直接要求 `TTProgram` 的 segment/kernel truth 完整
+- **P1: 删除 segment ABI 的 top-level runtime/common-runtime 回填**
+  - `tt_uses_top_level_runtime_args /
+    tt_uses_top_level_common_runtime_args`
+    已删除
+  - `fused_dataflow` copy 的 runtime/common-runtime/per-work truth
+    现在直接冻结在对应 `TTABIPlan`
+- **P2: 删除 runtime positional buffer-role fallback**
+  - `BlackholeModule` 已不再用参数位置恢复 output buffer
+  - 缺显式 schema 的 executable 直接 fail-fast / gate
+- **P3: 收紧 `BuildTTProgram` helper bridge**
+  - segment materialization 已不再把 top-level runtime/common-runtime args
+    回灌到局部 segment
+- **P4: 拆 `PlanTTKernelABI` 的 matcher / owner residue**
+  - 单段 copy classifier 只接 explicit direction truth
+  - `unknown -> fallback` 恢复式支路已去掉
 
 ## 当前未完成项
 
@@ -187,12 +207,10 @@
 
 ## 下一步
 
-1. 做 `Task 3B`
-  - runtime gate
-  - `flash-attn`
-  - `PlanTT*` owner pass 替换 seed bridge
-2. 再做 `Task 3C`
+1. 推进 `flash-attn` correctness payoff
+2. 进入 `Task 3C`
   - wider family / support surface
+3. 在更宽 admitted surface 上继续兑现 copy/dataflow/sync 支持面
 
 ## 最新验证摘要
 
@@ -211,6 +229,16 @@
     -> `41 passed`
   - `python -m pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q -k 'omits_legacy_semantic_attrs or attaches_multi_phase_spatial_program'`
     -> `2 passed, 60 deselected`
+- `2026-04-14` Task 3B old-chain cleanup verification
+  - 构建：
+    - `cmake --build tilelang_repo/build -j32 --target tilelang`
+      -> `Built target tilelang`
+  - copy pipeline:
+    - `python -m pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py -q -k 'build_reads_tt_program_without_legacy_projection_attrs or build_rejects_missing_runtime_arg_schema or build_rejects_missing_tt_program_even_with_legacy_attrs or lower_restores_host_device_split or runtime_module_keeps_host_and_device_entries or copy_pass_attrs or missing_buffer_role_schema_direct_runtime_unsupported or runtime_arg_identities_are_materialized'`
+      -> `8 passed`
+  - flash-attn pipeline:
+    - `python -m pytest tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -q -k 'buffer_materialization_contracts or buffer_flow_contracts or buffer_distribution_contracts or stage_count or aggregated_runtime_args_cover_segment_buffers or segment_kernels_keep_buffer_runtime_args_role_local'`
+      -> `7 passed`
 - 旧链收口确认：
   - semantic pass / wrapper / dead code 已删除：
     `ProjectSemanticSeeds / CollectSemanticManifestSeeds /

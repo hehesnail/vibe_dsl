@@ -366,6 +366,66 @@ runtime / codegen 的消费纪律固定为：
    - 只在 `TTSyncPlan + executable binding + runtime semantics`
      三者都稳定后进入 admitted surface
 
+## 5.2 当前旧链清理优先级
+
+在 `Task 3B` 里，当前剩余的旧链清理按下面顺序执行：
+
+1. **P0: 删除 runtime/build 的 legacy single-kernel fallback**
+   - `rt_mod_blackhole` 不再接受
+     “`TTProgram` 缺 segment truth 时退回单 kernel codegen”
+   - `fused_dataflow` 也必须走显式 `TTKernel/TTABIPlan`
+     物化后的 segment codegen
+2. **P1: 删除 segment ABI 的 top-level runtime-args 回填**
+   - 不再使用
+     `tt_uses_top_level_runtime_args /
+     tt_uses_top_level_common_runtime_args`
+     这类过渡标记
+   - segment 需要的 runtime/common runtime args
+     必须直接作为 segment ABI truth 冻结在
+     `TTABIPlan`
+3. **P2: 删除 runtime 里的 positional buffer-role fallback**
+   - `BlackholeModule` 不再从“最后一个 buffer 是 output”
+     这类位置约定恢复输入输出角色
+   - 缺显式 buffer role/buffer name schema 时直接 fail-fast
+4. **P3: 收紧 `BuildTTProgram` helper bridge**
+   - `BuildTTProgram` 继续往纯聚合器收
+   - 不再在 helper chain 里保留 top-level 汇总 truth，
+     需要的 truth 直接下沉到对应 owner object
+5. **P4: 拆 `PlanTTKernelABI` 的 matcher / recovery owner residue**
+   - 把仍然混在一起的 block/transport/sync/ABI/execution owner
+     责任继续拆开
+   - 目标不是系统性换名，而是让每层只持有它自己的 target truth
+
+### 5.2.1 `2026-04-14` 当前状态
+
+`Task 3B` 这 5 项旧链清理已完成：
+
+- **P0**
+  - `rt_mod_blackhole` 已删除 legacy single-kernel/fused-dataflow codegen fallback
+  - device build 现在硬要求显式 `TTProgram` segment truth
+- **P1**
+  - `tt_uses_top_level_runtime_args /
+    tt_uses_top_level_common_runtime_args`
+    已删除
+  - `fused_dataflow` copy 的 runtime/common-runtime/per-work truth
+    已直接冻结到 segment ABI
+- **P2**
+  - direct runtime 已删除 positional buffer-role fallback
+  - 缺显式 buffer binding/schema 的 executable
+    直接在 build/gate 边界 fail-fast
+- **P3**
+  - segment materialization helper
+    已删除 top-level runtime/common-runtime 回填
+- **P4**
+  - `PlanTTKernelABI` copy classifier
+    现在只接受 explicit direction truth
+  - `unknown -> fallback` 的恢复分支已去掉
+
+因此当前剩余重点已转到 `P5`：
+
+- `flash-attn` correctness payoff
+- `Task 3C` wider family / support surface
+
 ## 6. Wider Copy / Dataflow / Sync 支持面
 
 支持面扩张也必须服从同一条 owner 纪律。

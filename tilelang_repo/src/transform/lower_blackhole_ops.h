@@ -616,8 +616,6 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<std::string, std::vector<int64_t>> logical_buffer_shapes_;
   std::unordered_map<const Object*, int> stmt_order_index_by_node_;
   tvm::ffi::Array<tvm::ffi::Any> segment_plan_;
-  tvm::ffi::Array<tvm::ffi::Any> top_level_runtime_args_;
-  tvm::ffi::Array<tvm::ffi::Any> top_level_common_runtime_args_;
   tvm::ffi::Array<TTKernel> tt_kernels_;
   tvm::ffi::Array<TTABIPlan> tt_abi_plans_;
   tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> tt_program_payload_;

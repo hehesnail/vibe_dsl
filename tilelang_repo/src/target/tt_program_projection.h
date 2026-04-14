@@ -28,14 +28,6 @@ inline Map<String, Any> AsMap(const Any& any) {
   return any.as<Map<String, Any>>().value_or(Map<String, Any>());
 }
 
-inline bool GetBoolOrDefault(const Map<String, Any>& dict, const char* key,
-                             bool default_value = false) {
-  if (auto value = dict.Get(String(key))) {
-    return Downcast<Bool>(value.value());
-  }
-  return default_value;
-}
-
 inline tvm::ffi::Optional<TTProgram> GetTTProgram(const tir::PrimFunc& func) {
   return func->GetAttr<TTProgram>(attr::kTLTTProgram);
 }
@@ -123,12 +115,10 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram& program) {
     segment.Set("name", kernel->name);
     segment.Set("kind", kernel->kind);
     segment.Set("core_type", kernel->core_type);
-    if (!abi->runtime_args.empty() &&
-        !GetBoolOrDefault(segment, "tt_uses_top_level_runtime_args", false)) {
+    if (!abi->runtime_args.empty()) {
       segment.Set("runtime_args", abi->runtime_args);
     }
-    if (!abi->common_runtime_args.empty() &&
-        !GetBoolOrDefault(segment, "tt_uses_top_level_common_runtime_args", false)) {
+    if (!abi->common_runtime_args.empty()) {
       segment.Set("common_runtime_args", abi->common_runtime_args);
     }
     if (!abi->compile_time_arg_specs.empty()) {

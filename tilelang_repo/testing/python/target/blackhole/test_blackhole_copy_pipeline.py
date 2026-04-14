@@ -303,7 +303,6 @@ def _rebuild_codegen_module_without_copy_runtime_args(artifact):
             abi = tt_program.abi_plans[index]
             payload = dict(kernel.payload)
             payload.pop("runtime_args", None)
-            payload["tt_uses_top_level_runtime_args"] = False
             rebuilt_abi_plans.append(rebuild_tt_abi_plan(abi, runtime_args=[], payload=payload))
             rebuilt_kernels.append(
                 rebuild_tt_kernel(kernel, abi_plan_index=index, payload=payload)
@@ -1678,6 +1677,32 @@ def test_blackhole_copy_codegen_rejects_runtime_arg_without_identity():
 
     with pytest.raises(Exception, match="missing explicit identity"):
         _rebuild_codegen_module_with_runtime_args(artifact, missing_identity_runtime_args)
+
+
+def test_blackhole_copy_build_marks_missing_buffer_role_schema_direct_runtime_unsupported():
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    bufferless_runtime_args = [
+        {"name": "A_addr", "kind": "input_buffer_addr32", "identity": "input_buffer_addr32:A", "dtype": "uint32"},
+        {"name": "B_addr", "kind": "output_buffer_addr32", "identity": "output_buffer_addr32:B", "dtype": "uint32"},
+        {"name": "work_linear_id", "kind": "work_linear_id", "identity": "work_linear_id", "dtype": "uint32"},
+        {"name": "a_tile_start_id", "kind": "a_tile_start_id", "identity": "a_tile_start_id", "dtype": "uint32"},
+        {"name": "a_tile_num_tiles", "kind": "a_tile_num_tiles", "identity": "a_tile_num_tiles", "dtype": "uint32"},
+        {"name": "a_tile_stride", "kind": "a_tile_stride", "identity": "a_tile_stride", "dtype": "uint32"},
+        {"name": "output_tile_start_id", "kind": "output_tile_start_id", "identity": "output_tile_start_id", "dtype": "uint32"},
+        {"name": "output_tile_num_tiles", "kind": "output_tile_num_tiles", "identity": "output_tile_num_tiles", "dtype": "uint32"},
+        {"name": "output_tile_stride", "kind": "output_tile_stride", "identity": "output_tile_stride", "dtype": "uint32"},
+    ]
+
+    rebuilt = _rebuild_codegen_module_with_runtime_args(artifact, bufferless_runtime_args)
+    executable_spec = rebuilt.get_function_metadata("main")
+    reasons = [str(reason) for reason in executable_spec["direct_runtime_unsupported_reasons"]]
+
+    assert any("missing explicit buffer role schema" in reason for reason in reasons)
 
 
 def test_blackhole_copy_codegen_rejects_common_runtime_arg_without_identity():

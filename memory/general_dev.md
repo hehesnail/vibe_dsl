@@ -115,6 +115,11 @@
 - per-work/access truth 一旦 formalize 成 `per_work_arg_specs`，
   就要先 canonicalize 成 kernel-local `TTKernel / ExecutableSpec` contract；
   codegen/runtime 只能解释 `value_kind`，不能再按 arg kind 名字推语义
+- 只做 device `global_symbol` 对齐时，必须保留优化后的 device `PrimFunc`
+  和对应 `global_infos`；
+  不能把 source func 重新 `with_attr("global_symbol", ...)` 后塞回去。
+  否则会把 Blackhole lowering 后的真实 device body回退成旧 body，
+  重新暴露 free loop var（例如 `tile_row`）这类已经在优化版里消失的问题
 - Python 侧若需要做 companion IR mutation regression，
   优先通过 `tl.TT*` constructor 直接重建
   `TTProgram / TTKernel / TTCoreGroup / TTABIPlan / TTSemaphorePlan`

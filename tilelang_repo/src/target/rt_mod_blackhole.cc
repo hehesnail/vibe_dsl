@@ -2062,6 +2062,16 @@ static bool IsOutputBufferArgKind(const std::string& kind) {
   return kind == "output_buffer_addr32" || kind == "output_buffer_addr";
 }
 
+static std::string NormalizeBufferBindingName(std::string name) {
+  constexpr const char* kHandleSuffix = "_handle";
+  if (name.size() > std::strlen(kHandleSuffix) &&
+      name.compare(name.size() - std::strlen(kHandleSuffix), std::strlen(kHandleSuffix),
+                   kHandleSuffix) == 0) {
+    name.resize(name.size() - std::strlen(kHandleSuffix));
+  }
+  return name;
+}
+
 static std::string ResolveBufferRole(const ExecutableSpec& spec, const std::string& buffer_name) {
   auto check_args = [&](const std::vector<KernelArgSpec>& args, bool output) {
     return std::any_of(args.begin(), args.end(), [&](const KernelArgSpec& arg) {
@@ -2289,6 +2299,59 @@ static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
   }
 }
 
+static void EnforceExplicitBufferRoleSchemaGate(ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  size_t n_buffer_args = 0;
+  std::unordered_set<std::string> expected_buffer_names;
+  for (size_t i = 0; i < spec->tvm_is_buffer_arg.size(); ++i) {
+    if (!spec->tvm_is_buffer_arg[i]) {
+      continue;
+    }
+    ++n_buffer_args;
+    if (i < spec->tvm_arg_names.size() && !spec->tvm_arg_names[i].empty()) {
+      expected_buffer_names.insert(NormalizeBufferBindingName(spec->tvm_arg_names[i]));
+    }
+  }
+  if (n_buffer_args == 0) {
+    return;
+  }
+
+  bool missing_buffer_name = false;
+  std::unordered_set<std::string> bound_buffer_names;
+  auto record_args = [&](const std::vector<KernelArgSpec>& args) {
+    for (const auto& arg : args) {
+      if (!IsInputBufferArgKind(arg.kind) && !IsOutputBufferArgKind(arg.kind)) {
+        continue;
+      }
+      if (arg.buffer.empty()) {
+        missing_buffer_name = true;
+        continue;
+      }
+      bound_buffer_names.insert(NormalizeBufferBindingName(arg.buffer));
+    }
+  };
+  record_args(spec->runtime_args);
+  record_args(spec->common_runtime_args);
+
+  if (missing_buffer_name || bound_buffer_names.empty()) {
+    AppendDirectRuntimeUnsupportedReason(
+        spec,
+        "missing explicit buffer role schema; direct runtime requires named "
+        "input/output buffer bindings and must not recover output positionally");
+    return;
+  }
+
+  for (const auto& buffer_name : expected_buffer_names) {
+    if (!bound_buffer_names.count(buffer_name)) {
+      AppendDirectRuntimeUnsupportedReason(
+          spec,
+          "missing explicit buffer role schema; direct runtime requires named "
+          "input/output buffer bindings and must not recover output positionally");
+      return;
+    }
+  }
+}
+
 static std::vector<int64_t> ChooseBufferMaterializationAxisOrder(
     const ExecutableSpec& spec, const BufferMaterializationSpec& materialization,
     const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name) {
@@ -2408,51 +2471,6 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
   tir::PrimFunc segment_func = f;
   segment_func.CopyOnWrite()->body = extractor(f->body);
 
-  auto fallback_arg_allowed = [&](const KernelArgSpec& arg) {
-    if (!IsInputBufferArgKind(arg.kind) && !IsOutputBufferArgKind(arg.kind)) {
-      return true;
-    }
-    if (segment.kind == "reader") {
-      return IsInputBufferArgKind(arg.kind);
-    }
-    if (segment.kind == "writer") {
-      return IsOutputBufferArgKind(arg.kind);
-    }
-    // fused_dataflow and other segment kinds need both input and output buffer args
-    return true;
-  };
-
-  auto select_runtime_args = [](const std::vector<KernelArgSpec>& primary,
-                                const std::vector<KernelArgSpec>& fallback,
-                                const std::function<bool(const KernelArgSpec&)>& allow_fallback) {
-    if (!primary.empty()) {
-      return primary;
-    }
-    std::vector<KernelArgSpec> merged;
-    std::unordered_set<std::string> seen;
-    for (const auto& arg : fallback) {
-      if (!allow_fallback(arg)) {
-        continue;
-      }
-      const std::string dedupe_key =
-          !arg.identity.empty() && !arg.kind.empty() ? arg.identity + ":" + arg.kind : arg.identity;
-      if (!dedupe_key.empty() && seen.count(dedupe_key)) {
-        continue;
-      }
-      merged.push_back(arg);
-      if (!dedupe_key.empty()) {
-        seen.insert(dedupe_key);
-      }
-    }
-    return merged;
-  };
-
-  const std::vector<KernelArgSpec> merged_runtime_args =
-      select_runtime_args(segment.runtime_args, ExtractRuntimeArgs(f), fallback_arg_allowed);
-  const std::vector<KernelArgSpec> merged_common_runtime_args =
-      select_runtime_args(segment.common_runtime_args, ExtractCommonRuntimeArgs(f),
-                          fallback_arg_allowed);
-
   const tvm::tl::TTProgram original_program = tl::tt_program_projection::RequireTTProgram(
       f, "Blackhole segment materialization");
   const ffi::String kernel_name =
@@ -2461,9 +2479,9 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
       segment.kind.empty() ? ffi::String("fused_dataflow") : ffi::String(segment.kind);
   const ffi::String kernel_core_type =
       segment.core_type.empty() ? ffi::String("brisc") : ffi::String(segment.core_type);
-  const ffi::Array<ffi::Any> encoded_runtime_args = EncodeRuntimeArgs(merged_runtime_args);
+  const ffi::Array<ffi::Any> encoded_runtime_args = EncodeRuntimeArgs(segment.runtime_args);
   const ffi::Array<ffi::Any> encoded_common_runtime_args =
-      EncodeRuntimeArgs(merged_common_runtime_args);
+      EncodeRuntimeArgs(segment.common_runtime_args);
   const ffi::Array<ffi::Any> encoded_accessors = EncodeAccessors(segment.accessors);
   const ffi::Array<ffi::Any> encoded_compile_time_arg_specs =
       EncodeCompileTimeArgSpecs(segment.compile_time_arg_specs);
@@ -2577,29 +2595,18 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
                                              const std::string& func_name,
                                              Target target,
                                              bool kernel_code_only,
-                                             const std::string& legacy_code,
                                              ExecutableSpec* spec) {
   spec->kernels.clear();
   std::vector<SegmentInfo> segments = ExtractSegmentPlan(f, spec);
-  const bool use_legacy_single_kernel_path = segments.empty();
-  if (use_legacy_single_kernel_path) {
-    KernelSpec kernel;
-    kernel.name = func_name;
-    kernel.kind = spec->default_kernel_kind;
-    kernel.core_type = spec->default_kernel_core_type;
-    kernel.runtime_args = spec->runtime_args;
-    kernel.common_runtime_args = ExtractCommonRuntimeArgs(f);
-    kernel.per_work_arg_specs = spec->per_work_arg_specs;
-    kernel.source_code = legacy_code;
-    ICHECK(!kernel.source_code.empty())
-        << "Blackhole build produced no kernel source and no copy fallback was applicable for "
-        << func_name;
-    spec->kernels.push_back(std::move(kernel));
-    return;
-  }
+  ICHECK(!segments.empty())
+      << "Blackhole build requires non-empty TTProgram segment truth on device PrimFunc "
+      << func_name;
 
   for (const SegmentInfo& segment : segments) {
-    tir::PrimFunc segment_func = MakeSegmentPrimFunc(f, segment);
+    const bool whole_kernel_fused_dataflow =
+        segments.size() == 1 && (segment.kind.empty() || segment.kind == "fused_dataflow");
+    tir::PrimFunc segment_func =
+        whole_kernel_fused_dataflow ? f : MakeSegmentPrimFunc(f, segment);
     KernelSpec kernel;
     kernel.name = func_name + "_" + (segment.name.empty() ? segment.kind : segment.name);
     kernel.kind = segment.kind;
@@ -2722,7 +2729,6 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
 
   auto func_info_map = ExtractBlackholeFuncInfo(mod);
   std::unordered_map<std::string, tir::PrimFunc> device_funcs;
-  std::unordered_set<std::string> legacy_single_kernel_funcs;
   std::unordered_map<std::string, std::string> host_to_device;
   std::unordered_set<std::string> device_kernel_symbols;
 
@@ -2746,11 +2752,6 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     if (IsBlackholeDeviceKernel(f)) {
       device_kernel_symbols.insert(func_name);
       device_funcs.emplace(func_name, f);
-      ExecutableSpec probe_spec;
-      auto segments = ExtractSegmentPlan(f, &probe_spec);
-      if (segments.empty() || (segments.size() == 1 && probe_spec.default_kernel_kind == "fused_dataflow")) {
-        legacy_single_kernel_funcs.insert(func_name);
-      }
     }
   }
   for (auto kv : mod->functions) {
@@ -2765,38 +2766,19 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     }
   }
 
-  bool output_ssa = false;
-  bool emit_asserts = false;
-  bool emit_fwd_func_decl = true;
-  std::unordered_set<std::string> devices = {"blackhole"};
-  tl::CodeGenBlackhole legacy_cg;
-  legacy_cg.Init(output_ssa, emit_asserts, emit_fwd_func_decl, target->str(), devices);
-  bool has_legacy_funcs = false;
-  for (auto kv : mod->functions) {
-    auto gvar = Downcast<GlobalVar>(kv.first);
-    auto f = Downcast<tir::PrimFunc>(kv.second);
-    const std::string func_name = GetPrimFuncName(gvar, f);
-    if (legacy_single_kernel_funcs.count(func_name)) {
-      legacy_cg.AddFunction(gvar, f);
-      has_legacy_funcs = true;
-    }
-  }
-  const std::string legacy_code = has_legacy_funcs ? legacy_cg.Finish() : std::string();
-
   for (auto& kv : device_funcs) {
     auto spec_it = func_info_map.find(kv.first);
     if (spec_it == func_info_map.end()) {
       continue;
     }
-    const std::string& source = legacy_single_kernel_funcs.count(kv.first) ? legacy_code : std::string();
     PopulateKernelSpecsForDeviceFunc(kv.second, kv.first, target, /*kernel_code_only=*/false,
-                                     source,
                                      &spec_it->second);
     const auto buffer_info =
         CollectStaticBufferInfo(kv.second, CollectMaterializedBufferNames(spec_it->second));
     PopulateBufferMaterializationSpecs(buffer_info, &spec_it->second);
     EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
+    EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {
     auto host_it = func_info_map.find(kv.first);
@@ -2837,7 +2819,6 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
 
   auto func_info_map = ExtractBlackholeFuncInfo(mod);
   std::unordered_map<std::string, tir::PrimFunc> device_funcs;
-  std::unordered_set<std::string> legacy_single_kernel_funcs;
   std::unordered_map<std::string, std::string> host_to_device;
   std::unordered_set<std::string> device_kernel_symbols;
 
@@ -2861,11 +2842,6 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     if (IsBlackholeDeviceKernel(f)) {
       device_kernel_symbols.insert(func_name);
       device_funcs.emplace(func_name, f);
-      ExecutableSpec probe_spec;
-      auto segments = ExtractSegmentPlan(f, &probe_spec);
-      if (segments.empty() || (segments.size() == 1 && probe_spec.default_kernel_kind == "fused_dataflow")) {
-        legacy_single_kernel_funcs.insert(func_name);
-      }
     }
   }
   for (auto kv : mod->functions) {
@@ -2879,40 +2855,19 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
       }
     }
   }
-  bool output_ssa = false;
-  bool emit_asserts = false;
-  bool emit_fwd_func_decl = false;
-  std::unordered_set<std::string> devices = {"blackhole"};
-  tl::CodeGenBlackhole legacy_cg;
-  legacy_cg.Init(output_ssa, emit_asserts, emit_fwd_func_decl, target->str(), devices);
-  bool has_legacy_funcs = false;
-  for (auto kv : mod->functions) {
-    auto gvar = Downcast<GlobalVar>(kv.first);
-    auto f = Downcast<tir::PrimFunc>(kv.second);
-    const std::string func_name = GetPrimFuncName(gvar, f);
-    if (legacy_single_kernel_funcs.count(func_name)) {
-      legacy_cg.AddFunction(gvar, f);
-      has_legacy_funcs = true;
-    }
-  }
-  const std::string legacy_kernel_code =
-      has_legacy_funcs ? legacy_cg.GetKernelCode() : std::string();
-
   for (auto& kv : device_funcs) {
     auto spec_it = func_info_map.find(kv.first);
     if (spec_it == func_info_map.end()) {
       continue;
     }
-    const std::string& source =
-        legacy_single_kernel_funcs.count(kv.first) ? legacy_kernel_code : std::string();
     PopulateKernelSpecsForDeviceFunc(kv.second, kv.first, target, /*kernel_code_only=*/true,
-                                     source,
                                      &spec_it->second);
     const auto buffer_info =
         CollectStaticBufferInfo(kv.second, CollectMaterializedBufferNames(spec_it->second));
     PopulateBufferMaterializationSpecs(buffer_info, &spec_it->second);
     EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
+    EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {
     auto host_it = func_info_map.find(kv.first);

@@ -289,17 +289,135 @@ static bool IsBufferAddrRuntimeArgKind(const std::string& kind) {
          kind == "output_buffer_addr32" || kind == "output_buffer_addr";
 }
 
+static std::string GetRuntimeArgKind(const Any& arg_item) {
+  auto arg = arg_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+  if (arg.empty() || !arg.Get("kind")) {
+    return "";
+  }
+  return static_cast<std::string>(Downcast<String>(arg.Get("kind").value()));
+}
+
+static std::string GetRuntimeArgBufferName(const Any& arg_item) {
+  auto arg = arg_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+  if (arg.empty() || !arg.Get("buffer")) {
+    return "";
+  }
+  return static_cast<std::string>(Downcast<String>(arg.Get("buffer").value()));
+}
+
+static int FindRuntimeArgIndex(const Array<Any>& runtime_args, const std::string& kind,
+                               const std::string& buffer_name = "") {
+  for (int i = 0, n = static_cast<int>(runtime_args.size()); i < n; ++i) {
+    if (GetRuntimeArgKind(runtime_args[i]) != kind) {
+      continue;
+    }
+    if (!buffer_name.empty()) {
+      const std::string existing_buffer = GetRuntimeArgBufferName(runtime_args[i]);
+      if (!existing_buffer.empty() && existing_buffer != buffer_name) {
+        continue;
+      }
+    }
+    return i;
+  }
+  return -1;
+}
+
+static Map<String, Any> MakeRuntimeArg(const std::string& name, const std::string& kind,
+                                       const std::string& dtype,
+                                       const std::string& buffer_name = "") {
+  Map<String, Any> arg;
+  arg.Set("name", String(name));
+  arg.Set("kind", String(kind));
+  arg.Set("dtype", String(dtype));
+  if (!buffer_name.empty()) {
+    arg.Set("buffer", String(buffer_name));
+  }
+  arg.Set("identity", String(MakeBlackholeRuntimeArgIdentity(kind, name, buffer_name)));
+  return arg;
+}
+
+static std::string ResolveAccessorBufferNameBySlot(const Array<Any>& accessors, int slot) {
+  for (const auto& accessor_item : accessors) {
+    auto accessor = accessor_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+    if (accessor.empty() || !accessor.Get("buffer")) {
+      continue;
+    }
+    const int accessor_slot =
+        accessor.Get("compile_time_arg_offset")
+            ? Downcast<Integer>(accessor.Get("compile_time_arg_offset").value()).IntValue()
+            : (accessor.Get("slot")
+                   ? Downcast<Integer>(accessor.Get("slot").value()).IntValue()
+                   : -1);
+    if (accessor_slot == slot) {
+      return static_cast<std::string>(Downcast<String>(accessor.Get("buffer").value()));
+    }
+  }
+  return "";
+}
+
 static Array<Any> EnsureSegmentBufferRuntimeArgs(const std::string& segment_kind,
                                                  const Array<Any>& accessors,
-                                                 const Optional<Any>& runtime_args_opt) {
+                                                 const Optional<Any>& runtime_args_opt,
+                                                 const std::string& input_buffer_name = "",
+                                                 const std::string& output_buffer_name = "") {
+  Array<Any> existing_runtime_args =
+      runtime_args_opt ? Downcast<Array<Any>>(runtime_args_opt.value()) : Array<Any>();
+  if (segment_kind == "fused_dataflow") {
+    std::string resolved_input_buffer_name =
+        !input_buffer_name.empty() ? input_buffer_name : ResolveAccessorBufferNameBySlot(accessors, 0);
+    std::string resolved_output_buffer_name = !output_buffer_name.empty()
+                                                  ? output_buffer_name
+                                                  : ResolveAccessorBufferNameBySlot(
+                                                        accessors,
+                                                        resolved_input_buffer_name.empty() ? 0 : 2);
+    std::vector<bool> consumed(existing_runtime_args.size(), false);
+    Array<Any> runtime_args;
+    auto push_existing_or_synthesized = [&](const std::string& kind, const std::string& name,
+                                            const std::string& buffer_name = "") {
+      const int existing_index = FindRuntimeArgIndex(existing_runtime_args, kind, buffer_name);
+      if (existing_index >= 0) {
+        runtime_args.push_back(existing_runtime_args[existing_index]);
+        consumed[existing_index] = true;
+        return;
+      }
+      runtime_args.push_back(MakeRuntimeArg(name, kind, "uint32", buffer_name));
+    };
+
+    if (!resolved_input_buffer_name.empty()) {
+      push_existing_or_synthesized("input_buffer_addr32",
+                                   resolved_input_buffer_name + "_addr",
+                                   resolved_input_buffer_name);
+    }
+    if (!resolved_output_buffer_name.empty()) {
+      push_existing_or_synthesized("output_buffer_addr32",
+                                   resolved_output_buffer_name + "_addr",
+                                   resolved_output_buffer_name);
+    }
+    push_existing_or_synthesized("work_linear_id", "work_linear_id");
+    if (!resolved_input_buffer_name.empty()) {
+      push_existing_or_synthesized("a_tile_start_id", "a_tile_start_id");
+      push_existing_or_synthesized("a_tile_num_tiles", "a_tile_num_tiles");
+      push_existing_or_synthesized("a_tile_stride", "a_tile_stride");
+    }
+    if (!resolved_output_buffer_name.empty()) {
+      push_existing_or_synthesized("output_tile_start_id", "output_tile_start_id");
+      push_existing_or_synthesized("output_tile_num_tiles", "output_tile_num_tiles");
+      push_existing_or_synthesized("output_tile_stride", "output_tile_stride");
+    }
+    for (int i = 0, n = static_cast<int>(existing_runtime_args.size()); i < n; ++i) {
+      if (!consumed[i]) {
+        runtime_args.push_back(existing_runtime_args[i]);
+      }
+    }
+    return runtime_args;
+  }
+
   const bool is_reader = segment_kind == "reader";
   const bool is_writer = segment_kind == "writer";
   if (!is_reader && !is_writer) {
-    return runtime_args_opt ? Downcast<Array<Any>>(runtime_args_opt.value()) : Array<Any>();
+    return existing_runtime_args;
   }
 
-  Array<Any> existing_runtime_args =
-      runtime_args_opt ? Downcast<Array<Any>>(runtime_args_opt.value()) : Array<Any>();
   Array<Any> buffer_args;
   Array<Any> other_args;
   std::vector<std::string> bound_buffers;
@@ -771,10 +889,7 @@ static Map<String, Any> MakeLaunchSpec(const std::string& core_type,
   return spec;
 }
 
-static void BuildTTKernelAndABISeeds(const Array<Any>& segment_plan,
-                                     const Array<Any>& top_runtime_args,
-                                     const Array<Any>& top_common_runtime_args,
-                                     Array<TTKernel>* kernels_out,
+static void BuildTTKernelAndABISeeds(const Array<Any>& segment_plan, Array<TTKernel>* kernels_out,
                                      Array<TTABIPlan>* abi_plans_out) {
   Array<TTKernel> kernels;
   Array<TTABIPlan> abi_plans;
@@ -800,18 +915,6 @@ static void BuildTTKernelAndABISeeds(const Array<Any>& segment_plan,
         segment.Get("common_runtime_args")
             ? Downcast<Array<Any>>(segment.Get("common_runtime_args").value())
             : Array<Any>();
-    const bool uses_top_level_runtime_args = runtime_args.empty() && !top_runtime_args.empty();
-    const bool uses_top_level_common_runtime_args =
-        common_runtime_args.empty() && !top_common_runtime_args.empty();
-    if (runtime_args.empty()) {
-      runtime_args = top_runtime_args;
-    }
-    if (common_runtime_args.empty()) {
-      common_runtime_args = top_common_runtime_args;
-    }
-    segment.Set("tt_uses_top_level_runtime_args", Bool(uses_top_level_runtime_args));
-    segment.Set("tt_uses_top_level_common_runtime_args",
-                Bool(uses_top_level_common_runtime_args));
     Array<Any> compile_time_arg_specs =
         segment.Get("compile_time_arg_specs")
             ? Downcast<Array<Any>>(segment.Get("compile_time_arg_specs").value())
@@ -2187,8 +2290,6 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   buffer_live_form_cb_by_buffer_identity_.clear();
   stmt_order_index_by_node_.clear();
   segment_plan_.clear();
-  top_level_runtime_args_ = Array<Any>();
-  top_level_common_runtime_args_ = Array<Any>();
   tt_kernels_.clear();
   tt_abi_plans_.clear();
   tt_program_payload_ = Map<String, Any>();
@@ -2594,46 +2695,16 @@ void PlanTTKernelABI::StoreRuntimeArgs(PrimFunc& func) {
     return;
   }
 
-  Array<Any> runtime_args;
   Array<Any> per_work_arg_specs;
-  auto push_arg = [&](const std::string& name, const char* kind, const char* dtype,
-                      const std::string& buffer_name = "") {
-    Map<String, Any> arg_map;
-    arg_map.Set("name", String(name));
-    arg_map.Set("kind", String(kind));
-    arg_map.Set("dtype", String(dtype));
-    if (!buffer_name.empty()) {
-      arg_map.Set("buffer", String(buffer_name));
-    }
-    arg_map.Set("identity", String(MakeBlackholeRuntimeArgIdentity(kind, name, buffer_name)));
-    runtime_args.push_back(arg_map);
-  };
 
   const std::string input_buffer_name =
       copy_input_buffer_.defined() ? BufferIdentityName(copy_input_buffer_) : copy_input_buffer_name_;
   const std::string output_buffer_name = copy_output_buffer_.defined()
                                              ? BufferIdentityName(copy_output_buffer_)
                                              : copy_output_buffer_name_;
-  const std::string input_arg_name =
-      input_buffer_name.empty() ? "input_addr" : input_buffer_name + "_addr";
-  const std::string output_arg_name =
-      output_buffer_name.empty() ? "output_addr" : output_buffer_name + "_addr";
   const bool has_input_transport = !input_buffer_name.empty();
   const bool has_output_transport = !output_buffer_name.empty();
-
   if (has_input_transport) {
-    push_arg(input_arg_name, "input_buffer_addr32", "uint32", input_buffer_name);
-  }
-  if (has_output_transport) {
-    push_arg(output_arg_name, "output_buffer_addr32", "uint32", output_buffer_name);
-  }
-  if (has_input_transport || has_output_transport) {
-    push_arg("work_linear_id", "work_linear_id", "uint32");
-  }
-  if (has_input_transport) {
-    push_arg("a_tile_start_id", "a_tile_start_id", "uint32");
-    push_arg("a_tile_num_tiles", "a_tile_num_tiles", "uint32");
-    push_arg("a_tile_stride", "a_tile_stride", "uint32");
     per_work_arg_specs.push_back(MakePerWorkArgSpec(
         "a_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
         input_buffer_name));
@@ -2643,9 +2714,6 @@ void PlanTTKernelABI::StoreRuntimeArgs(PrimFunc& func) {
         "a_tile_stride", blackhole_runtime_arg_schema::kValueConstant, input_buffer_name, 1));
   }
   if (has_output_transport) {
-    push_arg("output_tile_start_id", "output_tile_start_id", "uint32");
-    push_arg("output_tile_num_tiles", "output_tile_num_tiles", "uint32");
-    push_arg("output_tile_stride", "output_tile_stride", "uint32");
     per_work_arg_specs.push_back(MakePerWorkArgSpec(
         "output_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
         output_buffer_name));
@@ -2657,8 +2725,6 @@ void PlanTTKernelABI::StoreRuntimeArgs(PrimFunc& func) {
         1));
   }
 
-  top_level_runtime_args_ = runtime_args;
-  top_level_common_runtime_args_ = Array<Any>();
   tt_program_payload_.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs),
                           per_work_arg_specs);
 }
@@ -2995,6 +3061,11 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
                                              const Optional<Any>& existing_specs_opt) {
     Array<Any> per_work_arg_specs =
         existing_specs_opt ? Downcast<Array<Any>>(existing_specs_opt.value()) : Array<Any>();
+    const std::string copy_input_buffer_name =
+        copy_input_buffer_.defined() ? BufferIdentityName(copy_input_buffer_) : copy_input_buffer_name_;
+    const std::string copy_output_buffer_name =
+        copy_output_buffer_.defined() ? BufferIdentityName(copy_output_buffer_)
+                                      : copy_output_buffer_name_;
 
     auto runtime_args_contain_kind = [&](const char* arg_kind) {
       return std::any_of(runtime_args.begin(), runtime_args.end(), [&](const Any& arg_item) {
@@ -3019,6 +3090,38 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
       }
     };
 
+    if (kind == "fused_dataflow") {
+      if (runtime_args_contain_kind("a_tile_start_id")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "a_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
+            copy_input_buffer_name));
+      }
+      if (runtime_args_contain_kind("a_tile_num_tiles")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "a_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant,
+            copy_input_buffer_name, 1));
+      }
+      if (runtime_args_contain_kind("a_tile_stride")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "a_tile_stride", blackhole_runtime_arg_schema::kValueConstant,
+            copy_input_buffer_name, 1));
+      }
+      if (runtime_args_contain_kind("output_tile_start_id")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "output_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
+            copy_output_buffer_name));
+      }
+      if (runtime_args_contain_kind("output_tile_num_tiles")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "output_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant,
+            copy_output_buffer_name, 1));
+      }
+      if (runtime_args_contain_kind("output_tile_stride")) {
+        push_if_needed(MakePerWorkArgSpec(
+            "output_tile_stride", blackhole_runtime_arg_schema::kValueConstant,
+            copy_output_buffer_name, 1));
+      }
+    }
     if (kind == "reader") {
       if (runtime_args_contain_kind("a_tile_start_id")) {
         push_if_needed(MakePerWorkArgSpec(
@@ -3179,7 +3282,11 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
       if (accessors.empty()) {
         accessors = EncodeAccessorDescriptors(kind);
       }
-      Array<Any> runtime_args = EnsureSegmentBufferRuntimeArgs(kind, accessors, segment.Get("runtime_args"));
+      Array<Any> runtime_args = EnsureSegmentBufferRuntimeArgs(
+          kind, accessors, segment.Get("runtime_args"),
+          copy_input_buffer_.defined() ? BufferIdentityName(copy_input_buffer_) : copy_input_buffer_name_,
+          copy_output_buffer_.defined() ? BufferIdentityName(copy_output_buffer_)
+                                        : copy_output_buffer_name_);
       Array<Any> per_work_arg_specs = make_segment_per_work_arg_specs(
           kind, runtime_args, segment.Get(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs)));
       compile_time_arg_specs = make_accessor_cta_specs(kind, accessors);
@@ -3212,44 +3319,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
     }
     segment_plan_ = rewritten_segments;
 
-    auto aggregate_runtime_args = [&](const char* field_name) {
-      Array<Any> aggregated;
-      std::unordered_set<std::string> seen_identities;
-      for (const auto& segment_item : rewritten_segments) {
-        auto segment = segment_item.as<Map<String, Any>>().value_or(Map<String, Any>());
-        if (segment.empty()) {
-          continue;
-        }
-        auto args_it = segment.Get(field_name);
-        if (!args_it) {
-          continue;
-        }
-        for (const auto& arg_item : Downcast<Array<Any>>(args_it.value())) {
-          auto arg = arg_item.as<Map<String, Any>>().value_or(Map<String, Any>());
-          if (arg.empty()) {
-            continue;
-          }
-          const std::string identity =
-              arg.Get("identity")
-                  ? static_cast<std::string>(Downcast<String>(arg.Get("identity").value()))
-                  : std::string();
-          if (!identity.empty() && !seen_identities.insert(identity).second) {
-            continue;
-          }
-          aggregated.push_back(arg);
-        }
-      }
-      return aggregated;
-    };
-
-    Array<Any> aggregated_runtime_args = aggregate_runtime_args("runtime_args");
-    if (!aggregated_runtime_args.empty()) {
-      top_level_runtime_args_ = aggregated_runtime_args;
-    }
-    Array<Any> aggregated_common_runtime_args = aggregate_runtime_args("common_runtime_args");
-    if (!aggregated_common_runtime_args.empty()) {
-      top_level_common_runtime_args_ = aggregated_common_runtime_args;
-    }
     auto aggregate_per_work_arg_specs = [&]() {
       Array<Any> aggregated;
       std::unordered_set<std::string> seen_identities;
@@ -3288,8 +3357,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
       tt_program_payload_.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs),
                               aggregated_per_work_arg_specs);
     }
-    BuildTTKernelAndABISeeds(segment_plan_, top_level_runtime_args_,
-                             top_level_common_runtime_args_, &tt_kernels_, &tt_abi_plans_);
+    BuildTTKernelAndABISeeds(segment_plan_, &tt_kernels_, &tt_abi_plans_);
   }
 }
 
@@ -3546,9 +3614,11 @@ bool PlanTTKernelABI::IsClearOperation(const CallNode* op) const {
 
 // Detect copy operation using buffer scopes
 bool PlanTTKernelABI::IsCopyOperation(const BufferStoreNode* op) const {
-  // Check if this is a BufferStore where value is a BufferLoad from another buffer
   if (const auto* load = op->value.as<BufferLoadNode>()) {
-    return !op->buffer.same_as(load->buffer);
+    if (op->buffer.same_as(load->buffer)) {
+      return false;
+    }
+    return GetCopyDirection(op) != CopyDirection::kUnknown;
   }
   return false;
 }
@@ -4705,10 +4775,8 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
 Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op) {
   CopyDirection direction = GetCopyDirection(op);
 
-  if (direction == CopyDirection::kUnknown) {
-    LOG(WARNING) << "PlanTTKernelABI: Unknown copy direction, falling back";
-    return StmtExprMutator::VisitStmt_(op);
-  }
+  ICHECK(direction != CopyDirection::kUnknown)
+      << "PlanTTKernelABI copy lowering requires an explicit copy-direction classification";
 
   const auto* load = op->value.as<BufferLoadNode>();
   if (!load) return StmtExprMutator::VisitStmt_(op);

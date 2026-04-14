@@ -122,6 +122,27 @@
 - **教训**: 一旦 typed target truth 建立，generic projection helper
   不能再偷偷 multiplex 两套真源
 
+#### host/device symbol 对齐不能把优化后的 device body 回退成 source body
+
+- **症状**: copy pipeline 在 codegen/build 阶段突然报
+  `Find undefined Variable tile_row`
+- **根因**:
+  - Python 侧 symbol-align helper
+    为了把 optimized device func 的 `global_symbol`
+    对齐回 source 名字，
+    直接返回了
+    `source_func.with_attr("global_symbol", target_symbol)`
+  - 结果把已经过 Blackhole lowering 的真实 device body
+    换回了较早阶段的 source body
+- **修法**:
+  - 继续使用 optimized device func，
+    只在它身上改 `global_symbol`
+  - `global_infos` 也同步保留 optimized device module 的版本
+- **教训**:
+  - symbol/name 对齐只能改 symbol；
+    不能顺手把 owner object 一起换回旧版本，
+    否则等于重新引入一条隐式旧链
+
 #### staged-copy 的 transpose truth 不能只留在 GEMM contract；host materialization 也必须显式消费
 
 - **症状**: `flash-attn` direct runtime 能执行但数值明显不对，
