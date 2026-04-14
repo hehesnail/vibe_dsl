@@ -9,10 +9,18 @@
 - **目标主线**:
   `Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion -> ExecutableSpec`
 
+命名约定：
+
+- `P0 / P1 / ...` 只保留给当前总任务优先级
+- 已完成的 `Task 3B` 旧链清理批次统一写作
+  `Task 3B cleanup C0-C4`，不再复用 `P*`
+
 ## 当前代码现实
 
-当前代码已经完成本轮 `P0` 旧 side-contract 清理，
-但还没有完全站到最终 planner 主链上。
+当前代码已经完成 `Task 3B cleanup C0-C4`
+这批旧 side-contract 清理，
+但总任务 `P0`
+还没有完全站到最终 planner 主链上。
 
 当前实际链路是：
 
@@ -75,7 +83,8 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
   中间 seed attr 的公开 surface 已删除
 - runtime / codegen 当前只读 `TTProgram / ExecutableSpec`
   的正式 reader 路线，不再保留公开 legacy entry
-- 本轮 `P0` 旧 side-contract 清理已完成：
+- `Task 3B cleanup C0-C4`
+  旧 side-contract 清理批次已完成：
   - `SpatialProgram` pass / companion / 相关测试入口
     已从 active path 删除
   - `buffer_distribution_contract`
@@ -90,23 +99,26 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
 
 ## 当前未完成
 
-1. 在当前 `TTProgram / ExecutableSpec` 真源下完成
+1. 完成总任务 `P0`：
+   把 target builtin mapping 真正前移到
+   anchored sub-TIR 仍保留
+   `tile-op / layout / load-store` truth 的边界，
+   由真实 `PlanTTTransport + PlanTTCompute`
+   取代 `BuildTTProgram` helper bridge
+2. 在当前 `TTProgram / ExecutableSpec` 真源下完成
    `flash-attn` admitted subset payoff / correctness 收口
-2. 在新 route 上承接
+3. 在新 route 上承接
    `topk / fusedmoe / paged decode / chunk recurrence`
-3. 扩更宽的 copy / data movement / sync 支持面
-4. 继续把 `BuildTTProgram` 内部 helper bridge
-   拆向真实的
-   `PlanTTTransport + PlanTTCompute`
-   owner pass
+4. 扩更宽的 copy / data movement / sync 支持面
 
 ## 当前优先级
 
-1. **P0 清理批次已完成**
-   - `SpatialProgram` / `buffer_distribution_contract`
-     已退出 active path
-   - segment-local per-work ABI truth
-     已在 `TTProgram / ExecutableSpec` 收口
+1. **P0: 真实 `PlanTTTransport + PlanTTCompute` cut-in**
+   - target builtin mapping 还没有完全前移到
+     anchored sub-TIR 边界
+   - active path 仍残留
+     `blackhole.*` analysis facts 和
+     `BuildTTProgram` helper bridge
 2. **P1: `flash-attn` payoff**
    - 在当前新 route 上兑现 multi-phase transport / reduction / broadcast
    - 继续把 compile-path 稳定性兑现成 correctness/admitted subset
@@ -114,9 +126,11 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
 4. **P3: wider support surface**
    - copy / dataflow / sync
-5. **架构债收口**
-   - 继续把 `BuildTTProgram` helper bridge
-     拆向真实 `PlanTTTransport + PlanTTCompute`
+
+最近完成的局部批次：
+
+- `Task 3B cleanup C0-C4`
+  已完成；对应的是旧链清理，不等于总任务 `P0` 完成
 
 ## 当前稳定基线
 
@@ -168,7 +182,6 @@ anchored sub-TIR 仍保留 tile-op / layout / load-store truth 的边界**。
 
 ## 下一步
 
-1. 推进 `flash-attn` correctness / admitted subset payoff
-2. 再进 wider family / support surface
-3. 继续把 `BuildTTProgram` helper bridge
-   拆向真实 `PlanTTTransport + PlanTTCompute`
+1. 先完成总任务 `P0`
+2. 再推进 `P1` 的 `flash-attn` correctness / admitted subset payoff
+3. 然后进入 wider family / support surface

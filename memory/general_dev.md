@@ -273,6 +273,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   如果 small bf16 correctness 已过、但大 shape `float16` 命中
   `UntestedFunctionality: tensix_execute_unpacr: fp16`，
   优先视为 simulator 能力边界，而不是先回退刚验证过的 target contract 修复
+- active 设计/进度文档里的编号要锁紧：
+  当前总任务优先级保留 `P0 / P1 / ...`，
+  局部 cleanup / migration 批次改用 `C0 / C1 / ...`
+  这类局部编号；
+  不要再把“某个 cleanup 子批次完成”
+  写成“总任务 `P0` 完成”
 - 清理旧 target 链时要从外往里收：
   先删 projection / side-channel，
   再删最终 Phase C 输出上的 seed bridge attr，

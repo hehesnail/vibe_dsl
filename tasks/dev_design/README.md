@@ -32,27 +32,29 @@
 
 ## 2.1 当前执行优先级
 
+命名约定：
+
+- `P0 / P1 / ...` 只指当前总任务优先级
+- 局部清理批次统一用 `C0 / C1 / ...`
+  这类局部编号，避免和总任务优先级混淆
+
 当前按下面顺序推进：
 
-1. `Task 3B` 的旧 side-contract 清理批次已完成
-   - `SpatialProgram` active path 已删除
-   - `buffer_distribution_contract`
-     已从 active protocol surface 删除
-   - segment-local per-work ABI truth
-     已收敛到 `TTProgram / ExecutableSpec`
+1. 总任务 `P0` 尚未完成：
+   - 真实 `PlanTTTransport + PlanTTCompute` cut-in
+   - target builtin mapping 前移到
+     anchored sub-TIR 真正持有 truth 的边界
 2. 当前 active 重点：
    - `flash-attn` payoff / runtime gate / correctness 收口
 3. 后续：
    - wider family / support surface
-4. 并行架构债：
-   - 把 `BuildTTProgram` helper bridge
-     继续拆向真实 `PlanTTTransport + PlanTTCompute`
 
 当前状态补充：
 
 - `Task 2A / 2B / 2C` 已完成
 - `Task 3A` 的 persistent/public 删除批次已完成
-- `Task 3B` 的旧 side-contract 清理批次已完成；
+- `Task 3B cleanup C0-C4`
+  旧 side-contract 清理批次已完成；
   `SpatialProgram` 和
   `buffer_distribution_contract`
   都已退出 active path
@@ -61,7 +63,7 @@
   还残留 `blackhole.*` analysis facts 与
   `BuildTTProgram` 内部 helper bridge
 - 当前入口已经从“旧 semantic / side-contract 清理”
-  转到“`flash-attn` payoff + helper bridge 继续内收”
+  转回“总任务 `P0` cut-in + `P1` `flash-attn` payoff”
 
 当前明确不作为优先项：
 

@@ -229,6 +229,9 @@ Normalized Tile TIR
 - `SpatialProgram` 已退出 active compile/runtime path
 - `buffer_distribution_contract`
   已从 active lowering/codegen/probe surface 删除
+- 最近完成的是 `Task 3B cleanup C0-C4`
+  这批旧链清理，
+  不是总任务 `P0` 的完成信号
 - 当前剩余架构债不再是旧 side-contract public surface，
   而是 `BuildTTProgram` 内部 helper bridge
   还没有完全拆成真实
@@ -266,6 +269,10 @@ BindTarget
 ## 8. 当前执行重点
 
 当前优先级固定为：
+
+- 这里的 `P0 / P1 / ...`
+  只表示总任务优先级；
+  局部 cleanup batch 不再复用这套编号
 
 1. **P0: 真实 `PlanTTTransport + PlanTTCompute` cut-in**
    - 删除 helper bridge
