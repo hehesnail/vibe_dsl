@@ -223,6 +223,16 @@ Normalized Tile TIR
       blackhole.compute_regions /
       blackhole.pipeline_stages`
      作为正式协议输入
+   - 先把当前混在
+     `blackhole.lowering_requirements`
+     里的
+     effect/use-role、
+     liveness、
+     materialization decision
+     拆开：
+     - 独立的 buffer effect / use-role analysis
+     - 独立的 buffer liveness analysis
+     - 独立消费前两者 facts 的 contract/planner 决策
    - 收紧 `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
      这组 helper residue，
      避免继续被文档误写成“已完成 owner pass”
@@ -253,20 +263,36 @@ Normalized Tile TIR
 
 ## 当前优先级
 
-1. **`T2.5 / R1-close`: 去掉 build/codegen 对 `blackhole.lowering_requirements` 的依赖**
+1. **`T3C.0a / R0-close`: 拆出独立的 buffer effect / use-role analysis**
+   - 只从 anchored sub-TIR
+     产出
+     `defs / uses / write-effect / use-role / recurrence edge`
+     facts
+   - 不直接写 merge/live-form contract
+2. **`T3C.0b / R0-close`: 拆出独立的 buffer liveness analysis**
+   - 只消费
+     `defs / uses + recurrence edge`
+   - 用标准 backward dataflow
+     计算 `live_in / live_out`
+3. **`T3C.0c / R0-close`: 把 materialization / source-live-form decision 移到独立 planner 阶段**
+   - 由 planner
+     消费
+     `effect/use-role + liveness`
+     facts
+   - 退役
+     `blackhole.lowering_requirements`
+     里当前混合式判定
+4. **`T2.5 / R1-close`: 去掉 build/codegen 对 `blackhole.lowering_requirements` 的依赖**
    - unsupported-compute / bridge-spec /
      materialization gate
      回收到 `TTProgram / ExecutableSpec`
-2. **`T3C.0 / R0-close`: 退役 `blackhole.*` analysis facts 的 active 协议角色**
-   - 保留 probe/debug 可以，
-     但不能继续作为 owner planning 主协议
-3. **`T3C.1 / R2-close`: 显式化 sync / ABI / execution owner**
+5. **`T3C.1 / R2-close`: 显式化 sync / ABI / execution owner**
    - `PlanTTSync -> PlanTTABI -> PlanTTExecution`
      要么落地成 pass，
      要么在文档和 gate 里明确仍属过渡实现
-4. **`R3`: `flash-attn` payoff**
-5. **`R4`: wider family cutover**
-6. **`R5`: wider support surface**
+6. **`R3`: `flash-attn` payoff**
+7. **`R4`: wider family cutover**
+8. **`R5`: wider support surface**
 
 最近完成的局部批次：
 
@@ -304,6 +330,17 @@ Normalized Tile TIR
     仍保留，
     但其 runtime 执行
     还不纳入当前 TT-Sim correctness gate
+  - 上面这批
+    `TIR execution order + recurrence/live consumer`
+    判定
+    当前仍属于过渡实现；
+    下一批
+    `T3C.0`
+    会把它拆成
+    独立的 effect/use-role analysis、
+    独立 liveness pass
+    和独立 planner decision，
+    不把这种混合逻辑固化成长期主链
 
 ## 当前稳定基线
 

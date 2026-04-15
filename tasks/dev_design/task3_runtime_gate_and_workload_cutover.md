@@ -433,31 +433,106 @@ Normalized Tile TIR
 - `Task 3B` 这类局部 batch
   统一用 `Tn.x`
 
-1. **`T3C.0 / R0-close`: 退役 `blackhole.*` analysis facts 的 active 协议角色**
+1. **`T3C.0a / R0-close`: 拆出独立的 buffer effect / use-role analysis**
+   - 新 analysis pass 只负责从 anchored sub-TIR
+     收集 execution-ordered buffer event facts：
+     `defs / uses / write-effect / use-role / recurrence edge`
+   - `write-effect`
+     与 `use-role`
+     由 TIR 结构、tile-op 语义、
+     `BufferLoad / BufferStore`
+     和已验证的 recurrence truth 推导，
+     不直接写 lowering contract
    - `AnalyzeBlackholeWorkDecomposition /
      AnalyzeBlackholeComputeRegions /
      AnalyzeBlackholePipelineStages`
      可以继续存在为 probe/debug，
-     但不能继续充当 owner planning 主协议
-2. **`T3C.1 / R1-close`: 去掉 build/codegen 对 `blackhole.lowering_requirements` 的依赖**
+     但不能继续承担这组 owner fact
+2. **`T3C.0b / R0-close`: 拆出独立的 buffer liveness analysis**
+   - 新 liveness pass
+     只消费
+     execution-ordered `defs / uses`
+     与 recurrence edge，
+     用标准 backward dataflow
+     计算 `live_in / live_out`
+   - liveness 不再夹带
+     `write-effect`、
+     `use-role`、
+     merge/live-form contract
+     这类别的层的概念
+3. **`T3C.0c / R0-close`: 让 materialization / source-live-form decision 成为独立 planner 决策**
+   - `buffer_materialization_contract /
+     source live-form bridge`
+     改为单独消费
+     `effect facts + liveness facts`
+     的 planner/builder 阶段
+   - 从
+     `blackhole.lowering_requirements`
+     移除混合式
+     “看前序写入 + 看后序 cast consumer + 当场决定 contract”
+     逻辑
+4. **`T3C.1 / R1-close`: 去掉 build/codegen 对 `blackhole.lowering_requirements` 的依赖**
    - 让 unsupported / bridge-spec /
      materialization gate
      回到 `TTProgram / ExecutableSpec`
      typed truth
-3. **`T3C.2 / R2-close`: 显式化 sync / ABI / execution owner**
+5. **`T3C.2 / R2-close`: 显式化 sync / ABI / execution owner**
    - `PlanTTSync / PlanTTABI / PlanTTExecution`
      要么落地成 pass，
      要么把当前 helper owner contract
      明确冻结下来，
      不再继续隐身在 `BuildTTProgram`
-4. **R3: `flash-attn` payoff**
+6. **R3: `flash-attn` payoff**
    - 再拿它验证 multi-op / multi-work /
      multi-phase data movement 的 admitted subset
-5. **R4: wider family cutover**
+7. **R4: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-6. **R5: wider support surface**
+8. **R5: wider support surface**
    - 在 admitted subset 内逐步放宽
      copy / dataflow / wider communication
+
+### 5.1.1 `T3C.0` 的算法边界
+
+`T3C.0`
+的目标不是继续在旧链上补几个 helper，
+而是把这组关系按经典 compiler analysis
+切回独立层次：
+
+1. **effect / use-role analysis**
+   - 只回答：
+     某次 write 是什么 effect，
+     某次 use 是什么 role
+   - 不回答 live-in/live-out，
+     不直接决定 merge/live-form contract
+2. **liveness analysis**
+   - 只回答：
+     某个 value / buffer slice
+     在某个 program point
+     是否 live-in / live-out
+   - 计算方式按经典 backward dataflow：
+     `LiveIn = Use ∪ (LiveOut - Def)`，
+     `LiveOut = union(successor.LiveIn)`
+3. **planner / contract decision**
+   - 只消费前两类 facts
+   - 负责决定
+     `intermediate_accumulator_merge`、
+     `republished_logical_tile`、
+     source live-form bridge
+
+实现纪律：
+
+- 不允许把
+  `write-effect / use-role / liveness / contract decision`
+  再混回同一个 pass
+- 不允许按 case
+  写
+  `if gemm && cast-consumer ... else if preclear ...`
+  这类组合分支去长逻辑
+- 不允许用 buffer/op 名字匹配恢复语义
+- 若现有 IR facts 还不够，
+  结论是补 schema / 更早 analysis
+  或显式 unsupported，
+  不是在 planner/runtime 尾部堆特判
 
 ## 5.2 `Task 3B` 已完成的旧链清理批次
 
