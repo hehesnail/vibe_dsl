@@ -3,42 +3,50 @@
 ## 基本信息
 
 - **文档 ID**: `final_blackhole_backend_redesign`
-- **日期**: `2026-04-15`
+- **日期**: `2026-04-16`
 - **状态**: 当前唯一权威总体设计文档
-- **定位**: 只保留长期架构、层间边界、真源规则和当前 rewrite 方向
+- **定位**: 只保留长期架构、层间边界、真源规则、validator 纪律和当前 rewrite 方向
 
 ## 1. 设计结论
 
-Blackhole 当前的核心问题不是“还差几个 builtin”或者“还差一个 contract”，
-而是 **target builtin mapping 边界放错了**。
+Blackhole 当前的根本问题不是“还差几个 builtin”或者“还差几个 contract”，
+而是 **中间的 virtual spatial/dataflow layer 没有真正立起来**。
 
-一旦 tile op、layout、真实 `load/store` 关系被打碎，
-后段就只能靠：
+当前代码名义上是：
 
-- matcher
-- side contract
-- bridge attr
-- payload bag
+```text
+Normalized Tile TIR
+  -> SpatialPlan
+  -> TTProgram
+  -> ExecutableSpec
+```
 
-去恢复“原来这是在做什么”。
+但现实里：
 
-这正是历史包袱反复长出来的根因。
+- `SpatialPlan` 过薄，只承接 closure / boundary 标签
+- target-independent 的 virtual spatial/dataflow truth 没有被对象化
+- 后段只能补出
+  legacy transition attrs / helper bridge / payload bag
+  这类影子协议
 
 因此长期路线固定为：
 
 ```text
 Normalized Tile TIR
-  -> SpatialPlan companion
-  -> TTProgram companion
+  -> SpatialPlan
+  -> TTProgram
   -> ExecutableSpec / BlackholeModule
 ```
 
-这里不是再造一层新的 semantic IR，
-而是把每层只收回它本来该拥有的 truth。
+但这里的 `SpatialPlan`
+不再表示“薄 companion + 后段自己猜”，
+而是表示
+**target-independent 的 virtual spatial/dataflow program**。
 
 ## 2. 第一性原理
 
-对 spatial target，一个算子最终只会落成三类事实：
+对 spatial/dataflow target，
+一个算子最终只会落成三类事实：
 
 1. **访存**
    - 从哪里读
@@ -47,15 +55,15 @@ Normalized Tile TIR
    - 是否跨 core / multicast / gather / remote write
 2. **计算**
    - 在 tile 上执行什么 compute builtin
+   - operand/result 与 tile-reg / pack / reduction 的关系
 3. **通信**
    - 哪些 core 之间交换数据
    - 走哪条 NoC / multicast / remote path
    - 谁等谁、何时可见
-   - 哪些 barrier / semaphore / global semaphore / completion relation 生效
-   - 哪些 topology / packet / launch-order truth 需要冻结
+   - 哪些 barrier / semaphore / completion / topology truth 需要冻结
 
-所以我们的编译链也必须按这三类事实组织，
-而不是按历史补丁名词组织。
+编译链必须围绕这三类事实组织，
+而不是围绕历史补丁名词组织。
 
 ## 3. 层间边界
 
@@ -71,44 +79,59 @@ Normalized Tile TIR
 - `BufferLoad / BufferStore`
 - address expr
 - region/subscript
+- loop-carried / dataflow structure
 - tile-op 参数
 
 只要信息还能由 TIR 稳定表达，
 就不允许复制到 companion。
 
-### 3.2 `SpatialPlan companion`
+### 3.2 `SpatialPlan`
 
-只回答空间切分问题：
+`SpatialPlan` 的新语义是：
+**virtual spatial/dataflow program**。
 
-- 哪些 anchored sub-TIR 构成一个局部执行闭包
-- 闭包之间的稳定 boundary 是什么
-- 哪些 frontier 可以切
-- 哪些 hint 经过 validate 后可进入 planner
+它负责回答：
 
-长期只保留：
+- 哪些 anchored sub-TIR 构成稳定执行单元
+- 单元之间有哪些显式数据流 / carry / reduction / broadcast 关系
+- virtual layout / sharding / distribution truth 是什么
+- virtual phase / ordering / materialization boundary 是什么
+- 哪些 hint 经 validate 后进入 planner
 
-- `ExecutionClosure`
-- `ClosureBoundary`
+长期 primary owner object set：
+
+- `ExecutionUnit`
+- `DataflowEdge`
+- `LayoutSpec`
+- `PhasePlan`
 - `ValidatedHintSet`
 
-它不负责：
+兼容视图：
 
-- access pattern
-- index map
-- target builtin family
+- legacy closure/boundary compatibility view
+
+只能作为调试或过渡 projection，
+不再是长期 primary owner truth。
+
+`SpatialPlan` 不负责：
+
+- TT builtin family
 - CB / semaphore / runtime arg
+- target block placement
+- executable leaf materialization
 
-### 3.3 `TTProgram companion`
+### 3.3 `TTProgram`
 
-只回答 target realization：
+`TTProgram` 是唯一 target realization truth。
 
-- block
-- kernel
-- buffer / CB / runtime-arg-carried accessor truth
-- transport
-- communication / completion
-- ABI
-- execution
+它负责回答：
+
+- block / core placement
+- kernel family / role
+- transport / routing / delivery
+- sync / completion / ordering
+- ABI / runtime args / accessor binding
+- execution / launch order / waves
 
 长期 primary owner object set：
 
@@ -119,26 +142,40 @@ Normalized Tile TIR
 - `TTABIPlan`
 - `TTExecutionPlan`
 
+当前代码里的：
+
+- `TTKernel`
+- `TTCoreGroup`
+- `TTCBPlan`
+- `TTSemaphorePlan`
+- `TTComputeSyncPlan`
+- `TTDstLayoutPlan`
+
+都只允许作为兼容载体或 realization detail 继续存在，
+不能替代上面这组长期 owner 边界。
+
 ### 3.4 `ExecutableSpec / runtime / codegen`
 
 只负责：
 
-- 冻结 `TTProgram` 结果
-- 物化并执行
+- 冻结 `TTProgram`
+- 投影 `ExecutableSpec`
+- build / codegen / runtime / `BlackholeModule` 执行
 
 不再承担：
 
 - target planning
 - semantic recovery
 - builtin guessing
+- fake protocol 补洞
 
 ## 4. TT builtin mapping 边界
 
 这次重写最关键的约束只有一条：
 
-> **TT builtin mapping 必须发生在 anchored sub-TIR 仍然保留 tile-op、layout、真实 load/store truth 的边界。**
+> **TT builtin mapping 必须发生在 anchored sub-TIR 仍保留 tile-op、layout、真实 load/store truth 的边界。**
 
-具体拆成两类 planning：
+具体分成三类 planning：
 
 ### 4.1 `PlanTTTransport`
 
@@ -147,17 +184,17 @@ Normalized Tile TIR
 - `BufferLoad / BufferStore`
 - address expr
 - region
-- `ClosureBoundary`
+- `DataflowEdge`
+- `LayoutSpec`
 - `TTBlockPlan`
 
 输出：
 
-- `TensorAccessor / Buffer / CB / NoC / multicast`
-  这组 memory-access / transport protocol
+- `TensorAccessor / Buffer / CB / NoC / multicast / remote endpoint`
+  这组 transport truth
 - reader / writer kernel 需要消费的
-  地址、页粒度、runtime-arg-carried accessor truth
-- peer core / remote endpoint / routing 这组
-  communication transport truth
+  address / page / runtime-arg-carried accessor truth
+- communication 里的 route / topology / delivery truth
 
 ### 4.2 `PlanTTCompute`
 
@@ -166,6 +203,7 @@ Normalized Tile TIR
 - tile op
 - layout
 - operand/result region
+- `ExecutionUnit`
 
 输出：
 
@@ -175,287 +213,123 @@ Normalized Tile TIR
   - `reduce`
   - `sfpu`
   - `copy / pack / untilize`
-- operand/result CB binding
-- tile register / pack-unpack / accumulation /
-  reduction 这组 compute protocol
+- operand/result binding
+- tile register / pack-unpack / accumulation / reduction protocol
 
 ### 4.3 `PlanTTSync`
 
-只负责 communication 里的 completion slice：
+只负责 communication 的 completion slice：
 
 - ordering
 - completion
 - barrier / semaphore / global-semaphore relation
 
-它不再兼职恢复 compute 或 transport 语义，
-也不单独承担全部 communication truth。
-
 补充：
 
-- `NoC / multicast / remote write / peer core / topology`
-  这组 communication routing truth
+- `route / multicast / remote write / topology`
   属于 `PlanTTTransport + PlanTTExecution`
 - `PlanTTSync`
-  只收口 communication 的
-  ordering / visibility / completion 语义
-- 第一性原理目标是否完成，
-  还要同时看 mapping 边界、
-  TT-Metal 三类语义面的 owner、
-  真源位置和后段 gate
+  不再兼职恢复 compute 或 transport 语义
 
-## 5. 真源规则
+## 5. Validator 纪律
 
-1. 语义 body 只存在于 `Normalized Tile TIR`
-2. `SpatialPlan companion` 只保存 planning 必须持久化、但 TIR 没对象化的 truth
-3. target truth 只存在于 `TTProgram companion`
-4. `ExecutableSpec` 只物化，不是第二真源
-5. 缺信息时只能：
-   - 扩 `TIR/DSL/schema`
-   - 补更早层 analysis
-   - `explicit unsupported`
-6. 不允许回退到 late matcher / late recovery
+layered IR 的价值只在于每层都显式承诺：
 
-### 5.1 第一性原理目标的完成判定
+- 它拥有哪类 truth
+- 它不拥有哪类 truth
+- 它与下一层是什么 refinement 关系
 
-当前 rewrite 的第一性原理目标，
-不是“跑通一个 workload”
-或者“把某个 pass 名字切过去”，
-而是下面 4 条必须同时成立：
+因此 validator 是主链对象，不是补丁。
+
+长期 validator set：
+
+- `ValidateSpatialPlan`
+  - 检查 execution-unit coverage
+  - 检查 dataflow edge endpoint completeness
+  - 检查 phase ordering / layout consistency
+  - 检查没有 TT noun 泄漏到 `SpatialPlan`
+- `ValidateTTProgram`
+  - 检查 target owner object completeness / consistency
+  - 检查 transport / sync / ABI / execution 闭合
+  - 禁止 payload bag 回升为主协议
+- `ValidateExecutableSpecProjection`
+  - 检查 leaf projection 只来源于 `TTProgram`
+  - 禁止 runtime/codegen 自己再补 planning truth
+
+fail-closed 纪律固定为：
+
+- 缺 evidence 就 reject / unsupported
+- 不再用名字匹配、位置假设、临时分支去补语义
+
+## 6. Fake Protocol 去留规则
+
+审计表中列出的
+legacy transition attrs / helper bridge / payload bag
+都不是长期 owner truth。
+
+它们的处理纪律固定为：
+
+1. 不扩
+2. 不升格
+3. 不再写成长期协议
+4. 只能被新 owner object 替换
+
+具体 disposition 见：
+`tasks/dev_design/blackhole_first_principles_protocol_audit.md`
+
+## 7. 当前 rewrite 方向
+
+当前 rewrite 不再围绕“补 fake attr”推进，
+而是围绕下面 4 个 closure set 推进：
+
+1. **中间层重建**
+   - 把 `SpatialPlan`
+     从薄 closure companion
+     重写成 virtual spatial/dataflow program
+2. **target owner 收口**
+   - 把 `TTProgram`
+     收正成唯一 physical realization truth
+3. **leaf reader 收口**
+   - 让 build / codegen / runtime
+     只读 `TTProgram / ExecutableSpec`
+4. **legacy protocol 退场**
+   - 删除 fake protocol 和 late matcher owner residue
+
+当前代码优先级仍固定为：
+
+1. `R0.1`
+   - buffer effect / use-role analysis
+2. `R0.2`
+   - buffer liveness analysis
+3. `R0.3`
+   - materialization / source-live-form planner decision
+4. `R1.1`
+   - 去掉 build/codegen/executable extraction
+     对 legacy gate attrs 的依赖
+5. `R2.1`
+   - 显式化 `PlanTTSync / PlanTTABI / PlanTTExecution`
+
+## 8. 完成判定
+
+第一性原理目标完成，
+必须同时满足下面 4 条：
 
 1. **mapping 边界正确**
    - TT builtin mapping
-     发生在 anchored sub-TIR
-     仍保留
+     发生在 anchored sub-TIR 仍保留
      `tile-op / layout / load-store truth`
      的边界
-2. **TT-Metal 三类语义面都有 owner**
-   - compute semantics
-     由 `PlanTTCompute`
-     负责 builtin family、operand/result binding、
-     tile-reg / pack / reduce protocol
-   - memory-access semantics
-     由 `PlanTTTransport + PlanTTABI`
-     负责 buffer / accessor / CB / runtime-arg truth
-   - communication semantics
-     由 `PlanTTTransport + PlanTTSync + PlanTTExecution`
-     负责 routing / topology / multicast / completion truth
+2. **三类语义面各有 owner**
+   - compute: `PlanTTCompute`
+   - memory-access: `PlanTTTransport + PlanTTABI`
+   - communication: `PlanTTTransport + PlanTTSync + PlanTTExecution`
 3. **真源位置收紧**
-   - 语义 body 只在 `Normalized Tile TIR`
-   - `SpatialPlan companion`
-     只保留 planning 必须持久化的 truth
-   - target truth 只在 `TTProgram companion`
-   - `ExecutableSpec`
-     只负责物化，不是第二真源
+   - 算法/访存 truth 只在 `Normalized Tile TIR`
+   - virtual spatial/dataflow truth 只在 `SpatialPlan`
+   - physical target truth 只在 `TTProgram`
+   - `ExecutableSpec` 只做 leaf materialization
 4. **后段不再补语义**
-   - runtime / codegen
-     不再做 planning recovery
-   - late matcher / side contract / payload bag
+   - runtime / codegen / build
+     不再做 late recovery
+   - fake protocol / payload bag / matcher
      不再承担 owner 职责
-
-补充约束：
-
-- 不能把第三类语义压缩成
-  “只剩 sync”
-  或“只剩 semaphore”
-  这会把
-  `NoC / peer-core / multicast / topology / packetization`
-  重新挤回后段恢复逻辑
-- `direct / indirect / paged / sharded`
-  都不是独立 semantic layer，
-  而是地址表达式与 transport realization 的问题
-- `row / col / face`
-  只允许作为 leaf builtin variant 出现，
-  不能回流成主设计 noun
-
-## 6. 明确删除方向
-
-下面这些都不再是长期设计对象：
-
-- `SemanticProgram`
-- `SpatialProgram` 作为独立 execution-bearing IR
-- `row_*`
-- `broadcast_sources`
-- `index map`
-- `access pattern`
-- `buffer_distribution_contract`
-- 其它只为 late matcher 服务的 side contract
-
-下面这些当前可能仍出现在代码里，
-但只按**迁移残留**处理：
-
-- `blackhole.work_decomposition`
-- `blackhole.compute_regions`
-- `blackhole.pipeline_stages`
-- `BuildTTProgram` 内部
-  `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
-
-它们不能继续扩张，也不能再被文档写成长期架构。
-
-`2026-04-15` 当前状态补充：
-
-- `SpatialProgram` 已退出 active compile/runtime path
-- `buffer_distribution_contract`
-  已从 active lowering/codegen/probe surface 删除
-- 最近完成的是 `Task 3B cleanup`
-  （`T3B.0-T3B.4`）
-  这批旧链清理，
-  不是当前 roadmap `R0` 的完成信号
-- 当前 active path 已显式经过
-  `PlanTTBlocks -> PlanTTCompute -> PlanTTTransport -> BuildTTProgram`
-- 但 `LowerToBlackholePhaseB`
-  仍显式产出
-  `blackhole.work_decomposition /
-   blackhole.compute_regions /
-   blackhole.pipeline_stages`
-  这组过渡 facts
-- `PlanTTCompute / PlanTTTransport / PlanTTBlocks`
-  目前仍分别 front
-  `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
-  这组 helper residue
-- `MaterializeBlackholeExecutable`
-  的 writer boundary
-  已收口：
-  当前显式写出
-  `tl.blackhole_executable`
-  companion attr，
-  build / executable extraction
-  显式要求该 writer projection
-- 当前剩余架构债仍包括
-  `R0-R2` 的 closure，
-  不是只剩 `R3` 之后的 payoff
-
-## 7. Canonical Pass Chain
-
-长期主链固定为：
-
-```text
-BindTarget
-  -> AddWrapperForSingleBufStore
-  -> LegalizeNegativeIndex
-  -> VerifyParallelLoop
-  -> InjectAssumes
-  -> Simplify
-  -> AnalyzeSpatialStructureFacts
-  -> BuildSpatialPlanCompanion
-  -> PlanTTBlocks
-  -> PlanTTCompute
-  -> PlanTTTransport
-  -> PlanTTSync
-  -> PlanTTABI
-  -> PlanTTExecution
-  -> BuildTTProgram
-  -> ValidateTTProgram
-  -> MaterializeBlackholeExecutable
-```
-
-其中真正的 cutover 重点是：
-
-- `PlanTTTransport`
-- `PlanTTCompute`
-- admitted-scope communication truth
-  通过 `PlanTTTransport + PlanTTSync + PlanTTExecution`
-  明确落位
-
-但第一性原理目标的完成判定
-不止这两项；
-还要求：
-
-- admitted scope 内的 communication semantics
-  进入稳定 owner/runtime semantics
-- runtime / codegen
-  严格退回到
-  `TTProgram / ExecutableSpec`
-  reader 角色
-- late matcher / side contract / helper bridge
-  不再承担主协议职责
-
-## 8. 当前执行重点
-
-当前优先级固定为：
-
-- 阶段组仍按
-  `R0-R5`
-  表示：
-  - `R0-R2`
-    表示第一性原理 closure set
-  - `R3-R5`
-    表示 payoff / wider family / wider support surface
-- **当前活动执行顺序**
-  统一按
-  `Rn.m`
-  阅读：
-  `R0.1 -> R0.2 -> R0.3 -> R1.1 -> R2.1 -> R3.1 -> R4.1 -> R5.1`
-- `Tn.x`
-  只保留给历史 batch、
-  cleanup 记录和旧文档引用，
-  不再作为当前主顺序
-
-1. **`R0.1 -> R0.2 -> R0.3`**
-   - 先把
-     effect/use-role analysis、
-     liveness analysis、
-     planner decision
-     拆成独立层
-2. **`R1.1`**
-   - 再去掉
-     build/codegen
-     对
-     `blackhole.lowering_requirements`
-     的依赖
-3. **`R2.1`**
-   - 再显式化
-     sync / ABI / execution owner
-4. **`R3.1`**
-   - `flash-attn` payoff
-5. **`R4.1`**
-   - wider family cutover：
-     `topk / fusedmoe / paged decode / chunk recurrence`
-6. **`R5.1`**
-   - wider support surface：
-     copy / data movement / wider communication
-
-`2026-04-15` 当前状态补充：
-
-- `R0-R2`
-  仍是当前需要收口的 closure set；
-  代码现实还没有同时满足
-  第一性原理目标本身
-- admitted communication subset
-  当前明确收敛为
-  non-oversubscribed explicit
-  semaphore / remote-endpoint communication
-- oversubscribed explicit communication contract、
-  multicast / wider collective / fabric route
-  仍保持 fail-fast / unsupported
-
-其中：
-
-- `R0-R2`
-  用来完成第一性原理目标本身
-- `R3-R5`
-  用来验证这套分层不是纸面方案，
-  并把 admitted support surface 继续扩出去
-
-## 9. 硬约束
-
-- `BlackholeModule` direct host path
-  仍是唯一正式执行路径
-- `ExecutableSpec`
-  仍是 runtime 消费的最终物化产物
-- copy / GEMM / export 当前支持面不能回退
-- 不引入第二条正式执行路径
-- runtime / codegen 不再承担 planning recovery
-- 当前收口范围只针对 `Blackhole` active compile/runtime path
-
-## 10. Supporting Docs
-
-- 根因诊断：
-  `tasks/dev_design/task0_ir_layering_root_cause.md`
-- `SpatialPlan` 边界：
-  `tasks/dev_design/task1_spatial_plan_companion.md`
-- `TTProgram` 边界：
-  `tasks/dev_design/task2_ttprogram_companion_cutover.md`
-- runtime gate / workload cutover：
-  `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
-- 当前状态：
-  `tasks/progress.md`

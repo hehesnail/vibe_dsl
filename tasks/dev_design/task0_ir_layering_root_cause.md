@@ -2,199 +2,142 @@
 
 ## 基本信息
 
-- **文档角色**: 当前 Blackhole 后端根因诊断文档
-- **当前状态**: `2026-04-14` 活动设计文档
-- **任务链位置**: `Task 0`；解释为什么必须从旧链切到新的
-  `TIR -> SpatialPlan -> TTProgram -> ExecutableSpec` 主链
-- **定位**: 不是第二份总体设计；只回答
-  “旧方案为什么会反复长出历史包袱，以及新的路线为什么必须这么切”
+- **文档角色**: 当前 Blackhole layered IR 根因诊断文档
+- **当前状态**: `2026-04-16` 活动设计文档
+- **任务链位置**: `Task 0`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
 
 ## 1. 根因结论
 
-当前 Blackhole 后端的根因不是“少几个 matcher”或者“少一层 contract”，
+当前 Blackhole 后端的问题不是“后段 matcher 不够聪明”，
 而是下面三件事同时发生：
 
 1. **target builtin 选择放得太晚**
-   - tile op、layout、真实 `load/store` 关系已经被打散
-   - 后段只能从 lowered loop、bridge attr、局部 pattern
-     去恢复“原来这是什么算子、怎么搬数据、怎么同步”
-2. **把 target planning 建模成了 side contract**
-   - `row_*`
-   - `broadcast_sources`
-   - `index map / access pattern`
-   - `buffer_distribution_contract`
-   - 以及各种 bridge attr / payload bag
-   这些都不是本质对象，只是晚期恢复失败后长出来的补丁
-3. **把过渡产物当成了长期架构**
-   - `blackhole.work_decomposition`
-   - `blackhole.compute_regions`
-   - `blackhole.pipeline_stages`
-   - `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
-   这些可以作为迁移时期的过渡残留，
-   但不能再被文档写成长期 owner 链的一部分
+   - tile op、layout、真实 `load/store`
+     已经被打碎
+2. **`SpatialPlan` 没有真正立起来**
+   - 当前 `SpatialPlan`
+     只承接 closure / boundary 标签
+   - virtual spatial/dataflow truth 没有对象化
+3. **后段被迫长出影子 IR**
+   - 一串 legacy transition attrs / helper bridge / payload bag
 
 一句话：
 
-> **旧路线的问题不是“后段 matcher 不够聪明”，而是 target mapping 本来就不该在那里发生。**
+> **当前真正缺的不是更多后段 contract，而是 `Normalized Tile TIR` 和 `TTProgram` 之间的 virtual spatial/dataflow layer。**
 
-## 2. 第一性原理
+## 2. 研究结论怎么落到仓库里
 
-对 tile-based spatial hardware，算子最终只会落成三类东西：
+这次重设计不是拍脑袋换名词，
+而是直接受下面几组论文约束：
 
-1. **访存**
-   - 从哪里读
-   - 读到哪个 tile / 哪个 L1 / 哪个 CB
-   - 怎么写回
-   - 是否跨 core / multicast / gather / remote write
-2. **计算**
-   - 在 tile 上执行什么 compute builtin
-   - 需要什么输入 tile / 输出 tile / tile register 语义
-3. **通信**
-   - 数据在哪些 core 间流动
-   - 走哪条 NoC / multicast / remote path
-   - 谁等谁、何时可见
-   - 何时需要 barrier / semaphore / global semaphore /
-     completion / topology truth
+### 2.1 `Dato / Revet / SPADA`
 
-因此，对 Blackhole 的长期分层，必须正对这三类事实：
+共同结论：
 
-- `TIR`
-  持有算子语义本身
+- task / stream / layout / routing / async ordering
+  不是 emitter 尾部细节
+- virtual dataflow program
+  必须先显式化
+- backend 不应反向恢复前段语义
+
+对仓库的直接含义：
+
 - `SpatialPlan`
-  只决定局部闭包、切分和边界
+  必须承接 virtual spatial/dataflow truth
+- 审计表列出的 fake/legacy protocol
+  都不是长期协议
+
+### 2.2 `TL / T2S`
+
+共同结论：
+
+- “算什么”
+  和
+  “怎么 spatially organize / map / realize”
+  必须拆开
+- tile-level truth
+  不能等打平后再恢复
+
+对仓库的直接含义：
+
+- `Normalized Tile TIR`
+  持有算法与访存真相
+- `SpatialPlan`
+  持有 virtual mapping / layout / phase / dataflow truth
 - `TTProgram`
-  把访存 / 计算 / 通信 具体化成 target plan
-- `ExecutableSpec`
-  只冻结并执行
+  承接 TT-specific physical realization
 
-## 3. 从 TileLang GPU 路线得到的直接启发
+### 2.3 `MLIR / ScaleHLS / K-CIRCT / Alive2 / Abstract Interpretation / CGC`
 
-TileLang GPU 路线的成熟点不在“API 长得像 GPU”，
-而在于它把 builtin 选择放在了正确边界：
+共同结论：
 
-- tile op 还活着
-- layout 还活着
-- operand/result region 还活着
-- 真实 `load/store` 关系还活着
+- 多层 IR 的意义在于
+  不同层解决不同合法性和优化问题
+- 每层都必须有显式 contract
+- validator 是主链对象
+- 缺证据时必须 fail-closed
 
-也就是说，GPU 并不是先把一切打平，
-再靠后段把 `gemm/copy/reduce` 猜回来；
-而是直接在 tile-op lowering 边界完成 target-aware 选择。
+对仓库的直接含义：
 
-Blackhole 需要吸收的不是 GPU 的 noun，
-而是 GPU 的 **mapping boundary**。
+- `ValidateSpatialPlan`
+  必须独立存在
+- `ValidateTTProgram`
+  不能继续只看 payload bag
+- build/codegen/runtime
+  不能再补 planning truth
 
-## 4. 从 TT-Metal 得到的直接约束
+## 3. 当前代码现实为什么一定会膨胀
 
-TT-Metal 本地 repo 里的 API、example 和 program factory
-指向的是同一套语义面：
-
-- **Host truth**
-  - `tt_metal/api/tt-metalium/host_api.hpp`
-  - `Program / Kernel / CircularBuffer / Buffer / Semaphore /
-    RuntimeArgs / Core placement`
-    是稳定 host object，
-    不是 late payload bag
-- **Compute**
-  - `tt_metal/programming_examples/hello_world_compute_kernel/`
-  - `ttnn/.../compute/bmm_large_block_zm_fused_bias_activation.cpp`
-  - 说明 compute 是 builtin family +
-    operand/result CB binding +
-    tile-reg / pack-unpack / reduction protocol
-- **Memory access / data movement**
-  - `tt_metal/programming_examples/hello_world_datamovement_kernel/`
-  - `tt_metal/programming_examples/matmul/matmul_multicore_reuse_mcast/`
-  - 说明访存不是抽象 pattern，
-    而是 `TensorAccessorArgs / Buffer / CB / NoC / runtime args`
-    这组协议组合
-- **Communication**
-  - `tt_metal/programming_examples/NoC_tile_transfer/noc_tile_transfer.cpp`
-  - `tt_metal/programming_examples/contributed/multicast/multicast.cpp`
-  - `ttnn/.../ccl/broadcast/device/broadcast_program_factory.cpp`
-  - `ttnn/.../experimental/ccl/all_reduce_async/device/all_reduce_async_program_factory.cpp`
-  - 说明 communication 不是只剩 `sync`；
-    它还包括 logical/physical core coord、
-    peer routing、multicast sender/receiver、
-    topology / num_links / packet sizing / fabric channel
-
-所以对我们来说：
-
-- `reduce` 就是 `reduce`
-- `broadcast` / `multicast` / `all-reduce`
-  不是“后段自己猜出来的 sync”，
-  而是 communication truth 的不同 realization
-- `direct / indirect / paged / sharded`
-  也不是独立 semantic class，
-  而是地址表达式和 transport protocol 的不同 realization
-
-这意味着：
-
-> **不能再把 data movement 另抽成 `access pattern / index map` 一层，**
-> **也不能把 compute 另抽成 `row_*` 一层，**
-> **更不能把 communication 压缩成“只剩 semaphore / sync”。**
-
-## 5. 旧路线为什么一定会膨胀
-
-一旦 builtin 选择放到太晚的边界，后段就只能做四种事：
+一旦中间 virtual layer 不存在，
+系统就只能做四种事：
 
 1. 看 loop 形状
 2. 看 buffer 读写
 3. 看零散 attr
 4. 看局部 matcher
 
-于是系统自然会长出这些东西：
+于是自然长出这些东西：
 
-- `row reduction / row broadcast`
-- `grouped_rows / row_state`
-- `broadcast_sources`
-- `buffer_distribution_contracts`
-- `compute_regions / lowering_requirements`
-- `PlanTTKernelABI` 里的恢复逻辑
+- 审计表列出的
+  legacy transition attrs / helper wrapper / payload bag
 
-这些对象的问题不只是名字不好，
-而是它们都在试图用后段拼出来的局部事实，
-替代原本应该在前面就冻结好的 target mapping。
+这些对象的共同问题不是“名字不好”，
+而是它们都在
+**替代本该在中间层显式冻结的 truth**。
 
-所以旧路线不是“还不够通用”，而是**方向本身就错了**。
+## 4. 正确的 owner 边界
 
-## 6. 正确的 owner 边界
+### 4.1 `Normalized Tile TIR`
 
-长期主链应该只保留下面这些 owner：
-
-### 6.1 `TIR`
-
-只要信息还能由 TIR 本身稳定表达，就不允许复制到 companion：
+owner：
 
 - tile op
-- loop/domain
-- predicate
 - `BufferLoad / BufferStore`
 - address expr
-- region / subscript
-- tile-op 参数
+- region / predicate / loop/domain
+- loop-carried / dataflow structure
 
-### 6.2 `SpatialPlan`
+### 4.2 `SpatialPlan`
 
-`SpatialPlan` 只回答：
+owner：
 
-- 哪些 anchored sub-TIR 构成一个局部执行闭包
-- 闭包之间的稳定 boundary 是什么
-- 哪些 frontier 可以切
-- 哪些 hint 经过 validate 可以进入 planner
+- `ExecutionUnit`
+- `DataflowEdge`
+- `LayoutSpec`
+- `PhasePlan`
+- `ValidatedHintSet`
 
-它不负责：
+不再只是：
 
-- access pattern
-- index map
-- TT builtin family
-- CB / semaphore / runtime arg
+- legacy closure/boundary compatibility view
 
-### 6.3 `TTProgram`
+这两个旧对象可以保留为兼容视图，
+但不再代表长期主语义。
 
-`TTProgram` 才是 target realization owner。
+### 4.3 `TTProgram`
 
-它至少需要承接：
+owner：
 
 - `TTBlockPlan`
 - `TTKernelPlan`
@@ -203,127 +146,42 @@ TT-Metal 本地 repo 里的 API、example 和 program factory
 - `TTABIPlan`
 - `TTExecutionPlan`
 
-这里最关键的是两类 planning：
+### 4.4 `ExecutableSpec`
 
-- `PlanTTTransport`
-  - 从 `BufferLoad / BufferStore + ClosureBoundary + TTBlockPlan`
-    选择 `TensorAccessor + CB + NoC + semaphore/mcast`
-- `PlanTTCompute`
-  - 从 tile op、layout、operand/result region
-    选择 compute builtin family
+只做 leaf projection，
+不再是第二真源。
 
-communication 语义也必须显式拆 owner：
+## 5. 对当前代码的整改方向
 
-- `PlanTTTransport`
-  - 负责 peer path / multicast / remote endpoint
-    这组 routing truth
-- `PlanTTSync`
-  - 负责 ordering / completion /
-    barrier / semaphore relation
-- `PlanTTExecution`
-  - 负责 core placement / launch order /
-    wave scheduling 这组 execution truth
+整改方向固定为：
 
-不能再把第三类语义整体塞进一个
-“sync pass 会解决”的模糊口径。
+1. **重写 `SpatialPlan`**
+   - 从薄 closure companion
+     改成 virtual spatial/dataflow program
+2. **让 `TTProgram` 收回 target owner**
+   - 后段停止依赖 fake protocol
+3. **让 leaf readers 只读 typed truth**
+   - build / codegen / runtime
+     停止读 legacy gate attrs
+4. **把 legacy attr 当债，不当资产**
+   - 只允许 shrink / delete
+   - 不允许再升格
 
-## 7. 新路线下什么必须删除
+## 6. 当前判断
 
-下面这些都不再是长期设计对象：
+当前代码现实不是：
 
-- `SemanticProgram`
-- `SpatialProgram` 作为独立 execution-bearing IR
-- `row_*`
-- `broadcast_sources`
-- `index map`
-- `access pattern`
-- `buffer_distribution_contract`
-- 任何只为 late matcher 服务的 side contract
+- `SpatialPlan` 已经站稳
+- 只是 `TTProgram` 还不够厚
 
-下面这些只允许作为**迁移期残留**存在：
-
-- `blackhole.work_decomposition`
-- `blackhole.compute_regions`
-- `blackhole.pipeline_stages`
-- `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
-
-它们的退出方向已经固定：
-
-- 不扩
-- 不升格
-- 不再写成长期 owner
-- 只允许被真正的 `PlanTTTransport / PlanTTCompute / PlanTTSync / ...`
-  替换掉
-
-## 8. 对当前代码状态的重新判断
-
-当前代码并不是已经站在最终架构上，
-而是处于一个**过渡实现仍然太重**的状态：
-
-- 外层旧 semantic / projection / seed bridge
-  已经删掉不少
-- 但 active path 仍然保留
-  一批旧路线遗留下来的 analysis facts 和 helper bridge
-- 这些残留还没有被真正的
-  `PlanTTTransport + PlanTTCompute`
-  所替代
-
-所以接下来的工作，不是“在现有 helper 上继续补 case”，
 而是：
 
-1. 把 target builtin mapping 边界前移
-2. 把 compute / memory-access / communication 的 owner 拆实
-3. 把 side contract 和 late matcher 逐批删除
+- `SpatialPlan` 过薄
+- `TTProgram` 又被迫承担恢复和 bridge 职责
+- leaf readers 还在消费 fake protocol
 
-补充：
+所以这轮 rewrite 的正确起点不是
+“继续补后段 case”，
+而是：
 
-- 当前 rewrite 的完成判定
-  不能只看 transport / compute cut-in
-- 还要同时看：
-  1. communication truth
-     是否稳定落到
-     `PlanTTTransport + PlanTTSync + PlanTTExecution +
-     runtime semantics`
-  2. 真源位置
-     是否回到
-     `TIR / SpatialPlan / TTProgram / ExecutableSpec`
-     各自边界
-  3. runtime / codegen
-     是否已经退回 reader，
-     不再补 planning truth
-
-## 9. Rewrite Direction
-
-当前 rewrite 路线固定为：
-
-```text
-Normalized Tile TIR
-  -> AnalyzeSpatialStructureFacts
-  -> BuildSpatialPlanCompanion
-  -> PlanTTBlocks
-  -> PlanTTTransport
-  -> PlanTTCompute
-  -> PlanTTSync
-  -> PlanTTABI
-  -> PlanTTExecution
-  -> BuildTTProgram
-  -> ValidateTTProgram
-  -> MaterializeBlackholeExecutable
-```
-
-执行纪律：
-
-1. 缺信息就补 `TIR/DSL/schema`
-2. 缺 analysis 就补更早层的 analysis
-3. 不能稳定决定的 variant 就 `unsupported`
-4. 不再引入新的 side contract
-5. 不再把过渡层写成长期架构
-
-## 10. 结论
-
-这轮重写的核心不是“换名字”，而是：
-
-> **把 target builtin 选择放回它本来该发生的位置，并让 TTProgram 只承接真正的硬件 realization。**
-
-只要这条边界不立住，后面无论再删多少旧名词，
-系统还是会重新长出下一批旧名词。
+> **先把中间层立起来，再把 target 层和 leaf 层收回各自边界。**
