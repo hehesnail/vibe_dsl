@@ -12,27 +12,36 @@
 - **总阶段**: Stage 4
 - **长期目标链路**:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
+- **当前阶段命名约定**:
+  - `Task 0: Root Cause and Rewrite Direction`
+  - `Task 1: SpatialPlan Owner Cutover`
+  - `Task 2: TTProgram Owner Cutover`
+  - `Task 3: ExecutableSpec / Leaf Reader Cutover`
+  - `Legacy Protocol Deletion`
 - **任务顺序**:
-  只按活动设计文档里的 owner cutover 顺序推进：
-  1. `task1_spatial_plan_companion.md`
-  2. `task2_ttprogram_companion_cutover.md`
-  3. `task3_runtime_gate_and_workload_cutover.md`
-  4. `blackhole_first_principles_protocol_audit.md`
-     中列出的 legacy protocol deletion
+  只按活动设计文档里的 canonical stage label 顺序推进：
+  1. `Task 1: SpatialPlan Owner Cutover`
+     (`task1_spatial_plan_companion.md`)
+  2. `Task 2: TTProgram Owner Cutover`
+     (`task2_ttprogram_companion_cutover.md`)
+  3. `Task 3: ExecutableSpec / Leaf Reader Cutover`
+     (`task3_runtime_gate_and_workload_cutover.md`)
+  4. `Legacy Protocol Deletion`
+     (`blackhole_first_principles_protocol_audit.md` disposition table)
 
 `buffer effect / use-role`、`liveness`、
 `materialization / source-live-form`
 这些都只是
-`SpatialPlan owner cutover`
+`Task 1: SpatialPlan Owner Cutover`
 里的子问题，
 不再单独充当顶层路线。
 
 ## 2. 当前任务状态（以 repo HEAD 为准）
 
-- `Task 0`
+- `Task 0: Root Cause and Rewrite Direction`
   - 已完成它作为根因诊断与设计约束入口的职责
   - 不再单独形成实现路线
-- `Task 1: SpatialPlan owner cutover`
+- `Task 1: SpatialPlan Owner Cutover`
   - **状态**: 进行中
   - **当前主任务**
     - 把 `SpatialPlan`
@@ -45,22 +54,22 @@
     - 吸收
       `work_decomposition / compute_regions / pipeline_stages`
       这组过渡 surface
-- `Task 2: TTProgram owner cutover`
+- `Task 2: TTProgram Owner Cutover`
   - **状态**: 未开始
   - **前置条件**
-    - `Task 1`
+    - `Task 1: SpatialPlan Owner Cutover`
       必须先把 validated `SpatialPlan`
       站稳
-- `Task 3: ExecutableSpec / leaf reader cutover`
+- `Task 3: ExecutableSpec / Leaf Reader Cutover`
   - **状态**: 未开始
   - **前置条件**
-    - `Task 2`
+    - `Task 2: TTProgram Owner Cutover`
       必须先把 `TTProgram`
       收成唯一 physical realization truth
-- `legacy protocol deletion`
+- `Legacy Protocol Deletion`
   - **状态**: 未开始
   - **前置条件**
-    - 前三项 owner cutover
+    - 前三项 Owner Cutover
       都已经站稳
 
 ## 3. 当前代码现实（以 repo HEAD 为准）
@@ -131,14 +140,18 @@ Normalized Tile TIR
 - 缺 truth 时 explicit unsupported / fail-fast
 
 如果新主链建立后，
-这些验证面和 owner cutover 冲突，
+这些验证面和当前 Owner Cutover 阶段冲突，
 应该改的是验证面，
 不是回头把旧实现抬成长期协议。
 
 ## 5. 当前安排的下一批任务
 
-下一批任务固定只做 `Task 1`，
-不提前切到 `Task 2/3`：
+下一批任务固定只做
+`Task 1: SpatialPlan Owner Cutover`，
+不提前切到
+`Task 2: TTProgram Owner Cutover`
+或
+`Task 3: ExecutableSpec / Leaf Reader Cutover`：
 
 1. 重写 `SpatialPlan` code schema
    - `ExecutionClosure / ClosureBoundary`
@@ -154,7 +167,7 @@ Normalized Tile TIR
      拆回
      `SpatialPlan` owner object /
      owner-side fact family
-4. 完成 `Task 1`
+4. 完成 `Task 1: SpatialPlan Owner Cutover`
    之后，
    再开始安排
-   `Task 2: TTProgram owner cutover`
+   `Task 2: TTProgram Owner Cutover`

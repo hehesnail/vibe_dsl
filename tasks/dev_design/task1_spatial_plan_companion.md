@@ -2,7 +2,7 @@
 
 ## 基本信息
 
-- **文档角色**: `Task 1` 的 `SpatialPlan owner cutover` 设计文档
+- **文档角色**: `Task 1: SpatialPlan Owner Cutover` 设计文档
 - **当前状态**: `2026-04-16` 活动设计文档
 - **任务链位置**: `Normalized Tile TIR -> SpatialPlan -> TTProgram`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`

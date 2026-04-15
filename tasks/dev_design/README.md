@@ -51,19 +51,19 @@ Normalized Tile TIR
 |------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计；定义长期层边界、validator 纪律、rewrite 方向 |
 | `task0_ir_layering_root_cause.md` | 根因诊断与研究结论；解释为什么必须把中间 spatial/dataflow owner layer 立起来 |
-| `task1_spatial_plan_companion.md` | `SpatialPlan owner cutover`；定义 virtual spatial/dataflow program 的 object set、validator 和当前执行切片 |
-| `task2_ttprogram_companion_cutover.md` | `TTProgram owner cutover`；定义 physical realization owner objects、planner pass 与完成判定 |
-| `task3_runtime_gate_and_workload_cutover.md` | `ExecutableSpec / leaf reader cutover`；定义 reader 纪律、workload 恢复顺序与完成判定 |
+| `task1_spatial_plan_companion.md` | `Task 1: SpatialPlan Owner Cutover`；定义 virtual spatial/dataflow program 的 object set、validator 和当前执行切片 |
+| `task2_ttprogram_companion_cutover.md` | `Task 2: TTProgram Owner Cutover`；定义 physical realization owner objects、planner pass 与完成判定 |
+| `task3_runtime_gate_and_workload_cutover.md` | `Task 3: ExecutableSpec / Leaf Reader Cutover`；定义 reader 纪律、workload 恢复顺序与完成判定 |
 | `blackhole_first_principles_protocol_audit.md` | disposition table；列出现存 fake/legacy protocol 的去留与迁移落点 |
 
 ## 4. 当前执行优先级
 
-当前只按层 owner cutover 排序：
+当前只按 canonical stage label 排序：
 
-1. `SpatialPlan owner cutover`
-2. `TTProgram owner cutover`
-3. `ExecutableSpec / leaf reader cutover`
-4. `legacy protocol deletion`
+1. `Task 1: SpatialPlan Owner Cutover`
+2. `Task 2: TTProgram Owner Cutover`
+3. `Task 3: ExecutableSpec / Leaf Reader Cutover`
+4. `Legacy Protocol Deletion`
 
 其中：
 
@@ -72,7 +72,7 @@ Normalized Tile TIR
 - `materialization / source-live-form`
 
 都只是
-`SpatialPlan owner cutover`
+`Task 1: SpatialPlan Owner Cutover`
 里的子问题，
 不再单独充当顶层路线。
 

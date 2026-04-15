@@ -316,21 +316,21 @@ legacy transition attrs / helper bridge / payload bag
 3. **leaf reader 收口**
    - 让 build / codegen / runtime
      只读 `TTProgram / ExecutableSpec`
-4. **legacy protocol 退场**
+4. **`Legacy Protocol Deletion`**
    - 删除 fake protocol 和 late matcher owner residue
 
 当前实现顺序固定为：
 
-1. **先做 `SpatialPlan owner cutover`**
+1. **先做 `Task 1: SpatialPlan Owner Cutover`**
    - 把 virtual spatial/dataflow truth
      真的对象化
-2. **再做 `TTProgram owner cutover`**
+2. **再做 `Task 2: TTProgram Owner Cutover`**
    - 把 target realization truth
      从 helper residue 里收回来
-3. **再做 `ExecutableSpec / leaf reader cutover`**
+3. **再做 `Task 3: ExecutableSpec / Leaf Reader Cutover`**
    - 让 leaf 只读
      `TTProgram / ExecutableSpec`
-4. **最后删 legacy protocol**
+4. **最后做 `Legacy Protocol Deletion`**
    - 只在新 owner truth
      稳定后退场
 
@@ -341,7 +341,7 @@ legacy transition attrs / helper bridge / payload bag
 - `materialization / source-live-form`
 
 都只是
-`SpatialPlan owner cutover`
+`Task 1: SpatialPlan Owner Cutover`
 里的 preparatory substeps，
 不再单独充当顶层 roadmap
 
@@ -350,11 +350,11 @@ legacy transition attrs / helper bridge / payload bag
 1. `task0_ir_layering_root_cause.md`
    - 固定根因和 owner 边界判断
 2. `task1_spatial_plan_companion.md`
-   - 固定 `SpatialPlan owner cutover`
+   - 固定 `Task 1: SpatialPlan Owner Cutover`
 3. `task2_ttprogram_companion_cutover.md`
-   - 固定 `TTProgram owner cutover`
+   - 固定 `Task 2: TTProgram Owner Cutover`
 4. `task3_runtime_gate_and_workload_cutover.md`
-   - 固定 `ExecutableSpec / leaf reader cutover`
+   - 固定 `Task 3: ExecutableSpec / Leaf Reader Cutover`
 
 ## 9. 完成判定
 

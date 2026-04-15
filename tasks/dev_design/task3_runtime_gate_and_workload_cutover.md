@@ -2,9 +2,13 @@
 
 ## 基本信息
 
-- **文档角色**: `Task 3` 的 `ExecutableSpec / leaf reader cutover` 文档
+- **文档角色**: `Task 3: ExecutableSpec / Leaf Reader Cutover` 文档
 - **当前状态**: `2026-04-16` 活动设计文档
-- **任务链位置**: `Task 1/2` owner cutover 之后的 leaf 收口与 support surface 承接
+- **任务链位置**:
+  `Task 1: SpatialPlan Owner Cutover`
+  和
+  `Task 2: TTProgram Owner Cutover`
+  之后的 leaf 收口与 support surface 承接
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
 
 ## 1. 目标
@@ -36,15 +40,15 @@
 ## 3. 前置条件
 
 `Task 3`
-只依赖前两层 owner cutover，
+只依赖前两层 Owner Cutover，
 不单独维护额外 roadmap 编号。
 
 它的前置条件固定为：
 
-1. `SpatialPlan owner cutover`
+1. `Task 1: SpatialPlan Owner Cutover`
    已经把 virtual truth
    对象化并可验证
-2. `TTProgram owner cutover`
+2. `Task 2: TTProgram Owner Cutover`
    已经把 target owner
    显式收回
 3. leaf readers
@@ -57,7 +61,7 @@
 - `liveness`
 - `materialization / source-live-form`
 
-这些工作属于前两层 owner cutover，
+这些工作属于前两层 Owner Cutover，
 不是 `Task 3`
 自己的顶层路线
 
@@ -133,7 +137,9 @@ support surface 扩张只能经由：
 ## 8. Workload 承接顺序
 
 workload payoff
-只能在 leaf reader cutover 之后按下面顺序恢复：
+只能在
+`Task 3: ExecutableSpec / Leaf Reader Cutover`
+之后按下面顺序恢复：
 
 1. `flash-attn`
    compile/runtime payoff
@@ -142,4 +148,4 @@ workload payoff
 
 在这之前，
 不允许把 workload payoff
-重新写成 owner cutover 的 blocker。
+重新写成 Owner Cutover 的 blocker。
