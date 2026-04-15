@@ -34,7 +34,9 @@
 - **当前结论**:
   - 现阶段应把 small bf16 runtime case 当作 correctness gate
   - 不要把 TT-Sim `float16` 能力边界直接误判成 TileLang target contract 回归
-  - 更宽 `MHA / GQA` / 大 shape runtime payoff 仍归属 `Phase C2`
+  - 更宽 `MHA / GQA` / 大 shape runtime payoff
+    当前不属于 `R0-R2` closure；
+    归到后续 `R3.1+` payoff / support-surface backlog
   - 该问题的 simulator-side 旁证和更宽 fatal taxonomy 扫描，
     统一见 `memory/tt_simulator_constraints.md`
 
@@ -340,8 +342,10 @@
   - 在 `TTProgram -> ExecutableSpec` materialization 阶段
     把 `per_work_arg_specs` canonicalize 成 kernel-local truth，
     并让 codegen/runtime 都按 `value_kind` 消费
-  - 在 `AnalyzeSemanticStructure -> SpatialProgram.buffer_materialization_contract ->
-    compute_epilogue_ops` 这条主链上，
+  - 在当前主链的
+    `buffer effect/use-role analysis -> buffer liveness analysis ->
+    planner decision -> compute_epilogue_ops`
+    这条链上，
     显式 materialize generic `buffer_materialization_contract`
     （`intermediate_accumulator_merge / intermediate_buffer /
     accumulator_delta / accumulator_add`），
@@ -395,7 +399,7 @@
     至少显式带出
     `live_form_kind / execution_topology_kind / physical_local_extent`
   - 这层 truth 的 owner 应该是
-    `StatefulSemanticIR / SpatialProgram`
+    `Normalized Tile TIR + 更早层 semantic/spatial analysis`
   - `TTProgram / PlanTTKernelABI / codegen`
     只消费这份 typed truth 做 target materialization；
     `CB` overlap / reserve / push / pop 之类物理资源分析仍留在 target 侧
@@ -469,13 +473,14 @@
 
 ### 2.4 analysis / lowering / gate
 
-#### semantic-owned truth 缺失时，要回补 `Phase A`，不要让 `Phase B` 借旧 attrs 自救
+#### semantic-owned truth 缺失时，要回补更早层 semantic analysis，不要让 spatial/target 层借旧 attrs 自救
 
-- **症状**: `row_reduction.kind` 缺失后，`SemanticProgram` 丢 reduce update，
-  `SpatialProgram` 退化成单 phase
+- **症状**: `row_reduction.kind` 缺失后，早层 reduce update truth 丢失，
+  后续 spatial closure 会退化成单 phase
 - **根因**: formal device 主链缺 semantic-owned fact
 - **修法**: 在 manifest / fragment analysis / semantic lift 把 truth 补齐
-- **教训**: 缺的是 semantic truth，就回 `Phase A` 收；不要让 `Phase B` 临时绕回 raw attrs
+- **教训**: 缺的是 semantic truth，就回更早层 semantic analysis 收；
+  不要让 spatial / target 层临时绕回 raw attrs
 
 #### `local/accumulator -> shared(CB)` bridge 应尽快变成正式 copy direction
 

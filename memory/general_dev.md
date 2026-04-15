@@ -45,7 +45,12 @@
 - module-scope truth 放 `IRModule.global_infos`，不要回退到单个 `PrimFunc.attrs`
 - unsafe TIR mutation 必须整体 invalidate companion truth，不要只删单个 attr
 - cross-pass schema 一律 handle-first；字符串只保留 display / debug / compatibility 角色
-- semantic truth 属于 `Phase A`，spatial truth 属于 `Phase B`，TT target truth 属于 `Phase C`
+- semantic truth 属于
+  `Normalized Tile TIR / 更早层 semantic analysis`，
+  spatial closure truth 属于
+  `SpatialPlan companion`，
+  TT target truth 属于
+  `TTProgram companion`
 - 下游 consumer 优先读最近的 typed IR，不要回头把 legacy attrs 当 primary truth
 - 如果 analysis 需要某类 operator-specific 事实，
   让 operator/semantic owner 暴露 typed metadata；
@@ -238,8 +243,8 @@
 
 - 如果 pass 只把规划结果写到 attrs 而不回写 IR body，就会制造两套真源；
   优先让 pass 同时完成 IR 回写
-- `Phase B` 内部若出现一个 lowering 同时做 domain synthesis、task formation、
-  phase ordering 和 final materialization，应优先拆成
+- 如果当前 layered 主链里一个 lowering 同时做 domain synthesis、task formation、
+  ordering 和 final materialization，应优先拆成
   `Analyze... -> Analyze... -> Materialize...` 的 pass 链，让 analysis facts
   先以 typed plan 落地，再由 materialize pass 组装最终 companion IR
 - 当 canonical pass 命名切换完成后，
@@ -334,7 +339,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
     不再补 planning truth
 - 清理旧 target 链时要从外往里收：
   先删 projection / side-channel，
-  再删最终 Phase C 输出上的 seed bridge attr，
+  再删最终 `TTProgram / ExecutableSpec` 输出上的 seed bridge attr，
   再删 active path 上的 `blackhole.*` compatibility attr synthesis，
   最后再把 canonical bundle 上的显式 legacy pass 链内收到单一入口；
   canonical `LowerToBlackholeTTProgram` 产物应只保留 `tl.tt_program`，

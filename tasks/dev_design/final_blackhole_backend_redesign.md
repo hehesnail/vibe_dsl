@@ -373,19 +373,46 @@ BindTarget
 
 当前优先级固定为：
 
-- 这里的 `R0 / R1 / ...`
-  只表示当前 roadmap 总优先级
-- task 内部或 cleanup batch
-  统一用 `Tn.x`
+- 阶段组仍按
+  `R0-R5`
+  表示：
+  - `R0-R2`
+    表示第一性原理 closure set
+  - `R3-R5`
+    表示 payoff / wider family / wider support surface
+- **当前活动执行顺序**
+  统一按
+  `Rn.m`
+  阅读：
+  `R0.1 -> R0.2 -> R0.3 -> R1.1 -> R2.1 -> R3.1 -> R4.1 -> R5.1`
+- `Tn.x`
+  只保留给历史 batch、
+  cleanup 记录和旧文档引用，
+  不再作为当前主顺序
 
-1. **`R0-close / R1-close / R2-close`**
-   - 先让第一性原理目标
-     在代码和文档里同时成立
-2. **R3: `flash-attn` payoff**
-3. **R4: wider family cutover**
-   - `topk / fusedmoe / paged decode / chunk recurrence`
-4. **R5: wider support surface**
-   - copy / data movement / wider communication
+1. **`R0.1 -> R0.2 -> R0.3`**
+   - 先把
+     effect/use-role analysis、
+     liveness analysis、
+     planner decision
+     拆成独立层
+2. **`R1.1`**
+   - 再去掉
+     build/codegen
+     对
+     `blackhole.lowering_requirements`
+     的依赖
+3. **`R2.1`**
+   - 再显式化
+     sync / ABI / execution owner
+4. **`R3.1`**
+   - `flash-attn` payoff
+5. **`R4.1`**
+   - wider family cutover：
+     `topk / fusedmoe / paged decode / chunk recurrence`
+6. **`R5.1`**
+   - wider support surface：
+     copy / data movement / wider communication
 
 `2026-04-15` 当前状态补充：
 

@@ -196,23 +196,25 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path
    - copy / GEMM current support surface
    - 第一批复杂 consumer 已打通的 compile-path 子集
-2. 文档、任务安排和实现边界统一以 `tasks/dev_design/final_blackhole_backend_redesign.md` 为准
-3. 当前 Stage 4 直接按分阶段文档执行，不再保留单一总 implementation plan 入口：
+2. 文档、任务安排和实现边界统一以当前入口文档为准：
+   - `tasks/dev_design/final_blackhole_backend_redesign.md`
    - `tasks/progress.md`
    - `tasks/dev_design/README.md`
-   - `tasks/dev_design/spatial_dataflow_program_model.md`
-   - `tasks/dev_design/stage4_phase_b_spatial_ir.md`
-   - `tasks/dev_design/stage4_phase_c_tt_target_ir.md`
-4. 当前执行重点：
-   - `Phase A` 已完成
-   - `Phase B` 已完成；`SpatialProgram` 已成为 execution-bearing spatial 主链
-   - `Phase C` 进行中；`TTProgram / MaterializeTTExecutableSpec` cutover 已完成，
-     当前工作集中在 `Phase C2` 和更宽支持面兑现
-5. 在新分层下继续推进：
-   - `Phase C2` 承接 `flash-attn` `blackhole.acc` correctness payoff
-   - `topk / fusedmoe / paged decode / chunk recurrence` 等 family 在新主链下统一承接
-   - 更宽 copy/dataflow 支持面
-   - 更宽 synchronization 支持面
+   - `tasks/dev_design/task0_ir_layering_root_cause.md`
+   - `tasks/dev_design/task1_spatial_plan_companion.md`
+   - `tasks/dev_design/task2_ttprogram_companion_cutover.md`
+   - `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
+3. 当前活动任务顺序统一按 `Rn.m` 阅读：
+   - `R0.1`：buffer effect / use-role analysis
+   - `R0.2`：buffer liveness analysis
+   - `R0.3`：materialization / source-live-form planner decision
+   - `R1.1`：去掉 build/codegen 对 `blackhole.lowering_requirements` 的依赖
+   - `R2.1`：显式化 sync / ABI / execution owner
+4. 阶段组层面仍按下面顺序推进：
+   - `R0-R2`：第一性原理 closure set
+   - `R3.1`：`flash-attn` payoff
+   - `R4.1`：wider family cutover
+   - `R5.1`：wider support surface
 
 ---
 
@@ -255,16 +257,23 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - `build_blackhole/` 和 legacy runner 都已删除
 - `tasks/dev_design/` 根目录只保留当前入口文档与完成阶段边界文档；
   `tasks/dev_design/archive/` 下内容全部视为历史记录，不再作为当前入口
-- `Phase A` 与 semantic manifest 已完成；`AnalyzeSemanticStructure` 已全面改成 manifest-first
-- 当前 Blackhole 设备侧主链：
-  `LowerDeviceStorageAccessInfo -> AugmentSemanticManifest -> LowerIntrin -> Simplify -> HoistBroadcastValues -> SplitBlackholeKernel -> AnalyzeBlackholeWorkDecomposition -> AnalyzeBlackholeFragmentRegions -> AnalyzeBlackholePipelineStages -> AnalyzeSemanticStructure -> LiftStatefulSemanticIR -> ValidateStatefulSemanticIR -> ValidateSemanticRefinement -> LowerToSpatialProgram -> ValidateSpatialProgram -> LowerBlackholeOps -> PlanBlackholeCB -> AssignBlackholeCores`
+- semantic manifest 路径已完成；`AnalyzeSemanticStructure` 已全面改成 manifest-first
+- 当前实际 active chain 是：
+  `Normalized Tile TIR -> SpatialPlan companion -> SplitBlackholeKernel -> blackhole.work_decomposition / blackhole.compute_regions / blackhole.pipeline_stages -> PlanTTBlocks -> PlanTTCompute(PlanTTKernelABI wrapper) -> PlanTTTransport(PlanTTCBAlloc wrapper) -> BuildTTProgram -> TTProgram companion -> ValidateTTProgram -> MaterializeBlackholeExecutable -> executable extraction / codegen / BlackholeModule`
+- 当前已知迁移残留包括：
+  - `blackhole.work_decomposition / blackhole.compute_regions / blackhole.pipeline_stages`
+  - `blackhole.lowering_requirements`
+  - `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
+  - 尚未完全显式化的 `PlanTTSync / PlanTTABI / PlanTTExecution`
 - `SplitBlackholeKernel` 已实现并已接入管线；纯 copy 走 `fused_dataflow` 单 kernel，GEMM 走 3-kernel（reader/compute/writer）
-- direct runtime 当前正式支持面：
+- direct runtime 当前 admitted 支持面：
   - copy：equal source/dest range，且 stride = 1
-  - GEMM：A/B-separated reader range + writer output range
+  - GEMM：A/B-separated reader range + writer output range；fresh fragment / preclear zero-init 统一走 `clear_accum=true` direct path
   - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
-- `flash-attn` forward subset 当前已打通 compile-path；其 `blackhole.acc` correctness payoff 当前归属 `Phase C2`
-- 当前总体架构 blocker 已不再是 target-truth cutover，
-  而是 `Phase C` 剩余支持面尚未兑现
-- 后续所有架构推进以 layered IR 为准：
-  `Stateful Semantic IR -> Spatial Program IR -> TT Target IR`
+  - communication：non-oversubscribed explicit semaphore / remote-endpoint subset
+- `flash-attn` compile-path / source/spec baseline 已稳定，但 direct runtime correctness 还不是 admitted support surface
+- direct cast consumer 当前只保留 build/source contract gate，不作为 TT-Sim direct-runtime correctness gate
+- TT-Sim `fp16` 仍按 simulator capability boundary 处理，不作为当前 correctness gate
+- 当前总体 blocker 是 `R0-R2` 还没有同时收口，不是单一 cutover 点
+- 后续所有架构推进以当前 layered IR 为准：
+  `Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion -> ExecutableSpec`

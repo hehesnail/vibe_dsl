@@ -329,7 +329,7 @@ Normalized Tile TIR
   不再物化/读取
   `tl.tt_kernel_seeds / tl.tt_abi_plans / tl.tt_cb_plans /
   tl.tt_core_groups / tl.tt_program_payload`
-  这组中间 attrs，最终 Phase C 输出只保留 `tl.tt_program`
+  这组中间 attrs，最终 target 输出只保留 `tl.tt_program`
   作为 target truth
 - 补充：
   canonical `LowerToBlackholeTTProgram`

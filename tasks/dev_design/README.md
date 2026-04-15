@@ -49,35 +49,37 @@
 
 当前按下面顺序推进：
 
-1. 当前 `R0`
-   已完成 active-path cut-in，
-   但还没有完成 owner closure：
-   - active path 已显式经过
-     `PlanTTBlocks -> PlanTTCompute -> PlanTTTransport -> BuildTTProgram`
-   - 但 `LowerToBlackholePhaseB`
-     仍跑
-     `AnalyzeBlackholeWorkDecomposition /
-      AnalyzeBlackholeComputeRegions /
-      AnalyzeBlackholePipelineStages`
-   - `PlanTTCompute / PlanTTTransport / PlanTTBlocks`
-     下面仍有
-     `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
-     helper residue
-2. 当前 active 重点：
+1. **`R0.1 -> R0.2 -> R0.3`**
    - 先完成
-     `R0-close / R1-close / R2-close`
-   - 再进入 `R3`
-     `flash-attn` payoff
-3. 后续：
-   - `R4/R5`
-     wider family / support surface
+     buffer effect / use-role analysis
+   - 再完成
+     buffer liveness analysis
+   - 再把
+     materialization / source-live-form decision
+     提成独立 planner 阶段
+2. **`R1.1`**
+   - 去掉
+     build/codegen/executable extraction
+     对
+     `blackhole.lowering_requirements`
+     的依赖
+3. **`R2.1`**
+   - 显式化
+     `PlanTTSync / PlanTTABI / PlanTTExecution`
+     的 owner 边界
+4. **`R3.1`**
+   - `flash-attn` payoff
+5. **`R4.1`**
+   - wider family cutover
+6. **`R5.1`**
+   - wider support surface
 
 补充口径：
 
 - 第一性原理目标本身
   不是单一 roadmap 条目，
   而是一组 invariant
-- 当前用 `R0-R2`
+- 阶段组层面仍用 `R0-R2`
   去收口这组 invariant：
   mapping 边界、
   TT-Metal 的 compute / memory-access / communication 语义面 owner、
