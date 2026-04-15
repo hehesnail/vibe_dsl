@@ -398,6 +398,18 @@ AnalyzeSpatialStructureFacts
      materialization gate
      收回 `TTProgram / ExecutableSpec`
      typed truth
+   - 当前执行前置是
+     `Task 3`
+     的
+     `T3C.0a-T3C.0c`：
+     先把混在
+     `blackhole.lowering_requirements`
+     里的
+     effect/use-role、
+     liveness、
+     materialization decision
+     拆成独立 analysis/planner，
+     再收掉这条过渡 attr 依赖
 2. **`T2.6`: 收紧 `blackhole.*` 过渡 attr 的公开地位**
    - probe/debug 可保留，
      但不能继续被文档和 regression
