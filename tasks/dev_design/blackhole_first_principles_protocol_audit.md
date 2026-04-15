@@ -4,6 +4,10 @@
 >
 > 它只做一件事：
 > **基于第一性原理，对现存 surface 做 owner / non-owner / validator / cutover disposition。**
+>
+> 下表里出现的现存 surface 名，全部按当前仓库里的历史字面名列出，
+> 目的只有一个：做删除与切换清单。
+> 它们不是当前允许继续扩展的协议名。
 
 ## 1. 判定标准
 

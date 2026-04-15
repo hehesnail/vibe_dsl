@@ -17,7 +17,7 @@
      已经被打碎
 2. **`SpatialPlan` 没有真正立起来**
    - 当前 `SpatialPlan`
-     只承接 closure / boundary 标签
+     只承接一层 legacy 兼容标签
    - virtual spatial/dataflow truth 没有对象化
 3. **后段被迫长出影子 IR**
    - 一串 legacy transition attrs / helper bridge / payload bag
@@ -130,7 +130,7 @@ owner：
 
 不再只是：
 
-- legacy closure/boundary compatibility view
+- legacy compatibility projection
 
 这两个旧对象可以保留为兼容视图，
 但不再代表长期主语义。
@@ -156,7 +156,7 @@ owner：
 整改方向固定为：
 
 1. **重写 `SpatialPlan`**
-   - 从薄 closure companion
+   - 从薄兼容层
      改成 virtual spatial/dataflow program
 2. **让 `TTProgram` 收回 target owner**
    - 后段停止依赖 fake protocol

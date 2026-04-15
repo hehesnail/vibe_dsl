@@ -44,8 +44,6 @@ Normalized Tile TIR
 
 当前任务重排口径：
 
-- 不再按旧 `R0 / R1 / R2`
-  编号阅读当前 roadmap
 - 当前 roadmap 只按层 owner cutover 排序：
   `SpatialPlan -> TTProgram -> ExecutableSpec/leaf -> legacy deletion`
 - 旧 `buffer effect / liveness / materialization`

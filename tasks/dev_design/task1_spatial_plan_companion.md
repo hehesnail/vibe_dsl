@@ -1,4 +1,4 @@
-# Task 1: SpatialPlan Companion 与 Virtual Layer 边界
+# Task 1: SpatialPlan 与 Virtual Layer 边界
 
 ## 基本信息
 
@@ -9,7 +9,7 @@
 
 ## 1. 角色重定义
 
-`SpatialPlan` 不再表示“薄 closure/boundary companion”，
+`SpatialPlan` 不再表示“薄兼容层”，
 而是表示：
 
 > **target-independent 的 virtual spatial/dataflow program**
@@ -34,7 +34,7 @@
 `SpatialPlan` builder 只允许读取：
 
 - `Normalized Tile TIR`
-- 结构分析得到的 closure / dependence / region facts
+- 结构分析得到的 execution-unit candidate / dependence / region facts
 - validate 后的 hints
 
 禁止把下面这些东西抬成 `SpatialPlan` 真源：
@@ -132,7 +132,7 @@ owner：
 
 当前代码里的：
 
-- legacy closure/boundary compatibility view
+- legacy compatibility projection
 
 可以继续存在，
 但只允许作为：
@@ -181,7 +181,7 @@ validator 失败时必须 fail-closed。
 
 - 从 analysis facts 构造
   `ExecutionUnit / DataflowEdge / LayoutSpec / PhasePlan / ValidatedHintSet`
-- 同步生成 legacy closure/boundary compatibility view
+- 同步生成 legacy compatibility projection
 
 ### `ValidateSpatialPlan`
 
@@ -227,7 +227,7 @@ validator 失败时必须 fail-closed。
 `Task 1` 的代码方向固定为：
 
 1. 扩 `SpatialPlan` object model
-2. 保留 closure/boundary 兼容视图
+2. 保留 legacy compatibility projection
 3. 新增 `ValidateSpatialPlan`
 4. 逐步让 `BuildTTProgram` 和各 `PlanTT*`
    读新对象，不再读 fake protocol

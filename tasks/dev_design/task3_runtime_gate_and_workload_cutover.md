@@ -36,8 +36,8 @@
 ## 3. 前置条件
 
 `Task 3`
-不再单独维护旧 `R0 / R1 / R2`
-closure set。
+只依赖前两层 owner cutover，
+不单独维护额外 roadmap 编号。
 
 它的前置条件固定为：
 

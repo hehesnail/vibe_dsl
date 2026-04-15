@@ -23,7 +23,7 @@ Normalized Tile TIR
 
 但现实里：
 
-- `SpatialPlan` 过薄，只承接 closure / boundary 标签
+- `SpatialPlan` 过薄，只承接一层 legacy 兼容标签
 - target-independent 的 virtual spatial/dataflow truth 没有被对象化
 - 后段只能补出
   legacy transition attrs / helper bridge / payload bag
@@ -39,7 +39,7 @@ Normalized Tile TIR
 ```
 
 但这里的 `SpatialPlan`
-不再表示“薄 companion + 后段自己猜”，
+不再表示“薄兼容壳 + 后段自己猜”，
 而是表示
 **target-independent 的 virtual spatial/dataflow program**。
 
@@ -108,7 +108,7 @@ Normalized Tile TIR
 
 兼容视图：
 
-- legacy closure/boundary compatibility view
+- legacy compatibility projection
 
 只能作为调试或过渡 projection，
 不再是长期 primary owner truth。
@@ -284,7 +284,7 @@ legacy transition attrs / helper bridge / payload bag
 
 1. **中间层重建**
    - 把 `SpatialPlan`
-     从薄 closure companion
+     从薄兼容层
      重写成 virtual spatial/dataflow program
 2. **target owner 收口**
    - 把 `TTProgram`

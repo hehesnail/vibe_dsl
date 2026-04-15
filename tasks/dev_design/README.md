@@ -58,9 +58,6 @@ Normalized Tile TIR
 
 ## 4. 当前执行优先级
 
-不再按旧 `R0 / R1 / R2`
-编号阅读当前 roadmap。
-
 当前只按层 owner cutover 排序：
 
 1. `SpatialPlan owner cutover`
