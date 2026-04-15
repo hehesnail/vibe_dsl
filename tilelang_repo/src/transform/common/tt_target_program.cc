@@ -17,6 +17,50 @@ void RegisterNodeReflection() {
 
 }  // namespace
 
+void TTBlockPlanNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTBlockPlanNode>()
+      .def_ro("name", &TTBlockPlanNode::name)
+      .def_ro("placement_kind", &TTBlockPlanNode::placement_kind)
+      .def_ro("task_indices", &TTBlockPlanNode::task_indices)
+      .def_ro("payload", &TTBlockPlanNode::payload);
+}
+
+TTBlockPlan::TTBlockPlan(ffi::String name, ffi::String placement_kind,
+                         ffi::Array<Integer> task_indices,
+                         ffi::Map<ffi::String, ffi::Any> payload) {
+  auto n = ffi::make_object<TTBlockPlanNode>();
+  n->name = std::move(name);
+  n->placement_kind = std::move(placement_kind);
+  n->task_indices = std::move(task_indices);
+  n->payload = std::move(payload);
+  data_ = std::move(n);
+}
+
+void TTKernelPlanNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTKernelPlanNode>()
+      .def_ro("name", &TTKernelPlanNode::name)
+      .def_ro("kind", &TTKernelPlanNode::kind)
+      .def_ro("core_type", &TTKernelPlanNode::core_type)
+      .def_ro("block_plan_index", &TTKernelPlanNode::block_plan_index)
+      .def_ro("abi_plan_index", &TTKernelPlanNode::abi_plan_index)
+      .def_ro("payload", &TTKernelPlanNode::payload);
+}
+
+TTKernelPlan::TTKernelPlan(ffi::String name, ffi::String kind, ffi::String core_type,
+                           int64_t block_plan_index, int64_t abi_plan_index,
+                           ffi::Map<ffi::String, ffi::Any> payload) {
+  auto n = ffi::make_object<TTKernelPlanNode>();
+  n->name = std::move(name);
+  n->kind = std::move(kind);
+  n->core_type = std::move(core_type);
+  n->block_plan_index = block_plan_index;
+  n->abi_plan_index = abi_plan_index;
+  n->payload = std::move(payload);
+  data_ = std::move(n);
+}
+
 void TTKernelNode::RegisterReflection() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<TTKernelNode>()
@@ -114,6 +158,33 @@ TTTransportPlan::TTTransportPlan(ffi::String name, ffi::String kind, int64_t sou
   n->target_task_index = target_task_index;
   n->payload_kind = std::move(payload_kind);
   n->delivery_kind = std::move(delivery_kind);
+  n->payload = std::move(payload);
+  data_ = std::move(n);
+}
+
+void TTSyncPlanNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTSyncPlanNode>()
+      .def_ro("name", &TTSyncPlanNode::name)
+      .def_ro("kind", &TTSyncPlanNode::kind)
+      .def_ro("source_task_index", &TTSyncPlanNode::source_task_index)
+      .def_ro("target_task_index", &TTSyncPlanNode::target_task_index)
+      .def_ro("ordering_kind", &TTSyncPlanNode::ordering_kind)
+      .def_ro("completion_kind", &TTSyncPlanNode::completion_kind)
+      .def_ro("payload", &TTSyncPlanNode::payload);
+}
+
+TTSyncPlan::TTSyncPlan(ffi::String name, ffi::String kind, int64_t source_task_index,
+                       int64_t target_task_index, ffi::String ordering_kind,
+                       ffi::String completion_kind,
+                       ffi::Map<ffi::String, ffi::Any> payload) {
+  auto n = ffi::make_object<TTSyncPlanNode>();
+  n->name = std::move(name);
+  n->kind = std::move(kind);
+  n->source_task_index = source_task_index;
+  n->target_task_index = target_task_index;
+  n->ordering_kind = std::move(ordering_kind);
+  n->completion_kind = std::move(completion_kind);
   n->payload = std::move(payload);
   data_ = std::move(n);
 }
@@ -254,48 +325,61 @@ void TTProgramNode::RegisterReflection() {
   refl::ObjectDef<TTProgramNode>()
       .def_ro("entry_name", &TTProgramNode::entry_name)
       .def_ro("member_func", &TTProgramNode::member_func)
+      .def_ro("block_plans", &TTProgramNode::block_plans)
+      .def_ro("kernel_plans", &TTProgramNode::kernel_plans)
+      .def_ro("transport_plans", &TTProgramNode::transport_plans)
+      .def_ro("sync_plans", &TTProgramNode::sync_plans)
+      .def_ro("abi_plans", &TTProgramNode::abi_plans)
+      .def_ro("execution_plans", &TTProgramNode::execution_plans)
       .def_ro("kernels", &TTProgramNode::kernels)
       .def_ro("core_groups", &TTProgramNode::core_groups)
       .def_ro("cb_plans", &TTProgramNode::cb_plans)
-      .def_ro("transport_plans", &TTProgramNode::transport_plans)
       .def_ro("semaphore_plans", &TTProgramNode::semaphore_plans)
       .def_ro("compute_sync_plans", &TTProgramNode::compute_sync_plans)
       .def_ro("dst_layout_plans", &TTProgramNode::dst_layout_plans)
-      .def_ro("abi_plans", &TTProgramNode::abi_plans)
-      .def_ro("execution_plans", &TTProgramNode::execution_plans)
       .def_ro("payload", &TTProgramNode::payload);
 }
 
-TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func, ffi::Array<TTKernel> kernels,
-                     ffi::Array<TTCoreGroup> core_groups, ffi::Array<TTCBPlan> cb_plans,
+TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
+                     ffi::Array<TTBlockPlan> block_plans,
+                     ffi::Array<TTKernelPlan> kernel_plans,
                      ffi::Array<TTTransportPlan> transport_plans,
+                     ffi::Array<TTSyncPlan> sync_plans,
+                     ffi::Array<TTABIPlan> abi_plans,
+                     ffi::Array<TTExecutionPlan> execution_plans,
+                     ffi::Array<TTKernel> kernels, ffi::Array<TTCoreGroup> core_groups,
+                     ffi::Array<TTCBPlan> cb_plans,
                      ffi::Array<TTSemaphorePlan> semaphore_plans,
                      ffi::Array<TTComputeSyncPlan> compute_sync_plans,
                      ffi::Array<TTDstLayoutPlan> dst_layout_plans,
-                     ffi::Array<TTABIPlan> abi_plans,
-                     ffi::Array<TTExecutionPlan> execution_plans,
                      ffi::Map<ffi::String, ffi::Any> payload) {
   auto n = ffi::make_object<TTProgramNode>();
   n->entry_name = std::move(entry_name);
   n->member_func = std::move(member_func);
+  n->block_plans = std::move(block_plans);
+  n->kernel_plans = std::move(kernel_plans);
+  n->transport_plans = std::move(transport_plans);
+  n->sync_plans = std::move(sync_plans);
+  n->abi_plans = std::move(abi_plans);
+  n->execution_plans = std::move(execution_plans);
   n->kernels = std::move(kernels);
   n->core_groups = std::move(core_groups);
   n->cb_plans = std::move(cb_plans);
-  n->transport_plans = std::move(transport_plans);
   n->semaphore_plans = std::move(semaphore_plans);
   n->compute_sync_plans = std::move(compute_sync_plans);
   n->dst_layout_plans = std::move(dst_layout_plans);
-  n->abi_plans = std::move(abi_plans);
-  n->execution_plans = std::move(execution_plans);
   n->payload = std::move(payload);
   data_ = std::move(n);
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
+  RegisterNodeReflection<TTBlockPlanNode>();
+  RegisterNodeReflection<TTKernelPlanNode>();
   RegisterNodeReflection<TTKernelNode>();
   RegisterNodeReflection<TTCoreGroupNode>();
   RegisterNodeReflection<TTCBPlanNode>();
   RegisterNodeReflection<TTTransportPlanNode>();
+  RegisterNodeReflection<TTSyncPlanNode>();
   RegisterNodeReflection<TTSemaphorePlanNode>();
   RegisterNodeReflection<TTComputeSyncPlanNode>();
   RegisterNodeReflection<TTDstLayoutPlanNode>();
@@ -306,6 +390,20 @@ TVM_FFI_STATIC_INIT_BLOCK() {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
+  refl::GlobalDef().def(
+      "tl.TTBlockPlan",
+      [](ffi::String name, ffi::String placement_kind, ffi::Array<Integer> task_indices,
+         ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTBlockPlan(std::move(name), std::move(placement_kind), std::move(task_indices),
+                           std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTKernelPlan",
+      [](ffi::String name, ffi::String kind, ffi::String core_type, int64_t block_plan_index,
+         int64_t abi_plan_index, ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTKernelPlan(std::move(name), std::move(kind), std::move(core_type),
+                            block_plan_index, abi_plan_index, std::move(payload));
+      });
   refl::GlobalDef().def(
       "tl.TTKernel",
       [](ffi::String name, ffi::String kind, ffi::String core_type, int64_t abi_plan_index,
@@ -338,6 +436,15 @@ TVM_FFI_STATIC_INIT_BLOCK() {
         return TTTransportPlan(std::move(name), std::move(kind), source_task_index,
                                target_task_index, std::move(payload_kind),
                                std::move(delivery_kind), std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTSyncPlan",
+      [](ffi::String name, ffi::String kind, int64_t source_task_index, int64_t target_task_index,
+         ffi::String ordering_kind, ffi::String completion_kind,
+         ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTSyncPlan(std::move(name), std::move(kind), source_task_index,
+                          target_task_index, std::move(ordering_kind),
+                          std::move(completion_kind), std::move(payload));
       });
   refl::GlobalDef().def(
       "tl.TTSemaphorePlan",
@@ -384,18 +491,21 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       });
   refl::GlobalDef().def(
       "tl.TTProgram",
-      [](ffi::String entry_name, ffi::String member_func, ffi::Array<TTKernel> kernels,
+      [](ffi::String entry_name, ffi::String member_func, ffi::Array<TTBlockPlan> block_plans,
+         ffi::Array<TTKernelPlan> kernel_plans, ffi::Array<TTTransportPlan> transport_plans,
+         ffi::Array<TTSyncPlan> sync_plans, ffi::Array<TTABIPlan> abi_plans,
+         ffi::Array<TTExecutionPlan> execution_plans, ffi::Array<TTKernel> kernels,
          ffi::Array<TTCoreGroup> core_groups, ffi::Array<TTCBPlan> cb_plans,
-         ffi::Array<TTTransportPlan> transport_plans, ffi::Array<TTSemaphorePlan> semaphore_plans,
+         ffi::Array<TTSemaphorePlan> semaphore_plans,
          ffi::Array<TTComputeSyncPlan> compute_sync_plans,
-         ffi::Array<TTDstLayoutPlan> dst_layout_plans, ffi::Array<TTABIPlan> abi_plans,
-         ffi::Array<TTExecutionPlan> execution_plans, ffi::Map<ffi::String, ffi::Any> payload) {
-        return TTProgram(std::move(entry_name), std::move(member_func), std::move(kernels),
-                         std::move(core_groups), std::move(cb_plans),
-                         std::move(transport_plans), std::move(semaphore_plans),
-                         std::move(compute_sync_plans), std::move(dst_layout_plans),
+         ffi::Array<TTDstLayoutPlan> dst_layout_plans, ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTProgram(std::move(entry_name), std::move(member_func),
+                         std::move(block_plans), std::move(kernel_plans),
+                         std::move(transport_plans), std::move(sync_plans),
                          std::move(abi_plans), std::move(execution_plans),
-                         std::move(payload));
+                         std::move(kernels), std::move(core_groups), std::move(cb_plans),
+                         std::move(semaphore_plans), std::move(compute_sync_plans),
+                         std::move(dst_layout_plans), std::move(payload));
       });
 }
 

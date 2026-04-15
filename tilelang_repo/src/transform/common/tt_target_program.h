@@ -13,6 +13,46 @@
 namespace tvm {
 namespace tl {
 
+class TTBlockPlanNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String placement_kind;
+  ffi::Array<Integer> task_indices;
+  ffi::Map<ffi::String, ffi::Any> payload;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTBlockPlan", TTBlockPlanNode, Object);
+};
+
+class TTBlockPlan : public ObjectRef {
+ public:
+  TVM_DLL TTBlockPlan(ffi::String name, ffi::String placement_kind,
+                      ffi::Array<Integer> task_indices,
+                      ffi::Map<ffi::String, ffi::Any> payload);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTBlockPlan, ObjectRef, TTBlockPlanNode);
+};
+
+class TTKernelPlanNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String kind;
+  ffi::String core_type;
+  int64_t block_plan_index = -1;
+  int64_t abi_plan_index = -1;
+  ffi::Map<ffi::String, ffi::Any> payload;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTKernelPlan", TTKernelPlanNode, Object);
+};
+
+class TTKernelPlan : public ObjectRef {
+ public:
+  TVM_DLL TTKernelPlan(ffi::String name, ffi::String kind, ffi::String core_type,
+                       int64_t block_plan_index, int64_t abi_plan_index,
+                       ffi::Map<ffi::String, ffi::Any> payload);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTKernelPlan, ObjectRef, TTKernelPlanNode);
+};
+
 class TTKernelNode : public Object {
  public:
   ffi::String name;
@@ -96,6 +136,29 @@ class TTTransportPlan : public ObjectRef {
                           int64_t target_task_index, ffi::String payload_kind,
                           ffi::String delivery_kind, ffi::Map<ffi::String, ffi::Any> payload);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTTransportPlan, ObjectRef, TTTransportPlanNode);
+};
+
+class TTSyncPlanNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String kind;
+  int64_t source_task_index = -1;
+  int64_t target_task_index = -1;
+  ffi::String ordering_kind;
+  ffi::String completion_kind;
+  ffi::Map<ffi::String, ffi::Any> payload;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTSyncPlan", TTSyncPlanNode, Object);
+};
+
+class TTSyncPlan : public ObjectRef {
+ public:
+  TVM_DLL TTSyncPlan(ffi::String name, ffi::String kind, int64_t source_task_index,
+                     int64_t target_task_index, ffi::String ordering_kind,
+                     ffi::String completion_kind,
+                     ffi::Map<ffi::String, ffi::Any> payload);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTSyncPlan, ObjectRef, TTSyncPlanNode);
 };
 
 class TTSemaphorePlanNode : public Object {
@@ -218,15 +281,18 @@ class TTProgramNode : public Object {
  public:
   ffi::String entry_name;
   ffi::String member_func;
+  ffi::Array<TTBlockPlan> block_plans;
+  ffi::Array<TTKernelPlan> kernel_plans;
+  ffi::Array<TTTransportPlan> transport_plans;
+  ffi::Array<TTSyncPlan> sync_plans;
+  ffi::Array<TTABIPlan> abi_plans;
+  ffi::Array<TTExecutionPlan> execution_plans;
   ffi::Array<TTKernel> kernels;
   ffi::Array<TTCoreGroup> core_groups;
   ffi::Array<TTCBPlan> cb_plans;
-  ffi::Array<TTTransportPlan> transport_plans;
   ffi::Array<TTSemaphorePlan> semaphore_plans;
   ffi::Array<TTComputeSyncPlan> compute_sync_plans;
   ffi::Array<TTDstLayoutPlan> dst_layout_plans;
-  ffi::Array<TTABIPlan> abi_plans;
-  ffi::Array<TTExecutionPlan> execution_plans;
   ffi::Map<ffi::String, ffi::Any> payload;
 
   static void RegisterReflection();
@@ -235,14 +301,18 @@ class TTProgramNode : public Object {
 
 class TTProgram : public ObjectRef {
  public:
-  TVM_DLL TTProgram(ffi::String entry_name, ffi::String member_func, ffi::Array<TTKernel> kernels,
-                    ffi::Array<TTCoreGroup> core_groups, ffi::Array<TTCBPlan> cb_plans,
+  TVM_DLL TTProgram(ffi::String entry_name, ffi::String member_func,
+                    ffi::Array<TTBlockPlan> block_plans,
+                    ffi::Array<TTKernelPlan> kernel_plans,
                     ffi::Array<TTTransportPlan> transport_plans,
+                    ffi::Array<TTSyncPlan> sync_plans,
+                    ffi::Array<TTABIPlan> abi_plans,
+                    ffi::Array<TTExecutionPlan> execution_plans,
+                    ffi::Array<TTKernel> kernels,
+                    ffi::Array<TTCoreGroup> core_groups, ffi::Array<TTCBPlan> cb_plans,
                     ffi::Array<TTSemaphorePlan> semaphore_plans,
                     ffi::Array<TTComputeSyncPlan> compute_sync_plans,
                     ffi::Array<TTDstLayoutPlan> dst_layout_plans,
-                    ffi::Array<TTABIPlan> abi_plans,
-                    ffi::Array<TTExecutionPlan> execution_plans,
                     ffi::Map<ffi::String, ffi::Any> payload);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTProgram, ObjectRef, TTProgramNode);
 };

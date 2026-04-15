@@ -254,6 +254,28 @@ def rebuild_tt_core_group(
     )
 
 
+def rebuild_tt_kernel_plan(
+    kernel_plan,
+    *,
+    name=None,
+    kind=None,
+    core_type=None,
+    block_plan_index=None,
+    abi_plan_index=None,
+    payload=None,
+):
+    """Rebuild a TTKernelPlan with optional field overrides."""
+    make_tt_kernel_plan = tilelang.tvm.get_global_func("tl.TTKernelPlan")
+    return make_tt_kernel_plan(
+        str(kernel_plan.name) if name is None else name,
+        str(kernel_plan.kind) if kind is None else kind,
+        str(kernel_plan.core_type) if core_type is None else core_type,
+        int(kernel_plan.block_plan_index) if block_plan_index is None else block_plan_index,
+        int(kernel_plan.abi_plan_index) if abi_plan_index is None else abi_plan_index,
+        dict(kernel_plan.payload) if payload is None else payload,
+    )
+
+
 def rebuild_tt_semaphore_plan(
     semaphore_plan,
     *,
@@ -317,6 +339,9 @@ def rebuild_tt_program(
     *,
     entry_name=None,
     member_func=None,
+    block_plans=None,
+    kernel_plans=None,
+    sync_plans=None,
     kernels=None,
     core_groups=None,
     cb_plans=None,
@@ -330,18 +355,32 @@ def rebuild_tt_program(
 ):
     """Rebuild a TTProgram with optional field overrides."""
     make_tt_program = tilelang.tvm.get_global_func("tl.TTProgram")
+    if kernels is not None and kernel_plans is None and len(program.kernel_plans) == len(kernels):
+        kernel_plans = [
+            rebuild_tt_kernel_plan(
+                program.kernel_plans[index],
+                name=str(kernel.name),
+                kind=str(kernel.kind),
+                core_type=str(kernel.core_type),
+                abi_plan_index=int(kernel.abi_plan_index),
+            )
+            for index, kernel in enumerate(kernels)
+        ]
     return make_tt_program(
         str(program.entry_name) if entry_name is None else entry_name,
         str(program.member_func) if member_func is None else member_func,
+        list(program.block_plans) if block_plans is None else block_plans,
+        list(program.kernel_plans) if kernel_plans is None else kernel_plans,
+        list(program.transport_plans) if transport_plans is None else transport_plans,
+        list(program.sync_plans) if sync_plans is None else sync_plans,
+        list(program.abi_plans) if abi_plans is None else abi_plans,
+        list(program.execution_plans) if execution_plans is None else execution_plans,
         list(program.kernels) if kernels is None else kernels,
         list(program.core_groups) if core_groups is None else core_groups,
         list(program.cb_plans) if cb_plans is None else cb_plans,
-        list(program.transport_plans) if transport_plans is None else transport_plans,
         list(program.semaphore_plans) if semaphore_plans is None else semaphore_plans,
         list(program.compute_sync_plans) if compute_sync_plans is None else compute_sync_plans,
         list(program.dst_layout_plans) if dst_layout_plans is None else dst_layout_plans,
-        list(program.abi_plans) if abi_plans is None else abi_plans,
-        list(program.execution_plans) if execution_plans is None else execution_plans,
         dict(program.payload) if payload is None else payload,
     )
 

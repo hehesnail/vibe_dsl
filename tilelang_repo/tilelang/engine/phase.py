@@ -421,6 +421,9 @@ def LowerToBlackholeTTProgram(mod: IRModule) -> IRModule:
     mod = tilelang.transform.PlanTTBlocks()(mod)
     mod = tilelang.transform.PlanTTCompute()(mod)
     mod = tilelang.transform.PlanTTTransport()(mod)
+    mod = tilelang.transform.PlanTTSync()(mod)
+    mod = tilelang.transform.PlanTTABI()(mod)
+    mod = tilelang.transform.PlanTTExecution()(mod)
     mod = tilelang.transform.BuildTTProgram()(mod)
     mod = tilelang.transform.ValidateTTProgram()(mod)
     return mod

@@ -2813,12 +2813,18 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
   execution_plans.push_back(tvm::tl::TTExecutionPlan(
       ffi::String("segment_execution"), execution_kernel_names, execution_phase_indices,
       ffi::Map<ffi::String, ffi::Any>()));
+  ffi::Array<tvm::tl::TTKernelPlan> kernel_plans;
+  kernel_plans.push_back(tvm::tl::TTKernelPlan(
+      kernel_name, kernel_kind, kernel_core_type, /*block_plan_index=*/0, /*abi_plan_index=*/0,
+      encoded_segment));
   const tvm::tl::TTProgram segment_program =
-      tvm::tl::TTProgram(original_program->entry_name, original_program->member_func, kernels,
-                         original_program->core_groups, original_program->cb_plans,
-                         original_program->transport_plans, original_program->semaphore_plans,
+      tvm::tl::TTProgram(original_program->entry_name, original_program->member_func,
+                         original_program->block_plans, kernel_plans,
+                         original_program->transport_plans, original_program->sync_plans,
+                         abi_plans, execution_plans, kernels, original_program->core_groups,
+                         original_program->cb_plans, original_program->semaphore_plans,
                          original_program->compute_sync_plans, original_program->dst_layout_plans,
-                         abi_plans, execution_plans, original_program->payload);
+                         original_program->payload);
 
   ffi::Map<ffi::String, ffi::Any> attrs;
   static const std::unordered_set<std::string> kSyntheticProjectionAttrs = {

@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档角色**: `Task 2: TTProgram Owner Cutover` 设计文档
-- **当前状态**: `2026-04-16` 活动设计文档
+- **当前状态**: `2026-04-16` 已落地（repo HEAD）
 - **任务链位置**: `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
 
@@ -112,6 +112,32 @@ AnalyzeSpatialStructureFacts
 
 `BuildTTProgram`
 不再允许承担任何 planning owner 责任。
+
+### repo HEAD 落地快照
+
+- `PlanTTSync / PlanTTABI / PlanTTExecution`
+  已显式落地成 public owner pass，
+  并已接入
+  Python wrapper
+  与
+  `LowerToBlackholeTTProgram`
+- `BuildTTProgram`
+  现在只聚合显式 owner attrs，
+  不再内联生成
+  sync / dst-layout / execution / hardware payload
+- `TTProgram`
+  已同时携带：
+  - owner slice：
+    `block_plans / kernel_plans / transport_plans /
+     sync_plans / abi_plans / execution_plans`
+  - compatibility / realization detail：
+    `kernels / core_groups / cb_plans / semaphore_plans /
+     compute_sync_plans / dst_layout_plans`
+- `PlanTTKernelABI / PlanTTCBAlloc`
+  当前只允许作为
+  `PlanTTCompute / PlanTTTransport`
+  的实现细节残留；
+  不再以 public owner planner 身份出现
 
 ## 5. Reader / Writer 边界
 

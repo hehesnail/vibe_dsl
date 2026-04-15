@@ -43,6 +43,14 @@ tir::PrimFunc StripTTIntermediateAttrs(tir::PrimFunc func) {
   }
   static const char* kIntermediateSeedAttrs[] = {
       attr::kTLTTSemaphorePlans,
+      attr::kTLInternalTTBlockPlans,
+      attr::kTLInternalTTKernelPlans,
+      attr::kTLInternalTTABIPlanSeeds,
+      attr::kTLInternalTTSyncPlans,
+      attr::kTLInternalTTSemaphorePlans,
+      attr::kTLInternalTTComputeSyncPlans,
+      attr::kTLInternalTTDstLayoutPlans,
+      attr::kTLInternalTTExecutionPlans,
       attr::kTLInternalTTKernels,
       attr::kTLInternalTTABIPlans,
       attr::kTLInternalTTCBPlans,
@@ -90,15 +98,6 @@ SpatialPlan RequireValidatedSpatialPlan(const tir::PrimFunc& func, const char* p
       << pass_name << " requires validated SpatialPlan; run ValidateSpatialPlan before target planning";
   return maybe_spatial_plan.value();
 }
-
-struct MaterializedTTPlanning {
-  tir::PrimFunc func;
-  Array<TTKernel> kernels;
-  Array<TTABIPlan> abi_plans;
-  Array<TTCBPlan> cb_plans;
-  Array<TTCoreGroup> core_groups;
-  Map<String, Any> payload;
-};
 
 Map<String, Any> CopyAttrs(const tir::PrimFunc& func) {
   return func->attrs.defined() ? func->attrs->dict : Map<String, Any>();
@@ -191,17 +190,35 @@ Array<TTCoreGroup> BuildCoreGroups(const PlanTTCoreGroups& planner) {
   return tt_core_groups;
 }
 
-std::vector<int> BuildPhaseIndexByUnit(const SpatialPlan& plan) {
-  std::vector<int> phase_by_unit(plan->execution_units.size(), 0);
-  for (const PhasePlan& phase : plan->phase_plans) {
-    for (const Integer& unit_index : phase->unit_indices) {
-      if (unit_index->value >= 0 &&
-          unit_index->value < static_cast<int64_t>(phase_by_unit.size())) {
-        phase_by_unit[unit_index->value] = static_cast<int>(phase->phase_index);
-      }
-    }
+Array<TTBlockPlan> BuildBlockPlans(const SpatialPlan& plan, const Array<TTCoreGroup>& core_groups) {
+  Array<Integer> task_indices;
+  for (size_t i = 0; i < plan->execution_units.size(); ++i) {
+    task_indices.push_back(Integer(static_cast<int64_t>(i)));
   }
-  return phase_by_unit;
+
+  Array<TTBlockPlan> block_plans;
+  for (size_t i = 0; i < core_groups.size(); ++i) {
+    const TTCoreGroup& core_group = core_groups[i];
+    Map<String, Any> payload = core_group->payload;
+    payload.Set("core_group_name", core_group->name);
+    payload.Set("physical_core_count", Integer(static_cast<int64_t>(core_group->physical_cores.size())));
+    payload.Set("work_packet_count", Integer(static_cast<int64_t>(core_group->work_packets.size())));
+    block_plans.push_back(
+        TTBlockPlan(String("block_plan_" + std::to_string(i)), String("core_group"),
+                    task_indices, payload));
+  }
+  return block_plans;
+}
+
+Array<TTKernelPlan> BuildKernelPlans(const Array<TTKernel>& kernels) {
+  Array<TTKernelPlan> kernel_plans;
+  for (const TTKernel& kernel : kernels) {
+    Map<String, Any> payload = kernel->payload;
+    payload.Set("compat_kernel_name", kernel->name);
+    kernel_plans.push_back(TTKernelPlan(kernel->name, kernel->kind, kernel->core_type,
+                                        /*block_plan_index=*/0, kernel->abi_plan_index, payload));
+  }
+  return kernel_plans;
 }
 
 String DeriveTransportDeliveryKind(const DataflowEdge& edge) {
@@ -279,6 +296,18 @@ Array<TTComputeSyncPlan> BuildComputeSyncPlans(const SpatialPlan& plan) {
   return sync_plans;
 }
 
+Array<TTSyncPlan> BuildSyncPlans(const Array<TTComputeSyncPlan>& compute_sync_plans) {
+  Array<TTSyncPlan> sync_plans;
+  for (const TTComputeSyncPlan& sync : compute_sync_plans) {
+    Map<String, Any> payload = sync->payload;
+    payload.Set("compat_sync_name", sync->name);
+    sync_plans.push_back(TTSyncPlan(sync->name, sync->kind, sync->source_task_index,
+                                    sync->target_task_index, sync->ordering_kind,
+                                    sync->materialization_kind, payload));
+  }
+  return sync_plans;
+}
+
 Array<TTDstLayoutPlan> BuildDstLayoutPlans(const Array<TTABIPlan>& abi_plans) {
   Array<TTDstLayoutPlan> dst_layouts;
   std::unordered_set<std::string> seen;
@@ -330,11 +359,12 @@ Array<TTExecutionPlan> BuildExecutionPlans(const SpatialPlan& plan, const Array<
 }
 
 template <typename T>
-T RequireOwnerPlanningAttr(const tir::PrimFunc& func, const char* attr_key) {
+T RequirePlanningAttr(const tir::PrimFunc& func, const char* attr_key, const char* consumer,
+                      const char* next_step_guidance) {
   auto maybe_value = func->GetAttr<T>(attr_key);
   ICHECK(maybe_value)
-      << "BuildTTProgram requires explicit TT owner planning attrs; missing " << attr_key
-      << ". Run PlanTTBlocks, PlanTTCompute, and PlanTTTransport before BuildTTProgram";
+      << consumer << " requires explicit TT owner planning attrs; missing " << attr_key
+      << ". " << next_step_guidance;
   return maybe_value.value();
 }
 
@@ -348,11 +378,13 @@ tvm::transform::Pass PlanTTBlocks() {
       if (!func || !IsBlackholePrimFunc(func.value())) {
         continue;
       }
-      RequireValidatedSpatialPlan(func.value(), "PlanTTBlocks");
+      const SpatialPlan spatial_plan = RequireValidatedSpatialPlan(func.value(), "PlanTTBlocks");
       PlanTTCoreGroups planner;
       tir::PrimFunc planned = planner.Transform(func.value());
+      const Array<TTCoreGroup> core_groups = BuildCoreGroups(planner);
       Map<String, Any> attrs = CopyAttrs(planned);
-      attrs.Set(attr::kTLInternalTTCoreGroups, BuildCoreGroups(planner));
+      attrs.Set(attr::kTLInternalTTBlockPlans, BuildBlockPlans(spatial_plan, core_groups));
+      attrs.Set(attr::kTLInternalTTCoreGroups, core_groups);
       planned.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
       updated->Add(gvar, planned, true);
     }
@@ -372,9 +404,11 @@ tvm::transform::Pass PlanTTCompute() {
       RequireValidatedSpatialPlan(func.value(), "PlanTTCompute");
       PlanTTKernelABI planner;
       tir::PrimFunc planned = planner.Transform(func.value());
+      const Array<TTKernel> kernels = planner.GetTTKernels();
       Map<String, Any> attrs = CopyAttrs(planned);
-      attrs.Set(attr::kTLInternalTTKernels, planner.GetTTKernels());
-      attrs.Set(attr::kTLInternalTTABIPlans, planner.GetTTABIPlans());
+      attrs.Set(attr::kTLInternalTTKernelPlans, BuildKernelPlans(kernels));
+      attrs.Set(attr::kTLInternalTTKernels, kernels);
+      attrs.Set(attr::kTLInternalTTABIPlanSeeds, planner.GetTTABIPlans());
       attrs.Set(attr::kTLInternalTTProgramPayload, planner.GetTTProgramPayload());
       planned.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
       updated->Add(gvar, planned, true);
@@ -407,12 +441,60 @@ tvm::transform::Pass PlanTTTransport() {
   return tvm::transform::CreateModulePass(pass_func, 0, "tl.transform.PlanTTTransport", {});
 }
 
-tvm::transform::Pass BuildTTProgram() {
+tvm::transform::Pass PlanTTSync() {
+  auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
+    IRModule updated = mod;
+    for (const auto& [gvar, base_func] : mod->functions) {
+      auto func = base_func.as<tir::PrimFunc>();
+      if (!func || !IsBlackholePrimFunc(func.value())) {
+        continue;
+      }
+      const SpatialPlan spatial_plan = RequireValidatedSpatialPlan(func.value(), "PlanTTSync");
+      const Array<TTComputeSyncPlan> compute_sync_plans = BuildComputeSyncPlans(spatial_plan);
+      Map<String, Any> attrs = CopyAttrs(func.value());
+      attrs.Set(attr::kTLInternalTTSyncPlans, BuildSyncPlans(compute_sync_plans));
+      attrs.Set(attr::kTLInternalTTComputeSyncPlans, compute_sync_plans);
+      attrs.Set(attr::kTLInternalTTSemaphorePlans, BuildSemaphorePlans(func.value()));
+      tir::PrimFunc planned = func.value();
+      planned.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
+      updated->Add(gvar, planned, true);
+    }
+    return updated;
+  };
+  return tvm::transform::CreateModulePass(pass_func, 0, "tl.transform.PlanTTSync", {});
+}
+
+tvm::transform::Pass PlanTTABI() {
+  auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
+    IRModule updated = mod;
+    for (const auto& [gvar, base_func] : mod->functions) {
+      auto func = base_func.as<tir::PrimFunc>();
+      if (!func || !IsBlackholePrimFunc(func.value())) {
+        continue;
+      }
+      RequireValidatedSpatialPlan(func.value(), "PlanTTABI");
+      const Array<TTABIPlan> abi_plans =
+          RequirePlanningAttr<Array<TTABIPlan>>(func.value(), attr::kTLInternalTTABIPlanSeeds,
+                                                "PlanTTABI",
+                                                "Run PlanTTCompute before PlanTTABI");
+      Map<String, Any> attrs = CopyAttrs(func.value());
+      attrs.Set(attr::kTLInternalTTABIPlans, abi_plans);
+      attrs.Set(attr::kTLInternalTTDstLayoutPlans, BuildDstLayoutPlans(abi_plans));
+      tir::PrimFunc planned = func.value();
+      planned.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
+      updated->Add(gvar, planned, true);
+    }
+    return updated;
+  };
+  return tvm::transform::CreateModulePass(pass_func, 0, "tl.transform.PlanTTABI", {});
+}
+
+tvm::transform::Pass PlanTTExecution() {
   auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
     auto maybe_hardware_model = GetModuleTTHardwareModel(mod);
     if (!maybe_hardware_model) {
       auto maybe_target = FindBlackholeTarget(mod);
-      ICHECK(maybe_target) << "BuildTTProgram requires blackhole target";
+      ICHECK(maybe_target) << "PlanTTExecution requires blackhole target";
       maybe_hardware_model = BuildBlackholeTTHardwareModel(maybe_target.value());
       mod = mod->ShallowCopy();
       mod->UpdateGlobalInfo(attr::kTLTTHardwareModel, Array<GlobalInfo>{maybe_hardware_model.value()});
@@ -423,44 +505,115 @@ tvm::transform::Pass BuildTTProgram() {
       if (!func || !IsBlackholePrimFunc(func.value())) {
         continue;
       }
-      const SpatialPlan spatial_plan =
-          RequireValidatedSpatialPlan(func.value(), "BuildTTProgram");
-      MaterializedTTPlanning planning;
-      planning.func = func.value();
-      planning.kernels = RequireOwnerPlanningAttr<Array<TTKernel>>(func.value(), attr::kTLInternalTTKernels);
-      planning.abi_plans =
-          RequireOwnerPlanningAttr<Array<TTABIPlan>>(func.value(), attr::kTLInternalTTABIPlans);
-      planning.cb_plans =
-          RequireOwnerPlanningAttr<Array<TTCBPlan>>(func.value(), attr::kTLInternalTTCBPlans);
-      planning.core_groups =
-          RequireOwnerPlanningAttr<Array<TTCoreGroup>>(func.value(), attr::kTLInternalTTCoreGroups);
-      planning.payload = RequireOwnerPlanningAttr<Map<String, Any>>(func.value(),
-                                                                   attr::kTLInternalTTProgramPayload);
-      const Array<TTTransportPlan> transport_plans =
-          RequireOwnerPlanningAttr<Array<TTTransportPlan>>(func.value(),
-                                                           attr::kTLInternalTTTransportPlans);
-
-      Map<String, Any> attrs = CopyAttrs(planning.func);
-      Map<String, Any> payload = planning.payload;
+      const SpatialPlan spatial_plan = RequireValidatedSpatialPlan(func.value(), "PlanTTExecution");
+      const Array<TTKernel> kernels =
+          RequirePlanningAttr<Array<TTKernel>>(func.value(), attr::kTLInternalTTKernels,
+                                               "PlanTTExecution",
+                                               "Run PlanTTCompute before PlanTTExecution");
+      Map<String, Any> payload =
+          RequirePlanningAttr<Map<String, Any>>(func.value(), attr::kTLInternalTTProgramPayload,
+                                                "PlanTTExecution",
+                                                "Run PlanTTCompute before PlanTTExecution");
       payload.Set("arch_name", maybe_hardware_model.value()->arch_name);
       payload.Set("logical_worker_grid_x", Integer(maybe_hardware_model.value()->logical_worker_grid_x));
       payload.Set("logical_worker_grid_y", Integer(maybe_hardware_model.value()->logical_worker_grid_y));
       payload.Set("worker_l1_size", Integer(maybe_hardware_model.value()->worker_l1_size));
 
-      const Array<TTKernel>& kernels = planning.kernels;
-      const Array<TTABIPlan>& abi_plans = planning.abi_plans;
-      ICHECK(!kernels.empty()) << "BuildTTProgram requires TT kernels from PlanTTCompute";
-      ICHECK_EQ(kernels.size(), abi_plans.size())
-          << "BuildTTProgram requires aligned TT kernel and ABI planning";
+      Map<String, Any> attrs = CopyAttrs(func.value());
+      attrs.Set(attr::kTLInternalTTProgramPayload, payload);
+      attrs.Set(attr::kTLInternalTTExecutionPlans, BuildExecutionPlans(spatial_plan, kernels));
+      tir::PrimFunc planned = func.value();
+      planned.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
+      updated->Add(gvar, planned, true);
+    }
+    return updated;
+  };
+  return tvm::transform::CreateModulePass(pass_func, 0, "tl.transform.PlanTTExecution", {});
+}
+
+tvm::transform::Pass BuildTTProgram() {
+  auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
+    IRModule updated = mod;
+    for (const auto& [gvar, base_func] : mod->functions) {
+      auto func = base_func.as<tir::PrimFunc>();
+      if (!func || !IsBlackholePrimFunc(func.value())) {
+        continue;
+      }
+      const SpatialPlan spatial_plan = RequireValidatedSpatialPlan(func.value(), "BuildTTProgram");
+      const Array<TTBlockPlan> block_plans =
+          RequirePlanningAttr<Array<TTBlockPlan>>(func.value(), attr::kTLInternalTTBlockPlans,
+                                                  "BuildTTProgram",
+                                                  "Run PlanTTBlocks, PlanTTCompute, PlanTTTransport, PlanTTSync, PlanTTABI, and PlanTTExecution before BuildTTProgram");
+      const Array<TTKernelPlan> kernel_plans =
+          RequirePlanningAttr<Array<TTKernelPlan>>(func.value(), attr::kTLInternalTTKernelPlans,
+                                                   "BuildTTProgram",
+                                                   "Run PlanTTBlocks, PlanTTCompute, PlanTTTransport, PlanTTSync, PlanTTABI, and PlanTTExecution before BuildTTProgram");
+      const Array<TTTransportPlan> transport_plans =
+          RequirePlanningAttr<Array<TTTransportPlan>>(func.value(), attr::kTLInternalTTTransportPlans,
+                                                      "BuildTTProgram",
+                                                      "Run PlanTTBlocks, PlanTTCompute, PlanTTTransport, PlanTTSync, PlanTTABI, and PlanTTExecution before BuildTTProgram");
+      const Array<TTSyncPlan> sync_plans =
+          RequirePlanningAttr<Array<TTSyncPlan>>(func.value(), attr::kTLInternalTTSyncPlans,
+                                                 "BuildTTProgram",
+                                                 "Run PlanTTBlocks, PlanTTCompute, PlanTTTransport, PlanTTSync, PlanTTABI, and PlanTTExecution before BuildTTProgram");
+      const Array<TTABIPlan> abi_plans =
+          RequirePlanningAttr<Array<TTABIPlan>>(func.value(), attr::kTLInternalTTABIPlans,
+                                                "BuildTTProgram",
+                                                "Run PlanTTBlocks, PlanTTCompute, PlanTTTransport, PlanTTSync, PlanTTABI, and PlanTTExecution before BuildTTProgram");
+      const Array<TTExecutionPlan> execution_plans =
+          RequirePlanningAttr<Array<TTExecutionPlan>>(func.value(), attr::kTLInternalTTExecutionPlans,
+                                                      "BuildTTProgram",
+                                                      "Run PlanTTBlocks, PlanTTCompute, PlanTTTransport, PlanTTSync, PlanTTABI, and PlanTTExecution before BuildTTProgram");
+      const Array<TTKernel> kernels =
+          RequirePlanningAttr<Array<TTKernel>>(func.value(), attr::kTLInternalTTKernels,
+                                               "BuildTTProgram",
+                                               "Run PlanTTCompute before BuildTTProgram");
+      const Array<TTCoreGroup> core_groups =
+          RequirePlanningAttr<Array<TTCoreGroup>>(func.value(), attr::kTLInternalTTCoreGroups,
+                                                  "BuildTTProgram",
+                                                  "Run PlanTTBlocks before BuildTTProgram");
+      const Array<TTCBPlan> cb_plans =
+          RequirePlanningAttr<Array<TTCBPlan>>(func.value(), attr::kTLInternalTTCBPlans,
+                                               "BuildTTProgram",
+                                               "Run PlanTTTransport before BuildTTProgram");
+      const Array<TTSemaphorePlan> semaphore_plans =
+          RequirePlanningAttr<Array<TTSemaphorePlan>>(func.value(), attr::kTLInternalTTSemaphorePlans,
+                                                      "BuildTTProgram",
+                                                      "Run PlanTTSync before BuildTTProgram");
+      const Array<TTComputeSyncPlan> compute_sync_plans =
+          RequirePlanningAttr<Array<TTComputeSyncPlan>>(func.value(), attr::kTLInternalTTComputeSyncPlans,
+                                                        "BuildTTProgram",
+                                                        "Run PlanTTSync before BuildTTProgram");
+      const Array<TTDstLayoutPlan> dst_layout_plans =
+          RequirePlanningAttr<Array<TTDstLayoutPlan>>(func.value(), attr::kTLInternalTTDstLayoutPlans,
+                                                      "BuildTTProgram",
+                                                      "Run PlanTTABI before BuildTTProgram");
+      const Map<String, Any> payload =
+          RequirePlanningAttr<Map<String, Any>>(func.value(), attr::kTLInternalTTProgramPayload,
+                                                "BuildTTProgram",
+                                                "Run PlanTTExecution before BuildTTProgram");
+
+      ICHECK(!block_plans.empty()) << "BuildTTProgram requires TTBlockPlan owner truth";
+      ICHECK(!kernel_plans.empty()) << "BuildTTProgram requires TTKernelPlan owner truth";
+      ICHECK_EQ(block_plans.size(), core_groups.size())
+          << "BuildTTProgram requires aligned TTBlockPlan and TTCoreGroup compatibility payloads";
+      ICHECK_EQ(kernel_plans.size(), kernels.size())
+          << "BuildTTProgram requires aligned TTKernelPlan and TTKernel compatibility payloads";
+      ICHECK_EQ(kernel_plans.size(), abi_plans.size())
+          << "BuildTTProgram requires aligned TTKernelPlan and TTABIPlan owner truth";
+      ICHECK_EQ(sync_plans.size(), compute_sync_plans.size())
+          << "BuildTTProgram requires aligned TTSyncPlan and TTComputeSyncPlan compatibility payloads";
+
+      Map<String, Any> attrs = CopyAttrs(func.value());
       attrs.Set(attr::kTLTTProgram,
-                TTProgram(gvar->name_hint, spatial_plan->member_func, kernels,
-                          planning.core_groups, planning.cb_plans, transport_plans,
-                          BuildSemaphorePlans(planning.func), BuildComputeSyncPlans(spatial_plan),
-                          BuildDstLayoutPlans(abi_plans), abi_plans,
-                          BuildExecutionPlans(spatial_plan, kernels), payload));
-      planning.func.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
-      planning.func = StripTTIntermediateAttrs(std::move(planning.func));
-      updated->Add(gvar, planning.func, true);
+                TTProgram(gvar->name_hint, spatial_plan->member_func, block_plans,
+                          kernel_plans, transport_plans, sync_plans, abi_plans,
+                          execution_plans, kernels, core_groups, cb_plans,
+                          semaphore_plans, compute_sync_plans, dst_layout_plans, payload));
+      tir::PrimFunc planned = func.value();
+      planned.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
+      planned = StripTTIntermediateAttrs(std::move(planned));
+      updated->Add(gvar, planned, true);
     }
     return updated;
   };
@@ -472,6 +625,9 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def("tl.transform.PlanTTBlocks", PlanTTBlocks);
   refl::GlobalDef().def("tl.transform.PlanTTCompute", PlanTTCompute);
   refl::GlobalDef().def("tl.transform.PlanTTTransport", PlanTTTransport);
+  refl::GlobalDef().def("tl.transform.PlanTTSync", PlanTTSync);
+  refl::GlobalDef().def("tl.transform.PlanTTABI", PlanTTABI);
+  refl::GlobalDef().def("tl.transform.PlanTTExecution", PlanTTExecution);
   refl::GlobalDef().def("tl.transform.BuildTTProgram", BuildTTProgram);
 }
 

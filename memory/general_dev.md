@@ -103,7 +103,8 @@
 - 两层 companion 新主链固定从 `Simplify` 后进入：
   `AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion ->
   PlanTTBlocks -> PlanTTCompute -> PlanTTTransport -> PlanTTSync -> PlanTTABI ->
-  PlanTTExecution -> MaterializeBlackholeExecutable`
+  PlanTTExecution -> BuildTTProgram -> ValidateTTProgram ->
+  MaterializeBlackholeExecutable`
 - `buffer effect / use-role analysis` 当前已接入 active path：
   `LowerToBlackholePhaseB`
   需要显式经过
@@ -115,14 +116,27 @@
   时必须 fail-closed
 - 当前第一性原理 cut-in 已把
   `BuildTTProgram`
-  退回成 reader/aggregator；
+  退回成纯 reader/aggregator；
   owner planning 通过
-  `PlanTTBlocks / PlanTTCompute / PlanTTTransport`
+  `PlanTTBlocks / PlanTTCompute / PlanTTTransport /
+   PlanTTSync / PlanTTABI / PlanTTExecution`
   显式进入 active path。
   现阶段 transport 在 pass 顺序上晚于 compute，
   是因为它消费 compute 发布的 CB/accessor requirement schema
   完成 CB allocation / transport materialization；
   这不改变 compute / memory-access 的 owner 边界
+- `TTProgram`
+  一旦开始同时承载
+  owner slice
+  和
+  compatibility payload，
+  validator 必须同时检查两者对齐：
+  - `block_plans <-> core_groups`
+  - `kernel_plans <-> kernels`
+  - `sync_plans <-> compute_sync_plans`
+  这样 leaf reader 还没完全 cutover 时，
+  compatibility payload
+  也不会悄悄漂成第二真源
 - TT target builtin 选择必须发生在 anchored sub-TIR
   仍保留 tile-op、layout、load/store、address expr 的边界；
   不要在 late matcher / bridge attr 层恢复 compute 或 transport 语义

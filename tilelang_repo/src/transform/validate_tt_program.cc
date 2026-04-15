@@ -52,6 +52,34 @@ void ValidateCoreGroup(const TTCoreGroup& core_group) {
   }
 }
 
+void ValidateBlockPlan(const TTBlockPlan& block_plan) {
+  ICHECK(!block_plan->name.empty()) << "TTBlockPlan requires name";
+  ICHECK(!block_plan->placement_kind.empty()) << "TTBlockPlan requires placement_kind";
+  ICHECK(!block_plan->task_indices.empty()) << "TTBlockPlan requires task_indices";
+}
+
+void ValidateKernelPlan(const TTKernelPlan& kernel_plan, int64_t abi_plan_count,
+                        int64_t block_plan_count) {
+  ICHECK(!kernel_plan->name.empty()) << "TTKernelPlan requires name";
+  ICHECK(!kernel_plan->kind.empty()) << "TTKernelPlan requires kind";
+  ICHECK(!kernel_plan->core_type.empty()) << "TTKernelPlan requires core_type";
+  ICHECK_GE(kernel_plan->abi_plan_index, 0) << "TTKernelPlan requires abi_plan_index";
+  ICHECK_LT(kernel_plan->abi_plan_index, abi_plan_count)
+      << "TTKernelPlan abi_plan_index out of bounds";
+  ICHECK_GE(kernel_plan->block_plan_index, 0) << "TTKernelPlan requires block_plan_index";
+  ICHECK_LT(kernel_plan->block_plan_index, block_plan_count)
+      << "TTKernelPlan block_plan_index out of bounds";
+}
+
+void ValidateSyncPlan(const TTSyncPlan& sync_plan) {
+  ICHECK(!sync_plan->name.empty()) << "TTSyncPlan requires name";
+  ICHECK(!sync_plan->kind.empty()) << "TTSyncPlan requires kind";
+  ICHECK_GE(sync_plan->source_task_index, 0) << "TTSyncPlan requires source_task_index";
+  ICHECK_GE(sync_plan->target_task_index, 0) << "TTSyncPlan requires target_task_index";
+  ICHECK(!sync_plan->ordering_kind.empty()) << "TTSyncPlan requires ordering_kind";
+  ICHECK(!sync_plan->completion_kind.empty()) << "TTSyncPlan requires completion_kind";
+}
+
 void ValidateAccessor(const Map<String, Any>& accessor) {
   ICHECK(HasKey(accessor, "buffer")) << "TTABIPlan accessor requires buffer";
   ICHECK(HasKey(accessor, "compile_time_arg_offset"))
@@ -206,10 +234,25 @@ void ValidateProgramPayload(const TTProgram& program) {
 
 void CheckTTProgram(const TTProgram& program) {
   ICHECK(!program->entry_name.empty()) << "TTProgram requires entry_name";
+  ICHECK(!program->block_plans.empty()) << "TTProgram requires at least one TTBlockPlan";
+  ICHECK(!program->kernel_plans.empty()) << "TTProgram requires at least one TTKernelPlan";
   ICHECK(!program->kernels.empty()) << "TTProgram requires at least one TTKernel";
   ICHECK(!program->core_groups.empty()) << "TTProgram requires at least one TTCoreGroup";
   ICHECK(!program->abi_plans.empty()) << "TTProgram requires at least one TTABIPlan";
   ICHECK(!program->execution_plans.empty()) << "TTProgram requires at least one TTExecutionPlan";
+  ICHECK_EQ(program->block_plans.size(), program->core_groups.size())
+      << "TTProgram requires aligned TTBlockPlan and TTCoreGroup compatibility payloads";
+  ICHECK_EQ(program->kernel_plans.size(), program->kernels.size())
+      << "TTProgram requires aligned TTKernelPlan and TTKernel compatibility payloads";
+  ICHECK_EQ(program->sync_plans.size(), program->compute_sync_plans.size())
+      << "TTProgram requires aligned TTSyncPlan and TTComputeSyncPlan compatibility payloads";
+
+  for (const TTBlockPlan& block_plan : program->block_plans) {
+    ValidateBlockPlan(block_plan);
+  }
+  for (const TTSyncPlan& sync_plan : program->sync_plans) {
+    ValidateSyncPlan(sync_plan);
+  }
 
   std::unordered_set<std::string> kernel_names;
   for (const TTKernel& kernel : program->kernels) {
@@ -221,6 +264,13 @@ void CheckTTProgram(const TTProgram& program) {
         << "TTKernel abi_plan_index out of bounds";
     ICHECK(kernel_names.insert(kernel->name).second) << "duplicate TTKernel name " << kernel->name;
     ValidateKernelPayload(kernel);
+  }
+  for (const TTKernelPlan& kernel_plan : program->kernel_plans) {
+    ValidateKernelPlan(kernel_plan, static_cast<int64_t>(program->abi_plans.size()),
+                       static_cast<int64_t>(program->block_plans.size()));
+    ICHECK(kernel_names.count(kernel_plan->name))
+        << "TTKernelPlan missing matching TTKernel compatibility payload: "
+        << kernel_plan->name;
   }
 
   ValidateProgramPayload(program);

@@ -117,6 +117,9 @@ def test_spatial_pass_surface_exposes_only_structure_and_plan_companions():
     assert hasattr(tilelang.transform, "PlanTTBlocks")
     assert hasattr(tilelang.transform, "PlanTTCompute")
     assert hasattr(tilelang.transform, "PlanTTTransport")
+    assert hasattr(tilelang.transform, "PlanTTSync")
+    assert hasattr(tilelang.transform, "PlanTTABI")
+    assert hasattr(tilelang.transform, "PlanTTExecution")
     assert not hasattr(tilelang.transform, "AnalyzeSpatialDomainPlan")
     assert not hasattr(tilelang.transform, "AnalyzeSpatialExecutionPlan")
     assert not hasattr(tilelang.transform, "MaterializeSpatialProgram")
@@ -212,10 +215,21 @@ def test_build_tt_program_consumes_plan_and_analysis_attrs_without_spatial_progr
     mod = tilelang.transform.PlanTTBlocks()(mod)
     mod = tilelang.transform.PlanTTCompute()(mod)
     mod = tilelang.transform.PlanTTTransport()(mod)
+    mod = tilelang.transform.PlanTTSync()(mod)
+    mod = tilelang.transform.PlanTTABI()(mod)
+    mod = tilelang.transform.PlanTTExecution()(mod)
     mod = tilelang.transform.BuildTTProgram()(mod)
 
-    tt_program = mod["main"].attrs["tl.tt_program"]
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
     assert tt_program is not None
+    assert len(tt_program.block_plans) == len(tt_program.core_groups)
+    assert len(tt_program.kernel_plans) == len(tt_program.kernels)
+    assert len(tt_program.sync_plans) == len(tt_program.compute_sync_plans)
+    assert main.attrs.get("tl.internal_tt_block_plans") is None
+    assert main.attrs.get("tl.internal_tt_kernel_plans") is None
+    assert main.attrs.get("tl.internal_tt_sync_plans") is None
+    assert main.attrs.get("tl.internal_tt_execution_plans") is None
     assert not tt_program.transport_plans or all(
         int(plan.source_task_index) >= 0 and int(plan.target_task_index) >= 0
         for plan in tt_program.transport_plans
@@ -249,6 +263,9 @@ def test_task1_tt_planning_requires_validated_spatial_plan():
 def test_build_tt_program_requires_explicit_tt_owner_plan_attrs():
     mod = _prepare_blackhole_phase_b_module(gemm_kernel())
     mod = _drop_legacy_spatial_attrs(mod)
+    mod = tilelang.transform.PlanTTBlocks()(mod)
+    mod = tilelang.transform.PlanTTCompute()(mod)
+    mod = tilelang.transform.PlanTTTransport()(mod)
 
-    with pytest.raises(Exception, match="requires explicit TT owner planning attrs"):
+    with pytest.raises(Exception, match="tl.internal_tt_sync_plans|PlanTTSync"):
         tilelang.transform.BuildTTProgram()(mod)

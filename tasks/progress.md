@@ -64,16 +64,38 @@
       不再从 legacy spatial projection
       恢复 virtual spatial/dataflow 关系
 - `Task 2: TTProgram Owner Cutover`
-  - **状态**: 未开始
-  - **前置条件**
-    - `Task 1: SpatialPlan Owner Cutover`
-      的 validated `SpatialPlan`
-      已经站稳
+  - **状态**: 已完成
+  - **repo HEAD 已收口**
+    - `PlanTTSync / PlanTTABI / PlanTTExecution`
+      已显式落地，
+      并已接入
+      Python wrapper
+      与
+      `LowerToBlackholeTTProgram`
+      canonical bundle
+    - `TTProgram`
+      已显式携带
+      `block_plans / kernel_plans / transport_plans /
+       sync_plans / abi_plans / execution_plans`
+      这组 owner slice；
+      `TTKernel / TTCoreGroup / TTCBPlan /
+       TTSemaphorePlan / TTComputeSyncPlan / TTDstLayoutPlan`
+      只保留 compatibility / realization detail
+    - `BuildTTProgram`
+      已退成纯聚合器，
+      只读取显式 owner attrs，
+      不再内联生成
+      sync / dst-layout / execution / hardware payload
+    - `PlanTTKernelABI / PlanTTCBAlloc`
+      仍可作为
+      `PlanTTCompute / PlanTTTransport`
+      的实现细节存在，
+      但不再以 public owner pass 身份对外暴露
 - `Task 3: ExecutableSpec / Leaf Reader Cutover`
   - **状态**: 未开始
   - **前置条件**
     - `Task 2: TTProgram Owner Cutover`
-      必须先把 `TTProgram`
+      已把 `TTProgram`
       收成唯一 physical realization truth
 - `Legacy Protocol Deletion`
   - **状态**: 未开始
@@ -82,8 +104,6 @@
       都已经站稳
 
 ## 3. 当前代码现实（以 repo HEAD 为准）
-
-当前 repo HEAD 还没有站在长期目标链路上。
 
 当前 active chain 是：
 
@@ -97,8 +117,11 @@ Normalized Tile TIR
   -> AnalyzeBlackholeComputeRegions
   -> AnalyzeBlackholePipelineStages
   -> PlanTTBlocks
-  -> PlanTTCompute   (PlanTTKernelABI wrapper)
-  -> PlanTTTransport (PlanTTCBAlloc wrapper)
+  -> PlanTTCompute
+  -> PlanTTTransport
+  -> PlanTTSync
+  -> PlanTTABI
+  -> PlanTTExecution
   -> BuildTTProgram
   -> ValidateTTProgram
   -> MaterializeBlackholeExecutable
@@ -119,13 +142,6 @@ Normalized Tile TIR
   `tl.spatial_plan_validated`
   成为后续 target planning / lowering requirement
   的正式 fail-closed gate
-- `PlanTTCompute`
-  和 `PlanTTTransport`
-  虽然已经换成 canonical pass 名，
-  但 owner planning 仍然分别包在
-  `PlanTTKernelABI`
-  和 `PlanTTCBAlloc`
-  这两套旧实现里
 - `PlanTTTransport / BuildTTProgram / lowering requirement`
   已切到从
   `DataflowEdge / PhasePlan`
@@ -133,10 +149,19 @@ Normalized Tile TIR
   不再从 legacy spatial projection
   恢复 phase / channel 关系
 - `BuildTTProgram`
-  已经成为 target 聚合入口，
-  但聚合输入仍然带着 helper residue /
-  internal attrs /
-  payload bag 的历史包袱
+  已退成纯聚合器，
+  只消费
+  `TTBlockPlan / TTKernelPlan / TTTransportPlan /
+   TTSyncPlan / TTABIPlan / TTExecutionPlan`
+  这组显式 owner slice
+- `TTProgram`
+  现在同时携带
+  owner slice
+  和
+  compatibility payload，
+  其中 compatibility 字段只用于
+  当前 codegen / runtime / projection
+  的 leaf 读取
 - `blackhole.work_decomposition /
   blackhole.compute_regions /
   blackhole.pipeline_stages`
@@ -167,19 +192,21 @@ Normalized Tile TIR
 ## 5. 当前安排的下一批任务
 
 下一批任务固定切到
-`Task 2: TTProgram Owner Cutover`：
+`Task 3: ExecutableSpec / Leaf Reader Cutover`：
 
 1. 显式拉出
-   `PlanTTSync / PlanTTABI / PlanTTExecution`
-2. 继续把
-   `PlanTTCompute / PlanTTTransport`
-   从
-   `PlanTTKernelABI / PlanTTCBAlloc`
-   旧实现里拆成真正 owner pass
-3. 让 `BuildTTProgram`
-   退成纯聚合器
-4. 继续压缩
-   helper residue /
-   internal attrs /
-   payload bag
-   这批 `TTProgram` 迁移残留
+   `ExecutableSpec`
+   成为唯一 leaf projection
+2. 让 build / codegen / runtime / `BlackholeModule`
+   只读
+   `tl.blackhole_executable`
+   或其内部 `ExecutableSpec` 投影
+3. 删除 leaf reader
+   对 legacy gate attrs /
+   internal bridge payload /
+   TTProgram compatibility fallback
+   的依赖
+4. 在 leaf reader cutover 稳定后，
+   再继续清理
+   `TTProgram`
+   过渡期 compatibility residue

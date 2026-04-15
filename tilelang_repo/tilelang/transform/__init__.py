@@ -710,6 +710,21 @@ def PlanTTTransport():
     return tvm.ffi.get_global_func("tl.transform.PlanTTTransport")()
 
 
+def PlanTTSync():
+    """Freeze Blackhole sync/completion owner truth before TTProgram aggregation."""
+    return tvm.ffi.get_global_func("tl.transform.PlanTTSync")()
+
+
+def PlanTTABI():
+    """Freeze Blackhole ABI/accessor owner truth before TTProgram aggregation."""
+    return tvm.ffi.get_global_func("tl.transform.PlanTTABI")()
+
+
+def PlanTTExecution():
+    """Freeze Blackhole execution/wave owner truth before TTProgram aggregation."""
+    return tvm.ffi.get_global_func("tl.transform.PlanTTExecution")()
+
+
 def BuildTTProgram():
     """Canonical Task 2 wrapper for TTProgram materialization from SpatialPlan and analysis facts."""
     return tvm.ffi.get_global_func("tl.transform.BuildTTProgram")()

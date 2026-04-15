@@ -502,11 +502,11 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
       payload.Set(String("compute_epilogue_ops"),
                   RewriteComputeEpilogueOps(Downcast<Array<Any>>(ops.value())));
     }
-    return TTProgram(program->entry_name, program->member_func, program->kernels,
-                     program->core_groups, program->cb_plans, program->transport_plans,
-                     program->semaphore_plans, program->compute_sync_plans,
-                     program->dst_layout_plans, program->abi_plans,
-                     program->execution_plans, payload);
+    return TTProgram(program->entry_name, program->member_func, program->block_plans,
+                     program->kernel_plans, program->transport_plans, program->sync_plans,
+                     program->abi_plans, program->execution_plans, program->kernels,
+                     program->core_groups, program->cb_plans, program->semaphore_plans,
+                     program->compute_sync_plans, program->dst_layout_plans, payload);
   }
 
   const ResourceInfo* GetOrInferInfo(const std::string& name,
