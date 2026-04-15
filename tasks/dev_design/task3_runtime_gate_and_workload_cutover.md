@@ -428,12 +428,14 @@ Normalized Tile TIR
 
 `Task 3` 的推进顺序固定为：
 
-- 这里的 `R0 / R1 / ...`
-  只保留给 `Task 3` roadmap 总优先级
-- `Task 3B` 这类局部 batch
-  统一用 `Tn.x`
+- 当前活动任务统一按
+  `Rn.m`
+  阅读和排序
+- `T3B.0-T3B.4`
+  这类 `T*`
+  只保留给已完成批次和旧引用
 
-1. **`T3C.0a / R0-close`: 拆出独立的 buffer effect / use-role analysis**
+1. **`R0.1`: 拆出独立的 buffer effect / use-role analysis**
    - 新 analysis pass 只负责从 anchored sub-TIR
      收集 execution-ordered buffer event facts：
      `defs / uses / write-effect / use-role / recurrence edge`
@@ -448,7 +450,9 @@ Normalized Tile TIR
      AnalyzeBlackholePipelineStages`
      可以继续存在为 probe/debug，
      但不能继续承担这组 owner fact
-2. **`T3C.0b / R0-close`: 拆出独立的 buffer liveness analysis**
+   - 旧文档别名：
+     `T3C.0a`
+2. **`R0.2`: 拆出独立的 buffer liveness analysis**
    - 新 liveness pass
      只消费
      execution-ordered `defs / uses`
@@ -460,7 +464,9 @@ Normalized Tile TIR
      `use-role`、
      merge/live-form contract
      这类别的层的概念
-3. **`T3C.0c / R0-close`: 让 materialization / source-live-form decision 成为独立 planner 决策**
+   - 旧文档别名：
+     `T3C.0b`
+3. **`R0.3`: 让 materialization / source-live-form decision 成为独立 planner 决策**
    - `buffer_materialization_contract /
      source live-form bridge`
      改为单独消费
@@ -471,29 +477,35 @@ Normalized Tile TIR
      移除混合式
      “看前序写入 + 看后序 cast consumer + 当场决定 contract”
      逻辑
-4. **`T3C.1 / R1-close`: 去掉 build/codegen 对 `blackhole.lowering_requirements` 的依赖**
+   - 旧文档别名：
+     `T3C.0c`
+4. **`R1.1`: 去掉 build/codegen 对 `blackhole.lowering_requirements` 的依赖**
    - 让 unsupported / bridge-spec /
      materialization gate
      回到 `TTProgram / ExecutableSpec`
      typed truth
-5. **`T3C.2 / R2-close`: 显式化 sync / ABI / execution owner**
+   - 旧文档别名：
+     `T2.5`
+5. **`R2.1`: 显式化 sync / ABI / execution owner**
    - `PlanTTSync / PlanTTABI / PlanTTExecution`
      要么落地成 pass，
      要么把当前 helper owner contract
      明确冻结下来，
      不再继续隐身在 `BuildTTProgram`
-6. **R3: `flash-attn` payoff**
+   - 旧文档别名：
+     `T3C.1`
+6. **`R3.1`: `flash-attn` payoff**
    - 再拿它验证 multi-op / multi-work /
      multi-phase data movement 的 admitted subset
-7. **R4: wider family cutover**
+7. **`R4.1`: wider family cutover**
    - `topk -> fusedmoe -> paged decode -> chunk recurrence`
-8. **R5: wider support surface**
+8. **`R5.1`: wider support surface**
    - 在 admitted subset 内逐步放宽
      copy / dataflow / wider communication
 
-### 5.1.1 `T3C.0` 的算法边界
+### 5.1.1 `R0.1-R0.3` 的算法边界
 
-`T3C.0`
+`R0.1-R0.3`
 的目标不是继续在旧链上补几个 helper，
 而是把这组关系按经典 compiler analysis
 切回独立层次：

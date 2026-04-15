@@ -392,7 +392,7 @@ AnalyzeSpatialStructureFacts
 `Task 2`
 还需要完成下面 2 项 closeout：
 
-1. **`T2.5`: 去掉 build/codegen/executable extraction 对 `blackhole.lowering_requirements` 的依赖**
+1. **`R1.1`（旧别名：`T2.5`）: 去掉 build/codegen/executable extraction 对 `blackhole.lowering_requirements` 的依赖**
    - unsupported-compute /
      bridge-spec /
      materialization gate
@@ -401,7 +401,7 @@ AnalyzeSpatialStructureFacts
    - 当前执行前置是
      `Task 3`
      的
-     `T3C.0a-T3C.0c`：
+     `R0.1-R0.3`：
      先把混在
      `blackhole.lowering_requirements`
      里的

@@ -11,9 +11,17 @@
 
 命名约定：
 
-- `R0 / R1 / ...` 表示当前 roadmap 总优先级
-- `Tn.x` 表示 task / batch 内部顺序
-  （例如 `T2.0`、`T3B.0`）
+- **当前活动任务顺序**统一写成 `Rn.m`
+  - `Rn`
+    表示 roadmap 阶段
+  - `.m`
+    表示该阶段内的当前执行顺序
+  - 例如：
+    `R0.1 -> R0.2 -> R0.3 -> R1.1`
+- `Tn.x`
+  只保留给历史 batch / 已完成清理项 /
+  代码 grep 兼容，
+  不再作为当前主阅读顺序
 
 ## 当前代码现实
 
@@ -263,18 +271,22 @@ Normalized Tile TIR
 
 ## 当前优先级
 
-1. **`T3C.0a / R0-close`: 拆出独立的 buffer effect / use-role analysis**
+1. **`R0.1`: 拆出独立的 buffer effect / use-role analysis**
    - 只从 anchored sub-TIR
      产出
      `defs / uses / write-effect / use-role / recurrence edge`
      facts
    - 不直接写 merge/live-form contract
-2. **`T3C.0b / R0-close`: 拆出独立的 buffer liveness analysis**
+   - 旧文档别名：
+     `T3C.0a`
+2. **`R0.2`: 拆出独立的 buffer liveness analysis**
    - 只消费
      `defs / uses + recurrence edge`
    - 用标准 backward dataflow
      计算 `live_in / live_out`
-3. **`T3C.0c / R0-close`: 把 materialization / source-live-form decision 移到独立 planner 阶段**
+   - 旧文档别名：
+     `T3C.0b`
+3. **`R0.3`: 把 materialization / source-live-form decision 移到独立 planner 阶段**
    - 由 planner
      消费
      `effect/use-role + liveness`
@@ -282,17 +294,23 @@ Normalized Tile TIR
    - 退役
      `blackhole.lowering_requirements`
      里当前混合式判定
-4. **`T2.5 / R1-close`: 去掉 build/codegen 对 `blackhole.lowering_requirements` 的依赖**
+   - 旧文档别名：
+     `T3C.0c`
+4. **`R1.1`: 去掉 build/codegen 对 `blackhole.lowering_requirements` 的依赖**
    - unsupported-compute / bridge-spec /
      materialization gate
      回收到 `TTProgram / ExecutableSpec`
-5. **`T3C.1 / R2-close`: 显式化 sync / ABI / execution owner**
+   - 旧文档别名：
+     `T2.5`
+5. **`R2.1`: 显式化 sync / ABI / execution owner**
    - `PlanTTSync -> PlanTTABI -> PlanTTExecution`
      要么落地成 pass，
      要么在文档和 gate 里明确仍属过渡实现
-6. **`R3`: `flash-attn` payoff**
-7. **`R4`: wider family cutover**
-8. **`R5`: wider support surface**
+   - 旧文档别名：
+     `T3C.1`
+6. **`R3.1`: `flash-attn` payoff**
+7. **`R4.1`: wider family cutover**
+8. **`R5.1`: wider support surface**
 
 最近完成的局部批次：
 
@@ -335,7 +353,7 @@ Normalized Tile TIR
     判定
     当前仍属于过渡实现；
     下一批
-    `T3C.0`
+    `R0.1-R0.3`
     会把它拆成
     独立的 effect/use-role analysis、
     独立 liveness pass
