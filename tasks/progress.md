@@ -92,15 +92,37 @@
       的实现细节存在，
       但不再以 public owner pass 身份对外暴露
 - `Task 3: ExecutableSpec / Leaf Reader Cutover`
-  - **状态**: 未开始
-  - **前置条件**
-    - `Task 2: TTProgram Owner Cutover`
-      已把 `TTProgram`
-      收成唯一 physical realization truth
+  - **状态**: 已完成
+  - **repo HEAD 已收口**
+    - build / codegen / runtime / `BlackholeModule`
+      已只消费
+      `tl.blackhole_executable`
+      与其内部
+      `ExecutableSpec`
+      投影，
+      不再读取
+      `tl.tt_program`
+      或
+      `blackhole.lowering_requirements`
+    - `MaterializeBlackholeExecutable`
+      现在承接
+      `TTProgram.payload`
+      里的 leaf-only build contracts，
+      包括
+      `buffer_tile_bridge_specs`
+      和
+      `unsupported_compute_ops`
+    - synthetic segment materialization
+      已改成只重建
+      segment-local
+      `tl.blackhole_executable`
+      视图，
+      不再在内部 leaf func
+      重新挂最小 `TTProgram`
 - `Legacy Protocol Deletion`
   - **状态**: 未开始
   - **前置条件**
-    - 前三项 Owner Cutover
+    - `Task 1 / Task 2 / Task 3`
       都已经站稳
 
 ## 3. 当前代码现实（以 repo HEAD 为准）
@@ -154,14 +176,13 @@ Normalized Tile TIR
   `TTBlockPlan / TTKernelPlan / TTTransportPlan /
    TTSyncPlan / TTABIPlan / TTExecutionPlan`
   这组显式 owner slice
-- `TTProgram`
-  现在同时携带
-  owner slice
-  和
-  compatibility payload，
-  其中 compatibility 字段只用于
-  当前 codegen / runtime / projection
-  的 leaf 读取
+- `TTProgram.payload`
+  现在只承接
+  executable writer
+  所需的 leaf projection contract；
+  真正的 leaf reader
+  已切到
+  `tl.blackhole_executable`
 - `blackhole.work_decomposition /
   blackhole.compute_regions /
   blackhole.pipeline_stages`
@@ -192,21 +213,16 @@ Normalized Tile TIR
 ## 5. 当前安排的下一批任务
 
 下一批任务固定切到
-`Task 3: ExecutableSpec / Leaf Reader Cutover`：
+`Legacy Protocol Deletion`：
 
 1. 显式拉出
-   `ExecutableSpec`
-   成为唯一 leaf projection
-2. 让 build / codegen / runtime / `BlackholeModule`
-   只读
-   `tl.blackhole_executable`
-   或其内部 `ExecutableSpec` 投影
-3. 删除 leaf reader
-   对 legacy gate attrs /
-   internal bridge payload /
-   TTProgram compatibility fallback
-   的依赖
-4. 在 leaf reader cutover 稳定后，
-   再继续清理
+   已失效的
+   legacy transition attrs /
+   helper bridge residue
+2. 继续清理
    `TTProgram`
    过渡期 compatibility residue
+3. 在 leaf reader cutover 站稳后，
+   再恢复更宽
+   workload payoff /
+   support surface

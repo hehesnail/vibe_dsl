@@ -34,6 +34,7 @@ from .common import (
 from .test_blackhole_copy_pipeline import (
     _extract_blackhole_executable_spec,
     _expected_launch_spec_for_core_type,
+    _rebuild_codegen_module_without_lowering_requirements,
     _rebuild_codegen_module_with_tt_program,
     _rebuild_tt_program_with_segment_plan,
     _refresh_tt_program_after_bridge_attr_mutation,
@@ -1448,6 +1449,26 @@ def test_blackhole_fragment_fill_cast_publish_exposes_buffer_tile_bridge_specs()
         assert int(spec["thread_extent"]) == 128
         assert int(spec["replicate_extent"]) == 1
         assert len(spec["inverse_logical_index_exprs"]) == 3
+
+
+def test_blackhole_fragment_fill_cast_publish_build_reads_executable_without_lowering_requirements():
+    kernel = fragment_fill_cast_publish_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = artifact.device_mod["main_kernel"]
+    assert "blackhole.lowering_requirements" in device_main.attrs
+
+    rebuilt = _rebuild_codegen_module_without_lowering_requirements(artifact)
+    executable_spec = rebuilt.get_function_metadata("main")
+    compute_kernel = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="compute", core_type="trisc"
+    )
+
+    assert compute_kernel["source_code"]
+    assert executable_spec["cb_configs"]
 
 
 def test_blackhole_gemm_direct_runtime_supports_transpose_a_compute_contract():

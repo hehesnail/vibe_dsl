@@ -1683,8 +1683,7 @@ static bool IsBlackholeDeviceKernel(const tir::PrimFunc& f) {
   if (calling_conv.defined()) {
     return calling_conv == CallingConv::kDeviceKernelLaunch;
   }
-  return !tl::tt_program_projection::GetBlackholeExecutableProjection(f).empty() ||
-         static_cast<bool>(tl::tt_program_projection::GetTTProgram(f));
+  return !tl::tt_program_projection::GetBlackholeExecutableProjection(f).empty();
 }
 
 static bool IsBlackholeHostEntry(const tir::PrimFunc& f) {
@@ -1711,40 +1710,19 @@ static void ValidateExtractedCorePlan(const CorePlan& core_plan, const std::stri
 
 static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f,
                                                           const std::string& entry_name) {
-  if (auto lowering_requirements =
-          f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.lowering_requirements")) {
-    std::vector<std::string> unsupported_ops;
-    std::unordered_set<std::string> seen_ops;
-    if (auto compute_ops = lowering_requirements.value().Get("compute_op_kinds")) {
-      for (const auto& item : Downcast<ffi::Array<ffi::Any>>(compute_ops.value())) {
-        const std::string op_name = Downcast<String>(item);
-        if ((op_name == "reduction" || op_name == "broadcast") &&
-            seen_ops.insert(op_name).second) {
-          unsupported_ops.push_back(op_name);
-        }
+  auto unsupported_ops = tl::tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kUnsupportedComputeOps);
+  if (!unsupported_ops.empty()) {
+    std::ostringstream os;
+    for (int i = 0; i < unsupported_ops.size(); ++i) {
+      if (i != 0) {
+        os << ", ";
       }
+      os << Downcast<String>(unsupported_ops[i]);
     }
-    if (auto pointwise_ops = lowering_requirements.value().Get("pointwise_op_kinds")) {
-      for (const auto& item : Downcast<ffi::Array<ffi::Any>>(pointwise_ops.value())) {
-        const std::string op_name = Downcast<String>(item);
-        if ((op_name == "fill" || op_name == "max" || op_name == "add" ||
-             op_name == "cast") &&
-            seen_ops.insert(op_name).second) {
-          unsupported_ops.push_back(op_name);
-        }
-      }
-    }
-    if (!unsupported_ops.empty()) {
-      std::ostringstream os;
-      for (size_t i = 0; i < unsupported_ops.size(); ++i) {
-        if (i != 0) {
-          os << ", ";
-        }
-        os << unsupported_ops[i];
-      }
-      ICHECK(false) << "Blackhole compute subset lowering is not implemented for ops ["
-                    << os.str() << "]";
-    }
+    ICHECK(false) << "Blackhole compute subset lowering is not implemented for ops ["
+                  << os.str() << "]";
   }
 
   ExecutableSpec spec;
@@ -2732,8 +2710,9 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
   tir::PrimFunc segment_func = f;
   segment_func.CopyOnWrite()->body = extractor(f->body);
 
-  const tvm::tl::TTProgram original_program = tl::tt_program_projection::RequireTTProgram(
-      f, "Blackhole segment materialization");
+  const ffi::Map<ffi::String, ffi::Any> original_executable =
+      tl::tt_program_projection::RequireBlackholeExecutableProjection(
+          f, "Blackhole segment materialization");
   const ffi::String kernel_name =
       segment.name.empty() ? ffi::String(segment.kind) : ffi::String(segment.name);
   const ffi::String kernel_kind =
@@ -2796,39 +2775,21 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
     encoded_segment.Set("compute_config", compute_config);
   }
 
-  ffi::Array<tvm::tl::TTKernel> kernels;
-  kernels.push_back(
-      tvm::tl::TTKernel(kernel_name, kernel_kind, kernel_core_type, /*abi_plan_index=*/0,
-                        encoded_segment));
-  ffi::Array<tvm::tl::TTABIPlan> abi_plans;
-  abi_plans.push_back(tvm::tl::TTABIPlan(
-      ffi::String("abi_0"), kernel_name, encoded_runtime_args, encoded_common_runtime_args,
-      encoded_compile_time_arg_specs, encoded_accessors, encoded_semaphore_bindings,
-      encoded_segment));
-  ffi::Array<ffi::String> execution_kernel_names;
-  execution_kernel_names.push_back(kernel_name);
-  ffi::Array<Integer> execution_phase_indices;
-  execution_phase_indices.push_back(Integer(0));
-  ffi::Array<tvm::tl::TTExecutionPlan> execution_plans;
-  execution_plans.push_back(tvm::tl::TTExecutionPlan(
-      ffi::String("segment_execution"), execution_kernel_names, execution_phase_indices,
-      ffi::Map<ffi::String, ffi::Any>()));
-  ffi::Array<tvm::tl::TTKernelPlan> kernel_plans;
-  kernel_plans.push_back(tvm::tl::TTKernelPlan(
-      kernel_name, kernel_kind, kernel_core_type, /*block_plan_index=*/0, /*abi_plan_index=*/0,
-      encoded_segment));
-  const tvm::tl::TTProgram segment_program =
-      tvm::tl::TTProgram(original_program->entry_name, original_program->member_func,
-                         original_program->block_plans, kernel_plans,
-                         original_program->transport_plans, original_program->sync_plans,
-                         abi_plans, execution_plans, kernels, original_program->core_groups,
-                         original_program->cb_plans, original_program->semaphore_plans,
-                         original_program->compute_sync_plans, original_program->dst_layout_plans,
-                         original_program->payload);
+  ffi::Map<ffi::String, ffi::Any> segment_executable;
+  for (const auto& kv : original_executable) {
+    if (kv.first ==
+        ffi::String(tl::tt_program_projection::executable_key::kSegmentPlan)) {
+      continue;
+    }
+    segment_executable.Set(kv.first, kv.second);
+  }
+  ffi::Array<ffi::Any> segment_plan;
+  segment_plan.push_back(encoded_segment);
+  segment_executable.Set(
+      ffi::String(tl::tt_program_projection::executable_key::kSegmentPlan), segment_plan);
 
   ffi::Map<ffi::String, ffi::Any> attrs;
   static const std::unordered_set<std::string> kSyntheticProjectionAttrs = {
-      tvm::tl::attr::kTLTTProgram,
       tvm::tl::attr::kTLBlackholeExecutable,
   };
   if (f->attrs.defined()) {
@@ -2839,9 +2800,7 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
       attrs.Set(kv.first, kv.second);
     }
   }
-  attrs.Set(tvm::tl::attr::kTLTTProgram, segment_program);
-  attrs.Set(tvm::tl::attr::kTLBlackholeExecutable,
-            tl::tt_program_projection::MaterializeBlackholeExecutableProjection(segment_program));
+  attrs.Set(tvm::tl::attr::kTLBlackholeExecutable, segment_executable);
   segment_func.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
   return segment_func;
 }
@@ -3022,10 +2981,6 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
         ICHECK(false) << "Blackhole build requires tl.blackhole_executable on device PrimFunc "
                       << gvar->name_hint;
       }
-      if (!tl::tt_program_projection::GetTTProgram(f)) {
-        ICHECK(false) << "Blackhole build requires tl.tt_program on device PrimFunc "
-                      << gvar->name_hint;
-      }
     }
     const std::string func_name = GetPrimFuncName(gvar, f);
     if (IsBlackholeDeviceKernel(f)) {
@@ -3116,10 +3071,6 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     if (is_blackhole_prim_func && !IsBlackholeHostEntry(f)) {
       if (tl::tt_program_projection::GetBlackholeExecutableProjection(f).empty()) {
         ICHECK(false) << "Blackhole build requires tl.blackhole_executable on device PrimFunc "
-                      << gvar->name_hint;
-      }
-      if (!tl::tt_program_projection::GetTTProgram(f)) {
-        ICHECK(false) << "Blackhole build requires tl.tt_program on device PrimFunc "
                       << gvar->name_hint;
       }
     }

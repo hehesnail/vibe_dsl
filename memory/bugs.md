@@ -181,6 +181,47 @@
 - **教训**: 一旦 typed target truth 建立，generic projection helper
   不能再偷偷 multiplex 两套真源
 
+#### leaf reader 所需 gate data 不能继续挂在 `blackhole.lowering_requirements`
+
+- **症状**:
+  - strip 掉 device func 上的
+    `blackhole.lowering_requirements`
+    之后，
+    build/codegen 会丢
+    `buffer_tile_bridge_specs`
+    或静默放过
+    unsupported compute subset
+- **根因**:
+  - leaf-only contract
+    没有先进入
+    `TTProgram.payload`
+    和
+    `tl.blackhole_executable`
+  - build/codegen/runtime
+    仍然直接消费
+    `blackhole.lowering_requirements`
+- **修法**:
+  - 在 `PlanTTCompute`
+    把
+    `buffer_tile_bridge_specs /
+     unsupported_compute_ops`
+    上提进
+    `TTProgram.payload`
+  - `MaterializeBlackholeExecutable`
+    再把它们投影到
+    `tl.blackhole_executable`
+  - leaf reader
+    统一改读 executable projection
+- **教训**:
+  - 只要字段需要越过
+    `BuildTTProgram`
+    继续活到 build/codegen/runtime，
+    它就已经是 leaf contract，
+    必须变成
+    `TTProgram / ExecutableSpec`
+    的显式 truth，
+    不能继续寄生在 lowering attr 上
+
 #### host/device symbol 对齐不能把优化后的 device body 回退成 source body
 
 - **症状**: copy pipeline 在 codegen/build 阶段突然报

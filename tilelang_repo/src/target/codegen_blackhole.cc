@@ -182,49 +182,26 @@ std::vector<ThreadEmissionPiece> BuildThreadEmissionPieces(const tvm::tir::Stmt&
 }
 
 void ValidateNoUnsupportedFragmentRequirementsForCodegen(const tvm::tir::PrimFunc& f) {
-  auto lowering_requirements =
-      f->GetAttr<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>("blackhole.lowering_requirements");
-  if (!lowering_requirements) {
+  auto unsupported_ops = tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole codegen", tt_program_projection::executable_key::kUnsupportedComputeOps);
+  if (unsupported_ops.empty()) {
     return;
   }
 
-  std::vector<std::string> unsupported_ops;
-  std::unordered_set<std::string> seen_ops;
-  if (auto compute_ops = lowering_requirements.value().Get("compute_op_kinds")) {
-    for (const auto& item : Downcast<tvm::ffi::Array<tvm::ffi::Any>>(compute_ops.value())) {
-      const std::string op_name = Downcast<tvm::ffi::String>(item);
-      if ((op_name == "reduction" || op_name == "broadcast") &&
-          seen_ops.insert(op_name).second) {
-        unsupported_ops.push_back(op_name);
-      }
+  std::ostringstream os;
+  for (int i = 0; i < unsupported_ops.size(); ++i) {
+    if (i != 0) {
+      os << ", ";
     }
+    os << Downcast<tvm::ffi::String>(unsupported_ops[i]);
   }
-  if (auto pointwise_ops = lowering_requirements.value().Get("pointwise_op_kinds")) {
-    for (const auto& item : Downcast<tvm::ffi::Array<tvm::ffi::Any>>(pointwise_ops.value())) {
-      const std::string op_name = Downcast<tvm::ffi::String>(item);
-      if ((op_name == "fill" || op_name == "max" || op_name == "add" || op_name == "cast") &&
-          seen_ops.insert(op_name).second) {
-        unsupported_ops.push_back(op_name);
-      }
-    }
-  }
-  if (!unsupported_ops.empty()) {
-    std::ostringstream os;
-    for (size_t i = 0; i < unsupported_ops.size(); ++i) {
-      if (i != 0) {
-        os << ", ";
-      }
-      os << unsupported_ops[i];
-    }
-    ICHECK(false) << "Blackhole compute subset lowering is not implemented for ops ["
-                  << os.str() << "]";
-  }
+  ICHECK(false) << "Blackhole compute subset lowering is not implemented for ops ["
+                << os.str() << "]";
 }
 
 ffi::Array<ffi::Any> AggregateSegmentRuntimeArgsForCodegen(const tvm::tir::PrimFunc& f) {
   ffi::Array<ffi::Any> aggregated;
-  auto segment_plan =
-      tt_program_projection::GetSegmentPlanFromTTProgram(f, "Blackhole codegen");
+  auto segment_plan = tt_program_projection::GetSegmentPlanFromExecutable(f, "Blackhole codegen");
   if (segment_plan.empty()) {
     return aggregated;
   }
@@ -270,12 +247,13 @@ ffi::Array<ffi::Any> GetRuntimeArgsForCodegen(const tvm::tir::PrimFunc& f) {
 }
 
 ffi::Array<ffi::Any> GetPerWorkArgSpecsForCodegen(const tvm::tir::PrimFunc& f) {
-  auto program = tt_program_projection::RequireTTProgram(f, "Blackhole codegen");
-  if (program->kernels.size() != 1) {
+  auto segment_plan = tt_program_projection::GetSegmentPlanFromExecutable(f, "Blackhole codegen");
+  if (segment_plan.size() != 1) {
     return ffi::Array<ffi::Any>();
   }
-  const auto& kernel_payload = program->kernels[0]->payload;
-  if (auto v = kernel_payload.Get(
+  auto segment = segment_plan[0].as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+      ffi::Map<ffi::String, ffi::Any>());
+  if (auto v = segment.Get(
           ffi::String(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs))) {
     return Downcast<ffi::Array<ffi::Any>>(v.value());
   }
@@ -283,25 +261,26 @@ ffi::Array<ffi::Any> GetPerWorkArgSpecsForCodegen(const tvm::tir::PrimFunc& f) {
 }
 
 ffi::Array<ffi::Any> GetCBConfigsForCodegen(const tvm::tir::PrimFunc& f) {
-  return tt_program_projection::GetCBConfigsFromTTProgram(f, "Blackhole codegen");
+  return tt_program_projection::GetCBConfigsFromExecutable(f, "Blackhole codegen");
 }
 
 ffi::Map<ffi::String, ffi::Any> GetCorePlanForCodegen(const tvm::tir::PrimFunc& f) {
-  return tt_program_projection::GetCorePlanFromTTProgram(f, "Blackhole codegen");
+  return tt_program_projection::GetCorePlanFromExecutable(f, "Blackhole codegen");
 }
 
 ffi::Array<ffi::Any> GetComputeEpilogueOpsForCodegen(const tvm::tir::PrimFunc& f) {
-  auto program = tt_program_projection::RequireTTProgram(f, "Blackhole codegen");
-  if (auto value = program->payload.Get("compute_epilogue_ops")) {
-    return Downcast<ffi::Array<ffi::Any>>(value.value());
-  }
-  return ffi::Array<ffi::Any>();
+  return tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole codegen", tt_program_projection::executable_key::kComputeEpilogueOps);
 }
 
 std::string GetCoreTypeForCodegen(const tvm::tir::PrimFunc& f) {
-  auto program = tt_program_projection::RequireTTProgram(f, "Blackhole codegen");
-  if (!program->kernels.empty()) {
-    return program->kernels[0]->core_type;
+  auto segment_plan = tt_program_projection::GetSegmentPlanFromExecutable(f, "Blackhole codegen");
+  if (!segment_plan.empty()) {
+    auto segment = segment_plan[0].as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+        ffi::Map<ffi::String, ffi::Any>());
+    if (auto value = segment.Get("core_type")) {
+      return Downcast<ffi::String>(value.value());
+    }
   }
   return "";
 }
@@ -806,17 +785,12 @@ void CodeGenBlackhole::LoadBufferTileBridgeSpecs(const tvm::tir::PrimFunc& f) {
     }
   };
 
-  if (auto lowering_requirements =
-          f->GetAttr<ffi::Map<ffi::String, ffi::Any>>("blackhole.lowering_requirements")) {
-    if (auto maybe_specs =
-            lowering_requirements.value().Get(ffi::String(schema_key::kBufferTileBridgeSpecs))) {
-      for (const ffi::Any& spec_any : Downcast<ffi::Array<ffi::Any>>(maybe_specs.value())) {
-        auto spec = spec_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-            ffi::Map<ffi::String, ffi::Any>());
-        if (!spec.empty()) {
-          ingest_spec(spec);
-        }
-      }
+  for (const ffi::Any& spec_any : tt_program_projection::GetExecutableArrayField(
+           f, "Blackhole codegen", tt_program_projection::executable_key::kBufferTileBridgeSpecs)) {
+    auto spec = spec_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+        ffi::Map<ffi::String, ffi::Any>());
+    if (!spec.empty()) {
+      ingest_spec(spec);
     }
   }
 

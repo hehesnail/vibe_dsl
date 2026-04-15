@@ -124,6 +124,34 @@ void ValidateProgramEpilogueOps(const Map<String, Any>& payload, const char* key
   }
 }
 
+void ValidateBufferTileBridgeSpecs(const Map<String, Any>& payload) {
+  if (auto specs_any = payload.Get(String(schema_key::kBufferTileBridgeSpecs))) {
+    Array<Any> specs = Downcast<Array<Any>>(specs_any.value());
+    for (const Any& spec_any : specs) {
+      Map<String, Any> spec = AsMap(spec_any);
+      ICHECK(!spec.empty()) << "TTProgram payload buffer_tile_bridge_specs entries must be maps";
+      ICHECK(HasKey(spec, "buffer"))
+          << "TTProgram payload buffer_tile_bridge_specs requires buffer";
+      ICHECK(HasKey(spec, "shape"))
+          << "TTProgram payload buffer_tile_bridge_specs requires shape";
+      ICHECK(HasKey(spec, "local_shape"))
+          << "TTProgram payload buffer_tile_bridge_specs requires local_shape";
+    }
+  }
+}
+
+void ValidateUnsupportedComputeOps(const Map<String, Any>& payload) {
+  if (auto ops_any = payload.Get(String("unsupported_compute_ops"))) {
+    Array<Any> ops = Downcast<Array<Any>>(ops_any.value());
+    for (const Any& op_any : ops) {
+      auto op = op_any.as<String>();
+      ICHECK(op) << "TTProgram payload unsupported_compute_ops entries must be strings";
+      ICHECK(!op.value().empty())
+          << "TTProgram payload unsupported_compute_ops entries must be non-empty";
+    }
+  }
+}
+
 void ValidateKernelPayload(const TTKernel& kernel) {
   Map<String, Any> payload = kernel->payload;
   ICHECK(HasKey(payload, "launch_spec"))
@@ -230,6 +258,8 @@ void ValidateProgramPayload(const TTProgram& program) {
     }
   }
   ValidateProgramEpilogueOps(payload, "compute_epilogue_ops", "TTProgram payload compute_epilogue_ops");
+  ValidateBufferTileBridgeSpecs(payload);
+  ValidateUnsupportedComputeOps(payload);
 }
 
 void CheckTTProgram(const TTProgram& program) {

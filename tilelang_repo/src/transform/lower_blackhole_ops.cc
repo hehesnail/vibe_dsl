@@ -1273,6 +1273,31 @@ static bool HasUnsupportedComputeOpsInRequirements(const Map<String, Any>& lower
   return false;
 }
 
+static std::vector<std::string> CollectLeafUnsupportedComputeOps(
+    const Map<String, Any>& lowering_requirements) {
+  std::vector<std::string> unsupported_ops;
+  std::unordered_set<std::string> seen_ops;
+  if (auto compute_ops = lowering_requirements.Get("compute_op_kinds")) {
+    for (const auto& item : Downcast<Array<Any>>(compute_ops.value())) {
+      const std::string op_name = Downcast<String>(item);
+      if ((op_name == "reduction" || op_name == "broadcast") &&
+          seen_ops.insert(op_name).second) {
+        unsupported_ops.push_back(op_name);
+      }
+    }
+  }
+  if (auto pointwise_ops = lowering_requirements.Get("pointwise_op_kinds")) {
+    for (const auto& item : Downcast<Array<Any>>(pointwise_ops.value())) {
+      const std::string op_name = Downcast<String>(item);
+      if ((op_name == "fill" || op_name == "max" || op_name == "add" || op_name == "cast") &&
+          seen_ops.insert(op_name).second) {
+        unsupported_ops.push_back(op_name);
+      }
+    }
+  }
+  return unsupported_ops;
+}
+
 namespace {
 bool IsFragmentFillValue(const PrimExpr& expr);
 bool HasResidualFragmentFill(const Stmt& body);
@@ -2350,6 +2375,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   StoreSegmentPlan(new_func);
   StoreAccessorDescriptors(new_func);
   StoreGemmContract(new_func);
+  StoreLeafExecutableContracts(lowering_requirements);
 
   if (!lowering_requirements.empty()) {
     Map<String, Any> attrs =
@@ -3818,6 +3844,30 @@ static bool IsPureCopyLoopNest(const Stmt& stmt) {
     return store->value.as<BufferLoadNode>() != nullptr;
   }
   return false;
+}
+
+void PlanTTKernelABI::StoreLeafExecutableContracts(
+    const Map<String, Any>& lowering_requirements) {
+  if (lowering_requirements.empty()) {
+    return;
+  }
+
+  Map<String, Any> tt_program_payload = tt_program_payload_;
+  if (auto bridge_specs = lowering_requirements.Get(String(schema_key::kBufferTileBridgeSpecs))) {
+    tt_program_payload.Set(String(schema_key::kBufferTileBridgeSpecs), bridge_specs.value());
+  }
+
+  const std::vector<std::string> unsupported_ops =
+      CollectLeafUnsupportedComputeOps(lowering_requirements);
+  if (!unsupported_ops.empty()) {
+    Array<Any> encoded_unsupported_ops;
+    for (const std::string& op_name : unsupported_ops) {
+      encoded_unsupported_ops.push_back(String(op_name));
+    }
+    tt_program_payload.Set(String("unsupported_compute_ops"), encoded_unsupported_ops);
+  }
+
+  tt_program_payload_ = tt_program_payload;
 }
 
 void PlanTTKernelABI::RecordStagedCopyBufferBinding(const BufferStoreNode* op,

@@ -39,6 +39,8 @@ constexpr const char* kMultiGemmContracts = "multi_gemm_contracts";
 constexpr const char* kMultiComputeContracts = "multi_compute_contracts";
 constexpr const char* kComputeEpilogueOps = "compute_epilogue_ops";
 constexpr const char* kDirectRuntimeUnsupportedReasons = "direct_runtime_unsupported_reasons";
+constexpr const char* kBufferTileBridgeSpecs = ::tvm::tl::schema_key::kBufferTileBridgeSpecs;
+constexpr const char* kUnsupportedComputeOps = "unsupported_compute_ops";
 }  // namespace executable_key
 
 inline Map<String, Any> AsMap(const Any& any) {
@@ -241,6 +243,8 @@ inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram
   copy_payload_field(executable_key::kMultiComputeContracts);
   copy_payload_field(executable_key::kComputeEpilogueOps);
   copy_payload_field(executable_key::kDirectRuntimeUnsupportedReasons);
+  copy_payload_field(executable_key::kBufferTileBridgeSpecs);
+  copy_payload_field(executable_key::kUnsupportedComputeOps);
   return executable;
 }
 
@@ -264,6 +268,42 @@ inline Map<String, Any> RequireBlackholeExecutableProjection(const tir::PrimFunc
   ICHECK(!executable.empty())
       << consumer << " requires tl.blackhole_executable for executable-writer cutover";
   return executable;
+}
+
+inline Array<Any> GetExecutableArrayField(const Map<String, Any>& executable, const char* key) {
+  if (auto value = executable.Get(String(key))) {
+    return Downcast<Array<Any>>(value.value());
+  }
+  return Array<Any>();
+}
+
+inline Array<Any> GetExecutableArrayField(const tir::PrimFunc& func, const char* consumer,
+                                          const char* key) {
+  return GetExecutableArrayField(RequireBlackholeExecutableProjection(func, consumer), key);
+}
+
+inline Map<String, Any> GetExecutableMapField(const Map<String, Any>& executable, const char* key) {
+  if (auto value = executable.Get(String(key))) {
+    return AsMap(value.value());
+  }
+  return Map<String, Any>();
+}
+
+inline Map<String, Any> GetExecutableMapField(const tir::PrimFunc& func, const char* consumer,
+                                              const char* key) {
+  return GetExecutableMapField(RequireBlackholeExecutableProjection(func, consumer), key);
+}
+
+inline Array<Any> GetSegmentPlanFromExecutable(const tir::PrimFunc& func, const char* consumer) {
+  return GetExecutableArrayField(func, consumer, executable_key::kSegmentPlan);
+}
+
+inline Array<Any> GetCBConfigsFromExecutable(const tir::PrimFunc& func, const char* consumer) {
+  return GetExecutableArrayField(func, consumer, executable_key::kCBConfigs);
+}
+
+inline Map<String, Any> GetCorePlanFromExecutable(const tir::PrimFunc& func, const char* consumer) {
+  return GetExecutableMapField(func, consumer, executable_key::kCorePlan);
 }
 
 }  // namespace tt_program_projection

@@ -320,6 +320,23 @@ def _rebuild_codegen_module_without_tt_program(artifact):
     )
 
 
+def _rebuild_codegen_module_without_lowering_requirements(artifact):
+    device_mod = artifact.device_mod
+    rewritten = {}
+    for gvar, func in device_mod.functions.items():
+        if func.attrs and "blackhole.lowering_requirements" in func.attrs:
+            func = func.without_attr("blackhole.lowering_requirements")
+        rewritten[gvar] = func
+    target = Target("blackhole")
+    build_mod = merge_ir_modules(
+        artifact.host_mod,
+        tvm.IRModule(rewritten, global_infos=device_mod.global_infos),
+    )
+    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
+        build_mod, target
+    )
+
+
 def _rebuild_codegen_module_without_copy_runtime_args(artifact):
     def mutate(tt_program):
         rebuilt_kernels = []
@@ -772,7 +789,7 @@ def test_blackhole_copy_buffer_materialization_specs_are_exposed():
     }
 
 
-def test_blackhole_copy_build_reads_tt_program_without_legacy_projection_attrs():
+def test_blackhole_copy_build_reads_executable_without_legacy_projection_attrs():
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     target = Target("blackhole")
 
@@ -806,15 +823,22 @@ def test_blackhole_copy_build_reads_tt_program_without_legacy_projection_attrs()
     assert executable_spec["core_plan"]
 
 
-def test_blackhole_copy_build_rejects_missing_tt_program_even_with_legacy_attrs():
+def test_blackhole_copy_build_reads_executable_without_tt_program():
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     target = Target("blackhole")
 
     with target:
         artifact = lower(kernel, target=target)
 
-    with pytest.raises(Exception, match="requires tl.tt_program"):
-        _rebuild_codegen_module_without_tt_program(artifact)
+    stripped_mod = _rebuild_codegen_module_without_tt_program(artifact)
+    executable_spec = stripped_mod.get_function_metadata("main")
+    kernel_spec = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="fused_dataflow", core_type="brisc"
+    )
+
+    assert kernel_spec["runtime_args"]
+    assert executable_spec["cb_configs"]
+    assert executable_spec["core_plan"]
 
 
 def test_blackhole_grid_indexed_copy_build_rejects_top_level_per_work_payload_fallback():

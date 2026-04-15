@@ -244,6 +244,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Store per-segment accessor descriptors for dataflow kernels */
   void StoreAccessorDescriptors(tvm::tir::PrimFunc& func);
 
+  /*! \brief Store leaf-only build/codegen contracts into TTProgram payload. */
+  void StoreLeafExecutableContracts(
+      const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>& lowering_requirements);
+
   /*! \brief Encode current lowering-time accessor descriptors as TIR attrs */
   tvm::ffi::Array<tvm::ffi::Any> EncodeAccessorDescriptors(const std::string& segment_kind) const;
 

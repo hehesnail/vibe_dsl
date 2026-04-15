@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档角色**: `Task 3: ExecutableSpec / Leaf Reader Cutover` 文档
-- **当前状态**: `2026-04-16` 活动设计文档
+- **当前状态**: `2026-04-16` 已完成（repo HEAD）
 - **任务链位置**:
   `Task 1: SpatialPlan Owner Cutover`
   和
@@ -104,18 +104,29 @@ support surface 扩张只能经由：
 
 ## 6. 当前执行重点
 
-`Task 3`
-当前不以扩 workload family 为主，
-而是先把 leaf gate 收口。
+repo HEAD 当前已经完成的 leaf cutover：
 
-当前优先级：
-
-1. build/codegen/runtime
-   停止读取 legacy gate attrs
-2. `PlanTTSync / PlanTTABI / PlanTTExecution`
-   独立站成 owner pass
-3. 在此基础上再恢复
-   `flash-attn` payoff 与 wider family
+1. build / codegen / runtime / `BlackholeModule`
+   只读
+   `tl.blackhole_executable`
+   与其内部
+   `ExecutableSpec`
+   投影
+2. leaf-only build contracts
+   已从
+   `blackhole.lowering_requirements`
+   上提到
+   `TTProgram.payload`
+   并经
+   `MaterializeBlackholeExecutable`
+   投影到
+   `tl.blackhole_executable`
+3. synthetic segment materialization
+   只重建
+   segment-local executable
+   视图，
+   不再给内部 leaf func
+   回挂最小 `TTProgram`
 
 ## 7. 完成判定
 
@@ -133,6 +144,8 @@ support surface 扩张只能经由：
    已经回到
    `SpatialPlan -> TTProgram -> ExecutableSpec`
    这条主链上进行
+
+repo HEAD 对上述四项完成判定都已满足。
 
 ## 8. Workload 承接顺序
 

@@ -169,6 +169,14 @@
   `gemm_contract / compute_contract / direct_runtime_unsupported_reasons`）
   一旦进入 runtime/codegen 正式消费面，就应提升进 `TTProgram.payload`；
   bridge attr 只能留作 compatibility fallback
+- leaf-only build/codegen gate data（如
+  `buffer_tile_bridge_specs / unsupported_compute_ops`）
+  也一样：
+  需要先进入 `TTProgram.payload`，
+  再由 `MaterializeBlackholeExecutable`
+  投影到 `tl.blackhole_executable`；
+  leaf reader 不应再直接摸
+  `blackhole.lowering_requirements`
 - 这类 function-level contract 若先在 device `ExecutableSpec` 上补充，
   host entry metadata 也必须同步拷回；否则 Python/runtime gate 仍会看见过时视图，
   以为 kernel 没有 unsupported reason
@@ -178,8 +186,11 @@
   必须拆成 `TTProgram`-only reader 与本地 materialization helper，
   否则会把单一真源再次偷偷变成双真源
 - synthetic segment / internal kernel emission 也应遵守同一规则：
-  如果内部还需要重建 target-truth，就直接挂最小单-kernel `TTProgram`，
-  不要再把 `segment/runtime/cb/core` 重新降回局部 `blackhole.*` attrs
+  在 `ExecutableSpec` leaf cutover 之后，
+  内部 leaf func
+  只应重建最小单-segment `tl.blackhole_executable` 视图；
+  不要再回挂 `TTProgram`
+  或重新降回局部 `blackhole.*` attrs
 - per-work/access truth 一旦 formalize 成 `per_work_arg_specs`，
   就要先 canonicalize 成 kernel-local `TTKernel / ExecutableSpec` contract；
   codegen/runtime 只能解释 `value_kind`，不能再按 arg kind 名字推语义
@@ -256,8 +267,14 @@
   “单波次 one-work-per-core” 假设；对还没把 `work_count`
   下沉成 device-side loop contract 的 executable，至少要按 packet truth
   做 repeated launch / wave scheduling，避免同一 core 的 runtime args 被后写覆盖
-- 一旦 reader-side cutover 成立，原始 device build 输入就应硬要求
-  `tl.tt_program`；不要让 build 在缺失 TT truth 时再悄悄回退到 legacy attrs
+- 一旦 `ExecutableSpec / Leaf Reader Cutover` 成立，
+  原始 device build/codegen/runtime 输入就应硬要求
+  `tl.blackhole_executable`；
+  `tl.tt_program`
+  和
+  `blackhole.lowering_requirements`
+  只能停留在上游 owner / planner / writer 边界，
+  不应再进入 leaf reader
 
 ## 6. analysis / lowering / planner / codegen 模式
 
