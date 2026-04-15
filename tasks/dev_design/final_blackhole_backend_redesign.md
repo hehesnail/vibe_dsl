@@ -321,6 +321,17 @@ legacy transition attrs / helper bridge / payload bag
 里的 preparatory substeps，
 不再单独充当顶层 roadmap
 
+当前活动设计文档按下面顺序约束实现：
+
+1. `task0_ir_layering_root_cause.md`
+   - 固定根因和 owner 边界判断
+2. `task1_spatial_plan_companion.md`
+   - 固定 `SpatialPlan owner cutover`
+3. `task2_ttprogram_companion_cutover.md`
+   - 固定 `TTProgram owner cutover`
+4. `task3_runtime_gate_and_workload_cutover.md`
+   - 固定 `ExecutableSpec / leaf reader cutover`
+
 ## 8. 完成判定
 
 第一性原理目标完成，

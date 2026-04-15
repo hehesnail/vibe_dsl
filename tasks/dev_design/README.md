@@ -51,9 +51,9 @@ Normalized Tile TIR
 |------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计；定义长期层边界、validator 纪律、rewrite 方向 |
 | `task0_ir_layering_root_cause.md` | 根因诊断与研究结论；解释为什么必须把中间 spatial/dataflow owner layer 立起来 |
-| `task1_spatial_plan_companion.md` | `SpatialPlan` 设计；定义 virtual spatial/dataflow program 的 object set 与 validator |
-| `task2_ttprogram_companion_cutover.md` | `TTProgram` 设计；定义 physical realization owner objects、planner pass 与 reader/writer 边界 |
-| `task3_runtime_gate_and_workload_cutover.md` | runtime/codegen/build gate、support surface 和 legacy attr 退场顺序 |
+| `task1_spatial_plan_companion.md` | `SpatialPlan owner cutover`；定义 virtual spatial/dataflow program 的 object set、validator 和当前执行切片 |
+| `task2_ttprogram_companion_cutover.md` | `TTProgram owner cutover`；定义 physical realization owner objects、planner pass 与完成判定 |
+| `task3_runtime_gate_and_workload_cutover.md` | `ExecutableSpec / leaf reader cutover`；定义 reader 纪律、workload 恢复顺序与完成判定 |
 | `blackhole_first_principles_protocol_audit.md` | disposition table；列出现存 fake/legacy protocol 的去留与迁移落点 |
 
 ## 4. 当前执行优先级

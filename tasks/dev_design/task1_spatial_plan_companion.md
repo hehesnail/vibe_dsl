@@ -1,8 +1,8 @@
-# Task 1: SpatialPlan 与 Virtual Layer 边界
+# Task 1: SpatialPlan Owner Cutover
 
 ## 基本信息
 
-- **文档角色**: `Task 1` 的 `SpatialPlan` 设计文档
+- **文档角色**: `Task 1` 的 `SpatialPlan owner cutover` 设计文档
 - **当前状态**: `2026-04-16` 活动设计文档
 - **任务链位置**: `Normalized Tile TIR -> SpatialPlan -> TTProgram`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -222,12 +222,44 @@ validator 失败时必须 fail-closed。
   - 不属于 `SpatialPlan`；
     归 `TTBlockPlan / TTExecutionPlan`
 
-## 8. 当前实现方向
+## 8. 完成判定
+
+`Task 1`
+只有在下面这些条件同时满足后才算完成：
+
+1. `SpatialPlan`
+   的 primary owner object
+   已经收成
+   `ExecutionUnit / DataflowEdge / LayoutSpec / PhasePlan / ValidatedHintSet`
+2. `ValidateSpatialPlan`
+   已落地，
+   并成为 TT planner 的正式前置 gate
+3. 现存
+   `work_decomposition / compute_regions / pipeline_stages`
+   这类过渡 surface
+   已经降成 projection / migration residue，
+   不再承担主 owner 身份
+4. 下游 `PlanTT*`
+   读取 `SpatialPlan`
+   主 truth，
+   而不是继续从 fake protocol 恢复 virtual spatial/dataflow truth
+
+## 9. 当前执行切片
 
 `Task 1` 的代码方向固定为：
 
 1. 扩 `SpatialPlan` object model
+   - 先把
+     `ExecutionClosure / ClosureBoundary`
+     收成
+     `ExecutionUnit / DataflowEdge`
 2. 保留 legacy compatibility projection
+   - 但只保留 projection 身份，
+     不再反向定义主 schema
 3. 新增 `ValidateSpatialPlan`
-4. 逐步让 `BuildTTProgram` 和各 `PlanTT*`
+4. 把
+   `work_decomposition / compute_regions / pipeline_stages`
+   拆回新 owner object /
+   owner-side fact family
+5. 再逐步让各 `PlanTT*`
    读新对象，不再读 fake protocol

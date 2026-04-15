@@ -1,8 +1,8 @@
-# Task 3: Runtime Gate 与 Workload Cutover
+# Task 3: ExecutableSpec / Leaf Reader Cutover
 
 ## 基本信息
 
-- **文档角色**: `Task 3` 的 runtime/build/codegen gate 与 workload cutover 文档
+- **文档角色**: `Task 3` 的 `ExecutableSpec / leaf reader cutover` 文档
 - **当前状态**: `2026-04-16` 活动设计文档
 - **任务链位置**: `Task 1/2` owner cutover 之后的 leaf 收口与 support surface 承接
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -112,3 +112,34 @@ support surface 扩张只能经由：
    独立站成 owner pass
 3. 在此基础上再恢复
    `flash-attn` payoff 与 wider family
+
+## 7. 完成判定
+
+`Task 3`
+只有在下面这些条件同时满足后才算完成：
+
+1. build / codegen / runtime / `BlackholeModule`
+   只读 `ExecutableSpec`
+2. `ExecutableSpec`
+   只投影自 `TTProgram`
+3. leaf readers
+   不再读取审计表列出的
+   legacy gate attrs / transition attrs / internal payload
+4. support surface 扩张
+   已经回到
+   `SpatialPlan -> TTProgram -> ExecutableSpec`
+   这条主链上进行
+
+## 8. Workload 承接顺序
+
+workload payoff
+只能在 leaf reader cutover 之后按下面顺序恢复：
+
+1. `flash-attn`
+   compile/runtime payoff
+2. wider family cutover
+3. wider support surface
+
+在这之前，
+不允许把 workload payoff
+重新写成 owner cutover 的 blocker。

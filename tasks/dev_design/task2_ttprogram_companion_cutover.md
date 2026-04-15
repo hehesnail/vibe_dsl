@@ -1,8 +1,8 @@
-# Task 2: TTProgram Companion Cutover
+# Task 2: TTProgram Owner Cutover
 
 ## 基本信息
 
-- **文档角色**: `Task 2` 的 target owner cutover 设计文档
+- **文档角色**: `Task 2` 的 `TTProgram owner cutover` 设计文档
 - **当前状态**: `2026-04-16` 活动设计文档
 - **任务链位置**: `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
@@ -163,3 +163,38 @@ legacy helper bridge / runtime-arg bridge / internal payload
 4. 让 `TTProgram`
    越来越靠近 TT-Metal host truth
    (`ProgramDescriptor` 风格)
+
+补充约束：
+
+- `Task 2`
+  不得在 `Task 1`
+  未站稳之前提前扩 workload payoff
+- 如果 target planner 发现上游 truth 不够，
+  结论只能是回到 `Task 1`
+  补 `SpatialPlan` owner，
+  不能在 `TTProgram`
+  再补一层 target-independent bridge
+
+## 8. 完成判定
+
+`Task 2`
+只有在下面这些条件同时满足后才算完成：
+
+1. `PlanTTCompute`
+   不再以
+   `PlanTTKernelABI`
+   充当长期 owner planner
+2. `PlanTTTransport`
+   不再以
+   `PlanTTCBAlloc`
+   充当长期 owner planner
+3. `PlanTTSync / PlanTTABI / PlanTTExecution`
+   已显式站成 owner pass
+4. `BuildTTProgram`
+   已退成纯聚合器
+5. `TTProgram`
+   已经能以
+   `TTBlockPlan / TTKernelPlan / TTTransportPlan /
+    TTSyncPlan / TTABIPlan / TTExecutionPlan`
+   这组 typed truth
+   充当唯一 physical realization truth
