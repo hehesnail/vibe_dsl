@@ -19,6 +19,12 @@
 
 - `layered_ir_references.md`
   - 只在需要研究背景或方法论参照时再读；不参与当前状态判断
+- `blackhole_first_principles_protocol_audit.md`
+  - 只从 `final_blackhole_backend_redesign.md`
+    第 2 节出发，
+    对当前协议面做
+    真语义 / 需收紧载体 / fake 过渡协议
+    分类；不是新的总体设计
 
 ## 2. 当前活动文档
 

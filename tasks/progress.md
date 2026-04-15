@@ -2,6 +2,14 @@
 
 > 当前唯一总体设计文档: `tasks/dev_design/final_blackhole_backend_redesign.md`
 
+> 当前协议面审计文档: `tasks/dev_design/blackhole_first_principles_protocol_audit.md`
+>
+> 该文档不承担总体设计职责，
+> 只严格从总纲第 2 节“第一性原理”出发，
+> 对现存协议面做
+> 真语义 / 需收紧载体 / fake 过渡协议
+> 分类。
+
 ## 当前阶段
 
 - **日期**: `2026-04-15`
