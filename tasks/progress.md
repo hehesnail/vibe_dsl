@@ -42,22 +42,17 @@ Normalized Tile TIR
 - build/codegen/runtime
   仍在读 fake protocol
 
-当前 closure 进度补充：
+当前任务重排口径：
 
-- `R0.1`
-  已接入 active path：
-  `LowerToBlackholePhaseB`
-  现在显式产出
-  `blackhole.buffer_effect_use_role_facts`
-- `PlanTTCompute`
-  现在对这份 analysis attr
-  fail-closed；
-  缺失时不再默默回退到后段猜语义
-- `R0.2 / R0.3`
-  仍未开始 code cutover；
-  `liveness` 和
-  `materialization / source-live-form`
-  还没有独立站成 pass
+- 不再按旧 `R0 / R1 / R2`
+  编号阅读当前 roadmap
+- 当前 roadmap 只按层 owner cutover 排序：
+  `SpatialPlan -> TTProgram -> ExecutableSpec/leaf -> legacy deletion`
+- 旧 `buffer effect / liveness / materialization`
+  这些工作现在只作为
+  `SpatialPlan owner cutover`
+  里的子问题存在，
+  不是顶层 roadmap
 
 ## 当前文档状态
 
@@ -74,46 +69,62 @@ Normalized Tile TIR
 
 ## 当前未完成
 
-1. **`SpatialPlan` 重建**
+1. **`SpatialPlan owner cutover`**
    - 引入
-     `ExecutionUnit / DataflowEdge / LayoutSpec / PhasePlan`
+     `ExecutionUnit / DataflowEdge / LayoutSpec / PhasePlan / ValidatedHintSet`
    - 新增 `ValidateSpatialPlan`
-2. **`TTProgram` owner 收口**
-   - 显式化
-     `PlanTTSync / PlanTTABI / PlanTTExecution`
+   - 让当前 analysis / planner 子步骤
+     显式服务这组 owner object
+2. **`TTProgram owner cutover`**
+   - 显式收正
+     `TTBlockPlan / TTKernelPlan / TTTransportPlan /
+      TTSyncPlan / TTABIPlan / TTExecutionPlan`
    - 让 `BuildTTProgram`
      退成纯聚合器
-3. **leaf reader 收口**
+3. **`ExecutableSpec / leaf reader cutover`**
    - 去掉 build/codegen/runtime
      对 legacy gate attrs
      和其它 fake protocol 的依赖
-4. **legacy protocol 退场**
+   - 保证 `ExecutableSpec`
+     只做 `TTProgram` 投影
+4. **`legacy protocol deletion`**
    - 审计表列出的 fake/legacy protocol
      全部退出长期协议面
 
 ## 当前执行优先级
 
-代码 cutover 顺序仍固定为：
+当前主路线固定为：
 
-1. `R0.2`
-   - buffer liveness analysis
-2. `R0.3`
-   - materialization / source-live-form planner decision
-3. `R1.1`
-   - 去掉 build/codegen/executable extraction
-     对 legacy gate attrs 的依赖
-4. `R2.1`
-   - 显式化 `PlanTTSync / PlanTTABI / PlanTTExecution`
+1. **先完成 `SpatialPlan owner cutover`**
+   - 先把 object model 和 validator 立起来
+   - 再把当前零散 analysis/planner
+     收到这层边界里
+2. **再完成 `TTProgram owner cutover`**
+   - 把 target planning owner
+     从 helper residue 里拉出来
+3. **再完成 `ExecutableSpec / leaf reader cutover`**
+   - 把 leaf gate 收回
+     `TTProgram / ExecutableSpec`
+4. **最后做 `legacy protocol deletion`**
+   - 只在新 owner truth
+     已经稳定后删旧面
 
-已完成的当前 closure 项：
+当前只完成了一个 preparatory substep：
 
-- `R0.1`
-  - `buffer effect / use-role analysis`
-    已落地并接入
-    `LowerToBlackholePhaseB`
+- `buffer effect / use-role analysis`
+  已接入 active path：
+  `LowerToBlackholePhaseB`
+  现在显式产出
+  `blackhole.buffer_effect_use_role_facts`
+- `PlanTTCompute`
+  现在对这份 analysis attr
+  fail-closed；
+  缺失时不再默默回退到后段猜语义
 
-文档重写不是新的 roadmap 项；
-它是这组代码任务的前置对齐。
+这不等于
+`SpatialPlan owner cutover`
+已经完成；
+它只是其中一个前置子步骤。
 
 ## 当前正式基线
 
@@ -129,9 +140,15 @@ Normalized Tile TIR
 ## 下一步
 
 1. 先把 `SpatialPlan`
-   的 object model 和 validator 立起来
-2. 再让 `PlanTT*`
+   的 owner object
+   (`ExecutionUnit / DataflowEdge / LayoutSpec / PhasePlan`)
+   立起来
+2. 再把 `liveness`
+   和 `materialization / source-live-form`
+   提成这层的独立 analysis / planner
+3. 再让 `PlanTT*`
    和 `BuildTTProgram`
-   读新 truth
-3. 再切 build/codegen/runtime readers
-4. 最后删 fake protocol 和 helper residue
+   开始读这组新 truth
+4. 然后才进入
+   `TTProgram owner cutover`
+   与 leaf reader cutover

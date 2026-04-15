@@ -58,22 +58,26 @@ Normalized Tile TIR
 
 ## 4. 当前执行优先级
 
-代码 cutover 顺序仍固定为：
+不再按旧 `R0 / R1 / R2`
+编号阅读当前 roadmap。
 
-1. `R0.1`
-   - buffer effect / use-role analysis
-2. `R0.2`
-   - buffer liveness analysis
-3. `R0.3`
-   - materialization / source-live-form planner decision
-4. `R1.1`
-   - 去掉 build/codegen/executable extraction
-     对 legacy gate attrs 的依赖
-5. `R2.1`
-   - 显式化 `PlanTTSync / PlanTTABI / PlanTTExecution`
+当前只按层 owner cutover 排序：
 
-文档重写不是新的 roadmap 阶段；
-它只是把这组代码任务重新放回正确的层边界里。
+1. `SpatialPlan owner cutover`
+2. `TTProgram owner cutover`
+3. `ExecutableSpec / leaf reader cutover`
+4. `legacy protocol deletion`
+
+其中：
+
+- `buffer effect / use-role`
+- `liveness`
+- `materialization / source-live-form`
+
+都只是
+`SpatialPlan owner cutover`
+里的子问题，
+不再单独充当顶层路线。
 
 ## 5. 清理规则
 

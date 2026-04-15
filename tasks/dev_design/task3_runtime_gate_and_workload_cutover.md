@@ -33,30 +33,33 @@
 - 从 `work_linear_id`、arg kind、payload bag、
   builtin 序列恢复 planning truth
 
-## 3. 当前 closure set
+## 3. 前置条件
 
-当前代码 closure set 仍固定为：
+`Task 3`
+不再单独维护旧 `R0 / R1 / R2`
+closure set。
 
-1. `R0.1`
-   - buffer effect / use-role analysis
-2. `R0.2`
-   - buffer liveness analysis
-3. `R0.3`
-   - materialization / source-live-form planner decision
-4. `R1.1`
-   - 去掉 build/codegen/executable extraction
-     对 legacy gate attrs 的依赖
-5. `R2.1`
-   - 显式化 `PlanTTSync / PlanTTABI / PlanTTExecution`
+它的前置条件固定为：
 
-其中：
+1. `SpatialPlan owner cutover`
+   已经把 virtual truth
+   对象化并可验证
+2. `TTProgram owner cutover`
+   已经把 target owner
+   显式收回
+3. leaf readers
+   可以直接读
+   `TTProgram / ExecutableSpec`
 
-- `R0`
-  收口 compute / memory-access owner
-- `R1`
-  收口 leaf reader / writer 边界
-- `R2`
-  收口 communication owner / runtime semantics
+因此：
+
+- `buffer effect / use-role`
+- `liveness`
+- `materialization / source-live-form`
+
+这些工作属于前两层 owner cutover，
+不是 `Task 3`
+自己的顶层路线
 
 ## 4. Support surface 纪律
 

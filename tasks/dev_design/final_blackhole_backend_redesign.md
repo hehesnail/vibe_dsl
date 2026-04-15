@@ -295,19 +295,31 @@ legacy transition attrs / helper bridge / payload bag
 4. **legacy protocol 退场**
    - 删除 fake protocol 和 late matcher owner residue
 
-当前代码优先级仍固定为：
+当前实现顺序固定为：
 
-1. `R0.1`
-   - buffer effect / use-role analysis
-2. `R0.2`
-   - buffer liveness analysis
-3. `R0.3`
-   - materialization / source-live-form planner decision
-4. `R1.1`
-   - 去掉 build/codegen/executable extraction
-     对 legacy gate attrs 的依赖
-5. `R2.1`
-   - 显式化 `PlanTTSync / PlanTTABI / PlanTTExecution`
+1. **先做 `SpatialPlan owner cutover`**
+   - 把 virtual spatial/dataflow truth
+     真的对象化
+2. **再做 `TTProgram owner cutover`**
+   - 把 target realization truth
+     从 helper residue 里收回来
+3. **再做 `ExecutableSpec / leaf reader cutover`**
+   - 让 leaf 只读
+     `TTProgram / ExecutableSpec`
+4. **最后删 legacy protocol**
+   - 只在新 owner truth
+     稳定后退场
+
+补充：
+
+- `buffer effect / use-role`
+- `liveness`
+- `materialization / source-live-form`
+
+都只是
+`SpatialPlan owner cutover`
+里的 preparatory substeps，
+不再单独充当顶层 roadmap
 
 ## 8. 完成判定
 
