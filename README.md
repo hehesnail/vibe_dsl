@@ -34,13 +34,14 @@
   - stateful reduction-update
   - chunked recurrence / scan
 - 旧的单层方案、历史 runtime 架构说明、旧 implementation plan 都已移入 `tasks/dev_design/archive/`，不再作为当前实现入口。
-- 当前稳定执行基线仍是 `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path：
+- 当前临时验证面仍主要落在 `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path：
   - copy / GEMM direct path 已稳定
   - `flash-attn` 只是第一批 consumer，当前 compile-path 已打通
   - `fusedmoe`、`topk`、`paged decode`、`mamba chunk state` 已进入总设计覆盖面
   - `flash-attn` 的 direct-runtime correctness payoff
     属于后续 runtime payoff / support-surface backlog，
     不再是当前总体架构 blocker
+  - 这组验证面不是长期架构约束；新主链建立后应由新验证面替换
 
 ## 推荐阅读顺序
 

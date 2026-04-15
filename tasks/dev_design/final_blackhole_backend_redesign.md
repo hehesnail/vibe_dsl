@@ -277,7 +277,31 @@ legacy transition attrs / helper bridge / payload bag
 具体 disposition 见：
 `tasks/dev_design/blackhole_first_principles_protocol_audit.md`
 
-## 7. 当前 rewrite 方向
+## 7. 后段实现审判规则
+
+当前后段实现即使“能跑”，
+也不能先被固定成上游设计前提。
+
+判断顺序固定为：
+
+1. 先看 owner 边界
+2. 再看当前实现是否越权持有上游 truth
+3. 只有在 truth 明确属于上游 owner 时，
+   才允许回头补上游 schema / analysis
+
+明确禁止：
+
+- 先把当前后段实现当成协议
+- 再要求 `SpatialPlan`
+  去补它需要的 truth
+- 把“现在能跑”
+  当成 owner 边界正确的证据
+
+如果当前后段实现和第一性原理 owner 冲突，
+优先改后段实现，
+而不是回退设计去迎合它。
+
+## 8. 当前 rewrite 方向
 
 当前 rewrite 不再围绕“补 fake attr”推进，
 而是围绕下面 4 个 closure set 推进：
@@ -332,7 +356,7 @@ legacy transition attrs / helper bridge / payload bag
 4. `task3_runtime_gate_and_workload_cutover.md`
    - 固定 `ExecutableSpec / leaf reader cutover`
 
-## 8. 完成判定
+## 9. 完成判定
 
 第一性原理目标完成，
 必须同时满足下面 4 条：

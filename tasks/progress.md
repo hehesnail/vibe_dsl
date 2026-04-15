@@ -117,16 +117,23 @@ Normalized Tile TIR
   仍然是 active path 的过渡 surface，
   还没有被新的 owner object set 吸收完
 
-## 4. 当前锁定基线
+## 4. 当前临时验证面
 
-下面这些基线不回退：
+下面这些只是重写期间的临时验证面，
+不是架构真源，
+也不能否决第一性原理 redesign：
 
 - `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule`
   direct host path
 - copy / GEMM 当前 admitted support surface
 - `bf16`
-  作为正式 runtime correctness baseline
+  作为当前 runtime correctness gate
 - 缺 truth 时 explicit unsupported / fail-fast
+
+如果新主链建立后，
+这些验证面和 owner cutover 冲突，
+应该改的是验证面，
+不是回头把旧实现抬成长期协议。
 
 ## 5. 当前安排的下一批任务
 

@@ -192,10 +192,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 
 ## 当前推进顺序
 
-1. 保持当前稳定基线不回退：
+1. 保留当前临时验证面，直到新主链替换它：
    - `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path
    - copy / GEMM current support surface
    - 第一批复杂 consumer 已打通的 compile-path 子集
+   - 这些只是过渡期验证面，不是架构真源；若与 owner cutover 冲突，应更新验证面而不是回退设计
 2. 文档、任务安排和实现边界统一以当前入口文档为准：
    - `tasks/dev_design/final_blackhole_backend_redesign.md`
    - `tasks/progress.md`

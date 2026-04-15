@@ -174,6 +174,11 @@ legacy helper bridge / runtime-arg bridge / internal payload
   补 `SpatialPlan` owner，
   不能在 `TTProgram`
   再补一层 target-independent bridge
+- 如果当前 target-side implementation
+  和 owner 边界冲突，
+  优先改 target-side implementation；
+  不允许先把现有 planner / codegen 习惯
+  固化成上游必须适配的前提
 
 ## 8. 完成判定
 
