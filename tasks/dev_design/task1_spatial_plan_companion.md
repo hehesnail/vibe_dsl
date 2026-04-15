@@ -3,7 +3,7 @@
 ## 基本信息
 
 - **文档角色**: `Task 1: SpatialPlan Owner Cutover` 设计文档
-- **当前状态**: `2026-04-16` 活动设计文档
+- **当前状态**: `2026-04-16` 已在 repo HEAD 落地
 - **任务链位置**: `Normalized Tile TIR -> SpatialPlan -> TTProgram`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
 
@@ -263,3 +263,35 @@ validator 失败时必须 fail-closed。
    owner-side fact family
 5. 再逐步让各 `PlanTT*`
    读新对象，不再读 fake protocol
+
+## 10. Repo HEAD Snapshot
+
+当前 repo HEAD 对 `Task 1` 的实现状态是：
+
+1. `SpatialPlan`
+   已持有
+   `ExecutionUnit / DataflowEdge / LayoutSpec / PhasePlan / ValidatedHintSet`
+   这组 primary owner object
+2. `ExecutionClosure / ClosureBoundary`
+   仍存在，
+   但只保留为 compatibility projection，
+   validator 会检查它们和主 truth 一致
+3. `ValidateSpatialPlan`
+   已落地，
+   并通过
+   `tl.spatial_plan_validated`
+   gate
+   约束
+   `PlanTT*`
+   与 lowering requirement builder
+4. `PlanTTTransport / BuildTTProgram / lowering requirement`
+   已切到从
+   `DataflowEdge / PhasePlan`
+   读取 virtual spatial/dataflow truth
+5. `work_decomposition / compute_regions / pipeline_stages`
+   仍保留为迁移 residue，
+   但当前只承接
+   TT owner 细化 /
+   lowering support facts，
+   不再承担 `SpatialPlan`
+   primary owner 身份

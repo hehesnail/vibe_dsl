@@ -1166,23 +1166,17 @@ LoweringSupportFacts AnalyzeLoweringSupportFacts(const tir::PrimFunc& func) {
   return facts;
 }
 
-std::vector<int> ComputeClosurePhases(const SpatialPlan& plan) {
-  const int n = static_cast<int>(plan->closures.size());
-  std::vector<std::vector<int>> preds(n);
-  for (const ClosureBoundary& boundary : plan->boundaries) {
-    if (boundary->source_closure_index < 0 || boundary->target_closure_index < 0 ||
-        boundary->source_closure_index == boundary->target_closure_index) {
-      continue;
-    }
-    preds[boundary->target_closure_index].push_back(boundary->source_closure_index);
-  }
-  std::vector<int> phase(n, 0);
-  for (int i = 0; i < n; ++i) {
-    for (int pred : preds[i]) {
-      phase[i] = std::max(phase[i], phase[pred] + 1);
+std::vector<int> BuildPhaseIndexByUnit(const SpatialPlan& plan) {
+  std::vector<int> phase_by_unit(plan->execution_units.size(), 0);
+  for (const PhasePlan& phase : plan->phase_plans) {
+    for (const Integer& unit_index : phase->unit_indices) {
+      if (unit_index->value >= 0 &&
+          unit_index->value < static_cast<int64_t>(phase_by_unit.size())) {
+        phase_by_unit[unit_index->value] = static_cast<int>(phase->phase_index);
+      }
     }
   }
-  return phase;
+  return phase_by_unit;
 }
 
 void CollectWorkDecompositionFacts(const tir::PrimFunc& func, Map<String, Any>* requirements) {
@@ -1208,24 +1202,24 @@ void CollectWorkDecompositionFacts(const tir::PrimFunc& func, Map<String, Any>* 
 }
 
 void CollectPhaseFacts(const SpatialPlan& plan, Map<String, Any>* requirements) {
-  if (plan->closures.empty()) {
+  if (plan->execution_units.empty()) {
     return;
   }
-  const std::vector<int> phases = ComputeClosurePhases(plan);
+  const std::vector<int> phases = BuildPhaseIndexByUnit(plan);
   std::unordered_set<int> unique_phases;
   Array<Any> phase_boundary_buffers;
   std::unordered_set<std::string> seen_boundary_subjects;
   for (int phase : phases) {
     unique_phases.insert(phase);
   }
-  for (const ClosureBoundary& boundary : plan->boundaries) {
-    if (boundary->source_closure_index < 0 || boundary->target_closure_index < 0) {
+  for (const DataflowEdge& edge : plan->dataflow_edges) {
+    if (edge->producer_unit_index < 0 || edge->consumer_unit_index < 0) {
       continue;
     }
-    if (phases[boundary->source_closure_index] == phases[boundary->target_closure_index]) {
+    if (phases[edge->producer_unit_index] == phases[edge->consumer_unit_index]) {
       continue;
     }
-    const std::string subject = boundary->subject;
+    const std::string subject = edge->subject;
     if (!subject.empty() && seen_boundary_subjects.insert(subject).second) {
       phase_boundary_buffers.push_back(String(subject));
     }
@@ -1233,9 +1227,9 @@ void CollectPhaseFacts(const SpatialPlan& plan, Map<String, Any>* requirements) 
   if (!unique_phases.empty()) {
     requirements->Set(String("spatial_phase_count"), Integer(static_cast<int>(unique_phases.size())));
   }
-  if (!plan->boundaries.empty()) {
+  if (!plan->dataflow_edges.empty()) {
     requirements->Set(String("spatial_channel_count"),
-                      Integer(static_cast<int>(plan->boundaries.size())));
+                      Integer(static_cast<int>(plan->dataflow_edges.size())));
   }
   if (!phase_boundary_buffers.empty()) {
     requirements->Set(String("spatial_phase_boundary_buffers"), phase_boundary_buffers);

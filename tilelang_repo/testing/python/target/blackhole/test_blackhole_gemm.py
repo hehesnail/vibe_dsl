@@ -236,7 +236,7 @@ def test_blackhole_gemm_pipeline_uses_spatial_plan_without_spatial_program():
     lowering_requirements = device_func.attrs["blackhole.lowering_requirements"]
     assert device_func.attrs.get("tl.spatial_program") is None
     assert {"ingress", "compute", "egress"}.issubset(
-        {str(closure.execution_role) for closure in plan.closures}
+        {str(unit.unit_role) for unit in plan.execution_units}
     )
     assert "gemm" in set(lowering_requirements["compute_op_kinds"])
 

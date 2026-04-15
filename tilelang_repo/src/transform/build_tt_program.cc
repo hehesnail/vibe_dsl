@@ -81,6 +81,16 @@ Map<String, Any> AsMap(const Any& any) {
   return any.as<Map<String, Any>>().value_or(Map<String, Any>());
 }
 
+SpatialPlan RequireValidatedSpatialPlan(const tir::PrimFunc& func, const char* pass_name) {
+  auto maybe_spatial_plan = func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
+  ICHECK(maybe_spatial_plan)
+      << pass_name << " requires tl.spatial_plan; run AnalyzeSpatialStructureFacts, "
+      << "BuildSpatialPlanCompanion, and ValidateSpatialPlan before target planning";
+  ICHECK(func->GetAttr<Bool>(attr::kTLSpatialPlanValidated, Bool(false)).value())
+      << pass_name << " requires validated SpatialPlan; run ValidateSpatialPlan before target planning";
+  return maybe_spatial_plan.value();
+}
+
 struct MaterializedTTPlanning {
   tir::PrimFunc func;
   Array<TTKernel> kernels;
@@ -181,68 +191,47 @@ Array<TTCoreGroup> BuildCoreGroups(const PlanTTCoreGroups& planner) {
   return tt_core_groups;
 }
 
-std::vector<int> ComputeClosurePhases(const SpatialPlan& plan) {
-  const int n = static_cast<int>(plan->closures.size());
-  std::vector<std::vector<int>> preds(n);
-  for (const ClosureBoundary& boundary : plan->boundaries) {
-    if (boundary->source_closure_index < 0 || boundary->target_closure_index < 0 ||
-        boundary->source_closure_index == boundary->target_closure_index) {
-      continue;
-    }
-    preds[boundary->target_closure_index].push_back(boundary->source_closure_index);
-  }
-  std::vector<int> phase(n, 0);
-  for (int i = 0; i < n; ++i) {
-    for (int pred : preds[i]) {
-      phase[i] = std::max(phase[i], phase[pred] + 1);
+std::vector<int> BuildPhaseIndexByUnit(const SpatialPlan& plan) {
+  std::vector<int> phase_by_unit(plan->execution_units.size(), 0);
+  for (const PhasePlan& phase : plan->phase_plans) {
+    for (const Integer& unit_index : phase->unit_indices) {
+      if (unit_index->value >= 0 &&
+          unit_index->value < static_cast<int64_t>(phase_by_unit.size())) {
+        phase_by_unit[unit_index->value] = static_cast<int>(phase->phase_index);
+      }
     }
   }
-  return phase;
+  return phase_by_unit;
 }
 
-String DeriveTransportDeliveryKind(const ClosureBoundary& boundary,
-                                   const std::vector<int>& closure_phases) {
-  const bool cross_phase = boundary->source_closure_index >= 0 &&
-                           boundary->target_closure_index >= 0 &&
-                           closure_phases[boundary->source_closure_index] !=
-                               closure_phases[boundary->target_closure_index];
-  if (cross_phase) {
+String DeriveTransportDeliveryKind(const DataflowEdge& edge) {
+  if (edge->crosses_phase) {
     return String("phase_boundary_materialized");
   }
-  if (boundary->kind == "join") {
+  if (edge->kind == "join") {
     return String("completion_visible");
   }
   return String("ordered");
 }
 
-String DeriveSyncOrderingKind(const ClosureBoundary& boundary,
-                              const std::vector<int>& closure_phases) {
-  const bool cross_phase = boundary->source_closure_index >= 0 &&
-                           boundary->target_closure_index >= 0 &&
-                           closure_phases[boundary->source_closure_index] !=
-                               closure_phases[boundary->target_closure_index];
-  if (cross_phase) {
+String DeriveSyncOrderingKind(const DataflowEdge& edge) {
+  if (edge->crosses_phase) {
     return String("phase_boundary_materialization");
   }
-  if (boundary->kind == "carry") {
+  if (edge->kind == "carry") {
     return String("carry_handoff");
   }
-  if (boundary->kind == "join") {
+  if (edge->kind == "join") {
     return String("reduction_completion");
   }
   return String("must_happen_before");
 }
 
-String DeriveSyncMaterializationKind(const ClosureBoundary& boundary,
-                                     const std::vector<int>& closure_phases) {
-  const bool cross_phase = boundary->source_closure_index >= 0 &&
-                           boundary->target_closure_index >= 0 &&
-                           closure_phases[boundary->source_closure_index] !=
-                               closure_phases[boundary->target_closure_index];
-  if (cross_phase) {
+String DeriveSyncMaterializationKind(const DataflowEdge& edge) {
+  if (edge->crosses_phase) {
     return String("phase_boundary_materialization");
   }
-  if (boundary->kind == "join") {
+  if (edge->kind == "join") {
     return String("completion_visibility");
   }
   return String("phase_boundary");
@@ -250,18 +239,17 @@ String DeriveSyncMaterializationKind(const ClosureBoundary& boundary,
 
 Array<TTTransportPlan> BuildTransportPlans(const SpatialPlan& plan) {
   Array<TTTransportPlan> transport_plans;
-  const std::vector<int> closure_phases = ComputeClosurePhases(plan);
-  for (const ClosureBoundary& boundary : plan->boundaries) {
-    if (boundary->source_closure_index < 0 || boundary->target_closure_index < 0) {
+  for (const DataflowEdge& edge : plan->dataflow_edges) {
+    if (edge->producer_unit_index < 0 || edge->consumer_unit_index < 0) {
       continue;
     }
     Map<String, Any> payload;
-    payload.Set("subject", boundary->subject);
-    payload.Set("boundary_kind", boundary->kind);
+    payload.Set("subject", edge->subject);
+    payload.Set("boundary_kind", edge->kind);
     transport_plans.push_back(
-        TTTransportPlan(boundary->name, boundary->kind, boundary->source_closure_index,
-                        boundary->target_closure_index, String("tensor"),
-                        DeriveTransportDeliveryKind(boundary, closure_phases), payload));
+        TTTransportPlan(edge->name, edge->kind, edge->producer_unit_index,
+                        edge->consumer_unit_index, String("tensor"),
+                        DeriveTransportDeliveryKind(edge), payload));
   }
   return transport_plans;
 }
@@ -275,20 +263,18 @@ Array<TTSemaphorePlan> BuildSemaphorePlans(const tir::PrimFunc& func) {
 
 Array<TTComputeSyncPlan> BuildComputeSyncPlans(const SpatialPlan& plan) {
   Array<TTComputeSyncPlan> sync_plans;
-  const std::vector<int> closure_phases = ComputeClosurePhases(plan);
-  for (const ClosureBoundary& boundary : plan->boundaries) {
-    if (boundary->source_closure_index < 0 || boundary->target_closure_index < 0 ||
-        boundary->source_closure_index == boundary->target_closure_index) {
+  for (const DataflowEdge& edge : plan->dataflow_edges) {
+    if (edge->producer_unit_index < 0 || edge->consumer_unit_index < 0 ||
+        edge->producer_unit_index == edge->consumer_unit_index) {
       continue;
     }
     Map<String, Any> payload;
-    payload.Set("subject", boundary->subject);
-    payload.Set("boundary_kind", boundary->kind);
+    payload.Set("subject", edge->subject);
+    payload.Set("boundary_kind", edge->kind);
     sync_plans.push_back(TTComputeSyncPlan(
-        String("sync_" + std::string(boundary->name)), boundary->kind,
-        boundary->source_closure_index, boundary->target_closure_index,
-        DeriveSyncOrderingKind(boundary, closure_phases),
-        DeriveSyncMaterializationKind(boundary, closure_phases), payload));
+        String("sync_" + std::string(edge->name)), edge->kind, edge->producer_unit_index,
+        edge->consumer_unit_index, DeriveSyncOrderingKind(edge),
+        DeriveSyncMaterializationKind(edge), payload));
   }
   return sync_plans;
 }
@@ -323,9 +309,10 @@ Array<TTExecutionPlan> BuildExecutionPlans(const SpatialPlan& plan, const Array<
   }
   std::unordered_set<int> seen;
   Array<Integer> phase_indices;
-  for (int phase : ComputeClosurePhases(plan)) {
-    if (seen.insert(phase).second) {
-      phase_indices.push_back(Integer(phase));
+  for (const PhasePlan& phase : plan->phase_plans) {
+    const int phase_index = static_cast<int>(phase->phase_index);
+    if (seen.insert(phase_index).second) {
+      phase_indices.push_back(Integer(phase_index));
     }
   }
   if (phase_indices.empty()) {
@@ -333,6 +320,8 @@ Array<TTExecutionPlan> BuildExecutionPlans(const SpatialPlan& plan, const Array<
   }
   Map<String, Any> payload;
   payload.Set("phase_count", Integer(static_cast<int>(phase_indices.size())));
+  payload.Set("execution_unit_count", Integer(static_cast<int>(plan->execution_units.size())));
+  payload.Set("dataflow_edge_count", Integer(static_cast<int>(plan->dataflow_edges.size())));
   payload.Set("closure_count", Integer(static_cast<int>(plan->closures.size())));
   payload.Set("boundary_count", Integer(static_cast<int>(plan->boundaries.size())));
   Array<TTExecutionPlan> execution_plans;
@@ -359,6 +348,7 @@ tvm::transform::Pass PlanTTBlocks() {
       if (!func || !IsBlackholePrimFunc(func.value())) {
         continue;
       }
+      RequireValidatedSpatialPlan(func.value(), "PlanTTBlocks");
       PlanTTCoreGroups planner;
       tir::PrimFunc planned = planner.Transform(func.value());
       Map<String, Any> attrs = CopyAttrs(planned);
@@ -379,6 +369,7 @@ tvm::transform::Pass PlanTTCompute() {
       if (!func || !IsBlackholePrimFunc(func.value())) {
         continue;
       }
+      RequireValidatedSpatialPlan(func.value(), "PlanTTCompute");
       PlanTTKernelABI planner;
       tir::PrimFunc planned = planner.Transform(func.value());
       Map<String, Any> attrs = CopyAttrs(planned);
@@ -401,15 +392,13 @@ tvm::transform::Pass PlanTTTransport() {
       if (!func || !IsBlackholePrimFunc(func.value())) {
         continue;
       }
-      auto maybe_spatial_plan = func.value()->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
-      ICHECK(maybe_spatial_plan)
-          << "PlanTTTransport requires tl.spatial_plan; run AnalyzeSpatialStructureFacts and "
-             "BuildSpatialPlanCompanion before target planning";
+      const SpatialPlan spatial_plan =
+          RequireValidatedSpatialPlan(func.value(), "PlanTTTransport");
       PlanTTCBAlloc planner;
       tir::PrimFunc planned = planner.Transform(func.value());
       Map<String, Any> attrs = CopyAttrs(planned);
       attrs.Set(attr::kTLInternalTTCBPlans, BuildCBPlans(planner.GetCBConfigs()));
-      attrs.Set(attr::kTLInternalTTTransportPlans, BuildTransportPlans(maybe_spatial_plan.value()));
+      attrs.Set(attr::kTLInternalTTTransportPlans, BuildTransportPlans(spatial_plan));
       planned.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
       updated->Add(gvar, planned, true);
     }
@@ -434,10 +423,8 @@ tvm::transform::Pass BuildTTProgram() {
       if (!func || !IsBlackholePrimFunc(func.value())) {
         continue;
       }
-      auto maybe_spatial_plan = func.value()->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
-      if (!maybe_spatial_plan) {
-        continue;
-      }
+      const SpatialPlan spatial_plan =
+          RequireValidatedSpatialPlan(func.value(), "BuildTTProgram");
       MaterializedTTPlanning planning;
       planning.func = func.value();
       planning.kernels = RequireOwnerPlanningAttr<Array<TTKernel>>(func.value(), attr::kTLInternalTTKernels);
@@ -466,11 +453,11 @@ tvm::transform::Pass BuildTTProgram() {
       ICHECK_EQ(kernels.size(), abi_plans.size())
           << "BuildTTProgram requires aligned TT kernel and ABI planning";
       attrs.Set(attr::kTLTTProgram,
-                TTProgram(gvar->name_hint, maybe_spatial_plan.value()->member_func, kernels,
+                TTProgram(gvar->name_hint, spatial_plan->member_func, kernels,
                           planning.core_groups, planning.cb_plans, transport_plans,
-                          BuildSemaphorePlans(planning.func), BuildComputeSyncPlans(maybe_spatial_plan.value()),
+                          BuildSemaphorePlans(planning.func), BuildComputeSyncPlans(spatial_plan),
                           BuildDstLayoutPlans(abi_plans), abi_plans,
-                          BuildExecutionPlans(maybe_spatial_plan.value(), kernels), payload));
+                          BuildExecutionPlans(spatial_plan, kernels), payload));
       planning.func.CopyOnWrite()->attrs = tvm::DictAttrs(attrs);
       planning.func = StripTTIntermediateAttrs(std::move(planning.func));
       updated->Add(gvar, planning.func, true);

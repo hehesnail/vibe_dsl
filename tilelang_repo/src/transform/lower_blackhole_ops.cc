@@ -1445,6 +1445,8 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
   ICHECK(spatial_plan)
       << "PlanTTKernelABI requires tl.spatial_plan; run AnalyzeSpatialStructureFacts and "
          "BuildSpatialPlanCompanion before lowering";
+  ICHECK(func->GetAttr<Bool>(attr::kTLSpatialPlanValidated, Bool(false)).value())
+      << "PlanTTKernelABI requires validated SpatialPlan; run ValidateSpatialPlan before lowering";
   return BuildBlackholeLoweringRequirements(func, spatial_plan.value());
 }
 

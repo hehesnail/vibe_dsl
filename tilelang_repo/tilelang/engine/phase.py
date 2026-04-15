@@ -407,6 +407,7 @@ def LowerToBlackholePhaseB(mod: IRModule) -> IRModule:
     """Run the stabilized Blackhole Phase B companion pipeline on a device module."""
     mod = tilelang.transform.AnalyzeSpatialStructureFacts()(mod)
     mod = tilelang.transform.BuildSpatialPlanCompanion()(mod)
+    mod = tilelang.transform.ValidateSpatialPlan()(mod)
     mod = tilelang.transform.SplitBlackholeKernel()(mod)
     mod = tilelang.transform.AnalyzeBlackholeWorkDecomposition()(mod)
     mod = tilelang.transform.AnalyzeBlackholeComputeRegions()(mod)

@@ -691,6 +691,10 @@ def BuildSpatialPlanCompanion():
     """Freeze Task 1 SpatialPlan companion from analyzed spatial structure facts."""
     return tvm.ffi.get_global_func("tl.transform.BuildSpatialPlanCompanion")()
 
+def ValidateSpatialPlan():
+    """Fail-closed validation gate for Task 1 SpatialPlan owner truth."""
+    return tvm.ffi.get_global_func("tl.transform.ValidateSpatialPlan")()
+
 def PlanTTBlocks():
     """Freeze Blackhole block/core assignment owner truth for TTProgram planning."""
     return tvm.ffi.get_global_func("tl.transform.PlanTTBlocks")()

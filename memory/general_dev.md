@@ -78,6 +78,28 @@
   中间执行单元 / 数据流边界骨架
   的 derived execution/materialization view；
   不能再当 primary truth owner
+- `SpatialPlan`
+  一旦正式收成
+  `ExecutionUnit / DataflowEdge / LayoutSpec / PhasePlan`
+  这组 owner object，
+  就应让
+  `ValidateSpatialPlan`
+  在 companion build 之后立即落地，
+  并由后续
+  `PlanTT*`
+  显式要求
+  `tl.spatial_plan_validated`；
+  不能只因为
+  `tl.spatial_plan`
+  存在就默认它可消费
+- 任何同时暴露
+  `*_names`
+  和
+  `*_indices`
+  的 companion object
+  都必须保证两组字段按同一顺序生成；
+  不能把名字单独排序后再和原 index 列表并排存放，
+  否则 validator 会立刻看到“名字和索引都合法，但彼此不对应”的裂缝
 - 两层 companion 新主链固定从 `Simplify` 后进入：
   `AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion ->
   PlanTTBlocks -> PlanTTCompute -> PlanTTTransport -> PlanTTSync -> PlanTTABI ->

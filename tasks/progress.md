@@ -42,24 +42,33 @@
   - 已完成它作为根因诊断与设计约束入口的职责
   - 不再单独形成实现路线
 - `Task 1: SpatialPlan Owner Cutover`
-  - **状态**: 进行中
-  - **当前主任务**
-    - 把 `SpatialPlan`
-      从
-      `ExecutionClosure / ClosureBoundary`
-      过渡 companion
-      收成
+  - **状态**: 已完成
+  - **repo HEAD 已收口**
+    - `SpatialPlan`
+      已收成
       `ExecutionUnit / DataflowEdge / LayoutSpec / PhasePlan / ValidatedHintSet`
-    - 新增 `ValidateSpatialPlan`
-    - 吸收
-      `work_decomposition / compute_regions / pipeline_stages`
-      这组过渡 surface
+      这组 primary owner object
+    - `ExecutionClosure / ClosureBoundary`
+      只保留为 compatibility projection
+    - `ValidateSpatialPlan`
+      已落地，
+      并通过
+      `tl.spatial_plan_validated`
+      成为 `PlanTT*`
+      和 lowering requirement builder
+      的正式前置 gate
+    - `PlanTTTransport / BuildTTProgram / lowering requirement`
+      已改为消费
+      `DataflowEdge / PhasePlan`
+      这组主 truth，
+      不再从 legacy spatial projection
+      恢复 virtual spatial/dataflow 关系
 - `Task 2: TTProgram Owner Cutover`
   - **状态**: 未开始
   - **前置条件**
     - `Task 1: SpatialPlan Owner Cutover`
-      必须先把 validated `SpatialPlan`
-      站稳
+      的 validated `SpatialPlan`
+      已经站稳
 - `Task 3: ExecutableSpec / Leaf Reader Cutover`
   - **状态**: 未开始
   - **前置条件**
@@ -82,6 +91,7 @@
 Normalized Tile TIR
   -> AnalyzeSpatialStructureFacts
   -> BuildSpatialPlanCompanion
+  -> ValidateSpatialPlan
   -> SplitBlackholeKernel
   -> AnalyzeBlackholeWorkDecomposition
   -> AnalyzeBlackholeComputeRegions
@@ -98,16 +108,17 @@ Normalized Tile TIR
 对这条链的当前判断固定为：
 
 - `SpatialPlan`
-  已接入主链，
-  但代码里的实际 object 仍然是
-  `ExecutionClosure / ClosureBoundary / ValidatedHintSet`
-  这套过渡 companion，
-  还不是设计文档要求的
+  已经收成
   `ExecutionUnit / DataflowEdge / LayoutSpec / PhasePlan / ValidatedHintSet`
+  这组 primary owner object；
+  `ExecutionClosure / ClosureBoundary`
+  只保留 compatibility projection
 - `ValidateSpatialPlan`
-  还没有落地，
-  所以上游 virtual spatial/dataflow truth
-  还没有自己的正式 fail-closed gate
+  已落地，
+  并通过
+  `tl.spatial_plan_validated`
+  成为后续 target planning / lowering requirement
+  的正式 fail-closed gate
 - `PlanTTCompute`
   和 `PlanTTTransport`
   虽然已经换成 canonical pass 名，
@@ -115,6 +126,12 @@ Normalized Tile TIR
   `PlanTTKernelABI`
   和 `PlanTTCBAlloc`
   这两套旧实现里
+- `PlanTTTransport / BuildTTProgram / lowering requirement`
+  已切到从
+  `DataflowEdge / PhasePlan`
+  读取 virtual spatial/dataflow truth，
+  不再从 legacy spatial projection
+  恢复 phase / channel 关系
 - `BuildTTProgram`
   已经成为 target 聚合入口，
   但聚合输入仍然带着 helper residue /
@@ -123,8 +140,11 @@ Normalized Tile TIR
 - `blackhole.work_decomposition /
   blackhole.compute_regions /
   blackhole.pipeline_stages`
-  仍然是 active path 的过渡 surface，
-  还没有被新的 owner object set 吸收完
+  仍然是 active path 的迁移 residue，
+  但当前只承接
+  TT owner 细化 / lowering support facts；
+  不再承担 `SpatialPlan`
+  的 primary owner 身份
 
 ## 4. 当前临时验证面
 
@@ -146,28 +166,20 @@ Normalized Tile TIR
 
 ## 5. 当前安排的下一批任务
 
-下一批任务固定只做
-`Task 1: SpatialPlan Owner Cutover`，
-不提前切到
-`Task 2: TTProgram Owner Cutover`
-或
-`Task 3: ExecutableSpec / Leaf Reader Cutover`：
+下一批任务固定切到
+`Task 2: TTProgram Owner Cutover`：
 
-1. 重写 `SpatialPlan` code schema
-   - `ExecutionClosure / ClosureBoundary`
-     -> `ExecutionUnit / DataflowEdge`
-   - 补 `LayoutSpec / PhasePlan`
-     到正式 owner object set
-2. 新增 `ValidateSpatialPlan`
-   - 让 TT target planning
-     只接受 validated `SpatialPlan`
-3. 回收过渡 surface
-   - 把
-     `work_decomposition / compute_regions / pipeline_stages`
-     拆回
-     `SpatialPlan` owner object /
-     owner-side fact family
-4. 完成 `Task 1: SpatialPlan Owner Cutover`
-   之后，
-   再开始安排
-   `Task 2: TTProgram Owner Cutover`
+1. 显式拉出
+   `PlanTTSync / PlanTTABI / PlanTTExecution`
+2. 继续把
+   `PlanTTCompute / PlanTTTransport`
+   从
+   `PlanTTKernelABI / PlanTTCBAlloc`
+   旧实现里拆成真正 owner pass
+3. 让 `BuildTTProgram`
+   退成纯聚合器
+4. 继续压缩
+   helper residue /
+   internal attrs /
+   payload bag
+   这批 `TTProgram` 迁移残留

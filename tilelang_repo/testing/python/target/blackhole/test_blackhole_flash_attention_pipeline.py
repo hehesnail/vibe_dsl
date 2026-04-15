@@ -448,8 +448,9 @@ def test_flash_attention_forward_pipeline_keeps_plan_and_lowering_requirements_o
     plan = device_func.attrs["tl.spatial_plan"]
     lowering_requirements = device_func.attrs["blackhole.lowering_requirements"]
     assert device_func.attrs.get("tl.spatial_program") is None
-    assert len(plan.closures) >= 2
-    assert len(plan.boundaries) >= 1
+    assert len(plan.execution_units) >= 2
+    assert len(plan.dataflow_edges) >= 1
+    assert len(plan.phase_plans) >= 1
     assert "scores_max" in set(lowering_requirements["spatial_phase_boundary_buffers"])
 
 
