@@ -203,7 +203,7 @@ validator 失败时必须 fail-closed。
 
 消费 `SpatialPlan`。
 
-不允许下游重新制造新的 virtual layer bag。
+不允许下游重新制造新的伪中间层 bag。
 
 ## 7. 现存 fake protocol 的归位
 

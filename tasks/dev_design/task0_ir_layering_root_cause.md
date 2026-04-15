@@ -89,7 +89,7 @@
 
 ## 3. 当前代码现实为什么一定会膨胀
 
-一旦中间 virtual layer 不存在，
+一旦中间 spatial/dataflow owner layer 不存在，
 系统就只能做四种事：
 
 1. 看 loop 形状

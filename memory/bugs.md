@@ -35,7 +35,7 @@
   - 现阶段应把 small bf16 runtime case 当作 correctness gate
   - 不要把 TT-Sim `float16` 能力边界直接误判成 TileLang target contract 回归
   - 更宽 `MHA / GQA` / 大 shape runtime payoff
-    当前不属于 `R0-R2` closure；
+    当前不属于第一性原理收口集；
     归到后续 `R3.1+` payoff / support-surface backlog
   - 该问题的 simulator-side 旁证和更宽 fatal taxonomy 扫描，
     统一见 `memory/tt_simulator_constraints.md`
@@ -95,8 +95,7 @@
     `row_state -> [1]`
   - `BlackholeDeviceResourceCanonicalization`
     同步回写
-    `blackhole.lowering_requirements / blackhole.compute_regions /
-    tl.spatial_program / tl.tt_program`
+    过渡 attrs 与 companion projection
     的 `scope`
 - **教训**:
   - 专用结构化证据必须能覆盖 generic layout truth，
@@ -224,7 +223,7 @@
 
 #### bridge-stage target truth 不应再落成过渡 attrs
 
-- **症状**: 想删除 `PlanTTKernelABI` 输出上的
+- **症状**: 想删除 TT kernel ABI planner 输出上的
   `blackhole.segment_plan / runtime_args / gemm_contract`，
   却被中间 bridge attr 或测试 fallback 卡住
 - **根因**: target truth 先被落成
@@ -400,7 +399,7 @@
     `live_form_kind / execution_topology_kind / physical_local_extent`
   - 这层 truth 的 owner 应该是
     `Normalized Tile TIR + 更早层 semantic/spatial analysis`
-  - `TTProgram / PlanTTKernelABI / codegen`
+  - `TTProgram / TT kernel ABI planner / codegen`
     只消费这份 typed truth 做 target materialization；
     `CB` overlap / reserve / push / pop 之类物理资源分析仍留在 target 侧
 - **教训**:
@@ -421,7 +420,7 @@
 #### 新 builtin 只要带 cb_id，就必须注册回写位置
 
 - **症状**: compute kernel 写错 CB，consumer 永远等不到数据
-- **根因**: `PlanTTCBAlloc::GetCBArgPositions` 漏注册 cb_id 参数位置
+- **根因**: CB allocator 的 cb_id 回写位置注册表漏注册参数位置
 - **修法**: 补注册，并加 post-condition guard
 - **教训**: “新增 builtin -> 必须声明 cb_id 回写位置” 是正式协议，不是习惯
 

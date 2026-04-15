@@ -204,17 +204,15 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - `tasks/dev_design/task1_spatial_plan_companion.md`
    - `tasks/dev_design/task2_ttprogram_companion_cutover.md`
    - `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
-3. 当前活动任务顺序统一按 `Rn.m` 阅读：
-   - `R0.1`：buffer effect / use-role analysis
-   - `R0.2`：buffer liveness analysis
-   - `R0.3`：materialization / source-live-form planner decision
-   - `R1.1`：去掉 build/codegen 对 `blackhole.lowering_requirements` 的依赖
-   - `R2.1`：显式化 sync / ABI / execution owner
-4. 阶段组层面仍按下面顺序推进：
-   - `R0-R2`：第一性原理 closure set
-   - `R3.1`：`flash-attn` payoff
-   - `R4.1`：wider family cutover
-   - `R5.1`：wider support surface
+3. 当前活动任务顺序统一按 owner cutover 阅读：
+   - `SpatialPlan owner cutover`
+   - `TTProgram owner cutover`
+   - `ExecutableSpec / leaf reader cutover`
+   - `legacy protocol deletion`
+4. 当前已接入主链、但只算前置子步骤的工作包括：
+   - `buffer effect / use-role analysis`
+   - `buffer liveness analysis`
+   - `materialization / source-live-form planner decision`
 
 ---
 
@@ -259,12 +257,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `tasks/dev_design/archive/` 下内容全部视为历史记录，不再作为当前入口
 - semantic manifest 路径已完成；`AnalyzeSemanticStructure` 已全面改成 manifest-first
 - 当前实际 active chain 是：
-  `Normalized Tile TIR -> SpatialPlan companion -> SplitBlackholeKernel -> blackhole.work_decomposition / blackhole.compute_regions / blackhole.pipeline_stages -> PlanTTBlocks -> PlanTTCompute(PlanTTKernelABI wrapper) -> PlanTTTransport(PlanTTCBAlloc wrapper) -> BuildTTProgram -> TTProgram companion -> ValidateTTProgram -> MaterializeBlackholeExecutable -> executable extraction / codegen / BlackholeModule`
+  `Normalized Tile TIR -> SpatialPlan companion -> SplitBlackholeKernel -> legacy transition attrs / helper wrappers -> PlanTTBlocks -> PlanTTCompute / PlanTTTransport with legacy helper residue -> BuildTTProgram -> TTProgram companion -> ValidateTTProgram -> MaterializeBlackholeExecutable -> executable extraction / codegen / BlackholeModule`
 - 当前已知迁移残留包括：
-  - `blackhole.work_decomposition / blackhole.compute_regions / blackhole.pipeline_stages`
-  - `blackhole.lowering_requirements`
-  - `PlanTTKernelABI / PlanTTCBAlloc / PlanTTCoreGroups`
-  - 尚未完全显式化的 `PlanTTSync / PlanTTABI / PlanTTExecution`
+  - `SpatialPlan -> TTProgram` 之间仍有 legacy transition attrs / helper wrappers
+  - `PlanTTCompute / PlanTTTransport / BuildTTProgram` 之间仍有 owner residue
+  - 尚未完全显式化的 `TTSyncPlan / TTABIPlan / TTExecutionPlan`
 - `SplitBlackholeKernel` 已实现并已接入管线；纯 copy 走 `fused_dataflow` 单 kernel，GEMM 走 3-kernel（reader/compute/writer）
 - direct runtime 当前 admitted 支持面：
   - copy：equal source/dest range，且 stride = 1
@@ -274,6 +271,6 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - `flash-attn` compile-path / source/spec baseline 已稳定，但 direct runtime correctness 还不是 admitted support surface
 - direct cast consumer 当前只保留 build/source contract gate，不作为 TT-Sim direct-runtime correctness gate
 - TT-Sim `fp16` 仍按 simulator capability boundary 处理，不作为当前 correctness gate
-- 当前总体 blocker 是 `R0-R2` 还没有同时收口，不是单一 cutover 点
+- 当前总体 blocker 是 `SpatialPlan owner cutover / TTProgram owner cutover / ExecutableSpec leaf cutover` 还没有同时收口，不是单一 cutover 点
 - 后续所有架构推进以当前 layered IR 为准：
-  `Normalized Tile TIR -> SpatialPlan companion -> TTProgram companion -> ExecutableSpec`
+  `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`

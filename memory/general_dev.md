@@ -62,7 +62,7 @@
   `SpatialPlan companion / TTProgram companion`
   只保存 TIR 没有对象化、但后续 planning 必须跨 pass 持久化的事实
 - `Task 1` 的 `SpatialPlan companion` 现在已在 `Simplify` 后落地；
-  第一版 `ExecutionClosure / ClosureBoundary`
+  第一版中间执行单元 / 数据流边界骨架
   直接按 normalized TIR top-level executable statements 和 buffer def-use 建立，
   不在 companion 中重复编码 expr / tile-op 参数
 - 一旦某层 companion / target bundle 成为当前正式入口，
@@ -75,14 +75,23 @@
   很快再次漂移
 - `Task / Channel` 继续可以存在，
   但只能作为
-  `ExecutionClosure / ClosureBoundary`
+  中间执行单元 / 数据流边界骨架
   的 derived execution/materialization view；
   不能再当 primary truth owner
 - 两层 companion 新主链固定从 `Simplify` 后进入：
   `AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion ->
   PlanTTBlocks -> PlanTTCompute -> PlanTTTransport -> PlanTTSync -> PlanTTABI ->
   PlanTTExecution -> MaterializeBlackholeExecutable`
-- 当前 R0 cut-in 已把
+- `buffer effect / use-role analysis` 当前已接入 active path：
+  `LowerToBlackholePhaseB`
+  需要显式经过
+  `AnalyzeBlackholeBufferEffectUseRoleFacts`，
+  并产出
+  `blackhole.buffer_effect_use_role_facts`；
+  `PlanTTCompute`
+  缺这份 analysis attr
+  时必须 fail-closed
+- 当前第一性原理 cut-in 已把
   `BuildTTProgram`
   退回成 reader/aggregator；
   owner planning 通过
@@ -161,16 +170,14 @@
   planner object 一旦可直接聚合成 `TTProgram`，
   中间 attr 就应该停产，helper/test 也不能再把它们当作回退面
 - active Blackhole path 不再保留
-  `tl.semantic_* / SemanticProgram / semantic_witness`
-  这类独立语义层；
+  独立 semantic mirror bridge；
   凡是能从 `Normalized Tile TIR + SpatialPlan companion +
-  blackhole.work_decomposition / blackhole.compute_regions /
-  blackhole.pipeline_stages`
-  稳定得到的信息，就必须直接从这些**过渡残留 + 当前 owner truth**
+  当前过渡残留`
+  稳定得到的信息，就必须直接从这些当前 owner truth / transition residue
   读取，并持续把这批残留往真正的 `PlanTT*` owner 上迁移。
   若仍然不够，优先扩 TIR/schema，不要再造一层 semantic mirror
 - TT fast path / short path 的判定必须看
-  `SpatialPlan` 自身的 closure / boundary 形状和
+  `SpatialPlan` 自身的执行单元 / 数据流边 / phase 形状和
   当前 target plan 能否直接承接，
   不能只看零散 segment kind 或历史 semantic 角色；
   否则 `flash-attn` 这类多闭包程序会被错误压成简单 GEMM / compute fast path
@@ -179,8 +186,7 @@
   一旦它把 `local.fragment / local` canonicalize 成 `blackhole.acc`
   或把 shared canonicalize 成 `blackhole.cb.*`，
   就必须同步改写
-  `blackhole.lowering_requirements / blackhole.compute_regions /
-  tl.spatial_program / tl.tt_program`
+  过渡 attrs 与 companion projection
   里对应 contract 的 `scope`；
   否则 planning / codegen 会命中
   “IR 已经切到新资源类，companion 还停在旧 scope” 的双真源裂缝
@@ -248,9 +254,8 @@
   `Analyze... -> Analyze... -> Materialize...` 的 pass 链，让 analysis facts
   先以 typed plan 落地，再由 materialize pass 组装最终 companion IR
 - 当 canonical pass 命名切换完成后，
-  旧 `LowerSpatialProgramToTTTarget / ValidateTTTargetProgram /
-  MaterializeTTExecutableSpec`
-  这类名字应直接删除；
+  旧 TT target probe / validator / executable materializer
+  这类命名应直接删除；
   不要再保留 compatibility shell、probe 或测试入口
 - unsupported subset gate 应在所有后端出口共享
 - gate 应按具体 contract / op family 报错，不要长期用黑盒总括词
@@ -358,8 +363,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - `flash-attn` 这类 optimized path 如果会在后续 pass 里
   canonicalize 资源或折叠 compute region，
   需要显式保留一份 pre-canonical logical compute-region truth
-  （例如 `blackhole.logical_compute_regions`），
-  让 lowering requirements 还能恢复
+  （例如一份独立 typed companion fact），
+  让 transition requirement reader 还能恢复
   row-state / grouped-row / fragment logical shape；
   否则后段会被迫重新猜 shape 或回退到旧 contract
 

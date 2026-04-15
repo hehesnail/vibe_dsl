@@ -50,7 +50,7 @@ Normalized Tile TIR
 | 文档 | 角色 |
 |------|------|
 | `final_blackhole_backend_redesign.md` | 唯一总体设计；定义长期层边界、validator 纪律、rewrite 方向 |
-| `task0_ir_layering_root_cause.md` | 根因诊断与研究结论；解释为什么必须把中间 virtual layer 立起来 |
+| `task0_ir_layering_root_cause.md` | 根因诊断与研究结论；解释为什么必须把中间 spatial/dataflow owner layer 立起来 |
 | `task1_spatial_plan_companion.md` | `SpatialPlan` 设计；定义 virtual spatial/dataflow program 的 object set 与 validator |
 | `task2_ttprogram_companion_cutover.md` | `TTProgram` 设计；定义 physical realization owner objects、planner pass 与 reader/writer 边界 |
 | `task3_runtime_gate_and_workload_cutover.md` | runtime/codegen/build gate、support surface 和 legacy attr 退场顺序 |

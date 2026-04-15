@@ -82,7 +82,7 @@
 当前代码的真实问题不是“旧协议太散”，
 而是：
 
-- 中间 virtual layer 太薄
+- 中间 spatial/dataflow owner layer 太薄
 - 后段被迫补出 fake protocol
 - leaf readers 仍在消费 fake protocol
 
