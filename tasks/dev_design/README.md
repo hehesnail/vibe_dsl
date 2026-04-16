@@ -22,6 +22,10 @@
   - 研究输入，不是协议真源
 - `blackhole_first_principles_protocol_audit.md`
   - 现存 surface 的 owner / non-owner / validator / cutover disposition
+- `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
+  - legacy protocol cleanup 执行总览；配套 task0-task5 分文件一起阅读
+  - 这些 cleanup task 文档默认采用 visitor / matcher / mutator 驱动的 pass 设计，
+    不再授权新增 bag / attr / wrapper 式语义层
 
 ## 2. 当前设计骨架
 
@@ -55,6 +59,7 @@ Normalized Tile TIR
 | `task2_ttprogram_companion_cutover.md` | `Task 2: TTProgram Owner Cutover`；定义 physical realization owner objects、planner pass 与完成判定 |
 | `task3_runtime_gate_and_workload_cutover.md` | `Task 3: ExecutableSpec / Leaf Reader Cutover`；定义 reader 纪律、workload 恢复顺序与完成判定 |
 | `blackhole_first_principles_protocol_audit.md` | disposition table；列出现存 fake/legacy protocol 的去留与迁移落点 |
+| `2026-04-16-blackhole-final-legacy-protocol-cleanup.md` | cleanup 执行总览；把 legacy protocol cleanup 拆成总览 + task0-task5 分文件 |
 
 ## 4. 当前执行优先级
 
