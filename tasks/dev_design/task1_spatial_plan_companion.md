@@ -34,7 +34,8 @@
 `SpatialPlan` builder 只允许读取：
 
 - `Normalized Tile TIR`
-- 结构分析得到的 execution-unit candidate / dependence / region facts
+- 对当前 TIR 做结构遍历后直接得到的
+  execution-unit candidate / dependence / region evidence
 - validate 后的 hints
 
 禁止把下面这些东西抬成 `SpatialPlan` 真源：
@@ -45,8 +46,9 @@
 如果 TIR 证据不足，
 结论只能是：
 
-- 补 TIR / DSL / schema
-- 补更早的 analysis
+- 补 TIR / DSL
+- 补当前 builder 的结构匹配 / 构造逻辑
+- 补 validator
 - 显式 reject / unsupported
 
 ## 3. 长期 owner object set
@@ -167,21 +169,24 @@ validator 失败时必须 fail-closed。
 
 ## 6. Pass 责任
 
-### `AnalyzeSpatialStructureFacts`
-
-负责：
-
-- 收集 closure 候选
-- 收集 dependence / region / carry / boundary facts
-- 形成 builder 需要的 analysis facts
-
 ### `BuildSpatialPlanCompanion`
 
 负责：
 
-- 从 analysis facts 构造
+- 在当前 `Normalized Tile TIR`
+  上做
+  `visitor / matcher / builder`
+  驱动的结构遍历
+- 直接构造
   `ExecutionUnit / DataflowEdge / LayoutSpec / PhasePlan / ValidatedHintSet`
 - 同步生成 legacy compatibility projection
+
+如果实现上仍保留一个前置结构收集步骤，
+它也只能是
+`BuildSpatialPlanCompanion`
+同文件内的局部 mechanics，
+不能形成新的 public analysis facts
+或 pass-to-pass 语义层。
 
 ### `ValidateSpatialPlan`
 
@@ -255,12 +260,12 @@ validator 失败时必须 fail-closed。
      `ExecutionUnit / DataflowEdge`
 2. 保留 legacy compatibility projection
    - 但只保留 projection 身份，
-     不再反向定义主 schema
+     不再反向定义主 truth
 3. 新增 `ValidateSpatialPlan`
 4. 把
    `work_decomposition / compute_regions / pipeline_stages`
    拆回新 owner object /
-   owner-side fact family
+   builder 直接恢复的结构 truth
 5. 再逐步让各 `PlanTT*`
    读新对象，不再读 fake protocol
 
@@ -292,6 +297,6 @@ validator 失败时必须 fail-closed。
    仍保留为迁移 residue，
    但当前只承接
    TT owner 细化 /
-   lowering support facts，
+   lowering support 需要的局部结构结果，
    不再承担 `SpatialPlan`
    primary owner 身份

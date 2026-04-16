@@ -58,7 +58,7 @@
   algorithmic truth、
   virtual spatial/dataflow truth
   还是 target realization truth
-- 用它帮助审视 validator、映射边界、typed object 边界是否站得住
+- 用它帮助审视 validator、映射边界、canonical owner object 边界是否站得住
 
 错误用法：
 
@@ -117,7 +117,10 @@
 这和当前算法/语义真相层很贴：
 
 - `Normalized Tile TIR` 之上的 companion abstraction 必须是稳定抽象
-- access / effect / use-role / liveness 这类 facts 需要统一 typed skeleton
+- access / effect / use-role / liveness 这类信息
+  需要在 canonical owner object / validator obligation
+  上显式化，
+  而不是再长一层 facts bag
 - `preserve / typed_rebind / invalidate` 这类 companion lifecycle contract 需要显式化
 
 它最直接支持的是：

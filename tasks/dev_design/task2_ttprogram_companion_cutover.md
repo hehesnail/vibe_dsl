@@ -75,8 +75,7 @@
 长期 canonical pass chain 固定为：
 
 ```text
-AnalyzeSpatialStructureFacts
-  -> BuildSpatialPlanCompanion
+BuildSpatialPlanCompanion
   -> ValidateSpatialPlan
   -> PlanTTBlocks
   -> PlanTTCompute
@@ -106,12 +105,27 @@ AnalyzeSpatialStructureFacts
 - `PlanTTExecution`
   - 形成 launch order / waves / kernel-to-core binding
 - `BuildTTProgram`
-  - 只聚合上面的 typed truth
+  - 只聚合上面的 canonical owner object
 - `ValidateTTProgram`
-  - 检查 typed owner object completeness / consistency
+  - 检查 canonical owner object completeness / consistency
 
 `BuildTTProgram`
 不再允许承担任何 planning owner 责任。
+
+补充纪律：
+
+- `PlanTTBlocks / PlanTTCompute / PlanTTTransport /
+   PlanTTSync / PlanTTABI / PlanTTExecution`
+  都应以当前 `SpatialPlan`
+  和 anchored sub-TIR
+  上的
+  `visitor / matcher / mutator / builder`
+  逻辑直接写入 `TTProgram`
+  owner object
+- 如果实现上仍保留局部 collector，
+  它也只能留在同一个 planner `.cc`
+  里作为 mechanics，
+  不能长成新的 bridge bag
 
 ### repo HEAD 落地快照
 
@@ -122,7 +136,7 @@ AnalyzeSpatialStructureFacts
   与
   `LowerToBlackholeTTProgram`
 - `BuildTTProgram`
-  现在只聚合显式 owner attrs，
+  现在只聚合显式 owner object，
   不再内联生成
   sync / dst-layout / execution / hardware payload
 - `TTProgram`
@@ -227,5 +241,5 @@ legacy helper bridge / runtime-arg bridge / internal payload
    已经能以
    `TTBlockPlan / TTKernelPlan / TTTransportPlan /
     TTSyncPlan / TTABIPlan / TTExecutionPlan`
-   这组 typed truth
+   这组 canonical owner object
    充当唯一 physical realization truth

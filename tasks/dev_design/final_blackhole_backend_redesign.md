@@ -160,7 +160,7 @@ Normalized Tile TIR
 
 - 冻结 `TTProgram`
 - 投影 `ExecutableSpec`
-- 基于显式 leaf schema 做 execution backend 选择 / admission gate
+- 基于显式 leaf projection 做 execution backend 选择 / admission gate
 - build / codegen / runtime / `BlackholeModule` 执行
 
 不再承担：
@@ -246,6 +246,49 @@ Normalized Tile TIR
 - `PlanTTSync`
   不再兼职恢复 compute 或 transport 语义
 
+### 4.4 Pass 实现纪律
+
+这条链上的实现形态也固定为：
+
+- pass 在**当前 IR / 当前 owner object**
+  上工作
+- 默认实现形态是
+  `visitor / matcher / mutator / builder`
+  驱动的直接构造或直接改写
+- 如果实现上需要一个前置结构遍历，
+  它也应留在同一个 `.cc`
+  中作为局部 mechanics
+
+明确禁止把这些局部结果升格成：
+
+- 新的 attr bag
+- 新的 public analysis wrapper
+- 新的 pass-to-pass 语义层
+- 新的 runtime/codegen late matcher 恢复层
+
+换句话说：
+
+- `SpatialPlan`
+  应由对当前 `Normalized Tile TIR`
+  的结构遍历直接构造
+- `TTProgram`
+  应由对当前 `SpatialPlan`
+  和 anchored sub-TIR
+  的 planner pass
+  直接写入 owner object
+- `ExecutableSpec`
+  应由对当前 `TTProgram`
+  的 direct projection 得到
+
+而不是：
+
+```text
+current IR
+  -> analysis facts / helper bag
+  -> another bridge protocol
+  -> owner object
+```
+
 ## 5. Validator 纪律
 
 layered IR 的价值只在于每层都显式承诺：
@@ -316,7 +359,7 @@ legacy transition attrs / helper bridge / payload bag
 1. 先看 owner 边界
 2. 再看当前实现是否越权持有上游 truth
 3. 只有在 truth 明确属于上游 owner 时，
-   才允许回头补上游 schema / analysis
+   才允许回头补上游 IR / owner object / builder logic / validator
 
 明确禁止：
 

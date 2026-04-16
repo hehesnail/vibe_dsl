@@ -16,7 +16,7 @@
 `Task 3` 只负责两件事：
 
 1. 让 build / codegen / runtime
-   严格消费 typed owner truth
+   严格消费 canonical owner truth
 2. 在新主链上重新承接 workload payoff
 
 `Task 3`
@@ -78,9 +78,9 @@ support surface 扩张只能经由：
 
 缺 truth 时只能：
 
-- 补 analysis
-- 补 schema
-- 补更早层 planner
+- 补更早层 IR / owner object
+- 补更早层 planner 的构造/改写逻辑
+- 补 validator
 - 显式 unsupported
 
 不允许：
@@ -88,6 +88,7 @@ support surface 扩张只能经由：
 - 新增 workaround attr
 - 新增 runtime fallback
 - 新增 late matcher
+- 新增 leaf-time visitor/matcher 去恢复 planning truth
 
 ## 5. 旧链退场顺序
 

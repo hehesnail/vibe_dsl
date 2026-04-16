@@ -160,7 +160,7 @@ owner：
      改成 virtual spatial/dataflow program
 2. **让 `TTProgram` 收回 target owner**
    - 后段停止依赖 fake protocol
-3. **让 leaf readers 只读 typed truth**
+3. **让 leaf readers 只读 canonical owner truth**
    - build / codegen / runtime
      停止读 legacy gate attrs
 4. **把 legacy attr 当债，不当资产**
@@ -193,3 +193,6 @@ owner：
 - 后段如果在 owner 边界上越权，
   应优先改后段，
   不是先给前面补 attr / 补 matcher / 补过渡 truth
+- 如果当前证据不足，
+  应优先补上游 IR / owner object / builder logic / validator，
+  不是先长一层 facts bag
