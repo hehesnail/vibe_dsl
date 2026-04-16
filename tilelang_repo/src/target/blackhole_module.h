@@ -817,9 +817,6 @@ struct ExecutableSpec {
     if (!multi_compute_contracts.empty()) {
       writer->WriteObjectKeyValue("multi_compute_contracts", multi_compute_contracts);
     }
-    if (!compute_epilogue_ops.empty()) {
-      writer->WriteObjectKeyValue("compute_epilogue_ops", compute_epilogue_ops);
-    }
     if (!direct_runtime_unsupported_reasons.empty()) {
       writer->WriteObjectKeyValue("direct_runtime_unsupported_reasons",
                                   direct_runtime_unsupported_reasons);

@@ -28,6 +28,7 @@
 #include "blackhole_cb_common.h"
 #include "common/tt_target_program.h"
 
+#include <tvm/ir/op.h>
 #include <tvm/tir/expr.h>
 #include <tvm/tir/function.h>
 #include <tvm/tir/stmt.h>
@@ -42,6 +43,15 @@
 
 namespace tvm {
 namespace tl {
+
+constexpr const char* kTLBlackholeTTMetalBuiltinSelection =
+    "tl.blackhole_tt_metal_builtin_selection";
+constexpr const char* kTLBlackholeLoweringRequirementsSeed =
+    "tl.blackhole_lowering_requirements_seed";
+
+bool IsHelperCompositeBlackholeBuiltin(const tvm::Op& op);
+bool UsesHelperCompositeBlackholeBuiltin(const tvm::tir::PrimFunc& func);
+tvm::transform::Pass SelectBlackholeTTMetalBuiltins();
 
 /*!
  * \brief Copy direction classification
@@ -67,10 +77,13 @@ enum class CopyDirection {
  */
 class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
  public:
-  PlanTTKernelABI();
+ PlanTTKernelABI();
 
   /*! \brief Main entry point */
   tvm::tir::PrimFunc Transform(const tvm::tir::PrimFunc& func);
+
+  /*! \brief Rewrite compute-side high-level TIR idioms into selected TT-Metal builtins. */
+  tvm::tir::PrimFunc SelectComputeBuiltins(const tvm::tir::PrimFunc& func);
 
   /*! \brief Get TT kernels synthesized during Transform. */
   tvm::ffi::Array<TTKernel> GetTTKernels() const { return tt_kernels_; }
@@ -548,6 +561,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool saw_copy_op_ = false;
   bool needs_copy_runtime_args_ = false;
   bool requires_compute_segment_ = false;
+  bool select_compute_builtins_only_ = false;
   tvm::tir::Buffer copy_input_buffer_;
   tvm::tir::Buffer copy_output_buffer_;
   std::string copy_input_buffer_name_;

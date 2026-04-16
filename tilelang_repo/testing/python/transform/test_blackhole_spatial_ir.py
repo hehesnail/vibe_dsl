@@ -18,8 +18,36 @@ if str(BLACKHOLE_TARGET_TEST_DIR) not in sys.path:
 if str(THIS_DIR) not in sys.path:
     sys.path.append(str(THIS_DIR))
 
-from common import gemm_kernel, staged_copy_kernel
+from common import gemm_kernel, lower_blackhole_to_tt_target, staged_copy_kernel
 from test_blackhole_flash_attention_analysis import mha_example
+
+
+HELPER_COMPOSITE_BLACKHOLE_BUILTINS = (
+    "reduce_row",
+    "mul_row_bcast",
+    "mul_grouped_row_bcast",
+    "div_row_bcast",
+    "div_grouped_row_bcast",
+    "exp2_row_bcast_affine",
+    "exp2_grouped_row_bcast_affine",
+    "scalar_max",
+    "scalar_exp2_affine",
+    "copy_tile_from_cb",
+)
+
+
+def _collect_blackhole_builtin_names(node):
+    names = set()
+
+    def visit(expr):
+        if isinstance(expr, tvm.tir.Call):
+            op = expr.op
+            if hasattr(op, "name") and op.name.startswith("tl.blackhole."):
+                names.add(op.name)
+
+    body = node.body if hasattr(node, "body") else node
+    tvm.tir.stmt_functor.post_order_visit(body, visit)
+    return names
 
 
 def _prepare_blackhole_phase_b_module(prim_func):
@@ -34,6 +62,23 @@ def _prepare_blackhole_phase_b_module(prim_func):
     mod = tvm.tir.transform.Simplify()(mod)
     mod = tilelang.transform.HoistBroadcastValues()(mod)
     return LowerToBlackholePhaseB(mod)
+
+
+def _prepare_blackhole_tt_program_module(prim_func):
+    mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
+    target = Target("blackhole")
+    with target:
+        if not (mod["main"].attrs and mod["main"].attrs.get("target") is not None):
+            mod = LowerAndLegalize(mod, target)
+        mod = lower_blackhole_to_tt_target(mod)
+    return mod
+
+
+def _prepare_blackhole_builtin_selection_module(prim_func):
+    mod = _prepare_blackhole_phase_b_module(prim_func)
+    mod = tilelang.transform.PlanTTBlocks()(mod)
+    mod = tilelang.transform.SelectBlackholeTTMetalBuiltins()(mod)
+    return mod
 
 
 def _drop_legacy_spatial_attrs(mod):
@@ -208,6 +253,65 @@ def test_phase_b_pipeline_exposes_only_spatial_plan_without_legacy_analysis_attr
     assert main.attrs.get("blackhole.work_decomposition") is None
     assert main.attrs.get("blackhole.compute_regions") is None
     assert main.attrs.get("blackhole.pipeline_stages") is None
+
+
+def test_tt_metal_api_granularity_rejects_helper_composite_builtins():
+    mod = _prepare_blackhole_tt_program_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    main = mod["main"]
+    builtin_names = _collect_blackhole_builtin_names(main)
+    payload = dict(main.attrs["tl.tt_program"].payload)
+
+    for builtin_name in HELPER_COMPOSITE_BLACKHOLE_BUILTINS:
+        assert f"tl.blackhole.{builtin_name}" not in builtin_names
+    assert "compute_epilogue_ops" not in payload
+
+
+def test_tt_metal_builtin_selector_lowers_compute_idioms_before_plan_tt_compute():
+    mod = _prepare_blackhole_builtin_selection_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    main = mod["main"]
+    builtin_suffixes = {
+        name.split("tl.blackhole.", 1)[1]
+        for name in _collect_blackhole_builtin_names(main)
+    }
+
+    assert main.attrs.get("tl.blackhole_tt_metal_builtin_selection")
+    assert {
+        "binary_max_tile_local",
+        "reduce_rows_local",
+        "mul_tiles_bcast_rows_local",
+        "div_tiles_bcast_rows_local",
+        "exp_tiles_bcast_rows_affine_local",
+        "exp_tile_affine_local",
+        "scalar_fma",
+    }.issubset(builtin_suffixes)
+    assert not any(
+        name.split("tl.blackhole.", 1)[1] in HELPER_COMPOSITE_BLACKHOLE_BUILTINS
+        for name in _collect_blackhole_builtin_names(main)
+    )
 
 
 def test_build_tt_program_consumes_plan_and_analysis_attrs_without_spatial_program():

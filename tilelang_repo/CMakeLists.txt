@@ -263,6 +263,7 @@ elseif(USE_BLACKHOLE)
     src/transform/analyze_spatial_structure_facts.cc
     src/transform/build_spatial_plan_companion.cc
     src/transform/validate_spatial_plan.cc
+    src/transform/select_blackhole_tt_metal_builtins.cc
     src/transform/build_tt_program.cc
     src/transform/validate_tt_program.cc
     src/transform/materialize_blackhole_executable.cc

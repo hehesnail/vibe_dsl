@@ -18,6 +18,41 @@ This task does **not** authorize another semantic layer. In particular it must n
 
 A rowwise softmax epilogue is not a builtin. It remains ordinary IR that selects into an exact TT-Metal sequence such as `binary_max_tile`, `exp_tile`, `reduce_tile`, `recip_tile`, `mul_tiles_bcast_rows`, `add_tiles_bcast_rows`, and `pack_tile`, subject to legality.
 
+## Status (`2026-04-17`)
+
+This selector-forwarding slice is landed in repo HEAD.
+
+- `SelectBlackholeTTMetalBuiltins` is now on the active chain between
+  `PlanTTBlocks` and `PlanTTCompute`.
+- compute-side anchored IR idioms are selected before planner helper lowering;
+  `PlanTTCompute` fail-closes on
+  `tl.blackhole_tt_metal_builtin_selection`.
+- helper/composite builtin residue is no longer admitted on the active IR
+  surface; tests and `ValidateTTProgram` reject it by exact op name.
+- `compute_epilogue_ops` is removed from
+  `TTProgram.payload`,
+  executable projection,
+  codegen,
+  runtime,
+  and tests.
+- current residue kept intentionally narrow:
+  `tl.blackhole_lowering_requirements_seed`
+  carries only
+  `buffer_materialization_contracts`
+  and
+  `buffer_tile_bridge_specs`
+  so selector-forwarding can preserve stable bridge/materialization facts
+  across the IR rewrite.
+  It is stripped before final TTProgram materialization and is not a new owner
+  protocol.
+- one remaining owner-cutover nuance is unchanged:
+  CB/materialization-sensitive bridge publication still touches
+  `PlanTTKernelABI`
+  because CB requirement indices are still planned there.
+  That residue is for
+  `Cleanup Task 1 / Task 2`,
+  not a reason to reopen helper/composite builtin selection.
+
 ## Files
 
 - Create: `tilelang_repo/src/transform/select_blackhole_tt_metal_builtins.cc`
@@ -46,7 +81,7 @@ A rowwise softmax epilogue is not a builtin. It remains ordinary IR that selects
 6. cut lowering/codegen/validation over to the selector and fail closed on residue
 7. rerun the focused suites and commit
 
-- [ ] **Step 1: Write the failing API-granularity regressions**
+- [x] **Step 1: Write the failing API-granularity regressions**
 
 Add regressions that lock the surface to exact TT-Metal API granularity:
 
@@ -65,7 +100,7 @@ Add regressions that lock the surface to exact TT-Metal API granularity:
 - executable/payload checks that no workload-side compute protocol appears, for example no `compute_epilogue_ops`
 - copy-path checks that data movement lowers to exact TT-Metal transport/data-movement APIs rather than broad pseudo-copy helpers
 
-- [ ] **Step 2: Run the targeted regressions and verify failure**
+- [x] **Step 2: Run the targeted regressions and verify failure**
 
 Run:
 
@@ -75,9 +110,14 @@ pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py -k tra
 pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -k no_compute_epilogue_payload
 ```
 
-Expected: FAIL because the current path still mixes exact TT-Metal shims with helper/composite builtins and payload residue.
+Historical red gate:
+FAIL because the old path mixed exact TT-Metal shims with helper/composite
+builtins and payload residue.
 
-- [ ] **Step 3: Audit the builtin surface against real TT-Metal APIs and delete fake helpers**
+Current repo HEAD status:
+these selectors/payload checks are now part of the green verification baseline.
+
+- [x] **Step 3: Audit the builtin surface against real TT-Metal APIs and delete fake helpers**
 
 Build the exact inventory from TT-Metal public kernel APIs and examples in `tt_metal_repo`. Keep only exact shims such as:
 
@@ -124,7 +164,12 @@ blackhole_read_cb_front_tile_to_local_fragment
 
 If a current helper hides a sequence like "init + op + pack" or "reserve + noc + barrier + push", split it into the exact TT-Metal operations instead of renaming the helper.
 
-- [ ] **Step 4: Define one legality-contract registry shared by selection and validation**
+Current repo HEAD note:
+old helper C++ wrapper entrypoints may still exist as compatibility aliases, but
+the active IR surface and validator surface are the canonical exact op names
+rather than the old helper/composite builtin names.
+
+- [x] **Step 4: Define one legality-contract registry shared by selection and validation**
 
 This registry is not a new pass and not a new protocol layer. It is only the shared legality surface for exact builtin emission and exact builtin validation.
 
@@ -193,7 +238,13 @@ That state is strictly local to the pass. It is not another protocol layer.
 
 Do **not** mix current direct-runtime admission limits into this registry. Runtime admission stays downstream, after `ExecutableSpec` projection.
 
-- [ ] **Step 5: Implement the dedicated builtin-selection pass**
+Current repo HEAD note:
+this slice landed the shared legality surface needed for selector stamp /
+residue rejection / exact builtin validation without introducing a new owner
+layer.
+Deeper CB/materialization ownership cleanup stays with the later cutover tasks.
+
+- [x] **Step 5: Implement the dedicated builtin-selection pass**
 
 Implement a normal mutating pass over current TIR, following the same shape already used by the repo's GPU passes:
 
@@ -232,7 +283,7 @@ The wrong shape is:
 - introduce `MatchTTMetalComputeLoweringWindows`
 - add a dedicated `TryLowerRowwiseFlashAttnRegion`
 
-- [ ] **Step 6: Cut lowering, projection, and validation over to exact builtin selection**
+- [x] **Step 6: Cut lowering, projection, and validation over to exact builtin selection**
 
 After the selector exists:
 
@@ -248,7 +299,7 @@ ICHECK(!UsesHelperCompositeBlackholeBuiltin(func))
     << "helper/composite builtin residue must be removed before TTProgram validation";
 ```
 
-- [ ] **Step 7: Re-run the focused suites and commit**
+- [x] **Step 7: Re-run the focused suites and commit**
 
 Run:
 

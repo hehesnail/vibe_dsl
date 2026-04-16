@@ -166,6 +166,9 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
   if (op_name == "tl.blackhole.pack_reconfig_data_format") {
     return {0};
   }
+  if (op_name == "tl.blackhole.copy_tile") {
+    return {0};
+  }
   if (op_name == "tl.blackhole.copy_tile_to_dst_init_short" ||
       op_name == "tl.blackhole.copy_tile_to_dst_init_short_with_dt" ||
       op_name == "tl.blackhole.copy_tile_from_cb") {
@@ -174,6 +177,39 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
   }
   if (op_name == "tl.blackhole.add_tiles_init" || op_name == "tl.blackhole.add_tiles") {
     return {0, 1};
+  }
+  if (op_name == "tl.blackhole.add_bcast_rows_init_short" ||
+      op_name == "tl.blackhole.add_tiles_bcast_rows" ||
+      op_name == "tl.blackhole.mul_bcast_rows_init_short" ||
+      op_name == "tl.blackhole.mul_bcast_cols_init_short" ||
+      op_name == "tl.blackhole.mul_tiles_bcast_rows" ||
+      op_name == "tl.blackhole.mul_tiles_bcast_cols") {
+    return {0, 1};
+  }
+  if (op_name == "tl.blackhole.reduce_init" || op_name == "tl.blackhole.reduce_tile") {
+    return {0, 1};
+  }
+  if (op_name == "tl.blackhole.reduce_block_max_row" ||
+      op_name == "tl.blackhole.reduce_block_max_row_uninit") {
+    return {0, 1};
+  }
+  if (op_name == "tl.blackhole.pack_untilize_slice") {
+    return {1};  // args: (src_handle, cb_id, dst_offset, num_elements, src_offset)
+  }
+  if (op_name == "tl.blackhole.pack_untilize_tile") {
+    return {1};  // args: (src_handle, cb_id, dst_tile_index, src_offset)
+  }
+  if (op_name == "tl.blackhole.tilize_local_fragment_slice") {
+    return {1};  // args: (src_handle, cb_id, dst_offset, num_elements, row_width, src_offset)
+  }
+  if (op_name == "tl.blackhole.tilize_cast_fragment_slice") {
+    return {2};  // args: (dst_handle, src_handle, cb_id, dst_offset, src_offset, num_elements, row_width)
+  }
+  if (op_name == "tl.blackhole.untilize_cb_front_tile") {
+    return {1};  // args: (dst_handle, src_cb_id, src_tile_index, dst_offset, num_elements)
+  }
+  if (op_name == "tl.blackhole.untilize_cb_front_tile_fragment") {
+    return {1};  // args: (dst_handle, src_cb_id, src_tile_index, dst_offset)
   }
   if (op_name == "tl.blackhole.write_local_slice_to_cb") {
     return {1};  // args: (src_handle, cb_id, dst_offset, num_elements)
@@ -203,6 +239,19 @@ bool HasNoCBArgs(const std::string& op_name) {
   return op_name == "tl.blackhole.cast_fragment_slice" ||
          op_name == "tl.blackhole.add_fragment" ||
          op_name == "tl.blackhole.fill_fragment" ||
+         op_name == "tl.blackhole.tile_regs_acquire" ||
+         op_name == "tl.blackhole.tile_regs_commit" ||
+         op_name == "tl.blackhole.tile_regs_wait" ||
+         op_name == "tl.blackhole.tile_regs_release" ||
+         op_name == "tl.blackhole.binary_max_tile_init" ||
+         op_name == "tl.blackhole.binary_max_tile" ||
+         op_name == "tl.blackhole.div_binary_tile_init" ||
+         op_name == "tl.blackhole.div_binary_tile" ||
+         op_name == "tl.blackhole.exp_tile_init" ||
+         op_name == "tl.blackhole.exp_tile" ||
+         op_name == "tl.blackhole.recip_tile_init" ||
+         op_name == "tl.blackhole.recip_tile" ||
+         op_name == "tl.blackhole.reduce_uninit" ||
          op_name == "tl.blackhole.scalar_max" ||
          op_name == "tl.blackhole.reduce_row" ||
          op_name == "tl.blackhole.mul_row_bcast" ||
@@ -212,7 +261,13 @@ bool HasNoCBArgs(const std::string& op_name) {
          op_name == "tl.blackhole.scalar_fma" ||
          op_name == "tl.blackhole.exp2_row_bcast_affine" ||
          op_name == "tl.blackhole.exp2_grouped_row_bcast_affine" ||
-         op_name == "tl.blackhole.scalar_exp2_affine";
+         op_name == "tl.blackhole.scalar_exp2_affine" ||
+         op_name == "tl.blackhole.binary_max_tile_local" ||
+         op_name == "tl.blackhole.reduce_rows_local" ||
+         op_name == "tl.blackhole.mul_tiles_bcast_rows_local" ||
+         op_name == "tl.blackhole.div_tiles_bcast_rows_local" ||
+         op_name == "tl.blackhole.exp_tiles_bcast_rows_affine_local" ||
+         op_name == "tl.blackhole.exp_tile_affine_local";
 }
 
 }  // namespace

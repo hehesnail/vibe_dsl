@@ -378,6 +378,7 @@ def LowerToBlackholeTTProgram(mod: IRModule) -> IRModule:
     """Run the canonical Task 2 Blackhole target bundle through validated TTProgram."""
     mod = LowerToBlackholePhaseB(mod)
     mod = tilelang.transform.PlanTTBlocks()(mod)
+    mod = tilelang.transform.SelectBlackholeTTMetalBuiltins()(mod)
     mod = tilelang.transform.PlanTTCompute()(mod)
     mod = tilelang.transform.PlanTTTransport()(mod)
     mod = tilelang.transform.PlanTTSync()(mod)

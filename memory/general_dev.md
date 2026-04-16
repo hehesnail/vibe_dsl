@@ -140,6 +140,54 @@
 - TT target builtin 选择必须发生在 anchored sub-TIR
   仍保留 tile-op、layout、load/store、address expr 的边界；
   不要在 late matcher / bridge attr 层恢复 compute 或 transport 语义
+- 对 Blackhole exact TT-Metal builtin cleanup，
+  `flash-attn` / rowwise softmax 是一个明确的结构性校验点：
+  如果 pass 输入里已经只剩
+  `write_local_fragment_tile_to_cb /
+   read_cb_front_tile_to_local_fragment /
+   reduce_row / scalar_max / scalar_exp2_affine /
+   exp2_grouped_row_bcast_affine`
+  这类 helper/composite builtin，
+  就说明 selector 已经放得太晚。
+  TT-Metal 上游的 exact 参考序列在
+  `tt_metal_repo/tests/tt_metal/tt_metal/test_kernels/compute/softmax.cpp`
+  和
+  `tt_metal_repo/tests/tt_metal/tt_metal/test_kernels/misc/sdpa/reduce_block_max_row/compute.cpp`
+  中，
+  依赖的是 `CB + DST` residency、
+  `copy_tile / reduce_* / binary_max_tile / exp_tile / recip_tile /
+  mul_tiles_bcast_* / pack_tile`
+  这一层 exact op。
+  这类序列必须在 pre-planner anchored TIR 上选择，
+  不能等 `PlanTTKernelABI` 已经把 compute 语义塌缩成 local-fragment helper
+  后再靠 patch / rename 修补
+- 针对 builtin-surface / residue 回归，
+  测试要收集实际 TIR `Call` 的 op 名，
+  不要做字符串子串匹配；
+  canonical 名里可能仍包含旧 helper 前缀片段
+  （例如 `reduce_rows_local` 会命中 `reduce_row` 子串），
+  子串断言会把已经前移后的 canonical surface 误判成 residue
+- selector 在 rewrite 前后如果要携带 bridge/materialization 事实，
+  只能 seed 稳定字段；
+  不要跨 rewrite 复用
+  `buffer_flow_contracts`
+  这类带顺序索引的结构。
+  `order_index`
+  会随着 rewrite 变化，
+  这类事实必须从当前 IR 重新构建
+- fragment-cast publish 的强制回写只能对
+  `blackhole.acc`
+  且确实带 materialization contract 的目标生效；
+  像
+  `O_shared_local_cast`
+  这类短生命周期 local temp
+  仍要保持 local，
+  等单独的 tilize / pack 步骤处理
+- `compute_epilogue_ops`
+  不再是正确的调试或验证入口；
+  现在应直接看 builtin 调用序列
+  与
+  `buffer_tile_bridge_specs`
 - `PlanTTTransport` 负责 `TensorAccessor / CB / NoC / semaphore / multicast`
   这组 data movement protocol，
   `PlanTTCompute` 负责 TT-Metal compute family；

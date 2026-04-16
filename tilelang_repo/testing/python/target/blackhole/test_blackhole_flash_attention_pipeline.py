@@ -25,6 +25,7 @@ from .common import (
     tt_abi_for_kernel,
 )
 from .test_blackhole_copy_pipeline import (
+    _collect_blackhole_builtin_names,
     _rebuild_codegen_module_with_tt_program,
     _extract_blackhole_executable_spec,
     _require_blackhole_kernel,
@@ -37,6 +38,20 @@ if str(EXAMPLE_DIR) not in sys.path:
 
 import example_mha_fwd_bshd as mha_example
 import example_gqa_fwd_bshd as gqa_example
+
+
+HELPER_COMPOSITE_BLACKHOLE_BUILTINS = (
+    "reduce_row",
+    "mul_row_bcast",
+    "mul_grouped_row_bcast",
+    "div_row_bcast",
+    "div_grouped_row_bcast",
+    "exp2_row_bcast_affine",
+    "exp2_grouped_row_bcast_affine",
+    "scalar_max",
+    "scalar_exp2_affine",
+    "copy_tile_from_cb",
+)
 
 
 def _lower_flash_attention_to_tt_target(*, is_causal=False):
@@ -96,18 +111,18 @@ def _tt_program_payload(func):
     return dict(require_tt_program(func).payload)
 
 
-def _compute_epilogue_ops(func):
-    payload = _tt_program_payload(func)
-    return [dict(op) for op in payload.get("compute_epilogue_ops", [])]
-
-
-def _compute_epilogue_kinds(func):
+def _blackhole_builtin_suffixes(func):
     return {
-        (
-            str(op["kind"]),
-            str(op.get("reduce_kind", "")),
-        )
-        for op in _compute_epilogue_ops(func)
+        name.split("tl.blackhole.", 1)[1]
+        for name in _collect_blackhole_builtin_names(func)
+    }
+
+
+def _buffer_tile_bridge_specs_by_buffer(func):
+    payload = _tt_program_payload(func)
+    return {
+        str(spec["buffer"]): dict(spec)
+        for spec in payload.get("buffer_tile_bridge_specs", [])
     }
 
 
@@ -120,10 +135,10 @@ def test_flash_attention_forward_tt_target_emits_tt_program_payload():
     assert "blackhole.lowering_requirements" not in attrs
 
     payload = _tt_program_payload(lowered)
-    epilogue_ops = _compute_epilogue_kinds(lowered)
     bridge_buffers = {
         str(spec["buffer"]) for spec in payload["buffer_tile_bridge_specs"]
     }
+    builtin_names = _blackhole_builtin_suffixes(lowered)
 
     assert len(payload["multi_compute_contracts"]) == 2
     assert all(
@@ -141,13 +156,17 @@ def test_flash_attention_forward_tt_target_emits_tt_program_payload():
         "logsum",
     }.issubset(bridge_buffers)
     assert {
-        ("scalar_max", ""),
-        ("reduce_row", "max"),
-        ("reduce_row", "sum"),
-        ("exp2_grouped_row_bcast_affine", ""),
-        ("scalar_exp2_affine", ""),
-        ("cast_fragment_slice", ""),
-    }.issubset(epilogue_ops)
+        "binary_max_tile_local",
+        "reduce_rows_local",
+        "mul_tiles_bcast_rows_local",
+        "div_tiles_bcast_rows_local",
+        "exp_tiles_bcast_rows_affine_local",
+        "exp_tile_affine_local",
+        "scalar_fma",
+        "cast_fragment_slice",
+        "tilize_local_fragment_slice",
+        "pack_untilize_tile",
+    }.issubset(builtin_names)
 
 
 def test_flash_attention_forward_optimized_path_lowers_scores_max_updates():
@@ -163,18 +182,17 @@ def test_flash_attention_forward_optimized_path_lowers_scores_max_updates():
         num_stages=1,
         threads=128,
     )["main"]
-    script = lowered.script()
-    epilogue_ops = _compute_epilogue_kinds(lowered)
+    builtin_names = _blackhole_builtin_suffixes(lowered)
 
-    assert "tl.blackhole.scalar_max" in script
-    assert ("scalar_max", "") in epilogue_ops
+    assert "binary_max_tile_local" in builtin_names
 
 
 def test_flash_attention_forward_tt_target_lowers_reductions_to_builtins():
     lowered = _lower_flash_attention_to_tt_target()
+    builtin_names = _blackhole_builtin_suffixes(lowered)
     script = lowered.script()
 
-    assert "tl.blackhole.reduce_row" in script
+    assert "reduce_rows_local" in builtin_names
     assert "\"max\"" in script
     assert "\"sum\"" in script
 
@@ -192,14 +210,9 @@ def test_flash_attention_forward_optimized_path_lowers_reductions_to_builtins():
         num_stages=1,
         threads=128,
     )["main"]
-    script = lowered.script()
-    epilogue_ops = _compute_epilogue_kinds(lowered)
+    builtin_names = _blackhole_builtin_suffixes(lowered)
 
-    assert "tl.blackhole.reduce_row" in script
-    assert {
-        ("reduce_row", "max"),
-        ("reduce_row", "sum"),
-    }.issubset(epilogue_ops)
+    assert "reduce_rows_local" in builtin_names
 
 
 def test_flash_attention_forward_optimized_path_lowers_acc_o_broadcast_updates():
@@ -215,16 +228,10 @@ def test_flash_attention_forward_optimized_path_lowers_acc_o_broadcast_updates()
         num_stages=1,
         threads=128,
     )["main"]
-    script = lowered.script()
+    builtin_names = _blackhole_builtin_suffixes(lowered)
 
-    assert (
-        "tl.blackhole.mul_row_bcast" in script
-        or "tl.blackhole.mul_grouped_row_bcast" in script
-    )
-    assert (
-        "tl.blackhole.div_row_bcast" in script
-        or "tl.blackhole.div_grouped_row_bcast" in script
-    )
+    assert "mul_tiles_bcast_rows_local" in builtin_names
+    assert "div_tiles_bcast_rows_local" in builtin_names
 
 
 def test_flash_attention_forward_optimized_path_lowers_logsum_scalar_fma():
@@ -258,12 +265,10 @@ def test_flash_attention_forward_optimized_path_lowers_scores_exp2_affine_update
         num_stages=1,
         threads=128,
     )["main"]
-    epilogue_ops = _compute_epilogue_kinds(lowered)
+    builtin_names = _blackhole_builtin_suffixes(lowered)
 
-    assert {
-        ("exp2_grouped_row_bcast_affine", ""),
-        ("scalar_exp2_affine", ""),
-    }.issubset(epilogue_ops)
+    assert "exp_tiles_bcast_rows_affine_local" in builtin_names
+    assert "exp_tile_affine_local" in builtin_names
 
 
 def test_flash_attention_forward_optimized_path_lowers_fragment_fills():
@@ -279,11 +284,10 @@ def test_flash_attention_forward_optimized_path_lowers_fragment_fills():
         num_stages=1,
         threads=128,
     )["main"]
-    script = lowered.script()
-    epilogue_ops = _compute_epilogue_kinds(lowered)
+    builtin_names = _blackhole_builtin_suffixes(lowered)
 
-    assert "tl.blackhole.fill_fragment" in script
-    assert ("fill", "") not in epilogue_ops
+    assert "fill_fragment" in builtin_names
+    assert "compute_epilogue_ops" not in _tt_program_payload(lowered)
 
 
 def test_flash_attention_forward_optimized_path_lowers_fragment_casts():
@@ -299,11 +303,10 @@ def test_flash_attention_forward_optimized_path_lowers_fragment_casts():
         num_stages=1,
         threads=128,
     )["main"]
-    script = lowered.script()
-    epilogue_ops = _compute_epilogue_kinds(lowered)
+    builtin_names = _blackhole_builtin_suffixes(lowered)
 
-    assert "tl.blackhole.cast_fragment_slice" in script
-    assert ("cast_fragment_slice", "") in epilogue_ops
+    assert "cast_fragment_slice" in builtin_names
+    assert "tilize_cast_fragment_slice" in builtin_names
 
 
 def test_flash_attention_forward_optimized_path_lowers_local_to_cb_staging():
@@ -319,9 +322,10 @@ def test_flash_attention_forward_optimized_path_lowers_local_to_cb_staging():
         num_stages=1,
         threads=128,
     )["main"]
+    builtin_names = _blackhole_builtin_suffixes(lowered)
     script = lowered.script()
 
-    assert "tl.blackhole.write_local_fragment_slice_to_tiled_cb" in script
+    assert "tilize_local_fragment_slice" in builtin_names
     assert "O_shared_1[tx" not in script
 
 
@@ -338,9 +342,10 @@ def test_flash_attention_forward_runtime_shape_lowers_local_to_cb_with_thread_of
         num_stages=1,
         threads=128,
     )["main"]
+    builtin_names = _blackhole_builtin_suffixes(lowered)
     script = lowered.script()
 
-    assert "tl.blackhole.write_local_fragment_slice_to_tiled_cb" in script
+    assert "tilize_local_fragment_slice" in builtin_names
     assert "tx * 128" in script
 
 
@@ -860,24 +865,10 @@ def test_flash_attention_executable_spec_materializes_multi_gemm_contracts_and_r
 
     multi_gemm_contracts = spec.get("multi_gemm_contracts", [])
     multi_compute_contracts = spec.get("multi_compute_contracts", [])
-    fragment_merge_ops = [
-        op for op in spec.get("compute_epilogue_ops", []) if str(op.get("kind", "")) == "merge_fragment_tiles"
-    ]
-    projected_contracts = [op["buffer_materialization_contract"] for op in fragment_merge_ops]
     assert len(multi_gemm_contracts) == 2
     assert len(multi_compute_contracts) == 2
-    assert len(fragment_merge_ops) == 2
+    assert "compute_epilogue_ops" not in spec
     assert all(str(contract.get("kind", "")) == "gemm" for contract in multi_compute_contracts)
-    assert {str(contract["target_buffer"]) for contract in projected_contracts} == {"acc_s", "acc_o"}
-    assert all(str(contract["kind"]) == "intermediate_accumulator_merge" for contract in projected_contracts)
-    assert all(str(contract["materialization_kind"]) == "intermediate_buffer" for contract in projected_contracts)
-    assert all(
-        str(contract["bridge_kind"]) == "tile_nfaces_materialization"
-        for contract in projected_contracts
-    )
-    assert all(str(contract["value_role"]) == "accumulator_delta" for contract in projected_contracts)
-    assert all(str(contract["merge_kind"]) == "accumulator_add" for contract in projected_contracts)
-    assert all(str(contract["execution_protocol"]) == "dst_cb_binary_pack" for contract in projected_contracts)
     reader_kernel = _require_blackhole_kernel(spec["kernels"], kind="reader", core_type="brisc")
     writer_kernel = _require_blackhole_kernel(spec["kernels"], kind="writer", core_type="ncrisc")
     reader_per_work = {
@@ -895,7 +886,7 @@ def test_flash_attention_executable_spec_materializes_multi_gemm_contracts_and_r
             assert field in contract
 
 
-def test_flash_attention_executable_spec_exposes_compute_epilogue_ops():
+def test_flash_attention_executable_spec_drops_compute_epilogue_ops_and_keeps_multi_gemm_contracts():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -918,33 +909,38 @@ def test_flash_attention_executable_spec_exposes_compute_epilogue_ops():
         )
 
     spec = _extract_blackhole_executable_spec(artifact)
-    epilogue_ops = {
-        (
-            str(op["kind"]),
-            str(op.get("reduce_kind", "")),
-        )
-        for op in spec.get("compute_epilogue_ops", [])
-    }
-
-    assert {
-        ("scalar_max", ""),
-        ("reduce_row", "max"),
-        ("reduce_row", "sum"),
-        ("exp2_grouped_row_bcast_affine", ""),
-        ("scalar_exp2_affine", ""),
-        ("cast_fragment_slice", ""),
-    }.issubset(epilogue_ops)
-    assert {
-        ("mul_grouped_row_bcast", ""),
-        ("div_grouped_row_bcast", ""),
-        ("scalar_fma", ""),
-        ("merge_fragment_tiles", ""),
-        ("cast_fragment_slice", ""),
-        ("write_local_fragment_slice_to_tiled_cb", ""),
-    }.issubset(epilogue_ops)
+    assert "compute_epilogue_ops" not in spec
+    assert len(spec.get("multi_gemm_contracts", [])) == 2
+    assert len(spec.get("multi_compute_contracts", [])) == 2
 
 
-def test_flash_attention_tt_program_payload_projects_buffer_materialization_contracts():
+def test_flash_attention_no_compute_epilogue_payload():
+    lowered = _lower_flash_attention_to_tt_target()
+    payload = _tt_program_payload(lowered)
+    spec = lower(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        ),
+        target=Target("blackhole"),
+    )
+    executable_spec = _extract_blackhole_executable_spec(spec)
+    builtin_names = _collect_blackhole_builtin_names(lowered)
+
+    assert "compute_epilogue_ops" not in payload
+    assert "compute_epilogue_ops" not in executable_spec
+    for builtin_name in HELPER_COMPOSITE_BLACKHOLE_BUILTINS:
+        assert f"tl.blackhole.{builtin_name}" not in builtin_names
+
+
+def test_flash_attention_tt_program_payload_keeps_buffer_tile_bridge_specs_for_internal_buffers():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -968,50 +964,38 @@ def test_flash_attention_tt_program_payload_projects_buffer_materialization_cont
 
     device_func = artifact.device_mod["main_kernel"]
     payload = _tt_program_payload(device_func)
-    epilogue_ops = _compute_epilogue_ops(device_func)
-    by_buffer = {
-        str(contract["target_buffer"]): contract
-        for contract in (
-            dict(op["buffer_materialization_contract"])
-            for op in epilogue_ops
-            if "buffer_materialization_contract" in op
-        )
-    }
-    merge_contracts = [by_buffer[name] for name in ("acc_s", "acc_o")]
+    bridge_specs = _buffer_tile_bridge_specs_by_buffer(device_func)
 
     assert "buffer_materialization_contracts" not in payload
-    assert {"acc_s", "acc_o"}.issubset(by_buffer)
-    assert all(str(contract["kind"]) == "intermediate_accumulator_merge" for contract in merge_contracts)
-    assert all(
-        str(contract["materialization_kind"]) == "intermediate_buffer"
-        for contract in merge_contracts
-    )
-    assert all(
-        str(contract["bridge_kind"]) == "tile_nfaces_materialization"
-        for contract in merge_contracts
-    )
-    assert all(str(contract["value_role"]) == "accumulator_delta" for contract in merge_contracts)
-    assert all(str(contract["merge_kind"]) == "accumulator_add" for contract in merge_contracts)
-    assert all(
-        str(contract["execution_protocol"]) == "dst_cb_binary_pack"
-        for contract in merge_contracts
-    )
-    assert all(str(contract["result_live_form"]) == "tiled_cb" for contract in merge_contracts)
-    assert all(str(contract["scope"]) == "blackhole.acc" for contract in merge_contracts)
-    republish_contract = by_buffer["acc_s_cast"]
-    assert str(republish_contract["kind"]) == "republished_logical_tile"
-    assert str(republish_contract["materialization_kind"]) == "republished_buffer"
-    assert str(republish_contract["bridge_kind"]) == "tile_nfaces_materialization"
-    assert str(republish_contract["value_role"]) == "consumer_input"
-    assert str(republish_contract["merge_kind"]) == "direct_write"
-    assert str(republish_contract["execution_protocol"]) == "tiled_cb_republish"
-    assert str(republish_contract["result_live_form"]) == "tiled_cb"
-    assert str(republish_contract["source_buffer"]) == "acc_s"
-    assert int(republish_contract["logical_row_width"]) == 128
-    assert str(republish_contract["scope"]) == "blackhole.acc"
+    assert {
+        "acc_s",
+        "acc_s_cast",
+        "acc_o",
+        "scores_max",
+        "scores_max_prev",
+        "scores_scale",
+        "scores_sum",
+        "logsum",
+    }.issubset(bridge_specs)
+    for name in ("acc_s", "acc_s_cast", "acc_o"):
+        spec = bridge_specs[name]
+        assert str(spec["scope"]) == "local"
+        assert tuple(int(dim) for dim in spec["shape"]) == (128, 128)
+        assert tuple(int(dim) for dim in spec["local_shape"]) == (128,)
+        assert int(spec["thread_extent"]) == 128
+        assert int(spec["replicate_extent"]) == 1
+        assert len(spec["inverse_logical_index_exprs"]) == 3
+    for name in ("scores_max", "scores_max_prev", "scores_scale", "scores_sum", "logsum"):
+        spec = bridge_specs[name]
+        assert str(spec["scope"]) == "local"
+        assert tuple(int(dim) for dim in spec["shape"]) == (128,)
+        assert tuple(int(dim) for dim in spec["local_shape"]) == (1,)
+        assert int(spec["thread_extent"]) == 128
+        assert int(spec["replicate_extent"]) == 1
+        assert len(spec["inverse_logical_index_exprs"]) == 2
 
 
-def test_flash_attention_tt_program_payload_projects_republished_buffer_contracts():
+def test_flash_attention_tt_program_payload_keeps_republished_buffer_bridge_specs():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1035,27 +1019,24 @@ def test_flash_attention_tt_program_payload_projects_republished_buffer_contract
 
     device_func = artifact.device_mod["main_kernel"]
     payload = _tt_program_payload(device_func)
-    epilogue_ops = _compute_epilogue_ops(device_func)
-    republish_ops = [
-        op
-        for op in epilogue_ops
-        if str(op["kind"]) == "cast_fragment_slice"
-        and str(op["dst_buffer"]) == "acc_s_cast"
-        and "buffer_materialization_contract" in op
-    ]
+    bridge_specs = _buffer_tile_bridge_specs_by_buffer(device_func)
 
     assert "buffer_flow_contracts" not in payload
-    assert republish_ops
+    assert {"acc_s", "acc_s_cast", "acc_o"}.issubset(bridge_specs)
 
-    republish_contract = dict(republish_ops[0]["buffer_materialization_contract"])
-    assert str(republish_contract["kind"]) == "republished_logical_tile"
-    assert str(republish_contract["materialization_kind"]) == "republished_buffer"
-    assert str(republish_contract["bridge_kind"]) == "tile_nfaces_materialization"
-    assert str(republish_contract["value_role"]) == "consumer_input"
-    assert str(republish_contract["merge_kind"]) == "direct_write"
-    assert str(republish_contract["execution_protocol"]) == "tiled_cb_republish"
-    assert str(republish_contract["source_buffer"]) == "acc_s"
-    assert int(republish_contract["logical_element_count"]) == 32 * 32
+    acc_s_spec = bridge_specs["acc_s"]
+    acc_s_cast_spec = bridge_specs["acc_s_cast"]
+    assert str(acc_s_cast_spec["scope"]) == "local"
+    assert tuple(int(dim) for dim in acc_s_cast_spec["shape"]) == (32, 32)
+    assert tuple(int(dim) for dim in acc_s_cast_spec["local_shape"]) == (8,)
+    assert int(acc_s_cast_spec["thread_extent"]) == 128
+    assert int(acc_s_cast_spec["replicate_extent"]) == 1
+    assert tuple(int(dim) for dim in acc_s_spec["shape"]) == tuple(
+        int(dim) for dim in acc_s_cast_spec["shape"]
+    )
+    assert tuple(int(dim) for dim in acc_s_spec["local_shape"]) == tuple(
+        int(dim) for dim in acc_s_cast_spec["local_shape"]
+    )
 
 
 def test_flash_attention_tt_program_payload_keeps_bridge_specs_without_distribution_contracts():

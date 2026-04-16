@@ -1314,38 +1314,28 @@ def test_blackhole_precleared_fragment_gemm_canonicalizes_to_clear_accum_true():
     )
 
 
-def test_blackhole_gemm_post_merge_cast_consumer_exposes_republish_contract():
+def test_blackhole_gemm_post_merge_cast_consumer_keeps_buffer_tile_bridge_specs():
     kernel = gemm_kernel_with_post_merge_cast_consumer()
     target = Target("blackhole")
 
     with target:
         artifact = lower(kernel, target=target)
 
-    spec = _extract_blackhole_executable_spec(artifact)
-    cast_op = next(
-        op
-        for op in spec.get("compute_epilogue_ops", [])
-        if str(op.get("kind", "")) == "cast_fragment_slice" and str(op.get("dst_buffer", "")) == "D_local"
-    )
-    contract = cast_op["buffer_materialization_contract"]
-    assert str(contract["kind"]) == "republished_logical_tile"
-    assert str(contract["materialization_kind"]) == "republished_buffer"
-    assert str(contract["bridge_kind"]) == "tile_nfaces_materialization"
-    assert str(contract["value_role"]) == "consumer_input"
-    assert str(contract["merge_kind"]) == "direct_write"
-    assert str(contract["execution_protocol"]) == "tiled_cb_republish"
-    assert str(contract["result_live_form"]) == "tiled_cb"
-    assert str(contract["source_buffer"]) == "C_local"
-    assert int(contract["logical_row_width"]) == 32
-    assert int(contract["logical_element_count"]) == 32 * 32
-    merge_op = next(
-        op
-        for op in spec.get("compute_epilogue_ops", [])
-        if str(op.get("kind", "")) == "merge_fragment_tiles"
-        and str(op.get("dst_buffer", "")) == "C_local"
-    )
-    merge_contract = merge_op["buffer_materialization_contract"]
-    assert str(merge_contract["result_live_form"]) == "tiled_cb"
+    device_func = artifact.device_mod["main_kernel"]
+    payload = dict(require_tt_program(device_func).payload)
+    bridge_specs = list(payload["buffer_tile_bridge_specs"])
+    by_buffer = {str(spec["buffer"]): spec for spec in bridge_specs}
+
+    assert "compute_epilogue_ops" not in payload
+    assert {"C_local", "D_local"}.issubset(by_buffer)
+    for name in ("C_local", "D_local"):
+        spec = by_buffer[name]
+        assert str(spec["scope"]) == "local"
+        assert tuple(int(dim) for dim in spec["shape"]) == (32, 32)
+        assert tuple(int(dim) for dim in spec["local_shape"]) == (8,)
+        assert int(spec["thread_extent"]) == 128
+        assert int(spec["replicate_extent"]) == 1
+        assert len(spec["inverse_logical_index_exprs"]) == 3
 
 
 def test_blackhole_gemm_direct_runtime_preserves_clear_accum_false_fragment_for_cast_consumer():

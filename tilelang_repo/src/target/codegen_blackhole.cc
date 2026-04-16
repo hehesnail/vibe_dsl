@@ -51,6 +51,35 @@ bool IsBufferAddressRuntimeArgKind(const std::string& kind) {
          kind == "output_buffer_addr32" || kind == "output_buffer_addr";
 }
 
+std::string RequireStringImm(const tvm::PrimExpr& expr, const char* op_name,
+                             const char* arg_name) {
+  const auto* value = expr.as<tvm::tir::StringImmNode>();
+  ICHECK(value) << op_name << " expects " << arg_name << " to be a string literal";
+  return value->value;
+}
+
+const char* ReduceKindToTTMetal(const std::string& reduce_kind, const char* op_name) {
+  if (reduce_kind == "sum") {
+    return "PoolType::SUM";
+  }
+  if (reduce_kind == "max") {
+    return "PoolType::MAX";
+  }
+  ICHECK(false) << op_name << " got unsupported reduce kind " << reduce_kind;
+  return "";
+}
+
+const char* ReduceDimToTTMetal(const std::string& reduce_dim, const char* op_name) {
+  if (reduce_dim == "row") {
+    return "ReduceDim::REDUCE_ROW";
+  }
+  if (reduce_dim == "col") {
+    return "ReduceDim::REDUCE_COL";
+  }
+  ICHECK(false) << op_name << " got unsupported reduce dim " << reduce_dim;
+  return "";
+}
+
 const tvm::tir::VarNode* AsHandleVar(const tvm::PrimExpr& expr) {
   if (const auto* var = expr.as<tvm::tir::VarNode>()) {
     return var;
@@ -266,11 +295,6 @@ ffi::Array<ffi::Any> GetCBConfigsForCodegen(const tvm::tir::PrimFunc& f) {
 
 ffi::Map<ffi::String, ffi::Any> GetCorePlanForCodegen(const tvm::tir::PrimFunc& f) {
   return tt_program_projection::GetCorePlanFromExecutable(f, "Blackhole codegen");
-}
-
-ffi::Array<ffi::Any> GetComputeEpilogueOpsForCodegen(const tvm::tir::PrimFunc& f) {
-  return tt_program_projection::GetExecutableArrayField(
-      f, "Blackhole codegen", tt_program_projection::executable_key::kComputeEpilogueOps);
 }
 
 std::string GetCoreTypeForCodegen(const tvm::tir::PrimFunc& f) {
@@ -788,23 +812,6 @@ void CodeGenBlackhole::LoadBufferTileBridgeSpecs(const tvm::tir::PrimFunc& f) {
   for (const ffi::Any& spec_any : tt_program_projection::GetExecutableArrayField(
            f, "Blackhole codegen", tt_program_projection::executable_key::kBufferTileBridgeSpecs)) {
     auto spec = spec_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
-        ffi::Map<ffi::String, ffi::Any>());
-    if (!spec.empty()) {
-      ingest_spec(spec);
-    }
-  }
-
-  for (const ffi::Any& op_any : GetComputeEpilogueOpsForCodegen(f)) {
-    auto op =
-        op_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(ffi::Map<ffi::String, ffi::Any>());
-    if (op.empty()) {
-      continue;
-    }
-    auto maybe_bridge_spec = op.Get(ffi::String(schema_key::kBufferTileBridgeSpec));
-    if (!maybe_bridge_spec) {
-      continue;
-    }
-    auto spec = maybe_bridge_spec.value().as<ffi::Map<ffi::String, ffi::Any>>().value_or(
         ffi::Map<ffi::String, ffi::Any>());
     if (!spec.empty()) {
       ingest_spec(spec);
@@ -1909,6 +1916,9 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   } else if (builtin_name == "copy_tile_to_dst_init_short_with_dt") {
     PrintCopyTileToDstInitShortWithDT(op, os);
     return true;
+  } else if (builtin_name == "copy_tile") {
+    PrintCopyTile(op, os);
+    return true;
   } else if (builtin_name == "copy_tile_from_cb") {
     PrintCopyTileFromCB(op, os);
     return true;
@@ -1917,6 +1927,66 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
     return true;
   } else if (builtin_name == "add_tiles") {
     PrintAddTiles(op, os);
+    return true;
+  } else if (builtin_name == "add_bcast_rows_init_short") {
+    PrintAddBcastRowsInitShort(op, os);
+    return true;
+  } else if (builtin_name == "add_tiles_bcast_rows") {
+    PrintAddTilesBcastRows(op, os);
+    return true;
+  } else if (builtin_name == "mul_bcast_rows_init_short") {
+    PrintMulBcastRowsInitShort(op, os);
+    return true;
+  } else if (builtin_name == "mul_bcast_cols_init_short") {
+    PrintMulBcastColsInitShort(op, os);
+    return true;
+  } else if (builtin_name == "mul_tiles_bcast_rows") {
+    PrintMulTilesBcastRows(op, os);
+    return true;
+  } else if (builtin_name == "mul_tiles_bcast_cols") {
+    PrintMulTilesBcastCols(op, os);
+    return true;
+  } else if (builtin_name == "reduce_init") {
+    PrintReduceInit(op, os);
+    return true;
+  } else if (builtin_name == "reduce_tile") {
+    PrintReduceTile(op, os);
+    return true;
+  } else if (builtin_name == "reduce_uninit") {
+    PrintReduceUninit(op, os);
+    return true;
+  } else if (builtin_name == "reduce_block_max_row_init") {
+    PrintReduceBlockMaxRowInit(op, os);
+    return true;
+  } else if (builtin_name == "reduce_block_max_row") {
+    PrintReduceBlockMaxRow(op, os);
+    return true;
+  } else if (builtin_name == "reduce_block_max_row_uninit") {
+    PrintReduceBlockMaxRowUninit(op, os);
+    return true;
+  } else if (builtin_name == "binary_max_tile_init") {
+    PrintBinaryMaxTileInit(op, os);
+    return true;
+  } else if (builtin_name == "binary_max_tile") {
+    PrintBinaryMaxTile(op, os);
+    return true;
+  } else if (builtin_name == "div_binary_tile_init") {
+    PrintDivBinaryTileInit(op, os);
+    return true;
+  } else if (builtin_name == "div_binary_tile") {
+    PrintDivBinaryTile(op, os);
+    return true;
+  } else if (builtin_name == "exp_tile_init") {
+    PrintExpTileInit(op, os);
+    return true;
+  } else if (builtin_name == "exp_tile") {
+    PrintExpTile(op, os);
+    return true;
+  } else if (builtin_name == "recip_tile_init") {
+    PrintRecipTileInit(op, os);
+    return true;
+  } else if (builtin_name == "recip_tile") {
+    PrintRecipTile(op, os);
     return true;
   } else if (builtin_name == "fill_fragment") {
     PrintFillFragment(op, os);
@@ -1927,43 +1997,53 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   } else if (builtin_name == "add_fragment_from_cb_front") {
     PrintAddFragmentFromCBFront(op, os);
     return true;
-  } else if (builtin_name == "write_local_slice_to_cb") {
+  } else if (builtin_name == "write_local_slice_to_cb" ||
+             builtin_name == "pack_untilize_slice") {
     PrintWriteLocalSliceToCB(op, os);
     return true;
-  } else if (builtin_name == "write_local_fragment_tile_to_cb") {
+  } else if (builtin_name == "write_local_fragment_tile_to_cb" ||
+             builtin_name == "pack_untilize_tile") {
     PrintWriteLocalFragmentTileToCB(op, os);
     return true;
-  } else if (builtin_name == "write_local_fragment_slice_to_tiled_cb") {
+  } else if (builtin_name == "write_local_fragment_slice_to_tiled_cb" ||
+             builtin_name == "tilize_local_fragment_slice") {
     PrintWriteLocalFragmentSliceToTiledCB(op, os);
     return true;
-  } else if (builtin_name == "cast_fragment_slice_to_tiled_cb") {
+  } else if (builtin_name == "cast_fragment_slice_to_tiled_cb" ||
+             builtin_name == "tilize_cast_fragment_slice") {
     PrintCastFragmentSliceToTiledCB(op, os);
     return true;
-  } else if (builtin_name == "read_cb_front_tile_to_local") {
+  } else if (builtin_name == "read_cb_front_tile_to_local" ||
+             builtin_name == "untilize_cb_front_tile") {
     PrintReadCBFrontTileToLocal(op, os);
     return true;
-  } else if (builtin_name == "read_cb_front_tile_to_local_fragment") {
+  } else if (builtin_name == "read_cb_front_tile_to_local_fragment" ||
+             builtin_name == "untilize_cb_front_tile_fragment") {
     PrintReadCBFrontTileToLocalFragment(op, os);
     return true;
-  } else if (builtin_name == "scalar_max") {
+  } else if (builtin_name == "scalar_max" ||
+             builtin_name == "binary_max_tile_local") {
     PrintScalarMax(op, os);
     return true;
   } else if (builtin_name == "cast_fragment_slice") {
     PrintCastFragmentSlice(op, os);
     return true;
-  } else if (builtin_name == "reduce_row") {
+  } else if (builtin_name == "reduce_row" ||
+             builtin_name == "reduce_rows_local") {
     PrintReduceRow(op, os);
     return true;
   } else if (builtin_name == "mul_row_bcast") {
     PrintMulRowBcast(op, os);
     return true;
-  } else if (builtin_name == "mul_grouped_row_bcast") {
+  } else if (builtin_name == "mul_grouped_row_bcast" ||
+             builtin_name == "mul_tiles_bcast_rows_local") {
     PrintMulGroupedRowBcast(op, os);
     return true;
   } else if (builtin_name == "div_row_bcast") {
     PrintDivRowBcast(op, os);
     return true;
-  } else if (builtin_name == "div_grouped_row_bcast") {
+  } else if (builtin_name == "div_grouped_row_bcast" ||
+             builtin_name == "div_tiles_bcast_rows_local") {
     PrintDivGroupedRowBcast(op, os);
     return true;
   } else if (builtin_name == "scalar_fma") {
@@ -1972,10 +2052,12 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   } else if (builtin_name == "exp2_row_bcast_affine") {
     PrintExp2RowBcastAffine(op, os);
     return true;
-  } else if (builtin_name == "exp2_grouped_row_bcast_affine") {
+  } else if (builtin_name == "exp2_grouped_row_bcast_affine" ||
+             builtin_name == "exp_tiles_bcast_rows_affine_local") {
     PrintExp2GroupedRowBcastAffine(op, os);
     return true;
-  } else if (builtin_name == "scalar_exp2_affine") {
+  } else if (builtin_name == "scalar_exp2_affine" ||
+             builtin_name == "exp_tile_affine_local") {
     PrintScalarExp2Affine(op, os);
     return true;
   }
@@ -2307,8 +2389,13 @@ void CodeGenBlackhole::PrintCopyTileToDstInitShortWithDT(const tvm::tir::CallNod
 
 void CodeGenBlackhole::PrintCopyTileFromCB(const tvm::tir::CallNode* op,
                                            std::ostream& os) {
+  PrintCopyTile(op, os);
+}
+
+void CodeGenBlackhole::PrintCopyTile(const tvm::tir::CallNode* op,
+                                     std::ostream& os) {
   need_compute_api_h_ = true;
-  ICHECK_EQ(op->args.size(), 3) << "tl.blackhole.copy_tile_from_cb expects 3 arguments";
+  ICHECK_EQ(op->args.size(), 3) << "tl.blackhole.copy_tile expects 3 arguments";
   os << "copy_tile(";
   PrintResolvedCBId(op->args[0], os);
   os << ", ";
@@ -2343,6 +2430,259 @@ void CodeGenBlackhole::PrintAddTiles(const tvm::tir::CallNode* op,
   PrintExpr(op->args[3], os);
   os << ", ";
   PrintExpr(op->args[4], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintAddBcastRowsInitShort(const tvm::tir::CallNode* op,
+                                                  std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 2)
+      << "tl.blackhole.add_bcast_rows_init_short expects 2 arguments";
+  os << "add_bcast_rows_init_short(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintAddTilesBcastRows(const tvm::tir::CallNode* op,
+                                              std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 5) << "tl.blackhole.add_tiles_bcast_rows expects 5 arguments";
+  os << "add_tiles_bcast_rows(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ", ";
+  PrintExpr(op->args[2], os);
+  os << ", ";
+  PrintExpr(op->args[3], os);
+  os << ", ";
+  PrintExpr(op->args[4], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintMulBcastRowsInitShort(const tvm::tir::CallNode* op,
+                                                  std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 2)
+      << "tl.blackhole.mul_bcast_rows_init_short expects 2 arguments";
+  os << "mul_bcast_rows_init_short(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintMulBcastColsInitShort(const tvm::tir::CallNode* op,
+                                                  std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 2)
+      << "tl.blackhole.mul_bcast_cols_init_short expects 2 arguments";
+  os << "mul_bcast_cols_init_short(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintMulTilesBcastRows(const tvm::tir::CallNode* op,
+                                              std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 5) << "tl.blackhole.mul_tiles_bcast_rows expects 5 arguments";
+  os << "mul_tiles_bcast_rows(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ", ";
+  PrintExpr(op->args[2], os);
+  os << ", ";
+  PrintExpr(op->args[3], os);
+  os << ", ";
+  PrintExpr(op->args[4], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintMulTilesBcastCols(const tvm::tir::CallNode* op,
+                                              std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 5) << "tl.blackhole.mul_tiles_bcast_cols expects 5 arguments";
+  os << "mul_tiles_bcast<BroadcastType::COL>(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ", ";
+  PrintExpr(op->args[2], os);
+  os << ", ";
+  PrintExpr(op->args[3], os);
+  os << ", ";
+  PrintExpr(op->args[4], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintReduceInit(const tvm::tir::CallNode* op,
+                                       std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 5) << "tl.blackhole.reduce_init expects 5 arguments";
+  const std::string reduce_kind = RequireStringImm(op->args[3], "tl.blackhole.reduce_init",
+                                                   "reduce_kind");
+  const std::string reduce_dim = RequireStringImm(op->args[4], "tl.blackhole.reduce_init",
+                                                  "reduce_dim");
+  os << "reduce_init<" << ReduceKindToTTMetal(reduce_kind, "tl.blackhole.reduce_init") << ", "
+     << ReduceDimToTTMetal(reduce_dim, "tl.blackhole.reduce_init") << ">(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[2], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintReduceTile(const tvm::tir::CallNode* op,
+                                       std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 7) << "tl.blackhole.reduce_tile expects 7 arguments";
+  const std::string reduce_kind = RequireStringImm(op->args[5], "tl.blackhole.reduce_tile",
+                                                   "reduce_kind");
+  const std::string reduce_dim = RequireStringImm(op->args[6], "tl.blackhole.reduce_tile",
+                                                  "reduce_dim");
+  os << "reduce_tile<" << ReduceKindToTTMetal(reduce_kind, "tl.blackhole.reduce_tile") << ", "
+     << ReduceDimToTTMetal(reduce_dim, "tl.blackhole.reduce_tile") << ">(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ", ";
+  PrintExpr(op->args[2], os);
+  os << ", ";
+  PrintExpr(op->args[3], os);
+  os << ", ";
+  PrintExpr(op->args[4], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintReduceUninit(const tvm::tir::CallNode* op,
+                                         std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 2) << "tl.blackhole.reduce_uninit expects 2 arguments";
+  const std::string reduce_kind = RequireStringImm(op->args[0], "tl.blackhole.reduce_uninit",
+                                                   "reduce_kind");
+  const std::string reduce_dim = RequireStringImm(op->args[1], "tl.blackhole.reduce_uninit",
+                                                  "reduce_dim");
+  os << "reduce_uninit<";
+  if (reduce_kind == "sum" && reduce_dim == "row") {
+    os << "false";
+  } else {
+    os << "true";
+  }
+  os << ">()";
+}
+
+void CodeGenBlackhole::PrintReduceBlockMaxRowInit(const tvm::tir::CallNode* op,
+                                                  std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 1)
+      << "tl.blackhole.reduce_block_max_row_init expects 1 argument";
+  os << "reduce_block_max_row_init<";
+  PrintExpr(op->args[0], os);
+  os << ">()";
+}
+
+void CodeGenBlackhole::PrintReduceBlockMaxRow(const tvm::tir::CallNode* op,
+                                              std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 5) << "tl.blackhole.reduce_block_max_row expects 5 arguments";
+  os << "reduce_block_max_row<";
+  PrintExpr(op->args[4], os);
+  os << ">(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ", ";
+  PrintExpr(op->args[2], os);
+  os << ", ";
+  PrintExpr(op->args[3], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintReduceBlockMaxRowUninit(const tvm::tir::CallNode* op,
+                                                    std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 1)
+      << "tl.blackhole.reduce_block_max_row_uninit expects 1 argument";
+  os << "reduce_block_max_row_uninit(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintBinaryMaxTileInit(const tvm::tir::CallNode* op,
+                                              std::ostream& os) {
+  (void)op;
+  need_compute_api_h_ = true;
+  os << "binary_max_tile_init()";
+}
+
+void CodeGenBlackhole::PrintBinaryMaxTile(const tvm::tir::CallNode* op,
+                                          std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 3) << "tl.blackhole.binary_max_tile expects 3 arguments";
+  os << "binary_max_tile(";
+  PrintExpr(op->args[0], os);
+  os << ", ";
+  PrintExpr(op->args[1], os);
+  os << ", ";
+  PrintExpr(op->args[2], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintDivBinaryTileInit(const tvm::tir::CallNode* op,
+                                              std::ostream& os) {
+  (void)op;
+  need_compute_api_h_ = true;
+  os << "div_binary_tile_init()";
+}
+
+void CodeGenBlackhole::PrintDivBinaryTile(const tvm::tir::CallNode* op,
+                                          std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 3) << "tl.blackhole.div_binary_tile expects 3 arguments";
+  os << "div_binary_tile(";
+  PrintExpr(op->args[0], os);
+  os << ", ";
+  PrintExpr(op->args[1], os);
+  os << ", ";
+  PrintExpr(op->args[2], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintExpTileInit(const tvm::tir::CallNode* op,
+                                        std::ostream& os) {
+  (void)op;
+  need_compute_api_h_ = true;
+  os << "exp_tile_init()";
+}
+
+void CodeGenBlackhole::PrintExpTile(const tvm::tir::CallNode* op,
+                                    std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 1) << "tl.blackhole.exp_tile expects 1 argument";
+  os << "exp_tile(";
+  PrintExpr(op->args[0], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintRecipTileInit(const tvm::tir::CallNode* op,
+                                          std::ostream& os) {
+  (void)op;
+  need_compute_api_h_ = true;
+  os << "recip_tile_init()";
+}
+
+void CodeGenBlackhole::PrintRecipTile(const tvm::tir::CallNode* op,
+                                      std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 1) << "tl.blackhole.recip_tile expects 1 argument";
+  os << "recip_tile(";
+  PrintExpr(op->args[0], os);
   os << ")";
 }
 

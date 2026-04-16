@@ -1,9 +1,12 @@
 import pytest
 import torch
+import sys
+from pathlib import Path
 
 import tilelang
 from tilelang import language as T
 from tilelang.engine.lower import is_device_call, lower, merge_ir_modules
+from tilelang.engine.phase import LowerAndLegalize
 from tvm.ir import CallingConv
 from tvm.target import Target
 from tilelang import tvm
@@ -33,6 +36,22 @@ from .common import (
     tt_abi_for_kernel,
 )
 
+EXAMPLE_DIR = Path(__file__).resolve().parents[4] / "examples" / "flash_attention"
+if str(EXAMPLE_DIR) not in sys.path:
+    sys.path.append(str(EXAMPLE_DIR))
+
+import example_mha_fwd_bshd as mha_example
+
+
+FRAGMENT_BRIDGE_HELPER_BUILTINS = (
+    "write_local_slice_to_cb",
+    "write_local_fragment_tile_to_cb",
+    "write_local_fragment_slice_to_tiled_cb",
+    "cast_fragment_slice_to_tiled_cb",
+    "read_cb_front_tile_to_local",
+    "read_cb_front_tile_to_local_fragment",
+)
+
 EXPECTED_UNIFIED_COPY_RUNTIME_ARG_KINDS = [
     "input_buffer_addr32",
     "output_buffer_addr32",
@@ -44,6 +63,46 @@ EXPECTED_UNIFIED_COPY_RUNTIME_ARG_KINDS = [
     "output_tile_num_tiles",
     "output_tile_stride",
 ]
+
+
+def _collect_blackhole_builtin_names(node):
+    names = set()
+
+    def visit(expr):
+        if isinstance(expr, tir.Call):
+            op = expr.op
+            if hasattr(op, "name") and op.name.startswith("tl.blackhole."):
+                names.add(op.name)
+
+    body = node.body if hasattr(node, "body") else node
+    tir.stmt_functor.post_order_visit(body, visit)
+    return names
+
+
+def test_transport_tt_metal_api_granularity_rejects_fragment_bridge_helpers():
+    target = Target("blackhole")
+    mod = tvm.IRModule(
+        {
+            "main": mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                128,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            )
+        }
+    )
+    with target:
+        mod = LowerAndLegalize(mod, target)
+    lowered = lower_blackhole_to_tt_target(mod)["main"]
+    builtin_names = _collect_blackhole_builtin_names(lowered)
+
+    for builtin_name in FRAGMENT_BRIDGE_HELPER_BUILTINS:
+        assert f"tl.blackhole.{builtin_name}" not in builtin_names
 
 
 def _rewrite_copy_semantics_annotations(func, annotation_mutator):

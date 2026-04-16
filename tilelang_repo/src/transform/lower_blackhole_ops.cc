@@ -805,7 +805,7 @@ using tir::builtin::blackhole_pack_tile;
 using tir::builtin::blackhole_pack_reconfig_data_format;
 using tir::builtin::blackhole_copy_tile_to_dst_init_short;
 using tir::builtin::blackhole_copy_tile_to_dst_init_short_with_dt;
-using tir::builtin::blackhole_copy_tile_from_cb;
+using tir::builtin::blackhole_copy_tile;
 using tir::builtin::blackhole_add_tiles_init;
 using tir::builtin::blackhole_add_tiles;
 using tir::builtin::blackhole_cb_push_back;
@@ -1473,7 +1473,18 @@ static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& fu
          "BuildSpatialPlanCompanion before lowering";
   ICHECK(func->GetAttr<Bool>(attr::kTLSpatialPlanValidated, Bool(false)).value())
       << "PlanTTKernelABI requires validated SpatialPlan; run ValidateSpatialPlan before lowering";
-  return BuildBlackholeLoweringRequirements(func, spatial_plan.value());
+  Map<String, Any> lowering_requirements =
+      BuildBlackholeLoweringRequirements(func, spatial_plan.value());
+  if (auto seeded = func->GetAttr<Map<String, Any>>(kTLBlackholeLoweringRequirementsSeed)) {
+    if (auto contracts = seeded.value().Get(String(schema_key::kBufferMaterializationContracts))) {
+      lowering_requirements.Set(String(schema_key::kBufferMaterializationContracts),
+                                contracts.value());
+    }
+    if (auto specs = seeded.value().Get(String(schema_key::kBufferTileBridgeSpecs))) {
+      lowering_requirements.Set(String(schema_key::kBufferTileBridgeSpecs), specs.value());
+    }
+  }
+  return lowering_requirements;
 }
 
 static bool BufferMaterializationContractHasField(const Map<String, Any>& contract,
@@ -1912,6 +1923,45 @@ static std::string GetStorageScope(const Buffer& buffer) {
 }
 
 PlanTTKernelABI::PlanTTKernelABI() : next_requirement_index_(0) {}
+
+PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
+  current_func_ = func;
+  logical_buffer_shapes_.clear();
+  compute_physical_buffers_by_data_.clear();
+  compute_physical_buffers_by_identity_.clear();
+  LoadComputeRegionPhysicalBufferBindings(func);
+  current_segment_kind_.clear();
+  thread_index_vars_.clear();
+  thread_index_var_names_.clear();
+  thread_index_var_static_extents_.clear();
+  block_index_vars_.clear();
+  block_index_var_names_.clear();
+  requires_compute_segment_ = false;
+  buffer_tile_bridge_specs_by_buffer_.clear();
+  select_compute_builtins_only_ = true;
+
+  Map<String, Any> lowering_requirements = BuildLoweringRequirementsFromAnalysis(func);
+  LoadLogicalBufferShapes(func, lowering_requirements);
+  requires_compute_segment_ = HasComputeSupportContract(lowering_requirements);
+  LoadBufferTileBridgeSpecs(lowering_requirements);
+
+  PrimFunc selected = func;
+  selected.CopyOnWrite()->body = VisitStmt(func->body);
+  Map<String, Any> seeded_requirements;
+  if (auto contracts = lowering_requirements.Get(String(schema_key::kBufferMaterializationContracts))) {
+    seeded_requirements.Set(String(schema_key::kBufferMaterializationContracts), contracts.value());
+  }
+  if (auto specs = lowering_requirements.Get(String(schema_key::kBufferTileBridgeSpecs))) {
+    seeded_requirements.Set(String(schema_key::kBufferTileBridgeSpecs), specs.value());
+  }
+  Map<String, Any> attrs = selected->attrs.defined() ? selected->attrs->dict : Map<String, Any>();
+  if (!seeded_requirements.empty()) {
+    attrs.Set(kTLBlackholeLoweringRequirementsSeed, seeded_requirements);
+    selected.CopyOnWrite()->attrs = DictAttrs(attrs);
+  }
+  select_compute_builtins_only_ = false;
+  return selected;
+}
 
 void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func,
                                               const Map<String, Any>& lowering_requirements) {
@@ -2636,13 +2686,6 @@ void PlanTTKernelABI::StoreGemmContract(PrimFunc& func) {
     }
     tt_program_payload.Set("multi_gemm_contracts", multi_gemm_contracts);
     tt_program_payload.Set("multi_compute_contracts", multi_compute_contracts);
-    if (!compute_epilogue_payloads_flat_.empty()) {
-      Array<Any> compute_epilogue_ops;
-      for (const auto& op_payload : compute_epilogue_payloads_flat_) {
-        compute_epilogue_ops.push_back(op_payload);
-      }
-      tt_program_payload.Set("compute_epilogue_ops", compute_epilogue_ops);
-    }
     tt_program_payload_ = tt_program_payload;
     return;
   }
@@ -2708,13 +2751,6 @@ void PlanTTKernelABI::StoreGemmContract(PrimFunc& func) {
 
   tt_program_payload.Set("gemm_contract", gemm_contract);
   tt_program_payload.Set("compute_contract", compute_contract);
-  if (!compute_epilogue_payloads_flat_.empty()) {
-    Array<Any> compute_epilogue_ops;
-    for (const auto& op_payload : compute_epilogue_payloads_flat_) {
-      compute_epilogue_ops.push_back(op_payload);
-    }
-    tt_program_payload.Set("compute_epilogue_ops", compute_epilogue_ops);
-  }
   tt_program_payload_ = tt_program_payload;
 }
 
@@ -4037,74 +4073,7 @@ void PlanTTKernelABI::ActivateCurrentComputeContractPayload() {
 }
 
 void PlanTTKernelABI::RecordComputeEpilogueOp(Map<String, Any> op_payload) {
-  compute_epilogue_payloads_flat_.push_back(op_payload);
-  if (compute_epilogue_payloads_.empty()) {
-    return;
-  }
-
-  std::vector<std::string> candidate_buffers;
-  auto collect_buffer = [&](const char* key) {
-    if (auto value = op_payload.Get(String(key))) {
-      std::string buffer = Downcast<String>(value.value());
-      if (!buffer.empty()) {
-        candidate_buffers.push_back(std::move(buffer));
-      }
-    }
-  };
-  collect_buffer("dst_buffer");
-  collect_buffer("src_buffer");
-  collect_buffer("scalar_buffer");
-  collect_buffer("lhs_buffer");
-  collect_buffer("rhs_buffer");
-  collect_buffer("add_buffer");
-
-  int best_index = -1;
-  int best_score = -1;
-  for (size_t i = 0; i < multi_compute_contract_payloads_.size(); ++i) {
-    const auto& contract = multi_compute_contract_payloads_[i];
-    const std::string a_buffer =
-        contract.Get(String("a_buffer"))
-            ? static_cast<std::string>(Downcast<String>(contract.Get(String("a_buffer")).value()))
-            : std::string();
-    const std::string b_buffer =
-        contract.Get(String("b_buffer"))
-            ? static_cast<std::string>(Downcast<String>(contract.Get(String("b_buffer")).value()))
-            : std::string();
-    const std::string c_buffer =
-        contract.Get(String("c_buffer"))
-            ? static_cast<std::string>(Downcast<String>(contract.Get(String("c_buffer")).value()))
-            : std::string();
-    int score = 0;
-    for (const auto& buffer : candidate_buffers) {
-      if (!c_buffer.empty() && buffer == c_buffer) {
-        score += 8;
-      } else if ((!a_buffer.empty() && buffer == a_buffer) ||
-                 (!b_buffer.empty() && buffer == b_buffer)) {
-        score += 4;
-      } else if (i < compute_contract_known_buffers_.size() &&
-                 compute_contract_known_buffers_[i].count(buffer)) {
-        score += 2;
-      }
-    }
-    if (score > best_score) {
-      best_score = score;
-      best_index = static_cast<int>(i);
-    }
-  }
-
-  if (best_score <= 0) {
-    best_index = active_compute_contract_payload_index_;
-  }
-  if (best_index < 0 || best_index >= static_cast<int>(compute_epilogue_payloads_.size())) {
-    return;
-  }
-  if (best_index < static_cast<int>(compute_contract_known_buffers_.size())) {
-    if (auto value = op_payload.Get(String("dst_buffer"))) {
-      compute_contract_known_buffers_[static_cast<size_t>(best_index)].insert(
-          static_cast<std::string>(Downcast<String>(value.value())));
-    }
-  }
-  compute_epilogue_payloads_[static_cast<size_t>(best_index)].push_back(std::move(op_payload));
+  (void)op_payload;
 }
 
 Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
@@ -4462,7 +4431,7 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
                                       {IntImm32(partials_cb_id)}));
   }
   for (int tile = 0; tile < num_c_tiles; ++tile) {
-    stmts.push_back(MakeBlackholeCall(blackhole_copy_tile_from_cb(),
+    stmts.push_back(MakeBlackholeCall(blackhole_copy_tile(),
                                       {IntImm32(partials_cb_id), IntImm32(tile), IntImm32(tile)}));
   }
   stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
@@ -6589,11 +6558,15 @@ bool PlanTTKernelABI::MatchDirectFragmentCast(const ForNode* op,
 
 Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& match,
                                                     bool publish_cb) {
+  const bool force_publish_from_contract =
+      GetStorageScope(match.dst) == "blackhole.acc" &&
+      FindBufferMaterializationContract(match.dst) != nullptr;
+  const bool publish_result = publish_cb || force_publish_from_contract;
   PrimExpr num_elements_expr = match.num_elements;
   Map<String, Any> op_payload =
       MakeComputeEpilogueOpPayload("cast_fragment_slice", BufferIdentityName(match.dst));
   op_payload.Set("src_buffer", String(BufferIdentityName(match.src)));
-  op_payload.Set("publish_cb", Bool(publish_cb));
+  op_payload.Set("publish_cb", Bool(publish_result));
   SetOptionalExprField(&op_payload, "dst_offset_expr", match.dst_offset);
   SetOptionalExprField(&op_payload, "src_offset_expr", match.src_offset);
   std::vector<Stmt> stmts;
@@ -6604,7 +6577,7 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
   const std::string dst_buffer_name = BufferIdentityName(match.dst);
   const Buffer physical_dst = ResolvePhysicalComputeBuffer(match.dst);
   const Buffer physical_src = ResolvePhysicalComputeBuffer(match.src);
-  if (publish_cb) {
+  if (publish_result) {
     cb_id = AllocateRequirementIndex(match.dst, CBType::kIntermediate);
     ICHECK_GE(cb_id, 0);
     ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
@@ -6709,7 +6682,7 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
                                        match.src_offset, num_elements_expr}));
   }
 
-  if (publish_cb) {
+  if (publish_result) {
     stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cb_push_back(),
                                       {IntImm32(cb_id), IntImm32(num_pages)}));
   }
@@ -6995,6 +6968,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const AttrStmtNode* op) {
 }
 
 Stmt PlanTTKernelABI::VisitStmt_(const DeclBufferNode* op) {
+  if (select_compute_builtins_only_) {
+    return StmtExprMutator::VisitStmt_(op);
+  }
   if (GetStorageScope(op->buffer) == "blackhole.acc") {
     const int requirement_index = AllocateRequirementIndex(op->buffer, CBType::kIntermediate);
     auto& req = cb_requirements_.at(requirement_index);
@@ -7168,28 +7144,32 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       return FindBufferMaterializationContract(out_buffer) == nullptr;
     };
 
-    Stmt retained_matmul;
-    if (try_lower_retained_matmul(op->seq[i], &retained_matmul)) {
-      rewritten.push_back(retained_matmul);
-      continue;
+    if (!select_compute_builtins_only_) {
+      Stmt retained_matmul;
+      if (try_lower_retained_matmul(op->seq[i], &retained_matmul)) {
+        rewritten.push_back(retained_matmul);
+        continue;
+      }
     }
-    if (i + 1 < static_cast<int>(op->seq.size()) &&
+    if (!select_compute_builtins_only_ && i + 1 < static_cast<int>(op->seq.size()) &&
         is_redundant_zero_fill_before_full_overwrite_matmul(op->seq[i], op->seq[i + 1])) {
       continue;
     }
-    if (const auto* direct_cast_loop = AsUnwrappedFor(op->seq[i])) {
-      FragmentCastMatch cast_match;
-      if (MatchDirectFragmentCast(direct_cast_loop, &cast_match)) {
-        std::vector<Stmt> prefix;
-        std::vector<Stmt> suffix;
-        ValidatePublishedBufferSourceEdge(cast_match.src, cast_match.dst);
-        AppendPublishedBufferSourceMaterialization(cast_match.src, current_order_index, &prefix,
-                                                   &suffix);
-        const bool publish_cb = ShouldPublishBufferResult(cast_match.dst, current_order_index);
-        prefix.push_back(GenerateFragmentCastSequence(cast_match, publish_cb));
-        prefix.insert(prefix.end(), suffix.begin(), suffix.end());
-        rewritten.push_back(SeqStmt::Flatten(prefix));
-        continue;
+    if (!select_compute_builtins_only_) {
+      if (const auto* direct_cast_loop = AsUnwrappedFor(op->seq[i])) {
+        FragmentCastMatch cast_match;
+        if (MatchDirectFragmentCast(direct_cast_loop, &cast_match)) {
+          std::vector<Stmt> prefix;
+          std::vector<Stmt> suffix;
+          ValidatePublishedBufferSourceEdge(cast_match.src, cast_match.dst);
+          AppendPublishedBufferSourceMaterialization(cast_match.src, current_order_index, &prefix,
+                                                     &suffix);
+          const bool publish_cb = ShouldPublishBufferResult(cast_match.dst, current_order_index);
+          prefix.push_back(GenerateFragmentCastSequence(cast_match, publish_cb));
+          prefix.insert(prefix.end(), suffix.begin(), suffix.end());
+          rewritten.push_back(SeqStmt::Flatten(prefix));
+          continue;
+        }
       }
     }
     if (i + 1 < op->seq.size()) {
@@ -7228,7 +7208,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
 Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
   const bool zero_loop_var = !op->thread_binding.defined();
   const Var transport_loop_var = zero_loop_var ? op->loop_var : Var();
-  if (auto ann = op->annotations.Get(String("blackhole.copy_semantics"))) {
+  if (!select_compute_builtins_only_) {
+    if (auto ann = op->annotations.Get(String("blackhole.copy_semantics"))) {
     Map<String, Any> sem = ann->as<Map<String, Any>>().value_or(Map<String, Any>());
 
     auto get_string = [&sem](const char* key) -> std::string {
@@ -7296,11 +7277,12 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
       copy_output_shape_ = get_shape(schema_key::kDstShape);
     }
 
-    needs_copy_runtime_args_ = true;
-    saw_copy_op_ = true;
+      needs_copy_runtime_args_ = true;
+      saw_copy_op_ = true;
+    }
   }
 
-  if (IsPureCopyLoopNest(op->body)) {
+  if (!select_compute_builtins_only_ && IsPureCopyLoopNest(op->body)) {
     std::vector<Var> loop_stack;
     std::vector<NestedCopyMatch> matches;
     CollectNestedCopyStores(op->body, &loop_stack, &matches);
@@ -7409,14 +7391,16 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
   if (MatchGroupedScalarFmaLoop(op, &grouped_scalar_fma_match)) {
     return GenerateScalarFmaSequence(grouped_scalar_fma_match);
   }
-  FragmentCastMatch direct_cast_match;
-  if (MatchDirectFragmentCast(op, &direct_cast_match)) {
-    return GenerateFragmentCastSequence(direct_cast_match);
-  }
-  LocalToCBSliceMatch local_to_cb_match;
-  if (MatchDirectLocalToCBSliceLoop(op, &local_to_cb_match)) {
-    saw_copy_op_ = true;
-    return GenerateLocalToCBSliceLoopSequence(op, local_to_cb_match);
+  if (!select_compute_builtins_only_) {
+    FragmentCastMatch direct_cast_match;
+    if (MatchDirectFragmentCast(op, &direct_cast_match)) {
+      return GenerateFragmentCastSequence(direct_cast_match);
+    }
+    LocalToCBSliceMatch local_to_cb_match;
+    if (MatchDirectLocalToCBSliceLoop(op, &local_to_cb_match)) {
+      saw_copy_op_ = true;
+      return GenerateLocalToCBSliceLoopSequence(op, local_to_cb_match);
+    }
   }
   Exp2RowBroadcastAffineMatch direct_exp2_row_broadcast_match;
   if (MatchExp2RowBroadcastAffine(op, &direct_exp2_row_broadcast_match)) {
@@ -7434,6 +7418,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
 // Note: We only override specific node types and return the original node
 // for unmatched patterns to avoid deep recursion that causes stack overflow.
 Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
+  if (select_compute_builtins_only_) {
+    return GetRef<Stmt>(op);
+  }
   if (const auto* call = op->value.as<CallNode>()) {
     if (IsMatmulCall(call)) {
       ExtractGemmInfo(call);
@@ -7470,7 +7457,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const BufferStoreNode* op) {
   if (MatchScalarFmaStore(op, &scalar_fma_match)) {
     return GenerateScalarFmaSequence(scalar_fma_match);
   }
-  if (IsCopyOperation(op)) {
+  if (!select_compute_builtins_only_ && IsCopyOperation(op)) {
     saw_copy_op_ = true;
     return GenerateCopySequence(op);
   }

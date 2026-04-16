@@ -38,6 +38,7 @@ tir::PrimFunc StripTTIntermediateAttrs(tir::PrimFunc func) {
   static const char* kLegacyProjectionAttrs[] = {
       "blackhole.cb_requirements",
       attr::kTLBlackholeLogicalBufferTileBridgeSpecs,
+      kTLBlackholeLoweringRequirementsSeed,
   };
   for (const char* key : kLegacyProjectionAttrs) {
     func = tvm::WithoutAttr(std::move(func), key);
@@ -96,6 +97,13 @@ SpatialPlan RequireValidatedSpatialPlan(const tir::PrimFunc& func, const char* p
   ICHECK(func->GetAttr<Bool>(attr::kTLSpatialPlanValidated, Bool(false)).value())
       << pass_name << " requires validated SpatialPlan; run ValidateSpatialPlan before target planning";
   return maybe_spatial_plan.value();
+}
+
+void RequireTTMetalBuiltinSelection(const tir::PrimFunc& func, const char* pass_name) {
+  ICHECK(func->GetAttr<Bool>(kTLBlackholeTTMetalBuiltinSelection, Bool(false)).value())
+      << pass_name
+      << " requires exact TT-Metal builtin selection; run "
+         "SelectBlackholeTTMetalBuiltins after SplitBlackholeKernel";
 }
 
 Map<String, Any> CopyAttrs(const tir::PrimFunc& func) {
@@ -466,6 +474,7 @@ tvm::transform::Pass PlanTTCompute() {
         continue;
       }
       const SpatialPlan spatial_plan = RequireValidatedSpatialPlan(func.value(), "PlanTTCompute");
+      RequireTTMetalBuiltinSelection(func.value(), "PlanTTCompute");
       PlanTTKernelABI planner;
       tir::PrimFunc planned = planner.Transform(func.value());
       const Array<TTKernel> kernels = planner.GetTTKernels();

@@ -12,6 +12,7 @@
 #include "common/blackhole_utils.h"
 #include "common/companion_base.h"
 #include "common/tt_target_program.h"
+#include "lower_blackhole_ops.h"
 
 namespace tvm {
 namespace tl {
@@ -102,28 +103,6 @@ void ValidateCompileTimeArgSpec(const Map<String, Any>& spec) {
   ICHECK(HasKey(spec, "count")) << "TTABIPlan compile_time_arg_spec requires count";
 }
 
-void ValidateComputeEpilogueOps(const Map<String, Any>& compute, const char* context) {
-  if (auto epilogue_any = compute.Get(String("epilogue_ops"))) {
-    Array<Any> epilogue_ops = Downcast<Array<Any>>(epilogue_any.value());
-    for (const Any& op_any : epilogue_ops) {
-      Map<String, Any> op = AsMap(op_any);
-      ICHECK(!op.empty()) << context << " epilogue_ops entries must be maps";
-      ICHECK(HasKey(op, "kind")) << context << " epilogue_ops requires kind";
-    }
-  }
-}
-
-void ValidateProgramEpilogueOps(const Map<String, Any>& payload, const char* key, const char* context) {
-  if (auto epilogue_any = payload.Get(String(key))) {
-    Array<Any> epilogue_ops = Downcast<Array<Any>>(epilogue_any.value());
-    for (const Any& op_any : epilogue_ops) {
-      Map<String, Any> op = AsMap(op_any);
-      ICHECK(!op.empty()) << context << " entries must be maps";
-      ICHECK(HasKey(op, "kind")) << context << " requires kind";
-    }
-  }
-}
-
 void ValidateBufferTileBridgeSpecs(const Map<String, Any>& payload) {
   if (auto specs_any = payload.Get(String(schema_key::kBufferTileBridgeSpecs))) {
     Array<Any> specs = Downcast<Array<Any>>(specs_any.value());
@@ -206,7 +185,6 @@ void ValidateProgramPayload(const TTProgram& program) {
       ICHECK(HasKey(compute, "clear_accum"))
           << "TTProgram payload compute_contract requires clear_accum";
       ICHECK(HasKey(compute, "k_pack")) << "TTProgram payload compute_contract requires k_pack";
-      ValidateComputeEpilogueOps(compute, "TTProgram payload compute_contract");
     }
   }
   if (auto multi_gemm_any = payload.Get(String("multi_gemm_contracts"))) {
@@ -254,10 +232,8 @@ void ValidateProgramPayload(const TTProgram& program) {
           << "TTProgram payload multi_compute_contracts requires clear_accum";
       ICHECK(HasKey(compute, "k_pack"))
           << "TTProgram payload multi_compute_contracts requires k_pack";
-      ValidateComputeEpilogueOps(compute, "TTProgram payload multi_compute_contracts");
     }
   }
-  ValidateProgramEpilogueOps(payload, "compute_epilogue_ops", "TTProgram payload compute_epilogue_ops");
   ValidateBufferTileBridgeSpecs(payload);
   ValidateUnsupportedComputeOps(payload);
 }
@@ -370,6 +346,8 @@ tvm::transform::Pass ValidateTTProgram() {
       if (!func || !IsBlackholePrimFunc(func.value())) {
         continue;
       }
+      ICHECK(!UsesHelperCompositeBlackholeBuiltin(func.value()))
+          << "helper/composite builtin residue must be removed before TTProgram validation";
       auto maybe_program = func.value()->GetAttr<TTProgram>(attr::kTLTTProgram);
       if (!maybe_program) {
         continue;

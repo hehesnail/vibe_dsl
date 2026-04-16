@@ -241,7 +241,6 @@ inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram
   copy_payload_field(executable_key::kComputeContract);
   copy_payload_field(executable_key::kMultiGemmContracts);
   copy_payload_field(executable_key::kMultiComputeContracts);
-  copy_payload_field(executable_key::kComputeEpilogueOps);
   copy_payload_field(executable_key::kDirectRuntimeUnsupportedReasons);
   copy_payload_field(executable_key::kBufferTileBridgeSpecs);
   copy_payload_field(executable_key::kUnsupportedComputeOps);

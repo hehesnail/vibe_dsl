@@ -270,6 +270,14 @@ TVM_DLL const Op& blackhole_copy_tile_to_dst_init_short_with_dt();
  * \param src_tile_index Tile index within the CB front window
  * \param dst_tile_index Destination tile index within DST registers
  */
+TVM_DLL const Op& blackhole_copy_tile();
+
+/*!
+ * \brief Legacy alias for copy_tile. New lowering must use blackhole_copy_tile.
+ * \param src_cb_id Source CB
+ * \param src_tile_index Tile index within the CB front window
+ * \param dst_tile_index Destination tile index within DST registers
+ */
 TVM_DLL const Op& blackhole_copy_tile_from_cb();
 
 /*!
@@ -288,6 +296,156 @@ TVM_DLL const Op& blackhole_add_tiles_init();
  * \param dst_tile_index Destination tile index within DST registers
  */
 TVM_DLL const Op& blackhole_add_tiles();
+
+/*!
+ * \brief Initialize TT-Metal add broadcast-rows sequence.
+ * \param lhs_cb_id Left-hand-side CB id
+ * \param rhs_cb_id Right-hand-side CB id
+ */
+TVM_DLL const Op& blackhole_add_bcast_rows_init_short();
+
+/*!
+ * \brief Add CB tiles with broadcast-rows layout into a DST register slot.
+ * \param lhs_cb_id Left-hand-side CB id
+ * \param rhs_cb_id Right-hand-side CB id
+ * \param lhs_tile_index Left-hand-side tile index in the CB front window
+ * \param rhs_tile_index Right-hand-side tile index in the CB front window
+ * \param dst_tile_index Destination tile index within DST registers
+ */
+TVM_DLL const Op& blackhole_add_tiles_bcast_rows();
+
+/*!
+ * \brief Initialize TT-Metal mul broadcast-rows sequence.
+ * \param lhs_cb_id Left-hand-side CB id
+ * \param rhs_cb_id Right-hand-side CB id
+ */
+TVM_DLL const Op& blackhole_mul_bcast_rows_init_short();
+
+/*!
+ * \brief Initialize TT-Metal mul broadcast-cols sequence.
+ * \param lhs_cb_id Left-hand-side CB id
+ * \param rhs_cb_id Right-hand-side CB id
+ */
+TVM_DLL const Op& blackhole_mul_bcast_cols_init_short();
+
+/*!
+ * \brief Multiply CB tiles with broadcast-rows layout into a DST register slot.
+ * \param lhs_cb_id Left-hand-side CB id
+ * \param rhs_cb_id Right-hand-side CB id
+ * \param lhs_tile_index Left-hand-side tile index in the CB front window
+ * \param rhs_tile_index Right-hand-side tile index in the CB front window
+ * \param dst_tile_index Destination tile index within DST registers
+ */
+TVM_DLL const Op& blackhole_mul_tiles_bcast_rows();
+
+/*!
+ * \brief Multiply CB tiles with broadcast-cols layout into a DST register slot.
+ * \param lhs_cb_id Left-hand-side CB id
+ * \param rhs_cb_id Right-hand-side CB id
+ * \param lhs_tile_index Left-hand-side tile index in the CB front window
+ * \param rhs_tile_index Right-hand-side tile index in the CB front window
+ * \param dst_tile_index Destination tile index within DST registers
+ */
+TVM_DLL const Op& blackhole_mul_tiles_bcast_cols();
+
+/*!
+ * \brief Initialize exact TT-Metal reduction state.
+ * \param src_cb_id Source CB id
+ * \param scaler_cb_id Scaler CB id
+ * \param dst_cb_id Destination CB id
+ * \param reduce_kind Reduction kind string ("sum" / "max")
+ * \param reduce_dim Reduction dim string ("row" / "col")
+ */
+TVM_DLL const Op& blackhole_reduce_init();
+
+/*!
+ * \brief Execute one exact TT-Metal reduction tile op into DST.
+ * \param src_cb_id Source CB id
+ * \param scaler_cb_id Scaler CB id
+ * \param src_tile_index Source tile index in the CB front window
+ * \param scaler_tile_index Scaler tile index in the scaler CB front window
+ * \param dst_tile_index Destination tile index within DST registers
+ * \param reduce_kind Reduction kind string ("sum" / "max")
+ * \param reduce_dim Reduction dim string ("row" / "col")
+ */
+TVM_DLL const Op& blackhole_reduce_tile();
+
+/*!
+ * \brief Uninitialize exact TT-Metal reduction state.
+ * \param reduce_kind Reduction kind string ("sum" / "max")
+ * \param reduce_dim Reduction dim string ("row" / "col")
+ */
+TVM_DLL const Op& blackhole_reduce_uninit();
+
+/*!
+ * \brief Initialize the exact TT-Metal custom reduce_block_max_row operation.
+ * \param block_ct_dim Compile-time block width in tiles
+ */
+TVM_DLL const Op& blackhole_reduce_block_max_row_init();
+
+/*!
+ * \brief Execute the exact TT-Metal custom reduce_block_max_row operation.
+ * \param src_cb_id Source CB id
+ * \param scaler_cb_id Scaler CB id
+ * \param row_start_index Starting tile index of the logical row
+ * \param dst_tile_index Destination tile index within DST registers
+ * \param block_ct_dim Compile-time block width in tiles
+ */
+TVM_DLL const Op& blackhole_reduce_block_max_row();
+
+/*!
+ * \brief Uninitialize the exact TT-Metal custom reduce_block_max_row operation.
+ * \param src_cb_id Source CB id
+ */
+TVM_DLL const Op& blackhole_reduce_block_max_row_uninit();
+
+/*!
+ * \brief Initialize exact TT-Metal binary max tile sequence.
+ */
+TVM_DLL const Op& blackhole_binary_max_tile_init();
+
+/*!
+ * \brief Execute exact TT-Metal binary max on DST tiles.
+ * \param lhs_dst_tile_index Left-hand-side DST tile index
+ * \param rhs_dst_tile_index Right-hand-side DST tile index
+ * \param dst_tile_index Destination DST tile index
+ */
+TVM_DLL const Op& blackhole_binary_max_tile();
+
+/*!
+ * \brief Initialize exact TT-Metal binary divide tile sequence.
+ */
+TVM_DLL const Op& blackhole_div_binary_tile_init();
+
+/*!
+ * \brief Execute exact TT-Metal binary divide on DST tiles.
+ * \param lhs_dst_tile_index Left-hand-side DST tile index
+ * \param rhs_dst_tile_index Right-hand-side DST tile index
+ * \param dst_tile_index Destination DST tile index
+ */
+TVM_DLL const Op& blackhole_div_binary_tile();
+
+/*!
+ * \brief Initialize exact TT-Metal exp tile sequence.
+ */
+TVM_DLL const Op& blackhole_exp_tile_init();
+
+/*!
+ * \brief Execute exact TT-Metal exp on one DST tile.
+ * \param dst_tile_index Destination DST tile index
+ */
+TVM_DLL const Op& blackhole_exp_tile();
+
+/*!
+ * \brief Initialize exact TT-Metal reciprocal tile sequence.
+ */
+TVM_DLL const Op& blackhole_recip_tile_init();
+
+/*!
+ * \brief Execute exact TT-Metal reciprocal on one DST tile.
+ * \param dst_tile_index Destination DST tile index
+ */
+TVM_DLL const Op& blackhole_recip_tile();
 
 /*!
  * \brief Copy a contiguous local fragment slice into the currently reserved CB write window.

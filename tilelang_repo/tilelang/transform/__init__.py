@@ -700,6 +700,11 @@ def PlanTTBlocks():
     return tvm.ffi.get_global_func("tl.transform.PlanTTBlocks")()
 
 
+def SelectBlackholeTTMetalBuiltins():
+    """Select exact TT-Metal builtin surface before TTProgram compute planning."""
+    return tvm.ffi.get_global_func("tl.transform.SelectBlackholeTTMetalBuiltins")()
+
+
 def PlanTTCompute():
     """Freeze Blackhole compute owner truth at the anchored sub-TIR mapping boundary."""
     return tvm.ffi.get_global_func("tl.transform.PlanTTCompute")()

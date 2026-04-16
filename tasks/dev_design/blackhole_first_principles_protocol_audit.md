@@ -77,6 +77,40 @@
   都应从 active chain 删除，
   不能继续以 debug / regression helper 名义常驻
 
+### 3.1 `2026-04-17` Task 0 落地补充
+
+- `SelectBlackholeTTMetalBuiltins`
+  现在已经位于
+  `PlanTTBlocks`
+  与
+  `PlanTTCompute`
+  之间，
+  compute-side exact builtin 选择前移到 planner helper 路线之前
+- `compute_epilogue_ops`
+  不再属于 repo HEAD 的 active protocol：
+  它已从
+  `TTProgram.payload`、
+  executable projection、
+  codegen、
+  runtime
+  和测试基线移除
+- 旧 helper/composite builtin 名称
+  不再是 active IR surface；
+  selector / validator
+  会按 exact op 名 fail-closed 拒绝 residue
+- 当前唯一和 Task 0 直接相关、仍暂时保留的过渡面是
+  `tl.blackhole_lowering_requirements_seed`：
+  它只承接
+  `buffer_materialization_contracts`
+  与
+  `buffer_tile_bridge_specs`
+  这两个稳定 seed，
+  供 selector-forwarding 跨 rewrite 保持桥接事实，
+  并在最终
+  `TTProgram`
+  物化前剥离；
+  它不是新的 planning truth
+
 ## 4. 长期保留的 truth 与 pass 纪律
 
 补充约束：

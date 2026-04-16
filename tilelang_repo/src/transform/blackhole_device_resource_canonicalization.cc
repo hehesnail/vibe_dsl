@@ -498,10 +498,6 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
 
   TTProgram RewriteTTProgram(const TTProgram& program) const {
     Map<String, Any> payload = program->payload;
-    if (auto ops = payload.Get(String("compute_epilogue_ops"))) {
-      payload.Set(String("compute_epilogue_ops"),
-                  RewriteComputeEpilogueOps(Downcast<Array<Any>>(ops.value())));
-    }
     return TTProgram(program->entry_name, program->member_func, program->block_plans,
                      program->kernel_plans, program->transport_plans, program->sync_plans,
                      program->abi_plans, program->execution_plans, program->kernels,

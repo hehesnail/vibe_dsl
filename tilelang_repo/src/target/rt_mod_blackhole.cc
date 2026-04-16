@@ -853,14 +853,6 @@ static ComputeContractSpec ParseComputeContract(const ffi::Map<ffi::String, ffi:
   return contract;
 }
 
-static std::vector<ComputeContractSpec::EpilogueOpSpec> ExtractComputeEpilogueOps(
-    const tir::PrimFunc& f) {
-  auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
-      f, "Blackhole executable spec extraction");
-  return ParseComputeEpilogueOps(executable,
-                                 tl::tt_program_projection::executable_key::kComputeEpilogueOps);
-}
-
 static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
                                                   const GemmContractSpec& gemm_contract) {
   auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
@@ -1750,7 +1742,6 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   spec.compute_contract = ExtractComputeContract(f, spec.gemm_contract);
   spec.multi_gemm_contracts = ExtractMultiGemmContracts(f);
   spec.multi_compute_contracts = ExtractMultiComputeContracts(f);
-  spec.compute_epilogue_ops = ExtractComputeEpilogueOps(f);
   spec.direct_runtime_unsupported_reasons = ExtractDirectRuntimeUnsupportedReasons(f);
   ExtractSegmentPlan(f, &spec);
   return spec;
@@ -2501,41 +2492,7 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
 
 static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
-  bool has_buffer_materialization_contract = false;
-  bool missing_buffer_materialization_contract = false;
-  bool missing_accumulator_execution_protocol = false;
-  for (const ComputeContractSpec::EpilogueOpSpec& op : spec->compute_epilogue_ops) {
-    if (op.buffer_materialization_contract.defined()) {
-      has_buffer_materialization_contract = true;
-      if (op.kind == "merge_fragment_tiles" &&
-          op.buffer_materialization_contract.execution_protocol.empty()) {
-        missing_accumulator_execution_protocol = true;
-      }
-    }
-    if (op.kind == "add_fragment_from_cb_front" &&
-        !op.buffer_materialization_contract.defined()) {
-      missing_buffer_materialization_contract = true;
-    }
-  }
-  if (!has_buffer_materialization_contract && !missing_buffer_materialization_contract) {
-    return;
-  }
-  if (missing_buffer_materialization_contract) {
-    AppendDirectRuntimeUnsupportedReason(
-        spec,
-        "missing typed accumulator materialization contract; direct runtime must "
-        "not execute add_fragment_from_cb_front scratch accumulation without "
-        "upstream accumulator materialization truth");
-    return;
-  }
-  if (missing_accumulator_execution_protocol) {
-    AppendDirectRuntimeUnsupportedReason(
-        spec,
-        "missing accumulator materialization execution protocol; direct runtime "
-        "must not choose merge execution sequence without typed upstream "
-        "contract");
-    return;
-  }
+  (void)spec;
 }
 
 static void EnforceExplicitBufferRoleSchemaGate(ExecutableSpec* spec) {

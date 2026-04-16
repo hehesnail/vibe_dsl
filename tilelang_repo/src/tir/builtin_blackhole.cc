@@ -35,6 +35,12 @@ namespace builtin {
     return op; \
   }
 
+#define TIR_DEFINE_BUILTIN_ALIAS(NAME, OP_NAME) \
+  const Op& blackhole_##NAME() { \
+    static const Op& op = Op::Get("tl.blackhole." OP_NAME); \
+    return op; \
+  }
+
 // Circular Buffer Operations
 TIR_DEFINE_BUILTIN(cb_reserve_back)
 TIR_DEFINE_BUILTIN(cb_push_back)
@@ -71,28 +77,49 @@ TIR_DEFINE_BUILTIN(pack_tile)
 TIR_DEFINE_BUILTIN(pack_reconfig_data_format)
 TIR_DEFINE_BUILTIN(copy_tile_to_dst_init_short)
 TIR_DEFINE_BUILTIN(copy_tile_to_dst_init_short_with_dt)
+TIR_DEFINE_BUILTIN(copy_tile)
 TIR_DEFINE_BUILTIN(copy_tile_from_cb)
 TIR_DEFINE_BUILTIN(add_tiles_init)
 TIR_DEFINE_BUILTIN(add_tiles)
-TIR_DEFINE_BUILTIN(write_local_slice_to_cb)
-TIR_DEFINE_BUILTIN(write_local_fragment_tile_to_cb)
-TIR_DEFINE_BUILTIN(write_local_fragment_slice_to_tiled_cb)
-TIR_DEFINE_BUILTIN(cast_fragment_slice_to_tiled_cb)
-TIR_DEFINE_BUILTIN(read_cb_front_tile_to_local)
-TIR_DEFINE_BUILTIN(read_cb_front_tile_to_local_fragment)
-TIR_DEFINE_BUILTIN(reduce_row)
-TIR_DEFINE_BUILTIN(mul_row_bcast)
-TIR_DEFINE_BUILTIN(mul_grouped_row_bcast)
-TIR_DEFINE_BUILTIN(div_row_bcast)
-TIR_DEFINE_BUILTIN(div_grouped_row_bcast)
+TIR_DEFINE_BUILTIN(add_bcast_rows_init_short)
+TIR_DEFINE_BUILTIN(add_tiles_bcast_rows)
+TIR_DEFINE_BUILTIN(mul_bcast_rows_init_short)
+TIR_DEFINE_BUILTIN(mul_bcast_cols_init_short)
+TIR_DEFINE_BUILTIN(mul_tiles_bcast_rows)
+TIR_DEFINE_BUILTIN(mul_tiles_bcast_cols)
+TIR_DEFINE_BUILTIN(reduce_init)
+TIR_DEFINE_BUILTIN(reduce_tile)
+TIR_DEFINE_BUILTIN(reduce_uninit)
+TIR_DEFINE_BUILTIN(reduce_block_max_row_init)
+TIR_DEFINE_BUILTIN(reduce_block_max_row)
+TIR_DEFINE_BUILTIN(reduce_block_max_row_uninit)
+TIR_DEFINE_BUILTIN(binary_max_tile_init)
+TIR_DEFINE_BUILTIN(binary_max_tile)
+TIR_DEFINE_BUILTIN(div_binary_tile_init)
+TIR_DEFINE_BUILTIN(div_binary_tile)
+TIR_DEFINE_BUILTIN(exp_tile_init)
+TIR_DEFINE_BUILTIN(exp_tile)
+TIR_DEFINE_BUILTIN(recip_tile_init)
+TIR_DEFINE_BUILTIN(recip_tile)
+TIR_DEFINE_BUILTIN_ALIAS(write_local_slice_to_cb, "pack_untilize_slice")
+TIR_DEFINE_BUILTIN_ALIAS(write_local_fragment_tile_to_cb, "pack_untilize_tile")
+TIR_DEFINE_BUILTIN_ALIAS(write_local_fragment_slice_to_tiled_cb, "tilize_local_fragment_slice")
+TIR_DEFINE_BUILTIN_ALIAS(cast_fragment_slice_to_tiled_cb, "tilize_cast_fragment_slice")
+TIR_DEFINE_BUILTIN_ALIAS(read_cb_front_tile_to_local, "untilize_cb_front_tile")
+TIR_DEFINE_BUILTIN_ALIAS(read_cb_front_tile_to_local_fragment, "untilize_cb_front_tile_fragment")
+TIR_DEFINE_BUILTIN_ALIAS(reduce_row, "reduce_rows_local")
+TIR_DEFINE_BUILTIN_ALIAS(mul_row_bcast, "mul_tiles_bcast_rows_local")
+TIR_DEFINE_BUILTIN_ALIAS(mul_grouped_row_bcast, "mul_tiles_bcast_rows_local")
+TIR_DEFINE_BUILTIN_ALIAS(div_row_bcast, "div_tiles_bcast_rows_local")
+TIR_DEFINE_BUILTIN_ALIAS(div_grouped_row_bcast, "div_tiles_bcast_rows_local")
 TIR_DEFINE_BUILTIN(scalar_fma)
-TIR_DEFINE_BUILTIN(exp2_row_bcast_affine)
-TIR_DEFINE_BUILTIN(exp2_grouped_row_bcast_affine)
-TIR_DEFINE_BUILTIN(scalar_exp2_affine)
+TIR_DEFINE_BUILTIN_ALIAS(exp2_row_bcast_affine, "exp_tiles_bcast_rows_affine_local")
+TIR_DEFINE_BUILTIN_ALIAS(exp2_grouped_row_bcast_affine, "exp_tiles_bcast_rows_affine_local")
+TIR_DEFINE_BUILTIN_ALIAS(scalar_exp2_affine, "exp_tile_affine_local")
 TIR_DEFINE_BUILTIN(fill_fragment)
 TIR_DEFINE_BUILTIN(add_fragment)
 TIR_DEFINE_BUILTIN(add_fragment_from_cb_front)
-TIR_DEFINE_BUILTIN(scalar_max)
+TIR_DEFINE_BUILTIN_ALIAS(scalar_max, "binary_max_tile_local")
 TIR_DEFINE_BUILTIN(cast_fragment_slice)
 
 // Register all builtins in TVM's op registry
@@ -294,6 +321,13 @@ TVM_REGISTER_OP("tl.blackhole.copy_tile_to_dst_init_short_with_dt")
     .add_argument("old_srca_cb_id", "int", "Previously configured SrcA CB ID")
     .add_argument("src_cb_id", "int", "Source CB ID");
 
+TVM_REGISTER_OP("tl.blackhole.copy_tile")
+    .set_num_inputs(3)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("src_cb_id", "int", "Source CB ID")
+    .add_argument("src_tile_index", "int", "Source tile index in the CB front window")
+    .add_argument("dst_tile_index", "int", "Destination tile index in DST");
+
 TVM_REGISTER_OP("tl.blackhole.copy_tile_from_cb")
     .set_num_inputs(3)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
@@ -316,7 +350,137 @@ TVM_REGISTER_OP("tl.blackhole.add_tiles")
     .add_argument("rhs_tile_index", "int", "Right-hand-side tile index in the CB front window")
     .add_argument("dst_tile_index", "int", "Destination tile index in DST");
 
-TVM_REGISTER_OP("tl.blackhole.write_local_slice_to_cb")
+TVM_REGISTER_OP("tl.blackhole.add_bcast_rows_init_short")
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
+    .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID");
+
+TVM_REGISTER_OP("tl.blackhole.add_tiles_bcast_rows")
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
+    .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID")
+    .add_argument("lhs_tile_index", "int", "Left-hand-side tile index in the CB front window")
+    .add_argument("rhs_tile_index", "int", "Right-hand-side tile index in the CB front window")
+    .add_argument("dst_tile_index", "int", "Destination tile index in DST");
+
+TVM_REGISTER_OP("tl.blackhole.mul_bcast_rows_init_short")
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
+    .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID");
+
+TVM_REGISTER_OP("tl.blackhole.mul_bcast_cols_init_short")
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
+    .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID");
+
+TVM_REGISTER_OP("tl.blackhole.mul_tiles_bcast_rows")
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
+    .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID")
+    .add_argument("lhs_tile_index", "int", "Left-hand-side tile index in the CB front window")
+    .add_argument("rhs_tile_index", "int", "Right-hand-side tile index in the CB front window")
+    .add_argument("dst_tile_index", "int", "Destination tile index in DST");
+
+TVM_REGISTER_OP("tl.blackhole.mul_tiles_bcast_cols")
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
+    .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID")
+    .add_argument("lhs_tile_index", "int", "Left-hand-side tile index in the CB front window")
+    .add_argument("rhs_tile_index", "int", "Right-hand-side tile index in the CB front window")
+    .add_argument("dst_tile_index", "int", "Destination tile index in DST");
+
+TVM_REGISTER_OP("tl.blackhole.reduce_init")
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("src_cb_id", "int", "Source CB ID")
+    .add_argument("scaler_cb_id", "int", "Scaler CB ID")
+    .add_argument("dst_cb_id", "int", "Destination CB ID")
+    .add_argument("reduce_kind", "string", "Reduction kind string")
+    .add_argument("reduce_dim", "string", "Reduction dim string");
+
+TVM_REGISTER_OP("tl.blackhole.reduce_tile")
+    .set_num_inputs(7)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("src_cb_id", "int", "Source CB ID")
+    .add_argument("scaler_cb_id", "int", "Scaler CB ID")
+    .add_argument("src_tile_index", "int", "Source tile index in the CB front window")
+    .add_argument("scaler_tile_index", "int", "Scaler tile index in the CB front window")
+    .add_argument("dst_tile_index", "int", "Destination tile index in DST")
+    .add_argument("reduce_kind", "string", "Reduction kind string")
+    .add_argument("reduce_dim", "string", "Reduction dim string");
+
+TVM_REGISTER_OP("tl.blackhole.reduce_uninit")
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("reduce_kind", "string", "Reduction kind string")
+    .add_argument("reduce_dim", "string", "Reduction dim string");
+
+TVM_REGISTER_OP("tl.blackhole.reduce_block_max_row_init")
+    .set_num_inputs(1)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("block_ct_dim", "int", "Compile-time block width in tiles");
+
+TVM_REGISTER_OP("tl.blackhole.reduce_block_max_row")
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("src_cb_id", "int", "Source CB ID")
+    .add_argument("scaler_cb_id", "int", "Scaler CB ID")
+    .add_argument("row_start_index", "int", "Starting tile index of the logical row")
+    .add_argument("dst_tile_index", "int", "Destination tile index in DST")
+    .add_argument("block_ct_dim", "int", "Compile-time block width in tiles");
+
+TVM_REGISTER_OP("tl.blackhole.reduce_block_max_row_uninit")
+    .set_num_inputs(1)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("src_cb_id", "int", "Source CB ID");
+
+TVM_REGISTER_OP("tl.blackhole.binary_max_tile_init")
+    .set_num_inputs(0)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TVM_REGISTER_OP("tl.blackhole.binary_max_tile")
+    .set_num_inputs(3)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("lhs_dst_tile_index", "int", "Left-hand-side DST tile index")
+    .add_argument("rhs_dst_tile_index", "int", "Right-hand-side DST tile index")
+    .add_argument("dst_tile_index", "int", "Destination DST tile index");
+
+TVM_REGISTER_OP("tl.blackhole.div_binary_tile_init")
+    .set_num_inputs(0)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TVM_REGISTER_OP("tl.blackhole.div_binary_tile")
+    .set_num_inputs(3)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("lhs_dst_tile_index", "int", "Left-hand-side DST tile index")
+    .add_argument("rhs_dst_tile_index", "int", "Right-hand-side DST tile index")
+    .add_argument("dst_tile_index", "int", "Destination DST tile index");
+
+TVM_REGISTER_OP("tl.blackhole.exp_tile_init")
+    .set_num_inputs(0)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TVM_REGISTER_OP("tl.blackhole.exp_tile")
+    .set_num_inputs(1)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("dst_tile_index", "int", "Destination DST tile index");
+
+TVM_REGISTER_OP("tl.blackhole.recip_tile_init")
+    .set_num_inputs(0)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TVM_REGISTER_OP("tl.blackhole.recip_tile")
+    .set_num_inputs(1)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("dst_tile_index", "int", "Destination DST tile index");
+
+TVM_REGISTER_OP("tl.blackhole.pack_untilize_slice")
     .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("src_buffer", "handle", "Source local fragment buffer handle")
@@ -326,7 +490,7 @@ TVM_REGISTER_OP("tl.blackhole.write_local_slice_to_cb")
     .add_argument("src_offset_elements", "int",
                   "Optional source element offset within the local fragment");
 
-TVM_REGISTER_OP("tl.blackhole.write_local_fragment_tile_to_cb")
+TVM_REGISTER_OP("tl.blackhole.pack_untilize_tile")
     .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("src_buffer", "handle", "Source local fragment buffer handle")
@@ -334,7 +498,7 @@ TVM_REGISTER_OP("tl.blackhole.write_local_fragment_tile_to_cb")
     .add_argument("dst_tile_index", "int", "Destination tile index within the reserved CB write window")
     .add_argument("src_offset_elements", "int", "Source element offset within the local fragment");
 
-TVM_REGISTER_OP("tl.blackhole.write_local_fragment_slice_to_tiled_cb")
+TVM_REGISTER_OP("tl.blackhole.tilize_local_fragment_slice")
     .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("src_buffer", "handle", "Source local fragment buffer handle")
@@ -345,7 +509,7 @@ TVM_REGISTER_OP("tl.blackhole.write_local_fragment_slice_to_tiled_cb")
     .add_argument("src_offset_elements", "int",
                   "Optional source element offset within the local fragment");
 
-TVM_REGISTER_OP("tl.blackhole.cast_fragment_slice_to_tiled_cb")
+TVM_REGISTER_OP("tl.blackhole.tilize_cast_fragment_slice")
     .set_num_inputs(7)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("dst_buffer", "handle", "Destination CB-backed fragment buffer handle")
@@ -356,7 +520,7 @@ TVM_REGISTER_OP("tl.blackhole.cast_fragment_slice_to_tiled_cb")
     .add_argument("num_elements", "int", "Number of contiguous elements to materialize")
     .add_argument("row_width", "int", "Logical row width of the destination tiled tensor");
 
-TVM_REGISTER_OP("tl.blackhole.read_cb_front_tile_to_local")
+TVM_REGISTER_OP("tl.blackhole.untilize_cb_front_tile")
     .set_num_inputs(5)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("dst_buffer", "handle", "Destination local fragment buffer handle")
@@ -365,7 +529,7 @@ TVM_REGISTER_OP("tl.blackhole.read_cb_front_tile_to_local")
     .add_argument("dst_offset_elements", "int", "Destination element offset in the local fragment")
     .add_argument("num_elements", "int", "Number of contiguous elements to copy");
 
-TVM_REGISTER_OP("tl.blackhole.read_cb_front_tile_to_local_fragment")
+TVM_REGISTER_OP("tl.blackhole.untilize_cb_front_tile_fragment")
     .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("dst_buffer", "handle", "Destination local fragment buffer handle")
@@ -373,7 +537,7 @@ TVM_REGISTER_OP("tl.blackhole.read_cb_front_tile_to_local_fragment")
     .add_argument("src_tile_index", "int", "Source tile index in the current CB front window")
     .add_argument("dst_offset_elements", "int", "Destination element offset in the local fragment");
 
-TVM_REGISTER_OP("tl.blackhole.reduce_row")
+TVM_REGISTER_OP("tl.blackhole.reduce_rows_local")
     .set_num_inputs(5)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("src_buffer", "handle", "Source local fragment buffer handle")
@@ -382,35 +546,48 @@ TVM_REGISTER_OP("tl.blackhole.reduce_row")
     .add_argument("reduce_kind", "string", "Reduction kind string")
     .add_argument("clear", "bool", "Whether to clear destination before reduction");
 
-TVM_REGISTER_OP("tl.blackhole.mul_row_bcast")
-    .set_num_inputs(3)
+TVM_REGISTER_OP("tl.blackhole.mul_tiles_bcast_rows_local")
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("dst_buffer", "handle", "Destination/source vector local fragment buffer handle")
     .add_argument("scalar_buffer", "handle", "Source scalar local fragment buffer handle")
-    .add_argument("num_elements", "int", "Number of contiguous destination elements");
-
-TVM_REGISTER_OP("tl.blackhole.mul_grouped_row_bcast")
-    .set_num_inputs(4)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
-    .add_argument("dst_buffer", "handle", "Destination/source vector local fragment buffer handle")
-    .add_argument("scalar_buffer", "handle", "Source per-row scalar local fragment buffer handle")
     .add_argument("num_elements", "int", "Number of contiguous destination elements")
-    .add_argument("row_width", "int", "Number of contiguous destination elements per scalar row");
+    .add_argument("row_width", "int", "Optional row width");
 
-TVM_REGISTER_OP("tl.blackhole.div_row_bcast")
-    .set_num_inputs(3)
+TVM_REGISTER_OP("tl.blackhole.div_tiles_bcast_rows_local")
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("dst_buffer", "handle", "Destination/source vector local fragment buffer handle")
     .add_argument("scalar_buffer", "handle", "Source scalar local fragment buffer handle")
-    .add_argument("num_elements", "int", "Number of contiguous destination elements");
+    .add_argument("num_elements", "int", "Number of contiguous destination elements")
+    .add_argument("row_width", "int", "Optional row width");
 
-TVM_REGISTER_OP("tl.blackhole.div_grouped_row_bcast")
-    .set_num_inputs(4)
+TVM_REGISTER_OP("tl.blackhole.exp_tiles_bcast_rows_affine_local")
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("dst_buffer", "handle", "Destination/source vector local fragment buffer handle")
-    .add_argument("scalar_buffer", "handle", "Source per-row scalar local fragment buffer handle")
+    .add_argument("scalar_buffer", "handle", "Source scalar local fragment buffer handle")
     .add_argument("num_elements", "int", "Number of contiguous destination elements")
-    .add_argument("row_width", "int", "Number of contiguous destination elements per scalar row");
+    .add_argument("row_width", "int", "Optional row width")
+    .add_argument("dst_scale", "float", "Scale applied to the vector source term")
+    .add_argument("scalar_scale", "float", "Scale applied to the scalar broadcast term");
+
+TVM_REGISTER_OP("tl.blackhole.exp_tile_affine_local")
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("dst_buffer", "handle", "Destination scalar local fragment buffer handle")
+    .add_argument("lhs_buffer", "handle", "Left scalar local fragment buffer handle")
+    .add_argument("rhs_buffer", "handle", "Right scalar local fragment buffer handle")
+    .add_argument("lhs_scale", "float", "Scale applied to lhs")
+    .add_argument("rhs_scale", "float", "Scale applied to rhs")
+    .add_argument("num_elements", "int", "Optional logical scalar fragment vector length");
+
+TVM_REGISTER_OP("tl.blackhole.binary_max_tile_local")
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("dst_buffer", "handle", "Destination scalar local fragment buffer handle")
+    .add_argument("src_buffer", "handle", "Source scalar local fragment buffer handle")
+    .add_argument("num_elements", "int", "Optional logical scalar fragment vector length");
 
 TVM_REGISTER_OP("tl.blackhole.scalar_fma")
     .set_num_inputs(4)
@@ -419,36 +596,6 @@ TVM_REGISTER_OP("tl.blackhole.scalar_fma")
     .add_argument("lhs_buffer", "handle", "Left multiplicand scalar local fragment buffer handle")
     .add_argument("rhs_buffer", "handle", "Right multiplicand scalar local fragment buffer handle")
     .add_argument("add_buffer", "handle", "Addend scalar local fragment buffer handle");
-
-TVM_REGISTER_OP("tl.blackhole.exp2_row_bcast_affine")
-    .set_num_inputs(5)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
-    .add_argument("dst_buffer", "handle", "Destination/source vector local fragment buffer handle")
-    .add_argument("scalar_buffer", "handle", "Source scalar local fragment buffer handle")
-    .add_argument("num_elements", "int", "Number of contiguous destination elements")
-    .add_argument("dst_scale", "float", "Scale applied to the vector source term")
-    .add_argument("scalar_scale", "float", "Scale applied to the scalar broadcast term");
-
-TVM_REGISTER_OP("tl.blackhole.exp2_grouped_row_bcast_affine")
-    .set_num_inputs(6)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
-    .add_argument("dst_buffer", "handle", "Destination/source vector local fragment buffer handle")
-    .add_argument("scalar_buffer", "handle", "Source per-row scalar local fragment buffer handle")
-    .add_argument("num_elements", "int", "Number of contiguous destination elements")
-    .add_argument("row_width", "int", "Number of contiguous destination elements per scalar row")
-    .add_argument("dst_scale", "float", "Scale applied to the vector source term")
-    .add_argument("scalar_scale", "float", "Scale applied to the scalar broadcast term");
-
-TVM_REGISTER_OP("tl.blackhole.scalar_exp2_affine")
-    .set_num_inputs(-1)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
-    .add_argument("dst_buffer", "handle", "Destination scalar local fragment buffer handle")
-    .add_argument("lhs_buffer", "handle", "Left scalar local fragment buffer handle")
-    .add_argument("rhs_buffer", "handle", "Right scalar local fragment buffer handle")
-    .add_argument("lhs_scale", "float", "Scale applied to lhs")
-    .add_argument("rhs_scale", "float", "Scale applied to rhs")
-    .add_argument("num_elements", "int",
-                  "Optional logical scalar fragment vector length");
 
 TVM_REGISTER_OP("tl.blackhole.fill_fragment")
     .set_num_inputs(3)
@@ -470,12 +617,6 @@ TVM_REGISTER_OP("tl.blackhole.add_fragment_from_cb_front")
     .add_argument("dst_buffer", "handle", "Destination/source local fragment buffer handle")
     .add_argument("src_cb_id", "int", "Source CB ID whose current front page(s) hold the fragment")
     .add_argument("num_elements", "int", "Number of contiguous destination elements");
-
-TVM_REGISTER_OP("tl.blackhole.scalar_max")
-    .set_num_inputs(2)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
-    .add_argument("dst_buffer", "handle", "Destination scalar local fragment buffer handle")
-    .add_argument("src_buffer", "handle", "Source scalar local fragment buffer handle");
 
 TVM_REGISTER_OP("tl.blackhole.cast_fragment_slice")
     .set_num_inputs(5)
