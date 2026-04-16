@@ -160,6 +160,7 @@ Normalized Tile TIR
 
 - 冻结 `TTProgram`
 - 投影 `ExecutableSpec`
+- 基于显式 leaf schema 做 execution backend 选择 / admission gate
 - build / codegen / runtime / `BlackholeModule` 执行
 
 不再承担：
@@ -168,6 +169,20 @@ Normalized Tile TIR
 - semantic recovery
 - builtin guessing
 - fake protocol 补洞
+
+额外边界固定为：
+
+- 当前 direct runtime / codegen 的 admitted support surface
+  只属于 leaf execution concern
+- 它可以拒绝某个
+  `ExecutableSpec -> execution backend`
+  组合
+- 但它**不能**反向收窄
+  `TTProgram` owner truth、
+  TT builtin basis、
+  或
+  `ValidateTTProgram`
+  的 legality 边界
 
 ## 4. TT builtin mapping 边界
 
@@ -250,16 +265,30 @@ layered IR 的价值只在于每层都显式承诺：
   - 检查没有 TT noun 泄漏到 `SpatialPlan`
 - `ValidateTTProgram`
   - 检查 target owner object completeness / consistency
+  - 检查 exact TT-Metal builtin / transport / sync legality
   - 检查 transport / sync / ABI / execution 闭合
   - 禁止 payload bag 回升为主协议
 - `ValidateExecutableSpecProjection`
   - 检查 leaf projection 只来源于 `TTProgram`
   - 禁止 runtime/codegen 自己再补 planning truth
+- `ValidateExecutionBackendAdmission`
+  - 只在 leaf 边界检查
+    某个 backend
+    是否接受当前 `ExecutableSpec`
+  - backend-specific unsupported
+    必须在这里 fail-fast
+  - 不能把 backend 当前 support subset
+    提升成
+    `TTProgram`
+    或 builtin legality
 
 fail-closed 纪律固定为：
 
 - 缺 evidence 就 reject / unsupported
 - 不再用名字匹配、位置假设、临时分支去补语义
+- backend-specific unsupported
+  只能停在 leaf execution gate，
+  不能回流成上游 owner / legality 约束
 
 ## 6. Fake Protocol 去留规则
 
@@ -296,6 +325,13 @@ legacy transition attrs / helper bridge / payload bag
   去补它需要的 truth
 - 把“现在能跑”
   当成 owner 边界正确的证据
+- 把 direct runtime 当前 admitted support surface
+  回写成
+  TT builtin mapping、
+  `TTProgram`
+  或
+  validator
+  的上游合法性边界
 
 如果当前后段实现和第一性原理 owner 冲突，
 优先改后段实现，
@@ -380,3 +416,14 @@ legacy transition attrs / helper bridge / payload bag
      不再做 late recovery
    - fake protocol / payload bag / matcher
      不再承担 owner 职责
+5. **execution gate 不反向塑形**
+   - backend-specific support subset
+     只在
+     `ValidateExecutionBackendAdmission`
+     / leaf execution
+     处生效
+   - 不再让 runtime 当前限制
+     倒逼
+     TT builtin basis /
+     `TTProgram`
+     / upstream legality

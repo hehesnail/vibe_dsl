@@ -302,33 +302,88 @@ tilelang_exp2_grouped_row_bcast_affine(...)
 tilelang_scalar_exp2_affine(...)
 ```
 
-- [ ] **Step 4: Add explicit legality contracts for every exact TT-Metal shim**
+- [ ] **Step 4: Add explicit TT-Metal legality contracts for every exact TT-Metal shim**
 
-Introduce one legality matrix used by lowering and validation. Representative rules:
+Introduce one canonical TT-Metal legality registry used by lowering and `ValidateTTProgram`. Do **not** mix current direct-runtime support limits into this registry. Backend-specific admission policies belong to a separate leaf execution gate after `ExecutableSpec` projection, otherwise runtime limitations will back-propagate and incorrectly shrink the builtin basis / `TTProgram` owner surface.
+
+The TT-Metal legality registry should be organized by rule type, not by ad hoc helper names, so lowering and validation can share one canonical legality taxonomy:
+
+```text
+1. Init / uninit pairing rules
+   - Example: exp_tile requires exp_tile_init
+   - Example: reduce_tile requires reduce_init and, before incompatible next ops, reduce_uninit
+
+2. Engine / resource state rules
+   - Example: most compute-side DST ops require acquire_dst state
+   - Example: compute-local tile-move / DST reload must execute with acquired DST registers
+
+3. Operand residency rules
+   - Example: exp_tile / exp2_tile / recip_tile consume and produce tiles resident in DST
+   - Example: binary_max_tile / div_binary_tile require both operands in DST
+   - Example: add_tiles_bcast_rows / mul_tiles_bcast_rows consume CB operands plus DST destination
+
+4. Layout / semantic-shape rules
+   - Example: add_tiles_bcast_rows is only legal for row-broadcast layout
+   - Example: reduce_tile legality depends on pool kind and reduction dimension matching the selected TT-Metal API
+
+5. Circular-buffer protocol rules
+   - Example: copy_tile requires prior cb_wait_front on the source CB
+   - Example: producer/consumer paths must respect cb_reserve_back -> write -> cb_push_back and cb_wait_front -> read -> cb_pop_front
+   - Example: CB tile counts must respect TT-Metal queue constraints (uniform wait/pop quanta, even divisibility)
+
+6. Data-format / reconfiguration rules
+   - Example: copy_tile_to_dst_init_short_with_dt is only needed when the compute-local tile-move path changes CB data format configuration
+   - Example: selected broadcast / unary / binary ops must be compatible with the operand data format and TT-Metal init path
+
+7. Ordering / barrier completion rules
+   - Example: noc_async_read must be completed by noc_async_read_barrier before the produced data is consumed
+   - Example: noc_async_write must be completed by noc_async_write_barrier before the write side is considered complete
+```
+
+Representative rules:
 
 ```cpp
-// examples
-RequireInterleavedDramAccessor(blackhole_noc_async_read);
-RequireInterleavedDramAccessor(blackhole_noc_async_write);
-RequireCommonRuntimeArgCountZero(current_direct_runtime_surface);
-
+// TT-Metal API / programming-model legality
 RequireInitPair(blackhole_reduce_tile, blackhole_reduce_init, blackhole_reduce_uninit);
-RequireCbOperandAndDstRegs(blackhole_reduce_tile);
+RequireAcquireDst(blackhole_reduce_tile);
+RequireCbOperands(blackhole_reduce_tile);
+RequireReduceSignatureMatch(blackhole_reduce_tile, /*pool, dim, scaler=*/...);
+
 RequireInitPair(blackhole_add_tiles_bcast_rows, blackhole_add_bcast_rows_init_short);
-RequireBroadcastShapeAndLayout(blackhole_add_tiles_bcast_rows, BroadcastType::ROW);
+RequireCbOperands(blackhole_add_tiles_bcast_rows);
+RequireBroadcastLayout(blackhole_add_tiles_bcast_rows, BroadcastType::ROW);
+
 RequireInitPair(blackhole_mul_tiles_bcast_rows, blackhole_mul_bcast_rows_init_short);
-RequireBroadcastShapeAndLayout(blackhole_mul_tiles_bcast_rows, BroadcastType::ROW);
+RequireCbOperands(blackhole_mul_tiles_bcast_rows);
+RequireBroadcastLayout(blackhole_mul_tiles_bcast_rows, BroadcastType::ROW);
+
 RequireInitPair(blackhole_exp_tile, blackhole_exp_tile_init);
-RequireDstTileResidencyAndInit(blackhole_exp_tile);
+RequireAcquireDst(blackhole_exp_tile);
+RequireDstOperand(blackhole_exp_tile, /*idst=*/0);
+
 RequireInitPair(blackhole_exp2_tile, blackhole_exp2_tile_init);
-RequireDstTileResidencyAndInit(blackhole_exp2_tile);
+RequireAcquireDst(blackhole_exp2_tile);
+RequireDstOperand(blackhole_exp2_tile, /*idst=*/0);
+
 RequireInitPair(blackhole_recip_tile, blackhole_recip_tile_init);
-RequireDstTileResidencyAndInit(blackhole_recip_tile);
+RequireAcquireDst(blackhole_recip_tile);
+RequireDstOperand(blackhole_recip_tile, /*idst=*/0);
+
 RequireInitPair(blackhole_binary_max_tile, blackhole_binary_max_tile_init);
-RequireBinarySfpuOperandsInDst(blackhole_binary_max_tile);
+RequireAcquireDst(blackhole_binary_max_tile);
+RequireDstOperand(blackhole_binary_max_tile, /*idst0=*/0);
+RequireDstOperand(blackhole_binary_max_tile, /*idst1=*/1);
+
 RequireInitPair(blackhole_div_binary_tile, blackhole_div_binary_tile_init);
-RequireBinarySfpuOperandsInDst(blackhole_div_binary_tile);
+RequireAcquireDst(blackhole_div_binary_tile);
+RequireDstOperand(blackhole_div_binary_tile, /*idst0=*/0);
+RequireDstOperand(blackhole_div_binary_tile, /*idst1=*/1);
+
+RequireBarrierAfter(blackhole_noc_async_read, blackhole_noc_async_read_barrier);
+RequireBarrierAfter(blackhole_noc_async_write, blackhole_noc_async_write_barrier);
 ```
+
+If the exact TT-Metal `copy_tile` API is later admitted as a compute-local builtin, its legality must be expressed under the TT-Metal API section above: prior `cb_wait_front`, acquired DST state, and matching `copy_tile_to_dst_init_short{,_with_dt}` setup. Do not encode it as part of the broad-copy policy surface.
 
 By the time builtin selection starts, any surviving local-fragment helper or composite semantic op is a hard error:
 
@@ -337,6 +392,19 @@ if (ContainsNonTTMetalBuiltinCandidate(body)) {
   LOG(FATAL) << "Blackhole lowering reached builtin selection with non-TT-Metal helper/composite ops";
 }
 ```
+
+Add a separate leaf execution-admission gate after `ValidateExecutableSpecProjection`. That gate may reject
+`ExecutableSpec -> BlackholeModule direct runtime`
+for temporary support-surface reasons such as:
+
+```cpp
+RequireInterleavedDramAccessorForDirectRuntime(executable);
+RequireZeroAccessorCommonRuntimeArgsForDirectRuntime(executable);
+RequireAdmittedSemaphoreAndRemoteRouteSubsetForDirectRuntime(executable);
+RequireNoExplicitSyncOnOversubscribedDirectLaunch(executable);
+```
+
+Those predicates are backend-specific execution gates only. They must not be consumed by builtin selection, `ValidateTTProgram`, or any pass that owns `TTProgram` legality.
 
 - [ ] **Step 5: Instruction-select exact TT-Metal transport and compute sequences directly from existing kernel-body truth**
 

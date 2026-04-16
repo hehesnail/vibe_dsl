@@ -251,6 +251,20 @@ Normalized Tile TIR
 应该改的是验证面，
 不是回头把旧实现抬成长期协议。
 
+补充固定规则：
+
+- current runtime / codegen admitted support surface
+  只属于 leaf execution gate
+- 它可以拒绝某个
+  `ExecutableSpec -> backend`
+  组合
+- 但它不能反向收窄
+  `TTProgram`
+  owner truth、
+  TT builtin basis、
+  或
+  upstream legality / validator 边界
+
 ## 5. 当前安排的下一批任务
 
 下一批任务固定切到
@@ -259,7 +273,9 @@ Normalized Tile TIR
 1. 在
    `TTProgram / ExecutableSpec`
    主链站稳后，
-   恢复更宽
+   把 backend-specific runtime gate
+   从上游 legality 语义里彻底剥离，
+   再恢复更宽
    workload payoff /
    admitted support surface
 2. 继续把
