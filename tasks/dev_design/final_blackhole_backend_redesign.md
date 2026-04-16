@@ -398,20 +398,39 @@ legacy transition attrs / helper bridge / payload bag
 4. **`Legacy Protocol Deletion`**
    - 删除 fake protocol 和 late matcher owner residue
 
-当前实现顺序固定为：
+架构收口顺序仍按
+`Task 1 -> Task 2 -> Task 3 -> Legacy Protocol Deletion`
+理解 owner boundary；
+但 repo HEAD 的实际实现顺序，
+固定按 cleanup 文档推进：
 
-1. **先做 `Task 1: SpatialPlan Owner Cutover`**
-   - 把 virtual spatial/dataflow truth
-     真的对象化
-2. **再做 `Task 2: TTProgram Owner Cutover`**
-   - 把 target realization truth
-     从 helper residue 里收回来
-3. **再做 `Task 3: ExecutableSpec / Leaf Reader Cutover`**
-   - 让 leaf 只读
-     `TTProgram / ExecutableSpec`
-4. **最后做 `Legacy Protocol Deletion`**
-   - 只在新 owner truth
-     稳定后退场
+1. **先做 `Cleanup Task 0`**
+   - 锁定 exact TT-Metal builtin surface
+   - 收正 builtin-selection pass
+2. **再做 `Cleanup Task 1`**
+   - 把 logical bridge capture
+     收成唯一窄 bridge attr
+3. **再做 `Cleanup Task 2`**
+   - 删除 public / internal legacy analysis bag
+   - 同时把
+     `BuildSpatialPlanCompanion`
+     收成 canonical builder
+4. **再做 `Cleanup Task 3`**
+   - 删除
+     `blackhole.copy_semantics`
+5. **再做 `Cleanup Task 4`**
+   - 删除
+     `blackhole.segment_kind`
+   - 收紧 planner / projection / runtime
+     对 kernel kind / segment plan
+     的直接 owner 消费
+6. **最后做 `Cleanup Task 5`**
+   - 做最终 cleanup scan、
+     文档同步、
+     验证与 memory 沉淀
+7. **cleanup 完成后**
+   - 才恢复 support surface /
+     workload payoff 扩展
 
 补充：
 
@@ -434,11 +453,17 @@ legacy transition attrs / helper bridge / payload bag
    - 固定 `Task 2: TTProgram Owner Cutover`
 4. `task3_runtime_gate_and_workload_cutover.md`
    - 固定 `Task 3: ExecutableSpec / Leaf Reader Cutover`
+5. `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
+   - 固定当前 repo HEAD 的 cleanup 总执行顺序
+6. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
+   到
+   `task5.md`
+   - 固定每一步 cleanup 的具体收口范围
 
 ## 9. 完成判定
 
 第一性原理目标完成，
-必须同时满足下面 4 条：
+必须同时满足下面 5 条：
 
 1. **mapping 边界正确**
    - TT builtin mapping

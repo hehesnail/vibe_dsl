@@ -11,10 +11,11 @@
 
 1. `final_blackhole_backend_redesign.md`
 2. `tasks/progress.md`
-3. `task0_ir_layering_root_cause.md`
-4. `task1_spatial_plan_companion.md`
-5. `task2_ttprogram_companion_cutover.md`
-6. `task3_runtime_gate_and_workload_cutover.md`
+3. `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
+4. `task0_ir_layering_root_cause.md`
+5. `task1_spatial_plan_companion.md`
+6. `task2_ttprogram_companion_cutover.md`
+7. `task3_runtime_gate_and_workload_cutover.md`
 
 额外参考：
 
@@ -63,12 +64,28 @@ Normalized Tile TIR
 
 ## 4. 当前执行优先级
 
-当前只按 canonical stage label 排序：
+当前执行顺序不再直接等同于
+`Task 1 / Task 2 / Task 3 / Legacy Protocol Deletion`
+这组 owner-stage label。
 
-1. `Task 1: SpatialPlan Owner Cutover`
-2. `Task 2: TTProgram Owner Cutover`
-3. `Task 3: ExecutableSpec / Leaf Reader Cutover`
-4. `Legacy Protocol Deletion`
+当前 repo HEAD 的实际实现顺序固定按 cleanup 文档推进：
+
+1. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
+2. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task1.md`
+3. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task2.md`
+4. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task3.md`
+5. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task4.md`
+6. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task5.md`
+7. cleanup 完成后，再恢复 support surface / workload payoff 扩展
+
+其中：
+
+- `task1_spatial_plan_companion.md`
+- `task2_ttprogram_companion_cutover.md`
+- `task3_runtime_gate_and_workload_cutover.md`
+
+负责定义 owner boundary / completion contract，
+不再单独充当“当前代码已经完成到哪一步”的判断来源。
 
 其中：
 
