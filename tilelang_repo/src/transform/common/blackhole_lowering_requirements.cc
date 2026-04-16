@@ -19,6 +19,9 @@
 #include <vector>
 
 #include "../../op/utils.h"
+#include "compute_region_analysis.h"
+#include "../analyze_blackhole_pipeline_stages.h"
+#include "../analyze_blackhole_work_decomposition.h"
 #include "runtime/thread_storage_scope.h"
 #include "blackhole_utils.h"
 #include "companion_base.h"
@@ -34,8 +37,6 @@ using tvm::ffi::Optional;
 using tvm::ffi::String;
 
 namespace {
-
-static constexpr const char* kLogicalComputeRegionsAttr = "blackhole.logical_compute_regions";
 
 struct LoweringSupportFacts {
   std::unordered_set<std::string> selection_subjects;
@@ -105,29 +106,29 @@ std::unordered_map<std::string, std::vector<int64_t>> BuildLogicalBufferShapes(
       remember(load->buffer);
     }
   });
-  if (auto maybe_regions = func->GetAttr<Array<Any>>(kLogicalComputeRegionsAttr)) {
-    for (const Any& region_any : maybe_regions.value()) {
+  Map<String, Any> compute_region_evidence = AnalyzeBlackholeComputeRegionEvidence(func);
+  if (auto maybe_regions = compute_region_evidence.Get(String("regions"))) {
+    for (const Any& region_any : Downcast<Array<Any>>(maybe_regions.value())) {
       Map<String, Any> region = Downcast<Map<String, Any>>(region_any);
       auto region_buffers_it = region.find(String(manifest_key::kRegionBuffers));
-      if (region_buffers_it == region.end()) {
-        continue;
-      }
-      for (const Any& region_buffer_any : Downcast<Array<Any>>((*region_buffers_it).second)) {
-        Map<String, Any> region_buffer = Downcast<Map<String, Any>>(region_buffer_any);
-        auto name_it = region_buffer.find(String(schema_key::kName));
-        auto buffer_it = region_buffer.find(String(schema_key::kBuffer));
-        if (name_it == region_buffer.end() || buffer_it == region_buffer.end()) {
-          continue;
+      if (region_buffers_it != region.end()) {
+        for (const Any& region_buffer_any : Downcast<Array<Any>>((*region_buffers_it).second)) {
+          Map<String, Any> region_buffer = Downcast<Map<String, Any>>(region_buffer_any);
+          auto name_it = region_buffer.find(String(schema_key::kName));
+          auto buffer_it = region_buffer.find(String(schema_key::kBuffer));
+          if (name_it == region_buffer.end() || buffer_it == region_buffer.end()) {
+            continue;
+          }
+          auto buffer = (*buffer_it).second.try_cast<tir::Buffer>();
+          if (!buffer.has_value()) {
+            continue;
+          }
+          auto static_shape = ExtractStaticShape(buffer.value()->shape);
+          if (!static_shape) {
+            continue;
+          }
+          shapes[Downcast<String>((*name_it).second)] = static_shape.value();
         }
-        auto buffer = (*buffer_it).second.try_cast<tir::Buffer>();
-        if (!buffer.has_value()) {
-          continue;
-        }
-        auto static_shape = ExtractStaticShape(buffer.value()->shape);
-        if (!static_shape) {
-          continue;
-        }
-        shapes[Downcast<String>((*name_it).second)] = static_shape.value();
       }
       auto bridge_specs_it = region.find(String(schema_key::kBufferTileBridgeSpecs));
       if (bridge_specs_it == region.end()) {
@@ -152,6 +153,29 @@ std::unordered_map<std::string, std::vector<int64_t>> BuildLogicalBufferShapes(
         if (!shape.empty()) {
           shapes[Downcast<String>((*buffer_it).second)] = shape;
         }
+      }
+    }
+  }
+  if (auto logical_specs =
+          func->GetAttr<Array<Any>>(attr::kTLBlackholeLogicalBufferTileBridgeSpecs)) {
+    for (const Any& spec_any : logical_specs.value()) {
+      Map<String, Any> spec = Downcast<Map<String, Any>>(spec_any);
+      auto buffer_it = spec.find(String(schema_key::kBuffer));
+      auto shape_it = spec.find(String(schema_key::kShape));
+      if (buffer_it == spec.end() || shape_it == spec.end()) {
+        continue;
+      }
+      std::vector<int64_t> shape;
+      for (const Any& dim_any : Downcast<Array<Any>>((*shape_it).second)) {
+        if (auto dim = dim_any.try_cast<Integer>()) {
+          shape.push_back(dim.value()->value);
+        } else {
+          shape.clear();
+          break;
+        }
+      }
+      if (!shape.empty()) {
+        shapes[Downcast<String>((*buffer_it).second)] = shape;
       }
     }
   }
@@ -1003,7 +1027,11 @@ Array<Any> CollectBufferMaterializationContractsFromBody(
 }
 
 Array<Any> GetComputeRegions(const tir::PrimFunc& func) {
-  return func->GetAttr<Array<Any>>("blackhole.compute_regions").value_or(Array<Any>());
+  Map<String, Any> evidence = AnalyzeBlackholeComputeRegionEvidence(func);
+  if (auto maybe_regions = evidence.Get(String("regions"))) {
+    return Downcast<Array<Any>>(maybe_regions.value());
+  }
+  return Array<Any>();
 }
 
 void SetArrayRequirementIfMissing(Map<String, Any>* lowering_requirements,
@@ -1114,21 +1142,15 @@ LoweringSupportFacts AnalyzeLoweringSupportFacts(const tir::PrimFunc& func) {
       }
     }
   }
-  if (auto maybe_regions = func->GetAttr<Array<Any>>(kLogicalComputeRegionsAttr)) {
-    for (const Any& region_any : maybe_regions.value()) {
-      Map<String, Any> region = Downcast<Map<String, Any>>(region_any);
-      if (auto maybe_specs = region.Get(String(schema_key::kBufferTileBridgeSpecs))) {
-        for (const Any& spec_any : Downcast<Array<Any>>(maybe_specs.value())) {
-          Map<String, Any> spec = Downcast<Map<String, Any>>(spec_any);
-          const std::string key =
-              KeyForAnyMap(spec, schema_key::kBuffer) + "|" +
-              KeyForAnyMap(spec, schema_key::kScope);
-          PushBackUnique(&buffer_tile_bridge_specs, &seen_buffer_tile_bridge_specs, spec, key);
-        }
-      }
+  if (auto logical_specs =
+          func->GetAttr<Array<Any>>(attr::kTLBlackholeLogicalBufferTileBridgeSpecs)) {
+    for (const Any& spec_any : logical_specs.value()) {
+      Map<String, Any> spec = Downcast<Map<String, Any>>(spec_any);
+      const std::string key =
+          KeyForAnyMap(spec, schema_key::kBuffer) + "|" + KeyForAnyMap(spec, schema_key::kScope);
+      PushBackUnique(&buffer_tile_bridge_specs, &seen_buffer_tile_bridge_specs, spec, key);
     }
   }
-
   Array<Any> flow_contracts = CollectBufferFlowContractsFromBody(func->body);
   Array<Any> materialization_contracts =
       CollectBufferMaterializationContractsFromBody(func, facts.recurrence_subjects);
@@ -1180,20 +1202,20 @@ std::vector<int> BuildPhaseIndexByUnit(const SpatialPlan& plan) {
 }
 
 void CollectWorkDecompositionFacts(const tir::PrimFunc& func, Map<String, Any>* requirements) {
-  auto work = func->GetAttr<Map<String, Any>>("blackhole.work_decomposition");
-  if (!work) {
+  Map<String, Any> work = AnalyzeBlackholeWorkDecompositionEvidence(func);
+  if (work.empty()) {
     return;
   }
-  if (auto axes = work.value().Get(String("axes"))) {
+  if (auto axes = work.Get(String("axes"))) {
     requirements->Set(String("work_axes"), Downcast<Array<Any>>(axes.value()));
   }
-  if (auto derived = work.value().Get(String("derived_index_exprs"))) {
+  if (auto derived = work.Get(String("derived_index_exprs"))) {
     const int count = static_cast<int>(Downcast<Array<Any>>(derived.value()).size());
     if (count > 0) {
       requirements->Set(String("derived_index_expr_count"), Integer(count));
     }
   }
-  if (auto bounds = work.value().Get(String("work_dependent_loop_bounds"))) {
+  if (auto bounds = work.Get(String("work_dependent_loop_bounds"))) {
     const int count = static_cast<int>(Downcast<Array<Any>>(bounds.value()).size());
     if (count > 0) {
       requirements->Set(String("work_dependent_loop_bound_count"), Integer(count));
@@ -1237,14 +1259,14 @@ void CollectPhaseFacts(const SpatialPlan& plan, Map<String, Any>* requirements) 
 }
 
 void CollectPipelineStageFacts(const tir::PrimFunc& func, Map<String, Any>* requirements) {
-  auto stages = func->GetAttr<Array<Any>>("blackhole.pipeline_stages");
-  if (!stages) {
+  Array<Any> stages = AnalyzeBlackholePipelineStageEvidence(func);
+  if (stages.empty()) {
     return;
   }
   Array<Any> stage_counts;
   Array<Any> loop_vars;
   std::unordered_set<std::string> seen_loop_vars;
-  for (const Any& stage_any : stages.value()) {
+  for (const Any& stage_any : stages) {
     auto stage = stage_any.as<Map<String, Any>>();
     if (!stage.has_value()) {
       continue;

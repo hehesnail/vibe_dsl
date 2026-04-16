@@ -183,7 +183,7 @@ def test_task1_gemm_spatial_plan_emits_compute_closure():
     assert len(plan.phase_plans) >= 1
 
 
-def test_phase_b_pipeline_keeps_blackhole_analysis_attrs_without_spatial_program():
+def test_phase_b_pipeline_exposes_only_spatial_plan_without_legacy_analysis_attrs():
     mod = _prepare_blackhole_phase_b_module(
         mha_example.flashattn.jit_impl.get_tir(
             1,
@@ -201,12 +201,13 @@ def test_phase_b_pipeline_keeps_blackhole_analysis_attrs_without_spatial_program
 
     assert main.attrs.get("tl.spatial_plan") is not None
     assert main.attrs.get("tl.spatial_plan_validated")
-    assert main.attrs.get("blackhole.work_decomposition") is not None
-    assert main.attrs.get("blackhole.compute_regions") is not None
     assert len(main.attrs["tl.spatial_plan"].phase_plans) >= 1
     assert main.attrs.get("tl.spatial_domain_plan") is None
     assert main.attrs.get("tl.spatial_execution_plan") is None
     assert main.attrs.get("tl.spatial_program") is None
+    assert main.attrs.get("blackhole.work_decomposition") is None
+    assert main.attrs.get("blackhole.compute_regions") is None
+    assert main.attrs.get("blackhole.pipeline_stages") is None
 
 
 def test_build_tt_program_consumes_plan_and_analysis_attrs_without_spatial_program():
@@ -234,6 +235,30 @@ def test_build_tt_program_consumes_plan_and_analysis_attrs_without_spatial_progr
         int(plan.source_task_index) >= 0 and int(plan.target_task_index) >= 0
         for plan in tt_program.transport_plans
     )
+
+
+def test_tt_planning_stages_tt_program_without_internal_bridge_attrs():
+    mod = _prepare_blackhole_phase_b_module(gemm_kernel())
+    mod = _drop_legacy_spatial_attrs(mod)
+
+    mod = tilelang.transform.PlanTTBlocks()(mod)
+    main = mod["main"]
+    assert main.attrs.get("tl.tt_program") is not None
+    assert main.attrs.get("tl.internal_tt_block_plans") is None
+    assert main.attrs.get("tl.internal_tt_core_groups") is None
+
+    mod = tilelang.transform.PlanTTCompute()(mod)
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    assert len(tt_program.block_plans) >= 1
+    assert len(tt_program.core_groups) >= 1
+    assert len(tt_program.kernel_plans) >= 1
+    assert len(tt_program.kernels) >= 1
+    assert len(tt_program.abi_plans) >= 1
+    assert main.attrs.get("tl.internal_tt_kernel_plans") is None
+    assert main.attrs.get("tl.internal_tt_kernels") is None
+    assert main.attrs.get("tl.internal_tt_abi_plan_seeds") is None
+    assert main.attrs.get("tl.internal_tt_program_payload") is None
 
 
 def test_task1_validate_spatial_plan_rejects_incomplete_dataflow_edge():
@@ -267,5 +292,5 @@ def test_build_tt_program_requires_explicit_tt_owner_plan_attrs():
     mod = tilelang.transform.PlanTTCompute()(mod)
     mod = tilelang.transform.PlanTTTransport()(mod)
 
-    with pytest.raises(Exception, match="tl.internal_tt_sync_plans|PlanTTSync"):
+    with pytest.raises(Exception, match="sync_plans|PlanTTSync|TTProgram"):
         tilelang.transform.BuildTTProgram()(mod)

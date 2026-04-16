@@ -22,6 +22,8 @@
  * \brief Analyze split-after Blackhole compute regions and emit a structured IR attr.
  */
 
+#include "common/compute_region_analysis.h"
+
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/expr.h>

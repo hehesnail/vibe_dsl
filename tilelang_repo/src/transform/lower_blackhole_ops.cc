@@ -27,6 +27,7 @@
 
 #include "lower_blackhole_ops.h"
 
+#include "common/compute_region_analysis.h"
 #include "../op/utils.h"
 #include "common/blackhole_lowering_requirements.h"
 #include "common/blackhole_utils.h"
@@ -1743,12 +1744,14 @@ void PlanTTKernelABI::LoadComputeRegionPhysicalBufferBindings(const PrimFunc& fu
   compute_physical_buffers_by_data_.clear();
   compute_physical_buffers_by_identity_.clear();
 
-  auto compute_regions = func->GetAttr<Array<Any>>("blackhole.compute_regions");
-  if (!compute_regions.has_value()) {
+  Map<String, Any> compute_region_evidence = AnalyzeBlackholeComputeRegionEvidence(func);
+  auto maybe_compute_regions = compute_region_evidence.Get(String("regions"));
+  if (!maybe_compute_regions) {
     return;
   }
+  Array<Any> compute_regions = Downcast<Array<Any>>(maybe_compute_regions.value());
 
-  for (const Any& region_any : compute_regions.value()) {
+  for (const Any& region_any : compute_regions) {
     auto region = Downcast<Map<String, Any>>(region_any);
     auto region_buffers_it = region.find(manifest_key::kRegionBuffers);
     if (region_buffers_it == region.end()) {
@@ -1990,10 +1993,12 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func,
     }
   }
 
-  auto compute_regions = func->GetAttr<Array<Any>>("blackhole.compute_regions");
-  if (!compute_regions.has_value()) {
+  Map<String, Any> compute_region_evidence = AnalyzeBlackholeComputeRegionEvidence(func);
+  auto maybe_compute_regions = compute_region_evidence.Get(String("regions"));
+  if (!maybe_compute_regions) {
     return;
   }
+  Array<Any> compute_regions = Downcast<Array<Any>>(maybe_compute_regions.value());
 
   auto infer_shape_from_names = [&](const Array<Any>& names) -> std::vector<int64_t> {
     for (const Any& name_any : names) {
@@ -2024,7 +2029,7 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func,
   bool changed = true;
   while (changed) {
     changed = false;
-    for (const Any& region_any : compute_regions.value()) {
+    for (const Any& region_any : compute_regions) {
       auto region = Downcast<Map<String, Any>>(region_any);
       auto update_sources_it = region.find(manifest_key::kUpdateSources);
       if (update_sources_it == region.end()) {
@@ -2069,7 +2074,7 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func,
     }
   }
 
-  for (const Any& region_any : compute_regions.value()) {
+  for (const Any& region_any : compute_regions) {
     auto region = Downcast<Map<String, Any>>(region_any);
     auto region_buffers_it = region.find(manifest_key::kRegionBuffers);
     if (region_buffers_it == region.end()) {
@@ -2376,13 +2381,6 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   StoreAccessorDescriptors(new_func);
   StoreGemmContract(new_func);
   StoreLeafExecutableContracts(lowering_requirements);
-
-  if (!lowering_requirements.empty()) {
-    Map<String, Any> attrs =
-        new_func->attrs.defined() ? new_func->attrs->dict : Map<String, Any>();
-    attrs.Set("blackhole.lowering_requirements", lowering_requirements);
-    new_func.CopyOnWrite()->attrs = DictAttrs(attrs);
-  }
 
   if (!HasUnsupportedComputeOpsInRequirements(lowering_requirements)) {
     ValidateNoResidualComputeRegionStores(body);

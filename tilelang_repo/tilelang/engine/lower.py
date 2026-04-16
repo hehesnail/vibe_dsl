@@ -202,6 +202,9 @@ def merge_ir_modules(*mods: tvm.IRModule) -> tvm.IRModule:
     return merged
 
 
+_BLACKHOLE_LOGICAL_BRIDGE_SPECS_ATTR = "tl.blackhole_logical_buffer_tile_bridge_specs"
+
+
 def _blackhole_prim_funcs(mod: tvm.IRModule) -> list[tuple[object, tir.PrimFunc]]:
     funcs = []
     for gvar, func in mod.functions.items():
@@ -213,6 +216,18 @@ def _blackhole_prim_funcs(mod: tvm.IRModule) -> list[tuple[object, tir.PrimFunc]
 def _prim_func_symbol(gvar, func: tir.PrimFunc) -> str:
     attrs = func.attrs or {}
     return str(attrs["global_symbol"]) if "global_symbol" in attrs else gvar.name_hint
+
+
+def _extract_logical_bridge_specs(func: tir.PrimFunc):
+    attrs = func.attrs or {}
+    if "blackhole.compute_regions" not in attrs:
+        return None
+    bridge_specs = []
+    for region in attrs["blackhole.compute_regions"]:
+        if "buffer_tile_bridge_specs" not in region:
+            continue
+        bridge_specs.extend(list(region["buffer_tile_bridge_specs"]))
+    return bridge_specs or None
 
 
 def _align_blackhole_device_symbol(
@@ -228,11 +243,11 @@ def _align_blackhole_device_symbol(
     optimized_gvar, optimized_func = optimized_funcs[0]
     target_symbol = _prim_func_symbol(optimized_gvar, optimized_func)
     aligned_func = optimized_func.with_attr("global_symbol", target_symbol)
-    source_attrs = source_func.attrs or {}
-    if "blackhole.compute_regions" in source_attrs:
+    logical_bridge_specs = _extract_logical_bridge_specs(source_func)
+    if logical_bridge_specs is not None:
         aligned_func = aligned_func.with_attr(
-            "blackhole.logical_compute_regions",
-            source_attrs["blackhole.compute_regions"],
+            _BLACKHOLE_LOGICAL_BRIDGE_SPECS_ATTR,
+            logical_bridge_specs,
         )
     return tvm.IRModule(
         {target_symbol: aligned_func},
@@ -356,7 +371,9 @@ def lower(
         # Phase 1: Lower and legalize the IR
         mod = LowerAndLegalize(mod, target)
         if target.kind.name == "blackhole":
-            blackhole_analysis_mod = LowerToBlackholePhaseB(mod)
+            blackhole_analysis_mod = tilelang.transform.AnalyzeBlackholeComputeRegions()(
+                LowerToBlackholePhaseB(mod)
+            )
 
         # Phase 2: Optimize the IR for the target
         mod = OptimizeForTarget(mod, target)

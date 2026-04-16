@@ -22,6 +22,8 @@
  * \brief Analyze split-after Blackhole pipelined loop structure and emit a structured IR attr.
  */
 
+#include "analyze_blackhole_pipeline_stages.h"
+
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/tir/expr.h>
 #include <tvm/tir/op.h>
@@ -336,16 +338,24 @@ class PipelineStageAnalyzer final : public StmtExprVisitor {
 
 }  // namespace
 
+Array<Any> AnalyzeBlackholePipelineStageEvidence(const PrimFunc& func) {
+  PipelineStageAnalyzer analyzer;
+  analyzer.Analyze(func);
+  if (!analyzer.HasPipelineStages()) {
+    return {};
+  }
+  return analyzer.Encode();
+}
+
 tir::transform::Pass AnalyzeBlackholePipelineStagesPass() {
   auto fpass = [](PrimFunc func, IRModule, tir::transform::PassContext) -> PrimFunc {
-    PipelineStageAnalyzer analyzer;
-    analyzer.Analyze(func);
-    if (!analyzer.HasPipelineStages()) {
+    Array<Any> encoded = AnalyzeBlackholePipelineStageEvidence(func);
+    if (encoded.empty()) {
       return func;
     }
 
     Map<String, Any> attrs = func->attrs.defined() ? func->attrs->dict : Map<String, Any>();
-    attrs.Set("blackhole.pipeline_stages", analyzer.Encode());
+    attrs.Set("blackhole.pipeline_stages", encoded);
 
     PrimFunc updated = func;
     updated.CopyOnWrite()->attrs = DictAttrs(attrs);

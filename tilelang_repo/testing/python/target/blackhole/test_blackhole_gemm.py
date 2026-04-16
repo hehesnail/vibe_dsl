@@ -234,12 +234,14 @@ def test_blackhole_gemm_pipeline_uses_spatial_plan_without_spatial_program():
 
     device_func = artifact.device_mod["main_kernel"]
     plan = device_func.attrs["tl.spatial_plan"]
-    lowering_requirements = device_func.attrs["blackhole.lowering_requirements"]
+    tt_program = require_tt_program(device_func)
+    compute_contract = dict(tt_program.payload["compute_contract"])
     assert device_func.attrs.get("tl.spatial_program") is None
+    assert device_func.attrs.get("blackhole.lowering_requirements") is None
     assert {"ingress", "compute", "egress"}.issubset(
         {str(unit.unit_role) for unit in plan.execution_units}
     )
-    assert "gemm" in set(lowering_requirements["compute_op_kinds"])
+    assert str(compute_contract["kind"]) == "gemm"
 
 
 def test_blackhole_gemm_arg_identity_drives_cross_segment_dedupe():
@@ -320,12 +322,7 @@ def test_blackhole_gemm_accumulator_scope_canonicalized():
         mod = tilelang.engine.phase.OptimizeForTarget(mod, target)
 
     func = mod["main"]
-    resource_plan = func.attrs["blackhole.resource_plan"]
-    accum_entries = [item for item in resource_plan if str(item["class"]) == "accumulator"]
-    assert accum_entries
-    assert any(str(item["name"]) == "C_local" for item in accum_entries)
-    assert all(str(item["scope"]) == "blackhole.acc" for item in accum_entries)
-
+    assert func.attrs.get("blackhole.resource_plan") is None
     func_text = func.script()
     assert 'scope="blackhole.acc"' in func_text
 
@@ -438,13 +435,8 @@ def test_blackhole_fresh_fragment_gemm_does_not_materialize_accumulator_merge_co
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = lower_blackhole_to_tt_target(mod)
 
-    lowering_requirements = mod["main"].attrs["blackhole.lowering_requirements"]
-    contracts = (
-        list(lowering_requirements["buffer_materialization_contracts"])
-        if "buffer_materialization_contracts" in lowering_requirements
-        else []
-    )
-    assert contracts == []
+    payload = dict(require_tt_program(mod["main"]).payload)
+    assert "buffer_materialization_contracts" not in payload
 
 
 def test_blackhole_precleared_fragment_gemm_does_not_materialize_accumulator_merge_contract():
@@ -459,13 +451,8 @@ def test_blackhole_precleared_fragment_gemm_does_not_materialize_accumulator_mer
     mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = lower_blackhole_to_tt_target(mod)
 
-    lowering_requirements = mod["main"].attrs["blackhole.lowering_requirements"]
-    contracts = (
-        list(lowering_requirements["buffer_materialization_contracts"])
-        if "buffer_materialization_contracts" in lowering_requirements
-        else []
-    )
-    assert contracts == []
+    payload = dict(require_tt_program(mod["main"]).payload)
+    assert "buffer_materialization_contracts" not in payload
 
 
 def test_blackhole_compute_contract_attr_materializes_nondefault_compute_abi():
@@ -1431,13 +1418,10 @@ def test_blackhole_fragment_fill_cast_publish_exposes_buffer_tile_bridge_specs()
     mod = tilelang.tvm.IRModule({"main": kernel})
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
-    mod = prepare_blackhole_phase_b_module(mod)
+    mod = lower_blackhole_to_tt_target(mod)
 
-    compute_regions = list(mod["main"].attrs["blackhole.compute_regions"])
-    bridge_specs = []
-    for region in compute_regions:
-        if "buffer_tile_bridge_specs" in region:
-            bridge_specs.extend(list(region["buffer_tile_bridge_specs"]))
+    payload = dict(require_tt_program(mod["main"]).payload)
+    bridge_specs = list(payload["buffer_tile_bridge_specs"])
     by_buffer = {str(spec["buffer"]): spec for spec in bridge_specs}
 
     assert {"C_local", "D_local"}.issubset(by_buffer)
@@ -1459,7 +1443,7 @@ def test_blackhole_fragment_fill_cast_publish_build_reads_executable_without_low
         artifact = lower(kernel, target=target)
 
     device_main = artifact.device_mod["main_kernel"]
-    assert "blackhole.lowering_requirements" in device_main.attrs
+    assert "blackhole.lowering_requirements" not in device_main.attrs
 
     rebuilt = _rebuild_codegen_module_without_lowering_requirements(artifact)
     executable_spec = rebuilt.get_function_metadata("main")

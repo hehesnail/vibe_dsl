@@ -22,6 +22,8 @@
  * \brief Analyze split-after Blackhole work decomposition and emit a unified IR attr.
  */
 
+#include "analyze_blackhole_work_decomposition.h"
+
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/node/structural_hash.h>
 #include <tvm/tir/builtin.h>
@@ -187,16 +189,24 @@ class WorkDecompositionAnalyzer : public StmtExprVisitor {
 
 }  // namespace
 
+Map<String, Any> AnalyzeBlackholeWorkDecompositionEvidence(const PrimFunc& func) {
+  WorkDecompositionAnalyzer analyzer;
+  analyzer.Analyze(func);
+  if (!analyzer.HasWorkDecomposition()) {
+    return {};
+  }
+  return analyzer.Encode();
+}
+
 tir::transform::Pass AnalyzeBlackholeWorkDecompositionPass() {
   auto fpass = [](PrimFunc func, IRModule, tir::transform::PassContext) -> PrimFunc {
-    WorkDecompositionAnalyzer analyzer;
-    analyzer.Analyze(func);
-    if (!analyzer.HasWorkDecomposition()) {
+    Map<String, Any> encoded = AnalyzeBlackholeWorkDecompositionEvidence(func);
+    if (encoded.empty()) {
       return func;
     }
 
     Map<String, Any> attrs = func->attrs.defined() ? func->attrs->dict : Map<String, Any>();
-    attrs.Set("blackhole.work_decomposition", analyzer.Encode());
+    attrs.Set("blackhole.work_decomposition", encoded);
 
     PrimFunc updated = func;
     updated.CopyOnWrite()->attrs = DictAttrs(attrs);

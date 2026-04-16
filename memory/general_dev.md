@@ -216,6 +216,43 @@
   这组 bridge attrs 传递 target truth；
   planner object 一旦可直接聚合成 `TTProgram`，
   中间 attr 就应该停产，helper/test 也不能再把它们当作回退面
+- 一旦
+  `PlanTTBlocks / PlanTTCompute / PlanTTTransport /
+   PlanTTSync / PlanTTABI / PlanTTExecution`
+  都开始提前发布 target truth，
+  过渡面应直接增量写 staged
+  `tl.tt_program`，
+  再由
+  `BuildTTProgram`
+  只做 completeness validation + final aggregation；
+  不要再引入
+  `tl.internal_tt_*`
+  这种第二层 bridge bag
+- canonical `Phase B`
+  不再负责发布
+  `blackhole.work_decomposition /
+   blackhole.compute_regions /
+   blackhole.pipeline_stages`
+  这组三件 analysis attr。
+  如果后续 pass 仍需这些 facts，
+  要么本地重跑 helper analysis，
+  要么只桥接真正缺的最小 schema；
+  不能把“analysis 结果方便拿”
+  再写回成新的 pass-to-pass 协议
+- 如果 optimized/helper path
+  在 destructive pass 之后
+  仍需要 logical tile bridge truth，
+  只对齐最小
+  `buffer_tile_bridge_specs`
+  即可；
+  不要重新桥接整袋
+  `blackhole.compute_regions`
+  或其他语义 bag。
+  repo HEAD 的做法是：
+  在 pre-opt 阶段抓 analysis，
+  再把窄 internal attr
+  `tl.blackhole_logical_buffer_tile_bridge_specs`
+  对齐回 optimized device func
 - active Blackhole path 不再保留
   独立 semantic mirror bridge；
   凡是能从 `Normalized Tile TIR + SpatialPlan companion +

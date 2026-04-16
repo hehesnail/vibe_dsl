@@ -238,6 +238,44 @@
   - 继续使用 optimized device func，
     只在它身上改 `global_symbol`
   - `global_infos` 也同步保留 optimized device module 的版本
+
+#### optimized helper 若在 `OptimizeForTarget` 之后才补 logical bridge analysis，会丢 row-reduction bridge spec
+
+- **症状**:
+  - flash-attn / gqa
+    通过 test helper
+    走
+    `OptimizeForTarget -> LowerToBlackholeTTProgram`
+    时，
+    `PlanTTKernelABI`
+    在 grouped row reduction
+    报
+    `missing buffer_tile_bridge_spec for acc_s`
+- **根因**:
+  - helper 在 destructive optimize 之后
+    才重新跑
+    `AnalyzeBlackholeComputeRegions`
+  - 这时局部 logical tile shape
+    已经被 lower 成更晚的表示，
+    无法再完整恢复
+    `buffer_tile_bridge_specs`
+- **修法**:
+  - 像正式 `lower()`
+    一样，
+    在 `OptimizeForTarget`
+    之前先跑
+    `AnalyzeBlackholeComputeRegions(LowerToBlackholePhaseB(...))`
+  - 只把最小
+    `buffer_tile_bridge_specs`
+    对齐回 optimized device func，
+    再进入
+    `LowerToBlackholeTTProgram`
+- **教训**:
+  - 任何 helper / test bundle
+    只要绕开 canonical engine helper，
+    就必须共享同一 pre-opt analysis capture point；
+    否则 optimized path
+    会先坏在 helper 漂移上
 - **教训**:
   - symbol/name 对齐只能改 symbol；
     不能顺手把 owner object 一起换回旧版本，

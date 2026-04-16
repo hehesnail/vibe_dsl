@@ -35,7 +35,7 @@
  *      (either as explicit AllocateNode stmts or in Block.alloc_buffers) INTO the
  *      thread_extent body, so that SplitHostDevice's VarUseDefAnalyzer sees them
  *      as defined (not free vars → not ABI params)
- *   4. Emits blackhole.resource_plan on the PrimFunc attrs
+ *   4. Rewrites attached typed projections to match canonicalized resource scopes
  *
  * Must run after AnnotateBlackholeCopySemantics and before AnnotateDeviceRegions.
  *
@@ -803,7 +803,6 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
                           program.value()));
       }
     }
-    new_attrs.Set("blackhole.resource_plan", plan);
     return DictAttrs(new_attrs);
   }
 };

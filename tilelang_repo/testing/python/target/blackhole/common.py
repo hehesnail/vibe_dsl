@@ -5,6 +5,8 @@ import torch
 
 import tilelang
 from tilelang import language as T
+from tilelang.engine.lower import _align_blackhole_device_symbol
+from tilelang.engine.phase import LowerToBlackholePhaseB
 
 
 def find_loop_annotation(stmt, attr_key):
@@ -94,6 +96,8 @@ def prepare_blackhole_phase_b_module(mod):
 
 def lower_blackhole_to_tt_target(mod):
     """Lower a Blackhole module through the validated TTProgram target contract."""
+    source_mod = tilelang.transform.AnalyzeBlackholeComputeRegions()(LowerToBlackholePhaseB(mod))
+    mod = _align_blackhole_device_symbol(source_mod, mod)
     return tilelang.engine.phase.LowerToBlackholeTTProgram(mod)
 
 
