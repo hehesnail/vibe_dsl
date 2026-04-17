@@ -126,12 +126,6 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 设计文档至少说明：目标、影响范围、协议变化、验证方式
 - 设计与实现冲突时，先更新设计再写代码
 
-**做小而完整的改动**：
-
-- 优先复用现有实现，不要重新发明轮子
-- 先统一协议，再补功能
-- 先闭环，再优化
-
 **代码结构原则**：
 
 1. **分离 analysis 与 transformation**
@@ -192,12 +186,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 
 ## 当前推进顺序
 
-1. 保留当前临时验证面，直到新主链替换它：
-   - `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path
-   - copy / GEMM current support surface
-   - 第一批复杂 consumer 已打通的 compile-path 子集
-   - 这些只是过渡期验证面，不是架构真源；若与 owner cutover 冲突，应更新验证面而不是回退设计
-2. 文档、任务安排和实现边界统一以当前入口文档为准：
+1. 文档、任务安排和实现边界统一以当前入口文档为准：
    - `tasks/dev_design/final_blackhole_backend_redesign.md`
    - `tasks/progress.md`
    - `tasks/dev_design/README.md`
@@ -205,12 +194,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - `tasks/dev_design/task1_spatial_plan_companion.md`
    - `tasks/dev_design/task2_ttprogram_companion_cutover.md`
    - `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
-3. 当前活动任务顺序统一按 owner cutover 阅读：
+2. 当前活动任务顺序统一按 owner cutover 阅读：
    - `SpatialPlan owner cutover`
    - `TTProgram owner cutover`
    - `ExecutableSpec / leaf reader cutover`
    - `legacy protocol deletion`
-4. 当前已接入主链、但只算前置子步骤的工作包括：
+3. 当前已接入主链、但只算前置子步骤的工作包括：
    - `buffer effect / use-role analysis`
    - `buffer liveness analysis`
    - `materialization / source-live-form planner decision`
