@@ -168,6 +168,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - 语义恢复必须优先依赖 IR 自身可验证的信息：对象类型、storage scope、def-use、region/access pattern、loop-carried/dataflow 结构、attrs/schema
    - 如果仅靠当前 IR 结构仍无法稳定区分语义，就扩 IR/DSL/schema；不要把名字匹配升级成长期分析手段
 
+5. **整个编译器必须以显式 IR 为中心，不允许在 IR 之外再造语义通道**
+   - 程序语义只能存在于当前 IR 层本身；analysis 只能是从当前 IR 派生出的、可失效可重算的临时结果
+   - pass 只能在当前 IR 上做规范化、重写，或向下一层 IR 做显式 lowering；不允许靠 bag、payload、helper、wrapper、命名约定或其他旁路机制承载跨阶段语义
+   - 任何需要跨阶段保留、被下游依赖、且不能在 analysis 失效后由当前 IR 重新推出的内容，都必须进入 IR 本身；如果当前 IR 表达不了，就先扩 IR，再继续实现
+
 **对 Blackhole 的具体要求**：
 
 - `runtime_args`、`buffer`、`cb`、`segment` 等绑定必须由 IR/schema 明确表达或可从 IR 稳定推导
