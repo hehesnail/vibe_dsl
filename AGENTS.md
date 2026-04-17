@@ -173,6 +173,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - pass 只能在当前 IR 上做规范化、重写，或向下一层 IR 做显式 lowering；不允许靠 bag、payload、helper、wrapper、命名约定或其他旁路机制承载跨阶段语义
    - 任何需要跨阶段保留、被下游依赖、且不能在 analysis 失效后由当前 IR 重新推出的内容，都必须进入 IR 本身；如果当前 IR 表达不了，就先扩 IR，再继续实现
 
+6. **设计边界必须写成 IR 层和显式表示对象，不能写成 pass 名字**
+   - `SpatialPlan`、`TTProgram`、`ExecutableSpec` 这类表示层才是长期边界；`BuildSpatialPlanCompanion`、`PlanTTCompute`、`PlanTTTransport` 之类只是在当前代码里构造或改写这些表示的实现手段
+   - pass 可以重命名、合并、拆分、内联；只要 IR 契约不变，架构就不应被描述成“某个 pass 拥有什么语义”
+   - 任务文档里沿用的历史文件名只作为索引，不得被理解成新的 IR 名词或长期协议对象
+
 **对 Blackhole 的具体要求**：
 
 - `runtime_args`、`buffer`、`cb`、`segment` 等绑定必须由 IR / attrs / typed fields 明确表达或可从 IR 稳定推导
@@ -203,7 +208,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - `Cleanup Task 0 -> Cleanup Task 1 -> Cleanup Task 2 -> Cleanup Task 3 -> Cleanup Task 4 -> Cleanup Task 5`
    - cleanup 完成后，才恢复 support surface / workload payoff 扩展
 3. `task1_spatial_plan_companion.md`、`task2_ttprogram_companion_cutover.md`、`task3_runtime_gate_and_workload_cutover.md`
-   负责定义 completion contract，不再单独充当当前实施顺序
+   负责定义 completion contract，不再单独充当当前实施顺序；
+   这些文件名中的 `companion / cutover` 只是历史索引，不是新的 IR 层命名
 4. 当前已接入主链、但只算前置子步骤的工作包括：
    - `buffer effect / use-role analysis`
    - `buffer liveness analysis`
@@ -253,8 +259,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - semantic manifest 路径已完成；`AnalyzeSemanticStructure` 已全面改成 manifest-first
 - 当前实际 active chain 是：
   `Normalized Tile TIR -> AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion -> ValidateSpatialPlan -> SplitBlackholeKernel -> legacy attrs / narrow bridge residue -> PlanTTBlocks -> SelectBlackholeTTMetalBuiltins -> PlanTTCompute / PlanTTTransport / PlanTTSync / PlanTTABI / PlanTTExecution -> BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable -> runtime / codegen leaf readers`
+- 上面这串名字描述的是当前 pass/phase 实现，不是新的长期 IR 层；
+  长期主链仍然只有 `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 - 当前已知迁移残留包括：
-  - `AnalyzeSpatialStructureFacts` 仍在 active chain 且仍通过 public wrapper 暴露；后续必须退回局部 mechanics 或被 `BuildSpatialPlanCompanion` 吸收
+  - `AnalyzeSpatialStructureFacts` 仍在 active chain 且仍通过 public wrapper 暴露；后续必须退回局部 mechanics，并把 `SpatialPlan` 收成单一 direct builder implementation；当前 `BuildSpatialPlanCompanion` 只是历史实现名
   - `SpatialPlan -> TTProgram` 之间仍有 legacy transition attrs / narrow bridge seeds / helper residue
   - `blackhole.copy_semantics`、`blackhole.segment_kind`、`blackhole.lowering_requirements`、`blackhole.resource_plan` 仍在 repo HEAD
   - `PlanTTSync / PlanTTABI / PlanTTExecution` 已落地为显式 planner passes，但 leaf reader / cleanup 还没同时收口

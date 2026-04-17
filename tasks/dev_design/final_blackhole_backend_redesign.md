@@ -24,7 +24,7 @@ Normalized Tile TIR
 但现实里：
 
 - `SpatialPlan` 过薄，只承接一层 legacy 兼容标签
-- target-independent 的 virtual spatial/dataflow truth 没有被对象化
+- target-independent 的 virtual spatial/dataflow 语义没有被对象化
 - 后段只能补出
   legacy transition attrs / helper bridge / payload bag
   这类影子协议
@@ -60,7 +60,7 @@ Normalized Tile TIR
    - 哪些 core 之间交换数据
    - 走哪条 NoC / multicast / remote path
    - 谁等谁、何时可见
-   - 哪些 barrier / semaphore / completion / topology truth 需要冻结
+   - 哪些 barrier / semaphore / completion / topology 语义需要冻结
 
 编译链必须围绕这三类事实组织，
 而不是围绕历史补丁名词组织。
@@ -110,7 +110,7 @@ Normalized Tile TIR
 - tile-op 参数
 
 只要信息还能由 TIR 稳定表达，
-就不允许复制到 companion。
+就不允许为下游再造一份旁路语义表示。
 
 ### 3.2 `SpatialPlan`
 
@@ -121,7 +121,7 @@ Normalized Tile TIR
 
 - 哪些 anchored sub-TIR 构成稳定执行单元
 - 单元之间有哪些显式数据流 / carry / reduction / broadcast 关系
-- virtual layout / sharding / distribution truth 是什么
+- virtual layout / sharding / distribution 语义是什么
 - virtual phase / ordering / materialization boundary 是什么
 - 哪些 hint 经 validate 后进入 planner
 
@@ -138,7 +138,7 @@ Normalized Tile TIR
 - legacy compatibility projection
 
 只能作为调试或过渡 projection，
-不再是长期主表示 truth。
+不再承载长期语义。
 
 `SpatialPlan` 不负责：
 
@@ -149,7 +149,7 @@ Normalized Tile TIR
 
 ### 3.3 `TTProgram`
 
-`TTProgram` 是唯一 target realization truth。
+`TTProgram` 是唯一 target realization 表示。
 
 它负责回答：
 
@@ -205,7 +205,7 @@ Normalized Tile TIR
   `ExecutableSpec -> execution backend`
   组合
 - 但它**不能**反向收窄
-  `TTProgram` owner truth、
+  `TTProgram` 显式语义、
   TT builtin basis、
   或
   `ValidateTTProgram`
@@ -215,9 +215,25 @@ Normalized Tile TIR
 
 这次重写最关键的约束只有一条：
 
-> **TT builtin mapping 必须发生在 anchored sub-TIR 仍保留 tile-op、layout、真实 load/store truth 的边界。**
+> **TT builtin mapping 必须发生在 anchored sub-TIR 仍保留 tile-op、layout、真实 load/store 语义的边界。**
 
-具体分成三类 planning：
+下面提到的 `PlanTTTransport / PlanTTCompute / PlanTTSync / PlanTTABI / PlanTTExecution`
+只是当前代码里的构造步骤，
+不是新的长期语义层。
+
+长期契约只有一条：
+
+- compute / transport / sync / ABI / execution
+  这些 target 语义
+  必须落在 `TTProgram`
+  的显式 plan 对象里
+- planner pass
+  只是把当前 IR
+  rewrite / lower
+  成这些对象的实现手段
+
+具体分成三类 `TTProgram` 语义 slice，
+当前分别由对应 planner 构造：
 
 ### 4.1 `PlanTTTransport`
 
@@ -232,11 +248,12 @@ Normalized Tile TIR
 
 输出：
 
-- `TensorAccessor / Buffer / CB / NoC / multicast / remote endpoint`
-  这组 transport truth
-- reader / writer kernel 需要消费的
-  address / page / runtime-arg-carried accessor truth
-- communication 里的 route / topology / delivery truth
+- `TTTransportPlan`
+  中的 transport / route / delivery / endpoint 语义
+- `TTABIPlan`
+  中的 accessor / page / runtime-arg / buffer-binding 语义
+- `TTExecutionPlan`
+  中需要和 transport 对齐的 delivery / launch 约束
 
 ### 4.2 `PlanTTCompute`
 
@@ -249,18 +266,22 @@ Normalized Tile TIR
 
 输出：
 
-- TT-Metal compute family
+- `TTKernelPlan`
+  中的 exact TT-Metal compute builtin 选择
   - `matmul`
   - `eltwise`
   - `reduce`
   - `sfpu`
   - `copy / pack / untilize`
-- operand/result binding
-- tile register / pack-unpack / accumulation / reduction protocol
+- `TTKernelPlan`
+  中的 operand/result binding
+- `TTKernelPlan`
+  中的 tile register / pack-unpack / accumulation / reduction protocol
 
 ### 4.3 `PlanTTSync`
 
-只负责 communication 的 completion slice：
+只负责把 communication 的 completion slice
+写入 `TTSyncPlan` / `TTExecutionPlan`：
 
 - ordering
 - completion
@@ -269,7 +290,7 @@ Normalized Tile TIR
 补充：
 
 - `route / multicast / remote write / topology`
-  属于 `PlanTTTransport + PlanTTExecution`
+  属于 `TTTransportPlan + TTExecutionPlan`
 - `PlanTTSync`
   不再兼职恢复 compute 或 transport 语义
 
@@ -321,8 +342,8 @@ current explicit IR
 
 layered IR 的价值只在于每层都显式承诺：
 
-- 它拥有哪类 truth
-- 它不拥有哪类 truth
+- 它拥有哪类语义
+- 它不拥有哪类语义
 - 它与下一层是什么 refinement 关系
 
 因此 validator 是主链对象，不是补丁。
@@ -341,7 +362,7 @@ layered IR 的价值只在于每层都显式承诺：
   - 禁止 payload bag 回升为主协议
 - `ValidateExecutableSpecProjection`
   - 检查 leaf projection 只来源于 `TTProgram`
-  - 禁止 runtime/codegen 自己再补 planning truth
+  - 禁止 runtime/codegen 自己再补上游 planning 语义
 - `ValidateExecutionBackendAdmission`
   - 只在 leaf 边界检查
     某个 backend
@@ -359,7 +380,7 @@ fail-closed 纪律固定为：
 - 不再用名字匹配、位置假设、临时分支去补语义
 - backend-specific unsupported
   只能停在 leaf execution gate，
-  不能回流成上游 owner / legality 约束
+  不能回流成上游表示层 / legality 约束
 
 ## 6. Fake Protocol 去留规则
 
@@ -385,15 +406,15 @@ legacy transition attrs / helper bridge / payload bag
 判断顺序固定为：
 
 1. 先看表示层边界
-2. 再看当前实现是否越权持有上游 truth
-3. 只有在 truth 明确属于上游显式表示层时，
+2. 再看当前实现是否越权持有上游语义
+3. 只有在语义明确属于上游显式表示层时，
    才允许回头补上游 IR / builder logic / validator
 
 明确禁止：
 
 - 先把当前后段实现当成协议
 - 再要求 `SpatialPlan`
-  去补它需要的 truth
+  去补它需要的语义
 - 把“现在能跑”
   当成表示层边界正确的证据
 - 把 direct runtime 当前 admitted support surface
@@ -404,7 +425,7 @@ legacy transition attrs / helper bridge / payload bag
   validator
   的上游合法性边界
 
-如果当前后段实现和第一性原理 owner 冲突，
+如果当前后段实现和第一性原理表示层边界冲突，
 优先改后段实现，
 而不是回退设计去迎合它。
 
@@ -417,18 +438,18 @@ legacy transition attrs / helper bridge / payload bag
    - 把 `SpatialPlan`
      从薄兼容层
      重写成 virtual spatial/dataflow program
-2. **target owner 收口**
+2. **target 表示收口**
    - 把 `TTProgram`
-     收正成唯一 physical realization truth
+     收正成唯一 physical realization 表示
 3. **leaf reader 收口**
    - 让 build / codegen / runtime
      只读 `TTProgram / ExecutableSpec`
 4. **`Legacy Protocol Deletion`**
-   - 删除 fake protocol 和 late matcher owner residue
+   - 删除 fake protocol 和 late matcher residue
 
 架构收口顺序仍按
 `Task 1 -> Task 2 -> Task 3 -> Legacy Protocol Deletion`
-理解 owner boundary；
+理解显式表示层边界；
 但 repo HEAD 的实际实现顺序，
 固定按 cleanup 文档推进：
 
@@ -441,8 +462,13 @@ legacy transition attrs / helper bridge / payload bag
 3. **再做 `Cleanup Task 2`**
    - 删除 public / internal legacy analysis bag
    - 同时把
+     `SpatialPlan`
+     收成单一 direct builder implementation；
+     当前
      `BuildSpatialPlanCompanion`
-     收成 canonical builder
+     这个名字如果继续保留，
+     也只是历史实现名，
+     不是架构契约
 4. **再做 `Cleanup Task 3`**
    - 删除
      `blackhole.copy_semantics`
@@ -451,7 +477,7 @@ legacy transition attrs / helper bridge / payload bag
      `blackhole.segment_kind`
    - 收紧 planner / projection / runtime
      对 kernel kind / segment plan
-     的直接 owner 消费
+     的直接表示消费
 6. **最后做 `Cleanup Task 5`**
    - 做最终 cleanup scan、
      文档同步、
@@ -474,11 +500,19 @@ legacy transition attrs / helper bridge / payload bag
 当前活动设计文档按下面顺序约束实现：
 
 1. `task0_ir_layering_root_cause.md`
-   - 固定根因和 owner 边界判断
+   - 固定根因和显式表示层边界判断
 2. `task1_spatial_plan_companion.md`
    - 固定 `Task 1: SpatialPlan Owner Cutover`
+   - 文件名里的 `companion`
+     只是历史索引；
+     架构目标仍是
+     `SpatialPlan`
+     的直接构造与显式表示
 3. `task2_ttprogram_companion_cutover.md`
    - 固定 `Task 2: TTProgram Owner Cutover`
+   - 文件名里的 `companion`
+     同样只作索引，
+     不引入新的 IR 层
 4. `task3_runtime_gate_and_workload_cutover.md`
    - 固定 `Task 3: ExecutableSpec / Leaf Reader Cutover`
 5. `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
@@ -496,22 +530,25 @@ legacy transition attrs / helper bridge / payload bag
 1. **mapping 边界正确**
    - TT builtin mapping
      发生在 anchored sub-TIR 仍保留
-     `tile-op / layout / load-store truth`
+     `tile-op / layout / load-store 语义`
      的边界
-2. **三类语义面各有 owner**
-   - compute: `PlanTTCompute`
-   - memory-access: `PlanTTTransport + PlanTTABI`
-   - communication: `PlanTTTransport + PlanTTSync + PlanTTExecution`
+2. **三类 target 语义都落在 `TTProgram` 的显式 slice**
+   - compute:
+     `TTKernelPlan`
+   - memory-access:
+     `TTTransportPlan + TTABIPlan`
+   - communication:
+     `TTTransportPlan + TTSyncPlan + TTExecutionPlan`
 3. **真源位置收紧**
-   - 算法/访存 truth 只在 `Normalized Tile TIR`
-   - virtual spatial/dataflow truth 只在 `SpatialPlan`
-   - physical target truth 只在 `TTProgram`
+   - 算法/访存语义只在 `Normalized Tile TIR`
+   - virtual spatial/dataflow 语义只在 `SpatialPlan`
+   - physical target 语义只在 `TTProgram`
    - `ExecutableSpec` 只做 leaf materialization
 4. **后段不再补语义**
    - runtime / codegen / build
      不再做 late recovery
    - fake protocol / payload bag / matcher
-     不再承担 owner 职责
+     不再承担语义承载职责
 5. **execution gate 不反向塑形**
    - backend-specific support subset
      只在

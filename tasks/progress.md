@@ -32,7 +32,7 @@
   传到
   `PlanTTCompute / PlanTTCBAlloc`；
   这是 pre-planner exact selection 的过渡残留，
-  不是新的 planning truth。
+  不是新的 planning 语义。
 - 当前硬约束固定为：
   跨 pass / 跨阶段语义
   只允许存在于
@@ -45,7 +45,7 @@
 - `task1_spatial_plan_companion.md`、
   `task2_ttprogram_companion_cutover.md`、
   `task3_runtime_gate_and_workload_cutover.md`
-  现在负责定义 **owner boundary / completion contract**；
+  现在负责定义 **显式表示层边界 / completion contract**；
   当前 repo HEAD 的实际收口顺序，
   由
   `2026-04-16-blackhole-final-legacy-protocol-cleanup*.md`
@@ -82,7 +82,7 @@ Normalized Tile TIR
 | 项目 | 新状态 | 说明 |
 |------|--------|------|
 | `Task 0: Root Cause and Rewrite Direction` | 已完成 | 作为根因诊断与 pass 纪律基线已经完成；它不再单独形成实现路线 |
-| `Task 1: SpatialPlan Owner Cutover` | 重新打开 / 部分完成 | `AnalyzeSpatialStructureFacts` 仍在 active chain 且仍有 public wrapper；按 IR-first 纪律它只能退回局部 mechanics 或被 `BuildSpatialPlanCompanion` 吸收 |
+| `Task 1: SpatialPlan Owner Cutover` | 重新打开 / 部分完成 | `SpatialPlan` 仍未在 active chain 中以单一 direct builder 直接从当前 TIR 构造；`AnalyzeSpatialStructureFacts` 仍以 public wrapper 形态存在。当前 `BuildSpatialPlanCompanion` 只是历史实现名，不应被当成架构边界 |
 | `Task 2: TTProgram Owner Cutover` | 重新打开 / 部分完成 | exact TT-Metal builtin basis 已锁定并前移到 dedicated selector；但 `blackhole.lowering_requirements` 窄 seed、planner residue 仍在主链 |
 | `Task 3: ExecutableSpec / Leaf Reader Cutover` | 重新打开 / 部分完成 | runtime / projection / executable writer 已不再消费 `compute_epilogue_ops`；但 `blackhole.segment_kind` 等旧叶子协议仍未删净 |
 | `Legacy Protocol Deletion` | 未完成 / 当前主任务 | helper/composite builtin active surface 与 `compute_epilogue_ops` 已清掉；`blackhole.copy_semantics`、`blackhole.segment_kind`、`AnalyzeBlackhole*`、`blackhole.lowering_requirements`、`blackhole.resource_plan` 仍在 repo HEAD |
@@ -116,6 +116,11 @@ Normalized Tile TIR
   -> MaterializeBlackholeExecutable
   -> runtime / codegen leaf readers
 ```
+
+这里列的是当前代码里的 pass/phase，
+不是额外的长期 IR 层；
+长期主链仍然只有
+`Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`。
 
 当前确认仍在 repo HEAD 上的旧面包括：
 
@@ -183,7 +188,7 @@ Normalized Tile TIR
 从现在开始，
 `progress` 里的执行顺序固定改成
 **cleanup task 驱动，
-owner cutover 文档给 completion contract**：
+cutover 文档给 completion contract**：
 
 1. **`Cleanup Task 0`**（已完成，`2026-04-17`）
    - 文档：
@@ -219,11 +224,16 @@ owner cutover 文档给 completion contract**：
    - 这一步同时重开并完成
      `Task 1: SpatialPlan Owner Cutover`
      剩余的 pass-discipline 收口：
-     `BuildSpatialPlanCompanion`
-     必须成为 canonical visitor / matcher / builder；
+     `SpatialPlan`
+     必须收成单一 direct builder implementation；
      `AnalyzeSpatialStructureFacts`
      若还需要，只能退回同一 `.cc` 里的 pass-local helper，
-     不能再作为 public wrapper / active-chain owner pass 存在
+     不能再作为 public wrapper / active-chain 语义 pass 存在；
+     当前
+     `BuildSpatialPlanCompanion`
+     这个名字如果继续保留，
+     也只表示实现入口，
+     不表示新的表示层
 
 4. **`Cleanup Task 3`**
    - 文档：
@@ -250,7 +260,7 @@ owner cutover 文档给 completion contract**：
      `Task 2: TTProgram Owner Cutover`
      和
      `Task 3: ExecutableSpec / Leaf Reader Cutover`
-     剩余 owner residue 的关键收口
+     剩余表示层 residue 的关键收口
 
 6. **`Cleanup Task 5`**
    - 文档：
@@ -284,11 +294,15 @@ owner cutover 文档给 completion contract**：
 - `task1_spatial_plan_companion.md`
   - 定义
     `SpatialPlan`
-    的显式表示内容、builder 纪律、validator 与完成判据
+    的显式表示内容、builder 纪律、validator 与完成判据；
+    文件名中的 `companion`
+    只是历史索引
 - `task2_ttprogram_companion_cutover.md`
   - 定义
     `TTProgram`
-    的显式表示内容与 planner / builder 完成判据
+    的显式表示内容与 planner / builder 完成判据；
+    文件名中的 `companion`
+    同样只作历史索引
 - `task3_runtime_gate_and_workload_cutover.md`
   - 定义
     `ExecutableSpec / leaf reader`
@@ -324,8 +338,8 @@ owner cutover 文档给 completion contract**：
    `buffer_materialization_contracts /
     buffer_tile_bridge_specs`
    这两个稳定 surface，
-   并在 owner cutover 时删掉；
-   不把它扩成新的 planning truth
+   并在对应表示层收口时删掉；
+   不把它扩成新的 planning 语义
 
 当前已确认的实现约束补充为：
 
@@ -336,7 +350,7 @@ owner cutover 文档给 completion contract**：
   `PlanTTKernelABI`
   已经塌缩出 helper/composite builtin
   后再靠 rename / patch 修复
-- 当前仍保留的一点 owner residue 是：
+- 当前仍保留的一点表示层 residue 是：
   CB / materialization-sensitive bridge publication
   还没有完全离开
   `PlanTTKernelABI`
