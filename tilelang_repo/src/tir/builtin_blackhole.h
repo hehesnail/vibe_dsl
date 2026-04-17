@@ -273,14 +273,6 @@ TVM_DLL const Op& blackhole_copy_tile_to_dst_init_short_with_dt();
 TVM_DLL const Op& blackhole_copy_tile();
 
 /*!
- * \brief Legacy alias for copy_tile. New lowering must use blackhole_copy_tile.
- * \param src_cb_id Source CB
- * \param src_tile_index Tile index within the CB front window
- * \param dst_tile_index Destination tile index within DST registers
- */
-TVM_DLL const Op& blackhole_copy_tile_from_cb();
-
-/*!
  * \brief Initialize TT-Metal elementwise add for two CB-backed tile streams.
  * \param lhs_cb_id Left-hand-side CB id
  * \param rhs_cb_id Right-hand-side CB id
@@ -313,6 +305,23 @@ TVM_DLL const Op& blackhole_add_bcast_rows_init_short();
  * \param dst_tile_index Destination tile index within DST registers
  */
 TVM_DLL const Op& blackhole_add_tiles_bcast_rows();
+
+/*!
+ * \brief Initialize TT-Metal elementwise mul for two CB-backed tile streams.
+ * \param lhs_cb_id Left-hand-side CB id
+ * \param rhs_cb_id Right-hand-side CB id
+ */
+TVM_DLL const Op& blackhole_mul_tiles_init();
+
+/*!
+ * \brief Multiply one tile from two CBs into a DST register slot.
+ * \param lhs_cb_id Left-hand-side CB id
+ * \param rhs_cb_id Right-hand-side CB id
+ * \param lhs_tile_index Tile index in the left-hand-side CB front window
+ * \param rhs_tile_index Tile index in the right-hand-side CB front window
+ * \param dst_tile_index Destination tile index within DST registers
+ */
+TVM_DLL const Op& blackhole_mul_tiles();
 
 /*!
  * \brief Initialize TT-Metal mul broadcast-rows sequence.
@@ -378,28 +387,6 @@ TVM_DLL const Op& blackhole_reduce_tile();
 TVM_DLL const Op& blackhole_reduce_uninit();
 
 /*!
- * \brief Initialize the exact TT-Metal custom reduce_block_max_row operation.
- * \param block_ct_dim Compile-time block width in tiles
- */
-TVM_DLL const Op& blackhole_reduce_block_max_row_init();
-
-/*!
- * \brief Execute the exact TT-Metal custom reduce_block_max_row operation.
- * \param src_cb_id Source CB id
- * \param scaler_cb_id Scaler CB id
- * \param row_start_index Starting tile index of the logical row
- * \param dst_tile_index Destination tile index within DST registers
- * \param block_ct_dim Compile-time block width in tiles
- */
-TVM_DLL const Op& blackhole_reduce_block_max_row();
-
-/*!
- * \brief Uninitialize the exact TT-Metal custom reduce_block_max_row operation.
- * \param src_cb_id Source CB id
- */
-TVM_DLL const Op& blackhole_reduce_block_max_row_uninit();
-
-/*!
  * \brief Initialize exact TT-Metal binary max tile sequence.
  */
 TVM_DLL const Op& blackhole_binary_max_tile_init();
@@ -435,6 +422,17 @@ TVM_DLL const Op& blackhole_exp_tile_init();
  * \param dst_tile_index Destination DST tile index
  */
 TVM_DLL const Op& blackhole_exp_tile();
+
+/*!
+ * \brief Initialize exact TT-Metal exp2 tile sequence.
+ */
+TVM_DLL const Op& blackhole_exp2_tile_init();
+
+/*!
+ * \brief Execute exact TT-Metal exp2 on one DST tile.
+ * \param dst_tile_index Destination DST tile index
+ */
+TVM_DLL const Op& blackhole_exp2_tile();
 
 /*!
  * \brief Initialize exact TT-Metal reciprocal tile sequence.
@@ -510,66 +508,6 @@ TVM_DLL const Op& blackhole_read_cb_front_tile_to_local();
 TVM_DLL const Op& blackhole_read_cb_front_tile_to_local_fragment();
 
 /*!
- * \brief Reduce a contiguous 1-D local fragment row into a scalar local fragment target.
- * \param src_buffer Source local fragment buffer handle
- * \param dst_buffer Destination scalar local fragment buffer handle
- * \param num_elements Number of contiguous elements to reduce
- * \param reduce_kind Reduction kind string ("sum" / "max")
- * \param clear Whether to clear destination before reduction
- */
-TVM_DLL const Op& blackhole_reduce_row();
-
-/*!
- * \brief Multiply a contiguous 1-D local fragment row by a scalar local fragment source.
- * \param dst_buffer Destination/source vector local fragment buffer handle
- * \param scalar_buffer Source scalar local fragment buffer handle
- * \param num_elements Number of contiguous destination elements
- */
-TVM_DLL const Op& blackhole_mul_row_bcast();
-TVM_DLL const Op& blackhole_mul_grouped_row_bcast();
-
-/*!
- * \brief Divide a contiguous 1-D local fragment row by a scalar local fragment source.
- * \param dst_buffer Destination/source vector local fragment buffer handle
- * \param scalar_buffer Source scalar local fragment buffer handle
- * \param num_elements Number of contiguous destination elements
- */
-TVM_DLL const Op& blackhole_div_row_bcast();
-TVM_DLL const Op& blackhole_div_grouped_row_bcast();
-
-/*!
- * \brief Fused scalar fragment update: dst = lhs * rhs + addend.
- * \param dst_buffer Destination scalar local fragment buffer handle
- * \param lhs_buffer Left multiplicand scalar local fragment buffer handle
- * \param rhs_buffer Right multiplicand scalar local fragment buffer handle
- * \param add_buffer Addend scalar local fragment buffer handle
- */
-TVM_DLL const Op& blackhole_scalar_fma();
-
-/*!
- * \brief Fused vector row-broadcast update:
- *        dst[i] = exp2(dst[i] * dst_scale + scalar * scalar_scale).
- * \param dst_buffer Destination/source vector local fragment buffer handle
- * \param scalar_buffer Source scalar local fragment buffer handle
- * \param num_elements Number of contiguous destination elements
- * \param dst_scale Scale applied to the vector source term
- * \param scalar_scale Scale applied to the scalar broadcast term
- */
-TVM_DLL const Op& blackhole_exp2_row_bcast_affine();
-TVM_DLL const Op& blackhole_exp2_grouped_row_bcast_affine();
-
-/*!
- * \brief Fused scalar fragment update:
- *        dst = exp2(lhs * lhs_scale + rhs * rhs_scale).
- * \param dst_buffer Destination scalar local fragment buffer handle
- * \param lhs_buffer Left scalar local fragment buffer handle
- * \param rhs_buffer Right scalar local fragment buffer handle
- * \param lhs_scale Scale applied to lhs
- * \param rhs_scale Scale applied to rhs
- */
-TVM_DLL const Op& blackhole_scalar_exp2_affine();
-
-/*!
  * \brief Fill a local fragment buffer with a scalar literal value.
  * \param dst_buffer Destination local fragment buffer handle
  * \param num_elements Number of contiguous destination elements
@@ -592,13 +530,6 @@ TVM_DLL const Op& blackhole_add_fragment();
  * \param num_elements Number of contiguous destination elements
  */
 TVM_DLL const Op& blackhole_add_fragment_from_cb_front();
-
-/*!
- * \brief Update a scalar fragment buffer in-place with max(dst, src).
- * \param dst_buffer Destination scalar local fragment buffer handle
- * \param src_buffer Source scalar local fragment buffer handle
- */
-TVM_DLL const Op& blackhole_scalar_max();
 
 /*!
  * \brief Cast a contiguous slice from one local fragment buffer into another.

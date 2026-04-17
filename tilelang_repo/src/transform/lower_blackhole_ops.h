@@ -122,6 +122,14 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     bool has_reference = false;
   };
 
+  struct ExactTiledCBValue {
+    tvm::tir::Buffer buffer;
+    int cb_id = -1;
+    int num_tiles = 0;
+    int64_t num_elements = 0;
+    int64_t row_width = 0;
+  };
+
   struct AccessorDescriptor {
     std::string segment_kind;
     tvm::tir::Buffer buffer;
@@ -247,6 +255,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Store CB requirements in function attributes */
   void StoreCBRequirements(tvm::tir::PrimFunc& func);
+
+  /*! \brief Load seeded CB requirements from function attributes and preserve indices. */
+  void LoadSeededCBRequirements(const tvm::tir::PrimFunc& func);
 
   /*! \brief Store minimal segment/kernel plan inferred during lowering */
   void StoreSegmentPlan(tvm::tir::PrimFunc& func);
@@ -463,6 +474,23 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                     int num_c_tiles,
                                                     bool materialize_live_form_to_local_state,
                                                     int publish_cb_id);
+  tvm::tir::Buffer CreateEphemeralBufferLike(const tvm::tir::Buffer& buffer,
+                                             const std::string& suffix) const;
+  tvm::tir::Buffer CreateConstantTileBuffer(tvm::DataType dtype, const std::string& suffix) const;
+  int PrepareExactTiledCBRequirement(const tvm::tir::Buffer& buffer);
+  tvm::tir::Stmt FillLocalTileBuffer(const tvm::tir::Buffer& buffer,
+                                     const tvm::PrimExpr& value);
+  tvm::tir::Stmt PublishLocalBufferToExactTiledCB(const tvm::tir::Buffer& src,
+                                                  const ExactTiledCBValue& cb_value);
+  tvm::tir::Stmt MaterializeExactTiledCBToLocalBuffer(const tvm::tir::Buffer& dst,
+                                                      const ExactTiledCBValue& cb_value,
+                                                      bool pop_front = true);
+  ExactTiledCBValue CreatePublishedExactTiledCBValue(const tvm::tir::Buffer& src,
+                                                     const std::string& suffix);
+  ExactTiledCBValue CreateEmptyExactTiledCBValue(const tvm::tir::Buffer& like_buffer,
+                                                 const std::string& suffix);
+  ExactTiledCBValue CreateConstantExactTiledCBValue(tvm::DataType dtype,
+                                                    const std::string& suffix);
 
   /*! \brief Generate copy builtin sequence (DRAM->CB, CB->DRAM, CB->CB) */
   tvm::tir::Stmt GenerateCopySequence(const tvm::tir::BufferStoreNode* op);

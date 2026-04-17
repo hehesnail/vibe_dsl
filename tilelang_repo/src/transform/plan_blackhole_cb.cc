@@ -170,12 +170,14 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
     return {0};
   }
   if (op_name == "tl.blackhole.copy_tile_to_dst_init_short" ||
-      op_name == "tl.blackhole.copy_tile_to_dst_init_short_with_dt" ||
-      op_name == "tl.blackhole.copy_tile_from_cb") {
+      op_name == "tl.blackhole.copy_tile_to_dst_init_short_with_dt") {
     return op_name == "tl.blackhole.copy_tile_to_dst_init_short_with_dt" ? std::vector<int>{0, 1}
                                                                           : std::vector<int>{0};
   }
   if (op_name == "tl.blackhole.add_tiles_init" || op_name == "tl.blackhole.add_tiles") {
+    return {0, 1};
+  }
+  if (op_name == "tl.blackhole.mul_tiles_init" || op_name == "tl.blackhole.mul_tiles") {
     return {0, 1};
   }
   if (op_name == "tl.blackhole.add_bcast_rows_init_short" ||
@@ -187,10 +189,6 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
     return {0, 1};
   }
   if (op_name == "tl.blackhole.reduce_init" || op_name == "tl.blackhole.reduce_tile") {
-    return {0, 1};
-  }
-  if (op_name == "tl.blackhole.reduce_block_max_row" ||
-      op_name == "tl.blackhole.reduce_block_max_row_uninit") {
     return {0, 1};
   }
   if (op_name == "tl.blackhole.pack_untilize_slice") {
@@ -249,25 +247,11 @@ bool HasNoCBArgs(const std::string& op_name) {
          op_name == "tl.blackhole.div_binary_tile" ||
          op_name == "tl.blackhole.exp_tile_init" ||
          op_name == "tl.blackhole.exp_tile" ||
+         op_name == "tl.blackhole.exp2_tile_init" ||
+         op_name == "tl.blackhole.exp2_tile" ||
          op_name == "tl.blackhole.recip_tile_init" ||
          op_name == "tl.blackhole.recip_tile" ||
-         op_name == "tl.blackhole.reduce_uninit" ||
-         op_name == "tl.blackhole.scalar_max" ||
-         op_name == "tl.blackhole.reduce_row" ||
-         op_name == "tl.blackhole.mul_row_bcast" ||
-         op_name == "tl.blackhole.mul_grouped_row_bcast" ||
-         op_name == "tl.blackhole.div_row_bcast" ||
-         op_name == "tl.blackhole.div_grouped_row_bcast" ||
-         op_name == "tl.blackhole.scalar_fma" ||
-         op_name == "tl.blackhole.exp2_row_bcast_affine" ||
-         op_name == "tl.blackhole.exp2_grouped_row_bcast_affine" ||
-         op_name == "tl.blackhole.scalar_exp2_affine" ||
-         op_name == "tl.blackhole.binary_max_tile_local" ||
-         op_name == "tl.blackhole.reduce_rows_local" ||
-         op_name == "tl.blackhole.mul_tiles_bcast_rows_local" ||
-         op_name == "tl.blackhole.div_tiles_bcast_rows_local" ||
-         op_name == "tl.blackhole.exp_tiles_bcast_rows_affine_local" ||
-         op_name == "tl.blackhole.exp_tile_affine_local";
+         op_name == "tl.blackhole.reduce_uninit";
 }
 
 }  // namespace

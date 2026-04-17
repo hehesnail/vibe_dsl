@@ -53,6 +53,15 @@ HELPER_COMPOSITE_BLACKHOLE_BUILTINS = (
     "copy_tile_from_cb",
 )
 
+LEGACY_LOCAL_BLACKHOLE_BUILTINS = (
+    "binary_max_tile_local",
+    "reduce_rows_local",
+    "mul_tiles_bcast_rows_local",
+    "div_tiles_bcast_rows_local",
+    "exp_tiles_bcast_rows_affine_local",
+    "exp_tile_affine_local",
+)
+
 
 def _lower_flash_attention_to_tt_target(*, is_causal=False):
     target = Target("blackhole")
@@ -156,17 +165,27 @@ def test_flash_attention_forward_tt_target_emits_tt_program_payload():
         "logsum",
     }.issubset(bridge_buffers)
     assert {
-        "binary_max_tile_local",
-        "reduce_rows_local",
-        "mul_tiles_bcast_rows_local",
-        "div_tiles_bcast_rows_local",
-        "exp_tiles_bcast_rows_affine_local",
-        "exp_tile_affine_local",
-        "scalar_fma",
+        "binary_max_tile_init",
+        "binary_max_tile",
+        "reduce_init",
+        "reduce_tile",
+        "reduce_uninit",
+        "mul_tiles_init",
+        "mul_tiles",
+        "add_tiles_init",
+        "add_tiles",
+        "mul_bcast_rows_init_short",
+        "mul_tiles_bcast_rows",
+        "add_bcast_rows_init_short",
+        "add_tiles_bcast_rows",
+        "exp2_tile_init",
+        "exp2_tile",
+        "pack_tile",
         "cast_fragment_slice",
         "tilize_local_fragment_slice",
         "pack_untilize_tile",
     }.issubset(builtin_names)
+    assert not any(name in LEGACY_LOCAL_BLACKHOLE_BUILTINS for name in builtin_names)
 
 
 def test_flash_attention_forward_optimized_path_lowers_scores_max_updates():
@@ -184,17 +203,17 @@ def test_flash_attention_forward_optimized_path_lowers_scores_max_updates():
     )["main"]
     builtin_names = _blackhole_builtin_suffixes(lowered)
 
-    assert "binary_max_tile_local" in builtin_names
+    assert "binary_max_tile" in builtin_names
+    assert "binary_max_tile_local" not in builtin_names
 
 
 def test_flash_attention_forward_tt_target_lowers_reductions_to_builtins():
     lowered = _lower_flash_attention_to_tt_target()
     builtin_names = _blackhole_builtin_suffixes(lowered)
-    script = lowered.script()
-
-    assert "reduce_rows_local" in builtin_names
-    assert "\"max\"" in script
-    assert "\"sum\"" in script
+    assert "reduce_init" in builtin_names
+    assert "reduce_tile" in builtin_names
+    assert "reduce_uninit" in builtin_names
+    assert "reduce_rows_local" not in builtin_names
 
 
 def test_flash_attention_forward_optimized_path_lowers_reductions_to_builtins():
@@ -212,7 +231,10 @@ def test_flash_attention_forward_optimized_path_lowers_reductions_to_builtins():
     )["main"]
     builtin_names = _blackhole_builtin_suffixes(lowered)
 
-    assert "reduce_rows_local" in builtin_names
+    assert "reduce_init" in builtin_names
+    assert "reduce_tile" in builtin_names
+    assert "reduce_uninit" in builtin_names
+    assert "reduce_rows_local" not in builtin_names
 
 
 def test_flash_attention_forward_optimized_path_lowers_acc_o_broadcast_updates():
@@ -230,11 +252,14 @@ def test_flash_attention_forward_optimized_path_lowers_acc_o_broadcast_updates()
     )["main"]
     builtin_names = _blackhole_builtin_suffixes(lowered)
 
-    assert "mul_tiles_bcast_rows_local" in builtin_names
-    assert "div_tiles_bcast_rows_local" in builtin_names
+    assert "mul_tiles_bcast_rows" in builtin_names
+    assert "recip_tile_init" in builtin_names
+    assert "recip_tile" in builtin_names
+    assert "mul_tiles_bcast_rows_local" not in builtin_names
+    assert "div_tiles_bcast_rows_local" not in builtin_names
 
 
-def test_flash_attention_forward_optimized_path_lowers_logsum_scalar_fma():
+def test_flash_attention_forward_optimized_path_lowers_logsum_to_exact_tile_binary_ops():
     lowered = _run_flash_attention_tt_target_after_optimize(
         mha_example,
         1,
@@ -247,9 +272,13 @@ def test_flash_attention_forward_optimized_path_lowers_logsum_scalar_fma():
         num_stages=1,
         threads=128,
     )["main"]
-    script = lowered.script()
+    builtin_names = _blackhole_builtin_suffixes(lowered)
 
-    assert "tl.blackhole.scalar_fma" in script
+    assert "mul_tiles_init" in builtin_names
+    assert "mul_tiles" in builtin_names
+    assert "add_tiles_init" in builtin_names
+    assert "add_tiles" in builtin_names
+    assert "scalar_fma" not in builtin_names
 
 
 def test_flash_attention_forward_optimized_path_lowers_scores_exp2_affine_updates():
@@ -267,8 +296,10 @@ def test_flash_attention_forward_optimized_path_lowers_scores_exp2_affine_update
     )["main"]
     builtin_names = _blackhole_builtin_suffixes(lowered)
 
-    assert "exp_tiles_bcast_rows_affine_local" in builtin_names
-    assert "exp_tile_affine_local" in builtin_names
+    assert "exp2_tile" in builtin_names
+    assert "exp2_tile_init" in builtin_names
+    assert "exp_tiles_bcast_rows_affine_local" not in builtin_names
+    assert "exp_tile_affine_local" not in builtin_names
 
 
 def test_flash_attention_forward_optimized_path_lowers_fragment_fills():
@@ -1415,8 +1446,11 @@ def test_flash_attention_compute_source_derives_grouped_reduce_rows_from_num_ele
 
     assert "const uint32_t num_elements = 16384;" in compute_source
     assert "const uint32_t row_width = 128;" in compute_source
-    assert "const uint32_t num_rows = num_elements / row_width;" in compute_source
-    assert "const uint32_t num_rows = 16384;" not in compute_source
+    assert "reduce_init<PoolType::MAX, ReduceDim::REDUCE_ROW>" in compute_source
+    assert "reduce_tile<PoolType::MAX, ReduceDim::REDUCE_ROW>" in compute_source
+    assert "reduce_uninit<true>()" in compute_source
+    assert "tilelang_reduce_grouped_row_max" not in compute_source
+    assert "const uint32_t num_rows = num_elements / row_width;" not in compute_source
 
 
 def test_flash_attention_compute_source_fills_full_matrix_fragments():
@@ -1705,10 +1739,15 @@ def test_flash_attention_small_bf16_compute_source_math_scopes_raw_fragment_help
     compute_source = str(compute["source_code"])
 
     assert "MATH({ float* dst = reinterpret_cast<float*>(acc_s);" in compute_source
-    assert "MATH({ const float* src = reinterpret_cast<const float*>(acc_s);" in compute_source
-    assert "MATH({ float* dst = reinterpret_cast<float*>(scores_scale);" in compute_source
+    assert "reinterpret_cast<const uint32_t*>(acc_s)" in compute_source
+    assert "reinterpret_cast<const uint32_t*>(scores_scale)" in compute_source
+    assert "reinterpret_cast<const uint32_t*>(logsum)" in compute_source
     assert "MATH({ float* dst = reinterpret_cast<float*>(acc_o);" in compute_source
-    assert "tilelang_div_grouped_row_bcast(dst, scalar, num_elements, row_width); })" in compute_source
+    assert "recip_tile_init();" in compute_source
+    assert "recip_tile(0);" in compute_source
+    assert "mul_bcast_rows_init_short" in compute_source
+    assert "mul_tiles_bcast_rows" in compute_source
+    assert "tilelang_div_grouped_row_bcast" not in compute_source
 
 
 def test_flash_attention_small_bf16_compute_source_emits_debug_waypoints_when_requested(monkeypatch):
@@ -1745,7 +1784,7 @@ def test_flash_attention_small_bf16_compute_source_emits_debug_waypoints_when_re
     compute_source = str(compute["source_code"])
 
     assert "WAYPOINT(" in compute_source
-    for tag in ("MXPV", "MCLR", "RMAX", "SMAX", "SEXP", "AEXP", "RSUM", "LFMA", "NORM", "OCST"):
+    for tag in ("MXPV", "MCLR", "OCST"):
         assert f'WAYPOINT("{tag}")' in compute_source
 
 
@@ -2102,8 +2141,8 @@ def test_flash_attention_seq64_bf16_compute_source_accumulates_clear_accum_false
 
     merge_pairs = re.findall(r"add_tiles_init\((\d+), (\d+)\);", compute_source)
     assert merge_pairs
-    assert all(reload_cb != scratch_cb for reload_cb, scratch_cb in merge_pairs)
     reload_cb, scratch_cb = merge_pairs[0]
+    assert reload_cb != scratch_cb
 
     merge_window_pattern = re.compile(
         r"add_tiles_init\(\d+, \d+\);.*?add_tiles\(\d+, \d+, 0, 0, 0\);.*?pack_tile\(0, \d+\);",

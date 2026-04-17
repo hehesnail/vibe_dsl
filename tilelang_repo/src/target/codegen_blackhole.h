@@ -162,11 +162,12 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintCopyTileToDstInitShort(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintCopyTileToDstInitShortWithDT(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintCopyTile(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintCopyTileFromCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddTilesInit(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddTiles(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddBcastRowsInitShort(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddTilesBcastRows(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintMulTilesInit(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintMulTiles(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintMulBcastRowsInitShort(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintMulBcastColsInitShort(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintMulTilesBcastRows(const tvm::tir::CallNode *op, std::ostream &os);
@@ -174,15 +175,14 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintReduceInit(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintReduceTile(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintReduceUninit(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintReduceBlockMaxRowInit(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintReduceBlockMaxRow(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintReduceBlockMaxRowUninit(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintBinaryMaxTileInit(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintBinaryMaxTile(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintDivBinaryTileInit(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintDivBinaryTile(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintExpTileInit(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintExpTile(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintExp2TileInit(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintExp2Tile(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintRecipTileInit(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintRecipTile(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintFillFragment(const tvm::tir::CallNode *op, std::ostream &os);
@@ -194,17 +194,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintCastFragmentSliceToTiledCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintReadCBFrontTileToLocal(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintReadCBFrontTileToLocalFragment(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintScalarMax(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintCastFragmentSlice(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintReduceRow(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintMulRowBcast(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintMulGroupedRowBcast(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintDivRowBcast(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintDivGroupedRowBcast(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintScalarFma(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintExp2RowBcastAffine(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintExp2GroupedRowBcastAffine(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintScalarExp2Affine(const tvm::tir::CallNode *op, std::ostream &os);
 
   // Legacy: Print CB operations (old interface)
   void PrintCBDeclare(const std::string &name, tvm::DataType dtype,

@@ -98,6 +98,16 @@
   不再是 active IR surface；
   selector / validator
   会按 exact op 名 fail-closed 拒绝 residue
+- rowwise flash-attn 相关的 local pseudo builtin surface
+  也已从 builtin/codegen 层删除；
+  repo HEAD 上保留的是 exact TT-Metal sequence，
+  不是“保留死代码再 fail-closed”
+- selector 创建的 exact temporary CB requirement
+  必须经由
+  `blackhole.cb_requirements`
+  seed 到
+  `PlanTTCompute / PlanTTCBAlloc`；
+  否则下游只会看见 dangling `requirement_index`
 - 当前唯一和 Task 0 直接相关、仍暂时保留的过渡面是
   `tl.blackhole_lowering_requirements_seed`：
   它只承接

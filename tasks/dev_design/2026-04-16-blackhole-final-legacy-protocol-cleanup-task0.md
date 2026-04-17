@@ -29,12 +29,34 @@ This selector-forwarding slice is landed in repo HEAD.
   `tl.blackhole_tt_metal_builtin_selection`.
 - helper/composite builtin residue is no longer admitted on the active IR
   surface; tests and `ValidateTTProgram` reject it by exact op name.
+- local pseudo compute builtins such as
+  `reduce_rows_local`,
+  `mul_tiles_bcast_rows_local`,
+  `div_tiles_bcast_rows_local`,
+  `exp_tiles_bcast_rows_affine_local`,
+  `exp_tile_affine_local`,
+  and
+  `scalar_fma`
+  are deleted from the builtin/codegen surface rather than merely fail-closed.
+  The active sequences now lower directly to exact TT-Metal ops such as
+  `reduce_init/reduce_tile/reduce_uninit`,
+  `mul_tiles_init/mul_tiles`,
+  `binary_max_tile`,
+  `exp2_tile`,
+  and
+  `recip_tile`.
 - `compute_epilogue_ops` is removed from
   `TTProgram.payload`,
   executable projection,
   codegen,
   runtime,
   and tests.
+- selector-created exact temporary CB requirements are now persisted through
+  `blackhole.cb_requirements`
+  and reloaded by
+  `PlanTTCompute`,
+  so `PlanTTCBAlloc` does not see dangling requirement indices after
+  selector-forwarding rewrites.
 - current residue kept intentionally narrow:
   `tl.blackhole_lowering_requirements_seed`
   carries only

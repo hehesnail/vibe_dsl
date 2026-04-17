@@ -38,6 +38,13 @@ const std::unordered_set<std::string>& HelperCompositeBlackholeBuiltinNames() {
       "tl.blackhole.exp2_grouped_row_bcast_affine",
       "tl.blackhole.scalar_max",
       "tl.blackhole.scalar_exp2_affine",
+      "tl.blackhole.binary_max_tile_local",
+      "tl.blackhole.reduce_rows_local",
+      "tl.blackhole.mul_tiles_bcast_rows_local",
+      "tl.blackhole.div_tiles_bcast_rows_local",
+      "tl.blackhole.exp_tiles_bcast_rows_affine_local",
+      "tl.blackhole.exp_tile_affine_local",
+      "tl.blackhole.scalar_fma",
   };
   return *names;
 }

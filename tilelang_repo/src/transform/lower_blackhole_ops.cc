@@ -808,6 +808,23 @@ using tir::builtin::blackhole_copy_tile_to_dst_init_short_with_dt;
 using tir::builtin::blackhole_copy_tile;
 using tir::builtin::blackhole_add_tiles_init;
 using tir::builtin::blackhole_add_tiles;
+using tir::builtin::blackhole_add_bcast_rows_init_short;
+using tir::builtin::blackhole_add_tiles_bcast_rows;
+using tir::builtin::blackhole_mul_tiles_init;
+using tir::builtin::blackhole_mul_tiles;
+using tir::builtin::blackhole_mul_bcast_rows_init_short;
+using tir::builtin::blackhole_mul_tiles_bcast_rows;
+using tir::builtin::blackhole_reduce_init;
+using tir::builtin::blackhole_reduce_tile;
+using tir::builtin::blackhole_reduce_uninit;
+using tir::builtin::blackhole_binary_max_tile_init;
+using tir::builtin::blackhole_binary_max_tile;
+using tir::builtin::blackhole_div_binary_tile_init;
+using tir::builtin::blackhole_div_binary_tile;
+using tir::builtin::blackhole_exp2_tile_init;
+using tir::builtin::blackhole_exp2_tile;
+using tir::builtin::blackhole_recip_tile_init;
+using tir::builtin::blackhole_recip_tile;
 using tir::builtin::blackhole_cb_push_back;
 using tir::builtin::blackhole_tile_regs_acquire;
 using tir::builtin::blackhole_tile_regs_release;
@@ -1315,9 +1332,10 @@ static int CountLoweredRowReductionBuiltins(const Stmt& body) {
     if (!call || !call->op->IsInstance<OpNode>()) {
       return;
     }
-    const Op op = Downcast<Op>(call->op);
-    if (op.same_as(tir::builtin::blackhole_reduce_row()) ||
-        op->name == "tl.blackhole.reduce_row") {
+    const std::string& op_name = Downcast<Op>(call->op)->name;
+    if (op_name == "tl.blackhole.reduce_init" || op_name == "tl.blackhole.reduce_tile" ||
+        op_name == "tl.blackhole.reduce_uninit" || op_name == "tl.blackhole.reduce_row" ||
+        op_name == "tl.blackhole.reduce_rows_local") {
       ++count;
     }
   });
@@ -1331,19 +1349,20 @@ static int CountLoweredRowBroadcastBuiltins(const Stmt& body) {
     if (!call || !call->op->IsInstance<OpNode>()) {
       return;
     }
-    const Op op = Downcast<Op>(call->op);
-    if (op.same_as(tir::builtin::blackhole_mul_row_bcast()) ||
-        op.same_as(tir::builtin::blackhole_mul_grouped_row_bcast()) ||
-        op.same_as(tir::builtin::blackhole_div_row_bcast()) ||
-        op.same_as(tir::builtin::blackhole_div_grouped_row_bcast()) ||
-        op.same_as(tir::builtin::blackhole_exp2_row_bcast_affine()) ||
-        op.same_as(tir::builtin::blackhole_exp2_grouped_row_bcast_affine()) ||
-        op->name == "tl.blackhole.mul_row_bcast" ||
-        op->name == "tl.blackhole.mul_grouped_row_bcast" ||
-        op->name == "tl.blackhole.div_row_bcast" ||
-        op->name == "tl.blackhole.div_grouped_row_bcast" ||
-        op->name == "tl.blackhole.exp2_row_bcast_affine" ||
-        op->name == "tl.blackhole.exp2_grouped_row_bcast_affine") {
+    const std::string& op_name = Downcast<Op>(call->op)->name;
+    if (op_name == "tl.blackhole.mul_tiles_bcast_rows" ||
+        op_name == "tl.blackhole.div_binary_tile" ||
+        op_name == "tl.blackhole.add_tiles_bcast_rows" ||
+        op_name == "tl.blackhole.exp2_tile" ||
+        op_name == "tl.blackhole.mul_row_bcast" ||
+        op_name == "tl.blackhole.mul_grouped_row_bcast" ||
+        op_name == "tl.blackhole.div_row_bcast" ||
+        op_name == "tl.blackhole.div_grouped_row_bcast" ||
+        op_name == "tl.blackhole.exp2_row_bcast_affine" ||
+        op_name == "tl.blackhole.exp2_grouped_row_bcast_affine" ||
+        op_name == "tl.blackhole.mul_tiles_bcast_rows_local" ||
+        op_name == "tl.blackhole.div_tiles_bcast_rows_local" ||
+        op_name == "tl.blackhole.exp_tiles_bcast_rows_affine_local") {
       ++count;
     }
   });
@@ -1926,6 +1945,11 @@ PlanTTKernelABI::PlanTTKernelABI() : next_requirement_index_(0) {}
 
 PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   current_func_ = func;
+  buffer_to_req_.clear();
+  buffer_data_to_req_index_.clear();
+  buffer_identity_to_req_index_.clear();
+  cb_requirements_.clear();
+  next_requirement_index_ = 0;
   logical_buffer_shapes_.clear();
   compute_physical_buffers_by_data_.clear();
   compute_physical_buffers_by_identity_.clear();
@@ -1947,6 +1971,9 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
 
   PrimFunc selected = func;
   selected.CopyOnWrite()->body = VisitStmt(func->body);
+  UpdateCBRequirementDepthsFromLoweredBody(
+      &cb_requirements_, selected->body, gemm_a_buffer_name_.empty() ? "fused_dataflow" : "compute");
+  StoreCBRequirements(selected);
   Map<String, Any> seeded_requirements;
   if (auto contracts = lowering_requirements.Get(String(schema_key::kBufferMaterializationContracts))) {
     seeded_requirements.Set(String(schema_key::kBufferMaterializationContracts), contracts.value());
@@ -2317,6 +2344,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   gemm_a_dtype_ = DataType::Void();
   gemm_b_dtype_ = DataType::Void();
   gemm_c_dtype_ = DataType::Void();
+  LoadSeededCBRequirements(func);
   Map<String, Any> lowering_requirements = BuildLoweringRequirementsFromAnalysis(func);
   LoadLogicalBufferShapes(func, lowering_requirements);
   ValidateComputePipelineLegalityFromBody(func->body);
@@ -2637,6 +2665,81 @@ void PlanTTKernelABI::StoreCBRequirements(PrimFunc& func) {
 
   attrs.Set("blackhole.cb_requirements", cb_reqs);
   func.CopyOnWrite()->attrs = DictAttrs(attrs);
+}
+
+void PlanTTKernelABI::LoadSeededCBRequirements(const PrimFunc& func) {
+  if (auto cb_req_attr = func->GetAttr<Array<Any>>("blackhole.cb_requirements")) {
+    int req_index = 0;
+    for (const Any& req_any : cb_req_attr.value()) {
+      Map<String, Any> req_map = req_any.as<Map<String, Any>>().value_or(Map<String, Any>());
+      if (req_map.empty()) {
+        ++req_index;
+        continue;
+      }
+
+      CBRequirement req;
+      req.lifetime_begin = req_index;
+      req.lifetime_end = req_index;
+      if (auto name = req_map.Get("name")) {
+        req.name = Downcast<String>(name.value()).c_str();
+      }
+      if (auto cb_type = req_map.Get("type")) {
+        const String type_str = Downcast<String>(cb_type.value());
+        if (type_str == "input") {
+          req.type = CBType::kInput;
+        } else if (type_str == "output") {
+          req.type = CBType::kOutput;
+        } else {
+          req.type = CBType::kIntermediate;
+        }
+      }
+      if (auto page_size = req_map.Get("page_size")) {
+        req.page_size = Downcast<Integer>(page_size.value())->value;
+      }
+      if (auto num_pages = req_map.Get("num_pages")) {
+        req.num_pages = Downcast<Integer>(num_pages.value())->value;
+      }
+      if (auto initial_reserve_pages = req_map.Get("initial_reserve_pages")) {
+        req.initial_reserve_pages = Downcast<Integer>(initial_reserve_pages.value())->value;
+      }
+      if (auto flow_class = req_map.Get("flow_class")) {
+        const std::string flow_class_str =
+            static_cast<std::string>(Downcast<String>(flow_class.value()));
+        if (flow_class_str == "stream") {
+          req.flow_class = CBFlowClass::kStream;
+        } else if (flow_class_str == "republish") {
+          req.flow_class = CBFlowClass::kRepublish;
+        } else {
+          req.flow_class = CBFlowClass::kState;
+        }
+      }
+      if (auto publish_pages = req_map.Get("publish_pages_per_event")) {
+        req.publish_pages_per_event = Downcast<Integer>(publish_pages.value())->value;
+      }
+      if (auto consume_pages = req_map.Get("consume_pages_per_event")) {
+        req.consume_pages_per_event = Downcast<Integer>(consume_pages.value())->value;
+      }
+      if (auto data_format = req_map.Get("data_format")) {
+        req.data_format = Downcast<String>(data_format.value()).c_str();
+      }
+      if (auto lifetime_begin = req_map.Get("lifetime_begin")) {
+        req.lifetime_begin = Downcast<Integer>(lifetime_begin.value())->value;
+      }
+      if (auto lifetime_end = req_map.Get("lifetime_end")) {
+        req.lifetime_end = Downcast<Integer>(lifetime_end.value())->value;
+      }
+      if (req.lifetime_end < req.lifetime_begin) {
+        std::swap(req.lifetime_begin, req.lifetime_end);
+      }
+
+      cb_requirements_.push_back(req);
+      if (!req.name.empty()) {
+        buffer_identity_to_req_index_[req.name] = req_index;
+      }
+      ++req_index;
+    }
+    next_requirement_index_ = std::max(next_requirement_index_, req_index);
+  }
 }
 
 void PlanTTKernelABI::StoreSegmentPlan(PrimFunc& func) {
@@ -4225,6 +4328,132 @@ Buffer PlanTTKernelABI::CreateFragmentMergeReloadBuffer(const Buffer& buffer) {
   return tir::decl_buffer(buffer->shape, buffer->dtype, reload_name, GetStorageScope(buffer));
 }
 
+Buffer PlanTTKernelABI::CreateEphemeralBufferLike(const Buffer& buffer,
+                                                  const std::string& suffix) const {
+  const std::string name =
+      BufferIdentityName(buffer) + "_" + suffix + "_" + std::to_string(next_requirement_index_);
+  return tir::decl_buffer(buffer->shape, buffer->dtype, name, GetStorageScope(buffer));
+}
+
+Buffer PlanTTKernelABI::CreateConstantTileBuffer(DataType dtype, const std::string& suffix) const {
+  Array<PrimExpr> tile_shape{IntImm32(kBlackholeTileRows), IntImm32(kBlackholeTileCols)};
+  const std::string name = "exact_const_tile_" + suffix + "_" + std::to_string(next_requirement_index_);
+  return tir::decl_buffer(tile_shape, dtype, name, "local.fragment");
+}
+
+int PlanTTKernelABI::PrepareExactTiledCBRequirement(const Buffer& buffer) {
+  const int cb_id = AllocateRequirementIndex(buffer, CBType::kIntermediate);
+  ICHECK_GE(cb_id, 0);
+  ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
+  const int num_tiles = GetLogicalBufferTileCount(buffer);
+  const int tile_bytes = kBlackholeTileRows * kBlackholeTileCols * buffer->dtype.bytes();
+  SetRequirementPageLayout(cb_id, tile_bytes, num_tiles);
+  auto& req = cb_requirements_.at(cb_id);
+  req.data_format = DataTypeToDataFormatForBlackhole(buffer->dtype);
+  req.publish_pages_per_event = std::max(req.publish_pages_per_event, num_tiles);
+  req.consume_pages_per_event = std::max(req.consume_pages_per_event, num_tiles);
+  return cb_id;
+}
+
+Stmt PlanTTKernelABI::FillLocalTileBuffer(const Buffer& buffer, const PrimExpr& value) {
+  return MakeBlackholeCall(
+      tir::builtin::blackhole_fill_fragment(),
+      {buffer->data, IntImm32(kBlackholeTileRows * kBlackholeTileCols), value});
+}
+
+Stmt PlanTTKernelABI::PublishLocalBufferToExactTiledCB(const Buffer& src,
+                                                       const ExactTiledCBValue& cb_value) {
+  ICHECK(cb_value.cb_id >= 0);
+  const Buffer physical_src = ResolvePhysicalComputeBuffer(src);
+  Array<Stmt> stmts{
+      MakeBlackholeCall(blackhole_cb_reserve_back(),
+                        {IntImm32(cb_value.cb_id), IntImm32(cb_value.num_tiles)}),
+      MakeBlackholeCall(blackhole_write_local_fragment_slice_to_tiled_cb(),
+                        {physical_src->data, IntImm32(cb_value.cb_id), IntImm32(0),
+                         IntImm32(static_cast<int>(cb_value.num_elements)),
+                         IntImm32(static_cast<int>(cb_value.row_width))}),
+      MakeBlackholeCall(blackhole_cb_push_back(),
+                        {IntImm32(cb_value.cb_id), IntImm32(cb_value.num_tiles)}),
+  };
+  return SeqStmt::Flatten(stmts);
+}
+
+Stmt PlanTTKernelABI::MaterializeExactTiledCBToLocalBuffer(const Buffer& dst,
+                                                           const ExactTiledCBValue& cb_value,
+                                                           bool pop_front) {
+  ICHECK(cb_value.cb_id >= 0);
+  const Buffer physical_dst = ResolvePhysicalComputeBuffer(dst);
+  Array<Stmt> stmts;
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(cb_value.cb_id), IntImm32(cb_value.num_tiles)}));
+  constexpr int kTileElements = kBlackholeTileRows * kBlackholeTileCols;
+  for (int tile = 0; tile < cb_value.num_tiles; ++tile) {
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_read_cb_front_tile_to_local_fragment(),
+        {physical_dst->data, IntImm32(cb_value.cb_id), IntImm32(tile), IntImm32(tile * kTileElements)}));
+  }
+  if (pop_front) {
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(cb_value.cb_id), IntImm32(cb_value.num_tiles)}));
+  }
+  return SeqStmt::Flatten(stmts);
+}
+
+PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreatePublishedExactTiledCBValue(
+    const Buffer& src, const std::string& suffix) {
+  ExactTiledCBValue value;
+  value.buffer = CreateEphemeralBufferLike(src, suffix);
+  value.num_elements = GetLogicalBufferElementCount(src);
+  value.num_tiles = GetLogicalBufferTileCount(src);
+  value.row_width = GetLogicalMatrixShape(src).second;
+  if (const Map<String, Any>* spec = FindBufferTileBridgeSpec(src)) {
+    auto shape_it = spec->find(String(schema_key::kShape));
+    if (shape_it != spec->end()) {
+      std::vector<int64_t> shape;
+      for (const Integer& dim : Downcast<Array<Integer>>((*shape_it).second)) {
+        shape.push_back(dim->value);
+      }
+      if (shape.size() >= 2U) {
+        value.num_elements = ComputeStaticElementCount(shape);
+        value.row_width = shape.back();
+        value.num_tiles = std::max(1, CeilDivToInt(shape[shape.size() - 2], kBlackholeTileRows) *
+                                          CeilDivToInt(shape.back(), kBlackholeTileCols));
+      } else if (shape.size() == 1U) {
+        value.num_elements = shape.front();
+        value.row_width = 1;
+        value.num_tiles = std::max(1, CeilDivToInt(shape.front(), kBlackholeTileRows));
+      }
+    }
+  }
+  if (value.row_width <= 0) {
+    value.row_width = kBlackholeTileCols;
+  }
+  value.cb_id = PrepareExactTiledCBRequirement(value.buffer);
+  SetRequirementPageLayout(value.cb_id,
+                           kBlackholeTileRows * kBlackholeTileCols * src->dtype.bytes(),
+                           value.num_tiles);
+  auto& req = cb_requirements_.at(value.cb_id);
+  req.publish_pages_per_event = std::max(req.publish_pages_per_event, value.num_tiles);
+  req.consume_pages_per_event = std::max(req.consume_pages_per_event, value.num_tiles);
+  return value;
+}
+
+PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateEmptyExactTiledCBValue(
+    const Buffer& like_buffer, const std::string& suffix) {
+  return CreatePublishedExactTiledCBValue(like_buffer, suffix);
+}
+
+PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateConstantExactTiledCBValue(
+    DataType dtype, const std::string& suffix) {
+  ExactTiledCBValue cb_value;
+  cb_value.buffer = CreateConstantTileBuffer(dtype, suffix);
+  cb_value.num_tiles = 1;
+  cb_value.num_elements = kBlackholeTileRows * kBlackholeTileCols;
+  cb_value.row_width = kBlackholeTileCols;
+  cb_value.cb_id = PrepareExactTiledCBRequirement(cb_value.buffer);
+  return cb_value;
+}
+
 bool PlanTTKernelABI::ClearAccumReloadNeedsDataFormatReconfig() const {
   return gemm_c_dtype_ != gemm_b_dtype_;
 }
@@ -5800,44 +6029,60 @@ bool PlanTTKernelABI::MatchGroupedRowReduction(const ForNode* op,
 }
 
 Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& match) {
-  RowReductionMatch lowered_match = match;
-  const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.src);
-  const int64_t logical_dst_extent = GetLogicalVectorLength(match.dst);
-  if (logical_rows > 0 && logical_cols > 0 && logical_dst_extent == logical_rows) {
-    lowered_match.grouped = true;
-    lowered_match.num_elements = IntImm(DataType::Int(32), logical_rows * logical_cols);
-    lowered_match.row_width = IntImm(DataType::Int(32), logical_cols);
-  }
+  ExactTiledCBValue src_in = CreatePublishedExactTiledCBValue(match.src, "reduce_src");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "reduce_out");
+  ExactTiledCBValue scaler = CreateConstantExactTiledCBValue(match.src->dtype, "reduce_scaler");
 
-  Map<String, Any> op_payload =
-      MakeComputeEpilogueOpPayload("reduce_row", BufferIdentityName(lowered_match.dst));
-  op_payload.Set("src_buffer", String(BufferIdentityName(lowered_match.src)));
-  op_payload.Set("reduce_kind", String(lowered_match.kind));
-  op_payload.Set("grouped", Bool(lowered_match.grouped));
-  op_payload.Set("clear", Bool(lowered_match.clear));
-  SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
-  SetOptionalExprField(&op_payload, "row_width_expr", lowered_match.row_width);
-  if (lowered_match.grouped) {
-    const Map<String, Any>* bridge_spec = FindBufferTileBridgeSpec(lowered_match.src);
-    ICHECK(bridge_spec != nullptr)
-        << "PlanTTKernelABI requires buffer_tile_bridge_spec in lowering_requirements for grouped "
-           "row reduction source "
-        << BufferIdentityName(lowered_match.src);
-    op_payload.Set(String(schema_key::kBufferTileBridgeSpec), *bridge_spec);
+  const Buffer scaler_local = scaler.buffer;
+  const Stmt scaler_fill = FillLocalTileBuffer(scaler_local, make_const(match.src->dtype, 1.0));
+  const Stmt scaler_publish = PublishLocalBufferToExactTiledCB(scaler_local, scaler);
+
+  const int tiles_per_reduction = std::max(1, src_in.num_tiles / std::max(1, out.num_tiles));
+  std::vector<Stmt> stmts;
+  stmts.push_back(PublishLocalBufferToExactTiledCB(match.src, src_in));
+  stmts.push_back(scaler_fill);
+  stmts.push_back(scaler_publish);
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(src_in.cb_id), IntImm32(src_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scaler.cb_id), IntImm32(scaler.num_tiles)}));
+  for (int out_tile = 0; out_tile < out.num_tiles; ++out_tile) {
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_reduce_init(),
+        {IntImm32(src_in.cb_id), IntImm32(scaler.cb_id), IntImm32(out.cb_id),
+         StringImm(match.kind), StringImm("row")}));
+    for (int tile = 0; tile < tiles_per_reduction; ++tile) {
+      const int src_tile = out_tile * tiles_per_reduction + tile;
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_reduce_tile(),
+          {IntImm32(src_in.cb_id), IntImm32(scaler.cb_id), IntImm32(src_tile), IntImm32(0),
+           IntImm32(0), StringImm(match.kind), StringImm("row")}));
+    }
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_reduce_uninit(), {StringImm(match.kind), StringImm("row")}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                      {IntImm32(0), IntImm32(out.cb_id), IntImm32(out_tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
   }
-  RecordComputeEpilogueOp(std::move(op_payload));
-  const Buffer physical_src = ResolvePhysicalComputeBuffer(lowered_match.src);
-  const Buffer physical_dst = ResolvePhysicalComputeBuffer(lowered_match.dst);
-  if (lowered_match.grouped) {
-    return MaybeWrapComputeSegment(MakeBlackholeCall(
-        tir::builtin::blackhole_reduce_row(),
-        {physical_src->data, physical_dst->data, lowered_match.num_elements,
-         lowered_match.row_width, StringImm(lowered_match.kind), Bool(lowered_match.clear)}));
-  }
-  return MaybeWrapComputeSegment(MakeBlackholeCall(
-      tir::builtin::blackhole_reduce_row(),
-      {physical_src->data, physical_dst->data, lowered_match.num_elements,
-       StringImm(lowered_match.kind), Bool(lowered_match.clear)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(src_in.cb_id), IntImm32(src_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(scaler.cb_id), IntImm32(scaler.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(MaterializeExactTiledCBToLocalBuffer(match.dst, out));
+
+  Stmt body = SeqStmt::Flatten(stmts);
+  body = tir::DeclBuffer(scaler_local, body);
+  body = tir::Allocate(scaler_local->data, scaler_local->dtype, scaler_local->shape, Bool(1), body);
+  return MaybeWrapComputeSegment(body);
 }
 
 bool PlanTTKernelABI::MatchDirectRowBroadcast(const ForNode* op,
@@ -5886,50 +6131,85 @@ bool PlanTTKernelABI::MatchDirectRowBroadcast(const ForNode* op,
 }
 
 Stmt PlanTTKernelABI::GenerateRowBroadcastSequence(const RowBroadcastMatch& match) {
-  RowBroadcastMatch lowered_match = match;
-  const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.dst);
-  const int64_t logical_scalar_extent = GetLogicalVectorLength(match.scalar);
-  if (logical_rows > 0 && logical_cols > 0 && logical_scalar_extent == logical_rows) {
-    lowered_match.grouped = true;
-    lowered_match.num_elements = IntImm(DataType::Int(32), logical_rows * logical_cols);
-    lowered_match.row_width = IntImm(DataType::Int(32), logical_cols);
+  ExactTiledCBValue dst_in = CreatePublishedExactTiledCBValue(match.dst, "row_bcast_dst");
+  ExactTiledCBValue scalar_in = CreatePublishedExactTiledCBValue(match.scalar, "row_bcast_scalar");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "row_bcast_out");
+
+  std::vector<Stmt> stmts;
+  stmts.push_back(PublishLocalBufferToExactTiledCB(match.dst, dst_in));
+  stmts.push_back(PublishLocalBufferToExactTiledCB(match.scalar, scalar_in));
+
+  ExactTiledCBValue* scalar_operand = &scalar_in;
+  ExactTiledCBValue reciprocal;
+  if (match.kind == "div") {
+    reciprocal = CreateEmptyExactTiledCBValue(match.scalar, "row_bcast_recip");
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(reciprocal.cb_id), IntImm32(reciprocal.num_tiles)}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scalar_in.cb_id), IntImm32(scalar_in.num_tiles)}));
+    for (int tile = 0; tile < reciprocal.num_tiles; ++tile) {
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+      stmts.push_back(
+          MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(), {IntImm32(scalar_in.cb_id)}));
+      stmts.push_back(
+          MakeBlackholeCall(blackhole_copy_tile(), {IntImm32(scalar_in.cb_id), IntImm32(tile), IntImm32(0)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_recip_tile_init(), {}));
+      stmts.push_back(MakeBlackholeCall(blackhole_recip_tile(), {IntImm32(0)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+      stmts.push_back(
+          MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(reciprocal.cb_id)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                        {IntImm32(0), IntImm32(reciprocal.cb_id), IntImm32(tile)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+    }
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(scalar_in.cb_id), IntImm32(scalar_in.num_tiles)}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(reciprocal.cb_id), IntImm32(reciprocal.num_tiles)}));
+    scalar_operand = &reciprocal;
   }
 
-  const char* op_kind = nullptr;
-  Op op;
-  if (lowered_match.kind == "mul") {
-    op = lowered_match.grouped ? tir::builtin::blackhole_mul_grouped_row_bcast()
-                       : tir::builtin::blackhole_mul_row_bcast();
-    op_kind = lowered_match.grouped ? "mul_grouped_row_bcast" : "mul_row_bcast";
+  const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.dst);
+  const int tiles_per_row =
+      logical_rows > 0 && logical_cols > 0 ? std::max(1, CeilDivToInt(logical_cols, kBlackholeTileCols))
+                                           : std::max(1, dst_in.num_tiles / std::max(1, scalar_operand->num_tiles));
+
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(dst_in.cb_id), IntImm32(dst_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scalar_operand->cb_id), IntImm32(scalar_operand->num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_mul_bcast_rows_init_short(),
+                                    {IntImm32(dst_in.cb_id), IntImm32(scalar_operand->cb_id)}));
+  for (int tile = 0; tile < out.num_tiles; ++tile) {
+    const int rhs_tile = tile / tiles_per_row;
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_bcast_rows(),
+                                      {IntImm32(dst_in.cb_id), IntImm32(scalar_operand->cb_id),
+                                       IntImm32(tile), IntImm32(rhs_tile), IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out.cb_id)}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_tile(), {IntImm32(0), IntImm32(out.cb_id), IntImm32(tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+  }
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(dst_in.cb_id), IntImm32(dst_in.num_tiles)}));
+  if (match.kind == "mul") {
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(scalar_in.cb_id), IntImm32(scalar_in.num_tiles)}));
   } else {
-    op = lowered_match.grouped ? tir::builtin::blackhole_div_grouped_row_bcast()
-                       : tir::builtin::blackhole_div_row_bcast();
-    op_kind = lowered_match.grouped ? "div_grouped_row_bcast" : "div_row_bcast";
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_cb_pop_front(), {IntImm32(reciprocal.cb_id), IntImm32(reciprocal.num_tiles)}));
   }
-  Map<String, Any> op_payload =
-      MakeComputeEpilogueOpPayload(op_kind, BufferIdentityName(lowered_match.dst));
-  op_payload.Set("scalar_buffer", String(BufferIdentityName(lowered_match.scalar)));
-  op_payload.Set("grouped", Bool(lowered_match.grouped));
-  SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
-  SetOptionalExprField(&op_payload, "row_width_expr", lowered_match.row_width);
-  if (lowered_match.grouped) {
-    const Map<String, Any>* bridge_spec = FindBufferTileBridgeSpec(lowered_match.dst);
-    ICHECK(bridge_spec != nullptr)
-        << "PlanTTKernelABI requires buffer_tile_bridge_spec in lowering_requirements for grouped "
-           "row broadcast destination "
-        << BufferIdentityName(lowered_match.dst);
-    op_payload.Set(String(schema_key::kBufferTileBridgeSpec), *bridge_spec);
-  }
-  RecordComputeEpilogueOp(std::move(op_payload));
-  const Buffer physical_dst = ResolvePhysicalComputeBuffer(lowered_match.dst);
-  const Buffer physical_scalar = ResolvePhysicalComputeBuffer(lowered_match.scalar);
-  if (lowered_match.grouped) {
-    return MaybeWrapComputeSegment(MakeBlackholeCall(
-        op, {physical_dst->data, physical_scalar->data, lowered_match.num_elements,
-             lowered_match.row_width}));
-  }
-  return MaybeWrapComputeSegment(
-      MakeBlackholeCall(op, {physical_dst->data, physical_scalar->data, lowered_match.num_elements}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(MaterializeExactTiledCBToLocalBuffer(match.dst, out));
+  return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
 }
 
 bool PlanTTKernelABI::MatchScalarFmaStore(const BufferStoreNode* op,
@@ -6020,32 +6300,78 @@ bool PlanTTKernelABI::MatchGroupedScalarFmaLoop(const ForNode* op,
 }
 
 Stmt PlanTTKernelABI::GenerateScalarFmaSequence(const ScalarFmaMatch& match) {
-  ScalarFmaMatch lowered_match = match;
-  const int64_t logical_extent = GetLogicalVectorLength(match.dst);
-  if (!lowered_match.num_elements.defined() && logical_extent > 1) {
-    lowered_match.num_elements = IntImm(DataType::Int(32), logical_extent);
-  }
+  ExactTiledCBValue lhs_in = CreatePublishedExactTiledCBValue(match.lhs, "scalar_fma_lhs");
+  ExactTiledCBValue rhs_in = CreatePublishedExactTiledCBValue(match.rhs, "scalar_fma_rhs");
+  ExactTiledCBValue add_in = CreatePublishedExactTiledCBValue(match.add, "scalar_fma_add");
+  ExactTiledCBValue product = CreateEmptyExactTiledCBValue(match.dst, "scalar_fma_product");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "scalar_fma_out");
 
-  Map<String, Any> op_payload =
-      MakeComputeEpilogueOpPayload("scalar_fma", BufferIdentityName(lowered_match.dst));
-  op_payload.Set("lhs_buffer", String(BufferIdentityName(lowered_match.lhs)));
-  op_payload.Set("rhs_buffer", String(BufferIdentityName(lowered_match.rhs)));
-  op_payload.Set("add_buffer", String(BufferIdentityName(lowered_match.add)));
-  SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
-  RecordComputeEpilogueOp(std::move(op_payload));
-  const Buffer physical_dst = ResolvePhysicalComputeBuffer(lowered_match.dst);
-  const Buffer physical_lhs = ResolvePhysicalComputeBuffer(lowered_match.lhs);
-  const Buffer physical_rhs = ResolvePhysicalComputeBuffer(lowered_match.rhs);
-  const Buffer physical_add = ResolvePhysicalComputeBuffer(lowered_match.add);
-  if (lowered_match.num_elements.defined()) {
-    return MaybeWrapComputeSegment(MakeBlackholeCall(
-        tir::builtin::blackhole_scalar_fma(),
-        {physical_dst->data, physical_lhs->data, physical_rhs->data, physical_add->data,
-         lowered_match.num_elements}));
+  ICHECK_EQ(lhs_in.num_tiles, rhs_in.num_tiles);
+  ICHECK_EQ(lhs_in.num_tiles, add_in.num_tiles);
+  ICHECK_EQ(lhs_in.num_tiles, out.num_tiles);
+
+  std::vector<Stmt> stmts;
+  stmts.push_back(PublishLocalBufferToExactTiledCB(match.lhs, lhs_in));
+  stmts.push_back(PublishLocalBufferToExactTiledCB(match.rhs, rhs_in));
+  stmts.push_back(PublishLocalBufferToExactTiledCB(match.add, add_in));
+
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(product.cb_id), IntImm32(product.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
+                                    {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)}));
+  for (int tile = 0; tile < product.num_tiles; ++tile) {
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
+                                      {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id),
+                                       IntImm32(tile), IntImm32(tile), IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(product.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                      {IntImm32(0), IntImm32(product.cb_id), IntImm32(tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
   }
-  return MaybeWrapComputeSegment(MakeBlackholeCall(
-      tir::builtin::blackhole_scalar_fma(),
-      {physical_dst->data, physical_lhs->data, physical_rhs->data, physical_add->data}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(product.cb_id), IntImm32(product.num_tiles)}));
+
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(product.cb_id), IntImm32(product.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(add_in.cb_id), IntImm32(add_in.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_init(),
+                                    {IntImm32(product.cb_id), IntImm32(add_in.cb_id)}));
+  for (int tile = 0; tile < out.num_tiles; ++tile) {
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_add_tiles(),
+                                      {IntImm32(product.cb_id), IntImm32(add_in.cb_id),
+                                       IntImm32(tile), IntImm32(tile), IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out.cb_id)}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_tile(), {IntImm32(0), IntImm32(out.cb_id), IntImm32(tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+  }
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(product.cb_id), IntImm32(product.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(add_in.cb_id), IntImm32(add_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(MaterializeExactTiledCBToLocalBuffer(match.dst, out));
+  return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
 }
 
 bool PlanTTKernelABI::MatchExp2RowBroadcastAffine(const ForNode* op,
@@ -6100,45 +6426,125 @@ bool PlanTTKernelABI::MatchExp2RowBroadcastAffine(const ForNode* op,
 
 Stmt PlanTTKernelABI::GenerateExp2RowBroadcastAffineSequence(
     const Exp2RowBroadcastAffineMatch& match) {
-  Exp2RowBroadcastAffineMatch lowered_match = match;
-  const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.dst);
-  const int64_t logical_scalar_extent = GetLogicalVectorLength(match.scalar);
-  if (logical_rows > 0 && logical_cols > 0 && logical_scalar_extent == logical_rows) {
-    lowered_match.grouped = true;
-    lowered_match.num_elements = IntImm(DataType::Int(32), logical_rows * logical_cols);
-    lowered_match.row_width = IntImm(DataType::Int(32), logical_cols);
-  }
+  ExactTiledCBValue dst_in = CreatePublishedExactTiledCBValue(match.dst, "exp2_affine_dst");
+  ExactTiledCBValue scalar_in = CreatePublishedExactTiledCBValue(match.scalar, "exp2_affine_scalar");
+  ExactTiledCBValue dst_scale = CreateConstantExactTiledCBValue(match.dst->dtype, "exp2_affine_dst_scale");
+  ExactTiledCBValue scalar_scale =
+      CreateConstantExactTiledCBValue(match.scalar->dtype, "exp2_affine_scalar_scale");
+  ExactTiledCBValue scaled_dst = CreateEmptyExactTiledCBValue(match.dst, "exp2_affine_scaled_dst");
+  ExactTiledCBValue scaled_scalar =
+      CreateEmptyExactTiledCBValue(match.scalar, "exp2_affine_scaled_scalar");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "exp2_affine_out");
 
-  Map<String, Any> op_payload = MakeComputeEpilogueOpPayload(
-      lowered_match.grouped ? "exp2_grouped_row_bcast_affine" : "exp2_row_bcast_affine",
-      BufferIdentityName(lowered_match.dst));
-  op_payload.Set("scalar_buffer", String(BufferIdentityName(lowered_match.scalar)));
-  op_payload.Set("grouped", Bool(lowered_match.grouped));
-  SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
-  SetOptionalExprField(&op_payload, "row_width_expr", lowered_match.row_width);
-  SetOptionalExprField(&op_payload, "dst_scale_expr", lowered_match.dst_scale);
-  SetOptionalExprField(&op_payload, "scalar_scale_expr", lowered_match.scalar_scale);
-  if (lowered_match.grouped) {
-    const Map<String, Any>* bridge_spec = FindBufferTileBridgeSpec(lowered_match.dst);
-    ICHECK(bridge_spec != nullptr)
-        << "PlanTTKernelABI requires buffer_tile_bridge_spec in lowering_requirements for grouped "
-           "exp2 row broadcast destination "
-        << BufferIdentityName(lowered_match.dst);
-    op_payload.Set(String(schema_key::kBufferTileBridgeSpec), *bridge_spec);
+  const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.dst);
+  const int tiles_per_row =
+      logical_rows > 0 && logical_cols > 0 ? std::max(1, CeilDivToInt(logical_cols, kBlackholeTileCols))
+                                           : std::max(1, dst_in.num_tiles / std::max(1, scalar_in.num_tiles));
+
+  std::vector<Stmt> stmts;
+  stmts.push_back(PublishLocalBufferToExactTiledCB(match.dst, dst_in));
+  stmts.push_back(PublishLocalBufferToExactTiledCB(match.scalar, scalar_in));
+  stmts.push_back(FillLocalTileBuffer(dst_scale.buffer, match.dst_scale));
+  stmts.push_back(PublishLocalBufferToExactTiledCB(dst_scale.buffer, dst_scale));
+  stmts.push_back(FillLocalTileBuffer(scalar_scale.buffer, match.scalar_scale));
+  stmts.push_back(PublishLocalBufferToExactTiledCB(scalar_scale.buffer, scalar_scale));
+
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(scaled_dst.cb_id), IntImm32(scaled_dst.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(dst_in.cb_id), IntImm32(dst_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(dst_scale.cb_id), IntImm32(dst_scale.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
+                                    {IntImm32(dst_in.cb_id), IntImm32(dst_scale.cb_id)}));
+  for (int tile = 0; tile < scaled_dst.num_tiles; ++tile) {
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
+                                      {IntImm32(dst_in.cb_id), IntImm32(dst_scale.cb_id),
+                                       IntImm32(tile), IntImm32(0), IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(scaled_dst.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                      {IntImm32(0), IntImm32(scaled_dst.cb_id), IntImm32(tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
   }
-  RecordComputeEpilogueOp(std::move(op_payload));
-  const Buffer physical_dst = ResolvePhysicalComputeBuffer(lowered_match.dst);
-  const Buffer physical_scalar = ResolvePhysicalComputeBuffer(lowered_match.scalar);
-  if (lowered_match.grouped) {
-    return MaybeWrapComputeSegment(MakeBlackholeCall(
-        tir::builtin::blackhole_exp2_grouped_row_bcast_affine(),
-        {physical_dst->data, physical_scalar->data, lowered_match.num_elements,
-         lowered_match.row_width, lowered_match.dst_scale, lowered_match.scalar_scale}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(dst_in.cb_id), IntImm32(dst_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(dst_scale.cb_id), IntImm32(dst_scale.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(scaled_dst.cb_id), IntImm32(scaled_dst.num_tiles)}));
+
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                    {IntImm32(scaled_scalar.cb_id), IntImm32(scaled_scalar.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scalar_in.cb_id), IntImm32(scalar_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scalar_scale.cb_id), IntImm32(scalar_scale.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
+                                    {IntImm32(scalar_in.cb_id), IntImm32(scalar_scale.cb_id)}));
+  for (int tile = 0; tile < scaled_scalar.num_tiles; ++tile) {
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
+                                      {IntImm32(scalar_in.cb_id), IntImm32(scalar_scale.cb_id),
+                                       IntImm32(tile), IntImm32(0), IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(scaled_scalar.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_pack_tile(), {IntImm32(0), IntImm32(scaled_scalar.cb_id), IntImm32(tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
   }
-  return MaybeWrapComputeSegment(MakeBlackholeCall(
-      tir::builtin::blackhole_exp2_row_bcast_affine(),
-      {physical_dst->data, physical_scalar->data, lowered_match.num_elements,
-       lowered_match.dst_scale, lowered_match.scalar_scale}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(scalar_in.cb_id), IntImm32(scalar_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(scalar_scale.cb_id), IntImm32(scalar_scale.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(
+      blackhole_cb_push_back(), {IntImm32(scaled_scalar.cb_id), IntImm32(scaled_scalar.num_tiles)}));
+
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scaled_dst.cb_id), IntImm32(scaled_dst.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(
+      blackhole_cb_wait_front(), {IntImm32(scaled_scalar.cb_id), IntImm32(scaled_scalar.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_add_bcast_rows_init_short(),
+                                    {IntImm32(scaled_dst.cb_id), IntImm32(scaled_scalar.cb_id)}));
+  for (int tile = 0; tile < out.num_tiles; ++tile) {
+    const int rhs_tile = tile / tiles_per_row;
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_bcast_rows(),
+                                      {IntImm32(scaled_dst.cb_id), IntImm32(scaled_scalar.cb_id),
+                                       IntImm32(tile), IntImm32(rhs_tile), IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_exp2_tile_init(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_exp2_tile(), {IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out.cb_id)}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_tile(), {IntImm32(0), IntImm32(out.cb_id), IntImm32(tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+  }
+  stmts.push_back(MakeBlackholeCall(
+      blackhole_cb_pop_front(), {IntImm32(scaled_dst.cb_id), IntImm32(scaled_dst.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(
+      blackhole_cb_pop_front(), {IntImm32(scaled_scalar.cb_id), IntImm32(scaled_scalar.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(MaterializeExactTiledCBToLocalBuffer(match.dst, out));
+
+  Stmt body = SeqStmt::Flatten(stmts);
+  body = tir::DeclBuffer(dst_scale.buffer, body);
+  body = tir::DeclBuffer(scalar_scale.buffer, body);
+  body = tir::Allocate(scalar_scale.buffer->data, scalar_scale.buffer->dtype,
+                       scalar_scale.buffer->shape, Bool(1), body);
+  body = tir::Allocate(dst_scale.buffer->data, dst_scale.buffer->dtype, dst_scale.buffer->shape,
+                       Bool(1), body);
+  return MaybeWrapComputeSegment(body);
 }
 
 bool PlanTTKernelABI::MatchScalarExp2AffineStore(const BufferStoreNode* op,
@@ -6244,31 +6650,122 @@ bool PlanTTKernelABI::MatchGroupedScalarExp2AffineLoop(const ForNode* op,
 }
 
 Stmt PlanTTKernelABI::GenerateScalarExp2AffineSequence(const ScalarExp2AffineMatch& match) {
-  const int64_t logical_extent = GetLogicalVectorLength(match.dst);
-  Map<String, Any> op_payload =
-      MakeComputeEpilogueOpPayload("scalar_exp2_affine", BufferIdentityName(match.dst));
-  op_payload.Set("lhs_buffer", String(BufferIdentityName(match.lhs)));
-  op_payload.Set("rhs_buffer", String(BufferIdentityName(match.rhs)));
-  SetOptionalExprField(&op_payload, "lhs_scale_expr", match.lhs_scale);
-  SetOptionalExprField(&op_payload, "rhs_scale_expr", match.rhs_scale);
-  if (logical_extent > 1) {
-    SetOptionalExprField(&op_payload, "num_elements_expr",
-                         IntImm(DataType::Int(32), logical_extent));
+  ExactTiledCBValue lhs_in = CreatePublishedExactTiledCBValue(match.lhs, "scalar_exp2_lhs");
+  ExactTiledCBValue rhs_in = CreatePublishedExactTiledCBValue(match.rhs, "scalar_exp2_rhs");
+  ExactTiledCBValue lhs_scale = CreateConstantExactTiledCBValue(match.lhs->dtype, "scalar_exp2_lhs_scale");
+  ExactTiledCBValue rhs_scale = CreateConstantExactTiledCBValue(match.rhs->dtype, "scalar_exp2_rhs_scale");
+  ExactTiledCBValue scaled_lhs =
+      CreateEmptyExactTiledCBValue(match.dst, "scalar_exp2_scaled_lhs");
+  ExactTiledCBValue scaled_rhs =
+      CreateEmptyExactTiledCBValue(match.dst, "scalar_exp2_scaled_rhs");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "scalar_exp2_out");
+
+  ICHECK_EQ(lhs_in.num_tiles, rhs_in.num_tiles);
+  ICHECK_EQ(lhs_in.num_tiles, out.num_tiles);
+
+  std::vector<Stmt> stmts;
+  stmts.push_back(PublishLocalBufferToExactTiledCB(match.lhs, lhs_in));
+  stmts.push_back(PublishLocalBufferToExactTiledCB(match.rhs, rhs_in));
+  stmts.push_back(FillLocalTileBuffer(lhs_scale.buffer, match.lhs_scale));
+  stmts.push_back(PublishLocalBufferToExactTiledCB(lhs_scale.buffer, lhs_scale));
+  stmts.push_back(FillLocalTileBuffer(rhs_scale.buffer, match.rhs_scale));
+  stmts.push_back(PublishLocalBufferToExactTiledCB(rhs_scale.buffer, rhs_scale));
+
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(scaled_lhs.cb_id), IntImm32(scaled_lhs.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(lhs_scale.cb_id), IntImm32(lhs_scale.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
+                                    {IntImm32(lhs_in.cb_id), IntImm32(lhs_scale.cb_id)}));
+  for (int tile = 0; tile < scaled_lhs.num_tiles; ++tile) {
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
+                                      {IntImm32(lhs_in.cb_id), IntImm32(lhs_scale.cb_id),
+                                       IntImm32(tile), IntImm32(0), IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(scaled_lhs.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_pack_tile(), {IntImm32(0), IntImm32(scaled_lhs.cb_id), IntImm32(tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
   }
-  RecordComputeEpilogueOp(std::move(op_payload));
-  const Buffer physical_dst = ResolvePhysicalComputeBuffer(match.dst);
-  const Buffer physical_lhs = ResolvePhysicalComputeBuffer(match.lhs);
-  const Buffer physical_rhs = ResolvePhysicalComputeBuffer(match.rhs);
-  if (logical_extent > 1) {
-    return MaybeWrapComputeSegment(MakeBlackholeCall(
-        tir::builtin::blackhole_scalar_exp2_affine(),
-        {physical_dst->data, physical_lhs->data, physical_rhs->data, match.lhs_scale,
-         match.rhs_scale, IntImm(DataType::Int(32), logical_extent)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(lhs_scale.cb_id), IntImm32(lhs_scale.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(scaled_lhs.cb_id), IntImm32(scaled_lhs.num_tiles)}));
+
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(scaled_rhs.cb_id), IntImm32(scaled_rhs.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(rhs_scale.cb_id), IntImm32(rhs_scale.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
+                                    {IntImm32(rhs_in.cb_id), IntImm32(rhs_scale.cb_id)}));
+  for (int tile = 0; tile < scaled_rhs.num_tiles; ++tile) {
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
+                                      {IntImm32(rhs_in.cb_id), IntImm32(rhs_scale.cb_id),
+                                       IntImm32(tile), IntImm32(0), IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(scaled_rhs.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_pack_tile(), {IntImm32(0), IntImm32(scaled_rhs.cb_id), IntImm32(tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
   }
-  return MaybeWrapComputeSegment(MakeBlackholeCall(
-      tir::builtin::blackhole_scalar_exp2_affine(),
-      {physical_dst->data, physical_lhs->data, physical_rhs->data, match.lhs_scale,
-       match.rhs_scale}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(rhs_scale.cb_id), IntImm32(rhs_scale.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(scaled_rhs.cb_id), IntImm32(scaled_rhs.num_tiles)}));
+
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scaled_lhs.cb_id), IntImm32(scaled_lhs.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scaled_rhs.cb_id), IntImm32(scaled_rhs.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_init(),
+                                    {IntImm32(scaled_lhs.cb_id), IntImm32(scaled_rhs.cb_id)}));
+  for (int tile = 0; tile < out.num_tiles; ++tile) {
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_add_tiles(),
+                                      {IntImm32(scaled_lhs.cb_id), IntImm32(scaled_rhs.cb_id),
+                                       IntImm32(tile), IntImm32(tile), IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_exp2_tile_init(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_exp2_tile(), {IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out.cb_id)}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_tile(), {IntImm32(0), IntImm32(out.cb_id), IntImm32(tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+  }
+  stmts.push_back(MakeBlackholeCall(
+      blackhole_cb_pop_front(), {IntImm32(scaled_lhs.cb_id), IntImm32(scaled_lhs.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(
+      blackhole_cb_pop_front(), {IntImm32(scaled_rhs.cb_id), IntImm32(scaled_rhs.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(MaterializeExactTiledCBToLocalBuffer(match.dst, out));
+
+  Stmt body = SeqStmt::Flatten(stmts);
+  body = tir::DeclBuffer(lhs_scale.buffer, body);
+  body = tir::DeclBuffer(rhs_scale.buffer, body);
+  body = tir::Allocate(rhs_scale.buffer->data, rhs_scale.buffer->dtype,
+                       rhs_scale.buffer->shape, Bool(1), body);
+  body = tir::Allocate(lhs_scale.buffer->data, lhs_scale.buffer->dtype,
+                       lhs_scale.buffer->shape, Bool(1), body);
+  return MaybeWrapComputeSegment(body);
 }
 
 bool PlanTTKernelABI::MatchDirectFragmentFill(const ForNode* op,
@@ -6391,26 +6888,48 @@ bool PlanTTKernelABI::MatchGroupedScalarMaxLoop(const ForNode* op,
 }
 
 Stmt PlanTTKernelABI::GenerateScalarMaxSequence(const ScalarMaxMatch& match) {
-  ScalarMaxMatch lowered_match = match;
-  const int64_t logical_extent = GetLogicalVectorLength(match.dst);
-  if (!lowered_match.num_elements.defined() && logical_extent > 1) {
-    lowered_match.num_elements = IntImm(DataType::Int(32), logical_extent);
-  }
+  ExactTiledCBValue dst_in = CreatePublishedExactTiledCBValue(match.dst, "scalar_max_lhs");
+  ExactTiledCBValue src_in = CreatePublishedExactTiledCBValue(match.src, "scalar_max_rhs");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "scalar_max_out");
 
-  Map<String, Any> op_payload =
-      MakeComputeEpilogueOpPayload("scalar_max", BufferIdentityName(lowered_match.dst));
-  op_payload.Set("src_buffer", String(BufferIdentityName(lowered_match.src)));
-  SetOptionalExprField(&op_payload, "num_elements_expr", lowered_match.num_elements);
-  RecordComputeEpilogueOp(std::move(op_payload));
-  const Buffer physical_dst = ResolvePhysicalComputeBuffer(lowered_match.dst);
-  const Buffer physical_src = ResolvePhysicalComputeBuffer(lowered_match.src);
-  if (lowered_match.num_elements.defined()) {
-    return MaybeWrapComputeSegment(MakeBlackholeCall(
-        tir::builtin::blackhole_scalar_max(),
-        {physical_dst->data, physical_src->data, lowered_match.num_elements}));
+  std::vector<Stmt> stmts;
+  stmts.push_back(PublishLocalBufferToExactTiledCB(match.dst, dst_in));
+  stmts.push_back(PublishLocalBufferToExactTiledCB(match.src, src_in));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(dst_in.cb_id), IntImm32(dst_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(src_in.cb_id), IntImm32(src_in.num_tiles)}));
+  for (int tile = 0; tile < out.num_tiles; ++tile) {
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(), {IntImm32(dst_in.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_copy_tile(),
+                                      {IntImm32(dst_in.cb_id), IntImm32(tile), IntImm32(0)}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(), {IntImm32(src_in.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_copy_tile(),
+                                      {IntImm32(src_in.cb_id), IntImm32(tile), IntImm32(1)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_binary_max_tile_init(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_binary_max_tile(),
+                                      {IntImm32(0), IntImm32(1), IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                      {IntImm32(0), IntImm32(out.cb_id), IntImm32(tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
   }
-  return MaybeWrapComputeSegment(MakeBlackholeCall(
-      tir::builtin::blackhole_scalar_max(), {physical_dst->data, physical_src->data}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(dst_in.cb_id), IntImm32(dst_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(src_in.cb_id), IntImm32(src_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(MaterializeExactTiledCBToLocalBuffer(match.dst, out));
+  return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
 }
 
 bool PlanTTKernelABI::MatchScalarFragmentCopyStore(const BufferStoreNode* op,

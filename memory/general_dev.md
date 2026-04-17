@@ -175,6 +175,20 @@
   `order_index`
   会随着 rewrite 变化，
   这类事实必须从当前 IR 重新构建
+- 如果 selector 在 pre-planner rewrite 里创建了 exact temporary CB，
+  就必须同时把这些 temporary requirement
+  通过
+  `blackhole.cb_requirements`
+  持久化，
+  并在
+  `PlanTTCompute`
+  入口重新装回 requirement table。
+  否则
+  `PlanTTCBAlloc`
+  只能看到 IR 里残留的 `requirement_index`
+  却没有对应 mapping，
+  最终会报
+  `Missing final cb_id for requirement_index=*`
 - fragment-cast publish 的强制回写只能对
   `blackhole.acc`
   且确实带 materialization contract 的目标生效；

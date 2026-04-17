@@ -22,8 +22,15 @@
   已插入 active chain，
   helper/composite builtin residue
   与
+  local pseudo builtin residue、
   `compute_epilogue_ops`
-  已从 active compute surface 移除。
+  已从 active compute surface 移除；
+  selector 创建的 exact temporary CB requirement
+  现在也会经由
+  `blackhole.cb_requirements`
+  seed 到
+  `PlanTTCompute / PlanTTCBAlloc`
+  完整收口。
 - `task1_spatial_plan_companion.md`、
   `task2_ttprogram_companion_cutover.md`、
   `task3_runtime_gate_and_workload_cutover.md`
@@ -119,12 +126,14 @@ Normalized Tile TIR
   `AnalyzeSpatialStructureFacts`
 - `tilelang_repo/src/tir/builtin_blackhole.h`
   和
-  `tilelang_repo/src/transform/lower_blackhole_ops.cc`
-  仍保留少量旧 C++ wrapper 名字作为兼容 alias；
-  但 active IR surface
-  已切到 canonical op 名，
-  `ValidateTTProgram`
-  也会 fail-closed 拒绝 helper/composite builtin residue
+  `tilelang_repo/src/target/codegen_blackhole.cc`
+  的 helper/composite builtin declarations / codegen entries
+  与 local pseudo builtin surface
+  已删掉；
+  当前只剩 selector denylist
+  和少量内部 matcher / counter 名字
+  作为 cleanup 守卫，
+  不再属于 active IR protocol
 - `lower_blackhole_ops.cc`、
   `blackhole_device_resource_canonicalization.cc`、
   `rt_mod_blackhole.cc`

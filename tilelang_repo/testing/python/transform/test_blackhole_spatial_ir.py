@@ -35,6 +35,15 @@ HELPER_COMPOSITE_BLACKHOLE_BUILTINS = (
     "copy_tile_from_cb",
 )
 
+LEGACY_LOCAL_BLACKHOLE_BUILTINS = (
+    "binary_max_tile_local",
+    "reduce_rows_local",
+    "mul_tiles_bcast_rows_local",
+    "div_tiles_bcast_rows_local",
+    "exp_tiles_bcast_rows_affine_local",
+    "exp_tile_affine_local",
+)
+
 
 def _collect_blackhole_builtin_names(node):
     names = set()
@@ -300,24 +309,35 @@ def test_tt_metal_builtin_selector_lowers_compute_idioms_before_plan_tt_compute(
 
     assert main.attrs.get("tl.blackhole_tt_metal_builtin_selection")
     assert {
-        "binary_max_tile_local",
-        "reduce_rows_local",
-        "mul_tiles_bcast_rows_local",
-        "div_tiles_bcast_rows_local",
-        "exp_tiles_bcast_rows_affine_local",
-        "exp_tile_affine_local",
-        "scalar_fma",
+        "binary_max_tile_init",
+        "binary_max_tile",
+        "reduce_init",
+        "reduce_tile",
+        "reduce_uninit",
+        "mul_tiles_init",
+        "mul_tiles",
+        "add_tiles_init",
+        "add_tiles",
+        "mul_bcast_rows_init_short",
+        "mul_tiles_bcast_rows",
+        "add_bcast_rows_init_short",
+        "add_tiles_bcast_rows",
+        "exp2_tile_init",
+        "exp2_tile",
+        "pack_tile",
     }.issubset(builtin_suffixes)
     assert not any(
         name.split("tl.blackhole.", 1)[1] in HELPER_COMPOSITE_BLACKHOLE_BUILTINS
         for name in _collect_blackhole_builtin_names(main)
     )
+    assert not any(name in LEGACY_LOCAL_BLACKHOLE_BUILTINS for name in builtin_suffixes)
 
 
 def test_build_tt_program_consumes_plan_and_analysis_attrs_without_spatial_program():
     mod = _prepare_blackhole_phase_b_module(gemm_kernel())
     mod = _drop_legacy_spatial_attrs(mod)
     mod = tilelang.transform.PlanTTBlocks()(mod)
+    mod = tilelang.transform.SelectBlackholeTTMetalBuiltins()(mod)
     mod = tilelang.transform.PlanTTCompute()(mod)
     mod = tilelang.transform.PlanTTTransport()(mod)
     mod = tilelang.transform.PlanTTSync()(mod)
@@ -351,6 +371,7 @@ def test_tt_planning_stages_tt_program_without_internal_bridge_attrs():
     assert main.attrs.get("tl.internal_tt_block_plans") is None
     assert main.attrs.get("tl.internal_tt_core_groups") is None
 
+    mod = tilelang.transform.SelectBlackholeTTMetalBuiltins()(mod)
     mod = tilelang.transform.PlanTTCompute()(mod)
     main = mod["main"]
     tt_program = main.attrs["tl.tt_program"]
@@ -393,6 +414,7 @@ def test_build_tt_program_requires_explicit_tt_owner_plan_attrs():
     mod = _prepare_blackhole_phase_b_module(gemm_kernel())
     mod = _drop_legacy_spatial_attrs(mod)
     mod = tilelang.transform.PlanTTBlocks()(mod)
+    mod = tilelang.transform.SelectBlackholeTTMetalBuiltins()(mod)
     mod = tilelang.transform.PlanTTCompute()(mod)
     mod = tilelang.transform.PlanTTTransport()(mod)
 

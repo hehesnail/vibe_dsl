@@ -485,107 +485,6 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         decl_stream << "__attribute__((noinline, noclone)) void tilelang_cast_fragment_slice(DstT* dst, const SrcT* src, uint32_t dst_offset, uint32_t src_offset, uint32_t num_elements) {\n";
         decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { dst[dst_offset + i] = static_cast<DstT>(src[src_offset + i]); }\n";
         decl_stream << "}\n";
-        decl_stream << "template <typename SrcT, typename DstT>\n";
-        decl_stream << "__attribute__((noinline, noclone)) void tilelang_reduce_grouped_row_sum(const SrcT* src, DstT* dst, uint32_t num_elements, uint32_t row_width, bool clear) {\n";
-        decl_stream << "  if (row_width == 0 || (num_elements % row_width) != 0) { return; }\n";
-        decl_stream << "  const uint32_t num_rows = num_elements / row_width;\n";
-        decl_stream << "  for (uint32_t row = 0; row < num_rows; ++row) {\n";
-        decl_stream << "    DstT value = clear ? static_cast<DstT>(0) : dst[row];\n";
-        decl_stream << "    for (uint32_t col = 0; col < row_width; ++col) {\n";
-        decl_stream << "      const uint32_t idx = row * row_width + col;\n";
-        decl_stream << "      value = static_cast<DstT>(value + static_cast<DstT>(src[idx]));\n";
-        decl_stream << "    }\n";
-        decl_stream << "    dst[row] = value;\n";
-        decl_stream << "  }\n";
-        decl_stream << "}\n";
-        decl_stream << "template <typename SrcT, typename DstT>\n";
-        decl_stream << "__attribute__((noinline, noclone)) void tilelang_reduce_grouped_row_max(const SrcT* src, DstT* dst, uint32_t num_elements, uint32_t row_width, bool clear) {\n";
-        decl_stream << "  if (row_width == 0 || (num_elements % row_width) != 0) { return; }\n";
-        decl_stream << "  const uint32_t num_rows = num_elements / row_width;\n";
-        decl_stream << "  for (uint32_t row = 0; row < num_rows; ++row) {\n";
-        decl_stream << "    const uint32_t first_idx = row * row_width;\n";
-        decl_stream << "    DstT value = clear ? static_cast<DstT>(src[first_idx]) : dst[row];\n";
-        decl_stream << "    for (uint32_t col = clear ? 1u : 0u; col < row_width; ++col) {\n";
-        decl_stream << "      const uint32_t idx = row * row_width + col;\n";
-        decl_stream << "      const DstT src_value = static_cast<DstT>(src[idx]);\n";
-        decl_stream << "      value = (src_value > value) ? src_value : value;\n";
-        decl_stream << "    }\n";
-        decl_stream << "    dst[row] = value;\n";
-        decl_stream << "  }\n";
-        decl_stream << "}\n";
-        decl_stream << "template <typename DstT, typename SrcT>\n";
-        decl_stream << "__attribute__((noinline, noclone)) void tilelang_scalar_max(DstT* dst, const SrcT* src, uint32_t num_elements) {\n";
-        decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = (static_cast<DstT>(src[i]) > dst[i]) ? static_cast<DstT>(src[i]) : dst[i]; }\n";
-        decl_stream << "}\n";
-        decl_stream << "template <typename SrcT, typename DstT>\n";
-        decl_stream << "__attribute__((noinline, noclone)) void tilelang_reduce_row_sum(const SrcT* src, DstT* dst, uint32_t num_elements, bool clear) {\n";
-        decl_stream << "  if (clear) { dst[0] = static_cast<DstT>(0); }\n";
-        decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { dst[0] = static_cast<DstT>(dst[0] + static_cast<DstT>(src[i])); }\n";
-        decl_stream << "}\n";
-        decl_stream << "template <typename SrcT, typename DstT>\n";
-        decl_stream << "__attribute__((noinline, noclone)) void tilelang_reduce_row_max(const SrcT* src, DstT* dst, uint32_t num_elements, bool clear) {\n";
-        decl_stream << "  if (num_elements == 0) { return; }\n";
-        decl_stream << "  DstT value = clear ? static_cast<DstT>(src[0]) : dst[0];\n";
-        decl_stream << "  for (uint32_t i = clear ? 1u : 0u; i < num_elements; ++i) { const DstT src_value = static_cast<DstT>(src[i]); value = (src_value > value) ? src_value : value; }\n";
-        decl_stream << "  dst[0] = value;\n";
-        decl_stream << "}\n";
-        decl_stream << "template <typename DstT, typename ScalarT>\n";
-        decl_stream << "__attribute__((noinline, noclone)) void tilelang_mul_row_bcast(DstT* dst, const ScalarT* scalar, uint32_t num_elements) {\n";
-        decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = static_cast<DstT>(dst[i] * static_cast<DstT>(scalar[0])); }\n";
-        decl_stream << "}\n";
-        decl_stream << "template <typename DstT, typename ScalarT>\n";
-        decl_stream << "__attribute__((noinline, noclone)) void tilelang_mul_grouped_row_bcast(DstT* dst, const ScalarT* scalar, uint32_t num_elements, uint32_t row_width) {\n";
-        decl_stream << "  if (row_width == 0 || (num_elements % row_width) != 0) { return; }\n";
-        decl_stream << "  const uint32_t num_rows = num_elements / row_width;\n";
-        decl_stream << "  for (uint32_t row = 0; row < num_rows; ++row) {\n";
-        decl_stream << "    const DstT scalar_value = static_cast<DstT>(scalar[row]);\n";
-        decl_stream << "    for (uint32_t col = 0; col < row_width; ++col) {\n";
-        decl_stream << "      const uint32_t idx = row * row_width + col;\n";
-        decl_stream << "      dst[idx] = static_cast<DstT>(dst[idx] * scalar_value);\n";
-        decl_stream << "    }\n";
-        decl_stream << "  }\n";
-        decl_stream << "}\n";
-        decl_stream << "template <typename DstT, typename ScalarT>\n";
-        decl_stream << "__attribute__((noinline, noclone)) void tilelang_div_row_bcast(DstT* dst, const ScalarT* scalar, uint32_t num_elements) {\n";
-        decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = static_cast<DstT>(dst[i] / static_cast<DstT>(scalar[0])); }\n";
-        decl_stream << "}\n";
-        decl_stream << "template <typename DstT, typename ScalarT>\n";
-        decl_stream << "__attribute__((noinline, noclone)) void tilelang_div_grouped_row_bcast(DstT* dst, const ScalarT* scalar, uint32_t num_elements, uint32_t row_width) {\n";
-        decl_stream << "  if (row_width == 0 || (num_elements % row_width) != 0) { return; }\n";
-        decl_stream << "  const uint32_t num_rows = num_elements / row_width;\n";
-        decl_stream << "  for (uint32_t row = 0; row < num_rows; ++row) {\n";
-        decl_stream << "    const DstT scalar_value = static_cast<DstT>(scalar[row]);\n";
-        decl_stream << "    for (uint32_t col = 0; col < row_width; ++col) {\n";
-        decl_stream << "      const uint32_t idx = row * row_width + col;\n";
-        decl_stream << "      dst[idx] = static_cast<DstT>(dst[idx] / scalar_value);\n";
-        decl_stream << "    }\n";
-        decl_stream << "  }\n";
-        decl_stream << "}\n";
-        decl_stream << "template <typename DstT, typename LhsT, typename RhsT, typename AddT>\n";
-        decl_stream << "__attribute__((noinline, noclone)) void tilelang_scalar_fma(DstT* dst, const LhsT* lhs, const RhsT* rhs, const AddT* add, uint32_t num_elements) {\n";
-        decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = static_cast<DstT>(static_cast<float>(lhs[i]) * static_cast<float>(rhs[i]) + static_cast<float>(add[i])); }\n";
-        decl_stream << "}\n";
-        decl_stream << "template <typename DstT, typename ScalarT>\n";
-        decl_stream << "__attribute__((noinline, noclone)) void tilelang_exp2_row_bcast_affine(DstT* dst, const ScalarT* scalar, uint32_t num_elements, float dst_scale, float scalar_scale) {\n";
-        decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { const float expr = static_cast<float>(dst[i]) * dst_scale + static_cast<float>(scalar[0]) * scalar_scale; dst[i] = static_cast<DstT>(tilelang_fast_exp2f(expr)); }\n";
-        decl_stream << "}\n";
-        decl_stream << "template <typename DstT, typename ScalarT>\n";
-        decl_stream << "__attribute__((noinline, noclone)) void tilelang_exp2_grouped_row_bcast_affine(DstT* dst, const ScalarT* scalar, uint32_t num_elements, uint32_t row_width, float dst_scale, float scalar_scale) {\n";
-        decl_stream << "  if (row_width == 0 || (num_elements % row_width) != 0) { return; }\n";
-        decl_stream << "  const uint32_t num_rows = num_elements / row_width;\n";
-        decl_stream << "  for (uint32_t row = 0; row < num_rows; ++row) {\n";
-        decl_stream << "    const float scalar_value = static_cast<float>(scalar[row]) * scalar_scale;\n";
-        decl_stream << "    for (uint32_t col = 0; col < row_width; ++col) {\n";
-        decl_stream << "      const uint32_t idx = row * row_width + col;\n";
-        decl_stream << "      const float expr = static_cast<float>(dst[idx]) * dst_scale + scalar_value;\n";
-        decl_stream << "      dst[idx] = static_cast<DstT>(tilelang_fast_exp2f(expr));\n";
-        decl_stream << "    }\n";
-        decl_stream << "  }\n";
-        decl_stream << "}\n";
-        decl_stream << "template <typename DstT, typename LhsT, typename RhsT>\n";
-        decl_stream << "__attribute__((noinline, noclone)) void tilelang_scalar_exp2_affine(DstT* dst, const LhsT* lhs, const RhsT* rhs, float lhs_scale, float rhs_scale, uint32_t num_elements) {\n";
-        decl_stream << "  for (uint32_t i = 0; i < num_elements; ++i) { dst[i] = static_cast<DstT>(tilelang_fast_exp2f(static_cast<float>(lhs[i]) * lhs_scale + static_cast<float>(rhs[i]) * rhs_scale)); }\n";
-        decl_stream << "}\n";
         decl_stream << "template <typename BitsT>\n";
         decl_stream << "__attribute__((noinline, noclone)) void tilelang_tilize_fragment_tile_nfaces(const BitsT* src, BitsT* dst) {\n";
         decl_stream << "  constexpr uint32_t kTileRows = 32;\n";
@@ -1919,9 +1818,6 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   } else if (builtin_name == "copy_tile") {
     PrintCopyTile(op, os);
     return true;
-  } else if (builtin_name == "copy_tile_from_cb") {
-    PrintCopyTileFromCB(op, os);
-    return true;
   } else if (builtin_name == "add_tiles_init") {
     PrintAddTilesInit(op, os);
     return true;
@@ -1933,6 +1829,12 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
     return true;
   } else if (builtin_name == "add_tiles_bcast_rows") {
     PrintAddTilesBcastRows(op, os);
+    return true;
+  } else if (builtin_name == "mul_tiles_init") {
+    PrintMulTilesInit(op, os);
+    return true;
+  } else if (builtin_name == "mul_tiles") {
+    PrintMulTiles(op, os);
     return true;
   } else if (builtin_name == "mul_bcast_rows_init_short") {
     PrintMulBcastRowsInitShort(op, os);
@@ -1955,15 +1857,6 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   } else if (builtin_name == "reduce_uninit") {
     PrintReduceUninit(op, os);
     return true;
-  } else if (builtin_name == "reduce_block_max_row_init") {
-    PrintReduceBlockMaxRowInit(op, os);
-    return true;
-  } else if (builtin_name == "reduce_block_max_row") {
-    PrintReduceBlockMaxRow(op, os);
-    return true;
-  } else if (builtin_name == "reduce_block_max_row_uninit") {
-    PrintReduceBlockMaxRowUninit(op, os);
-    return true;
   } else if (builtin_name == "binary_max_tile_init") {
     PrintBinaryMaxTileInit(op, os);
     return true;
@@ -1981,6 +1874,12 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
     return true;
   } else if (builtin_name == "exp_tile") {
     PrintExpTile(op, os);
+    return true;
+  } else if (builtin_name == "exp2_tile_init") {
+    PrintExp2TileInit(op, os);
+    return true;
+  } else if (builtin_name == "exp2_tile") {
+    PrintExp2Tile(op, os);
     return true;
   } else if (builtin_name == "recip_tile_init") {
     PrintRecipTileInit(op, os);
@@ -2021,44 +1920,8 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
              builtin_name == "untilize_cb_front_tile_fragment") {
     PrintReadCBFrontTileToLocalFragment(op, os);
     return true;
-  } else if (builtin_name == "scalar_max" ||
-             builtin_name == "binary_max_tile_local") {
-    PrintScalarMax(op, os);
-    return true;
   } else if (builtin_name == "cast_fragment_slice") {
     PrintCastFragmentSlice(op, os);
-    return true;
-  } else if (builtin_name == "reduce_row" ||
-             builtin_name == "reduce_rows_local") {
-    PrintReduceRow(op, os);
-    return true;
-  } else if (builtin_name == "mul_row_bcast") {
-    PrintMulRowBcast(op, os);
-    return true;
-  } else if (builtin_name == "mul_grouped_row_bcast" ||
-             builtin_name == "mul_tiles_bcast_rows_local") {
-    PrintMulGroupedRowBcast(op, os);
-    return true;
-  } else if (builtin_name == "div_row_bcast") {
-    PrintDivRowBcast(op, os);
-    return true;
-  } else if (builtin_name == "div_grouped_row_bcast" ||
-             builtin_name == "div_tiles_bcast_rows_local") {
-    PrintDivGroupedRowBcast(op, os);
-    return true;
-  } else if (builtin_name == "scalar_fma") {
-    PrintScalarFma(op, os);
-    return true;
-  } else if (builtin_name == "exp2_row_bcast_affine") {
-    PrintExp2RowBcastAffine(op, os);
-    return true;
-  } else if (builtin_name == "exp2_grouped_row_bcast_affine" ||
-             builtin_name == "exp_tiles_bcast_rows_affine_local") {
-    PrintExp2GroupedRowBcastAffine(op, os);
-    return true;
-  } else if (builtin_name == "scalar_exp2_affine" ||
-             builtin_name == "exp_tile_affine_local") {
-    PrintScalarExp2Affine(op, os);
     return true;
   }
 
@@ -2387,11 +2250,6 @@ void CodeGenBlackhole::PrintCopyTileToDstInitShortWithDT(const tvm::tir::CallNod
   os << ")";
 }
 
-void CodeGenBlackhole::PrintCopyTileFromCB(const tvm::tir::CallNode* op,
-                                           std::ostream& os) {
-  PrintCopyTile(op, os);
-}
-
 void CodeGenBlackhole::PrintCopyTile(const tvm::tir::CallNode* op,
                                      std::ostream& os) {
   need_compute_api_h_ = true;
@@ -2450,6 +2308,34 @@ void CodeGenBlackhole::PrintAddTilesBcastRows(const tvm::tir::CallNode* op,
   need_compute_api_h_ = true;
   ICHECK_EQ(op->args.size(), 5) << "tl.blackhole.add_tiles_bcast_rows expects 5 arguments";
   os << "add_tiles_bcast_rows(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ", ";
+  PrintExpr(op->args[2], os);
+  os << ", ";
+  PrintExpr(op->args[3], os);
+  os << ", ";
+  PrintExpr(op->args[4], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintMulTilesInit(const tvm::tir::CallNode* op,
+                                         std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 2) << "tl.blackhole.mul_tiles_init expects 2 arguments";
+  os << "mul_tiles_init(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintMulTiles(const tvm::tir::CallNode* op,
+                                     std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 5) << "tl.blackhole.mul_tiles expects 5 arguments";
+  os << "mul_tiles(";
   PrintResolvedCBId(op->args[0], os);
   os << ", ";
   PrintResolvedCBId(op->args[1], os);
@@ -2577,43 +2463,6 @@ void CodeGenBlackhole::PrintReduceUninit(const tvm::tir::CallNode* op,
   os << ">()";
 }
 
-void CodeGenBlackhole::PrintReduceBlockMaxRowInit(const tvm::tir::CallNode* op,
-                                                  std::ostream& os) {
-  need_compute_api_h_ = true;
-  ICHECK_EQ(op->args.size(), 1)
-      << "tl.blackhole.reduce_block_max_row_init expects 1 argument";
-  os << "reduce_block_max_row_init<";
-  PrintExpr(op->args[0], os);
-  os << ">()";
-}
-
-void CodeGenBlackhole::PrintReduceBlockMaxRow(const tvm::tir::CallNode* op,
-                                              std::ostream& os) {
-  need_compute_api_h_ = true;
-  ICHECK_EQ(op->args.size(), 5) << "tl.blackhole.reduce_block_max_row expects 5 arguments";
-  os << "reduce_block_max_row<";
-  PrintExpr(op->args[4], os);
-  os << ">(";
-  PrintResolvedCBId(op->args[0], os);
-  os << ", ";
-  PrintResolvedCBId(op->args[1], os);
-  os << ", ";
-  PrintExpr(op->args[2], os);
-  os << ", ";
-  PrintExpr(op->args[3], os);
-  os << ")";
-}
-
-void CodeGenBlackhole::PrintReduceBlockMaxRowUninit(const tvm::tir::CallNode* op,
-                                                    std::ostream& os) {
-  need_compute_api_h_ = true;
-  ICHECK_EQ(op->args.size(), 1)
-      << "tl.blackhole.reduce_block_max_row_uninit expects 1 argument";
-  os << "reduce_block_max_row_uninit(";
-  PrintResolvedCBId(op->args[0], os);
-  os << ")";
-}
-
 void CodeGenBlackhole::PrintBinaryMaxTileInit(const tvm::tir::CallNode* op,
                                               std::ostream& os) {
   (void)op;
@@ -2666,6 +2515,22 @@ void CodeGenBlackhole::PrintExpTile(const tvm::tir::CallNode* op,
   need_compute_api_h_ = true;
   ICHECK_EQ(op->args.size(), 1) << "tl.blackhole.exp_tile expects 1 argument";
   os << "exp_tile(";
+  PrintExpr(op->args[0], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintExp2TileInit(const tvm::tir::CallNode* op,
+                                         std::ostream& os) {
+  (void)op;
+  need_compute_api_h_ = true;
+  os << "exp2_tile_init()";
+}
+
+void CodeGenBlackhole::PrintExp2Tile(const tvm::tir::CallNode* op,
+                                     std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 1) << "tl.blackhole.exp2_tile expects 1 argument";
+  os << "exp2_tile(";
   PrintExpr(op->args[0], os);
   os << ")";
 }
@@ -3300,40 +3165,6 @@ void CodeGenBlackhole::PrintReadCBFrontTileToLocalFragment(const tvm::tir::CallN
      << ">(src_bits, dst_bits + dst_offset_elements); }) }";
 }
 
-void CodeGenBlackhole::PrintScalarMax(const tvm::tir::CallNode* op,
-                                      std::ostream& os) {
-  const auto* dst_var = AsHandleVar(op->args[0]);
-  const auto* src_var = AsHandleVar(op->args[1]);
-  ICHECK(dst_var && src_var)
-      << "tl.blackhole.scalar_max expects direct handle vars";
-
-  const DataType dst_dtype =
-      ResolveHandleDataType(dst_var, "tl.blackhole.scalar_max", "destination");
-  const DataType src_dtype =
-      ResolveHandleDataType(src_var, "tl.blackhole.scalar_max", "source");
-  ICHECK(dst_dtype == src_dtype)
-      << "tl.blackhole.scalar_max expects matching source/destination dtypes";
-
-  std::ostringstream dtype_os;
-  PrintType(dst_dtype, dtype_os);
-
-  os << "MATH({ " << dtype_os.str() << "* dst = reinterpret_cast<" << dtype_os.str() << "*>(";
-  PrintExpr(op->args[0], os);
-  os << "); const " << dtype_os.str() << "* src = reinterpret_cast<const " << dtype_os.str()
-     << "*>(";
-  PrintExpr(op->args[1], os);
-  os << "); const uint32_t num_elements = ";
-  if (op->args.size() >= 3) {
-    PrintExpr(op->args[2], os);
-  } else {
-    os << "1";
-  }
-  os << "; tilelang_scalar_max(dst, src, num_elements); })";
-  if (dst_var->name_hint == "scores_max") {
-    MaybeEmitMathWaypoint(os, "SMAX");
-  }
-}
-
 void CodeGenBlackhole::PrintCastFragmentSlice(const tvm::tir::CallNode* op,
                                               std::ostream& os) {
   const auto* dst_var = AsHandleVar(op->args[0]);
@@ -3396,341 +3227,6 @@ void CodeGenBlackhole::PrintCastFragmentSlice(const tvm::tir::CallNode* op,
     MaybeEmitMathWaypoint(os, "MXPV");
   } else if (dst_var->name_hint == "O_shared_local_cast") {
     MaybeEmitMathWaypoint(os, "OCST");
-  }
-}
-
-void CodeGenBlackhole::PrintReduceRow(const tvm::tir::CallNode* op,
-                                      std::ostream& os) {
-  const auto* src_var = AsHandleVar(op->args[0]);
-  const auto* dst_var = AsHandleVar(op->args[1]);
-  const bool grouped = op->args.size() >= 6;
-  const auto* reduce_kind = op->args[grouped ? 4 : 3].as<tvm::tir::StringImmNode>();
-  const auto* clear = op->args[grouped ? 5 : 4].as<tvm::tir::IntImmNode>();
-  ICHECK(src_var && dst_var && reduce_kind && clear)
-      << "tl.blackhole.reduce_row expects direct handle vars and constant reduce metadata";
-
-  const DataType src_dtype =
-      ResolveHandleDataType(src_var, "tl.blackhole.reduce_row", "source");
-  const DataType dst_dtype =
-      ResolveHandleDataType(dst_var, "tl.blackhole.reduce_row", "destination");
-
-  std::ostringstream src_dtype_os;
-  std::ostringstream dst_dtype_os;
-  PrintType(src_dtype, src_dtype_os);
-  PrintType(dst_dtype, dst_dtype_os);
-
-  os << "MATH({ const " << src_dtype_os.str() << "* src = reinterpret_cast<const "
-     << src_dtype_os.str() << "*>(";
-  PrintExpr(op->args[0], os);
-  os << "); " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str() << "*>(";
-  PrintExpr(op->args[1], os);
-  os << "); ";
-  if (grouped) {
-    os << "const uint32_t num_elements = ";
-    PrintExpr(op->args[2], os);
-    os << "; const uint32_t row_width = ";
-    PrintExpr(op->args[3], os);
-    os << "; ";
-    if (reduce_kind->value == "sum") {
-      os << "tilelang_reduce_grouped_row_sum(src, dst, num_elements, row_width, "
-         << (clear->value ? "true" : "false") << ");";
-    } else if (reduce_kind->value == "max") {
-      os << "tilelang_reduce_grouped_row_max(src, dst, num_elements, row_width, "
-         << (clear->value ? "true" : "false") << ");";
-    } else {
-      ICHECK(false) << "Unsupported tl.blackhole.reduce_row kind: " << reduce_kind->value;
-    }
-  } else {
-    os << "const uint32_t num_elements = ";
-    PrintExpr(op->args[2], os);
-    os << "; const bool clear = " << (clear->value ? "true" : "false") << "; ";
-    if (reduce_kind->value == "sum") {
-      os << "tilelang_reduce_row_sum(src, dst, num_elements, clear);";
-    } else if (reduce_kind->value == "max") {
-      os << "tilelang_reduce_row_max(src, dst, num_elements, clear);";
-    } else {
-      ICHECK(false) << "Unsupported tl.blackhole.reduce_row kind: " << reduce_kind->value;
-    }
-  }
-  os << " })";
-  if (grouped && reduce_kind->value == "max" && dst_var->name_hint == "scores_max") {
-    MaybeEmitMathWaypoint(os, "RMAX");
-  } else if (grouped && reduce_kind->value == "sum" && dst_var->name_hint == "scores_sum") {
-    MaybeEmitMathWaypoint(os, "RSUM");
-  }
-}
-
-void CodeGenBlackhole::PrintMulRowBcast(const tvm::tir::CallNode* op,
-                                        std::ostream& os) {
-  const auto* dst_var = AsHandleVar(op->args[0]);
-  const auto* scalar_var = AsHandleVar(op->args[1]);
-  ICHECK(dst_var && scalar_var) << "tl.blackhole.mul_row_bcast expects direct handle vars";
-  const DataType dst_dtype =
-      ResolveHandleDataType(dst_var, "tl.blackhole.mul_row_bcast", "destination");
-  const DataType scalar_dtype =
-      ResolveHandleDataType(scalar_var, "tl.blackhole.mul_row_bcast", "scalar");
-
-  std::ostringstream dst_dtype_os;
-  std::ostringstream scalar_dtype_os;
-  PrintType(dst_dtype, dst_dtype_os);
-  PrintType(scalar_dtype, scalar_dtype_os);
-  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
-     << "*>(";
-  PrintExpr(op->args[0], os);
-  os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
-     << scalar_dtype_os.str() << "*>(";
-  PrintExpr(op->args[1], os);
-  os << "); const uint32_t num_elements = ";
-  PrintExpr(op->args[2], os);
-  os << "; tilelang_mul_row_bcast(dst, scalar, num_elements); })";
-}
-
-void CodeGenBlackhole::PrintMulGroupedRowBcast(const tvm::tir::CallNode* op,
-                                               std::ostream& os) {
-  const auto* dst_var = AsHandleVar(op->args[0]);
-  const auto* scalar_var = AsHandleVar(op->args[1]);
-  ICHECK(dst_var && scalar_var)
-      << "tl.blackhole.mul_grouped_row_bcast expects direct handle vars";
-  const DataType dst_dtype =
-      ResolveHandleDataType(dst_var, "tl.blackhole.mul_grouped_row_bcast", "destination");
-  const DataType scalar_dtype =
-      ResolveHandleDataType(scalar_var, "tl.blackhole.mul_grouped_row_bcast", "scalar");
-
-  std::ostringstream dst_dtype_os;
-  std::ostringstream scalar_dtype_os;
-  PrintType(dst_dtype, dst_dtype_os);
-  PrintType(scalar_dtype, scalar_dtype_os);
-  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
-     << "*>(";
-  PrintExpr(op->args[0], os);
-  os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
-     << scalar_dtype_os.str() << "*>(";
-  PrintExpr(op->args[1], os);
-  os << "); const uint32_t num_elements = ";
-  PrintExpr(op->args[2], os);
-  os << "; const uint32_t row_width = ";
-  PrintExpr(op->args[3], os);
-  os << "; tilelang_mul_grouped_row_bcast(dst, scalar, num_elements, row_width); })";
-}
-
-void CodeGenBlackhole::PrintDivRowBcast(const tvm::tir::CallNode* op,
-                                        std::ostream& os) {
-  const auto* dst_var = AsHandleVar(op->args[0]);
-  const auto* scalar_var = AsHandleVar(op->args[1]);
-  ICHECK(dst_var && scalar_var) << "tl.blackhole.div_row_bcast expects direct handle vars";
-  const DataType dst_dtype =
-      ResolveHandleDataType(dst_var, "tl.blackhole.div_row_bcast", "destination");
-  const DataType scalar_dtype =
-      ResolveHandleDataType(scalar_var, "tl.blackhole.div_row_bcast", "scalar");
-
-  std::ostringstream dst_dtype_os;
-  std::ostringstream scalar_dtype_os;
-  PrintType(dst_dtype, dst_dtype_os);
-  PrintType(scalar_dtype, scalar_dtype_os);
-  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
-     << "*>(";
-  PrintExpr(op->args[0], os);
-  os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
-     << scalar_dtype_os.str() << "*>(";
-  PrintExpr(op->args[1], os);
-  os << "); const uint32_t num_elements = ";
-  PrintExpr(op->args[2], os);
-  os << "; tilelang_div_row_bcast(dst, scalar, num_elements); })";
-}
-
-void CodeGenBlackhole::PrintDivGroupedRowBcast(const tvm::tir::CallNode* op,
-                                               std::ostream& os) {
-  const auto* dst_var = AsHandleVar(op->args[0]);
-  const auto* scalar_var = AsHandleVar(op->args[1]);
-  ICHECK(dst_var && scalar_var)
-      << "tl.blackhole.div_grouped_row_bcast expects direct handle vars";
-  const DataType dst_dtype =
-      ResolveHandleDataType(dst_var, "tl.blackhole.div_grouped_row_bcast", "destination");
-  const DataType scalar_dtype =
-      ResolveHandleDataType(scalar_var, "tl.blackhole.div_grouped_row_bcast", "scalar");
-
-  std::ostringstream dst_dtype_os;
-  std::ostringstream scalar_dtype_os;
-  PrintType(dst_dtype, dst_dtype_os);
-  PrintType(scalar_dtype, scalar_dtype_os);
-  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
-     << "*>(";
-  PrintExpr(op->args[0], os);
-  os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
-     << scalar_dtype_os.str() << "*>(";
-  PrintExpr(op->args[1], os);
-  os << "); const uint32_t num_elements = ";
-  PrintExpr(op->args[2], os);
-  os << "; const uint32_t row_width = ";
-  PrintExpr(op->args[3], os);
-  os << "; tilelang_div_grouped_row_bcast(dst, scalar, num_elements, row_width); })";
-  if (dst_var->name_hint == "acc_o") {
-    MaybeEmitMathWaypoint(os, "NORM");
-  }
-}
-
-void CodeGenBlackhole::PrintScalarFma(const tvm::tir::CallNode* op,
-                                      std::ostream& os) {
-  const auto* dst_var = AsHandleVar(op->args[0]);
-  const auto* lhs_var = AsHandleVar(op->args[1]);
-  const auto* rhs_var = AsHandleVar(op->args[2]);
-  const auto* add_var = AsHandleVar(op->args[3]);
-  ICHECK(dst_var && lhs_var && rhs_var && add_var)
-      << "tl.blackhole.scalar_fma expects direct handle vars";
-
-  const DataType dst_dtype =
-      ResolveHandleDataType(dst_var, "tl.blackhole.scalar_fma", "destination");
-  const DataType lhs_dtype =
-      ResolveHandleDataType(lhs_var, "tl.blackhole.scalar_fma", "lhs");
-  const DataType rhs_dtype =
-      ResolveHandleDataType(rhs_var, "tl.blackhole.scalar_fma", "rhs");
-  const DataType add_dtype =
-      ResolveHandleDataType(add_var, "tl.blackhole.scalar_fma", "add");
-
-  std::ostringstream dst_dtype_os;
-  std::ostringstream lhs_dtype_os;
-  std::ostringstream rhs_dtype_os;
-  std::ostringstream add_dtype_os;
-  PrintType(dst_dtype, dst_dtype_os);
-  PrintType(lhs_dtype, lhs_dtype_os);
-  PrintType(rhs_dtype, rhs_dtype_os);
-  PrintType(add_dtype, add_dtype_os);
-
-  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
-     << "*>(";
-  PrintExpr(op->args[0], os);
-  os << "); const " << lhs_dtype_os.str() << "* lhs = reinterpret_cast<const "
-     << lhs_dtype_os.str() << "*>(";
-  PrintExpr(op->args[1], os);
-  os << "); const " << rhs_dtype_os.str() << "* rhs = reinterpret_cast<const "
-     << rhs_dtype_os.str() << "*>(";
-  PrintExpr(op->args[2], os);
-  os << "); const " << add_dtype_os.str() << "* add = reinterpret_cast<const "
-     << add_dtype_os.str() << "*>(";
-  PrintExpr(op->args[3], os);
-  os << "); const uint32_t num_elements = ";
-  if (op->args.size() >= 5) {
-    PrintExpr(op->args[4], os);
-  } else {
-    os << "1";
-  }
-  os << "; tilelang_scalar_fma(dst, lhs, rhs, add, num_elements); })";
-  if (dst_var->name_hint == "logsum") {
-    MaybeEmitMathWaypoint(os, "LFMA");
-  }
-}
-
-void CodeGenBlackhole::PrintExp2RowBcastAffine(const tvm::tir::CallNode* op,
-                                               std::ostream& os) {
-  const auto* dst_var = AsHandleVar(op->args[0]);
-  const auto* scalar_var = AsHandleVar(op->args[1]);
-  ICHECK(dst_var && scalar_var)
-      << "tl.blackhole.exp2_row_bcast_affine expects direct handle vars";
-  const DataType dst_dtype = ResolveHandleDataType(
-      dst_var, "tl.blackhole.exp2_row_bcast_affine", "destination");
-  const DataType scalar_dtype =
-      ResolveHandleDataType(scalar_var, "tl.blackhole.exp2_row_bcast_affine", "scalar");
-
-  std::ostringstream dst_dtype_os;
-  std::ostringstream scalar_dtype_os;
-  PrintType(dst_dtype, dst_dtype_os);
-  PrintType(scalar_dtype, scalar_dtype_os);
-
-  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
-     << "*>(";
-  PrintExpr(op->args[0], os);
-  os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
-     << scalar_dtype_os.str() << "*>(";
-  PrintExpr(op->args[1], os);
-  os << "); const uint32_t num_elements = ";
-  PrintExpr(op->args[2], os);
-  os << "; const float dst_scale = ";
-  PrintExpr(op->args[3], os);
-  os << "; const float scalar_scale = ";
-  PrintExpr(op->args[4], os);
-  os << "; tilelang_exp2_row_bcast_affine(dst, scalar, num_elements, dst_scale, scalar_scale); })";
-}
-
-void CodeGenBlackhole::PrintExp2GroupedRowBcastAffine(const tvm::tir::CallNode* op,
-                                                      std::ostream& os) {
-  const auto* dst_var = AsHandleVar(op->args[0]);
-  const auto* scalar_var = AsHandleVar(op->args[1]);
-  ICHECK(dst_var && scalar_var)
-      << "tl.blackhole.exp2_grouped_row_bcast_affine expects direct handle vars";
-  const DataType dst_dtype = ResolveHandleDataType(
-      dst_var, "tl.blackhole.exp2_grouped_row_bcast_affine", "destination");
-  const DataType scalar_dtype = ResolveHandleDataType(
-      scalar_var, "tl.blackhole.exp2_grouped_row_bcast_affine", "scalar");
-
-  std::ostringstream dst_dtype_os;
-  std::ostringstream scalar_dtype_os;
-  PrintType(dst_dtype, dst_dtype_os);
-  PrintType(scalar_dtype, scalar_dtype_os);
-
-  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
-     << "*>(";
-  PrintExpr(op->args[0], os);
-  os << "); const " << scalar_dtype_os.str() << "* scalar = reinterpret_cast<const "
-     << scalar_dtype_os.str() << "*>(";
-  PrintExpr(op->args[1], os);
-  os << "); const uint32_t num_elements = ";
-  PrintExpr(op->args[2], os);
-  os << "; const uint32_t row_width = ";
-  PrintExpr(op->args[3], os);
-  os << "; const float dst_scale = ";
-  PrintExpr(op->args[4], os);
-  os << "; const float scalar_scale = ";
-  PrintExpr(op->args[5], os);
-  os << "; tilelang_exp2_grouped_row_bcast_affine(dst, scalar, num_elements, row_width, "
-     << "dst_scale, scalar_scale); })";
-  if (dst_var->name_hint == "acc_s") {
-    MaybeEmitMathWaypoint(os, "AEXP");
-  }
-}
-
-void CodeGenBlackhole::PrintScalarExp2Affine(const tvm::tir::CallNode* op,
-                                             std::ostream& os) {
-  const auto* dst_var = AsHandleVar(op->args[0]);
-  const auto* lhs_var = AsHandleVar(op->args[1]);
-  const auto* rhs_var = AsHandleVar(op->args[2]);
-  ICHECK(dst_var && lhs_var && rhs_var)
-      << "tl.blackhole.scalar_exp2_affine expects direct handle vars";
-  const DataType dst_dtype =
-      ResolveHandleDataType(dst_var, "tl.blackhole.scalar_exp2_affine", "destination");
-  const DataType lhs_dtype =
-      ResolveHandleDataType(lhs_var, "tl.blackhole.scalar_exp2_affine", "lhs");
-  const DataType rhs_dtype =
-      ResolveHandleDataType(rhs_var, "tl.blackhole.scalar_exp2_affine", "rhs");
-
-  std::ostringstream dst_dtype_os;
-  std::ostringstream lhs_dtype_os;
-  std::ostringstream rhs_dtype_os;
-  PrintType(dst_dtype, dst_dtype_os);
-  PrintType(lhs_dtype, lhs_dtype_os);
-  PrintType(rhs_dtype, rhs_dtype_os);
-
-  os << "MATH({ " << dst_dtype_os.str() << "* dst = reinterpret_cast<" << dst_dtype_os.str()
-     << "*>(";
-  PrintExpr(op->args[0], os);
-  os << "); const " << lhs_dtype_os.str() << "* lhs = reinterpret_cast<const "
-     << lhs_dtype_os.str() << "*>(";
-  PrintExpr(op->args[1], os);
-  os << "); const " << rhs_dtype_os.str() << "* rhs = reinterpret_cast<const "
-     << rhs_dtype_os.str() << "*>(";
-  PrintExpr(op->args[2], os);
-  os << "); const float lhs_scale = ";
-  PrintExpr(op->args[3], os);
-  os << "; const float rhs_scale = ";
-  PrintExpr(op->args[4], os);
-  os << "; const uint32_t num_elements = ";
-  if (op->args.size() >= 6) {
-    PrintExpr(op->args[5], os);
-  } else {
-    os << "1";
-  }
-  os << "; tilelang_scalar_exp2_affine(dst, lhs, rhs, lhs_scale, rhs_scale, num_elements); })";
-  if (dst_var->name_hint == "scores_scale") {
-    MaybeEmitMathWaypoint(os, "SEXP");
   }
 }
 
