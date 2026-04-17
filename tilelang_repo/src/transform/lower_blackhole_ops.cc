@@ -1334,35 +1334,7 @@ static int CountLoweredRowReductionBuiltins(const Stmt& body) {
     }
     const std::string& op_name = Downcast<Op>(call->op)->name;
     if (op_name == "tl.blackhole.reduce_init" || op_name == "tl.blackhole.reduce_tile" ||
-        op_name == "tl.blackhole.reduce_uninit" || op_name == "tl.blackhole.reduce_row" ||
-        op_name == "tl.blackhole.reduce_rows_local") {
-      ++count;
-    }
-  });
-  return count;
-}
-
-static int CountLoweredRowBroadcastBuiltins(const Stmt& body) {
-  int count = 0;
-  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
-    const auto* call = node.as<CallNode>();
-    if (!call || !call->op->IsInstance<OpNode>()) {
-      return;
-    }
-    const std::string& op_name = Downcast<Op>(call->op)->name;
-    if (op_name == "tl.blackhole.mul_tiles_bcast_rows" ||
-        op_name == "tl.blackhole.div_binary_tile" ||
-        op_name == "tl.blackhole.add_tiles_bcast_rows" ||
-        op_name == "tl.blackhole.exp2_tile" ||
-        op_name == "tl.blackhole.mul_row_bcast" ||
-        op_name == "tl.blackhole.mul_grouped_row_bcast" ||
-        op_name == "tl.blackhole.div_row_bcast" ||
-        op_name == "tl.blackhole.div_grouped_row_bcast" ||
-        op_name == "tl.blackhole.exp2_row_bcast_affine" ||
-        op_name == "tl.blackhole.exp2_grouped_row_bcast_affine" ||
-        op_name == "tl.blackhole.mul_tiles_bcast_rows_local" ||
-        op_name == "tl.blackhole.div_tiles_bcast_rows_local" ||
-        op_name == "tl.blackhole.exp_tiles_bcast_rows_affine_local") {
+        op_name == "tl.blackhole.reduce_uninit") {
       ++count;
     }
   });
