@@ -65,6 +65,33 @@ Normalized Tile TIR
 编译链必须围绕这三类事实组织，
 而不是围绕历史补丁名词组织。
 
+### 2.1 IR-first 编译器纪律
+
+当前链上唯一允许跨阶段承载语义的东西，
+只有显式表示层本身：
+
+```text
+Normalized Tile TIR
+  -> SpatialPlan
+  -> TTProgram
+  -> ExecutableSpec
+```
+
+这意味着：
+
+- analysis 只能是从当前层派生出的、可失效可重建的临时结果，
+  不是协议面
+- pass 只能读取当前层，
+  并直接 rewrite 成同层或下一层显式表示；
+  如果当前层信息不够，就先扩这一层表示
+- 任何 helper bag / payload / wrapper / late matcher
+  都不能成为长期语义通道
+- 任何需要跨阶段保留、被下游依赖、
+  且不能在 analysis 失效后由当前层重新推出的内容，
+  都说明当前显式表示还不够，
+  必须补到 IR 本身，
+  而不是继续堆旁路协议
+
 ## 3. 层间边界
 
 ### 3.1 `Normalized Tile TIR`
@@ -98,7 +125,7 @@ Normalized Tile TIR
 - virtual phase / ordering / materialization boundary 是什么
 - 哪些 hint 经 validate 后进入 planner
 
-长期 primary owner object set：
+长期显式表示对象：
 
 - `ExecutionUnit`
 - `DataflowEdge`
@@ -111,7 +138,7 @@ Normalized Tile TIR
 - legacy compatibility projection
 
 只能作为调试或过渡 projection，
-不再是长期 primary owner truth。
+不再是长期主表示 truth。
 
 `SpatialPlan` 不负责：
 
@@ -133,7 +160,7 @@ Normalized Tile TIR
 - ABI / runtime args / accessor binding
 - execution / launch order / waves
 
-长期 primary owner object set：
+长期显式表示对象：
 
 - `TTBlockPlan`
 - `TTKernelPlan`
@@ -152,7 +179,7 @@ Normalized Tile TIR
 - `TTDstLayoutPlan`
 
 都只允许作为兼容载体或 realization detail 继续存在，
-不能替代上面这组长期 owner 边界。
+不能替代上面这组长期显式表示边界。
 
 ### 3.4 `ExecutableSpec / runtime / codegen`
 
@@ -250,7 +277,8 @@ Normalized Tile TIR
 
 这条链上的实现形态也固定为：
 
-- pass 在**当前 IR / 当前 owner object**
+- pass 只能在**当前显式表示层**
+  （`Normalized Tile TIR` / `SpatialPlan` / `TTProgram`）
   上工作
 - 默认实现形态是
   `visitor / matcher / mutator / builder`
@@ -275,7 +303,7 @@ Normalized Tile TIR
   应由对当前 `SpatialPlan`
   和 anchored sub-TIR
   的 planner pass
-  直接写入 owner object
+  直接构造
 - `ExecutableSpec`
   应由对当前 `TTProgram`
   的 direct projection 得到
@@ -283,10 +311,10 @@ Normalized Tile TIR
 而不是：
 
 ```text
-current IR
-  -> analysis facts / helper bag
+current explicit IR
+  -> analysis cache / helper bag
   -> another bridge protocol
-  -> owner object
+  -> next explicit IR
 ```
 
 ## 5. Validator 纪律
@@ -307,7 +335,7 @@ layered IR 的价值只在于每层都显式承诺：
   - 检查 phase ordering / layout consistency
   - 检查没有 TT noun 泄漏到 `SpatialPlan`
 - `ValidateTTProgram`
-  - 检查 target owner object completeness / consistency
+  - 检查 target 表示 completeness / consistency
   - 检查 exact TT-Metal builtin / transport / sync legality
   - 检查 transport / sync / ABI / execution 闭合
   - 禁止 payload bag 回升为主协议
@@ -337,14 +365,14 @@ fail-closed 纪律固定为：
 
 审计表中列出的
 legacy transition attrs / helper bridge / payload bag
-都不是长期 owner truth。
+都不是长期显式语义。
 
 它们的处理纪律固定为：
 
 1. 不扩
 2. 不升格
 3. 不再写成长期协议
-4. 只能被新 owner object 替换
+4. 只能被新的显式表示层替换
 
 具体 disposition 见：
 `tasks/dev_design/blackhole_first_principles_protocol_audit.md`
@@ -356,10 +384,10 @@ legacy transition attrs / helper bridge / payload bag
 
 判断顺序固定为：
 
-1. 先看 owner 边界
+1. 先看表示层边界
 2. 再看当前实现是否越权持有上游 truth
-3. 只有在 truth 明确属于上游 owner 时，
-   才允许回头补上游 IR / owner object / builder logic / validator
+3. 只有在 truth 明确属于上游显式表示层时，
+   才允许回头补上游 IR / builder logic / validator
 
 明确禁止：
 
@@ -367,7 +395,7 @@ legacy transition attrs / helper bridge / payload bag
 - 再要求 `SpatialPlan`
   去补它需要的 truth
 - 把“现在能跑”
-  当成 owner 边界正确的证据
+  当成表示层边界正确的证据
 - 把 direct runtime 当前 admitted support surface
   回写成
   TT builtin mapping、

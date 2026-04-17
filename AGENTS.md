@@ -129,18 +129,18 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 **代码结构原则**：
 
 1. **分离 analysis 与 transformation**
-   - analysis 产出 facts（不可变的结论），transformation 消费 facts 并改写 IR
-   - 一个 pass 如果同时在收集信息和产出结果，说明它在混两个 pass 的职责
-   - 这是编译器工程的基本纪律：analysis 和 rewrite 的耦合会让两边都无法独立演化
+   - analysis 只能从当前 IR 派生局部、可失效、可重算的结果；如果某个结果需要跨阶段保留，它就不能停留在 analysis 里，而必须进入 IR
+   - transformation 只能读取当前 IR 和当前 pass 内的局部 analysis，并直接改写当前 IR 或显式构造下一层 IR
+   - 一个 pass 如果一边旁路传协议、一边等后段补语义，说明它已经混乱了职责边界
 
-2. **中间状态必须有显式类型，不允许靠局部变量隐式传递**
-   - 如果一组相关状态需要在多个阶段之间流动，它就应该是一个 struct / IR node / typed container
-   - 裸 `unordered_map` 和 `unordered_set` 散在同一个函数作用域里，是隐式中间表示的信号
-   - 编译器里每一层 IR 都有显式 schema，pass 内部的中间表示也应该遵循同样的标准
+2. **跨阶段中间状态必须进入显式 IR，不允许靠局部变量或 bag 隐式传递**
+   - 任何需要跨阶段保留、被下游依赖、且不能在 analysis 失效后由当前 IR 重新推出的内容，都必须进入 IR 自身
+   - 裸 `unordered_map` / `unordered_set` / `Map<String, Any>` 在多个 pass 之间流动，是隐藏语义通道的信号
+   - pass 内的局部 mechanics 可以临时存在，但不能长成新的公共协议面
 
-3. **用类型系统捕获协议错误，不靠命名约定**
-   - 跨模块共享的常量（attr key、schema field name、enum value）必须定义在一处，消费侧引用定义
-   - 目的是把协议不一致从运行时 silent failure 提升到编译期错误
+3. **用类型和显式 IR 字段捕获协议错误，不靠命名约定**
+   - 跨模块共享的常量（attr key、field name、enum value）必须定义在一处，消费侧引用定义
+   - 目的是把协议不一致从运行时 silent failure 提升到编译期 / validator 错误
    - 这包括 C++ 侧的 `constexpr` 常量和 Python 侧的 module-level 定义
 
 4. **单一职责：一个函数 / 一个 pass / 一个文件只解决一个问题**
@@ -157,16 +157,16 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 
 2. **设计和实现必须通用，不针对单个 case 特判**
    - 不能把某个当前样例、参数顺序、单个 kernel 形态偷偷固化成协议
-   - 优先做统一 schema、统一 IR 语义、统一 pass 边界
+   - 优先做统一 IR 语义、统一 attrs/类型表达、统一 pass 边界
 
 3. **所需信息优先从 IR 分析；缺失就扩 IR/DSL，不要让后段猜**
    - 如果信息可以从 IR 得到，就必须从 IR 得到
-   - 如果 IR 表达不够，就扩 attrs/schema，必要时从 DSL 显式表达
+   - 如果 IR 表达不够，就扩 IR / attrs / 类型，必要时从 DSL 显式表达
 
 4. **IR 分析必须基于 IR 结构与类型，不允许基于名字匹配恢复语义**
    - 不允许用 buffer/var/op 的命名约定（如 `idx`、`scores_*`、`logsum`）来决定语义角色、绑定关系或协议分支
-   - 语义恢复必须优先依赖 IR 自身可验证的信息：对象类型、storage scope、def-use、region/access pattern、loop-carried/dataflow 结构、attrs/schema
-   - 如果仅靠当前 IR 结构仍无法稳定区分语义，就扩 IR/DSL/schema；不要把名字匹配升级成长期分析手段
+   - 语义恢复必须优先依赖 IR 自身可验证的信息：对象类型、storage scope、def-use、region/access pattern、loop-carried/dataflow 结构、显式 attrs / types
+   - 如果仅靠当前 IR 结构仍无法稳定区分语义，就扩 IR / DSL / attrs / types；不要把名字匹配升级成长期分析手段
 
 5. **整个编译器必须以显式 IR 为中心，不允许在 IR 之外再造语义通道**
    - 程序语义只能存在于当前 IR 层本身；analysis 只能是从当前 IR 派生出的、可失效可重算的临时结果
@@ -175,7 +175,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 
 **对 Blackhole 的具体要求**：
 
-- `runtime_args`、`buffer`、`cb`、`segment` 等绑定必须由 IR/schema 明确表达或可从 IR 稳定推导
+- `runtime_args`、`buffer`、`cb`、`segment` 等绑定必须由 IR / attrs / typed fields 明确表达或可从 IR 稳定推导
 - 不要为了绕开当前卡点新增并行执行路径或额外 emitter；优先修主路径
 - 修问题时优先收正协议和主链，而不是堆 workaround
 
@@ -199,12 +199,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - `tasks/dev_design/task1_spatial_plan_companion.md`
    - `tasks/dev_design/task2_ttprogram_companion_cutover.md`
    - `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
-2. 当前活动任务顺序统一按 owner cutover 阅读：
-   - `SpatialPlan owner cutover`
-   - `TTProgram owner cutover`
-   - `ExecutableSpec / leaf reader cutover`
-   - `legacy protocol deletion`
-3. 当前已接入主链、但只算前置子步骤的工作包括：
+2. 当前 repo HEAD 的实际执行顺序固定按 cleanup 文档推进：
+   - `Cleanup Task 0 -> Cleanup Task 1 -> Cleanup Task 2 -> Cleanup Task 3 -> Cleanup Task 4 -> Cleanup Task 5`
+   - cleanup 完成后，才恢复 support surface / workload payoff 扩展
+3. `task1_spatial_plan_companion.md`、`task2_ttprogram_companion_cutover.md`、`task3_runtime_gate_and_workload_cutover.md`
+   负责定义 completion contract，不再单独充当当前实施顺序
+4. 当前已接入主链、但只算前置子步骤的工作包括：
    - `buffer effect / use-role analysis`
    - `buffer liveness analysis`
    - `materialization / source-live-form planner decision`
@@ -252,11 +252,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `tasks/dev_design/archive/` 下内容全部视为历史记录，不再作为当前入口
 - semantic manifest 路径已完成；`AnalyzeSemanticStructure` 已全面改成 manifest-first
 - 当前实际 active chain 是：
-  `Normalized Tile TIR -> SpatialPlan companion -> SplitBlackholeKernel -> legacy transition attrs / helper wrappers -> PlanTTBlocks -> PlanTTCompute / PlanTTTransport with legacy helper residue -> BuildTTProgram -> TTProgram companion -> ValidateTTProgram -> MaterializeBlackholeExecutable -> executable extraction / codegen / BlackholeModule`
+  `Normalized Tile TIR -> AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion -> ValidateSpatialPlan -> SplitBlackholeKernel -> legacy attrs / narrow bridge residue -> PlanTTBlocks -> SelectBlackholeTTMetalBuiltins -> PlanTTCompute / PlanTTTransport / PlanTTSync / PlanTTABI / PlanTTExecution -> BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable -> runtime / codegen leaf readers`
 - 当前已知迁移残留包括：
-  - `SpatialPlan -> TTProgram` 之间仍有 legacy transition attrs / helper wrappers
-  - `PlanTTCompute / PlanTTTransport / BuildTTProgram` 之间仍有 owner residue
-  - 尚未完全显式化的 `TTSyncPlan / TTABIPlan / TTExecutionPlan`
+  - `AnalyzeSpatialStructureFacts` 仍在 active chain 且仍通过 public wrapper 暴露；后续必须退回局部 mechanics 或被 `BuildSpatialPlanCompanion` 吸收
+  - `SpatialPlan -> TTProgram` 之间仍有 legacy transition attrs / narrow bridge seeds / helper residue
+  - `blackhole.copy_semantics`、`blackhole.segment_kind`、`blackhole.lowering_requirements`、`blackhole.resource_plan` 仍在 repo HEAD
+  - `PlanTTSync / PlanTTABI / PlanTTExecution` 已落地为显式 planner passes，但 leaf reader / cleanup 还没同时收口
 - `SplitBlackholeKernel` 已实现并已接入管线；纯 copy 走 `fused_dataflow` 单 kernel，GEMM 走 3-kernel（reader/compute/writer）
 - direct runtime 当前 admitted 支持面：
   - copy：equal source/dest range，且 stride = 1
@@ -266,6 +267,6 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - `flash-attn` compile-path / source/spec baseline 已稳定，但 direct runtime correctness 还不是 admitted support surface
 - direct cast consumer 当前只保留 build/source contract gate，不作为 TT-Sim direct-runtime correctness gate
 - TT-Sim `fp16` 仍按 simulator capability boundary 处理，不作为当前 correctness gate
-- 当前总体 blocker 是 `SpatialPlan owner cutover / TTProgram owner cutover / ExecutableSpec leaf cutover` 还没有同时收口，不是单一 cutover 点
+- 当前总体 blocker 是 cleanup 主线 `Task 1-5` 还没做完，不是单一 cutover 点，也不是 support surface 不够
 - 后续所有架构推进以当前 layered IR 为准：
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
