@@ -3,44 +3,47 @@
 > 本文档不是新的总体设计。
 >
 > 它只做一件事：
-> **基于第一性原理，对现存 surface 做 owner / non-owner / validator / cutover disposition。**
+> **基于第一性原理，对现存 historical surface 做表示层落点、validator 和删除/切换 disposition。**
 >
-> 下表里出现的现存 surface 名，全部按当前仓库里的历史字面名列出，
+> 下表里出现的现存 surface 名，
+> 全部按当前仓库里的历史字面名列出，
 > 目的只有一个：做删除与切换清单。
 > 它们不是当前允许继续扩展的协议名。
 
 ## 1. 判定标准
 
 对 spatial/dataflow target，
-长期 truth 只能归到下面四层之一：
+长期语义只能稳定存在于下面四层显式表示之一：
 
 1. `Normalized Tile TIR`
 2. `SpatialPlan`
 3. `TTProgram`
 4. `ExecutableSpec`
 
-如果某个 surface 不能稳定归到这四层之一，
-它就不是长期 owner truth。
+如果某个 historical surface
+不能稳定归到这四层之一，
+或者它本身不是 verifier 可见的显式表示，
+它就不能继续作为长期协议。
 
-## 2. Owner Disposition Table
+## 2. Deletion / Migration Table
 
-| 现存 surface | 长期 owner | 非 owner 结论 | validator obligation | 去留 |
-|---|---|---|---|---|
-| `blackhole.copy_semantics` | `Normalized Tile TIR` access truth + `SpatialPlan.DataflowEdge` + `TTTransportPlan` | 不能继续当方向/角色真源 | `ValidateSpatialPlan` 检查 edge completeness；`ValidateTTProgram` 检查 transport realization | 删除 |
-| `blackhole.segment_kind` | `TTKernelPlan.kind` / `TTKernel.kind` | 不应再写回 TIR attr | `ValidateTTProgram` 检查 reader/compute/writer kernel kind、ABI、transport 闭合 | 删除 |
-| `blackhole.work_decomposition` | `TTBlockPlan` + `TTExecutionPlan` | 不属于 `SpatialPlan` 公开协议 | `ValidateTTProgram` 检查 work ownership / placement / wave legality | 删除 |
-| `blackhole.compute_regions` | `Normalized Tile TIR` anchored sub-TIR + `SpatialPlan.ExecutionUnit` | 不能继续作为 compute truth bag | `ValidateSpatialPlan` 检查 execution-unit coverage | 删除 |
-| `blackhole.pipeline_stages` | `SpatialPlan.PhasePlan` + `TTSyncPlan` | 不能继续作为跨层 bag | `ValidateSpatialPlan` 检查 phase/order；`ValidateTTProgram` 检查 completion/materialization | 删除 |
-| `blackhole.lowering_requirements` | 拆回当前 pass 的直接 IR/owner 读取 + `TTKernelPlan / TTTransportPlan / TTSyncPlan / TTABIPlan / TTExecutionPlan / ExecutableSpec` | 不是长期公共协议，也不应继续保留 internal builder bag | 三层 validator 分别检查 completeness；leaf 禁止反向依赖 planning bag | 删除 |
-| `blackhole.resource_plan` | `TTTransportPlan` / `TTSyncPlan` / `TTExecutionPlan` | 是 canonicalization 时代的影子产物 | `ValidateTTProgram` 直接验证 canonical target truth | 删除 |
-| `tl.internal_tt_*` | `TTProgram` canonical owner objects | 只能短期 bridge，不是正式协议 | `ValidateTTProgram` 只接受 canonical owner objects，不接受 internal attr bag | 删除 |
-| `TTProgram.payload` 大袋子 | `TTProgram` canonical owner objects + leaf projection payload | 只能保留 leaf 投影级 payload，不能反向充当 planning 真源 | `ValidateTTProgram` 禁止 payload 反客为主 | 已收紧 |
-| `ExecutableSpec` 中的 raw payload | `ExecutableSpec` leaf projection | 只能是投影结果，不能反向变成 planning source | `ValidateExecutableSpecProjection` | 已收紧 |
+| 现存 surface | 长期表示层落点 | 显式对象 / 语义来源 | 为什么当前 surface 必须退场 | validator / gate | 去留 |
+|---|---|---|---|---|---|
+| `blackhole.copy_semantics` | `Normalized Tile TIR -> SpatialPlan -> TTProgram` | `BufferLoad / BufferStore`、`DataflowEdge`、`TTTransportPlan` | 不能继续充当 copy 方向/角色的长期表示 | `ValidateSpatialPlan` 检查 edge completeness；`ValidateTTProgram` 检查 transport realization | 删除 |
+| `blackhole.segment_kind` | `TTProgram -> ExecutableSpec` | `TTKernelPlan.kind`、投影后的 executable kernel/segment 记录 | 不应再写回 TIR attr | `ValidateTTProgram` 检查 kernel/ABI/transport 闭合；leaf readers 只读投影记录 | 删除 |
+| `blackhole.work_decomposition` | `TTProgram` | `TTBlockPlan`、`TTExecutionPlan` | 不属于 `SpatialPlan` 公开表示 | `ValidateTTProgram` 检查 work placement / wave legality | 删除 |
+| `blackhole.compute_regions` | `Normalized Tile TIR -> SpatialPlan` | anchored sub-TIR、`ExecutionUnit` | 不能继续作为 compute 语义 bag | `ValidateSpatialPlan` 检查 execution-unit coverage | 删除 |
+| `blackhole.pipeline_stages` | `SpatialPlan -> TTProgram` | `PhasePlan`、`TTSyncPlan` | 不能继续作为跨层 bag | `ValidateSpatialPlan` 检查 phase/order；`ValidateTTProgram` 检查 completion/materialization | 删除 |
+| `blackhole.lowering_requirements` | 拆回当前表示层直接读取 + `TTProgram / ExecutableSpec` | 当前 IR / 当前显式对象上的直接读取、必要的 leaf projection 记录 | 不是长期公共协议，也不应继续保留 internal builder bag | 各层 validator 分别检查 completeness；leaf 禁止反向依赖 planning bag | 删除 |
+| `blackhole.resource_plan` | `TTProgram` | `TTTransportPlan`、`TTSyncPlan`、`TTExecutionPlan` | 是 canonicalization 时代的影子产物 | `ValidateTTProgram` 直接验证 canonical target representation | 删除 |
+| `tl.internal_tt_*` | `TTProgram` | `TTProgram` 显式 slices | 只能短期 bridge，不是正式协议 | `ValidateTTProgram` 只接受显式 slices，不接受 internal attr bag | 删除 |
+| `TTProgram.payload` 大袋子 | `TTProgram -> ExecutableSpec` | `TTProgram` 显式 slices + leaf projection payload | 只能保留 leaf 投影级 payload，不能反向充当 planning source | `ValidateTTProgram` 禁止 payload 反客为主；`ValidateExecutableSpecProjection` 约束 leaf-only projection | 已收紧 |
+| `ExecutableSpec` 中的 raw payload | `ExecutableSpec` | leaf projection | 只能是投影结果，不能反向变成 planning source | `ValidateExecutableSpecProjection` | 已收紧 |
 
-## 3. Repo HEAD 落地说明
+## 3. 当前 cleanup 解释
 
 `Legacy Protocol Deletion`
-在 repo HEAD 的含义已经固定为：
+在 repo HEAD 的目标含义固定为：
 
 - canonical `LowerToBlackholePhaseB`
   不再发布
@@ -53,7 +56,7 @@
   `BuildTTProgram`
   不再接受
   `tl.internal_tt_*`
-  当过渡 owner bag
+  这种过渡语义载体
 - leaf / resource path
   不再发布
   `blackhole.lowering_requirements`
@@ -72,8 +75,8 @@
 - `AnalyzeBlackholeWorkDecomposition /
    AnalyzeBlackholeComputeRegions /
    AnalyzeBlackholePipelineStages`
-  这些 pass wrapper
-  与对应的 internal evidence bag helper
+  这些 public wrapper
+  与对应的 internal evidence helper
   都应从 active chain 删除，
   不能继续以 debug / regression helper 名义常驻
 
@@ -119,19 +122,27 @@
   并在最终
   `TTProgram`
   物化前剥离；
-  它不是新的 planning truth
+  它不是新的 planning 语义
 
-## 4. 长期保留的 truth 与 pass 纪律
+## 4. 长期保留的表示与 transform 纪律
 
 补充约束：
 
-- 只允许 owner layer 定义长期协议面
-- IR 不是 read-only 观察对象；pass 的职责是把当前 stage 的 IR/object 改写到下一个更具体 stage
-- helper 只允许作为同一 `.cc` 内的局部 visitor / matcher / mutator mechanics
-- 如果一个 pass 能从当前 IR 或当前 owner object 直接恢复所需信息，就必须直接恢复，不能先发明 bag 再读 bag
-- helper 必须复用已有 owner enum / handle / object identity
-- 不能在 helper 里重新发明一套 `kind / direction / role` 字符串或平行 enum
-- 不能用 `Map<String, Any>` 充当跨 pass 语义协议
+- 只允许显式表示层定义长期协议面
+- IR 不是 read-only 观察对象；
+  pass 的职责是把当前 stage 的 IR/object
+  改写到下一个更具体 stage
+- helper 只允许作为同一 `.cc`
+  内的局部 visitor / matcher / mutator mechanics
+- 如果一个 pass 能从当前 IR 或当前显式对象直接恢复所需信息，
+  就必须直接恢复，
+  不能先发明 bag 再读 bag
+- helper 必须复用已有显式 enum / handle / object identity
+- 不能在 helper 里重新发明一套
+  `kind / direction / role`
+  字符串或平行 enum
+- 不能用 `Map<String, Any>`
+  充当跨 pass 语义协议
 
 ### `Normalized Tile TIR`
 
@@ -171,20 +182,20 @@
 - leaf projection
 - runtime/build/codegen 消费视图
 
-## 5. 当前代码判断
+## 5. 当前诊断
 
 当前代码的真实问题不是“旧协议太散”，
 而是：
 
-- 中间 spatial/dataflow owner layer 太薄
-- 后段被迫补出 fake protocol
+- 中间 spatial/dataflow 表示太薄
+- 下游被迫补出 fake protocol
 - leaf readers 仍在消费 fake protocol
 
 因此 disposition 的执行顺序固定为：
 
 1. 先把 `SpatialPlan`
-   重写成 virtual spatial/dataflow program
+   重写成 virtual spatial/dataflow representation
 2. 再把 `TTProgram`
-   收回 target owner
+   收回到 target realization 边界
 3. 再切 leaf readers
 4. 最后删 fake protocol

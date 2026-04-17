@@ -45,7 +45,7 @@
 - `task1_spatial_plan_companion.md`、
   `task2_ttprogram_companion_cutover.md`、
   `task3_runtime_gate_and_workload_cutover.md`
-  现在负责定义 **显式表示层边界 / completion contract**；
+  现在负责定义 **显式表示层边界 / 完成判据**；
   当前 repo HEAD 的实际收口顺序，
   由
   `2026-04-16-blackhole-final-legacy-protocol-cleanup*.md`
@@ -82,8 +82,8 @@ Normalized Tile TIR
 | 项目 | 新状态 | 说明 |
 |------|--------|------|
 | `Task 0: Root Cause and Rewrite Direction` | 已完成 | 作为根因诊断与 pass 纪律基线已经完成；它不再单独形成实现路线 |
-| `Task 1: SpatialPlan Owner Cutover` | 重新打开 / 部分完成 | `SpatialPlan` 仍未在 active chain 中以单一 direct builder 直接从当前 TIR 构造；`AnalyzeSpatialStructureFacts` 仍以 public wrapper 形态存在。当前 `BuildSpatialPlanCompanion` 只是历史实现名，不应被当成架构边界 |
-| `Task 2: TTProgram Owner Cutover` | 重新打开 / 部分完成 | exact TT-Metal builtin basis 已锁定并前移到 dedicated selector；但 `blackhole.lowering_requirements` 窄 seed、planner residue 仍在主链 |
+| `Task 1: SpatialPlan Representation Cutover` | 重新打开 / 部分完成 | `SpatialPlan` 仍未在 active chain 中以单一 direct builder 直接从当前 TIR 构造；`AnalyzeSpatialStructureFacts` 仍以 public wrapper 形态存在。当前 `BuildSpatialPlanCompanion` 只是历史实现名，不应被当成架构边界 |
+| `Task 2: TTProgram Representation Cutover` | 重新打开 / 部分完成 | exact TT-Metal builtin basis 已锁定并前移到 dedicated selector；但 `blackhole.lowering_requirements` 窄 seed、planner residue 仍在主链 |
 | `Task 3: ExecutableSpec / Leaf Reader Cutover` | 重新打开 / 部分完成 | runtime / projection / executable writer 已不再消费 `compute_epilogue_ops`；但 `blackhole.segment_kind` 等旧叶子协议仍未删净 |
 | `Legacy Protocol Deletion` | 未完成 / 当前主任务 | helper/composite builtin active surface 与 `compute_epilogue_ops` 已清掉；`blackhole.copy_semantics`、`blackhole.segment_kind`、`AnalyzeBlackhole*`、`blackhole.lowering_requirements`、`blackhole.resource_plan` 仍在 repo HEAD |
 
@@ -94,7 +94,7 @@ Normalized Tile TIR
 - `materialization / source-live-form`
 
 这些仍然只算
-`Task 1: SpatialPlan Owner Cutover`
+`Task 1: SpatialPlan Representation Cutover`
 里的 preparatory substeps，
 不能再拿来充当顶层阶段完成判据。
 
@@ -188,7 +188,7 @@ Normalized Tile TIR
 从现在开始，
 `progress` 里的执行顺序固定改成
 **cleanup task 驱动，
-cutover 文档给 completion contract**：
+cutover 文档给完成判据**：
 
 1. **`Cleanup Task 0`**（已完成，`2026-04-17`）
    - 文档：
@@ -222,7 +222,7 @@ cutover 文档给 completion contract**：
    - 目标：
      删除 public / internal legacy analysis bags
    - 这一步同时重开并完成
-     `Task 1: SpatialPlan Owner Cutover`
+     `Task 1: SpatialPlan Representation Cutover`
      剩余的 pass-discipline 收口：
      `SpatialPlan`
      必须收成单一 direct builder implementation；
@@ -257,7 +257,7 @@ cutover 文档给 completion contract**：
      直接构造并消费
      kernel kind / segment plan
    - 这一步同时承担
-     `Task 2: TTProgram Owner Cutover`
+     `Task 2: TTProgram Representation Cutover`
      和
      `Task 3: ExecutableSpec / Leaf Reader Cutover`
      剩余表示层 residue 的关键收口

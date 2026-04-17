@@ -11,6 +11,15 @@
   - `tasks/progress.md`
 - `tasks/dev_design/archive/` 只当历史记录，不再作为当前任务入口
 - 设计边界写在设计文档，阶段状态写在 `progress.md`，`memory/` 只记长期经验
+- 活跃设计文档只按
+  `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
+  这四层显式表示描述边界；
+  不把 pass 名、helper、bag、payload、bridge attr
+  写成长期协议
+- task 文档定义目标合同和完成判据；
+  `progress.md` 只记录 repo HEAD 状态与下一步；
+  `layered_ir_references.md`
+  只做研究输入，不充当活动设计入口
 
 ## 2. 构建模式
 

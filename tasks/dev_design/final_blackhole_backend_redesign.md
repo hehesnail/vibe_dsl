@@ -5,7 +5,7 @@
 - **文档 ID**: `final_blackhole_backend_redesign`
 - **日期**: `2026-04-16`
 - **状态**: 当前唯一权威总体设计文档
-- **定位**: 只保留长期架构、层间边界、真源规则、validator 纪律和当前 rewrite 方向
+- **定位**: 只保留长期架构、层间边界、显式表示规则、validator 纪律和当前 rewrite 方向
 
 ## 1. 设计结论
 
@@ -493,7 +493,7 @@ legacy transition attrs / helper bridge / payload bag
 - `materialization / source-live-form`
 
 都只是
-`Task 1: SpatialPlan Owner Cutover`
+`Task 1: SpatialPlan Representation Cutover`
 里的 preparatory substeps，
 不再单独充当顶层 roadmap
 
@@ -502,14 +502,14 @@ legacy transition attrs / helper bridge / payload bag
 1. `task0_ir_layering_root_cause.md`
    - 固定根因和显式表示层边界判断
 2. `task1_spatial_plan_companion.md`
-   - 固定 `Task 1: SpatialPlan Owner Cutover`
+   - 固定 `Task 1: SpatialPlan Representation Cutover`
    - 文件名里的 `companion`
      只是历史索引；
      架构目标仍是
      `SpatialPlan`
      的直接构造与显式表示
 3. `task2_ttprogram_companion_cutover.md`
-   - 固定 `Task 2: TTProgram Owner Cutover`
+   - 固定 `Task 2: TTProgram Representation Cutover`
    - 文件名里的 `companion`
      同样只作索引，
      不引入新的 IR 层
@@ -539,7 +539,7 @@ legacy transition attrs / helper bridge / payload bag
      `TTTransportPlan + TTABIPlan`
    - communication:
      `TTTransportPlan + TTSyncPlan + TTExecutionPlan`
-3. **真源位置收紧**
+3. **长期语义承载位置收紧**
    - 算法/访存语义只在 `Normalized Tile TIR`
    - virtual spatial/dataflow 语义只在 `SpatialPlan`
    - physical target 语义只在 `TTProgram`

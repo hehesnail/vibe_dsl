@@ -65,9 +65,9 @@ This selector-forwarding slice is landed in repo HEAD.
   `buffer_tile_bridge_specs`
   so selector-forwarding can preserve stable bridge/materialization facts
   across the IR rewrite.
-  It is stripped before final TTProgram materialization and is not a new owner
+  It is stripped before final TTProgram materialization and is not a new
   protocol.
-- one remaining owner-cutover nuance is unchanged:
+- one remaining representation-cutover nuance is unchanged:
   CB/materialization-sensitive bridge publication still touches
   `PlanTTKernelABI`
   because CB requirement indices are still planned there.
@@ -262,9 +262,9 @@ Do **not** mix current direct-runtime admission limits into this registry. Runti
 
 Current repo HEAD note:
 this slice landed the shared legality surface needed for selector stamp /
-residue rejection / exact builtin validation without introducing a new owner
-layer.
-Deeper CB/materialization ownership cleanup stays with the later cutover tasks.
+residue rejection / exact builtin validation without introducing a new
+representation layer.
+Deeper CB/materialization cleanup stays with the later cutover tasks.
 
 - [x] **Step 5: Implement the dedicated builtin-selection pass**
 

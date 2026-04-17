@@ -2,9 +2,9 @@
 
 ## Scope
 
-Replace `blackhole.segment_kind`-based slicing with direct kernel-kind construction while building `TTProgram`, then project that truth forward through `ExecutableSpec`.
+Replace `blackhole.segment_kind`-based slicing with direct kernel-kind construction while building `TTProgram`, then project that representation forward through `ExecutableSpec`.
 
-In current code terms, the canonical truth lives on `TTKernelPlan.kind` / `TTKernel.kind` and the projected executable `segment_plan` records. The semantic meaning is still reader / compute / writer kernel role, but the task must use the actual owner objects that already exist in this repo.
+In current code terms, the kernel-kind representation lives on `TTKernelPlan.kind` / `TTKernel.kind` and the projected executable `segment_plan` records. The semantic meaning is still reader / compute / writer kernel role, but the task must use the actual representation objects that already exist in this repo.
 
 This task must not introduce:
 
@@ -29,7 +29,7 @@ This task must not introduce:
 
 ## Execution Slices
 
-1. add the failing segment-truth regressions
+1. add the failing segment-kind regressions
 2. confirm planner/runtime still scan `segment_kind`
 3. assign kernel kind directly while building `TTProgram`
 4. project kernel records directly into executable `segment_plan`
@@ -37,7 +37,7 @@ This task must not introduce:
 6. stop emitting and reading `blackhole.segment_kind`
 7. rerun the GEMM/flash-attn suites and commit
 
-- [ ] **Step 1: Write the failing segment-truth regressions**
+- [ ] **Step 1: Write the failing segment-kind regressions**
 
 Add one phase-bundle regression and one runtime-facing regression:
 

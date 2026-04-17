@@ -20,21 +20,21 @@ This cleanup is complete only when all of the following are true:
 The cleanup must follow normal compiler pass discipline.
 
 1. The current IR/object at each stage is transformed into the next stage. It is not a read-only thing we keep re-analyzing forever.
-2. Long-lived truth belongs only to the canonical owner layers:
+2. Long-lived semantics may live only on the explicit representation layers:
    - `Normalized Tile TIR`
    - `SpatialPlan`
    - `TTProgram`
    - `ExecutableSpec`
 3. A cleanup pass should normally:
-   - walk the current IR or current owner object
+   - walk the current IR or current representation object
    - match the local pattern it cares about
-   - immediately rewrite IR or write directly into the owner object it is constructing
+   - immediately rewrite IR or write directly into the representation object it is constructing
 4. A match result is not a protocol.
 5. Pass-local helper structs/classes are fine when they stay inside one `.cc` and only support that pass's visitor/mutator logic.
 6. What is not allowed:
    - a new attr bag
    - a new public analysis wrapper
-   - a new owner-adjacent helper layer
+   - a new helper layer between representations
    - another stringly-typed `kind` / `role` / `direction` vocabulary
    - a workload-specific lowering path such as a dedicated flash-attention builtin matcher
 
@@ -54,7 +54,7 @@ Blackhole cleanup should look the same: visitor/matcher/mutator over current IR,
 Even that attr is tightly constrained:
 
 - it carries only logical buffer/tile bridge specs
-- it is leaf-local, not planning truth
+- it is leaf-local, not planning representation
 - it must not grow into a replacement for `blackhole.compute_regions`
 
 ## Dependency Order
@@ -119,7 +119,7 @@ Even that attr is tightly constrained:
 - `split_blackhole_kernel.cc` and `blackhole_device_resource_canonicalization.cc`:
   recover copy/dataflow meaning directly from current IR plus `SpatialPlan`.
 - `build_tt_program.cc` / `lower_blackhole_ops.cc`:
-  construct `TTProgram` kernel/transport/ABI truth directly from current IR plus current owner objects. No `segment_kind` replacement layer.
+  construct `TTProgram` kernel/transport/ABI representation directly from current IR plus current representation objects. No `segment_kind` replacement layer.
 - `tt_program_projection.h`, `materialize_blackhole_executable.cc`, `codegen_blackhole.cc`, and `rt_mod_blackhole.cc`:
   consume projected executable/kernel records directly from `TTProgram` / `ExecutableSpec`, not from legacy attrs.
 

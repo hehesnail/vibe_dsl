@@ -42,8 +42,8 @@ Add to `memory/general_dev.md`:
 
 ```md
 - In this pipeline the current IR/object is always being transformed into the next stage; it is not a read-only analysis substrate.
-- If a pass can recover what it needs from current IR or current owner objects, recover it locally in that pass instead of minting a bag or attr.
-- Pass-local matcher/visitor structs are fine only when they stay inside one `.cc` and immediately feed the rewrite or owner construction in that file.
+- If a pass can recover what it needs from current IR or current representation objects, recover it locally in that pass instead of minting a bag or attr.
+- Pass-local matcher/visitor structs are fine only when they stay inside one `.cc` and immediately feed the rewrite or representation construction in that file.
 - Blackhole builtins must stay at exact TT-Metal kernel API granularity; fusion comes from residency and schedule, not from helper/composite builtins.
 ```
 

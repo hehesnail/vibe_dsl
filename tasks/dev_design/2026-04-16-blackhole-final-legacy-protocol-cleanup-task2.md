@@ -6,8 +6,8 @@ Delete the public `AnalyzeBlackhole*` transform exports, delete the correspondin
 
 After this task, any pass that needs information must do one of two things:
 
-1. read the current `PrimFunc` / `SpatialPlan` / `TTProgram` directly and immediately rewrite or build from that truth; or
-2. if the result must survive, write it straight into the canonical owner object or the final executable projection being constructed.
+1. read the current `PrimFunc` / `SpatialPlan` / `TTProgram` directly and immediately rewrite or build from that representation; or
+2. if the result must survive, write it straight into the explicit representation object or the final executable projection being constructed.
 
 What it may **not** do:
 
@@ -104,7 +104,7 @@ AppendLeafProjectionFromTTProgram(program, executable);
 The exact helper names are local implementation detail. The contract is:
 
 - the helper stays in the same consuming file
-- it writes directly into the owner object or projection under construction
+- it writes directly into the representation object or projection under construction
 - it does not return a new semantic bag
 
 After this step, no active-chain reader may depend on:

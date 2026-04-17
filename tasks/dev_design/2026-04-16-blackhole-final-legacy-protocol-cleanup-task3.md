@@ -9,7 +9,7 @@ This task is intentionally small in abstraction surface:
 - no shared copy-analysis layer
 - no shared copy-direction attr
 - no exported copy matcher
-- no new helper vocabulary beyond what already exists on IR and owner objects
+- no new helper vocabulary beyond what already exists on IR and representation objects
 
 If two consumers need nearly the same structural walk, duplication is preferable to exporting another semantic layer. If a tiny shared helper is truly necessary, it may only factor traversal mechanics and must stay internal.
 

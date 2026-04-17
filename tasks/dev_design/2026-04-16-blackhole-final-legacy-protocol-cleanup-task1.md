@@ -7,11 +7,11 @@ Introduce one narrow mutating pass that walks the current `PrimFunc` and attache
 This pass is not a replacement analysis layer.
 
 - it reads current IR directly
-- it may consult current owner objects directly
+- it may consult current representation objects directly
 - it mutates the `PrimFunc` once by attaching one narrow attr
 - it must not publish another analysis wrapper, evidence bag, or reusable semantic object
 
-This attr remains temporary and leaf-local. It is not planning truth and must not grow into a replacement for `blackhole.compute_regions`.
+This attr remains temporary and leaf-local. It is not planning representation and must not grow into a replacement for `blackhole.compute_regions`.
 
 ## Files
 
