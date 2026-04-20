@@ -91,28 +91,39 @@
   compute-side exact builtin 选择前移到 planner helper 路线之前
 - `compute_epilogue_ops`
   不再属于 repo HEAD 的 active protocol：
-  它已从
+  顶层 key
+  已从
   `TTProgram.payload`、
-  executable projection、
-  codegen、
-  runtime
-  和测试基线移除
+  executable projection
+  和 payload/spec 测试基线移除；
+  但 nested
+  `compute_contract.epilogue_ops`
+  仍在 runtime compatibility metadata
+  中存活
 - 旧 helper/composite builtin 名称
   不再是 active IR surface；
   selector / validator
   会按 exact op 名 fail-closed 拒绝 residue
 - rowwise flash-attn 相关的 local pseudo builtin surface
-  也已从 builtin/codegen 层删除；
-  repo HEAD 上保留的是 exact TT-Metal sequence，
-  不是“保留死代码再 fail-closed”
+  已从 active lowered IR 退场；
+  但 `builtin_blackhole.{h,cc}`
+  和 `codegen_blackhole.cc`
+  里仍有 helper-named alias accessor /
+  alias dispatch residue，
+  所以 builtin/codegen surface
+  还没完全收口
 - selector 创建的 exact temporary CB requirement
   必须经由
   `blackhole.cb_requirements`
   seed 到
   `PlanTTCompute / PlanTTCBAlloc`；
   否则下游只会看见 dangling `requirement_index`
-- 当前唯一和 Task 0 直接相关、仍暂时保留的过渡面是
-  `tl.blackhole_lowering_requirements_seed`：
+- `blackhole.cb_requirements`
+  仍是
+  `PlanTTCBAlloc`
+  的 live planner input，
+  不是已经只剩文档清理的死字段
+- `tl.blackhole_lowering_requirements_seed`：
   它只承接
   `buffer_materialization_contracts`
   与

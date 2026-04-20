@@ -7,7 +7,9 @@
 
 完成后应满足三条硬约束：
 
-1. `builtin_blackhole.*` 只保留和 TT-Metal API 一一对应的 exact builtin；
+1. active lowered IR 只保留和 TT-Metal API 一一对应的 exact builtin，
+   `builtin_blackhole.{h,cc}` 里的 helper-named alias accessor
+   不能再继续定义 public builtin surface；
 2. `SelectBlackholeTTMetalBuiltins` 自己完成 primitive idiom 的 match + rewrite；
 3. exact builtin legality 的规则定义 / 常量 / predicate
    由 selector 和 validator 共享，
@@ -63,8 +65,22 @@ repo HEAD 里已经落地的局部结果只有：
   `BuildLoweringRequirementsFromAnalysis()`、
   `blackhole.cb_requirements`、
   `tl.blackhole_lowering_requirements_seed`；
+- `PlanTTCBAlloc`
+  仍显式要求
+  `blackhole.cb_requirements`，
+  所以下游 planner contract
+  还没有从这个 carrier 上切走；
 - `ValidateTTProgram` 还没有和 selector 共用一份 exact builtin legality contract；
-- `compute_epilogue_ops` 仍有 compatibility residue 留在 runtime / projection 侧代码里。
+- 顶层 `compute_epilogue_ops` key
+  虽已基本退出
+  `TTProgram.payload / executable projection`
+  主链，
+  但 nested `compute_contract.epilogue_ops`
+  仍在 runtime compatibility metadata 里存活；
+- `builtin_blackhole.{h,cc}`
+  和 `codegen_blackhole.cc`
+  里仍有 helper-named alias accessor /
+  alias dispatch residue。
 
 所以当前只能写成：
 
@@ -133,6 +149,63 @@ task0 的 builtin selection 应该直接面向当前 IR 和显式表示层，
 它现在仍是 `TTProgram` 结构 / payload validator，
 不是 selected exact-builtin TIR legality 的 owner truth。
 
+### 4.5 exact surface 仍有 registry / leaf alias residue
+
+当前 active lowered IR
+基本已经转到 exact builtin spellings，
+但 builtin / leaf 侧的 surface
+还没有完全收干净。
+
+repo HEAD 里还能直接看到：
+
+- `builtin_blackhole.{h,cc}`
+  仍通过 alias accessor
+  暴露
+  `write_local_slice_to_cb /
+   write_local_fragment_tile_to_cb /
+   write_local_fragment_slice_to_tiled_cb /
+   cast_fragment_slice_to_tiled_cb /
+   read_cb_front_tile_to_local /
+   read_cb_front_tile_to_local_fragment`
+- `codegen_blackhole.cc`
+  仍接受
+  helper-named spellings
+  和 exact op name
+  两套入口
+
+所以当前只能写成：
+
+- active IR surface
+  基本已切到 exact builtin
+
+不能写成：
+
+- builtin registry / leaf codegen
+  已经只剩单一 exact surface
+
+### 4.6 `blackhole.cb_requirements` 仍是 live planner contract
+
+当前不只是 selector
+会写回 `blackhole.cb_requirements`；
+下游 `PlanTTCBAlloc`
+也还把它当成 formal input。
+
+这意味着 repo HEAD 里：
+
+- `blackhole.cb_requirements`
+  还不是“已经退场、只差清理文档”的残留
+- 它仍是 active chain
+  上真实会被读取的 planner carrier
+
+因此 task0 文档必须把它写成：
+
+- 当前 live contract
+  但不属于终态 owner truth
+
+不能把它写成：
+
+- 已经只剩死字段或 leaf-local metadata
+
 ## 5. 基于审计结果修正后的任务内容
 
 ### 5.1 收正 task0 的 owner truth
@@ -161,8 +234,15 @@ owner truth 固定是：
 ### 5.2 收正 exact builtin surface
 
 task0 完成时，
-`builtin_blackhole.{h,cc}`
-里只能保留 exact TT-Metal builtin。
+必须同时满足两件事：
+
+1. active lowered IR
+   只剩 exact TT-Metal builtin op name
+2. `builtin_blackhole.{h,cc}`
+   里遗留的 helper-named alias accessor
+   要么删除，
+   要么降成 pass-local / compatibility-local helper，
+   不能继续定义 public builtin surface
 
 下面这类东西不能再属于 active builtin surface：
 
@@ -181,6 +261,14 @@ task0 完成时，
 如果某个语义需要多步 TT-Metal 调用，
 那就由 selector 直接改写成 exact sequence，
 而不是把组合动作封成 fake builtin。
+
+对应地，
+leaf codegen
+也不能继续长期接受：
+
+- helper-named alias spellings
+- “exact op name / helper op name 二选一”
+  这种兼容式 dispatch
 
 ### 5.3 收正 builtin 分类 owner truth
 
@@ -311,23 +399,44 @@ task0 文档里必须把两个层面拆开写：
 
 - covered executable projection 主链里，
   顶层 `compute_epilogue_ops` key
-  已基本不再作为 owner truth 产出
+  已经不再作为 owner truth 产出
+- `TTProgram -> executable projection`
+  的主 writer
+  不再发布这个顶层 key
 - 但 runtime compatibility metadata
   里的 nested `compute_contract.epilogue_ops`
   仍属于未删除 residue
+- `ExecutableSpec`
+  的 in-memory struct /
+  leaf runtime facade
+  里也仍有这类 compatibility surface
 
 所以 task0 只能写：
 
-- 顶层 projection key 已基本退出 covered 主链
+- 顶层 projection key
+  已退出 covered owner path
+- nested compatibility metadata
+  仍未删除
 
 不能写：
 
-- 这个协议面已经从整个仓库彻底删除
+- runtime / metadata 侧
+  已经完全不再接受 epilogue residue
 
 ### 5.9 收正 `blackhole.cb_requirements` 的删除目标
 
 `blackhole.cb_requirements`
 不应继续作为跨阶段 owner truth。
+
+但 repo HEAD 当前必须明确写清楚：
+
+- `PlanTTCBAlloc`
+  仍显式依赖它，
+  所以它现在仍是 live planner contract
+- “selection 不再依赖它”
+  和
+  “整个 active chain 已不再依赖它”
+  不是一回事
 
 task0 收口后的默认目标是：
 
@@ -360,9 +469,12 @@ task0 收口后的默认目标是：
    `blackhole.cb_requirements`
    不再作为 selection owner truth，
    后续 transport / CB planning 默认改成局部 derived analysis
-5. 删除 task0 范围内仍在 active chain 上的 helper/composite/local pseudo builtin residue
+5. 删除 task0 范围内仍在 active chain 上的 helper/composite/local pseudo builtin residue，
+   并同时收掉 builtin registry / leaf codegen
+   对 helper-named alias 的兼容入口
 6. 把 `compute_epilogue_ops`
-   的 runtime / projection residue
+   的顶层 projection 清理
+   与 nested runtime compatibility residue
    明确记录成 compatibility cleanup，
    不再误写成“已经删完”
 7. 重新校正文档和测试，
@@ -400,12 +512,20 @@ task0 的验证要证明“主链已经换了”，
    会在第一个 downstream consumer 之前被 fail-closed 拒绝
 4. payload/spec test：
    顶层 `compute_epilogue_ops` key
-   不再出现在 covered executable projection 主链产物里，
-   同时 runtime compatibility residue 仍按未删除记录
+   不再出现在
+   `TTProgram.payload / executable projection`
+   主链产物里，
+   同时 nested `compute_contract.epilogue_ops`
+   的 runtime compatibility residue
+   仍按未删除记录
 5. chain test：
    `PlanTTCompute`
    依赖的是已经合法化的 selector 产物本身，
    不是旧 planner 内部旁路
+6. surface audit test：
+   builtin registry / leaf codegen
+   不再把 helper-named alias
+   当成并行 public surface
 
 ## 9. 完成判据
 
@@ -413,6 +533,8 @@ task0 的验证要证明“主链已经换了”，
 task0 才算完成：
 
 - exact builtin surface 已收干净
+- active IR / builtin registry / leaf codegen
+  不再同时维持 helper-named alias surface
 - exact / helper / alias builtin 分类
   已收成单一协议定义
 - selector 已成为独立 rewrite pass
