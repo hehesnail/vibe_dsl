@@ -20,10 +20,11 @@ logical buffer/tile bridge handoff
   只负责 transform pipeline 内部
   source/helper/optimized device func
   之间的 bridge handoff；
-- downstream durable carrier
-  在 repo HEAD / task1 收口阶段
+- repo HEAD / task1 收口阶段
+  当前仍存在的 downstream
+  compatibility carrier
   不是这个临时 attr 本身，
-  当前只能暂时落在
+  而是暂时落在
   `TTProgram.payload["buffer_tile_bridge_specs"]`
   以及后续
   `tl.blackhole_executable["buffer_tile_bridge_specs"]`
@@ -41,15 +42,32 @@ logical buffer/tile bridge handoff
   leaf compatibility carrier；
 - 它们不是长期理想表示，
   也不能被重新定义成新的 owner truth；
-- 长期终态仍然必须回到显式表示层纪律：
-  bridge 语义要么能从 typed
-  `TTProgram` / `ExecutableSpec`
-  leaf object 稳定导出，
-  要么就必须升级成受类型约束的
-  显式 leaf field；
+- 长期终态仍然必须回到显式表示层纪律，
+  并按固定优先级收口：
+  - 默认优先从 typed
+    `TTProgram` / `ExecutableSpec`
+    leaf representation
+    稳定导出 codegen 所需 bridge 语义
+  - 只有当这份语义
+    无法从 typed leaf representation
+    稳定导出时，
+    才允许升级成受类型约束的
+    显式 leaf field / object；
 - bag/payload/projection
   只能作为过渡兼容路径，
   不能在 task1 文档里被洗白成长期协议。
+
+换句话说：
+
+- `buffer_tile_bridge_specs`
+  不是新的长期 IR 层名词
+- 也不是应该被永久保留的协议对象名
+- task1 只是在切掉
+  `blackhole.compute_regions`
+  的 owner truth，
+  不是在为
+  `buffer_tile_bridge_specs`
+  争取长期合法席位
 
 ## 2. 范围
 
@@ -61,12 +79,11 @@ logical buffer/tile bridge handoff
 - 让 optimized/helper 路径只消费这个窄 attr 完成 bridge handoff
 - 把 bridge-specific consumer
   从 broad compute-region bag 上切走
-- 把 bridge spec 的 downstream carrier
-  明确收口到
-  `TTProgram.payload`
-  和 executable projection，
-  而不是让临时 attr
-  偷偷长成新的长期协议
+- 把 repo HEAD 当前仍存在的
+  payload / projection
+  bridge 路径
+  明确记成 compatibility debt，
+  同时写死它的后续删除/收口方向
 
 这个 task 不负责的事：
 
@@ -204,6 +221,9 @@ temporary producer-side attr
   -> codegen consumer
 ```
 
+这条链路只是当前代码现实，
+不是 task1 要为它背书的长期设计。
+
 因此 task1 不能只写
 “leaf-local attr 会被 strip 掉”，
 还必须写清：
@@ -214,6 +234,9 @@ temporary producer-side attr
   不是最终理想表示
 - 不是 bridge spec 本身
   已经找到长期 owner truth
+- 这条 compatibility path
+  在后续 leaf cutover
+  里仍然是删除目标
 
 否则就会把“删临时 attr”
 误写成两种都错误的说法之一：
@@ -355,7 +378,7 @@ task1 完成后，
 它也只能搬运 dedicated capture pass
 写出来的窄 attr。
 
-### 5.3 窄 attr 只负责 producer-side handoff，downstream durable carrier 单独收口
+### 5.3 窄 attr、当前 compatibility carrier、长期收口必须分开写
 
 对 bridge handoff 这件具体事情来说，
 transform pipeline 内部
@@ -386,22 +409,27 @@ task1 不把这两层混成一个概念：
 - runtime `ExecutableSpec`
   仍然不拥有 bridge spec
 
-但 task1 也必须把退出条件写死：
+但 task1 也必须把长期收口顺序写死：
 
-- 后续 cleanup
-  不能让
+- 默认目标不是
+  “给 bridge spec
+  找一个新的长期存放处”，
+  而是让 codegen 所需 bridge 语义
+  能从 typed leaf representation
+  稳定导出；
+- 只有当这份语义
+  的确无法从 typed leaf representation
+  稳定导出时，
+  才允许把它升级成 typed
+  `TTProgram` / `ExecutableSpec`
+  leaf field / object；
+- 无论哪种情况，
   `buffer_tile_bridge_specs`
-  永久停留在裸 payload map /
-  裸 projection field
-  这种弱类型 carrier 上；
-- 最终必须二选一收口：
-  - 升成 typed `TTProgram` /
-    `ExecutableSpec`
-    leaf field / object
-  - 或让 codegen 所需 bridge 语义
-    能从 typed leaf representation
-    稳定导出，
-    不再依赖 bag/payload 传语义
+  这条 payload / projection path
+  都只是 compatibility debt，
+  不是长期 owner truth，
+  也是后续 leaf cutover
+  的删除目标
 
 ### 5.4 只为 bridge 而存在的 broad bag 读取必须切走
 
@@ -465,6 +493,8 @@ task1 的 capture contract
   上的 downstream bridge-spec carrier
 - 但后者也只是当前兼容债，
   不是最终设计完成态
+- 也不能在后续文档里
+  被重新描述成长期协议对象
 
 ## 6. 执行切片
 
@@ -489,7 +519,8 @@ task1 的 capture contract
    确保
    temporary carrier /
    compatibility carrier /
-   long-term exit condition /
+   typed leaf 收口优先级 /
+   删除目标 /
    runtime 非 owner
    这三件事都写实
 
@@ -551,6 +582,12 @@ task1 的验证要证明
     payload / projection
     标成过渡兼容 carrier，
     而不是长期 owner truth
+11. 文档明确把
+    typed leaf representation
+    的稳定导出
+    写成长期默认收口，
+    只有在不可导出时
+    才允许升级成 typed leaf field / object
 
 ## 9. 完成判据
 
@@ -570,11 +607,15 @@ task1 才算完成：
   而不是长期终态
 - runtime `ExecutableSpec`
   不再被文档或代码当成 bridge-spec owner
-- task1 已明确写出退出条件：
-  后续 cleanup
-  必须把 bridge 语义
-  收到 typed leaf field / object
-  或可稳定导出的 typed leaf representation
+- task1 已明确写出长期收口优先级：
+  默认必须从 typed leaf representation
+  稳定导出 bridge 语义；
+  只有在不可导出时，
+  才允许升级成 typed leaf field / object
+- `buffer_tile_bridge_specs`
+  payload / projection path
+  已被明确定义成
+  后续 leaf cutover 的删除目标
 - task1 文档和代码口径一致，
   不再把“消费落点已接好”误写成“capture 已完成”，
   也不再把 temporary attr
