@@ -9,7 +9,10 @@
 
 1. `builtin_blackhole.*` 只保留和 TT-Metal API 一一对应的 exact builtin；
 2. `SelectBlackholeTTMetalBuiltins` 自己完成 primitive idiom 的 match + rewrite；
-3. exact builtin legality 由 selector 和 validator 共享，而不是散落在旧 planner residue、黑名单和旁路字段里。
+3. exact builtin legality 的规则定义 / 常量 / predicate
+   由 selector 和 validator 共享，
+   而不是散落在旧 planner residue、
+   黑名单和旁路字段里。
 
 ## 2. 范围
 
@@ -17,7 +20,8 @@
 
 - 收正 exact builtin surface
 - 把 compute idiom 到 exact builtin sequence 的改写职责收进 dedicated selector pass
-- 把 selector / validator 之间需要共享的 legality 收成一处
+- 把 selector / validator 之间需要共享的 legality
+  收成单一 rule definition / constants / predicates
 - 删除 task0 范围内还在 active chain 上的 helper/composite builtin residue
 
 这个 task 不允许做的事：
@@ -255,7 +259,8 @@ task0 需要建立的是：
 ### 5.7 shared legality 的共享方式
 
 selector 和 validator
-必须共享同一份 exact legality 定义，
+必须共享同一份 exact legality
+规则定义，
 但它们消费的对象不同：
 
 - selected exact-builtin TIR legality
@@ -263,6 +268,25 @@ selector 和 validator
 - `TTProgram` validator
   只消费已经显式进入 `TTProgram`
   的 realization 结果
+
+这里“共享”的含义固定是：
+
+- 共享同一组
+  enum / constexpr / predicate /
+  legality rule definitions
+- 保证 selector postcondition
+  和 downstream validator
+  对同一类 exact builtin
+  使用同一套显式规则
+
+这里“共享”的含义明确**不是**：
+
+- 共享 bag / seed / payload
+- 共享 analysis object / evidence object
+- 共享需要跨阶段流动的 helper wrapper
+- 再造一个独立于当前 IR /
+  `TTProgram`
+  之外的“legality framework object”
 
 重点不是做一个很重的“框架”，
 而是不能再维持：
@@ -272,6 +296,14 @@ selector 和 validator
   一套历史规则
 - `TTProgram` validator
   只靠黑名单拒绝 residue
+
+如果某条 legality
+不能同时以
+当前 IR 上的 selector postcondition
+和 `TTProgram` 上的显式结果
+来表达，
+结论应当是补显式表示或补局部 derived check，
+不是新增共享协议对象。
 
 ### 5.8 明确 `compute_epilogue_ops` 的正确口径
 
