@@ -2,499 +2,414 @@
 
 ## 1. 任务目标
 
-`Task 1` 只做一件事：
+这个 cleanup task 只负责一件事：
 
-> **切掉 `blackhole.compute_regions` / compute-region evidence
-> 对 leaf-local logical buffer/tile correspondence 的 owner truth。**
+> **把 leaf-local logical buffer/tile bridge handoff 的 owner truth
+> 从 `blackhole.compute_regions`
+> / `AnalyzeBlackholeComputeRegionEvidence`
+> 切回当前阶段的 direct capture，
+> 并把
+> `tl.blackhole_logical_buffer_tile_bridge_specs`
+> 收成唯一窄 temporary handoff。**
 
-这里要切掉的不是“某个测试里的 bridge spec 字段名”，
-而是 broad compute-region bag
-在 active chain 上偷偷承担的跨阶段语义角色。
+task1 要修正的是
+**producer-side owner truth**，
+不是一次性做完所有 bridge consumer 的删除。
 
-task1 完成后必须同时满足：
+因此 task1 的正确合同是：
 
-1. optimized/helper 路径需要的 leaf-local logical bridge handoff
-   不再从 `blackhole.compute_regions` 提取；
-2. 这份 handoff
-   在 transform pipeline 内
-   只能通过
-   `tl.blackhole_logical_buffer_tile_bridge_specs`
-   这个 narrow temporary attr 传递；
-3. `buffer_tile_bridge_specs`
-   不会被文档重新洗白成新的长期协议对象。
+1. source/helper -> optimized device func
+   这段 bridge handoff
+   不再从 broad compute-region bag 抽取；
+2. 当前仍然存在的 downstream carrier
+   如果还要临时保留，
+   也必须以 direct capture 的结果为来源，
+   不能再把 broad bag 当真源；
+3. 文档不能把
+   `buffer_tile_bridge_specs`
+   重新洗白成新的长期协议对象。
 
-## 2. 这份语义到底属于哪一层
+## 2. 范围
 
-这次必须先把层边界讲清楚，
-否则 task1 永远会滑回
-"把当前实现面修辞合法化"。
+这个 task 允许做的事：
 
-### 2.1 它不属于 `SpatialPlan`
+- 在当前阶段直接 capture
+  leaf-local logical bridge handoff
+- 让
+  `tl.blackhole_logical_buffer_tile_bridge_specs`
+  充当 source/helper 和 optimized device func
+  之间的唯一窄 temporary carrier
+- 把当前 bridge-specific source
+  从 `blackhole.compute_regions`
+  切到 current-stage capture / narrow attr
+- 把 repo HEAD 现存的 payload / projection / codegen
+  bridge 路径
+  明确写成 downstream compatibility debt
 
-这份 bridge 语义
-不是 target-independent 的
-virtual spatial/dataflow 表示。
+这个 task 不负责的事：
 
-它不回答：
-
-- execution unit 是什么
-- unit 间 dataflow 是什么
-- virtual layout / phase / carry / reduction 是什么
-
-所以它不是 `SpatialPlan`
-应该长期承载的对象。
-
-### 2.2 它也不是 `TTProgram` 的长期 planning slice
-
-这份 bridge 语义
-也不是 target realization
-本身的长期 slice。
-
-它不回答：
-
-- block/core placement
-- transport / sync / ABI / execution
-- TT kernel family / role
-
-因此它也不应该被包装成
-新的 `TTProgram` planning noun。
-
-### 2.3 它本质上是当前 leaf path 的兼容债
-
-repo HEAD 里之所以还有这份 bridge 语义，
-是因为当前优化后 device func /
-projection / codegen
-之间还没有把 logical buffer/tile identity
-完整落到 typed leaf representation，
-导致 codegen 仍然需要一份
-leaf-local logical correspondence。
-
-所以正确口径只能是：
-
-- **task1 只修正它的来源和 owner truth**
-- **不授予它长期表示层地位**
-
-### 2.4 长期终态固定为后续 leaf cutover 义务
-
-task1 不负责完成长期终态，
-但必须把终态义务写死。
-
-长期只能二选一收口：
-
-1. 默认方案：
-   codegen 所需 bridge 语义
-   能从 typed leaf representation
-   稳定导出；
-2. 只有在确实无法稳定导出时：
-   才允许把它升级成
-   typed leaf field / object。
-
-无论哪种情况，
-`buffer_tile_bridge_specs`
-都不是应该被永久保留的协议对象名。
+- 删除整个 public / internal compute-region analysis 面
+  - 这是 task2
+- 删除
+  `TTProgram.payload["buffer_tile_bridge_specs"]`
+  / executable projection
+  / codegen bridge reader
+  - 这是 task3 的 leaf reader cutover
+- 定义新的长期 bridge representation
+- 新增 public analysis wrapper
+- 把另一份 `Map<String, Any>` 或 payload
+  包装成 replacement protocol
 
 ## 3. 当前状态 (`2026-04-20`)
 
 当前 **不算完成**。
 
-repo HEAD 已经有的局部现实包括：
+repo HEAD 当前的 bridge 链路仍然是：
+
+```text
+AnalyzeBlackholeComputeRegionEvidence
+  -> blackhole.compute_regions["buffer_tile_bridge_specs"]
+  -> lower.py:_extract_logical_bridge_specs()
+  -> tl.blackhole_logical_buffer_tile_bridge_specs
+  -> blackhole_lowering_requirements / lowering seed
+  -> TTProgram.payload["buffer_tile_bridge_specs"]
+  -> tl.blackhole_executable["buffer_tile_bridge_specs"]
+  -> codegen_blackhole.cc
+```
+
+这条链路暴露了两个事实：
+
+1. 上游 owner truth
+   仍然是 broad compute-region bag
+2. 下游 leaf/codegen
+   仍然保留 bridge compatibility path
+
+当前代码里已经成立的只有：
 
 - `tl.blackhole_logical_buffer_tile_bridge_specs`
-  attr key 已定义；
-- `blackhole_lowering_requirements.cc`
-  已能读取这个 attr；
-- `build_tt_program.cc`
-  会在 TTProgram finalization 时
-  strip 掉这个 temporary attr；
-- `lower_blackhole_ops.cc`
-  会把 bridge specs
-  放进 `TTProgram.payload`；
-- `tt_program_projection.h`
-  会把 payload 上的
+  attr key 已存在
+- `BuildTTProgram`
+  会在中间态结束时 strip
+  `tl.blackhole_logical_buffer_tile_bridge_specs`
+  和
+  `tl.blackhole_lowering_requirements_seed`
+- `rt_mod_blackhole.cc`
+  并不是
   `buffer_tile_bridge_specs`
-  投影到 `tl.blackhole_executable`；
-- `codegen_blackhole.cc`
-  还会继续消费这份 projection；
-- payload 侧已经有正向测试。
+  的 reader
 
-但这些都只是
-**当前兼容实现面**，
-不是 task1 已经完成的证明。
+但这些都不代表 task1 已完成。
 
 当前真正的问题仍然是：
 
 - [lower.py](/root/dev/vibe_dsl/tilelang_repo/tilelang/engine/lower.py#L221)
   还在从
   `blackhole.compute_regions`
-  提取 `buffer_tile_bridge_specs`；
-- [common.py](/root/dev/vibe_dsl/tilelang_repo/testing/python/target/blackhole/common.py#L97)
-  的测试 helper
-  也还在走同一路径；
-- [blackhole_lowering_requirements.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/common/blackhole_lowering_requirements.cc#L109)
+  抽 bridge handoff
+- repo HEAD 里还没有
+  `capture_blackhole_logical_bridge_specs.cc`
+  这类 direct capture 实现
+- [blackhole_lowering_requirements.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/common/blackhole_lowering_requirements.cc#L1335)
   和
-  [lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L1749)
-  里仍有 bridge-specific consumer
-  直接读
-  `AnalyzeBlackholeComputeRegionEvidence(func)`。
+  [lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L1460)
+  仍继续把 bridge specs
+  当作 active consumer 输入
 
-所以 repo HEAD 当前只能写成：
+## 4. 当前代码现实
 
-> narrow attr 的消费落点已接好
+### 4.1 broad compute-region bag 仍然拥有 producer-side owner truth
 
-不能写成：
+当前 bridge spec 的构造
+仍然发生在 compute-region analysis 里，
+不是发生在当前 exact builtin / current-TIR capture 上。
 
-> direct logical bridge capture 已成立
+直接证据：
 
-## 4. 当前失败模式
-
-### 4.1 broad bag 仍然拥有 bridge handoff 的来源
-
-当前 active 路径仍是：
-
-1. `LowerToBlackholePhaseB`
-2. `AnalyzeBlackholeComputeRegions`
-3. 从 `blackhole.compute_regions`
-   抽 `buffer_tile_bridge_specs`
-4. 再通过 `_align_blackhole_device_symbol()`
-   贴回 optimized device func
-
-这意味着：
-
-- narrow attr 不是 producer-side owner truth
-- broad bag 才是
-
-这正是 task1 要切掉的东西。
-
-### 4.2 “最终 `PrimFunc` 看不到 `blackhole.compute_regions`” 不是完成证明
-
-最终 active-chain `PrimFunc`
-通常不会暴露
-`blackhole.compute_regions`。
-
-但这只说明 broad bag
-没有被留到最终产物里；
-并不说明中途没有拿它做 owner truth。
-
-当前 repo HEAD 的问题
-恰恰就是：
-
-- 它仍然在中途承担 owner truth
-- 只是最终被丢掉了
-
-### 4.3 payload / projection 只是现状，不是 task1 的背书对象
-
-repo HEAD 当前还存在这条链：
-
-```text
-tl.blackhole_logical_buffer_tile_bridge_specs
-  -> TTProgram.payload["buffer_tile_bridge_specs"]
-  -> tl.blackhole_executable["buffer_tile_bridge_specs"]
-  -> codegen
-```
-
-task1 必须明确：
-
-- 这是当前 admitted compatibility path
-- 不是新的长期设计边界
-- 更不是 `bridge spec`
-  已经找到长期 owner truth
-
-## 5. Task1 收口后的正确合同
-
-### 5.1 producer-side handoff 只能是 narrow temporary attr
-
-对 transform pipeline 内部的
-leaf-local bridge handoff 来说，
-唯一允许的 temporary carrier
-只能是：
-
-- `tl.blackhole_logical_buffer_tile_bridge_specs`
-
-它只能做一件事：
-
-- 在 source/helper/optimized device func
-  之间传递当前仍需要的
-  logical buffer/tile correspondence
-
-它不能变成：
-
-- planning representation
-- public analysis wrapper
-- broad bag 替身
-- 新的长期协议对象
-
-### 5.2 broad compute-region bag 不能再作为 bridge 来源
-
-task1 完成后：
-
-- `engine/lower.py`
-  不能再从
-  `blackhole.compute_regions`
-  提取 bridge handoff；
-- 测试 helper
-  不能再复用这个 broad bag 路径；
-- `blackhole_lowering_requirements.cc`
-  里 broad bag 合并 bridge spec 的逻辑
-  必须退出 bridge-source 角色；
-- 凡是只为了 bridge handoff /
-  leaf-local logical correspondence
-  而读
-  `AnalyzeBlackholeComputeRegionEvidence(func)`
-  的代码，
-  都必须切走。
-
-task1 不是要求
-“所有 compute-region evidence 读取归零”，
-而是要求：
-
-> **bridge handoff 不再由 broad bag 拥有。**
-
-### 5.3 capture pass 只能是 pass-local mechanics
-
-task1 改完后，
-仓库里必须有 dedicated capture pass，
-例如：
-
-- `capture_blackhole_logical_bridge_specs.cc`
-
-它的职责固定是：
-
-- 直接遍历当前 `PrimFunc`
-- 基于当前 IR 结构、
-  buffer/binding/type/attr
-  这些显式信息
-  捕获 leaf-local logical bridge handoff
-- 只写出
+- [buffer_tile_bridge_spec_utils.h](/root/dev/vibe_dsl/tilelang_repo/src/transform/common/buffer_tile_bridge_spec_utils.h#L34)
+  从 fragment layout 构造 bridge spec
+- [analyze_blackhole_compute_regions.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/analyze_blackhole_compute_regions.cc#L176)
+  把 bridge specs 写进 region bag
+- [lower.py](/root/dev/vibe_dsl/tilelang_repo/tilelang/engine/lower.py#L221)
+  再把它复制到
   `tl.blackhole_logical_buffer_tile_bridge_specs`
 
-它明确不能：
+所以现在 narrow attr
+只是 broad bag 的复制品，
+还不是 direct capture 的 owner truth。
 
-- 顺便写 broad compute-region bag
-- 依赖名字匹配恢复语义
-- 变成新的 public analysis object
-- 变成共享 helper layer
+### 4.2 `buffer_tile_bridge_specs` 当前同时扮演两种角色
 
-如果当前 `PrimFunc`
-还不足以稳定恢复这份 handoff，
-结论只能是：
+repo HEAD 里，
+它不是单一角色。
 
-- 上游显式表示还不够
-- 需要补表示 / validator / reject
+它同时是：
 
-而不是继续保留
-`blackhole.compute_regions`
-作为隐性真源。
+1. **planning side channel**
+   - [lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L1611)
+     会把它装进
+     `buffer_tile_bridge_specs_by_buffer_`
+   - [lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L7099)
+     还会在 tiled republish materialization
+     缺少
+     `logical_row_width`
+     / `logical_element_count`
+     时拿它做 fallback
+2. **leaf compatibility carrier**
+   - [lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L3958)
+     把它写进
+     `TTProgram.payload`
+   - [tt_program_projection.h](/root/dev/vibe_dsl/tilelang_repo/src/target/tt_program_projection.h#L235)
+     把它投影到
+     `tl.blackhole_executable`
+   - [codegen_blackhole.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/codegen_blackhole.cc#L669)
+     读取它生成 generic bridge code
 
-## 6. task1 / task2 / task3 的责任边界
+因此 task1 文档不能把它写成
+“只剩 leaf debt”
+或
+“只剩 planning source”
+其中任意一种。
 
-### 6.1 task1 负责什么
+### 4.3 当前 builtin/current-TIR surface 还不足以直接删掉 leaf bridge path
 
-task1 只负责：
+repo HEAD 当前的 generic bridge codegen
+不仅需要：
 
-- 切掉 broad compute-region bag
-  对 bridge handoff 的 owner truth
-- 建立 direct logical bridge capture
-- 把 narrow attr
-  明确收成 producer-side temporary carrier
-- 把当前 payload / projection 路径
-  明确记成 compatibility debt
+- offset
+- num_elements
+- row_width
 
-### 6.2 task2 负责什么
+还需要：
 
-task2 才负责：
+- `local_shape`
+- inverse logical index expressions
 
-- 删除 public/internal legacy analysis bag
-- 删除 mixed compute-region consumer
-- 把 compute-region stack
-  彻底退成 history / local mechanics
+这些信息当前仍通过
+`BufferTileBridgeBinding`
+进入 codegen，
+见：
 
-所以 task1 不能假装
-“所有 evidence 读取都应在本轮归零”。
+- [codegen_blackhole.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/codegen_blackhole.cc#L2718)
+- [codegen_blackhole.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/codegen_blackhole.cc#L2872)
+- [codegen_blackhole.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/codegen_blackhole.cc#L3063)
 
-### 6.3 task3 负责什么
+而当前 builtin surface
+并没有把这些量完整编码出来，
+见：
 
-task3 才负责真正的 leaf 收口：
-
-- 让 build / codegen / runtime
-  严格回到 `ExecutableSpec`
-  reader discipline
-- 删除当前 payload / projection
-  上仍残留的 compatibility debt
-- 完成 bridge 语义的长期终态
-  二选一收口：
-  - 默认：从 typed leaf representation
-    稳定导出
-  - 不可导出时：升级成 typed leaf field / object
-
-所以 task1 必须把这条义务写死，
-但不能假装自己已经把 leaf end-state 做完。
-
-## 7. 当前 compatibility debt 的纪律
-
-repo HEAD 当前仍有：
-
-- `TTProgram.payload["buffer_tile_bridge_specs"]`
-- `tl.blackhole_executable["buffer_tile_bridge_specs"]`
-
-这两层在 task1 里的正确口径只有一个：
-
-> **当前 admitted compatibility debt**
+- [builtin_blackhole.cc](/root/dev/vibe_dsl/tilelang_repo/src/tir/builtin_blackhole.cc#L489)
 
 这意味着：
 
-- runtime `ExecutableSpec`
-  不是 bridge spec owner；
-- 当前 downstream consumer
-  只是 `codegen_blackhole.cc`；
-- 不能新增新的 reader
-  继续消费这条 payload / projection path；
-- 不能把这条路径
-  写成长期表示层对象；
-- 后续 leaf cutover
-  必须把这条路径删除掉。
+> **在 current-TIR / builtin surface
+> 还没有补齐之前，
+> task1 不能把 payload / projection / codegen
+> bridge path 的删除
+> 写成自己的完成判据。**
 
-## 8. 结构约束
+### 4.4 任务排序已经被其他权威文档固定
 
-task1 虽然不把 `bridge spec`
-当长期对象，
-但当前 compatibility carrier
-仍然必须受显式结构约束。
+当前其它权威文档对职责划分是明确的：
 
-至少要继续满足 repo HEAD
-已经存在的 gate：
+- [cleanup 总览](/root/dev/vibe_dsl/tasks/dev_design/2026-04-16-blackhole-final-legacy-protocol-cleanup.md#L63)
+  把 task1 写成
+  direct logical bridge capture
+- [task2](/root/dev/vibe_dsl/tasks/dev_design/2026-04-16-blackhole-final-legacy-protocol-cleanup-task2.md#L136)
+  负责删除 public / internal legacy analysis bag
+- [task3_runtime_gate_and_workload_cutover.md](/root/dev/vibe_dsl/tasks/dev_design/task3_runtime_gate_and_workload_cutover.md#L19)
+  明确把 leaf reader cutover
+  放在 `ExecutableSpec / leaf reader` 边界
+- [protocol audit](/root/dev/vibe_dsl/tasks/dev_design/blackhole_first_principles_protocol_audit.md#L205)
+  也把 internal bridge payload
+  的退场写在 leaf reader 清理侧
 
-- validator 要求每个 spec
-  至少包含
-  `buffer`
-  `shape`
-  `local_shape`
-- codegen generic bridge
-  还要求
-  `local_shape`
-  是 1-D，
-  并要求 inverse logical index
-  相关表达满足当前可投影形式
+所以 task1 文档如果把
+payload / projection / codegen reader
+删除写进自己的 completion contract，
+就会和当前权威入口冲突。
 
-这说明：
+## 5. 基于审计结果修正后的任务内容
 
-- 当前 attr / payload
-  仍然不能退化成任意 bag
-- 但“有结构约束”
-  不等于“它已经成了长期表示对象”
+### 5.1 task1 只切 bridge handoff 的来源和 owner truth
 
-## 9. 执行切片
+task1 的正确要求是：
 
-1. 新增 direct logical bridge capture pass，
-   只从当前 `PrimFunc`
-   产出
-   `tl.blackhole_logical_buffer_tile_bridge_specs`
-2. 更新 `engine/lower.py`
-   和测试 helper，
-   不再通过
-   `AnalyzeBlackholeComputeRegions`
-   提取 bridge handoff
-3. 把 bridge-specific consumer
-   从 broad compute-region evidence
-   切到：
-   - narrow temporary attr
-   - 当前 IR 局部恢复
-   - 或现有 compatibility path
-     的最小必需消费
-4. 明确把
-   `TTProgram.payload / executable projection`
-   上的 bridge 路径
-   标成 compatibility debt，
-   并把后续删除方向写进文档
-5. 保持 task2 / task3 的边界，
-   不把 mixed consumer deletion
-   和 leaf end-state
-   偷偷塞进 task1
+1. source/helper -> optimized device func
+   之间的 bridge handoff
+   不再来自
+   `blackhole.compute_regions`
+2. repo HEAD 里必须出现
+   direct capture 的 current-stage 实现
+   - 可以是 dedicated pass
+   - 也可以是等价的 current-stage local collector
+   - 但不能再是 broad bag copy
+3. `tl.blackhole_logical_buffer_tile_bridge_specs`
+   只允许作为这段 handoff 的窄 temporary carrier
 
-## 10. 相关文件
+如果当前阶段还无法稳定恢复所需 handoff，
+结论只能是：
+
+- 扩当前阶段表示 / 结构
+- 显式 reject / unsupported
+
+不能继续把 broad compute-region bag
+留成真源。
+
+### 5.2 task1 不负责删掉全部 downstream bridge consumer
+
+task1 改完以后，
+当前 surviving downstream carrier
+可以暂时继续存在，
+但只能按下面口径描述：
+
+- `blackhole_lowering_requirements.cc`
+  / `lower_blackhole_ops.cc`
+  里的 bridge consumer
+  仍属于 active planning residue
+  - 它们后续由 task2 继续收口
+- `TTProgram.payload`
+  / executable projection
+  / codegen bridge reader
+  仍属于 leaf compatibility debt
+  - 它们后续由 task3 删除
+
+这里的关键不是
+“现在就全部删完”，
+而是：
+
+> **这些 surviving consumer
+> 不能再反向定义 owner truth。**
+
+### 5.3 payload / projection / codegen 路径只能被写成 leaf compatibility debt
+
+审计后的固定口径是：
+
+- 它不是 `SpatialPlan` 语义
+- 它不是 `TTProgram` 的长期 planning slice
+- 它不是 TT-Metal runtime contract
+- 它只是 repo HEAD 当前 leaf/codegen
+  还没收口时的 compatibility debt
+
+因此 task1 文档必须同时做到两点：
+
+1. 不把它写成当前应该长期保留的协议对象
+2. 也不把它误写成
+   “task1 现在就必须删完”
+
+### 5.4 后续删除这条 leaf bridge 路径的前提要写清楚
+
+将来要删除
+`TTProgram.payload -> executable projection -> codegen`
+这条 bridge path，
+必须先满足至少一条：
+
+1. current-TIR / builtin surface
+   已经能直接表达 codegen 所需 mapping
+2. 或者显式 leaf representation
+   已经拥有等价字段
+
+在这之前，
+不能把 repo HEAD 当前 leaf bridge path
+描述成正确长期设计；
+也不能把它的删除
+提前压到 task1 上。
+
+## 6. 执行切片
+
+1. 新增 direct logical bridge capture
+   - 直接从当前阶段 capture
+     leaf-local bridge handoff
+   - 不再从
+     `AnalyzeBlackholeComputeRegionEvidence`
+     复制
+2. 更新 [lower.py](/root/dev/vibe_dsl/tilelang_repo/tilelang/engine/lower.py)
+   和测试 helper
+   - 不再通过
+     `blackhole.compute_regions`
+     提取 bridge handoff
+3. 把当前 bridge-specific source
+   从 broad bag
+   切到 direct capture / narrow attr
+   - 如果某些 consumer
+     还要暂时保留，
+     也只能消费这份 direct capture 结果
+4. 不在 task1 里扩大 scope 去删除：
+   - public/internal legacy analysis 面
+   - `TTProgram.payload`
+   - executable projection
+   - codegen bridge reader
+5. 同步文档和测试口径
+   - 明确 task1 / task2 / task3 的分工
+
+## 7. 相关文件
 
 - `tilelang_repo/src/transform/capture_blackhole_logical_bridge_specs.cc`
+  - 计划中的 direct capture 文件；
+    repo HEAD 当前还不存在
 - `tilelang_repo/tilelang/engine/lower.py`
-- `tilelang_repo/tilelang/engine/phase.py`
+- `tilelang_repo/testing/python/target/blackhole/common.py`
+- `tilelang_repo/src/transform/analyze_blackhole_compute_regions.cc`
+- `tilelang_repo/src/transform/common/buffer_tile_bridge_spec_utils.h`
 - `tilelang_repo/src/transform/common/blackhole_lowering_requirements.cc`
 - `tilelang_repo/src/transform/lower_blackhole_ops.cc`
-- `tilelang_repo/src/transform/common/companion_base.h`
 - `tilelang_repo/src/transform/build_tt_program.cc`
 - `tilelang_repo/src/transform/validate_tt_program.cc`
-- `tilelang_repo/testing/python/target/blackhole/common.py`
-- `tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
-- `tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py`
 - `tilelang_repo/src/target/tt_program_projection.h`
 - `tilelang_repo/src/target/codegen_blackhole.cc`
-- `tilelang_repo/src/target/rt_mod_blackhole.cc`
+- `tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py`
+- `tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
+- `tasks/dev_design/2026-04-16-blackhole-final-legacy-protocol-cleanup-task2.md`
+- `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
 
-## 11. 验证要求
+## 8. 验证要求
 
 task1 的验证必须证明：
 
-> **bridge handoff 的真源已经切换**
-
-不是只证明
-“最后 payload 里还有 bridge specs”。
+> **bridge handoff 的 owner truth
+> 已经不再来自 broad compute-region bag。**
 
 至少要覆盖：
 
-1. optimized/helper path
-   仍能保留正确的
-   `buffer_tile_bridge_specs`
-2. `engine/lower.py`
+1. `engine/lower.py`
    和测试 helper
-   都不再依赖
-   `AnalyzeBlackholeComputeRegions`
-   提取 bridge handoff
-3. dedicated capture pass
-   只写出
-   `tl.blackhole_logical_buffer_tile_bridge_specs`
-4. broad compute-region bag
-   不再作为 bridge-source
-   合并进 lowering path
-5. 最终 active-chain `PrimFunc`
-   仍不暴露
+   不再从
    `blackhole.compute_regions`
-6. `build_tt_program.cc`
-   仍会在中间态结束时
-   strip 掉 temporary attr
-7. `TTProgram.payload`
-   和 executable projection
-   仍能承接当前 compatibility path
-8. malformed bridge payload
-   继续在 validator / codegen
-   边界 fail closed
-9. 文档明确把
-   payload / projection
-   标成 compatibility debt
-10. 文档明确把长期终态
-    固定到 task3 的
-    typed leaf 收口义务上
+   抽取 bridge handoff
+2. repo HEAD 已经有 current-stage 的 direct capture 实现，
+   而不是 Python 复制 broad bag
+3. `tl.blackhole_logical_buffer_tile_bridge_specs`
+   成为唯一窄 temporary handoff
+4. 当前仍然保留的 downstream bridge consumer
+   不再把 broad compute-region bag
+   当真源
+5. 文档明确写出：
+   - task2 删除 public / internal legacy analysis bag
+   - task3 删除 payload / projection / codegen bridge path
+6. malformed bridge handoff
+   仍会在现有 validator / codegen 边界
+   fail closed
 
-## 12. 完成判据
+## 9. 完成判据
 
 只有下面这些同时成立，
 task1 才算完成：
 
-- dedicated direct capture pass 已存在
-- bridge handoff 已不再从 `blackhole.compute_regions` 抽取
-- broad compute-region bag
-  已退出 bridge owner truth
+- bridge handoff
+  已不再从
+  `blackhole.compute_regions`
+  / `AnalyzeBlackholeComputeRegionEvidence`
+  抽取
+- repo HEAD 已有 direct current-stage capture，
+  不再靠 broad bag copy
 - `tl.blackhole_logical_buffer_tile_bridge_specs`
-  已成为 transform pipeline
-  内唯一 producer-side temporary carrier
-- `TTProgram.payload / executable projection`
-  只被定义成当前 compatibility debt，
-  不被定义成长期表示边界
-- runtime `ExecutableSpec`
-  不再被文档或代码当成 bridge owner
-- task1 已把长期终态义务
-  明确压给后续 leaf cutover：
-  默认导出，
-  不可导出时才升级成 typed leaf field / object
-- task1 文档和代码口径一致，
-  不再把“消费落点已接好”
-  误写成“capture 已完成”，
-  也不再把
-  `buffer_tile_bridge_specs`
-  描述成应该长期保留的协议对象
+  已成为 source/helper -> optimized device func
+  之间唯一窄 temporary carrier
+- surviving downstream bridge path
+  已不再被写成 owner truth
+  或长期协议对象
+- task1 文档已经和
+  cleanup 总览 / task2 / task3 / protocol audit
+  保持一致：
+  - task1 只切 owner truth
+  - task2 再删 legacy analysis bag
+  - task3 再删 leaf bridge reader / internal bridge payload
