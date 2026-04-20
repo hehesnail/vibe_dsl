@@ -21,8 +21,9 @@ logical buffer/tile bridge handoff
   source/helper/optimized device func
   之间的 bridge handoff；
 - downstream durable carrier
+  在 repo HEAD / task1 收口阶段
   不是这个临时 attr 本身，
-  而是
+  当前只能暂时落在
   `TTProgram.payload["buffer_tile_bridge_specs"]`
   以及后续
   `tl.blackhole_executable["buffer_tile_bridge_specs"]`
@@ -31,6 +32,24 @@ logical buffer/tile bridge handoff
   不是 bridge spec 的 owner，
   也不直接消费这份语义；
   codegen 才是 downstream bridge-spec consumer。
+
+但这里必须同时写清：
+
+- `TTProgram.payload`
+  / executable projection
+  只是 repo HEAD 当前 admitted 的
+  leaf compatibility carrier；
+- 它们不是长期理想表示，
+  也不能被重新定义成新的 owner truth；
+- 长期终态仍然必须回到显式表示层纪律：
+  bridge 语义要么能从 typed
+  `TTProgram` / `ExecutableSpec`
+  leaf object 稳定导出，
+  要么就必须升级成受类型约束的
+  显式 leaf field；
+- bag/payload/projection
+  只能作为过渡兼容路径，
+  不能在 task1 文档里被洗白成长期协议。
 
 ## 2. 范围
 
@@ -175,7 +194,8 @@ repo HEAD 上已经有的局部铺垫包括：
   会从 executable projection
   读取 bridge specs。
 
-这说明当前真正完整的表示生命周期是：
+这说明当前 repo HEAD
+实际存在的兼容链路是：
 
 ```text
 temporary producer-side attr
@@ -189,10 +209,17 @@ temporary producer-side attr
 还必须写清：
 
 - 被 strip 掉的是 temporary producer-side attr
-- 不是 bridge spec 本身的 downstream contract
+- payload / executable projection
+  只是当前兼容 carrier，
+  不是最终理想表示
+- 不是 bridge spec 本身
+  已经找到长期 owner truth
 
 否则就会把“删临时 attr”
-误写成“bridge spec 在 TTProgram 之前就该消失”。
+误写成两种都错误的说法之一：
+
+- “bridge spec 在 TTProgram 之前就该消失”
+- “payload/projection 已经是原则上正确的最终落点”
 
 ### 4.3 bridge-specific consumer 仍然直接依赖 compute-region evidence
 
@@ -254,6 +281,15 @@ bridge spec downstream contract 的地方，
 而不能写成：
 
 - runtime 侧也拥有同一份 bridge-spec owner truth
+
+同时也不能倒过来写成：
+
+- 既然 codegen 现在通过 payload/projection 消费，
+  那 payload/projection
+  就天然是长期设计边界
+
+它们在 task1 里只是当前兼容实现面，
+不是新的长期 IR 层名词。
 
 ### 4.5 最终输出不带 `blackhole.compute_regions` 不是完成证明
 
@@ -334,7 +370,8 @@ transform pipeline 内部
   consumer 再从那边优先读取
 
 与此同时，
-downstream durable carrier
+repo HEAD 当前 admitted 的
+downstream compatibility carrier
 必须明确写成：
 
 - `TTProgram.payload["buffer_tile_bridge_specs"]`
@@ -344,9 +381,27 @@ task1 不把这两层混成一个概念：
 
 - temporary attr 可以被 strip
 - payload / executable projection
-  仍然必须保留 bridge-spec 语义
+  在当前代码里
+  仍然承接 bridge-spec 语义
 - runtime `ExecutableSpec`
   仍然不拥有 bridge spec
+
+但 task1 也必须把退出条件写死：
+
+- 后续 cleanup
+  不能让
+  `buffer_tile_bridge_specs`
+  永久停留在裸 payload map /
+  裸 projection field
+  这种弱类型 carrier 上；
+- 最终必须二选一收口：
+  - 升成 typed `TTProgram` /
+    `ExecutableSpec`
+    leaf field / object
+  - 或让 codegen 所需 bridge 语义
+    能从 typed leaf representation
+    稳定导出，
+    不再依赖 bag/payload 传语义
 
 ### 5.4 只为 bridge 而存在的 broad bag 读取必须切走
 
@@ -408,6 +463,8 @@ task1 的 capture contract
 - 不是 `TTProgram.payload`
   / executable projection
   上的 downstream bridge-spec carrier
+- 但后者也只是当前兼容债，
+  不是最终设计完成态
 
 ## 6. 执行切片
 
@@ -431,7 +488,8 @@ task1 的 capture contract
 5. 重新校正文档和测试，
    确保
    temporary carrier /
-   durable carrier /
+   compatibility carrier /
+   long-term exit condition /
    runtime 非 owner
    这三件事都写实
 
@@ -489,6 +547,10 @@ task1 的验证要证明
 9. malformed bridge spec
    会继续在 validator / codegen
    边界 fail closed
+10. 文档明确把
+    payload / projection
+    标成过渡兼容 carrier，
+    而不是长期 owner truth
 
 ## 9. 完成判据
 
@@ -503,9 +565,16 @@ task1 才算完成：
   内唯一的 producer-side temporary carrier
 - `TTProgram.payload`
   / executable projection
-  已成为唯一 downstream durable carrier
+  只被文档定义成当前 admitted
+  downstream compatibility carrier，
+  而不是长期终态
 - runtime `ExecutableSpec`
   不再被文档或代码当成 bridge-spec owner
+- task1 已明确写出退出条件：
+  后续 cleanup
+  必须把 bridge 语义
+  收到 typed leaf field / object
+  或可稳定导出的 typed leaf representation
 - task1 文档和代码口径一致，
   不再把“消费落点已接好”误写成“capture 已完成”，
   也不再把 temporary attr
