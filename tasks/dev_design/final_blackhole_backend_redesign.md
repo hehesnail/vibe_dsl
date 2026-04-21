@@ -572,47 +572,12 @@ planning seed
 
 架构收口仍按
 `Task 1 -> Task 2 -> Task 3 -> Legacy Protocol Deletion`
-理解显式表示层边界；
-当前统一 cleanup 顺序
-固定为：
+理解显式表示层边界。
 
-1. **`Cleanup Task 1`**
-   - 把 logical bridge capture
-     收成唯一窄 bridge attr
-2. **`Cleanup Task 2`**
-   - 删除 public / internal legacy analysis bag
-   - 同时把
-     `SpatialPlan`
-     收成单一 direct builder implementation；
-     当前
-     `BuildSpatialPlanCompanion`
-     这个名字如果继续保留，
-     也只是历史实现名，
-     不是架构契约
-3. **`Cleanup Task 0` 剩余工作**
-   - 回收 exact TT-Metal builtin surface /
-     builtin-selection pass /
-     legality contract
-   - `Task 0`
-     的 selector-forwarding
-     前半切片已落地，
-     但不按完成计
-4. **`Cleanup Task 3`**
-   - 删除
-     `blackhole.copy_semantics`
-5. **`Cleanup Task 4`**
-   - 删除
-     `blackhole.segment_kind`
-   - 收紧 planner / projection / runtime
-     对 kernel kind / segment plan
-     的直接表示消费
-6. **`Cleanup Task 5`**
-   - 做最终 cleanup scan、
-     文档同步、
-     验证与 memory 沉淀
-7. **cleanup 完成后**
-   - 才恢复 support surface /
-     workload payoff 扩展
+当前 cleanup 顺序和状态
+统一只看 `tasks/progress.md`；
+本文件不再重复维护
+repo HEAD 的当前任务队列。
 
 补充：
 
@@ -644,7 +609,9 @@ planning seed
 4. `task3_runtime_gate_and_workload_cutover.md`
    - 固定 `Task 3: ExecutableSpec / Leaf Reader Cutover`
 5. `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
-   - 固定当前统一 cleanup 顺序
+   - 固定 cleanup ownership /
+     forced debt /
+     convergence gate
 6. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
    到
    `task5.md`

@@ -347,39 +347,14 @@ task5 不是新的删除 owner。
   它不能被 overview
   合法化成新层
 
-## 5. Unified Execution Order
+## 5. Ordering Note
 
-当前统一 cleanup 顺序
-固定为：
+repo HEAD 当前 cleanup 顺序和状态
+统一只看 `tasks/progress.md`。
 
-1. task1：
-   把 bridge handoff
-   从 broad compute-region bag
-   切到 direct capture
-2. task2：
-   删除 public/internal
-   legacy analysis carrier
-3. task0 剩余工作：
-   锁 exact TT-Metal builtin surface /
-   current-IR legality owner truth /
-   `blackhole.cb_requirements`
-   删除
-4. task3：
-   删除
-   `blackhole.copy_semantics`
-   owner truth
-5. task4：
-   删除
-   `blackhole.segment_kind`
-   owner truth，
-   再单独删 leaf-local body slicing residue
-6. task5：
-   完成最终 docs /
-   scans /
-   verification /
-   delivery 收尾
-
-这里固定写死：
+本文不再重复维护
+当前任务队列；
+这里只保留一条顺序约束：
 
 - `task0`
   的 selector-forwarding
@@ -387,11 +362,12 @@ task5 不是新的删除 owner。
   但不按完成计
 - `task0`
   剩余的 full-contract cleanup
-  固定放在 `task2` 后，
-  不再另写一套顺序
-- cleanup 完成后，
-  才恢复 support surface /
-  workload payoff 扩展
+  必须在 `task2`
+  切掉主要 analysis /
+  lowering bag 依赖之后
+  立即回收，
+  不能拖到 `task3`
+  之后
 
 ## 6. Primary File Surfaces
 

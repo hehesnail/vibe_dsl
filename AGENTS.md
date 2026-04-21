@@ -204,14 +204,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - `tasks/dev_design/task1_spatial_plan_companion.md`
    - `tasks/dev_design/task2_ttprogram_companion_cutover.md`
    - `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
-2. 当前统一 cleanup 顺序固定为：
-   - `Cleanup Task 1 -> Cleanup Task 2 -> Cleanup Task 0(remain) -> Cleanup Task 3 -> Cleanup Task 4 -> Cleanup Task 5`
-   - cleanup 完成后，才恢复 support surface / workload payoff 扩展
-   - `Task 0`
-     的 selector-forwarding
-     前半切片已落地，
-     但完整合同还没完成；
-     它的剩余工作固定在 `Task 2` 后回收
+2. 当前 cleanup 顺序和状态
+   统一只看 `tasks/progress.md`
+   - 不要在其他入口文档里
+     再维护第二套当前顺序
+   - cleanup 完成后，
+     才恢复 support surface /
+     workload payoff 扩展
 3. `task1_spatial_plan_companion.md`、`task2_ttprogram_companion_cutover.md`、`task3_runtime_gate_and_workload_cutover.md`
    负责定义 completion contract，不再单独充当当前实施顺序；
    这些文件名中的 `companion / cutover` 只是历史索引，不是新的 IR 层命名
@@ -280,9 +279,9 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - `flash-attn` compile-path / source/spec baseline 已稳定，但 direct runtime correctness 还不是 admitted support surface
 - direct cast consumer 当前只保留 build/source contract gate，不作为 TT-Sim direct-runtime correctness gate
 - TT-Sim `fp16` 仍按 simulator capability boundary 处理，不作为当前 correctness gate
-- 当前总体 blocker 是统一 cleanup 顺序
-  `Task 1 -> Task 2 -> Task 0(remain) -> Task 3 -> Task 4 -> Task 5`
-  还没收口；
+- 当前总体 blocker
+  统一以 `tasks/progress.md`
+  里的 cleanup 看板为准；
   当前问题不是单一 cutover 点，也不是 support surface 不够
 - 后续所有架构推进以当前 layered IR 为准：
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`

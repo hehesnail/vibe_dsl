@@ -78,34 +78,30 @@ pass 名字、helper、bag、payload、bridge attr
 
 ## 4. 当前执行优先级
 
-当前统一 cleanup 顺序固定为：
-
-1. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task1.md`
-2. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task2.md`
-3. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
-   - 这里只回收 `Task 0`
-     剩余的 full-contract work；
-     selector-forwarding
-     前半切片已落地，
-     但不按完成计
-4. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task3.md`
-5. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task4.md`
-6. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task5.md`
-7. cleanup 完成后，再恢复 support surface / workload payoff 扩展
-
-其中：
-
-- `task1_spatial_plan_companion.md`
-- `task2_ttprogram_companion_cutover.md`
-- `task3_runtime_gate_and_workload_cutover.md`
-
-负责定义表示层边界和完成判据，
-不单独充当“当前代码已经完成到哪一步”的状态来源。
-
 当前 repo HEAD 的总体状态 /
 当前 blocker /
 当前下一步，
 仍统一只看 `tasks/progress.md`。
+
+这里不再重复维护当前 cleanup 顺序。
+
+- `tasks/progress.md`
+  - 唯一当前执行顺序 / 状态看板
+- `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
+  - cleanup ownership /
+    forced debt /
+    convergence gate
+- `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
+  到
+  `task5.md`
+  - 各自 residue 的
+    required end-state /
+    verification contract
+- `task1_spatial_plan_companion.md`
+- `task2_ttprogram_companion_cutover.md`
+- `task3_runtime_gate_and_workload_cutover.md`
+  - 长期表示层边界和 completion contract，
+    不是当前执行顺序页
 
 其中：
 
