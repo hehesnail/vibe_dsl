@@ -46,38 +46,47 @@
   - 未收口
   - 需要 `Cleanup Task 0-5` 全部完成
 
-### 2.2 cleanup 执行 lane
+### 2.2 cleanup 当前任务看板
 
-- `Cleanup Task 0`
-  - `selector-forwarding`
-    局部已落地
-  - 但 exact builtin selection /
-    legality /
-    `blackhole.cb_requirements`
-    删除还没完成
-  - 不是 repo HEAD
-    当前下一步，
-    但必须在 `Task 2`
-    之后回收
 - `Cleanup Task 1`
-  - 当前第一 blocker
+  - 状态：`当前第一 blocker / 应立即推进`
+  - 目标：把 logical bridge handoff
+    从 `blackhole.compute_regions`
+    切到 direct capture
 - `Cleanup Task 2`
-  - 当前第二 blocker
-  - 同时决定
+  - 状态：`当前第二 blocker / 待 Task 1 后推进`
+  - 目标：删除 public/internal
+    legacy analysis carrier
+  - 说明：它完成后，
     `Task 0`
     剩余 full-contract work
-    能否真正收口
+    必须回到关键路径
+- `Cleanup Task 0`
+  - 状态：`partial landed / 未完成 / 待 Task 2 后立即回收`
+  - 当前只完成：
+    `selector-forwarding`
+    局部前移
+  - 仍未完成：
+    exact builtin selection /
+    legality /
+    `blackhole.cb_requirements`
+    删除
 - `Cleanup Task 3`
-  - 待 `Task 1 / 2 / 0-remain`
-    后推进
+  - 状态：`pending / 待 Task 1 + Task 2 + Task 0-remain 后推进`
+  - 目标：删除
+    `blackhole.copy_semantics`
 - `Cleanup Task 4`
-  - 待 `Task 3`
-    后推进
+  - 状态：`pending / 待 Task 3 后推进`
+  - 目标：删除
+    `blackhole.segment_kind`
+    并收掉 leaf-local body slicing residue
 - `Cleanup Task 5`
-  - 只负责最终收敛 /
-    验证 /
-    交付
-  - 不是新的协议 owner
+  - 状态：`pending / 最终 convergence gate`
+  - 目标：统一文档 /
+    residue scans /
+    verification /
+    delivery
+  - 说明：不是新的协议 owner
 
 ### 2.3 Deferred lane
 
