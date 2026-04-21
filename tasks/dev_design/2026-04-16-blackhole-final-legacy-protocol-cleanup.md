@@ -392,6 +392,15 @@ cleanup 的架构依赖顺序
   只有 selector-forwarding
   局部结果，
   不按完成计
+- 一旦 task2
+  已经把 analysis /
+  lowering bag
+  对 task0 的主要卡点切掉，
+  task0 剩余的
+  full-contract cleanup
+  就必须立刻回到关键路径，
+  不能继续被无限期后置到
+  task3 之后
 
 ## 6. Primary File Surfaces
 
