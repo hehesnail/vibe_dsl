@@ -220,13 +220,9 @@ def _prim_func_symbol(gvar, func: tir.PrimFunc) -> str:
 
 def _extract_logical_bridge_specs(func: tir.PrimFunc):
     attrs = func.attrs or {}
-    if "blackhole.compute_regions" not in attrs:
+    if _BLACKHOLE_LOGICAL_BRIDGE_SPECS_ATTR not in attrs:
         return None
-    bridge_specs = []
-    for region in attrs["blackhole.compute_regions"]:
-        if "buffer_tile_bridge_specs" not in region:
-            continue
-        bridge_specs.extend(list(region["buffer_tile_bridge_specs"]))
+    bridge_specs = list(attrs[_BLACKHOLE_LOGICAL_BRIDGE_SPECS_ATTR])
     return bridge_specs or None
 
 
@@ -366,14 +362,12 @@ def lower(
     # the explicit `target` argument. Run the lowering phases under the target
     # context so canonicalized targets (for example Blackhole + host target)
     # observe the same semantics as manual `with target:` debugging flows.
-    blackhole_analysis_mod = None
+    blackhole_phase_b_mod = None
     with target:
         # Phase 1: Lower and legalize the IR
         mod = LowerAndLegalize(mod, target)
         if target.kind.name == "blackhole":
-            blackhole_analysis_mod = tilelang.transform.AnalyzeBlackholeComputeRegions()(
-                LowerToBlackholePhaseB(mod)
-            )
+            blackhole_phase_b_mod = LowerToBlackholePhaseB(mod)
 
         # Phase 2: Optimize the IR for the target
         mod = OptimizeForTarget(mod, target)
@@ -382,8 +376,8 @@ def lower(
     device_mod = tir.transform.Filter(_is_device_call)(mod)
 
     if target.kind.name == "blackhole":
-        if blackhole_analysis_mod is not None:
-            device_mod = _align_blackhole_device_symbol(blackhole_analysis_mod, device_mod)
+        if blackhole_phase_b_mod is not None:
+            device_mod = _align_blackhole_device_symbol(blackhole_phase_b_mod, device_mod)
         device_mod, codegen_mod = blackhole_codegen(host_mod, device_mod, target, enable_device_compile)
     else:
         codegen_mod = (

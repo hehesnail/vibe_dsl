@@ -652,36 +652,6 @@ def SplitBlackholeKernel():
     """
     return _ffi_api.SplitBlackholeKernel()  # type: ignore
 
-
-def AnalyzeBlackholeWorkDecomposition():
-    """Analyze split-after Blackhole launch axes and work-dependent index structure.
-
-    Emits a minimal `blackhole.work_decomposition` PrimFunc attr that captures
-    launch axes, derived index expressions, and work-dependent loop bounds.
-    """
-    return _ffi_api.AnalyzeBlackholeWorkDecomposition()  # type: ignore
-
-
-def AnalyzeBlackholeComputeRegions():
-    """Analyze split-after Blackhole compute regions.
-
-    Emits a structured `blackhole.compute_regions` PrimFunc attr capturing
-    compute-region buffers, row reductions, row broadcasts, pointwise chains,
-    and loop-carried region state.
-    """
-    return tvm.ffi.get_global_func("tl.transform.AnalyzeBlackholeComputeRegions")()
-
-
-def AnalyzeBlackholePipelineStages():
-    """Analyze split-after Blackhole pipelined loop structure.
-
-    Emits a structured `blackhole.pipeline_stages` PrimFunc attr capturing
-    pipelined loop stage count, stage-local shared buffers, and loop-carried
-    local state.
-    """
-    return tvm.ffi.get_global_func("tl.transform.AnalyzeBlackholePipelineStages")()
-
-
 def AnalyzeSpatialStructureFacts():
     """Analyze normalized TIR into Task 1 spatial structure facts."""
     return tvm.ffi.get_global_func("tl.transform.AnalyzeSpatialStructureFacts")()

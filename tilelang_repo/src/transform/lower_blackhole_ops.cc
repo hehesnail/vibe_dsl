@@ -27,7 +27,6 @@
 
 #include "lower_blackhole_ops.h"
 
-#include "common/compute_region_analysis.h"
 #include "../op/utils.h"
 #include "common/blackhole_lowering_requirements.h"
 #include "common/blackhole_utils.h"
@@ -1269,6 +1268,9 @@ static bool IsVectorLocalFragmentBuffer(const Buffer& buffer) {
 static void ValidateNoResidualComputeRegionStores(const Stmt& body) {
   tir::PostOrderVisit(body, [&](const ObjectRef& node) {
     if (const auto* store = node.as<BufferStoreNode>()) {
+      if (store->buffer->shape.size() == 1) {
+        return;
+      }
       if (IsUnsupportedResidualLocalScope(store->buffer)) {
         ICHECK(false)
             << "Blackhole compute subset lowering is not implemented; residual local "
@@ -1279,43 +1281,6 @@ static void ValidateNoResidualComputeRegionStores(const Stmt& body) {
   });
 }
 
-static bool HasUnsupportedComputeOpsInRequirements(const Map<String, Any>& lowering_requirements) {
-  if (auto compute_ops = lowering_requirements.Get("compute_op_kinds")) {
-    for (const auto& item : Downcast<Array<Any>>(compute_ops.value())) {
-      const std::string op_name = Downcast<String>(item);
-      if (op_name == "reduction" || op_name == "broadcast" || op_name == "pointwise_chain") {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-static std::vector<std::string> CollectLeafUnsupportedComputeOps(
-    const Map<String, Any>& lowering_requirements) {
-  std::vector<std::string> unsupported_ops;
-  std::unordered_set<std::string> seen_ops;
-  if (auto compute_ops = lowering_requirements.Get("compute_op_kinds")) {
-    for (const auto& item : Downcast<Array<Any>>(compute_ops.value())) {
-      const std::string op_name = Downcast<String>(item);
-      if ((op_name == "reduction" || op_name == "broadcast") &&
-          seen_ops.insert(op_name).second) {
-        unsupported_ops.push_back(op_name);
-      }
-    }
-  }
-  if (auto pointwise_ops = lowering_requirements.Get("pointwise_op_kinds")) {
-    for (const auto& item : Downcast<Array<Any>>(pointwise_ops.value())) {
-      const std::string op_name = Downcast<String>(item);
-      if ((op_name == "fill" || op_name == "max" || op_name == "add" || op_name == "cast") &&
-          seen_ops.insert(op_name).second) {
-        unsupported_ops.push_back(op_name);
-      }
-    }
-  }
-  return unsupported_ops;
-}
-
 namespace {
 bool IsFragmentFillValue(const PrimExpr& expr);
 bool HasResidualFragmentFill(const Stmt& body);
@@ -1323,6 +1288,32 @@ bool HasResidualFragmentAdd(const Stmt& body);
 bool HasResidualFragmentMax(const Stmt& body);
 bool HasResidualFragmentCast(const Stmt& body);
 bool HasResidualRowBroadcast(const Stmt& body);
+}  // namespace
+
+static std::vector<std::string> CollectLeafUnsupportedComputeOpsFromBody(const Stmt& body) {
+  std::vector<std::string> unsupported_ops;
+  std::unordered_set<std::string> seen_ops;
+  auto push = [&](const char* op_name) {
+    if (seen_ops.insert(op_name).second) {
+      unsupported_ops.push_back(op_name);
+    }
+  };
+  if (HasResidualRowBroadcast(body)) {
+    push("broadcast");
+  }
+  if (HasResidualFragmentFill(body)) {
+    push("fill");
+  }
+  if (HasResidualFragmentMax(body)) {
+    push("max");
+  }
+  if (HasResidualFragmentAdd(body)) {
+    push("add");
+  }
+  if (HasResidualFragmentCast(body)) {
+    push("cast");
+  }
+  return unsupported_ops;
 }
 
 static int CountLoweredRowReductionBuiltins(const Stmt& body) {
@@ -1341,120 +1332,86 @@ static int CountLoweredRowReductionBuiltins(const Stmt& body) {
   return count;
 }
 
-static Map<String, Any> PruneSatisfiedLoweringRequirements(const Map<String, Any>& lowering_requirements,
-                                                           const Stmt& body) {
-  auto reduction_targets_opt = lowering_requirements.Get("reduction_targets");
-  auto broadcast_sources_opt = lowering_requirements.Get("broadcast_sources");
-  auto pointwise_ops_opt = lowering_requirements.Get("pointwise_op_kinds");
-  if (!reduction_targets_opt.has_value() && !broadcast_sources_opt.has_value() &&
-      !pointwise_ops_opt.has_value()) {
-    return lowering_requirements;
-  }
-
-  bool reduction_satisfied = !reduction_targets_opt.has_value();
-  if (reduction_targets_opt.has_value()) {
-    const int target_count =
-        static_cast<int>(Downcast<Array<Any>>(reduction_targets_opt.value()).size());
-    reduction_satisfied =
-        target_count == 0 || CountLoweredRowReductionBuiltins(body) >= target_count;
-  }
-
-  bool broadcast_satisfied = !broadcast_sources_opt.has_value();
-  if (broadcast_sources_opt.has_value()) {
-    const int source_count =
-        static_cast<int>(Downcast<Array<Any>>(broadcast_sources_opt.value()).size());
-    broadcast_satisfied =
-        source_count == 0 || !HasResidualRowBroadcast(body);
-  }
-
-  if (!reduction_satisfied && !broadcast_satisfied) {
-    return lowering_requirements;
-  }
-
-  Map<String, Any> pruned;
-  for (const auto& [key, value] : lowering_requirements) {
-    if (key == "reduction_targets" && reduction_satisfied) {
-      continue;
-    }
-    if (key == "broadcast_sources" && broadcast_satisfied) {
-      continue;
-    }
-    if (key == "compute_op_kinds") {
-      Array<Any> kept_ops;
-      for (const auto& item : Downcast<Array<Any>>(value)) {
-        const std::string op_name = Downcast<String>(item);
-        if (op_name == "reduction" && reduction_satisfied) continue;
-        if (op_name == "broadcast" && broadcast_satisfied) continue;
-        kept_ops.push_back(item);
-      }
-      pruned.Set(key, kept_ops);
-      continue;
-    }
-    if (key == "pointwise_op_kinds") {
-      Array<Any> kept_ops;
-      for (const auto& item : Downcast<Array<Any>>(value)) {
-        const std::string op_name = Downcast<String>(item);
-        if (op_name == "fill" && !HasResidualFragmentFill(body)) {
-          continue;
-        }
-        if (op_name == "add" && !HasResidualFragmentAdd(body)) {
-          continue;
-        }
-        if (op_name == "max" && !HasResidualFragmentMax(body)) {
-          continue;
-        }
-        if (op_name == "cast" && !HasResidualFragmentCast(body)) {
-          continue;
-        }
-        kept_ops.push_back(item);
-      }
-      pruned.Set(key, kept_ops);
-      continue;
-    }
-    pruned.Set(key, value);
-  }
-  return pruned;
+static bool IsStageLocalScopeForPipelineLegality(const std::string& scope) {
+  return scope.rfind("shared", 0) == 0 || scope.rfind("blackhole.cb.", 0) == 0;
 }
 
-static void ValidateComputePipelineLegality(const Map<String, Any>& lowering_requirements) {
-  if (auto pipeline_stage_counts = lowering_requirements.Get("pipeline_stage_counts")) {
-    for (const auto& item : Downcast<Array<Any>>(pipeline_stage_counts.value())) {
-      const int stage_count = Downcast<Integer>(item)->value;
-      ICHECK_LE(stage_count, 2)
-          << "Blackhole compute pipeline legality: unsupported stage count " << stage_count;
+static std::optional<int64_t> GetPipelineStageCountFromLoop(const ForNode* loop) {
+  if (!loop || !loop->annotations.defined()) {
+    return std::nullopt;
+  }
+  for (const char* key : {"num_stages", "tl_pipelined_num_stages"}) {
+    if (auto value = loop->annotations.Get(key)) {
+      if (const auto* imm = value.value().as<IntImmNode>()) {
+        return imm->value;
+      }
     }
   }
+  return std::nullopt;
+}
+
+static std::optional<int64_t> InferPipelineStageCountFromStmt(const Stmt& stmt) {
+  std::optional<int64_t> inferred;
+  tir::PostOrderVisit(stmt, [&inferred](const ObjectRef& node) {
+    auto update_from_buffer = [&inferred](const Buffer& buffer) {
+      const std::string scope = buffer.scope();
+      if (!IsStageLocalScopeForPipelineLegality(scope) || buffer->shape.size() < 3) {
+        return;
+      }
+      if (const auto* imm = buffer->shape[0].as<IntImmNode>()) {
+        if (imm->value > 0) {
+          inferred = imm->value;
+        }
+      }
+    };
+    if (const auto* store = node.as<BufferStoreNode>()) {
+      update_from_buffer(store->buffer);
+      return;
+    }
+    if (const auto* load = node.as<BufferLoadNode>()) {
+      update_from_buffer(load->buffer);
+    }
+  });
+  return inferred;
 }
 
 static void ValidateComputePipelineLegalityFromBody(const Stmt& body) {
   tir::PostOrderVisit(body, [&](const ObjectRef& node) {
     const auto* loop = node.as<ForNode>();
-    if (!loop || !loop->annotations.defined()) {
+    if (!loop) {
       return;
     }
-    auto stage_count = loop->annotations.Get("num_stages");
-    if (!stage_count.has_value()) {
+    std::optional<int64_t> maybe_stages = GetPipelineStageCountFromLoop(loop);
+    if (!maybe_stages.has_value()) {
+      maybe_stages = InferPipelineStageCountFromStmt(GetRef<Stmt>(loop));
+    }
+    if (!maybe_stages.has_value()) {
       return;
     }
-    const int64_t stages = Downcast<Integer>(stage_count.value())->value;
+    const int64_t stages = maybe_stages.value();
     ICHECK_LE(stages, 2)
         << "Blackhole compute pipeline legality: unsupported stage count " << stages;
   });
 }
 
-static void SetArrayRequirementIfMissing(Map<String, Any>* lowering_requirements,
-                                         const String& key, const Array<Any>& values) {
-  if (!values.empty() && !lowering_requirements->count(key)) {
-    lowering_requirements->Set(key, values);
-  }
-}
-
-static bool HasComputeSupportContract(const Map<String, Any>& lowering_requirements) {
-  auto maybe_compute_ops = lowering_requirements.Get(String(schema_key::kComputeOpKinds));
-  if (!maybe_compute_ops) {
-    return false;
-  }
-  return !Downcast<Array<Any>>(maybe_compute_ops.value()).empty();
+static bool HasComputeSegmentRequirement(const Stmt& body) {
+  bool found = false;
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    if (const auto* call = node.as<CallNode>()) {
+      if (call->op->IsInstance<OpNode>() && Downcast<Op>(call->op)->name == "tl.tileop.gemm_py") {
+        found = true;
+      }
+      return;
+    }
+    const auto* store = node.as<BufferStoreNode>();
+    if (!store || !IsUnsupportedResidualLocalScope(store->buffer)) {
+      return;
+    }
+    if (!store->value.as<BufferLoadNode>()) {
+      found = true;
+    }
+  });
+  return found;
 }
 
 static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& func) {
@@ -1742,85 +1699,109 @@ void PlanTTKernelABI::AppendPublishedBufferSourceMaterialization(
   }
 }
 
-void PlanTTKernelABI::LoadComputeRegionPhysicalBufferBindings(const PrimFunc& func) {
+void PlanTTKernelABI::LoadPhysicalComputeBufferBindings(const PrimFunc& func) {
   compute_physical_buffers_by_data_.clear();
   compute_physical_buffers_by_identity_.clear();
 
-  Map<String, Any> compute_region_evidence = AnalyzeBlackholeComputeRegionEvidence(func);
-  auto maybe_compute_regions = compute_region_evidence.Get(String("regions"));
-  if (!maybe_compute_regions) {
-    return;
+  std::unordered_map<const VarNode*, std::vector<Buffer>> buffers_by_data;
+  std::unordered_map<std::string, std::vector<Buffer>> buffers_by_identity;
+
+  auto remember = [&](const Buffer& buffer) {
+    if (!buffer.defined() || !IsUnsupportedResidualLocalScope(buffer)) {
+      return;
+    }
+    if (const auto* data = BufferDataIdentity(buffer)) {
+      auto& group = buffers_by_data[data];
+      if (std::find(group.begin(), group.end(), buffer) == group.end()) {
+        group.push_back(buffer);
+      }
+      return;
+    }
+    const std::string identity = BufferIdentityName(buffer);
+    if (identity.empty()) {
+      return;
+    }
+    auto& group = buffers_by_identity[identity];
+    if (std::find(group.begin(), group.end(), buffer) == group.end()) {
+      group.push_back(buffer);
+    }
+  };
+
+  for (const auto& [_, buffer] : func->buffer_map) {
+    remember(buffer);
   }
-  Array<Any> compute_regions = Downcast<Array<Any>>(maybe_compute_regions.value());
+  tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
+    if (const auto* block = node.as<tir::BlockNode>()) {
+      for (const Buffer& buffer : block->alloc_buffers) {
+        remember(buffer);
+      }
+      return;
+    }
+    if (const auto* store = node.as<tir::BufferStoreNode>()) {
+      remember(store->buffer);
+      return;
+    }
+    if (const auto* load = node.as<tir::BufferLoadNode>()) {
+      remember(load->buffer);
+      return;
+    }
+    const auto* call = node.as<tir::CallNode>();
+    if (!call) {
+      return;
+    }
+    for (const PrimExpr& arg : call->args) {
+      if (IsBufferLikeExpr(arg)) {
+        remember(NormalizeToBufferRegion(arg)->buffer);
+      }
+    }
+  });
 
-  for (const Any& region_any : compute_regions) {
-    auto region = Downcast<Map<String, Any>>(region_any);
-    auto region_buffers_it = region.find(manifest_key::kRegionBuffers);
-    if (region_buffers_it == region.end()) {
+  auto preferred_scope_rank = [](const Buffer& buffer) {
+    const std::string scope = buffer.scope();
+    if (scope == "blackhole.acc") {
+      return 3;
+    }
+    if (scope == "local.fragment") {
+      return 2;
+    }
+    if (scope == "local") {
+      return 1;
+    }
+    return 0;
+  };
+  auto choose_preferred_buffer = [&](const std::vector<Buffer>& group) -> Optional<Buffer> {
+    Optional<Buffer> preferred;
+    int preferred_rank = -1;
+    for (const Buffer& candidate : group) {
+      const int rank = preferred_scope_rank(candidate);
+      if (!preferred || rank > preferred_rank) {
+        preferred = candidate;
+        preferred_rank = rank;
+      }
+    }
+    return preferred;
+  };
+
+  for (const auto& [data, group] : buffers_by_data) {
+    Optional<Buffer> preferred = choose_preferred_buffer(group);
+    if (!preferred) {
       continue;
     }
-
-    Optional<Buffer> preferred_buffer;
-    std::string preferred_name;
-    Optional<Buffer> fragment_backing_buffer;
-    std::string fragment_backing_name;
-    for (const Any& region_buffer_any : Downcast<Array<Any>>((*region_buffers_it).second)) {
-      auto region_buffer = Downcast<Map<String, Any>>(region_buffer_any);
-      auto name_it = region_buffer.find(schema_key::kName);
-      auto scope_it = region_buffer.find(schema_key::kScope);
-      auto buffer_it = region_buffer.find(schema_key::kBuffer);
-      if (name_it == region_buffer.end() || scope_it == region_buffer.end() ||
-          buffer_it == region_buffer.end()) {
-        continue;
-      }
-      auto buffer = (*buffer_it).second.try_cast<Buffer>();
-      if (!buffer.has_value()) {
-        continue;
-      }
-      const std::string canonical_name =
-          static_cast<std::string>(Downcast<String>((*name_it).second));
-      const std::string scope = static_cast<std::string>(Downcast<String>((*scope_it).second));
-      if (scope == "blackhole.acc") {
-        preferred_buffer = buffer.value();
-        preferred_name = canonical_name;
-        break;
-      }
-      if (!fragment_backing_buffer.has_value() && scope == "local.fragment") {
-        fragment_backing_buffer = buffer.value();
-        fragment_backing_name = canonical_name;
-      }
-    }
-    if (!preferred_buffer.has_value()) {
-      preferred_buffer = fragment_backing_buffer;
-      preferred_name = fragment_backing_name;
-    }
-    if (!preferred_buffer.has_value()) {
-      continue;
-    }
-
-    for (const Any& region_buffer_any : Downcast<Array<Any>>((*region_buffers_it).second)) {
-      auto region_buffer = Downcast<Map<String, Any>>(region_buffer_any);
-      auto name_it = region_buffer.find(schema_key::kName);
-      auto buffer_it = region_buffer.find(schema_key::kBuffer);
-      if (name_it == region_buffer.end() || buffer_it == region_buffer.end()) {
-        continue;
-      }
-      auto buffer = (*buffer_it).second.try_cast<Buffer>();
-      if (!buffer.has_value()) {
-        continue;
-      }
-      const std::string canonical_name =
-          static_cast<std::string>(Downcast<String>((*name_it).second));
-      if (canonical_name != preferred_name) {
-        continue;
-      }
-      if (const auto* data = BufferDataIdentity(buffer.value())) {
-        compute_physical_buffers_by_data_[data] = preferred_buffer.value();
-      }
-      const std::string identity = BufferIdentityName(buffer.value());
+    compute_physical_buffers_by_data_[data] = preferred.value();
+    for (const Buffer& buffer : group) {
+      const std::string identity = BufferIdentityName(buffer);
       if (!identity.empty()) {
-        compute_physical_buffers_by_identity_[identity] = preferred_buffer.value();
+        compute_physical_buffers_by_identity_[identity] = preferred.value();
       }
+    }
+  }
+  for (const auto& [identity, group] : buffers_by_identity) {
+    if (compute_physical_buffers_by_identity_.count(identity)) {
+      continue;
+    }
+    Optional<Buffer> preferred = choose_preferred_buffer(group);
+    if (preferred) {
+      compute_physical_buffers_by_identity_[identity] = preferred.value();
     }
   }
 }
@@ -1925,7 +1906,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   logical_buffer_shapes_.clear();
   compute_physical_buffers_by_data_.clear();
   compute_physical_buffers_by_identity_.clear();
-  LoadComputeRegionPhysicalBufferBindings(func);
+  LoadPhysicalComputeBufferBindings(func);
   current_segment_kind_.clear();
   thread_index_vars_.clear();
   thread_index_var_names_.clear();
@@ -1938,7 +1919,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
 
   Map<String, Any> lowering_requirements = BuildLoweringRequirementsFromAnalysis(func);
   LoadLogicalBufferShapes(func, lowering_requirements);
-  requires_compute_segment_ = HasComputeSupportContract(lowering_requirements);
+  requires_compute_segment_ = HasComputeSegmentRequirement(func->body);
   LoadBufferTileBridgeSpecs(lowering_requirements);
 
   PrimFunc selected = func;
@@ -1966,6 +1947,7 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func,
                                               const Map<String, Any>& lowering_requirements) {
   logical_buffer_shapes_.clear();
   std::unordered_map<std::string, std::vector<int64_t>> canonical_shapes;
+  std::unordered_map<const VarNode*, std::vector<std::string>> alias_names_by_data;
   auto register_shape = [&](const std::string& name, const std::vector<int64_t>& shape) {
     if (name.empty() || shape.empty()) {
       return;
@@ -1974,6 +1956,15 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func,
     canonical_shapes[name] = shape;
   };
   auto ingest_buffer = [&](const Buffer& buffer) {
+    if (const auto* data = BufferDataIdentity(buffer)) {
+      const std::string name = BufferIdentityName(buffer);
+      if (!name.empty()) {
+        auto& aliases = alias_names_by_data[data];
+        if (std::find(aliases.begin(), aliases.end(), name) == aliases.end()) {
+          aliases.push_back(name);
+        }
+      }
+    }
     auto static_shape = ExtractStaticShape(buffer->shape);
     if (!static_shape.has_value()) {
       return;
@@ -2041,109 +2032,20 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func,
       register_materialization_contract_shape(Downcast<Map<String, Any>>(contract_any));
     }
   }
-
-  Map<String, Any> compute_region_evidence = AnalyzeBlackholeComputeRegionEvidence(func);
-  auto maybe_compute_regions = compute_region_evidence.Get(String("regions"));
-  if (!maybe_compute_regions) {
-    return;
-  }
-  Array<Any> compute_regions = Downcast<Array<Any>>(maybe_compute_regions.value());
-
-  auto infer_shape_from_names = [&](const Array<Any>& names) -> std::vector<int64_t> {
-    for (const Any& name_any : names) {
-      const std::string name = static_cast<std::string>(Downcast<String>(name_any));
-      auto it = canonical_shapes.find(name);
+  for (const auto& [_, aliases] : alias_names_by_data) {
+    std::vector<int64_t> shared_shape;
+    for (const std::string& alias : aliases) {
+      auto it = canonical_shapes.find(alias);
       if (it != canonical_shapes.end()) {
-        return it->second;
+        shared_shape = it->second;
+        break;
       }
     }
-    return {};
-  };
-
-  auto infer_shape_from_buffers = [&](const Array<Any>& buffers) -> std::vector<int64_t> {
-    for (const Any& buffer_any : buffers) {
-      auto buffer = buffer_any.try_cast<Buffer>();
-      if (!buffer.has_value()) {
-        continue;
-      }
-      const std::string identity = BufferIdentityName(buffer.value());
-      auto it = logical_buffer_shapes_.find(identity);
-      if (it != logical_buffer_shapes_.end()) {
-        return it->second;
-      }
-    }
-    return {};
-  };
-
-  bool changed = true;
-  while (changed) {
-    changed = false;
-    for (const Any& region_any : compute_regions) {
-      auto region = Downcast<Map<String, Any>>(region_any);
-      auto update_sources_it = region.find(manifest_key::kUpdateSources);
-      if (update_sources_it == region.end()) {
-        continue;
-      }
-      for (const Any& update_any : Downcast<Array<Any>>((*update_sources_it).second)) {
-        auto update = Downcast<Map<String, Any>>(update_any);
-        auto target_it = update.find(schema_key::kTarget);
-        if (target_it == update.end()) {
-          continue;
-        }
-        const std::string target_name =
-            static_cast<std::string>(Downcast<String>((*target_it).second));
-        if (target_name.empty() || canonical_shapes.count(target_name)) {
-          continue;
-        }
-        std::vector<int64_t> inferred_shape;
-        auto sources_it = update.find(schema_key::kSources);
-        if (sources_it != update.end()) {
-          inferred_shape = infer_shape_from_names(Downcast<Array<Any>>((*sources_it).second));
-        }
-        if (inferred_shape.empty()) {
-          auto source_states_it = update.find(schema_key::kSourceStates);
-          if (source_states_it != update.end()) {
-            inferred_shape =
-                infer_shape_from_names(Downcast<Array<Any>>((*source_states_it).second));
-          }
-        }
-        if (inferred_shape.empty()) {
-          auto source_buffers_it = update.find(schema_key::kSourceBuffers);
-          if (source_buffers_it != update.end()) {
-            inferred_shape =
-                infer_shape_from_buffers(Downcast<Array<Any>>((*source_buffers_it).second));
-          }
-        }
-        if (!inferred_shape.empty()) {
-          canonical_shapes[target_name] = inferred_shape;
-          logical_buffer_shapes_[target_name] = inferred_shape;
-          changed = true;
-        }
-      }
-    }
-  }
-
-  for (const Any& region_any : compute_regions) {
-    auto region = Downcast<Map<String, Any>>(region_any);
-    auto region_buffers_it = region.find(manifest_key::kRegionBuffers);
-    if (region_buffers_it == region.end()) {
+    if (shared_shape.empty()) {
       continue;
     }
-    for (const Any& region_buffer_any : Downcast<Array<Any>>((*region_buffers_it).second)) {
-      auto region_buffer = Downcast<Map<String, Any>>(region_buffer_any);
-      auto name_it = region_buffer.find(schema_key::kName);
-      auto buffer_it = region_buffer.find(schema_key::kBuffer);
-      if (name_it == region_buffer.end() || buffer_it == region_buffer.end()) {
-        continue;
-      }
-      const std::string canonical_name =
-          static_cast<std::string>(Downcast<String>((*name_it).second));
-      auto shape_it = canonical_shapes.find(canonical_name);
-      auto buffer = (*buffer_it).second.try_cast<Buffer>();
-      if (shape_it == canonical_shapes.end() || !buffer.has_value()) {
-        continue;
-      }
-      logical_buffer_shapes_[BufferIdentityName(buffer.value())] = shape_it->second;
+    for (const std::string& alias : aliases) {
+      logical_buffer_shapes_[alias] = shared_shape;
     }
   }
 }
@@ -2252,7 +2154,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   logical_buffer_shapes_.clear();
   compute_physical_buffers_by_data_.clear();
   compute_physical_buffers_by_identity_.clear();
-  LoadComputeRegionPhysicalBufferBindings(func);
+  LoadPhysicalComputeBufferBindings(func);
   tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
     if (const auto* attr = node.as<AttrStmtNode>()) {
       if (attr->attr_key != tir::attr::thread_extent) {
@@ -2320,16 +2222,29 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   Map<String, Any> lowering_requirements = BuildLoweringRequirementsFromAnalysis(func);
   LoadLogicalBufferShapes(func, lowering_requirements);
   ValidateComputePipelineLegalityFromBody(func->body);
-  requires_compute_segment_ = HasComputeSupportContract(lowering_requirements);
+  requires_compute_segment_ = HasComputeSegmentRequirement(func->body);
   LoadBufferTileBridgeSpecs(lowering_requirements);
   buffer_materialization_contracts_by_target_buffer_ =
       BuildBufferMaterializationContractMap(lowering_requirements);
   LoadBufferFlowContracts(lowering_requirements);
   stmt_order_index_by_node_ = BuildExecutionOrderIndexByStmtNode(func->body);
-  if (!lowering_requirements.empty()) {
-    ValidateComputePipelineLegality(lowering_requirements);
-  }
-
+  const std::vector<std::string> expected_unsupported_ops =
+      CollectLeafUnsupportedComputeOpsFromBody(func->body);
+  int expected_row_reduction_count = 0;
+  tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
+    RowReductionMatch match;
+    if (const auto* loop = node.as<ForNode>()) {
+      if (MatchDirectRowReduction(loop, &match) || MatchGroupedRowReduction(loop, &match)) {
+        ++expected_row_reduction_count;
+      }
+      return;
+    }
+    if (const auto* allocate = node.as<AllocateNode>()) {
+      if (MatchAllocatedRowReduction(allocate, &match)) {
+        ++expected_row_reduction_count;
+      }
+    }
+  });
   // Pre-scan: register GEMM CB requirements first so their indices are stable
   // when copy stmts are visited.
   tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
@@ -2419,8 +2334,38 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   Stmt body = VisitStmt(func->body);
   UpdateCBRequirementDepthsFromLoweredBody(
       &cb_requirements_, body, gemm_a_buffer_name_.empty() ? "fused_dataflow" : "compute");
-  lowering_requirements = PruneSatisfiedLoweringRequirements(lowering_requirements, body);
-
+  std::vector<std::string> unresolved_unsupported_ops;
+  std::unordered_set<std::string> unresolved_unsupported_seen;
+  auto push_unresolved = [&](const char* op_name) {
+    if (unresolved_unsupported_seen.insert(op_name).second) {
+      unresolved_unsupported_ops.push_back(op_name);
+    }
+  };
+  if (expected_row_reduction_count > CountLoweredRowReductionBuiltins(body)) {
+    push_unresolved("reduction");
+  }
+  for (const std::string& op_name : expected_unsupported_ops) {
+    if (op_name == "broadcast" && HasResidualRowBroadcast(body)) {
+      push_unresolved("broadcast");
+      continue;
+    }
+    if (op_name == "fill" && HasResidualFragmentFill(body)) {
+      push_unresolved("fill");
+      continue;
+    }
+    if (op_name == "max" && HasResidualFragmentMax(body)) {
+      push_unresolved("max");
+      continue;
+    }
+    if (op_name == "add" && HasResidualFragmentAdd(body)) {
+      push_unresolved("add");
+      continue;
+    }
+    if (op_name == "cast" && HasResidualFragmentCast(body)) {
+      push_unresolved("cast");
+      continue;
+    }
+  }
   // Create new function with transformed body
   PrimFunc new_func = func;
   new_func.CopyOnWrite()->body = body;
@@ -2430,9 +2375,9 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   StoreSegmentPlan(new_func);
   StoreAccessorDescriptors(new_func);
   StoreGemmContract(new_func);
-  StoreLeafExecutableContracts(lowering_requirements);
+  StoreLeafExecutableContracts(lowering_requirements, unresolved_unsupported_ops);
 
-  if (!HasUnsupportedComputeOpsInRequirements(lowering_requirements)) {
+  if (unresolved_unsupported_ops.empty()) {
     ValidateNoResidualComputeRegionStores(body);
   }
 
@@ -3956,18 +3901,13 @@ static bool IsPureCopyLoopNest(const Stmt& stmt) {
 }
 
 void PlanTTKernelABI::StoreLeafExecutableContracts(
-    const Map<String, Any>& lowering_requirements) {
-  if (lowering_requirements.empty()) {
-    return;
-  }
-
+    const Map<String, Any>& lowering_requirements,
+    const std::vector<std::string>& unsupported_ops) {
   Map<String, Any> tt_program_payload = tt_program_payload_;
   if (auto bridge_specs = lowering_requirements.Get(String(schema_key::kBufferTileBridgeSpecs))) {
     tt_program_payload.Set(String(schema_key::kBufferTileBridgeSpecs), bridge_specs.value());
   }
 
-  const std::vector<std::string> unsupported_ops =
-      CollectLeafUnsupportedComputeOps(lowering_requirements);
   if (!unsupported_ops.empty()) {
     Array<Any> encoded_unsupported_ops;
     for (const std::string& op_name : unsupported_ops) {

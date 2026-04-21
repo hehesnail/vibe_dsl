@@ -99,11 +99,9 @@ def _run_flash_attention_tt_target_after_optimize(example_module, *args, **kwarg
     mod = tvm.IRModule({"main": example_module.flashattn.jit_impl.get_tir(*args, **kwargs)})
     with target:
         mod = LowerAndLegalize(mod, target)
-        analysis_mod = tilelang.transform.AnalyzeBlackholeComputeRegions()(
-            LowerToBlackholePhaseB(mod)
-        )
+        phase_b_mod = LowerToBlackholePhaseB(mod)
         mod = OptimizeForTarget(mod, target)
-    mod = _align_blackhole_device_symbol(analysis_mod, mod)
+    mod = _align_blackhole_device_symbol(phase_b_mod, mod)
     return LowerToBlackholeTTProgram(mod)
 
 

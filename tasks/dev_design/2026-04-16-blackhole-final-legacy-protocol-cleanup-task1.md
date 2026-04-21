@@ -1,5 +1,31 @@
 # Task 1: Replace Compute-Region Bags With Direct Logical Bridge Capture
 
+## 0. `2026-04-22` 收口更新
+
+- **状态**: `completed`
+- repo HEAD 已成立：
+  - `CaptureBlackholeLogicalBridgeSpecs`
+    已接入
+    `LowerToBlackholePhaseB`
+  - `lower.py`
+    / target test helper
+    已直接读取
+    `tl.blackhole_logical_buffer_tile_bridge_specs`
+  - `AnalyzeBlackholeComputeRegions`
+    / `blackhole.compute_regions`
+    已退出 producer-side bridge handoff
+- 本 task 剩余相关 debt
+  已移动到：
+  - cleanup task2：
+    public/internal legacy analysis bag 删除
+  - cleanup task3：
+    `TTProgram.payload`
+    / executable projection
+    bridge compatibility residue 删除
+
+> 下文 `2026-04-20` 的“当前状态 / 当前代码现实”
+> 保留为任务开始前的快照，不再代表 repo HEAD 当前状态。
+
 ## 1. 任务目标
 
 这个 cleanup task 只负责一件事：

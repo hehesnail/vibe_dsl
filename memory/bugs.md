@@ -70,7 +70,42 @@
 
 ## 2. 已解决但值得记住的模式
 
-### 2.0 grouped row / row-state distribution contract 不能让 generic layout 覆盖专用语义
+### 2.0 compute residual gate 不能把 row-state scalar / 1D carry buffer 当成 tile residue
+
+- **症状**:
+  - `PlanTTCompute`
+    在 flash-attn / GQA
+    会因为
+    `scores_max` /
+    `scores_max_prev`
+    这类 row-state local store
+    直接报
+    `residual local store remains`
+- **根因**:
+  - residual gate
+    把所有
+    `local / blackhole.acc`
+    store
+    都当成必须 lower 掉的 tile residue
+  - 但 `shape.size()==1`
+    的 row-state carry buffer
+    属于合法 leaf-local bookkeeping，
+    不应和 tile/vector residue 混为一谈
+- **修法**:
+  - residual gate
+    只拦截真正的 tile-like local residue；
+    1D row-state carry store
+    允许保留
+- **教训**:
+  - compute subset validator
+    要按表示对象区分
+    “tile fragment residue”
+    和
+    “row-state bookkeeping”
+  - 不能只按 storage scope
+    粗暴 fail-fast
+
+### 2.1 grouped row / row-state distribution contract 不能让 generic layout 覆盖专用语义
 
 - **症状**:
   - `flash-attn` / GQA 的 grouped `reduce_row` 会报
@@ -103,7 +138,40 @@
   - 过渡 projection attrs 只要保留旧 scope，
     就等于还在系统里保留一条旧链
 
-### 2.1 ABI / schema
+### 2.2 ABI / schema
+
+#### pipeline legality 不能只盯 `num_stages` 注解；annotation 消失后要从 stage-local buffer 反推
+
+- **症状**:
+  - 删除
+    `pipeline_stage_counts`
+    legacy bag
+    后，
+    `num_stages=4`
+    的 GQA
+    不再在 legality gate 处 fail-fast，
+    反而晚到 residual validation 才炸
+- **根因**:
+  - body-side legality check
+    只看 loop annotation 上的
+    `num_stages`
+  - 某些优化后形态里，
+    stage count
+    只能从 stage-local shared / CB buffer
+    的 leading dimension 反推出
+- **修法**:
+  - legality check
+    先读
+    `num_stages / tl_pipelined_num_stages`
+  - 读不到时，
+    再从 stage-local buffer shape[0]
+    直接推断
+- **教训**:
+  - 删除 legacy pipeline bag 时，
+    fail-fast 语义必须同步回收到当前 TIR
+  - 不能把“bag 删了”
+    误写成
+    “legality 不再需要”
 
 #### GEMM reader 的 buffer 绑定不能让 stride runtime arg 覆盖 buffer address
 

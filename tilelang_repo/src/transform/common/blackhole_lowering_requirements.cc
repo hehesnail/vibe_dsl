@@ -1,6 +1,6 @@
 /*!
  * \file blackhole_lowering_requirements.cc
- * \brief Derive Blackhole lowering requirements directly from SpatialPlan and analysis attrs.
+ * \brief Derive Blackhole leaf helper contracts directly from SpatialPlan and current TIR.
  */
 
 #include "blackhole_lowering_requirements.h"
@@ -19,9 +19,6 @@
 #include <vector>
 
 #include "../../op/utils.h"
-#include "compute_region_analysis.h"
-#include "../analyze_blackhole_pipeline_stages.h"
-#include "../analyze_blackhole_work_decomposition.h"
 #include "runtime/thread_storage_scope.h"
 #include "blackhole_utils.h"
 #include "companion_base.h"
@@ -39,10 +36,7 @@ using tvm::ffi::String;
 namespace {
 
 struct LoweringSupportFacts {
-  std::unordered_set<std::string> selection_subjects;
   std::unordered_set<std::string> recurrence_subjects;
-  std::unordered_set<std::string> reduction_subjects;
-  Map<String, Any> compute_support_payload;
   Array<Any> buffer_tile_bridge_specs;
   Array<Any> buffer_materialization_contracts;
   Array<Any> buffer_flow_contracts;
@@ -106,56 +100,6 @@ std::unordered_map<std::string, std::vector<int64_t>> BuildLogicalBufferShapes(
       remember(load->buffer);
     }
   });
-  Map<String, Any> compute_region_evidence = AnalyzeBlackholeComputeRegionEvidence(func);
-  if (auto maybe_regions = compute_region_evidence.Get(String("regions"))) {
-    for (const Any& region_any : Downcast<Array<Any>>(maybe_regions.value())) {
-      Map<String, Any> region = Downcast<Map<String, Any>>(region_any);
-      auto region_buffers_it = region.find(String(manifest_key::kRegionBuffers));
-      if (region_buffers_it != region.end()) {
-        for (const Any& region_buffer_any : Downcast<Array<Any>>((*region_buffers_it).second)) {
-          Map<String, Any> region_buffer = Downcast<Map<String, Any>>(region_buffer_any);
-          auto name_it = region_buffer.find(String(schema_key::kName));
-          auto buffer_it = region_buffer.find(String(schema_key::kBuffer));
-          if (name_it == region_buffer.end() || buffer_it == region_buffer.end()) {
-            continue;
-          }
-          auto buffer = (*buffer_it).second.try_cast<tir::Buffer>();
-          if (!buffer.has_value()) {
-            continue;
-          }
-          auto static_shape = ExtractStaticShape(buffer.value()->shape);
-          if (!static_shape) {
-            continue;
-          }
-          shapes[Downcast<String>((*name_it).second)] = static_shape.value();
-        }
-      }
-      auto bridge_specs_it = region.find(String(schema_key::kBufferTileBridgeSpecs));
-      if (bridge_specs_it == region.end()) {
-        continue;
-      }
-      for (const Any& spec_any : Downcast<Array<Any>>((*bridge_specs_it).second)) {
-        Map<String, Any> spec = Downcast<Map<String, Any>>(spec_any);
-        auto buffer_it = spec.find(String(schema_key::kBuffer));
-        auto shape_it = spec.find(String(schema_key::kShape));
-        if (buffer_it == spec.end() || shape_it == spec.end()) {
-          continue;
-        }
-        std::vector<int64_t> shape;
-        for (const Any& dim_any : Downcast<Array<Any>>((*shape_it).second)) {
-          if (auto dim = dim_any.try_cast<Integer>()) {
-            shape.push_back(dim.value()->value);
-          } else {
-            shape.clear();
-            break;
-          }
-        }
-        if (!shape.empty()) {
-          shapes[Downcast<String>((*buffer_it).second)] = shape;
-        }
-      }
-    }
-  }
   if (auto logical_specs =
           func->GetAttr<Array<Any>>(attr::kTLBlackholeLogicalBufferTileBridgeSpecs)) {
     for (const Any& spec_any : logical_specs.value()) {
@@ -1026,128 +970,31 @@ Array<Any> CollectBufferMaterializationContractsFromBody(
   return contracts;
 }
 
-Array<Any> GetComputeRegions(const tir::PrimFunc& func) {
-  Map<String, Any> evidence = AnalyzeBlackholeComputeRegionEvidence(func);
-  if (auto maybe_regions = evidence.Get(String("regions"))) {
-    return Downcast<Array<Any>>(maybe_regions.value());
-  }
-  return Array<Any>();
-}
-
-void SetArrayRequirementIfMissing(Map<String, Any>* lowering_requirements,
-                                  const String& key, const Array<Any>& values) {
-  if (!values.empty() && !lowering_requirements->count(key)) {
-    lowering_requirements->Set(key, values);
-  }
-}
-
-std::string KeyForAnyMap(const Map<String, Any>& map, const char* primary_key,
-                         const char* secondary_key = nullptr) {
-  if (auto value = map.Get(String(primary_key))) {
-    if (auto maybe_string = value.value().try_cast<String>()) {
-      return maybe_string.value();
-    }
-  }
-  if (secondary_key != nullptr) {
-    if (auto value = map.Get(String(secondary_key))) {
-      if (auto maybe_string = value.value().try_cast<String>()) {
-        return maybe_string.value();
-      }
-    }
-  }
-  return "";
-}
-
-LoweringSupportFacts AnalyzeLoweringSupportFacts(const tir::PrimFunc& func) {
+LoweringSupportFacts AnalyzeLoweringSupportFacts(const tir::PrimFunc& func,
+                                                 const SpatialPlan& plan) {
   LoweringSupportFacts facts;
-  Array<Any> compute_op_kinds;
-  Array<Any> pointwise_ops;
-  Array<Any> reduction_targets;
-  Array<Any> broadcast_sources;
-  Array<Any> loop_carried_state;
   Array<Any> buffer_tile_bridge_specs;
-  std::unordered_set<std::string> seen_compute_ops;
-  std::unordered_set<std::string> seen_pointwise_ops;
-  std::unordered_set<std::string> seen_reduction_targets;
-  std::unordered_set<std::string> seen_broadcasts;
-  std::unordered_set<std::string> seen_loop_carried;
   std::unordered_set<std::string> seen_buffer_tile_bridge_specs;
-
-  for (const Any& region_any : GetComputeRegions(func)) {
-    Map<String, Any> region = Downcast<Map<String, Any>>(region_any);
-    if (auto maybe_ops = region.Get(String("ops"))) {
-      for (const Any& op_any : Downcast<Array<Any>>(maybe_ops.value())) {
-        const std::string name = Downcast<String>(op_any);
-        PushBackUnique(&compute_op_kinds, &seen_compute_ops, String(name), name);
-      }
+  for (const DataflowEdge& edge : plan->dataflow_edges) {
+    if (str(edge->kind) != "carry") {
+      continue;
     }
-    if (auto maybe_ops = region.Get(String("pointwise_ops"))) {
-      for (const Any& op_any : Downcast<Array<Any>>(maybe_ops.value())) {
-        const std::string name = Downcast<String>(op_any);
-        PushBackUnique(&pointwise_ops, &seen_pointwise_ops, String(name), name);
-      }
-    }
-    if (auto maybe_targets = region.Get(String(manifest_key::kReductions))) {
-      for (const Any& target_any : Downcast<Array<Any>>(maybe_targets.value())) {
-        Map<String, Any> target = Downcast<Map<String, Any>>(target_any);
-        const std::string name = KeyForAnyMap(target, schema_key::kTarget);
-        if (!name.empty()) {
-          facts.reduction_subjects.insert(name);
-          PushBackUnique(&reduction_targets, &seen_reduction_targets, target, name);
-        }
-      }
-    }
-    if (auto maybe_sources = region.Get(String(manifest_key::kBroadcasts))) {
-      for (const Any& source_any : Downcast<Array<Any>>(maybe_sources.value())) {
-        Map<String, Any> source = Downcast<Map<String, Any>>(source_any);
-        const std::string name = KeyForAnyMap(source, schema_key::kSource);
-        PushBackUnique(&broadcast_sources, &seen_broadcasts, source, name);
-      }
-    }
-    if (auto maybe_targets = region.Get(String(manifest_key::kSelectionTargets))) {
-      for (const Any& target_any : Downcast<Array<Any>>(maybe_targets.value())) {
-        Map<String, Any> target = Downcast<Map<String, Any>>(target_any);
-        const std::string name = KeyForAnyMap(target, schema_key::kName);
-        if (!name.empty()) {
-          facts.selection_subjects.insert(name);
-        }
-      }
-    }
-    if (auto maybe_state = region.Get(String(manifest_key::kLoopCarriedState))) {
-      for (const Any& state_any : Downcast<Array<Any>>(maybe_state.value())) {
-        Map<String, Any> state = Downcast<Map<String, Any>>(state_any);
-        const std::string name = KeyForAnyMap(state, schema_key::kName);
-        if (!name.empty()) {
-          facts.recurrence_subjects.insert(name);
-          PushBackUnique(&loop_carried_state, &seen_loop_carried, state, name);
-        }
-      }
-    }
-    if (auto maybe_specs = region.Get(String(schema_key::kBufferTileBridgeSpecs))) {
-      for (const Any& spec_any : Downcast<Array<Any>>(maybe_specs.value())) {
-        Map<String, Any> spec = Downcast<Map<String, Any>>(spec_any);
-        const std::string key =
-            KeyForAnyMap(spec, schema_key::kBuffer) + "|" +
-            KeyForAnyMap(spec, schema_key::kScope);
-        PushBackUnique(&buffer_tile_bridge_specs, &seen_buffer_tile_bridge_specs, spec, key);
-      }
-    }
-    if (auto maybe_recurrence = region.Get(String(manifest_key::kRecurrenceEdges))) {
-      for (const Any& edge_any : Downcast<Array<Any>>(maybe_recurrence.value())) {
-        Map<String, Any> edge = Downcast<Map<String, Any>>(edge_any);
-        const std::string target = KeyForAnyMap(edge, schema_key::kTarget);
-        if (!target.empty()) {
-          facts.recurrence_subjects.insert(target);
-        }
-      }
+    const std::string subject = str(edge->subject);
+    if (!subject.empty()) {
+      facts.recurrence_subjects.insert(subject);
     }
   }
   if (auto logical_specs =
           func->GetAttr<Array<Any>>(attr::kTLBlackholeLogicalBufferTileBridgeSpecs)) {
     for (const Any& spec_any : logical_specs.value()) {
       Map<String, Any> spec = Downcast<Map<String, Any>>(spec_any);
+      auto buffer_it = spec.find(String(schema_key::kBuffer));
+      auto scope_it = spec.find(String(schema_key::kScope));
+      if (buffer_it == spec.end() || scope_it == spec.end()) {
+        continue;
+      }
       const std::string key =
-          KeyForAnyMap(spec, schema_key::kBuffer) + "|" + KeyForAnyMap(spec, schema_key::kScope);
+          Downcast<String>((*buffer_it).second) + "|" + Downcast<String>((*scope_it).second);
       PushBackUnique(&buffer_tile_bridge_specs, &seen_buffer_tile_bridge_specs, spec, key);
     }
   }
@@ -1158,24 +1005,6 @@ LoweringSupportFacts AnalyzeLoweringSupportFacts(const tir::PrimFunc& func) {
                                                               &materialization_contracts);
   AppendUniqueCastDrivenBufferMaterializationContractsFromBody(
       func->body, flow_contracts, BuildLogicalBufferShapes(func), &materialization_contracts);
-
-  if (!compute_op_kinds.empty()) {
-    facts.compute_support_payload.Set(String(schema_key::kComputeOpKinds), compute_op_kinds);
-  }
-  if (!pointwise_ops.empty()) {
-    facts.compute_support_payload.Set(String(schema_key::kPointwiseOpKinds), pointwise_ops);
-  }
-  if (!reduction_targets.empty()) {
-    facts.compute_support_payload.Set(String(schema_key::kReductionTargets),
-                                      reduction_targets);
-  }
-  if (!broadcast_sources.empty()) {
-    facts.compute_support_payload.Set(String(schema_key::kBroadcastSources),
-                                      broadcast_sources);
-  }
-  if (!loop_carried_state.empty()) {
-    facts.compute_support_payload.Set(String(schema_key::kLoopCarriedState), loop_carried_state);
-  }
   if (!buffer_tile_bridge_specs.empty()) {
     facts.buffer_tile_bridge_specs = buffer_tile_bridge_specs;
   }
@@ -1188,146 +1017,12 @@ LoweringSupportFacts AnalyzeLoweringSupportFacts(const tir::PrimFunc& func) {
   return facts;
 }
 
-std::vector<int> BuildPhaseIndexByUnit(const SpatialPlan& plan) {
-  std::vector<int> phase_by_unit(plan->execution_units.size(), 0);
-  for (const PhasePlan& phase : plan->phase_plans) {
-    for (const Integer& unit_index : phase->unit_indices) {
-      if (unit_index->value >= 0 &&
-          unit_index->value < static_cast<int64_t>(phase_by_unit.size())) {
-        phase_by_unit[unit_index->value] = static_cast<int>(phase->phase_index);
-      }
-    }
-  }
-  return phase_by_unit;
-}
-
-void CollectWorkDecompositionFacts(const tir::PrimFunc& func, Map<String, Any>* requirements) {
-  Map<String, Any> work = AnalyzeBlackholeWorkDecompositionEvidence(func);
-  if (work.empty()) {
-    return;
-  }
-  if (auto axes = work.Get(String("axes"))) {
-    requirements->Set(String("work_axes"), Downcast<Array<Any>>(axes.value()));
-  }
-  if (auto derived = work.Get(String("derived_index_exprs"))) {
-    const int count = static_cast<int>(Downcast<Array<Any>>(derived.value()).size());
-    if (count > 0) {
-      requirements->Set(String("derived_index_expr_count"), Integer(count));
-    }
-  }
-  if (auto bounds = work.Get(String("work_dependent_loop_bounds"))) {
-    const int count = static_cast<int>(Downcast<Array<Any>>(bounds.value()).size());
-    if (count > 0) {
-      requirements->Set(String("work_dependent_loop_bound_count"), Integer(count));
-    }
-  }
-}
-
-void CollectPhaseFacts(const SpatialPlan& plan, Map<String, Any>* requirements) {
-  if (plan->execution_units.empty()) {
-    return;
-  }
-  const std::vector<int> phases = BuildPhaseIndexByUnit(plan);
-  std::unordered_set<int> unique_phases;
-  Array<Any> phase_boundary_buffers;
-  std::unordered_set<std::string> seen_boundary_subjects;
-  for (int phase : phases) {
-    unique_phases.insert(phase);
-  }
-  for (const DataflowEdge& edge : plan->dataflow_edges) {
-    if (edge->producer_unit_index < 0 || edge->consumer_unit_index < 0) {
-      continue;
-    }
-    if (phases[edge->producer_unit_index] == phases[edge->consumer_unit_index]) {
-      continue;
-    }
-    const std::string subject = edge->subject;
-    if (!subject.empty() && seen_boundary_subjects.insert(subject).second) {
-      phase_boundary_buffers.push_back(String(subject));
-    }
-  }
-  if (!unique_phases.empty()) {
-    requirements->Set(String("spatial_phase_count"), Integer(static_cast<int>(unique_phases.size())));
-  }
-  if (!plan->dataflow_edges.empty()) {
-    requirements->Set(String("spatial_channel_count"),
-                      Integer(static_cast<int>(plan->dataflow_edges.size())));
-  }
-  if (!phase_boundary_buffers.empty()) {
-    requirements->Set(String("spatial_phase_boundary_buffers"), phase_boundary_buffers);
-  }
-}
-
-void CollectPipelineStageFacts(const tir::PrimFunc& func, Map<String, Any>* requirements) {
-  Array<Any> stages = AnalyzeBlackholePipelineStageEvidence(func);
-  if (stages.empty()) {
-    return;
-  }
-  Array<Any> stage_counts;
-  Array<Any> loop_vars;
-  std::unordered_set<std::string> seen_loop_vars;
-  for (const Any& stage_any : stages) {
-    auto stage = stage_any.as<Map<String, Any>>();
-    if (!stage.has_value()) {
-      continue;
-    }
-    if (auto num_stages = stage.value().Get(String(schema_key::kNumStages))) {
-      stage_counts.push_back(Downcast<Integer>(num_stages.value()));
-    }
-    if (auto loop_var = stage.value().Get(String(schema_key::kLoopVar))) {
-      const std::string loop_var_name = Downcast<String>(loop_var.value());
-      if (!loop_var_name.empty() && seen_loop_vars.insert(loop_var_name).second) {
-        loop_vars.push_back(loop_var.value());
-      }
-    }
-  }
-  if (!stage_counts.empty()) {
-    requirements->Set(String("pipeline_stage_counts"), stage_counts);
-  }
-  if (!loop_vars.empty()) {
-    requirements->Set(String("pipeline_loop_vars"), loop_vars);
-  }
-}
-
 }  // namespace
 
 Map<String, Any> BuildBlackholeLoweringRequirements(const tir::PrimFunc& func,
                                                     const SpatialPlan& plan) {
   Map<String, Any> lowering_requirements;
-  CollectWorkDecompositionFacts(func, &lowering_requirements);
-  CollectPhaseFacts(plan, &lowering_requirements);
-  CollectPipelineStageFacts(func, &lowering_requirements);
-
-  LoweringSupportFacts lowering_support_facts = AnalyzeLoweringSupportFacts(func);
-  if (!lowering_support_facts.compute_support_payload.empty()) {
-    if (auto compute_ops =
-            lowering_support_facts.compute_support_payload.Get(String(schema_key::kComputeOpKinds))) {
-      SetArrayRequirementIfMissing(&lowering_requirements, String(schema_key::kComputeOpKinds),
-                                   Downcast<Array<Any>>(compute_ops.value()));
-    }
-    if (auto reduction_targets = lowering_support_facts.compute_support_payload.Get(
-            String(schema_key::kReductionTargets))) {
-      SetArrayRequirementIfMissing(&lowering_requirements,
-                                   String(schema_key::kReductionTargets),
-                                   Downcast<Array<Any>>(reduction_targets.value()));
-    }
-    if (auto broadcast_sources = lowering_support_facts.compute_support_payload.Get(
-            String(schema_key::kBroadcastSources))) {
-      SetArrayRequirementIfMissing(&lowering_requirements,
-                                   String(schema_key::kBroadcastSources),
-                                   Downcast<Array<Any>>(broadcast_sources.value()));
-    }
-    if (auto pointwise_ops =
-            lowering_support_facts.compute_support_payload.Get(String(schema_key::kPointwiseOpKinds))) {
-      SetArrayRequirementIfMissing(&lowering_requirements, String(schema_key::kPointwiseOpKinds),
-                                   Downcast<Array<Any>>(pointwise_ops.value()));
-    }
-    if (auto loop_carried =
-            lowering_support_facts.compute_support_payload.Get(String(schema_key::kLoopCarriedState))) {
-      SetArrayRequirementIfMissing(&lowering_requirements, String(schema_key::kLoopCarriedState),
-                                   Downcast<Array<Any>>(loop_carried.value()));
-    }
-  }
+  LoweringSupportFacts lowering_support_facts = AnalyzeLoweringSupportFacts(func, plan);
   if (!lowering_support_facts.buffer_materialization_contracts.empty()) {
     lowering_requirements.Set(String(schema_key::kBufferMaterializationContracts),
                               lowering_support_facts.buffer_materialization_contracts);

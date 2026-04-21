@@ -63,7 +63,6 @@
 #include "../layout/layout.h"
 #include "common/tt_target_program.h"
 #include "common/companion_base.h"
-#include "common/buffer_tile_bridge_spec_utils.h"
 #include "runtime/thread_storage_scope.h"
 #include "tir/transforms/ir_utils.h"
 
@@ -417,57 +416,6 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
     return rewritten;
   }
 
-  Map<String, Any> RewriteComputeRegion(const Map<String, Any>& region) const {
-    Map<String, Any> rewritten = region;
-    if (auto buffers = region.Get(String(manifest_key::kRegionBuffers))) {
-      rewritten.Set(String(manifest_key::kRegionBuffers),
-                    RewriteScopedRecordArray(Downcast<Array<Any>>(buffers.value()),
-                                             schema_key::kName));
-    }
-    if (auto contracts = region.Get(String(schema_key::kBufferTileBridgeSpecs))) {
-      rewritten.Set(String(schema_key::kBufferTileBridgeSpecs),
-                    RewriteScopedRecordArray(Downcast<Array<Any>>(contracts.value()),
-                                             schema_key::kBuffer));
-    }
-    return rewritten;
-  }
-
-  Array<Any> RewriteComputeRegions(const Array<Any>& regions) const {
-    Array<Any> rewritten;
-    for (const Any& region_any : regions) {
-      auto region = region_any.as<Map<String, Any>>();
-      if (!region.has_value()) {
-        rewritten.push_back(region_any);
-        continue;
-      }
-      rewritten.push_back(RewriteComputeRegion(region.value()));
-    }
-    return rewritten;
-  }
-
-  Map<String, Any> RewritePipelineStage(const Map<String, Any>& stage) const {
-    Map<String, Any> rewritten = stage;
-    if (auto buffers = stage.Get(String(schema_key::kStageLocalBuffers))) {
-      rewritten.Set(String(schema_key::kStageLocalBuffers),
-                    RewriteScopedRecordArray(Downcast<Array<Any>>(buffers.value()),
-                                             schema_key::kName));
-    }
-    return rewritten;
-  }
-
-  Array<Any> RewritePipelineStages(const Array<Any>& stages) const {
-    Array<Any> rewritten;
-    for (const Any& stage_any : stages) {
-      auto stage = stage_any.as<Map<String, Any>>();
-      if (!stage.has_value()) {
-        rewritten.push_back(stage_any);
-        continue;
-      }
-      rewritten.push_back(RewritePipelineStage(stage.value()));
-    }
-    return rewritten;
-  }
-
   Map<String, Any> RewriteComputeEpilogueOp(const Map<String, Any>& op) const {
     Map<String, Any> rewritten = op;
     if (auto contract = op.Get(String(schema_key::kBufferTileBridgeSpec))) {
@@ -768,16 +716,6 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
           new_attrs.Set(k, requirements.has_value()
                                ? Any(RewriteLoweringRequirements(requirements.value()))
                                : v);
-          continue;
-        }
-        if (k == String("blackhole.compute_regions")) {
-          auto regions = v.as<Array<Any>>();
-          new_attrs.Set(k, regions.has_value() ? Any(RewriteComputeRegions(regions.value())) : v);
-          continue;
-        }
-        if (k == String("blackhole.pipeline_stages")) {
-          auto stages = v.as<Array<Any>>();
-          new_attrs.Set(k, stages.has_value() ? Any(RewritePipelineStages(stages.value())) : v);
           continue;
         }
         if (k == String(attr::kTLTTProgram)) {

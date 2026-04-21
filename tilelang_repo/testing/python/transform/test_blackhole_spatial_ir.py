@@ -13,13 +13,22 @@ from tvm.target import Target
 
 THIS_DIR = Path(__file__).resolve().parent
 BLACKHOLE_TARGET_TEST_DIR = THIS_DIR.parent / "target" / "blackhole"
+EXAMPLE_DIR = THIS_DIR.parents[2] / "examples" / "flash_attention"
 if str(BLACKHOLE_TARGET_TEST_DIR) not in sys.path:
     sys.path.append(str(BLACKHOLE_TARGET_TEST_DIR))
+if str(EXAMPLE_DIR) not in sys.path:
+    sys.path.append(str(EXAMPLE_DIR))
 if str(THIS_DIR) not in sys.path:
     sys.path.append(str(THIS_DIR))
 
-from common import gemm_kernel, lower_blackhole_to_tt_target, staged_copy_kernel
-from test_blackhole_flash_attention_analysis import mha_example
+import example_gqa_fwd_bshd as gqa_example
+import example_mha_fwd_bshd as mha_example
+from common import (
+    fragment_fill_cast_publish_kernel,
+    gemm_kernel,
+    lower_blackhole_to_tt_target,
+    staged_copy_kernel,
+)
 
 
 HELPER_COMPOSITE_BLACKHOLE_BUILTINS = (
@@ -179,6 +188,9 @@ def test_spatial_pass_surface_exposes_only_structure_and_plan_companions():
     assert not hasattr(tilelang.transform, "MaterializeSpatialProgram")
     assert not hasattr(tilelang.transform, "LowerToSpatialProgram")
     assert not hasattr(tilelang.transform, "ValidateSpatialProgram")
+    assert not hasattr(tilelang.transform, "AnalyzeBlackholeWorkDecomposition")
+    assert not hasattr(tilelang.transform, "AnalyzeBlackholeComputeRegions")
+    assert not hasattr(tilelang.transform, "AnalyzeBlackholePipelineStages")
 
 
 def test_task1_copy_spatial_plan_emits_flow_boundary_from_tir():
@@ -262,6 +274,78 @@ def test_phase_b_pipeline_exposes_only_spatial_plan_without_legacy_analysis_attr
     assert main.attrs.get("blackhole.work_decomposition") is None
     assert main.attrs.get("blackhole.compute_regions") is None
     assert main.attrs.get("blackhole.pipeline_stages") is None
+
+
+def test_flash_attention_spatial_plan_keeps_local_state_and_shared_layouts():
+    mod = _prepare_blackhole_phase_b_module(
+        gqa_example.flashattn.jit_impl.get_tir(
+            1,
+            16,
+            1024,
+            128,
+            False,
+            groups=16,
+            block_M=64,
+            block_N=64,
+            num_stages=4,
+            threads=128,
+        )
+    )
+    plan = mod["main"].attrs["tl.spatial_plan"]
+
+    compute_units = [unit for unit in plan.execution_units if str(unit.unit_role) == "compute"]
+    assert len(compute_units) >= 1
+    read_buffers = {
+        str(buffer) for unit in compute_units for buffer in unit.read_buffers
+    }
+    write_buffers = {
+        str(buffer) for unit in compute_units for buffer in unit.write_buffers
+    }
+    carry_subjects = {
+        str(edge.subject) for edge in plan.dataflow_edges if str(edge.kind) == "carry"
+    }
+    layout_scopes = {str(layout.subject): str(layout.scope) for layout in plan.layout_specs}
+
+    assert {"K_shared", "V_shared", "acc_o", "scores_max", "logsum"}.issubset(read_buffers)
+    assert {"V_shared", "acc_o", "scores_max", "logsum"}.issubset(write_buffers)
+    assert {
+        "K_shared",
+        "V_shared",
+        "acc_o",
+        "scores_max",
+        "scores_scale",
+        "scores_sum",
+        "logsum",
+    }.issubset(carry_subjects)
+    assert layout_scopes["K_shared"].startswith("blackhole.cb")
+    assert layout_scopes["V_shared"].startswith("blackhole.cb")
+    assert layout_scopes["Output"] == "global"
+    assert layout_scopes["acc_o"] == "blackhole.acc"
+    assert layout_scopes["scores_max"] == "blackhole.acc"
+    assert layout_scopes["logsum"] == "blackhole.acc"
+
+
+def test_phase_b_pipeline_captures_direct_logical_bridge_specs():
+    mod = tvm.IRModule({"main": fragment_fill_cast_publish_kernel().with_attr("global_symbol", "main")})
+    target = Target("blackhole")
+    with target:
+        mod = LowerAndLegalize(mod, target)
+    mod = LowerToBlackholePhaseB(mod)
+    main = mod["main"]
+
+    assert main.attrs.get("blackhole.compute_regions") is None
+    specs = list(main.attrs["tl.blackhole_logical_buffer_tile_bridge_specs"])
+    by_buffer = {str(spec["buffer"]): spec for spec in specs}
+
+    assert {"C_local", "D_local"}.issubset(by_buffer)
+    for name in ("C_local", "D_local"):
+        spec = by_buffer[name]
+        assert str(spec["scope"]) == "local"
+        assert tuple(int(dim) for dim in spec["shape"]) == (32, 32)
+        assert tuple(int(dim) for dim in spec["local_shape"]) == (8,)
+        assert int(spec["thread_extent"]) == 128
+        assert int(spec["replicate_extent"]) == 1
+        assert len(spec["inverse_logical_index_exprs"]) == 3
 
 
 def test_tt_metal_api_granularity_rejects_helper_composite_builtins():

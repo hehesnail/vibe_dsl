@@ -270,7 +270,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Store leaf-only build/codegen contracts into TTProgram payload. */
   void StoreLeafExecutableContracts(
-      const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>& lowering_requirements);
+      const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>& lowering_requirements,
+      const std::vector<std::string>& unsupported_ops);
 
   /*! \brief Encode current lowering-time accessor descriptors as TIR attrs */
   tvm::ffi::Array<tvm::ffi::Any> EncodeAccessorDescriptors(const std::string& segment_kind) const;
@@ -307,7 +308,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       const tvm::tir::Buffer& buffer) const;
 
   /*! \brief Load compute-region buffer to physical accumulator bindings from compute regions. */
-  void LoadComputeRegionPhysicalBufferBindings(const tvm::tir::PrimFunc& func);
+  void LoadPhysicalComputeBufferBindings(const tvm::tir::PrimFunc& func);
 
   /*! \brief Resolve the physical accumulator/backing buffer for a compute-region buffer. */
   tvm::tir::Buffer ResolvePhysicalComputeBuffer(const tvm::tir::Buffer& buffer) const;

@@ -1,5 +1,36 @@
 # Task 2: Remove Public And Internal Legacy Analysis Bags
 
+## 0. `2026-04-22` 更新
+
+- **状态**: `in progress`
+- repo HEAD 已完成：
+  - public
+    `AnalyzeBlackhole*`
+    wrapper 删除
+  - internal
+    `AnalyzeBlackhole*Evidence(...)`
+    helper / C++ pass / legacy analysis test 删除
+  - producer-side logical bridge handoff
+    已不再依赖
+    `AnalyzeBlackholeComputeRegions`
+- 当前剩余主问题：
+  - `blackhole_lowering_requirements.cc`
+    虽已切到
+    `SpatialPlan + current TIR`
+    direct analysis，
+    但 broad bag 仍在 active planning chain
+  - `tl.blackhole_lowering_requirements_seed`
+    /
+    `blackhole.cb_requirements`
+    仍在 active chain
+  - exact builtin legality /
+    leaf build gate
+    还没完全收回
+    `TTProgram`
+
+> 下文 `2026-04-17` 的“当前状态 / 当前代码现实”
+> 保留为任务开始前快照，不再代表 repo HEAD 当前状态。
+
 ## 1. 任务目标
 
 这个 cleanup task 只负责一件事：

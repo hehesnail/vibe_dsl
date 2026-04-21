@@ -96,7 +96,7 @@ def prepare_blackhole_phase_b_module(mod):
 
 def lower_blackhole_to_tt_target(mod):
     """Lower a Blackhole module through the validated TTProgram target contract."""
-    source_mod = tilelang.transform.AnalyzeBlackholeComputeRegions()(LowerToBlackholePhaseB(mod))
+    source_mod = LowerToBlackholePhaseB(mod)
     mod = _align_blackhole_device_symbol(source_mod, mod)
     return tilelang.engine.phase.LowerToBlackholeTTProgram(mod)
 
