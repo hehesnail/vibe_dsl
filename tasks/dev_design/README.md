@@ -78,36 +78,20 @@ pass 名字、helper、bag、payload、bridge attr
 
 ## 4. 当前执行优先级
 
-当前执行顺序不再直接等同于
-`Task 1 / Task 2 / Task 3 / Legacy Protocol Deletion`
-这组历史任务标签。
+当前统一 cleanup 顺序固定为：
 
-cleanup 的**架构依赖顺序**
-固定按 cleanup 文档理解：
-
-1. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
-2. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task1.md`
-3. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task2.md`
+1. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task1.md`
+2. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task2.md`
+3. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
+   - 这里只回收 `Task 0`
+     剩余的 full-contract work；
+     selector-forwarding
+     前半切片已落地，
+     但不按完成计
 4. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task3.md`
 5. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task4.md`
 6. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task5.md`
 7. cleanup 完成后，再恢复 support surface / workload payoff 扩展
-
-这里必须和
-`tasks/progress.md`
-分开理解：
-
-- 这里维护的是 cleanup 的依赖顺序
-- `progress.md`
-  维护的是 repo HEAD 当前 blocker
-  和下一步
-- `task0`
-  出现在依赖顺序里，
-  不等于 repo HEAD
-  已按完成口径收口；
-  当前只有 selector-forwarding
-  局部结果，
-  不能折算成完成声明
 
 其中：
 
@@ -121,7 +105,7 @@ cleanup 的**架构依赖顺序**
 当前 repo HEAD 的总体状态 /
 当前 blocker /
 当前下一步，
-统一只看 `tasks/progress.md`。
+仍统一只看 `tasks/progress.md`。
 
 其中：
 

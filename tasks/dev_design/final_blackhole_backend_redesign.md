@@ -573,16 +573,13 @@ planning seed
 架构收口仍按
 `Task 1 -> Task 2 -> Task 3 -> Legacy Protocol Deletion`
 理解显式表示层边界；
-cleanup 的架构依赖顺序
-固定按 cleanup 文档理解为：
+当前统一 cleanup 顺序
+固定为：
 
-1. **`Cleanup Task 0`**
-   - 锁定 exact TT-Metal builtin surface
-   - 收正 builtin-selection pass
-2. **`Cleanup Task 1`**
+1. **`Cleanup Task 1`**
    - 把 logical bridge capture
      收成唯一窄 bridge attr
-3. **`Cleanup Task 2`**
+2. **`Cleanup Task 2`**
    - 删除 public / internal legacy analysis bag
    - 同时把
      `SpatialPlan`
@@ -592,6 +589,14 @@ cleanup 的架构依赖顺序
      这个名字如果继续保留，
      也只是历史实现名，
      不是架构契约
+3. **`Cleanup Task 0` 剩余工作**
+   - 回收 exact TT-Metal builtin surface /
+     builtin-selection pass /
+     legality contract
+   - `Task 0`
+     的 selector-forwarding
+     前半切片已落地，
+     但不按完成计
 4. **`Cleanup Task 3`**
    - 删除
      `blackhole.copy_semantics`
@@ -608,22 +613,6 @@ cleanup 的架构依赖顺序
 7. **cleanup 完成后**
    - 才恢复 support surface /
      workload payoff 扩展
-
-这里要和
-`tasks/progress.md`
-明确分开：
-
-- 上面是 cleanup 的架构依赖顺序
-- repo HEAD 当前从哪个切片继续推进、
-  当前 blocker 在哪里，
-  统一只看 `progress.md`
-- `Cleanup Task 0`
-  出现在依赖顺序里，
-  不等于 repo HEAD
-  已按完成口径收口；
-  当前只有 selector-forwarding
-  局部结果，
-  不能当成完成声明
 
 补充：
 
@@ -655,7 +644,7 @@ cleanup 的架构依赖顺序
 4. `task3_runtime_gate_and_workload_cutover.md`
    - 固定 `Task 3: ExecutableSpec / Leaf Reader Cutover`
 5. `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
-   - 固定当前 repo HEAD 的 cleanup 总执行顺序
+   - 固定当前统一 cleanup 顺序
 6. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
    到
    `task5.md`

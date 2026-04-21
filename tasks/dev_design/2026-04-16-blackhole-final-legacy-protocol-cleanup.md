@@ -347,21 +347,23 @@ task5 不是新的删除 owner。
   它不能被 overview
   合法化成新层
 
-## 5. Dependency Order
+## 5. Unified Execution Order
 
-cleanup 的架构依赖顺序
+当前统一 cleanup 顺序
 固定为：
 
-1. task0：
-   锁 exact builtin surface
-   与 current-IR legality owner truth
-2. task1：
+1. task1：
    把 bridge handoff
    从 broad compute-region bag
    切到 direct capture
-3. task2：
+2. task2：
    删除 public/internal
    legacy analysis carrier
+3. task0 剩余工作：
+   锁 exact TT-Metal builtin surface /
+   current-IR legality owner truth /
+   `blackhole.cb_requirements`
+   删除
 4. task3：
    删除
    `blackhole.copy_semantics`
@@ -377,30 +379,19 @@ cleanup 的架构依赖顺序
    verification /
    delivery 收尾
 
-这里还要写清楚两点：
+这里固定写死：
 
-- 上面的依赖顺序
-  是架构依赖，
-  不是 repo HEAD
-  “今天先做哪个 blocker”
-  的状态声明
-- repo HEAD 当前的实际 blocker
-  可以从 task1 开始推进，
-  但这**不能**被误写成
-  task0 已完成；
-  当前 task0
-  只有 selector-forwarding
-  局部结果，
-  不按完成计
-- 一旦 task2
-  已经把 analysis /
-  lowering bag
-  对 task0 的主要卡点切掉，
-  task0 剩余的
-  full-contract cleanup
-  就必须立刻回到关键路径，
-  不能继续被无限期后置到
-  task3 之后
+- `task0`
+  的 selector-forwarding
+  前半切片已落地，
+  但不按完成计
+- `task0`
+  剩余的 full-contract cleanup
+  固定放在 `task2` 后，
+  不再另写一套顺序
+- cleanup 完成后，
+  才恢复 support surface /
+  workload payoff 扩展
 
 ## 6. Primary File Surfaces
 

@@ -14,24 +14,18 @@
 
 - **日期**: `2026-04-22`
 - **当前总体 blocker**:
-  cleanup 主线 `Cleanup Task 0-5`
-  还没收口；
-  repo HEAD 当前活跃 blocker
-  队列从 `Cleanup Task 1`
-  开始，
-  但 `Cleanup Task 0`
-  仍有必须回收的
-  full-contract debt
+  统一 cleanup 顺序
+  `Cleanup Task 1 -> Cleanup Task 2 -> Cleanup Task 0(remain) -> Cleanup Task 3 -> Cleanup Task 4 -> Cleanup Task 5`
+  还没收口
 - **当前推进原则**:
-  把长期合同层
-  和当前 cleanup 执行切片
-  分开看；
+  当前状态和顺序
+  统一按 cleanup 主线写；
   先完成 cleanup 主线，
   再恢复 support surface / workload payoff 扩展
 
 ## 2. 当前路线状态
 
-### 2.1 长期合同 lane
+### 2.1 长期合同受阻面
 
 - `SpatialPlan` 合同
   - 未收口
@@ -233,16 +227,10 @@ Normalized Tile TIR
   仍按 simulator capability boundary 处理，
   不作为当前 correctness gate
 
-## 6. 当前 blocker 顺序
+## 6. 统一剩余顺序
 
-cleanup 的架构依赖顺序
-仍按 cleanup 总览里的
-`Task 0 -> Task 1 -> Task 2 -> Task 3 -> Task 4 -> Task 5`
-理解。
-
-本节只记录
-repo HEAD 当前还未收口的 blocker 顺序，
-因此固定为：
+当前统一 cleanup 顺序
+固定为：
 
 1. `Cleanup Task 1`
 2. `Cleanup Task 2`
@@ -255,19 +243,12 @@ repo HEAD 当前还未收口的 blocker 顺序，
 补充：
 
 - `Cleanup Task 0`
-  没有从路线里消失；
-  只是 repo HEAD
-  当前更先被
-  `Task 1 / 2`
-  卡住
-- 一旦 `Task 2`
-  把 analysis /
-  lowering bag
-  依赖切掉，
-  就必须马上回收
-  `Task 0`
-  剩余 contract，
-  不能继续把它悬空
+  不是独立丢失的一段历史任务；
+  它的前半切片
+  已以 selector-forwarding
+  形式落地，
+  剩余 work
+  就按第 3 步回收
 - `Cleanup Task 5`
   不是实现 owner，
   只做最终 convergence gate
