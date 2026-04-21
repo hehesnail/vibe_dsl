@@ -88,7 +88,26 @@
   与
   `PlanTTCompute`
   之间，
-  compute-side exact builtin 选择前移到 planner helper 路线之前
+  compute-side exact builtin 选择前移到 planner helper 路线之前；
+  但 repo HEAD 里
+  它仍只是 front-door wrapper，
+  真正的 primitive idiom
+  match + rewrite owner
+  仍在 `PlanTTKernelABI`
+- task0 的 owner truth
+  仍然只能写成
+  当前 `Normalized Tile TIR`
+  的 selected exact-builtin
+  postcondition；
+  `CB / runtime arg / semaphore / launch`
+  这类 TT-Metal
+  program-construction 事实
+  仍属于
+  `TTProgram -> ExecutableSpec`
+  边界，
+  不能因为 repo HEAD
+  还保留 seed / payload residue
+  就倒灌回 task0
 - `compute_epilogue_ops`
   不再属于 repo HEAD 的 active protocol：
   顶层 key
@@ -99,7 +118,13 @@
   但 nested
   `compute_contract.epilogue_ops`
   仍在 runtime compatibility metadata
-  中存活
+  中存活；
+  direct runtime
+  也仍保留
+  `compute_contract -> multi_compute_contracts -> gemm_contract`
+  fallback，
+  这些都只属于 task3 负责删除的
+  leaf compatibility debt
 - 旧 helper/composite builtin 名称
   不再是 active IR surface；
   selector / validator
@@ -117,12 +142,20 @@
   `blackhole.cb_requirements`
   seed 到
   `PlanTTCompute / PlanTTCBAlloc`；
-  否则下游只会看见 dangling `requirement_index`
+  否则下游只会看见 dangling `requirement_index`；
+  这代表的是 forced implementation debt，
+  不是合法中间层边界
 - `blackhole.cb_requirements`
   仍是
   `PlanTTCBAlloc`
   的 live planner input，
-  不是已经只剩文档清理的死字段
+  不是已经只剩文档清理的死字段；
+  required end-state
+  是 selection 不再依赖它，
+  downstream planner
+  只能从当前表示做局部 derived analysis
+  或从显式 `TTProgram`
+  slice 读取结果
 - `tl.blackhole_lowering_requirements_seed`：
   它只承接
   `buffer_materialization_contracts`
@@ -133,7 +166,663 @@
   并在最终
   `TTProgram`
   物化前剥离；
-  它不是新的 planning 语义
+  它不是新的 planning 语义，
+  也不是可被文档合法化的
+  中期协议层
+
+### 3.2 `2026-04-21` Task 1 边界收紧
+
+- task1 当前真正的 wrong-now boundary
+  不是 leaf reader
+  本体，
+  而是
+  `blackhole.compute_regions`
+  /
+  `AnalyzeBlackholeComputeRegionEvidence`
+  仍然充当
+  logical bridge handoff
+  的 producer-side owner truth
+- repo HEAD 当前
+  `tl.blackhole_logical_buffer_tile_bridge_specs`
+  还不是 direct capture owner；
+  它只是
+  `lower.py`
+  /
+  测试 helper
+  从
+  `blackhole.compute_regions`
+  复制出来的窄 handoff。
+  task1 的 required end-state
+  是把这段 handoff
+  切回 current-stage
+  direct capture，
+  不是继续保留
+  broad bag copy
+- `tl.blackhole_logical_buffer_tile_bridge_specs`
+  只允许被写成
+  cleanup exception：
+  它是 leaf-local
+  temporary carrier，
+  不是新的
+  `SpatialPlan`
+  /
+  `TTProgram`
+  /
+  `ExecutableSpec`
+  语义层，
+  也不是 TT-Metal
+  target/runtime contract
+- `buffer_tile_bridge_specs`
+  在 repo HEAD
+  里同时活在两边：
+  planner 侧
+  `blackhole_lowering_requirements`
+  /
+  `lower_blackhole_ops`
+  仍把它当 active residue；
+  leaf 侧
+  `TTProgram.payload`
+  /
+  executable projection
+  /
+  `codegen_blackhole.cc`
+  仍把它当 compatibility surface。
+  task1 的 required wording
+  不是给这条路径
+  找新合法身份，
+  而是把它锁死成
+  后续必须删除的 debt
+- `rt_mod_blackhole.cc`
+  当前不是
+  `buffer_tile_bridge_specs`
+  的直接 reader；
+  直接 leaf consumer
+  是 `codegen_blackhole.cc`。
+  因此 task1
+  不能把
+  “runtime/codegen debt”
+  写成模糊大口袋
+- 这条 broad bag
+  -> Python/helper reread
+  -> narrow attr
+  的路径，
+  在 repo 内也没有成熟 backend 先例。
+  当前成熟模式
+  是 pass-local collector
+  或 narrow temporary attr
+  直接服务同层 rewrite /
+  projection，
+  不是把 public structured bag
+  当长期跨阶段协议面
+
+### 3.3 `2026-04-20` Task 2 边界收紧
+
+- task2 当前真正的 wrong-now 边界
+  不在
+  `BuildTTProgram`
+  / runtime / codegen reader
+  本体，
+  而在 planner 侧仍然复用：
+  public
+  `AnalyzeBlackhole*`
+  wrapper、
+  internal
+  `*Evidence(...)`
+  helper、
+  以及
+  `blackhole_lowering_requirements`
+  这类 broad
+  `Map<String, Any>`
+  semantic bag
+- `BuildTTProgram`
+  在 repo HEAD
+  里已经是 staged
+  `TTProgram`
+  的聚合 / 清理点；
+  它会剥离
+  `tl.internal_tt_*`
+  与
+  `tl.blackhole_lowering_requirements_seed`
+  之类中间 attr。
+  task2 的 required end-state
+  不是“再给 `BuildTTProgram`
+  发明一层 replacement staging bag”，
+  而是让
+  `PlanTTCompute`
+  之前的 active consumer
+  直接读取当前 IR /
+  当前 `SpatialPlan`
+  或 pass-local helper
+- repo 内成熟 backend
+  的共同模式
+  也是：
+  local collector /
+  pass-local state
+  直接服务当前 rewrite，
+  然后冻结成显式 attr /
+  typed object /
+  leaf projection。
+  没有成熟先例
+  会把 public wrapper
+  + internal evidence helper
+  + broad
+  `Map<String, Any>`
+  总包
+  合法化成长期 planner 边界
+- `BuildBlackholeLoweringRequirements`
+  当前还会产出一批
+  repo 内找不到 active reader
+  的 bag-only residue，
+  例如
+  `work_axes`、
+  `derived_index_expr_count`、
+  `work_dependent_loop_bound_count`、
+  `spatial_phase_count`、
+  `spatial_channel_count`、
+  `spatial_phase_boundary_buffers`
+  和
+  `pipeline_loop_vars`。
+  这些字段不能迁到 replacement bag；
+  required end-state
+  是直接删除，
+  或把仍然需要的事实
+  收回当前 IR /
+  当前 `SpatialPlan` /
+  pass-local helper
+- runtime / codegen / build
+  reader
+  现在已经主要站在
+  `TTProgram -> tl.blackhole_executable`
+  projection
+  边界上，
+  不再直接消费
+  public / internal legacy analysis bag。
+  这不等于 leaf residue
+  已经收口：
+  `buffer_tile_bridge_specs`
+  /
+  contract payload
+  这类 payload/projection debt
+  仍属于 task3，
+  `blackhole.segment_kind`
+  这类 leaf-local slicing residue
+  仍属于 task4
+- 因此 task2 文档必须同时写清楚两件事：
+  1. public/internal legacy analysis bag
+     是 architecturally wrong，
+     必须删除
+  2. task3 / task4
+     尚未删除的 leaf payload /
+     projection /
+     slicing residue
+     不能反过来把这些 bag
+     合法化成“仍然需要的中间层”
+- TT-Metal
+  的稳定 target truth
+  也只有
+  program / kernel /
+  circular-buffer /
+  semaphore /
+  runtime-arg
+  这类显式对象与 API。
+  它没有提供任何
+  target-model 理由，
+  允许
+  `work_decomposition`
+  /
+  `compute_regions`
+  /
+  `pipeline_stages`
+  /
+  `lowering_requirements`
+  这种 planner-side broad bag
+  继续存活，
+  也没有理由把
+  `BuildTTProgram`
+  重新写成 semantic owner
+
+### 3.4 `2026-04-21` Task 3 边界收紧
+
+- task3 当前真正的 wrong-now boundary
+  不是 target / codegen / runtime
+  reader，
+  而是 compiler-side
+  active prepass
+  `AnnotateBlackholeCopySemantics`
+  以及它的三个
+  implementation consumer：
+  `BlackholeDeviceResourceCanonicalization`、
+  `SplitBlackholeKernel`、
+  `PlanTTKernelABI`
+- `blackhole.copy_semantics`
+  在 repo HEAD
+  里实际写在
+  `For.annotations`
+  上，
+  不是新的
+  `AttrStmt`
+  wrapper；
+  因此 task3 的 deletion target
+  是 loop annotation carrier
+  本身，
+  不是把旧 schema
+  平移到另一个 wrapper / helper
+- 这三个 consumer
+  也不共享同一个合法可见表示层：
+  `BlackholeDeviceResourceCanonicalization`
+  运行早于
+  `SpatialPlan`
+  构造，
+  只能从当前 TIR
+  做 direct recovery；
+  `SplitBlackholeKernel`
+  运行时 validated
+  `SpatialPlan`
+  已存在，
+  但 repo HEAD
+  里它自己已经有部分 direct fallback，
+  所以 task3 的要求是
+  完成 owner-truth cutover，
+  不是把它误写成
+  “从零开始统一改成
+   `SpatialPlan.DataflowEdge`”；
+  `PlanTTKernelABI`
+  已经有大块 direct copy lowering logic，
+  真正还靠 annotation
+  的是 copy buffer/shape/runtime-arg
+  bookkeeping
+- repo 内成熟模式
+  也不是
+  “先发一个 shared copy contract，
+   再让多个 pass 去读”。
+  更接近的先例是
+  `lower_ptx_async_copy`
+  这种 local structural recovery：
+  从当前
+  `BufferLoad / BufferStore`
+  subtree
+  直接匹配，
+  然后在本地完成 rewrite。
+  task3 的 required end-state
+  应按这个模式写，
+  不是再造 exported copy matcher /
+  helper bag
+- `SelectBlackholeTTMetalBuiltins`
+  不是 task3 当前的主 blocker：
+  compute builtin selection
+  走
+  `select_compute_builtins_only_`
+  路径，
+  不应再被文档描述成
+  copy annotation
+  的主要 consumer
+- target / codegen / build / runtime
+  现在已经主要站在
+  `TTProgram -> tl.blackhole_executable -> ExecutableSpec`
+  projection
+  边界上，
+  不直接读取
+  `blackhole.copy_semantics`；
+  现存
+  `buffer_tile_bridge_specs`
+  /
+  `compute_contract`
+  /
+  `multi_compute_contracts`
+  /
+  `gemm_contract`
+  fallback
+  /
+  `blackhole.segment_kind`
+  这类 leaf residue
+  不能反过来把
+  copy annotation
+  合法化成“还需要保留的中间层”
+- 其中
+  `rt_mod_blackhole.cc`
+  与
+  `blackhole_module.cc`
+  当前还保留
+  `compute_contract <- gemm_contract`
+  的 leaf/runtime compatibility recovery。
+  这属于 task3 的
+  wrong-now, resolve-later
+  debt：
+  required end-state
+  是 leaf/runtime
+  直接消费显式
+  `compute_contract`
+  /
+  `multi_compute_contracts`
+  或其它明确 projection，
+  不是继续在 executable side
+  从旧 contract family
+  推断 compute truth
+- TT-Metal
+  的稳定 target truth
+  也只有
+  kernel / circular-buffer /
+  semaphore / runtime-arg /
+  launch
+  这类显式对象与 API；
+  copy/data movement
+  是 kernel 行为，
+  不是 target-side semantic tag。
+  因此没有任何 target-model 理由
+  要求保留
+  compiler-side
+  `blackhole.copy_semantics`
+
+### 3.5 `2026-04-21` Task 4 边界收紧
+
+- task4 当前真正的 wrong-now boundary
+  不是
+  `BuildTTProgram`
+  /
+  `MaterializeBlackholeExecutable`
+  /
+  `codegen_blackhole.cc`
+  这些 downstream reader，
+  而是两处还在直接依赖
+  `blackhole.segment_kind`
+  的地方：
+  planner 侧
+  `PlanTTKernelABI`
+  仍把 body attr
+  当成
+  `segment_plan_`
+  truth 来源，
+  并继续通过
+  `AnalyzeCBDepthEffect`
+  /
+  `current_segment_kind_`
+  驱动
+  segment-sensitive
+  CB depth /
+  accessor bookkeeping；
+  leaf 侧
+  `rt_mod_blackhole.cc`
+  仍用
+  `SegmentBodyExtractor`
+  按 attr
+  切 raw body
+- `TTKernel.kind`
+  /
+  `TTKernelPlan.kind`
+  /
+  projected executable
+  `segment_plan.kind`
+  在 repo HEAD
+  里已经是显式字段，
+  并且 downstream projection /
+  build /
+  codegen /
+  runtime metadata
+  reader
+  已主要站在这条显式链上。
+  因此 task4 的 required end-state
+  不是“去下游 reader
+  重新找一个新的 kind 来源”，
+  而是让 planner-side
+  owner truth
+  直接构造到这些显式对象里
+- `BuildTTProgram`
+  只是 staged
+  `TTProgram`
+  的聚合 / 校验点，
+  不是 kernel-kind classifier；
+  `MaterializeBlackholeExecutable`
+  只是 projection writer；
+  `codegen_blackhole.cc`
+  只是 projection reader。
+  这些点不能再被文档误写成
+  task4 的主 attr consumer
+- repo 内成熟模式
+  也不支持
+  `blackhole.segment_kind`
+  继续当中期边界：
+  `SplitHostDevice`
+  /
+  `KernelInfo`
+  /
+  `runtime::FunctionInfo`
+  /
+  `kernel_metadata`
+  这类 repo-local
+  先例，
+  都是把 per-kernel truth
+  冻结到显式对象 /
+  显式 projection，
+  而不是保留
+  cross-pass marker attr
+- `SplitBlackholeKernel`
+  当前仍会发出
+  `blackhole.segment_kind`
+  marker，
+  但它不是长期 kind truth；
+  只要
+  `rt_mod_blackhole.cc`
+  仍按 raw TIR body
+  做 segment slicing，
+  这个 marker
+  就只能被记成
+  architecturally wrong
+  的 leaf-local residue，
+  不能再回升成 planning /
+  projection /
+  runtime-schema
+  的合法中间层
+- `rt_mod_blackhole.cc`
+  当前其余 runtime metadata
+  reader
+  已经主要站在
+  projected executable
+  `segment_plan`
+  和显式
+  `kernel.kind`
+  /
+  `kernel.core_type`
+  上；
+  真正还碰
+  `blackhole.segment_kind`
+  的地方
+  只剩
+  `SegmentBodyExtractor`
+- TT-Metal
+  target model
+  也不要求
+  source-level
+  kernel-kind marker。
+  它要求的是
+  `Program`
+  里的显式 kernel objects、
+  `CreateKernel`
+  时选定的
+  kernel class/config、
+  以及最终 source /
+  runtime args。
+  所以 task4
+  里的 body slicing
+  只能被写成
+  compiler-local
+  wrong-now residue，
+  不能被描述成
+  target/runtime
+  必需协议
+- task4 还必须显式保留
+  task3 前置依赖：
+  `SplitBlackholeKernel`
+  当前 reader/writer
+  classification
+  仍受
+  `blackhole.copy_semantics`
+  影响。
+  task4 可以先切
+  `segment_kind`
+  owner truth，
+  但不能把
+  `copy_semantics`
+  依赖
+  合法化成 splitter
+  的终态设计
+- task4 当前测试主面
+  已经主要落在
+  `TTProgram.kernels[*].kind`
+  /
+  executable
+  `segment_plan[*].kind`。
+  Python 树里
+  没有一批
+  必须保留的
+  raw
+  `blackhole.segment_kind`
+  schema tests；
+  required end-state
+  是继续让测试
+  站在显式 kind truth
+  上，
+  而不是为了“兼容旧测试”
+  给 marker 续命
+
+### 3.6 `2026-04-21` Task 5 收敛合同收紧
+
+- task5 不是新的协议删除 task，
+  也不是
+  “前面 residue
+   还没删干净时，
+   最后再跑一轮 grep /
+   build /
+   push”
+  的扫尾脚本；
+  它只负责证明
+  task0-task4
+  已定义的 forbidden residue
+  真的退出 active chain，
+  并把最终状态
+  同步到
+  `progress` /
+  cleanup docs /
+  protocol audit /
+  memory /
+  verification matrix
+- task5 不能本地豁免
+  task0-task4
+  尚未删除的 wrong-now carrier。
+  当前 repo HEAD
+  里仍然 live 的
+  residue
+  包括：
+  public
+  `AnalyzeBlackhole*`、
+  `blackhole.lowering_requirements`、
+  `blackhole.resource_plan`、
+  `blackhole.copy_semantics`、
+  `blackhole.segment_kind`、
+  `blackhole.work_decomposition`、
+  `blackhole.compute_regions`、
+  `blackhole.pipeline_stages`、
+  `blackhole.cb_requirements`
+  和
+  `tl.internal_tt_*`
+  等 internal companion attrs。
+  task5 的职责
+  不是替这些 residue
+  重新找合法理由，
+  而是要求前序 task
+  先完成删除，
+  然后再做最终收敛验证
+- task5 的 grep / scan
+  合同必须直接继承
+  cleanup overview、
+  task0-task4 completion contract
+  和当前 progress
+  里真实还在跟踪的 residue；
+  不能继续使用
+  `ComputeLoweringFacts`、
+  `MatchTTMetalComputeLoweringWindows`、
+  `TryLowerRowwiseFlashAttnRegion`
+  这类已经脱离 active cleanup 边界的历史名字
+- repo-local
+  成熟后端先例
+  已经把最终 completion truth
+  收到
+  `tl.tt_program`
+  /
+  `tl.blackhole_executable`
+  /
+  `ExecutableSpec`
+  /
+  `artifact.rt_mod`
+  这条显式 artifact /
+  module 链上：
+  `tvm_ffi`
+  路径要求
+  `artifact.rt_mod`
+  才能执行 / 导出，
+  而
+  `test_blackhole_copy_build_reads_executable_without_legacy_projection_attrs`
+  /
+  `test_blackhole_gemm_spec_survives_without_legacy_contract_attrs`
+  也已经直接证明
+  legacy projection/contract attrs
+  不是最终交付 truth
+- task5 的验证矩阵
+  必须按当前 admitted support surface
+  写：
+  compile /
+  source /
+  projection /
+  codegen /
+  `tvm_ffi` export
+  是 hard gate；
+  copy / GEMM
+  admitted direct-runtime
+  是 hard gate；
+  `flash-attn`
+  direct-runtime correctness
+  仍属于后续 workload payoff，
+  不能被误写成
+  cleanup 完成条件；
+  TT-Sim `fp16`
+  仍属于 simulator capability boundary，
+  不是 cleanup correctness gate
+- TT-Metal
+  target model
+  也只要求
+  `Program`
+  /
+  `MeshWorkload`
+  /
+  kernel /
+  circular-buffer /
+  semaphore /
+  runtime-arg /
+  launch
+  这些显式对象与 API；
+  它不要求
+  更宽的 workload payoff，
+  也不要求
+  simulator capability breadth。
+  因此 task5
+  只能验证
+  当前 admitted surface
+  与显式 materialization boundary，
+  不能把
+  非 admitted runtime
+  或 TT-Sim `fp16`
+  重新升级成
+  cleanup completion truth
+- `memory/general_dev.md`
+  / `memory/bugs.md`
+  在 task5
+  里只负责记录
+  长期可复用经验和 bug taxonomy，
+  不负责承载阶段状态；
+  `git commit` / `git push`
+  也只是 repo workflow
+  的交付动作，
+  不能被写成
+  协议完成定义本身
 
 ## 4. 长期保留的表示与 transform 纪律
 

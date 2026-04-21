@@ -36,7 +36,7 @@
   - 不要把 TT-Sim `float16` 能力边界直接误判成 TileLang target contract 回归
   - 更宽 `MHA / GQA` / 大 shape runtime payoff
     当前不属于第一性原理收口集；
-    归到后续 `R3.1+` payoff / support-surface backlog
+    归到后续 support-surface / workload payoff backlog
   - 该问题的 simulator-side 旁证和更宽 fatal taxonomy 扫描，
     统一见 `memory/tt_simulator_constraints.md`
 
@@ -75,7 +75,7 @@
 - **症状**:
   - `flash-attn` / GQA 的 grouped `reduce_row` 会报
     `grouped_rows distribution contract` 缺失
-  - companion contract 的 `scope` / `shape`
+  - 过渡 projection contract 的 `scope` / `shape`
     可能仍停在 generic `thread_distributed` /
     完整二维 tile 形状
 - **根因**:
@@ -83,7 +83,7 @@
     比 row reduction / row broadcast 的结构化证据更早落表，
     后面的专用语义没有覆盖前面的 generic truth
   - 资源 canonicalization 只改了 TIR body，
-    没同步改 companion contract 的 `scope`
+    没同步改 projection contract 的 `scope`
 - **修法**:
   - `AnalyzeBlackholeComputeRegions`
     允许 row-reduction / row-broadcast evidence
@@ -95,12 +95,12 @@
     `row_state -> [1]`
   - `BlackholeDeviceResourceCanonicalization`
     同步回写
-    过渡 attrs 与 companion projection
+    过渡 attrs 与 projection records
     的 `scope`
 - **教训**:
   - 专用结构化证据必须能覆盖 generic layout truth，
     否则后段会重新掉回 matcher / fallback 思维
-  - companion attr 只要保留旧 scope，
+  - 过渡 projection attrs 只要保留旧 scope，
     就等于还在系统里保留一条旧链
 
 ### 2.1 ABI / schema

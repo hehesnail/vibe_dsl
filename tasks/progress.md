@@ -12,7 +12,7 @@
 
 ## 1. 当前总体状态
 
-- **日期**: `2026-04-17`
+- **日期**: `2026-04-22`
 - **当前总体 blocker**:
   cleanup 主线 `Cleanup Task 1-5`
   还没做完；
@@ -99,10 +99,12 @@ Normalized Tile TIR
   但 leaf reader / cleanup
   还没同时收口
 - `buffer_tile_bridge_specs`
-  仍同时承担
+  仍**错误地**同时承担
   planning residue
   和 leaf compatibility payload；
-  当前固定分工是：
+  这不是合法边界，
+  只是当前必须继续删除的 protocol debt。
+  当前固定删除顺序是：
   - `Cleanup Task 1`
     先切 owner truth
     到 direct capture / narrow attr
@@ -131,9 +133,16 @@ Normalized Tile TIR
   仍按 simulator capability boundary 处理，
   不作为当前 correctness gate
 
-## 6. 当前执行顺序
+## 6. 当前 blocker 顺序
 
-当前实际执行顺序固定为：
+cleanup 的架构依赖顺序
+仍按 cleanup 总览里的
+`Task 0 -> Task 1 -> Task 2 -> Task 3 -> Task 4 -> Task 5`
+理解。
+
+本节只记录
+repo HEAD 当前还未收口的 blocker 顺序，
+因此固定为：
 
 1. `Cleanup Task 1`
 2. `Cleanup Task 2`
@@ -141,6 +150,16 @@ Normalized Tile TIR
 4. `Cleanup Task 4`
 5. `Cleanup Task 5`
 6. cleanup 完成后，再恢复 support surface / workload payoff 扩展
+
+补充：
+
+- `Cleanup Task 0`
+  当前只有 selector-forwarding
+  局部结果，
+  不按完成计
+- 它仍属于 cleanup 的依赖切片，
+  但不构成 repo HEAD
+  当前下一步来源
 
 ## 7. 当前下一步
 

@@ -4,7 +4,7 @@
 
 - **文档角色**: 当前 Blackhole layered IR 根因诊断文档
 - **当前状态**: 活动设计基线
-- **任务链位置**: `Task 0`
+- **任务链位置**: 根因索引 `Task 0`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
 
 说明：
@@ -12,13 +12,17 @@
 - 本文档定义根因和 rewrite 方向
 - 它不是当前 repo HEAD 状态文档
 - 当前实现状态统一以 `tasks/progress.md` 为准
+- 这里的 `Task 0`
+  是历史根因索引，
+  不是 cleanup 主线里的
+  `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
 
 ## 1. 根因结论
 
 当前 Blackhole 后端的问题不是“后段 matcher 不够聪明”，
 而是下面三件事同时发生：
 
-1. **target builtin 选择放得太晚**
+1. **compute-side exact builtin 选择放得太晚**
    - tile op、layout、真实 `BufferLoad / BufferStore`
      的语义边界已经被打碎
 2. **`SpatialPlan` 这层显式表示没有真正立起来**
@@ -32,9 +36,85 @@
 
 一句话：
 
-> **当前真正缺的不是更多后段 contract，而是 `Normalized Tile TIR` 和 `TTProgram` 之间缺失了一层稳定的 virtual spatial/dataflow 表示。**
+> **当前真正缺的不是更多后段 contract，而是 `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec` 这条显式主链没有站稳，导致 exact builtin legality、virtual spatial/dataflow、target realization、leaf materialization 被挤到 side channel 里。**
+
+repo HEAD 当前正好把这条根因
+分三段暴露出来：
+
+1. `SpatialPlan`
+   还没收成 sole owner truth，
+   所以 public analysis wrapper /
+   broad bag
+   仍在替它承载语义
+2. planner / `TTProgram`
+   被迫继续吃
+   bridge seed / facts bag /
+   marker residue，
+   去补本该由上游显式化的 distinction
+3. build / codegen / runtime
+   虽然主链已经越来越站在
+   `tl.tt_program -> tl.blackhole_executable`
+   的显式投影上，
+   但 leaf 侧仍残留
+   marker scan /
+   compatibility payload /
+   contract fallback
+   这类 semantic recovery residue
+
+因此这份 root-cause 文档
+必须明确：
+
+- `TTProgram`
+  不是根因本体
+- leaf residue
+  也不是独立问题
+- **真正的第一推动错误**
+  是 target-independent 的
+  spatial/dataflow owner truth
+  没有及时收进显式 `SpatialPlan`
 
 ## 2. 这件事在分层 IR 上到底意味着什么
+
+当前 repo HEAD 的 active chain
+虽然名字很多，
+但长期边界仍只有：
+
+```text
+Normalized Tile TIR
+  -> SpatialPlan
+  -> TTProgram
+  -> ExecutableSpec
+```
+
+当前 pass / phase 顺序
+只是这四层的现有实现手段，
+不是新的 IR 层。
+
+尤其要注意两件事：
+
+- `phase.py`
+  当前已经把
+  `AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion -> ValidateSpatialPlan`
+  接进主链，
+  并继续下接
+  `PlanTTBlocks -> ... -> BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable`
+- 但 `lower.py`
+  顶层仍保留
+  `AnalyzeBlackholeComputeRegions()(LowerToBlackholePhaseB(mod))`
+  这条 legacy handoff，
+  而且 public
+  `AnalyzeBlackhole*`
+  wrapper
+  与旧 analysis tests
+  也还活着
+
+所以当前真实情况不是
+“层化 IR 完全没落地”，
+而是：
+
+- 显式主链已经存在
+- 但 side-channel residue
+  还在跨层串味
 
 ### 2.1 `Normalized Tile TIR`
 
@@ -50,13 +130,33 @@
 但不负责：
 
 - target block placement
-- TT builtin family
+- `CB / semaphore / runtime arg / launch`
 - sync / ABI / execution realization
+
+额外约束固定为：
+
+- compute-side exact TT-Metal builtin selection
+  的 owner truth
+  必须在这一层仍保留
+  tile op / layout /
+  真实 `BufferLoad / BufferStore`
+  语义时建立
+- 这里的
+  selected exact-builtin compute IR
+  只是当前 `Normalized Tile TIR`
+  的 checked postcondition /
+  admitted subset，
+  不是新层
+- 如果 exact legality
+  只能靠后面的 planner / payload /
+  runtime compatibility 证明，
+  说明边界已经错了
 
 ### 2.2 `SpatialPlan`
 
 这一层必须把 target-independent 的
-virtual spatial/dataflow 语义显式化。
+virtual spatial/dataflow 语义显式化，
+并且只能站在显式对象上。
 
 它应当回答：
 
@@ -65,25 +165,58 @@ virtual spatial/dataflow 语义显式化。
 - virtual layout / sharding / distribution 关系是什么
 - virtual ordering / materialization boundary 是什么
 
+长期对象固定按总体设计文档收在：
+
+- `ExecutionUnit`
+- `DataflowEdge`
+- `LayoutSpec`
+- `PhasePlan`
+- `ValidatedHintSet`
+
 如果这些东西不在这一层显式存在，
 下游就只能继续靠名字、attrs、局部 matcher
 或 payload bag 去猜。
 
 ### 2.3 `TTProgram`
 
-这一层必须承接 TT-specific physical realization：
+这一层必须承接唯一的
+TT-specific physical realization：
 
-- block placement
-- kernel kind / builtin selection result
-- transport / routing / delivery
-- sync / completion / ordering
-- ABI / runtime args / accessor binding
-- execution / launch order / waves
+- `kernel / transport / sync / ABI / execution`
+  这些 target slices
+- block / core placement
+- routing / delivery
+- runtime args / accessor binding
+- launch order / waves
+
+它消费的是：
+
+- `SpatialPlan`
+  的显式对象
+- anchored sub-TIR
+- 已经建立好的
+  compute-side exact builtin selection 结果
 
 它不能继续承担：
 
 - 恢复 target-independent spatial/dataflow 语义
 - 替上游补中间层抽象
+- 用 bridge bag / helper seed
+  反向定义 builtin legality
+
+补充说明：
+
+- `CB / semaphore / runtime arg / launch`
+  这类 TT-Metal program-construction 事实
+  属于这一层和后续 leaf projection 边界
+- 这和 TT-Metal
+  显式 `Program / MeshWorkload / CreateKernel /
+  CreateCircularBuffer / CreateSemaphore /
+  SetRuntimeArgs / LaunchProgram`
+  的程序模型一致；
+  它们不是 `SpatialPlan`
+  或 compute-side legality
+  应该承载的语义
 
 ### 2.4 `ExecutableSpec`
 
@@ -91,7 +224,14 @@ virtual spatial/dataflow 语义显式化。
 不是第二份长期语义表示。
 
 build / codegen / runtime
-只能消费这一层的投影结果，
+只能消费：
+
+- `tl.tt_program`
+- `tl.blackhole_executable`
+- `ExecutableSpec`
+- `artifact.rt_mod`
+
+这条显式链上的结果，
 不能回头恢复 planning 语义。
 
 ## 3. 为什么当前代码一定会膨胀
@@ -111,54 +251,180 @@ build / codegen / runtime
 - payload bag
 - workload-specific lowering residue
 
+在当前 cleanup 主线上，
+这些东西的典型形态已经很明确：
+
+- producer-side analysis /
+  public bag residue：
+  - `blackhole.work_decomposition`
+  - `blackhole.compute_regions`
+  - `blackhole.pipeline_stages`
+  - public `AnalyzeBlackhole*`
+    wrapper
+- planner / `TTProgram`
+  forced debt：
+  - `blackhole.lowering_requirements`
+  - `blackhole.cb_requirements`
+  - `tl.blackhole_lowering_requirements_seed`
+  - `tl.internal_tt_*`
+  - `tl.blackhole_logical_buffer_tile_bridge_specs`
+    这条唯一 narrow cleanup exception
+- leaf semantic recovery residue：
+  - `blackhole.copy_semantics`
+  - `blackhole.segment_kind`
+  - `blackhole.resource_plan`
+  - `buffer_tile_bridge_specs`
+    payload / projection / codegen residue
+  - `compute_contract`
+    /
+    `multi_compute_contracts`
+    /
+    `gemm_contract`
+    compatibility fallback
+
 这些对象的共同问题不是“名字不好”，
 而是它们都在
 **替代本该由显式表示层承载的语义**。
 
-## 4. 论文和参考输入真正支持的是什么
+更准确地说，
+它们不是三类互不相关的历史包袱，
+而是同一条根因链的连续症状：
 
-这次重设计不是拍脑袋换名词，
-而是直接受下面几类结论约束：
+1. `SpatialPlan`
+   没把 virtual spatial/dataflow owner truth
+   收干净
+2. planner / `TTProgram`
+   被迫继续 carry
+   facts bag / seed / bridge residue
+3. leaf
+   再从 marker / payload / fallback
+   恢复更晚阶段才需要的 meaning
 
-- `Dato / Revet / SPADA`
-  - virtual dataflow / routing / ordering
-    不是 emitter 尾部细节，
-    必须先显式化
-- `TL / T2S`
-  - “算什么”
-    和
-    “怎么 spatially organize / realize”
-    必须拆开
-- `MLIR / Alive2 / Abstract Interpretation`
-  - 多层 IR 的意义在于
-    每层承接不同合法性和优化问题
-  - validator 是主链对象
-  - 缺证据时必须 fail-closed
+## 4. repo-local 成熟后端和目标模型真正支持的是什么
 
-对仓库的直接含义是：
+这一轮收紧后，
+task0 根因结论
+已经不需要靠“再造一套 review 说法”来支撑；
+repo-local 成熟后端
+和 TT-Metal 稳定程序模型
+本身就在支持同一条纪律。
 
-- `SpatialPlan`
-  必须是稳定的中间显式表示
-- `TTProgram`
-  必须是稳定的 target realization 表示
-- build/codegen/runtime
-  不能再补 planning 语义
+### 4.1 repo-local 成熟 backend 的共同模式
+
+仓库里成熟 GPU passes
+已经在用同一模式：
+
+- 当前 IR
+- pass-local analysis / collector
+- 直接 rewrite 成当前层
+  或更显式的 target-facing 对象
+
+而不是：
+
+- shared facts bag
+- public helper wrapper
+- 跨 pass payload carrier
+
+直接例子包括：
+
+- [lower_ldg_stg.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_ldg_stg.cc)
+  - 直接从
+    `BufferLoad / BufferStore / Ramp / IfThenElse`
+    结构判断是否可 lower，
+    然后就地改写成显式 `ldg/stg` intrinsics
+- [lower_hopper_intrin.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_hopper_intrin.cc)
+  - 在同一个 pass 里
+    收集 descriptor / mbarrier 需要的局部事实，
+    然后直接把它们写回当前函数的显式 host/device setup
+- [wgmma_sync_rewriter.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/wgmma_sync_rewriter.cc)
+  - 只用当前 TIR 的 buffer access / stmt order
+    做局部分析，
+    然后立即重写 sync ordering
+- [annotate_warp_group_reg_alloc.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/annotate_warp_group_reg_alloc.cc)
+  - derived register hint
+    只在 pass 内收集和注入，
+    没有长成 shared semantic carrier
+
+这些 repo-local 先例共同说明：
+
+- target lowering
+  可以大量使用 visitor / matcher / mutator / builder
+- 但它们必须直接站在 current IR /
+  current object 上工作
+- 不能把 analysis 结果升格成长期协议面
+
+### 4.2 TT-Metal 程序模型支持的边界
+
+TT-Metal 的稳定 host-side truth
+是显式：
+
+- `Program`
+- `MeshWorkload`
+- `CreateKernel`
+- `CreateCircularBuffer`
+- `CreateSemaphore`
+- `SetRuntimeArgs`
+- `CompileProgram`
+- `WriteRuntimeArgsToDevice`
+- `ConfigureDeviceWithProgram`
+- `LaunchProgram`
+
+这说明：
+
+- exact builtin selection
+  必须在更早的 current IR
+  仍保有 compute 结构时完成
+- program-construction 事实
+  应收在 `TTProgram -> ExecutableSpec`
+  这条 target/leaf 边界
+- runtime API
+  不会替编译器恢复
+  `SpatialPlan`
+  或 current TIR
+  本应显式承载的语义
 
 ## 5. 正确的 rewrite 方向
 
-整改方向固定为：
+整改方向不是“多加几个 pass”，
+而是把 owner truth
+重新收回到显式表示层。
 
-1. **立起 `SpatialPlan`**
-   - 从薄兼容层
-     改成 virtual spatial/dataflow representation
-2. **把 `TTProgram` 收回到 target realization 边界**
-   - 停止依赖 fake protocol
-3. **把 leaf readers 收回到 `ExecutableSpec`**
+固定方向如下：
+
+1. **compute-side exact builtin legality**
+   - 收成当前 `Normalized Tile TIR`
+     的 checked postcondition
+   - 不再由旧 planner / helper / seed
+     间接拥有
+2. **`SpatialPlan`**
+   - 收成唯一的
+     virtual spatial/dataflow representation
+   - 不再允许 broad bridge bag
+     代替它
+3. **`TTProgram`**
+   - 收成唯一的
+     target realization representation
+   - `CB / semaphore / runtime arg / launch`
+     这类事实只允许留在这里
+     及其后续 leaf projection
+4. **`ExecutableSpec`**
+   - 只做 `TTProgram`
+     的 leaf projection / materialization
    - build / codegen / runtime
-     停止读 legacy gate attrs
-4. **把 legacy protocol 当债，不当资产**
-   - 只允许 shrink / delete
-   - 不允许升格
+     只能读它
+5. **legacy protocol**
+   - 统一按
+     `wrong now, delete later`
+     处理
+   - 只允许 shrink / delete，
+     不允许因为 repo HEAD
+     还依赖它就升格成合法边界
+   - 即便还保留
+     `tl.blackhole_logical_buffer_tile_bridge_specs`
+     这类唯一 narrow cleanup exception，
+     它也只能被写成
+     cleanup-local handoff，
+     不是长期设计
 
 ## 6. IR-First 纪律
 
@@ -170,19 +436,63 @@ build / codegen / runtime
 3. 如果下游需要的信息当前 IR 没有，
    结论只能是扩 IR / 扩显式对象 /
    扩 validator / 显式 unsupported
-4. 不能先把当前后段实现固定成前提，
+4. 架构边界只能写成：
+   - `Normalized Tile TIR`
+   - `SpatialPlan`
+   - `TTProgram`
+   - `ExecutableSpec`
+   这些显式表示层，
+   不能写成 pass / file / helper 名字
+5. visitor / matcher / mutator / builder
+   允许作为 pass-local mechanics
+   存在，
+   但它们必须直接支撑当前 rewrite，
+   不能长成新的 shared layer
+6. 不能先把当前后段实现固定成前提，
    再要求上游去适配
-5. 后段如果在表示层边界上越权，
+7. 后段如果在表示层边界上越权，
    应优先改后段实现，
    不是先给前面补 attr / matcher / facts bag
+8. 如果当前实现还依赖错误边界，
+   文档必须把它写成
+   `wrong now, delete later`，
+   不能写成“暂时合理的中间层”
+9. exact builtin legality
+   必须在进入 `TTProgram`
+   之前独立成立；
+   `ValidateTTProgram`
+   只能复验已经进入
+   `TTProgram`
+   的显式 realization 结果
+10. leaf/runtime 的 admitted support surface
+    可以拒绝某个
+    `ExecutableSpec -> execution backend`
+    组合，
+    但不能反向收窄
+    上层显式语义和 validator 边界
 
 ## 7. 与后续文档的关系
 
+- 本文档只负责：
+  - 根因诊断
+  - layered IR rewrite 方向
+  - IR-first 纪律基线
+- cleanup 主线
+  `task0-task5`
+  只是删除和收口这些 forced debt 的执行切片，
+  不是新的 IR 层
+- `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
+  负责当前 repo HEAD 上
+  compute-side exact builtin legality
+  这条 cleanup 切片的 owner truth
 - `task1_spatial_plan_companion.md`
   负责定义 `SpatialPlan` 这层表示的合同
 - `task2_ttprogram_companion_cutover.md`
   负责定义 `TTProgram` 这层表示的合同
 - `task3_runtime_gate_and_workload_cutover.md`
   负责定义 leaf reader / workload cutover 合同
+- `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
+  负责把 task0-task5
+  组织成当前 cleanup 总览
 - `tasks/progress.md`
   负责记录 repo HEAD 当前状态和下一步

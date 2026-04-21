@@ -37,6 +37,17 @@
 - 重新定义新的表示层
 - 再发明一个 replacement bag / replacement helper pass
 - 用另一套 `Map<String, Any>` 契约替换旧 bag
+- 删除
+  `TTProgram.payload`
+  /
+  `tl.blackhole_executable`
+  上仍然存活的
+  leaf payload / projection residue；
+  这属于 task3
+- 删除
+  `blackhole.segment_kind`
+  这类 leaf-side body slicing residue；
+  这属于 task4
 - 顶层 `Task 2: TTProgram Representation Cutover`
   的全部工作
 
@@ -72,10 +83,28 @@ repo HEAD 上已经成立的只有一些表面现象：
   pipeline stages /
   buffer contracts
   聚合成一个 `Map<String, Any>`
+- canonical
+  `LowerToBlackholeTTProgram`
+  主链本身已经不再调用
+  public `AnalyzeBlackhole*` wrapper，
+  `BuildTTProgram`
+  也已经是 staged
+  `TTProgram`
+  的聚合/清理点，
+  不是 task2 的主要问题源
 - `lower_blackhole_ops.cc`
   和 `blackhole_lowering_requirements.cc`
   仍然直接消费
   `AnalyzeBlackhole*Evidence(...)`
+- runtime / codegen / build
+  reader
+  现在已经主要读取
+  `tl.blackhole_executable`
+  /
+  `TTProgram.payload`
+  投影，
+  不再直接读取这些
+  public / internal legacy analysis 面
 - `test_blackhole_flash_attention_analysis.py`
   仍然是围绕 public wrapper 和 legacy attr 写的，
   还没有迁走
@@ -104,7 +133,28 @@ repo HEAD 上已经成立的只有一些表面现象：
 不只是“历史 API 还没删”。
 它现在还在 active Blackhole lowering path 里被直接调用，
 见 [engine/lower.py](/root/dev/vibe_dsl/tilelang_repo/tilelang/engine/lower.py#L369)
-和 [testing/python/target/blackhole/common.py](/root/dev/vibe_dsl/tilelang_repo/testing/python/target/blackhole/common.py#L97)。
+、
+[testing/python/target/blackhole/common.py](/root/dev/vibe_dsl/tilelang_repo/testing/python/target/blackhole/common.py#L97)
+和
+[test_blackhole_flash_attention_pipeline.py](/root/dev/vibe_dsl/tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py#L102)。
+
+但要注意：
+[LowerToBlackholeTTProgram](/root/dev/vibe_dsl/tilelang_repo/tilelang/engine/phase.py#L377)
+这条 canonical
+`TTProgram`
+主链本身已经不再调用这些 public wrapper。
+
+这说明 task2 当前真正要切掉的是：
+
+- `engine/lower.py`
+  / target test helper
+  这类 compile helper / test scaffolding 依赖
+- planner 内部对 evidence helper /
+  lowering bag 的复用
+
+而不是去把
+`BuildTTProgram`
+重新定义一遍。
 
 这意味着：
 task2 不能把“先删 public wrapper”
@@ -130,7 +180,7 @@ task2 不能把“先删 public wrapper”
 所以现在 legacy analysis 不是“只剩 public surface 没删”，
 而是内部语义消费还在。
 
-### 4.3 `blackhole.lowering_requirements` attr 虽然不见了，但 lowering bag 还活着
+### 4.3 `blackhole.lowering_requirements` attr 虽然不见了，但 lowering bag 还活着，而且仍在驱动 planner
 
 当前很多测试已经证明：
 
@@ -152,8 +202,73 @@ task2 不能把“先删 public wrapper”
 - materialization contracts
 - flow contracts
 
-然后 [lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L1460)
+然后
+[lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L1460)
+/
+[lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L2319)
 再把它作为 active planning 输入继续消费。
+
+当前已经能直接看到的用途包括：
+
+- `HasComputeSupportContract`
+  用
+  `compute_op_kinds`
+  决定是否需要 compute segment，
+  见 [lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L1452)
+- `ValidateComputePipelineLegality`
+  用
+  `pipeline_stage_counts`
+  做 legality gate，
+  见 [lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L1419)
+- `LoadBufferFlowContracts`
+  /
+  `BuildBufferMaterializationContractMap`
+  /
+  `LoadBufferTileBridgeSpecs`
+  用这些 bag 字段继续做 planner / payload shaping，
+  见 [lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L1500)
+  [lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L1849)
+- `StoreLeafExecutableContracts`
+  又把
+  `buffer_tile_bridge_specs`
+  和衍生出的
+  `unsupported_compute_ops`
+  写回
+  `TTProgram.payload`，
+  见 [lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L3958)
+
+而且这个 bag
+不只是“有 active reader”这么简单。
+repo HEAD 里
+[BuildBlackholeLoweringRequirements](/root/dev/vibe_dsl/tilelang_repo/src/transform/common/blackhole_lowering_requirements.cc#L1294)
+现在还会继续产出一批
+repo 内已经找不到 active consumer
+的字段：
+
+- `work_axes`
+- `derived_index_expr_count`
+- `work_dependent_loop_bound_count`
+- `spatial_phase_count`
+- `spatial_channel_count`
+- `spatial_phase_boundary_buffers`
+- `pipeline_loop_vars`
+
+这些字段没有证明
+“bag 还有合理边界”。
+相反，它们只说明：
+这个 broad
+`Map<String, Any>`
+已经在同时承担
+active planner input
+和 bag-only residue
+两种角色，
+所以 task2 的 required end-state
+不能是“换个名字继续保留总包”，
+而必须是把需要的事实
+拆回当前 IR /
+当前 `SpatialPlan` /
+pass-local helper /
+leaf-local projection。
 
 也就是说：
 `blackhole.lowering_requirements`
@@ -162,7 +277,96 @@ task2 不能把“先删 public wrapper”
 退回成了“internal helper return value”，
 并没有真正退出 active planning chain。
 
-### 4.4 task2 当前还受 task1 卡住
+### 4.4 `BuildTTProgram` 不是 task2 当前的主 blocker
+
+[BuildTTProgram](/root/dev/vibe_dsl/tilelang_repo/src/transform/build_tt_program.cc#L602)
+现在做的事情已经比较接近
+task2 需要的角色：
+
+- 读取 staged
+  `tl.tt_program`
+- 检查
+  `TTBlockPlan / TTKernelPlan / TTSyncPlan /
+   TTABIPlan / TTExecutionPlan`
+  和 compatibility payload 的对齐
+- 清理
+  `tl.internal_tt_*`
+  与
+  `tl.blackhole_lowering_requirements_seed`
+  这类中间 attrs
+
+对应测试也已经在检查：
+
+- `BuildTTProgram`
+  后
+  `tl.internal_tt_*`
+  不再残留，
+  见 [test_blackhole_spatial_ir.py](/root/dev/vibe_dsl/tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py#L336)
+- staged planning 过程中
+  `tl.tt_program`
+  已经承接 owner truth，
+  不再依赖
+  `tl.internal_tt_*`
+  attr，
+  见 [test_blackhole_spatial_ir.py](/root/dev/vibe_dsl/tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py#L364)
+
+所以 task2 不应该被写成：
+
+- “重做 `BuildTTProgram`”
+- “重新引入一层 internal staging attr”
+
+task2 真正要修的是
+`BuildTTProgram`
+之前那层
+analysis/bag
+依赖。
+
+### 4.5 runtime / codegen / build reader 已经基本不再读 legacy analysis bag
+
+当前 runtime / codegen / build
+reader 的主边界已经是：
+
+- `TTProgram`
+  -> `tl.blackhole_executable`
+  projection，
+  见 [tt_program_projection.h](/root/dev/vibe_dsl/tilelang_repo/src/target/tt_program_projection.h#L206)
+  和 [materialize_blackhole_executable.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/materialize_blackhole_executable.cc#L17)
+- `codegen_blackhole.cc`
+  /
+  `rt_mod_blackhole.cc`
+  读取
+  `tl.blackhole_executable`
+  而不是
+  `AnalyzeBlackhole*`
+  或
+  `blackhole.lowering_requirements`
+  这类 legacy analysis 面，
+  见 [codegen_blackhole.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/codegen_blackhole.cc#L231)
+  和 [rt_mod_blackhole.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/rt_mod_blackhole.cc#L1703)
+
+但这不代表 leaf-side residue
+已经收口。
+
+当前仍然存活的包括：
+
+- `TTProgram.payload`
+  /
+  executable projection
+  里的
+  `buffer_tile_bridge_specs`
+  和 contract payload，
+  这是 task3 范围
+- runtime-side
+  `blackhole.segment_kind`
+  body slicing residue，
+  这是 task4 范围
+
+所以 task2 不能把这些后续 debt
+误记成
+“public/internal analysis bag
+还必须保留”。
+
+### 4.6 task2 当前还受 task1 卡住
 
 task1 还没有完成 direct logical bridge capture。
 所以当前 active path
@@ -182,7 +386,7 @@ task2 不能先把 compute-region public wrapper 删掉，
 2. 再做 task2，
    删除 public/internal legacy analysis 面
 
-### 4.5 还有历史兼容代码在改写这些 legacy attr
+### 4.7 还有历史兼容代码在改写这些 legacy attr
 
 当前 [blackhole_device_resource_canonicalization.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/blackhole_device_resource_canonicalization.cc#L763)
 仍然会在 attr 存在时改写：
@@ -236,19 +440,133 @@ task2 的重点是：
 “一个装满各种语义的 `Map<String, Any>`”，
 task2 就没完成。
 
+这点不只是当前 Blackhole 路线的偏好，
+也是 repo 内成熟后端的共同边界：
+
+- local collector / visitor
+- 直接 rewrite 成显式 attr / typed object
+- leaf writer / runtime reader
+
+而不是：
+
+- public wrapper
+- internal evidence helper
+- broad `Map<String, Any>` 总包
+- 最后再让 builder / runtime / codegen 去猜
+
 如果这个文件在 task2 后仍然保留，
 它只能做：
 
+- 同一个 planner `.cc`
+  里的 pass-local utility
 - leaf-local projection helper
 - leaf-local validation helper
-- 极窄的 current-stage local utility
 
 它不能再承担：
 
 - 汇总 work / compute / pipeline / bridge / materialization / flow
   的统一 semantic bag
+- 保留一批
+  repo 内已经没有 active reader
+  的 bag-only residue 字段
+- 以 public 头文件 /
+  cross-pass helper API
+  的形式继续当语义入口
 
-### 5.4 task1 / task2 边界要写清楚
+### 5.4 `BuildTTProgram` 已经接近正确角色，task2 不应回退它
+
+task2 文档里要明确：
+
+- `BuildTTProgram`
+  当前已经是 staged
+  `TTProgram`
+  的聚合 / 清理点
+- task2
+  不需要通过
+  `tl.internal_tt_*`
+  或新的 bag
+  再给它喂一层中间协议
+
+换句话说：
+task2 的实现重点
+必须落在
+`engine/lower.py`
+/
+`blackhole_lowering_requirements.cc`
+/
+`PlanTTKernelABI`
+这类真正还在吃
+analysis bag
+的地方。
+
+这里也要明确：
+TT-Metal 的稳定 lowering 边界
+本来就是显式
+program / kernel / circular-buffer /
+semaphore / runtime-arg
+对象与 API。
+它没有提供任何 target-model 理由，
+要求我们保留
+`work_decomposition`
+/
+`compute_regions`
+/
+`pipeline_stages`
+/
+`lowering_requirements`
+这类 broad semantic bag，
+更没有理由把
+`BuildTTProgram`
+写成新的 semantic owner。
+
+### 5.5 task2 / task3 / task4 边界要写清楚
+
+task2 删除的是：
+
+- public `AnalyzeBlackhole*` wrapper
+- internal `*Evidence(...)`
+  helper
+- broad
+  `blackhole_lowering_requirements`
+  planner bag
+
+task2 不直接删除的是：
+
+- `TTProgram.payload`
+  /
+  `tl.blackhole_executable`
+  里的 leaf payload / projection residue；
+  这是 task3
+- runtime-side
+  `blackhole.segment_kind`
+  residue；
+  这是 task4
+
+但 task2 也不能因为
+task3 / task4
+还没做，
+就把前面的
+analysis bag
+继续描述成“必须保留的中间层”。
+
+如果 task2 后
+`buffer_tile_bridge_specs`
+之类 leaf payload
+还暂时存在，
+它的来源也只能是：
+
+- 当前 IR
+- 当前 `SpatialPlan`
+- task1 定义的窄 bridge attr
+- 或明确的 `TTProgram` / executable projection writer
+
+而不能继续是：
+
+- public wrapper
+- internal evidence helper
+- broad lowering bag
+
+### 5.6 task1 / task2 边界要写清楚
 
 task2 文档里必须明确：
 
@@ -262,7 +580,7 @@ task2 文档里必须明确：
 也不能拿 task1 未完成
 来把 task2 的真正合同写虚。
 
-### 5.5 旧 analysis 测试现在还不是“已经 obsolete”
+### 5.7 旧 analysis 测试现在还不是“已经 obsolete”
 
 [test_blackhole_flash_attention_analysis.py](/root/dev/vibe_dsl/tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py#L1)
 当前仍然是在给现有 public wrapper / legacy attr
@@ -290,20 +608,33 @@ task2 文档里必须明确：
    从 `AnalyzeBlackhole*Evidence(...)`
    上切走
 3. 让 current consumer
-   直接读取当前 `PrimFunc` / `SpatialPlan` / `TTProgram`
-   或极窄的 local helper，
+   直接读取当前 `PrimFunc` / `SpatialPlan`
+   或当前 planner 内的 pass-local helper，
    不再返回新的 broad `Map<String, Any>` bag
 4. 收缩或删除
    `blackhole_lowering_requirements.cc`
    的 planning semantic-carrier 角色
-5. 删除 public wrapper、
+5. 保持
+   `BuildTTProgram`
+   继续作为 staged
+   `TTProgram`
+   聚合 / 清理点，
+   不重新引入
+   `tl.internal_tt_*`
+   或 replacement staging bag
+6. 确认 compile helper /
+   target test helper
+   不再调用
+   `AnalyzeBlackholeComputeRegions`
+   这类 public wrapper
+7. 删除 public wrapper、
    registered pass、
    internal evidence helper、
    对应源文件和头文件
-6. 删除或迁移
+8. 删除或迁移
    `test_blackhole_flash_attention_analysis.py`
    里的剩余有效断言
-7. 清理仍然保留的 legacy analysis compatibility residue
+9. 清理仍然保留的 legacy analysis compatibility residue
 
 ## 7. 相关文件
 
@@ -343,12 +674,28 @@ task2 的验证要证明
    `AnalyzeBlackhole*Evidence(...)`
 4. active planning chain
    不再依赖 broad `Map<String, Any>` lowering bag
-5. 最终输出仍然不暴露
+   去做 legality / planner shaping / payload emission
+   而且不再残留
+   只存在于 bag 内、
+   repo 内没有 active consumer
+   的计数/摘要字段
+5. `BuildTTProgram`
+   后仍然不残留
+   `tl.internal_tt_*`
+   和
+   `tl.blackhole_lowering_requirements_seed`
+6. runtime / codegen / build
+   继续只读
+   `tl.blackhole_executable`
+   /
+   executable projection，
+   不回退成 legacy analysis bag reader
+7. 最终输出仍然不暴露
    `blackhole.lowering_requirements`
    `blackhole.work_decomposition`
    `blackhole.compute_regions`
    `blackhole.pipeline_stages`
-6. legacy analysis tests
+8. legacy analysis tests
    已删除或迁移到 canonical path
 
 ## 9. 完成判据
@@ -359,9 +706,25 @@ task2 才算完成：
 - public `AnalyzeBlackhole*` wrapper 已删除
 - internal `AnalyzeBlackhole*Evidence(...)`
   helper 已删除
-- active consumer 已切到当前 IR / 显式表示层
+- active consumer 已切到当前 IR /
+  `SpatialPlan` /
+  当前 planner 内的 pass-local helper
 - `blackhole_lowering_requirements.cc`
   不再承担 planning semantic carrier
+- `BuildTTProgram`
+  继续只做 staged
+  `TTProgram`
+  聚合 / 清理，
+  没有新的
+  `tl.internal_tt_*`
+  或 replacement bag
+- runtime / codegen / build
+  不依赖 legacy analysis bag；
+  剩余 payload/projection debt
+  仍明确归 task3，
+  `blackhole.segment_kind`
+  residue
+  仍明确归 task4
 - legacy analysis 相关测试和 compatibility residue
   已同步清理
 - task2 文档和代码口径一致，

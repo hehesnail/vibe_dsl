@@ -35,13 +35,20 @@ Normalized Tile TIR
 Normalized Tile TIR
   -> SpatialPlan
   -> TTProgram
-  -> ExecutableSpec / BlackholeModule
+  -> ExecutableSpec
 ```
 
 但这里的 `SpatialPlan`
 不再表示“薄兼容壳 + 后段自己猜”，
 而是表示
 **target-independent 的 virtual spatial/dataflow program**。
+
+`BlackholeModule` / build / codegen / runtime /
+`artifact.rt_mod`
+都只属于
+`ExecutableSpec`
+之后的 leaf consumer / delivery 边界，
+不再并入长期 layered IR 主链。
 
 ## 2. 第一性原理
 
@@ -181,14 +188,62 @@ Normalized Tile TIR
 都只允许作为兼容载体或 realization detail 继续存在，
 不能替代上面这组长期显式表示边界。
 
-### 3.4 `ExecutableSpec / runtime / codegen`
+如果当前实现里仍保留：
 
-只负责：
+- `BuildTTProgram`
+- `PlanTTBlocks / PlanTTCompute / PlanTTTransport / PlanTTSync / PlanTTABI / PlanTTExecution`
 
-- 冻结 `TTProgram`
-- 投影 `ExecutableSpec`
-- 基于显式 leaf projection 做 execution backend 选择 / admission gate
-- build / codegen / runtime / `BlackholeModule` 执行
+它们也只能是
+current `TTProgram`
+slice 的构造 /
+聚合 /
+finalize /
+cleanup mechanics，
+不是新的长期层边界。
+
+如果当前实现里仍保留：
+
+- `TTProgram.payload`
+- `buffer_tile_bridge_specs`
+- `compute_contract` /
+  `gemm_contract` /
+  `multi_*_contracts`
+- `direct_runtime_unsupported_reasons`
+
+这些也只能被写成
+leaf compatibility residue /
+admission metadata，
+不能回升成
+`TTProgram`
+的 owner truth。
+
+### 3.4 `ExecutableSpec`
+
+`ExecutableSpec`
+是唯一的
+leaf execution projection /
+runtime-module build contract。
+
+它只负责：
+
+- 冻结 validated `TTProgram`
+- 由 canonical writer
+  `MaterializeBlackholeExecutable`
+  投影
+  `tl.blackhole_executable`
+  与 `ExecutableSpec`
+- 暴露 leaf 可直接消费的
+  segment / kernel /
+  runtime-arg /
+  accessor /
+  CB /
+  semaphore /
+  core /
+  execution records
+- 基于显式 leaf projection
+  做 execution backend 选择 /
+  admission gate /
+  runtime-module materialization
 
 不再承担：
 
@@ -199,17 +254,53 @@ Normalized Tile TIR
 
 额外边界固定为：
 
+- build / codegen / runtime /
+  `BlackholeModule`
+  只允许读取
+  `tl.blackhole_executable`
+  或解析后的
+  `ExecutableSpec`
+  projection，
+  不允许回读
+  `TTProgram`
+  或 legacy attrs
+- `segment_plan.kind`
+  与其他 projected leaf records
+  是当前 leaf truth；
+  如果 repo HEAD
+  里仍保留
+  `blackhole.segment_kind`
+  之类 source marker，
+  它也只能是
+  cleanup debt，
+  不是 `ExecutableSpec`
+  成立的前提
 - 当前 direct runtime / codegen 的 admitted support surface
   只属于 leaf execution concern
 - 它可以拒绝某个
   `ExecutableSpec -> execution backend`
   组合
+- `direct_runtime_unsupported_reasons`
+  这类字段
+  也只允许承担
+  leaf admission /
+  workload gate /
+  diagnostic
 - 但它**不能**反向收窄
   `TTProgram` 显式语义、
   TT builtin basis、
   或
   `ValidateTTProgram`
   的 legality 边界
+
+长期交付链固定为：
+
+```text
+tl.tt_program
+  -> tl.blackhole_executable
+  -> ExecutableSpec
+  -> artifact.rt_mod
+```
 
 ## 4. TT builtin mapping 边界
 
@@ -385,8 +476,38 @@ fail-closed 纪律固定为：
 ## 6. Fake Protocol 去留规则
 
 审计表中列出的
-legacy transition attrs / helper bridge / payload bag
+legacy transition attrs /
+helper bridge /
+payload bag /
+planning seed
 都不是长期显式语义。
+
+其中必须明确写死：
+
+- `tl.blackhole_logical_buffer_tile_bridge_specs`
+  如果仍存在，
+  也只是 cleanup 期间
+  唯一允许存活的窄 temporary handoff，
+  不是新的
+  `SpatialPlan` /
+  `TTProgram` /
+  `ExecutableSpec`
+  语义层
+- `blackhole.lowering_requirements` /
+  `tl.blackhole_lowering_requirements_seed` /
+  `blackhole.cb_requirements`
+  如果仍存在，
+  也只是 forced implementation debt，
+  不能继续被文档表述成
+  `TTProgram`
+  的合法输入边界
+- `TTProgram.payload`
+  中仍存活的 bridge /
+  contract /
+  admission payload family
+  只允许作为
+  leaf compatibility debt，
+  不能回升成 planning source
 
 它们的处理纪律固定为：
 
@@ -442,24 +563,26 @@ legacy transition attrs / helper bridge / payload bag
    - 把 `TTProgram`
      收正成唯一 physical realization 表示
 3. **leaf reader 收口**
-   - 让 build / codegen / runtime
-     只读 `TTProgram / ExecutableSpec`
+   - 让 build / codegen / runtime /
+     `BlackholeModule`
+     只读 executable projection /
+     `ExecutableSpec`
 4. **`Legacy Protocol Deletion`**
    - 删除 fake protocol 和 late matcher residue
 
-架构收口顺序仍按
+架构收口仍按
 `Task 1 -> Task 2 -> Task 3 -> Legacy Protocol Deletion`
 理解显式表示层边界；
-但 repo HEAD 的实际实现顺序，
-固定按 cleanup 文档推进：
+cleanup 的架构依赖顺序
+固定按 cleanup 文档理解为：
 
-1. **先做 `Cleanup Task 0`**
+1. **`Cleanup Task 0`**
    - 锁定 exact TT-Metal builtin surface
    - 收正 builtin-selection pass
-2. **再做 `Cleanup Task 1`**
+2. **`Cleanup Task 1`**
    - 把 logical bridge capture
      收成唯一窄 bridge attr
-3. **再做 `Cleanup Task 2`**
+3. **`Cleanup Task 2`**
    - 删除 public / internal legacy analysis bag
    - 同时把
      `SpatialPlan`
@@ -469,22 +592,38 @@ legacy transition attrs / helper bridge / payload bag
      这个名字如果继续保留，
      也只是历史实现名，
      不是架构契约
-4. **再做 `Cleanup Task 3`**
+4. **`Cleanup Task 3`**
    - 删除
      `blackhole.copy_semantics`
-5. **再做 `Cleanup Task 4`**
+5. **`Cleanup Task 4`**
    - 删除
      `blackhole.segment_kind`
    - 收紧 planner / projection / runtime
      对 kernel kind / segment plan
      的直接表示消费
-6. **最后做 `Cleanup Task 5`**
+6. **`Cleanup Task 5`**
    - 做最终 cleanup scan、
      文档同步、
      验证与 memory 沉淀
 7. **cleanup 完成后**
    - 才恢复 support surface /
      workload payoff 扩展
+
+这里要和
+`tasks/progress.md`
+明确分开：
+
+- 上面是 cleanup 的架构依赖顺序
+- repo HEAD 当前从哪个切片继续推进、
+  当前 blocker 在哪里，
+  统一只看 `progress.md`
+- `Cleanup Task 0`
+  出现在依赖顺序里，
+  不等于 repo HEAD
+  已按完成口径收口；
+  当前只有 selector-forwarding
+  局部结果，
+  不能当成完成声明
 
 补充：
 
@@ -543,12 +682,21 @@ legacy transition attrs / helper bridge / payload bag
    - 算法/访存语义只在 `Normalized Tile TIR`
    - virtual spatial/dataflow 语义只在 `SpatialPlan`
    - physical target 语义只在 `TTProgram`
-   - `ExecutableSpec` 只做 leaf materialization
-4. **后段不再补语义**
-   - runtime / codegen / build
-     不再做 late recovery
-   - fake protocol / payload bag / matcher
-     不再承担语义承载职责
+   - `ExecutableSpec`
+     只做 leaf projection /
+     materialization
+4. **leaf writer / reader 边界收紧**
+   - `MaterializeBlackholeExecutable`
+     是唯一 canonical writer
+   - build / codegen / runtime /
+     `BlackholeModule`
+     只读 executable projection /
+     `ExecutableSpec`
+   - wrong-now residue
+     只允许留在 cleanup /
+     audit / progress
+     的 debt 表述里，
+     不能再回升成长期协议
 5. **execution gate 不反向塑形**
    - backend-specific support subset
      只在

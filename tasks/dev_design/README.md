@@ -82,7 +82,8 @@ pass 名字、helper、bag、payload、bridge attr
 `Task 1 / Task 2 / Task 3 / Legacy Protocol Deletion`
 这组历史任务标签。
 
-当前 repo HEAD 的实际实现顺序固定按 cleanup 文档推进：
+cleanup 的**架构依赖顺序**
+固定按 cleanup 文档理解：
 
 1. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
 2. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task1.md`
@@ -91,6 +92,22 @@ pass 名字、helper、bag、payload、bridge attr
 5. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task4.md`
 6. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task5.md`
 7. cleanup 完成后，再恢复 support surface / workload payoff 扩展
+
+这里必须和
+`tasks/progress.md`
+分开理解：
+
+- 这里维护的是 cleanup 的依赖顺序
+- `progress.md`
+  维护的是 repo HEAD 当前 blocker
+  和下一步
+- `task0`
+  出现在依赖顺序里，
+  不等于 repo HEAD
+  已按完成口径收口；
+  当前只有 selector-forwarding
+  局部结果，
+  不能折算成完成声明
 
 其中：
 
@@ -101,7 +118,9 @@ pass 名字、helper、bag、payload、bridge attr
 负责定义表示层边界和完成判据，
 不单独充当“当前代码已经完成到哪一步”的状态来源。
 
-当前真实实现状态和下一步，
+当前 repo HEAD 的总体状态 /
+当前 blocker /
+当前下一步，
 统一只看 `tasks/progress.md`。
 
 其中：
@@ -119,9 +138,21 @@ pass 名字、helper、bag、payload、bridge attr
   或 bridge attr 写成长期协议
 - 不新增第二份总体设计文档
 - `progress.md`
-  只维护当前真实代码状态与下一步
-- task 文档只定义目标合同和完成判据，
+  只维护 repo HEAD 的总体状态 /
+  当前 blocker /
+  当前下一步
+- `task1/task2/task3`
+  这组表示层合同文档
+  只定义目标合同和完成判据，
   不维护 repo HEAD 的阶段性状态快照
+- cleanup `task0-task5`
+  分文件
+  可以记录各自 residue 的
+  per-task current-state evidence /
+  required end-state /
+  verification contract，
+  但不替代 `progress.md`
+  作为总体状态来源
 - `README`
   只做入口索引，不重复维护详细 backlog
 - `archive/`

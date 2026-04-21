@@ -204,9 +204,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - `tasks/dev_design/task1_spatial_plan_companion.md`
    - `tasks/dev_design/task2_ttprogram_companion_cutover.md`
    - `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
-2. 当前 repo HEAD 的实际执行顺序固定按 cleanup 文档推进：
+2. cleanup 的架构依赖顺序固定按 cleanup 文档理解：
    - `Cleanup Task 0 -> Cleanup Task 1 -> Cleanup Task 2 -> Cleanup Task 3 -> Cleanup Task 4 -> Cleanup Task 5`
    - cleanup 完成后，才恢复 support surface / workload payoff 扩展
+   - 这描述的是依赖顺序，不等于 repo HEAD 当前 blocker 顺序；
+     当前总体状态、blocker 和下一步统一只看 `tasks/progress.md`
 3. `task1_spatial_plan_companion.md`、`task2_ttprogram_companion_cutover.md`、`task3_runtime_gate_and_workload_cutover.md`
    负责定义 completion contract，不再单独充当当前实施顺序；
    这些文件名中的 `companion / cutover` 只是历史索引，不是新的 IR 层命名

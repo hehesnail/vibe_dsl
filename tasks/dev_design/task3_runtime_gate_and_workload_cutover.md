@@ -4,168 +4,657 @@
 
 - **文档角色**: `ExecutableSpec / leaf reader` 合同文档
 - **任务链位置**:
-  `SpatialPlan -> TTProgram -> ExecutableSpec`
-  之后的 leaf 收口与 workload 承接
+  `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 - **唯一总体设计**: `tasks/dev_design/final_blackhole_backend_redesign.md`
 
 说明：
 
-- 本文档只定义 leaf 边界和 workload 承接合同
-- 它不单独声明 repo HEAD 是否已经完成
-- 当前实现状态统一只看 `tasks/progress.md`
+- 文件名里的 `runtime_gate_and_workload_cutover`
+  只是历史索引，
+  不是新的 IR 层命名
+- 本文档定义
+  `ExecutableSpec`
+  的长期 leaf projection /
+  runtime-module build contract，
+  以及它与 cleanup task3/task4/task5 的关系
+- 当前 repo HEAD 状态统一只看 `tasks/progress.md`
 
 ## 1. 目标
 
-`Task 3` 只负责两件事：
+`ExecutableSpec`
+不是新的 planning 层，
+也不是 `TTProgram.payload`
+在 leaf 侧的再包装。
 
-1. 让 build / codegen / runtime
-   严格消费 `ExecutableSpec`
-2. 在这条主链上重新承接 workload payoff
+它的语义固定为：
 
-`Task 3`
-不重新定义 `SpatialPlan` 或 `TTProgram`。
+> **唯一的 leaf execution projection / runtime-module build contract**
 
-## 2. Reader 纪律
+它负责回答：
 
-长期 reader 纪律固定为：
+- 哪个 `TTProgram`
+  被冻结成当前 leaf executable
+- 哪些 kernel / segment /
+  runtime-arg / accessor /
+  CB / semaphore / core records
+  已经是 leaf 可直接消费的显式结果
+- 当前 execution backend
+  是否接受这个 executable
+- build / codegen / runtime /
+  `BlackholeModule`
+  如何据此物化最终
+  `artifact.rt_mod`
 
-- build / codegen / runtime / `BlackholeModule`
-  只允许读 `ExecutableSpec`
+它不负责：
+
+- target planning
+- compute builtin legality
+- transport / sync / ABI
+  的上游语义决定
+- runtime/codegen 侧
+  重新恢复 planner 语义
+- 用当前 admitted support subset
+  反向塑形
+  `TTProgram`
+  或更早层表示
+
+补充说明：
+
+- cleanup task3/task4/task5
+  只是把 repo HEAD
+  收回到这个合同上的执行切片
+- 它们不是新的表示层，
+  也不能反向改写
+  `ExecutableSpec`
+  的长期语义
+
+## 2. 合法输入与禁止输入
+
+leaf writer /
+leaf reader
+只允许建立在：
+
+- validated `TTProgram`
+- `TTProgram`
+  上可直接投影出的显式对象
+- leaf-local 的
+  schema validation /
+  backend admission /
+  runtime-module materialization
+
+这里要特别写清楚：
+
 - `ExecutableSpec`
-  只允许投影自 `TTProgram`
+  只能是
+  `TTProgram`
+  的 direct projection
+- `MaterializeBlackholeExecutable`
+  是唯一 canonical writer
+- build / codegen / runtime /
+  `BlackholeModule`
+  只能读取
+  `tl.blackhole_executable`
+  或其解析后的
+  `ExecutableSpec`
 
-明确禁止：
+不允许回升为 leaf 输入的东西：
 
-- 读审计表列出的 legacy gate attrs / transition attrs
-- 从 `work_linear_id`、arg kind、payload bag、
-  builtin 序列恢复 planning 语义
-- 在 leaf-time 再做中间层或 target-side 语义恢复
+- `blackhole.copy_semantics`
+- `blackhole.segment_kind`
+- `blackhole.lowering_requirements`
+- helper bag /
+  seed /
+  payload fallback
+- 从 `work_linear_id`
+  或 builtin 序列
+  反推 planning 语义
+- runtime / codegen /
+  build 自己补出来的
+  kernel family /
+  copy direction /
+  buffer role /
+  ABI meaning
 
-## 3. 前置条件
+如果当前 leaf 输入
+证据不足，
+结论只能是：
 
-`Task 3`
-只依赖前两层表示合同，
-不单独维护额外 roadmap 编号。
+- 回到 `TTProgram`
+  或更早层
+  补显式表示
+- 扩 projection validator
+- 在 backend admission
+  处显式 reject / unsupported
 
-它的前置条件固定为：
+不能新增
+leaf-time matcher /
+late fallback /
+replacement helper carrier。
 
-1. `Task 1`
-   已经把 `SpatialPlan`
-   的 virtual spatial/dataflow 语义
-   显式化并可验证
-2. `Task 2`
-   已经把 `TTProgram`
-   的 target realization 表示
-   显式化并可验证
-3. leaf writer
-   可以直接从
-   `TTProgram`
-   投影到
-   `ExecutableSpec`
+## 3. `ExecutableSpec` 的显式 leaf truth
+
+`ExecutableSpec`
+的长期 owner truth
+只能写成 leaf 可直接消费的
+显式 projection 结果。
+
+### 3.1 executable identity
+
+它应编码：
+
+- executable schema version
+- executable source
+- entry identity
+- member function identity
+
+这里的 `source`
+只能表示：
+
+- 当前 executable
+  直接来源于
+  `tl.tt_program`
+
+它不是：
+
+- planner provenance bag
+- cleanup residue 来源说明
+
+### 3.2 segment / kernel realization
+
+它应编码：
+
+- segment identity
+- segment kind
+- core type
+- runtime args
+- common runtime args
+- compile-time arg specs
+- accessors
+- semaphore bindings
+- per-work arg specs
+
+这里的 `segment_plan`
+已经是 leaf truth，
+不是给 runtime
+再去切 kernel body
+的提示词。
+
+### 3.3 execution resources
+
+它应编码：
+
+- CB config
+- core plan
+- semaphore plan
+- execution-time 可直接读取的
+  launch/resource records
+
+这些事实已经处在
+TT-specific 显式程序构造边界，
+对齐的是 leaf build /
+runtime / codegen 消费面，
+不是上游 planner 再补一层的理由。
+
+### 3.4 backend admission metadata
+
+它应编码：
+
+- 当前 executable
+  对某个 execution backend
+  的 admitted / unsupported 信息
+- fail-closed 的直接拒绝理由
+
+其中最典型的就是：
+
+- `direct_runtime_unsupported_reasons`
+
+这类字段只允许承担：
+
+- backend admission
+- workload gate
+- leaf execution diagnostic
+
+它们不能承担：
+
+- `TTProgram`
+  语义 owner truth
+- builtin legality
+- 上游 planner 决策
+
+### 3.5 最终交付边界
+
+`ExecutableSpec`
+不是最终交付 artifact 本身，
+但最终交付必须站在它之上。
+
+长期交付链固定为：
+
+```text
+tl.tt_program
+  -> tl.blackhole_executable
+  -> ExecutableSpec
+  -> artifact.rt_mod
+```
+
+JIT / export /
+execution backend adapter
+最终只能消费：
+
+- `artifact.rt_mod`
+- 或 runtime-module
+  等价交付物
+
+不能回读：
+
+- `TTProgram`
+- legacy attrs
+- helper residue
+
+## 4. Writer / Reader / Validator 纪律
+
+### 4.1 `MaterializeBlackholeExecutable` 是唯一 writer
+
+长期 writer 纪律固定为：
+
+- 有 `tl.tt_program`
+  就投影
+  `tl.blackhole_executable`
+- 没有 `tl.tt_program`
+  就不能继续保留
+  stale executable attr
 
 因此：
 
-- `buffer effect / use-role`
-- `liveness`
-- `materialization / source-live-form`
+- executable projection
+  只能由 canonical writer 生成
+- 不允许新增第二条 writer path
+- 不允许测试或 runtime
+  把 leaf helper 重写成新的 owner truth
 
-这些工作都属于更早层的表示与构造问题，
-不是 `Task 3`
-自己的顶层路线。
+### 4.2 build / codegen / runtime / `BlackholeModule` 只读 executable projection
 
-## 4. Support Surface 纪律
+长期 reader 纪律固定为：
 
-support surface 扩张只能经由：
-
-- `SpatialPlan`
-  的显式 virtual spatial/dataflow 表示
-- `TTProgram`
-  的显式 target realization 表示
-- `ExecutableSpec`
-  的显式 leaf projection
-
-缺语义时只能：
-
-- 补更早层 IR / 显式对象
-- 补更早层 planner 的构造/改写逻辑
-- 补 validator
-- 显式 unsupported
-
-不允许：
-
-- 新增 workaround attr
-- 新增 runtime fallback
-- 新增 late matcher
-- 新增 leaf-time visitor/matcher 去恢复 planning 语义
-
-## 5. 旧链退场顺序
-
-退场顺序固定为：
-
-1. 先让上游显式表示站稳
-2. 再切 leaf readers
-3. 再删 fake protocol
-4. 最后删 helper bridge residue
-
-当前明确要删的读取面：
-
-- 审计表列出的 legacy transition attrs / internal bridge payload
-
-## 6. Leaf Writer / Reader 边界
-
-### `MaterializeBlackholeExecutable`
-
-是唯一 leaf writer。
-
-它负责：
-
-- 从 `TTProgram`
-  投影出
+- build 只读
+  `tl.blackhole_executable`
+  或解析后的
   `ExecutableSpec`
-- 冻结 leaf-only build/runtime/codegen 所需记录
+- codegen 只读
+  projected segment /
+  CB / core /
+  unsupported-op /
+  runtime-arg 记录
+- runtime /
+  `BlackholeModule`
+  只读 executable projection
+  与 `ExecutableSpec`
 
-### build / codegen / runtime / `BlackholeModule`
+明确禁止：
 
-只允许消费：
+- 直接回读
+  `tl.tt_program`
+- 直接回读
+  `blackhole.copy_semantics`
+  / `blackhole.segment_kind`
+  / `blackhole.lowering_requirements`
+- 直接从 top-level payload
+  恢复 work decomposition /
+  block meaning /
+  tile meaning
 
-- `tl.blackhole_executable`
-- 或其内部 `ExecutableSpec` 记录
+### 4.3 `ValidateExecutableSpecProjection`
 
-它们不允许再回头读取：
+leaf validator
+只负责：
+
+- 检查 projection
+  只来源于
+  `TTProgram`
+- 检查 executable schema
+  completeness / consistency
+- 检查 readers
+  不再自补上游 planning 语义
+
+它不负责：
+
+- 重做 `ValidateTTProgram`
+- 重新裁定
+  TT builtin legality
+- 把 backend 当前 unsupported
+  升格成上游表示层限制
+
+## 5. Wrong-Now Residue 与 Cleanup Debt
+
+下面这些东西
+必须明确写成
+**wrong now, delete later**
+或 **leaf compatibility debt**，
+不能写成
+`ExecutableSpec`
+的长期 owner truth。
+
+### 5.1 `buffer_tile_bridge_specs` 不是新层
+
+如果 repo HEAD
+里仍保留：
+
+- `buffer_tile_bridge_specs`
+- `tl.blackhole_logical_buffer_tile_bridge_specs`
+
+它们的正确口径只能是：
+
+- task1 残留的 narrow cleanup exception
+- task3 仍活着的
+  leaf compatibility residue
+- projection schema
+  上待删的 bridge debt
+
+它们不是：
+
+- `ExecutableSpec`
+  的长期字段族
+- TT-Metal runtime contract
+- codegen/runtime
+  再造出来的新表示层
+
+### 5.2 `compute_contract` / `gemm_contract` family 只是 leaf compatibility debt
+
+如果 repo HEAD
+里仍保留：
+
+- `compute_contract`
+- `multi_compute_contracts`
+- `gemm_contract`
+- `multi_gemm_contracts`
+- `compute_epilogue_ops`
+
+它们的正确口径只能是：
+
+- current leaf/runtime compatibility surface
+- admitted direct-runtime gate
+- 尚未删完的
+  contract-family residue
+
+这里必须特别写清楚：
+
+- `compute_contract <- gemm_contract`
+  fallback
+  如果还活着，
+  它只是 live compatibility debt
+- `compute_contract`
+  缺席时
+  从 `multi_compute_contracts`
+  或 `gemm_contract`
+  恢复语义，
+  也只是 live compatibility debt
+
+它们不是：
+
+- `ExecutableSpec`
+  的长期 planning truth
+- task3 已完成的证明
+- `TTProgram`
+  仍可继续依赖 payload family
+  的理由
+
+### 5.3 `direct_runtime_unsupported_reasons` 只能停在 leaf admission
+
+这个字段当前是
+合法的 leaf concern，
+但合同必须写死：
+
+- 它只能表达
+  当前 executable
+  对 direct runtime
+  的 unsupported 理由
+- 它可以作为
+  queryable runtime gate
+- 它可以 fail-closed
+  拒绝执行
+
+它不能表达：
 
 - `TTProgram`
-  内部 planning residue
-- 任意 legacy attr / helper payload
-- 任意 leaf-time 推导出的伪 planning 语义
+  是否合法
+- builtin selection
+  是否正确
+- 更早层表示
+  是否该改
 
-## 7. Completion Contract
+### 5.4 `segment_plan` 是 projection truth，`blackhole.segment_kind` 是 task4 debt
+
+`segment_plan`
+属于 executable projection
+的一等 leaf 字段。
+
+但如果 repo HEAD
+里 runtime 仍保留：
+
+- `SegmentBodyExtractor`
+- `blackhole.segment_kind`
+  body slicing
+
+正确口径只能是：
+
+- task4 尚未删完的
+  leaf-local residue
+- 当前实现为了切 body
+  仍保留的 wrong-now path
+
+它不是：
+
+- `ExecutableSpec`
+  需要 source-level marker
+  才能成立的证据
+- TT-Metal target model
+  对 source marker
+  的要求
+
+### 5.5 防御性 fallback 不是长期 reader 合法性
+
+当前实现里如果还存在：
+
+- `TTProgram payload fallback`
+  报错文案
+- 对 top-level payload
+  或 `work_linear_id`
+  恢复 planning 语义的
+  防御性 reject
+
+这只能说明：
+
+- repo HEAD
+  还在防守旧路径
+- leaf readers
+  已经不再把那条路径
+  当成合法 owner truth
+
+不能反过来写成：
+
+- 旧 fallback
+  仍是允许存在的 reader 合同
+
+## 6. Workload Gate 与 Runtime Admission
+
+leaf execution gate
+只允许做两类事：
+
+- 判断当前
+  `ExecutableSpec -> execution backend`
+  组合是否被支持
+- 对不支持的组合
+  fail-fast /
+  fail-closed
+
+它不允许做：
+
+- 重新规划 kernel
+- 重新解释 copy / gemm /
+  transport / sync 语义
+- 让 leaf runtime 限制
+  倒逼上游表示层收缩
+
+### 6.1 admitted support surface 只属于 leaf concern
+
+当前 direct runtime /
+codegen 的 admitted support surface，
+只属于 leaf execution concern。
+
+例如：
+
+- copy direct runtime
+  的 admitted subset
+- GEMM direct runtime
+  的 admitted subset
+- `mbarrier`
+  等 runtime-side unsupported
+
+这些都只能停在：
+
+- executable admission
+- runtime gate
+- direct execution constraint
+
+不能升级成：
+
+- `TTProgram`
+  的长期语义定义
+- task1/task2
+  的完成门槛
+
+### 6.2 workload payoff 不等于 cleanup completion
+
+workload payoff
+只能在 leaf boundary
+已经收紧之后恢复，
+但它不是 task3
+唯一 completion truth。
+
+必须明确区分：
+
+- compile / projection /
+  codegen / export
+  hard gate
+- admitted copy / GEMM
+  direct-runtime hard gate
+- unsupported workload
+  的 queryable gate
+- TT-Sim `fp16`
+  simulator capability boundary
+
+因此：
+
+- `flash-attn`
+  direct runtime
+  不是当前 cleanup hard gate
+- unsupported workload
+  不能反过来重写
+  `ExecutableSpec`
+  合同
+- workload breadth
+  不能拿来掩盖
+  reader boundary
+  还没收紧
+
+## 7. 与 Cleanup Task 的关系
+
+### 7.1 cleanup task3
+
+cleanup task3
+负责删除：
+
+- `blackhole.copy_semantics`
+  及其 compiler-side consumers
+
+它必须同时保持：
+
+- target / codegen / build / runtime
+  继续站在
+  `TTProgram -> tl.blackhole_executable -> ExecutableSpec`
+  projection boundary
+
+它不能把：
+
+- copy annotation
+- 新的 copy helper carrier
+- target-visible copy protocol
+
+重新引回 leaf 边界。
+
+### 7.2 cleanup task4
+
+cleanup task4
+负责删除：
+
+- planner / runtime
+  仍残留的
+  `blackhole.segment_kind`
+  marker path
+- `segment_plan.kind`
+  与 source-level marker
+  之间的错位 residue
+
+所以 task3 文档里必须承认：
+
+- `segment_kind`
+  仍可能是 live residue
+- 但它不属于
+  `ExecutableSpec`
+  的 owner truth
+
+### 7.3 cleanup task5
+
+cleanup task5
+负责最终 convergence /
+verification / residue scan /
+交付 gate，
+不是新的语义 owner。
+
+因此：
+
+- task3 文档
+  必须先写清楚
+  真正的 leaf boundary
+- task5
+  只负责证明
+  当前实现
+  是否已经收回到这条边界
+
+## 8. Completion Contract
 
 `Task 3`
 只有在下面这些条件同时满足后才算完成：
 
-1. build / codegen / runtime / `BlackholeModule`
-   只读 `ExecutableSpec`
-2. `ExecutableSpec`
-   只投影自 `TTProgram`
-3. leaf readers
-   不再读取审计表列出的
-   legacy gate attrs / transition attrs / internal payload
-4. support surface 扩张
-   已经回到
-   `SpatialPlan -> TTProgram -> ExecutableSpec`
-   这条主链上进行
-
-## 8. Workload 承接顺序
-
-workload payoff
-只能在 leaf reader 边界收紧后，
-按下面顺序恢复：
-
-1. `flash-attn`
-   compile/runtime payoff
-2. wider family cutover
-3. wider support surface
-
-在这之前，
-不允许把 workload payoff
-重新写成更早层表示 cutover 的 blocker。
+1. `MaterializeBlackholeExecutable`
+   成为唯一 executable writer
+2. build / codegen / runtime /
+   `BlackholeModule`
+   只读
+   `tl.blackhole_executable`
+   / `ExecutableSpec`
+3. `ExecutableSpec`
+   只作为
+   `TTProgram`
+   的 direct projection 存在
+4. leaf readers
+   不再直接读取
+   `blackhole.copy_semantics`
+   / `blackhole.segment_kind`
+   / `blackhole.lowering_requirements`
+   / helper bag
+5. `buffer_tile_bridge_specs`
+   与 contract-family residue
+   只被明确记录为 debt，
+   不再被文档合法化成长期字段边界
+6. backend admission
+   只停在 leaf execution gate，
+   不再反向塑形
+   `TTProgram`
+   或更早层语义
+7. JIT / export /
+   execution backend adapter
+   的最终交付
+   站在
+   `artifact.rt_mod`
+   或等价 runtime artifact
+   上，而不是回读 planner residue

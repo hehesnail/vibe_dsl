@@ -11,47 +11,92 @@
 - 文件名中的 `companion`
   只是历史文件名，
   不是新的 IR 层命名
-- 本文档只定义目标合同和完成判据
+- 本文档定义
+  `SpatialPlan`
+  的长期表示层合同
+  和它与 cleanup task1/task2 的关系
 - 当前 repo HEAD 状态统一只看 `tasks/progress.md`
 
 ## 1. 目标
 
-`SpatialPlan` 不再表示“薄兼容层”，
-而是表示：
+`SpatialPlan`
+是长期主链里的第二层显式表示，
+不是“薄兼容层”，
+也不是给后续 planner
+准备的一包临时 facts。
 
-> **target-independent 的 virtual spatial/dataflow representation**
+它的语义固定为：
 
-它负责承接：
+> **target-independent 的 virtual spatial/dataflow program**
 
-- execution unit
-- dataflow edge
-- layout / sharding / distribution 关系
-- phase / ordering / materialization boundary
-- validated planner hints
+它负责回答：
+
+- 哪些 anchored sub-TIR
+  构成稳定执行单元
+- 单元之间有哪些显式
+  dataflow / carry / reduction / broadcast / join 关系
+- virtual layout / sharding / distribution 语义是什么
+- virtual phase / ordering / materialization boundary 是什么
+- 哪些 hints
+  经过 validate 后进入 planner
 
 它不负责：
 
 - TT builtin family
 - CB / semaphore / runtime arg
 - target block placement
-- executable materialization
+- transport / sync / launch
+- executable leaf materialization
+
+补充说明：
+
+- cleanup task1/task2
+  只是把 repo HEAD
+  收回到这个合同上的执行切片
+- 它们不是新的表示层，
+  也不能反向重写
+  `SpatialPlan`
+  的长期语义
 
 ## 2. 合法输入与禁止输入
 
-`SpatialPlan` 的构造只允许读取：
+`SpatialPlan`
+的构造只允许读取：
 
 - `Normalized Tile TIR`
-- anchored sub-TIR 上可直接结构遍历得到的
+- anchored sub-TIR
+  上可直接结构遍历得到的
   execution-unit / dependence / region evidence
 - validate 后的 hints
 
-禁止把下面这些东西抬成 `SpatialPlan` 的长期语义来源：
+允许存在的实现 mechanics：
 
-- 审计表列出的 legacy transition attrs / helper bridge
+- visitor
+- matcher
+- mutator
+- builder
+- pass-local collector
+
+但这些只能是
+“从当前 TIR
+ 直接构造 `SpatialPlan`”
+的局部实现手段，
+不能升格成新的语义层。
+
+禁止把下面这些东西
+抬成 `SpatialPlan`
+的长期语义来源：
+
+- 审计表列出的
+  legacy transition attrs / helper bridge
+- public analysis wrapper
+  或 pass-to-pass facts bag
 - 任何 TT-specific noun
-- runtime/codegen/leaf path 恢复出来的结论
+- runtime / codegen / leaf path
+  恢复出来的结论
 
-如果当前 TIR 证据不足，
+如果当前 TIR
+证据不足，
 结论只能是：
 
 - 扩 TIR / DSL
@@ -59,11 +104,16 @@
 - 扩 validator
 - 显式 reject / unsupported
 
+不能靠 bag / payload /
+helper alias / late matcher
+补一层旁路语义。
+
 ## 3. `SpatialPlan` 的显式对象
 
 ### 3.1 `ExecutionUnit`
 
-表示一个 anchored sub-TIR 执行单元。
+表示一个 anchored sub-TIR
+执行单元。
 
 它应编码：
 
@@ -82,7 +132,8 @@
 
 ### 3.2 `DataflowEdge`
 
-表示 execution unit 之间的显式数据流关系。
+表示 execution unit
+之间的显式数据流关系。
 
 它应编码：
 
@@ -104,11 +155,16 @@
 - TT semaphore
 - target delivery kind
 
-这些属于 `TTProgram` 的 target slices。
+这些属于
+`TTProgram`
+的 target slices。
 
 ### 3.3 `LayoutSpec`
 
-表示 target-independent 的 virtual layout / sharding / distribution 关系。
+表示 target-independent 的
+virtual layout /
+sharding /
+distribution 关系。
 
 它应编码：
 
@@ -119,7 +175,17 @@
 
 ### 3.4 `PhasePlan`
 
-表示 virtual ordering / materialization boundary。
+表示 virtual ordering /
+materialization boundary。
+
+这里的 `materialization`
+只指 virtual phase
+上的可见性 /
+顺序 / 边界收束，
+不是 TT-Metal
+`Program / MeshWorkload`
+上的 compile /
+configure / launch 物化。
 
 它应编码：
 
@@ -138,90 +204,253 @@
 - rejected hints
 - diagnostics
 
-## 4. 兼容视图与迁移 residue
+### 3.6 兼容视图
 
-当前代码里的 legacy compatibility projection
-可以继续存在，
-但只允许作为：
+当前代码里如果仍保留：
+
+- `ExecutionClosure`
+- `ClosureBoundary`
+- 其他 legacy compatibility projection
+
+它们也只能是：
 
 - 调试展示
 - 兼容视图
 - 迁移 projection
 
-它不是 `SpatialPlan` 的语义来源，
-也不能反向定义下游 planner 合法性。
+它们不是
+`SpatialPlan`
+的 owner truth，
+也不能反向定义
+下游 planner 合法性。
+
+## 4. Wrong-Now Residue 与 Cleanup Exception
+
+下面这些东西
+必须明确写成
+**wrong now, delete later**
+或 **transitional debt**，
+不能写成新的中期层。
+
+### 4.1 public wrapper / facts object 不是长期边界
+
+如果 repo HEAD
+里仍存在：
+
+- `AnalyzeSpatialStructureFacts`
+- `SpatialStructureFacts`
+- `BuildSpatialPlanCompanion`
+
+它们的正确口径只能是：
+
+- 当前实现 mechanics
+- 历史实现名
+- 迁移期间尚未删除的辅助结构
+
+它们不是长期架构边界。
+
+长期边界只能写成：
+
+- `Normalized Tile TIR`
+- `SpatialPlan`
+- `TTProgram`
+
+而不是某个 pass 名字
+或 facts helper 名字。
+
+### 4.2 legacy attrs 不是 `SpatialPlan` 语义
+
+下面这些 surface
+不能继续被描述成
+`SpatialPlan`
+的语义来源：
+
+- `blackhole.work_decomposition`
+- `blackhole.compute_regions`
+- `blackhole.pipeline_stages`
+
+它们在 cleanup 期间
+如果仍然活着，
+也只能是：
+
+- compatibility residue
+- test migration surface
+- 尚未删除的 helper reader 输入
+
+而不能再定义
+当前 owner truth。
+
+### 4.3 `tl.blackhole_logical_buffer_tile_bridge_specs`
+只是唯一窄 cleanup exception
+
+task1/task2
+相关文档必须统一写清楚：
+
+- `tl.blackhole_logical_buffer_tile_bridge_specs`
+  是当前 cleanup
+  允许存在的唯一窄 temporary handoff
+- 它不是
+  `SpatialPlan`
+  / `TTProgram`
+  / `ExecutableSpec`
+  的长期表示
+- 它也不是
+  TT-Metal program /
+  runtime contract
+- 它不是新的 medium-term bridge layer
+
+它当前唯一允许存在的理由，
+是 optimized/helper entry
+仍需要一段 leaf-local handoff。
+
+一旦 task3
+把 leaf bridge payload /
+projection / codegen reader
+切掉，
+或者等价的显式 leaf representation
+已经承接这段信息，
+这个 narrow attr
+也必须一起退场。
 
 ## 5. Validator 合同
 
-`ValidateSpatialPlan` 必须检查：
+`ValidateSpatialPlan`
+是主链对象，
+不是补丁。
 
-1. execution-unit coverage 完整
+它必须成为
+下游 target planner
+之前的正式 hard gate，
+并且 fail-closed。
+
+当前合同至少包括：
+
+1. phase identity / index 唯一，
+   且每个 `ExecutionUnit`
+   必须恰好属于一个 `PhasePlan`
 2. 每条 `DataflowEdge`
-   的 producer / consumer / subject 完整
-3. phase membership 与 inter-phase edge 一致
-4. `LayoutSpec`
-   引用的对象都可回溯到 TIR / unit
-5. `SpatialPlan`
-   中不出现 TT noun
-6. 兼容视图与显式对象不冲突
+   的 producer / consumer / subject 完整，
+   且 `crosses_phase`
+   与 phase membership 一致
+3. 每个 `LayoutSpec`
+   引用的 subject
+   都可回溯到
+   `ExecutionUnit`
+   或 anchored sub-TIR
+4. `ExecutionUnit` /
+   `DataflowEdge` /
+   `LayoutSpec`
+   的公开枚举和值域中
+   不允许 TT noun 泄漏
+5. `ValidatedHintSet`
+   中的 accepted / rejected /
+   diagnostics 自洽
+6. 如果 compatibility projection
+   仍暂时存在，
+   它们必须和显式对象对齐，
+   不能各自漂移
 
-validator 失败时必须 fail-closed。
+补充要求：
+
+- validator 成功后，
+  下游必须显式要求
+  validated marker
+- `BuildTTProgram`
+  或其他 target planner
+  不能绕过这个 gate
 
 ## 6. Construction / Lowering 边界
 
-`SpatialPlan` 必须由当前 `Normalized Tile TIR`
+`SpatialPlan`
+必须由当前
+`Normalized Tile TIR`
 直接构造。
 
-当前实现可以使用：
+允许的实现形态是：
 
-- visitor
-- matcher
-- mutator
-- builder
+- 同一实现单元里的
+  visitor / matcher / builder
+- pass-local collector / helper
 
-这些局部 mechanics。
-
-如果实现上仍保留前置结构收集步骤，
-它也只能留在同一个 `.cc`
-里作为 pass-local helper，
-不能形成：
+明确禁止：
 
 - public analysis wrapper
 - pass-to-pass facts bag
-- 新的中间语义层
+- 新的 helper protocol
+- 让 leaf-time matcher
+  重新恢复
+  `SpatialPlan`
+  本应承载的语义
 
-补充说明：
+换句话说：
 
-- 当前实现里如果仍存在
+- 如果 repo HEAD
+  里还存在
   `BuildSpatialPlanCompanion`
   这个名字，
-  它也只是历史实现名，
-  不是架构边界
+  它也只是历史实现名
+- 如果 repo HEAD
+  里还存在前置结构收集，
+  它也只能留在
+  同一个构造实现里
+  作为局部 mechanics
+
+不能把这些 surviving implementation detail
+写成新的架构层。
 
 ## 7. 下游消费边界
 
 下游 target planner
 只允许消费：
 
-- `SpatialPlan`
+- validated `SpatialPlan`
   的显式对象
 - anchored sub-TIR
 
 不允许：
 
-- 从 fake protocol 恢复中间层语义
+- 从 fake protocol
+  恢复中间层语义
 - 重新制造伪中间层 bag
-- 用 leaf-time matcher 补回 `SpatialPlan` 本应承载的东西
+- 从 runtime / codegen /
+  executable reader
+  反推上游 planning 语义
 
-## 8. 历史 surface 的迁移落点
+`TTProgram`
+是下一层 owner truth。
+
+它负责承接：
+
+- work decomposition
+- block / core placement
+- kernel family / role
+- transport / routing
+- sync / completion
+- ABI / runtime args
+- execution / launch order
+
+这些语义都不属于
+`SpatialPlan`。
+
+它们后续会落到
+显式的 target-side
+program / workload
+materialization 边界，
+而不是反向倒灌回
+virtual spatial/dataflow 层。
+
+## 8. 历史 Surface 的落点
 
 具体显式名和 disposition
 统一看协议审计表。
 
-在表示层落点上固定为：
+表示层落点固定为：
 
 - compute-region-like 信息
-  - 落到 `ExecutionUnit` coverage
+  - 落到
+    `ExecutionUnit` coverage
+    / `DataflowEdge`
+    / anchored sub-TIR
 - pipeline-stage-like 信息
   - 落到 `PhasePlan`
 - copy/dataflow-like 信息
@@ -229,42 +458,98 @@ validator 失败时必须 fail-closed。
     与 TIR access semantics
 - work-decomposition-like 信息
   - 不属于 `SpatialPlan`
-  - 落到 `TTBlockPlan / TTExecutionPlan`
+  - 落到
+    `TTBlockPlan`
+    / `TTExecutionPlan`
+- logical bridge spec-like 信息
+  - 只允许在 cleanup 期间
+    以
+    `tl.blackhole_logical_buffer_tile_bridge_specs`
+    这一个窄 exception
+    暂存
+  - 它不是
+    `SpatialPlan`
+    的长期字段
 
 ## 9. Completion Contract
 
 `Task 1`
-只有在下面这些条件同时满足后才算完成：
+只有在下面这些条件同时满足后
+才算完成：
 
 1. `SpatialPlan`
    已显式收成
-   `ExecutionUnit / DataflowEdge / LayoutSpec / PhasePlan / ValidatedHintSet`
+   `ExecutionUnit /
+    DataflowEdge /
+    LayoutSpec /
+    PhasePlan /
+    ValidatedHintSet`
 2. `ValidateSpatialPlan`
-   已落地并成为下游 planner 的正式前置 gate
-3. `work_decomposition / compute_regions / pipeline_stages`
+   已落地并成为
+   下游 planner
+   的正式前置 gate
+3. `AnalyzeSpatialStructureFacts` /
+   `SpatialStructureFacts` /
+   `BuildSpatialPlanCompanion` /
+   `ExecutionClosure` /
+   `ClosureBoundary`
+   这类历史实现物
+   即使仍暂存，
+   也只剩 mechanics /
+   projection / residue 身份，
+   不再承载 owner truth
+4. `blackhole.work_decomposition` /
+   `blackhole.compute_regions` /
+   `blackhole.pipeline_stages`
    这类过渡 surface
-   已经降成 projection / migration residue，
-   不再承载中间层语义
-4. 下游 target planner
-   读取 `SpatialPlan` 显式对象，
-   而不是继续从 fake protocol 恢复
+   已经降成 migration residue，
+   不能再定义
+   `SpatialPlan`
+   边界
+5. 下游 target planner
+   读取 validated
+   `SpatialPlan`
+   显式对象，
+   而不是继续从
+   fake protocol /
+   bridge bag /
+   leaf reader
+   恢复
    virtual spatial/dataflow 语义
 
-## 10. 当前执行切片
+## 10. 与 Cleanup Task 的关系
 
-`Task 1` 的代码方向固定为：
+这份文档定义的是
+长期 `SpatialPlan` 合同，
+不是当前 cleanup 顺序说明。
 
-1. 扩 `SpatialPlan` object model
-   - 先把
-     `ExecutionClosure / ClosureBoundary`
-     收成
-     `ExecutionUnit / DataflowEdge`
-2. 保留 legacy compatibility projection
-   - 但只保留 projection 身份
-3. 新增 `ValidateSpatialPlan`
-4. 把
-   `work_decomposition / compute_regions / pipeline_stages`
-   拆回显式对象 /
-   builder 直接恢复的结构语义
-5. 再逐步让下游 planner
-   读新对象，不再读 fake protocol
+和 cleanup 文档的关系固定为：
+
+1. cleanup task1
+   负责把
+   `blackhole.compute_regions`
+   上的 bridge owner truth
+   切回 direct capture，
+   并把
+   `tl.blackhole_logical_buffer_tile_bridge_specs`
+   明确压成唯一窄 exception
+2. cleanup task2
+   负责继续删除
+   public wrapper /
+   facts bag /
+   broad planning bag
+   对 active chain 的控制，
+   把 `SpatialPlan -> TTProgram`
+   收回显式对象
+   和 direct builder /
+   planner 边界
+3. 如果 repo HEAD
+   在 cleanup 期间
+   仍然保留上述 residue，
+   正确写法也只能是
+   **wrong now, delete later**
+   或
+   **transitional debt**
+
+当前实现依赖
+不能削弱这个 verdict。

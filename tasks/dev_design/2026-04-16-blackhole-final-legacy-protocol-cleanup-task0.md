@@ -12,7 +12,10 @@
    不能再继续定义 public builtin surface；
 2. `SelectBlackholeTTMetalBuiltins` 自己完成 primitive idiom 的 match + rewrite；
 3. exact builtin legality 的规则定义 / 常量 / predicate
-   由 selector 和 validator 共享，
+   由 selector 和下游 validator 共享，
+   并且当前 IR legality
+   必须在进入 `TTProgram`
+   之前独立成立，
    而不是散落在旧 planner residue、
    黑名单和旁路字段里。
 
@@ -32,15 +35,35 @@
 - 把 helper/composite builtin 换个名字继续保留
 - 继续用 broad lowering bag 或 pass-to-pass seed 托着 builtin 选择走
 - 用 workload-specific matcher 充当 builtin selection 主路径
+- 把 `ValidateTTProgram`
+  包装成 selected exact-builtin TIR
+  legality owner
+- 把 codegen / runtime
+  的 compatibility reader
+  写成 builtin legality owner
 
 额外边界固定为：
 
 - task0 的主输出仍是当前 `Normalized Tile TIR`
   上的 selected exact-builtin compute IR，
   不是新的 companion / payload / helper layer
+- 这里的 selected exact-builtin compute IR
+  只是当前 `Normalized Tile TIR`
+  的一个 checked postcondition /
+  admitted subset，
+  不是新的中间表示层
 - `TTProgram`
   只能消费这层已经合法化的 exact builtin selection 结果，
   不能反过来替这层补 legality
+- `CB / runtime arg / semaphore / launch`
+  这类 TT-Metal
+  program-construction 事实
+  仍属于 `TTProgram`
+  及其后续 leaf projection /
+  runtime binding 边界，
+  不能因为 repo HEAD
+  里 selector 还吃 seed
+  就倒灌回 task0 owner truth
 
 ## 3. 当前状态 (`2026-04-20`)
 
@@ -51,11 +74,22 @@ repo HEAD 里已经落地的局部结果只有：
 - `SelectBlackholeTTMetalBuiltins`
   已经作为 front-door selector wrapper
   接入 active chain；
-- helper/composite builtin residue 在 active chain 上已 fail-closed 拒绝；
+- helper/composite builtin residue
+  在 selected-TIR active chain 上
+  已 fail-closed 拒绝；
 - covered executable projection 主链里，
   顶层 `compute_epilogue_ops` key
-  基本不再作为 owner truth 产出；
+  已不再由当前 executable projection writer
+  作为 owner truth 产出；
 - selector 产物会打上 `tl.blackhole_tt_metal_builtin_selection`。
+- `PlanTTCompute`
+  也已经要求这个选择完成标记
+  才进入 downstream planning；
+  但这只说明 consumer ordering
+  已经前移，
+  不等于 selected exact-builtin TIR
+  legality gate
+  已经独立建成。
 
 但 task0 要求的主合同还没有成立：
 
@@ -74,11 +108,17 @@ repo HEAD 里已经落地的局部结果只有：
   还没有从这个 carrier 上切走；
 - `ValidateTTProgram` 还没有和 selector 共用一份 exact builtin legality contract；
 - 顶层 `compute_epilogue_ops` key
-  虽已基本退出
+  虽已退出当前 writer 的 covered owner path
   `TTProgram.payload / executable projection`
   主链，
   但 nested `compute_contract.epilogue_ops`
   仍在 runtime compatibility metadata 里存活；
+- direct runtime
+  仍会在缺失显式 `compute_contract`
+  时回退到 legacy `gemm_contract`；
+  这属于 task3 负责删除的
+  leaf compatibility debt，
+  不是 task0 的合法边界；
 - `builtin_blackhole.{h,cc}`
   和 `codegen_blackhole.cc`
   里仍有 helper-named alias accessor /
@@ -155,6 +195,18 @@ task0 的 builtin selection 应该直接面向当前 IR 和显式表示层，
 也还没有和 selector
 共享一份显式 exact legality rule definition。
 
+当前链上实际还是：
+
+- selector 输出
+- `PlanTTCompute` 直接读取这份结果
+- 更后面才到 `ValidateTTProgram`
+
+所以 repo HEAD 里
+还不存在一个
+“在第一个 downstream consumer 之前
+建立 selected exact-builtin TIR legality”
+的独立 gate。
+
 ### 4.5 exact surface 仍有 public alias surface / dual-dispatch residue
 
 当前 active lowered IR
@@ -216,146 +268,55 @@ repo HEAD 里还能直接看到：
 
 - 已经只剩死字段或 leaf-local metadata
 
-## 5. 审计 verdict gate
+## 5. 基于审计结果修正后的任务内容
 
-- Subject under review:
-  `SelectBlackholeTTMetalBuiltins`
-  作为 builtin rewrite owner
-  vs
-  `PlanTTKernelABI`
-  继续持有真实 rewrite
-  - Architectural status:
-    `transitional debt`
-  - Why it has that status:
-    repo HEAD 里
-    `SelectBlackholeTTMetalBuiltins`
-    已是 active-chain front door，
-    但真正的 primitive idiom
-    match + rewrite
-    仍在 `PlanTTKernelABI::SelectComputeBuiltins()`；
-    这说明 pass 接口已经前移，
-    但 rewrite owner
-    还没真正切走
-  - Required end-state:
-    current selected exact-builtin TIR
-    的 rewrite owner
-    收成单一实现；
-    `PlanTTKernelABI`
-    不再继续拥有 builtin selection
-  - Resolution owner:
-    task0 / selected exact-builtin TIR rewrite boundary
-  - Can current repo state weaken the verdict?:
-    `No`
+### 5.1 repo HEAD 当前必须按 debt 处理的边界
 
-- Subject under review:
-  `blackhole.cb_requirements`
+task0 后续正文里的 owner / contract / residue
+统一按下面口径理解：
+
+- `SelectBlackholeTTMetalBuiltins`
+  当前只是 front-door selector wrapper；
+  真正的 primitive idiom
+  match + rewrite owner
+  仍在 `PlanTTKernelABI`
+- `blackhole.cb_requirements`
   /
   `tl.blackhole_lowering_requirements_seed`
-  作为跨阶段 carrier
-  - Architectural status:
-    `wrong boundary`
-  - Why it has that status:
-    它们当前仍是 repo HEAD
-    的 live contract，
-    但语义通过 bag / seed
-    在 pass 之间流动，
-    违反 layered IR
-    只允许显式表示层承载长期语义的纪律
-  - Required end-state:
-    selection 不再依赖这些 carrier；
-    transport / CB planning
-    只从当前表示做局部 derived analysis
-    或从显式 `TTProgram`
-    object 读取 owner truth
-  - Resolution owner:
-    task0 + TTProgram planner / `cb_plans`
-  - Can current repo state weaken the verdict?:
-    `No`
-
-- Subject under review:
-  helper-named alias accessor
+  当前仍是 live contract，
+  但属于 forced implementation debt，
+  不是合法 bag boundary
+- helper-named alias accessor
   /
   builtin registry
   /
   codegen dual dispatch
-  - Architectural status:
-    `wrong boundary`
-  - Why it has that status:
-    active IR 虽已基本切到 exact op spellings，
-    但 public builtin surface
-    和 leaf codegen
-    仍接受 helper-named alias 入口；
-    这会把兼容 spellings
-    继续伪装成合法长期 surface
-  - Required end-state:
-    只保留单一 public exact surface；
-    helper-named accessor
-    只能删除，
-    或缩到 pass-local compatibility helper，
-    不能继续作为 public registry / codegen surface
-  - Resolution owner:
-    task0 / builtin registry / leaf codegen cleanup
-  - Can current repo state weaken the verdict?:
-    `No`
-
-- Subject under review:
-  selected exact-builtin legality
-  的 owner 和 validator contract
-  - Architectural status:
-    `underspecified contract`
-  - Why it has that status:
-    repo HEAD 里
-    selector 有局部 reject / stamp，
-    `ValidateTTProgram`
-    只验证 helper residue
-    和 `TTProgram` payload 结构；
-    但还没有一份
-    在 selected exact-builtin TIR
-    上显式成立的 legality contract
-  - Required end-state:
-    第一个 downstream consumer
-    读取 selector 产物之前，
-    exact legality
-    已在当前 IR 层 fail-closed 成立；
-    `ValidateTTProgram`
-    只复验已经进入 `TTProgram`
-    的 realization 结果，
-    不再冒充当前 IR 层 legality owner
-  - Resolution owner:
-    task0 / selected exact-builtin TIR validator boundary
-  - Can current repo state weaken the verdict?:
-    `No`
-
-- Subject under review:
-  `compute_contract.epilogue_ops`
-  /
+  当前都只能按待删 compatibility surface
+  描述，
+  不能写成合法 public protocol
+- `ValidateTTProgram`
+  当前仍只是 downstream structural / payload validator，
+  不是 selected exact-builtin TIR
+  legality owner
+- nested `compute_contract.epilogue_ops`
+  与
   `ExecutableSpec::compute_epilogue_ops`
-  residue
-  - Architectural status:
-    `transitional debt`
-  - Why it has that status:
-    顶层 `compute_epilogue_ops` key
-    已退出 covered projection 主链，
-    但 nested
-    `compute_contract.epilogue_ops`
-    仍被 runtime compatibility path 读取，
-    in-memory `ExecutableSpec`
-    也仍保留对应字段
-  - Required end-state:
-    这类 epilogue payload
-    不再作为 runtime / metadata compatibility surface 存活；
-    如果某类事实仍必需，
-    它必须回到显式 compute/materialization contract
-    本身，
-    而不是挂在兼容 payload 上
-  - Resolution owner:
-    task3 / `ExecutableSpec` leaf-reader cutover
-  - Can current repo state weaken the verdict?:
-    `No`
+  当前仍是 task3 负责删除的
+  leaf compatibility debt
+- `blackhole_module.cc / rt_mod_blackhole.cc`
+  当前仍保留
+  `compute_contract -> multi_compute_contracts -> gemm_contract`
+  的 direct-runtime compatibility fallback；
+  这同样属于 task3 负责删除的
+  leaf/runtime debt，
+  不是 task0 的 owner truth
 
-## 6. 基于审计结果修正后的任务内容
+这些边界在 repo HEAD 里
+即使还被实现依赖，
+也不能被文档写成
+“暂时合理的中间层”。
 
-### 6.1 收正 task0 的 owner truth
+### 5.2 收正 task0 的 owner truth
 
 task0 完成后，
 owner truth 固定是：
@@ -377,8 +338,16 @@ owner truth 固定是：
 - 下游 consumer 只能消费这层已经合法化的结果，
   不能在 `TTProgram` / runtime / codegen
   再补一次“真正是什么意思”
+- `CB / runtime arg / semaphore / launch`
+  这些 TT-Metal
+  program-construction 事实
+  仍由 `TTProgram`
+  的显式 slice
+  负责承载，
+  不是 task0
+  倒推 builtin selection owner truth
 
-### 6.2 收正 exact builtin surface
+### 5.3 收正 exact builtin surface
 
 task0 完成时，
 必须同时满足两件事：
@@ -425,7 +394,7 @@ leaf codegen
 - “exact op name / helper op name 二选一”
   这种兼容式 dispatch
 
-### 6.3 收正 builtin 分类 owner truth
+### 5.4 收正 builtin 分类 owner truth
 
 exact / helper / alias builtin 的分类
 必须收成单一协议定义。
@@ -435,17 +404,19 @@ exact / helper / alias builtin 的分类
 - selector reject
 - builtin surface audit
 - codegen acceptance cleanup
-- runtime acceptance cleanup
 - negative tests
 
 不允许继续维持：
 
 - selector 一份黑名单
 - builtin registry 一份暴露面
-- codegen / runtime
-  再各自写一份字符串判断
+- codegen
+  再单独写一份平行字符串判断
+- runtime / test
+  再把 helper alias surface
+  写成另外一套 owner truth 词表
 
-### 6.4 selector 自己完成 match + rewrite
+### 5.5 selector 自己完成 match + rewrite
 
 `SelectBlackholeTTMetalBuiltins`
 在终态必须自己完成：
@@ -468,7 +439,7 @@ repo HEAD 当前仍处于：
 直接写成
 rewrite owner 已完成切换。
 
-### 6.5 切掉 selection 对旧 forwarding residue 的依赖
+### 5.6 切掉 selection 对旧 forwarding residue 的依赖
 
 task0 改完之后，
 selector 不应再把下列东西作为 builtin selection 的长期依赖：
@@ -477,11 +448,34 @@ selector 不应再把下列东西作为 builtin selection 的长期依赖：
 - `blackhole.cb_requirements`
 - `tl.blackhole_lowering_requirements_seed`
 
+这里要特别写清楚：
+
+- repo HEAD 当前
+  `tl.blackhole_lowering_requirements_seed`
+  即使只剩
+  `buffer_materialization_contracts`
+  /
+  `buffer_tile_bridge_specs`
+  这类窄 seed，
+  也不等于 task0
+  可以把它合法化成
+  current-IR builtin selection
+  的长期 owner truth
+- 如果 selector
+  真还需要其中某类长期事实，
+  结论仍然是：
+  要么把事实补成显式表示，
+  要么把它留成后续 task
+  负责的窄 bridge /
+  leaf-local contract，
+  不是继续维持
+  broad bag / seed
+
 如果 selector 真缺某类长期存在的区分，
 那说明对应信息应该落在显式表示层，
 而不是继续靠旧 residue 流动。
 
-### 6.6 收正 exact legality owner
+### 5.7 收正 exact legality owner
 
 exact builtin legality
 属于当前 selected exact-builtin TIR 合同，
@@ -503,13 +497,28 @@ task0 需要建立的是：
   读取 selector 产物之前，
   这份 legality 已经 fail-closed 成立
 
+repo HEAD 当前真正已经成立的，
+只有：
+
+- selection stamp
+- helper/composite residue reject
+- coarse compute-pipeline gate
+  （例如 `num_stages` /
+   `pipeline_stage_counts`
+   这类前置限制）
+
+这还不等于
+selected exact-builtin TIR
+自己的完整 legality owner
+已经立起来。
+
 `ValidateTTProgram`
 只能复验那些已经显式进入 `TTProgram`
 的结果；
 它当前仍是 downstream structural / payload validator，
 不能替代当前 IR 层 legality 的建立。
 
-### 6.7 shared legality 的共享方式
+### 5.8 shared legality 的共享方式
 
 这里描述的是 required end-state，
 不是 repo HEAD 当前已成立事实。
@@ -534,6 +543,16 @@ selector 和 validator
   和 downstream validator
   对同一类 exact builtin
   使用同一套显式规则
+- 共享范围
+  只限于 exact primitive
+  本身的 legality；
+  不把 `CB` 配置、
+  runtime-arg shape、
+  semaphore binding、
+  core launch
+  这类 program-construction /
+  ABI 事实
+  混进 task0 legality owner
 
 这里“共享”的含义明确**不是**：
 
@@ -561,7 +580,7 @@ selector 和 validator
 结论应当是补显式表示或补局部 derived check，
 不是新增共享协议对象。
 
-### 6.8 明确 `compute_epilogue_ops` 的正确口径
+### 5.9 明确 `compute_epilogue_ops` 的正确口径
 
 task0 文档里必须把两个层面拆开写：
 
@@ -589,16 +608,26 @@ task0 文档里必须把两个层面拆开写：
 
 - 顶层 projection key
   已退出 covered owner path
+- 当前 executable projection writer
+  不再发布这个顶层 key
 - nested runtime compatibility metadata
   与 in-memory compatibility field
   仍未删除
+- 直接 runtime
+  仍保留
+  `compute_contract -> multi_compute_contracts -> gemm_contract`
+  fallback，
+  这只是 compatibility reader，
+  不是 owner truth
 
 不能写：
 
 - runtime / metadata 侧
   已经完全不再接受 epilogue residue
+- direct runtime
+  已经只读单一显式 `compute_contract`
 
-### 6.9 收正 `blackhole.cb_requirements` 的删除目标
+### 5.10 收正 `blackhole.cb_requirements` 的删除目标
 
 `blackhole.cb_requirements`
 不应继续作为跨阶段 owner truth。
@@ -624,6 +653,18 @@ task0 收口后的默认目标是：
 - 真正需要跨阶段保留的结果，
   只允许进入显式表示层对象，
   例如最终 `TTProgram` 里的 `cb_plans`
+- 同样，
+  runtime-arg / accessor /
+  semaphore / launch
+  这类跨阶段事实
+  如确实需要保留，
+  也必须进入
+  `TTProgram` /
+  `ExecutableSpec`
+  的显式字段，
+  不能继续借
+  selection residue
+  流动
 
 如果后续发现其中某一部分
 无法从当前表示稳定重算，
@@ -631,7 +672,7 @@ task0 收口后的默认目标是：
 不是继续保留整个 `blackhole.cb_requirements`
 作为 bag 式协议面。
 
-## 7. 执行切片
+## 6. 执行切片
 
 1. 把 primitive idiom 的 match / rewrite
    从 `PlanTTKernelABI`
@@ -657,7 +698,7 @@ task0 收口后的默认目标是：
 7. 重新校正文档和测试，
    保证“局部切入”不再被写成“任务完成”
 
-## 8. 相关文件
+## 7. 相关文件
 
 - `tilelang_repo/src/transform/select_blackhole_tt_metal_builtins.cc`
 - `tilelang_repo/src/transform/lower_blackhole_ops.h`
@@ -673,7 +714,7 @@ task0 收口后的默认目标是：
 - `tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
 - `tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py`
 
-## 9. 验证要求
+## 8. 验证要求
 
 task0 的验证要证明“主链已经换了”，
 不是只证明某些旧字符串没有再出现。
@@ -694,7 +735,10 @@ task0 的验证要证明“主链已经换了”，
    主链产物里，
    同时 nested `compute_contract.epilogue_ops`
    的 runtime compatibility residue
-   仍按未删除记录
+   仍按未删除记录；
+   direct runtime / tests
+   即使还保留兼容读取，
+   也不能被当成 owner truth
 5. chain test：
    `PlanTTCompute`
    依赖的是已经合法化的 selector 产物本身，
@@ -704,7 +748,7 @@ task0 的验证要证明“主链已经换了”，
    不再把 helper-named alias
    当成并行 public surface
 
-## 10. 完成判据
+## 9. 完成判据
 
 只有下面这些同时成立，
 task0 才算完成：

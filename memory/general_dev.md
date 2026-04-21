@@ -38,7 +38,7 @@
 测试层级固定分三层：
 
 - 结构层：
-  - lowered TIR、attrs、companion IR
+  - lowered TIR、显式表示 attrs / projection records
 - planner 层：
   - `ExecutableSpec`、`KernelSpec`、bindings、CB / core / semaphore 规划结果
 - runtime 层：
@@ -49,141 +49,94 @@
 - 只做 codegen/reference compare 不算 true E2E
 - 当前支持面和 fail-fast 边界都应该在更早层被看见，不要全部压到 runtime
 
-## 4. Layered IR / companion 模式
+## 4. Layered IR / explicit representation 模式
 
-- module-scope truth 放 `IRModule.global_infos`，不要回退到单个 `PrimFunc.attrs`
-- unsafe TIR mutation 必须整体 invalidate companion truth，不要只删单个 attr
-- cross-pass schema 一律 handle-first；字符串只保留 display / debug / compatibility 角色
-- semantic truth 属于
-  `Normalized Tile TIR / 更早层 semantic analysis`，
-  spatial closure truth 属于
-  `SpatialPlan companion`，
-  TT target truth 属于
-  `TTProgram companion`
-- 下游 consumer 优先读最近的 typed IR，不要回头把 legacy attrs 当 primary truth
-- 如果 analysis 需要某类 operator-specific 事实，
-  让 operator/semantic owner 暴露 typed metadata；
-  不要把 `Analyze...` pass 写成 op family 名字匹配器
-
-当前稳定 companion 习惯：
-
-- `Normalized Tile TIR` 是唯一 semantic body；
-  `SpatialPlan companion / TTProgram companion`
-  只保存 TIR 没有对象化、但后续 planning 必须跨 pass 持久化的事实
-- `Task 1` 的 `SpatialPlan companion` 现在已在 `Simplify` 后落地；
-  第一版中间执行单元 / 数据流边界骨架
-  直接按 normalized TIR top-level executable statements 和 buffer def-use 建立，
-  不在 companion 中重复编码 expr / tile-op 参数
-- 一旦某层 companion / target bundle 成为当前正式入口，
-  要同时发布两层 surface：
-  - canonical transform alias（例如
-    `BuildTTProgram / ValidateTTProgram / MaterializeBlackholeExecutable`）
-  - engine/pytest bundle helper（例如
-    `LowerToBlackholePhaseB / LowerToBlackholeTTProgram / LowerToBlackholeExecutable`）
-  否则 active path、测试 helper 和设计文档会继续各自手写不同 pass 链，
-  很快再次漂移
-- `Task / Channel` 继续可以存在，
-  但只能作为
-  中间执行单元 / 数据流边界骨架
-  的 derived execution/materialization view；
-  不能再当 primary truth owner
-- `SpatialPlan`
-  一旦正式收成
-  `ExecutionUnit / DataflowEdge / LayoutSpec / PhasePlan`
-  这组 owner object，
-  就应让
-  `ValidateSpatialPlan`
-  在 companion build 之后立即落地，
-  并由后续
-  `PlanTT*`
-  显式要求
-  `tl.spatial_plan_validated`；
-  不能只因为
-  `tl.spatial_plan`
-  存在就默认它可消费
-- 任何同时暴露
-  `*_names`
-  和
-  `*_indices`
-  的 companion object
-  都必须保证两组字段按同一顺序生成；
-  不能把名字单独排序后再和原 index 列表并排存放，
-  否则 validator 会立刻看到“名字和索引都合法，但彼此不对应”的裂缝
-- 两层 companion 新主链固定从 `Simplify` 后进入：
-  `AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion ->
-  PlanTTBlocks -> PlanTTCompute -> PlanTTTransport -> PlanTTSync -> PlanTTABI ->
-  PlanTTExecution -> BuildTTProgram -> ValidateTTProgram ->
-  MaterializeBlackholeExecutable`
-- `buffer effect / use-role analysis` 当前已接入 active path：
-  `LowerToBlackholePhaseB`
-  需要显式经过
-  `AnalyzeBlackholeBufferEffectUseRoleFacts`，
-  并产出
-  `blackhole.buffer_effect_use_role_facts`；
-  `PlanTTCompute`
-  缺这份 analysis attr
-  时必须 fail-closed
-- 当前第一性原理 cut-in 已把
-  `BuildTTProgram`
-  退回成纯 reader/aggregator；
-  owner planning 通过
-  `PlanTTBlocks / PlanTTCompute / PlanTTTransport /
-   PlanTTSync / PlanTTABI / PlanTTExecution`
-  显式进入 active path。
-  现阶段 transport 在 pass 顺序上晚于 compute，
-  是因为它消费 compute 发布的 CB/accessor requirement schema
-  完成 CB allocation / transport materialization；
-  这不改变 compute / memory-access 的 owner 边界
+- module-scope truth 放 `IRModule.global_infos`
+  或当前层显式对象，
+  不要回退到单个 `PrimFunc.attrs`
+- unsafe TIR mutation
+  必须整体 invalidate
+  当前层派生 analysis /
+  plan /
+  projection truth；
+  不要只删单个旧 attr
+- cross-pass schema 一律 handle-first；
+  字符串只保留
+  display / debug / compatibility 角色
+- 当前长期边界只按
+  `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
+  描述；
+  pass 名、helper 名、历史文件名
+  只能当代码索引
+- `Normalized Tile TIR`
+  是唯一 semantic body；
+  `SpatialPlan`
+  负责 target-independent
+  execution-unit / dataflow / layout / phase truth；
+  `TTProgram`
+  负责 target realization；
+  `ExecutableSpec`
+  只负责 leaf projection /
+  runtime-module build contract
+- 任何需要跨 pass 保留、
+  且不能从当前层重新推出的事实，
+  都应进入当前层显式对象；
+  不要继续停在 bag / payload / seed /
+  helper wrapper
+- `BuildTTProgram`
+  只应做 staged aggregation /
+  completeness check /
+  cleanup；
+  `MaterializeBlackholeExecutable`
+  是唯一 canonical writer
+- build / codegen / runtime /
+  `BlackholeModule`
+  只应读取
+  `tl.blackhole_executable`
+  或解析后的
+  `ExecutableSpec`；
+  不要回读
+  `TTProgram`
+  或 legacy lowering attrs
+- `tl.blackhole_logical_buffer_tile_bridge_specs`
+  如果仍存在，
+  也只是唯一窄 temporary handoff；
+  `TTProgram.payload` /
+  `blackhole.lowering_requirements` /
+  `tl.blackhole_lowering_requirements_seed` /
+  `blackhole.cb_requirements`
+  都只能按 debt 处理，
+  不能写成长期协议
 - `TTProgram`
-  一旦开始同时承载
-  owner slice
-  和
-  compatibility payload，
-  validator 必须同时检查两者对齐：
-  - `block_plans <-> core_groups`
-  - `kernel_plans <-> kernels`
-  - `sync_plans <-> compute_sync_plans`
-  这样 leaf reader 还没完全 cutover 时，
-  compatibility payload
-  也不会悄悄漂成第二真源
-- TT target builtin 选择必须发生在 anchored sub-TIR
-  仍保留 tile-op、layout、load/store、address expr 的边界；
-  不要在 late matcher / bridge attr 层恢复 compute 或 transport 语义
-- 对 Blackhole exact TT-Metal builtin cleanup，
-  `flash-attn` / rowwise softmax 是一个明确的结构性校验点：
-  如果 pass 输入里已经只剩
-  `write_local_fragment_tile_to_cb /
-   read_cb_front_tile_to_local_fragment /
-   reduce_row / scalar_max / scalar_exp2_affine /
-   exp2_grouped_row_bcast_affine`
-  这类 helper/composite builtin，
-  就说明 selector 已经放得太晚。
-  TT-Metal 上游的 exact 参考序列在
-  `tt_metal_repo/tests/tt_metal/tt_metal/test_kernels/compute/softmax.cpp`
-  和
-  `tt_metal_repo/tests/tt_metal/tt_metal/test_kernels/misc/sdpa/reduce_block_max_row/compute.cpp`
-  中，
-  依赖的是 `CB + DST` residency、
-  `copy_tile / reduce_* / binary_max_tile / exp_tile / recip_tile /
-  mul_tiles_bcast_* / pack_tile`
-  这一层 exact op。
-  这类序列必须在 pre-planner anchored TIR 上选择，
-  不能等 `PlanTTKernelABI` 已经把 compute 语义塌缩成 local-fragment helper
-  后再靠 patch / rename 修补
-- 针对 builtin-surface / residue 回归，
-  测试要收集实际 TIR `Call` 的 op 名，
-  不要做字符串子串匹配；
-  canonical 名里可能仍包含旧 helper 前缀片段
-  （例如 `reduce_rows_local` 会命中 `reduce_row` 子串），
-  子串断言会把已经前移后的 canonical surface 误判成 residue
-- selector 在 rewrite 前后如果要携带 bridge/materialization 事实，
+  若同时承载 owner slice
+  与 compatibility payload，
+  validator 必须检查对齐，
+  防止 payload 漂成第二真源
+- exact TT-Metal builtin 选择
+  必须发生在 anchored sub-TIR
+  仍保留 tile-op / layout / load-store /
+  address expr 的边界；
+  不要等 compute 语义塌缩后
+  再靠 late matcher / bridge attr
+  恢复
+- 对 builtin-surface / residue 回归，
+  测试应收集实际 TIR `Call`
+  的 op 名；
+  不要用字符串子串匹配
+- selector 在 rewrite 前后若必须携带 bridge /
+  materialization 事实，
   只能 seed 稳定字段；
-  不要跨 rewrite 复用
-  `buffer_flow_contracts`
-  这类带顺序索引的结构。
-  `order_index`
-  会随着 rewrite 变化，
-  这类事实必须从当前 IR 重新构建
+  带顺序索引的结构
+  必须从当前 IR 重新构建
+- 兼容 attr 的删除顺序固定为：
+  先移走 semantic consumer，
+  再移走 lowering consumer，
+  最后删 attr 本身
+- 旧 pass/link 清理要三层一起删：
+  Python wrapper、
+  FFI global registration、
+  测试 helper / fallback；
+  否则旧入口会继续漂回 active path
 - 如果 selector 在 pre-planner rewrite 里创建了 exact temporary CB，
   就必须同时把这些 temporary requirement
   通过
@@ -217,12 +170,15 @@
   不要再引入 `row_* / broadcast_sources / index map / access pattern`
   这类 side contract 当长期 owner truth
 - seed / manifest / witness / program 分层存放
-- companion truth 一旦扩层级，
-  unsafe TIR mutation 侧也要同步 strip 新 analysis facts / plan attr；
-  只清旧层会留下 stale companion truth
-- intermediate typed plan 只要进入 pass 链，就要和最终 companion truth 一起纳入
-  invalidation；只删 `tl.spatial_program` 而保留 `tl.spatial_domain_plan` /
-  `tl.spatial_execution_plan` 会制造 stale plan
+- 显式 plan / projection truth 一旦扩层级，
+  unsafe TIR mutation 侧也要同步 strip
+  新 analysis facts / plan attr；
+  只清旧层会留下 stale truth
+- intermediate typed plan
+  只要进入 pass 链，
+  就要和最终显式表示 truth
+  一起纳入 invalidation；
+  不能只删一层旧字段
 - workload noun 不进入长期 semantic schema
 - evidence carrier 不是 truth owner
 - 兼容 attr 的删除顺序固定为：
@@ -276,7 +232,8 @@
   不能把 source func 重新 `with_attr("global_symbol", ...)` 后塞回去。
   否则会把 Blackhole lowering 后的真实 device body回退成旧 body，
   重新暴露 free loop var（例如 `tile_row`）这类已经在优化版里消失的问题
-- Python 侧若需要做 companion IR mutation regression，
+- Python 侧若需要做 typed plan /
+  explicit representation mutation regression，
   优先通过 `tl.TT*` constructor 直接重建
   `TTProgram / TTKernel / TTCoreGroup / TTABIPlan / TTSemaphorePlan`
   并重新跑 `ValidateTTProgram`；
@@ -326,7 +283,7 @@
   对齐回 optimized device func
 - active Blackhole path 不再保留
   独立 semantic mirror bridge；
-  凡是能从 `Normalized Tile TIR + SpatialPlan companion +
+  凡是能从 `Normalized Tile TIR + SpatialPlan +
   当前过渡残留`
   稳定得到的信息，就必须直接从这些当前 owner truth / transition residue
   读取，并持续把这批残留往真正的 `PlanTT*` owner 上迁移。
@@ -341,10 +298,10 @@
   一旦它把 `local.fragment / local` canonicalize 成 `blackhole.acc`
   或把 shared canonicalize 成 `blackhole.cb.*`，
   就必须同步改写
-  过渡 attrs 与 companion projection
+  过渡 attrs 与 projection records
   里对应 contract 的 `scope`；
   否则 planning / codegen 会命中
-  “IR 已经切到新资源类，companion 还停在旧 scope” 的双真源裂缝
+  “IR 已经切到新资源类，projection/typed record 还停在旧 scope” 的双真源裂缝
 - transport / layout / logical distribution 如果已经要进入正式 target truth，
   直接进入 `TTTransportPlan / TTABIPlan`；
   不要再额外造 `buffer_distribution_contract`
@@ -413,7 +370,7 @@
 - 如果当前 layered 主链里一个 lowering 同时做 domain synthesis、task formation、
   ordering 和 final materialization，应优先拆成
   `Analyze... -> Analyze... -> Materialize...` 的 pass 链，让 analysis facts
-  先以 typed plan 落地，再由 materialize pass 组装最终 companion IR
+  先以 typed plan 落地，再由 materialize pass 组装最终显式表示
 - 当 canonical pass 命名切换完成后，
   旧 TT target probe / validator / executable materializer
   这类命名应直接删除；
@@ -475,12 +432,15 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   如果 small bf16 correctness 已过、但大 shape `float16` 命中
   `UntestedFunctionality: tensix_execute_unpacr: fp16`，
   优先视为 simulator 能力边界，而不是先回退刚验证过的 target contract 修复
-- active 设计/进度文档里的编号要锁紧：
-  当前 roadmap 总优先级统一用 `R0 / R1 / ...`；
-  task / batch 内部顺序统一用 `Tn.x`
-  （如 `T2.0`、`T3B.0`）；
-  不要再把局部 batch 的完成
-  写成当前 roadmap `R0` 完成
+- active 设计/进度文档里的状态职责要锁紧：
+  总体状态 / blocker / 下一步
+  统一只写在 `tasks/progress.md`；
+  task / cleanup 分文件
+  只写各自 residue 的 owner boundary /
+  required end-state /
+  verification contract，
+  不要把局部切片完成
+  写成总体路线完成
 - 对当前 Blackhole rewrite，
   “第一性原理目标”不能被缩写成
   单个 workload payoff
@@ -524,7 +484,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - `flash-attn` 这类 optimized path 如果会在后续 pass 里
   canonicalize 资源或折叠 compute region，
   需要显式保留一份 pre-canonical logical compute-region truth
-  （例如一份独立 typed companion fact），
+  （例如一份独立 typed explicit fact），
   让 transition requirement reader 还能恢复
   row-state / grouped-row / fragment logical shape；
   否则后段会被迫重新猜 shape 或回退到旧 contract
