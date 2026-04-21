@@ -10,12 +10,12 @@
 当前入口顺序固定为：
 
 1. `final_blackhole_backend_redesign.md`
-2. `tasks/progress.md`
-3. `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
-4. `task0_ir_layering_root_cause.md`
-5. `task1_spatial_plan_companion.md`
-6. `task2_ttprogram_companion_cutover.md`
-7. `task3_runtime_gate_and_workload_cutover.md`
+2. `task0_ir_layering_root_cause.md`
+3. `task1_spatial_plan_companion.md`
+4. `task2_ttprogram_companion_cutover.md`
+5. `task3_runtime_gate_and_workload_cutover.md`
+6. `tasks/progress.md`
+7. `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
 
 额外参考：
 
@@ -25,6 +25,10 @@
   - 历史 surface 的删除/迁移落点表
 - `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
   - cleanup 执行总览；配套 task0-task5 分文件一起阅读
+  - 它只定义 residue cleanup 的 ownership /
+    forced debt /
+    convergence gate，
+    不替代主设计路线
   - 这些 cleanup task 文档默认采用 current IR/current object 上的
     visitor / matcher / mutator / builder 设计，
     不再授权新增 bag / attr / wrapper 式跨阶段语义层
@@ -83,25 +87,30 @@ pass 名字、helper、bag、payload、bridge attr
 当前下一步，
 仍统一只看 `tasks/progress.md`。
 
-这里不再重复维护当前 cleanup 顺序。
+主线固定按下面这条理解：
+
+`Task 1 -> Task 2 -> Task 3 -> Legacy Protocol Deletion`
+
+这里不再重复维护当前 repo HEAD
+的阶段队列。
 
 - `tasks/progress.md`
   - 唯一当前执行顺序 / 状态看板
+- `task1_spatial_plan_companion.md`
+- `task2_ttprogram_companion_cutover.md`
+- `task3_runtime_gate_and_workload_cutover.md`
+  - 主设计路线和 completion contract
 - `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
-  - cleanup ownership /
+  - cleanup overlap workstream 的
+    ownership /
     forced debt /
     convergence gate
 - `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
   到
   `task5.md`
-  - 各自 residue 的
-    required end-state /
+  - 和主线任务重叠的
+    residue cleanup /
     verification contract
-- `task1_spatial_plan_companion.md`
-- `task2_ttprogram_companion_cutover.md`
-- `task3_runtime_gate_and_workload_cutover.md`
-  - 长期表示层边界和 completion contract，
-    不是当前执行顺序页
 
 其中：
 
@@ -123,15 +132,18 @@ pass 名字、helper、bag、payload、bridge attr
   当前下一步
 - `task1/task2/task3`
   这组表示层合同文档
-  只定义目标合同和完成判据，
+  定义主设计路线 /
+  目标合同 /
+  完成判据，
   不维护 repo HEAD 的阶段性状态快照
 - cleanup `task0-task5`
   分文件
-  可以记录各自 residue 的
+  只记录各自 residue 的
   per-task current-state evidence /
   required end-state /
   verification contract，
-  但不替代 `progress.md`
+  不替代主设计任务链，
+  也不替代 `progress.md`
   作为总体状态来源
 - `README`
   只做入口索引，不重复维护详细 backlog

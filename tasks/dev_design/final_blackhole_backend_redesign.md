@@ -579,6 +579,20 @@ planning seed
 本文件不再重复维护
 repo HEAD 的当前任务队列。
 
+cleanup 文档的角色固定为：
+
+- 清理 legacy protocol /
+  helper residue /
+  side channel
+- 作为和主线 task
+  重叠的 cleanup workstream
+
+它不是：
+
+- `Task 1 / Task 2 / Task 3`
+  的替代路线图
+- 新的主设计分层
+
 补充：
 
 - `buffer effect / use-role`
@@ -612,6 +626,9 @@ repo HEAD 的当前任务队列。
    - 固定 cleanup ownership /
      forced debt /
      convergence gate
+   - 不替代
+     `Task 1 / Task 2 / Task 3`
+     主设计路线
 6. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
    到
    `task5.md`

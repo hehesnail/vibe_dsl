@@ -11,6 +11,10 @@
 > per-task current-state evidence，
 > 也不能替代 `progress.md`
 > 作为总体状态来源。
+> cleanup 只是和
+> `Task 1 / Task 2 / Task 3 / Legacy Protocol Deletion`
+> 重叠的 residue workstream，
+> 不是主设计路线图。
 
 ## 1. 文档定位
 

@@ -14,49 +14,83 @@
 
 - **日期**: `2026-04-22`
 - **当前总体 blocker**:
-  统一 cleanup 顺序
-  `Cleanup Task 1 -> Cleanup Task 2 -> Cleanup Task 0(remain) -> Cleanup Task 3 -> Cleanup Task 4 -> Cleanup Task 5`
-  还没收口
+  `Task 1: SpatialPlan Representation Cutover`
+  还没收口；
+  当前最直接的 repo HEAD
+  blocker
+  是和它重叠的
+  cleanup task1/task2 residue
 - **当前推进原则**:
-  当前状态和顺序
-  统一按 cleanup 主线写；
-  先完成 cleanup 主线，
+  主线固定按
+  `Task 1 -> Task 2 -> Task 3 -> Legacy Protocol Deletion`
+  推进；
+  cleanup 只记录
+  和主线重叠的 residue workstream。
+  先收口主设计任务，
   再恢复 support surface / workload payoff 扩展
 
-## 2. 当前路线状态
+## 2. 当前主线任务状态
 
-### 2.1 长期合同受阻面
+### 2.1 主线任务看板
 
-- `SpatialPlan` 合同
-  - 未收口
-  - 主要被 `Cleanup Task 1 / 2` 阻塞
-- `TTProgram` 合同
-  - 未收口
-  - 主要被 `Cleanup Task 0 / 2 / 3 / 4` 阻塞
-- `ExecutableSpec / leaf reader` 合同
-  - 未收口
-  - 主要被 `Cleanup Task 3 / 4 / 5` 阻塞
+- `Task 1: SpatialPlan Representation Cutover`
+  - 状态：`in progress / 当前主线`
+  - 当前直接 blocker：
+    cleanup task1/task2
+    这组 overlap residue
+  - 当前目标：
+    让 `SpatialPlan`
+    真正成为
+    target-independent
+    virtual spatial/dataflow
+    owner truth
+- `Task 2: TTProgram Representation Cutover`
+  - 状态：`pending / 受 Task 1 阻塞`
+  - overlap cleanup：
+    task2/task3，
+    以及仍未删完的
+    exact builtin /
+    legality residue
+  - 当前目标：
+    让 `TTProgram`
+    真正成为唯一
+    TT-specific realization
+- `Task 3: ExecutableSpec / Leaf Reader Cutover`
+  - 状态：`pending / 受 Task 2 阻塞`
+  - overlap cleanup：
+    task3/task4/task5
+  - 当前目标：
+    让 build / codegen / runtime /
+    `BlackholeModule`
+    只站在
+    `ExecutableSpec`
+    projection 边界上
 - `Legacy Protocol Deletion`
-  - 未收口
-  - 需要 `Cleanup Task 0-5` 全部完成
+  - 状态：`pending`
+  - 说明：
+    cleanup `task0-task5`
+    是这条线上的
+    overlap residue workstream，
+    不是另一条主路线
 
-### 2.2 cleanup 当前任务看板
+### 2.2 cleanup overlap 看板
 
 - `Cleanup Task 1`
-  - 状态：`当前第一 blocker / 应立即推进`
+  - 状态：`active overlap / 当前卡在 Task 1`
   - 目标：把 logical bridge handoff
     从 `blackhole.compute_regions`
     切到 direct capture
 - `Cleanup Task 2`
-  - 状态：`当前第二 blocker / 待 Task 1 后推进`
+  - 状态：`active overlap / 当前卡在 Task 1-Task 2 交界`
   - 目标：删除 public/internal
     legacy analysis carrier
-  - 说明：它完成后，
-    `Task 0`
-    剩余 full-contract work
-    必须回到关键路径
+  - 说明：
+    它是 `Task 1`
+    收口的组成部分，
+    同时也给 `Task 2`
+    清理 planning 输入边界
 - `Cleanup Task 0`
-  - 状态：`partial landed / 未完成 / 待 Task 2 后立即回收`
+  - 状态：`open residue / 不是主线 owner doc`
   - 当前只完成：
     `selector-forwarding`
     局部前移
@@ -66,16 +100,16 @@
     `blackhole.cb_requirements`
     删除
 - `Cleanup Task 3`
-  - 状态：`pending / 待 Task 1 + Task 2 + Task 0-remain 后推进`
+  - 状态：`pending overlap / 对应 Task 2-Task 3`
   - 目标：删除
     `blackhole.copy_semantics`
 - `Cleanup Task 4`
-  - 状态：`pending / 待 Task 3 后推进`
+  - 状态：`pending overlap / 对应 Task 3`
   - 目标：删除
     `blackhole.segment_kind`
     并收掉 leaf-local body slicing residue
 - `Cleanup Task 5`
-  - 状态：`pending / 最终 convergence gate`
+  - 状态：`pending overlap / 最终 convergence gate`
   - 目标：统一文档 /
     residue scans /
     verification /
@@ -92,19 +126,12 @@
 
 说明：
 
-- `task1_spatial_plan_companion.md`
-- `task2_ttprogram_companion_cutover.md`
-- `task3_runtime_gate_and_workload_cutover.md`
-
-这组文件
-只定义长期 end-state /
-完成判据，
-不再直接充当
-repo HEAD 的执行路线图。
-
-当前真正的执行切片
-以 cleanup `task0-task5`
-为准。
+- `task1/task2/task3`
+  这组文档
+  定义主线任务和完成判据
+- cleanup `task0-task5`
+  只定义 overlap residue
+  的删除范围和 convergence gate
 
 ## 3. repo HEAD 当前代码现状
 
@@ -140,9 +167,29 @@ Normalized Tile TIR
 上面这些都只是当前 repo HEAD 的现状，
 不表示顶层任务已经收口。
 
-## 4. 当前未收口项（按 cleanup task 归类）
+## 4. 当前未收口项（按主线任务归类）
 
-- `Cleanup Task 0`
+- `Task 1 / SpatialPlan`
+  - `blackhole.compute_regions`
+    仍是 bridge handoff
+    的 producer-side owner truth
+  - `lower.py`
+    / target test helper
+    仍通过
+    `AnalyzeBlackholeComputeRegions`
+    走 legacy hand-off
+  - public
+    `AnalyzeBlackhole*`
+    wrappers
+    仍暴露
+  - internal
+    `*Evidence(...)`
+    helper
+    和
+    `blackhole.lowering_requirements`
+    broad bag
+    仍在 active chain
+- `Task 2 / TTProgram`
   - `SelectBlackholeTTMetalBuiltins`
     仍是
     `PlanTTKernelABI::SelectComputeBuiltins()`
@@ -152,54 +199,25 @@ Normalized Tile TIR
   - selector / validator
     还没共用一份
     exact builtin legality contract
-- `Cleanup Task 1`
-  - `blackhole.compute_regions`
-    仍是
-    logical bridge handoff
-    的 producer-side owner truth
-  - `lower.py`
-    / target test helper
-    仍从 broad bag
-    抽
-    `buffer_tile_bridge_specs`
-- `Cleanup Task 2`
-  - public
-    `AnalyzeBlackhole*`
-    wrappers
-    仍暴露
-  - internal
-    `*Evidence(...)`
-    helpers
-    仍被 consumer 直接读取
-  - `blackhole.lowering_requirements`
-    仍由
-    `blackhole_lowering_requirements.cc`
-    聚合成 broad bag
-- `Cleanup Task 3`
-  - `AnnotateBlackholeCopySemantics`
+  - `buffer_tile_bridge_specs`
     /
-    `blackhole.copy_semantics`
-    仍在 active chain
-  - `blackhole.resource_plan`
-    仍由
-    `BlackholeDeviceResourceCanonicalization`
-    发出
-- `Cleanup Task 4`
+    `compute_contract`
+    /
+    `gemm_contract`
+    等 payload residue
+    仍停在
+    `TTProgram.payload`
+    和 leaf compatibility path
+- `Task 3 / ExecutableSpec / leaf reader`
+  - `blackhole.copy_semantics`
+    仍在 compiler-side
+    active chain
   - `blackhole.segment_kind`
     仍在 planner / leaf
     两侧存活
   - `SegmentBodyExtractor`
     仍按 marker
     切 raw body
-- cross-task leaf compatibility debt
-  - `buffer_tile_bridge_specs`
-    仍**错误地**同时停在
-    `TTProgram.payload`
-    /
-    executable projection
-    /
-    `codegen_blackhole.cc`
-    reader 上
   - `PlanTTSync / PlanTTABI / PlanTTExecution`
     虽已落地为显式 planner passes，
     但 leaf reader / cleanup
@@ -227,61 +245,38 @@ Normalized Tile TIR
   仍按 simulator capability boundary 处理，
   不作为当前 correctness gate
 
-## 6. 统一剩余顺序
-
-当前统一 cleanup 顺序
-固定为：
-
-1. `Cleanup Task 1`
-2. `Cleanup Task 2`
-3. `Cleanup Task 0` 剩余 full-contract 回收
-4. `Cleanup Task 3`
-5. `Cleanup Task 4`
-6. `Cleanup Task 5`
-7. cleanup 完成后，再恢复 support surface / workload payoff 扩展
-
-补充：
-
-- `Cleanup Task 0`
-  不是独立丢失的一段历史任务；
-  它的前半切片
-  已以 selector-forwarding
-  形式落地，
-  剩余 work
-  就按第 3 步回收
-- `Cleanup Task 5`
-  不是实现 owner，
-  只做最终 convergence gate
-
-## 7. 当前下一步
+## 6. 当前下一步
 
 当前下一步固定为：
 
-1. 完成 `Cleanup Task 1`
-   - 用 direct logical bridge capture
-     取代 compute-region bag
-2. 然后完成 `Cleanup Task 2`
-   - 删除 public / internal legacy analysis bag
-   - 同时把 `SpatialPlan`
-     收成单一 direct builder implementation
-3. 紧接着回收 `Cleanup Task 0` 剩余 full-contract work
-   - 让 selector
-     真正变成独立 rewrite
+1. 继续收口 `Task 1: SpatialPlan Representation Cutover`
+   - 先推进 cleanup task1
+     对应的 direct bridge capture
+   - 再推进 cleanup task2
+     对应的
+     public/internal legacy analysis bag
+     删除
+2. `Task 1`
+   收口后，
+   转入 `Task 2: TTProgram Representation Cutover`
+   - 同时处理与它重叠的
+     cleanup task0
+     exact builtin / legality residue
+   - 以及 cleanup task3
+     对应的 payload /
+     compatibility residue
+3. 然后推进
+   `Task 3: ExecutableSpec / Leaf Reader Cutover`
    - 删除
-     `blackhole.cb_requirements`
-     作为 builtin-selection owner truth
-   - 让 selector /
-     validator
-     共用 exact builtin legality contract
-4. 再推进 `Cleanup Task 3 / 4`
-   - 删除 `blackhole.copy_semantics`
-   - 删除 `blackhole.segment_kind`
-   - `Cleanup Task 4`
-     先切 `TTKernel / executable segment_plan`
-     的 kind owner truth，
-     再单独处理 leaf-local body slicing residue
-5. 最后做 `Cleanup Task 5`
-   - 统一文档 /
-     residue scans /
-     verification /
-     delivery 收尾
+     `blackhole.copy_semantics`
+   - 删除
+     `blackhole.segment_kind`
+   - 收紧 leaf reader /
+     runtime /
+     codegen 边界
+4. 最后做
+   `Legacy Protocol Deletion`
+   的 convergence /
+   scans /
+   verification /
+   delivery 收尾

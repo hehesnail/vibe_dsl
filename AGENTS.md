@@ -2,7 +2,14 @@
 
 本文件用于告诉 Codex 在这个仓库里应该如何工作。
 
-架构设计只看一份：`tasks/dev_design/final_blackhole_backend_redesign.md`
+总体设计只看一份：`tasks/dev_design/final_blackhole_backend_redesign.md`
+
+任务级设计合同看：
+
+- `tasks/dev_design/task0_ir_layering_root_cause.md`
+- `tasks/dev_design/task1_spatial_plan_companion.md`
+- `tasks/dev_design/task2_ttprogram_companion_cutover.md`
+- `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
 
 ---
 
@@ -80,10 +87,14 @@
 按顺序读：
 
 1. `tasks/dev_design/final_blackhole_backend_redesign.md` — 唯一权威总设计
-2. `tasks/progress.md` — 当前状态与下一步
-3. `tasks/dev_design/README.md` — 当前活动设计文档索引
-4. 如果涉及构建/调试/历史问题，再读 `memory/general_dev.md` 和 `memory/bugs.md`
-5. 然后读代码，不要只看文档
+2. `tasks/dev_design/task0_ir_layering_root_cause.md` — 根因与 rewrite 方向
+3. `tasks/dev_design/task1_spatial_plan_companion.md` — `SpatialPlan` 主设计合同
+4. `tasks/dev_design/task2_ttprogram_companion_cutover.md` — `TTProgram` 主设计合同
+5. `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md` — `ExecutableSpec / leaf reader` 主设计合同
+6. `tasks/progress.md` — 当前 repo HEAD 状态与下一步
+7. `tasks/dev_design/README.md` — 当前活动设计文档索引
+8. 如果涉及构建/调试/历史问题，再读 `memory/general_dev.md` 和 `memory/bugs.md`
+9. 然后读代码，不要只看文档
 
 ## 工作区偏好
 
@@ -204,17 +215,19 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - `tasks/dev_design/task1_spatial_plan_companion.md`
    - `tasks/dev_design/task2_ttprogram_companion_cutover.md`
    - `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
-2. 当前 cleanup 顺序和状态
-   统一只看 `tasks/progress.md`
-   - 不要在其他入口文档里
-     再维护第二套当前顺序
-   - cleanup 完成后，
-     才恢复 support surface /
-     workload payoff 扩展
-3. `task1_spatial_plan_companion.md`、`task2_ttprogram_companion_cutover.md`、`task3_runtime_gate_and_workload_cutover.md`
-   负责定义 completion contract，不再单独充当当前实施顺序；
-   这些文件名中的 `companion / cutover` 只是历史索引，不是新的 IR 层命名
-4. 当前已接入主链、但只算前置子步骤的工作包括：
+2. 当前主线固定按
+   `Task 1 -> Task 2 -> Task 3 -> Legacy Protocol Deletion`
+   理解
+3. `tasks/progress.md`
+   只维护 repo HEAD 当前状态 /
+   blocker /
+   下一步
+4. cleanup `task0-task5`
+   是 overlap residue workstream
+   - 它们清理旧协议 / 旧代码路径
+   - 它们可能和主线 task 重合
+   - 但它们不是新的主路线图
+5. 当前已接入主链、但只算前置子步骤的工作包括：
    - `buffer effect / use-role analysis`
    - `buffer liveness analysis`
    - `materialization / source-live-form planner decision`
@@ -281,7 +294,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - TT-Sim `fp16` 仍按 simulator capability boundary 处理，不作为当前 correctness gate
 - 当前总体 blocker
   统一以 `tasks/progress.md`
-  里的 cleanup 看板为准；
+  里的主线任务状态为准；
   当前问题不是单一 cutover 点，也不是 support surface 不够
 - 后续所有架构推进以当前 layered IR 为准：
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
