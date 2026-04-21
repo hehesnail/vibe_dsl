@@ -277,6 +277,9 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - `flash-attn` compile-path / source/spec baseline 已稳定，但 direct runtime correctness 还不是 admitted support surface
 - direct cast consumer 当前只保留 build/source contract gate，不作为 TT-Sim direct-runtime correctness gate
 - TT-Sim `fp16` 仍按 simulator capability boundary 处理，不作为当前 correctness gate
-- 当前总体 blocker 是 cleanup 主线 `Task 1-5` 还没做完，不是单一 cutover 点，也不是 support surface 不够
+- 当前总体 blocker 是 cleanup 主线 `Task 0-5` 还没收口；
+  repo HEAD 当前活跃 blocker 队列从 `Task 1` 开始，
+  但 `Task 0` 仍有必须回收的 partial debt；
+  当前问题不是单一 cutover 点，也不是 support surface 不够
 - 后续所有架构推进以当前 layered IR 为准：
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
