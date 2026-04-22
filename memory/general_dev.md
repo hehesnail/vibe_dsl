@@ -151,6 +151,17 @@
   FFI global registration、
   测试 helper / fallback；
   否则旧入口会继续漂回 active path
+- 在这个仓库的主线 task 上，
+  不要套用
+  “先迁 owner truth，
+   后删兼容壳”
+  的通用重构习惯；
+  除 task 文档明确写出的
+  narrow exception 外，
+  旧 `wrapper / facts / bag / payload / public surface`
+  还活着，
+  就应视为该 task
+  仍未按原则收口
 - 把 analysis + builder
   两段式 cutover 成
   direct builder 时，

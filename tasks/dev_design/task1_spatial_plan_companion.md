@@ -482,6 +482,25 @@ virtual spatial/dataflow 层。
 只有在下面这些条件同时满足后
 才算完成：
 
+补充硬约束：
+
+- `Task 1`
+  默认按终态实现，
+  不接受
+  “先迁 `SpatialPlan` owner truth，
+   后删旧 facts /
+   wrapper /
+   public surface”
+  的过渡式收口
+- 除本文档明确允许的
+  `tl.blackhole_logical_buffer_tile_bridge_specs`
+  这一个窄 exception 外，
+  旧 `wrapper / facts / bag / public surface`
+  只要仍在
+  `Task 1`
+  边界里活着，
+  就算未完成
+
 1. `SpatialPlan`
    已显式收成
    `ExecutionUnit /

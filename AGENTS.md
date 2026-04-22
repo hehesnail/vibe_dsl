@@ -189,6 +189,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - pass 可以重命名、合并、拆分、内联；只要 IR 契约不变，架构就不应被描述成“某个 pass 拥有什么语义”
    - 任务文档里沿用的历史文件名只作为索引，不得被理解成新的 IR 名词或长期协议对象
 
+7. **主线 task 默认按终态实现，不接受过渡式收口**
+   - 除非对应 task 文档明确把某个 residue 写成允许保留的 narrow exception，否则不要保留旧 `wrapper / facts / bag / payload / public surface` 当“兼容壳”
+   - 不允许把当前 repo HEAD / 当前 active chain / 当前残留实现当成继续保留旧面的授权；这些描述默认只是问题现状，不是目标形态
+   - 不要把一个 task 拆成“这一轮先迁 owner truth，下一轮再删旧壳”的 transition-minded implementation；如果旧 pass / 旧 attr / 旧 object / 旧 Python wrapper 仍在当前 task 边界里活着，就默认这个 task 还没按原则完成
+
 **对 Blackhole 的具体要求**：
 
 - `runtime_args`、`buffer`、`cb`、`segment` 等绑定必须由 IR / attrs / typed fields 明确表达或可从 IR 稳定推导
@@ -261,6 +266,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - “这一批改动已经通过验证”不算完成；它只是继续推进的前提，不是收口条件
 - 只要阶段状态仍是未完成，或当前任务对应的提交/推送还没做完，就不能把
   checkpoint、阶段性汇报、阶段性绿测当成 stopping point
+- 主线 task 默认按终态实现收口；除 task 文档明确允许的 narrow exception 外，
+  不能把“owner truth 已迁走，但旧 wrapper / facts / bag / payload / public surface 还在”
+  当作完成
+- 对当前 task 边界，active chain、public API、测试断言应在同一轮一起切到终态；
+  旧 pass / 旧 attr / 旧 object / 旧 Python wrapper 任一还活着，就不能报该 task 完成
 
 ---
 
@@ -275,11 +285,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `tasks/dev_design/archive/` 下内容全部视为历史记录，不再作为当前入口
 - semantic manifest 路径已完成；`AnalyzeSemanticStructure` 已全面改成 manifest-first
 - 当前实际 active chain 是：
-  `Normalized Tile TIR -> AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion -> ValidateSpatialPlan -> SplitBlackholeKernel -> legacy attrs / narrow bridge residue -> PlanTTBlocks -> SelectBlackholeTTMetalBuiltins -> PlanTTCompute / PlanTTTransport / PlanTTSync / PlanTTABI / PlanTTExecution -> BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable -> runtime / codegen leaf readers`
+  `Normalized Tile TIR -> BuildSpatialPlan -> ValidateSpatialPlan -> SplitBlackholeKernel -> legacy attrs / narrow bridge residue -> PlanTTBlocks -> SelectBlackholeTTMetalBuiltins -> PlanTTCompute / PlanTTTransport / PlanTTSync / PlanTTABI / PlanTTExecution -> BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable -> runtime / codegen leaf readers`
 - 上面这串名字描述的是当前 pass/phase 实现，不是新的长期 IR 层；
   长期主链仍然只有 `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 - 当前已知迁移残留包括：
-  - `AnalyzeSpatialStructureFacts` 仍在 active chain 且仍通过 public wrapper 暴露；后续必须退回局部 mechanics，并把 `SpatialPlan` 收成单一 direct builder implementation；当前 `BuildSpatialPlanCompanion` 只是历史实现名
   - `SpatialPlan -> TTProgram` 之间仍有 legacy transition attrs / narrow bridge seeds / helper residue
   - `blackhole.copy_semantics`、`blackhole.segment_kind`、`blackhole.lowering_requirements`、`blackhole.resource_plan` 仍在 repo HEAD
   - `PlanTTSync / PlanTTABI / PlanTTExecution` 已落地为显式 planner passes，但 leaf reader / cleanup 还没同时收口

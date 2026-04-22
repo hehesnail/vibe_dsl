@@ -596,6 +596,29 @@ build / codegen / runtime /
 只有在下面这些条件同时满足后
 才算完成：
 
+补充硬约束：
+
+- `Task 2`
+  默认按终态实现，
+  不接受
+  “先把 owner truth
+   迁到 typed `TTProgram` slice，
+   再把旧 analysis bag /
+   lowering bag /
+   seed /
+   wrapper
+   留到后面删除”
+  的过渡式收口
+- 除本文档明确标成
+  task3
+  继续删除对象的
+  leaf compatibility residue 外，
+  旧 `wrapper / bag / seed / payload`
+  只要仍在
+  `Task 2`
+  边界里充当兼容壳，
+  就算未完成
+
 1. target planning
    直接构造
    `TTBlockPlan /

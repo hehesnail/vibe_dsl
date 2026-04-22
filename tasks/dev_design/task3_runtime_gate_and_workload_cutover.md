@@ -625,6 +625,29 @@ verification / residue scan /
 `Task 3`
 只有在下面这些条件同时满足后才算完成：
 
+补充硬约束：
+
+- `Task 3`
+  默认按终态实现，
+  不接受
+  “先引入 `ExecutableSpec`
+   或新 leaf projection，
+   再把旧 leaf reader /
+   helper bag /
+   payload fallback
+   留到后面删除”
+  的过渡式收口
+- 一旦声明
+  `Task 3`
+  完成，
+  旧 leaf reader /
+  helper bag /
+  payload fallback /
+  planner residue
+  就不能再以
+  compatibility shell
+  身份留在 active path
+
 1. `MaterializeBlackholeExecutable`
    成为唯一 executable writer
 2. build / codegen / runtime /
