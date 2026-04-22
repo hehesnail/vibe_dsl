@@ -1,6 +1,6 @@
 /*!
  * \file spatial_plan.cc
- * \brief Task 1 SpatialPlan companion objects derived from normalized TIR.
+ * \brief Task 1 SpatialPlan objects derived from normalized TIR.
  */
 
 #include "spatial_plan.h"
@@ -134,20 +134,6 @@ PhasePlan::PhasePlan(ffi::String name, int64_t phase_index, ffi::Array<ffi::Stri
   data_ = std::move(n);
 }
 
-SpatialStructureFacts::SpatialStructureFacts(ffi::String member_func,
-                                             ffi::Array<ExecutionClosure> closure_candidates,
-                                             ffi::Array<ClosureBoundary> boundary_candidates,
-                                             ValidatedHintSet validated_hints,
-                                             ffi::Array<TIRAnchor> anchors) {
-  auto n = ffi::make_object<SpatialStructureFactsNode>();
-  n->member_func = std::move(member_func);
-  n->closure_candidates = std::move(closure_candidates);
-  n->boundary_candidates = std::move(boundary_candidates);
-  n->validated_hints = std::move(validated_hints);
-  n->anchors = std::move(anchors);
-  data_ = std::move(n);
-}
-
 SpatialPlan::SpatialPlan(ffi::String member_func, ffi::Array<ExecutionUnit> execution_units,
                          ffi::Array<DataflowEdge> dataflow_edges,
                          ffi::Array<LayoutSpec> layout_specs,
@@ -185,7 +171,6 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   DataflowEdgeNode::RegisterReflection();
   LayoutSpecNode::RegisterReflection();
   PhasePlanNode::RegisterReflection();
-  SpatialStructureFactsNode::RegisterReflection();
   SpatialPlanNode::RegisterReflection();
   TLDeviceProgramInfoNode::RegisterReflection();
 }
@@ -265,15 +250,6 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                          std::move(ingress_edge_indices), std::move(egress_edge_names),
                          std::move(egress_edge_indices), std::move(boundary_subjects),
                          std::move(anchors));
-      });
-  refl::GlobalDef().def(
-      "tl.SpatialStructureFacts",
-      [](ffi::String member_func, ffi::Array<ExecutionClosure> closure_candidates,
-         ffi::Array<ClosureBoundary> boundary_candidates, ValidatedHintSet validated_hints,
-         ffi::Array<TIRAnchor> anchors) {
-        return SpatialStructureFacts(std::move(member_func), std::move(closure_candidates),
-                                     std::move(boundary_candidates),
-                                     std::move(validated_hints), std::move(anchors));
       });
   refl::GlobalDef().def(
       "tl.SpatialPlan",

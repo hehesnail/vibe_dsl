@@ -366,9 +366,8 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
 
 
 def LowerToBlackholePhaseB(mod: IRModule) -> IRModule:
-    """Run the stabilized Blackhole Phase B companion pipeline on a device module."""
-    mod = tilelang.transform.AnalyzeSpatialStructureFacts()(mod)
-    mod = tilelang.transform.BuildSpatialPlanCompanion()(mod)
+    """Run the stabilized Blackhole Phase B SpatialPlan pipeline on a device module."""
+    mod = tilelang.transform.BuildSpatialPlan()(mod)
     mod = tilelang.transform.ValidateSpatialPlan()(mod)
     mod = tilelang.transform.SplitBlackholeKernel()(mod)
     mod = tilelang.tvm.get_global_func("tl.transform.CaptureBlackholeLogicalBridgeSpecs")()(mod)

@@ -1,6 +1,6 @@
 /*!
  * \file spatial_plan.h
- * \brief Task 1 SpatialPlan companion objects derived from normalized TIR.
+ * \brief Task 1 SpatialPlan objects derived from normalized TIR.
  */
 
 #ifndef TVM_TL_TRANSFORM_COMMON_SPATIAL_PLAN_H_
@@ -276,38 +276,6 @@ class PhasePlan : public ObjectRef {
                     ffi::Array<ffi::String> boundary_subjects,
                     ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(PhasePlan, ObjectRef, PhasePlanNode);
-};
-
-class SpatialStructureFactsNode : public Object {
- public:
-  ffi::String member_func;
-  ffi::Array<ExecutionClosure> closure_candidates;
-  ffi::Array<ClosureBoundary> boundary_candidates;
-  ValidatedHintSet validated_hints;
-  ffi::Array<TIRAnchor> anchors;
-
-  static void RegisterReflection() {
-    namespace refl = tvm::ffi::reflection;
-    refl::ObjectDef<SpatialStructureFactsNode>()
-        .def_ro("member_func", &SpatialStructureFactsNode::member_func)
-        .def_ro("closure_candidates", &SpatialStructureFactsNode::closure_candidates)
-        .def_ro("boundary_candidates", &SpatialStructureFactsNode::boundary_candidates)
-        .def_ro("validated_hints", &SpatialStructureFactsNode::validated_hints)
-        .def_ro("anchors", &SpatialStructureFactsNode::anchors);
-  }
-
-  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.SpatialStructureFacts", SpatialStructureFactsNode, Object);
-};
-
-class SpatialStructureFacts : public ObjectRef {
- public:
-  TVM_DLL SpatialStructureFacts(ffi::String member_func,
-                                ffi::Array<ExecutionClosure> closure_candidates,
-                                ffi::Array<ClosureBoundary> boundary_candidates,
-                                ValidatedHintSet validated_hints,
-                                ffi::Array<TIRAnchor> anchors);
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SpatialStructureFacts, ObjectRef,
-                                             SpatialStructureFactsNode);
 };
 
 class SpatialPlanNode : public Object {

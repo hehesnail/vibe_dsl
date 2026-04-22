@@ -91,8 +91,8 @@ Map<String, Any> AsMap(const Any& any) {
 SpatialPlan RequireValidatedSpatialPlan(const tir::PrimFunc& func, const char* pass_name) {
   auto maybe_spatial_plan = func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
   ICHECK(maybe_spatial_plan)
-      << pass_name << " requires tl.spatial_plan; run AnalyzeSpatialStructureFacts, "
-      << "BuildSpatialPlanCompanion, and ValidateSpatialPlan before target planning";
+      << pass_name
+      << " requires tl.spatial_plan; run BuildSpatialPlan and ValidateSpatialPlan before target planning";
   ICHECK(func->GetAttr<Bool>(attr::kTLSpatialPlanValidated, Bool(false)).value())
       << pass_name << " requires validated SpatialPlan; run ValidateSpatialPlan before target planning";
   return maybe_spatial_plan.value();

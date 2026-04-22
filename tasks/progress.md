@@ -40,6 +40,15 @@
     target-independent
     virtual spatial/dataflow
     owner truth；
+    `BuildSpatialPlan`
+    已成为
+    唯一 public direct builder，
+    `AnalyzeSpatialStructureFacts` /
+    `BuildSpatialPlanCompanion` /
+    `tl.spatial_structure_facts`
+    已退出
+    active chain
+    和 public surface；
     producer-side logical bridge handoff
     已从
     `blackhole.compute_regions`
@@ -79,6 +88,14 @@
 - `Cleanup Task 1`
   - 状态：`completed`
   - 已完成：
+    `SpatialPlan`
+    已收成
+    `BuildSpatialPlan`
+    direct builder；
+    public wrapper /
+    facts object /
+    facts attr
+    已删除；
     direct logical bridge capture
     已落到
     `CaptureBlackholeLogicalBridgeSpecs`
@@ -146,8 +163,7 @@ Normalized Tile TIR
 
 ```text
 Normalized Tile TIR
-  -> AnalyzeSpatialStructureFacts
-  -> BuildSpatialPlanCompanion
+  -> BuildSpatialPlan
   -> ValidateSpatialPlan
   -> SplitBlackholeKernel
   -> CaptureBlackholeLogicalBridgeSpecs
@@ -165,6 +181,13 @@ Normalized Tile TIR
   public wrapper、
   C++ pass registration、
   对应 legacy test
+  已从 repo HEAD 删除
+- `AnalyzeSpatialStructureFacts`
+  / `BuildSpatialPlanCompanion`
+  public wrapper、
+  C++ pass registration、
+  `tl.spatial_structure_facts`
+  facts attr / object
   已从 repo HEAD 删除
 - `lower.py`
   / target test helper
@@ -234,7 +257,6 @@ Normalized Tile TIR
   - `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
   - `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py`
   - `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
-  - `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
 - direct runtime 当前 admitted 支持面：
   - copy：equal source/dest range，且 stride = 1
   - GEMM：A/B-separated reader range + writer output range；

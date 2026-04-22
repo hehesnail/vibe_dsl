@@ -15,7 +15,6 @@ namespace tl {
 
 namespace attr {
 constexpr const char* kTLDevicePrograms = "tl.device_programs";
-constexpr const char* kTLSpatialStructureFacts = "tl.spatial_structure_facts";
 constexpr const char* kTLSpatialPlan = "tl.spatial_plan";
 constexpr const char* kTLSpatialPlanValidated = "tl.spatial_plan_validated";
 constexpr const char* kTLTTProgram = "tl.tt_program";

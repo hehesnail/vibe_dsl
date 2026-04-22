@@ -151,6 +151,18 @@
   FFI global registration、
   测试 helper / fallback；
   否则旧入口会继续漂回 active path
+- 把 analysis + builder
+  两段式 cutover 成
+  direct builder 时，
+  要四件事一起做：
+  - 主链改成单入口 builder
+  - 删除 facts attr / facts object
+  - 删除 Python / FFI 旧入口
+  - 把测试改成显式断言旧入口不存在；
+  只改 pass 顺序、
+  不删 facts object /
+  facts attr
+  仍然是在保留旧协议面
 - 如果 selector 在 pre-planner rewrite 里创建了 exact temporary CB，
   就必须同时把这些 temporary requirement
   通过

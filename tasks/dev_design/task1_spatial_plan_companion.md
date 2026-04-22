@@ -232,22 +232,28 @@ configure / launch 物化。
 或 **transitional debt**，
 不能写成新的中期层。
 
-### 4.1 public wrapper / facts object 不是长期边界
+### 4.1 public wrapper / facts object 必须退出主链与 public surface
 
-如果 repo HEAD
-里仍存在：
+下面这些 surface
+不允许继续存在于
+active chain
+或 public API：
 
 - `AnalyzeSpatialStructureFacts`
 - `SpatialStructureFacts`
+- `tl.spatial_structure_facts`
 - `BuildSpatialPlanCompanion`
 
-它们的正确口径只能是：
+它们的唯一正确 disposition 是：
 
-- 当前实现 mechanics
-- 历史实现名
-- 迁移期间尚未删除的辅助结构
-
-它们不是长期架构边界。
+- 删除 public wrapper
+- 删除 pass-to-pass facts attr
+- 删除 facts object
+- 把仍需要的局部结构分析
+  收回
+  `BuildSpatialPlan`
+  同一实现单元内的
+  pass-local mechanics
 
 长期边界只能写成：
 
@@ -376,6 +382,7 @@ projection / codegen reader
 
 - public analysis wrapper
 - pass-to-pass facts bag
+- facts attr
 - 新的 helper protocol
 - 让 leaf-time matcher
   重新恢复
@@ -384,18 +391,16 @@ projection / codegen reader
 
 换句话说：
 
-- 如果 repo HEAD
-  里还存在
-  `BuildSpatialPlanCompanion`
-  这个名字，
-  它也只是历史实现名
-- 如果 repo HEAD
-  里还存在前置结构收集，
+- public 构造入口
+  只能保留
+  `BuildSpatialPlan`
+- 如果仍需要前置结构收集，
   它也只能留在
-  同一个构造实现里
+  `BuildSpatialPlan`
+  同一个实现单元里
   作为局部 mechanics
 
-不能把这些 surviving implementation detail
+不能把这些 implementation detail
 写成新的架构层。
 
 ## 7. 下游消费边界
@@ -488,17 +493,26 @@ virtual spatial/dataflow 层。
    已落地并成为
    下游 planner
    的正式前置 gate
-3. `AnalyzeSpatialStructureFacts` /
+3. public `BuildSpatialPlan`
+   已成为
+   `SpatialPlan`
+   的唯一构造入口，
+   且
+   `AnalyzeSpatialStructureFacts` /
    `SpatialStructureFacts` /
-   `BuildSpatialPlanCompanion` /
-   `ExecutionClosure` /
+   `tl.spatial_structure_facts` /
+   `BuildSpatialPlanCompanion`
+   已退出
+   active chain
+   和 public surface
+4. `ExecutionClosure` /
    `ClosureBoundary`
-   这类历史实现物
-   即使仍暂存，
-   也只剩 mechanics /
-   projection / residue 身份，
+   如果仍暂存，
+   也只允许作为
+   `SpatialPlan`
+   内部 compatibility projection，
    不再承载 owner truth
-4. `blackhole.work_decomposition` /
+5. `blackhole.work_decomposition` /
    `blackhole.compute_regions` /
    `blackhole.pipeline_stages`
    这类过渡 surface
@@ -506,7 +520,7 @@ virtual spatial/dataflow 层。
    不能再定义
    `SpatialPlan`
    边界
-5. 下游 target planner
+6. 下游 target planner
    读取 validated
    `SpatialPlan`
    显式对象，
@@ -527,22 +541,25 @@ virtual spatial/dataflow 层。
 
 1. cleanup task1
    负责把
-   `blackhole.compute_regions`
-   上的 bridge owner truth
-   切回 direct capture，
-   并把
+   `SpatialPlan`
+   收成 direct builder，
+   并删除
+   public wrapper /
+   facts object /
+   facts attr
+   对 active chain
+   与 public surface
+   的控制；
+   同时把
    `tl.blackhole_logical_buffer_tile_bridge_specs`
    明确压成唯一窄 exception
 2. cleanup task2
-   负责继续删除
-   public wrapper /
-   facts bag /
-   broad planning bag
-   对 active chain 的控制，
-   把 `SpatialPlan -> TTProgram`
+   负责把
+   `SpatialPlan -> TTProgram`
    收回显式对象
-   和 direct builder /
-   planner 边界
+   和 direct planner 边界，
+   删除 broad planning bag
+   与 payload-style owner truth
 3. 如果 repo HEAD
    在 cleanup 期间
    仍然保留上述 residue，

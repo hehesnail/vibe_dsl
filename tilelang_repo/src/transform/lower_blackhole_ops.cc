@@ -1417,8 +1417,7 @@ static bool HasComputeSegmentRequirement(const Stmt& body) {
 static BlackholeLoweringSupportFacts BuildLoweringSupportFactsFromAnalysis(const PrimFunc& func) {
   auto spatial_plan = func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
   ICHECK(spatial_plan)
-      << "PlanTTKernelABI requires tl.spatial_plan; run AnalyzeSpatialStructureFacts and "
-         "BuildSpatialPlanCompanion before lowering";
+      << "PlanTTKernelABI requires tl.spatial_plan; run BuildSpatialPlan before lowering";
   ICHECK(func->GetAttr<Bool>(attr::kTLSpatialPlanValidated, Bool(false)).value())
       << "PlanTTKernelABI requires validated SpatialPlan; run ValidateSpatialPlan before lowering";
   return AnalyzeBlackholeLoweringSupportFacts(func, spatial_plan.value());

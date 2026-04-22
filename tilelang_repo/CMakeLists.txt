@@ -257,8 +257,7 @@ elseif(USE_BLACKHOLE)
     src/tir/builtin_blackhole.cc
     src/transform/annotate_blackhole_copy_semantics.cc
     src/transform/blackhole_device_resource_canonicalization.cc
-    src/transform/analyze_spatial_structure_facts.cc
-    src/transform/build_spatial_plan_companion.cc
+    src/transform/build_spatial_plan.cc
     src/transform/validate_spatial_plan.cc
     src/transform/capture_blackhole_logical_bridge_specs.cc
     src/transform/select_blackhole_tt_metal_builtins.cc

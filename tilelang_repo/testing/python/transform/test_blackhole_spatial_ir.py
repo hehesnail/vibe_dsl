@@ -194,9 +194,8 @@ def _rebuild_tt_program(program, *, cb_plans=None, payload=None):
     )
 
 
-def test_spatial_pass_surface_exposes_only_structure_and_plan_companions():
-    assert hasattr(tilelang.transform, "AnalyzeSpatialStructureFacts")
-    assert hasattr(tilelang.transform, "BuildSpatialPlanCompanion")
+def test_spatial_pass_surface_exposes_only_direct_spatial_plan_builder():
+    assert hasattr(tilelang.transform, "BuildSpatialPlan")
     assert hasattr(tilelang.transform, "ValidateSpatialPlan")
     assert hasattr(tilelang.transform, "PlanTTBlocks")
     assert hasattr(tilelang.transform, "PlanTTCompute")
@@ -209,6 +208,8 @@ def test_spatial_pass_surface_exposes_only_structure_and_plan_companions():
     assert not hasattr(tilelang.transform, "MaterializeSpatialProgram")
     assert not hasattr(tilelang.transform, "LowerToSpatialProgram")
     assert not hasattr(tilelang.transform, "ValidateSpatialProgram")
+    assert not hasattr(tilelang.transform, "AnalyzeSpatialStructureFacts")
+    assert not hasattr(tilelang.transform, "BuildSpatialPlanCompanion")
     assert not hasattr(tilelang.transform, "AnalyzeBlackholeWorkDecomposition")
     assert not hasattr(tilelang.transform, "AnalyzeBlackholeComputeRegions")
     assert not hasattr(tilelang.transform, "AnalyzeBlackholePipelineStages")
@@ -219,7 +220,7 @@ def test_task1_copy_spatial_plan_emits_flow_boundary_from_tir():
     main = mod["main"]
     plan = main.attrs["tl.spatial_plan"]
 
-    assert main.attrs.get("tl.spatial_structure_facts") is not None
+    assert main.attrs.get("tl.spatial_structure_facts") is None
     assert main.attrs.get("tl.spatial_plan_validated")
     assert main.attrs.get("tl.spatial_domain_plan") is None
     assert main.attrs.get("tl.spatial_execution_plan") is None

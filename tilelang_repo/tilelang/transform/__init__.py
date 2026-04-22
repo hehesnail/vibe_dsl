@@ -652,14 +652,9 @@ def SplitBlackholeKernel():
     """
     return _ffi_api.SplitBlackholeKernel()  # type: ignore
 
-def AnalyzeSpatialStructureFacts():
-    """Analyze normalized TIR into Task 1 spatial structure facts."""
-    return tvm.ffi.get_global_func("tl.transform.AnalyzeSpatialStructureFacts")()
-
-
-def BuildSpatialPlanCompanion():
-    """Freeze Task 1 SpatialPlan companion from analyzed spatial structure facts."""
-    return tvm.ffi.get_global_func("tl.transform.BuildSpatialPlanCompanion")()
+def BuildSpatialPlan():
+    """Build Task 1 SpatialPlan directly from normalized TIR."""
+    return tvm.ffi.get_global_func("tl.transform.BuildSpatialPlan")()
 
 def ValidateSpatialPlan():
     """Fail-closed validation gate for Task 1 SpatialPlan owner truth."""
