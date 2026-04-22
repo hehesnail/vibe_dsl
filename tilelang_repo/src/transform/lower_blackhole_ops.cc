@@ -1510,6 +1510,30 @@ static std::vector<std::string> CollectSegmentKindsFromBody(const Stmt& body) {
   return collector.segment_kinds();
 }
 
+static Array<Integer> ExtractStaticShape(const Buffer& buffer) {
+  Array<Integer> shape;
+  for (const PrimExpr& dim : buffer->shape) {
+    if (const auto* imm = dim.as<IntImmNode>()) {
+      shape.push_back(Integer(imm->value));
+    }
+  }
+  return shape;
+}
+
+static Stmt StripSegmentKindMarkers(const Stmt& body) {
+  class SegmentMarkerStripper : public tir::StmtMutator {
+   public:
+    Stmt VisitStmt_(const AttrStmtNode* op) final {
+      if (op->attr_key == "blackhole.segment_kind") {
+        return VisitStmt(op->body);
+      }
+      return tir::StmtMutator::VisitStmt_(op);
+    }
+  };
+
+  return SegmentMarkerStripper()(body);
+}
+
 static std::string CoreTypeForSegmentKind(const std::string& segment_kind) {
   if (segment_kind == "reader") {
     return "brisc";
@@ -1887,6 +1911,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   thread_index_vars_.clear();
   thread_index_var_names_.clear();
   thread_index_var_static_extents_.clear();
+  loop_var_static_extents_.clear();
   block_index_vars_.clear();
   block_index_var_names_.clear();
   requires_compute_segment_ = false;
@@ -1911,13 +1936,26 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(
     const PrimFunc& func, const BlackholeLoweringSupportFacts& lowering_support_facts) {
   logical_buffer_shapes_.clear();
   std::unordered_map<std::string, std::vector<int64_t>> canonical_shapes;
+  std::unordered_map<std::string, int> canonical_shape_priority;
   std::unordered_map<const VarNode*, std::vector<std::string>> alias_names_by_data;
-  auto register_shape = [&](const std::string& name, const std::vector<int64_t>& shape) {
+  auto register_shape = [&](const std::string& name, const std::vector<int64_t>& shape,
+                            int priority) {
     if (name.empty() || shape.empty()) {
       return;
     }
+    auto it = canonical_shapes.find(name);
+    if (it != canonical_shapes.end()) {
+      const int existing_priority = canonical_shape_priority[name];
+      if (priority < existing_priority) {
+        return;
+      }
+      if (priority == existing_priority && shape.size() <= it->second.size()) {
+        return;
+      }
+    }
     logical_buffer_shapes_[name] = shape;
     canonical_shapes[name] = shape;
+    canonical_shape_priority[name] = priority;
   };
   auto ingest_buffer = [&](const Buffer& buffer) {
     if (const auto* data = BufferDataIdentity(buffer)) {
@@ -1933,7 +1971,7 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(
     if (!static_shape.has_value()) {
       return;
     }
-    register_shape(BufferIdentityName(buffer), static_shape.value());
+    register_shape(BufferIdentityName(buffer), static_shape.value(), /*priority=*/0);
   };
   for (const auto& [_, buffer] : func->buffer_map) {
     ingest_buffer(buffer);
@@ -1967,7 +2005,8 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(
     if (buffer_it == spec.end() || shape_it == spec.end()) {
       return;
     }
-    register_shape(Downcast<String>((*buffer_it).second), decode_shape((*shape_it).second));
+    register_shape(Downcast<String>((*buffer_it).second), decode_shape((*shape_it).second),
+                   /*priority=*/1);
   };
   auto register_materialization_contract_shape = [&](const Map<String, Any>& contract) {
     auto target_it = contract.find(String(schema_key::kTargetBuffer));
@@ -1984,7 +2023,7 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(
         element_count % row_width != 0) {
       return;
     }
-    register_shape(target_name, {element_count / row_width, row_width});
+    register_shape(target_name, {element_count / row_width, row_width}, /*priority=*/1);
   };
   for (const Any& spec_any : lowering_support_facts.buffer_tile_bridge_specs) {
     register_tile_bridge_shape(Downcast<Map<String, Any>>(spec_any));
@@ -2035,6 +2074,18 @@ std::vector<int64_t> PlanTTKernelABI::GetLogicalBufferShape(const Buffer& buffer
   return {};
 }
 
+Array<Integer> PlanTTKernelABI::GetEncodedCurrentBufferShape(const Buffer& buffer) const {
+  Array<Integer> encoded_shape;
+  const std::vector<int64_t> logical_shape = GetLogicalBufferShape(buffer);
+  if (!logical_shape.empty()) {
+    for (int64_t dim : logical_shape) {
+      encoded_shape.push_back(Integer(dim));
+    }
+    return encoded_shape;
+  }
+  return ExtractStaticShape(buffer);
+}
+
 int64_t PlanTTKernelABI::GetLogicalBufferElementCount(const Buffer& buffer) const {
   const std::vector<int64_t> shape = GetLogicalBufferShape(buffer);
   if (!shape.empty()) {
@@ -2079,6 +2130,113 @@ std::pair<int64_t, int64_t> PlanTTKernelABI::GetLogicalMatrixShape(const Buffer&
   return {-1, -1};
 }
 
+std::optional<std::pair<int64_t, int64_t>>
+PlanTTKernelABI::InferStagedCopySharedShapeFromTransportCoverage(
+    const BufferStoreNode* op, const std::vector<Var>& loop_vars_to_zero) const {
+  const auto* load = op->value.as<BufferLoadNode>();
+  if (!load) {
+    return std::nullopt;
+  }
+
+  const CopyDirection direction = GetCopyDirection(op);
+  if (direction != CopyDirection::kDramToCB && direction != CopyDirection::kCBToDram) {
+    return std::nullopt;
+  }
+
+  const Buffer& global_buffer =
+      direction == CopyDirection::kDramToCB ? load->buffer : op->buffer;
+  const Array<PrimExpr>& global_indices =
+      direction == CopyDirection::kDramToCB ? load->indices : op->indices;
+  const std::vector<int64_t> logical_global_shape = GetLogicalBufferShape(global_buffer);
+  if (logical_global_shape.size() < 2U) {
+    return std::nullopt;
+  }
+
+  const int64_t global_cols = logical_global_shape.back();
+  if (global_cols <= 0) {
+    return std::nullopt;
+  }
+
+  PrimExpr row_expr;
+  PrimExpr col_expr;
+  const auto [row_axis, col_axis] =
+      SelectStagedCopyTransportAxes(global_indices, loop_vars_to_zero);
+  if (global_indices.size() > static_cast<size_t>(std::max(row_axis, col_axis))) {
+    row_expr = ScalarizeVectorizedIndex(global_indices[row_axis]);
+    col_expr = ScalarizeVectorizedIndex(global_indices[col_axis]);
+  } else if (global_indices.size() == 1U) {
+    PrimExpr linear_index = ScalarizeVectorizedIndex(global_indices[0]);
+    const PrimExpr global_cols_imm = IntImm(linear_index.dtype(), global_cols);
+    row_expr = FloorDiv(linear_index, global_cols_imm);
+    col_expr = FloorMod(linear_index, global_cols_imm);
+  } else {
+    return std::nullopt;
+  }
+
+  Analyzer analyzer;
+  for (const auto& [var_ptr, extent] : thread_index_var_static_extents_) {
+    if (extent <= 0) {
+      return std::nullopt;
+    }
+    analyzer.Bind(GetRef<Var>(var_ptr),
+                  Range::FromMinExtent(IntImm(DataType::Int(32), 0),
+                                       IntImm(DataType::Int(32), extent)));
+  }
+  for (const Var& loop_var : loop_vars_to_zero) {
+    auto it = loop_var_static_extents_.find(loop_var.get());
+    if (it == loop_var_static_extents_.end() || it->second <= 0) {
+      return std::nullopt;
+    }
+    analyzer.Bind(loop_var, Range::FromMinExtent(IntImm(loop_var.dtype(), 0),
+                                                 IntImm(loop_var.dtype(), it->second)));
+  }
+
+  auto zero_transport_vars = [&](const PrimExpr& expr) {
+    return ZeroThreadAndLoopVars(expr, loop_vars_to_zero);
+  };
+  const PrimExpr row_offset = analyzer.Simplify(row_expr - zero_transport_vars(row_expr));
+  const PrimExpr col_offset = analyzer.Simplify(col_expr - zero_transport_vars(col_expr));
+  const arith::ConstIntBound row_bounds = analyzer.const_int_bound(row_offset);
+  const arith::ConstIntBound col_bounds = analyzer.const_int_bound(col_offset);
+  if (row_bounds->min_value == arith::ConstIntBound::kNegInf ||
+      row_bounds->max_value == arith::ConstIntBound::kPosInf ||
+      col_bounds->min_value == arith::ConstIntBound::kNegInf ||
+      col_bounds->max_value == arith::ConstIntBound::kPosInf) {
+    return std::nullopt;
+  }
+
+  const int64_t vector_lanes = std::max<int>(1, op->value.dtype().lanes());
+  const int64_t shared_rows = row_bounds->max_value - row_bounds->min_value + 1;
+  const int64_t shared_cols = col_bounds->max_value - col_bounds->min_value + vector_lanes;
+  if (shared_rows <= 0 || shared_cols <= 0) {
+    return std::nullopt;
+  }
+  return std::make_pair(shared_rows, shared_cols);
+}
+
+Array<Integer> PlanTTKernelABI::GetEncodedCurrentStagedCopySharedShape(
+    const BufferStoreNode* op, const std::vector<Var>& loop_vars_to_zero) const {
+  const auto* load = op->value.as<BufferLoadNode>();
+  if (!load) {
+    return {};
+  }
+  const CopyDirection direction = GetCopyDirection(op);
+  const Buffer& shared_buffer =
+      direction == CopyDirection::kDramToCB ? op->buffer : load->buffer;
+  Array<Integer> shared_shape = GetEncodedCurrentBufferShape(shared_buffer);
+  if (shared_shape.size() >= 2U) {
+    return shared_shape;
+  }
+  auto inferred_shape = InferStagedCopySharedShapeFromTransportCoverage(op, loop_vars_to_zero);
+  if (!inferred_shape.has_value()) {
+    return shared_shape;
+  }
+  shared_shape.clear();
+  shared_shape.push_back(Integer(inferred_shape.value().first));
+  shared_shape.push_back(Integer(inferred_shape.value().second));
+  return shared_shape;
+}
+
 PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   current_func_ = func;
   buffer_to_req_.clear();
@@ -2100,6 +2258,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   thread_index_vars_.clear();
   thread_index_var_names_.clear();
   thread_index_var_static_extents_.clear();
+  loop_var_static_extents_.clear();
   block_index_vars_.clear();
   block_index_var_names_.clear();
   cb_consumed_compute_input_pages_by_buffer_identity_.clear();
@@ -2131,6 +2290,12 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
           block_index_vars_.insert(iv->var.get());
           block_index_var_names_.insert(iv->var->name_hint);
         }
+      }
+      return;
+    }
+    if (const auto* loop = node.as<ForNode>()) {
+      if (const auto* extent = loop->extent.as<IntImmNode>()) {
+        loop_var_static_extents_[loop->loop_var.get()] = extent->value;
       }
     }
   });
@@ -2292,10 +2457,12 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
     maybe_insert("c_buffer");
   }
 
-  // Transform the function body
-  Stmt body = VisitStmt(func->body);
-  UpdateCBRequirementDepthsFromLoweredBody(
-      &cb_requirements_, body, gemm_a_buffer_name_.empty() ? "fused_dataflow" : "compute");
+  // Transform the function body. Segment markers remain pass-local mechanics
+  // until we have derived TTProgram slice metadata and CB depth.
+  Stmt body_with_segment_markers = VisitStmt(func->body);
+  UpdateCBRequirementDepthsFromLoweredBody(&cb_requirements_, body_with_segment_markers,
+                                           gemm_a_buffer_name_.empty() ? "fused_dataflow"
+                                                                       : "compute");
   std::vector<std::string> unresolved_unsupported_ops;
   std::unordered_set<std::string> unresolved_unsupported_seen;
   auto push_unresolved = [&](const char* op_name) {
@@ -2303,43 +2470,45 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
       unresolved_unsupported_ops.push_back(op_name);
     }
   };
-  if (expected_row_reduction_count > CountLoweredRowReductionBuiltins(body)) {
+  if (expected_row_reduction_count > CountLoweredRowReductionBuiltins(body_with_segment_markers)) {
     push_unresolved("reduction");
   }
   for (const std::string& op_name : expected_unsupported_ops) {
-    if (op_name == "broadcast" && HasResidualRowBroadcast(body)) {
+    if (op_name == "broadcast" && HasResidualRowBroadcast(body_with_segment_markers)) {
       push_unresolved("broadcast");
       continue;
     }
-    if (op_name == "fill" && HasResidualFragmentFill(body)) {
+    if (op_name == "fill" && HasResidualFragmentFill(body_with_segment_markers)) {
       push_unresolved("fill");
       continue;
     }
-    if (op_name == "max" && HasResidualFragmentMax(body)) {
+    if (op_name == "max" && HasResidualFragmentMax(body_with_segment_markers)) {
       push_unresolved("max");
       continue;
     }
-    if (op_name == "add" && HasResidualFragmentAdd(body)) {
+    if (op_name == "add" && HasResidualFragmentAdd(body_with_segment_markers)) {
       push_unresolved("add");
       continue;
     }
-    if (op_name == "cast" && HasResidualFragmentCast(body)) {
+    if (op_name == "cast" && HasResidualFragmentCast(body_with_segment_markers)) {
       push_unresolved("cast");
       continue;
     }
   }
-  // Create new function with transformed body
-  PrimFunc new_func = func;
-  new_func.CopyOnWrite()->body = body;
+  // Store TTProgram slice metadata while pass-local segment markers still exist.
+  PrimFunc staged_func = func;
+  staged_func.CopyOnWrite()->body = body_with_segment_markers;
+  StoreSegmentPlan(staged_func);
 
-  // Store CB requirements in function attributes for PlanTTCBAlloc
-  StoreSegmentPlan(new_func);
+  // Create the final function body without cross-pass segment markers.
+  PrimFunc new_func = func;
+  new_func.CopyOnWrite()->body = StripSegmentKindMarkers(body_with_segment_markers);
   StoreAccessorDescriptors(new_func);
   StoreGemmContract(new_func);
   StoreLeafExecutableContracts(lowering_support_facts, unresolved_unsupported_ops);
 
   if (unresolved_unsupported_ops.empty()) {
-    ValidateNoResidualComputeRegionStores(body);
+    ValidateNoResidualComputeRegionStores(body_with_segment_markers);
   }
 
   return new_func;
@@ -3631,8 +3800,10 @@ PrimExpr PlanTTKernelABI::InferCopyTileIndex(const BufferStoreNode* op,
       direction == CopyDirection::kDramToCB ? load->indices : op->indices;
   const Buffer& shared_buffer =
       direction == CopyDirection::kDramToCB ? op->buffer : load->buffer;
-  const Array<Integer>& global_shape =
-      direction == CopyDirection::kDramToCB ? copy_input_shape_ : copy_output_shape_;
+  const Array<Integer> global_shape = GetEncodedCurrentBufferShape(global_buffer);
+  const Array<Integer> shared_shape =
+      GetEncodedCurrentStagedCopySharedShape(op, loop_var.defined() ? std::vector<Var>{loop_var}
+                                                                    : std::vector<Var>{});
   const auto [row_axis, col_axis] =
       SelectStagedCopyTransportAxes(global_indices, std::vector<Var>{loop_var});
 
@@ -3647,8 +3818,8 @@ PrimExpr PlanTTKernelABI::InferCopyTileIndex(const BufferStoreNode* op,
   int64_t shared_cols = 0;
   const auto logical_shared_shape = GetLogicalMatrixShape(shared_buffer);
   std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
-      shared_buffer, copy_intermediate_shape_, logical_shared_shape, segmented_gemm,
-      transpose_b_reader, accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
+      shared_buffer, shared_shape, logical_shared_shape, segmented_gemm, transpose_b_reader,
+      accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
   const StagedCopyTransportGeometry geometry = BuildStagedCopyTransportGeometry(
       shared_buffer, shared_rows, shared_cols, global_info.global_rows, global_info.global_cols,
       use_page_transport);
@@ -3682,8 +3853,9 @@ PrimExpr PlanTTKernelABI::InferStagedCopyBaseTileIndex(
   const bool transpose_b_reader = gemm_transpose_b_ && is_gemm_b_input;
   const Buffer& shared_buffer =
       direction == CopyDirection::kDramToCB ? op->buffer : load->buffer;
-  const Array<Integer>& global_shape =
-      direction == CopyDirection::kDramToCB ? copy_input_shape_ : copy_output_shape_;
+  const Array<Integer> global_shape = GetEncodedCurrentBufferShape(global_buffer);
+  const Array<Integer> shared_shape =
+      GetEncodedCurrentStagedCopySharedShape(op, loop_vars_to_zero);
   const auto [row_axis, col_axis] =
       SelectStagedCopyTransportAxes(global_indices, loop_vars_to_zero);
   const StagedCopyGlobalIndexInfo global_info = ResolveStagedCopyGlobalIndexInfo(
@@ -3696,8 +3868,8 @@ PrimExpr PlanTTKernelABI::InferStagedCopyBaseTileIndex(
   int64_t shared_cols = 0;
   const auto logical_shared_shape = GetLogicalMatrixShape(shared_buffer);
   std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
-      shared_buffer, copy_intermediate_shape_, logical_shared_shape, segmented_gemm,
-      transpose_b_reader, accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
+      shared_buffer, shared_shape, logical_shared_shape, segmented_gemm, transpose_b_reader,
+      accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
   const int64_t effective_global_rows =
       transpose_b_reader ? global_info.global_cols : global_info.global_rows;
   const int64_t effective_global_cols =
@@ -3838,9 +4010,13 @@ void PlanTTKernelABI::RecordStagedCopyBufferBinding(const BufferStoreNode* op,
   if (direction == CopyDirection::kDramToCB) {
     copy_input_buffer_ = load->buffer;
     copy_input_buffer_name_ = BufferIdentityName(load->buffer);
+    copy_input_shape_ = GetEncodedCurrentBufferShape(load->buffer);
+    copy_intermediate_shape_ = GetEncodedCurrentBufferShape(op->buffer);
   } else if (direction == CopyDirection::kCBToDram) {
     copy_output_buffer_ = op->buffer;
     copy_output_buffer_name_ = BufferIdentityName(op->buffer);
+    copy_output_shape_ = GetEncodedCurrentBufferShape(op->buffer);
+    copy_intermediate_shape_ = GetEncodedCurrentBufferShape(load->buffer);
   }
 }
 
@@ -3866,6 +4042,8 @@ void PlanTTKernelABI::RecordDramToDramCopy(const BufferStoreNode* op) {
   copy_output_buffer_ = op->buffer;
   copy_input_buffer_name_ = BufferIdentityName(load->buffer);
   copy_output_buffer_name_ = BufferIdentityName(op->buffer);
+  copy_input_shape_ = GetEncodedCurrentBufferShape(load->buffer);
+  copy_output_shape_ = GetEncodedCurrentBufferShape(op->buffer);
 }
 
 void PlanTTKernelABI::RegisterAccessor(const std::string& segment_kind,
@@ -4810,7 +4988,7 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
       int tile_bytes = EstimateCopyPageSize(op->buffer);
       RecordStagedCopyBufferBinding(op, direction);
       const Array<PrimExpr>& global_indices = load->indices;
-      const Array<Integer>& global_shape = copy_input_shape_;
+      const Array<Integer> global_shape = GetEncodedCurrentBufferShape(load->buffer);
       const auto [row_axis, col_axis] =
           SelectStagedCopyTransportAxes(global_indices, {});
       const std::vector<int64_t> host_axis_order =
@@ -4841,7 +5019,7 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
       int tile_bytes = EstimateCopyPageSize(load->buffer);
       RecordStagedCopyBufferBinding(op, direction);
       const Array<PrimExpr>& global_indices = op->indices;
-      const Array<Integer>& global_shape = copy_output_shape_;
+      const Array<Integer> global_shape = GetEncodedCurrentBufferShape(op->buffer);
       const auto [row_axis, col_axis] =
           SelectStagedCopyTransportAxes(global_indices, {});
       const std::vector<int64_t> host_axis_order =
@@ -4864,8 +5042,9 @@ Stmt PlanTTKernelABI::GenerateCopySequence(const BufferStoreNode* op,
   }
 }
 
-Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(const BufferStoreNode* op,
-                                                       const PrimExpr& base_tile_index) {
+Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(
+    const BufferStoreNode* op, const PrimExpr& base_tile_index,
+    const std::vector<Var>& loop_vars_to_zero) {
   CopyDirection direction = GetCopyDirection(op);
   const auto* load = op->value.as<BufferLoadNode>();
   if (!load) {
@@ -4890,16 +5069,17 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(const BufferStoreNode* op,
   int64_t shared_rows = 0;
   int64_t shared_cols = 0;
   const auto logical_shared_shape = GetLogicalMatrixShape(shared_buffer);
+  const Array<Integer> shared_shape =
+      GetEncodedCurrentStagedCopySharedShape(op, loop_vars_to_zero);
   std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
-      shared_buffer, copy_intermediate_shape_, logical_shared_shape, segmented_gemm,
-      transpose_b_reader, accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
+      shared_buffer, shared_shape, logical_shared_shape, segmented_gemm, transpose_b_reader,
+      accumulator_like_src, gemm_m_, gemm_n_, gemm_k_);
 
   const bool use_page_transport = UseStagedCopyPageTransport(shared_buffer);
   const Buffer& global_buffer = direction == CopyDirection::kDramToCB ? load->buffer : op->buffer;
   const Array<PrimExpr>& global_indices =
       direction == CopyDirection::kDramToCB ? load->indices : op->indices;
-  const Array<Integer>& global_shape =
-      direction == CopyDirection::kDramToCB ? copy_input_shape_ : copy_output_shape_;
+  const Array<Integer> global_shape = GetEncodedCurrentBufferShape(global_buffer);
   const auto [row_axis, col_axis] =
       SelectStagedCopyTransportAxes(global_indices, {});
   const std::vector<int64_t> host_axis_order =
@@ -5056,9 +5236,9 @@ Stmt PlanTTKernelABI::GenerateStagedCopyLoopSequence(const BufferStoreNode* op,
   return GenerateCopySequence(op);
 }
 
-Stmt PlanTTKernelABI::GenerateFusedStagedCopySequence(const BufferStoreNode* dram_to_cb,
-                                                        const BufferStoreNode* cb_to_dram,
-                                                        const PrimExpr& base_tile_index) {
+Stmt PlanTTKernelABI::GenerateFusedStagedCopySequence(
+    const BufferStoreNode* dram_to_cb, const BufferStoreNode* cb_to_dram,
+    const PrimExpr& base_tile_index, const std::vector<Var>& loop_vars_to_zero) {
   const auto* dram_load = dram_to_cb->value.as<BufferLoadNode>();
   const auto* cb_load = cb_to_dram->value.as<BufferLoadNode>();
   if (!dram_load || !cb_load) {
@@ -5071,14 +5251,17 @@ Stmt PlanTTKernelABI::GenerateFusedStagedCopySequence(const BufferStoreNode* dra
   int64_t shared_rows = 0;
   int64_t shared_cols = 0;
   const auto logical_shared_shape = GetLogicalMatrixShape(shared_buffer);
+  const Array<Integer> shared_shape =
+      GetEncodedCurrentStagedCopySharedShape(dram_to_cb, loop_vars_to_zero);
   std::tie(shared_rows, shared_cols) = ResolveStagedCopySharedShape(
-      shared_buffer, copy_intermediate_shape_, logical_shared_shape, /*segmented_gemm=*/false,
+      shared_buffer, shared_shape, logical_shared_shape, /*segmented_gemm=*/false,
       /*transpose_b_reader=*/false, /*accumulator_like_src=*/false, gemm_m_, gemm_n_, gemm_k_);
   const bool use_page_transport = UseStagedCopyPageTransport(shared_buffer);
+  const Array<Integer> global_shape = GetEncodedCurrentBufferShape(dram_load->buffer);
   int64_t global_rows = 0;
   int64_t global_cols = 0;
   std::tie(global_rows, global_cols) = ResolveStaticShape2DFromBufferOrMetadata(
-      dram_load->buffer, copy_input_shape_,
+      dram_load->buffer, global_shape,
       "Blackhole staged copy currently expects static global buffer shape",
       "Blackhole staged copy requires rank-2 global shape metadata after FlattenBuffer");
   const StagedCopyTransportGeometry geometry = BuildStagedCopyTransportGeometry(
@@ -7549,80 +7732,6 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
 Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
   const bool zero_loop_var = !op->thread_binding.defined();
   const Var transport_loop_var = zero_loop_var ? op->loop_var : Var();
-  if (!select_compute_builtins_only_) {
-    if (auto ann = op->annotations.Get(String("blackhole.copy_semantics"))) {
-    Map<String, Any> sem = ann->as<Map<String, Any>>().value_or(Map<String, Any>());
-
-    auto get_string = [&sem](const char* key) -> std::string {
-      auto opt = sem.Get(String(key));
-      if (!opt.has_value()) {
-        return "";
-      }
-      auto str_opt = opt.value().try_cast<String>();
-      return str_opt.has_value() ? std::string(str_opt.value()) : "";
-    };
-    auto get_shape = [&sem](const char* key) -> Array<Integer> {
-      auto opt = sem.Get(String(key));
-      if (!opt.has_value()) {
-        return {};
-      }
-      return opt.value().try_cast<Array<Integer>>().value_or(Array<Integer>{});
-    };
-    auto get_buffer = [&sem](const char* key) -> Buffer {
-      auto opt = sem.Get(String(key));
-      if (!opt.has_value()) {
-        return Buffer();
-      }
-      return opt.value().try_cast<Buffer>().value_or(Buffer());
-    };
-
-    const std::string kind = get_string(schema_key::kKind);
-    const std::string direction = get_string(schema_key::kDirection);
-
-    if (kind == "fused_staged_copy") {
-      copy_input_buffer_ = get_buffer(schema_key::kSrcBufferRef);
-      copy_output_buffer_ = get_buffer(schema_key::kDstBufferRef);
-      copy_input_buffer_name_ = copy_input_buffer_.defined()
-                                    ? BufferIdentityName(copy_input_buffer_)
-                                    : get_string(schema_key::kSrcBuffer);
-      copy_output_buffer_name_ = copy_output_buffer_.defined()
-                                     ? BufferIdentityName(copy_output_buffer_)
-                                     : get_string(schema_key::kDstBuffer);
-      copy_input_shape_ = get_shape(schema_key::kSrcShape);
-      copy_output_shape_ = get_shape(schema_key::kDstShape);
-      copy_intermediate_shape_ = get_shape(schema_key::kMidShape);
-    } else if (direction == "dram_to_cb") {
-      copy_input_buffer_ = get_buffer(schema_key::kSrcBufferRef);
-      copy_input_buffer_name_ = copy_input_buffer_.defined()
-                                    ? BufferIdentityName(copy_input_buffer_)
-                                    : get_string(schema_key::kSrcBuffer);
-      copy_input_shape_ = get_shape(schema_key::kSrcShape);
-      copy_intermediate_shape_ = get_shape(schema_key::kMidShape);
-    } else if (direction == "cb_to_dram") {
-      copy_output_buffer_ = get_buffer(schema_key::kDstBufferRef);
-      copy_output_buffer_name_ = copy_output_buffer_.defined()
-                                     ? BufferIdentityName(copy_output_buffer_)
-                                     : get_string(schema_key::kDstBuffer);
-      copy_output_shape_ = get_shape(schema_key::kDstShape);
-      copy_intermediate_shape_ = get_shape(schema_key::kMidShape);
-    } else if (direction == "dram_to_dram") {
-      copy_input_buffer_ = get_buffer(schema_key::kSrcBufferRef);
-      copy_output_buffer_ = get_buffer(schema_key::kDstBufferRef);
-      copy_input_buffer_name_ = copy_input_buffer_.defined()
-                                    ? BufferIdentityName(copy_input_buffer_)
-                                    : get_string(schema_key::kSrcBuffer);
-      copy_output_buffer_name_ = copy_output_buffer_.defined()
-                                     ? BufferIdentityName(copy_output_buffer_)
-                                     : get_string(schema_key::kDstBuffer);
-      copy_input_shape_ = get_shape(schema_key::kSrcShape);
-      copy_output_shape_ = get_shape(schema_key::kDstShape);
-    }
-
-      needs_copy_runtime_args_ = true;
-      saw_copy_op_ = true;
-    }
-  }
-
   if (!select_compute_builtins_only_ && IsPureCopyLoopNest(op->body)) {
     std::vector<Var> loop_stack;
     std::vector<NestedCopyMatch> matches;
@@ -7650,7 +7759,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
         PrimExpr base_tile_index =
             InferStagedCopyBaseTileIndex(dram_to_cb->store, loop_vars_to_zero);
         return GenerateFusedStagedCopySequence(dram_to_cb->store, cb_to_dram->store,
-                                               base_tile_index);
+                                               base_tile_index, loop_vars_to_zero);
       }
 
       bool all_staged_single_direction = true;
@@ -7669,7 +7778,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
                                  match.loop_vars.end());
         PrimExpr base_tile_index =
             InferStagedCopyBaseTileIndex(match.store, loop_vars_to_zero);
-        lowered_matches.push_back(GenerateStagedCopyLoopSequence(match.store, base_tile_index));
+        lowered_matches.push_back(
+            GenerateStagedCopyLoopSequence(match.store, base_tile_index, loop_vars_to_zero));
       }
       if (all_staged_single_direction && !lowered_matches.empty()) {
         saw_copy_op_ = true;
@@ -7690,7 +7800,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
                                  nested_loop_vars.end());
         PrimExpr base_tile_index =
             InferStagedCopyBaseTileIndex(nested_store, loop_vars_to_zero);
-        return GenerateStagedCopyLoopSequence(nested_store, base_tile_index);
+        return GenerateStagedCopyLoopSequence(nested_store, base_tile_index,
+                                              loop_vars_to_zero);
       }
     }
     if (const auto* store = op->body.as<BufferStoreNode>()) {

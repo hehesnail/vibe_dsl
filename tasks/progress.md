@@ -12,20 +12,22 @@
 
 - **日期**: `2026-04-22`
 - **当前总体 blocker**:
-  `Task 3: ExecutableSpec / Leaf Reader Cutover`
-  还没收口；
-  当前最直接的 repo HEAD blocker
-  是 leaf reader /
-  runtime /
-  codegen
-  仍然依赖
-  compiler-side residue
+  `Legacy Protocol Deletion / cleanup task5 convergence`
+  成为当前主线；
+  `Task 3`
+  已在 repo HEAD 收口，
+  当前最直接的后续工作
+  是对 leaf compatibility debt /
+  residue scan /
+  delivery gate
+  做最终 convergence
 - **当前推进原则**:
   主线固定按
-  `Task 3 -> Legacy Protocol Deletion`
+  `Legacy Protocol Deletion`
   推进；
   `Task 1`
-  和 `Task 2`
+  / `Task 2`
+  / `Task 3`
   已在 repo HEAD 收口
 
 ## 2. 当前主线任务状态
@@ -69,13 +71,26 @@
     exact TT-Metal legality
     的正式 hard gate
 - `Task 3: ExecutableSpec / Leaf Reader Cutover`
-  - 状态：`in progress / 当前主线`
-  - 当前目标：
-    让 build / codegen / runtime /
+  - 状态：`completed`
+  - 当前结论：
+    `MaterializeBlackholeExecutable`
+    已成为
+    唯一 executable writer；
+    build / codegen / runtime /
     `BlackholeModule`
-    只站在
-    `ExecutableSpec`
-    projection 边界上
+    已只站在
+    `tl.blackhole_executable`
+    / `ExecutableSpec`
+    projection 边界上；
+    `blackhole.copy_semantics`
+    与 cross-pass
+    `blackhole.segment_kind`
+    已退出 active path，
+    leaf body slicing
+    已改成
+    executable-kind +
+    lowered builtin
+    direct structural extraction
 - `Legacy Protocol Deletion`
   - 状态：`pending`
   - 说明：
@@ -129,14 +144,32 @@
     `ValidateTTProgram`
     fail-close 拒绝
 - `Cleanup Task 3`
-  - 状态：`pending overlap / 对应 Task 2-Task 3`
-  - 目标：删除
-    `blackhole.copy_semantics`
+  - 状态：`completed`
+  - 已完成：
+    `AnnotateBlackholeCopySemantics`
+    public wrapper /
+    active prepass /
+    实现文件
+    已删除，
+    compiler-side consumer
+    已回到
+    current TIR /
+    direct structural recovery
 - `Cleanup Task 4`
-  - 状态：`pending overlap / 对应 Task 3`
-  - 目标：删除
+  - 状态：`completed`
+  - 已完成：
+    cross-pass
     `blackhole.segment_kind`
-    并收掉 leaf-local body slicing residue
+    已退出 active chain，
+    `SplitBlackholeKernel`
+    不再发 marker，
+    planner 侧 marker
+    只保留 pass-local mechanics
+    并在最终 body strip，
+    `SegmentBodyExtractor`
+    已改为
+    基于 lowered builtin
+    的 structural slicer
 - `Cleanup Task 5`
   - 状态：`pending overlap / 最终 convergence gate`
 
@@ -145,8 +178,11 @@
 - support surface /
   workload payoff 扩展
   当前冻结；
-  只有 Task 2 / Task 3
-  主链收口后才恢复
+  当前等
+  `Legacy Protocol Deletion`
+  convergence /
+  delivery gate
+  完成后再恢复
 
 ## 3. repo HEAD 当前代码现状
 
@@ -205,29 +241,32 @@ Normalized Tile TIR
 - `SplitBlackholeKernel`
   已接入主链：
   pure copy 走 `fused_dataflow` 单 kernel，
-  GEMM 走 3-kernel（reader / compute / writer）
+  GEMM 走 3-kernel（reader / compute / writer），
+  且不再发出
+  cross-pass
+  `blackhole.segment_kind`
+  marker
 - exact TT-Metal builtin selector
   已接入 active chain
+- `AnnotateBlackholeCopySemantics`
+  Python wrapper /
+  FFI registration /
+  实现文件
+  已从 repo HEAD 删除
+- `SegmentBodyExtractor`
+  已切到
+  segment kind +
+  lowered builtin
+  direct structural slicing，
+  不再读
+  source-level marker
 - Blackhole 正式执行路径只剩
   `BlackholeModule`
   进程内 direct host path
 
 ## 4. 当前未收口项
 
-- `Task 3 / ExecutableSpec / leaf reader`
-  - `blackhole.copy_semantics`
-    仍在 compiler-side
-    active chain
-  - `blackhole.segment_kind`
-    仍在 planner / leaf
-    两侧存活
-  - `SegmentBodyExtractor`
-    仍按 marker
-    切 raw body
-  - leaf reader / runtime / codegen
-    还没只站在
-    `ExecutableSpec`
-    projection 边界上
+- `Legacy Protocol Deletion / convergence`
   - `buffer_tile_bridge_specs`
     /
     `unsupported_compute_ops`
@@ -237,15 +276,19 @@ Normalized Tile TIR
     `gemm_contract`
     /
     `multi_*_contracts`
-    仍停在
-    `TTProgram.payload`
-    和 leaf compatibility path；
-    这些现在只按
-    task3 debt
-    记录，
-    不再算
+    仍作为
+    executable projection
+    内的 leaf compatibility debt
+    存在；
+    它们不再是
     `TTProgram`
-    owner truth
+    owner truth，
+    但还没做最终 convergence 判定
+  - cleanup task5
+    尚未完成
+    residue scan /
+    delivery gate /
+    final wording cleanup
 
 ## 5. 当前稳定基线
 
@@ -276,26 +319,26 @@ Normalized Tile TIR
 当前下一步固定为：
 
 1. 推进
-   `Task 3: ExecutableSpec / Leaf Reader Cutover`
-   - 删除
-     `blackhole.copy_semantics`
-   - 删除
-     `blackhole.segment_kind`
-   - 收紧 leaf reader /
-     runtime /
-     codegen 边界
+   `Legacy Protocol Deletion / cleanup task5`
+   - 做 final residue scan
+   - 收掉 stale wording /
+     dead helper /
+     convergence debt
+   - 确认 active path
+     只剩
+     explicit representation
+     boundary
 2. 收掉
    仍留在
-   `TTProgram.payload`
+   executable projection /
+   leaf compatibility layer
+   内的
    的 leaf compatibility residue，
    把它们压到
-   `ExecutableSpec`
-   projection /
-   canonical writer
-   边界
+   明确 debt /
+   或删除
 3. 最后做
-   `Legacy Protocol Deletion`
-   的 convergence /
-   scans /
-   verification /
-   delivery 收尾
+   最终 verification /
+   delivery /
+   support-surface
+   恢复

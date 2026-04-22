@@ -240,10 +240,8 @@ def OptimizeForTarget(mod: IRModule, target: Target) -> IRModule:
         mod = tilelang.transform.PlanAndUpdateBufferAllocationLocation()(mod)
         mod = tilelang.transform.PipelinePlanning()(mod)
         mod = tilelang.transform.InjectSoftwarePipeline()(mod)
-        # Preserve copy semantics and canonicalize Blackhole device-private
-        # resources before LowerOpaqueBlock destroys the stable IR shape used by
-        # Stage 2C/2E analysis.
-        mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
+        # Canonicalize Blackhole device-private resources while the current TIR
+        # still preserves the copy/dataflow structure needed for local recovery.
         mod = tilelang.transform.BlackholeDeviceResourceCanonicalization()(mod)
         mod = tilelang.transform.LowerOpaqueBlock()(mod)
         mod = tilelang.transform.Simplify()(mod)

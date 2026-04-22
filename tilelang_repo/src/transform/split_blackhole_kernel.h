@@ -19,8 +19,7 @@
 
 /*!
  * \file split_blackhole_kernel.h
- * \brief SplitBlackholeKernels pass: annotate statements with segment kind
- *        for 3-kernel GEMM.
+ * \brief Historical Blackhole Phase-B normalization hook.
  */
 
 #ifndef TVM_TL_SPLIT_BLACKHOLE_KERNEL_H_
@@ -37,13 +36,9 @@ namespace tl {
 /*!
  * \brief Create the SplitBlackholeKernels pass.
  *
- * Scans each device PrimFunc for compute ops (tl.tileop.gemm_py).
- * If found, wraps each top-level statement with:
- *   AttrStmt("blackhole.segment_kind", "reader"|"compute"|"writer", stmt)
- * so downstream TT planning can recover segment truth directly from the body.
- *
- * Pure-copy functions (no compute op) are left unchanged; they continue
- * through the existing fused_dataflow single-kernel path.
+ * Task 4 removed cross-pass blackhole.segment_kind markers. The pass name
+ * remains as a stable phase hook, but segment truth is now constructed inside
+ * TT planning rather than emitted onto the TIR body here.
  */
 tir::transform::Pass SplitBlackholeKernelPass();
 

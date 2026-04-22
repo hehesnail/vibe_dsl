@@ -37,7 +37,8 @@
  *      as defined (not free vars → not ABI params)
  *   4. Rewrites attached typed projections to match canonicalized resource scopes
  *
- * Must run after AnnotateBlackholeCopySemantics and before AnnotateDeviceRegions.
+ * Must run before AnnotateDeviceRegions while the current TIR still exposes
+ * copy/dataflow structure directly.
  *
  * With corrected scopes, generic passes naturally skip Blackhole resources:
  *   MergeSharedMemoryAllocations: checks rank == kShared  → misses kBlackholeCB
@@ -79,13 +80,20 @@ using tvm::Integer;
 using runtime::StorageRank;
 using runtime::StorageScope;
 
-static constexpr const char* kCopySemantics = "blackhole.copy_semantics";
-
 // ---------------------------------------------------------------------------
 // Helper: get the scope string for a buffer_var
 // ---------------------------------------------------------------------------
 static std::string GetScope(const Var& v) {
   return std::string(GetPtrStorageScope(v));
+}
+
+static std::string GetStorageScopeStr(const Buffer& buf) {
+  ffi::String s = buf.scope();
+  return std::string(s);
+}
+
+static bool IsDramScope(const std::string& scope) {
+  return scope.empty() || scope == "global";
 }
 
 // ---------------------------------------------------------------------------
@@ -118,14 +126,40 @@ static Buffer RemapBufferData(const Buffer& buf, const Var& new_data) {
                 buf->axis_separators);
 }
 
-// ---------------------------------------------------------------------------
-// Helper: get string field from annotation map
-// ---------------------------------------------------------------------------
-static std::string GetStrField(const Map<String, Any>& m, const std::string& key) {
-  auto it = m.find(key);
-  if (it == m.end()) return "";
-  auto opt = (*it).second.as<String>();
-  return opt.has_value() ? std::string(opt.value()) : "";
+static bool IsCopyOp(const BufferStoreNode* op) {
+  const auto* load = op->value.as<BufferLoadNode>();
+  return load && !op->buffer.same_as(load->buffer);
+}
+
+enum class CopyDirection {
+  kUnknown,
+  kDramToCB,
+  kCBToDram,
+  kDramToDram,
+  kCBToCB,
+};
+
+static CopyDirection GetCopyDirection(const BufferStoreNode* op) {
+  const auto* load = op->value.as<BufferLoadNode>();
+  if (!load) {
+    return CopyDirection::kUnknown;
+  }
+
+  const std::string src_scope = GetStorageScopeStr(load->buffer);
+  const std::string dst_scope = GetStorageScopeStr(op->buffer);
+  if (IsDramScope(src_scope) && IsCBScope(dst_scope)) {
+    return CopyDirection::kDramToCB;
+  }
+  if (IsCBScope(src_scope) && IsDramScope(dst_scope)) {
+    return CopyDirection::kCBToDram;
+  }
+  if (IsDramScope(src_scope) && IsDramScope(dst_scope)) {
+    return CopyDirection::kDramToDram;
+  }
+  if (IsCBScope(src_scope) && IsCBScope(dst_scope)) {
+    return CopyDirection::kCBToCB;
+  }
+  return CopyDirection::kUnknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -168,30 +202,27 @@ class BlackholeResourceClassifier : public StmtExprVisitor {
  private:
   std::unordered_set<std::string> gemm_c_names_;
   std::unordered_set<std::string> layout_fragment_names_;
-  // From copy_semantics annotations:
-  std::unordered_set<std::string> cb_input_names_;    // appear as dst_buffer in dram_to_cb
-  std::unordered_set<std::string> cb_output_names_;   // appear as src_buffer in cb_to_dram
+  // Direct current-stage copy recovery:
+  std::unordered_set<std::string> cb_input_names_;    // appear as shared dst in dram_to_cb
+  std::unordered_set<std::string> cb_output_names_;   // appear as shared src in cb_to_dram
 
   void VisitStmt_(const ForNode* op) final {
-    // Extract copy_semantics to determine CB roles
-    auto it = op->annotations.find(String(kCopySemantics));
-    if (it != op->annotations.end()) {
-      auto opt = (*it).second.as<Map<String, Any>>();
-      if (opt.has_value()) {
-        const auto& ann = opt.value();
-        std::string dir = GetStrField(ann, "direction");
-        std::string kind = GetStrField(ann, "kind");
-        if (dir == "dram_to_cb") {
-          std::string dst = GetStrField(ann, "dst_buffer");
-          if (!dst.empty()) cb_input_names_.insert(dst);
-        } else if (dir == "cb_to_dram") {
-          std::string src = GetStrField(ann, "src_buffer");
-          if (!src.empty()) cb_output_names_.insert(src);
-        } else if (kind == "fused_staged_copy") {
-          // mid_buffer is the shared CB
-          std::string mid = GetStrField(ann, "mid_buffer");
-          if (!mid.empty()) cb_input_names_.insert(mid);
-        }
+    StmtExprVisitor::VisitStmt_(op);
+  }
+
+  void VisitStmt_(const BufferStoreNode* op) final {
+    if (IsCopyOp(op)) {
+      const auto* load = op->value.as<BufferLoadNode>();
+      ICHECK(load != nullptr);
+      switch (GetCopyDirection(op)) {
+        case CopyDirection::kDramToCB:
+          cb_input_names_.insert(op->buffer->name);
+          break;
+        case CopyDirection::kCBToDram:
+          cb_output_names_.insert(load->buffer->name);
+          break;
+        default:
+          break;
       }
     }
     StmtExprVisitor::VisitStmt_(op);
@@ -271,7 +302,7 @@ class BlackholeResourceClassifier : public StmtExprVisitor {
       }
       // else: keep as local — not a Blackhole device-private resource we reclassify
     } else if (IsCBScope(scope)) {
-      // Determine CB role from copy semantics
+      // Determine CB role from direct copy/dataflow recovery on the current TIR
       std::string cb_scope, role;
       if (cb_input_names_.count(name)) {
         cb_scope = "blackhole.cb.input";

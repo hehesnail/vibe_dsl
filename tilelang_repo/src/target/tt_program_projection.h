@@ -1,6 +1,6 @@
 /*!
  * \file tt_program_projection.h
- * \brief In-memory TTProgram projections for runtime/codegen direct readers.
+ * \brief TTProgram -> ExecutableSpec projection helpers for the canonical writer boundary.
  */
 
 #ifndef TVM_TL_TARGET_TT_PROGRAM_PROJECTION_H_
@@ -53,7 +53,7 @@ inline tvm::ffi::Optional<TTProgram> GetTTProgram(const tir::PrimFunc& func) {
 
 inline TTProgram RequireTTProgram(const tir::PrimFunc& func, const char* consumer) {
   auto maybe_program = GetTTProgram(func);
-  ICHECK(maybe_program) << consumer << " requires tl.tt_program for target-truth cutover";
+  ICHECK(maybe_program) << consumer << " requires tl.tt_program for executable-writer cutover";
   return maybe_program.value();
 }
 

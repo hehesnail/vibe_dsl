@@ -830,7 +830,7 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
     per_work_arg_bindings_by_kind_[arg_kind] = std::move(binding);
   }
   ICHECK(!runtime_args.empty())
-      << "Blackhole codegen requires TTProgram ABI runtime args";
+      << "Blackhole codegen requires executable kernel runtime args";
   if (logical_grid_x_ > 1 || logical_grid_y_ > 1) {
     for (const auto& item : runtime_args) {
       auto arg = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(

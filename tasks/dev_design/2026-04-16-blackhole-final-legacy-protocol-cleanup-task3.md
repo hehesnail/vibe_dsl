@@ -67,310 +67,139 @@ IR / 显式表示层 / pass-local derived facts。
 > 每个 consumer 只能依赖它在当前阶段本来就能合法看到的
 > IR / 显式表示层，不能依赖 legacy copy annotation。
 
-## 3. 当前状态 (`2026-04-21`)
+## 3. 当前状态 (`2026-04-22`)
 
-当前 **不算完成**。
+当前 **已完成**。
 
 repo HEAD 上，
 `blackhole.copy_semantics`
-仍然是 active compiler-side protocol：
+已经退出 active chain：
 
 - `phase.py`
-  在 Blackhole lowering 主链里仍显式运行
+  不再运行
   `AnnotateBlackholeCopySemantics()`
 - `tilelang.transform`
-  仍公开导出
+  不再公开导出
   `AnnotateBlackholeCopySemantics()`
+- `annotate_blackhole_copy_semantics.cc`
+  实现文件
+  已删除
 - `BlackholeDeviceResourceCanonicalization`
-  仍直接读
-  `blackhole.copy_semantics`
+  已改成
+  基于当前
+  `BufferLoad / BufferStore`
+  结构
+  直接恢复 copy direction
+  和 resource role
 - `SplitBlackholeKernel`
-  仍直接读
+  不再消费
   `blackhole.copy_semantics`
-- `lower_blackhole_ops.cc`
-  里的 `PlanTTKernelABI`
-  仍直接读
-  `blackhole.copy_semantics`
-- 多个 copy / gemm 测试
-  仍直接调用
-  `AnnotateBlackholeCopySemantics()`
-  或直接校验 annotation schema
+- `PlanTTKernelABI`
+  已改成
+  基于当前 TIR /
+  logical-shape metadata /
+  transport coverage
+  的 direct recovery
+- copy / gemm 回归
+  已切到 mainline phase ordering，
+  并显式断言
+  旧 public entry
+  与 annotation
+  不再存在
 
-但同样必须写清楚：
+同时保持不变的是：
 
 - target / codegen / build / runtime
-  现在并不是
+  仍然不是
   `blackhole.copy_semantics`
-  的直接 consumer
-- 它们当前主要站在
+  的 reader boundary
+- 它们继续只站在
   `TTProgram -> tl.blackhole_executable -> ExecutableSpec`
   projection 边界上
 
-所以当前不能写成：
-
-> task3 只剩两个 consumer 还没切掉 annotation
-
-也不能写成：
-
-> task3 的统一方案是把所有 consumer
-> 都切到 `SpatialPlan.DataflowEdge`
-
-更不能写成：
-
-> target/runtime reader 还在直接读 copy annotation
-
 ## 4. 当前代码现实
 
-### 4.1 producer 写的是 `For.annotations`，不是 `AttrStmt`
+### 4.1 deletion target 已经落到真实 carrier 本身
 
-当前
-[annotate_blackhole_copy_semantics.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/annotate_blackhole_copy_semantics.cc#L281)
-实际把
-`blackhole.copy_semantics`
-写进
-`ForNode::annotations`，
-不是额外包一层 `AttrStmt`。
+这次删除的不是某个想象中的
+`AttrStmt` wrapper，
+而是实际的
+loop annotation carrier /
+public prepass /
+Python wrapper /
+实现文件 /
+测试 helper
+整套旧入口。
 
-这和现有部分 doc/comment
-里还写着 “AttrStmt / wrap”
-并不一致。
+### 4.2 最早 consumer 现在直接依赖当前 TIR
 
-因此 task3 文档不能继续沿用
-“删掉某个 `AttrStmt` wrapper”
-这种过时表述；
-真实 deletion target
-就是 loop annotation carrier 本身。
-
-### 4.2 `BlackholeDeviceResourceCanonicalization` 是最早的 active consumer
-
-当前
-[phase.py](/root/dev/vibe_dsl/tilelang_repo/tilelang/engine/phase.py#L243)
-里，
 `BlackholeDeviceResourceCanonicalization`
-运行在：
+仍然处在
+很早的 lowering 阶段，
+也仍然看不到
+`SpatialPlan`
+作为它的 owner truth。
 
-- `AnnotateBlackholeCopySemantics()`
-  之后
-- `AnnotateDeviceRegions`
-  之前
-- 更早于
-  `AnalyzeSpatialStructureFacts /
-   BuildSpatialPlanCompanion /
-   ValidateSpatialPlan /
-   SplitBlackholeKernel`
+repo HEAD 的正确形态是：
 
-而
-[blackhole_device_resource_canonicalization.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/blackhole_device_resource_canonicalization.cc#L176)
-仍直接从 annotation 里取：
+- 直接从当前
+  `BufferLoad / BufferStore`
+  结构
+  恢复
+  DRAM <-> CB
+  copy direction
+- 在 pass-local 内部
+  完成 `cb_input / cb_output`
+  分类
+- 不再依赖
+  任何跨 pass copy annotation
 
-- `dst_buffer`
-  来标记 `cb_input`
-- `src_buffer`
-  来标记 `cb_output`
-- `mid_buffer`
-  来标记 `intermed`
+### 4.3 flatten / vectorize 后的 shared shape 也必须从当前 IR 恢复
 
-这里最关键的一点是：
-**它根本还看不到 `SpatialPlan`。**
+删除 `blackhole.copy_semantics`
+之后，
+flattened staged copy
+不能再依赖旧 annotation
+里携带的 shared/global shape。
 
-因此 task3 不能把
-“统一从 `SpatialPlan.DataflowEdge` 恢复”
-写成这个 consumer 的方案。
-它只能依赖当前阶段已有的 TIR 结构。
+repo HEAD 当前做法是：
 
-这不是 task3 的局部偏好，
-而是 repo 内成熟 lowering
-的一般模式：
-像
-[lower_ptx_async_copy.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_ptx_async_copy.cc#L252)
-这种成熟 pass，
-也是直接从当前
-`BufferLoad / BufferStore`
-结构恢复 copy/data-movement 含义，
-然后在本地完成 rewrite，
-而不是先发布一个跨 pass
-copy 语义 carrier。
+- logical buffer shape registry
+  对同 data identity
+  的 alias
+  保留更高优先级 /
+  更高维度的 logical shape
+- 对已经 flatten 成 1-D 的 shared staging buffer，
+  绑定 transport var 的静态 extent，
+  直接从当前 global access
+  的 row/col coverage
+  推出 shared matrix shape
 
-### 4.3 `SplitBlackholeKernel` 仍是 active consumer，但已经有部分 direct fallback
+这条恢复链
+完全站在当前 TIR /
+pass-local analysis 上，
+没有重新引入
+新的 shared copy carrier。
 
-当前
-[split_blackhole_kernel.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/split_blackhole_kernel.cc#L218)
-仍直接读
-`blackhole.copy_semantics`
-来做 reader / writer 分类。
+### 4.4 `SplitBlackholeKernel` 已退回历史 phase hook
 
-但 repo HEAD 也已经不是
-“完全没有 direct recovery”：
+repo HEAD 的
+`SplitBlackholeKernel`
+仍保留 phase name
+作为主链历史 hook，
+但它不再承担
+copy annotation consumer /
+segment marker producer
+角色。
 
-- post-compute writer
-  已经有
-  `FindWriterOutputBuffer(...)`
-  这类直接恢复路径
-- pure-copy function
-  仍直接保持原样，
-  `SplitBlackholeKernel`
-  只在有 compute 时介入
-
-所以 task3 的要求不是
-“从零开始发明 direct recovery”，
+因此 task3 的实际 end-state
+不是“换一个统一新 bag”，
 而是：
 
-> 把当前已经存在的 direct structural recovery
-> 收成 owner truth，
-> 删掉剩余 annotation-based segment classification。
-
-另外，
-mainline phase ordering
-里它运行时
-validated `SpatialPlan`
-已经存在，
-但 pass 本体目前并不读取它。
-
-这代表两件事：
-
-- task3 可以在需要时使用当前阶段已存在的显式表示层
-- 但文档不能把
-  “一定要统一切到 `SpatialPlan`”
-  写成唯一正确实现
-
-### 4.4 `PlanTTKernelABI` 才是晚期 lowering 侧的真实 consumer
-
-task3 原文档漏掉了第三个 active implementation consumer。
-
-当前
-[lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L7699)
-里，
-`PlanTTKernelABI::VisitStmt_(const ForNode*)`
-仍会读
-`blackhole.copy_semantics`
-来设置：
-
-- `copy_input_buffer_`
-- `copy_output_buffer_`
-- `copy_input_shape_`
-- `copy_output_shape_`
-- `copy_intermediate_shape_`
-- `needs_copy_runtime_args_`
-- `saw_copy_op_`
-
-但这里也要写准：
-
-- `PlanTTKernelABI`
-  本体已经有大量 direct lowering logic
-  处理 pure copy / staged copy
-- `SelectBlackholeTTMetalBuiltins`
-  走的是
-  `select_compute_builtins_only_`
-  路径，
-  不是当前 copy annotation
-  的主 blocker
-
-也就是说，
-task3 在晚期 lowering 侧的真实问题
-不是“compute builtin selection 还靠 copy annotation”，
-而是：
-
-> copy buffer identity / shape /
-> runtime-arg shaping
-> 这些 bookkeeping
-> 仍然由 annotation 充当 owner truth。
-
-### 4.5 当前测试面仍在固定旧 annotation 协议
-
-当前测试里仍有一整批直接依赖 annotation 的内容：
-
-- [test_blackhole_copy_pipeline.py](/root/dev/vibe_dsl/tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py#L1141)
-  直接检查 annotation schema
-- [test_blackhole_copy_pipeline.py](/root/dev/vibe_dsl/tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py#L1191)
-  检查 annotation 在 flatten/vectorize 后仍可存活
-- [test_blackhole_gemm.py](/root/dev/vibe_dsl/tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py#L337)
-  等多处显式调用
-  `AnnotateBlackholeCopySemantics()`
-- [test_blackhole_flash_attention_analysis.py](/root/dev/vibe_dsl/tilelang_repo/testing/python/transform/test_blackhole_flash_attention_analysis.py#L35)
-  还把
-  `SplitBlackholeKernel()`
-  当成可 standalone 调用的分析入口
-
-这说明 task3 的测试修订
-不能只盯
-`test_blackhole_copy_pipeline.py`。
-
-还要明确：
-
-- gemm 相关测试
-  也必须一起切
-- 如果 `SplitBlackholeKernel`
-  最终需要依赖 mainline ordering
-  已经建立的前置表示，
-  那么 standalone analysis test
-  也必须同步到真实 precondition
-- 但如果某些测试
-  是明确在验证
-  `TTProgram`
-  /
-  `tl.blackhole_executable`
-  这类 leaf projection boundary，
-  那么手工重建
-  `tl.tt_program`
-  或
-  `tl.blackhole_executable`
-  本身不是 task3 blocker；
-  真正必须删除的是
-  手工插入
-  `AnnotateBlackholeCopySemantics()`
-  或直接断言 annotation schema
-  的 staging/协议依赖
-
-### 4.6 target-side reader boundary 已经不在 `copy_semantics`
-
-runtime / codegen / build
-当前主要读取的是：
-
-- `TTProgram`
-- `tl.blackhole_executable`
-- `ExecutableSpec`
-
-而不是
-`blackhole.copy_semantics`。
-
-这意味着 task3 文档必须同时写清楚两件事：
-
-1. compiler-side annotation carrier
-   仍然是 wrong-now boundary，
-   必须删除
-2. target-side 仍然存在的
-   payload / projection /
-   segment slicing residue
-   不能反过来把 copy annotation
-   合法化成“还需要保留的中间层”
-
-其中尤其要分清：
-
-- `buffer_tile_bridge_specs`
-  是 projection / payload residue
-- `compute_contract`
-  /
-  `multi_compute_contracts`
-  /
-  `gemm_contract`
-  这组
-  ExecutableSpec-side contract family，
-  当前在
-  [rt_mod_blackhole.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/rt_mod_blackhole.cc#L857)
-  和
-  [blackhole_module.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/blackhole_module.cc#L229)
-  里仍有
-  `compute_contract <- gemm_contract`
-  fallback /
-  compatibility gate；
-  这是 task3 的 leaf/runtime compatibility debt，
-  不是 copy annotation 的 target-side reader
-- `blackhole.segment_kind`
-  是 kernel body slicing residue
-
-它们都不是
-`blackhole.copy_semantics`
-继续活着的理由。
+> 每个 compiler-side consumer
+> 只能依赖它在当前阶段本来就能合法看到的
+> IR / 显式表示层 /
+> pass-local derived facts。
 
 ## 5. 基于审计结果修正后的任务内容
 

@@ -35,6 +35,21 @@ def find_loop_annotation(stmt, attr_key):
     return None
 
 
+def contains_attr_stmt_key(stmt, attr_key):
+    """Return whether a TIR stmt tree still carries the given AttrStmt key."""
+    found = False
+
+    def visit(node):
+        nonlocal found
+        if found:
+            return
+        if isinstance(node, tilelang.tvm.tir.AttrStmt) and str(node.attr_key) == attr_key:
+            found = True
+
+    tilelang.tvm.tir.stmt_functor.post_order_visit(stmt, visit)
+    return found
+
+
 def check_blackhole_codegen_requirements():
     """Check if Blackhole compilation requirements are met."""
     tilelang_home = os.environ.get("TILELANG_HOME")

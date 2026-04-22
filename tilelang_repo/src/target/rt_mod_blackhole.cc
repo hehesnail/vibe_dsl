@@ -1753,6 +1753,18 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
       : segment_kind_(std::move(segment_kind)),
         retain_unmarked_stmts_(retain_unmarked_stmts) {}
 
+  enum class DetectedKind {
+    kNone,
+    kReader,
+    kCompute,
+    kWriter,
+  };
+
+  struct ChildSegmentInfo {
+    DetectedKind kind = DetectedKind::kNone;
+    bool has_blackhole_builtin = false;
+  };
+
   static bool IsNoOp(const Stmt& stmt) {
     if (!stmt.defined()) {
       return true;
@@ -1766,42 +1778,60 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
   }
 
   Stmt VisitStmt_(const tir::AttrStmtNode* op) final {
-    if (op->attr_key == "blackhole.segment_kind") {
-      if (const auto* kind = op->value.as<StringImmNode>()) {
-        if (kind->value == segment_kind_) {
-          return this->VisitStmt(op->body);
-        }
-      }
+    Stmt body = this->VisitStmt(op->body);
+    if (IsNoOp(body)) {
       return tir::Evaluate(IntImm(DataType::Int(32), 0));
     }
-    return tir::StmtMutator::VisitStmt_(op);
+    if (body.same_as(op->body)) {
+      return GetRef<Stmt>(op);
+    }
+    return tir::AttrStmt(op->node, op->attr_key, op->value, body);
   }
 
   Stmt VisitStmt_(const tir::SeqStmtNode* op) final {
-    bool has_segment_markers = false;
-    ffi::Array<Stmt> seq;
-    seq.reserve(op->seq.size());
-
+    std::vector<ChildSegmentInfo> child_info;
+    child_info.reserve(op->seq.size());
+    bool has_segment_anchors = false;
+    bool has_ambiguous_blackhole_stmt = false;
     for (const Stmt& stmt : op->seq) {
-      if (const auto* attr = stmt.as<tir::AttrStmtNode>()) {
-        if (attr->attr_key == "blackhole.segment_kind") {
-          has_segment_markers = true;
-          if (const auto* kind = attr->value.as<StringImmNode>()) {
-            if (kind->value == segment_kind_) {
-              seq.push_back(this->VisitStmt(attr->body));
-            }
-          }
+      ChildSegmentInfo info = DetectChildSegmentInfo(stmt);
+      has_segment_anchors = has_segment_anchors || info.kind != DetectedKind::kNone;
+      has_ambiguous_blackhole_stmt =
+          has_ambiguous_blackhole_stmt || (info.kind == DetectedKind::kNone && info.has_blackhole_builtin);
+      child_info.push_back(info);
+    }
+
+    if (!has_segment_anchors) {
+      if (retain_unmarked_stmts_) {
+        return tir::StmtMutator::VisitStmt_(op);
+      }
+      return tir::Evaluate(IntImm(DataType::Int(32), 0));
+    }
+
+    if (has_ambiguous_blackhole_stmt) {
+      for (size_t i = 0; i < child_info.size(); ++i) {
+        if (child_info[i].kind != DetectedKind::kNone || !child_info[i].has_blackhole_builtin) {
           continue;
         }
-      }
-      if (retain_unmarked_stmts_) {
-        seq.push_back(this->VisitStmt(stmt));
+        child_info[i].kind = InferNeighborSegmentKind(child_info, i);
       }
     }
 
-    if (!has_segment_markers) {
-      return tir::StmtMutator::VisitStmt_(op);
+    ffi::Array<Stmt> seq;
+    seq.reserve(op->seq.size());
+    for (size_t i = 0; i < op->seq.size(); ++i) {
+      const bool keep_segment_stmt =
+          child_info[i].kind == RequestedSegmentKind() ||
+          (child_info[i].kind == DetectedKind::kNone && retain_unmarked_stmts_);
+      if (!keep_segment_stmt) {
+        continue;
+      }
+      Stmt rewritten = this->VisitStmt(op->seq[i]);
+      if (!IsNoOp(rewritten)) {
+        seq.push_back(rewritten);
+      }
     }
+
     if (seq.empty()) {
       return tir::Evaluate(IntImm(DataType::Int(32), 0));
     }
@@ -1809,6 +1839,89 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
       return seq[0];
     }
     return tir::SeqStmt(seq);
+  }
+
+ private:
+  static bool IsReaderAnchor(const tir::CallNode* op) {
+    return op->op.same_as(tir::builtin::blackhole_read_tile_to_cb()) ||
+           op->op.same_as(tir::builtin::blackhole_read_page_to_cb());
+  }
+
+  static bool IsWriterAnchor(const tir::CallNode* op) {
+    return op->op.same_as(tir::builtin::blackhole_write_tile_from_cb()) ||
+           op->op.same_as(tir::builtin::blackhole_write_page_from_cb());
+  }
+
+  static bool IsBlackholeBuiltin(const tir::CallNode* op) {
+    const auto* op_node = op->op.as<OpNode>();
+    return op_node != nullptr && std::string(op_node->name).rfind("tl.blackhole.", 0) == 0;
+  }
+
+  static bool IsComputeAnchor(const tir::CallNode* op) {
+    if (!IsBlackholeBuiltin(op) || IsReaderAnchor(op) || IsWriterAnchor(op)) {
+      return false;
+    }
+    return !op->op.same_as(tir::builtin::blackhole_cb_reserve_back()) &&
+           !op->op.same_as(tir::builtin::blackhole_cb_push_back()) &&
+           !op->op.same_as(tir::builtin::blackhole_cb_wait_front()) &&
+           !op->op.same_as(tir::builtin::blackhole_cb_pop_front()) &&
+           !op->op.same_as(tir::builtin::blackhole_noc_async_read()) &&
+           !op->op.same_as(tir::builtin::blackhole_noc_async_write()) &&
+           !op->op.same_as(tir::builtin::blackhole_noc_async_read_barrier()) &&
+           !op->op.same_as(tir::builtin::blackhole_noc_async_write_barrier()) &&
+           !op->op.same_as(tir::builtin::blackhole_get_semaphore()) &&
+           !op->op.same_as(tir::builtin::blackhole_runtime_arg_u32()) &&
+           !op->op.same_as(tir::builtin::blackhole_semaphore_wait()) &&
+           !op->op.same_as(tir::builtin::blackhole_semaphore_set()) &&
+           !op->op.same_as(tir::builtin::blackhole_semaphore_inc_remote()) &&
+           !op->op.same_as(tir::builtin::blackhole_semaphore_set_remote());
+  }
+
+  static ChildSegmentInfo DetectChildSegmentInfo(const Stmt& stmt) {
+    ChildSegmentInfo info;
+    tir::PostOrderVisit(stmt, [&](const tvm::runtime::ObjectRef& node) {
+      const auto* op = node.as<tir::CallNode>();
+      if (!op || !SegmentBodyExtractor::IsBlackholeBuiltin(op)) {
+        return;
+      }
+      info.has_blackhole_builtin = true;
+      if (SegmentBodyExtractor::IsReaderAnchor(op)) {
+        info.kind = SegmentBodyExtractor::DetectedKind::kReader;
+      } else if (SegmentBodyExtractor::IsWriterAnchor(op)) {
+        info.kind = SegmentBodyExtractor::DetectedKind::kWriter;
+      } else if (SegmentBodyExtractor::IsComputeAnchor(op)) {
+        info.kind = SegmentBodyExtractor::DetectedKind::kCompute;
+      }
+    });
+    return info;
+  }
+
+  static DetectedKind InferNeighborSegmentKind(const std::vector<ChildSegmentInfo>& info,
+                                               size_t index) {
+    for (size_t i = index; i > 0; --i) {
+      if (info[i - 1].kind != DetectedKind::kNone) {
+        return info[i - 1].kind;
+      }
+    }
+    for (size_t i = index + 1; i < info.size(); ++i) {
+      if (info[i].kind != DetectedKind::kNone) {
+        return info[i].kind;
+      }
+    }
+    return DetectedKind::kNone;
+  }
+
+  DetectedKind RequestedSegmentKind() const {
+    if (segment_kind_ == "reader") {
+      return DetectedKind::kReader;
+    }
+    if (segment_kind_ == "compute") {
+      return DetectedKind::kCompute;
+    }
+    if (segment_kind_ == "writer") {
+      return DetectedKind::kWriter;
+    }
+    return DetectedKind::kNone;
   }
 
   Stmt VisitStmt_(const tir::AllocateNode* op) final {
@@ -2149,7 +2262,7 @@ static void ValidateKernelRuntimeArgSchema(const KernelSpec& kernel,
   }
   ICHECK(!kernel.runtime_args.empty())
       << "Blackhole runtime arg schema is required for copy/dataflow kernels; "
-      << "TTProgram segment runtime args are missing for kernel " << kernel.name
+      << "executable segment runtime args are missing for kernel " << kernel.name
       << " of " << func_name;
 }
 
@@ -2785,7 +2898,7 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
   spec->kernels.clear();
   std::vector<SegmentInfo> segments = ExtractSegmentPlan(f, spec);
   ICHECK(!segments.empty())
-      << "Blackhole build requires non-empty TTProgram segment truth on device PrimFunc "
+      << "Blackhole build requires non-empty executable segment truth on device PrimFunc "
       << func_name;
 
   for (const SegmentInfo& segment : segments) {

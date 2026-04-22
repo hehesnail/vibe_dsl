@@ -12,6 +12,7 @@ from .common import (
     prepare_blackhole_phase_b_module,
     check_blackhole_codegen_requirements,
     check_blackhole_direct_execution_requirements,
+    contains_attr_stmt_key,
     extract_blackhole_compute_contract,
     extract_blackhole_core_plan,
     extract_blackhole_segment_plan,
@@ -334,7 +335,6 @@ def test_blackhole_gemm_contract_attr_is_materialized():
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = lower_blackhole_to_tt_target(mod)
 
     func = mod["main"]
@@ -378,6 +378,25 @@ def test_blackhole_gemm_contract_attr_is_materialized():
     assert len(writer_abi.common_runtime_args) == 0
 
 
+def test_blackhole_gemm_segment_plan_is_not_backed_by_segment_markers():
+    kernel = gemm_kernel()
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+
+    mod = lower_blackhole_to_tt_target(mod)
+
+    func = mod["main"]
+    assert not contains_attr_stmt_key(func.body, "blackhole.segment_kind")
+    segment_plan = extract_blackhole_segment_plan(func)
+    assert [str(segment["kind"]) for segment in segment_plan] == [
+        "reader",
+        "compute",
+        "writer",
+    ]
+
+
 def test_blackhole_compute_contract_attr_is_materialized():
     kernel = gemm_kernel()
     mod = tilelang.tvm.IRModule({"main": kernel})
@@ -385,7 +404,6 @@ def test_blackhole_compute_contract_attr_is_materialized():
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = lower_blackhole_to_tt_target(mod)
 
     contract = require_tt_program(mod["main"]).payload["compute_contract"]
@@ -432,7 +450,6 @@ def test_blackhole_fresh_fragment_gemm_does_not_materialize_accumulator_merge_co
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = lower_blackhole_to_tt_target(mod)
 
     payload = dict(require_tt_program(mod["main"]).payload)
@@ -448,7 +465,6 @@ def test_blackhole_precleared_fragment_gemm_does_not_materialize_accumulator_mer
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = lower_blackhole_to_tt_target(mod)
 
     payload = dict(require_tt_program(mod["main"]).payload)
@@ -462,7 +478,6 @@ def test_blackhole_compute_contract_attr_materializes_nondefault_compute_abi():
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = lower_blackhole_to_tt_target(mod)
 
     func = mod["main"]
@@ -479,7 +494,6 @@ def test_blackhole_compute_contract_attr_materializes_richer_compute_config_extr
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = lower_blackhole_to_tt_target(mod)
 
     func = mod["main"]
@@ -505,7 +519,6 @@ def test_blackhole_compute_segment_compute_config_follows_compute_contract():
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = lower_blackhole_to_tt_target(mod)
 
     func = mod["main"]
@@ -534,7 +547,6 @@ def test_blackhole_compute_contract_attr_materializes_nondefault_policy():
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = lower_blackhole_to_tt_target(mod)
 
     contract = extract_blackhole_compute_contract(mod["main"])
@@ -549,7 +561,6 @@ def test_blackhole_compute_contract_attr_materializes_mbar_binding():
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = lower_blackhole_to_tt_target(mod)
 
     contract = extract_blackhole_compute_contract(mod["main"])
@@ -1488,7 +1499,6 @@ def test_blackhole_multicore_gemm_lowering_respects_transposed_b_layout():
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
 
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = lower_blackhole_to_tt_target(mod)
 
     func_text = mod["main"].script()

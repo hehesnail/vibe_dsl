@@ -289,6 +289,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Return manifest-backed logical shape for a buffer when available. */
   std::vector<int64_t> GetLogicalBufferShape(const tvm::tir::Buffer& buffer) const;
 
+  /*! \brief Encode the current IR-visible buffer shape, preferring logical shape metadata. */
+  tvm::ffi::Array<tvm::Integer> GetEncodedCurrentBufferShape(
+      const tvm::tir::Buffer& buffer) const;
+
   /*! \brief Return static logical element count, falling back to the lowered buffer shape. */
   int64_t GetLogicalBufferElementCount(const tvm::tir::Buffer& buffer) const;
 
@@ -300,6 +304,16 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Return the manifest-backed logical matrix shape for a compute-region buffer. */
   std::pair<int64_t, int64_t> GetLogicalMatrixShape(const tvm::tir::Buffer& buffer) const;
+
+  /*! \brief Recover staged-copy shared shape from the current copy op when the buffer is flat. */
+  tvm::ffi::Array<tvm::Integer> GetEncodedCurrentStagedCopySharedShape(
+      const tvm::tir::BufferStoreNode* op,
+      const std::vector<tvm::tir::Var>& loop_vars_to_zero) const;
+
+  /*! \brief Infer staged-copy shared matrix coverage from transport-variable global access. */
+  std::optional<std::pair<int64_t, int64_t>> InferStagedCopySharedShapeFromTransportCoverage(
+      const tvm::tir::BufferStoreNode* op,
+      const std::vector<tvm::tir::Var>& loop_vars_to_zero) const;
 
   /*! \brief Load buffer-distribution contracts exported by lowering requirements. */
   void LoadBufferTileBridgeSpecs(const BlackholeLoweringSupportFacts& lowering_support_facts);
@@ -505,12 +519,14 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Generate staged copy builtin sequence for a collapsed loop nest */
   tvm::tir::Stmt GenerateStagedCopyLoopSequence(const tvm::tir::BufferStoreNode* op,
-                                                const tvm::PrimExpr& base_tile_index);
+                                                const tvm::PrimExpr& base_tile_index,
+                                                const std::vector<tvm::tir::Var>& loop_vars_to_zero);
 
   /*! \brief Generate fused staged copy sequence for a read-then-write tile loop */
   tvm::tir::Stmt GenerateFusedStagedCopySequence(const tvm::tir::BufferStoreNode* dram_to_cb,
                                                  const tvm::tir::BufferStoreNode* cb_to_dram,
-                                                 const tvm::PrimExpr& base_tile_index);
+                                                 const tvm::PrimExpr& base_tile_index,
+                                                 const std::vector<tvm::tir::Var>& loop_vars_to_zero);
 
   /*! \brief Generate clear builtin sequence */
   tvm::tir::Stmt GenerateClearSequence(const tvm::tir::CallNode* op);
@@ -652,6 +668,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_set<const tvm::tir::VarNode*> thread_index_vars_;
   std::unordered_set<std::string> thread_index_var_names_;
   std::unordered_map<const tvm::tir::VarNode*, int64_t> thread_index_var_static_extents_;
+  std::unordered_map<const tvm::tir::VarNode*, int64_t> loop_var_static_extents_;
   std::unordered_set<const tvm::tir::VarNode*> block_index_vars_;
   std::unordered_set<std::string> block_index_var_names_;
   std::vector<AccessorDescriptor> accessor_descriptors_;

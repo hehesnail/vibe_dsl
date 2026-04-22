@@ -97,367 +97,132 @@ task4 的最终 end-state
   依赖，
   合法化 task4 的终态
 
-## 3. 当前状态 (`2026-04-21`)
+## 3. 当前状态 (`2026-04-22`)
 
-当前 **不算完成**。
+当前 **已完成**。
 
 repo HEAD 上，
 `blackhole.segment_kind`
-已经不再是“全链都在直接读”的旧协议，
-但也远没有删干净。
-
-当前真实状态是：
+已经退出 cross-pass active chain：
 
 - `SplitBlackholeKernel`
-  在 validated `SpatialPlan`
-  之后仍会发出
-  `AttrStmt("blackhole.segment_kind", ...)`
-- `PlanTTKernelABI`
-  仍通过 body attr scan、
-  `current_segment_kind_`
-  和 segment-sensitive
-  CB/accessor bookkeeping
-  把 marker 当成
-  `segment_plan_`
-  /
-  accessor slot /
-  CB depth
-  的来源
-- `TTKernel.kind`
-  / `TTKernelPlan.kind`
-  / projected executable
-  `segment_plan.kind`
-  已经是显式字段，
-  并且 downstream reader
-  大多已经站在这条显式链上
-- `BuildTTProgram`
-  不是 kernel-kind classifier；
-  它只聚合 staged TTProgram slices
-- `MaterializeBlackholeExecutable`
-  和 `codegen_blackhole.cc`
-  已经不是 attr reader
-- `rt_mod_blackhole.cc`
-  里仍有
-  `SegmentBodyExtractor`
-  直接按
+  不再发出
+  source-level
   `blackhole.segment_kind`
-  切 per-kernel body
+  marker
+- `TTKernel.kind`
+  / projected executable
+  `segment_plan[*].kind`
+  成为唯一跨阶段
+  kernel-kind truth
+- `PlanTTKernelABI`
+  对 segment-sensitive
+  CB/accessor bookkeeping
+  只保留 pass-local marker mechanics，
+  并在最终 body
+  strip 掉
+  marker residue
+- `SegmentBodyExtractor`
+  已改成
+  基于
+  `segment_plan.kind`
+  +
+  lowered builtin family
+  的 structural slicer，
+  不再读取 marker
+- copy / gemm 回归
+  已显式断言
+  最终 lowered body
+  不再残留
+  `blackhole.segment_kind`
 
-因此 task4 当前真正的 wrong-now boundary
-不是整个 downstream target path，
-而是：
+因此 task4 的完成口径现在是：
 
-1. planner 侧仍拿 attr
-   充当 kind truth
-2. leaf 侧仍拿 attr
-   充当 raw-body slicing marker
+1. planner / `TTProgram` / executable
+   的 owner truth
+   已全部站在显式
+   `kind`
+   字段链上
+2. leaf-local body slicing
+   也不再依赖
+   source marker
 
 ## 4. 当前代码现实
 
-### 4.1 显式 kernel-kind truth 已经存在于 `TTProgram / ExecutableSpec`
+### 4.1 显式 kernel-kind truth 已经成为唯一跨阶段边界
 
-当前 repo HEAD
-已经有完整的显式字段链：
-
-- `TTKernel.kind`
-- `TTKernelPlan.kind`
-- executable `segment_plan[*].kind`
-
-具体链路是：
+repo HEAD 当前稳定链路是：
 
 ```text
-PlanTTKernelABI segment_plan_
-  -> TTKernel / TTABIPlan
-  -> TTKernelPlan
-  -> executable segment_plan
+PlanTTKernelABI staged segment planning
+  -> TTKernel.kind
+  -> executable segment_plan[*].kind
   -> ExecutableSpec / KernelSpec
 ```
 
-这意味着 task4 不是
-“从零开始发明 kernel-kind 表示”。
+这里的
+`kind`
+已经是
+planner / projection / leaf reader
+共同消费的唯一显式 truth，
+不再需要
+source-level marker
+充当中间 owner。
 
-真正的问题是：
-**上游 owner truth 还没有彻底从 attr scan 上切下来。**
+### 4.2 planner 侧 marker 只允许停在 pass-local mechanics
 
-### 4.2 `PlanTTKernelABI` 才是 planner-side 的真实 wrong-now boundary
+`PlanTTKernelABI`
+内部仍会为了
+segment-sensitive
+CB depth /
+accessor slot /
+copy lowering
+使用局部 marker mechanics，
+但这些 marker：
 
-当前
-[lower_blackhole_ops.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L1550)
-仍会扫描 body 上的
-`blackhole.segment_kind`
-来收集 segment kinds，
-而
-[StoreSegmentPlan](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L2717)
-仍把这些 attr-scan 结果
-建成 `segment_plan_`。
+- 只存在于当前 pass
+  内部重写阶段
+- 不再作为 cross-pass contract
+  被后续 consumer 读取
+- 在最终写回
+  `PrimFunc.body`
+  前被 strip
 
-同时，
-[VisitStmt_(AttrStmt)](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L7446)
-还用
-`current_segment_kind_`
-在 lowering 过程中追踪活跃 segment。
+也就是说，
+task4 当前允许存在的
+唯一 residue
+是 pass-local implementation mechanics，
+不是新的长期协议面。
 
-但 planner-side
-对 marker 的依赖
-并不只停在
-`segment_plan_`
-这一层。
+### 4.3 leaf 侧 body slicing 改成 structural extraction
 
-[AnalyzeCBDepthEffect](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L644)
-/
-[UpdateCBRequirementDepthsFromLoweredBody](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L746)
-还会递归读取
-`blackhole.segment_kind`
-来做 segment-sensitive
-CB depth 推导；
-[WrapSegmentStmtIfNeeded](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L1590)
-/
-[MaybeWrapComputeSegment](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L1616)
-继续发 marker，
-而
-[ResolveAccessorSegmentKind](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_blackhole_ops.cc#L4063)
-和 copy lowering
-则继续用
-`current_segment_kind_`
-决定 accessor slot /
-runtime-arg / CB class
-bookkeeping。
-
-所以 task4 在 compiler-side
-真正要切的是：
-
-- `CollectSegmentKindsFromBody(...)`
-- attr-driven `segment_plan_`
-  construction
-- `AnalyzeCBDepthEffect(...)`
-  这类基于 marker
-  的 segment-sensitive
-  CB depth 推导
-- attr-driven
-  `current_segment_kind_`
-  /
-  accessor /
-  copy-lowering
-  bookkeeping
-
-而不是去改
-`BuildTTProgram`
-或已完成 projection cutover
-的 downstream reader。
-
-### 4.3 `BuildTTProgram` 不是 classifier，projection/codegen 也不是主要切口
-
-当前
-[build_tt_program.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/build_tt_program.cc#L468)
-里的 `PlanTTCompute`
-只是调用
-`PlanTTKernelABI`，
-再把产出的
-`TTKernel / TTABIPlan`
-写进 staged `TTProgram`。
-
-它不会自己推导 kernel kind。
-
-而：
-
-- [tt_program_projection.h](/root/dev/vibe_dsl/tilelang_repo/src/target/tt_program_projection.h#L100)
-  直接把 `TTKernel.kind`
-  投影成 executable `segment_plan.kind`
-- [materialize_blackhole_executable.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/materialize_blackhole_executable.cc#L17)
-  只是写 projection
-- [codegen_blackhole.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/codegen_blackhole.cc#L231)
-  只读 executable `segment_plan`
-
-这说明 task4
-不能再把
-`BuildTTProgram`、
-`MaterializeBlackholeExecutable`
-或
-`codegen_blackhole.cc`
-写成主要 attr consumer。
-
-repo 内成熟 backend
-先例
-也不支持继续保留
-这种 marker truth：
-
-- [split_host_device.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/split_host_device.cc#L64)
-  直接把 host/device body
-  切成独立 device `PrimFunc`
-- [lower_device_kernel_launch.cc](/root/dev/vibe_dsl/tilelang_repo/src/transform/lower_device_kernel_launch.cc#L41)
-  把 per-kernel launch truth
-  收成显式
-  `KernelInfo`
-- CUDA / HIP / CuTeDSL
-  runtime builder /
-  wrapper
-  继续消费
-  `runtime::FunctionInfo`
-  /
-  `kernel_metadata`
-  这类显式 records，
-  而不是跨 pass marker attr
-
-这些 repo-local
-成熟模式都说明：
-attr 可以是短命 lowering
-mechanics，
-但不能继续充当
-中期或长期
-cross-stage owner truth。
-
-### 4.4 `rt_mod_blackhole.cc` 的 body slicing 是单独的 leaf-local residue
-
-当前
-[rt_mod_blackhole.cc](/root/dev/vibe_dsl/tilelang_repo/src/target/rt_mod_blackhole.cc#L1750)
-里的
 `SegmentBodyExtractor`
-仍然直接读
-`AttrStmt("blackhole.segment_kind")`，
-而
-[MakeSegmentPrimFunc](/root/dev/vibe_dsl/tilelang_repo/src/target/rt_mod_blackhole.cc#L2663)
-会据此把原始 device `PrimFunc`
-切成 per-kernel `PrimFunc`。
+现在按：
 
-这里要明确：
+- `segment_plan.kind`
+- lowered builtin family
+- reader / compute / writer
+  anchor builtin
 
-- 这不是 planner truth
-- 这也不是 projection truth
-- 它只是当前 build/runtime path
-  还没删掉的
-  **leaf-local body slicing residue**
+直接切 per-kernel raw body。
 
-同一个
-`rt_mod_blackhole.cc`
-文件里，
-runtime metadata
-其余部分
-已经主要站在
-projected executable
-`segment_plan`
-和显式
-`kernel.kind`
-/
-`kernel.core_type`
-上；
-真正还碰
-`blackhole.segment_kind`
-的地方，
-只剩
-`SegmentBodyExtractor`
-这条 raw-body slicer。
+这条路径不再要求：
 
-而 TT-Metal
-target model
-本身也不要求
-这种 source-level marker：
-它要求的是
-host 端 `Program`
-里显式 kernel objects、
-`CreateKernel`
-时选定的
-kernel class/config、
-以及最终 source /
-runtime args。
+- `SplitBlackholeKernel`
+  先发 source marker
+- runtime / build
+  再回读 marker
+- 新的 helper layer
+  在 leaf 侧补 segment semantics
 
-因此 per-kernel body slicing
-在 task4 里
-只能被写成
-compiler-local deletion problem，
-不是 target/runtime
-必须保留的协议。
-
-因此 task4 文档必须同时写两件事：
-
-1. 它是 architecturally wrong，
-   不能长期存在
-2. 在完全删除前，
-   它也不能被重新表述成
-   “runtime 仍需要的合法中间层”
-
-### 4.5 task3 仍是 task4 的真实前置依赖
-
-当前
-`SplitBlackholeKernel`
-仍通过
-`blackhole.copy_semantics`
-做 reader / writer classification。
-
-因此 task4 文档必须写清楚：
-
-- task4 的当前实现
-  可以先切
-  `blackhole.segment_kind`
-  的 owner truth
-- 但这**不等于**
-  `SplitBlackholeKernel`
-  的分类来源已经合法
-- task3 仍然负责删除
-  `blackhole.copy_semantics`
-  依赖；
-  task4 不得把它带进最终设计口径
-
-### 4.6 当前测试主面已经站在显式 kind records 上
-
-当前 Python 回归测试里，
-已经没有一条主测试面
-继续直接断言
-`blackhole.segment_kind`
-字面 schema。
-
-主要断言
-大多落在：
-
-- `TTProgram.kernels[*].kind`
-- executable `segment_plan[*].kind`
-
-而不是直接扫
-`AttrStmt("blackhole.segment_kind")`。
-
-这说明 task4 的测试重心
-也应该继续放在：
-
-- `TTProgram`
-- executable projection
-- runtime/build metadata
-- 显式 `kind`
-  records 的 round-trip
-  和 leaf-boundary
-  行为校验
-
-而不是去“清扫一批
-并不存在的 raw-marker schema test”，
-或把 body attr
-重新拉回成主回归 surface。
-
-允许继续存在的测试
-是：
-显式 leaf-boundary
-重建
-`TTProgram`
-/
-`segment_plan`
-后
-验证 codegen/runtime
-行为的测试。
-
-不允许重新引入的测试
+因此 task4 的 end-state
 是：
 
-- 直接把
-  `blackhole.segment_kind`
-  当 public protocol
-  断言
-- 用 marker attr
-  作为 task4 已完成的
-  staging 证明
-- 用 task3
-  手工
-  `AnnotateBlackholeCopySemantics()`
-  staging
-  反向替 task4
-  掩盖 splitter
-  前置依赖
+> `segment_kind`
+> 只作为显式 executable segment kind
+> 保留在投影对象里，
+> 不再作为 source-level marker
+> 存活在 active path。
 
 ## 5. 基于审计结果修正后的任务内容
 

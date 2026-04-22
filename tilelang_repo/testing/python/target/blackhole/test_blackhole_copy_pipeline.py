@@ -16,6 +16,7 @@ from .common import (
     assert_tensors_close_or_dump,
     check_blackhole_codegen_requirements,
     check_blackhole_direct_execution_requirements,
+    contains_attr_stmt_key,
     extract_blackhole_cb_configs,
     extract_blackhole_core_plan,
     extract_blackhole_runtime_args,
@@ -103,32 +104,6 @@ def test_transport_tt_metal_api_granularity_rejects_fragment_bridge_helpers():
 
     for builtin_name in FRAGMENT_BRIDGE_HELPER_BUILTINS:
         assert f"tl.blackhole.{builtin_name}" not in builtin_names
-
-
-def _rewrite_copy_semantics_annotations(func, annotation_mutator):
-    def mutate(stmt):
-        if not isinstance(stmt, tir.For):
-            return stmt
-        sem = stmt.annotations.get("blackhole.copy_semantics")
-        if sem is None:
-            return stmt
-        annotations = dict(stmt.annotations)
-        annotations["blackhole.copy_semantics"] = annotation_mutator(dict(sem))
-        return tir.For(
-            stmt.loop_var,
-            stmt.min,
-            stmt.extent,
-            stmt.kind,
-            stmt.body,
-            stmt.thread_binding,
-            annotations,
-            stmt.step,
-            getattr(stmt, "span", None),
-        )
-
-    new_body = tir.stmt_functor.ir_transform(func.body, None, mutate, ["tir.For"])
-    return func.with_body(new_body)
-
 
 def _refresh_tt_program_after_bridge_attr_mutation(device_mod):
     rewritten = {}
@@ -1115,6 +1090,26 @@ def test_blackhole_copy_build_rejects_remote_semaphore_builtin_without_endpoint_
         )
 
 
+def test_blackhole_copy_mainline_no_longer_emits_copy_semantics_annotations():
+    assert not hasattr(tilelang.transform, "AnnotateBlackholeCopySemantics")
+
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    target = Target("blackhole")
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+
+    assert find_loop_annotation(mod["main"].body, "blackhole.copy_semantics") is None
+
+    mod = lower_blackhole_to_tt_target(mod)
+    func = mod["main"]
+    runtime_args = extract_blackhole_runtime_args(func)
+    assert [str(arg["kind"]) for arg in runtime_args] == EXPECTED_UNIFIED_COPY_RUNTIME_ARG_KINDS
+    assert str(runtime_args[0]["buffer"]) == "A"
+    assert str(runtime_args[1]["buffer"]) == "B"
+    assert not contains_attr_stmt_key(func.body, "blackhole.segment_kind")
+
+
 def test_blackhole_codegen_emits_device_semaphore_builtins():
     kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
     target = Target("blackhole")
@@ -1140,63 +1135,12 @@ def test_blackhole_codegen_emits_device_semaphore_builtins():
     assert "noc_semaphore_set(" in source
 
 
-def test_blackhole_copy_semantics_annotation_schema():
-    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
-    mod = tilelang.tvm.IRModule({"main": kernel})
-    target = Target("blackhole")
-    with target:
-        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-
-    sem = find_loop_annotation(mod["main"].body, "blackhole.copy_semantics")
-    assert sem is not None
-    assert str(sem["kind"]) == "fused_staged_copy"
-    assert str(sem["direction"]) == "dram_to_cb_to_dram"
-    assert str(sem["src_buffer"]) == "A"
-    assert str(sem["mid_buffer"]) == "A_shared"
-    assert str(sem["dst_buffer"]) == "B"
-    assert str(sem["src_buffer_ref"].name) == "A"
-    assert str(sem["mid_buffer_ref"].name) == "A_shared"
-    assert str(sem["dst_buffer_ref"].name) == "B"
-    assert str(sem["src_scope"]) == "global"
-    assert str(sem["dst_scope"]) == "global"
-    assert str(sem["dtype"]) == "bfloat16"
-    assert [int(x) for x in sem["src_shape"]] == [64, 32]
-    assert [int(x) for x in sem["dst_shape"]] == [64, 32]
-    assert [int(x) for x in sem["mid_shape"]] == [32, 32]
-
-
-def test_blackhole_copy_lowering_prefers_buffer_handles_over_annotation_names():
-    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
-    mod = tilelang.tvm.IRModule({"main": kernel})
-    target = Target("blackhole")
-    with target:
-        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
-    func = _rewrite_copy_semantics_annotations(
-        mod["main"],
-        lambda sem: {
-            **sem,
-            "src_buffer": "WRONG_INPUT_BUFFER",
-            "mid_buffer": "WRONG_INTERMEDIATE_BUFFER",
-            "dst_buffer": "WRONG_OUTPUT_BUFFER",
-        },
-    )
-    mod = tilelang.tvm.IRModule({"main": func})
-    mod = lower_blackhole_to_tt_target(mod)
-
-    runtime_args = extract_blackhole_runtime_args(mod["main"])
-    buffers = [str(arg["buffer"]) for arg in runtime_args if "buffer" in arg]
-    assert buffers == ["A", "B"]
-
-
 def test_blackhole_copy_semantics_survives_flatten_and_vectorize():
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     mod = tilelang.tvm.IRModule({"main": kernel})
     target = Target("blackhole")
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = tilelang.transform.FlattenBuffer()(mod)
     mod = tilelang.transform.VectorizeLoop()(mod)
     mod = lower_blackhole_to_tt_target(mod)
@@ -1717,7 +1661,6 @@ def test_blackhole_storage_rewrite_incompatible_with_cb_model():
     target = Target("blackhole")
     with target:
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
-    mod = tilelang.transform.AnnotateBlackholeCopySemantics()(mod)
     mod = tilelang.transform.FlattenBuffer()(mod)
     mod = tilelang.transform.VectorizeLoop()(mod)
     tilelang.transform.StorageRewrite()(mod)

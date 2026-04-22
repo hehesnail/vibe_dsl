@@ -255,7 +255,6 @@ elseif(USE_BLACKHOLE)
     src/target/rt_mod_blackhole.cc
     src/target/blackhole_module.cc
     src/tir/builtin_blackhole.cc
-    src/transform/annotate_blackhole_copy_semantics.cc
     src/transform/blackhole_device_resource_canonicalization.cc
     src/transform/build_spatial_plan.cc
     src/transform/validate_spatial_plan.cc

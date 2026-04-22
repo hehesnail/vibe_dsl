@@ -599,23 +599,6 @@ def LowerLDGSTG():
     return _ffi_api.LowerLDGSTG()  # type: ignore
 
 
-def AnnotateBlackholeCopySemantics():
-    """Annotate copy For loops with blackhole.copy_semantics before SplitHostDevice.
-
-    Runs in the split-before phase (after LowerTileOp, before AnnotateDeviceRegions).
-    Finds BufferStore(BufferLoad) copy loop patterns and wraps the outermost
-    copy-containing For loop with an AttrStmt annotation carrying structured
-    copy semantics metadata.  This gives PlanTTKernelABI stable metadata
-    without requiring fragile pattern-matching on the loop body.
-
-    Returns
-    -------
-    fpass : tvm.transform.Pass
-        The result pass
-    """
-    return _ffi_api.AnnotateBlackholeCopySemantics()  # type: ignore
-
-
 def BlackholeDeviceResourceCanonicalization():
     """Canonicalize Blackhole device-private resource scopes before SplitHostDevice.
 
@@ -627,7 +610,8 @@ def BlackholeDeviceResourceCanonicalization():
     thread_extent AttrStmt to inside it, so SplitHostDevice does not promote
     them to device function ABI parameters.
 
-    Must run after AnnotateBlackholeCopySemantics and before AnnotateDeviceRegions.
+    Recovers copy/dataflow roles directly from the current TIR instead of relying
+    on a pre-annotated copy carrier. Must run before AnnotateDeviceRegions.
     """
     return _ffi_api.BlackholeDeviceResourceCanonicalization()  # type: ignore
 
@@ -637,11 +621,7 @@ def CollectDevicePrograms():
     return tvm.ffi.get_global_func("tl.transform.CollectDevicePrograms")()
 
 def SplitBlackholeKernel():
-    """Annotate statements with blackhole.segment_kind for 3-kernel GEMM split.
-
-    Scans each device PrimFunc for compute ops (tl.tileop.gemm_py).
-    If found, wraps each top-level statement with an AttrStmt carrying
-    "reader", "compute", or "writer" segment kind.
+    """Normalize Blackhole Phase-B kernels before TT-specific planning.
 
     Pure-copy functions are left unchanged.
 

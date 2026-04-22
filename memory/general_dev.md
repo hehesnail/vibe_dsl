@@ -142,6 +142,26 @@
   只能 seed 稳定字段；
   带顺序索引的结构
   必须从当前 IR 重新构建
+- 当前 IR 上重建 logical shape registry 时，
+  同 data identity 的 flattened alias
+  可能会把原始高维 logical shape
+  覆盖成 1-D static shape；
+  registry 必须保留
+  更高优先级 /
+  更高维度的 logical shape，
+  不能让 flatten alias
+  反向污染 logical truth
+- staged copy 在
+  `FlattenBuffer / VectorizeLoop`
+  之后如果 shared staging buffer
+  已经变成 1-D，
+  不要回退到新的 copy annotation；
+  正确做法是绑定
+  transport var
+  的静态 extent，
+  直接从当前 global access
+  的 row/col coverage
+  推出 shared matrix shape
 - 兼容 attr 的删除顺序固定为：
   先移走 semantic consumer，
   再移走 lowering consumer，
