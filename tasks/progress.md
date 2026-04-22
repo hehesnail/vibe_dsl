@@ -12,16 +12,20 @@
 
 - **日期**: `2026-04-22`
 - **当前总体 blocker**:
-  `Task 2: TTProgram Representation Cutover`
+  `Task 3: ExecutableSpec / Leaf Reader Cutover`
   还没收口；
   当前最直接的 repo HEAD blocker
-  是和它重叠的
-  cleanup task2/task0 residue
+  是 leaf reader /
+  runtime /
+  codegen
+  仍然依赖
+  compiler-side residue
 - **当前推进原则**:
   主线固定按
-  `Task 2 -> Task 3 -> Legacy Protocol Deletion`
+  `Task 3 -> Legacy Protocol Deletion`
   推进；
   `Task 1`
+  和 `Task 2`
   已在 repo HEAD 收口
 
 ## 2. 当前主线任务状态
@@ -41,18 +45,22 @@
     `blackhole.compute_regions`
     切到 direct capture
 - `Task 2: TTProgram Representation Cutover`
-  - 状态：`in progress / 当前主线`
-  - 当前直接 blocker：
-    legacy planning bag /
-    exact builtin legality residue /
-    `TTProgram.payload`
-    compatibility residue
-  - 当前目标：
-    让 `TTProgram`
-    真正成为唯一
-    TT-specific realization
+  - 状态：`completed`
+  - 当前结论：
+    `TTProgram`
+    已成为
+    target planning
+    的唯一 TT-specific realization owner truth；
+    `BuildTTProgram`
+    已退成 staged slice aggregation /
+    finalize /
+    cleanup 点，
+    `ValidateTTProgram`
+    已成为
+    exact TT-Metal legality
+    的正式 hard gate
 - `Task 3: ExecutableSpec / Leaf Reader Cutover`
-  - 状态：`pending / 受 Task 2 阻塞`
+  - 状态：`in progress / 当前主线`
   - 当前目标：
     让 build / codegen / runtime /
     `BlackholeModule`
@@ -77,23 +85,32 @@
     +
     `tl.blackhole_logical_buffer_tile_bridge_specs`
 - `Cleanup Task 2`
-  - 状态：`active overlap / 当前卡在 Task 2`
+  - 状态：`completed`
   - 已完成：
     public/internal
     `AnalyzeBlackhole*`
-    analysis surface 删除
-  - 当前剩余：
-    `blackhole_lowering_requirements`
-    /
+    analysis surface 删除，
     `tl.blackhole_lowering_requirements_seed`
-    /
-    active planner bag residue 删除
+    已退出 active chain，
+    `blackhole_lowering_requirements`
+    已收成
+    current TIR + `SpatialPlan`
+    direct、pass-local analysis facts
 - `Cleanup Task 0`
-  - 状态：`active overlap / 当前与 Task 2 并行`
-  - 当前剩余：
-    exact builtin legality /
+  - 状态：`completed`
+  - 已完成：
     `blackhole.cb_requirements`
-    residue 删除
+    已退出 active chain，
+    staged CB contract
+    已改由
+    `TTProgram.cb_plans`
+    / typed `TTCBPlan`
+    承载，
+    unresolved
+    `unsupported_compute_ops`
+    已由
+    `ValidateTTProgram`
+    fail-close 拒绝
 - `Cleanup Task 3`
   - 状态：`pending overlap / 对应 Task 2-Task 3`
   - 目标：删除
@@ -174,33 +191,6 @@ Normalized Tile TIR
 
 ## 4. 当前未收口项
 
-- `Task 2 / TTProgram`
-  - `blackhole_lowering_requirements.cc`
-    虽然已经从
-    `AnalyzeBlackhole*Evidence(...)`
-    切到
-    `SpatialPlan + current TIR`
-    direct analysis，
-    但 broad bag
-    仍然存在
-  - `tl.blackhole_lowering_requirements_seed`
-    仍在 active chain
-  - `blackhole.cb_requirements`
-    仍在 active chain
-  - selector / validator
-    还没共用一份
-    exact builtin legality contract
-  - `buffer_tile_bridge_specs`
-    /
-    `unsupported_compute_ops`
-    /
-    `compute_contract`
-    /
-    `gemm_contract`
-    等 payload residue
-    仍停在
-    `TTProgram.payload`
-    和 leaf compatibility path
 - `Task 3 / ExecutableSpec / leaf reader`
   - `blackhole.copy_semantics`
     仍在 compiler-side
@@ -215,6 +205,24 @@ Normalized Tile TIR
     还没只站在
     `ExecutableSpec`
     projection 边界上
+  - `buffer_tile_bridge_specs`
+    /
+    `unsupported_compute_ops`
+    /
+    `compute_contract`
+    /
+    `gemm_contract`
+    /
+    `multi_*_contracts`
+    仍停在
+    `TTProgram.payload`
+    和 leaf compatibility path；
+    这些现在只按
+    task3 debt
+    记录，
+    不再算
+    `TTProgram`
+    owner truth
 
 ## 5. 当前稳定基线
 
@@ -223,6 +231,9 @@ Normalized Tile TIR
   当前基线已通过：
   - `cmake --build tilelang_repo/build -j32`
   - `pytest -q tilelang_repo/testing/python/transform -k blackhole`
+  - `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
+  - `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py`
+  - `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
   - `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
 - direct runtime 当前 admitted 支持面：
   - copy：equal source/dest range，且 stride = 1
@@ -242,19 +253,7 @@ Normalized Tile TIR
 
 当前下一步固定为：
 
-1. 推进 `Task 2: TTProgram Representation Cutover`
-   - 删除
-     `blackhole_lowering_requirements`
-     /
-     `tl.blackhole_lowering_requirements_seed`
-     这组 active planning bag
-   - 收掉
-     `blackhole.cb_requirements`
-     和 exact builtin legality residue
-   - 把仍然需要跨边界保留的 leaf/build gate data
-     统一收回
-     `TTProgram`
-2. 然后推进
+1. 推进
    `Task 3: ExecutableSpec / Leaf Reader Cutover`
    - 删除
      `blackhole.copy_semantics`
@@ -263,6 +262,15 @@ Normalized Tile TIR
    - 收紧 leaf reader /
      runtime /
      codegen 边界
+2. 收掉
+   仍留在
+   `TTProgram.payload`
+   的 leaf compatibility residue，
+   把它们压到
+   `ExecutableSpec`
+   projection /
+   canonical writer
+   边界
 3. 最后做
    `Legacy Protocol Deletion`
    的 convergence /

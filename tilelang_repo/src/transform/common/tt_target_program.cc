@@ -118,11 +118,20 @@ void TTCBPlanNode::RegisterReflection() {
       .def_ro("num_pages", &TTCBPlanNode::num_pages)
       .def_ro("page_size_bytes", &TTCBPlanNode::page_size_bytes)
       .def_ro("data_format", &TTCBPlanNode::data_format)
+      .def_ro("initial_reserve_pages", &TTCBPlanNode::initial_reserve_pages)
+      .def_ro("flow_class", &TTCBPlanNode::flow_class)
+      .def_ro("publish_pages_per_event", &TTCBPlanNode::publish_pages_per_event)
+      .def_ro("consume_pages_per_event", &TTCBPlanNode::consume_pages_per_event)
+      .def_ro("lifetime_begin", &TTCBPlanNode::lifetime_begin)
+      .def_ro("lifetime_end", &TTCBPlanNode::lifetime_end)
       .def_ro("payload", &TTCBPlanNode::payload);
 }
 
 TTCBPlan::TTCBPlan(ffi::String name, int64_t cb_id, ffi::String resource_class, int64_t num_pages,
                    int64_t page_size_bytes, ffi::String data_format,
+                   int64_t initial_reserve_pages, ffi::String flow_class,
+                   int64_t publish_pages_per_event, int64_t consume_pages_per_event,
+                   int64_t lifetime_begin, int64_t lifetime_end,
                    ffi::Map<ffi::String, ffi::Any> payload) {
   auto n = ffi::make_object<TTCBPlanNode>();
   n->name = std::move(name);
@@ -131,6 +140,12 @@ TTCBPlan::TTCBPlan(ffi::String name, int64_t cb_id, ffi::String resource_class, 
   n->num_pages = num_pages;
   n->page_size_bytes = page_size_bytes;
   n->data_format = std::move(data_format);
+  n->initial_reserve_pages = initial_reserve_pages;
+  n->flow_class = std::move(flow_class);
+  n->publish_pages_per_event = publish_pages_per_event;
+  n->consume_pages_per_event = consume_pages_per_event;
+  n->lifetime_begin = lifetime_begin;
+  n->lifetime_end = lifetime_end;
   n->payload = std::move(payload);
   data_ = std::move(n);
 }
@@ -423,10 +438,15 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def(
       "tl.TTCBPlan",
       [](ffi::String name, int64_t cb_id, ffi::String resource_class, int64_t num_pages,
-         int64_t page_size_bytes, ffi::String data_format,
+         int64_t page_size_bytes, ffi::String data_format, int64_t initial_reserve_pages,
+         ffi::String flow_class, int64_t publish_pages_per_event,
+         int64_t consume_pages_per_event, int64_t lifetime_begin, int64_t lifetime_end,
          ffi::Map<ffi::String, ffi::Any> payload) {
         return TTCBPlan(std::move(name), cb_id, std::move(resource_class), num_pages,
-                        page_size_bytes, std::move(data_format), std::move(payload));
+                        page_size_bytes, std::move(data_format), initial_reserve_pages,
+                        std::move(flow_class), publish_pages_per_event,
+                        consume_pages_per_event, lifetime_begin, lifetime_end,
+                        std::move(payload));
       });
   refl::GlobalDef().def(
       "tl.TTTransportPlan",

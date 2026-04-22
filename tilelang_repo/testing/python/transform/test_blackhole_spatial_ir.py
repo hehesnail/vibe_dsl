@@ -173,6 +173,27 @@ def _rebuild_spatial_plan(
     )
 
 
+def _rebuild_tt_program(program, *, cb_plans=None, payload=None):
+    make_tt_program = tvm.get_global_func("tl.TTProgram")
+    return make_tt_program(
+        program.entry_name,
+        program.member_func,
+        list(program.block_plans),
+        list(program.kernel_plans),
+        list(program.transport_plans),
+        list(program.sync_plans),
+        list(program.abi_plans),
+        list(program.execution_plans),
+        list(program.kernels),
+        list(program.core_groups),
+        list(program.cb_plans) if cb_plans is None else cb_plans,
+        list(program.semaphore_plans),
+        list(program.compute_sync_plans),
+        list(program.dst_layout_plans),
+        program.payload if payload is None else payload,
+    )
+
+
 def test_spatial_pass_surface_exposes_only_structure_and_plan_companions():
     assert hasattr(tilelang.transform, "AnalyzeSpatialStructureFacts")
     assert hasattr(tilelang.transform, "BuildSpatialPlanCompanion")
@@ -417,6 +438,58 @@ def test_tt_metal_builtin_selector_lowers_compute_idioms_before_plan_tt_compute(
     assert not any(name in LEGACY_LOCAL_BLACKHOLE_BUILTINS for name in builtin_suffixes)
 
 
+def test_tt_builtin_selection_stages_cb_plans_without_legacy_attr_handoff():
+    mod = _prepare_blackhole_builtin_selection_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+
+    assert main.attrs.get("blackhole.cb_requirements") is None
+    assert main.attrs.get("tl.blackhole_lowering_requirements_seed") is None
+    assert len(tt_program.cb_plans) > 0
+    assert all(
+        int(cb_plan.cb_id) == index for index, cb_plan in enumerate(tt_program.cb_plans)
+    )
+    assert all(
+        str(cb_plan.flow_class) in {"state", "stream", "republish"}
+        for cb_plan in tt_program.cb_plans
+    )
+    assert all(int(cb_plan.page_size_bytes) > 0 for cb_plan in tt_program.cb_plans)
+    assert all("requirement_index" not in dict(cb_plan.payload) for cb_plan in tt_program.cb_plans)
+
+
+def test_plan_tt_transport_consumes_staged_cb_plans_without_legacy_cb_attr():
+    mod = _prepare_blackhole_phase_b_module(gemm_kernel())
+    mod = tilelang.transform.PlanTTBlocks()(mod)
+    mod = tilelang.transform.SelectBlackholeTTMetalBuiltins()(mod)
+    mod = tilelang.transform.PlanTTCompute()(mod)
+
+    func = mod["main"]
+    assert func.attrs.get("tl.tt_program") is not None
+    if func.attrs and func.attrs.get("blackhole.cb_requirements") is not None:
+        func = func.without_attr("blackhole.cb_requirements")
+    if func.attrs and func.attrs.get("tl.blackhole_lowering_requirements_seed") is not None:
+        func = func.without_attr("tl.blackhole_lowering_requirements_seed")
+    mod = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
+
+    mod = tilelang.transform.PlanTTTransport()(mod)
+    main = mod["main"]
+
+    assert main.attrs.get("blackhole.cb_requirements") is None
+    assert main.attrs["tl.tt_program"].cb_plans
+
+
 def test_build_tt_program_consumes_plan_and_analysis_attrs_without_spatial_program():
     mod = _prepare_blackhole_phase_b_module(gemm_kernel())
     mod = _drop_legacy_spatial_attrs(mod)
@@ -443,6 +516,20 @@ def test_build_tt_program_consumes_plan_and_analysis_attrs_without_spatial_progr
         int(plan.source_task_index) >= 0 and int(plan.target_task_index) >= 0
         for plan in tt_program.transport_plans
     )
+
+
+def test_validate_tt_program_rejects_unresolved_unsupported_compute_ops():
+    mod = _prepare_blackhole_tt_program_module(gemm_kernel())
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    payload = dict(tt_program.payload)
+    payload["unsupported_compute_ops"] = ["tl.blackhole.unsupported"]
+    invalid_program = _rebuild_tt_program(tt_program, payload=payload)
+    invalid_main = main.with_attr("tl.tt_program", invalid_program)
+    invalid_mod = tvm.IRModule({"main": invalid_main}, global_infos=mod.global_infos)
+
+    with pytest.raises(tvm.error.InternalError, match="unsupported_compute_ops remain"):
+        tilelang.transform.ValidateTTProgram()(invalid_mod)
 
 
 def test_tt_planning_stages_tt_program_without_internal_bridge_attrs():

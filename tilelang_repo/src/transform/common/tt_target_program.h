@@ -102,6 +102,12 @@ class TTCBPlanNode : public Object {
   int64_t num_pages = 0;
   int64_t page_size_bytes = 0;
   ffi::String data_format;
+  int64_t initial_reserve_pages = 0;
+  ffi::String flow_class;
+  int64_t publish_pages_per_event = 0;
+  int64_t consume_pages_per_event = 0;
+  int64_t lifetime_begin = 0;
+  int64_t lifetime_end = 0;
   ffi::Map<ffi::String, ffi::Any> payload;
 
   static void RegisterReflection();
@@ -112,6 +118,9 @@ class TTCBPlan : public ObjectRef {
  public:
   TVM_DLL TTCBPlan(ffi::String name, int64_t cb_id, ffi::String resource_class,
                    int64_t num_pages, int64_t page_size_bytes, ffi::String data_format,
+                   int64_t initial_reserve_pages, ffi::String flow_class,
+                   int64_t publish_pages_per_event, int64_t consume_pages_per_event,
+                   int64_t lifetime_begin, int64_t lifetime_end,
                    ffi::Map<ffi::String, ffi::Any> payload);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTCBPlan, ObjectRef, TTCBPlanNode);
 };

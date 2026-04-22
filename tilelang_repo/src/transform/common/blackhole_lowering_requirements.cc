@@ -1,6 +1,6 @@
 /*!
  * \file blackhole_lowering_requirements.cc
- * \brief Derive Blackhole leaf helper contracts directly from SpatialPlan and current TIR.
+ * \brief Derive typed Blackhole lowering support facts directly from SpatialPlan and current TIR.
  */
 
 #include "blackhole_lowering_requirements.h"
@@ -35,11 +35,9 @@ using tvm::ffi::String;
 
 namespace {
 
-struct LoweringSupportFacts {
+struct LoweringSupportFactsAnalysis {
   std::unordered_set<std::string> recurrence_subjects;
-  Array<Any> buffer_tile_bridge_specs;
-  Array<Any> buffer_materialization_contracts;
-  Array<Any> buffer_flow_contracts;
+  BlackholeLoweringSupportFacts facts;
 };
 
 template <typename T>
@@ -288,9 +286,10 @@ bool BufferHasLiveInStateBeforeOrderIndex(const tir::Buffer& buffer,
   if (buffer_name.empty()) {
     return true;
   }
-  if (recurrence_subjects.count(buffer_name) != 0U) {
-    return true;
-  }
+  (void)recurrence_subjects;
+  // SpatialPlan carry/self-edge truth only records structural read/write relationships
+  // inside the normalized Tile TIR. It is not evidence that a fragment buffer already
+  // holds live accumulator state before this materialization candidate executes.
   for (int i = 0; i < order_index; ++i) {
     if (!StmtWritesBuffer(ordered_stmts[i], buffer)) {
       continue;
@@ -970,9 +969,9 @@ Array<Any> CollectBufferMaterializationContractsFromBody(
   return contracts;
 }
 
-LoweringSupportFacts AnalyzeLoweringSupportFacts(const tir::PrimFunc& func,
-                                                 const SpatialPlan& plan) {
-  LoweringSupportFacts facts;
+BlackholeLoweringSupportFacts AnalyzeBlackholeLoweringSupportFactsImpl(const tir::PrimFunc& func,
+                                                                       const SpatialPlan& plan) {
+  LoweringSupportFactsAnalysis analysis;
   Array<Any> buffer_tile_bridge_specs;
   std::unordered_set<std::string> seen_buffer_tile_bridge_specs;
   for (const DataflowEdge& edge : plan->dataflow_edges) {
@@ -981,7 +980,7 @@ LoweringSupportFacts AnalyzeLoweringSupportFacts(const tir::PrimFunc& func,
     }
     const std::string subject = str(edge->subject);
     if (!subject.empty()) {
-      facts.recurrence_subjects.insert(subject);
+      analysis.recurrence_subjects.insert(subject);
     }
   }
   if (auto logical_specs =
@@ -1000,42 +999,28 @@ LoweringSupportFacts AnalyzeLoweringSupportFacts(const tir::PrimFunc& func,
   }
   Array<Any> flow_contracts = CollectBufferFlowContractsFromBody(func->body);
   Array<Any> materialization_contracts =
-      CollectBufferMaterializationContractsFromBody(func, facts.recurrence_subjects);
+      CollectBufferMaterializationContractsFromBody(func, analysis.recurrence_subjects);
   AppendUniqueBufferMaterializationContractsFromFlowContracts(flow_contracts,
                                                               &materialization_contracts);
   AppendUniqueCastDrivenBufferMaterializationContractsFromBody(
       func->body, flow_contracts, BuildLogicalBufferShapes(func), &materialization_contracts);
   if (!buffer_tile_bridge_specs.empty()) {
-    facts.buffer_tile_bridge_specs = buffer_tile_bridge_specs;
+    analysis.facts.buffer_tile_bridge_specs = buffer_tile_bridge_specs;
   }
   if (!materialization_contracts.empty()) {
-    facts.buffer_materialization_contracts = materialization_contracts;
+    analysis.facts.buffer_materialization_contracts = materialization_contracts;
   }
   if (!flow_contracts.empty()) {
-    facts.buffer_flow_contracts = flow_contracts;
+    analysis.facts.buffer_flow_contracts = flow_contracts;
   }
-  return facts;
+  return analysis.facts;
 }
 
 }  // namespace
 
-Map<String, Any> BuildBlackholeLoweringRequirements(const tir::PrimFunc& func,
-                                                    const SpatialPlan& plan) {
-  Map<String, Any> lowering_requirements;
-  LoweringSupportFacts lowering_support_facts = AnalyzeLoweringSupportFacts(func, plan);
-  if (!lowering_support_facts.buffer_materialization_contracts.empty()) {
-    lowering_requirements.Set(String(schema_key::kBufferMaterializationContracts),
-                              lowering_support_facts.buffer_materialization_contracts);
-  }
-  if (!lowering_support_facts.buffer_tile_bridge_specs.empty()) {
-    lowering_requirements.Set(String(schema_key::kBufferTileBridgeSpecs),
-                              lowering_support_facts.buffer_tile_bridge_specs);
-  }
-  if (!lowering_support_facts.buffer_flow_contracts.empty()) {
-    lowering_requirements.Set(String(schema_key::kBufferFlowContracts),
-                              lowering_support_facts.buffer_flow_contracts);
-  }
-  return lowering_requirements;
+BlackholeLoweringSupportFacts AnalyzeBlackholeLoweringSupportFacts(const tir::PrimFunc& func,
+                                                                   const SpatialPlan& plan) {
+  return AnalyzeBlackholeLoweringSupportFactsImpl(func, plan);
 }
 
 }  // namespace tl

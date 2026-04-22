@@ -22,10 +22,10 @@
  * \brief Plan Circular Buffer (CB) allocation for Blackhole backend
  *
  * MVP Implementation (Phase 1):
- * - Read CB requirements from function attributes (written by PlanTTKernelABI)
+ * - Read staged CB plans from TTProgram (written by SelectBlackholeTTMetalBuiltins/PlanTTCompute)
  * - Validate constraints (CB count <= 64, total L1 <= 1.5MB)
  * - Assign CB IDs following TT-Metal convention: 0-15 input, 16-31 output
- * - Store CB configuration in function attributes
+ * - Rewrite placeholder requirement indices in the IR to final CB IDs
  */
 
 #ifndef TVM_TL_PLAN_BLACKHOLE_CB_H_
@@ -111,7 +111,11 @@ class PlanTTCBAlloc : public tvm::tir::StmtExprMutator {
   static constexpr int kOutputCBEnd = 31;
 
  private:
-  /*! \brief Get CB requirements from function attributes */
+  /*! \brief Get staged CB requirements from TTProgram cb_plans.
+   *
+   * Before allocation, each staged TTCBPlan uses `cb_id` as the requirement
+   * slot referenced by lowered IR builtins.
+   */
   std::vector<CBRequirement> GetCBRequirements(const tvm::tir::PrimFunc& func);
 
   /*! \brief Assign CB IDs to requirements */

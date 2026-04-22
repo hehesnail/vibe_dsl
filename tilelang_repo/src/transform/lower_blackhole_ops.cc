@@ -1414,25 +1414,14 @@ static bool HasComputeSegmentRequirement(const Stmt& body) {
   return found;
 }
 
-static Map<String, Any> BuildLoweringRequirementsFromAnalysis(const PrimFunc& func) {
+static BlackholeLoweringSupportFacts BuildLoweringSupportFactsFromAnalysis(const PrimFunc& func) {
   auto spatial_plan = func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
   ICHECK(spatial_plan)
       << "PlanTTKernelABI requires tl.spatial_plan; run AnalyzeSpatialStructureFacts and "
          "BuildSpatialPlanCompanion before lowering";
   ICHECK(func->GetAttr<Bool>(attr::kTLSpatialPlanValidated, Bool(false)).value())
       << "PlanTTKernelABI requires validated SpatialPlan; run ValidateSpatialPlan before lowering";
-  Map<String, Any> lowering_requirements =
-      BuildBlackholeLoweringRequirements(func, spatial_plan.value());
-  if (auto seeded = func->GetAttr<Map<String, Any>>(kTLBlackholeLoweringRequirementsSeed)) {
-    if (auto contracts = seeded.value().Get(String(schema_key::kBufferMaterializationContracts))) {
-      lowering_requirements.Set(String(schema_key::kBufferMaterializationContracts),
-                                contracts.value());
-    }
-    if (auto specs = seeded.value().Get(String(schema_key::kBufferTileBridgeSpecs))) {
-      lowering_requirements.Set(String(schema_key::kBufferTileBridgeSpecs), specs.value());
-    }
-  }
-  return lowering_requirements;
+  return AnalyzeBlackholeLoweringSupportFacts(func, spatial_plan.value());
 }
 
 static bool BufferMaterializationContractHasField(const Map<String, Any>& contract,
@@ -1455,14 +1444,9 @@ static int BufferMaterializationContractSpecificityScore(const Map<String, Any>&
 }
 
 static std::unordered_map<std::string, Map<String, Any>>
-BuildBufferMaterializationContractMap(const Map<String, Any>& lowering_requirements) {
+BuildBufferMaterializationContractMap(const Array<Any>& buffer_materialization_contracts) {
   std::unordered_map<std::string, Map<String, Any>> contracts_by_target_buffer;
-  auto maybe_contracts =
-      lowering_requirements.Get(String(schema_key::kBufferMaterializationContracts));
-  if (!maybe_contracts) {
-    return contracts_by_target_buffer;
-  }
-  for (const Any& contract_any : Downcast<Array<Any>>(maybe_contracts.value())) {
+  for (const Any& contract_any : buffer_materialization_contracts) {
     Map<String, Any> contract = Downcast<Map<String, Any>>(contract_any);
     auto target_it = contract.find(String(schema_key::kTargetBuffer));
     if (target_it == contract.end()) {
@@ -1484,13 +1468,9 @@ BuildBufferMaterializationContractMap(const Map<String, Any>& lowering_requireme
 }
 
 static std::unordered_map<std::string, Map<String, Any>> BuildBufferTileBridgeSpecMap(
-    const Map<String, Any>& lowering_requirements) {
+    const Array<Any>& buffer_tile_bridge_specs) {
   std::unordered_map<std::string, Map<String, Any>> specs_by_buffer;
-  auto maybe_specs = lowering_requirements.Get(String(schema_key::kBufferTileBridgeSpecs));
-  if (!maybe_specs) {
-    return specs_by_buffer;
-  }
-  for (const Any& spec_any : Downcast<Array<Any>>(maybe_specs.value())) {
+  for (const Any& spec_any : buffer_tile_bridge_specs) {
     Map<String, Any> spec = Downcast<Map<String, Any>>(spec_any);
     auto buffer_it = spec.find(String(schema_key::kBuffer));
     if (buffer_it == spec.end()) {
@@ -1566,8 +1546,9 @@ static Stmt WrapSegmentStmtIfNeeded(const std::string& current_segment_kind,
 }
 
 void PlanTTKernelABI::LoadBufferTileBridgeSpecs(
-    const Map<String, Any>& lowering_requirements) {
-  buffer_tile_bridge_specs_by_buffer_ = BuildBufferTileBridgeSpecMap(lowering_requirements);
+    const BlackholeLoweringSupportFacts& lowering_support_facts) {
+  buffer_tile_bridge_specs_by_buffer_ =
+      BuildBufferTileBridgeSpecMap(lowering_support_facts.buffer_tile_bridge_specs);
 }
 
 Stmt PlanTTKernelABI::MaybeWrapComputeSegment(const Stmt& stmt) const {
@@ -1827,14 +1808,10 @@ Buffer PlanTTKernelABI::ResolvePhysicalComputeBuffer(const Buffer& buffer) const
   return buffer;
 }
 
-void PlanTTKernelABI::LoadBufferFlowContracts(const Map<String, Any>& lowering_requirements) {
+void PlanTTKernelABI::LoadBufferFlowContracts(
+    const BlackholeLoweringSupportFacts& lowering_support_facts) {
   buffer_flow_contracts_.clear();
-  auto maybe_contracts =
-      lowering_requirements.Get(String(schema_key::kBufferFlowContracts));
-  if (!maybe_contracts) {
-    return;
-  }
-  for (const Any& contract_any : Downcast<Array<Any>>(maybe_contracts.value())) {
+  for (const Any& contract_any : lowering_support_facts.buffer_flow_contracts) {
     Map<String, Any> encoded_contract = Downcast<Map<String, Any>>(contract_any);
     auto buffer_it = encoded_contract.find(String(schema_key::kBuffer));
     auto flow_class_it = encoded_contract.find(String(schema_key::kFlowClass));
@@ -1917,34 +1894,22 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   buffer_tile_bridge_specs_by_buffer_.clear();
   select_compute_builtins_only_ = true;
 
-  Map<String, Any> lowering_requirements = BuildLoweringRequirementsFromAnalysis(func);
-  LoadLogicalBufferShapes(func, lowering_requirements);
+  const BlackholeLoweringSupportFacts lowering_support_facts =
+      BuildLoweringSupportFactsFromAnalysis(func);
+  LoadLogicalBufferShapes(func, lowering_support_facts);
   requires_compute_segment_ = HasComputeSegmentRequirement(func->body);
-  LoadBufferTileBridgeSpecs(lowering_requirements);
+  LoadBufferTileBridgeSpecs(lowering_support_facts);
 
   PrimFunc selected = func;
   selected.CopyOnWrite()->body = VisitStmt(func->body);
   UpdateCBRequirementDepthsFromLoweredBody(
       &cb_requirements_, selected->body, gemm_a_buffer_name_.empty() ? "fused_dataflow" : "compute");
-  StoreCBRequirements(selected);
-  Map<String, Any> seeded_requirements;
-  if (auto contracts = lowering_requirements.Get(String(schema_key::kBufferMaterializationContracts))) {
-    seeded_requirements.Set(String(schema_key::kBufferMaterializationContracts), contracts.value());
-  }
-  if (auto specs = lowering_requirements.Get(String(schema_key::kBufferTileBridgeSpecs))) {
-    seeded_requirements.Set(String(schema_key::kBufferTileBridgeSpecs), specs.value());
-  }
-  Map<String, Any> attrs = selected->attrs.defined() ? selected->attrs->dict : Map<String, Any>();
-  if (!seeded_requirements.empty()) {
-    attrs.Set(kTLBlackholeLoweringRequirementsSeed, seeded_requirements);
-    selected.CopyOnWrite()->attrs = DictAttrs(attrs);
-  }
   select_compute_builtins_only_ = false;
   return selected;
 }
 
-void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func,
-                                              const Map<String, Any>& lowering_requirements) {
+void PlanTTKernelABI::LoadLogicalBufferShapes(
+    const PrimFunc& func, const BlackholeLoweringSupportFacts& lowering_support_facts) {
   logical_buffer_shapes_.clear();
   std::unordered_map<std::string, std::vector<int64_t>> canonical_shapes;
   std::unordered_map<const VarNode*, std::vector<std::string>> alias_names_by_data;
@@ -2022,15 +1987,11 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(const PrimFunc& func,
     }
     register_shape(target_name, {element_count / row_width, row_width});
   };
-  if (auto specs = lowering_requirements.Get(String(schema_key::kBufferTileBridgeSpecs))) {
-    for (const Any& spec_any : Downcast<Array<Any>>(specs.value())) {
-      register_tile_bridge_shape(Downcast<Map<String, Any>>(spec_any));
-    }
+  for (const Any& spec_any : lowering_support_facts.buffer_tile_bridge_specs) {
+    register_tile_bridge_shape(Downcast<Map<String, Any>>(spec_any));
   }
-  if (auto contracts = lowering_requirements.Get(String(schema_key::kBufferMaterializationContracts))) {
-    for (const Any& contract_any : Downcast<Array<Any>>(contracts.value())) {
-      register_materialization_contract_shape(Downcast<Map<String, Any>>(contract_any));
-    }
+  for (const Any& contract_any : lowering_support_facts.buffer_materialization_contracts) {
+    register_materialization_contract_shape(Downcast<Map<String, Any>>(contract_any));
   }
   for (const auto& [_, aliases] : alias_names_by_data) {
     std::vector<int64_t> shared_shape;
@@ -2219,14 +2180,16 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   gemm_b_dtype_ = DataType::Void();
   gemm_c_dtype_ = DataType::Void();
   LoadSeededCBRequirements(func);
-  Map<String, Any> lowering_requirements = BuildLoweringRequirementsFromAnalysis(func);
-  LoadLogicalBufferShapes(func, lowering_requirements);
+  const BlackholeLoweringSupportFacts lowering_support_facts =
+      BuildLoweringSupportFactsFromAnalysis(func);
+  LoadLogicalBufferShapes(func, lowering_support_facts);
   ValidateComputePipelineLegalityFromBody(func->body);
   requires_compute_segment_ = HasComputeSegmentRequirement(func->body);
-  LoadBufferTileBridgeSpecs(lowering_requirements);
+  LoadBufferTileBridgeSpecs(lowering_support_facts);
   buffer_materialization_contracts_by_target_buffer_ =
-      BuildBufferMaterializationContractMap(lowering_requirements);
-  LoadBufferFlowContracts(lowering_requirements);
+      BuildBufferMaterializationContractMap(
+          lowering_support_facts.buffer_materialization_contracts);
+  LoadBufferFlowContracts(lowering_support_facts);
   stmt_order_index_by_node_ = BuildExecutionOrderIndexByStmtNode(func->body);
   const std::vector<std::string> expected_unsupported_ops =
       CollectLeafUnsupportedComputeOpsFromBody(func->body);
@@ -2371,11 +2334,10 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   new_func.CopyOnWrite()->body = body;
 
   // Store CB requirements in function attributes for PlanTTCBAlloc
-  StoreCBRequirements(new_func);
   StoreSegmentPlan(new_func);
   StoreAccessorDescriptors(new_func);
   StoreGemmContract(new_func);
-  StoreLeafExecutableContracts(lowering_requirements, unresolved_unsupported_ops);
+  StoreLeafExecutableContracts(lowering_support_facts, unresolved_unsupported_ops);
 
   if (unresolved_unsupported_ops.empty()) {
     ValidateNoResidualComputeRegionStores(body);
@@ -2540,123 +2502,70 @@ bool PlanTTKernelABI::UseStagedCopyPageTransport(const Buffer& shared_buffer) co
          cols_imm->value % kBlackholeTileCols != 0;
 }
 
-// Store CB requirements in function attributes
-void PlanTTKernelABI::StoreCBRequirements(PrimFunc& func) {
-  if (cb_requirements_.empty()) {
-    return;
-  }
-
-  // Get existing attributes
-  Map<String, Any> attrs;
-  if (func->attrs.defined()) {
-    attrs = func->attrs->dict;
-  }
-
-  // Build CB requirements array
-  Array<Any> cb_reqs;
+Array<TTCBPlan> PlanTTKernelABI::GetStagedCBPlans() const {
+  Array<TTCBPlan> staged_cb_plans;
   for (size_t i = 0; i < cb_requirements_.size(); ++i) {
     const auto& req = cb_requirements_[i];
-    Map<String, Any> req_map;
-    req_map.Set("requirement_index", Integer(static_cast<int>(i)));
-    req_map.Set("name", String(req.name));
-    req_map.Set("type", String(req.type == CBType::kInput ? "input" :
-                               req.type == CBType::kOutput ? "output" : "intermediate"));
-    req_map.Set("page_size", Integer(req.page_size));
-    req_map.Set("num_pages", Integer(req.num_pages));
-    if (req.initial_reserve_pages > 0) {
-      req_map.Set("initial_reserve_pages", Integer(req.initial_reserve_pages));
-    }
-    req_map.Set("flow_class", String(CBFlowClassToString(req.flow_class)));
-    if (req.publish_pages_per_event > 0) {
-      req_map.Set("publish_pages_per_event", Integer(req.publish_pages_per_event));
-    }
-    if (req.consume_pages_per_event > 0) {
-      req_map.Set("consume_pages_per_event", Integer(req.consume_pages_per_event));
-    }
-    req_map.Set("data_format", String(req.data_format));
-    req_map.Set("lifetime_begin", Integer(req.lifetime_begin));
-    req_map.Set("lifetime_end", Integer(std::max(req.lifetime_begin, req.lifetime_end)));
-
-    cb_reqs.push_back(req_map);
+    const int64_t lifetime_begin = req.lifetime_begin;
+    const int64_t lifetime_end = std::max(req.lifetime_begin, req.lifetime_end);
+    const char* role = req.type == CBType::kInput ? "input"
+                        : req.type == CBType::kOutput ? "output"
+                                                      : "intermediate";
+    // Until PlanTTCBAlloc assigns hardware ids, cb_id carries the dense
+    // requirement slot already referenced by the lowered IR.
+    staged_cb_plans.push_back(TTCBPlan(String(req.name), static_cast<int64_t>(i), String(role),
+                                       req.num_pages, req.page_size, String(req.data_format),
+                                       req.initial_reserve_pages,
+                                       String(CBFlowClassToString(req.flow_class)),
+                                       req.publish_pages_per_event,
+                                       req.consume_pages_per_event, lifetime_begin,
+                                       lifetime_end, Map<String, Any>()));
   }
-
-  attrs.Set("blackhole.cb_requirements", cb_reqs);
-  func.CopyOnWrite()->attrs = DictAttrs(attrs);
+  return staged_cb_plans;
 }
 
 void PlanTTKernelABI::LoadSeededCBRequirements(const PrimFunc& func) {
-  if (auto cb_req_attr = func->GetAttr<Array<Any>>("blackhole.cb_requirements")) {
-    int req_index = 0;
-    for (const Any& req_any : cb_req_attr.value()) {
-      Map<String, Any> req_map = req_any.as<Map<String, Any>>().value_or(Map<String, Any>());
-      if (req_map.empty()) {
-        ++req_index;
-        continue;
-      }
-
-      CBRequirement req;
-      req.lifetime_begin = req_index;
-      req.lifetime_end = req_index;
-      if (auto name = req_map.Get("name")) {
-        req.name = Downcast<String>(name.value()).c_str();
-      }
-      if (auto cb_type = req_map.Get("type")) {
-        const String type_str = Downcast<String>(cb_type.value());
-        if (type_str == "input") {
-          req.type = CBType::kInput;
-        } else if (type_str == "output") {
-          req.type = CBType::kOutput;
-        } else {
-          req.type = CBType::kIntermediate;
-        }
-      }
-      if (auto page_size = req_map.Get("page_size")) {
-        req.page_size = Downcast<Integer>(page_size.value())->value;
-      }
-      if (auto num_pages = req_map.Get("num_pages")) {
-        req.num_pages = Downcast<Integer>(num_pages.value())->value;
-      }
-      if (auto initial_reserve_pages = req_map.Get("initial_reserve_pages")) {
-        req.initial_reserve_pages = Downcast<Integer>(initial_reserve_pages.value())->value;
-      }
-      if (auto flow_class = req_map.Get("flow_class")) {
-        const std::string flow_class_str =
-            static_cast<std::string>(Downcast<String>(flow_class.value()));
-        if (flow_class_str == "stream") {
-          req.flow_class = CBFlowClass::kStream;
-        } else if (flow_class_str == "republish") {
-          req.flow_class = CBFlowClass::kRepublish;
-        } else {
-          req.flow_class = CBFlowClass::kState;
-        }
-      }
-      if (auto publish_pages = req_map.Get("publish_pages_per_event")) {
-        req.publish_pages_per_event = Downcast<Integer>(publish_pages.value())->value;
-      }
-      if (auto consume_pages = req_map.Get("consume_pages_per_event")) {
-        req.consume_pages_per_event = Downcast<Integer>(consume_pages.value())->value;
-      }
-      if (auto data_format = req_map.Get("data_format")) {
-        req.data_format = Downcast<String>(data_format.value()).c_str();
-      }
-      if (auto lifetime_begin = req_map.Get("lifetime_begin")) {
-        req.lifetime_begin = Downcast<Integer>(lifetime_begin.value())->value;
-      }
-      if (auto lifetime_end = req_map.Get("lifetime_end")) {
-        req.lifetime_end = Downcast<Integer>(lifetime_end.value())->value;
-      }
-      if (req.lifetime_end < req.lifetime_begin) {
-        std::swap(req.lifetime_begin, req.lifetime_end);
-      }
-
-      cb_requirements_.push_back(req);
-      if (!req.name.empty()) {
-        buffer_identity_to_req_index_[req.name] = req_index;
-      }
-      ++req_index;
-    }
-    next_requirement_index_ = std::max(next_requirement_index_, req_index);
+  auto staged_program = func->GetAttr<TTProgram>(attr::kTLTTProgram);
+  if (!staged_program) {
+    return;
   }
+  for (const TTCBPlan& staged_cb_plan : staged_program.value()->cb_plans) {
+    CBRequirement req;
+    const int req_index = static_cast<int>(staged_cb_plan->cb_id);
+    ICHECK_EQ(req_index, static_cast<int>(cb_requirements_.size()))
+        << "PlanTTKernelABI requires staged TTProgram cb_plans to preserve dense requirement "
+           "slot ordering";
+    req.name = static_cast<std::string>(staged_cb_plan->name);
+    const std::string role = static_cast<std::string>(staged_cb_plan->resource_class);
+    if (role == "input") {
+      req.type = CBType::kInput;
+    } else if (role == "output") {
+      req.type = CBType::kOutput;
+    } else {
+      req.type = CBType::kIntermediate;
+    }
+    req.page_size = static_cast<int>(staged_cb_plan->page_size_bytes);
+    req.num_pages = static_cast<int>(staged_cb_plan->num_pages);
+    req.data_format = static_cast<std::string>(staged_cb_plan->data_format);
+    req.initial_reserve_pages = static_cast<int>(staged_cb_plan->initial_reserve_pages);
+    req.flow_class =
+        ParseCBFlowClass(static_cast<std::string>(staged_cb_plan->flow_class))
+            .value_or(CBFlowClass::kState);
+    req.publish_pages_per_event = static_cast<int>(staged_cb_plan->publish_pages_per_event);
+    req.consume_pages_per_event = static_cast<int>(staged_cb_plan->consume_pages_per_event);
+    req.lifetime_begin = static_cast<int>(staged_cb_plan->lifetime_begin);
+    req.lifetime_end = static_cast<int>(staged_cb_plan->lifetime_end);
+    if (req.lifetime_end < req.lifetime_begin) {
+      std::swap(req.lifetime_begin, req.lifetime_end);
+    }
+
+    cb_requirements_.push_back(req);
+    if (!req.name.empty()) {
+      buffer_identity_to_req_index_[req.name] = req_index;
+    }
+  }
+  next_requirement_index_ =
+      std::max(next_requirement_index_, static_cast<int>(cb_requirements_.size()));
 }
 
 void PlanTTKernelABI::StoreSegmentPlan(PrimFunc& func) {
@@ -3901,11 +3810,12 @@ static bool IsPureCopyLoopNest(const Stmt& stmt) {
 }
 
 void PlanTTKernelABI::StoreLeafExecutableContracts(
-    const Map<String, Any>& lowering_requirements,
+    const BlackholeLoweringSupportFacts& lowering_support_facts,
     const std::vector<std::string>& unsupported_ops) {
   Map<String, Any> tt_program_payload = tt_program_payload_;
-  if (auto bridge_specs = lowering_requirements.Get(String(schema_key::kBufferTileBridgeSpecs))) {
-    tt_program_payload.Set(String(schema_key::kBufferTileBridgeSpecs), bridge_specs.value());
+  if (!lowering_support_facts.buffer_tile_bridge_specs.empty()) {
+    tt_program_payload.Set(String(schema_key::kBufferTileBridgeSpecs),
+                           lowering_support_facts.buffer_tile_bridge_specs);
   }
 
   if (!unsupported_ops.empty()) {
@@ -4089,6 +3999,51 @@ void PlanTTKernelABI::ActivateCurrentComputeContractPayload() {
 
 void PlanTTKernelABI::RecordComputeEpilogueOp(Map<String, Any> op_payload) {
   (void)op_payload;
+}
+
+Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(const CallNode* op,
+                                                      int current_order_index) {
+  ICHECK(op != nullptr);
+  ExtractGemmInfo(op);
+
+  bool retain_in0 = false;
+  bool retain_in1 = false;
+  bool reacquire_in0 = false;
+  bool reacquire_in1 = false;
+  if (IsBufferLikeExpr(op->args[0])) {
+    const Buffer in0_buffer = ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(op->args[0])->buffer);
+    retain_in0 = ShouldRetainComputeInputBuffer(in0_buffer, current_order_index);
+    if (!retain_in0) {
+      reacquire_in0 = ShouldReacquireComputeInputBuffer(in0_buffer, current_order_index);
+    }
+  }
+  if (IsBufferLikeExpr(op->args[1])) {
+    const Buffer in1_buffer = ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(op->args[1])->buffer);
+    retain_in1 = ShouldRetainComputeInputBuffer(in1_buffer, current_order_index);
+    if (!retain_in1) {
+      reacquire_in1 = ShouldReacquireComputeInputBuffer(in1_buffer, current_order_index);
+    }
+  }
+
+  bool publish_out = true;
+  bool publish_transport_out = true;
+  bool preserve_out_local_state = false;
+  if (IsBufferLikeExpr(op->args[2])) {
+    const Buffer out_buffer = ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(op->args[2])->buffer);
+    const bool needs_accumulator_merge = FindBufferMaterializationContract(out_buffer) != nullptr;
+    if (!gemm_clear_accum_ && !needs_accumulator_merge) {
+      gemm_clear_accum_ = true;
+    }
+    const FutureBufferUses future_uses =
+        ClassifyFutureBufferUses(out_buffer, current_order_index);
+    publish_out = future_uses.has_compute_consume || future_uses.has_transport_consume;
+    publish_transport_out = future_uses.has_transport_consume;
+    preserve_out_local_state = future_uses.has_compute_consume || future_uses.has_reference;
+  }
+
+  return GenerateMatmulSequence(op, retain_in0, retain_in1, publish_out,
+                                publish_transport_out, preserve_out_local_state, reacquire_in0,
+                                reacquire_in1);
 }
 
 Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
@@ -7475,51 +7430,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       }
       if (const auto* call = eval->value.as<CallNode>()) {
         if (IsMatmulCall(call)) {
-          ExtractGemmInfo(call);
-          bool retain_in0 = false;
-          bool retain_in1 = false;
-          bool reacquire_in0 = false;
-          bool reacquire_in1 = false;
-          if (IsBufferLikeExpr(call->args[0])) {
-            const Buffer in0_buffer =
-                ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(call->args[0])->buffer);
-            retain_in0 = ShouldRetainComputeInputBuffer(in0_buffer, current_order_index);
-            if (!retain_in0) {
-              reacquire_in0 =
-                  ShouldReacquireComputeInputBuffer(in0_buffer, current_order_index);
-            }
-          }
-          if (IsBufferLikeExpr(call->args[1])) {
-            const Buffer in1_buffer =
-                ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(call->args[1])->buffer);
-            retain_in1 = ShouldRetainComputeInputBuffer(in1_buffer, current_order_index);
-            if (!retain_in1) {
-              reacquire_in1 =
-                  ShouldReacquireComputeInputBuffer(in1_buffer, current_order_index);
-            }
-          }
-          bool publish_out = true;
-          bool publish_transport_out = true;
-          bool preserve_out_local_state = false;
-          if (IsBufferLikeExpr(call->args[2])) {
-            const Buffer out_buffer =
-                ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(call->args[2])->buffer);
-            const bool needs_accumulator_merge =
-                FindBufferMaterializationContract(out_buffer) != nullptr;
-            if (!gemm_clear_accum_ && !needs_accumulator_merge) {
-              gemm_clear_accum_ = true;
-            }
-            const FutureBufferUses future_uses =
-                ClassifyFutureBufferUses(out_buffer, current_order_index);
-            publish_out = future_uses.has_compute_consume || future_uses.has_transport_consume;
-            publish_transport_out = future_uses.has_transport_consume;
-            preserve_out_local_state =
-                future_uses.has_compute_consume || future_uses.has_reference;
-          }
-          Stmt matmul =
-              GenerateMatmulSequence(call, retain_in0, retain_in1, publish_out,
-                                     publish_transport_out, preserve_out_local_state,
-                                     reacquire_in0, reacquire_in1);
+          Stmt matmul = LowerMatmulCallWithFlowAnalysis(call, current_order_index);
           for (auto it = rewrap_stack.rbegin(); it != rewrap_stack.rend(); ++it) {
             matmul = (*it)(matmul);
           }
@@ -7854,8 +7765,10 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
   }
   if (const auto* call = op->value.as<CallNode>()) {
     if (IsMatmulCall(call)) {
-      ExtractGemmInfo(call);
-      return GenerateMatmulSequence(call);
+      const auto order_it = stmt_order_index_by_node_.find(op);
+      const int current_order_index =
+          order_it != stmt_order_index_by_node_.end() ? order_it->second : 0;
+      return LowerMatmulCallWithFlowAnalysis(call, current_order_index);
     }
     if (IsClearOperation(call)) {
       return GenerateClearSequence(call);

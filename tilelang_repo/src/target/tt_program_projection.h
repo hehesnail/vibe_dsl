@@ -67,6 +67,12 @@ inline Array<Any> EncodeCBPlans(const Array<TTCBPlan>& cb_plans) {
     item.Set("num_pages", Integer(cb->num_pages));
     item.Set("page_size", Integer(cb->page_size_bytes));
     item.Set("data_format", cb->data_format);
+    item.Set("initial_reserve_pages", Integer(cb->initial_reserve_pages));
+    item.Set("flow_class", cb->flow_class);
+    item.Set("publish_pages_per_event", Integer(cb->publish_pages_per_event));
+    item.Set("consume_pages_per_event", Integer(cb->consume_pages_per_event));
+    item.Set("lifetime_begin", Integer(cb->lifetime_begin));
+    item.Set("lifetime_end", Integer(cb->lifetime_end));
     encoded.push_back(item);
   }
   return encoded;

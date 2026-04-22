@@ -17,6 +17,35 @@
   和它与 cleanup task2/task3 的关系
 - 当前 repo HEAD 状态统一只看 `tasks/progress.md`
 
+### repo HEAD note (`2026-04-22`)
+
+- `tl.blackhole_lowering_requirements_seed`
+  和
+  `blackhole.cb_requirements`
+  已退出 active planning chain
+- staged CB planning truth
+  已收回
+  `TTProgram.cb_plans`
+  / typed `TTCBPlan`
+- `BuildTTProgram`
+  当前只承担 staged slice aggregation /
+  finalize /
+  cleanup
+- `ValidateTTProgram`
+  当前会对 unresolved
+  `unsupported_compute_ops`
+  fail-close
+- repo HEAD
+  仍保留的
+  `TTProgram.payload`
+  字段
+  只按 task3
+  leaf compatibility residue
+  记录，
+  不再表述成
+  `TTProgram`
+  owner truth
+
 ## 1. 目标
 
 `TTProgram`

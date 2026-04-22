@@ -22,10 +22,10 @@
  * \brief Plan Circular Buffer (CB) allocation for Blackhole backend
  *
  * MVP Implementation (Phase 1):
- * - Read CB requirements from function attributes (written by PlanTTKernelABI)
+ * - Read staged CB requirements from TTProgram cb_plans
  * - Validate constraints (CB count <= 64, total L1 <= 1.5MB)
  * - Assign CB IDs following TT-Metal convention: 0-15 input, 16-31 output
- * - Store CB configuration in function attributes
+ * - Rewrite placeholder requirement indices in the IR to final CB IDs
  */
 
 #include "plan_blackhole_cb.h"
@@ -323,74 +323,43 @@ PrimFunc PlanTTCBAlloc::Transform(const PrimFunc& func) {
   return new_func;
 }
 
-// Get CB requirements from function attributes
+// Get staged CB requirements from TTProgram.
 std::vector<CBRequirement> PlanTTCBAlloc::GetCBRequirements(
     const PrimFunc& func) {
   std::vector<CBRequirement> requirements;
 
-  // Read from function attributes (set by PlanTTKernelABI)
-  // Attribute format: "blackhole.cb_requirements" = [cb0_info, cb1_info, ...]
-  if (auto cb_req_attr = func->GetAttr<Array<Any>>("blackhole.cb_requirements")) {
-    Array<Any> cb_reqs = cb_req_attr.value();
-    int req_index = 0;
-    for (const auto& req : cb_reqs) {
-      // Try to downcast to Map - if it fails, req_map will be empty
-      Map<String, Any> req_map = req.as<Map<String, Any>>().value_or(Map<String, Any>());
-      if (!req_map.empty()) {
-        CBRequirement cb_req;
-        cb_req.lifetime_begin = req_index;
-        cb_req.lifetime_end = req_index;
+  auto staged_program = func->GetAttr<TTProgram>(attr::kTLTTProgram);
+  if (staged_program) {
+    for (const TTCBPlan& staged_cb_plan : staged_program.value()->cb_plans) {
+      ICHECK_EQ(static_cast<int>(staged_cb_plan->cb_id), static_cast<int>(requirements.size()))
+          << "PlanTTCBAlloc requires staged TTProgram cb_plans to preserve dense requirement "
+             "slot ordering";
+      CBRequirement cb_req;
+      cb_req.name = static_cast<std::string>(staged_cb_plan->name);
+      cb_req.page_size = static_cast<int>(staged_cb_plan->page_size_bytes);
+      cb_req.num_pages = static_cast<int>(staged_cb_plan->num_pages);
+      cb_req.data_format = static_cast<std::string>(staged_cb_plan->data_format);
+      cb_req.initial_reserve_pages = static_cast<int>(staged_cb_plan->initial_reserve_pages);
+      cb_req.flow_class = CBFlowClassFromString(static_cast<std::string>(staged_cb_plan->flow_class));
+      cb_req.publish_pages_per_event = static_cast<int>(staged_cb_plan->publish_pages_per_event);
+      cb_req.consume_pages_per_event = static_cast<int>(staged_cb_plan->consume_pages_per_event);
+      cb_req.lifetime_begin = static_cast<int>(staged_cb_plan->lifetime_begin);
+      cb_req.lifetime_end = static_cast<int>(staged_cb_plan->lifetime_end);
 
-        if (auto name = req_map.Get("name")) {
-          cb_req.name = Downcast<String>(name.value()).c_str();
-        }
-        if (auto cb_type = req_map.Get("type")) {
-          String type_str = Downcast<String>(cb_type.value());
-          if (type_str == "input") cb_req.type = CBType::kInput;
-          else if (type_str == "output") cb_req.type = CBType::kOutput;
-          else cb_req.type = CBType::kIntermediate;
-        }
-        if (auto page_size = req_map.Get("page_size")) {
-          cb_req.page_size = Downcast<Integer>(page_size.value())->value;
-        }
-        if (auto num_pages = req_map.Get("num_pages")) {
-          cb_req.num_pages = Downcast<Integer>(num_pages.value())->value;
-        }
-        if (auto initial_reserve_pages = req_map.Get("initial_reserve_pages")) {
-          cb_req.initial_reserve_pages =
-              Downcast<Integer>(initial_reserve_pages.value())->value;
-        }
-        if (auto flow_class = req_map.Get("flow_class")) {
-          cb_req.flow_class = CBFlowClassFromString(
-              std::string(Downcast<String>(flow_class.value()).c_str()));
-        }
-        if (auto publish_pages = req_map.Get("publish_pages_per_event")) {
-          cb_req.publish_pages_per_event = Downcast<Integer>(publish_pages.value())->value;
-        }
-        if (auto consume_pages = req_map.Get("consume_pages_per_event")) {
-          cb_req.consume_pages_per_event = Downcast<Integer>(consume_pages.value())->value;
-        }
-        if (auto data_format = req_map.Get("data_format")) {
-          cb_req.data_format = Downcast<String>(data_format.value()).c_str();
-        }
-        if (auto lifetime_begin = req_map.Get("lifetime_begin")) {
-          cb_req.lifetime_begin = Downcast<Integer>(lifetime_begin.value())->value;
-        }
-        if (auto lifetime_end = req_map.Get("lifetime_end")) {
-          cb_req.lifetime_end = Downcast<Integer>(lifetime_end.value())->value;
-        }
-        if (cb_req.lifetime_end < cb_req.lifetime_begin) {
-          std::swap(cb_req.lifetime_begin, cb_req.lifetime_end);
-        }
-
-        requirements.push_back(cb_req);
+      const std::string role = static_cast<std::string>(staged_cb_plan->resource_class);
+      if (role == "input") cb_req.type = CBType::kInput;
+      else if (role == "output") cb_req.type = CBType::kOutput;
+      else cb_req.type = CBType::kIntermediate;
+      if (cb_req.lifetime_end < cb_req.lifetime_begin) {
+        std::swap(cb_req.lifetime_begin, cb_req.lifetime_end);
       }
-      ++req_index;
+
+      requirements.push_back(cb_req);
     }
   }
 
   ICHECK(!requirements.empty())
-      << "PlanTTCBAlloc requires explicit blackhole.cb_requirements; "
+      << "PlanTTCBAlloc requires staged TTProgram cb_plans; "
          "alloc_shared inference is no longer part of the formal planner contract";
 
   return requirements;

@@ -1,6 +1,6 @@
 /*!
  * \file blackhole_lowering_requirements.h
- * \brief Derive Blackhole lowering requirements directly from SpatialPlan and analysis attrs.
+ * \brief Derive typed Blackhole lowering support facts directly from SpatialPlan and current TIR.
  */
 
 #ifndef TVM_TL_TRANSFORM_COMMON_BLACKHOLE_LOWERING_REQUIREMENTS_H_
@@ -13,7 +13,13 @@
 namespace tvm {
 namespace tl {
 
-TVM_DLL tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> BuildBlackholeLoweringRequirements(
+struct BlackholeLoweringSupportFacts {
+  tvm::ffi::Array<tvm::ffi::Any> buffer_tile_bridge_specs;
+  tvm::ffi::Array<tvm::ffi::Any> buffer_materialization_contracts;
+  tvm::ffi::Array<tvm::ffi::Any> buffer_flow_contracts;
+};
+
+TVM_DLL BlackholeLoweringSupportFacts AnalyzeBlackholeLoweringSupportFacts(
     const tvm::tir::PrimFunc& func, const SpatialPlan& plan);
 
 }  // namespace tl

@@ -81,6 +81,27 @@ void ValidateSyncPlan(const TTSyncPlan& sync_plan) {
   ICHECK(!sync_plan->completion_kind.empty()) << "TTSyncPlan requires completion_kind";
 }
 
+void ValidateCBPlan(const TTCBPlan& cb_plan) {
+  ICHECK(!cb_plan->name.empty()) << "TTCBPlan requires name";
+  ICHECK(!cb_plan->resource_class.empty()) << "TTCBPlan requires resource_class";
+  ICHECK_GT(cb_plan->num_pages, 0) << "TTCBPlan requires positive num_pages";
+  ICHECK_GT(cb_plan->page_size_bytes, 0) << "TTCBPlan requires positive page_size_bytes";
+  ICHECK(!cb_plan->data_format.empty()) << "TTCBPlan requires data_format";
+  ICHECK_GE(cb_plan->initial_reserve_pages, 0)
+      << "TTCBPlan requires non-negative initial_reserve_pages";
+  ICHECK(!cb_plan->flow_class.empty()) << "TTCBPlan requires flow_class";
+  const std::string flow_class = cb_plan->flow_class;
+  ICHECK(flow_class == "state" || flow_class == "stream" || flow_class == "republish")
+      << "TTCBPlan flow_class must be one of state/stream/republish";
+  ICHECK_GE(cb_plan->publish_pages_per_event, 0)
+      << "TTCBPlan requires non-negative publish_pages_per_event";
+  ICHECK_GE(cb_plan->consume_pages_per_event, 0)
+      << "TTCBPlan requires non-negative consume_pages_per_event";
+  ICHECK_GE(cb_plan->lifetime_begin, 0) << "TTCBPlan requires non-negative lifetime_begin";
+  ICHECK_GE(cb_plan->lifetime_end, cb_plan->lifetime_begin)
+      << "TTCBPlan requires lifetime_end >= lifetime_begin";
+}
+
 void ValidateAccessor(const Map<String, Any>& accessor) {
   ICHECK(HasKey(accessor, "buffer")) << "TTABIPlan accessor requires buffer";
   ICHECK(HasKey(accessor, "compile_time_arg_offset"))
@@ -122,12 +143,21 @@ void ValidateBufferTileBridgeSpecs(const Map<String, Any>& payload) {
 void ValidateUnsupportedComputeOps(const Map<String, Any>& payload) {
   if (auto ops_any = payload.Get(String("unsupported_compute_ops"))) {
     Array<Any> ops = Downcast<Array<Any>>(ops_any.value());
+    std::string joined_ops;
     for (const Any& op_any : ops) {
       auto op = op_any.as<String>();
       ICHECK(op) << "TTProgram payload unsupported_compute_ops entries must be strings";
       ICHECK(!op.value().empty())
           << "TTProgram payload unsupported_compute_ops entries must be non-empty";
+      if (!joined_ops.empty()) {
+        joined_ops += ", ";
+      }
+      joined_ops += static_cast<std::string>(op.value());
     }
+    ICHECK(ops.empty())
+        << "ValidateTTProgram requires exact TT-Metal builtin legality before leaf projection; "
+           "unsupported_compute_ops remain: "
+        << joined_ops;
   }
 }
 
@@ -287,6 +317,7 @@ void CheckTTProgram(const TTProgram& program) {
 
   std::unordered_set<int64_t> cb_ids;
   for (const TTCBPlan& cb : program->cb_plans) {
+    ValidateCBPlan(cb);
     ICHECK_GE(cb->cb_id, 0) << "TTCBPlan requires non-negative cb_id";
     ICHECK(cb_ids.insert(cb->cb_id).second) << "duplicate TTCBPlan cb_id " << cb->cb_id;
   }

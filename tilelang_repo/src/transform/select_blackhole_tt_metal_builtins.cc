@@ -49,6 +49,14 @@ const std::unordered_set<std::string>& HelperCompositeBlackholeBuiltinNames() {
   return *names;
 }
 
+TTProgram WithStagedCBPlans(const TTProgram& program, ffi::Array<TTCBPlan> cb_plans) {
+  return TTProgram(program->entry_name, program->member_func, program->block_plans,
+                   program->kernel_plans, program->transport_plans, program->sync_plans,
+                   program->abi_plans, program->execution_plans, program->kernels,
+                   program->core_groups, std::move(cb_plans), program->semaphore_plans,
+                   program->compute_sync_plans, program->dst_layout_plans, program->payload);
+}
+
 }  // namespace
 
 bool IsHelperCompositeBlackholeBuiltin(const tvm::Op& op) {
@@ -84,6 +92,12 @@ tvm::transform::Pass SelectBlackholeTTMetalBuiltins() {
       tir::PrimFunc selected = selector.SelectComputeBuiltins(func.value());
       ICHECK(!UsesHelperCompositeBlackholeBuiltin(selected))
           << "SelectBlackholeTTMetalBuiltins emitted helper/composite builtin residue";
+      auto staged_program = selected->GetAttr<TTProgram>(attr::kTLTTProgram);
+      ICHECK(staged_program)
+          << "SelectBlackholeTTMetalBuiltins requires staged tl.tt_program from PlanTTBlocks";
+      selected =
+          WithAttr(std::move(selected), attr::kTLTTProgram,
+                   WithStagedCBPlans(staged_program.value(), selector.GetStagedCBPlans()));
       selected = WithAttr(std::move(selected), kTLBlackholeTTMetalBuiltinSelection, Bool(true));
       updated->Add(gvar, selected, true);
     }

@@ -26,6 +26,7 @@
 #define TVM_TL_LOWER_BLACKHOLE_OPS_H_
 
 #include "blackhole_cb_common.h"
+#include "common/blackhole_lowering_requirements.h"
 #include "common/tt_target_program.h"
 
 #include <tvm/ir/op.h>
@@ -46,8 +47,6 @@ namespace tl {
 
 constexpr const char* kTLBlackholeTTMetalBuiltinSelection =
     "tl.blackhole_tt_metal_builtin_selection";
-constexpr const char* kTLBlackholeLoweringRequirementsSeed =
-    "tl.blackhole_lowering_requirements_seed";
 
 bool IsHelperCompositeBlackholeBuiltin(const tvm::Op& op);
 bool UsesHelperCompositeBlackholeBuiltin(const tvm::tir::PrimFunc& func);
@@ -90,6 +89,14 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Get TT ABI plans synthesized during Transform. */
   tvm::ffi::Array<TTABIPlan> GetTTABIPlans() const { return tt_abi_plans_; }
+
+  /*! \brief Get staged CB plans synthesized during selection/lowering.
+   *
+   * The staged plans already own the CB requirement contract. Before PlanTTCBAlloc
+   * finalizes hardware bindings, `cb_id` carries the dense requirement slot
+   * referenced by the lowered IR.
+   */
+  tvm::ffi::Array<TTCBPlan> GetStagedCBPlans() const;
 
   /*! \brief Get TT program payload synthesized during Transform. */
   tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> GetTTProgramPayload() const {
@@ -253,10 +260,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
    */
   int AllocateRequirementIndex(const tvm::tir::Buffer& buffer, CBType type);
 
-  /*! \brief Store CB requirements in function attributes */
-  void StoreCBRequirements(tvm::tir::PrimFunc& func);
-
-  /*! \brief Load seeded CB requirements from function attributes and preserve indices. */
+  /*! \brief Load staged CB plans from TTProgram and preserve requirement indices. */
   void LoadSeededCBRequirements(const tvm::tir::PrimFunc& func);
 
   /*! \brief Store minimal segment/kernel plan inferred during lowering */
@@ -269,9 +273,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   void StoreAccessorDescriptors(tvm::tir::PrimFunc& func);
 
   /*! \brief Store leaf-only build/codegen contracts into TTProgram payload. */
-  void StoreLeafExecutableContracts(
-      const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>& lowering_requirements,
-      const std::vector<std::string>& unsupported_ops);
+  void StoreLeafExecutableContracts(const BlackholeLoweringSupportFacts& lowering_support_facts,
+                                    const std::vector<std::string>& unsupported_ops);
 
   /*! \brief Encode current lowering-time accessor descriptors as TIR attrs */
   tvm::ffi::Array<tvm::ffi::Any> EncodeAccessorDescriptors(const std::string& segment_kind) const;
@@ -281,8 +284,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Load logical buffer shapes from the semantic manifest when present. */
   void LoadLogicalBufferShapes(const tvm::tir::PrimFunc& func,
-                               const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>&
-                                   lowering_requirements);
+                               const BlackholeLoweringSupportFacts& lowering_support_facts);
 
   /*! \brief Return manifest-backed logical shape for a buffer when available. */
   std::vector<int64_t> GetLogicalBufferShape(const tvm::tir::Buffer& buffer) const;
@@ -300,8 +302,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::pair<int64_t, int64_t> GetLogicalMatrixShape(const tvm::tir::Buffer& buffer) const;
 
   /*! \brief Load buffer-distribution contracts exported by lowering requirements. */
-  void LoadBufferTileBridgeSpecs(
-      const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>& lowering_requirements);
+  void LoadBufferTileBridgeSpecs(const BlackholeLoweringSupportFacts& lowering_support_facts);
 
   /*! \brief Return the buffer-distribution contract for a buffer, or nullptr if absent. */
   const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>* FindBufferTileBridgeSpec(
@@ -424,6 +425,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool UseStagedCopyPageTransport(const tvm::tir::Buffer& shared_buffer) const;
 
   /*! \brief Generate matmul builtin sequence */
+  tvm::tir::Stmt LowerMatmulCallWithFlowAnalysis(const tvm::tir::CallNode* op,
+                                                 int current_order_index);
   tvm::tir::Stmt GenerateMatmulSequence(const tvm::tir::CallNode* op,
                                         bool retain_in0 = false,
                                         bool retain_in1 = false,
@@ -545,7 +548,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool MatchGroupedScalarFragmentCopyLoop(const tvm::tir::ForNode* op,
                                           ScalarFragmentCopyMatch* match) const;
   tvm::tir::Stmt GenerateScalarFragmentCopySequence(const ScalarFragmentCopyMatch& match);
-  void LoadBufferFlowContracts(const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>& lowering_requirements);
+  void LoadBufferFlowContracts(const BlackholeLoweringSupportFacts& lowering_support_facts);
   FutureBufferUses ClassifyFutureBufferUses(const tvm::tir::Buffer& buffer,
                                             int current_order_index) const;
   const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>* FindBufferMaterializationContract(

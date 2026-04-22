@@ -112,6 +112,20 @@
   与 compatibility payload，
   validator 必须检查对齐，
   防止 payload 漂成第二真源
+- 扩 `TTProgram` /
+  `TTCBPlan`
+  这类显式对象时，
+  要同步更新：
+  - object schema / reflection
+  - producer pass
+  - executable projection
+  - validator
+  - Python 侧回归断言；
+  否则很容易出现
+  C++ 已经 typed 化，
+  但 leaf reader /
+  测试
+  还在读旧 payload
 - exact TT-Metal builtin 选择
   必须发生在 anchored sub-TIR
   仍保留 tile-op / layout / load-store /

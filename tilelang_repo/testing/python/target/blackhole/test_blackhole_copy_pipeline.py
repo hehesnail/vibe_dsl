@@ -659,8 +659,10 @@ def test_blackhole_copy_pass_attrs():
     cb_plans = tt_program.cb_plans
     assert [str(cb.resource_class) for cb in cb_plans] == ["intermediate"]
     assert int(cb_plans[0].payload["total_size_bytes"]) == 4096
-    assert int(cb_plans[0].payload["lifetime_begin"]) == 0
-    assert int(cb_plans[0].payload["lifetime_end"]) == 0
+    assert int(cb_plans[0].lifetime_begin) == 0
+    assert int(cb_plans[0].lifetime_end) == 0
+    assert "lifetime_begin" not in dict(cb_plans[0].payload)
+    assert "lifetime_end" not in dict(cb_plans[0].payload)
     assert [str(name) for name in cb_plans[0].payload["requirement_names"]] == [
         str(cb_plans[0].name)
     ]

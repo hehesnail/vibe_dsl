@@ -38,7 +38,6 @@ tir::PrimFunc StripTTIntermediateAttrs(tir::PrimFunc func) {
   static const char* kLegacyProjectionAttrs[] = {
       "blackhole.cb_requirements",
       attr::kTLBlackholeLogicalBufferTileBridgeSpecs,
-      kTLBlackholeLoweringRequirementsSeed,
   };
   for (const char* key : kLegacyProjectionAttrs) {
     func = tvm::WithoutAttr(std::move(func), key);
@@ -201,25 +200,7 @@ Array<TTCBPlan> BuildCBPlans(const std::vector<CBConfig>& configs) {
   Array<TTCBPlan> tt_cb_plans;
   for (const auto& config : configs) {
     Map<String, Any> cb_attr;
-    cb_attr.Set("cb_id", Integer(config.cb_id));
-    cb_attr.Set("page_size", Integer(config.page_size));
-    cb_attr.Set("num_pages", Integer(config.num_pages));
-    if (config.initial_reserve_pages > 0) {
-      cb_attr.Set("initial_reserve_pages", Integer(config.initial_reserve_pages));
-    }
-    cb_attr.Set("flow_class", String(CBFlowClassToString(config.flow_class)));
-    if (config.publish_pages_per_event > 0) {
-      cb_attr.Set("publish_pages_per_event", Integer(config.publish_pages_per_event));
-    }
-    if (config.consume_pages_per_event > 0) {
-      cb_attr.Set("consume_pages_per_event", Integer(config.consume_pages_per_event));
-    }
     cb_attr.Set("total_size_bytes", Integer(config.total_size));
-    cb_attr.Set("data_format", String(config.data_format));
-    cb_attr.Set("name", String(config.name));
-    cb_attr.Set("role", String(config.role));
-    cb_attr.Set("lifetime_begin", Integer(config.lifetime_begin));
-    cb_attr.Set("lifetime_end", Integer(config.lifetime_end));
     Array<Any> requirement_names;
     Array<Any> requirement_indices;
     for (const auto& req_name : config.requirement_names) {
@@ -232,6 +213,11 @@ Array<TTCBPlan> BuildCBPlans(const std::vector<CBConfig>& configs) {
     cb_attr.Set("requirement_indices", requirement_indices);
     tt_cb_plans.push_back(TTCBPlan(String(config.name), config.cb_id, String(config.role),
                                    config.num_pages, config.page_size, String(config.data_format),
+                                   config.initial_reserve_pages,
+                                   String(CBFlowClassToString(config.flow_class)),
+                                   config.publish_pages_per_event,
+                                   config.consume_pages_per_event, config.lifetime_begin,
+                                   config.lifetime_end,
                                    cb_attr));
   }
   return tt_cb_plans;
@@ -481,6 +467,7 @@ tvm::transform::Pass PlanTTCompute() {
       TTProgramSlices slices = GetOrCreateTTProgramSlices(planned, gvar, spatial_plan);
       slices.kernel_plans = BuildKernelPlans(kernels);
       slices.kernels = kernels;
+      slices.cb_plans = planner.GetStagedCBPlans();
       slices.abi_plans = planner.GetTTABIPlans();
       slices.payload = planner.GetTTProgramPayload();
       planned = WithTTProgramAttr(std::move(planned), PackTTProgram(std::move(slices)));
