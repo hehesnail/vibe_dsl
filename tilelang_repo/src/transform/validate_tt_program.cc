@@ -268,6 +268,76 @@ void ValidateProgramPayload(const TTProgram& program) {
   ValidateUnsupportedComputeOps(payload);
 }
 
+void ValidateLiveFormPlans(const TTProgram& program,
+                           std::unordered_set<std::string>* live_form_names) {
+  for (const TTLiveFormPlan& plan : program->live_form_plans) {
+    ICHECK(!plan->name.empty()) << "TTLiveFormPlan requires name";
+    ICHECK(!plan->logical_value.empty()) << "TTLiveFormPlan requires logical_value";
+    ICHECK(!plan->producer_kernel.empty()) << "TTLiveFormPlan requires producer_kernel";
+    ICHECK(!plan->physical_form.empty()) << "TTLiveFormPlan requires physical_form";
+    ICHECK(!plan->execution_topology.empty()) << "TTLiveFormPlan requires execution_topology";
+    ICHECK_GT(plan->physical_local_extent, 0)
+        << "TTLiveFormPlan requires positive physical_local_extent";
+    ICHECK_GT(plan->logical_element_count, 0)
+        << "TTLiveFormPlan requires positive logical_element_count";
+    ICHECK(live_form_names->insert(plan->name).second)
+        << "duplicate TTLiveFormPlan name " << plan->name;
+  }
+}
+
+void ValidateMaterializationPlans(const TTProgram& program,
+                                  const std::unordered_set<std::string>& live_form_names,
+                                  int64_t cb_plan_count) {
+  for (const TTMaterializationPlan& plan : program->materialization_plans) {
+    ICHECK(!plan->name.empty()) << "TTMaterializationPlan requires name";
+    ICHECK(!plan->source_live_form.empty())
+        << "TTMaterializationPlan requires source_live_form";
+    ICHECK(live_form_names.count(plan->source_live_form))
+        << "TTMaterializationPlan references unknown source_live_form "
+        << plan->source_live_form;
+    ICHECK(!plan->target_buffer.empty()) << "TTMaterializationPlan requires target_buffer";
+    ICHECK(!plan->target_kernel.empty()) << "TTMaterializationPlan requires target_kernel";
+    ICHECK(!plan->materialization_protocol.empty())
+        << "TTMaterializationPlan requires materialization_protocol";
+    ICHECK(!plan->produced_live_form.empty())
+        << "TTMaterializationPlan requires produced_live_form";
+    ICHECK(live_form_names.count(plan->produced_live_form))
+        << "TTMaterializationPlan references unknown produced_live_form "
+        << plan->produced_live_form;
+    if (plan->materialization_protocol == buffer_materialization::kCBRepublish) {
+      ICHECK(!plan->required_cb_plan_indices.empty())
+          << "TTMaterializationPlan cb_republish requires required_cb_plan_indices";
+    }
+    for (const Integer& index : plan->required_cb_plan_indices) {
+      ICHECK_GE(index->value, 0) << "TTMaterializationPlan requires non-negative CB plan index";
+      ICHECK_LT(index->value, cb_plan_count)
+          << "TTMaterializationPlan required_cb_plan_indices out of bounds";
+    }
+  }
+}
+
+void ValidateConsumerBindingPlans(const TTProgram& program,
+                                  const std::unordered_set<std::string>& live_form_names,
+                                  int64_t abi_plan_count) {
+  for (const TTConsumerBindingPlan& plan : program->consumer_binding_plans) {
+    ICHECK(!plan->name.empty()) << "TTConsumerBindingPlan requires name";
+    ICHECK(!plan->consumer_kernel.empty()) << "TTConsumerBindingPlan requires consumer_kernel";
+    ICHECK(!plan->consumer_op_kind.empty()) << "TTConsumerBindingPlan requires consumer_op_kind";
+    ICHECK(!plan->source_live_form.empty())
+        << "TTConsumerBindingPlan requires source_live_form";
+    ICHECK(live_form_names.count(plan->source_live_form))
+        << "TTConsumerBindingPlan references unknown source_live_form "
+        << plan->source_live_form;
+    if (plan->abi_plan_index >= 0) {
+      ICHECK_LT(plan->abi_plan_index, abi_plan_count)
+          << "TTConsumerBindingPlan abi_plan_index out of bounds";
+    }
+    ICHECK(plan->accepts_distributed_slice || plan->requires_full_logical_tile)
+        << "TTConsumerBindingPlan must declare whether the consumer accepts a distributed slice "
+           "or requires a full logical tile";
+  }
+}
+
 void CheckTTProgram(const TTProgram& program) {
   ICHECK(!program->entry_name.empty()) << "TTProgram requires entry_name";
   ICHECK(!program->block_plans.empty()) << "TTProgram requires at least one TTBlockPlan";
@@ -322,6 +392,11 @@ void CheckTTProgram(const TTProgram& program) {
     ICHECK(cb_ids.insert(cb->cb_id).second) << "duplicate TTCBPlan cb_id " << cb->cb_id;
   }
 
+  std::unordered_set<std::string> live_form_names;
+  ValidateLiveFormPlans(program, &live_form_names);
+  ValidateMaterializationPlans(program, live_form_names,
+                               static_cast<int64_t>(program->cb_plans.size()));
+
   std::unordered_set<std::string> abi_kernel_names;
   for (const TTABIPlan& abi : program->abi_plans) {
     ICHECK(!abi->kernel_name.empty()) << "TTABIPlan requires kernel_name";
@@ -337,6 +412,8 @@ void CheckTTProgram(const TTProgram& program) {
     ICHECK(abi_kernel_names.count(kernel->name))
         << "TTKernel missing matching TTABIPlan: " << kernel->name;
   }
+  ValidateConsumerBindingPlans(program, live_form_names,
+                               static_cast<int64_t>(program->abi_plans.size()));
 
   for (const TTTransportPlan& transport : program->transport_plans) {
     ICHECK(!transport->kind.empty()) << "TTTransportPlan requires kind";

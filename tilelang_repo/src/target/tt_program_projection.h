@@ -39,6 +39,9 @@ constexpr const char* kMultiGemmContracts = "multi_gemm_contracts";
 constexpr const char* kMultiComputeContracts = "multi_compute_contracts";
 constexpr const char* kComputeEpilogueOps = "compute_epilogue_ops";
 constexpr const char* kDirectRuntimeUnsupportedReasons = "direct_runtime_unsupported_reasons";
+constexpr const char* kLiveFormPlans = "live_form_plans";
+constexpr const char* kMaterializationPlans = "materialization_plans";
+constexpr const char* kConsumerBindingPlans = "consumer_binding_plans";
 constexpr const char* kBufferTileBridgeSpecs = ::tvm::tl::schema_key::kBufferTileBridgeSpecs;
 constexpr const char* kUnsupportedComputeOps = "unsupported_compute_ops";
 }  // namespace executable_key
@@ -97,6 +100,62 @@ inline Array<Any> EncodeSemaphorePlans(const Array<TTSemaphorePlan>& semaphore_p
     item.Set("core_type", sem->core_type);
     if (!sem->core_ranges.empty()) {
       item.Set("core_ranges", sem->core_ranges);
+    }
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any> EncodeLiveFormPlans(const Array<TTLiveFormPlan>& live_form_plans) {
+  Array<Any> encoded;
+  for (const TTLiveFormPlan& plan : live_form_plans) {
+    Map<String, Any> item = plan->payload;
+    item.Set("name", plan->name);
+    item.Set("logical_value", plan->logical_value);
+    item.Set("producer_kernel", plan->producer_kernel);
+    item.Set("physical_form", plan->physical_form);
+    item.Set("execution_topology", plan->execution_topology);
+    item.Set("physical_local_extent", Integer(plan->physical_local_extent));
+    item.Set("logical_element_count", Integer(plan->logical_element_count));
+    item.Set("ownership_kind", plan->ownership_kind);
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any> EncodeMaterializationPlans(
+    const Array<TTMaterializationPlan>& materialization_plans) {
+  Array<Any> encoded;
+  for (const TTMaterializationPlan& plan : materialization_plans) {
+    Map<String, Any> item = plan->payload;
+    item.Set("name", plan->name);
+    item.Set("source_live_form", plan->source_live_form);
+    item.Set("target_buffer", plan->target_buffer);
+    item.Set("target_kernel", plan->target_kernel);
+    item.Set("materialization_protocol", plan->materialization_protocol);
+    item.Set("required_cb_plan_indices", plan->required_cb_plan_indices);
+    if (!plan->required_sync_plan_indices.empty()) {
+      item.Set("required_sync_plan_indices", plan->required_sync_plan_indices);
+    }
+    item.Set("produced_live_form", plan->produced_live_form);
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any> EncodeConsumerBindingPlans(
+    const Array<TTConsumerBindingPlan>& consumer_binding_plans) {
+  Array<Any> encoded;
+  for (const TTConsumerBindingPlan& plan : consumer_binding_plans) {
+    Map<String, Any> item = plan->payload;
+    item.Set("name", plan->name);
+    item.Set("consumer_kernel", plan->consumer_kernel);
+    item.Set("consumer_op_kind", plan->consumer_op_kind);
+    item.Set("source_live_form", plan->source_live_form);
+    item.Set("accepts_distributed_slice", Bool(plan->accepts_distributed_slice));
+    item.Set("requires_full_logical_tile", Bool(plan->requires_full_logical_tile));
+    if (plan->abi_plan_index >= 0) {
+      item.Set("abi_plan_index", Integer(plan->abi_plan_index));
     }
     encoded.push_back(item);
   }
@@ -236,6 +295,23 @@ inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram
   Array<Any> semaphore_plan = EncodeSemaphorePlans(program->semaphore_plans);
   if (!semaphore_plan.empty()) {
     executable.Set(String(executable_key::kSemaphorePlan), semaphore_plan);
+  }
+
+  Array<Any> live_form_plans = EncodeLiveFormPlans(program->live_form_plans);
+  if (!live_form_plans.empty()) {
+    executable.Set(String(executable_key::kLiveFormPlans), live_form_plans);
+  }
+
+  Array<Any> materialization_plans =
+      EncodeMaterializationPlans(program->materialization_plans);
+  if (!materialization_plans.empty()) {
+    executable.Set(String(executable_key::kMaterializationPlans), materialization_plans);
+  }
+
+  Array<Any> consumer_binding_plans =
+      EncodeConsumerBindingPlans(program->consumer_binding_plans);
+  if (!consumer_binding_plans.empty()) {
+    executable.Set(String(executable_key::kConsumerBindingPlans), consumer_binding_plans);
   }
 
   auto copy_payload_field = [&](const char* key) {

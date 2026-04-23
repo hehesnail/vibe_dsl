@@ -409,7 +409,9 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
                      program->kernel_plans, program->transport_plans, program->sync_plans,
                      program->abi_plans, program->execution_plans, program->kernels,
                      program->core_groups, program->cb_plans, program->semaphore_plans,
-                     program->compute_sync_plans, program->dst_layout_plans, payload);
+                     program->compute_sync_plans, program->dst_layout_plans,
+                     program->live_form_plans, program->materialization_plans,
+                     program->consumer_binding_plans, payload);
   }
 
   const ResourceInfo* GetOrInferInfo(const std::string& name,

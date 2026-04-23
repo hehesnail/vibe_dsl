@@ -225,12 +225,16 @@
 - support surface /
   workload payoff 扩展
   已解除冻结；
-  现在回到
-  leaf admission /
-  runtime owner truth /
-  unsupported workload
-  queryable gate
-  收口；
+  live-form /
+  materialization
+  owner truth
+  已完成第一轮收口；
+  当前剩余工作
+  是把显式
+  materialization protocol
+  从 queryable gate
+  推进到
+  direct runtime admission；
   当前任务级设计
   已固定为
   `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
@@ -346,6 +350,53 @@ Normalized Tile TIR
 - Blackhole 正式执行路径只剩
   `BlackholeModule`
   进程内 direct host path
+- `TTProgram`
+  现已拥有 typed
+  `live_form_plans` /
+  `materialization_plans` /
+  `consumer_binding_plans`
+  slices；
+  `ValidateTTProgram`
+  会检查 live-form 引用、
+  materialization protocol、
+  consumer binding
+  与 typed CB 资源的一致性
+- `MaterializeBlackholeExecutable`
+  现会把上述 typed slices
+  投影到
+  `ExecutableSpec`
+  /
+  runtime metadata；
+  leaf reader
+  不再需要从 TIR body /
+  builtin 序列 /
+  buffer 名
+  恢复 fragment/cast/publish
+  live form
+- `fragment_fill -> cast -> publish`
+  与
+  GEMM post-merge cast consumer
+  现在都能在 projection 层暴露
+  `thread_distributed_slice -> cb_materialized_tile`
+  的
+  `cb_republish`
+  materialization owner truth
+- direct runtime
+  对 single-contract
+  host-visible
+  `thread_distributed + cb_republish`
+  materialization
+  现已给出 explicit
+  `direct_runtime_unsupported_reasons`
+  gate；
+  该 gate
+  只消费
+  `ExecutableSpec`
+  metadata，
+  并刻意不污染
+  flash-attn
+  multi-contract
+  compile/source baseline
 
 ## 4. 当前显式 Debt / 非 Blocker
 
@@ -371,27 +422,37 @@ Normalized Tile TIR
   后续只允许按
   explicit leaf debt
   继续收敛
-- `flash-attn` direct runtime
+- `fragment_fill -> cast -> publish`
   /
   direct cast consumer
-  /
-  `fragment_fill -> cast -> publish`
-  direct runtime
-  仍不在当前
-  correctness gate；
-  它们属于
-  support surface /
-  workload payoff
-  lane；
-  这条 lane
-  不按 runtime-only patch
-  推进，
-  而按 explicit
+  的
   live-form /
   materialization
   owner truth
-  admission
-  推进
+  已进入
+  `TTProgram`
+  和
+  `ExecutableSpec`；
+  但当前
+  `cb_republish`
+  仍依赖 mailbox-style
+  device-side CB write pointer transfer，
+  在 TT-Sim 上会命中
+  `t_tile_mmio_wr32`
+  capability boundary，
+  因此 direct runtime correctness
+  仍通过 explicit
+  unsupported reason
+  而不是 hard execute
+  收口
+- `flash-attn` direct runtime
+  仍不在当前
+  correctness gate；
+  它属于
+  materialization admission
+  之后的
+  workload payoff
+  lane
 
 ## 5. 当前稳定基线
 
@@ -402,6 +463,13 @@ Normalized Tile TIR
   - `cd tilelang_repo && pytest -q testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
   - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`
   - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_gemm.py`
+- `live-form / materialization owner truth`
+  baseline
+  当前已通过：
+  - `cd tilelang_repo && cmake --build build -j32`
+  - `PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_gemm.py`
+  - `PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`
 - direct runtime 当前 admitted 支持面：
   - copy：equal source/dest range，且 stride = 1
   - GEMM：A/B-separated reader range + writer output range；
@@ -418,38 +486,42 @@ Normalized Tile TIR
 - direct cast consumer
   和
   `fragment_fill -> cast -> publish`
-  当前只保留
-  build/source contract gate，
-  不进入
-  TT-Sim correctness gate
+  当前拥有 typed
+  live-form /
+  materialization projection
+  与 explicit
+  direct runtime unsupported gate；
+  它们不再只是
+  build/source contract，
+  但仍未进入
+  TT-Sim hard-execute
+  correctness gate
 
 ## 6. 当前下一步
 
 当前下一步固定为：
 
-1. 恢复
-   `support surface / workload payoff`
-   deferred lane，
-   入口设计为
-   `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
-2. 优先收
+1. 在现有 typed
    live-form /
    materialization
-   owner truth，
-   先让
-   `fragment_fill -> cast -> publish`
-   从 build/source-only
+   owner truth
+   基础上，
+   设计并实现非 mailbox 的
+   compute-thread CB publication /
+   materialization protocol，
+   让
+   `thread_distributed + cb_republish`
+   从 explicit unsupported gate
    晋级为 admitted bf16
-   direct runtime gate，
-   再收 direct cast consumer
-3. 保持
+   direct runtime gate
+2. 保持
    compile / projection /
    admitted runtime
    gate
    继续只站在
    explicit representation
    boundary 上
-4. flash-attn direct runtime
+3. flash-attn direct runtime
    只作为上述 admission
    完成后的 integration payoff，
    不作为当前设计驱动

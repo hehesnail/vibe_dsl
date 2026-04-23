@@ -415,6 +415,12 @@ struct BufferMaterializationSpec {
   uint32_t transport_page_size_bytes = 0;
   std::vector<int64_t> host_axis_order;
   bool transpose_2d = false;
+  std::string live_form_kind;
+  std::string execution_topology_kind;
+  uint32_t physical_local_extent = 0;
+  uint32_t logical_element_count = 0;
+  std::string producer_kernel;
+  std::string materialization_protocol;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -429,6 +435,102 @@ struct BufferMaterializationSpec {
     }
     if (transpose_2d) {
       writer->WriteObjectKeyValue("transpose_2d", transpose_2d);
+    }
+    if (!live_form_kind.empty()) {
+      writer->WriteObjectKeyValue("live_form_kind", live_form_kind);
+    }
+    if (!execution_topology_kind.empty()) {
+      writer->WriteObjectKeyValue("execution_topology_kind", execution_topology_kind);
+    }
+    if (physical_local_extent > 0) {
+      writer->WriteObjectKeyValue("physical_local_extent",
+                                  static_cast<int64_t>(physical_local_extent));
+    }
+    if (logical_element_count > 0) {
+      writer->WriteObjectKeyValue("logical_element_count",
+                                  static_cast<int64_t>(logical_element_count));
+    }
+    if (!producer_kernel.empty()) {
+      writer->WriteObjectKeyValue("producer_kernel", producer_kernel);
+    }
+    if (!materialization_protocol.empty()) {
+      writer->WriteObjectKeyValue("materialization_protocol", materialization_protocol);
+    }
+    writer->EndObject();
+  }
+};
+
+struct LiveFormPlanSpec {
+  std::string name;
+  std::string logical_value;
+  std::string producer_kernel;
+  std::string physical_form;
+  std::string execution_topology;
+  uint32_t physical_local_extent = 0;
+  uint32_t logical_element_count = 0;
+  std::string ownership_kind;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("logical_value", logical_value);
+    writer->WriteObjectKeyValue("producer_kernel", producer_kernel);
+    writer->WriteObjectKeyValue("physical_form", physical_form);
+    writer->WriteObjectKeyValue("execution_topology", execution_topology);
+    writer->WriteObjectKeyValue("physical_local_extent",
+                                static_cast<int64_t>(physical_local_extent));
+    writer->WriteObjectKeyValue("logical_element_count",
+                                static_cast<int64_t>(logical_element_count));
+    writer->WriteObjectKeyValue("ownership_kind", ownership_kind);
+    writer->EndObject();
+  }
+};
+
+struct MaterializationPlanSpec {
+  std::string name;
+  std::string source_live_form;
+  std::string target_buffer;
+  std::string target_kernel;
+  std::string materialization_protocol;
+  std::vector<int64_t> required_cb_plan_indices;
+  std::vector<int64_t> required_sync_plan_indices;
+  std::string produced_live_form;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("source_live_form", source_live_form);
+    writer->WriteObjectKeyValue("target_buffer", target_buffer);
+    writer->WriteObjectKeyValue("target_kernel", target_kernel);
+    writer->WriteObjectKeyValue("materialization_protocol", materialization_protocol);
+    writer->WriteObjectKeyValue("required_cb_plan_indices", required_cb_plan_indices);
+    if (!required_sync_plan_indices.empty()) {
+      writer->WriteObjectKeyValue("required_sync_plan_indices", required_sync_plan_indices);
+    }
+    writer->WriteObjectKeyValue("produced_live_form", produced_live_form);
+    writer->EndObject();
+  }
+};
+
+struct ConsumerBindingPlanSpec {
+  std::string name;
+  std::string consumer_kernel;
+  std::string consumer_op_kind;
+  std::string source_live_form;
+  bool accepts_distributed_slice = false;
+  bool requires_full_logical_tile = false;
+  int64_t abi_plan_index = -1;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("name", name);
+    writer->WriteObjectKeyValue("consumer_kernel", consumer_kernel);
+    writer->WriteObjectKeyValue("consumer_op_kind", consumer_op_kind);
+    writer->WriteObjectKeyValue("source_live_form", source_live_form);
+    writer->WriteObjectKeyValue("accepts_distributed_slice", accepts_distributed_slice);
+    writer->WriteObjectKeyValue("requires_full_logical_tile", requires_full_logical_tile);
+    if (abi_plan_index >= 0) {
+      writer->WriteObjectKeyValue("abi_plan_index", abi_plan_index);
     }
     writer->EndObject();
   }
@@ -773,6 +875,9 @@ struct ExecutableSpec {
   ComputeContractSpec compute_contract;
   std::vector<GemmContractSpec> multi_gemm_contracts;
   std::vector<ComputeContractSpec> multi_compute_contracts;
+  std::vector<LiveFormPlanSpec> live_form_plans;
+  std::vector<MaterializationPlanSpec> materialization_plans;
+  std::vector<ConsumerBindingPlanSpec> consumer_binding_plans;
   std::vector<ComputeContractSpec::EpilogueOpSpec> compute_epilogue_ops;
   std::vector<std::string> direct_runtime_unsupported_reasons;
 
@@ -816,6 +921,15 @@ struct ExecutableSpec {
     }
     if (!multi_compute_contracts.empty()) {
       writer->WriteObjectKeyValue("multi_compute_contracts", multi_compute_contracts);
+    }
+    if (!live_form_plans.empty()) {
+      writer->WriteObjectKeyValue("live_form_plans", live_form_plans);
+    }
+    if (!materialization_plans.empty()) {
+      writer->WriteObjectKeyValue("materialization_plans", materialization_plans);
+    }
+    if (!consumer_binding_plans.empty()) {
+      writer->WriteObjectKeyValue("consumer_binding_plans", consumer_binding_plans);
     }
     if (!direct_runtime_unsupported_reasons.empty()) {
       writer->WriteObjectKeyValue("direct_runtime_unsupported_reasons",

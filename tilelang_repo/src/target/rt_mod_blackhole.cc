@@ -1344,6 +1344,125 @@ static std::vector<std::string> ExtractDirectRuntimeUnsupportedReasons(const tir
   return reasons;
 }
 
+static std::vector<int64_t> ExtractIntegerVector(const ffi::Map<ffi::String, ffi::Any>& item,
+                                                 const char* key) {
+  std::vector<int64_t> values;
+  if (auto field = item.Get(key)) {
+    for (const Integer& value : Downcast<ffi::Array<Integer>>(field.value())) {
+      values.push_back(value->value);
+    }
+  }
+  return values;
+}
+
+static std::vector<LiveFormPlanSpec> ExtractLiveFormPlans(const tir::PrimFunc& f) {
+  std::vector<LiveFormPlanSpec> plans;
+  auto items = tl::tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kLiveFormPlans);
+  for (const auto& item_any : items) {
+    auto item =
+        item_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(ffi::Map<ffi::String, ffi::Any>());
+    if (item.empty()) {
+      continue;
+    }
+    LiveFormPlanSpec plan;
+    if (auto value = item.Get("name")) plan.name = Downcast<String>(value.value());
+    if (auto value = item.Get("logical_value")) plan.logical_value = Downcast<String>(value.value());
+    if (auto value = item.Get("producer_kernel")) {
+      plan.producer_kernel = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("physical_form")) plan.physical_form = Downcast<String>(value.value());
+    if (auto value = item.Get("execution_topology")) {
+      plan.execution_topology = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("physical_local_extent")) {
+      plan.physical_local_extent = static_cast<uint32_t>(Downcast<Integer>(value.value())->value);
+    }
+    if (auto value = item.Get("logical_element_count")) {
+      plan.logical_element_count = static_cast<uint32_t>(Downcast<Integer>(value.value())->value);
+    }
+    if (auto value = item.Get("ownership_kind")) {
+      plan.ownership_kind = Downcast<String>(value.value());
+    }
+    if (!plan.name.empty()) {
+      plans.push_back(std::move(plan));
+    }
+  }
+  return plans;
+}
+
+static std::vector<MaterializationPlanSpec> ExtractMaterializationPlans(const tir::PrimFunc& f) {
+  std::vector<MaterializationPlanSpec> plans;
+  auto items = tl::tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kMaterializationPlans);
+  for (const auto& item_any : items) {
+    auto item =
+        item_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(ffi::Map<ffi::String, ffi::Any>());
+    if (item.empty()) {
+      continue;
+    }
+    MaterializationPlanSpec plan;
+    if (auto value = item.Get("name")) plan.name = Downcast<String>(value.value());
+    if (auto value = item.Get("source_live_form")) {
+      plan.source_live_form = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("target_buffer")) plan.target_buffer = Downcast<String>(value.value());
+    if (auto value = item.Get("target_kernel")) plan.target_kernel = Downcast<String>(value.value());
+    if (auto value = item.Get("materialization_protocol")) {
+      plan.materialization_protocol = Downcast<String>(value.value());
+    }
+    plan.required_cb_plan_indices = ExtractIntegerVector(item, "required_cb_plan_indices");
+    plan.required_sync_plan_indices = ExtractIntegerVector(item, "required_sync_plan_indices");
+    if (auto value = item.Get("produced_live_form")) {
+      plan.produced_live_form = Downcast<String>(value.value());
+    }
+    if (!plan.name.empty()) {
+      plans.push_back(std::move(plan));
+    }
+  }
+  return plans;
+}
+
+static std::vector<ConsumerBindingPlanSpec> ExtractConsumerBindingPlans(const tir::PrimFunc& f) {
+  std::vector<ConsumerBindingPlanSpec> plans;
+  auto items = tl::tt_program_projection::GetExecutableArrayField(
+      f, "Blackhole executable spec extraction",
+      tl::tt_program_projection::executable_key::kConsumerBindingPlans);
+  for (const auto& item_any : items) {
+    auto item =
+        item_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(ffi::Map<ffi::String, ffi::Any>());
+    if (item.empty()) {
+      continue;
+    }
+    ConsumerBindingPlanSpec plan;
+    if (auto value = item.Get("name")) plan.name = Downcast<String>(value.value());
+    if (auto value = item.Get("consumer_kernel")) {
+      plan.consumer_kernel = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("consumer_op_kind")) {
+      plan.consumer_op_kind = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("source_live_form")) {
+      plan.source_live_form = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("accepts_distributed_slice")) {
+      plan.accepts_distributed_slice = Downcast<Bool>(value.value());
+    }
+    if (auto value = item.Get("requires_full_logical_tile")) {
+      plan.requires_full_logical_tile = Downcast<Bool>(value.value());
+    }
+    if (auto value = item.Get("abi_plan_index")) {
+      plan.abi_plan_index = Downcast<Integer>(value.value())->value;
+    }
+    if (!plan.name.empty()) {
+      plans.push_back(std::move(plan));
+    }
+  }
+  return plans;
+}
+
 static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecs(const tir::PrimFunc& f) {
   auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
       f, "Blackhole executable spec extraction");
@@ -1742,6 +1861,9 @@ static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f
   spec.compute_contract = ExtractComputeContract(f, spec.gemm_contract);
   spec.multi_gemm_contracts = ExtractMultiGemmContracts(f);
   spec.multi_compute_contracts = ExtractMultiComputeContracts(f);
+  spec.live_form_plans = ExtractLiveFormPlans(f);
+  spec.materialization_plans = ExtractMaterializationPlans(f);
+  spec.consumer_binding_plans = ExtractConsumerBindingPlans(f);
   spec.direct_runtime_unsupported_reasons = ExtractDirectRuntimeUnsupportedReasons(f);
   ExtractSegmentPlan(f, &spec);
   return spec;
@@ -2605,7 +2727,22 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
 
 static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
-  (void)spec;
+  if (!spec->multi_compute_contracts.empty()) {
+    return;
+  }
+  for (const auto& materialization : spec->buffer_materializations) {
+    if (materialization.materialization_protocol != "cb_republish") {
+      continue;
+    }
+    if (materialization.execution_topology_kind != "thread_distributed") {
+      continue;
+    }
+    AppendDirectRuntimeUnsupportedReason(
+        spec,
+        "thread-distributed cb_republish materialization is not admitted by direct runtime; "
+        "requires a non-mailbox materialization protocol for compute-thread CB publication");
+    return;
+  }
 }
 
 static void EnforceExplicitBufferRoleSchemaGate(ExecutableSpec* spec) {
@@ -2757,6 +2894,80 @@ static void PopulateBufferMaterializationSpecs(
       register_buffer(compile_time_arg_spec.buffer, compile_time_arg_spec.layout,
                       compile_time_arg_spec.memory_space);
     }
+  }
+
+  std::unordered_map<std::string, const LiveFormPlanSpec*> live_form_by_name;
+  for (const auto& live_form : spec->live_form_plans) {
+    live_form_by_name.emplace(live_form.name, &live_form);
+  }
+
+  std::vector<std::string> output_buffers;
+  std::unordered_set<std::string> seen_output_buffers;
+  auto remember_output_arg = [&](const KernelArgSpec& arg) {
+    if ((arg.kind == "output_buffer_addr32" || arg.kind == "output_buffer_addr") &&
+        !arg.buffer.empty() && seen_output_buffers.insert(arg.buffer).second) {
+      output_buffers.push_back(arg.buffer);
+    }
+  };
+  for (const auto& arg : spec->runtime_args) {
+    remember_output_arg(arg);
+  }
+  for (const auto& arg : spec->common_runtime_args) {
+    remember_output_arg(arg);
+  }
+  for (const auto& kernel : spec->kernels) {
+    for (const auto& arg : kernel.runtime_args) {
+      remember_output_arg(arg);
+    }
+    for (const auto& arg : kernel.common_runtime_args) {
+      remember_output_arg(arg);
+    }
+  }
+
+  auto resolve_host_buffer_for_materialization = [&](const std::string& target_buffer) {
+    auto direct_it = by_buffer.find(target_buffer);
+    if (direct_it != by_buffer.end()) {
+      return target_buffer;
+    }
+    constexpr const char* kLocalSuffix = "_local";
+    if (target_buffer.size() > std::strlen(kLocalSuffix) &&
+        target_buffer.compare(target_buffer.size() - std::strlen(kLocalSuffix),
+                              std::strlen(kLocalSuffix), kLocalSuffix) == 0) {
+      std::string host_name = target_buffer;
+      host_name.resize(host_name.size() - std::strlen(kLocalSuffix));
+      if (by_buffer.find(host_name) != by_buffer.end()) {
+        return host_name;
+      }
+    }
+    if (output_buffers.size() == 1 && by_buffer.find(output_buffers.front()) != by_buffer.end()) {
+      return output_buffers.front();
+    }
+    return std::string();
+  };
+
+  for (const auto& plan : spec->materialization_plans) {
+    const std::string host_buffer = resolve_host_buffer_for_materialization(plan.target_buffer);
+    if (host_buffer.empty()) {
+      continue;
+    }
+    auto materialization_it = by_buffer.find(host_buffer);
+    if (materialization_it == by_buffer.end()) {
+      continue;
+    }
+    auto live_form_it = live_form_by_name.find(plan.produced_live_form);
+    if (live_form_it == live_form_by_name.end()) {
+      continue;
+    }
+    BufferMaterializationSpec& materialization = materialization_it->second;
+    const LiveFormPlanSpec& live_form = *live_form_it->second;
+    materialization.live_form_kind = live_form.physical_form;
+    materialization.execution_topology_kind = live_form.execution_topology;
+    materialization.physical_local_extent = live_form.physical_local_extent;
+    materialization.logical_element_count = live_form.logical_element_count;
+    materialization.producer_kernel = live_form.producer_kernel.empty()
+                                          ? plan.target_kernel
+                                          : live_form.producer_kernel;
+    materialization.materialization_protocol = plan.materialization_protocol;
   }
 
   spec->buffer_materializations.clear();
@@ -3090,6 +3301,9 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     if (host_it != func_info_map.end() && device_it != func_info_map.end()) {
       host_it->second.kernels = device_it->second.kernels;
       host_it->second.buffer_materializations = device_it->second.buffer_materializations;
+      host_it->second.live_form_plans = device_it->second.live_form_plans;
+      host_it->second.materialization_plans = device_it->second.materialization_plans;
+      host_it->second.consumer_binding_plans = device_it->second.consumer_binding_plans;
       host_it->second.per_work_arg_specs = device_it->second.per_work_arg_specs;
       host_it->second.direct_runtime_unsupported_reasons =
           device_it->second.direct_runtime_unsupported_reasons;
@@ -3181,6 +3395,9 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     if (host_it != func_info_map.end() && device_it != func_info_map.end()) {
       host_it->second.kernels = device_it->second.kernels;
       host_it->second.buffer_materializations = device_it->second.buffer_materializations;
+      host_it->second.live_form_plans = device_it->second.live_form_plans;
+      host_it->second.materialization_plans = device_it->second.materialization_plans;
+      host_it->second.consumer_binding_plans = device_it->second.consumer_binding_plans;
       host_it->second.per_work_arg_specs = device_it->second.per_work_arg_specs;
       host_it->second.direct_runtime_unsupported_reasons =
           device_it->second.direct_runtime_unsupported_reasons;

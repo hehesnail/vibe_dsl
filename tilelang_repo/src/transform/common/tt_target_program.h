@@ -241,6 +241,88 @@ class TTDstLayoutPlan : public ObjectRef {
                                              TTDstLayoutPlanNode);
 };
 
+class TTLiveFormPlanNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String logical_value;
+  ffi::String producer_kernel;
+  ffi::String physical_form;
+  ffi::String execution_topology;
+  int64_t physical_local_extent = 0;
+  int64_t logical_element_count = 0;
+  ffi::String ownership_kind;
+  ffi::Map<ffi::String, ffi::Any> payload;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTLiveFormPlan", TTLiveFormPlanNode, Object);
+};
+
+class TTLiveFormPlan : public ObjectRef {
+ public:
+  TVM_DLL TTLiveFormPlan(ffi::String name, ffi::String logical_value,
+                         ffi::String producer_kernel, ffi::String physical_form,
+                         ffi::String execution_topology, int64_t physical_local_extent,
+                         int64_t logical_element_count, ffi::String ownership_kind,
+                         ffi::Map<ffi::String, ffi::Any> payload);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTLiveFormPlan, ObjectRef, TTLiveFormPlanNode);
+};
+
+class TTMaterializationPlanNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String source_live_form;
+  ffi::String target_buffer;
+  ffi::String target_kernel;
+  ffi::String materialization_protocol;
+  ffi::Array<Integer> required_cb_plan_indices;
+  ffi::Array<Integer> required_sync_plan_indices;
+  ffi::String produced_live_form;
+  ffi::Map<ffi::String, ffi::Any> payload;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTMaterializationPlan", TTMaterializationPlanNode, Object);
+};
+
+class TTMaterializationPlan : public ObjectRef {
+ public:
+  TVM_DLL TTMaterializationPlan(ffi::String name, ffi::String source_live_form,
+                                ffi::String target_buffer, ffi::String target_kernel,
+                                ffi::String materialization_protocol,
+                                ffi::Array<Integer> required_cb_plan_indices,
+                                ffi::Array<Integer> required_sync_plan_indices,
+                                ffi::String produced_live_form,
+                                ffi::Map<ffi::String, ffi::Any> payload);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTMaterializationPlan, ObjectRef,
+                                             TTMaterializationPlanNode);
+};
+
+class TTConsumerBindingPlanNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String consumer_kernel;
+  ffi::String consumer_op_kind;
+  ffi::String source_live_form;
+  bool accepts_distributed_slice = false;
+  bool requires_full_logical_tile = false;
+  int64_t abi_plan_index = -1;
+  ffi::Map<ffi::String, ffi::Any> payload;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTConsumerBindingPlan", TTConsumerBindingPlanNode,
+                                    Object);
+};
+
+class TTConsumerBindingPlan : public ObjectRef {
+ public:
+  TVM_DLL TTConsumerBindingPlan(ffi::String name, ffi::String consumer_kernel,
+                                ffi::String consumer_op_kind, ffi::String source_live_form,
+                                bool accepts_distributed_slice,
+                                bool requires_full_logical_tile, int64_t abi_plan_index,
+                                ffi::Map<ffi::String, ffi::Any> payload);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTConsumerBindingPlan, ObjectRef,
+                                             TTConsumerBindingPlanNode);
+};
+
 class TTABIPlanNode : public Object {
  public:
   ffi::String name;
@@ -302,6 +384,9 @@ class TTProgramNode : public Object {
   ffi::Array<TTSemaphorePlan> semaphore_plans;
   ffi::Array<TTComputeSyncPlan> compute_sync_plans;
   ffi::Array<TTDstLayoutPlan> dst_layout_plans;
+  ffi::Array<TTLiveFormPlan> live_form_plans;
+  ffi::Array<TTMaterializationPlan> materialization_plans;
+  ffi::Array<TTConsumerBindingPlan> consumer_binding_plans;
   ffi::Map<ffi::String, ffi::Any> payload;
 
   static void RegisterReflection();
@@ -322,6 +407,9 @@ class TTProgram : public ObjectRef {
                     ffi::Array<TTSemaphorePlan> semaphore_plans,
                     ffi::Array<TTComputeSyncPlan> compute_sync_plans,
                     ffi::Array<TTDstLayoutPlan> dst_layout_plans,
+                    ffi::Array<TTLiveFormPlan> live_form_plans,
+                    ffi::Array<TTMaterializationPlan> materialization_plans,
+                    ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
                     ffi::Map<ffi::String, ffi::Any> payload);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTProgram, ObjectRef, TTProgramNode);
 };

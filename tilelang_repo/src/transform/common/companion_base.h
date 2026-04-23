@@ -169,6 +169,7 @@ constexpr const char* kDirectWrite = "direct_write";
 
 constexpr const char* kDstCbBinaryPack = "dst_cb_binary_pack";
 constexpr const char* kTiledCBRepublish = "tiled_cb_republish";
+constexpr const char* kCBRepublish = "cb_republish";
 }  // namespace buffer_materialization
 
 namespace buffer_live_form {

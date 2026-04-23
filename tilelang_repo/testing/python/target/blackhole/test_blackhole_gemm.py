@@ -198,6 +198,14 @@ def _rebuild_codegen_module_with_core_plan(artifact, core_plan):
     return _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)
 
 
+def _direct_runtime_unsupported_reasons(artifact):
+    metadata = artifact.codegen_mod.get_function_metadata("main")
+    return [
+        str(reason)
+        for reason in metadata.get("direct_runtime_unsupported_reasons", [])
+    ]
+
+
 def multicore_gemm_kernel(
     M: int = 64, N: int = 64, K: int = 128, tile_m: int = 32, tile_n: int = 32
 ):
@@ -766,6 +774,83 @@ def test_blackhole_gemm_buffer_materialization_specs_are_exposed():
         "B": ("replicated", "interleaved", "dram", 2048),
         "C": ("replicated", "interleaved", "dram", 4096),
     }
+
+
+def test_blackhole_fragment_fill_cast_publish_exposes_typed_live_form_owner_truth():
+    kernel = fragment_fill_cast_publish_kernel()
+    target = Target("blackhole")
+
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+    mod = lower_blackhole_to_tt_target(mod)
+
+    tt_program = require_tt_program(mod["main"])
+    live_forms = {str(plan.logical_value): plan for plan in tt_program.live_form_plans}
+    assert {"C_local", "D_local"}.issubset(live_forms)
+    assert str(live_forms["C_local"].physical_form) == "thread_distributed_slice"
+    assert str(live_forms["D_local"].physical_form) == "cb_materialized_tile"
+    assert str(live_forms["D_local"].execution_topology) == "thread_distributed"
+    assert int(live_forms["D_local"].logical_element_count) == 1024
+    assert int(live_forms["D_local"].physical_local_extent) == 8
+
+    materializations = {
+        str(plan.target_buffer): plan for plan in tt_program.materialization_plans
+    }
+    assert "D_local" in materializations
+    d_local = materializations["D_local"]
+    assert str(d_local.materialization_protocol) == "cb_republish"
+    assert str(d_local.produced_live_form) == str(live_forms["D_local"].name)
+    assert [int(index) for index in d_local.required_cb_plan_indices]
+
+    bindings = {
+        str(plan.consumer_op_kind): plan for plan in tt_program.consumer_binding_plans
+    }
+    assert "cast_fragment_slice" in bindings
+    cast_binding = bindings["cast_fragment_slice"]
+    assert str(cast_binding.source_live_form) == str(live_forms["C_local"].name)
+    assert bool(cast_binding.accepts_distributed_slice) is True
+    assert bool(cast_binding.requires_full_logical_tile) is False
+
+
+def test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plans():
+    kernel = fragment_fill_cast_publish_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    materializations = {
+        str(plan["target_buffer"]): plan
+        for plan in executable_spec["materialization_plans"]
+    }
+    assert "D_local" in materializations
+    d_local = materializations["D_local"]
+    assert str(d_local["materialization_protocol"]) == "cb_republish"
+    assert str(d_local["source_live_form"]) == "live_form_C_local"
+    assert str(d_local["produced_live_form"]) == "live_form_D_local"
+
+    output_materialization = next(
+        item for item in executable_spec["buffer_materializations"] if str(item["buffer"]) == "D"
+    )
+    assert str(output_materialization["live_form_kind"]) == "cb_materialized_tile"
+    assert str(output_materialization["execution_topology_kind"]) == "thread_distributed"
+    assert int(output_materialization["physical_local_extent"]) == 8
+    assert int(output_materialization["logical_element_count"]) == 1024
+    assert str(output_materialization["producer_kernel"]) == "compute"
+    assert str(output_materialization["materialization_protocol"]) == "cb_republish"
+
+
+def test_blackhole_fragment_fill_cast_publish_reports_direct_runtime_materialization_gate():
+    kernel = fragment_fill_cast_publish_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    reasons = _direct_runtime_unsupported_reasons(artifact)
+    assert any("thread-distributed cb_republish materialization" in reason for reason in reasons)
 
 
 def test_blackhole_gemm_kernel_compute_config_follows_compute_contract_in_spec():
@@ -1349,15 +1434,18 @@ def test_blackhole_gemm_post_merge_cast_consumer_keeps_buffer_tile_bridge_specs(
         assert len(spec["inverse_logical_index_exprs"]) == 3
 
 
-def test_blackhole_gemm_direct_runtime_preserves_clear_accum_false_fragment_for_cast_consumer():
-    can_run, msg = check_blackhole_direct_execution_requirements()
-    if not can_run:
-        pytest.skip(f"Blackhole requirements not met: {msg}")
-    pytest.skip(
-        "Direct-runtime cast-consumer execution still depends on the legacy merge/live-form bridge; "
-        "keep this path out of the current TT-Sim correctness gate."
-    )
+def test_blackhole_gemm_post_merge_cast_consumer_reports_direct_runtime_materialization_gate():
+    kernel = gemm_kernel_with_post_merge_cast_consumer()
+    target = Target("blackhole")
 
+    with target:
+        artifact = lower(kernel, target=target)
+
+    reasons = _direct_runtime_unsupported_reasons(artifact)
+    assert any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+
+
+def test_blackhole_gemm_direct_runtime_preserves_clear_accum_false_fragment_for_cast_consumer():
     torch.manual_seed(0)
     a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
     b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
@@ -1373,6 +1461,13 @@ def test_blackhole_gemm_direct_runtime_preserves_clear_accum_false_fragment_for_
     executable_spec = _extract_blackhole_executable_spec(artifact)
     compute_contract = executable_spec["compute_contract"]
     assert bool(compute_contract["clear_accum"]) is False
+    reasons = _direct_runtime_unsupported_reasons(artifact)
+    if reasons:
+        assert any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+        return
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
 
     artifact.codegen_mod["main"](a_torch, b_torch, d_output)
     assert_tensors_close_or_dump(
@@ -1387,14 +1482,6 @@ def test_blackhole_gemm_direct_runtime_preserves_clear_accum_false_fragment_for_
 
 
 def test_blackhole_fragment_fill_cast_publish_runtime():
-    can_run, msg = check_blackhole_direct_execution_requirements()
-    if not can_run:
-        pytest.skip(f"Blackhole requirements not met: {msg}")
-    pytest.skip(
-        "Fragment fill->cast->publish direct runtime still depends on missing live-form "
-        "owner truth; keep this path out of the current TT-Sim correctness gate."
-    )
-
     d_output = torch.zeros(32, 32, dtype=torch.bfloat16)
     d_ref = torch.full((32, 32), 3.5, dtype=torch.bfloat16)
 
@@ -1403,6 +1490,14 @@ def test_blackhole_fragment_fill_cast_publish_runtime():
 
     with target:
         artifact = lower(kernel, target=target)
+
+    reasons = _direct_runtime_unsupported_reasons(artifact)
+    if reasons:
+        assert any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+        return
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
 
     artifact.codegen_mod["main"](d_output)
     assert_tensors_close_or_dump(

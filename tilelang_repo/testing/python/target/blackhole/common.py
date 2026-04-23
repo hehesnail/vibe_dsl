@@ -370,6 +370,9 @@ def rebuild_tt_program(
     semaphore_plans=None,
     compute_sync_plans=None,
     dst_layout_plans=None,
+    live_form_plans=None,
+    materialization_plans=None,
+    consumer_binding_plans=None,
     abi_plans=None,
     execution_plans=None,
     payload=None,
@@ -402,6 +405,13 @@ def rebuild_tt_program(
         list(program.semaphore_plans) if semaphore_plans is None else semaphore_plans,
         list(program.compute_sync_plans) if compute_sync_plans is None else compute_sync_plans,
         list(program.dst_layout_plans) if dst_layout_plans is None else dst_layout_plans,
+        list(program.live_form_plans) if live_form_plans is None else live_form_plans,
+        list(program.materialization_plans)
+        if materialization_plans is None
+        else materialization_plans,
+        list(program.consumer_binding_plans)
+        if consumer_binding_plans is None
+        else consumer_binding_plans,
         dict(program.payload) if payload is None else payload,
     )
 

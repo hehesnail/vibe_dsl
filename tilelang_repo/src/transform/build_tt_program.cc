@@ -107,6 +107,9 @@ struct TTProgramSlices {
   Array<TTSemaphorePlan> semaphore_plans;
   Array<TTComputeSyncPlan> compute_sync_plans;
   Array<TTDstLayoutPlan> dst_layout_plans;
+  Array<TTLiveFormPlan> live_form_plans;
+  Array<TTMaterializationPlan> materialization_plans;
+  Array<TTConsumerBindingPlan> consumer_binding_plans;
   Map<String, Any> payload;
 };
 
@@ -126,6 +129,9 @@ TTProgramSlices UnpackTTProgram(const TTProgram& program) {
   slices.semaphore_plans = program->semaphore_plans;
   slices.compute_sync_plans = program->compute_sync_plans;
   slices.dst_layout_plans = program->dst_layout_plans;
+  slices.live_form_plans = program->live_form_plans;
+  slices.materialization_plans = program->materialization_plans;
+  slices.consumer_binding_plans = program->consumer_binding_plans;
   slices.payload = program->payload;
   return slices;
 }
@@ -138,7 +144,9 @@ TTProgram PackTTProgram(TTProgramSlices slices) {
                    std::move(slices.kernels), std::move(slices.core_groups),
                    std::move(slices.cb_plans), std::move(slices.semaphore_plans),
                    std::move(slices.compute_sync_plans),
-                   std::move(slices.dst_layout_plans), std::move(slices.payload));
+                   std::move(slices.dst_layout_plans), std::move(slices.live_form_plans),
+                   std::move(slices.materialization_plans),
+                   std::move(slices.consumer_binding_plans), std::move(slices.payload));
 }
 
 TTProgramSlices GetOrCreateTTProgramSlices(const tir::PrimFunc& func, const GlobalVar& gvar,
@@ -382,6 +390,39 @@ Array<TTDstLayoutPlan> BuildDstLayoutPlans(const Array<TTABIPlan>& abi_plans) {
   return dst_layouts;
 }
 
+Array<TTMaterializationPlan> RemapMaterializationCBRequirementIndices(
+    const Array<TTMaterializationPlan>& materialization_plans,
+    const Array<TTCBPlan>& cb_plans) {
+  std::unordered_map<int64_t, int64_t> cb_plan_index_by_requirement_index;
+  for (int64_t cb_plan_index = 0; cb_plan_index < static_cast<int64_t>(cb_plans.size());
+       ++cb_plan_index) {
+    const TTCBPlan& cb_plan = cb_plans[static_cast<size_t>(cb_plan_index)];
+    if (auto requirement_indices = cb_plan->payload.Get("requirement_indices")) {
+      for (const Any& index_any : Downcast<Array<Any>>(requirement_indices.value())) {
+        cb_plan_index_by_requirement_index[Downcast<Integer>(index_any)->value] =
+            cb_plan_index;
+      }
+    }
+  }
+
+  Array<TTMaterializationPlan> remapped;
+  for (const TTMaterializationPlan& plan : materialization_plans) {
+    Array<Integer> cb_plan_indices;
+    for (const Integer& index : plan->required_cb_plan_indices) {
+      const int64_t requirement_index = index->value;
+      auto it = cb_plan_index_by_requirement_index.find(requirement_index);
+      cb_plan_indices.push_back(Integer(it != cb_plan_index_by_requirement_index.end()
+                                            ? it->second
+                                            : requirement_index));
+    }
+    remapped.push_back(TTMaterializationPlan(
+        plan->name, plan->source_live_form, plan->target_buffer, plan->target_kernel,
+        plan->materialization_protocol, cb_plan_indices, plan->required_sync_plan_indices,
+        plan->produced_live_form, plan->payload));
+  }
+  return remapped;
+}
+
 Array<TTExecutionPlan> BuildExecutionPlans(const SpatialPlan& plan, const Array<TTKernel>& kernels) {
   Array<ffi::String> kernel_names;
   for (const TTKernel& kernel : kernels) {
@@ -452,6 +493,9 @@ tvm::transform::Pass PlanTTCompute() {
       slices.kernels = kernels;
       slices.cb_plans = planner.GetStagedCBPlans();
       slices.abi_plans = planner.GetTTABIPlans();
+      slices.live_form_plans = planner.GetTTLiveFormPlans();
+      slices.materialization_plans = planner.GetTTMaterializationPlans();
+      slices.consumer_binding_plans = planner.GetTTConsumerBindingPlans();
       slices.payload = planner.GetTTProgramPayload();
       planned = WithTTProgramAttr(std::move(planned), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);
@@ -475,6 +519,8 @@ tvm::transform::Pass PlanTTTransport() {
       tir::PrimFunc planned = planner.Transform(func.value());
       TTProgramSlices slices = GetOrCreateTTProgramSlices(planned, gvar, spatial_plan);
       slices.cb_plans = BuildCBPlans(planner.GetCBConfigs());
+      slices.materialization_plans =
+          RemapMaterializationCBRequirementIndices(slices.materialization_plans, slices.cb_plans);
       slices.transport_plans = BuildTransportPlans(spatial_plan);
       planned = WithTTProgramAttr(std::move(planned), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);

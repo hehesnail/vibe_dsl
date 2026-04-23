@@ -90,6 +90,19 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Get TT ABI plans synthesized during Transform. */
   tvm::ffi::Array<TTABIPlan> GetTTABIPlans() const { return tt_abi_plans_; }
 
+  /*! \brief Get TT live-form plans synthesized during Transform. */
+  tvm::ffi::Array<TTLiveFormPlan> GetTTLiveFormPlans() const { return tt_live_form_plans_; }
+
+  /*! \brief Get TT materialization plans synthesized during Transform. */
+  tvm::ffi::Array<TTMaterializationPlan> GetTTMaterializationPlans() const {
+    return tt_materialization_plans_;
+  }
+
+  /*! \brief Get TT consumer binding plans synthesized during Transform. */
+  tvm::ffi::Array<TTConsumerBindingPlan> GetTTConsumerBindingPlans() const {
+    return tt_consumer_binding_plans_;
+  }
+
   /*! \brief Get staged CB plans synthesized during selection/lowering.
    *
    * The staged plans already own the CB requirement contract. Before PlanTTCBAlloc
@@ -576,6 +589,11 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                   int current_order_index,
                                                   std::vector<tvm::tir::Stmt>* prefix,
                                                   std::vector<tvm::tir::Stmt>* suffix);
+  void RecordFragmentCastMaterializationPlans(
+      const FragmentCastMatch& match,
+      const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>& contract,
+      int cb_requirement_index, const tvm::PrimExpr& num_elements_expr);
+  void FinalizeConsumerBindingABIIndices();
   bool ShouldRetainComputeInputBuffer(const tvm::tir::Buffer& buffer,
                                       int current_order_index) const;
   bool ShouldReacquireComputeInputBuffer(const tvm::tir::Buffer& buffer,
@@ -684,6 +702,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::ffi::Array<tvm::ffi::Any> segment_plan_;
   tvm::ffi::Array<TTKernel> tt_kernels_;
   tvm::ffi::Array<TTABIPlan> tt_abi_plans_;
+  tvm::ffi::Array<TTLiveFormPlan> tt_live_form_plans_;
+  tvm::ffi::Array<TTMaterializationPlan> tt_materialization_plans_;
+  tvm::ffi::Array<TTConsumerBindingPlan> tt_consumer_binding_plans_;
   tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> tt_program_payload_;
 
   // Requirement index counter (sequential, 0-based)

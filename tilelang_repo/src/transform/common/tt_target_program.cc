@@ -285,6 +285,105 @@ TTDstLayoutPlan::TTDstLayoutPlan(ffi::String name, ffi::String buffer, ffi::Stri
   data_ = std::move(n);
 }
 
+void TTLiveFormPlanNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTLiveFormPlanNode>()
+      .def_ro("name", &TTLiveFormPlanNode::name)
+      .def_ro("logical_value", &TTLiveFormPlanNode::logical_value)
+      .def_ro("producer_kernel", &TTLiveFormPlanNode::producer_kernel)
+      .def_ro("physical_form", &TTLiveFormPlanNode::physical_form)
+      .def_ro("execution_topology", &TTLiveFormPlanNode::execution_topology)
+      .def_ro("physical_local_extent", &TTLiveFormPlanNode::physical_local_extent)
+      .def_ro("logical_element_count", &TTLiveFormPlanNode::logical_element_count)
+      .def_ro("ownership_kind", &TTLiveFormPlanNode::ownership_kind)
+      .def_ro("payload", &TTLiveFormPlanNode::payload);
+}
+
+TTLiveFormPlan::TTLiveFormPlan(ffi::String name, ffi::String logical_value,
+                               ffi::String producer_kernel, ffi::String physical_form,
+                               ffi::String execution_topology, int64_t physical_local_extent,
+                               int64_t logical_element_count, ffi::String ownership_kind,
+                               ffi::Map<ffi::String, ffi::Any> payload) {
+  auto n = ffi::make_object<TTLiveFormPlanNode>();
+  n->name = std::move(name);
+  n->logical_value = std::move(logical_value);
+  n->producer_kernel = std::move(producer_kernel);
+  n->physical_form = std::move(physical_form);
+  n->execution_topology = std::move(execution_topology);
+  n->physical_local_extent = physical_local_extent;
+  n->logical_element_count = logical_element_count;
+  n->ownership_kind = std::move(ownership_kind);
+  n->payload = std::move(payload);
+  data_ = std::move(n);
+}
+
+void TTMaterializationPlanNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTMaterializationPlanNode>()
+      .def_ro("name", &TTMaterializationPlanNode::name)
+      .def_ro("source_live_form", &TTMaterializationPlanNode::source_live_form)
+      .def_ro("target_buffer", &TTMaterializationPlanNode::target_buffer)
+      .def_ro("target_kernel", &TTMaterializationPlanNode::target_kernel)
+      .def_ro("materialization_protocol", &TTMaterializationPlanNode::materialization_protocol)
+      .def_ro("required_cb_plan_indices",
+              &TTMaterializationPlanNode::required_cb_plan_indices)
+      .def_ro("required_sync_plan_indices",
+              &TTMaterializationPlanNode::required_sync_plan_indices)
+      .def_ro("produced_live_form", &TTMaterializationPlanNode::produced_live_form)
+      .def_ro("payload", &TTMaterializationPlanNode::payload);
+}
+
+TTMaterializationPlan::TTMaterializationPlan(
+    ffi::String name, ffi::String source_live_form, ffi::String target_buffer,
+    ffi::String target_kernel, ffi::String materialization_protocol,
+    ffi::Array<Integer> required_cb_plan_indices,
+    ffi::Array<Integer> required_sync_plan_indices, ffi::String produced_live_form,
+    ffi::Map<ffi::String, ffi::Any> payload) {
+  auto n = ffi::make_object<TTMaterializationPlanNode>();
+  n->name = std::move(name);
+  n->source_live_form = std::move(source_live_form);
+  n->target_buffer = std::move(target_buffer);
+  n->target_kernel = std::move(target_kernel);
+  n->materialization_protocol = std::move(materialization_protocol);
+  n->required_cb_plan_indices = std::move(required_cb_plan_indices);
+  n->required_sync_plan_indices = std::move(required_sync_plan_indices);
+  n->produced_live_form = std::move(produced_live_form);
+  n->payload = std::move(payload);
+  data_ = std::move(n);
+}
+
+void TTConsumerBindingPlanNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTConsumerBindingPlanNode>()
+      .def_ro("name", &TTConsumerBindingPlanNode::name)
+      .def_ro("consumer_kernel", &TTConsumerBindingPlanNode::consumer_kernel)
+      .def_ro("consumer_op_kind", &TTConsumerBindingPlanNode::consumer_op_kind)
+      .def_ro("source_live_form", &TTConsumerBindingPlanNode::source_live_form)
+      .def_ro("accepts_distributed_slice",
+              &TTConsumerBindingPlanNode::accepts_distributed_slice)
+      .def_ro("requires_full_logical_tile",
+              &TTConsumerBindingPlanNode::requires_full_logical_tile)
+      .def_ro("abi_plan_index", &TTConsumerBindingPlanNode::abi_plan_index)
+      .def_ro("payload", &TTConsumerBindingPlanNode::payload);
+}
+
+TTConsumerBindingPlan::TTConsumerBindingPlan(
+    ffi::String name, ffi::String consumer_kernel, ffi::String consumer_op_kind,
+    ffi::String source_live_form, bool accepts_distributed_slice,
+    bool requires_full_logical_tile, int64_t abi_plan_index,
+    ffi::Map<ffi::String, ffi::Any> payload) {
+  auto n = ffi::make_object<TTConsumerBindingPlanNode>();
+  n->name = std::move(name);
+  n->consumer_kernel = std::move(consumer_kernel);
+  n->consumer_op_kind = std::move(consumer_op_kind);
+  n->source_live_form = std::move(source_live_form);
+  n->accepts_distributed_slice = accepts_distributed_slice;
+  n->requires_full_logical_tile = requires_full_logical_tile;
+  n->abi_plan_index = abi_plan_index;
+  n->payload = std::move(payload);
+  data_ = std::move(n);
+}
+
 void TTABIPlanNode::RegisterReflection() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<TTABIPlanNode>()
@@ -352,6 +451,9 @@ void TTProgramNode::RegisterReflection() {
       .def_ro("semaphore_plans", &TTProgramNode::semaphore_plans)
       .def_ro("compute_sync_plans", &TTProgramNode::compute_sync_plans)
       .def_ro("dst_layout_plans", &TTProgramNode::dst_layout_plans)
+      .def_ro("live_form_plans", &TTProgramNode::live_form_plans)
+      .def_ro("materialization_plans", &TTProgramNode::materialization_plans)
+      .def_ro("consumer_binding_plans", &TTProgramNode::consumer_binding_plans)
       .def_ro("payload", &TTProgramNode::payload);
 }
 
@@ -367,6 +469,9 @@ TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
                      ffi::Array<TTSemaphorePlan> semaphore_plans,
                      ffi::Array<TTComputeSyncPlan> compute_sync_plans,
                      ffi::Array<TTDstLayoutPlan> dst_layout_plans,
+                     ffi::Array<TTLiveFormPlan> live_form_plans,
+                     ffi::Array<TTMaterializationPlan> materialization_plans,
+                     ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
                      ffi::Map<ffi::String, ffi::Any> payload) {
   auto n = ffi::make_object<TTProgramNode>();
   n->entry_name = std::move(entry_name);
@@ -383,6 +488,9 @@ TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
   n->semaphore_plans = std::move(semaphore_plans);
   n->compute_sync_plans = std::move(compute_sync_plans);
   n->dst_layout_plans = std::move(dst_layout_plans);
+  n->live_form_plans = std::move(live_form_plans);
+  n->materialization_plans = std::move(materialization_plans);
+  n->consumer_binding_plans = std::move(consumer_binding_plans);
   n->payload = std::move(payload);
   data_ = std::move(n);
 }
@@ -398,6 +506,9 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   RegisterNodeReflection<TTSemaphorePlanNode>();
   RegisterNodeReflection<TTComputeSyncPlanNode>();
   RegisterNodeReflection<TTDstLayoutPlanNode>();
+  RegisterNodeReflection<TTLiveFormPlanNode>();
+  RegisterNodeReflection<TTMaterializationPlanNode>();
+  RegisterNodeReflection<TTConsumerBindingPlanNode>();
   RegisterNodeReflection<TTABIPlanNode>();
   RegisterNodeReflection<TTExecutionPlanNode>();
   RegisterNodeReflection<TTProgramNode>();
@@ -492,6 +603,42 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                                std::move(memory_space), std::move(payload));
       });
   refl::GlobalDef().def(
+      "tl.TTLiveFormPlan",
+      [](ffi::String name, ffi::String logical_value, ffi::String producer_kernel,
+         ffi::String physical_form, ffi::String execution_topology,
+         int64_t physical_local_extent, int64_t logical_element_count,
+         ffi::String ownership_kind, ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTLiveFormPlan(std::move(name), std::move(logical_value),
+                              std::move(producer_kernel), std::move(physical_form),
+                              std::move(execution_topology), physical_local_extent,
+                              logical_element_count, std::move(ownership_kind),
+                              std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTMaterializationPlan",
+      [](ffi::String name, ffi::String source_live_form, ffi::String target_buffer,
+         ffi::String target_kernel, ffi::String materialization_protocol,
+         ffi::Array<Integer> required_cb_plan_indices,
+         ffi::Array<Integer> required_sync_plan_indices, ffi::String produced_live_form,
+         ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTMaterializationPlan(
+            std::move(name), std::move(source_live_form), std::move(target_buffer),
+            std::move(target_kernel), std::move(materialization_protocol),
+            std::move(required_cb_plan_indices), std::move(required_sync_plan_indices),
+            std::move(produced_live_form), std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTConsumerBindingPlan",
+      [](ffi::String name, ffi::String consumer_kernel, ffi::String consumer_op_kind,
+         ffi::String source_live_form, bool accepts_distributed_slice,
+         bool requires_full_logical_tile, int64_t abi_plan_index,
+         ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTConsumerBindingPlan(std::move(name), std::move(consumer_kernel),
+                                     std::move(consumer_op_kind), std::move(source_live_form),
+                                     accepts_distributed_slice, requires_full_logical_tile,
+                                     abi_plan_index, std::move(payload));
+      });
+  refl::GlobalDef().def(
       "tl.TTABIPlan",
       [](ffi::String name, ffi::String kernel_name, ffi::Array<ffi::Any> runtime_args,
          ffi::Array<ffi::Any> common_runtime_args, ffi::Array<ffi::Any> compile_time_arg_specs,
@@ -518,14 +665,20 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<TTCoreGroup> core_groups, ffi::Array<TTCBPlan> cb_plans,
          ffi::Array<TTSemaphorePlan> semaphore_plans,
          ffi::Array<TTComputeSyncPlan> compute_sync_plans,
-         ffi::Array<TTDstLayoutPlan> dst_layout_plans, ffi::Map<ffi::String, ffi::Any> payload) {
+         ffi::Array<TTDstLayoutPlan> dst_layout_plans,
+         ffi::Array<TTLiveFormPlan> live_form_plans,
+         ffi::Array<TTMaterializationPlan> materialization_plans,
+         ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
+         ffi::Map<ffi::String, ffi::Any> payload) {
         return TTProgram(std::move(entry_name), std::move(member_func),
                          std::move(block_plans), std::move(kernel_plans),
                          std::move(transport_plans), std::move(sync_plans),
                          std::move(abi_plans), std::move(execution_plans),
                          std::move(kernels), std::move(core_groups), std::move(cb_plans),
                          std::move(semaphore_plans), std::move(compute_sync_plans),
-                         std::move(dst_layout_plans), std::move(payload));
+                         std::move(dst_layout_plans), std::move(live_form_plans),
+                         std::move(materialization_plans),
+                         std::move(consumer_binding_plans), std::move(payload));
       });
 }
 

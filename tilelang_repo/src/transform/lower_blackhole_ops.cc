@@ -1483,6 +1483,29 @@ static std::unordered_map<std::string, Map<String, Any>> BuildBufferTileBridgeSp
   return specs_by_buffer;
 }
 
+static int64_t StaticIntValueOrDefault(const PrimExpr& expr, int64_t default_value = 0) {
+  if (const auto* imm = expr.as<IntImmNode>()) {
+    return imm->value;
+  }
+  return default_value;
+}
+
+static int64_t ProductIntegerArrayField(const Map<String, Any>& map, const char* key,
+                                        int64_t default_value = 0) {
+  auto it = map.find(String(key));
+  if (it == map.end()) {
+    return default_value;
+  }
+  int64_t product = 1;
+  for (const Integer& dim : Downcast<Array<Integer>>((*it).second)) {
+    if (dim->value <= 0) {
+      return default_value;
+    }
+    product *= dim->value;
+  }
+  return product;
+}
+
 static std::vector<std::string> CollectSegmentKindsFromBody(const Stmt& body) {
   class SegmentKindCollector : public tir::StmtVisitor {
    public:
@@ -1701,6 +1724,143 @@ void PlanTTKernelABI::AppendPublishedBufferSourceMaterialization(
         MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(num_tiles)}));
     buffer_live_form_cb_by_buffer_identity_.erase(live_form_it);
   }
+}
+
+void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
+    const FragmentCastMatch& match, const Map<String, Any>& contract, int cb_requirement_index,
+    const PrimExpr& num_elements_expr) {
+  const std::string source_name =
+      contract.Get(String(schema_key::kSourceBuffer))
+          ? static_cast<std::string>(Downcast<String>(
+                contract.Get(String(schema_key::kSourceBuffer)).value()))
+          : BufferIdentityName(match.src);
+  const std::string target_name = BufferIdentityName(match.dst);
+  if (source_name.empty() || target_name.empty()) {
+    return;
+  }
+  const std::string kernel_name =
+      !current_segment_kind_.empty()
+          ? current_segment_kind_
+          : (requires_compute_segment_ ? std::string("compute") : std::string("main"));
+  auto contract_string = [&](const char* key, const char* fallback) {
+    if (auto value = contract.Get(String(key))) {
+      return static_cast<std::string>(Downcast<String>(value.value()));
+    }
+    return std::string(fallback);
+  };
+  const int64_t logical_element_count =
+      contract.Get(String(schema_key::kLogicalElementCount))
+          ? Downcast<Integer>(contract.Get(String(schema_key::kLogicalElementCount)).value())
+                .IntValue()
+          : StaticIntValueOrDefault(num_elements_expr, GetLogicalBufferElementCount(match.dst));
+  auto bridge_local_extent = [&](const Buffer& buffer) {
+    const Map<String, Any>* spec = FindBufferTileBridgeSpec(buffer);
+    if (spec == nullptr) {
+      return int64_t{0};
+    }
+    return ProductIntegerArrayField(*spec, schema_key::kLocalShape, int64_t{0});
+  };
+  const int64_t source_local_extent = bridge_local_extent(match.src);
+  const int64_t target_local_extent = bridge_local_extent(match.dst);
+
+  auto has_live_form = [&](const std::string& name) {
+    for (const TTLiveFormPlan& plan : tt_live_form_plans_) {
+      if (static_cast<std::string>(plan->name) == name) {
+        return true;
+      }
+    }
+    return false;
+  };
+  auto push_live_form = [&](const std::string& logical_value, const std::string& physical_form,
+                            int64_t physical_local_extent, const char* ownership_kind) {
+    const std::string name = "live_form_" + logical_value;
+    if (has_live_form(name)) {
+      return;
+    }
+    Map<String, Any> payload;
+    payload.Set("logical_value", String(logical_value));
+    payload.Set("source_kernel", String(kernel_name));
+    tt_live_form_plans_.push_back(TTLiveFormPlan(
+        String(name), String(logical_value), String(kernel_name), String(physical_form),
+        String("thread_distributed"), physical_local_extent, logical_element_count,
+        String(ownership_kind), payload));
+  };
+
+  push_live_form(source_name, "thread_distributed_slice", source_local_extent,
+                 "producer_thread_lane");
+  push_live_form(target_name, "cb_materialized_tile", target_local_extent,
+                 "materialized_cb_pages");
+
+  const std::string source_live_form = "live_form_" + source_name;
+  const std::string produced_live_form = "live_form_" + target_name;
+  const std::string materialization_name = "materialize_" + source_name + "_to_" + target_name;
+  bool has_materialization = false;
+  for (const TTMaterializationPlan& plan : tt_materialization_plans_) {
+    if (static_cast<std::string>(plan->name) == materialization_name) {
+      has_materialization = true;
+      break;
+    }
+  }
+  if (!has_materialization) {
+    Array<Integer> required_cb_indices{Integer(cb_requirement_index)};
+    Array<Integer> required_sync_indices;
+    Map<String, Any> payload;
+    Array<Any> requirement_indices{Integer(cb_requirement_index)};
+    const std::string legacy_execution_protocol =
+        contract_string(schema_key::kExecutionProtocol, buffer_materialization::kTiledCBRepublish);
+    payload.Set("required_cb_requirement_indices", requirement_indices);
+    payload.Set("bridge_kind", String(contract_string(schema_key::kBridgeKind, "")));
+    payload.Set("materialization_kind",
+                String(contract_string(schema_key::kMaterializationKind, "")));
+    payload.Set("legacy_execution_protocol", String(legacy_execution_protocol));
+    tt_materialization_plans_.push_back(TTMaterializationPlan(
+        String(materialization_name), String(source_live_form), String(target_name),
+        String(kernel_name), String(buffer_materialization::kCBRepublish),
+        required_cb_indices, required_sync_indices, String(produced_live_form), payload));
+  }
+
+  const std::string binding_name = "consume_" + source_name + "_as_cast_fragment_slice";
+  bool has_binding = false;
+  for (const TTConsumerBindingPlan& plan : tt_consumer_binding_plans_) {
+    if (static_cast<std::string>(plan->name) == binding_name) {
+      has_binding = true;
+      break;
+    }
+  }
+  if (!has_binding) {
+    Map<String, Any> payload;
+    payload.Set("target_buffer", String(target_name));
+    payload.Set("materialization_plan", String(materialization_name));
+    tt_consumer_binding_plans_.push_back(TTConsumerBindingPlan(
+        String(binding_name), String(kernel_name), String("cast_fragment_slice"),
+        String(source_live_form), /*accepts_distributed_slice=*/true,
+        /*requires_full_logical_tile=*/false, /*abi_plan_index=*/-1, payload));
+  }
+}
+
+void PlanTTKernelABI::FinalizeConsumerBindingABIIndices() {
+  if (tt_consumer_binding_plans_.empty() || tt_abi_plans_.empty()) {
+    return;
+  }
+  std::unordered_map<std::string, int64_t> abi_index_by_kernel;
+  for (int64_t i = 0; i < static_cast<int64_t>(tt_abi_plans_.size()); ++i) {
+    abi_index_by_kernel[static_cast<std::string>(tt_abi_plans_[i]->kernel_name)] = i;
+  }
+  Array<TTConsumerBindingPlan> finalized;
+  for (const TTConsumerBindingPlan& plan : tt_consumer_binding_plans_) {
+    int64_t abi_plan_index = plan->abi_plan_index;
+    if (abi_plan_index < 0) {
+      auto it = abi_index_by_kernel.find(static_cast<std::string>(plan->consumer_kernel));
+      if (it != abi_index_by_kernel.end()) {
+        abi_plan_index = it->second;
+      }
+    }
+    finalized.push_back(TTConsumerBindingPlan(
+        plan->name, plan->consumer_kernel, plan->consumer_op_kind, plan->source_live_form,
+        plan->accepts_distributed_slice, plan->requires_full_logical_tile, abi_plan_index,
+        plan->payload));
+  }
+  tt_consumer_binding_plans_ = finalized;
 }
 
 void PlanTTKernelABI::LoadPhysicalComputeBufferBindings(const PrimFunc& func) {
@@ -2269,6 +2429,9 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   segment_plan_.clear();
   tt_kernels_.clear();
   tt_abi_plans_.clear();
+  tt_live_form_plans_.clear();
+  tt_materialization_plans_.clear();
+  tt_consumer_binding_plans_.clear();
   tt_program_payload_ = Map<String, Any>();
   logical_buffer_shapes_.clear();
   compute_physical_buffers_by_data_.clear();
@@ -3314,6 +3477,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
     }
     segment_plan_ = rewritten_segments;
     BuildTTKernelAndABISeeds(segment_plan_, &tt_kernels_, &tt_abi_plans_);
+    FinalizeConsumerBindingABIIndices();
   }
 }
 
@@ -7228,6 +7392,7 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
         }
         op_payload.Set(String(schema_key::kBufferMaterializationContract), *contract);
         SetOptionalExprField(&op_payload, "row_width_expr", tiled_republish_row_width);
+        RecordFragmentCastMaterializationPlans(match, *contract, cb_id, num_elements_expr);
       }
     }
   }

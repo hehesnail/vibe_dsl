@@ -40,33 +40,76 @@
   - 该问题的 simulator-side 旁证和更宽 fatal taxonomy 扫描，
     统一见 `memory/tt_simulator_constraints.md`
 
-### direct cast consumer 的 direct-runtime 仍属于旧 merge/live-form bridge 边界
+### thread-distributed cb_republish materialization 仍缺非 mailbox direct-runtime protocol
 
 - **现象**:
+  - `fragment_fill -> cast -> publish`
+    与
   - `gemm + post-merge cast consumer`
-    的 build/source contract
-    已能稳定物化出
-    `republished_logical_tile`
-    consumer contract
+    现在都能在
+    `TTProgram`
+    /
+    `ExecutableSpec`
+    暴露 typed
+    live-form /
+    materialization
+    owner truth：
+    `thread_distributed_slice`
+    通过
+    `cb_republish`
+    生成
+    `cb_materialized_tile`
   - 但 direct runtime / TT-Sim
     真执行仍会命中
+    `UnimplementedFunctionality: t_tile_mmio_wr32`
+- **已验证的负例**:
+  - 将 runtime test
+    的 hard skip
+    临时移除后，
+    执行能到 TT-Metal enqueue，
+    然后在 mailbox-style
+    CB write pointer transfer
+    上打到
     `t_tile_mmio_wr32`
-    这类旧 merge/live-form bridge
-    的 simulator/runtime 边界
+  - 把 device helper
+    改成直接读取
+    local CB interface
+    后，
+    TRISC1 链接阶段报
+    `undefined reference to cb_interface`
+    而不是形成可用 direct path
+- **根因**:
+  - 当前 owner truth
+    已经从旧 merge/live-form bridge
+    收到
+    typed
+    `TTLiveFormPlan`
+    /
+    `TTMaterializationPlan`
+  - 真正缺的是 admitted
+    compute-thread CB publication /
+    materialization protocol；
+    mailbox 写指针传输在当前
+    TT-Sim / device side
+    不是可执行支持面
 - **当前结论**:
-  - 当前 admitted 主链只把
-    fresh fragment /
-    preclear zero-init GEMM
-    收到 `clear_accum=true`
-    direct path
-  - direct cast consumer
-    仍保留 build/source contract gate，
-    但不进入当前 TT-Sim correctness gate
-  - 后续若要继续收这条 runtime，
-    应补
-    source live-form bridge
-    的主链 owner，
-    而不是继续在尾部堆 merge fallback
+  - 这类 shape
+    现在应通过
+    `ExecutableSpec`
+    metadata
+    产生 explicit
+    `direct_runtime_unsupported_reasons`
+  - 不要再把它写成
+    hard skip
+    或 runtime-only patch
+  - 后续要推进 admitted runtime，
+    应补非 mailbox
+    materialization protocol，
+    不是在 leaf reader
+    按 kernel shape /
+    builtin 序列 /
+    buffer 名
+    重建 producer-consumer graph
 
 ## 2. 已解决但值得记住的模式
 

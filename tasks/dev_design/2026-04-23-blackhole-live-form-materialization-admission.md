@@ -3,7 +3,15 @@
 ## 1. 定位
 
 - **日期**: `2026-04-23`
-- **状态**: 当前 support surface / workload payoff lane 的任务级设计
+- **状态**:
+  live-form /
+  materialization
+  owner truth
+  已落到
+  `TTProgram -> ExecutableSpec`；
+  direct runtime admission
+  仍等待非 mailbox
+  materialization protocol
 - **上级设计**: `final_blackhole_backend_redesign.md`
 - **适用范围**:
   - direct cast consumer
@@ -98,6 +106,84 @@ legacy protocol deletion
 不是让某个 runtime 测试先绿，
 而是补上 explicit live-form /
 materialization contract。
+
+### 3.1 当前实现快照
+
+本轮实现已完成 owner-truth 部分：
+
+- `TTProgram`
+  新增 typed
+  `TTLiveFormPlan` /
+  `TTMaterializationPlan` /
+  `TTConsumerBindingPlan`
+  slices，
+  由 planner 写入，
+  由
+  `ValidateTTProgram`
+  fail-close
+  校验
+- `MaterializeBlackholeExecutable`
+  将这些 slices
+  投影成
+  `ExecutableSpec`
+  / runtime metadata
+  中的
+  `live_form_plans` /
+  `materialization_plans` /
+  `consumer_binding_plans`
+- `BufferMaterializationSpec`
+  已扩展
+  `live_form_kind` /
+  `execution_topology_kind` /
+  `physical_local_extent` /
+  `logical_element_count` /
+  `producer_kernel` /
+  `materialization_protocol`
+- `fragment_fill -> cast -> publish`
+  和 GEMM post-merge cast consumer
+  均能显式表达
+  `thread_distributed_slice`
+  经
+  `cb_republish`
+  materialize 成
+  `cb_materialized_tile`
+
+本轮实现没有把
+runtime/codegen
+改成按 kernel shape /
+builtin sequence /
+buffer name
+恢复语义。
+
+runtime admission 的实际边界也已明确：
+当前 `cb_republish`
+仍依赖 mailbox-style
+device-side CB write pointer transfer。
+在 TT-Sim hard execution 中，
+该路径会命中
+`UnimplementedFunctionality: t_tile_mmio_wr32`。
+尝试在 device helper 中直接读取
+local CB interface
+又会在 TRISC1 链接阶段暴露
+`undefined reference to cb_interface`。
+因此当前 direct runtime
+不应再 hard-skip 或 runtime-only patch，
+而应从
+`ExecutableSpec`
+metadata
+产生 queryable
+unsupported reason：
+
+```text
+thread-distributed cb_republish materialization is not admitted by direct runtime; requires a non-mailbox materialization protocol for compute-thread CB publication
+```
+
+后续 admission
+必须补非 mailbox
+compute-thread CB publication /
+materialization protocol，
+而不是在 leaf reader
+重建 producer-consumer graph。
 
 ## 4. 方案取舍
 
@@ -375,9 +461,16 @@ buffer name
 - 证明 cast consumer
   读取前的 materialization protocol
   不是 leaf reader 猜出来的
-- 使 runtime correctness gate
-  从 skip
-  转成 admitted bf16 TT-Sim test
+- 使 runtime gate
+  从 hard skip /
+  source-only assertion
+  转成
+  `ExecutableSpec`
+  驱动的 queryable
+  materialization gate；
+  后续非 mailbox protocol
+  落地后，
+  再晋级为 admitted bf16 TT-Sim test
 
 不允许：
 
@@ -397,10 +490,24 @@ buffer name
   继续保持 `clear_accum=true`
   direct path
 
-验收：
+当前验收：
 
 - build/source contract gate
   仍通过
+- typed live-form /
+  materialization projection
+  能说明
+  cast consumer
+  消费的是哪一种 live form
+- direct runtime
+  在缺少 admitted protocol
+  时给出 explicit
+  unsupported reason，
+  而不是重新走旧 merge bridge
+
+最终 admission
+仍要求：
+
 - bf16 TT-Sim direct runtime
   admitted
 - `direct_runtime_unsupported_reasons`
@@ -472,7 +579,8 @@ live-form/materialization
 
 ## 9. 完成判据
 
-架构完成必须同时满足：
+本轮 owner-truth closeout
+必须同时满足：
 
 1. live-form /
    materialization distinction
@@ -482,10 +590,14 @@ live-form/materialization
    拒绝缺字段或不一致 protocol
 3. `fragment_fill -> cast -> publish`
    从 build/source-only
-   晋级到 admitted bf16 direct runtime gate
+   晋级到 typed projection +
+   explicit materialization
+   runtime gate
 4. direct cast consumer
    从 build/source-only
-   晋级到 admitted bf16 direct runtime gate
+   晋级到 typed projection +
+   explicit materialization
+   runtime gate
 5. runtime/codegen
    没有新增 semantic recovery
    或 workload 特判
@@ -494,10 +606,31 @@ live-form/materialization
    同步记录 flash-attn
    是否仍留在 payoff lane
 
+完整 runtime admission
+还必须继续满足：
+
+- 非 mailbox
+  compute-thread CB publication /
+  materialization protocol
+  落地
+- `fragment_fill -> cast -> publish`
+  和 direct cast consumer
+  晋级为 admitted bf16
+  TT-Sim direct-runtime
+  correctness gate
+- 对应
+  `direct_runtime_unsupported_reasons`
+  从 admitted shape
+  中移除
+
 交付完成还需要：
 
 - 相关 build / compile / projection tests
 - TT-Sim bf16 admitted runtime tests
+  或 explicit unsupported gate
+  regression，
+  取决于当前 protocol
+  是否已进入 admitted support surface
 - source scan
   确认没有新增 legacy attr /
   bag /

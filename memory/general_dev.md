@@ -120,12 +120,48 @@
   - producer pass
   - executable projection
   - validator
+  - runtime metadata / host metadata copy
+  - Python 侧 typed rebuild helper
   - Python 侧回归断言；
   否则很容易出现
   C++ 已经 typed 化，
   但 leaf reader /
   测试
   还在读旧 payload
+- 给 `TTProgram`
+  增加跨 leaf 的 owner truth
+  时，
+  不能只写 typed slice；
+  同一轮必须把
+  schema / constructor callsites /
+  planner producer /
+  validator /
+  `tt_program_projection` /
+  `ExecutableSpec` parser /
+  `BlackholeModule` host copy /
+  Python test helper
+  一起对齐。
+  缺其中任何一层，
+  都会把新 truth
+  变成“C++ pass 看得见、leaf/runtime 看不见”的半切换
+- `direct_runtime_unsupported_reasons`
+  只能由
+  `ExecutableSpec`
+  leaf metadata
+  推出，
+  不能读回
+  `TTProgram.payload`
+  或 TIR body
+  做 semantic recovery。
+  gate 也要按当前 admitted support surface
+  精确收窄；
+  例如 single-contract
+  `thread_distributed + cb_republish`
+  可以 gate，
+  但不应污染
+  flash-attn
+  multi-contract
+  compile/source baseline
 - exact TT-Metal builtin 选择
   必须发生在 anchored sub-TIR
   仍保留 tile-op / layout / load-store /
