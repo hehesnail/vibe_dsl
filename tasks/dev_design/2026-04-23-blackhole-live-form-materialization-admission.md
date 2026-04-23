@@ -10,8 +10,16 @@
   已落到
   `TTProgram -> ExecutableSpec`；
   direct runtime admission
-  仍等待非 mailbox
-  materialization protocol
+  已有
+  `pack_thread_direct_store`
+  与
+  `pack_tile`
+  两类非 mailbox
+  publication protocol；
+  更宽 live-in /
+  workload payoff
+  继续按显式 IR
+  扩支持面
 - **上级设计**: `final_blackhole_backend_redesign.md`
 - **适用范围**:
   - direct cast consumer
@@ -76,16 +84,17 @@ cleanup task5 之后，
 legacy protocol deletion
 已经收口。
 剩下的问题不是“旧协议还没删干净”，
-而是当前 admitted runtime surface
-仍缺少一类显式语义：
+而是 admitted runtime surface
+必须继续围绕一类显式语义
+扩展：
 
 > **logical value 当前以什么 live form 存在，
 > 以及 consumer 读取它之前是否已经完成 materialization。**
 
-当前 build/source baseline
+早期 build/source baseline
 能够稳定表达若干 fragment / cast / publish
 关系，
-但 runtime 真执行卡住的根因是：
+但 runtime 真执行曾卡住的根因是：
 
 - logical layout truth
   不等于 physical live-form truth
@@ -109,7 +118,8 @@ materialization contract。
 
 ### 3.1 当前实现快照
 
-本轮实现已完成 owner-truth 部分：
+本轮实现已完成 owner-truth
+与当前 admission 部分：
 
 - `TTProgram`
   新增 typed
@@ -156,10 +166,10 @@ builtin sequence /
 buffer name
 恢复语义。
 
-runtime admission 的实际边界也已明确：
-当前 `cb_republish`
-仍依赖 mailbox-style
-device-side CB write pointer transfer。
+runtime admission 的实际边界也已明确。
+早期 `cb_republish`
+只会降成 mailbox-style
+device-side CB write pointer transfer；
 在 TT-Sim hard execution 中，
 该路径会命中
 `UnimplementedFunctionality: t_tile_mmio_wr32`。
@@ -167,19 +177,17 @@ device-side CB write pointer transfer。
 local CB interface
 又会在 TRISC1 链接阶段暴露
 `undefined reference to cb_interface`。
-因此当前 direct runtime
-不应再 hard-skip 或 runtime-only patch，
-而应从
+因此 direct runtime admission
+不能靠 hard-skip 或 runtime-only patch，
+必须从
 `ExecutableSpec`
 metadata
-产生 queryable
-unsupported reason：
+区分 queryable
+unsupported reason
+和已实现的非 mailbox
+publication protocol。
 
-```text
-thread-distributed cb_republish materialization is not admitted by direct runtime; requires a non-mailbox materialization protocol for compute-thread CB publication
-```
-
-当前 admission 的补充协议是：
+当前 admission 的协议分层是：
 
 - `materialization_protocol`
   继续表示 consumer-visible 结果；
@@ -195,20 +203,32 @@ thread-distributed cb_republish materialization is not admitted by direct runtim
   mailbox write-pointer transfer
   必须保留 explicit unsupported reason
 
-当前首先 admitted 的非 mailbox
-publication protocol 是
-`pack_thread_direct_store`。
-它只用于 planner 已证明
-producer value 是常量 full-tile fill /
-cast publish
-的 case：
-PACK thread 在
-`cb_reserve_back`
-之后直接写 reserved CB page，
-再用
-`cb_push_back`
-发布可见性。
-它不是 leaf reader
+当前已 admitted 的非 mailbox
+publication protocols 有两类：
+
+- `pack_thread_direct_store`
+  用于 planner 已证明
+  producer value 是常量 full-tile fill /
+  cast publish
+  的 case：
+  PACK thread 在
+  `cb_reserve_back`
+  之后直接写 reserved CB page，
+  再用
+  `cb_push_back`
+  发布可见性
+- `pack_tile`
+  用于 GEMM post-merge
+  direct cast consumer
+  的 zero-preclear
+  full-tile case：
+  merge 侧从 partials CB
+  copy 到 DST register，
+  再把同一个 DST tile
+  pack 到 materialized
+  bf16 target CB
+
+两者都不是 leaf reader
 按 kernel shape 猜出来的 fallback；
 必须由
 `TTMaterializationPlan`
@@ -216,7 +236,8 @@ PACK thread 在
 `ExecutableSpec`
 后才能 admitted。
 该证明必须来自当前 IR
-中的 producer fact；
+中的 producer fact
+和 typed materialization contract；
 如果同一 source buffer
 在 fill 之后又被 matmul /
 merge /
@@ -225,23 +246,30 @@ reduction /
 scalar update /
 cast 等 producer 写入，
 constant-fill fact
-必须失效，
-不能穿过 mutation
+必须失效。
+GEMM post-merge
+`pack_tile`
+admission
+还必须看到当前 IR
+zero-preclear fact，
+不能穿过非零 live-in merge
 继续作为
 publication admission
 依据。
 
-后续 direct cast consumer
-若 source live form
-已在 DST register tile
-或已 published CB tile 中，
-应继续补
-`pack_tile`
-类 publication protocol。
 非 constant、
 非 DST-register-backed
+或缺少 zero-live-in proof
 的 arbitrary local slice
 仍不得靠 mailbox helper admitted。
+host output copy
+在读取 materialized bf16 output
+时也必须消费
+`BufferMaterializationSpec.live_form_kind`，
+不能把外部 output
+机械按 GEMM accumulator
+`float32`
+dtype 校验。
 
 ## 4. 方案取舍
 
@@ -566,18 +594,20 @@ buffer name
   cast consumer
   消费的是哪一种 live form
 - direct runtime
-  在缺少 admitted protocol
-  时给出 explicit
-  unsupported reason，
-  而不是重新走旧 merge bridge
-
-最终 admission
-仍要求：
-
-- bf16 TT-Sim direct runtime
+  对 zero-preclear
+  full-tile
+  GEMM post-merge
+  cast consumer
+  使用
+  `publication_protocol=pack_tile`
   admitted
 - `direct_runtime_unsupported_reasons`
   不再包含该 admitted shape
+- 无 zero-preclear /
+  非零 live-in
+  仍保留 explicit
+  unsupported reason，
+  而不是重新走旧 merge bridge
 
 ### 7.3 第三阶段：flash-attn direct runtime
 
@@ -590,7 +620,12 @@ flash-attn
 - fragment/cast/publish
   materialization 已 admitted
 - direct cast consumer
-  已 admitted
+  当前 zero-preclear
+  full-tile shape
+  已 admitted；
+  更宽 live-in
+  组合仍需显式协议后
+  再进入 admitted surface
 - multi-op compute kernel
   所需 reduction /
   broadcast /
@@ -681,6 +716,7 @@ live-form/materialization
   落地
 - `fragment_fill -> cast -> publish`
   和 direct cast consumer
+  的当前 admitted shapes
   晋级为 admitted bf16
   TT-Sim direct-runtime
   correctness gate
@@ -688,6 +724,11 @@ live-form/materialization
   `direct_runtime_unsupported_reasons`
   从 admitted shape
   中移除
+- 未 covered 的 live-in /
+  fragment materialization
+  组合继续 queryable
+  unsupported，
+  不静默错跑
 
 交付完成还需要：
 

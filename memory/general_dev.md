@@ -198,6 +198,35 @@
   时必须失效，
   否则 preclear fill
   会被误当成后续 cast source truth
+- post-merge GEMM
+  direct cast consumer
+  可以通过
+  `TTMaterializationPlan(publication_protocol=pack_tile)`
+  admitted，
+  但前提是当前 IR
+  还能证明 accumulator live-in
+  是 zero-preclear；
+  merge sequence
+  必须整体非 mailbox：
+  partials CB
+  copy 到 DST register
+  后再
+  `pack_tile`
+  发布 target CB，
+  不能只把最终 cast publication
+  改成 `pack_tile`
+  而保留 accumulator reload
+  mailbox helper
+- materialized output
+  的 host copy
+  要优先消费
+  `BufferMaterializationSpec.live_form_kind`
+  /
+  materialization spec；
+  不要把外部 output
+  机械按 GEMM accumulator
+  dtype 或 compute contract
+  校验
 - 对 builtin-surface / residue 回归，
   测试应收集实际 TIR `Call`
   的 op 名；
@@ -586,19 +615,30 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 当前 cleanup correctness gate
   的 admitted runtime
   只包括
-  copy / GEMM；
-  direct cast consumer
+  copy / GEMM，
+  以及 live-form /
+  materialization admission
+  后的当前 supported shapes：
+  constant
   和
   `fragment_fill -> cast -> publish`
-  继续留在
-  build/source contract gate，
-  不要混进
-  TT-Sim hard gate；
-  cleanup 之后要推进它们，
-  先按
+  的
+  `pack_thread_direct_store`
+  path，
+  以及 zero-preclear
+  GEMM post-merge
+  direct cast consumer
+  的
+  `pack_tile`
+  path；
+  更宽 direct cast /
+  live-in materialization
+  仍不能混进
+  TT-Sim hard gate，
+  需要先按
   `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
-  补 explicit live-form /
-  materialization owner truth，
+  扩 explicit live-form /
+  materialization protocol，
   不要写 runtime-only patch
 - 对 `flash-attn` / multi-op compute kernel，
   不要再靠后段从 `SeqStmt`、builtin 序列或 buffer 形态

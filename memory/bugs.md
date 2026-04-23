@@ -40,87 +40,89 @@
   - 该问题的 simulator-side 旁证和更宽 fatal taxonomy 扫描，
     统一见 `memory/tt_simulator_constraints.md`
 
-### non-constant thread-distributed cb_republish materialization 仍缺 pack-tile 类 publication protocol
+## 2. 已解决但值得记住的模式
 
-- **现象**:
+### post-merge `pack_tile` admission 不能只修最后一次 materialization
+
+- **症状**:
   - `gemm + post-merge cast consumer`
-    能在
+    已经能在
     `TTProgram`
     /
     `ExecutableSpec`
     暴露 typed
     live-form /
     materialization
-    owner truth：
-    `thread_distributed_slice`
-    通过
-    `cb_republish`
-    生成
-    `cb_materialized_tile`
-  - 但该类 source
-    不是 constant full-tile fill，
-    当前仍不能走
-    `pack_thread_direct_store`
-- **已验证的负例**:
-  - 将 runtime test
-    的 hard skip
-    临时移除后，
-    执行能到 TT-Metal enqueue，
-    然后在 mailbox-style
-    CB write pointer transfer
-    上打到
-    `t_tile_mmio_wr32`
-  - 把 device helper
-    改成直接读取
-    local CB interface
+    owner truth，
+    但最初只把
+    `D_local`
+    的 publication 改成
+    `pack_tile`
     后，
-    TRISC1 链接阶段报
-    `undefined reference to cb_interface`
-    而不是形成可用 direct path
+    TT-Sim 仍在 accumulator reload
+    helper 上命中 mailbox-style
+    CB write-pointer path
+  - host 侧随后又会把
+    materialized bf16 output
+    误按 GEMM accumulator
+    `float32`
+    dtype 校验
 - **根因**:
-  - 当前 owner truth
-    已经从旧 merge/live-form bridge
-    收到
-    typed
-    `TTLiveFormPlan`
-    /
-    `TTMaterializationPlan`
-  - non-constant
-    direct cast consumer
-    真正缺的是 admitted
+  - direct runtime admission
+    需要整个 device sequence
+    都避开 mailbox helper；
+    只修最终 cast publication
+    不够
+  - zero-preclear GEMM
+    的 merge live-in
+    可以由当前 IR
+    `tl.blackhole.fill_fragment`
+    zero fact
+    证明为零，
+    因此不需要把旧 accumulator
+    先写入 reload CB
+  - output host copy
+    不能只看 GEMM compute contract；
+    materialized output
+    必须优先按
+    `BufferMaterializationSpec.live_form_kind`
+    读取
+- **修法**:
+  - post-merge cast consumer
+    只在当前 IR
+    仍有 zero-preclear fact
+    且 target materialization contract
+    完整时 admitted
+  - merge 侧直接等待 partials CB，
+    copy 到 DST register，
+    再用
     `pack_tile`
-    或等价非 mailbox
-    compute-thread CB publication
-    protocol；
-    mailbox 写指针传输在当前
-    TT-Sim / device side
-    不是可执行支持面
-- **当前结论**:
-  - 这类 shape 继续通过
-    `ExecutableSpec`
-    metadata
-    产生 explicit
-    `direct_runtime_unsupported_reasons`
-  - 不要再把它写成
-    hard skip
-    或 runtime-only patch
-  - 后续要推进 admitted runtime，
-    应补
-    `pack_tile`
-    类 protocol，
-    不是在 leaf reader
-    按 kernel shape /
-    builtin 序列 /
-    buffer 名
-    重建 producer-consumer graph
-  - constant full-tile
-    `fragment_fill -> cast -> publish`
-    已由
-    `publication_protocol=pack_thread_direct_store`
-    admitted；
-    它不再属于该未解决项
-
-## 2. 已解决但值得记住的模式
+    发布
+    `D_local`
+    materialized CB
+  - `TTMaterializationPlan`
+    记录
+    `publication_protocol=pack_tile`，
+    无 zero-preclear /
+    非零 live-in
+    保留 explicit unsupported gate
+  - host output copy
+    通过
+    `BufferMaterializationSpec.live_form_kind`
+    识别 materialized bf16 output，
+    不再强套 accumulator dtype
+- **教训**:
+  - `pack_tile`
+    admission 是 typed materialization protocol，
+    不是 leaf source string patch
+  - 当前 IR
+    zero fact
+    是局部 analysis，
+    只能在 mutation 前使用；
+    非零 live-in merge
+    需要新的显式协议，
+    不能被这个 admitted shape
+    顺带放行
 
 ### 2.0 constant fill cb_republish admission 必须从当前 IR 的 fill builtin 推出，并在后续写入时失效
 

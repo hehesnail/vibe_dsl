@@ -453,7 +453,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Generate matmul builtin sequence */
   tvm::tir::Stmt LowerMatmulCallWithFlowAnalysis(const tvm::tir::CallNode* op,
-                                                 int current_order_index);
+                                                 int current_order_index,
+                                                 const FragmentCastMatch* post_merge_cast = nullptr,
+                                                 int post_merge_cast_order_index = -1,
+                                                 bool* consumed_post_merge_cast = nullptr);
   tvm::tir::Stmt GenerateMatmulSequence(const tvm::tir::CallNode* op,
                                         bool retain_in0 = false,
                                         bool retain_in1 = false,
@@ -461,7 +464,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                         bool publish_transport_out = true,
                                         bool preserve_out_local_state = false,
                                         bool reacquire_in0 = false,
-                                        bool reacquire_in1 = false);
+                                        bool reacquire_in1 = false,
+                                        const FragmentCastMatch* post_merge_cast = nullptr,
+                                        int post_merge_cast_order_index = -1);
   tvm::tir::Stmt GenerateMatmulSequenceForOutputRequirement(int out_req_index,
                                                             bool retain_in0,
                                                             bool retain_in1,
@@ -486,7 +491,14 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                     bool publish_transport_out,
                                                     bool preserve_out_local_state,
                                                     bool reacquire_in0,
-                                                    bool reacquire_in1);
+                                                    bool reacquire_in1,
+                                                    const FragmentCastMatch* post_merge_cast,
+                                                    int post_merge_cast_order_index,
+                                                    bool merge_with_zero_reload);
+  bool CanPublishPostMergeCastWithPackTile(const FragmentCastMatch& match,
+                                           int cast_order_index) const;
+  bool HasZeroFragmentFillFact(const tvm::tir::Buffer& buffer) const;
+  int PreparePostMergeCastPublishCB(const FragmentCastMatch& match, int num_c_tiles);
   tvm::tir::Stmt GenerateAddFragmentSequence(const tvm::tir::Buffer& dst,
                                              const tvm::tir::Buffer& src,
                                              const tvm::PrimExpr& num_elements);
@@ -504,7 +516,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                     const tvm::PrimExpr& num_elements,
                                                     int num_c_tiles,
                                                     bool materialize_live_form_to_local_state,
-                                                    int publish_cb_id);
+                                                    int publish_cb_id,
+                                                    int materialized_cast_cb_id = -1,
+                                                    bool merge_with_zero_reload = false);
   tvm::tir::Buffer CreateEphemeralBufferLike(const tvm::tir::Buffer& buffer,
                                              const std::string& suffix) const;
   tvm::tir::Buffer CreateConstantTileBuffer(tvm::DataType dtype, const std::string& suffix) const;

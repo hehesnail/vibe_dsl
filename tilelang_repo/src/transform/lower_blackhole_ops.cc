@@ -4368,9 +4368,13 @@ void PlanTTKernelABI::RecordComputeEpilogueOp(Map<String, Any> op_payload) {
   (void)op_payload;
 }
 
-Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(const CallNode* op,
-                                                      int current_order_index) {
+Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
+    const CallNode* op, int current_order_index, const FragmentCastMatch* post_merge_cast,
+    int post_merge_cast_order_index, bool* consumed_post_merge_cast) {
   ICHECK(op != nullptr);
+  if (consumed_post_merge_cast != nullptr) {
+    *consumed_post_merge_cast = false;
+  }
   ExtractGemmInfo(op);
 
   bool retain_in0 = false;
@@ -4408,9 +4412,28 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(const CallNode* op,
     preserve_out_local_state = future_uses.has_compute_consume || future_uses.has_reference;
   }
 
+  const bool can_publish_post_merge_cast =
+      post_merge_cast != nullptr && HasZeroFragmentFillFact(gemm_c_buffer_) &&
+      CanPublishPostMergeCastWithPackTile(*post_merge_cast, post_merge_cast_order_index);
+  if (can_publish_post_merge_cast) {
+    const FutureBufferUses source_uses_after_cast =
+        ClassifyFutureBufferUses(post_merge_cast->src, post_merge_cast_order_index);
+    if (!source_uses_after_cast.has_compute_consume &&
+        !source_uses_after_cast.has_transport_consume &&
+        !source_uses_after_cast.has_reference) {
+      preserve_out_local_state = false;
+    }
+    if (consumed_post_merge_cast != nullptr) {
+      *consumed_post_merge_cast = true;
+    }
+  } else {
+    post_merge_cast = nullptr;
+    post_merge_cast_order_index = -1;
+  }
+
   return GenerateMatmulSequence(op, retain_in0, retain_in1, publish_out,
                                 publish_transport_out, preserve_out_local_state, reacquire_in0,
-                                reacquire_in1);
+                                reacquire_in1, post_merge_cast, post_merge_cast_order_index);
 }
 
 Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
@@ -4420,16 +4443,21 @@ Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
                                                bool publish_transport_out,
                                                bool preserve_out_local_state,
                                                bool reacquire_in0,
-                                               bool reacquire_in1) {
+                                               bool reacquire_in1,
+                                               const FragmentCastMatch* post_merge_cast,
+                                               int post_merge_cast_order_index) {
   ICHECK_GE(gemm_a_req_index_, 0);
   ICHECK_GE(gemm_b_req_index_, 0);
   ICHECK_GE(gemm_c_req_index_, 0);
   ActivateCurrentComputeContractPayload();
+  const bool merge_with_zero_reload = !gemm_clear_accum_ && HasZeroFragmentFillFact(gemm_c_buffer_);
   InvalidateLastFragmentFillValue(gemm_c_buffer_);
   if (!gemm_clear_accum_) {
     return MaybeWrapComputeSegment(
         GenerateAccumulatingMatmulSequence(op, retain_in0, retain_in1, publish_transport_out,
-                                           preserve_out_local_state, reacquire_in0, reacquire_in1));
+                                           preserve_out_local_state, reacquire_in0, reacquire_in1,
+                                           post_merge_cast, post_merge_cast_order_index,
+                                           merge_with_zero_reload));
   }
   const bool publish_live_form_cb =
       preserve_out_local_state && BufferUsesTiledCBLiveForm(gemm_c_buffer_);
@@ -4741,13 +4769,16 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
                                                            const PrimExpr& num_elements,
                                                            int num_c_tiles,
                                                            bool materialize_live_form_to_local_state,
-                                                           int publish_cb_id) {
+                                                           int publish_cb_id,
+                                                           int materialized_cast_cb_id,
+                                                           bool merge_with_zero_reload) {
   InvalidateLastFragmentFillValue(dst);
   const std::string dst_buffer_name = BufferIdentityName(dst);
   Map<String, Any> op_payload =
       MakeComputeEpilogueOpPayload("merge_fragment_tiles", dst_buffer_name);
   op_payload.Set("src_buffer", String(BufferIdentityName(partials_buffer)));
   op_payload.Set("reload_buffer", String(BufferIdentityName(reload_buffer)));
+  op_payload.Set("zero_reload", Bool(merge_with_zero_reload));
   if (live_form_buffer.defined()) {
     op_payload.Set("live_form_buffer", String(BufferIdentityName(live_form_buffer)));
   }
@@ -4784,26 +4815,33 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
   const Buffer physical_dst = ResolvePhysicalComputeBuffer(dst);
 
   std::vector<Stmt> stmts;
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
-                                    {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
-  for (int tile = 0; tile < num_c_tiles; ++tile) {
-    stmts.push_back(MakeBlackholeCall(blackhole_write_local_fragment_tile_to_cb(),
-                                      {physical_dst->data, IntImm32(reload_cb_id), IntImm32(tile),
-                                       IntImm32(tile * tile_elements)}));
+  if (!merge_with_zero_reload) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                      {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
+    for (int tile = 0; tile < num_c_tiles; ++tile) {
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_write_local_fragment_tile_to_cb(),
+          {physical_dst->data, IntImm32(reload_cb_id), IntImm32(tile),
+           IntImm32(tile * tile_elements)}));
+    }
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                      {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_init(),
+                                      {IntImm32(reload_cb_id), IntImm32(partials_cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
+                                      {IntImm32(reload_cb_id), IntImm32(partials_cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                      {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
   }
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
-                                    {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_init(),
-                                    {IntImm32(reload_cb_id), IntImm32(partials_cb_id)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
-                                    {IntImm32(reload_cb_id), IntImm32(partials_cb_id)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
-                                    {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
   stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
                                     {IntImm32(partials_cb_id), IntImm32(num_c_tiles)}));
   if (live_form_cb_id >= 0) {
     stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
                                       {IntImm32(live_form_cb_id), IntImm32(num_c_tiles)}));
+  }
+  if (materialized_cast_cb_id >= 0) {
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_cb_reserve_back(), {IntImm32(materialized_cast_cb_id), IntImm32(num_c_tiles)}));
   }
   if (materialize_live_form_to_local_state) {
     ICHECK_GE(live_form_cb_id, 0)
@@ -4813,9 +4851,21 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
   }
   for (int tile = 0; tile < num_c_tiles; ++tile) {
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_add_tiles(),
-                                      {IntImm32(reload_cb_id), IntImm32(partials_cb_id),
-                                       IntImm32(tile), IntImm32(tile), IntImm32(0)}));
+    if (merge_with_zero_reload) {
+      if (ClearAccumReloadNeedsDataFormatReconfig()) {
+        stmts.push_back(MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short_with_dt(),
+                                          {IntImm32(gemm_b_req_index_), IntImm32(partials_cb_id)}));
+      } else {
+        stmts.push_back(MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(),
+                                          {IntImm32(partials_cb_id)}));
+      }
+      stmts.push_back(MakeBlackholeCall(blackhole_copy_tile(),
+                                        {IntImm32(partials_cb_id), IntImm32(tile), IntImm32(0)}));
+    } else {
+      stmts.push_back(MakeBlackholeCall(blackhole_add_tiles(),
+                                        {IntImm32(reload_cb_id), IntImm32(partials_cb_id),
+                                         IntImm32(tile), IntImm32(tile), IntImm32(0)}));
+    }
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
     if (live_form_cb_id >= 0) {
@@ -4830,10 +4880,18 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
       stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
                                         {IntImm32(0), IntImm32(publish_cb_id)}));
     }
+    if (materialized_cast_cb_id >= 0) {
+      stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
+                                        {IntImm32(materialized_cast_cb_id)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_pack_tile(), {IntImm32(0), IntImm32(materialized_cast_cb_id)}));
+    }
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
   }
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
-                                    {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
+  if (!merge_with_zero_reload) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                      {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
+  }
   stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
                                     {IntImm32(partials_cb_id), IntImm32(num_c_tiles)}));
   if (live_form_cb_id >= 0) {
@@ -4854,6 +4912,10 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
   if (publish_cb_id >= 0) {
     stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
                                       {IntImm32(publish_cb_id), IntImm32(num_c_tiles)}));
+  }
+  if (materialized_cast_cb_id >= 0) {
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_cb_push_back(), {IntImm32(materialized_cast_cb_id), IntImm32(num_c_tiles)}));
   }
   return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
 }
@@ -4970,13 +5032,94 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
   return SeqStmt::Flatten(stmts);
 }
 
+bool PlanTTKernelABI::CanPublishPostMergeCastWithPackTile(const FragmentCastMatch& match,
+                                                          int cast_order_index) const {
+  if (gemm_clear_accum_) {
+    return false;
+  }
+  if (!match.src.defined() || !match.dst.defined() || !gemm_c_buffer_.defined() ||
+      !SameBufferIdentity(match.src, gemm_c_buffer_) || !tir::is_zero(match.src_offset) ||
+      !tir::is_zero(match.dst_offset) || !match.dst->dtype.is_bfloat16()) {
+    return false;
+  }
+  if (gemm_m_ <= 0 || gemm_n_ <= 0 || gemm_m_ % kBlackholeTileRows != 0 ||
+      gemm_n_ % kBlackholeTileCols != 0) {
+    return false;
+  }
+  const int64_t logical_elements = static_cast<int64_t>(gemm_m_) * gemm_n_;
+  const int64_t cast_elements = StaticIntValueOrDefault(match.num_elements, -1);
+  if (cast_elements != logical_elements ||
+      GetLogicalBufferElementCount(match.src) != logical_elements ||
+      GetLogicalBufferElementCount(match.dst) != logical_elements) {
+    return false;
+  }
+  const FutureBufferUses dst_future_uses = ClassifyFutureBufferUses(match.dst, cast_order_index);
+  if (!dst_future_uses.has_transport_consume || dst_future_uses.has_compute_consume ||
+      dst_future_uses.has_reference) {
+    return false;
+  }
+  const Map<String, Any>* contract = FindBufferMaterializationContract(match.dst);
+  if (contract == nullptr) {
+    return false;
+  }
+  auto contract_string = [&](const char* key) -> std::string {
+    if (auto value = contract->Get(String(key))) {
+      return static_cast<std::string>(Downcast<String>(value.value()));
+    }
+    return "";
+  };
+  return contract_string(schema_key::kKind) ==
+             buffer_materialization::kRepublishedLogicalTile &&
+         contract_string(schema_key::kBridgeKind) ==
+             buffer_materialization::kTileNFacesMaterialization &&
+         contract_string(schema_key::kExecutionProtocol) ==
+             buffer_materialization::kTiledCBRepublish &&
+         contract_string(schema_key::kResultLiveForm) == buffer_live_form::kTiledCB;
+}
+
+bool PlanTTKernelABI::HasZeroFragmentFillFact(const Buffer& buffer) const {
+  const std::string identity = BufferIdentityName(buffer);
+  if (!identity.empty()) {
+    auto fill_it = last_fragment_fill_value_by_buffer_identity_.find(identity);
+    if (fill_it != last_fragment_fill_value_by_buffer_identity_.end()) {
+      return IsLiteralZeroValue(fill_it->second);
+    }
+  }
+  if (const VarNode* data = BufferDataIdentity(buffer)) {
+    auto fill_it = last_fragment_fill_value_by_data_.find(data);
+    if (fill_it != last_fragment_fill_value_by_data_.end()) {
+      return IsLiteralZeroValue(fill_it->second);
+    }
+  }
+  return false;
+}
+
+int PlanTTKernelABI::PreparePostMergeCastPublishCB(const FragmentCastMatch& match,
+                                                   int num_c_tiles) {
+  const int cb_id = AllocateRequirementIndex(match.dst, CBType::kIntermediate);
+  ICHECK_GE(cb_id, 0);
+  ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
+  const int target_tile_bytes =
+      kBlackholeTileRows * kBlackholeTileCols * match.dst->dtype.bytes();
+  SetRequirementPageLayout(cb_id, target_tile_bytes, num_c_tiles);
+  auto& req = cb_requirements_.at(cb_id);
+  req.data_format = DataTypeToDataFormatForBlackhole(match.dst->dtype);
+  req.flow_class = CBFlowClass::kStream;
+  req.publish_pages_per_event = std::max(req.publish_pages_per_event, num_c_tiles);
+  req.consume_pages_per_event = std::max(req.consume_pages_per_event, num_c_tiles);
+  return cb_id;
+}
+
 Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
                                                            bool retain_in0,
                                                            bool retain_in1,
                                                            bool publish_transport_out,
                                                            bool preserve_out_local_state,
                                                            bool reacquire_in0,
-                                                           bool reacquire_in1) {
+                                                           bool reacquire_in1,
+                                                           const FragmentCastMatch* post_merge_cast,
+                                                           int post_merge_cast_order_index,
+                                                           bool merge_with_zero_reload) {
   ICHECK(op != nullptr);
   ICHECK(IsUnsupportedResidualLocalScope(gemm_c_buffer_))
       << "Blackhole clear_accum=false lowering currently requires a compute-local accumulator "
@@ -5037,6 +5180,32 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
     materialize_live_form_to_local_state = !use_tiled_cb_live_form;
   }
 
+  int materialized_cast_req_index = -1;
+  if (post_merge_cast != nullptr &&
+      CanPublishPostMergeCastWithPackTile(*post_merge_cast, post_merge_cast_order_index)) {
+    materialized_cast_req_index = PreparePostMergeCastPublishCB(*post_merge_cast, num_c_tiles);
+    MarkRequirementLifetimeOverlap(scratch_req_index, materialized_cast_req_index);
+    MarkRequirementLifetimeOverlap(reload_req_index, materialized_cast_req_index);
+    if (live_form_req_index >= 0) {
+      MarkRequirementLifetimeOverlap(live_form_req_index, materialized_cast_req_index);
+    }
+    const Map<String, Any>* contract = FindBufferMaterializationContract(post_merge_cast->dst);
+    ICHECK(contract != nullptr)
+        << "PlanTTKernelABI requires a materialization contract for post-merge cast target "
+        << BufferIdentityName(post_merge_cast->dst);
+    PrimExpr cast_num_elements = post_merge_cast->num_elements;
+    if (auto logical_element_count = contract->Get(String(schema_key::kLogicalElementCount))) {
+      cast_num_elements = IntImm(
+          DataType::Int(32),
+          static_cast<int>(Downcast<Integer>(logical_element_count.value())->value));
+    }
+    RecordFragmentCastMaterializationPlans(
+        *post_merge_cast, *contract, materialized_cast_req_index, cast_num_elements,
+        buffer_materialization::kPackTile);
+    buffer_live_form_cb_by_buffer_identity_[BufferIdentityName(post_merge_cast->dst)] =
+        materialized_cast_req_index;
+  }
+
   const int64_t num_elements = GetLogicalBufferElementCount(gemm_c_buffer_);
   ICHECK_GT(num_elements, 0)
       << "Blackhole clear_accum=false lowering requires a static logical element count for "
@@ -5053,7 +5222,8 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
       gemm_c_buffer_, scratch_req_index, scratch_buffer, reload_req_index, reload_buffer,
       live_form_req_index, live_form_buffer, IntImm32(static_cast<int>(num_elements)),
       num_c_tiles, materialize_live_form_to_local_state,
-      publish_transport_out ? gemm_c_req_index_ : -1));
+      publish_transport_out ? gemm_c_req_index_ : -1, materialized_cast_req_index,
+      merge_with_zero_reload));
   if (use_tiled_cb_live_form) {
     buffer_live_form_cb_by_buffer_identity_[BufferIdentityName(gemm_c_buffer_)] =
         live_form_req_index;
@@ -7913,7 +8083,11 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
     const auto order_it = stmt_order_index_by_node_.find(op->seq[i].get());
     const int current_order_index =
         order_it != stmt_order_index_by_node_.end() ? order_it->second : static_cast<int>(i);
-    auto try_lower_retained_matmul = [&](const Stmt& stmt, Stmt* lowered) -> bool {
+    auto try_lower_retained_matmul = [&](const Stmt& stmt,
+                                         const FragmentCastMatch* post_merge_cast,
+                                         int post_merge_cast_order_index,
+                                         Stmt* lowered,
+                                         bool* consumed_post_merge_cast) -> bool {
       std::vector<std::function<Stmt(Stmt)>> rewrap_stack;
       Stmt current = stmt;
       while (true) {
@@ -7956,7 +8130,10 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       }
       if (const auto* call = eval->value.as<CallNode>()) {
         if (IsMatmulCall(call)) {
-          Stmt matmul = LowerMatmulCallWithFlowAnalysis(call, current_order_index);
+          Stmt matmul = LowerMatmulCallWithFlowAnalysis(call, current_order_index,
+                                                        post_merge_cast,
+                                                        post_merge_cast_order_index,
+                                                        consumed_post_merge_cast);
           for (auto it = rewrap_stack.rbegin(); it != rewrap_stack.rend(); ++it) {
             matmul = (*it)(matmul);
           }
@@ -8069,8 +8246,29 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
 
     if (!select_compute_builtins_only_) {
       Stmt retained_matmul;
-      if (try_lower_retained_matmul(op->seq[i], &retained_matmul)) {
+      FragmentCastMatch post_merge_cast;
+      const FragmentCastMatch* post_merge_cast_ptr = nullptr;
+      int post_merge_cast_order_index = -1;
+      if (i + 1 < op->seq.size()) {
+        if (const auto* next_cast_loop = AsUnwrappedFor(op->seq[i + 1])) {
+          if (MatchDirectFragmentCast(next_cast_loop, &post_merge_cast)) {
+            post_merge_cast_ptr = &post_merge_cast;
+            const auto next_order_it = stmt_order_index_by_node_.find(op->seq[i + 1].get());
+            post_merge_cast_order_index =
+                next_order_it != stmt_order_index_by_node_.end()
+                    ? next_order_it->second
+                    : static_cast<int>(i + 1);
+          }
+        }
+      }
+      bool consumed_post_merge_cast = false;
+      if (try_lower_retained_matmul(op->seq[i], post_merge_cast_ptr,
+                                    post_merge_cast_order_index, &retained_matmul,
+                                    &consumed_post_merge_cast)) {
         rewritten.push_back(retained_matmul);
+        if (consumed_post_merge_cast) {
+          ++i;
+        }
         continue;
       }
     }

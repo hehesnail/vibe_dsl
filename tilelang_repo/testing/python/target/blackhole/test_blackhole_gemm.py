@@ -1444,7 +1444,7 @@ def test_blackhole_gemm_post_merge_cast_consumer_keeps_buffer_tile_bridge_specs(
         assert len(spec["inverse_logical_index_exprs"]) == 3
 
 
-def test_blackhole_gemm_post_merge_cast_consumer_reports_direct_runtime_materialization_gate():
+def test_blackhole_gemm_post_merge_cast_consumer_uses_pack_tile_materialization():
     kernel = gemm_kernel_with_post_merge_cast_consumer()
     target = Target("blackhole")
 
@@ -1452,7 +1452,52 @@ def test_blackhole_gemm_post_merge_cast_consumer_reports_direct_runtime_material
         artifact = lower(kernel, target=target)
 
     reasons = _direct_runtime_unsupported_reasons(artifact)
+    assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    materializations = {
+        str(plan["target_buffer"]): plan
+        for plan in executable_spec["materialization_plans"]
+    }
+    assert "D_local" in materializations
+    d_local = materializations["D_local"]
+    assert str(d_local["materialization_protocol"]) == "cb_republish"
+    assert str(d_local["publication_protocol"]) == "pack_tile"
+    assert str(d_local["source_live_form"]) == "live_form_C_local"
+    assert str(d_local["produced_live_form"]) == "live_form_D_local"
+
+    d_local_configs = [
+        cfg for cfg in executable_spec["cb_configs"] if str(cfg["name"]) == "D_local"
+    ]
+    assert len(d_local_configs) == 1
+    d_local_cb_id = int(d_local_configs[0]["cb_id"])
+
+    compute_kernel = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="compute", core_type="trisc"
+    )
+    compute_source = str(compute_kernel["source_code"])
+    assert f"pack_tile(0, {d_local_cb_id});" in compute_source
+    assert f"tilelang_get_cb_write_ptr_bytes({d_local_cb_id})" not in compute_source
+    assert "reinterpret_cast<uint32_t*>(tilelang_get_cb_write_ptr_bytes(" not in compute_source
+    assert "reinterpret_cast<uint16_t*>(tilelang_get_cb_write_ptr_bytes(" not in compute_source
+
+
+def test_blackhole_gemm_post_merge_cast_consumer_without_zero_preclear_keeps_materialization_gate():
+    kernel = gemm_kernel_with_post_merge_cast_consumer(preclear_output_fragment=False)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    reasons = _direct_runtime_unsupported_reasons(artifact)
     assert any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    materializations = {
+        str(plan["target_buffer"]): plan
+        for plan in executable_spec["materialization_plans"]
+    }
+    assert str(materializations["D_local"]["publication_protocol"]) != "pack_tile"
 
 
 def test_blackhole_gemm_direct_runtime_preserves_clear_accum_false_fragment_for_cast_consumer():
@@ -1472,9 +1517,7 @@ def test_blackhole_gemm_direct_runtime_preserves_clear_accum_false_fragment_for_
     compute_contract = executable_spec["compute_contract"]
     assert bool(compute_contract["clear_accum"]) is False
     reasons = _direct_runtime_unsupported_reasons(artifact)
-    if reasons:
-        assert any("thread-distributed cb_republish materialization" in reason for reason in reasons)
-        return
+    assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")

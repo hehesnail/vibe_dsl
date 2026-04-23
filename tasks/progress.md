@@ -236,12 +236,18 @@
   `pack_thread_direct_store`
   晋级为 admitted
   bf16 direct runtime；
-  当前剩余工作
-  是继续补
-  non-constant /
+  GEMM post-merge
   direct cast consumer
-  的非 mailbox
-  publication protocol；
+  的 zero-preclear
+  full-tile shape
+  已通过
+  `pack_tile`
+  晋级为 admitted
+  bf16 direct runtime；
+  当前剩余工作
+  是继续扩大
+  materialization admission
+  支持面与 workload payoff；
   当前任务级设计
   已固定为
   `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
@@ -414,10 +420,22 @@ Normalized Tile TIR
   bf16 TT-Sim
   direct runtime correctness gate
 - GEMM post-merge cast consumer
-  仍保留
-  `direct_runtime_unsupported_reasons`
-  gate；
-  planner 会在 matmul /
+  的 zero-preclear
+  full-tile shape
+  现由当前 IR
+  zero fill fact
+  和 typed materialization contract
+  共同 admitted：
+  merge 侧不再走 accumulator reload
+  mailbox helper，
+  而是从 partials CB
+  copy 到 DST register
+  后用
+  `pack_tile`
+  发布
+  `D_local`
+  materialized CB；
+  planner 仍会在 matmul /
   merge /
   add /
   reduction /
@@ -426,6 +444,8 @@ Normalized Tile TIR
   写目标时失效旧 constant-fill fact，
   防止 preclear fill
   被误当成后续 cast source truth
+  或穿过非零 live-in merge
+  错误 admitted
 
 ## 4. 当前显式 Debt / 非 Blocker
 
@@ -467,13 +487,17 @@ Normalized Tile TIR
   已用
   `pack_thread_direct_store`
   admitted；
-  non-constant /
+  zero-preclear
   GEMM post-merge
   direct cast consumer
-  仍需补
+  已用
   `pack_tile`
-  或等价非 mailbox
-  publication protocol
+  admitted；
+  非零 live-in /
+  更宽 fragment materialization
+  与后续 workload payoff
+  仍需继续按显式 IR
+  扩支持面
 - `flash-attn` direct runtime
   仍不在当前
   correctness gate；
@@ -500,18 +524,23 @@ Normalized Tile TIR
   - `PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
   - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`
 - `thread_distributed + cb_republish`
-  constant-fill admission
+  non-mailbox admission
   baseline
   当前已通过：
   - `cd tilelang_repo && cmake --build build -j32`
-  - `PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_exposes_typed_live_form_owner_truth tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plans tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_admits_non_mailbox_cb_republish tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_post_merge_cast_consumer_reports_direct_runtime_materialization_gate`
+  - `PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_exposes_typed_live_form_owner_truth tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plans tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_admits_non_mailbox_cb_republish tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_post_merge_cast_consumer_uses_pack_tile_materialization tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_post_merge_cast_consumer_without_zero_preclear_keeps_materialization_gate`
   - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_runtime`
   - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_gemm.py`
 - direct runtime 当前 admitted 支持面：
   - copy：equal source/dest range，且 stride = 1
   - GEMM：A/B-separated reader range + writer output range；
     fresh fragment / preclear zero-init
-    统一走 `clear_accum=true` direct path
+    统一走 `clear_accum=true` direct path；
+    zero-preclear
+    GEMM post-merge cast consumer
+    支持
+    `publication_protocol=pack_tile`
+    的 bf16 materialized output
   - accessor：仅 interleaved + DRAM +
     `common_runtime_arg_count = 0`
   - communication：non-oversubscribed explicit semaphore /
@@ -533,8 +562,14 @@ Normalized Tile TIR
   已进入
   TT-Sim hard-execute
   correctness gate，
+  zero-preclear
   direct cast consumer
-  仍保留 explicit
+  也已进入
+  TT-Sim hard-execute
+  correctness gate；
+  无 zero-preclear /
+  非零 live-in
+  仍保持 explicit
   unsupported gate
 
 ## 6. 当前下一步
@@ -546,18 +581,17 @@ Normalized Tile TIR
    materialization
    owner truth
    基础上，
-   为 non-constant /
-   GEMM post-merge
-   direct cast consumer
-   设计并实现
-   `pack_tile`
-   类非 mailbox
-   publication protocol，
-   让该类
-   `thread_distributed + cb_republish`
-   从 explicit unsupported gate
-   晋级为 admitted
-   bf16 direct runtime gate
+   继续扩大
+   materialization admission
+   支持面：
+   非零 live-in merge、
+   更宽 fragment/cast producer
+   和后续 workload payoff
+   都必须继续通过
+   explicit representation
+   boundary
+   表达，
+   不回退到 leaf matcher
 2. 保持
    compile / projection /
    admitted runtime

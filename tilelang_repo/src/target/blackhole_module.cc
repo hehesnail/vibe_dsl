@@ -359,6 +359,9 @@ static void ValidateGemmOutputShape(const ExecutableSpec& spec,
 static const BufferMaterializationSpec& ResolveBufferMaterializationSpec(
     const ExecutableSpec& spec,
     const std::string& buffer_name);
+static const BufferMaterializationSpec* FindBufferMaterializationSpec(
+    const ExecutableSpec& spec,
+    const std::string& buffer_name);
 
 template <typename T>
 static const T* GetTensorData(const DLTensor* tensor) {
@@ -752,8 +755,11 @@ static void CopyOutputFromDeviceBuffer(const ExecutableSpec& spec,
   ICHECK(output_data.size() >= tensor_size)
       << "Output data size mismatch for " << binding.name;
   const auto gemm = GetComputeContract(spec);
+  const BufferMaterializationSpec* materialized_output =
+      FindBufferMaterializationSpec(spec, binding.name);
 
   if (!gemm.enabled || gemm.kind != "gemm" || binding.name != gemm.c_buffer ||
+      (materialized_output != nullptr && !materialized_output->live_form_kind.empty()) ||
       !IsTwoDimTensor(binding.tensor)) {
     const auto& materialization = ResolveBufferMaterializationSpec(spec, binding.name);
     const InterleavedTilePlan tile_plan =
@@ -807,21 +813,32 @@ static tt::DataFormat ParseDataFormat(const std::string& value) {
 static const BufferMaterializationSpec& ResolveBufferMaterializationSpec(
     const ExecutableSpec& spec,
     const std::string& buffer_name) {
+  const BufferMaterializationSpec* materialization =
+      FindBufferMaterializationSpec(spec, buffer_name);
+  ICHECK(materialization != nullptr)
+      << "Missing Blackhole buffer materialization spec for buffer " << buffer_name;
+  ICHECK_EQ(materialization->materialization_kind, "replicated")
+      << "Unsupported Blackhole buffer materialization kind for " << buffer_name << ": "
+      << materialization->materialization_kind;
+  ICHECK_EQ(materialization->memory_space, "dram")
+      << "Unsupported Blackhole buffer memory_space for " << buffer_name << ": "
+      << materialization->memory_space;
+  ICHECK_GT(materialization->transport_page_size_bytes, 0U)
+      << "Blackhole buffer materialization requires transport_page_size for " << buffer_name;
+  return *materialization;
+}
+
+static const BufferMaterializationSpec* FindBufferMaterializationSpec(
+    const ExecutableSpec& spec,
+    const std::string& buffer_name) {
   auto it = std::find_if(spec.buffer_materializations.begin(), spec.buffer_materializations.end(),
                          [&](const BufferMaterializationSpec& materialization) {
                            return materialization.buffer == buffer_name;
                          });
-  ICHECK(it != spec.buffer_materializations.end())
-      << "Missing Blackhole buffer materialization spec for buffer " << buffer_name;
-  ICHECK_EQ(it->materialization_kind, "replicated")
-      << "Unsupported Blackhole buffer materialization kind for " << buffer_name << ": "
-      << it->materialization_kind;
-  ICHECK_EQ(it->memory_space, "dram")
-      << "Unsupported Blackhole buffer memory_space for " << buffer_name << ": "
-      << it->memory_space;
-  ICHECK_GT(it->transport_page_size_bytes, 0U)
-      << "Blackhole buffer materialization requires transport_page_size for " << buffer_name;
-  return *it;
+  if (it == spec.buffer_materializations.end()) {
+    return nullptr;
+  }
+  return &*it;
 }
 
 static void ValidateSemaphoreCoreType(const std::string& core_type) {
