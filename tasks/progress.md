@@ -12,23 +12,32 @@
 
 - **日期**: `2026-04-23`
 - **当前总体 blocker**:
+  cleanup blocker
+  已解除；
+  当前活动 lane
+  是
+  `support surface / workload payoff`
+  deferred lane
+  重新打开；
   `Legacy Protocol Deletion / cleanup task5 convergence`
-  成为当前主线；
-  `Task 3`
-  已在 repo HEAD 收口，
-  当前最直接的后续工作
-  是对 leaf compatibility debt /
-  residue scan /
-  delivery gate
-  做最终 convergence
+  已在 repo HEAD 完成，
+  当前后续工作
+  回到 leaf admission /
+  runtime-support-surface
+  扩展
 - **当前推进原则**:
-  主线固定按
-  `Legacy Protocol Deletion`
-  推进；
-  `Task 1`
-  / `Task 2`
-  / `Task 3`
-  已在 repo HEAD 收口
+  layered IR 主链
+  `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
+  已完成收口；
+  后续只在
+  leaf admission /
+  runtime gate /
+  workload payoff
+  上推进，
+  不重新引入
+  legacy attr /
+  bag /
+  wrapper
 
 ## 2. 当前主线任务状态
 
@@ -92,7 +101,7 @@
     lowered builtin
     direct structural extraction
 - `Legacy Protocol Deletion`
-  - 状态：`pending`
+  - 状态：`completed`
   - 说明：
     cleanup `task0-task5`
     是 overlap residue workstream，
@@ -116,6 +125,25 @@
     已不再按
     `scores_max / acc_o / ...`
     这类 workload buffer 名分支
+    `blackhole.resource_plan`
+    /
+    `tl.internal_tt_*`
+    已从
+    `tilelang_repo/src`
+    和
+    `tilelang_repo/tilelang`
+    的定义面退出；
+    `blackhole.lowering_requirements`
+    broad bag
+    与
+    `AnalyzeBlackholeLoweringSupportFacts`
+    旧命名
+    也已退出 active chain，
+    只剩
+    pass-local
+    lowering collector /
+    strip-before-leaf
+    mechanics
 
 ### 2.2 cleanup overlap 看板
 
@@ -190,18 +218,19 @@
     基于 lowered builtin
     的 structural slicer
 - `Cleanup Task 5`
-  - 状态：`pending overlap / 最终 convergence gate`
+  - 状态：`completed overlap / convergence gate 已收口`
 
 ### 2.3 Deferred lane
 
 - support surface /
   workload payoff 扩展
-  当前冻结；
-  当前等
-  `Legacy Protocol Deletion`
-  convergence /
-  delivery gate
-  完成后再恢复
+  已解除冻结；
+  现在回到
+  leaf admission /
+  runtime owner truth /
+  unsupported workload
+  queryable gate
+  收口
 
 ## 3. repo HEAD 当前代码现状
 
@@ -315,42 +344,52 @@ Normalized Tile TIR
   `BlackholeModule`
   进程内 direct host path
 
-## 4. 当前未收口项
+## 4. 当前显式 Debt / 非 Blocker
 
-- `Legacy Protocol Deletion / convergence`
-  - `buffer_tile_bridge_specs`
-    /
-    `unsupported_compute_ops`
-    /
-    `compute_contract`
-    /
-    `gemm_contract`
-    /
-    `multi_*_contracts`
-    仍作为
-    executable projection
-    内的 leaf compatibility debt
-    存在；
-    它们不再是
-    `TTProgram`
-    owner truth，
-    但还没做最终 convergence 判定
-  - cleanup task5
-    尚未完成
-    residue scan /
-    delivery gate /
-    final wording cleanup
+- `buffer_tile_bridge_specs`
+  /
+  `unsupported_compute_ops`
+  /
+  `compute_contract`
+  /
+  `gemm_contract`
+  /
+  `multi_*_contracts`
+  仍作为
+  executable projection
+  / leaf compatibility
+  metadata
+  存在；
+  它们已经不是
+  `TTProgram`
+  owner truth，
+  也不再作为
+  task5 blocker，
+  后续只允许按
+  explicit leaf debt
+  继续收敛
+- `flash-attn` direct runtime
+  /
+  direct cast consumer
+  /
+  `fragment_fill -> cast -> publish`
+  direct runtime
+  仍不在当前
+  correctness gate；
+  它们属于
+  support surface /
+  workload payoff
+  lane
 
 ## 5. 当前稳定基线
 
-- `Task 1`
-  相关结构层 / target helper / flash-attn target pipeline
-  当前基线已通过：
-  - `cmake --build tilelang_repo/build -j32`
-  - `pytest -q tilelang_repo/testing/python/transform -k blackhole`
-  - `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
-  - `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py`
-  - `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
+- `Legacy Protocol Deletion / cleanup task5`
+  convergence baseline
+  当前已通过：
+  - `cd tilelang_repo && cmake --build build -j32`
+  - `cd tilelang_repo && pytest -q testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_gemm.py`
 - direct runtime 当前 admitted 支持面：
   - copy：equal source/dest range，且 stride = 1
   - GEMM：A/B-separated reader range + writer output range；
@@ -364,32 +403,33 @@ Normalized Tile TIR
   compile-path / source/spec baseline 已稳定，
   但 direct runtime correctness
   还不是 admitted support surface
+- direct cast consumer
+  和
+  `fragment_fill -> cast -> publish`
+  当前只保留
+  build/source contract gate，
+  不进入
+  TT-Sim correctness gate
 
 ## 6. 当前下一步
 
 当前下一步固定为：
 
-1. 推进
-   `Legacy Protocol Deletion / cleanup task5`
-   - 做 final residue scan
-   - 收掉 stale wording /
-     dead helper /
-     convergence debt
-   - 确认 active path
-     只剩
-     explicit representation
-     boundary
-2. 收掉
-   仍留在
-   executable projection /
-   leaf compatibility layer
-   内的
-   的 leaf compatibility residue，
-   把它们压到
-   明确 debt /
-   或删除
-3. 最后做
-   最终 verification /
-   delivery /
-   support-surface
-   恢复
+1. 恢复
+   `support surface / workload payoff`
+   deferred lane
+2. 优先收
+   direct cast /
+   live-form owner truth
+   和
+   `fragment_fill -> cast -> publish`
+   这类
+   非 admitted runtime
+   边界
+3. 保持
+   compile / projection /
+   admitted runtime
+   gate
+   继续只站在
+   explicit representation
+   boundary 上

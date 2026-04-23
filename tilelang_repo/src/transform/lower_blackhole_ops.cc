@@ -1420,7 +1420,7 @@ static BlackholeLoweringSupportFacts BuildLoweringSupportFactsFromAnalysis(const
       << "PlanTTKernelABI requires tl.spatial_plan; run BuildSpatialPlan before lowering";
   ICHECK(func->GetAttr<Bool>(attr::kTLSpatialPlanValidated, Bool(false)).value())
       << "PlanTTKernelABI requires validated SpatialPlan; run ValidateSpatialPlan before lowering";
-  return AnalyzeBlackholeLoweringSupportFacts(func, spatial_plan.value());
+  return CollectBlackholeLoweringSupportFacts(func, spatial_plan.value());
 }
 
 static bool BufferMaterializationContractHasField(const Map<String, Any>& contract,
@@ -7626,9 +7626,61 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
     auto is_redundant_zero_fill_before_full_overwrite_matmul =
         [&](const Stmt& fill_stmt, const Stmt& next_stmt) -> bool {
       FragmentFillMatch fill_match;
-      const auto* fill_loop = AsUnwrappedFor(fill_stmt);
-      if (!fill_loop || !MatchDirectFragmentFill(fill_loop, &fill_match) ||
-          !IsLiteralZeroValue(fill_match.value)) {
+      const VarNode* fill_data = nullptr;
+      auto match_zero_fill = [&](const Stmt& stmt) -> bool {
+        const auto* fill_loop = AsUnwrappedFor(stmt);
+        if (fill_loop && MatchDirectFragmentFill(fill_loop, &fill_match)) {
+          fill_data = BufferDataIdentity(fill_match.dst);
+          return IsLiteralZeroValue(fill_match.value);
+        }
+        const auto* fill_store = AsUnwrappedBufferStore(stmt);
+        if (fill_store && MatchScalarFragmentFillStore(fill_store, &fill_match)) {
+          fill_data = BufferDataIdentity(fill_match.dst);
+          return IsLiteralZeroValue(fill_match.value);
+        }
+
+        Stmt current = stmt;
+        while (true) {
+          if (const auto* attr = current.as<AttrStmtNode>()) {
+            current = attr->body;
+            continue;
+          }
+          if (const auto* let = current.as<LetStmtNode>()) {
+            current = let->body;
+            continue;
+          }
+          if (const auto* decl = current.as<DeclBufferNode>()) {
+            current = decl->body;
+            continue;
+          }
+          if (const auto* allocate = current.as<AllocateNode>()) {
+            current = allocate->body;
+            continue;
+          }
+          break;
+        }
+        const auto* eval = current.as<EvaluateNode>();
+        const auto* call = eval ? eval->value.as<CallNode>() : nullptr;
+        if (!call || !call->op->IsInstance<OpNode>()) {
+          return false;
+        }
+        Op call_op = Downcast<Op>(call->op);
+        if (call_op->name != "tl.blackhole.fill_fragment" || call->args.size() < 3) {
+          return false;
+        }
+        fill_data = call->args[0].as<VarNode>();
+        if (!fill_data || !IsLiteralZeroValue(call->args[2])) {
+          return false;
+        }
+        auto it = compute_physical_buffers_by_data_.find(fill_data);
+        if (it != compute_physical_buffers_by_data_.end()) {
+          fill_match.dst = it->second;
+        }
+        fill_match.num_elements = call->args[1];
+        fill_match.value = call->args[2];
+        return true;
+      };
+      if (!match_zero_fill(fill_stmt)) {
         return false;
       }
 
@@ -7662,7 +7714,10 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       const Buffer fill_buffer = ResolvePhysicalComputeBuffer(fill_match.dst);
       const Buffer out_buffer =
           ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(call->args[2])->buffer);
-      if (!SameBufferIdentity(fill_buffer, out_buffer)) {
+      if (fill_match.dst.defined() && !SameBufferIdentity(fill_buffer, out_buffer)) {
+        return false;
+      }
+      if (!fill_match.dst.defined() && fill_data != BufferDataIdentity(out_buffer)) {
         return false;
       }
       return FindBufferMaterializationContract(out_buffer) == nullptr;

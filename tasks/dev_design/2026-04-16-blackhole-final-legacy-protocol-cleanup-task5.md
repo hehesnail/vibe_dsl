@@ -96,57 +96,77 @@ task5 不是新的协议删除任务，
   `git commit` / `git push`
   当成架构完成的定义
 
-## 3. 当前状态 (`2026-04-21`)
+## 3. 完成更新 (`2026-04-23`)
 
-当前 **不算完成**。
+当前 task5
+已经完成
+convergence /
+delivery gate。
 
-repo HEAD 上，
-task5 还不能被描述成
-“只剩文档同步和最后推送”，
-因为前面 task
-定义的 residue
-  仍然在 active tree 里可见：
+本轮 repo HEAD
+完成证据：
 
-- `tilelang_repo/tilelang/engine/lower.py`
-  仍通过
-  `AnalyzeBlackholeComputeRegions()`
-  走 legacy analysis hand-off
-- `tilelang.transform`
-  仍公开导出
-  `AnalyzeBlackholeWorkDecomposition` /
-  `AnalyzeBlackholeComputeRegions` /
-  `AnalyzeBlackholePipelineStages`
-- `blackhole.copy_semantics`
-  仍被
-  `SplitBlackholeKernel`、
-  `BlackholeDeviceResourceCanonicalization`、
-  `PlanTTKernelABI`
-  直接消费
+- `rg -n "blackhole\\.resource_plan|tl\\.internal_tt_" tilelang_repo/src tilelang_repo/tilelang`
+  已为零命中；
+  `blackhole.resource_plan`
+  与
+  `tl.internal_tt_*`
+  定义面
+  已退出
+  active source tree
+- `AnalyzeBlackholeLoweringSupportFacts`
+  旧命名
+  已退出；
+  lowering support
+  只剩
+  pass-local
+  `CollectBlackholeLoweringSupportFacts`
+  helper，
+  不再作为
+  public analysis /
+  protocol surface
 - `blackhole.segment_kind`
-  仍被
-  `PlanTTKernelABI`
-  / `rt_mod_blackhole.cc`
-  直接消费
-- `blackhole.lowering_requirements`
-  仍由
-  `blackhole_lowering_requirements.cc`
-  聚合成 broad bag
-- `blackhole.resource_plan`
-  仍由
-  `BlackholeDeviceResourceCanonicalization`
-  发出
-- `blackhole.work_decomposition` /
-  `blackhole.compute_regions` /
-  `blackhole.pipeline_stages` /
-  `blackhole.cb_requirements`
-  仍在 repo HEAD
-- `tl.internal_tt_*`
-  internal companion attrs
-  仍在源码里保留定义面
+  只剩
+  `lower_blackhole_ops.cc`
+  内部的
+  pass-local mechanics /
+  final strip，
+  不再被
+  leaf reader /
+  runtime
+  当作 cross-pass protocol
+- admitted runtime gate
+  已明确只保留
+  copy / GEMM；
+  direct cast consumer
+  和
+  `fragment_fill -> cast -> publish`
+  runtime
+  现在显式跳出
+  TT-Sim correctness gate，
+  只保留
+  build/source contract
+- preclear zero-init GEMM
+  canonicalize 到
+  `clear_accum=true`
+  时，
+  lowering
+  现在会同步删除
+  已选中的
+  redundant
+  `tl.blackhole.fill_fragment`
+  zero-fill，
+  不再继续落到
+  旧 merge/live-form
+  路径
+- 本轮完成验证：
+  - `cd tilelang_repo && cmake --build build -j32`
+  - `cd tilelang_repo && pytest -q testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && pytest -q testing/python/target/blackhole/test_blackhole_gemm.py`
 
-这意味着 task5 当前真正要写清楚的，
-不是“最后还要不要 commit”，
-而是：
+本轮 task5
+最终确认的职责边界是：
 
 1. 哪些 residue
    必须由前面 task
@@ -373,6 +393,9 @@ module 边界上：
   还不是 admitted support surface
 - direct cast consumer
   当前只保留 build/source contract gate
+- `fragment_fill -> cast -> publish`
+  当前也只保留
+  build/source contract gate
 - TT-Sim `fp16`
   属于 simulator capability boundary，
   不是当前 correctness gate

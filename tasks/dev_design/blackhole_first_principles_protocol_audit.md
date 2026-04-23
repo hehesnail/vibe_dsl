@@ -824,6 +824,64 @@
   不能被写成
   协议完成定义本身
 
+### 3.7 `2026-04-23` Task 5 convergence note
+
+- `tilelang_repo/src`
+  /
+  `tilelang_repo/tilelang`
+  已不再保留
+  `blackhole.resource_plan`
+  或
+  `tl.internal_tt_*`
+  定义面；
+  task5 source-scan
+  已把这两类 surface
+  压成零命中
+- lowering support
+  只剩
+  pass-local
+  `CollectBlackholeLoweringSupportFacts`
+  helper；
+  broad
+  `blackhole.lowering_requirements`
+  / public
+  `AnalyzeBlackhole*`
+  surface
+  不再是 active protocol
+- `blackhole.segment_kind`
+  仍可作为
+  `lower_blackhole_ops.cc`
+  内部的
+  segment slicing mechanics
+  暂存，
+  但它必须在 leaf reader /
+  runtime 边界前剥离；
+  不能再回升成
+  cross-pass contract
+- admitted runtime gate
+  当前只覆盖
+  copy / GEMM；
+  direct cast consumer
+  与
+  `fragment_fill -> cast -> publish`
+  继续留在
+  build/source contract gate，
+  不反写
+  layered IR
+  completion contract
+- preclear zero-init GEMM
+  一旦 canonicalize 到
+  `clear_accum=true`，
+  lowering
+  也必须同步删除
+  紧邻 full-overwrite matmul
+  的 selected zero-fill builtin；
+  否则等于在
+  `ExecutableSpec`
+  已收正之后
+  又把 runtime
+  拖回旧 live-form path
+
 ## 4. 长期保留的表示与 transform 纪律
 
 补充约束：

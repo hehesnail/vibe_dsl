@@ -336,8 +336,8 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
     Stmt new_body = VisitStmt(func->body);
     auto n = func.CopyOnWrite();
     n->body = new_body;
-    // Emit blackhole.resource_plan
-    n->attrs = EmitResourcePlan(func->attrs, func->params, func->buffer_map);
+    // Rebuild lowered resource metadata directly on the current explicit attrs.
+    n->attrs = RewriteLoweredAttrs(func->attrs);
     return func;
   }
 
@@ -399,49 +399,6 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
         continue;
       }
       rewritten.push_back(RewriteScopedRecord(record.value(), name_key));
-    }
-    return rewritten;
-  }
-
-  Map<String, Any> RewriteLoweringRequirements(const Map<String, Any>& requirements) const {
-    Map<String, Any> rewritten = requirements;
-    if (auto contracts = requirements.Get(String(schema_key::kBufferMaterializationContracts))) {
-      rewritten.Set(String(schema_key::kBufferMaterializationContracts),
-                    RewriteScopedRecordArray(Downcast<Array<Any>>(contracts.value()),
-                                             schema_key::kTargetBuffer));
-    }
-    if (auto contracts = requirements.Get(String(schema_key::kBufferFlowContracts))) {
-      rewritten.Set(String(schema_key::kBufferFlowContracts),
-                    RewriteScopedRecordArray(Downcast<Array<Any>>(contracts.value()),
-                                             schema_key::kBuffer));
-    }
-    return rewritten;
-  }
-
-  Map<String, Any> RewriteComputeEpilogueOp(const Map<String, Any>& op) const {
-    Map<String, Any> rewritten = op;
-    if (auto contract = op.Get(String(schema_key::kBufferTileBridgeSpec))) {
-      rewritten.Set(String(schema_key::kBufferTileBridgeSpec),
-                    RewriteScopedRecord(Downcast<Map<String, Any>>(contract.value()),
-                                        schema_key::kBuffer));
-    }
-    if (auto contract = op.Get(String(schema_key::kBufferMaterializationContract))) {
-      rewritten.Set(String(schema_key::kBufferMaterializationContract),
-                    RewriteScopedRecord(Downcast<Map<String, Any>>(contract.value()),
-                                        schema_key::kTargetBuffer));
-    }
-    return rewritten;
-  }
-
-  Array<Any> RewriteComputeEpilogueOps(const Array<Any>& ops) const {
-    Array<Any> rewritten;
-    for (const Any& op_any : ops) {
-      auto op = op_any.as<Map<String, Any>>();
-      if (!op.has_value()) {
-        rewritten.push_back(op_any);
-        continue;
-      }
-      rewritten.push_back(RewriteComputeEpilogueOp(op.value()));
     }
     return rewritten;
   }
@@ -659,67 +616,11 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
     return BufferStore(new_buf, bs->value, bs->indices);
   }
 
-  // ---- Emit blackhole.resource_plan attr ----
-  DictAttrs EmitResourcePlan(const DictAttrs& old_attrs,
-                              const Array<Var>& params,
-                              const Map<Var, Buffer>& buffer_map) const {
-    Array<Map<String, Any>> plan;
-
-    // ABI (host-visible) resources: function params with global scope
-    for (const auto& param : params) {
-      // Only pointer-typed params have a storage scope
-      if (!param->type_annotation.as<PointerTypeNode>()) {
-        // Scalar parameter
-        Map<String, Any> entry;
-        entry.Set("name", String(std::string(param->name_hint)));
-        entry.Set("class", String("scalar"));
-        entry.Set("scope", String("global"));
-        entry.Set("host_visible", Integer(1));
-        plan.push_back(entry);
-        continue;
-      }
-      std::string scope = GetScope(param);
-      if (scope.empty() || scope == "global") {
-        if (buffer_map.count(param)) {
-          const Buffer& buf = buffer_map[param];
-          Map<String, Any> entry;
-          entry.Set("name", String(std::string(buf->name)));
-          entry.Set("class", String("dram_tensor"));
-          entry.Set("scope", String("global"));
-          entry.Set("host_visible", Integer(1));
-          plan.push_back(entry);
-        } else {
-          Map<String, Any> entry;
-          entry.Set("name", String(std::string(param->name_hint)));
-          entry.Set("class", String("ptr"));
-          entry.Set("scope", String(scope));
-          entry.Set("host_visible", Integer(1));
-          plan.push_back(entry);
-        }
-      }
-    }
-
-    // Device-private resources
-    for (const auto& [name, info] : resource_map_) {
-      Map<String, Any> entry;
-      entry.Set("name", String(name));
-      entry.Set("class", String(info.cls));
-      entry.Set("role", String(info.role));
-      entry.Set("scope", String(info.new_scope));
-      entry.Set("host_visible", Integer(0));
-      plan.push_back(entry);
-    }
-
+  // ---- Rebuild lowered attrs from the canonicalized resource state ----
+  DictAttrs RewriteLoweredAttrs(const DictAttrs& old_attrs) const {
     Map<String, Any> new_attrs;
     if (old_attrs.defined()) {
       for (const auto& [k, v] : old_attrs->dict) {
-        if (k == String("blackhole.lowering_requirements")) {
-          auto requirements = v.as<Map<String, Any>>();
-          new_attrs.Set(k, requirements.has_value()
-                               ? Any(RewriteLoweringRequirements(requirements.value()))
-                               : v);
-          continue;
-        }
         if (k == String(attr::kTLTTProgram)) {
           auto program = v.as<TTProgram>();
           new_attrs.Set(k, program.has_value() ? Any(RewriteTTProgram(program.value())) : v);

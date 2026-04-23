@@ -181,7 +181,8 @@ def test_flash_attention_forward_tt_target_emits_tt_program_payload():
         "pack_tile",
         "cast_fragment_slice",
         "tilize_local_fragment_slice",
-        "pack_untilize_tile",
+        "tilize_cast_fragment_slice",
+        "untilize_cb_front_tile_fragment",
     }.issubset(builtin_names)
     assert not any(name in LEGACY_LOCAL_BLACKHOLE_BUILTINS for name in builtin_names)
 
@@ -1529,7 +1530,7 @@ def test_flash_attention_compute_source_materializes_full_acc_s_matrix_into_tile
     assert "const uint32_t num_elements = 16384;" in compute_source
 
 
-def test_flash_attention_compute_source_preserves_thread_row_offset_in_cast_fragment_slice():
+def test_flash_attention_compute_source_keeps_thread_row_offset_shape_in_cast_fragment_slice():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1555,8 +1556,10 @@ def test_flash_attention_compute_source_preserves_thread_row_offset_in_cast_frag
     compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
     compute_source = str(compute["source_code"])
 
-    assert (
-        "const uint32_t src_offset = ((tx * 128) + (i_1 * 8));" in compute_source
+    assert re.search(
+        r"const uint32_t src_offset = \(\(tx \* 128\) \+ "
+        r"\([A-Za-z0-9_]+ \* 8\)\);",
+        compute_source,
     )
 
 
@@ -2050,22 +2053,26 @@ def test_flash_attention_seq64_bf16_compute_source_stages_actual_output_pages():
         )
 
     spec = _extract_blackhole_executable_spec(artifact)
+    cb_by_name = {str(cb["name"]): cb for cb in spec["cb_configs"]}
     compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
     writer = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "writer")
     compute_source = str(compute["source_code"])
     writer_source = str(writer["source_code"])
+    output_cb = cb_by_name["O_shared"]
+    output_cb_id = int(output_cb["cb_id"])
 
-    writer_wait = re.search(r"cb_wait_front\((\d+), 1\);", writer_source)
-    assert writer_wait is not None
-    output_cb_id = writer_wait.group(1)
-
+    assert str(output_cb["flow_class"]) == "republish"
+    assert int(output_cb["publish_pages_per_event"]) == 1
+    assert int(output_cb["consume_pages_per_event"]) == 1
     assert f"cb_reserve_back({output_cb_id}, 1);" in compute_source
     assert f"cb_push_back({output_cb_id}, 1);" in compute_source
     assert f"cb_reserve_back({output_cb_id}, 2);" not in compute_source
     assert f"cb_push_back({output_cb_id}, 2);" not in compute_source
+    assert f"cb_pop_front({output_cb_id}, 1);" in writer_source
+    assert f"cb_pop_front({output_cb_id}, 2);" not in writer_source
 
 
-def test_flash_attention_seq64_bf16_compute_source_does_not_republish_loop_carried_acc_states():
+def test_flash_attention_seq64_bf16_compute_source_keeps_acc_s_private_and_acc_o_single_tile_state_publication():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -2096,14 +2103,20 @@ def test_flash_attention_seq64_bf16_compute_source_does_not_republish_loop_carri
     cb_by_name = {str(cb["name"]): int(cb["cb_id"]) for cb in spec["cb_configs"]}
 
     scores_max_prev_cb = cb_by_name["scores_max_prev"]
+    acc_s_cb = cb_by_name["acc_s"]
+    acc_o_cb = cb_by_name["acc_o"]
     assert f"cb_push_back({scores_max_prev_cb}, 2);" not in compute_source
 
-    for name in ("acc_s", "acc_o"):
-        cb_id = cb_by_name[name]
-        assert f"cb_push_back({cb_id}, 1);" not in compute_source
-        assert f"cb_push_back({cb_id}, 16);" not in compute_source
-        assert f"pack_tile(0, {cb_id}, 0);" not in compute_source
-        assert f"pack_tile(0, {cb_id});" not in compute_source
+    assert f"cb_push_back({acc_s_cb}, 1);" not in compute_source
+    assert f"cb_push_back({acc_s_cb}, 16);" not in compute_source
+    assert f"pack_tile(0, {acc_s_cb}, 0);" not in compute_source
+    assert f"pack_tile(0, {acc_s_cb});" not in compute_source
+
+    assert f"cb_reserve_back({acc_o_cb}, 1);" in compute_source
+    assert f"cb_push_back({acc_o_cb}, 1);" in compute_source
+    assert f"pack_tile(0, {acc_o_cb});" in compute_source
+    assert f"cb_reserve_back({acc_o_cb}, 16);" not in compute_source
+    assert f"cb_push_back({acc_o_cb}, 16);" not in compute_source
 
 
 def test_flash_attention_seq64_bf16_compute_source_accumulates_clear_accum_false_gemm_via_tiled_merge_protocol():
@@ -2317,7 +2330,7 @@ def test_flash_attention_compute_source_hoists_thread_invariant_matmul_pipeline_
     assert re.search(r"cb_push_back\(2,\s*\d+\);", compute_source[tx_loop_pos:]) is None
 
 
-def test_flash_attention_compute_source_keeps_multitile_blackhole_acc_cb_layout_for_multiphase_mha():
+def test_flash_attention_compute_source_keeps_multiphase_acc_cb_layout_for_mha():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -2357,12 +2370,12 @@ def test_flash_attention_compute_source_keeps_multitile_blackhole_acc_cb_layout_
     )
 
     assert f"cb_reserve_back({acc_s_cb}, 16);" not in compute_source
-    assert f"cb_reserve_back({acc_o_cb}, 16);" not in compute_source
     assert f"cb_push_back({acc_s_cb}, 16);" not in compute_source
-    assert f"cb_push_back({acc_o_cb}, 16);" not in compute_source
     assert f"cb_reserve_back({acc_s_cb}, 1);" not in compute_source
-    assert f"cb_reserve_back({acc_o_cb}, 1);" not in compute_source
     assert f"cb_push_back({acc_s_cb}, 1);" not in compute_source
+    assert f"cb_reserve_back({acc_o_cb}, 16);" in compute_source
+    assert f"cb_push_back({acc_o_cb}, 16);" in compute_source
+    assert f"cb_reserve_back({acc_o_cb}, 1);" not in compute_source
     assert f"cb_push_back({acc_o_cb}, 1);" not in compute_source
     assert f"cb_reserve_back({reload_cb}, 16);" in compute_source
     assert f"cb_push_back({reload_cb}, 16);" in compute_source

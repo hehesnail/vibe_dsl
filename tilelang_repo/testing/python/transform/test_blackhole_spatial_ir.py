@@ -1,3 +1,4 @@
+import subprocess
 import sys
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from tilelang.engine.phase import (
 from tvm.target import Target
 
 THIS_DIR = Path(__file__).resolve().parent
+REPO_ROOT = THIS_DIR.parents[3]
 BLACKHOLE_TARGET_TEST_DIR = THIS_DIR.parent / "target" / "blackhole"
 EXAMPLE_DIR = THIS_DIR.parents[2] / "examples" / "flash_attention"
 if str(BLACKHOLE_TARGET_TEST_DIR) not in sys.path:
@@ -97,6 +99,17 @@ def _prepare_blackhole_builtin_selection_module(prim_func):
     mod = tilelang.transform.PlanTTBlocks()(mod)
     mod = tilelang.transform.SelectBlackholeTTMetalBuiltins()(mod)
     return mod
+
+
+def _source_tree_rg(pattern, *paths):
+    result = subprocess.run(
+        ["rg", "-n", pattern, *[str(path) for path in paths]],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return [line for line in result.stdout.splitlines() if line]
 
 
 def _drop_legacy_spatial_attrs(mod):
@@ -213,6 +226,15 @@ def test_spatial_pass_surface_exposes_only_direct_spatial_plan_builder():
     assert not hasattr(tilelang.transform, "AnalyzeBlackholeWorkDecomposition")
     assert not hasattr(tilelang.transform, "AnalyzeBlackholeComputeRegions")
     assert not hasattr(tilelang.transform, "AnalyzeBlackholePipelineStages")
+
+
+def test_task5_source_tree_has_no_internal_tt_or_resource_plan_definition_surface():
+    hits = _source_tree_rg(
+        r"blackhole\.resource_plan|tl\.internal_tt_",
+        REPO_ROOT / "tilelang_repo/src",
+        REPO_ROOT / "tilelang_repo/tilelang",
+    )
+    assert hits == []
 
 
 def test_task1_copy_spatial_plan_emits_flow_boundary_from_tir():

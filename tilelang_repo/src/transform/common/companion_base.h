@@ -23,20 +23,6 @@ constexpr const char* kTLBlackholeLogicalBufferTileBridgeSpecs =
     "tl.blackhole_logical_buffer_tile_bridge_specs";
 constexpr const char* kTLTTSemaphorePlans = "tl.tt_semaphore_plans";
 constexpr const char* kTLTTHardwareModel = "tl.tt_hardware_model";
-constexpr const char* kTLInternalTTBlockPlans = "tl.internal_tt_block_plans";
-constexpr const char* kTLInternalTTKernelPlans = "tl.internal_tt_kernel_plans";
-constexpr const char* kTLInternalTTABIPlans = "tl.internal_tt_abi_plans";
-constexpr const char* kTLInternalTTABIPlanSeeds = "tl.internal_tt_abi_plan_seeds";
-constexpr const char* kTLInternalTTCBPlans = "tl.internal_tt_cb_plans";
-constexpr const char* kTLInternalTTTransportPlans = "tl.internal_tt_transport_plans";
-constexpr const char* kTLInternalTTSyncPlans = "tl.internal_tt_sync_plans";
-constexpr const char* kTLInternalTTSemaphorePlans = "tl.internal_tt_semaphore_plans";
-constexpr const char* kTLInternalTTComputeSyncPlans = "tl.internal_tt_compute_sync_plans";
-constexpr const char* kTLInternalTTDstLayoutPlans = "tl.internal_tt_dst_layout_plans";
-constexpr const char* kTLInternalTTExecutionPlans = "tl.internal_tt_execution_plans";
-constexpr const char* kTLInternalTTKernels = "tl.internal_tt_kernels";
-constexpr const char* kTLInternalTTCoreGroups = "tl.internal_tt_core_groups";
-constexpr const char* kTLInternalTTProgramPayload = "tl.internal_tt_program_payload";
 }  // namespace attr
 
 namespace manifest_key {

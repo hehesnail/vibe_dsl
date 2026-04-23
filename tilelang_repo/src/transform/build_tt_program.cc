@@ -35,28 +35,11 @@ using tvm::ffi::String;
 namespace {
 
 tir::PrimFunc StripTTIntermediateAttrs(tir::PrimFunc func) {
-  static const char* kLegacyProjectionAttrs[] = {
-      "blackhole.cb_requirements",
-      attr::kTLBlackholeLogicalBufferTileBridgeSpecs,
-  };
+  static const char* kLegacyProjectionAttrs[] = {attr::kTLBlackholeLogicalBufferTileBridgeSpecs};
   for (const char* key : kLegacyProjectionAttrs) {
     func = tvm::WithoutAttr(std::move(func), key);
   }
-  static const char* kIntermediateSeedAttrs[] = {attr::kTLTTSemaphorePlans,
-                                                 attr::kTLInternalTTBlockPlans,
-                                                 attr::kTLInternalTTKernelPlans,
-                                                 attr::kTLInternalTTABIPlanSeeds,
-                                                 attr::kTLInternalTTSyncPlans,
-                                                 attr::kTLInternalTTSemaphorePlans,
-                                                 attr::kTLInternalTTComputeSyncPlans,
-                                                 attr::kTLInternalTTDstLayoutPlans,
-                                                 attr::kTLInternalTTExecutionPlans,
-                                                 attr::kTLInternalTTKernels,
-                                                 attr::kTLInternalTTABIPlans,
-                                                 attr::kTLInternalTTCBPlans,
-                                                 attr::kTLInternalTTCoreGroups,
-                                                 attr::kTLInternalTTTransportPlans,
-                                                 attr::kTLInternalTTProgramPayload};
+  static const char* kIntermediateSeedAttrs[] = {attr::kTLTTSemaphorePlans};
   for (const char* key : kIntermediateSeedAttrs) {
     func = tvm::WithoutAttr(std::move(func), key);
   }

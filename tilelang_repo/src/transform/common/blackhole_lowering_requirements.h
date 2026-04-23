@@ -19,7 +19,7 @@ struct BlackholeLoweringSupportFacts {
   tvm::ffi::Array<tvm::ffi::Any> buffer_flow_contracts;
 };
 
-TVM_DLL BlackholeLoweringSupportFacts AnalyzeBlackholeLoweringSupportFacts(
+TVM_DLL BlackholeLoweringSupportFacts CollectBlackholeLoweringSupportFacts(
     const tvm::tir::PrimFunc& func, const SpatialPlan& plan);
 
 }  // namespace tl

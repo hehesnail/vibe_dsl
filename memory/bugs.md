@@ -522,6 +522,19 @@
     fresh / preclear-only
     统一 canonicalize 到
     `clear_accum=true`
+  - 一旦 canonicalize 到
+    `clear_accum=true`，
+    还要继续删除
+    紧邻 full-overwrite matmul
+    的 selected
+    `tl.blackhole.fill_fragment`
+    zero-fill；
+    只改 contract
+    不改已选 builtin body，
+    runtime 仍会掉回
+    旧 live-form /
+    `t_tile_mmio_wr32`
+    边界
 - **教训**:
   - accumulator merge
     是 producer/consumer 关系问题，

@@ -206,6 +206,8 @@ def extract_blackhole_cb_configs(func):
         config.setdefault(
             "total_size_bytes", int(cb_plan.num_pages) * int(cb_plan.page_size_bytes)
         )
+        config.setdefault("lifetime_begin", int(cb_plan.lifetime_begin))
+        config.setdefault("lifetime_end", int(cb_plan.lifetime_end))
         config.setdefault("data_format", str(cb_plan.data_format))
         configs.append(config)
     return configs

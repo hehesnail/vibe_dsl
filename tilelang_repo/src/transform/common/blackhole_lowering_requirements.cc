@@ -969,7 +969,7 @@ Array<Any> CollectBufferMaterializationContractsFromBody(
   return contracts;
 }
 
-BlackholeLoweringSupportFacts AnalyzeBlackholeLoweringSupportFactsImpl(const tir::PrimFunc& func,
+BlackholeLoweringSupportFacts CollectBlackholeLoweringSupportFactsImpl(const tir::PrimFunc& func,
                                                                        const SpatialPlan& plan) {
   LoweringSupportFactsAnalysis analysis;
   Array<Any> buffer_tile_bridge_specs;
@@ -1018,9 +1018,9 @@ BlackholeLoweringSupportFacts AnalyzeBlackholeLoweringSupportFactsImpl(const tir
 
 }  // namespace
 
-BlackholeLoweringSupportFacts AnalyzeBlackholeLoweringSupportFacts(const tir::PrimFunc& func,
+BlackholeLoweringSupportFacts CollectBlackholeLoweringSupportFacts(const tir::PrimFunc& func,
                                                                    const SpatialPlan& plan) {
-  return AnalyzeBlackholeLoweringSupportFactsImpl(func, plan);
+  return CollectBlackholeLoweringSupportFactsImpl(func, plan);
 }
 
 }  // namespace tl

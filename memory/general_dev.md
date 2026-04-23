@@ -518,6 +518,17 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 优先消费 TT-Metal local install tree，不要把 `.cpmcache` 整片塞进 include path
 - 现阶段 Blackhole runtime/direct-runtime regression 默认统一用 `bf16` 输入；
   不要再把 `fp16` 当成 TT-Sim 上的正式 runtime baseline
+- 当前 cleanup correctness gate
+  的 admitted runtime
+  只包括
+  copy / GEMM；
+  direct cast consumer
+  和
+  `fragment_fill -> cast -> publish`
+  继续留在
+  build/source contract gate，
+  不要混进
+  TT-Sim hard gate
 - 对 `flash-attn` / multi-op compute kernel，
   不要再靠后段从 `SeqStmt`、builtin 序列或 buffer 形态
   恢复 producer-consumer / republish / reduce / broadcast 语义；

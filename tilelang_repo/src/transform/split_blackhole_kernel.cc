@@ -23,7 +23,7 @@
  *
  * Task 4 moved reader/compute/writer owner truth into the TTProgram /
  * ExecutableSpec explicit kernel records. This pass intentionally stops
- * emitting cross-pass blackhole.segment_kind markers.
+ * emitting cross-pass segment-kind markers.
  */
 
 #include "split_blackhole_kernel.h"

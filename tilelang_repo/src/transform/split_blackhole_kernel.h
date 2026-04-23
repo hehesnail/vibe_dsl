@@ -36,7 +36,7 @@ namespace tl {
 /*!
  * \brief Create the SplitBlackholeKernels pass.
  *
- * Task 4 removed cross-pass blackhole.segment_kind markers. The pass name
+ * Task 4 removed cross-pass segment-kind markers. The pass name
  * remains as a stable phase hook, but segment truth is now constructed inside
  * TT planning rather than emitted onto the TIR body here.
  */
