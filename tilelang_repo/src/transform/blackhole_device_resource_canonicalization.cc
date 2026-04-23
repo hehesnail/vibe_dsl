@@ -29,7 +29,7 @@
  * This pass:
  *   1. Classifies ALL device-private buffers anywhere in the IR:
  *        shared.dyn / shared  →  blackhole.cb.{input|output|intermed}
- *        local.fragment / local(gemm C)  →  blackhole.acc
+ *        local.fragment / local(with fragment layout evidence)  →  blackhole.acc
  *   2. Rewrites buffer scope (StorageRank) to the new types
  *   3. Relocates device-private buffers that live ABOVE the thread_extent boundary
  *      (either as explicit AllocateNode stmts or in Block.alloc_buffers) INTO the
@@ -162,23 +162,6 @@ static CopyDirection GetCopyDirection(const BufferStoreNode* op) {
   return CopyDirection::kUnknown;
 }
 
-// ---------------------------------------------------------------------------
-// Helper: extract buffer name from gemm_py argument (arg[0..2] are buffer regions).
-// Each gemm arg is T.region(buf[indices...], ...) → a Call(T.region, [BufferLoad, ...]).
-// We want the name of the buffer in the BufferLoad.
-// ---------------------------------------------------------------------------
-static std::string ExtractGemmArgBufName(const PrimExpr& e) {
-  if (const auto* v = e.as<VarNode>()) return std::string(v->name_hint);
-  if (const auto* bl = e.as<BufferLoadNode>()) return std::string(bl->buffer->name);
-  if (const auto* c = e.as<CallNode>()) {
-    if (!c->args.empty()) {
-      if (const auto* v = c->args[0].as<VarNode>()) return std::string(v->name_hint);
-      if (const auto* bl = c->args[0].as<BufferLoadNode>()) return std::string(bl->buffer->name);
-    }
-  }
-  return "";
-}
-
 // ===========================================================================
 // Phase 1: classify all device-private buffers
 // ===========================================================================
@@ -193,14 +176,13 @@ class BlackholeResourceClassifier : public StmtExprVisitor {
   // Final results: buffer var name → resource info
   std::unordered_map<std::string, ResourceInfo> resource_map;
   void Run(const PrimFunc& func) {
-    // Scan 1: collect gemm C buffer names and copy direction info
+    // Scan 1: collect copy direction info
     VisitStmt(func->body);
-    // Scan 2: revisit nodes with full context to assign scopes
+    // Scan 2: revisit nodes with full context to assign scopes and fragment-layout evidence
     ClassifyAllocates(func->body);
   }
 
  private:
-  std::unordered_set<std::string> gemm_c_names_;
   std::unordered_set<std::string> layout_fragment_names_;
   // Direct current-stage copy recovery:
   std::unordered_set<std::string> cb_input_names_;    // appear as shared dst in dram_to_cb
@@ -226,17 +208,6 @@ class BlackholeResourceClassifier : public StmtExprVisitor {
       }
     }
     StmtExprVisitor::VisitStmt_(op);
-  }
-
-  void VisitExpr_(const CallNode* op) final {
-    if (op->op->IsInstance<OpNode>()) {
-      if (Downcast<Op>(op->op)->name == "tl.tileop.gemm_py" && op->args.size() >= 3) {
-        // args[2] is the C (accumulator) buffer
-        std::string c_name = ExtractGemmArgBufName(op->args[2]);
-        if (!c_name.empty()) gemm_c_names_.insert(c_name);
-      }
-    }
-    StmtExprVisitor::VisitExpr_(op);
   }
 
   void CollectLayoutFragments(const BlockNode* op) {
@@ -295,9 +266,9 @@ class BlackholeResourceClassifier : public StmtExprVisitor {
       // Always an accumulator
       resource_map[name] = {"blackhole.acc", "accumulator", "accumulator"};
     } else if (scope == "local") {
-      // Accumulator if it is the GEMM C buffer or a local fragment view preserved
-      // through layout_map after LowerAndLegalize.
-      if (gemm_c_names_.count(name) || layout_fragment_names_.count(name)) {
+      // Promote local buffers to accumulator only when the current TIR still
+      // carries explicit fragment-layout evidence for that logical subject.
+      if (layout_fragment_names_.count(name)) {
         resource_map[name] = {"blackhole.acc", "accumulator", "accumulator"};
       }
       // else: keep as local — not a Blackhole device-private resource we reclassify

@@ -10,7 +10,7 @@
 
 ## 1. 当前总体状态
 
-- **日期**: `2026-04-22`
+- **日期**: `2026-04-23`
 - **当前总体 blocker**:
   `Legacy Protocol Deletion / cleanup task5 convergence`
   成为当前主线；
@@ -97,6 +97,25 @@
     cleanup `task0-task5`
     是 overlap residue workstream，
     不是另一条主路线
+  - 当前 convergence 备注：
+    `BuildSpatialPlan`
+    已不再依赖
+    `tl.tileop.gemm_py`
+    / `arg[2]`
+    这类 op-specific 恢复；
+    statement 级 read/write
+    现在直接从
+    `tl.region` access mask
+    和 tileop typed
+    `compute_consume`
+    contract 恢复。
+    `BlackholeDeviceResourceCanonicalization`
+    也已删掉
+    GEMM-only accumulator fallback，
+    debug waypoint emission
+    已不再按
+    `scores_max / acc_o / ...`
+    这类 workload buffer 名分支
 
 ### 2.2 cleanup overlap 看板
 
@@ -218,6 +237,38 @@ Normalized Tile TIR
   C++ pass registration、
   对应 legacy test
   已从 repo HEAD 删除
+- `BuildSpatialPlan`
+  当前 statement access
+  恢复逻辑
+  已改成：
+  `tl.region` access mask
+  负责通用 read/write edge，
+  tileop typed
+  `GetDataflowAccessInfo()`
+  只负责
+  `compute_consume`
+  contract；
+  不再在 generic pass
+  里按
+  `tl.tileop.gemm_py`
+  做 closure role /
+  write-edge 特判
+- `BlackholeDeviceResourceCanonicalization`
+  当前只接受
+  fragment/layout 结构证据
+  来把 local buffer
+  提升到
+  `blackhole.acc`；
+  `gemm_py`
+  fallback
+  已退出
+- `codegen_blackhole`
+  的 debug waypoint
+  当前只保留 generic op-kind tags；
+  workload-private
+  buffer 名
+  已不再进入
+  debug/source contract
 - `AnalyzeSpatialStructureFacts`
   / `BuildSpatialPlanCompanion`
   public wrapper、

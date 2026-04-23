@@ -227,9 +227,6 @@ class CodeGenBlackhole : public CodeGenCHost {
   void UnregisterActiveCBWritePtrBinding(int cb_id, const std::string& var_name);
   void EmitActiveCBWritePtrRefreshes(int cb_id);
   void MaybeEmitMathWaypoint(std::ostream& os, const char* code);
-  void MaybeEmitPackWaypoint(std::ostream& os, const char* code);
-  void MaybeEmitUnpackWaypoint(std::ostream& os, const char* code);
-  std::string GetCBRequirementName(int cb_id) const;
   void LoadBufferTileBridgeSpecs(const tvm::tir::PrimFunc& f);
   const BufferTileBridgeBinding* FindBufferTileBridgeBinding(const tvm::tir::VarNode* var) const;
   bool BufferTileBridgeRequiresGenericBridge(const BufferTileBridgeBinding& binding) const;
@@ -275,7 +272,6 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_map<int, int> cb_page_size_by_id_;
   std::unordered_map<int, int> cb_num_pages_by_id_;
   std::unordered_map<std::string, int> cb_id_by_requirement_name_;
-  std::unordered_map<int, std::string> cb_requirement_name_by_id_;
   std::unordered_map<std::string, int> cb_num_pages_by_requirement_name_;
   std::unordered_map<std::string, int> cb_publish_pages_by_requirement_name_;
   std::unordered_map<std::string, int> cb_initial_reserve_pages_by_requirement_name_;

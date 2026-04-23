@@ -1782,8 +1782,9 @@ def test_flash_attention_small_bf16_compute_source_emits_debug_waypoints_when_re
     compute_source = str(compute["source_code"])
 
     assert "WAYPOINT(" in compute_source
-    for tag in ("MXPV", "MCLR", "OCST"):
-        assert f'WAYPOINT("{tag}")' in compute_source
+    assert 'WAYPOINT("CAST")' in compute_source
+    for tag in ("MXPV", "MCLR", "OCST", "QKAD", "QVAD", "ACST"):
+        assert f'WAYPOINT("{tag}")' not in compute_source
 
 
 def test_flash_attention_seq64_bf16_compute_source_retains_q_cb_until_last_k_step():

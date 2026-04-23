@@ -142,6 +142,40 @@
   只能 seed 稳定字段；
   带顺序索引的结构
   必须从当前 IR 重新构建
+- 对 tileop statement
+  的通用 read/write
+  恢复，
+  先读
+  `tl.region`
+  的
+  `access_mask`
+  （`r/w/rw`）；
+  不要在 generic pass
+  里按
+  `gemm_py`
+  / 参数位次
+  恢复写边。
+  另外，
+  visitor
+  遇到
+  `tl.region`
+  时
+  不应继续递归到
+  内部 `BufferLoad`，
+  否则 write-only region
+  会被误记成 read
+- tileop typed contract
+  和 region contract
+  要分工：
+  `tl.region access_mask`
+  负责通用
+  read/write edge，
+  `TileOperator::GetDataflowAccessInfo()`
+  只负责额外的 typed
+  compute-consume /
+  planner contract；
+  不要把两者重新混成
+  op-name matcher
 - 当前 IR 上重建 logical shape registry 时，
   同 data identity 的 flattened alias
   可能会把原始高维 logical shape
@@ -218,6 +252,17 @@
   等单独的 tilize / pack 步骤处理
 - `compute_epilogue_ops`
   不再是正确的调试或验证入口；
+  debug / source contract
+  若要插 waypoint
+  或做 source 断言，
+  应该绑定
+  generic op-kind /
+  phase-kind /
+  structural marker，
+  不要绑定
+  `scores_max / acc_o / logsum`
+  这类 workload-private
+  buffer 名
   现在应直接看 builtin 调用序列
   与
   `buffer_tile_bridge_specs`

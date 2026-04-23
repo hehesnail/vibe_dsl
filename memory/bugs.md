@@ -140,6 +140,112 @@
 
 ### 2.2 ABI / schema
 
+#### generic statement-access recovery 不能把 `tl.region` 里的 `BufferLoad` 当成真实 read，也不能退回 op-name 特判
+
+- **症状**:
+  - `BuildSpatialPlan`
+    为了给 closure / dataflow
+    恢复 read/write set，
+    一边把
+    `tl.region(..., access_mask="w")`
+    的内部
+    `BufferLoad`
+    误记成 read，
+    一边又用
+    `tl.tileop.gemm_py`
+    /
+    `arg[2]`
+    人工补写边
+- **根因**:
+  - `tl.region`
+    是 transport bridge；
+    真正的读写语义
+    在
+    `access_mask`
+    上，
+    不在它内部那层
+    `BufferLoad`
+  - 直接递归 visitor
+    会把 write-only region
+    误分类成 read，
+    进一步诱导出
+    `gemm` 专用修补
+- **修法**:
+  - statement access
+    恢复改成：
+    遇到
+    `tl.region`
+    直接按
+    `access_mask`
+    记 read/write，
+    不再递归到内部
+    `BufferLoad`
+  - compute role /
+    locality trait
+    改成消费
+    tileop typed
+    `GetDataflowAccessInfo()`
+    的
+    `compute_consume`
+    contract，
+    不再按
+    `tl.tileop.gemm_py`
+    做 generic pass
+    特判
+- **教训**:
+  - bridge op
+    自己就是语义 carrier 时，
+    consumer
+    要读 bridge contract，
+    不要把桥里面的实现细节
+    当成 owner truth
+  - “先让 visitor 递归跑一遍，
+    再给特殊 op 打补丁”
+    在 generic analysis
+    里几乎一定会长成
+    case-coupled residue
+
+#### generic debug/source contract 不能按 workload-private buffer 名分支
+
+- **症状**:
+  - `codegen_blackhole`
+    的 debug waypoint
+    直接按
+    `scores_max` /
+    `acc_o` /
+    `acc_s_cast` /
+    `O_shared`
+    等 buffer 名
+    发不同 tag
+- **根因**:
+  - 调试 contract
+    被绑定到了
+    当前 flash-attn
+    workload 的实例名，
+    不是稳定的 op /
+    phase /
+    structural 边界
+- **修法**:
+  - 删除 workload-name
+    分支，
+    waypoint
+    只保留 generic op-kind
+    tag
+    （例如
+    `FILL` /
+    `AFCB` /
+    `CAST`）
+- **教训**:
+  - debug/source
+    也属于 contract surface；
+    一旦测试开始断言它，
+    workload-private 名字
+    就会反向固化成协议
+  - 想保留可复用的 debug gate，
+    就只能绑稳定结构，
+    不能绑当前 kernel
+    里那几个变量名
+
 #### pipeline legality 不能只盯 `num_stages` 注解；annotation 消失后要从 stage-local buffer 反推
 
 - **症状**:

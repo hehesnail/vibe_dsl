@@ -17,6 +17,8 @@
 #include <utility>
 #include <vector>
 
+#include "../op/operator.h"
+#include "../op/region.h"
 #include "common/blackhole_utils.h"
 #include "common/spatial_analysis.h"
 #include "common/spatial_plan.h"
@@ -37,7 +39,7 @@ struct StatementAccessSummary {
   std::vector<std::string> reads;
   std::vector<std::string> writes;
   std::unordered_map<std::string, std::string> scope_by_buffer;
-  bool has_gemm{false};
+  bool has_compute_consume{false};
 };
 
 struct ClosureCandidateInfo {
@@ -81,20 +83,6 @@ Array<String> ToStringArraySorted(const std::unordered_set<std::string>& values)
 
 std::string GetBufferScope(const tir::Buffer& buffer) {
   return buffer.defined() ? buffer.scope() : "";
-}
-
-std::string ExtractBufferIdentityFromExpr(const PrimExpr& expr) {
-  if (const auto* load = expr.as<tir::BufferLoadNode>()) {
-    return BufferIdentityName(load->buffer);
-  }
-  if (const auto* call = expr.as<tir::CallNode>()) {
-    if (!call->args.empty()) {
-      if (const auto* load = call->args[0].as<tir::BufferLoadNode>()) {
-        return BufferIdentityName(load->buffer);
-      }
-    }
-  }
-  return "";
 }
 
 tir::Stmt UnwrapStructuralStmt(tir::Stmt stmt) {
@@ -181,13 +169,24 @@ class StatementAccessAnalyzer : public tir::StmtExprVisitor {
     if (op->op.same_as(tir::builtin::tvm_storage_sync())) {
       return;
     }
-    if (op->op->IsInstance<OpNode>()) {
-      const std::string op_name = Downcast<Op>(op->op)->name;
-      if (op_name == "tl.tileop.gemm_py" && op->args.size() >= 3) {
-        summary_.has_gemm = true;
-        AppendUnique(&summary_.reads, ExtractBufferIdentityFromExpr(op->args[0]));
-        AppendUnique(&summary_.reads, ExtractBufferIdentityFromExpr(op->args[1]));
-        AppendUnique(&summary_.writes, ExtractBufferIdentityFromExpr(op->args[2]));
+    if (op->op.same_as(RegionOp::Get())) {
+      const RegionOp region(op->args);
+      const int access_mask = region->GetAccessMask();
+      if ((access_mask & 0x1) != 0) {
+        RecordRead(region->GetBuffer());
+      }
+      if ((access_mask & 0x2) != 0) {
+        RecordWrite(region->GetBuffer());
+      }
+      return;
+    }
+    TileOperator tile_op = ParseOperator(tvm::ffi::GetRef<tir::Call>(op));
+    if (tile_op.defined()) {
+      for (const DataflowAccessInfo& access : tile_op->GetDataflowAccessInfo()) {
+        if (access.kind == DataflowAccessKind::kComputeConsume) {
+          summary_.has_compute_consume = true;
+          RecordRead(access.buffer);
+        }
       }
     }
     tir::StmtExprVisitor::VisitExpr_(op);
@@ -227,7 +226,7 @@ bool HasLocalWrite(const StatementAccessSummary& summary) {
 }
 
 std::string DeriveExecutionRole(const StatementAccessSummary& summary) {
-  if (summary.has_gemm) {
+  if (summary.has_compute_consume) {
     return "compute";
   }
   const bool reads_global = HasGlobalRead(summary);
@@ -252,7 +251,7 @@ std::vector<std::string> DeriveClosureTraits(const StatementAccessSummary& summa
       AppendUnique(&traits, "carry_obligation");
     }
   }
-  if (summary.has_gemm) {
+  if (summary.has_compute_consume) {
     AppendUnique(&traits, "locality_obligation");
   }
   return traits;
@@ -283,7 +282,7 @@ std::vector<ClosureCandidateInfo> AnalyzeClosureCandidates(const tir::PrimFunc& 
       continue;
     }
     StatementAccessSummary summary = analyzer.Analyze(stmt);
-    if (summary.reads.empty() && summary.writes.empty() && !summary.has_gemm) {
+    if (summary.reads.empty() && summary.writes.empty() && !summary.has_compute_consume) {
       continue;
     }
     ClosureCandidateInfo info;

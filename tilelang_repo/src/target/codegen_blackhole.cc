@@ -342,7 +342,6 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   cb_page_size_by_id_.clear();
   cb_num_pages_by_id_.clear();
   cb_id_by_requirement_name_.clear();
-  cb_requirement_name_by_id_.clear();
   cb_num_pages_by_requirement_name_.clear();
   cb_publish_pages_by_requirement_name_.clear();
   cb_initial_reserve_pages_by_requirement_name_.clear();
@@ -744,7 +743,6 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   cb_page_size_by_id_.clear();
   cb_num_pages_by_id_.clear();
   cb_id_by_requirement_name_.clear();
-  cb_requirement_name_by_id_.clear();
   cb_num_pages_by_requirement_name_.clear();
   cb_publish_pages_by_requirement_name_.clear();
   cb_initial_reserve_pages_by_requirement_name_.clear();
@@ -786,7 +784,6 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
             const std::string requirement_name =
                 Downcast<tvm::ffi::String>(requirement_name_any);
             cb_id_by_requirement_name_[requirement_name] = cb_id;
-            cb_requirement_name_by_id_[cb_id] = requirement_name;
             cb_num_pages_by_requirement_name_[requirement_name] = std::max(1, num_pages);
             if (publish_pages_per_event > 0) {
               cb_publish_pages_by_requirement_name_[requirement_name] =
@@ -1173,28 +1170,6 @@ void CodeGenBlackhole::MaybeEmitMathWaypoint(std::ostream& os, const char* code)
     return;
   }
   os << "; MATH({ WAYPOINT(\"" << code << "\"); })";
-}
-
-void CodeGenBlackhole::MaybeEmitPackWaypoint(std::ostream& os, const char* code) {
-  if (!emit_debug_waypoints_ || core_type_ != CoreType::kTRISC || code == nullptr) {
-    return;
-  }
-  os << "; PACK({ WAYPOINT(\"" << code << "\"); })";
-}
-
-void CodeGenBlackhole::MaybeEmitUnpackWaypoint(std::ostream& os, const char* code) {
-  if (!emit_debug_waypoints_ || core_type_ != CoreType::kTRISC || code == nullptr) {
-    return;
-  }
-  os << "; UNPACK({ WAYPOINT(\"" << code << "\"); })";
-}
-
-std::string CodeGenBlackhole::GetCBRequirementName(int cb_id) const {
-  auto it = cb_requirement_name_by_id_.find(cb_id);
-  if (it == cb_requirement_name_by_id_.end()) {
-    return "";
-  }
-  return it->second;
 }
 
 void CodeGenBlackhole::RegisterActiveCBWritePtrBinding(int cb_id, const std::string& var_name,
@@ -1951,12 +1926,6 @@ void CodeGenBlackhole::PrintCBPushBack(const tvm::tir::CallNode *op,
   os << ", ";
   PrintExpr(op->args[1], os);
   os << ")";
-  const std::string requirement_name = GetCBRequirementName(cb_id);
-  if (requirement_name == "acc_s_cast") {
-    MaybeEmitMathWaypoint(os, "CAST");
-  } else if (requirement_name == "O_shared") {
-    MaybeEmitPackWaypoint(os, "OPUB");
-  }
 }
 
 void CodeGenBlackhole::PrintCBWaitFront(const tvm::tir::CallNode *op,
@@ -1978,10 +1947,6 @@ void CodeGenBlackhole::PrintCBPopFront(const tvm::tir::CallNode *op,
   os << ", ";
   PrintExpr(op->args[1], os);
   os << ")";
-  const std::string requirement_name = GetCBRequirementName(cb_id);
-  if (requirement_name.find("clear_accum_tmp_") != std::string::npos) {
-    MaybeEmitUnpackWaypoint(os, "QPOP");
-  }
 }
 
 void CodeGenBlackhole::PrintNOCAsyncRead(const tvm::tir::CallNode *op,
@@ -2568,9 +2533,7 @@ void CodeGenBlackhole::PrintFillFragment(const tvm::tir::CallNode* op,
   os << "; const " << dtype_os.str() << " value = static_cast<" << dtype_os.str() << ">(";
   PrintExpr(op->args[2], os);
   os << "); tilelang_fill_fragment(dst, num_elements, value); })";
-  if (dst_var->name_hint == "scores_max") {
-    MaybeEmitMathWaypoint(os, "MCLR");
-  }
+  MaybeEmitMathWaypoint(os, "FILL");
 }
 
 void CodeGenBlackhole::PrintAddFragment(const tvm::tir::CallNode* op,
@@ -2621,11 +2584,7 @@ void CodeGenBlackhole::PrintAddFragmentFromCBFront(const tvm::tir::CallNode* op,
   os << "); const uint32_t num_elements = ";
   PrintExpr(op->args[2], os);
   os << "; tilelang_add_fragment(dst, src, num_elements); }) }";
-  if (dst_var->name_hint == "acc_s") {
-    MaybeEmitMathWaypoint(os, "QKAD");
-  } else if (dst_var->name_hint == "acc_o") {
-    MaybeEmitMathWaypoint(os, "QVAD");
-  }
+  MaybeEmitMathWaypoint(os, "AFCB");
 }
 
 void CodeGenBlackhole::PrintWriteLocalSliceToCB(const tvm::tir::CallNode* op,
@@ -2653,9 +2612,6 @@ void CodeGenBlackhole::PrintWriteLocalSliceToCB(const tvm::tir::CallNode* op,
     PrintExpr(op->args[3], os);
     os << "; MATH({ for (uint32_t i = 0; i < num_elements; ++i) { "
        << "dst_bits[dst_offset_elements + i] = src_bits[src_offset_elements + i]; } }) }";
-    if (GetCBRequirementName(cb_id) == "O_shared") {
-      MaybeEmitMathWaypoint(os, "OWRT");
-    }
     return;
   }
 
@@ -2671,9 +2627,6 @@ void CodeGenBlackhole::PrintWriteLocalSliceToCB(const tvm::tir::CallNode* op,
   PrintExpr(op->args[3], os);
   os << "; MATH({ for (uint32_t i = 0; i < num_elements; ++i) { "
      << "dst[dst_offset_elements + i] = src[src_offset_elements + i]; } }) }";
-  if (GetCBRequirementName(cb_id) == "O_shared") {
-    MaybeEmitMathWaypoint(os, "OWRT");
-  }
 }
 
 void CodeGenBlackhole::PrintWriteLocalFragmentTileToCB(const tvm::tir::CallNode* op,
@@ -3200,11 +3153,7 @@ void CodeGenBlackhole::PrintCastFragmentSlice(const tvm::tir::CallNode* op,
     os << "; for (uint32_t i = 0; i < num_elements; ++i) { "
        << "dst_bits[dst_offset + i] = " << cast_bits_helper
        << "(src[src_offset + i]); } })";
-    if (dst_var->name_hint == "acc_s_cast") {
-      MaybeEmitMathWaypoint(os, "ACST");
-    } else if (dst_var->name_hint == "O_shared_local_cast") {
-      MaybeEmitMathWaypoint(os, "OCST");
-    }
+    MaybeEmitMathWaypoint(os, "CAST");
     return;
   }
 
@@ -3221,13 +3170,7 @@ void CodeGenBlackhole::PrintCastFragmentSlice(const tvm::tir::CallNode* op,
   os << "; const uint32_t num_elements = ";
   PrintExpr(op->args[4], os);
   os << "; tilelang_cast_fragment_slice(dst, src, dst_offset, src_offset, num_elements); })";
-  if (dst_var->name_hint == "acc_s_cast") {
-    MaybeEmitMathWaypoint(os, "ACST");
-  } else if (dst_var->name_hint == "scores_max_prev") {
-    MaybeEmitMathWaypoint(os, "MXPV");
-  } else if (dst_var->name_hint == "O_shared_local_cast") {
-    MaybeEmitMathWaypoint(os, "OCST");
-  }
+  MaybeEmitMathWaypoint(os, "CAST");
 }
 
 void CodeGenBlackhole::PrintKernelAttributes() {
