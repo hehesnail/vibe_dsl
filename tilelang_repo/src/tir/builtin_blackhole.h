@@ -489,6 +489,17 @@ TVM_DLL const Op& blackhole_write_local_fragment_slice_to_tiled_cb();
 TVM_DLL const Op& blackhole_cast_fragment_slice_to_tiled_cb();
 
 /*!
+ * \brief Fill a tiled CB page directly from the compute PACK thread.
+ * \param dst_buffer Destination CB-backed fragment buffer handle (dtype/source-of-truth only)
+ * \param dst_cb_id Destination CB id
+ * \param dst_offset_elements Logical destination element offset within the tiled tensor view
+ * \param num_elements Number of logical elements to fill
+ * \param row_width Logical row width of the destination tiled tensor view
+ * \param value Scalar fill value
+ */
+TVM_DLL const Op& blackhole_pack_fill_fragment_to_tiled_cb();
+
+/*!
  * \brief Copy a tile from the current CB front window into a contiguous local fragment slice.
  * \param dst_buffer Destination local fragment buffer handle
  * \param src_cb_id Source CB id

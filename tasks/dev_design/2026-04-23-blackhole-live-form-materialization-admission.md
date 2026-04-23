@@ -138,7 +138,8 @@ materialization contract。
   `physical_local_extent` /
   `logical_element_count` /
   `producer_kernel` /
-  `materialization_protocol`
+  `materialization_protocol` /
+  `publication_protocol`
 - `fragment_fill -> cast -> publish`
   和 GEMM post-merge cast consumer
   均能显式表达
@@ -178,12 +179,69 @@ unsupported reason：
 thread-distributed cb_republish materialization is not admitted by direct runtime; requires a non-mailbox materialization protocol for compute-thread CB publication
 ```
 
-后续 admission
-必须补非 mailbox
-compute-thread CB publication /
-materialization protocol，
-而不是在 leaf reader
-重建 producer-consumer graph。
+当前 admission 的补充协议是：
+
+- `materialization_protocol`
+  继续表示 consumer-visible 结果；
+  `cb_republish`
+  表示 produced live form
+  是 CB 中可消费的 logical tile
+- `publication_protocol`
+  表示 device-side 如何把 producer live form
+  写入该 CB
+- admitted direct runtime
+  只接受非 mailbox
+  publication protocol；
+  mailbox write-pointer transfer
+  必须保留 explicit unsupported reason
+
+当前首先 admitted 的非 mailbox
+publication protocol 是
+`pack_thread_direct_store`。
+它只用于 planner 已证明
+producer value 是常量 full-tile fill /
+cast publish
+的 case：
+PACK thread 在
+`cb_reserve_back`
+之后直接写 reserved CB page，
+再用
+`cb_push_back`
+发布可见性。
+它不是 leaf reader
+按 kernel shape 猜出来的 fallback；
+必须由
+`TTMaterializationPlan`
+投影到
+`ExecutableSpec`
+后才能 admitted。
+该证明必须来自当前 IR
+中的 producer fact；
+如果同一 source buffer
+在 fill 之后又被 matmul /
+merge /
+add /
+reduction /
+scalar update /
+cast 等 producer 写入，
+constant-fill fact
+必须失效，
+不能穿过 mutation
+继续作为
+publication admission
+依据。
+
+后续 direct cast consumer
+若 source live form
+已在 DST register tile
+或已 published CB tile 中，
+应继续补
+`pack_tile`
+类 publication protocol。
+非 constant、
+非 DST-register-backed
+的 arbitrary local slice
+仍不得靠 mailbox helper admitted。
 
 ## 4. 方案取舍
 
@@ -342,6 +400,11 @@ slice 风格命名，
     `cb_republish`,
     `untilize_pack_publish`,
     `host_writeback`
+  - publication protocol:
+    `mailbox_write_ptr`,
+    `pack_thread_direct_store`,
+    `pack_tile`,
+    `none`
   - required CB plan indices
   - required sync plan indices
   - produced live form after materialization
@@ -375,6 +438,7 @@ projection 字段：
   - `logical_element_count`
   - `producer_kernel`
   - `materialization_protocol`
+  - `publication_protocol`
 - compute epilogue op
   只引用 materialization spec id /
   source live-form id，
@@ -425,6 +489,11 @@ buffer name
 - `cb_republish`
   必须引用 typed `TTCBPlan`
   和必要 sync plan
+- `cb_republish`
+  必须声明
+  `publication_protocol`
+  且 direct runtime admission
+  只能接受已实现的非 mailbox protocol
 - `TTMaterializationPlan`
   不得通过 payload-only 字段
   承载必需协议
@@ -436,6 +505,7 @@ buffer name
 - leaf spec 中的
   `live_form_kind`
   / `materialization_protocol`
+  / `publication_protocol`
   与 source `TTProgram`
   一致
 - admitted direct runtime
@@ -461,16 +531,12 @@ buffer name
 - 证明 cast consumer
   读取前的 materialization protocol
   不是 leaf reader 猜出来的
-- 使 runtime gate
-  从 hard skip /
-  source-only assertion
-  转成
-  `ExecutableSpec`
-  驱动的 queryable
-  materialization gate；
-  后续非 mailbox protocol
-  落地后，
-  再晋级为 admitted bf16 TT-Sim test
+- 使 `cb_republish`
+  携带
+  `pack_thread_direct_store`
+  publication protocol，
+  并晋级为 admitted
+  bf16 TT-Sim direct runtime test
 
 不允许：
 

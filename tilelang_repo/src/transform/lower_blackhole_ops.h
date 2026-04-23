@@ -566,6 +566,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool MatchDirectFragmentFill(const tvm::tir::ForNode* op, FragmentFillMatch* match) const;
   bool MatchScalarFragmentFillStore(const tvm::tir::BufferStoreNode* op, FragmentFillMatch* match) const;
   tvm::tir::Stmt GenerateFragmentFillSequence(const FragmentFillMatch& match);
+  tvm::tir::Stmt GenerateFragmentFillCastPublishSequence(const FragmentFillMatch& fill_match,
+                                                         const FragmentCastMatch& cast_match,
+                                                         int current_order_index);
   bool MatchScalarMaxStore(const tvm::tir::BufferStoreNode* op, ScalarMaxMatch* match) const;
   bool MatchGroupedScalarMaxLoop(const tvm::tir::ForNode* op, ScalarMaxMatch* match) const;
   tvm::tir::Stmt GenerateScalarMaxSequence(const ScalarMaxMatch& match);
@@ -592,7 +595,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   void RecordFragmentCastMaterializationPlans(
       const FragmentCastMatch& match,
       const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>& contract,
-      int cb_requirement_index, const tvm::PrimExpr& num_elements_expr);
+      int cb_requirement_index, const tvm::PrimExpr& num_elements_expr,
+      const std::string& publication_protocol);
+  void InvalidateLastFragmentFillValue(const tvm::tir::Buffer& buffer);
   void FinalizeConsumerBindingABIIndices();
   bool ShouldRetainComputeInputBuffer(const tvm::tir::Buffer& buffer,
                                       int current_order_index) const;
@@ -697,6 +702,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<std::string, int> cb_consumed_compute_input_use_count_by_buffer_identity_;
   std::unordered_map<std::string, BufferFlowContract> buffer_flow_contracts_;
   std::unordered_map<std::string, int> buffer_live_form_cb_by_buffer_identity_;
+  std::unordered_map<std::string, tvm::PrimExpr> last_fragment_fill_value_by_buffer_identity_;
+  std::unordered_map<const tvm::tir::VarNode*, tvm::PrimExpr> last_fragment_fill_value_by_data_;
   std::unordered_map<std::string, std::vector<int64_t>> logical_buffer_shapes_;
   std::unordered_map<const Object*, int> stmt_order_index_by_node_;
   tvm::ffi::Array<tvm::ffi::Any> segment_plan_;

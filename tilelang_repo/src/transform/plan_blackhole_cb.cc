@@ -221,6 +221,9 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
   if (op_name == "tl.blackhole.cast_fragment_slice_to_tiled_cb") {
     return {2};  // args: (dst_handle, src_handle, cb_id, dst_offset, src_offset, num_elements, row_width)
   }
+  if (op_name == "tl.blackhole.pack_fill_fragment_to_tiled_cb") {
+    return {1};  // args: (dst_handle, cb_id, dst_offset, num_elements, row_width, value)
+  }
   if (op_name == "tl.blackhole.read_cb_front_tile_to_local") {
     return {1};  // args: (dst_handle, src_cb_id, src_tile_index, dst_offset, num_elements)
   }

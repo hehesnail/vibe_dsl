@@ -169,6 +169,35 @@
   不要等 compute 语义塌缩后
   再靠 late matcher / bridge attr
   恢复
+- materialization admission
+  只能从当前 IR
+  和 typed
+  `TTMaterializationPlan`
+  /
+  `ExecutableSpec`
+  推出；
+  例如
+  `SelectBlackholeTTMetalBuiltins`
+  已把 fragment fill
+  规范化成
+  `tl.blackhole.fill_fragment`
+  后，
+  `PlanTTCompute`
+  必须读取这个当前 IR builtin，
+  不能依赖上一 pass
+  的原始 loop matcher
+  局部状态
+- constant-fill
+  这类局部 analysis fact
+  只能在当前 IR
+  def/write 边界内使用；
+  matmul / merge / add /
+  reduction / scalar update /
+  cast 等后续 producer
+  写同一 buffer
+  时必须失效，
+  否则 preclear fill
+  会被误当成后续 cast source truth
 - 对 builtin-surface / residue 回归，
   测试应收集实际 TIR `Call`
   的 op 名；

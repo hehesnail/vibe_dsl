@@ -229,12 +229,19 @@
   materialization
   owner truth
   已完成第一轮收口；
+  `fragment_fill -> cast -> publish`
+  的 constant fill
+  `thread_distributed + cb_republish`
+  已通过
+  `pack_thread_direct_store`
+  晋级为 admitted
+  bf16 direct runtime；
   当前剩余工作
-  是把显式
-  materialization protocol
-  从 queryable gate
-  推进到
-  direct runtime admission；
+  是继续补
+  non-constant /
+  direct cast consumer
+  的非 mailbox
+  publication protocol；
   当前任务级设计
   已固定为
   `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
@@ -381,22 +388,44 @@ Normalized Tile TIR
   的
   `cb_republish`
   materialization owner truth
-- direct runtime
-  对 single-contract
-  host-visible
-  `thread_distributed + cb_republish`
-  materialization
-  现已给出 explicit
+- `TTMaterializationPlan`
+  /
+  `ExecutableSpec.materialization_plans`
+  /
+  `buffer_materializations`
+  现显式携带
+  `publication_protocol`；
+  `materialization_protocol=cb_republish`
+  表示 consumer-visible
+  CB live form，
+  `publication_protocol`
+  表示 producer-side
+  device publication 方式
+- `fragment_fill -> cast -> publish`
+  的 constant fill case
+  现由当前 IR 中的
+  `tl.blackhole.fill_fragment`
+  事实推出
+  `publication_protocol=pack_thread_direct_store`，
+  codegen 使用 PACK thread
+  直接写 reserved CB page，
+  不再使用 mailbox write-pointer transfer；
+  该 case 已进入
+  bf16 TT-Sim
+  direct runtime correctness gate
+- GEMM post-merge cast consumer
+  仍保留
   `direct_runtime_unsupported_reasons`
   gate；
-  该 gate
-  只消费
-  `ExecutableSpec`
-  metadata，
-  并刻意不污染
-  flash-attn
-  multi-contract
-  compile/source baseline
+  planner 会在 matmul /
+  merge /
+  add /
+  reduction /
+  scalar update /
+  cast 等 producer
+  写目标时失效旧 constant-fill fact，
+  防止 preclear fill
+  被误当成后续 cast source truth
 
 ## 4. 当前显式 Debt / 非 Blocker
 
@@ -433,18 +462,18 @@ Normalized Tile TIR
   `TTProgram`
   和
   `ExecutableSpec`；
-  但当前
-  `cb_republish`
-  仍依赖 mailbox-style
-  device-side CB write pointer transfer，
-  在 TT-Sim 上会命中
-  `t_tile_mmio_wr32`
-  capability boundary，
-  因此 direct runtime correctness
-  仍通过 explicit
-  unsupported reason
-  而不是 hard execute
-  收口
+  constant fill
+  `fragment_fill -> cast -> publish`
+  已用
+  `pack_thread_direct_store`
+  admitted；
+  non-constant /
+  GEMM post-merge
+  direct cast consumer
+  仍需补
+  `pack_tile`
+  或等价非 mailbox
+  publication protocol
 - `flash-attn` direct runtime
   仍不在当前
   correctness gate；
@@ -470,6 +499,14 @@ Normalized Tile TIR
   - `PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_gemm.py`
   - `PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
   - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`
+- `thread_distributed + cb_republish`
+  constant-fill admission
+  baseline
+  当前已通过：
+  - `cd tilelang_repo && cmake --build build -j32`
+  - `PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_exposes_typed_live_form_owner_truth tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plans tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_admits_non_mailbox_cb_republish tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_post_merge_cast_consumer_reports_direct_runtime_materialization_gate`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_runtime`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && cd /root/dev/vibe_dsl/tilelang_repo && PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_gemm.py`
 - direct runtime 当前 admitted 支持面：
   - copy：equal source/dest range，且 stride = 1
   - GEMM：A/B-separated reader range + writer output range；
@@ -490,12 +527,15 @@ Normalized Tile TIR
   live-form /
   materialization projection
   与 explicit
-  direct runtime unsupported gate；
-  它们不再只是
-  build/source contract，
-  但仍未进入
+  publication protocol；
+  constant fill
+  `fragment_fill -> cast -> publish`
+  已进入
   TT-Sim hard-execute
-  correctness gate
+  correctness gate，
+  direct cast consumer
+  仍保留 explicit
+  unsupported gate
 
 ## 6. 当前下一步
 
@@ -506,14 +546,18 @@ Normalized Tile TIR
    materialization
    owner truth
    基础上，
-   设计并实现非 mailbox 的
-   compute-thread CB publication /
-   materialization protocol，
-   让
+   为 non-constant /
+   GEMM post-merge
+   direct cast consumer
+   设计并实现
+   `pack_tile`
+   类非 mailbox
+   publication protocol，
+   让该类
    `thread_distributed + cb_republish`
    从 explicit unsupported gate
-   晋级为 admitted bf16
-   direct runtime gate
+   晋级为 admitted
+   bf16 direct runtime gate
 2. 保持
    compile / projection /
    admitted runtime

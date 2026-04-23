@@ -325,6 +325,7 @@ void TTMaterializationPlanNode::RegisterReflection() {
       .def_ro("target_buffer", &TTMaterializationPlanNode::target_buffer)
       .def_ro("target_kernel", &TTMaterializationPlanNode::target_kernel)
       .def_ro("materialization_protocol", &TTMaterializationPlanNode::materialization_protocol)
+      .def_ro("publication_protocol", &TTMaterializationPlanNode::publication_protocol)
       .def_ro("required_cb_plan_indices",
               &TTMaterializationPlanNode::required_cb_plan_indices)
       .def_ro("required_sync_plan_indices",
@@ -336,6 +337,7 @@ void TTMaterializationPlanNode::RegisterReflection() {
 TTMaterializationPlan::TTMaterializationPlan(
     ffi::String name, ffi::String source_live_form, ffi::String target_buffer,
     ffi::String target_kernel, ffi::String materialization_protocol,
+    ffi::String publication_protocol,
     ffi::Array<Integer> required_cb_plan_indices,
     ffi::Array<Integer> required_sync_plan_indices, ffi::String produced_live_form,
     ffi::Map<ffi::String, ffi::Any> payload) {
@@ -345,6 +347,7 @@ TTMaterializationPlan::TTMaterializationPlan(
   n->target_buffer = std::move(target_buffer);
   n->target_kernel = std::move(target_kernel);
   n->materialization_protocol = std::move(materialization_protocol);
+  n->publication_protocol = std::move(publication_protocol);
   n->required_cb_plan_indices = std::move(required_cb_plan_indices);
   n->required_sync_plan_indices = std::move(required_sync_plan_indices);
   n->produced_live_form = std::move(produced_live_form);
@@ -618,12 +621,14 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       "tl.TTMaterializationPlan",
       [](ffi::String name, ffi::String source_live_form, ffi::String target_buffer,
          ffi::String target_kernel, ffi::String materialization_protocol,
+         ffi::String publication_protocol,
          ffi::Array<Integer> required_cb_plan_indices,
          ffi::Array<Integer> required_sync_plan_indices, ffi::String produced_live_form,
          ffi::Map<ffi::String, ffi::Any> payload) {
         return TTMaterializationPlan(
             std::move(name), std::move(source_live_form), std::move(target_buffer),
             std::move(target_kernel), std::move(materialization_protocol),
+            std::move(publication_protocol),
             std::move(required_cb_plan_indices), std::move(required_sync_plan_indices),
             std::move(produced_live_form), std::move(payload));
       });

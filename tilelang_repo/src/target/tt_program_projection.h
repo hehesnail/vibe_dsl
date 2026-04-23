@@ -133,6 +133,7 @@ inline Array<Any> EncodeMaterializationPlans(
     item.Set("target_buffer", plan->target_buffer);
     item.Set("target_kernel", plan->target_kernel);
     item.Set("materialization_protocol", plan->materialization_protocol);
+    item.Set("publication_protocol", plan->publication_protocol);
     item.Set("required_cb_plan_indices", plan->required_cb_plan_indices);
     if (!plan->required_sync_plan_indices.empty()) {
       item.Set("required_sync_plan_indices", plan->required_sync_plan_indices);

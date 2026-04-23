@@ -299,6 +299,8 @@ void ValidateMaterializationPlans(const TTProgram& program,
     ICHECK(!plan->target_kernel.empty()) << "TTMaterializationPlan requires target_kernel";
     ICHECK(!plan->materialization_protocol.empty())
         << "TTMaterializationPlan requires materialization_protocol";
+    ICHECK(!plan->publication_protocol.empty())
+        << "TTMaterializationPlan requires publication_protocol";
     ICHECK(!plan->produced_live_form.empty())
         << "TTMaterializationPlan requires produced_live_form";
     ICHECK(live_form_names.count(plan->produced_live_form))
@@ -307,6 +309,11 @@ void ValidateMaterializationPlans(const TTProgram& program,
     if (plan->materialization_protocol == buffer_materialization::kCBRepublish) {
       ICHECK(!plan->required_cb_plan_indices.empty())
           << "TTMaterializationPlan cb_republish requires required_cb_plan_indices";
+      ICHECK(plan->publication_protocol == buffer_materialization::kMailboxWritePtr ||
+             plan->publication_protocol == buffer_materialization::kPackThreadDirectStore ||
+             plan->publication_protocol == buffer_materialization::kPackTile)
+          << "TTMaterializationPlan cb_republish has unsupported publication_protocol "
+          << plan->publication_protocol;
     }
     for (const Integer& index : plan->required_cb_plan_indices) {
       ICHECK_GE(index->value, 0) << "TTMaterializationPlan requires non-negative CB plan index";

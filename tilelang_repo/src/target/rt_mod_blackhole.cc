@@ -1413,6 +1413,9 @@ static std::vector<MaterializationPlanSpec> ExtractMaterializationPlans(const ti
     if (auto value = item.Get("materialization_protocol")) {
       plan.materialization_protocol = Downcast<String>(value.value());
     }
+    if (auto value = item.Get("publication_protocol")) {
+      plan.publication_protocol = Downcast<String>(value.value());
+    }
     plan.required_cb_plan_indices = ExtractIntegerVector(item, "required_cb_plan_indices");
     plan.required_sync_plan_indices = ExtractIntegerVector(item, "required_sync_plan_indices");
     if (auto value = item.Get("produced_live_form")) {
@@ -2737,6 +2740,10 @@ static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
     if (materialization.execution_topology_kind != "thread_distributed") {
       continue;
     }
+    if (materialization.publication_protocol == "pack_thread_direct_store" ||
+        materialization.publication_protocol == "pack_tile") {
+      continue;
+    }
     AppendDirectRuntimeUnsupportedReason(
         spec,
         "thread-distributed cb_republish materialization is not admitted by direct runtime; "
@@ -2968,6 +2975,7 @@ static void PopulateBufferMaterializationSpecs(
                                           ? plan.target_kernel
                                           : live_form.producer_kernel;
     materialization.materialization_protocol = plan.materialization_protocol;
+    materialization.publication_protocol = plan.publication_protocol;
   }
 
   spec->buffer_materializations.clear();

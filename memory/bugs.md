@@ -40,13 +40,11 @@
   - 该问题的 simulator-side 旁证和更宽 fatal taxonomy 扫描，
     统一见 `memory/tt_simulator_constraints.md`
 
-### thread-distributed cb_republish materialization 仍缺非 mailbox direct-runtime protocol
+### non-constant thread-distributed cb_republish materialization 仍缺 pack-tile 类 publication protocol
 
 - **现象**:
-  - `fragment_fill -> cast -> publish`
-    与
   - `gemm + post-merge cast consumer`
-    现在都能在
+    能在
     `TTProgram`
     /
     `ExecutableSpec`
@@ -59,9 +57,10 @@
     `cb_republish`
     生成
     `cb_materialized_tile`
-  - 但 direct runtime / TT-Sim
-    真执行仍会命中
-    `UnimplementedFunctionality: t_tile_mmio_wr32`
+  - 但该类 source
+    不是 constant full-tile fill，
+    当前仍不能走
+    `pack_thread_direct_store`
 - **已验证的负例**:
   - 将 runtime test
     的 hard skip
@@ -86,15 +85,18 @@
     `TTLiveFormPlan`
     /
     `TTMaterializationPlan`
-  - 真正缺的是 admitted
-    compute-thread CB publication /
-    materialization protocol；
+  - non-constant
+    direct cast consumer
+    真正缺的是 admitted
+    `pack_tile`
+    或等价非 mailbox
+    compute-thread CB publication
+    protocol；
     mailbox 写指针传输在当前
     TT-Sim / device side
     不是可执行支持面
 - **当前结论**:
-  - 这类 shape
-    现在应通过
+  - 这类 shape 继续通过
     `ExecutableSpec`
     metadata
     产生 explicit
@@ -103,17 +105,87 @@
     hard skip
     或 runtime-only patch
   - 后续要推进 admitted runtime，
-    应补非 mailbox
-    materialization protocol，
+    应补
+    `pack_tile`
+    类 protocol，
     不是在 leaf reader
     按 kernel shape /
     builtin 序列 /
     buffer 名
     重建 producer-consumer graph
+  - constant full-tile
+    `fragment_fill -> cast -> publish`
+    已由
+    `publication_protocol=pack_thread_direct_store`
+    admitted；
+    它不再属于该未解决项
 
 ## 2. 已解决但值得记住的模式
 
-### 2.0 compute residual gate 不能把 row-state scalar / 1D carry buffer 当成 tile residue
+### 2.0 constant fill cb_republish admission 必须从当前 IR 的 fill builtin 推出，并在后续写入时失效
+
+- **症状**:
+  - `fragment_fill -> cast -> publish`
+    增加
+    `publication_protocol`
+    后，
+    初始实现仍把
+    materialization
+    判成
+    `mailbox_write_ptr`
+  - 修到读取 fill fact 后，
+    `gemm + post-merge cast consumer`
+    又被错误 admitted，
+    因为 preclear fill
+    的事实穿过了后续 matmul /
+    merge 写入
+- **根因**:
+  - `fill`
+    在
+    `SelectBlackholeTTMetalBuiltins`
+    阶段已经规范化为
+    `tl.blackhole.fill_fragment`；
+    到
+    `PlanTTCompute`
+    时不能再依赖上一 pass
+    对原始 `For`
+    的局部 matcher 状态
+  - constant-fill fact
+    只是当前 IR
+    可重算的局部 analysis；
+    一旦同一 buffer
+    被 matmul / merge / add /
+    reduction / scalar update /
+    cast 等 producer 写入，
+    必须立即失效
+- **修法**:
+  - `PlanTTCompute`
+    从当前 IR 的
+    `tl.blackhole.fill_fragment`
+    builtin 记录 constant fill fact
+  - 后续 producer 写目标时清掉该 buffer
+    的 fill fact
+  - 只有最后一个有效 producer
+    仍是 constant full-tile fill
+    的
+    `cb_republish`
+    才能选择
+    `publication_protocol=pack_thread_direct_store`
+- **教训**:
+  - admission logic
+    不能读上一阶段的 pass-local state；
+    必须从当前 IR /
+    typed materialization contract
+    推出
+  - 任何局部 analysis fact
+    一旦跨过 mutation
+    就是 stale fact；
+    要么进入显式 IR，
+    要么严格按当前 IR
+    def/write
+    失效
+
+### 2.1 compute residual gate 不能把 row-state scalar / 1D carry buffer 当成 tile residue
 
 - **症状**:
   - `PlanTTCompute`
@@ -148,7 +220,7 @@
   - 不能只按 storage scope
     粗暴 fail-fast
 
-### 2.1 grouped row / row-state distribution contract 不能让 generic layout 覆盖专用语义
+### 2.2 grouped row / row-state distribution contract 不能让 generic layout 覆盖专用语义
 
 - **症状**:
   - `flash-attn` / GQA 的 grouped `reduce_row` 会报
@@ -181,7 +253,7 @@
   - 过渡 projection attrs 只要保留旧 scope，
     就等于还在系统里保留一条旧链
 
-### 2.2 ABI / schema
+### 2.3 ABI / schema
 
 #### generic statement-access recovery 不能把 `tl.region` 里的 `BufferLoad` 当成真实 read，也不能退回 op-name 特判
 

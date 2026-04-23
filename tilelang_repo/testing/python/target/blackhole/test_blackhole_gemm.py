@@ -828,6 +828,7 @@ def test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plan
     assert "D_local" in materializations
     d_local = materializations["D_local"]
     assert str(d_local["materialization_protocol"]) == "cb_republish"
+    assert str(d_local["publication_protocol"]) == "pack_thread_direct_store"
     assert str(d_local["source_live_form"]) == "live_form_C_local"
     assert str(d_local["produced_live_form"]) == "live_form_D_local"
 
@@ -840,9 +841,10 @@ def test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plan
     assert int(output_materialization["logical_element_count"]) == 1024
     assert str(output_materialization["producer_kernel"]) == "compute"
     assert str(output_materialization["materialization_protocol"]) == "cb_republish"
+    assert str(output_materialization["publication_protocol"]) == "pack_thread_direct_store"
 
 
-def test_blackhole_fragment_fill_cast_publish_reports_direct_runtime_materialization_gate():
+def test_blackhole_fragment_fill_cast_publish_admits_non_mailbox_cb_republish():
     kernel = fragment_fill_cast_publish_kernel()
     target = Target("blackhole")
 
@@ -850,7 +852,15 @@ def test_blackhole_fragment_fill_cast_publish_reports_direct_runtime_materializa
         artifact = lower(kernel, target=target)
 
     reasons = _direct_runtime_unsupported_reasons(artifact)
-    assert any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+    assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    compute_kernel = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="compute", core_type="trisc"
+    )
+    compute_source = str(compute_kernel["source_code"])
+    assert "tilelang_get_cb_write_ptr_bytes(17)" not in compute_source
+    assert "tilelang_pack_fill_bfloat16_tiled_cb(17" in compute_source
 
 
 def test_blackhole_gemm_kernel_compute_config_follows_compute_contract_in_spec():
@@ -1492,9 +1502,7 @@ def test_blackhole_fragment_fill_cast_publish_runtime():
         artifact = lower(kernel, target=target)
 
     reasons = _direct_runtime_unsupported_reasons(artifact)
-    if reasons:
-        assert any("thread-distributed cb_republish materialization" in reason for reason in reasons)
-        return
+    assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")

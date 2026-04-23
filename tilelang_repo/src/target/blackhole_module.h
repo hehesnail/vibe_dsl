@@ -421,6 +421,7 @@ struct BufferMaterializationSpec {
   uint32_t logical_element_count = 0;
   std::string producer_kernel;
   std::string materialization_protocol;
+  std::string publication_protocol;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -455,6 +456,9 @@ struct BufferMaterializationSpec {
     }
     if (!materialization_protocol.empty()) {
       writer->WriteObjectKeyValue("materialization_protocol", materialization_protocol);
+    }
+    if (!publication_protocol.empty()) {
+      writer->WriteObjectKeyValue("publication_protocol", publication_protocol);
     }
     writer->EndObject();
   }
@@ -492,6 +496,7 @@ struct MaterializationPlanSpec {
   std::string target_buffer;
   std::string target_kernel;
   std::string materialization_protocol;
+  std::string publication_protocol;
   std::vector<int64_t> required_cb_plan_indices;
   std::vector<int64_t> required_sync_plan_indices;
   std::string produced_live_form;
@@ -503,6 +508,7 @@ struct MaterializationPlanSpec {
     writer->WriteObjectKeyValue("target_buffer", target_buffer);
     writer->WriteObjectKeyValue("target_kernel", target_kernel);
     writer->WriteObjectKeyValue("materialization_protocol", materialization_protocol);
+    writer->WriteObjectKeyValue("publication_protocol", publication_protocol);
     writer->WriteObjectKeyValue("required_cb_plan_indices", required_cb_plan_indices);
     if (!required_sync_plan_indices.empty()) {
       writer->WriteObjectKeyValue("required_sync_plan_indices", required_sync_plan_indices);

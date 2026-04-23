@@ -192,6 +192,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintWriteLocalFragmentTileToCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintWriteLocalFragmentSliceToTiledCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintCastFragmentSliceToTiledCB(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintPackFillFragmentToTiledCB(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintReadCBFrontTileToLocal(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintReadCBFrontTileToLocalFragment(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintCastFragmentSlice(const tvm::tir::CallNode *op, std::ostream &os);
