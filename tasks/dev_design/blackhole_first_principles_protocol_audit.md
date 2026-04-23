@@ -868,7 +868,16 @@
   build/source contract gate，
   不反写
   layered IR
-  completion contract
+  completion contract；
+  cleanup 之后若要 admission，
+  必须按
+  `2026-04-23-blackhole-live-form-materialization-admission.md`
+  把
+  live-form /
+  materialization
+  owner truth
+  显式化，
+  不得走 runtime-only patch
 - preclear zero-init GEMM
   一旦 canonicalize 到
   `clear_accum=true`，

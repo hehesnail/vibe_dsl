@@ -17,6 +17,19 @@
 6. `tasks/progress.md`
 7. `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
 
+当前 support surface / workload payoff lane
+的任务级设计固定为：
+
+- `2026-04-23-blackhole-live-form-materialization-admission.md`
+  - 只定义 direct cast /
+    `fragment_fill -> cast -> publish`
+    /
+    flash-attn direct runtime admission
+    的 live-form / materialization
+    representation contract
+  - 不替代总体设计，
+    不引入新的长期 IR 层
+
 额外参考：
 
 - `layered_ir_references.md`
@@ -68,6 +81,7 @@ pass 名字、helper、bag、payload、bridge attr
 | `task1_spatial_plan_companion.md` | `SpatialPlan` 合同文档；定义这一层的显式对象、validator、construction/lowering 边界 |
 | `task2_ttprogram_companion_cutover.md` | `TTProgram` 合同文档；定义 target realization 的显式 slice、reader/writer 边界与完成判据 |
 | `task3_runtime_gate_and_workload_cutover.md` | `ExecutableSpec / leaf reader` 合同文档；定义 leaf reader 纪律、workload 恢复顺序与完成判据 |
+| `2026-04-23-blackhole-live-form-materialization-admission.md` | cleanup 之后 support surface lane 的任务级设计；定义 live-form / materialization owner truth、admission 顺序和禁止的 runtime-only patch |
 | `blackhole_first_principles_protocol_audit.md` | 删除/迁移表；列出现存 fake/legacy protocol 的表示层落点、validator 和 disposition |
 | `2026-04-16-blackhole-final-legacy-protocol-cleanup.md` | cleanup 执行总览；把 legacy protocol cleanup 拆成总览 + task0-task5 分文件 |
 
@@ -118,8 +132,14 @@ pass 名字、helper、bag、payload、bridge attr
 - `liveness`
 - `materialization / source-live-form`
 
-都只是前置分析/局部构造子问题，
-不单独充当顶层路线。
+曾经只是前置分析/局部构造子问题；
+cleanup 收口后，
+`materialization / source-live-form`
+已重新收束为
+`2026-04-23-blackhole-live-form-materialization-admission.md`
+里的 support surface admission
+任务级设计，
+仍不单独充当新的顶层路线。
 
 ## 5. 文档维护规则
 

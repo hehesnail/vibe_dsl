@@ -292,6 +292,35 @@ runtime-module build contract。
   或
   `ValidateTTProgram`
   的 legality 边界
+- cleanup 收口后重新打开的
+  direct cast /
+  `fragment_fill -> cast -> publish`
+  /
+  flash-attn direct runtime
+  support 工作
+  只允许作为
+  live-form /
+  materialization admission
+  问题推进；
+  它的任务级设计见
+  `2026-04-23-blackhole-live-form-materialization-admission.md`
+- 该 support lane
+  不新增 IR 层，
+  不允许 runtime/codegen
+  通过
+  `SeqStmt`
+  /
+  builtin 序列
+  /
+  buffer 名
+  恢复 producer-consumer 语义；
+  logical live value
+  必须先进入 `SpatialPlan`，
+  TT physical live form
+  必须进入 `TTProgram`，
+  leaf materialization
+  只能由 `ExecutableSpec`
+  冻结后供 runtime/codegen 消费
 
 长期交付链固定为：
 

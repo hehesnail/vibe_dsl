@@ -528,7 +528,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   继续留在
   build/source contract gate，
   不要混进
-  TT-Sim hard gate
+  TT-Sim hard gate；
+  cleanup 之后要推进它们，
+  先按
+  `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
+  补 explicit live-form /
+  materialization owner truth，
+  不要写 runtime-only patch
 - 对 `flash-attn` / multi-op compute kernel，
   不要再靠后段从 `SeqStmt`、builtin 序列或 buffer 形态
   恢复 producer-consumer / republish / reduce / broadcast 语义；

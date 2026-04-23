@@ -230,7 +230,10 @@
   runtime owner truth /
   unsupported workload
   queryable gate
-  收口
+  收口；
+  当前任务级设计
+  已固定为
+  `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
 
 ## 3. repo HEAD 当前代码现状
 
@@ -379,7 +382,16 @@ Normalized Tile TIR
   它们属于
   support surface /
   workload payoff
-  lane
+  lane；
+  这条 lane
+  不按 runtime-only patch
+  推进，
+  而按 explicit
+  live-form /
+  materialization
+  owner truth
+  admission
+  推进
 
 ## 5. 当前稳定基线
 
@@ -417,15 +429,19 @@ Normalized Tile TIR
 
 1. 恢复
    `support surface / workload payoff`
-   deferred lane
+   deferred lane，
+   入口设计为
+   `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
 2. 优先收
-   direct cast /
-   live-form owner truth
-   和
+   live-form /
+   materialization
+   owner truth，
+   先让
    `fragment_fill -> cast -> publish`
-   这类
-   非 admitted runtime
-   边界
+   从 build/source-only
+   晋级为 admitted bf16
+   direct runtime gate，
+   再收 direct cast consumer
 3. 保持
    compile / projection /
    admitted runtime
@@ -433,3 +449,7 @@ Normalized Tile TIR
    继续只站在
    explicit representation
    boundary 上
+4. flash-attn direct runtime
+   只作为上述 admission
+   完成后的 integration payoff，
+   不作为当前设计驱动

@@ -421,6 +421,37 @@ leaf validator
 - 更早层表示
   是否该改
 
+cleanup task5 之后重新打开的
+direct cast consumer、
+`fragment_fill -> cast -> publish`
+和 flash-attn direct runtime
+support 工作
+必须继续服从这个边界。
+
+任务级设计见
+`2026-04-23-blackhole-live-form-materialization-admission.md`：
+
+- unsupported reason
+  只能表示当前 executable
+  尚未 admitted
+- 真正需要跨阶段保留的
+  live-form /
+  materialization
+  distinction
+  必须进入
+  `SpatialPlan`
+  / `TTProgram`
+  / `ExecutableSpec`
+  显式对象
+- runtime/codegen
+  不允许靠
+  `SeqStmt`
+  /
+  builtin 序列
+  /
+  buffer 名
+  补回 producer-consumer 语义
+
 ### 5.4 `segment_plan` 是 projection truth，`blackhole.segment_kind` 是 task4 debt
 
 `segment_plan`
