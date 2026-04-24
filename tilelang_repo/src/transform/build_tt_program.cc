@@ -67,6 +67,14 @@ String GetStringOrDefault(const Map<String, Any>& dict, const char* key, String 
   return default_value;
 }
 
+int64_t GetIntegerOrDefault(const Map<String, Any>& dict, const char* key,
+                            int64_t default_value = 0) {
+  if (auto value = dict.Get(String(key))) {
+    return Downcast<Integer>(value.value())->value;
+  }
+  return default_value;
+}
+
 Map<String, Any> AsMap(const Any& any) {
   return any.as<Map<String, Any>>().value_or(Map<String, Any>());
 }
@@ -95,6 +103,8 @@ Map<String, Any> CopyAttrs(const tir::PrimFunc& func) {
 struct TTProgramSlices {
   String entry_name;
   String member_func;
+  Array<TTMeshPlan> mesh_plans;
+  Array<TTBufferDistributionPlan> buffer_distribution_plans;
   Array<TTBlockPlan> block_plans;
   Array<TTKernelPlan> kernel_plans;
   Array<TTTransportPlan> transport_plans;
@@ -117,6 +127,8 @@ TTProgramSlices UnpackTTProgram(const TTProgram& program) {
   TTProgramSlices slices;
   slices.entry_name = program->entry_name;
   slices.member_func = program->member_func;
+  slices.mesh_plans = program->mesh_plans;
+  slices.buffer_distribution_plans = program->buffer_distribution_plans;
   slices.block_plans = program->block_plans;
   slices.kernel_plans = program->kernel_plans;
   slices.transport_plans = program->transport_plans;
@@ -138,6 +150,8 @@ TTProgramSlices UnpackTTProgram(const TTProgram& program) {
 
 TTProgram PackTTProgram(TTProgramSlices slices) {
   return TTProgram(std::move(slices.entry_name), std::move(slices.member_func),
+                   std::move(slices.mesh_plans),
+                   std::move(slices.buffer_distribution_plans),
                    std::move(slices.block_plans), std::move(slices.kernel_plans),
                    std::move(slices.transport_plans), std::move(slices.sync_plans),
                    std::move(slices.abi_plans), std::move(slices.execution_plans),
@@ -212,6 +226,19 @@ Array<TTCBPlan> BuildCBPlans(const std::vector<CBConfig>& configs) {
                                    cb_attr));
   }
   return tt_cb_plans;
+}
+
+Array<TTMeshPlan> BuildUnitMeshPlans() {
+  Map<String, Any> payload;
+  payload.Set("coordinate_rank", Integer(2));
+  payload.Set("device_count", Integer(1));
+  Array<TTMeshPlan> mesh_plans;
+  mesh_plans.push_back(TTMeshPlan(String("unit_mesh"), String("unit_mesh"),
+                                  Array<Integer>{Integer(1), Integer(1)},
+                                  Array<Integer>{Integer(0), Integer(0)},
+                                  Array<Integer>{Integer(1), Integer(1)},
+                                  String("default_system_mesh"), payload));
+  return mesh_plans;
 }
 
 Array<TTCoreGroup> BuildCoreGroups(const PlanTTCoreGroups& planner) {
@@ -390,6 +417,79 @@ Array<TTDstLayoutPlan> BuildDstLayoutPlans(const Array<TTABIPlan>& abi_plans) {
   return dst_layouts;
 }
 
+String NormalizeMemorySpace(String memory_space) {
+  const std::string value = str(memory_space);
+  if (value == "dram" || value == "global") {
+    return String("DRAM");
+  }
+  if (value == "l1" || value == "local" || value == "shared" ||
+      value.rfind("blackhole.", 0) == 0) {
+    return String("L1");
+  }
+  if (value.empty()) {
+    return String("L1");
+  }
+  return memory_space;
+}
+
+String MemorySpaceFromLayoutScope(const String& scope) {
+  const std::string value = str(scope);
+  if (value == "global") {
+    return String("DRAM");
+  }
+  return String("L1");
+}
+
+Array<TTBufferDistributionPlan> BuildBufferDistributionPlans(
+    const SpatialPlan& spatial_plan, const Array<TTDstLayoutPlan>& dst_layout_plans) {
+  struct DstLayoutInfo {
+    String layout;
+    String memory_space;
+    int64_t page_size_bytes = 0;
+    Map<String, Any> payload;
+  };
+
+  std::unordered_map<std::string, DstLayoutInfo> dst_layout_by_buffer;
+  for (const TTDstLayoutPlan& dst_layout : dst_layout_plans) {
+    DstLayoutInfo info;
+    info.layout = dst_layout->layout;
+    info.memory_space = NormalizeMemorySpace(dst_layout->memory_space);
+    info.payload = dst_layout->payload;
+    info.page_size_bytes = GetIntegerOrDefault(dst_layout->payload, "transport_page_size", 0);
+    dst_layout_by_buffer.emplace(str(dst_layout->buffer), std::move(info));
+  }
+
+  Array<TTBufferDistributionPlan> distribution_plans;
+  std::unordered_set<std::string> seen;
+  for (const LayoutSpec& layout_spec : spatial_plan->layout_specs) {
+    const std::string buffer = str(layout_spec->subject);
+    if (buffer.empty() || !seen.insert(buffer).second) {
+      continue;
+    }
+    String layout = String("local");
+    String memory_space = MemorySpaceFromLayoutScope(layout_spec->scope);
+    int64_t page_size_bytes = 0;
+    Map<String, Any> payload;
+    payload.Set("spatial_layout", layout_spec->name);
+    payload.Set("spatial_distribution_kind", layout_spec->distribution_kind);
+    auto dst_it = dst_layout_by_buffer.find(buffer);
+    if (dst_it != dst_layout_by_buffer.end()) {
+      layout = dst_it->second.layout;
+      memory_space = dst_it->second.memory_space;
+      page_size_bytes = dst_it->second.page_size_bytes;
+      payload.Set("abi_layout", dst_it->second.layout);
+      payload.Set("abi_memory_space", dst_it->second.memory_space);
+    }
+    const String host_visibility =
+        str(memory_space) == "DRAM" ? String("host_visible") : String("device_local");
+    distribution_plans.push_back(TTBufferDistributionPlan(
+        String("buffer_distribution_" + buffer), String(buffer), String("unit_mesh"),
+        /*mesh_plan_index=*/0, String("replicated"), layout, memory_space, page_size_bytes,
+        Array<Integer>{}, String("row_major"), host_visibility, payload));
+  }
+  return distribution_plans;
+}
+
 Array<TTMaterializationPlan> RemapMaterializationCBRequirementIndices(
     const Array<TTMaterializationPlan>& materialization_plans,
     const Array<TTCBPlan>& cb_plans) {
@@ -466,6 +566,7 @@ tvm::transform::Pass PlanTTBlocks() {
       tir::PrimFunc planned = planner.Transform(func.value());
       const Array<TTCoreGroup> core_groups = BuildCoreGroups(planner);
       TTProgramSlices slices = GetOrCreateTTProgramSlices(planned, gvar, spatial_plan);
+      slices.mesh_plans = BuildUnitMeshPlans();
       slices.block_plans = BuildBlockPlans(spatial_plan, core_groups);
       slices.core_groups = core_groups;
       planned = WithTTProgramAttr(std::move(planned), PackTTProgram(std::move(slices)));
@@ -562,13 +663,15 @@ tvm::transform::Pass PlanTTABI() {
       if (!func || !IsBlackholePrimFunc(func.value())) {
         continue;
       }
-      RequireValidatedSpatialPlan(func.value(), "PlanTTABI");
+      const SpatialPlan spatial_plan = RequireValidatedSpatialPlan(func.value(), "PlanTTABI");
       const TTProgram staged =
           RequireStagedTTProgram(func.value(), "PlanTTABI", "Run PlanTTCompute before PlanTTABI");
       TTProgramSlices slices = UnpackTTProgram(staged);
       ICHECK(!slices.abi_plans.empty())
           << "PlanTTABI requires TTABIPlan owner truth; Run PlanTTCompute before PlanTTABI";
       slices.dst_layout_plans = BuildDstLayoutPlans(slices.abi_plans);
+      slices.buffer_distribution_plans =
+          BuildBufferDistributionPlans(spatial_plan, slices.dst_layout_plans);
       tir::PrimFunc planned = WithTTProgramAttr(func.value(), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);
     }
@@ -629,6 +732,9 @@ tvm::transform::Pass BuildTTProgram() {
           "Run PlanTTBlocks, PlanTTCompute, PlanTTTransport, PlanTTSync, PlanTTABI, and PlanTTExecution before BuildTTProgram");
       const TTProgramSlices slices = UnpackTTProgram(staged);
 
+      ICHECK(!slices.mesh_plans.empty()) << "BuildTTProgram requires TTMeshPlan owner truth";
+      ICHECK(!slices.buffer_distribution_plans.empty())
+          << "BuildTTProgram requires TTBufferDistributionPlan owner truth";
       ICHECK(!slices.block_plans.empty()) << "BuildTTProgram requires TTBlockPlan owner truth";
       ICHECK(!slices.kernel_plans.empty()) << "BuildTTProgram requires TTKernelPlan owner truth";
       ICHECK(!slices.core_groups.empty())

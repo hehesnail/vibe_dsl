@@ -193,6 +193,21 @@ replacement helper layer。
 `ExecutableSpec`
 backend admission。
 
+当前实现先落地
+unit mesh schema：
+
+- `BuildTTProgram`
+  聚合一个
+  `unit_mesh`
+  `TTMeshPlan`
+- `ValidateTTProgram`
+  校验 mesh identity /
+  shape /
+  device range
+- `MaterializeBlackholeExecutable`
+  将该 slice 投影到
+  `mesh_plans`
+
 ### 3.0.1 `TTBufferDistributionPlan`
 
 表示 TT-Metal
@@ -228,6 +243,25 @@ distribution realization。
   interleaved DRAM
   的事实
   写成 `TTProgram`
+
+当前实现先落地
+replicated buffer distribution
+schema：
+
+- 每个
+  `SpatialPlan.LayoutSpec.subject`
+  生成一个
+  `TTBufferDistributionPlan`
+- DRAM/L1 等 physical memory space
+  从 layout scope /
+  ABI layout 显式收敛
+- `ValidateTTProgram`
+  校验 buffer distribution
+  引用已知 mesh，
+  且覆盖 ABI accessor buffer
+- executable projection
+  输出
+  `buffer_distribution_plans`
   legality
 
 direct runtime

@@ -13,6 +13,65 @@
 namespace tvm {
 namespace tl {
 
+class TTMeshPlanNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String mesh_kind;
+  ffi::Array<Integer> mesh_shape;
+  ffi::Array<Integer> device_range_start;
+  ffi::Array<Integer> device_range_shape;
+  ffi::String system_mesh_ref;
+  ffi::Map<ffi::String, ffi::Any> payload;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTMeshPlan", TTMeshPlanNode, Object);
+};
+
+class TTMeshPlan : public ObjectRef {
+ public:
+  TVM_DLL TTMeshPlan(ffi::String name, ffi::String mesh_kind,
+                     ffi::Array<Integer> mesh_shape,
+                     ffi::Array<Integer> device_range_start,
+                     ffi::Array<Integer> device_range_shape,
+                     ffi::String system_mesh_ref,
+                     ffi::Map<ffi::String, ffi::Any> payload);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTMeshPlan, ObjectRef, TTMeshPlanNode);
+};
+
+class TTBufferDistributionPlanNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String buffer;
+  ffi::String mesh_plan;
+  int64_t mesh_plan_index = -1;
+  ffi::String distribution_kind;
+  ffi::String layout;
+  ffi::String memory_space;
+  int64_t page_size_bytes = 0;
+  ffi::Array<Integer> shard_shape;
+  ffi::String shard_orientation;
+  ffi::String host_visibility;
+  ffi::Map<ffi::String, ffi::Any> payload;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTBufferDistributionPlan",
+                                    TTBufferDistributionPlanNode, Object);
+};
+
+class TTBufferDistributionPlan : public ObjectRef {
+ public:
+  TVM_DLL TTBufferDistributionPlan(ffi::String name, ffi::String buffer,
+                                   ffi::String mesh_plan, int64_t mesh_plan_index,
+                                   ffi::String distribution_kind, ffi::String layout,
+                                   ffi::String memory_space, int64_t page_size_bytes,
+                                   ffi::Array<Integer> shard_shape,
+                                   ffi::String shard_orientation,
+                                   ffi::String host_visibility,
+                                   ffi::Map<ffi::String, ffi::Any> payload);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTBufferDistributionPlan, ObjectRef,
+                                             TTBufferDistributionPlanNode);
+};
+
 class TTBlockPlanNode : public Object {
  public:
   ffi::String name;
@@ -386,6 +445,8 @@ class TTProgramNode : public Object {
  public:
   ffi::String entry_name;
   ffi::String member_func;
+  ffi::Array<TTMeshPlan> mesh_plans;
+  ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans;
   ffi::Array<TTBlockPlan> block_plans;
   ffi::Array<TTKernelPlan> kernel_plans;
   ffi::Array<TTTransportPlan> transport_plans;
@@ -410,6 +471,8 @@ class TTProgramNode : public Object {
 class TTProgram : public ObjectRef {
  public:
   TVM_DLL TTProgram(ffi::String entry_name, ffi::String member_func,
+                    ffi::Array<TTMeshPlan> mesh_plans,
+                    ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
                     ffi::Array<TTBlockPlan> block_plans,
                     ffi::Array<TTKernelPlan> kernel_plans,
                     ffi::Array<TTTransportPlan> transport_plans,

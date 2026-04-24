@@ -6,8 +6,8 @@
 ## Status
 
 - Date: `2026-04-25`
-- Active lane: `TTProgram mesh/buffer distribution schema`
-- Current item: `P1 TTProgram mesh/buffer distribution schema`
+- Active lane: `compute-kind extension`
+- Current item: `P1 compute-kind extension`
 - Blocker: none
 - Main chain: `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -21,8 +21,8 @@
 - `P0.6 projection payload seed cleanup`: completed
 - `P1 runtime/codegen backend decoupling design`: completed
 - `P1 SpatialPlan live/materialization refinement`: completed
-- `P1 TTProgram mesh/buffer distribution schema`: next
-- `P1 compute-kind extension`: after mesh/schema gates
+- `P1 TTProgram mesh/buffer distribution schema`: completed
+- `P1 compute-kind extension`: next
 - `P1/P2 workload payoff`: after backend gates
 
 ## Open Debt
@@ -33,10 +33,10 @@
 
 ## Latest Verification
 
-P1 SpatialPlan live/materialization refinement:
+P1 TTProgram mesh/buffer distribution schema:
 
 - `cmake --build build -j32`
-- SpatialPlan schema/validator: `22 passed`
-- GEMM/materialization target pipeline: `43 passed, 16 skipped`
 - copy pipeline: `51 passed, 10 skipped, 1 xfailed`
+- GEMM/materialization target pipeline: `43 passed, 16 skipped`
+- SpatialPlan/TTProgram schema: `23 passed`
 - flash pipeline: `64 passed`

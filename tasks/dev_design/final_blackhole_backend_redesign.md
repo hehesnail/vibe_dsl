@@ -258,6 +258,21 @@ Normalized Tile TIR
 当前代码里的：
 
 - `TTKernel`
+
+当前 P1 实现状态：
+
+- `TTMeshPlan`
+  已作为 unit mesh
+  owner-truth slice
+  进入 `TTProgram`
+  和 executable projection
+- `TTBufferDistributionPlan`
+  已覆盖
+  `SpatialPlan.LayoutSpec`
+  subject，
+  记录 replicated distribution /
+  DRAM-L1 memory space /
+  ABI accessor coverage
 - `TTCoreGroup`
 - `TTCBPlan`
 - `TTSemaphorePlan`

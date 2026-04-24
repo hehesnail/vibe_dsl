@@ -17,6 +17,73 @@ void RegisterNodeReflection() {
 
 }  // namespace
 
+void TTMeshPlanNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTMeshPlanNode>()
+      .def_ro("name", &TTMeshPlanNode::name)
+      .def_ro("mesh_kind", &TTMeshPlanNode::mesh_kind)
+      .def_ro("mesh_shape", &TTMeshPlanNode::mesh_shape)
+      .def_ro("device_range_start", &TTMeshPlanNode::device_range_start)
+      .def_ro("device_range_shape", &TTMeshPlanNode::device_range_shape)
+      .def_ro("system_mesh_ref", &TTMeshPlanNode::system_mesh_ref)
+      .def_ro("payload", &TTMeshPlanNode::payload);
+}
+
+TTMeshPlan::TTMeshPlan(ffi::String name, ffi::String mesh_kind,
+                       ffi::Array<Integer> mesh_shape,
+                       ffi::Array<Integer> device_range_start,
+                       ffi::Array<Integer> device_range_shape,
+                       ffi::String system_mesh_ref,
+                       ffi::Map<ffi::String, ffi::Any> payload) {
+  auto n = ffi::make_object<TTMeshPlanNode>();
+  n->name = std::move(name);
+  n->mesh_kind = std::move(mesh_kind);
+  n->mesh_shape = std::move(mesh_shape);
+  n->device_range_start = std::move(device_range_start);
+  n->device_range_shape = std::move(device_range_shape);
+  n->system_mesh_ref = std::move(system_mesh_ref);
+  n->payload = std::move(payload);
+  data_ = std::move(n);
+}
+
+void TTBufferDistributionPlanNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTBufferDistributionPlanNode>()
+      .def_ro("name", &TTBufferDistributionPlanNode::name)
+      .def_ro("buffer", &TTBufferDistributionPlanNode::buffer)
+      .def_ro("mesh_plan", &TTBufferDistributionPlanNode::mesh_plan)
+      .def_ro("mesh_plan_index", &TTBufferDistributionPlanNode::mesh_plan_index)
+      .def_ro("distribution_kind", &TTBufferDistributionPlanNode::distribution_kind)
+      .def_ro("layout", &TTBufferDistributionPlanNode::layout)
+      .def_ro("memory_space", &TTBufferDistributionPlanNode::memory_space)
+      .def_ro("page_size_bytes", &TTBufferDistributionPlanNode::page_size_bytes)
+      .def_ro("shard_shape", &TTBufferDistributionPlanNode::shard_shape)
+      .def_ro("shard_orientation", &TTBufferDistributionPlanNode::shard_orientation)
+      .def_ro("host_visibility", &TTBufferDistributionPlanNode::host_visibility)
+      .def_ro("payload", &TTBufferDistributionPlanNode::payload);
+}
+
+TTBufferDistributionPlan::TTBufferDistributionPlan(
+    ffi::String name, ffi::String buffer, ffi::String mesh_plan, int64_t mesh_plan_index,
+    ffi::String distribution_kind, ffi::String layout, ffi::String memory_space,
+    int64_t page_size_bytes, ffi::Array<Integer> shard_shape, ffi::String shard_orientation,
+    ffi::String host_visibility, ffi::Map<ffi::String, ffi::Any> payload) {
+  auto n = ffi::make_object<TTBufferDistributionPlanNode>();
+  n->name = std::move(name);
+  n->buffer = std::move(buffer);
+  n->mesh_plan = std::move(mesh_plan);
+  n->mesh_plan_index = mesh_plan_index;
+  n->distribution_kind = std::move(distribution_kind);
+  n->layout = std::move(layout);
+  n->memory_space = std::move(memory_space);
+  n->page_size_bytes = page_size_bytes;
+  n->shard_shape = std::move(shard_shape);
+  n->shard_orientation = std::move(shard_orientation);
+  n->host_visibility = std::move(host_visibility);
+  n->payload = std::move(payload);
+  data_ = std::move(n);
+}
+
 void TTBlockPlanNode::RegisterReflection() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<TTBlockPlanNode>()
@@ -462,6 +529,8 @@ void TTProgramNode::RegisterReflection() {
   refl::ObjectDef<TTProgramNode>()
       .def_ro("entry_name", &TTProgramNode::entry_name)
       .def_ro("member_func", &TTProgramNode::member_func)
+      .def_ro("mesh_plans", &TTProgramNode::mesh_plans)
+      .def_ro("buffer_distribution_plans", &TTProgramNode::buffer_distribution_plans)
       .def_ro("block_plans", &TTProgramNode::block_plans)
       .def_ro("kernel_plans", &TTProgramNode::kernel_plans)
       .def_ro("transport_plans", &TTProgramNode::transport_plans)
@@ -481,6 +550,8 @@ void TTProgramNode::RegisterReflection() {
 }
 
 TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
+                     ffi::Array<TTMeshPlan> mesh_plans,
+                     ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
                      ffi::Array<TTBlockPlan> block_plans,
                      ffi::Array<TTKernelPlan> kernel_plans,
                      ffi::Array<TTTransportPlan> transport_plans,
@@ -499,6 +570,8 @@ TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
   auto n = ffi::make_object<TTProgramNode>();
   n->entry_name = std::move(entry_name);
   n->member_func = std::move(member_func);
+  n->mesh_plans = std::move(mesh_plans);
+  n->buffer_distribution_plans = std::move(buffer_distribution_plans);
   n->block_plans = std::move(block_plans);
   n->kernel_plans = std::move(kernel_plans);
   n->transport_plans = std::move(transport_plans);
@@ -519,6 +592,8 @@ TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
+  RegisterNodeReflection<TTMeshPlanNode>();
+  RegisterNodeReflection<TTBufferDistributionPlanNode>();
   RegisterNodeReflection<TTBlockPlanNode>();
   RegisterNodeReflection<TTKernelPlanNode>();
   RegisterNodeReflection<TTKernelNode>();
@@ -539,6 +614,28 @@ TVM_FFI_STATIC_INIT_BLOCK() {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
+  refl::GlobalDef().def(
+      "tl.TTMeshPlan",
+      [](ffi::String name, ffi::String mesh_kind, ffi::Array<Integer> mesh_shape,
+         ffi::Array<Integer> device_range_start, ffi::Array<Integer> device_range_shape,
+         ffi::String system_mesh_ref, ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTMeshPlan(std::move(name), std::move(mesh_kind), std::move(mesh_shape),
+                          std::move(device_range_start), std::move(device_range_shape),
+                          std::move(system_mesh_ref), std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTBufferDistributionPlan",
+      [](ffi::String name, ffi::String buffer, ffi::String mesh_plan,
+         int64_t mesh_plan_index, ffi::String distribution_kind, ffi::String layout,
+         ffi::String memory_space, int64_t page_size_bytes, ffi::Array<Integer> shard_shape,
+         ffi::String shard_orientation, ffi::String host_visibility,
+         ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTBufferDistributionPlan(
+            std::move(name), std::move(buffer), std::move(mesh_plan), mesh_plan_index,
+            std::move(distribution_kind), std::move(layout), std::move(memory_space),
+            page_size_bytes, std::move(shard_shape), std::move(shard_orientation),
+            std::move(host_visibility), std::move(payload));
+      });
   refl::GlobalDef().def(
       "tl.TTBlockPlan",
       [](ffi::String name, ffi::String placement_kind, ffi::Array<Integer> task_indices,
@@ -713,7 +810,9 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       });
   refl::GlobalDef().def(
       "tl.TTProgram",
-      [](ffi::String entry_name, ffi::String member_func, ffi::Array<TTBlockPlan> block_plans,
+      [](ffi::String entry_name, ffi::String member_func, ffi::Array<TTMeshPlan> mesh_plans,
+         ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
+         ffi::Array<TTBlockPlan> block_plans,
          ffi::Array<TTKernelPlan> kernel_plans, ffi::Array<TTTransportPlan> transport_plans,
          ffi::Array<TTSyncPlan> sync_plans, ffi::Array<TTABIPlan> abi_plans,
          ffi::Array<TTExecutionPlan> execution_plans, ffi::Array<TTKernel> kernels,
@@ -726,6 +825,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
          ffi::Map<ffi::String, ffi::Any> payload) {
         return TTProgram(std::move(entry_name), std::move(member_func),
+                         std::move(mesh_plans), std::move(buffer_distribution_plans),
                          std::move(block_plans), std::move(kernel_plans),
                          std::move(transport_plans), std::move(sync_plans),
                          std::move(abi_plans), std::move(execution_plans),

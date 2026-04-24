@@ -293,6 +293,8 @@ def _rebuild_spatial_plan(
 def _rebuild_tt_program(
     program,
     *,
+    mesh_plans=None,
+    buffer_distribution_plans=None,
     cb_plans=None,
     live_form_plans=None,
     materialization_plans=None,
@@ -303,6 +305,10 @@ def _rebuild_tt_program(
     return make_tt_program(
         program.entry_name,
         program.member_func,
+        list(program.mesh_plans) if mesh_plans is None else mesh_plans,
+        list(program.buffer_distribution_plans)
+        if buffer_distribution_plans is None
+        else buffer_distribution_plans,
         list(program.block_plans),
         list(program.kernel_plans),
         list(program.transport_plans),
@@ -727,6 +733,44 @@ def test_build_tt_program_consumes_plan_and_analysis_attrs_without_spatial_progr
         int(plan.source_task_index) >= 0 and int(plan.target_task_index) >= 0
         for plan in tt_program.transport_plans
     )
+
+
+def test_build_tt_program_exposes_mesh_and_buffer_distribution_plans():
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    spatial_plan = mod["main"].attrs["tl.spatial_plan"]
+    mod = tilelang.transform.PlanTTBlocks()(mod)
+    mod = tilelang.transform.SelectBlackholeTTMetalBuiltins()(mod)
+    mod = tilelang.transform.PlanTTCompute()(mod)
+    mod = tilelang.transform.PlanTTTransport()(mod)
+    mod = tilelang.transform.PlanTTSync()(mod)
+    mod = tilelang.transform.PlanTTABI()(mod)
+    mod = tilelang.transform.PlanTTExecution()(mod)
+    mod = tilelang.transform.BuildTTProgram()(mod)
+
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    assert len(tt_program.mesh_plans) == 1
+    mesh_plan = tt_program.mesh_plans[0]
+    assert str(mesh_plan.name) == "unit_mesh"
+    assert str(mesh_plan.mesh_kind) == "unit_mesh"
+    assert tuple(int(dim) for dim in mesh_plan.mesh_shape) == (1, 1)
+    assert tuple(int(dim) for dim in mesh_plan.device_range_shape) == (1, 1)
+
+    spatial_subjects = {str(layout.subject) for layout in spatial_plan.layout_specs}
+    distributions = {
+        str(plan.buffer): plan for plan in tt_program.buffer_distribution_plans
+    }
+    assert spatial_subjects.issubset(distributions)
+    assert all(str(plan.mesh_plan) == "unit_mesh" for plan in distributions.values())
+    assert all(int(plan.mesh_plan_index) == 0 for plan in distributions.values())
+    assert {str(plan.distribution_kind) for plan in distributions.values()} == {"replicated"}
+    assert str(distributions["A"].memory_space) == "DRAM"
+    assert str(distributions["A_shared"].memory_space) == "L1"
+
+    mod = tilelang.transform.MaterializeBlackholeExecutable()(mod)
+    executable = mod["main"].attrs["tl.blackhole_executable"]
+    assert "mesh_plans" in executable
+    assert "buffer_distribution_plans" in executable
 
 
 def test_validate_tt_program_rejects_unresolved_unsupported_compute_ops():

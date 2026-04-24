@@ -1007,6 +1007,24 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   否则同一 buffer subject
   在不同 producer/consumer relation
   下会选错 live value。
+- TT-Metal mesh /
+  buffer distribution
+  要作为 `TTProgram`
+  owner truth：
+  `TTMeshPlan`
+  表达 physical mesh /
+  device range，
+  `TTBufferDistributionPlan`
+  表达 per-buffer
+  replicated/sharded distribution
+  和 DRAM/L1 memory space。
+  direct runtime 当前只支持
+  unit mesh /
+  replicated subset
+  只能留在 leaf admission，
+  不能反向限制 codegen /
+  executable projection
+  的 schema。
 
 ## 9. 调试模式
 

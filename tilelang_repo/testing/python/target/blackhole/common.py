@@ -360,6 +360,8 @@ def rebuild_tt_program(
     *,
     entry_name=None,
     member_func=None,
+    mesh_plans=None,
+    buffer_distribution_plans=None,
     block_plans=None,
     kernel_plans=None,
     sync_plans=None,
@@ -393,6 +395,10 @@ def rebuild_tt_program(
     return make_tt_program(
         str(program.entry_name) if entry_name is None else entry_name,
         str(program.member_func) if member_func is None else member_func,
+        list(program.mesh_plans) if mesh_plans is None else mesh_plans,
+        list(program.buffer_distribution_plans)
+        if buffer_distribution_plans is None
+        else buffer_distribution_plans,
         list(program.block_plans) if block_plans is None else block_plans,
         list(program.kernel_plans) if kernel_plans is None else kernel_plans,
         list(program.transport_plans) if transport_plans is None else transport_plans,

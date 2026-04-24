@@ -39,6 +39,66 @@ int64_t GetIntOrDefault(const Map<String, Any>& map, const char* key, int64_t de
   return default_value;
 }
 
+void ValidatePositiveIntegerArray(const Array<Integer>& values, const std::string& context) {
+  ICHECK(!values.empty()) << context << " requires non-empty shape";
+  for (const Integer& value : values) {
+    ICHECK_GT(value->value, 0) << context << " requires positive dimensions";
+  }
+}
+
+void ValidateMeshPlan(const TTMeshPlan& mesh_plan) {
+  ICHECK(!mesh_plan->name.empty()) << "TTMeshPlan requires name";
+  ICHECK(!mesh_plan->mesh_kind.empty()) << "TTMeshPlan requires mesh_kind";
+  ValidatePositiveIntegerArray(mesh_plan->mesh_shape, "TTMeshPlan mesh_shape");
+  ICHECK_EQ(mesh_plan->device_range_start.size(), mesh_plan->mesh_shape.size())
+      << "TTMeshPlan device_range_start rank must match mesh_shape";
+  ICHECK_EQ(mesh_plan->device_range_shape.size(), mesh_plan->mesh_shape.size())
+      << "TTMeshPlan device_range_shape rank must match mesh_shape";
+  for (int i = 0; i < mesh_plan->mesh_shape.size(); ++i) {
+    ICHECK_GE(mesh_plan->device_range_start[i]->value, 0)
+        << "TTMeshPlan device_range_start requires non-negative coordinates";
+    ICHECK_GT(mesh_plan->device_range_shape[i]->value, 0)
+        << "TTMeshPlan device_range_shape requires positive dimensions";
+    ICHECK_LE(mesh_plan->device_range_start[i]->value + mesh_plan->device_range_shape[i]->value,
+              mesh_plan->mesh_shape[i]->value)
+        << "TTMeshPlan device range must fit in mesh_shape";
+  }
+}
+
+void ValidateBufferDistributionPlan(
+    const TTBufferDistributionPlan& plan,
+    const std::unordered_map<std::string, int64_t>& mesh_index_by_name) {
+  ICHECK(!plan->name.empty()) << "TTBufferDistributionPlan requires name";
+  ICHECK(!plan->buffer.empty()) << "TTBufferDistributionPlan requires buffer";
+  ICHECK(!plan->mesh_plan.empty()) << "TTBufferDistributionPlan requires mesh_plan";
+  ICHECK_GE(plan->mesh_plan_index, 0)
+      << "TTBufferDistributionPlan requires mesh_plan_index";
+  auto mesh_it = mesh_index_by_name.find(static_cast<std::string>(plan->mesh_plan));
+  ICHECK(mesh_it != mesh_index_by_name.end())
+      << "TTBufferDistributionPlan references unknown mesh_plan " << plan->mesh_plan;
+  ICHECK_EQ(plan->mesh_plan_index, mesh_it->second)
+      << "TTBufferDistributionPlan mesh_plan_index must match mesh_plan";
+  ICHECK(!plan->distribution_kind.empty())
+      << "TTBufferDistributionPlan requires distribution_kind";
+  const std::string distribution_kind = plan->distribution_kind;
+  ICHECK(distribution_kind == "replicated" || distribution_kind == "sharded")
+      << "TTBufferDistributionPlan distribution_kind must be replicated or sharded";
+  ICHECK(!plan->layout.empty()) << "TTBufferDistributionPlan requires layout";
+  ICHECK(!plan->memory_space.empty()) << "TTBufferDistributionPlan requires memory_space";
+  const std::string memory_space = plan->memory_space;
+  ICHECK(memory_space == "DRAM" || memory_space == "L1")
+      << "TTBufferDistributionPlan memory_space must be DRAM or L1";
+  ICHECK_GE(plan->page_size_bytes, 0)
+      << "TTBufferDistributionPlan requires non-negative page_size_bytes";
+  if (distribution_kind == "sharded") {
+    ValidatePositiveIntegerArray(plan->shard_shape, "TTBufferDistributionPlan shard_shape");
+  }
+  ICHECK(!plan->shard_orientation.empty())
+      << "TTBufferDistributionPlan requires shard_orientation";
+  ICHECK(!plan->host_visibility.empty())
+      << "TTBufferDistributionPlan requires host_visibility";
+}
+
 void ValidateCoreGroup(const TTCoreGroup& core_group) {
   ICHECK_GT(core_group->logical_grid_x, 0) << "TTCoreGroup requires positive logical_grid_x";
   ICHECK_GT(core_group->logical_grid_y, 0) << "TTCoreGroup requires positive logical_grid_y";
@@ -514,6 +574,9 @@ void ValidateSpatialLiveReferences(const TTProgram& program, const SpatialPlan& 
 
 void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan) {
   ICHECK(!program->entry_name.empty()) << "TTProgram requires entry_name";
+  ICHECK(!program->mesh_plans.empty()) << "TTProgram requires at least one TTMeshPlan";
+  ICHECK(!program->buffer_distribution_plans.empty())
+      << "TTProgram requires at least one TTBufferDistributionPlan";
   ICHECK(!program->block_plans.empty()) << "TTProgram requires at least one TTBlockPlan";
   ICHECK(!program->kernel_plans.empty()) << "TTProgram requires at least one TTKernelPlan";
   ICHECK(!program->kernels.empty()) << "TTProgram requires at least one TTKernel";
@@ -526,6 +589,29 @@ void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan) {
       << "TTProgram requires aligned TTKernelPlan and TTKernel compatibility payloads";
   ICHECK_EQ(program->sync_plans.size(), program->compute_sync_plans.size())
       << "TTProgram requires aligned TTSyncPlan and TTComputeSyncPlan compatibility payloads";
+
+  std::unordered_map<std::string, int64_t> mesh_index_by_name;
+  for (int64_t mesh_index = 0; mesh_index < static_cast<int64_t>(program->mesh_plans.size());
+       ++mesh_index) {
+    const TTMeshPlan& mesh_plan = program->mesh_plans[mesh_index];
+    ValidateMeshPlan(mesh_plan);
+    ICHECK(mesh_index_by_name.emplace(static_cast<std::string>(mesh_plan->name), mesh_index).second)
+        << "duplicate TTMeshPlan name " << mesh_plan->name;
+  }
+
+  std::unordered_set<std::string> spatial_layout_subjects;
+  for (const LayoutSpec& layout : spatial_plan->layout_specs) {
+    spatial_layout_subjects.insert(static_cast<std::string>(layout->subject));
+  }
+  std::unordered_set<std::string> distributed_buffers;
+  for (const TTBufferDistributionPlan& distribution : program->buffer_distribution_plans) {
+    ValidateBufferDistributionPlan(distribution, mesh_index_by_name);
+    ICHECK(distributed_buffers.insert(static_cast<std::string>(distribution->buffer)).second)
+        << "duplicate TTBufferDistributionPlan buffer " << distribution->buffer;
+    ICHECK(spatial_layout_subjects.count(static_cast<std::string>(distribution->buffer)))
+        << "TTBufferDistributionPlan buffer must match SpatialPlan LayoutSpec subject "
+        << distribution->buffer;
+  }
 
   for (const TTBlockPlan& block_plan : program->block_plans) {
     ValidateBlockPlan(block_plan);
@@ -575,7 +661,12 @@ void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan) {
   for (const TTABIPlan& abi : program->abi_plans) {
     ICHECK(!abi->kernel_name.empty()) << "TTABIPlan requires kernel_name";
     for (const Any& accessor_any : abi->accessors) {
-      ValidateAccessor(AsMap(accessor_any));
+      Map<String, Any> accessor = AsMap(accessor_any);
+      ValidateAccessor(accessor);
+      auto buffer = accessor.Get(String("buffer"));
+      ICHECK(buffer.has_value() &&
+             distributed_buffers.count(static_cast<std::string>(Downcast<String>(buffer.value()))))
+          << "TTABIPlan accessor buffer requires TTBufferDistributionPlan";
     }
     for (const Any& spec_any : abi->compile_time_arg_specs) {
       ValidateCompileTimeArgSpec(AsMap(spec_any));

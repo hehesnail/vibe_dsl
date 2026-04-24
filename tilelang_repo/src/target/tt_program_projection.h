@@ -30,6 +30,8 @@ constexpr const char* kSchemaVersion = "schema_version";
 constexpr const char* kSource = "source";
 constexpr const char* kEntryName = "entry_name";
 constexpr const char* kMemberFunc = "member_func";
+constexpr const char* kMeshPlans = "mesh_plans";
+constexpr const char* kBufferDistributionPlans = "buffer_distribution_plans";
 constexpr const char* kSegmentPlan = "segment_plan";
 constexpr const char* kCBConfigs = "cb_configs";
 constexpr const char* kCorePlan = "core_plan";
@@ -82,6 +84,44 @@ inline Array<Any> EncodeCBPlans(const Array<TTCBPlan>& cb_plans) {
     item.Set("consume_pages_per_event", Integer(cb->consume_pages_per_event));
     item.Set("lifetime_begin", Integer(cb->lifetime_begin));
     item.Set("lifetime_end", Integer(cb->lifetime_end));
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any> EncodeMeshPlans(const Array<TTMeshPlan>& mesh_plans) {
+  Array<Any> encoded;
+  for (const TTMeshPlan& plan : mesh_plans) {
+    Map<String, Any> item;
+    item.Set("name", plan->name);
+    item.Set("mesh_kind", plan->mesh_kind);
+    item.Set("mesh_shape", plan->mesh_shape);
+    item.Set("device_range_start", plan->device_range_start);
+    item.Set("device_range_shape", plan->device_range_shape);
+    item.Set("system_mesh_ref", plan->system_mesh_ref);
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any> EncodeBufferDistributionPlans(
+    const Array<TTBufferDistributionPlan>& buffer_distribution_plans) {
+  Array<Any> encoded;
+  for (const TTBufferDistributionPlan& plan : buffer_distribution_plans) {
+    Map<String, Any> item;
+    item.Set("name", plan->name);
+    item.Set("buffer", plan->buffer);
+    item.Set("mesh_plan", plan->mesh_plan);
+    item.Set("mesh_plan_index", Integer(plan->mesh_plan_index));
+    item.Set("distribution_kind", plan->distribution_kind);
+    item.Set("layout", plan->layout);
+    item.Set("memory_space", plan->memory_space);
+    item.Set("page_size_bytes", Integer(plan->page_size_bytes));
+    if (!plan->shard_shape.empty()) {
+      item.Set("shard_shape", plan->shard_shape);
+    }
+    item.Set("shard_orientation", plan->shard_orientation);
+    item.Set("host_visibility", plan->host_visibility);
     encoded.push_back(item);
   }
   return encoded;
@@ -264,6 +304,18 @@ inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram
   executable.Set(String(executable_key::kEntryName), program->entry_name);
   if (!program->member_func.empty()) {
     executable.Set(String(executable_key::kMemberFunc), program->member_func);
+  }
+
+  Array<Any> mesh_plans = EncodeMeshPlans(program->mesh_plans);
+  if (!mesh_plans.empty()) {
+    executable.Set(String(executable_key::kMeshPlans), mesh_plans);
+  }
+
+  Array<Any> buffer_distribution_plans =
+      EncodeBufferDistributionPlans(program->buffer_distribution_plans);
+  if (!buffer_distribution_plans.empty()) {
+    executable.Set(String(executable_key::kBufferDistributionPlans),
+                   buffer_distribution_plans);
   }
 
   Array<Any> segment_plan = EncodeSegmentPlan(program);
