@@ -19,13 +19,16 @@
 - `P0.4 typed per-work descriptor`: completed
 - `P0.5 materialization host/layout binding`: completed
 - `P0.6 projection payload seed cleanup`: completed
+- `P1 runtime/codegen backend decoupling design`: completed
 - `P1 SpatialPlan live/materialization refinement`: next
-- `P1 compute-kind extension`: after P0
-- `P1/P2 workload payoff`: after P0/P1 gates
+- `P1 TTProgram mesh/buffer distribution schema`: after SpatialPlan
+- `P1 compute-kind extension`: after mesh/schema gates
+- `P1/P2 workload payoff`: after backend gates
 
 ## Open Debt
 
 - `tl.blackhole_logical_buffer_tile_bridge_specs` remains the only narrow bridge attr.
+- Direct runtime remains an admitted leaf backend subset, not the codegen/export capability boundary.
 - Flash-attn compile/source/spec baseline is stable; direct runtime correctness is not admitted.
 
 ## Latest Verification

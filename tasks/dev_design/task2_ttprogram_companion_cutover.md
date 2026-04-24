@@ -60,6 +60,16 @@
 
 它负责回答：
 
+- mesh /
+  submesh /
+  device range /
+  fabric node
+  的 physical target placement
+- `MeshBuffer`
+  级别的 replicated /
+  sharded /
+  device-local
+  buffer distribution
 - block / core placement
 - kernel family / role / core type
 - transport / routing / delivery
@@ -147,6 +157,87 @@ replacement helper layer。
 
 ## 3. `TTProgram` 的显式 slice
 
+### 3.0 `TTMeshPlan`
+
+表示 TT-Metal distributed
+程序运行的 physical mesh
+和 device-coordinate
+空间。
+
+它应编码：
+
+- mesh identity
+- mesh shape
+- device range /
+  submesh membership
+- logical device coordinate
+  到 physical device /
+  fabric node
+  的引用
+- `MeshWorkload`
+  program range
+  需要的 device-coordinate
+  coverage
+
+它不负责：
+
+- target-independent
+  virtual sharding
+  语义
+- runtime backend
+  是否当前能执行该 mesh
+
+前者属于
+`SpatialPlan.LayoutSpec`，
+后者属于
+`ExecutableSpec`
+backend admission。
+
+### 3.0.1 `TTBufferDistributionPlan`
+
+表示 TT-Metal
+`MeshBuffer`
+级别的 buffer
+distribution realization。
+
+它应编码：
+
+- buffer identity
+- global layout
+  - `replicated`
+  - `sharded`
+- device-local memory space
+  - `DRAM`
+  - `L1`
+- page size /
+  shard shape /
+  shard orientation
+- host visible distribution
+  和 leaf transfer
+  所需的 buffer binding
+
+它不负责：
+
+- 从 tensor 名称 /
+  runtime arg 顺序
+  推断 buffer role
+- 把 direct runtime
+  当前只支持
+  unit mesh /
+  replicated buffer /
+  interleaved DRAM
+  的事实
+  写成 `TTProgram`
+  legality
+
+direct runtime
+如果暂时只接受该 subset，
+只能在
+`ExecutableSpec`
+backend admission
+处 reject
+更宽组合。
+
 ### 3.1 `TTBlockPlan`
 
 表示 target-side 的
@@ -158,6 +249,10 @@ placement 粒度。
 - block identity
 - placement kind
 - task membership
+- mesh coordinate /
+  device range /
+  submesh placement
+  引用
 - block-level payload
 
 它不负责：
@@ -274,6 +369,8 @@ launch grouping。
 长期 owner truth
 只能写成：
 
+- `TTMeshPlan`
+- `TTBufferDistributionPlan`
 - `TTBlockPlan`
 - `TTKernelPlan`
 - `TTTransportPlan`
@@ -443,7 +540,9 @@ medium-term bridge layer。
 
 当前合同至少包括：
 
-1. `TTBlockPlan /
+1. `TTMeshPlan /
+    TTBufferDistributionPlan /
+    TTBlockPlan /
     TTKernelPlan /
     TTTransportPlan /
     TTSyncPlan /
@@ -586,6 +685,17 @@ build / codegen / runtime /
   - 落到
     `TTBlockPlan`
     / `TTExecutionPlan`
+- mesh /
+  device-range /
+  fabric-node-like 信息
+  - 落到 `TTMeshPlan`
+- replicated /
+  sharded /
+  device-local
+  `MeshBuffer`
+  distribution-like 信息
+  - 落到
+    `TTBufferDistributionPlan`
 - kernel kind / role /
   core type / ABI 绑定
   - 落到
@@ -655,7 +765,9 @@ build / codegen / runtime /
 
 1. target planning
    直接构造
-   `TTBlockPlan /
+   `TTMeshPlan /
+    TTBufferDistributionPlan /
+    TTBlockPlan /
     TTKernelPlan /
     TTTransportPlan /
     TTSyncPlan /

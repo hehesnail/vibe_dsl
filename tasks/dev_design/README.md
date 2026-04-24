@@ -80,8 +80,8 @@ pass 名字、helper、bag、payload、bridge attr
 | `final_blackhole_backend_redesign.md` | 唯一总体设计；定义长期层边界、validator 纪律、rewrite 方向 |
 | `task0_ir_layering_root_cause.md` | 根因诊断与 IR-first 纪律基线；解释为什么必须立起中间显式表示层 |
 | `task1_spatial_plan_companion.md` | `SpatialPlan` 合同文档；定义这一层的显式对象、validator、construction/lowering 边界 |
-| `task2_ttprogram_companion_cutover.md` | `TTProgram` 合同文档；定义 target realization 的显式 slice、reader/writer 边界与完成判据 |
-| `task3_runtime_gate_and_workload_cutover.md` | `ExecutableSpec / leaf reader` 合同文档；定义 leaf reader 纪律、workload 恢复顺序与完成判据 |
+| `task2_ttprogram_companion_cutover.md` | `TTProgram` 合同文档；定义 target realization 的显式 slice、mesh/buffer distribution、reader/writer 边界与完成判据 |
+| `task3_runtime_gate_and_workload_cutover.md` | `ExecutableSpec / leaf reader` 合同文档；定义 leaf reader 纪律、direct runtime 与 codegen/export backend 分离、workload 恢复顺序与完成判据 |
 | `2026-04-23-blackhole-live-form-materialization-admission.md` | cleanup 之后 support surface lane 的任务级设计；定义 live-form / materialization owner truth、admission 顺序和禁止的 runtime-only patch |
 | `blackhole_first_principles_protocol_audit.md` | 删除/迁移表；列出现存 fake/legacy protocol 的表示层落点、validator 和 disposition |
 | `2026-04-16-blackhole-final-legacy-protocol-cleanup.md` | 已完成 cleanup 的边界索引；把 legacy protocol cleanup 拆成总览 + task0-task5 分文件 |

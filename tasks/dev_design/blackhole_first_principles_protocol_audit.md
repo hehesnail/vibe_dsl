@@ -817,7 +817,12 @@
   仍属于后续 workload payoff，
   不能被误写成
   cleanup 完成条件；
-  TT-Sim `fp16`
+  multi-device /
+  mesh /
+  fabric
+  是独立 backend /
+  integration lane；
+  TT-Sim
   仍属于 simulator capability boundary，
   不是 cleanup correctness gate
 - TT-Metal
@@ -825,25 +830,35 @@
   也只要求
   `Program`
   /
+  `MeshDevice`
+  /
   `MeshWorkload`
+  /
+  replicated /
+  sharded
+  `MeshBuffer`
   /
   kernel /
   circular-buffer /
   semaphore /
+  global semaphore /
   runtime-arg /
+  fabric transport /
   launch
   这些显式对象与 API；
   它不要求
-  更宽的 workload payoff，
-  也不要求
-  simulator capability breadth。
+  direct runtime
+  已经 admission
+  所有这些形态。
   因此 task5
   只能验证
   当前 admitted surface
   与显式 materialization boundary，
   不能把
-  非 admitted runtime
-  或 TT-Sim `fp16`
+  非 admitted runtime、
+  distributed/mesh/fabric
+  integration
+  或 simulator capability
   重新升级成
   cleanup completion truth
 - `memory/general_dev.md`
@@ -922,6 +937,18 @@
   `LiveValueEdge` /
   `MaterializationBoundary`，
   不得走 runtime-only patch
+- direct runtime
+  的 admitted gate
+  不等于 codegen/export
+  能力边界；
+  codegen/export
+  应按
+  `ExecutableSpec`
+  schema completeness
+  和 TT-Metal
+  `Program / MeshWorkload / MeshBuffer`
+  materialization
+  能力判断
 - preclear zero-init GEMM
   一旦 canonicalize 到
   `clear_accum=true`，

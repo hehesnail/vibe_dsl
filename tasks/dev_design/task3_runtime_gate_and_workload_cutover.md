@@ -379,6 +379,161 @@ leaf validator
 - 把 backend 当前 unsupported
   升格成上游表示层限制
 
+### 4.4 Runtime / Backend Decoupling Plan
+
+本轮 TT-Metal runtime model
+复查后的结论是：
+runtime 需要拆成三个独立边界，
+不能再把 direct runtime
+当前 admitted subset
+当作 codegen 能力边界。
+
+#### 4.4.1 TT-Metal program emission capability
+
+这是 codegen / export
+的目标边界。
+
+它只要求
+`ExecutableSpec`
+足够显式，
+能够 materialize：
+
+- `Program`
+- `MeshWorkload`
+- `MeshDevice` /
+  device range
+- replicated /
+  sharded
+  `MeshBuffer`
+- kernel source /
+  compile-time args /
+  runtime args
+- circular buffer /
+  semaphore /
+  global semaphore
+- fabric /
+  multicast /
+  collective transport
+  所需的 leaf records
+
+这条能力的 hard gate
+是：
+
+- executable schema completeness
+- TT-Metal API materialization
+  所需字段完整
+- codegen/export emitter
+  对对应 leaf records
+  有实现
+
+它不是：
+
+- direct runtime
+  是否已 admitted
+- TT-Sim
+  当前是否能执行该路径
+
+#### 4.4.2 Direct runtime backend admission
+
+direct runtime
+只是 `BlackholeModule`
+进程内执行 backend。
+
+当前 admitted subset
+可以继续保持保守：
+
+- unit mesh
+- replicated runtime buffers
+- interleaved DRAM accessors
+- copy /
+  GEMM /
+  已 admission 的
+  live-form materialization
+
+但这些限制只能写入：
+
+- backend admission metadata
+- `direct_runtime_unsupported_reasons`
+- direct-runtime test matrix
+
+它们不能写入：
+
+- `SpatialPlan`
+  合法性
+- `TTProgram`
+  target realization
+  合法性
+- codegen/export
+  hard gate
+
+#### 4.4.3 Runtime implementation sequence
+
+后续 runtime 改动按下面顺序推进：
+
+1. **Backend metadata split**
+   - 将 direct runtime
+     unsupported reason
+     保持为 backend-local
+     diagnostic
+   - 确认 codegen/export
+     不读取该字段决定
+     TT-Metal program
+     是否可生成
+2. **TT-Metal emitter surface**
+   - 让 leaf emitter
+     面向
+     `Program / MeshWorkload / MeshBuffer`
+     schema
+   - sharded /
+     replicated /
+     device-range /
+     fabric transport
+     都必须来自
+     `TTProgram`
+     和 `ExecutableSpec`
+     typed records
+3. **Direct runtime generalization**
+   - direct runtime
+     逐步从
+     hard-coded
+     `create_unit_mesh(0)`
+     /
+     replicated buffer
+     中剥离出
+     backend config
+   - 每扩大一个 subset，
+     先扩 typed schema
+     和 validator，
+     再扩 backend admission
+     和 execution
+4. **Verification split**
+   - compile /
+     projection /
+     codegen /
+     export
+     验证 schema 和 emitter
+   - direct runtime
+     只验证 admitted subset
+   - multi-device /
+     mesh /
+     fabric /
+     CCL
+     验证作为独立 backend
+     或硬件/TT-Metal
+     integration lane
+
+禁止新增：
+
+- 第二套 legacy runner
+- runtime-only matcher
+- 从 kernel 名 /
+  buffer 名 /
+  runtime arg 顺序
+  恢复 mesh /
+  sharding /
+  collective
+  语义的 fallback
+
 ## 5. Wrong-Now Residue 与 Cleanup Debt
 
 下面这些东西
@@ -833,9 +988,19 @@ leaf execution gate
 
 ### 6.1 admitted support surface 只属于 leaf concern
 
-当前 direct runtime /
-codegen 的 admitted support surface，
+当前 direct runtime
+的 admitted support surface，
 只属于 leaf execution concern。
+
+codegen / export
+不是 direct runtime
+的 admitted subset；
+它们的 gate
+是 `ExecutableSpec`
+schema completeness、
+TT-Metal program materialization
+所需字段完整，
+以及 emitter 是否实现。
 
 例如：
 
@@ -858,6 +1023,8 @@ codegen 的 admitted support surface，
   的长期语义定义
 - task1/task2
   的完成门槛
+- codegen/export
+  的通用能力上限
 
 ### 6.2 workload payoff 不等于 cleanup completion
 
@@ -876,7 +1043,11 @@ workload payoff
   direct-runtime hard gate
 - unsupported workload
   的 queryable gate
-- TT-Sim `fp16`
+- hardware /
+  mesh /
+  fabric
+  integration gate
+- TT-Sim
   simulator capability boundary
 
 因此：
@@ -892,6 +1063,16 @@ workload payoff
   不能拿来掩盖
   reader boundary
   还没收紧
+- direct runtime
+  不支持 distributed /
+  mesh /
+  fabric
+  时，
+  只能说明该 backend
+  未 admission，
+  不能说明
+  TT-Metal codegen/export
+  不该表达这些路径
 
 ## 7. 与 Cleanup Task 的关系
 
@@ -1019,7 +1200,12 @@ verification / residue scan /
    不再反向塑形
    `TTProgram`
    或更早层语义
-7. JIT / export /
+7. direct runtime
+   unsupported
+   不再阻断
+   schema-complete
+   TT-Metal codegen/export
+8. JIT / export /
    execution backend adapter
    的最终交付
    站在

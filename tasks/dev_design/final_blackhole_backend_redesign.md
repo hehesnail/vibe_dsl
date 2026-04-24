@@ -75,6 +75,33 @@ payload family
 或 builtin 序列
 补回 compute truth。
 
+`2026-04-24`
+TT-Metal runtime model
+复查后再固定一条边界：
+
+- direct runtime
+  只是
+  `ExecutableSpec`
+  的一个 leaf execution backend
+- 当前 direct runtime
+  的 unit-mesh /
+  replicated-buffer /
+  copy-GEMM admitted subset
+  不能作为 codegen /
+  export /
+  `TTProgram`
+  的能力上限
+- codegen / export
+  的长期目标是
+  TT-Metal
+  `Program / MeshWorkload / MeshBuffer`
+  显式程序模型；
+  direct runtime
+  只对其中已 admission 的 subset
+  允许执行，
+  对未 admission 的组合
+  fail-closed diagnostic
+
 ## 2. 第一性原理
 
 对 spatial/dataflow target，
@@ -195,6 +222,15 @@ Normalized Tile TIR
 
 它负责回答：
 
+- mesh / device range /
+  submesh / fabric node
+  的 physical placement
+- buffer distribution
+  是 replicated /
+  sharded /
+  device-local
+  还是后续 mesh/fabric
+  可见形态
 - block / core placement
 - kernel family / role
 - transport / routing / delivery
@@ -207,6 +243,8 @@ Normalized Tile TIR
 
 长期显式表示对象：
 
+- `TTMeshPlan`
+- `TTBufferDistributionPlan`
 - `TTBlockPlan`
 - `TTKernelPlan`
 - `TTTransportPlan`
@@ -288,6 +326,12 @@ runtime-module build contract。
   做 execution backend 选择 /
   admission gate /
   runtime-module materialization
+- 基于同一 projection
+  支撑多个 leaf consumer：
+  direct runtime、
+  TT-Metal codegen/export、
+  后续硬件/mesh/fabric
+  execution adapter
 
 不再承担：
 
@@ -319,8 +363,17 @@ runtime-module build contract。
   cleanup debt，
   不是 `ExecutableSpec`
   成立的前提
-- 当前 direct runtime / codegen 的 admitted support surface
-  只属于 leaf execution concern
+- 当前 direct runtime admission
+  与 codegen/export gate
+  必须拆开：
+  direct runtime
+  的 admitted support surface
+  只属于 leaf execution concern；
+  codegen/export
+  的 gate
+  是 schema completeness /
+  emitter capability /
+  TT-Metal program legality
 - 它可以拒绝某个
   `ExecutableSpec -> execution backend`
   组合
@@ -336,6 +389,15 @@ runtime-module build contract。
   或
   `ValidateTTProgram`
   的 legality 边界
+- direct runtime
+  当前如果仍固定
+  `MeshDevice::create_unit_mesh(0)`、
+  replicated `MeshBuffer`
+  和 interleaved DRAM accessor，
+  这些只是该 backend
+  的 admission rule，
+  不是 TT-Metal program
+  emission contract
 - `compute_contract` /
   `gemm_contract` /
   `multi_*_contracts`
@@ -566,6 +628,16 @@ layered IR 的价值只在于每层都显式承诺：
     提升成
     `TTProgram`
     或 builtin legality
+  - direct runtime
+    和 codegen/export
+    必须作为不同 backend /
+    consumer
+    分别 admission；
+    direct runtime
+    unsupported
+    不能阻断
+    schema-complete 的
+    TT-Metal codegen/export
 
 fail-closed 纪律固定为：
 
@@ -734,6 +806,14 @@ planning seed
      `BlackholeModule`
      只读 executable projection /
      `ExecutableSpec`
+   - 将 direct runtime admission
+     与 TT-Metal codegen/export
+     capability 分离；
+     不再让 unit-mesh
+     direct path
+     决定 broader
+     Program / MeshWorkload
+     emission
 4. **`Legacy Protocol Deletion`**
    - 删除 fake protocol 和 late matcher residue
 
@@ -857,3 +937,15 @@ support-surface admission lane；
      TT builtin basis /
      `TTProgram`
      / upstream legality
+   - direct runtime
+     当前不支持 mesh /
+     sharded buffer /
+     fabric collective
+     时，
+     只能表现为该 backend
+     unsupported；
+     不能阻止
+     `TTProgram`
+     和 `ExecutableSpec`
+     表达这些 TT-Metal
+     target facts

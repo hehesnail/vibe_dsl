@@ -179,7 +179,32 @@ distribution 关系。
 - logical tensor / buffer identity
 - shard / replicate / distribute 关系
 - virtual device axis 绑定
+- logical mesh axis
+  与 tensor axis /
+  phase
+  的关系
+- collective intent
+  的 target-independent
+  形态，
+  例如
+  replicate /
+  shard /
+  reduce /
+  gather
+  需要跨哪些 virtual axis
 - planner 需要持久化的 layout identity
+
+它不编码：
+
+- TT-Metal `MeshDevice`
+- `MeshWorkload`
+- `MeshBuffer`
+- fabric node id
+- physical device coordinate
+
+这些属于
+`TTProgram`
+的 target realization。
 
 ### 3.4 `PhasePlan`
 

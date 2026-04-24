@@ -68,6 +68,22 @@ cross-pass bag
    compatibility payload /
    contract fallback
    这类 semantic recovery residue
+4. direct runtime
+   当前仍只是
+   unit mesh /
+   replicated buffer /
+   copy-GEMM admitted subset，
+   它不能继续被当成
+   codegen/export
+   或 `TTProgram`
+   的能力边界；
+   TT-Metal 自身的
+   `Program / MeshWorkload / MeshBuffer`
+   模型已经覆盖
+   multi-device /
+   sharded /
+   fabric
+   方向
 
 因此这份 root-cause 文档
 必须明确：
@@ -76,6 +92,10 @@ cross-pass bag
   不是根因本体
 - leaf residue
   也不是独立问题
+- direct runtime
+  只是 leaf backend admission，
+  不是 target realization
+  的 owner truth
 - **第一推动错误**
   是 target-independent 的
   spatial/dataflow owner truth
@@ -221,6 +241,24 @@ TT-specific physical realization：
   它们不是 `SpatialPlan`
   或 compute-side legality
   应该承载的语义
+- multi-device /
+  distributed /
+  mesh
+  方向同样属于
+  `SpatialPlan`
+  的 virtual layout /
+  distribution
+  到 `TTProgram`
+  的
+  mesh / device-range /
+  `MeshBuffer`
+  distribution /
+  fabric transport
+  lowering；
+  不能被当前 direct runtime
+  的 `create_unit_mesh(0)`
+  admitted subset
+  反向裁掉
 
 ### 2.4 `ExecutableSpec`
 
@@ -237,6 +275,26 @@ build / codegen / runtime
 
 这条显式链上的结果，
 不能回头恢复 planning 语义。
+
+补充：
+
+- direct runtime
+  的 unsupported reason
+  只说明
+  当前 executable
+  对该 backend
+  未 admission
+- codegen/export
+  可以拥有不同的
+  schema / emitter
+  admission gate
+- 因此
+  “direct runtime 不能跑”
+  不能等价为
+  “TTProgram 不能表达”
+  或
+  “TT-Metal codegen
+   不能生成”
 
 ## 3. 为什么当前代码一定会膨胀
 

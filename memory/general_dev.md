@@ -207,6 +207,33 @@
   flash-attn
   multi-contract
   compile/source baseline
+- direct runtime
+  是 leaf execution backend
+  的 admitted subset，
+  不是 Blackhole
+  codegen/export
+  的能力边界；
+  runtime 工作要拆成
+  TT-Metal
+  `Program / MeshWorkload / MeshBuffer`
+  emission capability、
+  direct-runtime backend admission、
+  硬件/TT-Sim
+  验证 lane
+  三件事。
+  当前 direct runtime
+  若只支持
+  unit mesh /
+  replicated buffer /
+  interleaved DRAM，
+  只能在 backend admission
+  中 fail-close，
+  不能反向裁掉
+  `TTProgram`
+  的 mesh /
+  sharded buffer /
+  fabric
+  表示。
 - exact TT-Metal builtin 选择
   必须发生在 anchored sub-TIR
   仍保留 tile-op / layout / load-store /

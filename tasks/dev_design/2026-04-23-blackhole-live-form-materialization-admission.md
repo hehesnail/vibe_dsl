@@ -91,6 +91,12 @@ Normalized Tile TIR
 - 不新增与
   `SpatialPlan -> TTProgram -> ExecutableSpec`
   并行的 support IR
+- 不把 direct runtime
+  当前 admission subset
+  写成 codegen /
+  export /
+  TT-Metal program emission
+  的能力上限
 
 ## 3. 现状判断
 
@@ -104,6 +110,22 @@ legacy protocol deletion
 
 > **logical value 当前以什么 live form 存在，
 > 以及 consumer 读取它之前是否已经完成 materialization。**
+
+这份文档里的
+admission
+只指 direct runtime
+backend admission。
+schema-complete 的
+`ExecutableSpec`
+仍可以作为
+TT-Metal codegen/export
+输入；
+是否能被 direct runtime
+在当前 unit-mesh subset
+里执行，
+不能反向决定
+`TTProgram`
+是否允许表达该 live form。
 
 早期 build/source baseline
 能够稳定表达若干 fragment / cast / publish
