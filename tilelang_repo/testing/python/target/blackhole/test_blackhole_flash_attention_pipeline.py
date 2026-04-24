@@ -245,6 +245,7 @@ def test_flash_attention_forward_tt_target_emits_tt_program_payload():
 def test_flash_attention_tt_program_projects_two_typed_gemm_compute_ops():
     lowered = _lower_flash_attention_to_tt_target()
     tt_program = require_tt_program(lowered)
+    assert all("compute_ops" not in dict(kernel.payload) for kernel in tt_program.kernels)
 
     gemm_ops = [
         op for op in tt_program.compute_op_plans if str(op.kind) == "gemm"

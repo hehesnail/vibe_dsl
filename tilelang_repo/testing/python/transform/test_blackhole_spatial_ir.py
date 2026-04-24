@@ -29,6 +29,7 @@ from common import (
     fragment_fill_cast_publish_kernel,
     gemm_kernel,
     lower_blackhole_to_tt_target,
+    rebuild_tt_kernel,
     staged_copy_kernel,
 )
 
@@ -300,6 +301,7 @@ def _rebuild_tt_program(
     live_form_plans=None,
     materialization_plans=None,
     consumer_binding_plans=None,
+    kernels=None,
     payload=None,
 ):
     make_tt_program = tvm.get_global_func("tl.TTProgram")
@@ -317,7 +319,7 @@ def _rebuild_tt_program(
         list(program.sync_plans),
         list(program.abi_plans),
         list(program.execution_plans),
-        list(program.kernels),
+        list(program.kernels) if kernels is None else kernels,
         list(program.core_groups),
         list(program.cb_plans) if cb_plans is None else cb_plans,
         list(program.semaphore_plans),
@@ -788,6 +790,7 @@ def test_build_tt_program_exposes_typed_compute_op_plans():
 
     main = mod["main"]
     tt_program = main.attrs["tl.tt_program"]
+    assert all("compute_ops" not in dict(kernel.payload) for kernel in tt_program.kernels)
     assert len(tt_program.compute_op_plans) == 1
     compute_op = tt_program.compute_op_plans[0]
     assert str(compute_op.kind) == "gemm"
@@ -836,6 +839,29 @@ def test_validate_tt_program_rejects_unresolved_unsupported_compute_ops():
     invalid_mod = tvm.IRModule({"main": invalid_main}, global_infos=mod.global_infos)
 
     with pytest.raises(tvm.error.InternalError, match="unsupported_compute_ops remain"):
+        tilelang.transform.ValidateTTProgram()(invalid_mod)
+
+
+def test_validate_tt_program_rejects_kernel_payload_compute_ops():
+    mod = _prepare_blackhole_tt_program_module(gemm_kernel())
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+
+    rebuilt_kernels = []
+    for kernel in tt_program.kernels:
+        payload = dict(kernel.payload)
+        if str(kernel.kind) == "compute" or str(kernel.core_type) == "trisc":
+            payload["compute_ops"] = [{"kind": "gemm"}]
+        rebuilt_kernels.append(rebuild_tt_kernel(kernel, payload=payload))
+
+    invalid_program = _rebuild_tt_program(tt_program, kernels=rebuilt_kernels)
+    invalid_main = main.with_attr("tl.tt_program", invalid_program)
+    invalid_mod = tvm.IRModule({"main": invalid_main}, global_infos=mod.global_infos)
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="TTKernel payload compute_ops was removed",
+    ):
         tilelang.transform.ValidateTTProgram()(invalid_mod)
 
 

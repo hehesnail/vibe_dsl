@@ -314,8 +314,6 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram& program) {
     }
     if (!compute_ops.empty()) {
       segment.Set("compute_ops", compute_ops);
-    } else {
-      CopyPayloadAllowlist(&segment, kernel->payload, {"compute_ops"});
     }
     if (!abi->runtime_args.empty()) {
       segment.Set("runtime_args", abi->runtime_args);

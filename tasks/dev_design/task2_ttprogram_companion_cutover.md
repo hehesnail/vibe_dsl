@@ -417,7 +417,10 @@ typed entries，
 生成
 `KernelSpec.compute_ops`。
 旧 `TTKernel.payload["compute_ops"]`
-只保留 compatibility fallback。
+已删除；
+`ValidateTTProgram`
+必须拒绝该 payload
+重新出现。
 
 ### 3.7 兼容 / realization detail 视图
 

@@ -1044,8 +1044,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   compute-side buffer
   必须来自 typed
   `operand_bindings`，
-  旧 `TTKernel.payload["compute_ops"]`
-  只能是 compatibility fallback。
+  `TTKernel.payload["compute_ops"]`
+  不应存在；
+  projection 只能由
+  `TTComputeOpPlan`
+  生成 leaf
+  `KernelSpec.compute_ops`。
 
 ## 9. 调试模式
 

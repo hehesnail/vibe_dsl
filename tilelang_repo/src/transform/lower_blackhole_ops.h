@@ -90,6 +90,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Get TT ABI plans synthesized during Transform. */
   tvm::ffi::Array<TTABIPlan> GetTTABIPlans() const { return tt_abi_plans_; }
 
+  /*! \brief Get TT compute op plans synthesized during Transform. */
+  tvm::ffi::Array<TTComputeOpPlan> GetTTComputeOpPlans() const { return tt_compute_op_plans_; }
+
   /*! \brief Get TT live-form plans synthesized during Transform. */
   tvm::ffi::Array<TTLiveFormPlan> GetTTLiveFormPlans() const { return tt_live_form_plans_; }
 
@@ -755,6 +758,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::ffi::Array<tvm::ffi::Any> segment_plan_;
   tvm::ffi::Array<TTKernel> tt_kernels_;
   tvm::ffi::Array<TTABIPlan> tt_abi_plans_;
+  tvm::ffi::Array<TTComputeOpPlan> tt_compute_op_plans_;
   tvm::ffi::Array<TTLiveFormPlan> tt_live_form_plans_;
   tvm::ffi::Array<TTMaterializationPlan> tt_materialization_plans_;
   tvm::ffi::Array<TTConsumerBindingPlan> tt_consumer_binding_plans_;

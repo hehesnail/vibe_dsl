@@ -259,6 +259,151 @@ static Map<String, Any> BuildComputeContractPayload(
   return compute_contract;
 }
 
+static String GetStringOrDefault(const Map<String, Any>& dict, const char* key,
+                                 String default_value = String()) {
+  if (auto value = dict.Get(String(key))) {
+    return Downcast<String>(value.value());
+  }
+  return default_value;
+}
+
+static int64_t GetIntegerOrDefault(const Map<String, Any>& dict, const char* key,
+                                   int64_t default_value = 0) {
+  if (auto value = dict.Get(String(key))) {
+    return Downcast<Integer>(value.value())->value;
+  }
+  return default_value;
+}
+
+static bool GetBoolOrDefault(const Map<String, Any>& dict, const char* key,
+                             bool default_value = false) {
+  if (auto value = dict.Get(String(key))) {
+    return Downcast<Bool>(value.value());
+  }
+  return default_value;
+}
+
+static Array<Integer> BuildIntegerArray(std::initializer_list<int64_t> values) {
+  Array<Integer> result;
+  for (int64_t value : values) {
+    result.push_back(Integer(value));
+  }
+  return result;
+}
+
+static Array<String> BuildStringArray(std::initializer_list<const char*> values) {
+  Array<String> result;
+  for (const char* value : values) {
+    result.push_back(String(value));
+  }
+  return result;
+}
+
+static int64_t GetGemmTileDim(const Map<String, Any>& op, const char* tile_key,
+                              const char* dim_key) {
+  int64_t value = GetIntegerOrDefault(op, tile_key, 0);
+  if (value > 0) {
+    return value;
+  }
+  const int64_t dim = GetIntegerOrDefault(op, dim_key, 0);
+  return dim > 0 ? dim / 32 : 0;
+}
+
+static String ResolveComputeOperandHostBuffer(
+    const std::unordered_map<std::string, std::string>& host_buffer_by_operand,
+    const String& buffer) {
+  const std::string buffer_name = static_cast<std::string>(buffer);
+  auto it = host_buffer_by_operand.find(buffer_name);
+  if (it != host_buffer_by_operand.end() && !it->second.empty()) {
+    return String(it->second);
+  }
+  return buffer;
+}
+
+static TTComputeOperandBindingPlan BuildComputeOperandBindingPlanFromContract(
+    const Map<String, Any>& op,
+    const std::unordered_map<std::string, std::string>& host_buffer_by_operand,
+    const char* role, const char* field) {
+  const String buffer = GetStringOrDefault(op, field, String());
+  const String host_buffer = ResolveComputeOperandHostBuffer(host_buffer_by_operand, buffer);
+  const std::string role_string(role);
+  const std::string tensor_dtype_key = role_string + "_tensor_dtype";
+  const std::string cb_dtype_key = role_string + "_cb_dtype";
+  const bool transpose =
+      (role_string == "a" && GetBoolOrDefault(op, "transpose_A", false)) ||
+      (role_string == "b" && GetBoolOrDefault(op, "transpose_B", false));
+
+  Map<String, Any> payload;
+  payload.Set("role", String(role));
+  payload.Set("buffer", buffer);
+  payload.Set("host_buffer", host_buffer);
+  return TTComputeOperandBindingPlan(
+      String(role), buffer, host_buffer, GetStringOrDefault(op, tensor_dtype_key.c_str(), String()),
+      GetStringOrDefault(op, cb_dtype_key.c_str(), String()),
+      String(transpose ? "transpose" : "identity"), payload);
+}
+
+static TTComputeOpPlan BuildTTComputeOpPlanFromContract(
+    const Map<String, Any>& op,
+    const std::unordered_map<std::string, std::string>& host_buffer_by_operand,
+    const String& kernel_name, int64_t kernel_plan_index, int64_t ordinal) {
+  const String kind = GetStringOrDefault(op, "kind", String("unknown"));
+  Array<TTComputeOperandBindingPlan> operand_bindings;
+  const TTComputeOperandBindingPlan a_binding =
+      BuildComputeOperandBindingPlanFromContract(op, host_buffer_by_operand, "a", "a_buffer");
+  const TTComputeOperandBindingPlan b_binding =
+      BuildComputeOperandBindingPlanFromContract(op, host_buffer_by_operand, "b", "b_buffer");
+  const TTComputeOperandBindingPlan c_binding =
+      BuildComputeOperandBindingPlanFromContract(op, host_buffer_by_operand, "c", "c_buffer");
+  operand_bindings.push_back(a_binding);
+  operand_bindings.push_back(b_binding);
+  operand_bindings.push_back(c_binding);
+
+  Array<String> problem_shape_axes;
+  Array<Integer> problem_shape;
+  Array<Integer> tile_shape;
+  Array<Integer> block_shape;
+  Array<Integer> subblock_shape;
+  if (kind == "gemm") {
+    const int64_t m = GetIntegerOrDefault(op, "M", 0);
+    const int64_t n = GetIntegerOrDefault(op, "N", 0);
+    const int64_t k = GetIntegerOrDefault(op, "K", 0);
+    const int64_t mt = GetGemmTileDim(op, "Mt", "M");
+    const int64_t nt = GetGemmTileDim(op, "Nt", "N");
+    const int64_t kt = GetGemmTileDim(op, "Kt", "K");
+    problem_shape_axes = BuildStringArray({"M", "N", "K"});
+    problem_shape = BuildIntegerArray({m, n, k});
+    tile_shape = BuildIntegerArray({mt, nt, kt});
+    block_shape = BuildIntegerArray({GetIntegerOrDefault(op, "block_m_tiles", mt),
+                                     GetIntegerOrDefault(op, "block_n_tiles", nt),
+                                     GetIntegerOrDefault(op, "block_k_tiles", kt)});
+    subblock_shape = BuildIntegerArray({GetIntegerOrDefault(op, "subblock_m_tiles", mt),
+                                        GetIntegerOrDefault(op, "subblock_n_tiles", nt)});
+  }
+
+  Array<String> mbarrier_index_exprs;
+  if (auto value = op.Get(String("mbarrier_index_exprs"))) {
+    for (const Any& expr : Downcast<Array<Any>>(value.value())) {
+      mbarrier_index_exprs.push_back(Downcast<String>(expr));
+    }
+  }
+
+  Map<String, Any> payload = op;
+  payload.Set("a_buffer", a_binding->host_buffer);
+  payload.Set("b_buffer", b_binding->host_buffer);
+  payload.Set("c_buffer", c_binding->host_buffer);
+  payload.Set("has_mbarrier", Bool(!GetStringOrDefault(op, "mbarrier_buffer", String()).empty()));
+
+  const std::string name = "compute_op_" + static_cast<std::string>(kernel_name) + "_" +
+                           std::to_string(ordinal);
+  return TTComputeOpPlan(
+      String(name), kernel_name, kernel_plan_index, kind, GetBoolOrDefault(op, "enabled", true),
+      operand_bindings, problem_shape_axes, problem_shape, tile_shape, block_shape,
+      subblock_shape, GetStringOrDefault(op, "accumulator_dtype", String()),
+      GetStringOrDefault(op, "mbarrier_buffer", String()),
+      GetStringOrDefault(op, "mbarrier_scope", String()), mbarrier_index_exprs, payload);
+}
+
 static Map<String, Any> MakeComputeEpilogueOpPayload(const char* kind,
                                                      const std::string& dst_buffer) {
   Map<String, Any> op_payload;
@@ -2671,6 +2816,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   multi_gemm_contract_payloads_.clear();
   multi_compute_contract_payloads_.clear();
   compute_epilogue_payloads_.clear();
+  tt_compute_op_plans_.clear();
   active_compute_contract_payload_index_ = -1;
   compute_epilogue_payloads_flat_.clear();
   buffer_tile_bridge_specs_by_buffer_.clear();
@@ -3175,62 +3321,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
     compute_config.Set("policy_type", Integer(gemm_policy_type_));
     compute_config.Set("policy_name", String(GemmWarpPolicyTypeToStringForBlackhole(gemm_policy_type_)));
     return compute_config;
-  };
-
-  auto make_gemm_compute_op = [&](const std::string& a_buffer,
-                                  const std::string& b_buffer,
-                                  const std::string& c_buffer,
-                                  const std::string& a_host_buffer,
-                                  const std::string& b_host_buffer,
-                                  const std::string& c_host_buffer) -> Map<String, Any> {
-    Map<String, Any> gemm_compute;
-    gemm_compute.Set("enabled", Bool(true));
-    gemm_compute.Set("kind", String("gemm"));
-    gemm_compute.Set("a_buffer", String(a_host_buffer));
-    gemm_compute.Set("b_buffer", String(b_host_buffer));
-    gemm_compute.Set("c_buffer", String(c_host_buffer));
-    Array<Any> operand_bindings;
-    auto push_operand_binding = [&](const std::string& role, const std::string& buffer,
-                                    const std::string& host_buffer) {
-      Map<String, Any> binding;
-      binding.Set("role", String(role));
-      binding.Set("buffer", String(buffer));
-      binding.Set("host_buffer", String(host_buffer));
-      operand_bindings.push_back(binding);
-    };
-    push_operand_binding("a", a_buffer, a_host_buffer);
-    push_operand_binding("b", b_buffer, b_host_buffer);
-    push_operand_binding("c", c_buffer, c_host_buffer);
-    gemm_compute.Set("operand_bindings", operand_bindings);
-    gemm_compute.Set("M", Integer(gemm_m_));
-    gemm_compute.Set("N", Integer(gemm_n_));
-    gemm_compute.Set("K", Integer(gemm_k_));
-    gemm_compute.Set("Mt", Integer(gemm_m_ / kBlackholeTileRows));
-    gemm_compute.Set("Nt", Integer(gemm_n_ / kBlackholeTileCols));
-    gemm_compute.Set("Kt", Integer(gemm_k_ / kBlackholeTileCols));
-    gemm_compute.Set("block_m_tiles", Integer(gemm_m_ / kBlackholeTileRows));
-    gemm_compute.Set("block_n_tiles", Integer(gemm_n_ / kBlackholeTileCols));
-    gemm_compute.Set("block_k_tiles", Integer(gemm_k_ / kBlackholeTileCols));
-    gemm_compute.Set("subblock_m_tiles", Integer(gemm_m_ / kBlackholeTileRows));
-    gemm_compute.Set("subblock_n_tiles", Integer(gemm_n_ / kBlackholeTileCols));
-    gemm_compute.Set("transpose_A", Bool(gemm_transpose_a_));
-    gemm_compute.Set("transpose_B", Bool(gemm_transpose_b_));
-    gemm_compute.Set("a_tensor_dtype", String(DataTypeToDataFormatForBlackhole(gemm_a_dtype_)));
-    gemm_compute.Set("b_tensor_dtype", String(DataTypeToDataFormatForBlackhole(gemm_b_dtype_)));
-    gemm_compute.Set("c_tensor_dtype", String(DataTypeToDataFormatForBlackhole(gemm_c_dtype_)));
-    gemm_compute.Set("a_cb_dtype", String(DataTypeToDataFormatForBlackhole(gemm_a_dtype_)));
-    gemm_compute.Set("b_cb_dtype", String(DataTypeToDataFormatForBlackhole(gemm_b_dtype_)));
-    gemm_compute.Set("c_cb_dtype", String(DataTypeToDataFormatForBlackhole(gemm_c_dtype_)));
-    gemm_compute.Set("accumulator_dtype", String("Float32"));
-    gemm_compute.Set("has_mbarrier", Bool(!gemm_mbarrier_buffer_name_.empty()));
-    gemm_compute.Set("mbarrier_buffer", String(gemm_mbarrier_buffer_name_));
-    gemm_compute.Set("mbarrier_scope", String(gemm_mbarrier_scope_));
-    Array<Any> mbarrier_index_exprs;
-    for (const std::string& expr : gemm_mbarrier_index_exprs_) {
-      mbarrier_index_exprs.push_back(String(expr));
-    }
-    gemm_compute.Set("mbarrier_index_exprs", mbarrier_index_exprs);
-    return gemm_compute;
   };
 
   auto make_launch_spec = [](const std::string& core_type) -> Map<String, Any> {
@@ -3748,33 +3838,38 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
       segment.Set("common_runtime_args", EncodeCommonRuntimeArgs(kind));
       rewritten_segments.push_back(segment);
     }
-    if (gemm_contract_signatures_.size() == 1) {
-      Array<Any> segments_with_compute_ops;
-      for (const auto& item : rewritten_segments) {
-        auto segment = item.as<Map<String, Any>>().value_or(Map<String, Any>());
-        if (segment.empty()) {
-          segments_with_compute_ops.push_back(item);
-          continue;
-        }
-        const std::string kind =
-            segment.Get("kind")
-                ? static_cast<std::string>(Downcast<String>(segment.Get("kind").value()))
-                : std::string();
-        if (kind == "compute") {
-          Array<Any> compute_ops;
-          compute_ops.push_back(make_gemm_compute_op(
-              gemm_a_buffer_name_, gemm_b_buffer_name_, gemm_c_buffer_name_,
-              ResolveHostBufferForComputeOperand(gemm_a_buffer_),
-              ResolveHostBufferForComputeOperand(gemm_b_buffer_),
-              ResolveHostBufferForComputeOperand(gemm_c_buffer_)));
-          segment.Set("compute_ops", compute_ops);
-        }
-        segments_with_compute_ops.push_back(segment);
-      }
-      rewritten_segments = segments_with_compute_ops;
-    }
     segment_plan_ = rewritten_segments;
     FinalizeMaterializationPlanHostBuffers();
+    String compute_kernel_name;
+    for (const Any& item : segment_plan_) {
+      auto segment = item.as<Map<String, Any>>().value_or(Map<String, Any>());
+      if (segment.empty()) {
+        continue;
+      }
+      const std::string kind =
+          segment.Get("kind") ? static_cast<std::string>(Downcast<String>(segment.Get("kind").value()))
+                              : std::string();
+      const std::string core_type =
+          segment.Get("core_type")
+              ? static_cast<std::string>(Downcast<String>(segment.Get("core_type").value()))
+              : std::string();
+      if (kind == "compute" || core_type == "trisc") {
+        compute_kernel_name =
+            segment.Get("name") ? Downcast<String>(segment.Get("name").value()) : String("compute");
+        break;
+      }
+    }
+    tt_compute_op_plans_.clear();
+    if (!multi_compute_contract_payloads_.empty()) {
+      ICHECK(!compute_kernel_name.empty())
+          << "PlanTTKernelABI produced compute contracts without a compute kernel segment";
+      int64_t ordinal = 0;
+      for (const auto& contract : multi_compute_contract_payloads_) {
+        tt_compute_op_plans_.push_back(BuildTTComputeOpPlanFromContract(
+            contract, host_buffer_by_compute_operand_buffer_, compute_kernel_name,
+            /*kernel_plan_index=*/-1, ordinal++));
+      }
+    }
     BuildTTKernelAndABISeeds(segment_plan_, &tt_kernels_, &tt_abi_plans_);
     FinalizeConsumerBindingABIIndices();
   }

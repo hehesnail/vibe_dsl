@@ -185,22 +185,6 @@ def _rebuild_codegen_module_with_compute_overrides(artifact, compute_overrides):
                         value = compute_overrides[key]
                         compute_config[key] = list(value) if isinstance(value, list) else value
                 kernel_payload["compute_config"] = compute_config
-                if "compute_ops" in kernel_payload:
-                    compute_ops = []
-                    for compute_op in kernel_payload["compute_ops"]:
-                        compute_op = dict(compute_op)
-                        if str(compute_op.get("kind", "")) == "gemm":
-                            for key in (
-                                "has_mbarrier",
-                                "mbarrier_buffer",
-                                "mbarrier_scope",
-                                "mbarrier_index_exprs",
-                            ):
-                                if key in compute_overrides:
-                                    value = compute_overrides[key]
-                                    compute_op[key] = list(value) if isinstance(value, list) else value
-                        compute_ops.append(compute_op)
-                    kernel_payload["compute_ops"] = compute_ops
             rebuilt_kernels.append(rebuild_tt_kernel(kernel, payload=kernel_payload))
         for compute_op in tt_program.compute_op_plans:
             op_payload = dict(compute_op.payload)

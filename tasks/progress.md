@@ -23,6 +23,7 @@
 - `P1 SpatialPlan live/materialization refinement`: completed
 - `P1 TTProgram mesh/buffer distribution schema`: completed
 - `P1 compute-kind extension`: completed
+- `P1 TTKernel compute_ops payload removal`: completed
 - `P1/P2 workload payoff`: next
 
 ## Open Debt
@@ -34,10 +35,10 @@
 
 ## Latest Verification
 
-P1 compute-kind extension:
+P1 compute-kind owner-truth cleanup:
 
 - `cmake --build build -j32`
-- SpatialPlan/TTProgram schema: `24 passed`
+- SpatialPlan/TTProgram schema: `25 passed`
 - GEMM/materialization target pipeline: `43 passed, 16 skipped`
 - copy pipeline: `51 passed, 10 skipped, 1 xfailed`
 - flash pipeline: `65 passed`
