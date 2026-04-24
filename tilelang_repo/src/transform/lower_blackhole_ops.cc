@@ -943,17 +943,21 @@ static Map<String, Any> MakeCompileTimeArgSpec(const std::string& name,
 }
 
 static Map<String, Any> MakePerWorkArgSpec(const std::string& arg_kind,
+                                           const std::string& arg_identity,
+                                           const std::string& descriptor_kind,
                                            const std::string& value_kind,
+                                           const std::string& value_source,
                                            const std::string& buffer = "",
                                            uint32_t constant_value = 0) {
   Map<String, Any> spec;
   spec.Set(String(blackhole_runtime_arg_schema::kArgKind), String(arg_kind));
-  spec.Set(String(blackhole_runtime_arg_schema::kArgIdentity),
-           String(MakeBlackholeRuntimeArgIdentity(arg_kind, arg_kind, buffer)));
+  spec.Set(String(blackhole_runtime_arg_schema::kArgIdentity), String(arg_identity));
   if (!buffer.empty()) {
     spec.Set(String(blackhole_runtime_arg_schema::kBuffer), String(buffer));
   }
+  spec.Set(String(blackhole_runtime_arg_schema::kDescriptorKind), String(descriptor_kind));
   spec.Set(String(blackhole_runtime_arg_schema::kValueKind), String(value_kind));
+  spec.Set(String(blackhole_runtime_arg_schema::kValueSource), String(value_source));
   if (value_kind == blackhole_runtime_arg_schema::kValueConstant) {
     spec.Set(String(blackhole_runtime_arg_schema::kConstantValue),
              Integer(static_cast<int64_t>(constant_value)));
@@ -3357,24 +3361,35 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         copy_output_buffer_.defined() ? BufferIdentityName(copy_output_buffer_)
                                       : copy_output_buffer_name_;
 
-    auto runtime_args_contain_kind = [&](const char* arg_kind) {
-      return std::any_of(runtime_args.begin(), runtime_args.end(), [&](const Any& arg_item) {
+    auto runtime_arg_identity_for_kind = [&](const char* arg_kind) -> std::string {
+      for (const Any& arg_item : runtime_args) {
         auto arg = arg_item.as<Map<String, Any>>().value_or(Map<String, Any>());
-        return arg.Get("kind") &&
-               static_cast<std::string>(Downcast<String>(arg.Get("kind").value())) == arg_kind;
-      });
-    };
-    auto upsert_spec = [&](const Map<String, Any>& spec) {
-      const std::string arg_kind = static_cast<std::string>(
-          Downcast<String>(spec.Get(String(blackhole_runtime_arg_schema::kArgKind)).value()));
-      for (int i = 0; i < per_work_arg_specs.size(); ++i) {
-        auto existing = per_work_arg_specs[i].as<Map<String, Any>>().value_or(Map<String, Any>());
-        if (existing.empty() || !existing.Get(String(blackhole_runtime_arg_schema::kArgKind))) {
+        if (!arg.Get("kind") ||
+            static_cast<std::string>(Downcast<String>(arg.Get("kind").value())) != arg_kind) {
           continue;
         }
-        const std::string existing_arg_kind = static_cast<std::string>(Downcast<String>(
-            existing.Get(String(blackhole_runtime_arg_schema::kArgKind)).value()));
-        if (existing_arg_kind == arg_kind) {
+        if (auto identity = arg.Get("identity")) {
+          return Downcast<String>(identity.value());
+        }
+        return MakeBlackholeRuntimeArgIdentity(arg_kind, arg_kind);
+      }
+      return "";
+    };
+    auto runtime_args_contain_kind = [&](const char* arg_kind) {
+      return !runtime_arg_identity_for_kind(arg_kind).empty();
+    };
+    auto upsert_spec = [&](const Map<String, Any>& spec) {
+      const std::string arg_identity = static_cast<std::string>(
+          Downcast<String>(spec.Get(String(blackhole_runtime_arg_schema::kArgIdentity)).value()));
+      for (int i = 0; i < per_work_arg_specs.size(); ++i) {
+        auto existing = per_work_arg_specs[i].as<Map<String, Any>>().value_or(Map<String, Any>());
+        if (existing.empty() ||
+            !existing.Get(String(blackhole_runtime_arg_schema::kArgIdentity))) {
+          continue;
+        }
+        const std::string existing_arg_identity = static_cast<std::string>(Downcast<String>(
+            existing.Get(String(blackhole_runtime_arg_schema::kArgIdentity)).value()));
+        if (existing_arg_identity == arg_identity) {
           per_work_arg_specs.Set(i, spec);
           return;
         }
@@ -3385,91 +3400,142 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
     if (kind == "fused_dataflow") {
       if (runtime_args_contain_kind("a_tile_start_id")) {
         upsert_spec(MakePerWorkArgSpec(
-            "a_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
+            "a_tile_start_id", runtime_arg_identity_for_kind("a_tile_start_id"),
+            blackhole_runtime_arg_schema::kDescriptorTileStart,
+            blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
+            blackhole_runtime_arg_schema::kValueSourceWorkLinearId,
             copy_input_buffer_name));
       }
       if (runtime_args_contain_kind("a_tile_num_tiles")) {
         upsert_spec(MakePerWorkArgSpec(
-            "a_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant,
+            "a_tile_num_tiles", runtime_arg_identity_for_kind("a_tile_num_tiles"),
+            blackhole_runtime_arg_schema::kDescriptorTileCount,
+            blackhole_runtime_arg_schema::kValueConstant,
+            blackhole_runtime_arg_schema::kValueSourceConstant,
             copy_input_buffer_name, 1));
       }
       if (runtime_args_contain_kind("a_tile_stride")) {
         upsert_spec(MakePerWorkArgSpec(
-            "a_tile_stride", blackhole_runtime_arg_schema::kValueConstant,
+            "a_tile_stride", runtime_arg_identity_for_kind("a_tile_stride"),
+            blackhole_runtime_arg_schema::kDescriptorTileStride,
+            blackhole_runtime_arg_schema::kValueConstant,
+            blackhole_runtime_arg_schema::kValueSourceConstant,
             copy_input_buffer_name, 1));
       }
       if (runtime_args_contain_kind("output_tile_start_id")) {
         upsert_spec(MakePerWorkArgSpec(
-            "output_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
+            "output_tile_start_id", runtime_arg_identity_for_kind("output_tile_start_id"),
+            blackhole_runtime_arg_schema::kDescriptorTileStart,
+            blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
+            blackhole_runtime_arg_schema::kValueSourceWorkLinearId,
             copy_output_buffer_name));
       }
       if (runtime_args_contain_kind("output_tile_num_tiles")) {
         upsert_spec(MakePerWorkArgSpec(
-            "output_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant,
+            "output_tile_num_tiles", runtime_arg_identity_for_kind("output_tile_num_tiles"),
+            blackhole_runtime_arg_schema::kDescriptorTileCount,
+            blackhole_runtime_arg_schema::kValueConstant,
+            blackhole_runtime_arg_schema::kValueSourceConstant,
             copy_output_buffer_name, 1));
       }
       if (runtime_args_contain_kind("output_tile_stride")) {
         upsert_spec(MakePerWorkArgSpec(
-            "output_tile_stride", blackhole_runtime_arg_schema::kValueConstant,
+            "output_tile_stride", runtime_arg_identity_for_kind("output_tile_stride"),
+            blackhole_runtime_arg_schema::kDescriptorTileStride,
+            blackhole_runtime_arg_schema::kValueConstant,
+            blackhole_runtime_arg_schema::kValueSourceConstant,
             copy_output_buffer_name, 1));
       }
     }
     if (kind == "reader") {
       if (runtime_args_contain_kind("a_tile_start_id")) {
         upsert_spec(MakePerWorkArgSpec(
-            "a_tile_start_id", blackhole_runtime_arg_schema::kValueLogicalBlockY,
+            "a_tile_start_id", runtime_arg_identity_for_kind("a_tile_start_id"),
+            blackhole_runtime_arg_schema::kDescriptorTileStart,
+            blackhole_runtime_arg_schema::kValueLogicalBlockY,
+            blackhole_runtime_arg_schema::kValueSourceLogicalBlockY,
             gemm_a_buffer_name_));
       }
       if (runtime_args_contain_kind("a_tile_num_tiles")) {
         upsert_spec(MakePerWorkArgSpec(
-            "a_tile_num_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles,
+            "a_tile_num_tiles", runtime_arg_identity_for_kind("a_tile_num_tiles"),
+            blackhole_runtime_arg_schema::kDescriptorTileCount,
+            blackhole_runtime_arg_schema::kValueGemmNumKTiles,
+            blackhole_runtime_arg_schema::kValueSourceComputeNumKTiles,
             gemm_a_buffer_name_));
       }
       if (runtime_args_contain_kind("a_tile_stride")) {
         upsert_spec(MakePerWorkArgSpec(
-            "a_tile_stride", blackhole_runtime_arg_schema::kValueConstant, gemm_a_buffer_name_,
+            "a_tile_stride", runtime_arg_identity_for_kind("a_tile_stride"),
+            blackhole_runtime_arg_schema::kDescriptorTileStride,
+            blackhole_runtime_arg_schema::kValueConstant,
+            blackhole_runtime_arg_schema::kValueSourceConstant, gemm_a_buffer_name_,
             1));
       }
       if (runtime_args_contain_kind("b_tile_start_id")) {
         upsert_spec(MakePerWorkArgSpec(
-            "b_tile_start_id", blackhole_runtime_arg_schema::kValueLogicalBlockX,
+            "b_tile_start_id", runtime_arg_identity_for_kind("b_tile_start_id"),
+            blackhole_runtime_arg_schema::kDescriptorTileStart,
+            blackhole_runtime_arg_schema::kValueLogicalBlockX,
+            blackhole_runtime_arg_schema::kValueSourceLogicalBlockX,
             gemm_b_buffer_name_));
       }
       if (runtime_args_contain_kind("b_tile_num_tiles")) {
         upsert_spec(MakePerWorkArgSpec(
-            "b_tile_num_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles,
+            "b_tile_num_tiles", runtime_arg_identity_for_kind("b_tile_num_tiles"),
+            blackhole_runtime_arg_schema::kDescriptorTileCount,
+            blackhole_runtime_arg_schema::kValueGemmNumKTiles,
+            blackhole_runtime_arg_schema::kValueSourceComputeNumKTiles,
             gemm_b_buffer_name_));
       }
       if (runtime_args_contain_kind("b_tile_stride")) {
         upsert_spec(MakePerWorkArgSpec(
-            "b_tile_stride", blackhole_runtime_arg_schema::kValueGemmLogicalNTiles,
+            "b_tile_stride", runtime_arg_identity_for_kind("b_tile_stride"),
+            blackhole_runtime_arg_schema::kDescriptorTileStride,
+            blackhole_runtime_arg_schema::kValueGemmLogicalNTiles,
+            blackhole_runtime_arg_schema::kValueSourceComputeLogicalNTiles,
             gemm_b_buffer_name_));
       }
     }
     if (kind == "reader" || kind == "compute") {
       if (runtime_args_contain_kind("k_tile_start_id")) {
         upsert_spec(MakePerWorkArgSpec(
-            "k_tile_start_id", blackhole_runtime_arg_schema::kValueConstant, "", 0));
+            "k_tile_start_id", runtime_arg_identity_for_kind("k_tile_start_id"),
+            blackhole_runtime_arg_schema::kDescriptorKTileStart,
+            blackhole_runtime_arg_schema::kValueConstant,
+            blackhole_runtime_arg_schema::kValueSourceConstant, "", 0));
       }
       if (runtime_args_contain_kind("num_k_tiles")) {
         upsert_spec(MakePerWorkArgSpec(
-            "num_k_tiles", blackhole_runtime_arg_schema::kValueGemmNumKTiles));
+            "num_k_tiles", runtime_arg_identity_for_kind("num_k_tiles"),
+            blackhole_runtime_arg_schema::kDescriptorKTileCount,
+            blackhole_runtime_arg_schema::kValueGemmNumKTiles,
+            blackhole_runtime_arg_schema::kValueSourceComputeNumKTiles));
       }
     }
     if (kind == "writer") {
       if (runtime_args_contain_kind("output_tile_start_id")) {
         upsert_spec(MakePerWorkArgSpec(
-            "output_tile_start_id", blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
+            "output_tile_start_id", runtime_arg_identity_for_kind("output_tile_start_id"),
+            blackhole_runtime_arg_schema::kDescriptorTileStart,
+            blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
+            blackhole_runtime_arg_schema::kValueSourceWorkLinearId,
             gemm_c_buffer_name_));
       }
       if (runtime_args_contain_kind("output_tile_num_tiles")) {
         upsert_spec(MakePerWorkArgSpec(
-            "output_tile_num_tiles", blackhole_runtime_arg_schema::kValueConstant,
+            "output_tile_num_tiles", runtime_arg_identity_for_kind("output_tile_num_tiles"),
+            blackhole_runtime_arg_schema::kDescriptorTileCount,
+            blackhole_runtime_arg_schema::kValueConstant,
+            blackhole_runtime_arg_schema::kValueSourceConstant,
             gemm_c_buffer_name_, 1));
       }
       if (runtime_args_contain_kind("output_tile_stride")) {
         upsert_spec(MakePerWorkArgSpec(
-            "output_tile_stride", blackhole_runtime_arg_schema::kValueConstant,
+            "output_tile_stride", runtime_arg_identity_for_kind("output_tile_stride"),
+            blackhole_runtime_arg_schema::kDescriptorTileStride,
+            blackhole_runtime_arg_schema::kValueConstant,
+            blackhole_runtime_arg_schema::kValueSourceConstant,
             gemm_c_buffer_name_, 1));
       }
     }

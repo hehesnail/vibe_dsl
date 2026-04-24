@@ -1705,49 +1705,44 @@ static DirectRuntimeWorkContext BuildDirectRuntimeWorkContext(const KernelSpec& 
 
 static const PerWorkArgSpec* FindPerWorkArgSpec(const std::vector<PerWorkArgSpec>& per_work_arg_specs,
                                                 const KernelArgSpec& arg_spec) {
-  if (!arg_spec.identity.empty()) {
-    auto it = std::find_if(
-        per_work_arg_specs.begin(), per_work_arg_specs.end(),
-        [&](const PerWorkArgSpec& spec) { return spec.arg_identity == arg_spec.identity; });
-    if (it != per_work_arg_specs.end()) {
-      return &(*it);
-    }
-  }
+  ICHECK(!arg_spec.identity.empty())
+      << "Blackhole direct runtime per-work binding requires runtime arg identity for "
+      << arg_spec.name << " kind=" << arg_spec.kind;
   auto it = std::find_if(per_work_arg_specs.begin(), per_work_arg_specs.end(),
                          [&](const PerWorkArgSpec& spec) {
-                           return spec.arg_kind == arg_spec.kind;
+                           return spec.arg_identity == arg_spec.identity;
                          });
   return it == per_work_arg_specs.end() ? nullptr : &(*it);
 }
 
 static uint32_t EvaluatePerWorkArgSpec(const PerWorkArgSpec& spec,
                                        const DirectRuntimeWorkContext& context) {
-  if (spec.value_kind == tl::blackhole_runtime_arg_schema::kValueCurrentWorkLinearId) {
+  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceWorkLinearId) {
     return context.work_linear_id;
   }
-  if (spec.value_kind == tl::blackhole_runtime_arg_schema::kValueLogicalBlockX) {
+  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockX) {
     return context.bx;
   }
-  if (spec.value_kind == tl::blackhole_runtime_arg_schema::kValueLogicalBlockY) {
+  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockY) {
     return context.by;
   }
-  if (spec.value_kind == tl::blackhole_runtime_arg_schema::kValueGemmNumKTiles) {
+  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceComputeNumKTiles) {
     ICHECK(context.has_gemm_compute_op)
         << "Blackhole direct runtime per_work_arg_spec requires GEMM compute_op for "
-        << spec.arg_kind;
+        << spec.arg_identity;
     return context.num_k_tiles;
   }
-  if (spec.value_kind == tl::blackhole_runtime_arg_schema::kValueGemmLogicalNTiles) {
+  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceComputeLogicalNTiles) {
     ICHECK(context.has_gemm_compute_op)
         << "Blackhole direct runtime per_work_arg_spec requires GEMM compute_op for "
-        << spec.arg_kind;
+        << spec.arg_identity;
     return context.logical_n_tiles;
   }
-  if (spec.value_kind == tl::blackhole_runtime_arg_schema::kValueConstant) {
+  if (spec.value_source == tl::blackhole_runtime_arg_schema::kValueSourceConstant) {
     return spec.constant_value;
   }
-  LOG(FATAL) << "Unsupported Blackhole per_work_arg_spec value_kind " << spec.value_kind
-             << " for arg " << spec.arg_kind;
+  LOG(FATAL) << "Unsupported Blackhole per_work_arg_spec value_source " << spec.value_source
+             << " for arg " << spec.arg_identity;
   return 0;
 }
 

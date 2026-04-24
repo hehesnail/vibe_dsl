@@ -244,7 +244,9 @@ class CodeGenBlackhole : public CodeGenCHost {
 
   struct PerWorkArgSpecBinding {
     std::string arg_identity;
+    std::string descriptor_kind;
     std::string value_kind;
+    std::string value_source;
     uint32_t constant_value{0};
   };
 
@@ -268,8 +270,10 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_map<const tvm::tir::VarNode *, std::string> buffer_runtime_arg_map_;
   std::unordered_map<std::string, std::string> buffer_runtime_arg_map_by_name_;
   std::unordered_map<std::string, std::string> runtime_arg_vars_by_kind_;
+  std::unordered_map<std::string, std::string> runtime_arg_vars_by_identity_;
   std::unordered_map<std::string, std::string> runtime_arg_vars_by_name_;
-  std::unordered_map<std::string, PerWorkArgSpecBinding> per_work_arg_bindings_by_kind_;
+  std::unordered_map<std::string, PerWorkArgSpecBinding> per_work_arg_bindings_by_identity_;
+  std::vector<PerWorkArgSpecBinding> per_work_arg_bindings_;
   std::unordered_map<int, int> cb_page_size_by_id_;
   std::unordered_map<int, int> cb_num_pages_by_id_;
   std::unordered_map<std::string, int> cb_id_by_requirement_name_;

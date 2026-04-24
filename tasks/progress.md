@@ -7,8 +7,8 @@
 
 - Date: `2026-04-24`
 - Active lane: `public specialization residue cleanup`
-- Current blocker: none after P0.3; next active risk is P0.4 per-work descriptor still using arg-kind owner truth
-- Active item: `P0.4 typed per-work descriptor`
+- Current blocker: none after P0.4; next active risk is P0.5 materialization host/layout fallback
+- Active item: `P0.5 materialization host/layout binding`
 - Broad state:
   - Main layered chain is fixed as `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
   - Cleanup task0-task5 broad legacy protocol convergence is complete
@@ -32,13 +32,12 @@
    - Verification: build, copy pipeline, GEMM, spatial/flash/export, selected TT-Sim copy/common-buffer/GEMM
 
 4. `P0.4 typed per-work descriptor`
-   - Status: `active`
-   - Goal: stop treating `a_tile_start_id` / `b_tile_start_id` / `output_tile_start_id` / `gemm_num_k_tiles` arg-kind names as long-term owner truth
-   - Replacement: typed value expressions tied to core plan, compute op dims, and access pattern
-   - Gate: runtime/codegen must stop deriving block axes from arg-kind priority
+   - Status: `completed`
+   - Result: per-work descriptors now carry typed `descriptor_kind` / `value_source` / `arg_identity`; runtime/codegen consume identity + typed source instead of arg-kind fallback
+   - Verification: build, copy pipeline, flash pipeline/runtime, GEMM/copy selected TT-Sim
 
 5. `P0.5 materialization host/layout binding`
-   - Status: `pending`
+   - Status: `active`
    - Goal: remove `_local` suffix, single-output fallback, and shape heuristics from materialization host/layout binding
    - Replacement: explicit `TTMaterializationPlan` / `ExecutableSpec` host binding and layout/axis truth
 
@@ -62,7 +61,6 @@
 ## Remaining Debt
 
 - `tl.blackhole_logical_buffer_tile_bridge_specs` remains the only narrow bridge attr
-- `per_work_arg_specs` still exposes arg-kind-named descriptors until P0.4 completes
 - Materialization host/layout binding still has suffix / fallback / heuristic residue until P0.5 completes
 - Some projection paths still use typed-node `payload` as construction seed until P0.6 completes
 - Flash-attn compile/source/spec baseline is stable; direct runtime correctness is not yet admitted support surface
@@ -73,9 +71,9 @@
   `BuildSpatialPlan -> ValidateSpatialPlan -> SplitBlackholeKernel -> CaptureBlackholeLogicalBridgeSpecs -> PlanTTBlocks -> SelectBlackholeTTMetalBuiltins -> PlanTTCompute/PlanTTTransport/PlanTTSync/PlanTTABI/PlanTTExecution -> BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable`
 - Direct runtime admitted support:
   copy equal range stride-1; GEMM A/B-separated reader + writer output; interleaved DRAM accessors with no common runtime accessor args; non-oversubscribed explicit semaphore / remote endpoint subset; admitted bf16 materialization paths documented in the design docs
-- Latest P0.3 verification:
+- Latest P0.4 verification:
   - `cmake --build build -j32`
   - `pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
-  - `pytest -q testing/python/target/blackhole/test_blackhole_gemm.py`
-  - `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
-  - TT-Sim selected: `test_blackhole_module_direct_call`, `test_blackhole_copy_direct_runtime_materializes_shared_common_runtime_buffer_args`, `test_blackhole_gemm_direct_runtime_uses_typed_compute_ops_without_contract_family`
+  - `pytest -q testing/python/target/blackhole/test_blackhole_gemm.py testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
+  - `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`
+  - TT-Sim selected: `test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch`, `test_blackhole_module_direct_call_accepts_richer_copy_schema_with_explicit_per_work_spec`, `test_blackhole_gemm_direct_runtime_uses_typed_compute_ops_without_contract_family`

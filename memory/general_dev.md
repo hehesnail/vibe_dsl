@@ -121,6 +121,28 @@
   缺失或不一致应在 codegen /
   direct-runtime schema
   处 fail-close
+- per-work runtime args
+  需要用 typed descriptor
+  表达：
+  `arg_identity`
+  绑定具体 runtime arg，
+  `descriptor_kind`
+  描述 tile/start/count/stride
+  这类 per-work 角色，
+  `value_source`
+  描述来自 work-linear-id /
+  logical block /
+  compute-op dims /
+  constant
+  的值来源。
+  codegen/runtime
+  不应按
+  `a_tile_start_id`
+  /
+  `b_tile_start_id`
+  /
+  `output_tile_start_id`
+  的名字优先级恢复 block axis
 - `tl.blackhole_logical_buffer_tile_bridge_specs`
   如果仍存在，
   也只是唯一窄 temporary handoff；

@@ -399,13 +399,13 @@ def test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch():
     assert len(core_plan["physical_cores"]) == 6
     assert len(core_plan["work_packets"]) == 6
     per_work_arg_specs = {
-        spec["arg_kind"]: spec["value_kind"]
+        (spec["buffer"], spec["descriptor_kind"]): spec["value_source"]
         for spec in executable_spec["per_work_arg_specs"]
     }
-    assert per_work_arg_specs["a_tile_start_id"] == "current_work_linear_id"
-    assert per_work_arg_specs["output_tile_start_id"] == "current_work_linear_id"
+    assert per_work_arg_specs[("A", "tile_start")] == "work_linear_id"
+    assert per_work_arg_specs[("B", "tile_start")] == "work_linear_id"
     kernel_per_work_arg_specs = {
-        spec["arg_kind"]: spec["value_kind"]
+        (spec["buffer"], spec["descriptor_kind"]): spec["value_source"]
         for spec in executable_spec["kernels"][0]["per_work_arg_specs"]
     }
     assert kernel_per_work_arg_specs == per_work_arg_specs
@@ -673,7 +673,9 @@ def test_blackhole_module_direct_call_accepts_richer_copy_schema_with_explicit_p
                 {
                     "arg_kind": "b_tile_start_id",
                     "arg_identity": "b_tile_start_id",
+                    "descriptor_kind": "tile_start",
                     "value_kind": "logical_block_x",
+                    "value_source": "logical_block_x",
                 }
             )
             payload["per_work_arg_specs"] = per_work_arg_specs

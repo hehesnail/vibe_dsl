@@ -908,15 +908,30 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
     if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kBuffer)) {
       spec.buffer = Downcast<String>(v.value());
     }
+    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kDescriptorKind)) {
+      spec.descriptor_kind = Downcast<String>(v.value());
+    }
     if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kValueKind)) {
       spec.value_kind = Downcast<String>(v.value());
+    }
+    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kValueSource)) {
+      spec.value_source = Downcast<String>(v.value());
     }
     if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue)) {
       spec.constant_value = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
     }
-    if (!spec.arg_kind.empty() && !spec.value_kind.empty()) {
-      per_work_arg_specs.push_back(std::move(spec));
-    }
+    ICHECK(!spec.arg_identity.empty())
+        << "Blackhole per-work descriptor requires explicit arg_identity";
+    ICHECK(!spec.descriptor_kind.empty())
+        << "Blackhole per-work descriptor for " << spec.arg_identity
+        << " requires descriptor_kind";
+    ICHECK(!spec.value_source.empty())
+        << "Blackhole per-work descriptor for " << spec.arg_identity
+        << " requires value_source";
+    ICHECK(!spec.value_kind.empty())
+        << "Blackhole per-work descriptor for " << spec.arg_identity
+        << " requires compatibility value_kind";
+    per_work_arg_specs.push_back(std::move(spec));
   }
   return per_work_arg_specs;
 }
@@ -966,8 +981,7 @@ static std::vector<PerWorkArgSpec> AggregateSegmentPerWorkArgSpecs(
     std::vector<PerWorkArgSpec> segment_specs =
         ExtractPerWorkArgSpecsFromArray(Downcast<ffi::Array<ffi::Any>>(specs_it.value()));
     for (const auto& spec : segment_specs) {
-      const std::string dedupe_key =
-          !spec.arg_identity.empty() ? spec.arg_identity : spec.arg_kind;
+      const std::string dedupe_key = spec.arg_identity;
       if (dedupe_key.empty() || seen.count(dedupe_key)) {
         continue;
       }
@@ -1941,7 +1955,15 @@ static ffi::Array<ffi::Any> EncodePerWorkArgSpecs(
     if (!spec.buffer.empty()) {
       spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kBuffer, ffi::String(spec.buffer));
     }
+    if (!spec.descriptor_kind.empty()) {
+      spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kDescriptorKind,
+                    ffi::String(spec.descriptor_kind));
+    }
     spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueKind, ffi::String(spec.value_kind));
+    if (!spec.value_source.empty()) {
+      spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueSource,
+                    ffi::String(spec.value_source));
+    }
     if (spec.value_kind == ::tvm::tl::blackhole_runtime_arg_schema::kValueConstant) {
       spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue,
                     Integer(static_cast<int>(spec.constant_value)));
@@ -2055,10 +2077,10 @@ static bool KernelArgsContainKind(const std::vector<KernelArgSpec>& args,
   });
 }
 
-static bool PerWorkArgSpecsContainKind(const std::vector<PerWorkArgSpec>& specs,
-                                       std::string_view kind) {
+static bool PerWorkArgSpecsContainArgIdentity(const std::vector<PerWorkArgSpec>& specs,
+                                              std::string_view identity) {
   return std::any_of(specs.begin(), specs.end(), [&](const PerWorkArgSpec& spec) {
-    return spec.arg_kind == kind;
+    return spec.arg_identity == identity;
   });
 }
 
@@ -2081,9 +2103,14 @@ static void ValidateKernelExplicitPerWorkBindingSchema(const CorePlan& core_plan
     if (!RuntimeArgKindRequiresExplicitPerWorkBinding(arg.kind)) {
       continue;
     }
-    ICHECK(PerWorkArgSpecsContainKind(kernel.per_work_arg_specs, arg.kind))
+    ICHECK(!arg.identity.empty())
+        << "Blackhole build requires runtime arg identity before per-work descriptor binding for "
+        << arg.name << " kind=" << arg.kind << " on kernel " << kernel.name << " of "
+        << func_name;
+    ICHECK(PerWorkArgSpecsContainArgIdentity(kernel.per_work_arg_specs, arg.identity))
         << "Blackhole build requires explicit per-work arg binding for runtime arg kind '"
-        << arg.kind << "' on kernel " << kernel.name << " of " << func_name
+        << arg.kind << "' identity '" << arg.identity << "' on kernel " << kernel.name
+        << " of " << func_name
         << "; runtime/codegen must not recover block/tile semantics from work_linear_id or "
         << "top-level TTProgram payload fallback";
   }
@@ -2407,7 +2434,8 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
               arg.kind == "output_tile_start_id" || arg.kind == "output_tile_num_tiles" ||
               arg.kind == "output_tile_stride" || arg.kind == "k_tile_start_id" ||
               arg.kind == "num_k_tiles") {
-            if (!PerWorkArgSpecsContainKind(per_work_arg_specs, arg.kind)) {
+            if (arg.identity.empty() ||
+                !PerWorkArgSpecsContainArgIdentity(per_work_arg_specs, arg.identity)) {
               return true;
             }
           }

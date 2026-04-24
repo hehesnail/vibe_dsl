@@ -226,7 +226,9 @@ struct PerWorkArgSpec {
   std::string arg_kind;
   std::string arg_identity;
   std::string buffer;
+  std::string descriptor_kind;
   std::string value_kind;
+  std::string value_source;
   uint32_t constant_value = 0;
 
   void Save(dmlc::JSONWriter* writer) const {
@@ -241,8 +243,16 @@ struct PerWorkArgSpec {
       writer->WriteObjectKeyValue(
           tl::blackhole_runtime_arg_schema::kBuffer, buffer);
     }
+    if (!descriptor_kind.empty()) {
+      writer->WriteObjectKeyValue(
+          tl::blackhole_runtime_arg_schema::kDescriptorKind, descriptor_kind);
+    }
     writer->WriteObjectKeyValue(
         tl::blackhole_runtime_arg_schema::kValueKind, value_kind);
+    if (!value_source.empty()) {
+      writer->WriteObjectKeyValue(
+          tl::blackhole_runtime_arg_schema::kValueSource, value_source);
+    }
     if (value_kind == tl::blackhole_runtime_arg_schema::kValueConstant) {
       writer->WriteObjectKeyValue(
           tl::blackhole_runtime_arg_schema::kConstantValue,

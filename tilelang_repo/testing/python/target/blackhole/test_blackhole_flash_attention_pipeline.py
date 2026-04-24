@@ -908,15 +908,17 @@ def test_flash_attention_executable_spec_drops_contract_family_and_reports_contr
     reader_kernel = _require_blackhole_kernel(spec["kernels"], kind="reader", core_type="brisc")
     writer_kernel = _require_blackhole_kernel(spec["kernels"], kind="writer", core_type="ncrisc")
     reader_per_work = {
-        spec["arg_kind"]: spec["value_kind"] for spec in reader_kernel["per_work_arg_specs"]
+        (str(spec["descriptor_kind"]), str(spec["value_source"]))
+        for spec in reader_kernel["per_work_arg_specs"]
     }
     writer_per_work = {
-        spec["arg_kind"]: spec["value_kind"] for spec in writer_kernel["per_work_arg_specs"]
+        (str(spec["descriptor_kind"]), str(spec["value_source"]))
+        for spec in writer_kernel["per_work_arg_specs"]
     }
-    assert reader_per_work["a_tile_start_id"] == "logical_block_y"
-    assert reader_per_work["b_tile_start_id"] == "logical_block_x"
-    assert reader_per_work["num_k_tiles"] == "gemm_num_k_tiles"
-    assert writer_per_work["output_tile_start_id"] == "current_work_linear_id"
+    assert ("tile_start", "logical_block_y") in reader_per_work
+    assert ("tile_start", "logical_block_x") in reader_per_work
+    assert ("k_tile_count", "compute_op_num_k_tiles") in reader_per_work
+    assert ("tile_start", "work_linear_id") in writer_per_work
 
 
 def test_flash_attention_executable_spec_drops_contract_family():
@@ -1153,7 +1155,7 @@ def test_flash_attention_segment_kernels_prefer_explicit_tile_descriptors_over_w
     assert not any("work_linear_id" in line for line in writer_tile_index_lines)
 
 
-def test_flash_attention_segment_writer_block_indices_follow_per_work_value_kind():
+def test_flash_attention_segment_writer_block_indices_follow_per_work_value_source():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1187,6 +1189,7 @@ def test_flash_attention_segment_writer_block_indices_follow_per_work_value_kind
                     spec = dict(spec)
                     if str(spec.get("arg_kind", "")) == "output_tile_start_id":
                         spec["value_kind"] = "logical_block_x"
+                        spec["value_source"] = "logical_block_x"
                     updated_specs.append(spec)
                 payload["per_work_arg_specs"] = updated_specs
             rebuilt_kernels.append(rebuild_tt_kernel(kernel, payload=payload))

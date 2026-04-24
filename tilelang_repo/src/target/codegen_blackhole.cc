@@ -337,8 +337,10 @@ void CodeGenBlackhole::Init(bool output_ssa, bool emit_asserts,
   buffer_runtime_arg_map_.clear();
   buffer_runtime_arg_map_by_name_.clear();
   runtime_arg_vars_by_kind_.clear();
+  runtime_arg_vars_by_identity_.clear();
   runtime_arg_vars_by_name_.clear();
-  per_work_arg_bindings_by_kind_.clear();
+  per_work_arg_bindings_by_identity_.clear();
+  per_work_arg_bindings_.clear();
   cb_page_size_by_id_.clear();
   cb_num_pages_by_id_.clear();
   cb_id_by_requirement_name_.clear();
@@ -765,8 +767,10 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   buffer_runtime_arg_map_.clear();
   buffer_runtime_arg_map_by_name_.clear();
   runtime_arg_vars_by_kind_.clear();
+  runtime_arg_vars_by_identity_.clear();
   runtime_arg_vars_by_name_.clear();
-  per_work_arg_bindings_by_kind_.clear();
+  per_work_arg_bindings_by_identity_.clear();
+  per_work_arg_bindings_.clear();
   cb_page_size_by_id_.clear();
   cb_num_pages_by_id_.clear();
   cb_id_by_requirement_name_.clear();
@@ -838,20 +842,31 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
     if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kArgKind)) {
       arg_kind = Downcast<tvm::ffi::String>(v.value());
     }
-    if (arg_kind.empty()) {
-      continue;
-    }
     PerWorkArgSpecBinding binding;
     if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kArgIdentity)) {
       binding.arg_identity = Downcast<tvm::ffi::String>(v.value());
     }
+    if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kDescriptorKind)) {
+      binding.descriptor_kind = Downcast<tvm::ffi::String>(v.value());
+    }
     if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kValueKind)) {
       binding.value_kind = Downcast<tvm::ffi::String>(v.value());
+    }
+    if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kValueSource)) {
+      binding.value_source = Downcast<tvm::ffi::String>(v.value());
     }
     if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue)) {
       binding.constant_value = Downcast<tvm::Integer>(v.value()).IntValue();
     }
-    per_work_arg_bindings_by_kind_[arg_kind] = std::move(binding);
+    ICHECK(!binding.arg_identity.empty())
+        << "Blackhole codegen requires per-work descriptor arg_identity";
+    ICHECK(!binding.descriptor_kind.empty())
+        << "Blackhole codegen requires per-work descriptor_kind for "
+        << binding.arg_identity;
+    ICHECK(!binding.value_source.empty())
+        << "Blackhole codegen requires per-work value_source for " << binding.arg_identity;
+    per_work_arg_bindings_by_identity_[binding.arg_identity] = binding;
+    per_work_arg_bindings_.push_back(std::move(binding));
   }
   ICHECK(!runtime_args.empty())
       << "Blackhole codegen requires executable kernel runtime args";
@@ -866,6 +881,10 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
       if (auto v = arg.Get("kind")) {
         arg_kind = Downcast<tvm::ffi::String>(v.value());
       }
+      std::string arg_identity;
+      if (auto v = arg.Get("identity")) {
+        arg_identity = Downcast<tvm::ffi::String>(v.value());
+      }
       const bool requires_explicit_per_work_binding =
           arg_kind == "a_tile_start_id" || arg_kind == "a_tile_num_tiles" ||
           arg_kind == "a_tile_stride" || arg_kind == "b_tile_start_id" ||
@@ -876,9 +895,13 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
       if (!requires_explicit_per_work_binding) {
         continue;
       }
-      ICHECK(per_work_arg_bindings_by_kind_.count(arg_kind))
+      ICHECK(!arg_identity.empty())
+          << "Blackhole codegen requires runtime arg identity before per-work binding for "
+          << arg_kind;
+      ICHECK(per_work_arg_bindings_by_identity_.count(arg_identity))
           << "Blackhole codegen requires explicit per-work arg binding for runtime arg kind '"
-          << arg_kind << "' on multi-work kernels; codegen must not recover block/tile semantics "
+          << arg_kind << "' identity '" << arg_identity
+          << "' on multi-work kernels; codegen must not recover block/tile semantics "
           << "from work_linear_id or TTProgram payload fallback";
     }
   }
@@ -985,6 +1008,12 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
     runtime_arg_vars_by_name_[arg_name] = arg_name;
     if (!arg_kind.empty() && !runtime_arg_vars_by_kind_.count(arg_kind)) {
       runtime_arg_vars_by_kind_[arg_kind] = arg_name;
+    }
+    if (auto v = arg_info.Get("identity")) {
+      const std::string arg_identity = Downcast<tvm::ffi::String>(v.value());
+      if (!arg_identity.empty() && !runtime_arg_vars_by_identity_.count(arg_identity)) {
+        runtime_arg_vars_by_identity_[arg_identity] = arg_name;
+      }
     }
 
     if (IsBufferAddressRuntimeArgKind(arg_kind)) {
@@ -1389,62 +1418,57 @@ void CodeGenBlackhole::BindThreadIndex(const tvm::tir::IterVar &iv) {
   }
 
   std::string thread_tag = iv->thread_tag;
-  auto lookup_runtime_arg = [&](const char* kind) -> std::optional<std::string> {
-    auto it = runtime_arg_vars_by_kind_.find(kind);
-    if (it == runtime_arg_vars_by_kind_.end()) {
+  auto runtime_arg_for_binding = [&](const PerWorkArgSpecBinding& binding)
+      -> std::optional<std::string> {
+    auto it = runtime_arg_vars_by_identity_.find(binding.arg_identity);
+    if (it == runtime_arg_vars_by_identity_.end()) {
       return std::nullopt;
     }
     return it->second;
   };
   const bool row_major_grid = linearization_ == "row_major" && logical_grid_x_ > 0;
-  auto resolve_explicit_axis = [&](const char* kind, bool want_x) -> std::optional<std::string> {
-    auto binding_it = per_work_arg_bindings_by_kind_.find(kind);
-    if (binding_it == per_work_arg_bindings_by_kind_.end()) {
-      return std::nullopt;
-    }
-    auto arg_var = lookup_runtime_arg(kind);
-    if (!arg_var.has_value()) {
-      return std::nullopt;
-    }
-    const auto& binding = binding_it->second;
-    if (binding.value_kind == ::tvm::tl::blackhole_runtime_arg_schema::kValueCurrentWorkLinearId) {
-      if (want_x) {
-        if (row_major_grid) {
-          return "(" + arg_var.value() + " % " + std::to_string(logical_grid_x_) + ")";
+  auto resolve_explicit_axis = [&](bool want_x) -> std::optional<std::string> {
+    for (const auto& binding : per_work_arg_bindings_) {
+      if (binding.descriptor_kind !=
+          ::tvm::tl::blackhole_runtime_arg_schema::kDescriptorTileStart) {
+        continue;
+      }
+      auto arg_var = runtime_arg_for_binding(binding);
+      if (!arg_var.has_value()) {
+        continue;
+      }
+      if (binding.value_source ==
+          ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceWorkLinearId) {
+        if (want_x) {
+          if (row_major_grid) {
+            return "(" + arg_var.value() + " % " + std::to_string(logical_grid_x_) + ")";
+          }
+          return arg_var;
         }
-        return arg_var;
+        if (row_major_grid) {
+          return "(" + arg_var.value() + " / " + std::to_string(logical_grid_x_) + ")";
+        }
+        return std::string("0 /* explicit_linear_work_descriptor_y */");
       }
-      if (row_major_grid) {
-        return "(" + arg_var.value() + " / " + std::to_string(logical_grid_x_) + ")";
+      if (binding.value_source ==
+          ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockX) {
+        if (want_x) {
+          return arg_var;
+        }
+        continue;
       }
-      return std::string("0 /* explicit_linear_work_descriptor_y */");
-    }
-    if (binding.value_kind == ::tvm::tl::blackhole_runtime_arg_schema::kValueLogicalBlockX) {
-      return want_x ? arg_var : std::nullopt;
-    }
-    if (binding.value_kind == ::tvm::tl::blackhole_runtime_arg_schema::kValueLogicalBlockY) {
-      return want_x ? std::nullopt : arg_var;
+      if (binding.value_source ==
+          ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceLogicalBlockY) {
+        if (!want_x) {
+          return arg_var;
+        }
+        continue;
+      }
     }
     return std::nullopt;
   };
-  const auto explicit_block_x = [&]() -> std::optional<std::string> {
-    if (auto expr = resolve_explicit_axis("output_tile_start_id", /*want_x=*/true)) {
-      return expr;
-    }
-    if (auto expr = resolve_explicit_axis("b_tile_start_id", /*want_x=*/true)) {
-      return expr;
-    }
-    return resolve_explicit_axis("a_tile_start_id", /*want_x=*/true);
-  }();
-  const auto explicit_block_y = [&]() -> std::optional<std::string> {
-    if (auto expr = resolve_explicit_axis("output_tile_start_id", /*want_x=*/false)) {
-      return expr;
-    }
-    if (auto expr = resolve_explicit_axis("a_tile_start_id", /*want_x=*/false)) {
-      return expr;
-    }
-    return resolve_explicit_axis("b_tile_start_id", /*want_x=*/false);
-  }();
+  const auto explicit_block_x = resolve_explicit_axis(/*want_x=*/true);
+  const auto explicit_block_y = resolve_explicit_axis(/*want_x=*/false);
   const bool has_explicit_work_descriptor =
       explicit_block_x.has_value() || explicit_block_y.has_value();
 

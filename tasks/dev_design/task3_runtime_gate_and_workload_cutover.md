@@ -211,6 +211,30 @@ runtime arg kind
 fallback
 恢复 buffer 身份。
 
+per-work runtime descriptors
+必须显式携带
+`arg_identity`、
+`descriptor_kind`
+和
+`value_source`。
+leaf reader /
+runtime /
+codegen
+只能用
+runtime arg identity
+绑定目标参数，
+并用
+typed value source
+解释 work value；
+不能把
+`a_tile_start_id` /
+`b_tile_start_id` /
+`output_tile_start_id`
+这类 arg-kind 名字
+当作 block axis /
+tile descriptor
+owner truth。
+
 ### 3.3 execution resources
 
 它应编码：

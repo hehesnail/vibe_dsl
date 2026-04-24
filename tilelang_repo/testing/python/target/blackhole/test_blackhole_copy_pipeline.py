@@ -896,6 +896,49 @@ def test_blackhole_grid_indexed_copy_build_rejects_top_level_per_work_payload_fa
         )
 
 
+def test_blackhole_grid_indexed_copy_per_work_specs_expose_typed_descriptors():
+    target = Target("blackhole")
+    with target:
+        artifact = lower(grid_indexed_staged_copy_kernel(grid_x=2, grid_y=2), target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    descriptors = {
+        (str(spec.get("buffer", "")), str(spec["descriptor_kind"])): str(spec["value_source"])
+        for spec in executable_spec["per_work_arg_specs"]
+    }
+
+    assert descriptors[("A", "tile_start")] == "work_linear_id"
+    assert descriptors[("A", "tile_count")] == "constant"
+    assert descriptors[("A", "tile_stride")] == "constant"
+    assert descriptors[("B", "tile_start")] == "work_linear_id"
+    assert descriptors[("B", "tile_count")] == "constant"
+    assert descriptors[("B", "tile_stride")] == "constant"
+
+
+def test_blackhole_grid_indexed_copy_rejects_per_work_arg_kind_fallback_without_identity():
+    target = Target("blackhole")
+    with target:
+        artifact = lower(grid_indexed_staged_copy_kernel(grid_x=2, grid_y=2), target=target)
+
+    def segment_mutator(segment_plan):
+        mutated_segments = []
+        for segment in segment_plan:
+            mutated = dict(segment)
+            mutated_specs = []
+            for spec in segment.get("per_work_arg_specs", []):
+                mutated_spec = dict(spec)
+                mutated_spec.pop("arg_identity", None)
+                mutated_specs.append(mutated_spec)
+            mutated["per_work_arg_specs"] = mutated_specs
+            mutated_segments.append(mutated)
+        return mutated_segments
+
+    with pytest.raises(Exception, match="per-work.*identity|arg_identity"):
+        _rebuild_codegen_module_with_body_and_segment_plan(
+            artifact, segment_mutator=segment_mutator
+        )
+
+
 def test_blackhole_copy_semaphore_plan_is_materialized():
     kernel = staged_copy_kernel(tile_rows=1, tile_cols=1)
     target = Target("blackhole")

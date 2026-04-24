@@ -204,18 +204,19 @@ def test_blackhole_flash_attention_multi_work_item_metadata_exposes_explicit_per
     ]
     assert reader_specs
     assert writer_specs
-    assert all(str(spec["value_kind"]) for spec in reader_specs + writer_specs)
+    assert all(str(spec["descriptor_kind"]) for spec in reader_specs + writer_specs)
+    assert all(str(spec["value_source"]) for spec in reader_specs + writer_specs)
+    assert all(str(spec["arg_identity"]) for spec in reader_specs + writer_specs)
 
-    reader_start_specs = {
-        str(spec["arg_kind"]): str(spec["value_kind"])
+    reader_start_sources = {
+        str(spec["value_source"])
         for spec in reader_specs
-        if str(spec["arg_kind"]).endswith("_tile_start_id")
+        if str(spec["descriptor_kind"]) == "tile_start"
     }
-    assert "a_tile_start_id" in reader_start_specs
-    assert reader_start_specs["a_tile_start_id"] in {"logical_block_y", "current_work_linear_id"}
+    assert reader_start_sources & {"logical_block_y", "work_linear_id"}
     assert any(
-        str(spec["arg_kind"]) == "output_tile_start_id"
-        and str(spec["value_kind"]) == "current_work_linear_id"
+        str(spec["descriptor_kind"]) == "tile_start"
+        and str(spec["value_source"]) == "work_linear_id"
         for spec in reader_specs + writer_specs
     )
 
