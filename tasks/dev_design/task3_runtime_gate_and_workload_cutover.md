@@ -569,6 +569,110 @@ support 工作
 - 旧 fallback
   仍是允许存在的 reader 合同
 
+### 5.6 public specialization audit verdict
+
+本轮审查结论是：
+当前 residue
+不只是 compute 指令的问题，
+而是所有跨
+`TTProgram -> ExecutableSpec -> runtime / codegen`
+边界的
+workload-named /
+order-based /
+payload-seeded
+public surface
+都要按同一标准删除。
+
+当前明确属于 wrong-now
+的 surface：
+
+- `gemm_contract`
+  / `compute_contract`
+  / `multi_*_contracts`
+  仍在 projection、
+  `ExecutableSpec`
+  和测试里作为 public field；
+  它们必须被
+  typed compute-op /
+  materialization /
+  ABI schema
+  完整替换后删除
+- `KernelSpec.compute_ops`
+  是正确方向，
+  但 GEMM entry
+  的 operand truth
+  不能继续从 reader/writer
+  runtime arg order
+  恢复；
+  operand binding
+  必须来自 compute op
+  或显式 ABI 绑定
+- host wrapper
+  和 codegen
+  不能用 PackedArgs
+  buffer 位置、
+  handle suffix、
+  runtime arg kind
+  fallback
+  绑定 buffer；
+  这些绑定必须来自
+  `ExecutableSpec`
+  中的 typed buffer identity /
+  role records，
+  缺失时 fail-close
+- `per_work_arg_specs`
+  不能长期用
+  `a_tile_start_id`
+  / `b_tile_start_id`
+  / `output_tile_start_id`
+  /
+  `gemm_num_k_tiles`
+  这类 workload arg name
+  表达 work descriptor；
+  它需要收敛成引用
+  core plan、
+  compute op dims
+  或 access pattern
+  的 typed value expression
+- materialization
+  host buffer
+  和 axis order
+  不能由
+  `_local`
+  suffix、
+  single-output fallback
+  或 leaf-side shape heuristic
+  恢复；
+  `TTMaterializationPlan`
+  /
+  `ExecutableSpec`
+  必须显式携带
+  host binding
+  和 layout/axis truth
+- projection encoder
+  不能再以各类
+  typed TTProgram node
+  的
+  `payload`
+  为 seed
+  构造 executable map；
+  否则新旧语义会绕过
+  validator
+  混入 leaf schema
+
+对应测试也要同步收口：
+测试可以断言
+`kind=gemm`
+作为
+`compute_ops`
+variant
+存在，
+但不能继续要求
+contract-family top-level field、
+GEMM-specific per-work value kind
+或 name/order fallback
+作为长期绿测条件。
+
 ## 6. Workload Gate 与 Runtime Admission
 
 leaf execution gate

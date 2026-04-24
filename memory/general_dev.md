@@ -804,6 +804,35 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   都应在同一数组下新增 typed entry，
   runtime 只消费 admitted `kind`
   并对未 admitted subset 走 explicit unsupported gate
+- public protocol audit
+  不能只盯某个 compute 指令名：
+  凡是被 projection /
+  `ExecutableSpec` parser /
+  runtime /
+  codegen /
+  wrapper
+  读取的字段，
+  都已经是 public schema。
+  payload seed、
+  runtime arg order、
+  PackedArgs position、
+  handle suffix、
+  `_local`
+  suffix、
+  single-output fallback、
+  arg-kind priority、
+  shape-based axis heuristic
+  都不能承担 owner truth；
+  正确收口是 typed
+  `TTProgram`
+  /
+  `ExecutableSpec`
+  fields
+  加 validator
+  fail-close，
+  不是把新 workload
+  继续挂到旧 fallback
+  上
 
 ## 9. 调试模式
 

@@ -29,7 +29,20 @@
   first-class 表示的消费与细化、
   leaf contract-family typed 化、
   runtime-support-surface
-  扩展
+  扩展。
+  `2026-04-24`
+  public specialization audit
+  已确认：
+  当前 residue
+  不是单一 GEMM compute
+  特例，
+  而是所有跨
+  `TTProgram -> ExecutableSpec -> runtime / codegen`
+  的 workload-named /
+  order-based /
+  payload-seeded
+  public surface
+  都必须按同一标准收敛
 - **当前推进原则**:
   layered IR 主链
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
@@ -119,10 +132,19 @@
     `gemm_contract` /
     `multi_*_contracts`
     仍作为 leaf compatibility
-    metadata /
-    runtime fallback
-    存活，
-    不属于 task3
+    metadata
+    存活；
+    host wrapper /
+    codegen /
+    materialization
+    leaf reader
+    也仍存在
+    position /
+    suffix /
+    arg-kind /
+    shape-heuristic
+    fallback residue；
+    这些都不属于 task3
     终态 leaf schema
 - `Legacy Protocol Deletion`
   - 状态：`completed broad-protocol convergence / narrow leaf debt remains`
@@ -796,7 +818,33 @@ Normalized Tile TIR
 
 当前下一步固定为：
 
-1. 继续让
+1. 先关闭 public specialization
+   residue：
+   `gemm_contract`
+   / `compute_contract`
+   / `multi_*_contracts`
+   public field、
+   runtime arg order
+   operand recovery、
+   PackedArgs
+   positional buffer binding、
+   codegen
+   kind/name fallback、
+   `_local`
+   / single-output
+   materialization binding、
+   leaf-side
+   `host_axis_order`
+   heuristic
+   都必须被 typed
+   `TTProgram`
+   /
+   `ExecutableSpec`
+   schema
+   或 fail-closed
+   validator
+   取代
+2. 继续让
    `PlanTT*`
    消费并细化
    已落地的
@@ -818,7 +866,7 @@ Normalized Tile TIR
    或 leaf reader
    继续用 body-order matcher
    承担跨阶段 owner truth
-2. 将
+3. 将
    `compute_contract` /
    `gemm_contract` /
    `multi_*_contracts`
@@ -844,7 +892,7 @@ Normalized Tile TIR
    增加同一数组下的 typed
    `kind`
    entry
-3. 在上述 typed owner truth
+4. 在上述 typed owner truth
    基础上扩大
    materialization admission
    支持面：
@@ -856,21 +904,21 @@ Normalized Tile TIR
    boundary
    表达，
    不回退到 leaf matcher
-4. 保持
+5. 保持
    compile / projection /
    admitted runtime
    gate
    继续只站在
    explicit representation
    boundary 上
-5. 等 layout /
+6. 等 layout /
    materialization boundary
    和 typed executable
    materialization schema
    全面承接后，
    删除窄 bridge attr
    `tl.blackhole_logical_buffer_tile_bridge_specs`
-6. flash-attn direct runtime
+7. flash-attn direct runtime
    只作为上述 admission
    完成后的 integration payoff，
    不作为当前设计驱动

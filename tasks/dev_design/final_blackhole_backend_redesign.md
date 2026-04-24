@@ -575,6 +575,70 @@ fail-closed 纪律固定为：
   只能停在 leaf execution gate，
   不能回流成上游表示层 / legality 约束
 
+当前 public protocol surface
+审查再固定一个更具体的规则：
+
+- 任何被
+  projection /
+  `ExecutableSpec` parser /
+  runtime /
+  codegen /
+  export wrapper
+  读取的 key，
+  都已经是 public protocol；
+  不能因为它暂存在
+  `payload`
+  或 helper map
+  里就豁免 validator
+  和删除标准
+- generic schema
+  可以用
+  `kind`
+  variant
+  承载 family-specific fields；
+  但 workload /
+  instruction family
+  noun
+  不能升级成 top-level
+  public field。
+  `KernelSpec.compute_ops`
+  是合法方向；
+  `gemm_contract`
+  / `compute_contract`
+  / `multi_*_contracts`
+  这类 family field
+  是待删 compatibility debt
+- buffer /
+  operand /
+  work-item /
+  materialization
+  binding
+  的 owner truth
+  必须是 typed field
+  或可由当前 IR 结构稳定推出；
+  runtime arg order、
+  handle suffix、
+  `_local`
+  suffix、
+  single-output fallback、
+  arg-kind priority
+  只能作为当前 wrong-now
+  residue 定位线索，
+  不能继续作为 leaf reader
+  合法推断规则
+- projection encoder
+  必须从 typed fields
+  构造 fresh executable maps；
+  不能以
+  `payload`
+  为 seed
+  再覆盖 typed 字段。
+  需要保留的 diagnostic /
+  admission field
+  必须显式 allowlist，
+  并由 validator
+  确认不会成为第二真源
+
 ## 6. Fake Protocol 去留规则
 
 审计表中列出的
