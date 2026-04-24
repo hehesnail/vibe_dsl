@@ -4,6 +4,11 @@
 
 - **日期**: `2026-04-23`
 - **状态**:
+  `SpatialPlan`
+  logical live-value /
+  materialization-boundary
+  的 first-class 表示
+  已完成第一轮落地；
   live-form /
   materialization
   的 TT physical /
@@ -11,13 +16,13 @@
   已在 admitted case
   落到
   `TTProgram -> ExecutableSpec`；
+  后续 support surface
+  仍必须继续消费并细化
   `SpatialPlan`
   侧的 logical live-value /
-  materialization boundary
-  仍是 required end-state，
-  不能被
-  TTProgram-only recovery
-  代替；
+  materialization boundary，
+  不能退回
+  TTProgram-only recovery；
   direct runtime admission
   已有
   `pack_thread_direct_store`
@@ -127,11 +132,34 @@ materialization contract。
 
 ### 3.1 当前实现快照
 
-本轮实现只完成当前 admitted cases
-的 TT physical /
+当前实现已经把 logical layer
+和 TT physical /
 leaf owner-truth
-部分：
+的第一轮表示分开：
 
+- `SpatialPlan`
+  新增
+  `LiveValue` /
+  `LiveValueEdge` /
+  `MaterializationBoundary`
+  slices；
+  `BuildSpatialPlan`
+  由当前 TIR
+  buffer metadata
+  和 dataflow edges
+  构造 logical live-value
+  与 same-phase /
+  cross-phase
+  materialization boundary，
+  `ValidateSpatialPlan`
+  fail-close
+  校验引用、
+  producer /
+  consumer /
+  subject
+  一致性、
+  shape / dtype
+  和 phase visibility
 - `TTProgram`
   新增 typed
   `TTLiveFormPlan` /
@@ -170,34 +198,28 @@ leaf owner-truth
   materialize 成
   `cb_materialized_tile`
 
-这不等于
+这不等于所有 workload
+的 live-value distinction
+已经 admission。
+当前
 `SpatialPlan`
-logical live-value
-表示已经完成。
-当前 admitted case
-仍主要由当前 TIR
-结构事实 /
-typed tileop contract /
-pass-local analysis
-进入
-`TTProgram`
-typed slice；
-后续一旦 support surface
-需要跨 execution-unit /
-phase 保留 logical live-value
-distinction，
-必须先补
-`SpatialPlan`
-的一等
-`LiveValue` /
-`LiveValueEdge` /
-`MaterializationBoundary`
-对象和
-`ValidateSpatialPlan`
-检查，
-不能继续让
+表示覆盖 current dataflow edge
+的 logical value /
+edge /
+boundary
+骨架；
+后续更宽 support surface
+需要把 recurrence、
+reduction row state、
+非零 live-in merge
+和 flash-attn payoff
+逐步映射到该层，
+再由
 `PlanTT*`
-或 leaf reader
+构造 TT physical live-form。
+不能让
+leaf reader
+或 body-order matcher
 自己恢复 logical producer-consumer
 关系。
 

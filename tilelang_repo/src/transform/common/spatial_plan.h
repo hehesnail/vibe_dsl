@@ -45,14 +45,12 @@ class ExecutionClosureNode : public Object {
 
 class ExecutionClosure : public ObjectRef {
  public:
-  TVM_DLL ExecutionClosure(ffi::String name, ffi::String closure_basis,
-                           ffi::String execution_role, ffi::Array<Integer> stmt_indices,
-                           ffi::Array<ffi::String> read_buffers,
+  TVM_DLL ExecutionClosure(ffi::String name, ffi::String closure_basis, ffi::String execution_role,
+                           ffi::Array<Integer> stmt_indices, ffi::Array<ffi::String> read_buffers,
                            ffi::Array<ffi::String> write_buffers,
-                           ffi::Array<ffi::String> cut_frontiers,
-                           ffi::Array<ffi::String> traits, ffi::Array<TIRAnchor> anchors);
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(ExecutionClosure, ObjectRef,
-                                             ExecutionClosureNode);
+                           ffi::Array<ffi::String> cut_frontiers, ffi::Array<ffi::String> traits,
+                           ffi::Array<TIRAnchor> anchors);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(ExecutionClosure, ObjectRef, ExecutionClosureNode);
 };
 
 class ClosureBoundaryNode : public Object {
@@ -228,8 +226,7 @@ class LayoutSpec : public ObjectRef {
  public:
   TVM_DLL LayoutSpec(ffi::String name, ffi::String subject, ffi::String scope,
                      ffi::String distribution_kind, ffi::Array<ffi::String> unit_names,
-                     ffi::Array<Integer> unit_indices,
-                     ffi::Array<ffi::String> virtual_device_axes,
+                     ffi::Array<Integer> unit_indices, ffi::Array<ffi::String> virtual_device_axes,
                      ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(LayoutSpec, ObjectRef, LayoutSpecNode);
 };
@@ -268,14 +265,140 @@ class PhasePlanNode : public Object {
 class PhasePlan : public ObjectRef {
  public:
   TVM_DLL PhasePlan(ffi::String name, int64_t phase_index, ffi::Array<ffi::String> unit_names,
-                    ffi::Array<Integer> unit_indices,
-                    ffi::Array<ffi::String> ingress_edge_names,
+                    ffi::Array<Integer> unit_indices, ffi::Array<ffi::String> ingress_edge_names,
                     ffi::Array<Integer> ingress_edge_indices,
                     ffi::Array<ffi::String> egress_edge_names,
                     ffi::Array<Integer> egress_edge_indices,
-                    ffi::Array<ffi::String> boundary_subjects,
-                    ffi::Array<TIRAnchor> anchors);
+                    ffi::Array<ffi::String> boundary_subjects, ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(PhasePlan, ObjectRef, PhasePlanNode);
+};
+
+class LiveValueNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String subject;
+  ffi::String producer_unit;
+  int64_t producer_unit_index = -1;
+  ffi::String value_role;
+  ffi::Array<Integer> logical_shape;
+  ffi::String dtype;
+  ffi::Array<ffi::String> traits;
+  ffi::Array<TIRAnchor> anchors;
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<LiveValueNode>()
+        .def_ro("name", &LiveValueNode::name)
+        .def_ro("subject", &LiveValueNode::subject)
+        .def_ro("producer_unit", &LiveValueNode::producer_unit)
+        .def_ro("producer_unit_index", &LiveValueNode::producer_unit_index)
+        .def_ro("value_role", &LiveValueNode::value_role)
+        .def_ro("logical_shape", &LiveValueNode::logical_shape)
+        .def_ro("dtype", &LiveValueNode::dtype)
+        .def_ro("traits", &LiveValueNode::traits)
+        .def_ro("anchors", &LiveValueNode::anchors);
+  }
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.LiveValue", LiveValueNode, Object);
+};
+
+class LiveValue : public ObjectRef {
+ public:
+  TVM_DLL LiveValue(ffi::String name, ffi::String subject, ffi::String producer_unit,
+                    int64_t producer_unit_index, ffi::String value_role,
+                    ffi::Array<Integer> logical_shape, ffi::String dtype,
+                    ffi::Array<ffi::String> traits, ffi::Array<TIRAnchor> anchors);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(LiveValue, ObjectRef, LiveValueNode);
+};
+
+class LiveValueEdgeNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String source_live_value;
+  int64_t source_live_value_index = -1;
+  ffi::String dataflow_edge;
+  int64_t dataflow_edge_index = -1;
+  ffi::String producer_unit;
+  ffi::String consumer_unit;
+  int64_t producer_unit_index = -1;
+  int64_t consumer_unit_index = -1;
+  ffi::String relation_kind;
+  bool requires_full_logical_value = false;
+  bool accepts_distributed_slice = false;
+  ffi::Array<TIRAnchor> anchors;
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<LiveValueEdgeNode>()
+        .def_ro("name", &LiveValueEdgeNode::name)
+        .def_ro("source_live_value", &LiveValueEdgeNode::source_live_value)
+        .def_ro("source_live_value_index", &LiveValueEdgeNode::source_live_value_index)
+        .def_ro("dataflow_edge", &LiveValueEdgeNode::dataflow_edge)
+        .def_ro("dataflow_edge_index", &LiveValueEdgeNode::dataflow_edge_index)
+        .def_ro("producer_unit", &LiveValueEdgeNode::producer_unit)
+        .def_ro("consumer_unit", &LiveValueEdgeNode::consumer_unit)
+        .def_ro("producer_unit_index", &LiveValueEdgeNode::producer_unit_index)
+        .def_ro("consumer_unit_index", &LiveValueEdgeNode::consumer_unit_index)
+        .def_ro("relation_kind", &LiveValueEdgeNode::relation_kind)
+        .def_ro("requires_full_logical_value", &LiveValueEdgeNode::requires_full_logical_value)
+        .def_ro("accepts_distributed_slice", &LiveValueEdgeNode::accepts_distributed_slice)
+        .def_ro("anchors", &LiveValueEdgeNode::anchors);
+  }
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.LiveValueEdge", LiveValueEdgeNode, Object);
+};
+
+class LiveValueEdge : public ObjectRef {
+ public:
+  TVM_DLL LiveValueEdge(ffi::String name, ffi::String source_live_value,
+                        int64_t source_live_value_index, ffi::String dataflow_edge,
+                        int64_t dataflow_edge_index, ffi::String producer_unit,
+                        ffi::String consumer_unit, int64_t producer_unit_index,
+                        int64_t consumer_unit_index, ffi::String relation_kind,
+                        bool requires_full_logical_value, bool accepts_distributed_slice,
+                        ffi::Array<TIRAnchor> anchors);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(LiveValueEdge, ObjectRef, LiveValueEdgeNode);
+};
+
+class MaterializationBoundaryNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String source_live_value;
+  int64_t source_live_value_index = -1;
+  ffi::String live_value_edge;
+  int64_t live_value_edge_index = -1;
+  ffi::String required_visibility;
+  ffi::String logical_coverage;
+  ffi::String phase_relation;
+  ffi::Array<TIRAnchor> anchors;
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<MaterializationBoundaryNode>()
+        .def_ro("name", &MaterializationBoundaryNode::name)
+        .def_ro("source_live_value", &MaterializationBoundaryNode::source_live_value)
+        .def_ro("source_live_value_index", &MaterializationBoundaryNode::source_live_value_index)
+        .def_ro("live_value_edge", &MaterializationBoundaryNode::live_value_edge)
+        .def_ro("live_value_edge_index", &MaterializationBoundaryNode::live_value_edge_index)
+        .def_ro("required_visibility", &MaterializationBoundaryNode::required_visibility)
+        .def_ro("logical_coverage", &MaterializationBoundaryNode::logical_coverage)
+        .def_ro("phase_relation", &MaterializationBoundaryNode::phase_relation)
+        .def_ro("anchors", &MaterializationBoundaryNode::anchors);
+  }
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.MaterializationBoundary", MaterializationBoundaryNode,
+                                    Object);
+};
+
+class MaterializationBoundary : public ObjectRef {
+ public:
+  TVM_DLL MaterializationBoundary(ffi::String name, ffi::String source_live_value,
+                                  int64_t source_live_value_index, ffi::String live_value_edge,
+                                  int64_t live_value_edge_index, ffi::String required_visibility,
+                                  ffi::String logical_coverage, ffi::String phase_relation,
+                                  ffi::Array<TIRAnchor> anchors);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(MaterializationBoundary, ObjectRef,
+                                             MaterializationBoundaryNode);
 };
 
 class SpatialPlanNode : public Object {
@@ -285,6 +408,9 @@ class SpatialPlanNode : public Object {
   ffi::Array<DataflowEdge> dataflow_edges;
   ffi::Array<LayoutSpec> layout_specs;
   ffi::Array<PhasePlan> phase_plans;
+  ffi::Array<LiveValue> live_values;
+  ffi::Array<LiveValueEdge> live_value_edges;
+  ffi::Array<MaterializationBoundary> materialization_boundaries;
   ffi::Array<ExecutionClosure> closures;
   ffi::Array<ClosureBoundary> boundaries;
   ValidatedHintSet validated_hints;
@@ -298,6 +424,9 @@ class SpatialPlanNode : public Object {
         .def_ro("dataflow_edges", &SpatialPlanNode::dataflow_edges)
         .def_ro("layout_specs", &SpatialPlanNode::layout_specs)
         .def_ro("phase_plans", &SpatialPlanNode::phase_plans)
+        .def_ro("live_values", &SpatialPlanNode::live_values)
+        .def_ro("live_value_edges", &SpatialPlanNode::live_value_edges)
+        .def_ro("materialization_boundaries", &SpatialPlanNode::materialization_boundaries)
         .def_ro("closures", &SpatialPlanNode::closures)
         .def_ro("boundaries", &SpatialPlanNode::boundaries)
         .def_ro("validated_hints", &SpatialPlanNode::validated_hints)
@@ -310,13 +439,12 @@ class SpatialPlanNode : public Object {
 class SpatialPlan : public ObjectRef {
  public:
   TVM_DLL SpatialPlan(ffi::String member_func, ffi::Array<ExecutionUnit> execution_units,
-                      ffi::Array<DataflowEdge> dataflow_edges,
-                      ffi::Array<LayoutSpec> layout_specs,
-                      ffi::Array<PhasePlan> phase_plans,
-                      ValidatedHintSet validated_hints,
-                      ffi::Array<ExecutionClosure> closures,
-                      ffi::Array<ClosureBoundary> boundaries,
-                      ffi::Array<TIRAnchor> anchors);
+                      ffi::Array<DataflowEdge> dataflow_edges, ffi::Array<LayoutSpec> layout_specs,
+                      ffi::Array<PhasePlan> phase_plans, ffi::Array<LiveValue> live_values,
+                      ffi::Array<LiveValueEdge> live_value_edges,
+                      ffi::Array<MaterializationBoundary> materialization_boundaries,
+                      ValidatedHintSet validated_hints, ffi::Array<ExecutionClosure> closures,
+                      ffi::Array<ClosureBoundary> boundaries, ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SpatialPlan, ObjectRef, SpatialPlanNode);
 };
 

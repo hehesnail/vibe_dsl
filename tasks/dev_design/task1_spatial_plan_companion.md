@@ -251,17 +251,41 @@ logical live-value
 `ExecutableSpec`
 边界。
 
-如果当前实现尚未提供这组三类对象，
+当前实现已提供这组三类对象的第一轮
+schema：
+
+- `live_values`
+  记录 logical value identity、
+  producer unit、
+  subject、
+  logical shape /
+  dtype
+  和 target-independent role
+- `live_value_edges`
+  把 logical live value
+  绑定到
+  `DataflowEdge`
+  与 producer /
+  consumer
+  relation，
+  并标出 consumer
+  是否要求 full logical value
+  或可消费 distributed slice
+- `materialization_boundaries`
+  描述 live edge
+  在 same-phase /
+  cross-phase
+  场景下的 visibility、
+  phase relation
+  和 coverage
+
 后续 support-surface
-工作只能依赖
-当前 TIR
-可稳定重算的局部事实；
-任何需要跨阶段保留、
-下游 admission /
-ABI /
-materialization
-仍依赖的 live-value distinction，
-必须先补入这里，
+工作如果需要更细的 recurrence /
+reduction /
+broadcast /
+live-in distinction，
+应继续扩展这组三类对象和
+validator，
 不能由
 `PlanTT*`
 或 leaf reader

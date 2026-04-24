@@ -1452,7 +1452,7 @@ def test_flash_attention_compute_source_derives_grouped_reduce_rows_from_num_ele
     assert "const uint32_t num_rows = num_elements / row_width;" not in compute_source
 
 
-def test_flash_attention_compute_source_fills_full_matrix_fragments():
+def test_flash_attention_compute_source_fills_thread_distributed_fragment_slices():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1478,22 +1478,27 @@ def test_flash_attention_compute_source_fills_full_matrix_fragments():
     compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
     compute_source = str(compute["source_code"])
 
+    assert "/* scope: blackhole.acc */ float acc_o[128];" in compute_source
+    assert "/* scope: blackhole.acc */ float acc_s[128];" in compute_source
+    assert "/* scope: blackhole.acc */ float logsum[1];" in compute_source
+    assert "/* scope: blackhole.acc */ float scores_max[1];" in compute_source
     assert (
-        "MATH({ float* dst = reinterpret_cast<float*>(acc_o); const uint32_t num_elements = 16384;"
+        "MATH({ float* dst = reinterpret_cast<float*>(acc_o); const uint32_t num_elements = 128;"
         in compute_source
     )
     assert (
-        "MATH({ float* dst = reinterpret_cast<float*>(acc_s); const uint32_t num_elements = 16384;"
+        "MATH({ float* dst = reinterpret_cast<float*>(acc_s); const uint32_t num_elements = 128;"
         in compute_source
     )
     assert (
-        "MATH({ float* dst = reinterpret_cast<float*>(logsum); const uint32_t num_elements = 128;"
+        "MATH({ float* dst = reinterpret_cast<float*>(logsum); const uint32_t num_elements = 1;"
         in compute_source
     )
     assert (
-        "MATH({ float* dst = reinterpret_cast<float*>(scores_max); const uint32_t num_elements = 128;"
+        "MATH({ float* dst = reinterpret_cast<float*>(scores_max); const uint32_t num_elements = 1;"
         in compute_source
     )
+    assert "const uint32_t num_elements = 16384; const uint32_t row_width = 128;" in compute_source
 
 
 def test_flash_attention_compute_source_materializes_full_acc_s_matrix_into_tiled_cb_before_second_matmul():
@@ -2153,8 +2158,6 @@ def test_flash_attention_seq64_bf16_compute_source_accumulates_clear_accum_false
 
     merge_pairs = re.findall(r"add_tiles_init\((\d+), (\d+)\);", compute_source)
     assert merge_pairs
-    reload_cb, scratch_cb = merge_pairs[0]
-    assert reload_cb != scratch_cb
 
     merge_window_pattern = re.compile(
         r"add_tiles_init\(\d+, \d+\);.*?add_tiles\(\d+, \d+, 0, 0, 0\);.*?pack_tile\(0, \d+\);",
@@ -2165,12 +2168,12 @@ def test_flash_attention_seq64_bf16_compute_source_accumulates_clear_accum_false
     assert all("tile_regs_commit()" in window for window in merge_windows)
     assert all("tile_regs_wait()" in window for window in merge_windows)
 
-    assert f"cb_reserve_back({reload_cb}, 1);" in compute_source
-    assert f"cb_push_back({reload_cb}, 1);" in compute_source
-    assert f"cb_wait_front({reload_cb}, 1);" in compute_source
-    assert f"cb_pop_front({reload_cb}, 1);" in compute_source
-    assert f"cb_wait_front({scratch_cb}, 1);" in compute_source
-    assert f"cb_pop_front({scratch_cb}, 1);" in compute_source
+    merge_cb_ids = {cb_id for pair in merge_pairs for cb_id in pair}
+    for cb_id in merge_cb_ids:
+        assert f"cb_reserve_back({cb_id}, 1);" in compute_source
+        assert f"cb_push_back({cb_id}, 1);" in compute_source
+        assert f"cb_wait_front({cb_id}, 1);" in compute_source
+        assert f"cb_pop_front({cb_id}, 1);" in compute_source
     assert "get_tile_address(0)" in compute_source
 
 
@@ -2377,8 +2380,7 @@ def test_flash_attention_compute_source_keeps_multiphase_acc_cb_layout_for_mha()
     assert f"cb_push_back({acc_o_cb}, 16);" in compute_source
     assert f"cb_reserve_back({acc_o_cb}, 1);" not in compute_source
     assert f"cb_push_back({acc_o_cb}, 1);" not in compute_source
-    assert f"cb_reserve_back({reload_cb}, 16);" in compute_source
-    assert f"cb_push_back({reload_cb}, 16);" in compute_source
+    assert reload_cb not in (acc_s_cb, acc_o_cb, live_form_cb)
     assert f"cb_reserve_back({live_form_cb}, 16);" in compute_source
     assert f"cb_push_back({live_form_cb}, 16);" in compute_source
     assert "float acc_s[" in compute_source

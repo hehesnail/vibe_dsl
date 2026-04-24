@@ -187,6 +187,39 @@
   不能依赖上一 pass
   的原始 loop matcher
   局部状态
+- `SpatialPlan`
+  的 logical live-value
+  应从当前 TIR
+  buffer metadata
+  和 dataflow edge
+  派生，
+  并作为
+  `LiveValue` /
+  `LiveValueEdge` /
+  `MaterializationBoundary`
+  进入 IR；
+  跨 phase /
+  execution-unit
+  的 producer-consumer truth
+  不应留给
+  `PlanTT*`
+  或 leaf reader
+  从 body order /
+  buffer 名
+  恢复
+- source/codegen regression
+  要区分 logical element count
+  和 thread-distributed
+  physical local extent；
+  例如 flash-attn
+  的 `acc_s`
+  logical 形状可以是 full matrix，
+  但 device local array
+  只保存 producer thread lane slice，
+  full logical materialization
+  应在 CB publication /
+  materialization boundary
+  上断言
 - constant-fill
   这类局部 analysis fact
   只能在当前 IR

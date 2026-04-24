@@ -795,6 +795,17 @@
   - `TTProgram / TT kernel ABI planner / codegen`
     只消费这份 typed truth 做 target materialization；
     `CB` overlap / reserve / push / pop 之类物理资源分析仍留在 target 侧
+  - 当前 `SpatialPlan`
+    侧已经补上
+    `LiveValue` /
+    `LiveValueEdge` /
+    `MaterializationBoundary`
+    骨架；
+    regression 里应同时检查 logical shape
+    和 physical local extent，
+    不要再用 full logical matrix
+    反推 device local array
+    大小
 - **教训**:
   - `layout truth restored` 不代表
     `fragment materialization protocol closed`

@@ -26,7 +26,7 @@
   `SpatialPlan`
   logical live-value /
   materialization-boundary
-  表示补齐、
+  first-class 表示的消费与细化、
   leaf contract-family typed 化、
   runtime-support-surface
   扩展
@@ -249,6 +249,19 @@
 - support surface /
   workload payoff 扩展
   已解除冻结；
+  `SpatialPlan`
+  logical live-value /
+  materialization-boundary
+  一等表示已完成第一轮落地，
+  当前 dataflow edge
+  会生成
+  `LiveValue` /
+  `LiveValueEdge` /
+  `MaterializationBoundary`
+  并由
+  `ValidateSpatialPlan`
+  fail-close
+  检查；
   live-form /
   materialization
   的 TT physical /
@@ -257,8 +270,12 @@
   `SpatialPlan`
   logical live-value /
   materialization-boundary
-  一等表示仍是后续扩大支持面时
-  必须补齐的显式表示要求；
+  后续仍需继续被
+  `PlanTT*`
+  消费并细化到更宽 live-in /
+  recurrence /
+  workload payoff
+  支持面；
   `fragment_fill -> cast -> publish`
   的 constant fill
   `thread_distributed + cb_republish`
@@ -348,6 +365,30 @@ Normalized Tile TIR
   buffer 名
   已不再进入
   debug/source contract
+- `SpatialPlan`
+  现已拥有 typed
+  `live_values` /
+  `live_value_edges` /
+  `materialization_boundaries`
+  slices；
+  `BuildSpatialPlan`
+  会从当前 TIR
+  buffer metadata
+  和 dataflow edges
+  构造 logical live-value
+  及跨 phase /
+  same phase
+  materialization boundary，
+  `ValidateSpatialPlan`
+  会检查引用完整性、
+  subject /
+  producer /
+  consumer
+  与 dataflow edge
+  一致性、
+  shape / dtype
+  以及 phase boundary
+  visibility
 - `AnalyzeSpatialStructureFacts`
   / `BuildSpatialPlanCompanion`
   public wrapper、
@@ -510,14 +551,18 @@ Normalized Tile TIR
   /
   `ExecutableSpec`
   长期边界。
-  后续必须由
   `SpatialPlan`
   logical live-value /
+  materialization-boundary
+  第一轮 schema
+  已存在，
+  但该窄 bridge
+  仍要等
   layout /
   materialization boundary
   和 typed executable
   materialization schema
-  承接后删除
+  全面承接后删除
 - `compute_contract` /
   `gemm_contract` /
   `multi_*_contracts`
@@ -642,6 +687,13 @@ Normalized Tile TIR
   非零 live-in
   仍保持 explicit
   unsupported gate
+- `SpatialPlan logical live-value / materialization-boundary`
+  baseline
+  当前已通过：
+  - `cd tilelang_repo && cmake --build build -j32`
+  - `PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
+  - `PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_exposes_typed_live_form_owner_truth tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plans tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_admits_non_mailbox_cb_republish tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_post_merge_cast_consumer_uses_pack_tile_materialization tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_post_merge_cast_consumer_without_zero_preclear_keeps_materialization_gate`
 
 ## 6. 当前下一步
 
@@ -664,7 +716,8 @@ Normalized Tile TIR
    表达，
    不回退到 leaf matcher
 2. 扩大 support surface
-   前先补齐必要的
+   时继续消费并细化
+   已落地的
    `SpatialPlan`
    logical live-value /
    materialization-boundary

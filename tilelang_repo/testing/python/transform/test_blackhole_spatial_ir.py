@@ -160,6 +160,55 @@ def _rebuild_dataflow_edge(
     )
 
 
+def _rebuild_live_value_edge(
+    edge,
+    *,
+    name=None,
+    source_live_value=None,
+    source_live_value_index=None,
+    dataflow_edge=None,
+    dataflow_edge_index=None,
+    producer_unit=None,
+    consumer_unit=None,
+    producer_unit_index=None,
+    consumer_unit_index=None,
+    relation_kind=None,
+    requires_full_logical_value=None,
+    accepts_distributed_slice=None,
+    anchors=None,
+):
+    make_live_value_edge = tvm.get_global_func("tl.LiveValueEdge")
+    return make_live_value_edge(
+        str(edge.name) if name is None else name,
+        str(edge.source_live_value)
+        if source_live_value is None
+        else source_live_value,
+        int(edge.source_live_value_index)
+        if source_live_value_index is None
+        else source_live_value_index,
+        str(edge.dataflow_edge) if dataflow_edge is None else dataflow_edge,
+        int(edge.dataflow_edge_index)
+        if dataflow_edge_index is None
+        else dataflow_edge_index,
+        str(edge.producer_unit) if producer_unit is None else producer_unit,
+        str(edge.consumer_unit) if consumer_unit is None else consumer_unit,
+        int(edge.producer_unit_index)
+        if producer_unit_index is None
+        else producer_unit_index,
+        int(edge.consumer_unit_index)
+        if consumer_unit_index is None
+        else consumer_unit_index,
+        str(edge.relation_kind) if relation_kind is None else relation_kind,
+        bool(edge.requires_full_logical_value)
+        if requires_full_logical_value is None
+        else requires_full_logical_value,
+        bool(edge.accepts_distributed_slice)
+        if accepts_distributed_slice is None
+        else accepts_distributed_slice,
+        list(edge.anchors) if anchors is None else anchors,
+    )
+
+
 def _rebuild_spatial_plan(
     plan,
     *,
@@ -167,6 +216,9 @@ def _rebuild_spatial_plan(
     dataflow_edges=None,
     layout_specs=None,
     phase_plans=None,
+    live_values=None,
+    live_value_edges=None,
+    materialization_boundaries=None,
     validated_hints=None,
     closures=None,
     boundaries=None,
@@ -179,6 +231,13 @@ def _rebuild_spatial_plan(
         list(plan.dataflow_edges) if dataflow_edges is None else dataflow_edges,
         list(plan.layout_specs) if layout_specs is None else layout_specs,
         list(plan.phase_plans) if phase_plans is None else phase_plans,
+        list(plan.live_values) if live_values is None else live_values,
+        list(plan.live_value_edges)
+        if live_value_edges is None
+        else live_value_edges,
+        list(plan.materialization_boundaries)
+        if materialization_boundaries is None
+        else materialization_boundaries,
         plan.validated_hints if validated_hints is None else validated_hints,
         list(plan.closures) if closures is None else closures,
         list(plan.boundaries) if boundaries is None else boundaries,
@@ -186,7 +245,15 @@ def _rebuild_spatial_plan(
     )
 
 
-def _rebuild_tt_program(program, *, cb_plans=None, payload=None):
+def _rebuild_tt_program(
+    program,
+    *,
+    cb_plans=None,
+    live_form_plans=None,
+    materialization_plans=None,
+    consumer_binding_plans=None,
+    payload=None,
+):
     make_tt_program = tvm.get_global_func("tl.TTProgram")
     return make_tt_program(
         program.entry_name,
@@ -203,6 +270,13 @@ def _rebuild_tt_program(program, *, cb_plans=None, payload=None):
         list(program.semaphore_plans),
         list(program.compute_sync_plans),
         list(program.dst_layout_plans),
+        list(program.live_form_plans) if live_form_plans is None else live_form_plans,
+        list(program.materialization_plans)
+        if materialization_plans is None
+        else materialization_plans,
+        list(program.consumer_binding_plans)
+        if consumer_binding_plans is None
+        else consumer_binding_plans,
         program.payload if payload is None else payload,
     )
 
@@ -278,6 +352,43 @@ def test_task1_copy_spatial_plan_emits_flow_boundary_from_tir():
 
     assert len(plan.closures) == len(plan.execution_units)
     assert len(plan.boundaries) == len(plan.dataflow_edges)
+
+
+def test_task1_spatial_plan_exposes_logical_live_value_boundaries():
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    plan = mod["main"].attrs["tl.spatial_plan"]
+
+    flow_edges = [edge for edge in plan.dataflow_edges if str(edge.kind) == "flow"]
+    assert len(flow_edges) == 1
+    flow_edge = flow_edges[0]
+
+    live_values = {str(value.name): value for value in plan.live_values}
+    live_edges = {str(edge.dataflow_edge): edge for edge in plan.live_value_edges}
+    boundaries = {
+        str(boundary.live_value_edge): boundary
+        for boundary in plan.materialization_boundaries
+    }
+
+    assert str(flow_edge.name) in live_edges
+    live_edge = live_edges[str(flow_edge.name)]
+    assert str(live_edge.relation_kind) == "flow"
+    assert bool(live_edge.requires_full_logical_value)
+    assert str(live_edge.source_live_value) in live_values
+
+    live_value = live_values[str(live_edge.source_live_value)]
+    assert str(live_value.subject) == "A_shared"
+    assert str(live_value.value_role) == "fragment"
+    assert str(live_value.producer_unit) == str(flow_edge.producer_unit)
+    assert int(live_value.producer_unit_index) == int(flow_edge.producer_unit_index)
+    assert tuple(int(dim) for dim in live_value.logical_shape)
+    assert str(live_value.dtype)
+
+    assert str(live_edge.name) in boundaries
+    boundary = boundaries[str(live_edge.name)]
+    assert str(boundary.source_live_value) == str(live_value.name)
+    assert str(boundary.required_visibility) == "next_phase"
+    assert str(boundary.logical_coverage) == "full_logical_value"
+    assert str(boundary.phase_relation) == "cross_phase"
 
 
 def test_task1_gemm_spatial_plan_emits_compute_closure():
@@ -593,6 +704,47 @@ def test_task1_validate_spatial_plan_rejects_incomplete_dataflow_edge():
     broken = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
     with pytest.raises(Exception, match="DataflowEdge.*subject"):
+        tilelang.transform.ValidateSpatialPlan()(broken)
+
+
+def test_task1_validate_spatial_plan_rejects_live_value_edge_without_source_value():
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    main = mod["main"]
+    plan = main.attrs["tl.spatial_plan"]
+    invalid_edge = _rebuild_live_value_edge(
+        plan.live_value_edges[0],
+        source_live_value="missing_live_value",
+        source_live_value_index=-1,
+    )
+    invalid_plan = _rebuild_spatial_plan(
+        plan,
+        live_value_edges=[invalid_edge, *list(plan.live_value_edges[1:])],
+    )
+    func = main.with_attr("tl.spatial_plan", invalid_plan).without_attr(
+        "tl.spatial_plan_validated"
+    )
+    broken = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
+
+    with pytest.raises(Exception, match="LiveValueEdge.*source_live_value"):
+        tilelang.transform.ValidateSpatialPlan()(broken)
+
+
+def test_task1_validate_spatial_plan_rejects_missing_live_value_schema():
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    main = mod["main"]
+    plan = main.attrs["tl.spatial_plan"]
+    invalid_plan = _rebuild_spatial_plan(
+        plan,
+        live_values=[],
+        live_value_edges=[],
+        materialization_boundaries=[],
+    )
+    func = main.with_attr("tl.spatial_plan", invalid_plan).without_attr(
+        "tl.spatial_plan_validated"
+    )
+    broken = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
+
+    with pytest.raises(Exception, match="SpatialPlan live_values"):
         tilelang.transform.ValidateSpatialPlan()(broken)
 
 

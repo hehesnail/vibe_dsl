@@ -7,10 +7,12 @@
 #include <tvm/ir/attrs.h>
 #include <tvm/ir/op.h>
 #include <tvm/ir/transform.h>
+#include <tvm/runtime/data_type.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/stmt_functor.h>
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -70,6 +72,14 @@ Array<Integer> ToIntegerArray(std::initializer_list<int64_t> values) {
 Array<Integer> ToIntegerArray(const std::vector<int>& values) {
   Array<Integer> result;
   for (int value : values) {
+    result.push_back(Integer(value));
+  }
+  return result;
+}
+
+Array<Integer> ToIntegerArray(const std::vector<int64_t>& values) {
+  Array<Integer> result;
+  for (int64_t value : values) {
     result.push_back(Integer(value));
   }
   return result;
@@ -260,9 +270,8 @@ std::vector<std::string> DeriveClosureTraits(const StatementAccessSummary& summa
 ExecutionClosure BuildExecutionClosure(int stmt_index, const StatementAccessSummary& summary) {
   const std::string name = "closure_" + std::to_string(stmt_index);
   return ExecutionClosure(
-      String(name), String("normalized_tir_top_level_stmt"),
-      String(DeriveExecutionRole(summary)), ToIntegerArray({stmt_index}),
-      ToStringArray(summary.reads), ToStringArray(summary.writes),
+      String(name), String("normalized_tir_top_level_stmt"), String(DeriveExecutionRole(summary)),
+      ToIntegerArray({stmt_index}), ToStringArray(summary.reads), ToStringArray(summary.writes),
       MakeTraits({"statement_boundary"}), ToStringArray(DeriveClosureTraits(summary)),
       MakeAnchors("execution_closure", name));
 }
@@ -306,15 +315,13 @@ Array<ClosureBoundary> BuildBoundaryCandidates(const std::vector<ClosureCandidat
 
     for (const std::string& subject : closure.writes) {
       if (read_set.count(subject)) {
-        const std::string key =
-            "carry|" + subject + "|" + std::to_string(closure_index) + "|" +
-            std::to_string(closure_index);
+        const std::string key = "carry|" + subject + "|" + std::to_string(closure_index) + "|" +
+                                std::to_string(closure_index);
         if (emitted.insert(key).second) {
           boundaries.push_back(ClosureBoundary(
               String("carry_" + subject + "_" + std::to_string(closure_index)), String("carry"),
               String(closure.name), String(closure.name), closure_index, closure_index,
-              String(subject), ToStringArray({"self_edge"}),
-              MakeAnchors("closure_boundary", key)));
+              String(subject), ToStringArray({"self_edge"}), MakeAnchors("closure_boundary", key)));
         }
       }
     }
@@ -370,7 +377,8 @@ Array<String> DataflowEdgeNamesForIndices(const std::vector<int>& edge_indices,
   return edge_names;
 }
 
-std::vector<int> ComputeExecutionUnitPhases(const Array<ClosureBoundary>& boundaries, int unit_count) {
+std::vector<int> ComputeExecutionUnitPhases(const Array<ClosureBoundary>& boundaries,
+                                            int unit_count) {
   std::vector<std::vector<int>> preds(unit_count);
   for (const ClosureBoundary& boundary : boundaries) {
     if (boundary->source_closure_index < 0 || boundary->target_closure_index < 0 ||
@@ -393,11 +401,10 @@ std::vector<int> ComputeExecutionUnitPhases(const Array<ClosureBoundary>& bounda
 Array<ExecutionUnit> BuildExecutionUnits(const Array<ExecutionClosure>& closures) {
   Array<ExecutionUnit> execution_units;
   for (const ExecutionClosure& closure : closures) {
-    execution_units.push_back(ExecutionUnit(closure->name, closure->closure_basis,
-                                            closure->execution_role, closure->stmt_indices,
-                                            closure->read_buffers, closure->write_buffers,
-                                            closure->traits,
-                                            MakeAnchors("execution_unit", str(closure->name))));
+    execution_units.push_back(
+        ExecutionUnit(closure->name, closure->closure_basis, closure->execution_role,
+                      closure->stmt_indices, closure->read_buffers, closure->write_buffers,
+                      closure->traits, MakeAnchors("execution_unit", str(closure->name))));
   }
   return execution_units;
 }
@@ -411,8 +418,8 @@ Array<DataflowEdge> BuildDataflowEdges(const Array<ClosureBoundary>& boundaries,
         boundary->source_closure_index < static_cast<int64_t>(unit_phases.size()) &&
         boundary->target_closure_index < static_cast<int64_t>(unit_phases.size()) &&
         boundary->source_closure_index != boundary->target_closure_index) {
-      crosses_phase =
-          unit_phases[boundary->source_closure_index] != unit_phases[boundary->target_closure_index];
+      crosses_phase = unit_phases[boundary->source_closure_index] !=
+                      unit_phases[boundary->target_closure_index];
     }
     dataflow_edges.push_back(DataflowEdge(
         boundary->name, boundary->kind, boundary->source_closure, boundary->target_closure,
@@ -465,6 +472,76 @@ class BufferScopeCollector : public tir::StmtExprVisitor {
   }
 
   std::unordered_map<std::string, std::string> scope_by_buffer_;
+};
+
+struct BufferMetadata {
+  std::string scope;
+  std::vector<int64_t> shape;
+  std::string dtype;
+};
+
+std::optional<std::vector<int64_t>> ExtractStaticShape(const Array<PrimExpr>& shape) {
+  std::vector<int64_t> result;
+  result.reserve(shape.size());
+  for (const PrimExpr& dim : shape) {
+    const auto* imm = dim.as<IntImmNode>();
+    if (imm == nullptr) {
+      return std::nullopt;
+    }
+    result.push_back(imm->value);
+  }
+  return result;
+}
+
+class BufferMetadataCollector : public tir::StmtExprVisitor {
+ public:
+  std::unordered_map<std::string, BufferMetadata> Collect(const tir::PrimFunc& func) {
+    metadata_by_buffer_.clear();
+    for (const auto& [_, buffer] : func->buffer_map) {
+      Record(buffer);
+    }
+    VisitStmt(func->body);
+    return metadata_by_buffer_;
+  }
+
+ private:
+  void Record(const tir::Buffer& buffer) {
+    const std::string name = BufferIdentityName(buffer);
+    if (name.empty() || metadata_by_buffer_.count(name)) {
+      return;
+    }
+    BufferMetadata metadata;
+    metadata.scope = GetBufferScope(buffer);
+    metadata.dtype = tvm::runtime::DLDataTypeToString(buffer->dtype);
+    if (auto shape = ExtractStaticShape(buffer->shape)) {
+      metadata.shape = std::move(shape.value());
+    }
+    metadata_by_buffer_.emplace(name, std::move(metadata));
+  }
+
+  void VisitExpr_(const tir::BufferLoadNode* op) final {
+    Record(op->buffer);
+    tir::StmtExprVisitor::VisitExpr_(op);
+  }
+
+  void VisitStmt_(const tir::BufferStoreNode* op) final {
+    Record(op->buffer);
+    tir::StmtExprVisitor::VisitStmt_(op);
+  }
+
+  void VisitStmt_(const tir::DeclBufferNode* op) final {
+    Record(op->buffer);
+    tir::StmtExprVisitor::VisitStmt_(op);
+  }
+
+  void VisitStmt_(const tir::BlockNode* op) final {
+    for (const tir::Buffer& buffer : op->alloc_buffers) {
+      Record(buffer);
+    }
+    tir::StmtExprVisitor::VisitStmt_(op);
+  }
+
+  std::unordered_map<std::string, BufferMetadata> metadata_by_buffer_;
 };
 
 std::string DeriveDistributionKind(const std::string& scope) {
@@ -535,10 +612,92 @@ Array<LayoutSpec> BuildLayoutSpecs(const tir::PrimFunc& func,
         String("layout_" + subject), String(subject), String(info.scope),
         String(DeriveDistributionKind(info.scope)),
         ExecutionUnitNamesForIndices(info.unit_indices, execution_units),
-        ToIntegerArray(info.unit_indices), Array<String>{},
-        MakeAnchors("layout_spec", subject)));
+        ToIntegerArray(info.unit_indices), Array<String>{}, MakeAnchors("layout_spec", subject)));
   }
   return layout_specs;
+}
+
+std::string DeriveLiveValueRole(const BufferMetadata* metadata) {
+  if (metadata == nullptr) {
+    return "consumer_input";
+  }
+  if (metadata->scope == "global") {
+    return "consumer_input";
+  }
+  return "fragment";
+}
+
+const BufferMetadata* FindBufferMetadata(
+    const std::unordered_map<std::string, BufferMetadata>& metadata_by_buffer,
+    const String& subject) {
+  auto it = metadata_by_buffer.find(str(subject));
+  if (it == metadata_by_buffer.end()) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
+Array<LiveValue> BuildLiveValues(
+    const Array<DataflowEdge>& dataflow_edges,
+    const std::unordered_map<std::string, BufferMetadata>& metadata_by_buffer) {
+  Array<LiveValue> live_values;
+  for (int edge_index = 0; edge_index < dataflow_edges.size(); ++edge_index) {
+    const DataflowEdge& edge = dataflow_edges[edge_index];
+    const BufferMetadata* metadata = FindBufferMetadata(metadata_by_buffer, edge->subject);
+    std::vector<std::string> traits;
+    AppendUnique(&traits, str(edge->kind));
+    if (edge->crosses_phase) {
+      AppendUnique(&traits, "cross_phase");
+    }
+    live_values.push_back(
+        LiveValue(String("live_" + str(edge->name)), edge->subject, edge->producer_unit,
+                  edge->producer_unit_index, String(DeriveLiveValueRole(metadata)),
+                  metadata == nullptr ? Array<Integer>{} : ToIntegerArray(metadata->shape),
+                  metadata == nullptr ? String("unknown") : String(metadata->dtype),
+                  ToStringArray(traits), MakeAnchors("live_value", str(edge->name))));
+  }
+  return live_values;
+}
+
+Array<LiveValueEdge> BuildLiveValueEdges(const Array<DataflowEdge>& dataflow_edges,
+                                         const Array<LiveValue>& live_values) {
+  Array<LiveValueEdge> live_value_edges;
+  ICHECK_EQ(dataflow_edges.size(), live_values.size())
+      << "BuildLiveValueEdges requires dataflow_edges/live_values alignment";
+  for (int edge_index = 0; edge_index < dataflow_edges.size(); ++edge_index) {
+    const DataflowEdge& edge = dataflow_edges[edge_index];
+    const LiveValue& live_value = live_values[edge_index];
+    live_value_edges.push_back(
+        LiveValueEdge(String("live_edge_" + str(edge->name)), live_value->name, edge_index,
+                      edge->name, edge_index, edge->producer_unit, edge->consumer_unit,
+                      edge->producer_unit_index, edge->consumer_unit_index, edge->kind, true, false,
+                      MakeAnchors("live_value_edge", str(edge->name))));
+  }
+  return live_value_edges;
+}
+
+Array<MaterializationBoundary> BuildMaterializationBoundaries(
+    const Array<DataflowEdge>& dataflow_edges, const Array<LiveValue>& live_values,
+    const Array<LiveValueEdge>& live_value_edges) {
+  Array<MaterializationBoundary> materialization_boundaries;
+  ICHECK_EQ(dataflow_edges.size(), live_values.size())
+      << "BuildMaterializationBoundaries requires dataflow_edges/live_values "
+         "alignment";
+  ICHECK_EQ(dataflow_edges.size(), live_value_edges.size())
+      << "BuildMaterializationBoundaries requires "
+         "dataflow_edges/live_value_edges alignment";
+  for (int edge_index = 0; edge_index < dataflow_edges.size(); ++edge_index) {
+    const DataflowEdge& edge = dataflow_edges[edge_index];
+    const LiveValue& live_value = live_values[edge_index];
+    const LiveValueEdge& live_value_edge = live_value_edges[edge_index];
+    const bool crosses_phase = edge->crosses_phase;
+    materialization_boundaries.push_back(MaterializationBoundary(
+        String("materialization_" + str(edge->name)), live_value->name, edge_index,
+        live_value_edge->name, edge_index, String(crosses_phase ? "next_phase" : "same_unit"),
+        String("full_logical_value"), String(crosses_phase ? "cross_phase" : "same_phase"),
+        MakeAnchors("materialization_boundary", str(edge->name))));
+  }
+  return materialization_boundaries;
 }
 
 Array<PhasePlan> BuildPhasePlans(const Array<ExecutionUnit>& execution_units,
@@ -604,8 +763,7 @@ Array<PhasePlan> BuildPhasePlans(const Array<ExecutionUnit>& execution_units,
         DataflowEdgeNamesForIndices(phase.ingress_edge_indices, dataflow_edges),
         ToIntegerArray(phase.ingress_edge_indices),
         DataflowEdgeNamesForIndices(phase.egress_edge_indices, dataflow_edges),
-        ToIntegerArray(phase.egress_edge_indices),
-        ToStringArraySorted(phase.boundary_subjects),
+        ToIntegerArray(phase.egress_edge_indices), ToStringArraySorted(phase.boundary_subjects),
         MakeAnchors("phase_plan", std::to_string(phase_index))));
   }
   return phase_plans;
@@ -626,9 +784,17 @@ SpatialPlan BuildSpatialPlanForFunc(const std::string& member_func, const tir::P
   const Array<LayoutSpec> layout_specs = BuildLayoutSpecs(func, execution_units);
   const Array<PhasePlan> phase_plans =
       BuildPhasePlans(execution_units, dataflow_edges, unit_phases);
+  BufferMetadataCollector metadata_collector;
+  const std::unordered_map<std::string, BufferMetadata> metadata_by_buffer =
+      metadata_collector.Collect(func);
+  const Array<LiveValue> live_values = BuildLiveValues(dataflow_edges, metadata_by_buffer);
+  const Array<LiveValueEdge> live_value_edges = BuildLiveValueEdges(dataflow_edges, live_values);
+  const Array<MaterializationBoundary> materialization_boundaries =
+      BuildMaterializationBoundaries(dataflow_edges, live_values, live_value_edges);
 
   return SpatialPlan(String(member_func), execution_units, dataflow_edges, layout_specs,
-                     phase_plans, validated_hints, closures, boundaries,
+                     phase_plans, live_values, live_value_edges, materialization_boundaries,
+                     validated_hints, closures, boundaries,
                      MakeAnchors("spatial_plan", member_func));
 }
 
@@ -647,8 +813,8 @@ tvm::transform::Pass BuildSpatialPlan() {
       const SpatialPlan plan = BuildSpatialPlanForFunc(member_func, func.value());
 
       tir::PrimFunc updated_func = func.value();
-      Map<String, Any> attrs = updated_func->attrs.defined() ? updated_func->attrs->dict
-                                                             : Map<String, Any>();
+      Map<String, Any> attrs =
+          updated_func->attrs.defined() ? updated_func->attrs->dict : Map<String, Any>();
       attrs.Set(attr::kTLSpatialPlan, plan);
       attrs.Set(attr::kTLSpatialPlanValidated, Bool(false));
       updated_func.CopyOnWrite()->attrs = DictAttrs(attrs);
