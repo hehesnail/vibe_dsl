@@ -9,6 +9,7 @@
 #include <tvm/ir/expr.h>
 #include <tvm/tir/function.h>
 
+#include <initializer_list>
 #include <string>
 #include "../transform/common/blackhole_runtime_arg_schema.h"
 #include "../transform/common/companion_base.h"
@@ -45,6 +46,15 @@ inline Map<String, Any> AsMap(const Any& any) {
   return any.as<Map<String, Any>>().value_or(Map<String, Any>());
 }
 
+inline void CopyPayloadAllowlist(Map<String, Any>* dst, const Map<String, Any>& payload,
+                                 std::initializer_list<const char*> keys) {
+  for (const char* key : keys) {
+    if (auto value = payload.Get(String(key))) {
+      dst->Set(String(key), value.value());
+    }
+  }
+}
+
 inline tvm::ffi::Optional<TTProgram> GetTTProgram(const tir::PrimFunc& func) {
   return func->GetAttr<TTProgram>(attr::kTLTTProgram);
 }
@@ -58,12 +68,13 @@ inline TTProgram RequireTTProgram(const tir::PrimFunc& func, const char* consume
 inline Array<Any> EncodeCBPlans(const Array<TTCBPlan>& cb_plans) {
   Array<Any> encoded;
   for (const TTCBPlan& cb : cb_plans) {
-    Map<String, Any> item = cb->payload;
+    Map<String, Any> item;
     item.Set("name", cb->name);
     item.Set("cb_id", Integer(cb->cb_id));
     item.Set("role", cb->resource_class);
     item.Set("num_pages", Integer(cb->num_pages));
     item.Set("page_size", Integer(cb->page_size_bytes));
+    item.Set("total_size_bytes", Integer(cb->num_pages * cb->page_size_bytes));
     item.Set("data_format", cb->data_format);
     item.Set("initial_reserve_pages", Integer(cb->initial_reserve_pages));
     item.Set("flow_class", cb->flow_class);
@@ -77,7 +88,7 @@ inline Array<Any> EncodeCBPlans(const Array<TTCBPlan>& cb_plans) {
 }
 
 inline Map<String, Any> EncodeCoreGroup(const TTCoreGroup& core_group) {
-  Map<String, Any> item = core_group->payload;
+  Map<String, Any> item;
   item.Set("logical_grid_x", Integer(core_group->logical_grid_x));
   item.Set("logical_grid_y", Integer(core_group->logical_grid_y));
   item.Set("linearization", core_group->linearization);
@@ -89,7 +100,7 @@ inline Map<String, Any> EncodeCoreGroup(const TTCoreGroup& core_group) {
 inline Array<Any> EncodeSemaphorePlans(const Array<TTSemaphorePlan>& semaphore_plans) {
   Array<Any> encoded;
   for (const TTSemaphorePlan& sem : semaphore_plans) {
-    Map<String, Any> item = sem->payload;
+    Map<String, Any> item;
     item.Set("id", Integer(sem->semaphore_id));
     item.Set("initial_value", Integer(sem->initial_value));
     item.Set("core_type", sem->core_type);
@@ -104,7 +115,7 @@ inline Array<Any> EncodeSemaphorePlans(const Array<TTSemaphorePlan>& semaphore_p
 inline Array<Any> EncodeLiveFormPlans(const Array<TTLiveFormPlan>& live_form_plans) {
   Array<Any> encoded;
   for (const TTLiveFormPlan& plan : live_form_plans) {
-    Map<String, Any> item = plan->payload;
+    Map<String, Any> item;
     item.Set("name", plan->name);
     item.Set("logical_value", plan->logical_value);
     item.Set("spatial_live_value", plan->spatial_live_value);
@@ -124,7 +135,7 @@ inline Array<Any> EncodeMaterializationPlans(
     const Array<TTMaterializationPlan>& materialization_plans) {
   Array<Any> encoded;
   for (const TTMaterializationPlan& plan : materialization_plans) {
-    Map<String, Any> item = plan->payload;
+    Map<String, Any> item;
     item.Set("name", plan->name);
     item.Set("source_live_form", plan->source_live_form);
     item.Set("materialization_boundary", plan->materialization_boundary);
@@ -148,7 +159,7 @@ inline Array<Any> EncodeConsumerBindingPlans(
     const Array<TTConsumerBindingPlan>& consumer_binding_plans) {
   Array<Any> encoded;
   for (const TTConsumerBindingPlan& plan : consumer_binding_plans) {
-    Map<String, Any> item = plan->payload;
+    Map<String, Any> item;
     item.Set("name", plan->name);
     item.Set("consumer_kernel", plan->consumer_kernel);
     item.Set("consumer_op_kind", plan->consumer_op_kind);
@@ -170,10 +181,14 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram& program) {
   for (const TTKernel& kernel : program->kernels) {
     ICHECK_GE(kernel->abi_plan_index, 0);
     const TTABIPlan& abi = program->abi_plans[static_cast<size_t>(kernel->abi_plan_index)];
-    Map<String, Any> segment = kernel->payload;
+    Map<String, Any> segment;
     segment.Set("name", kernel->name);
     segment.Set("kind", kernel->kind);
     segment.Set("core_type", kernel->core_type);
+    CopyPayloadAllowlist(
+        &segment, kernel->payload,
+        {"launch_spec", "compute_config", "compute_ops",
+         ::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs});
     if (!abi->runtime_args.empty()) {
       segment.Set("runtime_args", abi->runtime_args);
     }
@@ -188,11 +203,6 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram& program) {
     }
     if (!abi->semaphore_bindings.empty()) {
       segment.Set("semaphore_bindings", abi->semaphore_bindings);
-    }
-    if (auto v = kernel->payload.Get(
-            String(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs))) {
-      segment.Set(String(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs),
-                  v.value());
     }
     segments.push_back(segment);
   }

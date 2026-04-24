@@ -34,6 +34,7 @@ from .common import (
 )
 from .test_blackhole_copy_pipeline import (
     _extract_blackhole_executable_spec,
+    _extract_materialized_blackhole_executable,
     _expected_launch_spec_for_core_type,
     _rebuild_codegen_module_without_lowering_requirements,
     _rebuild_codegen_module_with_tt_program,
@@ -232,6 +233,54 @@ def _rebuild_tt_materialization_plan(plan, *, payload=None):
         list(plan.required_cb_plan_indices),
         list(plan.required_sync_plan_indices),
         str(plan.produced_live_form),
+        dict(plan.payload) if payload is None else payload,
+    )
+
+
+def _rebuild_tt_cb_plan(plan, *, payload=None):
+    make_tt_cb_plan = tilelang.tvm.get_global_func("tl.TTCBPlan")
+    return make_tt_cb_plan(
+        str(plan.name),
+        int(plan.cb_id),
+        str(plan.resource_class),
+        int(plan.num_pages),
+        int(plan.page_size_bytes),
+        str(plan.data_format),
+        int(plan.initial_reserve_pages),
+        str(plan.flow_class),
+        int(plan.publish_pages_per_event),
+        int(plan.consume_pages_per_event),
+        int(plan.lifetime_begin),
+        int(plan.lifetime_end),
+        dict(plan.payload) if payload is None else payload,
+    )
+
+
+def _rebuild_tt_live_form_plan(plan, *, payload=None):
+    make_tt_live_form_plan = tilelang.tvm.get_global_func("tl.TTLiveFormPlan")
+    return make_tt_live_form_plan(
+        str(plan.name),
+        str(plan.logical_value),
+        str(plan.producer_kernel),
+        str(plan.physical_form),
+        str(plan.execution_topology),
+        int(plan.physical_local_extent),
+        int(plan.logical_element_count),
+        str(plan.ownership_kind),
+        dict(plan.payload) if payload is None else payload,
+    )
+
+
+def _rebuild_tt_consumer_binding_plan(plan, *, payload=None):
+    make_tt_consumer_binding_plan = tilelang.tvm.get_global_func("tl.TTConsumerBindingPlan")
+    return make_tt_consumer_binding_plan(
+        str(plan.name),
+        str(plan.consumer_kernel),
+        str(plan.consumer_op_kind),
+        str(plan.source_live_form),
+        bool(plan.accepts_distributed_slice),
+        bool(plan.requires_full_logical_tile),
+        int(plan.abi_plan_index),
         dict(plan.payload) if payload is None else payload,
     )
 
@@ -989,6 +1038,89 @@ def test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plan
     assert str(output_materialization["producer_kernel"]) == "compute"
     assert str(output_materialization["materialization_protocol"]) == "cb_republish"
     assert str(output_materialization["publication_protocol"]) == "pack_thread_direct_store"
+
+
+def test_blackhole_executable_projection_does_not_seed_leaf_records_from_payload():
+    kernel = fragment_fill_cast_publish_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    poison_key = "payload_poison"
+
+    def poison_payload(payload):
+        poisoned = dict(payload)
+        poisoned[poison_key] = "must_not_project"
+        return poisoned
+
+    def mutate(tt_program):
+        return rebuild_tt_program(
+            tt_program,
+            kernels=[
+                rebuild_tt_kernel(kernel, payload=poison_payload(kernel.payload))
+                for kernel in tt_program.kernels
+            ],
+            core_groups=[
+                rebuild_tt_core_group(group, payload=poison_payload(group.payload))
+                for group in tt_program.core_groups
+            ],
+            cb_plans=[
+                _rebuild_tt_cb_plan(plan, payload=poison_payload(plan.payload))
+                for plan in tt_program.cb_plans
+            ],
+            live_form_plans=[
+                _rebuild_tt_live_form_plan(plan, payload=poison_payload(plan.payload))
+                for plan in tt_program.live_form_plans
+            ],
+            materialization_plans=[
+                _rebuild_tt_materialization_plan(plan, payload=poison_payload(plan.payload))
+                for plan in tt_program.materialization_plans
+            ],
+            consumer_binding_plans=[
+                _rebuild_tt_consumer_binding_plan(
+                    plan, payload=poison_payload(plan.payload)
+                )
+                for plan in tt_program.consumer_binding_plans
+            ],
+        )
+
+    rewritten = {}
+    for gvar, func in artifact.device_mod.functions.items():
+        if func.attrs and "tl.tt_program" in func.attrs:
+            func = func.with_attr("tl.tt_program", mutate(require_tt_program(func)))
+        rewritten[gvar] = func
+    device_mod = tvm.IRModule(rewritten, global_infos=artifact.device_mod.global_infos)
+    device_mod = tilelang.transform.ValidateTTProgram()(device_mod)
+    device_mod = tilelang.transform.MaterializeBlackholeExecutable()(device_mod)
+
+    executable_spec = None
+    for func in device_mod.functions.values():
+        if func.attrs and "tl.blackhole_executable" in func.attrs:
+            executable_spec = _extract_materialized_blackhole_executable(func)
+            break
+    if executable_spec is None:
+        pytest.fail("Expected materialized Blackhole executable projection")
+
+    def assert_no_poison(value):
+        if hasattr(value, "items"):
+            items = dict(value)
+            assert poison_key not in items
+            for nested in items.values():
+                assert_no_poison(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                assert_no_poison(nested)
+
+    for key in (
+        "segment_plan",
+        "cb_configs",
+        "core_plan",
+        "live_form_plans",
+        "materialization_plans",
+        "consumer_binding_plans",
+    ):
+        assert_no_poison(executable_spec[key])
 
 
 def test_blackhole_fragment_fill_cast_publish_rejects_materialization_plan_without_host_buffer():

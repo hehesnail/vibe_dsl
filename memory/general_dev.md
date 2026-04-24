@@ -950,6 +950,23 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   或
   `output_buffer_addr32`
   的出现顺序猜
+- executable projection writer
+  不能以 child typed-node
+  的
+  `payload`
+  为 seed
+  再覆盖字段；
+  应 fresh-map 构造 leaf record，
+  对尚未上提成 typed field
+  但必须 leaf-visible 的字段
+  使用显式 allowlist。
+  回归测试要直接检查
+  `tl.blackhole_executable`
+  attr，
+  因为最终 runtime metadata parser
+  可能已经丢掉未知字段，
+  掩盖 projection writer
+  的 payload 泄漏
 
 ## 9. 调试模式
 
