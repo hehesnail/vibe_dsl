@@ -6,9 +6,18 @@
 - **状态**:
   live-form /
   materialization
-  owner truth
-  已落到
+  的 TT physical /
+  leaf owner truth
+  已在 admitted case
+  落到
   `TTProgram -> ExecutableSpec`；
+  `SpatialPlan`
+  侧的 logical live-value /
+  materialization boundary
+  仍是 required end-state，
+  不能被
+  TTProgram-only recovery
+  代替；
   direct runtime admission
   已有
   `pack_thread_direct_store`
@@ -118,8 +127,10 @@ materialization contract。
 
 ### 3.1 当前实现快照
 
-本轮实现已完成 owner-truth
-与当前 admission 部分：
+本轮实现只完成当前 admitted cases
+的 TT physical /
+leaf owner-truth
+部分：
 
 - `TTProgram`
   新增 typed
@@ -158,6 +169,37 @@ materialization contract。
   `cb_republish`
   materialize 成
   `cb_materialized_tile`
+
+这不等于
+`SpatialPlan`
+logical live-value
+表示已经完成。
+当前 admitted case
+仍主要由当前 TIR
+结构事实 /
+typed tileop contract /
+pass-local analysis
+进入
+`TTProgram`
+typed slice；
+后续一旦 support surface
+需要跨 execution-unit /
+phase 保留 logical live-value
+distinction，
+必须先补
+`SpatialPlan`
+的一等
+`LiveValue` /
+`LiveValueEdge` /
+`MaterializationBoundary`
+对象和
+`ValidateSpatialPlan`
+检查，
+不能继续让
+`PlanTT*`
+或 leaf reader
+自己恢复 logical producer-consumer
+关系。
 
 本轮实现没有把
 runtime/codegen
@@ -392,6 +434,34 @@ logical program meaning。
 semaphore id、
 runtime arg slot、
 TT core coordinate。
+
+当前实现如果尚未提供这些对象，
+该缺口必须按
+`missing explicit representation`
+处理：
+
+- 当前 admitted case
+  只能依赖可由当前 TIR
+  和 typed tileop contract
+  直接重算的局部事实
+- 任何不能在 analysis 失效后
+  从当前 TIR
+  稳定重算、
+  且下游 admission /
+  ABI /
+  materialization
+  仍需要的 distinction，
+  必须先进入
+  `SpatialPlan`
+- 不允许把
+  `buffer_materialization_contracts`
+  /
+  flow contracts
+  /
+  body-order matcher
+  写成替代
+  logical live-value
+  IR
 
 ### 5.2 `TTProgram` 侧：physical live form
 
@@ -680,7 +750,8 @@ live-form/materialization
 
 ## 9. 完成判据
 
-本轮 owner-truth closeout
+本轮 TT physical /
+leaf closeout
 必须同时满足：
 
 1. live-form /

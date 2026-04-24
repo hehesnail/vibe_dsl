@@ -235,7 +235,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 5. 当前已接入主链、但只算前置子步骤的工作包括：
    - `buffer effect / use-role analysis`
    - `buffer liveness analysis`
-   - `materialization / source-live-form planner decision`
+6. `materialization / source-live-form`
+   已重新收束为
+   `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
+   下的 support-surface admission lane，
+   不再作为单独顶层路线
 
 ---
 
@@ -285,25 +289,52 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `tasks/dev_design/archive/` 下内容全部视为历史记录，不再作为当前入口
 - semantic manifest 路径已完成；`AnalyzeSemanticStructure` 已全面改成 manifest-first
 - 当前实际 active chain 是：
-  `Normalized Tile TIR -> BuildSpatialPlan -> ValidateSpatialPlan -> SplitBlackholeKernel -> legacy attrs / narrow bridge residue -> PlanTTBlocks -> SelectBlackholeTTMetalBuiltins -> PlanTTCompute / PlanTTTransport / PlanTTSync / PlanTTABI / PlanTTExecution -> BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable -> runtime / codegen leaf readers`
+  `Normalized Tile TIR -> BuildSpatialPlan -> ValidateSpatialPlan -> SplitBlackholeKernel -> CaptureBlackholeLogicalBridgeSpecs narrow bridge -> PlanTTBlocks -> SelectBlackholeTTMetalBuiltins -> PlanTTCompute / PlanTTTransport / PlanTTSync / PlanTTABI / PlanTTExecution -> BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable -> runtime / codegen leaf readers`
 - 上面这串名字描述的是当前 pass/phase 实现，不是新的长期 IR 层；
   长期主链仍然只有 `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 - 当前已知迁移残留包括：
-  - `SpatialPlan -> TTProgram` 之间仍有 legacy transition attrs / narrow bridge seeds / helper residue
-  - `blackhole.copy_semantics`、`blackhole.segment_kind`、`blackhole.lowering_requirements`、`blackhole.resource_plan` 仍在 repo HEAD
-  - `PlanTTSync / PlanTTABI / PlanTTExecution` 已落地为显式 planner passes，但 leaf reader / cleanup 还没同时收口
+  - `tl.blackhole_logical_buffer_tile_bridge_specs`
+    仍是唯一窄 bridge attr，
+    不是长期边界
+  - `compute_contract` / `gemm_contract` /
+    `multi_*_contracts`
+    仍存在
+    `TTProgram.payload -> ExecutableSpec -> runtime`
+    compatibility 链
+  - `blackhole.segment_kind`
+    只允许作为
+    `lower_blackhole_ops.cc`
+    内部 pass-local mechanics，
+    final IR / leaf reader 前必须剥离
 - `SplitBlackholeKernel` 已实现并已接入管线；纯 copy 走 `fused_dataflow` 单 kernel，GEMM 走 3-kernel（reader/compute/writer）
 - direct runtime 当前 admitted 支持面：
   - copy：equal source/dest range，且 stride = 1
   - GEMM：A/B-separated reader range + writer output range；fresh fragment / preclear zero-init 统一走 `clear_accum=true` direct path
   - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
   - communication：non-oversubscribed explicit semaphore / remote-endpoint subset
+  - live-form / materialization：
+    当前 admitted bf16 subset 包括
+    `fragment_fill -> cast -> publish`
+    的 `pack_thread_direct_store`
+    path，
+    以及 GEMM post-merge
+    direct cast consumer
+    zero-preclear full-tile
+    `pack_tile`
+    path
 - `flash-attn` compile-path / source/spec baseline 已稳定，但 direct runtime correctness 还不是 admitted support surface
-- direct cast consumer 当前只保留 build/source contract gate，不作为 TT-Sim direct-runtime correctness gate
 - TT-Sim `fp16` 仍按 simulator capability boundary 处理，不作为当前 correctness gate
 - 当前总体 blocker
   统一以 `tasks/progress.md`
   里的主线任务状态为准；
-  当前问题不是单一 cutover 点，也不是 support surface 不够
+  当前问题不是单一 cutover 点；
+  当前下一步是补齐
+  `SpatialPlan`
+  logical live-value /
+  materialization-boundary
+  表示，
+  并将 leaf contract-family
+  从 payload/fallback
+  收敛到 typed schema
 - 后续所有架构推进以当前 layered IR 为准：
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`

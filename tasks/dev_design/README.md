@@ -15,7 +15,8 @@
 4. `task2_ttprogram_companion_cutover.md`
 5. `task3_runtime_gate_and_workload_cutover.md`
 6. `tasks/progress.md`
-7. `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
+7. `2026-04-23-blackhole-live-form-materialization-admission.md`
+8. `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
 
 当前 support surface / workload payoff lane
 的任务级设计固定为：
@@ -37,7 +38,7 @@
 - `blackhole_first_principles_protocol_audit.md`
   - 历史 surface 的删除/迁移落点表
 - `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
-  - cleanup 执行总览；配套 task0-task5 分文件一起阅读
+  - 已完成 cleanup 的边界索引；配套 task0-task5 分文件一起阅读
   - 它只定义 residue cleanup 的 ownership /
     forced debt /
     convergence gate，
@@ -83,7 +84,7 @@ pass 名字、helper、bag、payload、bridge attr
 | `task3_runtime_gate_and_workload_cutover.md` | `ExecutableSpec / leaf reader` 合同文档；定义 leaf reader 纪律、workload 恢复顺序与完成判据 |
 | `2026-04-23-blackhole-live-form-materialization-admission.md` | cleanup 之后 support surface lane 的任务级设计；定义 live-form / materialization owner truth、admission 顺序和禁止的 runtime-only patch |
 | `blackhole_first_principles_protocol_audit.md` | 删除/迁移表；列出现存 fake/legacy protocol 的表示层落点、validator 和 disposition |
-| `2026-04-16-blackhole-final-legacy-protocol-cleanup.md` | cleanup 执行总览；把 legacy protocol cleanup 拆成总览 + task0-task5 分文件 |
+| `2026-04-16-blackhole-final-legacy-protocol-cleanup.md` | 已完成 cleanup 的边界索引；把 legacy protocol cleanup 拆成总览 + task0-task5 分文件 |
 
 补充说明：
 
@@ -115,7 +116,7 @@ pass 名字、helper、bag、payload、bridge attr
 - `task3_runtime_gate_and_workload_cutover.md`
   - 主设计路线和 completion contract
 - `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
-  - cleanup overlap workstream 的
+  - 已完成 cleanup overlap workstream 的
     ownership /
     forced debt /
     convergence gate
@@ -140,6 +141,10 @@ cleanup 收口后，
 里的 support surface admission
 任务级设计，
 仍不单独充当新的顶层路线。
+当前执行顺序只在
+`tasks/progress.md`
+维护；
+README 不再重复维护 backlog。
 
 ## 5. 文档维护规则
 

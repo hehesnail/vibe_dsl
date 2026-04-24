@@ -1,9 +1,9 @@
 # Task 2: Remove Public And Internal Legacy Analysis Bags
 
-## 0. `2026-04-22` 更新
+## 0. `2026-04-24` 收口更新
 
-- **状态**: `in progress`
-- repo HEAD 已完成：
+- **状态**: `completed`
+- repo HEAD 当前已完成：
   - public
     `AnalyzeBlackhole*`
     wrapper 删除
@@ -13,20 +13,34 @@
   - producer-side logical bridge handoff
     已不再依赖
     `AnalyzeBlackholeComputeRegions`
-- 当前剩余主问题：
-  - `blackhole_lowering_requirements.cc`
-    虽已切到
-    `SpatialPlan + current TIR`
-    direct analysis，
-    但 broad bag 仍在 active planning chain
+  - `blackhole.lowering_requirements`
+    broad bag
+    已退出 active chain
   - `tl.blackhole_lowering_requirements_seed`
     /
     `blackhole.cb_requirements`
-    仍在 active chain
-  - exact builtin legality /
-    leaf build gate
-    还没完全收回
-    `TTProgram`
+    已退出 active chain
+  - `BuildTTProgram`
+    不再接收
+    `tl.internal_tt_*`
+    staging bag
+- 当前剩余相关 debt
+  不属于 task2 broad-analysis 删除：
+  - `tl.blackhole_logical_buffer_tile_bridge_specs`
+    是唯一窄 bridge attr，
+    后续由
+    `SpatialPlan`
+    logical live-value /
+    materialization-boundary
+    与 typed leaf materialization schema
+    替换
+  - `compute_contract`
+    /
+    `gemm_contract`
+    /
+    `multi_*_contracts`
+    是 task3 /
+    leaf contract-family debt
 
 > 下文 `2026-04-17` 的“当前状态 / 当前代码现实”
 > 保留为任务开始前快照，不再代表 repo HEAD 当前状态。
@@ -82,9 +96,9 @@
 - 顶层 `Task 2: TTProgram Representation Cutover`
   的全部工作
 
-## 3. 当前状态 (`2026-04-17`)
+## 3. 历史状态快照 (`2026-04-17`)
 
-当前 **不算完成**。
+当时 **不算完成**。
 
 repo HEAD 上已经成立的只有一些表面现象：
 

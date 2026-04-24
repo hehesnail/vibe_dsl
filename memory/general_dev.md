@@ -390,14 +390,25 @@
   不要把“允许缺失”本身再写成一层兼容语义
 - function-level target contract（如
   `gemm_contract / compute_contract / direct_runtime_unsupported_reasons`）
-  一旦进入 runtime/codegen 正式消费面，就应提升进 `TTProgram.payload`；
+  一旦进入 runtime/codegen 正式消费面，就应提升进 typed
+  `TTProgram` slice
+  和 typed
+  `ExecutableSpec`
+  schema；
+  `TTProgram.payload`
+  只能是 forced leaf compatibility debt，
   bridge attr 只能留作 compatibility fallback
 - leaf-only build/codegen gate data（如
   `buffer_tile_bridge_specs / unsupported_compute_ops`）
   也一样：
-  需要先进入 `TTProgram.payload`，
-  再由 `MaterializeBlackholeExecutable`
-  投影到 `tl.blackhole_executable`；
+  需要先进入 typed
+  `TTProgram`
+  object，
+  再由
+  `MaterializeBlackholeExecutable`
+  投影到 typed
+  `tl.blackhole_executable`
+  leaf schema；
   leaf reader 不应再直接摸
   `blackhole.lowering_requirements`
 - 这类 function-level contract 若先在 device `ExecutableSpec` 上补充，

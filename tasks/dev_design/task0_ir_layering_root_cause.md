@@ -9,7 +9,8 @@
 
 说明：
 
-- 本文档定义根因和 rewrite 方向
+- 本文档定义根因和 rewrite 方向；
+  不维护 cleanup 完成状态
 - 它不是当前 repo HEAD 状态文档
 - 当前实现状态统一以 `tasks/progress.md` 为准
 - 这里的 `Task 0`
@@ -19,8 +20,9 @@
 
 ## 1. 根因结论
 
-当前 Blackhole 后端的问题不是“后段 matcher 不够聪明”，
-而是下面三件事同时发生：
+Blackhole 后端这轮 rewrite 的根因
+不是“后段 matcher 不够聪明”，
+而是历史上下面三件事同时发生：
 
 1. **compute-side exact builtin 选择放得太晚**
    - tile op、layout、真实 `BufferLoad / BufferStore`
@@ -36,27 +38,33 @@
 
 一句话：
 
-> **当前真正缺的不是更多后段 contract，而是 `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec` 这条显式主链没有站稳，导致 exact builtin legality、virtual spatial/dataflow、target realization、leaf materialization 被挤到 side channel 里。**
+> **真正缺的不是更多后段 contract，而是 `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec` 这条显式主链必须成为唯一跨阶段语义载体；否则 exact builtin legality、virtual spatial/dataflow、target realization、leaf materialization 会继续被挤到 side channel 里。**
 
-repo HEAD 当前正好把这条根因
-分三段暴露出来：
+截至 `2026-04-24`，
+repo HEAD 已经把 broad legacy protocol /
+public wrapper /
+cross-pass bag
+从 active chain 中收掉。
+根因仍用于解释
+当前剩余 narrow leaf debt：
 
 1. `SpatialPlan`
-   还没收成 sole owner truth，
-   所以 public analysis wrapper /
-   broad bag
-   仍在替它承载语义
+   已收成 cleanup owner truth，
+   但 support-surface 扩展所需的
+   logical live-value /
+   materialization-boundary
+   一等表示仍需补齐
 2. planner / `TTProgram`
-   被迫继续吃
-   bridge seed / facts bag /
-   marker residue，
-   去补本该由上游显式化的 distinction
+   已成为 TT-specific realization
+   owner truth，
+   但仍存在
+   `tl.blackhole_logical_buffer_tile_bridge_specs`
+   这条窄 bridge attr
 3. build / codegen / runtime
-   虽然主链已经越来越站在
+   已站在
    `tl.tt_program -> tl.blackhole_executable`
    的显式投影上，
-   但 leaf 侧仍残留
-   marker scan /
+   但 leaf 侧仍保留
    compatibility payload /
    contract fallback
    这类 semantic recovery residue
@@ -68,10 +76,13 @@ repo HEAD 当前正好把这条根因
   不是根因本体
 - leaf residue
   也不是独立问题
-- **真正的第一推动错误**
+- **第一推动错误**
   是 target-independent 的
   spatial/dataflow owner truth
   没有及时收进显式 `SpatialPlan`
+  和后续显式对象；
+  当前后续工作不能把 leaf debt
+  反向写成新的上层协议
 
 ## 2. 这件事在分层 IR 上到底意味着什么
 
@@ -90,31 +101,21 @@ Normalized Tile TIR
 只是这四层的现有实现手段，
 不是新的 IR 层。
 
-尤其要注意两件事：
+当前 repo HEAD 的真实情况是：
 
-- `phase.py`
-  当前已经把
-  `AnalyzeSpatialStructureFacts -> BuildSpatialPlanCompanion -> ValidateSpatialPlan`
-  接进主链，
-  并继续下接
-  `PlanTTBlocks -> ... -> BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable`
-- 但 `lower.py`
-  顶层仍保留
-  `AnalyzeBlackholeComputeRegions()(LowerToBlackholePhaseB(mod))`
-  这条 legacy handoff，
-  而且 public
-  `AnalyzeBlackhole*`
-  wrapper
-  与旧 analysis tests
-  也还活着
-
-所以当前真实情况不是
-“层化 IR 完全没落地”，
-而是：
-
-- 显式主链已经存在
-- 但 side-channel residue
-  还在跨层串味
+- 显式主链已经存在并成为 active chain
+- broad legacy analysis /
+  public wrapper /
+  cross-pass bag
+  已退出
+- 剩余问题集中在
+  logical live-value
+  缺失、
+  narrow bridge attr
+  和 leaf contract-family
+  fallback，
+  这些只能继续按 debt 收敛，
+  不能写成新的中间层
 
 ### 2.1 `Normalized Tile TIR`
 
@@ -172,6 +173,9 @@ virtual spatial/dataflow 语义显式化，
 - `LayoutSpec`
 - `PhasePlan`
 - `ValidatedHintSet`
+- `LiveValue`
+- `LiveValueEdge`
+- `MaterializationBoundary`
 
 如果这些东西不在这一层显式存在，
 下游就只能继续靠名字、attrs、局部 matcher
@@ -251,28 +255,38 @@ build / codegen / runtime
 - payload bag
 - workload-specific lowering residue
 
-在当前 cleanup 主线上，
+在 cleanup 主线启动时，
 这些东西的典型形态已经很明确：
 
 - producer-side analysis /
-  public bag residue：
+  public bag residue，
+  现已退出 active chain：
   - `blackhole.work_decomposition`
   - `blackhole.compute_regions`
   - `blackhole.pipeline_stages`
   - public `AnalyzeBlackhole*`
     wrapper
 - planner / `TTProgram`
-  forced debt：
+  broad forced debt，
+  现已收敛；
+  剩余只允许作为 narrow leaf debt 跟踪：
   - `blackhole.lowering_requirements`
   - `blackhole.cb_requirements`
   - `tl.blackhole_lowering_requirements_seed`
   - `tl.internal_tt_*`
   - `tl.blackhole_logical_buffer_tile_bridge_specs`
-    这条唯一 narrow cleanup exception
+    这条唯一仍需替换的 narrow bridge exception
 - leaf semantic recovery residue：
   - `blackhole.copy_semantics`
   - `blackhole.segment_kind`
   - `blackhole.resource_plan`
+    这些 broad / cross-pass residue
+    已退出 active chain；
+    `blackhole.segment_kind`
+    只允许作为 pass-local mechanics
+    并在 leaf 前剥离
+  - `tl.blackhole_logical_buffer_tile_bridge_specs`
+    narrow bridge attr
   - `buffer_tile_bridge_specs`
     payload / projection / codegen residue
   - `compute_contract`
@@ -294,11 +308,13 @@ build / codegen / runtime
    没把 virtual spatial/dataflow owner truth
    收干净
 2. planner / `TTProgram`
-   被迫继续 carry
-   facts bag / seed / bridge residue
+   如果继续 carry
+   facts bag / seed / bridge residue，
+   就是在替上游显式表示补洞
 3. leaf
-   再从 marker / payload / fallback
+   如果再从 marker / payload / fallback
    恢复更晚阶段才需要的 meaning
+   就是在把 projection 反向变成 planning
 
 ## 4. repo-local 成熟后端和目标模型真正支持的是什么
 
@@ -477,12 +493,15 @@ TT-Metal 的稳定 host-side truth
   - 根因诊断
   - layered IR rewrite 方向
   - IR-first 纪律基线
-- cleanup 主线
-  `task0-task5`
-  只是删除和收口这些 forced debt 的执行切片，
-  不是新的 IR 层
+- cleanup `task0-task5`
+  是已完成 broad convergence
+  的执行切片，
+  不是新的 IR 层；
+  当前剩余 narrow leaf debt
+  只按 `tasks/progress.md`
+  和对应任务设计继续跟踪
 - `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
-  负责当前 repo HEAD 上
+  负责 cleanup 启动时
   compute-side exact builtin legality
   这条 cleanup 切片的 owner truth
 - `task1_spatial_plan_companion.md`
@@ -493,6 +512,6 @@ TT-Metal 的稳定 host-side truth
   负责定义 leaf reader / workload cutover 合同
 - `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
   负责把 task0-task5
-  组织成当前 cleanup 总览
+  组织成 cleanup 完成边界和验证索引
 - `tasks/progress.md`
   负责记录 repo HEAD 当前状态和下一步

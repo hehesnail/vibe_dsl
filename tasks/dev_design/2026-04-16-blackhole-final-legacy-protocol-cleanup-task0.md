@@ -1,5 +1,42 @@
 # Task 0: Lock Exact TT-Metal Builtin Surface And Add Dedicated Builtin Selection
 
+## 0. `2026-04-24` 收口更新
+
+- **状态**:
+  `completed broad cleanup /
+   leaf contract-family debt tracked outside task0`
+- repo HEAD 当前口径：
+  - helper / composite builtin
+    不再作为 active selected-TIR
+    owner truth
+  - `blackhole.cb_requirements`
+    /
+    `tl.blackhole_lowering_requirements_seed`
+    已退出 active chain
+  - exact builtin selection
+    与 downstream legality
+    已按 current IR /
+    typed planner result
+    fail-close
+  - broad task0 cleanup
+    不再是当前 blocker
+- 下文
+  `2026-04-20`
+  的“当前状态 / 当前代码现实”
+  保留为任务启动快照；
+  不再代表 repo HEAD 当前状态。
+- 仍存活的
+  `compute_contract`
+  /
+  `gemm_contract`
+  /
+  `multi_*_contracts`
+  runtime fallback
+  属于 task3 /
+  leaf contract-family debt，
+  不能反向把 task0
+  标成未完成。
+
 ## 1. 任务目标
 
 这个 task 只做一件事：
@@ -65,9 +102,9 @@
   里 selector 还吃 seed
   就倒灌回 task0 owner truth
 
-## 3. 当前状态 (`2026-04-20`)
+## 3. 历史状态快照 (`2026-04-20`)
 
-当前 **不算完成**。
+当时 **不算完成**。
 
 repo HEAD 里已经落地的局部结果只有：
 
@@ -124,15 +161,15 @@ repo HEAD 里已经落地的局部结果只有：
   里仍有 helper-named alias accessor /
   alias dispatch residue。
 
-所以当前只能写成：
+所以当时只能写成：
 
 > selector-forwarding slice 已落地
 
-不能写成：
+当时不能写成：
 
 > `Task 0` 已完成
 
-## 4. 当前代码现实
+## 4. 历史代码现实
 
 ### 4.1 selector pass 还不是独立 rewrite
 

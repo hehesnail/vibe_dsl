@@ -1,6 +1,6 @@
-# Blackhole Final Legacy Protocol Cleanup Plan
+# Blackhole Final Legacy Protocol Cleanup Boundary
 
-> 当前 cleanup 执行总览；默认和 task0-task5 分文件一起阅读。
+> 已完成 cleanup 的边界索引；默认和 task0-task5 分文件一起阅读。
 
 > 本文只定义 cleanup 的 task ownership、forced debt、唯一 exception、
 > 依赖顺序和 final convergence gate。
@@ -358,20 +358,40 @@ repo HEAD 当前 cleanup 顺序和状态
 
 本文不再重复维护
 当前任务队列；
-这里只保留一条顺序约束：
+这里只保留当前完成边界：
 
-- `task0`
-  的 selector-forwarding
-  前半切片已落地，
-  但不按完成计
-- `task0`
-  剩余的 full-contract cleanup
-  必须在 `task2`
-  切掉主要 analysis /
-  lowering bag 依赖之后
-  立即回收，
-  不能拖到 `task3`
-  之后
+- cleanup `task0-task5`
+  的 broad protocol convergence
+  已完成
+- broad legacy analysis /
+  wrapper /
+  bag /
+  cross-pass attr
+  不再是当前 active chain
+  的 owner truth
+- `tl.blackhole_logical_buffer_tile_bridge_specs`
+  仍是唯一窄 bridge exception，
+  只能按 forced leaf debt
+  继续收敛
+- `compute_contract`
+  /
+  `gemm_contract`
+  /
+  `multi_*_contracts`
+  仍在
+  `TTProgram.payload -> ExecutableSpec -> runtime`
+  fallback 链里，
+  只属于 task3 /
+  leaf contract-family debt
+- 后续顺序固定回到
+  `tasks/progress.md`
+  中的 support-surface lane：
+  先补
+  `SpatialPlan`
+  logical live-value /
+  materialization-boundary，
+  再 typed 化 leaf contract-family
+  并删除 runtime fallback
 
 ## 6. Primary File Surfaces
 

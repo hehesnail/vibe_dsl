@@ -39,6 +39,8 @@
 | `tl.internal_tt_*` | `TTProgram` | `TTProgram` 显式 slices | 只能短期 bridge，不是正式协议 | `ValidateTTProgram` 只接受显式 slices，不接受 internal attr bag | 删除 |
 | `TTProgram.payload` 大袋子 | `TTProgram -> ExecutableSpec` | `TTProgram` 显式 slices + leaf projection payload | 只能保留 leaf 投影级 payload，不能反向充当 planning source | `ValidateTTProgram` 禁止 payload 反客为主；`ValidateExecutableSpecProjection` 约束 leaf-only projection | 已收紧 |
 | `ExecutableSpec` 中的 raw payload | `ExecutableSpec` | leaf projection | 只能是投影结果，不能反向变成 planning source | `ValidateExecutableSpecProjection` | 已收紧 |
+| `tl.blackhole_logical_buffer_tile_bridge_specs` | `SpatialPlan -> TTProgram -> ExecutableSpec` 的待替换显式对象 | `LayoutSpec` / `LiveValue` / `MaterializationBoundary` / typed leaf materialization schema | 仍是跨 pass attr；只能作为当前唯一窄 bridge exception，不能在 task3 完成后继续被理解成 cleanup 已删除对象 | `ValidateSpatialPlan` / `ValidateTTProgram` / executable projection gate 必须逐步改为验证 typed objects | forced leaf debt，删除 |
+| `compute_contract` / `gemm_contract` / `multi_*_contracts` | `TTProgram -> ExecutableSpec` typed compute / kernel / materialization schema | `TTKernelPlan`、`TTABIPlan`、`TTExecutionPlan`、`TTLiveFormPlan`、`TTMaterializationPlan`、`TTConsumerBindingPlan` 或等价 typed object | 当前仍从 `TTProgram.payload` 投影并被 runtime fallback 消费；这只是 leaf compatibility debt，不是 `TTProgram` owner truth | `ValidateTTProgram` 的 payload shape check 只能 containment；leaf runtime 缺 typed schema 必须 fail-close | forced leaf debt，删除 fallback |
 
 ## 3. 当前 cleanup 解释
 
@@ -72,6 +74,38 @@
   这一个 leaf-local bridge surface，
   不重新引入整袋
   `blackhole.compute_regions`
+- 这条 narrow bridge
+  在 cleanup task3/task5
+  之后仍存活时，
+  只能按
+  forced leaf debt
+  继续跟踪；
+  `Legacy Protocol Deletion`
+  的 completed 状态
+  不能被解释成
+  该 attr
+  已经成为合法长期边界
+- `compute_contract` /
+  `gemm_contract` /
+  `multi_*_contracts`
+  仍由
+  `TTProgram.payload`
+  投影到 executable
+  并被 runtime fallback 消费时，
+  它们同样只属于
+  forced leaf debt；
+  正确退出条件是
+  typed `TTProgram`
+  slice 和 typed
+  `ExecutableSpec`
+  schema
+  承接所需 compute /
+  ABI /
+  materialization
+  facts，
+  然后删除
+  `compute_contract <- gemm_contract`
+  fallback
 - `AnalyzeBlackholeWorkDecomposition /
    AnalyzeBlackholeComputeRegions /
    AnalyzeBlackholePipelineStages`
@@ -860,23 +894,33 @@
   cross-pass contract
 - admitted runtime gate
   当前只覆盖
-  copy / GEMM；
+  copy / GEMM
+  以及当前已 admission 的
+  live-form /
+  materialization cases；
   direct cast consumer
   与
   `fragment_fill -> cast -> publish`
-  继续留在
-  build/source contract gate，
-  不反写
-  layered IR
-  completion contract；
-  cleanup 之后若要 admission，
-  必须按
+  已经按
   `2026-04-23-blackhole-live-form-materialization-admission.md`
-  把
+  把 TT physical /
+  leaf
   live-form /
   materialization
   owner truth
-  显式化，
+  显式化并进入
+  admitted bf16 direct-runtime
+  subset。
+  但这不代表
+  `SpatialPlan`
+  logical live-value /
+  materialization-boundary
+  已完成；
+  后续扩大 support surface
+  仍必须先补
+  `LiveValue` /
+  `LiveValueEdge` /
+  `MaterializationBoundary`，
   不得走 runtime-only patch
 - preclear zero-init GEMM
   一旦 canonicalize 到

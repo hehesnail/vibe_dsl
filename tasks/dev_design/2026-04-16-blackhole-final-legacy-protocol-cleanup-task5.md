@@ -137,15 +137,22 @@ delivery gate。
   当作 cross-pass protocol
 - admitted runtime gate
   已明确只保留
-  copy / GEMM；
+  copy / GEMM
+  和后续已 admission 的
+  live-form /
+  materialization
+  bf16 subset；
   direct cast consumer
   和
   `fragment_fill -> cast -> publish`
-  runtime
-  现在显式跳出
-  TT-Sim correctness gate，
-  只保留
-  build/source contract
+  在 cleanup 收口时
+  不是 hard gate，
+  但已经由
+  `2026-04-23-blackhole-live-form-materialization-admission.md`
+  按 typed projection /
+  explicit materialization
+  晋级为 admitted
+  bf16 direct-runtime subset
 - preclear zero-init GEMM
   canonicalize 到
   `clear_accum=true`
@@ -392,10 +399,21 @@ module 边界上：
   但 direct-runtime correctness
   还不是 admitted support surface
 - direct cast consumer
-  当前只保留 build/source contract gate
+  在 cleanup 收口时
+  只保留 build/source contract gate；
+  之后已按
+  live-form /
+  materialization
+  admission 设计
+  晋级当前 supported shape
 - `fragment_fill -> cast -> publish`
-  当前也只保留
-  build/source contract gate
+  在 cleanup 收口时
+  也只保留
+  build/source contract gate；
+  之后已按
+  explicit materialization
+  admission 设计
+  晋级当前 supported shape
 - TT-Sim `fp16`
   属于 simulator capability boundary，
   不是当前 correctness gate
@@ -690,6 +708,10 @@ pytest -q testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py
   baseline
   必须通过
 - admitted copy / GEMM
+  和当前已 admission 的
+  live-form /
+  materialization
+  bf16 subset
   direct-runtime baseline
   必须通过
 - `flash-attn`

@@ -485,8 +485,10 @@
 - **根因**:
   - leaf-only contract
     没有先进入
-    `TTProgram.payload`
-    和
+    typed `TTProgram`
+    object /
+    leaf schema
+    和临时
     `tl.blackhole_executable`
   - build/codegen/runtime
     仍然直接消费
@@ -496,11 +498,19 @@
     把
     `buffer_tile_bridge_specs /
      unsupported_compute_ops`
-    上提进
+    先上提进
+    typed `TTProgram`
+    object；
+    当前仍经
     `TTProgram.payload`
+    暂存的字段
+    只能按 leaf compatibility debt
+    处理
   - `MaterializeBlackholeExecutable`
     再把它们投影到
+    typed
     `tl.blackhole_executable`
+    leaf schema
   - leaf reader
     统一改读 executable projection
 - **教训**:

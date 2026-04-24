@@ -391,6 +391,40 @@ medium-term bridge layer。
   仍然活着时，
   只是 task3
   的 leaf/runtime compatibility debt
+- `ValidateTTProgram`
+  对这些 payload family
+  做 shape check
+  只能表示
+  debt containment，
+  不能表示这些字段已经成为
+  `TTProgram`
+  的合法 owner truth
+- required end-state
+  是把仍需要的
+  compute ABI /
+  compute config /
+  epilogue /
+  materialization
+  事实收进
+  `TTKernelPlan`
+  /
+  `TTABIPlan`
+  /
+  `TTExecutionPlan`
+  /
+  `TTLiveFormPlan`
+  /
+  `TTMaterializationPlan`
+  /
+  `TTConsumerBindingPlan`
+  等 typed slice，
+  或等价的一等 typed
+  `TTProgram`
+  object；
+  `TTProgram.payload`
+  不再被
+  `MaterializeBlackholeExecutable`
+  复制成 leaf truth
 
 ## 5. Validator 合同
 
@@ -662,6 +696,19 @@ build / codegen / runtime /
    反向合法化成
    `TTProgram`
    语义边界
+7. `compute_contract` /
+   `gemm_contract` /
+   `multi_*_contracts`
+   如果仍存在，
+   只允许作为 task3
+   leaf compatibility debt；
+   它们不能被
+   `ValidateTTProgram`
+   的 shape check
+   或 executable projection
+   重新解释成
+   `TTProgram`
+   完成态字段
 
 ## 10. 与 Cleanup Task 的关系
 

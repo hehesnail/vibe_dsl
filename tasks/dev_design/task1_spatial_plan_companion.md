@@ -37,6 +37,14 @@
   dataflow / carry / reduction / broadcast / join 关系
 - virtual layout / sharding / distribution 语义是什么
 - virtual phase / ordering / materialization boundary 是什么
+- logical live value
+  的 producer / consumer /
+  carry / reduction / broadcast
+  关系是什么
+- logical value
+  在跨 execution unit /
+  phase 被消费前
+  需要什么 materialization boundary
 - 哪些 hints
   经过 validate 后进入 planner
 
@@ -204,7 +212,65 @@ configure / launch 物化。
 - rejected hints
 - diagnostics
 
-### 3.6 兼容视图
+### 3.6 `LiveValue` / `LiveValueEdge` / `MaterializationBoundary`
+
+表示 support surface
+扩展时必须保留的
+logical live-value
+关系。
+
+它们应编码：
+
+- logical value identity
+- producer / consumer
+  `ExecutionUnit`
+- producer-consumer edge
+  与 carry /
+  reduction /
+  broadcast /
+  recurrence 分类
+- consumer 是否需要
+  full logical value
+  或可消费 distributed slice
+- materialization boundary
+  的 visibility /
+  coverage /
+  phase relation
+
+它们不编码：
+
+- CB id
+- semaphore id
+- runtime arg slot
+- TT core coordinate
+- publication protocol
+
+这些属于
+`TTProgram`
+或
+`ExecutableSpec`
+边界。
+
+如果当前实现尚未提供这组三类对象，
+后续 support-surface
+工作只能依赖
+当前 TIR
+可稳定重算的局部事实；
+任何需要跨阶段保留、
+下游 admission /
+ABI /
+materialization
+仍依赖的 live-value distinction，
+必须先补入这里，
+不能由
+`PlanTT*`
+或 leaf reader
+从 body order /
+builtin 序列 /
+buffer 名
+恢复。
+
+### 3.7 兼容视图
 
 当前代码里如果仍保留：
 
@@ -351,7 +417,19 @@ projection / codegen reader
 5. `ValidatedHintSet`
    中的 accepted / rejected /
    diagnostics 自洽
-6. 如果 compatibility projection
+6. logical live-value
+   对象存在时，
+   producer /
+   consumer /
+   materialization boundary
+   必须引用已存在的
+   `ExecutionUnit`
+   /
+   `DataflowEdge`
+   /
+   `PhasePlan`
+   且不得包含 TT noun
+7. 如果 compatibility projection
    仍暂时存在，
    它们必须和显式对象对齐，
    不能各自漂移
@@ -508,6 +586,17 @@ virtual spatial/dataflow 层。
     LayoutSpec /
     PhasePlan /
     ValidatedHintSet`
+   这组 cleanup owner truth；
+   后续 live-form /
+   materialization
+   support lane
+   若需要跨阶段 logical live-value
+   语义，
+   还必须继续补齐
+   `LiveValue /
+    LiveValueEdge /
+    MaterializationBoundary`
+   一等对象
 2. `ValidateSpatialPlan`
    已落地并成为
    下游 planner

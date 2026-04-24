@@ -86,9 +86,9 @@ task1 要修正的是
 - 把另一份 `Map<String, Any>` 或 payload
   包装成 replacement protocol
 
-## 3. 当前状态 (`2026-04-20`)
+## 3. 历史状态快照 (`2026-04-20`)
 
-当前 **不算完成**。
+当时 **不算完成**。
 
 repo HEAD 当前的 bridge 链路仍然是：
 

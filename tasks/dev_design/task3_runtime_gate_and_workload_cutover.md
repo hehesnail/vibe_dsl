@@ -387,6 +387,32 @@ leaf validator
   或 `gemm_contract`
   恢复语义，
   也只是 live compatibility debt
+- `MaterializeBlackholeExecutable`
+  如果仍直接从
+  `TTProgram.payload`
+  复制这些字段，
+  这只是 forced leaf debt
+  的当前实现形态，
+  不是 canonical writer
+  的长期合同
+- runtime /
+  `BlackholeModule`
+  如果仍通过
+  `compute_contract <- multi_compute_contracts <- gemm_contract`
+  选择 compute truth，
+  这只能是
+  wrong-now fallback；
+  required end-state
+  是 runtime
+  只读
+  `ExecutableSpec`
+  typed compute /
+  kernel /
+  materialization
+  records，
+  缺字段时 fail-close，
+  不再从旧 contract family
+  推断
 
 它们不是：
 
@@ -699,7 +725,15 @@ verification / residue scan /
 5. `buffer_tile_bridge_specs`
    与 contract-family residue
    只被明确记录为 debt，
-   不再被文档合法化成长期字段边界
+   不再被文档合法化成长期字段边界；
+   `compute_contract` /
+   `gemm_contract` /
+   `multi_*_contracts`
+   退出
+   `TTProgram.payload -> ExecutableSpec -> runtime`
+   fallback 链之前，
+   leaf contract-family deletion
+   不能被视为完成
 6. backend admission
    只停在 leaf execution gate，
    不再反向塑形

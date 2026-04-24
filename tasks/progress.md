@@ -3,14 +3,14 @@
 > 当前唯一总体设计文档:
 > `tasks/dev_design/final_blackhole_backend_redesign.md`
 
-> 当前 cleanup 执行总览:
+> 已完成 cleanup 的边界索引:
 > `tasks/dev_design/2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
 
 > 本文件只记录 repo HEAD 当前状态与下一步。
 
 ## 1. 当前总体状态
 
-- **日期**: `2026-04-23`
+- **日期**: `2026-04-24`
 - **当前总体 blocker**:
   cleanup blocker
   已解除；
@@ -18,19 +18,33 @@
   是
   `support surface / workload payoff`
   deferred lane
-  重新打开；
+  重新打开。
   `Legacy Protocol Deletion / cleanup task5 convergence`
-  已在 repo HEAD 完成，
+  已在 repo HEAD 完成；
   当前后续工作
-  回到 leaf admission /
+  回到
+  `SpatialPlan`
+  logical live-value /
+  materialization-boundary
+  表示补齐、
+  leaf contract-family typed 化、
   runtime-support-surface
   扩展
 - **当前推进原则**:
   layered IR 主链
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
   已完成收口；
+  这里的 completed
+  只表示 broad legacy protocol /
+  public wrapper /
+  cross-pass bag
+  已退出 active chain，
+  不表示所有 leaf compatibility
+  payload /
+  runtime fallback
+  已经删除；
   后续只在
-  leaf admission /
+  explicit representation admission /
   runtime gate /
   workload payoff
   上推进，
@@ -80,7 +94,7 @@
     exact TT-Metal legality
     的正式 hard gate
 - `Task 3: ExecutableSpec / Leaf Reader Cutover`
-  - 状态：`completed`
+  - 状态：`completed boundary cutover / leaf contract-family deletion remains open debt`
   - 当前结论：
     `MaterializeBlackholeExecutable`
     已成为
@@ -99,9 +113,19 @@
     已改成
     executable-kind +
     lowered builtin
-    direct structural extraction
+    direct structural extraction；
+    但
+    `compute_contract` /
+    `gemm_contract` /
+    `multi_*_contracts`
+    仍作为 leaf compatibility
+    metadata /
+    runtime fallback
+    存活，
+    不属于 task3
+    终态 leaf schema
 - `Legacy Protocol Deletion`
-  - 状态：`completed`
+  - 状态：`completed broad-protocol convergence / narrow leaf debt remains`
   - 说明：
     cleanup `task0-task5`
     是 overlap residue workstream，
@@ -227,8 +251,14 @@
   已解除冻结；
   live-form /
   materialization
-  owner truth
+  的 TT physical /
+  leaf owner truth
   已完成第一轮收口；
+  `SpatialPlan`
+  logical live-value /
+  materialization-boundary
+  一等表示仍是后续扩大支持面时
+  必须补齐的显式表示要求；
   `fragment_fill -> cast -> publish`
   的 constant fill
   `thread_distributed + cb_republish`
@@ -471,6 +501,47 @@ Normalized Tile TIR
   后续只允许按
   explicit leaf debt
   继续收敛
+- `tl.blackhole_logical_buffer_tile_bridge_specs`
+  仍是当前唯一窄 bridge attr；
+  它不是
+  `SpatialPlan`
+  /
+  `TTProgram`
+  /
+  `ExecutableSpec`
+  长期边界。
+  后续必须由
+  `SpatialPlan`
+  logical live-value /
+  layout /
+  materialization boundary
+  和 typed executable
+  materialization schema
+  承接后删除
+- `compute_contract` /
+  `gemm_contract` /
+  `multi_*_contracts`
+  仍存在
+  `TTProgram.payload -> tl.blackhole_executable -> ExecutableSpec -> runtime`
+  compatibility 链；
+  `ValidateTTProgram`
+  当前对它们做 shape check
+  只表示 debt containment，
+  不是 owner truth。
+  required end-state
+  是 typed
+  `TTProgram`
+  compute /
+  ABI /
+  materialization
+  slices
+  和 typed
+  `ExecutableSpec`
+  records
+  承接这些事实，
+  删除 runtime
+  `compute_contract <- gemm_contract`
+  fallback
 - `fragment_fill -> cast -> publish`
   /
   direct cast consumer
@@ -592,14 +663,36 @@ Normalized Tile TIR
    boundary
    表达，
    不回退到 leaf matcher
-2. 保持
+2. 扩大 support surface
+   前先补齐必要的
+   `SpatialPlan`
+   logical live-value /
+   materialization-boundary
+   表示；
+   不能让
+   `PlanTT*`
+   或 leaf reader
+   继续用 body-order matcher
+   承担跨阶段 owner truth
+3. 将
+   `compute_contract` /
+   `gemm_contract` /
+   `multi_*_contracts`
+   从 payload/fallback
+   收敛到 typed
+   `TTProgram`
+   和
+   `ExecutableSpec`
+   schema，
+   然后删除 runtime fallback
+4. 保持
    compile / projection /
    admitted runtime
    gate
    继续只站在
    explicit representation
    boundary 上
-3. flash-attn direct runtime
+5. flash-attn direct runtime
    只作为上述 admission
    完成后的 integration payoff，
    不作为当前设计驱动

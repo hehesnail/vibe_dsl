@@ -130,6 +130,13 @@ Normalized Tile TIR
 - 单元之间有哪些显式数据流 / carry / reduction / broadcast 关系
 - virtual layout / sharding / distribution 语义是什么
 - virtual phase / ordering / materialization boundary 是什么
+- logical live value
+  的 producer / consumer /
+  carry / reduction / broadcast
+  关系是什么
+- logical value
+  在跨 unit / phase 被消费前
+  需要什么 materialization boundary
 - 哪些 hint 经 validate 后进入 planner
 
 长期显式表示对象：
@@ -139,6 +146,9 @@ Normalized Tile TIR
 - `LayoutSpec`
 - `PhasePlan`
 - `ValidatedHintSet`
+- `LiveValue`
+- `LiveValueEdge`
+- `MaterializationBoundary`
 
 兼容视图：
 
@@ -166,6 +176,9 @@ Normalized Tile TIR
 - sync / completion / ordering
 - ABI / runtime args / accessor binding
 - execution / launch order / waves
+- physical live form /
+  materialization protocol /
+  consumer binding
 
 长期显式表示对象：
 
@@ -175,6 +188,9 @@ Normalized Tile TIR
 - `TTSyncPlan`
 - `TTABIPlan`
 - `TTExecutionPlan`
+- `TTLiveFormPlan`
+- `TTMaterializationPlan`
+- `TTConsumerBindingPlan`
 
 当前代码里的：
 
@@ -239,7 +255,10 @@ runtime-module build contract。
   CB /
   semaphore /
   core /
-  execution records
+  execution /
+  live-form /
+  materialization /
+  consumer-binding records
 - 基于显式 leaf projection
   做 execution backend 选择 /
   admission gate /
@@ -292,6 +311,31 @@ runtime-module build contract。
   或
   `ValidateTTProgram`
   的 legality 边界
+- `compute_contract` /
+  `gemm_contract` /
+  `multi_*_contracts`
+  这类 contract-family
+  字段如果仍从
+  `TTProgram.payload`
+  投影到
+  `ExecutableSpec`
+  或被 runtime fallback 消费，
+  只能是
+  leaf compatibility debt；
+  required end-state
+  是把仍需要的 compute ABI /
+  config /
+  epilogue /
+  materialization
+  事实收进
+  `TTProgram`
+  typed slices
+  和
+  `ExecutableSpec`
+  typed leaf schema，
+  删除
+  `compute_contract <- gemm_contract`
+  之类 fallback
 - cleanup 收口后重新打开的
   direct cast /
   `fragment_fill -> cast -> publish`
@@ -315,7 +359,11 @@ runtime-module build contract。
   buffer 名
   恢复 producer-consumer 语义；
   logical live value
-  必须先进入 `SpatialPlan`，
+  必须先进入 `SpatialPlan`
+  的
+  `LiveValue` /
+  `LiveValueEdge` /
+  `MaterializationBoundary`，
   TT physical live form
   必须进入 `TTProgram`，
   leaf materialization
@@ -525,9 +573,10 @@ planning seed
 - `blackhole.lowering_requirements` /
   `tl.blackhole_lowering_requirements_seed` /
   `blackhole.cb_requirements`
-  如果仍存在，
-  也只是 forced implementation debt，
-  不能继续被文档表述成
+  这类 broad planning debt
+  已退出 repo HEAD active chain；
+  后续不能重新引入，
+  也不能继续被文档表述成
   `TTProgram`
   的合法输入边界
 - `TTProgram.payload`
@@ -626,12 +675,21 @@ cleanup 文档的角色固定为：
 
 - `buffer effect / use-role`
 - `liveness`
-- `materialization / source-live-form`
 
 都只是
 `Task 1: SpatialPlan Representation Cutover`
 里的 preparatory substeps，
-不再单独充当顶层 roadmap
+不再单独充当顶层 roadmap。
+
+`materialization / source-live-form`
+在 cleanup 之后已经重新收束为
+support-surface admission lane；
+当前只通过
+`2026-04-23-blackhole-live-form-materialization-admission.md`
+和 `tasks/progress.md`
+跟踪，
+不再作为单独顶层路线，
+也不允许回退到 runtime-only matcher。
 
 当前活动设计文档按下面顺序约束实现：
 
