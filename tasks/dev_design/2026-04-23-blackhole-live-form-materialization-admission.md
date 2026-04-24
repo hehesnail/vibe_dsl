@@ -223,6 +223,26 @@ leaf reader
 自己恢复 logical producer-consumer
 关系。
 
+当前 repo HEAD
+的执行顺序不是直接扩大 runtime case。
+先把
+`PlanTT*`
+接到
+`SpatialPlan`
+live-value /
+materialization-boundary
+schema，
+再把 leaf contract-family
+从 payload/fallback
+收敛到 typed
+`TTProgram`
+/
+`ExecutableSpec`
+schema；
+之后才扩大非零 live-in /
+更宽 fragment materialization
+的 admitted runtime surface。
+
 本轮实现没有把
 runtime/codegen
 改成按 kernel shape /
@@ -638,6 +658,32 @@ buffer name
   不绕过 validator
 
 ## 7. Workload admission 顺序
+
+当前状态：
+
+- `fragment_fill -> cast -> publish`
+  的 constant fill
+  已通过
+  `pack_thread_direct_store`
+  admitted
+- direct cast consumer
+  的 zero-preclear
+  GEMM post-merge
+  full-tile shape
+  已通过
+  `pack_tile`
+  admitted
+- 非零 live-in /
+  更宽 fragment/cast producer
+  仍未 admitted；
+  进入这些 case 前，
+  必须先完成
+  `PlanTT*`
+  对
+  `SpatialPlan`
+  live-value boundary
+  的消费与 leaf contract-family
+  typed 化
 
 ### 7.1 第一阶段：`fragment_fill -> cast -> publish`
 

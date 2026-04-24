@@ -292,7 +292,17 @@
   晋级为 admitted
   bf16 direct runtime；
   当前剩余工作
-  是继续扩大
+  按顺序收束为：
+  先让
+  `PlanTT*`
+  消费并细化
+  `SpatialPlan`
+  live-value /
+  materialization-boundary
+  schema，
+  再收敛 leaf contract-family
+  typed schema，
+  然后扩大
   materialization admission
   支持面与 workload payoff；
   当前任务级设计
@@ -699,24 +709,9 @@ Normalized Tile TIR
 
 当前下一步固定为：
 
-1. 在现有 typed
-   live-form /
-   materialization
-   owner truth
-   基础上，
-   继续扩大
-   materialization admission
-   支持面：
-   非零 live-in merge、
-   更宽 fragment/cast producer
-   和后续 workload payoff
-   都必须继续通过
-   explicit representation
-   boundary
-   表达，
-   不回退到 leaf matcher
-2. 扩大 support surface
-   时继续消费并细化
+1. 先让
+   `PlanTT*`
+   消费并细化
    已落地的
    `SpatialPlan`
    logical live-value /
@@ -727,7 +722,7 @@ Normalized Tile TIR
    或 leaf reader
    继续用 body-order matcher
    承担跨阶段 owner truth
-3. 将
+2. 将
    `compute_contract` /
    `gemm_contract` /
    `multi_*_contracts`
@@ -738,6 +733,18 @@ Normalized Tile TIR
    `ExecutableSpec`
    schema，
    然后删除 runtime fallback
+3. 在上述 typed owner truth
+   基础上扩大
+   materialization admission
+   支持面：
+   非零 live-in merge、
+   更宽 fragment/cast producer
+   和后续 workload payoff
+   都必须继续通过
+   explicit representation
+   boundary
+   表达，
+   不回退到 leaf matcher
 4. 保持
    compile / projection /
    admitted runtime
@@ -745,7 +752,14 @@ Normalized Tile TIR
    继续只站在
    explicit representation
    boundary 上
-5. flash-attn direct runtime
+5. 等 layout /
+   materialization boundary
+   和 typed executable
+   materialization schema
+   全面承接后，
+   删除窄 bridge attr
+   `tl.blackhole_logical_buffer_tile_bridge_specs`
+6. flash-attn direct runtime
    只作为上述 admission
    完成后的 integration payoff，
    不作为当前设计驱动
