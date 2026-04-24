@@ -18,6 +18,7 @@ from tvm.target import Target
 from .common import (
     check_blackhole_codegen_requirements,
     lower_blackhole_to_tt_target,
+    rebuild_tt_abi_plan,
     rebuild_tt_kernel,
     rebuild_tt_program,
     require_tt_kernel,
@@ -127,6 +128,49 @@ def _assert_no_executable_contract_family(spec):
         "compute_epilogue_ops",
     ):
         assert legacy_key not in spec
+
+
+def _strip_tt_program_accessor_host_axis_order(tt_program):
+    def strip_accessors(accessors):
+        stripped = []
+        for accessor in accessors:
+            item = dict(accessor)
+            item.pop("host_axis_order", None)
+            stripped.append(item)
+        return stripped
+
+    def strip_compile_time_arg_specs(specs):
+        stripped = []
+        for spec in specs:
+            item = dict(spec)
+            item.pop("host_axis_order", None)
+            stripped.append(item)
+        return stripped
+
+    rebuilt_abi_plans = list(tt_program.abi_plans)
+    rebuilt_kernels = []
+    for kernel in tt_program.kernels:
+        abi_plan_index = int(kernel.abi_plan_index)
+        abi = tt_program.abi_plans[abi_plan_index]
+        accessors = strip_accessors(list(abi.accessors))
+        compile_time_arg_specs = strip_compile_time_arg_specs(
+            list(abi.compile_time_arg_specs)
+        )
+        payload = dict(kernel.payload)
+        if "accessors" in payload:
+            payload["accessors"] = strip_accessors(list(payload["accessors"]))
+        if "compile_time_arg_specs" in payload:
+            payload["compile_time_arg_specs"] = strip_compile_time_arg_specs(
+                list(payload["compile_time_arg_specs"])
+            )
+        rebuilt_abi_plans[abi_plan_index] = rebuild_tt_abi_plan(
+            abi, accessors=accessors, compile_time_arg_specs=compile_time_arg_specs
+        )
+        rebuilt_kernels.append(rebuild_tt_kernel(kernel, payload=payload))
+
+    return rebuild_tt_program(
+        tt_program, kernels=rebuilt_kernels, abi_plans=rebuilt_abi_plans
+    )
 
 
 def _blackhole_builtin_suffixes(func):
@@ -831,6 +875,38 @@ def test_flash_attention_buffer_materialization_emits_explicit_host_axis_order(
     }
     for buffer, axis_order in required_axis_orders.items():
         assert actual_axis_orders[buffer] == axis_order
+
+
+def test_flash_attention_build_rejects_missing_explicit_host_axis_order():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            mha_example.flashattn.jit_impl.get_tir(
+                1,
+                32,
+                128,
+                128,
+                False,
+                block_M=128,
+                block_N=128,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    with pytest.raises(
+        tvm.TVMError,
+        match="Blackhole buffer materialization requires explicit host_axis_order",
+    ):
+        _rebuild_codegen_module_with_tt_program(
+            artifact,
+            tt_program_mutator=_strip_tt_program_accessor_host_axis_order,
+        )
 
 
 def test_flash_attention_bf16_variant_keeps_shared_bridge_cbs_in_bfloat16():

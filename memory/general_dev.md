@@ -612,6 +612,25 @@
   不能只留在 compute contract；如果 host materialization 也要配合，
   就必须显式进 accessor/materialization schema
   （例如 `transpose_2d`），并由 host tilize / readback 真正执行
+- materialization host binding
+  必须由
+  `TTMaterializationPlan.host_buffer`
+  和 accessor /
+  compile-time ABI
+  中的
+  `transport_page_size` /
+  `host_axis_order` /
+  `transpose_2d`
+  显式表达；
+  不要从
+  `_local`
+  suffix、
+  single-output、
+  CB role、
+  first-CB、
+  固定 page size
+  或 tensor shape/work split
+  恢复这些语义
 - 如果 planner 已正式产出 `core_plan.work_packets` 且允许
   `work_count > 1`，direct runtime 不能再把 packet 扁平成
   “单波次 one-work-per-core” 假设；对还没把 `work_count`

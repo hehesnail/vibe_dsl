@@ -183,6 +183,8 @@ struct CompileTimeArgSpec {
   uint32_t transport_page_size_bytes = 0;
   std::string layout;
   std::string memory_space;
+  std::vector<int64_t> host_axis_order;
+  bool transpose_2d = false;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -217,6 +219,12 @@ struct CompileTimeArgSpec {
     }
     if (!memory_space.empty()) {
       writer->WriteObjectKeyValue("memory_space", memory_space);
+    }
+    if (!host_axis_order.empty()) {
+      writer->WriteObjectKeyValue("host_axis_order", host_axis_order);
+    }
+    if (transpose_2d) {
+      writer->WriteObjectKeyValue("transpose_2d", transpose_2d);
     }
     writer->EndObject();
   }
@@ -596,6 +604,7 @@ struct MaterializationPlanSpec {
   std::string materialization_boundary;
   int64_t materialization_boundary_index = -1;
   std::string target_buffer;
+  std::string host_buffer;
   std::string target_kernel;
   std::string materialization_protocol;
   std::string publication_protocol;
@@ -610,6 +619,7 @@ struct MaterializationPlanSpec {
     writer->WriteObjectKeyValue("materialization_boundary", materialization_boundary);
     writer->WriteObjectKeyValue("materialization_boundary_index", materialization_boundary_index);
     writer->WriteObjectKeyValue("target_buffer", target_buffer);
+    writer->WriteObjectKeyValue("host_buffer", host_buffer);
     writer->WriteObjectKeyValue("target_kernel", target_kernel);
     writer->WriteObjectKeyValue("materialization_protocol", materialization_protocol);
     writer->WriteObjectKeyValue("publication_protocol", publication_protocol);

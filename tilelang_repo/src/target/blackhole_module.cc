@@ -376,15 +376,6 @@ static int64_t ShapeProduct(const std::vector<int64_t>& shape, size_t begin, siz
   return product;
 }
 
-static std::vector<int64_t> MakeIdentityAxisOrder(int ndim) {
-  std::vector<int64_t> axis_order;
-  axis_order.reserve(ndim);
-  for (int i = 0; i < ndim; ++i) {
-    axis_order.push_back(i);
-  }
-  return axis_order;
-}
-
 static std::vector<int64_t> InvertAxisOrder(const std::vector<int64_t>& axis_order) {
   std::vector<int64_t> inverse(axis_order.size(), -1);
   for (size_t i = 0; i < axis_order.size(); ++i) {
@@ -411,84 +402,6 @@ static std::vector<int64_t> ComputeRowMajorStrides(const std::vector<int64_t>& s
     running *= shape[static_cast<size_t>(i)];
   }
   return strides;
-}
-
-static int AxisOrderDisplacementScore(const std::vector<int64_t>& axis_order) {
-  int score = 0;
-  for (size_t i = 0; i < axis_order.size(); ++i) {
-    score += std::abs(static_cast<int>(axis_order[i]) - static_cast<int>(i));
-  }
-  return score;
-}
-
-static uint32_t GetTotalLogicalWorkItems(const ExecutableSpec& spec) {
-  uint32_t total = 0;
-  for (const auto& packet : spec.core_plan.work_packets) {
-    total += packet.work_count;
-  }
-  return std::max<uint32_t>(1, total);
-}
-
-static std::vector<int64_t> InferWorkMajorAxisOrder(const DLTensor* tensor,
-                                                    uint32_t total_work_items,
-                                                    uint32_t tile_rows) {
-  const std::vector<int64_t> identity = MakeIdentityAxisOrder(tensor->ndim);
-  if (tensor->ndim <= 2 || total_work_items <= 1) {
-    return identity;
-  }
-
-  const std::vector<int64_t> shape = GetTensorShape(tensor);
-  const int64_t total_rows = ShapeProduct(shape, 0, shape.size() - 1);
-  if (total_rows <= 0 || total_rows % total_work_items != 0) {
-    return identity;
-  }
-  const int64_t rows_per_work_item = total_rows / total_work_items;
-  if (rows_per_work_item <= 0 || rows_per_work_item % tile_rows != 0) {
-    return identity;
-  }
-
-  std::vector<int64_t> row_axes;
-  row_axes.reserve(static_cast<size_t>(tensor->ndim - 1));
-  for (int i = 0; i < tensor->ndim - 1; ++i) {
-    row_axes.push_back(i);
-  }
-
-  std::vector<int64_t> best_axis_order;
-  int best_score = std::numeric_limits<int>::max();
-  do {
-    int64_t leading_product = 1;
-    for (size_t split = 1; split <= row_axes.size(); ++split) {
-      leading_product *= shape[static_cast<size_t>(row_axes[split - 1])];
-      if (leading_product > total_work_items) {
-        break;
-      }
-      if (leading_product != total_work_items) {
-        continue;
-      }
-      const int64_t trailing_product =
-          split == row_axes.size()
-              ? 1
-              : [&]() {
-                  int64_t product = 1;
-                  for (size_t i = split; i < row_axes.size(); ++i) {
-                    product *= shape[static_cast<size_t>(row_axes[i])];
-                  }
-                  return product;
-                }();
-      if (trailing_product != rows_per_work_item) {
-        continue;
-      }
-      std::vector<int64_t> candidate = row_axes;
-      candidate.push_back(tensor->ndim - 1);
-      const int score = AxisOrderDisplacementScore(candidate);
-      if (score < best_score) {
-        best_score = score;
-        best_axis_order = std::move(candidate);
-      }
-    }
-  } while (std::next_permutation(row_axes.begin(), row_axes.end()));
-
-  return best_axis_order.empty() ? identity : best_axis_order;
 }
 
 static bool IsValidAxisOrder(const std::vector<int64_t>& axis_order, int ndim) {
@@ -540,6 +453,7 @@ struct InterleavedTilePlan {
 static InterleavedTilePlan BuildInterleavedTilePlan(const ExecutableSpec& spec,
                                                     const BufferMaterializationSpec& materialization,
                                                     const DLTensor* tensor) {
+  (void)spec;
   InterleavedTilePlan plan;
   if (tensor == nullptr || tensor->ndim < 2 || !HasCompactRowMajorLayout(tensor)) {
     return plan;
@@ -567,7 +481,9 @@ static InterleavedTilePlan BuildInterleavedTilePlan(const ExecutableSpec& spec,
         << materialization.buffer;
     plan.axis_order = materialization.host_axis_order;
   } else {
-    plan.axis_order = InferWorkMajorAxisOrder(tensor, GetTotalLogicalWorkItems(spec), tile_rows);
+    ICHECK(!materialization.host_axis_order.empty())
+        << "Blackhole runtime requires explicit host_axis_order materialization contract for buffer "
+        << materialization.buffer;
   }
   const std::vector<int64_t> host_shape = GetTensorShape(tensor);
   const std::vector<int64_t> device_shape = PermuteShape(host_shape, plan.axis_order);

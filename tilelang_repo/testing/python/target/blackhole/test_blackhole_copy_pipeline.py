@@ -825,6 +825,43 @@ def test_blackhole_copy_buffer_materialization_specs_are_exposed():
     }
 
 
+def test_blackhole_copy_build_rejects_missing_explicit_transport_page_size():
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def segment_mutator(segment_plan):
+        mutated = []
+        for segment in segment_plan:
+            segment = dict(segment)
+            if "accessors" in segment:
+                accessors = []
+                for accessor in segment["accessors"]:
+                    accessor = dict(accessor)
+                    accessor.pop("transport_page_size", None)
+                    accessors.append(accessor)
+                segment["accessors"] = accessors
+            if "compile_time_arg_specs" in segment:
+                compile_time_arg_specs = []
+                for spec in segment["compile_time_arg_specs"]:
+                    spec = dict(spec)
+                    spec.pop("transport_page_size", None)
+                    compile_time_arg_specs.append(spec)
+                segment["compile_time_arg_specs"] = compile_time_arg_specs
+            mutated.append(segment)
+        return mutated
+
+    with pytest.raises(
+        tvm.TVMError,
+        match="Blackhole buffer materialization requires explicit transport_page_size",
+    ):
+        _rebuild_codegen_module_with_body_and_segment_plan(
+            artifact, segment_mutator=segment_mutator
+        )
+
+
 def test_blackhole_copy_build_reads_executable_without_legacy_projection_attrs():
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     target = Target("blackhole")

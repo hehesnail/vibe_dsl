@@ -1,79 +1,40 @@
 # TileLang Blackhole Backend Progress
 
 > 设计依据只看 `tasks/dev_design/final_blackhole_backend_redesign.md`。
-> 本文件只记录 repo HEAD 当前状态、blocker、下一步和最近验证。
+> 本文件只记录当前状态、阻塞、下一步和最近验证；不写设计细节。
 
-## Current Status
+## Status
 
 - Date: `2026-04-24`
 - Active lane: `public specialization residue cleanup`
-- Current blocker: none after P0.4; next active risk is P0.5 materialization host/layout fallback
-- Active item: `P0.5 materialization host/layout binding`
-- Broad state:
-  - Main layered chain is fixed as `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
-  - Cleanup task0-task5 broad legacy protocol convergence is complete
-  - Support-surface / workload payoff lane remains open, but public specialization residues stay ahead of new workload expansion
+- Current item: `P0.6 projection payload seed cleanup`
+- Blocker: none
+- Main chain: `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
-## Priority Queue
+## Priority
 
-1. `P0.1 contract-family public surface`
-   - Status: `completed`
-   - Result: top-level contract-family projection / `ExecutableSpec` / runtime metadata surface removed
-   - Verification: build, GEMM, flash pipeline/runtime, spatial/copy/export, selected TT-Sim GEMM
+- `P0.1 contract-family public surface`: completed
+- `P0.2 compute operand binding`: completed
+- `P0.3 host wrapper / codegen buffer binding`: completed
+- `P0.4 typed per-work descriptor`: completed
+- `P0.5 materialization host/layout binding`: completed
+- `P0.6 projection payload seed cleanup`: next
+- `P1 SpatialPlan live/materialization refinement`: after P0
+- `P1 compute-kind extension`: after P0
+- `P1/P2 workload payoff`: after P0/P1 gates
 
-2. `P0.2 compute operand binding`
-   - Status: `completed`
-   - Result: GEMM A/B/C binding moved from reader/writer runtime arg order to typed `KernelSpec.compute_ops[].operand_bindings`
-   - Verification: build, GEMM, spatial/copy/flash/export, selected TT-Sim typed-compute cases
+## Open Debt
 
-3. `P0.3 host wrapper / codegen buffer binding`
-   - Status: `completed`
-   - Result: host wrapper, codegen, and direct-runtime accessor ABI now require exact formal buffer identity plus explicit `buffer` role schema
-   - Verification: build, copy pipeline, GEMM, spatial/flash/export, selected TT-Sim copy/common-buffer/GEMM
+- `tl.blackhole_logical_buffer_tile_bridge_specs` remains the only narrow bridge attr.
+- Some projection paths still seed executable records from typed-node `payload` until P0.6.
+- Flash-attn compile/source/spec baseline is stable; direct runtime correctness is not admitted.
 
-4. `P0.4 typed per-work descriptor`
-   - Status: `completed`
-   - Result: per-work descriptors now carry typed `descriptor_kind` / `value_source` / `arg_identity`; runtime/codegen consume identity + typed source instead of arg-kind fallback
-   - Verification: build, copy pipeline, flash pipeline/runtime, GEMM/copy selected TT-Sim
+## Latest Verification
 
-5. `P0.5 materialization host/layout binding`
-   - Status: `active`
-   - Goal: remove `_local` suffix, single-output fallback, and shape heuristics from materialization host/layout binding
-   - Replacement: explicit `TTMaterializationPlan` / `ExecutableSpec` host binding and layout/axis truth
+P0.5 materialization host/layout binding:
 
-6. `P0.6 projection payload seed cleanup`
-   - Status: `pending`
-   - Goal: projection encoders stop seeding executable records from typed-node `payload`
-   - Replacement: fresh typed projection maps plus explicit diagnostic allowlist
-
-7. `P1 SpatialPlan live/materialization refinement`
-   - Status: `pending after P0`
-   - Focus: recurrence, reduction row state, non-zero live-in merge, and wider consumer binding
-
-8. `P1 compute-kind extension`
-   - Status: `pending after P0`
-   - Focus: add non-GEMM TT-Metal compute instructions as generic `KernelSpec.compute_ops[].kind` entries
-
-9. `P1/P2 workload payoff`
-   - Status: `pending after P0/P1 gates`
-   - Focus: materialization admission expansion, narrow bridge deletion, then flash-attn direct runtime
-
-## Remaining Debt
-
-- `tl.blackhole_logical_buffer_tile_bridge_specs` remains the only narrow bridge attr
-- Materialization host/layout binding still has suffix / fallback / heuristic residue until P0.5 completes
-- Some projection paths still use typed-node `payload` as construction seed until P0.6 completes
-- Flash-attn compile/source/spec baseline is stable; direct runtime correctness is not yet admitted support surface
-
-## Current Baseline
-
-- Active pass/phase implementation:
-  `BuildSpatialPlan -> ValidateSpatialPlan -> SplitBlackholeKernel -> CaptureBlackholeLogicalBridgeSpecs -> PlanTTBlocks -> SelectBlackholeTTMetalBuiltins -> PlanTTCompute/PlanTTTransport/PlanTTSync/PlanTTABI/PlanTTExecution -> BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable`
-- Direct runtime admitted support:
-  copy equal range stride-1; GEMM A/B-separated reader + writer output; interleaved DRAM accessors with no common runtime accessor args; non-oversubscribed explicit semaphore / remote endpoint subset; admitted bf16 materialization paths documented in the design docs
-- Latest P0.4 verification:
-  - `cmake --build build -j32`
-  - `pytest -q testing/python/target/blackhole/test_blackhole_copy_pipeline.py`
-  - `pytest -q testing/python/target/blackhole/test_blackhole_gemm.py testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
-  - `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`
-  - TT-Sim selected: `test_blackhole_module_direct_call_grid_indexed_copy_multicore_launch`, `test_blackhole_module_direct_call_accepts_richer_copy_schema_with_explicit_per_work_spec`, `test_blackhole_gemm_direct_runtime_uses_typed_compute_ops_without_contract_family`
+- `cmake --build build -j32`
+- P0.5 regression selectors: `5 passed`
+- copy/GEMM/flash pipeline: `157 passed, 26 skipped, 1 xfailed`
+- spatial/export: `21 passed`
+- TT-Sim selected direct-runtime cases: `5 passed`

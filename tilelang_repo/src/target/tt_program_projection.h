@@ -130,6 +130,7 @@ inline Array<Any> EncodeMaterializationPlans(
     item.Set("materialization_boundary", plan->materialization_boundary);
     item.Set("materialization_boundary_index", Integer(plan->materialization_boundary_index));
     item.Set("target_buffer", plan->target_buffer);
+    item.Set("host_buffer", plan->host_buffer);
     item.Set("target_kernel", plan->target_kernel);
     item.Set("materialization_protocol", plan->materialization_protocol);
     item.Set("publication_protocol", plan->publication_protocol);

@@ -907,7 +907,9 @@ static Map<String, Any> MakeCompileTimeArgSpec(const std::string& name,
                                                int args_config_bits = 0,
                                                int transport_page_size_bytes = 0,
                                                const std::string& layout = "",
-                                               const std::string& memory_space = "") {
+                                               const std::string& memory_space = "",
+                                               std::vector<int64_t> host_axis_order = {},
+                                               bool transpose_2d = false) {
   Map<String, Any> spec;
   spec.Set("name", String(name));
   spec.Set("kind", String(kind));
@@ -938,6 +940,16 @@ static Map<String, Any> MakeCompileTimeArgSpec(const std::string& name,
   }
   if (!memory_space.empty()) {
     spec.Set("memory_space", String(memory_space));
+  }
+  if (!host_axis_order.empty()) {
+    Array<Any> axis_order;
+    for (int64_t axis : host_axis_order) {
+      axis_order.push_back(Integer(axis));
+    }
+    spec.Set("host_axis_order", axis_order);
+  }
+  if (transpose_2d) {
+    spec.Set("transpose_2d", Bool(true));
   }
   return spec;
 }
@@ -1899,7 +1911,7 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
     payload.Set("materialization_boundary_index", Integer(source_boundary_ref->index));
     tt_materialization_plans_.push_back(TTMaterializationPlan(
         String(materialization_name), String(source_live_form), String(source_boundary_ref->name),
-        source_boundary_ref->index, String(target_name), String(kernel_name),
+        source_boundary_ref->index, String(target_name), String(), String(kernel_name),
         String(buffer_materialization::kCBRepublish), String(publication_protocol),
         required_cb_indices, required_sync_indices,
         String(produced_live_form), payload));
@@ -1950,6 +1962,45 @@ void PlanTTKernelABI::FinalizeConsumerBindingABIIndices() {
         plan->requires_full_logical_tile, abi_plan_index, plan->payload));
   }
   tt_consumer_binding_plans_ = finalized;
+}
+
+void PlanTTKernelABI::FinalizeMaterializationPlanHostBuffers() {
+  if (tt_materialization_plans_.empty()) {
+    return;
+  }
+
+  std::unordered_set<std::string> accessor_buffers;
+  for (const AccessorDescriptor& accessor : accessor_descriptors_) {
+    if (!accessor.buffer_name.empty()) {
+      accessor_buffers.insert(accessor.buffer_name);
+    }
+  }
+
+  Array<TTMaterializationPlan> finalized;
+  for (const TTMaterializationPlan& plan : tt_materialization_plans_) {
+    const std::string target_buffer = static_cast<std::string>(plan->target_buffer);
+    std::string host_buffer = static_cast<std::string>(plan->host_buffer);
+
+    auto mapped_host = host_buffer_by_compute_operand_buffer_.find(target_buffer);
+    if (mapped_host != host_buffer_by_compute_operand_buffer_.end() && !mapped_host->second.empty()) {
+      host_buffer = mapped_host->second;
+    } else if (host_buffer.empty() && accessor_buffers.count(target_buffer)) {
+      host_buffer = target_buffer;
+    }
+
+    Map<String, Any> payload = plan->payload;
+    if (!host_buffer.empty()) {
+      payload.Set("host_buffer", String(host_buffer));
+    }
+
+    finalized.push_back(TTMaterializationPlan(
+        plan->name, plan->source_live_form, plan->materialization_boundary,
+        plan->materialization_boundary_index, plan->target_buffer, String(host_buffer),
+        plan->target_kernel, plan->materialization_protocol, plan->publication_protocol,
+        plan->required_cb_plan_indices, plan->required_sync_plan_indices,
+        plan->produced_live_form, payload));
+  }
+  tt_materialization_plans_ = finalized;
 }
 
 void PlanTTKernelABI::LoadPhysicalComputeBufferBindings(const PrimFunc& func) {
@@ -3220,6 +3271,15 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
           accessor.Get("transport_page_size")
               ? Downcast<Integer>(accessor.Get("transport_page_size").value()).IntValue()
               : 0;
+      std::vector<int64_t> host_axis_order;
+      if (auto axis_order_value = accessor.Get("host_axis_order")) {
+        for (const Any& axis : Downcast<Array<Any>>(axis_order_value.value())) {
+          host_axis_order.push_back(Downcast<Integer>(axis).IntValue());
+        }
+      }
+      const bool transpose_2d =
+          accessor.Get("transpose_2d") ? Downcast<Bool>(accessor.Get("transpose_2d").value())
+                                       : false;
 
       compile_time_arg_specs.push_back(MakeCompileTimeArgSpec(
           buffer,
@@ -3233,7 +3293,9 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
           args_config_bits,
           transport_page_size,
           layout,
-          memory_space));
+          memory_space,
+          host_axis_order,
+          transpose_2d));
     }
     return compile_time_arg_specs;
   };
@@ -3701,6 +3763,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
       rewritten_segments = segments_with_compute_ops;
     }
     segment_plan_ = rewritten_segments;
+    FinalizeMaterializationPlanHostBuffers();
     BuildTTKernelAndABISeeds(segment_plan_, &tt_kernels_, &tt_abi_plans_);
     FinalizeConsumerBindingABIIndices();
   }

@@ -877,6 +877,14 @@ static std::vector<CompileTimeArgSpec> ExtractCompileTimeArgSpecsFromArray(
     if (auto v = spec_info.Get("memory_space")) {
       spec.memory_space = Downcast<String>(v.value());
     }
+    if (auto v = spec_info.Get("host_axis_order")) {
+      for (const auto& axis : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+        spec.host_axis_order.push_back(Downcast<Integer>(axis).IntValue());
+      }
+    }
+    if (auto v = spec_info.Get("transpose_2d")) {
+      spec.transpose_2d = Downcast<Bool>(v.value());
+    }
     if (spec.count == 0) {
       spec.count = static_cast<uint32_t>(spec.values.size());
     }
@@ -1132,6 +1140,7 @@ static std::vector<MaterializationPlanSpec> ExtractMaterializationPlans(const ti
       plan.materialization_boundary_index = Downcast<Integer>(value.value())->value;
     }
     if (auto value = item.Get("target_buffer")) plan.target_buffer = Downcast<String>(value.value());
+    if (auto value = item.Get("host_buffer")) plan.host_buffer = Downcast<String>(value.value());
     if (auto value = item.Get("target_kernel")) plan.target_kernel = Downcast<String>(value.value());
     if (auto value = item.Get("materialization_protocol")) {
       plan.materialization_protocol = Downcast<String>(value.value());
@@ -1271,31 +1280,6 @@ static std::unordered_map<std::string, StaticBufferInfo> CollectStaticBufferInfo
   return by_name;
 }
 
-static int64_t ShapeProduct(const std::vector<int64_t>& shape, size_t begin, size_t end) {
-  int64_t product = 1;
-  for (size_t i = begin; i < end; ++i) {
-    product *= shape[i];
-  }
-  return product;
-}
-
-static std::vector<int64_t> MakeIdentityAxisOrder(size_t ndim) {
-  std::vector<int64_t> axis_order;
-  axis_order.reserve(ndim);
-  for (size_t i = 0; i < ndim; ++i) {
-    axis_order.push_back(static_cast<int64_t>(i));
-  }
-  return axis_order;
-}
-
-static int AxisOrderDisplacementScore(const std::vector<int64_t>& axis_order) {
-  int score = 0;
-  for (size_t i = 0; i < axis_order.size(); ++i) {
-    score += std::abs(static_cast<int>(axis_order[i]) - static_cast<int>(i));
-  }
-  return score;
-}
-
 static uint32_t GetTotalLogicalWorkItems(const CorePlan& core_plan) {
   uint32_t total = 0;
   for (const auto& packet : core_plan.work_packets) {
@@ -1322,60 +1306,6 @@ static std::unordered_set<std::string> CollectMaterializedBufferNames(const Exec
     }
   }
   return buffers;
-}
-
-static std::vector<int64_t> InferStaticWorkMajorAxisOrder(
-    const std::vector<int64_t>& shape, uint32_t total_work_items, uint32_t tile_rows) {
-  const std::vector<int64_t> identity = MakeIdentityAxisOrder(shape.size());
-  if (shape.size() <= 2 || total_work_items <= 1) {
-    return identity;
-  }
-
-  const int64_t total_rows = ShapeProduct(shape, 0, shape.size() - 1);
-  if (total_rows <= 0 || total_rows % total_work_items != 0) {
-    return identity;
-  }
-  const int64_t rows_per_work_item = total_rows / total_work_items;
-  if (rows_per_work_item <= 0 || rows_per_work_item % tile_rows != 0) {
-    return identity;
-  }
-
-  std::vector<int64_t> row_axes;
-  row_axes.reserve(shape.size() - 1);
-  for (size_t i = 0; i + 1 < shape.size(); ++i) {
-    row_axes.push_back(static_cast<int64_t>(i));
-  }
-
-  std::vector<int64_t> best_axis_order;
-  int best_score = std::numeric_limits<int>::max();
-  do {
-    int64_t leading_product = 1;
-    for (size_t split = 1; split <= row_axes.size(); ++split) {
-      leading_product *= shape[static_cast<size_t>(row_axes[split - 1])];
-      if (leading_product > total_work_items) {
-        break;
-      }
-      if (leading_product != total_work_items) {
-        continue;
-      }
-      int64_t trailing_product = 1;
-      for (size_t i = split; i < row_axes.size(); ++i) {
-        trailing_product *= shape[static_cast<size_t>(row_axes[i])];
-      }
-      if (trailing_product != rows_per_work_item) {
-        continue;
-      }
-      std::vector<int64_t> candidate = row_axes;
-      candidate.push_back(static_cast<int64_t>(shape.size() - 1));
-      const int score = AxisOrderDisplacementScore(candidate);
-      if (score < best_score) {
-        best_score = score;
-        best_axis_order = std::move(candidate);
-      }
-    }
-  } while (std::next_permutation(row_axes.begin(), row_axes.end()));
-
-  return best_axis_order.empty() ? identity : best_axis_order;
 }
 
 struct SegmentInfo {
@@ -1938,6 +1868,16 @@ static ffi::Array<ffi::Any> EncodeCompileTimeArgSpecs(
     if (!spec.memory_space.empty()) {
       spec_info.Set("memory_space", ffi::String(spec.memory_space));
     }
+    if (!spec.host_axis_order.empty()) {
+      ffi::Array<ffi::Any> axis_order;
+      for (int64_t axis : spec.host_axis_order) {
+        axis_order.push_back(Integer(axis));
+      }
+      spec_info.Set("host_axis_order", axis_order);
+    }
+    if (spec.transpose_2d) {
+      spec_info.Set("transpose_2d", Bool(true));
+    }
     encoded.push_back(spec_info);
   }
   return encoded;
@@ -1994,35 +1934,6 @@ static bool IsOutputBufferArgKind(const std::string& kind) {
   return kind == "output_buffer_addr32" || kind == "output_buffer_addr";
 }
 
-static std::string ResolveBufferRole(const ExecutableSpec& spec, const std::string& buffer_name) {
-  auto check_args = [&](const std::vector<KernelArgSpec>& args, bool output) {
-    return std::any_of(args.begin(), args.end(), [&](const KernelArgSpec& arg) {
-      if (arg.buffer != buffer_name) {
-        return false;
-      }
-      return output ? IsOutputBufferArgKind(arg.kind) : IsInputBufferArgKind(arg.kind);
-    });
-  };
-
-  if (check_args(spec.runtime_args, /*output=*/true)) {
-    return "output";
-  }
-  if (check_args(spec.runtime_args, /*output=*/false)) {
-    return "input";
-  }
-  for (const auto& kernel : spec.kernels) {
-    if (check_args(kernel.runtime_args, /*output=*/true) ||
-        check_args(kernel.common_runtime_args, /*output=*/true)) {
-      return "output";
-    }
-    if (check_args(kernel.runtime_args, /*output=*/false) ||
-        check_args(kernel.common_runtime_args, /*output=*/false)) {
-      return "input";
-    }
-  }
-  return "";
-}
-
 static uint32_t ChooseBufferMaterializationPageSize(const ExecutableSpec& spec,
                                                     const std::string& buffer_name) {
   uint32_t inferred_page_size = 0;
@@ -2058,16 +1969,10 @@ static uint32_t ChooseBufferMaterializationPageSize(const ExecutableSpec& spec,
     return inferred_page_size;
   }
 
-  const std::string role = ResolveBufferRole(spec, buffer_name);
-  for (const auto& cb : spec.cb_configs) {
-    if (cb.role == role) {
-      return cb.page_size_bytes;
-    }
-  }
-  if (!spec.cb_configs.empty()) {
-    return spec.cb_configs.front().page_size_bytes;
-  }
-  return 2048;
+  ICHECK_NE(inferred_page_size, 0)
+      << "Blackhole buffer materialization requires explicit transport_page_size for buffer "
+      << buffer_name;
+  return inferred_page_size;
 }
 
 static bool KernelArgsContainKind(const std::vector<KernelArgSpec>& args,
@@ -2468,6 +2373,11 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
       "items > 1 for materialized buffers with rank > 2");
 }
 
+static bool IsDirectRuntimeAdmittedPublicationProtocol(const std::string& publication_protocol) {
+  return publication_protocol == "pack_thread_direct_store" ||
+         publication_protocol == "pack_tile";
+}
+
 static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
   for (const auto& materialization : spec->buffer_materializations) {
@@ -2477,8 +2387,28 @@ static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
     if (materialization.execution_topology_kind != "thread_distributed") {
       continue;
     }
-    if (materialization.publication_protocol == "pack_thread_direct_store" ||
-        materialization.publication_protocol == "pack_tile") {
+    if (IsDirectRuntimeAdmittedPublicationProtocol(materialization.publication_protocol)) {
+      continue;
+    }
+    AppendDirectRuntimeUnsupportedReason(
+        spec,
+        "thread-distributed cb_republish materialization is not admitted by direct runtime; "
+        "requires a non-mailbox materialization protocol for compute-thread CB publication");
+    return;
+  }
+
+  std::unordered_map<std::string, const LiveFormPlanSpec*> live_form_by_name;
+  for (const auto& live_form : spec->live_form_plans) {
+    live_form_by_name.emplace(live_form.name, &live_form);
+  }
+  for (const auto& plan : spec->materialization_plans) {
+    if (plan.materialization_protocol != "cb_republish" ||
+        IsDirectRuntimeAdmittedPublicationProtocol(plan.publication_protocol)) {
+      continue;
+    }
+    auto live_form_it = live_form_by_name.find(plan.produced_live_form);
+    if (live_form_it == live_form_by_name.end() ||
+        live_form_it->second->execution_topology != "thread_distributed") {
       continue;
     }
     AppendDirectRuntimeUnsupportedReason(
@@ -2542,44 +2472,16 @@ static void EnforceExplicitBufferRoleSchemaGate(ExecutableSpec* spec) {
   }
 }
 
-static std::vector<int64_t> ChooseBufferMaterializationAxisOrder(
-    const ExecutableSpec& spec, const BufferMaterializationSpec& materialization,
-    const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name) {
-  auto info_it = buffer_info_by_name.find(materialization.buffer);
-  if (info_it == buffer_info_by_name.end()) {
-    return {};
-  }
-  const StaticBufferInfo& info = info_it->second;
-  if (materialization.layout != "interleaved" || materialization.memory_space != "dram" ||
-      info.shape.size() < 2 || info.dtype.lanes != 1 || info.dtype.bits == 0) {
-    return {};
-  }
-
-  constexpr uint32_t kBlackholeTileCols = 32;
-  const uint32_t element_size_bytes = static_cast<uint32_t>((info.dtype.bits + 7) / 8);
-  if (element_size_bytes == 0 || materialization.transport_page_size_bytes == 0 ||
-      materialization.transport_page_size_bytes % element_size_bytes != 0) {
-    return {};
-  }
-
-  const uint32_t tile_elements = materialization.transport_page_size_bytes / element_size_bytes;
-  if (tile_elements == 0 || tile_elements % kBlackholeTileCols != 0) {
-    return {};
-  }
-  const uint32_t tile_rows = tile_elements / kBlackholeTileCols;
-  const int64_t total_rows = ShapeProduct(info.shape, 0, info.shape.size() - 1);
-  const int64_t cols = info.shape.back();
-  if (tile_rows == 0 || total_rows <= 0 || cols <= 0 || cols % kBlackholeTileCols != 0 ||
-      total_rows % tile_rows != 0) {
-    return {};
-  }
-  return InferStaticWorkMajorAxisOrder(info.shape, GetTotalLogicalWorkItems(spec.core_plan),
-                                       tile_rows);
+static bool BufferMaterializationRequiresExplicitHostAxisOrder(
+    const BufferMaterializationSpec& materialization) {
+  return materialization.layout == "interleaved" && materialization.memory_space == "dram" &&
+         materialization.transport_page_size_bytes > 0;
 }
 
 static void PopulateBufferMaterializationSpecs(
     const std::unordered_map<std::string, StaticBufferInfo>& buffer_info_by_name,
     ExecutableSpec* spec) {
+  (void)buffer_info_by_name;
   std::unordered_map<std::string, BufferMaterializationSpec> by_buffer;
   std::vector<std::string> order;
 
@@ -2636,7 +2538,8 @@ static void PopulateBufferMaterializationSpecs(
         continue;
       }
       register_buffer(compile_time_arg_spec.buffer, compile_time_arg_spec.layout,
-                      compile_time_arg_spec.memory_space);
+                      compile_time_arg_spec.memory_space, compile_time_arg_spec.host_axis_order,
+                      compile_time_arg_spec.transpose_2d);
     }
   }
 
@@ -2645,63 +2548,21 @@ static void PopulateBufferMaterializationSpecs(
     live_form_by_name.emplace(live_form.name, &live_form);
   }
 
-  std::vector<std::string> output_buffers;
-  std::unordered_set<std::string> seen_output_buffers;
-  auto remember_output_arg = [&](const KernelArgSpec& arg) {
-    if ((arg.kind == "output_buffer_addr32" || arg.kind == "output_buffer_addr") &&
-        !arg.buffer.empty() && seen_output_buffers.insert(arg.buffer).second) {
-      output_buffers.push_back(arg.buffer);
-    }
-  };
-  for (const auto& arg : spec->runtime_args) {
-    remember_output_arg(arg);
-  }
-  for (const auto& arg : spec->common_runtime_args) {
-    remember_output_arg(arg);
-  }
-  for (const auto& kernel : spec->kernels) {
-    for (const auto& arg : kernel.runtime_args) {
-      remember_output_arg(arg);
-    }
-    for (const auto& arg : kernel.common_runtime_args) {
-      remember_output_arg(arg);
-    }
-  }
-
-  auto resolve_host_buffer_for_materialization = [&](const std::string& target_buffer) {
-    auto direct_it = by_buffer.find(target_buffer);
-    if (direct_it != by_buffer.end()) {
-      return target_buffer;
-    }
-    constexpr const char* kLocalSuffix = "_local";
-    if (target_buffer.size() > std::strlen(kLocalSuffix) &&
-        target_buffer.compare(target_buffer.size() - std::strlen(kLocalSuffix),
-                              std::strlen(kLocalSuffix), kLocalSuffix) == 0) {
-      std::string host_name = target_buffer;
-      host_name.resize(host_name.size() - std::strlen(kLocalSuffix));
-      if (by_buffer.find(host_name) != by_buffer.end()) {
-        return host_name;
-      }
-    }
-    if (output_buffers.size() == 1 && by_buffer.find(output_buffers.front()) != by_buffer.end()) {
-      return output_buffers.front();
-    }
-    return std::string();
-  };
-
   for (const auto& plan : spec->materialization_plans) {
-    const std::string host_buffer = resolve_host_buffer_for_materialization(plan.target_buffer);
-    if (host_buffer.empty()) {
+    if (plan.host_buffer.empty()) {
+      ICHECK(!IsDirectRuntimeAdmittedPublicationProtocol(plan.publication_protocol))
+          << "Blackhole buffer materialization plan requires explicit host_buffer for target "
+          << plan.target_buffer;
       continue;
     }
-    auto materialization_it = by_buffer.find(host_buffer);
-    if (materialization_it == by_buffer.end()) {
-      continue;
-    }
+    auto materialization_it = by_buffer.find(plan.host_buffer);
+    ICHECK(materialization_it != by_buffer.end())
+        << "Blackhole buffer materialization plan host_buffer " << plan.host_buffer
+        << " must reference a registered host buffer materialization";
     auto live_form_it = live_form_by_name.find(plan.produced_live_form);
-    if (live_form_it == live_form_by_name.end()) {
-      continue;
-    }
+    ICHECK(live_form_it != live_form_by_name.end())
+        << "Blackhole buffer materialization plan references unknown produced_live_form "
+        << plan.produced_live_form;
     BufferMaterializationSpec& materialization = materialization_it->second;
     const LiveFormPlanSpec& live_form = *live_form_it->second;
     materialization.live_form_kind = live_form.physical_form;
@@ -2722,8 +2583,9 @@ static void PopulateBufferMaterializationSpecs(
     materialization.transport_page_size_bytes =
         ChooseBufferMaterializationPageSize(*spec, buffer_name);
     if (materialization.host_axis_order.empty()) {
-      materialization.host_axis_order =
-          ChooseBufferMaterializationAxisOrder(*spec, materialization, buffer_info_by_name);
+      ICHECK(!BufferMaterializationRequiresExplicitHostAxisOrder(materialization))
+          << "Blackhole buffer materialization requires explicit host_axis_order for buffer "
+          << materialization.buffer;
     }
     spec->buffer_materializations.push_back(std::move(materialization));
   }

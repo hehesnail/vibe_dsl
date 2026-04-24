@@ -752,6 +752,41 @@ public surface
   必须显式携带
   host binding
   和 layout/axis truth
+- host-visible
+  `TTMaterializationPlan`
+  必须携带
+  `host_buffer`
+  并投影到
+  `ExecutableSpec`；
+  direct-runtime admitted
+  `pack_thread_direct_store`
+  /
+  `pack_tile`
+  publication
+  缺少该字段时必须 fail-close。
+  空
+  `host_buffer`
+  只允许表示内部 materialization，
+  不能作为 leaf 侧恢复 host buffer
+  的入口。
+- `transport_page_size`、
+  `host_axis_order`
+  和
+  `transpose_2d`
+  是 accessor /
+  compile-time ABI schema
+  的显式 truth；
+  runtime /
+  `BlackholeModule`
+  不能从 CB role、
+  first-CB、
+  固定 2048 page、
+  tensor shape
+  或 work-item 数量
+  推回这些值。
+  缺失时应在 leaf reader /
+  runtime gate
+  处 fail-close。
 - projection encoder
   不能再以各类
   typed TTProgram node

@@ -637,6 +637,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       const std::string& publication_protocol);
   void InvalidateLastFragmentFillValue(const tvm::tir::Buffer& buffer);
   void FinalizeConsumerBindingABIIndices();
+  void FinalizeMaterializationPlanHostBuffers();
   bool ShouldRetainComputeInputBuffer(const tvm::tir::Buffer& buffer,
                                       int current_order_index) const;
   bool ShouldReacquireComputeInputBuffer(const tvm::tir::Buffer& buffer,

@@ -417,6 +417,10 @@ void ValidateMaterializationPlans(const TTProgram& program,
              plan->publication_protocol == buffer_materialization::kPackTile)
           << "TTMaterializationPlan cb_republish has unsupported publication_protocol "
           << plan->publication_protocol;
+      if (plan->publication_protocol == buffer_materialization::kPackThreadDirectStore ||
+          plan->publication_protocol == buffer_materialization::kPackTile) {
+        ICHECK(!plan->host_buffer.empty()) << "TTMaterializationPlan requires host_buffer";
+      }
     }
     for (const Integer& index : plan->required_cb_plan_indices) {
       ICHECK_GE(index->value, 0) << "TTMaterializationPlan requires non-negative CB plan index";

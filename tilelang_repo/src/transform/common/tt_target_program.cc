@@ -333,6 +333,7 @@ void TTMaterializationPlanNode::RegisterReflection() {
       .def_ro("materialization_boundary_index",
               &TTMaterializationPlanNode::materialization_boundary_index)
       .def_ro("target_buffer", &TTMaterializationPlanNode::target_buffer)
+      .def_ro("host_buffer", &TTMaterializationPlanNode::host_buffer)
       .def_ro("target_kernel", &TTMaterializationPlanNode::target_kernel)
       .def_ro("materialization_protocol", &TTMaterializationPlanNode::materialization_protocol)
       .def_ro("publication_protocol", &TTMaterializationPlanNode::publication_protocol)
@@ -347,7 +348,7 @@ void TTMaterializationPlanNode::RegisterReflection() {
 TTMaterializationPlan::TTMaterializationPlan(
     ffi::String name, ffi::String source_live_form, ffi::String materialization_boundary,
     int64_t materialization_boundary_index, ffi::String target_buffer,
-    ffi::String target_kernel, ffi::String materialization_protocol,
+    ffi::String host_buffer, ffi::String target_kernel, ffi::String materialization_protocol,
     ffi::String publication_protocol,
     ffi::Array<Integer> required_cb_plan_indices,
     ffi::Array<Integer> required_sync_plan_indices, ffi::String produced_live_form,
@@ -358,6 +359,7 @@ TTMaterializationPlan::TTMaterializationPlan(
   n->materialization_boundary = std::move(materialization_boundary);
   n->materialization_boundary_index = materialization_boundary_index;
   n->target_buffer = std::move(target_buffer);
+  n->host_buffer = std::move(host_buffer);
   n->target_kernel = std::move(target_kernel);
   n->materialization_protocol = std::move(materialization_protocol);
   n->publication_protocol = std::move(publication_protocol);
@@ -653,17 +655,21 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<Integer> required_sync_plan_indices, ffi::String produced_live_form,
          ffi::Map<ffi::String, ffi::Any> payload) {
         ffi::String materialization_boundary;
+        ffi::String host_buffer;
         int64_t materialization_boundary_index = -1;
         if (auto value = payload.Get("materialization_boundary")) {
           materialization_boundary = Downcast<ffi::String>(value.value());
+        }
+        if (auto value = payload.Get("host_buffer")) {
+          host_buffer = Downcast<ffi::String>(value.value());
         }
         if (auto value = payload.Get("materialization_boundary_index")) {
           materialization_boundary_index = Downcast<Integer>(value.value())->value;
         }
         return TTMaterializationPlan(
             std::move(name), std::move(source_live_form), std::move(materialization_boundary),
-            materialization_boundary_index, std::move(target_buffer), std::move(target_kernel),
-            std::move(materialization_protocol), std::move(publication_protocol),
+            materialization_boundary_index, std::move(target_buffer), std::move(host_buffer),
+            std::move(target_kernel), std::move(materialization_protocol), std::move(publication_protocol),
             std::move(required_cb_plan_indices), std::move(required_sync_plan_indices),
             std::move(produced_live_form), std::move(payload));
       });

@@ -220,6 +220,22 @@ def _rebuild_codegen_module_without_contract_family_payload(artifact):
     return _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)
 
 
+def _rebuild_tt_materialization_plan(plan, *, payload=None):
+    make_tt_materialization_plan = tilelang.tvm.get_global_func("tl.TTMaterializationPlan")
+    return make_tt_materialization_plan(
+        str(plan.name),
+        str(plan.source_live_form),
+        str(plan.target_buffer),
+        str(plan.target_kernel),
+        str(plan.materialization_protocol),
+        str(plan.publication_protocol),
+        list(plan.required_cb_plan_indices),
+        list(plan.required_sync_plan_indices),
+        str(plan.produced_live_form),
+        dict(plan.payload) if payload is None else payload,
+    )
+
+
 def _rebuild_codegen_module_without_legacy_contract_attrs(artifact):
     device_mod = artifact.device_mod
     rewritten = {}
@@ -859,6 +875,7 @@ def test_blackhole_fragment_fill_cast_publish_exposes_typed_live_form_owner_trut
     assert "D_local" in materializations
     d_local = materializations["D_local"]
     assert str(d_local.materialization_protocol) == "cb_republish"
+    assert str(d_local.host_buffer) == "D"
     assert str(d_local.produced_live_form) == str(live_forms["D_local"].name)
     assert [int(index) for index in d_local.required_cb_plan_indices]
 
@@ -946,6 +963,7 @@ def test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plan
     }
     assert "D_local" in materializations
     d_local = materializations["D_local"]
+    assert str(d_local["host_buffer"]) == "D"
     assert str(d_local["materialization_protocol"]) == "cb_republish"
     assert str(d_local["publication_protocol"]) == "pack_thread_direct_store"
     assert str(d_local["source_live_form"]) == "live_form_C_local"
@@ -971,6 +989,31 @@ def test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plan
     assert str(output_materialization["producer_kernel"]) == "compute"
     assert str(output_materialization["materialization_protocol"]) == "cb_republish"
     assert str(output_materialization["publication_protocol"]) == "pack_thread_direct_store"
+
+
+def test_blackhole_fragment_fill_cast_publish_rejects_materialization_plan_without_host_buffer():
+    kernel = fragment_fill_cast_publish_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    def drop_host_buffer(tt_program):
+        rebuilt_materializations = []
+        for plan in tt_program.materialization_plans:
+            payload = dict(plan.payload)
+            payload.pop("host_buffer", None)
+            rebuilt_materializations.append(
+                _rebuild_tt_materialization_plan(plan, payload=payload)
+            )
+        return rebuild_tt_program(
+            tt_program, materialization_plans=rebuilt_materializations
+        )
+
+    with pytest.raises(tvm.TVMError, match="TTMaterializationPlan requires host_buffer"):
+        _rebuild_codegen_module_with_tt_program(
+            artifact, tt_program_mutator=drop_host_buffer
+        )
 
 
 def test_blackhole_fragment_fill_cast_publish_admits_non_mailbox_cb_republish():

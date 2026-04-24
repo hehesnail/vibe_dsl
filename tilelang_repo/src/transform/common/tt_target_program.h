@@ -277,6 +277,7 @@ class TTMaterializationPlanNode : public Object {
   ffi::String materialization_boundary;
   int64_t materialization_boundary_index = -1;
   ffi::String target_buffer;
+  ffi::String host_buffer;
   ffi::String target_kernel;
   ffi::String materialization_protocol;
   ffi::String publication_protocol;
@@ -294,7 +295,8 @@ class TTMaterializationPlan : public ObjectRef {
   TVM_DLL TTMaterializationPlan(ffi::String name, ffi::String source_live_form,
                                 ffi::String materialization_boundary,
                                 int64_t materialization_boundary_index,
-                                ffi::String target_buffer, ffi::String target_kernel,
+                                ffi::String target_buffer, ffi::String host_buffer,
+                                ffi::String target_kernel,
                                 ffi::String materialization_protocol,
                                 ffi::String publication_protocol,
                                 ffi::Array<Integer> required_cb_plan_indices,
