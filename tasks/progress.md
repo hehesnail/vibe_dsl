@@ -323,7 +323,29 @@
   materialization-boundary
   schema，
   再收敛 leaf contract-family
-  typed schema，
+  typed schema；
+  当前第一轮
+  leaf compute typed schema
+  已落到
+  `KernelSpec.compute_ops`
+  generic 数组，
+  GEMM 只作为
+  `kind=gemm`
+  entry 存在，
+  direct runtime
+  的 GEMM work decomposition /
+  shape /
+  dtype truth
+  已改读该 typed entry，
+  不再从
+  `compute_contract <- multi_compute_contracts <- gemm_contract`
+  做 runtime fallback；
+  但 top-level
+  contract-family payload
+  仍作为 compatibility metadata
+  存活，
+  后续仍需继续删除其 projection /
+  public test surface，
   然后扩大
   materialization admission
   支持面与 workload payoff；
@@ -506,6 +528,26 @@ Normalized Tile TIR
   的
   `cb_republish`
   materialization owner truth
+- GEMM compute leaf truth
+  现已从 legacy contract-family runtime fallback
+  迁到
+  executable
+  `KernelSpec.compute_ops`
+  typed schema；
+  compute kernel 可以携带多个
+  `compute_ops`
+  entry，
+  当前 admitted direct runtime
+  只消费
+  `kind=gemm`
+  entry，
+  非 GEMM TT-Metal compute instruction
+  后续按同一数组增加 typed
+  `kind`
+  schema，
+  不再新增
+  GEMM-only public field
+  或名字 matcher
 - `TTMaterializationPlan`
   /
   `ExecutableSpec.materialization_plans`
@@ -742,6 +784,13 @@ Normalized Tile TIR
   - `TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_gemm.py`
   - `TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
   - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && export TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib && export LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:${LD_LIBRARY_PATH} && cd /root/dev/vibe_dsl/tilelang_repo && PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_runtime testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_post_merge_cast_consumer_uses_pack_tile_materialization testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_post_merge_cast_consumer_without_zero_preclear_keeps_materialization_gate`
+- `leaf compute_ops typed schema`
+  baseline
+  当前已通过：
+  - `cd tilelang_repo && cmake --build build -j32`
+  - `TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_gemm.py`
+  - `TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && export TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib && export LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:${LD_LIBRARY_PATH} && cd /root/dev/vibe_dsl/tilelang_repo && PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_direct_runtime_uses_typed_compute_ops_without_contract_family testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_direct_runtime_rejects_mbarrier_compute_contract`
 
 ## 6. 当前下一步
 
@@ -778,8 +827,23 @@ Normalized Tile TIR
    `TTProgram`
    和
    `ExecutableSpec`
-   schema，
-   然后删除 runtime fallback
+   schema。
+   当前
+   `KernelSpec.compute_ops`
+   已承接 GEMM direct runtime
+   truth
+   并删除 runtime
+   contract-family fallback；
+   下一步继续把 top-level
+   compatibility payload /
+   public tests
+   收窄到 typed
+   compute-op schema，
+   并为非 GEMM TT-Metal compute
+   instruction
+   增加同一数组下的 typed
+   `kind`
+   entry
 3. 在上述 typed owner truth
    基础上扩大
    materialization admission

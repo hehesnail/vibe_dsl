@@ -172,6 +172,10 @@ replacement helper carrier。
 - accessors
 - semaphore bindings
 - per-work arg specs
+- typed compute operation records
+  such as
+  `KernelSpec.compute_ops`
+  entries
 
 这里的 `segment_plan`
 已经是 leaf truth，
@@ -413,6 +417,40 @@ leaf validator
   缺字段时 fail-close，
   不再从旧 contract family
   推断
+- 当前第一轮 typed replacement
+  是
+  executable
+  `KernelSpec.compute_ops`
+  数组；
+  GEMM 只是其中
+  `kind=gemm`
+  entry，
+  不是 compute kernel
+  的通用字段名。
+  direct runtime
+  已改从该 entry
+  读取 GEMM
+  shape /
+  dtype /
+  transpose /
+  work-decomposition /
+  unsupported mbarrier gate
+  truth；
+  后续 TT-Metal
+  eltwise /
+  reduction /
+  SFPU /
+  pack-materialization
+  等 compute instruction
+  也必须在同一
+  `compute_ops`
+  schema 下增加 typed
+  `kind`
+  entry，
+  不允许新增并行 GEMM-only
+  public field
+  或从 builtin 序列 /
+  buffer 名恢复语义
 
 它们不是：
 

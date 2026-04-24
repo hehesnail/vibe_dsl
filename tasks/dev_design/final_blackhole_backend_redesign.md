@@ -50,6 +50,31 @@ Normalized Tile TIR
 之后的 leaf consumer / delivery 边界，
 不再并入长期 layered IR 主链。
 
+当前 leaf compute schema
+的收口方向是
+generic
+`KernelSpec.compute_ops`
+typed 数组：
+单个 TT-Metal compute instruction family
+以
+`kind`
+区分，
+GEMM 只是
+`kind=gemm`
+entry，
+不是所有 compute kernel
+的长期字段名或强绑定。
+runtime / codegen
+只能消费这些 typed entry
+和对应 validator
+已经接受的字段，
+不能从旧
+`compute_contract` /
+`gemm_contract`
+payload family
+或 builtin 序列
+补回 compute truth。
+
 ## 2. 第一性原理
 
 对 spatial/dataflow target，

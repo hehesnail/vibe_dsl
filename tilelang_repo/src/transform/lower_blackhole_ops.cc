@@ -50,6 +50,7 @@
 #include <functional>
 #include <limits>
 #include <sstream>
+#include <tuple>
 
 #include "../tir/builtin_blackhole.h"
 
@@ -3153,6 +3154,101 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
     return compute_config;
   };
 
+  auto make_gemm_compute_op = [&](const std::string& a_buffer,
+                                  const std::string& b_buffer,
+                                  const std::string& c_buffer) -> Map<String, Any> {
+    Map<String, Any> gemm_compute;
+    gemm_compute.Set("enabled", Bool(true));
+    gemm_compute.Set("kind", String("gemm"));
+    gemm_compute.Set("a_buffer", String(a_buffer));
+    gemm_compute.Set("b_buffer", String(b_buffer));
+    gemm_compute.Set("c_buffer", String(c_buffer));
+    gemm_compute.Set("M", Integer(gemm_m_));
+    gemm_compute.Set("N", Integer(gemm_n_));
+    gemm_compute.Set("K", Integer(gemm_k_));
+    gemm_compute.Set("Mt", Integer(gemm_m_ / kBlackholeTileRows));
+    gemm_compute.Set("Nt", Integer(gemm_n_ / kBlackholeTileCols));
+    gemm_compute.Set("Kt", Integer(gemm_k_ / kBlackholeTileCols));
+    gemm_compute.Set("block_m_tiles", Integer(gemm_m_ / kBlackholeTileRows));
+    gemm_compute.Set("block_n_tiles", Integer(gemm_n_ / kBlackholeTileCols));
+    gemm_compute.Set("block_k_tiles", Integer(gemm_k_ / kBlackholeTileCols));
+    gemm_compute.Set("subblock_m_tiles", Integer(gemm_m_ / kBlackholeTileRows));
+    gemm_compute.Set("subblock_n_tiles", Integer(gemm_n_ / kBlackholeTileCols));
+    gemm_compute.Set("transpose_A", Bool(gemm_transpose_a_));
+    gemm_compute.Set("transpose_B", Bool(gemm_transpose_b_));
+    gemm_compute.Set("a_tensor_dtype", String(DataTypeToDataFormatForBlackhole(gemm_a_dtype_)));
+    gemm_compute.Set("b_tensor_dtype", String(DataTypeToDataFormatForBlackhole(gemm_b_dtype_)));
+    gemm_compute.Set("c_tensor_dtype", String(DataTypeToDataFormatForBlackhole(gemm_c_dtype_)));
+    gemm_compute.Set("a_cb_dtype", String(DataTypeToDataFormatForBlackhole(gemm_a_dtype_)));
+    gemm_compute.Set("b_cb_dtype", String(DataTypeToDataFormatForBlackhole(gemm_b_dtype_)));
+    gemm_compute.Set("c_cb_dtype", String(DataTypeToDataFormatForBlackhole(gemm_c_dtype_)));
+    gemm_compute.Set("accumulator_dtype", String("Float32"));
+    gemm_compute.Set("has_mbarrier", Bool(!gemm_mbarrier_buffer_name_.empty()));
+    gemm_compute.Set("mbarrier_buffer", String(gemm_mbarrier_buffer_name_));
+    gemm_compute.Set("mbarrier_scope", String(gemm_mbarrier_scope_));
+    Array<Any> mbarrier_index_exprs;
+    for (const std::string& expr : gemm_mbarrier_index_exprs_) {
+      mbarrier_index_exprs.push_back(String(expr));
+    }
+    gemm_compute.Set("mbarrier_index_exprs", mbarrier_index_exprs);
+    return gemm_compute;
+  };
+
+  auto writer_output_directly_materializes_gemm_accumulator = [&]() -> bool {
+    for (const auto& op_payload : compute_epilogue_payloads_flat_) {
+      if (auto value = op_payload.Get(String("dst_buffer"))) {
+        const std::string dst_buffer = Downcast<String>(value.value());
+        if (!dst_buffer.empty() && dst_buffer != gemm_c_buffer_name_) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+
+  auto resolve_gemm_compute_buffers =
+      [&](const Array<Any>& segments) -> std::tuple<std::string, std::string, std::string> {
+    std::string a_buffer = gemm_a_buffer_name_;
+    std::string b_buffer = gemm_b_buffer_name_;
+    std::string c_buffer = gemm_c_buffer_name_;
+    const bool writer_output_direct =
+        writer_output_directly_materializes_gemm_accumulator();
+    for (const auto& item : segments) {
+      auto segment = item.as<Map<String, Any>>().value_or(Map<String, Any>());
+      if (segment.empty()) {
+        continue;
+      }
+      const std::string kind = segment.Get("kind")
+                                   ? static_cast<std::string>(Downcast<String>(segment.Get("kind").value()))
+                                   : std::string();
+      auto runtime_args = segment.Get("runtime_args");
+      if (!runtime_args) {
+        continue;
+      }
+      for (const auto& arg_item : Downcast<Array<Any>>(runtime_args.value())) {
+        auto arg = arg_item.as<Map<String, Any>>().value_or(Map<String, Any>());
+        if (arg.empty() || !arg.Get("buffer")) {
+          continue;
+        }
+        const std::string buffer_name = Downcast<String>(arg.Get("buffer").value());
+        const std::string arg_kind = arg.Get("kind")
+                                         ? static_cast<std::string>(Downcast<String>(arg.Get("kind").value()))
+                                         : std::string();
+        if (kind == "reader" && arg_kind == "input_buffer_addr32") {
+          if (a_buffer == gemm_a_buffer_name_) {
+            a_buffer = buffer_name;
+          } else if (b_buffer == gemm_b_buffer_name_) {
+            b_buffer = buffer_name;
+          }
+        } else if (kind == "writer" && arg_kind == "output_buffer_addr32" &&
+                   writer_output_direct) {
+          c_buffer = buffer_name;
+        }
+      }
+    }
+    return {a_buffer, b_buffer, c_buffer};
+  };
+
   auto make_launch_spec = [](const std::string& core_type) -> Map<String, Any> {
     if (core_type == "brisc") {
       return MakeLaunchSpec(core_type, "riscv_0", "riscv_0_default");
@@ -3594,6 +3690,29 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
       }
       segment.Set("common_runtime_args", EncodeCommonRuntimeArgs(kind));
       rewritten_segments.push_back(segment);
+    }
+    if (gemm_contract_signatures_.size() == 1) {
+      const auto [a_buffer, b_buffer, c_buffer] =
+          resolve_gemm_compute_buffers(rewritten_segments);
+      Array<Any> segments_with_compute_ops;
+      for (const auto& item : rewritten_segments) {
+        auto segment = item.as<Map<String, Any>>().value_or(Map<String, Any>());
+        if (segment.empty()) {
+          segments_with_compute_ops.push_back(item);
+          continue;
+        }
+        const std::string kind =
+            segment.Get("kind")
+                ? static_cast<std::string>(Downcast<String>(segment.Get("kind").value()))
+                : std::string();
+        if (kind == "compute") {
+          Array<Any> compute_ops;
+          compute_ops.push_back(make_gemm_compute_op(a_buffer, b_buffer, c_buffer));
+          segment.Set("compute_ops", compute_ops);
+        }
+        segments_with_compute_ops.push_back(segment);
+      }
+      rewritten_segments = segments_with_compute_ops;
     }
     segment_plan_ = rewritten_segments;
     BuildTTKernelAndABISeeds(segment_plan_, &tt_kernels_, &tt_abi_plans_);

@@ -224,97 +224,65 @@ static void ValidateGemmTensorDType(const RuntimeTensorBinding& binding,
       << ", expected " << expected_dtype;
 }
 
-static ComputeContractSpec GetComputeContract(const ExecutableSpec& spec);
+static std::vector<const KernelComputeOpSpec*> CollectGemmComputeOps(const ExecutableSpec& spec) {
+  std::vector<const KernelComputeOpSpec*> gemm_ops;
+  for (const auto& kernel : spec.kernels) {
+    for (const auto& compute_op : kernel.compute_ops) {
+      if (!compute_op.enabled || compute_op.kind != "gemm") {
+        continue;
+      }
+      gemm_ops.push_back(&compute_op);
+    }
+  }
+  return gemm_ops;
+}
 
-static void ValidateMultiComputeContractsShareDirectRuntimeWorkDecomposition(
+static KernelComputeOpSpec GetPrimaryGemmCompute(const ExecutableSpec& spec) {
+  const auto gemm_ops = CollectGemmComputeOps(spec);
+  if (gemm_ops.empty()) {
+    return KernelComputeOpSpec();
+  }
+  return *gemm_ops.front();
+}
+
+static void ValidateGemmComputeOpsShareDirectRuntimeWorkDecomposition(
     const ExecutableSpec& spec) {
-  if (spec.compute_contract.enabled || spec.multi_compute_contracts.size() <= 1) {
+  const auto gemm_ops = CollectGemmComputeOps(spec);
+  if (gemm_ops.size() <= 1) {
     return;
   }
 
-  const auto& reference = spec.multi_compute_contracts.front();
-  if (!reference.enabled || reference.kind != "gemm") {
-    return;
-  }
-
-  for (size_t i = 1; i < spec.multi_compute_contracts.size(); ++i) {
-    const auto& contract = spec.multi_compute_contracts[i];
-    if (!contract.enabled || contract.kind != "gemm") {
-      continue;
-    }
-    ICHECK_EQ(contract.M, reference.M)
-        << "Blackhole direct runtime requires multi_compute_contracts to agree on M";
-    ICHECK_EQ(contract.N, reference.N)
-        << "Blackhole direct runtime requires multi_compute_contracts to agree on N";
-    ICHECK_EQ(contract.K, reference.K)
-        << "Blackhole direct runtime requires multi_compute_contracts to agree on K";
-    ICHECK_EQ(contract.Mt, reference.Mt)
-        << "Blackhole direct runtime requires multi_compute_contracts to agree on Mt";
-    ICHECK_EQ(contract.Nt, reference.Nt)
-        << "Blackhole direct runtime requires multi_compute_contracts to agree on Nt";
-    ICHECK_EQ(contract.Kt, reference.Kt)
-        << "Blackhole direct runtime requires multi_compute_contracts to agree on Kt";
+  const KernelComputeOpSpec& reference = *gemm_ops.front();
+  for (size_t i = 1; i < gemm_ops.size(); ++i) {
+    const KernelComputeOpSpec& gemm = *gemm_ops[i];
+    ICHECK_EQ(gemm.M, reference.M)
+        << "Blackhole direct runtime requires compute_ops GEMM specs to agree on M";
+    ICHECK_EQ(gemm.N, reference.N)
+        << "Blackhole direct runtime requires compute_ops GEMM specs to agree on N";
+    ICHECK_EQ(gemm.K, reference.K)
+        << "Blackhole direct runtime requires compute_ops GEMM specs to agree on K";
+    ICHECK_EQ(gemm.Mt, reference.Mt)
+        << "Blackhole direct runtime requires compute_ops GEMM specs to agree on Mt";
+    ICHECK_EQ(gemm.Nt, reference.Nt)
+        << "Blackhole direct runtime requires compute_ops GEMM specs to agree on Nt";
+    ICHECK_EQ(gemm.Kt, reference.Kt)
+        << "Blackhole direct runtime requires compute_ops GEMM specs to agree on Kt";
   }
 }
 
-static void ValidateComputeContractDirectRuntimeConstraints(const ExecutableSpec& spec) {
-  ValidateMultiComputeContractsShareDirectRuntimeWorkDecomposition(spec);
-  const auto contract = GetComputeContract(spec);
-  if (contract.enabled && contract.kind == "gemm") {
-    ICHECK(!contract.has_mbarrier)
-        << "Blackhole direct runtime does not yet support GEMM compute_contract.mbarrier bindings";
+static void ValidateGemmComputeDirectRuntimeConstraints(const ExecutableSpec& spec) {
+  ValidateGemmComputeOpsShareDirectRuntimeWorkDecomposition(spec);
+  for (const KernelComputeOpSpec* gemm_op : CollectGemmComputeOps(spec)) {
+    ICHECK(!gemm_op->has_mbarrier)
+        << "Blackhole direct runtime does not yet support GEMM compute_ops.mbarrier bindings";
   }
-  for (const auto& multi_contract : spec.multi_compute_contracts) {
-    if (!multi_contract.enabled || multi_contract.kind != "gemm") {
-      continue;
-    }
-    ICHECK(!multi_contract.has_mbarrier)
-        << "Blackhole direct runtime does not yet support GEMM multi_compute_contracts.mbarrier bindings";
-  }
-}
-
-static ComputeContractSpec GetComputeContract(const ExecutableSpec& spec) {
-  if (spec.compute_contract.enabled) {
-    return spec.compute_contract;
-  }
-  if (!spec.multi_compute_contracts.empty()) {
-    return spec.multi_compute_contracts.front();
-  }
-  if (!spec.gemm_contract.enabled) {
-    return ComputeContractSpec();
-  }
-
-  constexpr uint32_t kBlackholeTileRows = 32;
-  constexpr uint32_t kBlackholeTileCols = 32;
-  ComputeContractSpec contract;
-  contract.enabled = true;
-  contract.kind = "gemm";
-  contract.a_buffer = spec.gemm_contract.a_buffer;
-  contract.b_buffer = spec.gemm_contract.b_buffer;
-  contract.c_buffer = spec.gemm_contract.c_buffer;
-  contract.M = spec.gemm_contract.M;
-  contract.N = spec.gemm_contract.N;
-  contract.K = spec.gemm_contract.K;
-  contract.Mt = spec.gemm_contract.M / kBlackholeTileRows;
-  contract.Nt = spec.gemm_contract.N / kBlackholeTileCols;
-  contract.Kt = spec.gemm_contract.K / kBlackholeTileCols;
-  contract.transpose_A = spec.gemm_contract.transpose_A;
-  contract.transpose_B = spec.gemm_contract.transpose_B;
-  contract.a_tensor_dtype = spec.gemm_contract.a_tensor_dtype;
-  contract.b_tensor_dtype = spec.gemm_contract.b_tensor_dtype;
-  contract.c_tensor_dtype = spec.gemm_contract.c_tensor_dtype;
-  contract.a_cb_dtype = spec.gemm_contract.a_cb_dtype;
-  contract.b_cb_dtype = spec.gemm_contract.b_cb_dtype;
-  contract.c_cb_dtype = spec.gemm_contract.c_cb_dtype;
-  contract.accumulator_dtype = spec.gemm_contract.accumulator_dtype;
-  return contract;
 }
 
 static void ValidateGemmInputShape(const ExecutableSpec& spec,
                                    const RuntimeTensorBinding& binding,
                                    uint32_t rows,
                                    uint32_t cols) {
-  const auto gemm = GetComputeContract(spec);
+  const auto gemm = GetPrimaryGemmCompute(spec);
   const uint32_t logical_grid_x = std::max<uint32_t>(1, spec.core_plan.logical_grid_x);
   const uint32_t logical_grid_y = std::max<uint32_t>(1, spec.core_plan.logical_grid_y);
 
@@ -345,7 +313,7 @@ static void ValidateGemmInputShape(const ExecutableSpec& spec,
 static void ValidateGemmOutputShape(const ExecutableSpec& spec,
                                     uint32_t rows,
                                     uint32_t cols) {
-  const auto gemm = GetComputeContract(spec);
+  const auto gemm = GetPrimaryGemmCompute(spec);
   const uint32_t logical_grid_x = std::max<uint32_t>(1, spec.core_plan.logical_grid_x);
   const uint32_t logical_grid_y = std::max<uint32_t>(1, spec.core_plan.logical_grid_y);
   const uint32_t expected_rows = gemm.M * logical_grid_y;
@@ -679,7 +647,7 @@ static std::vector<uint8_t> BuildInputTransferData(const ExecutableSpec& spec,
   const DLTensor* tensor = binding.tensor;
   ICHECK(tensor != nullptr);
   const size_t tensor_size = GetDataSize(*tensor);
-  const auto gemm = GetComputeContract(spec);
+  const auto gemm = GetPrimaryGemmCompute(spec);
 
   if (!gemm.enabled || gemm.kind != "gemm" || !IsTwoDimTensor(tensor)) {
     const auto& materialization = ResolveBufferMaterializationSpec(spec, binding.name);
@@ -754,7 +722,7 @@ static void CopyOutputFromDeviceBuffer(const ExecutableSpec& spec,
   const size_t tensor_size = GetDataSize(*binding.tensor);
   ICHECK(output_data.size() >= tensor_size)
       << "Output data size mismatch for " << binding.name;
-  const auto gemm = GetComputeContract(spec);
+  const auto gemm = GetPrimaryGemmCompute(spec);
   const BufferMaterializationSpec* materialized_output =
       FindBufferMaterializationSpec(spec, binding.name);
 
@@ -876,10 +844,10 @@ static std::unordered_map<uint32_t, uint32_t> CreateSemaphoresFromSpec(Program& 
 }
 
 static uint32_t GetRuntimeNumKTiles(const ExecutableSpec& spec) {
-  const auto gemm = GetComputeContract(spec);
+  const auto gemm = GetPrimaryGemmCompute(spec);
   if (gemm.enabled && gemm.kind == "gemm") {
     ICHECK_GT(gemm.Kt, 0U)
-        << "Blackhole GEMM direct path requires compute_contract.Kt to be populated";
+        << "Blackhole GEMM direct path requires compute_ops GEMM Kt to be populated";
     return std::max<uint32_t>(1, gemm.Kt);
   }
   return 0;
@@ -890,11 +858,11 @@ static uint32_t GetRuntimeLogicalGridX(const ExecutableSpec& spec) {
 }
 
 static uint32_t GetRuntimeLogicalNTiles(const ExecutableSpec& spec) {
-  const auto gemm = GetComputeContract(spec);
+  const auto gemm = GetPrimaryGemmCompute(spec);
   ICHECK(gemm.enabled && gemm.kind == "gemm")
       << "logical_n_tiles is only defined for GEMM kernels in Blackhole direct runtime";
   ICHECK_GT(gemm.Nt, 0U)
-      << "Blackhole GEMM direct path requires compute_contract.Nt to be populated";
+      << "Blackhole GEMM direct path requires compute_ops GEMM Nt to be populated";
   const uint32_t local_n_tiles = std::max<uint32_t>(1, gemm.Nt);
   const uint32_t logical_grid_x = GetRuntimeLogicalGridX(spec);
   return local_n_tiles * logical_grid_x;
@@ -1711,7 +1679,7 @@ struct DirectRuntimeWorkContext {
   uint32_t work_linear_id = 0;
   uint32_t bx = 0;
   uint32_t by = 0;
-  bool has_gemm_compute_contract = false;
+  bool has_gemm_compute_op = false;
 };
 
 static DirectRuntimeWorkContext BuildDirectRuntimeWorkContext(const KernelSpec& kernel,
@@ -1723,10 +1691,9 @@ static DirectRuntimeWorkContext BuildDirectRuntimeWorkContext(const KernelSpec& 
   context.work_linear_id = current_work_linear_id;
   context.bx = context.logical_grid_x == 0 ? 0 : (context.work_linear_id % context.logical_grid_x);
   context.by = context.logical_grid_x == 0 ? 0 : (context.work_linear_id / context.logical_grid_x);
-  const auto compute_contract = GetComputeContract(spec);
-  context.has_gemm_compute_contract =
-      compute_contract.enabled && compute_contract.kind == "gemm";
-  if (context.has_gemm_compute_contract) {
+  const auto gemm_op = GetPrimaryGemmCompute(spec);
+  context.has_gemm_compute_op = gemm_op.enabled && gemm_op.kind == "gemm";
+  if (context.has_gemm_compute_op) {
     context.num_k_tiles = GetRuntimeNumKTiles(spec);
     context.logical_n_tiles = GetRuntimeLogicalNTiles(spec);
   }
@@ -1762,14 +1729,14 @@ static uint32_t EvaluatePerWorkArgSpec(const PerWorkArgSpec& spec,
     return context.by;
   }
   if (spec.value_kind == tl::blackhole_runtime_arg_schema::kValueGemmNumKTiles) {
-    ICHECK(context.has_gemm_compute_contract)
-        << "Blackhole direct runtime per_work_arg_spec requires GEMM compute contract for "
+    ICHECK(context.has_gemm_compute_op)
+        << "Blackhole direct runtime per_work_arg_spec requires GEMM compute_op for "
         << spec.arg_kind;
     return context.num_k_tiles;
   }
   if (spec.value_kind == tl::blackhole_runtime_arg_schema::kValueGemmLogicalNTiles) {
-    ICHECK(context.has_gemm_compute_contract)
-        << "Blackhole direct runtime per_work_arg_spec requires GEMM compute contract for "
+    ICHECK(context.has_gemm_compute_op)
+        << "Blackhole direct runtime per_work_arg_spec requires GEMM compute_op for "
         << spec.arg_kind;
     return context.logical_n_tiles;
   }
@@ -1989,7 +1956,7 @@ void BlackholeModuleNode::ExecuteDirect(
     LOG(FATAL) << "Blackhole direct runtime is not supported for " << func_name << ": "
                << os.str();
   }
-  ValidateComputeContractDirectRuntimeConstraints(spec);
+  ValidateGemmComputeDirectRuntimeConstraints(spec);
   for (const auto& kernel_spec : spec.kernels) {
     ValidateKernelDirectRuntimeConstraints(kernel_spec);
   }

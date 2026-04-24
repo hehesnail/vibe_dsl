@@ -162,6 +162,53 @@ void ValidateUnsupportedComputeOps(const Map<String, Any>& payload) {
   }
 }
 
+void ValidateGemmComputeOpPayload(const Map<String, Any>& compute_op) {
+  ICHECK(HasKey(compute_op, "a_buffer")) << "TTKernel GEMM compute_op requires a_buffer";
+  ICHECK(HasKey(compute_op, "b_buffer")) << "TTKernel GEMM compute_op requires b_buffer";
+  ICHECK(HasKey(compute_op, "c_buffer")) << "TTKernel GEMM compute_op requires c_buffer";
+  ICHECK(HasKey(compute_op, "M")) << "TTKernel GEMM compute_op requires M";
+  ICHECK(HasKey(compute_op, "N")) << "TTKernel GEMM compute_op requires N";
+  ICHECK(HasKey(compute_op, "K")) << "TTKernel GEMM compute_op requires K";
+  ICHECK(HasKey(compute_op, "Mt")) << "TTKernel GEMM compute_op requires Mt";
+  ICHECK(HasKey(compute_op, "Nt")) << "TTKernel GEMM compute_op requires Nt";
+  ICHECK(HasKey(compute_op, "Kt")) << "TTKernel GEMM compute_op requires Kt";
+  ICHECK(HasKey(compute_op, "transpose_A"))
+      << "TTKernel GEMM compute_op requires transpose_A";
+  ICHECK(HasKey(compute_op, "transpose_B"))
+      << "TTKernel GEMM compute_op requires transpose_B";
+  ICHECK(HasKey(compute_op, "a_tensor_dtype"))
+      << "TTKernel GEMM compute_op requires a_tensor_dtype";
+  ICHECK(HasKey(compute_op, "b_tensor_dtype"))
+      << "TTKernel GEMM compute_op requires b_tensor_dtype";
+  ICHECK(HasKey(compute_op, "c_tensor_dtype"))
+      << "TTKernel GEMM compute_op requires c_tensor_dtype";
+  ICHECK(HasKey(compute_op, "a_cb_dtype")) << "TTKernel GEMM compute_op requires a_cb_dtype";
+  ICHECK(HasKey(compute_op, "b_cb_dtype")) << "TTKernel GEMM compute_op requires b_cb_dtype";
+  ICHECK(HasKey(compute_op, "c_cb_dtype")) << "TTKernel GEMM compute_op requires c_cb_dtype";
+  ICHECK(HasKey(compute_op, "accumulator_dtype"))
+      << "TTKernel GEMM compute_op requires accumulator_dtype";
+}
+
+void ValidateComputeOpsPayload(const Map<String, Any>& payload) {
+  if (!HasKey(payload, "compute_ops")) {
+    return;
+  }
+  Array<Any> compute_ops = Downcast<Array<Any>>(payload.Get(String("compute_ops")).value());
+  ICHECK(!compute_ops.empty()) << "TTKernel compute_ops must be non-empty";
+  for (const Any& op_any : compute_ops) {
+    Map<String, Any> compute_op = AsMap(op_any);
+    ICHECK(!compute_op.empty()) << "TTKernel compute_ops entries must be maps";
+    ICHECK(HasKey(compute_op, "enabled")) << "TTKernel compute_op requires enabled";
+    ICHECK(HasKey(compute_op, "kind")) << "TTKernel compute_op requires kind";
+    String kind = Downcast<String>(compute_op.Get(String("kind")).value());
+    if (kind == "gemm") {
+      ValidateGemmComputeOpPayload(compute_op);
+    } else {
+      ICHECK(false) << "TTKernel compute_ops unsupported kind " << kind;
+    }
+  }
+}
+
 void ValidateKernelPayload(const TTKernel& kernel) {
   Map<String, Any> payload = kernel->payload;
   ICHECK(HasKey(payload, "launch_spec"))
@@ -183,6 +230,7 @@ void ValidateKernelPayload(const TTKernel& kernel) {
         << "TTKernel compute_config requires clear_accum";
     ICHECK(HasKey(compute_config, "k_pack")) << "TTKernel compute_config requires k_pack";
   }
+  ValidateComputeOpsPayload(payload);
 }
 
 void ValidateProgramPayload(const TTProgram& program) {

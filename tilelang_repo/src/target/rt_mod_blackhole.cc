@@ -510,55 +510,6 @@ static std::vector<GemmContractSpec> ExtractMultiGemmContracts(const tir::PrimFu
   return contracts;
 }
 
-static ComputeContractSpec ComputeContractFromLegacyGemm(const GemmContractSpec& gemm) {
-  ComputeContractSpec contract;
-  if (!gemm.enabled) {
-    return contract;
-  }
-
-  constexpr uint32_t kBlackholeTileRows = 32;
-  constexpr uint32_t kBlackholeTileCols = 32;
-  contract.enabled = true;
-  contract.kind = "gemm";
-  contract.a_buffer = gemm.a_buffer;
-  contract.b_buffer = gemm.b_buffer;
-  contract.c_buffer = gemm.c_buffer;
-  contract.M = gemm.M;
-  contract.N = gemm.N;
-  contract.K = gemm.K;
-  contract.Mt = gemm.M / kBlackholeTileRows;
-  contract.Nt = gemm.N / kBlackholeTileCols;
-  contract.Kt = gemm.K / kBlackholeTileCols;
-  contract.block_m_tiles = contract.Mt;
-  contract.block_n_tiles = contract.Nt;
-  contract.block_k_tiles = contract.Kt;
-  contract.subblock_m_tiles = contract.Mt;
-  contract.subblock_n_tiles = contract.Nt;
-  contract.transpose_A = gemm.transpose_A;
-  contract.transpose_B = gemm.transpose_B;
-  contract.a_tensor_dtype = gemm.a_tensor_dtype;
-  contract.b_tensor_dtype = gemm.b_tensor_dtype;
-  contract.c_tensor_dtype = gemm.c_tensor_dtype;
-  contract.a_cb_dtype = gemm.a_cb_dtype;
-  contract.b_cb_dtype = gemm.b_cb_dtype;
-  contract.c_cb_dtype = gemm.c_cb_dtype;
-  contract.accumulator_dtype = gemm.accumulator_dtype;
-  contract.math_fidelity = "HiFi4";
-  contract.fp32_dest_acc_en = true;
-  contract.dst_full_sync_en = false;
-  contract.math_approx_mode = false;
-  contract.bfp8_pack_precise = false;
-  contract.clear_accum = false;
-  contract.k_pack = 1;
-  contract.wg_wait = 0;
-  contract.policy_type = 0;
-  contract.policy_name = "Square";
-  contract.defines = {};
-  contract.named_compile_args = {};
-  contract.has_mbarrier = false;
-  return contract;
-}
-
 static std::vector<ComputeContractSpec::EpilogueOpSpec> ParseComputeEpilogueOps(
     const ffi::Map<ffi::String, ffi::Any>& attrs, const char* key = "epilogue_ops") {
   std::vector<ComputeContractSpec::EpilogueOpSpec> epilogue_ops;
@@ -855,6 +806,7 @@ static ComputeContractSpec ParseComputeContract(const ffi::Map<ffi::String, ffi:
 
 static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
                                                   const GemmContractSpec& gemm_contract) {
+  (void)gemm_contract;
   auto executable = tl::tt_program_projection::RequireBlackholeExecutableProjection(
       f, "Blackhole executable spec extraction");
   auto attrs =
@@ -865,7 +817,7 @@ static ComputeContractSpec ExtractComputeContract(const tir::PrimFunc& f,
                 .value_or(ffi::Map<ffi::String, ffi::Any>())
           : ffi::Map<ffi::String, ffi::Any>();
   if (attrs.empty()) {
-    return ComputeContractFromLegacyGemm(gemm_contract);
+    return ComputeContractSpec();
   }
   return ParseComputeContract(attrs);
 }
@@ -976,22 +928,155 @@ static bool ExtractComputeConfig(const ffi::Map<ffi::String, ffi::Any>& spec_inf
          !compute_config->unpack_to_dest_mode.empty();
 }
 
-static KernelComputeConfigSpec ComputeConfigFromContract(const ComputeContractSpec& contract) {
-  KernelComputeConfigSpec compute_config;
-  compute_config.math_fidelity = contract.math_fidelity;
-  compute_config.fp32_dest_acc_en = contract.fp32_dest_acc_en;
-  compute_config.dst_full_sync_en = contract.dst_full_sync_en;
-  compute_config.math_approx_mode = contract.math_approx_mode;
-  compute_config.unpack_to_dest_mode = contract.unpack_to_dest_mode;
-  compute_config.bfp8_pack_precise = contract.bfp8_pack_precise;
-  compute_config.clear_accum = contract.clear_accum;
-  compute_config.k_pack = contract.k_pack;
-  compute_config.wg_wait = contract.wg_wait;
-  compute_config.policy_type = contract.policy_type;
-  compute_config.policy_name = contract.policy_name;
-  compute_config.defines = contract.defines;
-  compute_config.named_compile_args = contract.named_compile_args;
-  return compute_config;
+static bool ExtractComputeOp(const ffi::Map<ffi::String, ffi::Any>& spec_info,
+                             KernelComputeOpSpec* compute_op) {
+  if (spec_info.empty()) {
+    return false;
+  }
+  if (auto v = spec_info.Get("enabled")) {
+    compute_op->enabled = Downcast<Bool>(v.value());
+  }
+  if (auto v = spec_info.Get("kind")) {
+    compute_op->kind = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("a_buffer")) {
+    compute_op->a_buffer = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("b_buffer")) {
+    compute_op->b_buffer = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("c_buffer")) {
+    compute_op->c_buffer = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("M")) {
+    compute_op->M = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = spec_info.Get("N")) {
+    compute_op->N = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = spec_info.Get("K")) {
+    compute_op->K = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = spec_info.Get("Mt")) {
+    compute_op->Mt = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = spec_info.Get("Nt")) {
+    compute_op->Nt = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = spec_info.Get("Kt")) {
+    compute_op->Kt = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = spec_info.Get("block_m_tiles")) {
+    compute_op->block_m_tiles =
+        static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = spec_info.Get("block_n_tiles")) {
+    compute_op->block_n_tiles =
+        static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = spec_info.Get("block_k_tiles")) {
+    compute_op->block_k_tiles =
+        static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = spec_info.Get("subblock_m_tiles")) {
+    compute_op->subblock_m_tiles =
+        static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = spec_info.Get("subblock_n_tiles")) {
+    compute_op->subblock_n_tiles =
+        static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
+  }
+  if (auto v = spec_info.Get("transpose_A")) {
+    compute_op->transpose_A = Downcast<Bool>(v.value());
+  }
+  if (auto v = spec_info.Get("transpose_B")) {
+    compute_op->transpose_B = Downcast<Bool>(v.value());
+  }
+  if (auto v = spec_info.Get("a_tensor_dtype")) {
+    compute_op->a_tensor_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("b_tensor_dtype")) {
+    compute_op->b_tensor_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("c_tensor_dtype")) {
+    compute_op->c_tensor_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("a_cb_dtype")) {
+    compute_op->a_cb_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("b_cb_dtype")) {
+    compute_op->b_cb_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("c_cb_dtype")) {
+    compute_op->c_cb_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("accumulator_dtype")) {
+    compute_op->accumulator_dtype = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("has_mbarrier")) {
+    compute_op->has_mbarrier = Downcast<Bool>(v.value());
+  }
+  if (auto v = spec_info.Get("mbarrier_buffer")) {
+    compute_op->mbarrier_buffer = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("mbarrier_scope")) {
+    compute_op->mbarrier_scope = Downcast<String>(v.value());
+  }
+  if (auto v = spec_info.Get("mbarrier_index_exprs")) {
+    for (const auto& expr : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+      compute_op->mbarrier_index_exprs.push_back(Downcast<String>(expr));
+    }
+  }
+  if (compute_op->enabled && compute_op->kind == "gemm") {
+    if (compute_op->Mt == 0 && compute_op->M > 0) compute_op->Mt = compute_op->M / 32;
+    if (compute_op->Nt == 0 && compute_op->N > 0) compute_op->Nt = compute_op->N / 32;
+    if (compute_op->Kt == 0 && compute_op->K > 0) compute_op->Kt = compute_op->K / 32;
+    if (compute_op->block_m_tiles == 0) compute_op->block_m_tiles = compute_op->Mt;
+    if (compute_op->block_n_tiles == 0) compute_op->block_n_tiles = compute_op->Nt;
+    if (compute_op->block_k_tiles == 0) compute_op->block_k_tiles = compute_op->Kt;
+    if (compute_op->subblock_m_tiles == 0) compute_op->subblock_m_tiles = compute_op->Mt;
+    if (compute_op->subblock_n_tiles == 0) compute_op->subblock_n_tiles = compute_op->Nt;
+  }
+  return compute_op->enabled && !compute_op->kind.empty();
+}
+
+static ffi::Map<ffi::String, ffi::Any> EncodeKernelComputeOp(
+    const KernelComputeOpSpec& compute_op) {
+  ffi::Map<ffi::String, ffi::Any> item;
+  item.Set("enabled", Bool(compute_op.enabled));
+  item.Set("kind", ffi::String(compute_op.kind));
+  item.Set("a_buffer", ffi::String(compute_op.a_buffer));
+  item.Set("b_buffer", ffi::String(compute_op.b_buffer));
+  item.Set("c_buffer", ffi::String(compute_op.c_buffer));
+  item.Set("M", Integer(static_cast<int>(compute_op.M)));
+  item.Set("N", Integer(static_cast<int>(compute_op.N)));
+  item.Set("K", Integer(static_cast<int>(compute_op.K)));
+  item.Set("Mt", Integer(static_cast<int>(compute_op.Mt)));
+  item.Set("Nt", Integer(static_cast<int>(compute_op.Nt)));
+  item.Set("Kt", Integer(static_cast<int>(compute_op.Kt)));
+  item.Set("block_m_tiles", Integer(static_cast<int>(compute_op.block_m_tiles)));
+  item.Set("block_n_tiles", Integer(static_cast<int>(compute_op.block_n_tiles)));
+  item.Set("block_k_tiles", Integer(static_cast<int>(compute_op.block_k_tiles)));
+  item.Set("subblock_m_tiles", Integer(static_cast<int>(compute_op.subblock_m_tiles)));
+  item.Set("subblock_n_tiles", Integer(static_cast<int>(compute_op.subblock_n_tiles)));
+  item.Set("transpose_A", Bool(compute_op.transpose_A));
+  item.Set("transpose_B", Bool(compute_op.transpose_B));
+  item.Set("a_tensor_dtype", ffi::String(compute_op.a_tensor_dtype));
+  item.Set("b_tensor_dtype", ffi::String(compute_op.b_tensor_dtype));
+  item.Set("c_tensor_dtype", ffi::String(compute_op.c_tensor_dtype));
+  item.Set("a_cb_dtype", ffi::String(compute_op.a_cb_dtype));
+  item.Set("b_cb_dtype", ffi::String(compute_op.b_cb_dtype));
+  item.Set("c_cb_dtype", ffi::String(compute_op.c_cb_dtype));
+  item.Set("accumulator_dtype", ffi::String(compute_op.accumulator_dtype));
+  item.Set("has_mbarrier", Bool(compute_op.has_mbarrier));
+  item.Set("mbarrier_buffer", ffi::String(compute_op.mbarrier_buffer));
+  item.Set("mbarrier_scope", ffi::String(compute_op.mbarrier_scope));
+  ffi::Array<ffi::Any> mbarrier_index_exprs;
+  for (const auto& expr : compute_op.mbarrier_index_exprs) {
+    mbarrier_index_exprs.push_back(ffi::String(expr));
+  }
+  item.Set("mbarrier_index_exprs", mbarrier_index_exprs);
+  return item;
 }
 
 static std::vector<KernelArgSpec> ExtractRuntimeArgsFromArray(const ffi::Array<ffi::Any>& items) {
@@ -1679,6 +1764,7 @@ struct SegmentInfo {
   KernelLaunchSpec launch_spec;
   bool has_compute_config = false;
   KernelComputeConfigSpec compute_config;
+  std::vector<KernelComputeOpSpec> compute_ops;
   std::vector<AccessorSpec> accessors;
   std::vector<SemaphoreBindingSpec> semaphore_bindings;
   std::vector<RemoteCoreDescriptorSpec> remote_core_descriptors;
@@ -1788,6 +1874,16 @@ static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, Execu
       auto compute_config = v.value().as<ffi::Map<ffi::String, ffi::Any>>().value_or(
           ffi::Map<ffi::String, ffi::Any>());
       info.has_compute_config = ExtractComputeConfig(compute_config, &info.compute_config);
+    }
+    if (auto v = segment.Get("compute_ops")) {
+      for (const auto& op_item : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+        auto compute_op = op_item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+            ffi::Map<ffi::String, ffi::Any>());
+        KernelComputeOpSpec op;
+        if (ExtractComputeOp(compute_op, &op)) {
+          info.compute_ops.push_back(std::move(op));
+        }
+      }
     }
 
     if (segments_out.empty()) {
@@ -3081,6 +3177,13 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
     compute_config.Set("policy_name", ffi::String(segment.compute_config.policy_name));
     encoded_segment.Set("compute_config", compute_config);
   }
+  if (!segment.compute_ops.empty()) {
+    ffi::Array<ffi::Any> compute_ops;
+    for (const auto& compute_op : segment.compute_ops) {
+      compute_ops.push_back(EncodeKernelComputeOp(compute_op));
+    }
+    encoded_segment.Set("compute_ops", compute_ops);
+  }
 
   ffi::Map<ffi::String, ffi::Any> segment_executable;
   for (const auto& kv : original_executable) {
@@ -3158,16 +3261,11 @@ static void PopulateKernelSpecsForDeviceFunc(const tir::PrimFunc& f,
     if (segment.has_launch_spec) {
       kernel.launch_spec = segment.launch_spec;
     }
-    if ((kernel.core_type == "trisc" || kernel.kind == "compute") && spec->compute_contract.enabled &&
-        spec->compute_contract.kind == "gemm") {
-      kernel.has_compute_config = true;
-      kernel.compute_config = ComputeConfigFromContract(spec->compute_contract);
-    } else {
-      kernel.has_compute_config = segment.has_compute_config;
-      if (segment.has_compute_config) {
-        kernel.compute_config = segment.compute_config;
-      }
+    kernel.has_compute_config = segment.has_compute_config;
+    if (segment.has_compute_config) {
+      kernel.compute_config = segment.compute_config;
     }
+    kernel.compute_ops = segment.compute_ops;
     kernel.accessors = segment.accessors;
     kernel.semaphore_bindings = segment.semaphore_bindings;
     ValidateKernelRuntimeArgSchema(kernel, func_name);

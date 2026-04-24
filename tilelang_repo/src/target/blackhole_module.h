@@ -336,6 +336,76 @@ struct KernelComputeConfigSpec {
   }
 };
 
+struct KernelComputeOpSpec {
+  bool enabled = false;
+  std::string kind;
+  std::string a_buffer;
+  std::string b_buffer;
+  std::string c_buffer;
+  uint32_t M = 0;
+  uint32_t N = 0;
+  uint32_t K = 0;
+  uint32_t Mt = 0;
+  uint32_t Nt = 0;
+  uint32_t Kt = 0;
+  uint32_t block_m_tiles = 0;
+  uint32_t block_n_tiles = 0;
+  uint32_t block_k_tiles = 0;
+  uint32_t subblock_m_tiles = 0;
+  uint32_t subblock_n_tiles = 0;
+  bool transpose_A = false;
+  bool transpose_B = false;
+  std::string a_tensor_dtype;
+  std::string b_tensor_dtype;
+  std::string c_tensor_dtype;
+  std::string a_cb_dtype;
+  std::string b_cb_dtype;
+  std::string c_cb_dtype;
+  std::string accumulator_dtype;
+  bool has_mbarrier = false;
+  std::string mbarrier_buffer;
+  std::string mbarrier_scope;
+  std::vector<std::string> mbarrier_index_exprs;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("enabled", enabled);
+    writer->WriteObjectKeyValue("kind", kind);
+    writer->WriteObjectKeyValue("a_buffer", a_buffer);
+    writer->WriteObjectKeyValue("b_buffer", b_buffer);
+    writer->WriteObjectKeyValue("c_buffer", c_buffer);
+    writer->WriteObjectKeyValue("M", static_cast<int64_t>(M));
+    writer->WriteObjectKeyValue("N", static_cast<int64_t>(N));
+    writer->WriteObjectKeyValue("K", static_cast<int64_t>(K));
+    writer->WriteObjectKeyValue("Mt", static_cast<int64_t>(Mt));
+    writer->WriteObjectKeyValue("Nt", static_cast<int64_t>(Nt));
+    writer->WriteObjectKeyValue("Kt", static_cast<int64_t>(Kt));
+    writer->WriteObjectKeyValue("block_m_tiles", static_cast<int64_t>(block_m_tiles));
+    writer->WriteObjectKeyValue("block_n_tiles", static_cast<int64_t>(block_n_tiles));
+    writer->WriteObjectKeyValue("block_k_tiles", static_cast<int64_t>(block_k_tiles));
+    writer->WriteObjectKeyValue("subblock_m_tiles", static_cast<int64_t>(subblock_m_tiles));
+    writer->WriteObjectKeyValue("subblock_n_tiles", static_cast<int64_t>(subblock_n_tiles));
+    writer->WriteObjectKeyValue("transpose_A", transpose_A);
+    writer->WriteObjectKeyValue("transpose_B", transpose_B);
+    writer->WriteObjectKeyValue("a_tensor_dtype", a_tensor_dtype);
+    writer->WriteObjectKeyValue("b_tensor_dtype", b_tensor_dtype);
+    writer->WriteObjectKeyValue("c_tensor_dtype", c_tensor_dtype);
+    writer->WriteObjectKeyValue("a_cb_dtype", a_cb_dtype);
+    writer->WriteObjectKeyValue("b_cb_dtype", b_cb_dtype);
+    writer->WriteObjectKeyValue("c_cb_dtype", c_cb_dtype);
+    writer->WriteObjectKeyValue("accumulator_dtype", accumulator_dtype);
+    writer->WriteObjectKeyValue("has_mbarrier", has_mbarrier);
+    writer->WriteObjectKeyValue("mbarrier_buffer", mbarrier_buffer);
+    writer->WriteObjectKeyValue("mbarrier_scope", mbarrier_scope);
+    if (!mbarrier_index_exprs.empty()) {
+      writer->WriteObjectKeyValue("mbarrier_index_exprs", mbarrier_index_exprs);
+    } else {
+      writer->WriteObjectKeyValue("mbarrier_index_exprs", std::vector<std::string>{});
+    }
+    writer->EndObject();
+  }
+};
+
 struct AccessorSpec {
   std::string buffer;
   uint32_t slot = 0;
@@ -571,6 +641,7 @@ struct KernelSpec {
   KernelLaunchSpec launch_spec;
   bool has_compute_config = false;
   KernelComputeConfigSpec compute_config;
+  std::vector<KernelComputeOpSpec> compute_ops;
   std::vector<AccessorSpec> accessors;
   std::vector<SemaphoreBindingSpec> semaphore_bindings;
   std::vector<RemoteCoreDescriptorSpec> remote_core_descriptors;
@@ -607,6 +678,9 @@ struct KernelSpec {
     }
     if (has_compute_config) {
       writer->WriteObjectKeyValue("compute_config", compute_config);
+    }
+    if (!compute_ops.empty()) {
+      writer->WriteObjectKeyValue("compute_ops", compute_ops);
     }
     if (!accessors.empty()) {
       writer->WriteObjectKeyValue("accessors", accessors);

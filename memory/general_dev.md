@@ -790,6 +790,20 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `logical_core_noc_x/y + remote_core_descriptors`；
   不要再让后段从 literal 坐标、
   裸地址或 builtin 序列补协议
+- leaf compute schema 要按 generic op 数组扩展：
+  `KernelSpec.compute_ops`
+  是长期方向，
+  entry 用 `kind` 分派 family-specific fields；
+  GEMM 可以有
+  `M/N/K`、operand buffer、transpose、dtype、work-decomposition
+  字段，
+  但它只是 `kind=gemm` entry，
+  不能把 `gemm_compute`
+  升成所有 compute kernel 的 public field。
+  后续 eltwise / reduction / SFPU / pack-materialization
+  都应在同一数组下新增 typed entry，
+  runtime 只消费 admitted `kind`
+  并对未 admitted subset 走 explicit unsupported gate
 
 ## 9. 调试模式
 

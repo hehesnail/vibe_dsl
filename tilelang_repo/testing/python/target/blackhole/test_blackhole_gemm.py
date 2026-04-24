@@ -156,8 +156,42 @@ def _rebuild_codegen_module_with_compute_contract(artifact, compute_contract):
                     "policy_type": compute_contract.get("policy_type", 0),
                     "policy_name": compute_contract.get("policy_name", "Square"),
                 }
+                if "compute_ops" in kernel_payload:
+                    compute_ops = []
+                    for compute_op in kernel_payload["compute_ops"]:
+                        compute_op = dict(compute_op)
+                        if str(compute_op.get("kind", "")) == "gemm":
+                            compute_op["has_mbarrier"] = compute_contract.get(
+                                "has_mbarrier", False
+                            )
+                            compute_op["mbarrier_buffer"] = compute_contract.get(
+                                "mbarrier_buffer", ""
+                            )
+                            compute_op["mbarrier_scope"] = compute_contract.get(
+                                "mbarrier_scope", ""
+                            )
+                            compute_op["mbarrier_index_exprs"] = list(
+                                compute_contract.get("mbarrier_index_exprs", [])
+                            )
+                        compute_ops.append(compute_op)
+                    kernel_payload["compute_ops"] = compute_ops
             rebuilt_kernels.append(rebuild_tt_kernel(kernel, payload=kernel_payload))
         return rebuild_tt_program(tt_program, kernels=rebuilt_kernels, payload=payload)
+
+    return _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)
+
+
+def _rebuild_codegen_module_without_contract_family_payload(artifact):
+    def mutate(tt_program):
+        payload = dict(tt_program.payload)
+        for key in (
+            "gemm_contract",
+            "compute_contract",
+            "multi_gemm_contracts",
+            "multi_compute_contracts",
+        ):
+            payload.pop(key, None)
+        return rebuild_tt_program(tt_program, payload=payload)
 
     return _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)
 
@@ -960,6 +994,39 @@ def test_blackhole_gemm_kernel_compute_config_follows_compute_contract_in_spec()
     assert str(compute_config["policy_name"]) == str(compute_contract["policy_name"])
 
 
+def test_blackhole_gemm_kernel_projects_typed_compute_ops_schema():
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    compute = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="compute", core_type="trisc"
+    )
+    assert "gemm_compute" not in compute
+    assert "compute_ops" in compute
+    compute_ops = [dict(item) for item in compute["compute_ops"]]
+    gemm_op = next(item for item in compute_ops if str(item["kind"]) == "gemm")
+
+    assert bool(gemm_op["enabled"]) is True
+    assert int(gemm_op["M"]) == 32
+    assert int(gemm_op["N"]) == 32
+    assert int(gemm_op["K"]) == 128
+    assert int(gemm_op["Mt"]) == 1
+    assert int(gemm_op["Nt"]) == 1
+    assert int(gemm_op["Kt"]) == 4
+    assert str(gemm_op["a_buffer"]) == "A"
+    assert str(gemm_op["b_buffer"]) == "B"
+    assert str(gemm_op["c_buffer"]) == "C"
+    assert bool(gemm_op["transpose_A"]) is False
+    assert bool(gemm_op["transpose_B"]) is True
+    assert str(gemm_op["a_tensor_dtype"]) == "Float16_b"
+    assert str(gemm_op["b_tensor_dtype"]) == "Float16_b"
+    assert str(gemm_op["c_tensor_dtype"]) == "Float32"
+
+
 def test_blackhole_gemm_spec_survives_without_legacy_contract_attrs():
     kernel = gemm_kernel()
     target = Target("blackhole")
@@ -977,6 +1044,55 @@ def test_blackhole_gemm_spec_survives_without_legacy_contract_attrs():
     assert int(compute_contract["M"]) == 32
     assert int(compute_contract["N"]) == 32
     assert int(compute_contract["K"]) == 128
+
+
+def test_blackhole_gemm_spec_survives_without_contract_family_payload():
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    stripped_mod = _rebuild_codegen_module_without_contract_family_payload(artifact)
+    executable_spec = stripped_mod.get_function_metadata("main")
+    assert bool(executable_spec["compute_contract"]["enabled"]) is False
+    assert bool(executable_spec["gemm_contract"]["enabled"]) is False
+
+    compute = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="compute", core_type="trisc"
+    )
+    assert "compute_ops" in compute
+    gemm_op = next(item for item in compute["compute_ops"] if str(item["kind"]) == "gemm")
+    assert bool(gemm_op["enabled"]) is True
+    assert int(gemm_op["K"]) == 128
+
+
+def test_blackhole_gemm_direct_runtime_uses_typed_compute_ops_without_contract_family():
+    can_run, msg = check_blackhole_direct_execution_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    stripped_mod = _rebuild_codegen_module_without_contract_family_payload(artifact)
+
+    a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
+    c_output = torch.zeros(32, 32, dtype=torch.float32)
+
+    stripped_mod["main"](a_torch, b_torch, c_output)
+    expected = torch.matmul(a_torch.to(torch.float32), b_torch.to(torch.float32).T)
+    assert_tensors_close_or_dump(
+        c_output,
+        expected,
+        atol=1e-2,
+        rtol=1e-2,
+        failure_message="gemm_typed_compute_without_contract_family mismatch",
+    )
 
 
 def test_blackhole_gemm_compile_time_abi_materializes_nondefault_compute_abi():
