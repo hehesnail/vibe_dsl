@@ -537,28 +537,36 @@ direct runtime
 ## 5. Wrong-Now Residue 与 Cleanup Debt
 
 下面这些东西
-必须明确写成
+在历史 repo HEAD
+里曾经必须明确写成
 **wrong now, delete later**
 或 **leaf compatibility debt**，
 不能写成
 `ExecutableSpec`
 的长期 owner truth。
+`2026-04-25`
+compatibility fallback
+收束后，
+这些旧面已从 active chain 删除；
+后续不能按兼容名义恢复。
 
 ### 5.1 `buffer_tile_bridge_specs` 不是新层
 
-如果 repo HEAD
-里仍保留：
+repo HEAD
+已删除：
 
 - `buffer_tile_bridge_specs`
 - `tl.blackhole_logical_buffer_tile_bridge_specs`
 
-它们的正确口径只能是：
-
-- task1 残留的 narrow cleanup exception
-- task3 仍活着的
-  leaf compatibility residue
-- projection schema
-  上待删的 bridge debt
+logical tile layout
+只允许由
+`SpatialPlan.LayoutSpec`
+和
+`TTBufferDistributionPlan`
+typed fields
+承载，
+再投影到
+`ExecutableSpec.buffer_distribution_plans`。
 
 它们不是：
 
@@ -568,10 +576,10 @@ direct runtime
 - codegen/runtime
   再造出来的新表示层
 
-### 5.2 `compute_contract` / `gemm_contract` family 只是 leaf compatibility debt
+### 5.2 `compute_contract` / `gemm_contract` family 已删除
 
-如果 repo HEAD
-里仍保留：
+repo HEAD
+已删除：
 
 - `compute_contract`
 - `multi_compute_contracts`
@@ -579,10 +587,11 @@ direct runtime
 - `multi_gemm_contracts`
 - `compute_epilogue_ops`
 
-截至
-`2026-04-24`
-P0.1，
-这些字段已经不再出现在
+这些字段不再出现在
+`TTProgram.payload`
+生成 /
+验证 /
+测试、
 `MaterializeBlackholeExecutable`
 projection、
 `ExecutableSpec`
@@ -591,64 +600,25 @@ runtime JSON
 或 function metadata
 公共 schema
 中。
-仍可见的
-`TTProgram.payload`
-contract-family
-生成 /
-验证 /
-测试
-只属于 P0.6
-payload seed
-cleanup debt，
-不是 leaf public schema。
 
-它们的正确口径只能是：
-
-- current leaf/runtime compatibility surface
-- admitted direct-runtime gate
-- 尚未删完的
-  contract-family residue
-
-这里必须特别写清楚：
-
-- `compute_contract <- gemm_contract`
-  fallback
-  如果还活着，
-  它只是 live compatibility debt
-- `compute_contract`
-  缺席时
-  从 `multi_compute_contracts`
-  或 `gemm_contract`
-  恢复语义，
-  也只是 live compatibility debt
-- `MaterializeBlackholeExecutable`
-  如果仍直接从
-  `TTProgram.payload`
-  复制这些字段，
-  这只是 forced leaf debt
-  的当前实现形态，
-  不是 canonical writer
-  的长期合同
-- runtime /
-  `BlackholeModule`
-  如果仍通过
-  `compute_contract <- multi_compute_contracts <- gemm_contract`
-  选择 compute truth，
-  这只能是
-  wrong-now fallback；
-  required end-state
-  是 runtime
-  只读
-  `ExecutableSpec`
-  typed compute /
-  kernel /
-  materialization
-  records，
-  缺字段时 fail-close，
-  不再从旧 contract family
-  推断
-- 当前第一轮 typed replacement
-  是
+compute truth
+现在只能从
+`TTComputeOpPlan`
+投影到
+`KernelSpec.compute_ops`。
+runtime /
+`BlackholeModule`
+只读
+`ExecutableSpec`
+typed compute /
+kernel /
+materialization
+records；
+缺字段时 fail-close，
+不再从旧 contract family
+推断。
+当前 typed replacement
+是
   `TTProgram.TTComputeOpPlan`
   到 executable
   `KernelSpec.compute_ops`
@@ -797,27 +767,15 @@ support 工作
 
 ### 5.5 防御性 fallback 不是长期 reader 合法性
 
-当前实现里如果还存在：
-
-- `TTProgram payload fallback`
-  报错文案
-- 对 top-level payload
-  或 `work_linear_id`
-  恢复 planning 语义的
-  防御性 reject
-
-这只能说明：
-
-- repo HEAD
-  还在防守旧路径
-- leaf readers
-  已经不再把那条路径
-  当成合法 owner truth
-
-不能反过来写成：
-
-- 旧 fallback
-  仍是允许存在的 reader 合同
+当前实现不再保留
+`TTProgram payload fallback`
+报错文案，
+也不允许从 top-level payload
+或 `work_linear_id`
+恢复 planning 语义。
+防御性检查只能要求 typed 字段存在；
+不能把旧 fallback
+重新写成 reader 合同。
 
 ### 5.6 public specialization audit verdict
 
@@ -847,13 +805,12 @@ public surface
   和 runtime metadata
   中的 public field
   形态；
-  剩余
+  P0.6
+  后续已删除
   `TTProgram.payload`
   seed
   读取 /
   写入
-  是 P0.6
-  cleanup debt
 - P0.2
   已把 GEMM
   `KernelSpec.compute_ops`
@@ -1186,16 +1143,10 @@ verification / residue scan /
    / helper bag
 5. `buffer_tile_bridge_specs`
    与 contract-family residue
-   只被明确记录为 debt，
-   不再被文档合法化成长期字段边界；
-   `compute_contract` /
-   `gemm_contract` /
-   `multi_*_contracts`
-   退出
+   已退出 active chain；
+   后续不能重新进入
    `TTProgram.payload -> ExecutableSpec -> runtime`
-   fallback 链之前，
-   leaf contract-family deletion
-   不能被视为完成
+   fallback 链
 6. backend admission
    只停在 leaf execution gate，
    不再反向塑形

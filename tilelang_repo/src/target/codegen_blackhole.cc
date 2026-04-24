@@ -608,7 +608,7 @@ void CodeGenBlackhole::GenerateGenericKernelMain(const tvm::tir::PrimFunc &f,
   // TT-Metal kernels use get_arg_val<uint32_t>(arg_index) to read arguments
   stream << "  // Load kernel arguments from runtime\n";
   LoadCorePlan(f);
-  LoadBufferTileBridgeSpecs(f);
+  LoadLogicalTileLayouts(f);
   if (HasRuntimeArgsForCodegen(f)) {
     EmitRuntimeArgLoads(f);
     this->VisitStmt(f->body);
@@ -694,19 +694,19 @@ void CodeGenBlackhole::LoadCorePlan(const tvm::tir::PrimFunc &f) {
   }
 }
 
-void CodeGenBlackhole::LoadBufferTileBridgeSpecs(const tvm::tir::PrimFunc& f) {
-  buffer_tile_bridge_bindings_by_buffer_name_.clear();
+void CodeGenBlackhole::LoadLogicalTileLayouts(const tvm::tir::PrimFunc& f) {
+  logical_tile_layout_bindings_by_buffer_name_.clear();
   auto ingest_spec = [&](const ffi::Map<ffi::String, ffi::Any>& spec) {
     auto maybe_buffer = spec.Get(ffi::String(schema_key::kBuffer));
     if (!maybe_buffer) {
       return;
     }
-    BufferTileBridgeBinding binding;
+    LogicalTileLayoutBinding binding;
     binding.buffer_name = Downcast<ffi::String>(maybe_buffer.value());
-    if (auto v = spec.Get(ffi::String(schema_key::kShape))) {
+    if (auto v = spec.Get(ffi::String("logical_shape"))) {
       binding.logical_shape = Downcast<ffi::Array<tvm::PrimExpr>>(v.value());
     }
-    if (auto v = spec.Get(ffi::String(schema_key::kLocalShape))) {
+    if (auto v = spec.Get(ffi::String("local_shape"))) {
       binding.local_shape = Downcast<ffi::Array<tvm::PrimExpr>>(v.value());
     }
     if (auto v = spec.Get(ffi::String(schema_key::kInverseLogicalIndexVars))) {
@@ -725,7 +725,7 @@ void CodeGenBlackhole::LoadBufferTileBridgeSpecs(const tvm::tir::PrimFunc& f) {
       return;
     }
     auto [it, inserted] =
-        buffer_tile_bridge_bindings_by_buffer_name_.emplace(binding.buffer_name, binding);
+        logical_tile_layout_bindings_by_buffer_name_.emplace(binding.buffer_name, binding);
     if (!inserted) {
       ICHECK(StructuralEqual()(it->second.logical_shape, binding.logical_shape))
           << "Blackhole codegen requires a single logical bridge shape per buffer; "
@@ -736,30 +736,31 @@ void CodeGenBlackhole::LoadBufferTileBridgeSpecs(const tvm::tir::PrimFunc& f) {
     }
   };
 
-  for (const ffi::Any& spec_any : tt_program_projection::GetExecutableArrayField(
-           f, "Blackhole codegen", tt_program_projection::executable_key::kBufferTileBridgeSpecs)) {
-    auto spec = spec_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+  for (const ffi::Any& item_any : tt_program_projection::GetExecutableArrayField(
+           f, "Blackhole codegen", tt_program_projection::executable_key::kBufferDistributionPlans)) {
+    auto item = item_any.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
         ffi::Map<ffi::String, ffi::Any>());
-    if (!spec.empty()) {
-      ingest_spec(spec);
+    if (item.empty() || !item.Get("logical_shape")) {
+      continue;
     }
+    ingest_spec(item);
   }
 }
 
-const CodeGenBlackhole::BufferTileBridgeBinding* CodeGenBlackhole::FindBufferTileBridgeBinding(
+const CodeGenBlackhole::LogicalTileLayoutBinding* CodeGenBlackhole::FindLogicalTileLayoutBinding(
     const tvm::tir::VarNode* var) const {
   if (var == nullptr) {
     return nullptr;
   }
-  auto it = buffer_tile_bridge_bindings_by_buffer_name_.find(var->name_hint);
-  if (it == buffer_tile_bridge_bindings_by_buffer_name_.end()) {
+  auto it = logical_tile_layout_bindings_by_buffer_name_.find(var->name_hint);
+  if (it == logical_tile_layout_bindings_by_buffer_name_.end()) {
     return nullptr;
   }
   return &it->second;
 }
 
-bool CodeGenBlackhole::BufferTileBridgeRequiresGenericBridge(
-    const BufferTileBridgeBinding& binding) const {
+bool CodeGenBlackhole::LogicalTileLayoutRequiresGenericBridge(
+    const LogicalTileLayoutBinding& binding) const {
   return !binding.inverse_logical_index_exprs.empty() && !binding.local_shape.empty();
 }
 
@@ -902,7 +903,7 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
           << "Blackhole codegen requires explicit per-work arg binding for runtime arg kind '"
           << arg_kind << "' identity '" << arg_identity
           << "' on multi-work kernels; codegen must not recover block/tile semantics "
-          << "from work_linear_id or TTProgram payload fallback";
+          << "from work_linear_id or implicit runtime-arg inference";
     }
   }
 
@@ -2678,8 +2679,8 @@ void CodeGenBlackhole::PrintWriteLocalFragmentSliceToTiledCB(const tvm::tir::Cal
       << "tl.blackhole.write_local_fragment_slice_to_tiled_cb requires 16-bit or 32-bit element dtype";
   const char* bits_type = bit_width == 16 ? "uint16_t" : "uint32_t";
   const PrimExpr src_offset = op->args.size() >= 6 ? op->args[5] : IntImm(DataType::Int(32), 0);
-  if (const BufferTileBridgeBinding* binding = FindBufferTileBridgeBinding(src_var);
-      binding != nullptr && BufferTileBridgeRequiresGenericBridge(*binding)) {
+  if (const LogicalTileLayoutBinding* binding = FindLogicalTileLayoutBinding(src_var);
+      binding != nullptr && LogicalTileLayoutRequiresGenericBridge(*binding)) {
     ICHECK_EQ(binding->local_shape.size(), 1)
         << "Blackhole codegen generic fragment->tiled CB bridge currently requires a 1-D "
            "local_shape for "
@@ -2832,8 +2833,8 @@ void CodeGenBlackhole::PrintCastFragmentSliceToTiledCB(const tvm::tir::CallNode*
         << "tl.blackhole.cast_fragment_slice_to_tiled_cb currently supports only float16, "
            "bfloat16, or float32 destination dtypes";
   }
-  if (const BufferTileBridgeBinding* binding = FindBufferTileBridgeBinding(src_var);
-      binding != nullptr && BufferTileBridgeRequiresGenericBridge(*binding)) {
+  if (const LogicalTileLayoutBinding* binding = FindLogicalTileLayoutBinding(src_var);
+      binding != nullptr && LogicalTileLayoutRequiresGenericBridge(*binding)) {
     ICHECK_EQ(binding->local_shape.size(), 1)
         << "Blackhole codegen generic cast-fragment->tiled CB bridge currently requires a 1-D "
            "local_shape for "
@@ -3046,8 +3047,8 @@ void CodeGenBlackhole::PrintReadCBFrontTileToLocalFragment(const tvm::tir::CallN
   ICHECK(bit_width == 16 || bit_width == 32)
       << "tl.blackhole.read_cb_front_tile_to_local_fragment requires 16-bit or 32-bit element dtype";
   const char* bits_type = bit_width == 16 ? "uint16_t" : "uint32_t";
-  if (const BufferTileBridgeBinding* binding = FindBufferTileBridgeBinding(dst_var);
-      binding != nullptr && BufferTileBridgeRequiresGenericBridge(*binding)) {
+  if (const LogicalTileLayoutBinding* binding = FindLogicalTileLayoutBinding(dst_var);
+      binding != nullptr && LogicalTileLayoutRequiresGenericBridge(*binding)) {
     ICHECK_EQ(binding->local_shape.size(), 1)
         << "Blackhole codegen generic tiled CB->fragment bridge currently requires a 1-D "
            "local_shape for "

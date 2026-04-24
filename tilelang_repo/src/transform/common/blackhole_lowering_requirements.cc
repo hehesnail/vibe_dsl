@@ -21,6 +21,7 @@
 #include "../../op/utils.h"
 #include "runtime/thread_storage_scope.h"
 #include "blackhole_utils.h"
+#include "buffer_tile_bridge_spec_utils.h"
 #include "companion_base.h"
 
 namespace tvm {
@@ -47,13 +48,6 @@ void PushBackUnique(std::vector<T>* values, const T& value) {
   }
 }
 
-void PushBackUnique(Array<Any>* values, std::unordered_set<std::string>* seen, const Any& value,
-                    const std::string& key) {
-  if (!key.empty() && seen->insert(key).second) {
-    values->push_back(value);
-  }
-}
-
 std::optional<std::vector<int64_t>> ExtractStaticShape(const Array<PrimExpr>& shape) {
   std::vector<int64_t> dims;
   dims.reserve(shape.size());
@@ -65,6 +59,59 @@ std::optional<std::vector<int64_t>> ExtractStaticShape(const Array<PrimExpr>& sh
     dims.push_back(imm->value);
   }
   return dims;
+}
+
+Array<Any> CollectLogicalTileLayoutSpecsFromBody(const tir::Stmt& body) {
+  class Collector final : public tir::StmtExprVisitor {
+   public:
+    Array<Any> Collect(const tir::Stmt& stmt) {
+      specs_.clear();
+      seen_.clear();
+      VisitStmt(stmt);
+      return specs_;
+    }
+
+   private:
+    void Record(const tir::Buffer& buffer, const Layout& layout) {
+      const std::string scope = buffer.scope();
+      if (scope != "local" && scope != "local.fragment" && scope != "blackhole.acc") {
+        return;
+      }
+      auto maybe_spec = TryBuildBufferTileBridgeSpec(buffer, layout);
+      if (!maybe_spec) {
+        return;
+      }
+      const Map<String, Any>& spec = maybe_spec.value();
+      auto buffer_it = spec.find(String(schema_key::kBuffer));
+      auto scope_it = spec.find(String(schema_key::kScope));
+      if (buffer_it == spec.end() || scope_it == spec.end()) {
+        return;
+      }
+      const std::string key = str(Downcast<String>((*buffer_it).second)) + "|" +
+                              str(Downcast<String>((*scope_it).second));
+      if (!key.empty() && seen_.insert(key).second) {
+        specs_.push_back(spec);
+      }
+    }
+
+    void VisitStmt_(const tir::BlockNode* op) final {
+      if (op->annotations.count(attr::kLayoutMap)) {
+        if (auto layout_map_any = op->annotations.Get(attr::kLayoutMap)) {
+          auto layout_map = layout_map_any->as<Map<tir::Buffer, Layout>>();
+          if (layout_map && layout_map.value().defined()) {
+            for (const auto& [buffer, layout] : layout_map.value()) {
+              Record(buffer, layout);
+            }
+          }
+        }
+      }
+      tir::StmtExprVisitor::VisitStmt_(op);
+    }
+
+    Array<Any> specs_;
+    std::unordered_set<std::string> seen_;
+  };
+  return Collector().Collect(body);
 }
 
 std::unordered_map<std::string, std::vector<int64_t>> BuildLogicalBufferShapes(
@@ -98,27 +145,24 @@ std::unordered_map<std::string, std::vector<int64_t>> BuildLogicalBufferShapes(
       remember(load->buffer);
     }
   });
-  if (auto logical_specs =
-          func->GetAttr<Array<Any>>(attr::kTLBlackholeLogicalBufferTileBridgeSpecs)) {
-    for (const Any& spec_any : logical_specs.value()) {
-      Map<String, Any> spec = Downcast<Map<String, Any>>(spec_any);
-      auto buffer_it = spec.find(String(schema_key::kBuffer));
-      auto shape_it = spec.find(String(schema_key::kShape));
-      if (buffer_it == spec.end() || shape_it == spec.end()) {
-        continue;
+  for (const Any& spec_any : CollectLogicalTileLayoutSpecsFromBody(func->body)) {
+    Map<String, Any> spec = Downcast<Map<String, Any>>(spec_any);
+    auto buffer_it = spec.find(String(schema_key::kBuffer));
+    auto shape_it = spec.find(String(schema_key::kShape));
+    if (buffer_it == spec.end() || shape_it == spec.end()) {
+      continue;
+    }
+    std::vector<int64_t> shape;
+    for (const Any& dim_any : Downcast<Array<Any>>((*shape_it).second)) {
+      if (auto dim = dim_any.try_cast<Integer>()) {
+        shape.push_back(dim.value()->value);
+      } else {
+        shape.clear();
+        break;
       }
-      std::vector<int64_t> shape;
-      for (const Any& dim_any : Downcast<Array<Any>>((*shape_it).second)) {
-        if (auto dim = dim_any.try_cast<Integer>()) {
-          shape.push_back(dim.value()->value);
-        } else {
-          shape.clear();
-          break;
-        }
-      }
-      if (!shape.empty()) {
-        shapes[Downcast<String>((*buffer_it).second)] = shape;
-      }
+    }
+    if (!shape.empty()) {
+      shapes[Downcast<String>((*buffer_it).second)] = shape;
     }
   }
   return shapes;
@@ -972,8 +1016,6 @@ Array<Any> CollectBufferMaterializationContractsFromBody(
 BlackholeLoweringSupportFacts CollectBlackholeLoweringSupportFactsImpl(const tir::PrimFunc& func,
                                                                        const SpatialPlan& plan) {
   LoweringSupportFactsAnalysis analysis;
-  Array<Any> buffer_tile_bridge_specs;
-  std::unordered_set<std::string> seen_buffer_tile_bridge_specs;
   for (const DataflowEdge& edge : plan->dataflow_edges) {
     if (str(edge->kind) != "carry") {
       continue;
@@ -983,20 +1025,6 @@ BlackholeLoweringSupportFacts CollectBlackholeLoweringSupportFactsImpl(const tir
       analysis.recurrence_subjects.insert(subject);
     }
   }
-  if (auto logical_specs =
-          func->GetAttr<Array<Any>>(attr::kTLBlackholeLogicalBufferTileBridgeSpecs)) {
-    for (const Any& spec_any : logical_specs.value()) {
-      Map<String, Any> spec = Downcast<Map<String, Any>>(spec_any);
-      auto buffer_it = spec.find(String(schema_key::kBuffer));
-      auto scope_it = spec.find(String(schema_key::kScope));
-      if (buffer_it == spec.end() || scope_it == spec.end()) {
-        continue;
-      }
-      const std::string key =
-          Downcast<String>((*buffer_it).second) + "|" + Downcast<String>((*scope_it).second);
-      PushBackUnique(&buffer_tile_bridge_specs, &seen_buffer_tile_bridge_specs, spec, key);
-    }
-  }
   Array<Any> flow_contracts = CollectBufferFlowContractsFromBody(func->body);
   Array<Any> materialization_contracts =
       CollectBufferMaterializationContractsFromBody(func, analysis.recurrence_subjects);
@@ -1004,9 +1032,6 @@ BlackholeLoweringSupportFacts CollectBlackholeLoweringSupportFactsImpl(const tir
                                                               &materialization_contracts);
   AppendUniqueCastDrivenBufferMaterializationContractsFromBody(
       func->body, flow_contracts, BuildLogicalBufferShapes(func), &materialization_contracts);
-  if (!buffer_tile_bridge_specs.empty()) {
-    analysis.facts.buffer_tile_bridge_specs = buffer_tile_bridge_specs;
-  }
   if (!materialization_contracts.empty()) {
     analysis.facts.buffer_materialization_contracts = materialization_contracts;
   }

@@ -22,6 +22,7 @@
 #include "../op/operator.h"
 #include "../op/region.h"
 #include "common/blackhole_utils.h"
+#include "common/buffer_tile_bridge_spec_utils.h"
 #include "common/spatial_analysis.h"
 #include "common/spatial_plan.h"
 
@@ -611,6 +612,81 @@ struct BufferMetadata {
   std::string dtype;
 };
 
+struct LogicalTileLayoutInfo {
+  Array<PrimExpr> logical_shape;
+  Array<PrimExpr> local_shape;
+  PrimExpr thread_extent;
+  PrimExpr replicate_extent;
+  Array<PrimExpr> inverse_logical_index_vars;
+  Array<PrimExpr> inverse_logical_index_exprs;
+};
+
+class LogicalTileLayoutCollector : public tir::StmtExprVisitor {
+ public:
+  std::unordered_map<std::string, LogicalTileLayoutInfo> Collect(const tir::PrimFunc& func) {
+    layout_by_buffer_.clear();
+    VisitStmt(func->body);
+    return layout_by_buffer_;
+  }
+
+ private:
+  void Record(const tir::Buffer& buffer, const Layout& layout) {
+    const std::string scope = buffer.scope();
+    if (scope != "local" && scope != "local.fragment" && scope != "blackhole.acc") {
+      return;
+    }
+    auto maybe_spec = TryBuildBufferTileBridgeSpec(buffer, layout);
+    if (!maybe_spec) {
+      return;
+    }
+    const Map<String, Any>& spec = maybe_spec.value();
+    auto buffer_it = spec.find(String(schema_key::kBuffer));
+    if (buffer_it == spec.end()) {
+      return;
+    }
+    const std::string buffer_name = Downcast<String>((*buffer_it).second);
+    if (buffer_name.empty() || layout_by_buffer_.count(buffer_name)) {
+      return;
+    }
+    LogicalTileLayoutInfo info;
+    if (auto value = spec.Get(String(schema_key::kShape))) {
+      info.logical_shape = Downcast<Array<PrimExpr>>(value.value());
+    }
+    if (auto value = spec.Get(String(schema_key::kLocalShape))) {
+      info.local_shape = Downcast<Array<PrimExpr>>(value.value());
+    }
+    if (auto value = spec.Get(String(schema_key::kThreadExtent))) {
+      info.thread_extent = Downcast<PrimExpr>(value.value());
+    }
+    if (auto value = spec.Get(String(schema_key::kReplicateExtent))) {
+      info.replicate_extent = Downcast<PrimExpr>(value.value());
+    }
+    if (auto value = spec.Get(String(schema_key::kInverseLogicalIndexVars))) {
+      info.inverse_logical_index_vars = Downcast<Array<PrimExpr>>(value.value());
+    }
+    if (auto value = spec.Get(String(schema_key::kInverseLogicalIndexExprs))) {
+      info.inverse_logical_index_exprs = Downcast<Array<PrimExpr>>(value.value());
+    }
+    layout_by_buffer_.emplace(buffer_name, std::move(info));
+  }
+
+  void VisitStmt_(const tir::BlockNode* op) final {
+    if (op->annotations.count(attr::kLayoutMap)) {
+      if (auto layout_map_any = op->annotations.Get(attr::kLayoutMap)) {
+        auto layout_map = layout_map_any->as<Map<tir::Buffer, Layout>>();
+        if (layout_map && layout_map.value().defined()) {
+          for (const auto& [buffer, layout] : layout_map.value()) {
+            Record(buffer, layout);
+          }
+        }
+      }
+    }
+    tir::StmtExprVisitor::VisitStmt_(op);
+  }
+
+  std::unordered_map<std::string, LogicalTileLayoutInfo> layout_by_buffer_;
+};
+
 std::optional<std::vector<int64_t>> ExtractStaticShape(const Array<PrimExpr>& shape) {
   std::vector<int64_t> result;
   result.reserve(shape.size());
@@ -698,6 +774,9 @@ Array<LayoutSpec> BuildLayoutSpecs(const tir::PrimFunc& func,
 
   BufferScopeCollector collector;
   std::unordered_map<std::string, std::string> scope_by_buffer = collector.Collect(func);
+  LogicalTileLayoutCollector tile_layout_collector;
+  std::unordered_map<std::string, LogicalTileLayoutInfo> tile_layout_by_buffer =
+      tile_layout_collector.Collect(func);
   std::unordered_map<std::string, LayoutInfo> layout_info_by_subject;
 
   for (int unit_index = 0; unit_index < static_cast<int>(execution_units.size()); ++unit_index) {
@@ -739,13 +818,66 @@ Array<LayoutSpec> BuildLayoutSpecs(const tir::PrimFunc& func,
   for (const std::string& subject : subjects) {
     LayoutInfo& info = layout_info_by_subject[subject];
     std::sort(info.unit_indices.begin(), info.unit_indices.end());
+    auto tile_layout_it = tile_layout_by_buffer.find(subject);
+    LogicalTileLayoutInfo tile_layout =
+        tile_layout_it == tile_layout_by_buffer.end() ? LogicalTileLayoutInfo()
+                                                      : tile_layout_it->second;
     layout_specs.push_back(LayoutSpec(
         String("layout_" + subject), String(subject), String(info.scope),
         String(DeriveDistributionKind(info.scope)),
         ExecutionUnitNamesForIndices(info.unit_indices, execution_units),
-        ToIntegerArray(info.unit_indices), Array<String>{}, MakeAnchors("layout_spec", subject)));
+        ToIntegerArray(info.unit_indices), Array<String>{}, tile_layout.logical_shape,
+        tile_layout.local_shape, tile_layout.thread_extent, tile_layout.replicate_extent,
+        tile_layout.inverse_logical_index_vars, tile_layout.inverse_logical_index_exprs,
+        MakeAnchors("layout_spec", subject)));
   }
   return layout_specs;
+}
+
+LogicalTileLayoutInfo LogicalTileLayoutInfoFromLayoutSpec(const LayoutSpec& layout_spec) {
+  LogicalTileLayoutInfo info;
+  info.logical_shape = layout_spec->logical_shape;
+  info.local_shape = layout_spec->local_shape;
+  info.thread_extent = layout_spec->thread_extent;
+  info.replicate_extent = layout_spec->replicate_extent;
+  info.inverse_logical_index_vars = layout_spec->inverse_logical_index_vars;
+  info.inverse_logical_index_exprs = layout_spec->inverse_logical_index_exprs;
+  return info;
+}
+
+Array<LayoutSpec> MergePriorTypedLayoutSpecs(const tir::PrimFunc& func,
+                                             const Array<LayoutSpec>& layout_specs) {
+  auto prior_plan = func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
+  if (!prior_plan) {
+    return layout_specs;
+  }
+  std::unordered_map<std::string, LayoutSpec> prior_layout_by_subject;
+  for (const LayoutSpec& prior_layout : prior_plan.value()->layout_specs) {
+    if (!prior_layout->logical_shape.empty()) {
+      prior_layout_by_subject.emplace(str(prior_layout->subject), prior_layout);
+    }
+  }
+  if (prior_layout_by_subject.empty()) {
+    return layout_specs;
+  }
+
+  Array<LayoutSpec> merged_layout_specs;
+  for (const LayoutSpec& layout : layout_specs) {
+    LogicalTileLayoutInfo tile_layout = LogicalTileLayoutInfoFromLayoutSpec(layout);
+    if (tile_layout.logical_shape.empty()) {
+      auto prior_it = prior_layout_by_subject.find(str(layout->subject));
+      if (prior_it != prior_layout_by_subject.end()) {
+        tile_layout = LogicalTileLayoutInfoFromLayoutSpec(prior_it->second);
+      }
+    }
+    merged_layout_specs.push_back(LayoutSpec(
+        layout->name, layout->subject, layout->scope, layout->distribution_kind,
+        layout->unit_names, layout->unit_indices, layout->virtual_device_axes,
+        tile_layout.logical_shape, tile_layout.local_shape, tile_layout.thread_extent,
+        tile_layout.replicate_extent, tile_layout.inverse_logical_index_vars,
+        tile_layout.inverse_logical_index_exprs, layout->anchors));
+  }
+  return merged_layout_specs;
 }
 
 std::string DeriveLiveValueRole(const BufferMetadata* metadata) {
@@ -995,7 +1127,8 @@ SpatialPlan BuildSpatialPlanForFunc(const std::string& member_func, const tir::P
   const LocalValueFlowEdges local_value_flow_edges = BuildLocalValueFlowEdges(candidates);
   const Array<DataflowEdge> dataflow_edges =
       ConcatDataflowEdges(closure_dataflow_edges, local_value_flow_edges.dataflow_edges);
-  const Array<LayoutSpec> layout_specs = BuildLayoutSpecs(func, execution_units);
+  const Array<LayoutSpec> layout_specs =
+      MergePriorTypedLayoutSpecs(func, BuildLayoutSpecs(func, execution_units));
   const Array<PhasePlan> phase_plans =
       BuildPhasePlans(execution_units, dataflow_edges, unit_phases);
   BufferMetadataCollector metadata_collector;

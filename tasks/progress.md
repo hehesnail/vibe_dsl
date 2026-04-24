@@ -6,7 +6,7 @@
 ## Status
 
 - Date: `2026-04-25`
-- Active lane: `workload payoff`
+- Active lane: `P1 compatibility fallback deletion`
 - Current item: `P1/P2 workload payoff`
 - Blocker: none
 - Main chain: `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
@@ -24,21 +24,20 @@
 - `P1 TTProgram mesh/buffer distribution schema`: completed
 - `P1 compute-kind extension`: completed
 - `P1 TTKernel compute_ops payload removal`: completed
+- `P1 bridge attr/payload deletion`: completed
+- `P1 contract-family fallback deletion`: completed
+- `P1 kernel/core/compute/sync payload surface deletion`: completed
 - `P1/P2 workload payoff`: next
 
 ## Open Debt
 
-- `tl.blackhole_logical_buffer_tile_bridge_specs` remains the only narrow bridge attr.
 - Direct runtime remains an admitted leaf backend subset, not the codegen/export capability boundary.
 - Non-GEMM exact compute builtins compile through kernel source; per-op typed expansion is next payoff work.
 - Flash-attn compile/source/spec baseline is stable; direct runtime correctness is not admitted.
 
 ## Latest Verification
 
-P1 compute-kind owner-truth cleanup:
+P1 compatibility fallback deletion:
 
 - `cmake --build build -j32`
-- SpatialPlan/TTProgram schema: `25 passed`
-- GEMM/materialization target pipeline: `43 passed, 16 skipped`
-- copy pipeline: `51 passed, 10 skipped, 1 xfailed`
-- flash pipeline: `65 passed`
+- Blackhole schema/runtime/pipeline sweep: `222 passed, 1 skipped, 1 xfailed, 4 warnings`

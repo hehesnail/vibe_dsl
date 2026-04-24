@@ -368,7 +368,6 @@ def LowerToBlackholePhaseB(mod: IRModule) -> IRModule:
     mod = tilelang.transform.BuildSpatialPlan()(mod)
     mod = tilelang.transform.ValidateSpatialPlan()(mod)
     mod = tilelang.transform.SplitBlackholeKernel()(mod)
-    mod = tilelang.tvm.get_global_func("tl.transform.CaptureBlackholeLogicalBridgeSpecs")()(mod)
     return mod
 
 

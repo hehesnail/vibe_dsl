@@ -51,6 +51,12 @@ class TTBufferDistributionPlanNode : public Object {
   ffi::Array<Integer> shard_shape;
   ffi::String shard_orientation;
   ffi::String host_visibility;
+  ffi::Array<PrimExpr> logical_shape;
+  ffi::Array<PrimExpr> local_shape;
+  PrimExpr thread_extent;
+  PrimExpr replicate_extent;
+  ffi::Array<PrimExpr> inverse_logical_index_vars;
+  ffi::Array<PrimExpr> inverse_logical_index_exprs;
   ffi::Map<ffi::String, ffi::Any> payload;
 
   static void RegisterReflection();
@@ -67,6 +73,11 @@ class TTBufferDistributionPlan : public ObjectRef {
                                    ffi::Array<Integer> shard_shape,
                                    ffi::String shard_orientation,
                                    ffi::String host_visibility,
+                                   ffi::Array<PrimExpr> logical_shape,
+                                   ffi::Array<PrimExpr> local_shape,
+                                   PrimExpr thread_extent, PrimExpr replicate_extent,
+                                   ffi::Array<PrimExpr> inverse_logical_index_vars,
+                                   ffi::Array<PrimExpr> inverse_logical_index_exprs,
                                    ffi::Map<ffi::String, ffi::Any> payload);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTBufferDistributionPlan, ObjectRef,
                                              TTBufferDistributionPlanNode);
@@ -80,7 +91,6 @@ class TTComputeOperandBindingPlanNode : public Object {
   ffi::String tensor_dtype;
   ffi::String cb_dtype;
   ffi::String transform_kind;
-  ffi::Map<ffi::String, ffi::Any> payload;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTComputeOperandBindingPlan",
@@ -91,8 +101,7 @@ class TTComputeOperandBindingPlan : public ObjectRef {
  public:
   TVM_DLL TTComputeOperandBindingPlan(ffi::String role, ffi::String buffer,
                                       ffi::String host_buffer, ffi::String tensor_dtype,
-                                      ffi::String cb_dtype, ffi::String transform_kind,
-                                      ffi::Map<ffi::String, ffi::Any> payload);
+                                      ffi::String cb_dtype, ffi::String transform_kind);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTComputeOperandBindingPlan, ObjectRef,
                                              TTComputeOperandBindingPlanNode);
 };
@@ -114,7 +123,6 @@ class TTComputeOpPlanNode : public Object {
   ffi::String mbarrier_buffer;
   ffi::String mbarrier_scope;
   ffi::Array<ffi::String> mbarrier_index_exprs;
-  ffi::Map<ffi::String, ffi::Any> payload;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTComputeOpPlan", TTComputeOpPlanNode, Object);
@@ -132,8 +140,7 @@ class TTComputeOpPlan : public ObjectRef {
                           ffi::Array<Integer> subblock_shape,
                           ffi::String accumulator_dtype,
                           ffi::String mbarrier_buffer, ffi::String mbarrier_scope,
-                          ffi::Array<ffi::String> mbarrier_index_exprs,
-                          ffi::Map<ffi::String, ffi::Any> payload);
+                          ffi::Array<ffi::String> mbarrier_index_exprs);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTComputeOpPlan, ObjectRef,
                                              TTComputeOpPlanNode);
 };
@@ -184,7 +191,9 @@ class TTKernelNode : public Object {
   ffi::String kind;
   ffi::String core_type;
   int64_t abi_plan_index = -1;
-  ffi::Map<ffi::String, ffi::Any> payload;
+  ffi::Map<ffi::String, ffi::Any> launch_spec;
+  ffi::Map<ffi::String, ffi::Any> compute_config;
+  ffi::Array<ffi::Any> per_work_arg_specs;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTKernel", TTKernelNode, Object);
@@ -193,7 +202,10 @@ class TTKernelNode : public Object {
 class TTKernel : public ObjectRef {
  public:
   TVM_DLL TTKernel(ffi::String name, ffi::String kind, ffi::String core_type,
-                   int64_t abi_plan_index, ffi::Map<ffi::String, ffi::Any> payload);
+                   int64_t abi_plan_index,
+                   ffi::Map<ffi::String, ffi::Any> launch_spec,
+                   ffi::Map<ffi::String, ffi::Any> compute_config,
+                   ffi::Array<ffi::Any> per_work_arg_specs);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTKernel, ObjectRef, TTKernelNode);
 };
 
@@ -205,7 +217,6 @@ class TTCoreGroupNode : public Object {
   ffi::String linearization;
   ffi::Array<ffi::Any> physical_cores;
   ffi::Array<ffi::Any> work_packets;
-  ffi::Map<ffi::String, ffi::Any> payload;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTCoreGroup", TTCoreGroupNode, Object);
@@ -215,7 +226,7 @@ class TTCoreGroup : public ObjectRef {
  public:
   TVM_DLL TTCoreGroup(ffi::String name, int64_t logical_grid_x, int64_t logical_grid_y,
                       ffi::String linearization, ffi::Array<ffi::Any> physical_cores,
-                      ffi::Array<ffi::Any> work_packets, ffi::Map<ffi::String, ffi::Any> payload);
+                      ffi::Array<ffi::Any> work_packets);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTCoreGroup, ObjectRef, TTCoreGroupNode);
 };
 
@@ -330,7 +341,6 @@ class TTComputeSyncPlanNode : public Object {
   int64_t target_task_index = -1;
   ffi::String ordering_kind;
   ffi::String materialization_kind;
-  ffi::Map<ffi::String, ffi::Any> payload;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTComputeSyncPlan", TTComputeSyncPlanNode, Object);
@@ -340,8 +350,7 @@ class TTComputeSyncPlan : public ObjectRef {
  public:
   TVM_DLL TTComputeSyncPlan(ffi::String name, ffi::String kind, int64_t source_task_index,
                             int64_t target_task_index, ffi::String ordering_kind,
-                            ffi::String materialization_kind,
-                            ffi::Map<ffi::String, ffi::Any> payload);
+                            ffi::String materialization_kind);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTComputeSyncPlan, ObjectRef,
                                              TTComputeSyncPlanNode);
 };

@@ -109,7 +109,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   // that transform the TIR before it reaches the CodeGen stage.
 
  protected:
-  struct BufferTileBridgeBinding {
+  struct LogicalTileLayoutBinding {
     std::string buffer_name;
     tvm::ffi::Array<tvm::PrimExpr> logical_shape;
     tvm::ffi::Array<tvm::PrimExpr> local_shape;
@@ -228,9 +228,9 @@ class CodeGenBlackhole : public CodeGenCHost {
   void UnregisterActiveCBWritePtrBinding(int cb_id, const std::string& var_name);
   void EmitActiveCBWritePtrRefreshes(int cb_id);
   void MaybeEmitMathWaypoint(std::ostream& os, const char* code);
-  void LoadBufferTileBridgeSpecs(const tvm::tir::PrimFunc& f);
-  const BufferTileBridgeBinding* FindBufferTileBridgeBinding(const tvm::tir::VarNode* var) const;
-  bool BufferTileBridgeRequiresGenericBridge(const BufferTileBridgeBinding& binding) const;
+  void LoadLogicalTileLayouts(const tvm::tir::PrimFunc& f);
+  const LogicalTileLayoutBinding* FindLogicalTileLayoutBinding(const tvm::tir::VarNode* var) const;
+  bool LogicalTileLayoutRequiresGenericBridge(const LogicalTileLayoutBinding& binding) const;
   std::optional<DataType> TryResolveHandleDataType(const tvm::tir::VarNode* var) const;
   DataType ResolveHandleDataType(const tvm::tir::VarNode* var, const char* op_name,
                                  const char* role) const;
@@ -281,7 +281,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   std::unordered_map<std::string, int> cb_publish_pages_by_requirement_name_;
   std::unordered_map<std::string, int> cb_initial_reserve_pages_by_requirement_name_;
   std::unordered_map<int, std::vector<ActiveCBWritePtrBinding>> active_cb_write_ptr_bindings_;
-  std::unordered_map<std::string, BufferTileBridgeBinding> buffer_tile_bridge_bindings_by_buffer_name_;
+  std::unordered_map<std::string, LogicalTileLayoutBinding> logical_tile_layout_bindings_by_buffer_name_;
   std::string thread_idx_x_expr_;
   int logical_grid_x_{1};
   int logical_grid_y_{1};

@@ -128,10 +128,17 @@ def extract_tt_program_segments(func):
     abi_plans = list(tt_program.abi_plans)
     segments = []
     for kernel in tt_program.kernels:
-        payload = dict(kernel.payload)
-        payload.setdefault("name", str(kernel.name))
-        payload.setdefault("kind", str(kernel.kind))
-        payload.setdefault("core_type", str(kernel.core_type))
+        payload = {
+            "name": str(kernel.name),
+            "kind": str(kernel.kind),
+            "core_type": str(kernel.core_type),
+        }
+        if getattr(kernel, "launch_spec", None):
+            payload["launch_spec"] = dict(kernel.launch_spec)
+        if getattr(kernel, "compute_config", None):
+            payload["compute_config"] = dict(kernel.compute_config)
+        if getattr(kernel, "per_work_arg_specs", None):
+            payload["per_work_arg_specs"] = list(kernel.per_work_arg_specs)
         abi_plan_index = int(kernel.abi_plan_index)
         if 0 <= abi_plan_index < len(abi_plans):
             abi = abi_plans[abi_plan_index]
@@ -140,6 +147,13 @@ def extract_tt_program_segments(func):
             payload.setdefault("compile_time_arg_specs", list(abi.compile_time_arg_specs))
             payload.setdefault("accessors", list(abi.accessors))
             payload.setdefault("semaphore_bindings", list(abi.semaphore_bindings))
+        compute_ops = [
+            encode_tt_compute_op_plan(plan)
+            for plan in tt_program.compute_op_plans
+            if str(plan.kernel_name) == str(kernel.name)
+        ]
+        if compute_ops:
+            payload["compute_ops"] = compute_ops
         segments.append(payload)
     return segments
 
@@ -177,13 +191,13 @@ def extract_blackhole_core_plan(func):
     if not tt_program.core_groups:
         pytest.fail("Expected TTProgram to carry a TTCoreGroup")
     core_group = tt_program.core_groups[0]
-    core_plan = dict(core_group.payload)
-    core_plan.setdefault("logical_grid_x", int(core_group.logical_grid_x))
-    core_plan.setdefault("logical_grid_y", int(core_group.logical_grid_y))
-    core_plan.setdefault("linearization", str(core_group.linearization))
-    core_plan.setdefault("physical_cores", list(core_group.physical_cores))
-    core_plan.setdefault("work_packets", list(core_group.work_packets))
-    return core_plan
+    return {
+        "logical_grid_x": int(core_group.logical_grid_x),
+        "logical_grid_y": int(core_group.logical_grid_y),
+        "linearization": str(core_group.linearization),
+        "physical_cores": list(core_group.physical_cores),
+        "work_packets": list(core_group.work_packets),
+    }
 
 
 def extract_blackhole_work_per_core(func):
@@ -223,23 +237,81 @@ def extract_tt_program_payload_map(func):
     return dict(require_tt_program(func).payload)
 
 
-def extract_blackhole_compute_contract(func):
-    """Return compute contract from TTProgram payload."""
-    payload = extract_tt_program_payload_map(func)
-    if "compute_contract" not in payload:
-        pytest.fail("Expected TTProgram payload to carry compute_contract")
-    return dict(payload["compute_contract"])
+def encode_tt_compute_op_plan(plan):
+    operands = {str(binding.role): binding for binding in plan.operand_bindings}
+    item = {
+        "name": str(plan.name),
+        "kernel_name": str(plan.kernel_name),
+        "kernel_plan_index": int(plan.kernel_plan_index),
+        "enabled": bool(plan.enabled),
+        "kind": str(plan.kind),
+        "operand_bindings": [
+            {
+                "role": str(binding.role),
+                "buffer": str(binding.buffer),
+                "host_buffer": str(binding.host_buffer),
+                "tensor_dtype": str(binding.tensor_dtype),
+                "cb_dtype": str(binding.cb_dtype),
+                "transform_kind": str(binding.transform_kind),
+            }
+            for binding in plan.operand_bindings
+        ],
+    }
+    axes = [str(axis) for axis in plan.problem_shape_axes]
+    shape = [int(dim) for dim in plan.problem_shape]
+    if axes and len(axes) == len(shape):
+        item.update({axis: value for axis, value in zip(axes, shape)})
+    for key, index in (("Mt", 0), ("Nt", 1), ("Kt", 2)):
+        if index < len(plan.tile_shape):
+            item[key] = int(plan.tile_shape[index])
+    for key, index in (("block_m_tiles", 0), ("block_n_tiles", 1), ("block_k_tiles", 2)):
+        if index < len(plan.block_shape):
+            item[key] = int(plan.block_shape[index])
+    for key, index in (("subblock_m_tiles", 0), ("subblock_n_tiles", 1)):
+        if index < len(plan.subblock_shape):
+            item[key] = int(plan.subblock_shape[index])
+    for role, prefix in (("a", "a"), ("b", "b"), ("c", "c")):
+        if role not in operands:
+            continue
+        binding = operands[role]
+        item[f"{prefix}_buffer"] = str(binding.host_buffer)
+        if str(binding.tensor_dtype):
+            item[f"{prefix}_tensor_dtype"] = str(binding.tensor_dtype)
+        if str(binding.cb_dtype):
+            item[f"{prefix}_cb_dtype"] = str(binding.cb_dtype)
+        if role in {"a", "b"}:
+            item[f"transpose_{role.upper()}"] = str(binding.transform_kind) == "transpose"
+    if str(plan.accumulator_dtype):
+        item["accumulator_dtype"] = str(plan.accumulator_dtype)
+    item["has_mbarrier"] = bool(str(plan.mbarrier_buffer))
+    if str(plan.mbarrier_buffer):
+        item["mbarrier_buffer"] = str(plan.mbarrier_buffer)
+    if str(plan.mbarrier_scope):
+        item["mbarrier_scope"] = str(plan.mbarrier_scope)
+    if list(plan.mbarrier_index_exprs):
+        item["mbarrier_index_exprs"] = [str(expr) for expr in plan.mbarrier_index_exprs]
+    return item
 
 
-def extract_blackhole_gemm_contract(func):
-    """Return GEMM contract from TTProgram payload."""
-    payload = extract_tt_program_payload_map(func)
-    if "gemm_contract" not in payload:
-        pytest.fail("Expected TTProgram payload to carry gemm_contract")
-    return dict(payload["gemm_contract"])
+def require_gemm_compute_op(func, *, index=0):
+    """Return a typed GEMM TTComputeOpPlan."""
+    plans = [plan for plan in require_tt_program(func).compute_op_plans if str(plan.kind) == "gemm"]
+    if len(plans) <= index:
+        pytest.fail(f"Expected GEMM TTComputeOpPlan at index {index}, found {len(plans)}")
+    return plans[index]
 
 
-def rebuild_tt_kernel(kernel, *, name=None, kind=None, core_type=None, abi_plan_index=None, payload=None):
+def rebuild_tt_kernel(
+    kernel,
+    *,
+    name=None,
+    kind=None,
+    core_type=None,
+    abi_plan_index=None,
+    launch_spec=None,
+    compute_config=None,
+    per_work_arg_specs=None,
+):
     """Rebuild a TTKernel with optional field overrides."""
     make_tt_kernel = tilelang.tvm.get_global_func("tl.TTKernel")
     return make_tt_kernel(
@@ -247,7 +319,9 @@ def rebuild_tt_kernel(kernel, *, name=None, kind=None, core_type=None, abi_plan_
         str(kernel.kind) if kind is None else kind,
         str(kernel.core_type) if core_type is None else core_type,
         int(kernel.abi_plan_index) if abi_plan_index is None else abi_plan_index,
-        dict(kernel.payload) if payload is None else payload,
+        dict(kernel.launch_spec) if launch_spec is None else launch_spec,
+        dict(kernel.compute_config) if compute_config is None else compute_config,
+        list(kernel.per_work_arg_specs) if per_work_arg_specs is None else per_work_arg_specs,
     )
 
 
@@ -260,7 +334,6 @@ def rebuild_tt_core_group(
     linearization=None,
     physical_cores=None,
     work_packets=None,
-    payload=None,
 ):
     """Rebuild a TTCoreGroup with optional field overrides."""
     make_tt_core_group = tilelang.tvm.get_global_func("tl.TTCoreGroup")
@@ -271,7 +344,6 @@ def rebuild_tt_core_group(
         str(core_group.linearization) if linearization is None else linearization,
         list(core_group.physical_cores) if physical_cores is None else physical_cores,
         list(core_group.work_packets) if work_packets is None else work_packets,
-        dict(core_group.payload) if payload is None else payload,
     )
 
 
@@ -306,7 +378,6 @@ def rebuild_tt_compute_operand_binding_plan(
     tensor_dtype=None,
     cb_dtype=None,
     transform_kind=None,
-    payload=None,
 ):
     """Rebuild a TTComputeOperandBindingPlan with optional field overrides."""
     make_binding = tilelang.tvm.get_global_func("tl.TTComputeOperandBindingPlan")
@@ -317,7 +388,6 @@ def rebuild_tt_compute_operand_binding_plan(
         str(binding.tensor_dtype) if tensor_dtype is None else tensor_dtype,
         str(binding.cb_dtype) if cb_dtype is None else cb_dtype,
         str(binding.transform_kind) if transform_kind is None else transform_kind,
-        dict(binding.payload) if payload is None else payload,
     )
 
 
@@ -339,7 +409,6 @@ def rebuild_tt_compute_op_plan(
     mbarrier_buffer=None,
     mbarrier_scope=None,
     mbarrier_index_exprs=None,
-    payload=None,
 ):
     """Rebuild a TTComputeOpPlan with optional field overrides."""
     make_compute_op = tilelang.tvm.get_global_func("tl.TTComputeOpPlan")
@@ -373,7 +442,6 @@ def rebuild_tt_compute_op_plan(
         list(compute_op.mbarrier_index_exprs)
         if mbarrier_index_exprs is None
         else mbarrier_index_exprs,
-        dict(compute_op.payload) if payload is None else payload,
     )
 
 

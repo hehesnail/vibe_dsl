@@ -13,7 +13,7 @@ from .common import (
     check_blackhole_codegen_requirements,
     check_blackhole_direct_execution_requirements,
     contains_attr_stmt_key,
-    extract_blackhole_compute_contract,
+    encode_tt_compute_op_plan,
     extract_blackhole_core_plan,
     extract_blackhole_segment_plan,
     gemm_kernel,
@@ -29,6 +29,7 @@ from .common import (
     rebuild_tt_core_group,
     rebuild_tt_kernel,
     rebuild_tt_program,
+    require_gemm_compute_op,
     require_tt_kernel,
     require_tt_program,
     tt_abi_for_kernel,
@@ -157,15 +158,24 @@ def _require_gemm_compute_op(executable_spec):
     return dict(next(item for item in compute["compute_ops"] if str(item["kind"]) == "gemm"))
 
 
+def _require_tt_program_compute_kernel(func):
+    tt_program = require_tt_program(func)
+    return require_tt_kernel(tt_program, kind="compute", core_type="trisc")
+
+
+def _typed_gemm_schema(func):
+    item = encode_tt_compute_op_plan(require_gemm_compute_op(func))
+    item.update(dict(_require_tt_program_compute_kernel(func).compute_config))
+    return item
+
+
 def _rebuild_codegen_module_with_compute_overrides(artifact, compute_overrides):
     def mutate(tt_program):
-        payload = dict(tt_program.payload)
         rebuilt_kernels = []
         rebuilt_compute_op_plans = []
         for kernel in tt_program.kernels:
-            kernel_payload = dict(kernel.payload)
+            compute_config = dict(kernel.compute_config)
             if str(kernel.kind) == "compute" or str(kernel.core_type) == "trisc":
-                compute_config = dict(kernel_payload["compute_config"])
                 for key in (
                     "math_fidelity",
                     "fp32_dest_acc_en",
@@ -184,23 +194,12 @@ def _rebuild_codegen_module_with_compute_overrides(artifact, compute_overrides):
                     if key in compute_overrides:
                         value = compute_overrides[key]
                         compute_config[key] = list(value) if isinstance(value, list) else value
-                kernel_payload["compute_config"] = compute_config
-            rebuilt_kernels.append(rebuild_tt_kernel(kernel, payload=kernel_payload))
+            rebuilt_kernels.append(rebuild_tt_kernel(kernel, compute_config=compute_config))
         for compute_op in tt_program.compute_op_plans:
-            op_payload = dict(compute_op.payload)
             mbarrier_buffer = str(compute_op.mbarrier_buffer)
             mbarrier_scope = str(compute_op.mbarrier_scope)
             mbarrier_index_exprs = list(compute_op.mbarrier_index_exprs)
             if str(compute_op.kind) == "gemm":
-                for key in (
-                    "has_mbarrier",
-                    "mbarrier_buffer",
-                    "mbarrier_scope",
-                    "mbarrier_index_exprs",
-                ):
-                    if key in compute_overrides:
-                        value = compute_overrides[key]
-                        op_payload[key] = list(value) if isinstance(value, list) else value
                 if "mbarrier_buffer" in compute_overrides:
                     mbarrier_buffer = compute_overrides["mbarrier_buffer"]
                 if "mbarrier_scope" in compute_overrides:
@@ -213,14 +212,12 @@ def _rebuild_codegen_module_with_compute_overrides(artifact, compute_overrides):
                     mbarrier_buffer=mbarrier_buffer,
                     mbarrier_scope=mbarrier_scope,
                     mbarrier_index_exprs=mbarrier_index_exprs,
-                    payload=op_payload,
                 )
             )
         return rebuild_tt_program(
             tt_program,
             kernels=rebuilt_kernels,
             compute_op_plans=rebuilt_compute_op_plans,
-            payload=payload,
         )
 
     return _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)
@@ -228,16 +225,7 @@ def _rebuild_codegen_module_with_compute_overrides(artifact, compute_overrides):
 
 def _rebuild_codegen_module_without_contract_family_payload(artifact):
     def mutate(tt_program):
-        payload = dict(tt_program.payload)
-        for key in (
-            "gemm_contract",
-            "compute_contract",
-            "multi_gemm_contracts",
-            "multi_compute_contracts",
-            "compute_epilogue_ops",
-        ):
-            payload.pop(key, None)
-        return rebuild_tt_program(tt_program, payload=payload)
+        return rebuild_tt_program(tt_program)
 
     return _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)
 
@@ -306,25 +294,6 @@ def _rebuild_tt_consumer_binding_plan(plan, *, payload=None):
     )
 
 
-def _rebuild_codegen_module_without_legacy_contract_attrs(artifact):
-    device_mod = artifact.device_mod
-    rewritten = {}
-    for gvar, func in device_mod.functions.items():
-        if func.attrs and "blackhole.gemm_contract" in func.attrs:
-            func = func.without_attr("blackhole.gemm_contract")
-        if func.attrs and "blackhole.compute_contract" in func.attrs:
-            func = func.without_attr("blackhole.compute_contract")
-        rewritten[gvar] = func
-    target = Target("blackhole")
-    build_mod = merge_ir_modules(
-        artifact.host_mod,
-        tvm.IRModule(rewritten, global_infos=device_mod.global_infos),
-    )
-    return tvm.ffi.get_global_func("target.build.tilelang_blackhole_without_host")(
-        build_mod, target
-    )
-
-
 def _rebuild_codegen_module_with_core_plan(artifact, core_plan):
     def mutate(tt_program):
         core_group = tt_program.core_groups[0]
@@ -335,7 +304,6 @@ def _rebuild_codegen_module_with_core_plan(artifact, core_plan):
             linearization=str(core_plan["linearization"]),
             physical_cores=list(core_plan["physical_cores"]),
             work_packets=list(core_plan["work_packets"]),
-            payload=dict(core_plan),
         )
         return rebuild_tt_program(tt_program, core_groups=[rebuilt_core_group])
 
@@ -388,13 +356,13 @@ def test_blackhole_gemm_pipeline_uses_spatial_plan_without_spatial_program():
     device_func = artifact.device_mod["main_kernel"]
     plan = device_func.attrs["tl.spatial_plan"]
     tt_program = require_tt_program(device_func)
-    compute_contract = dict(tt_program.payload["compute_contract"])
+    gemm_schema = _typed_gemm_schema(device_func)
     assert device_func.attrs.get("tl.spatial_program") is None
     assert device_func.attrs.get("blackhole.lowering_requirements") is None
     assert {"ingress", "compute", "egress"}.issubset(
         {str(unit.unit_role) for unit in plan.execution_units}
     )
-    assert str(compute_contract["kind"]) == "gemm"
+    assert str(gemm_schema["kind"]) == "gemm"
 
 
 def test_blackhole_gemm_arg_identity_drives_cross_segment_dedupe():
@@ -480,7 +448,7 @@ def test_blackhole_gemm_accumulator_scope_canonicalized():
     assert 'scope="blackhole.acc"' in func_text
 
 
-def test_blackhole_gemm_contract_attr_is_materialized():
+def test_blackhole_typed_gemm_plan_is_materialized():
     kernel = gemm_kernel()
     mod = tilelang.tvm.IRModule({"main": kernel})
     target = Target("blackhole")
@@ -491,21 +459,26 @@ def test_blackhole_gemm_contract_attr_is_materialized():
 
     func = mod["main"]
     tt_program = require_tt_program(func)
-    contract = tt_program.payload["gemm_contract"]
-    assert str(contract["a_buffer"]) == "A"
-    assert str(contract["b_buffer"]) == "B"
-    assert str(contract["c_buffer"]) == "C"
-    assert int(contract["M"]) == 32
-    assert int(contract["N"]) == 32
-    assert int(contract["K"]) == 128
-    assert bool(contract["transpose_B"]) is True
-    assert str(contract["a_tensor_dtype"]) == "Float16_b"
-    assert str(contract["b_tensor_dtype"]) == "Float16_b"
-    assert str(contract["c_tensor_dtype"]) == "Float32"
-    assert str(contract["a_cb_dtype"]) == "Float16_b"
-    assert str(contract["b_cb_dtype"]) == "Float16_b"
-    assert str(contract["c_cb_dtype"]) == "Float32"
-    assert str(contract["accumulator_dtype"]) == "Float32"
+    gemm_schema = _typed_gemm_schema(func)
+    payload = dict(tt_program.payload)
+    assert "gemm_contract" not in payload
+    assert "compute_contract" not in payload
+    assert "multi_gemm_contracts" not in payload
+    assert "multi_compute_contracts" not in payload
+    assert str(gemm_schema["a_buffer"]) == "A"
+    assert str(gemm_schema["b_buffer"]) == "B"
+    assert str(gemm_schema["c_buffer"]) == "C"
+    assert int(gemm_schema["M"]) == 32
+    assert int(gemm_schema["N"]) == 32
+    assert int(gemm_schema["K"]) == 128
+    assert bool(gemm_schema["transpose_B"]) is True
+    assert str(gemm_schema["a_tensor_dtype"]) == "Float16_b"
+    assert str(gemm_schema["b_tensor_dtype"]) == "Float16_b"
+    assert str(gemm_schema["c_tensor_dtype"]) == "Float32"
+    assert str(gemm_schema["a_cb_dtype"]) == "Float16_b"
+    assert str(gemm_schema["b_cb_dtype"]) == "Float16_b"
+    assert str(gemm_schema["c_cb_dtype"]) == "Float32"
+    assert str(gemm_schema["accumulator_dtype"]) == "Float32"
 
     reader_abi = tt_abi_for_kernel(tt_program, require_tt_kernel(tt_program, kind="reader", core_type="brisc"))
     writer_abi = tt_abi_for_kernel(tt_program, require_tt_kernel(tt_program, kind="writer", core_type="ncrisc"))
@@ -549,7 +522,7 @@ def test_blackhole_gemm_segment_plan_is_not_backed_by_segment_markers():
     ]
 
 
-def test_blackhole_compute_contract_attr_is_materialized():
+def test_blackhole_typed_compute_schema_is_materialized():
     kernel = gemm_kernel()
     mod = tilelang.tvm.IRModule({"main": kernel})
     target = Target("blackhole")
@@ -558,41 +531,41 @@ def test_blackhole_compute_contract_attr_is_materialized():
 
     mod = lower_blackhole_to_tt_target(mod)
 
-    contract = require_tt_program(mod["main"]).payload["compute_contract"]
-    assert str(contract["kind"]) == "gemm"
-    assert bool(contract["enabled"]) is True
-    assert str(contract["a_buffer"]) == "A"
-    assert str(contract["b_buffer"]) == "B"
-    assert str(contract["c_buffer"]) == "C"
-    assert int(contract["M"]) == 32
-    assert int(contract["N"]) == 32
-    assert int(contract["K"]) == 128
-    assert int(contract["Mt"]) == 1
-    assert int(contract["Nt"]) == 1
-    assert int(contract["Kt"]) == 4
-    assert bool(contract["transpose_A"]) is False
-    assert bool(contract["transpose_B"]) is True
-    assert str(contract["a_tensor_dtype"]) == "Float16_b"
-    assert str(contract["b_tensor_dtype"]) == "Float16_b"
-    assert str(contract["c_tensor_dtype"]) == "Float32"
-    assert str(contract["a_cb_dtype"]) == "Float16_b"
-    assert str(contract["b_cb_dtype"]) == "Float16_b"
-    assert str(contract["c_cb_dtype"]) == "Float32"
-    assert str(contract["accumulator_dtype"]) == "Float32"
-    assert int(contract["block_m_tiles"]) == 1
-    assert int(contract["block_n_tiles"]) == 1
-    assert int(contract["block_k_tiles"]) == 4
-    assert int(contract["subblock_m_tiles"]) == 1
-    assert int(contract["subblock_n_tiles"]) == 1
-    assert str(contract["math_fidelity"]) == "HiFi4"
-    assert bool(contract["fp32_dest_acc_en"]) is True
-    assert bool(contract["math_approx_mode"]) is False
-    assert [str(item) for item in contract["unpack_to_dest_mode"]] == []
-    assert bool(contract["clear_accum"]) is True
-    assert int(contract["k_pack"]) == 1
-    assert int(contract["wg_wait"]) == 0
-    assert int(contract["policy_type"]) == 0
-    assert str(contract["policy_name"]) == "Square"
+    schema = _typed_gemm_schema(mod["main"])
+    assert str(schema["kind"]) == "gemm"
+    assert bool(schema["enabled"]) is True
+    assert str(schema["a_buffer"]) == "A"
+    assert str(schema["b_buffer"]) == "B"
+    assert str(schema["c_buffer"]) == "C"
+    assert int(schema["M"]) == 32
+    assert int(schema["N"]) == 32
+    assert int(schema["K"]) == 128
+    assert int(schema["Mt"]) == 1
+    assert int(schema["Nt"]) == 1
+    assert int(schema["Kt"]) == 4
+    assert bool(schema["transpose_A"]) is False
+    assert bool(schema["transpose_B"]) is True
+    assert str(schema["a_tensor_dtype"]) == "Float16_b"
+    assert str(schema["b_tensor_dtype"]) == "Float16_b"
+    assert str(schema["c_tensor_dtype"]) == "Float32"
+    assert str(schema["a_cb_dtype"]) == "Float16_b"
+    assert str(schema["b_cb_dtype"]) == "Float16_b"
+    assert str(schema["c_cb_dtype"]) == "Float32"
+    assert str(schema["accumulator_dtype"]) == "Float32"
+    assert int(schema["block_m_tiles"]) == 1
+    assert int(schema["block_n_tiles"]) == 1
+    assert int(schema["block_k_tiles"]) == 4
+    assert int(schema["subblock_m_tiles"]) == 1
+    assert int(schema["subblock_n_tiles"]) == 1
+    assert str(schema["math_fidelity"]) == "HiFi4"
+    assert bool(schema["fp32_dest_acc_en"]) is True
+    assert bool(schema["math_approx_mode"]) is False
+    assert [str(item) for item in schema["unpack_to_dest_mode"]] == []
+    assert bool(schema["clear_accum"]) is True
+    assert int(schema["k_pack"]) == 1
+    assert int(schema["wg_wait"]) == 0
+    assert int(schema["policy_type"]) == 0
+    assert str(schema["policy_name"]) == "Square"
 
 
 def test_blackhole_fresh_fragment_gemm_does_not_materialize_accumulator_merge_contract():
@@ -623,7 +596,7 @@ def test_blackhole_precleared_fragment_gemm_does_not_materialize_accumulator_mer
     assert "buffer_materialization_contracts" not in payload
 
 
-def test_blackhole_compute_contract_attr_materializes_nondefault_compute_abi():
+def test_blackhole_typed_compute_schema_materializes_nondefault_compute_abi():
     kernel = gemm_kernel_with_compute_abi()
     mod = tilelang.tvm.IRModule({"main": kernel})
     target = Target("blackhole")
@@ -633,13 +606,13 @@ def test_blackhole_compute_contract_attr_materializes_nondefault_compute_abi():
     mod = lower_blackhole_to_tt_target(mod)
 
     func = mod["main"]
-    contract = extract_blackhole_compute_contract(func)
-    assert bool(contract["clear_accum"]) is True
-    assert int(contract["k_pack"]) == 2
-    assert int(contract["wg_wait"]) == 3
+    schema = _typed_gemm_schema(func)
+    assert bool(schema["clear_accum"]) is True
+    assert int(schema["k_pack"]) == 2
+    assert int(schema["wg_wait"]) == 3
 
 
-def test_blackhole_compute_contract_attr_materializes_richer_compute_config_extras():
+def test_blackhole_typed_compute_schema_materializes_richer_compute_config_extras():
     kernel = gemm_kernel_with_compute_config_extras()
     mod = tilelang.tvm.IRModule({"main": kernel})
     target = Target("blackhole")
@@ -649,22 +622,22 @@ def test_blackhole_compute_contract_attr_materializes_richer_compute_config_extr
     mod = lower_blackhole_to_tt_target(mod)
 
     func = mod["main"]
-    contract = extract_blackhole_compute_contract(func)
-    assert bool(contract["dst_full_sync_en"]) is True
-    assert bool(contract["bfp8_pack_precise"]) is True
-    assert [(str(item["name"]), str(item["value"])) for item in contract["defines"]] == [
+    schema = _typed_gemm_schema(func)
+    assert bool(schema["dst_full_sync_en"]) is True
+    assert bool(schema["bfp8_pack_precise"]) is True
+    assert [(str(item["name"]), str(item["value"])) for item in schema["defines"]] == [
         ("BLACKHOLE_ACC_MODE", "fp32"),
         ("BLACKHOLE_TEST_DEFINE", "1"),
-    ] or [(str(item["name"]), str(item["value"])) for item in contract["defines"]] == [
+    ] or [(str(item["name"]), str(item["value"])) for item in schema["defines"]] == [
         ("BLACKHOLE_TEST_DEFINE", "1"),
         ("BLACKHOLE_ACC_MODE", "fp32"),
     ]
     assert sorted(
-        (str(item["name"]), int(item["value"])) for item in contract["named_compile_args"]
+        (str(item["name"]), int(item["value"])) for item in schema["named_compile_args"]
     ) == [("c_0", 0), ("c_1", 1), ("c_16", 16)]
 
 
-def test_blackhole_compute_segment_compute_config_follows_compute_contract():
+def test_blackhole_compute_segment_compute_config_follows_typed_compute_schema():
     kernel = gemm_kernel_with_compute_abi()
     mod = tilelang.tvm.IRModule({"main": kernel})
     target = Target("blackhole")
@@ -674,25 +647,25 @@ def test_blackhole_compute_segment_compute_config_follows_compute_contract():
     mod = lower_blackhole_to_tt_target(mod)
 
     func = mod["main"]
-    contract = extract_blackhole_compute_contract(func)
+    schema = _typed_gemm_schema(func)
     plan = extract_blackhole_segment_plan(func)
     compute = next(segment for segment in plan if str(segment["kind"]) == "compute")
     compute_config = compute["compute_config"]
 
-    assert str(compute_config["math_fidelity"]) == str(contract["math_fidelity"])
-    assert bool(compute_config["fp32_dest_acc_en"]) is bool(contract["fp32_dest_acc_en"])
-    assert bool(compute_config["math_approx_mode"]) is bool(contract["math_approx_mode"])
+    assert str(compute_config["math_fidelity"]) == str(schema["math_fidelity"])
+    assert bool(compute_config["fp32_dest_acc_en"]) is bool(schema["fp32_dest_acc_en"])
+    assert bool(compute_config["math_approx_mode"]) is bool(schema["math_approx_mode"])
     assert [str(item) for item in compute_config["unpack_to_dest_mode"]] == [
-        str(item) for item in contract["unpack_to_dest_mode"]
+        str(item) for item in schema["unpack_to_dest_mode"]
     ]
-    assert bool(compute_config["clear_accum"]) is bool(contract["clear_accum"])
-    assert int(compute_config["k_pack"]) == int(contract["k_pack"])
-    assert int(compute_config["wg_wait"]) == int(contract["wg_wait"])
-    assert int(compute_config["policy_type"]) == int(contract["policy_type"])
-    assert str(compute_config["policy_name"]) == str(contract["policy_name"])
+    assert bool(compute_config["clear_accum"]) is bool(schema["clear_accum"])
+    assert int(compute_config["k_pack"]) == int(schema["k_pack"])
+    assert int(compute_config["wg_wait"]) == int(schema["wg_wait"])
+    assert int(compute_config["policy_type"]) == int(schema["policy_type"])
+    assert str(compute_config["policy_name"]) == str(schema["policy_name"])
 
 
-def test_blackhole_compute_contract_attr_materializes_nondefault_policy():
+def test_blackhole_typed_compute_schema_materializes_nondefault_policy():
     kernel = gemm_kernel_with_policy()
     mod = tilelang.tvm.IRModule({"main": kernel})
     target = Target("blackhole")
@@ -701,12 +674,12 @@ def test_blackhole_compute_contract_attr_materializes_nondefault_policy():
 
     mod = lower_blackhole_to_tt_target(mod)
 
-    contract = extract_blackhole_compute_contract(mod["main"])
-    assert int(contract["policy_type"]) == 1
-    assert str(contract["policy_name"]) == "FullRow"
+    schema = _typed_gemm_schema(mod["main"])
+    assert int(schema["policy_type"]) == 1
+    assert str(schema["policy_name"]) == "FullRow"
 
 
-def test_blackhole_compute_contract_attr_materializes_mbar_binding():
+def test_blackhole_typed_compute_schema_materializes_mbar_binding():
     kernel = gemm_kernel_with_mbar()
     mod = tilelang.tvm.IRModule({"main": kernel})
     target = Target("blackhole")
@@ -715,11 +688,11 @@ def test_blackhole_compute_contract_attr_materializes_mbar_binding():
 
     mod = lower_blackhole_to_tt_target(mod)
 
-    contract = extract_blackhole_compute_contract(mod["main"])
-    assert bool(contract["has_mbarrier"]) is True
-    assert str(contract["mbarrier_buffer"]) == "mbar"
-    assert str(contract["mbarrier_scope"]) == "shared.barrier"
-    assert [str(item) for item in contract["mbarrier_index_exprs"]] == ["0"]
+    schema = _typed_gemm_schema(mod["main"])
+    assert bool(schema["has_mbarrier"]) is True
+    assert str(schema["mbarrier_buffer"]) == "mbar"
+    assert str(schema["mbarrier_scope"]) == "shared.barrier"
+    assert [str(item) for item in schema["mbarrier_index_exprs"]] == ["0"]
 
 
 def test_blackhole_gemm_compile_time_abi_is_materialized():
@@ -1078,14 +1051,6 @@ def test_blackhole_executable_projection_does_not_seed_leaf_records_from_payload
     def mutate(tt_program):
         return rebuild_tt_program(
             tt_program,
-            kernels=[
-                rebuild_tt_kernel(kernel, payload=poison_payload(kernel.payload))
-                for kernel in tt_program.kernels
-            ],
-            core_groups=[
-                rebuild_tt_core_group(group, payload=poison_payload(group.payload))
-                for group in tt_program.core_groups
-            ],
             cb_plans=[
                 _rebuild_tt_cb_plan(plan, payload=poison_payload(plan.payload))
                 for plan in tt_program.cb_plans
@@ -1188,7 +1153,7 @@ def test_blackhole_fragment_fill_cast_publish_admits_non_mailbox_cb_republish():
     assert "tilelang_pack_fill_bfloat16_tiled_cb(17" in compute_source
 
 
-def test_blackhole_gemm_kernel_compute_config_follows_compute_contract_in_spec():
+def test_blackhole_gemm_kernel_compute_config_follows_typed_compute_schema():
     kernel = gemm_kernel_with_compute_abi()
     target = Target("blackhole")
 
@@ -1196,14 +1161,7 @@ def test_blackhole_gemm_kernel_compute_config_follows_compute_contract_in_spec()
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    for legacy_key in (
-        "gemm_contract",
-        "compute_contract",
-        "multi_gemm_contracts",
-        "multi_compute_contracts",
-        "compute_epilogue_ops",
-    ):
-        assert legacy_key not in executable_spec
+    _assert_no_contract_family(executable_spec)
     compute = _require_blackhole_kernel(
         executable_spec["kernels"], kind="compute", core_type="trisc"
     )
@@ -1282,24 +1240,16 @@ def test_blackhole_gemm_compute_ops_carry_typed_operand_bindings():
     assert str(gemm_op["c_buffer"]) == str(operand_bindings["c"]["host_buffer"])
 
 
-def test_blackhole_gemm_spec_survives_without_legacy_contract_attrs():
+def test_blackhole_gemm_spec_uses_typed_compute_ops_without_legacy_payload():
     kernel = gemm_kernel()
     target = Target("blackhole")
 
     with target:
         artifact = lower(kernel, target=target)
 
-    stripped_mod = _rebuild_codegen_module_without_legacy_contract_attrs(artifact)
-    executable_spec = stripped_mod.get_function_metadata("main")
+    executable_spec = _extract_blackhole_executable_spec(artifact)
 
-    for legacy_key in (
-        "gemm_contract",
-        "compute_contract",
-        "multi_gemm_contracts",
-        "multi_compute_contracts",
-        "compute_epilogue_ops",
-    ):
-        assert legacy_key not in executable_spec
+    _assert_no_contract_family(executable_spec)
     compute = _require_blackhole_kernel(
         executable_spec["kernels"], kind="compute", core_type="trisc"
     )
@@ -1538,11 +1488,7 @@ def test_blackhole_gemm_compile_time_abi_rejects_misaligned_shapes():
             lower(kernel, target=target)
 
 
-def test_blackhole_gemm_direct_runtime_rejects_sharded_accessor_schema():
-    can_run, msg = check_blackhole_direct_execution_requirements()
-    if not can_run:
-        pytest.skip(f"Blackhole requirements not met: {msg}")
-
+def test_blackhole_gemm_build_rejects_sharded_accessor_schema():
     kernel = gemm_kernel()
     target = Target("blackhole")
 
@@ -1562,16 +1508,10 @@ def test_blackhole_gemm_direct_runtime_rejects_sharded_accessor_schema():
         strip_accessors=True,
         compile_time_arg_spec_mutator=mutate_sharded_compile_time_spec,
     )
-    mutated_mod = _rebuild_codegen_module_with_segment_plan(
-        artifact, extract_blackhole_segment_plan(richer_func)
-    )
-
-    a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
-    b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
-    c_output = torch.zeros(32, 32, dtype=torch.float32)
-
-    with pytest.raises(tvm.error.InternalError, match="interleaved"):
-        mutated_mod["main"](a_torch, b_torch, c_output)
+    with pytest.raises(tvm.error.InternalError, match="single layout per buffer"):
+        _rebuild_codegen_module_with_segment_plan(
+            artifact, extract_blackhole_segment_plan(richer_func)
+        )
 
 
 def test_blackhole_gemm_direct_runtime_rejects_accessor_common_runtime_arg_count():
@@ -1702,7 +1642,7 @@ def test_blackhole_gemm_direct_runtime_rejects_unknown_math_fidelity():
         mutated_mod["main"](a_torch, b_torch, c_output)
 
 
-def test_blackhole_gemm_direct_runtime_rejects_mbarrier_compute_contract():
+def test_blackhole_gemm_direct_runtime_rejects_mbarrier_typed_compute_schema():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1858,7 +1798,7 @@ def test_blackhole_precleared_fragment_gemm_canonicalizes_to_clear_accum_true():
     )
 
 
-def test_blackhole_gemm_post_merge_cast_consumer_keeps_buffer_tile_bridge_specs():
+def test_blackhole_gemm_post_merge_cast_consumer_keeps_typed_layout_specs():
     kernel = gemm_kernel_with_post_merge_cast_consumer()
     target = Target("blackhole")
 
@@ -1867,19 +1807,21 @@ def test_blackhole_gemm_post_merge_cast_consumer_keeps_buffer_tile_bridge_specs(
 
     device_func = artifact.device_mod["main_kernel"]
     payload = dict(require_tt_program(device_func).payload)
-    bridge_specs = list(payload["buffer_tile_bridge_specs"])
-    by_buffer = {str(spec["buffer"]): spec for spec in bridge_specs}
+    by_buffer = {
+        str(plan.buffer): plan
+        for plan in require_tt_program(device_func).buffer_distribution_plans
+    }
 
     assert "compute_epilogue_ops" not in payload
+    assert "buffer_tile_bridge_specs" not in payload
     assert {"C_local", "D_local"}.issubset(by_buffer)
     for name in ("C_local", "D_local"):
-        spec = by_buffer[name]
-        assert str(spec["scope"]) == "local"
-        assert tuple(int(dim) for dim in spec["shape"]) == (32, 32)
-        assert tuple(int(dim) for dim in spec["local_shape"]) == (8,)
-        assert int(spec["thread_extent"]) == 128
-        assert int(spec["replicate_extent"]) == 1
-        assert len(spec["inverse_logical_index_exprs"]) == 3
+        plan = by_buffer[name]
+        assert tuple(int(dim) for dim in plan.logical_shape) == (32, 32)
+        assert tuple(int(dim) for dim in plan.local_shape) == (8,)
+        assert int(plan.thread_extent) == 128
+        assert int(plan.replicate_extent) == 1
+        assert len(plan.inverse_logical_index_exprs) == 3
 
 
 def test_blackhole_gemm_post_merge_cast_consumer_uses_pack_tile_materialization():
@@ -2001,7 +1943,7 @@ def test_blackhole_fragment_fill_cast_publish_runtime():
     )
 
 
-def test_blackhole_fragment_fill_cast_publish_exposes_buffer_tile_bridge_specs():
+def test_blackhole_fragment_fill_cast_publish_exposes_typed_layout_specs():
     kernel = fragment_fill_cast_publish_kernel()
     target = Target("blackhole")
 
@@ -2010,19 +1952,19 @@ def test_blackhole_fragment_fill_cast_publish_exposes_buffer_tile_bridge_specs()
         mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
     mod = lower_blackhole_to_tt_target(mod)
 
-    payload = dict(require_tt_program(mod["main"]).payload)
-    bridge_specs = list(payload["buffer_tile_bridge_specs"])
-    by_buffer = {str(spec["buffer"]): spec for spec in bridge_specs}
+    tt_program = require_tt_program(mod["main"])
+    payload = dict(tt_program.payload)
+    by_buffer = {str(plan.buffer): plan for plan in tt_program.buffer_distribution_plans}
 
+    assert "buffer_tile_bridge_specs" not in payload
     assert {"C_local", "D_local"}.issubset(by_buffer)
     for name in ("C_local", "D_local"):
-        spec = by_buffer[name]
-        assert str(spec["scope"]) == "local"
-        assert tuple(int(dim) for dim in spec["shape"]) == (32, 32)
-        assert tuple(int(dim) for dim in spec["local_shape"]) == (8,)
-        assert int(spec["thread_extent"]) == 128
-        assert int(spec["replicate_extent"]) == 1
-        assert len(spec["inverse_logical_index_exprs"]) == 3
+        plan = by_buffer[name]
+        assert tuple(int(dim) for dim in plan.logical_shape) == (32, 32)
+        assert tuple(int(dim) for dim in plan.local_shape) == (8,)
+        assert int(plan.thread_extent) == 128
+        assert int(plan.replicate_extent) == 1
+        assert len(plan.inverse_logical_index_exprs) == 3
 
 
 def test_blackhole_fragment_fill_cast_publish_build_reads_executable_without_lowering_requirements():
@@ -2045,7 +1987,7 @@ def test_blackhole_fragment_fill_cast_publish_build_reads_executable_without_low
     assert executable_spec["cb_configs"]
 
 
-def test_blackhole_gemm_direct_runtime_supports_transpose_a_compute_contract():
+def test_blackhole_gemm_direct_runtime_supports_transpose_a_typed_compute_schema():
     can_run, msg = check_blackhole_direct_execution_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")

@@ -150,7 +150,6 @@ def _rebuild_direct_runtime_module_with_core_plan(artifact, core_plan):
             linearization=str(core_plan["linearization"]),
             physical_cores=list(core_plan["physical_cores"]),
             work_packets=list(core_plan["work_packets"]),
-            payload=dict(core_groups[0].payload),
         )
         return rebuild_tt_program(tt_program, core_groups=core_groups)
 
@@ -667,8 +666,7 @@ def test_blackhole_module_direct_call_accepts_richer_copy_schema_with_explicit_p
         ]
         rebuilt_kernels = []
         for kernel in tt_program.kernels:
-            payload = dict(kernel.payload)
-            per_work_arg_specs = list(payload["per_work_arg_specs"])
+            per_work_arg_specs = list(kernel.per_work_arg_specs)
             per_work_arg_specs.append(
                 {
                     "arg_kind": "b_tile_start_id",
@@ -678,8 +676,9 @@ def test_blackhole_module_direct_call_accepts_richer_copy_schema_with_explicit_p
                     "value_source": "logical_block_x",
                 }
             )
-            payload["per_work_arg_specs"] = per_work_arg_specs
-            rebuilt_kernels.append(rebuild_tt_kernel(kernel, payload=payload))
+            rebuilt_kernels.append(
+                rebuild_tt_kernel(kernel, per_work_arg_specs=per_work_arg_specs)
+            )
         return rebuild_tt_program(tt_program, abi_plans=abi_plans, kernels=rebuilt_kernels)
 
     mutated_mod = _rebuild_direct_runtime_module_with_tt_program(

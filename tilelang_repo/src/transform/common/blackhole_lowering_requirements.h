@@ -14,7 +14,6 @@ namespace tvm {
 namespace tl {
 
 struct BlackholeLoweringSupportFacts {
-  tvm::ffi::Array<tvm::ffi::Any> buffer_tile_bridge_specs;
   tvm::ffi::Array<tvm::ffi::Any> buffer_materialization_contracts;
   tvm::ffi::Array<tvm::ffi::Any> buffer_flow_contracts;
 };

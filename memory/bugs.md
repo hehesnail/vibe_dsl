@@ -42,6 +42,85 @@
 
 ## 2. 已解决但值得记住的模式
 
+### pre-opt `SpatialPlan` 只能作为 typed layout merge source，不能整份替换 optimized plan
+
+- **症状**:
+  - 删除 bridge attr 后，为了保留 logical tile layout，
+    如果直接跳过 optimized path 上的
+    `BuildSpatialPlan`，
+    后续会丢优化后的 execution units /
+    ingress-egress units /
+    dataflow truth
+- **根因**:
+  - pre-opt plan 的 layout truth 有价值，
+    但它的 execution/dataflow truth
+    不是 optimized body 的 owner truth
+- **修法**:
+  - pre-opt 阶段只保留 typed
+    `SpatialPlan.LayoutSpec`
+    作为 merge source
+  - optimized body 仍重建
+    `SpatialPlan`
+  - 按 subject
+    只合并当前 optimized plan 缺失的
+    logical/local/thread/replicate/inverse-index
+    typed layout fields
+- **教训**:
+  - 删除 bridge attr 时不能用“保留旧 plan”
+    替代重建当前层 IR；
+    analysis-derived truth
+    必须回到当前 IR 层的 typed object
+
+### fragment-cast materialization 的 logical size 不能用 local slice size 代替
+
+- **症状**:
+  - `fragment_fill -> cast -> publish`
+    的 leaf materialization plan
+    在 bridge attr 删除后仍能生成，
+    但 `logical_element_count`
+    可能只剩单个 slice 的 8，
+    而不是完整 logical tile 的 1024
+  - 即使 metadata 已经是 1024，
+    生成的
+    `pack_fill_fragment_to_tiled_cb`
+    调用仍可能保留
+    `num_elements=8 / row_width=8`，
+    导致 direct runtime
+    只写出 tile 的局部片段
+- **根因**:
+  - materialization planner
+    只看了当前 contract/slice extent，
+    没有从 typed layout truth
+    恢复完整 logical shape
+  - source emission
+    也不能只按
+    Buffer object identity
+    查 layout；
+    fragment-view buffer
+    需要同时用 materialization contract
+    的 source/target subject
+    去查 typed layout
+- **修法**:
+  - materialization logical size
+    取 contract extent
+    和
+    `SpatialPlan.LayoutSpec.logical_shape`
+    product
+    的保守上界
+  - pack-thread direct-store
+    source call
+    的
+    `num_elements`
+    和
+    `row_width`
+    同样按 typed layout shape
+    覆盖 local slice contract
+- **教训**:
+  - live-form/materialization
+    的 logical quantity
+    应来自 typed layout object，
+    不能退回到局部执行 slice
+
 ### post-merge `pack_tile` admission 不能只修最后一次 materialization
 
 - **症状**:

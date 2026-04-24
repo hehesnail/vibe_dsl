@@ -19,8 +19,6 @@ constexpr const char* kTLSpatialPlan = "tl.spatial_plan";
 constexpr const char* kTLSpatialPlanValidated = "tl.spatial_plan_validated";
 constexpr const char* kTLTTProgram = "tl.tt_program";
 constexpr const char* kTLBlackholeExecutable = "tl.blackhole_executable";
-constexpr const char* kTLBlackholeLogicalBufferTileBridgeSpecs =
-    "tl.blackhole_logical_buffer_tile_bridge_specs";
 constexpr const char* kTLTTSemaphorePlans = "tl.tt_semaphore_plans";
 constexpr const char* kTLTTHardwareModel = "tl.tt_hardware_model";
 }  // namespace attr
@@ -62,8 +60,6 @@ constexpr const char* kExecutionProtocol = "execution_protocol";
 constexpr const char* kFormationBasis = "formation_basis";
 constexpr const char* kBufferMaterializationContracts = "buffer_materialization_contracts";
 constexpr const char* kBufferMaterializationContract = "buffer_materialization_contract";
-constexpr const char* kBufferTileBridgeSpecs = "buffer_tile_bridge_specs";
-constexpr const char* kBufferTileBridgeSpec = "buffer_tile_bridge_spec";
 constexpr const char* kBufferFlowContracts = "buffer_flow_contracts";
 constexpr const char* kComputeOpKinds = "compute_op_kinds";
 constexpr const char* kFlowClass = "flow_class";

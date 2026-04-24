@@ -526,25 +526,32 @@ medium-term bridge layer。
 
 ### 4.3 payload residue 不是 `TTProgram` 语义
 
-如果 repo HEAD
-里仍通过
+`2026-04-25`
+compatibility fallback
+收束后，
+repo HEAD
+不再通过
 `TTProgram.payload`
 携带：
 
 - `buffer_tile_bridge_specs`
-- `unsupported_compute_ops`
 - `compute_contract`
 - `gemm_contract`
 - `multi_compute_contracts`
 - `multi_gemm_contracts`
-- `direct_runtime_unsupported_reasons`
-- 其他 leaf/runtime compatibility payload
+- compute op /
+  kernel /
+  core group /
+  sync 的 leaf fallback payload
 
-这些东西也只能写成：
-
-- leaf compatibility debt
-- `ExecutableSpec` 投影 residue
-- task3 继续删除的 forced carrier
+这些旧面不能再写成
+task3
+继续保留的 forced carrier。
+仍保留的
+`TTProgram.payload`
+只允许是显式 allowlist
+的 admission / diagnostic metadata，
+不能成为 owner truth。
 
 它们不能被文档表述成：
 
@@ -557,22 +564,23 @@ medium-term bridge layer。
 
 其中要单独写清楚：
 
-- `buffer_tile_bridge_specs`
-  仍然活着时，
-  只是 cleanup task1/task3
-  之间尚未删完的 narrow compatibility residue
-- `compute_contract` /
-  `gemm_contract` /
-  `multi_*_contracts`
-  仍然活着时，
-  只是 task3
-  的 leaf/runtime compatibility debt
+- logical tile layout
+  已从 bridge attr /
+  payload
+  收进
+  `SpatialPlan.LayoutSpec`
+  和
+  `TTBufferDistributionPlan`
+- compute leaf truth
+  已从 contract family
+  收进
+  `TTComputeOpPlan`
+  和
+  `KernelSpec.compute_ops`
 - `ValidateTTProgram`
-  对这些 payload family
-  做 shape check
-  只能表示
-  debt containment，
-  不能表示这些字段已经成为
+  不能再对这些已删除 payload family
+  做 containment 式 shape check，
+  更不能表示这些字段已经成为
   `TTProgram`
   的合法 owner truth
 - required end-state
@@ -807,16 +815,15 @@ build / codegen / runtime /
   - 不属于 `TTProgram`
   - 只能删除，
     或收回 pass-local helper
-- `buffer_tile_bridge_specs` /
+- 已删除的
+  `buffer_tile_bridge_specs` /
   `compute_contract` /
   `gemm_contract` /
-  `multi_*_contracts` /
-  `direct_runtime_unsupported_reasons`
+  `multi_*_contracts`
   - 不属于 `TTProgram`
     长期字段
-  - 只允许作为 task3
-    继续删除的
-    leaf compatibility residue
+  - 不允许作为 compatibility fallback
+    重新出现
 
 ## 9. Completion Contract
 
@@ -877,15 +884,13 @@ build / codegen / runtime /
    输入边界
 5. `TTKernel` /
    `TTCoreGroup` /
-   `TTCBPlan` /
-   `TTSemaphorePlan` /
-   `TTComputeSyncPlan` /
-   `TTDstLayoutPlan` /
-   `TTProgram.payload`
-   即使仍暂时存在，
-   也只剩 compatibility /
-   realization detail /
-   leaf residue 身份，
+   `TTComputeOpPlan` /
+   operand binding /
+   `TTComputeSyncPlan`
+   已删除 leaf fallback payload；
+   其他保留 payload 的 plan
+   只能作为局部 realization detail /
+   admission metadata，
    不再承载 owner truth
 6. leaf writer / leaf readers
    不再把 planning residue
@@ -895,9 +900,7 @@ build / codegen / runtime /
 7. `compute_contract` /
    `gemm_contract` /
    `multi_*_contracts`
-   如果仍存在，
-   只允许作为 task3
-   leaf compatibility debt；
+   已退出 active chain；
    它们不能被
    `ValidateTTProgram`
    的 shape check

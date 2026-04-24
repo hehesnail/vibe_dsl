@@ -2017,7 +2017,7 @@ static void ValidateKernelExplicitPerWorkBindingSchema(const CorePlan& core_plan
         << arg.kind << "' identity '" << arg.identity << "' on kernel " << kernel.name
         << " of " << func_name
         << "; runtime/codegen must not recover block/tile semantics from work_linear_id or "
-        << "top-level TTProgram payload fallback";
+        << "implicit runtime-arg inference";
   }
 }
 

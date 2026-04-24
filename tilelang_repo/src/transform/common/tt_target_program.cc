@@ -60,6 +60,14 @@ void TTBufferDistributionPlanNode::RegisterReflection() {
       .def_ro("shard_shape", &TTBufferDistributionPlanNode::shard_shape)
       .def_ro("shard_orientation", &TTBufferDistributionPlanNode::shard_orientation)
       .def_ro("host_visibility", &TTBufferDistributionPlanNode::host_visibility)
+      .def_ro("logical_shape", &TTBufferDistributionPlanNode::logical_shape)
+      .def_ro("local_shape", &TTBufferDistributionPlanNode::local_shape)
+      .def_ro("thread_extent", &TTBufferDistributionPlanNode::thread_extent)
+      .def_ro("replicate_extent", &TTBufferDistributionPlanNode::replicate_extent)
+      .def_ro("inverse_logical_index_vars",
+              &TTBufferDistributionPlanNode::inverse_logical_index_vars)
+      .def_ro("inverse_logical_index_exprs",
+              &TTBufferDistributionPlanNode::inverse_logical_index_exprs)
       .def_ro("payload", &TTBufferDistributionPlanNode::payload);
 }
 
@@ -67,7 +75,11 @@ TTBufferDistributionPlan::TTBufferDistributionPlan(
     ffi::String name, ffi::String buffer, ffi::String mesh_plan, int64_t mesh_plan_index,
     ffi::String distribution_kind, ffi::String layout, ffi::String memory_space,
     int64_t page_size_bytes, ffi::Array<Integer> shard_shape, ffi::String shard_orientation,
-    ffi::String host_visibility, ffi::Map<ffi::String, ffi::Any> payload) {
+    ffi::String host_visibility, ffi::Array<PrimExpr> logical_shape,
+    ffi::Array<PrimExpr> local_shape, PrimExpr thread_extent, PrimExpr replicate_extent,
+    ffi::Array<PrimExpr> inverse_logical_index_vars,
+    ffi::Array<PrimExpr> inverse_logical_index_exprs,
+    ffi::Map<ffi::String, ffi::Any> payload) {
   auto n = ffi::make_object<TTBufferDistributionPlanNode>();
   n->name = std::move(name);
   n->buffer = std::move(buffer);
@@ -80,6 +92,12 @@ TTBufferDistributionPlan::TTBufferDistributionPlan(
   n->shard_shape = std::move(shard_shape);
   n->shard_orientation = std::move(shard_orientation);
   n->host_visibility = std::move(host_visibility);
+  n->logical_shape = std::move(logical_shape);
+  n->local_shape = std::move(local_shape);
+  n->thread_extent = std::move(thread_extent);
+  n->replicate_extent = std::move(replicate_extent);
+  n->inverse_logical_index_vars = std::move(inverse_logical_index_vars);
+  n->inverse_logical_index_exprs = std::move(inverse_logical_index_exprs);
   n->payload = std::move(payload);
   data_ = std::move(n);
 }
@@ -92,13 +110,12 @@ void TTComputeOperandBindingPlanNode::RegisterReflection() {
       .def_ro("host_buffer", &TTComputeOperandBindingPlanNode::host_buffer)
       .def_ro("tensor_dtype", &TTComputeOperandBindingPlanNode::tensor_dtype)
       .def_ro("cb_dtype", &TTComputeOperandBindingPlanNode::cb_dtype)
-      .def_ro("transform_kind", &TTComputeOperandBindingPlanNode::transform_kind)
-      .def_ro("payload", &TTComputeOperandBindingPlanNode::payload);
+      .def_ro("transform_kind", &TTComputeOperandBindingPlanNode::transform_kind);
 }
 
 TTComputeOperandBindingPlan::TTComputeOperandBindingPlan(
     ffi::String role, ffi::String buffer, ffi::String host_buffer, ffi::String tensor_dtype,
-    ffi::String cb_dtype, ffi::String transform_kind, ffi::Map<ffi::String, ffi::Any> payload) {
+    ffi::String cb_dtype, ffi::String transform_kind) {
   auto n = ffi::make_object<TTComputeOperandBindingPlanNode>();
   n->role = std::move(role);
   n->buffer = std::move(buffer);
@@ -106,7 +123,6 @@ TTComputeOperandBindingPlan::TTComputeOperandBindingPlan(
   n->tensor_dtype = std::move(tensor_dtype);
   n->cb_dtype = std::move(cb_dtype);
   n->transform_kind = std::move(transform_kind);
-  n->payload = std::move(payload);
   data_ = std::move(n);
 }
 
@@ -127,8 +143,7 @@ void TTComputeOpPlanNode::RegisterReflection() {
       .def_ro("accumulator_dtype", &TTComputeOpPlanNode::accumulator_dtype)
       .def_ro("mbarrier_buffer", &TTComputeOpPlanNode::mbarrier_buffer)
       .def_ro("mbarrier_scope", &TTComputeOpPlanNode::mbarrier_scope)
-      .def_ro("mbarrier_index_exprs", &TTComputeOpPlanNode::mbarrier_index_exprs)
-      .def_ro("payload", &TTComputeOpPlanNode::payload);
+      .def_ro("mbarrier_index_exprs", &TTComputeOpPlanNode::mbarrier_index_exprs);
 }
 
 TTComputeOpPlan::TTComputeOpPlan(
@@ -138,7 +153,7 @@ TTComputeOpPlan::TTComputeOpPlan(
     ffi::Array<Integer> tile_shape, ffi::Array<Integer> block_shape,
     ffi::Array<Integer> subblock_shape, ffi::String accumulator_dtype,
     ffi::String mbarrier_buffer, ffi::String mbarrier_scope,
-    ffi::Array<ffi::String> mbarrier_index_exprs, ffi::Map<ffi::String, ffi::Any> payload) {
+    ffi::Array<ffi::String> mbarrier_index_exprs) {
   auto n = ffi::make_object<TTComputeOpPlanNode>();
   n->name = std::move(name);
   n->kernel_name = std::move(kernel_name);
@@ -155,7 +170,6 @@ TTComputeOpPlan::TTComputeOpPlan(
   n->mbarrier_buffer = std::move(mbarrier_buffer);
   n->mbarrier_scope = std::move(mbarrier_scope);
   n->mbarrier_index_exprs = std::move(mbarrier_index_exprs);
-  n->payload = std::move(payload);
   data_ = std::move(n);
 }
 
@@ -210,17 +224,24 @@ void TTKernelNode::RegisterReflection() {
       .def_ro("kind", &TTKernelNode::kind)
       .def_ro("core_type", &TTKernelNode::core_type)
       .def_ro("abi_plan_index", &TTKernelNode::abi_plan_index)
-      .def_ro("payload", &TTKernelNode::payload);
+      .def_ro("launch_spec", &TTKernelNode::launch_spec)
+      .def_ro("compute_config", &TTKernelNode::compute_config)
+      .def_ro("per_work_arg_specs", &TTKernelNode::per_work_arg_specs);
 }
 
 TTKernel::TTKernel(ffi::String name, ffi::String kind, ffi::String core_type,
-                   int64_t abi_plan_index, ffi::Map<ffi::String, ffi::Any> payload) {
+                   int64_t abi_plan_index,
+                   ffi::Map<ffi::String, ffi::Any> launch_spec,
+                   ffi::Map<ffi::String, ffi::Any> compute_config,
+                   ffi::Array<ffi::Any> per_work_arg_specs) {
   auto n = ffi::make_object<TTKernelNode>();
   n->name = std::move(name);
   n->kind = std::move(kind);
   n->core_type = std::move(core_type);
   n->abi_plan_index = abi_plan_index;
-  n->payload = std::move(payload);
+  n->launch_spec = std::move(launch_spec);
+  n->compute_config = std::move(compute_config);
+  n->per_work_arg_specs = std::move(per_work_arg_specs);
   data_ = std::move(n);
 }
 
@@ -232,14 +253,12 @@ void TTCoreGroupNode::RegisterReflection() {
       .def_ro("logical_grid_y", &TTCoreGroupNode::logical_grid_y)
       .def_ro("linearization", &TTCoreGroupNode::linearization)
       .def_ro("physical_cores", &TTCoreGroupNode::physical_cores)
-      .def_ro("work_packets", &TTCoreGroupNode::work_packets)
-      .def_ro("payload", &TTCoreGroupNode::payload);
+      .def_ro("work_packets", &TTCoreGroupNode::work_packets);
 }
 
 TTCoreGroup::TTCoreGroup(ffi::String name, int64_t logical_grid_x, int64_t logical_grid_y,
                          ffi::String linearization, ffi::Array<ffi::Any> physical_cores,
-                         ffi::Array<ffi::Any> work_packets,
-                         ffi::Map<ffi::String, ffi::Any> payload) {
+                         ffi::Array<ffi::Any> work_packets) {
   auto n = ffi::make_object<TTCoreGroupNode>();
   n->name = std::move(name);
   n->logical_grid_x = logical_grid_x;
@@ -247,7 +266,6 @@ TTCoreGroup::TTCoreGroup(ffi::String name, int64_t logical_grid_x, int64_t logic
   n->linearization = std::move(linearization);
   n->physical_cores = std::move(physical_cores);
   n->work_packets = std::move(work_packets);
-  n->payload = std::move(payload);
   data_ = std::move(n);
 }
 
@@ -386,14 +404,12 @@ void TTComputeSyncPlanNode::RegisterReflection() {
       .def_ro("source_task_index", &TTComputeSyncPlanNode::source_task_index)
       .def_ro("target_task_index", &TTComputeSyncPlanNode::target_task_index)
       .def_ro("ordering_kind", &TTComputeSyncPlanNode::ordering_kind)
-      .def_ro("materialization_kind", &TTComputeSyncPlanNode::materialization_kind)
-      .def_ro("payload", &TTComputeSyncPlanNode::payload);
+      .def_ro("materialization_kind", &TTComputeSyncPlanNode::materialization_kind);
 }
 
 TTComputeSyncPlan::TTComputeSyncPlan(ffi::String name, ffi::String kind, int64_t source_task_index,
                                      int64_t target_task_index, ffi::String ordering_kind,
-                                     ffi::String materialization_kind,
-                                     ffi::Map<ffi::String, ffi::Any> payload) {
+                                     ffi::String materialization_kind) {
   auto n = ffi::make_object<TTComputeSyncPlanNode>();
   n->name = std::move(name);
   n->kind = std::move(kind);
@@ -401,7 +417,6 @@ TTComputeSyncPlan::TTComputeSyncPlan(ffi::String name, ffi::String kind, int64_t
   n->target_task_index = target_task_index;
   n->ordering_kind = std::move(ordering_kind);
   n->materialization_kind = std::move(materialization_kind);
-  n->payload = std::move(payload);
   data_ = std::move(n);
 }
 
@@ -709,22 +724,27 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          int64_t mesh_plan_index, ffi::String distribution_kind, ffi::String layout,
          ffi::String memory_space, int64_t page_size_bytes, ffi::Array<Integer> shard_shape,
          ffi::String shard_orientation, ffi::String host_visibility,
+         ffi::Array<PrimExpr> logical_shape, ffi::Array<PrimExpr> local_shape,
+         PrimExpr thread_extent, PrimExpr replicate_extent,
+         ffi::Array<PrimExpr> inverse_logical_index_vars,
+         ffi::Array<PrimExpr> inverse_logical_index_exprs,
          ffi::Map<ffi::String, ffi::Any> payload) {
         return TTBufferDistributionPlan(
             std::move(name), std::move(buffer), std::move(mesh_plan), mesh_plan_index,
             std::move(distribution_kind), std::move(layout), std::move(memory_space),
             page_size_bytes, std::move(shard_shape), std::move(shard_orientation),
-            std::move(host_visibility), std::move(payload));
+            std::move(host_visibility), std::move(logical_shape), std::move(local_shape),
+            std::move(thread_extent), std::move(replicate_extent),
+            std::move(inverse_logical_index_vars), std::move(inverse_logical_index_exprs),
+            std::move(payload));
       });
   refl::GlobalDef().def(
       "tl.TTComputeOperandBindingPlan",
       [](ffi::String role, ffi::String buffer, ffi::String host_buffer,
-         ffi::String tensor_dtype, ffi::String cb_dtype, ffi::String transform_kind,
-         ffi::Map<ffi::String, ffi::Any> payload) {
+         ffi::String tensor_dtype, ffi::String cb_dtype, ffi::String transform_kind) {
         return TTComputeOperandBindingPlan(
             std::move(role), std::move(buffer), std::move(host_buffer),
-            std::move(tensor_dtype), std::move(cb_dtype), std::move(transform_kind),
-            std::move(payload));
+            std::move(tensor_dtype), std::move(cb_dtype), std::move(transform_kind));
       });
   refl::GlobalDef().def(
       "tl.TTComputeOpPlan",
@@ -735,15 +755,14 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<Integer> tile_shape, ffi::Array<Integer> block_shape,
          ffi::Array<Integer> subblock_shape, ffi::String accumulator_dtype,
          ffi::String mbarrier_buffer, ffi::String mbarrier_scope,
-         ffi::Array<ffi::String> mbarrier_index_exprs,
-         ffi::Map<ffi::String, ffi::Any> payload) {
+         ffi::Array<ffi::String> mbarrier_index_exprs) {
         return TTComputeOpPlan(
             std::move(name), std::move(kernel_name), kernel_plan_index, std::move(kind),
             enabled, std::move(operand_bindings), std::move(problem_shape_axes),
             std::move(problem_shape), std::move(tile_shape), std::move(block_shape),
             std::move(subblock_shape), std::move(accumulator_dtype),
             std::move(mbarrier_buffer), std::move(mbarrier_scope),
-            std::move(mbarrier_index_exprs), std::move(payload));
+            std::move(mbarrier_index_exprs));
       });
   refl::GlobalDef().def(
       "tl.TTBlockPlan",
@@ -762,18 +781,21 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def(
       "tl.TTKernel",
       [](ffi::String name, ffi::String kind, ffi::String core_type, int64_t abi_plan_index,
-         ffi::Map<ffi::String, ffi::Any> payload) {
+         ffi::Map<ffi::String, ffi::Any> launch_spec,
+         ffi::Map<ffi::String, ffi::Any> compute_config,
+         ffi::Array<ffi::Any> per_work_arg_specs) {
         return TTKernel(std::move(name), std::move(kind), std::move(core_type), abi_plan_index,
-                        std::move(payload));
+                        std::move(launch_spec), std::move(compute_config),
+                        std::move(per_work_arg_specs));
       });
   refl::GlobalDef().def(
       "tl.TTCoreGroup",
       [](ffi::String name, int64_t logical_grid_x, int64_t logical_grid_y,
          ffi::String linearization, ffi::Array<ffi::Any> physical_cores,
-         ffi::Array<ffi::Any> work_packets, ffi::Map<ffi::String, ffi::Any> payload) {
+         ffi::Array<ffi::Any> work_packets) {
         return TTCoreGroup(std::move(name), logical_grid_x, logical_grid_y,
                            std::move(linearization), std::move(physical_cores),
-                           std::move(work_packets), std::move(payload));
+                           std::move(work_packets));
       });
   refl::GlobalDef().def(
       "tl.TTCBPlan",
@@ -818,11 +840,10 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def(
       "tl.TTComputeSyncPlan",
       [](ffi::String name, ffi::String kind, int64_t source_task_index, int64_t target_task_index,
-         ffi::String ordering_kind, ffi::String materialization_kind,
-         ffi::Map<ffi::String, ffi::Any> payload) {
+         ffi::String ordering_kind, ffi::String materialization_kind) {
         return TTComputeSyncPlan(std::move(name), std::move(kind), source_task_index,
                                  target_task_index, std::move(ordering_kind),
-                                 std::move(materialization_kind), std::move(payload));
+                                 std::move(materialization_kind));
       });
   refl::GlobalDef().def(
       "tl.TTDstLayoutPlan",

@@ -204,6 +204,12 @@ class LayoutSpecNode : public Object {
   ffi::Array<ffi::String> unit_names;
   ffi::Array<Integer> unit_indices;
   ffi::Array<ffi::String> virtual_device_axes;
+  ffi::Array<PrimExpr> logical_shape;
+  ffi::Array<PrimExpr> local_shape;
+  PrimExpr thread_extent;
+  PrimExpr replicate_extent;
+  ffi::Array<PrimExpr> inverse_logical_index_vars;
+  ffi::Array<PrimExpr> inverse_logical_index_exprs;
   ffi::Array<TIRAnchor> anchors;
 
   static void RegisterReflection() {
@@ -216,6 +222,12 @@ class LayoutSpecNode : public Object {
         .def_ro("unit_names", &LayoutSpecNode::unit_names)
         .def_ro("unit_indices", &LayoutSpecNode::unit_indices)
         .def_ro("virtual_device_axes", &LayoutSpecNode::virtual_device_axes)
+        .def_ro("logical_shape", &LayoutSpecNode::logical_shape)
+        .def_ro("local_shape", &LayoutSpecNode::local_shape)
+        .def_ro("thread_extent", &LayoutSpecNode::thread_extent)
+        .def_ro("replicate_extent", &LayoutSpecNode::replicate_extent)
+        .def_ro("inverse_logical_index_vars", &LayoutSpecNode::inverse_logical_index_vars)
+        .def_ro("inverse_logical_index_exprs", &LayoutSpecNode::inverse_logical_index_exprs)
         .def_ro("anchors", &LayoutSpecNode::anchors);
   }
 
@@ -227,6 +239,10 @@ class LayoutSpec : public ObjectRef {
   TVM_DLL LayoutSpec(ffi::String name, ffi::String subject, ffi::String scope,
                      ffi::String distribution_kind, ffi::Array<ffi::String> unit_names,
                      ffi::Array<Integer> unit_indices, ffi::Array<ffi::String> virtual_device_axes,
+                     ffi::Array<PrimExpr> logical_shape, ffi::Array<PrimExpr> local_shape,
+                     PrimExpr thread_extent, PrimExpr replicate_extent,
+                     ffi::Array<PrimExpr> inverse_logical_index_vars,
+                     ffi::Array<PrimExpr> inverse_logical_index_exprs,
                      ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(LayoutSpec, ObjectRef, LayoutSpecNode);
 };

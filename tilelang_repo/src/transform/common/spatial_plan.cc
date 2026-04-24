@@ -93,7 +93,12 @@ DataflowEdge::DataflowEdge(ffi::String name, ffi::String kind, ffi::String produ
 LayoutSpec::LayoutSpec(ffi::String name, ffi::String subject, ffi::String scope,
                        ffi::String distribution_kind, ffi::Array<ffi::String> unit_names,
                        ffi::Array<Integer> unit_indices,
-                       ffi::Array<ffi::String> virtual_device_axes, ffi::Array<TIRAnchor> anchors) {
+                       ffi::Array<ffi::String> virtual_device_axes,
+                       ffi::Array<PrimExpr> logical_shape, ffi::Array<PrimExpr> local_shape,
+                       PrimExpr thread_extent, PrimExpr replicate_extent,
+                       ffi::Array<PrimExpr> inverse_logical_index_vars,
+                       ffi::Array<PrimExpr> inverse_logical_index_exprs,
+                       ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<LayoutSpecNode>();
   n->name = std::move(name);
   n->subject = std::move(subject);
@@ -102,6 +107,12 @@ LayoutSpec::LayoutSpec(ffi::String name, ffi::String subject, ffi::String scope,
   n->unit_names = std::move(unit_names);
   n->unit_indices = std::move(unit_indices);
   n->virtual_device_axes = std::move(virtual_device_axes);
+  n->logical_shape = std::move(logical_shape);
+  n->local_shape = std::move(local_shape);
+  n->thread_extent = std::move(thread_extent);
+  n->replicate_extent = std::move(replicate_extent);
+  n->inverse_logical_index_vars = std::move(inverse_logical_index_vars);
+  n->inverse_logical_index_exprs = std::move(inverse_logical_index_exprs);
   n->anchors = std::move(anchors);
   data_ = std::move(n);
 }
@@ -287,11 +298,19 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       "tl.LayoutSpec",
       [](ffi::String name, ffi::String subject, ffi::String scope, ffi::String distribution_kind,
          ffi::Array<ffi::String> unit_names, ffi::Array<Integer> unit_indices,
-         ffi::Array<ffi::String> virtual_device_axes, ffi::Array<TIRAnchor> anchors) {
+         ffi::Array<ffi::String> virtual_device_axes,
+         ffi::Array<PrimExpr> logical_shape, ffi::Array<PrimExpr> local_shape,
+         PrimExpr thread_extent, PrimExpr replicate_extent,
+         ffi::Array<PrimExpr> inverse_logical_index_vars,
+         ffi::Array<PrimExpr> inverse_logical_index_exprs,
+         ffi::Array<TIRAnchor> anchors) {
         return LayoutSpec(std::move(name), std::move(subject), std::move(scope),
                           std::move(distribution_kind), std::move(unit_names),
                           std::move(unit_indices), std::move(virtual_device_axes),
-                          std::move(anchors));
+                          std::move(logical_shape), std::move(local_shape),
+                          std::move(thread_extent), std::move(replicate_extent),
+                          std::move(inverse_logical_index_vars),
+                          std::move(inverse_logical_index_exprs), std::move(anchors));
       });
   refl::GlobalDef().def(
       "tl.PhasePlan",

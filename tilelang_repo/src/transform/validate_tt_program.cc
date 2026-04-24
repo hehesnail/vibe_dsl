@@ -97,6 +97,18 @@ void ValidateBufferDistributionPlan(
       << "TTBufferDistributionPlan requires shard_orientation";
   ICHECK(!plan->host_visibility.empty())
       << "TTBufferDistributionPlan requires host_visibility";
+  if (!plan->logical_shape.empty()) {
+    ICHECK(!plan->local_shape.empty())
+        << "TTBufferDistributionPlan logical_shape requires local_shape";
+    ICHECK(plan->thread_extent.defined())
+        << "TTBufferDistributionPlan logical_shape requires thread_extent";
+    ICHECK(plan->replicate_extent.defined())
+        << "TTBufferDistributionPlan logical_shape requires replicate_extent";
+    ICHECK(!plan->inverse_logical_index_exprs.empty())
+        << "TTBufferDistributionPlan logical_shape requires inverse layout expressions";
+    ICHECK(!plan->inverse_logical_index_vars.empty())
+        << "TTBufferDistributionPlan logical_shape requires inverse layout variables";
+  }
 }
 
 void ValidateCoreGroup(const TTCoreGroup& core_group) {
@@ -245,22 +257,6 @@ void ValidateCompileTimeArgSpec(const Map<String, Any>& spec) {
   ICHECK(HasKey(spec, "count")) << "TTABIPlan compile_time_arg_spec requires count";
 }
 
-void ValidateBufferTileBridgeSpecs(const Map<String, Any>& payload) {
-  if (auto specs_any = payload.Get(String(schema_key::kBufferTileBridgeSpecs))) {
-    Array<Any> specs = Downcast<Array<Any>>(specs_any.value());
-    for (const Any& spec_any : specs) {
-      Map<String, Any> spec = AsMap(spec_any);
-      ICHECK(!spec.empty()) << "TTProgram payload buffer_tile_bridge_specs entries must be maps";
-      ICHECK(HasKey(spec, "buffer"))
-          << "TTProgram payload buffer_tile_bridge_specs requires buffer";
-      ICHECK(HasKey(spec, "shape"))
-          << "TTProgram payload buffer_tile_bridge_specs requires shape";
-      ICHECK(HasKey(spec, "local_shape"))
-          << "TTProgram payload buffer_tile_bridge_specs requires local_shape";
-    }
-  }
-}
-
 void ValidateUnsupportedComputeOps(const Map<String, Any>& payload) {
   if (auto ops_any = payload.Get(String("unsupported_compute_ops"))) {
     Array<Any> ops = Downcast<Array<Any>>(ops_any.value());
@@ -282,21 +278,17 @@ void ValidateUnsupportedComputeOps(const Map<String, Any>& payload) {
   }
 }
 
-void ValidateKernelPayload(const TTKernel& kernel) {
-  Map<String, Any> payload = kernel->payload;
-  ICHECK(!HasKey(payload, "compute_ops"))
-      << "TTKernel payload compute_ops was removed; use TTComputeOpPlan owner truth";
-  ICHECK(HasKey(payload, "launch_spec"))
-      << "TTKernel requires launch_spec in payload for reader-side cutover";
-  Map<String, Any> launch_spec = AsMap(payload.Get(String("launch_spec")).value());
+void ValidateKernelLeafFields(const TTKernel& kernel) {
+  ICHECK(!kernel->launch_spec.empty()) << "TTKernel requires launch_spec";
+  Map<String, Any> launch_spec = kernel->launch_spec;
   ICHECK(HasKey(launch_spec, "core_type")) << "TTKernel launch_spec requires core_type";
   ICHECK(HasKey(launch_spec, "processor")) << "TTKernel launch_spec requires processor";
   ICHECK(HasKey(launch_spec, "noc")) << "TTKernel launch_spec requires noc";
 
   if (kernel->kind == "compute" || kernel->core_type == "trisc") {
-    ICHECK(HasKey(payload, "compute_config"))
-        << "TTKernel compute payload requires compute_config for compute kernels";
-    Map<String, Any> compute_config = AsMap(payload.Get(String("compute_config")).value());
+    ICHECK(!kernel->compute_config.empty())
+        << "TTKernel compute kernels require compute_config";
+    Map<String, Any> compute_config = kernel->compute_config;
     ICHECK(HasKey(compute_config, "math_fidelity"))
         << "TTKernel compute_config requires math_fidelity";
     ICHECK(HasKey(compute_config, "fp32_dest_acc_en"))
@@ -309,85 +301,6 @@ void ValidateKernelPayload(const TTKernel& kernel) {
 
 void ValidateProgramPayload(const TTProgram& program) {
   const Map<String, Any>& payload = program->payload;
-  if (auto gemm_any = payload.Get(String("gemm_contract"))) {
-    Map<String, Any> gemm = AsMap(gemm_any.value());
-    ICHECK(!gemm.empty()) << "TTProgram payload gemm_contract must be a map";
-    ICHECK(HasKey(gemm, "a_buffer")) << "TTProgram payload gemm_contract requires a_buffer";
-    ICHECK(HasKey(gemm, "b_buffer")) << "TTProgram payload gemm_contract requires b_buffer";
-    ICHECK(HasKey(gemm, "c_buffer")) << "TTProgram payload gemm_contract requires c_buffer";
-    ICHECK(HasKey(gemm, "M")) << "TTProgram payload gemm_contract requires M";
-    ICHECK(HasKey(gemm, "N")) << "TTProgram payload gemm_contract requires N";
-    ICHECK(HasKey(gemm, "K")) << "TTProgram payload gemm_contract requires K";
-  }
-  if (auto compute_any = payload.Get(String("compute_contract"))) {
-    Map<String, Any> compute = AsMap(compute_any.value());
-    ICHECK(!compute.empty()) << "TTProgram payload compute_contract must be a map";
-    ICHECK(HasKey(compute, "enabled")) << "TTProgram payload compute_contract requires enabled";
-    ICHECK(HasKey(compute, "kind")) << "TTProgram payload compute_contract requires kind";
-    if (GetIntOrDefault(compute, "M", -1) != -1 || HasKey(compute, "a_buffer")) {
-      ICHECK(HasKey(compute, "a_buffer")) << "TTProgram payload compute_contract requires a_buffer";
-      ICHECK(HasKey(compute, "b_buffer")) << "TTProgram payload compute_contract requires b_buffer";
-      ICHECK(HasKey(compute, "c_buffer")) << "TTProgram payload compute_contract requires c_buffer";
-      ICHECK(HasKey(compute, "M")) << "TTProgram payload compute_contract requires M";
-      ICHECK(HasKey(compute, "N")) << "TTProgram payload compute_contract requires N";
-      ICHECK(HasKey(compute, "K")) << "TTProgram payload compute_contract requires K";
-      ICHECK(HasKey(compute, "math_fidelity"))
-          << "TTProgram payload compute_contract requires math_fidelity";
-      ICHECK(HasKey(compute, "fp32_dest_acc_en"))
-          << "TTProgram payload compute_contract requires fp32_dest_acc_en";
-      ICHECK(HasKey(compute, "clear_accum"))
-          << "TTProgram payload compute_contract requires clear_accum";
-      ICHECK(HasKey(compute, "k_pack")) << "TTProgram payload compute_contract requires k_pack";
-    }
-  }
-  if (auto multi_gemm_any = payload.Get(String("multi_gemm_contracts"))) {
-    Array<Any> contracts = Downcast<Array<Any>>(multi_gemm_any.value());
-    ICHECK(!contracts.empty()) << "TTProgram payload multi_gemm_contracts must be non-empty";
-    for (const Any& contract_any : contracts) {
-      Map<String, Any> gemm = AsMap(contract_any);
-      ICHECK(!gemm.empty()) << "TTProgram payload multi_gemm_contracts entries must be maps";
-      ICHECK(HasKey(gemm, "a_buffer"))
-          << "TTProgram payload multi_gemm_contracts requires a_buffer";
-      ICHECK(HasKey(gemm, "b_buffer"))
-          << "TTProgram payload multi_gemm_contracts requires b_buffer";
-      ICHECK(HasKey(gemm, "c_buffer"))
-          << "TTProgram payload multi_gemm_contracts requires c_buffer";
-      ICHECK(HasKey(gemm, "M")) << "TTProgram payload multi_gemm_contracts requires M";
-      ICHECK(HasKey(gemm, "N")) << "TTProgram payload multi_gemm_contracts requires N";
-      ICHECK(HasKey(gemm, "K")) << "TTProgram payload multi_gemm_contracts requires K";
-    }
-  }
-  if (auto multi_compute_any = payload.Get(String("multi_compute_contracts"))) {
-    Array<Any> contracts = Downcast<Array<Any>>(multi_compute_any.value());
-    ICHECK(!contracts.empty()) << "TTProgram payload multi_compute_contracts must be non-empty";
-    for (const Any& contract_any : contracts) {
-      Map<String, Any> compute = AsMap(contract_any);
-      ICHECK(!compute.empty())
-          << "TTProgram payload multi_compute_contracts entries must be maps";
-      ICHECK(HasKey(compute, "enabled"))
-          << "TTProgram payload multi_compute_contracts requires enabled";
-      ICHECK(HasKey(compute, "kind"))
-          << "TTProgram payload multi_compute_contracts requires kind";
-      ICHECK(HasKey(compute, "a_buffer"))
-          << "TTProgram payload multi_compute_contracts requires a_buffer";
-      ICHECK(HasKey(compute, "b_buffer"))
-          << "TTProgram payload multi_compute_contracts requires b_buffer";
-      ICHECK(HasKey(compute, "c_buffer"))
-          << "TTProgram payload multi_compute_contracts requires c_buffer";
-      ICHECK(HasKey(compute, "M")) << "TTProgram payload multi_compute_contracts requires M";
-      ICHECK(HasKey(compute, "N")) << "TTProgram payload multi_compute_contracts requires N";
-      ICHECK(HasKey(compute, "K")) << "TTProgram payload multi_compute_contracts requires K";
-      ICHECK(HasKey(compute, "math_fidelity"))
-          << "TTProgram payload multi_compute_contracts requires math_fidelity";
-      ICHECK(HasKey(compute, "fp32_dest_acc_en"))
-          << "TTProgram payload multi_compute_contracts requires fp32_dest_acc_en";
-      ICHECK(HasKey(compute, "clear_accum"))
-          << "TTProgram payload multi_compute_contracts requires clear_accum";
-      ICHECK(HasKey(compute, "k_pack"))
-          << "TTProgram payload multi_compute_contracts requires k_pack";
-    }
-  }
-  ValidateBufferTileBridgeSpecs(payload);
   ValidateUnsupportedComputeOps(payload);
 }
 
@@ -552,11 +465,11 @@ void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan) {
   ICHECK(!program->abi_plans.empty()) << "TTProgram requires at least one TTABIPlan";
   ICHECK(!program->execution_plans.empty()) << "TTProgram requires at least one TTExecutionPlan";
   ICHECK_EQ(program->block_plans.size(), program->core_groups.size())
-      << "TTProgram requires aligned TTBlockPlan and TTCoreGroup compatibility payloads";
+      << "TTProgram requires aligned TTBlockPlan and TTCoreGroup owner truth";
   ICHECK_EQ(program->kernel_plans.size(), program->kernels.size())
-      << "TTProgram requires aligned TTKernelPlan and TTKernel compatibility payloads";
+      << "TTProgram requires aligned TTKernelPlan and TTKernel owner truth";
   ICHECK_EQ(program->sync_plans.size(), program->compute_sync_plans.size())
-      << "TTProgram requires aligned TTSyncPlan and TTComputeSyncPlan compatibility payloads";
+      << "TTProgram requires aligned TTSyncPlan and TTComputeSyncPlan owner truth";
 
   std::unordered_map<std::string, int64_t> mesh_index_by_name;
   for (int64_t mesh_index = 0; mesh_index < static_cast<int64_t>(program->mesh_plans.size());
@@ -597,14 +510,13 @@ void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan) {
     ICHECK_LT(kernel->abi_plan_index, static_cast<int64_t>(program->abi_plans.size()))
         << "TTKernel abi_plan_index out of bounds";
     ICHECK(kernel_names.insert(kernel->name).second) << "duplicate TTKernel name " << kernel->name;
-    ValidateKernelPayload(kernel);
+    ValidateKernelLeafFields(kernel);
   }
   for (const TTKernelPlan& kernel_plan : program->kernel_plans) {
     ValidateKernelPlan(kernel_plan, static_cast<int64_t>(program->abi_plans.size()),
                        static_cast<int64_t>(program->block_plans.size()));
     ICHECK(kernel_names.count(kernel_plan->name))
-        << "TTKernelPlan missing matching TTKernel compatibility payload: "
-        << kernel_plan->name;
+        << "TTKernelPlan missing matching TTKernel owner truth: " << kernel_plan->name;
   }
   std::unordered_set<std::string> compute_op_names;
   for (const TTComputeOpPlan& compute_op_plan : program->compute_op_plans) {

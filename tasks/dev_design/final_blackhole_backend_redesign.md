@@ -75,6 +75,26 @@ payload family
 或 builtin 序列
 补回 compute truth。
 
+`2026-04-25`
+compatibility fallback
+收束后，
+repo HEAD
+的 compute leaf truth
+已经只从
+typed
+`TTComputeOpPlan`
+/
+`KernelSpec.compute_ops`
+进入 runtime /
+codegen；
+旧
+`compute_contract` /
+`gemm_contract` /
+`multi_*_contracts`
+不再出现在
+`TTProgram.payload -> ExecutableSpec -> runtime`
+链路中。
+
 `2026-04-24`
 TT-Metal runtime model
 复查后再固定一条边界：
@@ -309,21 +329,27 @@ finalize /
 cleanup mechanics，
 不是新的长期层边界。
 
-如果当前实现里仍保留：
-
-- `TTProgram.payload`
-- `buffer_tile_bridge_specs`
-- `compute_contract` /
-  `gemm_contract` /
-  `multi_*_contracts`
-- `direct_runtime_unsupported_reasons`
-
-这些也只能被写成
-leaf compatibility residue /
-admission metadata，
+`2026-04-25`
+repo HEAD
+已删除
+`buffer_tile_bridge_specs`
+bridge、
+contract-family
+payload
+和
+`TTKernel` /
+`TTCoreGroup` /
+`TTComputeOpPlan` /
+operand binding /
+`TTComputeSyncPlan`
+上的 leaf fallback payload。
+仍保留的
+`TTProgram.payload`
+只允许承载明确 allowlist
+的 admission / diagnostic metadata，
 不能回升成
 `TTProgram`
-的 owner truth。
+owner truth。
 
 ### 3.4 `ExecutableSpec`
 
@@ -431,27 +457,21 @@ runtime-module build contract。
   `gemm_contract` /
   `multi_*_contracts`
   这类 contract-family
-  字段如果仍从
-  `TTProgram.payload`
-  投影到
-  `ExecutableSpec`
-  或被 runtime fallback 消费，
-  只能是
-  leaf compatibility debt；
-  required end-state
-  是把仍需要的 compute ABI /
+  字段已退出
+  `TTProgram.payload ->
+   ExecutableSpec ->
+   runtime`
+  fallback 链。
+  后续新增 compute ABI /
   config /
   epilogue /
   materialization
-  事实收进
+  事实只能进入
   `TTProgram`
   typed slices
   和
   `ExecutableSpec`
-  typed leaf schema，
-  删除
-  `compute_contract <- gemm_contract`
-  之类 fallback
+  typed leaf schema
 - cleanup 收口后重新打开的
   direct cast /
   `fragment_fill -> cast -> publish`
@@ -765,14 +785,20 @@ planning seed
 其中必须明确写死：
 
 - `tl.blackhole_logical_buffer_tile_bridge_specs`
-  如果仍存在，
-  也只是 cleanup 期间
-  唯一允许存活的窄 temporary handoff，
-  不是新的
-  `SpatialPlan` /
-  `TTProgram` /
+  和
+  `buffer_tile_bridge_specs`
+  已删除。
+  logical tile layout
+  truth
+  只允许进入
+  `SpatialPlan.LayoutSpec`
+  和
+  `TTBufferDistributionPlan`
+  的 typed fields，
+  再投影到
   `ExecutableSpec`
-  语义层
+  的
+  `buffer_distribution_plans`
 - `blackhole.lowering_requirements` /
   `tl.blackhole_lowering_requirements_seed` /
   `blackhole.cb_requirements`
@@ -783,12 +809,12 @@ planning seed
   `TTProgram`
   的合法输入边界
 - `TTProgram.payload`
-  中仍存活的 bridge /
-  contract /
-  admission payload family
-  只允许作为
-  leaf compatibility debt，
-  不能回升成 planning source
+  中旧 bridge /
+  contract family
+  已删除；
+  后续不能以
+  compatibility fallback
+  名义重新引入 planning source
 
 它们的处理纪律固定为：
 

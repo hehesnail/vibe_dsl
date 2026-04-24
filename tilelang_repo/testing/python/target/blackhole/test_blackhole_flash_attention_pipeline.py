@@ -148,7 +148,6 @@ def _strip_tt_program_accessor_host_axis_order(tt_program):
         return stripped
 
     rebuilt_abi_plans = list(tt_program.abi_plans)
-    rebuilt_kernels = []
     for kernel in tt_program.kernels:
         abi_plan_index = int(kernel.abi_plan_index)
         abi = tt_program.abi_plans[abi_plan_index]
@@ -156,21 +155,11 @@ def _strip_tt_program_accessor_host_axis_order(tt_program):
         compile_time_arg_specs = strip_compile_time_arg_specs(
             list(abi.compile_time_arg_specs)
         )
-        payload = dict(kernel.payload)
-        if "accessors" in payload:
-            payload["accessors"] = strip_accessors(list(payload["accessors"]))
-        if "compile_time_arg_specs" in payload:
-            payload["compile_time_arg_specs"] = strip_compile_time_arg_specs(
-                list(payload["compile_time_arg_specs"])
-            )
         rebuilt_abi_plans[abi_plan_index] = rebuild_tt_abi_plan(
             abi, accessors=accessors, compile_time_arg_specs=compile_time_arg_specs
         )
-        rebuilt_kernels.append(rebuild_tt_kernel(kernel, payload=payload))
 
-    return rebuild_tt_program(
-        tt_program, kernels=rebuilt_kernels, abi_plans=rebuilt_abi_plans
-    )
+    return rebuild_tt_program(tt_program, abi_plans=rebuilt_abi_plans)
 
 
 def _blackhole_builtin_suffixes(func):
@@ -180,11 +169,11 @@ def _blackhole_builtin_suffixes(func):
     }
 
 
-def _buffer_tile_bridge_specs_by_buffer(func):
-    payload = _tt_program_payload(func)
+def _typed_layout_plans_by_buffer(func):
     return {
-        str(spec["buffer"]): dict(spec)
-        for spec in payload.get("buffer_tile_bridge_specs", [])
+        str(plan.buffer): plan
+        for plan in require_tt_program(func).buffer_distribution_plans
+        if len(plan.logical_shape) > 0
     }
 
 
@@ -197,16 +186,14 @@ def test_flash_attention_forward_tt_target_emits_tt_program_payload():
     assert "blackhole.lowering_requirements" not in attrs
 
     payload = _tt_program_payload(lowered)
-    bridge_buffers = {
-        str(spec["buffer"]) for spec in payload["buffer_tile_bridge_specs"]
-    }
+    layout_buffers = set(_typed_layout_plans_by_buffer(lowered))
     builtin_names = _blackhole_builtin_suffixes(lowered)
+    gemm_ops = [
+        op for op in require_tt_program(lowered).compute_op_plans if str(op.kind) == "gemm"
+    ]
 
-    assert len(payload["multi_compute_contracts"]) == 2
-    assert all(
-        str(contract["kind"]) == "gemm"
-        for contract in payload["multi_compute_contracts"]
-    )
+    assert "buffer_tile_bridge_specs" not in payload
+    assert len(gemm_ops) == 2
     assert {
         "acc_s",
         "acc_s_cast",
@@ -216,7 +203,7 @@ def test_flash_attention_forward_tt_target_emits_tt_program_payload():
         "scores_scale",
         "scores_sum",
         "logsum",
-    }.issubset(bridge_buffers)
+    }.issubset(layout_buffers)
     assert {
         "binary_max_tile_init",
         "binary_max_tile",
@@ -245,7 +232,7 @@ def test_flash_attention_forward_tt_target_emits_tt_program_payload():
 def test_flash_attention_tt_program_projects_two_typed_gemm_compute_ops():
     lowered = _lower_flash_attention_to_tt_target()
     tt_program = require_tt_program(lowered)
-    assert all("compute_ops" not in dict(kernel.payload) for kernel in tt_program.kernels)
+    assert all(not hasattr(kernel, "payload") for kernel in tt_program.kernels)
 
     gemm_ops = [
         op for op in tt_program.compute_op_plans if str(op.kind) == "gemm"
@@ -617,16 +604,13 @@ def test_flash_attention_forward_pipeline_keeps_plan_and_tt_program_only():
 
     device_func = artifact.device_mod["main_kernel"]
     plan = device_func.attrs["tl.spatial_plan"]
-    payload = _tt_program_payload(device_func)
-    bridge_buffers = {
-        str(spec["buffer"]) for spec in payload["buffer_tile_bridge_specs"]
-    }
+    layout_buffers = set(_typed_layout_plans_by_buffer(device_func))
     assert device_func.attrs.get("tl.spatial_program") is None
     assert device_func.attrs.get("blackhole.lowering_requirements") is None
     assert len(plan.execution_units) >= 2
     assert len(plan.dataflow_edges) >= 1
     assert len(plan.phase_plans) >= 1
-    assert "scores_max" in bridge_buffers
+    assert "scores_max" in layout_buffers
 
 
 def test_flash_attention_forward_lowers_gqa_pipeline_for_supported_stage_count():
@@ -1087,7 +1071,7 @@ def test_flash_attention_no_compute_epilogue_payload():
         assert f"tl.blackhole.{builtin_name}" not in builtin_names
 
 
-def test_flash_attention_tt_program_payload_keeps_buffer_tile_bridge_specs_for_internal_buffers():
+def test_flash_attention_tt_program_keeps_typed_layout_specs_for_internal_buffers():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1111,9 +1095,10 @@ def test_flash_attention_tt_program_payload_keeps_buffer_tile_bridge_specs_for_i
 
     device_func = artifact.device_mod["main_kernel"]
     payload = _tt_program_payload(device_func)
-    bridge_specs = _buffer_tile_bridge_specs_by_buffer(device_func)
+    layout_plans = _typed_layout_plans_by_buffer(device_func)
 
     assert "buffer_materialization_contracts" not in payload
+    assert "buffer_tile_bridge_specs" not in payload
     assert {
         "acc_s",
         "acc_s_cast",
@@ -1123,26 +1108,26 @@ def test_flash_attention_tt_program_payload_keeps_buffer_tile_bridge_specs_for_i
         "scores_scale",
         "scores_sum",
         "logsum",
-    }.issubset(bridge_specs)
+    }.issubset(layout_plans)
     for name in ("acc_s", "acc_s_cast", "acc_o"):
-        spec = bridge_specs[name]
-        assert str(spec["scope"]) == "local"
-        assert tuple(int(dim) for dim in spec["shape"]) == (128, 128)
-        assert tuple(int(dim) for dim in spec["local_shape"]) == (128,)
-        assert int(spec["thread_extent"]) == 128
-        assert int(spec["replicate_extent"]) == 1
-        assert len(spec["inverse_logical_index_exprs"]) == 3
+        plan = layout_plans[name]
+        assert str(plan.memory_space) == "L1"
+        assert tuple(int(dim) for dim in plan.logical_shape) == (128, 128)
+        assert tuple(int(dim) for dim in plan.local_shape) == (128,)
+        assert int(plan.thread_extent) == 128
+        assert int(plan.replicate_extent) == 1
+        assert len(plan.inverse_logical_index_exprs) == 3
     for name in ("scores_max", "scores_max_prev", "scores_scale", "scores_sum", "logsum"):
-        spec = bridge_specs[name]
-        assert str(spec["scope"]) == "local"
-        assert tuple(int(dim) for dim in spec["shape"]) == (128,)
-        assert tuple(int(dim) for dim in spec["local_shape"]) == (1,)
-        assert int(spec["thread_extent"]) == 128
-        assert int(spec["replicate_extent"]) == 1
-        assert len(spec["inverse_logical_index_exprs"]) == 2
+        plan = layout_plans[name]
+        assert str(plan.memory_space) == "L1"
+        assert tuple(int(dim) for dim in plan.logical_shape) == (128,)
+        assert tuple(int(dim) for dim in plan.local_shape) == (1,)
+        assert int(plan.thread_extent) == 128
+        assert int(plan.replicate_extent) == 1
+        assert len(plan.inverse_logical_index_exprs) == 2
 
 
-def test_flash_attention_tt_program_payload_keeps_republished_buffer_bridge_specs():
+def test_flash_attention_tt_program_keeps_typed_layout_specs_for_republished_buffers():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1166,27 +1151,28 @@ def test_flash_attention_tt_program_payload_keeps_republished_buffer_bridge_spec
 
     device_func = artifact.device_mod["main_kernel"]
     payload = _tt_program_payload(device_func)
-    bridge_specs = _buffer_tile_bridge_specs_by_buffer(device_func)
+    layout_plans = _typed_layout_plans_by_buffer(device_func)
 
     assert "buffer_flow_contracts" not in payload
-    assert {"acc_s", "acc_s_cast", "acc_o"}.issubset(bridge_specs)
+    assert "buffer_tile_bridge_specs" not in payload
+    assert {"acc_s", "acc_s_cast", "acc_o"}.issubset(layout_plans)
 
-    acc_s_spec = bridge_specs["acc_s"]
-    acc_s_cast_spec = bridge_specs["acc_s_cast"]
-    assert str(acc_s_cast_spec["scope"]) == "local"
-    assert tuple(int(dim) for dim in acc_s_cast_spec["shape"]) == (32, 32)
-    assert tuple(int(dim) for dim in acc_s_cast_spec["local_shape"]) == (8,)
-    assert int(acc_s_cast_spec["thread_extent"]) == 128
-    assert int(acc_s_cast_spec["replicate_extent"]) == 1
-    assert tuple(int(dim) for dim in acc_s_spec["shape"]) == tuple(
-        int(dim) for dim in acc_s_cast_spec["shape"]
+    acc_s_plan = layout_plans["acc_s"]
+    acc_s_cast_plan = layout_plans["acc_s_cast"]
+    assert str(acc_s_cast_plan.memory_space) == "L1"
+    assert tuple(int(dim) for dim in acc_s_cast_plan.logical_shape) == (32, 32)
+    assert tuple(int(dim) for dim in acc_s_cast_plan.local_shape) == (8,)
+    assert int(acc_s_cast_plan.thread_extent) == 128
+    assert int(acc_s_cast_plan.replicate_extent) == 1
+    assert tuple(int(dim) for dim in acc_s_plan.logical_shape) == tuple(
+        int(dim) for dim in acc_s_cast_plan.logical_shape
     )
-    assert tuple(int(dim) for dim in acc_s_spec["local_shape"]) == tuple(
-        int(dim) for dim in acc_s_cast_spec["local_shape"]
+    assert tuple(int(dim) for dim in acc_s_plan.local_shape) == tuple(
+        int(dim) for dim in acc_s_cast_plan.local_shape
     )
 
 
-def test_flash_attention_tt_program_payload_keeps_bridge_specs_without_distribution_contracts():
+def test_flash_attention_tt_program_keeps_typed_layout_specs_without_distribution_contracts():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1208,12 +1194,11 @@ def test_flash_attention_tt_program_payload_keeps_bridge_specs_without_distribut
             target=target,
         )
 
-    payload = _tt_program_payload(artifact.device_mod["main_kernel"])
+    device_func = artifact.device_mod["main_kernel"]
+    payload = _tt_program_payload(device_func)
     assert "buffer_distribution_contracts" not in payload
-    assert "buffer_tile_bridge_specs" in payload
-    bridge_buffers = {
-        str(spec["buffer"]) for spec in payload["buffer_tile_bridge_specs"]
-    }
+    assert "buffer_tile_bridge_specs" not in payload
+    layout_buffers = set(_typed_layout_plans_by_buffer(device_func))
     assert {
         "acc_s",
         "acc_s_cast",
@@ -1223,7 +1208,7 @@ def test_flash_attention_tt_program_payload_keeps_bridge_specs_without_distribut
         "scores_scale",
         "scores_sum",
         "logsum",
-    }.issubset(bridge_buffers)
+    }.issubset(layout_buffers)
 
 
 def test_flash_attention_segment_kernels_prefer_explicit_tile_descriptors_over_work_id():
@@ -1296,17 +1281,19 @@ def test_flash_attention_segment_writer_block_indices_follow_per_work_value_sour
         writer = require_tt_kernel(tt_program, kind="writer", core_type="ncrisc")
         rebuilt_kernels = []
         for kernel in tt_program.kernels:
-            payload = dict(kernel.payload)
+            per_work_arg_specs = list(kernel.per_work_arg_specs)
             if str(kernel.name) == str(writer.name):
                 updated_specs = []
-                for spec in payload["per_work_arg_specs"]:
+                for spec in per_work_arg_specs:
                     spec = dict(spec)
                     if str(spec.get("arg_kind", "")) == "output_tile_start_id":
                         spec["value_kind"] = "logical_block_x"
                         spec["value_source"] = "logical_block_x"
                     updated_specs.append(spec)
-                payload["per_work_arg_specs"] = updated_specs
-            rebuilt_kernels.append(rebuild_tt_kernel(kernel, payload=payload))
+                per_work_arg_specs = updated_specs
+            rebuilt_kernels.append(
+                rebuild_tt_kernel(kernel, per_work_arg_specs=per_work_arg_specs)
+            )
         return rebuild_tt_program(tt_program, kernels=rebuilt_kernels)
 
     rebuilt = _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)

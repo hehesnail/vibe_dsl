@@ -298,13 +298,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Store minimal segment/kernel plan inferred during lowering */
   void StoreSegmentPlan(tvm::tir::PrimFunc& func);
 
-  /*! \brief Store minimal GEMM contract metadata for runtime layout handling */
-  void StoreGemmContract(tvm::tir::PrimFunc& func);
-
   /*! \brief Store per-segment accessor descriptors for dataflow kernels */
   void StoreAccessorDescriptors(tvm::tir::PrimFunc& func);
 
-  /*! \brief Store leaf-only build/codegen contracts into TTProgram payload. */
+  /*! \brief Store leaf-only build/codegen metadata into TTProgram payload. */
   void StoreLeafExecutableContracts(const BlackholeLoweringSupportFacts& lowering_support_facts,
                                     const std::vector<std::string>& unsupported_ops);
 
@@ -314,9 +311,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Encode empty or richer common-runtime args for a segment */
   tvm::ffi::Array<tvm::ffi::Any> EncodeCommonRuntimeArgs(const std::string& segment_kind) const;
 
-  /*! \brief Load logical buffer shapes from the semantic manifest when present. */
+  /*! \brief Load logical buffer shapes from current IR and typed SpatialPlan fields. */
   void LoadLogicalBufferShapes(const tvm::tir::PrimFunc& func,
-                               const BlackholeLoweringSupportFacts& lowering_support_facts);
+                               const BlackholeLoweringSupportFacts& lowering_support_facts,
+                               const SpatialPlan& spatial_plan);
 
   /*! \brief Return manifest-backed logical shape for a buffer when available. */
   std::vector<int64_t> GetLogicalBufferShape(const tvm::tir::Buffer& buffer) const;
@@ -347,11 +345,11 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       const tvm::tir::BufferStoreNode* op,
       const std::vector<tvm::tir::Var>& loop_vars_to_zero) const;
 
-  /*! \brief Load buffer-distribution contracts exported by lowering requirements. */
-  void LoadBufferTileBridgeSpecs(const BlackholeLoweringSupportFacts& lowering_support_facts);
+  /*! \brief Load logical tile layout facts from typed SpatialPlan LayoutSpec fields. */
+  void LoadLogicalTileLayoutSpecs(const SpatialPlan& spatial_plan);
 
-  /*! \brief Return the buffer-distribution contract for a buffer, or nullptr if absent. */
-  const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>* FindBufferTileBridgeSpec(
+  /*! \brief Return logical tile layout facts for a buffer, or nullptr if absent. */
+  const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>* FindLogicalTileLayoutSpec(
       const tvm::tir::Buffer& buffer) const;
 
   /*! \brief Load first-class SpatialPlan live-value references for TT physical plans. */
@@ -652,8 +650,6 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool MatchDirectLocalToCBSliceLoop(const tvm::tir::ForNode* op, LocalToCBSliceMatch* match) const;
   tvm::tir::Stmt GenerateLocalToCBSliceLoopSequence(const tvm::tir::ForNode* op,
                                                     const LocalToCBSliceMatch& match);
-  void ActivateCurrentComputeContractPayload();
-  void RecordComputeEpilogueOp(tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> op_payload);
   std::string ResolveHostBufferForComputeOperand(const tvm::tir::Buffer& buffer) const;
 
   // StmtExprMutator overrides
@@ -703,20 +699,16 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   int gemm_m_ = 0;
   int gemm_n_ = 0;
   int gemm_k_ = 0;
-  std::unordered_set<std::string> gemm_contract_signatures_;
-  std::unordered_map<std::string, int> compute_contract_payload_index_by_signature_;
-  std::vector<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>> multi_gemm_contract_payloads_;
-  std::vector<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>> multi_compute_contract_payloads_;
-  std::vector<std::vector<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>> compute_epilogue_payloads_;
-  std::vector<std::unordered_set<std::string>> compute_contract_known_buffers_;
-  std::vector<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>> compute_epilogue_payloads_flat_;
+  std::unordered_set<std::string> compute_op_signatures_;
+  std::unordered_map<std::string, int> compute_op_seed_index_by_signature_;
+  std::vector<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>> compute_op_seeds_;
+  std::vector<std::unordered_set<std::string>> compute_op_seed_known_buffers_;
   std::unordered_map<std::string, tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>
-      buffer_tile_bridge_specs_by_buffer_;
+      logical_tile_layout_specs_by_buffer_;
   std::unordered_map<std::string, tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>
       buffer_materialization_contracts_by_target_buffer_;
   std::unordered_map<const tvm::tir::VarNode*, tvm::tir::Buffer> compute_physical_buffers_by_data_;
   std::unordered_map<std::string, tvm::tir::Buffer> compute_physical_buffers_by_identity_;
-  int active_compute_contract_payload_index_ = -1;
   std::unordered_map<std::string, int> gemm_input_buffer_num_tiles_;
   bool gemm_transpose_a_ = false;
   bool gemm_transpose_b_ = false;

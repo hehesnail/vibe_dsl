@@ -258,7 +258,6 @@ elseif(USE_BLACKHOLE)
     src/transform/blackhole_device_resource_canonicalization.cc
     src/transform/build_spatial_plan.cc
     src/transform/validate_spatial_plan.cc
-    src/transform/capture_blackhole_logical_bridge_specs.cc
     src/transform/select_blackhole_tt_metal_builtins.cc
     src/transform/build_tt_program.cc
     src/transform/validate_tt_program.cc

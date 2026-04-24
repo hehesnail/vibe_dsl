@@ -29,7 +29,6 @@ from common import (
     fragment_fill_cast_publish_kernel,
     gemm_kernel,
     lower_blackhole_to_tt_target,
-    rebuild_tt_kernel,
     staged_copy_kernel,
 )
 
@@ -567,7 +566,7 @@ def test_flash_attention_spatial_plan_keeps_local_state_and_shared_layouts():
     assert layout_scopes["logsum"] == "blackhole.acc"
 
 
-def test_phase_b_pipeline_captures_direct_logical_bridge_specs():
+def test_phase_b_pipeline_records_live_values_without_logical_bridge_attr():
     mod = tvm.IRModule({"main": fragment_fill_cast_publish_kernel().with_attr("global_symbol", "main")})
     target = Target("blackhole")
     with target:
@@ -576,18 +575,18 @@ def test_phase_b_pipeline_captures_direct_logical_bridge_specs():
     main = mod["main"]
 
     assert main.attrs.get("blackhole.compute_regions") is None
-    specs = list(main.attrs["tl.blackhole_logical_buffer_tile_bridge_specs"])
-    by_buffer = {str(spec["buffer"]): spec for spec in specs}
+    assert main.attrs.get("tl.blackhole_logical_buffer_tile_bridge_specs") is None
+    spatial_plan = main.attrs["tl.spatial_plan"]
+    layout_specs = {str(spec.subject): spec for spec in spatial_plan.layout_specs}
 
-    assert {"C_local", "D_local"}.issubset(by_buffer)
+    assert {"C_local", "D_local"}.issubset(layout_specs)
     for name in ("C_local", "D_local"):
-        spec = by_buffer[name]
-        assert str(spec["scope"]) == "local"
-        assert tuple(int(dim) for dim in spec["shape"]) == (32, 32)
-        assert tuple(int(dim) for dim in spec["local_shape"]) == (8,)
-        assert int(spec["thread_extent"]) == 128
-        assert int(spec["replicate_extent"]) == 1
-        assert len(spec["inverse_logical_index_exprs"]) == 3
+        spec = layout_specs[name]
+        assert tuple(int(dim) for dim in spec.logical_shape) == (32, 32)
+        assert tuple(int(dim) for dim in spec.local_shape) == (8,)
+        assert int(spec.thread_extent) == 128
+        assert int(spec.replicate_extent) == 1
+        assert len(spec.inverse_logical_index_exprs) == 3
 
 
 def test_tt_metal_api_granularity_rejects_helper_composite_builtins():
@@ -790,9 +789,17 @@ def test_build_tt_program_exposes_typed_compute_op_plans():
 
     main = mod["main"]
     tt_program = main.attrs["tl.tt_program"]
-    assert all("compute_ops" not in dict(kernel.payload) for kernel in tt_program.kernels)
+    payload = dict(tt_program.payload)
+    assert "gemm_contract" not in payload
+    assert "compute_contract" not in payload
+    assert "multi_gemm_contracts" not in payload
+    assert "multi_compute_contracts" not in payload
+    assert "buffer_tile_bridge_specs" not in payload
+    assert all(not hasattr(kernel, "payload") for kernel in tt_program.kernels)
+    assert all(not hasattr(core_group, "payload") for core_group in tt_program.core_groups)
     assert len(tt_program.compute_op_plans) == 1
     compute_op = tt_program.compute_op_plans[0]
+    assert not hasattr(compute_op, "payload")
     assert str(compute_op.kind) == "gemm"
     assert str(compute_op.kernel_name) == "compute"
     assert int(compute_op.kernel_plan_index) == next(
@@ -806,6 +813,7 @@ def test_build_tt_program_exposes_typed_compute_op_plans():
     assert tuple(int(dim) for dim in compute_op.block_shape) == (1, 1, 4)
     operands = {str(binding.role): binding for binding in compute_op.operand_bindings}
     assert {str(role) for role in operands} == {"a", "b", "c"}
+    assert all(not hasattr(binding, "payload") for binding in operands.values())
     assert str(operands["a"].buffer) == "A_shared"
     assert str(operands["a"].host_buffer) == "A"
     assert str(operands["a"].tensor_dtype) == "Float16_b"
@@ -842,27 +850,19 @@ def test_validate_tt_program_rejects_unresolved_unsupported_compute_ops():
         tilelang.transform.ValidateTTProgram()(invalid_mod)
 
 
-def test_validate_tt_program_rejects_kernel_payload_compute_ops():
+def test_tt_kernel_does_not_expose_payload_compute_ops_surface():
     mod = _prepare_blackhole_tt_program_module(gemm_kernel())
-    main = mod["main"]
-    tt_program = main.attrs["tl.tt_program"]
+    tt_program = mod["main"].attrs["tl.tt_program"]
 
-    rebuilt_kernels = []
-    for kernel in tt_program.kernels:
-        payload = dict(kernel.payload)
-        if str(kernel.kind) == "compute" or str(kernel.core_type) == "trisc":
-            payload["compute_ops"] = [{"kind": "gemm"}]
-        rebuilt_kernels.append(rebuild_tt_kernel(kernel, payload=payload))
-
-    invalid_program = _rebuild_tt_program(tt_program, kernels=rebuilt_kernels)
-    invalid_main = main.with_attr("tl.tt_program", invalid_program)
-    invalid_mod = tvm.IRModule({"main": invalid_main}, global_infos=mod.global_infos)
-
-    with pytest.raises(
-        tvm.error.InternalError,
-        match="TTKernel payload compute_ops was removed",
-    ):
-        tilelang.transform.ValidateTTProgram()(invalid_mod)
+    assert all(not hasattr(kernel, "payload") for kernel in tt_program.kernels)
+    assert all(
+        not hasattr(compute_op, "payload") for compute_op in tt_program.compute_op_plans
+    )
+    assert all(
+        not hasattr(binding, "payload")
+        for compute_op in tt_program.compute_op_plans
+        for binding in compute_op.operand_bindings
+    )
 
 
 def test_tt_planning_stages_tt_program_without_internal_bridge_attrs():

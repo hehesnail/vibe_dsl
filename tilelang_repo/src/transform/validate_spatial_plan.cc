@@ -264,6 +264,23 @@ void ValidateLayoutSpecs(const SpatialPlan& plan) {
     ICHECK_EQ(layout->unit_names.size(), layout->unit_indices.size())
         << "LayoutSpec " << layout->name << " requires aligned unit_names/unit_indices";
     ValidateNoTTNoun(str(layout->distribution_kind), "LayoutSpec distribution_kind");
+    if (!layout->logical_shape.empty()) {
+      ICHECK(!layout->local_shape.empty())
+          << "LayoutSpec " << layout->name
+          << " requires local_shape when logical_shape is present";
+      ICHECK(layout->thread_extent.defined())
+          << "LayoutSpec " << layout->name
+          << " requires thread_extent when logical_shape is present";
+      ICHECK(layout->replicate_extent.defined())
+          << "LayoutSpec " << layout->name
+          << " requires replicate_extent when logical_shape is present";
+      ICHECK(!layout->inverse_logical_index_exprs.empty())
+          << "LayoutSpec " << layout->name
+          << " requires inverse logical layout expressions";
+      ICHECK(!layout->inverse_logical_index_vars.empty())
+          << "LayoutSpec " << layout->name
+          << " requires inverse logical layout variables";
+    }
 
     auto it = unit_indices_by_subject.find(str(layout->subject));
     ICHECK(it != unit_indices_by_subject.end())

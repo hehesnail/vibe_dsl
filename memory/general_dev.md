@@ -144,19 +144,26 @@
   `output_tile_start_id`
   的名字优先级恢复 block axis
 - `tl.blackhole_logical_buffer_tile_bridge_specs`
-  如果仍存在，
-  也只是唯一窄 temporary handoff；
-  `TTProgram.payload` /
-  `blackhole.lowering_requirements` /
-  `tl.blackhole_lowering_requirements_seed` /
-  `blackhole.cb_requirements`
-  都只能按 debt 处理，
-  不能写成长期协议
-- `TTProgram`
-  若同时承载 owner slice
-  与 compatibility payload，
-  validator 必须检查对齐，
-  防止 payload 漂成第二真源
+  与
+  `buffer_tile_bridge_specs`
+  已退出 active chain；
+  logical tile layout
+  只从
+  `SpatialPlan.LayoutSpec`
+  进入
+  `TTBufferDistributionPlan`
+  和 executable
+  `buffer_distribution_plans`
+- `TTProgram.payload`
+  不能再承载 bridge /
+  contract-family
+  compatibility fallback。
+  保留 payload 的 plan
+  只能写局部 realization /
+  admission metadata；
+  一旦字段成为 leaf reader truth，
+  就要提升为 typed slice /
+  typed executable schema
 - 扩 `TTProgram` /
   `TTCBPlan`
   这类显式对象时，
@@ -493,18 +500,19 @@
   只删其中一层会留下可达旧入口，active path 很快又会漂回去。
   做“入口已经不存在”的回归时，优先显式断言查询抛错，
   不要把“允许缺失”本身再写成一层兼容语义
-- function-level target contract（如
-  `gemm_contract / compute_contract / direct_runtime_unsupported_reasons`）
+- function-level target contract
   一旦进入 runtime/codegen 正式消费面，就应提升进 typed
   `TTProgram` slice
   和 typed
   `ExecutableSpec`
   schema；
-  `TTProgram.payload`
-  只能是 forced leaf compatibility debt，
-  bridge attr 只能留作 compatibility fallback
+  `gemm_contract / compute_contract`
+  family
+  已删除，
+  不要再以 compatibility fallback
+  形式恢复
 - leaf-only build/codegen gate data（如
-  `buffer_tile_bridge_specs / unsupported_compute_ops`）
+  `unsupported_compute_ops`）
   也一样：
   需要先进入 typed
   `TTProgram`
@@ -581,18 +589,21 @@
   再写回成新的 pass-to-pass 协议
 - 如果 optimized/helper path
   在 destructive pass 之后
-  仍需要 logical tile bridge truth，
-  只对齐最小
-  `buffer_tile_bridge_specs`
-  即可；
-  不要重新桥接整袋
-  `blackhole.compute_regions`
-  或其他语义 bag。
+  仍需要 logical tile layout truth，
+  不要跳过
+  `BuildSpatialPlan`，
+  也不要恢复 bridge attr。
   repo HEAD 的做法是：
-  在 pre-opt 阶段抓 analysis，
-  再把窄 internal attr
-  `tl.blackhole_logical_buffer_tile_bridge_specs`
-  对齐回 optimized device func
+  在 pre-opt 阶段保留 typed
+  `SpatialPlan.LayoutSpec`
+  作为 merge source，
+  然后重建 optimized
+  `SpatialPlan`
+  并只把缺失的 typed layout fields
+  按 subject
+  合并回来；
+  这样不会丢优化后 execution units /
+  dataflow truth
 - active Blackhole path 不再保留
   独立 semantic mirror bridge；
   凡是能从 `Normalized Tile TIR + SpatialPlan +

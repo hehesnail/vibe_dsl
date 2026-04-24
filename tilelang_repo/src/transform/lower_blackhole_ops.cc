@@ -78,7 +78,7 @@ static std::string PrimExprToCompactString(const PrimExpr& expr) {
   return os.str();
 }
 
-static std::string EncodeGemmContractSignature(
+static std::string EncodeGemmComputeOpSignature(
     const std::string& a_buffer, const std::string& b_buffer, const std::string& c_buffer, int m,
     int n, int k, bool transpose_a, bool transpose_b, int policy_type, bool clear_accum,
     int k_pack, int wg_wait, bool dst_full_sync_en, bool bfp8_pack_precise,
@@ -177,30 +177,7 @@ static bool IsLiteralZeroValue(const PrimExpr& expr) {
   return false;
 }
 
-static Map<String, Any> BuildGemmContractPayload(
-    const std::string& a_buffer, const std::string& b_buffer, const std::string& c_buffer, int m,
-    int n, int k, bool transpose_a, bool transpose_b, DataType a_dtype, DataType b_dtype,
-    DataType c_dtype) {
-  Map<String, Any> gemm_contract;
-  gemm_contract.Set("a_buffer", String(a_buffer));
-  gemm_contract.Set("b_buffer", String(b_buffer));
-  gemm_contract.Set("c_buffer", String(c_buffer));
-  gemm_contract.Set("M", Integer(m));
-  gemm_contract.Set("N", Integer(n));
-  gemm_contract.Set("K", Integer(k));
-  gemm_contract.Set("transpose_A", Bool(transpose_a));
-  gemm_contract.Set("transpose_B", Bool(transpose_b));
-  gemm_contract.Set("a_tensor_dtype", String(DataTypeToDataFormatForBlackhole(a_dtype)));
-  gemm_contract.Set("b_tensor_dtype", String(DataTypeToDataFormatForBlackhole(b_dtype)));
-  gemm_contract.Set("c_tensor_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
-  gemm_contract.Set("a_cb_dtype", String(DataTypeToDataFormatForBlackhole(a_dtype)));
-  gemm_contract.Set("b_cb_dtype", String(DataTypeToDataFormatForBlackhole(b_dtype)));
-  gemm_contract.Set("c_cb_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
-  gemm_contract.Set("accumulator_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
-  return gemm_contract;
-}
-
-static Map<String, Any> BuildComputeContractPayload(
+static Map<String, Any> BuildGemmComputeOpSeed(
     const std::string& a_buffer, const std::string& b_buffer, const std::string& c_buffer, int m,
     int n, int k, bool transpose_a, bool transpose_b, int policy_type, bool clear_accum,
     int k_pack, int wg_wait, bool dst_full_sync_en, bool bfp8_pack_precise,
@@ -209,54 +186,54 @@ static Map<String, Any> BuildComputeContractPayload(
     const std::string& mbarrier_buffer, const std::string& mbarrier_scope,
     const std::vector<std::string>& mbarrier_index_exprs, DataType a_dtype, DataType b_dtype,
     DataType c_dtype) {
-  Map<String, Any> compute_contract;
-  compute_contract.Set("enabled", Bool(true));
-  compute_contract.Set("kind", String("gemm"));
-  compute_contract.Set("a_buffer", String(a_buffer));
-  compute_contract.Set("b_buffer", String(b_buffer));
-  compute_contract.Set("c_buffer", String(c_buffer));
-  compute_contract.Set("M", Integer(m));
-  compute_contract.Set("N", Integer(n));
-  compute_contract.Set("K", Integer(k));
-  compute_contract.Set("Mt", Integer(m / 32));
-  compute_contract.Set("Nt", Integer(n / 32));
-  compute_contract.Set("Kt", Integer(k / 32));
-  compute_contract.Set("block_m_tiles", Integer(m / 32));
-  compute_contract.Set("block_n_tiles", Integer(n / 32));
-  compute_contract.Set("block_k_tiles", Integer(k / 32));
-  compute_contract.Set("subblock_m_tiles", Integer(m / 32));
-  compute_contract.Set("subblock_n_tiles", Integer(n / 32));
-  compute_contract.Set("transpose_A", Bool(transpose_a));
-  compute_contract.Set("transpose_B", Bool(transpose_b));
-  compute_contract.Set("policy_type", Integer(policy_type));
-  compute_contract.Set("policy_name", String(GemmWarpPolicyTypeToStringForBlackhole(policy_type)));
-  compute_contract.Set("has_mbarrier", Bool(!mbarrier_buffer.empty()));
-  compute_contract.Set("mbarrier_buffer", String(mbarrier_buffer));
-  compute_contract.Set("mbarrier_scope", String(mbarrier_scope));
+  Map<String, Any> seed;
+  seed.Set("enabled", Bool(true));
+  seed.Set("kind", String("gemm"));
+  seed.Set("a_buffer", String(a_buffer));
+  seed.Set("b_buffer", String(b_buffer));
+  seed.Set("c_buffer", String(c_buffer));
+  seed.Set("M", Integer(m));
+  seed.Set("N", Integer(n));
+  seed.Set("K", Integer(k));
+  seed.Set("Mt", Integer(m / 32));
+  seed.Set("Nt", Integer(n / 32));
+  seed.Set("Kt", Integer(k / 32));
+  seed.Set("block_m_tiles", Integer(m / 32));
+  seed.Set("block_n_tiles", Integer(n / 32));
+  seed.Set("block_k_tiles", Integer(k / 32));
+  seed.Set("subblock_m_tiles", Integer(m / 32));
+  seed.Set("subblock_n_tiles", Integer(n / 32));
+  seed.Set("transpose_A", Bool(transpose_a));
+  seed.Set("transpose_B", Bool(transpose_b));
+  seed.Set("policy_type", Integer(policy_type));
+  seed.Set("policy_name", String(GemmWarpPolicyTypeToStringForBlackhole(policy_type)));
+  seed.Set("has_mbarrier", Bool(!mbarrier_buffer.empty()));
+  seed.Set("mbarrier_buffer", String(mbarrier_buffer));
+  seed.Set("mbarrier_scope", String(mbarrier_scope));
   Array<Any> encoded_mbarrier_index_exprs;
   for (const auto& expr : mbarrier_index_exprs) {
     encoded_mbarrier_index_exprs.push_back(String(expr));
   }
-  compute_contract.Set("mbarrier_index_exprs", encoded_mbarrier_index_exprs);
-  compute_contract.Set("a_tensor_dtype", String(DataTypeToDataFormatForBlackhole(a_dtype)));
-  compute_contract.Set("b_tensor_dtype", String(DataTypeToDataFormatForBlackhole(b_dtype)));
-  compute_contract.Set("c_tensor_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
-  compute_contract.Set("a_cb_dtype", String(DataTypeToDataFormatForBlackhole(a_dtype)));
-  compute_contract.Set("b_cb_dtype", String(DataTypeToDataFormatForBlackhole(b_dtype)));
-  compute_contract.Set("c_cb_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
-  compute_contract.Set("accumulator_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
-  compute_contract.Set("math_fidelity", String("HiFi4"));
-  compute_contract.Set("fp32_dest_acc_en", Bool(true));
-  compute_contract.Set("dst_full_sync_en", Bool(dst_full_sync_en));
-  compute_contract.Set("math_approx_mode", Bool(false));
-  compute_contract.Set("unpack_to_dest_mode", Array<Any>{});
-  compute_contract.Set("bfp8_pack_precise", Bool(bfp8_pack_precise));
-  compute_contract.Set("defines", EncodeNamedStringPairs(defines));
-  compute_contract.Set("named_compile_args", EncodeNamedUint32Pairs(named_compile_args));
-  compute_contract.Set("clear_accum", Bool(clear_accum));
-  compute_contract.Set("k_pack", Integer(k_pack));
-  compute_contract.Set("wg_wait", Integer(wg_wait));
-  return compute_contract;
+  seed.Set("mbarrier_index_exprs", encoded_mbarrier_index_exprs);
+  seed.Set("a_tensor_dtype", String(DataTypeToDataFormatForBlackhole(a_dtype)));
+  seed.Set("b_tensor_dtype", String(DataTypeToDataFormatForBlackhole(b_dtype)));
+  seed.Set("c_tensor_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
+  seed.Set("a_cb_dtype", String(DataTypeToDataFormatForBlackhole(a_dtype)));
+  seed.Set("b_cb_dtype", String(DataTypeToDataFormatForBlackhole(b_dtype)));
+  seed.Set("c_cb_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
+  seed.Set("accumulator_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
+  seed.Set("math_fidelity", String("HiFi4"));
+  seed.Set("fp32_dest_acc_en", Bool(true));
+  seed.Set("dst_full_sync_en", Bool(dst_full_sync_en));
+  seed.Set("math_approx_mode", Bool(false));
+  seed.Set("unpack_to_dest_mode", Array<Any>{});
+  seed.Set("bfp8_pack_precise", Bool(bfp8_pack_precise));
+  seed.Set("defines", EncodeNamedStringPairs(defines));
+  seed.Set("named_compile_args", EncodeNamedUint32Pairs(named_compile_args));
+  seed.Set("clear_accum", Bool(clear_accum));
+  seed.Set("k_pack", Integer(k_pack));
+  seed.Set("wg_wait", Integer(wg_wait));
+  return seed;
 }
 
 static String GetStringOrDefault(const Map<String, Any>& dict, const char* key,
@@ -333,14 +310,10 @@ static TTComputeOperandBindingPlan BuildComputeOperandBindingPlanFromContract(
       (role_string == "a" && GetBoolOrDefault(op, "transpose_A", false)) ||
       (role_string == "b" && GetBoolOrDefault(op, "transpose_B", false));
 
-  Map<String, Any> payload;
-  payload.Set("role", String(role));
-  payload.Set("buffer", buffer);
-  payload.Set("host_buffer", host_buffer);
   return TTComputeOperandBindingPlan(
       String(role), buffer, host_buffer, GetStringOrDefault(op, tensor_dtype_key.c_str(), String()),
       GetStringOrDefault(op, cb_dtype_key.c_str(), String()),
-      String(transpose ? "transpose" : "identity"), payload);
+      String(transpose ? "transpose" : "identity"));
 }
 
 static TTComputeOpPlan BuildTTComputeOpPlanFromContract(
@@ -388,12 +361,6 @@ static TTComputeOpPlan BuildTTComputeOpPlanFromContract(
     }
   }
 
-  Map<String, Any> payload = op;
-  payload.Set("a_buffer", a_binding->host_buffer);
-  payload.Set("b_buffer", b_binding->host_buffer);
-  payload.Set("c_buffer", c_binding->host_buffer);
-  payload.Set("has_mbarrier", Bool(!GetStringOrDefault(op, "mbarrier_buffer", String()).empty()));
-
   const std::string name = "compute_op_" + static_cast<std::string>(kernel_name) + "_" +
                            std::to_string(ordinal);
   return TTComputeOpPlan(
@@ -401,29 +368,13 @@ static TTComputeOpPlan BuildTTComputeOpPlanFromContract(
       operand_bindings, problem_shape_axes, problem_shape, tile_shape, block_shape,
       subblock_shape, GetStringOrDefault(op, "accumulator_dtype", String()),
       GetStringOrDefault(op, "mbarrier_buffer", String()),
-      GetStringOrDefault(op, "mbarrier_scope", String()), mbarrier_index_exprs, payload);
-}
-
-static Map<String, Any> MakeComputeEpilogueOpPayload(const char* kind,
-                                                     const std::string& dst_buffer) {
-  Map<String, Any> op_payload;
-  op_payload.Set("kind", String(kind));
-  if (!dst_buffer.empty()) {
-    op_payload.Set("dst_buffer", String(dst_buffer));
-  }
-  return op_payload;
+      GetStringOrDefault(op, "mbarrier_scope", String()), mbarrier_index_exprs);
 }
 
 static void SetOptionalBufferField(Map<String, Any>* payload, const char* key,
                                    const Buffer& buffer) {
   if (buffer.defined()) {
     payload->Set(String(key), String(BufferIdentityName(buffer)));
-  }
-}
-
-static void SetOptionalExprField(Map<String, Any>* payload, const char* key, const PrimExpr& expr) {
-  if (expr.defined()) {
-    payload->Set(String(key), String(PrimExprToCompactString(expr)));
   }
 }
 
@@ -1181,10 +1132,23 @@ static void BuildTTKernelAndABISeeds(const Array<Any>& segment_plan, Array<TTKer
         segment.Get("semaphore_bindings")
             ? Downcast<Array<Any>>(segment.Get("semaphore_bindings").value())
             : Array<Any>();
+    Map<String, Any> launch_spec =
+        segment.Get("launch_spec") ? Downcast<Map<String, Any>>(segment.Get("launch_spec").value())
+                                   : Map<String, Any>();
+    Map<String, Any> compute_config =
+        segment.Get("compute_config")
+            ? Downcast<Map<String, Any>>(segment.Get("compute_config").value())
+            : Map<String, Any>();
+    Array<Any> per_work_arg_specs =
+        segment.Get(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs))
+            ? Downcast<Array<Any>>(
+                  segment.Get(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs)).value())
+            : Array<Any>();
     abi_plans.push_back(TTABIPlan(String("abi_" + std::to_string(index)), kernel_name, runtime_args,
                                   common_runtime_args, compile_time_arg_specs, accessors,
                                   semaphore_bindings, segment));
-    kernels.push_back(TTKernel(kernel_name, kernel_kind, core_type, index, segment));
+    kernels.push_back(TTKernel(kernel_name, kernel_kind, core_type, index, launch_spec,
+                               compute_config, per_work_arg_specs));
     ++index;
   }
   *kernels_out = kernels;
@@ -1629,19 +1593,29 @@ BuildBufferMaterializationContractMap(const Array<Any>& buffer_materialization_c
   return contracts_by_target_buffer;
 }
 
-static std::unordered_map<std::string, Map<String, Any>> BuildBufferTileBridgeSpecMap(
-    const Array<Any>& buffer_tile_bridge_specs) {
+static std::unordered_map<std::string, Map<String, Any>> BuildLogicalTileLayoutSpecMap(
+    const SpatialPlan& spatial_plan) {
   std::unordered_map<std::string, Map<String, Any>> specs_by_buffer;
-  for (const Any& spec_any : buffer_tile_bridge_specs) {
-    Map<String, Any> spec = Downcast<Map<String, Any>>(spec_any);
-    auto buffer_it = spec.find(String(schema_key::kBuffer));
-    if (buffer_it == spec.end()) {
+  for (const LayoutSpec& layout : spatial_plan->layout_specs) {
+    if (layout->logical_shape.empty()) {
       continue;
     }
-    const std::string buffer_name = Downcast<String>((*buffer_it).second);
-    if (!buffer_name.empty()) {
-      specs_by_buffer.emplace(buffer_name, spec);
+    const std::string buffer_name = static_cast<std::string>(layout->subject);
+    if (buffer_name.empty()) {
+      continue;
     }
+    Map<String, Any> spec;
+    spec.Set(String(schema_key::kBuffer), layout->subject);
+    spec.Set(String(schema_key::kScope), layout->scope);
+    spec.Set(String(schema_key::kShape), layout->logical_shape);
+    spec.Set(String(schema_key::kLocalShape), layout->local_shape);
+    spec.Set(String(schema_key::kThreadExtent), layout->thread_extent);
+    spec.Set(String(schema_key::kReplicateExtent), layout->replicate_extent);
+    spec.Set(String(schema_key::kInverseLogicalIndexVars),
+             layout->inverse_logical_index_vars);
+    spec.Set(String(schema_key::kInverseLogicalIndexExprs),
+             layout->inverse_logical_index_exprs);
+    specs_by_buffer.emplace(buffer_name, std::move(spec));
   }
   return specs_by_buffer;
 }
@@ -1754,10 +1728,8 @@ static Stmt WrapSegmentStmtIfNeeded(const std::string& current_segment_kind,
   return wrap_one(stmt);
 }
 
-void PlanTTKernelABI::LoadBufferTileBridgeSpecs(
-    const BlackholeLoweringSupportFacts& lowering_support_facts) {
-  buffer_tile_bridge_specs_by_buffer_ =
-      BuildBufferTileBridgeSpecMap(lowering_support_facts.buffer_tile_bridge_specs);
+void PlanTTKernelABI::LoadLogicalTileLayoutSpecs(const SpatialPlan& spatial_plan) {
+  logical_tile_layout_specs_by_buffer_ = BuildLogicalTileLayoutSpecMap(spatial_plan);
 }
 
 void PlanTTKernelABI::LoadSpatialLiveValueBoundaries(const SpatialPlan& plan) {
@@ -1818,10 +1790,10 @@ Stmt PlanTTKernelABI::MaybeWrapComputeSegment(const Stmt& stmt) const {
                   StringImm("compute"), stmt);
 }
 
-const Map<String, Any>* PlanTTKernelABI::FindBufferTileBridgeSpec(const Buffer& buffer) const {
+const Map<String, Any>* PlanTTKernelABI::FindLogicalTileLayoutSpec(const Buffer& buffer) const {
   const std::string buffer_name = BufferIdentityName(buffer);
-  auto it = buffer_tile_bridge_specs_by_buffer_.find(buffer_name);
-  if (it == buffer_tile_bridge_specs_by_buffer_.end()) {
+  auto it = logical_tile_layout_specs_by_buffer_.find(buffer_name);
+  if (it == logical_tile_layout_specs_by_buffer_.end()) {
     return nullptr;
   }
   return &it->second;
@@ -1976,17 +1948,34 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
     }
     return std::string(fallback);
   };
-  const int64_t logical_element_count =
+  int64_t logical_element_count =
       contract.Get(String(schema_key::kLogicalElementCount))
           ? Downcast<Integer>(contract.Get(String(schema_key::kLogicalElementCount)).value())
                 .IntValue()
           : StaticIntValueOrDefault(num_elements_expr, GetLogicalBufferElementCount(match.dst));
-  auto bridge_local_extent = [&](const Buffer& buffer) {
-    const Map<String, Any>* spec = FindBufferTileBridgeSpec(buffer);
-    if (spec == nullptr) {
-      return int64_t{0};
+  auto bridge_logical_extent = [&](const Buffer& buffer) {
+    const Map<String, Any>* spec = FindLogicalTileLayoutSpec(buffer);
+    if (spec != nullptr) {
+      return ProductIntegerArrayField(*spec, schema_key::kShape, int64_t{0});
     }
-    return ProductIntegerArrayField(*spec, schema_key::kLocalShape, int64_t{0});
+    return int64_t{0};
+  };
+  logical_element_count =
+      std::max(logical_element_count,
+               std::max(bridge_logical_extent(match.src), bridge_logical_extent(match.dst)));
+  auto bridge_local_extent = [&](const Buffer& buffer) {
+    const Map<String, Any>* spec = FindLogicalTileLayoutSpec(buffer);
+    if (spec != nullptr) {
+      const int64_t local_extent =
+          ProductIntegerArrayField(*spec, schema_key::kLocalShape, int64_t{0});
+      if (local_extent > 0) {
+        return local_extent;
+      }
+    }
+    if (auto static_shape = ExtractStaticShape(buffer->shape)) {
+      return ComputeStaticElementCount(static_shape.value());
+    }
+    return int64_t{0};
   };
   const int64_t source_local_extent = bridge_local_extent(match.src);
   const int64_t target_local_extent = bridge_local_extent(match.dst);
@@ -2394,7 +2383,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   block_index_vars_.clear();
   block_index_var_names_.clear();
   requires_compute_segment_ = false;
-  buffer_tile_bridge_specs_by_buffer_.clear();
+  logical_tile_layout_specs_by_buffer_.clear();
   spatial_live_value_by_subject_.clear();
   spatial_materialization_boundary_by_source_target_.clear();
   select_compute_builtins_only_ = true;
@@ -2405,9 +2394,9 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   LoadSpatialLiveValueBoundaries(maybe_spatial_plan.value());
   const BlackholeLoweringSupportFacts lowering_support_facts =
       BuildLoweringSupportFactsFromAnalysis(func);
-  LoadLogicalBufferShapes(func, lowering_support_facts);
+  LoadLogicalBufferShapes(func, lowering_support_facts, maybe_spatial_plan.value());
   requires_compute_segment_ = HasComputeSegmentRequirement(func->body);
-  LoadBufferTileBridgeSpecs(lowering_support_facts);
+  LoadLogicalTileLayoutSpecs(maybe_spatial_plan.value());
 
   PrimFunc selected = func;
   selected.CopyOnWrite()->body = VisitStmt(func->body);
@@ -2418,7 +2407,8 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
 }
 
 void PlanTTKernelABI::LoadLogicalBufferShapes(
-    const PrimFunc& func, const BlackholeLoweringSupportFacts& lowering_support_facts) {
+    const PrimFunc& func, const BlackholeLoweringSupportFacts& lowering_support_facts,
+    const SpatialPlan& spatial_plan) {
   logical_buffer_shapes_.clear();
   std::unordered_map<std::string, std::vector<int64_t>> canonical_shapes;
   std::unordered_map<std::string, int> canonical_shape_priority;
@@ -2510,8 +2500,8 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(
     }
     register_shape(target_name, {element_count / row_width, row_width}, /*priority=*/1);
   };
-  for (const Any& spec_any : lowering_support_facts.buffer_tile_bridge_specs) {
-    register_tile_bridge_shape(Downcast<Map<String, Any>>(spec_any));
+  for (const auto& [_, spec] : BuildLogicalTileLayoutSpecMap(spatial_plan)) {
+    register_tile_bridge_shape(spec);
   }
   for (const Any& contract_any : lowering_support_facts.buffer_materialization_contracts) {
     register_materialization_contract_shape(Downcast<Map<String, Any>>(contract_any));
@@ -2540,7 +2530,7 @@ std::vector<int64_t> PlanTTKernelABI::GetLogicalBufferShape(const Buffer& buffer
   if (it != logical_buffer_shapes_.end()) {
     return it->second;
   }
-  if (const Map<String, Any>* spec = FindBufferTileBridgeSpec(buffer)) {
+  if (const Map<String, Any>* spec = FindLogicalTileLayoutSpec(buffer)) {
     auto shape_it = spec->find(String(schema_key::kShape));
     if (shape_it != spec->end()) {
       std::vector<int64_t> shape;
@@ -2811,15 +2801,11 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   gemm_m_ = 0;
   gemm_n_ = 0;
   gemm_k_ = 0;
-  gemm_contract_signatures_.clear();
-  compute_contract_payload_index_by_signature_.clear();
-  multi_gemm_contract_payloads_.clear();
-  multi_compute_contract_payloads_.clear();
-  compute_epilogue_payloads_.clear();
+  compute_op_signatures_.clear();
+  compute_op_seed_index_by_signature_.clear();
+  compute_op_seeds_.clear();
   tt_compute_op_plans_.clear();
-  active_compute_contract_payload_index_ = -1;
-  compute_epilogue_payloads_flat_.clear();
-  buffer_tile_bridge_specs_by_buffer_.clear();
+  logical_tile_layout_specs_by_buffer_.clear();
   spatial_live_value_by_subject_.clear();
   spatial_materialization_boundary_by_source_target_.clear();
   buffer_materialization_contracts_by_target_buffer_.clear();
@@ -2844,10 +2830,10 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   LoadSpatialLiveValueBoundaries(maybe_spatial_plan.value());
   const BlackholeLoweringSupportFacts lowering_support_facts =
       BuildLoweringSupportFactsFromAnalysis(func);
-  LoadLogicalBufferShapes(func, lowering_support_facts);
+  LoadLogicalBufferShapes(func, lowering_support_facts, maybe_spatial_plan.value());
   ValidateComputePipelineLegalityFromBody(func->body);
   requires_compute_segment_ = HasComputeSegmentRequirement(func->body);
-  LoadBufferTileBridgeSpecs(lowering_support_facts);
+  LoadLogicalTileLayoutSpecs(maybe_spatial_plan.value());
   buffer_materialization_contracts_by_target_buffer_ =
       BuildBufferMaterializationContractMap(
           lowering_support_facts.buffer_materialization_contracts);
@@ -2941,12 +2927,11 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
     record_if_cb_consumed_fragment(call->args[1], k_tiles * n_tiles);
   });
 
-  compute_epilogue_payloads_.assign(multi_compute_contract_payloads_.size(), {});
-  compute_contract_known_buffers_.assign(multi_compute_contract_payloads_.size(), {});
-  for (size_t i = 0; i < multi_compute_contract_payloads_.size(); ++i) {
+  compute_op_seed_known_buffers_.assign(compute_op_seeds_.size(), {});
+  for (size_t i = 0; i < compute_op_seeds_.size(); ++i) {
     auto maybe_insert = [&](const char* key) {
-      if (auto value = multi_compute_contract_payloads_[i].Get(String(key))) {
-        compute_contract_known_buffers_[i].insert(
+      if (auto value = compute_op_seeds_[i].Get(String(key))) {
+        compute_op_seed_known_buffers_[i].insert(
             static_cast<std::string>(Downcast<String>(value.value())));
       }
     };
@@ -3002,7 +2987,6 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   PrimFunc new_func = func;
   new_func.CopyOnWrite()->body = StripSegmentKindMarkers(body_with_segment_markers);
   StoreAccessorDescriptors(new_func);
-  StoreGemmContract(new_func);
   StoreLeafExecutableContracts(lowering_support_facts, unresolved_unsupported_ops);
 
   if (unresolved_unsupported_ops.empty()) {
@@ -3263,49 +3247,8 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc& func) {
   segment_plan_ = kernels;
 }
 
-void PlanTTKernelABI::StoreGemmContract(PrimFunc& func) {
-  (void)func;
-  if (multi_gemm_contract_payloads_.empty() || multi_compute_contract_payloads_.empty()) {
-    return;
-  }
-  Map<String, Any> tt_program_payload = tt_program_payload_;
-
-  if (gemm_contract_signatures_.size() > 1) {
-    Array<Any> multi_gemm_contracts;
-    for (const auto& contract : multi_gemm_contract_payloads_) {
-      multi_gemm_contracts.push_back(contract);
-    }
-    Array<Any> multi_compute_contracts;
-    for (const auto& contract : multi_compute_contract_payloads_) {
-      multi_compute_contracts.push_back(contract);
-    }
-    tt_program_payload.Set("multi_gemm_contracts", multi_gemm_contracts);
-    tt_program_payload.Set("multi_compute_contracts", multi_compute_contracts);
-    tt_program_payload_ = tt_program_payload;
-    return;
-  }
-
-  const std::string a_host_buffer = ResolveHostBufferForComputeOperand(gemm_a_buffer_);
-  const std::string b_host_buffer = ResolveHostBufferForComputeOperand(gemm_b_buffer_);
-  const std::string c_host_buffer = ResolveHostBufferForComputeOperand(gemm_c_buffer_);
-
-  Map<String, Any> gemm_contract = BuildGemmContractPayload(
-      a_host_buffer, b_host_buffer, c_host_buffer, gemm_m_, gemm_n_, gemm_k_, gemm_transpose_a_,
-      gemm_transpose_b_, gemm_a_dtype_, gemm_b_dtype_, gemm_c_dtype_);
-  Map<String, Any> compute_contract = BuildComputeContractPayload(
-      a_host_buffer, b_host_buffer, c_host_buffer, gemm_m_, gemm_n_, gemm_k_, gemm_transpose_a_,
-      gemm_transpose_b_, gemm_policy_type_, gemm_clear_accum_, gemm_k_pack_, gemm_wg_wait_,
-      gemm_dst_full_sync_en_, gemm_bfp8_pack_precise_, gemm_defines_, gemm_named_compile_args_,
-      gemm_mbarrier_buffer_name_, gemm_mbarrier_scope_, gemm_mbarrier_index_exprs_, gemm_a_dtype_,
-      gemm_b_dtype_, gemm_c_dtype_);
-
-  tt_program_payload.Set("gemm_contract", gemm_contract);
-  tt_program_payload.Set("compute_contract", compute_contract);
-  tt_program_payload_ = tt_program_payload;
-}
-
 void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
-  auto make_compute_config_from_contract = [&]() -> Map<String, Any> {
+  auto make_compute_config_from_gemm_state = [&]() -> Map<String, Any> {
     Map<String, Any> compute_config;
     compute_config.Set("math_fidelity", String("HiFi4"));
     compute_config.Set("fp32_dest_acc_en", Bool(true));
@@ -3812,13 +3755,13 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
           kind, runtime_args, segment.Get(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs)));
       compile_time_arg_specs = make_accessor_cta_specs(kind, accessors);
       if (kind == "compute") {
-        if (gemm_contract_signatures_.size() == 1) {
+        if (compute_op_signatures_.size() == 1) {
           auto gemm_compile_time_arg_specs = make_gemm_compute_cta_specs();
           for (const auto& spec : gemm_compile_time_arg_specs) {
             compile_time_arg_specs.push_back(spec);
           }
         }
-        segment.Set("compute_config", make_compute_config_from_contract());
+        segment.Set("compute_config", make_compute_config_from_gemm_state());
       }
       segment.Set("accessors", accessors);
       if (!runtime_args.empty()) {
@@ -3860,13 +3803,13 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
       }
     }
     tt_compute_op_plans_.clear();
-    if (!multi_compute_contract_payloads_.empty()) {
+    if (!compute_op_seeds_.empty()) {
       ICHECK(!compute_kernel_name.empty())
-          << "PlanTTKernelABI produced compute contracts without a compute kernel segment";
+      << "PlanTTKernelABI produced compute op seeds without a compute kernel segment";
       int64_t ordinal = 0;
-      for (const auto& contract : multi_compute_contract_payloads_) {
+      for (const auto& seed : compute_op_seeds_) {
         tt_compute_op_plans_.push_back(BuildTTComputeOpPlanFromContract(
-            contract, host_buffer_by_compute_operand_buffer_, compute_kernel_name,
+            seed, host_buffer_by_compute_operand_buffer_, compute_kernel_name,
             /*kernel_plan_index=*/-1, ordinal++));
       }
     }
@@ -4027,19 +3970,16 @@ void PlanTTKernelABI::ExtractGemmInfo(const CallNode* op) {
   if (const auto* imm = args[5].as<IntImmNode>()) gemm_m_ = static_cast<int>(imm->value);
   if (const auto* imm = args[6].as<IntImmNode>()) gemm_n_ = static_cast<int>(imm->value);
   if (const auto* imm = args[7].as<IntImmNode>()) gemm_k_ = static_cast<int>(imm->value);
-  const std::string signature = EncodeGemmContractSignature(
+  const std::string signature = EncodeGemmComputeOpSignature(
       gemm_a_buffer_name_, gemm_b_buffer_name_, gemm_c_buffer_name_, gemm_m_, gemm_n_, gemm_k_,
       gemm_transpose_a_, gemm_transpose_b_, gemm_policy_type_, gemm_clear_accum_, gemm_k_pack_,
       gemm_wg_wait_, gemm_dst_full_sync_en_, gemm_bfp8_pack_precise_, gemm_defines_,
       gemm_named_compile_args_, gemm_mbarrier_buffer_name_, gemm_mbarrier_scope_,
       gemm_mbarrier_index_exprs_);
-  if (gemm_contract_signatures_.insert(signature).second) {
-    compute_contract_payload_index_by_signature_[signature] =
-        static_cast<int>(multi_compute_contract_payloads_.size());
-    multi_gemm_contract_payloads_.push_back(BuildGemmContractPayload(
-        gemm_a_buffer_name_, gemm_b_buffer_name_, gemm_c_buffer_name_, gemm_m_, gemm_n_, gemm_k_,
-        gemm_transpose_a_, gemm_transpose_b_, gemm_a_dtype_, gemm_b_dtype_, gemm_c_dtype_));
-    multi_compute_contract_payloads_.push_back(BuildComputeContractPayload(
+  if (compute_op_signatures_.insert(signature).second) {
+    compute_op_seed_index_by_signature_[signature] =
+        static_cast<int>(compute_op_seeds_.size());
+    compute_op_seeds_.push_back(BuildGemmComputeOpSeed(
         gemm_a_buffer_name_, gemm_b_buffer_name_, gemm_c_buffer_name_, gemm_m_, gemm_n_, gemm_k_,
         gemm_transpose_a_, gemm_transpose_b_, gemm_policy_type_, gemm_clear_accum_, gemm_k_pack_,
         gemm_wg_wait_, gemm_dst_full_sync_en_, gemm_bfp8_pack_precise_, gemm_defines_,
@@ -4541,12 +4481,8 @@ static bool IsPureCopyLoopNest(const Stmt& stmt) {
 void PlanTTKernelABI::StoreLeafExecutableContracts(
     const BlackholeLoweringSupportFacts& lowering_support_facts,
     const std::vector<std::string>& unsupported_ops) {
+  (void)lowering_support_facts;
   Map<String, Any> tt_program_payload = tt_program_payload_;
-  if (!lowering_support_facts.buffer_tile_bridge_specs.empty()) {
-    tt_program_payload.Set(String(schema_key::kBufferTileBridgeSpecs),
-                           lowering_support_facts.buffer_tile_bridge_specs);
-  }
-
   if (!unsupported_ops.empty()) {
     Array<Any> encoded_unsupported_ops;
     for (const std::string& op_name : unsupported_ops) {
@@ -4730,25 +4666,6 @@ int PlanTTKernelABI::GetWriteAccessorSlot(const std::string& segment_kind, const
   return 0;
 }
 
-void PlanTTKernelABI::ActivateCurrentComputeContractPayload() {
-  const std::string signature = EncodeGemmContractSignature(
-      gemm_a_buffer_name_, gemm_b_buffer_name_, gemm_c_buffer_name_, gemm_m_, gemm_n_, gemm_k_,
-      gemm_transpose_a_, gemm_transpose_b_, gemm_policy_type_, gemm_clear_accum_, gemm_k_pack_,
-      gemm_wg_wait_, gemm_dst_full_sync_en_, gemm_bfp8_pack_precise_, gemm_defines_,
-      gemm_named_compile_args_, gemm_mbarrier_buffer_name_, gemm_mbarrier_scope_,
-      gemm_mbarrier_index_exprs_);
-  auto it = compute_contract_payload_index_by_signature_.find(signature);
-  if (it == compute_contract_payload_index_by_signature_.end()) {
-    active_compute_contract_payload_index_ = -1;
-    return;
-  }
-  active_compute_contract_payload_index_ = it->second;
-}
-
-void PlanTTKernelABI::RecordComputeEpilogueOp(Map<String, Any> op_payload) {
-  (void)op_payload;
-}
-
 Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
     const CallNode* op, int current_order_index, const FragmentCastMatch* post_merge_cast,
     int post_merge_cast_order_index, bool* consumed_post_merge_cast) {
@@ -4830,7 +4747,6 @@ Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
   ICHECK_GE(gemm_a_req_index_, 0);
   ICHECK_GE(gemm_b_req_index_, 0);
   ICHECK_GE(gemm_c_req_index_, 0);
-  ActivateCurrentComputeContractPayload();
   const bool merge_with_zero_reload = !gemm_clear_accum_ && HasZeroFragmentFillFact(gemm_c_buffer_);
   InvalidateLastFragmentFillValue(gemm_c_buffer_);
   if (!gemm_clear_accum_) {
@@ -5050,7 +4966,7 @@ PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreatePublishedExactTiledCBV
   value.num_elements = GetLogicalBufferElementCount(src);
   value.num_tiles = GetLogicalBufferTileCount(src);
   value.row_width = GetLogicalMatrixShape(src).second;
-  if (const Map<String, Any>* spec = FindBufferTileBridgeSpec(src)) {
+  if (const Map<String, Any>* spec = FindLogicalTileLayoutSpec(src)) {
     auto shape_it = spec->find(String(schema_key::kShape));
     if (shape_it != spec->end()) {
       std::vector<int64_t> shape;
@@ -5104,13 +5020,8 @@ bool PlanTTKernelABI::ClearAccumReloadNeedsDataFormatReconfig() const {
 
 Stmt PlanTTKernelABI::GenerateAddFragmentSequence(const Buffer& dst,
                                                     const Buffer& src,
-                                                    const PrimExpr& num_elements) {
+  const PrimExpr& num_elements) {
   InvalidateLastFragmentFillValue(dst);
-  Map<String, Any> op_payload =
-      MakeComputeEpilogueOpPayload("add_fragment", BufferIdentityName(dst));
-  op_payload.Set("src_buffer", String(BufferIdentityName(src)));
-  SetOptionalExprField(&op_payload, "num_elements_expr", num_elements);
-  RecordComputeEpilogueOp(std::move(op_payload));
   const Buffer physical_dst = ResolvePhysicalComputeBuffer(dst);
   const Buffer physical_src = ResolvePhysicalComputeBuffer(src);
   return MaybeWrapComputeSegment(MakeBlackholeCall(
@@ -5123,17 +5034,11 @@ Stmt PlanTTKernelABI::GenerateAddFragmentFromCBFrontSequence(const Buffer& dst,
                                                                const Buffer& src_buffer) {
   InvalidateLastFragmentFillValue(dst);
   const std::string dst_buffer_name = BufferIdentityName(dst);
-  Map<String, Any> op_payload =
-      MakeComputeEpilogueOpPayload("add_fragment_from_cb_front", dst_buffer_name);
-  op_payload.Set("src_buffer", String(BufferIdentityName(src_buffer)));
   const Map<String, Any>* contract = FindBufferMaterializationContract(dst);
   ICHECK(contract != nullptr)
       << "PlanTTKernelABI requires buffer_materialization_contract in lowering_requirements for "
          "add_fragment_from_cb_front destination "
       << dst_buffer_name;
-  op_payload.Set(String(schema_key::kBufferMaterializationContract), *contract);
-  SetOptionalExprField(&op_payload, "num_elements_expr", num_elements);
-  RecordComputeEpilogueOp(std::move(op_payload));
   const Buffer physical_dst = ResolvePhysicalComputeBuffer(dst);
   return MaybeWrapComputeSegment(MakeBlackholeCall(
       blackhole_add_fragment_from_cb_front(),
@@ -5155,14 +5060,6 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
                                                            bool merge_with_zero_reload) {
   InvalidateLastFragmentFillValue(dst);
   const std::string dst_buffer_name = BufferIdentityName(dst);
-  Map<String, Any> op_payload =
-      MakeComputeEpilogueOpPayload("merge_fragment_tiles", dst_buffer_name);
-  op_payload.Set("src_buffer", String(BufferIdentityName(partials_buffer)));
-  op_payload.Set("reload_buffer", String(BufferIdentityName(reload_buffer)));
-  op_payload.Set("zero_reload", Bool(merge_with_zero_reload));
-  if (live_form_buffer.defined()) {
-    op_payload.Set("live_form_buffer", String(BufferIdentityName(live_form_buffer)));
-  }
   const Map<String, Any>* contract = FindBufferMaterializationContract(dst);
   ICHECK(contract != nullptr)
       << "PlanTTKernelABI requires buffer_materialization_contract in lowering_requirements for "
@@ -5184,10 +5081,6 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
   ICHECK_EQ(execution_protocol, "dst_cb_binary_pack")
       << "PlanTTKernelABI does not support buffer-materialization execution_protocol "
       << execution_protocol << " for " << dst_buffer_name;
-  op_payload.Set(String(schema_key::kBufferMaterializationContract), *contract);
-  SetOptionalExprField(&op_payload, "num_elements_expr", num_elements);
-  RecordComputeEpilogueOp(std::move(op_payload));
-
   ICHECK_GT(gemm_c_dtype_.bytes(), 0)
       << "Blackhole accumulator-merge lowering requires a valid destination dtype for "
       << dst_buffer_name;
@@ -7615,7 +7508,7 @@ bool PlanTTKernelABI::MatchScalarFragmentFillStore(const BufferStoreNode* op,
 Stmt PlanTTKernelABI::GenerateFragmentFillSequence(const FragmentFillMatch& match) {
   PrimExpr num_elements = match.num_elements;
   int64_t physical_local_extent = 0;
-  if (const Map<String, Any>* spec = FindBufferTileBridgeSpec(match.dst)) {
+  if (const Map<String, Any>* spec = FindLogicalTileLayoutSpec(match.dst)) {
     physical_local_extent = ProductIntegerArrayField(*spec, schema_key::kLocalShape, int64_t{0});
   }
   if (physical_local_extent > 0) {
@@ -7679,18 +7572,42 @@ Stmt PlanTTKernelABI::GenerateFragmentFillCastPublishSequence(
   if (auto logical_row_width = contract->Get(String(schema_key::kLogicalRowWidth))) {
     row_width = IntImm(DataType::Int(32),
                        static_cast<int>(Downcast<Integer>(logical_row_width.value())->value));
-  } else if (!row_width.defined()) {
-    if (const Map<String, Any>* spec = FindBufferTileBridgeSpec(cast_match.dst)) {
-      auto shape_it = spec->find(String(schema_key::kShape));
-      if (shape_it != spec->end()) {
-        const Array<Integer> logical_shape = Downcast<Array<Integer>>((*shape_it).second);
-        if (logical_shape.size() >= 2U) {
-          row_width =
-              IntImm(DataType::Int(32), static_cast<int>(logical_shape.back()->value));
-        }
+  }
+  auto apply_typed_layout_shape_spec = [&](const Map<String, Any>* spec) {
+    if (spec == nullptr) {
+      return;
+    }
+    const int64_t logical_element_count =
+        ProductIntegerArrayField(*spec, schema_key::kShape, int64_t{0});
+    if (logical_element_count > StaticIntValueOrDefault(num_elements_expr, int64_t{0})) {
+      num_elements_expr = IntImm(DataType::Int(32), static_cast<int>(logical_element_count));
+    }
+    auto shape_it = spec->find(String(schema_key::kShape));
+    if (shape_it != spec->end()) {
+      const Array<Integer> logical_shape = Downcast<Array<Integer>>((*shape_it).second);
+      if (logical_shape.size() >= 2U && logical_shape.back()->value > 0) {
+        row_width = IntImm(DataType::Int(32), static_cast<int>(logical_shape.back()->value));
       }
     }
-  }
+  };
+  auto apply_typed_layout_shape = [&](const Buffer& buffer) {
+    apply_typed_layout_shape_spec(FindLogicalTileLayoutSpec(buffer));
+  };
+  auto apply_typed_layout_shape_by_name = [&](const std::string& buffer_name) {
+    auto it = logical_tile_layout_specs_by_buffer_.find(buffer_name);
+    if (it != logical_tile_layout_specs_by_buffer_.end()) {
+      apply_typed_layout_shape_spec(&it->second);
+    }
+  };
+  auto apply_typed_layout_shape_from_contract = [&](const char* key) {
+    if (auto value = contract->Get(String(key))) {
+      apply_typed_layout_shape_by_name(static_cast<std::string>(Downcast<String>(value.value())));
+    }
+  };
+  apply_typed_layout_shape(cast_match.src);
+  apply_typed_layout_shape(cast_match.dst);
+  apply_typed_layout_shape_from_contract(schema_key::kSourceBuffer);
+  apply_typed_layout_shape_from_contract(schema_key::kTargetBuffer);
   ICHECK(row_width.defined())
       << "PlanTTKernelABI requires logical row_width for pack-thread direct-store "
          "fragment fill publication of "
@@ -7704,22 +7621,12 @@ Stmt PlanTTKernelABI::GenerateFragmentFillCastPublishSequence(
              ? cb_requirements_[cb_id].publish_pages_per_event
              : cb_requirements_[cb_id].num_pages);
 
-  Map<String, Any> op_payload =
-      MakeComputeEpilogueOpPayload("pack_fill_fragment_to_tiled_cb",
-                                   BufferIdentityName(cast_match.dst));
-  op_payload.Set("src_buffer", String(BufferIdentityName(cast_match.src)));
-  op_payload.Set("publish_cb", Bool(true));
-  op_payload.Set(String(schema_key::kBufferMaterializationContract), *contract);
-  SetOptionalExprField(&op_payload, "dst_offset_expr", cast_match.dst_offset);
-  SetOptionalExprField(&op_payload, "num_elements_expr", num_elements_expr);
-  SetOptionalExprField(&op_payload, "row_width_expr", row_width);
-  RecordComputeEpilogueOp(std::move(op_payload));
   RecordFragmentCastMaterializationPlans(
       cast_match, *contract, cb_id, num_elements_expr,
       buffer_materialization::kPackThreadDirectStore);
 
   PrimExpr local_fill_elements = fill_match.num_elements;
-  if (const Map<String, Any>* spec = FindBufferTileBridgeSpec(fill_match.dst)) {
+  if (const Map<String, Any>* spec = FindLogicalTileLayoutSpec(fill_match.dst)) {
     const int64_t local_extent =
         ProductIntegerArrayField(*spec, schema_key::kLocalShape, int64_t{0});
     if (local_extent > 0) {
@@ -7999,12 +7906,6 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
       FindBufferMaterializationContract(match.dst) != nullptr;
   const bool publish_result = publish_cb || force_publish_from_contract;
   PrimExpr num_elements_expr = match.num_elements;
-  Map<String, Any> op_payload =
-      MakeComputeEpilogueOpPayload("cast_fragment_slice", BufferIdentityName(match.dst));
-  op_payload.Set("src_buffer", String(BufferIdentityName(match.src)));
-  op_payload.Set("publish_cb", Bool(publish_result));
-  SetOptionalExprField(&op_payload, "dst_offset_expr", match.dst_offset);
-  SetOptionalExprField(&op_payload, "src_offset_expr", match.src_offset);
   std::vector<Stmt> stmts;
   bool use_tiled_republish_materialization = false;
   PrimExpr pack_thread_direct_fill_value;
@@ -8043,21 +7944,49 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
           Downcast<String>((*protocol_it).second) ==
               buffer_materialization::kTiledCBRepublish;
       if (use_tiled_republish_materialization) {
-        auto bridge_spec_it = buffer_tile_bridge_specs_by_buffer_.find(dst_buffer_name);
+        auto layout_spec_it = logical_tile_layout_specs_by_buffer_.find(dst_buffer_name);
+        auto apply_typed_layout_shape_spec = [&](const Map<String, Any>* spec) {
+          if (spec == nullptr) {
+            return;
+          }
+          const int64_t logical_element_count =
+              ProductIntegerArrayField(*spec, schema_key::kShape, int64_t{0});
+          if (logical_element_count > StaticIntValueOrDefault(num_elements_expr, int64_t{0})) {
+            num_elements_expr = IntImm(DataType::Int(32),
+                                       static_cast<int>(logical_element_count));
+          }
+          auto shape_it = spec->find(String(schema_key::kShape));
+          if (shape_it != spec->end()) {
+            const Array<Integer> logical_shape = Downcast<Array<Integer>>((*shape_it).second);
+            if (logical_shape.size() >= 2U && logical_shape.back()->value > 0) {
+              tiled_republish_row_width =
+                  IntImm(DataType::Int(32), static_cast<int>(logical_shape.back()->value));
+            }
+          }
+        };
+        auto apply_typed_layout_shape = [&](const Buffer& buffer) {
+          apply_typed_layout_shape_spec(FindLogicalTileLayoutSpec(buffer));
+        };
+        auto apply_typed_layout_shape_by_name = [&](const std::string& buffer_name) {
+          auto it = logical_tile_layout_specs_by_buffer_.find(buffer_name);
+          if (it != logical_tile_layout_specs_by_buffer_.end()) {
+            apply_typed_layout_shape_spec(&it->second);
+          }
+        };
+        auto apply_typed_layout_shape_from_contract = [&](const char* key) {
+          auto it = contract->find(String(key));
+          if (it != contract->end()) {
+            apply_typed_layout_shape_by_name(
+                static_cast<std::string>(Downcast<String>((*it).second)));
+          }
+        };
         auto row_width_it = contract->find(String(schema_key::kLogicalRowWidth));
         if (row_width_it != contract->end()) {
           tiled_republish_row_width = IntImm(
               DataType::Int(32),
               static_cast<int>(Downcast<Integer>((*row_width_it).second)->value));
-        } else if (bridge_spec_it != buffer_tile_bridge_specs_by_buffer_.end()) {
-          auto shape_it = bridge_spec_it->second.find(String(schema_key::kShape));
-          if (shape_it != bridge_spec_it->second.end()) {
-            const Array<Integer> logical_shape = Downcast<Array<Integer>>((*shape_it).second);
-            if (logical_shape.size() >= 2U) {
-              tiled_republish_row_width =
-                  IntImm(DataType::Int(32), static_cast<int>(logical_shape.back()->value));
-            }
-          }
+        } else if (layout_spec_it != logical_tile_layout_specs_by_buffer_.end()) {
+          apply_typed_layout_shape_spec(&layout_spec_it->second);
         }
         if (!tiled_republish_row_width.defined()) {
           tiled_republish_row_width = match.row_width;
@@ -8083,20 +8012,11 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
           num_elements_expr = IntImm(
               DataType::Int(32),
               static_cast<int>(Downcast<Integer>((*logical_element_count_it).second)->value));
-        } else if (bridge_spec_it != buffer_tile_bridge_specs_by_buffer_.end()) {
-          auto shape_it = bridge_spec_it->second.find(String(schema_key::kShape));
-          if (shape_it != bridge_spec_it->second.end()) {
-            int64_t logical_element_count = 1;
-            for (const Integer& dim : Downcast<Array<Integer>>((*shape_it).second)) {
-              logical_element_count *= dim->value;
-            }
-            if (logical_element_count > 0) {
-              num_elements_expr = IntImm(DataType::Int(32), static_cast<int>(logical_element_count));
-            }
-          }
         }
-        op_payload.Set(String(schema_key::kBufferMaterializationContract), *contract);
-        SetOptionalExprField(&op_payload, "row_width_expr", tiled_republish_row_width);
+        apply_typed_layout_shape(match.src);
+        apply_typed_layout_shape(match.dst);
+        apply_typed_layout_shape_from_contract(schema_key::kSourceBuffer);
+        apply_typed_layout_shape_from_contract(schema_key::kTargetBuffer);
         auto fill_value_it =
             last_fragment_fill_value_by_buffer_identity_.find(BufferIdentityName(match.src));
         auto fill_data_value_it =
@@ -8116,8 +8036,6 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
       }
     }
   }
-  SetOptionalExprField(&op_payload, "num_elements_expr", num_elements_expr);
-  RecordComputeEpilogueOp(std::move(op_payload));
   if (use_tiled_republish_materialization) {
     // The republish contract says the result becomes cb-live. Whether the logical
     // buffer also happens to use blackhole.acc storage does not imply a page has
@@ -8334,14 +8252,6 @@ class LocalSliceCastSourceOffsetRewriter : public tir::StmtExprMutator {
 
 Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
                                                            const LocalToCBSliceMatch& match) {
-  Map<String, Any> op_payload =
-      MakeComputeEpilogueOpPayload("write_local_fragment_slice_to_tiled_cb",
-                                   BufferIdentityName(match.dst));
-  op_payload.Set("src_buffer", String(BufferIdentityName(match.src)));
-  SetOptionalExprField(&op_payload, "dst_offset_expr", match.dst_offset_elements);
-  SetOptionalExprField(&op_payload, "num_elements_expr", match.num_elements);
-  SetOptionalExprField(&op_payload, "row_width_expr", match.row_width);
-  RecordComputeEpilogueOp(std::move(op_payload));
   const int cb_id = AllocateRequirementIndex(match.dst, CBType::kIntermediate);
   ICHECK_GE(cb_id, 0);
   ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));

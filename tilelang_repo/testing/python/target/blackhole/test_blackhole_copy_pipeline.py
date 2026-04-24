@@ -161,17 +161,6 @@ def _rebuild_tt_program_with_segment_plan(tt_program, segment_plan):
     for index, segment in enumerate(segment_plan):
         kernel = kernels[index]
         abi = abi_plans[int(kernel.abi_plan_index)]
-        payload = dict(kernel.payload)
-        for key in (
-            "runtime_args",
-            "common_runtime_args",
-            "accessors",
-            "compile_time_arg_specs",
-            "semaphore_bindings",
-        ):
-            payload.pop(key, None)
-        payload.update(dict(segment))
-
         runtime_args = (
             list(segment["runtime_args"])
             if "runtime_args" in segment
@@ -182,14 +171,18 @@ def _rebuild_tt_program_with_segment_plan(tt_program, segment_plan):
             if "common_runtime_args" in segment
             else list(abi.common_runtime_args)
         )
-        accessors = list(segment["accessors"]) if "accessors" in segment else []
+        accessors = (
+            list(segment["accessors"]) if "accessors" in segment else list(abi.accessors)
+        )
         compile_time_arg_specs = (
             list(segment["compile_time_arg_specs"])
             if "compile_time_arg_specs" in segment
-            else []
+            else list(abi.compile_time_arg_specs)
         )
         semaphore_bindings = (
-            list(segment["semaphore_bindings"]) if "semaphore_bindings" in segment else []
+            list(segment["semaphore_bindings"])
+            if "semaphore_bindings" in segment
+            else list(abi.semaphore_bindings)
         )
 
         rebuilt_abi_plans.append(
@@ -202,7 +195,6 @@ def _rebuild_tt_program_with_segment_plan(tt_program, segment_plan):
                 compile_time_arg_specs=compile_time_arg_specs,
                 accessors=accessors,
                 semaphore_bindings=semaphore_bindings,
-                payload=payload,
             )
         )
         rebuilt_kernels.append(
@@ -212,11 +204,22 @@ def _rebuild_tt_program_with_segment_plan(tt_program, segment_plan):
                 kind=str(segment.get("kind", kernel.kind)),
                 core_type=str(segment.get("core_type", kernel.core_type)),
                 abi_plan_index=index,
-                payload=payload,
+                launch_spec=dict(segment.get("launch_spec", kernel.launch_spec)),
+                compute_config=dict(segment.get("compute_config", kernel.compute_config)),
+                per_work_arg_specs=list(
+                    segment.get("per_work_arg_specs", kernel.per_work_arg_specs)
+                ),
             )
         )
 
     return rebuild_tt_program(tt_program, kernels=rebuilt_kernels, abi_plans=rebuilt_abi_plans)
+
+
+def _extract_segment_plan_from_artifact(artifact):
+    for func in artifact.device_mod.functions.values():
+        if getattr(func, "attrs", None) and "tl.tt_program" in func.attrs:
+            return [dict(segment) for segment in extract_blackhole_segment_plan(func)]
+    pytest.fail("Expected artifact device module to carry tl.tt_program")
 
 
 def _normalize_semaphore_plan_for_tt_program(semaphore_plan):
@@ -373,17 +376,10 @@ def _rebuild_codegen_module_without_lowering_requirements(artifact):
 
 def _rebuild_codegen_module_without_copy_runtime_args(artifact):
     def mutate(tt_program):
-        rebuilt_kernels = []
         rebuilt_abi_plans = []
-        for index, kernel in enumerate(tt_program.kernels):
-            abi = tt_program.abi_plans[index]
-            payload = dict(kernel.payload)
-            payload.pop("runtime_args", None)
-            rebuilt_abi_plans.append(rebuild_tt_abi_plan(abi, runtime_args=[], payload=payload))
-            rebuilt_kernels.append(
-                rebuild_tt_kernel(kernel, abi_plan_index=index, payload=payload)
-            )
-        return rebuild_tt_program(tt_program, kernels=rebuilt_kernels, abi_plans=rebuilt_abi_plans)
+        for abi in tt_program.abi_plans:
+            rebuilt_abi_plans.append(rebuild_tt_abi_plan(abi, runtime_args=[]))
+        return rebuild_tt_program(tt_program, abi_plans=rebuilt_abi_plans)
 
     return _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)
 
@@ -400,13 +396,10 @@ def _rebuild_codegen_module_with_semaphore_plan(artifact, semaphore_plan):
 def _rebuild_codegen_module_with_semaphore_binding(
     artifact, *, semaphore_plan=None, segment_mutator=None, runtime_args_mutator=None
 ):
+    base_segment_plan = _extract_segment_plan_from_artifact(artifact)
+
     def mutate(tt_program):
-        payload = dict(tt_program.payload)
-        current_segment_plan = [dict(segment) for segment in payload.get("segment_plan", [])]
-        if not current_segment_plan:
-            current_segment_plan = [
-                dict(kernel.payload) for kernel in tt_program.kernels
-            ]
+        current_segment_plan = [dict(segment) for segment in base_segment_plan]
         if runtime_args_mutator is not None:
             runtime_args = runtime_args_mutator(
                 [dict(arg) for arg in tt_program.abi_plans[0].runtime_args]
@@ -427,8 +420,10 @@ def _rebuild_codegen_module_with_semaphore_binding(
 def _rebuild_codegen_module_with_body_and_segment_plan(
     artifact, *, body_mutator=None, segment_mutator=None
 ):
+    base_segment_plan = _extract_segment_plan_from_artifact(artifact)
+
     def mutate(tt_program):
-        current_segment_plan = [dict(kernel.payload) for kernel in tt_program.kernels]
+        current_segment_plan = [dict(segment) for segment in base_segment_plan]
         if segment_mutator is not None:
             current_segment_plan = segment_mutator(current_segment_plan)
         return _rebuild_tt_program_with_segment_plan(tt_program, current_segment_plan)
@@ -879,8 +874,6 @@ def test_blackhole_copy_build_reads_executable_without_legacy_projection_attrs()
         "blackhole.cb_configs",
         "blackhole.semaphore_plan",
         "blackhole.core_plan",
-        "blackhole.gemm_contract",
-        "blackhole.compute_contract",
         "blackhole.direct_runtime_unsupported_reasons",
     ):
         assert key not in device_main.attrs

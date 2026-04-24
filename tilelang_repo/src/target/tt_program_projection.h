@@ -9,7 +9,6 @@
 #include <tvm/ir/expr.h>
 #include <tvm/tir/function.h>
 
-#include <initializer_list>
 #include <string>
 #include "../transform/common/blackhole_runtime_arg_schema.h"
 #include "../transform/common/companion_base.h"
@@ -41,21 +40,11 @@ constexpr const char* kDirectRuntimeUnsupportedReasons = "direct_runtime_unsuppo
 constexpr const char* kLiveFormPlans = "live_form_plans";
 constexpr const char* kMaterializationPlans = "materialization_plans";
 constexpr const char* kConsumerBindingPlans = "consumer_binding_plans";
-constexpr const char* kBufferTileBridgeSpecs = ::tvm::tl::schema_key::kBufferTileBridgeSpecs;
 constexpr const char* kUnsupportedComputeOps = "unsupported_compute_ops";
 }  // namespace executable_key
 
 inline Map<String, Any> AsMap(const Any& any) {
   return any.as<Map<String, Any>>().value_or(Map<String, Any>());
-}
-
-inline void CopyPayloadAllowlist(Map<String, Any>* dst, const Map<String, Any>& payload,
-                                 std::initializer_list<const char*> keys) {
-  for (const char* key : keys) {
-    if (auto value = payload.Get(String(key))) {
-      dst->Set(String(key), value.value());
-    }
-  }
 }
 
 inline tvm::ffi::Optional<TTProgram> GetTTProgram(const tir::PrimFunc& func) {
@@ -123,6 +112,24 @@ inline Array<Any> EncodeBufferDistributionPlans(
     }
     item.Set("shard_orientation", plan->shard_orientation);
     item.Set("host_visibility", plan->host_visibility);
+    if (!plan->logical_shape.empty()) {
+      item.Set("logical_shape", plan->logical_shape);
+    }
+    if (!plan->local_shape.empty()) {
+      item.Set("local_shape", plan->local_shape);
+    }
+    if (plan->thread_extent.defined()) {
+      item.Set("thread_extent", plan->thread_extent);
+    }
+    if (plan->replicate_extent.defined()) {
+      item.Set("replicate_extent", plan->replicate_extent);
+    }
+    if (!plan->inverse_logical_index_vars.empty()) {
+      item.Set("inverse_logical_index_vars", plan->inverse_logical_index_vars);
+    }
+    if (!plan->inverse_logical_index_exprs.empty()) {
+      item.Set("inverse_logical_index_exprs", plan->inverse_logical_index_exprs);
+    }
     encoded.push_back(item);
   }
   return encoded;
@@ -144,6 +151,13 @@ inline Map<String, Any> EncodeComputeOperandBindingPlan(
     item.Set("transform_kind", binding->transform_kind);
   }
   return item;
+}
+
+inline void SetIntegerShapeField(Map<String, Any>* item, const char* key,
+                                 const Array<Integer>& values, size_t index) {
+  if (index < values.size()) {
+    item->Set(String(key), values[index]);
+  }
 }
 
 inline Map<String, Any> EncodeComputeOpPlan(const TTComputeOpPlan& plan) {
@@ -185,13 +199,56 @@ inline Map<String, Any> EncodeComputeOpPlan(const TTComputeOpPlan& plan) {
   if (!plan->mbarrier_index_exprs.empty()) {
     item.Set("mbarrier_index_exprs", plan->mbarrier_index_exprs);
   }
-  CopyPayloadAllowlist(
-      &item, plan->payload,
-      {"a_buffer", "b_buffer", "c_buffer", "M", "N", "K", "Mt", "Nt", "Kt",
-       "block_m_tiles", "block_n_tiles", "block_k_tiles", "subblock_m_tiles",
-       "subblock_n_tiles", "transpose_A", "transpose_B", "a_tensor_dtype",
-       "b_tensor_dtype", "c_tensor_dtype", "a_cb_dtype", "b_cb_dtype", "c_cb_dtype",
-       "has_mbarrier"});
+  for (const TTComputeOperandBindingPlan& binding : plan->operand_bindings) {
+    const std::string role = static_cast<std::string>(binding->role);
+    if (role == "a") {
+      item.Set("a_buffer", binding->host_buffer);
+      item.Set("transpose_A", Bool(binding->transform_kind == "transpose"));
+      if (!binding->tensor_dtype.empty()) {
+        item.Set("a_tensor_dtype", binding->tensor_dtype);
+      }
+      if (!binding->cb_dtype.empty()) {
+        item.Set("a_cb_dtype", binding->cb_dtype);
+      }
+    } else if (role == "b") {
+      item.Set("b_buffer", binding->host_buffer);
+      item.Set("transpose_B", Bool(binding->transform_kind == "transpose"));
+      if (!binding->tensor_dtype.empty()) {
+        item.Set("b_tensor_dtype", binding->tensor_dtype);
+      }
+      if (!binding->cb_dtype.empty()) {
+        item.Set("b_cb_dtype", binding->cb_dtype);
+      }
+    } else if (role == "c") {
+      item.Set("c_buffer", binding->host_buffer);
+      if (!binding->tensor_dtype.empty()) {
+        item.Set("c_tensor_dtype", binding->tensor_dtype);
+      }
+      if (!binding->cb_dtype.empty()) {
+        item.Set("c_cb_dtype", binding->cb_dtype);
+      }
+    }
+  }
+  if (plan->problem_shape_axes.size() == plan->problem_shape.size()) {
+    for (size_t i = 0; i < plan->problem_shape_axes.size(); ++i) {
+      const std::string axis = static_cast<std::string>(plan->problem_shape_axes[i]);
+      if (axis == "M" || axis == "N" || axis == "K") {
+        item.Set(String(axis), plan->problem_shape[i]);
+      }
+    }
+  } else if (plan->problem_shape.size() >= 3) {
+    item.Set("M", plan->problem_shape[0]);
+    item.Set("N", plan->problem_shape[1]);
+    item.Set("K", plan->problem_shape[2]);
+  }
+  SetIntegerShapeField(&item, "Mt", plan->tile_shape, 0);
+  SetIntegerShapeField(&item, "Nt", plan->tile_shape, 1);
+  SetIntegerShapeField(&item, "Kt", plan->tile_shape, 2);
+  SetIntegerShapeField(&item, "block_m_tiles", plan->block_shape, 0);
+  SetIntegerShapeField(&item, "block_n_tiles", plan->block_shape, 1);
+  SetIntegerShapeField(&item, "block_k_tiles", plan->block_shape, 2);
+  SetIntegerShapeField(&item, "subblock_m_tiles", plan->subblock_shape, 0);
+  SetIntegerShapeField(&item, "subblock_n_tiles", plan->subblock_shape, 1);
   item.Set("has_mbarrier", Bool(!plan->mbarrier_buffer.empty()));
   return item;
 }
@@ -302,10 +359,16 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram& program) {
     segment.Set("name", kernel->name);
     segment.Set("kind", kernel->kind);
     segment.Set("core_type", kernel->core_type);
-    CopyPayloadAllowlist(
-        &segment, kernel->payload,
-        {"launch_spec", "compute_config",
-         ::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs});
+    if (!kernel->launch_spec.empty()) {
+      segment.Set("launch_spec", kernel->launch_spec);
+    }
+    if (!kernel->compute_config.empty()) {
+      segment.Set("compute_config", kernel->compute_config);
+    }
+    if (!kernel->per_work_arg_specs.empty()) {
+      segment.Set(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs,
+                  kernel->per_work_arg_specs);
+    }
     Array<Any> compute_ops;
     for (const TTComputeOpPlan& plan : program->compute_op_plans) {
       if (plan->kernel_name == kernel->name) {
@@ -452,7 +515,6 @@ inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram
     }
   };
   copy_payload_field(executable_key::kDirectRuntimeUnsupportedReasons);
-  copy_payload_field(executable_key::kBufferTileBridgeSpecs);
   copy_payload_field(executable_key::kUnsupportedComputeOps);
   return executable;
 }

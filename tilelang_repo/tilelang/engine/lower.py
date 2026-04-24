@@ -202,9 +202,6 @@ def merge_ir_modules(*mods: tvm.IRModule) -> tvm.IRModule:
     return merged
 
 
-_BLACKHOLE_LOGICAL_BRIDGE_SPECS_ATTR = "tl.blackhole_logical_buffer_tile_bridge_specs"
-
-
 def _blackhole_prim_funcs(mod: tvm.IRModule) -> list[tuple[object, tir.PrimFunc]]:
     funcs = []
     for gvar, func in mod.functions.items():
@@ -216,14 +213,6 @@ def _blackhole_prim_funcs(mod: tvm.IRModule) -> list[tuple[object, tir.PrimFunc]
 def _prim_func_symbol(gvar, func: tir.PrimFunc) -> str:
     attrs = func.attrs or {}
     return str(attrs["global_symbol"]) if "global_symbol" in attrs else gvar.name_hint
-
-
-def _extract_logical_bridge_specs(func: tir.PrimFunc):
-    attrs = func.attrs or {}
-    if _BLACKHOLE_LOGICAL_BRIDGE_SPECS_ATTR not in attrs:
-        return None
-    bridge_specs = list(attrs[_BLACKHOLE_LOGICAL_BRIDGE_SPECS_ATTR])
-    return bridge_specs or None
 
 
 def _align_blackhole_device_symbol(
@@ -239,12 +228,10 @@ def _align_blackhole_device_symbol(
     optimized_gvar, optimized_func = optimized_funcs[0]
     target_symbol = _prim_func_symbol(optimized_gvar, optimized_func)
     aligned_func = optimized_func.with_attr("global_symbol", target_symbol)
-    logical_bridge_specs = _extract_logical_bridge_specs(source_func)
-    if logical_bridge_specs is not None:
-        aligned_func = aligned_func.with_attr(
-            _BLACKHOLE_LOGICAL_BRIDGE_SPECS_ATTR,
-            logical_bridge_specs,
-        )
+    source_attrs = source_func.attrs or {}
+    for key in ("tl.spatial_plan", "tl.spatial_plan_validated"):
+        if key in source_attrs:
+            aligned_func = aligned_func.with_attr(key, source_attrs[key])
     return tvm.IRModule(
         {target_symbol: aligned_func},
         global_infos=optimized_device_mod.global_infos,
