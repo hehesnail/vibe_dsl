@@ -242,6 +242,43 @@ def test_flash_attention_forward_tt_target_emits_tt_program_payload():
     assert not any(name in LEGACY_LOCAL_BLACKHOLE_BUILTINS for name in builtin_names)
 
 
+def test_flash_attention_tt_program_projects_two_typed_gemm_compute_ops():
+    lowered = _lower_flash_attention_to_tt_target()
+    tt_program = require_tt_program(lowered)
+
+    gemm_ops = [
+        op for op in tt_program.compute_op_plans if str(op.kind) == "gemm"
+    ]
+    assert len(gemm_ops) == 2
+    operand_sets = []
+    for op in gemm_ops:
+        assert str(op.kernel_name) == "compute"
+        assert int(op.kernel_plan_index) >= 0
+        assert tuple(str(axis) for axis in op.problem_shape_axes) == ("M", "N", "K")
+        assert all(int(dim) > 0 for dim in op.problem_shape)
+        assert all(int(dim) > 0 for dim in op.tile_shape)
+        operands = {str(binding.role): binding for binding in op.operand_bindings}
+        assert {"a", "b", "c"} == set(operands)
+        operand_sets.append(
+            tuple(str(operands[role].buffer) for role in ("a", "b", "c"))
+        )
+
+    assert ("Q_shared", "K_shared", "acc_s") in operand_sets
+    assert ("acc_s_cast", "V_shared", "acc_o") in operand_sets
+
+    mod = tvm.IRModule({"main": lowered})
+    mod = tilelang.transform.MaterializeBlackholeExecutable()(mod)
+    executable = mod["main"].attrs["tl.blackhole_executable"]
+    assert len(executable["compute_op_plans"]) == 2
+    compute_segments = [
+        segment
+        for segment in executable["segment_plan"]
+        if str(segment["kind"]) == "compute"
+    ]
+    assert len(compute_segments) == 1
+    assert len(compute_segments[0]["compute_ops"]) == 2
+
+
 def test_flash_attention_forward_optimized_path_lowers_scores_max_updates():
     lowered = _run_flash_attention_tt_target_after_optimize(
         mha_example,

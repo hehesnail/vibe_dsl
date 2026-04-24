@@ -72,6 +72,72 @@ class TTBufferDistributionPlan : public ObjectRef {
                                              TTBufferDistributionPlanNode);
 };
 
+class TTComputeOperandBindingPlanNode : public Object {
+ public:
+  ffi::String role;
+  ffi::String buffer;
+  ffi::String host_buffer;
+  ffi::String tensor_dtype;
+  ffi::String cb_dtype;
+  ffi::String transform_kind;
+  ffi::Map<ffi::String, ffi::Any> payload;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTComputeOperandBindingPlan",
+                                    TTComputeOperandBindingPlanNode, Object);
+};
+
+class TTComputeOperandBindingPlan : public ObjectRef {
+ public:
+  TVM_DLL TTComputeOperandBindingPlan(ffi::String role, ffi::String buffer,
+                                      ffi::String host_buffer, ffi::String tensor_dtype,
+                                      ffi::String cb_dtype, ffi::String transform_kind,
+                                      ffi::Map<ffi::String, ffi::Any> payload);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTComputeOperandBindingPlan, ObjectRef,
+                                             TTComputeOperandBindingPlanNode);
+};
+
+class TTComputeOpPlanNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String kernel_name;
+  int64_t kernel_plan_index = -1;
+  ffi::String kind;
+  bool enabled = true;
+  ffi::Array<TTComputeOperandBindingPlan> operand_bindings;
+  ffi::Array<ffi::String> problem_shape_axes;
+  ffi::Array<Integer> problem_shape;
+  ffi::Array<Integer> tile_shape;
+  ffi::Array<Integer> block_shape;
+  ffi::Array<Integer> subblock_shape;
+  ffi::String accumulator_dtype;
+  ffi::String mbarrier_buffer;
+  ffi::String mbarrier_scope;
+  ffi::Array<ffi::String> mbarrier_index_exprs;
+  ffi::Map<ffi::String, ffi::Any> payload;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTComputeOpPlan", TTComputeOpPlanNode, Object);
+};
+
+class TTComputeOpPlan : public ObjectRef {
+ public:
+  TVM_DLL TTComputeOpPlan(ffi::String name, ffi::String kernel_name,
+                          int64_t kernel_plan_index, ffi::String kind, bool enabled,
+                          ffi::Array<TTComputeOperandBindingPlan> operand_bindings,
+                          ffi::Array<ffi::String> problem_shape_axes,
+                          ffi::Array<Integer> problem_shape,
+                          ffi::Array<Integer> tile_shape,
+                          ffi::Array<Integer> block_shape,
+                          ffi::Array<Integer> subblock_shape,
+                          ffi::String accumulator_dtype,
+                          ffi::String mbarrier_buffer, ffi::String mbarrier_scope,
+                          ffi::Array<ffi::String> mbarrier_index_exprs,
+                          ffi::Map<ffi::String, ffi::Any> payload);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTComputeOpPlan, ObjectRef,
+                                             TTComputeOpPlanNode);
+};
+
 class TTBlockPlanNode : public Object {
  public:
   ffi::String name;
@@ -449,6 +515,7 @@ class TTProgramNode : public Object {
   ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans;
   ffi::Array<TTBlockPlan> block_plans;
   ffi::Array<TTKernelPlan> kernel_plans;
+  ffi::Array<TTComputeOpPlan> compute_op_plans;
   ffi::Array<TTTransportPlan> transport_plans;
   ffi::Array<TTSyncPlan> sync_plans;
   ffi::Array<TTABIPlan> abi_plans;
@@ -475,6 +542,7 @@ class TTProgram : public ObjectRef {
                     ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
                     ffi::Array<TTBlockPlan> block_plans,
                     ffi::Array<TTKernelPlan> kernel_plans,
+                    ffi::Array<TTComputeOpPlan> compute_op_plans,
                     ffi::Array<TTTransportPlan> transport_plans,
                     ffi::Array<TTSyncPlan> sync_plans,
                     ffi::Array<TTABIPlan> abi_plans,

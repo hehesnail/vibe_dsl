@@ -6,8 +6,8 @@
 ## Status
 
 - Date: `2026-04-25`
-- Active lane: `compute-kind extension`
-- Current item: `P1 compute-kind extension`
+- Active lane: `workload payoff`
+- Current item: `P1/P2 workload payoff`
 - Blocker: none
 - Main chain: `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -22,21 +22,22 @@
 - `P1 runtime/codegen backend decoupling design`: completed
 - `P1 SpatialPlan live/materialization refinement`: completed
 - `P1 TTProgram mesh/buffer distribution schema`: completed
-- `P1 compute-kind extension`: next
-- `P1/P2 workload payoff`: after backend gates
+- `P1 compute-kind extension`: completed
+- `P1/P2 workload payoff`: next
 
 ## Open Debt
 
 - `tl.blackhole_logical_buffer_tile_bridge_specs` remains the only narrow bridge attr.
 - Direct runtime remains an admitted leaf backend subset, not the codegen/export capability boundary.
+- Non-GEMM exact compute builtins compile through kernel source; per-op typed expansion is next payoff work.
 - Flash-attn compile/source/spec baseline is stable; direct runtime correctness is not admitted.
 
 ## Latest Verification
 
-P1 TTProgram mesh/buffer distribution schema:
+P1 compute-kind extension:
 
 - `cmake --build build -j32`
-- copy pipeline: `51 passed, 10 skipped, 1 xfailed`
+- SpatialPlan/TTProgram schema: `24 passed`
 - GEMM/materialization target pipeline: `43 passed, 16 skipped`
-- SpatialPlan/TTProgram schema: `23 passed`
-- flash pipeline: `64 passed`
+- copy pipeline: `51 passed, 10 skipped, 1 xfailed`
+- flash pipeline: `65 passed`

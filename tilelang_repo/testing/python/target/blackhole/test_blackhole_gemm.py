@@ -25,6 +25,7 @@ from .common import (
     gemm_kernel_with_policy,
     gemm_kernel_with_transpose_flags,
     lower_blackhole_to_tt_target,
+    rebuild_tt_compute_op_plan,
     rebuild_tt_core_group,
     rebuild_tt_kernel,
     rebuild_tt_program,
@@ -160,6 +161,7 @@ def _rebuild_codegen_module_with_compute_overrides(artifact, compute_overrides):
     def mutate(tt_program):
         payload = dict(tt_program.payload)
         rebuilt_kernels = []
+        rebuilt_compute_op_plans = []
         for kernel in tt_program.kernels:
             kernel_payload = dict(kernel.payload)
             if str(kernel.kind) == "compute" or str(kernel.core_type) == "trisc":
@@ -200,7 +202,42 @@ def _rebuild_codegen_module_with_compute_overrides(artifact, compute_overrides):
                         compute_ops.append(compute_op)
                     kernel_payload["compute_ops"] = compute_ops
             rebuilt_kernels.append(rebuild_tt_kernel(kernel, payload=kernel_payload))
-        return rebuild_tt_program(tt_program, kernels=rebuilt_kernels, payload=payload)
+        for compute_op in tt_program.compute_op_plans:
+            op_payload = dict(compute_op.payload)
+            mbarrier_buffer = str(compute_op.mbarrier_buffer)
+            mbarrier_scope = str(compute_op.mbarrier_scope)
+            mbarrier_index_exprs = list(compute_op.mbarrier_index_exprs)
+            if str(compute_op.kind) == "gemm":
+                for key in (
+                    "has_mbarrier",
+                    "mbarrier_buffer",
+                    "mbarrier_scope",
+                    "mbarrier_index_exprs",
+                ):
+                    if key in compute_overrides:
+                        value = compute_overrides[key]
+                        op_payload[key] = list(value) if isinstance(value, list) else value
+                if "mbarrier_buffer" in compute_overrides:
+                    mbarrier_buffer = compute_overrides["mbarrier_buffer"]
+                if "mbarrier_scope" in compute_overrides:
+                    mbarrier_scope = compute_overrides["mbarrier_scope"]
+                if "mbarrier_index_exprs" in compute_overrides:
+                    mbarrier_index_exprs = list(compute_overrides["mbarrier_index_exprs"])
+            rebuilt_compute_op_plans.append(
+                rebuild_tt_compute_op_plan(
+                    compute_op,
+                    mbarrier_buffer=mbarrier_buffer,
+                    mbarrier_scope=mbarrier_scope,
+                    mbarrier_index_exprs=mbarrier_index_exprs,
+                    payload=op_payload,
+                )
+            )
+        return rebuild_tt_program(
+            tt_program,
+            kernels=rebuilt_kernels,
+            compute_op_plans=rebuilt_compute_op_plans,
+            payload=payload,
+        )
 
     return _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)
 

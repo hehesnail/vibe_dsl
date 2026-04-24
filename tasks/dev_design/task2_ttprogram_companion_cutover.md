@@ -377,6 +377,48 @@ launch grouping。
 - phase / wave grouping
 - execution payload
 
+### 3.6.1 `TTComputeOpPlan`
+
+表示 target compute kernel
+内部的 typed compute operation。
+
+它应编码：
+
+- compute op identity
+- `kernel_name` /
+  `kernel_plan_index`
+- generic `kind`
+  variant
+- operand/result binding
+- problem shape /
+  tile shape /
+  block shape
+- accumulator /
+  mbarrier /
+  family-specific fields
+
+它不负责：
+
+- 作为 `gemm_contract`
+  或 `compute_contract`
+  的新名字
+- 从 reader/writer
+  runtime arg 顺序恢复
+  operand role
+- 把 GEMM 字段升级成
+  compute kernel 顶层 schema
+
+当前实现生成
+GEMM / multi-GEMM
+typed entries，
+并由 executable projection
+优先从
+`TTComputeOpPlan`
+生成
+`KernelSpec.compute_ops`。
+旧 `TTKernel.payload["compute_ops"]`
+只保留 compatibility fallback。
+
 ### 3.7 兼容 / realization detail 视图
 
 当前代码里如果仍保留：
@@ -735,6 +777,11 @@ build / codegen / runtime /
   - 落到
     `TTKernelPlan`
     / `TTABIPlan`
+- compute op kind /
+  operand binding /
+  family-specific shape
+  - 落到
+    `TTComputeOpPlan`
 - transport / delivery /
   routing-like 信息
   - 落到 `TTTransportPlan`

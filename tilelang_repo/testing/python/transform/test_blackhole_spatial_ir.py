@@ -295,6 +295,7 @@ def _rebuild_tt_program(
     *,
     mesh_plans=None,
     buffer_distribution_plans=None,
+    compute_op_plans=None,
     cb_plans=None,
     live_form_plans=None,
     materialization_plans=None,
@@ -311,6 +312,7 @@ def _rebuild_tt_program(
         else buffer_distribution_plans,
         list(program.block_plans),
         list(program.kernel_plans),
+        list(program.compute_op_plans) if compute_op_plans is None else compute_op_plans,
         list(program.transport_plans),
         list(program.sync_plans),
         list(program.abi_plans),
@@ -771,6 +773,56 @@ def test_build_tt_program_exposes_mesh_and_buffer_distribution_plans():
     executable = mod["main"].attrs["tl.blackhole_executable"]
     assert "mesh_plans" in executable
     assert "buffer_distribution_plans" in executable
+
+
+def test_build_tt_program_exposes_typed_compute_op_plans():
+    mod = _prepare_blackhole_phase_b_module(gemm_kernel())
+    mod = tilelang.transform.PlanTTBlocks()(mod)
+    mod = tilelang.transform.SelectBlackholeTTMetalBuiltins()(mod)
+    mod = tilelang.transform.PlanTTCompute()(mod)
+    mod = tilelang.transform.PlanTTTransport()(mod)
+    mod = tilelang.transform.PlanTTSync()(mod)
+    mod = tilelang.transform.PlanTTABI()(mod)
+    mod = tilelang.transform.PlanTTExecution()(mod)
+    mod = tilelang.transform.BuildTTProgram()(mod)
+
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    assert len(tt_program.compute_op_plans) == 1
+    compute_op = tt_program.compute_op_plans[0]
+    assert str(compute_op.kind) == "gemm"
+    assert str(compute_op.kernel_name) == "compute"
+    assert int(compute_op.kernel_plan_index) == next(
+        index
+        for index, plan in enumerate(tt_program.kernel_plans)
+        if str(plan.name) == "compute"
+    )
+    assert tuple(str(axis) for axis in compute_op.problem_shape_axes) == ("M", "N", "K")
+    assert tuple(int(dim) for dim in compute_op.problem_shape) == (32, 32, 128)
+    assert tuple(int(dim) for dim in compute_op.tile_shape) == (1, 1, 4)
+    assert tuple(int(dim) for dim in compute_op.block_shape) == (1, 1, 4)
+    operands = {str(binding.role): binding for binding in compute_op.operand_bindings}
+    assert {str(role) for role in operands} == {"a", "b", "c"}
+    assert str(operands["a"].buffer) == "A_shared"
+    assert str(operands["a"].host_buffer) == "A"
+    assert str(operands["a"].tensor_dtype) == "Float16_b"
+    assert str(operands["b"].buffer) == "B_shared"
+    assert str(operands["b"].host_buffer) == "B"
+    assert str(operands["b"].transform_kind) == "transpose"
+    assert str(operands["c"].buffer) == "C_local"
+    assert str(operands["c"].host_buffer) == "C"
+    assert str(compute_op.accumulator_dtype) == "Float32"
+
+    mod = tilelang.transform.MaterializeBlackholeExecutable()(mod)
+    executable = mod["main"].attrs["tl.blackhole_executable"]
+    assert "compute_op_plans" in executable
+    compute_segments = [
+        segment
+        for segment in executable["segment_plan"]
+        if str(segment["kind"]) == "compute"
+    ]
+    assert len(compute_segments) == 1
+    assert str(compute_segments[0]["compute_ops"][0]["kind"]) == "gemm"
 
 
 def test_validate_tt_program_rejects_unresolved_unsupported_compute_ops():

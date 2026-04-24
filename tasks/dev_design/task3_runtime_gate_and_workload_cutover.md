@@ -649,9 +649,10 @@ cleanup debt，
   推断
 - 当前第一轮 typed replacement
   是
-  executable
+  `TTProgram.TTComputeOpPlan`
+  到 executable
   `KernelSpec.compute_ops`
-  数组；
+  的 projection；
   GEMM 只是其中
   `kind=gemm`
   entry，

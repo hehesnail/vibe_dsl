@@ -133,6 +133,66 @@ void ValidateKernelPlan(const TTKernelPlan& kernel_plan, int64_t abi_plan_count,
       << "TTKernelPlan block_plan_index out of bounds";
 }
 
+void ValidateComputeOperandBindingPlan(const TTComputeOperandBindingPlan& binding) {
+  ICHECK(!binding->role.empty()) << "TTComputeOperandBindingPlan requires role";
+  ICHECK(!binding->buffer.empty()) << "TTComputeOperandBindingPlan requires buffer";
+  ICHECK(!binding->host_buffer.empty()) << "TTComputeOperandBindingPlan requires host_buffer";
+  const std::string role = binding->role;
+  ICHECK(role == "a" || role == "b" || role == "c" || role == "input" ||
+         role == "lhs" || role == "rhs" || role == "output" || role == "scaler")
+      << "TTComputeOperandBindingPlan unsupported role " << binding->role;
+  if (!binding->transform_kind.empty()) {
+    const std::string transform_kind = binding->transform_kind;
+    ICHECK(transform_kind == "identity" || transform_kind == "transpose" ||
+           transform_kind == "broadcast" || transform_kind == "cast")
+        << "TTComputeOperandBindingPlan unsupported transform_kind "
+        << binding->transform_kind;
+  }
+}
+
+void ValidateComputeOpPlan(const TTComputeOpPlan& plan, int64_t kernel_plan_count,
+                           const std::unordered_set<std::string>& kernel_names) {
+  ICHECK(!plan->name.empty()) << "TTComputeOpPlan requires name";
+  ICHECK(!plan->kernel_name.empty()) << "TTComputeOpPlan requires kernel_name";
+  ICHECK(kernel_names.count(static_cast<std::string>(plan->kernel_name)))
+      << "TTComputeOpPlan references unknown kernel " << plan->kernel_name;
+  ICHECK_GE(plan->kernel_plan_index, 0) << "TTComputeOpPlan requires kernel_plan_index";
+  ICHECK_LT(plan->kernel_plan_index, kernel_plan_count)
+      << "TTComputeOpPlan kernel_plan_index out of bounds";
+  ICHECK(!plan->kind.empty()) << "TTComputeOpPlan requires kind";
+  const std::string kind = plan->kind;
+  ICHECK(kind == "gemm" || kind == "binary" || kind == "unary" || kind == "reduce" ||
+         kind == "sfpu" || kind == "pack" || kind == "copy")
+      << "TTComputeOpPlan unsupported kind " << plan->kind;
+  ICHECK(!plan->operand_bindings.empty())
+      << "TTComputeOpPlan requires operand_bindings";
+  std::unordered_set<std::string> roles;
+  for (const TTComputeOperandBindingPlan& binding : plan->operand_bindings) {
+    ValidateComputeOperandBindingPlan(binding);
+    ICHECK(roles.insert(static_cast<std::string>(binding->role)).second)
+        << "TTComputeOpPlan duplicate operand role " << binding->role;
+  }
+  if (kind == "gemm") {
+    for (const char* role : {"a", "b", "c"}) {
+      ICHECK(roles.count(role)) << "TTComputeOpPlan GEMM requires operand role " << role;
+    }
+    ICHECK_EQ(plan->problem_shape_axes.size(), 3)
+        << "TTComputeOpPlan GEMM requires M/N/K problem_shape_axes";
+    ICHECK_EQ(plan->problem_shape.size(), 3)
+        << "TTComputeOpPlan GEMM requires M/N/K problem_shape";
+    ICHECK_EQ(plan->tile_shape.size(), 3) << "TTComputeOpPlan GEMM requires tile_shape";
+    ICHECK_EQ(plan->block_shape.size(), 3) << "TTComputeOpPlan GEMM requires block_shape";
+    ICHECK_EQ(plan->subblock_shape.size(), 2)
+        << "TTComputeOpPlan GEMM requires subblock_shape";
+    ValidatePositiveIntegerArray(plan->problem_shape, "TTComputeOpPlan GEMM problem_shape");
+    ValidatePositiveIntegerArray(plan->tile_shape, "TTComputeOpPlan GEMM tile_shape");
+    ValidatePositiveIntegerArray(plan->block_shape, "TTComputeOpPlan GEMM block_shape");
+    ValidatePositiveIntegerArray(plan->subblock_shape, "TTComputeOpPlan GEMM subblock_shape");
+    ICHECK(!plan->accumulator_dtype.empty())
+        << "TTComputeOpPlan GEMM requires accumulator_dtype";
+  }
+}
+
 void ValidateSyncPlan(const TTSyncPlan& sync_plan) {
   ICHECK(!sync_plan->name.empty()) << "TTSyncPlan requires name";
   ICHECK(!sync_plan->kind.empty()) << "TTSyncPlan requires kind";
@@ -637,6 +697,13 @@ void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan) {
     ICHECK(kernel_names.count(kernel_plan->name))
         << "TTKernelPlan missing matching TTKernel compatibility payload: "
         << kernel_plan->name;
+  }
+  std::unordered_set<std::string> compute_op_names;
+  for (const TTComputeOpPlan& compute_op_plan : program->compute_op_plans) {
+    ValidateComputeOpPlan(compute_op_plan,
+                          static_cast<int64_t>(program->kernel_plans.size()), kernel_names);
+    ICHECK(compute_op_names.insert(static_cast<std::string>(compute_op_plan->name)).second)
+        << "duplicate TTComputeOpPlan name " << compute_op_plan->name;
   }
 
   ValidateProgramPayload(program);

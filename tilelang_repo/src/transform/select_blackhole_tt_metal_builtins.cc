@@ -52,7 +52,8 @@ const std::unordered_set<std::string>& HelperCompositeBlackholeBuiltinNames() {
 TTProgram WithStagedCBPlans(const TTProgram& program, ffi::Array<TTCBPlan> cb_plans) {
   return TTProgram(program->entry_name, program->member_func, program->mesh_plans,
                    program->buffer_distribution_plans, program->block_plans,
-                   program->kernel_plans, program->transport_plans, program->sync_plans,
+                   program->kernel_plans, program->compute_op_plans,
+                   program->transport_plans, program->sync_plans,
                    program->abi_plans, program->execution_plans, program->kernels,
                    program->core_groups, std::move(cb_plans), program->semaphore_plans,
                    program->compute_sync_plans, program->dst_layout_plans,

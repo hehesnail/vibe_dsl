@@ -32,6 +32,7 @@ constexpr const char* kEntryName = "entry_name";
 constexpr const char* kMemberFunc = "member_func";
 constexpr const char* kMeshPlans = "mesh_plans";
 constexpr const char* kBufferDistributionPlans = "buffer_distribution_plans";
+constexpr const char* kComputeOpPlans = "compute_op_plans";
 constexpr const char* kSegmentPlan = "segment_plan";
 constexpr const char* kCBConfigs = "cb_configs";
 constexpr const char* kCorePlan = "core_plan";
@@ -123,6 +124,82 @@ inline Array<Any> EncodeBufferDistributionPlans(
     item.Set("shard_orientation", plan->shard_orientation);
     item.Set("host_visibility", plan->host_visibility);
     encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Map<String, Any> EncodeComputeOperandBindingPlan(
+    const TTComputeOperandBindingPlan& binding) {
+  Map<String, Any> item;
+  item.Set("role", binding->role);
+  item.Set("buffer", binding->buffer);
+  item.Set("host_buffer", binding->host_buffer);
+  if (!binding->tensor_dtype.empty()) {
+    item.Set("tensor_dtype", binding->tensor_dtype);
+  }
+  if (!binding->cb_dtype.empty()) {
+    item.Set("cb_dtype", binding->cb_dtype);
+  }
+  if (!binding->transform_kind.empty()) {
+    item.Set("transform_kind", binding->transform_kind);
+  }
+  return item;
+}
+
+inline Map<String, Any> EncodeComputeOpPlan(const TTComputeOpPlan& plan) {
+  Map<String, Any> item;
+  item.Set("name", plan->name);
+  item.Set("kernel_name", plan->kernel_name);
+  item.Set("kernel_plan_index", Integer(plan->kernel_plan_index));
+  item.Set("enabled", Bool(plan->enabled));
+  item.Set("kind", plan->kind);
+  Array<Any> operand_bindings;
+  for (const TTComputeOperandBindingPlan& binding : plan->operand_bindings) {
+    operand_bindings.push_back(EncodeComputeOperandBindingPlan(binding));
+  }
+  item.Set("operand_bindings", operand_bindings);
+  if (!plan->problem_shape_axes.empty()) {
+    item.Set("problem_shape_axes", plan->problem_shape_axes);
+  }
+  if (!plan->problem_shape.empty()) {
+    item.Set("problem_shape", plan->problem_shape);
+  }
+  if (!plan->tile_shape.empty()) {
+    item.Set("tile_shape", plan->tile_shape);
+  }
+  if (!plan->block_shape.empty()) {
+    item.Set("block_shape", plan->block_shape);
+  }
+  if (!plan->subblock_shape.empty()) {
+    item.Set("subblock_shape", plan->subblock_shape);
+  }
+  if (!plan->accumulator_dtype.empty()) {
+    item.Set("accumulator_dtype", plan->accumulator_dtype);
+  }
+  if (!plan->mbarrier_buffer.empty()) {
+    item.Set("mbarrier_buffer", plan->mbarrier_buffer);
+  }
+  if (!plan->mbarrier_scope.empty()) {
+    item.Set("mbarrier_scope", plan->mbarrier_scope);
+  }
+  if (!plan->mbarrier_index_exprs.empty()) {
+    item.Set("mbarrier_index_exprs", plan->mbarrier_index_exprs);
+  }
+  CopyPayloadAllowlist(
+      &item, plan->payload,
+      {"a_buffer", "b_buffer", "c_buffer", "M", "N", "K", "Mt", "Nt", "Kt",
+       "block_m_tiles", "block_n_tiles", "block_k_tiles", "subblock_m_tiles",
+       "subblock_n_tiles", "transpose_A", "transpose_B", "a_tensor_dtype",
+       "b_tensor_dtype", "c_tensor_dtype", "a_cb_dtype", "b_cb_dtype", "c_cb_dtype",
+       "has_mbarrier"});
+  item.Set("has_mbarrier", Bool(!plan->mbarrier_buffer.empty()));
+  return item;
+}
+
+inline Array<Any> EncodeComputeOpPlans(const Array<TTComputeOpPlan>& compute_op_plans) {
+  Array<Any> encoded;
+  for (const TTComputeOpPlan& plan : compute_op_plans) {
+    encoded.push_back(EncodeComputeOpPlan(plan));
   }
   return encoded;
 }
@@ -227,8 +304,19 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram& program) {
     segment.Set("core_type", kernel->core_type);
     CopyPayloadAllowlist(
         &segment, kernel->payload,
-        {"launch_spec", "compute_config", "compute_ops",
+        {"launch_spec", "compute_config",
          ::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs});
+    Array<Any> compute_ops;
+    for (const TTComputeOpPlan& plan : program->compute_op_plans) {
+      if (plan->kernel_name == kernel->name) {
+        compute_ops.push_back(EncodeComputeOpPlan(plan));
+      }
+    }
+    if (!compute_ops.empty()) {
+      segment.Set("compute_ops", compute_ops);
+    } else {
+      CopyPayloadAllowlist(&segment, kernel->payload, {"compute_ops"});
+    }
     if (!abi->runtime_args.empty()) {
       segment.Set("runtime_args", abi->runtime_args);
     }
@@ -316,6 +404,11 @@ inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram
   if (!buffer_distribution_plans.empty()) {
     executable.Set(String(executable_key::kBufferDistributionPlans),
                    buffer_distribution_plans);
+  }
+
+  Array<Any> compute_op_plans = EncodeComputeOpPlans(program->compute_op_plans);
+  if (!compute_op_plans.empty()) {
+    executable.Set(String(executable_key::kComputeOpPlans), compute_op_plans);
   }
 
   Array<Any> segment_plan = EncodeSegmentPlan(program);

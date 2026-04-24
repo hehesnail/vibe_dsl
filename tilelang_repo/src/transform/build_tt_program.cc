@@ -107,6 +107,7 @@ struct TTProgramSlices {
   Array<TTBufferDistributionPlan> buffer_distribution_plans;
   Array<TTBlockPlan> block_plans;
   Array<TTKernelPlan> kernel_plans;
+  Array<TTComputeOpPlan> compute_op_plans;
   Array<TTTransportPlan> transport_plans;
   Array<TTSyncPlan> sync_plans;
   Array<TTABIPlan> abi_plans;
@@ -131,6 +132,7 @@ TTProgramSlices UnpackTTProgram(const TTProgram& program) {
   slices.buffer_distribution_plans = program->buffer_distribution_plans;
   slices.block_plans = program->block_plans;
   slices.kernel_plans = program->kernel_plans;
+  slices.compute_op_plans = program->compute_op_plans;
   slices.transport_plans = program->transport_plans;
   slices.sync_plans = program->sync_plans;
   slices.abi_plans = program->abi_plans;
@@ -153,6 +155,7 @@ TTProgram PackTTProgram(TTProgramSlices slices) {
                    std::move(slices.mesh_plans),
                    std::move(slices.buffer_distribution_plans),
                    std::move(slices.block_plans), std::move(slices.kernel_plans),
+                   std::move(slices.compute_op_plans),
                    std::move(slices.transport_plans), std::move(slices.sync_plans),
                    std::move(slices.abi_plans), std::move(slices.execution_plans),
                    std::move(slices.kernels), std::move(slices.core_groups),
@@ -305,6 +308,202 @@ Array<TTKernelPlan> BuildKernelPlans(const Array<TTKernel>& kernels) {
                                         /*block_plan_index=*/0, kernel->abi_plan_index, payload));
   }
   return kernel_plans;
+}
+
+bool GetBoolOrDefault(const Map<String, Any>& dict, const char* key, bool default_value = false) {
+  if (auto value = dict.Get(String(key))) {
+    return Downcast<Bool>(value.value());
+  }
+  return default_value;
+}
+
+Array<Integer> BuildIntegerArray(std::initializer_list<int64_t> values) {
+  Array<Integer> result;
+  for (int64_t value : values) {
+    result.push_back(Integer(value));
+  }
+  return result;
+}
+
+Array<String> BuildStringArray(std::initializer_list<const char*> values) {
+  Array<String> result;
+  for (const char* value : values) {
+    result.push_back(String(value));
+  }
+  return result;
+}
+
+int64_t GetGemmTileDim(const Map<String, Any>& op, const char* tile_key, const char* dim_key) {
+  int64_t value = GetIntegerOrDefault(op, tile_key, 0);
+  if (value > 0) {
+    return value;
+  }
+  const int64_t dim = GetIntegerOrDefault(op, dim_key, 0);
+  return dim > 0 ? dim / 32 : 0;
+}
+
+Array<TTComputeOperandBindingPlan> BuildComputeOperandBindingPlans(const Map<String, Any>& op) {
+  auto dtype_for_role = [&](const std::string& role, const char* suffix) {
+    const std::string key = role + suffix;
+    return GetStringOrDefault(op, key.c_str(), String());
+  };
+  auto transform_for_role = [&](const std::string& role) {
+    if ((role == "a" && GetBoolOrDefault(op, "transpose_A", false)) ||
+        (role == "b" && GetBoolOrDefault(op, "transpose_B", false))) {
+      return String("transpose");
+    }
+    return String("identity");
+  };
+
+  Array<TTComputeOperandBindingPlan> bindings;
+  if (auto value = op.Get(String("operand_bindings"))) {
+    for (const Any& binding_any : Downcast<Array<Any>>(value.value())) {
+      Map<String, Any> binding = AsMap(binding_any);
+      if (binding.empty()) {
+        continue;
+      }
+      const String role = GetStringOrDefault(binding, "role", String());
+      const String buffer = GetStringOrDefault(binding, "buffer", String());
+      if (role.empty() || buffer.empty()) {
+        continue;
+      }
+      const std::string role_str = static_cast<std::string>(role);
+      String host_buffer = GetStringOrDefault(binding, "host_buffer", buffer);
+      Map<String, Any> payload = binding;
+      bindings.push_back(TTComputeOperandBindingPlan(
+          role, buffer, host_buffer, dtype_for_role(role_str, "_tensor_dtype"),
+          dtype_for_role(role_str, "_cb_dtype"), transform_for_role(role_str), payload));
+    }
+  }
+  if (!bindings.empty()) {
+    return bindings;
+  }
+
+  auto push_gemm_operand = [&](const char* role, const char* field) {
+    const String buffer = GetStringOrDefault(op, field, String());
+    if (buffer.empty()) {
+      return;
+    }
+    const std::string role_str(role);
+    Map<String, Any> payload;
+    payload.Set("role", String(role));
+    payload.Set("buffer", buffer);
+    payload.Set("host_buffer", buffer);
+    bindings.push_back(TTComputeOperandBindingPlan(
+        String(role), buffer, buffer, dtype_for_role(role_str, "_tensor_dtype"),
+        dtype_for_role(role_str, "_cb_dtype"), transform_for_role(role_str), payload));
+  };
+  push_gemm_operand("a", "a_buffer");
+  push_gemm_operand("b", "b_buffer");
+  push_gemm_operand("c", "c_buffer");
+  return bindings;
+}
+
+TTComputeOpPlan BuildComputeOpPlanFromMap(const Map<String, Any>& op, const String& kernel_name,
+                                          int64_t kernel_plan_index, int64_t ordinal) {
+  const String kind = GetStringOrDefault(op, "kind", String("unknown"));
+  Array<Integer> problem_shape;
+  Array<String> problem_shape_axes;
+  Array<Integer> tile_shape;
+  Array<Integer> block_shape;
+  Array<Integer> subblock_shape;
+  if (kind == "gemm") {
+    const int64_t m = GetIntegerOrDefault(op, "M", 0);
+    const int64_t n = GetIntegerOrDefault(op, "N", 0);
+    const int64_t k = GetIntegerOrDefault(op, "K", 0);
+    const int64_t mt = GetGemmTileDim(op, "Mt", "M");
+    const int64_t nt = GetGemmTileDim(op, "Nt", "N");
+    const int64_t kt = GetGemmTileDim(op, "Kt", "K");
+    problem_shape_axes = BuildStringArray({"M", "N", "K"});
+    problem_shape = BuildIntegerArray({m, n, k});
+    tile_shape = BuildIntegerArray({mt, nt, kt});
+    block_shape = BuildIntegerArray({GetIntegerOrDefault(op, "block_m_tiles", mt),
+                                     GetIntegerOrDefault(op, "block_n_tiles", nt),
+                                     GetIntegerOrDefault(op, "block_k_tiles", kt)});
+    subblock_shape = BuildIntegerArray({GetIntegerOrDefault(op, "subblock_m_tiles", mt),
+                                        GetIntegerOrDefault(op, "subblock_n_tiles", nt)});
+  }
+
+  Array<String> mbarrier_index_exprs;
+  if (auto value = op.Get(String("mbarrier_index_exprs"))) {
+    for (const Any& expr : Downcast<Array<Any>>(value.value())) {
+      mbarrier_index_exprs.push_back(Downcast<String>(expr));
+    }
+  }
+
+  const std::string name = "compute_op_" + static_cast<std::string>(kernel_name) + "_" +
+                           std::to_string(ordinal);
+  return TTComputeOpPlan(
+      String(name), kernel_name, kernel_plan_index, kind,
+      GetBoolOrDefault(op, "enabled", true), BuildComputeOperandBindingPlans(op),
+      problem_shape_axes, problem_shape, tile_shape, block_shape, subblock_shape,
+      GetStringOrDefault(op, "accumulator_dtype", String()),
+      GetStringOrDefault(op, "mbarrier_buffer", String()),
+      GetStringOrDefault(op, "mbarrier_scope", String()), mbarrier_index_exprs, op);
+}
+
+Array<TTComputeOpPlan> BuildComputeOpPlans(const Array<TTKernel>& kernels,
+                                           const Array<TTKernelPlan>& kernel_plans,
+                                           const Map<String, Any>& program_payload) {
+  std::unordered_map<std::string, int64_t> kernel_index_by_name;
+  for (int64_t i = 0; i < static_cast<int64_t>(kernel_plans.size()); ++i) {
+    kernel_index_by_name.emplace(static_cast<std::string>(kernel_plans[i]->name), i);
+  }
+
+  Array<TTComputeOpPlan> compute_op_plans;
+  for (const TTKernel& kernel : kernels) {
+    auto kernel_index_it = kernel_index_by_name.find(static_cast<std::string>(kernel->name));
+    const int64_t kernel_plan_index =
+        kernel_index_it == kernel_index_by_name.end() ? -1 : kernel_index_it->second;
+    if (auto value = kernel->payload.Get(String("compute_ops"))) {
+      int64_t ordinal = 0;
+      for (const Any& op_any : Downcast<Array<Any>>(value.value())) {
+        Map<String, Any> op = AsMap(op_any);
+        if (op.empty()) {
+          continue;
+        }
+        compute_op_plans.push_back(
+            BuildComputeOpPlanFromMap(op, kernel->name, kernel_plan_index, ordinal++));
+      }
+    }
+  }
+  if (!compute_op_plans.empty()) {
+    return compute_op_plans;
+  }
+
+  String compute_kernel_name;
+  int64_t compute_kernel_plan_index = -1;
+  for (int64_t i = 0; i < static_cast<int64_t>(kernel_plans.size()); ++i) {
+    const TTKernelPlan& plan = kernel_plans[i];
+    if (plan->kind == "compute" || plan->core_type == "trisc") {
+      compute_kernel_name = plan->name;
+      compute_kernel_plan_index = i;
+      break;
+    }
+  }
+  if (compute_kernel_name.empty()) {
+    return compute_op_plans;
+  }
+  if (auto value = program_payload.Get(String("multi_compute_contracts"))) {
+    int64_t ordinal = 0;
+    for (const Any& op_any : Downcast<Array<Any>>(value.value())) {
+      Map<String, Any> op = AsMap(op_any);
+      if (op.empty()) {
+        continue;
+      }
+      compute_op_plans.push_back(BuildComputeOpPlanFromMap(
+          op, compute_kernel_name, compute_kernel_plan_index, ordinal++));
+    }
+    return compute_op_plans;
+  }
+  if (auto value = program_payload.Get(String("compute_contract"))) {
+    Map<String, Any> op = AsMap(value.value());
+    if (!op.empty()) {
+      compute_op_plans.push_back(
+          BuildComputeOpPlanFromMap(op, compute_kernel_name, compute_kernel_plan_index, 0));
+    }
+  }
+  return compute_op_plans;
 }
 
 String DeriveTransportDeliveryKind(const DataflowEdge& edge) {
@@ -599,6 +798,8 @@ tvm::transform::Pass PlanTTCompute() {
       slices.materialization_plans = planner.GetTTMaterializationPlans();
       slices.consumer_binding_plans = planner.GetTTConsumerBindingPlans();
       slices.payload = planner.GetTTProgramPayload();
+      slices.compute_op_plans =
+          BuildComputeOpPlans(slices.kernels, slices.kernel_plans, slices.payload);
       planned = WithTTProgramAttr(std::move(planned), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);
     }

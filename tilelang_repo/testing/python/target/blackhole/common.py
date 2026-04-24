@@ -297,6 +297,86 @@ def rebuild_tt_kernel_plan(
     )
 
 
+def rebuild_tt_compute_operand_binding_plan(
+    binding,
+    *,
+    role=None,
+    buffer=None,
+    host_buffer=None,
+    tensor_dtype=None,
+    cb_dtype=None,
+    transform_kind=None,
+    payload=None,
+):
+    """Rebuild a TTComputeOperandBindingPlan with optional field overrides."""
+    make_binding = tilelang.tvm.get_global_func("tl.TTComputeOperandBindingPlan")
+    return make_binding(
+        str(binding.role) if role is None else role,
+        str(binding.buffer) if buffer is None else buffer,
+        str(binding.host_buffer) if host_buffer is None else host_buffer,
+        str(binding.tensor_dtype) if tensor_dtype is None else tensor_dtype,
+        str(binding.cb_dtype) if cb_dtype is None else cb_dtype,
+        str(binding.transform_kind) if transform_kind is None else transform_kind,
+        dict(binding.payload) if payload is None else payload,
+    )
+
+
+def rebuild_tt_compute_op_plan(
+    compute_op,
+    *,
+    name=None,
+    kernel_name=None,
+    kernel_plan_index=None,
+    kind=None,
+    enabled=None,
+    operand_bindings=None,
+    problem_shape_axes=None,
+    problem_shape=None,
+    tile_shape=None,
+    block_shape=None,
+    subblock_shape=None,
+    accumulator_dtype=None,
+    mbarrier_buffer=None,
+    mbarrier_scope=None,
+    mbarrier_index_exprs=None,
+    payload=None,
+):
+    """Rebuild a TTComputeOpPlan with optional field overrides."""
+    make_compute_op = tilelang.tvm.get_global_func("tl.TTComputeOpPlan")
+    return make_compute_op(
+        str(compute_op.name) if name is None else name,
+        str(compute_op.kernel_name) if kernel_name is None else kernel_name,
+        int(compute_op.kernel_plan_index)
+        if kernel_plan_index is None
+        else kernel_plan_index,
+        str(compute_op.kind) if kind is None else kind,
+        bool(compute_op.enabled) if enabled is None else enabled,
+        list(compute_op.operand_bindings)
+        if operand_bindings is None
+        else operand_bindings,
+        list(compute_op.problem_shape_axes)
+        if problem_shape_axes is None
+        else problem_shape_axes,
+        list(compute_op.problem_shape) if problem_shape is None else problem_shape,
+        list(compute_op.tile_shape) if tile_shape is None else tile_shape,
+        list(compute_op.block_shape) if block_shape is None else block_shape,
+        list(compute_op.subblock_shape)
+        if subblock_shape is None
+        else subblock_shape,
+        str(compute_op.accumulator_dtype)
+        if accumulator_dtype is None
+        else accumulator_dtype,
+        str(compute_op.mbarrier_buffer)
+        if mbarrier_buffer is None
+        else mbarrier_buffer,
+        str(compute_op.mbarrier_scope) if mbarrier_scope is None else mbarrier_scope,
+        list(compute_op.mbarrier_index_exprs)
+        if mbarrier_index_exprs is None
+        else mbarrier_index_exprs,
+        dict(compute_op.payload) if payload is None else payload,
+    )
+
+
 def rebuild_tt_semaphore_plan(
     semaphore_plan,
     *,
@@ -362,6 +442,7 @@ def rebuild_tt_program(
     member_func=None,
     mesh_plans=None,
     buffer_distribution_plans=None,
+    compute_op_plans=None,
     block_plans=None,
     kernel_plans=None,
     sync_plans=None,
@@ -401,6 +482,7 @@ def rebuild_tt_program(
         else buffer_distribution_plans,
         list(program.block_plans) if block_plans is None else block_plans,
         list(program.kernel_plans) if kernel_plans is None else kernel_plans,
+        list(program.compute_op_plans) if compute_op_plans is None else compute_op_plans,
         list(program.transport_plans) if transport_plans is None else transport_plans,
         list(program.sync_plans) if sync_plans is None else sync_plans,
         list(program.abi_plans) if abi_plans is None else abi_plans,

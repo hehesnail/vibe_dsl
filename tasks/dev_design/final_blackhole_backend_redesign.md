@@ -247,6 +247,7 @@ Normalized Tile TIR
 - `TTBufferDistributionPlan`
 - `TTBlockPlan`
 - `TTKernelPlan`
+- `TTComputeOpPlan`
 - `TTTransportPlan`
 - `TTSyncPlan`
 - `TTABIPlan`
@@ -273,6 +274,19 @@ Normalized Tile TIR
   记录 replicated distribution /
   DRAM-L1 memory space /
   ABI accessor coverage
+- `TTComputeOpPlan`
+  已作为 compute-kind
+  owner-truth slice
+  进入 `TTProgram`
+  和 executable projection；
+  当前生成覆盖 GEMM /
+  multi-GEMM，
+  以 `kind=gemm`
+  entry 承载 operand binding /
+  M-N-K shape /
+  tile-block shape /
+  accumulator dtype /
+  mbarrier binding
 - `TTCoreGroup`
 - `TTCBPlan`
 - `TTSemaphorePlan`
@@ -546,10 +560,20 @@ tl.tt_program
   - `reduce`
   - `sfpu`
   - `copy / pack / untilize`
-- `TTKernelPlan`
+- `TTComputeOpPlan`
   中的 operand/result binding
-- `TTKernelPlan`
+- `TTComputeOpPlan`
   中的 tile register / pack-unpack / accumulation / reduction protocol
+
+当前生成先覆盖
+GEMM / multi-GEMM；
+non-GEMM exact builtin
+仍由 lowered kernel source
+和 builtin selection
+保证 compile path，
+逐 op typed expansion
+归入 workload payoff
+继续推进。
 
 ### 4.3 `PlanTTSync`
 

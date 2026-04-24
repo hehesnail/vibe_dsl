@@ -1025,6 +1025,27 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   不能反向限制 codegen /
   executable projection
   的 schema。
+- Compute kind 不能再用
+  `gemm_contract`
+  / `compute_contract`
+  这类 family payload
+  当 owner truth。
+  `TTComputeOpPlan`
+  是 `TTProgram`
+  层的 typed compute slice；
+  executable
+  `KernelSpec.compute_ops`
+  应优先由它投影。
+  GEMM 只是
+  `kind=gemm`
+  的 entry，
+  operand role /
+  host buffer /
+  compute-side buffer
+  必须来自 typed
+  `operand_bindings`，
+  旧 `TTKernel.payload["compute_ops"]`
+  只能是 compatibility fallback。
 
 ## 9. 调试模式
 

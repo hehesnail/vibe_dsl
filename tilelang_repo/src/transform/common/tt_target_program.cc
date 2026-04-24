@@ -84,6 +84,81 @@ TTBufferDistributionPlan::TTBufferDistributionPlan(
   data_ = std::move(n);
 }
 
+void TTComputeOperandBindingPlanNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTComputeOperandBindingPlanNode>()
+      .def_ro("role", &TTComputeOperandBindingPlanNode::role)
+      .def_ro("buffer", &TTComputeOperandBindingPlanNode::buffer)
+      .def_ro("host_buffer", &TTComputeOperandBindingPlanNode::host_buffer)
+      .def_ro("tensor_dtype", &TTComputeOperandBindingPlanNode::tensor_dtype)
+      .def_ro("cb_dtype", &TTComputeOperandBindingPlanNode::cb_dtype)
+      .def_ro("transform_kind", &TTComputeOperandBindingPlanNode::transform_kind)
+      .def_ro("payload", &TTComputeOperandBindingPlanNode::payload);
+}
+
+TTComputeOperandBindingPlan::TTComputeOperandBindingPlan(
+    ffi::String role, ffi::String buffer, ffi::String host_buffer, ffi::String tensor_dtype,
+    ffi::String cb_dtype, ffi::String transform_kind, ffi::Map<ffi::String, ffi::Any> payload) {
+  auto n = ffi::make_object<TTComputeOperandBindingPlanNode>();
+  n->role = std::move(role);
+  n->buffer = std::move(buffer);
+  n->host_buffer = std::move(host_buffer);
+  n->tensor_dtype = std::move(tensor_dtype);
+  n->cb_dtype = std::move(cb_dtype);
+  n->transform_kind = std::move(transform_kind);
+  n->payload = std::move(payload);
+  data_ = std::move(n);
+}
+
+void TTComputeOpPlanNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTComputeOpPlanNode>()
+      .def_ro("name", &TTComputeOpPlanNode::name)
+      .def_ro("kernel_name", &TTComputeOpPlanNode::kernel_name)
+      .def_ro("kernel_plan_index", &TTComputeOpPlanNode::kernel_plan_index)
+      .def_ro("kind", &TTComputeOpPlanNode::kind)
+      .def_ro("enabled", &TTComputeOpPlanNode::enabled)
+      .def_ro("operand_bindings", &TTComputeOpPlanNode::operand_bindings)
+      .def_ro("problem_shape_axes", &TTComputeOpPlanNode::problem_shape_axes)
+      .def_ro("problem_shape", &TTComputeOpPlanNode::problem_shape)
+      .def_ro("tile_shape", &TTComputeOpPlanNode::tile_shape)
+      .def_ro("block_shape", &TTComputeOpPlanNode::block_shape)
+      .def_ro("subblock_shape", &TTComputeOpPlanNode::subblock_shape)
+      .def_ro("accumulator_dtype", &TTComputeOpPlanNode::accumulator_dtype)
+      .def_ro("mbarrier_buffer", &TTComputeOpPlanNode::mbarrier_buffer)
+      .def_ro("mbarrier_scope", &TTComputeOpPlanNode::mbarrier_scope)
+      .def_ro("mbarrier_index_exprs", &TTComputeOpPlanNode::mbarrier_index_exprs)
+      .def_ro("payload", &TTComputeOpPlanNode::payload);
+}
+
+TTComputeOpPlan::TTComputeOpPlan(
+    ffi::String name, ffi::String kernel_name, int64_t kernel_plan_index, ffi::String kind,
+    bool enabled, ffi::Array<TTComputeOperandBindingPlan> operand_bindings,
+    ffi::Array<ffi::String> problem_shape_axes, ffi::Array<Integer> problem_shape,
+    ffi::Array<Integer> tile_shape, ffi::Array<Integer> block_shape,
+    ffi::Array<Integer> subblock_shape, ffi::String accumulator_dtype,
+    ffi::String mbarrier_buffer, ffi::String mbarrier_scope,
+    ffi::Array<ffi::String> mbarrier_index_exprs, ffi::Map<ffi::String, ffi::Any> payload) {
+  auto n = ffi::make_object<TTComputeOpPlanNode>();
+  n->name = std::move(name);
+  n->kernel_name = std::move(kernel_name);
+  n->kernel_plan_index = kernel_plan_index;
+  n->kind = std::move(kind);
+  n->enabled = enabled;
+  n->operand_bindings = std::move(operand_bindings);
+  n->problem_shape_axes = std::move(problem_shape_axes);
+  n->problem_shape = std::move(problem_shape);
+  n->tile_shape = std::move(tile_shape);
+  n->block_shape = std::move(block_shape);
+  n->subblock_shape = std::move(subblock_shape);
+  n->accumulator_dtype = std::move(accumulator_dtype);
+  n->mbarrier_buffer = std::move(mbarrier_buffer);
+  n->mbarrier_scope = std::move(mbarrier_scope);
+  n->mbarrier_index_exprs = std::move(mbarrier_index_exprs);
+  n->payload = std::move(payload);
+  data_ = std::move(n);
+}
+
 void TTBlockPlanNode::RegisterReflection() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<TTBlockPlanNode>()
@@ -533,6 +608,7 @@ void TTProgramNode::RegisterReflection() {
       .def_ro("buffer_distribution_plans", &TTProgramNode::buffer_distribution_plans)
       .def_ro("block_plans", &TTProgramNode::block_plans)
       .def_ro("kernel_plans", &TTProgramNode::kernel_plans)
+      .def_ro("compute_op_plans", &TTProgramNode::compute_op_plans)
       .def_ro("transport_plans", &TTProgramNode::transport_plans)
       .def_ro("sync_plans", &TTProgramNode::sync_plans)
       .def_ro("abi_plans", &TTProgramNode::abi_plans)
@@ -554,6 +630,7 @@ TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
                      ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
                      ffi::Array<TTBlockPlan> block_plans,
                      ffi::Array<TTKernelPlan> kernel_plans,
+                     ffi::Array<TTComputeOpPlan> compute_op_plans,
                      ffi::Array<TTTransportPlan> transport_plans,
                      ffi::Array<TTSyncPlan> sync_plans,
                      ffi::Array<TTABIPlan> abi_plans,
@@ -574,6 +651,7 @@ TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
   n->buffer_distribution_plans = std::move(buffer_distribution_plans);
   n->block_plans = std::move(block_plans);
   n->kernel_plans = std::move(kernel_plans);
+  n->compute_op_plans = std::move(compute_op_plans);
   n->transport_plans = std::move(transport_plans);
   n->sync_plans = std::move(sync_plans);
   n->abi_plans = std::move(abi_plans);
@@ -594,6 +672,8 @@ TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
 TVM_FFI_STATIC_INIT_BLOCK() {
   RegisterNodeReflection<TTMeshPlanNode>();
   RegisterNodeReflection<TTBufferDistributionPlanNode>();
+  RegisterNodeReflection<TTComputeOperandBindingPlanNode>();
+  RegisterNodeReflection<TTComputeOpPlanNode>();
   RegisterNodeReflection<TTBlockPlanNode>();
   RegisterNodeReflection<TTKernelPlanNode>();
   RegisterNodeReflection<TTKernelNode>();
@@ -635,6 +715,35 @@ TVM_FFI_STATIC_INIT_BLOCK() {
             std::move(distribution_kind), std::move(layout), std::move(memory_space),
             page_size_bytes, std::move(shard_shape), std::move(shard_orientation),
             std::move(host_visibility), std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTComputeOperandBindingPlan",
+      [](ffi::String role, ffi::String buffer, ffi::String host_buffer,
+         ffi::String tensor_dtype, ffi::String cb_dtype, ffi::String transform_kind,
+         ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTComputeOperandBindingPlan(
+            std::move(role), std::move(buffer), std::move(host_buffer),
+            std::move(tensor_dtype), std::move(cb_dtype), std::move(transform_kind),
+            std::move(payload));
+      });
+  refl::GlobalDef().def(
+      "tl.TTComputeOpPlan",
+      [](ffi::String name, ffi::String kernel_name, int64_t kernel_plan_index,
+         ffi::String kind, bool enabled,
+         ffi::Array<TTComputeOperandBindingPlan> operand_bindings,
+         ffi::Array<ffi::String> problem_shape_axes, ffi::Array<Integer> problem_shape,
+         ffi::Array<Integer> tile_shape, ffi::Array<Integer> block_shape,
+         ffi::Array<Integer> subblock_shape, ffi::String accumulator_dtype,
+         ffi::String mbarrier_buffer, ffi::String mbarrier_scope,
+         ffi::Array<ffi::String> mbarrier_index_exprs,
+         ffi::Map<ffi::String, ffi::Any> payload) {
+        return TTComputeOpPlan(
+            std::move(name), std::move(kernel_name), kernel_plan_index, std::move(kind),
+            enabled, std::move(operand_bindings), std::move(problem_shape_axes),
+            std::move(problem_shape), std::move(tile_shape), std::move(block_shape),
+            std::move(subblock_shape), std::move(accumulator_dtype),
+            std::move(mbarrier_buffer), std::move(mbarrier_scope),
+            std::move(mbarrier_index_exprs), std::move(payload));
       });
   refl::GlobalDef().def(
       "tl.TTBlockPlan",
@@ -813,7 +922,9 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       [](ffi::String entry_name, ffi::String member_func, ffi::Array<TTMeshPlan> mesh_plans,
          ffi::Array<TTBufferDistributionPlan> buffer_distribution_plans,
          ffi::Array<TTBlockPlan> block_plans,
-         ffi::Array<TTKernelPlan> kernel_plans, ffi::Array<TTTransportPlan> transport_plans,
+         ffi::Array<TTKernelPlan> kernel_plans,
+         ffi::Array<TTComputeOpPlan> compute_op_plans,
+         ffi::Array<TTTransportPlan> transport_plans,
          ffi::Array<TTSyncPlan> sync_plans, ffi::Array<TTABIPlan> abi_plans,
          ffi::Array<TTExecutionPlan> execution_plans, ffi::Array<TTKernel> kernels,
          ffi::Array<TTCoreGroup> core_groups, ffi::Array<TTCBPlan> cb_plans,
@@ -827,6 +938,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
         return TTProgram(std::move(entry_name), std::move(member_func),
                          std::move(mesh_plans), std::move(buffer_distribution_plans),
                          std::move(block_plans), std::move(kernel_plans),
+                         std::move(compute_op_plans),
                          std::move(transport_plans), std::move(sync_plans),
                          std::move(abi_plans), std::move(execution_plans),
                          std::move(kernels), std::move(core_groups), std::move(cb_plans),
