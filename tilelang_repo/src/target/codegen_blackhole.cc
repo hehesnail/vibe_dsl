@@ -884,7 +884,6 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   }
 
   std::unordered_map<std::string, const tvm::tir::VarNode *> buffer_vars_by_name;
-  std::vector<std::string> ordered_handle_buffer_names;
   auto record_handle_dtype = [&](const tvm::tir::VarNode* var,
                                  std::optional<DataType> dtype = std::nullopt) {
     if (var == nullptr) {
@@ -903,7 +902,6 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   for (const auto &param : f->params) {
     if (param->dtype.is_handle()) {
       buffer_vars_by_name[param->name_hint] = param.get();
-      ordered_handle_buffer_names.push_back(param->name_hint);
       record_handle_dtype(param.get());
     }
   }
@@ -911,14 +909,10 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
     const auto &buffer = kv.second;
     buffer_vars_by_name[buffer->name] = buffer->data.get();
     record_handle_dtype(buffer->data.get(), buffer->dtype);
-    if (std::find(ordered_handle_buffer_names.begin(), ordered_handle_buffer_names.end(),
-                  buffer->name) == ordered_handle_buffer_names.end()) {
-      ordered_handle_buffer_names.push_back(buffer->name);
-    }
   }
   // Packed Blackhole entrypoints can arrive after MakePackedAPI, where the
   // public function params are no longer the original A/B handles and
-  // buffer_map may be empty.  Recover the runtime-backed buffer vars from the
+  // buffer_map may be empty.  Recover exact runtime-backed buffer vars from the
   // actual TIR body so builtins like read_tile_to_cb(A, ...) still bind.
   tir::PostOrderVisit(f->body, [&](const tvm::runtime::ObjectRef &node) {
     if (const auto *store = node.as<tvm::tir::BufferStoreNode>()) {
@@ -971,10 +965,6 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   });
 
   int arg_idx = 0;
-  size_t next_input_buffer = 0;
-  size_t next_output_buffer = ordered_handle_buffer_names.empty()
-                                  ? 0
-                                  : ordered_handle_buffer_names.size() - 1;
   for (const auto &item : runtime_args) {
     auto arg_info = item.as<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>().value_or(
         tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>());
@@ -997,32 +987,32 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
       runtime_arg_vars_by_kind_[arg_kind] = arg_name;
     }
 
-    std::optional<std::string> bound_buffer_name;
-    if (auto v = arg_info.Get("buffer")) {
-      bound_buffer_name = std::string(Downcast<tvm::ffi::String>(v.value()));
-    } else if ((arg_kind == "input_buffer_addr32" || arg_kind == "input_buffer_addr") &&
-               next_input_buffer < ordered_handle_buffer_names.size()) {
-      bound_buffer_name = ordered_handle_buffer_names[next_input_buffer++];
-    } else if ((arg_kind == "output_buffer_addr32" || arg_kind == "output_buffer_addr") &&
-               !ordered_handle_buffer_names.empty() &&
-               next_output_buffer < ordered_handle_buffer_names.size()) {
-      bound_buffer_name = ordered_handle_buffer_names[next_output_buffer];
-      if (next_output_buffer > 0) {
-        --next_output_buffer;
-      }
-    }
-
-    if (bound_buffer_name.has_value() && IsBufferAddressRuntimeArgKind(arg_kind)) {
-      std::vector<std::string> candidate_names{bound_buffer_name.value()};
-      candidate_names.push_back(bound_buffer_name.value() + "_handle");
-      for (const auto& candidate_name : candidate_names) {
-        auto it = buffer_vars_by_name.find(candidate_name);
-        if (it != buffer_vars_by_name.end()) {
-          buffer_runtime_arg_map_[it->second] = arg_name;
-          buffer_runtime_arg_map_by_name_[candidate_name] = arg_name;
-        }
-      }
-      buffer_runtime_arg_map_by_name_[bound_buffer_name.value()] = arg_name;
+    if (IsBufferAddressRuntimeArgKind(arg_kind)) {
+      auto buffer_it = arg_info.Get("buffer");
+      ICHECK(buffer_it.has_value())
+          << "Blackhole codegen requires explicit buffer binding for runtime arg "
+          << arg_name << " kind=" << arg_kind;
+      const std::string bound_buffer_name = Downcast<tvm::ffi::String>(buffer_it.value());
+      ICHECK(!bound_buffer_name.empty())
+          << "Blackhole codegen requires non-empty buffer binding for runtime arg "
+          << arg_name << " kind=" << arg_kind;
+      auto var_it = buffer_vars_by_name.find(bound_buffer_name);
+      ICHECK(var_it != buffer_vars_by_name.end())
+          << "Blackhole codegen requires runtime arg " << arg_name << " kind=" << arg_kind
+          << " buffer=" << bound_buffer_name
+          << " to match a formal/TIR buffer identity";
+      auto [var_binding_it, var_inserted] =
+          buffer_runtime_arg_map_.emplace(var_it->second, arg_name);
+      ICHECK(var_inserted || var_binding_it->second == arg_name)
+          << "Blackhole codegen buffer " << bound_buffer_name
+          << " has conflicting runtime arg bindings " << var_binding_it->second
+          << " and " << arg_name;
+      auto [name_binding_it, name_inserted] =
+          buffer_runtime_arg_map_by_name_.emplace(bound_buffer_name, arg_name);
+      ICHECK(name_inserted || name_binding_it->second == arg_name)
+          << "Blackhole codegen buffer " << bound_buffer_name
+          << " has conflicting runtime arg name bindings " << name_binding_it->second
+          << " and " << arg_name;
     }
     ++arg_idx;
   }
@@ -1050,40 +1040,6 @@ std::string CodeGenBlackhole::GetRuntimeArgVarForBuffer(
   auto by_name = buffer_runtime_arg_map_by_name_.find(buffer_var->name_hint);
   if (by_name != buffer_runtime_arg_map_by_name_.end()) {
     return by_name->second;
-  }
-
-  auto lookup_kind = [&](const char* kind) -> std::optional<std::string> {
-    if (!kind) {
-      return std::nullopt;
-    }
-    auto it = runtime_arg_vars_by_kind_.find(kind);
-    if (it == runtime_arg_vars_by_kind_.end()) {
-      return std::nullopt;
-    }
-    return it->second;
-  };
-
-  if (auto preferred = lookup_kind(preferred_kind)) {
-    return *preferred;
-  }
-  if (preferred_kind) {
-    const std::string preferred32 = std::string(preferred_kind) + "32";
-    if (auto preferred = lookup_kind(preferred32.c_str())) {
-      return *preferred;
-    }
-  }
-
-  auto out32 = runtime_arg_vars_by_kind_.find("output_buffer_addr32");
-  auto out64 = runtime_arg_vars_by_kind_.find("output_buffer_addr");
-  const bool has_input_addr32 = runtime_arg_vars_by_kind_.count("input_buffer_addr32");
-  const bool has_input_addr64 = runtime_arg_vars_by_kind_.count("input_buffer_addr");
-  if (!has_input_addr32 && !has_input_addr64) {
-    if (out32 != runtime_arg_vars_by_kind_.end()) {
-      return out32->second;
-    }
-    if (out64 != runtime_arg_vars_by_kind_.end()) {
-      return out64->second;
-    }
   }
 
   std::ostringstream available_names;

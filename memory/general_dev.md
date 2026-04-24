@@ -98,6 +98,29 @@
   不要回读
   `TTProgram`
   或 legacy lowering attrs
+- leaf-side host/codegen buffer binding
+  必须以
+  `ExecutableSpec`
+  formal buffer identity
+  和 runtime/common runtime arg
+  explicit `buffer`
+  role schema
+  exact match
+  为准。
+  不要用
+  `PackedArgs`
+  顺序、
+  `_handle`
+  suffix、
+  runtime arg kind
+  或
+  compile-time ABI
+  `spec.name`
+  fallback
+  恢复 buffer 身份；
+  缺失或不一致应在 codegen /
+  direct-runtime schema
+  处 fail-close
 - `tl.blackhole_logical_buffer_tile_bridge_specs`
   如果仍存在，
   也只是唯一窄 temporary handoff；

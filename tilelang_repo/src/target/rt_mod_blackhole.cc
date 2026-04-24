@@ -1972,16 +1972,6 @@ static bool IsOutputBufferArgKind(const std::string& kind) {
   return kind == "output_buffer_addr32" || kind == "output_buffer_addr";
 }
 
-static std::string NormalizeBufferBindingName(std::string name) {
-  constexpr const char* kHandleSuffix = "_handle";
-  if (name.size() > std::strlen(kHandleSuffix) &&
-      name.compare(name.size() - std::strlen(kHandleSuffix), std::strlen(kHandleSuffix),
-                   kHandleSuffix) == 0) {
-    name.resize(name.size() - std::strlen(kHandleSuffix));
-  }
-  return name;
-}
-
 static std::string ResolveBufferRole(const ExecutableSpec& spec, const std::string& buffer_name) {
   auto check_args = [&](const std::vector<KernelArgSpec>& args, bool output) {
     return std::any_of(args.begin(), args.end(), [&](const KernelArgSpec& arg) {
@@ -2481,7 +2471,7 @@ static void EnforceExplicitBufferRoleSchemaGate(ExecutableSpec* spec) {
     }
     ++n_buffer_args;
     if (i < spec->tvm_arg_names.size() && !spec->tvm_arg_names[i].empty()) {
-      expected_buffer_names.insert(NormalizeBufferBindingName(spec->tvm_arg_names[i]));
+      expected_buffer_names.insert(spec->tvm_arg_names[i]);
     }
   }
   if (n_buffer_args == 0) {
@@ -2499,7 +2489,7 @@ static void EnforceExplicitBufferRoleSchemaGate(ExecutableSpec* spec) {
         missing_buffer_name = true;
         continue;
       }
-      bound_buffer_names.insert(NormalizeBufferBindingName(arg.buffer));
+      bound_buffer_names.insert(arg.buffer);
     }
   };
   record_args(spec->runtime_args);

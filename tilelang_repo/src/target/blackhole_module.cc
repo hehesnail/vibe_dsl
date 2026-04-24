@@ -18,7 +18,6 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
-#include <cstring>
 #include <cstdlib>
 #include <unistd.h>
 #include <filesystem>
@@ -1219,8 +1218,10 @@ static void AppendAccessorCompileTimeArgs(
     const CompileTimeArgSpec& spec,
     const std::unordered_map<std::string, RuntimeBufferBinding>& buffer_bindings,
     std::vector<uint32_t>* compile_time_args) {
-  const std::string buffer_name = !spec.buffer.empty() ? spec.buffer : spec.name;
-  AppendInterleavedAccessorCompileTimeArgs(buffer_name, spec.count, spec.args_config_bits,
+  ICHECK(!spec.buffer.empty())
+      << "Blackhole interleaved accessor compile-time ABI requires explicit buffer binding for "
+      << spec.name;
+  AppendInterleavedAccessorCompileTimeArgs(spec.buffer, spec.count, spec.args_config_bits,
                                            buffer_bindings, compile_time_args);
 }
 
@@ -1371,8 +1372,10 @@ static void ValidateKernelDirectRuntimeSchema(const KernelSpec& kernel) {
     if (spec.kind != "interleaved_accessor_cta") {
       continue;
     }
-    ValidateDirectRuntimeAccessorSpec(!spec.buffer.empty() ? spec.buffer : spec.name, spec.layout,
-                                      spec.memory_space,
+    ICHECK(!spec.buffer.empty())
+        << "Blackhole direct runtime requires explicit buffer binding for compile-time ABI "
+        << spec.name;
+    ValidateDirectRuntimeAccessorSpec(spec.buffer, spec.layout, spec.memory_space,
                                       /*common_runtime_arg_count=*/0, spec.args_config_bits);
   }
 }
@@ -2051,38 +2054,23 @@ void BlackholeModuleNode::ExecuteDirect(
 
 void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
                                        void** void_args) const {
-  auto normalize_buffer_name = [](std::string name) {
-    constexpr const char* kHandleSuffix = "_handle";
-    if (name.size() > std::strlen(kHandleSuffix) &&
-        name.compare(name.size() - std::strlen(kHandleSuffix), std::strlen(kHandleSuffix),
-                     kHandleSuffix) == 0) {
-      name.resize(name.size() - std::strlen(kHandleSuffix));
-    }
-    return name;
-  };
-
   // Direct runtime requires explicit schema-derived name->role bindings.
   std::unordered_map<std::string, bool> buffer_is_output_by_name;
-  std::vector<std::string> ordered_buffer_names;
-  std::unordered_set<std::string> seen_buffer_names;
   auto append_buffer_contract = [&](const std::vector<KernelArgSpec>& runtime_args) {
     for (const auto& arg : runtime_args) {
-      if (arg.kind == "input_buffer_addr32" || arg.kind == "input_buffer_addr") {
-        if (!arg.buffer.empty()) {
-          const std::string normalized_buffer_name = normalize_buffer_name(arg.buffer);
-          buffer_is_output_by_name.emplace(normalized_buffer_name, false);
-          if (seen_buffer_names.insert(normalized_buffer_name).second) {
-            ordered_buffer_names.push_back(normalized_buffer_name);
-          }
-        }
-      } else if (arg.kind == "output_buffer_addr32" || arg.kind == "output_buffer_addr") {
-        if (!arg.buffer.empty()) {
-          const std::string normalized_buffer_name = normalize_buffer_name(arg.buffer);
-          buffer_is_output_by_name.emplace(normalized_buffer_name, true);
-          if (seen_buffer_names.insert(normalized_buffer_name).second) {
-            ordered_buffer_names.push_back(normalized_buffer_name);
-          }
-        }
+      const bool is_input = arg.kind == "input_buffer_addr32" || arg.kind == "input_buffer_addr";
+      const bool is_output = arg.kind == "output_buffer_addr32" || arg.kind == "output_buffer_addr";
+      if (!is_input && !is_output) {
+        continue;
+      }
+      ICHECK(!arg.buffer.empty())
+          << "Blackhole direct runtime requires explicit buffer role schema for arg "
+          << arg.name << " kind=" << arg.kind;
+      auto [it, inserted] = buffer_is_output_by_name.emplace(arg.buffer, is_output);
+      ICHECK(inserted || it->second == is_output)
+          << "Blackhole direct runtime buffer role mismatch for " << arg.buffer;
+      if (is_input) {
+        ICHECK(!is_output);
       }
     }
   };
@@ -2096,27 +2084,23 @@ void BlackholeWrappedFunc::operator()(ffi::PackedArgs args, ffi::Any* rv,
   std::vector<uint32_t> scalars;
   std::vector<std::string> output_names;
 
-  size_t buf_idx = 0;
   for (size_t i = 0; i < info_.tvm_arg_types.size(); ++i) {
     if (info_.tvm_is_buffer_arg[i]) {
       DLTensor* tensor = ExtractTensorArg(args[i], void_args != nullptr ? void_args[i] : nullptr);
-      const std::string buffer_name =
-          (buf_idx < ordered_buffer_names.size())
-              ? ordered_buffer_names[buf_idx]
-              : ((i < info_.tvm_arg_names.size() && !info_.tvm_arg_names[i].empty())
-                     ? info_.tvm_arg_names[i]
-                     : ("arg" + std::to_string(i)));
-      const std::string normalized_buffer_name = normalize_buffer_name(buffer_name);
-      auto role_it = buffer_is_output_by_name.find(normalized_buffer_name);
+      ICHECK_LT(i, info_.tvm_arg_names.size())
+          << "Blackhole direct runtime requires formal buffer identity for arg index " << i;
+      const std::string buffer_name = info_.tvm_arg_names[i];
+      ICHECK(!buffer_name.empty())
+          << "Blackhole direct runtime requires formal buffer identity for arg index " << i;
+      auto role_it = buffer_is_output_by_name.find(buffer_name);
       ICHECK(role_it != buffer_is_output_by_name.end())
           << "Blackhole direct runtime requires explicit buffer role binding for "
-          << normalized_buffer_name;
+          << buffer_name;
       bool is_out = role_it->second;
-      buffer_args.push_back(RuntimeTensorBinding{normalized_buffer_name, tensor, is_out});
+      buffer_args.push_back(RuntimeTensorBinding{buffer_name, tensor, is_out});
       if (is_out) {
-        output_names.push_back(normalized_buffer_name);
+        output_names.push_back(buffer_name);
       }
-      ++buf_idx;
     } else {
       ffi::AnyView arg = args[i];
       uint32_t val = ExtractScalar(arg, info_.tvm_arg_types[i]);

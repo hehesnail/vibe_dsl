@@ -172,6 +172,10 @@ replacement helper carrier。
 - accessors
 - semaphore bindings
 - per-work arg specs
+- formal buffer identities
+  and their exact runtime/common-runtime
+  `buffer`
+  role bindings
 - typed compute operation records
   such as
   `KernelSpec.compute_ops`
@@ -182,6 +186,30 @@ replacement helper carrier。
 不是给 runtime
 再去切 kernel body
 的提示词。
+
+formal buffer identity
+必须由
+`ExecutableSpec`
+显式携带并与
+runtime arg /
+common runtime arg /
+compile-time accessor ABI
+中的
+`buffer`
+字段 exact match。
+leaf reader /
+codegen /
+`BlackholeModule`
+不能用
+PackedArgs
+位置、
+`_handle`
+suffix、
+runtime arg kind
+或
+`spec.name`
+fallback
+恢复 buffer 身份。
 
 ### 3.3 execution resources
 

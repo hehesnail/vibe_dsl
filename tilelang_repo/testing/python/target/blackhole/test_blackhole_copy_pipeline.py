@@ -1869,7 +1869,7 @@ def test_blackhole_copy_codegen_rejects_runtime_arg_without_identity():
         _rebuild_codegen_module_with_runtime_args(artifact, missing_identity_runtime_args)
 
 
-def test_blackhole_copy_build_marks_missing_buffer_role_schema_direct_runtime_unsupported():
+def test_blackhole_copy_codegen_rejects_buffer_addr_arg_without_buffer_identity():
     kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
     target = Target("blackhole")
 
@@ -1888,11 +1888,58 @@ def test_blackhole_copy_build_marks_missing_buffer_role_schema_direct_runtime_un
         {"name": "output_tile_stride", "kind": "output_tile_stride", "identity": "output_tile_stride", "dtype": "uint32"},
     ]
 
-    rebuilt = _rebuild_codegen_module_with_runtime_args(artifact, bufferless_runtime_args)
-    executable_spec = rebuilt.get_function_metadata("main")
-    reasons = [str(reason) for reason in executable_spec["direct_runtime_unsupported_reasons"]]
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="explicit buffer binding|Missing runtime arg binding for buffer var",
+    ):
+        _rebuild_codegen_module_with_runtime_args(artifact, bufferless_runtime_args)
 
-    assert any("missing explicit buffer role schema" in reason for reason in reasons)
+
+def test_blackhole_copy_codegen_rejects_buffer_identity_mismatch_without_arg_kind_fallback():
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = artifact.device_mod["main_kernel"]
+    mismatched_runtime_args = []
+    for arg in extract_blackhole_runtime_args(device_main):
+        mutated_arg = dict(arg)
+        if str(mutated_arg.get("buffer", "")) == "A":
+            mutated_arg["buffer"] = "A_unbound"
+            mutated_arg["identity"] = "input_buffer_addr32:A_unbound"
+        mismatched_runtime_args.append(mutated_arg)
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="formal/TIR buffer identity|Missing runtime arg binding for buffer var",
+    ):
+        _rebuild_codegen_module_with_runtime_args(artifact, mismatched_runtime_args)
+
+
+def test_blackhole_copy_codegen_rejects_handle_suffix_buffer_identity_fallback():
+    kernel = staged_copy_kernel(tile_rows=2, tile_cols=1)
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    device_main = artifact.device_mod["main_kernel"]
+    suffixed_runtime_args = []
+    for arg in extract_blackhole_runtime_args(device_main):
+        mutated_arg = dict(arg)
+        buffer_name = str(mutated_arg.get("buffer", ""))
+        if buffer_name in ("A", "B"):
+            mutated_arg["buffer"] = f"{buffer_name}_handle"
+            mutated_arg["identity"] = f"{mutated_arg['kind']}:{buffer_name}_handle"
+        suffixed_runtime_args.append(mutated_arg)
+
+    with pytest.raises(
+        tvm.error.InternalError,
+        match="formal/TIR buffer identity|Missing runtime arg binding for buffer var",
+    ):
+        _rebuild_codegen_module_with_runtime_args(artifact, suffixed_runtime_args)
 
 
 def test_blackhole_copy_codegen_rejects_common_runtime_arg_without_identity():
