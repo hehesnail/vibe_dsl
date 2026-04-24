@@ -166,11 +166,22 @@ leaf owner-truth
   `TTMaterializationPlan` /
   `TTConsumerBindingPlan`
   slices，
-  由 planner 写入，
+  由 planner 写入；
+  admitted materialization paths
+  已分别携带
+  `SpatialPlan`
+  `LiveValue`
+  /
+  `MaterializationBoundary`
+  /
+  `LiveValueEdge`
+  typed references，
   由
   `ValidateTTProgram`
   fail-close
-  校验
+  校验这些引用与
+  logical owner truth
+  一致
 - `MaterializeBlackholeExecutable`
   将这些 slices
   投影成
@@ -225,13 +236,19 @@ leaf reader
 
 当前 repo HEAD
 的执行顺序不是直接扩大 runtime case。
-先把
+admitted fragment/cast
+materialization path
+已经把
 `PlanTT*`
 接到
 `SpatialPlan`
 live-value /
 materialization-boundary
-schema，
+schema；
+后续先把 recurrence /
+reduction row state /
+非零 live-in merge
+继续映射到这层，
 再把 leaf contract-family
 从 payload/fallback
 收敛到 typed
@@ -618,6 +635,30 @@ buffer name
 
 - 每个 `TTConsumerBindingPlan`
   都引用一个存在的 `TTLiveFormPlan`
+- `TTLiveFormPlan`
+  必须携带 typed
+  `spatial_live_value`
+  /
+  `spatial_live_value_index`
+  并与
+  `SpatialPlan.live_values`
+  对齐
+- `TTMaterializationPlan`
+  必须携带 typed
+  `materialization_boundary`
+  /
+  `materialization_boundary_index`
+  并与
+  `SpatialPlan.materialization_boundaries`
+  对齐
+- `TTConsumerBindingPlan`
+  必须携带 typed
+  `live_value_edge`
+  /
+  `live_value_edge_index`
+  并与
+  `SpatialPlan.live_value_edges`
+  对齐
 - consumer 若要求 full logical tile，
   source live form
   必须是 full logical tile

@@ -1369,6 +1369,12 @@ static std::vector<LiveFormPlanSpec> ExtractLiveFormPlans(const tir::PrimFunc& f
     LiveFormPlanSpec plan;
     if (auto value = item.Get("name")) plan.name = Downcast<String>(value.value());
     if (auto value = item.Get("logical_value")) plan.logical_value = Downcast<String>(value.value());
+    if (auto value = item.Get("spatial_live_value")) {
+      plan.spatial_live_value = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("spatial_live_value_index")) {
+      plan.spatial_live_value_index = Downcast<Integer>(value.value())->value;
+    }
     if (auto value = item.Get("producer_kernel")) {
       plan.producer_kernel = Downcast<String>(value.value());
     }
@@ -1407,6 +1413,12 @@ static std::vector<MaterializationPlanSpec> ExtractMaterializationPlans(const ti
     if (auto value = item.Get("name")) plan.name = Downcast<String>(value.value());
     if (auto value = item.Get("source_live_form")) {
       plan.source_live_form = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("materialization_boundary")) {
+      plan.materialization_boundary = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("materialization_boundary_index")) {
+      plan.materialization_boundary_index = Downcast<Integer>(value.value())->value;
     }
     if (auto value = item.Get("target_buffer")) plan.target_buffer = Downcast<String>(value.value());
     if (auto value = item.Get("target_kernel")) plan.target_kernel = Downcast<String>(value.value());
@@ -1449,6 +1461,12 @@ static std::vector<ConsumerBindingPlanSpec> ExtractConsumerBindingPlans(const ti
     }
     if (auto value = item.Get("source_live_form")) {
       plan.source_live_form = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("live_value_edge")) {
+      plan.live_value_edge = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("live_value_edge_index")) {
+      plan.live_value_edge_index = Downcast<Integer>(value.value())->value;
     }
     if (auto value = item.Get("accepts_distributed_slice")) {
       plan.accepts_distributed_slice = Downcast<Bool>(value.value());

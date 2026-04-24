@@ -813,6 +813,60 @@ def test_blackhole_fragment_fill_cast_publish_exposes_typed_live_form_owner_trut
     assert bool(cast_binding.requires_full_logical_tile) is False
 
 
+def test_blackhole_fragment_fill_cast_publish_tt_plans_reference_spatial_live_boundaries():
+    kernel = fragment_fill_cast_publish_kernel()
+    target = Target("blackhole")
+
+    mod = tilelang.tvm.IRModule({"main": kernel})
+    with target:
+        mod = tilelang.engine.phase.LowerAndLegalize(mod, target)
+    mod = lower_blackhole_to_tt_target(mod)
+
+    main = mod["main"]
+    spatial_plan = main.attrs["tl.spatial_plan"]
+    tt_program = require_tt_program(main)
+
+    live_value_by_subject = {
+        str(live_value.subject): (index, live_value)
+        for index, live_value in enumerate(spatial_plan.live_values)
+    }
+    boundary_by_source_live_value = {
+        str(boundary.source_live_value): (index, boundary)
+        for index, boundary in enumerate(spatial_plan.materialization_boundaries)
+    }
+    live_edge_by_name = {
+        str(edge.name): (index, edge)
+        for index, edge in enumerate(spatial_plan.live_value_edges)
+    }
+
+    c_local_index, c_local_live_value = live_value_by_subject["C_local"]
+    c_local_boundary_index, c_local_boundary = boundary_by_source_live_value[
+        str(c_local_live_value.name)
+    ]
+    c_local_live_edge_index, c_local_live_edge = live_edge_by_name[
+        str(c_local_boundary.live_value_edge)
+    ]
+
+    live_forms = {str(plan.logical_value): plan for plan in tt_program.live_form_plans}
+    c_local_live_form = live_forms["C_local"]
+    assert str(c_local_live_form.spatial_live_value) == str(c_local_live_value.name)
+    assert int(c_local_live_form.spatial_live_value_index) == c_local_index
+
+    materializations = {
+        str(plan.target_buffer): plan for plan in tt_program.materialization_plans
+    }
+    d_local_materialization = materializations["D_local"]
+    assert str(d_local_materialization.materialization_boundary) == str(c_local_boundary.name)
+    assert int(d_local_materialization.materialization_boundary_index) == c_local_boundary_index
+
+    bindings = {
+        str(plan.consumer_op_kind): plan for plan in tt_program.consumer_binding_plans
+    }
+    cast_binding = bindings["cast_fragment_slice"]
+    assert str(cast_binding.live_value_edge) == str(c_local_live_edge.name)
+    assert int(cast_binding.live_value_edge_index) == c_local_live_edge_index
+
+
 def test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plans():
     kernel = fragment_fill_cast_publish_kernel()
     target = Target("blackhole")
@@ -821,6 +875,12 @@ def test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plan
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
+    live_forms = {
+        str(plan["logical_value"]): plan for plan in executable_spec["live_form_plans"]
+    }
+    assert str(live_forms["C_local"]["spatial_live_value"]).startswith("live_")
+    assert int(live_forms["C_local"]["spatial_live_value_index"]) >= 0
+
     materializations = {
         str(plan["target_buffer"]): plan
         for plan in executable_spec["materialization_plans"]
@@ -831,6 +891,16 @@ def test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plan
     assert str(d_local["publication_protocol"]) == "pack_thread_direct_store"
     assert str(d_local["source_live_form"]) == "live_form_C_local"
     assert str(d_local["produced_live_form"]) == "live_form_D_local"
+    assert str(d_local["materialization_boundary"]).startswith("materialization_")
+    assert int(d_local["materialization_boundary_index"]) >= 0
+    consumer_bindings = {
+        str(plan["consumer_op_kind"]): plan
+        for plan in executable_spec["consumer_binding_plans"]
+    }
+    assert str(consumer_bindings["cast_fragment_slice"]["live_value_edge"]).startswith(
+        "live_edge_"
+    )
+    assert int(consumer_bindings["cast_fragment_slice"]["live_value_edge_index"]) >= 0
 
     output_materialization = next(
         item for item in executable_spec["buffer_materializations"] if str(item["buffer"]) == "D"

@@ -416,7 +416,8 @@ Array<TTMaterializationPlan> RemapMaterializationCBRequirementIndices(
                                             : requirement_index));
     }
     remapped.push_back(TTMaterializationPlan(
-        plan->name, plan->source_live_form, plan->target_buffer, plan->target_kernel,
+        plan->name, plan->source_live_form, plan->materialization_boundary,
+        plan->materialization_boundary_index, plan->target_buffer, plan->target_kernel,
         plan->materialization_protocol, plan->publication_protocol, cb_plan_indices,
         plan->required_sync_plan_indices, plan->produced_live_form, plan->payload));
   }

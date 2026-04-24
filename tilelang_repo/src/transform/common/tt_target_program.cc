@@ -290,6 +290,8 @@ void TTLiveFormPlanNode::RegisterReflection() {
   refl::ObjectDef<TTLiveFormPlanNode>()
       .def_ro("name", &TTLiveFormPlanNode::name)
       .def_ro("logical_value", &TTLiveFormPlanNode::logical_value)
+      .def_ro("spatial_live_value", &TTLiveFormPlanNode::spatial_live_value)
+      .def_ro("spatial_live_value_index", &TTLiveFormPlanNode::spatial_live_value_index)
       .def_ro("producer_kernel", &TTLiveFormPlanNode::producer_kernel)
       .def_ro("physical_form", &TTLiveFormPlanNode::physical_form)
       .def_ro("execution_topology", &TTLiveFormPlanNode::execution_topology)
@@ -300,6 +302,8 @@ void TTLiveFormPlanNode::RegisterReflection() {
 }
 
 TTLiveFormPlan::TTLiveFormPlan(ffi::String name, ffi::String logical_value,
+                               ffi::String spatial_live_value,
+                               int64_t spatial_live_value_index,
                                ffi::String producer_kernel, ffi::String physical_form,
                                ffi::String execution_topology, int64_t physical_local_extent,
                                int64_t logical_element_count, ffi::String ownership_kind,
@@ -307,6 +311,8 @@ TTLiveFormPlan::TTLiveFormPlan(ffi::String name, ffi::String logical_value,
   auto n = ffi::make_object<TTLiveFormPlanNode>();
   n->name = std::move(name);
   n->logical_value = std::move(logical_value);
+  n->spatial_live_value = std::move(spatial_live_value);
+  n->spatial_live_value_index = spatial_live_value_index;
   n->producer_kernel = std::move(producer_kernel);
   n->physical_form = std::move(physical_form);
   n->execution_topology = std::move(execution_topology);
@@ -322,6 +328,10 @@ void TTMaterializationPlanNode::RegisterReflection() {
   refl::ObjectDef<TTMaterializationPlanNode>()
       .def_ro("name", &TTMaterializationPlanNode::name)
       .def_ro("source_live_form", &TTMaterializationPlanNode::source_live_form)
+      .def_ro("materialization_boundary",
+              &TTMaterializationPlanNode::materialization_boundary)
+      .def_ro("materialization_boundary_index",
+              &TTMaterializationPlanNode::materialization_boundary_index)
       .def_ro("target_buffer", &TTMaterializationPlanNode::target_buffer)
       .def_ro("target_kernel", &TTMaterializationPlanNode::target_kernel)
       .def_ro("materialization_protocol", &TTMaterializationPlanNode::materialization_protocol)
@@ -335,7 +345,8 @@ void TTMaterializationPlanNode::RegisterReflection() {
 }
 
 TTMaterializationPlan::TTMaterializationPlan(
-    ffi::String name, ffi::String source_live_form, ffi::String target_buffer,
+    ffi::String name, ffi::String source_live_form, ffi::String materialization_boundary,
+    int64_t materialization_boundary_index, ffi::String target_buffer,
     ffi::String target_kernel, ffi::String materialization_protocol,
     ffi::String publication_protocol,
     ffi::Array<Integer> required_cb_plan_indices,
@@ -344,6 +355,8 @@ TTMaterializationPlan::TTMaterializationPlan(
   auto n = ffi::make_object<TTMaterializationPlanNode>();
   n->name = std::move(name);
   n->source_live_form = std::move(source_live_form);
+  n->materialization_boundary = std::move(materialization_boundary);
+  n->materialization_boundary_index = materialization_boundary_index;
   n->target_buffer = std::move(target_buffer);
   n->target_kernel = std::move(target_kernel);
   n->materialization_protocol = std::move(materialization_protocol);
@@ -362,6 +375,8 @@ void TTConsumerBindingPlanNode::RegisterReflection() {
       .def_ro("consumer_kernel", &TTConsumerBindingPlanNode::consumer_kernel)
       .def_ro("consumer_op_kind", &TTConsumerBindingPlanNode::consumer_op_kind)
       .def_ro("source_live_form", &TTConsumerBindingPlanNode::source_live_form)
+      .def_ro("live_value_edge", &TTConsumerBindingPlanNode::live_value_edge)
+      .def_ro("live_value_edge_index", &TTConsumerBindingPlanNode::live_value_edge_index)
       .def_ro("accepts_distributed_slice",
               &TTConsumerBindingPlanNode::accepts_distributed_slice)
       .def_ro("requires_full_logical_tile",
@@ -372,7 +387,8 @@ void TTConsumerBindingPlanNode::RegisterReflection() {
 
 TTConsumerBindingPlan::TTConsumerBindingPlan(
     ffi::String name, ffi::String consumer_kernel, ffi::String consumer_op_kind,
-    ffi::String source_live_form, bool accepts_distributed_slice,
+    ffi::String source_live_form, ffi::String live_value_edge, int64_t live_value_edge_index,
+    bool accepts_distributed_slice,
     bool requires_full_logical_tile, int64_t abi_plan_index,
     ffi::Map<ffi::String, ffi::Any> payload) {
   auto n = ffi::make_object<TTConsumerBindingPlanNode>();
@@ -380,6 +396,8 @@ TTConsumerBindingPlan::TTConsumerBindingPlan(
   n->consumer_kernel = std::move(consumer_kernel);
   n->consumer_op_kind = std::move(consumer_op_kind);
   n->source_live_form = std::move(source_live_form);
+  n->live_value_edge = std::move(live_value_edge);
+  n->live_value_edge_index = live_value_edge_index;
   n->accepts_distributed_slice = accepts_distributed_slice;
   n->requires_full_logical_tile = requires_full_logical_tile;
   n->abi_plan_index = abi_plan_index;
@@ -611,7 +629,16 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::String physical_form, ffi::String execution_topology,
          int64_t physical_local_extent, int64_t logical_element_count,
          ffi::String ownership_kind, ffi::Map<ffi::String, ffi::Any> payload) {
+        ffi::String spatial_live_value;
+        int64_t spatial_live_value_index = -1;
+        if (auto value = payload.Get("spatial_live_value")) {
+          spatial_live_value = Downcast<ffi::String>(value.value());
+        }
+        if (auto value = payload.Get("spatial_live_value_index")) {
+          spatial_live_value_index = Downcast<Integer>(value.value())->value;
+        }
         return TTLiveFormPlan(std::move(name), std::move(logical_value),
+                              std::move(spatial_live_value), spatial_live_value_index,
                               std::move(producer_kernel), std::move(physical_form),
                               std::move(execution_topology), physical_local_extent,
                               logical_element_count, std::move(ownership_kind),
@@ -625,10 +652,18 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<Integer> required_cb_plan_indices,
          ffi::Array<Integer> required_sync_plan_indices, ffi::String produced_live_form,
          ffi::Map<ffi::String, ffi::Any> payload) {
+        ffi::String materialization_boundary;
+        int64_t materialization_boundary_index = -1;
+        if (auto value = payload.Get("materialization_boundary")) {
+          materialization_boundary = Downcast<ffi::String>(value.value());
+        }
+        if (auto value = payload.Get("materialization_boundary_index")) {
+          materialization_boundary_index = Downcast<Integer>(value.value())->value;
+        }
         return TTMaterializationPlan(
-            std::move(name), std::move(source_live_form), std::move(target_buffer),
-            std::move(target_kernel), std::move(materialization_protocol),
-            std::move(publication_protocol),
+            std::move(name), std::move(source_live_form), std::move(materialization_boundary),
+            materialization_boundary_index, std::move(target_buffer), std::move(target_kernel),
+            std::move(materialization_protocol), std::move(publication_protocol),
             std::move(required_cb_plan_indices), std::move(required_sync_plan_indices),
             std::move(produced_live_form), std::move(payload));
       });
@@ -638,8 +673,17 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::String source_live_form, bool accepts_distributed_slice,
          bool requires_full_logical_tile, int64_t abi_plan_index,
          ffi::Map<ffi::String, ffi::Any> payload) {
+        ffi::String live_value_edge;
+        int64_t live_value_edge_index = -1;
+        if (auto value = payload.Get("live_value_edge")) {
+          live_value_edge = Downcast<ffi::String>(value.value());
+        }
+        if (auto value = payload.Get("live_value_edge_index")) {
+          live_value_edge_index = Downcast<Integer>(value.value())->value;
+        }
         return TTConsumerBindingPlan(std::move(name), std::move(consumer_kernel),
                                      std::move(consumer_op_kind), std::move(source_live_form),
+                                     std::move(live_value_edge), live_value_edge_index,
                                      accepts_distributed_slice, requires_full_logical_tile,
                                      abi_plan_index, std::move(payload));
       });

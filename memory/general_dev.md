@@ -690,6 +690,20 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   这些都必须在
   `PlanTTTransport + PlanTTCompute`
   能直接消费的 owner truth 上落地
+- `TTProgram` 的 physical live-form /
+  materialization /
+  consumer-binding plan
+  如果承接 `SpatialPlan`
+  logical relation，
+  必须用 typed refs
+  指回
+  `LiveValue` /
+  `MaterializationBoundary` /
+  `LiveValueEdge`
+  并在 `ValidateTTProgram`
+  对照 `SpatialPlan` fail-close；
+  不能只把这些名字塞进 payload
+  或让 leaf reader 再从 body order 恢复
 - Data movement 与 compute 的边界要保持明确：
   `TensorAccessor / CB / NoC / semaphore`
   属于 transport protocol；

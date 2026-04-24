@@ -467,6 +467,8 @@ struct BufferMaterializationSpec {
 struct LiveFormPlanSpec {
   std::string name;
   std::string logical_value;
+  std::string spatial_live_value;
+  int64_t spatial_live_value_index = -1;
   std::string producer_kernel;
   std::string physical_form;
   std::string execution_topology;
@@ -478,6 +480,8 @@ struct LiveFormPlanSpec {
     writer->BeginObject();
     writer->WriteObjectKeyValue("name", name);
     writer->WriteObjectKeyValue("logical_value", logical_value);
+    writer->WriteObjectKeyValue("spatial_live_value", spatial_live_value);
+    writer->WriteObjectKeyValue("spatial_live_value_index", spatial_live_value_index);
     writer->WriteObjectKeyValue("producer_kernel", producer_kernel);
     writer->WriteObjectKeyValue("physical_form", physical_form);
     writer->WriteObjectKeyValue("execution_topology", execution_topology);
@@ -493,6 +497,8 @@ struct LiveFormPlanSpec {
 struct MaterializationPlanSpec {
   std::string name;
   std::string source_live_form;
+  std::string materialization_boundary;
+  int64_t materialization_boundary_index = -1;
   std::string target_buffer;
   std::string target_kernel;
   std::string materialization_protocol;
@@ -505,6 +511,8 @@ struct MaterializationPlanSpec {
     writer->BeginObject();
     writer->WriteObjectKeyValue("name", name);
     writer->WriteObjectKeyValue("source_live_form", source_live_form);
+    writer->WriteObjectKeyValue("materialization_boundary", materialization_boundary);
+    writer->WriteObjectKeyValue("materialization_boundary_index", materialization_boundary_index);
     writer->WriteObjectKeyValue("target_buffer", target_buffer);
     writer->WriteObjectKeyValue("target_kernel", target_kernel);
     writer->WriteObjectKeyValue("materialization_protocol", materialization_protocol);
@@ -523,6 +531,8 @@ struct ConsumerBindingPlanSpec {
   std::string consumer_kernel;
   std::string consumer_op_kind;
   std::string source_live_form;
+  std::string live_value_edge;
+  int64_t live_value_edge_index = -1;
   bool accepts_distributed_slice = false;
   bool requires_full_logical_tile = false;
   int64_t abi_plan_index = -1;
@@ -533,6 +543,8 @@ struct ConsumerBindingPlanSpec {
     writer->WriteObjectKeyValue("consumer_kernel", consumer_kernel);
     writer->WriteObjectKeyValue("consumer_op_kind", consumer_op_kind);
     writer->WriteObjectKeyValue("source_live_form", source_live_form);
+    writer->WriteObjectKeyValue("live_value_edge", live_value_edge);
+    writer->WriteObjectKeyValue("live_value_edge_index", live_value_edge_index);
     writer->WriteObjectKeyValue("accepts_distributed_slice", accepts_distributed_slice);
     writer->WriteObjectKeyValue("requires_full_logical_tile", requires_full_logical_tile);
     if (abi_plan_index >= 0) {

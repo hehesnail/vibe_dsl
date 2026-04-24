@@ -112,6 +112,8 @@ inline Array<Any> EncodeLiveFormPlans(const Array<TTLiveFormPlan>& live_form_pla
     Map<String, Any> item = plan->payload;
     item.Set("name", plan->name);
     item.Set("logical_value", plan->logical_value);
+    item.Set("spatial_live_value", plan->spatial_live_value);
+    item.Set("spatial_live_value_index", Integer(plan->spatial_live_value_index));
     item.Set("producer_kernel", plan->producer_kernel);
     item.Set("physical_form", plan->physical_form);
     item.Set("execution_topology", plan->execution_topology);
@@ -130,6 +132,8 @@ inline Array<Any> EncodeMaterializationPlans(
     Map<String, Any> item = plan->payload;
     item.Set("name", plan->name);
     item.Set("source_live_form", plan->source_live_form);
+    item.Set("materialization_boundary", plan->materialization_boundary);
+    item.Set("materialization_boundary_index", Integer(plan->materialization_boundary_index));
     item.Set("target_buffer", plan->target_buffer);
     item.Set("target_kernel", plan->target_kernel);
     item.Set("materialization_protocol", plan->materialization_protocol);
@@ -153,6 +157,8 @@ inline Array<Any> EncodeConsumerBindingPlans(
     item.Set("consumer_kernel", plan->consumer_kernel);
     item.Set("consumer_op_kind", plan->consumer_op_kind);
     item.Set("source_live_form", plan->source_live_form);
+    item.Set("live_value_edge", plan->live_value_edge);
+    item.Set("live_value_edge_index", Integer(plan->live_value_edge_index));
     item.Set("accepts_distributed_slice", Bool(plan->accepts_distributed_slice));
     item.Set("requires_full_logical_tile", Bool(plan->requires_full_logical_tile));
     if (plan->abi_plan_index >= 0) {

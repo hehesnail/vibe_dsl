@@ -270,9 +270,31 @@
   `SpatialPlan`
   logical live-value /
   materialization-boundary
-  后续仍需继续被
+  已开始被
   `PlanTT*`
-  消费并细化到更宽 live-in /
+  消费：
+  admitted live-form /
+  materialization paths
+  的
+  `TTLiveFormPlan`
+  /
+  `TTMaterializationPlan`
+  /
+  `TTConsumerBindingPlan`
+  现在分别携带 typed
+  `spatial_live_value`
+  /
+  `materialization_boundary`
+  /
+  `live_value_edge`
+  引用，
+  并由
+  `ValidateTTProgram`
+  对照
+  `SpatialPlan`
+  fail-close
+  校验；
+  后续仍需继续细化到更宽 live-in /
   recurrence /
   workload payoff
   支持面；
@@ -295,7 +317,7 @@
   按顺序收束为：
   先让
   `PlanTT*`
-  消费并细化
+  已开始消费并细化
   `SpatialPlan`
   live-value /
   materialization-boundary
@@ -450,8 +472,17 @@ Normalized Tile TIR
   `materialization_plans` /
   `consumer_binding_plans`
   slices；
+  admitted materialization paths
+  已携带
+  `SpatialPlan`
+  logical live-value /
+  materialization-boundary /
+  live-value-edge
+  typed refs；
   `ValidateTTProgram`
   会检查 live-form 引用、
+  `SpatialPlan`
+  引用一致性、
   materialization protocol、
   consumer binding
   与 typed CB 资源的一致性
@@ -704,19 +735,35 @@ Normalized Tile TIR
   - `PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
   - `PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
   - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_exposes_typed_live_form_owner_truth tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plans tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_admits_non_mailbox_cb_republish tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_post_merge_cast_consumer_uses_pack_tile_materialization tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_post_merge_cast_consumer_without_zero_preclear_keeps_materialization_gate`
+- `PlanTT spatial live-reference consumption`
+  baseline
+  当前已通过：
+  - `cd tilelang_repo && cmake --build build -j32`
+  - `TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_gemm.py`
+  - `TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:$LD_LIBRARY_PATH PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`
+  - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && export TVM_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib && export LD_LIBRARY_PATH=/root/dev/vibe_dsl/tilelang_repo/build/lib:${LD_LIBRARY_PATH} && cd /root/dev/vibe_dsl/tilelang_repo && PYTHONPATH=/root/dev/vibe_dsl/tilelang_repo pytest -q testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_runtime testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_post_merge_cast_consumer_uses_pack_tile_materialization testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_gemm_post_merge_cast_consumer_without_zero_preclear_keeps_materialization_gate`
 
 ## 6. 当前下一步
 
 当前下一步固定为：
 
-1. 先让
+1. 继续让
    `PlanTT*`
    消费并细化
    已落地的
    `SpatialPlan`
    logical live-value /
    materialization-boundary
-   表示；
+   表示。
+   当前 admitted
+   fragment/cast materialization
+   已有 typed 引用；
+   下一步重点是
+   recurrence /
+   reduction row state /
+   非零 live-in merge
+   的 logical relation
+   映射；
    不能让
    `PlanTT*`
    或 leaf reader

@@ -245,6 +245,8 @@ class TTLiveFormPlanNode : public Object {
  public:
   ffi::String name;
   ffi::String logical_value;
+  ffi::String spatial_live_value;
+  int64_t spatial_live_value_index = -1;
   ffi::String producer_kernel;
   ffi::String physical_form;
   ffi::String execution_topology;
@@ -260,6 +262,7 @@ class TTLiveFormPlanNode : public Object {
 class TTLiveFormPlan : public ObjectRef {
  public:
   TVM_DLL TTLiveFormPlan(ffi::String name, ffi::String logical_value,
+                         ffi::String spatial_live_value, int64_t spatial_live_value_index,
                          ffi::String producer_kernel, ffi::String physical_form,
                          ffi::String execution_topology, int64_t physical_local_extent,
                          int64_t logical_element_count, ffi::String ownership_kind,
@@ -271,6 +274,8 @@ class TTMaterializationPlanNode : public Object {
  public:
   ffi::String name;
   ffi::String source_live_form;
+  ffi::String materialization_boundary;
+  int64_t materialization_boundary_index = -1;
   ffi::String target_buffer;
   ffi::String target_kernel;
   ffi::String materialization_protocol;
@@ -287,6 +292,8 @@ class TTMaterializationPlanNode : public Object {
 class TTMaterializationPlan : public ObjectRef {
  public:
   TVM_DLL TTMaterializationPlan(ffi::String name, ffi::String source_live_form,
+                                ffi::String materialization_boundary,
+                                int64_t materialization_boundary_index,
                                 ffi::String target_buffer, ffi::String target_kernel,
                                 ffi::String materialization_protocol,
                                 ffi::String publication_protocol,
@@ -304,6 +311,8 @@ class TTConsumerBindingPlanNode : public Object {
   ffi::String consumer_kernel;
   ffi::String consumer_op_kind;
   ffi::String source_live_form;
+  ffi::String live_value_edge;
+  int64_t live_value_edge_index = -1;
   bool accepts_distributed_slice = false;
   bool requires_full_logical_tile = false;
   int64_t abi_plan_index = -1;
@@ -318,6 +327,7 @@ class TTConsumerBindingPlan : public ObjectRef {
  public:
   TVM_DLL TTConsumerBindingPlan(ffi::String name, ffi::String consumer_kernel,
                                 ffi::String consumer_op_kind, ffi::String source_live_form,
+                                ffi::String live_value_edge, int64_t live_value_edge_index,
                                 bool accepts_distributed_slice,
                                 bool requires_full_logical_tile, int64_t abi_plan_index,
                                 ffi::Map<ffi::String, ffi::Any> payload);

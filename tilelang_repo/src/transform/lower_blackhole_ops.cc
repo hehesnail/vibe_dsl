@@ -1598,6 +1598,46 @@ void PlanTTKernelABI::LoadBufferTileBridgeSpecs(
       BuildBufferTileBridgeSpecMap(lowering_support_facts.buffer_tile_bridge_specs);
 }
 
+void PlanTTKernelABI::LoadSpatialLiveValueBoundaries(const SpatialPlan& plan) {
+  spatial_live_value_by_subject_.clear();
+  spatial_materialization_boundary_by_subject_.clear();
+  std::unordered_map<std::string, std::string> subject_by_live_value;
+
+  for (int64_t i = 0; i < static_cast<int64_t>(plan->live_values.size()); ++i) {
+    const LiveValue& live_value = plan->live_values[i];
+    const std::string subject = static_cast<std::string>(live_value->subject);
+    if (subject.empty()) {
+      continue;
+    }
+    if (spatial_live_value_by_subject_.find(subject) == spatial_live_value_by_subject_.end()) {
+      spatial_live_value_by_subject_[subject] =
+          SpatialLiveValueRef{static_cast<std::string>(live_value->name), i};
+    }
+    subject_by_live_value.emplace(static_cast<std::string>(live_value->name), subject);
+  }
+
+  for (int64_t i = 0; i < static_cast<int64_t>(plan->materialization_boundaries.size()); ++i) {
+    const MaterializationBoundary& boundary = plan->materialization_boundaries[i];
+    const std::string source_live_value = static_cast<std::string>(boundary->source_live_value);
+    auto subject_it = subject_by_live_value.find(source_live_value);
+    if (subject_it == subject_by_live_value.end()) {
+      continue;
+    }
+    const std::string& subject = subject_it->second;
+    if (spatial_materialization_boundary_by_subject_.find(subject) !=
+        spatial_materialization_boundary_by_subject_.end()) {
+      continue;
+    }
+    spatial_materialization_boundary_by_subject_[subject] =
+        SpatialMaterializationBoundaryRef{static_cast<std::string>(boundary->name),
+                                          i,
+                                          source_live_value,
+                                          boundary->source_live_value_index,
+                                          static_cast<std::string>(boundary->live_value_edge),
+                                          boundary->live_value_edge_index};
+  }
+}
+
 Stmt PlanTTKernelABI::MaybeWrapComputeSegment(const Stmt& stmt) const {
   if (!requires_compute_segment_ || !current_segment_kind_.empty()) {
     return stmt;
@@ -1615,6 +1655,24 @@ const Map<String, Any>* PlanTTKernelABI::FindBufferTileBridgeSpec(const Buffer& 
   const std::string buffer_name = BufferIdentityName(buffer);
   auto it = buffer_tile_bridge_specs_by_buffer_.find(buffer_name);
   if (it == buffer_tile_bridge_specs_by_buffer_.end()) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
+const PlanTTKernelABI::SpatialLiveValueRef* PlanTTKernelABI::FindSpatialLiveValueRef(
+    const std::string& subject) const {
+  auto it = spatial_live_value_by_subject_.find(subject);
+  if (it == spatial_live_value_by_subject_.end()) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
+const PlanTTKernelABI::SpatialMaterializationBoundaryRef*
+PlanTTKernelABI::FindSpatialMaterializationBoundaryRef(const std::string& subject) const {
+  auto it = spatial_materialization_boundary_by_subject_.find(subject);
+  if (it == spatial_materialization_boundary_by_subject_.end()) {
     return nullptr;
   }
   return &it->second;
@@ -1763,6 +1821,20 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
   };
   const int64_t source_local_extent = bridge_local_extent(match.src);
   const int64_t target_local_extent = bridge_local_extent(match.dst);
+  const SpatialLiveValueRef* source_live_value_ref = FindSpatialLiveValueRef(source_name);
+  const SpatialLiveValueRef* target_live_value_ref = FindSpatialLiveValueRef(target_name);
+  const SpatialMaterializationBoundaryRef* source_boundary_ref =
+      FindSpatialMaterializationBoundaryRef(source_name);
+  ICHECK(source_live_value_ref != nullptr)
+      << "PlanTTKernelABI requires SpatialPlan LiveValue for materialization source "
+      << source_name;
+  ICHECK(target_live_value_ref != nullptr)
+      << "PlanTTKernelABI requires SpatialPlan LiveValue for materialization target "
+      << target_name;
+  ICHECK(source_boundary_ref != nullptr)
+      << "PlanTTKernelABI requires SpatialPlan MaterializationBoundary for materialization "
+         "source "
+      << source_name;
 
   auto has_live_form = [&](const std::string& name) {
     for (const TTLiveFormPlan& plan : tt_live_form_plans_) {
@@ -1773,24 +1845,28 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
     return false;
   };
   auto push_live_form = [&](const std::string& logical_value, const std::string& physical_form,
-                            int64_t physical_local_extent, const char* ownership_kind) {
+                            int64_t physical_local_extent, const char* ownership_kind,
+                            const SpatialLiveValueRef& spatial_live_value) {
     const std::string name = "live_form_" + logical_value;
     if (has_live_form(name)) {
       return;
     }
     Map<String, Any> payload;
     payload.Set("logical_value", String(logical_value));
+    payload.Set("spatial_live_value", String(spatial_live_value.name));
+    payload.Set("spatial_live_value_index", Integer(spatial_live_value.index));
     payload.Set("source_kernel", String(kernel_name));
     tt_live_form_plans_.push_back(TTLiveFormPlan(
-        String(name), String(logical_value), String(kernel_name), String(physical_form),
+        String(name), String(logical_value), String(spatial_live_value.name),
+        spatial_live_value.index, String(kernel_name), String(physical_form),
         String("thread_distributed"), physical_local_extent, logical_element_count,
         String(ownership_kind), payload));
   };
 
   push_live_form(source_name, "thread_distributed_slice", source_local_extent,
-                 "producer_thread_lane");
+                 "producer_thread_lane", *source_live_value_ref);
   push_live_form(target_name, "cb_materialized_tile", target_local_extent,
-                 "materialized_cb_pages");
+                 "materialized_cb_pages", *target_live_value_ref);
 
   const std::string source_live_form = "live_form_" + source_name;
   const std::string produced_live_form = "live_form_" + target_name;
@@ -1814,10 +1890,13 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
     payload.Set("materialization_kind",
                 String(contract_string(schema_key::kMaterializationKind, "")));
     payload.Set("legacy_execution_protocol", String(legacy_execution_protocol));
+    payload.Set("materialization_boundary", String(source_boundary_ref->name));
+    payload.Set("materialization_boundary_index", Integer(source_boundary_ref->index));
     tt_materialization_plans_.push_back(TTMaterializationPlan(
-        String(materialization_name), String(source_live_form), String(target_name),
-        String(kernel_name), String(buffer_materialization::kCBRepublish),
-        String(publication_protocol), required_cb_indices, required_sync_indices,
+        String(materialization_name), String(source_live_form), String(source_boundary_ref->name),
+        source_boundary_ref->index, String(target_name), String(kernel_name),
+        String(buffer_materialization::kCBRepublish), String(publication_protocol),
+        required_cb_indices, required_sync_indices,
         String(produced_live_form), payload));
   }
 
@@ -1833,9 +1912,12 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
     Map<String, Any> payload;
     payload.Set("target_buffer", String(target_name));
     payload.Set("materialization_plan", String(materialization_name));
+    payload.Set("live_value_edge", String(source_boundary_ref->live_value_edge));
+    payload.Set("live_value_edge_index", Integer(source_boundary_ref->live_value_edge_index));
     tt_consumer_binding_plans_.push_back(TTConsumerBindingPlan(
         String(binding_name), String(kernel_name), String("cast_fragment_slice"),
-        String(source_live_form), /*accepts_distributed_slice=*/true,
+        String(source_live_form), String(source_boundary_ref->live_value_edge),
+        source_boundary_ref->live_value_edge_index, /*accepts_distributed_slice=*/true,
         /*requires_full_logical_tile=*/false, /*abi_plan_index=*/-1, payload));
   }
 }
@@ -1859,8 +1941,8 @@ void PlanTTKernelABI::FinalizeConsumerBindingABIIndices() {
     }
     finalized.push_back(TTConsumerBindingPlan(
         plan->name, plan->consumer_kernel, plan->consumer_op_kind, plan->source_live_form,
-        plan->accepts_distributed_slice, plan->requires_full_logical_tile, abi_plan_index,
-        plan->payload));
+        plan->live_value_edge, plan->live_value_edge_index, plan->accepts_distributed_slice,
+        plan->requires_full_logical_tile, abi_plan_index, plan->payload));
   }
   tt_consumer_binding_plans_ = finalized;
 }
@@ -2100,8 +2182,14 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   block_index_var_names_.clear();
   requires_compute_segment_ = false;
   buffer_tile_bridge_specs_by_buffer_.clear();
+  spatial_live_value_by_subject_.clear();
+  spatial_materialization_boundary_by_subject_.clear();
   select_compute_builtins_only_ = true;
 
+  auto maybe_spatial_plan = func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
+  ICHECK(maybe_spatial_plan)
+      << "PlanTTKernelABI requires tl.spatial_plan; run BuildSpatialPlan before lowering";
+  LoadSpatialLiveValueBoundaries(maybe_spatial_plan.value());
   const BlackholeLoweringSupportFacts lowering_support_facts =
       BuildLoweringSupportFactsFromAnalysis(func);
   LoadLogicalBufferShapes(func, lowering_support_facts);
@@ -2517,6 +2605,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   active_compute_contract_payload_index_ = -1;
   compute_epilogue_payloads_flat_.clear();
   buffer_tile_bridge_specs_by_buffer_.clear();
+  spatial_live_value_by_subject_.clear();
+  spatial_materialization_boundary_by_subject_.clear();
   buffer_materialization_contracts_by_target_buffer_.clear();
   gemm_input_buffer_num_tiles_.clear();
   gemm_transpose_a_ = false;
@@ -2533,6 +2623,10 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   gemm_b_dtype_ = DataType::Void();
   gemm_c_dtype_ = DataType::Void();
   LoadSeededCBRequirements(func);
+  auto maybe_spatial_plan = func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
+  ICHECK(maybe_spatial_plan)
+      << "PlanTTKernelABI requires tl.spatial_plan; run BuildSpatialPlan before lowering";
+  LoadSpatialLiveValueBoundaries(maybe_spatial_plan.value());
   const BlackholeLoweringSupportFacts lowering_support_facts =
       BuildLoweringSupportFactsFromAnalysis(func);
   LoadLogicalBufferShapes(func, lowering_support_facts);

@@ -7,6 +7,7 @@
 #include <tvm/ir/transform.h>
 
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "common/blackhole_utils.h"
@@ -273,6 +274,10 @@ void ValidateLiveFormPlans(const TTProgram& program,
   for (const TTLiveFormPlan& plan : program->live_form_plans) {
     ICHECK(!plan->name.empty()) << "TTLiveFormPlan requires name";
     ICHECK(!plan->logical_value.empty()) << "TTLiveFormPlan requires logical_value";
+    ICHECK(!plan->spatial_live_value.empty())
+        << "TTLiveFormPlan requires spatial_live_value";
+    ICHECK_GE(plan->spatial_live_value_index, 0)
+        << "TTLiveFormPlan requires spatial_live_value_index";
     ICHECK(!plan->producer_kernel.empty()) << "TTLiveFormPlan requires producer_kernel";
     ICHECK(!plan->physical_form.empty()) << "TTLiveFormPlan requires physical_form";
     ICHECK(!plan->execution_topology.empty()) << "TTLiveFormPlan requires execution_topology";
@@ -295,6 +300,10 @@ void ValidateMaterializationPlans(const TTProgram& program,
     ICHECK(live_form_names.count(plan->source_live_form))
         << "TTMaterializationPlan references unknown source_live_form "
         << plan->source_live_form;
+    ICHECK(!plan->materialization_boundary.empty())
+        << "TTMaterializationPlan requires materialization_boundary";
+    ICHECK_GE(plan->materialization_boundary_index, 0)
+        << "TTMaterializationPlan requires materialization_boundary_index";
     ICHECK(!plan->target_buffer.empty()) << "TTMaterializationPlan requires target_buffer";
     ICHECK(!plan->target_kernel.empty()) << "TTMaterializationPlan requires target_kernel";
     ICHECK(!plan->materialization_protocol.empty())
@@ -335,6 +344,9 @@ void ValidateConsumerBindingPlans(const TTProgram& program,
     ICHECK(live_form_names.count(plan->source_live_form))
         << "TTConsumerBindingPlan references unknown source_live_form "
         << plan->source_live_form;
+    ICHECK(!plan->live_value_edge.empty()) << "TTConsumerBindingPlan requires live_value_edge";
+    ICHECK_GE(plan->live_value_edge_index, 0)
+        << "TTConsumerBindingPlan requires live_value_edge_index";
     if (plan->abi_plan_index >= 0) {
       ICHECK_LT(plan->abi_plan_index, abi_plan_count)
           << "TTConsumerBindingPlan abi_plan_index out of bounds";
@@ -345,7 +357,55 @@ void ValidateConsumerBindingPlans(const TTProgram& program,
   }
 }
 
-void CheckTTProgram(const TTProgram& program) {
+void ValidateSpatialLiveReferences(const TTProgram& program, const SpatialPlan& spatial_plan) {
+  std::unordered_map<std::string, std::string> live_value_name_by_form;
+  for (const TTLiveFormPlan& plan : program->live_form_plans) {
+    ICHECK_LT(plan->spatial_live_value_index,
+              static_cast<int64_t>(spatial_plan->live_values.size()))
+        << "TTLiveFormPlan spatial_live_value_index out of bounds";
+    const LiveValue& live_value =
+        spatial_plan->live_values[static_cast<size_t>(plan->spatial_live_value_index)];
+    ICHECK_EQ(plan->spatial_live_value, live_value->name)
+        << "TTLiveFormPlan spatial_live_value must match SpatialPlan live_values index";
+    ICHECK_EQ(plan->logical_value, live_value->subject)
+        << "TTLiveFormPlan logical_value must match SpatialPlan LiveValue subject";
+    live_value_name_by_form[static_cast<std::string>(plan->name)] =
+        static_cast<std::string>(plan->spatial_live_value);
+  }
+
+  for (const TTMaterializationPlan& plan : program->materialization_plans) {
+    ICHECK_LT(plan->materialization_boundary_index,
+              static_cast<int64_t>(spatial_plan->materialization_boundaries.size()))
+        << "TTMaterializationPlan materialization_boundary_index out of bounds";
+    const MaterializationBoundary& boundary =
+        spatial_plan->materialization_boundaries[static_cast<size_t>(
+            plan->materialization_boundary_index)];
+    ICHECK_EQ(plan->materialization_boundary, boundary->name)
+        << "TTMaterializationPlan materialization_boundary must match SpatialPlan index";
+    auto source_it = live_value_name_by_form.find(static_cast<std::string>(plan->source_live_form));
+    ICHECK(source_it != live_value_name_by_form.end())
+        << "TTMaterializationPlan source_live_form missing matching TTLiveFormPlan";
+    ICHECK_EQ(source_it->second, static_cast<std::string>(boundary->source_live_value))
+        << "TTMaterializationPlan source_live_form must refer to boundary source_live_value";
+  }
+
+  for (const TTConsumerBindingPlan& plan : program->consumer_binding_plans) {
+    ICHECK_LT(plan->live_value_edge_index,
+              static_cast<int64_t>(spatial_plan->live_value_edges.size()))
+        << "TTConsumerBindingPlan live_value_edge_index out of bounds";
+    const LiveValueEdge& live_edge =
+        spatial_plan->live_value_edges[static_cast<size_t>(plan->live_value_edge_index)];
+    ICHECK_EQ(plan->live_value_edge, live_edge->name)
+        << "TTConsumerBindingPlan live_value_edge must match SpatialPlan index";
+    auto source_it = live_value_name_by_form.find(static_cast<std::string>(plan->source_live_form));
+    ICHECK(source_it != live_value_name_by_form.end())
+        << "TTConsumerBindingPlan source_live_form missing matching TTLiveFormPlan";
+    ICHECK_EQ(source_it->second, static_cast<std::string>(live_edge->source_live_value))
+        << "TTConsumerBindingPlan source_live_form must refer to edge source_live_value";
+  }
+}
+
+void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan) {
   ICHECK(!program->entry_name.empty()) << "TTProgram requires entry_name";
   ICHECK(!program->block_plans.empty()) << "TTProgram requires at least one TTBlockPlan";
   ICHECK(!program->kernel_plans.empty()) << "TTProgram requires at least one TTKernelPlan";
@@ -421,6 +481,7 @@ void CheckTTProgram(const TTProgram& program) {
   }
   ValidateConsumerBindingPlans(program, live_form_names,
                                static_cast<int64_t>(program->abi_plans.size()));
+  ValidateSpatialLiveReferences(program, spatial_plan);
 
   for (const TTTransportPlan& transport : program->transport_plans) {
     ICHECK(!transport->kind.empty()) << "TTTransportPlan requires kind";
@@ -467,7 +528,10 @@ tvm::transform::Pass ValidateTTProgram() {
       if (!maybe_program) {
         continue;
       }
-      CheckTTProgram(maybe_program.value());
+      auto maybe_spatial_plan = func.value()->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
+      ICHECK(maybe_spatial_plan)
+          << "ValidateTTProgram requires tl.spatial_plan for live-form validation";
+      CheckTTProgram(maybe_program.value(), maybe_spatial_plan.value());
     }
     return mod;
   };
