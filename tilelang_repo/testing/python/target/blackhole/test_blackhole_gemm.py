@@ -1057,6 +1057,35 @@ def test_blackhole_gemm_kernel_projects_typed_compute_ops_schema():
     assert str(gemm_op["c_tensor_dtype"]) == "Float32"
 
 
+def test_blackhole_gemm_compute_ops_carry_typed_operand_bindings():
+    kernel = gemm_kernel()
+    target = Target("blackhole")
+
+    with target:
+        artifact = lower(kernel, target=target)
+
+    executable_spec = _extract_blackhole_executable_spec(artifact)
+    gemm_op = _require_gemm_compute_op(executable_spec)
+
+    operand_bindings = {
+        str(binding["role"]): dict(binding)
+        for binding in gemm_op["operand_bindings"]
+    }
+    assert {role: str(binding["buffer"]) for role, binding in operand_bindings.items()} == {
+        "a": "A_shared",
+        "b": "B_shared",
+        "c": "C_local",
+    }
+    assert {role: str(binding["host_buffer"]) for role, binding in operand_bindings.items()} == {
+        "a": "A",
+        "b": "B",
+        "c": "C",
+    }
+    assert str(gemm_op["a_buffer"]) == str(operand_bindings["a"]["host_buffer"])
+    assert str(gemm_op["b_buffer"]) == str(operand_bindings["b"]["host_buffer"])
+    assert str(gemm_op["c_buffer"]) == str(operand_bindings["c"]["host_buffer"])
+
+
 def test_blackhole_gemm_spec_survives_without_legacy_contract_attrs():
     kernel = gemm_kernel()
     target = Target("blackhole")

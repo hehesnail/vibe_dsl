@@ -25,10 +25,19 @@
   /
   runtime metadata
   surface；
+  P0.2
+  已把 GEMM
+  compute operand binding
+  从 reader/writer
+  runtime arg order
+  迁到 typed
+  `KernelSpec.compute_ops[].operand_bindings`；
   当前 active item
   前移到
-  P0.2
-  compute operand binding
+  P0.3
+  host wrapper /
+  codegen
+  buffer binding
   cleanup。
   `support surface / workload payoff`
   deferred lane
@@ -914,6 +923,7 @@ Normalized Tile TIR
      tests
      通过
 2. **P0.2: 把 compute operand binding 从 runtime arg order 迁走**
+   - 状态：`completed`
    - 目标：
      GEMM
      `compute_ops`
@@ -932,6 +942,47 @@ Normalized Tile TIR
      的 fail-closed
      validator /
      regression
+   - 已完成：
+     GEMM
+     `compute_ops`
+     entry
+     新增 typed
+     `operand_bindings`
+     数组；
+     每个 binding
+     显式携带
+     `role`
+     /
+     compute-side
+     `buffer`
+     /
+     host runtime
+     `host_buffer`。
+     `PlanTTKernelABI`
+     已删除从 reader
+     `input_buffer_addr32`
+     顺序和 writer
+     `output_buffer_addr32`
+     顺序恢复
+     A/B/C
+     的逻辑；
+     `ValidateTTProgram`
+     对缺失 /
+     重复 /
+     不一致
+     operand binding
+     fail-closed
+   - 验证：
+     `cmake --build build -j32`；
+     `pytest -q testing/python/target/blackhole/test_blackhole_gemm.py`；
+     `pytest -q testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`；
+     TT-Sim
+     selected
+     GEMM
+     operand-binding /
+     typed-compute
+     tests
+     通过
 3. **P0.3: 收紧 host wrapper / codegen buffer binding**
    - 目标：
      删除 PackedArgs

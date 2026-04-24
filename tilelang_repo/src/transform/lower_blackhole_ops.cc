@@ -2171,6 +2171,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   logical_buffer_shapes_.clear();
   compute_physical_buffers_by_data_.clear();
   compute_physical_buffers_by_identity_.clear();
+  host_buffer_by_compute_operand_buffer_.clear();
   last_fragment_fill_value_by_buffer_identity_.clear();
   last_fragment_fill_value_by_data_.clear();
   LoadPhysicalComputeBufferBindings(func);
@@ -2525,6 +2526,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   copy_output_buffer_ = Buffer();
   copy_input_buffer_name_.clear();
   copy_output_buffer_name_.clear();
+  host_buffer_by_compute_operand_buffer_.clear();
   copy_input_shape_.clear();
   copy_output_shape_.clear();
   copy_intermediate_shape_.clear();
@@ -3071,60 +3073,15 @@ void PlanTTKernelABI::StoreGemmContract(PrimFunc& func) {
     return;
   }
 
-  std::string a_buffer = gemm_a_buffer_name_;
-  std::string b_buffer = gemm_b_buffer_name_;
-  std::string c_buffer = gemm_c_buffer_name_;
-  bool writer_output_directly_materializes_gemm_accumulator = true;
-  for (const auto& op_payload : compute_epilogue_payloads_flat_) {
-    if (auto value = op_payload.Get(String("dst_buffer"))) {
-      const std::string dst_buffer = Downcast<String>(value.value());
-      if (!dst_buffer.empty() && dst_buffer != gemm_c_buffer_name_) {
-        writer_output_directly_materializes_gemm_accumulator = false;
-        break;
-      }
-    }
-  }
-  if (!segment_plan_.empty()) {
-    for (const auto& item : segment_plan_) {
-      auto segment = item.as<Map<String, Any>>().value_or(Map<String, Any>());
-      if (segment.empty()) {
-        continue;
-      }
-      const std::string kind = segment.Get("kind")
-                                   ? static_cast<std::string>(Downcast<String>(segment.Get("kind").value()))
-                                   : std::string();
-      auto runtime_args = segment.Get("runtime_args");
-      if (!runtime_args) {
-        continue;
-      }
-      for (const auto& arg_item : Downcast<Array<Any>>(runtime_args.value())) {
-        auto arg = arg_item.as<Map<String, Any>>().value_or(Map<String, Any>());
-        if (arg.empty() || !arg.Get("buffer")) {
-          continue;
-        }
-        const std::string buffer_name = Downcast<String>(arg.Get("buffer").value());
-        const std::string arg_kind = arg.Get("kind")
-                                         ? static_cast<std::string>(Downcast<String>(arg.Get("kind").value()))
-                                         : std::string();
-        if (kind == "reader" && arg_kind == "input_buffer_addr32") {
-          if (a_buffer == gemm_a_buffer_name_) {
-            a_buffer = buffer_name;
-          } else if (b_buffer == gemm_b_buffer_name_) {
-            b_buffer = buffer_name;
-          }
-        } else if (kind == "writer" && arg_kind == "output_buffer_addr32" &&
-                   writer_output_directly_materializes_gemm_accumulator) {
-          c_buffer = buffer_name;
-        }
-      }
-    }
-  }
+  const std::string a_host_buffer = ResolveHostBufferForComputeOperand(gemm_a_buffer_);
+  const std::string b_host_buffer = ResolveHostBufferForComputeOperand(gemm_b_buffer_);
+  const std::string c_host_buffer = ResolveHostBufferForComputeOperand(gemm_c_buffer_);
 
   Map<String, Any> gemm_contract = BuildGemmContractPayload(
-      a_buffer, b_buffer, c_buffer, gemm_m_, gemm_n_, gemm_k_, gemm_transpose_a_,
+      a_host_buffer, b_host_buffer, c_host_buffer, gemm_m_, gemm_n_, gemm_k_, gemm_transpose_a_,
       gemm_transpose_b_, gemm_a_dtype_, gemm_b_dtype_, gemm_c_dtype_);
   Map<String, Any> compute_contract = BuildComputeContractPayload(
-      a_buffer, b_buffer, c_buffer, gemm_m_, gemm_n_, gemm_k_, gemm_transpose_a_,
+      a_host_buffer, b_host_buffer, c_host_buffer, gemm_m_, gemm_n_, gemm_k_, gemm_transpose_a_,
       gemm_transpose_b_, gemm_policy_type_, gemm_clear_accum_, gemm_k_pack_, gemm_wg_wait_,
       gemm_dst_full_sync_en_, gemm_bfp8_pack_precise_, gemm_defines_, gemm_named_compile_args_,
       gemm_mbarrier_buffer_name_, gemm_mbarrier_scope_, gemm_mbarrier_index_exprs_, gemm_a_dtype_,
@@ -3156,13 +3113,29 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
 
   auto make_gemm_compute_op = [&](const std::string& a_buffer,
                                   const std::string& b_buffer,
-                                  const std::string& c_buffer) -> Map<String, Any> {
+                                  const std::string& c_buffer,
+                                  const std::string& a_host_buffer,
+                                  const std::string& b_host_buffer,
+                                  const std::string& c_host_buffer) -> Map<String, Any> {
     Map<String, Any> gemm_compute;
     gemm_compute.Set("enabled", Bool(true));
     gemm_compute.Set("kind", String("gemm"));
-    gemm_compute.Set("a_buffer", String(a_buffer));
-    gemm_compute.Set("b_buffer", String(b_buffer));
-    gemm_compute.Set("c_buffer", String(c_buffer));
+    gemm_compute.Set("a_buffer", String(a_host_buffer));
+    gemm_compute.Set("b_buffer", String(b_host_buffer));
+    gemm_compute.Set("c_buffer", String(c_host_buffer));
+    Array<Any> operand_bindings;
+    auto push_operand_binding = [&](const std::string& role, const std::string& buffer,
+                                    const std::string& host_buffer) {
+      Map<String, Any> binding;
+      binding.Set("role", String(role));
+      binding.Set("buffer", String(buffer));
+      binding.Set("host_buffer", String(host_buffer));
+      operand_bindings.push_back(binding);
+    };
+    push_operand_binding("a", a_buffer, a_host_buffer);
+    push_operand_binding("b", b_buffer, b_host_buffer);
+    push_operand_binding("c", c_buffer, c_host_buffer);
+    gemm_compute.Set("operand_bindings", operand_bindings);
     gemm_compute.Set("M", Integer(gemm_m_));
     gemm_compute.Set("N", Integer(gemm_n_));
     gemm_compute.Set("K", Integer(gemm_k_));
@@ -3192,61 +3165,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
     }
     gemm_compute.Set("mbarrier_index_exprs", mbarrier_index_exprs);
     return gemm_compute;
-  };
-
-  auto writer_output_directly_materializes_gemm_accumulator = [&]() -> bool {
-    for (const auto& op_payload : compute_epilogue_payloads_flat_) {
-      if (auto value = op_payload.Get(String("dst_buffer"))) {
-        const std::string dst_buffer = Downcast<String>(value.value());
-        if (!dst_buffer.empty() && dst_buffer != gemm_c_buffer_name_) {
-          return false;
-        }
-      }
-    }
-    return true;
-  };
-
-  auto resolve_gemm_compute_buffers =
-      [&](const Array<Any>& segments) -> std::tuple<std::string, std::string, std::string> {
-    std::string a_buffer = gemm_a_buffer_name_;
-    std::string b_buffer = gemm_b_buffer_name_;
-    std::string c_buffer = gemm_c_buffer_name_;
-    const bool writer_output_direct =
-        writer_output_directly_materializes_gemm_accumulator();
-    for (const auto& item : segments) {
-      auto segment = item.as<Map<String, Any>>().value_or(Map<String, Any>());
-      if (segment.empty()) {
-        continue;
-      }
-      const std::string kind = segment.Get("kind")
-                                   ? static_cast<std::string>(Downcast<String>(segment.Get("kind").value()))
-                                   : std::string();
-      auto runtime_args = segment.Get("runtime_args");
-      if (!runtime_args) {
-        continue;
-      }
-      for (const auto& arg_item : Downcast<Array<Any>>(runtime_args.value())) {
-        auto arg = arg_item.as<Map<String, Any>>().value_or(Map<String, Any>());
-        if (arg.empty() || !arg.Get("buffer")) {
-          continue;
-        }
-        const std::string buffer_name = Downcast<String>(arg.Get("buffer").value());
-        const std::string arg_kind = arg.Get("kind")
-                                         ? static_cast<std::string>(Downcast<String>(arg.Get("kind").value()))
-                                         : std::string();
-        if (kind == "reader" && arg_kind == "input_buffer_addr32") {
-          if (a_buffer == gemm_a_buffer_name_) {
-            a_buffer = buffer_name;
-          } else if (b_buffer == gemm_b_buffer_name_) {
-            b_buffer = buffer_name;
-          }
-        } else if (kind == "writer" && arg_kind == "output_buffer_addr32" &&
-                   writer_output_direct) {
-          c_buffer = buffer_name;
-        }
-      }
-    }
-    return {a_buffer, b_buffer, c_buffer};
   };
 
   auto make_launch_spec = [](const std::string& core_type) -> Map<String, Any> {
@@ -3692,8 +3610,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
       rewritten_segments.push_back(segment);
     }
     if (gemm_contract_signatures_.size() == 1) {
-      const auto [a_buffer, b_buffer, c_buffer] =
-          resolve_gemm_compute_buffers(rewritten_segments);
       Array<Any> segments_with_compute_ops;
       for (const auto& item : rewritten_segments) {
         auto segment = item.as<Map<String, Any>>().value_or(Map<String, Any>());
@@ -3707,7 +3623,11 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
                 : std::string();
         if (kind == "compute") {
           Array<Any> compute_ops;
-          compute_ops.push_back(make_gemm_compute_op(a_buffer, b_buffer, c_buffer));
+          compute_ops.push_back(make_gemm_compute_op(
+              gemm_a_buffer_name_, gemm_b_buffer_name_, gemm_c_buffer_name_,
+              ResolveHostBufferForComputeOperand(gemm_a_buffer_),
+              ResolveHostBufferForComputeOperand(gemm_b_buffer_),
+              ResolveHostBufferForComputeOperand(gemm_c_buffer_)));
           segment.Set("compute_ops", compute_ops);
         }
         segments_with_compute_ops.push_back(segment);
@@ -4415,12 +4335,25 @@ void PlanTTKernelABI::RecordStagedCopyBufferBinding(const BufferStoreNode* op,
     copy_input_buffer_name_ = BufferIdentityName(load->buffer);
     copy_input_shape_ = GetEncodedCurrentBufferShape(load->buffer);
     copy_intermediate_shape_ = GetEncodedCurrentBufferShape(op->buffer);
+    host_buffer_by_compute_operand_buffer_[BufferIdentityName(op->buffer)] =
+        BufferIdentityName(load->buffer);
   } else if (direction == CopyDirection::kCBToDram) {
     copy_output_buffer_ = op->buffer;
     copy_output_buffer_name_ = BufferIdentityName(op->buffer);
     copy_output_shape_ = GetEncodedCurrentBufferShape(op->buffer);
     copy_intermediate_shape_ = GetEncodedCurrentBufferShape(load->buffer);
+    host_buffer_by_compute_operand_buffer_[BufferIdentityName(load->buffer)] =
+        BufferIdentityName(op->buffer);
   }
+}
+
+std::string PlanTTKernelABI::ResolveHostBufferForComputeOperand(const Buffer& buffer) const {
+  const std::string buffer_name = BufferIdentityName(buffer);
+  auto it = host_buffer_by_compute_operand_buffer_.find(buffer_name);
+  if (it != host_buffer_by_compute_operand_buffer_.end() && !it->second.empty()) {
+    return it->second;
+  }
+  return buffer_name;
 }
 
 void PlanTTKernelABI::RecordDramToDramCopy(const BufferStoreNode* op) {

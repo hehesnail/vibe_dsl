@@ -856,6 +856,36 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   "no unsupported reasons"
   绿测而重新保留 compatibility
   metadata
+- GEMM
+  compute operand binding
+  不能从 reader/writer
+  runtime arg
+  顺序恢复。
+  正确 schema
+  是在
+  `KernelSpec.compute_ops`
+  entry
+  内写 typed
+  `operand_bindings`：
+  `role`
+  表达 op-local
+  operand 角色，
+  `buffer`
+  表达 compute-side
+  operand buffer，
+  `host_buffer`
+  表达 runtime tensor
+  binding。
+  对 staged copy
+  场景，
+  host mapping
+  应从结构化 copy
+  关系记录，
+  不能通过
+  `input_buffer_addr32`
+  或
+  `output_buffer_addr32`
+  的出现顺序猜
 
 ## 9. 调试模式
 

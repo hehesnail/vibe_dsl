@@ -457,8 +457,27 @@ cleanup debt，
   dtype /
   transpose /
   work-decomposition /
+  typed operand binding /
   unsupported mbarrier gate
   truth；
+  P0.2
+  已新增
+  `operand_bindings`
+  数组，
+  entry
+  显式携带
+  role、
+  compute-side
+  buffer
+  与 host
+  runtime
+  buffer；
+  producer
+  不再从 reader/writer
+  runtime arg
+  顺序恢复
+  A/B/C
+  语义。
   后续 TT-Metal
   eltwise /
   reduction /
@@ -627,16 +646,18 @@ public surface
   写入
   是 P0.6
   cleanup debt
-- `KernelSpec.compute_ops`
-  是正确方向，
-  但 GEMM entry
+- P0.2
+  已把 GEMM
+  `KernelSpec.compute_ops`
+  entry
   的 operand truth
-  不能继续从 reader/writer
+  收进 typed
+  `operand_bindings`；
+  剩余 P0
+  surface
+  不能再新增 reader/writer
   runtime arg order
-  恢复；
-  operand binding
-  必须来自 compute op
-  或显式 ABI 绑定
+  恢复路径
 - host wrapper
   和 codegen
   不能用 PackedArgs

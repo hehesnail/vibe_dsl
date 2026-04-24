@@ -648,6 +648,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                     const LocalToCBSliceMatch& match);
   void ActivateCurrentComputeContractPayload();
   void RecordComputeEpilogueOp(tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> op_payload);
+  std::string ResolveHostBufferForComputeOperand(const tvm::tir::Buffer& buffer) const;
 
   // StmtExprMutator overrides
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;
@@ -675,6 +676,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::tir::Buffer copy_output_buffer_;
   std::string copy_input_buffer_name_;
   std::string copy_output_buffer_name_;
+  std::unordered_map<std::string, std::string> host_buffer_by_compute_operand_buffer_;
 
   // GEMM info populated by ExtractGemmInfo (pre-scan)
   tvm::tir::Buffer gemm_a_buffer_;

@@ -526,6 +526,31 @@ static bool ExtractComputeOp(const ffi::Map<ffi::String, ffi::Any>& spec_info,
   if (auto v = spec_info.Get("c_buffer")) {
     compute_op->c_buffer = Downcast<String>(v.value());
   }
+  if (auto v = spec_info.Get("operand_bindings")) {
+    for (const auto& binding_item : Downcast<ffi::Array<ffi::Any>>(v.value())) {
+      auto binding_info =
+          binding_item.as<ffi::Map<ffi::String, ffi::Any>>().value_or(
+              ffi::Map<ffi::String, ffi::Any>());
+      if (binding_info.empty()) {
+        continue;
+      }
+      ComputeOperandBindingSpec binding;
+      if (auto role = binding_info.Get("role")) {
+        binding.role = Downcast<String>(role.value());
+      }
+      if (auto buffer = binding_info.Get("buffer")) {
+        binding.buffer = Downcast<String>(buffer.value());
+      }
+      if (auto host_buffer = binding_info.Get("host_buffer")) {
+        binding.host_buffer = Downcast<String>(host_buffer.value());
+      } else {
+        binding.host_buffer = binding.buffer;
+      }
+      if (!binding.role.empty() && !binding.buffer.empty()) {
+        compute_op->operand_bindings.push_back(std::move(binding));
+      }
+    }
+  }
   if (auto v = spec_info.Get("M")) {
     compute_op->M = static_cast<uint32_t>(Downcast<Integer>(v.value())->value);
   }
@@ -626,6 +651,15 @@ static ffi::Map<ffi::String, ffi::Any> EncodeKernelComputeOp(
   item.Set("a_buffer", ffi::String(compute_op.a_buffer));
   item.Set("b_buffer", ffi::String(compute_op.b_buffer));
   item.Set("c_buffer", ffi::String(compute_op.c_buffer));
+  ffi::Array<ffi::Any> operand_bindings;
+  for (const auto& binding : compute_op.operand_bindings) {
+    ffi::Map<ffi::String, ffi::Any> encoded_binding;
+    encoded_binding.Set("role", ffi::String(binding.role));
+    encoded_binding.Set("buffer", ffi::String(binding.buffer));
+    encoded_binding.Set("host_buffer", ffi::String(binding.host_buffer));
+    operand_bindings.push_back(encoded_binding);
+  }
+  item.Set("operand_bindings", operand_bindings);
   item.Set("M", Integer(static_cast<int>(compute_op.M)));
   item.Set("N", Integer(static_cast<int>(compute_op.N)));
   item.Set("K", Integer(static_cast<int>(compute_op.K)));

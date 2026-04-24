@@ -166,6 +166,52 @@ void ValidateGemmComputeOpPayload(const Map<String, Any>& compute_op) {
   ICHECK(HasKey(compute_op, "a_buffer")) << "TTKernel GEMM compute_op requires a_buffer";
   ICHECK(HasKey(compute_op, "b_buffer")) << "TTKernel GEMM compute_op requires b_buffer";
   ICHECK(HasKey(compute_op, "c_buffer")) << "TTKernel GEMM compute_op requires c_buffer";
+  ICHECK(HasKey(compute_op, "operand_bindings"))
+      << "TTKernel GEMM compute_op requires typed operand_bindings";
+  const std::string a_buffer =
+      static_cast<std::string>(Downcast<String>(compute_op.Get(String("a_buffer")).value()));
+  const std::string b_buffer =
+      static_cast<std::string>(Downcast<String>(compute_op.Get(String("b_buffer")).value()));
+  const std::string c_buffer =
+      static_cast<std::string>(Downcast<String>(compute_op.Get(String("c_buffer")).value()));
+  std::unordered_map<std::string, std::string> operand_buffers;
+  for (const Any& binding_any :
+       Downcast<Array<Any>>(compute_op.Get(String("operand_bindings")).value())) {
+    Map<String, Any> binding = AsMap(binding_any);
+    ICHECK(!binding.empty()) << "TTKernel GEMM compute_op operand_bindings entries must be maps";
+    ICHECK(HasKey(binding, "role"))
+        << "TTKernel GEMM compute_op operand_binding requires role";
+    ICHECK(HasKey(binding, "buffer"))
+        << "TTKernel GEMM compute_op operand_binding requires buffer";
+    ICHECK(HasKey(binding, "host_buffer"))
+        << "TTKernel GEMM compute_op operand_binding requires host_buffer";
+    const std::string role =
+        static_cast<std::string>(Downcast<String>(binding.Get(String("role")).value()));
+    const std::string buffer =
+        static_cast<std::string>(Downcast<String>(binding.Get(String("buffer")).value()));
+    const std::string host_buffer =
+        static_cast<std::string>(Downcast<String>(binding.Get(String("host_buffer")).value()));
+    ICHECK(role == "a" || role == "b" || role == "c")
+        << "TTKernel GEMM compute_op operand_binding unsupported role " << role;
+    ICHECK(!buffer.empty())
+        << "TTKernel GEMM compute_op operand_binding buffer must be non-empty";
+    ICHECK(!host_buffer.empty())
+        << "TTKernel GEMM compute_op operand_binding host_buffer must be non-empty";
+    ICHECK(operand_buffers.emplace(role, host_buffer).second)
+        << "TTKernel GEMM compute_op operand_binding duplicates role " << role;
+  }
+  auto require_operand_buffer = [&](const std::string& role) -> const std::string& {
+    auto it = operand_buffers.find(role);
+    ICHECK(it != operand_buffers.end())
+        << "TTKernel GEMM compute_op operand_bindings missing role " << role;
+    return it->second;
+  };
+  ICHECK_EQ(require_operand_buffer("a"), a_buffer)
+      << "TTKernel GEMM compute_op operand_binding role a must match a_buffer";
+  ICHECK_EQ(require_operand_buffer("b"), b_buffer)
+      << "TTKernel GEMM compute_op operand_binding role b must match b_buffer";
+  ICHECK_EQ(require_operand_buffer("c"), c_buffer)
+      << "TTKernel GEMM compute_op operand_binding role c must match c_buffer";
   ICHECK(HasKey(compute_op, "M")) << "TTKernel GEMM compute_op requires M";
   ICHECK(HasKey(compute_op, "N")) << "TTKernel GEMM compute_op requires N";
   ICHECK(HasKey(compute_op, "K")) << "TTKernel GEMM compute_op requires K";

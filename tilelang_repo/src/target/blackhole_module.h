@@ -336,12 +336,27 @@ struct KernelComputeConfigSpec {
   }
 };
 
+struct ComputeOperandBindingSpec {
+  std::string role;
+  std::string buffer;
+  std::string host_buffer;
+
+  void Save(dmlc::JSONWriter* writer) const {
+    writer->BeginObject();
+    writer->WriteObjectKeyValue("role", role);
+    writer->WriteObjectKeyValue("buffer", buffer);
+    writer->WriteObjectKeyValue("host_buffer", host_buffer);
+    writer->EndObject();
+  }
+};
+
 struct KernelComputeOpSpec {
   bool enabled = false;
   std::string kind;
   std::string a_buffer;
   std::string b_buffer;
   std::string c_buffer;
+  std::vector<ComputeOperandBindingSpec> operand_bindings;
   uint32_t M = 0;
   uint32_t N = 0;
   uint32_t K = 0;
@@ -374,6 +389,7 @@ struct KernelComputeOpSpec {
     writer->WriteObjectKeyValue("a_buffer", a_buffer);
     writer->WriteObjectKeyValue("b_buffer", b_buffer);
     writer->WriteObjectKeyValue("c_buffer", c_buffer);
+    writer->WriteObjectKeyValue("operand_bindings", operand_bindings);
     writer->WriteObjectKeyValue("M", static_cast<int64_t>(M));
     writer->WriteObjectKeyValue("N", static_cast<int64_t>(N));
     writer->WriteObjectKeyValue("K", static_cast<int64_t>(K));
