@@ -15,20 +15,37 @@
   cleanup blocker
   已解除；
   当前活动 lane
-  是
+  临时前置为
+  `public specialization residue cleanup`。
   `support surface / workload payoff`
   deferred lane
-  重新打开。
+  已重新打开，
+  但在继续扩大 workload
+  之前，
+  必须先处理
+  `2026-04-24`
+  public specialization audit
+  暴露出的
+  public schema /
+  leaf reader
+  residue。
   `Legacy Protocol Deletion / cleanup task5 convergence`
   已在 repo HEAD 完成；
   当前后续工作
-  回到
+  先按 P0
+  cleanup 队列
+  删除 /
+  收敛
+  workload-named、
+  order-based、
+  payload-seeded
+  public surfaces；
+  然后再回到
   `SpatialPlan`
   logical live-value /
   materialization-boundary
-  first-class 表示的消费与细化、
-  leaf contract-family typed 化、
-  runtime-support-surface
+  first-class 表示的消费与细化
+  与 runtime-support-surface
   扩展。
   `2026-04-24`
   public specialization audit
@@ -107,7 +124,7 @@
     exact TT-Metal legality
     的正式 hard gate
 - `Task 3: ExecutableSpec / Leaf Reader Cutover`
-  - 状态：`completed boundary cutover / leaf contract-family deletion remains open debt`
+  - 状态：`completed boundary cutover / public specialization cleanup active`
   - 当前结论：
     `MaterializeBlackholeExecutable`
     已成为
@@ -818,107 +835,193 @@ Normalized Tile TIR
 
 当前下一步固定为：
 
-1. 先关闭 public specialization
-   residue：
-   `gemm_contract`
-   / `compute_contract`
-   / `multi_*_contracts`
-   public field、
-   runtime arg order
-   operand recovery、
-   PackedArgs
-   positional buffer binding、
-   codegen
-   kind/name fallback、
-   `_local`
-   / single-output
-   materialization binding、
-   leaf-side
-   `host_axis_order`
-   heuristic
-   都必须被 typed
-   `TTProgram`
-   /
-   `ExecutableSpec`
-   schema
-   或 fail-closed
-   validator
-   取代
-2. 继续让
-   `PlanTT*`
-   消费并细化
-   已落地的
-   `SpatialPlan`
-   logical live-value /
-   materialization-boundary
-   表示。
-   当前 admitted
-   fragment/cast materialization
-   已有 typed 引用；
-   下一步重点是
-   recurrence /
-   reduction row state /
-   非零 live-in merge
-   的 logical relation
-   映射；
-   不能让
-   `PlanTT*`
-   或 leaf reader
-   继续用 body-order matcher
-   承担跨阶段 owner truth
-3. 将
-   `compute_contract` /
-   `gemm_contract` /
-   `multi_*_contracts`
-   从 payload/fallback
-   收敛到 typed
-   `TTProgram`
-   和
-   `ExecutableSpec`
-   schema。
-   当前
-   `KernelSpec.compute_ops`
-   已承接 GEMM direct runtime
-   truth
-   并删除 runtime
-   contract-family fallback；
-   下一步继续把 top-level
-   compatibility payload /
-   public tests
-   收窄到 typed
-   compute-op schema，
-   并为非 GEMM TT-Metal compute
-   instruction
-   增加同一数组下的 typed
-   `kind`
-   entry
-4. 在上述 typed owner truth
-   基础上扩大
-   materialization admission
-   支持面：
-   非零 live-in merge、
-   更宽 fragment/cast producer
-   和后续 workload payoff
-   都必须继续通过
-   explicit representation
-   boundary
-   表达，
-   不回退到 leaf matcher
-5. 保持
-   compile / projection /
-   admitted runtime
-   gate
-   继续只站在
-   explicit representation
-   boundary 上
-6. 等 layout /
-   materialization boundary
-   和 typed executable
-   materialization schema
-   全面承接后，
-   删除窄 bridge attr
-   `tl.blackhole_logical_buffer_tile_bridge_specs`
-7. flash-attn direct runtime
-   只作为上述 admission
-   完成后的 integration payoff，
-   不作为当前设计驱动
+1. **P0.1: 删除 contract-family public surface**
+   - 目标：
+     `gemm_contract`
+     / `compute_contract`
+     / `multi_gemm_contracts`
+     / `multi_compute_contracts`
+     不再从
+     `TTProgram.payload`
+     投影到
+     `tl.blackhole_executable`
+     / `ExecutableSpec`
+     / runtime JSON
+   - replacement：
+     `KernelSpec.compute_ops`
+     和后续 typed
+     materialization /
+     ABI schema
+   - 同步要求：
+     public tests
+     不再把 top-level
+     contract-family field
+     当成绿测条件
+2. **P0.2: 把 compute operand binding 从 runtime arg order 迁走**
+   - 目标：
+     GEMM
+     `compute_ops`
+     entry
+     的 A/B/C
+     不能再由 reader/writer
+     segment
+     runtime arg 顺序恢复
+   - replacement：
+     compute op
+     或
+     `TTABIPlan`
+     typed operand binding
+   - 同步要求：
+     新增缺失 operand binding
+     的 fail-closed
+     validator /
+     regression
+3. **P0.3: 收紧 host wrapper / codegen buffer binding**
+   - 目标：
+     删除 PackedArgs
+     positional buffer binding、
+     handle suffix fallback、
+     codegen
+     kind/name fallback
+   - replacement：
+     `ExecutableSpec`
+     typed buffer identity /
+     role records
+     与 formal param identity
+   - 同步要求：
+     缺 `buffer`
+     或 identity 不一致时
+     compile/codegen/runtime
+     fail-close
+4. **P0.4: typed per-work descriptor**
+   - 目标：
+     `per_work_arg_specs`
+     不再长期以
+     `a_tile_start_id`
+     / `b_tile_start_id`
+     / `output_tile_start_id`
+     /
+     `gemm_num_k_tiles`
+     作为 owner truth
+   - replacement：
+     引用
+     core plan、
+     compute op dims、
+     access pattern
+     的 typed value expression
+   - 同步要求：
+     runtime/codegen
+     只解释 typed descriptor，
+     不按 arg-kind priority
+     推 block axis
+5. **P0.5: materialization host/layout binding 显式化**
+   - 目标：
+     leaf reader
+     不再用
+     `_local`
+     suffix、
+     single-output fallback、
+     shape heuristic
+     推 host buffer
+     或
+     `host_axis_order`
+   - replacement：
+     `TTMaterializationPlan`
+     /
+     `ExecutableSpec`
+     显式 host binding
+     与 layout/axis truth
+   - 同步要求：
+     缺失时 fail-close，
+     不静默跳过 materialization plan
+6. **P0.6: projection payload seed cleanup**
+   - 目标：
+     projection encoders
+     不再以各类 typed
+     `TTProgram`
+     node
+     的
+     `payload`
+     为 seed
+     构造 executable map
+   - replacement：
+     fresh map
+     + typed field
+     + explicit diagnostic allowlist
+   - 同步要求：
+     validator
+     阻止 payload
+     回升成第二真源
+7. **P1: SpatialPlan live/materialization refinement**
+   - 继续让
+     `PlanTT*`
+     消费并细化
+     已落地的
+     `SpatialPlan`
+     logical live-value /
+     materialization-boundary
+     表示
+   - 下一步重点：
+     recurrence /
+     reduction row state /
+     非零 live-in merge
+     的 logical relation
+     映射
+   - 禁止：
+     `PlanTT*`
+     或 leaf reader
+     继续用 body-order matcher
+     承担跨阶段 owner truth
+8. **P1: 非 GEMM compute kind extension**
+   - 前提：
+     P0.1 /
+     P0.2
+     关闭 contract-family
+     public field
+     与 operand-order recovery
+   - 目标：
+     为非 GEMM
+     TT-Metal compute
+     instruction
+     增加同一
+     `KernelSpec.compute_ops`
+     数组下的 typed
+     `kind`
+     entry
+   - 禁止：
+     新增并行
+     family-specific
+     top-level executable field
+9. **P1: materialization admission 扩面**
+   - 在上述 typed owner truth
+     基础上扩大
+     materialization admission
+     支持面
+   - 非零 live-in merge、
+     更宽 fragment/cast producer
+     和后续 workload payoff
+     都必须继续通过
+     explicit representation
+     boundary
+     表达，
+     不回退到 leaf matcher
+10. **P1: explicit boundary gate 保持**
+    - compile /
+      projection /
+      admitted runtime
+      gate
+      继续只站在
+      explicit representation
+      boundary 上
+11. **P1: 删除窄 bridge attr**
+    - 等 layout /
+      materialization boundary
+      和 typed executable
+      materialization schema
+      全面承接后，
+      删除
+      `tl.blackhole_logical_buffer_tile_bridge_specs`
+12. **P2: flash-attn direct runtime**
+    - 只作为上述 admission
+      完成后的 integration payoff，
+      不作为当前设计驱动
