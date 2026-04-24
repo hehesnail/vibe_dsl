@@ -1617,7 +1617,7 @@ void PlanTTKernelABI::LoadBufferTileBridgeSpecs(
 
 void PlanTTKernelABI::LoadSpatialLiveValueBoundaries(const SpatialPlan& plan) {
   spatial_live_value_by_subject_.clear();
-  spatial_materialization_boundary_by_subject_.clear();
+  spatial_materialization_boundary_by_source_target_.clear();
   std::unordered_map<std::string, std::string> subject_by_live_value;
 
   for (int64_t i = 0; i < static_cast<int64_t>(plan->live_values.size()); ++i) {
@@ -1636,20 +1636,25 @@ void PlanTTKernelABI::LoadSpatialLiveValueBoundaries(const SpatialPlan& plan) {
   for (int64_t i = 0; i < static_cast<int64_t>(plan->materialization_boundaries.size()); ++i) {
     const MaterializationBoundary& boundary = plan->materialization_boundaries[i];
     const std::string source_live_value = static_cast<std::string>(boundary->source_live_value);
-    auto subject_it = subject_by_live_value.find(source_live_value);
-    if (subject_it == subject_by_live_value.end()) {
+    const std::string target_live_value = static_cast<std::string>(boundary->target_live_value);
+    auto source_subject_it = subject_by_live_value.find(source_live_value);
+    auto target_subject_it = subject_by_live_value.find(target_live_value);
+    if (source_subject_it == subject_by_live_value.end() ||
+        target_subject_it == subject_by_live_value.end()) {
       continue;
     }
-    const std::string& subject = subject_it->second;
-    if (spatial_materialization_boundary_by_subject_.find(subject) !=
-        spatial_materialization_boundary_by_subject_.end()) {
+    const std::string key = source_subject_it->second + "->" + target_subject_it->second;
+    if (spatial_materialization_boundary_by_source_target_.find(key) !=
+        spatial_materialization_boundary_by_source_target_.end()) {
       continue;
     }
-    spatial_materialization_boundary_by_subject_[subject] =
+    spatial_materialization_boundary_by_source_target_[key] =
         SpatialMaterializationBoundaryRef{static_cast<std::string>(boundary->name),
                                           i,
                                           source_live_value,
                                           boundary->source_live_value_index,
+                                          target_live_value,
+                                          boundary->target_live_value_index,
                                           static_cast<std::string>(boundary->live_value_edge),
                                           boundary->live_value_edge_index};
   }
@@ -1687,9 +1692,11 @@ const PlanTTKernelABI::SpatialLiveValueRef* PlanTTKernelABI::FindSpatialLiveValu
 }
 
 const PlanTTKernelABI::SpatialMaterializationBoundaryRef*
-PlanTTKernelABI::FindSpatialMaterializationBoundaryRef(const std::string& subject) const {
-  auto it = spatial_materialization_boundary_by_subject_.find(subject);
-  if (it == spatial_materialization_boundary_by_subject_.end()) {
+PlanTTKernelABI::FindSpatialMaterializationBoundaryRef(const std::string& source_subject,
+                                                       const std::string& target_subject) const {
+  const std::string key = source_subject + "->" + target_subject;
+  auto it = spatial_materialization_boundary_by_source_target_.find(key);
+  if (it == spatial_materialization_boundary_by_source_target_.end()) {
     return nullptr;
   }
   return &it->second;
@@ -1841,7 +1848,7 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
   const SpatialLiveValueRef* source_live_value_ref = FindSpatialLiveValueRef(source_name);
   const SpatialLiveValueRef* target_live_value_ref = FindSpatialLiveValueRef(target_name);
   const SpatialMaterializationBoundaryRef* source_boundary_ref =
-      FindSpatialMaterializationBoundaryRef(source_name);
+      FindSpatialMaterializationBoundaryRef(source_name, target_name);
   ICHECK(source_live_value_ref != nullptr)
       << "PlanTTKernelABI requires SpatialPlan LiveValue for materialization source "
       << source_name;
@@ -1850,8 +1857,12 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
       << target_name;
   ICHECK(source_boundary_ref != nullptr)
       << "PlanTTKernelABI requires SpatialPlan MaterializationBoundary for materialization "
-         "source "
-      << source_name;
+         "source/target "
+      << source_name << " -> " << target_name;
+  SpatialLiveValueRef boundary_source_live_value_ref{source_boundary_ref->source_live_value,
+                                                     source_boundary_ref->source_live_value_index};
+  SpatialLiveValueRef boundary_target_live_value_ref{source_boundary_ref->target_live_value,
+                                                     source_boundary_ref->target_live_value_index};
 
   auto has_live_form = [&](const std::string& name) {
     for (const TTLiveFormPlan& plan : tt_live_form_plans_) {
@@ -1881,9 +1892,9 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
   };
 
   push_live_form(source_name, "thread_distributed_slice", source_local_extent,
-                 "producer_thread_lane", *source_live_value_ref);
+                 "producer_thread_lane", boundary_source_live_value_ref);
   push_live_form(target_name, "cb_materialized_tile", target_local_extent,
-                 "materialized_cb_pages", *target_live_value_ref);
+                 "materialized_cb_pages", boundary_target_live_value_ref);
 
   const std::string source_live_form = "live_form_" + source_name;
   const std::string produced_live_form = "live_form_" + target_name;
@@ -2240,7 +2251,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   requires_compute_segment_ = false;
   buffer_tile_bridge_specs_by_buffer_.clear();
   spatial_live_value_by_subject_.clear();
-  spatial_materialization_boundary_by_subject_.clear();
+  spatial_materialization_boundary_by_source_target_.clear();
   select_compute_builtins_only_ = true;
 
   auto maybe_spatial_plan = func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
@@ -2664,7 +2675,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   compute_epilogue_payloads_flat_.clear();
   buffer_tile_bridge_specs_by_buffer_.clear();
   spatial_live_value_by_subject_.clear();
-  spatial_materialization_boundary_by_subject_.clear();
+  spatial_materialization_boundary_by_source_target_.clear();
   buffer_materialization_contracts_by_target_buffer_.clear();
   gemm_input_buffer_num_tiles_.clear();
   gemm_transpose_a_ = false;

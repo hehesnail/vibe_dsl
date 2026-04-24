@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <initializer_list>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -92,6 +93,15 @@ void ValidateNoTTNouns(const Array<String>& values, const std::string& context) 
   }
 }
 
+bool IsOneOf(const std::string& value, std::initializer_list<const char*> allowed) {
+  for (const char* item : allowed) {
+    if (value == item) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::vector<int> BuildPhaseIndexByUnit(const SpatialPlan& plan) {
   std::vector<int> phase_index_by_unit(plan->execution_units.size(), -1);
   std::unordered_set<int64_t> seen_phase_indices;
@@ -144,9 +154,9 @@ void ValidateCompatibilityProjection(const SpatialPlan& plan) {
   ICHECK_EQ(plan->execution_units.size(), plan->closures.size())
       << "SpatialPlan compatibility projection requires "
          "execution_units/closures alignment";
-  ICHECK_EQ(plan->dataflow_edges.size(), plan->boundaries.size())
+  ICHECK_LE(plan->boundaries.size(), plan->dataflow_edges.size())
       << "SpatialPlan compatibility projection requires "
-         "dataflow_edges/boundaries alignment";
+         "boundaries to remain a DataflowEdge prefix";
 
   for (int i = 0; i < plan->execution_units.size(); ++i) {
     const ExecutionUnit& unit = plan->execution_units[i];
@@ -168,7 +178,7 @@ void ValidateCompatibilityProjection(const SpatialPlan& plan) {
         << "SpatialPlan compatibility projection mismatch for traits";
   }
 
-  for (int i = 0; i < plan->dataflow_edges.size(); ++i) {
+  for (int i = 0; i < plan->boundaries.size(); ++i) {
     const DataflowEdge& edge = plan->dataflow_edges[i];
     const ClosureBoundary& boundary = plan->boundaries[i];
     ICHECK_EQ(str(edge->name), str(boundary->name))
@@ -328,14 +338,17 @@ void ValidatePhasePlans(const SpatialPlan& plan, const std::vector<int>& phase_i
 
 void ValidateLiveValueBoundaryObjects(const SpatialPlan& plan,
                                       const std::vector<int>& phase_index_by_unit) {
-  ICHECK_EQ(plan->live_values.size(), plan->dataflow_edges.size())
-      << "SpatialPlan live_values must cover every DataflowEdge";
+  if (!plan->dataflow_edges.empty()) {
+    ICHECK(!plan->live_values.empty())
+        << "SpatialPlan live_values must cover DataflowEdge producer values";
+  }
   ICHECK_EQ(plan->live_value_edges.size(), plan->dataflow_edges.size())
       << "SpatialPlan live_value_edges must cover every DataflowEdge";
   ICHECK_EQ(plan->materialization_boundaries.size(), plan->dataflow_edges.size())
       << "SpatialPlan materialization_boundaries must cover every DataflowEdge";
 
   std::unordered_set<std::string> seen_live_value_names;
+  std::unordered_set<std::string> seen_live_value_producer_subjects;
   for (int live_value_index = 0; live_value_index < plan->live_values.size(); ++live_value_index) {
     const LiveValue& value = plan->live_values[live_value_index];
     ICHECK(!value->name.empty()) << "LiveValue requires name";
@@ -351,7 +364,17 @@ void ValidateLiveValueBoundaryObjects(const SpatialPlan& plan,
     ICHECK_EQ(str(value->producer_unit),
               str(plan->execution_units[value->producer_unit_index]->name))
         << "LiveValue " << value->name << " producer_unit must match producer_unit_index";
+    const std::string producer_subject_key =
+        std::to_string(value->producer_unit_index) + "|" + str(value->subject);
+    ICHECK(seen_live_value_producer_subjects.insert(producer_subject_key).second)
+        << "duplicate LiveValue producer/subject " << value->producer_unit << " "
+        << value->subject;
     ICHECK(!value->value_role.empty()) << "LiveValue " << value->name << " requires value_role";
+    ICHECK(IsOneOf(str(value->value_role),
+                   {"fragment", "accumulator", "cast_source", "publish_source",
+                    "consumer_input"}))
+        << "LiveValue " << value->name << " value_role has unsupported value "
+        << value->value_role;
     ValidateNoTTNoun(str(value->value_role), "LiveValue value_role");
     ValidateNoTTNouns(value->traits, "LiveValue traits");
     ICHECK(!value->logical_shape.empty())
@@ -406,10 +429,16 @@ void ValidateLiveValueBoundaryObjects(const SpatialPlan& plan,
         << "LiveValueEdge " << live_edge->name << " requires relation_kind";
     ICHECK_EQ(str(live_edge->relation_kind), str(dataflow_edge->kind))
         << "LiveValueEdge " << live_edge->name << " relation_kind must match DataflowEdge kind";
+    ICHECK(IsOneOf(str(live_edge->relation_kind), {"carry", "flow", "join", "materialize"}))
+        << "LiveValueEdge " << live_edge->name << " relation_kind has unsupported value "
+        << live_edge->relation_kind;
     ValidateNoTTNoun(str(live_edge->relation_kind), "LiveValueEdge relation_kind");
     ICHECK(live_edge->requires_full_logical_value || live_edge->accepts_distributed_slice)
         << "LiveValueEdge " << live_edge->name
         << " must either require full logical value or accept distributed slice";
+    ICHECK(!(live_edge->requires_full_logical_value && live_edge->accepts_distributed_slice))
+        << "LiveValueEdge " << live_edge->name
+        << " must not require a full logical value and accept a distributed slice";
   }
 
   std::unordered_set<std::string> seen_boundary_names;
@@ -427,6 +456,16 @@ void ValidateLiveValueBoundaryObjects(const SpatialPlan& plan,
     ICHECK_EQ(str(boundary->source_live_value), str(source_live_value->name))
         << "MaterializationBoundary " << boundary->name
         << " source_live_value must match source_live_value_index";
+    ICHECK(!boundary->target_live_value.empty())
+        << "MaterializationBoundary " << boundary->name << " requires target_live_value";
+    ICHECK_GE(boundary->target_live_value_index, 0)
+        << "MaterializationBoundary " << boundary->name << " requires target_live_value_index";
+    ICHECK_LT(boundary->target_live_value_index, static_cast<int64_t>(plan->live_values.size()))
+        << "MaterializationBoundary " << boundary->name << " target_live_value_index out of bounds";
+    const LiveValue& target_live_value = plan->live_values[boundary->target_live_value_index];
+    ICHECK_EQ(str(boundary->target_live_value), str(target_live_value->name))
+        << "MaterializationBoundary " << boundary->name
+        << " target_live_value must match target_live_value_index";
     ICHECK(!boundary->live_value_edge.empty())
         << "MaterializationBoundary " << boundary->name << " requires live_value_edge";
     ICHECK_GE(boundary->live_value_edge_index, 0)
@@ -443,6 +482,11 @@ void ValidateLiveValueBoundaryObjects(const SpatialPlan& plan,
     ICHECK_EQ(boundary->source_live_value_index, live_edge->source_live_value_index)
         << "MaterializationBoundary " << boundary->name
         << " source_live_value_index must match LiveValueEdge source";
+    if (str(live_edge->relation_kind) == "materialize") {
+      ICHECK_EQ(target_live_value->producer_unit_index, live_edge->consumer_unit_index)
+          << "MaterializationBoundary " << boundary->name
+          << " target_live_value producer must match materialize consumer unit";
+    }
     const DataflowEdge& dataflow_edge = plan->dataflow_edges[live_edge->dataflow_edge_index];
     const bool crosses_phase = phase_index_by_unit[dataflow_edge->producer_unit_index] !=
                                phase_index_by_unit[dataflow_edge->consumer_unit_index];
@@ -452,10 +496,31 @@ void ValidateLiveValueBoundaryObjects(const SpatialPlan& plan,
         << "MaterializationBoundary " << boundary->name << " requires logical_coverage";
     ICHECK(!boundary->phase_relation.empty())
         << "MaterializationBoundary " << boundary->name << " requires phase_relation";
+    ICHECK(IsOneOf(str(boundary->required_visibility),
+                   {"same_unit", "next_phase", "host_visible_output"}))
+        << "MaterializationBoundary " << boundary->name
+        << " required_visibility has unsupported value " << boundary->required_visibility;
+    ICHECK(IsOneOf(str(boundary->logical_coverage),
+                   {"full_logical_value", "distributed_slice", "row_slice", "grouped_slice"}))
+        << "MaterializationBoundary " << boundary->name
+        << " logical_coverage has unsupported value " << boundary->logical_coverage;
+    ICHECK(IsOneOf(str(boundary->phase_relation), {"same_phase", "cross_phase"}))
+        << "MaterializationBoundary " << boundary->name
+        << " phase_relation has unsupported value " << boundary->phase_relation;
     ValidateNoTTNoun(str(boundary->required_visibility),
                      "MaterializationBoundary required_visibility");
     ValidateNoTTNoun(str(boundary->logical_coverage), "MaterializationBoundary logical_coverage");
     ValidateNoTTNoun(str(boundary->phase_relation), "MaterializationBoundary phase_relation");
+    if (live_edge->requires_full_logical_value) {
+      ICHECK_EQ(str(boundary->logical_coverage), "full_logical_value")
+          << "MaterializationBoundary " << boundary->name
+          << " full-value consumer requires full_logical_value coverage";
+    }
+    if (str(boundary->logical_coverage) != "full_logical_value") {
+      ICHECK(live_edge->accepts_distributed_slice)
+          << "MaterializationBoundary " << boundary->name
+          << " partial coverage requires a slice-capable LiveValueEdge";
+    }
     ICHECK_EQ(str(boundary->phase_relation), crosses_phase ? "cross_phase" : "same_phase")
         << "MaterializationBoundary " << boundary->name
         << " phase_relation must match DataflowEdge phase membership";

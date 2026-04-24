@@ -209,6 +209,51 @@ def _rebuild_live_value_edge(
     )
 
 
+def _rebuild_materialization_boundary(
+    boundary,
+    *,
+    name=None,
+    source_live_value=None,
+    source_live_value_index=None,
+    target_live_value=None,
+    target_live_value_index=None,
+    live_value_edge=None,
+    live_value_edge_index=None,
+    required_visibility=None,
+    logical_coverage=None,
+    phase_relation=None,
+    anchors=None,
+):
+    make_materialization_boundary = tvm.get_global_func("tl.MaterializationBoundary")
+    return make_materialization_boundary(
+        str(boundary.name) if name is None else name,
+        str(boundary.source_live_value)
+        if source_live_value is None
+        else source_live_value,
+        int(boundary.source_live_value_index)
+        if source_live_value_index is None
+        else source_live_value_index,
+        str(boundary.target_live_value)
+        if target_live_value is None
+        else target_live_value,
+        int(boundary.target_live_value_index)
+        if target_live_value_index is None
+        else target_live_value_index,
+        str(boundary.live_value_edge) if live_value_edge is None else live_value_edge,
+        int(boundary.live_value_edge_index)
+        if live_value_edge_index is None
+        else live_value_edge_index,
+        str(boundary.required_visibility)
+        if required_visibility is None
+        else required_visibility,
+        str(boundary.logical_coverage)
+        if logical_coverage is None
+        else logical_coverage,
+        str(boundary.phase_relation) if phase_relation is None else phase_relation,
+        list(boundary.anchors) if anchors is None else anchors,
+    )
+
+
 def _rebuild_spatial_plan(
     plan,
     *,
@@ -389,6 +434,38 @@ def test_task1_spatial_plan_exposes_logical_live_value_boundaries():
     assert str(boundary.required_visibility) == "next_phase"
     assert str(boundary.logical_coverage) == "full_logical_value"
     assert str(boundary.phase_relation) == "cross_phase"
+
+
+def test_task1_spatial_plan_materialization_boundary_names_target_live_value():
+    mod = _prepare_blackhole_phase_b_module(fragment_fill_cast_publish_kernel())
+    plan = mod["main"].attrs["tl.spatial_plan"]
+
+    live_values = {str(value.name): value for value in plan.live_values}
+    live_value_by_subject = {str(value.subject): value for value in plan.live_values}
+    assert {"C_local", "D_local"}.issubset(live_value_by_subject)
+
+    c_live = live_value_by_subject["C_local"]
+    d_live = live_value_by_subject["D_local"]
+    c_to_d_boundaries = [
+        boundary
+        for boundary in plan.materialization_boundaries
+        if str(boundary.source_live_value) == str(c_live.name)
+        and str(boundary.target_live_value) == str(d_live.name)
+    ]
+    assert len(c_to_d_boundaries) == 1
+    boundary = c_to_d_boundaries[0]
+    assert int(boundary.source_live_value_index) == list(plan.live_values).index(c_live)
+    assert int(boundary.target_live_value_index) == list(plan.live_values).index(d_live)
+    assert str(boundary.required_visibility) == "same_unit"
+    assert str(boundary.logical_coverage) == "distributed_slice"
+    assert str(boundary.phase_relation) == "same_phase"
+
+    live_edge = plan.live_value_edges[int(boundary.live_value_edge_index)]
+    assert str(live_edge.name) == str(boundary.live_value_edge)
+    assert str(live_edge.source_live_value) in live_values
+    assert str(live_edge.relation_kind) == "materialize"
+    assert bool(live_edge.accepts_distributed_slice) is True
+    assert bool(live_edge.requires_full_logical_value) is False
 
 
 def test_task1_gemm_spatial_plan_emits_compute_closure():
@@ -726,6 +803,31 @@ def test_task1_validate_spatial_plan_rejects_live_value_edge_without_source_valu
     broken = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
     with pytest.raises(Exception, match="LiveValueEdge.*source_live_value"):
+        tilelang.transform.ValidateSpatialPlan()(broken)
+
+
+def test_task1_validate_spatial_plan_rejects_materialization_without_target_value():
+    mod = _prepare_blackhole_phase_b_module(fragment_fill_cast_publish_kernel())
+    main = mod["main"]
+    plan = main.attrs["tl.spatial_plan"]
+    invalid_boundary = _rebuild_materialization_boundary(
+        plan.materialization_boundaries[0],
+        target_live_value="missing_target_live_value",
+        target_live_value_index=-1,
+    )
+    invalid_plan = _rebuild_spatial_plan(
+        plan,
+        materialization_boundaries=[
+            invalid_boundary,
+            *list(plan.materialization_boundaries[1:]),
+        ],
+    )
+    func = main.with_attr("tl.spatial_plan", invalid_plan).without_attr(
+        "tl.spatial_plan_validated"
+    )
+    broken = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
+
+    with pytest.raises(Exception, match="MaterializationBoundary.*target_live_value"):
         tilelang.transform.ValidateSpatialPlan()(broken)
 
 

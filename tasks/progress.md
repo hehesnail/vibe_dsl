@@ -5,9 +5,9 @@
 
 ## Status
 
-- Date: `2026-04-24`
-- Active lane: `SpatialPlan live/materialization refinement`
-- Current item: `P1 SpatialPlan live/materialization refinement`
+- Date: `2026-04-25`
+- Active lane: `TTProgram mesh/buffer distribution schema`
+- Current item: `P1 TTProgram mesh/buffer distribution schema`
 - Blocker: none
 - Main chain: `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -20,8 +20,8 @@
 - `P0.5 materialization host/layout binding`: completed
 - `P0.6 projection payload seed cleanup`: completed
 - `P1 runtime/codegen backend decoupling design`: completed
-- `P1 SpatialPlan live/materialization refinement`: next
-- `P1 TTProgram mesh/buffer distribution schema`: after SpatialPlan
+- `P1 SpatialPlan live/materialization refinement`: completed
+- `P1 TTProgram mesh/buffer distribution schema`: next
 - `P1 compute-kind extension`: after mesh/schema gates
 - `P1/P2 workload payoff`: after backend gates
 
@@ -33,11 +33,10 @@
 
 ## Latest Verification
 
-P0.6 projection payload seed cleanup:
+P1 SpatialPlan live/materialization refinement:
 
 - `cmake --build build -j32`
-- P0.6 projection poison regression: `1 passed`
-- copy/GEMM/flash pipeline: `158 passed, 26 skipped, 1 xfailed`
-- spatial/export: `21 passed`
-- copy/flash runtime under TT-Sim: `22 passed, 5 skipped`
-- TT-Sim selected direct-runtime cases: `5 passed`
+- SpatialPlan schema/validator: `22 passed`
+- GEMM/materialization target pipeline: `43 passed, 16 skipped`
+- copy pipeline: `51 passed, 10 skipped, 1 xfailed`
+- flash pipeline: `64 passed`

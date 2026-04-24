@@ -37,10 +37,17 @@ using tvm::ffi::String;
 
 namespace {
 
+struct LocalValueFlow {
+  std::string source;
+  std::string target;
+  bool accepts_distributed_slice{false};
+};
+
 struct StatementAccessSummary {
   std::vector<std::string> reads;
   std::vector<std::string> writes;
   std::unordered_map<std::string, std::string> scope_by_buffer;
+  std::vector<LocalValueFlow> local_value_flows;
   bool has_compute_consume{false};
 };
 
@@ -48,6 +55,7 @@ struct ClosureCandidateInfo {
   std::string name;
   std::vector<std::string> reads;
   std::vector<std::string> writes;
+  std::vector<LocalValueFlow> local_value_flows;
   ExecutionClosure closure;
 };
 
@@ -59,6 +67,21 @@ void AppendUnique(std::vector<std::string>* values, const std::string& value) {
   if (std::find(values->begin(), values->end(), value) == values->end()) {
     values->push_back(value);
   }
+}
+
+void AppendUniqueValueFlow(std::vector<LocalValueFlow>* flows, LocalValueFlow flow) {
+  ICHECK(flows != nullptr);
+  if (flow.source.empty() || flow.target.empty() || flow.source == flow.target) {
+    return;
+  }
+  for (LocalValueFlow& existing : *flows) {
+    if (existing.source == flow.source && existing.target == flow.target) {
+      existing.accepts_distributed_slice =
+          existing.accepts_distributed_slice || flow.accepts_distributed_slice;
+      return;
+    }
+  }
+  flows->push_back(std::move(flow));
 }
 
 Array<Integer> ToIntegerArray(std::initializer_list<int64_t> values) {
@@ -138,6 +161,45 @@ bool IsStorageSyncStmt(const tir::Stmt& stmt) {
   return call != nullptr && call->op.same_as(tir::builtin::tvm_storage_sync());
 }
 
+class ExprBufferReadCollector : public tir::StmtExprVisitor {
+ public:
+  std::vector<tir::Buffer> Collect(const PrimExpr& expr) {
+    buffers_.clear();
+    buffer_names_.clear();
+    VisitExpr(expr);
+    return buffers_;
+  }
+
+ private:
+  void VisitExpr_(const tir::BufferLoadNode* op) final {
+    const std::string name = BufferIdentityName(op->buffer);
+    if (!name.empty() && buffer_names_.insert(name).second) {
+      buffers_.push_back(op->buffer);
+    }
+    tir::StmtExprVisitor::VisitExpr_(op);
+  }
+
+  std::vector<tir::Buffer> buffers_;
+  std::unordered_set<std::string> buffer_names_;
+};
+
+class CastDetector : public tir::StmtExprVisitor {
+ public:
+  bool ContainsCast(const PrimExpr& expr) {
+    contains_cast_ = false;
+    VisitExpr(expr);
+    return contains_cast_;
+  }
+
+ private:
+  void VisitExpr_(const tir::CastNode* op) final {
+    contains_cast_ = true;
+    tir::StmtExprVisitor::VisitExpr_(op);
+  }
+
+  bool contains_cast_{false};
+};
+
 class StatementAccessAnalyzer : public tir::StmtExprVisitor {
  public:
   StatementAccessSummary Analyze(const tir::Stmt& stmt) {
@@ -171,6 +233,7 @@ class StatementAccessAnalyzer : public tir::StmtExprVisitor {
   }
 
   void VisitStmt_(const tir::BufferStoreNode* op) final {
+    RecordLocalValueFlows(op);
     RecordWrite(op->buffer);
     tir::StmtExprVisitor::VisitStmt_(op);
   }
@@ -200,6 +263,28 @@ class StatementAccessAnalyzer : public tir::StmtExprVisitor {
       }
     }
     tir::StmtExprVisitor::VisitExpr_(op);
+  }
+
+  void RecordLocalValueFlows(const tir::BufferStoreNode* op) {
+    const std::string target_name = BufferIdentityName(op->buffer);
+    const std::string target_scope = GetBufferScope(op->buffer);
+    if (target_name.empty() || target_scope.empty() || target_scope == "global") {
+      return;
+    }
+
+    ExprBufferReadCollector read_collector;
+    CastDetector cast_detector;
+    const bool accepts_distributed_slice = cast_detector.ContainsCast(op->value);
+    for (const tir::Buffer& source : read_collector.Collect(op->value)) {
+      const std::string source_name = BufferIdentityName(source);
+      const std::string source_scope = GetBufferScope(source);
+      if (source_name.empty() || source_name == target_name || source_scope.empty() ||
+          source_scope == "global") {
+        continue;
+      }
+      AppendUniqueValueFlow(&summary_.local_value_flows,
+                            LocalValueFlow{source_name, target_name, accepts_distributed_slice});
+    }
   }
 
   StatementAccessSummary summary_;
@@ -299,6 +384,7 @@ std::vector<ClosureCandidateInfo> AnalyzeClosureCandidates(const tir::PrimFunc& 
     info.name = str(info.closure->name);
     info.reads = std::move(summary.reads);
     info.writes = std::move(summary.writes);
+    info.local_value_flows = std::move(summary.local_value_flows);
     candidates.push_back(std::move(info));
   }
   return candidates;
@@ -427,6 +513,51 @@ Array<DataflowEdge> BuildDataflowEdges(const Array<ClosureBoundary>& boundaries,
         crosses_phase, boundary->traits, MakeAnchors("dataflow_edge", str(boundary->name))));
   }
   return dataflow_edges;
+}
+
+struct LocalValueFlowEdges {
+  Array<DataflowEdge> dataflow_edges;
+  std::unordered_map<std::string, std::string> target_subject_by_edge;
+};
+
+LocalValueFlowEdges BuildLocalValueFlowEdges(const std::vector<ClosureCandidateInfo>& candidates) {
+  LocalValueFlowEdges result;
+  std::unordered_set<std::string> emitted;
+  for (int unit_index = 0; unit_index < static_cast<int>(candidates.size()); ++unit_index) {
+    const ClosureCandidateInfo& candidate = candidates[unit_index];
+    for (const LocalValueFlow& flow : candidate.local_value_flows) {
+      const std::string key =
+          flow.source + "|" + flow.target + "|" + std::to_string(unit_index);
+      if (!emitted.insert(key).second) {
+        continue;
+      }
+      const std::string name =
+          "materialize_" + flow.source + "_to_" + flow.target + "_" + std::to_string(unit_index);
+      std::vector<std::string> traits{"same_unit"};
+      if (flow.accepts_distributed_slice) {
+        AppendUnique(&traits, "distributed_slice_consumer");
+      }
+      result.dataflow_edges.push_back(DataflowEdge(
+          String(name), String("materialize"), String(candidate.name), String(candidate.name),
+          unit_index, unit_index, String(flow.source), false, ToStringArray(traits),
+          MakeAnchors("dataflow_edge", name)));
+      result.target_subject_by_edge.emplace(name, flow.target);
+    }
+  }
+  return result;
+}
+
+Array<DataflowEdge> ConcatDataflowEdges(const Array<DataflowEdge>& lhs,
+                                        const Array<DataflowEdge>& rhs) {
+  Array<DataflowEdge> result;
+  result.reserve(lhs.size() + rhs.size());
+  for (const DataflowEdge& edge : lhs) {
+    result.push_back(edge);
+  }
+  for (const DataflowEdge& edge : rhs) {
+    result.push_back(edge);
+  }
+  return result;
 }
 
 class BufferScopeCollector : public tir::StmtExprVisitor {
@@ -629,32 +760,85 @@ std::string DeriveLiveValueRole(const BufferMetadata* metadata) {
 
 const BufferMetadata* FindBufferMetadata(
     const std::unordered_map<std::string, BufferMetadata>& metadata_by_buffer,
-    const String& subject) {
-  auto it = metadata_by_buffer.find(str(subject));
+    const std::string& subject) {
+  auto it = metadata_by_buffer.find(subject);
   if (it == metadata_by_buffer.end()) {
     return nullptr;
   }
   return &it->second;
 }
 
+std::string LiveValueKey(int64_t producer_unit_index, const std::string& subject) {
+  return std::to_string(producer_unit_index) + "|" + subject;
+}
+
+std::unordered_map<std::string, int64_t> BuildLiveValueIndexByProducerSubject(
+    const Array<LiveValue>& live_values) {
+  std::unordered_map<std::string, int64_t> index_by_key;
+  for (int64_t live_value_index = 0; live_value_index < static_cast<int64_t>(live_values.size());
+       ++live_value_index) {
+    const LiveValue& value = live_values[live_value_index];
+    index_by_key.emplace(
+        LiveValueKey(value->producer_unit_index, static_cast<std::string>(value->subject)),
+        live_value_index);
+  }
+  return index_by_key;
+}
+
+bool HasTrait(const Array<String>& traits, const std::string& trait) {
+  for (const String& existing : traits) {
+    if (str(existing) == trait) {
+      return true;
+    }
+  }
+  return false;
+}
+
 Array<LiveValue> BuildLiveValues(
-    const Array<DataflowEdge>& dataflow_edges,
+    const Array<DataflowEdge>& dataflow_edges, const Array<ExecutionUnit>& execution_units,
     const std::unordered_map<std::string, BufferMetadata>& metadata_by_buffer) {
   Array<LiveValue> live_values;
+  std::unordered_set<std::string> emitted;
+
+  auto emit_live_value = [&](const std::string& name_seed, const std::string& subject,
+                             const std::string& producer_unit, int64_t producer_unit_index,
+                             std::vector<std::string> traits) {
+    const std::string key = LiveValueKey(producer_unit_index, subject);
+    if (!emitted.insert(key).second) {
+      return;
+    }
+    const BufferMetadata* metadata = FindBufferMetadata(metadata_by_buffer, subject);
+    live_values.push_back(LiveValue(
+        String("live_" + name_seed), String(subject), String(producer_unit), producer_unit_index,
+        String(DeriveLiveValueRole(metadata)),
+        metadata == nullptr ? Array<Integer>{} : ToIntegerArray(metadata->shape),
+        metadata == nullptr ? String("unknown") : String(metadata->dtype), ToStringArray(traits),
+        MakeAnchors("live_value", name_seed)));
+  };
+
   for (int edge_index = 0; edge_index < dataflow_edges.size(); ++edge_index) {
     const DataflowEdge& edge = dataflow_edges[edge_index];
-    const BufferMetadata* metadata = FindBufferMetadata(metadata_by_buffer, edge->subject);
     std::vector<std::string> traits;
     AppendUnique(&traits, str(edge->kind));
     if (edge->crosses_phase) {
       AppendUnique(&traits, "cross_phase");
     }
-    live_values.push_back(
-        LiveValue(String("live_" + str(edge->name)), edge->subject, edge->producer_unit,
-                  edge->producer_unit_index, String(DeriveLiveValueRole(metadata)),
-                  metadata == nullptr ? Array<Integer>{} : ToIntegerArray(metadata->shape),
-                  metadata == nullptr ? String("unknown") : String(metadata->dtype),
-                  ToStringArray(traits), MakeAnchors("live_value", str(edge->name))));
+    emit_live_value(str(edge->name), str(edge->subject), str(edge->producer_unit),
+                    edge->producer_unit_index, std::move(traits));
+  }
+
+  for (int64_t unit_index = 0; unit_index < static_cast<int64_t>(execution_units.size());
+       ++unit_index) {
+    const ExecutionUnit& unit = execution_units[unit_index];
+    for (const String& subject : unit->write_buffers) {
+      const std::string subject_name = str(subject);
+      const BufferMetadata* metadata = FindBufferMetadata(metadata_by_buffer, subject_name);
+      if (metadata == nullptr || metadata->scope == "global") {
+        continue;
+      }
+      emit_live_value("write_" + subject_name + "_" + std::to_string(unit_index), subject_name,
+                      str(unit->name), unit_index, {"write_value"});
+    }
   }
   return live_values;
 }
@@ -662,15 +846,23 @@ Array<LiveValue> BuildLiveValues(
 Array<LiveValueEdge> BuildLiveValueEdges(const Array<DataflowEdge>& dataflow_edges,
                                          const Array<LiveValue>& live_values) {
   Array<LiveValueEdge> live_value_edges;
-  ICHECK_EQ(dataflow_edges.size(), live_values.size())
-      << "BuildLiveValueEdges requires dataflow_edges/live_values alignment";
+  const std::unordered_map<std::string, int64_t> live_value_index_by_key =
+      BuildLiveValueIndexByProducerSubject(live_values);
   for (int edge_index = 0; edge_index < dataflow_edges.size(); ++edge_index) {
     const DataflowEdge& edge = dataflow_edges[edge_index];
-    const LiveValue& live_value = live_values[edge_index];
+    const std::string live_value_key =
+        LiveValueKey(edge->producer_unit_index, static_cast<std::string>(edge->subject));
+    auto live_value_index_it = live_value_index_by_key.find(live_value_key);
+    ICHECK(live_value_index_it != live_value_index_by_key.end())
+        << "BuildLiveValueEdges requires producer live value for DataflowEdge " << edge->name;
+    const int64_t live_value_index = live_value_index_it->second;
+    const LiveValue& live_value = live_values[live_value_index];
+    const bool accepts_distributed_slice = HasTrait(edge->traits, "distributed_slice_consumer");
     live_value_edges.push_back(
-        LiveValueEdge(String("live_edge_" + str(edge->name)), live_value->name, edge_index,
+        LiveValueEdge(String("live_edge_" + str(edge->name)), live_value->name, live_value_index,
                       edge->name, edge_index, edge->producer_unit, edge->consumer_unit,
-                      edge->producer_unit_index, edge->consumer_unit_index, edge->kind, true, false,
+                      edge->producer_unit_index, edge->consumer_unit_index, edge->kind,
+                      !accepts_distributed_slice, accepts_distributed_slice,
                       MakeAnchors("live_value_edge", str(edge->name))));
   }
   return live_value_edges;
@@ -678,23 +870,42 @@ Array<LiveValueEdge> BuildLiveValueEdges(const Array<DataflowEdge>& dataflow_edg
 
 Array<MaterializationBoundary> BuildMaterializationBoundaries(
     const Array<DataflowEdge>& dataflow_edges, const Array<LiveValue>& live_values,
-    const Array<LiveValueEdge>& live_value_edges) {
+    const Array<LiveValueEdge>& live_value_edges,
+    const std::unordered_map<std::string, std::string>& target_subject_by_edge) {
   Array<MaterializationBoundary> materialization_boundaries;
-  ICHECK_EQ(dataflow_edges.size(), live_values.size())
-      << "BuildMaterializationBoundaries requires dataflow_edges/live_values "
-         "alignment";
   ICHECK_EQ(dataflow_edges.size(), live_value_edges.size())
       << "BuildMaterializationBoundaries requires "
          "dataflow_edges/live_value_edges alignment";
+  const std::unordered_map<std::string, int64_t> live_value_index_by_key =
+      BuildLiveValueIndexByProducerSubject(live_values);
   for (int edge_index = 0; edge_index < dataflow_edges.size(); ++edge_index) {
     const DataflowEdge& edge = dataflow_edges[edge_index];
-    const LiveValue& live_value = live_values[edge_index];
     const LiveValueEdge& live_value_edge = live_value_edges[edge_index];
+    const LiveValue& source_live_value = live_values[live_value_edge->source_live_value_index];
+    const auto target_subject_it =
+        target_subject_by_edge.find(static_cast<std::string>(edge->name));
+    const std::string target_subject = target_subject_it == target_subject_by_edge.end()
+                                           ? static_cast<std::string>(source_live_value->subject)
+                                           : target_subject_it->second;
+    int64_t target_live_value_index = live_value_edge->source_live_value_index;
+    if (target_subject_it != target_subject_by_edge.end()) {
+      const std::string target_key = LiveValueKey(edge->consumer_unit_index, target_subject);
+      auto target_live_value_it = live_value_index_by_key.find(target_key);
+      ICHECK(target_live_value_it != live_value_index_by_key.end())
+          << "BuildMaterializationBoundaries requires target live value for DataflowEdge "
+          << edge->name << " target " << target_subject;
+      target_live_value_index = target_live_value_it->second;
+    }
+    const LiveValue& target_live_value = live_values[target_live_value_index];
     const bool crosses_phase = edge->crosses_phase;
+    const bool distributed_slice = live_value_edge->accepts_distributed_slice &&
+                                   !live_value_edge->requires_full_logical_value;
     materialization_boundaries.push_back(MaterializationBoundary(
-        String("materialization_" + str(edge->name)), live_value->name, edge_index,
+        String("materialization_" + str(edge->name)), source_live_value->name,
+        live_value_edge->source_live_value_index, target_live_value->name, target_live_value_index,
         live_value_edge->name, edge_index, String(crosses_phase ? "next_phase" : "same_unit"),
-        String("full_logical_value"), String(crosses_phase ? "cross_phase" : "same_phase"),
+        String(distributed_slice ? "distributed_slice" : "full_logical_value"),
+        String(crosses_phase ? "cross_phase" : "same_phase"),
         MakeAnchors("materialization_boundary", str(edge->name))));
   }
   return materialization_boundaries;
@@ -780,17 +991,22 @@ SpatialPlan BuildSpatialPlanForFunc(const std::string& member_func, const tir::P
   const Array<ExecutionUnit> execution_units = BuildExecutionUnits(closures);
   const std::vector<int> unit_phases =
       ComputeExecutionUnitPhases(boundaries, static_cast<int>(execution_units.size()));
-  const Array<DataflowEdge> dataflow_edges = BuildDataflowEdges(boundaries, unit_phases);
+  const Array<DataflowEdge> closure_dataflow_edges = BuildDataflowEdges(boundaries, unit_phases);
+  const LocalValueFlowEdges local_value_flow_edges = BuildLocalValueFlowEdges(candidates);
+  const Array<DataflowEdge> dataflow_edges =
+      ConcatDataflowEdges(closure_dataflow_edges, local_value_flow_edges.dataflow_edges);
   const Array<LayoutSpec> layout_specs = BuildLayoutSpecs(func, execution_units);
   const Array<PhasePlan> phase_plans =
       BuildPhasePlans(execution_units, dataflow_edges, unit_phases);
   BufferMetadataCollector metadata_collector;
   const std::unordered_map<std::string, BufferMetadata> metadata_by_buffer =
       metadata_collector.Collect(func);
-  const Array<LiveValue> live_values = BuildLiveValues(dataflow_edges, metadata_by_buffer);
+  const Array<LiveValue> live_values =
+      BuildLiveValues(dataflow_edges, execution_units, metadata_by_buffer);
   const Array<LiveValueEdge> live_value_edges = BuildLiveValueEdges(dataflow_edges, live_values);
   const Array<MaterializationBoundary> materialization_boundaries =
-      BuildMaterializationBoundaries(dataflow_edges, live_values, live_value_edges);
+      BuildMaterializationBoundaries(dataflow_edges, live_values, live_value_edges,
+                                     local_value_flow_edges.target_subject_by_edge);
 
   return SpatialPlan(String(member_func), execution_units, dataflow_edges, layout_specs,
                      phase_plans, live_values, live_value_edges, materialization_boundaries,

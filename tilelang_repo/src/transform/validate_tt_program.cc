@@ -485,6 +485,15 @@ void ValidateSpatialLiveReferences(const TTProgram& program, const SpatialPlan& 
         << "TTMaterializationPlan source_live_form missing matching TTLiveFormPlan";
     ICHECK_EQ(source_it->second, static_cast<std::string>(boundary->source_live_value))
         << "TTMaterializationPlan source_live_form must refer to boundary source_live_value";
+    ICHECK_LT(boundary->target_live_value_index,
+              static_cast<int64_t>(spatial_plan->live_values.size()))
+        << "MaterializationBoundary target_live_value_index out of bounds";
+    const LiveValue& target_live_value =
+        spatial_plan->live_values[static_cast<size_t>(boundary->target_live_value_index)];
+    ICHECK_EQ(boundary->target_live_value, target_live_value->name)
+        << "MaterializationBoundary target_live_value must match SpatialPlan index";
+    ICHECK_EQ(plan->target_buffer, target_live_value->subject)
+        << "TTMaterializationPlan target_buffer must refer to boundary target_live_value";
   }
 
   for (const TTConsumerBindingPlan& plan : program->consumer_binding_plans) {

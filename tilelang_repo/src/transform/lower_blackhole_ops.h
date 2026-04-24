@@ -272,6 +272,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     int64_t index = -1;
     std::string source_live_value;
     int64_t source_live_value_index = -1;
+    std::string target_live_value;
+    int64_t target_live_value_index = -1;
     std::string live_value_edge;
     int64_t live_value_edge_index = -1;
   };
@@ -357,7 +359,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Return the SpatialPlan materialization boundary for a buffer subject. */
   const SpatialMaterializationBoundaryRef* FindSpatialMaterializationBoundaryRef(
-      const std::string& subject) const;
+      const std::string& source_subject, const std::string& target_subject) const;
 
   /*! \brief Load compute-region buffer to physical accumulator bindings from compute regions. */
   void LoadPhysicalComputeBufferBindings(const tvm::tir::PrimFunc& func);
@@ -745,7 +747,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<std::string, int> buffer_live_form_cb_by_buffer_identity_;
   std::unordered_map<std::string, SpatialLiveValueRef> spatial_live_value_by_subject_;
   std::unordered_map<std::string, SpatialMaterializationBoundaryRef>
-      spatial_materialization_boundary_by_subject_;
+      spatial_materialization_boundary_by_source_target_;
   std::unordered_map<std::string, tvm::PrimExpr> last_fragment_fill_value_by_buffer_identity_;
   std::unordered_map<const tvm::tir::VarNode*, tvm::PrimExpr> last_fragment_fill_value_by_data_;
   std::unordered_map<std::string, std::vector<int64_t>> logical_buffer_shapes_;

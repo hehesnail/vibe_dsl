@@ -492,6 +492,9 @@ logical live-value 关系。
 - `MaterializationBoundary`
   - source `LiveValue`
   - target logical consumer value
+  - target `LiveValue`
+    typed ref /
+    index
   - required visibility:
     `same_unit`,
     `next_phase`,
@@ -508,6 +511,33 @@ logical live-value 关系。
   - reduction / broadcast classification
   - whether consumer requires logical full value
     or may consume distributed slice
+
+当前 P1 refinement
+已将 fragment cast/publish
+这类 same-unit local materialization
+从 TTProgram matcher 的 subject lookup
+前移到 `SpatialPlan`：
+
+- local-to-local
+  `BufferStore`
+  source / target flow
+  生成 `materialize`
+  `DataflowEdge`
+  和 slice-capable
+  `LiveValueEdge`
+- boundary
+  同时引用 source / target
+  `LiveValue`
+- TT planner
+  通过 source -> target
+  boundary identity
+  写入
+  `TTLiveFormPlan` /
+  `TTMaterializationPlan`
+  typed refs，
+  不再用 source subject
+  first-match
+  选择 materialization boundary
 
 这些对象只回答
 logical program meaning。

@@ -451,6 +451,9 @@ runtime-module build contract。
   `LiveValue` /
   `LiveValueEdge` /
   `MaterializationBoundary`，
+  materialization boundary
+  必须能引用 source 和 target
+  logical live value，
   TT physical live form
   必须进入 `TTProgram`，
   leaf materialization

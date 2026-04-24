@@ -301,8 +301,38 @@ schema：
   在 same-phase /
   cross-phase
   场景下的 visibility、
+  source live value、
+  target live value、
   phase relation
   和 coverage
+
+当前 P1 refinement 已把
+same-unit local value flow
+纳入 `SpatialPlan`：
+
+- `BufferStore`
+  的结构化 local-to-local
+  source / target 关系会生成
+  `materialize`
+  `DataflowEdge` /
+  `LiveValueEdge`
+- `MaterializationBoundary`
+  同时携带
+  `source_live_value(_index)`
+  与
+  `target_live_value(_index)`
+- distributed-slice consumer
+  由 `LiveValueEdge.accepts_distributed_slice`
+  和
+  `MaterializationBoundary.logical_coverage`
+  显式表达
+- 下游 planner
+  必须按
+  source -> target
+  boundary ref 消费，
+  不能只按 source subject
+  取第一条 live value /
+  boundary
 
 后续 support-surface
 工作如果需要更细的 recurrence /

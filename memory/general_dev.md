@@ -994,6 +994,19 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   可能已经丢掉未知字段，
   掩盖 projection writer
   的 payload 泄漏
+- SpatialPlan materialization boundary
+  需要同时携带 source / target
+  logical live value typed refs。
+  TTProgram planner
+  消费 materialization 时应按
+  source -> target
+  boundary identity
+  取 ref，
+  不能只按 source subject
+  first-match，
+  否则同一 buffer subject
+  在不同 producer/consumer relation
+  下会选错 live value。
 
 ## 9. 调试模式
 

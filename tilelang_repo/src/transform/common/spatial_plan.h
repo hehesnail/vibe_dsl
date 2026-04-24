@@ -365,6 +365,8 @@ class MaterializationBoundaryNode : public Object {
   ffi::String name;
   ffi::String source_live_value;
   int64_t source_live_value_index = -1;
+  ffi::String target_live_value;
+  int64_t target_live_value_index = -1;
   ffi::String live_value_edge;
   int64_t live_value_edge_index = -1;
   ffi::String required_visibility;
@@ -378,6 +380,8 @@ class MaterializationBoundaryNode : public Object {
         .def_ro("name", &MaterializationBoundaryNode::name)
         .def_ro("source_live_value", &MaterializationBoundaryNode::source_live_value)
         .def_ro("source_live_value_index", &MaterializationBoundaryNode::source_live_value_index)
+        .def_ro("target_live_value", &MaterializationBoundaryNode::target_live_value)
+        .def_ro("target_live_value_index", &MaterializationBoundaryNode::target_live_value_index)
         .def_ro("live_value_edge", &MaterializationBoundaryNode::live_value_edge)
         .def_ro("live_value_edge_index", &MaterializationBoundaryNode::live_value_edge_index)
         .def_ro("required_visibility", &MaterializationBoundaryNode::required_visibility)
@@ -393,7 +397,9 @@ class MaterializationBoundaryNode : public Object {
 class MaterializationBoundary : public ObjectRef {
  public:
   TVM_DLL MaterializationBoundary(ffi::String name, ffi::String source_live_value,
-                                  int64_t source_live_value_index, ffi::String live_value_edge,
+                                  int64_t source_live_value_index,
+                                  ffi::String target_live_value,
+                                  int64_t target_live_value_index, ffi::String live_value_edge,
                                   int64_t live_value_edge_index, ffi::String required_visibility,
                                   ffi::String logical_coverage, ffi::String phase_relation,
                                   ffi::Array<TIRAnchor> anchors);

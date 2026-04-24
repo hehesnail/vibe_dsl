@@ -169,12 +169,15 @@ LiveValueEdge::LiveValueEdge(ffi::String name, ffi::String source_live_value,
 
 MaterializationBoundary::MaterializationBoundary(
     ffi::String name, ffi::String source_live_value, int64_t source_live_value_index,
-    ffi::String live_value_edge, int64_t live_value_edge_index, ffi::String required_visibility,
-    ffi::String logical_coverage, ffi::String phase_relation, ffi::Array<TIRAnchor> anchors) {
+    ffi::String target_live_value, int64_t target_live_value_index, ffi::String live_value_edge,
+    int64_t live_value_edge_index, ffi::String required_visibility, ffi::String logical_coverage,
+    ffi::String phase_relation, ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<MaterializationBoundaryNode>();
   n->name = std::move(name);
   n->source_live_value = std::move(source_live_value);
   n->source_live_value_index = source_live_value_index;
+  n->target_live_value = std::move(target_live_value);
+  n->target_live_value_index = target_live_value_index;
   n->live_value_edge = std::move(live_value_edge);
   n->live_value_edge_index = live_value_edge_index;
   n->required_visibility = std::move(required_visibility);
@@ -329,13 +332,15 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def(
       "tl.MaterializationBoundary",
       [](ffi::String name, ffi::String source_live_value, int64_t source_live_value_index,
+         ffi::String target_live_value, int64_t target_live_value_index,
          ffi::String live_value_edge, int64_t live_value_edge_index,
          ffi::String required_visibility, ffi::String logical_coverage, ffi::String phase_relation,
          ffi::Array<TIRAnchor> anchors) {
         return MaterializationBoundary(
             std::move(name), std::move(source_live_value), source_live_value_index,
-            std::move(live_value_edge), live_value_edge_index, std::move(required_visibility),
-            std::move(logical_coverage), std::move(phase_relation), std::move(anchors));
+            std::move(target_live_value), target_live_value_index, std::move(live_value_edge),
+            live_value_edge_index, std::move(required_visibility), std::move(logical_coverage),
+            std::move(phase_relation), std::move(anchors));
       });
   refl::GlobalDef().def(
       "tl.SpatialPlan",
