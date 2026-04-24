@@ -118,6 +118,17 @@ def _tt_program_payload(func):
     return dict(require_tt_program(func).payload)
 
 
+def _assert_no_executable_contract_family(spec):
+    for legacy_key in (
+        "gemm_contract",
+        "compute_contract",
+        "multi_gemm_contracts",
+        "multi_compute_contracts",
+        "compute_epilogue_ops",
+    ):
+        assert legacy_key not in spec
+
+
 def _blackhole_builtin_suffixes(func):
     return {
         name.split("tl.blackhole.", 1)[1]
@@ -877,7 +888,7 @@ def test_flash_attention_bf16_variant_keeps_shared_bridge_cbs_in_bfloat16():
         ),
     ],
 )
-def test_flash_attention_executable_spec_materializes_multi_gemm_contracts_and_reports_contract_gates(
+def test_flash_attention_executable_spec_drops_contract_family_and_reports_contract_gates(
     example_module, args, kwargs
 ):
     can_run, msg = check_blackhole_codegen_requirements()
@@ -891,14 +902,9 @@ def test_flash_attention_executable_spec_materializes_multi_gemm_contracts_and_r
     spec = _extract_blackhole_executable_spec(artifact)
     reasons = [str(reason) for reason in spec.get("direct_runtime_unsupported_reasons", [])]
     assert not any("missing explicit per-work access descriptor" in reason for reason in reasons)
-    assert not reasons
+    assert any("thread-distributed cb_republish materialization" in reason for reason in reasons)
 
-    multi_gemm_contracts = spec.get("multi_gemm_contracts", [])
-    multi_compute_contracts = spec.get("multi_compute_contracts", [])
-    assert len(multi_gemm_contracts) == 2
-    assert len(multi_compute_contracts) == 2
-    assert "compute_epilogue_ops" not in spec
-    assert all(str(contract.get("kind", "")) == "gemm" for contract in multi_compute_contracts)
+    _assert_no_executable_contract_family(spec)
     reader_kernel = _require_blackhole_kernel(spec["kernels"], kind="reader", core_type="brisc")
     writer_kernel = _require_blackhole_kernel(spec["kernels"], kind="writer", core_type="ncrisc")
     reader_per_work = {
@@ -911,12 +917,9 @@ def test_flash_attention_executable_spec_materializes_multi_gemm_contracts_and_r
     assert reader_per_work["b_tile_start_id"] == "logical_block_x"
     assert reader_per_work["num_k_tiles"] == "gemm_num_k_tiles"
     assert writer_per_work["output_tile_start_id"] == "current_work_linear_id"
-    for contract in [*multi_gemm_contracts, *multi_compute_contracts]:
-        for field in ("a_buffer", "b_buffer", "c_buffer", "M", "N", "K"):
-            assert field in contract
 
 
-def test_flash_attention_executable_spec_drops_compute_epilogue_ops_and_keeps_multi_gemm_contracts():
+def test_flash_attention_executable_spec_drops_contract_family():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -939,9 +942,7 @@ def test_flash_attention_executable_spec_drops_compute_epilogue_ops_and_keeps_mu
         )
 
     spec = _extract_blackhole_executable_spec(artifact)
-    assert "compute_epilogue_ops" not in spec
-    assert len(spec.get("multi_gemm_contracts", [])) == 2
-    assert len(spec.get("multi_compute_contracts", [])) == 2
+    _assert_no_executable_contract_family(spec)
 
 
 def test_flash_attention_no_compute_epilogue_payload():

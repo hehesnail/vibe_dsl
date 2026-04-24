@@ -60,7 +60,7 @@ def test_blackhole_flash_attention_runtime_gate_is_queryable():
     assert isinstance(msg, str)
 
 
-def test_blackhole_flash_attention_single_work_item_metadata_preserves_contracts():
+def test_blackhole_flash_attention_single_work_item_metadata_drops_contract_family():
     kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
         1,
         1,
@@ -73,11 +73,17 @@ def test_blackhole_flash_attention_single_work_item_metadata_preserves_contracts
         threads=128,
     )
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
-    assert len(metadata.get("multi_gemm_contracts", [])) == 2
-    assert len(metadata.get("multi_compute_contracts", [])) == 2
+    for legacy_key in (
+        "gemm_contract",
+        "compute_contract",
+        "multi_gemm_contracts",
+        "multi_compute_contracts",
+        "compute_epilogue_ops",
+    ):
+        assert legacy_key not in metadata
 
 
-def test_blackhole_flash_attention_single_work_item_runtime_metadata_exposes_buffer_materialization_contracts():
+def test_blackhole_flash_attention_single_work_item_runtime_metadata_uses_typed_materialization_gate():
     kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
         1,
         1,
@@ -91,20 +97,13 @@ def test_blackhole_flash_attention_single_work_item_runtime_metadata_exposes_buf
     )
     _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
-    assert not reasons
-    epilogue_ops = metadata.get("compute_epilogue_ops", [])
-    materialization_ops = [
-        op for op in epilogue_ops if "buffer_materialization_contract" in {str(key) for key in op.keys()}
-    ]
-    protocols_by_dst = {
-        str(op["dst_buffer"]): str(op["buffer_materialization_contract"]["execution_protocol"])
-        for op in materialization_ops
+    assert any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+    assert "compute_epilogue_ops" not in metadata
+    materialization_plans = {
+        str(plan["target_buffer"]): plan for plan in metadata["materialization_plans"]
     }
-    assert protocols_by_dst == {
-        "acc_s": "dst_cb_binary_pack",
-        "acc_o": "dst_cb_binary_pack",
-        "acc_s_cast": "tiled_cb_republish",
-    }
+    assert str(materialization_plans["acc_s_cast"]["materialization_protocol"]) == "cb_republish"
+    assert str(materialization_plans["acc_s_cast"]["publication_protocol"]) == "mailbox_write_ptr"
 
 
 @pytest.mark.parametrize(
@@ -189,7 +188,7 @@ def test_blackhole_flash_attention_multi_work_item_metadata_exposes_explicit_per
 
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
     assert not any("missing explicit per-work access descriptor" in reason for reason in reasons)
-    assert not reasons
+    assert any("thread-distributed cb_republish materialization" in reason for reason in reasons)
 
     reader_specs = [
         spec

@@ -33,11 +33,6 @@ constexpr const char* kSegmentPlan = "segment_plan";
 constexpr const char* kCBConfigs = "cb_configs";
 constexpr const char* kCorePlan = "core_plan";
 constexpr const char* kSemaphorePlan = "semaphore_plan";
-constexpr const char* kGemmContract = "gemm_contract";
-constexpr const char* kComputeContract = "compute_contract";
-constexpr const char* kMultiGemmContracts = "multi_gemm_contracts";
-constexpr const char* kMultiComputeContracts = "multi_compute_contracts";
-constexpr const char* kComputeEpilogueOps = "compute_epilogue_ops";
 constexpr const char* kDirectRuntimeUnsupportedReasons = "direct_runtime_unsupported_reasons";
 constexpr const char* kLiveFormPlans = "live_form_plans";
 constexpr const char* kMaterializationPlans = "materialization_plans";
@@ -251,30 +246,6 @@ inline Array<Any> GetDirectRuntimeUnsupportedReasonsFromTTProgram(const tir::Pri
   return GetDirectRuntimeUnsupportedReasonsFromTTProgram(RequireTTProgram(func, consumer));
 }
 
-inline Map<String, Any> GetGemmContractFromTTProgram(const TTProgram& program) {
-  if (auto contract = program->payload.Get("gemm_contract")) {
-    return AsMap(contract.value());
-  }
-  return Map<String, Any>();
-}
-
-inline Map<String, Any> GetGemmContractFromTTProgram(const tir::PrimFunc& func,
-                                                     const char* consumer) {
-  return GetGemmContractFromTTProgram(RequireTTProgram(func, consumer));
-}
-
-inline Map<String, Any> GetComputeContractFromTTProgram(const TTProgram& program) {
-  if (auto contract = program->payload.Get("compute_contract")) {
-    return AsMap(contract.value());
-  }
-  return Map<String, Any>();
-}
-
-inline Map<String, Any> GetComputeContractFromTTProgram(const tir::PrimFunc& func,
-                                                        const char* consumer) {
-  return GetComputeContractFromTTProgram(RequireTTProgram(func, consumer));
-}
-
 inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram& program) {
   Map<String, Any> executable;
   executable.Set(String(executable_key::kSchemaVersion), Integer(1));
@@ -326,10 +297,6 @@ inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram
       executable.Set(String(key), value.value());
     }
   };
-  copy_payload_field(executable_key::kGemmContract);
-  copy_payload_field(executable_key::kComputeContract);
-  copy_payload_field(executable_key::kMultiGemmContracts);
-  copy_payload_field(executable_key::kMultiComputeContracts);
   copy_payload_field(executable_key::kDirectRuntimeUnsupportedReasons);
   copy_payload_field(executable_key::kBufferTileBridgeSpecs);
   copy_payload_field(executable_key::kUnsupportedComputeOps);

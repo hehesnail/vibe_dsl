@@ -17,6 +17,19 @@
   当前活动 lane
   临时前置为
   `public specialization residue cleanup`。
+  P0.1
+  已删除
+  contract-family
+  public projection /
+  `ExecutableSpec`
+  /
+  runtime metadata
+  surface；
+  当前 active item
+  前移到
+  P0.2
+  compute operand binding
+  cleanup。
   `support surface / workload payoff`
   deferred lane
   已重新打开，
@@ -144,13 +157,20 @@
     executable-kind +
     lowered builtin
     direct structural extraction；
-    但
-    `compute_contract` /
-    `gemm_contract` /
-    `multi_*_contracts`
-    仍作为 leaf compatibility
+    contract-family
+    public projection /
+    `ExecutableSpec`
+    /
+    runtime JSON
     metadata
-    存活；
+    已在 P0.1 删除；
+    legacy
+    `TTProgram.payload`
+    seed
+    残留只作为 P0.6
+    cleanup debt
+    存在；
+    但
     host wrapper /
     codegen /
     materialization
@@ -836,6 +856,7 @@ Normalized Tile TIR
 当前下一步固定为：
 
 1. **P0.1: 删除 contract-family public surface**
+   - 状态：`completed`
    - 目标：
      `gemm_contract`
      / `compute_contract`
@@ -857,6 +878,41 @@ Normalized Tile TIR
      不再把 top-level
      contract-family field
      当成绿测条件
+   - 已完成：
+     `MaterializeBlackholeExecutableProjection`
+     不再把 contract-family
+     payload fields
+     投影到 executable attr；
+     `ExecutableSpec`
+     / runtime metadata
+     删除
+     `gemm_contract`
+     / `compute_contract`
+     / `multi_*_contracts`
+     / `compute_epilogue_ops`；
+     GEMM
+     和 flash-attn
+     tests
+     已改为断言
+     typed
+     `KernelSpec.compute_ops`
+     /
+     `compute_config`
+     /
+     materialization gate
+     truth
+   - 验证：
+     `cmake --build build -j32`；
+     `pytest -q testing/python/target/blackhole/test_blackhole_gemm.py`；
+     `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`；
+     `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`；
+     `pytest -q testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_tvm_ffi_export.py`；
+     TT-Sim
+     selected
+     GEMM
+     typed-compute
+     tests
+     通过
 2. **P0.2: 把 compute operand binding 从 runtime arg order 迁走**
    - 目标：
      GEMM

@@ -833,6 +833,29 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   不是把新 workload
   继续挂到旧 fallback
   上
+- 删除 public
+  contract-family
+  fields
+  时要同时检查 admission gate
+  是否被旧字段遮住：
+  P0.1
+  删除
+  `multi_compute_contracts`
+  runtime metadata
+  后，
+  flash-attn
+  暴露出真实 typed
+  materialization
+  unsupported reason
+  `thread-distributed cb_republish materialization`。
+  测试应断言新的 typed
+  gate
+  和 public field
+  缺席，
+  不应为了维持旧
+  "no unsupported reasons"
+  绿测而重新保留 compatibility
+  metadata
 
 ## 9. 调试模式
 

@@ -129,50 +129,73 @@ def _rebuild_codegen_module_with_segment_plan(artifact, segment_plan):
     )
 
 
-def _rebuild_codegen_module_with_compute_contract(artifact, compute_contract):
+def _assert_no_contract_family(executable_spec):
+    for legacy_key in (
+        "gemm_contract",
+        "compute_contract",
+        "multi_gemm_contracts",
+        "multi_compute_contracts",
+        "compute_epilogue_ops",
+    ):
+        assert legacy_key not in executable_spec
+
+
+def _require_compute_kernel_spec(executable_spec):
+    return _require_blackhole_kernel(
+        executable_spec["kernels"], kind="compute", core_type="trisc"
+    )
+
+
+def _require_compute_config(executable_spec):
+    return dict(_require_compute_kernel_spec(executable_spec)["compute_config"])
+
+
+def _require_gemm_compute_op(executable_spec):
+    compute = _require_compute_kernel_spec(executable_spec)
+    return dict(next(item for item in compute["compute_ops"] if str(item["kind"]) == "gemm"))
+
+
+def _rebuild_codegen_module_with_compute_overrides(artifact, compute_overrides):
     def mutate(tt_program):
         payload = dict(tt_program.payload)
-        payload["compute_contract"] = compute_contract
         rebuilt_kernels = []
         for kernel in tt_program.kernels:
             kernel_payload = dict(kernel.payload)
             if str(kernel.kind) == "compute" or str(kernel.core_type) == "trisc":
-                kernel_payload["compute_config"] = {
-                    "math_fidelity": compute_contract.get("math_fidelity", "HiFi4"),
-                    "fp32_dest_acc_en": compute_contract.get("fp32_dest_acc_en", True),
-                    "dst_full_sync_en": compute_contract.get("dst_full_sync_en", False),
-                    "math_approx_mode": compute_contract.get("math_approx_mode", False),
-                    "unpack_to_dest_mode": list(
-                        compute_contract.get("unpack_to_dest_mode", [])
-                    ),
-                    "bfp8_pack_precise": compute_contract.get("bfp8_pack_precise", False),
-                    "defines": list(compute_contract.get("defines", [])),
-                    "named_compile_args": list(
-                        compute_contract.get("named_compile_args", [])
-                    ),
-                    "clear_accum": compute_contract.get("clear_accum", True),
-                    "k_pack": compute_contract.get("k_pack", 1),
-                    "wg_wait": compute_contract.get("wg_wait", 0),
-                    "policy_type": compute_contract.get("policy_type", 0),
-                    "policy_name": compute_contract.get("policy_name", "Square"),
-                }
+                compute_config = dict(kernel_payload["compute_config"])
+                for key in (
+                    "math_fidelity",
+                    "fp32_dest_acc_en",
+                    "dst_full_sync_en",
+                    "math_approx_mode",
+                    "unpack_to_dest_mode",
+                    "bfp8_pack_precise",
+                    "defines",
+                    "named_compile_args",
+                    "clear_accum",
+                    "k_pack",
+                    "wg_wait",
+                    "policy_type",
+                    "policy_name",
+                ):
+                    if key in compute_overrides:
+                        value = compute_overrides[key]
+                        compute_config[key] = list(value) if isinstance(value, list) else value
+                kernel_payload["compute_config"] = compute_config
                 if "compute_ops" in kernel_payload:
                     compute_ops = []
                     for compute_op in kernel_payload["compute_ops"]:
                         compute_op = dict(compute_op)
                         if str(compute_op.get("kind", "")) == "gemm":
-                            compute_op["has_mbarrier"] = compute_contract.get(
-                                "has_mbarrier", False
-                            )
-                            compute_op["mbarrier_buffer"] = compute_contract.get(
-                                "mbarrier_buffer", ""
-                            )
-                            compute_op["mbarrier_scope"] = compute_contract.get(
-                                "mbarrier_scope", ""
-                            )
-                            compute_op["mbarrier_index_exprs"] = list(
-                                compute_contract.get("mbarrier_index_exprs", [])
-                            )
+                            for key in (
+                                "has_mbarrier",
+                                "mbarrier_buffer",
+                                "mbarrier_scope",
+                                "mbarrier_index_exprs",
+                            ):
+                                if key in compute_overrides:
+                                    value = compute_overrides[key]
+                                    compute_op[key] = list(value) if isinstance(value, list) else value
                         compute_ops.append(compute_op)
                     kernel_payload["compute_ops"] = compute_ops
             rebuilt_kernels.append(rebuild_tt_kernel(kernel, payload=kernel_payload))
@@ -189,6 +212,7 @@ def _rebuild_codegen_module_without_contract_family_payload(artifact):
             "compute_contract",
             "multi_gemm_contracts",
             "multi_compute_contracts",
+            "compute_epilogue_ops",
         ):
             payload.pop(key, None)
         return rebuild_tt_program(tt_program, payload=payload)
@@ -762,27 +786,28 @@ def test_blackhole_gemm_compile_time_abi_is_materialized():
     assert str(writer_launch_spec["processor"]) == expected_writer_launch_spec["processor"]
     assert str(writer_launch_spec["noc"]) == expected_writer_launch_spec["noc"]
 
-    assert "compute_contract" in executable_spec
-    compute_contract = executable_spec["compute_contract"]
-    assert str(compute_contract["kind"]) == "gemm"
-    assert bool(compute_contract["enabled"]) is True
-    assert int(compute_contract["M"]) == 32
-    assert int(compute_contract["N"]) == 32
-    assert int(compute_contract["K"]) == 128
-    assert int(compute_contract["Mt"]) == 1
-    assert int(compute_contract["Nt"]) == 1
-    assert int(compute_contract["Kt"]) == 4
-    assert bool(compute_contract["transpose_A"]) is False
-    assert bool(compute_contract["transpose_B"]) is True
-    assert int(compute_contract["block_m_tiles"]) == 1
-    assert int(compute_contract["block_n_tiles"]) == 1
-    assert int(compute_contract["block_k_tiles"]) == 4
-    assert int(compute_contract["subblock_m_tiles"]) == 1
-    assert int(compute_contract["subblock_n_tiles"]) == 1
-    assert str(compute_contract["math_fidelity"]) == "HiFi4"
-    assert bool(compute_contract["fp32_dest_acc_en"]) is True
-    assert bool(compute_contract["math_approx_mode"]) is False
-    assert [str(item) for item in compute_contract["unpack_to_dest_mode"]] == []
+    _assert_no_contract_family(executable_spec)
+    gemm_op = next(item for item in compute["compute_ops"] if str(item["kind"]) == "gemm")
+    compute_config = compute["compute_config"]
+    assert str(gemm_op["kind"]) == "gemm"
+    assert bool(gemm_op["enabled"]) is True
+    assert int(gemm_op["M"]) == 32
+    assert int(gemm_op["N"]) == 32
+    assert int(gemm_op["K"]) == 128
+    assert int(gemm_op["Mt"]) == 1
+    assert int(gemm_op["Nt"]) == 1
+    assert int(gemm_op["Kt"]) == 4
+    assert bool(gemm_op["transpose_A"]) is False
+    assert bool(gemm_op["transpose_B"]) is True
+    assert int(gemm_op["block_m_tiles"]) == 1
+    assert int(gemm_op["block_n_tiles"]) == 1
+    assert int(gemm_op["block_k_tiles"]) == 4
+    assert int(gemm_op["subblock_m_tiles"]) == 1
+    assert int(gemm_op["subblock_n_tiles"]) == 1
+    assert str(compute_config["math_fidelity"]) == "HiFi4"
+    assert bool(compute_config["fp32_dest_acc_en"]) is True
+    assert bool(compute_config["math_approx_mode"]) is False
+    assert [str(item) for item in compute_config["unpack_to_dest_mode"]] == []
 
 
 def test_blackhole_gemm_buffer_materialization_specs_are_exposed():
@@ -975,23 +1000,28 @@ def test_blackhole_gemm_kernel_compute_config_follows_compute_contract_in_spec()
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
+    for legacy_key in (
+        "gemm_contract",
+        "compute_contract",
+        "multi_gemm_contracts",
+        "multi_compute_contracts",
+        "compute_epilogue_ops",
+    ):
+        assert legacy_key not in executable_spec
     compute = _require_blackhole_kernel(
         executable_spec["kernels"], kind="compute", core_type="trisc"
     )
     compute_config = compute["compute_config"]
-    compute_contract = executable_spec["compute_contract"]
 
-    assert str(compute_config["math_fidelity"]) == str(compute_contract["math_fidelity"])
-    assert bool(compute_config["fp32_dest_acc_en"]) is bool(compute_contract["fp32_dest_acc_en"])
-    assert bool(compute_config["math_approx_mode"]) is bool(compute_contract["math_approx_mode"])
-    assert [str(item) for item in compute_config["unpack_to_dest_mode"]] == [
-        str(item) for item in compute_contract["unpack_to_dest_mode"]
-    ]
-    assert bool(compute_config["clear_accum"]) is bool(compute_contract["clear_accum"])
-    assert int(compute_config["k_pack"]) == int(compute_contract["k_pack"])
-    assert int(compute_config["wg_wait"]) == int(compute_contract["wg_wait"])
-    assert int(compute_config["policy_type"]) == int(compute_contract["policy_type"])
-    assert str(compute_config["policy_name"]) == str(compute_contract["policy_name"])
+    assert str(compute_config["math_fidelity"]) == "HiFi4"
+    assert bool(compute_config["fp32_dest_acc_en"]) is True
+    assert bool(compute_config["math_approx_mode"]) is False
+    assert [str(item) for item in compute_config["unpack_to_dest_mode"]] == []
+    assert bool(compute_config["clear_accum"]) is True
+    assert int(compute_config["k_pack"]) == 2
+    assert int(compute_config["wg_wait"]) == 3
+    assert int(compute_config["policy_type"]) == 0
+    assert str(compute_config["policy_name"]) == "Square"
 
 
 def test_blackhole_gemm_kernel_projects_typed_compute_ops_schema():
@@ -1037,13 +1067,22 @@ def test_blackhole_gemm_spec_survives_without_legacy_contract_attrs():
     stripped_mod = _rebuild_codegen_module_without_legacy_contract_attrs(artifact)
     executable_spec = stripped_mod.get_function_metadata("main")
 
-    assert "compute_contract" in executable_spec
-    compute_contract = executable_spec["compute_contract"]
-    assert str(compute_contract["kind"]) == "gemm"
-    assert bool(compute_contract["enabled"]) is True
-    assert int(compute_contract["M"]) == 32
-    assert int(compute_contract["N"]) == 32
-    assert int(compute_contract["K"]) == 128
+    for legacy_key in (
+        "gemm_contract",
+        "compute_contract",
+        "multi_gemm_contracts",
+        "multi_compute_contracts",
+        "compute_epilogue_ops",
+    ):
+        assert legacy_key not in executable_spec
+    compute = _require_blackhole_kernel(
+        executable_spec["kernels"], kind="compute", core_type="trisc"
+    )
+    gemm_op = next(item for item in compute["compute_ops"] if str(item["kind"]) == "gemm")
+    assert bool(gemm_op["enabled"]) is True
+    assert int(gemm_op["M"]) == 32
+    assert int(gemm_op["N"]) == 32
+    assert int(gemm_op["K"]) == 128
 
 
 def test_blackhole_gemm_spec_survives_without_contract_family_payload():
@@ -1055,8 +1094,7 @@ def test_blackhole_gemm_spec_survives_without_contract_family_payload():
 
     stripped_mod = _rebuild_codegen_module_without_contract_family_payload(artifact)
     executable_spec = stripped_mod.get_function_metadata("main")
-    assert bool(executable_spec["compute_contract"]["enabled"]) is False
-    assert bool(executable_spec["gemm_contract"]["enabled"]) is False
+    _assert_no_contract_family(executable_spec)
 
     compute = _require_blackhole_kernel(
         executable_spec["kernels"], kind="compute", core_type="trisc"
@@ -1103,10 +1141,11 @@ def test_blackhole_gemm_compile_time_abi_materializes_nondefault_compute_abi():
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    compute_contract = executable_spec["compute_contract"]
-    assert bool(compute_contract["clear_accum"]) is True
-    assert int(compute_contract["k_pack"]) == 2
-    assert int(compute_contract["wg_wait"]) == 3
+    _assert_no_contract_family(executable_spec)
+    compute_config = _require_compute_config(executable_spec)
+    assert bool(compute_config["clear_accum"]) is True
+    assert int(compute_config["k_pack"]) == 2
+    assert int(compute_config["wg_wait"]) == 3
 
     compute = _require_blackhole_kernel(
         executable_spec["kernels"], kind="compute", core_type="trisc"
@@ -1140,20 +1179,16 @@ def test_blackhole_gemm_compute_config_materializes_extended_precision_flags():
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    mutated_contract = dict(executable_spec["compute_contract"])
-    mutated_contract["dst_full_sync_en"] = True
-    mutated_contract["bfp8_pack_precise"] = True
-    mutated_mod = _rebuild_codegen_module_with_compute_contract(artifact, mutated_contract)
+    _assert_no_contract_family(executable_spec)
+    mutated_config = _require_compute_config(executable_spec)
+    mutated_config["dst_full_sync_en"] = True
+    mutated_config["bfp8_pack_precise"] = True
+    mutated_mod = _rebuild_codegen_module_with_compute_overrides(artifact, mutated_config)
 
     executable_spec = mutated_mod.get_function_metadata("main")
-    compute_contract = executable_spec["compute_contract"]
-    compute = _require_blackhole_kernel(
-        executable_spec["kernels"], kind="compute", core_type="trisc"
-    )
-    compute_config = compute["compute_config"]
+    _assert_no_contract_family(executable_spec)
+    compute_config = _require_compute_config(executable_spec)
 
-    assert bool(compute_contract["dst_full_sync_en"]) is True
-    assert bool(compute_contract["bfp8_pack_precise"]) is True
     assert bool(compute_config["dst_full_sync_en"]) is True
     assert bool(compute_config["bfp8_pack_precise"]) is True
 
@@ -1166,32 +1201,23 @@ def test_blackhole_gemm_compute_config_materializes_defines_and_named_compile_ar
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    mutated_contract = dict(executable_spec["compute_contract"])
-    mutated_contract["defines"] = [
+    _assert_no_contract_family(executable_spec)
+    mutated_config = _require_compute_config(executable_spec)
+    mutated_config["defines"] = [
         {"name": "BLACKHOLE_TEST_DEFINE", "value": "1"},
         {"name": "BLACKHOLE_ACC_MODE", "value": "fp32"},
     ]
-    mutated_contract["named_compile_args"] = [
+    mutated_config["named_compile_args"] = [
         {"name": "c_0", "value": 0},
         {"name": "c_1", "value": 1},
         {"name": "c_16", "value": 16},
     ]
-    mutated_mod = _rebuild_codegen_module_with_compute_contract(artifact, mutated_contract)
+    mutated_mod = _rebuild_codegen_module_with_compute_overrides(artifact, mutated_config)
 
     executable_spec = mutated_mod.get_function_metadata("main")
-    compute_contract = executable_spec["compute_contract"]
-    compute = _require_blackhole_kernel(
-        executable_spec["kernels"], kind="compute", core_type="trisc"
-    )
-    compute_config = compute["compute_config"]
+    _assert_no_contract_family(executable_spec)
+    compute_config = _require_compute_config(executable_spec)
 
-    assert [(str(item["name"]), str(item["value"])) for item in compute_contract["defines"]] == [
-        ("BLACKHOLE_TEST_DEFINE", "1"),
-        ("BLACKHOLE_ACC_MODE", "fp32"),
-    ]
-    assert [
-        (str(item["name"]), int(item["value"])) for item in compute_contract["named_compile_args"]
-    ] == [("c_0", 0), ("c_1", 1), ("c_16", 16)]
     assert [(str(item["name"]), str(item["value"])) for item in compute_config["defines"]] == [
         ("BLACKHOLE_TEST_DEFINE", "1"),
         ("BLACKHOLE_ACC_MODE", "fp32"),
@@ -1209,23 +1235,11 @@ def test_blackhole_gemm_spec_materializes_dsl_produced_compute_config_extras():
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    compute_contract = executable_spec["compute_contract"]
-    compute = _require_blackhole_kernel(
-        executable_spec["kernels"], kind="compute", core_type="trisc"
-    )
-    compute_config = compute["compute_config"]
+    _assert_no_contract_family(executable_spec)
+    compute_config = _require_compute_config(executable_spec)
 
-    assert bool(compute_contract["dst_full_sync_en"]) is True
-    assert bool(compute_contract["bfp8_pack_precise"]) is True
     assert bool(compute_config["dst_full_sync_en"]) is True
     assert bool(compute_config["bfp8_pack_precise"]) is True
-    assert sorted((str(item["name"]), str(item["value"])) for item in compute_contract["defines"]) == [
-        ("BLACKHOLE_ACC_MODE", "fp32"),
-        ("BLACKHOLE_TEST_DEFINE", "1"),
-    ]
-    assert sorted(
-        (str(item["name"]), int(item["value"])) for item in compute_contract["named_compile_args"]
-    ) == [("c_0", 0), ("c_1", 1), ("c_16", 16)]
     assert sorted((str(item["name"]), str(item["value"])) for item in compute_config["defines"]) == [
         ("BLACKHOLE_ACC_MODE", "fp32"),
         ("BLACKHOLE_TEST_DEFINE", "1"),
@@ -1243,9 +1257,10 @@ def test_blackhole_gemm_compile_time_abi_materializes_nondefault_policy():
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    compute_contract = executable_spec["compute_contract"]
-    assert int(compute_contract["policy_type"]) == 1
-    assert str(compute_contract["policy_name"]) == "FullRow"
+    _assert_no_contract_family(executable_spec)
+    compute_config = _require_compute_config(executable_spec)
+    assert int(compute_config["policy_type"]) == 1
+    assert str(compute_config["policy_name"]) == "FullRow"
 
     compute = _require_blackhole_kernel(
         executable_spec["kernels"], kind="compute", core_type="trisc"
@@ -1264,19 +1279,24 @@ def test_blackhole_gemm_compile_time_abi_materializes_mbar_binding():
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    mutated_contract = dict(executable_spec["compute_contract"])
-    mutated_contract["has_mbarrier"] = True
-    mutated_contract["mbarrier_buffer"] = "mbar"
-    mutated_contract["mbarrier_scope"] = "shared.barrier"
-    mutated_contract["mbarrier_index_exprs"] = ["0"]
-    mutated_mod = _rebuild_codegen_module_with_compute_contract(artifact, mutated_contract)
+    _assert_no_contract_family(executable_spec)
+    mutated_mod = _rebuild_codegen_module_with_compute_overrides(
+        artifact,
+        {
+            "has_mbarrier": True,
+            "mbarrier_buffer": "mbar",
+            "mbarrier_scope": "shared.barrier",
+            "mbarrier_index_exprs": ["0"],
+        },
+    )
 
     executable_spec = mutated_mod.get_function_metadata("main")
-    compute_contract = executable_spec["compute_contract"]
-    assert bool(compute_contract["has_mbarrier"]) is True
-    assert str(compute_contract["mbarrier_buffer"]) == "mbar"
-    assert str(compute_contract["mbarrier_scope"]) == "shared.barrier"
-    assert [str(item) for item in compute_contract["mbarrier_index_exprs"]] == ["0"]
+    _assert_no_contract_family(executable_spec)
+    gemm_op = _require_gemm_compute_op(executable_spec)
+    assert bool(gemm_op["has_mbarrier"]) is True
+    assert str(gemm_op["mbarrier_buffer"]) == "mbar"
+    assert str(gemm_op["mbarrier_scope"]) == "shared.barrier"
+    assert [str(item) for item in gemm_op["mbarrier_index_exprs"]] == ["0"]
 
     compute = _require_blackhole_kernel(
         executable_spec["kernels"], kind="compute", core_type="trisc"
@@ -1444,9 +1464,10 @@ def test_blackhole_gemm_direct_runtime_rejects_unknown_math_fidelity():
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    mutated_contract = dict(executable_spec["compute_contract"])
-    mutated_contract["math_fidelity"] = "UltraFi9"
-    mutated_mod = _rebuild_codegen_module_with_compute_contract(artifact, mutated_contract)
+    _assert_no_contract_family(executable_spec)
+    mutated_config = _require_compute_config(executable_spec)
+    mutated_config["math_fidelity"] = "UltraFi9"
+    mutated_mod = _rebuild_codegen_module_with_compute_overrides(artifact, mutated_config)
 
     a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
     b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
@@ -1468,12 +1489,16 @@ def test_blackhole_gemm_direct_runtime_rejects_mbarrier_compute_contract():
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    mutated_contract = dict(executable_spec["compute_contract"])
-    mutated_contract["has_mbarrier"] = True
-    mutated_contract["mbarrier_buffer"] = "mbar"
-    mutated_contract["mbarrier_scope"] = "shared.barrier"
-    mutated_contract["mbarrier_index_exprs"] = ["0"]
-    mutated_mod = _rebuild_codegen_module_with_compute_contract(artifact, mutated_contract)
+    _assert_no_contract_family(executable_spec)
+    mutated_mod = _rebuild_codegen_module_with_compute_overrides(
+        artifact,
+        {
+            "has_mbarrier": True,
+            "mbarrier_buffer": "mbar",
+            "mbarrier_scope": "shared.barrier",
+            "mbarrier_index_exprs": ["0"],
+        },
+    )
 
     a_torch = torch.randn(32, 128, dtype=torch.bfloat16)
     b_torch = torch.randn(32, 128, dtype=torch.bfloat16)
@@ -1550,15 +1575,16 @@ def test_blackhole_gemm_direct_runtime_preserves_richer_compute_config_correctne
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    compute_contract = executable_spec["compute_contract"]
-    assert bool(compute_contract["dst_full_sync_en"]) is True
-    assert bool(compute_contract["bfp8_pack_precise"]) is True
-    assert sorted((str(item["name"]), str(item["value"])) for item in compute_contract["defines"]) == [
+    _assert_no_contract_family(executable_spec)
+    compute_config = _require_compute_config(executable_spec)
+    assert bool(compute_config["dst_full_sync_en"]) is True
+    assert bool(compute_config["bfp8_pack_precise"]) is True
+    assert sorted((str(item["name"]), str(item["value"])) for item in compute_config["defines"]) == [
         ("BLACKHOLE_ACC_MODE", "fp32"),
         ("BLACKHOLE_TEST_DEFINE", "1"),
     ]
     assert sorted(
-        (str(item["name"]), int(item["value"])) for item in compute_contract["named_compile_args"]
+        (str(item["name"]), int(item["value"])) for item in compute_config["named_compile_args"]
     ) == [("c_0", 0), ("c_1", 1), ("c_16", 16)]
 
     artifact.codegen_mod["main"](a_torch, b_torch, c_output)
@@ -1591,10 +1617,11 @@ def test_blackhole_precleared_fragment_gemm_canonicalizes_to_clear_accum_true():
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    compute_contract = executable_spec["compute_contract"]
-    assert bool(compute_contract["clear_accum"]) is True
-    assert int(compute_contract["k_pack"]) == 1
-    assert int(compute_contract["wg_wait"]) == 0
+    _assert_no_contract_family(executable_spec)
+    compute_config = _require_compute_config(executable_spec)
+    assert bool(compute_config["clear_accum"]) is True
+    assert int(compute_config["k_pack"]) == 1
+    assert int(compute_config["wg_wait"]) == 0
 
     artifact.codegen_mod["main"](a_torch, b_torch, c_output)
     assert_tensors_close_or_dump(
@@ -1700,8 +1727,9 @@ def test_blackhole_gemm_direct_runtime_preserves_clear_accum_false_fragment_for_
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    compute_contract = executable_spec["compute_contract"]
-    assert bool(compute_contract["clear_accum"]) is False
+    _assert_no_contract_family(executable_spec)
+    compute_config = _require_compute_config(executable_spec)
+    assert bool(compute_config["clear_accum"]) is False
     reasons = _direct_runtime_unsupported_reasons(artifact)
     assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
     can_run, msg = check_blackhole_direct_execution_requirements()
@@ -1810,13 +1838,13 @@ def test_blackhole_gemm_direct_runtime_supports_transpose_a_compute_contract():
         artifact = lower(kernel, target=target)
 
     executable_spec = _extract_blackhole_executable_spec(artifact)
-    assert "compute_contract" in executable_spec
-    contract = executable_spec["compute_contract"]
-    assert bool(contract["transpose_A"]) is True
-    assert bool(contract["transpose_B"]) is True
-    assert int(contract["Mt"]) == 1
-    assert int(contract["Nt"]) == 1
-    assert int(contract["Kt"]) == 4
+    _assert_no_contract_family(executable_spec)
+    gemm_op = _require_gemm_compute_op(executable_spec)
+    assert bool(gemm_op["transpose_A"]) is True
+    assert bool(gemm_op["transpose_B"]) is True
+    assert int(gemm_op["Mt"]) == 1
+    assert int(gemm_op["Nt"]) == 1
+    assert int(gemm_op["Kt"]) == 4
 
     artifact.codegen_mod["main"](a_torch, b_torch, c_output)
     assert_tensors_close_or_dump(

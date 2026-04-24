@@ -372,6 +372,29 @@ leaf validator
 - `multi_gemm_contracts`
 - `compute_epilogue_ops`
 
+截至
+`2026-04-24`
+P0.1，
+这些字段已经不再出现在
+`MaterializeBlackholeExecutable`
+projection、
+`ExecutableSpec`
+结构、
+runtime JSON
+或 function metadata
+公共 schema
+中。
+仍可见的
+`TTProgram.payload`
+contract-family
+生成 /
+验证 /
+测试
+只属于 P0.6
+payload seed
+cleanup debt，
+不是 leaf public schema。
+
 它们的正确口径只能是：
 
 - current leaf/runtime compatibility surface
@@ -586,17 +609,24 @@ public surface
 当前明确属于 wrong-now
 的 surface：
 
-- `gemm_contract`
+- P0.1
+  已删除
+  `gemm_contract`
   / `compute_contract`
   / `multi_*_contracts`
-  仍在 projection、
+  / `compute_epilogue_ops`
+  在 projection、
   `ExecutableSpec`
-  和测试里作为 public field；
-  它们必须被
-  typed compute-op /
-  materialization /
-  ABI schema
-  完整替换后删除
+  和 runtime metadata
+  中的 public field
+  形态；
+  剩余
+  `TTProgram.payload`
+  seed
+  读取 /
+  写入
+  是 P0.6
+  cleanup debt
 - `KernelSpec.compute_ops`
   是正确方向，
   但 GEMM entry
