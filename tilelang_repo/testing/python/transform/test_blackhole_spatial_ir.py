@@ -396,6 +396,16 @@ def test_blackhole_lowering_support_facts_have_no_contract_map_surface():
     assert hits == []
 
 
+def test_blackhole_compute_op_planning_has_no_map_seed_contract_surface():
+    hits = _source_tree_rg(
+        r"compute_op_seeds_|BuildGemmComputeOpSeed|"
+        r"BuildTTComputeOpPlanFromContract|BuildComputeOperandBindingPlanFromContract",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.h",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.cc",
+    )
+    assert hits == []
+
+
 def test_task1_copy_spatial_plan_emits_flow_boundary_from_tir():
     mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
     main = mod["main"]

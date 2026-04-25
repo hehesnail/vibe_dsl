@@ -1104,6 +1104,19 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `TTProgram`
   typed IR 字段，
   不能重新变成 public bag。
+- compute-op planning
+  不要保留 pass-local
+  `Map<String, Any>`
+  seed
+  再转
+  `TTComputeOpPlan`。
+  这类 map seed
+  会把旧
+  contract-family
+  reader 形式留在 pass 内；
+  直接用 typed fact /
+  typed plan constructor
+  表达 GEMM 或后续 compute kind。
 
 ## 9. 调试模式
 

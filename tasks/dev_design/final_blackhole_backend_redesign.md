@@ -847,6 +847,20 @@ planning seed
   `SpatialPlan` /
   `TTProgram`
   typed 表示
+- GEMM compute op
+  planning 也不能先落成
+  pass-local
+  `Map<String, Any>`
+  seed
+  再回填
+  `TTComputeOpPlan`。
+  `TTComputeOpPlan`
+  的输入应来自 typed
+  compute-op fact /
+  当前 TIR analysis，
+  map seed 不能作为旧
+  contract-family
+  的替身继续存在
 - top-level `TTProgram.payload`
   已删除；
   后续不能以

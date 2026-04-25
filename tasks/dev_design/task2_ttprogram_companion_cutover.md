@@ -58,6 +58,21 @@
   也不能重新投影成 public payload /
   bag
   给下游消费
+- repo HEAD
+  已将 GEMM compute-op
+  planning 的 pass-local
+  seed
+  从
+  `Map<String, Any>`
+  改为 typed
+  `GemmComputeOpFact`
+  并直接构造
+  `TTComputeOpPlan`；
+  compute owner truth
+  不允许再借
+  map seed /
+  contract reader
+  过渡
 
 ## 1. 目标
 

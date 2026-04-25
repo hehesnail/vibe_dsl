@@ -64,6 +64,31 @@ enum class CopyDirection {
   kUnknown
 };
 
+struct GemmComputeOpFact {
+  std::string a_buffer;
+  std::string b_buffer;
+  std::string c_buffer;
+  int m = 0;
+  int n = 0;
+  int k = 0;
+  bool transpose_a = false;
+  bool transpose_b = false;
+  int policy_type = 0;
+  bool clear_accum = false;
+  int k_pack = 1;
+  int wg_wait = 0;
+  bool dst_full_sync_en = false;
+  bool bfp8_pack_precise = false;
+  std::vector<std::pair<std::string, std::string>> defines;
+  std::vector<std::pair<std::string, uint32_t>> named_compile_args;
+  std::string mbarrier_buffer;
+  std::string mbarrier_scope;
+  std::vector<std::string> mbarrier_index_exprs;
+  tvm::DataType a_dtype;
+  tvm::DataType b_dtype;
+  tvm::DataType c_dtype;
+};
+
 /*!
  * \brief PlanTTKernelABI Pass
  *
@@ -675,9 +700,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   int gemm_n_ = 0;
   int gemm_k_ = 0;
   std::unordered_set<std::string> compute_op_signatures_;
-  std::unordered_map<std::string, int> compute_op_seed_index_by_signature_;
-  std::vector<tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>> compute_op_seeds_;
-  std::vector<std::unordered_set<std::string>> compute_op_seed_known_buffers_;
+  std::unordered_map<std::string, int> gemm_compute_op_fact_index_by_signature_;
+  std::vector<GemmComputeOpFact> gemm_compute_op_facts_;
+  std::vector<std::unordered_set<std::string>> gemm_compute_op_known_buffers_;
   std::unordered_map<std::string, tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>
       logical_tile_layout_specs_by_buffer_;
   std::unordered_map<std::string, BlackholeBufferMaterializationFact>

@@ -177,7 +177,7 @@ static bool IsLiteralZeroValue(const PrimExpr& expr) {
   return false;
 }
 
-static Map<String, Any> BuildGemmComputeOpSeed(
+static GemmComputeOpFact BuildGemmComputeOpFact(
     const std::string& a_buffer, const std::string& b_buffer, const std::string& c_buffer, int m,
     int n, int k, bool transpose_a, bool transpose_b, int policy_type, bool clear_accum,
     int k_pack, int wg_wait, bool dst_full_sync_en, bool bfp8_pack_precise,
@@ -186,78 +186,30 @@ static Map<String, Any> BuildGemmComputeOpSeed(
     const std::string& mbarrier_buffer, const std::string& mbarrier_scope,
     const std::vector<std::string>& mbarrier_index_exprs, DataType a_dtype, DataType b_dtype,
     DataType c_dtype) {
-  Map<String, Any> seed;
-  seed.Set("enabled", Bool(true));
-  seed.Set("kind", String("gemm"));
-  seed.Set("a_buffer", String(a_buffer));
-  seed.Set("b_buffer", String(b_buffer));
-  seed.Set("c_buffer", String(c_buffer));
-  seed.Set("M", Integer(m));
-  seed.Set("N", Integer(n));
-  seed.Set("K", Integer(k));
-  seed.Set("Mt", Integer(m / 32));
-  seed.Set("Nt", Integer(n / 32));
-  seed.Set("Kt", Integer(k / 32));
-  seed.Set("block_m_tiles", Integer(m / 32));
-  seed.Set("block_n_tiles", Integer(n / 32));
-  seed.Set("block_k_tiles", Integer(k / 32));
-  seed.Set("subblock_m_tiles", Integer(m / 32));
-  seed.Set("subblock_n_tiles", Integer(n / 32));
-  seed.Set("transpose_A", Bool(transpose_a));
-  seed.Set("transpose_B", Bool(transpose_b));
-  seed.Set("policy_type", Integer(policy_type));
-  seed.Set("policy_name", String(GemmWarpPolicyTypeToStringForBlackhole(policy_type)));
-  seed.Set("has_mbarrier", Bool(!mbarrier_buffer.empty()));
-  seed.Set("mbarrier_buffer", String(mbarrier_buffer));
-  seed.Set("mbarrier_scope", String(mbarrier_scope));
-  Array<Any> encoded_mbarrier_index_exprs;
-  for (const auto& expr : mbarrier_index_exprs) {
-    encoded_mbarrier_index_exprs.push_back(String(expr));
-  }
-  seed.Set("mbarrier_index_exprs", encoded_mbarrier_index_exprs);
-  seed.Set("a_tensor_dtype", String(DataTypeToDataFormatForBlackhole(a_dtype)));
-  seed.Set("b_tensor_dtype", String(DataTypeToDataFormatForBlackhole(b_dtype)));
-  seed.Set("c_tensor_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
-  seed.Set("a_cb_dtype", String(DataTypeToDataFormatForBlackhole(a_dtype)));
-  seed.Set("b_cb_dtype", String(DataTypeToDataFormatForBlackhole(b_dtype)));
-  seed.Set("c_cb_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
-  seed.Set("accumulator_dtype", String(DataTypeToDataFormatForBlackhole(c_dtype)));
-  seed.Set("math_fidelity", String("HiFi4"));
-  seed.Set("fp32_dest_acc_en", Bool(true));
-  seed.Set("dst_full_sync_en", Bool(dst_full_sync_en));
-  seed.Set("math_approx_mode", Bool(false));
-  seed.Set("unpack_to_dest_mode", Array<Any>{});
-  seed.Set("bfp8_pack_precise", Bool(bfp8_pack_precise));
-  seed.Set("defines", EncodeNamedStringPairs(defines));
-  seed.Set("named_compile_args", EncodeNamedUint32Pairs(named_compile_args));
-  seed.Set("clear_accum", Bool(clear_accum));
-  seed.Set("k_pack", Integer(k_pack));
-  seed.Set("wg_wait", Integer(wg_wait));
-  return seed;
-}
-
-static String GetStringOrDefault(const Map<String, Any>& dict, const char* key,
-                                 String default_value = String()) {
-  if (auto value = dict.Get(String(key))) {
-    return Downcast<String>(value.value());
-  }
-  return default_value;
-}
-
-static int64_t GetIntegerOrDefault(const Map<String, Any>& dict, const char* key,
-                                   int64_t default_value = 0) {
-  if (auto value = dict.Get(String(key))) {
-    return Downcast<Integer>(value.value())->value;
-  }
-  return default_value;
-}
-
-static bool GetBoolOrDefault(const Map<String, Any>& dict, const char* key,
-                             bool default_value = false) {
-  if (auto value = dict.Get(String(key))) {
-    return Downcast<Bool>(value.value());
-  }
-  return default_value;
+  GemmComputeOpFact fact;
+  fact.a_buffer = a_buffer;
+  fact.b_buffer = b_buffer;
+  fact.c_buffer = c_buffer;
+  fact.m = m;
+  fact.n = n;
+  fact.k = k;
+  fact.transpose_a = transpose_a;
+  fact.transpose_b = transpose_b;
+  fact.policy_type = policy_type;
+  fact.clear_accum = clear_accum;
+  fact.k_pack = k_pack;
+  fact.wg_wait = wg_wait;
+  fact.dst_full_sync_en = dst_full_sync_en;
+  fact.bfp8_pack_precise = bfp8_pack_precise;
+  fact.defines = defines;
+  fact.named_compile_args = named_compile_args;
+  fact.mbarrier_buffer = mbarrier_buffer;
+  fact.mbarrier_scope = mbarrier_scope;
+  fact.mbarrier_index_exprs = mbarrier_index_exprs;
+  fact.a_dtype = a_dtype;
+  fact.b_dtype = b_dtype;
+  fact.c_dtype = c_dtype;
+  return fact;
 }
 
 static Array<Integer> BuildIntegerArray(std::initializer_list<int64_t> values) {
@@ -276,99 +228,77 @@ static Array<String> BuildStringArray(std::initializer_list<const char*> values)
   return result;
 }
 
-static int64_t GetGemmTileDim(const Map<String, Any>& op, const char* tile_key,
-                              const char* dim_key) {
-  int64_t value = GetIntegerOrDefault(op, tile_key, 0);
-  if (value > 0) {
-    return value;
-  }
-  const int64_t dim = GetIntegerOrDefault(op, dim_key, 0);
-  return dim > 0 ? dim / 32 : 0;
-}
-
 static String ResolveComputeOperandHostBuffer(
     const std::unordered_map<std::string, std::string>& host_buffer_by_operand,
-    const String& buffer) {
-  const std::string buffer_name = static_cast<std::string>(buffer);
-  auto it = host_buffer_by_operand.find(buffer_name);
+    const std::string& buffer) {
+  auto it = host_buffer_by_operand.find(buffer);
   if (it != host_buffer_by_operand.end() && !it->second.empty()) {
     return String(it->second);
   }
-  return buffer;
+  return String(buffer);
 }
 
-static TTComputeOperandBindingPlan BuildComputeOperandBindingPlanFromContract(
-    const Map<String, Any>& op,
+static TTComputeOperandBindingPlan BuildGemmComputeOperandBindingPlan(
+    const GemmComputeOpFact& fact,
     const std::unordered_map<std::string, std::string>& host_buffer_by_operand,
-    const char* role, const char* field) {
-  const String buffer = GetStringOrDefault(op, field, String());
-  const String host_buffer = ResolveComputeOperandHostBuffer(host_buffer_by_operand, buffer);
+    const char* role) {
+  std::string buffer;
+  DataType dtype;
+  bool transpose = false;
   const std::string role_string(role);
-  const std::string tensor_dtype_key = role_string + "_tensor_dtype";
-  const std::string cb_dtype_key = role_string + "_cb_dtype";
-  const bool transpose =
-      (role_string == "a" && GetBoolOrDefault(op, "transpose_A", false)) ||
-      (role_string == "b" && GetBoolOrDefault(op, "transpose_B", false));
+  if (role_string == "a") {
+    buffer = fact.a_buffer;
+    dtype = fact.a_dtype;
+    transpose = fact.transpose_a;
+  } else if (role_string == "b") {
+    buffer = fact.b_buffer;
+    dtype = fact.b_dtype;
+    transpose = fact.transpose_b;
+  } else {
+    buffer = fact.c_buffer;
+    dtype = fact.c_dtype;
+  }
+  const String host_buffer = ResolveComputeOperandHostBuffer(host_buffer_by_operand, buffer);
+  const String data_format = String(DataTypeToDataFormatForBlackhole(dtype));
 
   return TTComputeOperandBindingPlan(
-      String(role), buffer, host_buffer, GetStringOrDefault(op, tensor_dtype_key.c_str(), String()),
-      GetStringOrDefault(op, cb_dtype_key.c_str(), String()),
+      String(role), String(buffer), host_buffer, data_format, data_format,
       String(transpose ? "transpose" : "identity"));
 }
 
-static TTComputeOpPlan BuildTTComputeOpPlanFromContract(
-    const Map<String, Any>& op,
+static TTComputeOpPlan BuildTTComputeOpPlanFromFact(
+    const GemmComputeOpFact& fact,
     const std::unordered_map<std::string, std::string>& host_buffer_by_operand,
     const String& kernel_name, int64_t kernel_plan_index, int64_t ordinal) {
-  const String kind = GetStringOrDefault(op, "kind", String("unknown"));
   Array<TTComputeOperandBindingPlan> operand_bindings;
   const TTComputeOperandBindingPlan a_binding =
-      BuildComputeOperandBindingPlanFromContract(op, host_buffer_by_operand, "a", "a_buffer");
+      BuildGemmComputeOperandBindingPlan(fact, host_buffer_by_operand, "a");
   const TTComputeOperandBindingPlan b_binding =
-      BuildComputeOperandBindingPlanFromContract(op, host_buffer_by_operand, "b", "b_buffer");
+      BuildGemmComputeOperandBindingPlan(fact, host_buffer_by_operand, "b");
   const TTComputeOperandBindingPlan c_binding =
-      BuildComputeOperandBindingPlanFromContract(op, host_buffer_by_operand, "c", "c_buffer");
+      BuildGemmComputeOperandBindingPlan(fact, host_buffer_by_operand, "c");
   operand_bindings.push_back(a_binding);
   operand_bindings.push_back(b_binding);
   operand_bindings.push_back(c_binding);
 
-  Array<String> problem_shape_axes;
-  Array<Integer> problem_shape;
-  Array<Integer> tile_shape;
-  Array<Integer> block_shape;
-  Array<Integer> subblock_shape;
-  if (kind == "gemm") {
-    const int64_t m = GetIntegerOrDefault(op, "M", 0);
-    const int64_t n = GetIntegerOrDefault(op, "N", 0);
-    const int64_t k = GetIntegerOrDefault(op, "K", 0);
-    const int64_t mt = GetGemmTileDim(op, "Mt", "M");
-    const int64_t nt = GetGemmTileDim(op, "Nt", "N");
-    const int64_t kt = GetGemmTileDim(op, "Kt", "K");
-    problem_shape_axes = BuildStringArray({"M", "N", "K"});
-    problem_shape = BuildIntegerArray({m, n, k});
-    tile_shape = BuildIntegerArray({mt, nt, kt});
-    block_shape = BuildIntegerArray({GetIntegerOrDefault(op, "block_m_tiles", mt),
-                                     GetIntegerOrDefault(op, "block_n_tiles", nt),
-                                     GetIntegerOrDefault(op, "block_k_tiles", kt)});
-    subblock_shape = BuildIntegerArray({GetIntegerOrDefault(op, "subblock_m_tiles", mt),
-                                        GetIntegerOrDefault(op, "subblock_n_tiles", nt)});
-  }
+  const int64_t mt = fact.m > 0 ? fact.m / 32 : 0;
+  const int64_t nt = fact.n > 0 ? fact.n / 32 : 0;
+  const int64_t kt = fact.k > 0 ? fact.k / 32 : 0;
 
   Array<String> mbarrier_index_exprs;
-  if (auto value = op.Get(String("mbarrier_index_exprs"))) {
-    for (const Any& expr : Downcast<Array<Any>>(value.value())) {
-      mbarrier_index_exprs.push_back(Downcast<String>(expr));
-    }
+  for (const auto& expr : fact.mbarrier_index_exprs) {
+    mbarrier_index_exprs.push_back(String(expr));
   }
 
   const std::string name = "compute_op_" + static_cast<std::string>(kernel_name) + "_" +
                            std::to_string(ordinal);
   return TTComputeOpPlan(
-      String(name), kernel_name, kernel_plan_index, kind, GetBoolOrDefault(op, "enabled", true),
-      operand_bindings, problem_shape_axes, problem_shape, tile_shape, block_shape,
-      subblock_shape, GetStringOrDefault(op, "accumulator_dtype", String()),
-      GetStringOrDefault(op, "mbarrier_buffer", String()),
-      GetStringOrDefault(op, "mbarrier_scope", String()), mbarrier_index_exprs);
+      String(name), kernel_name, kernel_plan_index, String("gemm"), Bool(true),
+      operand_bindings, BuildStringArray({"M", "N", "K"}),
+      BuildIntegerArray({fact.m, fact.n, fact.k}), BuildIntegerArray({mt, nt, kt}),
+      BuildIntegerArray({mt, nt, kt}), BuildIntegerArray({mt, nt}),
+      String(DataTypeToDataFormatForBlackhole(fact.c_dtype)),
+      String(fact.mbarrier_buffer), String(fact.mbarrier_scope), mbarrier_index_exprs);
 }
 
 static void SetOptionalBufferField(Map<String, Any>* payload, const char* key,
@@ -2722,8 +2652,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   gemm_n_ = 0;
   gemm_k_ = 0;
   compute_op_signatures_.clear();
-  compute_op_seed_index_by_signature_.clear();
-  compute_op_seeds_.clear();
+  gemm_compute_op_fact_index_by_signature_.clear();
+  gemm_compute_op_facts_.clear();
   tt_compute_op_plans_.clear();
   logical_tile_layout_specs_by_buffer_.clear();
   spatial_live_value_by_subject_.clear();
@@ -2847,17 +2777,17 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
     record_if_cb_consumed_fragment(call->args[1], k_tiles * n_tiles);
   });
 
-  compute_op_seed_known_buffers_.assign(compute_op_seeds_.size(), {});
-  for (size_t i = 0; i < compute_op_seeds_.size(); ++i) {
-    auto maybe_insert = [&](const char* key) {
-      if (auto value = compute_op_seeds_[i].Get(String(key))) {
-        compute_op_seed_known_buffers_[i].insert(
-            static_cast<std::string>(Downcast<String>(value.value())));
+  gemm_compute_op_known_buffers_.assign(gemm_compute_op_facts_.size(), {});
+  for (size_t i = 0; i < gemm_compute_op_facts_.size(); ++i) {
+    const GemmComputeOpFact& fact = gemm_compute_op_facts_[i];
+    auto maybe_insert = [&](const std::string& buffer) {
+      if (!buffer.empty()) {
+        gemm_compute_op_known_buffers_[i].insert(buffer);
       }
     };
-    maybe_insert("a_buffer");
-    maybe_insert("b_buffer");
-    maybe_insert("c_buffer");
+    maybe_insert(fact.a_buffer);
+    maybe_insert(fact.b_buffer);
+    maybe_insert(fact.c_buffer);
   }
 
   // Transform the function body. Segment markers remain pass-local mechanics
@@ -3723,13 +3653,13 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
       }
     }
     tt_compute_op_plans_.clear();
-    if (!compute_op_seeds_.empty()) {
+    if (!gemm_compute_op_facts_.empty()) {
       ICHECK(!compute_kernel_name.empty())
-      << "PlanTTKernelABI produced compute op seeds without a compute kernel segment";
+      << "PlanTTKernelABI produced GEMM compute op facts without a compute kernel segment";
       int64_t ordinal = 0;
-      for (const auto& seed : compute_op_seeds_) {
-        tt_compute_op_plans_.push_back(BuildTTComputeOpPlanFromContract(
-            seed, host_buffer_by_compute_operand_buffer_, compute_kernel_name,
+      for (const auto& fact : gemm_compute_op_facts_) {
+        tt_compute_op_plans_.push_back(BuildTTComputeOpPlanFromFact(
+            fact, host_buffer_by_compute_operand_buffer_, compute_kernel_name,
             /*kernel_plan_index=*/-1, ordinal++));
       }
     }
@@ -3897,9 +3827,9 @@ void PlanTTKernelABI::ExtractGemmInfo(const CallNode* op) {
       gemm_named_compile_args_, gemm_mbarrier_buffer_name_, gemm_mbarrier_scope_,
       gemm_mbarrier_index_exprs_);
   if (compute_op_signatures_.insert(signature).second) {
-    compute_op_seed_index_by_signature_[signature] =
-        static_cast<int>(compute_op_seeds_.size());
-    compute_op_seeds_.push_back(BuildGemmComputeOpSeed(
+    gemm_compute_op_fact_index_by_signature_[signature] =
+        static_cast<int>(gemm_compute_op_facts_.size());
+    gemm_compute_op_facts_.push_back(BuildGemmComputeOpFact(
         gemm_a_buffer_name_, gemm_b_buffer_name_, gemm_c_buffer_name_, gemm_m_, gemm_n_, gemm_k_,
         gemm_transpose_a_, gemm_transpose_b_, gemm_policy_type_, gemm_clear_accum_, gemm_k_pack_,
         gemm_wg_wait_, gemm_dst_full_sync_en_, gemm_bfp8_pack_precise_, gemm_defines_,

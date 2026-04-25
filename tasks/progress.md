@@ -30,6 +30,7 @@
 - `P1 top-level TTProgram payload deletion`: completed
 - `P1 plan-local TT*Plan payload deletion`: completed
 - `P1 lowering facts contract-map cleanup`: completed
+- `P1 compute-op seed map cleanup`: completed
 - `P1 TTProgram ABI/kernel map schema cleanup`: next
 - `P1 leaf reader name/default cleanup`: next
 - `P1/P2 workload payoff`: queued
@@ -47,7 +48,8 @@ P1 redundant protocol cleanup:
 
 - `cmake --build build -j32`
 - Lowering facts contract-map regression: `1 passed`
+- Compute-op seed map regression: `1 passed`
 - TTProgram payload/facts regression: `1 passed`
-- Blackhole schema/pipeline sweep: `143 passed, 10 skipped, 1 xfailed, 4 warnings`
+- Blackhole schema/pipeline sweep: `144 passed, 10 skipped, 1 xfailed, 4 warnings`
 - TT-Sim copy runtime: `13 passed`
 - TT-Sim GEMM: `59 passed`
