@@ -7,7 +7,7 @@
 
 - Date: `2026-04-25`
 - Active lane: `P1 redundant protocol cleanup`
-- Current item: `P1/P2 workload payoff`
+- Current item: `P1 remaining protocol-residue cleanup`
 - Blocker: none
 - Main chain: `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -28,13 +28,16 @@
 - `P1 contract-family fallback deletion`: completed
 - `P1 kernel/core/compute/sync payload surface deletion`: completed
 - `P1 top-level TTProgram payload deletion`: completed
-- `P1/P2 workload payoff`: next
+- `P1 plan-local TT*Plan payload deletion`: next
+- `P1 lowering facts contract-map cleanup`: next
+- `P1 leaf reader name/default cleanup`: next
+- `P1/P2 workload payoff`: queued
 
 ## Open Debt
 
 - Direct runtime remains an admitted leaf backend subset, not the codegen/export capability boundary.
 - Non-GEMM exact compute builtins compile through kernel source; per-op typed expansion is next payoff work.
-- Remaining plan-local payload fields are local realization details and should keep shrinking into typed fields.
+- Remaining plan-local payload, analysis-fact maps, and leaf name/default readers should shrink into typed fields.
 - Flash-attn compile/source/spec baseline is stable; direct runtime correctness is not admitted.
 
 ## Latest Verification
