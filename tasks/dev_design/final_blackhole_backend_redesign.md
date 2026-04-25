@@ -371,6 +371,22 @@ top-level
 `payload`；
 仍需保留的信息必须进入 typed fields
 或 leaf projection。
+同日后续清理已将
+`TTKernel.launch_spec` /
+`TTKernel.compute_config` /
+`TTKernel.per_work_arg_specs`
+从 public map/Any 字段
+收成 typed
+`TTKernelLaunchSpec` /
+`TTKernelComputeConfig` /
+`TTPerWorkArgSpec`；
+leaf `ExecutableSpec`
+仍由 projection
+编码成 segment map，
+但 `TTProgram`
+公共 schema
+不再用这三个 leaf map
+承载 kernel 语义。
 
 ### 3.4 `ExecutableSpec`
 

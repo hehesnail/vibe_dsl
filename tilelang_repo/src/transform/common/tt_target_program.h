@@ -188,15 +188,124 @@ class TTKernelPlan : public ObjectRef {
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTKernelPlan, ObjectRef, TTKernelPlanNode);
 };
 
+class TTKernelLaunchSpecNode : public Object {
+ public:
+  ffi::String core_type;
+  ffi::String processor;
+  ffi::String noc;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTKernelLaunchSpec", TTKernelLaunchSpecNode, Object);
+};
+
+class TTKernelLaunchSpec : public ObjectRef {
+ public:
+  TVM_DLL TTKernelLaunchSpec(ffi::String core_type, ffi::String processor, ffi::String noc);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTKernelLaunchSpec, ObjectRef,
+                                             TTKernelLaunchSpecNode);
+};
+
+class TTKernelDefineNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String value;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTKernelDefine", TTKernelDefineNode, Object);
+};
+
+class TTKernelDefine : public ObjectRef {
+ public:
+  TVM_DLL TTKernelDefine(ffi::String name, ffi::String value);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTKernelDefine, ObjectRef,
+                                             TTKernelDefineNode);
+};
+
+class TTKernelNamedCompileArgNode : public Object {
+ public:
+  ffi::String name;
+  int64_t value = 0;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTKernelNamedCompileArg",
+                                    TTKernelNamedCompileArgNode, Object);
+};
+
+class TTKernelNamedCompileArg : public ObjectRef {
+ public:
+  TVM_DLL TTKernelNamedCompileArg(ffi::String name, int64_t value);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTKernelNamedCompileArg, ObjectRef,
+                                             TTKernelNamedCompileArgNode);
+};
+
+class TTKernelComputeConfigNode : public Object {
+ public:
+  ffi::String math_fidelity;
+  bool fp32_dest_acc_en = false;
+  bool dst_full_sync_en = false;
+  bool math_approx_mode = false;
+  ffi::Array<ffi::String> unpack_to_dest_mode;
+  bool bfp8_pack_precise = false;
+  ffi::Array<TTKernelDefine> defines;
+  ffi::Array<TTKernelNamedCompileArg> named_compile_args;
+  bool clear_accum = false;
+  int64_t k_pack = 1;
+  int64_t wg_wait = 0;
+  int64_t policy_type = 0;
+  ffi::String policy_name;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTKernelComputeConfig",
+                                    TTKernelComputeConfigNode, Object);
+};
+
+class TTKernelComputeConfig : public ObjectRef {
+ public:
+  TVM_DLL TTKernelComputeConfig(ffi::String math_fidelity, bool fp32_dest_acc_en,
+                                bool dst_full_sync_en, bool math_approx_mode,
+                                ffi::Array<ffi::String> unpack_to_dest_mode,
+                                bool bfp8_pack_precise,
+                                ffi::Array<TTKernelDefine> defines,
+                                ffi::Array<TTKernelNamedCompileArg> named_compile_args,
+                                bool clear_accum, int64_t k_pack, int64_t wg_wait,
+                                int64_t policy_type, ffi::String policy_name);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTKernelComputeConfig, ObjectRef,
+                                             TTKernelComputeConfigNode);
+};
+
+class TTPerWorkArgSpecNode : public Object {
+ public:
+  ffi::String arg_kind;
+  ffi::String arg_identity;
+  ffi::String buffer;
+  ffi::String descriptor_kind;
+  ffi::String value_kind;
+  ffi::String value_source;
+  int64_t constant_value = 0;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTPerWorkArgSpec", TTPerWorkArgSpecNode, Object);
+};
+
+class TTPerWorkArgSpec : public ObjectRef {
+ public:
+  TVM_DLL TTPerWorkArgSpec(ffi::String arg_kind, ffi::String arg_identity,
+                           ffi::String buffer, ffi::String descriptor_kind,
+                           ffi::String value_kind, ffi::String value_source,
+                           int64_t constant_value);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTPerWorkArgSpec, ObjectRef,
+                                             TTPerWorkArgSpecNode);
+};
+
 class TTKernelNode : public Object {
  public:
   ffi::String name;
   ffi::String kind;
   ffi::String core_type;
   int64_t abi_plan_index = -1;
-  ffi::Map<ffi::String, ffi::Any> launch_spec;
-  ffi::Map<ffi::String, ffi::Any> compute_config;
-  ffi::Array<ffi::Any> per_work_arg_specs;
+  TTKernelLaunchSpec launch_spec;
+  TTKernelComputeConfig compute_config;
+  ffi::Array<TTPerWorkArgSpec> per_work_arg_specs;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTKernel", TTKernelNode, Object);
@@ -206,9 +315,9 @@ class TTKernel : public ObjectRef {
  public:
   TVM_DLL TTKernel(ffi::String name, ffi::String kind, ffi::String core_type,
                    int64_t abi_plan_index,
-                   ffi::Map<ffi::String, ffi::Any> launch_spec,
-                   ffi::Map<ffi::String, ffi::Any> compute_config,
-                   ffi::Array<ffi::Any> per_work_arg_specs);
+                   TTKernelLaunchSpec launch_spec,
+                   TTKernelComputeConfig compute_config,
+                   ffi::Array<TTPerWorkArgSpec> per_work_arg_specs);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTKernel, ObjectRef, TTKernelNode);
 };
 

@@ -303,6 +303,82 @@ inline Array<Any> EncodeSemaphorePlans(const Array<TTSemaphorePlan>& semaphore_p
   return encoded;
 }
 
+inline bool HasLaunchSpec(const TTKernelLaunchSpec& launch_spec) {
+  return launch_spec.defined() && !launch_spec->core_type.empty();
+}
+
+inline Map<String, Any> EncodeKernelLaunchSpec(const TTKernelLaunchSpec& launch_spec) {
+  Map<String, Any> encoded;
+  if (!HasLaunchSpec(launch_spec)) {
+    return encoded;
+  }
+  encoded.Set("core_type", launch_spec->core_type);
+  encoded.Set("processor", launch_spec->processor);
+  encoded.Set("noc", launch_spec->noc);
+  return encoded;
+}
+
+inline bool HasComputeConfig(const TTKernelComputeConfig& compute_config) {
+  return compute_config.defined() && !compute_config->math_fidelity.empty();
+}
+
+inline Map<String, Any> EncodeKernelComputeConfig(const TTKernelComputeConfig& compute_config) {
+  Map<String, Any> encoded;
+  if (!HasComputeConfig(compute_config)) {
+    return encoded;
+  }
+  encoded.Set("math_fidelity", compute_config->math_fidelity);
+  encoded.Set("fp32_dest_acc_en", Bool(compute_config->fp32_dest_acc_en));
+  encoded.Set("dst_full_sync_en", Bool(compute_config->dst_full_sync_en));
+  encoded.Set("math_approx_mode", Bool(compute_config->math_approx_mode));
+  encoded.Set("unpack_to_dest_mode", compute_config->unpack_to_dest_mode);
+  encoded.Set("bfp8_pack_precise", Bool(compute_config->bfp8_pack_precise));
+  Array<Any> defines;
+  for (const TTKernelDefine& define : compute_config->defines) {
+    Map<String, Any> item;
+    item.Set("name", define->name);
+    item.Set("value", define->value);
+    defines.push_back(item);
+  }
+  encoded.Set("defines", defines);
+  Array<Any> named_compile_args;
+  for (const TTKernelNamedCompileArg& arg : compute_config->named_compile_args) {
+    Map<String, Any> item;
+    item.Set("name", arg->name);
+    item.Set("value", Integer(arg->value));
+    named_compile_args.push_back(item);
+  }
+  encoded.Set("named_compile_args", named_compile_args);
+  encoded.Set("clear_accum", Bool(compute_config->clear_accum));
+  encoded.Set("k_pack", Integer(compute_config->k_pack));
+  encoded.Set("wg_wait", Integer(compute_config->wg_wait));
+  encoded.Set("policy_type", Integer(compute_config->policy_type));
+  encoded.Set("policy_name", compute_config->policy_name);
+  return encoded;
+}
+
+inline Array<Any> EncodePerWorkArgSpecs(const Array<TTPerWorkArgSpec>& per_work_arg_specs) {
+  Array<Any> encoded;
+  for (const TTPerWorkArgSpec& spec : per_work_arg_specs) {
+    Map<String, Any> item;
+    item.Set(::tvm::tl::blackhole_runtime_arg_schema::kArgKind, spec->arg_kind);
+    item.Set(::tvm::tl::blackhole_runtime_arg_schema::kArgIdentity, spec->arg_identity);
+    if (!spec->buffer.empty()) {
+      item.Set(::tvm::tl::blackhole_runtime_arg_schema::kBuffer, spec->buffer);
+    }
+    item.Set(::tvm::tl::blackhole_runtime_arg_schema::kDescriptorKind,
+             spec->descriptor_kind);
+    item.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueKind, spec->value_kind);
+    item.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueSource, spec->value_source);
+    if (spec->value_kind == ::tvm::tl::blackhole_runtime_arg_schema::kValueConstant) {
+      item.Set(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue,
+               Integer(spec->constant_value));
+    }
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
 inline Array<Any> EncodeLiveFormPlans(const Array<TTLiveFormPlan>& live_form_plans) {
   Array<Any> encoded;
   for (const TTLiveFormPlan& plan : live_form_plans) {
@@ -388,15 +464,15 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram& program) {
     segment.Set("name", kernel->name);
     segment.Set("kind", kernel->kind);
     segment.Set("core_type", kernel->core_type);
-    if (!kernel->launch_spec.empty()) {
-      segment.Set("launch_spec", kernel->launch_spec);
+    if (HasLaunchSpec(kernel->launch_spec)) {
+      segment.Set("launch_spec", EncodeKernelLaunchSpec(kernel->launch_spec));
     }
-    if (!kernel->compute_config.empty()) {
-      segment.Set("compute_config", kernel->compute_config);
+    if (HasComputeConfig(kernel->compute_config)) {
+      segment.Set("compute_config", EncodeKernelComputeConfig(kernel->compute_config));
     }
     if (!kernel->per_work_arg_specs.empty()) {
       segment.Set(::tvm::tl::blackhole_runtime_arg_schema::kPerWorkArgSpecs,
-                  kernel->per_work_arg_specs);
+                  EncodePerWorkArgSpecs(kernel->per_work_arg_specs));
     }
     Array<Any> compute_ops;
     for (const TTComputeOpPlan& plan : program->compute_op_plans) {

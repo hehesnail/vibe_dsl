@@ -122,6 +122,140 @@ def require_tt_program(func):
         pytest.fail("Expected PrimFunc to carry tl.tt_program")
     return func.attrs["tl.tt_program"]
 
+
+def _try_plain_dict(value):
+    try:
+        return dict(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def tt_launch_spec_to_dict(launch_spec):
+    if launch_spec is None:
+        return {}
+    plain = _try_plain_dict(launch_spec)
+    if plain is not None:
+        return {
+            "core_type": str(plain.get("core_type", "")),
+            "processor": str(plain.get("processor", "")),
+            "noc": str(plain.get("noc", "")),
+        }
+    if not hasattr(launch_spec, "core_type") or not str(launch_spec.core_type):
+        return {}
+    return {
+        "core_type": str(launch_spec.core_type),
+        "processor": str(launch_spec.processor),
+        "noc": str(launch_spec.noc),
+    }
+
+
+def tt_compute_config_to_dict(compute_config):
+    if compute_config is None:
+        return {}
+    plain = _try_plain_dict(compute_config)
+    if plain is not None:
+        return dict(plain)
+    if not hasattr(compute_config, "math_fidelity") or not str(compute_config.math_fidelity):
+        return {}
+    return {
+        "math_fidelity": str(compute_config.math_fidelity),
+        "fp32_dest_acc_en": bool(compute_config.fp32_dest_acc_en),
+        "dst_full_sync_en": bool(compute_config.dst_full_sync_en),
+        "math_approx_mode": bool(compute_config.math_approx_mode),
+        "unpack_to_dest_mode": [str(item) for item in compute_config.unpack_to_dest_mode],
+        "bfp8_pack_precise": bool(compute_config.bfp8_pack_precise),
+        "defines": [
+            {"name": str(item.name), "value": str(item.value)}
+            for item in compute_config.defines
+        ],
+        "named_compile_args": [
+            {"name": str(item.name), "value": int(item.value)}
+            for item in compute_config.named_compile_args
+        ],
+        "clear_accum": bool(compute_config.clear_accum),
+        "k_pack": int(compute_config.k_pack),
+        "wg_wait": int(compute_config.wg_wait),
+        "policy_type": int(compute_config.policy_type),
+        "policy_name": str(compute_config.policy_name),
+    }
+
+
+def tt_per_work_arg_specs_to_list(per_work_arg_specs):
+    encoded = []
+    for spec in per_work_arg_specs or []:
+        plain = _try_plain_dict(spec)
+        if plain is not None:
+            encoded.append(dict(plain))
+            continue
+        item = {
+            "arg_kind": str(spec.arg_kind),
+            "arg_identity": str(spec.arg_identity),
+            "descriptor_kind": str(spec.descriptor_kind),
+            "value_kind": str(spec.value_kind),
+            "value_source": str(spec.value_source),
+        }
+        if str(spec.buffer):
+            item["buffer"] = str(spec.buffer)
+        if str(spec.value_kind) == "constant":
+            item["constant_value"] = int(spec.constant_value)
+        encoded.append(item)
+    return encoded
+
+
+def make_tt_launch_spec(launch_spec):
+    spec = tt_launch_spec_to_dict(launch_spec)
+    make = tilelang.tvm.get_global_func("tl.TTKernelLaunchSpec")
+    return make(
+        spec.get("core_type", ""),
+        spec.get("processor", ""),
+        spec.get("noc", ""),
+    )
+
+
+def make_tt_compute_config(compute_config):
+    spec = tt_compute_config_to_dict(compute_config)
+    make_define = tilelang.tvm.get_global_func("tl.TTKernelDefine")
+    make_named_arg = tilelang.tvm.get_global_func("tl.TTKernelNamedCompileArg")
+    make = tilelang.tvm.get_global_func("tl.TTKernelComputeConfig")
+    return make(
+        spec.get("math_fidelity", ""),
+        bool(spec.get("fp32_dest_acc_en", False)),
+        bool(spec.get("dst_full_sync_en", False)),
+        bool(spec.get("math_approx_mode", False)),
+        [str(item) for item in spec.get("unpack_to_dest_mode", [])],
+        bool(spec.get("bfp8_pack_precise", False)),
+        [
+            make_define(str(item["name"]), str(item["value"]))
+            for item in spec.get("defines", [])
+        ],
+        [
+            make_named_arg(str(item["name"]), int(item["value"]))
+            for item in spec.get("named_compile_args", [])
+        ],
+        bool(spec.get("clear_accum", False)),
+        int(spec.get("k_pack", 1)),
+        int(spec.get("wg_wait", 0)),
+        int(spec.get("policy_type", 0)),
+        str(spec.get("policy_name", "")),
+    )
+
+
+def make_tt_per_work_arg_specs(per_work_arg_specs):
+    make = tilelang.tvm.get_global_func("tl.TTPerWorkArgSpec")
+    return [
+        make(
+            str(item.get("arg_kind", "")),
+            str(item.get("arg_identity", "")),
+            str(item.get("buffer", "")),
+            str(item.get("descriptor_kind", "")),
+            str(item.get("value_kind", "")),
+            str(item.get("value_source", "")),
+            int(item.get("constant_value", 0)),
+        )
+        for item in tt_per_work_arg_specs_to_list(per_work_arg_specs)
+    ]
+
+
 def extract_tt_program_segments(func):
     """Extract segment-like kernel/ABI records from TTProgram for regression tests."""
     tt_program = require_tt_program(func)
@@ -133,12 +267,17 @@ def extract_tt_program_segments(func):
             "kind": str(kernel.kind),
             "core_type": str(kernel.core_type),
         }
-        if getattr(kernel, "launch_spec", None):
-            payload["launch_spec"] = dict(kernel.launch_spec)
-        if getattr(kernel, "compute_config", None):
-            payload["compute_config"] = dict(kernel.compute_config)
-        if getattr(kernel, "per_work_arg_specs", None):
-            payload["per_work_arg_specs"] = list(kernel.per_work_arg_specs)
+        launch_spec = tt_launch_spec_to_dict(getattr(kernel, "launch_spec", None))
+        if launch_spec:
+            payload["launch_spec"] = launch_spec
+        compute_config = tt_compute_config_to_dict(getattr(kernel, "compute_config", None))
+        if compute_config:
+            payload["compute_config"] = compute_config
+        per_work_arg_specs = tt_per_work_arg_specs_to_list(
+            getattr(kernel, "per_work_arg_specs", [])
+        )
+        if per_work_arg_specs:
+            payload["per_work_arg_specs"] = per_work_arg_specs
         abi_plan_index = int(kernel.abi_plan_index)
         if 0 <= abi_plan_index < len(abi_plans):
             abi = abi_plans[abi_plan_index]
@@ -315,9 +454,13 @@ def rebuild_tt_kernel(
         str(kernel.kind) if kind is None else kind,
         str(kernel.core_type) if core_type is None else core_type,
         int(kernel.abi_plan_index) if abi_plan_index is None else abi_plan_index,
-        dict(kernel.launch_spec) if launch_spec is None else launch_spec,
-        dict(kernel.compute_config) if compute_config is None else compute_config,
-        list(kernel.per_work_arg_specs) if per_work_arg_specs is None else per_work_arg_specs,
+        make_tt_launch_spec(kernel.launch_spec if launch_spec is None else launch_spec),
+        make_tt_compute_config(kernel.compute_config if compute_config is None else compute_config),
+        make_tt_per_work_arg_specs(
+            kernel.per_work_arg_specs
+            if per_work_arg_specs is None
+            else per_work_arg_specs
+        ),
     )
 
 

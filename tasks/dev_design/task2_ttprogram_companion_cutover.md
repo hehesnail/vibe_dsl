@@ -449,6 +449,22 @@ typed entries，
 `ValidateTTProgram`
 必须拒绝该 payload
 重新出现。
+`TTKernel`
+的 leaf launch /
+compute config /
+per-work descriptor
+公共字段也不能继续是
+`Map<String, Any>` /
+`Array<Any>`
+schema；
+当前实现应通过 typed
+`TTKernelLaunchSpec`、
+`TTKernelComputeConfig`
+和
+`TTPerWorkArgSpec`
+承载，
+再由 executable projection
+编码成 leaf segment map。
 
 ### 3.7 兼容 / realization detail 视图
 

@@ -24,6 +24,7 @@ from .common import (
     require_tt_program,
     staged_copy_kernel,
     staged_stick_copy_kernel,
+    tt_per_work_arg_specs_to_list,
 )
 from .test_blackhole_copy_pipeline import (
     _extract_blackhole_executable_spec,
@@ -663,7 +664,7 @@ def test_blackhole_module_direct_call_accepts_richer_copy_schema_with_explicit_p
         ]
         rebuilt_kernels = []
         for kernel in tt_program.kernels:
-            per_work_arg_specs = list(kernel.per_work_arg_specs)
+            per_work_arg_specs = tt_per_work_arg_specs_to_list(kernel.per_work_arg_specs)
             per_work_arg_specs.append(
                 {
                     "arg_kind": "b_tile_start_id",

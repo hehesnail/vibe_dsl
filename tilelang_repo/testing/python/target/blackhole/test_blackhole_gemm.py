@@ -32,6 +32,7 @@ from .common import (
     require_gemm_compute_op,
     require_tt_kernel,
     require_tt_program,
+    tt_compute_config_to_dict,
     tt_abi_for_kernel,
 )
 from .test_blackhole_copy_pipeline import (
@@ -165,7 +166,7 @@ def _require_tt_program_compute_kernel(func):
 
 def _typed_gemm_schema(func):
     item = encode_tt_compute_op_plan(require_gemm_compute_op(func))
-    item.update(dict(_require_tt_program_compute_kernel(func).compute_config))
+    item.update(tt_compute_config_to_dict(_require_tt_program_compute_kernel(func).compute_config))
     return item
 
 
@@ -174,7 +175,7 @@ def _rebuild_codegen_module_with_compute_overrides(artifact, compute_overrides):
         rebuilt_kernels = []
         rebuilt_compute_op_plans = []
         for kernel in tt_program.kernels:
-            compute_config = dict(kernel.compute_config)
+            compute_config = tt_compute_config_to_dict(kernel.compute_config)
             if str(kernel.kind) == "compute" or str(kernel.core_type) == "trisc":
                 for key in (
                     "math_fidelity",

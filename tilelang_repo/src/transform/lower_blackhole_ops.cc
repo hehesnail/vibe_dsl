@@ -103,26 +103,20 @@ static std::string EncodeGemmComputeOpSignature(
   return os.str();
 }
 
-static Array<Any> EncodeNamedStringPairs(
+static Array<TTKernelDefine> EncodeTTKernelDefines(
     const std::vector<std::pair<std::string, std::string>>& entries) {
-  Array<Any> encoded_entries;
+  Array<TTKernelDefine> encoded_entries;
   for (const auto& [name, value] : entries) {
-    Map<String, Any> entry;
-    entry.Set("name", String(name));
-    entry.Set("value", String(value));
-    encoded_entries.push_back(entry);
+    encoded_entries.push_back(TTKernelDefine(String(name), String(value)));
   }
   return encoded_entries;
 }
 
-static Array<Any> EncodeNamedUint32Pairs(
+static Array<TTKernelNamedCompileArg> EncodeTTKernelNamedCompileArgs(
     const std::vector<std::pair<std::string, uint32_t>>& entries) {
-  Array<Any> encoded_entries;
+  Array<TTKernelNamedCompileArg> encoded_entries;
   for (const auto& [name, value] : entries) {
-    Map<String, Any> entry;
-    entry.Set("name", String(name));
-    entry.Set("value", Integer(static_cast<int>(value)));
-    encoded_entries.push_back(entry);
+    encoded_entries.push_back(TTKernelNamedCompileArg(String(name), value));
   }
   return encoded_entries;
 }
@@ -980,27 +974,16 @@ static Map<String, Any> MakeCompileTimeArgSpec(const std::string& name,
   return spec;
 }
 
-static Map<String, Any> MakePerWorkArgSpec(const std::string& arg_kind,
+static TTPerWorkArgSpec MakePerWorkArgSpec(const std::string& arg_kind,
                                            const std::string& arg_identity,
                                            const std::string& descriptor_kind,
                                            const std::string& value_kind,
                                            const std::string& value_source,
                                            const std::string& buffer = "",
                                            uint32_t constant_value = 0) {
-  Map<String, Any> spec;
-  spec.Set(String(blackhole_runtime_arg_schema::kArgKind), String(arg_kind));
-  spec.Set(String(blackhole_runtime_arg_schema::kArgIdentity), String(arg_identity));
-  if (!buffer.empty()) {
-    spec.Set(String(blackhole_runtime_arg_schema::kBuffer), String(buffer));
-  }
-  spec.Set(String(blackhole_runtime_arg_schema::kDescriptorKind), String(descriptor_kind));
-  spec.Set(String(blackhole_runtime_arg_schema::kValueKind), String(value_kind));
-  spec.Set(String(blackhole_runtime_arg_schema::kValueSource), String(value_source));
-  if (value_kind == blackhole_runtime_arg_schema::kValueConstant) {
-    spec.Set(String(blackhole_runtime_arg_schema::kConstantValue),
-             Integer(static_cast<int64_t>(constant_value)));
-  }
-  return spec;
+  return TTPerWorkArgSpec(String(arg_kind), String(arg_identity), String(buffer),
+                          String(descriptor_kind), String(value_kind), String(value_source),
+                          static_cast<int64_t>(constant_value));
 }
 
 static int MakeAccessorArgsConfigBits(const std::string& layout,
@@ -1015,14 +998,16 @@ static int MakeAccessorArgsConfigBits(const std::string& layout,
   return bits;
 }
 
-static Map<String, Any> MakeLaunchSpec(const std::string& core_type,
-                                       const std::string& processor,
-                                       const std::string& noc) {
-  Map<String, Any> spec;
-  spec.Set("core_type", String(core_type));
-  spec.Set("processor", String(processor));
-  spec.Set("noc", String(noc));
-  return spec;
+static TTKernelLaunchSpec MakeLaunchSpec(const std::string& core_type,
+                                         const std::string& processor,
+                                         const std::string& noc) {
+  return TTKernelLaunchSpec(String(core_type), String(processor), String(noc));
+}
+
+static TTKernelComputeConfig MakeEmptyComputeConfig() {
+  return TTKernelComputeConfig(String(""), false, false, false, Array<String>{}, false,
+                               Array<TTKernelDefine>{}, Array<TTKernelNamedCompileArg>{},
+                               false, 1, 0, 0, String(""));
 }
 
 static void BuildTTKernelAndABISeeds(const Array<Any>& segment_plan, Array<TTKernel>* kernels_out,
@@ -1062,18 +1047,18 @@ static void BuildTTKernelAndABISeeds(const Array<Any>& segment_plan, Array<TTKer
         segment.Get("semaphore_bindings")
             ? Downcast<Array<Any>>(segment.Get("semaphore_bindings").value())
             : Array<Any>();
-    Map<String, Any> launch_spec =
-        segment.Get("launch_spec") ? Downcast<Map<String, Any>>(segment.Get("launch_spec").value())
-                                   : Map<String, Any>();
-    Map<String, Any> compute_config =
+    TTKernelLaunchSpec launch_spec =
+        segment.Get("launch_spec") ? Downcast<TTKernelLaunchSpec>(segment.Get("launch_spec").value())
+                                   : TTKernelLaunchSpec(String(""), String(""), String(""));
+    TTKernelComputeConfig compute_config =
         segment.Get("compute_config")
-            ? Downcast<Map<String, Any>>(segment.Get("compute_config").value())
-            : Map<String, Any>();
-    Array<Any> per_work_arg_specs =
+            ? Downcast<TTKernelComputeConfig>(segment.Get("compute_config").value())
+            : MakeEmptyComputeConfig();
+    Array<TTPerWorkArgSpec> per_work_arg_specs =
         segment.Get(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs))
-            ? Downcast<Array<Any>>(
+            ? Downcast<Array<TTPerWorkArgSpec>>(
                   segment.Get(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs)).value())
-            : Array<Any>();
+            : Array<TTPerWorkArgSpec>();
     abi_plans.push_back(TTABIPlan(String("abi_" + std::to_string(index)), kernel_name, runtime_args,
                                   common_runtime_args, compile_time_arg_specs, accessors,
                                   semaphore_bindings));
@@ -3098,25 +3083,16 @@ void PlanTTKernelABI::StoreSegmentPlan(PrimFunc& func) {
 }
 
 void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
-  auto make_compute_config_from_gemm_state = [&]() -> Map<String, Any> {
-    Map<String, Any> compute_config;
-    compute_config.Set("math_fidelity", String("HiFi4"));
-    compute_config.Set("fp32_dest_acc_en", Bool(true));
-    compute_config.Set("dst_full_sync_en", Bool(gemm_dst_full_sync_en_));
-    compute_config.Set("math_approx_mode", Bool(false));
-    compute_config.Set("unpack_to_dest_mode", Array<Any>{});
-    compute_config.Set("bfp8_pack_precise", Bool(gemm_bfp8_pack_precise_));
-    compute_config.Set("defines", EncodeNamedStringPairs(gemm_defines_));
-    compute_config.Set("named_compile_args", EncodeNamedUint32Pairs(gemm_named_compile_args_));
-    compute_config.Set("clear_accum", Bool(gemm_clear_accum_));
-    compute_config.Set("k_pack", Integer(gemm_k_pack_));
-    compute_config.Set("wg_wait", Integer(gemm_wg_wait_));
-    compute_config.Set("policy_type", Integer(gemm_policy_type_));
-    compute_config.Set("policy_name", String(GemmWarpPolicyTypeToStringForBlackhole(gemm_policy_type_)));
-    return compute_config;
+  auto make_compute_config_from_gemm_state = [&]() -> TTKernelComputeConfig {
+    return TTKernelComputeConfig(
+        String("HiFi4"), true, gemm_dst_full_sync_en_, false, Array<String>{},
+        gemm_bfp8_pack_precise_, EncodeTTKernelDefines(gemm_defines_),
+        EncodeTTKernelNamedCompileArgs(gemm_named_compile_args_), gemm_clear_accum_,
+        gemm_k_pack_, gemm_wg_wait_, gemm_policy_type_,
+        String(GemmWarpPolicyTypeToStringForBlackhole(gemm_policy_type_)));
   };
 
-  auto make_launch_spec = [](const std::string& core_type) -> Map<String, Any> {
+  auto make_launch_spec = [](const std::string& core_type) -> TTKernelLaunchSpec {
     if (core_type == "brisc") {
       return MakeLaunchSpec(core_type, "riscv_0", "riscv_0_default");
     }
@@ -3126,7 +3102,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
     if (core_type == "trisc") {
       return MakeLaunchSpec(core_type, "", "");
     }
-    return Map<String, Any>();
+    return TTKernelLaunchSpec(String(""), String(""), String(""));
   };
 
   auto make_accessor_cta_specs = [&](const std::string& kind, const Array<Any>& accessors) {
@@ -3309,8 +3285,9 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
   auto make_segment_per_work_arg_specs = [&](const std::string& kind,
                                              const Array<Any>& runtime_args,
                                              const Optional<Any>& existing_specs_opt) {
-    Array<Any> per_work_arg_specs =
-        existing_specs_opt ? Downcast<Array<Any>>(existing_specs_opt.value()) : Array<Any>();
+    Array<TTPerWorkArgSpec> per_work_arg_specs =
+        existing_specs_opt ? Downcast<Array<TTPerWorkArgSpec>>(existing_specs_opt.value())
+                           : Array<TTPerWorkArgSpec>();
     const std::string copy_input_buffer_name =
         copy_input_buffer_.defined() ? BufferIdentityName(copy_input_buffer_) : copy_input_buffer_name_;
     const std::string copy_output_buffer_name =
@@ -3334,17 +3311,11 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
     auto runtime_args_contain_kind = [&](const char* arg_kind) {
       return !runtime_arg_identity_for_kind(arg_kind).empty();
     };
-    auto upsert_spec = [&](const Map<String, Any>& spec) {
-      const std::string arg_identity = static_cast<std::string>(
-          Downcast<String>(spec.Get(String(blackhole_runtime_arg_schema::kArgIdentity)).value()));
+    auto upsert_spec = [&](const TTPerWorkArgSpec& spec) {
+      const std::string arg_identity = static_cast<std::string>(spec->arg_identity);
       for (int i = 0; i < per_work_arg_specs.size(); ++i) {
-        auto existing = per_work_arg_specs[i].as<Map<String, Any>>().value_or(Map<String, Any>());
-        if (existing.empty() ||
-            !existing.Get(String(blackhole_runtime_arg_schema::kArgIdentity))) {
-          continue;
-        }
-        const std::string existing_arg_identity = static_cast<std::string>(Downcast<String>(
-            existing.Get(String(blackhole_runtime_arg_schema::kArgIdentity)).value()));
+        const TTPerWorkArgSpec& existing = per_work_arg_specs[i];
+        const std::string existing_arg_identity = static_cast<std::string>(existing->arg_identity);
         if (existing_arg_identity == arg_identity) {
           per_work_arg_specs.Set(i, spec);
           return;
@@ -3601,7 +3572,7 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
           copy_input_buffer_.defined() ? BufferIdentityName(copy_input_buffer_) : copy_input_buffer_name_,
           copy_output_buffer_.defined() ? BufferIdentityName(copy_output_buffer_)
                                         : copy_output_buffer_name_);
-      Array<Any> per_work_arg_specs = make_segment_per_work_arg_specs(
+      Array<TTPerWorkArgSpec> per_work_arg_specs = make_segment_per_work_arg_specs(
           kind, runtime_args, segment.Get(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs)));
       compile_time_arg_specs = make_accessor_cta_specs(kind, accessors);
       if (kind == "compute") {
@@ -3621,11 +3592,11 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         segment.Set(String(blackhole_runtime_arg_schema::kPerWorkArgSpecs), per_work_arg_specs);
       }
       segment.Set("compile_time_arg_specs", compile_time_arg_specs);
-      Map<String, Any> launch_spec =
+      TTKernelLaunchSpec launch_spec =
           make_launch_spec(segment.Get("core_type")
                                ? static_cast<std::string>(Downcast<String>(segment.Get("core_type").value()))
                                : std::string());
-      if (!launch_spec.empty()) {
+      if (!launch_spec->core_type.empty()) {
         segment.Set("launch_spec", launch_spec);
       }
       segment.Set("common_runtime_args", EncodeCommonRuntimeArgs(kind));

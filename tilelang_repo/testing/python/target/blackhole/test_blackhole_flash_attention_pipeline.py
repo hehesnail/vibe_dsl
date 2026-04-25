@@ -24,6 +24,7 @@ from .common import (
     require_tt_kernel,
     require_tt_program,
     tt_abi_for_kernel,
+    tt_per_work_arg_specs_to_list,
 )
 from .test_blackhole_copy_pipeline import (
     _collect_blackhole_builtin_names,
@@ -1273,7 +1274,7 @@ def test_flash_attention_segment_writer_block_indices_follow_per_work_value_sour
         writer = require_tt_kernel(tt_program, kind="writer", core_type="ncrisc")
         rebuilt_kernels = []
         for kernel in tt_program.kernels:
-            per_work_arg_specs = list(kernel.per_work_arg_specs)
+            per_work_arg_specs = tt_per_work_arg_specs_to_list(kernel.per_work_arg_specs)
             if str(kernel.name) == str(writer.name):
                 updated_specs = []
                 for spec in per_work_arg_specs:

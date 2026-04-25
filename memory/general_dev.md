@@ -1117,6 +1117,21 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   直接用 typed fact /
   typed plan constructor
   表达 GEMM 或后续 compute kind。
+- `TTKernel`
+  这类 public `TTProgram`
+  object
+  不应把 leaf launch /
+  compute config /
+  per-work descriptor
+  挂成
+  `Map<String, Any>` /
+  `Array<Any>`；
+  用 typed object
+  表达 owner truth，
+  只在
+  `ExecutableSpec`
+  projection boundary
+  编码成 leaf segment map。
 
 ## 9. 调试模式
 

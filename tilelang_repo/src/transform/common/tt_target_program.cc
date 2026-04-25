@@ -221,6 +221,119 @@ TTKernelPlan::TTKernelPlan(ffi::String name, ffi::String kind, ffi::String core_
   data_ = std::move(n);
 }
 
+void TTKernelLaunchSpecNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTKernelLaunchSpecNode>()
+      .def_ro("core_type", &TTKernelLaunchSpecNode::core_type)
+      .def_ro("processor", &TTKernelLaunchSpecNode::processor)
+      .def_ro("noc", &TTKernelLaunchSpecNode::noc);
+}
+
+TTKernelLaunchSpec::TTKernelLaunchSpec(ffi::String core_type, ffi::String processor,
+                                       ffi::String noc) {
+  auto n = ffi::make_object<TTKernelLaunchSpecNode>();
+  n->core_type = std::move(core_type);
+  n->processor = std::move(processor);
+  n->noc = std::move(noc);
+  data_ = std::move(n);
+}
+
+void TTKernelDefineNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTKernelDefineNode>()
+      .def_ro("name", &TTKernelDefineNode::name)
+      .def_ro("value", &TTKernelDefineNode::value);
+}
+
+TTKernelDefine::TTKernelDefine(ffi::String name, ffi::String value) {
+  auto n = ffi::make_object<TTKernelDefineNode>();
+  n->name = std::move(name);
+  n->value = std::move(value);
+  data_ = std::move(n);
+}
+
+void TTKernelNamedCompileArgNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTKernelNamedCompileArgNode>()
+      .def_ro("name", &TTKernelNamedCompileArgNode::name)
+      .def_ro("value", &TTKernelNamedCompileArgNode::value);
+}
+
+TTKernelNamedCompileArg::TTKernelNamedCompileArg(ffi::String name, int64_t value) {
+  auto n = ffi::make_object<TTKernelNamedCompileArgNode>();
+  n->name = std::move(name);
+  n->value = value;
+  data_ = std::move(n);
+}
+
+void TTKernelComputeConfigNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTKernelComputeConfigNode>()
+      .def_ro("math_fidelity", &TTKernelComputeConfigNode::math_fidelity)
+      .def_ro("fp32_dest_acc_en", &TTKernelComputeConfigNode::fp32_dest_acc_en)
+      .def_ro("dst_full_sync_en", &TTKernelComputeConfigNode::dst_full_sync_en)
+      .def_ro("math_approx_mode", &TTKernelComputeConfigNode::math_approx_mode)
+      .def_ro("unpack_to_dest_mode", &TTKernelComputeConfigNode::unpack_to_dest_mode)
+      .def_ro("bfp8_pack_precise", &TTKernelComputeConfigNode::bfp8_pack_precise)
+      .def_ro("defines", &TTKernelComputeConfigNode::defines)
+      .def_ro("named_compile_args", &TTKernelComputeConfigNode::named_compile_args)
+      .def_ro("clear_accum", &TTKernelComputeConfigNode::clear_accum)
+      .def_ro("k_pack", &TTKernelComputeConfigNode::k_pack)
+      .def_ro("wg_wait", &TTKernelComputeConfigNode::wg_wait)
+      .def_ro("policy_type", &TTKernelComputeConfigNode::policy_type)
+      .def_ro("policy_name", &TTKernelComputeConfigNode::policy_name);
+}
+
+TTKernelComputeConfig::TTKernelComputeConfig(
+    ffi::String math_fidelity, bool fp32_dest_acc_en, bool dst_full_sync_en,
+    bool math_approx_mode, ffi::Array<ffi::String> unpack_to_dest_mode,
+    bool bfp8_pack_precise, ffi::Array<TTKernelDefine> defines,
+    ffi::Array<TTKernelNamedCompileArg> named_compile_args, bool clear_accum,
+    int64_t k_pack, int64_t wg_wait, int64_t policy_type, ffi::String policy_name) {
+  auto n = ffi::make_object<TTKernelComputeConfigNode>();
+  n->math_fidelity = std::move(math_fidelity);
+  n->fp32_dest_acc_en = fp32_dest_acc_en;
+  n->dst_full_sync_en = dst_full_sync_en;
+  n->math_approx_mode = math_approx_mode;
+  n->unpack_to_dest_mode = std::move(unpack_to_dest_mode);
+  n->bfp8_pack_precise = bfp8_pack_precise;
+  n->defines = std::move(defines);
+  n->named_compile_args = std::move(named_compile_args);
+  n->clear_accum = clear_accum;
+  n->k_pack = k_pack;
+  n->wg_wait = wg_wait;
+  n->policy_type = policy_type;
+  n->policy_name = std::move(policy_name);
+  data_ = std::move(n);
+}
+
+void TTPerWorkArgSpecNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTPerWorkArgSpecNode>()
+      .def_ro("arg_kind", &TTPerWorkArgSpecNode::arg_kind)
+      .def_ro("arg_identity", &TTPerWorkArgSpecNode::arg_identity)
+      .def_ro("buffer", &TTPerWorkArgSpecNode::buffer)
+      .def_ro("descriptor_kind", &TTPerWorkArgSpecNode::descriptor_kind)
+      .def_ro("value_kind", &TTPerWorkArgSpecNode::value_kind)
+      .def_ro("value_source", &TTPerWorkArgSpecNode::value_source)
+      .def_ro("constant_value", &TTPerWorkArgSpecNode::constant_value);
+}
+
+TTPerWorkArgSpec::TTPerWorkArgSpec(ffi::String arg_kind, ffi::String arg_identity,
+                                   ffi::String buffer, ffi::String descriptor_kind,
+                                   ffi::String value_kind, ffi::String value_source,
+                                   int64_t constant_value) {
+  auto n = ffi::make_object<TTPerWorkArgSpecNode>();
+  n->arg_kind = std::move(arg_kind);
+  n->arg_identity = std::move(arg_identity);
+  n->buffer = std::move(buffer);
+  n->descriptor_kind = std::move(descriptor_kind);
+  n->value_kind = std::move(value_kind);
+  n->value_source = std::move(value_source);
+  n->constant_value = constant_value;
+  data_ = std::move(n);
+}
+
 void TTKernelNode::RegisterReflection() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<TTKernelNode>()
@@ -235,9 +348,9 @@ void TTKernelNode::RegisterReflection() {
 
 TTKernel::TTKernel(ffi::String name, ffi::String kind, ffi::String core_type,
                    int64_t abi_plan_index,
-                   ffi::Map<ffi::String, ffi::Any> launch_spec,
-                   ffi::Map<ffi::String, ffi::Any> compute_config,
-                   ffi::Array<ffi::Any> per_work_arg_specs) {
+                   TTKernelLaunchSpec launch_spec,
+                   TTKernelComputeConfig compute_config,
+                   ffi::Array<TTPerWorkArgSpec> per_work_arg_specs) {
   auto n = ffi::make_object<TTKernelNode>();
   n->name = std::move(name);
   n->kind = std::move(kind);
@@ -682,6 +795,11 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   RegisterNodeReflection<TTComputeOpPlanNode>();
   RegisterNodeReflection<TTBlockPlanNode>();
   RegisterNodeReflection<TTKernelPlanNode>();
+  RegisterNodeReflection<TTKernelLaunchSpecNode>();
+  RegisterNodeReflection<TTKernelDefineNode>();
+  RegisterNodeReflection<TTKernelNamedCompileArgNode>();
+  RegisterNodeReflection<TTKernelComputeConfigNode>();
+  RegisterNodeReflection<TTPerWorkArgSpecNode>();
   RegisterNodeReflection<TTKernelNode>();
   RegisterNodeReflection<TTCoreGroupNode>();
   RegisterNodeReflection<TTCBPlanNode>();
@@ -772,11 +890,49 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                             block_plan_index, abi_plan_index);
       });
   refl::GlobalDef().def(
+      "tl.TTKernelLaunchSpec",
+      [](ffi::String core_type, ffi::String processor, ffi::String noc) {
+        return TTKernelLaunchSpec(std::move(core_type), std::move(processor), std::move(noc));
+      });
+  refl::GlobalDef().def(
+      "tl.TTKernelDefine",
+      [](ffi::String name, ffi::String value) {
+        return TTKernelDefine(std::move(name), std::move(value));
+      });
+  refl::GlobalDef().def(
+      "tl.TTKernelNamedCompileArg",
+      [](ffi::String name, int64_t value) {
+        return TTKernelNamedCompileArg(std::move(name), value);
+      });
+  refl::GlobalDef().def(
+      "tl.TTKernelComputeConfig",
+      [](ffi::String math_fidelity, bool fp32_dest_acc_en, bool dst_full_sync_en,
+         bool math_approx_mode, ffi::Array<ffi::String> unpack_to_dest_mode,
+         bool bfp8_pack_precise, ffi::Array<TTKernelDefine> defines,
+         ffi::Array<TTKernelNamedCompileArg> named_compile_args, bool clear_accum,
+         int64_t k_pack, int64_t wg_wait, int64_t policy_type, ffi::String policy_name) {
+        return TTKernelComputeConfig(
+            std::move(math_fidelity), fp32_dest_acc_en, dst_full_sync_en, math_approx_mode,
+            std::move(unpack_to_dest_mode), bfp8_pack_precise, std::move(defines),
+            std::move(named_compile_args), clear_accum, k_pack, wg_wait, policy_type,
+            std::move(policy_name));
+      });
+  refl::GlobalDef().def(
+      "tl.TTPerWorkArgSpec",
+      [](ffi::String arg_kind, ffi::String arg_identity, ffi::String buffer,
+         ffi::String descriptor_kind, ffi::String value_kind, ffi::String value_source,
+         int64_t constant_value) {
+        return TTPerWorkArgSpec(std::move(arg_kind), std::move(arg_identity),
+                                std::move(buffer), std::move(descriptor_kind),
+                                std::move(value_kind), std::move(value_source),
+                                constant_value);
+      });
+  refl::GlobalDef().def(
       "tl.TTKernel",
       [](ffi::String name, ffi::String kind, ffi::String core_type, int64_t abi_plan_index,
-         ffi::Map<ffi::String, ffi::Any> launch_spec,
-         ffi::Map<ffi::String, ffi::Any> compute_config,
-         ffi::Array<ffi::Any> per_work_arg_specs) {
+         TTKernelLaunchSpec launch_spec,
+         TTKernelComputeConfig compute_config,
+         ffi::Array<TTPerWorkArgSpec> per_work_arg_specs) {
         return TTKernel(std::move(name), std::move(kind), std::move(core_type), abi_plan_index,
                         std::move(launch_spec), std::move(compute_config),
                         std::move(per_work_arg_specs));

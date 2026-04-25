@@ -35,6 +35,9 @@ from .common import (
     staged_copy_kernel,
     staged_stick_copy_kernel,
     tt_abi_for_kernel,
+    tt_compute_config_to_dict,
+    tt_launch_spec_to_dict,
+    tt_per_work_arg_specs_to_list,
 )
 
 EXAMPLE_DIR = Path(__file__).resolve().parents[4] / "examples" / "flash_attention"
@@ -204,9 +207,11 @@ def _rebuild_tt_program_with_segment_plan(tt_program, segment_plan):
                 kind=str(segment.get("kind", kernel.kind)),
                 core_type=str(segment.get("core_type", kernel.core_type)),
                 abi_plan_index=index,
-                launch_spec=dict(segment.get("launch_spec", kernel.launch_spec)),
-                compute_config=dict(segment.get("compute_config", kernel.compute_config)),
-                per_work_arg_specs=list(
+                launch_spec=tt_launch_spec_to_dict(segment.get("launch_spec", kernel.launch_spec)),
+                compute_config=tt_compute_config_to_dict(
+                    segment.get("compute_config", kernel.compute_config)
+                ),
+                per_work_arg_specs=tt_per_work_arg_specs_to_list(
                     segment.get("per_work_arg_specs", kernel.per_work_arg_specs)
                 ),
             )

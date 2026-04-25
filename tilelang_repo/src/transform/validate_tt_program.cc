@@ -258,23 +258,14 @@ void ValidateCompileTimeArgSpec(const Map<String, Any>& spec) {
 }
 
 void ValidateKernelLeafFields(const TTKernel& kernel) {
-  ICHECK(!kernel->launch_spec.empty()) << "TTKernel requires launch_spec";
-  Map<String, Any> launch_spec = kernel->launch_spec;
-  ICHECK(HasKey(launch_spec, "core_type")) << "TTKernel launch_spec requires core_type";
-  ICHECK(HasKey(launch_spec, "processor")) << "TTKernel launch_spec requires processor";
-  ICHECK(HasKey(launch_spec, "noc")) << "TTKernel launch_spec requires noc";
+  ICHECK(kernel->launch_spec.defined()) << "TTKernel requires launch_spec";
+  ICHECK(!kernel->launch_spec->core_type.empty()) << "TTKernel launch_spec requires core_type";
 
   if (kernel->kind == "compute" || kernel->core_type == "trisc") {
-    ICHECK(!kernel->compute_config.empty())
+    ICHECK(kernel->compute_config.defined() && !kernel->compute_config->math_fidelity.empty())
         << "TTKernel compute kernels require compute_config";
-    Map<String, Any> compute_config = kernel->compute_config;
-    ICHECK(HasKey(compute_config, "math_fidelity"))
-        << "TTKernel compute_config requires math_fidelity";
-    ICHECK(HasKey(compute_config, "fp32_dest_acc_en"))
-        << "TTKernel compute_config requires fp32_dest_acc_en";
-    ICHECK(HasKey(compute_config, "clear_accum"))
-        << "TTKernel compute_config requires clear_accum";
-    ICHECK(HasKey(compute_config, "k_pack")) << "TTKernel compute_config requires k_pack";
+    ICHECK_GT(kernel->compute_config->k_pack, 0)
+        << "TTKernel compute_config requires positive k_pack";
   }
 }
 
