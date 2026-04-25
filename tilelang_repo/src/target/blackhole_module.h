@@ -360,7 +360,9 @@ struct ComputeOperandBindingSpec {
     writer->BeginObject();
     writer->WriteObjectKeyValue("role", role);
     writer->WriteObjectKeyValue("buffer", buffer);
-    writer->WriteObjectKeyValue("host_buffer", host_buffer);
+    if (!host_buffer.empty()) {
+      writer->WriteObjectKeyValue("host_buffer", host_buffer);
+    }
     writer->EndObject();
   }
 };
@@ -368,6 +370,7 @@ struct ComputeOperandBindingSpec {
 struct KernelComputeOpSpec {
   bool enabled = false;
   std::string kind;
+  std::string operation_name;
   std::string a_buffer;
   std::string b_buffer;
   std::string c_buffer;
@@ -401,6 +404,7 @@ struct KernelComputeOpSpec {
     writer->BeginObject();
     writer->WriteObjectKeyValue("enabled", enabled);
     writer->WriteObjectKeyValue("kind", kind);
+    writer->WriteObjectKeyValue("operation_name", operation_name);
     writer->WriteObjectKeyValue("a_buffer", a_buffer);
     writer->WriteObjectKeyValue("b_buffer", b_buffer);
     writer->WriteObjectKeyValue("c_buffer", c_buffer);

@@ -287,8 +287,8 @@ static TTComputeOpPlan BuildTTComputeOpPlanFromFact(
   const std::string name = "compute_op_" + static_cast<std::string>(kernel_name) + "_" +
                            std::to_string(ordinal);
   return TTComputeOpPlan(
-      String(name), kernel_name, kernel_plan_index, String("gemm"), Bool(true),
-      operand_bindings, BuildStringArray({"M", "N", "K"}),
+      String(name), kernel_name, kernel_plan_index, String("gemm"), String("matmul_tiles"),
+      Bool(true), operand_bindings, BuildStringArray({"M", "N", "K"}),
       BuildIntegerArray({fact.m, fact.n, fact.k}), BuildIntegerArray({mt, nt, kt}),
       BuildIntegerArray({mt, nt, kt}), BuildIntegerArray({mt, nt}),
       String(DataTypeToDataFormatForBlackhole(fact.c_dtype)),
@@ -2338,6 +2338,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   logical_tile_layout_specs_by_buffer_.clear();
   spatial_live_value_by_subject_.clear();
   spatial_materialization_boundary_by_source_target_.clear();
+  tt_compute_op_plans_.clear();
   select_compute_builtins_only_ = true;
 
   auto maybe_spatial_plan = func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
@@ -2772,6 +2773,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   gemm_b_dtype_ = DataType::Void();
   gemm_c_dtype_ = DataType::Void();
   LoadSeededCBRequirements(func);
+  LoadSeededComputeOpPlans(func);
   auto maybe_spatial_plan = func->GetAttr<SpatialPlan>(attr::kTLSpatialPlan);
   ICHECK(maybe_spatial_plan)
       << "PlanTTKernelABI requires tl.spatial_plan; run BuildSpatialPlan before lowering";
@@ -3164,6 +3166,16 @@ void PlanTTKernelABI::LoadSeededCBRequirements(const PrimFunc& func) {
   }
   next_requirement_index_ =
       std::max(next_requirement_index_, static_cast<int>(cb_requirements_.size()));
+}
+
+void PlanTTKernelABI::LoadSeededComputeOpPlans(const PrimFunc& func) {
+  auto staged_program = func->GetAttr<TTProgram>(attr::kTLTTProgram);
+  if (!staged_program) {
+    return;
+  }
+  for (const TTComputeOpPlan& plan : staged_program.value()->compute_op_plans) {
+    tt_compute_op_plans_.push_back(plan);
+  }
 }
 
 void PlanTTKernelABI::StoreSegmentPlan(PrimFunc& func) {
@@ -3715,7 +3727,11 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         break;
       }
     }
+    Array<TTComputeOpPlan> exact_compute_op_plans = tt_compute_op_plans_;
     tt_compute_op_plans_.clear();
+    for (const TTComputeOpPlan& plan : exact_compute_op_plans) {
+      tt_compute_op_plans_.push_back(plan);
+    }
     if (!gemm_compute_op_facts_.empty()) {
       ICHECK(!compute_kernel_name.empty())
       << "PlanTTKernelABI produced GEMM compute op facts without a compute kernel segment";
@@ -4435,7 +4451,87 @@ std::string PlanTTKernelABI::ResolveHostBufferForComputeOperand(const Buffer& bu
   if (it != host_buffer_by_compute_operand_buffer_.end() && !it->second.empty()) {
     return it->second;
   }
-  return buffer_name;
+  return "";
+}
+
+std::string PlanTTKernelABI::ComputeKernelNameForCurrentPlan() const {
+  if (!current_segment_kind_.empty()) {
+    return current_segment_kind_;
+  }
+  return requires_compute_segment_ ? std::string("compute") : std::string("main");
+}
+
+void PlanTTKernelABI::RecordExactComputeOpPlan(
+    const std::string& kind, const std::string& operation_name,
+    const std::vector<ComputeOperandPlanSeed>& operands) {
+  if (operation_name.empty() || operands.empty()) {
+    return;
+  }
+
+  Array<TTComputeOperandBindingPlan> operand_bindings;
+  const Buffer* output_buffer = nullptr;
+  for (const ComputeOperandPlanSeed& operand : operands) {
+    if (!operand.buffer.defined()) {
+      continue;
+    }
+    const std::string buffer_name = BufferIdentityName(operand.buffer);
+    if (buffer_name.empty()) {
+      continue;
+    }
+    if (operand.role == "output" || operand.role == "c") {
+      output_buffer = &operand.buffer;
+    }
+    const std::string data_format = DataTypeToDataFormatForBlackhole(operand.buffer->dtype);
+    operand_bindings.push_back(TTComputeOperandBindingPlan(
+        String(operand.role), String(buffer_name),
+        String(ResolveHostBufferForComputeOperand(operand.buffer)), String(data_format),
+        String(data_format),
+        String(operand.transform_kind.empty() ? "identity" : operand.transform_kind)));
+  }
+  if (operand_bindings.empty()) {
+    return;
+  }
+
+  if (output_buffer == nullptr) {
+    output_buffer = &operands.back().buffer;
+  }
+
+  Array<String> problem_shape_axes;
+  Array<Integer> problem_shape;
+  Array<Integer> tile_shape;
+  std::string accumulator_dtype;
+  if (output_buffer != nullptr && output_buffer->defined()) {
+    const std::vector<int64_t> logical_shape = GetLogicalBufferShape(*output_buffer);
+    for (size_t i = 0; i < logical_shape.size(); ++i) {
+      if (logical_shape.size() == 1U) {
+        problem_shape_axes.push_back(String("elements"));
+      } else if (logical_shape.size() == 2U) {
+        problem_shape_axes.push_back(String(i == 0 ? "rows" : "cols"));
+      } else {
+        problem_shape_axes.push_back(String("dim" + std::to_string(i)));
+      }
+      problem_shape.push_back(Integer(logical_shape[i]));
+    }
+    if (logical_shape.size() >= 2U) {
+      const int64_t rows = logical_shape[logical_shape.size() - 2];
+      const int64_t cols = logical_shape[logical_shape.size() - 1];
+      tile_shape.push_back(Integer(std::max<int64_t>(1, CeilDivToInt(rows, kBlackholeTileRows))));
+      tile_shape.push_back(Integer(std::max<int64_t>(1, CeilDivToInt(cols, kBlackholeTileCols))));
+    } else if (logical_shape.size() == 1U) {
+      tile_shape.push_back(Integer(std::max<int64_t>(
+          1, CeilDivToInt(logical_shape[0], kBlackholeTileRows * kBlackholeTileCols))));
+    }
+    accumulator_dtype = DataTypeToDataFormatForBlackhole((*output_buffer)->dtype);
+  }
+
+  const std::string kernel_name = ComputeKernelNameForCurrentPlan();
+  const std::string plan_name = "compute_op_" + kernel_name + "_" + operation_name + "_" +
+                                std::to_string(tt_compute_op_plans_.size());
+  tt_compute_op_plans_.push_back(TTComputeOpPlan(
+      String(plan_name), String(kernel_name), /*kernel_plan_index=*/-1, String(kind),
+      String(operation_name), Bool(true), operand_bindings, problem_shape_axes, problem_shape,
+      tile_shape, Array<Integer>{}, Array<Integer>{}, String(accumulator_dtype),
+      String(""), String(""), Array<String>{}));
 }
 
 void PlanTTKernelABI::RecordDramToDramCopy(const BufferStoreNode* op) {
@@ -4995,6 +5091,12 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
   const int tile_elements = (kBlackholeTileRows * kBlackholeTileCols * gemm_c_dtype_.bytes()) /
                             gemm_c_dtype_.bytes();
   const Buffer physical_dst = ResolvePhysicalComputeBuffer(dst);
+  if (!merge_with_zero_reload) {
+    RecordExactComputeOpPlan("binary", "add_tiles",
+                             {{"lhs", reload_buffer, "identity"},
+                              {"rhs", partials_buffer, "identity"},
+                              {"output", dst, "identity"}});
+  }
 
   std::vector<Stmt> stmts;
   if (!merge_with_zero_reload) {
@@ -6619,6 +6721,10 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
   ExactTiledCBValue src_in = CreatePublishedExactTiledCBValue(match.src, "reduce_src");
   ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "reduce_out");
   ExactTiledCBValue scaler = CreateConstantExactTiledCBValue(match.src->dtype, "reduce_scaler");
+  RecordExactComputeOpPlan("reduce", "reduce_tile",
+                           {{"input", match.src, "identity"},
+                            {"scaler", scaler.buffer, "identity"},
+                            {"output", match.dst, "identity"}});
 
   const Buffer scaler_local = scaler.buffer;
   const Stmt scaler_fill = FillLocalTileBuffer(scaler_local, make_const(match.src->dtype, 1.0));
@@ -6731,6 +6837,9 @@ Stmt PlanTTKernelABI::GenerateRowBroadcastSequence(const RowBroadcastMatch& matc
   ExactTiledCBValue reciprocal;
   if (match.kind == "div") {
     reciprocal = CreateEmptyExactTiledCBValue(match.scalar, "row_bcast_recip");
+    RecordExactComputeOpPlan("unary", "recip_tile",
+                             {{"input", match.scalar, "identity"},
+                              {"output", reciprocal.buffer, "identity"}});
     stmts.push_back(
         MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(reciprocal.cb_id), IntImm32(reciprocal.num_tiles)}));
     stmts.push_back(
@@ -6762,6 +6871,10 @@ Stmt PlanTTKernelABI::GenerateRowBroadcastSequence(const RowBroadcastMatch& matc
   const int tiles_per_row =
       logical_rows > 0 && logical_cols > 0 ? std::max(1, CeilDivToInt(logical_cols, kBlackholeTileCols))
                                            : std::max(1, dst_in.num_tiles / std::max(1, scalar_operand->num_tiles));
+  RecordExactComputeOpPlan("binary", "mul_tiles_bcast_rows",
+                           {{"lhs", match.dst, "identity"},
+                            {"rhs", scalar_operand->buffer, "broadcast"},
+                            {"output", match.dst, "identity"}});
 
   stmts.push_back(
       MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
@@ -6894,6 +7007,14 @@ Stmt PlanTTKernelABI::GenerateScalarFmaSequence(const ScalarFmaMatch& match) {
   ExactTiledCBValue add_in = CreatePublishedExactTiledCBValue(match.add, "scalar_fma_add");
   ExactTiledCBValue product = CreateEmptyExactTiledCBValue(match.dst, "scalar_fma_product");
   ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "scalar_fma_out");
+  RecordExactComputeOpPlan("binary", "mul_tiles",
+                           {{"lhs", match.lhs, "identity"},
+                            {"rhs", match.rhs, "identity"},
+                            {"output", product.buffer, "identity"}});
+  RecordExactComputeOpPlan("binary", "add_tiles",
+                           {{"lhs", product.buffer, "identity"},
+                            {"rhs", match.add, "identity"},
+                            {"output", match.dst, "identity"}});
 
   ICHECK_EQ(lhs_in.num_tiles, rhs_in.num_tiles);
   ICHECK_EQ(lhs_in.num_tiles, add_in.num_tiles);
@@ -7025,6 +7146,21 @@ Stmt PlanTTKernelABI::GenerateExp2RowBroadcastAffineSequence(
   ExactTiledCBValue scaled_scalar =
       CreateEmptyExactTiledCBValue(match.scalar, "exp2_affine_scaled_scalar");
   ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "exp2_affine_out");
+  RecordExactComputeOpPlan("binary", "mul_tiles",
+                           {{"lhs", match.dst, "identity"},
+                            {"rhs", dst_scale.buffer, "identity"},
+                            {"output", scaled_dst.buffer, "identity"}});
+  RecordExactComputeOpPlan("binary", "mul_tiles",
+                           {{"lhs", match.scalar, "identity"},
+                            {"rhs", scalar_scale.buffer, "identity"},
+                            {"output", scaled_scalar.buffer, "identity"}});
+  RecordExactComputeOpPlan("binary", "add_tiles_bcast_rows",
+                           {{"lhs", scaled_dst.buffer, "identity"},
+                            {"rhs", scaled_scalar.buffer, "broadcast"},
+                            {"output", out.buffer, "identity"}});
+  RecordExactComputeOpPlan("unary", "exp2_tile",
+                           {{"input", out.buffer, "identity"},
+                            {"output", match.dst, "identity"}});
 
   const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.dst);
   const int tiles_per_row =
@@ -7250,6 +7386,21 @@ Stmt PlanTTKernelABI::GenerateScalarExp2AffineSequence(const ScalarExp2AffineMat
   ExactTiledCBValue scaled_rhs =
       CreateEmptyExactTiledCBValue(match.dst, "scalar_exp2_scaled_rhs");
   ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "scalar_exp2_out");
+  RecordExactComputeOpPlan("binary", "mul_tiles",
+                           {{"lhs", match.lhs, "identity"},
+                            {"rhs", lhs_scale.buffer, "identity"},
+                            {"output", scaled_lhs.buffer, "identity"}});
+  RecordExactComputeOpPlan("binary", "mul_tiles",
+                           {{"lhs", match.rhs, "identity"},
+                            {"rhs", rhs_scale.buffer, "identity"},
+                            {"output", scaled_rhs.buffer, "identity"}});
+  RecordExactComputeOpPlan("binary", "add_tiles",
+                           {{"lhs", scaled_lhs.buffer, "identity"},
+                            {"rhs", scaled_rhs.buffer, "identity"},
+                            {"output", out.buffer, "identity"}});
+  RecordExactComputeOpPlan("unary", "exp2_tile",
+                           {{"input", out.buffer, "identity"},
+                            {"output", match.dst, "identity"}});
 
   ICHECK_EQ(lhs_in.num_tiles, rhs_in.num_tiles);
   ICHECK_EQ(lhs_in.num_tiles, out.num_tiles);
@@ -7603,6 +7754,10 @@ Stmt PlanTTKernelABI::GenerateScalarMaxSequence(const ScalarMaxMatch& match) {
   ExactTiledCBValue dst_in = CreatePublishedExactTiledCBValue(match.dst, "scalar_max_lhs");
   ExactTiledCBValue src_in = CreatePublishedExactTiledCBValue(match.src, "scalar_max_rhs");
   ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "scalar_max_out");
+  RecordExactComputeOpPlan("binary", "binary_max_tile",
+                           {{"lhs", match.dst, "identity"},
+                            {"rhs", match.src, "identity"},
+                            {"output", match.dst, "identity"}});
 
   std::vector<Stmt> stmts;
   stmts.push_back(PublishLocalBufferToExactTiledCB(match.dst, dst_in));

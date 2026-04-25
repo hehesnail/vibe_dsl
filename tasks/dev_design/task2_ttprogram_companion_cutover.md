@@ -417,6 +417,8 @@ launch grouping。
   `kernel_plan_index`
 - generic `kind`
   variant
+- `operation_name`
+  exact builtin identity
 - operand/result binding
 - problem shape /
   tile shape /
@@ -439,6 +441,28 @@ launch grouping。
 当前实现生成
 GEMM / multi-GEMM
 typed entries，
+并把 flash-attn
+compile path 中已选择的
+non-GEMM exact compute builtin
+记录为
+`kind=binary|unary|reduce`
+加
+`operation_name`
+的 typed entries。
+`kind`
+只表示 compute op family；
+具体 TT-Metal builtin
+不能藏在 plan `name`
+或 source string 中。
+GEMM operand
+必须显式携带
+compute-side buffer
+和 host runtime buffer；
+non-GEMM 内部 operand
+只要求 compute-side buffer，
+不得为了满足旧 GEMM schema
+伪造 `host_buffer`。
+这些 entries
 并由 executable projection
 优先从
 `TTComputeOpPlan`

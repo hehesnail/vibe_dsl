@@ -157,7 +157,9 @@ inline Map<String, Any> EncodeComputeOperandBindingPlan(
   Map<String, Any> item;
   item.Set("role", binding->role);
   item.Set("buffer", binding->buffer);
-  item.Set("host_buffer", binding->host_buffer);
+  if (!binding->host_buffer.empty()) {
+    item.Set("host_buffer", binding->host_buffer);
+  }
   if (!binding->tensor_dtype.empty()) {
     item.Set("tensor_dtype", binding->tensor_dtype);
   }
@@ -184,6 +186,7 @@ inline Map<String, Any> EncodeComputeOpPlan(const TTComputeOpPlan& plan) {
   item.Set("kernel_plan_index", Integer(plan->kernel_plan_index));
   item.Set("enabled", Bool(plan->enabled));
   item.Set("kind", plan->kind);
+  item.Set("operation_name", plan->operation_name);
   Array<Any> operand_bindings;
   for (const TTComputeOperandBindingPlan& binding : plan->operand_bindings) {
     operand_bindings.push_back(EncodeComputeOperandBindingPlan(binding));

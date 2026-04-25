@@ -1135,6 +1135,21 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   直接用 typed fact /
   typed plan constructor
   表达 GEMM 或后续 compute kind。
+- `TTComputeOpPlan`
+  的 `kind`
+  只表达 compute family
+  （如 `gemm` /
+  `binary` /
+  `unary` /
+  `reduce`）；
+  具体 exact TT-Metal builtin
+  应进 typed
+  `operation_name`。
+  非 GEMM 内部 operand
+  不要为了复用 GEMM leaf schema
+  伪造 `host_buffer`；
+  只有 GEMM direct-runtime
+  admission 需要显式 host runtime buffer。
 - `TTKernel`
   / `TTABIPlan`
   这类 public `TTProgram`

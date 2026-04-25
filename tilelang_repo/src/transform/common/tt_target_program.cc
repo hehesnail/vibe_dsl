@@ -138,6 +138,7 @@ void TTComputeOpPlanNode::RegisterReflection() {
       .def_ro("kernel_name", &TTComputeOpPlanNode::kernel_name)
       .def_ro("kernel_plan_index", &TTComputeOpPlanNode::kernel_plan_index)
       .def_ro("kind", &TTComputeOpPlanNode::kind)
+      .def_ro("operation_name", &TTComputeOpPlanNode::operation_name)
       .def_ro("enabled", &TTComputeOpPlanNode::enabled)
       .def_ro("operand_bindings", &TTComputeOpPlanNode::operand_bindings)
       .def_ro("problem_shape_axes", &TTComputeOpPlanNode::problem_shape_axes)
@@ -153,7 +154,8 @@ void TTComputeOpPlanNode::RegisterReflection() {
 
 TTComputeOpPlan::TTComputeOpPlan(
     ffi::String name, ffi::String kernel_name, int64_t kernel_plan_index, ffi::String kind,
-    bool enabled, ffi::Array<TTComputeOperandBindingPlan> operand_bindings,
+    ffi::String operation_name, bool enabled,
+    ffi::Array<TTComputeOperandBindingPlan> operand_bindings,
     ffi::Array<ffi::String> problem_shape_axes, ffi::Array<Integer> problem_shape,
     ffi::Array<Integer> tile_shape, ffi::Array<Integer> block_shape,
     ffi::Array<Integer> subblock_shape, ffi::String accumulator_dtype,
@@ -164,6 +166,7 @@ TTComputeOpPlan::TTComputeOpPlan(
   n->kernel_name = std::move(kernel_name);
   n->kernel_plan_index = kernel_plan_index;
   n->kind = std::move(kind);
+  n->operation_name = std::move(operation_name);
   n->enabled = enabled;
   n->operand_bindings = std::move(operand_bindings);
   n->problem_shape_axes = std::move(problem_shape_axes);
@@ -986,7 +989,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def(
       "tl.TTComputeOpPlan",
       [](ffi::String name, ffi::String kernel_name, int64_t kernel_plan_index,
-         ffi::String kind, bool enabled,
+         ffi::String kind, ffi::String operation_name, bool enabled,
          ffi::Array<TTComputeOperandBindingPlan> operand_bindings,
          ffi::Array<ffi::String> problem_shape_axes, ffi::Array<Integer> problem_shape,
          ffi::Array<Integer> tile_shape, ffi::Array<Integer> block_shape,
@@ -995,10 +998,10 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<ffi::String> mbarrier_index_exprs) {
         return TTComputeOpPlan(
             std::move(name), std::move(kernel_name), kernel_plan_index, std::move(kind),
-            enabled, std::move(operand_bindings), std::move(problem_shape_axes),
-            std::move(problem_shape), std::move(tile_shape), std::move(block_shape),
-            std::move(subblock_shape), std::move(accumulator_dtype),
-            std::move(mbarrier_buffer), std::move(mbarrier_scope),
+            std::move(operation_name), enabled, std::move(operand_bindings),
+            std::move(problem_shape_axes), std::move(problem_shape),
+            std::move(tile_shape), std::move(block_shape), std::move(subblock_shape),
+            std::move(accumulator_dtype), std::move(mbarrier_buffer), std::move(mbarrier_scope),
             std::move(mbarrier_index_exprs));
       });
   refl::GlobalDef().def(

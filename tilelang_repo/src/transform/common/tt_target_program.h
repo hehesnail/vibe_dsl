@@ -116,6 +116,7 @@ class TTComputeOpPlanNode : public Object {
   ffi::String kernel_name;
   int64_t kernel_plan_index = -1;
   ffi::String kind;
+  ffi::String operation_name;
   bool enabled = true;
   ffi::Array<TTComputeOperandBindingPlan> operand_bindings;
   ffi::Array<ffi::String> problem_shape_axes;
@@ -135,7 +136,8 @@ class TTComputeOpPlanNode : public Object {
 class TTComputeOpPlan : public ObjectRef {
  public:
   TVM_DLL TTComputeOpPlan(ffi::String name, ffi::String kernel_name,
-                          int64_t kernel_plan_index, ffi::String kind, bool enabled,
+                          int64_t kernel_plan_index, ffi::String kind,
+                          ffi::String operation_name, bool enabled,
                           ffi::Array<TTComputeOperandBindingPlan> operand_bindings,
                           ffi::Array<ffi::String> problem_shape_axes,
                           ffi::Array<Integer> problem_shape,

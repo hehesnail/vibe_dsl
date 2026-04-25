@@ -378,9 +378,9 @@ Array<TTComputeOpPlan> AttachComputeOpKernelPlanIndices(
     const int64_t kernel_plan_index =
         kernel_index_it == kernel_index_by_name.end() ? -1 : kernel_index_it->second;
     updated.push_back(TTComputeOpPlan(
-        plan->name, plan->kernel_name, kernel_plan_index, plan->kind, plan->enabled,
-        plan->operand_bindings, plan->problem_shape_axes, plan->problem_shape, plan->tile_shape,
-        plan->block_shape, plan->subblock_shape, plan->accumulator_dtype,
+        plan->name, plan->kernel_name, kernel_plan_index, plan->kind, plan->operation_name,
+        plan->enabled, plan->operand_bindings, plan->problem_shape_axes, plan->problem_shape,
+        plan->tile_shape, plan->block_shape, plan->subblock_shape, plan->accumulator_dtype,
         plan->mbarrier_buffer, plan->mbarrier_scope, plan->mbarrier_index_exprs));
   }
   return updated;

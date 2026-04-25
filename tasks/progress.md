@@ -34,26 +34,22 @@
 - `P1 TTProgram kernel leaf map schema cleanup`: completed
 - `P1 TTProgram ABI arg/accessor map schema cleanup`: completed
 - `P1 leaf reader name/default cleanup`: completed
-- `P1/P2 workload payoff`: next
+- `P1/P2 non-GEMM exact compute op typed expansion`: completed
+- `P2 flash-attn direct runtime admission`: next
 
 ## Open Debt
 
 - Direct runtime remains an admitted leaf backend subset, not the codegen/export capability boundary.
-- Non-GEMM exact compute builtins compile through kernel source; per-op typed expansion is next payoff work.
 - Flash-attn compile/source/spec baseline is stable; direct runtime correctness is not admitted.
 
 ## Latest Verification
 
-P1 redundant protocol cleanup:
+P1/P2 non-GEMM exact compute op typed expansion:
 
 - `cmake --build build -j32`
-- Leaf reader default/fallback guard regression: `1 passed`
-- Targeted leaf schema/runtime-codegen regressions: `7 passed, 2 skipped`
-- Blackhole non-runtime schema/pipeline sweep: `162 passed, 25 skipped, 1 xfailed, 4 warnings`
-- TTKernel public map/Any schema regression: `1 passed`
-- TTABIPlan public Array/Any schema regression: `1 passed`
-- Lowering facts contract-map regression: `1 passed`
-- Compute-op seed map regression: `1 passed`
-- TTProgram payload/facts regression: `1 passed`
+- non-GEMM compute op typed regression: `1 passed`
+- GEMM compute op schema regressions: `3 passed`
+- flash-attn pipeline: `66 passed`
+- Blackhole non-runtime schema/pipeline sweep: `163 passed, 25 skipped, 1 xfailed, 4 warnings`
 - TT-Sim copy runtime: `13 passed`
 - TT-Sim GEMM: `59 passed`

@@ -629,6 +629,25 @@ records；
   entry，
   不是 compute kernel
   的通用字段名。
+  exact builtin identity
+  由
+  `operation_name`
+  字段承载；
+  `kind`
+  只表示
+  GEMM /
+  binary /
+  unary /
+  reduce
+  等 compute family。
+  non-GEMM
+  internal operand binding
+  可以没有
+  host runtime buffer；
+  只有 GEMM direct-runtime
+  admission 继续要求
+  host buffer
+  显式存在。
   direct runtime
   已改从该 entry
   读取 GEMM

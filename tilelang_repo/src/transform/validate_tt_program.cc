@@ -148,7 +148,6 @@ void ValidateKernelPlan(const TTKernelPlan& kernel_plan, int64_t abi_plan_count,
 void ValidateComputeOperandBindingPlan(const TTComputeOperandBindingPlan& binding) {
   ICHECK(!binding->role.empty()) << "TTComputeOperandBindingPlan requires role";
   ICHECK(!binding->buffer.empty()) << "TTComputeOperandBindingPlan requires buffer";
-  ICHECK(!binding->host_buffer.empty()) << "TTComputeOperandBindingPlan requires host_buffer";
   const std::string role = binding->role;
   ICHECK(role == "a" || role == "b" || role == "c" || role == "input" ||
          role == "lhs" || role == "rhs" || role == "output" || role == "scaler")
@@ -172,6 +171,7 @@ void ValidateComputeOpPlan(const TTComputeOpPlan& plan, int64_t kernel_plan_coun
   ICHECK_LT(plan->kernel_plan_index, kernel_plan_count)
       << "TTComputeOpPlan kernel_plan_index out of bounds";
   ICHECK(!plan->kind.empty()) << "TTComputeOpPlan requires kind";
+  ICHECK(!plan->operation_name.empty()) << "TTComputeOpPlan requires operation_name";
   const std::string kind = plan->kind;
   ICHECK(kind == "gemm" || kind == "binary" || kind == "unary" || kind == "reduce" ||
          kind == "sfpu" || kind == "pack" || kind == "copy")
@@ -187,6 +187,11 @@ void ValidateComputeOpPlan(const TTComputeOpPlan& plan, int64_t kernel_plan_coun
   if (kind == "gemm") {
     for (const char* role : {"a", "b", "c"}) {
       ICHECK(roles.count(role)) << "TTComputeOpPlan GEMM requires operand role " << role;
+    }
+    for (const TTComputeOperandBindingPlan& binding : plan->operand_bindings) {
+      ICHECK(!binding->host_buffer.empty())
+          << "TTComputeOpPlan GEMM operand role " << binding->role
+          << " requires host_buffer";
     }
     ICHECK_EQ(plan->problem_shape_axes.size(), 3)
         << "TTComputeOpPlan GEMM requires M/N/K problem_shape_axes";

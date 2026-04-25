@@ -560,17 +560,17 @@ def extract_blackhole_total_l1_bytes(func):
 
 def encode_tt_compute_op_plan(plan):
     operands = {str(binding.role): binding for binding in plan.operand_bindings}
-    item = {
+    encoded = {
         "name": str(plan.name),
         "kernel_name": str(plan.kernel_name),
         "kernel_plan_index": int(plan.kernel_plan_index),
         "enabled": bool(plan.enabled),
         "kind": str(plan.kind),
+        "operation_name": str(plan.operation_name),
         "operand_bindings": [
             {
                 "role": str(binding.role),
                 "buffer": str(binding.buffer),
-                "host_buffer": str(binding.host_buffer),
                 "tensor_dtype": str(binding.tensor_dtype),
                 "cb_dtype": str(binding.cb_dtype),
                 "transform_kind": str(binding.transform_kind),
@@ -578,40 +578,43 @@ def encode_tt_compute_op_plan(plan):
             for binding in plan.operand_bindings
         ],
     }
+    for operand_item, binding in zip(encoded["operand_bindings"], plan.operand_bindings):
+        if str(binding.host_buffer):
+            operand_item["host_buffer"] = str(binding.host_buffer)
     axes = [str(axis) for axis in plan.problem_shape_axes]
     shape = [int(dim) for dim in plan.problem_shape]
     if axes and len(axes) == len(shape):
-        item.update({axis: value for axis, value in zip(axes, shape)})
+        encoded.update({axis: value for axis, value in zip(axes, shape)})
     for key, index in (("Mt", 0), ("Nt", 1), ("Kt", 2)):
         if index < len(plan.tile_shape):
-            item[key] = int(plan.tile_shape[index])
+            encoded[key] = int(plan.tile_shape[index])
     for key, index in (("block_m_tiles", 0), ("block_n_tiles", 1), ("block_k_tiles", 2)):
         if index < len(plan.block_shape):
-            item[key] = int(plan.block_shape[index])
+            encoded[key] = int(plan.block_shape[index])
     for key, index in (("subblock_m_tiles", 0), ("subblock_n_tiles", 1)):
         if index < len(plan.subblock_shape):
-            item[key] = int(plan.subblock_shape[index])
+            encoded[key] = int(plan.subblock_shape[index])
     for role, prefix in (("a", "a"), ("b", "b"), ("c", "c")):
         if role not in operands:
             continue
         binding = operands[role]
-        item[f"{prefix}_buffer"] = str(binding.host_buffer)
+        encoded[f"{prefix}_buffer"] = str(binding.host_buffer)
         if str(binding.tensor_dtype):
-            item[f"{prefix}_tensor_dtype"] = str(binding.tensor_dtype)
+            encoded[f"{prefix}_tensor_dtype"] = str(binding.tensor_dtype)
         if str(binding.cb_dtype):
-            item[f"{prefix}_cb_dtype"] = str(binding.cb_dtype)
+            encoded[f"{prefix}_cb_dtype"] = str(binding.cb_dtype)
         if role in {"a", "b"}:
-            item[f"transpose_{role.upper()}"] = str(binding.transform_kind) == "transpose"
+            encoded[f"transpose_{role.upper()}"] = str(binding.transform_kind) == "transpose"
     if str(plan.accumulator_dtype):
-        item["accumulator_dtype"] = str(plan.accumulator_dtype)
-    item["has_mbarrier"] = bool(str(plan.mbarrier_buffer))
+        encoded["accumulator_dtype"] = str(plan.accumulator_dtype)
+    encoded["has_mbarrier"] = bool(str(plan.mbarrier_buffer))
     if str(plan.mbarrier_buffer):
-        item["mbarrier_buffer"] = str(plan.mbarrier_buffer)
+        encoded["mbarrier_buffer"] = str(plan.mbarrier_buffer)
     if str(plan.mbarrier_scope):
-        item["mbarrier_scope"] = str(plan.mbarrier_scope)
+        encoded["mbarrier_scope"] = str(plan.mbarrier_scope)
     if list(plan.mbarrier_index_exprs):
-        item["mbarrier_index_exprs"] = [str(expr) for expr in plan.mbarrier_index_exprs]
-    return item
+        encoded["mbarrier_index_exprs"] = [str(expr) for expr in plan.mbarrier_index_exprs]
+    return encoded
 
 
 def require_gemm_compute_op(func, *, index=0):
@@ -721,6 +724,7 @@ def rebuild_tt_compute_op_plan(
     kernel_name=None,
     kernel_plan_index=None,
     kind=None,
+    operation_name=None,
     enabled=None,
     operand_bindings=None,
     problem_shape_axes=None,
@@ -742,6 +746,7 @@ def rebuild_tt_compute_op_plan(
         if kernel_plan_index is None
         else kernel_plan_index,
         str(compute_op.kind) if kind is None else kind,
+        str(compute_op.operation_name) if operation_name is None else operation_name,
         bool(compute_op.enabled) if enabled is None else enabled,
         list(compute_op.operand_bindings)
         if operand_bindings is None

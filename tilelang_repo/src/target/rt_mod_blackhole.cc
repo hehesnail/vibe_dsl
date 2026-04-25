@@ -516,6 +516,9 @@ static bool ExtractComputeOp(const ffi::Map<ffi::String, ffi::Any>& spec_info,
   if (auto v = spec_info.Get("kind")) {
     compute_op->kind = Downcast<String>(v.value());
   }
+  if (auto v = spec_info.Get("operation_name")) {
+    compute_op->operation_name = Downcast<String>(v.value());
+  }
   if (auto v = spec_info.Get("a_buffer")) {
     compute_op->a_buffer = Downcast<String>(v.value());
   }
@@ -547,9 +550,11 @@ static bool ExtractComputeOp(const ffi::Map<ffi::String, ffi::Any>& spec_info,
       ICHECK(!binding.buffer.empty())
           << "Blackhole compute operand binding for role " << binding.role
           << " requires device buffer";
-      ICHECK(!binding.host_buffer.empty())
-          << "Blackhole compute operand binding for role " << binding.role
-          << " requires explicit host_buffer";
+      if (compute_op->kind == "gemm") {
+        ICHECK(!binding.host_buffer.empty())
+            << "Blackhole GEMM compute operand binding for role " << binding.role
+            << " requires explicit host_buffer";
+      }
       compute_op->operand_bindings.push_back(std::move(binding));
     }
   }
@@ -655,6 +660,7 @@ static ffi::Map<ffi::String, ffi::Any> EncodeKernelComputeOp(
   ffi::Map<ffi::String, ffi::Any> item;
   item.Set("enabled", Bool(compute_op.enabled));
   item.Set("kind", ffi::String(compute_op.kind));
+  item.Set("operation_name", ffi::String(compute_op.operation_name));
   item.Set("a_buffer", ffi::String(compute_op.a_buffer));
   item.Set("b_buffer", ffi::String(compute_op.b_buffer));
   item.Set("c_buffer", ffi::String(compute_op.c_buffer));
@@ -663,7 +669,9 @@ static ffi::Map<ffi::String, ffi::Any> EncodeKernelComputeOp(
     ffi::Map<ffi::String, ffi::Any> encoded_binding;
     encoded_binding.Set("role", ffi::String(binding.role));
     encoded_binding.Set("buffer", ffi::String(binding.buffer));
-    encoded_binding.Set("host_buffer", ffi::String(binding.host_buffer));
+    if (!binding.host_buffer.empty()) {
+      encoded_binding.Set("host_buffer", ffi::String(binding.host_buffer));
+    }
     operand_bindings.push_back(encoded_binding);
   }
   item.Set("operand_bindings", operand_bindings);

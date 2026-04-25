@@ -308,7 +308,20 @@ Normalized Tile TIR
   和 executable projection；
   当前生成覆盖 GEMM /
   multi-GEMM，
-  以 `kind=gemm`
+  以及 flash-attn
+  compile path 中已选择的
+  non-GEMM exact compute builtins。
+  `kind`
+  表示
+  GEMM /
+  binary /
+  unary /
+  reduce
+  等 compute family；
+  `operation_name`
+  表示具体 exact builtin。
+  GEMM 以
+  `kind=gemm`
   entry 承载 operand binding /
   M-N-K shape /
   tile-block shape /
@@ -638,15 +651,19 @@ tl.tt_program
 - `TTComputeOpPlan`
   中的 tile register / pack-unpack / accumulation / reduction protocol
 
-当前生成先覆盖
-GEMM / multi-GEMM；
-non-GEMM exact builtin
-仍由 lowered kernel source
-和 builtin selection
-保证 compile path，
-逐 op typed expansion
-归入 workload payoff
-继续推进。
+当前生成覆盖
+GEMM / multi-GEMM，
+以及 flash-attn compile path
+已选择的 non-GEMM
+exact compute builtins。
+后续新增 compute instruction
+必须继续进入
+`TTComputeOpPlan.kind`
+/
+`operation_name`
+/
+operand binding，
+不能只留在 lowered source。
 
 ### 4.3 `PlanTTSync`
 

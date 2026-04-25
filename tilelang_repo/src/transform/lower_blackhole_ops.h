@@ -154,6 +154,12 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     int64_t row_width = 0;
   };
 
+  struct ComputeOperandPlanSeed {
+    std::string role;
+    tvm::tir::Buffer buffer;
+    std::string transform_kind;
+  };
+
   struct AccessorDescriptor {
     std::string segment_kind;
     tvm::tir::Buffer buffer;
@@ -295,6 +301,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Load staged CB plans from TTProgram and preserve requirement indices. */
   void LoadSeededCBRequirements(const tvm::tir::PrimFunc& func);
+
+  /*! \brief Load staged exact compute op plans from TTProgram. */
+  void LoadSeededComputeOpPlans(const tvm::tir::PrimFunc& func);
 
   /*! \brief Store minimal segment/kernel plan inferred during lowering */
   void StoreSegmentPlan(tvm::tir::PrimFunc& func);
@@ -651,6 +660,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::tir::Stmt GenerateLocalToCBSliceLoopSequence(const tvm::tir::ForNode* op,
                                                     const LocalToCBSliceMatch& match);
   std::string ResolveHostBufferForComputeOperand(const tvm::tir::Buffer& buffer) const;
+  std::string ComputeKernelNameForCurrentPlan() const;
+  void RecordExactComputeOpPlan(const std::string& kind,
+                                const std::string& operation_name,
+                                const std::vector<ComputeOperandPlanSeed>& operands);
 
   // StmtExprMutator overrides
   tvm::tir::Stmt VisitStmt_(const tvm::tir::AttrStmtNode* op) override;

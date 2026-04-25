@@ -49,10 +49,12 @@ const std::unordered_set<std::string>& HelperCompositeBlackholeBuiltinNames() {
   return *names;
 }
 
-TTProgram WithStagedCBPlans(const TTProgram& program, ffi::Array<TTCBPlan> cb_plans) {
+TTProgram WithStagedCBAndComputeOpPlans(const TTProgram& program,
+                                        ffi::Array<TTCBPlan> cb_plans,
+                                        ffi::Array<TTComputeOpPlan> compute_op_plans) {
   return TTProgram(program->entry_name, program->member_func, program->mesh_plans,
                    program->buffer_distribution_plans, program->block_plans,
-                   program->kernel_plans, program->compute_op_plans,
+                   program->kernel_plans, std::move(compute_op_plans),
                    program->transport_plans, program->sync_plans,
                    program->abi_plans, program->execution_plans, program->kernels,
                    program->core_groups, std::move(cb_plans), program->semaphore_plans,
@@ -101,7 +103,9 @@ tvm::transform::Pass SelectBlackholeTTMetalBuiltins() {
           << "SelectBlackholeTTMetalBuiltins requires staged tl.tt_program from PlanTTBlocks";
       selected =
           WithAttr(std::move(selected), attr::kTLTTProgram,
-                   WithStagedCBPlans(staged_program.value(), selector.GetStagedCBPlans()));
+                   WithStagedCBAndComputeOpPlans(staged_program.value(),
+                                                 selector.GetStagedCBPlans(),
+                                                 selector.GetTTComputeOpPlans()));
       selected = WithAttr(std::move(selected), kTLBlackholeTTMetalBuiltinSelection, Bool(true));
       updated->Add(gvar, selected, true);
     }

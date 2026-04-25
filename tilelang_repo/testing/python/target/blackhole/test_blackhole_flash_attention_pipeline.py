@@ -257,14 +257,76 @@ def test_flash_attention_tt_program_projects_two_typed_gemm_compute_ops():
     mod = tvm.IRModule({"main": lowered})
     mod = tilelang.transform.MaterializeBlackholeExecutable()(mod)
     executable = mod["main"].attrs["tl.blackhole_executable"]
-    assert len(executable["compute_op_plans"]) == 2
+    executable_gemm_ops = [
+        op for op in executable["compute_op_plans"] if str(op["kind"]) == "gemm"
+    ]
+    assert len(executable_gemm_ops) == 2
     compute_segments = [
         segment
         for segment in executable["segment_plan"]
         if str(segment["kind"]) == "compute"
     ]
     assert len(compute_segments) == 1
-    assert len(compute_segments[0]["compute_ops"]) == 2
+    segment_gemm_ops = [
+        op for op in compute_segments[0]["compute_ops"] if str(op["kind"]) == "gemm"
+    ]
+    assert len(segment_gemm_ops) == 2
+
+
+def test_flash_attention_tt_program_projects_non_gemm_exact_compute_ops():
+    lowered = _lower_flash_attention_to_tt_target()
+    tt_program = require_tt_program(lowered)
+
+    non_gemm_ops = [
+        op for op in tt_program.compute_op_plans if str(op.kind) != "gemm"
+    ]
+    operation_names = {str(op.operation_name) for op in non_gemm_ops}
+    assert {
+        "binary_max_tile",
+        "reduce_tile",
+        "mul_tiles",
+        "add_tiles",
+        "mul_tiles_bcast_rows",
+        "add_tiles_bcast_rows",
+        "exp2_tile",
+    }.issubset(operation_names)
+
+    expected_kind_by_operation = {
+        "binary_max_tile": "binary",
+        "reduce_tile": "reduce",
+        "mul_tiles": "binary",
+        "add_tiles": "binary",
+        "mul_tiles_bcast_rows": "binary",
+        "add_tiles_bcast_rows": "binary",
+        "exp2_tile": "unary",
+    }
+    for op in non_gemm_ops:
+        assert str(op.kernel_name) == "compute"
+        assert int(op.kernel_plan_index) >= 0
+        assert bool(op.enabled)
+        if str(op.operation_name) in expected_kind_by_operation:
+            assert str(op.kind) == expected_kind_by_operation[str(op.operation_name)]
+        roles = {str(binding.role) for binding in op.operand_bindings}
+        if str(op.kind) == "binary":
+            assert {"lhs", "rhs", "output"}.issubset(roles)
+        elif str(op.kind) == "unary":
+            assert {"input", "output"}.issubset(roles)
+        elif str(op.kind) == "reduce":
+            assert {"input", "scaler", "output"}.issubset(roles)
+
+    mod = tvm.IRModule({"main": lowered})
+    mod = tilelang.transform.MaterializeBlackholeExecutable()(mod)
+    executable = mod["main"].attrs["tl.blackhole_executable"]
+    compute_segments = [
+        segment
+        for segment in executable["segment_plan"]
+        if str(segment["kind"]) == "compute"
+    ]
+    assert len(compute_segments) == 1
+    projected_operation_names = {
+        str(op["operation_name"]) for op in compute_segments[0]["compute_ops"]
+    }
+    assert operation_names.issubset(projected_operation_names)
 
 
 def test_flash_attention_forward_optimized_path_lowers_scores_max_updates():
