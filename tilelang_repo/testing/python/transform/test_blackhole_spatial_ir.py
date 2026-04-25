@@ -301,7 +301,6 @@ def _rebuild_tt_program(
     materialization_plans=None,
     consumer_binding_plans=None,
     kernels=None,
-    payload=None,
 ):
     make_tt_program = tvm.get_global_func("tl.TTProgram")
     return make_tt_program(
@@ -331,7 +330,6 @@ def _rebuild_tt_program(
         list(program.consumer_binding_plans)
         if consumer_binding_plans is None
         else consumer_binding_plans,
-        program.payload if payload is None else payload,
     )
 
 
@@ -605,11 +603,11 @@ def test_tt_metal_api_granularity_rejects_helper_composite_builtins():
     )
     main = mod["main"]
     builtin_names = _collect_blackhole_builtin_names(main)
-    payload = dict(main.attrs["tl.tt_program"].payload)
+    tt_program = main.attrs["tl.tt_program"]
 
+    assert not hasattr(tt_program, "payload")
     for builtin_name in HELPER_COMPOSITE_BLACKHOLE_BUILTINS:
         assert f"tl.blackhole.{builtin_name}" not in builtin_names
-    assert "compute_epilogue_ops" not in payload
 
 
 def test_tt_metal_builtin_selector_lowers_compute_idioms_before_plan_tt_compute():
@@ -789,12 +787,7 @@ def test_build_tt_program_exposes_typed_compute_op_plans():
 
     main = mod["main"]
     tt_program = main.attrs["tl.tt_program"]
-    payload = dict(tt_program.payload)
-    assert "gemm_contract" not in payload
-    assert "compute_contract" not in payload
-    assert "multi_gemm_contracts" not in payload
-    assert "multi_compute_contracts" not in payload
-    assert "buffer_tile_bridge_specs" not in payload
+    assert not hasattr(tt_program, "payload")
     assert all(not hasattr(kernel, "payload") for kernel in tt_program.kernels)
     assert all(not hasattr(core_group, "payload") for core_group in tt_program.core_groups)
     assert len(tt_program.compute_op_plans) == 1
@@ -836,18 +829,11 @@ def test_build_tt_program_exposes_typed_compute_op_plans():
     assert str(compute_segments[0]["compute_ops"][0]["kind"]) == "gemm"
 
 
-def test_validate_tt_program_rejects_unresolved_unsupported_compute_ops():
+def test_tt_program_has_no_unresolved_unsupported_compute_payload():
     mod = _prepare_blackhole_tt_program_module(gemm_kernel())
-    main = mod["main"]
-    tt_program = main.attrs["tl.tt_program"]
-    payload = dict(tt_program.payload)
-    payload["unsupported_compute_ops"] = ["tl.blackhole.unsupported"]
-    invalid_program = _rebuild_tt_program(tt_program, payload=payload)
-    invalid_main = main.with_attr("tl.tt_program", invalid_program)
-    invalid_mod = tvm.IRModule({"main": invalid_main}, global_infos=mod.global_infos)
+    tt_program = mod["main"].attrs["tl.tt_program"]
 
-    with pytest.raises(tvm.error.InternalError, match="unsupported_compute_ops remain"):
-        tilelang.transform.ValidateTTProgram()(invalid_mod)
+    assert not hasattr(tt_program, "payload")
 
 
 def test_tt_kernel_does_not_expose_payload_compute_ops_surface():
@@ -887,7 +873,6 @@ def test_tt_planning_stages_tt_program_without_internal_bridge_attrs():
     assert main.attrs.get("tl.internal_tt_kernel_plans") is None
     assert main.attrs.get("tl.internal_tt_kernels") is None
     assert main.attrs.get("tl.internal_tt_abi_plan_seeds") is None
-    assert main.attrs.get("tl.internal_tt_program_payload") is None
 
 
 def test_task1_validate_spatial_plan_rejects_incomplete_dataflow_edge():

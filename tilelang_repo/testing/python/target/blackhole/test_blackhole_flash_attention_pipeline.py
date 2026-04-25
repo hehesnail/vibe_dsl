@@ -115,10 +115,6 @@ def _load_flash_attention_module_with_dtype(module_path, dtype_expr):
     return mutated
 
 
-def _tt_program_payload(func):
-    return dict(require_tt_program(func).payload)
-
-
 def _assert_no_executable_contract_family(spec):
     for legacy_key in (
         "gemm_contract",
@@ -177,7 +173,7 @@ def _typed_layout_plans_by_buffer(func):
     }
 
 
-def test_flash_attention_forward_tt_target_emits_tt_program_payload():
+def test_flash_attention_forward_tt_target_emits_typed_tt_program_without_payload():
     lowered = _lower_flash_attention_to_tt_target()
 
     attrs = lowered.attrs
@@ -185,14 +181,14 @@ def test_flash_attention_forward_tt_target_emits_tt_program_payload():
     assert "attention_work_contract" not in attrs
     assert "blackhole.lowering_requirements" not in attrs
 
-    payload = _tt_program_payload(lowered)
+    tt_program = require_tt_program(lowered)
     layout_buffers = set(_typed_layout_plans_by_buffer(lowered))
     builtin_names = _blackhole_builtin_suffixes(lowered)
     gemm_ops = [
-        op for op in require_tt_program(lowered).compute_op_plans if str(op.kind) == "gemm"
+        op for op in tt_program.compute_op_plans if str(op.kind) == "gemm"
     ]
 
-    assert "buffer_tile_bridge_specs" not in payload
+    assert not hasattr(tt_program, "payload")
     assert len(gemm_ops) == 2
     assert {
         "acc_s",
@@ -397,7 +393,7 @@ def test_flash_attention_forward_optimized_path_lowers_fragment_fills():
     builtin_names = _blackhole_builtin_suffixes(lowered)
 
     assert "fill_fragment" in builtin_names
-    assert "compute_epilogue_ops" not in _tt_program_payload(lowered)
+    assert not hasattr(require_tt_program(lowered), "payload")
 
 
 def test_flash_attention_forward_optimized_path_lowers_fragment_casts():
@@ -1045,9 +1041,9 @@ def test_flash_attention_executable_spec_drops_contract_family():
     _assert_no_executable_contract_family(spec)
 
 
-def test_flash_attention_no_compute_epilogue_payload():
+def test_flash_attention_has_no_tt_program_payload_or_executable_epilogue_contract():
     lowered = _lower_flash_attention_to_tt_target()
-    payload = _tt_program_payload(lowered)
+    tt_program = require_tt_program(lowered)
     spec = lower(
         mha_example.flashattn.jit_impl.get_tir(
             1,
@@ -1065,7 +1061,7 @@ def test_flash_attention_no_compute_epilogue_payload():
     executable_spec = _extract_blackhole_executable_spec(spec)
     builtin_names = _collect_blackhole_builtin_names(lowered)
 
-    assert "compute_epilogue_ops" not in payload
+    assert not hasattr(tt_program, "payload")
     assert "compute_epilogue_ops" not in executable_spec
     for builtin_name in HELPER_COMPOSITE_BLACKHOLE_BUILTINS:
         assert f"tl.blackhole.{builtin_name}" not in builtin_names
@@ -1094,11 +1090,10 @@ def test_flash_attention_tt_program_keeps_typed_layout_specs_for_internal_buffer
         )
 
     device_func = artifact.device_mod["main_kernel"]
-    payload = _tt_program_payload(device_func)
+    tt_program = require_tt_program(device_func)
     layout_plans = _typed_layout_plans_by_buffer(device_func)
 
-    assert "buffer_materialization_contracts" not in payload
-    assert "buffer_tile_bridge_specs" not in payload
+    assert not hasattr(tt_program, "payload")
     assert {
         "acc_s",
         "acc_s_cast",
@@ -1150,11 +1145,10 @@ def test_flash_attention_tt_program_keeps_typed_layout_specs_for_republished_buf
         )
 
     device_func = artifact.device_mod["main_kernel"]
-    payload = _tt_program_payload(device_func)
+    tt_program = require_tt_program(device_func)
     layout_plans = _typed_layout_plans_by_buffer(device_func)
 
-    assert "buffer_flow_contracts" not in payload
-    assert "buffer_tile_bridge_specs" not in payload
+    assert not hasattr(tt_program, "payload")
     assert {"acc_s", "acc_s_cast", "acc_o"}.issubset(layout_plans)
 
     acc_s_plan = layout_plans["acc_s"]
@@ -1195,9 +1189,7 @@ def test_flash_attention_tt_program_keeps_typed_layout_specs_without_distributio
         )
 
     device_func = artifact.device_mod["main_kernel"]
-    payload = _tt_program_payload(device_func)
-    assert "buffer_distribution_contracts" not in payload
-    assert "buffer_tile_bridge_specs" not in payload
+    assert not hasattr(require_tt_program(device_func), "payload")
     layout_buffers = set(_typed_layout_plans_by_buffer(device_func))
     assert {
         "acc_s",

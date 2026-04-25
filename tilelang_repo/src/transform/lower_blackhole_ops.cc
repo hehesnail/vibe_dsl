@@ -2045,13 +2045,10 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
     Array<Integer> required_sync_indices;
     Map<String, Any> payload;
     Array<Any> requirement_indices{Integer(cb_requirement_index)};
-    const std::string legacy_execution_protocol =
-        contract_string(schema_key::kExecutionProtocol, buffer_materialization::kTiledCBRepublish);
     payload.Set("required_cb_requirement_indices", requirement_indices);
     payload.Set("bridge_kind", String(contract_string(schema_key::kBridgeKind, "")));
     payload.Set("materialization_kind",
                 String(contract_string(schema_key::kMaterializationKind, "")));
-    payload.Set("legacy_execution_protocol", String(legacy_execution_protocol));
     payload.Set("materialization_boundary", String(source_boundary_ref->name));
     payload.Set("materialization_boundary_index", Integer(source_boundary_ref->index));
     tt_materialization_plans_.push_back(TTMaterializationPlan(
@@ -2748,7 +2745,6 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   tt_live_form_plans_.clear();
   tt_materialization_plans_.clear();
   tt_consumer_binding_plans_.clear();
-  tt_program_payload_ = Map<String, Any>();
   logical_buffer_shapes_.clear();
   compute_physical_buffers_by_data_.clear();
   compute_physical_buffers_by_identity_.clear();
@@ -2987,7 +2983,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   PrimFunc new_func = func;
   new_func.CopyOnWrite()->body = StripSegmentKindMarkers(body_with_segment_markers);
   StoreAccessorDescriptors(new_func);
-  StoreLeafExecutableContracts(lowering_support_facts, unresolved_unsupported_ops);
+  RejectUnsupportedComputeOps(unresolved_unsupported_ops);
 
   if (unresolved_unsupported_ops.empty()) {
     ValidateNoResidualComputeRegionStores(body_with_segment_markers);
@@ -4478,20 +4474,18 @@ static bool IsPureCopyLoopNest(const Stmt& stmt) {
   return false;
 }
 
-void PlanTTKernelABI::StoreLeafExecutableContracts(
-    const BlackholeLoweringSupportFacts& lowering_support_facts,
-    const std::vector<std::string>& unsupported_ops) {
-  (void)lowering_support_facts;
-  Map<String, Any> tt_program_payload = tt_program_payload_;
+void PlanTTKernelABI::RejectUnsupportedComputeOps(const std::vector<std::string>& unsupported_ops) {
   if (!unsupported_ops.empty()) {
-    Array<Any> encoded_unsupported_ops;
+    std::ostringstream os;
     for (const std::string& op_name : unsupported_ops) {
-      encoded_unsupported_ops.push_back(String(op_name));
+      if (!os.str().empty()) {
+        os << ", ";
+      }
+      os << op_name;
     }
-    tt_program_payload.Set(String("unsupported_compute_ops"), encoded_unsupported_ops);
+    ICHECK(false) << "PlanTTCompute requires exact TT-Metal builtin legality before TTProgram; "
+                  << "unsupported_compute_ops remain: " << os.str();
   }
-
-  tt_program_payload_ = tt_program_payload;
 }
 
 void PlanTTKernelABI::RecordStagedCopyBufferBinding(const BufferStoreNode* op,

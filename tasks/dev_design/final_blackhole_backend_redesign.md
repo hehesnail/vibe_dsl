@@ -94,6 +94,13 @@ codegen；
 不再出现在
 `TTProgram.payload -> ExecutableSpec -> runtime`
 链路中。
+同日后续清理已删除 top-level
+`TTProgram.payload`
+字段本身；
+leaf admission / diagnostic
+不能再挂回
+`TTProgram`
+公共 bag。
 
 `2026-04-24`
 TT-Metal runtime model
@@ -343,13 +350,14 @@ payload
 operand binding /
 `TTComputeSyncPlan`
 上的 leaf fallback payload。
-仍保留的
+top-level
 `TTProgram.payload`
-只允许承载明确 allowlist
-的 admission / diagnostic metadata，
-不能回升成
-`TTProgram`
-owner truth。
+也已删除；
+剩余 plan-local
+`payload`
+只能作为局部 realization detail
+继续收敛，
+不能回升成 owner truth。
 
 ### 3.4 `ExecutableSpec`
 
@@ -808,9 +816,7 @@ planning seed
   也不能继续被文档表述成
   `TTProgram`
   的合法输入边界
-- `TTProgram.payload`
-  中旧 bridge /
-  contract family
+- top-level `TTProgram.payload`
   已删除；
   后续不能以
   compatibility fallback

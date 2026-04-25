@@ -257,27 +257,6 @@ void ValidateCompileTimeArgSpec(const Map<String, Any>& spec) {
   ICHECK(HasKey(spec, "count")) << "TTABIPlan compile_time_arg_spec requires count";
 }
 
-void ValidateUnsupportedComputeOps(const Map<String, Any>& payload) {
-  if (auto ops_any = payload.Get(String("unsupported_compute_ops"))) {
-    Array<Any> ops = Downcast<Array<Any>>(ops_any.value());
-    std::string joined_ops;
-    for (const Any& op_any : ops) {
-      auto op = op_any.as<String>();
-      ICHECK(op) << "TTProgram payload unsupported_compute_ops entries must be strings";
-      ICHECK(!op.value().empty())
-          << "TTProgram payload unsupported_compute_ops entries must be non-empty";
-      if (!joined_ops.empty()) {
-        joined_ops += ", ";
-      }
-      joined_ops += static_cast<std::string>(op.value());
-    }
-    ICHECK(ops.empty())
-        << "ValidateTTProgram requires exact TT-Metal builtin legality before leaf projection; "
-           "unsupported_compute_ops remain: "
-        << joined_ops;
-  }
-}
-
 void ValidateKernelLeafFields(const TTKernel& kernel) {
   ICHECK(!kernel->launch_spec.empty()) << "TTKernel requires launch_spec";
   Map<String, Any> launch_spec = kernel->launch_spec;
@@ -297,11 +276,6 @@ void ValidateKernelLeafFields(const TTKernel& kernel) {
         << "TTKernel compute_config requires clear_accum";
     ICHECK(HasKey(compute_config, "k_pack")) << "TTKernel compute_config requires k_pack";
   }
-}
-
-void ValidateProgramPayload(const TTProgram& program) {
-  const Map<String, Any>& payload = program->payload;
-  ValidateUnsupportedComputeOps(payload);
 }
 
 void ValidateLiveFormPlans(const TTProgram& program,
@@ -525,8 +499,6 @@ void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan) {
     ICHECK(compute_op_names.insert(static_cast<std::string>(compute_op_plan->name)).second)
         << "duplicate TTComputeOpPlan name " << compute_op_plan->name;
   }
-
-  ValidateProgramPayload(program);
 
   for (const TTCoreGroup& core_group : program->core_groups) {
     ValidateCoreGroup(core_group);

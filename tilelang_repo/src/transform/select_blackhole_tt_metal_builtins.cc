@@ -58,7 +58,7 @@ TTProgram WithStagedCBPlans(const TTProgram& program, ffi::Array<TTCBPlan> cb_pl
                    program->core_groups, std::move(cb_plans), program->semaphore_plans,
                    program->compute_sync_plans, program->dst_layout_plans,
                    program->live_form_plans, program->materialization_plans,
-                   program->consumer_binding_plans, program->payload);
+                   program->consumer_binding_plans);
 }
 
 }  // namespace

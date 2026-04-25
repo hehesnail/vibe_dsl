@@ -40,7 +40,6 @@ constexpr const char* kDirectRuntimeUnsupportedReasons = "direct_runtime_unsuppo
 constexpr const char* kLiveFormPlans = "live_form_plans";
 constexpr const char* kMaterializationPlans = "materialization_plans";
 constexpr const char* kConsumerBindingPlans = "consumer_binding_plans";
-constexpr const char* kUnsupportedComputeOps = "unsupported_compute_ops";
 }  // namespace executable_key
 
 inline Map<String, Any> AsMap(const Any& any) {
@@ -434,18 +433,6 @@ inline Map<String, Any> GetCorePlanFromTTProgram(const tir::PrimFunc& func, cons
   return GetCorePlanFromTTProgram(RequireTTProgram(func, consumer));
 }
 
-inline Array<Any> GetDirectRuntimeUnsupportedReasonsFromTTProgram(const TTProgram& program) {
-  if (auto reasons = program->payload.Get("direct_runtime_unsupported_reasons")) {
-    return Downcast<Array<Any>>(reasons.value());
-  }
-  return Array<Any>();
-}
-
-inline Array<Any> GetDirectRuntimeUnsupportedReasonsFromTTProgram(const tir::PrimFunc& func,
-                                                                  const char* consumer) {
-  return GetDirectRuntimeUnsupportedReasonsFromTTProgram(RequireTTProgram(func, consumer));
-}
-
 inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram& program) {
   Map<String, Any> executable;
   executable.Set(String(executable_key::kSchemaVersion), Integer(1));
@@ -508,14 +495,6 @@ inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram
   if (!consumer_binding_plans.empty()) {
     executable.Set(String(executable_key::kConsumerBindingPlans), consumer_binding_plans);
   }
-
-  auto copy_payload_field = [&](const char* key) {
-    if (auto value = program->payload.Get(String(key))) {
-      executable.Set(String(key), value.value());
-    }
-  };
-  copy_payload_field(executable_key::kDirectRuntimeUnsupportedReasons);
-  copy_payload_field(executable_key::kUnsupportedComputeOps);
   return executable;
 }
 

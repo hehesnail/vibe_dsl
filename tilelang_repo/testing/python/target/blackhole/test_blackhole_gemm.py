@@ -460,11 +460,7 @@ def test_blackhole_typed_gemm_plan_is_materialized():
     func = mod["main"]
     tt_program = require_tt_program(func)
     gemm_schema = _typed_gemm_schema(func)
-    payload = dict(tt_program.payload)
-    assert "gemm_contract" not in payload
-    assert "compute_contract" not in payload
-    assert "multi_gemm_contracts" not in payload
-    assert "multi_compute_contracts" not in payload
+    assert not hasattr(tt_program, "payload")
     assert str(gemm_schema["a_buffer"]) == "A"
     assert str(gemm_schema["b_buffer"]) == "B"
     assert str(gemm_schema["c_buffer"]) == "C"
@@ -577,8 +573,7 @@ def test_blackhole_fresh_fragment_gemm_does_not_materialize_accumulator_merge_co
 
     mod = lower_blackhole_to_tt_target(mod)
 
-    payload = dict(require_tt_program(mod["main"]).payload)
-    assert "buffer_materialization_contracts" not in payload
+    assert not hasattr(require_tt_program(mod["main"]), "payload")
 
 
 def test_blackhole_precleared_fragment_gemm_does_not_materialize_accumulator_merge_contract():
@@ -592,8 +587,7 @@ def test_blackhole_precleared_fragment_gemm_does_not_materialize_accumulator_mer
 
     mod = lower_blackhole_to_tt_target(mod)
 
-    payload = dict(require_tt_program(mod["main"]).payload)
-    assert "buffer_materialization_contracts" not in payload
+    assert not hasattr(require_tt_program(mod["main"]), "payload")
 
 
 def test_blackhole_typed_compute_schema_materializes_nondefault_compute_abi():
@@ -1806,14 +1800,13 @@ def test_blackhole_gemm_post_merge_cast_consumer_keeps_typed_layout_specs():
         artifact = lower(kernel, target=target)
 
     device_func = artifact.device_mod["main_kernel"]
-    payload = dict(require_tt_program(device_func).payload)
+    tt_program = require_tt_program(device_func)
     by_buffer = {
         str(plan.buffer): plan
-        for plan in require_tt_program(device_func).buffer_distribution_plans
+        for plan in tt_program.buffer_distribution_plans
     }
 
-    assert "compute_epilogue_ops" not in payload
-    assert "buffer_tile_bridge_specs" not in payload
+    assert not hasattr(tt_program, "payload")
     assert {"C_local", "D_local"}.issubset(by_buffer)
     for name in ("C_local", "D_local"):
         plan = by_buffer[name]
@@ -1953,10 +1946,9 @@ def test_blackhole_fragment_fill_cast_publish_exposes_typed_layout_specs():
     mod = lower_blackhole_to_tt_target(mod)
 
     tt_program = require_tt_program(mod["main"])
-    payload = dict(tt_program.payload)
     by_buffer = {str(plan.buffer): plan for plan in tt_program.buffer_distribution_plans}
 
-    assert "buffer_tile_bridge_specs" not in payload
+    assert not hasattr(tt_program, "payload")
     assert {"C_local", "D_local"}.issubset(by_buffer)
     for name in ("C_local", "D_local"):
         plan = by_buffer[name]

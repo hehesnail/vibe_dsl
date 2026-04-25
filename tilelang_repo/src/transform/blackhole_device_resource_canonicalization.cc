@@ -404,7 +404,6 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
   }
 
   TTProgram RewriteTTProgram(const TTProgram& program) const {
-    Map<String, Any> payload = program->payload;
     return TTProgram(program->entry_name, program->member_func, program->mesh_plans,
                      program->buffer_distribution_plans, program->block_plans,
                      program->kernel_plans, program->compute_op_plans,
@@ -413,7 +412,7 @@ class BlackholeResourceCanonicalizer : public StmtExprMutator {
                      program->core_groups, program->cb_plans, program->semaphore_plans,
                      program->compute_sync_plans, program->dst_layout_plans,
                      program->live_form_plans, program->materialization_plans,
-                     program->consumer_binding_plans, payload);
+                     program->consumer_binding_plans);
   }
 
   const ResourceInfo* GetOrInferInfo(const std::string& name,

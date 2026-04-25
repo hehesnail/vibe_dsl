@@ -1494,21 +1494,6 @@ static void ValidateExtractedCorePlan(const CorePlan& core_plan, const std::stri
 
 static ExecutableSpec ExtractExecutableSpecFromDeviceFunc(const tir::PrimFunc& f,
                                                           const std::string& entry_name) {
-  auto unsupported_ops = tl::tt_program_projection::GetExecutableArrayField(
-      f, "Blackhole executable spec extraction",
-      tl::tt_program_projection::executable_key::kUnsupportedComputeOps);
-  if (!unsupported_ops.empty()) {
-    std::ostringstream os;
-    for (int i = 0; i < unsupported_ops.size(); ++i) {
-      if (i != 0) {
-        os << ", ";
-      }
-      os << Downcast<String>(unsupported_ops[i]);
-    }
-    ICHECK(false) << "Blackhole compute subset lowering is not implemented for ops ["
-                  << os.str() << "]";
-  }
-
   ExecutableSpec spec;
   spec.entry_name = entry_name;
 

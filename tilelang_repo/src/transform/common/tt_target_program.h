@@ -538,7 +538,6 @@ class TTProgramNode : public Object {
   ffi::Array<TTLiveFormPlan> live_form_plans;
   ffi::Array<TTMaterializationPlan> materialization_plans;
   ffi::Array<TTConsumerBindingPlan> consumer_binding_plans;
-  ffi::Map<ffi::String, ffi::Any> payload;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTProgram", TTProgramNode, Object);
@@ -563,8 +562,7 @@ class TTProgram : public ObjectRef {
                     ffi::Array<TTDstLayoutPlan> dst_layout_plans,
                     ffi::Array<TTLiveFormPlan> live_form_plans,
                     ffi::Array<TTMaterializationPlan> materialization_plans,
-                    ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
-                    ffi::Map<ffi::String, ffi::Any> payload);
+                    ffi::Array<TTConsumerBindingPlan> consumer_binding_plans);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTProgram, ObjectRef, TTProgramNode);
 };
 

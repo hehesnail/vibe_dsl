@@ -31,20 +31,16 @@
   当前只承担 staged slice aggregation /
   finalize /
   cleanup
-- `ValidateTTProgram`
-  当前会对 unresolved
-  `unsupported_compute_ops`
-  fail-close
 - repo HEAD
-  仍保留的
+  已删除 top-level
   `TTProgram.payload`
-  字段
-  只按 task3
-  leaf compatibility residue
-  记录，
-  不再表述成
+  字段；
+  unresolved compute legality
+  必须在
+  `PlanTTCompute`
+  进入
   `TTProgram`
-  owner truth
+  前 fail-close
 
 ## 1. 目标
 
@@ -432,7 +428,6 @@ typed entries，
 - `TTSemaphorePlan`
 - `TTComputeSyncPlan`
 - `TTDstLayoutPlan`
-- `TTProgram.payload`
 
 它们也只能是：
 
@@ -543,14 +538,17 @@ repo HEAD
   kernel /
   core group /
   sync 的 leaf fallback payload
+- top-level
+  `TTProgram.payload`
 
 这些旧面不能再写成
 task3
 继续保留的 forced carrier。
-仍保留的
-`TTProgram.payload`
-只允许是显式 allowlist
-的 admission / diagnostic metadata，
+剩余 plan-local
+`payload`
+只能作为局部 realization detail /
+admission metadata
+继续收敛，
 不能成为 owner truth。
 
 它们不能被文档表述成：
@@ -657,13 +655,11 @@ task3
    compatibility / realization detail
    接受对齐检查，
    不能反客为主
-5. `TTProgram.payload`
-   如果暂时存在，
+5. top-level
+   `TTProgram.payload`
+   已删除；
    validator
-   只能检查其残留 shape
-   不违反当前实现的 leaf compatibility 需要，
-   不能把它升格成
-   planning owner truth
+   不能再恢复 payload shape check
 
 补充要求：
 
@@ -882,7 +878,10 @@ build / codegen / runtime /
    不再定义
    `TTProgram`
    输入边界
-5. `TTKernel` /
+5. top-level
+   `TTProgram.payload`
+   已删除；
+   `TTKernel` /
    `TTCoreGroup` /
    `TTComputeOpPlan` /
    operand binding /
@@ -929,10 +928,9 @@ build / codegen / runtime /
    current object /
    direct planner builder
 2. cleanup task3
-   负责继续删除
-   `TTProgram.payload`
-   /
-   executable projection
+   已删除 top-level
+   `TTProgram.payload`；
+   后续只负责继续删除 executable projection
    /
    codegen/runtime
    仍在使用的

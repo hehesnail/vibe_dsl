@@ -197,7 +197,6 @@ struct TTProgramSlices {
   Array<TTLiveFormPlan> live_form_plans;
   Array<TTMaterializationPlan> materialization_plans;
   Array<TTConsumerBindingPlan> consumer_binding_plans;
-  Map<String, Any> payload;
 };
 
 TTProgramSlices UnpackTTProgram(const TTProgram& program) {
@@ -222,7 +221,6 @@ TTProgramSlices UnpackTTProgram(const TTProgram& program) {
   slices.live_form_plans = program->live_form_plans;
   slices.materialization_plans = program->materialization_plans;
   slices.consumer_binding_plans = program->consumer_binding_plans;
-  slices.payload = program->payload;
   return slices;
 }
 
@@ -239,7 +237,7 @@ TTProgram PackTTProgram(TTProgramSlices slices) {
                    std::move(slices.compute_sync_plans),
                    std::move(slices.dst_layout_plans), std::move(slices.live_form_plans),
                    std::move(slices.materialization_plans),
-                   std::move(slices.consumer_binding_plans), std::move(slices.payload));
+                   std::move(slices.consumer_binding_plans));
 }
 
 TTProgramSlices GetOrCreateTTProgramSlices(const tir::PrimFunc& func, const GlobalVar& gvar,
@@ -714,7 +712,6 @@ tvm::transform::Pass PlanTTCompute() {
       slices.live_form_plans = planner.GetTTLiveFormPlans();
       slices.materialization_plans = planner.GetTTMaterializationPlans();
       slices.consumer_binding_plans = planner.GetTTConsumerBindingPlans();
-      slices.payload = planner.GetTTProgramPayload();
       slices.compute_op_plans =
           AttachComputeOpKernelPlanIndices(planner.GetTTComputeOpPlans(), slices.kernel_plans);
       planned = WithTTProgramAttr(std::move(planned), PackTTProgram(std::move(slices)));
@@ -821,13 +818,6 @@ tvm::transform::Pass PlanTTExecution() {
       const Array<TTKernel>& kernels = slices.kernels;
       ICHECK(!kernels.empty())
           << "PlanTTExecution requires TTKernel owner truth; Run PlanTTCompute before PlanTTExecution";
-      Map<String, Any> payload = slices.payload;
-      payload.Set("arch_name", maybe_hardware_model.value()->arch_name);
-      payload.Set("logical_worker_grid_x", Integer(maybe_hardware_model.value()->logical_worker_grid_x));
-      payload.Set("logical_worker_grid_y", Integer(maybe_hardware_model.value()->logical_worker_grid_y));
-      payload.Set("worker_l1_size", Integer(maybe_hardware_model.value()->worker_l1_size));
-
-      slices.payload = payload;
       slices.execution_plans = BuildExecutionPlans(spatial_plan, kernels);
       tir::PrimFunc planned = WithTTProgramAttr(func.value(), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);

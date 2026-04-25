@@ -210,24 +210,6 @@ std::vector<ThreadEmissionPiece> BuildThreadEmissionPieces(const tvm::tir::Stmt&
   return pieces;
 }
 
-void ValidateNoUnsupportedFragmentRequirementsForCodegen(const tvm::tir::PrimFunc& f) {
-  auto unsupported_ops = tt_program_projection::GetExecutableArrayField(
-      f, "Blackhole codegen", tt_program_projection::executable_key::kUnsupportedComputeOps);
-  if (unsupported_ops.empty()) {
-    return;
-  }
-
-  std::ostringstream os;
-  for (int i = 0; i < unsupported_ops.size(); ++i) {
-    if (i != 0) {
-      os << ", ";
-    }
-    os << Downcast<tvm::ffi::String>(unsupported_ops[i]);
-  }
-  ICHECK(false) << "Blackhole compute subset lowering is not implemented for ops ["
-                << os.str() << "]";
-}
-
 ffi::Array<ffi::Any> AggregateSegmentRuntimeArgsForCodegen(const tvm::tir::PrimFunc& f) {
   ffi::Array<ffi::Any> aggregated;
   auto segment_plan = tt_program_projection::GetSegmentPlanFromExecutable(f, "Blackhole codegen");
@@ -365,7 +347,6 @@ std::string CodeGenBlackhole::GetKernelCode() const {
 
 void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
                                    const tvm::tir::PrimFunc &f) {
-  ValidateNoUnsupportedFragmentRequirementsForCodegen(f);
   // Emit TT-Metal headers for kernel code (per-instance, not static)
   if (!headers_emitted_) {
     // Clear decl_stream to remove TVM headers added by CodeGenCHost::Init

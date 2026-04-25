@@ -636,8 +636,7 @@ void TTProgramNode::RegisterReflection() {
       .def_ro("dst_layout_plans", &TTProgramNode::dst_layout_plans)
       .def_ro("live_form_plans", &TTProgramNode::live_form_plans)
       .def_ro("materialization_plans", &TTProgramNode::materialization_plans)
-      .def_ro("consumer_binding_plans", &TTProgramNode::consumer_binding_plans)
-      .def_ro("payload", &TTProgramNode::payload);
+      .def_ro("consumer_binding_plans", &TTProgramNode::consumer_binding_plans);
 }
 
 TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
@@ -657,8 +656,7 @@ TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
                      ffi::Array<TTDstLayoutPlan> dst_layout_plans,
                      ffi::Array<TTLiveFormPlan> live_form_plans,
                      ffi::Array<TTMaterializationPlan> materialization_plans,
-                     ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
-                     ffi::Map<ffi::String, ffi::Any> payload) {
+                     ffi::Array<TTConsumerBindingPlan> consumer_binding_plans) {
   auto n = ffi::make_object<TTProgramNode>();
   n->entry_name = std::move(entry_name);
   n->member_func = std::move(member_func);
@@ -680,7 +678,6 @@ TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
   n->live_form_plans = std::move(live_form_plans);
   n->materialization_plans = std::move(materialization_plans);
   n->consumer_binding_plans = std::move(consumer_binding_plans);
-  n->payload = std::move(payload);
   data_ = std::move(n);
 }
 
@@ -954,8 +951,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<TTDstLayoutPlan> dst_layout_plans,
          ffi::Array<TTLiveFormPlan> live_form_plans,
          ffi::Array<TTMaterializationPlan> materialization_plans,
-         ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
-         ffi::Map<ffi::String, ffi::Any> payload) {
+         ffi::Array<TTConsumerBindingPlan> consumer_binding_plans) {
         return TTProgram(std::move(entry_name), std::move(member_func),
                          std::move(mesh_plans), std::move(buffer_distribution_plans),
                          std::move(block_plans), std::move(kernel_plans),
@@ -966,7 +962,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                          std::move(semaphore_plans), std::move(compute_sync_plans),
                          std::move(dst_layout_plans), std::move(live_form_plans),
                          std::move(materialization_plans),
-                         std::move(consumer_binding_plans), std::move(payload));
+                         std::move(consumer_binding_plans));
       });
 }
 

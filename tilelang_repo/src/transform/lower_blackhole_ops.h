@@ -114,11 +114,6 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
    */
   tvm::ffi::Array<TTCBPlan> GetStagedCBPlans() const;
 
-  /*! \brief Get TT program payload synthesized during Transform. */
-  tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> GetTTProgramPayload() const {
-    return tt_program_payload_;
-  }
-
  private:
   enum class BufferFlowEventKind {
     kWrite,
@@ -301,9 +296,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Store per-segment accessor descriptors for dataflow kernels */
   void StoreAccessorDescriptors(tvm::tir::PrimFunc& func);
 
-  /*! \brief Store leaf-only build/codegen metadata into TTProgram payload. */
-  void StoreLeafExecutableContracts(const BlackholeLoweringSupportFacts& lowering_support_facts,
-                                    const std::vector<std::string>& unsupported_ops);
+  /*! \brief Reject unresolved compute builtin legality before TTProgram construction. */
+  void RejectUnsupportedComputeOps(const std::vector<std::string>& unsupported_ops);
 
   /*! \brief Encode current lowering-time accessor descriptors as TIR attrs */
   tvm::ffi::Array<tvm::ffi::Any> EncodeAccessorDescriptors(const std::string& segment_kind) const;
@@ -754,7 +748,6 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::ffi::Array<TTLiveFormPlan> tt_live_form_plans_;
   tvm::ffi::Array<TTMaterializationPlan> tt_materialization_plans_;
   tvm::ffi::Array<TTConsumerBindingPlan> tt_consumer_binding_plans_;
-  tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any> tt_program_payload_;
 
   // Requirement index counter (sequential, 0-based)
   int next_requirement_index_ = 0;

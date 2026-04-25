@@ -1061,6 +1061,19 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `TTComputeOpPlan`
   生成 leaf
   `KernelSpec.compute_ops`。
+- top-level
+  `TTProgram.payload`
+  删除后，
+  admission /
+  diagnostic
+  也不能再挂回
+  `TTProgram`
+  公共 bag；
+  未支持能力应在构造
+  `TTProgram`
+  前 fail-close，
+  或进入明确 typed leaf
+  admission 字段。
 
 ## 9. 调试模式
 

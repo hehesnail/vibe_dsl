@@ -23,7 +23,8 @@
 
 `ExecutableSpec`
 不是新的 planning 层，
-也不是 `TTProgram.payload`
+也不是已删除的 top-level
+`TTProgram.payload`
 在 leaf 侧的再包装。
 
 它的语义固定为：
@@ -1144,9 +1145,10 @@ verification / residue scan /
 5. `buffer_tile_bridge_specs`
    与 contract-family residue
    已退出 active chain；
-   后续不能重新进入
-   `TTProgram.payload -> ExecutableSpec -> runtime`
-   fallback 链
+   top-level
+   `TTProgram.payload`
+   已删除，
+   后续不能重新引入 fallback 链
 6. backend admission
    只停在 leaf execution gate，
    不再反向塑形

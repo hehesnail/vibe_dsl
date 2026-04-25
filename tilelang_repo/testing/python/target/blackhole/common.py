@@ -232,11 +232,6 @@ def extract_blackhole_total_l1_bytes(func):
     return sum(int(config["total_size_bytes"]) for config in extract_blackhole_cb_configs(func))
 
 
-def extract_tt_program_payload_map(func):
-    """Return TTProgram payload as a Python dict for regression tests."""
-    return dict(require_tt_program(func).payload)
-
-
 def encode_tt_compute_op_plan(plan):
     operands = {str(binding.role): binding for binding in plan.operand_bindings}
     item = {
@@ -526,7 +521,6 @@ def rebuild_tt_program(
     consumer_binding_plans=None,
     abi_plans=None,
     execution_plans=None,
-    payload=None,
 ):
     """Rebuild a TTProgram with optional field overrides."""
     make_tt_program = tilelang.tvm.get_global_func("tl.TTProgram")
@@ -568,7 +562,6 @@ def rebuild_tt_program(
         list(program.consumer_binding_plans)
         if consumer_binding_plans is None
         else consumer_binding_plans,
-        dict(program.payload) if payload is None else payload,
     )
 
 
