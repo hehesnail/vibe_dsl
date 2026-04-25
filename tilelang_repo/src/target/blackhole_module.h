@@ -235,7 +235,6 @@ struct PerWorkArgSpec {
   std::string arg_identity;
   std::string buffer;
   std::string descriptor_kind;
-  std::string value_kind;
   std::string value_source;
   uint32_t constant_value = 0;
 
@@ -255,13 +254,11 @@ struct PerWorkArgSpec {
       writer->WriteObjectKeyValue(
           tl::blackhole_runtime_arg_schema::kDescriptorKind, descriptor_kind);
     }
-    writer->WriteObjectKeyValue(
-        tl::blackhole_runtime_arg_schema::kValueKind, value_kind);
     if (!value_source.empty()) {
       writer->WriteObjectKeyValue(
           tl::blackhole_runtime_arg_schema::kValueSource, value_source);
     }
-    if (value_kind == tl::blackhole_runtime_arg_schema::kValueConstant) {
+    if (value_source == tl::blackhole_runtime_arg_schema::kValueSourceConstant) {
       writer->WriteObjectKeyValue(
           tl::blackhole_runtime_arg_schema::kConstantValue,
           static_cast<int64_t>(constant_value));
@@ -442,7 +439,6 @@ struct KernelComputeOpSpec {
 
 struct AccessorSpec {
   std::string buffer;
-  uint32_t slot = 0;
   uint32_t compile_time_arg_offset = 0;
   uint32_t compile_time_arg_count = 0;
   uint32_t common_runtime_arg_offset = 0;
@@ -457,7 +453,6 @@ struct AccessorSpec {
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
     writer->WriteObjectKeyValue("buffer", buffer);
-    writer->WriteObjectKeyValue("slot", static_cast<int64_t>(slot));
     writer->WriteObjectKeyValue("compile_time_arg_offset",
                                 static_cast<int64_t>(compile_time_arg_offset));
     writer->WriteObjectKeyValue("compile_time_arg_count",
@@ -756,8 +751,6 @@ struct ExecutableSpec {
   CorePlan core_plan;
   std::vector<SemaphoreSpec> semaphores;
   std::vector<BufferMaterializationSpec> buffer_materializations;
-  std::string default_kernel_kind = "fused_dataflow";
-  std::string default_kernel_core_type = "brisc";
   std::vector<KernelArgSpec> runtime_args;
   std::vector<KernelArgSpec> common_runtime_args;
   std::vector<PerWorkArgSpec> per_work_arg_specs;
@@ -785,8 +778,6 @@ struct ExecutableSpec {
     if (!buffer_materializations.empty()) {
       writer->WriteObjectKeyValue("buffer_materializations", buffer_materializations);
     }
-    writer->WriteObjectKeyValue("default_kernel_kind", default_kernel_kind);
-    writer->WriteObjectKeyValue("default_kernel_core_type", default_kernel_core_type);
     if (!runtime_args.empty()) {
       writer->WriteObjectKeyValue("runtime_args", runtime_args);
     }

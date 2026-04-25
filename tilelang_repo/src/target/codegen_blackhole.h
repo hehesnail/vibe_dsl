@@ -245,7 +245,6 @@ class CodeGenBlackhole : public CodeGenCHost {
   struct PerWorkArgSpecBinding {
     std::string arg_identity;
     std::string descriptor_kind;
-    std::string value_kind;
     std::string value_source;
     uint32_t constant_value{0};
   };
@@ -254,7 +253,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   bool headers_emitted_{false};
 
   // Current core type being generated (from IR attrs, not function name)
-  CoreType core_type_{CoreType::kBRISC};  // Default to BRISC for TT-Sim compatibility
+  CoreType core_type_{CoreType::kBRISC};
 
   // TT-Metal specific state
   bool need_tt_metal_h_{false};

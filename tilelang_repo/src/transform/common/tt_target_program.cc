@@ -314,21 +314,18 @@ void TTPerWorkArgSpecNode::RegisterReflection() {
       .def_ro("arg_identity", &TTPerWorkArgSpecNode::arg_identity)
       .def_ro("buffer", &TTPerWorkArgSpecNode::buffer)
       .def_ro("descriptor_kind", &TTPerWorkArgSpecNode::descriptor_kind)
-      .def_ro("value_kind", &TTPerWorkArgSpecNode::value_kind)
       .def_ro("value_source", &TTPerWorkArgSpecNode::value_source)
       .def_ro("constant_value", &TTPerWorkArgSpecNode::constant_value);
 }
 
 TTPerWorkArgSpec::TTPerWorkArgSpec(ffi::String arg_kind, ffi::String arg_identity,
                                    ffi::String buffer, ffi::String descriptor_kind,
-                                   ffi::String value_kind, ffi::String value_source,
-                                   int64_t constant_value) {
+                                   ffi::String value_source, int64_t constant_value) {
   auto n = ffi::make_object<TTPerWorkArgSpecNode>();
   n->arg_kind = std::move(arg_kind);
   n->arg_identity = std::move(arg_identity);
   n->buffer = std::move(buffer);
   n->descriptor_kind = std::move(descriptor_kind);
-  n->value_kind = std::move(value_kind);
   n->value_source = std::move(value_source);
   n->constant_value = constant_value;
   data_ = std::move(n);
@@ -1049,12 +1046,10 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def(
       "tl.TTPerWorkArgSpec",
       [](ffi::String arg_kind, ffi::String arg_identity, ffi::String buffer,
-         ffi::String descriptor_kind, ffi::String value_kind, ffi::String value_source,
-         int64_t constant_value) {
+         ffi::String descriptor_kind, ffi::String value_source, int64_t constant_value) {
         return TTPerWorkArgSpec(std::move(arg_kind), std::move(arg_identity),
                                 std::move(buffer), std::move(descriptor_kind),
-                                std::move(value_kind), std::move(value_source),
-                                constant_value);
+                                std::move(value_source), constant_value);
       });
   refl::GlobalDef().def(
       "tl.TTKernel",

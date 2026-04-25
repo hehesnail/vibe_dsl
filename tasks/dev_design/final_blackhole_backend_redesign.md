@@ -957,6 +957,17 @@ planning seed
      `BlackholeModule`
      只读 executable projection /
      `ExecutableSpec`
+   - leaf reader
+     不能再用默认 CB、
+     segment kind/core_type 默认、
+     accessor `slot`
+     兼容键、
+     compute operand `host_buffer`
+     fallback、
+     GEMM tile 维度反推
+     或 per-work `value_kind`
+     这类旧面恢复语义；
+     缺 typed 字段必须 fail-close
    - 将 direct runtime admission
      与 TT-Metal codegen/export
      capability 分离；

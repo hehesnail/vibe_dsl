@@ -299,7 +299,7 @@ bool HasRuntimeArgsForCodegen(const tvm::tir::PrimFunc& f) {
 
 CodeGenBlackhole::CodeGenBlackhole()
     : headers_emitted_(false),
-      core_type_(CoreType::kBRISC),  // Default to BRISC for TT-Sim compatibility
+      core_type_(CoreType::kBRISC),
       need_dataflow_api_h_(false),
       need_compute_api_h_(false),
       emit_debug_waypoints_(false) {}
@@ -367,6 +367,9 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
       core_type_ = CoreType::kNCRISC;
     } else if (core_type_str == "trisc") {
       core_type_ = CoreType::kTRISC;
+    } else {
+      ICHECK(false) << "Blackhole codegen requires executable segment core_type, got '"
+                    << core_type_str << "'";
     }
 
     // Include appropriate API header based on core type
@@ -565,8 +568,7 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         decl_stream << "}\n";
         break;
       default:
-        decl_stream << "// DataMovement kernel API (default)\n";
-        decl_stream << "#include \"api/dataflow/dataflow_api.h\"\n";
+        ICHECK(false) << "Blackhole codegen reached unknown core_type enum";
         break;
     }
     decl_stream << "\n";
@@ -830,9 +832,6 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
     }
     if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kDescriptorKind)) {
       binding.descriptor_kind = Downcast<tvm::ffi::String>(v.value());
-    }
-    if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kValueKind)) {
-      binding.value_kind = Downcast<tvm::ffi::String>(v.value());
     }
     if (auto v = spec.Get(::tvm::tl::blackhole_runtime_arg_schema::kValueSource)) {
       binding.value_source = Downcast<tvm::ffi::String>(v.value());

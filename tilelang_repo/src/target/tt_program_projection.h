@@ -368,9 +368,9 @@ inline Array<Any> EncodePerWorkArgSpecs(const Array<TTPerWorkArgSpec>& per_work_
     }
     item.Set(::tvm::tl::blackhole_runtime_arg_schema::kDescriptorKind,
              spec->descriptor_kind);
-    item.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueKind, spec->value_kind);
     item.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueSource, spec->value_source);
-    if (spec->value_kind == ::tvm::tl::blackhole_runtime_arg_schema::kValueConstant) {
+    if (spec->value_source ==
+        ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceConstant) {
       item.Set(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue,
                Integer(spec->constant_value));
     }

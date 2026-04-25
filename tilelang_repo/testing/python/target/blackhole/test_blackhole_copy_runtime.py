@@ -671,7 +671,6 @@ def test_blackhole_module_direct_call_accepts_richer_copy_schema_with_explicit_p
                     "arg_kind": "b_tile_start_id",
                     "arg_identity": "b_tile_start_id",
                     "descriptor_kind": "tile_start",
-                    "value_kind": "logical_block_x",
                     "value_source": "logical_block_x",
                 }
             )

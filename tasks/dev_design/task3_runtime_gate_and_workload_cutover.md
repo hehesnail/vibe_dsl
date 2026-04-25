@@ -778,6 +778,43 @@ support 工作
 不能把旧 fallback
 重新写成 reader 合同。
 
+截至 `2026-04-25`，
+leaf reader / codegen
+也不再保留下面这些默认恢复面：
+
+- 缺 `cb_configs`
+  时生成 `default_cb`
+- compute operand
+  缺 `host_buffer`
+  时用 device buffer 代替
+- accessor
+  从旧 `slot`
+  兼容键恢复
+  `compile_time_arg_offset`
+- GEMM compute op
+  缺 tile/block/subblock 字段时从
+  `M/N/K`
+  反推
+- segment
+  缺 `kind/core_type`
+  时补
+  `fused_dataflow/brisc`
+- codegen
+  在没有 segment
+  `core_type`
+  时默认走 dataflow header
+- per-work descriptor
+  同时携带旧
+  `value_kind`
+  和新
+  `value_source`
+
+这些字段现在必须由
+typed `TTProgram`
+或 executable projection
+显式给出；
+缺失时 fail-close。
+
 ### 5.6 public specialization audit verdict
 
 本轮审查结论是：

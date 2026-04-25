@@ -51,6 +51,11 @@ if str(EXAMPLE_DIR) not in sys.path:
 import example_mha_fwd_bshd as mha_example
 
 
+REPO_ROOT = Path(__file__).resolve().parents[4]
+TARGET_SRC_DIR = REPO_ROOT / "src" / "target"
+TRANSFORM_SRC_DIR = REPO_ROOT / "src" / "transform"
+TEST_HELPER = REPO_ROOT / "testing" / "python" / "target" / "blackhole" / "common.py"
+
 FRAGMENT_BRIDGE_HELPER_BUILTINS = (
     "write_local_slice_to_cb",
     "write_local_fragment_tile_to_cb",
@@ -71,6 +76,83 @@ EXPECTED_UNIFIED_COPY_RUNTIME_ARG_KINDS = [
     "output_tile_num_tiles",
     "output_tile_stride",
 ]
+
+
+def test_blackhole_leaf_readers_do_not_keep_legacy_defaults_or_slot_fallbacks():
+    legacy_richer_accessor_slot = "richer_accessor" + '["slot"]'
+    legacy_value_kind_spec = "spec" + '["value_kind"]'
+    forbidden_snippets = {
+        REPO_ROOT / "src" / "transform" / "common" / "blackhole_runtime_arg_schema.h": [
+            "kValueKind",
+            "kValueCurrentWorkLinearId",
+            "kValueLogicalBlockX",
+            "kValueLogicalBlockY",
+            "kValueGemmNumKTiles",
+            "kValueGemmLogicalNTiles",
+        ],
+        TARGET_SRC_DIR / "rt_mod_blackhole.cc": [
+            'config.name = "default_cb"',
+            "binding.host_buffer = binding.buffer",
+            'accessor_info.Get("slot")',
+            'accessor_info.Set("slot"',
+            "block_m_tiles == 0",
+            'segment.kind.empty() ? ffi::String("fused_dataflow")',
+            'segment.core_type.empty() ? ffi::String("brisc")',
+            "kValueKind",
+            "compatibility value_kind",
+        ],
+        TARGET_SRC_DIR / "blackhole_module.h": [
+            'WriteObjectKeyValue("slot"',
+            'default_kernel_kind = "fused_dataflow"',
+            'default_kernel_core_type = "brisc"',
+            "std::string value_kind;",
+        ],
+        TARGET_SRC_DIR / "codegen_blackhole.cc": [
+            "// DataMovement kernel API (default)",
+            "kValueKind",
+        ],
+        TARGET_SRC_DIR / "codegen_blackhole.h": [
+            "std::string value_kind;",
+        ],
+        TRANSFORM_SRC_DIR / "lower_blackhole_ops.cc": [
+            'accessor.Get("slot")',
+            'accessor.Set("slot"',
+            "kValueCurrentWorkLinearId",
+            "kValueLogicalBlockX",
+            "kValueLogicalBlockY",
+            "kValueGemmNumKTiles",
+            "kValueGemmLogicalNTiles",
+        ],
+        TEST_HELPER: [
+            'item.get("compile_time_arg_offset", item.get("slot", 0))',
+            '"value_kind": str(spec.value_kind)',
+            'str(item.get("value_kind", ""))',
+        ],
+        Path(__file__).resolve(): [
+            legacy_richer_accessor_slot,
+            legacy_value_kind_spec,
+        ],
+        REPO_ROOT / "testing" / "python" / "target" / "blackhole" / "test_blackhole_gemm.py": [
+            legacy_richer_accessor_slot,
+        ],
+        REPO_ROOT
+        / "testing"
+        / "python"
+        / "target"
+        / "blackhole"
+        / "test_blackhole_flash_attention_pipeline.py": [
+            legacy_value_kind_spec,
+        ],
+    }
+
+    offenders = []
+    for path, snippets in forbidden_snippets.items():
+        source = path.read_text()
+        for snippet in snippets:
+            if snippet in source:
+                offenders.append(f"{path.relative_to(REPO_ROOT)}: {snippet}")
+
+    assert offenders == []
 
 
 def _collect_blackhole_builtin_names(node):
@@ -545,12 +627,9 @@ def _with_richer_accessor_schema(func, common_runtime_args=None, layout_override
             continue
         for accessor in accessors:
             richer_accessor = dict(accessor)
-            if "compile_time_arg_offset" in richer_accessor:
-                richer_accessor["compile_time_arg_offset"] = int(
-                    richer_accessor["compile_time_arg_offset"]
-                )
-            else:
-                richer_accessor["compile_time_arg_offset"] = int(richer_accessor["slot"])
+            richer_accessor["compile_time_arg_offset"] = int(
+                richer_accessor["compile_time_arg_offset"]
+            )
             richer_accessor["compile_time_arg_count"] = 2
             richer_accessor["common_runtime_arg_offset"] = 0
             richer_accessor["common_runtime_arg_count"] = 0

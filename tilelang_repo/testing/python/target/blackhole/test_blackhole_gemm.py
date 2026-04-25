@@ -64,12 +64,9 @@ def _with_richer_accessor_schema(func, common_runtime_args=None):
             continue
         for accessor in accessors:
             richer_accessor = dict(accessor)
-            if "compile_time_arg_offset" in richer_accessor:
-                richer_accessor["compile_time_arg_offset"] = int(
-                    richer_accessor["compile_time_arg_offset"]
-                )
-            else:
-                richer_accessor["compile_time_arg_offset"] = int(richer_accessor["slot"])
+            richer_accessor["compile_time_arg_offset"] = int(
+                richer_accessor["compile_time_arg_offset"]
+            )
             richer_accessor["compile_time_arg_count"] = 2
             richer_accessor["common_runtime_arg_offset"] = 0
             richer_accessor["common_runtime_arg_count"] = 0
@@ -96,12 +93,9 @@ def _with_sharded_accessor_schema(func):
             continue
         for accessor in accessors:
             richer_accessor = dict(accessor)
-            if "compile_time_arg_offset" in richer_accessor:
-                richer_accessor["compile_time_arg_offset"] = int(
-                    richer_accessor["compile_time_arg_offset"]
-                )
-            else:
-                richer_accessor["compile_time_arg_offset"] = int(richer_accessor["slot"])
+            richer_accessor["compile_time_arg_offset"] = int(
+                richer_accessor["compile_time_arg_offset"]
+            )
             richer_accessor["compile_time_arg_count"] = 2
             richer_accessor["common_runtime_arg_offset"] = 0
             richer_accessor["common_runtime_arg_count"] = 0

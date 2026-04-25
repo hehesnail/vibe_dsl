@@ -210,15 +210,6 @@ static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
                                                            .value())
                      : ffi::Array<ffi::Any>();
   if (cb_attr.empty()) {
-    // Use default CB config for simple kernels
-    CBConfig config;
-    config.cb_id = 0;
-    config.name = "default_cb";
-    config.role = "intermediate";
-    config.num_pages = 1;
-    config.page_size_bytes = 2048;
-    config.data_format = "Float16_b";
-    cb_configs.push_back(std::move(config));
     return cb_configs;
   }
 
@@ -228,8 +219,12 @@ static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
         ffi::Map<ffi::String, ffi::Any>());
     if (cb_info.empty()) continue;
 
+    bool has_cb_id = false;
+    bool has_num_pages = false;
+    bool has_page_size = false;
     if (auto cb_id = cb_info.Get("cb_id")) {
       config.cb_id = Downcast<Integer>(cb_id.value()).IntValue();
+      has_cb_id = true;
     }
     if (auto name = cb_info.Get("name")) {
       config.name = Downcast<String>(name.value());
@@ -239,9 +234,11 @@ static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
     }
     if (auto num_pages = cb_info.Get("num_pages")) {
       config.num_pages = Downcast<Integer>(num_pages.value()).IntValue();
+      has_num_pages = true;
     }
     if (auto page_size = cb_info.Get("page_size")) {
       config.page_size_bytes = Downcast<Integer>(page_size.value()).IntValue();
+      has_page_size = true;
     }
     if (auto initial_reserve_pages = cb_info.Get("initial_reserve_pages")) {
       config.initial_reserve_pages =
@@ -260,15 +257,17 @@ static std::vector<CBConfig> ExtractCBConfig(const tir::PrimFunc& f) {
       config.data_format = Downcast<String>(data_format.value());
     }
 
-    if (config.name.empty()) {
-      config.name = "cb_" + std::to_string(config.cb_id);
-    }
-    if (config.role.empty()) {
-      config.role = "intermediate";
-    }
-    if (config.data_format.empty()) {
-      config.data_format = "Float16_b";
-    }
+    ICHECK(has_cb_id) << "Blackhole executable CB config requires explicit cb_id";
+    ICHECK(!config.name.empty())
+        << "Blackhole executable CB config requires explicit name for cb_id=" << config.cb_id;
+    ICHECK(!config.role.empty())
+        << "Blackhole executable CB config requires explicit role for " << config.name;
+    ICHECK(has_num_pages && config.num_pages > 0)
+        << "Blackhole executable CB config requires explicit num_pages for " << config.name;
+    ICHECK(has_page_size && config.page_size_bytes > 0)
+        << "Blackhole executable CB config requires explicit page_size for " << config.name;
+    ICHECK(!config.data_format.empty())
+        << "Blackhole executable CB config requires explicit data_format for " << config.name;
 
     cb_configs.push_back(config);
   }
@@ -543,12 +542,15 @@ static bool ExtractComputeOp(const ffi::Map<ffi::String, ffi::Any>& spec_info,
       }
       if (auto host_buffer = binding_info.Get("host_buffer")) {
         binding.host_buffer = Downcast<String>(host_buffer.value());
-      } else {
-        binding.host_buffer = binding.buffer;
       }
-      if (!binding.role.empty() && !binding.buffer.empty()) {
-        compute_op->operand_bindings.push_back(std::move(binding));
-      }
+      ICHECK(!binding.role.empty()) << "Blackhole compute operand binding requires role";
+      ICHECK(!binding.buffer.empty())
+          << "Blackhole compute operand binding for role " << binding.role
+          << " requires device buffer";
+      ICHECK(!binding.host_buffer.empty())
+          << "Blackhole compute operand binding for role " << binding.role
+          << " requires explicit host_buffer";
+      compute_op->operand_bindings.push_back(std::move(binding));
     }
   }
   if (auto v = spec_info.Get("M")) {
@@ -631,14 +633,19 @@ static bool ExtractComputeOp(const ffi::Map<ffi::String, ffi::Any>& spec_info,
     }
   }
   if (compute_op->enabled && compute_op->kind == "gemm") {
-    if (compute_op->Mt == 0 && compute_op->M > 0) compute_op->Mt = compute_op->M / 32;
-    if (compute_op->Nt == 0 && compute_op->N > 0) compute_op->Nt = compute_op->N / 32;
-    if (compute_op->Kt == 0 && compute_op->K > 0) compute_op->Kt = compute_op->K / 32;
-    if (compute_op->block_m_tiles == 0) compute_op->block_m_tiles = compute_op->Mt;
-    if (compute_op->block_n_tiles == 0) compute_op->block_n_tiles = compute_op->Nt;
-    if (compute_op->block_k_tiles == 0) compute_op->block_k_tiles = compute_op->Kt;
-    if (compute_op->subblock_m_tiles == 0) compute_op->subblock_m_tiles = compute_op->Mt;
-    if (compute_op->subblock_n_tiles == 0) compute_op->subblock_n_tiles = compute_op->Nt;
+    ICHECK_GT(compute_op->Mt, 0U) << "Blackhole GEMM compute_op requires explicit Mt";
+    ICHECK_GT(compute_op->Nt, 0U) << "Blackhole GEMM compute_op requires explicit Nt";
+    ICHECK_GT(compute_op->Kt, 0U) << "Blackhole GEMM compute_op requires explicit Kt";
+    ICHECK_GT(compute_op->block_m_tiles, 0U)
+        << "Blackhole GEMM compute_op requires explicit block_m_tiles";
+    ICHECK_GT(compute_op->block_n_tiles, 0U)
+        << "Blackhole GEMM compute_op requires explicit block_n_tiles";
+    ICHECK_GT(compute_op->block_k_tiles, 0U)
+        << "Blackhole GEMM compute_op requires explicit block_k_tiles";
+    ICHECK_GT(compute_op->subblock_m_tiles, 0U)
+        << "Blackhole GEMM compute_op requires explicit subblock_m_tiles";
+    ICHECK_GT(compute_op->subblock_n_tiles, 0U)
+        << "Blackhole GEMM compute_op requires explicit subblock_n_tiles";
   }
   return compute_op->enabled && !compute_op->kind.empty();
 }
@@ -743,28 +750,35 @@ static std::vector<AccessorSpec> ExtractAccessorsFromArray(const ffi::Array<ffi:
     if (auto v = accessor_info.Get("buffer")) {
       accessor.buffer = Downcast<String>(v.value());
     }
-    if (auto v = accessor_info.Get("slot")) {
-      accessor.slot = static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
-    }
+    bool has_compile_time_arg_offset = false;
+    bool has_compile_time_arg_count = false;
+    bool has_common_runtime_arg_offset = false;
+    bool has_common_runtime_arg_count = false;
+    bool has_args_config_bits = false;
     if (auto v = accessor_info.Get("compile_time_arg_offset")) {
       accessor.compile_time_arg_offset =
           static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+      has_compile_time_arg_offset = true;
     }
     if (auto v = accessor_info.Get("compile_time_arg_count")) {
       accessor.compile_time_arg_count =
           static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+      has_compile_time_arg_count = true;
     }
     if (auto v = accessor_info.Get("common_runtime_arg_offset")) {
       accessor.common_runtime_arg_offset =
           static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+      has_common_runtime_arg_offset = true;
     }
     if (auto v = accessor_info.Get("common_runtime_arg_count")) {
       accessor.common_runtime_arg_count =
           static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+      has_common_runtime_arg_count = true;
     }
     if (auto v = accessor_info.Get("args_config_bits")) {
       accessor.args_config_bits =
           static_cast<uint32_t>(Downcast<Integer>(v.value()).IntValue());
+      has_args_config_bits = true;
     }
     if (auto v = accessor_info.Get("transport_page_size")) {
       accessor.transport_page_size_bytes =
@@ -785,14 +799,26 @@ static std::vector<AccessorSpec> ExtractAccessorsFromArray(const ffi::Array<ffi:
       accessor.transpose_2d = Downcast<Bool>(v.value());
     }
     if (!accessor.buffer.empty()) {
-      if (accessor.compile_time_arg_offset == 0 && accessor.slot != 0) {
-        accessor.compile_time_arg_offset = accessor.slot;
-      }
-      accessor.slot = accessor.compile_time_arg_offset;
-      if (accessor.compile_time_arg_count == 0) {
-        accessor.compile_time_arg_count =
-            accessor.layout == "interleaved" ? 2U : 0U;
-      }
+      ICHECK(has_compile_time_arg_offset)
+          << "Blackhole accessor for buffer " << accessor.buffer
+          << " requires explicit compile_time_arg_offset";
+      ICHECK(has_compile_time_arg_count)
+          << "Blackhole accessor for buffer " << accessor.buffer
+          << " requires explicit compile_time_arg_count";
+      ICHECK(has_common_runtime_arg_offset)
+          << "Blackhole accessor for buffer " << accessor.buffer
+          << " requires explicit common_runtime_arg_offset";
+      ICHECK(has_common_runtime_arg_count)
+          << "Blackhole accessor for buffer " << accessor.buffer
+          << " requires explicit common_runtime_arg_count";
+      ICHECK(has_args_config_bits)
+          << "Blackhole accessor for buffer " << accessor.buffer
+          << " requires explicit args_config_bits";
+      ICHECK(!accessor.layout.empty())
+          << "Blackhole accessor for buffer " << accessor.buffer << " requires explicit layout";
+      ICHECK(!accessor.memory_space.empty())
+          << "Blackhole accessor for buffer " << accessor.buffer
+          << " requires explicit memory_space";
       accessors.push_back(std::move(accessor));
     }
   }
@@ -919,9 +945,6 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
     if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kDescriptorKind)) {
       spec.descriptor_kind = Downcast<String>(v.value());
     }
-    if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kValueKind)) {
-      spec.value_kind = Downcast<String>(v.value());
-    }
     if (auto v = spec_info.Get(::tvm::tl::blackhole_runtime_arg_schema::kValueSource)) {
       spec.value_source = Downcast<String>(v.value());
     }
@@ -936,9 +959,6 @@ static std::vector<PerWorkArgSpec> ExtractPerWorkArgSpecsFromArray(
     ICHECK(!spec.value_source.empty())
         << "Blackhole per-work descriptor for " << spec.arg_identity
         << " requires value_source";
-    ICHECK(!spec.value_kind.empty())
-        << "Blackhole per-work descriptor for " << spec.arg_identity
-        << " requires compatibility value_kind";
     per_work_arg_specs.push_back(std::move(spec));
   }
   return per_work_arg_specs;
@@ -1452,14 +1472,11 @@ static std::vector<SegmentInfo> ExtractSegmentPlan(const tir::PrimFunc& f, Execu
       }
     }
 
-    if (segments_out.empty()) {
-      if (!info.kind.empty()) {
-        spec->default_kernel_kind = info.kind;
-      }
-      if (!info.core_type.empty()) {
-        spec->default_kernel_core_type = info.core_type;
-      }
-    }
+    ICHECK(!info.name.empty()) << "Blackhole executable segment requires explicit name";
+    ICHECK(!info.kind.empty()) << "Blackhole executable segment " << info.name
+                              << " requires explicit kind";
+    ICHECK(!info.core_type.empty()) << "Blackhole executable segment " << info.name
+                                   << " requires explicit core_type";
 
     segments_out.push_back(std::move(info));
   }
@@ -1796,7 +1813,6 @@ static ffi::Array<ffi::Any> EncodeAccessors(const std::vector<AccessorSpec>& acc
   for (const auto& accessor : accessors) {
     ffi::Map<ffi::String, ffi::Any> accessor_info;
     accessor_info.Set("buffer", ffi::String(accessor.buffer));
-    accessor_info.Set("slot", Integer(static_cast<int>(accessor.slot)));
     accessor_info.Set("compile_time_arg_offset",
                       Integer(static_cast<int>(accessor.compile_time_arg_offset)));
     accessor_info.Set("compile_time_arg_count",
@@ -1894,12 +1910,12 @@ static ffi::Array<ffi::Any> EncodePerWorkArgSpecs(
       spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kDescriptorKind,
                     ffi::String(spec.descriptor_kind));
     }
-    spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueKind, ffi::String(spec.value_kind));
     if (!spec.value_source.empty()) {
       spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kValueSource,
                     ffi::String(spec.value_source));
     }
-    if (spec.value_kind == ::tvm::tl::blackhole_runtime_arg_schema::kValueConstant) {
+    if (spec.value_source ==
+        ::tvm::tl::blackhole_runtime_arg_schema::kValueSourceConstant) {
       spec_info.Set(::tvm::tl::blackhole_runtime_arg_schema::kConstantValue,
                     Integer(static_cast<int>(spec.constant_value)));
     }
@@ -2598,10 +2614,12 @@ static tir::PrimFunc MakeSegmentPrimFunc(const tir::PrimFunc& f, const SegmentIn
           f, "Blackhole segment materialization");
   const ffi::String kernel_name =
       segment.name.empty() ? ffi::String(segment.kind) : ffi::String(segment.name);
-  const ffi::String kernel_kind =
-      segment.kind.empty() ? ffi::String("fused_dataflow") : ffi::String(segment.kind);
-  const ffi::String kernel_core_type =
-      segment.core_type.empty() ? ffi::String("brisc") : ffi::String(segment.core_type);
+  ICHECK(!segment.kind.empty())
+      << "Blackhole segment materialization requires explicit segment kind";
+  ICHECK(!segment.core_type.empty())
+      << "Blackhole segment materialization requires explicit segment core_type";
+  const ffi::String kernel_kind = ffi::String(segment.kind);
+  const ffi::String kernel_core_type = ffi::String(segment.core_type);
   const ffi::Array<ffi::Any> encoded_runtime_args = EncodeRuntimeArgs(segment.runtime_args);
   const ffi::Array<ffi::Any> encoded_common_runtime_args =
       EncodeRuntimeArgs(segment.common_runtime_args);

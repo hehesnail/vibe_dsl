@@ -370,19 +370,19 @@ static Map<String, Any> MakeRuntimeArg(const std::string& name, const std::strin
   return arg;
 }
 
-static std::string ResolveAccessorBufferNameBySlot(const Array<Any>& accessors, int slot) {
+static std::string ResolveAccessorBufferNameByCompileTimeArgOffset(const Array<Any>& accessors,
+                                                                   int offset) {
   for (const auto& accessor_item : accessors) {
     auto accessor = accessor_item.as<Map<String, Any>>().value_or(Map<String, Any>());
     if (accessor.empty() || !accessor.Get("buffer")) {
       continue;
     }
-    const int accessor_slot =
-        accessor.Get("compile_time_arg_offset")
-            ? Downcast<Integer>(accessor.Get("compile_time_arg_offset").value()).IntValue()
-            : (accessor.Get("slot")
-                   ? Downcast<Integer>(accessor.Get("slot").value()).IntValue()
-                   : -1);
-    if (accessor_slot == slot) {
+    if (!accessor.Get("compile_time_arg_offset")) {
+      continue;
+    }
+    const int accessor_offset =
+        Downcast<Integer>(accessor.Get("compile_time_arg_offset").value()).IntValue();
+    if (accessor_offset == offset) {
       return static_cast<std::string>(Downcast<String>(accessor.Get("buffer").value()));
     }
   }
@@ -398,10 +398,12 @@ static Array<Any> EnsureSegmentBufferRuntimeArgs(const std::string& segment_kind
       runtime_args_opt ? Downcast<Array<Any>>(runtime_args_opt.value()) : Array<Any>();
   if (segment_kind == "fused_dataflow") {
     std::string resolved_input_buffer_name =
-        !input_buffer_name.empty() ? input_buffer_name : ResolveAccessorBufferNameBySlot(accessors, 0);
+        !input_buffer_name.empty()
+            ? input_buffer_name
+            : ResolveAccessorBufferNameByCompileTimeArgOffset(accessors, 0);
     std::string resolved_output_buffer_name = !output_buffer_name.empty()
                                                   ? output_buffer_name
-                                                  : ResolveAccessorBufferNameBySlot(
+                                                  : ResolveAccessorBufferNameByCompileTimeArgOffset(
                                                         accessors,
                                                         resolved_input_buffer_name.empty() ? 0 : 2);
     std::vector<bool> consumed(existing_runtime_args.size(), false);
@@ -977,12 +979,11 @@ static Map<String, Any> MakeCompileTimeArgSpec(const std::string& name,
 static TTPerWorkArgSpec MakePerWorkArgSpec(const std::string& arg_kind,
                                            const std::string& arg_identity,
                                            const std::string& descriptor_kind,
-                                           const std::string& value_kind,
                                            const std::string& value_source,
                                            const std::string& buffer = "",
                                            uint32_t constant_value = 0) {
   return TTPerWorkArgSpec(String(arg_kind), String(arg_identity), String(buffer),
-                          String(descriptor_kind), String(value_kind), String(value_source),
+                          String(descriptor_kind), String(value_source),
                           static_cast<int64_t>(constant_value));
 }
 
@@ -3227,28 +3228,25 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
       const std::string buffer =
           accessor.Get("buffer") ? static_cast<std::string>(Downcast<String>(accessor.Get("buffer").value()))
                                   : std::string();
+      ICHECK(accessor.Get("compile_time_arg_offset"))
+          << "PlanTTKernelABI requires accessor compile_time_arg_offset for " << buffer;
+      ICHECK(accessor.Get("compile_time_arg_count"))
+          << "PlanTTKernelABI requires accessor compile_time_arg_count for " << buffer;
+      ICHECK(accessor.Get("layout")) << "PlanTTKernelABI requires accessor layout for " << buffer;
+      ICHECK(accessor.Get("memory_space"))
+          << "PlanTTKernelABI requires accessor memory_space for " << buffer;
+      ICHECK(accessor.Get("args_config_bits"))
+          << "PlanTTKernelABI requires accessor args_config_bits for " << buffer;
       const int compile_time_arg_offset =
-          accessor.Get("compile_time_arg_offset")
-              ? Downcast<Integer>(accessor.Get("compile_time_arg_offset").value()).IntValue()
-              : (accessor.Get("slot")
-                     ? Downcast<Integer>(accessor.Get("slot").value()).IntValue()
-                     : 0);
+          Downcast<Integer>(accessor.Get("compile_time_arg_offset").value()).IntValue();
       const int compile_time_arg_count =
-          accessor.Get("compile_time_arg_count")
-              ? Downcast<Integer>(accessor.Get("compile_time_arg_count").value()).IntValue()
-              : 2;
+          Downcast<Integer>(accessor.Get("compile_time_arg_count").value()).IntValue();
       const std::string layout =
-          accessor.Get("layout")
-              ? static_cast<std::string>(Downcast<String>(accessor.Get("layout").value()))
-              : std::string("interleaved");
+          static_cast<std::string>(Downcast<String>(accessor.Get("layout").value()));
       const std::string memory_space =
-          accessor.Get("memory_space")
-              ? static_cast<std::string>(Downcast<String>(accessor.Get("memory_space").value()))
-              : std::string("dram");
+          static_cast<std::string>(Downcast<String>(accessor.Get("memory_space").value()));
       const int args_config_bits =
-          accessor.Get("args_config_bits")
-              ? Downcast<Integer>(accessor.Get("args_config_bits").value()).IntValue()
-              : MakeAccessorArgsConfigBits(layout, memory_space);
+          Downcast<Integer>(accessor.Get("args_config_bits").value()).IntValue();
       const int transport_page_size =
           accessor.Get("transport_page_size")
               ? Downcast<Integer>(accessor.Get("transport_page_size").value()).IntValue()
@@ -3441,7 +3439,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "a_tile_start_id", runtime_arg_identity_for_kind("a_tile_start_id"),
             blackhole_runtime_arg_schema::kDescriptorTileStart,
-            blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
             blackhole_runtime_arg_schema::kValueSourceWorkLinearId,
             copy_input_buffer_name));
       }
@@ -3449,7 +3446,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "a_tile_num_tiles", runtime_arg_identity_for_kind("a_tile_num_tiles"),
             blackhole_runtime_arg_schema::kDescriptorTileCount,
-            blackhole_runtime_arg_schema::kValueConstant,
             blackhole_runtime_arg_schema::kValueSourceConstant,
             copy_input_buffer_name, 1));
       }
@@ -3457,7 +3453,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "a_tile_stride", runtime_arg_identity_for_kind("a_tile_stride"),
             blackhole_runtime_arg_schema::kDescriptorTileStride,
-            blackhole_runtime_arg_schema::kValueConstant,
             blackhole_runtime_arg_schema::kValueSourceConstant,
             copy_input_buffer_name, 1));
       }
@@ -3465,7 +3460,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "output_tile_start_id", runtime_arg_identity_for_kind("output_tile_start_id"),
             blackhole_runtime_arg_schema::kDescriptorTileStart,
-            blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
             blackhole_runtime_arg_schema::kValueSourceWorkLinearId,
             copy_output_buffer_name));
       }
@@ -3473,7 +3467,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "output_tile_num_tiles", runtime_arg_identity_for_kind("output_tile_num_tiles"),
             blackhole_runtime_arg_schema::kDescriptorTileCount,
-            blackhole_runtime_arg_schema::kValueConstant,
             blackhole_runtime_arg_schema::kValueSourceConstant,
             copy_output_buffer_name, 1));
       }
@@ -3481,7 +3474,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "output_tile_stride", runtime_arg_identity_for_kind("output_tile_stride"),
             blackhole_runtime_arg_schema::kDescriptorTileStride,
-            blackhole_runtime_arg_schema::kValueConstant,
             blackhole_runtime_arg_schema::kValueSourceConstant,
             copy_output_buffer_name, 1));
       }
@@ -3491,7 +3483,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "a_tile_start_id", runtime_arg_identity_for_kind("a_tile_start_id"),
             blackhole_runtime_arg_schema::kDescriptorTileStart,
-            blackhole_runtime_arg_schema::kValueLogicalBlockY,
             blackhole_runtime_arg_schema::kValueSourceLogicalBlockY,
             gemm_a_buffer_name_));
       }
@@ -3499,7 +3490,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "a_tile_num_tiles", runtime_arg_identity_for_kind("a_tile_num_tiles"),
             blackhole_runtime_arg_schema::kDescriptorTileCount,
-            blackhole_runtime_arg_schema::kValueGemmNumKTiles,
             blackhole_runtime_arg_schema::kValueSourceComputeNumKTiles,
             gemm_a_buffer_name_));
       }
@@ -3507,7 +3497,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "a_tile_stride", runtime_arg_identity_for_kind("a_tile_stride"),
             blackhole_runtime_arg_schema::kDescriptorTileStride,
-            blackhole_runtime_arg_schema::kValueConstant,
             blackhole_runtime_arg_schema::kValueSourceConstant, gemm_a_buffer_name_,
             1));
       }
@@ -3515,7 +3504,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "b_tile_start_id", runtime_arg_identity_for_kind("b_tile_start_id"),
             blackhole_runtime_arg_schema::kDescriptorTileStart,
-            blackhole_runtime_arg_schema::kValueLogicalBlockX,
             blackhole_runtime_arg_schema::kValueSourceLogicalBlockX,
             gemm_b_buffer_name_));
       }
@@ -3523,7 +3511,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "b_tile_num_tiles", runtime_arg_identity_for_kind("b_tile_num_tiles"),
             blackhole_runtime_arg_schema::kDescriptorTileCount,
-            blackhole_runtime_arg_schema::kValueGemmNumKTiles,
             blackhole_runtime_arg_schema::kValueSourceComputeNumKTiles,
             gemm_b_buffer_name_));
       }
@@ -3531,7 +3518,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "b_tile_stride", runtime_arg_identity_for_kind("b_tile_stride"),
             blackhole_runtime_arg_schema::kDescriptorTileStride,
-            blackhole_runtime_arg_schema::kValueGemmLogicalNTiles,
             blackhole_runtime_arg_schema::kValueSourceComputeLogicalNTiles,
             gemm_b_buffer_name_));
       }
@@ -3541,14 +3527,12 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "k_tile_start_id", runtime_arg_identity_for_kind("k_tile_start_id"),
             blackhole_runtime_arg_schema::kDescriptorKTileStart,
-            blackhole_runtime_arg_schema::kValueConstant,
             blackhole_runtime_arg_schema::kValueSourceConstant, "", 0));
       }
       if (runtime_args_contain_kind("num_k_tiles")) {
         upsert_spec(MakePerWorkArgSpec(
             "num_k_tiles", runtime_arg_identity_for_kind("num_k_tiles"),
             blackhole_runtime_arg_schema::kDescriptorKTileCount,
-            blackhole_runtime_arg_schema::kValueGemmNumKTiles,
             blackhole_runtime_arg_schema::kValueSourceComputeNumKTiles));
       }
     }
@@ -3557,7 +3541,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "output_tile_start_id", runtime_arg_identity_for_kind("output_tile_start_id"),
             blackhole_runtime_arg_schema::kDescriptorTileStart,
-            blackhole_runtime_arg_schema::kValueCurrentWorkLinearId,
             blackhole_runtime_arg_schema::kValueSourceWorkLinearId,
             gemm_c_buffer_name_));
       }
@@ -3565,7 +3548,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "output_tile_num_tiles", runtime_arg_identity_for_kind("output_tile_num_tiles"),
             blackhole_runtime_arg_schema::kDescriptorTileCount,
-            blackhole_runtime_arg_schema::kValueConstant,
             blackhole_runtime_arg_schema::kValueSourceConstant,
             gemm_c_buffer_name_, 1));
       }
@@ -3573,7 +3555,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
         upsert_spec(MakePerWorkArgSpec(
             "output_tile_stride", runtime_arg_identity_for_kind("output_tile_stride"),
             blackhole_runtime_arg_schema::kDescriptorTileStride,
-            blackhole_runtime_arg_schema::kValueConstant,
             blackhole_runtime_arg_schema::kValueSourceConstant,
             gemm_c_buffer_name_, 1));
       }
@@ -3603,44 +3584,44 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
             continue;
           }
 
+          const std::string buffer_name =
+              accessor.Get("buffer")
+                  ? static_cast<std::string>(Downcast<String>(accessor.Get("buffer").value()))
+                  : std::string();
+          ICHECK(accessor.Get("compile_time_arg_offset"))
+              << "PlanTTKernelABI requires accessor compile_time_arg_offset for " << buffer_name;
+          ICHECK(accessor.Get("compile_time_arg_count"))
+              << "PlanTTKernelABI requires accessor compile_time_arg_count for " << buffer_name;
+          ICHECK(accessor.Get("common_runtime_arg_offset"))
+              << "PlanTTKernelABI requires accessor common_runtime_arg_offset for " << buffer_name;
+          ICHECK(accessor.Get("common_runtime_arg_count"))
+              << "PlanTTKernelABI requires accessor common_runtime_arg_count for " << buffer_name;
+          ICHECK(accessor.Get("layout"))
+              << "PlanTTKernelABI requires accessor layout for " << buffer_name;
+          ICHECK(accessor.Get("memory_space"))
+              << "PlanTTKernelABI requires accessor memory_space for " << buffer_name;
+          ICHECK(accessor.Get("args_config_bits"))
+              << "PlanTTKernelABI requires accessor args_config_bits for " << buffer_name;
           const int compile_time_arg_offset =
-              accessor.Get("compile_time_arg_offset")
-                  ? Downcast<Integer>(accessor.Get("compile_time_arg_offset").value()).IntValue()
-                  : (accessor.Get("slot")
-                         ? Downcast<Integer>(accessor.Get("slot").value()).IntValue()
-                         : 0);
+              Downcast<Integer>(accessor.Get("compile_time_arg_offset").value()).IntValue();
           const int compile_time_arg_count =
-              accessor.Get("compile_time_arg_count")
-                  ? Downcast<Integer>(accessor.Get("compile_time_arg_count").value()).IntValue()
-                  : 2;
+              Downcast<Integer>(accessor.Get("compile_time_arg_count").value()).IntValue();
           const int common_runtime_arg_offset =
-              accessor.Get("common_runtime_arg_offset")
-                  ? Downcast<Integer>(accessor.Get("common_runtime_arg_offset").value()).IntValue()
-                  : 0;
+              Downcast<Integer>(accessor.Get("common_runtime_arg_offset").value()).IntValue();
           const int common_runtime_arg_count =
-              accessor.Get("common_runtime_arg_count")
-                  ? Downcast<Integer>(accessor.Get("common_runtime_arg_count").value()).IntValue()
-                  : 0;
+              Downcast<Integer>(accessor.Get("common_runtime_arg_count").value()).IntValue();
           const std::string layout =
-              accessor.Get("layout")
-                  ? static_cast<std::string>(Downcast<String>(accessor.Get("layout").value()))
-                  : std::string("interleaved");
+              static_cast<std::string>(Downcast<String>(accessor.Get("layout").value()));
           const std::string memory_space =
-              accessor.Get("memory_space")
-                  ? static_cast<std::string>(Downcast<String>(accessor.Get("memory_space").value()))
-                  : std::string("dram");
+              static_cast<std::string>(Downcast<String>(accessor.Get("memory_space").value()));
           const int args_config_bits =
-              accessor.Get("args_config_bits")
-                  ? Downcast<Integer>(accessor.Get("args_config_bits").value()).IntValue()
-                  : MakeAccessorArgsConfigBits(layout, memory_space);
+              Downcast<Integer>(accessor.Get("args_config_bits").value()).IntValue();
           const int transport_page_size =
               accessor.Get("transport_page_size")
                   ? Downcast<Integer>(accessor.Get("transport_page_size").value()).IntValue()
                   : 0;
           int resolved_transport_page_size = transport_page_size;
           if (resolved_transport_page_size == 0 && accessor.Get("buffer")) {
-            const std::string buffer_name =
-                static_cast<std::string>(Downcast<String>(accessor.Get("buffer").value()));
             auto transport_it = accessor_transport_page_sizes.find(buffer_name);
             if (transport_it != accessor_transport_page_sizes.end()) {
               resolved_transport_page_size = transport_it->second;
@@ -3662,7 +3643,6 @@ void PlanTTKernelABI::StoreAccessorDescriptors(PrimFunc& func) {
             }
           }
 
-          accessor.Set("slot", Integer(compile_time_arg_offset));
           accessor.Set("compile_time_arg_offset", Integer(compile_time_arg_offset));
           accessor.Set("compile_time_arg_count", Integer(compile_time_arg_count));
           accessor.Set("common_runtime_arg_offset", Integer(common_runtime_arg_offset));

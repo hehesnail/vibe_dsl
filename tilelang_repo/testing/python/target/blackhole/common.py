@@ -191,12 +191,11 @@ def tt_per_work_arg_specs_to_list(per_work_arg_specs):
             "arg_kind": str(spec.arg_kind),
             "arg_identity": str(spec.arg_identity),
             "descriptor_kind": str(spec.descriptor_kind),
-            "value_kind": str(spec.value_kind),
             "value_source": str(spec.value_source),
         }
         if str(spec.buffer):
             item["buffer"] = str(spec.buffer)
-        if str(spec.value_kind) == "constant":
+        if str(spec.value_source) == "constant":
             item["constant_value"] = int(spec.constant_value)
         encoded.append(item)
     return encoded
@@ -248,7 +247,6 @@ def make_tt_per_work_arg_specs(per_work_arg_specs):
             str(item.get("arg_identity", "")),
             str(item.get("buffer", "")),
             str(item.get("descriptor_kind", "")),
-            str(item.get("value_kind", "")),
             str(item.get("value_source", "")),
             int(item.get("constant_value", 0)),
         )
@@ -404,7 +402,7 @@ def make_tt_accessor_specs(accessors):
     return [
         make(
             str(item.get("buffer", "")),
-            int(item.get("compile_time_arg_offset", item.get("slot", 0))),
+            int(item.get("compile_time_arg_offset", 0)),
             int(item.get("compile_time_arg_count", 0)),
             int(item.get("common_runtime_arg_offset", 0)),
             int(item.get("common_runtime_arg_count", 0)),

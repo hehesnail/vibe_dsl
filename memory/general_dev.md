@@ -540,13 +540,31 @@
   或重新降回局部 `blackhole.*` attrs
 - per-work/access truth 一旦 formalize 成 `per_work_arg_specs`，
   就要先 canonicalize 成 kernel-local `TTKernel / ExecutableSpec` contract；
-  codegen/runtime 只能解释 `value_kind`，不能再按 arg kind 名字推语义
+  codegen/runtime 只能解释 typed `descriptor_kind` /
+  `value_source`，
+  不能再按 arg kind 名字推语义，
+  也不能保留旧 `value_kind`
+  作为兼容真源
 - `per_work_arg_specs`
   一旦完成 kernel-local canonicalization，
   就不要再保留 top-level `TTProgram.payload`
   版本给 reader 当 fallback；
   否则 single-kernel/multi-kernel 两条 host path
   会重新出现“segment truth 缺了但 top-level bag 还能兜住”的双真源
+- leaf reader / codegen
+  一旦切到 typed executable projection，
+  不要再保留默认恢复逻辑：
+  缺 `cb_configs`
+  时不要生成 `default_cb`，
+  缺 `host_buffer`
+  时不要用 device buffer 代替，
+  accessor 不要读旧 `slot`，
+  GEMM 不要从 `M/N/K`
+  反推 tile/block/subblock，
+  segment 不要默认
+  `fused_dataflow/brisc`。
+  这些都应在 projection/schema
+  缺失处 fail-close。
 - 只做 device `global_symbol` 对齐时，必须保留优化后的 device `PrimFunc`
   和对应 `global_infos`；
   不能把 source func 重新 `with_attr("global_symbol", ...)` 后塞回去。

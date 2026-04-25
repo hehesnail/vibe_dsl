@@ -279,7 +279,6 @@ class TTPerWorkArgSpecNode : public Object {
   ffi::String arg_identity;
   ffi::String buffer;
   ffi::String descriptor_kind;
-  ffi::String value_kind;
   ffi::String value_source;
   int64_t constant_value = 0;
 
@@ -291,8 +290,7 @@ class TTPerWorkArgSpec : public ObjectRef {
  public:
   TVM_DLL TTPerWorkArgSpec(ffi::String arg_kind, ffi::String arg_identity,
                            ffi::String buffer, ffi::String descriptor_kind,
-                           ffi::String value_kind, ffi::String value_source,
-                           int64_t constant_value);
+                           ffi::String value_source, int64_t constant_value);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTPerWorkArgSpec, ObjectRef,
                                              TTPerWorkArgSpecNode);
 };

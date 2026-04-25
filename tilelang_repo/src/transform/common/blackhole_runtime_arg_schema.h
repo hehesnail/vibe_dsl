@@ -34,16 +34,8 @@ inline constexpr const char* kArgKind = "arg_kind";
 inline constexpr const char* kArgIdentity = "arg_identity";
 inline constexpr const char* kBuffer = "buffer";
 inline constexpr const char* kDescriptorKind = "descriptor_kind";
-inline constexpr const char* kValueKind = "value_kind";
 inline constexpr const char* kValueSource = "value_source";
 inline constexpr const char* kConstantValue = "constant_value";
-
-inline constexpr const char* kValueCurrentWorkLinearId = "current_work_linear_id";
-inline constexpr const char* kValueLogicalBlockX = "logical_block_x";
-inline constexpr const char* kValueLogicalBlockY = "logical_block_y";
-inline constexpr const char* kValueGemmNumKTiles = "gemm_num_k_tiles";
-inline constexpr const char* kValueGemmLogicalNTiles = "gemm_logical_n_tiles";
-inline constexpr const char* kValueConstant = "constant";
 
 inline constexpr const char* kDescriptorTileStart = "tile_start";
 inline constexpr const char* kDescriptorTileCount = "tile_count";

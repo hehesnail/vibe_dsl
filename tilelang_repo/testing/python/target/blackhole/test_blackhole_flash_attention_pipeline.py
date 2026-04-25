@@ -1287,7 +1287,6 @@ def test_flash_attention_segment_writer_block_indices_follow_per_work_value_sour
                 for spec in per_work_arg_specs:
                     spec = dict(spec)
                     if str(spec.get("arg_kind", "")) == "output_tile_start_id":
-                        spec["value_kind"] = "logical_block_x"
                         spec["value_source"] = "logical_block_x"
                     updated_specs.append(spec)
                 per_work_arg_specs = updated_specs
