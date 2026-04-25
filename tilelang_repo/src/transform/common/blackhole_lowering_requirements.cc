@@ -234,51 +234,45 @@ bool IsBufferMaterializationCandidate(const tir::CallNode* call) {
   return tile_op.defined() && tile_op->GetBufferMaterializationInfo().has_value();
 }
 
-Optional<Map<String, Any>> TryBuildBufferMaterializationContract(const tir::CallNode* call,
-                                                                tir::Buffer* target_buffer_out) {
+std::optional<BlackholeBufferMaterializationFact> TryBuildBufferMaterializationFact(
+    const tir::CallNode* call, tir::Buffer* target_buffer_out) {
   if (!call) {
-    return Optional<Map<String, Any>>();
+    return std::nullopt;
   }
   TileOperator tile_op = ParseOperator(GetRef<tir::Call>(call));
   if (!tile_op.defined()) {
-    return Optional<Map<String, Any>>();
+    return std::nullopt;
   }
   auto info = tile_op->GetBufferMaterializationInfo();
   if (!info.has_value()) {
-    return Optional<Map<String, Any>>();
+    return std::nullopt;
   }
   const tir::Buffer& target = info->target_buffer;
   const std::string target_buffer_name = BufferIdentityName(target);
   const std::string scope = target.scope();
   if (target_buffer_name.empty() || !IsTrackedStateScope(scope)) {
-    return Optional<Map<String, Any>>();
+    return std::nullopt;
   }
   if (target_buffer_out != nullptr) {
     *target_buffer_out = target;
   }
-  Map<String, Any> contract;
-  contract.Set(String(schema_key::kKind),
-               String(buffer_materialization::kIntermediateAccumulatorMerge));
-  contract.Set(String(schema_key::kTargetBuffer), String(target_buffer_name));
-  contract.Set(String(schema_key::kScope), String(scope));
-  contract.Set(String(schema_key::kMaterializationKind), info->materialization_kind);
-  contract.Set(String(schema_key::kBridgeKind), info->bridge_kind);
-  contract.Set(String(schema_key::kValueRole), info->value_role);
-  contract.Set(String(schema_key::kMergeKind), info->merge_kind);
-  contract.Set(String(schema_key::kExecutionProtocol), info->execution_protocol);
-  contract.Set(String(schema_key::kResultLiveForm), info->result_live_form);
-  return contract;
+  BlackholeBufferMaterializationFact fact;
+  fact.kind = buffer_materialization::kIntermediateAccumulatorMerge;
+  fact.target_buffer = target_buffer_name;
+  fact.scope = scope;
+  fact.materialization_kind = str(info->materialization_kind);
+  fact.bridge_kind = str(info->bridge_kind);
+  fact.value_role = str(info->value_role);
+  fact.merge_kind = str(info->merge_kind);
+  fact.execution_protocol = str(info->execution_protocol);
+  fact.result_live_form = str(info->result_live_form);
+  return fact;
 }
 
-bool FlowContractHasEventKind(const Map<String, Any>& flow_contract, const char* kind) {
-  auto events_it = flow_contract.find(String(schema_key::kEvents));
-  if (events_it == flow_contract.end()) {
-    return false;
-  }
-  for (const Any& event_any : Downcast<Array<Any>>((*events_it).second)) {
-    Map<String, Any> event = Downcast<Map<String, Any>>(event_any);
-    auto kind_it = event.find(String(schema_key::kKind));
-    if (kind_it != event.end() && Downcast<String>((*kind_it).second) == kind) {
+bool FlowFactHasEventKind(const BlackholeBufferFlowFact& flow_fact,
+                          BlackholeBufferFlowEventKind kind) {
+  for (const BlackholeBufferFlowEvent& event : flow_fact.events) {
+    if (event.kind == kind) {
       return true;
     }
   }
@@ -359,16 +353,14 @@ bool BufferFeedsDirectFragmentCastConsumerAfterOrderIndex(
   return false;
 }
 
-bool ShouldKeepBufferMaterializationContract(
-    const Map<String, Any>& contract, const tir::Buffer& target_buffer,
+bool ShouldKeepBufferMaterializationFact(
+    const BlackholeBufferMaterializationFact& fact, const tir::Buffer& target_buffer,
     const std::vector<tir::Stmt>& ordered_stmts,
     const std::unordered_set<std::string>& recurrence_subjects, int order_index) {
-  auto kind_it = contract.find(String(schema_key::kKind));
-  if (kind_it == contract.end() || !target_buffer.defined()) {
+  if (fact.kind.empty() || !target_buffer.defined()) {
     return true;
   }
-  if (Downcast<String>((*kind_it).second) !=
-      buffer_materialization::kIntermediateAccumulatorMerge) {
+  if (fact.kind != buffer_materialization::kIntermediateAccumulatorMerge) {
     return true;
   }
   if (BufferFeedsDirectFragmentCastConsumerAfterOrderIndex(target_buffer, ordered_stmts,
@@ -379,75 +371,44 @@ bool ShouldKeepBufferMaterializationContract(
                                               order_index);
 }
 
-Optional<Map<String, Any>> TryBuildRepublishBufferMaterializationContract(
-    const Map<String, Any>& flow_contract) {
-  auto buffer_it = flow_contract.find(String(schema_key::kBuffer));
-  auto scope_it = flow_contract.find(String(schema_key::kScope));
-  auto flow_class_it = flow_contract.find(String(schema_key::kFlowClass));
-  auto granule_kind_it = flow_contract.find(String(schema_key::kGranuleKind));
-  if (buffer_it == flow_contract.end() || scope_it == flow_contract.end() ||
-      flow_class_it == flow_contract.end() || granule_kind_it == flow_contract.end()) {
-    return Optional<Map<String, Any>>();
+std::optional<BlackholeBufferMaterializationFact> TryBuildRepublishBufferMaterializationFact(
+    const BlackholeBufferFlowFact& flow_fact) {
+  if (flow_fact.buffer.empty() || !IsTrackedStateScope(flow_fact.scope) ||
+      flow_fact.flow_class != CBFlowClass::kRepublish ||
+      !FlowFactHasEventKind(flow_fact, BlackholeBufferFlowEventKind::kComputeConsume)) {
+    return std::nullopt;
   }
-  const std::string buffer_name = Downcast<String>((*buffer_it).second);
-  const std::string scope = Downcast<String>((*scope_it).second);
-  const std::string flow_class = Downcast<String>((*flow_class_it).second);
-  const std::string granule_kind = Downcast<String>((*granule_kind_it).second);
-  if (buffer_name.empty() || !IsTrackedStateScope(scope) ||
-      flow_class != buffer_flow::kRepublish ||
-      granule_kind != buffer_flow::kLogicalTile ||
-      !FlowContractHasEventKind(flow_contract, buffer_flow::kComputeConsume)) {
-    return Optional<Map<String, Any>>();
-  }
-  Map<String, Any> contract;
-  contract.Set(String(schema_key::kKind),
-               String(buffer_materialization::kRepublishedLogicalTile));
-  contract.Set(String(schema_key::kTargetBuffer), String(buffer_name));
-  contract.Set(String(schema_key::kScope), String(scope));
-  contract.Set(String(schema_key::kMaterializationKind),
-               String(buffer_materialization::kRepublishedBuffer));
-  contract.Set(String(schema_key::kBridgeKind),
-               String(buffer_materialization::kTileNFacesMaterialization));
-  contract.Set(String(schema_key::kValueRole),
-               String(buffer_materialization::kConsumerInput));
-  contract.Set(String(schema_key::kMergeKind),
-               String(buffer_materialization::kDirectWrite));
-  contract.Set(String(schema_key::kExecutionProtocol),
-               String(buffer_materialization::kTiledCBRepublish));
-  contract.Set(String(schema_key::kResultLiveForm), String(buffer_live_form::kTiledCB));
-  return contract;
+  BlackholeBufferMaterializationFact fact;
+  fact.kind = buffer_materialization::kRepublishedLogicalTile;
+  fact.target_buffer = flow_fact.buffer;
+  fact.scope = flow_fact.scope;
+  fact.materialization_kind = buffer_materialization::kRepublishedBuffer;
+  fact.bridge_kind = buffer_materialization::kTileNFacesMaterialization;
+  fact.value_role = buffer_materialization::kConsumerInput;
+  fact.merge_kind = buffer_materialization::kDirectWrite;
+  fact.execution_protocol = buffer_materialization::kTiledCBRepublish;
+  fact.result_live_form = buffer_live_form::kTiledCB;
+  return fact;
 }
 
-Map<String, Any> MakeRepublishedLogicalTileMaterializationContract(
+BlackholeBufferMaterializationFact MakeRepublishedLogicalTileMaterializationFact(
     const std::string& buffer_name, const std::string& scope,
     const std::string& source_buffer = std::string(), int64_t logical_row_width = -1,
     int64_t logical_element_count = -1) {
-  Map<String, Any> contract;
-  contract.Set(String(schema_key::kKind),
-               String(buffer_materialization::kRepublishedLogicalTile));
-  contract.Set(String(schema_key::kTargetBuffer), String(buffer_name));
-  contract.Set(String(schema_key::kScope), String(scope));
-  contract.Set(String(schema_key::kMaterializationKind),
-               String(buffer_materialization::kRepublishedBuffer));
-  contract.Set(String(schema_key::kBridgeKind),
-               String(buffer_materialization::kTileNFacesMaterialization));
-  contract.Set(String(schema_key::kValueRole),
-               String(buffer_materialization::kConsumerInput));
-  contract.Set(String(schema_key::kMergeKind),
-               String(buffer_materialization::kDirectWrite));
-  contract.Set(String(schema_key::kExecutionProtocol),
-               String(buffer_materialization::kTiledCBRepublish));
-  contract.Set(String(schema_key::kResultLiveForm), String(buffer_live_form::kTiledCB));
-  if (!source_buffer.empty()) {
-    contract.Set(String(schema_key::kSourceBuffer), String(source_buffer));
-  }
-  if (logical_row_width > 0) {
-    contract.Set(String(schema_key::kLogicalRowWidth), Integer(logical_row_width));
-  }
-  if (logical_element_count > 0) {
-    contract.Set(String(schema_key::kLogicalElementCount), Integer(logical_element_count));
-  }
-  return contract;
+  BlackholeBufferMaterializationFact fact;
+  fact.kind = buffer_materialization::kRepublishedLogicalTile;
+  fact.target_buffer = buffer_name;
+  fact.scope = scope;
+  fact.materialization_kind = buffer_materialization::kRepublishedBuffer;
+  fact.bridge_kind = buffer_materialization::kTileNFacesMaterialization;
+  fact.value_role = buffer_materialization::kConsumerInput;
+  fact.merge_kind = buffer_materialization::kDirectWrite;
+  fact.execution_protocol = buffer_materialization::kTiledCBRepublish;
+  fact.result_live_form = buffer_live_form::kTiledCB;
+  fact.source_buffer = source_buffer;
+  fact.logical_row_width = logical_row_width;
+  fact.logical_element_count = logical_element_count;
+  return fact;
 }
 
 bool IsVectorLocalFragmentBuffer(const tir::Buffer& buffer) {
@@ -724,62 +685,28 @@ std::unordered_set<std::string> CollectComputeConsumedBuffers(const tir::Stmt& s
   return buffers;
 }
 
-enum class BufferFlowEventKind {
-  kWrite,
-  kComputeConsume,
-  kTransportConsume,
-  kReference,
-};
-
-struct BufferFlowEvent {
-  int order_index = -1;
-  BufferFlowEventKind kind = BufferFlowEventKind::kReference;
-};
-
-struct BufferFlowContract {
-  std::string buffer_name;
-  std::string scope;
-  std::string flow_class = buffer_flow::kState;
-  int publish_granule = 1;
-  int consume_granule = 1;
-  std::vector<BufferFlowEvent> events;
-};
-
-std::string BufferFlowEventKindToString(BufferFlowEventKind kind) {
-  switch (kind) {
-    case BufferFlowEventKind::kWrite:
-      return buffer_flow::kWrite;
-    case BufferFlowEventKind::kComputeConsume:
-      return buffer_flow::kComputeConsume;
-    case BufferFlowEventKind::kTransportConsume:
-      return buffer_flow::kTransportConsume;
-    default:
-      return buffer_flow::kReference;
-  }
-}
-
-std::string DeriveBufferFlowClassLabel(const std::vector<BufferFlowEvent>& events) {
+CBFlowClass DeriveBufferFlowClass(const std::vector<BlackholeBufferFlowEvent>& events) {
   int first_consume = std::numeric_limits<int>::max();
   bool has_consume = false;
-  for (const BufferFlowEvent& event : events) {
-    if (event.kind == BufferFlowEventKind::kComputeConsume ||
-        event.kind == BufferFlowEventKind::kTransportConsume) {
+  for (const BlackholeBufferFlowEvent& event : events) {
+    if (event.kind == BlackholeBufferFlowEventKind::kComputeConsume ||
+        event.kind == BlackholeBufferFlowEventKind::kTransportConsume) {
       has_consume = true;
       first_consume = std::min(first_consume, event.order_index);
     }
   }
   if (!has_consume) {
-    return buffer_flow::kState;
+    return CBFlowClass::kState;
   }
-  for (const BufferFlowEvent& event : events) {
-    if (event.kind == BufferFlowEventKind::kWrite && event.order_index > first_consume) {
-      return buffer_flow::kRepublish;
+  for (const BlackholeBufferFlowEvent& event : events) {
+    if (event.kind == BlackholeBufferFlowEventKind::kWrite && event.order_index > first_consume) {
+      return CBFlowClass::kRepublish;
     }
   }
-  return buffer_flow::kStream;
+  return CBFlowClass::kStream;
 }
 
-Array<Any> CollectBufferFlowContractsFromBody(const tir::Stmt& body) {
+std::vector<BlackholeBufferFlowFact> CollectBufferFlowFactsFromBody(const tir::Stmt& body) {
   std::unordered_map<std::string, tir::Buffer> tracked_buffers;
   const std::vector<tir::Stmt> ordered_stmts = CollectExecutionOrderedStmts(body);
   for (const tir::Stmt& stmt : ordered_stmts) {
@@ -823,7 +750,7 @@ Array<Any> CollectBufferFlowContractsFromBody(const tir::Stmt& body) {
     });
   }
 
-  std::unordered_map<std::string, BufferFlowContract> contracts_by_buffer;
+  std::unordered_map<std::string, BlackholeBufferFlowFact> facts_by_buffer;
   for (int order_index = 0; order_index < static_cast<int>(ordered_stmts.size()); ++order_index) {
     const tir::Stmt& stmt = ordered_stmts[order_index];
     const auto compute_consumed = CollectComputeConsumedBuffers(stmt);
@@ -831,110 +758,86 @@ Array<Any> CollectBufferFlowContractsFromBody(const tir::Stmt& body) {
       if (!StmtReferencesBuffer(stmt, buffer)) {
         continue;
       }
-      BufferFlowContract& contract = contracts_by_buffer[buffer_name];
-      contract.buffer_name = buffer_name;
-      contract.scope = buffer.scope();
+      BlackholeBufferFlowFact& fact = facts_by_buffer[buffer_name];
+      fact.buffer = buffer_name;
+      fact.scope = buffer.scope();
       const bool compute_consume = compute_consumed.count(buffer_name);
       const bool transport_consume = StmtConsumesBufferViaTransport(stmt, buffer);
       const bool reads = StmtReadsBuffer(stmt, buffer);
       const bool writes = StmtWritesBuffer(stmt, buffer);
-      auto append = [&](BufferFlowEventKind kind) {
-        contract.events.push_back(BufferFlowEvent{order_index, kind});
+      auto append = [&](BlackholeBufferFlowEventKind kind) {
+        fact.events.push_back(BlackholeBufferFlowEvent{order_index, kind});
       };
       if (compute_consume) {
-        append(BufferFlowEventKind::kComputeConsume);
+        append(BlackholeBufferFlowEventKind::kComputeConsume);
       }
       if (!compute_consume && reads && !transport_consume) {
-        append(BufferFlowEventKind::kReference);
+        append(BlackholeBufferFlowEventKind::kReference);
       }
       if (transport_consume) {
-        append(BufferFlowEventKind::kTransportConsume);
+        append(BlackholeBufferFlowEventKind::kTransportConsume);
       }
       if (writes) {
-        append(BufferFlowEventKind::kWrite);
+        append(BlackholeBufferFlowEventKind::kWrite);
       }
       if (!compute_consume && !reads && !transport_consume && !writes) {
-        append(BufferFlowEventKind::kReference);
+        append(BlackholeBufferFlowEventKind::kReference);
       }
     }
   }
 
-  Array<Any> contracts;
-  for (auto& [buffer_name, contract] : contracts_by_buffer) {
-    if (contract.events.empty()) {
+  std::vector<BlackholeBufferFlowFact> facts;
+  for (auto& [_, fact] : facts_by_buffer) {
+    if (fact.events.empty()) {
       continue;
     }
-    contract.flow_class = DeriveBufferFlowClassLabel(contract.events);
-    Map<String, Any> encoded;
-    encoded.Set(String(schema_key::kBuffer), String(buffer_name));
-    encoded.Set(String(schema_key::kScope), String(contract.scope));
-    encoded.Set(String(schema_key::kFlowClass), String(contract.flow_class));
-    encoded.Set(String(schema_key::kGranuleKind), String(buffer_flow::kLogicalTile));
-    encoded.Set(String(schema_key::kPublishGranule), Integer(contract.publish_granule));
-    encoded.Set(String(schema_key::kConsumeGranule), Integer(contract.consume_granule));
-    Array<Any> events;
-    for (const BufferFlowEvent& event : contract.events) {
-      Map<String, Any> encoded_event;
-      encoded_event.Set(String(schema_key::kKind),
-                        String(BufferFlowEventKindToString(event.kind)));
-      encoded_event.Set(String(schema_key::kOrderIndex), Integer(event.order_index));
-      events.push_back(encoded_event);
-    }
-    encoded.Set(String(schema_key::kEvents), events);
-    contracts.push_back(encoded);
+    fact.flow_class = DeriveBufferFlowClass(fact.events);
+    fact.publish_pages_per_event = 1;
+    fact.consume_pages_per_event = 1;
+    facts.push_back(std::move(fact));
   }
-  return contracts;
+  return facts;
 }
 
-void AppendUniqueBufferMaterializationContractsFromFlowContracts(
-    const Array<Any>& flow_contracts, Array<Any>* materialization_contracts) {
+void AppendUniqueBufferMaterializationFactsFromFlowFacts(
+    const std::vector<BlackholeBufferFlowFact>& flow_facts,
+    std::vector<BlackholeBufferMaterializationFact>* materialization_facts) {
   std::unordered_set<std::string> seen;
-  for (const Any& contract_any : *materialization_contracts) {
-    Map<String, Any> contract = Downcast<Map<String, Any>>(contract_any);
-    seen.insert(Downcast<String>(contract.at(String(schema_key::kTargetBuffer))) + "|" +
-                Downcast<String>(contract.at(String(schema_key::kScope))));
+  for (const BlackholeBufferMaterializationFact& fact : *materialization_facts) {
+    seen.insert(fact.target_buffer + "|" + fact.scope);
   }
-  for (const Any& flow_contract_any : flow_contracts) {
-    Map<String, Any> flow_contract = Downcast<Map<String, Any>>(flow_contract_any);
-    auto maybe_contract = TryBuildRepublishBufferMaterializationContract(flow_contract);
-    if (!maybe_contract) {
+  for (const BlackholeBufferFlowFact& flow_fact : flow_facts) {
+    auto maybe_fact = TryBuildRepublishBufferMaterializationFact(flow_fact);
+    if (!maybe_fact) {
       continue;
     }
-    const std::string key =
-        Downcast<String>(maybe_contract.value().at(String(schema_key::kTargetBuffer))) + "|" +
-        Downcast<String>(maybe_contract.value().at(String(schema_key::kScope)));
+    const std::string key = maybe_fact->target_buffer + "|" + maybe_fact->scope;
     if (seen.insert(key).second) {
-      materialization_contracts->push_back(maybe_contract.value());
+      materialization_facts->push_back(maybe_fact.value());
     }
   }
 }
 
-void AppendUniqueCastDrivenBufferMaterializationContractsFromBody(
-    const tir::Stmt& body, const Array<Any>& flow_contracts,
+void AppendUniqueCastDrivenBufferMaterializationFactsFromBody(
+    const tir::Stmt& body, const std::vector<BlackholeBufferFlowFact>& flow_facts,
     const std::unordered_map<std::string, std::vector<int64_t>>& logical_buffer_shapes,
-    Array<Any>* materialization_contracts) {
-  std::unordered_map<std::string, Map<String, Any>> flow_by_buffer;
-  for (const Any& flow_any : flow_contracts) {
-    Map<String, Any> flow = Downcast<Map<String, Any>>(flow_any);
-    auto buffer_it = flow.find(String(schema_key::kBuffer));
-    if (buffer_it != flow.end()) {
-      flow_by_buffer.emplace(Downcast<String>((*buffer_it).second), flow);
+    std::vector<BlackholeBufferMaterializationFact>* materialization_facts) {
+  std::unordered_map<std::string, BlackholeBufferFlowFact> flow_by_buffer;
+  for (const BlackholeBufferFlowFact& flow : flow_facts) {
+    if (!flow.buffer.empty()) {
+      flow_by_buffer.emplace(flow.buffer, flow);
     }
   }
-  auto upsert = [&](const Map<String, Any>& contract) {
-    const std::string key = Downcast<String>(contract.at(String(schema_key::kTargetBuffer))) + "|" +
-                            Downcast<String>(contract.at(String(schema_key::kScope)));
-    for (int i = 0; i < materialization_contracts->size(); ++i) {
-      Map<String, Any> existing = Downcast<Map<String, Any>>((*materialization_contracts)[i]);
-      const std::string existing_key =
-          Downcast<String>(existing.at(String(schema_key::kTargetBuffer))) + "|" +
-          Downcast<String>(existing.at(String(schema_key::kScope)));
+  auto upsert = [&](const BlackholeBufferMaterializationFact& fact) {
+    const std::string key = fact.target_buffer + "|" + fact.scope;
+    for (BlackholeBufferMaterializationFact& existing : *materialization_facts) {
+      const std::string existing_key = existing.target_buffer + "|" + existing.scope;
       if (existing_key == key) {
-        materialization_contracts->Set(i, contract);
+        existing = fact;
         return;
       }
     }
-    materialization_contracts->push_back(contract);
+    materialization_facts->push_back(fact);
   };
 
   tir::PostOrderVisit(body, [&](const ObjectRef& node) {
@@ -953,13 +856,10 @@ void AppendUniqueCastDrivenBufferMaterializationContractsFromBody(
     if (src_name.empty() || dst_name.empty() || flow_it == flow_by_buffer.end()) {
       return;
     }
-    const Map<String, Any>& flow_contract = flow_it->second;
-    const std::string scope = Downcast<String>(flow_contract.at(String(schema_key::kScope)));
-    const std::string granule_kind =
-        Downcast<String>(flow_contract.at(String(schema_key::kGranuleKind)));
-    if (!IsTrackedStateScope(scope) || granule_kind != buffer_flow::kLogicalTile ||
-        (!FlowContractHasEventKind(flow_contract, buffer_flow::kComputeConsume) &&
-         !FlowContractHasEventKind(flow_contract, buffer_flow::kTransportConsume))) {
+    const BlackholeBufferFlowFact& flow_fact = flow_it->second;
+    if (!IsTrackedStateScope(flow_fact.scope) ||
+        (!FlowFactHasEventKind(flow_fact, BlackholeBufferFlowEventKind::kComputeConsume) &&
+         !FlowFactHasEventKind(flow_fact, BlackholeBufferFlowEventKind::kTransportConsume))) {
       return;
     }
     auto lookup_row_width = [&](const tir::Buffer& buffer) {
@@ -979,14 +879,14 @@ void AppendUniqueCastDrivenBufferMaterializationContractsFromBody(
       logical_element_count =
           dst_logical_element_count > 0 ? dst_logical_element_count : src_logical_element_count;
     }
-    upsert(MakeRepublishedLogicalTileMaterializationContract(
-        dst_name, scope, src_name, logical_row_width, logical_element_count));
+    upsert(MakeRepublishedLogicalTileMaterializationFact(
+        dst_name, flow_fact.scope, src_name, logical_row_width, logical_element_count));
   });
 }
 
-Array<Any> CollectBufferMaterializationContractsFromBody(
+std::vector<BlackholeBufferMaterializationFact> CollectBufferMaterializationFactsFromBody(
     const tir::PrimFunc& func, const std::unordered_set<std::string>& recurrence_subjects) {
-  Array<Any> contracts;
+  std::vector<BlackholeBufferMaterializationFact> facts;
   std::unordered_set<std::string> seen;
   const std::vector<tir::Stmt> ordered_stmts = CollectMaterializationOrderedStmts(func->body);
   for (int order_index = 0; order_index < static_cast<int>(ordered_stmts.size()); ++order_index) {
@@ -996,21 +896,19 @@ Array<Any> CollectBufferMaterializationContractsFromBody(
         return;
       }
       tir::Buffer target_buffer;
-      auto maybe_contract = TryBuildBufferMaterializationContract(call, &target_buffer);
-      if (!maybe_contract || !ShouldKeepBufferMaterializationContract(
-                                 maybe_contract.value(), target_buffer, ordered_stmts,
-                                 recurrence_subjects, order_index)) {
+      auto maybe_fact = TryBuildBufferMaterializationFact(call, &target_buffer);
+      if (!maybe_fact || !ShouldKeepBufferMaterializationFact(
+                             maybe_fact.value(), target_buffer, ordered_stmts,
+                             recurrence_subjects, order_index)) {
         return;
       }
-      const std::string key =
-          Downcast<String>(maybe_contract.value().at(String(schema_key::kTargetBuffer))) + "|" +
-          Downcast<String>(maybe_contract.value().at(String(schema_key::kScope)));
+      const std::string key = maybe_fact->target_buffer + "|" + maybe_fact->scope;
       if (seen.insert(key).second) {
-        contracts.push_back(maybe_contract.value());
+        facts.push_back(maybe_fact.value());
       }
     });
   }
-  return contracts;
+  return facts;
 }
 
 BlackholeLoweringSupportFacts CollectBlackholeLoweringSupportFactsImpl(const tir::PrimFunc& func,
@@ -1025,18 +923,17 @@ BlackholeLoweringSupportFacts CollectBlackholeLoweringSupportFactsImpl(const tir
       analysis.recurrence_subjects.insert(subject);
     }
   }
-  Array<Any> flow_contracts = CollectBufferFlowContractsFromBody(func->body);
-  Array<Any> materialization_contracts =
-      CollectBufferMaterializationContractsFromBody(func, analysis.recurrence_subjects);
-  AppendUniqueBufferMaterializationContractsFromFlowContracts(flow_contracts,
-                                                              &materialization_contracts);
-  AppendUniqueCastDrivenBufferMaterializationContractsFromBody(
-      func->body, flow_contracts, BuildLogicalBufferShapes(func), &materialization_contracts);
-  if (!materialization_contracts.empty()) {
-    analysis.facts.buffer_materialization_contracts = materialization_contracts;
+  std::vector<BlackholeBufferFlowFact> flow_facts = CollectBufferFlowFactsFromBody(func->body);
+  std::vector<BlackholeBufferMaterializationFact> materialization_facts =
+      CollectBufferMaterializationFactsFromBody(func, analysis.recurrence_subjects);
+  AppendUniqueBufferMaterializationFactsFromFlowFacts(flow_facts, &materialization_facts);
+  AppendUniqueCastDrivenBufferMaterializationFactsFromBody(
+      func->body, flow_facts, BuildLogicalBufferShapes(func), &materialization_facts);
+  if (!materialization_facts.empty()) {
+    analysis.facts.buffer_materialization_facts = std::move(materialization_facts);
   }
-  if (!flow_contracts.empty()) {
-    analysis.facts.buffer_flow_contracts = flow_contracts;
+  if (!flow_facts.empty()) {
+    analysis.facts.buffer_flow_facts = std::move(flow_facts);
   }
   return analysis.facts;
 }

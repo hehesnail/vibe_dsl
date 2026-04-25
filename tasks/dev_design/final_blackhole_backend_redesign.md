@@ -829,6 +829,24 @@ planning seed
   也不能继续被文档表述成
   `TTProgram`
   的合法输入边界
+- `BlackholeLoweringSupportFacts`
+  这类 pass 内 analysis 结果
+  也不能再伪装成
+  `Array<Any>` /
+  `Map<String, Any>`
+  contract family。
+  允许存在的形态只能是
+  从当前 TIR /
+  `SpatialPlan`
+  派生、
+  不进入 IR 公共面的
+  typed C++ analysis structs；
+  如果事实需要跨过当前 lowering
+  阶段继续保留，
+  必须进入
+  `SpatialPlan` /
+  `TTProgram`
+  typed 表示
 - top-level `TTProgram.payload`
   已删除；
   后续不能以

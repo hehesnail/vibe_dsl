@@ -384,6 +384,18 @@ def test_task5_source_tree_has_no_internal_tt_or_resource_plan_definition_surfac
     assert hits == []
 
 
+def test_blackhole_lowering_support_facts_have_no_contract_map_surface():
+    hits = _source_tree_rg(
+        r"buffer_materialization_contracts|buffer_flow_contracts|"
+        r"BuildBufferMaterializationContractMap|FindBufferMaterializationContract",
+        REPO_ROOT / "tilelang_repo/src/transform/common/blackhole_lowering_requirements.h",
+        REPO_ROOT / "tilelang_repo/src/transform/common/blackhole_lowering_requirements.cc",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.h",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.cc",
+    )
+    assert hits == []
+
+
 def test_task1_copy_spatial_plan_emits_flow_boundary_from_tir():
     mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
     main = mod["main"]

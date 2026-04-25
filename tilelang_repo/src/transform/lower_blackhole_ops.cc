@@ -1550,47 +1550,48 @@ static BlackholeLoweringSupportFacts BuildLoweringSupportFactsFromAnalysis(const
   return CollectBlackholeLoweringSupportFacts(func, spatial_plan.value());
 }
 
-static bool BufferMaterializationContractHasField(const Map<String, Any>& contract,
-                                                  const char* key) {
-  return contract.find(String(key)) != contract.end();
+static bool BufferMaterializationFactHasLogicalRowWidth(
+    const BlackholeBufferMaterializationFact& fact) {
+  return fact.logical_row_width > 0;
 }
 
-static int BufferMaterializationContractSpecificityScore(const Map<String, Any>& contract) {
+static bool BufferMaterializationFactHasLogicalElementCount(
+    const BlackholeBufferMaterializationFact& fact) {
+  return fact.logical_element_count > 0;
+}
+
+static int BufferMaterializationFactSpecificityScore(
+    const BlackholeBufferMaterializationFact& fact) {
   int score = 0;
-  if (BufferMaterializationContractHasField(contract, schema_key::kLogicalRowWidth)) {
+  if (BufferMaterializationFactHasLogicalRowWidth(fact)) {
     score += 4;
   }
-  if (BufferMaterializationContractHasField(contract, schema_key::kLogicalElementCount)) {
+  if (BufferMaterializationFactHasLogicalElementCount(fact)) {
     score += 2;
   }
-  if (BufferMaterializationContractHasField(contract, schema_key::kSourceBuffer)) {
+  if (!fact.source_buffer.empty()) {
     score += 1;
   }
   return score;
 }
 
-static std::unordered_map<std::string, Map<String, Any>>
-BuildBufferMaterializationContractMap(const Array<Any>& buffer_materialization_contracts) {
-  std::unordered_map<std::string, Map<String, Any>> contracts_by_target_buffer;
-  for (const Any& contract_any : buffer_materialization_contracts) {
-    Map<String, Any> contract = Downcast<Map<String, Any>>(contract_any);
-    auto target_it = contract.find(String(schema_key::kTargetBuffer));
-    if (target_it == contract.end()) {
-      continue;
-    }
-    const std::string target_buffer = Downcast<String>((*target_it).second);
-    if (!target_buffer.empty()) {
-      auto existing_it = contracts_by_target_buffer.find(target_buffer);
-      if (existing_it == contracts_by_target_buffer.end() ||
-          BufferMaterializationContractSpecificityScore(contract) >=
-              BufferMaterializationContractSpecificityScore(existing_it->second)) {
-        // Keep the most specific contract for each target buffer so later
-        // cast-/publish-driven contracts can override generic seed entries.
-        contracts_by_target_buffer[target_buffer] = std::move(contract);
+static std::unordered_map<std::string, BlackholeBufferMaterializationFact>
+BuildBufferMaterializationFactMap(
+    const std::vector<BlackholeBufferMaterializationFact>& buffer_materialization_facts) {
+  std::unordered_map<std::string, BlackholeBufferMaterializationFact> facts_by_target_buffer;
+  for (const BlackholeBufferMaterializationFact& fact : buffer_materialization_facts) {
+    if (!fact.target_buffer.empty()) {
+      auto existing_it = facts_by_target_buffer.find(fact.target_buffer);
+      if (existing_it == facts_by_target_buffer.end() ||
+          BufferMaterializationFactSpecificityScore(fact) >=
+              BufferMaterializationFactSpecificityScore(existing_it->second)) {
+        // Keep the most specific fact for each target buffer so later
+        // cast-/publish-driven facts can override generic seed entries.
+        facts_by_target_buffer[fact.target_buffer] = fact;
       }
     }
   }
-  return contracts_by_target_buffer;
+  return facts_by_target_buffer;
 }
 
 static std::unordered_map<std::string, Map<String, Any>> BuildLogicalTileLayoutSpecMap(
@@ -1819,25 +1820,23 @@ PlanTTKernelABI::FindSpatialMaterializationBoundaryRef(const std::string& source
   return &it->second;
 }
 
-const Map<String, Any>* PlanTTKernelABI::FindBufferMaterializationContract(
+const BlackholeBufferMaterializationFact* PlanTTKernelABI::FindBufferMaterializationFact(
     const Buffer& buffer) const {
   const std::string buffer_name = BufferIdentityName(buffer);
-  auto it = buffer_materialization_contracts_by_target_buffer_.find(buffer_name);
-  if (it == buffer_materialization_contracts_by_target_buffer_.end()) {
+  auto it = buffer_materialization_facts_by_target_buffer_.find(buffer_name);
+  if (it == buffer_materialization_facts_by_target_buffer_.end()) {
     return nullptr;
   }
   return &it->second;
 }
 
 bool PlanTTKernelABI::BufferUsesTiledCBLiveForm(const Buffer& buffer) const {
-  auto contract_uses_tiled_cb = [](const Map<String, Any>& contract) {
-    auto result_live_form_it = contract.find(String(schema_key::kResultLiveForm));
-    return result_live_form_it != contract.end() &&
-           Downcast<String>((*result_live_form_it).second) == buffer_live_form::kTiledCB;
+  auto fact_uses_tiled_cb = [](const BlackholeBufferMaterializationFact& fact) {
+    return fact.result_live_form == buffer_live_form::kTiledCB;
   };
 
-  if (const Map<String, Any>* contract = FindBufferMaterializationContract(buffer);
-      contract != nullptr && contract_uses_tiled_cb(*contract)) {
+  if (const BlackholeBufferMaterializationFact* fact = FindBufferMaterializationFact(buffer);
+      fact != nullptr && fact_uses_tiled_cb(*fact)) {
     return true;
   }
 
@@ -1845,13 +1844,11 @@ bool PlanTTKernelABI::BufferUsesTiledCBLiveForm(const Buffer& buffer) const {
   if (buffer_name.empty()) {
     return false;
   }
-  for (const auto& [_, contract] : buffer_materialization_contracts_by_target_buffer_) {
-    auto source_buffer_it = contract.find(String(schema_key::kSourceBuffer));
-    if (source_buffer_it == contract.end() ||
-        Downcast<String>((*source_buffer_it).second) != buffer_name) {
+  for (const auto& [_, fact] : buffer_materialization_facts_by_target_buffer_) {
+    if (fact.source_buffer != buffer_name) {
       continue;
     }
-    if (contract_uses_tiled_cb(contract)) {
+    if (fact_uses_tiled_cb(fact)) {
       return true;
     }
   }
@@ -1866,19 +1863,18 @@ void PlanTTKernelABI::ValidatePublishedBufferSourceEdge(const Buffer& src,
   if (live_form_it == buffer_live_form_cb_by_buffer_identity_.end()) {
     return;
   }
-  const Map<String, Any>* dst_contract = FindBufferMaterializationContract(dst);
-  ICHECK(dst_contract != nullptr)
-      << "PlanTTKernelABI requires buffer_materialization_contract for consumer "
+  const BlackholeBufferMaterializationFact* dst_fact = FindBufferMaterializationFact(dst);
+  ICHECK(dst_fact != nullptr)
+      << "PlanTTKernelABI requires buffer materialization fact for consumer "
       << dst_name << " when source " << src_name << " is carried via explicit live-form CB";
-  auto source_buffer_it = dst_contract->find(String(schema_key::kSourceBuffer));
-  ICHECK(source_buffer_it != dst_contract->end())
-      << "PlanTTKernelABI requires explicit source_buffer in buffer_materialization_contract "
+  ICHECK(!dst_fact->source_buffer.empty())
+      << "PlanTTKernelABI requires explicit source_buffer in buffer materialization fact "
          "for consumer "
       << dst_name << " when source " << src_name << " is carried via explicit live-form CB";
-  ICHECK_EQ(Downcast<String>((*source_buffer_it).second), src_name)
-      << "PlanTTKernelABI requires buffer_materialization_contract source_buffer to match "
+  ICHECK_EQ(dst_fact->source_buffer, src_name)
+      << "PlanTTKernelABI requires buffer materialization fact source_buffer to match "
          "consumer source "
-      << src_name << " for " << dst_name;
+         << src_name << " for " << dst_name;
 }
 
 void PlanTTKernelABI::AppendPublishedBufferSourceMaterialization(
@@ -1927,13 +1923,11 @@ void PlanTTKernelABI::AppendPublishedBufferSourceMaterialization(
 }
 
 void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
-    const FragmentCastMatch& match, const Map<String, Any>& contract, int cb_requirement_index,
+    const FragmentCastMatch& match, const BlackholeBufferMaterializationFact& fact,
+    int cb_requirement_index,
     const PrimExpr& num_elements_expr, const std::string& publication_protocol) {
   const std::string source_name =
-      contract.Get(String(schema_key::kSourceBuffer))
-          ? static_cast<std::string>(Downcast<String>(
-                contract.Get(String(schema_key::kSourceBuffer)).value()))
-          : BufferIdentityName(match.src);
+      !fact.source_buffer.empty() ? fact.source_buffer : BufferIdentityName(match.src);
   const std::string target_name = BufferIdentityName(match.dst);
   if (source_name.empty() || target_name.empty()) {
     return;
@@ -1942,16 +1936,9 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
       !current_segment_kind_.empty()
           ? current_segment_kind_
           : (requires_compute_segment_ ? std::string("compute") : std::string("main"));
-  auto contract_string = [&](const char* key, const char* fallback) {
-    if (auto value = contract.Get(String(key))) {
-      return static_cast<std::string>(Downcast<String>(value.value()));
-    }
-    return std::string(fallback);
-  };
   int64_t logical_element_count =
-      contract.Get(String(schema_key::kLogicalElementCount))
-          ? Downcast<Integer>(contract.Get(String(schema_key::kLogicalElementCount)).value())
-                .IntValue()
+      fact.logical_element_count > 0
+          ? fact.logical_element_count
           : StaticIntValueOrDefault(num_elements_expr, GetLogicalBufferElementCount(match.dst));
   auto bridge_logical_extent = [&](const Buffer& buffer) {
     const Map<String, Any>* spec = FindLogicalTileLayoutSpec(buffer);
@@ -2041,8 +2028,8 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
     tt_materialization_plans_.push_back(TTMaterializationPlan(
         String(materialization_name), String(source_live_form), String(source_boundary_ref->name),
         source_boundary_ref->index, String(target_name), String(), String(kernel_name),
-        String(contract_string(schema_key::kBridgeKind, "")),
-        String(contract_string(schema_key::kMaterializationKind, "")),
+        String(fact.bridge_kind),
+        String(fact.materialization_kind),
         String(buffer_materialization::kCBRepublish), String(publication_protocol),
         required_cb_indices, required_sync_indices,
         String(produced_live_form)));
@@ -2275,56 +2262,14 @@ void PlanTTKernelABI::InvalidateLastFragmentFillValue(const Buffer& buffer) {
   }
 }
 
-void PlanTTKernelABI::LoadBufferFlowContracts(
+void PlanTTKernelABI::LoadBufferFlowFacts(
     const BlackholeLoweringSupportFacts& lowering_support_facts) {
-  buffer_flow_contracts_.clear();
-  for (const Any& contract_any : lowering_support_facts.buffer_flow_contracts) {
-    Map<String, Any> encoded_contract = Downcast<Map<String, Any>>(contract_any);
-    auto buffer_it = encoded_contract.find(String(schema_key::kBuffer));
-    auto flow_class_it = encoded_contract.find(String(schema_key::kFlowClass));
-    if (buffer_it == encoded_contract.end() || flow_class_it == encoded_contract.end()) {
+  buffer_flow_facts_.clear();
+  for (const BlackholeBufferFlowFact& fact : lowering_support_facts.buffer_flow_facts) {
+    if (fact.buffer.empty()) {
       continue;
     }
-    const std::string buffer_name = Downcast<String>((*buffer_it).second);
-    auto parsed_flow_class = ParseCBFlowClass(Downcast<String>((*flow_class_it).second));
-    ICHECK(parsed_flow_class.has_value())
-        << "PlanTTKernelABI requires a known compute-region buffer flow_class for "
-        << buffer_name;
-
-    BufferFlowContract contract;
-    contract.flow_class = parsed_flow_class.value();
-    if (auto publish = encoded_contract.Get(String(schema_key::kPublishGranule))) {
-      contract.publish_pages_per_event =
-          std::max(1, static_cast<int>(Downcast<Integer>(publish.value())->value));
-    }
-    if (auto consume = encoded_contract.Get(String(schema_key::kConsumeGranule))) {
-      contract.consume_pages_per_event =
-          std::max(1, static_cast<int>(Downcast<Integer>(consume.value())->value));
-    }
-    if (auto events = encoded_contract.Get(String(schema_key::kEvents))) {
-      for (const Any& event_any : Downcast<Array<Any>>(events.value())) {
-        Map<String, Any> encoded_event = Downcast<Map<String, Any>>(event_any);
-        auto maybe_kind = encoded_event.Get(String(schema_key::kKind));
-        auto maybe_order_index = encoded_event.Get(String(schema_key::kOrderIndex));
-        if (!maybe_kind || !maybe_order_index) {
-          continue;
-        }
-        BufferFlowEvent event;
-        event.order_index = Downcast<Integer>(maybe_order_index.value())->value;
-        const std::string kind = Downcast<String>(maybe_kind.value());
-        if (kind == buffer_flow::kWrite) {
-          event.kind = BufferFlowEventKind::kWrite;
-        } else if (kind == buffer_flow::kComputeConsume) {
-          event.kind = BufferFlowEventKind::kComputeConsume;
-        } else if (kind == buffer_flow::kTransportConsume) {
-          event.kind = BufferFlowEventKind::kTransportConsume;
-        } else {
-          event.kind = BufferFlowEventKind::kReference;
-        }
-        contract.events.push_back(event);
-      }
-    }
-    buffer_flow_contracts_.emplace(buffer_name, std::move(contract));
+    buffer_flow_facts_.emplace(fact.buffer, fact);
   }
 }
 
@@ -2462,28 +2407,25 @@ void PlanTTKernelABI::LoadLogicalBufferShapes(
     register_shape(Downcast<String>((*buffer_it).second), decode_shape((*shape_it).second),
                    /*priority=*/1);
   };
-  auto register_materialization_contract_shape = [&](const Map<String, Any>& contract) {
-    auto target_it = contract.find(String(schema_key::kTargetBuffer));
-    auto row_width_it = contract.find(String(schema_key::kLogicalRowWidth));
-    auto element_count_it = contract.find(String(schema_key::kLogicalElementCount));
-    if (target_it == contract.end() || row_width_it == contract.end() ||
-        element_count_it == contract.end()) {
+  auto register_materialization_fact_shape = [&](const BlackholeBufferMaterializationFact& fact) {
+    if (fact.target_buffer.empty() || fact.logical_row_width <= 0 ||
+        fact.logical_element_count <= 0) {
       return;
     }
-    const std::string target_name = Downcast<String>((*target_it).second);
-    const int64_t row_width = Downcast<Integer>((*row_width_it).second)->value;
-    const int64_t element_count = Downcast<Integer>((*element_count_it).second)->value;
-    if (target_name.empty() || row_width <= 0 || element_count <= 0 ||
-        element_count % row_width != 0) {
+    if (fact.logical_element_count % fact.logical_row_width != 0) {
       return;
     }
-    register_shape(target_name, {element_count / row_width, row_width}, /*priority=*/1);
+    register_shape(fact.target_buffer,
+                   {fact.logical_element_count / fact.logical_row_width,
+                    fact.logical_row_width},
+                   /*priority=*/1);
   };
   for (const auto& [_, spec] : BuildLogicalTileLayoutSpecMap(spatial_plan)) {
     register_tile_bridge_shape(spec);
   }
-  for (const Any& contract_any : lowering_support_facts.buffer_materialization_contracts) {
-    register_materialization_contract_shape(Downcast<Map<String, Any>>(contract_any));
+  for (const BlackholeBufferMaterializationFact& fact :
+       lowering_support_facts.buffer_materialization_facts) {
+    register_materialization_fact_shape(fact);
   }
   for (const auto& [_, aliases] : alias_names_by_data) {
     std::vector<int64_t> shared_shape;
@@ -2718,7 +2660,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   block_index_var_names_.clear();
   cb_consumed_compute_input_pages_by_buffer_identity_.clear();
   cb_consumed_compute_input_use_count_by_buffer_identity_.clear();
-  buffer_flow_contracts_.clear();
+  buffer_flow_facts_.clear();
   buffer_live_form_cb_by_buffer_identity_.clear();
   stmt_order_index_by_node_.clear();
   segment_plan_.clear();
@@ -2786,7 +2728,7 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   logical_tile_layout_specs_by_buffer_.clear();
   spatial_live_value_by_subject_.clear();
   spatial_materialization_boundary_by_source_target_.clear();
-  buffer_materialization_contracts_by_target_buffer_.clear();
+  buffer_materialization_facts_by_target_buffer_.clear();
   gemm_input_buffer_num_tiles_.clear();
   gemm_transpose_a_ = false;
   gemm_transpose_b_ = false;
@@ -2812,10 +2754,10 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   ValidateComputePipelineLegalityFromBody(func->body);
   requires_compute_segment_ = HasComputeSegmentRequirement(func->body);
   LoadLogicalTileLayoutSpecs(maybe_spatial_plan.value());
-  buffer_materialization_contracts_by_target_buffer_ =
-      BuildBufferMaterializationContractMap(
-          lowering_support_facts.buffer_materialization_contracts);
-  LoadBufferFlowContracts(lowering_support_facts);
+  buffer_materialization_facts_by_target_buffer_ =
+      BuildBufferMaterializationFactMap(
+          lowering_support_facts.buffer_materialization_facts);
+  LoadBufferFlowFacts(lowering_support_facts);
   stmt_order_index_by_node_ = BuildExecutionOrderIndexByStmtNode(func->body);
   const std::vector<std::string> expected_unsupported_ops =
       CollectLeafUnsupportedComputeOpsFromBody(func->body);
@@ -3059,18 +3001,18 @@ int PlanTTKernelABI::AllocateRequirementIndex(const Buffer& buffer, CBType type)
   req.data_format = DataTypeToDataFormatForBlackhole(buffer->dtype);
 
   if (!buffer_identity.empty()) {
-    auto flow_contract_it = buffer_flow_contracts_.find(buffer_identity);
-    if (flow_contract_it != buffer_flow_contracts_.end()) {
-      req.flow_class = flow_contract_it->second.flow_class;
-      if (flow_contract_it->second.publish_pages_per_event > 0) {
+    auto flow_fact_it = buffer_flow_facts_.find(buffer_identity);
+    if (flow_fact_it != buffer_flow_facts_.end()) {
+      req.flow_class = flow_fact_it->second.flow_class;
+      if (flow_fact_it->second.publish_pages_per_event > 0) {
         req.publish_pages_per_event =
             std::max(req.publish_pages_per_event,
-                     flow_contract_it->second.publish_pages_per_event);
+                     flow_fact_it->second.publish_pages_per_event);
       }
-      if (flow_contract_it->second.consume_pages_per_event > 0) {
+      if (flow_fact_it->second.consume_pages_per_event > 0) {
         req.consume_pages_per_event =
             std::max(req.consume_pages_per_event,
-                     flow_contract_it->second.consume_pages_per_event);
+                     flow_fact_it->second.consume_pages_per_event);
       }
     }
   }
@@ -3996,9 +3938,9 @@ void PlanTTKernelABI::ExtractGemmInfo(const CallNode* op) {
     }
     const std::string buffer_identity = BufferIdentityName(buffer);
     CBFlowClass flow_class = CBFlowClass::kStream;
-    if (auto contract_it = buffer_flow_contracts_.find(buffer_identity);
-        contract_it != buffer_flow_contracts_.end()) {
-      flow_class = contract_it->second.flow_class;
+    if (auto flow_fact_it = buffer_flow_facts_.find(buffer_identity);
+        flow_fact_it != buffer_flow_facts_.end()) {
+      flow_class = flow_fact_it->second.flow_class;
     } else if (auto use_count_it =
                    cb_consumed_compute_input_use_count_by_buffer_identity_.find(buffer_identity);
                use_count_it != cb_consumed_compute_input_use_count_by_buffer_identity_.end() &&
@@ -4083,15 +4025,15 @@ CopyDirection PlanTTKernelABI::GetCopyDirection(const BufferStoreNode* op) const
 
   if (isAccumulatorLikeScope(src_scope) && isDRAMScope(dst_scope)) {
     const std::string src_name = BufferIdentityName(load->buffer);
-    const bool has_flow_contract =
-        !src_name.empty() && buffer_flow_contracts_.count(src_name) != 0U;
-    const bool has_materialization_contract =
-        FindBufferMaterializationContract(load->buffer) != nullptr;
+    const bool has_flow_fact =
+        !src_name.empty() && buffer_flow_facts_.count(src_name) != 0U;
+    const bool has_materialization_fact =
+        FindBufferMaterializationFact(load->buffer) != nullptr;
     const bool has_explicit_tiled_live_form =
         !src_name.empty() &&
         buffer_live_form_cb_by_buffer_identity_.count(src_name) != 0U;
     const bool has_multi_element_logical_shape = GetLogicalBufferElementCount(load->buffer) > 1;
-    if (has_flow_contract || has_materialization_contract || has_explicit_tiled_live_form ||
+    if (has_flow_fact || has_materialization_fact || has_explicit_tiled_live_form ||
         has_multi_element_logical_shape) {
       return CopyDirection::kCBToDram;
     }
@@ -4675,7 +4617,7 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
   bool preserve_out_local_state = false;
   if (IsBufferLikeExpr(op->args[2])) {
     const Buffer out_buffer = ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(op->args[2])->buffer);
-    const bool needs_accumulator_merge = FindBufferMaterializationContract(out_buffer) != nullptr;
+    const bool needs_accumulator_merge = FindBufferMaterializationFact(out_buffer) != nullptr;
     if (!gemm_clear_accum_ && !needs_accumulator_merge) {
       gemm_clear_accum_ = true;
     }
@@ -5010,9 +4952,9 @@ Stmt PlanTTKernelABI::GenerateAddFragmentFromCBFrontSequence(const Buffer& dst,
                                                                const Buffer& src_buffer) {
   InvalidateLastFragmentFillValue(dst);
   const std::string dst_buffer_name = BufferIdentityName(dst);
-  const Map<String, Any>* contract = FindBufferMaterializationContract(dst);
-  ICHECK(contract != nullptr)
-      << "PlanTTKernelABI requires buffer_materialization_contract in lowering_requirements for "
+  const BlackholeBufferMaterializationFact* fact = FindBufferMaterializationFact(dst);
+  ICHECK(fact != nullptr)
+      << "PlanTTKernelABI requires buffer materialization fact for "
          "add_fragment_from_cb_front destination "
       << dst_buffer_name;
   const Buffer physical_dst = ResolvePhysicalComputeBuffer(dst);
@@ -5036,27 +4978,24 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
                                                            bool merge_with_zero_reload) {
   InvalidateLastFragmentFillValue(dst);
   const std::string dst_buffer_name = BufferIdentityName(dst);
-  const Map<String, Any>* contract = FindBufferMaterializationContract(dst);
-  ICHECK(contract != nullptr)
-      << "PlanTTKernelABI requires buffer_materialization_contract in lowering_requirements for "
+  const BlackholeBufferMaterializationFact* fact = FindBufferMaterializationFact(dst);
+  ICHECK(fact != nullptr)
+      << "PlanTTKernelABI requires buffer materialization fact for "
          "merge_fragment_tiles destination "
       << dst_buffer_name;
-  auto bridge_it = contract->find(String(schema_key::kBridgeKind));
-  ICHECK(bridge_it != contract->end())
-      << "PlanTTKernelABI requires bridge_kind in buffer_materialization_contract for "
+  ICHECK(!fact->bridge_kind.empty())
+      << "PlanTTKernelABI requires bridge_kind in buffer materialization fact for "
       << dst_buffer_name;
-  const std::string bridge_kind = Downcast<String>((*bridge_it).second);
-  auto protocol_it = contract->find(String(schema_key::kExecutionProtocol));
-  ICHECK(protocol_it != contract->end())
-      << "PlanTTKernelABI requires execution_protocol in buffer_materialization_contract for "
+  ICHECK(!fact->execution_protocol.empty())
+      << "PlanTTKernelABI requires execution_protocol in buffer materialization fact for "
       << dst_buffer_name;
-  const std::string execution_protocol = Downcast<String>((*protocol_it).second);
-  ICHECK_EQ(bridge_kind, "tile_nfaces_materialization")
-      << "PlanTTKernelABI does not support buffer-materialization bridge_kind " << bridge_kind
+  ICHECK_EQ(fact->bridge_kind, "tile_nfaces_materialization")
+      << "PlanTTKernelABI does not support buffer-materialization bridge_kind "
+      << fact->bridge_kind
       << " for " << dst_buffer_name;
-  ICHECK_EQ(execution_protocol, "dst_cb_binary_pack")
+  ICHECK_EQ(fact->execution_protocol, "dst_cb_binary_pack")
       << "PlanTTKernelABI does not support buffer-materialization execution_protocol "
-      << execution_protocol << " for " << dst_buffer_name;
+      << fact->execution_protocol << " for " << dst_buffer_name;
   ICHECK_GT(gemm_c_dtype_.bytes(), 0)
       << "Blackhole accumulator-merge lowering requires a valid destination dtype for "
       << dst_buffer_name;
@@ -5308,23 +5247,14 @@ bool PlanTTKernelABI::CanPublishPostMergeCastWithPackTile(const FragmentCastMatc
       dst_future_uses.has_reference) {
     return false;
   }
-  const Map<String, Any>* contract = FindBufferMaterializationContract(match.dst);
-  if (contract == nullptr) {
+  const BlackholeBufferMaterializationFact* fact = FindBufferMaterializationFact(match.dst);
+  if (fact == nullptr) {
     return false;
   }
-  auto contract_string = [&](const char* key) -> std::string {
-    if (auto value = contract->Get(String(key))) {
-      return static_cast<std::string>(Downcast<String>(value.value()));
-    }
-    return "";
-  };
-  return contract_string(schema_key::kKind) ==
-             buffer_materialization::kRepublishedLogicalTile &&
-         contract_string(schema_key::kBridgeKind) ==
-             buffer_materialization::kTileNFacesMaterialization &&
-         contract_string(schema_key::kExecutionProtocol) ==
-             buffer_materialization::kTiledCBRepublish &&
-         contract_string(schema_key::kResultLiveForm) == buffer_live_form::kTiledCB;
+  return fact->kind == buffer_materialization::kRepublishedLogicalTile &&
+         fact->bridge_kind == buffer_materialization::kTileNFacesMaterialization &&
+         fact->execution_protocol == buffer_materialization::kTiledCBRepublish &&
+         fact->result_live_form == buffer_live_form::kTiledCB;
 }
 
 bool PlanTTKernelABI::HasZeroFragmentFillFact(const Buffer& buffer) const {
@@ -5439,18 +5369,18 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
     if (live_form_req_index >= 0) {
       MarkRequirementLifetimeOverlap(live_form_req_index, materialized_cast_req_index);
     }
-    const Map<String, Any>* contract = FindBufferMaterializationContract(post_merge_cast->dst);
-    ICHECK(contract != nullptr)
-        << "PlanTTKernelABI requires a materialization contract for post-merge cast target "
+    const BlackholeBufferMaterializationFact* fact =
+        FindBufferMaterializationFact(post_merge_cast->dst);
+    ICHECK(fact != nullptr)
+        << "PlanTTKernelABI requires a materialization fact for post-merge cast target "
         << BufferIdentityName(post_merge_cast->dst);
     PrimExpr cast_num_elements = post_merge_cast->num_elements;
-    if (auto logical_element_count = contract->Get(String(schema_key::kLogicalElementCount))) {
+    if (fact->logical_element_count > 0) {
       cast_num_elements = IntImm(
-          DataType::Int(32),
-          static_cast<int>(Downcast<Integer>(logical_element_count.value())->value));
+          DataType::Int(32), static_cast<int>(fact->logical_element_count));
     }
     RecordFragmentCastMaterializationPlans(
-        *post_merge_cast, *contract, materialized_cast_req_index, cast_num_elements,
+        *post_merge_cast, *fact, materialized_cast_req_index, cast_num_elements,
         buffer_materialization::kPackTile);
     buffer_live_form_cb_by_buffer_identity_[BufferIdentityName(post_merge_cast->dst)] =
         materialized_cast_req_index;
@@ -7518,36 +7448,26 @@ Stmt PlanTTKernelABI::GenerateFragmentFillCastPublishSequence(
       !cast_match.dst->dtype.is_bfloat16() || !tir::is_zero(cast_match.src_offset)) {
     return Stmt();
   }
-  const Map<String, Any>* contract = FindBufferMaterializationContract(cast_match.dst);
-  if (contract == nullptr) {
+  const BlackholeBufferMaterializationFact* fact =
+      FindBufferMaterializationFact(cast_match.dst);
+  if (fact == nullptr) {
     return Stmt();
   }
-  auto contract_string = [&](const char* key, const char* fallback) {
-    if (auto value = contract->Get(String(key))) {
-      return static_cast<std::string>(Downcast<String>(value.value()));
-    }
-    return std::string(fallback);
-  };
-  if (contract_string(schema_key::kKind, "") !=
-          buffer_materialization::kRepublishedLogicalTile ||
-      contract_string(schema_key::kBridgeKind, "") !=
-          buffer_materialization::kTileNFacesMaterialization ||
-      contract_string(schema_key::kExecutionProtocol, "") !=
-          buffer_materialization::kTiledCBRepublish) {
+  if (fact->kind != buffer_materialization::kRepublishedLogicalTile ||
+      fact->bridge_kind != buffer_materialization::kTileNFacesMaterialization ||
+      fact->execution_protocol != buffer_materialization::kTiledCBRepublish) {
     return Stmt();
   }
 
   PrimExpr num_elements_expr = cast_match.num_elements;
-  if (auto logical_element_count = contract->Get(String(schema_key::kLogicalElementCount))) {
-    num_elements_expr = IntImm(
-        DataType::Int(32),
-        static_cast<int>(Downcast<Integer>(logical_element_count.value())->value));
+  if (fact->logical_element_count > 0) {
+    num_elements_expr = IntImm(DataType::Int(32),
+                               static_cast<int>(fact->logical_element_count));
   }
 
   PrimExpr row_width = cast_match.row_width;
-  if (auto logical_row_width = contract->Get(String(schema_key::kLogicalRowWidth))) {
-    row_width = IntImm(DataType::Int(32),
-                       static_cast<int>(Downcast<Integer>(logical_row_width.value())->value));
+  if (fact->logical_row_width > 0) {
+    row_width = IntImm(DataType::Int(32), static_cast<int>(fact->logical_row_width));
   }
   auto apply_typed_layout_shape_spec = [&](const Map<String, Any>* spec) {
     if (spec == nullptr) {
@@ -7575,15 +7495,15 @@ Stmt PlanTTKernelABI::GenerateFragmentFillCastPublishSequence(
       apply_typed_layout_shape_spec(&it->second);
     }
   };
-  auto apply_typed_layout_shape_from_contract = [&](const char* key) {
-    if (auto value = contract->Get(String(key))) {
-      apply_typed_layout_shape_by_name(static_cast<std::string>(Downcast<String>(value.value())));
+  auto apply_typed_layout_shape_from_fact = [&](const std::string& buffer_name) {
+    if (!buffer_name.empty()) {
+      apply_typed_layout_shape_by_name(buffer_name);
     }
   };
   apply_typed_layout_shape(cast_match.src);
   apply_typed_layout_shape(cast_match.dst);
-  apply_typed_layout_shape_from_contract(schema_key::kSourceBuffer);
-  apply_typed_layout_shape_from_contract(schema_key::kTargetBuffer);
+  apply_typed_layout_shape_from_fact(fact->source_buffer);
+  apply_typed_layout_shape_from_fact(fact->target_buffer);
   ICHECK(row_width.defined())
       << "PlanTTKernelABI requires logical row_width for pack-thread direct-store "
          "fragment fill publication of "
@@ -7598,7 +7518,7 @@ Stmt PlanTTKernelABI::GenerateFragmentFillCastPublishSequence(
              : cb_requirements_[cb_id].num_pages);
 
   RecordFragmentCastMaterializationPlans(
-      cast_match, *contract, cb_id, num_elements_expr,
+      cast_match, *fact, cb_id, num_elements_expr,
       buffer_materialization::kPackThreadDirectStore);
 
   PrimExpr local_fill_elements = fill_match.num_elements;
@@ -7877,10 +7797,10 @@ bool PlanTTKernelABI::MatchDirectFragmentCast(const ForNode* op,
 Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& match,
                                                     bool publish_cb) {
   InvalidateLastFragmentFillValue(match.dst);
-  const bool force_publish_from_contract =
+  const bool force_publish_from_fact =
       GetStorageScope(match.dst) == "blackhole.acc" &&
-      FindBufferMaterializationContract(match.dst) != nullptr;
-  const bool publish_result = publish_cb || force_publish_from_contract;
+      FindBufferMaterializationFact(match.dst) != nullptr;
+  const bool publish_result = publish_cb || force_publish_from_fact;
   PrimExpr num_elements_expr = match.num_elements;
   std::vector<Stmt> stmts;
   bool use_tiled_republish_materialization = false;
@@ -7905,20 +7825,12 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
         cb_requirements_[cb_id].publish_pages_per_event <= 0) {
       num_pages = std::max(1, it->second);
     }
-    const Map<String, Any>* contract = FindBufferMaterializationContract(match.dst);
-    if (contract != nullptr) {
-      auto kind_it = contract->find(String(schema_key::kKind));
-      auto bridge_it = contract->find(String(schema_key::kBridgeKind));
-      auto protocol_it = contract->find(String(schema_key::kExecutionProtocol));
+    const BlackholeBufferMaterializationFact* fact = FindBufferMaterializationFact(match.dst);
+    if (fact != nullptr) {
       use_tiled_republish_materialization =
-          kind_it != contract->end() && bridge_it != contract->end() &&
-          protocol_it != contract->end() &&
-          Downcast<String>((*kind_it).second) ==
-              buffer_materialization::kRepublishedLogicalTile &&
-          Downcast<String>((*bridge_it).second) ==
-              buffer_materialization::kTileNFacesMaterialization &&
-          Downcast<String>((*protocol_it).second) ==
-              buffer_materialization::kTiledCBRepublish;
+          fact->kind == buffer_materialization::kRepublishedLogicalTile &&
+          fact->bridge_kind == buffer_materialization::kTileNFacesMaterialization &&
+          fact->execution_protocol == buffer_materialization::kTiledCBRepublish;
       if (use_tiled_republish_materialization) {
         auto layout_spec_it = logical_tile_layout_specs_by_buffer_.find(dst_buffer_name);
         auto apply_typed_layout_shape_spec = [&](const Map<String, Any>* spec) {
@@ -7949,18 +7861,14 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
             apply_typed_layout_shape_spec(&it->second);
           }
         };
-        auto apply_typed_layout_shape_from_contract = [&](const char* key) {
-          auto it = contract->find(String(key));
-          if (it != contract->end()) {
-            apply_typed_layout_shape_by_name(
-                static_cast<std::string>(Downcast<String>((*it).second)));
+        auto apply_typed_layout_shape_from_fact = [&](const std::string& buffer_name) {
+          if (!buffer_name.empty()) {
+            apply_typed_layout_shape_by_name(buffer_name);
           }
         };
-        auto row_width_it = contract->find(String(schema_key::kLogicalRowWidth));
-        if (row_width_it != contract->end()) {
-          tiled_republish_row_width = IntImm(
-              DataType::Int(32),
-              static_cast<int>(Downcast<Integer>((*row_width_it).second)->value));
+        if (fact->logical_row_width > 0) {
+          tiled_republish_row_width =
+              IntImm(DataType::Int(32), static_cast<int>(fact->logical_row_width));
         } else if (layout_spec_it != logical_tile_layout_specs_by_buffer_.end()) {
           apply_typed_layout_shape_spec(&layout_spec_it->second);
         }
@@ -7980,19 +7888,17 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
           }
         }
         ICHECK(tiled_republish_row_width.defined())
-            << "PlanTTKernelABI requires logical_row_width contract or structural row_width "
+            << "PlanTTKernelABI requires logical_row_width fact or structural row_width "
                "for tiled republish materialization of "
             << dst_buffer_name;
-        auto logical_element_count_it = contract->find(String(schema_key::kLogicalElementCount));
-        if (logical_element_count_it != contract->end()) {
-          num_elements_expr = IntImm(
-              DataType::Int(32),
-              static_cast<int>(Downcast<Integer>((*logical_element_count_it).second)->value));
+        if (fact->logical_element_count > 0) {
+          num_elements_expr =
+              IntImm(DataType::Int(32), static_cast<int>(fact->logical_element_count));
         }
         apply_typed_layout_shape(match.src);
         apply_typed_layout_shape(match.dst);
-        apply_typed_layout_shape_from_contract(schema_key::kSourceBuffer);
-        apply_typed_layout_shape_from_contract(schema_key::kTargetBuffer);
+        apply_typed_layout_shape_from_fact(fact->source_buffer);
+        apply_typed_layout_shape_from_fact(fact->target_buffer);
         auto fill_value_it =
             last_fragment_fill_value_by_buffer_identity_.find(BufferIdentityName(match.src));
         auto fill_data_value_it =
@@ -8005,7 +7911,7 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
           pack_thread_direct_fill_value = fill_data_value_it->second;
         }
         RecordFragmentCastMaterializationPlans(
-            match, *contract, cb_id, num_elements_expr,
+            match, *fact, cb_id, num_elements_expr,
             pack_thread_direct_fill_value.defined()
                 ? buffer_materialization::kPackThreadDirectStore
                 : buffer_materialization::kMailboxWritePtr);
@@ -8013,7 +7919,7 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
     }
   }
   if (use_tiled_republish_materialization) {
-    // The republish contract says the result becomes cb-live. Whether the logical
+    // The republish fact says the result becomes cb-live. Whether the logical
     // buffer also happens to use blackhole.acc storage does not imply a page has
     // already been reserved for the publish event.
     stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
@@ -8051,26 +7957,26 @@ PlanTTKernelABI::FutureBufferUses PlanTTKernelABI::ClassifyFutureBufferUses(
     const Buffer& buffer, int current_order_index) const {
   FutureBufferUses uses;
   const std::string buffer_identity = BufferIdentityName(buffer);
-  auto it = buffer_flow_contracts_.find(buffer_identity);
-  if (it == buffer_flow_contracts_.end()) {
+  auto it = buffer_flow_facts_.find(buffer_identity);
+  if (it == buffer_flow_facts_.end()) {
     return uses;
   }
-  for (const BufferFlowEvent& event : it->second.events) {
+  for (const BlackholeBufferFlowEvent& event : it->second.events) {
     if (event.order_index <= current_order_index) {
       continue;
     }
-    if (event.kind == BufferFlowEventKind::kWrite) {
+    if (event.kind == BlackholeBufferFlowEventKind::kWrite) {
       break;
     }
-    if (event.kind == BufferFlowEventKind::kComputeConsume) {
+    if (event.kind == BlackholeBufferFlowEventKind::kComputeConsume) {
       uses.has_compute_consume = true;
       continue;
     }
-    if (event.kind == BufferFlowEventKind::kTransportConsume) {
+    if (event.kind == BlackholeBufferFlowEventKind::kTransportConsume) {
       uses.has_transport_consume = true;
       continue;
     }
-    if (event.kind == BufferFlowEventKind::kReference) {
+    if (event.kind == BlackholeBufferFlowEventKind::kReference) {
       uses.has_reference = true;
     }
   }
@@ -8088,15 +7994,15 @@ bool PlanTTKernelABI::ShouldReacquireComputeInputBuffer(const Buffer& buffer,
     return false;
   }
   const std::string buffer_identity = BufferIdentityName(buffer);
-  auto it = buffer_flow_contracts_.find(buffer_identity);
-  if (it == buffer_flow_contracts_.end()) {
+  auto it = buffer_flow_facts_.find(buffer_identity);
+  if (it == buffer_flow_facts_.end()) {
     return false;
   }
-  for (const BufferFlowEvent& event : it->second.events) {
+  for (const BlackholeBufferFlowEvent& event : it->second.events) {
     if (event.order_index <= current_order_index) {
       continue;
     }
-    return event.kind == BufferFlowEventKind::kWrite;
+    return event.kind == BlackholeBufferFlowEventKind::kWrite;
   }
   return false;
 }
@@ -8508,7 +8414,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       if (!fill_match.dst.defined() && fill_data != BufferDataIdentity(out_buffer)) {
         return false;
       }
-      return FindBufferMaterializationContract(out_buffer) == nullptr;
+      return FindBufferMaterializationFact(out_buffer) == nullptr;
     };
 
     if (!select_compute_builtins_only_) {

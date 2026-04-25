@@ -115,25 +115,6 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::ffi::Array<TTCBPlan> GetStagedCBPlans() const;
 
  private:
-  enum class BufferFlowEventKind {
-    kWrite,
-    kComputeConsume,
-    kTransportConsume,
-    kReference,
-  };
-
-  struct BufferFlowEvent {
-    int order_index = -1;
-    BufferFlowEventKind kind = BufferFlowEventKind::kReference;
-  };
-
-  struct BufferFlowContract {
-    CBFlowClass flow_class = CBFlowClass::kState;
-    int publish_pages_per_event = 0;
-    int consume_pages_per_event = 0;
-    std::vector<BufferFlowEvent> events;
-  };
-
   struct FutureBufferUses {
     bool has_compute_consume = false;
     bool has_transport_consume = false;
@@ -463,7 +444,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Estimate a copy tile page size for a buffer */
   int EstimateCopyPageSize(const tvm::tir::Buffer& buffer) const;
 
-  /*! \brief Override CB requirement page sizing after a more specific contract is known. */
+  /*! \brief Override CB requirement page sizing after a more specific fact is known. */
   void SetRequirementPageLayout(int requirement_index, int page_size, int num_pages);
 
   /*! \brief Mark two CB requirements as overlapping so planner cannot reuse one CB for both. */
@@ -615,10 +596,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool MatchGroupedScalarFragmentCopyLoop(const tvm::tir::ForNode* op,
                                           ScalarFragmentCopyMatch* match) const;
   tvm::tir::Stmt GenerateScalarFragmentCopySequence(const ScalarFragmentCopyMatch& match);
-  void LoadBufferFlowContracts(const BlackholeLoweringSupportFacts& lowering_support_facts);
+  void LoadBufferFlowFacts(const BlackholeLoweringSupportFacts& lowering_support_facts);
   FutureBufferUses ClassifyFutureBufferUses(const tvm::tir::Buffer& buffer,
                                             int current_order_index) const;
-  const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>* FindBufferMaterializationContract(
+  const BlackholeBufferMaterializationFact* FindBufferMaterializationFact(
       const tvm::tir::Buffer& buffer) const;
   bool BufferUsesTiledCBLiveForm(const tvm::tir::Buffer& buffer) const;
   void ValidatePublishedBufferSourceEdge(const tvm::tir::Buffer& src,
@@ -629,7 +610,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                   std::vector<tvm::tir::Stmt>* suffix);
   void RecordFragmentCastMaterializationPlans(
       const FragmentCastMatch& match,
-      const tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>& contract,
+      const BlackholeBufferMaterializationFact& fact,
       int cb_requirement_index, const tvm::PrimExpr& num_elements_expr,
       const std::string& publication_protocol);
   void InvalidateLastFragmentFillValue(const tvm::tir::Buffer& buffer);
@@ -699,8 +680,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::vector<std::unordered_set<std::string>> compute_op_seed_known_buffers_;
   std::unordered_map<std::string, tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>
       logical_tile_layout_specs_by_buffer_;
-  std::unordered_map<std::string, tvm::ffi::Map<tvm::ffi::String, tvm::ffi::Any>>
-      buffer_materialization_contracts_by_target_buffer_;
+  std::unordered_map<std::string, BlackholeBufferMaterializationFact>
+      buffer_materialization_facts_by_target_buffer_;
   std::unordered_map<const tvm::tir::VarNode*, tvm::tir::Buffer> compute_physical_buffers_by_data_;
   std::unordered_map<std::string, tvm::tir::Buffer> compute_physical_buffers_by_identity_;
   std::unordered_map<std::string, int> gemm_input_buffer_num_tiles_;
@@ -732,7 +713,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<std::string, int> write_accessor_slots_;
   std::unordered_map<std::string, int> cb_consumed_compute_input_pages_by_buffer_identity_;
   std::unordered_map<std::string, int> cb_consumed_compute_input_use_count_by_buffer_identity_;
-  std::unordered_map<std::string, BufferFlowContract> buffer_flow_contracts_;
+  std::unordered_map<std::string, BlackholeBufferFlowFact> buffer_flow_facts_;
   std::unordered_map<std::string, int> buffer_live_form_cb_by_buffer_identity_;
   std::unordered_map<std::string, SpatialLiveValueRef> spatial_live_value_by_subject_;
   std::unordered_map<std::string, SpatialMaterializationBoundaryRef>

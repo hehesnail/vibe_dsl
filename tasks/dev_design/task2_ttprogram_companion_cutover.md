@@ -41,6 +41,23 @@
   进入
   `TTProgram`
   前 fail-close
+- repo HEAD
+  已将
+  `BlackholeLoweringSupportFacts`
+  的 materialization /
+  flow
+  结果从
+  `Array<Any>` /
+  `Map<String, Any>`
+  contract-map
+  改为 pass-local typed C++ structs；
+  这些 facts
+  不是
+  `TTProgram`
+  输入协议，
+  也不能重新投影成 public payload /
+  bag
+  给下游消费
 
 ## 1. 目标
 

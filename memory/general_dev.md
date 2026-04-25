@@ -1088,6 +1088,22 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   consumer binding target 等，
   都应由 typed plan field
   进入 executable projection。
+- lowering-support analysis
+  不能用
+  `Array<Any>` /
+  `Map<String, Any>`
+  contract-map
+  在 helper 和 lowering pass
+  之间传协议。
+  `BlackholeLoweringSupportFacts`
+  这类只在当前 pass 内消费的结果
+  应保持 typed C++ struct；
+  一旦事实需要跨阶段保留，
+  就应升级到
+  `SpatialPlan` /
+  `TTProgram`
+  typed IR 字段，
+  不能重新变成 public bag。
 
 ## 9. 调试模式
 
