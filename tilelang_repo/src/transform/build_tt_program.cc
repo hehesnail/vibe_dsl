@@ -281,40 +281,33 @@ const char* CBFlowClassToString(CBFlowClass flow_class) {
 Array<TTCBPlan> BuildCBPlans(const std::vector<CBConfig>& configs) {
   Array<TTCBPlan> tt_cb_plans;
   for (const auto& config : configs) {
-    Map<String, Any> cb_attr;
-    cb_attr.Set("total_size_bytes", Integer(config.total_size));
-    Array<Any> requirement_names;
-    Array<Any> requirement_indices;
+    Array<String> requirement_names;
+    Array<Integer> requirement_indices;
     for (const auto& req_name : config.requirement_names) {
       requirement_names.push_back(String(req_name));
     }
     for (int req_index : config.requirement_indices) {
       requirement_indices.push_back(Integer(req_index));
     }
-    cb_attr.Set("requirement_names", requirement_names);
-    cb_attr.Set("requirement_indices", requirement_indices);
     tt_cb_plans.push_back(TTCBPlan(String(config.name), config.cb_id, String(config.role),
                                    config.num_pages, config.page_size, String(config.data_format),
                                    config.initial_reserve_pages,
                                    String(CBFlowClassToString(config.flow_class)),
                                    config.publish_pages_per_event,
                                    config.consume_pages_per_event, config.lifetime_begin,
-                                   config.lifetime_end,
-                                   cb_attr));
+                                   config.lifetime_end, requirement_names,
+                                   requirement_indices));
   }
   return tt_cb_plans;
 }
 
 Array<TTMeshPlan> BuildUnitMeshPlans() {
-  Map<String, Any> payload;
-  payload.Set("coordinate_rank", Integer(2));
-  payload.Set("device_count", Integer(1));
   Array<TTMeshPlan> mesh_plans;
   mesh_plans.push_back(TTMeshPlan(String("unit_mesh"), String("unit_mesh"),
                                   Array<Integer>{Integer(1), Integer(1)},
                                   Array<Integer>{Integer(0), Integer(0)},
                                   Array<Integer>{Integer(1), Integer(1)},
-                                  String("default_system_mesh"), payload));
+                                  String("default_system_mesh")));
   return mesh_plans;
 }
 
@@ -355,18 +348,9 @@ Array<TTBlockPlan> BuildBlockPlans(const SpatialPlan& plan, const Array<TTCoreGr
   Array<TTBlockPlan> block_plans;
   for (size_t i = 0; i < core_groups.size(); ++i) {
     const TTCoreGroup& core_group = core_groups[i];
-    Map<String, Any> payload;
-    payload.Set("logical_grid_x", Integer(core_group->logical_grid_x));
-    payload.Set("logical_grid_y", Integer(core_group->logical_grid_y));
-    payload.Set("linearization", core_group->linearization);
-    payload.Set("physical_cores", core_group->physical_cores);
-    payload.Set("work_packets", core_group->work_packets);
-    payload.Set("core_group_name", core_group->name);
-    payload.Set("physical_core_count", Integer(static_cast<int64_t>(core_group->physical_cores.size())));
-    payload.Set("work_packet_count", Integer(static_cast<int64_t>(core_group->work_packets.size())));
     block_plans.push_back(
         TTBlockPlan(String("block_plan_" + std::to_string(i)), String("core_group"),
-                    task_indices, payload));
+                    task_indices, core_group->name, static_cast<int64_t>(i)));
   }
   return block_plans;
 }
@@ -374,10 +358,8 @@ Array<TTBlockPlan> BuildBlockPlans(const SpatialPlan& plan, const Array<TTCoreGr
 Array<TTKernelPlan> BuildKernelPlans(const Array<TTKernel>& kernels) {
   Array<TTKernelPlan> kernel_plans;
   for (const TTKernel& kernel : kernels) {
-    Map<String, Any> payload;
-    payload.Set("kernel_name", kernel->name);
     kernel_plans.push_back(TTKernelPlan(kernel->name, kernel->kind, kernel->core_type,
-                                        /*block_plan_index=*/0, kernel->abi_plan_index, payload));
+                                        /*block_plan_index=*/0, kernel->abi_plan_index));
   }
   return kernel_plans;
 }
@@ -443,13 +425,10 @@ Array<TTTransportPlan> BuildTransportPlans(const SpatialPlan& plan) {
     if (edge->producer_unit_index < 0 || edge->consumer_unit_index < 0) {
       continue;
     }
-    Map<String, Any> payload;
-    payload.Set("subject", edge->subject);
-    payload.Set("boundary_kind", edge->kind);
     transport_plans.push_back(
         TTTransportPlan(edge->name, edge->kind, edge->producer_unit_index,
                         edge->consumer_unit_index, String("tensor"),
-                        DeriveTransportDeliveryKind(edge), payload));
+                        DeriveTransportDeliveryKind(edge), edge->subject));
   }
   return transport_plans;
 }
@@ -481,7 +460,7 @@ Array<TTSyncPlan> BuildSyncPlans(const Array<TTComputeSyncPlan>& compute_sync_pl
   for (const TTComputeSyncPlan& sync : compute_sync_plans) {
     sync_plans.push_back(TTSyncPlan(sync->name, sync->kind, sync->source_task_index,
                                     sync->target_task_index, sync->ordering_kind,
-                                    sync->materialization_kind, Map<String, Any>()));
+                                    sync->materialization_kind));
   }
   return sync_plans;
 }
@@ -502,8 +481,10 @@ Array<TTDstLayoutPlan> BuildDstLayoutPlans(const Array<TTABIPlan>& abi_plans) {
       if (!seen.insert(dedupe).second) {
         continue;
       }
+      const int64_t page_size_bytes = GetIntegerOrDefault(spec, "transport_page_size", 0);
       dst_layouts.push_back(
-          TTDstLayoutPlan(String("dst_layout_" + dedupe), buffer, layout, memory_space, spec));
+          TTDstLayoutPlan(String("dst_layout_" + dedupe), buffer, layout, memory_space,
+                          page_size_bytes));
     }
   }
   return dst_layouts;
@@ -550,7 +531,6 @@ Array<TTBufferDistributionPlan> BuildBufferDistributionPlans(
     String layout;
     String memory_space;
     int64_t page_size_bytes = 0;
-    Map<String, Any> payload;
   };
 
   std::unordered_map<std::string, DstLayoutInfo> dst_layout_by_buffer;
@@ -558,8 +538,7 @@ Array<TTBufferDistributionPlan> BuildBufferDistributionPlans(
     DstLayoutInfo info;
     info.layout = dst_layout->layout;
     info.memory_space = NormalizeMemorySpace(dst_layout->memory_space);
-    info.payload = dst_layout->payload;
-    info.page_size_bytes = GetIntegerOrDefault(dst_layout->payload, "transport_page_size", 0);
+    info.page_size_bytes = dst_layout->page_size_bytes;
     dst_layout_by_buffer.emplace(str(dst_layout->buffer), std::move(info));
   }
 
@@ -575,16 +554,17 @@ Array<TTBufferDistributionPlan> BuildBufferDistributionPlans(
     String layout = String("local");
     String memory_space = MemorySpaceFromLayoutScope(layout_spec->scope);
     int64_t page_size_bytes = 0;
-    Map<String, Any> payload;
-    payload.Set("spatial_layout", layout_spec->name);
-    payload.Set("spatial_distribution_kind", layout_spec->distribution_kind);
+    String spatial_layout = layout_spec->name;
+    String spatial_distribution_kind = layout_spec->distribution_kind;
+    String abi_layout;
+    String abi_memory_space;
     auto dst_it = dst_layout_by_buffer.find(buffer);
     if (dst_it != dst_layout_by_buffer.end()) {
       layout = dst_it->second.layout;
       memory_space = dst_it->second.memory_space;
       page_size_bytes = dst_it->second.page_size_bytes;
-      payload.Set("abi_layout", dst_it->second.layout);
-      payload.Set("abi_memory_space", dst_it->second.memory_space);
+      abi_layout = dst_it->second.layout;
+      abi_memory_space = dst_it->second.memory_space;
     }
     const String host_visibility =
         str(memory_space) == "DRAM" ? String("host_visible") : String("device_local");
@@ -599,7 +579,8 @@ Array<TTBufferDistributionPlan> BuildBufferDistributionPlans(
         /*mesh_plan_index=*/0, String("replicated"), layout, memory_space, page_size_bytes,
         Array<Integer>{}, String("row_major"), host_visibility, layout_info.logical_shape,
         layout_info.local_shape, layout_info.thread_extent, layout_info.replicate_extent,
-        layout_info.inverse_logical_index_vars, layout_info.inverse_logical_index_exprs, payload));
+        layout_info.inverse_logical_index_vars, layout_info.inverse_logical_index_exprs,
+        spatial_layout, spatial_distribution_kind, abi_layout, abi_memory_space));
   }
   return distribution_plans;
 }
@@ -611,11 +592,8 @@ Array<TTMaterializationPlan> RemapMaterializationCBRequirementIndices(
   for (int64_t cb_plan_index = 0; cb_plan_index < static_cast<int64_t>(cb_plans.size());
        ++cb_plan_index) {
     const TTCBPlan& cb_plan = cb_plans[static_cast<size_t>(cb_plan_index)];
-    if (auto requirement_indices = cb_plan->payload.Get("requirement_indices")) {
-      for (const Any& index_any : Downcast<Array<Any>>(requirement_indices.value())) {
-        cb_plan_index_by_requirement_index[Downcast<Integer>(index_any)->value] =
-            cb_plan_index;
-      }
+    for (const Integer& index : cb_plan->requirement_indices) {
+      cb_plan_index_by_requirement_index[index->value] = cb_plan_index;
     }
   }
 
@@ -632,8 +610,9 @@ Array<TTMaterializationPlan> RemapMaterializationCBRequirementIndices(
     remapped.push_back(TTMaterializationPlan(
         plan->name, plan->source_live_form, plan->materialization_boundary,
         plan->materialization_boundary_index, plan->target_buffer, plan->host_buffer,
-        plan->target_kernel, plan->materialization_protocol, plan->publication_protocol, cb_plan_indices,
-        plan->required_sync_plan_indices, plan->produced_live_form, plan->payload));
+        plan->target_kernel, plan->bridge_kind, plan->materialization_kind,
+        plan->materialization_protocol, plan->publication_protocol, cb_plan_indices,
+        plan->required_sync_plan_indices, plan->produced_live_form));
   }
   return remapped;
 }
@@ -654,14 +633,8 @@ Array<TTExecutionPlan> BuildExecutionPlans(const SpatialPlan& plan, const Array<
   if (phase_indices.empty()) {
     phase_indices.push_back(Integer(0));
   }
-  Map<String, Any> payload;
-  payload.Set("phase_count", Integer(static_cast<int>(phase_indices.size())));
-  payload.Set("execution_unit_count", Integer(static_cast<int>(plan->execution_units.size())));
-  payload.Set("dataflow_edge_count", Integer(static_cast<int>(plan->dataflow_edges.size())));
-  payload.Set("closure_count", Integer(static_cast<int>(plan->closures.size())));
-  payload.Set("boundary_count", Integer(static_cast<int>(plan->boundaries.size())));
   Array<TTExecutionPlan> execution_plans;
-  execution_plans.push_back(TTExecutionPlan(String("main_execution"), kernel_names, phase_indices, payload));
+  execution_plans.push_back(TTExecutionPlan(String("main_execution"), kernel_names, phase_indices));
   return execution_plans;
 }
 

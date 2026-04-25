@@ -1142,6 +1142,10 @@ static std::vector<MaterializationPlanSpec> ExtractMaterializationPlans(const ti
     if (auto value = item.Get("target_buffer")) plan.target_buffer = Downcast<String>(value.value());
     if (auto value = item.Get("host_buffer")) plan.host_buffer = Downcast<String>(value.value());
     if (auto value = item.Get("target_kernel")) plan.target_kernel = Downcast<String>(value.value());
+    if (auto value = item.Get("bridge_kind")) plan.bridge_kind = Downcast<String>(value.value());
+    if (auto value = item.Get("materialization_kind")) {
+      plan.materialization_kind = Downcast<String>(value.value());
+    }
     if (auto value = item.Get("materialization_protocol")) {
       plan.materialization_protocol = Downcast<String>(value.value());
     }
@@ -1181,6 +1185,12 @@ static std::vector<ConsumerBindingPlanSpec> ExtractConsumerBindingPlans(const ti
     }
     if (auto value = item.Get("source_live_form")) {
       plan.source_live_form = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("target_buffer")) {
+      plan.target_buffer = Downcast<String>(value.value());
+    }
+    if (auto value = item.Get("materialization_plan")) {
+      plan.materialization_plan = Downcast<String>(value.value());
     }
     if (auto value = item.Get("live_value_edge")) {
       plan.live_value_edge = Downcast<String>(value.value());

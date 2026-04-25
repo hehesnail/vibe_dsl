@@ -235,7 +235,6 @@ def _normalize_semaphore_plan_for_tt_program(semaphore_plan):
                 "source_task_index": int(plan.get("source_task_index", -1)),
                 "target_task_index": int(plan.get("target_task_index", -1)),
                 "core_ranges": list(plan.get("core_ranges", [])),
-                "payload": dict(plan.get("payload", {})),
             }
         )
     return normalized
@@ -258,7 +257,6 @@ def _rebuild_tt_program_with_semaphore_plan(tt_program, semaphore_plan):
                     source_task_index=plan["source_task_index"],
                     target_task_index=plan["target_task_index"],
                     core_ranges=plan["core_ranges"],
-                    payload=plan["payload"],
                 )
             )
         else:
@@ -273,7 +271,6 @@ def _rebuild_tt_program_with_semaphore_plan(tt_program, semaphore_plan):
                     plan["source_task_index"],
                     plan["target_task_index"],
                     plan["core_ranges"],
-                    plan["payload"],
                 )
             )
     return rebuild_tt_program(tt_program, semaphore_plans=rebuilt)
@@ -628,14 +625,11 @@ def test_blackhole_copy_pass_attrs():
 
     cb_plans = tt_program.cb_plans
     assert [str(cb.resource_class) for cb in cb_plans] == ["intermediate"]
-    assert int(cb_plans[0].payload["total_size_bytes"]) == 4096
+    assert int(cb_plans[0].num_pages) * int(cb_plans[0].page_size_bytes) == 4096
     assert int(cb_plans[0].lifetime_begin) == 0
     assert int(cb_plans[0].lifetime_end) == 0
-    assert "lifetime_begin" not in dict(cb_plans[0].payload)
-    assert "lifetime_end" not in dict(cb_plans[0].payload)
-    assert [str(name) for name in cb_plans[0].payload["requirement_names"]] == [
-        str(cb_plans[0].name)
-    ]
+    assert not hasattr(cb_plans[0], "payload")
+    assert [str(name) for name in cb_plans[0].requirement_names] == [str(cb_plans[0].name)]
     assert int(cb_plans[0].cb_id) == 16
 
     fused_dataflow = require_tt_kernel(tt_program, kind="fused_dataflow", core_type="brisc")

@@ -28,7 +28,7 @@
 - `P1 contract-family fallback deletion`: completed
 - `P1 kernel/core/compute/sync payload surface deletion`: completed
 - `P1 top-level TTProgram payload deletion`: completed
-- `P1 plan-local TT*Plan payload deletion`: next
+- `P1 plan-local TT*Plan payload deletion`: completed
 - `P1 lowering facts contract-map cleanup`: next
 - `P1 leaf reader name/default cleanup`: next
 - `P1/P2 workload payoff`: queued
@@ -37,7 +37,7 @@
 
 - Direct runtime remains an admitted leaf backend subset, not the codegen/export capability boundary.
 - Non-GEMM exact compute builtins compile through kernel source; per-op typed expansion is next payoff work.
-- Remaining plan-local payload, analysis-fact maps, and leaf name/default readers should shrink into typed fields.
+- Remaining analysis-fact maps and leaf name/default readers should shrink into typed fields.
 - Flash-attn compile/source/spec baseline is stable; direct runtime correctness is not admitted.
 
 ## Latest Verification
@@ -45,5 +45,6 @@
 P1 redundant protocol cleanup:
 
 - `cmake --build build -j32`
-- Blackhole schema/runtime/pipeline sweep: `222 passed, 1 skipped, 1 xfailed, 4 warnings`
-- Post-cleanup spot check: `3 passed`
+- Blackhole schema/pipeline sweep: `142 passed, 10 skipped, 1 xfailed, 4 warnings`
+- TT-Sim copy runtime: `13 passed`
+- TT-Sim GEMM: `59 passed`

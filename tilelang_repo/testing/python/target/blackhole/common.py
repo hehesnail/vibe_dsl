@@ -207,22 +207,23 @@ def extract_blackhole_work_per_core(func):
 
 
 def extract_blackhole_cb_configs(func):
-    """Return TTProgram CB-plan payloads."""
+    """Return TTProgram CB-plan fields."""
     cb_plans = list(require_tt_program(func).cb_plans)
     configs = []
     for cb_plan in cb_plans:
-        config = dict(cb_plan.payload)
-        config.setdefault("cb_id", int(cb_plan.cb_id))
-        config.setdefault("name", str(cb_plan.name))
-        config.setdefault("role", str(cb_plan.resource_class))
-        config.setdefault("num_pages", int(cb_plan.num_pages))
-        config.setdefault("page_size", int(cb_plan.page_size_bytes))
-        config.setdefault(
-            "total_size_bytes", int(cb_plan.num_pages) * int(cb_plan.page_size_bytes)
-        )
-        config.setdefault("lifetime_begin", int(cb_plan.lifetime_begin))
-        config.setdefault("lifetime_end", int(cb_plan.lifetime_end))
-        config.setdefault("data_format", str(cb_plan.data_format))
+        config = {
+            "cb_id": int(cb_plan.cb_id),
+            "name": str(cb_plan.name),
+            "role": str(cb_plan.resource_class),
+            "num_pages": int(cb_plan.num_pages),
+            "page_size": int(cb_plan.page_size_bytes),
+            "total_size_bytes": int(cb_plan.num_pages) * int(cb_plan.page_size_bytes),
+            "lifetime_begin": int(cb_plan.lifetime_begin),
+            "lifetime_end": int(cb_plan.lifetime_end),
+            "data_format": str(cb_plan.data_format),
+            "requirement_names": [str(name) for name in cb_plan.requirement_names],
+            "requirement_indices": [int(index) for index in cb_plan.requirement_indices],
+        }
         configs.append(config)
     return configs
 
@@ -350,7 +351,6 @@ def rebuild_tt_kernel_plan(
     core_type=None,
     block_plan_index=None,
     abi_plan_index=None,
-    payload=None,
 ):
     """Rebuild a TTKernelPlan with optional field overrides."""
     make_tt_kernel_plan = tilelang.tvm.get_global_func("tl.TTKernelPlan")
@@ -360,7 +360,6 @@ def rebuild_tt_kernel_plan(
         str(kernel_plan.core_type) if core_type is None else core_type,
         int(kernel_plan.block_plan_index) if block_plan_index is None else block_plan_index,
         int(kernel_plan.abi_plan_index) if abi_plan_index is None else abi_plan_index,
-        dict(kernel_plan.payload) if payload is None else payload,
     )
 
 
@@ -451,7 +450,6 @@ def rebuild_tt_semaphore_plan(
     source_task_index=None,
     target_task_index=None,
     core_ranges=None,
-    payload=None,
 ):
     """Rebuild a TTSemaphorePlan with optional field overrides."""
     make_tt_semaphore_plan = tilelang.tvm.get_global_func("tl.TTSemaphorePlan")
@@ -464,7 +462,6 @@ def rebuild_tt_semaphore_plan(
         int(semaphore_plan.source_task_index) if source_task_index is None else source_task_index,
         int(semaphore_plan.target_task_index) if target_task_index is None else target_task_index,
         list(semaphore_plan.core_ranges) if core_ranges is None else core_ranges,
-        dict(semaphore_plan.payload) if payload is None else payload,
     )
 
 
@@ -478,7 +475,6 @@ def rebuild_tt_abi_plan(
     compile_time_arg_specs=None,
     accessors=None,
     semaphore_bindings=None,
-    payload=None,
 ):
     """Rebuild a TTABIPlan with optional field overrides."""
     make_tt_abi_plan = tilelang.tvm.get_global_func("tl.TTABIPlan")
@@ -494,7 +490,6 @@ def rebuild_tt_abi_plan(
         else compile_time_arg_specs,
         list(abi_plan.accessors) if accessors is None else accessors,
         list(abi_plan.semaphore_bindings) if semaphore_bindings is None else semaphore_bindings,
-        dict(abi_plan.payload) if payload is None else payload,
     )
 
 

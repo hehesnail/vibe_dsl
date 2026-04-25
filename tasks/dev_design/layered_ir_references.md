@@ -226,7 +226,7 @@ MLIR 对当前设计的价值不是“我们也要长得像 MLIR”，而是：
 
 对应到仓库：
 
-- `Channel.kind / payload_kind / delivery_kind`
+- `Channel.kind / value_kind / delivery_kind`
 - `ProgramPhase / SyncEdge`
 - cross-phase materialization / ordering legality
 

@@ -1074,6 +1074,20 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   前 fail-close，
   或进入明确 typed leaf
   admission 字段。
+- plan-local
+  `TT*Plan.payload`
+  也不能作为局部兼容壳保留。
+  `TTProgram`
+  内部 plan object 需要跨 builder /
+  validator /
+  projection 保留的信息，
+  应直接建 typed field；
+  例如 CB requirement index/name、
+  dst layout page size、
+  materialization host/boundary、
+  consumer binding target 等，
+  都应由 typed plan field
+  进入 executable projection。
 
 ## 9. 调试模式
 

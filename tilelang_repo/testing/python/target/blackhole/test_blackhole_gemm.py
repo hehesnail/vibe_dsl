@@ -230,23 +230,27 @@ def _rebuild_codegen_module_without_contract_family_payload(artifact):
     return _rebuild_codegen_module_with_tt_program(artifact, tt_program_mutator=mutate)
 
 
-def _rebuild_tt_materialization_plan(plan, *, payload=None):
+def _rebuild_tt_materialization_plan(plan, *, host_buffer=None):
     make_tt_materialization_plan = tilelang.tvm.get_global_func("tl.TTMaterializationPlan")
     return make_tt_materialization_plan(
         str(plan.name),
         str(plan.source_live_form),
+        str(plan.materialization_boundary),
+        int(plan.materialization_boundary_index),
         str(plan.target_buffer),
+        str(plan.host_buffer) if host_buffer is None else host_buffer,
         str(plan.target_kernel),
+        str(plan.bridge_kind),
+        str(plan.materialization_kind),
         str(plan.materialization_protocol),
         str(plan.publication_protocol),
         list(plan.required_cb_plan_indices),
         list(plan.required_sync_plan_indices),
         str(plan.produced_live_form),
-        dict(plan.payload) if payload is None else payload,
     )
 
 
-def _rebuild_tt_cb_plan(plan, *, payload=None):
+def _rebuild_tt_cb_plan(plan):
     make_tt_cb_plan = tilelang.tvm.get_global_func("tl.TTCBPlan")
     return make_tt_cb_plan(
         str(plan.name),
@@ -261,36 +265,41 @@ def _rebuild_tt_cb_plan(plan, *, payload=None):
         int(plan.consume_pages_per_event),
         int(plan.lifetime_begin),
         int(plan.lifetime_end),
-        dict(plan.payload) if payload is None else payload,
+        list(plan.requirement_names),
+        list(plan.requirement_indices),
     )
 
 
-def _rebuild_tt_live_form_plan(plan, *, payload=None):
+def _rebuild_tt_live_form_plan(plan):
     make_tt_live_form_plan = tilelang.tvm.get_global_func("tl.TTLiveFormPlan")
     return make_tt_live_form_plan(
         str(plan.name),
         str(plan.logical_value),
+        str(plan.spatial_live_value),
+        int(plan.spatial_live_value_index),
         str(plan.producer_kernel),
         str(plan.physical_form),
         str(plan.execution_topology),
         int(plan.physical_local_extent),
         int(plan.logical_element_count),
         str(plan.ownership_kind),
-        dict(plan.payload) if payload is None else payload,
     )
 
 
-def _rebuild_tt_consumer_binding_plan(plan, *, payload=None):
+def _rebuild_tt_consumer_binding_plan(plan):
     make_tt_consumer_binding_plan = tilelang.tvm.get_global_func("tl.TTConsumerBindingPlan")
     return make_tt_consumer_binding_plan(
         str(plan.name),
         str(plan.consumer_kernel),
         str(plan.consumer_op_kind),
         str(plan.source_live_form),
+        str(plan.live_value_edge),
+        int(plan.live_value_edge_index),
         bool(plan.accepts_distributed_slice),
         bool(plan.requires_full_logical_tile),
         int(plan.abi_plan_index),
-        dict(plan.payload) if payload is None else payload,
+        str(plan.target_buffer),
+        str(plan.materialization_plan),
     )
 
 
@@ -1028,47 +1037,24 @@ def test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plan
     assert str(output_materialization["publication_protocol"]) == "pack_thread_direct_store"
 
 
-def test_blackhole_executable_projection_does_not_seed_leaf_records_from_payload():
+def test_blackhole_executable_projection_has_no_plan_local_payload_records():
     kernel = fragment_fill_cast_publish_kernel()
     target = Target("blackhole")
 
     with target:
         artifact = lower(kernel, target=target)
 
-    poison_key = "payload_poison"
-
-    def poison_payload(payload):
-        poisoned = dict(payload)
-        poisoned[poison_key] = "must_not_project"
-        return poisoned
-
-    def mutate(tt_program):
-        return rebuild_tt_program(
-            tt_program,
-            cb_plans=[
-                _rebuild_tt_cb_plan(plan, payload=poison_payload(plan.payload))
-                for plan in tt_program.cb_plans
-            ],
-            live_form_plans=[
-                _rebuild_tt_live_form_plan(plan, payload=poison_payload(plan.payload))
-                for plan in tt_program.live_form_plans
-            ],
-            materialization_plans=[
-                _rebuild_tt_materialization_plan(plan, payload=poison_payload(plan.payload))
-                for plan in tt_program.materialization_plans
-            ],
-            consumer_binding_plans=[
-                _rebuild_tt_consumer_binding_plan(
-                    plan, payload=poison_payload(plan.payload)
-                )
-                for plan in tt_program.consumer_binding_plans
-            ],
-        )
-
     rewritten = {}
     for gvar, func in artifact.device_mod.functions.items():
         if func.attrs and "tl.tt_program" in func.attrs:
-            func = func.with_attr("tl.tt_program", mutate(require_tt_program(func)))
+            tt_program = require_tt_program(func)
+            for plan_group in (
+                tt_program.cb_plans,
+                tt_program.live_form_plans,
+                tt_program.materialization_plans,
+                tt_program.consumer_binding_plans,
+            ):
+                assert all(not hasattr(plan, "payload") for plan in plan_group)
         rewritten[gvar] = func
     device_mod = tvm.IRModule(rewritten, global_infos=artifact.device_mod.global_infos)
     device_mod = tilelang.transform.ValidateTTProgram()(device_mod)
@@ -1082,15 +1068,15 @@ def test_blackhole_executable_projection_does_not_seed_leaf_records_from_payload
     if executable_spec is None:
         pytest.fail("Expected materialized Blackhole executable projection")
 
-    def assert_no_poison(value):
+    def assert_no_payload_key(value):
         if hasattr(value, "items"):
             items = dict(value)
-            assert poison_key not in items
+            assert "payload" not in items
             for nested in items.values():
-                assert_no_poison(nested)
+                assert_no_payload_key(nested)
         elif isinstance(value, (list, tuple)):
             for nested in value:
-                assert_no_poison(nested)
+                assert_no_payload_key(nested)
 
     for key in (
         "segment_plan",
@@ -1100,7 +1086,7 @@ def test_blackhole_executable_projection_does_not_seed_leaf_records_from_payload
         "materialization_plans",
         "consumer_binding_plans",
     ):
-        assert_no_poison(executable_spec[key])
+        assert_no_payload_key(executable_spec[key])
 
 
 def test_blackhole_fragment_fill_cast_publish_rejects_materialization_plan_without_host_buffer():
@@ -1113,10 +1099,8 @@ def test_blackhole_fragment_fill_cast_publish_rejects_materialization_plan_witho
     def drop_host_buffer(tt_program):
         rebuilt_materializations = []
         for plan in tt_program.materialization_plans:
-            payload = dict(plan.payload)
-            payload.pop("host_buffer", None)
             rebuilt_materializations.append(
-                _rebuild_tt_materialization_plan(plan, payload=payload)
+                _rebuild_tt_materialization_plan(plan, host_buffer="")
             )
         return rebuild_tt_program(
             tt_program, materialization_plans=rebuilt_materializations

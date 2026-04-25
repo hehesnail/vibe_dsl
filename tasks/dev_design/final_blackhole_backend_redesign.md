@@ -352,12 +352,25 @@ operand binding /
 上的 leaf fallback payload。
 top-level
 `TTProgram.payload`
-也已删除；
-剩余 plan-local
-`payload`
-只能作为局部 realization detail
-继续收敛，
-不能回升成 owner truth。
+也已删除。
+`TTMeshPlan` /
+`TTBufferDistributionPlan` /
+`TTBlockPlan` /
+`TTKernelPlan` /
+`TTCBPlan` /
+`TTTransportPlan` /
+`TTSyncPlan` /
+`TTSemaphorePlan` /
+`TTDstLayoutPlan` /
+`TTLiveFormPlan` /
+`TTMaterializationPlan` /
+`TTConsumerBindingPlan` /
+`TTABIPlan` /
+`TTExecutionPlan`
+已不再暴露 plan-local
+`payload`；
+仍需保留的信息必须进入 typed fields
+或 leaf projection。
 
 ### 3.4 `ExecutableSpec`
 

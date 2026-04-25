@@ -75,7 +75,6 @@ def _normalize_semaphore_plan_for_tt_program(semaphore_plan):
                 "source_task_index": int(plan.get("source_task_index", -1)),
                 "target_task_index": int(plan.get("target_task_index", -1)),
                 "core_ranges": list(plan.get("core_ranges", [])),
-                "payload": dict(plan.get("payload", {})),
             }
         )
     return normalized
@@ -99,7 +98,6 @@ def _rebuild_semaphore_plans(tt_program, semaphore_plan):
                     source_task_index=plan["source_task_index"],
                     target_task_index=plan["target_task_index"],
                     core_ranges=plan["core_ranges"],
-                    payload=plan["payload"],
                 )
             )
         else:
@@ -113,7 +111,6 @@ def _rebuild_semaphore_plans(tt_program, semaphore_plan):
                     plan["source_task_index"],
                     plan["target_task_index"],
                     plan["core_ranges"],
-                    plan["payload"],
                 )
             )
     return rebuilt

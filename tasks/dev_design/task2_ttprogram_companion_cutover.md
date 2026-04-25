@@ -540,16 +540,20 @@ repo HEAD
   sync 的 leaf fallback payload
 - top-level
   `TTProgram.payload`
+- plan-local
+  `TT*Plan.payload`
 
 这些旧面不能再写成
 task3
 继续保留的 forced carrier。
-剩余 plan-local
+repo HEAD
+不再把 plan-local
 `payload`
-只能作为局部 realization detail /
-admission metadata
-继续收敛，
-不能成为 owner truth。
+暴露为
+`TTProgram`
+表示面；
+仍需保留的信息必须进入 typed fields
+或 leaf projection。
 
 它们不能被文档表述成：
 

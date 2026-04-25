@@ -1146,7 +1146,7 @@ static void BuildTTKernelAndABISeeds(const Array<Any>& segment_plan, Array<TTKer
             : Array<Any>();
     abi_plans.push_back(TTABIPlan(String("abi_" + std::to_string(index)), kernel_name, runtime_args,
                                   common_runtime_args, compile_time_arg_specs, accessors,
-                                  semaphore_bindings, segment));
+                                  semaphore_bindings));
     kernels.push_back(TTKernel(kernel_name, kernel_kind, core_type, index, launch_spec,
                                compute_config, per_work_arg_specs));
     ++index;
@@ -2013,16 +2013,11 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
     if (has_live_form(name)) {
       return;
     }
-    Map<String, Any> payload;
-    payload.Set("logical_value", String(logical_value));
-    payload.Set("spatial_live_value", String(spatial_live_value.name));
-    payload.Set("spatial_live_value_index", Integer(spatial_live_value.index));
-    payload.Set("source_kernel", String(kernel_name));
     tt_live_form_plans_.push_back(TTLiveFormPlan(
         String(name), String(logical_value), String(spatial_live_value.name),
         spatial_live_value.index, String(kernel_name), String(physical_form),
         String("thread_distributed"), physical_local_extent, logical_element_count,
-        String(ownership_kind), payload));
+        String(ownership_kind)));
   };
 
   push_live_form(source_name, "thread_distributed_slice", source_local_extent,
@@ -2043,20 +2038,14 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
   if (!has_materialization) {
     Array<Integer> required_cb_indices{Integer(cb_requirement_index)};
     Array<Integer> required_sync_indices;
-    Map<String, Any> payload;
-    Array<Any> requirement_indices{Integer(cb_requirement_index)};
-    payload.Set("required_cb_requirement_indices", requirement_indices);
-    payload.Set("bridge_kind", String(contract_string(schema_key::kBridgeKind, "")));
-    payload.Set("materialization_kind",
-                String(contract_string(schema_key::kMaterializationKind, "")));
-    payload.Set("materialization_boundary", String(source_boundary_ref->name));
-    payload.Set("materialization_boundary_index", Integer(source_boundary_ref->index));
     tt_materialization_plans_.push_back(TTMaterializationPlan(
         String(materialization_name), String(source_live_form), String(source_boundary_ref->name),
         source_boundary_ref->index, String(target_name), String(), String(kernel_name),
+        String(contract_string(schema_key::kBridgeKind, "")),
+        String(contract_string(schema_key::kMaterializationKind, "")),
         String(buffer_materialization::kCBRepublish), String(publication_protocol),
         required_cb_indices, required_sync_indices,
-        String(produced_live_form), payload));
+        String(produced_live_form)));
   }
 
   const std::string binding_name = "consume_" + source_name + "_as_cast_fragment_slice";
@@ -2068,16 +2057,12 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
     }
   }
   if (!has_binding) {
-    Map<String, Any> payload;
-    payload.Set("target_buffer", String(target_name));
-    payload.Set("materialization_plan", String(materialization_name));
-    payload.Set("live_value_edge", String(source_boundary_ref->live_value_edge));
-    payload.Set("live_value_edge_index", Integer(source_boundary_ref->live_value_edge_index));
     tt_consumer_binding_plans_.push_back(TTConsumerBindingPlan(
         String(binding_name), String(kernel_name), String("cast_fragment_slice"),
         String(source_live_form), String(source_boundary_ref->live_value_edge),
         source_boundary_ref->live_value_edge_index, /*accepts_distributed_slice=*/true,
-        /*requires_full_logical_tile=*/false, /*abi_plan_index=*/-1, payload));
+        /*requires_full_logical_tile=*/false, /*abi_plan_index=*/-1, String(target_name),
+        String(materialization_name)));
   }
 }
 
@@ -2101,7 +2086,8 @@ void PlanTTKernelABI::FinalizeConsumerBindingABIIndices() {
     finalized.push_back(TTConsumerBindingPlan(
         plan->name, plan->consumer_kernel, plan->consumer_op_kind, plan->source_live_form,
         plan->live_value_edge, plan->live_value_edge_index, plan->accepts_distributed_slice,
-        plan->requires_full_logical_tile, abi_plan_index, plan->payload));
+        plan->requires_full_logical_tile, abi_plan_index, plan->target_buffer,
+        plan->materialization_plan));
   }
   tt_consumer_binding_plans_ = finalized;
 }
@@ -2130,17 +2116,13 @@ void PlanTTKernelABI::FinalizeMaterializationPlanHostBuffers() {
       host_buffer = target_buffer;
     }
 
-    Map<String, Any> payload = plan->payload;
-    if (!host_buffer.empty()) {
-      payload.Set("host_buffer", String(host_buffer));
-    }
-
     finalized.push_back(TTMaterializationPlan(
         plan->name, plan->source_live_form, plan->materialization_boundary,
         plan->materialization_boundary_index, plan->target_buffer, String(host_buffer),
-        plan->target_kernel, plan->materialization_protocol, plan->publication_protocol,
+        plan->target_kernel, plan->bridge_kind, plan->materialization_kind,
+        plan->materialization_protocol, plan->publication_protocol,
         plan->required_cb_plan_indices, plan->required_sync_plan_indices,
-        plan->produced_live_form, payload));
+        plan->produced_live_form));
   }
   tt_materialization_plans_ = finalized;
 }
@@ -3165,7 +3147,7 @@ Array<TTCBPlan> PlanTTKernelABI::GetStagedCBPlans() const {
                                        String(CBFlowClassToString(req.flow_class)),
                                        req.publish_pages_per_event,
                                        req.consume_pages_per_event, lifetime_begin,
-                                       lifetime_end, Map<String, Any>()));
+                                       lifetime_end, Array<String>{}, Array<Integer>{}));
   }
   return staged_cb_plans;
 }

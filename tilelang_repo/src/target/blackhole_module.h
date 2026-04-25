@@ -606,6 +606,8 @@ struct MaterializationPlanSpec {
   std::string target_buffer;
   std::string host_buffer;
   std::string target_kernel;
+  std::string bridge_kind;
+  std::string materialization_kind;
   std::string materialization_protocol;
   std::string publication_protocol;
   std::vector<int64_t> required_cb_plan_indices;
@@ -621,6 +623,12 @@ struct MaterializationPlanSpec {
     writer->WriteObjectKeyValue("target_buffer", target_buffer);
     writer->WriteObjectKeyValue("host_buffer", host_buffer);
     writer->WriteObjectKeyValue("target_kernel", target_kernel);
+    if (!bridge_kind.empty()) {
+      writer->WriteObjectKeyValue("bridge_kind", bridge_kind);
+    }
+    if (!materialization_kind.empty()) {
+      writer->WriteObjectKeyValue("materialization_kind", materialization_kind);
+    }
     writer->WriteObjectKeyValue("materialization_protocol", materialization_protocol);
     writer->WriteObjectKeyValue("publication_protocol", publication_protocol);
     writer->WriteObjectKeyValue("required_cb_plan_indices", required_cb_plan_indices);
@@ -642,6 +650,8 @@ struct ConsumerBindingPlanSpec {
   bool accepts_distributed_slice = false;
   bool requires_full_logical_tile = false;
   int64_t abi_plan_index = -1;
+  std::string target_buffer;
+  std::string materialization_plan;
 
   void Save(dmlc::JSONWriter* writer) const {
     writer->BeginObject();
@@ -649,6 +659,12 @@ struct ConsumerBindingPlanSpec {
     writer->WriteObjectKeyValue("consumer_kernel", consumer_kernel);
     writer->WriteObjectKeyValue("consumer_op_kind", consumer_op_kind);
     writer->WriteObjectKeyValue("source_live_form", source_live_form);
+    if (!target_buffer.empty()) {
+      writer->WriteObjectKeyValue("target_buffer", target_buffer);
+    }
+    if (!materialization_plan.empty()) {
+      writer->WriteObjectKeyValue("materialization_plan", materialization_plan);
+    }
     writer->WriteObjectKeyValue("live_value_edge", live_value_edge);
     writer->WriteObjectKeyValue("live_value_edge_index", live_value_edge_index);
     writer->WriteObjectKeyValue("accepts_distributed_slice", accepts_distributed_slice);

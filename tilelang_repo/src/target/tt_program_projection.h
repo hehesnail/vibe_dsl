@@ -73,6 +73,12 @@ inline Array<Any> EncodeCBPlans(const Array<TTCBPlan>& cb_plans) {
     item.Set("consume_pages_per_event", Integer(cb->consume_pages_per_event));
     item.Set("lifetime_begin", Integer(cb->lifetime_begin));
     item.Set("lifetime_end", Integer(cb->lifetime_end));
+    if (!cb->requirement_names.empty()) {
+      item.Set("requirement_names", cb->requirement_names);
+    }
+    if (!cb->requirement_indices.empty()) {
+      item.Set("requirement_indices", cb->requirement_indices);
+    }
     encoded.push_back(item);
   }
   return encoded;
@@ -128,6 +134,18 @@ inline Array<Any> EncodeBufferDistributionPlans(
     }
     if (!plan->inverse_logical_index_exprs.empty()) {
       item.Set("inverse_logical_index_exprs", plan->inverse_logical_index_exprs);
+    }
+    if (!plan->spatial_layout.empty()) {
+      item.Set("spatial_layout", plan->spatial_layout);
+    }
+    if (!plan->spatial_distribution_kind.empty()) {
+      item.Set("spatial_distribution_kind", plan->spatial_distribution_kind);
+    }
+    if (!plan->abi_layout.empty()) {
+      item.Set("abi_layout", plan->abi_layout);
+    }
+    if (!plan->abi_memory_space.empty()) {
+      item.Set("abi_memory_space", plan->abi_memory_space);
     }
     encoded.push_back(item);
   }
@@ -316,6 +334,12 @@ inline Array<Any> EncodeMaterializationPlans(
     item.Set("target_buffer", plan->target_buffer);
     item.Set("host_buffer", plan->host_buffer);
     item.Set("target_kernel", plan->target_kernel);
+    if (!plan->bridge_kind.empty()) {
+      item.Set("bridge_kind", plan->bridge_kind);
+    }
+    if (!plan->materialization_kind.empty()) {
+      item.Set("materialization_kind", plan->materialization_kind);
+    }
     item.Set("materialization_protocol", plan->materialization_protocol);
     item.Set("publication_protocol", plan->publication_protocol);
     item.Set("required_cb_plan_indices", plan->required_cb_plan_indices);
@@ -337,6 +361,12 @@ inline Array<Any> EncodeConsumerBindingPlans(
     item.Set("consumer_kernel", plan->consumer_kernel);
     item.Set("consumer_op_kind", plan->consumer_op_kind);
     item.Set("source_live_form", plan->source_live_form);
+    if (!plan->target_buffer.empty()) {
+      item.Set("target_buffer", plan->target_buffer);
+    }
+    if (!plan->materialization_plan.empty()) {
+      item.Set("materialization_plan", plan->materialization_plan);
+    }
     item.Set("live_value_edge", plan->live_value_edge);
     item.Set("live_value_edge_index", Integer(plan->live_value_edge_index));
     item.Set("accepts_distributed_slice", Bool(plan->accepts_distributed_slice));

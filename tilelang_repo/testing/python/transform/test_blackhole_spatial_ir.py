@@ -333,6 +333,27 @@ def _rebuild_tt_program(
     )
 
 
+def _assert_no_tt_plan_payload_surface(tt_program):
+    plan_groups = (
+        tt_program.mesh_plans,
+        tt_program.buffer_distribution_plans,
+        tt_program.block_plans,
+        tt_program.kernel_plans,
+        tt_program.cb_plans,
+        tt_program.transport_plans,
+        tt_program.sync_plans,
+        tt_program.abi_plans,
+        tt_program.execution_plans,
+        tt_program.semaphore_plans,
+        tt_program.dst_layout_plans,
+        tt_program.live_form_plans,
+        tt_program.materialization_plans,
+        tt_program.consumer_binding_plans,
+    )
+    for plans in plan_groups:
+        assert all(not hasattr(plan, "payload") for plan in plans)
+
+
 def test_spatial_pass_surface_exposes_only_direct_spatial_plan_builder():
     assert hasattr(tilelang.transform, "BuildSpatialPlan")
     assert hasattr(tilelang.transform, "ValidateSpatialPlan")
@@ -684,7 +705,7 @@ def test_tt_builtin_selection_stages_cb_plans_without_legacy_attr_handoff():
         for cb_plan in tt_program.cb_plans
     )
     assert all(int(cb_plan.page_size_bytes) > 0 for cb_plan in tt_program.cb_plans)
-    assert all("requirement_index" not in dict(cb_plan.payload) for cb_plan in tt_program.cb_plans)
+    assert all(not hasattr(cb_plan, "payload") for cb_plan in tt_program.cb_plans)
 
 
 def test_plan_tt_transport_consumes_staged_cb_plans_without_legacy_cb_attr():
@@ -723,6 +744,7 @@ def test_build_tt_program_consumes_plan_and_analysis_attrs_without_spatial_progr
     main = mod["main"]
     tt_program = main.attrs["tl.tt_program"]
     assert tt_program is not None
+    _assert_no_tt_plan_payload_surface(tt_program)
     assert len(tt_program.block_plans) == len(tt_program.core_groups)
     assert len(tt_program.kernel_plans) == len(tt_program.kernels)
     assert len(tt_program.sync_plans) == len(tt_program.compute_sync_plans)

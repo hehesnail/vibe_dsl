@@ -542,7 +542,7 @@ void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan) {
 
   for (const TTTransportPlan& transport : program->transport_plans) {
     ICHECK(!transport->kind.empty()) << "TTTransportPlan requires kind";
-    ICHECK(!transport->payload_kind.empty()) << "TTTransportPlan requires payload_kind";
+    ICHECK(!transport->value_kind.empty()) << "TTTransportPlan requires value_kind";
     ICHECK(!transport->delivery_kind.empty()) << "TTTransportPlan requires delivery_kind";
     ICHECK_GE(transport->source_task_index, 0) << "TTTransportPlan requires source_task_index";
     ICHECK_GE(transport->target_task_index, 0) << "TTTransportPlan requires target_task_index";
