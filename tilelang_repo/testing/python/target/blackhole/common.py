@@ -256,6 +256,181 @@ def make_tt_per_work_arg_specs(per_work_arg_specs):
     ]
 
 
+def tt_runtime_arg_specs_to_list(runtime_args):
+    encoded = []
+    for spec in runtime_args or []:
+        plain = _try_plain_dict(spec)
+        if plain is not None:
+            encoded.append(dict(plain))
+            continue
+        item = {
+            "name": str(spec.name),
+            "kind": str(spec.kind),
+            "dtype": str(spec.dtype),
+        }
+        if str(spec.buffer):
+            item["buffer"] = str(spec.buffer)
+        if str(spec.identity):
+            item["identity"] = str(spec.identity)
+        if int(spec.core_x) >= 0:
+            item["core_x"] = int(spec.core_x)
+        if int(spec.core_y) >= 0:
+            item["core_y"] = int(spec.core_y)
+        encoded.append(item)
+    return encoded
+
+
+def tt_compile_time_arg_specs_to_list(compile_time_arg_specs):
+    encoded = []
+    for spec in compile_time_arg_specs or []:
+        plain = _try_plain_dict(spec)
+        if plain is not None:
+            encoded.append(dict(plain))
+            continue
+        item = {
+            "name": str(spec.name),
+            "kind": str(spec.kind),
+            "dtype": str(spec.dtype),
+            "offset": int(spec.offset),
+            "count": int(spec.count),
+        }
+        if str(spec.buffer):
+            item["buffer"] = str(spec.buffer)
+        if str(spec.segment_role):
+            item["segment_role"] = str(spec.segment_role)
+        if list(spec.values):
+            item["values"] = [int(value) for value in spec.values]
+        if int(spec.args_config_bits) != 0:
+            item["args_config_bits"] = int(spec.args_config_bits)
+        if int(spec.transport_page_size) > 0:
+            item["transport_page_size"] = int(spec.transport_page_size)
+        if str(spec.layout):
+            item["layout"] = str(spec.layout)
+        if str(spec.memory_space):
+            item["memory_space"] = str(spec.memory_space)
+        if list(spec.host_axis_order):
+            item["host_axis_order"] = [int(axis) for axis in spec.host_axis_order]
+        if bool(spec.transpose_2d):
+            item["transpose_2d"] = True
+        encoded.append(item)
+    return encoded
+
+
+def tt_accessor_specs_to_list(accessors):
+    encoded = []
+    for spec in accessors or []:
+        plain = _try_plain_dict(spec)
+        if plain is not None:
+            encoded.append(dict(plain))
+            continue
+        item = {
+            "buffer": str(spec.buffer),
+            "compile_time_arg_offset": int(spec.compile_time_arg_offset),
+            "compile_time_arg_count": int(spec.compile_time_arg_count),
+            "common_runtime_arg_offset": int(spec.common_runtime_arg_offset),
+            "common_runtime_arg_count": int(spec.common_runtime_arg_count),
+            "args_config_bits": int(spec.args_config_bits),
+            "layout": str(spec.layout),
+            "memory_space": str(spec.memory_space),
+        }
+        if int(spec.transport_page_size) > 0:
+            item["transport_page_size"] = int(spec.transport_page_size)
+        if list(spec.host_axis_order):
+            item["host_axis_order"] = [int(axis) for axis in spec.host_axis_order]
+        if bool(spec.transpose_2d):
+            item["transpose_2d"] = True
+        encoded.append(item)
+    return encoded
+
+
+def tt_semaphore_binding_specs_to_list(semaphore_bindings):
+    encoded = []
+    for spec in semaphore_bindings or []:
+        plain = _try_plain_dict(spec)
+        if plain is not None:
+            encoded.append(dict(plain))
+            continue
+        encoded.append(
+            {
+                "name": str(spec.name),
+                "semaphore_id": int(spec.semaphore_id),
+                "arg_kind": str(spec.arg_kind),
+            }
+        )
+    return encoded
+
+
+def make_tt_runtime_arg_specs(runtime_args):
+    make = tilelang.tvm.get_global_func("tl.TTRuntimeArgSpec")
+    return [
+        make(
+            str(item.get("name", "")),
+            str(item.get("kind", "")),
+            str(item.get("dtype", "")),
+            str(item.get("buffer", "")),
+            str(item.get("identity", "")),
+            int(item.get("core_x", -1)),
+            int(item.get("core_y", -1)),
+        )
+        for item in tt_runtime_arg_specs_to_list(runtime_args)
+    ]
+
+
+def make_tt_compile_time_arg_specs(compile_time_arg_specs):
+    make = tilelang.tvm.get_global_func("tl.TTCompileTimeArgSpec")
+    return [
+        make(
+            str(item.get("name", "")),
+            str(item.get("kind", "")),
+            str(item.get("dtype", "")),
+            int(item.get("offset", 0)),
+            int(item.get("count", 0)),
+            str(item.get("buffer", "")),
+            str(item.get("segment_role", "")),
+            [int(value) for value in item.get("values", [])],
+            int(item.get("args_config_bits", 0)),
+            int(item.get("transport_page_size", 0)),
+            str(item.get("layout", "")),
+            str(item.get("memory_space", "")),
+            [int(axis) for axis in item.get("host_axis_order", [])],
+            bool(item.get("transpose_2d", False)),
+        )
+        for item in tt_compile_time_arg_specs_to_list(compile_time_arg_specs)
+    ]
+
+
+def make_tt_accessor_specs(accessors):
+    make = tilelang.tvm.get_global_func("tl.TTAccessorSpec")
+    return [
+        make(
+            str(item.get("buffer", "")),
+            int(item.get("compile_time_arg_offset", item.get("slot", 0))),
+            int(item.get("compile_time_arg_count", 0)),
+            int(item.get("common_runtime_arg_offset", 0)),
+            int(item.get("common_runtime_arg_count", 0)),
+            int(item.get("args_config_bits", 0)),
+            int(item.get("transport_page_size", 0)),
+            str(item.get("layout", "")),
+            str(item.get("memory_space", "")),
+            [int(axis) for axis in item.get("host_axis_order", [])],
+            bool(item.get("transpose_2d", False)),
+        )
+        for item in tt_accessor_specs_to_list(accessors)
+    ]
+
+
+def make_tt_semaphore_binding_specs(semaphore_bindings):
+    make = tilelang.tvm.get_global_func("tl.TTSemaphoreBindingSpec")
+    return [
+        make(
+            str(item.get("name", "")),
+            int(item.get("semaphore_id", 0)),
+            str(item.get("arg_kind", "")),
+        )
+        for item in tt_semaphore_binding_specs_to_list(semaphore_bindings)
+    ]
+
+
 def extract_tt_program_segments(func):
     """Extract segment-like kernel/ABI records from TTProgram for regression tests."""
     tt_program = require_tt_program(func)
@@ -281,11 +456,20 @@ def extract_tt_program_segments(func):
         abi_plan_index = int(kernel.abi_plan_index)
         if 0 <= abi_plan_index < len(abi_plans):
             abi = abi_plans[abi_plan_index]
-            payload.setdefault("runtime_args", list(abi.runtime_args))
-            payload.setdefault("common_runtime_args", list(abi.common_runtime_args))
-            payload.setdefault("compile_time_arg_specs", list(abi.compile_time_arg_specs))
-            payload.setdefault("accessors", list(abi.accessors))
-            payload.setdefault("semaphore_bindings", list(abi.semaphore_bindings))
+            payload.setdefault("runtime_args", tt_runtime_arg_specs_to_list(abi.runtime_args))
+            payload.setdefault(
+                "common_runtime_args",
+                tt_runtime_arg_specs_to_list(abi.common_runtime_args),
+            )
+            payload.setdefault(
+                "compile_time_arg_specs",
+                tt_compile_time_arg_specs_to_list(abi.compile_time_arg_specs),
+            )
+            payload.setdefault("accessors", tt_accessor_specs_to_list(abi.accessors))
+            payload.setdefault(
+                "semaphore_bindings",
+                tt_semaphore_binding_specs_to_list(abi.semaphore_bindings),
+            )
         compute_ops = [
             encode_tt_compute_op_plan(plan)
             for plan in tt_program.compute_op_plans
@@ -308,12 +492,16 @@ def extract_blackhole_runtime_args(func, *, kind=None, core_type=None, common=Fa
     if kind is not None or core_type is not None:
         kernel = require_tt_kernel(tt_program, kind=kind, core_type=core_type)
         abi = tt_abi_for_kernel(tt_program, kernel)
-        return list(abi.common_runtime_args if common else abi.runtime_args)
+        return tt_runtime_arg_specs_to_list(
+            abi.common_runtime_args if common else abi.runtime_args
+        )
 
     aggregated = []
     seen = set()
     for abi in tt_program.abi_plans:
-        args = abi.common_runtime_args if common else abi.runtime_args
+        args = tt_runtime_arg_specs_to_list(
+            abi.common_runtime_args if common else abi.runtime_args
+        )
         for arg in args:
             identity = str(arg["identity"]) if "identity" in arg else None
             key = identity or (str(arg["name"]) if "name" in arg else repr(dict(arg)))
@@ -624,15 +812,25 @@ def rebuild_tt_abi_plan(
     return make_tt_abi_plan(
         str(abi_plan.name) if name is None else name,
         str(abi_plan.kernel_name) if kernel_name is None else kernel_name,
-        list(abi_plan.runtime_args) if runtime_args is None else runtime_args,
-        list(abi_plan.common_runtime_args)
-        if common_runtime_args is None
-        else common_runtime_args,
-        list(abi_plan.compile_time_arg_specs)
-        if compile_time_arg_specs is None
-        else compile_time_arg_specs,
-        list(abi_plan.accessors) if accessors is None else accessors,
-        list(abi_plan.semaphore_bindings) if semaphore_bindings is None else semaphore_bindings,
+        make_tt_runtime_arg_specs(
+            abi_plan.runtime_args if runtime_args is None else runtime_args
+        ),
+        make_tt_runtime_arg_specs(
+            abi_plan.common_runtime_args
+            if common_runtime_args is None
+            else common_runtime_args
+        ),
+        make_tt_compile_time_arg_specs(
+            abi_plan.compile_time_arg_specs
+            if compile_time_arg_specs is None
+            else compile_time_arg_specs
+        ),
+        make_tt_accessor_specs(abi_plan.accessors if accessors is None else accessors),
+        make_tt_semaphore_binding_specs(
+            abi_plan.semaphore_bindings
+            if semaphore_bindings is None
+            else semaphore_bindings
+        ),
     )
 
 

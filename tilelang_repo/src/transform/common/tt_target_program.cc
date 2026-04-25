@@ -677,6 +677,129 @@ TTConsumerBindingPlan::TTConsumerBindingPlan(
   data_ = std::move(n);
 }
 
+void TTRuntimeArgSpecNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTRuntimeArgSpecNode>()
+      .def_ro("name", &TTRuntimeArgSpecNode::name)
+      .def_ro("kind", &TTRuntimeArgSpecNode::kind)
+      .def_ro("dtype", &TTRuntimeArgSpecNode::dtype)
+      .def_ro("buffer", &TTRuntimeArgSpecNode::buffer)
+      .def_ro("identity", &TTRuntimeArgSpecNode::identity)
+      .def_ro("core_x", &TTRuntimeArgSpecNode::core_x)
+      .def_ro("core_y", &TTRuntimeArgSpecNode::core_y);
+}
+
+TTRuntimeArgSpec::TTRuntimeArgSpec(ffi::String name, ffi::String kind, ffi::String dtype,
+                                   ffi::String buffer, ffi::String identity,
+                                   int64_t core_x, int64_t core_y) {
+  auto n = ffi::make_object<TTRuntimeArgSpecNode>();
+  n->name = std::move(name);
+  n->kind = std::move(kind);
+  n->dtype = std::move(dtype);
+  n->buffer = std::move(buffer);
+  n->identity = std::move(identity);
+  n->core_x = core_x;
+  n->core_y = core_y;
+  data_ = std::move(n);
+}
+
+void TTCompileTimeArgSpecNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTCompileTimeArgSpecNode>()
+      .def_ro("name", &TTCompileTimeArgSpecNode::name)
+      .def_ro("kind", &TTCompileTimeArgSpecNode::kind)
+      .def_ro("dtype", &TTCompileTimeArgSpecNode::dtype)
+      .def_ro("offset", &TTCompileTimeArgSpecNode::offset)
+      .def_ro("count", &TTCompileTimeArgSpecNode::count)
+      .def_ro("buffer", &TTCompileTimeArgSpecNode::buffer)
+      .def_ro("segment_role", &TTCompileTimeArgSpecNode::segment_role)
+      .def_ro("values", &TTCompileTimeArgSpecNode::values)
+      .def_ro("args_config_bits", &TTCompileTimeArgSpecNode::args_config_bits)
+      .def_ro("transport_page_size", &TTCompileTimeArgSpecNode::transport_page_size)
+      .def_ro("layout", &TTCompileTimeArgSpecNode::layout)
+      .def_ro("memory_space", &TTCompileTimeArgSpecNode::memory_space)
+      .def_ro("host_axis_order", &TTCompileTimeArgSpecNode::host_axis_order)
+      .def_ro("transpose_2d", &TTCompileTimeArgSpecNode::transpose_2d);
+}
+
+TTCompileTimeArgSpec::TTCompileTimeArgSpec(
+    ffi::String name, ffi::String kind, ffi::String dtype, int64_t offset, int64_t count,
+    ffi::String buffer, ffi::String segment_role, ffi::Array<Integer> values,
+    int64_t args_config_bits, int64_t transport_page_size, ffi::String layout,
+    ffi::String memory_space, ffi::Array<Integer> host_axis_order, bool transpose_2d) {
+  auto n = ffi::make_object<TTCompileTimeArgSpecNode>();
+  n->name = std::move(name);
+  n->kind = std::move(kind);
+  n->dtype = std::move(dtype);
+  n->offset = offset;
+  n->count = count;
+  n->buffer = std::move(buffer);
+  n->segment_role = std::move(segment_role);
+  n->values = std::move(values);
+  n->args_config_bits = args_config_bits;
+  n->transport_page_size = transport_page_size;
+  n->layout = std::move(layout);
+  n->memory_space = std::move(memory_space);
+  n->host_axis_order = std::move(host_axis_order);
+  n->transpose_2d = transpose_2d;
+  data_ = std::move(n);
+}
+
+void TTAccessorSpecNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTAccessorSpecNode>()
+      .def_ro("buffer", &TTAccessorSpecNode::buffer)
+      .def_ro("compile_time_arg_offset", &TTAccessorSpecNode::compile_time_arg_offset)
+      .def_ro("compile_time_arg_count", &TTAccessorSpecNode::compile_time_arg_count)
+      .def_ro("common_runtime_arg_offset", &TTAccessorSpecNode::common_runtime_arg_offset)
+      .def_ro("common_runtime_arg_count", &TTAccessorSpecNode::common_runtime_arg_count)
+      .def_ro("args_config_bits", &TTAccessorSpecNode::args_config_bits)
+      .def_ro("transport_page_size", &TTAccessorSpecNode::transport_page_size)
+      .def_ro("layout", &TTAccessorSpecNode::layout)
+      .def_ro("memory_space", &TTAccessorSpecNode::memory_space)
+      .def_ro("host_axis_order", &TTAccessorSpecNode::host_axis_order)
+      .def_ro("transpose_2d", &TTAccessorSpecNode::transpose_2d);
+}
+
+TTAccessorSpec::TTAccessorSpec(ffi::String buffer, int64_t compile_time_arg_offset,
+                               int64_t compile_time_arg_count,
+                               int64_t common_runtime_arg_offset,
+                               int64_t common_runtime_arg_count, int64_t args_config_bits,
+                               int64_t transport_page_size, ffi::String layout,
+                               ffi::String memory_space, ffi::Array<Integer> host_axis_order,
+                               bool transpose_2d) {
+  auto n = ffi::make_object<TTAccessorSpecNode>();
+  n->buffer = std::move(buffer);
+  n->compile_time_arg_offset = compile_time_arg_offset;
+  n->compile_time_arg_count = compile_time_arg_count;
+  n->common_runtime_arg_offset = common_runtime_arg_offset;
+  n->common_runtime_arg_count = common_runtime_arg_count;
+  n->args_config_bits = args_config_bits;
+  n->transport_page_size = transport_page_size;
+  n->layout = std::move(layout);
+  n->memory_space = std::move(memory_space);
+  n->host_axis_order = std::move(host_axis_order);
+  n->transpose_2d = transpose_2d;
+  data_ = std::move(n);
+}
+
+void TTSemaphoreBindingSpecNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTSemaphoreBindingSpecNode>()
+      .def_ro("name", &TTSemaphoreBindingSpecNode::name)
+      .def_ro("semaphore_id", &TTSemaphoreBindingSpecNode::semaphore_id)
+      .def_ro("arg_kind", &TTSemaphoreBindingSpecNode::arg_kind);
+}
+
+TTSemaphoreBindingSpec::TTSemaphoreBindingSpec(ffi::String name, int64_t semaphore_id,
+                                               ffi::String arg_kind) {
+  auto n = ffi::make_object<TTSemaphoreBindingSpecNode>();
+  n->name = std::move(name);
+  n->semaphore_id = semaphore_id;
+  n->arg_kind = std::move(arg_kind);
+  data_ = std::move(n);
+}
+
 void TTABIPlanNode::RegisterReflection() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<TTABIPlanNode>()
@@ -689,10 +812,12 @@ void TTABIPlanNode::RegisterReflection() {
       .def_ro("semaphore_bindings", &TTABIPlanNode::semaphore_bindings);
 }
 
-TTABIPlan::TTABIPlan(ffi::String name, ffi::String kernel_name, ffi::Array<ffi::Any> runtime_args,
-                     ffi::Array<ffi::Any> common_runtime_args,
-                     ffi::Array<ffi::Any> compile_time_arg_specs,
-                     ffi::Array<ffi::Any> accessors, ffi::Array<ffi::Any> semaphore_bindings) {
+TTABIPlan::TTABIPlan(ffi::String name, ffi::String kernel_name,
+                     ffi::Array<TTRuntimeArgSpec> runtime_args,
+                     ffi::Array<TTRuntimeArgSpec> common_runtime_args,
+                     ffi::Array<TTCompileTimeArgSpec> compile_time_arg_specs,
+                     ffi::Array<TTAccessorSpec> accessors,
+                     ffi::Array<TTSemaphoreBindingSpec> semaphore_bindings) {
   auto n = ffi::make_object<TTABIPlanNode>();
   n->name = std::move(name);
   n->kernel_name = std::move(kernel_name);
@@ -811,6 +936,10 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   RegisterNodeReflection<TTLiveFormPlanNode>();
   RegisterNodeReflection<TTMaterializationPlanNode>();
   RegisterNodeReflection<TTConsumerBindingPlanNode>();
+  RegisterNodeReflection<TTRuntimeArgSpecNode>();
+  RegisterNodeReflection<TTCompileTimeArgSpecNode>();
+  RegisterNodeReflection<TTAccessorSpecNode>();
+  RegisterNodeReflection<TTSemaphoreBindingSpecNode>();
   RegisterNodeReflection<TTABIPlanNode>();
   RegisterNodeReflection<TTExecutionPlanNode>();
   RegisterNodeReflection<TTProgramNode>();
@@ -1045,10 +1174,50 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                                      std::move(materialization_plan));
       });
   refl::GlobalDef().def(
+      "tl.TTRuntimeArgSpec",
+      [](ffi::String name, ffi::String kind, ffi::String dtype, ffi::String buffer,
+         ffi::String identity, int64_t core_x, int64_t core_y) {
+        return TTRuntimeArgSpec(std::move(name), std::move(kind), std::move(dtype),
+                                std::move(buffer), std::move(identity), core_x, core_y);
+      });
+  refl::GlobalDef().def(
+      "tl.TTCompileTimeArgSpec",
+      [](ffi::String name, ffi::String kind, ffi::String dtype, int64_t offset,
+         int64_t count, ffi::String buffer, ffi::String segment_role,
+         ffi::Array<Integer> values, int64_t args_config_bits, int64_t transport_page_size,
+         ffi::String layout, ffi::String memory_space, ffi::Array<Integer> host_axis_order,
+         bool transpose_2d) {
+        return TTCompileTimeArgSpec(
+            std::move(name), std::move(kind), std::move(dtype), offset, count,
+            std::move(buffer), std::move(segment_role), std::move(values), args_config_bits,
+            transport_page_size, std::move(layout), std::move(memory_space),
+            std::move(host_axis_order), transpose_2d);
+      });
+  refl::GlobalDef().def(
+      "tl.TTAccessorSpec",
+      [](ffi::String buffer, int64_t compile_time_arg_offset,
+         int64_t compile_time_arg_count, int64_t common_runtime_arg_offset,
+         int64_t common_runtime_arg_count, int64_t args_config_bits,
+         int64_t transport_page_size, ffi::String layout, ffi::String memory_space,
+         ffi::Array<Integer> host_axis_order, bool transpose_2d) {
+        return TTAccessorSpec(std::move(buffer), compile_time_arg_offset,
+                              compile_time_arg_count, common_runtime_arg_offset,
+                              common_runtime_arg_count, args_config_bits, transport_page_size,
+                              std::move(layout), std::move(memory_space),
+                              std::move(host_axis_order), transpose_2d);
+      });
+  refl::GlobalDef().def(
+      "tl.TTSemaphoreBindingSpec",
+      [](ffi::String name, int64_t semaphore_id, ffi::String arg_kind) {
+        return TTSemaphoreBindingSpec(std::move(name), semaphore_id, std::move(arg_kind));
+      });
+  refl::GlobalDef().def(
       "tl.TTABIPlan",
-      [](ffi::String name, ffi::String kernel_name, ffi::Array<ffi::Any> runtime_args,
-         ffi::Array<ffi::Any> common_runtime_args, ffi::Array<ffi::Any> compile_time_arg_specs,
-         ffi::Array<ffi::Any> accessors, ffi::Array<ffi::Any> semaphore_bindings) {
+      [](ffi::String name, ffi::String kernel_name, ffi::Array<TTRuntimeArgSpec> runtime_args,
+         ffi::Array<TTRuntimeArgSpec> common_runtime_args,
+         ffi::Array<TTCompileTimeArgSpec> compile_time_arg_specs,
+         ffi::Array<TTAccessorSpec> accessors,
+         ffi::Array<TTSemaphoreBindingSpec> semaphore_bindings) {
         return TTABIPlan(std::move(name), std::move(kernel_name), std::move(runtime_args),
                          std::move(common_runtime_args), std::move(compile_time_arg_specs),
                          std::move(accessors), std::move(semaphore_bindings));

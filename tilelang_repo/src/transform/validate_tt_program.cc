@@ -235,26 +235,19 @@ void ValidateCBPlan(const TTCBPlan& cb_plan) {
       << "TTCBPlan requires lifetime_end >= lifetime_begin";
 }
 
-void ValidateAccessor(const Map<String, Any>& accessor) {
-  ICHECK(HasKey(accessor, "buffer")) << "TTABIPlan accessor requires buffer";
-  ICHECK(HasKey(accessor, "compile_time_arg_offset"))
-      << "TTABIPlan accessor requires compile_time_arg_offset";
-  ICHECK(HasKey(accessor, "compile_time_arg_count"))
+void ValidateAccessor(const TTAccessorSpec& accessor) {
+  ICHECK(!accessor->buffer.empty()) << "TTABIPlan accessor requires buffer";
+  ICHECK_GT(accessor->compile_time_arg_count, 0)
       << "TTABIPlan accessor requires compile_time_arg_count";
-  ICHECK(HasKey(accessor, "common_runtime_arg_offset"))
-      << "TTABIPlan accessor requires common_runtime_arg_offset";
-  ICHECK(HasKey(accessor, "common_runtime_arg_count"))
-      << "TTABIPlan accessor requires common_runtime_arg_count";
-  ICHECK(HasKey(accessor, "args_config_bits")) << "TTABIPlan accessor requires args_config_bits";
-  ICHECK(HasKey(accessor, "layout")) << "TTABIPlan accessor requires layout";
-  ICHECK(HasKey(accessor, "memory_space")) << "TTABIPlan accessor requires memory_space";
+  ICHECK(!accessor->layout.empty()) << "TTABIPlan accessor requires layout";
+  ICHECK(!accessor->memory_space.empty()) << "TTABIPlan accessor requires memory_space";
 }
 
-void ValidateCompileTimeArgSpec(const Map<String, Any>& spec) {
-  ICHECK(HasKey(spec, "kind")) << "TTABIPlan compile_time_arg_spec requires kind";
-  ICHECK(HasKey(spec, "dtype")) << "TTABIPlan compile_time_arg_spec requires dtype";
-  ICHECK(HasKey(spec, "offset")) << "TTABIPlan compile_time_arg_spec requires offset";
-  ICHECK(HasKey(spec, "count")) << "TTABIPlan compile_time_arg_spec requires count";
+void ValidateCompileTimeArgSpec(const TTCompileTimeArgSpec& spec) {
+  ICHECK(!spec->kind.empty()) << "TTABIPlan compile_time_arg_spec requires kind";
+  ICHECK(!spec->dtype.empty()) << "TTABIPlan compile_time_arg_spec requires dtype";
+  ICHECK_GE(spec->offset, 0) << "TTABIPlan compile_time_arg_spec requires offset";
+  ICHECK_GE(spec->count, 0) << "TTABIPlan compile_time_arg_spec requires count";
 }
 
 void ValidateKernelLeafFields(const TTKernel& kernel) {
@@ -510,16 +503,13 @@ void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan) {
   std::unordered_set<std::string> abi_kernel_names;
   for (const TTABIPlan& abi : program->abi_plans) {
     ICHECK(!abi->kernel_name.empty()) << "TTABIPlan requires kernel_name";
-    for (const Any& accessor_any : abi->accessors) {
-      Map<String, Any> accessor = AsMap(accessor_any);
+    for (const TTAccessorSpec& accessor : abi->accessors) {
       ValidateAccessor(accessor);
-      auto buffer = accessor.Get(String("buffer"));
-      ICHECK(buffer.has_value() &&
-             distributed_buffers.count(static_cast<std::string>(Downcast<String>(buffer.value()))))
+      ICHECK(distributed_buffers.count(static_cast<std::string>(accessor->buffer)))
           << "TTABIPlan accessor buffer requires TTBufferDistributionPlan";
     }
-    for (const Any& spec_any : abi->compile_time_arg_specs) {
-      ValidateCompileTimeArgSpec(AsMap(spec_any));
+    for (const TTCompileTimeArgSpec& spec : abi->compile_time_arg_specs) {
+      ValidateCompileTimeArgSpec(spec);
     }
     abi_kernel_names.insert(abi->kernel_name);
   }

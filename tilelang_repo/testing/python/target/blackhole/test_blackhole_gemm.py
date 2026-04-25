@@ -32,7 +32,9 @@ from .common import (
     require_gemm_compute_op,
     require_tt_kernel,
     require_tt_program,
+    tt_accessor_specs_to_list,
     tt_compute_config_to_dict,
+    tt_runtime_arg_specs_to_list,
     tt_abi_for_kernel,
 )
 from .test_blackhole_copy_pipeline import (
@@ -488,25 +490,27 @@ def test_blackhole_typed_gemm_plan_is_materialized():
 
     reader_abi = tt_abi_for_kernel(tt_program, require_tt_kernel(tt_program, kind="reader", core_type="brisc"))
     writer_abi = tt_abi_for_kernel(tt_program, require_tt_kernel(tt_program, kind="writer", core_type="ncrisc"))
-    assert [(str(item["buffer"]), int(item["compile_time_arg_offset"])) for item in reader_abi.accessors] == [
+    reader_accessors = tt_accessor_specs_to_list(reader_abi.accessors)
+    writer_accessors = tt_accessor_specs_to_list(writer_abi.accessors)
+    assert [(str(item["buffer"]), int(item["compile_time_arg_offset"])) for item in reader_accessors] == [
         ("A", 0),
         ("B", 2),
     ]
-    assert [int(item["compile_time_arg_count"]) for item in reader_abi.accessors] == [2, 2]
-    assert [int(item["common_runtime_arg_offset"]) for item in reader_abi.accessors] == [0, 0]
-    assert [int(item["common_runtime_arg_count"]) for item in reader_abi.accessors] == [0, 0]
-    assert [int(item["args_config_bits"]) for item in reader_abi.accessors] == [2, 2]
-    assert [(str(item["buffer"]), int(item["compile_time_arg_offset"])) for item in writer_abi.accessors] == [
+    assert [int(item["compile_time_arg_count"]) for item in reader_accessors] == [2, 2]
+    assert [int(item["common_runtime_arg_offset"]) for item in reader_accessors] == [0, 0]
+    assert [int(item["common_runtime_arg_count"]) for item in reader_accessors] == [0, 0]
+    assert [int(item["args_config_bits"]) for item in reader_accessors] == [2, 2]
+    assert [(str(item["buffer"]), int(item["compile_time_arg_offset"])) for item in writer_accessors] == [
         ("C", 0)
     ]
-    assert [int(item["compile_time_arg_count"]) for item in writer_abi.accessors] == [2]
-    assert [int(item["common_runtime_arg_offset"]) for item in writer_abi.accessors] == [0]
-    assert [int(item["common_runtime_arg_count"]) for item in writer_abi.accessors] == [0]
-    assert [int(item["args_config_bits"]) for item in writer_abi.accessors] == [2]
-    assert all(str(item["layout"]) == "interleaved" for item in reader_abi.accessors)
-    assert all(str(item["memory_space"]) == "dram" for item in reader_abi.accessors)
-    assert len(reader_abi.common_runtime_args) == 0
-    assert len(writer_abi.common_runtime_args) == 0
+    assert [int(item["compile_time_arg_count"]) for item in writer_accessors] == [2]
+    assert [int(item["common_runtime_arg_offset"]) for item in writer_accessors] == [0]
+    assert [int(item["common_runtime_arg_count"]) for item in writer_accessors] == [0]
+    assert [int(item["args_config_bits"]) for item in writer_accessors] == [2]
+    assert all(str(item["layout"]) == "interleaved" for item in reader_accessors)
+    assert all(str(item["memory_space"]) == "dram" for item in reader_accessors)
+    assert len(tt_runtime_arg_specs_to_list(reader_abi.common_runtime_args)) == 0
+    assert len(tt_runtime_arg_specs_to_list(writer_abi.common_runtime_args)) == 0
 
 
 def test_blackhole_gemm_segment_plan_is_not_backed_by_segment_markers():

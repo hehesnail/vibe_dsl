@@ -25,6 +25,7 @@ from .common import (
     staged_copy_kernel,
     staged_stick_copy_kernel,
     tt_per_work_arg_specs_to_list,
+    tt_runtime_arg_specs_to_list,
 )
 from .test_blackhole_copy_pipeline import (
     _extract_blackhole_executable_spec,
@@ -172,7 +173,7 @@ def _extract_tt_program_runtime_args(device_main):
     tt_program = require_tt_program(device_main)
     if not tt_program.abi_plans:
         pytest.fail("Expected TTProgram to carry a TTABIPlan")
-    return list(tt_program.abi_plans[0].runtime_args)
+    return tt_runtime_arg_specs_to_list(tt_program.abi_plans[0].runtime_args)
 
 
 def _inject_worker_semaphore_handshake(remote_core_x, remote_core_y):

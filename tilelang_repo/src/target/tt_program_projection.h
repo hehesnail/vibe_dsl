@@ -379,6 +379,111 @@ inline Array<Any> EncodePerWorkArgSpecs(const Array<TTPerWorkArgSpec>& per_work_
   return encoded;
 }
 
+inline Array<Any> EncodeRuntimeArgSpecs(const Array<TTRuntimeArgSpec>& runtime_args) {
+  Array<Any> encoded;
+  for (const TTRuntimeArgSpec& spec : runtime_args) {
+    Map<String, Any> item;
+    item.Set("name", spec->name);
+    item.Set("kind", spec->kind);
+    item.Set("dtype", spec->dtype);
+    if (!spec->buffer.empty()) {
+      item.Set("buffer", spec->buffer);
+    }
+    if (!spec->identity.empty()) {
+      item.Set("identity", spec->identity);
+    }
+    if (spec->core_x >= 0) {
+      item.Set("core_x", Integer(spec->core_x));
+    }
+    if (spec->core_y >= 0) {
+      item.Set("core_y", Integer(spec->core_y));
+    }
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any> EncodeCompileTimeArgSpecs(
+    const Array<TTCompileTimeArgSpec>& compile_time_arg_specs) {
+  Array<Any> encoded;
+  for (const TTCompileTimeArgSpec& spec : compile_time_arg_specs) {
+    Map<String, Any> item;
+    item.Set("name", spec->name);
+    item.Set("kind", spec->kind);
+    item.Set("dtype", spec->dtype);
+    item.Set("offset", Integer(spec->offset));
+    item.Set("count", Integer(spec->count));
+    if (!spec->buffer.empty()) {
+      item.Set("buffer", spec->buffer);
+    }
+    if (!spec->segment_role.empty()) {
+      item.Set("segment_role", spec->segment_role);
+    }
+    if (!spec->values.empty()) {
+      item.Set("values", spec->values);
+    }
+    if (spec->args_config_bits != 0) {
+      item.Set("args_config_bits", Integer(spec->args_config_bits));
+    }
+    if (spec->transport_page_size > 0) {
+      item.Set("transport_page_size", Integer(spec->transport_page_size));
+    }
+    if (!spec->layout.empty()) {
+      item.Set("layout", spec->layout);
+    }
+    if (!spec->memory_space.empty()) {
+      item.Set("memory_space", spec->memory_space);
+    }
+    if (!spec->host_axis_order.empty()) {
+      item.Set("host_axis_order", spec->host_axis_order);
+    }
+    if (spec->transpose_2d) {
+      item.Set("transpose_2d", Bool(true));
+    }
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any> EncodeAccessorSpecs(const Array<TTAccessorSpec>& accessors) {
+  Array<Any> encoded;
+  for (const TTAccessorSpec& spec : accessors) {
+    Map<String, Any> item;
+    item.Set("buffer", spec->buffer);
+    item.Set("compile_time_arg_offset", Integer(spec->compile_time_arg_offset));
+    item.Set("compile_time_arg_count", Integer(spec->compile_time_arg_count));
+    item.Set("common_runtime_arg_offset", Integer(spec->common_runtime_arg_offset));
+    item.Set("common_runtime_arg_count", Integer(spec->common_runtime_arg_count));
+    item.Set("args_config_bits", Integer(spec->args_config_bits));
+    if (spec->transport_page_size > 0) {
+      item.Set("transport_page_size", Integer(spec->transport_page_size));
+    }
+    item.Set("layout", spec->layout);
+    item.Set("memory_space", spec->memory_space);
+    if (!spec->host_axis_order.empty()) {
+      item.Set("host_axis_order", spec->host_axis_order);
+    }
+    if (spec->transpose_2d) {
+      item.Set("transpose_2d", Bool(true));
+    }
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
+inline Array<Any> EncodeSemaphoreBindingSpecs(
+    const Array<TTSemaphoreBindingSpec>& semaphore_bindings) {
+  Array<Any> encoded;
+  for (const TTSemaphoreBindingSpec& spec : semaphore_bindings) {
+    Map<String, Any> item;
+    item.Set("name", spec->name);
+    item.Set("semaphore_id", Integer(spec->semaphore_id));
+    item.Set("arg_kind", spec->arg_kind);
+    encoded.push_back(item);
+  }
+  return encoded;
+}
+
 inline Array<Any> EncodeLiveFormPlans(const Array<TTLiveFormPlan>& live_form_plans) {
   Array<Any> encoded;
   for (const TTLiveFormPlan& plan : live_form_plans) {
@@ -484,19 +589,20 @@ inline Array<Any> EncodeSegmentPlan(const TTProgram& program) {
       segment.Set("compute_ops", compute_ops);
     }
     if (!abi->runtime_args.empty()) {
-      segment.Set("runtime_args", abi->runtime_args);
+      segment.Set("runtime_args", EncodeRuntimeArgSpecs(abi->runtime_args));
     }
     if (!abi->common_runtime_args.empty()) {
-      segment.Set("common_runtime_args", abi->common_runtime_args);
+      segment.Set("common_runtime_args", EncodeRuntimeArgSpecs(abi->common_runtime_args));
     }
     if (!abi->compile_time_arg_specs.empty()) {
-      segment.Set("compile_time_arg_specs", abi->compile_time_arg_specs);
+      segment.Set("compile_time_arg_specs",
+                  EncodeCompileTimeArgSpecs(abi->compile_time_arg_specs));
     }
     if (!abi->accessors.empty()) {
-      segment.Set("accessors", abi->accessors);
+      segment.Set("accessors", EncodeAccessorSpecs(abi->accessors));
     }
     if (!abi->semaphore_bindings.empty()) {
-      segment.Set("semaphore_bindings", abi->semaphore_bindings);
+      segment.Set("semaphore_bindings", EncodeSemaphoreBindingSpecs(abi->semaphore_bindings));
     }
     segments.push_back(segment);
   }

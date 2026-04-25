@@ -24,7 +24,10 @@ from .common import (
     require_tt_kernel,
     require_tt_program,
     tt_abi_for_kernel,
+    tt_accessor_specs_to_list,
+    tt_compile_time_arg_specs_to_list,
     tt_per_work_arg_specs_to_list,
+    tt_runtime_arg_specs_to_list,
 )
 from .test_blackhole_copy_pipeline import (
     _collect_blackhole_builtin_names,
@@ -148,9 +151,9 @@ def _strip_tt_program_accessor_host_axis_order(tt_program):
     for kernel in tt_program.kernels:
         abi_plan_index = int(kernel.abi_plan_index)
         abi = tt_program.abi_plans[abi_plan_index]
-        accessors = strip_accessors(list(abi.accessors))
+        accessors = strip_accessors(tt_accessor_specs_to_list(abi.accessors))
         compile_time_arg_specs = strip_compile_time_arg_specs(
-            list(abi.compile_time_arg_specs)
+            tt_compile_time_arg_specs_to_list(abi.compile_time_arg_specs)
         )
         rebuilt_abi_plans[abi_plan_index] = rebuild_tt_abi_plan(
             abi, accessors=accessors, compile_time_arg_specs=compile_time_arg_specs
@@ -474,10 +477,12 @@ def test_flash_attention_gqa_reader_runtime_args_cover_all_accessor_buffers():
     tt_program = require_tt_program(lowered)
     reader_abi = tt_abi_for_kernel(tt_program, require_tt_kernel(tt_program, kind="reader", core_type="brisc"))
 
-    accessor_buffers = [acc["buffer"] for acc in reader_abi.accessors]
+    reader_accessors = tt_accessor_specs_to_list(reader_abi.accessors)
+    reader_runtime_args = tt_runtime_arg_specs_to_list(reader_abi.runtime_args)
+    accessor_buffers = [acc["buffer"] for acc in reader_accessors]
     runtime_arg_buffers = [
         arg["buffer"]
-        for arg in reader_abi.runtime_args
+        for arg in reader_runtime_args
         if arg["kind"] == "input_buffer_addr32"
     ]
 
@@ -504,7 +509,7 @@ def test_flash_attention_gqa_aggregated_runtime_args_cover_segment_buffers():
     seen_runtime_arg_identities = set()
     top_level_runtime_arg_buffers = []
     for abi in tt_program.abi_plans:
-        for arg in abi.runtime_args:
+        for arg in tt_runtime_arg_specs_to_list(abi.runtime_args):
             if arg["kind"] != "input_buffer_addr32":
                 continue
             identity = str(arg["identity"]) if "identity" in arg else ""
@@ -516,7 +521,9 @@ def test_flash_attention_gqa_aggregated_runtime_args_cover_segment_buffers():
 
     reader_abi = tt_abi_for_kernel(tt_program, require_tt_kernel(tt_program, kind="reader", core_type="brisc"))
     reader_runtime_arg_buffers = [
-        arg["buffer"] for arg in reader_abi.runtime_args if arg["kind"] == "input_buffer_addr32"
+        arg["buffer"]
+        for arg in tt_runtime_arg_specs_to_list(reader_abi.runtime_args)
+        if arg["kind"] == "input_buffer_addr32"
     ]
 
     assert len(reader_runtime_arg_buffers) == 3

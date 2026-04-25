@@ -581,15 +581,121 @@ class TTConsumerBindingPlan : public ObjectRef {
                                              TTConsumerBindingPlanNode);
 };
 
+class TTRuntimeArgSpecNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String kind;
+  ffi::String dtype;
+  ffi::String buffer;
+  ffi::String identity;
+  int64_t core_x = -1;
+  int64_t core_y = -1;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTRuntimeArgSpec", TTRuntimeArgSpecNode, Object);
+};
+
+class TTRuntimeArgSpec : public ObjectRef {
+ public:
+  TVM_DLL TTRuntimeArgSpec(ffi::String name, ffi::String kind, ffi::String dtype,
+                           ffi::String buffer, ffi::String identity,
+                           int64_t core_x, int64_t core_y);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTRuntimeArgSpec, ObjectRef,
+                                             TTRuntimeArgSpecNode);
+};
+
+class TTCompileTimeArgSpecNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String kind;
+  ffi::String dtype;
+  int64_t offset = 0;
+  int64_t count = 0;
+  ffi::String buffer;
+  ffi::String segment_role;
+  ffi::Array<Integer> values;
+  int64_t args_config_bits = 0;
+  int64_t transport_page_size = 0;
+  ffi::String layout;
+  ffi::String memory_space;
+  ffi::Array<Integer> host_axis_order;
+  bool transpose_2d = false;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTCompileTimeArgSpec",
+                                    TTCompileTimeArgSpecNode, Object);
+};
+
+class TTCompileTimeArgSpec : public ObjectRef {
+ public:
+  TVM_DLL TTCompileTimeArgSpec(ffi::String name, ffi::String kind, ffi::String dtype,
+                               int64_t offset, int64_t count, ffi::String buffer,
+                               ffi::String segment_role, ffi::Array<Integer> values,
+                               int64_t args_config_bits, int64_t transport_page_size,
+                               ffi::String layout, ffi::String memory_space,
+                               ffi::Array<Integer> host_axis_order, bool transpose_2d);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTCompileTimeArgSpec, ObjectRef,
+                                             TTCompileTimeArgSpecNode);
+};
+
+class TTAccessorSpecNode : public Object {
+ public:
+  ffi::String buffer;
+  int64_t compile_time_arg_offset = 0;
+  int64_t compile_time_arg_count = 0;
+  int64_t common_runtime_arg_offset = 0;
+  int64_t common_runtime_arg_count = 0;
+  int64_t args_config_bits = 0;
+  int64_t transport_page_size = 0;
+  ffi::String layout;
+  ffi::String memory_space;
+  ffi::Array<Integer> host_axis_order;
+  bool transpose_2d = false;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTAccessorSpec", TTAccessorSpecNode, Object);
+};
+
+class TTAccessorSpec : public ObjectRef {
+ public:
+  TVM_DLL TTAccessorSpec(ffi::String buffer, int64_t compile_time_arg_offset,
+                         int64_t compile_time_arg_count, int64_t common_runtime_arg_offset,
+                         int64_t common_runtime_arg_count, int64_t args_config_bits,
+                         int64_t transport_page_size, ffi::String layout,
+                         ffi::String memory_space, ffi::Array<Integer> host_axis_order,
+                         bool transpose_2d);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTAccessorSpec, ObjectRef,
+                                             TTAccessorSpecNode);
+};
+
+class TTSemaphoreBindingSpecNode : public Object {
+ public:
+  ffi::String name;
+  int64_t semaphore_id = 0;
+  ffi::String arg_kind;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTSemaphoreBindingSpec",
+                                    TTSemaphoreBindingSpecNode, Object);
+};
+
+class TTSemaphoreBindingSpec : public ObjectRef {
+ public:
+  TVM_DLL TTSemaphoreBindingSpec(ffi::String name, int64_t semaphore_id,
+                                 ffi::String arg_kind);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTSemaphoreBindingSpec, ObjectRef,
+                                             TTSemaphoreBindingSpecNode);
+};
+
 class TTABIPlanNode : public Object {
  public:
   ffi::String name;
   ffi::String kernel_name;
-  ffi::Array<ffi::Any> runtime_args;
-  ffi::Array<ffi::Any> common_runtime_args;
-  ffi::Array<ffi::Any> compile_time_arg_specs;
-  ffi::Array<ffi::Any> accessors;
-  ffi::Array<ffi::Any> semaphore_bindings;
+  ffi::Array<TTRuntimeArgSpec> runtime_args;
+  ffi::Array<TTRuntimeArgSpec> common_runtime_args;
+  ffi::Array<TTCompileTimeArgSpec> compile_time_arg_specs;
+  ffi::Array<TTAccessorSpec> accessors;
+  ffi::Array<TTSemaphoreBindingSpec> semaphore_bindings;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTABIPlan", TTABIPlanNode, Object);
@@ -597,10 +703,12 @@ class TTABIPlanNode : public Object {
 
 class TTABIPlan : public ObjectRef {
  public:
-  TVM_DLL TTABIPlan(ffi::String name, ffi::String kernel_name, ffi::Array<ffi::Any> runtime_args,
-                    ffi::Array<ffi::Any> common_runtime_args,
-                    ffi::Array<ffi::Any> compile_time_arg_specs,
-                    ffi::Array<ffi::Any> accessors, ffi::Array<ffi::Any> semaphore_bindings);
+  TVM_DLL TTABIPlan(ffi::String name, ffi::String kernel_name,
+                    ffi::Array<TTRuntimeArgSpec> runtime_args,
+                    ffi::Array<TTRuntimeArgSpec> common_runtime_args,
+                    ffi::Array<TTCompileTimeArgSpec> compile_time_arg_specs,
+                    ffi::Array<TTAccessorSpec> accessors,
+                    ffi::Array<TTSemaphoreBindingSpec> semaphore_bindings);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTABIPlan, ObjectRef, TTABIPlanNode);
 };
 

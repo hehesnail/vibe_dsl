@@ -465,6 +465,17 @@ schema；
 承载，
 再由 executable projection
 编码成 leaf segment map。
+`TTABIPlan`
+的 runtime /
+common-runtime /
+compile-time /
+accessor /
+semaphore binding
+公共字段也必须是 typed object
+数组，
+不能继续暴露
+`Array<Any>`
+leaf map schema。
 
 ### 3.7 兼容 / realization detail 视图
 

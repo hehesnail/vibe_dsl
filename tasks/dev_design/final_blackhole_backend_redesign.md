@@ -387,6 +387,22 @@ leaf `ExecutableSpec`
 公共 schema
 不再用这三个 leaf map
 承载 kernel 语义。
+`TTABIPlan.runtime_args` /
+`common_runtime_args` /
+`compile_time_arg_specs` /
+`accessors` /
+`semaphore_bindings`
+也已收成 typed
+`TTRuntimeArgSpec` /
+`TTCompileTimeArgSpec` /
+`TTAccessorSpec` /
+`TTSemaphoreBindingSpec`
+数组；
+ABI leaf map
+只在
+`ExecutableSpec`
+projection boundary
+出现。
 
 ### 3.4 `ExecutableSpec`
 

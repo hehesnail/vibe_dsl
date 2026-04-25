@@ -905,6 +905,16 @@ def test_tt_kernel_public_schema_has_no_map_any_leaf_fields():
     assert hits == []
 
 
+def test_tt_abi_plan_public_schema_has_no_array_any_leaf_fields():
+    hits = _source_tree_rg(
+        r"ffi::Array<ffi::Any>\s+"
+        r"(runtime_args|common_runtime_args|compile_time_arg_specs|accessors|semaphore_bindings)",
+        "tilelang_repo/src/transform/common/tt_target_program.h",
+        "tilelang_repo/src/transform/common/tt_target_program.cc",
+    )
+    assert hits == []
+
+
 def test_tt_planning_stages_tt_program_without_internal_bridge_attrs():
     mod = _prepare_blackhole_phase_b_module(gemm_kernel())
     mod = _drop_legacy_spatial_attrs(mod)

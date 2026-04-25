@@ -1010,6 +1010,128 @@ static TTKernelComputeConfig MakeEmptyComputeConfig() {
                                false, 1, 0, 0, String(""));
 }
 
+static Map<String, Any> AsStringAnyMap(const Any& item) {
+  return item.as<Map<String, Any>>().value_or(Map<String, Any>());
+}
+
+static String GetMapString(const Map<String, Any>& item, const char* key) {
+  if (auto value = item.Get(key)) {
+    return Downcast<String>(value.value());
+  }
+  return String("");
+}
+
+static int64_t GetMapInteger(const Map<String, Any>& item, const char* key,
+                             int64_t default_value = 0) {
+  if (auto value = item.Get(key)) {
+    return Downcast<Integer>(value.value()).IntValue();
+  }
+  return default_value;
+}
+
+static bool GetMapBool(const Map<String, Any>& item, const char* key,
+                       bool default_value = false) {
+  if (auto value = item.Get(key)) {
+    return Downcast<Bool>(value.value());
+  }
+  return default_value;
+}
+
+static Array<Integer> GetMapIntegerArray(const Map<String, Any>& item, const char* key) {
+  Array<Integer> values;
+  if (auto value = item.Get(key)) {
+    for (const Any& element : Downcast<Array<Any>>(value.value())) {
+      values.push_back(Downcast<Integer>(element));
+    }
+  }
+  return values;
+}
+
+static TTRuntimeArgSpec DecodeRuntimeArgSpec(const Any& item) {
+  const Map<String, Any> arg = AsStringAnyMap(item);
+  return TTRuntimeArgSpec(GetMapString(arg, "name"), GetMapString(arg, "kind"),
+                          GetMapString(arg, "dtype"), GetMapString(arg, "buffer"),
+                          GetMapString(arg, "identity"), GetMapInteger(arg, "core_x", -1),
+                          GetMapInteger(arg, "core_y", -1));
+}
+
+static Array<TTRuntimeArgSpec> DecodeRuntimeArgSpecs(const Optional<Any>& items_opt) {
+  Array<TTRuntimeArgSpec> specs;
+  if (!items_opt) {
+    return specs;
+  }
+  for (const Any& item : Downcast<Array<Any>>(items_opt.value())) {
+    specs.push_back(DecodeRuntimeArgSpec(item));
+  }
+  return specs;
+}
+
+static TTCompileTimeArgSpec DecodeCompileTimeArgSpec(const Any& item) {
+  const Map<String, Any> spec = AsStringAnyMap(item);
+  return TTCompileTimeArgSpec(
+      GetMapString(spec, "name"), GetMapString(spec, "kind"), GetMapString(spec, "dtype"),
+      GetMapInteger(spec, "offset"), GetMapInteger(spec, "count"),
+      GetMapString(spec, "buffer"), GetMapString(spec, "segment_role"),
+      GetMapIntegerArray(spec, "values"), GetMapInteger(spec, "args_config_bits"),
+      GetMapInteger(spec, "transport_page_size"), GetMapString(spec, "layout"),
+      GetMapString(spec, "memory_space"), GetMapIntegerArray(spec, "host_axis_order"),
+      GetMapBool(spec, "transpose_2d"));
+}
+
+static Array<TTCompileTimeArgSpec> DecodeCompileTimeArgSpecs(const Optional<Any>& items_opt) {
+  Array<TTCompileTimeArgSpec> specs;
+  if (!items_opt) {
+    return specs;
+  }
+  for (const Any& item : Downcast<Array<Any>>(items_opt.value())) {
+    specs.push_back(DecodeCompileTimeArgSpec(item));
+  }
+  return specs;
+}
+
+static TTAccessorSpec DecodeAccessorSpec(const Any& item) {
+  const Map<String, Any> accessor = AsStringAnyMap(item);
+  return TTAccessorSpec(
+      GetMapString(accessor, "buffer"), GetMapInteger(accessor, "compile_time_arg_offset"),
+      GetMapInteger(accessor, "compile_time_arg_count"),
+      GetMapInteger(accessor, "common_runtime_arg_offset"),
+      GetMapInteger(accessor, "common_runtime_arg_count"),
+      GetMapInteger(accessor, "args_config_bits"),
+      GetMapInteger(accessor, "transport_page_size"), GetMapString(accessor, "layout"),
+      GetMapString(accessor, "memory_space"), GetMapIntegerArray(accessor, "host_axis_order"),
+      GetMapBool(accessor, "transpose_2d"));
+}
+
+static Array<TTAccessorSpec> DecodeAccessorSpecs(const Optional<Any>& items_opt) {
+  Array<TTAccessorSpec> specs;
+  if (!items_opt) {
+    return specs;
+  }
+  for (const Any& item : Downcast<Array<Any>>(items_opt.value())) {
+    specs.push_back(DecodeAccessorSpec(item));
+  }
+  return specs;
+}
+
+static TTSemaphoreBindingSpec DecodeSemaphoreBindingSpec(const Any& item) {
+  const Map<String, Any> binding = AsStringAnyMap(item);
+  return TTSemaphoreBindingSpec(GetMapString(binding, "name"),
+                                GetMapInteger(binding, "semaphore_id"),
+                                GetMapString(binding, "arg_kind"));
+}
+
+static Array<TTSemaphoreBindingSpec> DecodeSemaphoreBindingSpecs(
+    const Optional<Any>& items_opt) {
+  Array<TTSemaphoreBindingSpec> specs;
+  if (!items_opt) {
+    return specs;
+  }
+  for (const Any& item : Downcast<Array<Any>>(items_opt.value())) {
+    specs.push_back(DecodeSemaphoreBindingSpec(item));
+  }
+  return specs;
+}
+
 static void BuildTTKernelAndABISeeds(const Array<Any>& segment_plan, Array<TTKernel>* kernels_out,
                                      Array<TTABIPlan>* abi_plans_out) {
   Array<TTKernel> kernels;
@@ -1029,24 +1151,14 @@ static void BuildTTKernelAndABISeeds(const Array<Any>& segment_plan, Array<TTKer
     String core_type =
         segment.Get("core_type") ? Downcast<String>(segment.Get("core_type").value())
                                  : String("brisc");
-    Array<Any> runtime_args =
-        segment.Get("runtime_args") ? Downcast<Array<Any>>(segment.Get("runtime_args").value())
-                                    : Array<Any>();
-    Array<Any> common_runtime_args =
-        segment.Get("common_runtime_args")
-            ? Downcast<Array<Any>>(segment.Get("common_runtime_args").value())
-            : Array<Any>();
-    Array<Any> compile_time_arg_specs =
-        segment.Get("compile_time_arg_specs")
-            ? Downcast<Array<Any>>(segment.Get("compile_time_arg_specs").value())
-            : Array<Any>();
-    Array<Any> accessors =
-        segment.Get("accessors") ? Downcast<Array<Any>>(segment.Get("accessors").value())
-                                 : Array<Any>();
-    Array<Any> semaphore_bindings =
-        segment.Get("semaphore_bindings")
-            ? Downcast<Array<Any>>(segment.Get("semaphore_bindings").value())
-            : Array<Any>();
+    Array<TTRuntimeArgSpec> runtime_args = DecodeRuntimeArgSpecs(segment.Get("runtime_args"));
+    Array<TTRuntimeArgSpec> common_runtime_args =
+        DecodeRuntimeArgSpecs(segment.Get("common_runtime_args"));
+    Array<TTCompileTimeArgSpec> compile_time_arg_specs =
+        DecodeCompileTimeArgSpecs(segment.Get("compile_time_arg_specs"));
+    Array<TTAccessorSpec> accessors = DecodeAccessorSpecs(segment.Get("accessors"));
+    Array<TTSemaphoreBindingSpec> semaphore_bindings =
+        DecodeSemaphoreBindingSpecs(segment.Get("semaphore_bindings"));
     TTKernelLaunchSpec launch_spec =
         segment.Get("launch_spec") ? Downcast<TTKernelLaunchSpec>(segment.Get("launch_spec").value())
                                    : TTKernelLaunchSpec(String(""), String(""), String(""));

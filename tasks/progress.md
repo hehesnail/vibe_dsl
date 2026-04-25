@@ -32,7 +32,7 @@
 - `P1 lowering facts contract-map cleanup`: completed
 - `P1 compute-op seed map cleanup`: completed
 - `P1 TTProgram kernel leaf map schema cleanup`: completed
-- `P1 TTProgram ABI arg/accessor map schema cleanup`: next
+- `P1 TTProgram ABI arg/accessor map schema cleanup`: completed
 - `P1 leaf reader name/default cleanup`: next
 - `P1/P2 workload payoff`: queued
 
@@ -40,7 +40,7 @@
 
 - Direct runtime remains an admitted leaf backend subset, not the codegen/export capability boundary.
 - Non-GEMM exact compute builtins compile through kernel source; per-op typed expansion is next payoff work.
-- TTProgram ABI arg/accessor map-shaped public schema and leaf name/default readers should shrink into typed fields.
+- Leaf name/default readers should shrink into exact typed projection reads.
 - Flash-attn compile/source/spec baseline is stable; direct runtime correctness is not admitted.
 
 ## Latest Verification
@@ -49,9 +49,10 @@ P1 redundant protocol cleanup:
 
 - `cmake --build build -j32`
 - TTKernel public map/Any schema regression: `1 passed`
+- TTABIPlan public Array/Any schema regression: `1 passed`
 - Lowering facts contract-map regression: `1 passed`
 - Compute-op seed map regression: `1 passed`
 - TTProgram payload/facts regression: `1 passed`
-- Blackhole schema/pipeline sweep: `189 passed, 25 skipped, 1 xfailed, 4 warnings`
+- Blackhole schema/pipeline sweep: `190 passed, 25 skipped, 1 xfailed, 4 warnings`
 - TT-Sim copy runtime: `13 passed`
 - TT-Sim GEMM: `59 passed`

@@ -38,6 +38,10 @@ from .common import (
     tt_compute_config_to_dict,
     tt_launch_spec_to_dict,
     tt_per_work_arg_specs_to_list,
+    tt_accessor_specs_to_list,
+    tt_compile_time_arg_specs_to_list,
+    tt_runtime_arg_specs_to_list,
+    tt_semaphore_binding_specs_to_list,
 )
 
 EXAMPLE_DIR = Path(__file__).resolve().parents[4] / "examples" / "flash_attention"
@@ -167,25 +171,27 @@ def _rebuild_tt_program_with_segment_plan(tt_program, segment_plan):
         runtime_args = (
             list(segment["runtime_args"])
             if "runtime_args" in segment
-            else list(abi.runtime_args)
+            else tt_runtime_arg_specs_to_list(abi.runtime_args)
         )
         common_runtime_args = (
             list(segment["common_runtime_args"])
             if "common_runtime_args" in segment
-            else list(abi.common_runtime_args)
+            else tt_runtime_arg_specs_to_list(abi.common_runtime_args)
         )
         accessors = (
-            list(segment["accessors"]) if "accessors" in segment else list(abi.accessors)
+            list(segment["accessors"])
+            if "accessors" in segment
+            else tt_accessor_specs_to_list(abi.accessors)
         )
         compile_time_arg_specs = (
             list(segment["compile_time_arg_specs"])
             if "compile_time_arg_specs" in segment
-            else list(abi.compile_time_arg_specs)
+            else tt_compile_time_arg_specs_to_list(abi.compile_time_arg_specs)
         )
         semaphore_bindings = (
             list(segment["semaphore_bindings"])
             if "semaphore_bindings" in segment
-            else list(abi.semaphore_bindings)
+            else tt_semaphore_binding_specs_to_list(abi.semaphore_bindings)
         )
 
         rebuilt_abi_plans.append(
@@ -404,7 +410,7 @@ def _rebuild_codegen_module_with_semaphore_binding(
         current_segment_plan = [dict(segment) for segment in base_segment_plan]
         if runtime_args_mutator is not None:
             runtime_args = runtime_args_mutator(
-                [dict(arg) for arg in tt_program.abi_plans[0].runtime_args]
+                tt_runtime_arg_specs_to_list(tt_program.abi_plans[0].runtime_args)
             )
             for segment in current_segment_plan:
                 if "runtime_args" in segment or len(current_segment_plan) == 1:
@@ -639,7 +645,7 @@ def test_blackhole_copy_pass_attrs():
 
     fused_dataflow = require_tt_kernel(tt_program, kind="fused_dataflow", core_type="brisc")
     abi = tt_abi_for_kernel(tt_program, fused_dataflow)
-    runtime_args = abi.runtime_args
+    runtime_args = tt_runtime_arg_specs_to_list(abi.runtime_args)
     assert [str(arg["kind"]) for arg in runtime_args] == EXPECTED_UNIFIED_COPY_RUNTIME_ARG_KINDS
     assert str(runtime_args[0]["buffer"]) == "A"
     assert str(runtime_args[1]["buffer"]) == "B"
@@ -657,7 +663,7 @@ def test_blackhole_copy_pass_attrs():
 
     assert str(fused_dataflow.kind) == "fused_dataflow"
     assert str(fused_dataflow.core_type) == "brisc"
-    accessors = abi.accessors
+    accessors = tt_accessor_specs_to_list(abi.accessors)
     assert [(str(item["buffer"]), int(item["compile_time_arg_offset"])) for item in accessors] == [
         ("A", 0),
         ("B", 2),
@@ -668,7 +674,7 @@ def test_blackhole_copy_pass_attrs():
     assert [int(item["args_config_bits"]) for item in accessors] == [2, 2]
     assert all(str(item["layout"]) == "interleaved" for item in accessors)
     assert all(str(item["memory_space"]) == "dram" for item in accessors)
-    assert len(abi.common_runtime_args) == 0
+    assert len(tt_runtime_arg_specs_to_list(abi.common_runtime_args)) == 0
 
     body_script = func.body.script()
     assert "tl.blackhole.read_tile_to_cb" in body_script

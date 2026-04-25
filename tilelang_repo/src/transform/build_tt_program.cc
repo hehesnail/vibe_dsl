@@ -469,11 +469,10 @@ Array<TTDstLayoutPlan> BuildDstLayoutPlans(const Array<TTABIPlan>& abi_plans) {
   Array<TTDstLayoutPlan> dst_layouts;
   std::unordered_set<std::string> seen;
   for (const TTABIPlan& abi : abi_plans) {
-    for (const Any& item : abi->compile_time_arg_specs) {
-      Map<String, Any> spec = AsMap(item);
-      String buffer = GetStringOrDefault(spec, "buffer");
-      String layout = GetStringOrDefault(spec, "layout");
-      String memory_space = GetStringOrDefault(spec, "memory_space");
+    for (const TTCompileTimeArgSpec& spec : abi->compile_time_arg_specs) {
+      String buffer = spec->buffer;
+      String layout = spec->layout;
+      String memory_space = spec->memory_space;
       if (buffer.empty() || layout.empty() || memory_space.empty()) {
         continue;
       }
@@ -481,7 +480,7 @@ Array<TTDstLayoutPlan> BuildDstLayoutPlans(const Array<TTABIPlan>& abi_plans) {
       if (!seen.insert(dedupe).second) {
         continue;
       }
-      const int64_t page_size_bytes = GetIntegerOrDefault(spec, "transport_page_size", 0);
+      const int64_t page_size_bytes = spec->transport_page_size;
       dst_layouts.push_back(
           TTDstLayoutPlan(String("dst_layout_" + dedupe), buffer, layout, memory_space,
                           page_size_bytes));
