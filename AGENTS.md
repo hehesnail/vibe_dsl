@@ -228,10 +228,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    blocker /
    下一步
 4. cleanup `task0-task5`
-   是 overlap residue workstream
-   - 它们清理旧协议 / 旧代码路径
-   - 它们可能和主线 task 重合
-   - 但它们不是新的主路线图
+   已完成并归档到
+   `tasks/dev_design/archive/`
+   - 它们只作完成期历史记录
+   - 不再作为当前活动设计入口
+   - 当前任务顺序只看
+     `tasks/progress.md`
 5. 当前已接入主链、但只算前置子步骤的工作包括：
    - `buffer effect / use-role analysis`
    - `buffer liveness analysis`
@@ -285,7 +287,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 默认开发构建目录固定为 `tilelang_repo/build/`
 - 默认并行编译线程数按 `-j32` 执行
 - `build_blackhole/` 和 legacy runner 都已删除
-- `tasks/dev_design/` 根目录只保留当前入口文档与完成阶段边界文档；
+- `tasks/dev_design/` 根目录只保留当前入口文档、当前 support-surface lane
+  和 protocol audit；
   `tasks/dev_design/archive/` 下内容全部视为历史记录，不再作为当前入口
 - semantic manifest 路径已完成；`AnalyzeSemanticStructure` 已全面改成 manifest-first
 - 当前实际 active chain 是：

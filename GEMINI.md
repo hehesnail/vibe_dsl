@@ -34,12 +34,17 @@
 每次开始工作，按这个顺序：
 
 1. 先读 `tasks/dev_design/final_blackhole_backend_redesign.md`
-2. 再看 `tasks/progress.md`
-3. 如果任务涉及构建、调试、历史问题，再看：
+2. 再读任务级设计合同：
+   - `tasks/dev_design/task0_ir_layering_root_cause.md`
+   - `tasks/dev_design/task1_spatial_plan_companion.md`
+   - `tasks/dev_design/task2_ttprogram_companion_cutover.md`
+   - `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
+3. 再看 `tasks/progress.md`
+4. 再看 `tasks/dev_design/README.md`
+5. 如果任务涉及构建、调试、历史问题，再看：
    - `memory/general_dev.md`
    - `memory/bugs.md`
-   - `tasks/dev_design/README.md`
-4. 然后读代码，不要只看文档
+6. 然后读代码，不要只看文档
 
 ## TT-Sim 环境入口
 
@@ -88,26 +93,37 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 
 当前 Blackhole 后端默认推进顺序：
 
-1. 保留当前临时验证面，直到新主链替换它：
-   - `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path
-   - copy / GEMM current support surface
-   - 第一批复杂 consumer 已打通的 compile-path 子集（当前以 `flash-attn` 为主）
-   - 这些只是过渡期验证面，不是架构真源；若与 owner cutover 冲突，应更新验证面而不是回退设计
-2. 文档、任务安排和实现边界统一以 `tasks/dev_design/final_blackhole_backend_redesign.md` 为准。
-3. 当前活动文档统一以这些入口为准：
+1. 文档、任务安排和实现边界统一以当前入口为准：
    - `tasks/dev_design/final_blackhole_backend_redesign.md`
    - `tasks/progress.md`
    - `tasks/dev_design/README.md`
-4. 当前 roadmap 只按 owner cutover 排序：
-   - `SpatialPlan owner cutover`
-   - `TTProgram owner cutover`
-   - `ExecutableSpec / leaf reader cutover`
-   - `legacy protocol deletion`
-5. 在当前分层下继续推进：
-   - `flash-attn` `blackhole.acc` 语义收正
-   - `topk / fusedmoe / paged decode / chunk recurrence` 等 family 的统一承接
-   - 更宽 copy/dataflow 支持面（P4）
-   - 更宽 synchronization 支持面（P5）
+   - `tasks/dev_design/task0_ir_layering_root_cause.md`
+   - `tasks/dev_design/task1_spatial_plan_companion.md`
+   - `tasks/dev_design/task2_ttprogram_companion_cutover.md`
+   - `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
+2. cleanup `task0-task5`
+   已完成并归档到
+   `tasks/dev_design/archive/`；
+   它们只作完成期历史记录，
+   不再作为当前活动路线图
+3. 当前 active lane
+   统一看 `tasks/progress.md`；
+   当前是
+   `P2 flash-attn direct runtime admission`
+4. `materialization / source-live-form`
+   已重新收束为
+   `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
+   下的 support-surface admission lane
+5. 后续更宽 workload /
+   mesh /
+   distributed runtime
+   支持面必须通过
+   `SpatialPlan -> TTProgram -> ExecutableSpec`
+   typed schema
+   和 leaf admission
+   扩展，
+   不能回到 runtime-only patch
+   或隐式 payload 通道
 
 ## 经验与问题记录
 
@@ -178,13 +194,52 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - `tilelang.compile(..., execution_backend="tvm_ffi")` 的 Blackhole wrapper/export path 已恢复
 - 默认开发构建目录固定为 `tilelang_repo/build/`
 - `build_blackhole/` 和 legacy runner 都已删除
-- Pass 管线顺序：`AnnotateBlackholeCopySemantics` → `BlackholeDeviceResourceCanonicalization` → `SplitHostDevice` → `SplitBlackholeKernel` → `LowerBlackholeOps` → `PlanBlackholeCB`
+- 当前实际 active chain 是：
+  `Normalized Tile TIR -> BuildSpatialPlan -> ValidateSpatialPlan -> SplitBlackholeKernel -> PlanTTBlocks -> SelectBlackholeTTMetalBuiltins -> PlanTTCompute / PlanTTTransport / PlanTTSync / PlanTTABI / PlanTTExecution -> BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable -> runtime / codegen leaf readers`
+- 上面这串名字描述的是当前 pass/phase 实现，不是新的长期 IR 层；
+  长期主链仍然只有
+  `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
+- `tl.blackhole_logical_buffer_tile_bridge_specs`
+  已从 active code path 删除，
+  不能再作为 bridge exception
+  或长期边界重新引入
+- `compute_contract` / `gemm_contract` /
+  `multi_*_contracts`
+  已退出 active chain；
+  compute truth 只能经 typed
+  `TTComputeOpPlan`
+  / `KernelSpec.compute_ops`
+  流动
 - `SplitBlackholeKernel` 已实现并已接入管线；纯 copy 走 `fused_dataflow` 单 kernel，GEMM 走 3-kernel（reader/compute/writer）
-- direct runtime 当前正式支持面：
+- direct runtime 当前 admitted 支持面：
   - copy：equal source/dest range，且 stride = 1
-  - GEMM：A/B-separated reader range + writer output range
+  - GEMM：A/B-separated reader range + writer output range；fresh fragment / preclear zero-init 统一走 `clear_accum=true` direct path
   - accessor：仅 interleaved + DRAM + `common_runtime_arg_count = 0`
-- `flash-attn` 当前是第一批 consumer，不是总体架构边界；总体设计同时面向 selection/indexing、routed/grouped dispatch、paged decode、chunk recurrence 等 workload family
+  - communication：non-oversubscribed explicit semaphore / remote-endpoint subset
+  - live-form / materialization：
+    当前 admitted bf16 subset 包括
+    `fragment_fill -> cast -> publish`
+    的 `pack_thread_direct_store`
+    path，
+    以及 GEMM post-merge
+    direct cast consumer
+    zero-preclear full-tile
+    `pack_tile`
+    path
+- `flash-attn` compile-path / source/spec baseline 已稳定，但 direct runtime correctness 还不是 admitted support surface
+- 当前 blocker 统一以 `tasks/progress.md` 为准；
+  当前下一步是补齐 flash-attn exact row-reduction
+  的 source-live-form truth，
+  让它消费 upstream matmul
+  产生的 CB-live value，
+  而不是 stale synthetic fill fallback
+- full mesh/distributed runtime
+  仍是后续 admission lane；
+  schema 已在 `TTProgram`
+  层表达，
+  runtime 当前只 admission unit mesh /
+  replicated `MeshBuffer`
+  subset
 - TT-Sim 当前正式环境入口是顶层 `scripts/setup_tt_sim.sh`
 - `setup_tt_sim.sh` 与后续测试必须在同一个 shell 中执行
 - 如果在 worktree 中运行测试，source 后必须把 `TILELANG_HOME` 指回当前 checkout/worktree

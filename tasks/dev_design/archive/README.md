@@ -29,6 +29,11 @@ Notable archived files:
 - `review_final_blackhole_backend_redesign.md`: 总设计审计快照，当前只保留历史参考价值
 - `layered_ir_references.md`: 分层 IR 研究输入和方法论参考，
   当前只作为历史/方法论资料，不是活动设计入口
+- `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
+  and `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
+  through `task5.md`: completed legacy protocol cleanup boundary records.
+  Cleanup is not the current active lane; use `tasks/progress.md`
+  for current status and task order.
 - `task2_task3_tt_target_cutover.md`: 已归档的旧 `Task 2 / Task 3`
   合并过渡稿；当前 active 设计已拆分为独立的 `Task 2` / `Task 3` 文档
 - `stage4_stage0_guardrails.md`: completed Stage 0 guardrails doc

@@ -210,8 +210,9 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
 2. cleanup `task0-task5`
    已完成 broad legacy protocol deletion；
-   它们是 completed boundary docs，
-   不是当前主路线图
+   它们已归档到
+   `tasks/dev_design/archive/`，
+   只作完成期历史记录
 3. 当前 active lane
    统一看 `tasks/progress.md`；
    当前是
@@ -264,7 +265,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 默认开发构建目录固定为 `tilelang_repo/build/`
 - 默认并行编译线程数按 `-j32` 执行
 - `build_blackhole/` 和 legacy runner 都已删除
-- `tasks/dev_design/` 根目录只保留当前入口文档与完成阶段边界文档；
+- `tasks/dev_design/` 根目录只保留当前入口文档、当前 support-surface lane
+  和 protocol audit；
   `tasks/dev_design/archive/` 下内容全部视为历史记录，不再作为当前入口
 - semantic manifest 路径已完成；`AnalyzeSemanticStructure` 已全面改成 manifest-first
 - 当前实际 active chain 是：

@@ -1222,8 +1222,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `tasks/dev_design/`
   根目录只保留入口 /
   support lane /
-  audit /
-  completed boundary docs；
+  audit；
+  completed boundary docs
+  也放入
+  `tasks/dev_design/archive/`；
   方法论和历史研究输入放
   `tasks/dev_design/archive/`。
 - 如果开 `TT_METAL_WATCHER` 后症状从 hang 变成 `SIGABRT` 或只在 dump 期间卡住，

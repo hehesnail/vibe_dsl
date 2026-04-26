@@ -16,7 +16,6 @@
 5. `task3_runtime_gate_and_workload_cutover.md`
 6. `tasks/progress.md`
 7. `2026-04-23-blackhole-live-form-materialization-admission.md`
-8. `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
 
 当前 support surface / workload payoff lane
 的任务级设计固定为：
@@ -37,15 +36,12 @@
   - 研究输入和方法论参考，不是当前活动设计入口
 - `blackhole_first_principles_protocol_audit.md`
   - 历史 surface 的删除/迁移落点表
-- `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
-  - 已完成 cleanup 的边界索引；配套 task0-task5 分文件一起阅读
-  - 它只定义 residue cleanup 的 ownership /
-    forced debt /
-    convergence gate，
-    不替代主设计路线
-  - 这些 cleanup task 文档默认采用 current IR/current object 上的
-    visitor / matcher / mutator / builder 设计，
-    不再授权新增 bag / attr / wrapper 式跨阶段语义层
+- `archive/2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
+  - 已完成 cleanup 的历史边界索引；
+    配套 task0-task5 分文件也在
+    `archive/`
+  - 只作历史参考，
+    不是当前活动设计入口
 
 ## 2. 当前长期设计骨架
 
@@ -84,7 +80,6 @@ pass 名字、helper、bag、payload、bridge attr
 | `task3_runtime_gate_and_workload_cutover.md` | `ExecutableSpec / leaf reader` 合同文档；定义 leaf reader 纪律、direct runtime 与 codegen/export backend 分离、workload 恢复顺序与完成判据 |
 | `2026-04-23-blackhole-live-form-materialization-admission.md` | cleanup 之后 support surface lane 的任务级设计；定义 live-form / materialization owner truth、admission 顺序和禁止的 runtime-only patch |
 | `blackhole_first_principles_protocol_audit.md` | 删除/迁移表；列出现存 fake/legacy protocol 的表示层落点、validator 和 disposition |
-| `2026-04-16-blackhole-final-legacy-protocol-cleanup.md` | 已完成 cleanup 的边界索引；把 legacy protocol cleanup 拆成总览 + task0-task5 分文件 |
 
 ### Runtime / mesh / distributed 调研索引
 
@@ -204,17 +199,11 @@ runtime 重构和 TT-Metal mesh/distributed API
 - `task2_ttprogram_companion_cutover.md`
 - `task3_runtime_gate_and_workload_cutover.md`
   - 主设计路线和 completion contract
-- `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
-  - 已完成 cleanup overlap workstream 的
-    ownership /
-    forced debt /
-    convergence gate
-- `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
-  到
-  `task5.md`
-  - 和主线任务重叠的
-    residue cleanup /
-    verification contract
+- cleanup `task0-task5`
+  已归档到
+  `archive/2026-04-16-blackhole-final-legacy-protocol-cleanup*.md`；
+  它们只作完成期历史记录，
+  不再参与当前执行优先级
 
 其中：
 
@@ -251,24 +240,22 @@ README 不再重复维护 backlog。
   完成判据，
   不维护 repo HEAD 的阶段性状态快照
 - cleanup `task0-task5`
-  分文件
-  只记录各自 residue 的
-  per-task current-state evidence /
-  required end-state /
-  verification contract，
-  不替代主设计任务链，
-  也不替代 `progress.md`
-  作为总体状态来源
+  分文件已归档；
+  archive 里的完成期状态 /
+  grep 合同 /
+  residue 表述
+  不替代 `progress.md`
+  作为当前状态来源
 - `README`
   只做入口索引，不重复维护详细 backlog
 - `archive/`
   下全部文档只作历史参考
 - `tasks/dev_design/`
   根目录只保留当前入口文档、
-  当前 support-surface lane、
-  protocol audit、
-  以及已完成阶段边界文档；
+  当前 support-surface lane
+  和 protocol audit；
   方法论 / 研究输入 /
+  已完成阶段边界 /
   旧阶段设计全部放在
   `archive/`
 
