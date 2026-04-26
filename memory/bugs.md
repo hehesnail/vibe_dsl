@@ -1179,6 +1179,49 @@
     当前 TT-Sim bf16 correctness
     不能 admission
 
+#### non-mailbox publication 之后仍可能卡在 source live-form truth
+
+- **症状**:
+  - small bf16 flash-attn
+    targeted compute source
+    已不再调用
+    `tilelang_get_cb_write_ptr_bytes`
+    /
+    `CircularBuffer::get_tile_address`
+    /
+    mailbox helper
+  - 临时打开
+    `cast_fragment_slice_to_tiled_cb`
+    direct-runtime gate 后，
+    TT-Sim 执行失败：
+    `UnsupportedFunctionality: tensix_execute_gmpool: src_b_val=0x0 must be 1.0f`
+  - 源码检查显示第一处 exact row-reduction
+    的 source CB
+    仍由 synthetic zero fill 发布，
+    没有消费前面 matmul 产生的 CB-live value
+- **根因**:
+  - publication helper 已经不是主要 blocker；
+    剩余问题是 source live-form /
+    physical alias truth
+    没有完整覆盖 exact row-reduction input
+  - gate 放开会把 stale fill fallback
+    伪装成 admitted runtime source，
+    导致 simulator 在 reduce/gmpool 上首先报错
+- **修法**:
+  - direct runtime gate 保持 fail-closed
+  - row-reduction input 必须从显式 live-form state
+    绑定到 upstream matmul CB-live value
+  - 不要把
+    `cast_fragment_slice_to_tiled_cb`
+    加入 admitted set
+    作为 correctness shortcut
+- **教训**:
+  - “generated source 无 mailbox”
+    只是 admission 的必要条件；
+    source live-form truth
+    和 stale fill invalidation
+    也必须被验证
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

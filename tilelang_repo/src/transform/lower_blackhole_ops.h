@@ -37,6 +37,7 @@
 #include <tvm/tir/transform.h>
 
 #include <map>
+#include <initializer_list>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -152,6 +153,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     int num_tiles = 0;
     int64_t num_elements = 0;
     int64_t row_width = 0;
+    bool borrowed_live = false;
   };
 
   struct ComputeOperandPlanSeed {
@@ -257,6 +259,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   struct LocalToCBSliceMatch {
     tvm::tir::Buffer dst;
     tvm::tir::Buffer src;
+    tvm::tir::Buffer cast_src;
     tvm::PrimExpr dst_offset_elements;
     tvm::PrimExpr num_elements;
     tvm::PrimExpr row_width;
@@ -561,6 +564,20 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   int PrepareExactTiledCBRequirement(const tvm::tir::Buffer& buffer);
   tvm::tir::Stmt FillLocalTileBuffer(const tvm::tir::Buffer& buffer,
                                      const tvm::PrimExpr& value);
+  void PopulateExactTiledCBValueShape(const tvm::tir::Buffer& buffer,
+                                      ExactTiledCBValue* value) const;
+  bool TryCreateLiveExactTiledCBValue(const tvm::tir::Buffer& buffer,
+                                      ExactTiledCBValue* value) const;
+  bool TryGetLastFragmentFillValue(const tvm::tir::Buffer& buffer,
+                                   tvm::PrimExpr* value) const;
+  tvm::tir::Stmt PublishConstantToExactTiledCB(const tvm::tir::Buffer& buffer,
+                                              const tvm::PrimExpr& fill_value,
+                                              const ExactTiledCBValue& cb_value);
+  tvm::tir::Stmt PublishExactInputToTiledCB(const tvm::tir::Buffer& src,
+                                           ExactTiledCBValue* cb_value);
+  void RecordExactOutputLiveForm(const tvm::tir::Buffer& dst,
+                                 const ExactTiledCBValue& cb_value);
+  void MarkExactCBValuesOverlap(std::initializer_list<int> cb_ids);
   tvm::tir::Stmt PublishLocalBufferToExactTiledCB(const tvm::tir::Buffer& src,
                                                   const ExactTiledCBValue& cb_value);
   tvm::tir::Stmt MaterializeExactTiledCBToLocalBuffer(const tvm::tir::Buffer& dst,
@@ -624,7 +641,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::tir::Stmt GenerateScalarMaxSequence(const ScalarMaxMatch& match);
   bool MatchDirectFragmentCast(const tvm::tir::ForNode* op, FragmentCastMatch* match) const;
   tvm::tir::Stmt GenerateFragmentCastSequence(const FragmentCastMatch& match,
-                                              bool publish_cb = false);
+                                              bool publish_cb = false,
+                                              int current_order_index = -1);
   bool MatchScalarFragmentCopyStore(const tvm::tir::BufferStoreNode* op,
                                     ScalarFragmentCopyMatch* match) const;
   bool MatchGroupedScalarFragmentCopyLoop(const tvm::tir::ForNode* op,
@@ -647,6 +665,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       const BlackholeBufferMaterializationFact& fact,
       int cb_requirement_index, const tvm::PrimExpr& num_elements_expr,
       const std::string& publication_protocol);
+  void RecordTiledCBLiveFormAliases(const tvm::tir::Buffer& buffer, int cb_id);
   void InvalidateLastFragmentFillValue(const tvm::tir::Buffer& buffer);
   void FinalizeConsumerBindingABIIndices();
   void FinalizeMaterializationPlanHostBuffers();

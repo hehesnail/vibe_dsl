@@ -2571,7 +2571,8 @@ static void PopulateBufferMaterializationSpecs(
 
   for (const auto& plan : spec->materialization_plans) {
     if (plan.host_buffer.empty()) {
-      ICHECK(!IsDirectRuntimeAdmittedPublicationProtocol(plan.publication_protocol))
+      ICHECK(plan.publication_protocol != buffer_materialization::kPackThreadDirectStore &&
+             plan.publication_protocol != buffer_materialization::kPackTile)
           << "Blackhole buffer materialization plan requires explicit host_buffer for target "
           << plan.target_buffer;
       continue;

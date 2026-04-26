@@ -7,8 +7,8 @@
 
 - Date: `2026-04-26`
 - Active lane: `P2 flash-attn direct runtime admission`
-- Current item: `blocked on replacing mailbox-backed local-fragment scratch staging with typed non-mailbox live-form publication`
-- Blocker: `flash-attn compute source still emits mailbox-backed tilelang_get_cb_write_ptr_bytes / CircularBuffer::get_tile_address for local-fragment <-> CB scratch staging; gate-bypass probe reaches TT-Sim t_tile_mmio_wr32 before correctness`
+- Current item: `blocked on completing source-live-form truth for flash-attn exact row-reduction inputs`
+- Blocker: `flash-attn compute source no longer emits mailbox-backed tilelang_get_cb_write_ptr_bytes / CircularBuffer::get_tile_address in the targeted small bf16 source, but direct-runtime admission remains gated: a gate-open probe reaches TT-Sim UnsupportedFunctionality in tensix_execute_gmpool because the first exact row-reduction still publishes a synthetic zero tile instead of consuming the matmul-produced CB-live source`
 - Main chain: `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
 ## Priority
@@ -41,12 +41,13 @@
 
 - Direct runtime remains an admitted leaf backend subset, not the codegen/export capability boundary.
 - Flash-attn compile/source/spec baseline is stable; direct runtime correctness is not admitted.
-- `cast_fragment_slice_to_tiled_cb` is now explicit typed materialization metadata, but remains a
-  direct-runtime unsupported gate until a non-mailbox, TT compute-linkable CB publication path exists.
-- The current blocker is wider than the single `acc_s -> acc_s_cast` materialization plan:
-  exact-op scratch staging still uses local fragment to CB and CB to local transfers backed by
-  mailbox address exchange. Admission requires typed internal staging/live-form plans plus a
-  PACK/DST-linkable publication path, not a runtime gate relaxation.
+- `cast_fragment_slice_to_tiled_cb` is explicit typed materialization metadata and now has a
+  non-mailbox generated publication shape, but remains a direct-runtime unsupported gate until
+  source-live-form truth is complete enough for correctness.
+- The current blocker is no longer the single `acc_s -> acc_s_cast` materialization plan or
+  mailbox address exchange. Admission now requires the exact row-reduction source to consume the
+  upstream matmul CB-live value through typed live-form state instead of a stale fragment-fill
+  fallback.
 
 ## Latest Verification
 
@@ -68,3 +69,16 @@ P2 flash-attn typed materialization gate restore:
 - TT-Sim flash-attn gate check: `1 passed, 1 skipped`
 - flash-attn runtime metadata file under TT-Sim env: `9 passed, 5 skipped`
 - flash-attn pipeline: `66 passed`
+
+P2 flash-attn non-mailbox publication checkpoint:
+
+- `cmake --build build -j32`
+- targeted flash-attn metadata/source/direct-runtime gate:
+  `7 passed, 1 skipped`
+- full flash-attn runtime metadata file under TT-Sim env:
+  `10 passed, 5 skipped`
+- exploratory gate-open probe reached TT-Sim execution and failed at
+  `UnsupportedFunctionality: tensix_execute_gmpool: src_b_val=0x0 must be 1.0f`;
+  source inspection showed the first exact row-reduction still materializes its source from a
+  synthetic zero fill rather than the upstream matmul CB-live value. The direct runtime gate is
+  therefore intentionally still closed.

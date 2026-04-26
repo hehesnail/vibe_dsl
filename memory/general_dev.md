@@ -1196,6 +1196,21 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   probe 后必须撤回 gate 放宽并重编
   `tilelang_repo/build/`
   里的 `libtilelang.so`。
+- MATH-side direct access to
+  `get_local_cb_interface(cb).fifo_wr_ptr`
+  is not a valid replacement for mailbox CB pointer exchange.
+  A gate-open flash-attn probe linked only after removing call sites;
+  when the helper itself was called from compute/MATH source, TT kernel link failed with
+  undefined `cb_interface`.
+  Publication from compute must be expressed through TT compute APIs
+  (`tile_regs_*`, `copy_tile`, `pack_tile`, typed live-form CBs),
+  not raw CB write-pointer arithmetic in MATH code.
+- For flash-attn exact op admission,
+  generated source being non-mailbox is necessary but not sufficient.
+  If row-reduction source live-form truth is incomplete,
+  lowering can still publish a stale synthetic fill tile as the reduction input.
+  Keep direct runtime fail-closed until row-reduction inputs consume the upstream
+  CB-live value through explicit live-form state.
 - 如果开 `TT_METAL_WATCHER` 后症状从 hang 变成 `SIGABRT` 或只在 dump 期间卡住，
   先抓 native backtrace；问题可能在 `WatcherServer` 线程，而不是 direct runtime 主链
 - 需要保留 watcher 现场但避免立即 abort 时，可临时开 `TT_METAL_WATCHER_TEST_MODE=1`

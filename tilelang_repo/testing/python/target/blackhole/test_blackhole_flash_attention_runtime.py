@@ -109,6 +109,36 @@ def test_blackhole_flash_attention_single_work_item_runtime_metadata_uses_typed_
     )
 
 
+def test_blackhole_flash_attention_small_bf16_compute_source_uses_non_mailbox_publication():
+    kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
+        1,
+        1,
+        32,
+        32,
+        False,
+        block_M=32,
+        block_N=32,
+        num_stages=1,
+        threads=128,
+    )
+    _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+
+    assert any(
+        "thread-distributed cb_republish materialization" in str(reason)
+        for reason in metadata.get("direct_runtime_unsupported_reasons", [])
+    )
+
+    compute_kernel = next(
+        kernel
+        for kernel in metadata["kernels"]
+        if str(kernel["kind"]) == "compute" and str(kernel["core_type"]) == "trisc"
+    )
+    compute_source = str(compute_kernel["source_code"])
+    assert "tilelang_get_cb_write_ptr_bytes" not in compute_source
+    assert "mailbox_write" not in compute_source
+    assert "mailbox_read" not in compute_source
+
+
 @pytest.mark.parametrize(
     ("kernel",),
     [

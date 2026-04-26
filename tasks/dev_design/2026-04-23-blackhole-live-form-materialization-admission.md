@@ -30,6 +30,14 @@
   `pack_tile`
   两类非 mailbox
   publication protocol；
+  `cast_fragment_slice_to_tiled_cb`
+  已能生成非 mailbox
+  publication source，
+  但尚未进入 direct-runtime admitted set，
+  因为 flash-attn
+  exact row-reduction
+  的 source live-form truth
+  仍会在 gate-open probe 中退回 stale fill fallback；
   更宽 live-in /
   workload payoff
   继续按显式 IR
@@ -151,6 +159,31 @@ TT-Metal codegen/export
 不是让某个 runtime 测试先绿，
 而是补上 explicit live-form /
 materialization contract。
+
+2026-04-26 checkpoint:
+small bf16 flash-attn
+targeted source
+已经不再依赖 mailbox-backed
+`tilelang_get_cb_write_ptr_bytes`
+或
+`CircularBuffer::get_tile_address`
+来做 compute-thread CB publication。
+但是 direct runtime admission
+仍保持 fail-closed；
+临时打开 gate 后，
+TT-Sim 在第一处 row-reduction
+报
+`tensix_execute_gmpool: src_b_val=0x0 must be 1.0f`。
+生成源码显示该 reduction
+的 source CB
+来自 synthetic zero fill，
+而不是 upstream matmul
+产生的 CB-live value。
+这说明剩余问题是
+source live-form alias /
+exact row-reduction input truth，
+不是 publication helper
+或 runtime gate 本身。
 
 ### 3.1 当前实现快照
 
