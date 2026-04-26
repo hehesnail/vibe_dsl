@@ -101,6 +101,14 @@
      multi-page exact CB-republish live-form for seq64 / multi-K-step
      flash-attn, without reintroducing mailbox helper or raw CB pointer
      publication.
+   - Design constraint:
+     do not extend P2.2 by stacking more local matcher special cases in
+     `lower_blackhole_ops.cc`.
+     Multi-page exact CB republish must first become typed owner truth:
+     page ownership, producer/consumer windows, page-count agreement, and
+     `cb_wait_front` / `cb_pop_front` / `cb_reserve_back` / `cb_push_back`
+     lifetime must be represented and validated through
+     `TTProgram -> ExecutableSpec`, then consumed by lowering/codegen.
 
 2. `P3 mesh/distributed runtime expansion`
    - Treat this as a later runtime admission lane.

@@ -1133,6 +1133,52 @@ P2.2 当前验收：
   留给 P2.3
   扩 support surface
 
+P2.3 entry contract:
+
+- 不把 P2.2 的 single-page
+  exact CB republish
+  通过继续堆
+  `lower_blackhole_ops.cc`
+  局部 matcher
+  扩成 multi-page support
+- multi-page exact CB republish
+  必须先进入 typed owner truth：
+  - page ownership /
+    page count
+  - producer publish window
+  - consumer read window
+  - `cb_wait_front`
+    /
+    `cb_pop_front`
+    /
+    `cb_reserve_back`
+    /
+    `cb_push_back`
+    lifetime
+  - producer/consumer
+    live-form alias
+    失效规则
+- 上述字段必须经
+  `TTProgram -> ExecutableSpec`
+  投影和 validator
+  fail-close；
+  lowering /
+  codegen
+  只能消费该 projection，
+  不能从 builtin 顺序、
+  buffer 名、
+  SeqStmt 形态
+  或 leaf runtime
+  重新恢复语义
+- P2.3 第一个 admitted gate
+  是 seq64 /
+  multi-K-step
+  bf16 flash-attn；
+  在该 contract 完成前，
+  `multi-page exact CB-republish live-form`
+  继续作为 queryable
+  unsupported reason
+
 ## 8. 实现边界
 
 允许的实现方向：
