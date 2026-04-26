@@ -86,6 +86,94 @@ pass 名字、helper、bag、payload、bridge attr
 | `blackhole_first_principles_protocol_audit.md` | 删除/迁移表；列出现存 fake/legacy protocol 的表示层落点、validator 和 disposition |
 | `2026-04-16-blackhole-final-legacy-protocol-cleanup.md` | 已完成 cleanup 的边界索引；把 legacy protocol cleanup 拆成总览 + task0-task5 分文件 |
 
+### Runtime / mesh / distributed 调研索引
+
+runtime 重构和 TT-Metal mesh/distributed API
+调研结论不单独另立总体设计文档，
+统一落在下面几处：
+
+- `final_blackhole_backend_redesign.md`
+  - 固定 direct runtime
+    只是 `ExecutableSpec`
+    的 leaf execution backend；
+    当前 unit-mesh /
+    replicated-buffer /
+    admitted subset
+    不能作为 codegen /
+    export /
+    `TTProgram`
+    的能力上限
+  - 定义 `TTMeshPlan` /
+    `TTBufferDistributionPlan`
+    作为 `TTProgram`
+    的显式表示对象
+- `task0_ir_layering_root_cause.md`
+  - 记录根因：
+    multi-device /
+    distributed /
+    mesh /
+    fabric
+    语义不能藏在 runtime fallback
+    或 host-side recovery 里
+- `task1_spatial_plan_companion.md`
+  - 记录 logical mesh axis、
+    distributed-slice consumer
+    和 live value 边界
+- `task2_ttprogram_companion_cutover.md`
+  - 记录 TT-Metal
+    `MeshDevice` /
+    `MeshWorkload` /
+    `MeshBuffer`
+    对应的 physical mesh、
+    buffer distribution、
+    device-coordinate
+    schema
+- `task3_runtime_gate_and_workload_cutover.md`
+  - 记录 direct runtime
+    与 codegen/export
+    的边界：
+    `BlackholeModule`
+    当前可以用 TT-Metal distributed API
+    执行 unit mesh /
+    replicated `MeshBuffer`
+    admitted subset，
+    但 distributed /
+    mesh /
+    fabric
+    未 admission 时只能是该 backend
+    fail-closed unsupported
+- 历史调研和开发记录只作辅助参考：
+  `blackhole_first_principles_protocol_audit.md`、
+  `archive/stage3_multicore_design.md`、
+  `archive/stage2_concrete_dev_task_plan.md`、
+  `archive/task2_task3_tt_target_cutover.md`、
+  `memory/general_dev.md`
+
+当前结论：
+
+- Blackhole runtime 主路径已经收敛到
+  `BlackholeModule`
+  进程内 direct host path；
+  legacy external runner
+  不再是支持路径
+- 当前 direct runtime
+  只 admission
+  unit mesh /
+  replicated `MeshBuffer`
+  /
+  已验证 workload subset；
+  这不等于完整 multi-device /
+  fabric collective /
+  distributed runtime
+  已支持
+- 完整 mesh/distributed 能力必须继续通过
+  `TTProgram -> ExecutableSpec`
+  的 typed schema
+  和 leaf admission
+  扩展，
+  不能回到 runtime-only patch
+  或隐式 payload 通道
+
 补充说明：
 
 - `task1_spatial_plan_companion.md`
