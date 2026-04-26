@@ -1,5 +1,6 @@
 import sys
 import types
+import re
 from pathlib import Path
 
 import pytest
@@ -137,6 +138,52 @@ def test_blackhole_flash_attention_small_bf16_compute_source_uses_non_mailbox_pu
     assert "tilelang_get_cb_write_ptr_bytes" not in compute_source
     assert "mailbox_write" not in compute_source
     assert "mailbox_read" not in compute_source
+
+
+def test_blackhole_flash_attention_first_row_reduction_consumes_matmul_live_form():
+    kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
+        1,
+        1,
+        32,
+        32,
+        False,
+        block_M=32,
+        block_N=32,
+        num_stages=1,
+        threads=128,
+    )
+    _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+
+    compute_kernel = next(
+        kernel
+        for kernel in metadata["kernels"]
+        if str(kernel["kind"]) == "compute" and str(kernel["core_type"]) == "trisc"
+    )
+    compute_source = str(compute_kernel["source_code"])
+    first_reduce = re.search(
+        r"reduce_init<PoolType::MAX, ReduceDim::REDUCE_ROW>\((\d+),",
+        compute_source,
+    )
+    assert first_reduce is not None
+    reduce_src_cb = int(first_reduce.group(1))
+    cb_configs = {int(config["cb_id"]): config for config in metadata["cb_configs"]}
+    reduce_src_config = cb_configs[reduce_src_cb]
+
+    assert str(reduce_src_config["flow_class"]) == "stream"
+    assert "reduce_src" not in str(reduce_src_config["name"])
+
+    first_reduce_offset = first_reduce.start()
+    source_reserve_offset = compute_source.rfind(
+        f"cb_reserve_back({reduce_src_cb},", 0, first_reduce_offset
+    )
+    source_push_offset = compute_source.rfind(
+        f"cb_push_back({reduce_src_cb},", 0, first_reduce_offset
+    )
+    source_matmul_offset = compute_source.rfind("matmul_tiles(", 0, source_push_offset)
+    assert source_reserve_offset >= 0
+    assert source_push_offset > source_reserve_offset
+    assert source_matmul_offset >= 0
+    assert "fill_tile_bitcast" not in compute_source[source_reserve_offset:source_push_offset]
 
 
 @pytest.mark.parametrize(

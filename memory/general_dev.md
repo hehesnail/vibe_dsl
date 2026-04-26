@@ -1209,8 +1209,10 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   generated source being non-mailbox is necessary but not sufficient.
   If row-reduction source live-form truth is incomplete,
   lowering can still publish a stale synthetic fill tile as the reduction input.
-  Keep direct runtime fail-closed until row-reduction inputs consume the upstream
-  CB-live value through explicit live-form state.
+  The P2.1 source fix seeds selected source-live only for explicit single
+  32x32 matmul outputs and lets the row-reduction input borrow that streamed
+  CB-live value; keep direct runtime fail-closed until P2.2 separately proves
+  the admitted bf16 subset under TT-Sim.
 - 文档收口时，
   `tasks/progress.md`
   是唯一当前状态 /

@@ -34,10 +34,15 @@
   已能生成非 mailbox
   publication source，
   但尚未进入 direct-runtime admitted set，
-  因为 flash-attn
-  exact row-reduction
-  的 source live-form truth
-  仍会在 gate-open probe 中退回 stale fill fallback；
+  `P2.1`
+  已补齐 targeted small bf16 flash-attn
+  first exact row-reduction
+  的 source live-form truth，
+  direct runtime admission
+  仍需在
+  `P2.2`
+  中重新打开 typed bf16 subset
+  并跑 TT-Sim correctness gate；
   更宽 live-in /
   workload payoff
   继续按显式 IR
@@ -184,6 +189,35 @@ source live-form alias /
 exact row-reduction input truth，
 不是 publication helper
 或 runtime gate 本身。
+
+2026-04-26 P2.1 closeout:
+small bf16 flash-attn
+first exact row-reduction
+现在借用 upstream matmul
+产生的 streamed
+`acc_s`
+CB-live source；
+生成源码中该 source 的
+reserve / matmul / push
+在 reduction 之前发生，
+且 source publish window
+不再包含
+`fill_tile_bitcast`
+synthetic fill。
+这个 admission lane
+只对显式单个完整 hardware tile
+的 matmul output
+种下 selected source-live producer，
+避免把大 shape / thread-distributed
+临时 tile
+误收进当前 admitted subset。
+direct runtime gate
+仍保持 fail-closed；
+是否从 unsupported gate
+晋级到 admitted TT-Sim bf16 correctness
+属于后续
+`P2.2`
+任务。
 
 ### 3.1 当前实现快照
 

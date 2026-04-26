@@ -2321,6 +2321,84 @@ void PlanTTKernelABI::InvalidateLastFragmentFillValue(const Buffer& buffer) {
   }
 }
 
+void PlanTTKernelABI::ClearSelectedSourceLiveProducer(const Buffer& buffer) {
+  if (!buffer.defined()) {
+    return;
+  }
+  auto erase_buffer = [&](const Buffer& candidate) {
+    const std::string identity = BufferIdentityName(candidate);
+    if (!identity.empty()) {
+      selected_source_live_producer_buffers_.erase(identity);
+    }
+  };
+  erase_buffer(buffer);
+  const Buffer physical = ResolvePhysicalComputeBuffer(buffer);
+  if (physical.defined() && !physical.same_as(buffer)) {
+    erase_buffer(physical);
+  }
+  if (physical.defined()) {
+    for (const auto& [identity, physical_candidate] : compute_physical_buffers_by_identity_) {
+      if (!identity.empty() && physical_candidate.defined() &&
+          SameBufferIdentity(physical_candidate, physical)) {
+        selected_source_live_producer_buffers_.erase(identity);
+      }
+    }
+  }
+}
+
+void PlanTTKernelABI::RecordSelectedSourceLiveProducer(const Buffer& buffer) {
+  if (!buffer.defined()) {
+    return;
+  }
+  ClearSelectedSourceLiveProducer(buffer);
+  auto record_buffer = [&](const Buffer& candidate) {
+    const std::string identity = BufferIdentityName(candidate);
+    if (!identity.empty()) {
+      selected_source_live_producer_buffers_.insert(identity);
+    }
+  };
+  record_buffer(buffer);
+  const Buffer physical = ResolvePhysicalComputeBuffer(buffer);
+  if (physical.defined() && !physical.same_as(buffer)) {
+    record_buffer(physical);
+  }
+  if (physical.defined()) {
+    for (const auto& [identity, physical_candidate] : compute_physical_buffers_by_identity_) {
+      if (!identity.empty() && physical_candidate.defined() &&
+          SameBufferIdentity(physical_candidate, physical)) {
+        selected_source_live_producer_buffers_.insert(identity);
+      }
+    }
+  }
+}
+
+bool PlanTTKernelABI::HasSelectedSourceLiveProducer(const Buffer& buffer) const {
+  if (!buffer.defined()) {
+    return false;
+  }
+  auto has_buffer = [&](const Buffer& candidate) {
+    const std::string identity = BufferIdentityName(candidate);
+    return !identity.empty() && selected_source_live_producer_buffers_.count(identity) != 0U;
+  };
+  if (has_buffer(buffer)) {
+    return true;
+  }
+  const Buffer physical = ResolvePhysicalComputeBuffer(buffer);
+  if (physical.defined() && !physical.same_as(buffer) && has_buffer(physical)) {
+    return true;
+  }
+  if (physical.defined()) {
+    for (const auto& [identity, physical_candidate] : compute_physical_buffers_by_identity_) {
+      if (!identity.empty() && physical_candidate.defined() &&
+          SameBufferIdentity(physical_candidate, physical) &&
+          selected_source_live_producer_buffers_.count(identity) != 0U) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 void PlanTTKernelABI::LoadBufferFlowFacts(
     const BlackholeLoweringSupportFacts& lowering_support_facts) {
   buffer_flow_facts_.clear();
@@ -2355,6 +2433,8 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   compute_physical_buffers_by_data_.clear();
   compute_physical_buffers_by_identity_.clear();
   host_buffer_by_compute_operand_buffer_.clear();
+  selected_source_live_producer_buffers_.clear();
+  seeded_cb_requirement_names_.clear();
   last_fragment_fill_value_by_buffer_identity_.clear();
   last_fragment_fill_value_by_data_.clear();
   LoadPhysicalComputeBufferBindings(func);
@@ -2586,6 +2666,11 @@ std::pair<int64_t, int64_t> PlanTTKernelABI::GetLogicalMatrixShape(const Buffer&
   return {-1, -1};
 }
 
+bool PlanTTKernelABI::IsSingleFullTileLogicalMatrix(const Buffer& buffer) const {
+  const auto [rows, cols] = GetLogicalMatrixShape(buffer);
+  return rows == kBlackholeTileRows && cols == kBlackholeTileCols;
+}
+
 std::optional<std::pair<int64_t, int64_t>>
 PlanTTKernelABI::InferStagedCopySharedShapeFromTransportCoverage(
     const BufferStoreNode* op, const std::vector<Var>& loop_vars_to_zero) const {
@@ -2722,6 +2807,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   cb_consumed_compute_input_use_count_by_buffer_identity_.clear();
   buffer_flow_facts_.clear();
   buffer_live_form_cb_by_buffer_identity_.clear();
+  selected_source_live_producer_buffers_.clear();
+  seeded_cb_requirement_names_.clear();
   stmt_order_index_by_node_.clear();
   segment_plan_.clear();
   tt_kernels_.clear();
@@ -3193,6 +3280,7 @@ void PlanTTKernelABI::LoadSeededCBRequirements(const PrimFunc& func) {
     cb_requirements_.push_back(req);
     if (!req.name.empty()) {
       buffer_identity_to_req_index_[req.name] = req_index;
+      seeded_cb_requirement_names_.insert(req.name);
     }
   }
   next_requirement_index_ =
@@ -3822,6 +3910,16 @@ bool PlanTTKernelABI::IsMatmulCall(const CallNode* op) const {
 
   Op call_op = Downcast<Op>(op->op);
   return call_op->name == "tl.tileop.gemm_py";
+}
+
+bool PlanTTKernelABI::IsSingleFullTileMatmulOutput(const CallNode* op) const {
+  if (!IsMatmulCall(op) || op->args.size() < 7) {
+    return false;
+  }
+  const auto* m = op->args[5].as<IntImmNode>();
+  const auto* n = op->args[6].as<IntImmNode>();
+  return m != nullptr && n != nullptr && m->value == kBlackholeTileRows &&
+         n->value == kBlackholeTileCols;
 }
 
 std::string PlanTTKernelABI::DataTypeToDataFormat(DataType dtype) {
@@ -5045,6 +5143,32 @@ bool PlanTTKernelABI::TryCreateLiveExactTiledCBValue(const Buffer& buffer,
   return true;
 }
 
+bool PlanTTKernelABI::TryCreateSelectedSourceLiveExactTiledCBValue(const Buffer& buffer,
+                                                                   ExactTiledCBValue* value) {
+  ICHECK(value != nullptr);
+  if (!select_compute_builtins_only_ || !HasSelectedSourceLiveProducer(buffer)) {
+    return false;
+  }
+  if (!IsSingleFullTileLogicalMatrix(buffer)) {
+    return false;
+  }
+  value->buffer = buffer;
+  value->cb_id = PrepareExactTiledCBRequirement(buffer);
+  value->borrowed_live = true;
+  PopulateExactTiledCBValueShape(buffer, value);
+  return true;
+}
+
+PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateRowReductionInputCBValue(
+    const Buffer& src) {
+  ExactTiledCBValue live_value;
+  if (TryCreateLiveExactTiledCBValue(src, &live_value) ||
+      TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value)) {
+    return live_value;
+  }
+  return CreatePublishedExactTiledCBValue(src, "reduce_src");
+}
+
 bool PlanTTKernelABI::TryGetLastFragmentFillValue(const Buffer& buffer,
                                                   PrimExpr* value) const {
   ICHECK(value != nullptr);
@@ -5107,6 +5231,9 @@ Stmt PlanTTKernelABI::PublishConstantToExactTiledCB(const Buffer& buffer,
 Stmt PlanTTKernelABI::PublishExactInputToTiledCB(const Buffer& src,
                                                 ExactTiledCBValue* cb_value) {
   ICHECK(cb_value != nullptr);
+  if (cb_value->borrowed_live) {
+    return Stmt();
+  }
   ExactTiledCBValue live_value;
   if (TryCreateLiveExactTiledCBValue(src, &live_value)) {
     *cb_value = live_value;
@@ -5624,13 +5751,21 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
   const bool use_tiled_cb_live_form =
       preserve_out_local_state && BufferUsesTiledCBLiveForm(gemm_c_buffer_);
   if (preserve_out_local_state) {
-    const std::string live_form_name =
-        BufferIdentityName(gemm_c_buffer_) + "_fragment_merge_live_form_" +
-        std::to_string(next_requirement_index_);
-    live_form_buffer =
-        tir::decl_buffer(gemm_c_buffer_->shape, gemm_c_buffer_->dtype, live_form_name,
-                         GetStorageScope(gemm_c_buffer_));
-    live_form_req_index = AllocateRequirementIndex(live_form_buffer, CBType::kIntermediate);
+    const std::string output_identity = BufferIdentityName(gemm_c_buffer_);
+    const bool reuse_seeded_source_live_cb =
+        use_tiled_cb_live_form && seeded_cb_requirement_names_.count(output_identity) != 0U &&
+        gemm_c_req_index_ >= 0 && IsSingleFullTileLogicalMatrix(gemm_c_buffer_);
+    if (reuse_seeded_source_live_cb) {
+      live_form_buffer = gemm_c_buffer_;
+      live_form_req_index = gemm_c_req_index_;
+    } else {
+      const std::string live_form_name =
+          output_identity + "_fragment_merge_live_form_" + std::to_string(next_requirement_index_);
+      live_form_buffer =
+          tir::decl_buffer(gemm_c_buffer_->shape, gemm_c_buffer_->dtype, live_form_name,
+                           GetStorageScope(gemm_c_buffer_));
+      live_form_req_index = AllocateRequirementIndex(live_form_buffer, CBType::kIntermediate);
+    }
     SetRequirementPageLayout(live_form_req_index, c_tile_bytes, num_c_tiles);
     auto& live_form_req = cb_requirements_.at(live_form_req_index);
     live_form_req.data_format = DataTypeToDataFormat(gemm_c_dtype_);
@@ -6904,7 +7039,7 @@ bool PlanTTKernelABI::MatchGroupedRowReduction(const ForNode* op,
 }
 
 Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& match) {
-  ExactTiledCBValue src_in = CreatePublishedExactTiledCBValue(match.src, "reduce_src");
+  ExactTiledCBValue src_in = CreateRowReductionInputCBValue(match.src);
   ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "reduce_out");
   ExactTiledCBValue scaler = CreateConstantExactTiledCBValue(match.src->dtype, "reduce_scaler");
   RecordExactComputeOpPlan("reduce", "reduce_tile",
@@ -7015,7 +7150,8 @@ bool PlanTTKernelABI::MatchDirectRowBroadcast(const ForNode* op,
 
 Stmt PlanTTKernelABI::GenerateRowBroadcastSequence(const RowBroadcastMatch& match) {
   ExactTiledCBValue dst_in = CreatePublishedExactTiledCBValue(match.dst, "row_bcast_dst");
-  ExactTiledCBValue scalar_in = CreatePublishedExactTiledCBValue(match.scalar, "row_bcast_scalar");
+  ExactTiledCBValue scalar_in =
+      CreatePublishedExactTiledCBValue(match.scalar, "row_bcast_scalar");
   ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "row_bcast_out");
 
   std::vector<Stmt> stmts;
@@ -7351,7 +7487,8 @@ bool PlanTTKernelABI::MatchExp2RowBroadcastAffine(const ForNode* op,
 Stmt PlanTTKernelABI::GenerateExp2RowBroadcastAffineSequence(
     const Exp2RowBroadcastAffineMatch& match) {
   ExactTiledCBValue dst_in = CreatePublishedExactTiledCBValue(match.dst, "exp2_affine_dst");
-  ExactTiledCBValue scalar_in = CreatePublishedExactTiledCBValue(match.scalar, "exp2_affine_scalar");
+  ExactTiledCBValue scalar_in =
+      CreatePublishedExactTiledCBValue(match.scalar, "exp2_affine_scalar");
   ExactTiledCBValue dst_scale = CreateConstantExactTiledCBValue(match.dst->dtype, "exp2_affine_dst_scale");
   ExactTiledCBValue scalar_scale =
       CreateConstantExactTiledCBValue(match.scalar->dtype, "exp2_affine_scalar_scale");
@@ -7807,6 +7944,7 @@ Stmt PlanTTKernelABI::GenerateFragmentFillSequence(const FragmentFillMatch& matc
   }
   const Buffer physical_dst = ResolvePhysicalComputeBuffer(match.dst);
   const std::string dst_name = BufferIdentityName(match.dst);
+  ClearSelectedSourceLiveProducer(match.dst);
   if (!dst_name.empty()) {
     buffer_live_form_cb_by_buffer_identity_.erase(dst_name);
   }
@@ -9155,6 +9293,31 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
 // for unmatched patterns to avoid deep recursion that causes stack overflow.
 Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
   if (select_compute_builtins_only_) {
+    if (const auto* call = op->value.as<CallNode>()) {
+      if (call->op->IsInstance<OpNode>()) {
+        const Op call_op = Downcast<Op>(call->op);
+        if (call_op->name == "tl.blackhole.fill_fragment" && call->args.size() >= 3 &&
+            IsFragmentFillValue(call->args[2])) {
+          if (const auto* data = call->args[0].as<VarNode>()) {
+            auto physical_it = compute_physical_buffers_by_data_.find(data);
+            if (physical_it != compute_physical_buffers_by_data_.end()) {
+              ClearSelectedSourceLiveProducer(physical_it->second);
+              last_fragment_fill_value_by_buffer_identity_[BufferIdentityName(physical_it->second)] =
+                  call->args[2];
+            }
+            last_fragment_fill_value_by_data_[data] = call->args[2];
+          }
+        }
+      }
+      if (IsMatmulCall(call) && call->args.size() >= 3 && IsBufferLikeExpr(call->args[2])) {
+        const Buffer out_buffer = NormalizeToBufferRegion(call->args[2])->buffer;
+        InvalidateLastFragmentFillValue(out_buffer);
+        ClearSelectedSourceLiveProducer(out_buffer);
+        if (IsSingleFullTileMatmulOutput(call)) {
+          RecordSelectedSourceLiveProducer(out_buffer);
+        }
+      }
+    }
     return GetRef<Stmt>(op);
   }
   if (const auto* call = op->value.as<CallNode>()) {

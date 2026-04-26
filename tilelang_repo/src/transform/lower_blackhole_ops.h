@@ -347,6 +347,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Return the manifest-backed logical matrix shape for a compute-region buffer. */
   std::pair<int64_t, int64_t> GetLogicalMatrixShape(const tvm::tir::Buffer& buffer) const;
 
+  /*! \brief Return true when the logical value is exactly one full hardware tile. */
+  bool IsSingleFullTileLogicalMatrix(const tvm::tir::Buffer& buffer) const;
+
   /*! \brief Recover staged-copy shared shape from the current copy op when the buffer is flat. */
   tvm::ffi::Array<tvm::Integer> GetEncodedCurrentStagedCopySharedShape(
       const tvm::tir::BufferStoreNode* op,
@@ -382,6 +385,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Detect matmul call using Op comparison (not string matching) */
   bool IsMatmulCall(const tvm::tir::CallNode* op) const;
+
+  /*! \brief Detect a matmul whose explicit M/N output extent is one full hardware tile. */
+  bool IsSingleFullTileMatmulOutput(const tvm::tir::CallNode* op) const;
 
   /*! \brief Extract GEMM buffer names and dimensions from a tl.tileop.gemm_py call */
   void ExtractGemmInfo(const tvm::tir::CallNode* op);
@@ -568,6 +574,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                       ExactTiledCBValue* value) const;
   bool TryCreateLiveExactTiledCBValue(const tvm::tir::Buffer& buffer,
                                       ExactTiledCBValue* value) const;
+  bool TryCreateSelectedSourceLiveExactTiledCBValue(const tvm::tir::Buffer& buffer,
+                                                    ExactTiledCBValue* value);
+  ExactTiledCBValue CreateRowReductionInputCBValue(const tvm::tir::Buffer& src);
   bool TryGetLastFragmentFillValue(const tvm::tir::Buffer& buffer,
                                    tvm::PrimExpr* value) const;
   tvm::tir::Stmt PublishConstantToExactTiledCB(const tvm::tir::Buffer& buffer,
@@ -667,6 +676,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       const std::string& publication_protocol);
   void RecordTiledCBLiveFormAliases(const tvm::tir::Buffer& buffer, int cb_id);
   void InvalidateLastFragmentFillValue(const tvm::tir::Buffer& buffer);
+  void ClearSelectedSourceLiveProducer(const tvm::tir::Buffer& buffer);
+  void RecordSelectedSourceLiveProducer(const tvm::tir::Buffer& buffer);
+  bool HasSelectedSourceLiveProducer(const tvm::tir::Buffer& buffer) const;
   void FinalizeConsumerBindingABIIndices();
   void FinalizeMaterializationPlanHostBuffers();
   bool ShouldRetainComputeInputBuffer(const tvm::tir::Buffer& buffer,
@@ -772,6 +784,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<std::string, int> cb_consumed_compute_input_use_count_by_buffer_identity_;
   std::unordered_map<std::string, BlackholeBufferFlowFact> buffer_flow_facts_;
   std::unordered_map<std::string, int> buffer_live_form_cb_by_buffer_identity_;
+  std::unordered_set<std::string> selected_source_live_producer_buffers_;
+  std::unordered_set<std::string> seeded_cb_requirement_names_;
   std::unordered_map<std::string, SpatialLiveValueRef> spatial_live_value_by_subject_;
   std::unordered_map<std::string, SpatialMaterializationBoundaryRef>
       spatial_materialization_boundary_by_source_target_;

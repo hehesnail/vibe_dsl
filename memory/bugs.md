@@ -1211,6 +1211,17 @@
   - direct runtime gate 保持 fail-closed
   - row-reduction input 必须从显式 live-form state
     绑定到 upstream matmul CB-live value
+  - `2026-04-26` P2.1 收口：
+    selected source-live producer 只由显式
+    `M == 32 && N == 32`
+    的 single full-tile matmul output
+    种下；
+    exact row-reduction source
+    优先借用该 streamed CB-live value，
+    并在 matmul 覆写时失效旧 fragment-fill fact。
+    大 shape /
+    thread-distributed 临时 tile
+    不进入这个 admitted lane。
   - 不要把
     `cast_fragment_slice_to_tiled_cb`
     加入 admitted set
