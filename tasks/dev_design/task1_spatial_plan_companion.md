@@ -432,14 +432,17 @@ active chain
 当前 owner truth。
 
 ### 4.3 `tl.blackhole_logical_buffer_tile_bridge_specs`
-只是唯一窄 cleanup exception
+已删除，不再是 cleanup exception
 
 task1/task2
 相关文档必须统一写清楚：
 
 - `tl.blackhole_logical_buffer_tile_bridge_specs`
-  是当前 cleanup
-  允许存在的唯一窄 temporary handoff
+  曾经是 cleanup
+  允许存在的窄 temporary handoff，
+  但 repo HEAD
+  active chain
+  已不再发布或消费它
 - 它不是
   `SpatialPlan`
   / `TTProgram`
@@ -450,18 +453,16 @@ task1/task2
   runtime contract
 - 它不是新的 medium-term bridge layer
 
-它当前唯一允许存在的理由，
-是 optimized/helper entry
-仍需要一段 leaf-local handoff。
-
-一旦 task3
-把 leaf bridge payload /
-projection / codegen reader
-切掉，
-或者等价的显式 leaf representation
-已经承接这段信息，
-这个 narrow attr
-也必须一起退场。
+后续如果发现 logical tile /
+live-value /
+materialization
+信息不足，
+只能扩
+`SpatialPlan`
+显式对象和 validator，
+不能恢复该 attr
+作为 debug helper
+或临时 bridge。
 
 ## 5. Validator 合同
 
@@ -624,10 +625,8 @@ virtual spatial/dataflow 层。
     `TTBlockPlan`
     / `TTExecutionPlan`
 - logical bridge spec-like 信息
-  - 只允许在 cleanup 期间
-    以
+  - 已经不能再以
     `tl.blackhole_logical_buffer_tile_bridge_specs`
-    这一个窄 exception
     暂存
   - 它不是
     `SpatialPlan`
@@ -649,10 +648,7 @@ virtual spatial/dataflow 层。
    wrapper /
    public surface”
   的过渡式收口
-- 除本文档明确允许的
-  `tl.blackhole_logical_buffer_tile_bridge_specs`
-  这一个窄 exception 外，
-  旧 `wrapper / facts / bag / public surface`
+- 旧 `wrapper / facts / bag / public surface`
   只要仍在
   `Task 1`
   边界里活着，
@@ -737,9 +733,8 @@ virtual spatial/dataflow 层。
    对 active chain
    与 public surface
    的控制；
-   同时把
    `tl.blackhole_logical_buffer_tile_bridge_specs`
-   明确压成唯一窄 exception
+   不能作为例外重新出现
 2. cleanup task2
    负责把
    `SpatialPlan -> TTProgram`

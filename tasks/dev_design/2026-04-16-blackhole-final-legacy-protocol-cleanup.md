@@ -310,17 +310,19 @@ task5 不是新的删除 owner。
 - 把 `git commit` / `git push`
   写成协议完成定义
 
-## 4. 唯一 Narrow Cleanup Exception
+## 4. Narrow Cleanup Exception 已关闭
 
 `tl.blackhole_logical_buffer_tile_bridge_specs`
-是当前 cleanup
+曾是 cleanup
 唯一允许存在的窄 temporary handoff。
+截至当前 repo HEAD，
+它已经从 active chain 删除。
 
 它的正确口径固定为：
 
-- 当前允许的窄 exception
-- leaf-local handoff，
-  不是 planning representation
+- 已删除的 historical surface
+- 不能恢复为 leaf-local handoff
+  或 planning representation
 - 不是
   `SpatialPlan`
   / `TTProgram`
@@ -330,26 +332,20 @@ task5 不是新的删除 owner。
   runtime contract
 - 不是新的 medium-term bridge layer
 
-这条 exception
-当前存在的唯一理由，
-是 optimized/helper entry
-仍需要一段 leaf-local handoff。
-
-对应 forced debt
-也必须写死：
-
-- task1 只切 owner truth
-  到 direct capture
-- downstream
-  `buffer_tile_bridge_specs`
-  payload / projection / codegen path
-  仍只允许被写成
-  wrong-now leaf compatibility debt
-- 这条 debt
-  由 task3
-  继续删除；
-  它不能被 overview
-  合法化成新层
+如果后续 workload
+再次需要 logical tile /
+live-value /
+materialization
+truth，
+只能扩显式
+`SpatialPlan`
+/
+`TTProgram`
+/
+`ExecutableSpec`
+typed objects
+和 validator，
+不能恢复该 bridge。
 
 ## 5. Ordering Note
 
@@ -370,19 +366,20 @@ repo HEAD 当前 cleanup 顺序和状态
   不再是当前 active chain
   的 owner truth
 - `tl.blackhole_logical_buffer_tile_bridge_specs`
-  仍是唯一窄 bridge exception，
-  只能按 forced leaf debt
-  继续收敛
+  / `buffer_tile_bridge_specs`
+  已删除，
+  不再是 cleanup exception
 - `compute_contract`
   /
   `gemm_contract`
   /
   `multi_*_contracts`
-  仍在
-  `TTProgram.payload -> ExecutableSpec -> runtime`
-  fallback 链里，
-  只属于 task3 /
-  leaf contract-family debt
+  已退出
+  `TTProgram -> ExecutableSpec -> runtime`
+  active chain，
+  compute truth
+  只能经 typed schema
+  流动
 - 后续顺序固定回到
   `tasks/progress.md`
   中的 support-surface lane：

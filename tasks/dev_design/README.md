@@ -33,7 +33,7 @@
 
 额外参考：
 
-- `layered_ir_references.md`
+- `archive/layered_ir_references.md`
   - 研究输入和方法论参考，不是当前活动设计入口
 - `blackhole_first_principles_protocol_audit.md`
   - 历史 surface 的删除/迁移落点表
@@ -144,6 +144,7 @@ runtime 重构和 TT-Metal mesh/distributed API
     fail-closed unsupported
 - 历史调研和开发记录只作辅助参考：
   `blackhole_first_principles_protocol_audit.md`、
+  `archive/layered_ir_references.md`、
   `archive/stage3_multicore_design.md`、
   `archive/stage2_concrete_dev_task_plan.md`、
   `archive/task2_task3_tt_target_cutover.md`、
@@ -262,6 +263,14 @@ README 不再重复维护 backlog。
   只做入口索引，不重复维护详细 backlog
 - `archive/`
   下全部文档只作历史参考
+- `tasks/dev_design/`
+  根目录只保留当前入口文档、
+  当前 support-surface lane、
+  protocol audit、
+  以及已完成阶段边界文档；
+  方法论 / 研究输入 /
+  旧阶段设计全部放在
+  `archive/`
 
 ## 6. Archive
 

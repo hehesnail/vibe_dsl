@@ -18,7 +18,7 @@
   写成长期协议
 - task 文档定义目标合同和完成判据；
   `progress.md` 只记录 repo HEAD 状态与下一步；
-  `layered_ir_references.md`
+  `tasks/dev_design/archive/layered_ir_references.md`
   只做研究输入，不充当活动设计入口
 
 ## 2. 构建模式
@@ -1211,6 +1211,21 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   lowering can still publish a stale synthetic fill tile as the reduction input.
   Keep direct runtime fail-closed until row-reduction inputs consume the upstream
   CB-live value through explicit live-form state.
+- 文档收口时，
+  `tasks/progress.md`
+  是唯一当前状态 /
+  next-task source；
+  `AGENTS.md`
+  只能记录 repo-wide working facts，
+  不能滞留已经删除的 bridge attr /
+  contract-family fallback。
+  `tasks/dev_design/`
+  根目录只保留入口 /
+  support lane /
+  audit /
+  completed boundary docs；
+  方法论和历史研究输入放
+  `tasks/dev_design/archive/`。
 - 如果开 `TT_METAL_WATCHER` 后症状从 hang 变成 `SIGABRT` 或只在 dump 期间卡住，
   先抓 native backtrace；问题可能在 `WatcherServer` 线程，而不是 direct runtime 主链
 - 需要保留 watcher 现场但避免立即 abort 时，可临时开 `TT_METAL_WATCHER_TEST_MODE=1`

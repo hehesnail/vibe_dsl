@@ -628,6 +628,9 @@ repo HEAD
 
 这些旧面不能再写成
 task3
+或 leaf reader
+需要保留的 compatibility debt；
+它们已经是删除完成项。
 继续保留的 forced carrier。
 repo HEAD
 不再把 plan-local

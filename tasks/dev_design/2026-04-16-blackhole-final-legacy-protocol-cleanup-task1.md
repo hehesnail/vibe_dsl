@@ -1,27 +1,31 @@
 # Task 1: Replace Compute-Region Bags With Direct Logical Bridge Capture
 
-## 0. `2026-04-22` 收口更新
+## 0. `2026-04-26` 收口更新
 
 - **状态**: `completed`
 - repo HEAD 已成立：
-  - `CaptureBlackholeLogicalBridgeSpecs`
-    已接入
-    `LowerToBlackholePhaseB`
-  - `lower.py`
-    / target test helper
-    已直接读取
-    `tl.blackhole_logical_buffer_tile_bridge_specs`
   - `AnalyzeBlackholeComputeRegions`
     / `blackhole.compute_regions`
     已退出 producer-side bridge handoff
-- 本 task 剩余相关 debt
-  已移动到：
-  - cleanup task2：
-    public/internal legacy analysis bag 删除
-  - cleanup task3：
+  - `CaptureBlackholeLogicalBridgeSpecs`
+    和
+    `tl.blackhole_logical_buffer_tile_bridge_specs`
+    不再属于 active chain
+  - downstream
     `TTProgram.payload`
-    / executable projection
-    bridge compatibility residue 删除
+    /
+    executable projection
+    bridge compatibility residue
+    已删除
+  - 后续 logical tile /
+    live-value /
+    materialization truth
+    只能经显式
+    `SpatialPlan`
+    / `TTProgram`
+    / `ExecutableSpec`
+    typed objects
+    流动
 
 > 下文 `2026-04-20` 的“当前状态 / 当前代码现实”
 > 保留为任务开始前的快照，不再代表 repo HEAD 当前状态。
@@ -33,10 +37,9 @@
 > **把 leaf-local logical buffer/tile bridge handoff 的 owner truth
 > 从 `blackhole.compute_regions`
 > / `AnalyzeBlackholeComputeRegionEvidence`
-> 切回当前阶段的 direct capture，
-> 并把
-> `tl.blackhole_logical_buffer_tile_bridge_specs`
-> 收成唯一窄 temporary handoff。**
+> 切回当前阶段的 direct capture；
+> 当前 repo HEAD
+> 已进一步删除 narrow bridge handoff。**
 
 task1 要修正的是
 **producer-side owner truth**，

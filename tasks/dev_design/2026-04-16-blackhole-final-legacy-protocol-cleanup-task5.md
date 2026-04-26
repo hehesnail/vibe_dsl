@@ -1,5 +1,31 @@
 # Task 5: Final Convergence, Documentation Sync, And Verification
 
+## 0. `2026-04-26` 收口更新
+
+- **状态**: `completed`
+- repo HEAD 当前口径：
+  - cleanup task0-task5
+    的 broad legacy protocol deletion
+    已完成
+  - `tl.blackhole_logical_buffer_tile_bridge_specs`
+    /
+    `buffer_tile_bridge_specs`
+    已退出 active chain
+  - `compute_contract`
+    /
+    `gemm_contract`
+    /
+    `multi_*_contracts`
+    已退出 active chain
+  - 当前未完成项不是 cleanup，
+    而是 `P2 flash-attn direct runtime admission`
+    的 support-surface admission
+- 下文的完成更新和历史 grep 合同
+  只保留为收敛期记录；
+  当前状态统一以
+  `tasks/progress.md`
+  为准。
+
 ## 1. 任务目标
 
 task5 不是新的协议删除任务，

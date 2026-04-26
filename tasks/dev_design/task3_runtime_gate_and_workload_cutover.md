@@ -756,25 +756,34 @@ support 工作
   buffer 名
   补回 producer-consumer 语义
 
-### 5.4 `segment_plan` 是 projection truth，`blackhole.segment_kind` 是 task4 debt
+### 5.4 `segment_plan` 是 projection truth，`blackhole.segment_kind` 只允许 pass-local
 
 `segment_plan`
 属于 executable projection
 的一等 leaf 字段。
 
-但如果 repo HEAD
-里 runtime 仍保留：
+repo HEAD
+不允许 runtime /
+codegen /
+leaf reader
+继续读取：
 
-- `SegmentBodyExtractor`
 - `blackhole.segment_kind`
-  body slicing
 
-正确口径只能是：
+`blackhole.segment_kind`
+只允许作为
+`lower_blackhole_ops.cc`
+内部 pass-local mechanics，
+并且必须在 final IR /
+leaf reader 前剥离。
 
-- task4 尚未删完的
-  leaf-local residue
-- 当前实现为了切 body
-  仍保留的 wrong-now path
+如果后续又需要区分
+kernel kind /
+segment kind，
+只能使用
+`TTKernelPlan.kind`
+和 executable projection
+里的 typed `segment_plan.kind`。
 
 它不是：
 
@@ -1117,15 +1126,12 @@ cleanup task3
 ### 7.2 cleanup task4
 
 cleanup task4
-负责删除：
+已经收敛：
 
-- planner / runtime
-  仍残留的
-  `blackhole.segment_kind`
-  marker path
 - `segment_plan.kind`
   与 source-level marker
-  之间的错位 residue
+  之间不能再有 leaf-reader
+  依赖
 
 所以 task3 文档里必须承认：
 

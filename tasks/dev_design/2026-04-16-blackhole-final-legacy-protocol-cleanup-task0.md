@@ -2,9 +2,7 @@
 
 ## 0. `2026-04-24` 收口更新
 
-- **状态**:
-  `completed broad cleanup /
-   leaf contract-family debt tracked outside task0`
+- **状态**: `completed`
 - repo HEAD 当前口径：
   - helper / composite builtin
     不再作为 active selected-TIR
@@ -18,24 +16,27 @@
     已按 current IR /
     typed planner result
     fail-close
-  - broad task0 cleanup
-    不再是当前 blocker
+- broad task0 cleanup
+  不再是当前 blocker
+- contract-family
+  `compute_contract` /
+  `gemm_contract` /
+  `multi_*_contracts`
+  已退出 active chain；
+  后续 compute truth
+  只能走 typed
+  `TTComputeOpPlan`
+  /
+  `KernelSpec.compute_ops`
 - 下文
   `2026-04-20`
   的“当前状态 / 当前代码现实”
   保留为任务启动快照；
   不再代表 repo HEAD 当前状态。
-- 仍存活的
-  `compute_contract`
-  /
-  `gemm_contract`
-  /
-  `multi_*_contracts`
-  runtime fallback
-  属于 task3 /
-  leaf contract-family debt，
-  不能反向把 task0
-  标成未完成。
+- 下文提到的 contract-family fallback
+  是任务启动快照或历史 debt 描述；
+  不代表当前 repo HEAD
+  仍在使用这些 fallback。
 
 ## 1. 任务目标
 

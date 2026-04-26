@@ -40,13 +40,13 @@ Blackhole 后端这轮 rewrite 的根因
 
 > **真正缺的不是更多后段 contract，而是 `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec` 这条显式主链必须成为唯一跨阶段语义载体；否则 exact builtin legality、virtual spatial/dataflow、target realization、leaf materialization 会继续被挤到 side channel 里。**
 
-截至 `2026-04-24`，
+截至 `2026-04-26`，
 repo HEAD 已经把 broad legacy protocol /
 public wrapper /
 cross-pass bag
 从 active chain 中收掉。
 根因仍用于解释
-当前剩余 narrow leaf debt：
+当前剩余 support-surface debt：
 
 1. `SpatialPlan`
    已收成 cleanup owner truth，
@@ -57,17 +57,26 @@ cross-pass bag
 2. planner / `TTProgram`
    已成为 TT-specific realization
    owner truth，
-   但仍存在
    `tl.blackhole_logical_buffer_tile_bridge_specs`
    这条窄 bridge attr
+   已退出 active chain；
+   mesh /
+   buffer distribution
+   schema 已在
+   `TTProgram`
+   typed fields 中表达
 3. build / codegen / runtime
    已站在
    `tl.tt_program -> tl.blackhole_executable`
    的显式投影上，
-   但 leaf 侧仍保留
-   compatibility payload /
-   contract fallback
-   这类 semantic recovery residue
+   contract-family payload /
+   fallback
+   已删除；
+   剩余问题是
+   flash-attn
+   exact row-reduction
+   仍需要正确消费上游
+   CB-live source
 4. direct runtime
    当前仍只是
    unit mesh /
@@ -91,7 +100,9 @@ cross-pass bag
 - `TTProgram`
   不是根因本体
 - leaf residue
-  也不是独立问题
+  已从 legacy cleanup
+  转成 support-surface admission
+  问题
 - direct runtime
   只是 leaf backend admission，
   不是 target realization
@@ -325,15 +336,13 @@ build / codegen / runtime
   - public `AnalyzeBlackhole*`
     wrapper
 - planner / `TTProgram`
-  broad forced debt，
-  现已收敛；
-  剩余只允许作为 narrow leaf debt 跟踪：
+  broad forced debt
+  已收敛：
   - `blackhole.lowering_requirements`
   - `blackhole.cb_requirements`
   - `tl.blackhole_lowering_requirements_seed`
   - `tl.internal_tt_*`
   - `tl.blackhole_logical_buffer_tile_bridge_specs`
-    这条唯一仍需替换的 narrow bridge exception
 - leaf semantic recovery residue：
   - `blackhole.copy_semantics`
   - `blackhole.segment_kind`
@@ -343,8 +352,6 @@ build / codegen / runtime
     `blackhole.segment_kind`
     只允许作为 pass-local mechanics
     并在 leaf 前剥离
-  - `tl.blackhole_logical_buffer_tile_bridge_specs`
-    narrow bridge attr
   - `buffer_tile_bridge_specs`
     payload / projection / codegen residue
   - `compute_contract`
@@ -353,6 +360,14 @@ build / codegen / runtime
     /
     `gemm_contract`
     compatibility fallback
+  上述 leaf residue
+  也已退出 active chain；
+  `blackhole.segment_kind`
+  只允许作为
+  `lower_blackhole_ops.cc`
+  内部 pass-local mechanics，
+  不允许到达 final IR /
+  leaf reader
 
 这些对象的共同问题不是“名字不好”，
 而是它们都在
@@ -493,12 +508,11 @@ TT-Metal 的稳定 host-side truth
    - 只允许 shrink / delete，
      不允许因为 repo HEAD
      还依赖它就升格成合法边界
-   - 即便还保留
-     `tl.blackhole_logical_buffer_tile_bridge_specs`
-     这类唯一 narrow cleanup exception，
-     它也只能被写成
-     cleanup-local handoff，
-     不是长期设计
+   - 已删除的 bridge attr /
+     payload fallback /
+     contract-family surface
+     不能以 debug helper
+     或测试兼容面名义重新引入
 
 ## 6. IR-First 纪律
 

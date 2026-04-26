@@ -10,9 +10,8 @@ Rules:
 4. Internal links, task names, and file paths inside archived documents may intentionally remain historical rather than fully rewritten.
 4.1 Archived docs may still use historical `P0 / P1 / ...` labels.
     These are legacy milestone names, not the current active numbering.
-    Current active docs use:
-    - `R0 / R1 / ...` for roadmap priorities
-    - `Tn.x` for task-local or batch-local sequence
+    Current active numbering is defined only by `tasks/progress.md`;
+    do not infer active priority from archived labels.
 5. Current work should start from:
    - `tasks/dev_design/final_blackhole_backend_redesign.md`
    - `tasks/progress.md`
@@ -28,6 +27,8 @@ Notable archived files:
 - `2026-04-02-stateful-tiled-ir-phase1-implementation-plan.md`: superseded pre-layered implementation-plan draft
 - `phase_b_code_audit.md`: `Phase B` 代码审计快照，结论已吸收进完成阶段文档
 - `review_final_blackhole_backend_redesign.md`: 总设计审计快照，当前只保留历史参考价值
+- `layered_ir_references.md`: 分层 IR 研究输入和方法论参考，
+  当前只作为历史/方法论资料，不是活动设计入口
 - `task2_task3_tt_target_cutover.md`: 已归档的旧 `Task 2 / Task 3`
   合并过渡稿；当前 active 设计已拆分为独立的 `Task 2` / `Task 3` 文档
 - `stage4_stage0_guardrails.md`: completed Stage 0 guardrails doc

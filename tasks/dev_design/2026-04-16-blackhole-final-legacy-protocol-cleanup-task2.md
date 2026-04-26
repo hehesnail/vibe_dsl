@@ -1,6 +1,6 @@
 # Task 2: Remove Public And Internal Legacy Analysis Bags
 
-## 0. `2026-04-24` 收口更新
+## 0. `2026-04-26` 收口更新
 
 - **状态**: `completed`
 - repo HEAD 当前已完成：
@@ -24,23 +24,18 @@
     不再接收
     `tl.internal_tt_*`
     staging bag
-- 当前剩余相关 debt
-  不属于 task2 broad-analysis 删除：
+- 后续收口已完成：
   - `tl.blackhole_logical_buffer_tile_bridge_specs`
-    是唯一窄 bridge attr，
-    后续由
-    `SpatialPlan`
-    logical live-value /
-    materialization-boundary
-    与 typed leaf materialization schema
-    替换
+    已退出 active chain，
+    不再是窄 bridge exception
   - `compute_contract`
     /
     `gemm_contract`
     /
     `multi_*_contracts`
-    是 task3 /
-    leaf contract-family debt
+    已退出
+    `TTProgram -> ExecutableSpec -> runtime`
+    active chain
 
 > 下文 `2026-04-17` 的“当前状态 / 当前代码现实”
 > 保留为任务开始前快照，不再代表 repo HEAD 当前状态。

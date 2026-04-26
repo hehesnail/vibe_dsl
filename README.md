@@ -20,10 +20,14 @@
 - semantic manifest 路径已完成：
   - `AnalyzeSemanticStructure` 已是 manifest-first
   - 当前 compile path 已不再把 semantic mirror 当长期 owner 层
-- 当前主实施阶段是 `SpatialPlan owner cutover`
+- 当前主实施阶段是
+  `P2 flash-attn direct runtime admission`
 - 当前总体 blocker 是
-  `SpatialPlan -> TTProgram -> ExecutableSpec`
-  这条单一 owner chain 还没有完全收正
+  flash-attn exact row-reduction
+  的 source-live-form truth
+  还没有完整消费 upstream matmul
+  产生的 CB-live value；
+  gate-open probe 仍会退回 synthetic zero fill
 - `SpatialPlan` 当前定位已经收紧为
   virtual spatial/dataflow owner layer；
   它必须承载 task/flow/layout/partition/order 这些执行相关但非 TT-specific 的 truth
@@ -34,14 +38,18 @@
   - stateful reduction-update
   - chunked recurrence / scan
 - 旧的单层方案、历史 runtime 架构说明、旧 implementation plan 都已移入 `tasks/dev_design/archive/`，不再作为当前实现入口。
-- 当前临时验证面仍主要落在 `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path：
+- 当前验证面落在 `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path：
   - copy / GEMM direct path 已稳定
-  - `flash-attn` 只是第一批 consumer，当前 compile-path 已打通
-  - `fusedmoe`、`topk`、`paged decode`、`mamba chunk state` 已进入总设计覆盖面
-  - `flash-attn` 的 direct-runtime correctness payoff
-    属于后续 runtime payoff / support-surface backlog，
-    不再是当前总体架构 blocker
-  - 这组验证面不是长期架构约束；新主链建立后应由新验证面替换
+  - `flash-attn` compile/source/spec baseline 已稳定
+  - `flash-attn` direct-runtime correctness
+    是当前 active support-surface blocker
+  - full mesh/distributed runtime
+    仍是后续 admission lane；
+    schema 已在 `TTProgram`
+    层表达，
+    runtime 当前只 admission unit mesh /
+    replicated `MeshBuffer`
+    subset
 
 ## 推荐阅读顺序
 

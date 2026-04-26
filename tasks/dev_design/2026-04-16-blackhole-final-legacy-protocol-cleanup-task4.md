@@ -1,5 +1,31 @@
 # Task 4: Replace `blackhole.segment_kind` With Direct Kernel-Kind Construction
 
+## 0. `2026-04-26` 收口更新
+
+- **状态**: `completed`
+- repo HEAD 当前口径：
+  - `TTKernelPlan.kind`
+    与 executable
+    `segment_plan.kind`
+    是跨阶段 kernel-kind truth
+  - runtime /
+    codegen /
+    leaf reader
+    不允许读取
+    `blackhole.segment_kind`
+  - `blackhole.segment_kind`
+    只允许作为
+    `lower_blackhole_ops.cc`
+    内部 pass-local mechanics，
+    final IR /
+    `ExecutableSpec`
+    /
+    leaf reader
+    前必须剥离
+- 下文的“当前状态 / 当前代码现实”
+  保留为任务执行期快照；
+  不再代表 repo HEAD 当前状态。
+
 ## 1. 任务目标
 
 这个 cleanup task 的正确目标不是

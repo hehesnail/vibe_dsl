@@ -37,10 +37,10 @@
 | `blackhole.lowering_requirements` | 拆回当前表示层直接读取 + `TTProgram / ExecutableSpec` | 当前 IR / 当前显式对象上的直接读取、必要的 leaf projection 记录 | 不是长期公共协议，也不应继续保留 internal builder bag | 各层 validator 分别检查 completeness；leaf 禁止反向依赖 planning bag | 删除 |
 | `blackhole.resource_plan` | `TTProgram` | `TTTransportPlan`、`TTSyncPlan`、`TTExecutionPlan` | 是 canonicalization 时代的影子产物 | `ValidateTTProgram` 直接验证 canonical target representation | 删除 |
 | `tl.internal_tt_*` | `TTProgram` | `TTProgram` 显式 slices | 只能短期 bridge，不是正式协议 | `ValidateTTProgram` 只接受显式 slices，不接受 internal attr bag | 删除 |
-| `TTProgram.payload` 大袋子 | `TTProgram -> ExecutableSpec` | `TTProgram` 显式 slices + leaf projection payload | 只能保留 leaf 投影级 payload，不能反向充当 planning source | `ValidateTTProgram` 禁止 payload 反客为主；`ValidateExecutableSpecProjection` 约束 leaf-only projection | 已收紧 |
-| `ExecutableSpec` 中的 raw payload | `ExecutableSpec` | leaf projection | 只能是投影结果，不能反向变成 planning source | `ValidateExecutableSpecProjection` | 已收紧 |
-| `tl.blackhole_logical_buffer_tile_bridge_specs` | `SpatialPlan -> TTProgram -> ExecutableSpec` 的待替换显式对象 | `LayoutSpec` / `LiveValue` / `MaterializationBoundary` / typed leaf materialization schema | 仍是跨 pass attr；只能作为当前唯一窄 bridge exception，不能在 task3 完成后继续被理解成 cleanup 已删除对象 | `ValidateSpatialPlan` / `ValidateTTProgram` / executable projection gate 必须逐步改为验证 typed objects | forced leaf debt，删除 |
-| `compute_contract` / `gemm_contract` / `multi_*_contracts` | `TTProgram -> ExecutableSpec` typed compute / kernel / materialization schema | `TTKernelPlan`、`TTABIPlan`、`TTExecutionPlan`、`TTLiveFormPlan`、`TTMaterializationPlan`、`TTConsumerBindingPlan` 或等价 typed object | 当前仍从 `TTProgram.payload` 投影并被 runtime fallback 消费；这只是 leaf compatibility debt，不是 `TTProgram` owner truth | `ValidateTTProgram` 的 payload shape check 只能 containment；leaf runtime 缺 typed schema 必须 fail-close | forced leaf debt，删除 fallback |
+| `TTProgram.payload` 大袋子 | `TTProgram -> ExecutableSpec` | `TTProgram` 显式 slices + leaf projection | 已删除；不能反向充当 planning source | `ValidateTTProgram` / tests 禁止 top-level payload surface | 已删除 |
+| `ExecutableSpec` 中的 raw payload | `ExecutableSpec` | typed leaf projection | 不能反向变成 planning source；projection writer 必须 fresh-map 构造 allowlisted leaf schema | `ValidateExecutableSpecProjection` | 已收紧 |
+| `tl.blackhole_logical_buffer_tile_bridge_specs` | `SpatialPlan -> TTProgram -> ExecutableSpec` 的显式对象 | `LayoutSpec` / `LiveValue` / `MaterializationBoundary` / typed leaf materialization schema | 已从 active chain 删除；不能再作为 narrow bridge exception 恢复 | `ValidateSpatialPlan` / `ValidateTTProgram` / executable projection gate 验证 typed objects | 已删除 |
+| `compute_contract` / `gemm_contract` / `multi_*_contracts` | `TTProgram -> ExecutableSpec` typed compute / kernel / materialization schema | `TTComputeOpPlan`、`KernelSpec.compute_ops`、`TTKernelPlan`、`TTABIPlan`、`TTExecutionPlan`、`TTLiveFormPlan`、`TTMaterializationPlan`、`TTConsumerBindingPlan` 或等价 typed object | 已退出 `TTProgram -> ExecutableSpec -> runtime` active chain；不能作为 leaf compatibility fallback 恢复 | `ValidateTTProgram` 和 leaf tests 缺 typed schema 必须 fail-close | 已删除 fallback |
 
 ## 3. 当前 cleanup 解释
 
@@ -64,46 +64,34 @@
   `blackhole.lowering_requirements`
   与
   `blackhole.resource_plan`
-- 为了让 optimized/helper 入口
-  还能把 pre-opt logical tile bridge spec
-  对齐回 optimized device func，
-  只允许一个窄 internal bridge attr：
-  `tl.blackhole_logical_buffer_tile_bridge_specs`
-  它只承接
+- `tl.blackhole_logical_buffer_tile_bridge_specs`
+  和
   `buffer_tile_bridge_specs`
-  这一个 leaf-local bridge surface，
-  不重新引入整袋
-  `blackhole.compute_regions`
-- 这条 narrow bridge
-  在 cleanup task3/task5
-  之后仍存活时，
-  只能按
-  forced leaf debt
-  继续跟踪；
-  `Legacy Protocol Deletion`
-  的 completed 状态
-  不能被解释成
-  该 attr
-  已经成为合法长期边界
+  已退出 active chain；
+  logical tile /
+  live-value /
+  materialization
+  信息不足时，
+  只能扩
+  `SpatialPlan`
+  / `TTProgram`
+  / `ExecutableSpec`
+  typed objects，
+  不能恢复窄 bridge attr
 - `compute_contract` /
   `gemm_contract` /
   `multi_*_contracts`
-  仍由
-  `TTProgram.payload`
-  投影到 executable
-  并被 runtime fallback 消费时，
-  它们同样只属于
-  forced leaf debt；
-  正确退出条件是
-  typed `TTProgram`
+  已由 typed `TTProgram`
   slice 和 typed
   `ExecutableSpec`
   schema
-  承接所需 compute /
+  替换；
+  后续 compute /
   ABI /
   materialization
-  facts，
-  然后删除
+  facts
+  必须继续走 typed fields，
+  不能恢复
   `compute_contract <- gemm_contract`
   fallback
 - `AnalyzeBlackholeWorkDecomposition /
@@ -113,6 +101,14 @@
   与对应的 internal evidence helper
   都应从 active chain 删除，
   不能继续以 debug / regression helper 名义常驻
+
+下面 `3.1` 到 `3.7`
+保留为 cleanup 执行期的历史落地记录。
+其中写到的“当前 repo HEAD”
+指对应日期的当时状态，
+不覆盖本节开头和
+`tasks/progress.md`
+记录的当前状态。
 
 ### 3.1 `2026-04-17` Task 0 落地补充
 
@@ -1023,17 +1019,32 @@
 ## 5. 当前诊断
 
 当前代码的真实问题不是“旧协议太散”，
-而是：
+而是已经从 legacy deletion
+转为 support-surface admission：
 
-- 中间 spatial/dataflow 表示太薄
-- 下游被迫补出 fake protocol
-- leaf readers 仍在消费 fake protocol
+- flash-attn exact row-reduction
+  的 source-live-form truth
+  仍需补齐
+- direct runtime admission
+  只能在 typed schema
+  和 validator 证明后打开
+- full mesh/distributed runtime
+  仍是后续 admission lane，
+  不能反向收窄
+  `TTProgram`
+  表达能力
 
 因此 disposition 的执行顺序固定为：
 
-1. 先把 `SpatialPlan`
-   重写成 virtual spatial/dataflow representation
-2. 再把 `TTProgram`
-   收回到 target realization 边界
-3. 再切 leaf readers
-4. 最后删 fake protocol
+1. 保持 `SpatialPlan`
+   / `TTProgram`
+   / `ExecutableSpec`
+   作为唯一主链
+2. 对 P2 support surface
+   补显式 live-form /
+   materialization truth
+3. 在 leaf admission
+   处 fail-closed
+   或打开已验证 subset
+4. 已删除 fake protocol
+   不得重新进入 active chain

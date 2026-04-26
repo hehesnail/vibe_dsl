@@ -811,7 +811,9 @@ fail-closed 纪律固定为：
   / `compute_contract`
   / `multi_*_contracts`
   这类 family field
-  是待删 compatibility debt
+  已从 active chain 删除，
+  后续不能作为 compatibility debt
+  或测试辅助面重新出现
 - buffer /
   operand /
   work-item /

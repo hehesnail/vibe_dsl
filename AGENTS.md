@@ -289,18 +289,23 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `tasks/dev_design/archive/` 下内容全部视为历史记录，不再作为当前入口
 - semantic manifest 路径已完成；`AnalyzeSemanticStructure` 已全面改成 manifest-first
 - 当前实际 active chain 是：
-  `Normalized Tile TIR -> BuildSpatialPlan -> ValidateSpatialPlan -> SplitBlackholeKernel -> CaptureBlackholeLogicalBridgeSpecs narrow bridge -> PlanTTBlocks -> SelectBlackholeTTMetalBuiltins -> PlanTTCompute / PlanTTTransport / PlanTTSync / PlanTTABI / PlanTTExecution -> BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable -> runtime / codegen leaf readers`
+  `Normalized Tile TIR -> BuildSpatialPlan -> ValidateSpatialPlan -> SplitBlackholeKernel -> PlanTTBlocks -> SelectBlackholeTTMetalBuiltins -> PlanTTCompute / PlanTTTransport / PlanTTSync / PlanTTABI / PlanTTExecution -> BuildTTProgram -> ValidateTTProgram -> MaterializeBlackholeExecutable -> runtime / codegen leaf readers`
 - 上面这串名字描述的是当前 pass/phase 实现，不是新的长期 IR 层；
   长期主链仍然只有 `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
-- 当前已知迁移残留包括：
+- 当前协议边界事实：
   - `tl.blackhole_logical_buffer_tile_bridge_specs`
-    仍是唯一窄 bridge attr，
-    不是长期边界
+    已从 active code path 删除；
+    不能再作为新的 bridge exception
+    或长期边界重新引入
   - `compute_contract` / `gemm_contract` /
     `multi_*_contracts`
-    仍存在
-    `TTProgram.payload -> ExecutableSpec -> runtime`
-    compatibility 链
+    已退出
+    `TTProgram -> ExecutableSpec -> runtime`
+    active chain；
+    compute truth 只能经
+    typed `TTComputeOpPlan`
+    / `KernelSpec.compute_ops`
+    流动
   - `blackhole.segment_kind`
     只允许作为
     `lower_blackhole_ops.cc`
@@ -329,12 +334,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   里的主线任务状态为准；
   当前问题不是单一 cutover 点；
   当前下一步是补齐
-  `SpatialPlan`
-  logical live-value /
-  materialization-boundary
-  表示，
-  并将 leaf contract-family
-  从 payload/fallback
-  收敛到 typed schema
+  flash-attn exact row-reduction
+  的 source-live-form truth，
+  让它消费 upstream matmul
+  产生的 CB-live value，
+  而不是 stale synthetic fill
+  fallback
 - 后续所有架构推进以当前 layered IR 为准：
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`

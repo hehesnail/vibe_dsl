@@ -1,5 +1,27 @@
 # Task 3: Replace `blackhole.copy_semantics` With Direct Current-Stage Recovery
 
+## 0. `2026-04-26` 收口更新
+
+- **状态**: `completed`
+- repo HEAD 当前已完成：
+  - `blackhole.copy_semantics`
+    已退出 active chain
+  - leaf reader /
+    codegen /
+    runtime
+    站在
+    `TTProgram -> tl.blackhole_executable -> ExecutableSpec`
+    projection boundary
+  - bridge payload /
+    contract-family fallback
+    已删除，
+    不能再作为 task3
+    或 runtime compatibility debt
+    恢复
+- 下文的“当前状态 / 当前代码现实”
+  保留为任务执行期快照；
+  不再代表 repo HEAD 当前状态。
+
 ## 1. 任务目标
 
 这个 cleanup task 只负责一件事：
