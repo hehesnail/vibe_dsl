@@ -40,6 +40,49 @@
   - 该问题的 simulator-side 旁证和更宽 fatal taxonomy 扫描，
     统一见 `memory/tt_simulator_constraints.md`
 
+### `cast_fragment_slice_to_tiled_cb` 不能仅靠 raw compute-side CB interface 晋级 direct runtime admission
+
+- **现象**:
+  - 将 flash-attn
+    `thread_distributed + cb_republish`
+    的 publication protocol
+    标成
+    `cast_fragment_slice_to_tiled_cb`
+    并从 direct runtime gate 中放行后，
+    TT-Sim bf16 runtime 会在 TT-Metal JIT 阶段失败：
+    `trisc2`
+    编译报
+    `get_operand_id was not declared`，
+    `trisc1`
+    链接报
+    `undefined reference to cb_interface`
+- **根因**:
+  - compute kernel 中直接读
+    `get_local_cb_interface`
+    或手写维护 CB read/write pointer，
+    不等价于一个 TT compute-side 可链接的 publication protocol
+  - 该路径会重新落回 memory 中已知的
+    compute-side CB interface / mailbox boundary，
+    不能作为 admitted runtime support surface
+- **当前结论**:
+  - `cast_fragment_slice_to_tiled_cb`
+    可以作为 typed
+    `TTMaterializationPlan.publication_protocol`
+    和 executable metadata 保留
+  - direct runtime admission
+    仍只接受已实现的
+    `pack_thread_direct_store`
+    /
+    `pack_tile`
+    subset
+  - flash-attn 继续通过
+    `direct_runtime_unsupported_reasons`
+    fail-close；
+    后续 admission 必须先实现非 mailbox、
+    TT compute-linkable 的 CB publication path，
+    不能靠 runtime-only source patch
+    或 raw CB interface helper 放行
+
 ## 2. 已解决但值得记住的模式
 
 ### pre-opt `SpatialPlan` 只能作为 typed layout merge source，不能整份替换 optimized plan

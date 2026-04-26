@@ -318,7 +318,8 @@ void ValidateMaterializationPlans(const TTProgram& program,
           << "TTMaterializationPlan cb_republish requires required_cb_plan_indices";
       ICHECK(plan->publication_protocol == buffer_materialization::kMailboxWritePtr ||
              plan->publication_protocol == buffer_materialization::kPackThreadDirectStore ||
-             plan->publication_protocol == buffer_materialization::kPackTile)
+             plan->publication_protocol == buffer_materialization::kPackTile ||
+             plan->publication_protocol == buffer_materialization::kCastFragmentSliceToTiledCB)
           << "TTMaterializationPlan cb_republish has unsupported publication_protocol "
           << plan->publication_protocol;
       if (plan->publication_protocol == buffer_materialization::kPackThreadDirectStore ||

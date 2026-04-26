@@ -103,7 +103,10 @@ def test_blackhole_flash_attention_single_work_item_runtime_metadata_uses_typed_
         str(plan["target_buffer"]): plan for plan in metadata["materialization_plans"]
     }
     assert str(materialization_plans["acc_s_cast"]["materialization_protocol"]) == "cb_republish"
-    assert str(materialization_plans["acc_s_cast"]["publication_protocol"]) == "mailbox_write_ptr"
+    assert (
+        str(materialization_plans["acc_s_cast"]["publication_protocol"])
+        == "cast_fragment_slice_to_tiled_cb"
+    )
 
 
 @pytest.mark.parametrize(

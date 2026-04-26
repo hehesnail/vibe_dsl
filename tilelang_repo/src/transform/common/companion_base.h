@@ -167,6 +167,7 @@ constexpr const char* kCBRepublish = "cb_republish";
 constexpr const char* kMailboxWritePtr = "mailbox_write_ptr";
 constexpr const char* kPackThreadDirectStore = "pack_thread_direct_store";
 constexpr const char* kPackTile = "pack_tile";
+constexpr const char* kCastFragmentSliceToTiledCB = "cast_fragment_slice_to_tiled_cb";
 }  // namespace buffer_materialization
 
 namespace buffer_live_form {

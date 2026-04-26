@@ -1052,7 +1052,7 @@ def test_flash_attention_bf16_variant_keeps_shared_bridge_cbs_in_bfloat16():
         ),
     ],
 )
-def test_flash_attention_executable_spec_drops_contract_family_and_reports_contract_gates(
+def test_flash_attention_executable_spec_drops_contract_family_and_reports_typed_materialization_gate(
     example_module, args, kwargs
 ):
     can_run, msg = check_blackhole_codegen_requirements()

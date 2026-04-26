@@ -351,6 +351,39 @@ publication protocols 有两类：
   pack 到 materialized
   bf16 target CB
 
+`2026-04-26`
+flash-attn
+fragment-slice cast republish
+已命名为 typed
+`publication_protocol=cast_fragment_slice_to_tiled_cb`，
+用于说明
+`TTMaterializationPlan`
+确实看到的 producer /
+consumer relation。
+它当前**不是** direct-runtime
+admitted protocol。
+一次尝试把它直接 admission
+并在 TRISC source 中用 raw
+`get_local_cb_interface`
+/
+手写 CB pointer helper
+实现时，
+TT-Metal JIT 在
+`trisc2`
+编译阶段暴露
+`get_operand_id`
+不可见，
+并在
+`trisc1`
+链接阶段暴露
+`undefined reference to cb_interface`。
+因此该 protocol
+当前只允许作为 explicit metadata
+和 queryable unsupported gate，
+直到实现一个非 mailbox、
+TT compute-linkable
+的 CB publication path。
+
 两者都不是 leaf reader
 按 kernel shape 猜出来的 fallback；
 必须由

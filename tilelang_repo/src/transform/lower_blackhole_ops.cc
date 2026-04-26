@@ -8062,7 +8062,7 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
             match, *fact, cb_id, num_elements_expr,
             pack_thread_direct_fill_value.defined()
                 ? buffer_materialization::kPackThreadDirectStore
-                : buffer_materialization::kMailboxWritePtr);
+                : buffer_materialization::kCastFragmentSliceToTiledCB);
       }
     }
   }

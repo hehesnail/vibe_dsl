@@ -47,6 +47,7 @@
 #include "codegen_blackhole.h"
 #include "blackhole_module.h"
 #include "tt_program_projection.h"
+#include "../transform/common/companion_base.h"
 #include "../tir/builtin_blackhole.h"
 
 namespace tvm {
@@ -54,6 +55,7 @@ namespace runtime {
 
 using tvm::ffi::Map;
 using tvm::ffi::String;
+namespace buffer_materialization = tvm::tl::buffer_materialization;
 
 /*!
  * \brief Blackhole device API
@@ -2393,14 +2395,14 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
 }
 
 static bool IsDirectRuntimeAdmittedPublicationProtocol(const std::string& publication_protocol) {
-  return publication_protocol == "pack_thread_direct_store" ||
-         publication_protocol == "pack_tile";
+  return publication_protocol == buffer_materialization::kPackThreadDirectStore ||
+         publication_protocol == buffer_materialization::kPackTile;
 }
 
 static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
   for (const auto& materialization : spec->buffer_materializations) {
-    if (materialization.materialization_protocol != "cb_republish") {
+    if (materialization.materialization_protocol != buffer_materialization::kCBRepublish) {
       continue;
     }
     if (materialization.execution_topology_kind != "thread_distributed") {
@@ -2421,7 +2423,7 @@ static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
     live_form_by_name.emplace(live_form.name, &live_form);
   }
   for (const auto& plan : spec->materialization_plans) {
-    if (plan.materialization_protocol != "cb_republish" ||
+    if (plan.materialization_protocol != buffer_materialization::kCBRepublish ||
         IsDirectRuntimeAdmittedPublicationProtocol(plan.publication_protocol)) {
       continue;
     }

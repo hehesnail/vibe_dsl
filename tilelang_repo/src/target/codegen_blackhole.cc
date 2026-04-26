@@ -383,10 +383,21 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         break;
       case CoreType::kTRISC:
         decl_stream << "// Compute kernel API (TRISC)\n";
+        decl_stream << "#ifndef REDUCE_OP\n";
+        decl_stream << "#define REDUCE_OP PoolType::SUM\n";
+        decl_stream << "#endif\n";
+        decl_stream << "#ifndef REDUCE_DIM\n";
+        decl_stream << "#define REDUCE_DIM ReduceDim::REDUCE_ROW\n";
+        decl_stream << "#endif\n";
         decl_stream << "#include \"api/compute/pack.h\"\n";
         decl_stream << "#include \"api/compute/reconfig_data_format.h\"\n";
         decl_stream << "#include \"api/compute/tile_move_copy.h\"\n";
         decl_stream << "#include \"api/compute/eltwise_binary.h\"\n";
+        decl_stream << "#include \"api/compute/bcast.h\"\n";
+        decl_stream << "#include \"api/compute/binary_max_min.h\"\n";
+        decl_stream << "#include \"api/compute/reduce.h\"\n";
+        decl_stream << "#include \"api/compute/eltwise_unary/recip.h\"\n";
+        decl_stream << "#include \"api/compute/compute_kernel_api.h\"\n";
         decl_stream << "#include \"api/compute/matmul.h\"\n";
         decl_stream << "#include \"api/debug/waypoint.h\"\n";
         decl_stream << "#include \"experimental/circular_buffer.h\"\n";

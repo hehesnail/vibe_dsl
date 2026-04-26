@@ -5,9 +5,9 @@
 
 ## Status
 
-- Date: `2026-04-25`
-- Active lane: `P1/P2 workload payoff`
-- Current item: `P1/P2 workload payoff`
+- Date: `2026-04-26`
+- Active lane: `P2 flash-attn direct runtime admission`
+- Current item: `typed fragment-slice CB republish gate restored; next is a TT compute-linkable publication implementation`
 - Blocker: none
 - Main chain: `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -41,15 +41,16 @@
 
 - Direct runtime remains an admitted leaf backend subset, not the codegen/export capability boundary.
 - Flash-attn compile/source/spec baseline is stable; direct runtime correctness is not admitted.
+- `cast_fragment_slice_to_tiled_cb` is now explicit typed materialization metadata, but remains a
+  direct-runtime unsupported gate until a non-mailbox, TT compute-linkable CB publication path exists.
 
 ## Latest Verification
 
-P1/P2 non-GEMM exact compute op typed expansion:
+P2 flash-attn typed materialization gate restore:
 
 - `cmake --build build -j32`
-- non-GEMM compute op typed regression: `1 passed`
-- GEMM compute op schema regressions: `3 passed`
+- flash-attn typed gate regression: `8 passed`
+- flash-attn source/codegen targeted regression: `5 passed`
+- TT-Sim flash-attn gate check: `1 passed, 1 skipped`
+- flash-attn runtime metadata file under TT-Sim env: `9 passed, 5 skipped`
 - flash-attn pipeline: `66 passed`
-- Blackhole non-runtime schema/pipeline sweep: `163 passed, 25 skipped, 1 xfailed, 4 warnings`
-- TT-Sim copy runtime: `13 passed`
-- TT-Sim GEMM: `59 passed`
