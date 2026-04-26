@@ -192,6 +192,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     std::string kind;
     bool grouped = false;
     bool clear = true;
+    bool accumulate_existing = false;
   };
 
   struct RowBroadcastMatch {
@@ -567,6 +568,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::tir::Buffer CreateEphemeralBufferLike(const tvm::tir::Buffer& buffer,
                                              const std::string& suffix) const;
   tvm::tir::Buffer CreateConstantTileBuffer(tvm::DataType dtype, const std::string& suffix) const;
+  tvm::DataType ExactTiledCBStorageDType(tvm::DataType dtype) const;
   int PrepareExactTiledCBRequirement(const tvm::tir::Buffer& buffer);
   tvm::tir::Stmt FillLocalTileBuffer(const tvm::tir::Buffer& buffer,
                                      const tvm::PrimExpr& value);
@@ -574,8 +576,12 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                       ExactTiledCBValue* value) const;
   bool TryCreateLiveExactTiledCBValue(const tvm::tir::Buffer& buffer,
                                       ExactTiledCBValue* value) const;
+  bool TryCreateExactOutputLiveTiledCBValue(const tvm::tir::Buffer& buffer,
+                                            ExactTiledCBValue* value) const;
   bool TryCreateSelectedSourceLiveExactTiledCBValue(const tvm::tir::Buffer& buffer,
                                                     ExactTiledCBValue* value);
+  ExactTiledCBValue CreateExactInputCBValue(const tvm::tir::Buffer& src,
+                                            const std::string& suffix);
   ExactTiledCBValue CreateRowReductionInputCBValue(const tvm::tir::Buffer& src);
   bool TryGetLastFragmentFillValue(const tvm::tir::Buffer& buffer,
                                    tvm::PrimExpr* value) const;
@@ -592,12 +598,16 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   tvm::tir::Stmt MaterializeExactTiledCBToLocalBuffer(const tvm::tir::Buffer& dst,
                                                       const ExactTiledCBValue& cb_value,
                                                       bool pop_front = true);
+  tvm::tir::Stmt AttachExactOutputLiveFormMarker(const tvm::tir::Buffer& dst,
+                                                 const ExactTiledCBValue& cb_value,
+                                                 const tvm::tir::Stmt& body) const;
   ExactTiledCBValue CreatePublishedExactTiledCBValue(const tvm::tir::Buffer& src,
                                                      const std::string& suffix);
   ExactTiledCBValue CreateEmptyExactTiledCBValue(const tvm::tir::Buffer& like_buffer,
                                                  const std::string& suffix);
   ExactTiledCBValue CreateConstantExactTiledCBValue(tvm::DataType dtype,
                                                     const std::string& suffix);
+  ExactTiledCBValue CreateReduceScalerExactTiledCBValue();
 
   /*! \brief Generate copy builtin sequence (DRAM->CB, CB->DRAM, CB->CB) */
   tvm::tir::Stmt GenerateCopySequence(const tvm::tir::BufferStoreNode* op);
@@ -624,6 +634,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool MatchDirectRowReduction(const tvm::tir::ForNode* op, RowReductionMatch* match) const;
   bool MatchAllocatedRowReduction(const tvm::tir::AllocateNode* op, RowReductionMatch* match) const;
   bool MatchGroupedRowReduction(const tvm::tir::ForNode* op, RowReductionMatch* match) const;
+  bool MatchStandaloneRowReduction(const tvm::tir::ForNode* op, RowReductionMatch* match) const;
   tvm::tir::Stmt GenerateRowReductionSequence(const RowReductionMatch& match);
   bool MatchDirectRowBroadcast(const tvm::tir::ForNode* op, RowBroadcastMatch* match) const;
   tvm::tir::Stmt GenerateRowBroadcastSequence(const RowBroadcastMatch& match);
@@ -658,6 +669,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                           ScalarFragmentCopyMatch* match) const;
   tvm::tir::Stmt GenerateScalarFragmentCopySequence(const ScalarFragmentCopyMatch& match);
   void LoadBufferFlowFacts(const BlackholeLoweringSupportFacts& lowering_support_facts);
+  std::vector<std::string> CollectBufferFlowIdentities(const tvm::tir::Buffer& buffer) const;
+  bool HasInterveningBufferWrite(const tvm::tir::Buffer& buffer,
+                                 int live_order_index,
+                                 int current_order_index) const;
   FutureBufferUses ClassifyFutureBufferUses(const tvm::tir::Buffer& buffer,
                                             int current_order_index) const;
   const BlackholeBufferMaterializationFact* FindBufferMaterializationFact(
@@ -675,6 +690,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       int cb_requirement_index, const tvm::PrimExpr& num_elements_expr,
       const std::string& publication_protocol);
   void RecordTiledCBLiveFormAliases(const tvm::tir::Buffer& buffer, int cb_id);
+  void ClearTiledCBLiveFormAliases(const tvm::tir::Buffer& buffer);
+  void ClearTiledCBLiveFormIdentity(const std::string& identity);
   void InvalidateLastFragmentFillValue(const tvm::tir::Buffer& buffer);
   void ClearSelectedSourceLiveProducer(const tvm::tir::Buffer& buffer);
   void RecordSelectedSourceLiveProducer(const tvm::tir::Buffer& buffer);
@@ -784,6 +801,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<std::string, int> cb_consumed_compute_input_use_count_by_buffer_identity_;
   std::unordered_map<std::string, BlackholeBufferFlowFact> buffer_flow_facts_;
   std::unordered_map<std::string, int> buffer_live_form_cb_by_buffer_identity_;
+  std::unordered_map<std::string, int> buffer_live_form_order_by_buffer_identity_;
+  std::unordered_map<std::string, int> exact_output_live_form_cb_by_buffer_identity_;
+  std::unordered_map<std::string, int> exact_output_live_form_order_by_buffer_identity_;
   std::unordered_set<std::string> selected_source_live_producer_buffers_;
   std::unordered_set<std::string> seeded_cb_requirement_names_;
   std::unordered_map<std::string, SpatialLiveValueRef> spatial_live_value_by_subject_;
@@ -793,6 +813,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<const tvm::tir::VarNode*, tvm::PrimExpr> last_fragment_fill_value_by_data_;
   std::unordered_map<std::string, std::vector<int64_t>> logical_buffer_shapes_;
   std::unordered_map<const Object*, int> stmt_order_index_by_node_;
+  int current_lowering_order_index_ = -1;
   tvm::ffi::Array<tvm::ffi::Any> segment_plan_;
   tvm::ffi::Array<TTKernel> tt_kernels_;
   tvm::ffi::Array<TTABIPlan> tt_abi_plans_;

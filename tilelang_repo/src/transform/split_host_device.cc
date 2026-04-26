@@ -33,6 +33,9 @@
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
+#include <algorithm>
+#include <unordered_map>
+
 #include "../op/builtin.h"
 #include "common/assume.h"
 #include "tir/analysis/var_use_def_analysis.h"
@@ -84,6 +87,10 @@ public:
     cluster_dims_ = std::move(cluster_dims);
   }
 
+  void SetHostParams(Array<tir::Var> params) {
+    host_params_ = std::move(params);
+  }
+
   tir::Stmt VisitStmt_(const tir::AttrStmtNode *op) final {
     if (op->attr_key == tvm::attr::kTarget) {
       found_device_region_ = true;
@@ -121,6 +128,7 @@ public:
 private:
   bool found_device_region_{false};
   Array<tir::Var> non_restrict_params_;
+  Array<tir::Var> host_params_;
   Optional<Array<Integer>> cluster_dims_{std::nullopt};
 
   // Wrap body with assumes, substituting variables in assumes with the
@@ -171,8 +179,29 @@ private:
                                     return IsBlackholeDevicePrivateVar(var);
                                   }),
                    params.end());
+      std::unordered_map<std::string, size_t> host_param_order;
+      for (size_t i = 0; i < host_params_.size(); ++i) {
+        const std::string name = host_params_[i]->name_hint;
+        host_param_order.emplace(name, i);
+        const std::string handle_suffix = "_handle";
+        if (name.size() > handle_suffix.size() &&
+            name.compare(name.size() - handle_suffix.size(), handle_suffix.size(),
+                         handle_suffix) == 0) {
+          host_param_order.emplace(name.substr(0, name.size() - handle_suffix.size()), i);
+        }
+      }
       std::sort(params.begin(), params.end(),
-                [](const tir::Var &a, const tir::Var &b) {
+                [&](const tir::Var &a, const tir::Var &b) {
+                  const auto a_order = host_param_order.find(a->name_hint);
+                  const auto b_order = host_param_order.find(b->name_hint);
+                  const bool a_is_host_param = a_order != host_param_order.end();
+                  const bool b_is_host_param = b_order != host_param_order.end();
+                  if (a_is_host_param || b_is_host_param) {
+                    if (a_is_host_param != b_is_host_param) {
+                      return a_is_host_param;
+                    }
+                    return a_order->second < b_order->second;
+                  }
                   auto sort_key = [](const tir::Var &var) {
                     return std::tuple{
                         !var->dtype.is_handle(),
@@ -308,6 +337,7 @@ private:
 tir::PrimFunc SplitHostDevice(tir::PrimFunc func, IRModule *device_mod,
                               std::function<GlobalVar()> var_supply) {
   HostDeviceSplitter splitter(device_mod, std::move(var_supply));
+  splitter.SetHostParams(func->params);
   // Propagate non-restrict parameter list from host func to device kernels
   if (auto opt = func->GetAttr<Array<tir::Var>>(tl::attr::kNonRestrictParams)) {
     splitter.SetNonRestrictParams(opt.value());

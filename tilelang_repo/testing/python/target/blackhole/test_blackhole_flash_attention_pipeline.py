@@ -214,17 +214,16 @@ def test_flash_attention_forward_tt_target_emits_typed_tt_program_without_payloa
         "mul_tiles",
         "add_tiles_init",
         "add_tiles",
-        "mul_bcast_rows_init_short",
-        "mul_tiles_bcast_rows",
-        "add_bcast_rows_init_short",
-        "add_tiles_bcast_rows",
+        "mul_bcast_cols_init_short",
+        "mul_tiles_bcast_cols",
+        "add_bcast_cols_init_short",
+        "add_tiles_bcast_cols",
         "exp2_tile_init",
         "exp2_tile",
         "pack_tile",
+        "pack_fill_fragment_to_tiled_cb",
         "cast_fragment_slice",
-        "tilize_local_fragment_slice",
         "tilize_cast_fragment_slice",
-        "untilize_cb_front_tile_fragment",
     }.issubset(builtin_names)
     assert not any(name in LEGACY_LOCAL_BLACKHOLE_BUILTINS for name in builtin_names)
 
@@ -286,8 +285,8 @@ def test_flash_attention_tt_program_projects_non_gemm_exact_compute_ops():
         "reduce_tile",
         "mul_tiles",
         "add_tiles",
-        "mul_tiles_bcast_rows",
-        "add_tiles_bcast_rows",
+        "mul_tiles_bcast_cols",
+        "add_tiles_bcast_cols",
         "exp2_tile",
     }.issubset(operation_names)
 
@@ -296,8 +295,8 @@ def test_flash_attention_tt_program_projects_non_gemm_exact_compute_ops():
         "reduce_tile": "reduce",
         "mul_tiles": "binary",
         "add_tiles": "binary",
-        "mul_tiles_bcast_rows": "binary",
-        "add_tiles_bcast_rows": "binary",
+        "mul_tiles_bcast_cols": "binary",
+        "add_tiles_bcast_cols": "binary",
         "exp2_tile": "unary",
     }
     for op in non_gemm_ops:
@@ -393,7 +392,7 @@ def test_flash_attention_forward_optimized_path_lowers_acc_o_broadcast_updates()
     )["main"]
     builtin_names = _blackhole_builtin_suffixes(lowered)
 
-    assert "mul_tiles_bcast_rows" in builtin_names
+    assert "mul_tiles_bcast_cols" in builtin_names
     assert "recip_tile_init" in builtin_names
     assert "recip_tile" in builtin_names
     assert "mul_tiles_bcast_rows_local" not in builtin_names
@@ -497,7 +496,7 @@ def test_flash_attention_forward_optimized_path_lowers_local_to_cb_staging():
     builtin_names = _blackhole_builtin_suffixes(lowered)
     script = lowered.script()
 
-    assert "tilize_local_fragment_slice" in builtin_names
+    assert "tilize_cast_fragment_slice" in builtin_names
     assert "O_shared_1[tx" not in script
 
 
@@ -517,8 +516,8 @@ def test_flash_attention_forward_runtime_shape_lowers_local_to_cb_with_thread_of
     builtin_names = _blackhole_builtin_suffixes(lowered)
     script = lowered.script()
 
-    assert "tilize_local_fragment_slice" in builtin_names
-    assert "tx * 128" in script
+    assert "tilize_cast_fragment_slice" in builtin_names
+    assert "O_shared_1[tx" not in script
 
 
 def test_flash_attention_gqa_reader_runtime_args_cover_all_accessor_buffers():
@@ -526,7 +525,7 @@ def test_flash_attention_gqa_reader_runtime_args_cover_all_accessor_buffers():
         gqa_example,
         1,
         16,
-        1024,
+        128,
         128,
         False,
         groups=16,
@@ -557,7 +556,7 @@ def test_flash_attention_gqa_aggregated_runtime_args_cover_segment_buffers():
         gqa_example,
         1,
         16,
-        1024,
+        128,
         128,
         False,
         groups=16,
@@ -690,7 +689,7 @@ def test_flash_attention_forward_lowers_gqa_pipeline_for_supported_stage_count()
             gqa_example.flashattn.jit_impl.get_tir(
                 1,
                 16,
-                1024,
+                128,
                 128,
                 False,
                 groups=16,
@@ -715,7 +714,7 @@ def test_flash_attention_forward_compute_cb_ids_stay_in_compute_window():
             mha_example.flashattn.jit_impl.get_tir(
                 1,
                 4,
-                64,
+                32,
                 32,
                 False,
                 block_M=32,
@@ -730,14 +729,13 @@ def test_flash_attention_forward_compute_cb_ids_stay_in_compute_window():
     compute_kernel = _require_blackhole_kernel(spec["kernels"], kind="compute", core_type="trisc")
     compute_source = str(compute_kernel["source_code"])
 
-    compute_cb_ids = {
-        int(cb["cb_id"])
-        for cb in spec["cb_configs"]
-        if int(cb["cb_id"]) >= 16 and f"({int(cb['cb_id'])}" in compute_source
+    pack_cb_ids = {
+        int(cb_id)
+        for cb_id in re.findall(r"\bpack_reconfig_data_format\((\d+)\)", compute_source)
     }
 
-    assert compute_cb_ids
-    assert compute_cb_ids == {cb_id for cb_id in compute_cb_ids if 16 <= cb_id <= 31}
+    assert pack_cb_ids
+    assert pack_cb_ids == {cb_id for cb_id in pack_cb_ids if 0 <= cb_id <= 31}
 
 
 def test_flash_attention_mha_reader_accessors_have_distinct_compile_time_slots():
@@ -1066,7 +1064,11 @@ def test_flash_attention_executable_spec_drops_contract_family_and_reports_typed
     spec = _extract_blackhole_executable_spec(artifact)
     reasons = [str(reason) for reason in spec.get("direct_runtime_unsupported_reasons", [])]
     assert not any("missing explicit per-work access descriptor" in reason for reason in reasons)
-    assert any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+    assert any(
+        "thread-distributed cb_republish materialization" in reason
+        or "multi-page exact CB-republish live-form" in reason
+        for reason in reasons
+    )
 
     _assert_no_executable_contract_family(spec)
     reader_kernel = _require_blackhole_kernel(spec["kernels"], kind="reader", core_type="brisc")
@@ -1579,8 +1581,9 @@ def test_flash_attention_compute_serializes_thread_row_offset_in_local_to_cb_mat
     ]
 
     assert dst_offset_lines
-    assert tx_loop_lines
-    assert any(re.search(r"dst_offset_elements = .*tx.*128", line) for line in dst_offset_lines)
+    assert not tx_loop_lines
+    assert any("dst_offset_elements = 0" in line for line in dst_offset_lines)
+    assert "thread_idx_x = 0" in compute_source
 
 
 def test_flash_attention_compute_source_derives_grouped_reduce_rows_from_num_elements():
@@ -1613,7 +1616,7 @@ def test_flash_attention_compute_source_derives_grouped_reduce_rows_from_num_ele
     assert "const uint32_t row_width = 128;" in compute_source
     assert "reduce_init<PoolType::MAX, ReduceDim::REDUCE_ROW>" in compute_source
     assert "reduce_tile<PoolType::MAX, ReduceDim::REDUCE_ROW>" in compute_source
-    assert "reduce_uninit<true>()" in compute_source
+    assert "reduce_uninit<false>()" in compute_source
     assert "tilelang_reduce_grouped_row_max" not in compute_source
     assert "const uint32_t num_rows = num_elements / row_width;" not in compute_source
 
@@ -1727,11 +1730,9 @@ def test_flash_attention_compute_source_keeps_thread_row_offset_shape_in_cast_fr
     compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
     compute_source = str(compute["source_code"])
 
-    assert re.search(
-        r"const uint32_t src_offset = \(\(tx \* 128\) \+ "
-        r"\([A-Za-z0-9_]+ \* 8\)\);",
-        compute_source,
-    )
+    assert "const uint32_t src_offset_elements = 0;" in compute_source
+    assert "const uint32_t row_width = 128;" in compute_source
+    assert "const uint32_t thread_idx_x = 0;" in compute_source
 
 
 def test_flash_attention_compute_source_publishes_acc_s_cast_cb_before_second_matmul():
@@ -1762,7 +1763,7 @@ def test_flash_attention_compute_source_publishes_acc_s_cast_cb_before_second_ma
     cb_by_name = {str(cb["name"]): int(cb["cb_id"]) for cb in spec["cb_configs"]}
 
     acc_s_cb_id = cb_by_name["acc_s_cast"]
-    write_ptr = f"tilelang_get_cb_write_ptr_bytes({acc_s_cb_id})"
+    write_ptr = f"tilelang_cb_write_ptr_bytes_direct({acc_s_cb_id})"
     cast_pos = compute_source.find(write_ptr)
 
     reserve_match = re.search(rf"cb_reserve_back\({acc_s_cb_id}, (\d+)\);", compute_source)
@@ -1827,7 +1828,7 @@ def test_flash_attention_small_bf16_compute_source_keeps_acc_s_cast_cb_pages_con
     assert push_match.start() < second_mm_match.start()
 
 
-def test_flash_attention_small_bf16_compute_source_uses_explicit_fp32_to_bf16_bitcasts():
+def test_flash_attention_small_bf16_compute_source_publishes_output_via_typed_pack_path():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1859,21 +1860,22 @@ def test_flash_attention_small_bf16_compute_source_uses_explicit_fp32_to_bf16_bi
         int(cb["cb_id"]) for cb in spec["cb_configs"] if str(cb["name"]) == "O_shared"
     )
 
-    assert "tilelang_float_to_bfloat_bits" in compute_source
+    assert "O_shared_local_cast" not in compute_source
     assert re.search(
-        r"dst_bits\[tiled_index\] = tilelang_float_to_bfloat_bits"
-        r"\(static_cast<float>\(src\[src_offset_elements \+ [A-Za-z0-9_]+\]\)\);",
+        rf"cb_reserve_back\({output_cb_id}, 1\);\s*"
+        r"tile_regs_acquire\(\);\s*"
+        r"copy_tile_to_dst_init_short\(\d+\);\s*"
+        r"copy_tile\(\d+, 0, 0\);\s*"
+        r"tile_regs_commit\(\);\s*"
+        r"tile_regs_wait\(\);\s*"
+        rf"pack_reconfig_data_format\({output_cb_id}\);\s*"
+        rf"pack_tile\(0, {output_cb_id}, 0\);\s*"
+        r"tile_regs_release\(\);\s*"
+        rf"cb_push_back\({output_cb_id}, 1\);",
         compute_source,
     )
-    assert (
-        "MATH({ uint16_t* dst_bits = reinterpret_cast<uint16_t*>(O_shared_local_cast);"
-        in compute_source
-    )
-    assert (
-        "{ const uint16_t* src_bits = reinterpret_cast<const uint16_t*>(O_shared_local_cast);"
-        in compute_source
-    )
-    assert f"tilelang_get_cb_write_ptr_bytes({output_cb_id})" in compute_source
+    assert f"tilelang_cb_write_ptr_bytes_direct({output_cb_id})" not in compute_source
+    assert f"tilelang_get_cb_write_ptr_bytes({output_cb_id})" not in compute_source
     assert f"get_local_cb_interface({output_cb_id}).fifo_wr_ptr" not in compute_source
     assert (
         f"PACK({{ uint16_t* dst_bits = reinterpret_cast<uint16_t*>((get_local_cb_interface({output_cb_id}).fifo_wr_ptr << 4)"
@@ -1881,7 +1883,7 @@ def test_flash_attention_small_bf16_compute_source_uses_explicit_fp32_to_bf16_bi
     )
 
 
-def test_flash_attention_small_bf16_compute_source_math_scopes_raw_fragment_helpers():
+def test_flash_attention_small_bf16_compute_source_uses_typed_exact_helpers():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1911,14 +1913,18 @@ def test_flash_attention_small_bf16_compute_source_math_scopes_raw_fragment_help
     compute_source = str(compute["source_code"])
 
     assert "MATH({ float* dst = reinterpret_cast<float*>(acc_s);" in compute_source
-    assert "reinterpret_cast<const uint32_t*>(acc_s)" in compute_source
-    assert "reinterpret_cast<const uint32_t*>(scores_scale)" in compute_source
-    assert "reinterpret_cast<const uint32_t*>(logsum)" in compute_source
     assert "MATH({ float* dst = reinterpret_cast<float*>(acc_o);" in compute_source
+    assert "reinterpret_cast<const uint32_t*>(acc_s)" not in compute_source
+    assert "reinterpret_cast<const uint32_t*>(scores_scale)" not in compute_source
+    assert "reinterpret_cast<const uint32_t*>(logsum)" not in compute_source
+    assert "reduce_init<PoolType::MAX, ReduceDim::REDUCE_ROW>" in compute_source
+    assert "reduce_init<PoolType::SUM, ReduceDim::REDUCE_ROW>" in compute_source
+    assert "binary_max_tile" in compute_source
     assert "recip_tile_init();" in compute_source
     assert "recip_tile(0);" in compute_source
-    assert "mul_bcast_rows_init_short" in compute_source
-    assert "mul_tiles_bcast_rows" in compute_source
+    assert "mul_bcast_cols_init_short" in compute_source
+    assert "mul_tiles_bcast<BroadcastType::COL>" in compute_source
+    assert "BroadcastType::ROW" not in compute_source
     assert "tilelang_div_grouped_row_bcast" not in compute_source
 
 
@@ -1956,7 +1962,8 @@ def test_flash_attention_small_bf16_compute_source_emits_debug_waypoints_when_re
     compute_source = str(compute["source_code"])
 
     assert "WAYPOINT(" in compute_source
-    assert 'WAYPOINT("CAST")' in compute_source
+    assert 'WAYPOINT("FILL")' in compute_source
+    assert 'WAYPOINT("CAST")' not in compute_source
     for tag in ("MXPV", "MCLR", "OCST", "QKAD", "QVAD", "ACST"):
         assert f'WAYPOINT("{tag}")' not in compute_source
 
@@ -2049,7 +2056,7 @@ def test_flash_attention_seq64_bf16_compute_source_reacquires_acc_s_cast_pages_b
     push = f"cb_push_back({acc_s_cast_cb}, 1);"
     pop = f"cb_pop_front({acc_s_cast_cb}, 1);"
 
-    assert compute_source.count(reserve) >= 3
+    assert compute_source.count(reserve) == 2
     assert compute_source.count(push) == 2
     assert compute_source.count(pop) == 2
 
@@ -2065,7 +2072,7 @@ def test_flash_attention_seq64_bf16_compute_source_reacquires_acc_s_cast_pages_b
     assert first_reserve_pos < first_push_pos < first_pop_pos < second_reserve_pos
 
 
-def test_flash_attention_seq64_bf16_compute_source_refreshes_acc_s_cast_write_ptr_after_rereserve():
+def test_flash_attention_seq64_bf16_compute_source_packs_acc_s_cast_after_each_rereserve():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -2096,20 +2103,27 @@ def test_flash_attention_seq64_bf16_compute_source_refreshes_acc_s_cast_write_pt
     cb_by_name = {str(cb["name"]): int(cb["cb_id"]) for cb in spec["cb_configs"]}
 
     acc_s_cast_cb = cb_by_name["acc_s_cast"]
-    refresh = f"tilelang_get_cb_write_ptr_bytes({acc_s_cast_cb})"
+    push = f"cb_push_back({acc_s_cast_cb}, 1);"
+    pack_reconfig = f"pack_reconfig_data_format({acc_s_cast_cb});"
+    pack_tile = f"pack_tile(0, {acc_s_cast_cb}, 0);"
+
+    assert f"tilelang_get_cb_write_ptr_bytes({acc_s_cast_cb})" not in compute_source
 
     reserve_matches = list(
         re.finditer(rf"cb_reserve_back\({acc_s_cast_cb}, (\d+)\);", compute_source)
     )
-    assert len(reserve_matches) >= 2
+    assert len(reserve_matches) == 2
     assert reserve_matches[-1].group(1) == "1"
 
-    second_reserve_pos = reserve_matches[-1].start()
-    refresh_pos = compute_source.find(refresh, second_reserve_pos)
-
-    assert second_reserve_pos != -1
-    assert refresh_pos != -1
-    assert second_reserve_pos < refresh_pos
+    for reserve_match in reserve_matches:
+        reserve_pos = reserve_match.start()
+        pack_reconfig_pos = compute_source.find(pack_reconfig, reserve_pos)
+        pack_tile_pos = compute_source.find(pack_tile, reserve_pos)
+        push_pos = compute_source.find(push, reserve_pos)
+        assert pack_reconfig_pos != -1
+        assert pack_tile_pos != -1
+        assert push_pos != -1
+        assert reserve_pos < pack_reconfig_pos < pack_tile_pos < push_pos
 
 
 def test_flash_attention_seq64_bf16_cb_plan_allocates_two_pages_for_staged_kv_inputs():
@@ -2243,7 +2257,7 @@ def test_flash_attention_seq64_bf16_compute_source_stages_actual_output_pages():
     assert f"cb_pop_front({output_cb_id}, 2);" not in writer_source
 
 
-def test_flash_attention_seq64_bf16_compute_source_keeps_acc_s_private_and_acc_o_single_tile_state_publication():
+def test_flash_attention_seq64_bf16_compute_source_keeps_acc_s_and_acc_o_single_tile_state_publication():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -2278,10 +2292,14 @@ def test_flash_attention_seq64_bf16_compute_source_keeps_acc_s_private_and_acc_o
     acc_o_cb = cb_by_name["acc_o"]
     assert f"cb_push_back({scores_max_prev_cb}, 2);" not in compute_source
 
-    assert f"cb_push_back({acc_s_cb}, 1);" not in compute_source
+    assert f"cb_reserve_back({acc_s_cb}, 1);" in compute_source
+    assert f"cb_push_back({acc_s_cb}, 1);" in compute_source
+    assert (
+        f"pack_tile(0, {acc_s_cb});" in compute_source
+        or f"pack_tile(0, {acc_s_cb}, 0);" in compute_source
+    )
+    assert f"cb_reserve_back({acc_s_cb}, 16);" not in compute_source
     assert f"cb_push_back({acc_s_cb}, 16);" not in compute_source
-    assert f"pack_tile(0, {acc_s_cb}, 0);" not in compute_source
-    assert f"pack_tile(0, {acc_s_cb});" not in compute_source
 
     assert f"cb_reserve_back({acc_o_cb}, 1);" in compute_source
     assert f"cb_push_back({acc_o_cb}, 1);" in compute_source
@@ -2339,8 +2357,10 @@ def test_flash_attention_seq64_bf16_compute_source_accumulates_clear_accum_false
         assert f"cb_reserve_back({cb_id}, 1);" in compute_source
         assert f"cb_push_back({cb_id}, 1);" in compute_source
         assert f"cb_wait_front({cb_id}, 1);" in compute_source
-        assert f"cb_pop_front({cb_id}, 1);" in compute_source
-    assert "get_tile_address(0)" in compute_source
+    assert any(f"cb_pop_front({cb_id}, 1);" in compute_source for cb_id in merge_cb_ids)
+    assert "tilelang_add_fragment(dst, src, num_elements);" not in compute_source
+    assert "tilelang_get_cb_write_ptr_bytes" not in compute_source
+    assert "get_tile_address(0)" not in compute_source
 
 
 def test_flash_attention_small_bf16_metadata_marks_k_materialization_as_transposed():
@@ -2412,7 +2432,7 @@ def test_flash_attention_compute_source_does_not_rereserve_blackhole_acc_gemm_ou
     assert "tile_regs_wait();\ncb_reserve_back(17, 1);\npack_tile(0, 17);" not in compute_source
 
 
-def test_flash_attention_compute_source_hoists_output_cb_staging_around_thread_row_loop():
+def test_flash_attention_compute_source_hoists_output_cb_staging_as_single_window():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -2441,17 +2461,19 @@ def test_flash_attention_compute_source_hoists_output_cb_staging_around_thread_r
 
     output_cb_id = cb_by_name["O_shared"]
     reserve_pos = compute_source.find(f"cb_reserve_back({output_cb_id}, 16);")
-    tx_loop_pos = compute_source.find("for (int32_t tx = 0; tx < 128; ++tx)")
+    pack_pos = compute_source.find(f"pack_reconfig_data_format({output_cb_id});", reserve_pos)
     push_pos = compute_source.find(f"cb_push_back({output_cb_id}, 16);")
 
     assert reserve_pos != -1
-    assert tx_loop_pos != -1
+    assert pack_pos != -1
     assert push_pos != -1
-    assert reserve_pos < tx_loop_pos < push_pos
+    assert reserve_pos < pack_pos < push_pos
+    assert "for (int32_t tx = 0; tx < 128; ++tx)" not in compute_source
+    assert f"cb_reserve_back({output_cb_id}, 1);" not in compute_source
     assert "cb_reserve_back(0, 1);" not in compute_source
 
 
-def test_flash_attention_compute_source_hoists_thread_invariant_matmul_pipeline_outside_thread_row_loop():
+def test_flash_attention_compute_source_emits_thread_invariant_matmul_pipeline_without_thread_row_loop():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -2485,18 +2507,11 @@ def test_flash_attention_compute_source_hoists_thread_invariant_matmul_pipeline_
     first_mm_pos = -1 if first_mm_match is None else first_mm_match.start()
     second_mm_pos = -1 if second_mm_match is None else second_mm_match.start()
 
-    assert tx_loop_pos != -1
+    assert tx_loop_pos == -1
     assert first_mm_pos != -1
     assert second_mm_pos != -1
     assert acc_s_publish_pos != -1
-    assert first_mm_pos < tx_loop_pos
-    assert second_mm_pos < tx_loop_pos
-    assert acc_s_publish_pos < tx_loop_pos
-    assert re.search(r"mm_init\(0, 1, \d+\);", compute_source[tx_loop_pos:]) is None
-    assert re.search(r"mm_init\(2, 3, \d+\);", compute_source[tx_loop_pos:]) is None
-    assert re.search(r"cb_wait_front\(0,\s*\d+\);", compute_source[tx_loop_pos:]) is None
-    assert re.search(r"cb_wait_front\(2,\s*\d+\);", compute_source[tx_loop_pos:]) is None
-    assert re.search(r"cb_push_back\(2,\s*\d+\);", compute_source[tx_loop_pos:]) is None
+    assert first_mm_pos < acc_s_publish_pos < second_mm_pos
 
 
 def test_flash_attention_compute_source_keeps_multiphase_acc_cb_layout_for_mha():

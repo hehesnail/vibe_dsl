@@ -9,14 +9,13 @@
 - Date: `2026-04-26`
 - Active lane: `P2 flash-attn direct runtime admission`
 - Current item:
-  `P2.2 flash-attn bf16 direct-runtime admission`
+  `P2.3 live-form support-surface expansion`
 - Blocker:
-  `P2.1` source-live-form truth is complete for the targeted small bf16
-  flash-attn row-reduction input:
-  the first exact row-reduction now consumes the upstream matmul-produced
-  CB-live value instead of a stale synthetic fill tile.
-  Direct-runtime admission remains intentionally gated until `P2.2` reopens
-  the typed subset and runs the formal TT-Sim bf16 correctness gate.
+  No P2.2 completion blocker remains.
+  The next boundary is explicitly gated as
+  `multi-page exact CB-republish live-form` for seq64 / multi-K-step
+  workloads; it must expand the typed live-form support surface instead of
+  reopening raw CB pointer or mailbox publication paths.
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -45,6 +44,7 @@
 - `P1 leaf reader name/default cleanup`: completed
 - `P1/P2 non-GEMM exact compute op typed expansion`: completed
 - `P2.1 flash-attn exact row-reduction source-live truth`: completed
+- `P2.2 flash-attn bf16 direct-runtime admission`: completed
 
 ## Current Support Boundary
 
@@ -65,42 +65,44 @@
   schema exists and is validated.
   Runtime execution remains unit mesh / replicated `MeshBuffer` subset;
   full multi-device / sharded / fabric collective runtime is not admitted.
-- Flash-attn compile/source/spec baseline is stable;
-  flash-attn direct runtime correctness is not admitted.
+- Flash-attn compile/source/spec baseline is stable.
+  The admitted bf16 direct-runtime subset now covers single-K-tile
+  32x32 flash-attn MHA / GQA shapes with typed exact CB live-form,
+  BF16 exact CB physical storage, bcast-cols row scalar semantics,
+  non-mailbox pack publication, and ABI order
+  `Q, K, V, Output`.
+  Seq64 / multi-K-step flash-attn remains queryably gated by
+  `multi-page exact CB-republish live-form`.
 
 ## Open Debt
 
-- `P2 flash-attn direct runtime admission`: in progress.
+- `P2.3 live-form support-surface expansion`: next.
 - `cast_fragment_slice_to_tiled_cb`
-  has explicit typed materialization metadata and a non-mailbox generated
-  publication shape, but remains outside the direct-runtime admitted set until
-  `P2.2` proves the complete typed subset under TT-Sim.
+  is admitted only for the proven single-page exact CB-republish bf16 subset.
+  Multi-page republish remains a queryable unsupported reason.
 - The current blocker is no longer the single
-  `acc_s -> acc_s_cast` materialization plan, mailbox address exchange, or
-  stale first row-reduction source.
-  Admission now requires opening the fail-closed gate only for the proven bf16
-  subset and recording any remaining unsupported live-in / materialization
-  shapes as queryable reasons.
+  `acc_s -> acc_s_cast` materialization plan, mailbox address exchange,
+  stale first row-reduction source, or BF16 small-shape runtime correctness.
+  The next expansion must generalize exact live-form republish across
+  multi-K steps and multi-page input CBs through typed
+  `TTProgram -> ExecutableSpec` records.
 - Full mesh/distributed runtime support remains future work.
   The current schema can express the direction; runtime admission must expand
   through typed `TTProgram -> ExecutableSpec` records, not runtime-only patching.
 
 ## Next Task Order
 
-1. `P2.2 flash-attn bf16 direct-runtime admission`
-   - Re-open the current fail-closed direct-runtime gate only for the proven
-     typed subset.
-   - Run the formal TT-Sim bf16 correctness gate for the admitted subset.
-   - Keep unsupported reasons queryable for live-in / materialization shapes
-     still outside the admitted subset.
-
-2. `P2.3 live-form support-surface expansion`
+1. `P2.3 live-form support-surface expansion`
    - Generalize beyond the first flash-attn shape only after the source-live
      and materialization contracts are explicit and validated.
    - Add regression tests at projection, source/codegen, and direct-runtime
      gate boundaries.
+   - First target:
+     multi-page exact CB-republish live-form for seq64 / multi-K-step
+     flash-attn, without reintroducing mailbox helper or raw CB pointer
+     publication.
 
-3. `P3 mesh/distributed runtime expansion`
+2. `P3 mesh/distributed runtime expansion`
    - Treat this as a later runtime admission lane.
    - Reuse `TTMeshPlan` / `TTBufferDistributionPlan` schema.
    - Add real sharded / multi-device / fabric semantics only through typed
@@ -157,3 +159,23 @@ P2.1 flash-attn exact row-reduction source-live truth:
   tests also still fail on the existing optimized-path L1/admission surface.
   Those belong to later pipeline cleanup / `P2.3` support-surface expansion,
   not to the completed small bf16 row-reduction source-live fix.
+
+P2.2 flash-attn bf16 direct-runtime admission:
+
+- `cmake --build build -j32`
+- flash-attn runtime metadata/source/direct-runtime file under TT-Sim env:
+  `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`
+  -> `14 passed, 5 skipped`
+- flash-attn pipeline file under TT-Sim env:
+  `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
+  -> `66 passed`
+- GEMM direct-runtime guard cases under TT-Sim env:
+  richer compute config, clear-accum-false cast consumer,
+  fragment-fill cast publish, transpose-A/B typed compute schema
+  -> `4 passed`
+- copy direct-runtime file under TT-Sim env:
+  `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`
+  -> `13 passed`
+- The admitted subset is bf16 single-page exact CB-republish.
+  Seq64 / multi-K-step cases remain intentionally skipped by queryable
+  `multi-page exact CB-republish live-form` unsupported reasons.

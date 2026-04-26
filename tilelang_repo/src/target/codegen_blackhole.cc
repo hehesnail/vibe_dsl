@@ -339,9 +339,15 @@ std::string CodeGenBlackhole::GetKernelCode() const {
   // Return the kernel code with TT-Metal headers but without TVM-specific headers
   // decl_stream now contains TT-Metal headers (dataflow_api.h, etc.)
   // stream contains the actual kernel implementation
+  const std::string body = stream.str();
   std::ostringstream kernel_code;
   kernel_code << decl_stream.str();
-  kernel_code << stream.str();
+  if (body.find("tilelang_cb_write_ptr_bytes_direct(") != std::string::npos) {
+    kernel_code << "ALWI uint32_t tilelang_cb_write_ptr_bytes_direct(uint32_t cb_id) {\n";
+    kernel_code << "  return get_local_cb_interface(cb_id).fifo_wr_ptr << 4;\n";
+    kernel_code << "}\n";
+  }
+  kernel_code << body;
   return kernel_code.str();
 }
 
@@ -569,9 +575,6 @@ void CodeGenBlackhole::AddFunction(const tvm::GlobalVar &gvar,
         decl_stream << "      }\n";
         decl_stream << "    }\n";
         decl_stream << "  }\n";
-        decl_stream << "}\n";
-        decl_stream << "ALWI uint32_t tilelang_cb_write_ptr_bytes_direct(uint32_t cb_id) {\n";
-        decl_stream << "  return get_local_cb_interface(cb_id).fifo_wr_ptr << 4;\n";
         decl_stream << "}\n";
         break;
       default:
@@ -1797,8 +1800,14 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   } else if (builtin_name == "add_bcast_rows_init_short") {
     PrintAddBcastRowsInitShort(op, os);
     return true;
+  } else if (builtin_name == "add_bcast_cols_init_short") {
+    PrintAddBcastColsInitShort(op, os);
+    return true;
   } else if (builtin_name == "add_tiles_bcast_rows") {
     PrintAddTilesBcastRows(op, os);
+    return true;
+  } else if (builtin_name == "add_tiles_bcast_cols") {
+    PrintAddTilesBcastCols(op, os);
     return true;
   } else if (builtin_name == "mul_tiles_init") {
     PrintMulTilesInit(op, os);
@@ -2266,11 +2275,40 @@ void CodeGenBlackhole::PrintAddBcastRowsInitShort(const tvm::tir::CallNode* op,
   os << ")";
 }
 
+void CodeGenBlackhole::PrintAddBcastColsInitShort(const tvm::tir::CallNode* op,
+                                                  std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 2)
+      << "tl.blackhole.add_bcast_cols_init_short expects 2 arguments";
+  os << "add_bcast_cols_init_short(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ")";
+}
+
 void CodeGenBlackhole::PrintAddTilesBcastRows(const tvm::tir::CallNode* op,
                                               std::ostream& os) {
   need_compute_api_h_ = true;
   ICHECK_EQ(op->args.size(), 5) << "tl.blackhole.add_tiles_bcast_rows expects 5 arguments";
   os << "add_tiles_bcast_rows(";
+  PrintResolvedCBId(op->args[0], os);
+  os << ", ";
+  PrintResolvedCBId(op->args[1], os);
+  os << ", ";
+  PrintExpr(op->args[2], os);
+  os << ", ";
+  PrintExpr(op->args[3], os);
+  os << ", ";
+  PrintExpr(op->args[4], os);
+  os << ")";
+}
+
+void CodeGenBlackhole::PrintAddTilesBcastCols(const tvm::tir::CallNode* op,
+                                              std::ostream& os) {
+  need_compute_api_h_ = true;
+  ICHECK_EQ(op->args.size(), 5) << "tl.blackhole.add_tiles_bcast_cols expects 5 arguments";
+  os << "add_tiles_bcast_cols(";
   PrintResolvedCBId(op->args[0], os);
   os << ", ";
   PrintResolvedCBId(op->args[1], os);
@@ -2417,13 +2455,9 @@ void CodeGenBlackhole::PrintReduceUninit(const tvm::tir::CallNode* op,
                                                    "reduce_kind");
   const std::string reduce_dim = RequireStringImm(op->args[1], "tl.blackhole.reduce_uninit",
                                                   "reduce_dim");
-  os << "reduce_uninit<";
-  if (reduce_kind == "sum" && reduce_dim == "row") {
-    os << "false";
-  } else {
-    os << "true";
-  }
-  os << ">()";
+  (void)reduce_kind;
+  (void)reduce_dim;
+  os << "reduce_uninit<false>()";
 }
 
 void CodeGenBlackhole::PrintBinaryMaxTileInit(const tvm::tir::CallNode* op,
@@ -2977,9 +3011,9 @@ void CodeGenBlackhole::PrintPackFillFragmentToTiledCB(const tvm::tir::CallNode* 
   PrintExpr(op->args[3], os);
   os << ") + 1023u) / 1024u; fill_tile_init(); "
         "for (uint32_t tile = 0; tile < num_tiles; ++tile) { "
-        "tile_regs_acquire(); fill_tile_bitcast(0, tilelang_bitcast_float_to_u32(static_cast<float>(";
+        "tile_regs_acquire(); fill_tile(0, static_cast<float>(";
   PrintExpr(op->args[5], os);
-  os << "))); tile_regs_commit(); tile_regs_wait(); pack_reconfig_data_format(" << cb_id
+  os << ")); tile_regs_commit(); tile_regs_wait(); pack_reconfig_data_format(" << cb_id
      << "); pack_tile(0, " << cb_id << ", tile); tile_regs_release(); } }";
 }
 

@@ -1576,6 +1576,10 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
   struct ChildSegmentInfo {
     DetectedKind kind = DetectedKind::kNone;
     bool has_blackhole_builtin = false;
+    bool has_cb_reserve = false;
+    bool has_cb_push = false;
+    bool has_cb_wait = false;
+    bool has_cb_pop = false;
   };
 
   static bool IsNoOp(const Stmt& stmt) {
@@ -1626,7 +1630,7 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
         if (child_info[i].kind != DetectedKind::kNone || !child_info[i].has_blackhole_builtin) {
           continue;
         }
-        child_info[i].kind = InferNeighborSegmentKind(child_info, i);
+        child_info[i].kind = InferAmbiguousSegmentKind(child_info, i);
       }
     }
 
@@ -1705,21 +1709,66 @@ class SegmentBodyExtractor final : public tir::StmtMutator {
       } else if (SegmentBodyExtractor::IsComputeAnchor(op)) {
         info.kind = SegmentBodyExtractor::DetectedKind::kCompute;
       }
+      if (op->op.same_as(tir::builtin::blackhole_cb_reserve_back())) {
+        info.has_cb_reserve = true;
+      } else if (op->op.same_as(tir::builtin::blackhole_cb_push_back())) {
+        info.has_cb_push = true;
+      } else if (op->op.same_as(tir::builtin::blackhole_cb_wait_front())) {
+        info.has_cb_wait = true;
+      } else if (op->op.same_as(tir::builtin::blackhole_cb_pop_front())) {
+        info.has_cb_pop = true;
+      }
     });
     return info;
   }
 
-  static DetectedKind InferNeighborSegmentKind(const std::vector<ChildSegmentInfo>& info,
+  static DetectedKind InferNextSegmentKind(const std::vector<ChildSegmentInfo>& info,
+                                           size_t index) {
+    for (size_t i = index + 1; i < info.size(); ++i) {
+      if (info[i].kind != DetectedKind::kNone) {
+        return info[i].kind;
+      }
+    }
+    return DetectedKind::kNone;
+  }
+
+  static DetectedKind InferPreviousSegmentKind(const std::vector<ChildSegmentInfo>& info,
                                                size_t index) {
     for (size_t i = index; i > 0; --i) {
       if (info[i - 1].kind != DetectedKind::kNone) {
         return info[i - 1].kind;
       }
     }
-    for (size_t i = index + 1; i < info.size(); ++i) {
-      if (info[i].kind != DetectedKind::kNone) {
-        return info[i].kind;
+    return DetectedKind::kNone;
+  }
+
+  static DetectedKind InferAmbiguousSegmentKind(const std::vector<ChildSegmentInfo>& info,
+                                                size_t index) {
+    const ChildSegmentInfo& current = info[index];
+    if (current.has_cb_reserve || current.has_cb_wait) {
+      DetectedKind next = InferNextSegmentKind(info, index);
+      if (next != DetectedKind::kNone) {
+        return next;
       }
+    }
+    if (current.has_cb_push || current.has_cb_pop) {
+      DetectedKind previous = InferPreviousSegmentKind(info, index);
+      if (previous != DetectedKind::kNone) {
+        return previous;
+      }
+    }
+    return InferNeighborSegmentKind(info, index);
+  }
+
+  static DetectedKind InferNeighborSegmentKind(const std::vector<ChildSegmentInfo>& info,
+                                               size_t index) {
+    DetectedKind previous = InferPreviousSegmentKind(info, index);
+    if (previous != DetectedKind::kNone) {
+      return previous;
+    }
+    DetectedKind next = InferNextSegmentKind(info, index);
+    if (next != DetectedKind::kNone) {
+      return next;
     }
     return DetectedKind::kNone;
   }
@@ -2396,7 +2445,8 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
 
 static bool IsDirectRuntimeAdmittedPublicationProtocol(const std::string& publication_protocol) {
   return publication_protocol == buffer_materialization::kPackThreadDirectStore ||
-         publication_protocol == buffer_materialization::kPackTile;
+         publication_protocol == buffer_materialization::kPackTile ||
+         publication_protocol == buffer_materialization::kCastFragmentSliceToTiledCB;
 }
 
 static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
@@ -2438,6 +2488,62 @@ static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
         "requires a non-mailbox materialization protocol for compute-thread CB publication");
     return;
   }
+}
+
+static bool SpecHasRuntimeArgKind(const ExecutableSpec& spec, std::string_view kind) {
+  if (KernelArgsContainKind(spec.runtime_args, kind) ||
+      KernelArgsContainKind(spec.common_runtime_args, kind)) {
+    return true;
+  }
+  for (const auto& kernel : spec.kernels) {
+    if (KernelArgsContainKind(kernel.runtime_args, kind) ||
+        KernelArgsContainKind(kernel.common_runtime_args, kind)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool SpecHasThreadDistributedCastRepublishPlan(const ExecutableSpec& spec) {
+  std::unordered_map<std::string, const LiveFormPlanSpec*> live_form_by_name;
+  for (const auto& live_form : spec.live_form_plans) {
+    live_form_by_name.emplace(live_form.name, &live_form);
+  }
+  for (const auto& plan : spec.materialization_plans) {
+    if (plan.materialization_protocol != buffer_materialization::kCBRepublish ||
+        plan.publication_protocol != buffer_materialization::kCastFragmentSliceToTiledCB) {
+      continue;
+    }
+    auto live_form_it = live_form_by_name.find(plan.produced_live_form);
+    if (live_form_it == live_form_by_name.end() ||
+        live_form_it->second->execution_topology == "thread_distributed") {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool SpecHasMultiPageRepublishedInputCB(const ExecutableSpec& spec) {
+  return std::any_of(spec.cb_configs.begin(), spec.cb_configs.end(), [](const CBConfig& cb) {
+    return cb.role == "input" && cb.flow_class == "republish" && cb.num_pages > 1;
+  });
+}
+
+static void EnforceExactLiveFormMultiPageRepublishGate(ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  if (!SpecHasThreadDistributedCastRepublishPlan(*spec)) {
+    return;
+  }
+  if (!SpecHasRuntimeArgKind(*spec, "num_k_tiles")) {
+    return;
+  }
+  if (!SpecHasMultiPageRepublishedInputCB(*spec)) {
+    return;
+  }
+  AppendDirectRuntimeUnsupportedReason(
+      spec,
+      "multi-page exact CB-republish live-form direct runtime is not admitted; "
+      "current bf16 direct path supports one K tile per work item");
 }
 
 static void EnforceExplicitBufferRoleSchemaGate(ExecutableSpec* spec) {
@@ -2926,6 +3032,7 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     PopulateBufferMaterializationSpecs(buffer_info, &spec_it->second);
     EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
+    EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {
@@ -3020,6 +3127,7 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     PopulateBufferMaterializationSpecs(buffer_info, &spec_it->second);
     EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
+    EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {

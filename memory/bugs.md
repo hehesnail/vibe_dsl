@@ -1233,6 +1233,131 @@
     和 stale fill invalidation
     也必须被验证
 
+#### flash-attn row scalar broadcast 方向不能按名字直觉选 `bcast_rows`
+
+- **症状**:
+  - exact softmax path 已经进入 tiled CB ops，
+    但 TT-Sim bf16 结果明显偏离 reference
+  - generated source 使用
+    `mul_bcast_rows` /
+    `add_bcast_rows`
+    处理 row-reduction 后的 scalar
+- **根因**:
+  - TT-Metal 的 `BroadcastType::COL`
+    才对应当前 flash-attn
+    per-row scalar / column-vector
+    broadcast 需求；
+    按名字直觉使用 `bcast_rows`
+    会把缩放维度搞反
+- **修法**:
+  - exact row-broadcast 和 exp2 row-broadcast affine
+    改用
+    `mul_bcast_cols_init_short` /
+    `mul_tiles_bcast<BroadcastType::COL>` /
+    `add_bcast_cols_init_short` /
+    `add_tiles_bcast_cols`
+  - TTProgram `operation_name`
+    也同步写成
+    `*_bcast_cols`
+- **教训**:
+  - broadcast 方向必须由 tile API
+    的实际 operand semantics
+    验证，
+    不能只靠高层 buffer 名称或“row/col”直觉
+
+#### flash-attn exact softmax 中间 CB 不能用 Float32 物理页作为当前 admitted lane
+
+- **症状**:
+  - P2.2 gate 打开后，
+    small bf16 flash-attn
+    可以跑到更深处，
+    但输出出现 huge / inf 类错误
+    或 simulator format failure
+  - 参考 TT-Metal SDPA 路径的 softmax
+    intermediate 使用 BF16 CB
+- **根因**:
+  - logical float32 exact value
+    不等于当前 Blackhole direct-runtime
+    admitted physical storage dtype；
+    softmax exact tiled-CB lane
+    用 Float32 page/data_format
+    会偏离 TT-Metal admitted path
+- **修法**:
+  - 为 exact tiled-CB
+    增加 physical storage dtype 选择：
+    logical float32 softmax intermediate
+    在 admitted direct path
+    使用 `Float16_b` page/data format
+  - GEMM ordinary output
+    仍保持自身 dtype；
+    只有 live-form exact CB
+    走 BF16 storage
+- **教训**:
+  - direct-runtime admission
+    的 dtype truth
+    必须分清 logical value dtype
+    和 physical CB storage dtype
+
+#### standalone accumulating row-reduction 不能残留 fragment add fallback
+
+- **症状**:
+  - seq64 flash-attn pipeline source
+    仍出现 unsupported `add`
+    或 raw fragment add helper
+  - `scores_sum += row_reduce(...)`
+    这类 update 没有被 exact tiled CB pipeline
+    完整接住
+- **根因**:
+  - matcher 只覆盖了直接 row-reduction，
+    没覆盖 accumulator already-live
+    的 standalone update 形态
+- **修法**:
+  - 为 row-reduction match
+    增加 `accumulate_existing`
+    语义
+  - lowering 先 produce reduced CB，
+    再用 typed exact
+    `add_tiles` /
+    `binary_max_tile`
+    与 existing accumulator 合成
+  - 已知 zero-fill accumulator
+    可直接 canonicalize，
+    避免多余 CB 占用
+- **教训**:
+  - recurrence/update 形态要进入 typed exact op，
+    不能让 fragment helper 成为 fallback
+
+#### multi-page exact CB republish 是 P2.3 gate，不是 P2.2 blocker
+
+- **症状**:
+  - seq64 / multi-K-step flash-attn
+    metadata 已有 explicit per-work descriptors，
+    但 direct runtime 仍需 skip
+  - TT-Sim 深处可能出现
+    `tensix_execute_pacr intermediate_format=5 late_from_format=0`
+    一类 format/runtime failure
+- **根因**:
+  - 当前 P2.2 admitted direct path
+    只覆盖 one K tile per work item /
+    single-page exact CB-republish
+  - multi-page input republish
+    需要更宽 live-form ownership、
+    page lifetime、
+    and consumer binding
+    语义，不应在 leaf runtime 猜
+- **修法**:
+  - runtime gate 新增
+    `multi-page exact CB-republish live-form`
+    queryable unsupported reason
+  - P2.3 再通过 typed
+    `TTProgram -> ExecutableSpec`
+    扩 support surface
+- **教训**:
+  - simulator deep failure
+    不能替代 admission gate；
+    support surface 外的 multi-page exact path
+    必须 fail-closed
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

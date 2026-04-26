@@ -31,18 +31,20 @@
   两类非 mailbox
   publication protocol；
   `cast_fragment_slice_to_tiled_cb`
-  已能生成非 mailbox
-  publication source，
-  但尚未进入 direct-runtime admitted set，
+  已对 single-page exact CB-republish
+  bf16 flash-attn subset
+  进入 direct-runtime admitted set；
   `P2.1`
   已补齐 targeted small bf16 flash-attn
   first exact row-reduction
   的 source live-form truth，
-  direct runtime admission
-  仍需在
   `P2.2`
-  中重新打开 typed bf16 subset
-  并跑 TT-Sim correctness gate；
+  已用 TT-Sim correctness gate
+  admission 该 typed bf16 subset；
+  multi-page exact CB-republish
+  仍保留 queryable unsupported gate
+  给
+  `P2.3`；
   更宽 live-in /
   workload payoff
   继续按显式 IR
@@ -212,12 +214,59 @@ synthetic fill。
 临时 tile
 误收进当前 admitted subset。
 direct runtime gate
-仍保持 fail-closed；
-是否从 unsupported gate
-晋级到 admitted TT-Sim bf16 correctness
-属于后续
+在 P2.1 收口时仍保持 fail-closed；
+后续是否 admission
+留给
 `P2.2`
-任务。
+用 TT-Sim bf16 correctness
+单独证明。
+
+2026-04-26 P2.2 closeout:
+small bf16 flash-attn
+single-K-tile MHA /
+GQA direct runtime
+已 admission。
+exact tiled-CB
+physical storage
+对 logical float32 softmax
+intermediate 使用
+`Float16_b`
+CB page/data format；
+row scalar broadcast
+使用
+`bcast_cols`
+语义；
+standalone accumulating
+row-reduction
+lower 成 typed
+reduce + add/max
+CB op；
+最终 output
+从 normalized live-form
+通过
+`copy_tile`
+/
+`pack_tile`
+发布，
+不再依赖
+mailbox helper、
+raw CB write pointer
+或
+local fragment bitcast loop。
+seq64 /
+multi-K-step
+仍通过
+`multi-page exact CB-republish live-form`
+unsupported reason
+fail-closed；
+这属于
+`P2.3`
+live-form support-surface
+扩展，
+不是
+`P2.2`
+runtime correctness
+blocker。
 
 ### 3.1 当前实现快照
 
@@ -394,7 +443,7 @@ publication protocol。
   必须保留 explicit unsupported reason
 
 当前已 admitted 的非 mailbox
-publication protocols 有两类：
+publication protocols 有三类：
 
 - `pack_thread_direct_store`
   用于 planner 已证明
@@ -417,6 +466,21 @@ publication protocols 有两类：
   再把同一个 DST tile
   pack 到 materialized
   bf16 target CB
+- `cast_fragment_slice_to_tiled_cb`
+  只用于 P2.2 已证明的
+  single-page exact CB-republish
+  bf16 flash-attn subset：
+  source live form
+  必须来自 typed exact CB state，
+  physical CB storage
+  使用 admitted BF16 page/data format，
+  publication
+  通过
+  `copy_tile`
+  /
+  `pack_tile`
+  或同等 TT compute-linkable path
+  完成
 
 `2026-04-26`
 flash-attn
@@ -427,8 +491,8 @@ fragment-slice cast republish
 `TTMaterializationPlan`
 确实看到的 producer /
 consumer relation。
-它当前**不是** direct-runtime
-admitted protocol。
+它曾经**不是** direct-runtime
+admitted protocol：
 一次尝试把它直接 admission
 并在 TRISC source 中用 raw
 `get_local_cb_interface`
@@ -445,11 +509,15 @@ TT-Metal JIT 在
 链接阶段暴露
 `undefined reference to cb_interface`。
 因此该 protocol
-当前只允许作为 explicit metadata
-和 queryable unsupported gate，
-直到实现一个非 mailbox、
+只能在拥有非 mailbox、
 TT compute-linkable
-的 CB publication path。
+CB publication path
+的 subset 中 admission。
+P2.2 仅 admission
+single-page exact CB-republish
+bf16 flash-attn；
+multi-page republish
+继续进入 queryable unsupported gate。
 
 同日后续 probe
 把 direct-runtime gate
@@ -922,8 +990,18 @@ buffer name
   已通过
   `pack_tile`
   admitted
+- flash-attn
+  single-K-tile
+  bf16 MHA / GQA
+  已通过
+  typed exact CB live-form
+  和
+  `cast_fragment_slice_to_tiled_cb`
+  single-page republish
+  admitted
 - 非零 live-in /
-  更宽 fragment/cast producer
+  更宽 fragment/cast producer /
+  multi-page exact CB-republish
   仍未 admitted；
   进入这些 case 前，
   必须先完成
@@ -1026,6 +1104,34 @@ flash-attn
 flash-attn 不作为
 live-form/materialization
 设计正确性的第一证明。
+
+P2.2 当前验收：
+
+- small / seq32 bf16
+  MHA 和 GQA
+  direct runtime
+  在 TT-Sim 下与 reference 对齐
+- generated compute source
+  不再依赖
+  `tilelang_get_cb_write_ptr_bytes`、
+  `get_local_cb_interface`
+  或 mailbox helper
+- exact row-reduction
+  消费 upstream matmul
+  CB-live value；
+  final output
+  消费 normalized live-form
+  并经
+  `pack_tile`
+  发布
+- seq64 /
+  multi-K-step
+  direct runtime
+  仍通过
+  `multi-page exact CB-republish live-form`
+  fail-closed，
+  留给 P2.3
+  扩 support surface
 
 ## 8. 实现边界
 

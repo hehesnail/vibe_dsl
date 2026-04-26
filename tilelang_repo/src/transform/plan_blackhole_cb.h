@@ -119,7 +119,8 @@ class PlanTTCBAlloc : public tvm::tir::StmtExprMutator {
   std::vector<CBRequirement> GetCBRequirements(const tvm::tir::PrimFunc& func);
 
   /*! \brief Assign CB IDs to requirements */
-  std::vector<CBConfig> AssignCBIds(const std::vector<CBRequirement>& requirements);
+  std::vector<CBConfig> AssignCBIds(const std::vector<CBRequirement>& requirements,
+                                    const std::vector<bool>& referenced_requirements);
 
   /*! \brief Validate CB allocation constraints */
   bool Validate(const std::vector<CBConfig>& configs) const;

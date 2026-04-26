@@ -297,6 +297,13 @@ TVM_DLL const Op& blackhole_add_tiles();
 TVM_DLL const Op& blackhole_add_bcast_rows_init_short();
 
 /*!
+ * \brief Initialize TT-Metal add broadcast-cols sequence.
+ * \param lhs_cb_id Left-hand-side CB id
+ * \param rhs_cb_id Right-hand-side CB id
+ */
+TVM_DLL const Op& blackhole_add_bcast_cols_init_short();
+
+/*!
  * \brief Add CB tiles with broadcast-rows layout into a DST register slot.
  * \param lhs_cb_id Left-hand-side CB id
  * \param rhs_cb_id Right-hand-side CB id
@@ -305,6 +312,16 @@ TVM_DLL const Op& blackhole_add_bcast_rows_init_short();
  * \param dst_tile_index Destination tile index within DST registers
  */
 TVM_DLL const Op& blackhole_add_tiles_bcast_rows();
+
+/*!
+ * \brief Add CB tiles with broadcast-cols layout into a DST register slot.
+ * \param lhs_cb_id Left-hand-side CB id
+ * \param rhs_cb_id Right-hand-side CB id
+ * \param lhs_tile_index Left-hand-side tile index in the CB front window
+ * \param rhs_tile_index Right-hand-side tile index in the CB front window
+ * \param dst_tile_index Destination tile index within DST registers
+ */
+TVM_DLL const Op& blackhole_add_tiles_bcast_cols();
 
 /*!
  * \brief Initialize TT-Metal elementwise mul for two CB-backed tile streams.

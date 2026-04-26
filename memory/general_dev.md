@@ -1213,6 +1213,23 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   32x32 matmul outputs and lets the row-reduction input borrow that streamed
   CB-live value; keep direct runtime fail-closed until P2.2 separately proves
   the admitted bf16 subset under TT-Sim.
+- For P2.2 flash-attn exact CB admission,
+  row scalar broadcast uses TT-Metal `bcast_cols`, not `bcast_rows`.
+  The semantic shape is a per-row scalar / column-vector broadcast even though
+  the logical transform reads like a row reduction follow-up.
+- Keep logical float32 softmax exact values physically stored in BF16 tiled
+  CB pages for the admitted Blackhole direct-runtime subset. TT-Metal SDPA
+  reference kernels keep these intermediates as `Float16_b`; using Float32 CB
+  storage in this lane can produce simulator overflow/format failures rather
+  than a useful correctness signal.
+- Standalone accumulating row reductions such as
+  `scores_sum += row_reduce(...)` must lower as typed exact reduce plus
+  add/max CB ops. Do not fall back to fragment add helpers or raw local
+  fragment staging.
+- `multi-page exact CB-republish live-form` is the current explicit P2.3
+  direct-runtime boundary for seq64 / multi-K-step flash-attn. Treat it as a
+  queryable unsupported reason, not as a reason to reintroduce mailbox
+  publication or raw CB write pointers.
 - 文档收口时，
   `tasks/progress.md`
   是唯一当前状态 /

@@ -37,9 +37,11 @@
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
+#include <algorithm>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace tvm {
 namespace tl {
@@ -182,13 +184,18 @@ std::vector<int> GetCBArgPositions(const std::string& op_name) {
   }
   if (op_name == "tl.blackhole.add_bcast_rows_init_short" ||
       op_name == "tl.blackhole.add_tiles_bcast_rows" ||
+      op_name == "tl.blackhole.add_bcast_cols_init_short" ||
+      op_name == "tl.blackhole.add_tiles_bcast_cols" ||
       op_name == "tl.blackhole.mul_bcast_rows_init_short" ||
       op_name == "tl.blackhole.mul_bcast_cols_init_short" ||
       op_name == "tl.blackhole.mul_tiles_bcast_rows" ||
       op_name == "tl.blackhole.mul_tiles_bcast_cols") {
     return {0, 1};
   }
-  if (op_name == "tl.blackhole.reduce_init" || op_name == "tl.blackhole.reduce_tile") {
+  if (op_name == "tl.blackhole.reduce_init") {
+    return {0, 1, 2};
+  }
+  if (op_name == "tl.blackhole.reduce_tile") {
     return {0, 1};
   }
   if (op_name == "tl.blackhole.pack_untilize_slice") {
@@ -257,6 +264,30 @@ bool HasNoCBArgs(const std::string& op_name) {
          op_name == "tl.blackhole.reduce_uninit";
 }
 
+std::vector<bool> CollectReferencedCBRequirements(const tir::Stmt& body, int requirement_count) {
+  std::vector<bool> referenced(std::max(0, requirement_count), false);
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    const auto* call = node.as<tir::CallNode>();
+    if (!call || !call->op->IsInstance<OpNode>()) {
+      return;
+    }
+    const std::vector<int> positions = GetCBArgPositions(Downcast<Op>(call->op)->name);
+    for (int pos : positions) {
+      ICHECK_LT(pos, static_cast<int>(call->args.size()));
+      if (const auto* imm = call->args[pos].as<IntImmNode>()) {
+        const int requirement_index = static_cast<int>(imm->value);
+        ICHECK_GE(requirement_index, 0)
+            << "PlanTTCBAlloc expects non-negative requirement_index placeholders";
+        ICHECK_LT(requirement_index, requirement_count)
+            << "PlanTTCBAlloc found requirement_index=" << requirement_index
+            << " outside staged requirement count=" << requirement_count;
+        referenced[requirement_index] = true;
+      }
+    }
+  });
+  return referenced;
+}
+
 }  // namespace
 
 // Main entry point
@@ -269,8 +300,12 @@ PrimFunc PlanTTCBAlloc::Transform(const PrimFunc& func) {
     return func;
   }
 
-  // Assign CB IDs to requirements
-  std::vector<CBConfig> configs = AssignCBIds(requirements);
+  // Assign CB IDs to requirements. Builtins can only pack from CB IDs in the
+  // architectural compute range, so requirements referenced by executable IR get
+  // first claim on low IDs before stale metadata-only requirements spill.
+  const std::vector<bool> referenced_requirements =
+      CollectReferencedCBRequirements(func->body, static_cast<int>(requirements.size()));
+  std::vector<CBConfig> configs = AssignCBIds(requirements, referenced_requirements);
 
   // Validate the allocation
   ICHECK(Validate(configs))
@@ -370,14 +405,45 @@ std::vector<CBRequirement> PlanTTCBAlloc::GetCBRequirements(
 
 // Assign CB IDs to requirements
 std::vector<CBConfig> PlanTTCBAlloc::AssignCBIds(
-    const std::vector<CBRequirement>& requirements) {
+    const std::vector<CBRequirement>& requirements,
+    const std::vector<bool>& referenced_requirements) {
   std::vector<CBConfig> configs;
+  ICHECK_EQ(referenced_requirements.size(), requirements.size());
 
   int next_input_id = kInputCBStart;
   int next_compute_cb_id = kOutputCBStart;
+  const int reserved_input_ids = std::min(
+      kInputCBEnd - kInputCBStart + 1,
+      static_cast<int>(std::count_if(requirements.begin(), requirements.end(), [](const auto& req) {
+        return req.type == CBType::kInput;
+      })));
+  int next_low_spill_id = kInputCBStart + reserved_input_ids;
   int next_spill_id = kOutputCBEnd + 1;
 
+  std::vector<size_t> allocation_order;
+  allocation_order.reserve(requirements.size());
   for (size_t req_index = 0; req_index < requirements.size(); ++req_index) {
+    if (referenced_requirements[req_index]) {
+      allocation_order.push_back(req_index);
+    }
+  }
+  for (size_t req_index = 0; req_index < requirements.size(); ++req_index) {
+    if (!referenced_requirements[req_index]) {
+      allocation_order.push_back(req_index);
+    }
+  }
+
+  auto allocate_compute_cb_id = [&]() {
+    if (next_compute_cb_id <= kOutputCBEnd) {
+      return next_compute_cb_id++;
+    }
+    if (next_low_spill_id <= kInputCBEnd) {
+      return next_low_spill_id++;
+    }
+    return next_spill_id++;
+  };
+
+  for (size_t req_index : allocation_order) {
     const auto& req = requirements[req_index];
     bool reused = false;
     for (auto& config : configs) {
@@ -412,26 +478,19 @@ std::vector<CBConfig> PlanTTCBAlloc::AssignCBIds(
     // Assign CB ID based on type
     switch (req.type) {
       case CBType::kInput:
-        if (next_input_id <= kInputCBEnd) {
+        if (next_input_id < kInputCBStart + reserved_input_ids &&
+            next_input_id <= kInputCBEnd) {
           config.cb_id = next_input_id++;
         } else {
           config.cb_id = next_spill_id++;
         }
         break;
       case CBType::kOutput:
-        if (next_compute_cb_id <= kOutputCBEnd) {
-          config.cb_id = next_compute_cb_id++;
-        } else {
-          config.cb_id = next_spill_id++;
-        }
+        config.cb_id = allocate_compute_cb_id();
         break;
       case CBType::kIntermediate:
       default:
-        if (next_compute_cb_id <= kOutputCBEnd) {
-          config.cb_id = next_compute_cb_id++;
-        } else {
-          config.cb_id = next_spill_id++;
-        }
+        config.cb_id = allocate_compute_cb_id();
         break;
     }
 

@@ -81,7 +81,9 @@ TIR_DEFINE_BUILTIN(copy_tile)
 TIR_DEFINE_BUILTIN(add_tiles_init)
 TIR_DEFINE_BUILTIN(add_tiles)
 TIR_DEFINE_BUILTIN(add_bcast_rows_init_short)
+TIR_DEFINE_BUILTIN(add_bcast_cols_init_short)
 TIR_DEFINE_BUILTIN(add_tiles_bcast_rows)
+TIR_DEFINE_BUILTIN(add_tiles_bcast_cols)
 TIR_DEFINE_BUILTIN(mul_tiles_init)
 TIR_DEFINE_BUILTIN(mul_tiles)
 TIR_DEFINE_BUILTIN(mul_bcast_rows_init_short)
@@ -340,7 +342,22 @@ TVM_REGISTER_OP("tl.blackhole.add_bcast_rows_init_short")
     .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
     .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID");
 
+TVM_REGISTER_OP("tl.blackhole.add_bcast_cols_init_short")
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
+    .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID");
+
 TVM_REGISTER_OP("tl.blackhole.add_tiles_bcast_rows")
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
+    .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID")
+    .add_argument("lhs_tile_index", "int", "Left-hand-side tile index in the CB front window")
+    .add_argument("rhs_tile_index", "int", "Right-hand-side tile index in the CB front window")
+    .add_argument("dst_tile_index", "int", "Destination tile index in DST");
+
+TVM_REGISTER_OP("tl.blackhole.add_tiles_bcast_cols")
     .set_num_inputs(5)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
