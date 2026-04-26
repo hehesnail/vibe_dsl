@@ -7,8 +7,8 @@
 
 - Date: `2026-04-26`
 - Active lane: `P2 flash-attn direct runtime admission`
-- Current item: `typed fragment-slice CB republish gate restored; next is a TT compute-linkable publication implementation`
-- Blocker: none
+- Current item: `blocked on replacing mailbox-backed local-fragment scratch staging with typed non-mailbox live-form publication`
+- Blocker: `flash-attn compute source still emits mailbox-backed tilelang_get_cb_write_ptr_bytes / CircularBuffer::get_tile_address for local-fragment <-> CB scratch staging; gate-bypass probe reaches TT-Sim t_tile_mmio_wr32 before correctness`
 - Main chain: `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
 ## Priority
@@ -35,7 +35,7 @@
 - `P1 TTProgram ABI arg/accessor map schema cleanup`: completed
 - `P1 leaf reader name/default cleanup`: completed
 - `P1/P2 non-GEMM exact compute op typed expansion`: completed
-- `P2 flash-attn direct runtime admission`: next
+- `P2 flash-attn direct runtime admission`: blocked
 
 ## Open Debt
 
@@ -43,8 +43,22 @@
 - Flash-attn compile/source/spec baseline is stable; direct runtime correctness is not admitted.
 - `cast_fragment_slice_to_tiled_cb` is now explicit typed materialization metadata, but remains a
   direct-runtime unsupported gate until a non-mailbox, TT compute-linkable CB publication path exists.
+- The current blocker is wider than the single `acc_s -> acc_s_cast` materialization plan:
+  exact-op scratch staging still uses local fragment to CB and CB to local transfers backed by
+  mailbox address exchange. Admission requires typed internal staging/live-form plans plus a
+  PACK/DST-linkable publication path, not a runtime gate relaxation.
 
 ## Latest Verification
+
+P2 flash-attn admission probe:
+
+- `cmake --build build -j32`
+- small bf16 MHA metadata probe: unsupported reason remains queryable for
+  `thread-distributed cb_republish materialization`
+- temporary gate-bypass probe: internal `acc_s_cast` materialization has empty
+  `host_buffer`; after bypassing the host-buffer check for probe only, TT-Sim
+  fails at `UnimplementedFunctionality: t_tile_mmio_wr32`
+- probe changes were reverted and `cmake --build build -j32` rebuilt the clean gated path
 
 P2 flash-attn typed materialization gate restore:
 

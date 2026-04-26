@@ -1120,6 +1120,65 @@
 - **修法**: kernel 临时目录每次执行唯一化
 - **教训**: JIT 缓存串扰首先要怀疑路径复用，而不是数值逻辑本身
 
+#### flash-attn gate bypass 不能当作 direct-runtime admission
+
+- **症状**:
+  - 临时把
+    `cast_fragment_slice_to_tiled_cb`
+    放进 admitted publication protocol 后，
+    executable projection 先在内部
+    `acc_s_cast`
+    materialization 上触发
+    `host_buffer`
+    为空的 assert
+  - 继续临时绕过该 assert 后，
+    small bf16 MHA
+    能创建 reader /
+    compute /
+    writer kernels，
+    但 TT-Sim 立刻报
+    `UnimplementedFunctionality: t_tile_mmio_wr32`
+- **根因**:
+  - `acc_s -> acc_s_cast`
+    只是第一个 typed gate；
+    compute source 里仍有多处
+    `tilelang_get_cb_write_ptr_bytes`
+    /
+    `CircularBuffer::get_tile_address`
+    做 local-fragment <-> CB
+    scratch staging
+  - 这些 helper 依赖 mailbox /
+    CB address exchange；
+    TT-Sim hard execution
+    不支持这条 MMIO path
+  - 内部 live-form republish
+    不能伪装成 host-buffer
+    materialization 塞进 leaf
+    `BufferMaterializationSpec`
+- **修法**:
+  - 保留 explicit unsupported gate
+  - 后续 admission 必须先把内部 scratch
+    local-fragment staging
+    表达成 typed live-form /
+    materialization /
+    consumer-binding plan
+  - publication 实现必须走非 mailbox、
+    TT compute-linkable 的
+    PACK /
+    DST
+    路径
+- **教训**:
+  - direct-runtime admission
+    不能通过放宽 gate 验出来；
+    gate-bypass probe
+    只用于定位真实下游 failure，
+    probe 后必须撤回并重编
+  - 如果 generated compute source
+    仍出现 mailbox-backed
+    CB pointer helper，
+    当前 TT-Sim bf16 correctness
+    不能 admission
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

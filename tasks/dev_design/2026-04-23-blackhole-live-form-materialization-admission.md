@@ -384,6 +384,62 @@ TT-Metal JIT 在
 TT compute-linkable
 的 CB publication path。
 
+同日后续 probe
+把 direct-runtime gate
+临时放开用于定位真实执行边界：
+
+- executable projection 先暴露
+  `acc_s_cast`
+  的
+  `TTMaterializationPlan`
+  是内部 live-form republish，
+  `host_buffer`
+  为空；
+  因此不能把它当作
+  host buffer materialization
+  直接塞进当前 leaf
+  `BufferMaterializationSpec`
+  admission 汇总器
+- 继续临时绕过该 host-buffer
+  assert 后，
+  small bf16 MHA 在创建 reader /
+  compute /
+  writer 三个 kernel 后，
+  TT-Sim 仍命中
+  `UnimplementedFunctionality: t_tile_mmio_wr32`
+- 生成的 compute source
+  不只有
+  `acc_s -> acc_s_cast`
+  这一处 mailbox path；
+  exact-op scratch staging
+  还存在多处
+  `tilelang_get_cb_write_ptr_bytes`
+  和
+  `CircularBuffer::get_tile_address`
+  local-fragment <-> CB
+  交换
+
+所以 flash-attn direct-runtime
+admission 的 blocker
+不是单个
+`publication_protocol`
+枚举没放行。
+需要先把这些内部 scratch
+local-fragment staging
+提升为 typed
+live-form /
+materialization /
+consumer-binding
+计划，
+再选择
+PACK /
+DST
+可链接的 publication
+实现。
+runtime gate relaxation
+或 source-level mailbox helper
+都不是合法收口。
+
 两者都不是 leaf reader
 按 kernel shape 猜出来的 fallback；
 必须由
