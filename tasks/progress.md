@@ -109,6 +109,17 @@
      `cb_wait_front` / `cb_pop_front` / `cb_reserve_back` / `cb_push_back`
      lifetime must be represented and validated through
      `TTProgram -> ExecutableSpec`, then consumed by lowering/codegen.
+   - Cleanup constraint:
+     helper/composite exact-op names such as
+     `exp2_row_bcast_affine` /
+     `scalar_exp2_affine`
+     are selector-local transition residue only.
+     They must not become `TTComputeOpPlan.operation_name`,
+     `ExecutableSpec.compute_ops`,
+     source/codegen protocol, or new P2.3 support surface.
+     The durable compute granularity remains TT-Metal builtin granularity
+     (`mul_tiles`, `add_tiles`, `*_bcast_cols`, `exp2_tile`, `pack_tile`,
+     etc.).
 
 2. `P3 mesh/distributed runtime expansion`
    - Treat this as a later runtime admission lane.

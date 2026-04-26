@@ -1170,6 +1170,28 @@ P2.3 entry contract:
   SeqStmt 形态
   或 leaf runtime
   重新恢复语义
+- `exp2_row_bcast_affine`
+  /
+  `scalar_exp2_affine`
+  这类 helper/composite exact-op
+  名字只允许作为 selector-local
+  过渡残留；
+  不允许进入
+  `TTComputeOpPlan.operation_name`
+  /
+  `ExecutableSpec.compute_ops`
+  /
+  source codegen protocol
+  /
+  P2.3 新 support surface。
+  长期 compute 粒度必须是
+  TT-Metal builtin 粒度：
+  `mul_tiles`、
+  `add_tiles`、
+  `*_bcast_cols`、
+  `exp2_tile`、
+  `pack_tile`
+  等
 - P2.3 第一个 admitted gate
   是 seq64 /
   multi-K-step
