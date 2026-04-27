@@ -102,6 +102,23 @@
    - Admit larger stage2/block64 shapes only after the exact CB
      multi-page event contract is represented and validated through
      `TTProgram -> ExecutableSpec`.
+   - GPU/example parity targets to record explicitly:
+     first correctness target is the existing CUDA regression scale:
+     MHA forward BSHD
+     `(batch=1, heads=32, seq_len=256, dim=128,
+       block_M=128, block_N=128, num_stages=1, threads=128)`
+     and GQA forward BSHD
+     `(batch=1, heads=16, seq_len=1024, dim=128, groups=16,
+       block_M=64, block_N=64, num_stages=2, threads=128)`.
+     Stretch/perf parity is the example default/regression scale:
+     MHA
+     `(batch=8, heads=32, seq_len=4096, dim=128,
+       block_M=128, block_N=128)`
+     and GQA
+     `(batch=1, heads=64, seq_len=4096, dim=128, groups=16,
+       block_M=128, block_N=128)`.
+   - Do not treat seq64 as the wider-shape target; it is only the P2.3
+     multi-K-step admission smoke gate.
    - Keep helper/composite exact-op names out of
      `TTComputeOpPlan.operation_name`,
      `ExecutableSpec.compute_ops`,

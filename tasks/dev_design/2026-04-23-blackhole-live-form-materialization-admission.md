@@ -1213,6 +1213,38 @@ P2.3 closeout contract:
   继续作为 queryable
   unsupported reason
 
+Post-P2 wider-shape target:
+
+- seq64 只作为 P2.3
+  multi-K-step admission smoke gate，
+  不是 wider-shape payoff
+  的目标规模
+- 先对齐 repo 里已有 CUDA regression
+  correctness 规模：
+  - MHA forward BSHD:
+    `batch=1, heads=32, seq_len=256, dim=128,
+     block_M=128, block_N=128, num_stages=1, threads=128`
+  - GQA forward BSHD:
+    `batch=1, heads=16, seq_len=1024, dim=128, groups=16,
+     block_M=64, block_N=64, num_stages=2, threads=128`
+- 再对齐 example default /
+  regression perf 规模：
+  - MHA:
+    `batch=8, heads=32, seq_len=4096, dim=128,
+     block_M=128, block_N=128`
+  - GQA:
+    `batch=1, heads=64, seq_len=4096, dim=128, groups=16,
+     block_M=128, block_N=128`
+- 这些 shape 的 admission
+  仍必须通过 typed
+  `TTProgram -> ExecutableSpec`
+  page-count /
+  producer-consumer window /
+  CB lifetime contract，
+  不能用 runtime-only gate bypass
+  或 helper/composite builtin
+  补协议
+
 ## 8. 实现边界
 
 允许的实现方向：
