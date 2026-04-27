@@ -382,6 +382,10 @@ class LiveValueNode : public Object {
   ffi::String subject;
   ffi::String producer_unit;
   int64_t producer_unit_index = -1;
+  int64_t version_index = -1;
+  ffi::String definition_kind;
+  int64_t defining_access_region_index = -1;
+  int64_t defining_event_index = -1;
   ffi::String value_role;
   ffi::Array<Integer> logical_shape;
   ffi::String dtype;
@@ -395,6 +399,11 @@ class LiveValueNode : public Object {
         .def_ro("subject", &LiveValueNode::subject)
         .def_ro("producer_unit", &LiveValueNode::producer_unit)
         .def_ro("producer_unit_index", &LiveValueNode::producer_unit_index)
+        .def_ro("version_index", &LiveValueNode::version_index)
+        .def_ro("definition_kind", &LiveValueNode::definition_kind)
+        .def_ro("defining_access_region_index",
+                &LiveValueNode::defining_access_region_index)
+        .def_ro("defining_event_index", &LiveValueNode::defining_event_index)
         .def_ro("value_role", &LiveValueNode::value_role)
         .def_ro("logical_shape", &LiveValueNode::logical_shape)
         .def_ro("dtype", &LiveValueNode::dtype)
@@ -408,7 +417,9 @@ class LiveValueNode : public Object {
 class LiveValue : public ObjectRef {
  public:
   TVM_DLL LiveValue(ffi::String name, ffi::String subject, ffi::String producer_unit,
-                    int64_t producer_unit_index, ffi::String value_role,
+                    int64_t producer_unit_index, int64_t version_index,
+                    ffi::String definition_kind, int64_t defining_access_region_index,
+                    int64_t defining_event_index, ffi::String value_role,
                     ffi::Array<Integer> logical_shape, ffi::String dtype,
                     ffi::Array<ffi::String> traits, ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(LiveValue, ObjectRef, LiveValueNode);
@@ -426,6 +437,10 @@ class LiveValueEdgeNode : public Object {
   int64_t producer_unit_index = -1;
   int64_t consumer_unit_index = -1;
   ffi::String relation_kind;
+  ffi::String use_kind;
+  int64_t consumer_access_region_index = -1;
+  int64_t source_version_index = -1;
+  int64_t target_version_index = -1;
   bool requires_full_logical_value = false;
   bool accepts_distributed_slice = false;
   ffi::Array<TIRAnchor> anchors;
@@ -443,6 +458,11 @@ class LiveValueEdgeNode : public Object {
         .def_ro("producer_unit_index", &LiveValueEdgeNode::producer_unit_index)
         .def_ro("consumer_unit_index", &LiveValueEdgeNode::consumer_unit_index)
         .def_ro("relation_kind", &LiveValueEdgeNode::relation_kind)
+        .def_ro("use_kind", &LiveValueEdgeNode::use_kind)
+        .def_ro("consumer_access_region_index",
+                &LiveValueEdgeNode::consumer_access_region_index)
+        .def_ro("source_version_index", &LiveValueEdgeNode::source_version_index)
+        .def_ro("target_version_index", &LiveValueEdgeNode::target_version_index)
         .def_ro("requires_full_logical_value", &LiveValueEdgeNode::requires_full_logical_value)
         .def_ro("accepts_distributed_slice", &LiveValueEdgeNode::accepts_distributed_slice)
         .def_ro("anchors", &LiveValueEdgeNode::anchors);
@@ -458,6 +478,8 @@ class LiveValueEdge : public ObjectRef {
                         int64_t dataflow_edge_index, ffi::String producer_unit,
                         ffi::String consumer_unit, int64_t producer_unit_index,
                         int64_t consumer_unit_index, ffi::String relation_kind,
+                        ffi::String use_kind, int64_t consumer_access_region_index,
+                        int64_t source_version_index, int64_t target_version_index,
                         bool requires_full_logical_value, bool accepts_distributed_slice,
                         ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(LiveValueEdge, ObjectRef, LiveValueEdgeNode);
@@ -475,6 +497,11 @@ class MaterializationBoundaryNode : public Object {
   ffi::String required_visibility;
   ffi::String logical_coverage;
   ffi::String phase_relation;
+  int64_t source_access_region_index = -1;
+  int64_t target_access_region_index = -1;
+  ffi::String event_lifetime_kind;
+  int64_t min_publish_pages = 0;
+  int64_t max_consume_pages = 0;
   ffi::Array<TIRAnchor> anchors;
 
   static void RegisterReflection() {
@@ -490,6 +517,13 @@ class MaterializationBoundaryNode : public Object {
         .def_ro("required_visibility", &MaterializationBoundaryNode::required_visibility)
         .def_ro("logical_coverage", &MaterializationBoundaryNode::logical_coverage)
         .def_ro("phase_relation", &MaterializationBoundaryNode::phase_relation)
+        .def_ro("source_access_region_index",
+                &MaterializationBoundaryNode::source_access_region_index)
+        .def_ro("target_access_region_index",
+                &MaterializationBoundaryNode::target_access_region_index)
+        .def_ro("event_lifetime_kind", &MaterializationBoundaryNode::event_lifetime_kind)
+        .def_ro("min_publish_pages", &MaterializationBoundaryNode::min_publish_pages)
+        .def_ro("max_consume_pages", &MaterializationBoundaryNode::max_consume_pages)
         .def_ro("anchors", &MaterializationBoundaryNode::anchors);
   }
 
@@ -505,6 +539,10 @@ class MaterializationBoundary : public ObjectRef {
                                   int64_t target_live_value_index, ffi::String live_value_edge,
                                   int64_t live_value_edge_index, ffi::String required_visibility,
                                   ffi::String logical_coverage, ffi::String phase_relation,
+                                  int64_t source_access_region_index,
+                                  int64_t target_access_region_index,
+                                  ffi::String event_lifetime_kind, int64_t min_publish_pages,
+                                  int64_t max_consume_pages,
                                   ffi::Array<TIRAnchor> anchors);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(MaterializationBoundary, ObjectRef,
                                              MaterializationBoundaryNode);

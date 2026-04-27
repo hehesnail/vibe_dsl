@@ -180,7 +180,9 @@ PhasePlan::PhasePlan(ffi::String name, int64_t phase_index, ffi::Array<ffi::Stri
 }
 
 LiveValue::LiveValue(ffi::String name, ffi::String subject, ffi::String producer_unit,
-                     int64_t producer_unit_index, ffi::String value_role,
+                     int64_t producer_unit_index, int64_t version_index,
+                     ffi::String definition_kind, int64_t defining_access_region_index,
+                     int64_t defining_event_index, ffi::String value_role,
                      ffi::Array<Integer> logical_shape, ffi::String dtype,
                      ffi::Array<ffi::String> traits, ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<LiveValueNode>();
@@ -188,6 +190,10 @@ LiveValue::LiveValue(ffi::String name, ffi::String subject, ffi::String producer
   n->subject = std::move(subject);
   n->producer_unit = std::move(producer_unit);
   n->producer_unit_index = producer_unit_index;
+  n->version_index = version_index;
+  n->definition_kind = std::move(definition_kind);
+  n->defining_access_region_index = defining_access_region_index;
+  n->defining_event_index = defining_event_index;
   n->value_role = std::move(value_role);
   n->logical_shape = std::move(logical_shape);
   n->dtype = std::move(dtype);
@@ -201,6 +207,8 @@ LiveValueEdge::LiveValueEdge(ffi::String name, ffi::String source_live_value,
                              int64_t dataflow_edge_index, ffi::String producer_unit,
                              ffi::String consumer_unit, int64_t producer_unit_index,
                              int64_t consumer_unit_index, ffi::String relation_kind,
+                             ffi::String use_kind, int64_t consumer_access_region_index,
+                             int64_t source_version_index, int64_t target_version_index,
                              bool requires_full_logical_value, bool accepts_distributed_slice,
                              ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<LiveValueEdgeNode>();
@@ -214,6 +222,10 @@ LiveValueEdge::LiveValueEdge(ffi::String name, ffi::String source_live_value,
   n->producer_unit_index = producer_unit_index;
   n->consumer_unit_index = consumer_unit_index;
   n->relation_kind = std::move(relation_kind);
+  n->use_kind = std::move(use_kind);
+  n->consumer_access_region_index = consumer_access_region_index;
+  n->source_version_index = source_version_index;
+  n->target_version_index = target_version_index;
   n->requires_full_logical_value = requires_full_logical_value;
   n->accepts_distributed_slice = accepts_distributed_slice;
   n->anchors = std::move(anchors);
@@ -224,7 +236,9 @@ MaterializationBoundary::MaterializationBoundary(
     ffi::String name, ffi::String source_live_value, int64_t source_live_value_index,
     ffi::String target_live_value, int64_t target_live_value_index, ffi::String live_value_edge,
     int64_t live_value_edge_index, ffi::String required_visibility, ffi::String logical_coverage,
-    ffi::String phase_relation, ffi::Array<TIRAnchor> anchors) {
+    ffi::String phase_relation, int64_t source_access_region_index,
+    int64_t target_access_region_index, ffi::String event_lifetime_kind,
+    int64_t min_publish_pages, int64_t max_consume_pages, ffi::Array<TIRAnchor> anchors) {
   auto n = ffi::make_object<MaterializationBoundaryNode>();
   n->name = std::move(name);
   n->source_live_value = std::move(source_live_value);
@@ -236,6 +250,11 @@ MaterializationBoundary::MaterializationBoundary(
   n->required_visibility = std::move(required_visibility);
   n->logical_coverage = std::move(logical_coverage);
   n->phase_relation = std::move(phase_relation);
+  n->source_access_region_index = source_access_region_index;
+  n->target_access_region_index = target_access_region_index;
+  n->event_lifetime_kind = std::move(event_lifetime_kind);
+  n->min_publish_pages = min_publish_pages;
+  n->max_consume_pages = max_consume_pages;
   n->anchors = std::move(anchors);
   data_ = std::move(n);
 }
@@ -400,23 +419,31 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def(
       "tl.LiveValue",
       [](ffi::String name, ffi::String subject, ffi::String producer_unit,
-         int64_t producer_unit_index, ffi::String value_role, ffi::Array<Integer> logical_shape,
-         ffi::String dtype, ffi::Array<ffi::String> traits, ffi::Array<TIRAnchor> anchors) {
+         int64_t producer_unit_index, int64_t version_index, ffi::String definition_kind,
+         int64_t defining_access_region_index, int64_t defining_event_index,
+         ffi::String value_role, ffi::Array<Integer> logical_shape, ffi::String dtype,
+         ffi::Array<ffi::String> traits, ffi::Array<TIRAnchor> anchors) {
         return LiveValue(std::move(name), std::move(subject), std::move(producer_unit),
-                         producer_unit_index, std::move(value_role), std::move(logical_shape),
-                         std::move(dtype), std::move(traits), std::move(anchors));
+                         producer_unit_index, version_index, std::move(definition_kind),
+                         defining_access_region_index, defining_event_index,
+                         std::move(value_role), std::move(logical_shape), std::move(dtype),
+                         std::move(traits), std::move(anchors));
       });
   refl::GlobalDef().def(
       "tl.LiveValueEdge",
       [](ffi::String name, ffi::String source_live_value, int64_t source_live_value_index,
          ffi::String dataflow_edge, int64_t dataflow_edge_index, ffi::String producer_unit,
          ffi::String consumer_unit, int64_t producer_unit_index, int64_t consumer_unit_index,
-         ffi::String relation_kind, bool requires_full_logical_value,
-         bool accepts_distributed_slice, ffi::Array<TIRAnchor> anchors) {
+         ffi::String relation_kind, ffi::String use_kind, int64_t consumer_access_region_index,
+         int64_t source_version_index, int64_t target_version_index,
+         bool requires_full_logical_value, bool accepts_distributed_slice,
+         ffi::Array<TIRAnchor> anchors) {
         return LiveValueEdge(std::move(name), std::move(source_live_value), source_live_value_index,
                              std::move(dataflow_edge), dataflow_edge_index,
                              std::move(producer_unit), std::move(consumer_unit),
                              producer_unit_index, consumer_unit_index, std::move(relation_kind),
+                             std::move(use_kind), consumer_access_region_index,
+                             source_version_index, target_version_index,
                              requires_full_logical_value, accepts_distributed_slice,
                              std::move(anchors));
       });
@@ -426,12 +453,16 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::String target_live_value, int64_t target_live_value_index,
          ffi::String live_value_edge, int64_t live_value_edge_index,
          ffi::String required_visibility, ffi::String logical_coverage, ffi::String phase_relation,
+         int64_t source_access_region_index, int64_t target_access_region_index,
+         ffi::String event_lifetime_kind, int64_t min_publish_pages, int64_t max_consume_pages,
          ffi::Array<TIRAnchor> anchors) {
         return MaterializationBoundary(
             std::move(name), std::move(source_live_value), source_live_value_index,
             std::move(target_live_value), target_live_value_index, std::move(live_value_edge),
             live_value_edge_index, std::move(required_visibility), std::move(logical_coverage),
-            std::move(phase_relation), std::move(anchors));
+            std::move(phase_relation), source_access_region_index, target_access_region_index,
+            std::move(event_lifetime_kind), min_publish_pages, max_consume_pages,
+            std::move(anchors));
       });
   refl::GlobalDef().def(
       "tl.SpatialPlan",

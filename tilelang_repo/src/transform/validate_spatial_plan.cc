@@ -102,6 +102,16 @@ bool IsOneOf(const std::string& value, std::initializer_list<const char*> allowe
   return false;
 }
 
+bool AccessRegionReads(const AccessRegion& region) {
+  const std::string access_kind = str(region->access_kind);
+  return access_kind == "read" || access_kind == "read_write" || access_kind == "reduce_read";
+}
+
+bool AccessRegionWrites(const AccessRegion& region) {
+  const std::string access_kind = str(region->access_kind);
+  return access_kind == "write" || access_kind == "read_write" || access_kind == "reduce_write";
+}
+
 std::vector<int> BuildPhaseIndexByUnit(const SpatialPlan& plan) {
   std::vector<int> phase_index_by_unit(plan->execution_units.size(), -1);
   std::unordered_set<int64_t> seen_phase_indices;
@@ -538,6 +548,7 @@ void ValidateLiveValueBoundaryObjects(const SpatialPlan& plan,
 
   std::unordered_set<std::string> seen_live_value_names;
   std::unordered_set<std::string> seen_live_value_producer_subjects;
+  std::unordered_set<std::string> seen_live_value_subject_versions;
   for (int live_value_index = 0; live_value_index < plan->live_values.size(); ++live_value_index) {
     const LiveValue& value = plan->live_values[live_value_index];
     ICHECK(!value->name.empty()) << "LiveValue requires name";
@@ -558,6 +569,41 @@ void ValidateLiveValueBoundaryObjects(const SpatialPlan& plan,
     ICHECK(seen_live_value_producer_subjects.insert(producer_subject_key).second)
         << "duplicate LiveValue producer/subject " << value->producer_unit << " "
         << value->subject;
+    ICHECK_GE(value->version_index, 0)
+        << "LiveValue " << value->name << " requires non-negative version_index";
+    const std::string subject_version_key = str(value->subject) + "|" +
+                                            std::to_string(value->version_index);
+    ICHECK(seen_live_value_subject_versions.insert(subject_version_key).second)
+        << "duplicate LiveValue subject/version " << value->subject << " v"
+        << value->version_index;
+    ICHECK(!value->definition_kind.empty())
+        << "LiveValue " << value->name << " requires definition_kind";
+    ICHECK(IsOneOf(str(value->definition_kind),
+                   {"external_input", "compute_write", "materialization_write", "phi",
+                    "host_output"}))
+        << "LiveValue " << value->name << " definition_kind has unsupported value "
+        << value->definition_kind;
+    ValidateNoTTNoun(str(value->definition_kind), "LiveValue definition_kind");
+    ICHECK_GE(value->defining_access_region_index, -1)
+        << "LiveValue " << value->name << " defining_access_region_index must be >= -1";
+    if (value->defining_access_region_index >= 0) {
+      ICHECK_LT(value->defining_access_region_index,
+                static_cast<int64_t>(plan->access_regions.size()))
+          << "LiveValue " << value->name << " defining_access_region_index out of bounds";
+      const AccessRegion& region = plan->access_regions[value->defining_access_region_index];
+      ICHECK_EQ(str(region->subject), str(value->subject))
+          << "LiveValue " << value->name << " defining access subject must match";
+      ICHECK_EQ(region->unit_index, value->producer_unit_index)
+          << "LiveValue " << value->name << " defining access unit must match producer";
+      ICHECK(AccessRegionWrites(region))
+          << "LiveValue " << value->name << " defining access must be a write";
+    }
+    ICHECK_GE(value->defining_event_index, -1)
+        << "LiveValue " << value->name << " defining_event_index must be >= -1";
+    if (value->defining_event_index >= 0) {
+      ICHECK_LT(value->defining_event_index, static_cast<int64_t>(plan->dataflow_edges.size()))
+          << "LiveValue " << value->name << " defining_event_index out of bounds";
+    }
     ICHECK(!value->value_role.empty()) << "LiveValue " << value->name << " requires value_role";
     ICHECK(IsOneOf(str(value->value_role),
                    {"fragment", "accumulator", "cast_source", "publish_source",
@@ -622,6 +668,35 @@ void ValidateLiveValueBoundaryObjects(const SpatialPlan& plan,
         << "LiveValueEdge " << live_edge->name << " relation_kind has unsupported value "
         << live_edge->relation_kind;
     ValidateNoTTNoun(str(live_edge->relation_kind), "LiveValueEdge relation_kind");
+    ICHECK(!live_edge->use_kind.empty())
+        << "LiveValueEdge " << live_edge->name << " requires use_kind";
+    ICHECK(IsOneOf(str(live_edge->use_kind),
+                   {"compute_consume", "materialization_consume", "transport_consume",
+                    "host_output_consume"}))
+        << "LiveValueEdge " << live_edge->name << " use_kind has unsupported value "
+        << live_edge->use_kind;
+    ValidateNoTTNoun(str(live_edge->use_kind), "LiveValueEdge use_kind");
+    ICHECK_EQ(live_edge->source_version_index, source_live_value->version_index)
+        << "LiveValueEdge " << live_edge->name
+        << " source_version_index must match source LiveValue";
+    ICHECK_GE(live_edge->target_version_index, 0)
+        << "LiveValueEdge " << live_edge->name << " requires target_version_index";
+    ICHECK_GE(live_edge->consumer_access_region_index, -1)
+        << "LiveValueEdge " << live_edge->name
+        << " consumer_access_region_index must be >= -1";
+    if (live_edge->consumer_access_region_index >= 0) {
+      ICHECK_LT(live_edge->consumer_access_region_index,
+                static_cast<int64_t>(plan->access_regions.size()))
+          << "LiveValueEdge " << live_edge->name
+          << " consumer_access_region_index out of bounds";
+      const AccessRegion& region = plan->access_regions[live_edge->consumer_access_region_index];
+      ICHECK_EQ(str(region->subject), str(dataflow_edge->subject))
+          << "LiveValueEdge " << live_edge->name << " consumer access subject must match";
+      ICHECK_EQ(region->unit_index, live_edge->consumer_unit_index)
+          << "LiveValueEdge " << live_edge->name << " consumer access unit must match";
+      ICHECK(AccessRegionReads(region))
+          << "LiveValueEdge " << live_edge->name << " consumer access must be a read";
+    }
     ICHECK(live_edge->requires_full_logical_value || live_edge->accepts_distributed_slice)
         << "LiveValueEdge " << live_edge->name
         << " must either require full logical value or accept distributed slice";
@@ -677,6 +752,9 @@ void ValidateLiveValueBoundaryObjects(const SpatialPlan& plan,
           << " target_live_value producer must match materialize consumer unit";
     }
     const DataflowEdge& dataflow_edge = plan->dataflow_edges[live_edge->dataflow_edge_index];
+    ICHECK_EQ(live_edge->target_version_index, target_live_value->version_index)
+        << "MaterializationBoundary " << boundary->name
+        << " target_version_index must match target LiveValue";
     const bool crosses_phase = phase_index_by_unit[dataflow_edge->producer_unit_index] !=
                                phase_index_by_unit[dataflow_edge->consumer_unit_index];
     ICHECK(!boundary->required_visibility.empty())
@@ -696,10 +774,49 @@ void ValidateLiveValueBoundaryObjects(const SpatialPlan& plan,
     ICHECK(IsOneOf(str(boundary->phase_relation), {"same_phase", "cross_phase"}))
         << "MaterializationBoundary " << boundary->name
         << " phase_relation has unsupported value " << boundary->phase_relation;
+    ICHECK_GE(boundary->source_access_region_index, -1)
+        << "MaterializationBoundary " << boundary->name
+        << " source_access_region_index must be >= -1";
+    ICHECK_GE(boundary->target_access_region_index, -1)
+        << "MaterializationBoundary " << boundary->name
+        << " target_access_region_index must be >= -1";
+    if (boundary->source_access_region_index >= 0) {
+      ICHECK_LT(boundary->source_access_region_index,
+                static_cast<int64_t>(plan->access_regions.size()))
+          << "MaterializationBoundary " << boundary->name
+          << " source_access_region_index out of bounds";
+      ICHECK_EQ(str(plan->access_regions[boundary->source_access_region_index]->subject),
+                str(source_live_value->subject))
+          << "MaterializationBoundary " << boundary->name
+          << " source access subject must match source LiveValue";
+    }
+    if (boundary->target_access_region_index >= 0) {
+      ICHECK_LT(boundary->target_access_region_index,
+                static_cast<int64_t>(plan->access_regions.size()))
+          << "MaterializationBoundary " << boundary->name
+          << " target_access_region_index out of bounds";
+      ICHECK_EQ(str(plan->access_regions[boundary->target_access_region_index]->subject),
+                str(target_live_value->subject))
+          << "MaterializationBoundary " << boundary->name
+          << " target access subject must match target LiveValue";
+    }
+    ICHECK(!boundary->event_lifetime_kind.empty())
+        << "MaterializationBoundary " << boundary->name << " requires event_lifetime_kind";
+    ICHECK(IsOneOf(str(boundary->event_lifetime_kind),
+                   {"single_event", "multi_event", "loop_carried"}))
+        << "MaterializationBoundary " << boundary->name
+        << " event_lifetime_kind has unsupported value " << boundary->event_lifetime_kind;
+    ICHECK_GE(boundary->min_publish_pages, 1)
+        << "MaterializationBoundary " << boundary->name << " requires min_publish_pages >= 1";
+    ICHECK_GE(boundary->max_consume_pages, boundary->min_publish_pages)
+        << "MaterializationBoundary " << boundary->name
+        << " requires max_consume_pages >= min_publish_pages";
     ValidateNoTTNoun(str(boundary->required_visibility),
                      "MaterializationBoundary required_visibility");
     ValidateNoTTNoun(str(boundary->logical_coverage), "MaterializationBoundary logical_coverage");
     ValidateNoTTNoun(str(boundary->phase_relation), "MaterializationBoundary phase_relation");
+    ValidateNoTTNoun(str(boundary->event_lifetime_kind),
+                     "MaterializationBoundary event_lifetime_kind");
     if (live_edge->requires_full_logical_value) {
       ICHECK_EQ(str(boundary->logical_coverage), "full_logical_value")
           << "MaterializationBoundary " << boundary->name
@@ -716,6 +833,12 @@ void ValidateLiveValueBoundaryObjects(const SpatialPlan& plan,
     ICHECK_EQ(str(boundary->required_visibility), crosses_phase ? "next_phase" : "same_unit")
         << "MaterializationBoundary " << boundary->name
         << " required_visibility must match DataflowEdge phase membership";
+    const std::string expected_lifetime =
+        str(dataflow_edge->kind) == "carry" ? "loop_carried" : (crosses_phase ? "multi_event"
+                                                                              : "single_event");
+    ICHECK_EQ(str(boundary->event_lifetime_kind), expected_lifetime)
+        << "MaterializationBoundary " << boundary->name
+        << " event_lifetime_kind must match dataflow edge lifetime";
   }
 }
 

@@ -1078,6 +1078,31 @@ std::string LiveValueKey(int64_t producer_unit_index, const std::string& subject
   return std::to_string(producer_unit_index) + "|" + subject;
 }
 
+bool AccessRegionReads(const AccessRegion& region) {
+  const std::string access_kind = str(region->access_kind);
+  return access_kind == "read" || access_kind == "read_write" || access_kind == "reduce_read";
+}
+
+bool AccessRegionWrites(const AccessRegion& region) {
+  const std::string access_kind = str(region->access_kind);
+  return access_kind == "write" || access_kind == "read_write" || access_kind == "reduce_write";
+}
+
+int64_t FindAccessRegionIndex(const Array<AccessRegion>& access_regions, int64_t unit_index,
+                              const std::string& subject, bool require_write) {
+  for (int64_t region_index = 0; region_index < static_cast<int64_t>(access_regions.size());
+       ++region_index) {
+    const AccessRegion& region = access_regions[region_index];
+    if (region->unit_index != unit_index || str(region->subject) != subject) {
+      continue;
+    }
+    if (require_write ? AccessRegionWrites(region) : AccessRegionReads(region)) {
+      return region_index;
+    }
+  }
+  return -1;
+}
+
 std::unordered_map<std::string, int64_t> BuildLiveValueIndexByProducerSubject(
     const Array<LiveValue>& live_values) {
   std::unordered_map<std::string, int64_t> index_by_key;
@@ -1100,23 +1125,43 @@ bool HasTrait(const Array<String>& traits, const std::string& trait) {
   return false;
 }
 
+std::string DeriveLiveValueDefinitionKind(const DataflowEdge& edge) {
+  const std::string edge_kind = str(edge->kind);
+  if (edge_kind == "carry" || edge_kind == "join" || edge_kind == "reduction") {
+    return "phi";
+  }
+  return "compute_write";
+}
+
+std::string DeriveLiveValueUseKind(const DataflowEdge& edge) {
+  if (str(edge->kind) == "materialize") {
+    return "materialization_consume";
+  }
+  return "compute_consume";
+}
+
 Array<LiveValue> BuildLiveValues(
     const Array<DataflowEdge>& dataflow_edges, const Array<ExecutionUnit>& execution_units,
+    const Array<AccessRegion>& access_regions,
     const std::unordered_map<std::string, BufferMetadata>& metadata_by_buffer) {
   Array<LiveValue> live_values;
   std::unordered_set<std::string> emitted;
+  std::unordered_map<std::string, int64_t> next_version_by_subject;
 
   auto emit_live_value = [&](const std::string& name_seed, const std::string& subject,
                              const std::string& producer_unit, int64_t producer_unit_index,
-                             std::vector<std::string> traits) {
+                             std::string definition_kind, int64_t defining_access_region_index,
+                             int64_t defining_event_index, std::vector<std::string> traits) {
     const std::string key = LiveValueKey(producer_unit_index, subject);
     if (!emitted.insert(key).second) {
       return;
     }
     const BufferMetadata* metadata = FindBufferMetadata(metadata_by_buffer, subject);
+    const int64_t version_index = next_version_by_subject[subject]++;
     live_values.push_back(LiveValue(
         String("live_" + name_seed), String(subject), String(producer_unit), producer_unit_index,
-        String(DeriveLiveValueRole(metadata)),
+        version_index, String(definition_kind), defining_access_region_index,
+        defining_event_index, String(DeriveLiveValueRole(metadata)),
         metadata == nullptr ? Array<Integer>{} : ToIntegerArray(metadata->shape),
         metadata == nullptr ? String("unknown") : String(metadata->dtype), ToStringArray(traits),
         MakeAnchors("live_value", name_seed)));
@@ -1124,13 +1169,21 @@ Array<LiveValue> BuildLiveValues(
 
   for (int edge_index = 0; edge_index < dataflow_edges.size(); ++edge_index) {
     const DataflowEdge& edge = dataflow_edges[edge_index];
+    if (str(edge->kind) == "materialize") {
+      continue;
+    }
     std::vector<std::string> traits;
     AppendUnique(&traits, str(edge->kind));
     if (edge->crosses_phase) {
       AppendUnique(&traits, "cross_phase");
     }
+    const std::string subject = str(edge->subject);
+    const int64_t defining_access_region_index =
+        FindAccessRegionIndex(access_regions, edge->producer_unit_index, subject,
+                              /*require_write=*/true);
     emit_live_value(str(edge->name), str(edge->subject), str(edge->producer_unit),
-                    edge->producer_unit_index, std::move(traits));
+                    edge->producer_unit_index, DeriveLiveValueDefinitionKind(edge),
+                    defining_access_region_index, edge_index, std::move(traits));
   }
 
   for (int64_t unit_index = 0; unit_index < static_cast<int64_t>(execution_units.size());
@@ -1142,34 +1195,81 @@ Array<LiveValue> BuildLiveValues(
       if (metadata == nullptr || metadata->scope == "global") {
         continue;
       }
+      const int64_t defining_access_region_index =
+          FindAccessRegionIndex(access_regions, unit_index, subject_name, /*require_write=*/true);
       emit_live_value("write_" + subject_name + "_" + std::to_string(unit_index), subject_name,
-                      str(unit->name), unit_index, {"write_value"});
+                      str(unit->name), unit_index, "compute_write", defining_access_region_index,
+                      /*defining_event_index=*/-1, {"write_value"});
     }
   }
   return live_values;
 }
 
+int64_t ResolveSourceLiveValueIndexForEdge(
+    int64_t edge_index, const Array<DataflowEdge>& dataflow_edges,
+    const std::unordered_map<std::string, int64_t>& live_value_index_by_key) {
+  const DataflowEdge& edge = dataflow_edges[edge_index];
+  const std::string subject = str(edge->subject);
+  if (str(edge->kind) == "materialize") {
+    for (int64_t prior_index = edge_index - 1; prior_index >= 0; --prior_index) {
+      const DataflowEdge& prior_edge = dataflow_edges[prior_index];
+      if (str(prior_edge->subject) != subject ||
+          prior_edge->consumer_unit_index != edge->producer_unit_index) {
+        continue;
+      }
+      const std::string reaching_key = LiveValueKey(prior_edge->producer_unit_index, subject);
+      auto reaching_it = live_value_index_by_key.find(reaching_key);
+      if (reaching_it != live_value_index_by_key.end()) {
+        return reaching_it->second;
+      }
+    }
+  }
+  const std::string live_value_key = LiveValueKey(edge->producer_unit_index, subject);
+  auto live_value_index_it = live_value_index_by_key.find(live_value_key);
+  if (live_value_index_it == live_value_index_by_key.end()) {
+    return -1;
+  }
+  return live_value_index_it->second;
+}
+
 Array<LiveValueEdge> BuildLiveValueEdges(const Array<DataflowEdge>& dataflow_edges,
-                                         const Array<LiveValue>& live_values) {
+                                         const Array<LiveValue>& live_values,
+                                         const Array<AccessRegion>& access_regions,
+                                         const std::unordered_map<std::string, std::string>&
+                                             target_subject_by_edge) {
   Array<LiveValueEdge> live_value_edges;
   const std::unordered_map<std::string, int64_t> live_value_index_by_key =
       BuildLiveValueIndexByProducerSubject(live_values);
   for (int edge_index = 0; edge_index < dataflow_edges.size(); ++edge_index) {
     const DataflowEdge& edge = dataflow_edges[edge_index];
-    const std::string live_value_key =
-        LiveValueKey(edge->producer_unit_index, static_cast<std::string>(edge->subject));
-    auto live_value_index_it = live_value_index_by_key.find(live_value_key);
-    ICHECK(live_value_index_it != live_value_index_by_key.end())
+    const int64_t live_value_index =
+        ResolveSourceLiveValueIndexForEdge(edge_index, dataflow_edges, live_value_index_by_key);
+    ICHECK_GE(live_value_index, 0)
         << "BuildLiveValueEdges requires producer live value for DataflowEdge " << edge->name;
-    const int64_t live_value_index = live_value_index_it->second;
     const LiveValue& live_value = live_values[live_value_index];
+    const auto target_subject_it =
+        target_subject_by_edge.find(static_cast<std::string>(edge->name));
+    int64_t target_version_index = live_value->version_index;
+    if (target_subject_it != target_subject_by_edge.end()) {
+      const std::string target_key =
+          LiveValueKey(edge->consumer_unit_index, target_subject_it->second);
+      auto target_live_value_it = live_value_index_by_key.find(target_key);
+      ICHECK(target_live_value_it != live_value_index_by_key.end())
+          << "BuildLiveValueEdges requires target live value for DataflowEdge " << edge->name
+          << " target " << target_subject_it->second;
+      target_version_index = live_values[target_live_value_it->second]->version_index;
+    }
+    const int64_t consumer_access_region_index =
+        FindAccessRegionIndex(access_regions, edge->consumer_unit_index, str(edge->subject),
+                              /*require_write=*/false);
     const bool accepts_distributed_slice = HasTrait(edge->traits, "distributed_slice_consumer");
-    live_value_edges.push_back(
-        LiveValueEdge(String("live_edge_" + str(edge->name)), live_value->name, live_value_index,
-                      edge->name, edge_index, edge->producer_unit, edge->consumer_unit,
-                      edge->producer_unit_index, edge->consumer_unit_index, edge->kind,
-                      !accepts_distributed_slice, accepts_distributed_slice,
-                      MakeAnchors("live_value_edge", str(edge->name))));
+    live_value_edges.push_back(LiveValueEdge(
+        String("live_edge_" + str(edge->name)), live_value->name, live_value_index, edge->name,
+        edge_index, edge->producer_unit, edge->consumer_unit, edge->producer_unit_index,
+        edge->consumer_unit_index, edge->kind, String(DeriveLiveValueUseKind(edge)),
+        consumer_access_region_index, live_value->version_index, target_version_index,
+        !accepts_distributed_slice, accepts_distributed_slice,
+        MakeAnchors("live_value_edge", str(edge->name))));
   }
   return live_value_edges;
 }
@@ -1206,12 +1306,18 @@ Array<MaterializationBoundary> BuildMaterializationBoundaries(
     const bool crosses_phase = edge->crosses_phase;
     const bool distributed_slice = live_value_edge->accepts_distributed_slice &&
                                    !live_value_edge->requires_full_logical_value;
+    const std::string event_lifetime_kind =
+        str(edge->kind) == "carry" ? "loop_carried" : (crosses_phase ? "multi_event"
+                                                                     : "single_event");
     materialization_boundaries.push_back(MaterializationBoundary(
         String("materialization_" + str(edge->name)), source_live_value->name,
         live_value_edge->source_live_value_index, target_live_value->name, target_live_value_index,
         live_value_edge->name, edge_index, String(crosses_phase ? "next_phase" : "same_unit"),
         String(distributed_slice ? "distributed_slice" : "full_logical_value"),
         String(crosses_phase ? "cross_phase" : "same_phase"),
+        source_live_value->defining_access_region_index,
+        target_live_value->defining_access_region_index, String(event_lifetime_kind),
+        /*min_publish_pages=*/1, /*max_consume_pages=*/1,
         MakeAnchors("materialization_boundary", str(edge->name))));
   }
   return materialization_boundaries;
@@ -1317,8 +1423,10 @@ SpatialPlan BuildSpatialPlanForFunc(const std::string& member_func, const tir::P
   const Array<PhasePlan> phase_plans =
       BuildPhasePlans(execution_units, dataflow_edges, unit_phases);
   const Array<LiveValue> live_values =
-      BuildLiveValues(dataflow_edges, execution_units, metadata_by_buffer);
-  const Array<LiveValueEdge> live_value_edges = BuildLiveValueEdges(dataflow_edges, live_values);
+      BuildLiveValues(dataflow_edges, execution_units, access_regions, metadata_by_buffer);
+  const Array<LiveValueEdge> live_value_edges =
+      BuildLiveValueEdges(dataflow_edges, live_values, access_regions,
+                          local_value_flow_edges.target_subject_by_edge);
   const Array<MaterializationBoundary> materialization_boundaries =
       BuildMaterializationBoundaries(dataflow_edges, live_values, live_value_edges,
                                      local_value_flow_edges.target_subject_by_edge);

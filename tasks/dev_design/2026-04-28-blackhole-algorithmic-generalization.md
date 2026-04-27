@@ -629,6 +629,8 @@ Completion gate:
 
 ### Phase C: LiveValueSSA
 
+Status: completed in repo HEAD.
+
 Files:
 
 - modify `spatial_plan.h/.cc`
@@ -655,6 +657,30 @@ Work:
 6. Keep old object names only as compatibility
    projection where needed;
    do not introduce payload fallback.
+
+Implementation notes:
+
+- `LiveValue` now carries
+  `version_index`,
+  `definition_kind`,
+  `defining_access_region_index`,
+  and `defining_event_index`.
+- `LiveValueEdge` now carries
+  `use_kind`,
+  `consumer_access_region_index`,
+  `source_version_index`,
+  and `target_version_index`.
+- `MaterializationBoundary` now carries
+  source/target access-region indices,
+  `event_lifetime_kind`,
+  and publish/consume page bounds.
+- The builder resolves local materialize edges to the reaching source
+  live version instead of treating a consumer-side source as a new
+  definition.  This keeps the fragment-fill -> cast -> publish path from
+  producing stale synthetic source definitions.
+- TT validation now requires version/use/lifetime evidence on
+  `TTLiveFormPlan`, `TTMaterializationPlan`, and
+  `TTConsumerBindingPlan` references back to `SpatialPlan`.
 
 Completion gate:
 

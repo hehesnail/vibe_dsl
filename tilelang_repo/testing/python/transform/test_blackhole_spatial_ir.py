@@ -283,6 +283,10 @@ def _rebuild_live_value_edge(
     producer_unit_index=None,
     consumer_unit_index=None,
     relation_kind=None,
+    use_kind=None,
+    consumer_access_region_index=None,
+    source_version_index=None,
+    target_version_index=None,
     requires_full_logical_value=None,
     accepts_distributed_slice=None,
     anchors=None,
@@ -309,6 +313,16 @@ def _rebuild_live_value_edge(
         if consumer_unit_index is None
         else consumer_unit_index,
         str(edge.relation_kind) if relation_kind is None else relation_kind,
+        str(edge.use_kind) if use_kind is None else use_kind,
+        int(edge.consumer_access_region_index)
+        if consumer_access_region_index is None
+        else consumer_access_region_index,
+        int(edge.source_version_index)
+        if source_version_index is None
+        else source_version_index,
+        int(edge.target_version_index)
+        if target_version_index is None
+        else target_version_index,
         bool(edge.requires_full_logical_value)
         if requires_full_logical_value is None
         else requires_full_logical_value,
@@ -332,6 +346,11 @@ def _rebuild_materialization_boundary(
     required_visibility=None,
     logical_coverage=None,
     phase_relation=None,
+    source_access_region_index=None,
+    target_access_region_index=None,
+    event_lifetime_kind=None,
+    min_publish_pages=None,
+    max_consume_pages=None,
     anchors=None,
 ):
     make_materialization_boundary = tvm.get_global_func("tl.MaterializationBoundary")
@@ -360,6 +379,21 @@ def _rebuild_materialization_boundary(
         if logical_coverage is None
         else logical_coverage,
         str(boundary.phase_relation) if phase_relation is None else phase_relation,
+        int(boundary.source_access_region_index)
+        if source_access_region_index is None
+        else source_access_region_index,
+        int(boundary.target_access_region_index)
+        if target_access_region_index is None
+        else target_access_region_index,
+        str(boundary.event_lifetime_kind)
+        if event_lifetime_kind is None
+        else event_lifetime_kind,
+        int(boundary.min_publish_pages)
+        if min_publish_pages is None
+        else min_publish_pages,
+        int(boundary.max_consume_pages)
+        if max_consume_pages is None
+        else max_consume_pages,
         list(boundary.anchors) if anchors is None else anchors,
     )
 
@@ -716,6 +750,45 @@ def test_task1_spatial_plan_exposes_logical_live_value_boundaries():
     assert str(boundary.required_visibility) == "next_phase"
     assert str(boundary.logical_coverage) == "full_logical_value"
     assert str(boundary.phase_relation) == "cross_phase"
+
+
+def test_algorithmic_live_values_carry_ssa_version_and_boundary_evidence():
+    mod = _prepare_blackhole_phase_b_module(fragment_fill_cast_publish_kernel())
+    plan = mod["main"].attrs["tl.spatial_plan"]
+
+    live_value_by_subject = {str(value.subject): value for value in plan.live_values}
+    assert {"C_local", "D_local"}.issubset(live_value_by_subject)
+    c_live = live_value_by_subject["C_local"]
+    d_live = live_value_by_subject["D_local"]
+
+    assert int(c_live.version_index) >= 0
+    assert int(d_live.version_index) >= 0
+    assert str(c_live.definition_kind) == "compute_write"
+    assert str(d_live.definition_kind) == "compute_write"
+    assert int(c_live.defining_access_region_index) >= 0
+    assert int(d_live.defining_access_region_index) >= 0
+
+    boundary = next(
+        boundary
+        for boundary in plan.materialization_boundaries
+        if str(boundary.source_live_value) == str(c_live.name)
+        and str(boundary.target_live_value) == str(d_live.name)
+    )
+    live_edge = plan.live_value_edges[int(boundary.live_value_edge_index)]
+
+    assert str(live_edge.use_kind) == "materialization_consume"
+    assert int(live_edge.source_version_index) == int(c_live.version_index)
+    assert int(live_edge.target_version_index) == int(d_live.version_index)
+    assert int(live_edge.consumer_access_region_index) >= 0
+    assert int(boundary.source_access_region_index) == int(
+        c_live.defining_access_region_index
+    )
+    assert int(boundary.target_access_region_index) == int(
+        d_live.defining_access_region_index
+    )
+    assert str(boundary.event_lifetime_kind) == "single_event"
+    assert int(boundary.min_publish_pages) == 1
+    assert int(boundary.max_consume_pages) == 1
 
 
 def test_task1_spatial_plan_materialization_boundary_names_target_live_value():
@@ -1309,6 +1382,27 @@ def test_task1_validate_spatial_plan_rejects_live_value_edge_without_source_valu
     broken = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
     with pytest.raises(Exception, match="LiveValueEdge.*source_live_value"):
+        tilelang.transform.ValidateSpatialPlan()(broken)
+
+
+def test_algorithmic_validate_spatial_plan_rejects_live_value_edge_version_mismatch():
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    main = mod["main"]
+    plan = main.attrs["tl.spatial_plan"]
+    invalid_edge = _rebuild_live_value_edge(
+        plan.live_value_edges[0],
+        source_version_index=-1,
+    )
+    invalid_plan = _rebuild_spatial_plan(
+        plan,
+        live_value_edges=[invalid_edge, *list(plan.live_value_edges[1:])],
+    )
+    func = main.with_attr("tl.spatial_plan", invalid_plan).without_attr(
+        "tl.spatial_plan_validated"
+    )
+    broken = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
+
+    with pytest.raises(Exception, match="LiveValueEdge.*source_version_index"):
         tilelang.transform.ValidateSpatialPlan()(broken)
 
 

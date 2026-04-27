@@ -9,12 +9,12 @@
 - Date: `2026-04-28`
 - Active lane: `Blackhole algorithmic generalization implementation queue`
 - Current item:
-  2026-04-28 `Algorithmic generalization Phase B: graph-backed SpatialPlan dependence`
-  completed.  `SpatialPlan` now carries typed `DependenceComponent`
-  SCC diagnostics, and flow/carry/join/materialize dataflow edges are
-  built through the shared dependence graph helper from `AccessRegion`
-  events plus local value-flow evidence.  The next implementation unit is
-  `Algorithmic generalization Phase C: LiveValueSSA`.
+  2026-04-28 `Algorithmic generalization Phase C: LiveValueSSA`
+  completed.  `LiveValue` is now a versioned definition, `LiveValueEdge`
+  carries typed def-use version/use/access evidence, and
+  `MaterializationBoundary` records source/target access plus event
+  lifetime/page bounds.  The next implementation unit is
+  `Algorithmic generalization Phase D: TT live-form solver`.
 - Blocker:
   No blocker remains for Blackhole tile-compute preservation itself.
   Active lowering no longer recovers row-reduction / broadcast /
@@ -67,6 +67,7 @@
 - `Blackhole follow-up task queue refresh`: completed
 - `Algorithmic generalization Phase A AccessRegion foundation`: completed
 - `Algorithmic generalization Phase B graph-backed SpatialPlan dependence`: completed
+- `Algorithmic generalization Phase C LiveValueSSA`: completed
 
 ## Current Support Boundary
 
@@ -129,34 +130,27 @@
   The current schema can express the direction; runtime admission must expand
   through typed `TTProgram -> ExecutableSpec` records, not runtime-only patching.
 - The next refactor lane is now ordered by representation dependency:
-  `LiveValueSSA`, TT live-form solver, tile compute legalizer / DAG
+  TT live-form solver, tile compute legalizer / DAG
   covering, and only then wider runtime admission.  `AccessRegion`
-  and graph-backed `SpatialPlan` dependence are implemented; the remaining
-  items are design-complete but not implemented.
+  graph-backed `SpatialPlan` dependence, and `LiveValueSSA` are implemented;
+  the remaining items are design-complete but not implemented.
 
 ## Next Task Order
 
-1. `Algorithmic generalization Phase C: LiveValueSSA`
-   - Version logical values through `LiveValueSSA`,
-     materialization boundaries, phi/join records, and source/target version
-     references.
-   - Delete any pass-local fallback as soon as the corresponding typed
-     version field feeds downstream planning.
-
-2. `Algorithmic generalization Phase D: TT live-form solver`
+1. `Algorithmic generalization Phase D: TT live-form solver`
    - Add the live-form lattice solver and project solver decisions into
      `TTLiveFormPlan`, `TTMaterializationPlan`, and
      `TTConsumerBindingPlan`.
    - Replace exact-CB/source-live-form pass-local maps where the value
      survives across events or phases.
 
-3. `Tile compute legalizer / DAG covering Phase A-B`
+2. `Tile compute legalizer / DAG covering Phase A-B`
    - Add `TileComputeDAG` read-only dump, pattern schema, and legalizer
      diagnostics for current admitted leaf ops.
    - Keep existing source emission active until the legalizer accepts the
      same admitted compute set.
 
-4. `Tile compute legalizer / DAG covering Phase C-E`
+3. `Tile compute legalizer / DAG covering Phase C-E`
    - Add `TileComputeDAG`, legalization actions, TT-Metal leaf pattern
      covering, fanout/materialization-aware covering, and old branch
      deletion for current admitted compute ops.
@@ -164,26 +158,26 @@
    - Do not let covering output become a pass-to-pass DAG payload or
      source-string protocol.
 
-5. `Multi-block flash-attn direct-runtime admission`
+4. `Multi-block flash-attn direct-runtime admission`
    - Re-admit seq64 / multi-K-step direct runtime only after the
      online-softmax live-form contract is represented and verified through
      typed `TTProgram -> ExecutableSpec` state.
    - Correctness gate remains TT-Sim bf16; compile/source/spec stability
      alone is not runtime admission.
 
-6. `Post-P2 flash-attn wider exact-CB event support`
+5. `Post-P2 flash-attn wider exact-CB event support`
    - Admit larger stage2/block64 shapes only after the exact CB
      multi-page event contract is represented and validated through
      `TTProgram -> ExecutableSpec`.
    - Treat this as event-lifetime admission, not a source emitter patch.
 
-7. `P3 mesh/distributed runtime expansion`
+6. `P3 mesh/distributed runtime expansion`
    - Treat this as a deferred runtime admission lane.
    - Reuse `TTMeshPlan` / `TTBufferDistributionPlan` schema.
    - Add real sharded / multi-device / fabric semantics only through typed
      schema and validator extensions.
 
-8. Post-P2 flash-attn wider-shape support
+7. Post-P2 flash-attn wider-shape support
    - Expand workload scale only after the multi-K-step and multi-page
      event contracts above are admitted.
    - Do not jump straight to 4096.  The intended admission ladder is:
@@ -243,21 +237,32 @@
     materialize-edge constructor from `build_spatial_plan.cc`; the pass now
     orchestrates typed builders.
 
+- `Algorithmic generalization Phase C: LiveValueSSA`
+  - Extended `LiveValue`, `LiveValueEdge`, and
+    `MaterializationBoundary` with typed version, definition/use,
+    access-region, event-lifetime, and page-bound fields.
+  - `BuildSpatialPlan` now resolves local materialize consumers to the
+    reaching source live version instead of inventing a stale same-unit
+    source definition.
+  - Spatial and TTProgram validators require the version/use/lifetime fields;
+    `PlanTTKernelABI` prefers the latest typed live version per subject when
+    it needs a subject-level lookup.
+
 ## Latest Verification
 
-Algorithmic generalization Phase B graph-backed SpatialPlan dependence:
+Algorithmic generalization Phase C LiveValueSSA:
 
 - docs updated:
   `tasks/progress.md`,
   `memory/general_dev.md`,
   and `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
 - tests added:
-  `test_algorithmic_spatial_plan_records_carry_dependence_components`
+  `test_algorithmic_live_values_carry_ssa_version_and_boundary_evidence`
   and
-  `test_algorithmic_validate_spatial_plan_rejects_invalid_dependence_component_edge`
+  `test_algorithmic_validate_spatial_plan_rejects_live_value_edge_version_mismatch`
 - `cmake --build build -j32`
   -> passed
 - `python -m pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
-  -> `39 passed`
+  -> `41 passed`
 - background process scan:
   no lingering `pytest` / `cmake --build` / `ninja` process

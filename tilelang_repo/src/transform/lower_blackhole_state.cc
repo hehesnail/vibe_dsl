@@ -167,6 +167,7 @@ void PlanTTKernelABI::LoadSpatialLiveValueBoundaries(const SpatialPlan& plan) {
   spatial_live_value_by_subject_.clear();
   spatial_materialization_boundary_by_source_target_.clear();
   std::unordered_map<std::string, std::string> subject_by_live_value;
+  std::unordered_map<std::string, int64_t> version_by_subject;
 
   for (int64_t i = 0; i < static_cast<int64_t>(plan->live_values.size()); ++i) {
     const LiveValue& live_value = plan->live_values[i];
@@ -174,7 +175,10 @@ void PlanTTKernelABI::LoadSpatialLiveValueBoundaries(const SpatialPlan& plan) {
     if (subject.empty()) {
       continue;
     }
-    if (spatial_live_value_by_subject_.find(subject) == spatial_live_value_by_subject_.end()) {
+    auto version_it = version_by_subject.find(subject);
+    if (version_it == version_by_subject.end() ||
+        live_value->version_index >= version_it->second) {
+      version_by_subject[subject] = live_value->version_index;
       spatial_live_value_by_subject_[subject] =
           SpatialLiveValueRef{static_cast<std::string>(live_value->name), i};
     }

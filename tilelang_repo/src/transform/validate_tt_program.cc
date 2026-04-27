@@ -382,6 +382,10 @@ void ValidateSpatialLiveReferences(const TTProgram& program, const SpatialPlan& 
         << "TTLiveFormPlan spatial_live_value must match SpatialPlan live_values index";
     ICHECK_EQ(plan->logical_value, live_value->subject)
         << "TTLiveFormPlan logical_value must match SpatialPlan LiveValue subject";
+    ICHECK_GE(live_value->version_index, 0)
+        << "TTLiveFormPlan requires versioned SpatialPlan LiveValue";
+    ICHECK(!live_value->definition_kind.empty())
+        << "TTLiveFormPlan requires SpatialPlan LiveValue definition_kind";
     live_value_name_by_form[static_cast<std::string>(plan->name)] =
         static_cast<std::string>(plan->spatial_live_value);
   }
@@ -395,6 +399,10 @@ void ValidateSpatialLiveReferences(const TTProgram& program, const SpatialPlan& 
             plan->materialization_boundary_index)];
     ICHECK_EQ(plan->materialization_boundary, boundary->name)
         << "TTMaterializationPlan materialization_boundary must match SpatialPlan index";
+    ICHECK(!boundary->event_lifetime_kind.empty())
+        << "TTMaterializationPlan requires SpatialPlan MaterializationBoundary lifetime";
+    ICHECK_GE(boundary->min_publish_pages, 1)
+        << "TTMaterializationPlan requires bounded publish pages";
     auto source_it = live_value_name_by_form.find(static_cast<std::string>(plan->source_live_form));
     ICHECK(source_it != live_value_name_by_form.end())
         << "TTMaterializationPlan source_live_form missing matching TTLiveFormPlan";
@@ -419,6 +427,10 @@ void ValidateSpatialLiveReferences(const TTProgram& program, const SpatialPlan& 
         spatial_plan->live_value_edges[static_cast<size_t>(plan->live_value_edge_index)];
     ICHECK_EQ(plan->live_value_edge, live_edge->name)
         << "TTConsumerBindingPlan live_value_edge must match SpatialPlan index";
+    ICHECK(!live_edge->use_kind.empty())
+        << "TTConsumerBindingPlan requires SpatialPlan LiveValueEdge use_kind";
+    ICHECK_GE(live_edge->source_version_index, 0)
+        << "TTConsumerBindingPlan requires SpatialPlan source version";
     auto source_it = live_value_name_by_form.find(static_cast<std::string>(plan->source_live_form));
     ICHECK(source_it != live_value_name_by_form.end())
         << "TTConsumerBindingPlan source_live_form missing matching TTLiveFormPlan";

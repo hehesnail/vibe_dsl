@@ -1435,3 +1435,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `SpatialPlan.dependence_components`。
   `build_spatial_plan.cc` 不再本地维护 read/write boundary
   matcher 或 materialize edge constructor。
+- 2026-04-28 Algorithmic generalization Phase C
+  已把 `SpatialPlan` live-value surface 改成 versioned SSA 形态：
+  `LiveValue` 带 version / definition / defining access event，
+  `LiveValueEdge` 带 use kind / consumer access / source-target
+  version，
+  `MaterializationBoundary` 带 source-target access /
+  event lifetime / publish-consume page bounds。
+  local materialize edge 的 source 现在解析为 reaching live version；
+  不再把 consumer unit 上的 source buffer 合成一个新的 stale
+  definition。
