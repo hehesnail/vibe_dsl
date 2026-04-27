@@ -9,12 +9,13 @@
 - Date: `2026-04-28`
 - Active lane: `Blackhole algorithmic generalization implementation queue`
 - Current item:
-  2026-04-28 `Algorithmic generalization Phase C: LiveValueSSA`
-  completed.  `LiveValue` is now a versioned definition, `LiveValueEdge`
-  carries typed def-use version/use/access evidence, and
-  `MaterializationBoundary` records source/target access plus event
-  lifetime/page bounds.  The next implementation unit is
-  `Algorithmic generalization Phase D: TT live-form solver`.
+  2026-04-28 `Algorithmic generalization Phase D: TT live-form solver`
+  completed.  Fragment/cast live-form decisions now flow through
+  `tt_live_form_solver` and are projected into typed
+  `TTLiveFormPlan`, `TTMaterializationPlan`, and
+  `TTConsumerBindingPlan` records.  The Algorithmic generalization
+  implementation queue is complete; the next implementation unit is
+  `Tile compute legalizer / DAG covering Phase A-B`.
 - Blocker:
   No blocker remains for Blackhole tile-compute preservation itself.
   Active lowering no longer recovers row-reduction / broadcast /
@@ -68,6 +69,7 @@
 - `Algorithmic generalization Phase A AccessRegion foundation`: completed
 - `Algorithmic generalization Phase B graph-backed SpatialPlan dependence`: completed
 - `Algorithmic generalization Phase C LiveValueSSA`: completed
+- `Algorithmic generalization Phase D TT live-form solver`: completed
 
 ## Current Support Boundary
 
@@ -130,27 +132,20 @@
   The current schema can express the direction; runtime admission must expand
   through typed `TTProgram -> ExecutableSpec` records, not runtime-only patching.
 - The next refactor lane is now ordered by representation dependency:
-  TT live-form solver, tile compute legalizer / DAG
-  covering, and only then wider runtime admission.  `AccessRegion`
-  graph-backed `SpatialPlan` dependence, and `LiveValueSSA` are implemented;
-  the remaining items are design-complete but not implemented.
+  tile compute legalizer / DAG covering, and only then wider runtime
+  admission.  `AccessRegion`, graph-backed `SpatialPlan` dependence,
+  `LiveValueSSA`, and the first TT live-form solver are implemented; the
+  remaining items are design-complete but not implemented.
 
 ## Next Task Order
 
-1. `Algorithmic generalization Phase D: TT live-form solver`
-   - Add the live-form lattice solver and project solver decisions into
-     `TTLiveFormPlan`, `TTMaterializationPlan`, and
-     `TTConsumerBindingPlan`.
-   - Replace exact-CB/source-live-form pass-local maps where the value
-     survives across events or phases.
-
-2. `Tile compute legalizer / DAG covering Phase A-B`
+1. `Tile compute legalizer / DAG covering Phase A-B`
    - Add `TileComputeDAG` read-only dump, pattern schema, and legalizer
      diagnostics for current admitted leaf ops.
    - Keep existing source emission active until the legalizer accepts the
      same admitted compute set.
 
-3. `Tile compute legalizer / DAG covering Phase C-E`
+2. `Tile compute legalizer / DAG covering Phase C-E`
    - Add `TileComputeDAG`, legalization actions, TT-Metal leaf pattern
      covering, fanout/materialization-aware covering, and old branch
      deletion for current admitted compute ops.
@@ -158,26 +153,26 @@
    - Do not let covering output become a pass-to-pass DAG payload or
      source-string protocol.
 
-4. `Multi-block flash-attn direct-runtime admission`
+3. `Multi-block flash-attn direct-runtime admission`
    - Re-admit seq64 / multi-K-step direct runtime only after the
      online-softmax live-form contract is represented and verified through
      typed `TTProgram -> ExecutableSpec` state.
    - Correctness gate remains TT-Sim bf16; compile/source/spec stability
      alone is not runtime admission.
 
-5. `Post-P2 flash-attn wider exact-CB event support`
+4. `Post-P2 flash-attn wider exact-CB event support`
    - Admit larger stage2/block64 shapes only after the exact CB
      multi-page event contract is represented and validated through
      `TTProgram -> ExecutableSpec`.
    - Treat this as event-lifetime admission, not a source emitter patch.
 
-6. `P3 mesh/distributed runtime expansion`
+5. `P3 mesh/distributed runtime expansion`
    - Treat this as a deferred runtime admission lane.
    - Reuse `TTMeshPlan` / `TTBufferDistributionPlan` schema.
    - Add real sharded / multi-device / fabric semantics only through typed
      schema and validator extensions.
 
-7. Post-P2 flash-attn wider-shape support
+6. Post-P2 flash-attn wider-shape support
    - Expand workload scale only after the multi-K-step and multi-page
      event contracts above are admitted.
    - Do not jump straight to 4096.  The intended admission ladder is:
@@ -248,21 +243,34 @@
     `PlanTTKernelABI` prefers the latest typed live version per subject when
     it needs a subject-level lookup.
 
+- `Algorithmic generalization Phase D: TT live-form solver`
+  - Added `tt_live_form_solver.{h,cc}` as the owner for fragment/cast
+    live-form transfer decisions.
+  - `PlanTTKernelABI` now requests solver decisions and projects them into
+    `TTLiveFormPlan`, `TTMaterializationPlan`, and
+    `TTConsumerBindingPlan` instead of hard-coding physical form and
+    ownership literals in the pass.
+  - The seq64 flash-attn direct-runtime metadata gate still fails closed with
+    the typed multi-block exact-CB unsupported reason; no runtime-only
+    source-live-form patch was added.
+
 ## Latest Verification
 
-Algorithmic generalization Phase C LiveValueSSA:
+Algorithmic generalization Phase D TT live-form solver:
 
 - docs updated:
   `tasks/progress.md`,
   `memory/general_dev.md`,
   and `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
 - tests added:
-  `test_algorithmic_live_values_carry_ssa_version_and_boundary_evidence`
-  and
-  `test_algorithmic_validate_spatial_plan_rejects_live_value_edge_version_mismatch`
+  `test_algorithmic_live_form_solver_owns_tt_live_form_decision_literals`
 - `cmake --build build -j32`
   -> passed
+- `python -m pytest -q testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_exposes_typed_live_form_owner_truth testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_tt_plans_reference_spatial_live_boundaries testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plans`
+  -> `3 passed`
+- `python -m pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py::test_blackhole_flash_attention_seq64_bf16_metadata_gates_multi_block_direct_runtime`
+  -> `1 passed`
 - `python -m pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
-  -> `41 passed`
+  -> `42 passed`
 - background process scan:
   no lingering `pytest` / `cmake --build` / `ninja` process

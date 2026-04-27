@@ -1406,6 +1406,15 @@ def test_algorithmic_validate_spatial_plan_rejects_live_value_edge_version_misma
         tilelang.transform.ValidateSpatialPlan()(broken)
 
 
+def test_algorithmic_live_form_solver_owns_tt_live_form_decision_literals():
+    hits = _source_tree_rg(
+        r"thread_distributed_slice|cb_materialized_tile|"
+        r"producer_thread_lane|materialized_cb_pages",
+        "tilelang_repo/src/transform/lower_blackhole_state.cc",
+    )
+    assert hits == []
+
+
 def test_task1_validate_spatial_plan_rejects_materialization_without_target_value():
     mod = _prepare_blackhole_phase_b_module(fragment_fill_cast_publish_kernel())
     main = mod["main"]

@@ -1445,3 +1445,18 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   local materialize edge 的 source 现在解析为 reaching live version；
   不再把 consumer unit 上的 source buffer 合成一个新的 stale
   definition。
+- 2026-04-28 Algorithmic generalization Phase D
+  已添加 `tt_live_form_solver.{h,cc}`。
+  fragment/cast live-form transfer 的 physical form、
+  topology、
+  ownership、
+  materialization/publication protocol
+  和 consumer slice/full-tile requirement
+  现在由 solver request/result 决定，
+  `PlanTTKernelABI` 只把 solver 结果投影成 typed
+  `TTLiveFormPlan` /
+  `TTMaterializationPlan` /
+  `TTConsumerBindingPlan`。
+  seq64 / multi-K-step flash-attn direct runtime 仍通过 typed
+  unsupported-reason metadata fail closed；
+  这轮没有做 runtime-only source-live-form patch。

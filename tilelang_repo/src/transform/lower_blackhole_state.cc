@@ -26,6 +26,7 @@
 
 #include "../op/utils.h"
 #include "common/blackhole_utils.h"
+#include "common/tt_live_form_solver.h"
 
 #include <tvm/tir/op.h>
 #include <tvm/tir/stmt_functor.h>
@@ -208,7 +209,10 @@ void PlanTTKernelABI::LoadSpatialLiveValueBoundaries(const SpatialPlan& plan) {
                                           target_live_value,
                                           boundary->target_live_value_index,
                                           static_cast<std::string>(boundary->live_value_edge),
-                                          boundary->live_value_edge_index};
+                                          boundary->live_value_edge_index,
+                                          static_cast<std::string>(boundary->event_lifetime_kind),
+                                          boundary->min_publish_pages,
+                                          boundary->max_consume_pages};
   }
 }
 
@@ -419,6 +423,22 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
                                                      source_boundary_ref->source_live_value_index};
   SpatialLiveValueRef boundary_target_live_value_ref{source_boundary_ref->target_live_value,
                                                      source_boundary_ref->target_live_value_index};
+  const TTLiveFormSolverResult live_form_solution = SolveFragmentCastLiveFormTransition(
+      TTLiveFormSolverRequest{source_name,
+                              target_name,
+                              boundary_source_live_value_ref.name,
+                              boundary_source_live_value_ref.index,
+                              boundary_target_live_value_ref.name,
+                              boundary_target_live_value_ref.index,
+                              source_local_extent,
+                              target_local_extent,
+                              logical_element_count,
+                              source_boundary_ref->event_lifetime_kind,
+                              source_boundary_ref->min_publish_pages,
+                              source_boundary_ref->max_consume_pages,
+                              fact.bridge_kind,
+                              fact.materialization_kind,
+                              publication_protocol});
 
   auto has_live_form = [&](const std::string& name) {
     for (const TTLiveFormPlan& plan : tt_live_form_plans_) {
@@ -428,27 +448,23 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
     }
     return false;
   };
-  auto push_live_form = [&](const std::string& logical_value, const std::string& physical_form,
-                            int64_t physical_local_extent, const char* ownership_kind,
-                            const SpatialLiveValueRef& spatial_live_value) {
-    const std::string name = "live_form_" + logical_value;
+  auto push_live_form = [&](const TTLiveFormValueDecision& decision) {
+    const std::string name = "live_form_" + decision.logical_value;
     if (has_live_form(name)) {
       return;
     }
     tt_live_form_plans_.push_back(TTLiveFormPlan(
-        String(name), String(logical_value), String(spatial_live_value.name),
-        spatial_live_value.index, String(kernel_name), String(physical_form),
-        String("thread_distributed"), physical_local_extent, logical_element_count,
-        String(ownership_kind)));
+        String(name), String(decision.logical_value), String(decision.spatial_live_value),
+        decision.spatial_live_value_index, String(kernel_name), String(decision.physical_form),
+        String(decision.execution_topology), decision.physical_local_extent,
+        decision.logical_element_count, String(decision.ownership_kind)));
   };
 
-  push_live_form(source_name, "thread_distributed_slice", source_local_extent,
-                 "producer_thread_lane", boundary_source_live_value_ref);
-  push_live_form(target_name, "cb_materialized_tile", target_local_extent,
-                 "materialized_cb_pages", boundary_target_live_value_ref);
+  push_live_form(live_form_solution.source_value);
+  push_live_form(live_form_solution.target_value);
 
-  const std::string source_live_form = "live_form_" + source_name;
-  const std::string produced_live_form = "live_form_" + target_name;
+  const std::string source_live_form = live_form_solution.materialization.source_live_form;
+  const std::string produced_live_form = live_form_solution.materialization.produced_live_form;
   const std::string materialization_name = "materialize_" + source_name + "_to_" + target_name;
   bool has_materialization = false;
   for (const TTMaterializationPlan& plan : tt_materialization_plans_) {
@@ -462,12 +478,12 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
     Array<Integer> required_sync_indices;
     tt_materialization_plans_.push_back(TTMaterializationPlan(
         String(materialization_name), String(source_live_form), String(source_boundary_ref->name),
-        source_boundary_ref->index, String(target_name), String(), String(kernel_name),
-        String(fact.bridge_kind),
-        String(fact.materialization_kind),
-        String(buffer_materialization::kCBRepublish), String(publication_protocol),
-        required_cb_indices, required_sync_indices,
-        String(produced_live_form)));
+        source_boundary_ref->index, String(live_form_solution.materialization.target_buffer),
+        String(), String(kernel_name), String(live_form_solution.materialization.bridge_kind),
+        String(live_form_solution.materialization.materialization_kind),
+        String(live_form_solution.materialization.materialization_protocol),
+        String(live_form_solution.materialization.publication_protocol), required_cb_indices,
+        required_sync_indices, String(produced_live_form)));
   }
 
   const std::string binding_name = "consume_" + source_name + "_as_cast_fragment_slice";
@@ -482,8 +498,10 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
     tt_consumer_binding_plans_.push_back(TTConsumerBindingPlan(
         String(binding_name), String(kernel_name), String("cast_fragment_slice"),
         String(source_live_form), String(source_boundary_ref->live_value_edge),
-        source_boundary_ref->live_value_edge_index, /*accepts_distributed_slice=*/true,
-        /*requires_full_logical_tile=*/false, /*abi_plan_index=*/-1, String(target_name),
+        source_boundary_ref->live_value_edge_index,
+        live_form_solution.consumer.accepts_distributed_slice,
+        live_form_solution.consumer.requires_full_logical_tile, /*abi_plan_index=*/-1,
+        String(target_name),
         String(materialization_name)));
   }
 }

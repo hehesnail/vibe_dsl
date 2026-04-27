@@ -235,6 +235,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     int64_t target_live_value_index = -1;
     std::string live_value_edge;
     int64_t live_value_edge_index = -1;
+    std::string event_lifetime_kind;
+    int64_t min_publish_pages = 0;
+    int64_t max_consume_pages = 0;
   };
 
   /*! \brief Get CB configuration from function attributes */

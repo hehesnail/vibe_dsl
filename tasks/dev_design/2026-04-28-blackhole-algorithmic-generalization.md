@@ -692,6 +692,10 @@ Completion gate:
 
 ### Phase D: Live-Form Solver And Runtime Admission
 
+Status: completed in repo HEAD for the current fragment/cast live-form
+transfer surface.  Wider flash-attn runtime admission remains a later
+runtime support lane, not part of this phase completion.
+
 Files:
 
 - create `tilelang_repo/src/transform/common/tt_live_form_solver.h`
@@ -713,6 +717,26 @@ Work:
 4. Keep pass-local caches only as derived implementation state.
 5. Admit multi-block flash-attn only after solver evidence
    is visible in typed `TTProgram -> ExecutableSpec`.
+
+Implementation notes:
+
+- Added `tt_live_form_solver.{h,cc}` with typed request/result structs for
+  fragment/cast live-form transitions.
+- `PlanTTKernelABI` now delegates physical form,
+  topology,
+  ownership,
+  materialization protocol,
+  publication protocol,
+  and consumer full/slice requirements to the solver result before
+  constructing `TTLiveFormPlan`,
+  `TTMaterializationPlan`,
+  and `TTConsumerBindingPlan`.
+- Pass-local maps remain only as implementation caches for CB/order state.
+  The solver-visible inputs come from typed `SpatialPlan`
+  live values and materialization boundaries.
+- Seq64 / multi-K-step flash-attn remains outside direct-runtime
+  admission and still fails closed through the typed direct-runtime
+  unsupported-reason metadata gate.
 
 Completion gate:
 
