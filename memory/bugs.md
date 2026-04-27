@@ -90,6 +90,50 @@
     multi-page publish/consume event
     仍需后续 typed contract
 
+### Blackhole tile compute 不能先 scalar expand 再靠 late matcher 恢复
+
+- **现象**:
+  - P2.2/P2.3 为了 admit flash-attn，
+    在 `lower_blackhole_ops.cc`
+    中从 post-`LowerTileOp`
+    scalar loop / local expression
+    恢复 row reduction、
+    broadcast、
+    exp2 affine、
+    scalar max/fma/copy/fill/cast
+    等 TT-Metal compute sequence
+- **根因**:
+  - Blackhole 是 tile-based compute target；
+    TT-Metal 已经以 `matmul_tiles`、
+    `reduce_tile`、
+    `add_tiles`、
+    `mul_tiles`、
+    `*_bcast_rows/cols`、
+    `exp2_tile`、
+    `copy_tile`、
+    `pack_tile`、
+    `tilize_block`、
+    `untilize_block`
+    等 leaf API 表达 compute semantics
+  - generic scalar lowering
+    在 exact builtin selection 前破坏这些语义，
+    后段 matcher 被迫重新从 scalar idiom
+    猜回 tile compute intent
+- **当前结论**:
+  - 这是通用架构债务，
+    不是 reduce-only
+    或 flash-attn-only 问题
+  - 后续实现必须按
+    `tasks/dev_design/2026-04-27-blackhole-tile-compute-preservation.md`
+    把 TT-Metal API 粒度 tile compute semantics
+    上移到 `Normalized Tile TIR`
+    preservation / normalization
+  - `softmax` /
+    `exp2_affine` /
+    `row_broadcast_exp2_affine`
+    等 composite helper
+    不能进入生产 compute op 协议
+
 ## 2. 已解决但值得记住的模式
 
 ### pre-opt `SpatialPlan` 只能作为 typed layout merge source，不能整份替换 optimized plan

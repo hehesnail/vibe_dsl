@@ -7,14 +7,15 @@
 ## Status
 
 - Date: `2026-04-27`
-- Active lane: `P2 flash-attn direct runtime admission`
+- Active lane: `Blackhole tile-compute preservation design`
 - Current item:
-  `P2 complete; next lane is P3 mesh/distributed runtime expansion`
+  `2026-04-27 Blackhole tile compute preservation design recorded; next implementation lane should move TT-Metal API-grain compute semantics upstream before wider P2/P3 admission work`
 - Blocker:
   No P2 blocker remains for the admitted bf16 flash-attn direct-runtime
-  surface.  Larger stage2/block64 flash-attn shapes that require a
-  multi-page publish/consume event remain an explicit post-P2 support-surface
-  backlog, not a seq64 P2.3 blocker.
+  surface.  The current architectural blocker is that P2.2/P2.3 still rely
+  on late scalar-loop idiom recovery for TT-Metal API-grain tile compute
+  semantics.  That debt is generic across matmul/reduce/unary/binary/
+  broadcast/copy/pack/tilize/untilize leaf APIs, not a reduce-only issue.
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -82,6 +83,15 @@
 
 ## Open Debt
 
+- P2.2/P2.3 admitted flash-attn through late TIR idiom recovery in
+  `lower_blackhole_ops.cc`.
+  That path currently recovers row reduction, broadcast, exp2 affine,
+  scalar max/fma/copy/fill/cast shapes after generic scalar lowering.
+  It must be replaced by upstream preservation / normalization of
+  TT-Metal API-grain tile compute semantics in `Normalized Tile TIR`.
+  Composite/workload helper names such as `softmax`, `exp2_affine`,
+  `row_broadcast_exp2_affine`, or `scalar_exp2_affine` must not become
+  production compute op grain.
 - Larger flash-attn stage2/block64 shapes still need a wider exact-CB
   live-form admission for single events that publish/consume multiple pages.
   That expansion must continue through typed
@@ -92,13 +102,26 @@
 
 ## Next Task Order
 
-1. `P3 mesh/distributed runtime expansion`
+1. `Blackhole tile-compute preservation`
+   - Implement
+     `tasks/dev_design/2026-04-27-blackhole-tile-compute-preservation.md`.
+   - Move TT-Metal API-grain tile compute semantics upstream into
+     `Normalized Tile TIR` preservation / normalization before destructive
+     scalar expansion.
+   - Delete or make unreachable the P2.2/P2.3 late scalar-loop idiom
+     recovery path as each compute family is migrated.
+   - Scope is generic:
+     matmul / reduce / unary / binary / broadcast / copy / pack /
+     tilize / untilize,
+     not reduce-only and not flash-attn-specific.
+
+2. `P3 mesh/distributed runtime expansion`
    - Treat this as a later runtime admission lane.
    - Reuse `TTMeshPlan` / `TTBufferDistributionPlan` schema.
    - Add real sharded / multi-device / fabric semantics only through typed
      schema and validator extensions.
 
-2. Post-P2 flash-attn wider-shape support
+3. Post-P2 flash-attn wider-shape support
    - Admit larger stage2/block64 shapes only after the exact CB
      multi-page event contract is represented and validated through
      `TTProgram -> ExecutableSpec`.

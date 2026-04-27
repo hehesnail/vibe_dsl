@@ -75,6 +75,34 @@ payload family
 或 builtin 序列
 补回 compute truth。
 
+`2026-04-27`
+tile compute preservation
+边界再固定一条：
+Blackhole 的 compute ops
+集合按 TT-Metal API 粒度定义。
+凡是 TT-Metal 以 tile compute API
+直接表达的语义
+（matmul / reduce / unary / binary /
+broadcast / copy / pack /
+tilize / untilize 等），
+必须在
+`Normalized Tile TIR`
+中保留或规范化，
+不能先被 generic scalar lowering
+展开后再由
+`lower_blackhole_ops.cc`
+late TIR idiom matcher
+恢复。
+`softmax` /
+`exp2_affine` /
+`row_broadcast_exp2_affine`
+这类 workload/composite helper
+不是生产 compute op 粒度，
+不能进入
+`TTComputeOpPlan.operation_name`
+或
+`KernelSpec.compute_ops`。
+
 `2026-04-25`
 compatibility fallback
 收束后，
@@ -194,6 +222,32 @@ Normalized Tile TIR
 - region/subscript
 - loop-carried / dataflow structure
 - tile-op 参数
+
+对 Blackhole target，
+TT-Metal API 粒度的 tile compute semantics
+也必须在这一层保留或规范化：
+matmul、
+reduce、
+unary、
+binary、
+broadcast、
+copy、
+pack、
+tilize、
+untilize
+等 leaf API 语义
+不能先展开成 scalar loop /
+local expression
+后再由后段按 workload idiom
+恢复。
+如果某个 tile expression
+需要拆成多个 TT-Metal leaf API，
+这个 decomposition
+也属于当前层的结构化 normalization，
+不是
+`TTProgram`
+或 runtime/codegen
+的 semantic recovery。
 
 只要信息还能由 TIR 稳定表达，
 就不允许为下游再造一份旁路语义表示。

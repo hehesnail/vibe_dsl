@@ -27,6 +27,15 @@ Blackhole 后端这轮 rewrite 的根因
 1. **compute-side exact builtin 选择放得太晚**
    - tile op、layout、真实 `BufferLoad / BufferStore`
      的语义边界已经被打碎
+   - TT-Metal API 粒度的 tile compute semantics
+     （matmul / reduce / unary / binary /
+     broadcast / copy / pack /
+     tilize / untilize 等）
+     被 generic scalar lowering
+     提前破坏或隐藏，
+     迫使后段用 late matcher
+     从 scalar loop / local expression
+     中恢复 compute intent
 2. **`SpatialPlan` 这层显式表示没有真正立起来**
    - 当前中间层过薄，
      无法稳定承接
@@ -173,6 +182,22 @@ Normalized Tile TIR
   tile op / layout /
   真实 `BufferLoad / BufferStore`
   语义时建立
+- Blackhole target
+  的 TT-Metal API 粒度 tile compute semantics
+  必须在这一层保留或规范化；
+  这覆盖 matmul / reduce / unary /
+  binary / broadcast / copy / pack /
+  tilize / untilize
+  等通用 leaf API 粒度，
+  不是 reduce 或 flash-attn 专项例外
+- local tile expression
+  如果需要拆成多个 TT-Metal leaf API，
+  decomposition
+  必须基于 IR 结构、类型、region、axis
+  在当前层完成；
+  不允许在后段按 workload 名 /
+  buffer 名 /
+  scalar loop 形态恢复语义
 - 这里的
   selected exact-builtin compute IR
   只是当前 `Normalized Tile TIR`

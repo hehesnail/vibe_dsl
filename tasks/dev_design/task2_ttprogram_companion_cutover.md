@@ -139,6 +139,8 @@ target planning
 - anchored sub-TIR
 - 当前层已经建立好的
   compute-side exact builtin-selected IR
+  或显式保留 / 规范化的
+  Blackhole tile compute semantics
 - `TTHardwareModel`
 - validate 后的 target hints
 
@@ -149,6 +151,14 @@ target planning
   “exact TT-Metal builtin legality
    已经在当前 TIR 上成立”
   这个前置条件
+- 这个前置条件必须来自
+  `Normalized Tile TIR`
+  中显式存在的 tile compute semantics
+  或 selected TIR call，
+  而不是从 scalar loop /
+  source string /
+  workload helper
+  恢复出来的结论
 - 但这个前置条件
   不是 `TTProgram`
   自己创建的

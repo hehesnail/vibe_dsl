@@ -78,6 +78,28 @@
   `ExecutableSpec`
   只负责 leaf projection /
   runtime-module build contract
+- 对 Blackhole 这类 tile-based compute target，
+  TT-Metal API 粒度的 tile compute semantics
+  必须在
+  `Normalized Tile TIR`
+  中保留或规范化。
+  这包括 matmul / reduce / unary /
+  binary / broadcast / copy / pack /
+  tilize / untilize
+  等通用 leaf API 粒度，
+  不是 reduce 或 flash-attn 专项例外。
+  不要先 scalar-expand
+  再在后段按 workload idiom
+  恢复 compute DAG。
+- `TTComputeOpPlan.operation_name`
+  和 executable compute ops
+  应保持 TT-Metal leaf API 粒度。
+  `softmax` /
+  `exp2_affine` /
+  `row_broadcast_exp2_affine`
+  这类 composite/helper 名
+  只能是历史债务或调试描述，
+  不能成为生产协议。
 - 任何需要跨 pass 保留、
   且不能从当前层重新推出的事实，
   都应进入当前层显式对象；
