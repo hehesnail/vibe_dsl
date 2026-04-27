@@ -1309,3 +1309,19 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 如果开 `TT_METAL_WATCHER` 后症状从 hang 变成 `SIGABRT` 或只在 dump 期间卡住，
   先抓 native backtrace；问题可能在 `WatcherServer` 线程，而不是 direct runtime 主链
 - 需要保留 watcher 现场但避免立即 abort 时，可临时开 `TT_METAL_WATCHER_TEST_MODE=1`
+- Blackhole tile-compute preservation 之后，
+  `lower_blackhole_ops.cc`
+  的瘦身应按 implementation responsibility
+  拆文件 / helper，
+  不新增 IR 层或 side-channel。
+  explicit preserved tile compute lowering
+  已拆到
+  `lower_blackhole_tile_compute.cc`；
+  后续候选是 exact-CB materialization、
+  ABI/accessor encoding、
+  staged transport/source emission。
+  `lower_tile_op.cc`
+  还有重复的 Blackhole tile compute normalization，
+  后续应集中成单一实现面，
+  继续产出显式
+  `tl.tileop.blackhole_compute`。

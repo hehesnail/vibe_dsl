@@ -17,6 +17,7 @@
 6. `tasks/progress.md`
 7. `2026-04-23-blackhole-live-form-materialization-admission.md`
 8. `2026-04-27-blackhole-tile-compute-preservation.md`
+9. `2026-04-27-blackhole-post-preservation-pass-shrink.md`
 
 当前 support surface / workload payoff lane
 的任务级设计固定为：
@@ -49,6 +50,21 @@
     后续不能重新作为 guard /
     wrapper /
     compatibility shell 引入
+
+当前 post-preservation pass shrink lane
+的任务级设计记录为：
+
+- `2026-04-27-blackhole-post-preservation-pass-shrink.md`
+  - 定义 tile-compute preservation 完成后
+    `lower_blackhole_ops.cc`
+    的责任缩小边界
+  - 只允许 implementation split /
+    pass-local helper reuse，
+    不引入新的长期 IR 层或 side-channel
+  - 记录其他 heavy mixed-responsibility pass
+    的后续候选，
+    尤其是 `lower_tile_op.cc`
+    中重复的 Blackhole tile compute normalization
 
 额外参考：
 
@@ -100,6 +116,7 @@ pass 名字、helper、bag、payload、bridge attr
 | `task3_runtime_gate_and_workload_cutover.md` | `ExecutableSpec / leaf reader` 合同文档；定义 leaf reader 纪律、direct runtime 与 codegen/export backend 分离、workload 恢复顺序与完成判据 |
 | `2026-04-23-blackhole-live-form-materialization-admission.md` | cleanup 之后 support surface lane 的任务级设计；定义 live-form / materialization owner truth、admission 顺序和禁止的 runtime-only patch |
 | `2026-04-27-blackhole-tile-compute-preservation.md` | Blackhole tile compute preservation lane 的完成记录；定义 TT-Metal API 粒度 compute semantics 在 `Normalized Tile TIR` 的保留 / 规范化边界和 late matcher 删除边界 |
+| `2026-04-27-blackhole-post-preservation-pass-shrink.md` | tile-compute preservation 之后的实现瘦身 lane；定义 `lower_blackhole_ops.cc` 拆分边界、helper 复用纪律和后续 heavy pass audit 候选 |
 | `blackhole_first_principles_protocol_audit.md` | 删除/迁移表；列出现存 fake/legacy protocol 的表示层落点、validator 和 disposition |
 
 ### Runtime / mesh / distributed 调研索引
