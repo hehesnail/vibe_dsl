@@ -771,7 +771,6 @@ void CodeGenBlackhole::EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f) {
   cb_num_pages_by_requirement_name_.clear();
   cb_publish_pages_by_requirement_name_.clear();
   cb_initial_reserve_pages_by_requirement_name_.clear();
-
   auto cb_configs = GetCBConfigsForCodegen(f);
   if (!cb_configs.empty()) {
     for (const auto &item : cb_configs) {
@@ -1146,6 +1145,11 @@ int CodeGenBlackhole::ResolveCBId(const tvm::PrimExpr &expr) const {
 
 void CodeGenBlackhole::PrintResolvedCBId(const tvm::PrimExpr &expr, std::ostream &os) const {
   os << ResolveCBId(expr);
+}
+
+void CodeGenBlackhole::PrintPackReconfigDataFormatForCB(int cb_id, std::ostream& os) {
+  need_compute_api_h_ = true;
+  os << "pack_reconfig_data_format<true>(" << cb_id << ")";
 }
 
 int CodeGenBlackhole::GetCBPageSize(int cb_id) const {
@@ -1875,32 +1879,26 @@ bool CodeGenBlackhole::HandleBlackholeBuiltin(const tvm::tir::CallNode *op,
   } else if (builtin_name == "add_fragment_from_cb_front") {
     PrintAddFragmentFromCBFront(op, os);
     return true;
-  } else if (builtin_name == "write_local_slice_to_cb" ||
-             builtin_name == "pack_untilize_slice") {
-    PrintWriteLocalSliceToCB(op, os);
+  } else if (builtin_name == "pack_untilize_slice") {
+    PrintPackUntilizeSlice(op, os);
     return true;
-  } else if (builtin_name == "write_local_fragment_tile_to_cb" ||
-             builtin_name == "pack_untilize_tile") {
-    PrintWriteLocalFragmentTileToCB(op, os);
+  } else if (builtin_name == "pack_untilize_tile") {
+    PrintPackUntilizeTile(op, os);
     return true;
-  } else if (builtin_name == "write_local_fragment_slice_to_tiled_cb" ||
-             builtin_name == "tilize_local_fragment_slice") {
-    PrintWriteLocalFragmentSliceToTiledCB(op, os);
+  } else if (builtin_name == "tilize_local_fragment_slice") {
+    PrintTilizeLocalFragmentSlice(op, os);
     return true;
-  } else if (builtin_name == "cast_fragment_slice_to_tiled_cb" ||
-             builtin_name == "tilize_cast_fragment_slice") {
-    PrintCastFragmentSliceToTiledCB(op, os);
+  } else if (builtin_name == "tilize_cast_fragment_slice") {
+    PrintTilizeCastFragmentSlice(op, os);
     return true;
   } else if (builtin_name == "pack_fill_fragment_to_tiled_cb") {
     PrintPackFillFragmentToTiledCB(op, os);
     return true;
-  } else if (builtin_name == "read_cb_front_tile_to_local" ||
-             builtin_name == "untilize_cb_front_tile") {
-    PrintReadCBFrontTileToLocal(op, os);
+  } else if (builtin_name == "untilize_cb_front_tile") {
+    PrintUntilizeCBFrontTile(op, os);
     return true;
-  } else if (builtin_name == "read_cb_front_tile_to_local_fragment" ||
-             builtin_name == "untilize_cb_front_tile_fragment") {
-    PrintReadCBFrontTileToLocalFragment(op, os);
+  } else if (builtin_name == "untilize_cb_front_tile_fragment") {
+    PrintUntilizeCBFrontTileFragment(op, os);
     return true;
   } else if (builtin_name == "cast_fragment_slice") {
     PrintCastFragmentSlice(op, os);
@@ -2193,12 +2191,9 @@ void CodeGenBlackhole::PrintPackTile(const tvm::tir::CallNode *op,
 
 void CodeGenBlackhole::PrintPackReconfigDataFormat(const tvm::tir::CallNode* op,
                                                    std::ostream& os) {
-  need_compute_api_h_ = true;
   ICHECK_EQ(op->args.size(), 1)
       << "tl.blackhole.pack_reconfig_data_format expects 1 argument";
-  os << "pack_reconfig_data_format(";
-  PrintResolvedCBId(op->args[0], os);
-  os << ")";
+  PrintPackReconfigDataFormatForCB(ResolveCBId(op->args[0]), os);
 }
 
 void CodeGenBlackhole::PrintCopyTileToDstInitShort(const tvm::tir::CallNode* op,
@@ -2238,11 +2233,16 @@ void CodeGenBlackhole::PrintCopyTile(const tvm::tir::CallNode* op,
 void CodeGenBlackhole::PrintAddTilesInit(const tvm::tir::CallNode* op,
                                          std::ostream& os) {
   need_compute_api_h_ = true;
-  ICHECK_EQ(op->args.size(), 2) << "tl.blackhole.add_tiles_init expects 2 arguments";
+  ICHECK(op->args.size() == 2 || op->args.size() == 3)
+      << "tl.blackhole.add_tiles_init expects 2 or 3 arguments";
   os << "add_tiles_init(";
   PrintResolvedCBId(op->args[0], os);
   os << ", ";
   PrintResolvedCBId(op->args[1], os);
+  if (op->args.size() == 3) {
+    os << ", ";
+    PrintExpr(op->args[2], os);
+  }
   os << ")";
 }
 
@@ -2470,13 +2470,20 @@ void CodeGenBlackhole::PrintBinaryMaxTileInit(const tvm::tir::CallNode* op,
 void CodeGenBlackhole::PrintBinaryMaxTile(const tvm::tir::CallNode* op,
                                           std::ostream& os) {
   need_compute_api_h_ = true;
-  ICHECK_EQ(op->args.size(), 3) << "tl.blackhole.binary_max_tile expects 3 arguments";
+  ICHECK(op->args.size() == 3 || op->args.size() == 4)
+      << "tl.blackhole.binary_max_tile expects 3 or 4 arguments";
   os << "binary_max_tile(";
   PrintExpr(op->args[0], os);
   os << ", ";
   PrintExpr(op->args[1], os);
   os << ", ";
   PrintExpr(op->args[2], os);
+  if (op->args.size() == 4) {
+    const auto* mode = op->args[3].as<StringImmNode>();
+    ICHECK(mode != nullptr)
+        << "tl.blackhole.binary_max_tile vector_mode must be a string literal";
+    os << ", (int)VectorMode::" << mode->value;
+  }
   os << ")";
 }
 
@@ -2534,17 +2541,39 @@ void CodeGenBlackhole::PrintExp2Tile(const tvm::tir::CallNode* op,
 
 void CodeGenBlackhole::PrintRecipTileInit(const tvm::tir::CallNode* op,
                                           std::ostream& os) {
-  (void)op;
   need_compute_api_h_ = true;
-  os << "recip_tile_init()";
+  ICHECK(op->args.empty() || op->args.size() == 1)
+      << "tl.blackhole.recip_tile_init expects 0 or 1 arguments";
+  os << "recip_tile_init";
+  if (op->args.size() == 1) {
+    const auto* legacy = op->args[0].as<IntImmNode>();
+    ICHECK(legacy != nullptr && (legacy->value == 0 || legacy->value == 1))
+        << "tl.blackhole.recip_tile_init legacy_compat must be literal 0 or 1";
+    os << "<" << (legacy->value != 0 ? "true" : "false") << ">";
+  }
+  os << "()";
 }
 
 void CodeGenBlackhole::PrintRecipTile(const tvm::tir::CallNode* op,
                                       std::ostream& os) {
   need_compute_api_h_ = true;
-  ICHECK_EQ(op->args.size(), 1) << "tl.blackhole.recip_tile expects 1 argument";
-  os << "recip_tile(";
+  ICHECK(op->args.size() == 1 || op->args.size() == 2 || op->args.size() == 3)
+      << "tl.blackhole.recip_tile expects 1, 2, or 3 arguments";
+  os << "recip_tile";
+  if (op->args.size() == 3) {
+    const auto* legacy = op->args[2].as<IntImmNode>();
+    ICHECK(legacy != nullptr && (legacy->value == 0 || legacy->value == 1))
+        << "tl.blackhole.recip_tile legacy_compat must be literal 0 or 1";
+    os << "<" << (legacy->value != 0 ? "true" : "false") << ">";
+  }
+  os << "(";
   PrintExpr(op->args[0], os);
+  if (op->args.size() >= 2) {
+    const auto* mode = op->args[1].as<StringImmNode>();
+    ICHECK(mode != nullptr)
+        << "tl.blackhole.recip_tile vector_mode must be a string literal";
+    os << ", (int)VectorMode::" << mode->value;
+  }
   os << ")";
 }
 
@@ -2619,12 +2648,12 @@ void CodeGenBlackhole::PrintAddFragmentFromCBFront(const tvm::tir::CallNode* op,
   MaybeEmitMathWaypoint(os, "AFCB");
 }
 
-void CodeGenBlackhole::PrintWriteLocalSliceToCB(const tvm::tir::CallNode* op,
-                                                std::ostream& os) {
+void CodeGenBlackhole::PrintPackUntilizeSlice(const tvm::tir::CallNode* op,
+                                              std::ostream& os) {
   const auto* src_var = AsHandleVar(op->args[0]);
-  ICHECK(src_var) << "tl.blackhole.write_local_slice_to_cb expects a direct source handle var";
+  ICHECK(src_var) << "tl.blackhole.pack_untilize_slice expects a direct source handle var";
   const DataType src_dtype =
-      ResolveHandleDataType(src_var, "tl.blackhole.write_local_slice_to_cb", "source");
+      ResolveHandleDataType(src_var, "tl.blackhole.pack_untilize_slice", "source");
 
   std::ostringstream src_dtype_os;
   PrintType(src_dtype, src_dtype_os);
@@ -2661,18 +2690,18 @@ void CodeGenBlackhole::PrintWriteLocalSliceToCB(const tvm::tir::CallNode* op,
      << "dst[dst_offset_elements + i] = src[src_offset_elements + i]; } }) }";
 }
 
-void CodeGenBlackhole::PrintWriteLocalFragmentTileToCB(const tvm::tir::CallNode* op,
-                                                       std::ostream& os) {
+void CodeGenBlackhole::PrintPackUntilizeTile(const tvm::tir::CallNode* op,
+                                             std::ostream& os) {
   const auto* src_var = AsHandleVar(op->args[0]);
   ICHECK(src_var)
-      << "tl.blackhole.write_local_fragment_tile_to_cb expects a direct source handle var";
+      << "tl.blackhole.pack_untilize_tile expects a direct source handle var";
   const DataType src_dtype =
-      ResolveHandleDataType(src_var, "tl.blackhole.write_local_fragment_tile_to_cb", "source");
+      ResolveHandleDataType(src_var, "tl.blackhole.pack_untilize_tile", "source");
 
   const int cb_id = ResolveCBId(op->args[1]);
   const int bit_width = src_dtype.bits();
   ICHECK(bit_width == 16 || bit_width == 32)
-      << "tl.blackhole.write_local_fragment_tile_to_cb requires 16-bit or 32-bit element dtype";
+      << "tl.blackhole.pack_untilize_tile requires 16-bit or 32-bit element dtype";
   const char* bits_type = bit_width == 16 ? "uint16_t" : "uint32_t";
 
   os << "{ const " << bits_type << "* src_bits = reinterpret_cast<const " << bits_type << "*>(";
@@ -2686,18 +2715,18 @@ void CodeGenBlackhole::PrintWriteLocalFragmentTileToCB(const tvm::tir::CallNode*
      << "dst_bits + dst_tile_index * 1024u); }) }";
 }
 
-void CodeGenBlackhole::PrintWriteLocalFragmentSliceToTiledCB(const tvm::tir::CallNode* op,
-                                                             std::ostream& os) {
+void CodeGenBlackhole::PrintTilizeLocalFragmentSlice(const tvm::tir::CallNode* op,
+                                                     std::ostream& os) {
   const auto* src_var = AsHandleVar(op->args[0]);
   ICHECK(src_var)
-      << "tl.blackhole.write_local_fragment_slice_to_tiled_cb expects a direct source handle var";
+      << "tl.blackhole.tilize_local_fragment_slice expects a direct source handle var";
   const DataType src_dtype = ResolveHandleDataType(
-      src_var, "tl.blackhole.write_local_fragment_slice_to_tiled_cb", "source");
+      src_var, "tl.blackhole.tilize_local_fragment_slice", "source");
 
   const int cb_id = ResolveCBId(op->args[1]);
   const int bit_width = src_dtype.bits();
   ICHECK(bit_width == 16 || bit_width == 32)
-      << "tl.blackhole.write_local_fragment_slice_to_tiled_cb requires 16-bit or 32-bit element dtype";
+      << "tl.blackhole.tilize_local_fragment_slice requires 16-bit or 32-bit element dtype";
   const char* bits_type = bit_width == 16 ? "uint16_t" : "uint32_t";
   const PrimExpr src_offset = op->args.size() >= 6 ? op->args[5] : IntImm(DataType::Int(32), 0);
   if (const LogicalTileLayoutBinding* binding = FindLogicalTileLayoutBinding(src_var);
@@ -2811,19 +2840,19 @@ void CodeGenBlackhole::PrintWriteLocalFragmentSliceToTiledCB(const tvm::tir::Cal
      << ">(src_bits + src_offset_elements, dst_bits, dst_offset_elements, num_elements, row_width); }) }";
 }
 
-void CodeGenBlackhole::PrintCastFragmentSliceToTiledCB(const tvm::tir::CallNode* op,
-                                                       std::ostream& os) {
+void CodeGenBlackhole::PrintTilizeCastFragmentSlice(const tvm::tir::CallNode* op,
+                                                    std::ostream& os) {
   const auto* dst_var = AsHandleVar(op->args[0]);
   const auto* src_var = AsHandleVar(op->args[1]);
   ICHECK(dst_var)
-      << "tl.blackhole.cast_fragment_slice_to_tiled_cb expects a direct destination handle var";
+      << "tl.blackhole.tilize_cast_fragment_slice expects a direct destination handle var";
   ICHECK(src_var)
-      << "tl.blackhole.cast_fragment_slice_to_tiled_cb expects a direct source handle var";
+      << "tl.blackhole.tilize_cast_fragment_slice expects a direct source handle var";
 
   const DataType dst_dtype =
-      ResolveHandleDataType(dst_var, "tl.blackhole.cast_fragment_slice_to_tiled_cb", "destination");
+      ResolveHandleDataType(dst_var, "tl.blackhole.tilize_cast_fragment_slice", "destination");
   const DataType src_dtype =
-      ResolveHandleDataType(src_var, "tl.blackhole.cast_fragment_slice_to_tiled_cb", "source");
+      ResolveHandleDataType(src_var, "tl.blackhole.tilize_cast_fragment_slice", "source");
   const int cb_id = ResolveCBId(op->args[2]);
 
   std::ostringstream src_dtype_os;
@@ -2851,7 +2880,7 @@ void CodeGenBlackhole::PrintCastFragmentSliceToTiledCB(const tvm::tir::CallNode*
     dst_bits_type = "uint32_t";
   } else {
     ICHECK(false)
-        << "tl.blackhole.cast_fragment_slice_to_tiled_cb currently supports only float16, "
+        << "tl.blackhole.tilize_cast_fragment_slice currently supports only float16, "
            "bfloat16, or float32 destination dtypes";
   }
   if (const LogicalTileLayoutBinding* binding = FindLogicalTileLayoutBinding(src_var);
@@ -3013,17 +3042,18 @@ void CodeGenBlackhole::PrintPackFillFragmentToTiledCB(const tvm::tir::CallNode* 
         "for (uint32_t tile = 0; tile < num_tiles; ++tile) { "
         "tile_regs_acquire(); fill_tile(0, static_cast<float>(";
   PrintExpr(op->args[5], os);
-  os << ")); tile_regs_commit(); tile_regs_wait(); pack_reconfig_data_format(" << cb_id
-     << "); pack_tile(0, " << cb_id << ", tile); tile_regs_release(); } }";
+  os << ")); tile_regs_commit(); tile_regs_wait(); ";
+  PrintPackReconfigDataFormatForCB(cb_id, os);
+  os << "; pack_tile(0, " << cb_id << ", tile); tile_regs_release(); } }";
 }
 
-void CodeGenBlackhole::PrintReadCBFrontTileToLocal(const tvm::tir::CallNode* op,
-                                                   std::ostream& os) {
+void CodeGenBlackhole::PrintUntilizeCBFrontTile(const tvm::tir::CallNode* op,
+                                                std::ostream& os) {
   const auto* dst_var = AsHandleVar(op->args[0]);
   ICHECK(dst_var)
-      << "tl.blackhole.read_cb_front_tile_to_local expects a direct destination handle var";
+      << "tl.blackhole.untilize_cb_front_tile expects a direct destination handle var";
   const DataType dst_dtype =
-      ResolveHandleDataType(dst_var, "tl.blackhole.read_cb_front_tile_to_local", "destination");
+      ResolveHandleDataType(dst_var, "tl.blackhole.untilize_cb_front_tile", "destination");
 
   std::ostringstream dst_dtype_os;
   PrintType(dst_dtype, dst_dtype_os);
@@ -3060,18 +3090,18 @@ void CodeGenBlackhole::PrintReadCBFrontTileToLocal(const tvm::tir::CallNode* op,
      << "dst[dst_offset_elements + i] = src[i]; } }) }";
 }
 
-void CodeGenBlackhole::PrintReadCBFrontTileToLocalFragment(const tvm::tir::CallNode* op,
-                                                           std::ostream& os) {
+void CodeGenBlackhole::PrintUntilizeCBFrontTileFragment(const tvm::tir::CallNode* op,
+                                                        std::ostream& os) {
   const auto* dst_var = AsHandleVar(op->args[0]);
   ICHECK(dst_var)
-      << "tl.blackhole.read_cb_front_tile_to_local_fragment expects a direct destination handle var";
+      << "tl.blackhole.untilize_cb_front_tile_fragment expects a direct destination handle var";
   const DataType dst_dtype = ResolveHandleDataType(
-      dst_var, "tl.blackhole.read_cb_front_tile_to_local_fragment", "destination");
+      dst_var, "tl.blackhole.untilize_cb_front_tile_fragment", "destination");
 
   const int cb_id = ResolveCBId(op->args[1]);
   const int bit_width = dst_dtype.bits();
   ICHECK(bit_width == 16 || bit_width == 32)
-      << "tl.blackhole.read_cb_front_tile_to_local_fragment requires 16-bit or 32-bit element dtype";
+      << "tl.blackhole.untilize_cb_front_tile_fragment requires 16-bit or 32-bit element dtype";
   const char* bits_type = bit_width == 16 ? "uint16_t" : "uint32_t";
   if (const LogicalTileLayoutBinding* binding = FindLogicalTileLayoutBinding(dst_var);
       binding != nullptr && LogicalTileLayoutRequiresGenericBridge(*binding)) {

@@ -56,11 +56,13 @@ def _run_blackhole_flash_attention(kernel, *inputs):
     artifact.codegen_mod["main"](*inputs)
 
 
-def _has_multi_page_republish_input_cb(metadata):
+def _has_multi_page_republish_event(metadata):
     return any(
-        str(config["role"]) == "input"
-        and str(config["flow_class"]) == "republish"
-        and int(config["num_pages"]) > 1
+        str(config["flow_class"]) == "republish"
+        and (
+            int(config.get("publish_pages_per_event", 0)) > 1
+            or int(config.get("consume_pages_per_event", 0)) > 1
+        )
         for config in metadata["cb_configs"]
     )
 
@@ -117,7 +119,7 @@ def test_blackhole_flash_attention_single_work_item_runtime_metadata_admits_type
     assert str(materialization_plans["acc_s_cast"]["materialization_protocol"]) == "cb_republish"
     assert (
         str(materialization_plans["acc_s_cast"]["publication_protocol"])
-        == "cast_fragment_slice_to_tiled_cb"
+        == "tilize_cast_fragment_slice"
     )
 
 
@@ -161,7 +163,10 @@ def test_blackhole_flash_attention_small_bf16_compute_source_uses_non_mailbox_pu
 
     pack_cb_ids = [
         int(cb_id)
-        for cb_id in re.findall(r"\b(?:pack_reconfig_data_format|pack_tile)\([^;\n]*?(\d+)", compute_source)
+        for cb_id in re.findall(
+            r"\b(?:pack_reconfig_data_format(?:<true>)?|pack_tile)\([^;\n]*?(\d+)",
+            compute_source,
+        )
     ]
     assert pack_cb_ids
     assert max(pack_cb_ids) <= 31
@@ -245,23 +250,32 @@ def test_blackhole_flash_attention_final_publish_consumes_normalized_live_form()
     assert writer_wait is not None
     output_cb = int(writer_wait.group(1))
 
-    final_publish_matches = list(re.finditer(
-        rf"cb_wait_front\((\d+), 1\);"
-        rf"\ncb_reserve_back\({output_cb}, 1\);"
-        rf".*?copy_tile_to_dst_init_short(?:_with_dt)?\([^)]*?(\d+)\);"
-        rf"\ncopy_tile\((\d+), 0, 0\);"
-        rf".*?pack_tile\(0, {output_cb}, 0\);",
-        compute_source,
-        flags=re.DOTALL,
-    ))
+    final_publish_matches = list(
+        re.finditer(
+            rf"cb_wait_front\((?P<src>\d+), 1\);\s*"
+            rf"cb_reserve_back\({output_cb}, 1\);\s*"
+            r"tile_regs_acquire\(\);\s*"
+            r"copy_tile_to_dst_init_short(?:_with_dt)?\((?:\d+,\s*)?(?P=src)\);\s*"
+            r"copy_tile\((?P=src), 0, 0\);\s*"
+            r"tile_regs_commit\(\);\s*"
+            r"tile_regs_wait\(\);\s*"
+            rf"pack_reconfig_data_format(?:<true>)?\({output_cb}\);\s*"
+            rf"pack_tile\(0, {output_cb}, 0\);\s*"
+            r"tile_regs_release\(\);\s*"
+            r"(?P<source_lifetime>(?:cb_pop_front\(\d+, 1\);\s*)*)"
+            rf"cb_push_back\({output_cb}, 1\);",
+            compute_source,
+        )
+    )
     final_publish = final_publish_matches[-1] if final_publish_matches else None
     assert final_publish is not None
-    waited_cb, init_cb, copied_cb = map(int, final_publish.groups())
-    assert waited_cb == init_cb == copied_cb
+    copied_cb = int(final_publish.group("src"))
+    assert f"cb_pop_front({copied_cb}, 1);" in final_publish.group("source_lifetime")
 
     cb_configs = {int(config["cb_id"]): config for config in metadata["cb_configs"]}
     source_config = cb_configs[copied_cb]
-    assert "row_bcast_out" in str(source_config["name"])
+    assert copied_cb != output_cb
+    assert str(source_config["data_format"]) == "Float16_b"
 
 
 def test_blackhole_flash_attention_row_reduction_init_uses_rewritten_output_cb():
@@ -287,7 +301,7 @@ def test_blackhole_flash_attention_row_reduction_init_uses_rewritten_output_cb()
 
     reduce_windows = re.findall(
         r"reduce_init<[^>]+>\(\d+, \d+, (\d+)\);"
-        r".*?pack_reconfig_data_format\((\d+)\);"
+        r".*?pack_reconfig_data_format(?:<true>)?\((\d+)\);"
         r"\npack_tile\(0, (\d+), 0\);",
         compute_source,
         flags=re.DOTALL,
@@ -411,10 +425,10 @@ def test_blackhole_flash_attention_multi_work_item_metadata_exposes_explicit_per
 
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
     assert not any("missing explicit per-work access descriptor" in reason for reason in reasons)
-    if _has_multi_page_republish_input_cb(metadata):
+    assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
+    if _has_multi_page_republish_event(metadata):
         assert any(MULTI_PAGE_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
     else:
-        assert not any("thread-distributed cb_republish materialization" in reason for reason in reasons)
         assert not any(MULTI_PAGE_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
 
     reader_specs = [
@@ -445,6 +459,62 @@ def test_blackhole_flash_attention_multi_work_item_metadata_exposes_explicit_per
         str(spec["descriptor_kind"]) == "tile_start"
         and str(spec["value_source"]) == "work_linear_id"
         for spec in reader_specs + writer_specs
+    )
+
+
+def test_blackhole_flash_attention_seq64_bf16_metadata_admits_multi_page_exact_cb_republish():
+    kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
+        1,
+        4,
+        64,
+        32,
+        False,
+        block_M=32,
+        block_N=32,
+        num_stages=1,
+        threads=128,
+    )
+    _, metadata = _lower_blackhole_flash_attention_metadata(kernel)
+
+    reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
+    assert not any(MULTI_PAGE_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
+
+    cb_by_name = {str(config["name"]): config for config in metadata["cb_configs"]}
+    for cb_name in ("K_shared", "V_shared", "acc_s_cast"):
+        cb = cb_by_name[cb_name]
+        assert int(cb["num_pages"]) == 2
+        assert int(cb["publish_pages_per_event"]) == 1
+        assert int(cb["consume_pages_per_event"]) == 1
+
+    materialization_plans = {
+        str(plan["target_buffer"]): plan for plan in metadata["materialization_plans"]
+    }
+    assert str(materialization_plans["acc_s_cast"]["materialization_protocol"]) == "cb_republish"
+    assert (
+        str(materialization_plans["acc_s_cast"]["publication_protocol"])
+        == "tilize_cast_fragment_slice"
+    )
+
+    compute_source = str(
+        next(
+            kernel["source_code"]
+            for kernel in metadata["kernels"]
+            if str(kernel["kind"]) == "compute" and str(kernel["core_type"]) == "trisc"
+        )
+    )
+    cb_format_by_id = {
+        int(config["cb_id"]): str(config["data_format"]) for config in metadata["cb_configs"]
+    }
+    pack_reconfig_cb_ids = [
+        int(cb_id)
+        for cb_id in re.findall(
+            r"pack_reconfig_data_format(?:<true>)?\((\d+)\);",
+            compute_source,
+        )
+    ]
+    assert any(
+        cb_format_by_id[cb_id] == "Float16_b"
+        for cb_id in pack_reconfig_cb_ids
     )
 
 

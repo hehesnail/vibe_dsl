@@ -190,13 +190,13 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintFillFragment(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddFragment(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintAddFragmentFromCBFront(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintWriteLocalSliceToCB(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintWriteLocalFragmentTileToCB(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintWriteLocalFragmentSliceToTiledCB(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintCastFragmentSliceToTiledCB(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintPackUntilizeSlice(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintPackUntilizeTile(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintTilizeLocalFragmentSlice(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintTilizeCastFragmentSlice(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintPackFillFragmentToTiledCB(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintReadCBFrontTileToLocal(const tvm::tir::CallNode *op, std::ostream &os);
-  void PrintReadCBFrontTileToLocalFragment(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintUntilizeCBFrontTile(const tvm::tir::CallNode *op, std::ostream &os);
+  void PrintUntilizeCBFrontTileFragment(const tvm::tir::CallNode *op, std::ostream &os);
   void PrintCastFragmentSlice(const tvm::tir::CallNode *op, std::ostream &os);
 
   // Legacy: Print CB operations (old interface)
@@ -215,6 +215,7 @@ class CodeGenBlackhole : public CodeGenCHost {
   void PrintNOCWait();
 
   void EmitRuntimeArgLoads(const tvm::tir::PrimFunc &f);
+  void PrintPackReconfigDataFormatForCB(int cb_id, std::ostream& os);
   void LoadCorePlan(const tvm::tir::PrimFunc &f);
   std::string GetRuntimeArgVarByKind(const std::string &kind) const;
   std::string GetRuntimeArgVarForBuffer(const tvm::PrimExpr &buffer_expr,

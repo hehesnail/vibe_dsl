@@ -6,16 +6,15 @@
 
 ## Status
 
-- Date: `2026-04-26`
+- Date: `2026-04-27`
 - Active lane: `P2 flash-attn direct runtime admission`
 - Current item:
-  `P2.3 live-form support-surface expansion`
+  `P2 complete; next lane is P3 mesh/distributed runtime expansion`
 - Blocker:
-  No P2.2 completion blocker remains.
-  The next boundary is explicitly gated as
-  `multi-page exact CB-republish live-form` for seq64 / multi-K-step
-  workloads; it must expand the typed live-form support surface instead of
-  reopening raw CB pointer or mailbox publication paths.
+  No P2 blocker remains for the admitted bf16 flash-attn direct-runtime
+  surface.  Larger stage2/block64 flash-attn shapes that require a
+  multi-page publish/consume event remain an explicit post-P2 support-surface
+  backlog, not a seq64 P2.3 blocker.
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -45,6 +44,7 @@
 - `P1/P2 non-GEMM exact compute op typed expansion`: completed
 - `P2.1 flash-attn exact row-reduction source-live truth`: completed
 - `P2.2 flash-attn bf16 direct-runtime admission`: completed
+- `P2.3 seq64 exact CB-republish live-form admission`: completed
 
 ## Current Support Boundary
 
@@ -66,68 +66,76 @@
   Runtime execution remains unit mesh / replicated `MeshBuffer` subset;
   full multi-device / sharded / fabric collective runtime is not admitted.
 - Flash-attn compile/source/spec baseline is stable.
-  The admitted bf16 direct-runtime subset now covers single-K-tile
-  32x32 flash-attn MHA / GQA shapes with typed exact CB live-form,
-  BF16 exact CB physical storage, bcast-cols row scalar semantics,
-  non-mailbox pack publication, and ABI order
-  `Q, K, V, Output`.
-  Seq64 / multi-K-step flash-attn remains queryably gated by
+  The admitted bf16 direct-runtime subset now covers:
+  small single-work-item flash-attn,
+  32x32 MHA / GQA,
+  and seq64 / multi-K-step MHA / GQA shapes.
+  The path uses typed exact CB live-form,
+  BF16 exact CB physical storage,
+  bcast-cols row scalar semantics,
+  non-mailbox `copy_tile` / `pack_tile` publication,
+  per-event one-page exact CB republish,
+  and ABI order `Q, K, V, Output`.
+  Larger stage2/block64 shapes that require a multi-page exact CB
+  publish/consume event still fail closed with
   `multi-page exact CB-republish live-form`.
 
 ## Open Debt
 
-- `P2.3 live-form support-surface expansion`: next.
-- `cast_fragment_slice_to_tiled_cb`
-  is admitted only for the proven single-page exact CB-republish bf16 subset.
-  Multi-page republish remains a queryable unsupported reason.
-- The current blocker is no longer the single
-  `acc_s -> acc_s_cast` materialization plan, mailbox address exchange,
-  stale first row-reduction source, or BF16 small-shape runtime correctness.
-  The next expansion must generalize exact live-form republish across
-  multi-K steps and multi-page input CBs through typed
-  `TTProgram -> ExecutableSpec` records.
+- Larger flash-attn stage2/block64 shapes still need a wider exact-CB
+  live-form admission for single events that publish/consume multiple pages.
+  That expansion must continue through typed
+  `TTProgram -> ExecutableSpec` records, not runtime-only source patching.
 - Full mesh/distributed runtime support remains future work.
   The current schema can express the direction; runtime admission must expand
   through typed `TTProgram -> ExecutableSpec` records, not runtime-only patching.
 
 ## Next Task Order
 
-1. `P2.3 live-form support-surface expansion`
-   - Generalize beyond the first flash-attn shape only after the source-live
-     and materialization contracts are explicit and validated.
-   - Add regression tests at projection, source/codegen, and direct-runtime
-     gate boundaries.
-   - First target:
-     multi-page exact CB-republish live-form for seq64 / multi-K-step
-     flash-attn, without reintroducing mailbox helper or raw CB pointer
-     publication.
-   - Design constraint:
-     do not extend P2.2 by stacking more local matcher special cases in
-     `lower_blackhole_ops.cc`.
-     Multi-page exact CB republish must first become typed owner truth:
-     page ownership, producer/consumer windows, page-count agreement, and
-     `cb_wait_front` / `cb_pop_front` / `cb_reserve_back` / `cb_push_back`
-     lifetime must be represented and validated through
-     `TTProgram -> ExecutableSpec`, then consumed by lowering/codegen.
-   - Cleanup constraint:
-     helper/composite exact-op names such as
-     `exp2_row_bcast_affine` /
-     `scalar_exp2_affine`
-     are selector-local transition residue only.
-     They must not become `TTComputeOpPlan.operation_name`,
-     `ExecutableSpec.compute_ops`,
-     source/codegen protocol, or new P2.3 support surface.
-     The durable compute granularity remains TT-Metal builtin granularity
-     (`mul_tiles`, `add_tiles`, `*_bcast_cols`, `exp2_tile`, `pack_tile`,
-     etc.).
-
-2. `P3 mesh/distributed runtime expansion`
+1. `P3 mesh/distributed runtime expansion`
    - Treat this as a later runtime admission lane.
    - Reuse `TTMeshPlan` / `TTBufferDistributionPlan` schema.
    - Add real sharded / multi-device / fabric semantics only through typed
      schema and validator extensions.
 
+2. Post-P2 flash-attn wider-shape support
+   - Admit larger stage2/block64 shapes only after the exact CB
+     multi-page event contract is represented and validated through
+     `TTProgram -> ExecutableSpec`.
+   - Keep helper/composite exact-op names out of
+     `TTComputeOpPlan.operation_name`,
+     `ExecutableSpec.compute_ops`,
+     source/codegen protocol,
+     and runtime support surfaces.
+     The durable compute granularity remains TT-Metal builtin granularity
+     (`mul_tiles`, `add_tiles`, `*_bcast_cols`, `exp2_tile`, `pack_tile`,
+     etc.).
+
 ## Latest Verification
+
+P2.3 flash-attn multi-K exact CB-republish closeout:
+
+- `cmake --build build -j32`
+- flash-attn pipeline:
+  `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
+  -> `67 passed`
+- flash-attn runtime metadata/source/direct-runtime file under TT-Sim env:
+  `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`
+  -> `20 passed`
+- copy direct-runtime file under TT-Sim env:
+  `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`
+  -> `13 passed`
+- GEMM direct-runtime guard cases under TT-Sim env:
+  richer compute config,
+  clear-accum-false cast consumer,
+  fragment-fill cast publish,
+  transpose-A typed compute schema
+  -> `4 passed`
+- Production source cleanup scan:
+  no `tl.blackhole.*` helper/composite builtin names,
+  no `HelperCompositeBlackholeBuiltin`,
+  no debug pack hang hooks,
+  and no `live_reload_cast` residue under `tilelang_repo/src`.
 
 P2 flash-attn admission probe:
 

@@ -30,8 +30,8 @@
   `pack_tile`
   两类非 mailbox
   publication protocol；
-  `cast_fragment_slice_to_tiled_cb`
-  已对 single-page exact CB-republish
+  `tilize_cast_fragment_slice`
+  已对 exact CB-republish
   bf16 flash-attn subset
   进入 direct-runtime admitted set；
   `P2.1`
@@ -41,10 +41,13 @@
   `P2.2`
   已用 TT-Sim correctness gate
   admission 该 typed bf16 subset；
-  multi-page exact CB-republish
-  仍保留 queryable unsupported gate
-  给
-  `P2.3`；
+  `P2.3`
+  已 admission seq64 /
+  multi-K-step
+  per-event one-page exact CB-republish；
+  stage2/block64
+  multi-page publish/consume event
+  仍保留 queryable unsupported gate；
   更宽 live-in /
   workload payoff
   继续按显式 IR
@@ -255,18 +258,19 @@ raw CB write pointer
 local fragment bitcast loop。
 seq64 /
 multi-K-step
+bf16 MHA / GQA
+在 `P2.3`
+中已通过 per-event one-page
+exact CB republish
+进入 direct-runtime admitted set。
+stage2/block64
+仍需要 multi-page publish/consume
+event 级别的后续 admission；
+该更宽 case
 仍通过
 `multi-page exact CB-republish live-form`
 unsupported reason
-fail-closed；
-这属于
-`P2.3`
-live-form support-surface
-扩展，
-不是
-`P2.2`
-runtime correctness
-blocker。
+fail-closed。
 
 ### 3.1 当前实现快照
 
@@ -466,9 +470,9 @@ publication protocols 有三类：
   再把同一个 DST tile
   pack 到 materialized
   bf16 target CB
-- `cast_fragment_slice_to_tiled_cb`
-  只用于 P2.2 已证明的
-  single-page exact CB-republish
+- `tilize_cast_fragment_slice`
+  用于已证明的
+  exact CB-republish
   bf16 flash-attn subset：
   source live form
   必须来自 typed exact CB state，
@@ -486,12 +490,14 @@ publication protocols 有三类：
 flash-attn
 fragment-slice cast republish
 已命名为 typed
-`publication_protocol=cast_fragment_slice_to_tiled_cb`，
+`publication_protocol=tilize_cast_fragment_slice`，
 用于说明
 `TTMaterializationPlan`
 确实看到的 producer /
 consumer relation。
-它曾经**不是** direct-runtime
+旧名
+`cast_fragment_slice_to_tiled_cb`
+曾经**不是** direct-runtime
 admitted protocol：
 一次尝试把它直接 admission
 并在 TRISC source 中用 raw
@@ -991,17 +997,18 @@ buffer name
   `pack_tile`
   admitted
 - flash-attn
-  single-K-tile
+  single-K-tile /
+  seq64 multi-K-step
   bf16 MHA / GQA
   已通过
   typed exact CB live-form
   和
-  `cast_fragment_slice_to_tiled_cb`
-  single-page republish
+  `tilize_cast_fragment_slice`
+  per-event one-page republish
   admitted
 - 非零 live-in /
   更宽 fragment/cast producer /
-  multi-page exact CB-republish
+  multi-page publish/consume event
   仍未 admitted；
   进入这些 case 前，
   必须先完成
@@ -1127,20 +1134,24 @@ P2.2 当前验收：
 - seq64 /
   multi-K-step
   direct runtime
-  仍通过
-  `multi-page exact CB-republish live-form`
-  fail-closed，
-  留给 P2.3
-  扩 support surface
-
-P2.3 entry contract:
-
-- 不把 P2.2 的 single-page
+  已通过 per-event one-page
   exact CB republish
-  通过继续堆
-  `lower_blackhole_ops.cc`
-  局部 matcher
-  扩成 multi-page support
+  admission；
+  stage2/block64
+  的 multi-page publish/consume event
+  仍 fail-closed
+
+P2.3 closeout contract:
+
+- P2.3 admitted surface
+  覆盖 seq64 /
+  multi-K-step
+  bf16 flash-attn
+  的 per-event one-page
+  exact CB republish；
+  larger stage2/block64
+  multi-page event
+  仍是后续 support-surface backlog
 - multi-page exact CB republish
   必须先进入 typed owner truth：
   - page ownership /
@@ -1174,16 +1185,16 @@ P2.3 entry contract:
   /
   `scalar_exp2_affine`
   这类 helper/composite exact-op
-  名字只允许作为 selector-local
-  过渡残留；
-  不允许进入
+  名字只允许作为 historical /
+  regression forbidden labels；
+  不允许进入生产 TIR builtin、
   `TTComputeOpPlan.operation_name`
   /
   `ExecutableSpec.compute_ops`
   /
   source codegen protocol
   /
-  P2.3 新 support surface。
+  support surface。
   长期 compute 粒度必须是
   TT-Metal builtin 粒度：
   `mul_tiles`、
@@ -1192,11 +1203,12 @@ P2.3 entry contract:
   `exp2_tile`、
   `pack_tile`
   等
-- P2.3 第一个 admitted gate
+- P2.3 admitted gate
   是 seq64 /
   multi-K-step
   bf16 flash-attn；
-  在该 contract 完成前，
+  对 larger stage2/block64
+  multi-page exact CB publish/consume event，
   `multi-page exact CB-republish live-form`
   继续作为 queryable
   unsupported reason

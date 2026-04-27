@@ -104,10 +104,16 @@ TileOperator GemmPyNode::Clone() const {
 }
 
 std::vector<DataflowAccessInfo> GemmPyNode::GetDataflowAccessInfo() const {
-  return {
+  std::vector<DataflowAccessInfo> accesses = {
       DataflowAccessInfo{a_, DataflowAccessKind::kComputeConsume},
       DataflowAccessInfo{b_, DataflowAccessKind::kComputeConsume},
+      DataflowAccessInfo{c_, DataflowAccessKind::kComputeProduce},
   };
+  const auto* clear_accum = clearAccum_.as<IntImmNode>();
+  if (!clear_accum || clear_accum->value == 0) {
+    accesses.push_back(DataflowAccessInfo{c_, DataflowAccessKind::kComputeConsume});
+  }
+  return accesses;
 }
 
 std::optional<BufferMaterializationInfo>

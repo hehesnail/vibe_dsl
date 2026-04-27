@@ -795,8 +795,14 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   的
   `pack_tile`
   path；
+  P2.3 后还包括 bf16 flash-attn
+  small / 32x32 MHA-GQA /
+  seq64 MHA-GQA direct runtime，
+  前提是 exact CB republish
+  单次 publish/consume 仍为 one page；
   更宽 direct cast /
-  live-in materialization
+  live-in materialization /
+  stage2-block64 multi-page event
   仍不能混进
   TT-Sim hard gate，
   需要先按
@@ -1226,10 +1232,22 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `scores_sum += row_reduce(...)` must lower as typed exact reduce plus
   add/max CB ops. Do not fall back to fragment add helpers or raw local
   fragment staging.
-- `multi-page exact CB-republish live-form` is the current explicit P2.3
-  direct-runtime boundary for seq64 / multi-K-step flash-attn. Treat it as a
-  queryable unsupported reason, not as a reason to reintroduce mailbox
-  publication or raw CB write pointers.
+- Helper/composite Blackhole builtin names such as
+  `exp2_row_bcast_affine` and `scalar_exp2_affine` must not exist in
+  production TIR builtin names, `TTComputeOpPlan.operation_name`,
+  `ExecutableSpec.compute_ops`, or source/codegen protocol. Exact compute
+  truth should be recorded at TT-Metal API granularity such as `mul_tiles`,
+  `add_tiles`, `*_bcast_cols`, `exp2_tile`, and `pack_tile`.
+- For exact CB live-form republish, distinguish total CB capacity from
+  per-event lifetime. Seq64 flash-attn uses multi-page CBs but admitted
+  one-page publish/consume events; stage2/block64 shapes that require one
+  event to publish or consume multiple pages still need a wider support
+  contract and should fail closed.
+- When a borrowed live source CB is copied/repacked into a new CB, pop the
+  borrowed source as soon as there is no future read before the next write.
+  Events at the next write boundary are a redefinition, not a consumer of the
+  old live page. Do not keep an early deferred `cb_reserve_back` for buffers
+  whose next producer is already a typed materialization/live-form writer.
 - 文档收口时，
   `tasks/progress.md`
   是唯一当前状态 /

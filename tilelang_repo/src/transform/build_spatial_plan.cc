@@ -260,6 +260,8 @@ class StatementAccessAnalyzer : public tir::StmtExprVisitor {
         if (access.kind == DataflowAccessKind::kComputeConsume) {
           summary_.has_compute_consume = true;
           RecordRead(access.buffer);
+        } else if (access.kind == DataflowAccessKind::kComputeProduce) {
+          RecordWrite(access.buffer);
         }
       }
     }

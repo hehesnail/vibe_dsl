@@ -35,12 +35,6 @@ namespace builtin {
     return op; \
   }
 
-#define TIR_DEFINE_BUILTIN_ALIAS(NAME, OP_NAME) \
-  const Op& blackhole_##NAME() { \
-    static const Op& op = Op::Get("tl.blackhole." OP_NAME); \
-    return op; \
-  }
-
 // Circular Buffer Operations
 TIR_DEFINE_BUILTIN(cb_reserve_back)
 TIR_DEFINE_BUILTIN(cb_push_back)
@@ -103,13 +97,13 @@ TIR_DEFINE_BUILTIN(exp2_tile_init)
 TIR_DEFINE_BUILTIN(exp2_tile)
 TIR_DEFINE_BUILTIN(recip_tile_init)
 TIR_DEFINE_BUILTIN(recip_tile)
-TIR_DEFINE_BUILTIN_ALIAS(write_local_slice_to_cb, "pack_untilize_slice")
-TIR_DEFINE_BUILTIN_ALIAS(write_local_fragment_tile_to_cb, "pack_untilize_tile")
-TIR_DEFINE_BUILTIN_ALIAS(write_local_fragment_slice_to_tiled_cb, "tilize_local_fragment_slice")
-TIR_DEFINE_BUILTIN_ALIAS(cast_fragment_slice_to_tiled_cb, "tilize_cast_fragment_slice")
+TIR_DEFINE_BUILTIN(pack_untilize_slice)
+TIR_DEFINE_BUILTIN(pack_untilize_tile)
+TIR_DEFINE_BUILTIN(tilize_local_fragment_slice)
+TIR_DEFINE_BUILTIN(tilize_cast_fragment_slice)
 TIR_DEFINE_BUILTIN(pack_fill_fragment_to_tiled_cb)
-TIR_DEFINE_BUILTIN_ALIAS(read_cb_front_tile_to_local, "untilize_cb_front_tile")
-TIR_DEFINE_BUILTIN_ALIAS(read_cb_front_tile_to_local_fragment, "untilize_cb_front_tile_fragment")
+TIR_DEFINE_BUILTIN(untilize_cb_front_tile)
+TIR_DEFINE_BUILTIN(untilize_cb_front_tile_fragment)
 TIR_DEFINE_BUILTIN(fill_fragment)
 TIR_DEFINE_BUILTIN(add_fragment)
 TIR_DEFINE_BUILTIN(add_fragment_from_cb_front)
@@ -322,10 +316,11 @@ TVM_REGISTER_OP("tl.blackhole.copy_tile")
     .add_argument("dst_tile_index", "int", "Destination tile index in DST");
 
 TVM_REGISTER_OP("tl.blackhole.add_tiles_init")
-    .set_num_inputs(2)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("lhs_cb_id", "int", "Left-hand-side CB ID")
-    .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID");
+    .add_argument("rhs_cb_id", "int", "Right-hand-side CB ID")
+    .add_argument("acc_to_dest", "int", "Whether to accumulate into the destination register");
 
 TVM_REGISTER_OP("tl.blackhole.add_tiles")
     .set_num_inputs(5)
@@ -442,11 +437,12 @@ TVM_REGISTER_OP("tl.blackhole.binary_max_tile_init")
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TVM_REGISTER_OP("tl.blackhole.binary_max_tile")
-    .set_num_inputs(3)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
     .add_argument("lhs_dst_tile_index", "int", "Left-hand-side DST tile index")
     .add_argument("rhs_dst_tile_index", "int", "Right-hand-side DST tile index")
-    .add_argument("dst_tile_index", "int", "Destination DST tile index");
+    .add_argument("dst_tile_index", "int", "Destination DST tile index")
+    .add_argument("vector_mode", "str", "Optional TT-Metal VectorMode suffix");
 
 TVM_REGISTER_OP("tl.blackhole.div_binary_tile_init")
     .set_num_inputs(0)
@@ -478,13 +474,16 @@ TVM_REGISTER_OP("tl.blackhole.exp2_tile")
     .add_argument("dst_tile_index", "int", "Destination DST tile index");
 
 TVM_REGISTER_OP("tl.blackhole.recip_tile_init")
-    .set_num_inputs(0)
-    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
+    .add_argument("legacy_compat", "int", "Optional TT-Metal reciprocal legacy compatibility flag");
 
 TVM_REGISTER_OP("tl.blackhole.recip_tile")
-    .set_num_inputs(1)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque))
-    .add_argument("dst_tile_index", "int", "Destination DST tile index");
+    .add_argument("dst_tile_index", "int", "Destination DST tile index")
+    .add_argument("vector_mode", "string", "Optional TT-Metal VectorMode name")
+    .add_argument("legacy_compat", "int", "Optional TT-Metal reciprocal legacy compatibility flag");
 
 TVM_REGISTER_OP("tl.blackhole.pack_untilize_slice")
     .set_num_inputs(-1)

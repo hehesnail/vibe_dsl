@@ -12,8 +12,8 @@
 
 #include "common/blackhole_utils.h"
 #include "common/companion_base.h"
+#include "common/spatial_plan.h"
 #include "common/tt_target_program.h"
-#include "lower_blackhole_ops.h"
 
 namespace tvm {
 namespace tl {
@@ -235,6 +235,16 @@ void ValidateCBPlan(const TTCBPlan& cb_plan) {
       << "TTCBPlan requires non-negative publish_pages_per_event";
   ICHECK_GE(cb_plan->consume_pages_per_event, 0)
       << "TTCBPlan requires non-negative consume_pages_per_event";
+  if (flow_class == "republish") {
+    ICHECK_GT(cb_plan->publish_pages_per_event, 0)
+        << "republish TTCBPlan requires positive publish_pages_per_event";
+    ICHECK_GT(cb_plan->consume_pages_per_event, 0)
+        << "republish TTCBPlan requires positive consume_pages_per_event";
+    ICHECK_LE(cb_plan->publish_pages_per_event, cb_plan->num_pages)
+        << "republish TTCBPlan publish_pages_per_event must fit in num_pages";
+    ICHECK_LE(cb_plan->consume_pages_per_event, cb_plan->num_pages)
+        << "republish TTCBPlan consume_pages_per_event must fit in num_pages";
+  }
   ICHECK_GE(cb_plan->lifetime_begin, 0) << "TTCBPlan requires non-negative lifetime_begin";
   ICHECK_GE(cb_plan->lifetime_end, cb_plan->lifetime_begin)
       << "TTCBPlan requires lifetime_end >= lifetime_begin";
@@ -319,7 +329,7 @@ void ValidateMaterializationPlans(const TTProgram& program,
       ICHECK(plan->publication_protocol == buffer_materialization::kMailboxWritePtr ||
              plan->publication_protocol == buffer_materialization::kPackThreadDirectStore ||
              plan->publication_protocol == buffer_materialization::kPackTile ||
-             plan->publication_protocol == buffer_materialization::kCastFragmentSliceToTiledCB)
+             plan->publication_protocol == buffer_materialization::kTilizeCastFragmentSlice)
           << "TTMaterializationPlan cb_republish has unsupported publication_protocol "
           << plan->publication_protocol;
       if (plan->publication_protocol == buffer_materialization::kPackThreadDirectStore ||
@@ -566,8 +576,6 @@ tvm::transform::Pass ValidateTTProgram() {
       if (!func || !IsBlackholePrimFunc(func.value())) {
         continue;
       }
-      ICHECK(!UsesHelperCompositeBlackholeBuiltin(func.value()))
-          << "helper/composite builtin residue must be removed before TTProgram validation";
       auto maybe_program = func.value()->GetAttr<TTProgram>(attr::kTLTTProgram);
       if (!maybe_program) {
         continue;

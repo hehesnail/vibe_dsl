@@ -864,13 +864,13 @@ using tir::builtin::blackhole_read_tile_to_cb;
 using tir::builtin::blackhole_read_page_to_cb;
 using tir::builtin::blackhole_write_tile_from_cb;
 using tir::builtin::blackhole_write_page_from_cb;
-using tir::builtin::blackhole_write_local_slice_to_cb;
-using tir::builtin::blackhole_write_local_fragment_tile_to_cb;
-using tir::builtin::blackhole_write_local_fragment_slice_to_tiled_cb;
-using tir::builtin::blackhole_cast_fragment_slice_to_tiled_cb;
+using tir::builtin::blackhole_pack_untilize_slice;
+using tir::builtin::blackhole_pack_untilize_tile;
+using tir::builtin::blackhole_tilize_local_fragment_slice;
+using tir::builtin::blackhole_tilize_cast_fragment_slice;
 using tir::builtin::blackhole_pack_fill_fragment_to_tiled_cb;
-using tir::builtin::blackhole_read_cb_front_tile_to_local;
-using tir::builtin::blackhole_read_cb_front_tile_to_local_fragment;
+using tir::builtin::blackhole_untilize_cb_front_tile;
+using tir::builtin::blackhole_untilize_cb_front_tile_fragment;
 using tvm::Integer;
 using tvm::DataType;
 using tvm::IntImm;
@@ -1943,17 +1943,18 @@ void PlanTTKernelABI::AppendPublishedBufferSourceMaterialization(
   prefix->push_back(
       MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(cb_id), IntImm32(num_tiles)}));
   for (int tile = 0; tile < num_tiles; ++tile) {
-    prefix->push_back(MakeBlackholeCall(blackhole_read_cb_front_tile_to_local_fragment(),
+    prefix->push_back(MakeBlackholeCall(blackhole_untilize_cb_front_tile_fragment(),
                                         {physical_src->data, IntImm32(cb_id), IntImm32(tile),
                                          IntImm32(tile * tile_elements)}));
   }
 
-  const FutureBufferUses future_uses = ClassifyFutureBufferUses(src, current_order_index);
+  const FutureBufferUses future_uses =
+      ClassifyFutureLiveCBReadsBeforeNextWrite(src, current_order_index);
   if (!future_uses.has_compute_consume && !future_uses.has_transport_consume &&
       !future_uses.has_reference) {
     suffix->push_back(
         MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(cb_id), IntImm32(num_tiles)}));
-    ClearTiledCBLiveFormIdentity(live_form_it->first);
+    ClearTiledCBLiveFormAliases(src);
   }
 }
 
@@ -2495,6 +2496,45 @@ bool PlanTTKernelABI::HasInterveningBufferWrite(const Buffer& buffer,
     }
   }
   return false;
+}
+
+int PlanTTKernelABI::ResolveCurrentBufferTransferOrder(
+    const Buffer& src, const Buffer& dst, int lower_bound_order_index) const {
+  if (lower_bound_order_index < 0) {
+    return lower_bound_order_index;
+  }
+  auto collect_orders = [&](const Buffer& buffer, bool want_write) {
+    std::vector<int> orders;
+    for (const std::string& identity : CollectBufferFlowIdentities(buffer)) {
+      auto it = buffer_flow_facts_.find(identity);
+      if (it == buffer_flow_facts_.end()) {
+        continue;
+      }
+      for (const BlackholeBufferFlowEvent& event : it->second.events) {
+        if (event.order_index < lower_bound_order_index) {
+          continue;
+        }
+        const bool is_write = event.kind == BlackholeBufferFlowEventKind::kWrite;
+        if (want_write != is_write) {
+          continue;
+        }
+        if (std::find(orders.begin(), orders.end(), event.order_index) == orders.end()) {
+          orders.push_back(event.order_index);
+        }
+      }
+    }
+    std::sort(orders.begin(), orders.end());
+    return orders;
+  };
+  const std::vector<int> src_read_orders = collect_orders(src, /*want_write=*/false);
+  const std::vector<int> dst_write_orders = collect_orders(dst, /*want_write=*/true);
+  for (int src_order : src_read_orders) {
+    if (std::find(dst_write_orders.begin(), dst_write_orders.end(), src_order) !=
+        dst_write_orders.end()) {
+      return src_order;
+    }
+  }
+  return lower_bound_order_index;
 }
 
 // Helper to get storage scope from buffer
@@ -4932,8 +4972,12 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
   if (IsBufferLikeExpr(op->args[2])) {
     const Buffer out_buffer = ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(op->args[2])->buffer);
     const bool needs_accumulator_merge = FindBufferMaterializationFact(out_buffer) != nullptr;
+    ExactTiledCBValue live_accumulator;
+    const bool has_live_accumulator =
+        !gemm_clear_accum_ && !needs_accumulator_merge &&
+        TryCreateLiveExactTiledCBValue(out_buffer, &live_accumulator);
     if (!gemm_clear_accum_ && !needs_accumulator_merge) {
-      gemm_clear_accum_ = true;
+      gemm_clear_accum_ = !has_live_accumulator;
     }
     const FutureBufferUses future_uses =
         ClassifyFutureBufferUses(out_buffer, current_order_index);
@@ -4988,6 +5032,7 @@ Stmt PlanTTKernelABI::GenerateMatmulSequence(const CallNode* op,
   if (logical_gemm_c_buffer.defined()) {
     InvalidateLastFragmentFillValue(logical_gemm_c_buffer);
   }
+
   if (!gemm_clear_accum_) {
     Stmt body =
         GenerateAccumulatingMatmulSequence(op, retain_in0, retain_in1, publish_transport_out,
@@ -5050,6 +5095,8 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceForOutputRequirement(int out_req_ind
   // 1. Initialize MM engine
   stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
                                     {IntImm32(in0_id), IntImm32(in1_id)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out_id)}));
   stmts.push_back(MakeBlackholeCall(
       blackhole_mm_init(),
       {IntImm32(in0_id), IntImm32(in1_id), IntImm32(out_id)}));
@@ -5106,8 +5153,6 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceForOutputRequirement(int out_req_ind
         blackhole_cb_reserve_back(),
         {IntImm32(out_id), IntImm32(num_c_tiles)}));
   }
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out_id)}));
   for (int out_tile = 0; out_tile < num_c_tiles; ++out_tile) {
     std::vector<PrimExpr> pack_args = {IntImm32(out_tile), IntImm32(out_id)};
     if (!publish_out) {
@@ -5494,13 +5539,13 @@ Stmt PlanTTKernelABI::PublishLocalBufferToExactTiledCB(const Buffer& src,
       blackhole_cb_reserve_back(), {IntImm32(cb_value.cb_id), IntImm32(cb_value.num_tiles)})};
   if (requires_cast_bridge) {
     stmts.push_back(MakeBlackholeCall(
-        blackhole_cast_fragment_slice_to_tiled_cb(),
+        blackhole_tilize_cast_fragment_slice(),
         {cb_value.buffer->data, physical_src->data, IntImm32(cb_value.cb_id), IntImm32(0),
          IntImm32(0), IntImm32(static_cast<int>(cb_value.num_elements)),
          IntImm32(static_cast<int>(cb_value.row_width))}));
   } else {
     stmts.push_back(MakeBlackholeCall(
-        blackhole_write_local_fragment_slice_to_tiled_cb(),
+        blackhole_tilize_local_fragment_slice(),
         {physical_src->data, IntImm32(cb_value.cb_id), IntImm32(0),
          IntImm32(static_cast<int>(cb_value.num_elements)),
          IntImm32(static_cast<int>(cb_value.row_width))}));
@@ -5521,7 +5566,7 @@ Stmt PlanTTKernelABI::MaterializeExactTiledCBToLocalBuffer(const Buffer& dst,
   constexpr int kTileElements = kBlackholeTileRows * kBlackholeTileCols;
   for (int tile = 0; tile < cb_value.num_tiles; ++tile) {
     stmts.push_back(MakeBlackholeCall(
-        blackhole_read_cb_front_tile_to_local_fragment(),
+        blackhole_untilize_cb_front_tile_fragment(),
         {physical_dst->data, IntImm32(cb_value.cb_id), IntImm32(tile), IntImm32(tile * kTileElements)}));
   }
   if (pop_front) {
@@ -5625,27 +5670,34 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
                                                            bool materialize_live_form_to_local_state,
                                                            int publish_cb_id,
                                                            int materialized_cast_cb_id,
-                                                           bool merge_with_zero_reload) {
+                                                           bool merge_with_zero_reload,
+                                                           int live_reload_cb_id,
+                                                           const Buffer& live_reload_buffer) {
   InvalidateLastFragmentFillValue(dst);
   const std::string dst_buffer_name = BufferIdentityName(dst);
+  const bool use_live_reload = !merge_with_zero_reload && live_reload_cb_id >= 0;
   const BlackholeBufferMaterializationFact* fact = FindBufferMaterializationFact(dst);
-  ICHECK(fact != nullptr)
-      << "PlanTTKernelABI requires buffer materialization fact for "
-         "merge_fragment_tiles destination "
-      << dst_buffer_name;
-  ICHECK(!fact->bridge_kind.empty())
-      << "PlanTTKernelABI requires bridge_kind in buffer materialization fact for "
-      << dst_buffer_name;
-  ICHECK(!fact->execution_protocol.empty())
-      << "PlanTTKernelABI requires execution_protocol in buffer materialization fact for "
-      << dst_buffer_name;
-  ICHECK_EQ(fact->bridge_kind, "tile_nfaces_materialization")
-      << "PlanTTKernelABI does not support buffer-materialization bridge_kind "
-      << fact->bridge_kind
-      << " for " << dst_buffer_name;
-  ICHECK_EQ(fact->execution_protocol, "dst_cb_binary_pack")
-      << "PlanTTKernelABI does not support buffer-materialization execution_protocol "
-      << fact->execution_protocol << " for " << dst_buffer_name;
+  if (!merge_with_zero_reload && !use_live_reload) {
+    ICHECK(fact != nullptr)
+        << "PlanTTKernelABI requires buffer materialization fact or exact live-CB state for "
+           "merge_fragment_tiles destination "
+        << dst_buffer_name;
+  }
+  if (fact != nullptr) {
+    ICHECK(!fact->bridge_kind.empty())
+        << "PlanTTKernelABI requires bridge_kind in buffer materialization fact for "
+        << dst_buffer_name;
+    ICHECK(!fact->execution_protocol.empty())
+        << "PlanTTKernelABI requires execution_protocol in buffer materialization fact for "
+        << dst_buffer_name;
+    ICHECK_EQ(fact->bridge_kind, "tile_nfaces_materialization")
+        << "PlanTTKernelABI does not support buffer-materialization bridge_kind "
+        << fact->bridge_kind
+        << " for " << dst_buffer_name;
+    ICHECK_EQ(fact->execution_protocol, "dst_cb_binary_pack")
+        << "PlanTTKernelABI does not support buffer-materialization execution_protocol "
+        << fact->execution_protocol << " for " << dst_buffer_name;
+  }
   ICHECK_GT(gemm_c_dtype_.bytes(), 0)
       << "Blackhole accumulator-merge lowering requires a valid destination dtype for "
       << dst_buffer_name;
@@ -5653,30 +5705,54 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
                             gemm_c_dtype_.bytes();
   const Buffer physical_dst = ResolvePhysicalComputeBuffer(dst);
   if (!merge_with_zero_reload) {
+    if (use_live_reload) {
+      ICHECK(live_reload_buffer.defined())
+          << "Blackhole live accumulator-merge lowering requires a live reload buffer for "
+          << dst_buffer_name;
+    } else {
+      ICHECK_GE(reload_cb_id, 0)
+          << "Blackhole accumulator-merge lowering requires a reload CB for "
+          << dst_buffer_name;
+      ICHECK(reload_buffer.defined())
+          << "Blackhole accumulator-merge lowering requires a reload buffer for "
+          << dst_buffer_name;
+    }
     RecordExactComputeOpPlan("binary", "add_tiles",
-                             {{"lhs", reload_buffer, "identity"},
+                             {{use_live_reload ? "lhs" : "lhs",
+                               use_live_reload ? live_reload_buffer : reload_buffer, "identity"},
                               {"rhs", partials_buffer, "identity"},
                               {"output", dst, "identity"}});
   }
 
   std::vector<Stmt> stmts;
   if (!merge_with_zero_reload) {
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
-                                      {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
-    for (int tile = 0; tile < num_c_tiles; ++tile) {
+    if (use_live_reload) {
       stmts.push_back(MakeBlackholeCall(
-          blackhole_write_local_fragment_tile_to_cb(),
-          {physical_dst->data, IntImm32(reload_cb_id), IntImm32(tile),
-           IntImm32(tile * tile_elements)}));
+          blackhole_reconfig_data_format(),
+          {IntImm32(live_reload_cb_id), IntImm32(partials_cb_id)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_add_tiles_init(),
+          {IntImm32(live_reload_cb_id), IntImm32(partials_cb_id)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_wait_front(), {IntImm32(live_reload_cb_id), IntImm32(num_c_tiles)}));
+    } else {
+      stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                        {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
+      for (int tile = 0; tile < num_c_tiles; ++tile) {
+          stmts.push_back(MakeBlackholeCall(
+              blackhole_pack_untilize_tile(),
+              {physical_dst->data, IntImm32(reload_cb_id), IntImm32(tile),
+               IntImm32(tile * tile_elements)}));
+      }
+      stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                        {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
+                                        {IntImm32(reload_cb_id), IntImm32(partials_cb_id)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_init(),
+                                        {IntImm32(reload_cb_id), IntImm32(partials_cb_id)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                        {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
     }
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
-                                      {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_init(),
-                                      {IntImm32(reload_cb_id), IntImm32(partials_cb_id)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
-                                      {IntImm32(reload_cb_id), IntImm32(partials_cb_id)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
-                                      {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
   }
   stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
                                     {IntImm32(partials_cb_id), IntImm32(num_c_tiles)}));
@@ -5707,9 +5783,16 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
       stmts.push_back(MakeBlackholeCall(blackhole_copy_tile(),
                                         {IntImm32(partials_cb_id), IntImm32(tile), IntImm32(0)}));
     } else {
-      stmts.push_back(MakeBlackholeCall(blackhole_add_tiles(),
-                                        {IntImm32(reload_cb_id), IntImm32(partials_cb_id),
-                                         IntImm32(tile), IntImm32(tile), IntImm32(0)}));
+      if (use_live_reload) {
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_add_tiles(),
+            {IntImm32(live_reload_cb_id), IntImm32(partials_cb_id),
+             IntImm32(tile), IntImm32(tile), IntImm32(0)}));
+      } else {
+        stmts.push_back(MakeBlackholeCall(blackhole_add_tiles(),
+                                          {IntImm32(reload_cb_id), IntImm32(partials_cb_id),
+                                           IntImm32(tile), IntImm32(tile), IntImm32(0)}));
+      }
     }
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
@@ -5733,9 +5816,14 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
     }
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
   }
-  if (!merge_with_zero_reload) {
+  if (!merge_with_zero_reload && !use_live_reload) {
     stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
                                       {IntImm32(reload_cb_id), IntImm32(num_c_tiles)}));
+  }
+  if (use_live_reload) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                      {IntImm32(live_reload_cb_id),
+                                       IntImm32(num_c_tiles)}));
   }
   stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
                                     {IntImm32(partials_cb_id), IntImm32(num_c_tiles)}));
@@ -5747,7 +5835,7 @@ Stmt PlanTTKernelABI::GenerateMergeFragmentTilesSequence(const Buffer& dst,
     stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
                                       {IntImm32(live_form_cb_id), IntImm32(num_c_tiles)}));
     for (int tile = 0; tile < num_c_tiles; ++tile) {
-      stmts.push_back(MakeBlackholeCall(blackhole_read_cb_front_tile_to_local_fragment(),
+      stmts.push_back(MakeBlackholeCall(blackhole_untilize_cb_front_tile_fragment(),
                                         {physical_dst->data, IntImm32(live_form_cb_id), IntImm32(tile),
                                          IntImm32(tile * tile_elements)}));
     }
@@ -5792,6 +5880,8 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
 
   stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
                                     {IntImm32(in0_id), IntImm32(in1_id)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out_id)}));
   stmts.push_back(MakeBlackholeCall(blackhole_mm_init(),
                                     {IntImm32(in0_id), IntImm32(in1_id), IntImm32(out_id)}));
   stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
@@ -5817,7 +5907,6 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
     stmts.push_back(
         MakeBlackholeCall(blackhole_mm_init_short(), {IntImm32(in0_id), IntImm32(in1_id)}));
   }
-
   stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
                                     {IntImm32(in0_id), IntImm32(num_a_tiles)}));
   stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
@@ -5856,8 +5945,6 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
     stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
                                       {IntImm32(out_id), IntImm32(num_c_tiles)}));
   }
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out_id)}));
   for (int out_tile = 0; out_tile < num_c_tiles; ++out_tile) {
     std::vector<PrimExpr> pack_args = {IntImm32(out_tile), IntImm32(out_id)};
     if (!publish_out) {
@@ -5978,28 +6065,41 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
   scratch_req.consume_pages_per_event =
       std::max(scratch_req.consume_pages_per_event, num_c_tiles);
 
-  Buffer reload_buffer = CreateFragmentMergeReloadBuffer(gemm_c_buffer_);
-  const int reload_req_index = AllocateRequirementIndex(reload_buffer, CBType::kIntermediate);
-  SetRequirementPageLayout(reload_req_index, c_tile_bytes, num_c_tiles);
-  auto& reload_req = cb_requirements_.at(reload_req_index);
-  reload_req.data_format = DataTypeToDataFormat(gemm_c_dtype_);
-  reload_req.flow_class = CBFlowClass::kStream;
-  reload_req.publish_pages_per_event =
-      std::max(reload_req.publish_pages_per_event, num_c_tiles);
-  reload_req.consume_pages_per_event =
-      std::max(reload_req.consume_pages_per_event, num_c_tiles);
-  MarkRequirementLifetimeOverlap(scratch_req_index, reload_req_index);
+  ExactTiledCBValue live_reload_value;
+  const bool use_live_reload =
+      !merge_with_zero_reload && TryCreateLiveExactTiledCBValue(gemm_c_buffer_, &live_reload_value);
+
+  Buffer reload_buffer;
+  int reload_req_index = -1;
+  if (!merge_with_zero_reload && !use_live_reload) {
+    reload_buffer = CreateFragmentMergeReloadBuffer(gemm_c_buffer_);
+    reload_req_index = AllocateRequirementIndex(reload_buffer, CBType::kIntermediate);
+    SetRequirementPageLayout(reload_req_index, c_tile_bytes, num_c_tiles);
+    auto& reload_req = cb_requirements_.at(reload_req_index);
+    reload_req.data_format = DataTypeToDataFormat(gemm_c_dtype_);
+    reload_req.flow_class = CBFlowClass::kStream;
+    reload_req.publish_pages_per_event =
+        std::max(reload_req.publish_pages_per_event, num_c_tiles);
+    reload_req.consume_pages_per_event =
+        std::max(reload_req.consume_pages_per_event, num_c_tiles);
+    MarkRequirementLifetimeOverlap(scratch_req_index, reload_req_index);
+  }
+  if (use_live_reload) {
+    MarkRequirementLifetimeOverlap(scratch_req_index, live_reload_value.cb_id);
+  }
 
   Buffer live_form_buffer;
   int live_form_req_index = -1;
   bool materialize_live_form_to_local_state = false;
   const bool use_tiled_cb_live_form =
-      preserve_out_local_state && BufferUsesTiledCBLiveForm(gemm_c_buffer_);
+      preserve_out_local_state &&
+      (BufferUsesTiledCBLiveForm(gemm_c_buffer_) || use_live_reload);
   if (preserve_out_local_state) {
     const std::string output_identity = BufferIdentityName(gemm_c_buffer_);
     const bool reuse_seeded_source_live_cb =
         use_tiled_cb_live_form && seeded_cb_requirement_names_.count(output_identity) != 0U &&
-        gemm_c_req_index_ >= 0 && IsSingleFullTileLogicalMatrix(gemm_c_buffer_);
+        gemm_c_req_index_ >= 0 && IsSingleFullTileLogicalMatrix(gemm_c_buffer_) &&
+        (!use_live_reload || gemm_c_req_index_ != live_reload_value.cb_id);
     if (reuse_seeded_source_live_cb) {
       live_form_buffer = gemm_c_buffer_;
       live_form_req_index = gemm_c_req_index_;
@@ -6018,12 +6118,20 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
     auto& live_form_req = cb_requirements_.at(live_form_req_index);
     live_form_req.data_format = DataTypeToDataFormat(live_form_storage_dtype);
     live_form_req.flow_class = CBFlowClass::kStream;
+    if (use_live_reload) {
+      live_form_req.flow_class = CBFlowClass::kState;
+    }
     live_form_req.publish_pages_per_event =
         std::max(live_form_req.publish_pages_per_event, num_c_tiles);
     live_form_req.consume_pages_per_event =
         std::max(live_form_req.consume_pages_per_event, num_c_tiles);
     MarkRequirementLifetimeOverlap(scratch_req_index, live_form_req_index);
-    MarkRequirementLifetimeOverlap(reload_req_index, live_form_req_index);
+    if (reload_req_index >= 0) {
+      MarkRequirementLifetimeOverlap(reload_req_index, live_form_req_index);
+    }
+    if (use_live_reload && live_reload_value.cb_id != live_form_req_index) {
+      MarkRequirementLifetimeOverlap(live_reload_value.cb_id, live_form_req_index);
+    }
     materialize_live_form_to_local_state = !use_tiled_cb_live_form;
   }
 
@@ -6032,7 +6140,12 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
       CanPublishPostMergeCastWithPackTile(*post_merge_cast, post_merge_cast_order_index)) {
     materialized_cast_req_index = PreparePostMergeCastPublishCB(*post_merge_cast, num_c_tiles);
     MarkRequirementLifetimeOverlap(scratch_req_index, materialized_cast_req_index);
-    MarkRequirementLifetimeOverlap(reload_req_index, materialized_cast_req_index);
+    if (reload_req_index >= 0) {
+      MarkRequirementLifetimeOverlap(reload_req_index, materialized_cast_req_index);
+    }
+    if (use_live_reload && live_reload_value.cb_id != materialized_cast_req_index) {
+      MarkRequirementLifetimeOverlap(live_reload_value.cb_id, materialized_cast_req_index);
+    }
     if (live_form_req_index >= 0) {
       MarkRequirementLifetimeOverlap(live_form_req_index, materialized_cast_req_index);
     }
@@ -6069,7 +6182,8 @@ Stmt PlanTTKernelABI::GenerateAccumulatingMatmulSequence(const CallNode* op,
       live_form_req_index, live_form_buffer, IntImm32(static_cast<int>(num_elements)),
       num_c_tiles, materialize_live_form_to_local_state,
       publish_transport_out ? gemm_c_req_index_ : -1, materialized_cast_req_index,
-      merge_with_zero_reload));
+      merge_with_zero_reload, use_live_reload ? live_reload_value.cb_id : -1,
+      use_live_reload ? live_reload_value.buffer : Buffer()));
   if (use_tiled_cb_live_form) {
     RecordTiledCBLiveFormAliases(gemm_c_buffer_, live_form_req_index);
   }
@@ -7448,8 +7562,9 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
         stmts.push_back(MakeBlackholeCall(
             blackhole_copy_tile(), {IntImm32(reduced.cb_id), IntImm32(tile), IntImm32(1)}));
         stmts.push_back(MakeBlackholeCall(blackhole_binary_max_tile_init(), {}));
-        stmts.push_back(
-            MakeBlackholeCall(blackhole_binary_max_tile(), {IntImm32(0), IntImm32(1), IntImm32(0)}));
+        stmts.push_back(MakeBlackholeCall(
+            blackhole_binary_max_tile(),
+            {IntImm32(0), IntImm32(1), IntImm32(0), StringImm("C")}));
       }
       stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
       stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
@@ -7536,6 +7651,10 @@ Stmt PlanTTKernelABI::GenerateRowBroadcastSequence(const RowBroadcastMatch& matc
   ExactTiledCBValue dst_in = CreateExactInputCBValue(match.dst, "row_bcast_dst");
   ExactTiledCBValue scalar_in = CreateExactInputCBValue(match.scalar, "row_bcast_scalar");
   ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "row_bcast_out");
+  const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.dst);
+  const int tiles_per_row =
+      logical_rows > 0 && logical_cols > 0 ? std::max(1, CeilDivToInt(logical_cols, kBlackholeTileCols))
+                                           : std::max(1, dst_in.num_tiles / std::max(1, scalar_in.num_tiles));
 
   std::vector<Stmt> stmts;
   if (Stmt publish_dst = PublishExactInputToTiledCB(match.dst, &dst_in); publish_dst.defined()) {
@@ -7548,22 +7667,69 @@ Stmt PlanTTKernelABI::GenerateRowBroadcastSequence(const RowBroadcastMatch& matc
 
   ExactTiledCBValue* scalar_operand = &scalar_in;
   ExactTiledCBValue reciprocal;
+  ExactTiledCBValue scalar_full;
+  ExactTiledCBValue scalar_full_ones;
   if (match.kind == "div") {
-    reciprocal = CreateEmptyExactTiledCBValue(match.scalar, "row_bcast_recip");
-    MarkExactCBValuesOverlap({scalar_in.cb_id, reciprocal.cb_id});
+    scalar_full = CreateEmptyExactTiledCBValue(match.dst, "row_bcast_scalar_full");
+    scalar_full_ones = CreateConstantExactTiledCBValue(match.dst->dtype, "row_bcast_one");
+    reciprocal = CreateEmptyExactTiledCBValue(match.dst, "row_bcast_recip");
+    MarkExactCBValuesOverlap({scalar_in.cb_id, scalar_full_ones.cb_id, scalar_full.cb_id,
+                              reciprocal.cb_id});
+    RecordExactComputeOpPlan("binary", "mul_tiles_bcast_cols",
+                             {{"lhs", scalar_full_ones.buffer, "identity"},
+                              {"rhs", match.scalar, "broadcast"},
+                              {"output", scalar_full.buffer, "identity"}});
     RecordExactComputeOpPlan("unary", "recip_tile",
-                             {{"input", match.scalar, "identity"},
+                             {{"input", scalar_full.buffer, "identity"},
                               {"output", reciprocal.buffer, "identity"}});
+    stmts.push_back(PublishConstantToExactTiledCB(
+        scalar_full_ones.buffer, make_const(match.dst->dtype, 1.0), scalar_full_ones));
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                      {IntImm32(scalar_full.cb_id), IntImm32(scalar_full.num_tiles)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                      {IntImm32(scalar_full_ones.cb_id),
+                                       IntImm32(scalar_full_ones.num_tiles)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                      {IntImm32(scalar_in.cb_id), IntImm32(scalar_in.num_tiles)}));
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_reconfig_data_format(),
+        {IntImm32(scalar_full_ones.cb_id), IntImm32(scalar_in.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_mul_bcast_cols_init_short(),
+                                      {IntImm32(scalar_full_ones.cb_id), IntImm32(scalar_in.cb_id)}));
+    for (int tile = 0; tile < scalar_full.num_tiles; ++tile) {
+      const int rhs_tile = tile / tiles_per_row;
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_mul_tiles_bcast_cols(),
+          {IntImm32(scalar_full_ones.cb_id), IntImm32(scalar_in.cb_id), IntImm32(0),
+           IntImm32(rhs_tile), IntImm32(0)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+      stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
+                                        {IntImm32(scalar_full.cb_id)}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_pack_tile(), {IntImm32(0), IntImm32(scalar_full.cb_id), IntImm32(tile)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+    }
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_cb_pop_front(),
+        {IntImm32(scalar_full_ones.cb_id), IntImm32(scalar_full_ones.num_tiles)}));
+    if (!scalar_in.borrowed_live) {
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_cb_pop_front(), {IntImm32(scalar_in.cb_id), IntImm32(scalar_in.num_tiles)}));
+    }
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_cb_push_back(), {IntImm32(scalar_full.cb_id), IntImm32(scalar_full.num_tiles)}));
     stmts.push_back(
         MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(reciprocal.cb_id), IntImm32(reciprocal.num_tiles)}));
     stmts.push_back(
-        MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scalar_in.cb_id), IntImm32(scalar_in.num_tiles)}));
+        MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scalar_full.cb_id), IntImm32(scalar_full.num_tiles)}));
     for (int tile = 0; tile < reciprocal.num_tiles; ++tile) {
       stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
       stmts.push_back(
-          MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(), {IntImm32(scalar_in.cb_id)}));
+          MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(), {IntImm32(scalar_full.cb_id)}));
       stmts.push_back(
-          MakeBlackholeCall(blackhole_copy_tile(), {IntImm32(scalar_in.cb_id), IntImm32(tile), IntImm32(0)}));
+          MakeBlackholeCall(blackhole_copy_tile(), {IntImm32(scalar_full.cb_id), IntImm32(tile), IntImm32(0)}));
       stmts.push_back(MakeBlackholeCall(blackhole_recip_tile_init(), {}));
       stmts.push_back(MakeBlackholeCall(blackhole_recip_tile(), {IntImm32(0)}));
       stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
@@ -7574,22 +7740,17 @@ Stmt PlanTTKernelABI::GenerateRowBroadcastSequence(const RowBroadcastMatch& matc
                                         {IntImm32(0), IntImm32(reciprocal.cb_id), IntImm32(tile)}));
       stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
     }
-    if (!scalar_in.borrowed_live) {
-      stmts.push_back(
-          MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(scalar_in.cb_id), IntImm32(scalar_in.num_tiles)}));
-    }
+    stmts.push_back(MakeBlackholeCall(
+        blackhole_cb_pop_front(), {IntImm32(scalar_full.cb_id), IntImm32(scalar_full.num_tiles)}));
     stmts.push_back(
         MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(reciprocal.cb_id), IntImm32(reciprocal.num_tiles)}));
     scalar_operand = &reciprocal;
   }
 
-  const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.dst);
-  const int tiles_per_row =
-      logical_rows > 0 && logical_cols > 0 ? std::max(1, CeilDivToInt(logical_cols, kBlackholeTileCols))
-                                           : std::max(1, dst_in.num_tiles / std::max(1, scalar_operand->num_tiles));
-  RecordExactComputeOpPlan("binary", "mul_tiles_bcast_cols",
+  RecordExactComputeOpPlan("binary", match.kind == "div" ? "mul_tiles" : "mul_tiles_bcast_cols",
                            {{"lhs", match.dst, "identity"},
-                            {"rhs", scalar_operand->buffer, "broadcast"},
+                            {"rhs", scalar_operand->buffer,
+                             match.kind == "div" ? "identity" : "broadcast"},
                             {"output", match.dst, "identity"}});
 
   MarkExactCBValuesOverlap({dst_in.cb_id, scalar_operand->cb_id, out.cb_id});
@@ -7601,14 +7762,25 @@ Stmt PlanTTKernelABI::GenerateRowBroadcastSequence(const RowBroadcastMatch& matc
       MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scalar_operand->cb_id), IntImm32(scalar_operand->num_tiles)}));
   stmts.push_back(MakeBlackholeCall(
       blackhole_reconfig_data_format(), {IntImm32(dst_in.cb_id), IntImm32(scalar_operand->cb_id)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_mul_bcast_cols_init_short(),
-                                    {IntImm32(dst_in.cb_id), IntImm32(scalar_operand->cb_id)}));
+  if (match.kind == "div") {
+    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
+                                      {IntImm32(dst_in.cb_id), IntImm32(scalar_operand->cb_id)}));
+  } else {
+    stmts.push_back(MakeBlackholeCall(blackhole_mul_bcast_cols_init_short(),
+                                      {IntImm32(dst_in.cb_id), IntImm32(scalar_operand->cb_id)}));
+  }
   for (int tile = 0; tile < out.num_tiles; ++tile) {
     const int rhs_tile = tile / tiles_per_row;
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_bcast_cols(),
-                                      {IntImm32(dst_in.cb_id), IntImm32(scalar_operand->cb_id),
-                                       IntImm32(tile), IntImm32(rhs_tile), IntImm32(0)}));
+    if (match.kind == "div") {
+      stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
+                                        {IntImm32(dst_in.cb_id), IntImm32(scalar_operand->cb_id),
+                                         IntImm32(tile), IntImm32(tile), IntImm32(0)}));
+    } else {
+      stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_bcast_cols(),
+                                        {IntImm32(dst_in.cb_id), IntImm32(scalar_operand->cb_id),
+                                         IntImm32(tile), IntImm32(rhs_tile), IntImm32(0)}));
+    }
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
     stmts.push_back(
@@ -8566,7 +8738,8 @@ Stmt PlanTTKernelABI::GenerateScalarMaxSequence(const ScalarMaxMatch& match) {
                                       {IntImm32(src_in.cb_id), IntImm32(tile), IntImm32(1)}));
     stmts.push_back(MakeBlackholeCall(blackhole_binary_max_tile_init(), {}));
     stmts.push_back(MakeBlackholeCall(blackhole_binary_max_tile(),
-                                      {IntImm32(0), IntImm32(1), IntImm32(0)}));
+                                      {IntImm32(0), IntImm32(1), IntImm32(0),
+                                       StringImm("C")}));
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
     stmts.push_back(
@@ -8874,7 +9047,7 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
             match, *fact, cb_id, num_elements_expr,
             pack_thread_direct_fill_value.defined()
                 ? buffer_materialization::kPackThreadDirectStore
-                : buffer_materialization::kCastFragmentSliceToTiledCB);
+                : buffer_materialization::kTilizeCastFragmentSlice);
       }
     }
   }
@@ -8931,13 +9104,13 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
       }
       if (current_order_index >= 0) {
         const FutureBufferUses future_uses =
-            ClassifyFutureBufferUses(match.src, current_order_index);
+            ClassifyFutureLiveCBReadsBeforeNextWrite(match.src, current_order_index);
         if (!future_uses.has_compute_consume && !future_uses.has_transport_consume &&
             !future_uses.has_reference) {
           stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
                                             {IntImm32(live_source.cb_id),
                                              IntImm32(live_source.num_tiles)}));
-          ClearTiledCBLiveFormIdentity(BufferIdentityName(match.src));
+          ClearTiledCBLiveFormAliases(match.src);
         }
       }
       stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_cb_push_back(),
@@ -8959,7 +9132,7 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
       last_fragment_fill_value_by_data_.erase(BufferDataIdentity(match.src));
     } else {
       stmts.push_back(
-          MakeBlackholeCall(tir::builtin::blackhole_cast_fragment_slice_to_tiled_cb(),
+          MakeBlackholeCall(tir::builtin::blackhole_tilize_cast_fragment_slice(),
                             {physical_dst->data, physical_src->data, IntImm32(cb_id),
                              match.dst_offset, match.src_offset, num_elements_expr,
                              tiled_republish_row_width}));
@@ -8982,7 +9155,9 @@ Stmt PlanTTKernelABI::GenerateFragmentCastSequence(const FragmentCastMatch& matc
 PlanTTKernelABI::FutureBufferUses PlanTTKernelABI::ClassifyFutureBufferUses(
     const Buffer& buffer, int current_order_index) const {
   FutureBufferUses uses;
-  for (const std::string& buffer_identity : CollectBufferFlowIdentities(buffer)) {
+  const std::vector<std::string> identities = CollectBufferFlowIdentities(buffer);
+  int next_write_order_index = -1;
+  for (const std::string& buffer_identity : identities) {
     auto it = buffer_flow_facts_.find(buffer_identity);
     if (it == buffer_flow_facts_.end()) {
       continue;
@@ -8992,7 +9167,78 @@ PlanTTKernelABI::FutureBufferUses PlanTTKernelABI::ClassifyFutureBufferUses(
         continue;
       }
       if (event.kind == BlackholeBufferFlowEventKind::kWrite) {
-        break;
+        if (next_write_order_index < 0 || event.order_index < next_write_order_index) {
+          next_write_order_index = event.order_index;
+        }
+      }
+    }
+  }
+  for (const std::string& buffer_identity : identities) {
+    auto it = buffer_flow_facts_.find(buffer_identity);
+    if (it == buffer_flow_facts_.end()) {
+      continue;
+    }
+    for (const BlackholeBufferFlowEvent& event : it->second.events) {
+      if (event.order_index <= current_order_index) {
+        continue;
+      }
+      if (next_write_order_index >= 0 && event.order_index > next_write_order_index) {
+        continue;
+      }
+      if (event.kind == BlackholeBufferFlowEventKind::kWrite) {
+        continue;
+      }
+      if (event.kind == BlackholeBufferFlowEventKind::kComputeConsume) {
+        uses.has_compute_consume = true;
+        continue;
+      }
+      if (event.kind == BlackholeBufferFlowEventKind::kTransportConsume) {
+        uses.has_transport_consume = true;
+        continue;
+      }
+      if (event.kind == BlackholeBufferFlowEventKind::kReference) {
+        uses.has_reference = true;
+      }
+    }
+  }
+  return uses;
+}
+
+PlanTTKernelABI::FutureBufferUses
+PlanTTKernelABI::ClassifyFutureLiveCBReadsBeforeNextWrite(
+    const Buffer& buffer, int current_order_index) const {
+  FutureBufferUses uses;
+  const std::vector<std::string> identities = CollectBufferFlowIdentities(buffer);
+  int next_write_order_index = -1;
+  for (const std::string& buffer_identity : identities) {
+    auto it = buffer_flow_facts_.find(buffer_identity);
+    if (it == buffer_flow_facts_.end()) {
+      continue;
+    }
+    for (const BlackholeBufferFlowEvent& event : it->second.events) {
+      if (event.order_index <= current_order_index) {
+        continue;
+      }
+      if (event.kind == BlackholeBufferFlowEventKind::kWrite &&
+          (next_write_order_index < 0 || event.order_index < next_write_order_index)) {
+        next_write_order_index = event.order_index;
+      }
+    }
+  }
+  for (const std::string& buffer_identity : identities) {
+    auto it = buffer_flow_facts_.find(buffer_identity);
+    if (it == buffer_flow_facts_.end()) {
+      continue;
+    }
+    for (const BlackholeBufferFlowEvent& event : it->second.events) {
+      if (event.order_index <= current_order_index) {
+        continue;
+      }
+      if (next_write_order_index >= 0 && event.order_index >= next_write_order_index) {
+        continue;
+      }
+      if (event.kind == BlackholeBufferFlowEventKind::kWrite) {
+        continue;
       }
       if (event.kind == BlackholeBufferFlowEventKind::kComputeConsume) {
         uses.has_compute_consume = true;
@@ -9018,6 +9264,9 @@ bool PlanTTKernelABI::ShouldRetainComputeInputBuffer(const Buffer& buffer,
 bool PlanTTKernelABI::ShouldReacquireComputeInputBuffer(const Buffer& buffer,
                                                           int current_order_index) const {
   if (GetStorageScope(buffer) != "blackhole.acc") {
+    return false;
+  }
+  if (FindBufferMaterializationFact(buffer) != nullptr || BufferUsesTiledCBLiveForm(buffer)) {
     return false;
   }
   for (const std::string& buffer_identity : CollectBufferFlowIdentities(buffer)) {
@@ -9213,6 +9462,17 @@ Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
                                         {IntImm32(0), IntImm32(cb_id), IntImm32(tile)}));
       stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
     }
+    if (current_lowering_order_index_ >= 0) {
+      const FutureBufferUses future_uses = ClassifyFutureLiveCBReadsBeforeNextWrite(
+          live_source_candidate, current_lowering_order_index_);
+      if (!future_uses.has_compute_consume && !future_uses.has_transport_consume &&
+          !future_uses.has_reference) {
+        stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                          {IntImm32(live_source.cb_id),
+                                           IntImm32(live_source.num_tiles)}));
+        ClearTiledCBLiveFormAliases(live_source_candidate);
+      }
+    }
     stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
                                       {IntImm32(cb_id), IntImm32(num_pages)}));
     return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
@@ -9227,7 +9487,7 @@ Stmt PlanTTKernelABI::GenerateLocalToCBSliceLoopSequence(const ForNode* op,
     loop_stmts.push_back(lowered_prefix);
   }
   loop_stmts.push_back(
-      MakeBlackholeCall(blackhole_write_local_fragment_slice_to_tiled_cb(),
+      MakeBlackholeCall(blackhole_tilize_local_fragment_slice(),
                         {match.src->data, IntImm32(cb_id), match.dst_offset_elements,
                          match.num_elements, match.row_width}));
   Stmt loop_body =
@@ -9526,11 +9786,13 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
         if (const auto* next_cast_loop = AsUnwrappedFor(op->seq[i + 1])) {
           if (MatchDirectFragmentCast(next_cast_loop, &post_merge_cast)) {
             post_merge_cast_ptr = &post_merge_cast;
-            const auto next_order_it = stmt_order_index_by_node_.find(op->seq[i + 1].get());
+            const auto next_order_it = stmt_order_index_by_node_.find(next_cast_loop);
             post_merge_cast_order_index =
                 next_order_it != stmt_order_index_by_node_.end()
                     ? next_order_it->second
                     : static_cast<int>(i + 1);
+            post_merge_cast_order_index = ResolveCurrentBufferTransferOrder(
+                post_merge_cast.src, post_merge_cast.dst, post_merge_cast_order_index);
           }
         }
       }
@@ -9556,8 +9818,16 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       FragmentCastMatch cast_match;
       if (fill_loop && cast_loop && MatchDirectFragmentFill(fill_loop, &fill_match) &&
           MatchDirectFragmentCast(cast_loop, &cast_match)) {
+        const auto cast_order_it = stmt_order_index_by_node_.find(cast_loop);
+        const int cast_order_index =
+            ResolveCurrentBufferTransferOrder(
+                cast_match.src, cast_match.dst,
+                cast_order_it != stmt_order_index_by_node_.end()
+                    ? cast_order_it->second
+                    : current_order_index);
+        LoweringOrderGuard cast_order_guard(&current_lowering_order_index_, cast_order_index);
         Stmt fused =
-            GenerateFragmentFillCastPublishSequence(fill_match, cast_match, current_order_index);
+            GenerateFragmentFillCastPublishSequence(fill_match, cast_match, cast_order_index);
         if (fused.defined()) {
           rewritten.push_back(fused);
           ++i;
@@ -9569,19 +9839,27 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       if (const auto* direct_cast_loop = AsUnwrappedFor(op->seq[i])) {
         FragmentCastMatch cast_match;
         if (MatchDirectFragmentCast(direct_cast_loop, &cast_match)) {
+          const auto cast_order_it = stmt_order_index_by_node_.find(direct_cast_loop);
+          const int cast_order_index =
+              ResolveCurrentBufferTransferOrder(
+                  cast_match.src, cast_match.dst,
+                  cast_order_it != stmt_order_index_by_node_.end()
+                      ? cast_order_it->second
+                      : current_order_index);
+          LoweringOrderGuard cast_order_guard(&current_lowering_order_index_, cast_order_index);
           std::vector<Stmt> prefix;
           std::vector<Stmt> suffix;
           ValidatePublishedBufferSourceEdge(cast_match.src, cast_match.dst);
-          const bool publish_cb = ShouldPublishBufferResult(cast_match.dst, current_order_index);
+          const bool publish_cb = ShouldPublishBufferResult(cast_match.dst, cast_order_index);
           const bool source_has_live_cb =
               buffer_live_form_cb_by_buffer_identity_.count(BufferIdentityName(cast_match.src)) != 0U;
           const bool dst_has_republish_fact = FindBufferMaterializationFact(cast_match.dst) != nullptr;
           if (!(source_has_live_cb && dst_has_republish_fact && publish_cb)) {
-            AppendPublishedBufferSourceMaterialization(cast_match.src, current_order_index, &prefix,
+            AppendPublishedBufferSourceMaterialization(cast_match.src, cast_order_index, &prefix,
                                                        &suffix);
           }
           prefix.push_back(
-              GenerateFragmentCastSequence(cast_match, publish_cb, current_order_index));
+              GenerateFragmentCastSequence(cast_match, publish_cb, cast_order_index));
           prefix.insert(prefix.end(), suffix.begin(), suffix.end());
           rewritten.push_back(SeqStmt::Flatten(prefix));
           continue;

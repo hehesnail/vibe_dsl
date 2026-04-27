@@ -49,8 +49,6 @@ namespace tl {
 constexpr const char* kTLBlackholeTTMetalBuiltinSelection =
     "tl.blackhole_tt_metal_builtin_selection";
 
-bool IsHelperCompositeBlackholeBuiltin(const tvm::Op& op);
-bool UsesHelperCompositeBlackholeBuiltin(const tvm::tir::PrimFunc& func);
 tvm::transform::Pass SelectBlackholeTTMetalBuiltins();
 
 /*!
@@ -564,7 +562,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                     bool materialize_live_form_to_local_state,
                                                     int publish_cb_id,
                                                     int materialized_cast_cb_id = -1,
-                                                    bool merge_with_zero_reload = false);
+                                                    bool merge_with_zero_reload = false,
+                                                    int live_reload_cb_id = -1,
+                                                    const tvm::tir::Buffer& live_reload_buffer =
+                                                        tvm::tir::Buffer());
   tvm::tir::Buffer CreateEphemeralBufferLike(const tvm::tir::Buffer& buffer,
                                              const std::string& suffix) const;
   tvm::tir::Buffer CreateConstantTileBuffer(tvm::DataType dtype, const std::string& suffix) const;
@@ -673,8 +674,14 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool HasInterveningBufferWrite(const tvm::tir::Buffer& buffer,
                                  int live_order_index,
                                  int current_order_index) const;
+  int ResolveCurrentBufferTransferOrder(const tvm::tir::Buffer& src,
+                                        const tvm::tir::Buffer& dst,
+                                        int lower_bound_order_index) const;
   FutureBufferUses ClassifyFutureBufferUses(const tvm::tir::Buffer& buffer,
                                             int current_order_index) const;
+  FutureBufferUses ClassifyFutureLiveCBReadsBeforeNextWrite(
+      const tvm::tir::Buffer& buffer,
+      int current_order_index) const;
   const BlackholeBufferMaterializationFact* FindBufferMaterializationFact(
       const tvm::tir::Buffer& buffer) const;
   bool BufferUsesTiledCBLiveForm(const tvm::tir::Buffer& buffer) const;

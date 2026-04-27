@@ -45,8 +45,9 @@ import example_mha_fwd_bshd as mha_example
 import example_gqa_fwd_bshd as gqa_example
 
 
-HELPER_COMPOSITE_BLACKHOLE_BUILTINS = (
+FORBIDDEN_WORKLOAD_COMPOSITE_BLACKHOLE_BUILTINS = (
     "reduce_row",
+    "reduce_rows_local",
     "mul_row_bcast",
     "mul_grouped_row_bcast",
     "div_row_bcast",
@@ -55,12 +56,9 @@ HELPER_COMPOSITE_BLACKHOLE_BUILTINS = (
     "exp2_grouped_row_bcast_affine",
     "scalar_max",
     "scalar_exp2_affine",
+    "scalar_fma",
     "copy_tile_from_cb",
-)
-
-LEGACY_LOCAL_BLACKHOLE_BUILTINS = (
     "binary_max_tile_local",
-    "reduce_rows_local",
     "mul_tiles_bcast_rows_local",
     "div_tiles_bcast_rows_local",
     "exp_tiles_bcast_rows_affine_local",
@@ -128,6 +126,20 @@ def _assert_no_executable_contract_family(spec):
         "compute_epilogue_ops",
     ):
         assert legacy_key not in spec
+
+
+def _collect_executable_compute_ops(executable_spec):
+    if "segment_plan" in executable_spec:
+        return [
+            op
+            for segment in executable_spec["segment_plan"]
+            for op in segment.get("compute_ops", [])
+        ]
+    return [
+        op
+        for kernel in executable_spec.get("kernels", [])
+        for op in kernel.get("compute_ops", [])
+    ]
 
 
 def _strip_tt_program_accessor_host_axis_order(tt_program):
@@ -225,7 +237,7 @@ def test_flash_attention_forward_tt_target_emits_typed_tt_program_without_payloa
         "cast_fragment_slice",
         "tilize_cast_fragment_slice",
     }.issubset(builtin_names)
-    assert not any(name in LEGACY_LOCAL_BLACKHOLE_BUILTINS for name in builtin_names)
+    assert not any(name in FORBIDDEN_WORKLOAD_COMPOSITE_BLACKHOLE_BUILTINS for name in builtin_names)
 
 
 def test_flash_attention_tt_program_projects_two_typed_gemm_compute_ops():
@@ -280,6 +292,7 @@ def test_flash_attention_tt_program_projects_non_gemm_exact_compute_ops():
         op for op in tt_program.compute_op_plans if str(op.kind) != "gemm"
     ]
     operation_names = {str(op.operation_name) for op in non_gemm_ops}
+    assert operation_names.isdisjoint(FORBIDDEN_WORKLOAD_COMPOSITE_BLACKHOLE_BUILTINS)
     assert {
         "binary_max_tile",
         "reduce_tile",
@@ -731,7 +744,10 @@ def test_flash_attention_forward_compute_cb_ids_stay_in_compute_window():
 
     pack_cb_ids = {
         int(cb_id)
-        for cb_id in re.findall(r"\bpack_reconfig_data_format\((\d+)\)", compute_source)
+        for cb_id in re.findall(
+            r"\bpack_reconfig_data_format(?:<true>)?\((\d+)\)",
+            compute_source,
+        )
     }
 
     assert pack_cb_ids
@@ -1132,10 +1148,17 @@ def test_flash_attention_has_no_tt_program_payload_or_executable_epilogue_contra
     )
     executable_spec = _extract_blackhole_executable_spec(spec)
     builtin_names = _collect_blackhole_builtin_names(lowered)
+    tt_operation_names = {str(op.operation_name) for op in tt_program.compute_op_plans}
+    executable_operation_names = {
+        str(op["operation_name"])
+        for op in _collect_executable_compute_ops(executable_spec)
+    }
 
     assert not hasattr(tt_program, "payload")
     assert "compute_epilogue_ops" not in executable_spec
-    for builtin_name in HELPER_COMPOSITE_BLACKHOLE_BUILTINS:
+    assert tt_operation_names.isdisjoint(FORBIDDEN_WORKLOAD_COMPOSITE_BLACKHOLE_BUILTINS)
+    assert executable_operation_names.isdisjoint(FORBIDDEN_WORKLOAD_COMPOSITE_BLACKHOLE_BUILTINS)
+    for builtin_name in FORBIDDEN_WORKLOAD_COMPOSITE_BLACKHOLE_BUILTINS:
         assert f"tl.blackhole.{builtin_name}" not in builtin_names
 
 
@@ -1861,19 +1884,24 @@ def test_flash_attention_small_bf16_compute_source_publishes_output_via_typed_pa
     )
 
     assert "O_shared_local_cast" not in compute_source
-    assert re.search(
+    publish_match = re.search(
         rf"cb_reserve_back\({output_cb_id}, 1\);\s*"
         r"tile_regs_acquire\(\);\s*"
-        r"copy_tile_to_dst_init_short\(\d+\);\s*"
-        r"copy_tile\(\d+, 0, 0\);\s*"
+        r"copy_tile_to_dst_init_short\((\d+)\);\s*"
+        r"copy_tile\((\d+), 0, 0\);\s*"
         r"tile_regs_commit\(\);\s*"
         r"tile_regs_wait\(\);\s*"
-        rf"pack_reconfig_data_format\({output_cb_id}\);\s*"
+        rf"pack_reconfig_data_format(?:<true>)?\({output_cb_id}\);\s*"
         rf"pack_tile\(0, {output_cb_id}, 0\);\s*"
         r"tile_regs_release\(\);\s*"
+        r"(?P<source_lifetime>(?:cb_pop_front\(\d+, 1\);\s*)*)"
         rf"cb_push_back\({output_cb_id}, 1\);",
         compute_source,
     )
+    assert publish_match is not None
+    assert publish_match.group(1) == publish_match.group(2)
+    source_cb_id = publish_match.group(2)
+    assert f"cb_pop_front({source_cb_id}, 1);" in publish_match.group("source_lifetime")
     assert f"tilelang_cb_write_ptr_bytes_direct({output_cb_id})" not in compute_source
     assert f"tilelang_get_cb_write_ptr_bytes({output_cb_id})" not in compute_source
     assert f"get_local_cb_interface({output_cb_id}).fifo_wr_ptr" not in compute_source
@@ -2072,6 +2100,59 @@ def test_flash_attention_seq64_bf16_compute_source_reacquires_acc_s_cast_pages_b
     assert first_reserve_pos < first_push_pos < first_pop_pos < second_reserve_pos
 
 
+def test_flash_attention_seq64_bf16_republish_consumes_stale_acc_s_source_before_rewrite():
+    can_run, msg = check_blackhole_codegen_requirements()
+    if not can_run:
+        pytest.skip(f"Blackhole requirements not met: {msg}")
+
+    bf16_mha_example = _load_flash_attention_module_with_dtype(
+        mha_example.__file__, "T.bfloat16"
+    )
+    target = Target("blackhole")
+    with target:
+        artifact = lower(
+            bf16_mha_example.flashattn.jit_impl.get_tir(
+                1,
+                4,
+                64,
+                32,
+                False,
+                block_M=32,
+                block_N=32,
+                num_stages=1,
+                threads=128,
+            ),
+            target=target,
+        )
+
+    spec = _extract_blackhole_executable_spec(artifact)
+    compute = next(kernel for kernel in spec["kernels"] if str(kernel["kind"]) == "compute")
+    compute_source = str(compute["source_code"])
+    cb_by_name = {str(cb["name"]): int(cb["cb_id"]) for cb in spec["cb_configs"]}
+
+    acc_s_cb = cb_by_name["acc_s"]
+    acc_s_cast_cb = cb_by_name["acc_s_cast"]
+    source_copy = f"copy_tile({acc_s_cb}, 0, 0);"
+    cast_reserve = f"cb_reserve_back({acc_s_cast_cb}, 1);"
+    cast_push = f"cb_push_back({acc_s_cast_cb}, 1);"
+    source_pop = f"cb_pop_front({acc_s_cb}, 1);"
+    source_rereserve = f"cb_reserve_back({acc_s_cb}, 1);"
+
+    first_cast_reserve_pos = compute_source.find(cast_reserve)
+    assert first_cast_reserve_pos != -1
+    first_source_copy_pos = compute_source.find(source_copy, first_cast_reserve_pos)
+    first_cast_push_pos = compute_source.find(cast_push, first_cast_reserve_pos)
+    source_pop_pos = compute_source.find(source_pop, first_source_copy_pos)
+    second_source_reserve_pos = compute_source.find(source_rereserve, first_source_copy_pos)
+
+    assert first_source_copy_pos != -1
+    assert first_cast_push_pos != -1
+    assert source_pop_pos != -1
+    assert second_source_reserve_pos != -1
+    assert first_source_copy_pos < source_pop_pos < second_source_reserve_pos
+    assert first_source_copy_pos < first_cast_push_pos < second_source_reserve_pos
+
+
 def test_flash_attention_seq64_bf16_compute_source_packs_acc_s_cast_after_each_rereserve():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
@@ -2104,7 +2185,7 @@ def test_flash_attention_seq64_bf16_compute_source_packs_acc_s_cast_after_each_r
 
     acc_s_cast_cb = cb_by_name["acc_s_cast"]
     push = f"cb_push_back({acc_s_cast_cb}, 1);"
-    pack_reconfig = f"pack_reconfig_data_format({acc_s_cast_cb});"
+    pack_reconfig_pattern = rf"pack_reconfig_data_format(?:<true>)?\({acc_s_cast_cb}\);"
     pack_tile = f"pack_tile(0, {acc_s_cast_cb}, 0);"
 
     assert f"tilelang_get_cb_write_ptr_bytes({acc_s_cast_cb})" not in compute_source
@@ -2117,7 +2198,10 @@ def test_flash_attention_seq64_bf16_compute_source_packs_acc_s_cast_after_each_r
 
     for reserve_match in reserve_matches:
         reserve_pos = reserve_match.start()
-        pack_reconfig_pos = compute_source.find(pack_reconfig, reserve_pos)
+        pack_reconfig_match = re.search(pack_reconfig_pattern, compute_source[reserve_pos:])
+        pack_reconfig_pos = (
+            reserve_pos + pack_reconfig_match.start() if pack_reconfig_match else -1
+        )
         pack_tile_pos = compute_source.find(pack_tile, reserve_pos)
         push_pos = compute_source.find(push, reserve_pos)
         assert pack_reconfig_pos != -1
@@ -2287,10 +2371,11 @@ def test_flash_attention_seq64_bf16_compute_source_keeps_acc_s_and_acc_o_single_
     compute_source = str(compute["source_code"])
     cb_by_name = {str(cb["name"]): int(cb["cb_id"]) for cb in spec["cb_configs"]}
 
-    scores_max_prev_cb = cb_by_name["scores_max_prev"]
+    scores_max_prev_cb = cb_by_name.get("scores_max_prev")
     acc_s_cb = cb_by_name["acc_s"]
     acc_o_cb = cb_by_name["acc_o"]
-    assert f"cb_push_back({scores_max_prev_cb}, 2);" not in compute_source
+    if scores_max_prev_cb is not None:
+        assert f"cb_push_back({scores_max_prev_cb}, 2);" not in compute_source
 
     assert f"cb_reserve_back({acc_s_cb}, 1);" in compute_source
     assert f"cb_push_back({acc_s_cb}, 1);" in compute_source
@@ -2461,7 +2546,11 @@ def test_flash_attention_compute_source_hoists_output_cb_staging_as_single_windo
 
     output_cb_id = cb_by_name["O_shared"]
     reserve_pos = compute_source.find(f"cb_reserve_back({output_cb_id}, 16);")
-    pack_pos = compute_source.find(f"pack_reconfig_data_format({output_cb_id});", reserve_pos)
+    pack_match = re.search(
+        rf"pack_reconfig_data_format(?:<true>)?\({output_cb_id}\);",
+        compute_source[reserve_pos:],
+    )
+    pack_pos = reserve_pos + pack_match.start() if pack_match else -1
     push_pos = compute_source.find(f"cb_push_back({output_cb_id}, 16);")
 
     assert reserve_pos != -1
@@ -2541,27 +2630,33 @@ def test_flash_attention_compute_source_keeps_multiphase_acc_cb_layout_for_mha()
     compute_source = str(compute["source_code"])
     cb_by_name = {str(cb["name"]): int(cb["cb_id"]) for cb in spec["cb_configs"]}
     acc_s_cb = cb_by_name["acc_s"]
-    acc_o_cb = cb_by_name["acc_o"]
-    reload_cb = next(
+    reload_cbs = [
         int(cb["cb_id"])
         for cb in spec["cb_configs"]
         if str(cb["name"]).startswith("acc_s_fragment_merge_reload")
-    )
+    ]
     live_form_cb = next(
         int(cb["cb_id"])
         for cb in spec["cb_configs"]
         if str(cb["name"]).startswith("acc_s_fragment_merge_live_form")
+    )
+    acc_o_live_form_cb = next(
+        int(cb["cb_id"])
+        for cb in spec["cb_configs"]
+        if str(cb["name"]).startswith("acc_o_fragment_merge_live_form")
     )
 
     assert f"cb_reserve_back({acc_s_cb}, 16);" not in compute_source
     assert f"cb_push_back({acc_s_cb}, 16);" not in compute_source
     assert f"cb_reserve_back({acc_s_cb}, 1);" not in compute_source
     assert f"cb_push_back({acc_s_cb}, 1);" not in compute_source
-    assert f"cb_reserve_back({acc_o_cb}, 16);" in compute_source
-    assert f"cb_push_back({acc_o_cb}, 16);" in compute_source
-    assert f"cb_reserve_back({acc_o_cb}, 1);" not in compute_source
-    assert f"cb_push_back({acc_o_cb}, 1);" not in compute_source
-    assert reload_cb not in (acc_s_cb, acc_o_cb, live_form_cb)
+    assert f"cb_reserve_back({acc_o_live_form_cb}, 16);" in compute_source
+    assert f"cb_push_back({acc_o_live_form_cb}, 16);" in compute_source
+    assert f"cb_reserve_back({acc_o_live_form_cb}, 1);" not in compute_source
+    assert f"cb_push_back({acc_o_live_form_cb}, 1);" not in compute_source
+    for reload_cb in reload_cbs:
+        assert reload_cb not in (acc_s_cb, acc_o_live_form_cb, live_form_cb)
+    assert live_form_cb not in (acc_s_cb, acc_o_live_form_cb)
     assert f"cb_reserve_back({live_form_cb}, 16);" in compute_source
     assert f"cb_push_back({live_form_cb}, 16);" in compute_source
     assert "float acc_s[" in compute_source

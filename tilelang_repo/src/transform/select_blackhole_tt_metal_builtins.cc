@@ -6,12 +6,9 @@
 #include "lower_blackhole_ops.h"
 
 #include <tvm/ffi/reflection/registry.h>
-#include <tvm/ir/op.h>
 #include <tvm/ir/transform.h>
-#include <tvm/tir/stmt_functor.h>
 
-#include <string>
-#include <unordered_set>
+#include <utility>
 
 #include "common/blackhole_utils.h"
 
@@ -19,35 +16,6 @@ namespace tvm {
 namespace tl {
 
 namespace {
-
-const std::unordered_set<std::string>& HelperCompositeBlackholeBuiltinNames() {
-  static const auto* names = new std::unordered_set<std::string>{
-      "tl.blackhole.copy_tile_from_cb",
-      "tl.blackhole.write_local_slice_to_cb",
-      "tl.blackhole.write_local_fragment_tile_to_cb",
-      "tl.blackhole.write_local_fragment_slice_to_tiled_cb",
-      "tl.blackhole.cast_fragment_slice_to_tiled_cb",
-      "tl.blackhole.read_cb_front_tile_to_local",
-      "tl.blackhole.read_cb_front_tile_to_local_fragment",
-      "tl.blackhole.reduce_row",
-      "tl.blackhole.mul_row_bcast",
-      "tl.blackhole.mul_grouped_row_bcast",
-      "tl.blackhole.div_row_bcast",
-      "tl.blackhole.div_grouped_row_bcast",
-      "tl.blackhole.exp2_row_bcast_affine",
-      "tl.blackhole.exp2_grouped_row_bcast_affine",
-      "tl.blackhole.scalar_max",
-      "tl.blackhole.scalar_exp2_affine",
-      "tl.blackhole.binary_max_tile_local",
-      "tl.blackhole.reduce_rows_local",
-      "tl.blackhole.mul_tiles_bcast_rows_local",
-      "tl.blackhole.div_tiles_bcast_rows_local",
-      "tl.blackhole.exp_tiles_bcast_rows_affine_local",
-      "tl.blackhole.exp_tile_affine_local",
-      "tl.blackhole.scalar_fma",
-  };
-  return *names;
-}
 
 TTProgram WithStagedCBAndComputeOpPlans(const TTProgram& program,
                                         ffi::Array<TTCBPlan> cb_plans,
@@ -65,27 +33,6 @@ TTProgram WithStagedCBAndComputeOpPlans(const TTProgram& program,
 
 }  // namespace
 
-bool IsHelperCompositeBlackholeBuiltin(const tvm::Op& op) {
-  return HelperCompositeBlackholeBuiltinNames().count(op->name) != 0U;
-}
-
-bool UsesHelperCompositeBlackholeBuiltin(const tir::PrimFunc& func) {
-  bool found = false;
-  tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
-    if (found) {
-      return;
-    }
-    const auto* call = node.as<tir::CallNode>();
-    if (!call) {
-      return;
-    }
-    if (const auto* ir_op = call->op.as<tvm::OpNode>()) {
-      found = HelperCompositeBlackholeBuiltinNames().count(ir_op->name) != 0U;
-    }
-  });
-  return found;
-}
-
 tvm::transform::Pass SelectBlackholeTTMetalBuiltins() {
   auto pass_func = [](IRModule mod, tvm::transform::PassContext) {
     IRModule updated = mod;
@@ -96,8 +43,6 @@ tvm::transform::Pass SelectBlackholeTTMetalBuiltins() {
       }
       PlanTTKernelABI selector;
       tir::PrimFunc selected = selector.SelectComputeBuiltins(func.value());
-      ICHECK(!UsesHelperCompositeBlackholeBuiltin(selected))
-          << "SelectBlackholeTTMetalBuiltins emitted helper/composite builtin residue";
       auto staged_program = selected->GetAttr<TTProgram>(attr::kTLTTProgram);
       ICHECK(staged_program)
           << "SelectBlackholeTTMetalBuiltins requires staged tl.tt_program from PlanTTBlocks";

@@ -279,6 +279,21 @@ bool FlowFactHasEventKind(const BlackholeBufferFlowFact& flow_fact,
   return false;
 }
 
+bool FlowFactHasSameOrderConsumeAndWrite(const BlackholeBufferFlowFact& flow_fact) {
+  for (const BlackholeBufferFlowEvent& lhs : flow_fact.events) {
+    if (lhs.kind != BlackholeBufferFlowEventKind::kComputeConsume) {
+      continue;
+    }
+    for (const BlackholeBufferFlowEvent& rhs : flow_fact.events) {
+      if (rhs.kind == BlackholeBufferFlowEventKind::kWrite &&
+          rhs.order_index == lhs.order_index) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 bool ExprIsLiteralZero(const PrimExpr& expr) {
   arith::Analyzer analyzer;
   const PrimExpr simplified = analyzer.Simplify(expr);
@@ -375,7 +390,8 @@ std::optional<BlackholeBufferMaterializationFact> TryBuildRepublishBufferMateria
     const BlackholeBufferFlowFact& flow_fact) {
   if (flow_fact.buffer.empty() || !IsTrackedStateScope(flow_fact.scope) ||
       flow_fact.flow_class != CBFlowClass::kRepublish ||
-      !FlowFactHasEventKind(flow_fact, BlackholeBufferFlowEventKind::kComputeConsume)) {
+      !FlowFactHasEventKind(flow_fact, BlackholeBufferFlowEventKind::kComputeConsume) ||
+      FlowFactHasSameOrderConsumeAndWrite(flow_fact)) {
     return std::nullopt;
   }
   BlackholeBufferMaterializationFact fact;
@@ -590,6 +606,22 @@ bool StmtWritesBuffer(const tir::Stmt& stmt, const tir::Buffer& buffer) {
   tir::PostOrderVisit(stmt, [&](const ObjectRef& node) {
     if (const auto* store = node.as<tir::BufferStoreNode>()) {
       writes = writes || BufferIdentityName(store->buffer) == identity;
+      return;
+    }
+    const auto* call = node.as<tir::CallNode>();
+    if (!call || !call->op->IsInstance<OpNode>()) {
+      return;
+    }
+    TileOperator tile_op = ParseOperator(GetRef<tir::Call>(call));
+    if (!tile_op.defined()) {
+      return;
+    }
+    for (const DataflowAccessInfo& access : tile_op->GetDataflowAccessInfo()) {
+      if (access.kind == DataflowAccessKind::kComputeProduce &&
+          BufferIdentityName(access.buffer) == identity) {
+        writes = true;
+        return;
+      }
     }
   });
   return writes;
@@ -612,7 +644,8 @@ bool StmtReadsBuffer(const tir::Stmt& stmt, const tir::Buffer& buffer) {
       return;
     }
     for (const DataflowAccessInfo& access : tile_op->GetDataflowAccessInfo()) {
-      if (BufferIdentityName(access.buffer) == identity) {
+      if (access.kind == DataflowAccessKind::kComputeConsume &&
+          BufferIdentityName(access.buffer) == identity) {
         reads = true;
         return;
       }

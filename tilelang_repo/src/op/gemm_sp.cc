@@ -128,10 +128,15 @@ TileOperator GemmSPNode::Clone() const {
 }
 
 std::vector<DataflowAccessInfo> GemmSPNode::GetDataflowAccessInfo() const {
-  return {
+  std::vector<DataflowAccessInfo> accesses = {
       DataflowAccessInfo{a_, DataflowAccessKind::kComputeConsume},
       DataflowAccessInfo{b_, DataflowAccessKind::kComputeConsume},
+      DataflowAccessInfo{c_, DataflowAccessKind::kComputeProduce},
   };
+  if (!clearAccum_) {
+    accesses.push_back(DataflowAccessInfo{c_, DataflowAccessKind::kComputeConsume});
+  }
+  return accesses;
 }
 
 /**

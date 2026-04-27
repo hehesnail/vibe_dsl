@@ -93,6 +93,7 @@ struct BufferMaterializationInfo {
 
 enum class DataflowAccessKind : uint8_t {
   kComputeConsume = 0,
+  kComputeProduce = 1,
 };
 
 struct DataflowAccessInfo {

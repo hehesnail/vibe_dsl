@@ -2446,7 +2446,7 @@ static void EnforceExplicitPerWorkAccessDescriptorGate(
 static bool IsDirectRuntimeAdmittedPublicationProtocol(const std::string& publication_protocol) {
   return publication_protocol == buffer_materialization::kPackThreadDirectStore ||
          publication_protocol == buffer_materialization::kPackTile ||
-         publication_protocol == buffer_materialization::kCastFragmentSliceToTiledCB;
+         publication_protocol == buffer_materialization::kTilizeCastFragmentSlice;
 }
 
 static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
@@ -2511,7 +2511,7 @@ static bool SpecHasThreadDistributedCastRepublishPlan(const ExecutableSpec& spec
   }
   for (const auto& plan : spec.materialization_plans) {
     if (plan.materialization_protocol != buffer_materialization::kCBRepublish ||
-        plan.publication_protocol != buffer_materialization::kCastFragmentSliceToTiledCB) {
+        plan.publication_protocol != buffer_materialization::kTilizeCastFragmentSlice) {
       continue;
     }
     auto live_form_it = live_form_by_name.find(plan.produced_live_form);
@@ -2523,12 +2523,6 @@ static bool SpecHasThreadDistributedCastRepublishPlan(const ExecutableSpec& spec
   return false;
 }
 
-static bool SpecHasMultiPageRepublishedInputCB(const ExecutableSpec& spec) {
-  return std::any_of(spec.cb_configs.begin(), spec.cb_configs.end(), [](const CBConfig& cb) {
-    return cb.role == "input" && cb.flow_class == "republish" && cb.num_pages > 1;
-  });
-}
-
 static void EnforceExactLiveFormMultiPageRepublishGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
   if (!SpecHasThreadDistributedCastRepublishPlan(*spec)) {
@@ -2537,13 +2531,19 @@ static void EnforceExactLiveFormMultiPageRepublishGate(ExecutableSpec* spec) {
   if (!SpecHasRuntimeArgKind(*spec, "num_k_tiles")) {
     return;
   }
-  if (!SpecHasMultiPageRepublishedInputCB(*spec)) {
+  for (const CBConfig& cb : spec->cb_configs) {
+    if (cb.role != "input" || cb.flow_class != "republish" || cb.num_pages <= 1) {
+      continue;
+    }
+    if (cb.publish_pages_per_event == 1 && cb.consume_pages_per_event == 1) {
+      continue;
+    }
+    AppendDirectRuntimeUnsupportedReason(
+        spec,
+        "multi-page exact CB-republish live-form direct runtime is not admitted; "
+        "requires typed one-page producer and consumer event windows");
     return;
   }
-  AppendDirectRuntimeUnsupportedReason(
-      spec,
-      "multi-page exact CB-republish live-form direct runtime is not admitted; "
-      "current bf16 direct path supports one K tile per work item");
 }
 
 static void EnforceExplicitBufferRoleSchemaGate(ExecutableSpec* spec) {

@@ -40,14 +40,14 @@
   - 该问题的 simulator-side 旁证和更宽 fatal taxonomy 扫描，
     统一见 `memory/tt_simulator_constraints.md`
 
-### `cast_fragment_slice_to_tiled_cb` 不能仅靠 raw compute-side CB interface 晋级 direct runtime admission
+### exact CB republish 不能靠 raw compute-side CB interface 晋级 direct runtime admission
 
 - **现象**:
   - 将 flash-attn
     `thread_distributed + cb_republish`
     的 publication protocol
     标成
-    `cast_fragment_slice_to_tiled_cb`
+    旧名 `cast_fragment_slice_to_tiled_cb`
     并从 direct runtime gate 中放行后，
     TT-Sim bf16 runtime 会在 TT-Metal JIT 阶段失败：
     `trisc2`
@@ -65,23 +65,30 @@
     compute-side CB interface / mailbox boundary，
     不能作为 admitted runtime support surface
 - **当前结论**:
-  - `cast_fragment_slice_to_tiled_cb`
-    可以作为 typed
+  - active protocol 名已收为
+    `tilize_cast_fragment_slice`；
+    旧名
+    `cast_fragment_slice_to_tiled_cb`
+    只应作为历史 bug / forbidden regression label
+  - typed
     `TTMaterializationPlan.publication_protocol`
-    和 executable metadata 保留
+    和 executable metadata
+    可以表达 exact CB republish，
+    但 source 实现必须走
+    `copy_tile` /
+    `pack_tile`
+    或等价 TT compute-linkable API
   - direct runtime admission
-    仍只接受已实现的
+    接受已证明的
     `pack_thread_direct_store`
     /
     `pack_tile`
-    subset
-  - flash-attn 继续通过
-    `direct_runtime_unsupported_reasons`
-    fail-close；
-    后续 admission 必须先实现非 mailbox、
-    TT compute-linkable 的 CB publication path，
-    不能靠 runtime-only source patch
-    或 raw CB interface helper 放行
+    /
+    per-event one-page exact CB republish
+    subset；
+    stage2/block64
+    multi-page publish/consume event
+    仍需后续 typed contract
 
 ## 2. 已解决但值得记住的模式
 
@@ -1327,36 +1334,141 @@
   - recurrence/update 形态要进入 typed exact op，
     不能让 fragment helper 成为 fallback
 
-#### multi-page exact CB republish 是 P2.3 gate，不是 P2.2 blocker
+#### exact CB republish 要区分总页数和单次 publish/consume 页数
 
 - **症状**:
   - seq64 / multi-K-step flash-attn
-    metadata 已有 explicit per-work descriptors，
-    但 direct runtime 仍需 skip
-  - TT-Sim 深处可能出现
-    `tensix_execute_pacr intermediate_format=5 late_from_format=0`
-    一类 format/runtime failure
+    需要 multi-page CB capacity，
+    但单次 publish/consume
+    仍是 one page
+  - stage2/block64 flash-attn
+    会出现真正的 multi-page
+    publish/consume event，
+    仍应 fail-closed
 - **根因**:
-  - 当前 P2.2 admitted direct path
-    只覆盖 one K tile per work item /
-    single-page exact CB-republish
-  - multi-page input republish
+  - `num_pages > 1`
+    只是 CB capacity；
+    direct runtime admission
+    的关键是
+    `publish_pages_per_event`
+    /
+    `consume_pages_per_event`
+  - one-page event 可以用已有
+    wait / copy / pack / pop / push
+    lifetime 证明；
+    multi-page event
     需要更宽 live-form ownership、
-    page lifetime、
-    and consumer binding
-    语义，不应在 leaf runtime 猜
+    page lifetime
+    和 consumer binding
+    语义
 - **修法**:
-  - runtime gate 新增
+  - P2.3 admission
+    放行 seq64 /
+    multi-K-step
+    per-event one-page
+    exact CB republish
+  - stage2/block64
+    仍用
     `multi-page exact CB-republish live-form`
     queryable unsupported reason
-  - P2.3 再通过 typed
-    `TTProgram -> ExecutableSpec`
-    扩 support surface
+    gate 住
 - **教训**:
-  - simulator deep failure
-    不能替代 admission gate；
-    support surface 外的 multi-page exact path
-    必须 fail-closed
+  - 不要用 CB 总页数判断 admission；
+    要看每次 producer/consumer event
+    的 page-count contract
+
+#### borrowed exact CB live source 必须在下一次重写前消费并 pop
+
+- **症状**:
+  - seq64 flash-attn 第一轮
+    `acc_s -> acc_s_cast`
+    republish 后，
+    第二个 K step
+    可能重新写 `acc_s`
+  - 如果旧 `acc_s` live source
+    没有在重写前 `cb_pop_front`，
+    后续 row-reduction /
+    republish 会读到 stale page
+  - 另一个相邻症状是
+    `acc_s_cast`
+    被 matmul 消费后，
+    old deferred reacquire
+    先 `cb_reserve_back`，
+    后续 typed materialization writer
+    又再次 reserve，
+    造成 reserve/push 不配对
+- **根因**:
+  - future-use classification
+    把下一次 write boundary
+    附近的事件当成旧 live page
+    consumer；
+    实际上 write boundary
+    是 redefinition
+  - old reacquire mechanics
+    仍假设未来 producer
+    不会自己 reserve，
+    但 typed materialization /
+    live-form writer
+    已经拥有
+    `cb_reserve_back` /
+    `cb_push_back`
+    lifetime
+- **修法**:
+  - future live-CB read classifier
+    只统计下一次 write 之前的 reads；
+    write boundary 及之后不算旧 page consumer
+  - borrowed source copy/repack 完成后，
+    若下一次 write 前没有 read，
+    立即 `cb_pop_front`
+    并清掉 live-form alias
+  - 对已有 typed materialization /
+    tiled-CB live-form owner 的 buffer，
+    禁用旧 deferred reacquire；
+    让实际 producer writer
+    自己 reserve/push
+- **教训**:
+  - exact CB live-form lifetime
+    要按 producer/consumer event
+    证明；
+    不要让旧 early-reserve mechanics
+    和 typed materialization writer
+    同时拥有同一个 page lifetime
+
+#### row-scalar division 不要走 scalar-only reciprocal SFPU macro 路径
+
+- **症状**:
+  - flash-attn row division
+    若直接对 per-row scalar CB
+    调 reciprocal，
+    TT-Sim 可能命中
+    `recip_tile<false>(VectorMode::C)`
+    相关 SFPU macro / simulator boundary，
+    或出现 scalar lane 为 0 的数值异常
+- **根因**:
+  - 当前 admitted path
+    需要完整 tile 形态的 denominator
+    才能稳定接入
+    TT-Metal `recip_tile`
+    /
+    `mul_tiles`
+    组合；
+    scalar-only VectorMode
+    不是这条 direct-runtime
+    correctness gate
+- **修法**:
+  - 用 ones tile
+    经 `mul_tiles_bcast_cols`
+    先构造 full-tile denominator
+  - 对 full tile
+    执行 `recip_tile`
+  - 再用 `mul_tiles`
+    完成 division
+- **教训**:
+  - 即便高层语义是 row scalar，
+    admitted TT-Metal API 粒度仍应落在
+    已验证的 tile op 序列上；
+    不要为了追求“更小”粒度
+    走 simulator 未覆盖的 scalar SFPU path
 
 ## 3. 环境问题速查
 

@@ -463,26 +463,26 @@ TVM_DLL const Op& blackhole_recip_tile_init();
 TVM_DLL const Op& blackhole_recip_tile();
 
 /*!
- * \brief Copy a contiguous local fragment slice into the currently reserved CB write window.
+ * \brief Pack/untilize a contiguous local fragment slice into the reserved CB write window.
  * \param src_buffer Source local fragment buffer handle
  * \param dst_cb_id Destination CB id
  * \param dst_offset_elements Element offset from the beginning of the reserved CB write window
  * \param num_elements Number of contiguous elements to copy
  * \param src_offset_elements Optional element offset from the beginning of the local fragment slice
  */
-TVM_DLL const Op& blackhole_write_local_slice_to_cb();
+TVM_DLL const Op& blackhole_pack_untilize_slice();
 
 /*!
- * \brief Materialize one 32x32 local fragment tile into tiled-nfaces layout in the reserved CB write window.
+ * \brief Pack/untilize one 32x32 local fragment tile into tiled-nfaces layout.
  * \param src_buffer Source local fragment buffer handle
  * \param dst_cb_id Destination CB id
  * \param dst_tile_index Destination tile index in the reserved CB write window
  * \param src_offset_elements Element offset from the beginning of the local fragment tile
  */
-TVM_DLL const Op& blackhole_write_local_fragment_tile_to_cb();
+TVM_DLL const Op& blackhole_pack_untilize_tile();
 
 /*!
- * \brief Materialize a row-major local fragment slice into tiled-nfaces layout in the reserved CB write window.
+ * \brief Tilize a row-major local fragment slice into tiled-nfaces layout.
  * \param src_buffer Source local fragment buffer handle
  * \param dst_cb_id Destination CB id
  * \param dst_offset_elements Logical element offset within the destination tensor view
@@ -490,11 +490,10 @@ TVM_DLL const Op& blackhole_write_local_fragment_tile_to_cb();
  * \param row_width Logical row width of the destination tiled tensor view
  * \param src_offset_elements Optional source element offset from the beginning of the local fragment slice
  */
-TVM_DLL const Op& blackhole_write_local_fragment_slice_to_tiled_cb();
+TVM_DLL const Op& blackhole_tilize_local_fragment_slice();
 
 /*!
- * \brief Cast a row-major local fragment slice and materialize it into tiled-nfaces layout in
- * the reserved CB write window.
+ * \brief Tilize a casted row-major local fragment slice into tiled-nfaces layout.
  * \param dst_buffer Destination CB-backed fragment buffer handle (dtype/source-of-truth only)
  * \param src_buffer Source local fragment buffer handle
  * \param dst_cb_id Destination CB id
@@ -503,7 +502,7 @@ TVM_DLL const Op& blackhole_write_local_fragment_slice_to_tiled_cb();
  * \param num_elements Number of contiguous source elements to cast/materialize
  * \param row_width Logical row width of the destination tiled tensor view
  */
-TVM_DLL const Op& blackhole_cast_fragment_slice_to_tiled_cb();
+TVM_DLL const Op& blackhole_tilize_cast_fragment_slice();
 
 /*!
  * \brief Fill a tiled CB page directly from the compute PACK thread.
@@ -517,23 +516,23 @@ TVM_DLL const Op& blackhole_cast_fragment_slice_to_tiled_cb();
 TVM_DLL const Op& blackhole_pack_fill_fragment_to_tiled_cb();
 
 /*!
- * \brief Copy a tile from the current CB front window into a contiguous local fragment slice.
+ * \brief Untilize a tile from the current CB front window into a local fragment slice.
  * \param dst_buffer Destination local fragment buffer handle
  * \param src_cb_id Source CB id
  * \param src_tile_index Source tile index in the current CB front window
  * \param dst_offset_elements Element offset from the beginning of the destination local fragment
  * \param num_elements Number of contiguous elements to copy from the source tile
  */
-TVM_DLL const Op& blackhole_read_cb_front_tile_to_local();
+TVM_DLL const Op& blackhole_untilize_cb_front_tile();
 
 /*!
- * \brief Materialize one 32x32 tile from the current CB front window into row-major local fragment layout.
+ * \brief Untilize one 32x32 tile from the current CB front window into row-major local fragment layout.
  * \param dst_buffer Destination local fragment buffer handle
  * \param src_cb_id Source CB id
  * \param src_tile_index Source tile index in the current CB front window
  * \param dst_offset_elements Element offset from the beginning of the destination local fragment tile
  */
-TVM_DLL const Op& blackhole_read_cb_front_tile_to_local_fragment();
+TVM_DLL const Op& blackhole_untilize_cb_front_tile_fragment();
 
 /*!
  * \brief Fill a local fragment buffer with a scalar literal value.
