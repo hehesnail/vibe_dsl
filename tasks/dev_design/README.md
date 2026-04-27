@@ -19,6 +19,8 @@
 8. `2026-04-27-blackhole-tile-compute-preservation.md`
 9. `2026-04-27-blackhole-post-preservation-pass-shrink.md`
 10. `2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md`
+11. `2026-04-28-blackhole-algorithmic-generalization.md`
+12. `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
 
 当前 support surface / workload payoff lane
 的任务级设计固定为：
@@ -82,6 +84,47 @@
     downstream matcher
     或跨阶段 side-channel
 
+当前 Blackhole algorithmic generalization
+的任务级设计记录为：
+
+- `2026-04-28-blackhole-algorithmic-generalization.md`
+  - 定义
+    `AccessRegion` /
+    graph-backed `SpatialPlan` dependence model /
+    `LiveValueSSA`
+    三件事的重构设计
+  - 借鉴 LLVM Dependence Graph /
+    MemorySSA
+    和 MLIR affine/dataflow
+    的算法骨架，
+    但不引入新的长期 IR 层
+  - 目标是让 multi-block flash-attn
+    和后续更复杂 fused compute
+    通过 typed graph /
+    version /
+    event evidence 扩展，
+    不再堆 workload-specific matcher
+
+当前 Blackhole tile compute legalizer /
+DAG covering
+的任务级设计记录为：
+
+- `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
+  - 定义
+    `TileComputeDAG`
+    /
+    legalization
+    /
+    target leaf pattern covering
+    的 selection 架构
+  - 对齐 LLVM SelectionDAG /
+    TableGen pattern selection
+    的思想，
+    但第一版只用 C++ typed schema
+  - 目标是让新增 TT-Metal leaf compute op
+    变成 pattern + legality + tests，
+    而不是新增手写 per-op branch family
+
 额外参考：
 
 - `archive/layered_ir_references.md`
@@ -134,6 +177,8 @@ pass 名字、helper、bag、payload、bridge attr
 | `2026-04-27-blackhole-tile-compute-preservation.md` | Blackhole tile compute preservation lane 的完成记录；定义 TT-Metal API 粒度 compute semantics 在 `Normalized Tile TIR` 的保留 / 规范化边界和 late matcher 删除边界 |
 | `2026-04-27-blackhole-post-preservation-pass-shrink.md` | tile-compute preservation 之后的实现瘦身 lane；定义 `lower_blackhole_ops.cc` 拆分边界、helper 复用纪律和后续 heavy pass audit 候选 |
 | `2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md` | `lower_tile_op.cc` cleanup 任务设计；定义 Blackhole tile compute normalization 的单一实现面和验证边界 |
+| `2026-04-28-blackhole-algorithmic-generalization.md` | Blackhole passes 算法化重构设计；定义 AccessRegion、SpatialPlan dependence graph 和 LiveValueSSA 的表示/算法/迁移边界 |
+| `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md` | Blackhole tile compute selection 算法化设计；定义 TileComputeDAG、legalizer、leaf pattern covering、cost model 和迁移边界 |
 | `blackhole_first_principles_protocol_audit.md` | 删除/迁移表；列出现存 fake/legacy protocol 的表示层落点、validator 和 disposition |
 
 ### Runtime / mesh / distributed 调研索引

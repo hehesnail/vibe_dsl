@@ -1369,3 +1369,16 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   和 TT-Metal leaf API 粒度 operation name；
   不要在两个 pass class 里重新复制 matcher /
   generator surface。
+- 2026-04-28 后续 Blackhole refactor
+  应优先走算法化基础：
+  affine-lite `AccessRegion`、
+  graph-backed `SpatialPlan` dependence construction、
+  `LiveValueSSA` / BufferSSA-style version and event model。
+  这些仍然落在现有
+  `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
+  主链内，
+  不是新 IR 层。
+  tile compute selection 的下一层设计是
+  `TileComputeDAG` + legalizer + TT-Metal leaf pattern covering；
+  新增 compute 支持应扩 pattern / legality / cost / tests，
+  不要新增 workload-specific matcher branch。

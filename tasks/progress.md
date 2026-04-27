@@ -7,13 +7,16 @@
 ## Status
 
 - Date: `2026-04-28`
-- Active lane: `Blackhole post-preservation pass shrink`
+- Active lane: `Blackhole algorithmic generalization design`
 - Current item:
-  2026-04-28 `lower_tile_op.cc` Blackhole tile compute normalizer dedup
-  completed.  `LowerTileOpPass` and `BlackholeTileComputeNormalizer` now share
-  one pass-local normalizer helper that emits explicit
-  `tl.tileop.blackhole_compute` operations at TT-Metal leaf API granularity.
-  The old duplicate implementation surfaces inside both pass classes are gone.
+  2026-04-28 algorithmic generalization design completed for the next
+  Blackhole refactor lane.  The design is split into
+  `2026-04-28-blackhole-algorithmic-generalization.md`
+  for `AccessRegion`, graph-backed `SpatialPlan` dependence, and
+  `LiveValueSSA`, plus
+  `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
+  for `TileComputeDAG`, legalization, and TT-Metal leaf pattern covering.
+  No implementation has been started for this lane yet.
 - Blocker:
   No blocker remains for Blackhole tile-compute preservation itself.
   Active lowering no longer recovers row-reduction / broadcast /
@@ -60,6 +63,8 @@
 - `Post-preservation staged transport split`: completed
 - `Post-preservation matmul lowering split`: completed
 - `Post-preservation lower_tile_op Blackhole normalizer dedup`: completed
+- `Blackhole algorithmic generalization design`: completed
+- `Blackhole tile compute legalizer / DAG covering design`: completed
 
 ## Current Support Boundary
 
@@ -121,21 +126,43 @@
 - Full mesh/distributed runtime support remains future work.
   The current schema can express the direction; runtime admission must expand
   through typed `TTProgram -> ExecutableSpec` records, not runtime-only patching.
+- The next refactor lane should introduce algorithmic foundations before
+  broadening support: affine-lite `AccessRegion`, graph-backed
+  `SpatialPlan` dependence construction, `LiveValueSSA` event/version
+  modeling, and then tile compute legalizer / DAG covering.  These are
+  design-complete but not implemented.
 
 ## Next Task Order
 
-1. `Multi-block flash-attn direct-runtime admission`
+1. `Algorithmic generalization Phase A: AccessRegion foundation`
+   - Add typed `AccessRegion` / affine-lite access analysis and validator
+     coverage.
+   - Keep it inside the existing
+     `Normalized Tile TIR -> SpatialPlan` boundary.
+
+2. `Algorithmic generalization Phase B/C: dependence graph and LiveValueSSA`
+   - Build graph-backed `SpatialPlan` dependence edges from
+     `AccessRegion` and tile op dataflow evidence.
+   - Version logical values through `LiveValueSSA` /
+     materialization event records before expanding runtime admission.
+
+3. `Tile compute legalizer / DAG covering`
+   - Add `TileComputeDAG`, legalization actions, TT-Metal leaf pattern
+     schema, and local DAG covering for current admitted compute ops.
+   - Keep `TTComputeOpPlan.operation_name` at leaf API granularity.
+
+4. `Multi-block flash-attn direct-runtime admission`
    - Re-admit seq64 / multi-K-step direct runtime only after the
      online-softmax live-form contract is represented and verified through
      typed `TTProgram -> ExecutableSpec` state.
 
-2. `P3 mesh/distributed runtime expansion`
+5. `P3 mesh/distributed runtime expansion`
    - Treat this as a later runtime admission lane.
    - Reuse `TTMeshPlan` / `TTBufferDistributionPlan` schema.
    - Add real sharded / multi-device / fabric semantics only through typed
      schema and validator extensions.
 
-3. Post-P2 flash-attn wider-shape support
+6. Post-P2 flash-attn wider-shape support
    - Admit larger stage2/block64 shapes only after the exact CB
      multi-page event contract is represented and validated through
      `TTProgram -> ExecutableSpec`.
@@ -177,24 +204,16 @@
 
 ## Latest Verification
 
-Blackhole `lower_tile_op.cc` normalizer dedup completion:
+Blackhole algorithmic generalization design completion:
 
-- `cmake --build build -j32`
-  -> passed
-- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py::test_lower_tile_op_has_single_blackhole_tile_compute_normalizer_surface testing/python/transform/test_blackhole_spatial_ir.py::test_blackhole_frontend_normalizes_flash_attention_leaf_tile_compute_before_tt_selection testing/python/transform/test_blackhole_spatial_ir.py::test_blackhole_frontend_tile_compute_normalization_uses_leaf_operations`
-  -> `3 passed`
-- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_gemm.py`
-  -> `198 passed, 25 skipped, 1 xfailed`
-- TT-Sim:
-  `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`
-  -> `15 passed, 5 skipped`
-- TT-Sim:
-  `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`
-  -> `13 passed`
+- docs added:
+  `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
+  and
+  `tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
+- placeholder scan:
+  `rg -n "TBD|TODO|fill in|later|open question|Open Question" tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
+  -> no matches
 - `git diff --check`
   -> clean
-- cleanup scan:
-  `rg -n "GenerateScalar|GenerateRowBroadcast|GenerateExp2RowBroadcast|GenerateExplicit|ScalarFma|ScalarExp2|Exp2RowBroadcast|RowBroadcastMatch|ScalarMaxMatch|ScalarFragmentCopyMatch|FragmentFillMatch|MatchScalar|MatchGrouped|MatchDirectRow|MatchDirectFragmentFill|MatchScalarFragmentFillStore|scalar_exp2|scalar_fma|exp2_affine|row_bcast|row_broadcast_affine|scalar_affine|RejectLegacyScalar" tilelang_repo -S`
-  -> no matches
 - background process scan:
   no lingering `pytest` / `cmake --build` / `ninja` process
