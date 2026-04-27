@@ -23,6 +23,7 @@ import example_mha_fwd_bshd as mha_example
 BLACKHOLE_FLASH_ATTENTION_DTYPE_EXPR = "T.bfloat16"
 BLACKHOLE_FLASH_ATTENTION_TORCH_DTYPE = torch.bfloat16
 MULTI_PAGE_EXACT_CB_REPUBLISH_REASON = "multi-page exact CB-republish live-form"
+MULTI_BLOCK_EXACT_CB_REPUBLISH_REASON = "multi-block exact CB-republish"
 
 
 def _load_flash_attention_module_with_dtype(module_path, dtype_expr=BLACKHOLE_FLASH_ATTENTION_DTYPE_EXPR):
@@ -462,7 +463,7 @@ def test_blackhole_flash_attention_multi_work_item_metadata_exposes_explicit_per
     )
 
 
-def test_blackhole_flash_attention_seq64_bf16_metadata_admits_multi_page_exact_cb_republish():
+def test_blackhole_flash_attention_seq64_bf16_metadata_gates_multi_block_direct_runtime():
     kernel = blackhole_mha_example.flashattn.jit_impl.get_tir(
         1,
         4,
@@ -478,6 +479,7 @@ def test_blackhole_flash_attention_seq64_bf16_metadata_admits_multi_page_exact_c
 
     reasons = [str(reason) for reason in metadata.get("direct_runtime_unsupported_reasons", [])]
     assert not any(MULTI_PAGE_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
+    assert any(MULTI_BLOCK_EXACT_CB_REPUBLISH_REASON in reason for reason in reasons)
 
     cb_by_name = {str(config["name"]): config for config in metadata["cb_configs"]}
     for cb_name in ("K_shared", "V_shared", "acc_s_cast"):

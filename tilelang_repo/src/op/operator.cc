@@ -7,6 +7,7 @@
 #include "operator.h"
 
 #include "builtin.h"
+#include "utils.h"
 
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op_attr_types.h>
@@ -15,6 +16,70 @@ namespace tvm {
 namespace tl {
 
 using namespace tir;
+
+namespace {
+
+class BlackholeTileComputeNode : public TileOperatorNode {
+ public:
+  std::vector<DataflowAccessInfo> accesses;
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.BlackholeTileCompute",
+                                    BlackholeTileComputeNode,
+                                    TileOperatorNode);
+
+  Stmt Lower(const LowerArgs &T, arith::Analyzer *analyzer) const final {
+    return Evaluate(IntImm(DataType::Int(32), 0));
+  }
+
+  LayoutMap InferLayout(const LayoutInferArgs &T, InferLevel level) const final {
+    return {};
+  }
+
+  TileOperator Clone() const final {
+    auto op = tvm::ffi::make_object<BlackholeTileComputeNode>(*this);
+    return TileOperator(op);
+  }
+
+  std::vector<DataflowAccessInfo> GetDataflowAccessInfo() const final {
+    return accesses;
+  }
+};
+
+TileOperator BuildBlackholeTileCompute(Array<PrimExpr> args,
+                                       Map<String, ObjectRef> annotations) {
+  ObjectPtr<BlackholeTileComputeNode> node =
+      tvm::ffi::make_object<BlackholeTileComputeNode>();
+  for (size_t i = 1; i < args.size(); ++i) {
+    if (!IsBufferLikeExpr(args[i])) {
+      continue;
+    }
+    BufferRegion region = NormalizeToBufferRegion(args[i]);
+    if (!region.defined() || !region->buffer.defined()) {
+      continue;
+    }
+    int access_mask = 0;
+    if (const auto *call = args[i].as<CallNode>()) {
+      if (call->op.same_as(RegionOp::Get())) {
+        RegionOp region_op(call->args);
+        access_mask = region_op->GetAccessMask();
+      }
+    }
+    if (access_mask == 0) {
+      access_mask = 1;
+    }
+    if ((access_mask & 0x1) != 0) {
+      node->accesses.push_back(
+          DataflowAccessInfo{region->buffer, DataflowAccessKind::kComputeConsume});
+    }
+    if ((access_mask & 0x2) != 0) {
+      node->accesses.push_back(
+          DataflowAccessInfo{region->buffer, DataflowAccessKind::kComputeProduce});
+    }
+  }
+  return TileOperator(node);
+}
+
+}  // namespace
 
 /**
  * @brief Construct a TileOperator from a TIR Call using a registered builder.
@@ -90,6 +155,13 @@ Var GetVarFromAccessPtr(const PrimExpr &expr) {
                 "call, but got: "
              << tvm::ffi::GetRef<Call>(call);
 }
+
+TVM_REGISTER_OP("tl.tileop.blackhole_compute")
+    .set_attr<TScriptPrinterName>("TScriptPrinterName", "blackhole_compute")
+    .set_attr<OpBuilderFunc>("TLOpBuilder", BuildBlackholeTileCompute)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
 
 } // namespace tl
 } // namespace tvm

@@ -2449,6 +2449,12 @@ static bool IsDirectRuntimeAdmittedPublicationProtocol(const std::string& public
          publication_protocol == buffer_materialization::kTilizeCastFragmentSlice;
 }
 
+static bool IsDirectRuntimeAdmittedHostPublicationProtocol(
+    const std::string& publication_protocol) {
+  return publication_protocol == buffer_materialization::kPackThreadDirectStore ||
+         publication_protocol == buffer_materialization::kPackTile;
+}
+
 static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
   ICHECK(spec != nullptr);
   for (const auto& materialization : spec->buffer_materializations) {
@@ -2458,7 +2464,7 @@ static void EnforceTypedDstCbAccumulationGate(ExecutableSpec* spec) {
     if (materialization.execution_topology_kind != "thread_distributed") {
       continue;
     }
-    if (IsDirectRuntimeAdmittedPublicationProtocol(materialization.publication_protocol)) {
+    if (IsDirectRuntimeAdmittedHostPublicationProtocol(materialization.publication_protocol)) {
       continue;
     }
     AppendDirectRuntimeUnsupportedReason(
@@ -2543,6 +2549,24 @@ static void EnforceExactLiveFormMultiPageRepublishGate(ExecutableSpec* spec) {
         "multi-page exact CB-republish live-form direct runtime is not admitted; "
         "requires typed one-page producer and consumer event windows");
     return;
+  }
+}
+
+static void EnforceMultiBlockExactCBRepublishGate(ExecutableSpec* spec) {
+  ICHECK(spec != nullptr);
+  if (!SpecHasThreadDistributedCastRepublishPlan(*spec) ||
+      !SpecHasRuntimeArgKind(*spec, "num_k_tiles")) {
+    return;
+  }
+  for (const CBConfig& cb : spec->cb_configs) {
+    if (cb.role == "input" && cb.flow_class == "republish" && cb.num_pages > 1) {
+      AppendDirectRuntimeUnsupportedReason(
+          spec,
+          "multi-block exact CB-republish flash-attention direct runtime correctness is not "
+          "admitted; compile/source/spec lowering is supported, but runtime execution needs "
+          "the multi-block online-softmax live-form contract to be admitted separately");
+      return;
+    }
   }
 }
 
@@ -3033,6 +3057,7 @@ ffi::Module BuildTileLangBlackhole(IRModule mod, Target target) {
     EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
+    EnforceMultiBlockExactCBRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {
@@ -3128,6 +3153,7 @@ ffi::Module BuildTileLangBlackholeWithoutHost(IRModule mod, Target target) {
     EnforceExplicitPerWorkAccessDescriptorGate(buffer_info, &spec_it->second);
     EnforceTypedDstCbAccumulationGate(&spec_it->second);
     EnforceExactLiveFormMultiPageRepublishGate(&spec_it->second);
+    EnforceMultiBlockExactCBRepublishGate(&spec_it->second);
     EnforceExplicitBufferRoleSchemaGate(&spec_it->second);
   }
   for (const auto& kv : host_to_device) {

@@ -60,6 +60,11 @@ def LowerTileOp():
     return _ffi_api.LowerTileOp()  # type: ignore
 
 
+def NormalizeBlackholeTileCompute():
+    """Normalize Blackhole local tile-compute loops to explicit tile compute calls."""
+    return _ffi_api.NormalizeBlackholeTileCompute()  # type: ignore
+
+
 def InjectSoftwarePipeline():
     """InjectSoftwarePipeline
 

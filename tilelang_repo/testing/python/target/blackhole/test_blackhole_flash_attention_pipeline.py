@@ -45,25 +45,20 @@ import example_mha_fwd_bshd as mha_example
 import example_gqa_fwd_bshd as gqa_example
 
 
-FORBIDDEN_WORKLOAD_COMPOSITE_BLACKHOLE_BUILTINS = (
-    "reduce_row",
-    "reduce_rows_local",
-    "mul_row_bcast",
-    "mul_grouped_row_bcast",
-    "div_row_bcast",
-    "div_grouped_row_bcast",
-    "exp2_row_bcast_affine",
-    "exp2_grouped_row_bcast_affine",
-    "scalar_max",
-    "scalar_exp2_affine",
-    "scalar_fma",
-    "copy_tile_from_cb",
-    "binary_max_tile_local",
-    "mul_tiles_bcast_rows_local",
-    "div_tiles_bcast_rows_local",
-    "exp_tiles_bcast_rows_affine_local",
-    "exp_tile_affine_local",
-)
+BLACKHOLE_FLASH_ATTN_LEAF_COMPUTE_OPS = {
+    "binary_max_tile",
+    "reduce_tile",
+    "mul_tiles",
+    "add_tiles",
+    "mul_tiles_bcast_cols",
+    "add_tiles_bcast_cols",
+    "exp2_tile",
+    "copy_tile",
+    "pack_tile",
+    "typecast_tile",
+    "fill_tile",
+    "recip_tile",
+}
 
 
 def _lower_flash_attention_to_tt_target(*, is_causal=False):
@@ -234,10 +229,9 @@ def test_flash_attention_forward_tt_target_emits_typed_tt_program_without_payloa
         "exp2_tile",
         "pack_tile",
         "pack_fill_fragment_to_tiled_cb",
-        "cast_fragment_slice",
         "tilize_cast_fragment_slice",
     }.issubset(builtin_names)
-    assert not any(name in FORBIDDEN_WORKLOAD_COMPOSITE_BLACKHOLE_BUILTINS for name in builtin_names)
+    assert "cast_fragment_slice" not in builtin_names
 
 
 def test_flash_attention_tt_program_projects_two_typed_gemm_compute_ops():
@@ -292,7 +286,7 @@ def test_flash_attention_tt_program_projects_non_gemm_exact_compute_ops():
         op for op in tt_program.compute_op_plans if str(op.kind) != "gemm"
     ]
     operation_names = {str(op.operation_name) for op in non_gemm_ops}
-    assert operation_names.isdisjoint(FORBIDDEN_WORKLOAD_COMPOSITE_BLACKHOLE_BUILTINS)
+    assert operation_names <= BLACKHOLE_FLASH_ATTN_LEAF_COMPUTE_OPS
     assert {
         "binary_max_tile",
         "reduce_tile",
@@ -431,10 +425,9 @@ def test_flash_attention_forward_optimized_path_lowers_logsum_to_exact_tile_bina
     assert "mul_tiles" in builtin_names
     assert "add_tiles_init" in builtin_names
     assert "add_tiles" in builtin_names
-    assert "scalar_fma" not in builtin_names
 
 
-def test_flash_attention_forward_optimized_path_lowers_scores_exp2_affine_updates():
+def test_flash_attention_forward_optimized_path_lowers_exp2_to_leaf_tile_ops():
     lowered = _run_flash_attention_tt_target_after_optimize(
         mha_example,
         1,
@@ -474,7 +467,7 @@ def test_flash_attention_forward_optimized_path_lowers_fragment_fills():
     assert not hasattr(require_tt_program(lowered), "payload")
 
 
-def test_flash_attention_forward_optimized_path_lowers_fragment_casts():
+def test_flash_attention_forward_optimized_path_uses_tilize_cast_publication():
     lowered = _run_flash_attention_tt_target_after_optimize(
         mha_example,
         1,
@@ -489,7 +482,7 @@ def test_flash_attention_forward_optimized_path_lowers_fragment_casts():
     )["main"]
     builtin_names = _blackhole_builtin_suffixes(lowered)
 
-    assert "cast_fragment_slice" in builtin_names
+    assert "cast_fragment_slice" not in builtin_names
     assert "tilize_cast_fragment_slice" in builtin_names
 
 
@@ -1156,10 +1149,10 @@ def test_flash_attention_has_no_tt_program_payload_or_executable_epilogue_contra
 
     assert not hasattr(tt_program, "payload")
     assert "compute_epilogue_ops" not in executable_spec
-    assert tt_operation_names.isdisjoint(FORBIDDEN_WORKLOAD_COMPOSITE_BLACKHOLE_BUILTINS)
-    assert executable_operation_names.isdisjoint(FORBIDDEN_WORKLOAD_COMPOSITE_BLACKHOLE_BUILTINS)
-    for builtin_name in FORBIDDEN_WORKLOAD_COMPOSITE_BLACKHOLE_BUILTINS:
-        assert f"tl.blackhole.{builtin_name}" not in builtin_names
+    assert tt_operation_names <= BLACKHOLE_FLASH_ATTN_LEAF_COMPUTE_OPS | {"matmul_tiles"}
+    assert executable_operation_names <= BLACKHOLE_FLASH_ATTN_LEAF_COMPUTE_OPS | {"matmul_tiles"}
+    assert "tl.blackhole.reduce_tile" in builtin_names
+    assert "tl.blackhole.exp2_tile" in builtin_names
 
 
 def test_flash_attention_tt_program_keeps_typed_layout_specs_for_internal_buffers():
@@ -1513,11 +1506,18 @@ def test_flash_attention_segment_kernels_do_not_leak_compute_resources_into_writ
 
     compute_source = str(compute["source_code"])
     writer_source = str(writer["source_code"])
+    compute_op_buffers = {
+        str(binding["buffer"])
+        for op in compute.get("compute_ops", [])
+        for binding in op.get("operand_bindings", [])
+        if "buffer" in binding
+    }
 
-    # Fragment state must appear in compute kernel (as CB-backed pointers or array refs)
+    # Fragment state must belong to the compute kernel even when some values are
+    # fully CB-backed and no longer need named local arrays in generated source.
     assert "acc_o" in compute_source
-    assert "scores_max" in compute_source
     assert "acc_s_cast" in compute_source
+    assert {"acc_o", "scores_max", "acc_s_cast"}.issubset(compute_op_buffers)
 
     # Fragment state must NOT leak into writer kernel
     assert "acc_o" not in writer_source
@@ -1644,7 +1644,7 @@ def test_flash_attention_compute_source_derives_grouped_reduce_rows_from_num_ele
     assert "const uint32_t num_rows = num_elements / row_width;" not in compute_source
 
 
-def test_flash_attention_compute_source_fills_thread_distributed_fragment_slices():
+def test_flash_attention_compute_source_uses_cb_backed_row_state_fills():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -1673,7 +1673,7 @@ def test_flash_attention_compute_source_fills_thread_distributed_fragment_slices
     assert "/* scope: blackhole.acc */ float acc_o[128];" in compute_source
     assert "/* scope: blackhole.acc */ float acc_s[128];" in compute_source
     assert "/* scope: blackhole.acc */ float logsum[1];" in compute_source
-    assert "/* scope: blackhole.acc */ float scores_max[1];" in compute_source
+    assert "/* scope: blackhole.acc */ float scores_max[1];" not in compute_source
     assert (
         "MATH({ float* dst = reinterpret_cast<float*>(acc_o); const uint32_t num_elements = 128;"
         in compute_source
@@ -1686,10 +1686,7 @@ def test_flash_attention_compute_source_fills_thread_distributed_fragment_slices
         "MATH({ float* dst = reinterpret_cast<float*>(logsum); const uint32_t num_elements = 1;"
         in compute_source
     )
-    assert (
-        "MATH({ float* dst = reinterpret_cast<float*>(scores_max); const uint32_t num_elements = 1;"
-        in compute_source
-    )
+    assert "fill_tile(0, static_cast<float>(-inff))" in compute_source
     assert "const uint32_t num_elements = 16384; const uint32_t row_width = 128;" in compute_source
 
 
@@ -1953,7 +1950,6 @@ def test_flash_attention_small_bf16_compute_source_uses_typed_exact_helpers():
     assert "mul_bcast_cols_init_short" in compute_source
     assert "mul_tiles_bcast<BroadcastType::COL>" in compute_source
     assert "BroadcastType::ROW" not in compute_source
-    assert "tilelang_div_grouped_row_bcast" not in compute_source
 
 
 def test_flash_attention_small_bf16_compute_source_emits_debug_waypoints_when_requested(monkeypatch):
@@ -2100,7 +2096,7 @@ def test_flash_attention_seq64_bf16_compute_source_reacquires_acc_s_cast_pages_b
     assert first_reserve_pos < first_push_pos < first_pop_pos < second_reserve_pos
 
 
-def test_flash_attention_seq64_bf16_republish_consumes_stale_acc_s_source_before_rewrite():
+def test_flash_attention_seq64_bf16_republish_consumes_fresh_acc_s_live_cb():
     can_run, msg = check_blackhole_codegen_requirements()
     if not can_run:
         pytest.skip(f"Blackhole requirements not met: {msg}")
@@ -2132,25 +2128,28 @@ def test_flash_attention_seq64_bf16_republish_consumes_stale_acc_s_source_before
 
     acc_s_cb = cb_by_name["acc_s"]
     acc_s_cast_cb = cb_by_name["acc_s_cast"]
-    source_copy = f"copy_tile({acc_s_cb}, 0, 0);"
     cast_reserve = f"cb_reserve_back({acc_s_cast_cb}, 1);"
     cast_push = f"cb_push_back({acc_s_cast_cb}, 1);"
-    source_pop = f"cb_pop_front({acc_s_cb}, 1);"
-    source_rereserve = f"cb_reserve_back({acc_s_cb}, 1);"
 
     first_cast_reserve_pos = compute_source.find(cast_reserve)
     assert first_cast_reserve_pos != -1
-    first_source_copy_pos = compute_source.find(source_copy, first_cast_reserve_pos)
     first_cast_push_pos = compute_source.find(cast_push, first_cast_reserve_pos)
-    source_pop_pos = compute_source.find(source_pop, first_source_copy_pos)
-    second_source_reserve_pos = compute_source.find(source_rereserve, first_source_copy_pos)
-
-    assert first_source_copy_pos != -1
     assert first_cast_push_pos != -1
-    assert source_pop_pos != -1
-    assert second_source_reserve_pos != -1
-    assert first_source_copy_pos < source_pop_pos < second_source_reserve_pos
-    assert first_source_copy_pos < first_cast_push_pos < second_source_reserve_pos
+    republish_match = re.search(
+        rf"cb_wait_front\((\d+), 1\);\s*"
+        rf"cb_reserve_back\({acc_s_cast_cb}, 1\);\s*"
+        rf"tile_regs_acquire\(\);\s*"
+        rf"copy_tile_to_dst_init_short\(\1\);\s*"
+        rf"copy_tile\(\1, 0, 0\);",
+        compute_source[max(0, first_cast_reserve_pos - 256) : first_cast_push_pos],
+    )
+
+    assert republish_match is not None
+    fresh_acc_s_cb = int(republish_match.group(1))
+    assert fresh_acc_s_cb != acc_s_cb
+    source_pop = f"cb_pop_front({fresh_acc_s_cb}, 1);"
+    source_pop_pos = compute_source.find(source_pop, first_cast_reserve_pos)
+    assert first_cast_reserve_pos < source_pop_pos < first_cast_push_pos
 
 
 def test_flash_attention_seq64_bf16_compute_source_packs_acc_s_cast_after_each_rereserve():
@@ -2373,7 +2372,12 @@ def test_flash_attention_seq64_bf16_compute_source_keeps_acc_s_and_acc_o_single_
 
     scores_max_prev_cb = cb_by_name.get("scores_max_prev")
     acc_s_cb = cb_by_name["acc_s"]
-    acc_o_cb = cb_by_name["acc_o"]
+    acc_o_publication_cbs = [
+        int(cb["cb_id"])
+        for cb in spec["cb_configs"]
+        if str(cb["name"]) == "acc_o"
+        or str(cb["name"]).startswith("acc_o_fragment_merge_live_form")
+    ]
     if scores_max_prev_cb is not None:
         assert f"cb_push_back({scores_max_prev_cb}, 2);" not in compute_source
 
@@ -2386,11 +2390,20 @@ def test_flash_attention_seq64_bf16_compute_source_keeps_acc_s_and_acc_o_single_
     assert f"cb_reserve_back({acc_s_cb}, 16);" not in compute_source
     assert f"cb_push_back({acc_s_cb}, 16);" not in compute_source
 
-    assert f"cb_reserve_back({acc_o_cb}, 1);" in compute_source
-    assert f"cb_push_back({acc_o_cb}, 1);" in compute_source
-    assert f"pack_tile(0, {acc_o_cb});" in compute_source
-    assert f"cb_reserve_back({acc_o_cb}, 16);" not in compute_source
-    assert f"cb_push_back({acc_o_cb}, 16);" not in compute_source
+    def publishes_single_acc_o_page(cb_id):
+        return (
+            f"cb_reserve_back({cb_id}, 1);" in compute_source
+            and f"cb_push_back({cb_id}, 1);" in compute_source
+            and (
+                f"pack_tile(0, {cb_id});" in compute_source
+                or f"pack_tile(0, {cb_id}, 0);" in compute_source
+            )
+        )
+
+    assert any(publishes_single_acc_o_page(cb_id) for cb_id in acc_o_publication_cbs)
+    for cb_id in acc_o_publication_cbs:
+        assert f"cb_reserve_back({cb_id}, 16);" not in compute_source
+        assert f"cb_push_back({cb_id}, 16);" not in compute_source
 
 
 def test_flash_attention_seq64_bf16_compute_source_accumulates_clear_accum_false_gemm_via_tiled_merge_protocol():

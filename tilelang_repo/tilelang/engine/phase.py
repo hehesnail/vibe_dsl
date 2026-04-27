@@ -213,6 +213,8 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     mod = tilelang.transform.Simplify()(mod)
     # Hoist any root-block annotations to PrimFunc attrs if pass is available
     mod = tilelang.transform.HoistNonRestrictParams()(mod)
+    if target.kind.name == "blackhole":
+        mod = tilelang.transform.NormalizeBlackholeTileCompute()(mod)
     return mod
 
 

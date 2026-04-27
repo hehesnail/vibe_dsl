@@ -193,53 +193,6 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     bool accumulate_existing = false;
   };
 
-  struct RowBroadcastMatch {
-    tvm::tir::Buffer dst;
-    tvm::tir::Buffer scalar;
-    tvm::PrimExpr num_elements;
-    tvm::PrimExpr row_width;
-    bool grouped = false;
-    std::string kind;
-  };
-
-  struct ScalarFmaMatch {
-    tvm::tir::Buffer dst;
-    tvm::tir::Buffer lhs;
-    tvm::tir::Buffer rhs;
-    tvm::tir::Buffer add;
-    tvm::PrimExpr num_elements;
-  };
-
-  struct Exp2RowBroadcastAffineMatch {
-    tvm::tir::Buffer dst;
-    tvm::tir::Buffer scalar;
-    tvm::PrimExpr num_elements;
-    tvm::PrimExpr row_width;
-    bool grouped = false;
-    tvm::PrimExpr dst_scale;
-    tvm::PrimExpr scalar_scale;
-  };
-
-  struct ScalarExp2AffineMatch {
-    tvm::tir::Buffer dst;
-    tvm::tir::Buffer lhs;
-    tvm::tir::Buffer rhs;
-    tvm::PrimExpr lhs_scale;
-    tvm::PrimExpr rhs_scale;
-  };
-
-  struct FragmentFillMatch {
-    tvm::tir::Buffer dst;
-    tvm::PrimExpr num_elements;
-    tvm::PrimExpr value;
-  };
-
-  struct ScalarMaxMatch {
-    tvm::tir::Buffer dst;
-    tvm::tir::Buffer src;
-    tvm::PrimExpr num_elements;
-  };
-
   struct FragmentCastMatch {
     tvm::tir::Buffer dst;
     tvm::tir::Buffer src;
@@ -247,12 +200,6 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     tvm::PrimExpr src_offset;
     tvm::PrimExpr num_elements;
     tvm::PrimExpr row_width;
-  };
-
-  struct ScalarFragmentCopyMatch {
-    tvm::tir::Buffer dst;
-    tvm::tir::Buffer src;
-    tvm::PrimExpr num_elements;
   };
 
   struct LocalToCBSliceMatch {
@@ -633,44 +580,38 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
 
   /*! \brief Detect and lower explicit preserved tile reductions. */
   bool MatchExplicitTileReduce(const tvm::tir::CallNode* op, RowReductionMatch* match) const;
-  /*! \brief Detect residual scalar row-reduction loops on local fragment buffers. */
-  bool MatchDirectRowReduction(const tvm::tir::ForNode* op, RowReductionMatch* match) const;
-  bool MatchAllocatedRowReduction(const tvm::tir::AllocateNode* op, RowReductionMatch* match) const;
-  bool MatchGroupedRowReduction(const tvm::tir::ForNode* op, RowReductionMatch* match) const;
-  bool MatchStandaloneRowReduction(const tvm::tir::ForNode* op, RowReductionMatch* match) const;
+  bool MatchExplicitTileTypecast(const tvm::tir::CallNode* op,
+                                 FragmentCastMatch* match) const;
+  tvm::tir::Stmt LowerExplicitBlackholeTileCompute(const tvm::tir::CallNode* op);
   tvm::tir::Stmt GenerateRowReductionSequence(const RowReductionMatch& match);
-  bool MatchDirectRowBroadcast(const tvm::tir::ForNode* op, RowBroadcastMatch* match) const;
-  tvm::tir::Stmt GenerateRowBroadcastSequence(const RowBroadcastMatch& match);
-  bool MatchScalarFmaStore(const tvm::tir::BufferStoreNode* op, ScalarFmaMatch* match) const;
-  bool MatchGroupedScalarFmaLoop(const tvm::tir::ForNode* op, ScalarFmaMatch* match) const;
-  tvm::tir::Stmt GenerateScalarFmaSequence(const ScalarFmaMatch& match);
-  bool MatchExp2RowBroadcastAffine(const tvm::tir::ForNode* op,
-                                   Exp2RowBroadcastAffineMatch* match) const;
-  tvm::tir::Stmt GenerateExp2RowBroadcastAffineSequence(
-      const Exp2RowBroadcastAffineMatch& match);
-  bool MatchScalarExp2AffineStore(const tvm::tir::BufferStoreNode* op,
-                                  ScalarExp2AffineMatch* match) const;
-  bool MatchGroupedScalarExp2AffineLoop(const tvm::tir::ForNode* op,
-                                        ScalarExp2AffineMatch* match) const;
-  tvm::tir::Stmt GenerateScalarExp2AffineSequence(const ScalarExp2AffineMatch& match);
-  bool MatchDirectFragmentFill(const tvm::tir::ForNode* op, FragmentFillMatch* match) const;
-  bool MatchScalarFragmentFillStore(const tvm::tir::BufferStoreNode* op, FragmentFillMatch* match) const;
-  tvm::tir::Stmt GenerateFragmentFillSequence(const FragmentFillMatch& match);
-  tvm::tir::Stmt GenerateFragmentFillCastPublishSequence(const FragmentFillMatch& fill_match,
-                                                         const FragmentCastMatch& cast_match,
-                                                         int current_order_index);
-  bool MatchScalarMaxStore(const tvm::tir::BufferStoreNode* op, ScalarMaxMatch* match) const;
-  bool MatchGroupedScalarMaxLoop(const tvm::tir::ForNode* op, ScalarMaxMatch* match) const;
-  tvm::tir::Stmt GenerateScalarMaxSequence(const ScalarMaxMatch& match);
+  tvm::tir::Stmt GenerateFillTileSequence(const tvm::tir::Buffer& dst,
+                                          const tvm::PrimExpr& value,
+                                          const tvm::PrimExpr& num_elements);
+  tvm::tir::Stmt GenerateCopyTileSequence(const tvm::tir::Buffer& src,
+                                          const tvm::tir::Buffer& dst,
+                                          const tvm::PrimExpr& num_elements);
+  tvm::tir::Stmt GenerateBinaryMaxTileSequence(const tvm::tir::Buffer& dst,
+                                               const tvm::tir::Buffer& rhs);
+  tvm::tir::Stmt GenerateBinaryTileSequence(const tvm::tir::Buffer& dst,
+                                            const tvm::tir::Buffer& rhs,
+                                            const std::string& operation_name);
+  tvm::tir::Stmt GenerateMulTilesBcastColsSequence(const std::string& kind,
+                                                   const tvm::tir::Buffer& dst,
+                                                   const tvm::tir::Buffer& rhs,
+                                                   const tvm::PrimExpr& num_elements,
+                                                   const tvm::PrimExpr& row_width);
+  tvm::tir::Stmt GenerateExp2TileLeafDAGSequence(const std::string& mode,
+                                                 const tvm::tir::Buffer& dst,
+                                                 const tvm::tir::Buffer& lhs,
+                                                 const tvm::tir::Buffer& rhs,
+                                                 const tvm::PrimExpr& lhs_scale,
+                                                 const tvm::PrimExpr& rhs_scale,
+                                                 const tvm::PrimExpr& row_width,
+                                                 const tvm::PrimExpr& num_elements);
   bool MatchDirectFragmentCast(const tvm::tir::ForNode* op, FragmentCastMatch* match) const;
   tvm::tir::Stmt GenerateFragmentCastSequence(const FragmentCastMatch& match,
                                               bool publish_cb = false,
                                               int current_order_index = -1);
-  bool MatchScalarFragmentCopyStore(const tvm::tir::BufferStoreNode* op,
-                                    ScalarFragmentCopyMatch* match) const;
-  bool MatchGroupedScalarFragmentCopyLoop(const tvm::tir::ForNode* op,
-                                          ScalarFragmentCopyMatch* match) const;
-  tvm::tir::Stmt GenerateScalarFragmentCopySequence(const ScalarFragmentCopyMatch& match);
   void LoadBufferFlowFacts(const BlackholeLoweringSupportFacts& lowering_support_facts);
   std::vector<std::string> CollectBufferFlowIdentities(const tvm::tir::Buffer& buffer) const;
   bool HasInterveningBufferWrite(const tvm::tir::Buffer& buffer,

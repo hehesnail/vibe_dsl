@@ -1544,7 +1544,9 @@ static bool HasComputeSegmentRequirement(const Stmt& body) {
   bool found = false;
   tir::PostOrderVisit(body, [&](const ObjectRef& node) {
     if (const auto* call = node.as<CallNode>()) {
-      if (call->op->IsInstance<OpNode>() && Downcast<Op>(call->op)->name == "tl.tileop.gemm_py") {
+      if (call->op->IsInstance<OpNode>() &&
+          (Downcast<Op>(call->op)->name == "tl.tileop.gemm_py" ||
+           Downcast<Op>(call->op)->name == blackhole_tile_compute_schema::kOpName)) {
         found = true;
       }
       return;
@@ -2267,6 +2269,22 @@ void PlanTTKernelABI::RecordTiledCBLiveFormAliases(const Buffer& buffer, int cb_
     return;
   }
   const int order_index = current_lowering_order_index_;
+  auto clear_exact_buffer = [&](const std::string& identity) {
+    if (identity.empty()) {
+      return false;
+    }
+    auto exact_order_it = exact_output_live_form_order_by_buffer_identity_.find(identity);
+    if (order_index >= 0 &&
+        exact_order_it != exact_output_live_form_order_by_buffer_identity_.end() &&
+        exact_order_it->second > order_index) {
+      return false;
+    }
+    exact_output_live_form_cb_by_buffer_identity_.erase(identity);
+    if (order_index >= 0) {
+      exact_output_live_form_order_by_buffer_identity_[identity] = order_index;
+    }
+    return true;
+  };
   auto record_buffer = [&](const Buffer& candidate) {
     const std::string identity = BufferIdentityName(candidate);
     if (!identity.empty()) {
@@ -2275,6 +2293,7 @@ void PlanTTKernelABI::RecordTiledCBLiveFormAliases(const Buffer& buffer, int cb_
           order_it->second > order_index) {
         return;
       }
+      clear_exact_buffer(identity);
       buffer_live_form_cb_by_buffer_identity_[identity] = cb_id;
       buffer_live_form_order_by_buffer_identity_[identity] = order_index;
     }
@@ -2286,7 +2305,11 @@ void PlanTTKernelABI::RecordTiledCBLiveFormAliases(const Buffer& buffer, int cb_
     for (const auto& [identity, physical_candidate] : compute_physical_buffers_by_identity_) {
       if (!identity.empty() && physical_candidate.defined() &&
           SameBufferIdentity(physical_candidate, physical)) {
+        clear_exact_buffer(identity);
         buffer_live_form_cb_by_buffer_identity_[identity] = cb_id;
+        if (order_index >= 0) {
+          buffer_live_form_order_by_buffer_identity_[identity] = order_index;
+        }
       }
     }
   }
@@ -2305,6 +2328,10 @@ void PlanTTKernelABI::ClearTiledCBLiveFormIdentity(const std::string& identity) 
   buffer_live_form_cb_by_buffer_identity_.erase(identity);
   if (order_index >= 0) {
     buffer_live_form_order_by_buffer_identity_[identity] = order_index;
+  }
+  exact_output_live_form_cb_by_buffer_identity_.erase(identity);
+  if (order_index >= 0) {
+    exact_output_live_form_order_by_buffer_identity_[identity] = order_index;
   }
 }
 
@@ -2560,6 +2587,7 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   logical_tile_layout_specs_by_buffer_.clear();
   spatial_live_value_by_subject_.clear();
   spatial_materialization_boundary_by_source_target_.clear();
+  buffer_materialization_facts_by_target_buffer_.clear();
   tt_compute_op_plans_.clear();
   select_compute_builtins_only_ = true;
 
@@ -2572,6 +2600,9 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   LoadLogicalBufferShapes(func, lowering_support_facts, maybe_spatial_plan.value());
   requires_compute_segment_ = HasComputeSegmentRequirement(func->body);
   LoadLogicalTileLayoutSpecs(maybe_spatial_plan.value());
+  buffer_materialization_facts_by_target_buffer_ =
+      BuildBufferMaterializationFactMap(
+          lowering_support_facts.buffer_materialization_facts);
 
   PrimFunc selected = func;
   selected.CopyOnWrite()->body = VisitStmt(func->body);
@@ -3121,21 +3152,6 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
       unresolved_unsupported_ops.push_back(op_name);
     }
   };
-  tir::PostOrderVisit(body_with_segment_markers, [&](const ObjectRef& node) {
-    RowReductionMatch match;
-    if (const auto* loop = node.as<ForNode>()) {
-      if (MatchDirectRowReduction(loop, &match) || MatchGroupedRowReduction(loop, &match) ||
-          MatchStandaloneRowReduction(loop, &match)) {
-        push_unresolved("reduction");
-      }
-      return;
-    }
-    if (const auto* allocate = node.as<AllocateNode>()) {
-      if (MatchAllocatedRowReduction(allocate, &match)) {
-        push_unresolved("reduction");
-      }
-    }
-  });
   for (const std::string& op_name : expected_unsupported_ops) {
     if (op_name == "broadcast" && HasResidualRowBroadcast(body_with_segment_markers)) {
       push_unresolved("broadcast");
@@ -4952,7 +4968,24 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
   bool preserve_out_local_state = false;
   if (IsBufferLikeExpr(op->args[2])) {
     const Buffer out_buffer = ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(op->args[2])->buffer);
-    const bool needs_accumulator_merge = FindBufferMaterializationFact(out_buffer) != nullptr;
+    const FutureBufferUses future_uses =
+        ClassifyFutureBufferUses(out_buffer, current_order_index);
+    const bool has_zero_preclear = HasZeroFragmentFillFact(out_buffer);
+    bool adjacent_post_merge_cast_is_only_compute_consumer = false;
+    if (post_merge_cast != nullptr && post_merge_cast_order_index >= 0 &&
+        post_merge_cast->src.defined() && SameBufferIdentity(post_merge_cast->src, out_buffer)) {
+      const FutureBufferUses uses_after_cast =
+          ClassifyFutureBufferUses(out_buffer, post_merge_cast_order_index);
+      adjacent_post_merge_cast_is_only_compute_consumer =
+          !uses_after_cast.has_compute_consume && !uses_after_cast.has_transport_consume &&
+          !uses_after_cast.has_reference;
+    }
+    const bool post_merge_cast_can_consume_live_cb =
+        post_merge_cast != nullptr && adjacent_post_merge_cast_is_only_compute_consumer &&
+        !has_zero_preclear;
+    const bool needs_accumulator_merge =
+        FindBufferMaterializationFact(out_buffer) != nullptr ||
+        (future_uses.has_compute_consume && !post_merge_cast_can_consume_live_cb);
     ExactTiledCBValue live_accumulator;
     const bool has_live_accumulator =
         !gemm_clear_accum_ && !needs_accumulator_merge &&
@@ -4960,8 +4993,6 @@ Stmt PlanTTKernelABI::LowerMatmulCallWithFlowAnalysis(
     if (!gemm_clear_accum_ && !needs_accumulator_merge) {
       gemm_clear_accum_ = !has_live_accumulator;
     }
-    const FutureBufferUses future_uses =
-        ClassifyFutureBufferUses(out_buffer, current_order_index);
     publish_out = future_uses.has_compute_consume || future_uses.has_transport_consume;
     publish_transport_out = future_uses.has_transport_consume;
     preserve_out_local_state = future_uses.has_compute_consume || future_uses.has_reference;
@@ -5373,7 +5404,8 @@ bool PlanTTKernelABI::TryCreateSelectedSourceLiveExactTiledCBValue(const Buffer&
 PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateRowReductionInputCBValue(
     const Buffer& src) {
   ExactTiledCBValue live_value;
-  if (TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value) ||
+  if (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
+      TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value) ||
       TryCreateLiveExactTiledCBValue(src, &live_value)) {
     return live_value;
   }
@@ -5383,7 +5415,8 @@ PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateRowReductionInputCBVal
 PlanTTKernelABI::ExactTiledCBValue PlanTTKernelABI::CreateExactInputCBValue(
     const Buffer& src, const std::string& suffix) {
   ExactTiledCBValue live_value;
-  if (TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value) ||
+  if (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
+      TryCreateSelectedSourceLiveExactTiledCBValue(src, &live_value) ||
       TryCreateLiveExactTiledCBValue(src, &live_value)) {
     return live_value;
   }
@@ -5456,7 +5489,8 @@ Stmt PlanTTKernelABI::PublishExactInputToTiledCB(const Buffer& src,
     return Stmt();
   }
   ExactTiledCBValue live_value;
-  if (TryCreateLiveExactTiledCBValue(src, &live_value)) {
+  if (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
+      TryCreateLiveExactTiledCBValue(src, &live_value)) {
     *cb_value = live_value;
     return Stmt();
   }
@@ -5942,7 +5976,16 @@ Stmt PlanTTKernelABI::GenerateMatmulSequenceWithPartialReload(int out_req_index,
   for (const Stmt& reacquire : deferred_reacquire_stmts) {
     stmts.push_back(reacquire);
   }
-  return SeqStmt::Flatten(stmts);
+  Stmt body = SeqStmt::Flatten(stmts);
+  if (publish_out && gemm_c_buffer_.defined()) {
+    ExactTiledCBValue live_value;
+    live_value.buffer = gemm_c_buffer_;
+    live_value.cb_id = out_id;
+    live_value.borrowed_live = true;
+    PopulateExactTiledCBValueShape(gemm_c_buffer_, &live_value);
+    body = AttachExactOutputLiveFormMarker(gemm_c_buffer_, live_value, body);
+  }
+  return body;
 }
 
 bool PlanTTKernelABI::CanPublishPostMergeCastWithPackTile(const FragmentCastMatch& match,
@@ -5966,11 +6009,6 @@ bool PlanTTKernelABI::CanPublishPostMergeCastWithPackTile(const FragmentCastMatc
       GetLogicalBufferElementCount(match.dst) != logical_elements) {
     return false;
   }
-  const FutureBufferUses dst_future_uses = ClassifyFutureBufferUses(match.dst, cast_order_index);
-  if (!dst_future_uses.has_transport_consume || dst_future_uses.has_compute_consume ||
-      dst_future_uses.has_reference) {
-    return false;
-  }
   const BlackholeBufferMaterializationFact* fact = FindBufferMaterializationFact(match.dst);
   if (fact == nullptr) {
     return false;
@@ -5982,8 +6020,7 @@ bool PlanTTKernelABI::CanPublishPostMergeCastWithPackTile(const FragmentCastMatc
 }
 
 bool PlanTTKernelABI::HasZeroFragmentFillFact(const Buffer& buffer) const {
-  const std::string identity = BufferIdentityName(buffer);
-  if (!identity.empty()) {
+  for (const std::string& identity : CollectBufferFlowIdentities(buffer)) {
     auto fill_it = last_fragment_fill_value_by_buffer_identity_.find(identity);
     if (fill_it != last_fragment_fill_value_by_buffer_identity_.end()) {
       return IsLiteralZeroValue(fill_it->second);
@@ -6686,13 +6723,6 @@ Stmt PlanTTKernelABI::GenerateClearSequence(const CallNode* op) {
 
 namespace {
 
-bool IsScalarLocalFragmentBuffer(const Buffer& buffer) {
-  if (!IsUnsupportedResidualLocalScope(buffer)) {
-    return false;
-  }
-  return buffer->shape.size() == 1 && tir::is_one(buffer->shape[0]);
-}
-
 bool IsRowScalarLocalFragmentBuffer(const Buffer& buffer) {
   if (!IsUnsupportedResidualLocalScope(buffer)) {
     return false;
@@ -6700,107 +6730,11 @@ bool IsRowScalarLocalFragmentBuffer(const Buffer& buffer) {
   return buffer->shape.size() == 1;
 }
 
-bool MatchScalarAccumulatorUpdate(const BufferStoreNode* store,
-                                  const Buffer& accum_buffer,
-                                  const Var& reduce_var,
-                                  Buffer* src_buffer,
-                                  std::string* kind) {
-  auto same_buffer = [](const Buffer& lhs, const Buffer& rhs) { return SameBufferIdentity(lhs, rhs); };
-  auto same_loop_index = [&](const PrimExpr& index) {
-    if (index.same_as(reduce_var)) {
-      return true;
-    }
-    const auto* index_var = index.as<VarNode>();
-    return index_var &&
-           (index_var == reduce_var.get() || index_var->name_hint == reduce_var->name_hint);
-  };
-  if (!store || !same_buffer(store->buffer, accum_buffer) || store->indices.size() != 1 ||
-      !tir::is_zero(store->indices[0])) {
-    return false;
-  }
-
-  auto try_match_binary = [&](const PrimExpr& lhs, const PrimExpr& rhs,
-                              const char* expected_kind) -> bool {
-    const auto* accum_load = lhs.as<BufferLoadNode>();
-    const auto* src_load = rhs.as<BufferLoadNode>();
-    if (!accum_load || !src_load) {
-      return false;
-    }
-    if (!same_buffer(accum_load->buffer, accum_buffer) || accum_load->indices.size() != 1 ||
-        !tir::is_zero(accum_load->indices[0])) {
-      return false;
-    }
-    if (same_buffer(src_load->buffer, accum_buffer) || src_load->indices.size() != 1 ||
-        !same_loop_index(src_load->indices[0])) {
-      return false;
-    }
-    *src_buffer = src_load->buffer;
-    *kind = expected_kind;
-    return true;
-  };
-
-  if (const auto* add = store->value.as<AddNode>()) {
-    return try_match_binary(add->a, add->b, "sum") || try_match_binary(add->b, add->a, "sum");
-  }
-  if (const auto* max = store->value.as<MaxNode>()) {
-    return try_match_binary(max->a, max->b, "max") || try_match_binary(max->b, max->a, "max");
-  }
-  return false;
-}
-
-bool MatchReductionFinalizeStore(const BufferStoreNode* store,
-                                 const Buffer& tmp_buffer,
-                                 Buffer* dst_buffer,
-                                 std::string* kind) {
-  auto same_buffer = [](const Buffer& lhs, const Buffer& rhs) { return SameBufferIdentity(lhs, rhs); };
-  if (!store || store->buffer->shape.size() != 1 || store->indices.size() != 1 ||
-      !tir::is_zero(store->indices[0]) || !IsScalarLocalFragmentBuffer(store->buffer)) {
-    return false;
-  }
-
-  auto try_match_binary = [&](const PrimExpr& lhs, const PrimExpr& rhs,
-                              const char* expected_kind) -> bool {
-    const auto* dst_load = lhs.as<BufferLoadNode>();
-    const auto* tmp_load = rhs.as<BufferLoadNode>();
-    if (!dst_load || !tmp_load) {
-      return false;
-    }
-    if (!same_buffer(dst_load->buffer, store->buffer) || dst_load->indices.size() != 1 ||
-        !tir::is_zero(dst_load->indices[0])) {
-      return false;
-    }
-    if (!same_buffer(tmp_load->buffer, tmp_buffer) || tmp_load->indices.size() != 1 ||
-        !tir::is_zero(tmp_load->indices[0])) {
-      return false;
-    }
-    *dst_buffer = store->buffer;
-    *kind = expected_kind;
-    return true;
-  };
-
-  if (const auto* add = store->value.as<AddNode>()) {
-    return try_match_binary(add->a, add->b, "sum") || try_match_binary(add->b, add->a, "sum");
-  }
-  if (const auto* max = store->value.as<MaxNode>()) {
-    return try_match_binary(max->a, max->b, "max") || try_match_binary(max->b, max->a, "max");
-  }
-  return false;
-}
-
 std::vector<Stmt> FlattenSeqStmtBody(const Stmt& body) {
   if (const auto* seq = body.as<SeqStmtNode>()) {
     return std::vector<Stmt>(seq->seq.begin(), seq->seq.end());
   }
   return {body};
-}
-
-std::vector<Stmt> FlattenSingletonLoopBody(const Stmt& body) {
-  if (const auto* loop = body.as<ForNode>()) {
-    if (tir::is_one(loop->extent)) {
-      return FlattenSeqStmtBody(loop->body);
-    }
-  }
-  return FlattenSeqStmtBody(body);
 }
 
 const ForNode* AsUnwrappedFor(const Stmt& stmt) {
@@ -6847,6 +6781,9 @@ bool IsFloatImmValue(const PrimExpr& expr, double expected) {
   if (const auto* imm = expr.as<FloatImmNode>()) {
     return imm->value == expected;
   }
+  if (const auto* cast = expr.as<CastNode>()) {
+    return IsFloatImmValue(cast->value, expected);
+  }
   return false;
 }
 
@@ -6856,7 +6793,7 @@ bool IsInfinityExpr(const PrimExpr& expr) {
     return false;
   }
   Op op = Downcast<Op>(call->op);
-  return op->name == "tir.infinity";
+  return op->name == "tir.infinity" || op->name == "tl.infinity";
 }
 
 bool IsScalarLiteralValue(const PrimExpr& expr) {
@@ -6880,6 +6817,9 @@ bool IsZeroValue(const PrimExpr& expr) {
 }
 
 bool IsNegInfValue(const PrimExpr& expr) {
+  if (const auto* cast = expr.as<CastNode>()) {
+    return IsNegInfValue(cast->value);
+  }
   if (const auto* mul = expr.as<MulNode>()) {
     return ((IsFloatImmValue(mul->a, std::numeric_limits<double>::infinity()) ||
              IsInfinityExpr(mul->a)) &&
@@ -6888,7 +6828,7 @@ bool IsNegInfValue(const PrimExpr& expr) {
              IsInfinityExpr(mul->b)) &&
             IsFloatImmValue(mul->a, -1.0));
   }
-  return IsFloatImmValue(expr, -std::numeric_limits<double>::infinity()) || IsInfinityExpr(expr);
+  return IsFloatImmValue(expr, -std::numeric_limits<double>::infinity());
 }
 
 bool IsFragmentFillValue(const PrimExpr& expr) {
@@ -6993,190 +6933,6 @@ bool HasResidualRowBroadcast(const Stmt& body) {
   return found;
 }
 
-bool MatchSelfIndexedVectorLoad(const PrimExpr& expr,
-                                const Buffer& dst_buffer,
-                                const Var& loop_var) {
-  const auto* load = expr.as<BufferLoadNode>();
-  return load && SameBufferIdentity(load->buffer, dst_buffer) &&
-         load->indices.size() == 1 && load->indices[0].same_as(loop_var);
-}
-
-bool MatchScalarFragmentLoad(const PrimExpr& expr, Buffer* scalar_buffer) {
-  const auto* load = expr.as<BufferLoadNode>();
-  if (!load || load->indices.size() != 1 || !tir::is_zero(load->indices[0]) ||
-      !IsScalarLocalFragmentBuffer(load->buffer)) {
-    return false;
-  }
-  *scalar_buffer = load->buffer;
-  return true;
-}
-
-bool MatchGroupedScalarFragmentLoad(const PrimExpr& expr,
-                                    const Var& loop_var,
-                                    Buffer* scalar_buffer,
-                                    PrimExpr* row_width) {
-  const auto* load = expr.as<BufferLoadNode>();
-  if (!load || load->indices.size() != 1 || !IsRowScalarLocalFragmentBuffer(load->buffer)) {
-    return false;
-  }
-  if (const auto* floordiv = load->indices[0].as<FloorDivNode>()) {
-    if (!floordiv->a.same_as(loop_var)) {
-      return false;
-    }
-    const auto* width_imm = floordiv->b.as<IntImmNode>();
-    if (!width_imm || width_imm->value <= 0) {
-      return false;
-    }
-    *scalar_buffer = load->buffer;
-    *row_width = floordiv->b;
-    return true;
-  }
-  if (const auto* shift = load->indices[0].as<CallNode>()) {
-    if (!shift->op->IsInstance<OpNode>()) {
-      return false;
-    }
-    const Op shift_op = Downcast<Op>(shift->op);
-    if (shift_op->name != "tir.shift_right" || shift->args.size() != 2 ||
-        !shift->args[0].same_as(loop_var)) {
-      return false;
-    }
-    const auto* shift_imm = shift->args[1].as<IntImmNode>();
-    if (!shift_imm || shift_imm->value < 0 || shift_imm->value >= 31) {
-      return false;
-    }
-    *scalar_buffer = load->buffer;
-    *row_width = IntImm(DataType::Int(32), 1 << shift_imm->value);
-    return true;
-  }
-  return false;
-}
-
-bool MatchScalarBufferLoadFrom(const PrimExpr& expr, const Buffer& buffer) {
-  const auto* load = expr.as<BufferLoadNode>();
-  return load && load->indices.size() == 1 && tir::is_zero(load->indices[0]) &&
-         SameBufferIdentity(load->buffer, buffer);
-}
-
-bool MatchIndexedRowStateLoad(const PrimExpr& expr, const Buffer& buffer, const Var& loop_var) {
-  const auto* load = expr.as<BufferLoadNode>();
-  return load && load->indices.size() == 1 && load->indices[0].same_as(loop_var) &&
-         SameBufferIdentity(load->buffer, buffer);
-}
-
-bool MatchExp2Call(const PrimExpr& expr, PrimExpr* arg) {
-  const auto* call = expr.as<CallNode>();
-  if (!call || !call->op->IsInstance<OpNode>()) {
-    return false;
-  }
-  const Op op = Downcast<Op>(call->op);
-  if (op->name == "tir.exp2") {
-    if (call->args.size() != 1) {
-      return false;
-    }
-    if (arg != nullptr) {
-      *arg = call->args[0];
-    }
-    return true;
-  }
-
-  const bool is_extern_exp2 =
-      (op.same_as(tir::builtin::call_pure_extern()) || op.same_as(tir::builtin::call_extern())) &&
-      call->args.size() == 2;
-  if (!is_extern_exp2) {
-    return false;
-  }
-
-  const auto* callee = call->args[0].as<StringImmNode>();
-  if (!callee) {
-    return false;
-  }
-
-  const std::string extern_name = callee->value;
-  if (extern_name != "exp2" && extern_name != "exp2f" && extern_name != "exp2l" &&
-      extern_name != "__exp2f") {
-    return false;
-  }
-
-  if (arg != nullptr) {
-    *arg = call->args[1];
-  }
-  return true;
-}
-
-bool MatchScaledSelfIndexedVectorLoad(const PrimExpr& expr,
-                                      const Buffer& dst_buffer,
-                                      const Var& loop_var,
-                                      PrimExpr* scale) {
-  if (MatchSelfIndexedVectorLoad(expr, dst_buffer, loop_var)) {
-    *scale = make_const(expr.dtype(), 1.0);
-    return true;
-  }
-  const auto* mul = expr.as<MulNode>();
-  if (!mul) {
-    return false;
-  }
-  if (MatchSelfIndexedVectorLoad(mul->a, dst_buffer, loop_var) && IsScalarLiteralValue(mul->b) &&
-      !ExprUsesVar(mul->b, loop_var)) {
-    *scale = mul->b;
-    return true;
-  }
-  if (MatchSelfIndexedVectorLoad(mul->b, dst_buffer, loop_var) && IsScalarLiteralValue(mul->a) &&
-      !ExprUsesVar(mul->a, loop_var)) {
-    *scale = mul->a;
-    return true;
-  }
-  return false;
-}
-
-bool MatchScaledScalarFragmentLoad(const PrimExpr& expr, Buffer* scalar_buffer, PrimExpr* scale) {
-  if (MatchScalarFragmentLoad(expr, scalar_buffer)) {
-    *scale = make_const(expr.dtype(), 1.0);
-    return true;
-  }
-  const auto* mul = expr.as<MulNode>();
-  if (!mul) {
-    return false;
-  }
-  if (MatchScalarFragmentLoad(mul->a, scalar_buffer) && IsScalarLiteralValue(mul->b)) {
-    *scale = mul->b;
-    return true;
-  }
-  if (MatchScalarFragmentLoad(mul->b, scalar_buffer) && IsScalarLiteralValue(mul->a)) {
-    *scale = mul->a;
-    return true;
-  }
-  return false;
-}
-
-bool MatchScaledGroupedScalarFragmentLoad(const PrimExpr& expr,
-                                          const Var& loop_var,
-                                          Buffer* scalar_buffer,
-                                          PrimExpr* row_width,
-                                          PrimExpr* scale) {
-  if (MatchGroupedScalarFragmentLoad(expr, loop_var, scalar_buffer, row_width)) {
-    *scale = make_const(expr.dtype(), 1.0);
-    return true;
-  }
-  const auto* mul = expr.as<MulNode>();
-  if (!mul) {
-    return false;
-  }
-  PrimExpr local_row_width;
-  if (MatchGroupedScalarFragmentLoad(mul->a, loop_var, scalar_buffer, &local_row_width) &&
-      IsScalarLiteralValue(mul->b)) {
-    *row_width = local_row_width;
-    *scale = mul->b;
-    return true;
-  }
-  if (MatchGroupedScalarFragmentLoad(mul->b, loop_var, scalar_buffer, &local_row_width) &&
-      IsScalarLiteralValue(mul->a)) {
-    *row_width = local_row_width;
-    *scale = mul->a;
-    return true;
-  }
-  return false;
-}
-
 }  // namespace
 
 bool PlanTTKernelABI::MatchExplicitTileReduce(const CallNode* op,
@@ -7240,244 +6996,132 @@ bool PlanTTKernelABI::MatchExplicitTileReduce(const CallNode* op,
   return true;
 }
 
-bool PlanTTKernelABI::MatchDirectRowReduction(const ForNode* op, RowReductionMatch* match) const {
-  if (!op || !match || !tir::is_one(op->extent)) {
+bool PlanTTKernelABI::MatchExplicitTileTypecast(const CallNode* op,
+                                                FragmentCastMatch* match) const {
+  if (!op || !match || !op->op->IsInstance<OpNode>()) {
     return false;
   }
-  std::vector<Stmt> stmts = FlattenSingletonLoopBody(op->body);
-  if (stmts.size() != 2) {
+  const Op call_op = Downcast<Op>(op->op);
+  if (call_op->name != blackhole_tile_compute_schema::kOpName || op->args.size() < 4U) {
     return false;
   }
-
-  const auto* init_store = AsUnwrappedBufferStore(stmts[0]);
-  const auto* reduce_loop = AsUnwrappedFor(stmts[1]);
-  if (!init_store || !reduce_loop || !IsScalarLocalFragmentBuffer(init_store->buffer) ||
-      init_store->indices.size() != 1 || !tir::is_zero(init_store->indices[0])) {
+  const auto* operation_imm = op->args[0].as<StringImmNode>();
+  if (!operation_imm ||
+      operation_imm->value != blackhole_tile_compute_schema::kTypecastTile ||
+      !IsBufferLikeExpr(op->args[1]) || !IsBufferLikeExpr(op->args[2])) {
     return false;
   }
-  Buffer src_buffer;
-  std::string kind;
-  if (!MatchScalarAccumulatorUpdate(AsUnwrappedBufferStore(reduce_loop->body), init_store->buffer,
-                                    reduce_loop->loop_var, &src_buffer, &kind)) {
-    return false;
+  match->src = ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(op->args[1])->buffer);
+  match->dst = NormalizeToBufferRegion(op->args[2])->buffer;
+  match->src_offset = IntImm(DataType::Int(32), 0);
+  match->dst_offset = IntImm(DataType::Int(32), 0);
+  match->num_elements = op->args[3];
+  match->row_width = PrimExpr();
+  const auto [logical_src_rows, logical_src_cols] = GetLogicalMatrixShape(match->src);
+  if (logical_src_rows > 0 && logical_src_cols > 0) {
+    match->row_width = IntImm(DataType::Int(32), static_cast<int>(logical_src_cols));
+    match->num_elements =
+        IntImm(DataType::Int(32), static_cast<int>(logical_src_rows * logical_src_cols));
   }
-
-  if (kind == "sum" && !IsZeroValue(init_store->value)) {
-    return false;
-  }
-  if (kind == "max" && !IsNegInfValue(init_store->value)) {
-    return false;
-  }
-
-  match->src = src_buffer;
-  match->dst = init_store->buffer;
-  match->num_elements = reduce_loop->extent;
-  match->row_width = reduce_loop->extent;
-  match->kind = kind;
-  match->grouped = false;
-  match->clear = true;
-  match->accumulate_existing = false;
   return true;
 }
 
-bool PlanTTKernelABI::MatchAllocatedRowReduction(const AllocateNode* op,
-                                                   RowReductionMatch* match) const {
-  if (!op || !match || op->extents.size() != 1 || !tir::is_one(op->extents[0])) {
-    return false;
+Stmt PlanTTKernelABI::LowerExplicitBlackholeTileCompute(const CallNode* op) {
+  if (!op || !op->op->IsInstance<OpNode>()) {
+    return Stmt();
   }
-  std::vector<Stmt> stmts = FlattenSingletonLoopBody(op->body);
-  if (stmts.size() != 3) {
-    return false;
+  const Op call_op = Downcast<Op>(op->op);
+  if (call_op->name != blackhole_tile_compute_schema::kOpName ||
+      op->args.empty()) {
+    return Stmt();
   }
-
-  const auto* init_store = AsUnwrappedBufferStore(stmts[0]);
-  const auto* reduce_loop = AsUnwrappedFor(stmts[1]);
-  const auto* finalize_store = AsUnwrappedBufferStore(stmts[2]);
-  if (init_store) {
-  }
-  if (!init_store || !reduce_loop || !finalize_store || init_store->indices.size() != 1 ||
-      !tir::is_zero(init_store->indices[0])) {
-    return false;
-  }
-  if (BufferDataIdentity(init_store->buffer) != op->buffer_var.get()) {
-    return false;
-  }
-
-  Buffer src_buffer;
-  std::string reduction_kind;
-  if (!MatchScalarAccumulatorUpdate(AsUnwrappedBufferStore(reduce_loop->body), init_store->buffer,
-                                    reduce_loop->loop_var, &src_buffer, &reduction_kind)) {
-    return false;
-  }
-
-  Buffer dst_buffer;
-  std::string finalize_kind;
-  if (!MatchReductionFinalizeStore(finalize_store, init_store->buffer, &dst_buffer, &finalize_kind) ||
-      finalize_kind != reduction_kind) {
-    return false;
-  }
-
-  match->src = src_buffer;
-  match->dst = dst_buffer;
-  match->num_elements = reduce_loop->extent;
-  match->row_width = reduce_loop->extent;
-  match->kind = reduction_kind;
-  match->grouped = false;
-  match->clear = false;
-  match->accumulate_existing = false;
-  return true;
-}
-
-bool PlanTTKernelABI::MatchGroupedRowReduction(const ForNode* op,
-                                                 RowReductionMatch* match) const {
-  if (!op || !match) {
-    return false;
-  }
-  std::vector<Stmt> stmts = FlattenSingletonLoopBody(op->body);
-  if (stmts.size() != 3 && stmts.size() != 4) {
-    return false;
-  }
-
-  const auto* init_store = AsUnwrappedBufferStore(stmts[0]);
-  const auto* reduce_loop = AsUnwrappedFor(stmts[1]);
-  const auto* allreduce_store = AsUnwrappedBufferStore(stmts[2]);
-  const auto* finalize_store = stmts.size() == 4 ? AsUnwrappedBufferStore(stmts[3]) : nullptr;
-  if (!init_store || !reduce_loop || !allreduce_store ||
-      !IsRowScalarLocalFragmentBuffer(init_store->buffer) || init_store->indices.size() != 1 ||
-      !init_store->indices[0].same_as(op->loop_var)) {
-    return false;
-  }
-
-  auto same_buffer = [](const Buffer& lhs, const Buffer& rhs) { return SameBufferIdentity(lhs, rhs); };
-
-  Buffer src_buffer;
-  std::string reduction_kind;
-  auto try_match_reduce = [&](const PrimExpr& lhs, const PrimExpr& rhs,
-                              const char* expected_kind) -> bool {
-    const auto* accum_load = lhs.as<BufferLoadNode>();
-    const auto* src_load = rhs.as<BufferLoadNode>();
-    if (!accum_load || !src_load || !same_buffer(accum_load->buffer, init_store->buffer) ||
-        accum_load->indices.size() != 1 || !accum_load->indices[0].same_as(op->loop_var) ||
-        src_load->indices.size() != 1) {
-      return false;
-    }
-    Analyzer analyzer;
-    PrimExpr expected_index = op->loop_var * reduce_loop->extent + reduce_loop->loop_var;
-    if (!tir::is_zero(analyzer.Simplify(src_load->indices[0] - expected_index))) {
-      return false;
-    }
-    src_buffer = src_load->buffer;
-    reduction_kind = expected_kind;
-    return true;
+  const auto* operation_imm = op->args[0].as<StringImmNode>();
+  ICHECK(operation_imm) << "tl.tileop.blackhole_compute requires string operation name";
+  const std::string operation = operation_imm->value;
+  auto buffer_arg = [&](size_t index) -> Buffer {
+    ICHECK_LT(index, op->args.size())
+        << "tl.tileop.blackhole_compute missing buffer argument " << index
+        << " for operation " << operation;
+    return ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(op->args[index])->buffer);
+  };
+  auto prim_arg = [&](size_t index) -> PrimExpr {
+    ICHECK_LT(index, op->args.size())
+        << "tl.tileop.blackhole_compute missing scalar argument " << index
+        << " for operation " << operation;
+    return op->args[index];
+  };
+  auto string_arg = [&](size_t index) -> std::string {
+    const auto* imm = prim_arg(index).as<StringImmNode>();
+    ICHECK(imm) << "tl.tileop.blackhole_compute expects string argument " << index
+                << " for operation " << operation;
+    return imm->value;
   };
 
-  const auto* reduce_store = AsUnwrappedBufferStore(reduce_loop->body);
-  if (!reduce_store || !same_buffer(reduce_store->buffer, init_store->buffer) ||
-      reduce_store->indices.size() != 1 || !reduce_store->indices[0].same_as(op->loop_var)) {
-    return false;
+  if (operation == blackhole_tile_compute_schema::kFillTile) {
+    return GenerateFillTileSequence(buffer_arg(1), prim_arg(2), prim_arg(3));
   }
-  if (const auto* add = reduce_store->value.as<AddNode>()) {
-    if (!(try_match_reduce(add->a, add->b, "sum") || try_match_reduce(add->b, add->a, "sum"))) {
-      return false;
-    }
-  } else if (const auto* max = reduce_store->value.as<MaxNode>()) {
-    if (!(try_match_reduce(max->a, max->b, "max") || try_match_reduce(max->b, max->a, "max"))) {
-      return false;
-    }
-  } else {
-    return false;
+  if (operation == blackhole_tile_compute_schema::kCopyTile) {
+    return GenerateCopyTileSequence(buffer_arg(1), buffer_arg(2), prim_arg(3));
   }
-
-  const auto* allreduce_call = allreduce_store->value.as<CallNode>();
-  if (!same_buffer(allreduce_store->buffer, init_store->buffer) || allreduce_store->indices.size() != 1 ||
-      !allreduce_store->indices[0].same_as(op->loop_var) || !allreduce_call ||
-      !allreduce_call->op.same_as(tir::builtin::call_extern())) {
-    return false;
-  }
-
-  Buffer dst_buffer = init_store->buffer;
-  bool clear = true;
-  if (finalize_store != nullptr) {
-    auto try_match_finalize = [&](const PrimExpr& lhs, const PrimExpr& rhs,
-                                  const char* expected_kind) -> bool {
-      const auto* dst_load = lhs.as<BufferLoadNode>();
-      const auto* tmp_load = rhs.as<BufferLoadNode>();
-      if (!dst_load || !tmp_load || dst_load->indices.size() != 1 || tmp_load->indices.size() != 1 ||
-          !dst_load->indices[0].same_as(op->loop_var) || !tmp_load->indices[0].same_as(op->loop_var) ||
-          !same_buffer(tmp_load->buffer, init_store->buffer)) {
-        return false;
+  if (operation == blackhole_tile_compute_schema::kTypecastTile) {
+    FragmentCastMatch match;
+    ICHECK(MatchExplicitTileTypecast(op, &match))
+        << "tl.tileop.blackhole_compute typecast_tile requires source and destination regions";
+    const int cast_order_index =
+        ResolveCurrentBufferTransferOrder(match.src, match.dst,
+                                          current_lowering_order_index_);
+    const bool publish_cb =
+        !select_compute_builtins_only_ &&
+        ShouldPublishBufferResult(match.dst, cast_order_index);
+    std::vector<Stmt> prefix;
+    std::vector<Stmt> suffix;
+    if (publish_cb) {
+      ValidatePublishedBufferSourceEdge(match.src, match.dst);
+      const bool source_has_live_cb =
+          buffer_live_form_cb_by_buffer_identity_.count(BufferIdentityName(match.src)) != 0U;
+      const bool dst_has_republish_fact = FindBufferMaterializationFact(match.dst) != nullptr;
+      if (!(source_has_live_cb && dst_has_republish_fact)) {
+        AppendPublishedBufferSourceMaterialization(match.src, cast_order_index, &prefix, &suffix);
       }
-      dst_buffer = finalize_store->buffer;
-      return same_buffer(dst_load->buffer, finalize_store->buffer) && reduction_kind == expected_kind;
-    };
-
-    if (const auto* add = finalize_store->value.as<AddNode>()) {
-      if (!(try_match_finalize(add->a, add->b, "sum") ||
-            try_match_finalize(add->b, add->a, "sum"))) {
-        return false;
-      }
-    } else if (const auto* max = finalize_store->value.as<MaxNode>()) {
-      if (!(try_match_finalize(max->a, max->b, "max") ||
-            try_match_finalize(max->b, max->a, "max"))) {
-        return false;
-      }
-    } else {
-      return false;
     }
-    clear = false;
+    prefix.push_back(GenerateFragmentCastSequence(match, publish_cb, cast_order_index));
+    prefix.insert(prefix.end(), suffix.begin(), suffix.end());
+    return SeqStmt::Flatten(prefix);
   }
-
-  if (reduction_kind == "sum" && !IsZeroValue(init_store->value)) {
-    return false;
+  if (operation == blackhole_tile_compute_schema::kBinaryMaxTile) {
+    return GenerateBinaryMaxTileSequence(buffer_arg(1), buffer_arg(2));
   }
-  if (reduction_kind == "max" && !IsNegInfValue(init_store->value)) {
-    return false;
+  if (operation == blackhole_tile_compute_schema::kMulTiles ||
+      operation == blackhole_tile_compute_schema::kAddTiles) {
+    return GenerateBinaryTileSequence(buffer_arg(1), buffer_arg(2), operation);
   }
-
-  match->src = src_buffer;
-  match->dst = dst_buffer;
-  match->num_elements = op->extent;
-  match->row_width = reduce_loop->extent;
-  match->kind = reduction_kind;
-  match->grouped = true;
-  match->clear = clear;
-  return true;
-}
-
-bool PlanTTKernelABI::MatchStandaloneRowReduction(const ForNode* op,
-                                                    RowReductionMatch* match) const {
-  if (!op || !match) {
-    return false;
+  if (operation == blackhole_tile_compute_schema::kMulTilesBcastCols) {
+    return GenerateMulTilesBcastColsSequence(string_arg(1), buffer_arg(2), buffer_arg(3),
+                                             prim_arg(4), prim_arg(5));
   }
-  const auto* reduce_store = AsUnwrappedBufferStore(op->body);
-  if (!reduce_store || !IsScalarLocalFragmentBuffer(reduce_store->buffer)) {
-    return false;
+  if (operation == blackhole_tile_compute_schema::kExp2Tile) {
+    const std::string mode = string_arg(1);
+    if (mode == "bcast_cols") {
+      return GenerateExp2TileLeafDAGSequence(mode, buffer_arg(2), buffer_arg(3), buffer_arg(4),
+                                             prim_arg(5), prim_arg(6), prim_arg(7), prim_arg(8));
+    }
+    if (mode == "binary") {
+      return GenerateExp2TileLeafDAGSequence(mode, buffer_arg(2), buffer_arg(3), buffer_arg(4),
+                                             prim_arg(5), prim_arg(6), PrimExpr(), PrimExpr());
+    }
+    ICHECK(false) << "Unsupported Blackhole exp2_tile mode: " << mode;
   }
-
-  Buffer src_buffer;
-  std::string reduction_kind;
-  if (!MatchScalarAccumulatorUpdate(reduce_store, reduce_store->buffer, op->loop_var,
-                                    &src_buffer, &reduction_kind)) {
-    return false;
-  }
-
-  match->src = src_buffer;
-  match->dst = reduce_store->buffer;
-  match->num_elements = op->extent;
-  match->row_width = op->extent;
-  match->kind = reduction_kind;
-  match->grouped = false;
-  match->clear = false;
-  match->accumulate_existing = true;
-  return true;
+  ICHECK(false) << "Unsupported Blackhole tile compute operation: " << operation;
+  return Stmt();
 }
 
 Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& match) {
   PrimExpr accumulator_fill_value;
-  const bool accumulator_is_zero_fill =
+  const bool accumulator_is_identity_fill =
       match.accumulate_existing && TryGetLastFragmentFillValue(match.dst, &accumulator_fill_value) &&
-      IsZeroValue(accumulator_fill_value);
-  const bool accumulate_existing = match.accumulate_existing && !accumulator_is_zero_fill;
+      ((match.kind == "sum" && IsZeroValue(accumulator_fill_value)) ||
+       (match.kind == "max" && IsNegInfValue(accumulator_fill_value)));
+  const bool accumulate_existing = match.accumulate_existing && !accumulator_is_identity_fill;
   ExactTiledCBValue src_in = CreateRowReductionInputCBValue(match.src);
   ExactTiledCBValue out;
   ExactTiledCBValue reduced;
@@ -7644,919 +7288,25 @@ Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& matc
   return MaybeWrapComputeSegment(body);
 }
 
-bool PlanTTKernelABI::MatchDirectRowBroadcast(const ForNode* op,
-                                                RowBroadcastMatch* match) const {
-  if (!op || !match) {
-    return false;
-  }
-  const auto* store = AsUnwrappedBufferStore(op->body);
-  if (!store || !IsVectorLocalFragmentBuffer(store->buffer) || store->indices.size() != 1 ||
-      !store->indices[0].same_as(op->loop_var)) {
-    return false;
-  }
-
-  auto fill_match = [&](const PrimExpr& lhs, const PrimExpr& rhs,
-                        const char* kind) -> bool {
-    Buffer scalar;
-    PrimExpr row_width;
-    if (!MatchSelfIndexedVectorLoad(lhs, store->buffer, op->loop_var)) {
-      return false;
-    }
-    match->dst = store->buffer;
-    match->num_elements = op->extent;
-    match->kind = kind;
-    match->grouped = false;
-    if (MatchScalarFragmentLoad(rhs, &scalar)) {
-      match->scalar = scalar;
-      match->row_width = op->extent;
-      return true;
-    }
-    if (MatchGroupedScalarFragmentLoad(rhs, op->loop_var, &scalar, &row_width)) {
-      match->scalar = scalar;
-      match->row_width = row_width;
-      match->grouped = true;
-      return true;
-    }
-    return false;
-  };
-
-  if (const auto* mul = store->value.as<MulNode>()) {
-    return fill_match(mul->a, mul->b, "mul") || fill_match(mul->b, mul->a, "mul");
-  }
-  if (const auto* div = store->value.as<DivNode>()) {
-    return fill_match(div->a, div->b, "div");
-  }
-  return false;
-}
-
-Stmt PlanTTKernelABI::GenerateRowBroadcastSequence(const RowBroadcastMatch& match) {
-  ExactTiledCBValue dst_in = CreateExactInputCBValue(match.dst, "row_bcast_dst");
-  ExactTiledCBValue scalar_in = CreateExactInputCBValue(match.scalar, "row_bcast_scalar");
-  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "row_bcast_out");
-  const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.dst);
-  const int tiles_per_row =
-      logical_rows > 0 && logical_cols > 0 ? std::max(1, CeilDivToInt(logical_cols, kBlackholeTileCols))
-                                           : std::max(1, dst_in.num_tiles / std::max(1, scalar_in.num_tiles));
-
-  std::vector<Stmt> stmts;
-  if (Stmt publish_dst = PublishExactInputToTiledCB(match.dst, &dst_in); publish_dst.defined()) {
-    stmts.push_back(publish_dst);
-  }
-  if (Stmt publish_scalar = PublishExactInputToTiledCB(match.scalar, &scalar_in);
-      publish_scalar.defined()) {
-    stmts.push_back(publish_scalar);
+Stmt PlanTTKernelABI::GenerateFillTileSequence(const Buffer& dst, const PrimExpr& value,
+                                               const PrimExpr& requested_num_elements) {
+  const FutureBufferUses future_uses =
+      ClassifyFutureBufferUses(dst, current_lowering_order_index_);
+  if (GetStorageScope(dst) == "local.fragment" &&
+      !future_uses.has_compute_consume && !future_uses.has_transport_consume &&
+      !future_uses.has_reference && FindBufferMaterializationFact(dst) == nullptr) {
+    return Evaluate(IntImm32(0));
   }
 
-  ExactTiledCBValue* scalar_operand = &scalar_in;
-  ExactTiledCBValue reciprocal;
-  ExactTiledCBValue scalar_full;
-  ExactTiledCBValue scalar_full_ones;
-  if (match.kind == "div") {
-    scalar_full = CreateEmptyExactTiledCBValue(match.dst, "row_bcast_scalar_full");
-    scalar_full_ones = CreateConstantExactTiledCBValue(match.dst->dtype, "row_bcast_one");
-    reciprocal = CreateEmptyExactTiledCBValue(match.dst, "row_bcast_recip");
-    MarkExactCBValuesOverlap({scalar_in.cb_id, scalar_full_ones.cb_id, scalar_full.cb_id,
-                              reciprocal.cb_id});
-    RecordExactComputeOpPlan("binary", "mul_tiles_bcast_cols",
-                             {{"lhs", scalar_full_ones.buffer, "identity"},
-                              {"rhs", match.scalar, "broadcast"},
-                              {"output", scalar_full.buffer, "identity"}});
-    RecordExactComputeOpPlan("unary", "recip_tile",
-                             {{"input", scalar_full.buffer, "identity"},
-                              {"output", reciprocal.buffer, "identity"}});
-    stmts.push_back(PublishConstantToExactTiledCB(
-        scalar_full_ones.buffer, make_const(match.dst->dtype, 1.0), scalar_full_ones));
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
-                                      {IntImm32(scalar_full.cb_id), IntImm32(scalar_full.num_tiles)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
-                                      {IntImm32(scalar_full_ones.cb_id),
-                                       IntImm32(scalar_full_ones.num_tiles)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
-                                      {IntImm32(scalar_in.cb_id), IntImm32(scalar_in.num_tiles)}));
-    stmts.push_back(MakeBlackholeCall(
-        blackhole_reconfig_data_format(),
-        {IntImm32(scalar_full_ones.cb_id), IntImm32(scalar_in.cb_id)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_mul_bcast_cols_init_short(),
-                                      {IntImm32(scalar_full_ones.cb_id), IntImm32(scalar_in.cb_id)}));
-    for (int tile = 0; tile < scalar_full.num_tiles; ++tile) {
-      const int rhs_tile = tile / tiles_per_row;
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-      stmts.push_back(MakeBlackholeCall(
-          blackhole_mul_tiles_bcast_cols(),
-          {IntImm32(scalar_full_ones.cb_id), IntImm32(scalar_in.cb_id), IntImm32(0),
-           IntImm32(rhs_tile), IntImm32(0)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-      stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
-                                        {IntImm32(scalar_full.cb_id)}));
-      stmts.push_back(MakeBlackholeCall(
-          blackhole_pack_tile(), {IntImm32(0), IntImm32(scalar_full.cb_id), IntImm32(tile)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-    }
-    stmts.push_back(MakeBlackholeCall(
-        blackhole_cb_pop_front(),
-        {IntImm32(scalar_full_ones.cb_id), IntImm32(scalar_full_ones.num_tiles)}));
-    if (!scalar_in.borrowed_live) {
-      stmts.push_back(MakeBlackholeCall(
-          blackhole_cb_pop_front(), {IntImm32(scalar_in.cb_id), IntImm32(scalar_in.num_tiles)}));
-    }
-    stmts.push_back(MakeBlackholeCall(
-        blackhole_cb_push_back(), {IntImm32(scalar_full.cb_id), IntImm32(scalar_full.num_tiles)}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(reciprocal.cb_id), IntImm32(reciprocal.num_tiles)}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scalar_full.cb_id), IntImm32(scalar_full.num_tiles)}));
-    for (int tile = 0; tile < reciprocal.num_tiles; ++tile) {
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-      stmts.push_back(
-          MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(), {IntImm32(scalar_full.cb_id)}));
-      stmts.push_back(
-          MakeBlackholeCall(blackhole_copy_tile(), {IntImm32(scalar_full.cb_id), IntImm32(tile), IntImm32(0)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_recip_tile_init(), {}));
-      stmts.push_back(MakeBlackholeCall(blackhole_recip_tile(), {IntImm32(0)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-      stmts.push_back(
-          MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(reciprocal.cb_id)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
-                                        {IntImm32(0), IntImm32(reciprocal.cb_id), IntImm32(tile)}));
-      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-    }
-    stmts.push_back(MakeBlackholeCall(
-        blackhole_cb_pop_front(), {IntImm32(scalar_full.cb_id), IntImm32(scalar_full.num_tiles)}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(reciprocal.cb_id), IntImm32(reciprocal.num_tiles)}));
-    scalar_operand = &reciprocal;
-  }
-
-  RecordExactComputeOpPlan("binary", match.kind == "div" ? "mul_tiles" : "mul_tiles_bcast_cols",
-                           {{"lhs", match.dst, "identity"},
-                            {"rhs", scalar_operand->buffer,
-                             match.kind == "div" ? "identity" : "broadcast"},
-                            {"output", match.dst, "identity"}});
-
-  MarkExactCBValuesOverlap({dst_in.cb_id, scalar_operand->cb_id, out.cb_id});
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(dst_in.cb_id), IntImm32(dst_in.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scalar_operand->cb_id), IntImm32(scalar_operand->num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_reconfig_data_format(), {IntImm32(dst_in.cb_id), IntImm32(scalar_operand->cb_id)}));
-  if (match.kind == "div") {
-    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
-                                      {IntImm32(dst_in.cb_id), IntImm32(scalar_operand->cb_id)}));
-  } else {
-    stmts.push_back(MakeBlackholeCall(blackhole_mul_bcast_cols_init_short(),
-                                      {IntImm32(dst_in.cb_id), IntImm32(scalar_operand->cb_id)}));
-  }
-  for (int tile = 0; tile < out.num_tiles; ++tile) {
-    const int rhs_tile = tile / tiles_per_row;
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    if (match.kind == "div") {
-      stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
-                                        {IntImm32(dst_in.cb_id), IntImm32(scalar_operand->cb_id),
-                                         IntImm32(tile), IntImm32(tile), IntImm32(0)}));
-    } else {
-      stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_bcast_cols(),
-                                        {IntImm32(dst_in.cb_id), IntImm32(scalar_operand->cb_id),
-                                         IntImm32(tile), IntImm32(rhs_tile), IntImm32(0)}));
-    }
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out.cb_id)}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_pack_tile(), {IntImm32(0), IntImm32(out.cb_id), IntImm32(tile)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-  }
-  if (!dst_in.borrowed_live) {
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(dst_in.cb_id), IntImm32(dst_in.num_tiles)}));
-  }
-  if (match.kind == "mul") {
-    if (!scalar_in.borrowed_live) {
-      stmts.push_back(
-          MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(scalar_in.cb_id), IntImm32(scalar_in.num_tiles)}));
-    }
-  } else {
-    stmts.push_back(MakeBlackholeCall(
-        blackhole_cb_pop_front(), {IntImm32(reciprocal.cb_id), IntImm32(reciprocal.num_tiles)}));
-  }
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
-  RecordExactOutputLiveForm(match.dst, out);
-  Stmt body = AttachExactOutputLiveFormMarker(match.dst, out, SeqStmt::Flatten(stmts));
-  return MaybeWrapComputeSegment(body);
-}
-
-bool PlanTTKernelABI::MatchScalarFmaStore(const BufferStoreNode* op,
-                                            ScalarFmaMatch* match) const {
-  if (!op || !match || !IsScalarLocalFragmentBuffer(op->buffer) || op->indices.size() != 1 ||
-      !tir::is_zero(op->indices[0])) {
-    return false;
-  }
-  const auto* add = op->value.as<AddNode>();
-  if (!add) {
-    return false;
-  }
-
-  auto try_match = [&](const PrimExpr& mul_expr, const PrimExpr& add_expr) -> bool {
-    const auto* mul = mul_expr.as<MulNode>();
-    Buffer mul_lhs;
-    Buffer mul_rhs;
-    Buffer add_buffer;
-    if (!mul || !MatchScalarFragmentLoad(mul->a, &mul_lhs) ||
-        !MatchScalarFragmentLoad(mul->b, &mul_rhs) ||
-        !MatchScalarFragmentLoad(add_expr, &add_buffer)) {
-      return false;
-    }
-    if (!MatchScalarBufferLoadFrom(mul->a, op->buffer) &&
-        !MatchScalarBufferLoadFrom(mul->b, op->buffer)) {
-      return false;
-    }
-    match->dst = op->buffer;
-    match->lhs = mul_lhs;
-    match->rhs = mul_rhs;
-    match->add = add_buffer;
-    match->num_elements = PrimExpr();
-    return true;
-  };
-
-  return try_match(add->a, add->b) || try_match(add->b, add->a);
-}
-
-bool PlanTTKernelABI::MatchGroupedScalarFmaLoop(const ForNode* op,
-                                                  ScalarFmaMatch* match) const {
-  if (!op || !match) {
-    return false;
-  }
-  const auto* store = AsUnwrappedBufferStore(op->body);
-  if (!store || !IsRowScalarLocalFragmentBuffer(store->buffer) || store->indices.size() != 1 ||
-      !store->indices[0].same_as(op->loop_var)) {
-    return false;
-  }
-  const auto* add = store->value.as<AddNode>();
-  if (!add) {
-    return false;
-  }
-
-  auto try_match = [&](const PrimExpr& mul_expr, const PrimExpr& add_expr) -> bool {
-    const auto* mul = mul_expr.as<MulNode>();
-    Buffer mul_lhs;
-    Buffer mul_rhs;
-    Buffer add_buffer;
-    if (!mul || !MatchIndexedRowStateLoad(mul->a, store->buffer, op->loop_var) &&
-                    !MatchIndexedRowStateLoad(mul->b, store->buffer, op->loop_var)) {
-      return false;
-    }
-    const PrimExpr& other_mul = MatchIndexedRowStateLoad(mul->a, store->buffer, op->loop_var) ? mul->b : mul->a;
-    const PrimExpr& self_mul = MatchIndexedRowStateLoad(mul->a, store->buffer, op->loop_var) ? mul->a : mul->b;
-    if (!MatchIndexedRowStateLoad(self_mul, store->buffer, op->loop_var)) {
-      return false;
-    }
-    const auto* other_load = other_mul.as<BufferLoadNode>();
-    const auto* add_load = add_expr.as<BufferLoadNode>();
-    if (!other_load || !add_load || other_load->indices.size() != 1 || add_load->indices.size() != 1 ||
-        !other_load->indices[0].same_as(op->loop_var) || !add_load->indices[0].same_as(op->loop_var) ||
-        !IsRowScalarLocalFragmentBuffer(other_load->buffer) ||
-        !IsRowScalarLocalFragmentBuffer(add_load->buffer)) {
-      return false;
-    }
-    mul_lhs = store->buffer;
-    mul_rhs = other_load->buffer;
-    add_buffer = add_load->buffer;
-    match->dst = store->buffer;
-    match->lhs = mul_lhs;
-    match->rhs = mul_rhs;
-    match->add = add_buffer;
-    match->num_elements = PrimExpr();
-    return true;
-  };
-
-  return try_match(add->a, add->b) || try_match(add->b, add->a);
-}
-
-Stmt PlanTTKernelABI::GenerateScalarFmaSequence(const ScalarFmaMatch& match) {
-  ExactTiledCBValue lhs_in = CreateExactInputCBValue(match.lhs, "scalar_fma_lhs");
-  ExactTiledCBValue rhs_in = CreateExactInputCBValue(match.rhs, "scalar_fma_rhs");
-  ExactTiledCBValue add_in = CreateExactInputCBValue(match.add, "scalar_fma_add");
-  ExactTiledCBValue product = CreateEmptyExactTiledCBValue(match.dst, "scalar_fma_product");
-  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "scalar_fma_out");
-  RecordExactComputeOpPlan("binary", "mul_tiles",
-                           {{"lhs", match.lhs, "identity"},
-                            {"rhs", match.rhs, "identity"},
-                            {"output", product.buffer, "identity"}});
-  RecordExactComputeOpPlan("binary", "add_tiles",
-                           {{"lhs", product.buffer, "identity"},
-                            {"rhs", match.add, "identity"},
-                            {"output", match.dst, "identity"}});
-
-  ICHECK_EQ(lhs_in.num_tiles, rhs_in.num_tiles);
-  ICHECK_EQ(lhs_in.num_tiles, add_in.num_tiles);
-  ICHECK_EQ(lhs_in.num_tiles, out.num_tiles);
-
-  std::vector<Stmt> stmts;
-  if (Stmt publish_lhs = PublishExactInputToTiledCB(match.lhs, &lhs_in); publish_lhs.defined()) {
-    stmts.push_back(publish_lhs);
-  }
-  if (Stmt publish_rhs = PublishExactInputToTiledCB(match.rhs, &rhs_in); publish_rhs.defined()) {
-    stmts.push_back(publish_rhs);
-  }
-  if (Stmt publish_add = PublishExactInputToTiledCB(match.add, &add_in); publish_add.defined()) {
-    stmts.push_back(publish_add);
-  }
-  MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, add_in.cb_id, product.cb_id, out.cb_id});
-
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(product.cb_id), IntImm32(product.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
-                                    {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
-                                    {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)}));
-  for (int tile = 0; tile < product.num_tiles; ++tile) {
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
-                                      {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id),
-                                       IntImm32(tile), IntImm32(tile), IntImm32(0)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(product.cb_id)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
-                                      {IntImm32(0), IntImm32(product.cb_id), IntImm32(tile)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-  }
-  if (!lhs_in.borrowed_live) {
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
-  }
-  if (!rhs_in.borrowed_live) {
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
-  }
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(product.cb_id), IntImm32(product.num_tiles)}));
-
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(product.cb_id), IntImm32(product.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(add_in.cb_id), IntImm32(add_in.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
-                                    {IntImm32(product.cb_id), IntImm32(add_in.cb_id)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_init(),
-                                    {IntImm32(product.cb_id), IntImm32(add_in.cb_id)}));
-  for (int tile = 0; tile < out.num_tiles; ++tile) {
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_add_tiles(),
-                                      {IntImm32(product.cb_id), IntImm32(add_in.cb_id),
-                                       IntImm32(tile), IntImm32(tile), IntImm32(0)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out.cb_id)}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_pack_tile(), {IntImm32(0), IntImm32(out.cb_id), IntImm32(tile)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-  }
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(product.cb_id), IntImm32(product.num_tiles)}));
-  if (!add_in.borrowed_live) {
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(add_in.cb_id), IntImm32(add_in.num_tiles)}));
-  }
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
-  RecordExactOutputLiveForm(match.dst, out);
-  Stmt body = AttachExactOutputLiveFormMarker(match.dst, out, SeqStmt::Flatten(stmts));
-  return MaybeWrapComputeSegment(body);
-}
-
-bool PlanTTKernelABI::MatchExp2RowBroadcastAffine(const ForNode* op,
-                                                    Exp2RowBroadcastAffineMatch* match) const {
-  if (!op || !match) {
-    return false;
-  }
-  const auto* store = AsUnwrappedBufferStore(op->body);
-  if (!store || !IsVectorLocalFragmentBuffer(store->buffer) || store->indices.size() != 1 ||
-      !store->indices[0].same_as(op->loop_var)) {
-    return false;
-  }
-
-  PrimExpr exp2_arg;
-  if (!MatchExp2Call(store->value, &exp2_arg)) {
-    return false;
-  }
-  const auto* sub = exp2_arg.as<SubNode>();
-  if (!sub) {
-    return false;
-  }
-
-  Buffer scalar;
-  PrimExpr dst_scale;
-  PrimExpr scalar_scale;
-  PrimExpr row_width;
-  if (!MatchScaledSelfIndexedVectorLoad(sub->a, store->buffer, op->loop_var, &dst_scale)) {
-    return false;
-  }
-
-  match->dst = store->buffer;
-  match->num_elements = op->extent;
-  match->dst_scale = dst_scale;
-  Analyzer analyzer;
-  match->grouped = false;
-  if (MatchScaledScalarFragmentLoad(sub->b, &scalar, &scalar_scale)) {
-    match->scalar = scalar;
-    match->row_width = op->extent;
-    match->scalar_scale = analyzer.Simplify(-scalar_scale);
-    return true;
-  }
-  if (MatchScaledGroupedScalarFragmentLoad(sub->b, op->loop_var, &scalar, &row_width,
-                                           &scalar_scale)) {
-    match->scalar = scalar;
-    match->row_width = row_width;
-    match->grouped = true;
-    match->scalar_scale = analyzer.Simplify(-scalar_scale);
-    return true;
-  }
-  return false;
-}
-
-Stmt PlanTTKernelABI::GenerateExp2RowBroadcastAffineSequence(
-    const Exp2RowBroadcastAffineMatch& match) {
-  ExactTiledCBValue dst_in = CreateExactInputCBValue(match.dst, "exp2_affine_dst");
-  ExactTiledCBValue scalar_in = CreateExactInputCBValue(match.scalar, "exp2_affine_scalar");
-  ExactTiledCBValue dst_scale = CreateConstantExactTiledCBValue(match.dst->dtype, "exp2_affine_dst_scale");
-  ExactTiledCBValue scalar_scale =
-      CreateConstantExactTiledCBValue(match.scalar->dtype, "exp2_affine_scalar_scale");
-  ExactTiledCBValue scaled_dst = CreateEmptyExactTiledCBValue(match.dst, "exp2_affine_scaled_dst");
-  ExactTiledCBValue scaled_scalar =
-      CreateEmptyExactTiledCBValue(match.scalar, "exp2_affine_scaled_scalar");
-  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "exp2_affine_out");
-  const bool update_dst_live_form_in_place =
-      dst_in.borrowed_live && dst_in.num_tiles == out.num_tiles;
-  if (update_dst_live_form_in_place) {
-    out = dst_in;
-    out.borrowed_live = false;
-  }
-  RecordExactComputeOpPlan("binary", "mul_tiles",
-                           {{"lhs", match.dst, "identity"},
-                            {"rhs", dst_scale.buffer, "identity"},
-                            {"output", scaled_dst.buffer, "identity"}});
-  RecordExactComputeOpPlan("binary", "mul_tiles",
-                           {{"lhs", match.scalar, "identity"},
-                            {"rhs", scalar_scale.buffer, "identity"},
-                            {"output", scaled_scalar.buffer, "identity"}});
-  RecordExactComputeOpPlan("binary", "add_tiles_bcast_cols",
-                           {{"lhs", scaled_dst.buffer, "identity"},
-                            {"rhs", scaled_scalar.buffer, "broadcast"},
-                            {"output", out.buffer, "identity"}});
-  RecordExactComputeOpPlan("unary", "exp2_tile",
-                           {{"input", out.buffer, "identity"},
-                            {"output", match.dst, "identity"}});
-
-  const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(match.dst);
-  const int tiles_per_row =
-      logical_rows > 0 && logical_cols > 0 ? std::max(1, CeilDivToInt(logical_cols, kBlackholeTileCols))
-                                           : std::max(1, dst_in.num_tiles / std::max(1, scalar_in.num_tiles));
-
-  std::vector<Stmt> stmts;
-  if (Stmt publish_dst = PublishExactInputToTiledCB(match.dst, &dst_in); publish_dst.defined()) {
-    stmts.push_back(publish_dst);
-  }
-  if (Stmt publish_scalar = PublishExactInputToTiledCB(match.scalar, &scalar_in);
-      publish_scalar.defined()) {
-    stmts.push_back(publish_scalar);
-  }
-  stmts.push_back(PublishConstantToExactTiledCB(dst_scale.buffer, match.dst_scale, dst_scale));
-  stmts.push_back(
-      PublishConstantToExactTiledCB(scalar_scale.buffer, match.scalar_scale, scalar_scale));
-  MarkExactCBValuesOverlap({dst_in.cb_id, scalar_in.cb_id, dst_scale.cb_id,
-                            scalar_scale.cb_id, scaled_dst.cb_id, scaled_scalar.cb_id,
-                            out.cb_id});
-
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(scaled_dst.cb_id), IntImm32(scaled_dst.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(dst_in.cb_id), IntImm32(dst_in.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(dst_scale.cb_id), IntImm32(dst_scale.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
-                                    {IntImm32(dst_in.cb_id), IntImm32(dst_scale.cb_id)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
-                                    {IntImm32(dst_in.cb_id), IntImm32(dst_scale.cb_id)}));
-  for (int tile = 0; tile < scaled_dst.num_tiles; ++tile) {
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
-                                      {IntImm32(dst_in.cb_id), IntImm32(dst_scale.cb_id),
-                                       IntImm32(tile), IntImm32(0), IntImm32(0)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(scaled_dst.cb_id)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
-                                      {IntImm32(0), IntImm32(scaled_dst.cb_id), IntImm32(tile)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-  }
-  if (!dst_in.borrowed_live || update_dst_live_form_in_place) {
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(dst_in.cb_id), IntImm32(dst_in.num_tiles)}));
-  }
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(dst_scale.cb_id), IntImm32(dst_scale.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(scaled_dst.cb_id), IntImm32(scaled_dst.num_tiles)}));
-
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
-                                    {IntImm32(scaled_scalar.cb_id), IntImm32(scaled_scalar.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scalar_in.cb_id), IntImm32(scalar_in.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scalar_scale.cb_id), IntImm32(scalar_scale.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
-                                    {IntImm32(scalar_in.cb_id), IntImm32(scalar_scale.cb_id)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
-                                    {IntImm32(scalar_in.cb_id), IntImm32(scalar_scale.cb_id)}));
-  for (int tile = 0; tile < scaled_scalar.num_tiles; ++tile) {
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
-                                      {IntImm32(scalar_in.cb_id), IntImm32(scalar_scale.cb_id),
-                                       IntImm32(tile), IntImm32(0), IntImm32(0)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(scaled_scalar.cb_id)}));
-    stmts.push_back(MakeBlackholeCall(
-        blackhole_pack_tile(), {IntImm32(0), IntImm32(scaled_scalar.cb_id), IntImm32(tile)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-  }
-  if (!scalar_in.borrowed_live) {
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(scalar_in.cb_id), IntImm32(scalar_in.num_tiles)}));
-  }
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(scalar_scale.cb_id), IntImm32(scalar_scale.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_cb_push_back(), {IntImm32(scaled_scalar.cb_id), IntImm32(scaled_scalar.num_tiles)}));
-
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scaled_dst.cb_id), IntImm32(scaled_dst.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_cb_wait_front(), {IntImm32(scaled_scalar.cb_id), IntImm32(scaled_scalar.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_reconfig_data_format(), {IntImm32(scaled_dst.cb_id), IntImm32(scaled_scalar.cb_id)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_add_bcast_cols_init_short(),
-                                    {IntImm32(scaled_dst.cb_id), IntImm32(scaled_scalar.cb_id)}));
-  for (int tile = 0; tile < out.num_tiles; ++tile) {
-    const int rhs_tile = tile / tiles_per_row;
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_bcast_cols(),
-                                      {IntImm32(scaled_dst.cb_id), IntImm32(scaled_scalar.cb_id),
-                                       IntImm32(tile), IntImm32(rhs_tile), IntImm32(0)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_exp2_tile_init(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_exp2_tile(), {IntImm32(0)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out.cb_id)}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_pack_tile(), {IntImm32(0), IntImm32(out.cb_id), IntImm32(tile)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-  }
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_cb_pop_front(), {IntImm32(scaled_dst.cb_id), IntImm32(scaled_dst.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_cb_pop_front(), {IntImm32(scaled_scalar.cb_id), IntImm32(scaled_scalar.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
-  RecordExactOutputLiveForm(match.dst, out);
-
-  Stmt body = SeqStmt::Flatten(stmts);
-  body = tir::DeclBuffer(dst_scale.buffer, body);
-  body = tir::DeclBuffer(scalar_scale.buffer, body);
-  body = tir::Allocate(scalar_scale.buffer->data, scalar_scale.buffer->dtype,
-                       scalar_scale.buffer->shape, Bool(1), body);
-  body = tir::Allocate(dst_scale.buffer->data, dst_scale.buffer->dtype, dst_scale.buffer->shape,
-                       Bool(1), body);
-  body = AttachExactOutputLiveFormMarker(match.dst, out, body);
-  return MaybeWrapComputeSegment(body);
-}
-
-bool PlanTTKernelABI::MatchScalarExp2AffineStore(const BufferStoreNode* op,
-                                                   ScalarExp2AffineMatch* match) const {
-  if (!op || !match || !IsScalarLocalFragmentBuffer(op->buffer) || op->indices.size() != 1 ||
-      !tir::is_zero(op->indices[0])) {
-    return false;
-  }
-
-  PrimExpr exp2_arg;
-  if (!MatchExp2Call(op->value, &exp2_arg)) {
-    return false;
-  }
-  const auto* sub = exp2_arg.as<SubNode>();
-  if (!sub) {
-    return false;
-  }
-
-  Buffer lhs;
-  Buffer rhs;
-  PrimExpr lhs_scale;
-  PrimExpr rhs_scale;
-  if (!MatchScaledScalarFragmentLoad(sub->a, &lhs, &lhs_scale) ||
-      !MatchScaledScalarFragmentLoad(sub->b, &rhs, &rhs_scale)) {
-    return false;
-  }
-
-  match->dst = op->buffer;
-  match->lhs = lhs;
-  match->rhs = rhs;
-  match->lhs_scale = lhs_scale;
-  Analyzer analyzer;
-  match->rhs_scale = analyzer.Simplify(-rhs_scale);
-  return true;
-}
-
-bool PlanTTKernelABI::MatchGroupedScalarExp2AffineLoop(const ForNode* op,
-                                                         ScalarExp2AffineMatch* match) const {
-  if (!op || !match) {
-    return false;
-  }
-  const auto* store = AsUnwrappedBufferStore(op->body);
-  if (!store || !IsRowScalarLocalFragmentBuffer(store->buffer) || store->indices.size() != 1 ||
-      !store->indices[0].same_as(op->loop_var)) {
-    return false;
-  }
-
-  PrimExpr exp2_arg;
-  if (!MatchExp2Call(store->value, &exp2_arg)) {
-    return false;
-  }
-  const auto* sub = exp2_arg.as<SubNode>();
-  if (!sub) {
-    return false;
-  }
-
-  auto match_scaled_row_state_load = [&](const PrimExpr& expr, Buffer* buffer, PrimExpr* scale) {
-    if (MatchIndexedRowStateLoad(expr, store->buffer, op->loop_var)) {
-      *buffer = store->buffer;
-      *scale = make_const(expr.dtype(), 1.0);
-      return true;
-    }
-    const auto* load = expr.as<BufferLoadNode>();
-    if (load && load->indices.size() == 1 && load->indices[0].same_as(op->loop_var) &&
-        IsRowScalarLocalFragmentBuffer(load->buffer)) {
-      *buffer = load->buffer;
-      *scale = make_const(expr.dtype(), 1.0);
-      return true;
-    }
-    const auto* mul = expr.as<MulNode>();
-    if (!mul || !IsScalarLiteralValue(mul->a) && !IsScalarLiteralValue(mul->b)) {
-      return false;
-    }
-    const PrimExpr& maybe_load = IsScalarLiteralValue(mul->a) ? mul->b : mul->a;
-    const PrimExpr& maybe_scale = IsScalarLiteralValue(mul->a) ? mul->a : mul->b;
-    const auto* load_expr = maybe_load.as<BufferLoadNode>();
-    if (!load_expr || load_expr->indices.size() != 1 ||
-        !load_expr->indices[0].same_as(op->loop_var) ||
-        !IsRowScalarLocalFragmentBuffer(load_expr->buffer)) {
-      return false;
-    }
-    *buffer = load_expr->buffer;
-    *scale = maybe_scale;
-    return true;
-  };
-
-  Buffer lhs;
-  Buffer rhs;
-  PrimExpr lhs_scale;
-  PrimExpr rhs_scale;
-  if (!match_scaled_row_state_load(sub->a, &lhs, &lhs_scale) ||
-      !match_scaled_row_state_load(sub->b, &rhs, &rhs_scale)) {
-    return false;
-  }
-
-  Analyzer analyzer;
-  match->dst = store->buffer;
-  match->lhs = lhs;
-  match->rhs = rhs;
-  match->lhs_scale = lhs_scale;
-  match->rhs_scale = analyzer.Simplify(-rhs_scale);
-  return true;
-}
-
-Stmt PlanTTKernelABI::GenerateScalarExp2AffineSequence(const ScalarExp2AffineMatch& match) {
-  ExactTiledCBValue lhs_in = CreateExactInputCBValue(match.lhs, "scalar_exp2_lhs");
-  ExactTiledCBValue rhs_in = CreateExactInputCBValue(match.rhs, "scalar_exp2_rhs");
-  ExactTiledCBValue lhs_scale = CreateConstantExactTiledCBValue(match.lhs->dtype, "scalar_exp2_lhs_scale");
-  ExactTiledCBValue rhs_scale = CreateConstantExactTiledCBValue(match.rhs->dtype, "scalar_exp2_rhs_scale");
-  ExactTiledCBValue scaled_lhs =
-      CreateEmptyExactTiledCBValue(match.dst, "scalar_exp2_scaled_lhs");
-  ExactTiledCBValue scaled_rhs =
-      CreateEmptyExactTiledCBValue(match.dst, "scalar_exp2_scaled_rhs");
-  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "scalar_exp2_out");
-  RecordExactComputeOpPlan("binary", "mul_tiles",
-                           {{"lhs", match.lhs, "identity"},
-                            {"rhs", lhs_scale.buffer, "identity"},
-                            {"output", scaled_lhs.buffer, "identity"}});
-  RecordExactComputeOpPlan("binary", "mul_tiles",
-                           {{"lhs", match.rhs, "identity"},
-                            {"rhs", rhs_scale.buffer, "identity"},
-                            {"output", scaled_rhs.buffer, "identity"}});
-  RecordExactComputeOpPlan("binary", "add_tiles",
-                           {{"lhs", scaled_lhs.buffer, "identity"},
-                            {"rhs", scaled_rhs.buffer, "identity"},
-                            {"output", out.buffer, "identity"}});
-  RecordExactComputeOpPlan("unary", "exp2_tile",
-                           {{"input", out.buffer, "identity"},
-                            {"output", match.dst, "identity"}});
-
-  ICHECK_EQ(lhs_in.num_tiles, rhs_in.num_tiles);
-  ICHECK_EQ(lhs_in.num_tiles, out.num_tiles);
-
-  std::vector<Stmt> stmts;
-  if (Stmt publish_lhs = PublishExactInputToTiledCB(match.lhs, &lhs_in); publish_lhs.defined()) {
-    stmts.push_back(publish_lhs);
-  }
-  if (Stmt publish_rhs = PublishExactInputToTiledCB(match.rhs, &rhs_in); publish_rhs.defined()) {
-    stmts.push_back(publish_rhs);
-  }
-  stmts.push_back(PublishConstantToExactTiledCB(lhs_scale.buffer, match.lhs_scale, lhs_scale));
-  stmts.push_back(PublishConstantToExactTiledCB(rhs_scale.buffer, match.rhs_scale, rhs_scale));
-  MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, lhs_scale.cb_id, rhs_scale.cb_id,
-                            scaled_lhs.cb_id, scaled_rhs.cb_id, out.cb_id});
-
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(scaled_lhs.cb_id), IntImm32(scaled_lhs.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(lhs_scale.cb_id), IntImm32(lhs_scale.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
-                                    {IntImm32(lhs_in.cb_id), IntImm32(lhs_scale.cb_id)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
-                                    {IntImm32(lhs_in.cb_id), IntImm32(lhs_scale.cb_id)}));
-  for (int tile = 0; tile < scaled_lhs.num_tiles; ++tile) {
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
-                                      {IntImm32(lhs_in.cb_id), IntImm32(lhs_scale.cb_id),
-                                       IntImm32(tile), IntImm32(0), IntImm32(0)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(scaled_lhs.cb_id)}));
-    stmts.push_back(MakeBlackholeCall(
-        blackhole_pack_tile(), {IntImm32(0), IntImm32(scaled_lhs.cb_id), IntImm32(tile)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-  }
-  if (!lhs_in.borrowed_live) {
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
-  }
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(lhs_scale.cb_id), IntImm32(lhs_scale.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(scaled_lhs.cb_id), IntImm32(scaled_lhs.num_tiles)}));
-
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(scaled_rhs.cb_id), IntImm32(scaled_rhs.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(rhs_scale.cb_id), IntImm32(rhs_scale.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
-                                    {IntImm32(rhs_in.cb_id), IntImm32(rhs_scale.cb_id)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
-                                    {IntImm32(rhs_in.cb_id), IntImm32(rhs_scale.cb_id)}));
-  for (int tile = 0; tile < scaled_rhs.num_tiles; ++tile) {
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
-                                      {IntImm32(rhs_in.cb_id), IntImm32(rhs_scale.cb_id),
-                                       IntImm32(tile), IntImm32(0), IntImm32(0)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(scaled_rhs.cb_id)}));
-    stmts.push_back(MakeBlackholeCall(
-        blackhole_pack_tile(), {IntImm32(0), IntImm32(scaled_rhs.cb_id), IntImm32(tile)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-  }
-  if (!rhs_in.borrowed_live) {
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
-  }
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(rhs_scale.cb_id), IntImm32(rhs_scale.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(scaled_rhs.cb_id), IntImm32(scaled_rhs.num_tiles)}));
-
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scaled_lhs.cb_id), IntImm32(scaled_lhs.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(scaled_rhs.cb_id), IntImm32(scaled_rhs.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_reconfig_data_format(), {IntImm32(scaled_lhs.cb_id), IntImm32(scaled_rhs.cb_id)}));
-  stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_init(),
-                                    {IntImm32(scaled_lhs.cb_id), IntImm32(scaled_rhs.cb_id)}));
-  for (int tile = 0; tile < out.num_tiles; ++tile) {
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_add_tiles(),
-                                      {IntImm32(scaled_lhs.cb_id), IntImm32(scaled_rhs.cb_id),
-                                       IntImm32(tile), IntImm32(tile), IntImm32(0)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_exp2_tile_init(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_exp2_tile(), {IntImm32(0)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out.cb_id)}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_pack_tile(), {IntImm32(0), IntImm32(out.cb_id), IntImm32(tile)}));
-    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
-  }
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_cb_pop_front(), {IntImm32(scaled_lhs.cb_id), IntImm32(scaled_lhs.num_tiles)}));
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_cb_pop_front(), {IntImm32(scaled_rhs.cb_id), IntImm32(scaled_rhs.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
-  RecordExactOutputLiveForm(match.dst, out);
-
-  Stmt body = SeqStmt::Flatten(stmts);
-  body = tir::DeclBuffer(lhs_scale.buffer, body);
-  body = tir::DeclBuffer(rhs_scale.buffer, body);
-  body = tir::Allocate(rhs_scale.buffer->data, rhs_scale.buffer->dtype,
-                       rhs_scale.buffer->shape, Bool(1), body);
-  body = tir::Allocate(lhs_scale.buffer->data, lhs_scale.buffer->dtype,
-                       lhs_scale.buffer->shape, Bool(1), body);
-  body = AttachExactOutputLiveFormMarker(match.dst, out, body);
-  return MaybeWrapComputeSegment(body);
-}
-
-bool PlanTTKernelABI::MatchDirectFragmentFill(const ForNode* op,
-                                                FragmentFillMatch* match) const {
-  if (!op || !match) {
-    return false;
-  }
-  const auto* store = AsUnwrappedBufferStore(op->body);
-  if (!store || !IsVectorLocalFragmentBuffer(store->buffer) || store->indices.size() != 1 ||
-      !store->indices[0].same_as(op->loop_var) || !IsFragmentFillValue(store->value)) {
-    const auto* inner_loop = AsUnwrappedFor(op->body);
-    const auto* inner_store = inner_loop ? AsUnwrappedBufferStore(inner_loop->body) : nullptr;
-    if (!inner_loop || !inner_store || !IsVectorLocalFragmentBuffer(inner_store->buffer) ||
-        inner_store->indices.size() != 1 || !IsFragmentFillValue(inner_store->value)) {
-      return false;
-    }
-    Analyzer analyzer;
-    auto match_linearized_index = [&](const PrimExpr& expr) -> bool {
-      PrimExpr expected = op->loop_var * inner_loop->extent + inner_loop->loop_var;
-      return tir::is_zero(analyzer.Simplify(expr - expected));
-    };
-    if (!match_linearized_index(inner_store->indices[0])) {
-      return false;
-    }
-    match->dst = inner_store->buffer;
-    match->num_elements = analyzer.Simplify(op->extent * inner_loop->extent);
-    match->value = inner_store->value;
-    return true;
-  }
-  match->dst = store->buffer;
-  match->num_elements = op->extent;
-  match->value = store->value;
-  return true;
-}
-
-bool PlanTTKernelABI::MatchScalarFragmentFillStore(const BufferStoreNode* op,
-                                                     FragmentFillMatch* match) const {
-  if (!op || !match || !IsScalarLocalFragmentBuffer(op->buffer) || op->indices.size() != 1 ||
-      !tir::is_zero(op->indices[0]) || !IsFragmentFillValue(op->value)) {
-    return false;
-  }
-  match->dst = op->buffer;
-  match->num_elements = IntImm(DataType::Int(32), 1);
-  match->value = op->value;
-  return true;
-}
-
-Stmt PlanTTKernelABI::GenerateFragmentFillSequence(const FragmentFillMatch& match) {
-  PrimExpr num_elements = match.num_elements;
+  PrimExpr num_elements = requested_num_elements;
   int64_t physical_local_extent = 0;
-  if (const Map<String, Any>* spec = FindLogicalTileLayoutSpec(match.dst)) {
+  if (const Map<String, Any>* spec = FindLogicalTileLayoutSpec(dst)) {
     physical_local_extent = ProductIntegerArrayField(*spec, schema_key::kLocalShape, int64_t{0});
   }
   if (physical_local_extent > 0) {
     num_elements = IntImm(DataType::Int(32), static_cast<int>(physical_local_extent));
   }
-  const int64_t logical_extent = GetLogicalBufferElementCount(match.dst);
+  const int64_t logical_extent = GetLogicalBufferElementCount(dst);
   if (physical_local_extent <= 0 && logical_extent > 1) {
     bool should_promote_extent = !num_elements.defined();
     if (const auto* int_imm = num_elements.as<IntImmNode>()) {
@@ -8566,326 +7316,585 @@ Stmt PlanTTKernelABI::GenerateFragmentFillSequence(const FragmentFillMatch& matc
       num_elements = IntImm(DataType::Int(32), logical_extent);
     }
   }
-  const Buffer physical_dst = ResolvePhysicalComputeBuffer(match.dst);
-  ClearSelectedSourceLiveProducer(match.dst);
-  ClearTiledCBLiveFormAliases(match.dst);
-  last_fragment_fill_value_by_buffer_identity_[BufferIdentityName(match.dst)] = match.value;
-  if (const VarNode* data = BufferDataIdentity(match.dst)) {
-    last_fragment_fill_value_by_data_[data] = match.value;
+
+  ClearSelectedSourceLiveProducer(dst);
+  ClearTiledCBLiveFormAliases(dst);
+  for (const std::string& identity : CollectBufferFlowIdentities(dst)) {
+    last_fragment_fill_value_by_buffer_identity_[identity] = value;
+  }
+  if (const VarNode* data = BufferDataIdentity(dst)) {
+    last_fragment_fill_value_by_data_[data] = value;
   }
   return MaybeWrapComputeSegment(MakeBlackholeCall(
-      tir::builtin::blackhole_fill_fragment(), {physical_dst->data, num_elements, match.value}));
+      tir::builtin::blackhole_fill_fragment(), {dst->data, num_elements, value}));
 }
 
-Stmt PlanTTKernelABI::GenerateFragmentFillCastPublishSequence(
-    const FragmentFillMatch& fill_match, const FragmentCastMatch& cast_match,
-    int current_order_index) {
-  (void)current_order_index;
-  if (!fill_match.dst.defined() || !cast_match.src.defined() || !cast_match.dst.defined() ||
-      !SameBufferIdentity(fill_match.dst, cast_match.src) ||
-      !cast_match.dst->dtype.is_bfloat16() || !tir::is_zero(cast_match.src_offset)) {
-    return Stmt();
-  }
-  const BlackholeBufferMaterializationFact* fact =
-      FindBufferMaterializationFact(cast_match.dst);
-  if (fact == nullptr) {
-    return Stmt();
-  }
-  if (fact->kind != buffer_materialization::kRepublishedLogicalTile ||
-      fact->bridge_kind != buffer_materialization::kTileNFacesMaterialization ||
-      fact->execution_protocol != buffer_materialization::kTiledCBRepublish) {
-    return Stmt();
+Stmt PlanTTKernelABI::GenerateCopyTileSequence(const Buffer& src, const Buffer& dst,
+                                               const PrimExpr& num_elements) {
+  ExactTiledCBValue live_value;
+  if (TryCreateExactOutputLiveTiledCBValue(src, &live_value) ||
+      TryCreateLiveExactTiledCBValue(src, &live_value)) {
+    RecordTiledCBLiveFormAliases(dst, live_value.cb_id);
+    InvalidateLastFragmentFillValue(dst);
+    return Evaluate(IntImm32(0));
   }
 
-  PrimExpr num_elements_expr = cast_match.num_elements;
-  if (fact->logical_element_count > 0) {
-    num_elements_expr = IntImm(DataType::Int(32),
-                               static_cast<int>(fact->logical_element_count));
+  PrimExpr fill_value;
+  if (TryGetLastFragmentFillValue(src, &fill_value)) {
+    const std::string dst_name = BufferIdentityName(dst);
+    if (!dst_name.empty()) {
+      ClearTiledCBLiveFormIdentity(dst_name);
+      last_fragment_fill_value_by_buffer_identity_[dst_name] = fill_value;
+    }
+    if (const VarNode* data = BufferDataIdentity(dst)) {
+      last_fragment_fill_value_by_data_[data] = fill_value;
+    }
+    return Evaluate(IntImm32(0));
   }
 
-  PrimExpr row_width = cast_match.row_width;
-  if (fact->logical_row_width > 0) {
-    row_width = IntImm(DataType::Int(32), static_cast<int>(fact->logical_row_width));
-  }
-  auto apply_typed_layout_shape_spec = [&](const Map<String, Any>* spec) {
-    if (spec == nullptr) {
-      return;
-    }
-    const int64_t logical_element_count =
-        ProductIntegerArrayField(*spec, schema_key::kShape, int64_t{0});
-    if (logical_element_count > StaticIntValueOrDefault(num_elements_expr, int64_t{0})) {
-      num_elements_expr = IntImm(DataType::Int(32), static_cast<int>(logical_element_count));
-    }
-    auto shape_it = spec->find(String(schema_key::kShape));
-    if (shape_it != spec->end()) {
-      const Array<Integer> logical_shape = Downcast<Array<Integer>>((*shape_it).second);
-      if (logical_shape.size() >= 2U && logical_shape.back()->value > 0) {
-        row_width = IntImm(DataType::Int(32), static_cast<int>(logical_shape.back()->value));
-      }
-    }
-  };
-  auto apply_typed_layout_shape = [&](const Buffer& buffer) {
-    apply_typed_layout_shape_spec(FindLogicalTileLayoutSpec(buffer));
-  };
-  auto apply_typed_layout_shape_by_name = [&](const std::string& buffer_name) {
-    auto it = logical_tile_layout_specs_by_buffer_.find(buffer_name);
-    if (it != logical_tile_layout_specs_by_buffer_.end()) {
-      apply_typed_layout_shape_spec(&it->second);
-    }
-  };
-  auto apply_typed_layout_shape_from_fact = [&](const std::string& buffer_name) {
-    if (!buffer_name.empty()) {
-      apply_typed_layout_shape_by_name(buffer_name);
-    }
-  };
-  apply_typed_layout_shape(cast_match.src);
-  apply_typed_layout_shape(cast_match.dst);
-  apply_typed_layout_shape_from_fact(fact->source_buffer);
-  apply_typed_layout_shape_from_fact(fact->target_buffer);
-  ICHECK(row_width.defined())
-      << "PlanTTKernelABI requires logical row_width for pack-thread direct-store "
-         "fragment fill publication of "
-      << BufferIdentityName(cast_match.dst);
-
-  const int cb_id = AllocateRequirementIndex(cast_match.dst, CBType::kIntermediate);
-  ICHECK_GE(cb_id, 0);
-  ICHECK_LT(cb_id, static_cast<int>(cb_requirements_.size()));
-  const int num_pages = std::max(
-      1, cb_requirements_[cb_id].publish_pages_per_event > 0
-             ? cb_requirements_[cb_id].publish_pages_per_event
-             : cb_requirements_[cb_id].num_pages);
-
-  RecordFragmentCastMaterializationPlans(
-      cast_match, *fact, cb_id, num_elements_expr,
-      buffer_materialization::kPackThreadDirectStore);
-
-  PrimExpr local_fill_elements = fill_match.num_elements;
-  if (const Map<String, Any>* spec = FindLogicalTileLayoutSpec(fill_match.dst)) {
-    const int64_t local_extent =
-        ProductIntegerArrayField(*spec, schema_key::kLocalShape, int64_t{0});
-    if (local_extent > 0) {
-      local_fill_elements = IntImm(DataType::Int(32), static_cast<int>(local_extent));
+  FragmentCastMatch cast_match;
+  cast_match.dst = dst;
+  cast_match.src = src;
+  cast_match.dst_offset = IntImm(DataType::Int(32), 0);
+  cast_match.src_offset = IntImm(DataType::Int(32), 0);
+  cast_match.num_elements = num_elements;
+  if (!cast_match.num_elements.defined()) {
+    const int64_t logical_extent = GetLogicalVectorLength(dst);
+    if (logical_extent > 1) {
+      cast_match.num_elements = IntImm(DataType::Int(32), logical_extent);
     }
   }
-
-  const Buffer physical_src = ResolvePhysicalComputeBuffer(fill_match.dst);
-  const Buffer physical_dst = ResolvePhysicalComputeBuffer(cast_match.dst);
-  std::vector<Stmt> stmts;
-  stmts.push_back(MakeBlackholeCall(tir::builtin::blackhole_fill_fragment(),
-                                    {physical_src->data, local_fill_elements,
-                                     fill_match.value}));
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
-                                    {IntImm32(cb_id), IntImm32(num_pages)}));
-  stmts.push_back(MakeBlackholeCall(
-      blackhole_pack_fill_fragment_to_tiled_cb(),
-      {physical_dst->data, IntImm32(cb_id), cast_match.dst_offset, num_elements_expr,
-       row_width, fill_match.value}));
-  stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
-                                    {IntImm32(cb_id), IntImm32(num_pages)}));
-  RecordTiledCBLiveFormAliases(cast_match.dst, cb_id);
-  return MaybeWrapComputeSegment(SeqStmt::Flatten(stmts));
+  return GenerateFragmentCastSequence(cast_match, /*publish_cb=*/false);
 }
 
-bool PlanTTKernelABI::MatchScalarMaxStore(const BufferStoreNode* op,
-                                            ScalarMaxMatch* match) const {
-  if (!op || !match || !IsScalarLocalFragmentBuffer(op->buffer) || op->indices.size() != 1 ||
-      !tir::is_zero(op->indices[0])) {
-    return false;
-  }
-  const auto* max = op->value.as<MaxNode>();
-  if (!max) {
-    return false;
-  }
-
-  auto try_match = [&](const PrimExpr& self_expr, const PrimExpr& other_expr) -> bool {
-    Buffer other;
-    if (!MatchScalarBufferLoadFrom(self_expr, op->buffer) ||
-        !MatchScalarFragmentLoad(other_expr, &other)) {
-      return false;
-    }
-    match->dst = op->buffer;
-    match->src = other;
-    match->num_elements = PrimExpr();
-    return true;
-  };
-
-  return try_match(max->a, max->b) || try_match(max->b, max->a);
-}
-
-bool PlanTTKernelABI::MatchGroupedScalarMaxLoop(const ForNode* op,
-                                                  ScalarMaxMatch* match) const {
-  if (!op || !match) {
-    return false;
-  }
-  const auto* store = AsUnwrappedBufferStore(op->body);
-  if (!store || !IsRowScalarLocalFragmentBuffer(store->buffer) || store->indices.size() != 1 ||
-      !store->indices[0].same_as(op->loop_var)) {
-    return false;
-  }
-  const auto* max = store->value.as<MaxNode>();
-  if (!max) {
-    return false;
-  }
-
-  auto try_match = [&](const PrimExpr& self_expr, const PrimExpr& other_expr) -> bool {
-    const auto* other_load = other_expr.as<BufferLoadNode>();
-    if (!MatchIndexedRowStateLoad(self_expr, store->buffer, op->loop_var) || !other_load ||
-        other_load->indices.size() != 1 || !other_load->indices[0].same_as(op->loop_var) ||
-        !IsRowScalarLocalFragmentBuffer(other_load->buffer)) {
-      return false;
-    }
-    match->dst = store->buffer;
-    match->src = other_load->buffer;
-    match->num_elements = PrimExpr();
-    return true;
-  };
-
-  return try_match(max->a, max->b) || try_match(max->b, max->a);
-}
-
-Stmt PlanTTKernelABI::GenerateScalarMaxSequence(const ScalarMaxMatch& match) {
-  ExactTiledCBValue dst_in = CreateExactInputCBValue(match.dst, "scalar_max_lhs");
-  ExactTiledCBValue src_in = CreateExactInputCBValue(match.src, "scalar_max_rhs");
-  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(match.dst, "scalar_max_out");
+Stmt PlanTTKernelABI::GenerateBinaryMaxTileSequence(const Buffer& dst, const Buffer& rhs) {
+  ExactTiledCBValue lhs_in = CreateExactInputCBValue(dst, "binary_max_lhs");
+  ExactTiledCBValue rhs_in = CreateExactInputCBValue(rhs, "binary_max_rhs");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(dst, "binary_max_out");
   RecordExactComputeOpPlan("binary", "binary_max_tile",
-                           {{"lhs", match.dst, "identity"},
-                            {"rhs", match.src, "identity"},
-                            {"output", match.dst, "identity"}});
+                           {{"lhs", dst, "identity"},
+                            {"rhs", rhs, "identity"},
+                            {"output", dst, "identity"}});
 
   std::vector<Stmt> stmts;
-  if (Stmt publish_dst = PublishExactInputToTiledCB(match.dst, &dst_in); publish_dst.defined()) {
-    stmts.push_back(publish_dst);
+  if (Stmt publish_lhs = PublishExactInputToTiledCB(dst, &lhs_in); publish_lhs.defined()) {
+    stmts.push_back(publish_lhs);
   }
-  if (Stmt publish_src = PublishExactInputToTiledCB(match.src, &src_in); publish_src.defined()) {
-    stmts.push_back(publish_src);
+  if (Stmt publish_rhs = PublishExactInputToTiledCB(rhs, &rhs_in); publish_rhs.defined()) {
+    stmts.push_back(publish_rhs);
   }
-  MarkExactCBValuesOverlap({dst_in.cb_id, src_in.cb_id, out.cb_id});
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(dst_in.cb_id), IntImm32(dst_in.num_tiles)}));
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(src_in.cb_id), IntImm32(src_in.num_tiles)}));
+  MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, out.cb_id});
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                    {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
   stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
-                                    {IntImm32(dst_in.cb_id), IntImm32(src_in.cb_id)}));
+                                    {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)}));
   for (int tile = 0; tile < out.num_tiles; ++tile) {
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(), {IntImm32(dst_in.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(),
+                                      {IntImm32(lhs_in.cb_id)}));
     stmts.push_back(MakeBlackholeCall(blackhole_copy_tile(),
-                                      {IntImm32(dst_in.cb_id), IntImm32(tile), IntImm32(0)}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(), {IntImm32(src_in.cb_id)}));
+                                      {IntImm32(lhs_in.cb_id), IntImm32(tile), IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(),
+                                      {IntImm32(rhs_in.cb_id)}));
     stmts.push_back(MakeBlackholeCall(blackhole_copy_tile(),
-                                      {IntImm32(src_in.cb_id), IntImm32(tile), IntImm32(1)}));
+                                      {IntImm32(rhs_in.cb_id), IntImm32(tile), IntImm32(1)}));
     stmts.push_back(MakeBlackholeCall(blackhole_binary_max_tile_init(), {}));
     stmts.push_back(MakeBlackholeCall(blackhole_binary_max_tile(),
                                       {IntImm32(0), IntImm32(1), IntImm32(0),
                                        StringImm("C")}));
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
+                                      {IntImm32(out.cb_id)}));
     stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
                                       {IntImm32(0), IntImm32(out.cb_id), IntImm32(tile)}));
     stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
   }
-  if (!dst_in.borrowed_live) {
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(dst_in.cb_id), IntImm32(dst_in.num_tiles)}));
+  if (!lhs_in.borrowed_live) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                      {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
   }
-  if (!src_in.borrowed_live) {
-    stmts.push_back(
-        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(src_in.cb_id), IntImm32(src_in.num_tiles)}));
+  if (!rhs_in.borrowed_live) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                      {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
   }
-  stmts.push_back(
-      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
-  RecordExactOutputLiveForm(match.dst, out);
-  Stmt body = AttachExactOutputLiveFormMarker(match.dst, out, SeqStmt::Flatten(stmts));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                    {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  RecordExactOutputLiveForm(dst, out);
+  Stmt body = AttachExactOutputLiveFormMarker(dst, out, SeqStmt::Flatten(stmts));
   return MaybeWrapComputeSegment(body);
 }
 
-bool PlanTTKernelABI::MatchScalarFragmentCopyStore(const BufferStoreNode* op,
-                                                     ScalarFragmentCopyMatch* match) const {
-  if (!op || !match || !IsScalarLocalFragmentBuffer(op->buffer) || op->indices.size() != 1 ||
-      !tir::is_zero(op->indices[0])) {
-    return false;
+Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
+                                                  const Buffer& rhs,
+                                                  const std::string& operation_name) {
+  ICHECK(operation_name == blackhole_tile_compute_schema::kMulTiles ||
+         operation_name == blackhole_tile_compute_schema::kAddTiles)
+      << "Unsupported explicit binary tile operation " << operation_name;
+  ExactTiledCBValue lhs_in = CreateExactInputCBValue(dst, operation_name + "_lhs");
+  ExactTiledCBValue rhs_in = CreateExactInputCBValue(rhs, operation_name + "_rhs");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(dst, operation_name + "_out");
+  RecordExactComputeOpPlan("binary", operation_name,
+                           {{"lhs", dst, "identity"},
+                            {"rhs", rhs, "identity"},
+                            {"output", dst, "identity"}});
+
+  std::vector<Stmt> stmts;
+  if (Stmt publish_lhs = PublishExactInputToTiledCB(dst, &lhs_in); publish_lhs.defined()) {
+    stmts.push_back(publish_lhs);
   }
-  const auto* load = op->value.as<BufferLoadNode>();
-  if (!load || load->indices.size() != 1 || !tir::is_zero(load->indices[0]) ||
-      !IsScalarLocalFragmentBuffer(load->buffer) || SameBufferIdentity(op->buffer, load->buffer) ||
-      op->buffer->dtype != load->buffer->dtype) {
-    return false;
+  if (Stmt publish_rhs = PublishExactInputToTiledCB(rhs, &rhs_in); publish_rhs.defined()) {
+    stmts.push_back(publish_rhs);
   }
-  const int64_t logical_extent = GetLogicalVectorLength(op->buffer);
-  if (logical_extent <= 1) {
-    return false;
+  MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, out.cb_id});
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_reserve_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_wait_front(), {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
+                                    {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)}));
+  if (operation_name == blackhole_tile_compute_schema::kMulTiles) {
+    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
+                                      {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)}));
+  } else {
+    stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_init(),
+                                      {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)}));
   }
-  match->dst = op->buffer;
-  match->src = load->buffer;
-  match->num_elements = IntImm(DataType::Int(32), logical_extent);
-  return true;
+  for (int tile = 0; tile < out.num_tiles; ++tile) {
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    if (operation_name == blackhole_tile_compute_schema::kMulTiles) {
+      stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
+                                        {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id),
+                                         IntImm32(tile), IntImm32(tile), IntImm32(0)}));
+    } else {
+      stmts.push_back(MakeBlackholeCall(blackhole_add_tiles(),
+                                        {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id),
+                                         IntImm32(tile), IntImm32(tile), IntImm32(0)}));
+    }
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_reconfig_data_format(), {IntImm32(out.cb_id)}));
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_pack_tile(), {IntImm32(0), IntImm32(out.cb_id), IntImm32(tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+  }
+  if (!lhs_in.borrowed_live) {
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
+  }
+  if (!rhs_in.borrowed_live) {
+    stmts.push_back(
+        MakeBlackholeCall(blackhole_cb_pop_front(), {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
+  }
+  stmts.push_back(
+      MakeBlackholeCall(blackhole_cb_push_back(), {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  RecordExactOutputLiveForm(dst, out);
+  Stmt body = AttachExactOutputLiveFormMarker(dst, out, SeqStmt::Flatten(stmts));
+  return MaybeWrapComputeSegment(body);
 }
 
-bool PlanTTKernelABI::MatchGroupedScalarFragmentCopyLoop(const ForNode* op,
-                                                           ScalarFragmentCopyMatch* match) const {
-  if (!op || !match) {
-    return false;
+Stmt PlanTTKernelABI::GenerateMulTilesBcastColsSequence(
+    const std::string& kind, const Buffer& dst, const Buffer& rhs,
+    const PrimExpr& num_elements, const PrimExpr& row_width) {
+  (void)num_elements;
+  (void)row_width;
+  ICHECK(kind == "mul" || kind == "div")
+      << "mul_tiles_bcast_cols lowering supports mul/div forms only, got " << kind;
+
+  ExactTiledCBValue lhs_in = CreateExactInputCBValue(dst, "mul_bcast_cols_lhs");
+  ExactTiledCBValue rhs_in = CreateExactInputCBValue(rhs, "mul_bcast_cols_rhs");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(dst, "mul_bcast_cols_out");
+  const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(dst);
+  const int tiles_per_row =
+      logical_rows > 0 && logical_cols > 0
+          ? std::max(1, CeilDivToInt(logical_cols, kBlackholeTileCols))
+          : std::max(1, lhs_in.num_tiles / std::max(1, rhs_in.num_tiles));
+
+  std::vector<Stmt> stmts;
+  if (Stmt publish_lhs = PublishExactInputToTiledCB(dst, &lhs_in); publish_lhs.defined()) {
+    stmts.push_back(publish_lhs);
   }
-  const auto* store = AsUnwrappedBufferStore(op->body);
-  if (!store || !IsRowScalarLocalFragmentBuffer(store->buffer) || store->indices.size() != 1 ||
-      !store->indices[0].same_as(op->loop_var)) {
-    return false;
+  if (Stmt publish_rhs = PublishExactInputToTiledCB(rhs, &rhs_in); publish_rhs.defined()) {
+    stmts.push_back(publish_rhs);
   }
-  const auto* load = store->value.as<BufferLoadNode>();
-  if (!load || load->indices.size() != 1 || !load->indices[0].same_as(op->loop_var) ||
-      !IsRowScalarLocalFragmentBuffer(load->buffer) ||
-      SameBufferIdentity(store->buffer, load->buffer) ||
-      store->buffer->dtype != load->buffer->dtype) {
-    return false;
+
+  ExactTiledCBValue* rhs_operand = &rhs_in;
+  ExactTiledCBValue rhs_full;
+  ExactTiledCBValue rhs_full_ones;
+  ExactTiledCBValue reciprocal;
+  if (kind == "div") {
+    rhs_full = CreateEmptyExactTiledCBValue(dst, "mul_bcast_cols_rhs_full");
+    rhs_full_ones = CreateConstantExactTiledCBValue(dst->dtype, "mul_bcast_cols_one");
+    reciprocal = CreateEmptyExactTiledCBValue(dst, "recip_tile_out");
+    MarkExactCBValuesOverlap({rhs_in.cb_id, rhs_full_ones.cb_id, rhs_full.cb_id,
+                              reciprocal.cb_id});
+    RecordExactComputeOpPlan("binary", "mul_tiles_bcast_cols",
+                             {{"lhs", rhs_full_ones.buffer, "identity"},
+                              {"rhs", rhs, "broadcast"},
+                              {"output", rhs_full.buffer, "identity"}});
+    RecordExactComputeOpPlan("unary", "recip_tile",
+                             {{"input", rhs_full.buffer, "identity"},
+                              {"output", reciprocal.buffer, "identity"}});
+
+    stmts.push_back(PublishConstantToExactTiledCB(
+        rhs_full_ones.buffer, make_const(dst->dtype, 1.0), rhs_full_ones));
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                      {IntImm32(rhs_full.cb_id),
+                                       IntImm32(rhs_full.num_tiles)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                      {IntImm32(rhs_full_ones.cb_id),
+                                       IntImm32(rhs_full_ones.num_tiles)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                      {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
+                                      {IntImm32(rhs_full_ones.cb_id),
+                                       IntImm32(rhs_in.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_mul_bcast_cols_init_short(),
+                                      {IntImm32(rhs_full_ones.cb_id),
+                                       IntImm32(rhs_in.cb_id)}));
+    for (int tile = 0; tile < rhs_full.num_tiles; ++tile) {
+      const int rhs_tile = tile / tiles_per_row;
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+      stmts.push_back(MakeBlackholeCall(
+          blackhole_mul_tiles_bcast_cols(),
+          {IntImm32(rhs_full_ones.cb_id), IntImm32(rhs_in.cb_id), IntImm32(0),
+           IntImm32(rhs_tile), IntImm32(0)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+      stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
+                                        {IntImm32(rhs_full.cb_id)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                        {IntImm32(0), IntImm32(rhs_full.cb_id),
+                                         IntImm32(tile)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+    }
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                      {IntImm32(rhs_full_ones.cb_id),
+                                       IntImm32(rhs_full_ones.num_tiles)}));
+    if (!rhs_in.borrowed_live) {
+      stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                        {IntImm32(rhs_in.cb_id),
+                                         IntImm32(rhs_in.num_tiles)}));
+    }
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                      {IntImm32(rhs_full.cb_id),
+                                       IntImm32(rhs_full.num_tiles)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                      {IntImm32(reciprocal.cb_id),
+                                       IntImm32(reciprocal.num_tiles)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                      {IntImm32(rhs_full.cb_id),
+                                       IntImm32(rhs_full.num_tiles)}));
+    for (int tile = 0; tile < reciprocal.num_tiles; ++tile) {
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+      stmts.push_back(MakeBlackholeCall(blackhole_copy_tile_to_dst_init_short(),
+                                        {IntImm32(rhs_full.cb_id)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_copy_tile(),
+                                        {IntImm32(rhs_full.cb_id), IntImm32(tile),
+                                         IntImm32(0)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_recip_tile_init(), {}));
+      stmts.push_back(MakeBlackholeCall(blackhole_recip_tile(), {IntImm32(0)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+      stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
+                                        {IntImm32(reciprocal.cb_id)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                        {IntImm32(0), IntImm32(reciprocal.cb_id),
+                                         IntImm32(tile)}));
+      stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+    }
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                      {IntImm32(rhs_full.cb_id),
+                                       IntImm32(rhs_full.num_tiles)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                      {IntImm32(reciprocal.cb_id),
+                                       IntImm32(reciprocal.num_tiles)}));
+    rhs_operand = &reciprocal;
   }
-  const int64_t logical_extent = GetLogicalVectorLength(store->buffer);
-  if (logical_extent <= 1) {
-    return false;
+
+  RecordExactComputeOpPlan("binary", kind == "div" ? "mul_tiles" : "mul_tiles_bcast_cols",
+                           {{"lhs", dst, "identity"},
+                            {"rhs", rhs_operand->buffer,
+                             kind == "div" ? "identity" : "broadcast"},
+                            {"output", dst, "identity"}});
+  MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_operand->cb_id, out.cb_id});
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                    {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(rhs_operand->cb_id),
+                                     IntImm32(rhs_operand->num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
+                                    {IntImm32(lhs_in.cb_id),
+                                     IntImm32(rhs_operand->cb_id)}));
+  if (kind == "div") {
+    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
+                                      {IntImm32(lhs_in.cb_id),
+                                       IntImm32(rhs_operand->cb_id)}));
+  } else {
+    stmts.push_back(MakeBlackholeCall(blackhole_mul_bcast_cols_init_short(),
+                                      {IntImm32(lhs_in.cb_id),
+                                       IntImm32(rhs_operand->cb_id)}));
   }
-  match->dst = store->buffer;
-  match->src = load->buffer;
-  match->num_elements = IntImm(DataType::Int(32), logical_extent);
-  return true;
+  for (int tile = 0; tile < out.num_tiles; ++tile) {
+    const int rhs_tile = tile / tiles_per_row;
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    if (kind == "div") {
+      stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
+                                        {IntImm32(lhs_in.cb_id),
+                                         IntImm32(rhs_operand->cb_id),
+                                         IntImm32(tile), IntImm32(tile), IntImm32(0)}));
+    } else {
+      stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_bcast_cols(),
+                                        {IntImm32(lhs_in.cb_id),
+                                         IntImm32(rhs_operand->cb_id),
+                                         IntImm32(tile), IntImm32(rhs_tile), IntImm32(0)}));
+    }
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
+                                      {IntImm32(out.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                      {IntImm32(0), IntImm32(out.cb_id), IntImm32(tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+  }
+  if (!lhs_in.borrowed_live) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                      {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
+  }
+  if (kind == "mul") {
+    if (!rhs_in.borrowed_live) {
+      stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                        {IntImm32(rhs_in.cb_id),
+                                         IntImm32(rhs_in.num_tiles)}));
+    }
+  } else {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                      {IntImm32(reciprocal.cb_id),
+                                       IntImm32(reciprocal.num_tiles)}));
+  }
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                    {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  RecordExactOutputLiveForm(dst, out);
+  Stmt body = AttachExactOutputLiveFormMarker(dst, out, SeqStmt::Flatten(stmts));
+  return MaybeWrapComputeSegment(body);
 }
 
-Stmt PlanTTKernelABI::GenerateScalarFragmentCopySequence(const ScalarFragmentCopyMatch& match) {
-  ExactTiledCBValue live_value;
-  if (TryCreateLiveExactTiledCBValue(match.src, &live_value)) {
-    RecordTiledCBLiveFormAliases(match.dst, live_value.cb_id);
-    InvalidateLastFragmentFillValue(match.dst);
-    return Evaluate(IntImm32(0));
+Stmt PlanTTKernelABI::GenerateExp2TileLeafDAGSequence(
+    const std::string& mode, const Buffer& dst, const Buffer& lhs, const Buffer& rhs,
+    const PrimExpr& lhs_scale_value, const PrimExpr& rhs_scale_value,
+    const PrimExpr& row_width, const PrimExpr& num_elements) {
+  (void)row_width;
+  (void)num_elements;
+  const bool use_bcast_cols = mode == "bcast_cols";
+  ICHECK(use_bcast_cols || mode == "binary")
+      << "Unsupported exp2_tile leaf DAG mode: " << mode;
+
+  ExactTiledCBValue lhs_in = CreateExactInputCBValue(lhs, "exp2_lhs");
+  ExactTiledCBValue rhs_in = CreateExactInputCBValue(rhs, "exp2_rhs");
+  ExactTiledCBValue lhs_scale =
+      CreateConstantExactTiledCBValue(lhs->dtype, "exp2_lhs_scale");
+  ExactTiledCBValue rhs_scale =
+      CreateConstantExactTiledCBValue(rhs->dtype, "exp2_rhs_scale");
+  ExactTiledCBValue scaled_lhs = CreateEmptyExactTiledCBValue(dst, "exp2_scaled_lhs");
+  ExactTiledCBValue scaled_rhs =
+      CreateEmptyExactTiledCBValue(use_bcast_cols ? rhs : dst, "exp2_scaled_rhs");
+  ExactTiledCBValue out = CreateEmptyExactTiledCBValue(dst, "exp2_out");
+
+  RecordExactComputeOpPlan("binary", "mul_tiles",
+                           {{"lhs", lhs, "identity"},
+                            {"rhs", lhs_scale.buffer, "identity"},
+                            {"output", scaled_lhs.buffer, "identity"}});
+  RecordExactComputeOpPlan("binary", "mul_tiles",
+                           {{"lhs", rhs, "identity"},
+                            {"rhs", rhs_scale.buffer, "identity"},
+                            {"output", scaled_rhs.buffer, "identity"}});
+  RecordExactComputeOpPlan("binary",
+                           use_bcast_cols ? "add_tiles_bcast_cols" : "add_tiles",
+                           {{"lhs", scaled_lhs.buffer, "identity"},
+                            {"rhs", scaled_rhs.buffer,
+                             use_bcast_cols ? "broadcast" : "identity"},
+                            {"output", out.buffer, "identity"}});
+  RecordExactComputeOpPlan("unary", "exp2_tile",
+                           {{"input", out.buffer, "identity"},
+                            {"output", dst, "identity"}});
+
+  const auto [logical_rows, logical_cols] = GetLogicalMatrixShape(dst);
+  const int tiles_per_row =
+      logical_rows > 0 && logical_cols > 0
+          ? std::max(1, CeilDivToInt(logical_cols, kBlackholeTileCols))
+          : std::max(1, lhs_in.num_tiles / std::max(1, rhs_in.num_tiles));
+
+  std::vector<Stmt> stmts;
+  if (Stmt publish_lhs = PublishExactInputToTiledCB(lhs, &lhs_in); publish_lhs.defined()) {
+    stmts.push_back(publish_lhs);
   }
-  PrimExpr fill_value;
-  if (TryGetLastFragmentFillValue(match.src, &fill_value)) {
-    const std::string dst_name = BufferIdentityName(match.dst);
-    if (!dst_name.empty()) {
-      ClearTiledCBLiveFormIdentity(dst_name);
-      last_fragment_fill_value_by_buffer_identity_[dst_name] = fill_value;
-    }
-    if (const VarNode* data = BufferDataIdentity(match.dst)) {
-      last_fragment_fill_value_by_data_[data] = fill_value;
-    }
-    return Evaluate(IntImm32(0));
+  if (Stmt publish_rhs = PublishExactInputToTiledCB(rhs, &rhs_in); publish_rhs.defined()) {
+    stmts.push_back(publish_rhs);
   }
-  FragmentCastMatch cast_match;
-  cast_match.dst = match.dst;
-  cast_match.src = match.src;
-  cast_match.dst_offset = IntImm(DataType::Int(32), 0);
-  cast_match.src_offset = IntImm(DataType::Int(32), 0);
-  cast_match.num_elements = match.num_elements;
-  if (!cast_match.num_elements.defined()) {
-    const int64_t logical_extent = GetLogicalVectorLength(match.dst);
-    if (logical_extent > 1) {
-      cast_match.num_elements = IntImm(DataType::Int(32), logical_extent);
-    }
+  stmts.push_back(PublishConstantToExactTiledCB(lhs_scale.buffer, lhs_scale_value, lhs_scale));
+  stmts.push_back(PublishConstantToExactTiledCB(rhs_scale.buffer, rhs_scale_value, rhs_scale));
+  MarkExactCBValuesOverlap({lhs_in.cb_id, rhs_in.cb_id, lhs_scale.cb_id, rhs_scale.cb_id,
+                            scaled_lhs.cb_id, scaled_rhs.cb_id, out.cb_id});
+
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                    {IntImm32(scaled_lhs.cb_id),
+                                     IntImm32(scaled_lhs.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(lhs_scale.cb_id),
+                                     IntImm32(lhs_scale.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
+                                    {IntImm32(lhs_in.cb_id),
+                                     IntImm32(lhs_scale.cb_id)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
+                                    {IntImm32(lhs_in.cb_id),
+                                     IntImm32(lhs_scale.cb_id)}));
+  for (int tile = 0; tile < scaled_lhs.num_tiles; ++tile) {
+    const int lhs_tile = lhs_in.num_tiles == 1 ? 0 : tile % lhs_in.num_tiles;
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
+                                      {IntImm32(lhs_in.cb_id),
+                                       IntImm32(lhs_scale.cb_id),
+                                       IntImm32(lhs_tile), IntImm32(0), IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
+                                      {IntImm32(scaled_lhs.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                      {IntImm32(0), IntImm32(scaled_lhs.cb_id),
+                                       IntImm32(tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
   }
-  return GenerateFragmentCastSequence(cast_match, /*publish_cb=*/false);
+  if (!lhs_in.borrowed_live) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                      {IntImm32(lhs_in.cb_id), IntImm32(lhs_in.num_tiles)}));
+  }
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                    {IntImm32(lhs_scale.cb_id),
+                                     IntImm32(lhs_scale.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                    {IntImm32(scaled_lhs.cb_id),
+                                     IntImm32(scaled_lhs.num_tiles)}));
+
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                    {IntImm32(scaled_rhs.cb_id),
+                                     IntImm32(scaled_rhs.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(rhs_scale.cb_id),
+                                     IntImm32(rhs_scale.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
+                                    {IntImm32(rhs_in.cb_id),
+                                     IntImm32(rhs_scale.cb_id)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles_init(),
+                                    {IntImm32(rhs_in.cb_id),
+                                     IntImm32(rhs_scale.cb_id)}));
+  for (int tile = 0; tile < scaled_rhs.num_tiles; ++tile) {
+    const int rhs_tile = rhs_in.num_tiles == 1 ? 0 : tile % rhs_in.num_tiles;
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_mul_tiles(),
+                                      {IntImm32(rhs_in.cb_id),
+                                       IntImm32(rhs_scale.cb_id),
+                                       IntImm32(rhs_tile), IntImm32(0), IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
+                                      {IntImm32(scaled_rhs.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                      {IntImm32(0), IntImm32(scaled_rhs.cb_id),
+                                       IntImm32(tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+  }
+  if (!rhs_in.borrowed_live) {
+    stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                      {IntImm32(rhs_in.cb_id), IntImm32(rhs_in.num_tiles)}));
+  }
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                    {IntImm32(rhs_scale.cb_id),
+                                     IntImm32(rhs_scale.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                    {IntImm32(scaled_rhs.cb_id),
+                                     IntImm32(scaled_rhs.num_tiles)}));
+
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_reserve_back(),
+                                    {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(scaled_lhs.cb_id),
+                                     IntImm32(scaled_lhs.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_wait_front(),
+                                    {IntImm32(scaled_rhs.cb_id),
+                                     IntImm32(scaled_rhs.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_reconfig_data_format(),
+                                    {IntImm32(scaled_lhs.cb_id),
+                                     IntImm32(scaled_rhs.cb_id)}));
+  if (use_bcast_cols) {
+    stmts.push_back(MakeBlackholeCall(blackhole_add_bcast_cols_init_short(),
+                                      {IntImm32(scaled_lhs.cb_id),
+                                       IntImm32(scaled_rhs.cb_id)}));
+  } else {
+    stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_init(),
+                                      {IntImm32(scaled_lhs.cb_id),
+                                       IntImm32(scaled_rhs.cb_id)}));
+  }
+  for (int tile = 0; tile < out.num_tiles; ++tile) {
+    const int lhs_tile = scaled_lhs.num_tiles == 1 ? 0 : tile % scaled_lhs.num_tiles;
+    const int rhs_tile =
+        use_bcast_cols ? tile / tiles_per_row
+                       : (scaled_rhs.num_tiles == 1 ? 0 : tile % scaled_rhs.num_tiles);
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_acquire(), {}));
+    if (use_bcast_cols) {
+      stmts.push_back(MakeBlackholeCall(blackhole_add_tiles_bcast_cols(),
+                                        {IntImm32(scaled_lhs.cb_id),
+                                         IntImm32(scaled_rhs.cb_id),
+                                         IntImm32(lhs_tile), IntImm32(rhs_tile),
+                                         IntImm32(0)}));
+    } else {
+      stmts.push_back(MakeBlackholeCall(blackhole_add_tiles(),
+                                        {IntImm32(scaled_lhs.cb_id),
+                                         IntImm32(scaled_rhs.cb_id),
+                                         IntImm32(lhs_tile), IntImm32(rhs_tile),
+                                         IntImm32(0)}));
+    }
+    stmts.push_back(MakeBlackholeCall(blackhole_exp2_tile_init(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_exp2_tile(), {IntImm32(0)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_commit(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_wait(), {}));
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_reconfig_data_format(),
+                                      {IntImm32(out.cb_id)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_pack_tile(),
+                                      {IntImm32(0), IntImm32(out.cb_id), IntImm32(tile)}));
+    stmts.push_back(MakeBlackholeCall(blackhole_tile_regs_release(), {}));
+  }
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                    {IntImm32(scaled_lhs.cb_id),
+                                     IntImm32(scaled_lhs.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_pop_front(),
+                                    {IntImm32(scaled_rhs.cb_id),
+                                     IntImm32(scaled_rhs.num_tiles)}));
+  stmts.push_back(MakeBlackholeCall(blackhole_cb_push_back(),
+                                    {IntImm32(out.cb_id), IntImm32(out.num_tiles)}));
+  RecordExactOutputLiveForm(dst, out);
+
+  Stmt body = SeqStmt::Flatten(stmts);
+  body = tir::DeclBuffer(lhs_scale.buffer, body);
+  body = tir::DeclBuffer(rhs_scale.buffer, body);
+  body = tir::Allocate(rhs_scale.buffer->data, rhs_scale.buffer->dtype,
+                       rhs_scale.buffer->shape, Bool(1), body);
+  body = tir::Allocate(lhs_scale.buffer->data, lhs_scale.buffer->dtype,
+                       lhs_scale.buffer->shape, Bool(1), body);
+  body = AttachExactOutputLiveFormMarker(dst, out, body);
+  return MaybeWrapComputeSegment(body);
 }
 
 bool PlanTTKernelABI::MatchDirectFragmentCast(const ForNode* op,
@@ -9331,6 +8340,9 @@ bool PlanTTKernelABI::ShouldReacquireComputeInputBuffer(const Buffer& buffer,
 
 bool PlanTTKernelABI::ShouldPublishBufferResult(const Buffer& buffer,
                                                   int current_order_index) const {
+  if (FindBufferMaterializationFact(buffer) != nullptr) {
+    return true;
+  }
   const FutureBufferUses uses = ClassifyFutureBufferUses(buffer, current_order_index);
   return uses.has_compute_consume || uses.has_transport_consume;
 }
@@ -9708,64 +8720,81 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       return false;
     };
 
+    auto unwrap_call = [](const Stmt& stmt) -> const CallNode* {
+      Stmt current = stmt;
+      while (true) {
+        if (const auto* attr = current.as<AttrStmtNode>()) {
+          current = attr->body;
+          continue;
+        }
+        if (const auto* let = current.as<LetStmtNode>()) {
+          current = let->body;
+          continue;
+        }
+        if (const auto* decl = current.as<DeclBufferNode>()) {
+          current = decl->body;
+          continue;
+        }
+        if (const auto* allocate = current.as<AllocateNode>()) {
+          current = allocate->body;
+          continue;
+        }
+        break;
+      }
+      const auto* eval = current.as<EvaluateNode>();
+      return eval ? eval->value.as<CallNode>() : nullptr;
+    };
+
+    struct ExplicitFragmentFill {
+      Buffer dst;
+      PrimExpr value;
+      PrimExpr num_elements;
+      const VarNode* data = nullptr;
+    };
+    auto match_explicit_fragment_fill =
+        [&](const Stmt& stmt, ExplicitFragmentFill* fill) -> bool {
+      if (!fill) {
+        return false;
+      }
+      const CallNode* call = unwrap_call(stmt);
+      if (!call || !call->op->IsInstance<OpNode>()) {
+        return false;
+      }
+      const Op call_op = Downcast<Op>(call->op);
+      if (call_op->name == blackhole_tile_compute_schema::kOpName && call->args.size() >= 4U) {
+        const auto* operation = call->args[0].as<StringImmNode>();
+        if (!operation || operation->value != blackhole_tile_compute_schema::kFillTile ||
+            !IsBufferLikeExpr(call->args[1]) || !IsFragmentFillValue(call->args[2])) {
+          return false;
+        }
+        fill->dst = NormalizeToBufferRegion(call->args[1])->buffer;
+        fill->value = call->args[2];
+        fill->num_elements = call->args[3];
+        fill->data = BufferDataIdentity(fill->dst);
+        return true;
+      }
+      if (call_op->name != "tl.blackhole.fill_fragment" || call->args.size() < 3U ||
+          !IsFragmentFillValue(call->args[2])) {
+        return false;
+      }
+      fill->data = call->args[0].as<VarNode>();
+      if (!fill->data) {
+        return false;
+      }
+      auto it = compute_physical_buffers_by_data_.find(fill->data);
+      if (it != compute_physical_buffers_by_data_.end()) {
+        fill->dst = it->second;
+      }
+      fill->value = call->args[2];
+      fill->num_elements = call->args[1];
+      return true;
+    };
+
     auto is_redundant_zero_fill_before_full_overwrite_matmul =
         [&](const Stmt& fill_stmt, const Stmt& next_stmt) -> bool {
-      FragmentFillMatch fill_match;
-      const VarNode* fill_data = nullptr;
-      auto match_zero_fill = [&](const Stmt& stmt) -> bool {
-        const auto* fill_loop = AsUnwrappedFor(stmt);
-        if (fill_loop && MatchDirectFragmentFill(fill_loop, &fill_match)) {
-          fill_data = BufferDataIdentity(fill_match.dst);
-          return IsLiteralZeroValue(fill_match.value);
-        }
-        const auto* fill_store = AsUnwrappedBufferStore(stmt);
-        if (fill_store && MatchScalarFragmentFillStore(fill_store, &fill_match)) {
-          fill_data = BufferDataIdentity(fill_match.dst);
-          return IsLiteralZeroValue(fill_match.value);
-        }
-
-        Stmt current = stmt;
-        while (true) {
-          if (const auto* attr = current.as<AttrStmtNode>()) {
-            current = attr->body;
-            continue;
-          }
-          if (const auto* let = current.as<LetStmtNode>()) {
-            current = let->body;
-            continue;
-          }
-          if (const auto* decl = current.as<DeclBufferNode>()) {
-            current = decl->body;
-            continue;
-          }
-          if (const auto* allocate = current.as<AllocateNode>()) {
-            current = allocate->body;
-            continue;
-          }
-          break;
-        }
-        const auto* eval = current.as<EvaluateNode>();
-        const auto* call = eval ? eval->value.as<CallNode>() : nullptr;
-        if (!call || !call->op->IsInstance<OpNode>()) {
-          return false;
-        }
-        Op call_op = Downcast<Op>(call->op);
-        if (call_op->name != "tl.blackhole.fill_fragment" || call->args.size() < 3) {
-          return false;
-        }
-        fill_data = call->args[0].as<VarNode>();
-        if (!fill_data || !IsLiteralZeroValue(call->args[2])) {
-          return false;
-        }
-        auto it = compute_physical_buffers_by_data_.find(fill_data);
-        if (it != compute_physical_buffers_by_data_.end()) {
-          fill_match.dst = it->second;
-        }
-        fill_match.num_elements = call->args[1];
-        fill_match.value = call->args[2];
-        return true;
-      };
-      if (!match_zero_fill(fill_stmt)) {
+      ExplicitFragmentFill fill_match;
+      if (!match_explicit_fragment_fill(fill_stmt, &fill_match) ||
+          !IsLiteralZeroValue(fill_match.value)) {
         return false;
       }
 
@@ -9802,10 +8831,214 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       if (fill_match.dst.defined() && !SameBufferIdentity(fill_buffer, out_buffer)) {
         return false;
       }
-      if (!fill_match.dst.defined() && fill_data != BufferDataIdentity(out_buffer)) {
+      if (!fill_match.dst.defined() && fill_match.data != BufferDataIdentity(out_buffer)) {
         return false;
       }
-      return FindBufferMaterializationFact(out_buffer) == nullptr;
+      if (FindBufferMaterializationFact(out_buffer) != nullptr) {
+        return false;
+      }
+      const auto next_order_it = stmt_order_index_by_node_.find(next_stmt.get());
+      const int next_order_index =
+          next_order_it != stmt_order_index_by_node_.end()
+              ? next_order_it->second
+              : current_order_index + 1;
+      const FutureBufferUses future_uses =
+          ClassifyFutureBufferUses(out_buffer, next_order_index);
+      return !future_uses.has_compute_consume && !future_uses.has_reference;
+    };
+
+    auto is_redundant_identity_fill_before_clear_row_reduce =
+        [&](const Stmt& fill_stmt, const Stmt& next_stmt) -> bool {
+      ExplicitFragmentFill fill_match;
+      if (!match_explicit_fragment_fill(fill_stmt, &fill_match)) {
+        return false;
+      }
+
+      Stmt current = next_stmt;
+      while (true) {
+        if (const auto* attr = current.as<AttrStmtNode>()) {
+          current = attr->body;
+          continue;
+        }
+        if (const auto* let = current.as<LetStmtNode>()) {
+          current = let->body;
+          continue;
+        }
+        if (const auto* decl = current.as<DeclBufferNode>()) {
+          current = decl->body;
+          continue;
+        }
+        if (const auto* allocate = current.as<AllocateNode>()) {
+          current = allocate->body;
+          continue;
+        }
+        break;
+      }
+      const auto* eval = current.as<EvaluateNode>();
+      const auto* call = eval ? eval->value.as<CallNode>() : nullptr;
+      if (call && call->op->IsInstance<OpNode>()) {
+        const Op call_op = Downcast<Op>(call->op);
+        if (call_op->name == "tl.tileop.reduce" && call->args.size() >= 5U &&
+            fill_match.dst.defined() && IsBufferLikeExpr(call->args[1])) {
+          const auto* kind_imm = call->args[2].as<StringImmNode>();
+          const Buffer reduce_dst = NormalizeToBufferRegion(call->args[1])->buffer;
+          const bool identity_fill =
+              kind_imm != nullptr &&
+              ((kind_imm->value == "sum" && IsZeroValue(fill_match.value)) ||
+               (kind_imm->value == "max" && IsNegInfValue(fill_match.value)));
+          if (identity_fill && SameBufferIdentity(fill_match.dst, reduce_dst)) {
+            ClearSelectedSourceLiveProducer(fill_match.dst);
+            ClearTiledCBLiveFormAliases(fill_match.dst);
+            for (const std::string& identity : CollectBufferFlowIdentities(fill_match.dst)) {
+              last_fragment_fill_value_by_buffer_identity_[identity] = fill_match.value;
+            }
+            if (const VarNode* data = BufferDataIdentity(fill_match.dst)) {
+              last_fragment_fill_value_by_data_[data] = fill_match.value;
+            }
+            if (fill_match.data != nullptr) {
+              last_fragment_fill_value_by_data_[fill_match.data] = fill_match.value;
+            }
+            return true;
+          }
+        }
+      }
+      RowReductionMatch reduce_match;
+      if (!call || !MatchExplicitTileReduce(call, &reduce_match) ||
+          !(reduce_match.clear || reduce_match.accumulate_existing)) {
+        return false;
+      }
+      Buffer reduce_logical_dst;
+      if (call->args.size() >= 2U && IsBufferLikeExpr(call->args[1])) {
+        reduce_logical_dst = NormalizeToBufferRegion(call->args[1])->buffer;
+      }
+
+      const Buffer fill_buffer = ResolvePhysicalComputeBuffer(fill_match.dst);
+      const Buffer reduce_buffer = ResolvePhysicalComputeBuffer(reduce_match.dst);
+      if (fill_match.dst.defined()) {
+        const bool same_target =
+            SameBufferIdentity(fill_match.dst, reduce_match.dst) ||
+            (reduce_logical_dst.defined() &&
+             SameBufferIdentity(fill_match.dst, reduce_logical_dst)) ||
+            SameBufferIdentity(fill_buffer, reduce_buffer);
+        if (!same_target) {
+          return false;
+        }
+      }
+      if (!fill_match.dst.defined() && fill_match.data != BufferDataIdentity(reduce_buffer)) {
+        return false;
+      }
+      const bool identity_fill =
+          (reduce_match.kind == "sum" && IsZeroValue(fill_match.value)) ||
+          (reduce_match.kind == "max" && IsNegInfValue(fill_match.value));
+      if (!identity_fill) {
+        return false;
+      }
+      if (fill_match.dst.defined()) {
+        ClearSelectedSourceLiveProducer(fill_match.dst);
+        ClearTiledCBLiveFormAliases(fill_match.dst);
+        for (const std::string& identity : CollectBufferFlowIdentities(fill_match.dst)) {
+          last_fragment_fill_value_by_buffer_identity_[identity] = fill_match.value;
+        }
+        if (const VarNode* data = BufferDataIdentity(fill_match.dst)) {
+          last_fragment_fill_value_by_data_[data] = fill_match.value;
+        }
+      }
+      if (fill_match.data != nullptr) {
+        last_fragment_fill_value_by_data_[fill_match.data] = fill_match.value;
+      }
+      return true;
+    };
+
+    auto is_initial_identity_state_copy_before_clear_row_reduce =
+        [&](const Stmt& copy_stmt, const Stmt& fill_stmt, const Stmt& reduce_stmt,
+            const Stmt& combine_stmt) -> bool {
+      auto blackhole_compute_operation = [](const CallNode* call) -> const StringImmNode* {
+        if (!call || !call->op->IsInstance<OpNode>() || call->args.empty()) {
+          return nullptr;
+        }
+        const Op call_op = Downcast<Op>(call->op);
+        if (call_op->name != blackhole_tile_compute_schema::kOpName) {
+          return nullptr;
+        }
+        return call->args[0].as<StringImmNode>();
+      };
+      auto buffer_arg = [&](const CallNode* call, size_t index) -> Buffer {
+        if (!call || index >= call->args.size() || !IsBufferLikeExpr(call->args[index])) {
+          return Buffer();
+        }
+        return ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(call->args[index])->buffer);
+      };
+
+      const CallNode* copy_call = unwrap_call(copy_stmt);
+      const StringImmNode* copy_op = blackhole_compute_operation(copy_call);
+      if (!copy_op || copy_op->value != blackhole_tile_compute_schema::kCopyTile ||
+          copy_call->args.size() < 4U) {
+        return false;
+      }
+      const Buffer copy_src = buffer_arg(copy_call, 1);
+      const Buffer copy_dst = buffer_arg(copy_call, 2);
+      if (!copy_src.defined() || !copy_dst.defined()) {
+        return false;
+      }
+
+      const CallNode* fill_call = unwrap_call(fill_stmt);
+      const StringImmNode* fill_op = blackhole_compute_operation(fill_call);
+      if (!fill_op || fill_op->value != blackhole_tile_compute_schema::kFillTile ||
+          fill_call->args.size() < 4U) {
+        return false;
+      }
+      const Buffer fill_dst = buffer_arg(fill_call, 1);
+      const PrimExpr fill_value = fill_call->args[2];
+      if (!fill_dst.defined() || !SameBufferIdentity(copy_src, fill_dst)) {
+        return false;
+      }
+
+      const CallNode* reduce_call = unwrap_call(reduce_stmt);
+      RowReductionMatch reduce_match;
+      if (!reduce_call || !MatchExplicitTileReduce(reduce_call, &reduce_match) ||
+          !SameBufferIdentity(copy_src, reduce_match.dst)) {
+        return false;
+      }
+      const bool identity_fill =
+          (reduce_match.kind == "sum" && IsZeroValue(fill_value)) ||
+          (reduce_match.kind == "max" && IsNegInfValue(fill_value));
+      if (!identity_fill) {
+        return false;
+      }
+
+      const CallNode* combine_call = unwrap_call(combine_stmt);
+      const StringImmNode* combine_op = blackhole_compute_operation(combine_call);
+      const char* expected_combine_op =
+          reduce_match.kind == "sum" ? blackhole_tile_compute_schema::kAddTiles
+                                     : blackhole_tile_compute_schema::kBinaryMaxTile;
+      if (!combine_op || combine_op->value != expected_combine_op ||
+          combine_call->args.size() < 3U) {
+        return false;
+      }
+      const Buffer combine_dst = buffer_arg(combine_call, 1);
+      const Buffer combine_rhs = buffer_arg(combine_call, 2);
+      if (!combine_dst.defined() || !combine_rhs.defined() ||
+          !SameBufferIdentity(copy_src, combine_dst) ||
+          !SameBufferIdentity(copy_dst, combine_rhs)) {
+        return false;
+      }
+
+      PrimExpr existing_fill;
+      ExactTiledCBValue existing_live;
+      if (TryGetLastFragmentFillValue(copy_src, &existing_fill) ||
+          TryCreateLiveExactTiledCBValue(copy_src, &existing_live)) {
+        return false;
+      }
+
+      ClearSelectedSourceLiveProducer(copy_dst);
+      ClearTiledCBLiveFormAliases(copy_dst);
+      for (const std::string& identity : CollectBufferFlowIdentities(copy_dst)) {
+        last_fragment_fill_value_by_buffer_identity_[identity] = fill_value;
+      }
+      if (const VarNode* data = BufferDataIdentity(copy_dst)) {
+        last_fragment_fill_value_by_data_[data] = fill_value;
+      }
+      return true;
     };
 
     if (!select_compute_builtins_only_) {
@@ -9814,10 +9047,11 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
       const FragmentCastMatch* post_merge_cast_ptr = nullptr;
       int post_merge_cast_order_index = -1;
       if (i + 1 < op->seq.size()) {
-        if (const auto* next_cast_loop = AsUnwrappedFor(op->seq[i + 1])) {
-          if (MatchDirectFragmentCast(next_cast_loop, &post_merge_cast)) {
+        if (const auto* next_eval = op->seq[i + 1].as<EvaluateNode>()) {
+          const auto* next_call = next_eval->value.as<CallNode>();
+          if (next_call && MatchExplicitTileTypecast(next_call, &post_merge_cast)) {
             post_merge_cast_ptr = &post_merge_cast;
-            const auto next_order_it = stmt_order_index_by_node_.find(next_cast_loop);
+            const auto next_order_it = stmt_order_index_by_node_.find(next_eval);
             post_merge_cast_order_index =
                 next_order_it != stmt_order_index_by_node_.end()
                     ? next_order_it->second
@@ -9842,60 +9076,14 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
         is_redundant_zero_fill_before_full_overwrite_matmul(op->seq[i], op->seq[i + 1])) {
       continue;
     }
-    if (i + 1 < op->seq.size()) {
-      const auto* fill_loop = AsUnwrappedFor(op->seq[i]);
-      const auto* cast_loop = AsUnwrappedFor(op->seq[i + 1]);
-      FragmentFillMatch fill_match;
-      FragmentCastMatch cast_match;
-      if (fill_loop && cast_loop && MatchDirectFragmentFill(fill_loop, &fill_match) &&
-          MatchDirectFragmentCast(cast_loop, &cast_match)) {
-        const auto cast_order_it = stmt_order_index_by_node_.find(cast_loop);
-        const int cast_order_index =
-            ResolveCurrentBufferTransferOrder(
-                cast_match.src, cast_match.dst,
-                cast_order_it != stmt_order_index_by_node_.end()
-                    ? cast_order_it->second
-                    : current_order_index);
-        LoweringOrderGuard cast_order_guard(&current_lowering_order_index_, cast_order_index);
-        Stmt fused =
-            GenerateFragmentFillCastPublishSequence(fill_match, cast_match, cast_order_index);
-        if (fused.defined()) {
-          rewritten.push_back(fused);
-          ++i;
-          continue;
-        }
-      }
+    if (i + 1 < static_cast<int>(op->seq.size()) &&
+        is_redundant_identity_fill_before_clear_row_reduce(op->seq[i], op->seq[i + 1])) {
+      continue;
     }
-    if (!select_compute_builtins_only_) {
-      if (const auto* direct_cast_loop = AsUnwrappedFor(op->seq[i])) {
-        FragmentCastMatch cast_match;
-        if (MatchDirectFragmentCast(direct_cast_loop, &cast_match)) {
-          const auto cast_order_it = stmt_order_index_by_node_.find(direct_cast_loop);
-          const int cast_order_index =
-              ResolveCurrentBufferTransferOrder(
-                  cast_match.src, cast_match.dst,
-                  cast_order_it != stmt_order_index_by_node_.end()
-                      ? cast_order_it->second
-                      : current_order_index);
-          LoweringOrderGuard cast_order_guard(&current_lowering_order_index_, cast_order_index);
-          std::vector<Stmt> prefix;
-          std::vector<Stmt> suffix;
-          ValidatePublishedBufferSourceEdge(cast_match.src, cast_match.dst);
-          const bool publish_cb = ShouldPublishBufferResult(cast_match.dst, cast_order_index);
-          const bool source_has_live_cb =
-              buffer_live_form_cb_by_buffer_identity_.count(BufferIdentityName(cast_match.src)) != 0U;
-          const bool dst_has_republish_fact = FindBufferMaterializationFact(cast_match.dst) != nullptr;
-          if (!(source_has_live_cb && dst_has_republish_fact && publish_cb)) {
-            AppendPublishedBufferSourceMaterialization(cast_match.src, cast_order_index, &prefix,
-                                                       &suffix);
-          }
-          prefix.push_back(
-              GenerateFragmentCastSequence(cast_match, publish_cb, cast_order_index));
-          prefix.insert(prefix.end(), suffix.begin(), suffix.end());
-          rewritten.push_back(SeqStmt::Flatten(prefix));
-          continue;
-        }
-      }
+    if (i + 3 < static_cast<int>(op->seq.size()) &&
+        is_initial_identity_state_copy_before_clear_row_reduce(
+            op->seq[i], op->seq[i + 1], op->seq[i + 2], op->seq[i + 3])) {
+      continue;
     }
     rewritten.push_back(VisitStmt(op->seq[i]));
   }
@@ -9988,44 +9176,12 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
       }
     }
   }
-  FragmentFillMatch direct_fill_match;
-  if (MatchDirectFragmentFill(op, &direct_fill_match)) {
-    return GenerateFragmentFillSequence(direct_fill_match);
-  }
-  ScalarFragmentCopyMatch grouped_scalar_copy_match;
-  if (MatchGroupedScalarFragmentCopyLoop(op, &grouped_scalar_copy_match)) {
-    return GenerateScalarFragmentCopySequence(grouped_scalar_copy_match);
-  }
-  ScalarMaxMatch grouped_scalar_max_match;
-  if (MatchGroupedScalarMaxLoop(op, &grouped_scalar_max_match)) {
-    return GenerateScalarMaxSequence(grouped_scalar_max_match);
-  }
-  ScalarExp2AffineMatch grouped_scalar_exp2_affine_match;
-  if (MatchGroupedScalarExp2AffineLoop(op, &grouped_scalar_exp2_affine_match)) {
-    return GenerateScalarExp2AffineSequence(grouped_scalar_exp2_affine_match);
-  }
-  ScalarFmaMatch grouped_scalar_fma_match;
-  if (MatchGroupedScalarFmaLoop(op, &grouped_scalar_fma_match)) {
-    return GenerateScalarFmaSequence(grouped_scalar_fma_match);
-  }
   if (!select_compute_builtins_only_) {
-    FragmentCastMatch direct_cast_match;
-    if (MatchDirectFragmentCast(op, &direct_cast_match)) {
-      return GenerateFragmentCastSequence(direct_cast_match);
-    }
     LocalToCBSliceMatch local_to_cb_match;
     if (MatchDirectLocalToCBSliceLoop(op, &local_to_cb_match)) {
       saw_copy_op_ = true;
       return GenerateLocalToCBSliceLoopSequence(op, local_to_cb_match);
     }
-  }
-  Exp2RowBroadcastAffineMatch direct_exp2_row_broadcast_match;
-  if (MatchExp2RowBroadcastAffine(op, &direct_exp2_row_broadcast_match)) {
-    return GenerateExp2RowBroadcastAffineSequence(direct_exp2_row_broadcast_match);
-  }
-  RowBroadcastMatch direct_row_broadcast_match;
-  if (MatchDirectRowBroadcast(op, &direct_row_broadcast_match)) {
-    return GenerateRowBroadcastSequence(direct_row_broadcast_match);
   }
   Stmt lowered = StmtExprMutator::VisitStmt_(op);
   return lowered;
@@ -10037,6 +9193,14 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
 Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
   if (select_compute_builtins_only_) {
     if (const auto* call = op->value.as<CallNode>()) {
+      FragmentCastMatch explicit_typecast_match;
+      if (MatchExplicitTileTypecast(call, &explicit_typecast_match)) {
+        return GetRef<Stmt>(op);
+      }
+      if (Stmt explicit_compute = LowerExplicitBlackholeTileCompute(call);
+          explicit_compute.defined()) {
+        return explicit_compute;
+      }
       RowReductionMatch explicit_reduce_match;
       if (MatchExplicitTileReduce(call, &explicit_reduce_match)) {
         return GenerateRowReductionSequence(explicit_reduce_match);
@@ -10049,8 +9213,10 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
             auto physical_it = compute_physical_buffers_by_data_.find(data);
             if (physical_it != compute_physical_buffers_by_data_.end()) {
               ClearSelectedSourceLiveProducer(physical_it->second);
-              last_fragment_fill_value_by_buffer_identity_[BufferIdentityName(physical_it->second)] =
-                  call->args[2];
+              for (const std::string& identity :
+                   CollectBufferFlowIdentities(physical_it->second)) {
+                last_fragment_fill_value_by_buffer_identity_[identity] = call->args[2];
+              }
             }
             last_fragment_fill_value_by_data_[data] = call->args[2];
           }
@@ -10069,6 +9235,10 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
     return GetRef<Stmt>(op);
   }
   if (const auto* call = op->value.as<CallNode>()) {
+    if (Stmt explicit_compute = LowerExplicitBlackholeTileCompute(call);
+        explicit_compute.defined()) {
+      return explicit_compute;
+    }
     RowReductionMatch explicit_reduce_match;
     if (MatchExplicitTileReduce(call, &explicit_reduce_match)) {
       return GenerateRowReductionSequence(explicit_reduce_match);
@@ -10081,8 +9251,8 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
           last_fragment_fill_value_by_data_[data] = call->args[2];
           auto physical_it = compute_physical_buffers_by_data_.find(data);
           if (physical_it != compute_physical_buffers_by_data_.end()) {
-            const std::string identity = BufferIdentityName(physical_it->second);
-            if (!identity.empty()) {
+            for (const std::string& identity :
+                 CollectBufferFlowIdentities(physical_it->second)) {
               last_fragment_fill_value_by_buffer_identity_[identity] = call->args[2];
             }
           }
@@ -10110,26 +9280,6 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
 }
 
 Stmt PlanTTKernelABI::VisitStmt_(const BufferStoreNode* op) {
-  FragmentFillMatch fill_match;
-  if (MatchScalarFragmentFillStore(op, &fill_match)) {
-    return GenerateFragmentFillSequence(fill_match);
-  }
-  ScalarFragmentCopyMatch scalar_copy_match;
-  if (MatchScalarFragmentCopyStore(op, &scalar_copy_match)) {
-    return GenerateScalarFragmentCopySequence(scalar_copy_match);
-  }
-  ScalarMaxMatch scalar_max_match;
-  if (MatchScalarMaxStore(op, &scalar_max_match)) {
-    return GenerateScalarMaxSequence(scalar_max_match);
-  }
-  ScalarExp2AffineMatch scalar_exp2_affine_match;
-  if (MatchScalarExp2AffineStore(op, &scalar_exp2_affine_match)) {
-    return GenerateScalarExp2AffineSequence(scalar_exp2_affine_match);
-  }
-  ScalarFmaMatch scalar_fma_match;
-  if (MatchScalarFmaStore(op, &scalar_fma_match)) {
-    return GenerateScalarFmaSequence(scalar_fma_match);
-  }
   if (!select_compute_builtins_only_ && IsCopyOperation(op)) {
     saw_copy_op_ = true;
     return GenerateCopySequence(op);

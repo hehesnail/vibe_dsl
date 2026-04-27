@@ -1586,6 +1586,41 @@
     不要为了追求“更小”粒度
     走 simulator 未覆盖的 scalar SFPU path
 
+#### exact-output live-form alias 必须随 tiled live-form 更新失效
+
+- **症状**:
+  - flash-attn seq64 / multi-K-step
+    在 `acc_o` merge 之后可能在 TT-Sim
+    卡住
+  - 生成 source 中后续 compute
+    会对旧 exact-output CB
+    `cb_wait_front`，
+    但该 CB page
+    已在前一个 materialization /
+    republish event 后被消费并 pop
+- **根因**:
+  - ordinary tiled live-form alias
+    更新 / 清除时，
+    没有同步清除同一 logical buffer
+    的 exact-output live-form alias
+  - 后续 exact compute
+    优先复用了 stale exact-output source identity，
+    把已经失效的 CB page
+    当成当前 live producer
+- **修法**:
+  - `RecordTiledCBLiveFormAliases`
+    和 `ClearTiledCBLiveFormIdentity`
+    同步失效 exact-output live-form aliases
+  - exact source selection
+    只在当前 live-form identity
+    仍有效时复用 exact-output CB
+- **教训**:
+  - exact-output alias
+    是从当前 live-form 派生出的临时 truth，
+    不是独立 owner truth；
+    一旦 tiled live-form owner 改写或清除，
+    exact-output alias 必须一起失效
+
 ## 3. 环境问题速查
 
 | 问题 | 解决 |

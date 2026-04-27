@@ -32,7 +32,7 @@
     不引入新的长期 IR 层
 
 当前 Blackhole tile compute preservation lane
-的任务级设计固定为：
+的任务级设计记录为：
 
 - `2026-04-27-blackhole-tile-compute-preservation.md`
   - 定义 TT-Metal API 粒度 tile compute semantics
@@ -45,7 +45,10 @@
     不是 reduce 或 flash-attn 专项设计
   - 明确 P2.2/P2.3
     late scalar-loop idiom recovery
-    是待删除架构债务
+    已作为本 lane 清理目标删除，
+    后续不能重新作为 guard /
+    wrapper /
+    compatibility shell 引入
 
 额外参考：
 
@@ -96,7 +99,7 @@ pass 名字、helper、bag、payload、bridge attr
 | `task2_ttprogram_companion_cutover.md` | `TTProgram` 合同文档；定义 target realization 的显式 slice、mesh/buffer distribution、reader/writer 边界与完成判据 |
 | `task3_runtime_gate_and_workload_cutover.md` | `ExecutableSpec / leaf reader` 合同文档；定义 leaf reader 纪律、direct runtime 与 codegen/export backend 分离、workload 恢复顺序与完成判据 |
 | `2026-04-23-blackhole-live-form-materialization-admission.md` | cleanup 之后 support surface lane 的任务级设计；定义 live-form / materialization owner truth、admission 顺序和禁止的 runtime-only patch |
-| `2026-04-27-blackhole-tile-compute-preservation.md` | Blackhole tile compute preservation lane 的任务级设计；定义 TT-Metal API 粒度 compute semantics 在 `Normalized Tile TIR` 的保留 / 规范化边界和 late matcher 删除路线 |
+| `2026-04-27-blackhole-tile-compute-preservation.md` | Blackhole tile compute preservation lane 的完成记录；定义 TT-Metal API 粒度 compute semantics 在 `Normalized Tile TIR` 的保留 / 规范化边界和 late matcher 删除边界 |
 | `blackhole_first_principles_protocol_audit.md` | 删除/迁移表；列出现存 fake/legacy protocol 的表示层落点、validator 和 disposition |
 
 ### Runtime / mesh / distributed 调研索引

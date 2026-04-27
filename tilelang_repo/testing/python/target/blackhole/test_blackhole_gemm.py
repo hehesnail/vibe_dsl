@@ -1127,7 +1127,11 @@ def test_blackhole_fragment_fill_cast_publish_admits_non_mailbox_cb_republish():
     )
     compute_source = str(compute_kernel["source_code"])
     assert "tilelang_get_cb_write_ptr_bytes(17)" not in compute_source
-    assert "tilelang_pack_fill_bfloat16_tiled_cb(17" in compute_source
+    assert "tilelang_get_cb_write_ptr_bytes(" not in compute_source
+    assert "cb_reserve_back(" in compute_source
+    assert "fill_tile(0, static_cast<float>(3.500000e+00f))" in compute_source
+    assert "pack_tile(0," in compute_source
+    assert "cb_push_back(" in compute_source
 
 
 def test_blackhole_gemm_kernel_compute_config_follows_typed_compute_schema():

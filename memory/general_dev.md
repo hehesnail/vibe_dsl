@@ -1281,6 +1281,14 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   Events at the next write boundary are a redefinition, not a consumer of the
   old live page. Do not keep an early deferred `cb_reserve_back` for buffers
   whose next producer is already a typed materialization/live-form writer.
+- When recording or clearing an ordinary tiled CB live-form alias, also clear
+  stale exact-output live-form aliases for the same logical buffer. Otherwise a
+  later exact compute can wait on an old CB page that has already been popped
+  after a typed materialization/republish event.
+- Multi-block flash-attn direct runtime must stay gated until the online-softmax
+  source-live-form and event lifetime contract is admitted. Compile/source/spec
+  stability is independent from direct-runtime correctness; do not reopen the
+  runtime path by bypassing the unsupported-reason gate.
 - 文档收口时，
   `tasks/progress.md`
   是唯一当前状态 /

@@ -5,15 +5,15 @@
 - **文档 ID**:
   `2026-04-27-blackhole-tile-compute-preservation`
 - **日期**: `2026-04-27`
-- **状态**: 当前活动设计合同
+- **状态**: 已完成
 - **父设计**:
   `tasks/dev_design/final_blackhole_backend_redesign.md`
 - **定位**:
   定义 Blackhole tile compute 语义在
   `Normalized Tile TIR`
   中被保留 / 规范化的边界，
-  并给出删除 P2.2/P2.3 late TIR idiom recovery
-  的迁移路线
+  并记录删除 P2.2/P2.3 late TIR idiom recovery
+  后的完成边界
 
 ## 1. 设计结论
 
@@ -58,7 +58,7 @@ TileLang source / DSL
   只消费 leaf projection；
   不能恢复 compute 语义
 
-P2.2/P2.3 中存在的
+P2.2/P2.3 中曾经存在的
 row-reduction /
 row-broadcast /
 exp2 affine /
@@ -68,8 +68,11 @@ copy /
 fill /
 cast
 late matcher
-只允许作为已经识别出的过渡债务。
-它们不能继续扩展成新的公共协议面。
+已作为本 lane 的核心债务删除。
+这类 matcher / generate 函数不能作为
+fail-closed guard、
+compatibility shell
+或新的公共协议面保留。
 
 ## 2. 适用范围
 
@@ -476,10 +479,9 @@ runtime / codegen
   typed `TTComputeOpPlan`
   和 leaf builtin sequence
 - row-reduction scalar-loop matcher
-  已从 active lowering path 删除；
-  剩余 matcher 只在 residual scan
-  中作为 fail-closed diagnostic
-  判断 post-scalar reduction residue
+  已从 lowering implementation 删除；
+  不再保留 downstream matcher
+  或 residue reject wrapper
 - explicit reduce lowering
   保留 accumulator fill/live truth
   到 generator 内消费，
@@ -512,6 +514,35 @@ runtime / codegen
 - 删除 helper/composite builtin 名
   进入 production plan 的路径
 
+当前实现状态
+（`2026-04-27`）：
+
+- Blackhole tile compute normalization
+  已把 local tile compute loop
+  显式化为
+  `tl.tileop.blackhole_compute`
+- 已覆盖当前主链需要的
+  `fill_tile`、
+  `copy_tile`、
+  `binary_max_tile`、
+  `mul_tiles`、
+  `add_tiles`、
+  `mul_tiles_bcast_cols`、
+  `exp2_tile`
+  和 `typecast_tile`
+- exp2 affine / scalar fma /
+  scalar max / row broadcast
+  不再以 composite helper 名
+  进入 production builtin、
+  `TTComputeOpPlan.operation_name`
+  或 `KernelSpec.compute_ops`
+- downstream
+  `Generate*Affine` /
+  `GenerateScalar*` /
+  row-broadcast /
+  scalar-fragment matcher
+  families 已从 source 删除
+
 ### Phase C: copy / pack / materialization boundary cleanup
 
 - 明确 `copy_tile` /
@@ -526,6 +557,24 @@ runtime / codegen
   对 materialization truth
   的隐式推导
 
+当前实现状态
+（`2026-04-27`）：
+
+- `copy_tile` /
+  `pack_tile`
+  仍按 TT-Metal leaf API
+  出现在 compute/source 序列中
+- exact CB live-form /
+  page event /
+  source-live identity
+  继续由 materialization/live-form
+  typed state 负责
+- stale exact-output live-form alias
+  会在 ordinary tiled live-form alias
+  record / clear 时同步失效，
+  避免后续 compute wait/pop
+  已被消费的旧 CB page
+
 ### Phase D: validator and file split
 
 - validator reject
@@ -539,6 +588,26 @@ runtime / codegen
   ABI planning /
   source emission support
   各自明确边界
+
+当前实现状态
+（`2026-04-27`）：
+
+- production/test tree cleanup scan
+  确认旧 downstream matcher /
+  generator /
+  composite helper name
+  不再存在于 `tilelang_repo`
+- seq64 / multi-K-step flash-attn
+  compile/source/spec lowering 保持稳定；
+  direct-runtime correctness
+  通过
+  `multi-block exact CB-republish flash-attention direct runtime correctness`
+  unsupported reason fail closed
+- `lower_blackhole_ops.cc`
+  仍然偏大；
+  file split / responsibility shrink
+  是后续清理任务，
+  但不再包含旧 scalar-loop compute recovery surface
 
 ## 8. 验证方式
 
@@ -556,6 +625,7 @@ runtime / codegen
 
 - flash-attn pipeline tests
 - flash-attn bf16 TT-Sim direct runtime tests
+  for the admitted/gated runtime surface
 - copy runtime tests
 - GEMM guard tests
 - existing TTProgram / ExecutableSpec validator tests
@@ -576,6 +646,22 @@ runtime / codegen
   helper wrapper
   carrying compute semantics
 
+本次收口验证
+（`2026-04-27`）：
+
+- `cmake --build build -j32`
+- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_gemm.py`
+  -> `197 passed, 25 skipped, 1 xfailed`
+- TT-Sim:
+  `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`
+  -> `15 passed, 5 skipped`
+- TT-Sim:
+  `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`
+  -> `13 passed`
+- cleanup scan over `tilelang_repo`
+  for deleted downstream matcher/generator/composite names
+  -> no matches
+
 ## 9. 完成判据
 
 本 lane 完成时必须同时满足：
@@ -588,7 +674,7 @@ runtime / codegen
 - `operation_name`
   只使用 TT-Metal leaf API 粒度
 - P2.2/P2.3 late scalar-loop idiom matcher
-  被删除或降级为 unreachable debug guard
+  被删除
 - runtime / codegen
   不从 scalar expression
   恢复 compute semantics

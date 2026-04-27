@@ -200,6 +200,16 @@ int64_t GetLogicalRowWidth(
   return -1;
 }
 
+int64_t GetLogicalRowWidth(
+    const std::string& buffer_name,
+    const std::unordered_map<std::string, std::vector<int64_t>>& logical_buffer_shapes) {
+  auto it = logical_buffer_shapes.find(buffer_name);
+  if (it == logical_buffer_shapes.end() || it->second.empty()) {
+    return -1;
+  }
+  return it->second.back();
+}
+
 bool IsTrackedStateScope(const std::string& scope) {
   return scope == "local" || scope == "local.fragment" || scope == "blackhole.acc";
 }
@@ -528,6 +538,26 @@ bool MatchDirectFragmentCastTarget(const tir::ForNode* op, tir::Buffer* src_buff
   *src_buffer = load->buffer;
   *dst_buffer = inner_store->buffer;
   return true;
+}
+
+bool MatchExplicitFragmentCastTarget(const tir::CallNode* op, tir::Buffer* src_buffer,
+                                     tir::Buffer* dst_buffer) {
+  if (!op || !src_buffer || !dst_buffer || !op->op->IsInstance<OpNode>()) {
+    return false;
+  }
+  const Op call_op = Downcast<Op>(op->op);
+  if (call_op->name != blackhole_tile_compute_schema::kOpName || op->args.size() < 4U) {
+    return false;
+  }
+  const auto* operation = op->args[0].as<StringImmNode>();
+  if (!operation || operation->value != blackhole_tile_compute_schema::kTypecastTile ||
+      !IsBufferLikeExpr(op->args[1]) || !IsBufferLikeExpr(op->args[2])) {
+    return false;
+  }
+  *src_buffer = NormalizeToBufferRegion(op->args[1])->buffer;
+  *dst_buffer = NormalizeToBufferRegion(op->args[2])->buffer;
+  return src_buffer->defined() && dst_buffer->defined() &&
+         !SameBufferIdentity(*src_buffer, *dst_buffer);
 }
 
 std::vector<tir::Stmt> CollectMaterializationOrderedStmts(const tir::Stmt& root) {
@@ -873,16 +903,8 @@ void AppendUniqueCastDrivenBufferMaterializationFactsFromBody(
     materialization_facts->push_back(fact);
   };
 
-  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
-    const auto* loop = node.as<tir::ForNode>();
-    if (!loop) {
-      return;
-    }
-    tir::Buffer src_buffer;
-    tir::Buffer dst_buffer;
-    if (!MatchDirectFragmentCastTarget(loop, &src_buffer, &dst_buffer)) {
-      return;
-    }
+  auto maybe_append_cast_fact = [&](const tir::Buffer& src_buffer,
+                                    const tir::Buffer& dst_buffer) {
     const std::string src_name = BufferIdentityName(src_buffer);
     const std::string dst_name = BufferIdentityName(dst_buffer);
     auto flow_it = flow_by_buffer.find(dst_name);
@@ -914,7 +936,117 @@ void AppendUniqueCastDrivenBufferMaterializationFactsFromBody(
     }
     upsert(MakeRepublishedLogicalTileMaterializationFact(
         dst_name, flow_fact.scope, src_name, logical_row_width, logical_element_count));
+  };
+
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    tir::Buffer src_buffer;
+    tir::Buffer dst_buffer;
+    if (const auto* loop = node.as<tir::ForNode>()) {
+      if (MatchDirectFragmentCastTarget(loop, &src_buffer, &dst_buffer)) {
+        maybe_append_cast_fact(src_buffer, dst_buffer);
+      }
+      return;
+    }
+    if (const auto* call = node.as<tir::CallNode>()) {
+      if (MatchExplicitFragmentCastTarget(call, &src_buffer, &dst_buffer)) {
+        maybe_append_cast_fact(src_buffer, dst_buffer);
+      }
+    }
   });
+}
+
+std::unordered_map<std::string, std::string> CollectBufferScopesFromBody(const tir::Stmt& body) {
+  std::unordered_map<std::string, std::string> scopes;
+  auto remember = [&](const tir::Buffer& buffer) {
+    const std::string name = BufferIdentityName(buffer);
+    if (!name.empty() && scopes.find(name) == scopes.end()) {
+      scopes.emplace(name, std::string(buffer.scope()));
+    }
+  };
+  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
+    if (const auto* store = node.as<tir::BufferStoreNode>()) {
+      remember(store->buffer);
+      return;
+    }
+    if (const auto* load = node.as<tir::BufferLoadNode>()) {
+      remember(load->buffer);
+      return;
+    }
+    if (const auto* decl = node.as<tir::DeclBufferNode>()) {
+      remember(decl->buffer);
+      return;
+    }
+    if (const auto* block = node.as<tir::BlockNode>()) {
+      for (const tir::Buffer& buffer : block->alloc_buffers) {
+        remember(buffer);
+      }
+      return;
+    }
+    const auto* call = node.as<tir::CallNode>();
+    if (!call) {
+      return;
+    }
+    TileOperator tile_op = ParseOperator(GetRef<tir::Call>(call));
+    if (tile_op.defined()) {
+      for (const DataflowAccessInfo& access : tile_op->GetDataflowAccessInfo()) {
+        remember(access.buffer);
+      }
+    }
+    for (const PrimExpr& arg : call->args) {
+      if (IsBufferLikeExpr(arg)) {
+        remember(NormalizeToBufferRegion(arg)->buffer);
+      }
+    }
+  });
+  return scopes;
+}
+
+void AppendUniqueSpatialPlanMaterializationFacts(
+    const SpatialPlan& plan, const std::unordered_map<std::string, std::string>& scope_by_buffer,
+    const std::unordered_map<std::string, std::vector<int64_t>>& logical_buffer_shapes,
+    std::vector<BlackholeBufferMaterializationFact>* materialization_facts) {
+  std::unordered_map<std::string, std::string> subject_by_live_value;
+  for (const LiveValue& live_value : plan->live_values) {
+    const std::string name = str(live_value->name);
+    const std::string subject = str(live_value->subject);
+    if (!name.empty() && !subject.empty()) {
+      subject_by_live_value.emplace(name, subject);
+    }
+  }
+  auto upsert = [&](const BlackholeBufferMaterializationFact& fact) {
+    const std::string key = fact.target_buffer + "|" + fact.scope;
+    for (BlackholeBufferMaterializationFact& existing : *materialization_facts) {
+      const std::string existing_key = existing.target_buffer + "|" + existing.scope;
+      if (existing_key == key) {
+        existing = fact;
+        return;
+      }
+    }
+    materialization_facts->push_back(fact);
+  };
+  for (const MaterializationBoundary& boundary : plan->materialization_boundaries) {
+    auto source_it = subject_by_live_value.find(str(boundary->source_live_value));
+    auto target_it = subject_by_live_value.find(str(boundary->target_live_value));
+    if (source_it == subject_by_live_value.end() ||
+        target_it == subject_by_live_value.end() ||
+        source_it->second == target_it->second) {
+      continue;
+    }
+    auto scope_it = scope_by_buffer.find(target_it->second);
+    if (scope_it == scope_by_buffer.end() || !IsTrackedStateScope(scope_it->second)) {
+      continue;
+    }
+    int64_t logical_row_width = GetLogicalRowWidth(source_it->second, logical_buffer_shapes);
+    if (logical_row_width <= 0) {
+      logical_row_width = GetLogicalRowWidth(target_it->second, logical_buffer_shapes);
+    }
+    int64_t logical_element_count =
+        std::max(GetLogicalElementCount(source_it->second, logical_buffer_shapes),
+                 GetLogicalElementCount(target_it->second, logical_buffer_shapes));
+    upsert(MakeRepublishedLogicalTileMaterializationFact(
+        target_it->second, scope_it->second, source_it->second, logical_row_width,
+        logical_element_count));
+  }
 }
 
 std::vector<BlackholeBufferMaterializationFact> CollectBufferMaterializationFactsFromBody(
@@ -959,9 +1091,14 @@ BlackholeLoweringSupportFacts CollectBlackholeLoweringSupportFactsImpl(const tir
   std::vector<BlackholeBufferFlowFact> flow_facts = CollectBufferFlowFactsFromBody(func->body);
   std::vector<BlackholeBufferMaterializationFact> materialization_facts =
       CollectBufferMaterializationFactsFromBody(func, analysis.recurrence_subjects);
+  const std::unordered_map<std::string, std::vector<int64_t>> logical_buffer_shapes =
+      BuildLogicalBufferShapes(func);
   AppendUniqueBufferMaterializationFactsFromFlowFacts(flow_facts, &materialization_facts);
   AppendUniqueCastDrivenBufferMaterializationFactsFromBody(
-      func->body, flow_facts, BuildLogicalBufferShapes(func), &materialization_facts);
+      func->body, flow_facts, logical_buffer_shapes, &materialization_facts);
+  AppendUniqueSpatialPlanMaterializationFacts(
+      plan, CollectBufferScopesFromBody(func->body), logical_buffer_shapes,
+      &materialization_facts);
   if (!materialization_facts.empty()) {
     analysis.facts.buffer_materialization_facts = std::move(materialization_facts);
   }

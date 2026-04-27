@@ -9,15 +9,14 @@
 - Date: `2026-04-27`
 - Active lane: `Blackhole tile-compute preservation design`
 - Current item:
-  `2026-04-27 Phase A reduce preservation implemented; next tile-compute preservation work is Phase B unary/binary/broadcast upstream normalization`
+  `2026-04-27 Blackhole tile-compute preservation implemented; active code path uses explicit tile compute semantics and TT-Metal leaf compute ops`
 - Blocker:
-  No P2 blocker remains for the admitted bf16 flash-attn direct-runtime
-  surface.  Phase A removed active row-reduction scalar-loop recovery from
-  the production lowering path by preserving `tl.tileop.reduce` upstream and
-  selecting `reduce_tile` from explicit tile semantics.  The remaining
-  architectural blocker is that P2.2/P2.3 still rely on late scalar-loop
-  idiom recovery for unary/binary/broadcast/copy/pack/tilize/untilize
-  TT-Metal API-grain compute semantics.
+  No blocker remains for Blackhole tile-compute preservation itself.
+  Active lowering no longer recovers row-reduction / broadcast /
+  exp2-affine / scalar-fma / fill / copy / typecast compute semantics
+  from downstream scalar-loop matcher families.  Multi-block flash-attn
+  direct-runtime correctness remains outside the admitted runtime surface
+  and fails closed through the direct-runtime unsupported-reason gate.
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -47,7 +46,8 @@
 - `P1/P2 non-GEMM exact compute op typed expansion`: completed
 - `P2.1 flash-attn exact row-reduction source-live truth`: completed
 - `P2.2 flash-attn bf16 direct-runtime admission`: completed
-- `P2.3 seq64 exact CB-republish live-form admission`: completed
+- `P2.3 seq64 exact CB-republish compile/source/spec admission`: completed
+- `Blackhole tile-compute preservation`: completed
 
 ## Current Support Boundary
 
@@ -69,33 +69,34 @@
   Runtime execution remains unit mesh / replicated `MeshBuffer` subset;
   full multi-device / sharded / fabric collective runtime is not admitted.
 - Flash-attn compile/source/spec baseline is stable.
-  The admitted bf16 direct-runtime subset now covers:
+  The admitted bf16 direct-runtime subset covers:
   small single-work-item flash-attn,
-  32x32 MHA / GQA,
-  and seq64 / multi-K-step MHA / GQA shapes.
+  and 32x32 MHA / GQA.
   The path uses typed exact CB live-form,
   BF16 exact CB physical storage,
   bcast-cols row scalar semantics,
   non-mailbox `copy_tile` / `pack_tile` publication,
   per-event one-page exact CB republish,
   and ABI order `Q, K, V, Output`.
+  Seq64 / multi-K-step MHA and GQA compile/source/spec lowering is stable,
+  but direct-runtime correctness is not admitted; the runtime gate reports
+  `multi-block exact CB-republish flash-attention direct runtime correctness`
+  for that shape family.
   Larger stage2/block64 shapes that require a multi-page exact CB
   publish/consume event still fail closed with
   `multi-page exact CB-republish live-form`.
 
 ## Open Debt
 
-- P2.2/P2.3 admitted flash-attn through late TIR idiom recovery in
-  `lower_blackhole_ops.cc`.
-  Phase A has moved row reduction to preserved `tl.tileop.reduce` and
-  downgraded the scalar row-reduction matchers to residual fail-closed
-  diagnostics.  The remaining path still recovers broadcast, exp2 affine,
-  scalar max/fma/copy/fill/cast shapes after generic scalar lowering.
-  Those must be replaced by upstream preservation / normalization of
-  TT-Metal API-grain tile compute semantics in `Normalized Tile TIR`.
-  Composite/workload helper names such as `softmax`, `exp2_affine`,
-  `row_broadcast_exp2_affine`, or `scalar_exp2_affine` must not become
-  production compute op grain.
+- `lower_blackhole_ops.cc` still owns several adjacent responsibilities
+  (tile compute selection, exact-CB materialization planning, ABI planning,
+  and source-emission support).  The active scalar-loop compute recovery
+  families are deleted, but file split / responsibility shrink remains
+  future cleanup.
+- Multi-block flash-attn direct-runtime correctness needs a separate
+  online-softmax live-form admission.  Do not reopen it by bypassing the
+  runtime gate; admit it only after typed source-live-form and event
+  lifetime evidence is verified under TT-Sim.
 - Larger flash-attn stage2/block64 shapes still need a wider exact-CB
   live-form admission for single events that publish/consume multiple pages.
   That expansion must continue through typed
@@ -106,32 +107,25 @@
 
 ## Next Task Order
 
-1. `Blackhole tile-compute preservation`
-   - Implement
-     `tasks/dev_design/2026-04-27-blackhole-tile-compute-preservation.md`.
-   - Phase A reduce preservation is implemented:
-     Blackhole `LowerTileOp` preserves `tl.tileop.reduce`,
-     `ReduceOpNode` carries dataflow access truth,
-     `SelectBlackholeTTMetalBuiltins` emits typed `reduce_tile`,
-     and active scalar row-reduction lowering has been removed.
-   - Next: Phase B unary / binary / broadcast preservation.
-     Move those TT-Metal API-grain semantics upstream into
-     `Normalized Tile TIR` preservation / normalization before destructive
-     scalar expansion.
-   - Continue deleting or making unreachable the P2.2/P2.3 late scalar-loop
-     idiom recovery path as each compute family is migrated.
-   - Scope is generic:
-     matmul / reduce / unary / binary / broadcast / copy / pack /
-     tilize / untilize,
-     not reduce-only and not flash-attn-specific.
+1. `Post-preservation file split / responsibility shrink`
+   - Split the remaining `lower_blackhole_ops.cc` responsibilities around
+     explicit tile compute selection, exact-CB materialization planning,
+     ABI planning, and source-emission support.
+   - Keep `TTComputeOpPlan.operation_name` and `KernelSpec.compute_ops`
+     at TT-Metal leaf API granularity.
 
-2. `P3 mesh/distributed runtime expansion`
+2. `Multi-block flash-attn direct-runtime admission`
+   - Re-admit seq64 / multi-K-step direct runtime only after the
+     online-softmax live-form contract is represented and verified through
+     typed `TTProgram -> ExecutableSpec` state.
+
+3. `P3 mesh/distributed runtime expansion`
    - Treat this as a later runtime admission lane.
    - Reuse `TTMeshPlan` / `TTBufferDistributionPlan` schema.
    - Add real sharded / multi-device / fabric semantics only through typed
      schema and validator extensions.
 
-3. Post-P2 flash-attn wider-shape support
+4. Post-P2 flash-attn wider-shape support
    - Admit larger stage2/block64 shapes only after the exact CB
      multi-page event contract is represented and validated through
      `TTProgram -> ExecutableSpec`.
@@ -160,8 +154,8 @@
      and GQA
      `(batch=1, heads=64, seq_len=4096, dim=128, groups=16,
        block_M=128, block_N=128)`.
-   - Do not treat seq64 as the wider-shape target; it is only the P2.3
-     multi-K-step admission smoke gate.
+   - Do not treat seq64 as the wider-shape target; it is the next
+     multi-K-step direct-runtime admission gate.
    - Keep helper/composite exact-op names out of
      `TTComputeOpPlan.operation_name`,
      `ExecutableSpec.compute_ops`,
@@ -173,116 +167,17 @@
 
 ## Latest Verification
 
-Blackhole tile-compute preservation Phase A:
+Blackhole tile-compute preservation:
 
 - `cmake --build build -j32`
-- transform structural suite:
-  `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
-  -> `32 passed`
-- flash-attn pipeline:
-  `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
-  -> `67 passed`
-- flash-attn runtime metadata/source/direct-runtime file under TT-Sim env:
+- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_gemm.py`
+  -> `197 passed, 25 skipped, 1 xfailed`
+- TT-Sim:
   `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`
-  -> `20 passed`
-- targeted regression:
-  preserved reduce survives frontend as `tl.tileop.reduce`,
-  selector lowers it to `reduce_tile`,
-  `SpatialPlan` records preserved reduce as a compute producer,
-  and the small bf16 compute source remains free of
-  `tilelang_cb_write_ptr_bytes_direct` /
-  `get_local_cb_interface`.
-
-P2.3 flash-attn multi-K exact CB-republish closeout:
-
-- `cmake --build build -j32`
-- flash-attn pipeline:
-  `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
-  -> `67 passed`
-- flash-attn runtime metadata/source/direct-runtime file under TT-Sim env:
-  `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`
-  -> `20 passed`
-- copy direct-runtime file under TT-Sim env:
+  -> `15 passed, 5 skipped`
+- TT-Sim:
   `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`
   -> `13 passed`
-- GEMM direct-runtime guard cases under TT-Sim env:
-  richer compute config,
-  clear-accum-false cast consumer,
-  fragment-fill cast publish,
-  transpose-A typed compute schema
-  -> `4 passed`
-- Production source cleanup scan:
-  no `tl.blackhole.*` helper/composite builtin names,
-  no `HelperCompositeBlackholeBuiltin`,
-  no debug pack hang hooks,
-  and no `live_reload_cast` residue under `tilelang_repo/src`.
-
-P2 flash-attn admission probe:
-
-- `cmake --build build -j32`
-- small bf16 MHA metadata probe: unsupported reason remains queryable for
-  `thread-distributed cb_republish materialization`
-- temporary gate-bypass probe: internal `acc_s_cast` materialization has empty
-  `host_buffer`; after bypassing the host-buffer check for probe only, TT-Sim
-  fails at `UnimplementedFunctionality: t_tile_mmio_wr32`
-- probe changes were reverted and `cmake --build build -j32` rebuilt the clean
-  gated path
-
-P2 flash-attn typed materialization gate restore:
-
-- `cmake --build build -j32`
-- flash-attn typed gate regression: `8 passed`
-- flash-attn source/codegen targeted regression: `5 passed`
-- TT-Sim flash-attn gate check: `1 passed, 1 skipped`
-- flash-attn runtime metadata file under TT-Sim env: `9 passed, 5 skipped`
-- flash-attn pipeline: `66 passed`
-
-P2 flash-attn non-mailbox publication checkpoint:
-
-- `cmake --build build -j32`
-- targeted flash-attn metadata/source/direct-runtime gate:
-  `7 passed, 1 skipped`
-- full flash-attn runtime metadata file under TT-Sim env:
-  `10 passed, 5 skipped`
-- exploratory gate-open probe reached TT-Sim execution and failed at
-  `UnsupportedFunctionality: tensix_execute_gmpool: src_b_val=0x0 must be 1.0f`;
-  source inspection showed the first exact row-reduction still materializes its
-  source from a synthetic zero fill rather than the upstream matmul CB-live
-  value. The direct runtime gate is therefore intentionally still closed.
-
-P2.1 flash-attn exact row-reduction source-live truth:
-
-- `cmake --build build -j32`
-- new regression:
-  `pytest testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py::test_blackhole_flash_attention_first_row_reduction_consumes_matmul_live_form -q`
-  -> `1 passed`
-- full P2.1 runtime metadata/source/gate file:
-  `pytest testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py -q`
-  -> `11 passed, 5 skipped`
-- exploratory full flash-attn pipeline suite was not used as the P2.1 gate:
-  it currently contains pre-non-mailbox source expectations such as requiring
-  `tilelang_get_cb_write_ptr_bytes` to appear, while the current P2 source gate
-  requires that mailbox path to be absent. Representative large-shape pipeline
-  tests also still fail on the existing optimized-path L1/admission surface.
-  Those belong to later pipeline cleanup / `P2.3` support-surface expansion,
-  not to the completed small bf16 row-reduction source-live fix.
-
-P2.2 flash-attn bf16 direct-runtime admission:
-
-- `cmake --build build -j32`
-- flash-attn runtime metadata/source/direct-runtime file under TT-Sim env:
-  `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`
-  -> `14 passed, 5 skipped`
-- flash-attn pipeline file under TT-Sim env:
-  `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
-  -> `66 passed`
-- GEMM direct-runtime guard cases under TT-Sim env:
-  richer compute config, clear-accum-false cast consumer,
-  fragment-fill cast publish, transpose-A/B typed compute schema
-  -> `4 passed`
-- copy direct-runtime file under TT-Sim env:
-  `pytest -q testing/python/target/blackhole/test_blackhole_copy_runtime.py`
-  -> `13 passed`
-- The admitted subset is bf16 single-page exact CB-republish.
-  Seq64 / multi-K-step cases remain intentionally skipped by queryable
-  `multi-page exact CB-republish live-form` unsupported reasons.
+- cleanup scan:
+  `rg -n "GenerateScalar|GenerateRowBroadcast|GenerateExp2RowBroadcast|GenerateExplicit|ScalarFma|ScalarExp2|Exp2RowBroadcast|RowBroadcastMatch|ScalarMaxMatch|ScalarFragmentCopyMatch|FragmentFillMatch|MatchScalar|MatchGrouped|MatchDirectRow|MatchDirectFragmentFill|MatchScalarFragmentFillStore|scalar_exp2|scalar_fma|exp2_affine|row_bcast|row_broadcast_affine|scalar_affine|RejectLegacyScalar" tilelang_repo -S`
+  -> no matches

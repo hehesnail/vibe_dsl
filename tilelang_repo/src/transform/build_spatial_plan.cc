@@ -21,6 +21,7 @@
 
 #include "../op/operator.h"
 #include "../op/region.h"
+#include "../op/utils.h"
 #include "common/blackhole_utils.h"
 #include "common/buffer_tile_bridge_spec_utils.h"
 #include "common/spatial_analysis.h"
@@ -265,7 +266,46 @@ class StatementAccessAnalyzer : public tir::StmtExprVisitor {
         }
       }
     }
+    RecordBlackholeTileComputeValueFlows(op);
     tir::StmtExprVisitor::VisitExpr_(op);
+  }
+
+  void RecordBlackholeTileComputeValueFlows(const tir::CallNode* op) {
+    if (!op || !op->op->IsInstance<OpNode>()) {
+      return;
+    }
+    const Op call_op = Downcast<Op>(op->op);
+    if (call_op->name != blackhole_tile_compute_schema::kOpName ||
+        op->args.size() < 3U) {
+      return;
+    }
+    const auto* operation = op->args[0].as<StringImmNode>();
+    if (!operation) {
+      return;
+    }
+    const std::string op_name = operation->value;
+    const bool is_value_transfer =
+        op_name == blackhole_tile_compute_schema::kCopyTile ||
+        op_name == blackhole_tile_compute_schema::kTypecastTile;
+    if (!is_value_transfer || !IsBufferLikeExpr(op->args[1]) ||
+        !IsBufferLikeExpr(op->args[2])) {
+      return;
+    }
+    const tir::Buffer src = NormalizeToBufferRegion(op->args[1])->buffer;
+    const tir::Buffer dst = NormalizeToBufferRegion(op->args[2])->buffer;
+    const std::string source_name = BufferIdentityName(src);
+    const std::string target_name = BufferIdentityName(dst);
+    const std::string source_scope = GetBufferScope(src);
+    const std::string target_scope = GetBufferScope(dst);
+    if (source_name.empty() || target_name.empty() || source_name == target_name ||
+        source_scope.empty() || target_scope.empty() || source_scope == "global" ||
+        target_scope == "global") {
+      return;
+    }
+    AppendUniqueValueFlow(
+        &summary_.local_value_flows,
+        LocalValueFlow{source_name, target_name,
+                       op_name == blackhole_tile_compute_schema::kTypecastTile});
   }
 
   void RecordLocalValueFlows(const tir::BufferStoreNode* op) {
@@ -672,6 +712,60 @@ class LogicalTileLayoutCollector : public tir::StmtExprVisitor {
     layout_by_buffer_.emplace(buffer_name, std::move(info));
   }
 
+  void RecordExplicitReduceOutput(const tir::CallNode* op) {
+    if (!op || !op->op->IsInstance<OpNode>()) {
+      return;
+    }
+    const Op call_op = Downcast<Op>(op->op);
+    if (call_op->name != "tl.tileop.reduce" || op->args.size() < 4U ||
+        !IsBufferLikeExpr(op->args[0]) || !IsBufferLikeExpr(op->args[1])) {
+      return;
+    }
+    const tir::BufferRegion src_region = NormalizeToBufferRegion(op->args[0]);
+    const tir::BufferRegion dst_region = NormalizeToBufferRegion(op->args[1]);
+    const std::string src_name = BufferIdentityName(src_region->buffer);
+    const std::string dst_name = BufferIdentityName(dst_region->buffer);
+    if (src_name.empty() || dst_name.empty() || layout_by_buffer_.count(dst_name)) {
+      return;
+    }
+    auto source_layout_it = layout_by_buffer_.find(src_name);
+    if (source_layout_it == layout_by_buffer_.end() ||
+        source_layout_it->second.logical_shape.empty()) {
+      return;
+    }
+
+    LogicalTileLayoutInfo info;
+    for (const Range& range : dst_region->region) {
+      info.logical_shape.push_back(range->extent);
+    }
+    if (info.logical_shape.empty()) {
+      return;
+    }
+    info.local_shape.push_back(IntImm(DataType::Int(32), 1));
+    info.thread_extent = source_layout_it->second.thread_extent;
+    info.replicate_extent = source_layout_it->second.replicate_extent;
+    info.inverse_logical_index_vars =
+        source_layout_it->second.inverse_logical_index_vars;
+
+    int64_t reduced_dim = -1;
+    if (const auto* dim_imm = op->args[3].as<IntImmNode>()) {
+      reduced_dim = dim_imm->value;
+    }
+    if (reduced_dim < 0) {
+      reduced_dim += static_cast<int64_t>(
+          source_layout_it->second.logical_shape.size());
+    }
+    const Array<PrimExpr>& source_inverse_exprs =
+        source_layout_it->second.inverse_logical_index_exprs;
+    for (int64_t i = 0; i < static_cast<int64_t>(source_inverse_exprs.size()); ++i) {
+      if (i == reduced_dim) {
+        continue;
+      }
+      info.inverse_logical_index_exprs.push_back(source_inverse_exprs[i]);
+    }
+    layout_by_buffer_.emplace(dst_name, std::move(info));
+  }
+
   void VisitStmt_(const tir::BlockNode* op) final {
     if (op->annotations.count(attr::kLayoutMap)) {
       if (auto layout_map_any = op->annotations.Get(attr::kLayoutMap)) {
@@ -684,6 +778,11 @@ class LogicalTileLayoutCollector : public tir::StmtExprVisitor {
       }
     }
     tir::StmtExprVisitor::VisitStmt_(op);
+  }
+
+  void VisitExpr_(const tir::CallNode* op) final {
+    RecordExplicitReduceOutput(op);
+    tir::StmtExprVisitor::VisitExpr_(op);
   }
 
   std::unordered_map<std::string, LogicalTileLayoutInfo> layout_by_buffer_;
@@ -880,6 +979,51 @@ Array<LayoutSpec> MergePriorTypedLayoutSpecs(const tir::PrimFunc& func,
         tile_layout.inverse_logical_index_exprs, layout->anchors));
   }
   return merged_layout_specs;
+}
+
+Array<LayoutSpec> PropagateLocalValueFlowLayoutSpecs(
+    const Array<LayoutSpec>& layout_specs,
+    const std::vector<ClosureCandidateInfo>& candidates) {
+  std::unordered_map<std::string, LogicalTileLayoutInfo> layout_by_subject;
+  for (const LayoutSpec& layout : layout_specs) {
+    layout_by_subject.emplace(str(layout->subject), LogicalTileLayoutInfoFromLayoutSpec(layout));
+  }
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const ClosureCandidateInfo& candidate : candidates) {
+      for (const LocalValueFlow& flow : candidate.local_value_flows) {
+        auto source_it = layout_by_subject.find(flow.source);
+        auto target_it = layout_by_subject.find(flow.target);
+        if (source_it == layout_by_subject.end() || target_it == layout_by_subject.end()) {
+          continue;
+        }
+        if (source_it->second.logical_shape.empty() ||
+            !target_it->second.logical_shape.empty()) {
+          continue;
+        }
+        target_it->second = source_it->second;
+        changed = true;
+      }
+    }
+  }
+
+  Array<LayoutSpec> propagated;
+  for (const LayoutSpec& layout : layout_specs) {
+    LogicalTileLayoutInfo tile_layout = LogicalTileLayoutInfoFromLayoutSpec(layout);
+    auto propagated_it = layout_by_subject.find(str(layout->subject));
+    if (tile_layout.logical_shape.empty() && propagated_it != layout_by_subject.end()) {
+      tile_layout = propagated_it->second;
+    }
+    propagated.push_back(LayoutSpec(
+        layout->name, layout->subject, layout->scope, layout->distribution_kind,
+        layout->unit_names, layout->unit_indices, layout->virtual_device_axes,
+        tile_layout.logical_shape, tile_layout.local_shape, tile_layout.thread_extent,
+        tile_layout.replicate_extent, tile_layout.inverse_logical_index_vars,
+        tile_layout.inverse_logical_index_exprs, layout->anchors));
+  }
+  return propagated;
 }
 
 std::string DeriveLiveValueRole(const BufferMetadata* metadata) {
@@ -1130,7 +1274,9 @@ SpatialPlan BuildSpatialPlanForFunc(const std::string& member_func, const tir::P
   const Array<DataflowEdge> dataflow_edges =
       ConcatDataflowEdges(closure_dataflow_edges, local_value_flow_edges.dataflow_edges);
   const Array<LayoutSpec> layout_specs =
-      MergePriorTypedLayoutSpecs(func, BuildLayoutSpecs(func, execution_units));
+      PropagateLocalValueFlowLayoutSpecs(
+          MergePriorTypedLayoutSpecs(func, BuildLayoutSpecs(func, execution_units)),
+          candidates);
   const Array<PhasePlan> phase_plans =
       BuildPhasePlans(execution_units, dataflow_edges, unit_phases);
   BufferMetadataCollector metadata_collector;

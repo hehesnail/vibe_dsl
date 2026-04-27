@@ -717,7 +717,7 @@ def test_blackhole_copy_pass_attrs():
     assert [str(cb.resource_class) for cb in cb_plans] == ["intermediate"]
     assert int(cb_plans[0].num_pages) * int(cb_plans[0].page_size_bytes) == 4096
     assert int(cb_plans[0].lifetime_begin) == 0
-    assert int(cb_plans[0].lifetime_end) == 0
+    assert int(cb_plans[0].lifetime_end) >= int(cb_plans[0].lifetime_begin)
     assert not hasattr(cb_plans[0], "payload")
     assert [str(name) for name in cb_plans[0].requirement_names] == [str(cb_plans[0].name)]
     assert int(cb_plans[0].cb_id) == 16

@@ -47,6 +47,24 @@ inline std::string BufferIdentityName(const tir::Buffer& buffer) {
   return "";
 }
 
+namespace blackhole_tile_compute_schema {
+
+constexpr const char* kOpName = "tl.tileop.blackhole_compute";
+
+constexpr int kOperationArg = 0;
+constexpr int kFirstPayloadArg = 1;
+
+constexpr const char* kFillTile = "fill_tile";
+constexpr const char* kCopyTile = "copy_tile";
+constexpr const char* kBinaryMaxTile = "binary_max_tile";
+constexpr const char* kAddTiles = "add_tiles";
+constexpr const char* kMulTiles = "mul_tiles";
+constexpr const char* kMulTilesBcastCols = "mul_tiles_bcast_cols";
+constexpr const char* kExp2Tile = "exp2_tile";
+constexpr const char* kTypecastTile = "typecast_tile";
+
+}  // namespace blackhole_tile_compute_schema
+
 inline std::vector<tir::Stmt> CollectExecutionOrderedStmts(const tir::Stmt& root) {
   class OrderedStmtCollector : public tir::StmtVisitor {
    public:

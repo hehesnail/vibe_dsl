@@ -34,27 +34,20 @@ from common import (
 )
 
 
-HELPER_COMPOSITE_BLACKHOLE_BUILTINS = (
-    "reduce_row",
-    "mul_row_bcast",
-    "mul_grouped_row_bcast",
-    "div_row_bcast",
-    "div_grouped_row_bcast",
-    "exp2_row_bcast_affine",
-    "exp2_grouped_row_bcast_affine",
-    "scalar_max",
-    "scalar_exp2_affine",
-    "copy_tile_from_cb",
-)
-
-LEGACY_LOCAL_BLACKHOLE_BUILTINS = (
-    "binary_max_tile_local",
-    "reduce_rows_local",
-    "mul_tiles_bcast_rows_local",
-    "div_tiles_bcast_rows_local",
-    "exp_tiles_bcast_rows_affine_local",
-    "exp_tile_affine_local",
-)
+BLACKHOLE_TILE_COMPUTE_LEAF_OPS = {
+    "fill_tile",
+    "copy_tile",
+    "binary_max_tile",
+    "add_tiles",
+    "mul_tiles",
+    "mul_tiles_bcast_cols",
+    "add_tiles_bcast_cols",
+    "exp2_tile",
+    "typecast_tile",
+    "reduce_tile",
+    "pack_tile",
+    "recip_tile",
+}
 
 
 def _collect_blackhole_builtin_names(node):
@@ -97,6 +90,21 @@ def _collect_call_op_names(node):
     body = node.body if hasattr(node, "body") else node
     tvm.tir.stmt_functor.post_order_visit(body, visit)
     return names
+
+
+def _collect_blackhole_tile_compute_operations(node):
+    operations = set()
+
+    def visit(expr):
+        if isinstance(expr, tvm.tir.Call):
+            op = expr.op
+            if hasattr(op, "name") and op.name == "tl.tileop.blackhole_compute":
+                if expr.args and isinstance(expr.args[0], tvm.tir.StringImm):
+                    operations.add(str(expr.args[0].value))
+
+    body = node.body if hasattr(node, "body") else node
+    tvm.tir.stmt_functor.post_order_visit(body, visit)
+    return operations
 
 
 def _row_reduce_sum_kernel():
@@ -456,6 +464,54 @@ def test_blackhole_frontend_preserves_reduce_tileop_before_tt_selection():
     assert "tir.call_extern" not in op_names
 
 
+def test_blackhole_frontend_normalizes_flash_attention_leaf_tile_compute_before_tt_selection():
+    mod = _lower_blackhole_frontend(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    operations = _collect_blackhole_tile_compute_operations(mod["main"])
+
+    assert {
+        "fill_tile",
+        "copy_tile",
+        "binary_max_tile",
+        "add_tiles",
+        "mul_tiles",
+        "mul_tiles_bcast_cols",
+        "exp2_tile",
+        "typecast_tile",
+    }.issubset(operations)
+
+
+def test_blackhole_frontend_tile_compute_normalization_uses_leaf_operations():
+    mod = _lower_blackhole_frontend(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    operations = _collect_blackhole_tile_compute_operations(mod["main"])
+
+    assert operations
+    assert operations <= BLACKHOLE_TILE_COMPUTE_LEAF_OPS
+
+
 def test_spatial_plan_records_preserved_reduce_as_compute_producer():
     mod = _prepare_blackhole_phase_b_module(_row_reduce_sum_kernel())
     plan = mod["main"].attrs["tl.spatial_plan"]
@@ -693,7 +749,7 @@ def test_phase_b_pipeline_records_live_values_without_logical_bridge_attr():
         assert len(spec.inverse_logical_index_exprs) == 3
 
 
-def test_tt_metal_api_granularity_rejects_helper_composite_builtins():
+def test_tt_metal_api_granularity_uses_typed_leaf_plans():
     mod = _prepare_blackhole_tt_program_module(
         mha_example.flashattn.jit_impl.get_tir(
             1,
@@ -712,8 +768,13 @@ def test_tt_metal_api_granularity_rejects_helper_composite_builtins():
     tt_program = main.attrs["tl.tt_program"]
 
     assert not hasattr(tt_program, "payload")
-    for builtin_name in HELPER_COMPOSITE_BLACKHOLE_BUILTINS:
-        assert f"tl.blackhole.{builtin_name}" not in builtin_names
+    assert "tl.blackhole.reduce_tile" in builtin_names
+    assert "tl.blackhole.exp2_tile" in builtin_names
+    assert {
+        str(op.operation_name)
+        for op in tt_program.compute_op_plans
+        if str(op.kind) != "gemm"
+    } <= BLACKHOLE_TILE_COMPUTE_LEAF_OPS
 
 
 def test_tt_metal_builtin_selector_lowers_compute_idioms_before_plan_tt_compute():
@@ -755,11 +816,6 @@ def test_tt_metal_builtin_selector_lowers_compute_idioms_before_plan_tt_compute(
         "exp2_tile",
         "pack_tile",
     }.issubset(builtin_suffixes)
-    assert not any(
-        name.split("tl.blackhole.", 1)[1] in HELPER_COMPOSITE_BLACKHOLE_BUILTINS
-        for name in _collect_blackhole_builtin_names(main)
-    )
-    assert not any(name in LEGACY_LOCAL_BLACKHOLE_BUILTINS for name in builtin_suffixes)
 
 
 def test_tt_metal_builtin_selector_lowers_preserved_reduce_tileop():
