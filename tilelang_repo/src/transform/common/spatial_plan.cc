@@ -90,6 +90,33 @@ DataflowEdge::DataflowEdge(ffi::String name, ffi::String kind, ffi::String produ
   data_ = std::move(n);
 }
 
+AccessRegion::AccessRegion(ffi::String name, ffi::String subject, ffi::String unit_name,
+                           int64_t unit_index, ffi::String access_kind,
+                           ffi::String value_kind, int64_t logical_rank,
+                           ffi::Array<ffi::String> loop_vars,
+                           ffi::Array<PrimExpr> index_exprs,
+                           ffi::Array<PrimExpr> lower_bounds, ffi::Array<PrimExpr> extents,
+                           ffi::Array<PrimExpr> strides, ffi::String coverage_kind,
+                           ffi::String predicate_kind, ffi::Array<TIRAnchor> anchors) {
+  auto n = ffi::make_object<AccessRegionNode>();
+  n->name = std::move(name);
+  n->subject = std::move(subject);
+  n->unit_name = std::move(unit_name);
+  n->unit_index = unit_index;
+  n->access_kind = std::move(access_kind);
+  n->value_kind = std::move(value_kind);
+  n->logical_rank = logical_rank;
+  n->loop_vars = std::move(loop_vars);
+  n->index_exprs = std::move(index_exprs);
+  n->lower_bounds = std::move(lower_bounds);
+  n->extents = std::move(extents);
+  n->strides = std::move(strides);
+  n->coverage_kind = std::move(coverage_kind);
+  n->predicate_kind = std::move(predicate_kind);
+  n->anchors = std::move(anchors);
+  data_ = std::move(n);
+}
+
 LayoutSpec::LayoutSpec(ffi::String name, ffi::String subject, ffi::String scope,
                        ffi::String distribution_kind, ffi::Array<ffi::String> unit_names,
                        ffi::Array<Integer> unit_indices,
@@ -199,6 +226,7 @@ MaterializationBoundary::MaterializationBoundary(
 }
 
 SpatialPlan::SpatialPlan(ffi::String member_func, ffi::Array<ExecutionUnit> execution_units,
+                         ffi::Array<AccessRegion> access_regions,
                          ffi::Array<DataflowEdge> dataflow_edges,
                          ffi::Array<LayoutSpec> layout_specs, ffi::Array<PhasePlan> phase_plans,
                          ffi::Array<LiveValue> live_values,
@@ -209,6 +237,7 @@ SpatialPlan::SpatialPlan(ffi::String member_func, ffi::Array<ExecutionUnit> exec
   auto n = ffi::make_object<SpatialPlanNode>();
   n->member_func = std::move(member_func);
   n->execution_units = std::move(execution_units);
+  n->access_regions = std::move(access_regions);
   n->dataflow_edges = std::move(dataflow_edges);
   n->layout_specs = std::move(layout_specs);
   n->phase_plans = std::move(phase_plans);
@@ -235,6 +264,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   ClosureBoundaryNode::RegisterReflection();
   ValidatedHintSetNode::RegisterReflection();
   ExecutionUnitNode::RegisterReflection();
+  AccessRegionNode::RegisterReflection();
   DataflowEdgeNode::RegisterReflection();
   LayoutSpecNode::RegisterReflection();
   PhasePlanNode::RegisterReflection();
@@ -283,6 +313,21 @@ TVM_FFI_STATIC_INIT_BLOCK() {
         return ExecutionUnit(std::move(name), std::move(formation_basis), std::move(unit_role),
                              std::move(stmt_indices), std::move(read_buffers),
                              std::move(write_buffers), std::move(traits), std::move(anchors));
+      });
+  refl::GlobalDef().def(
+      "tl.AccessRegion",
+      [](ffi::String name, ffi::String subject, ffi::String unit_name, int64_t unit_index,
+         ffi::String access_kind, ffi::String value_kind, int64_t logical_rank,
+         ffi::Array<ffi::String> loop_vars, ffi::Array<PrimExpr> index_exprs,
+         ffi::Array<PrimExpr> lower_bounds, ffi::Array<PrimExpr> extents,
+         ffi::Array<PrimExpr> strides, ffi::String coverage_kind, ffi::String predicate_kind,
+         ffi::Array<TIRAnchor> anchors) {
+        return AccessRegion(std::move(name), std::move(subject), std::move(unit_name),
+                            unit_index, std::move(access_kind), std::move(value_kind),
+                            logical_rank, std::move(loop_vars), std::move(index_exprs),
+                            std::move(lower_bounds), std::move(extents), std::move(strides),
+                            std::move(coverage_kind), std::move(predicate_kind),
+                            std::move(anchors));
       });
   refl::GlobalDef().def(
       "tl.DataflowEdge",
@@ -364,15 +409,16 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef().def(
       "tl.SpatialPlan",
       [](ffi::String member_func, ffi::Array<ExecutionUnit> execution_units,
-         ffi::Array<DataflowEdge> dataflow_edges, ffi::Array<LayoutSpec> layout_specs,
-         ffi::Array<PhasePlan> phase_plans, ffi::Array<LiveValue> live_values,
+         ffi::Array<AccessRegion> access_regions, ffi::Array<DataflowEdge> dataflow_edges,
+         ffi::Array<LayoutSpec> layout_specs, ffi::Array<PhasePlan> phase_plans,
+         ffi::Array<LiveValue> live_values,
          ffi::Array<LiveValueEdge> live_value_edges,
          ffi::Array<MaterializationBoundary> materialization_boundaries,
          ValidatedHintSet validated_hints, ffi::Array<ExecutionClosure> closures,
          ffi::Array<ClosureBoundary> boundaries, ffi::Array<TIRAnchor> anchors) {
         return SpatialPlan(std::move(member_func), std::move(execution_units),
-                           std::move(dataflow_edges), std::move(layout_specs),
-                           std::move(phase_plans), std::move(live_values),
+                           std::move(access_regions), std::move(dataflow_edges),
+                           std::move(layout_specs), std::move(phase_plans), std::move(live_values),
                            std::move(live_value_edges), std::move(materialization_boundaries),
                            std::move(validated_hints), std::move(closures), std::move(boundaries),
                            std::move(anchors));

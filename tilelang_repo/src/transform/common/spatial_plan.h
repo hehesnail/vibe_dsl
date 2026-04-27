@@ -155,6 +155,59 @@ class ExecutionUnit : public ObjectRef {
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(ExecutionUnit, ObjectRef, ExecutionUnitNode);
 };
 
+class AccessRegionNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String subject;
+  ffi::String unit_name;
+  int64_t unit_index = -1;
+  ffi::String access_kind;
+  ffi::String value_kind;
+  int64_t logical_rank = 0;
+  ffi::Array<ffi::String> loop_vars;
+  ffi::Array<PrimExpr> index_exprs;
+  ffi::Array<PrimExpr> lower_bounds;
+  ffi::Array<PrimExpr> extents;
+  ffi::Array<PrimExpr> strides;
+  ffi::String coverage_kind;
+  ffi::String predicate_kind;
+  ffi::Array<TIRAnchor> anchors;
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<AccessRegionNode>()
+        .def_ro("name", &AccessRegionNode::name)
+        .def_ro("subject", &AccessRegionNode::subject)
+        .def_ro("unit_name", &AccessRegionNode::unit_name)
+        .def_ro("unit_index", &AccessRegionNode::unit_index)
+        .def_ro("access_kind", &AccessRegionNode::access_kind)
+        .def_ro("value_kind", &AccessRegionNode::value_kind)
+        .def_ro("logical_rank", &AccessRegionNode::logical_rank)
+        .def_ro("loop_vars", &AccessRegionNode::loop_vars)
+        .def_ro("index_exprs", &AccessRegionNode::index_exprs)
+        .def_ro("lower_bounds", &AccessRegionNode::lower_bounds)
+        .def_ro("extents", &AccessRegionNode::extents)
+        .def_ro("strides", &AccessRegionNode::strides)
+        .def_ro("coverage_kind", &AccessRegionNode::coverage_kind)
+        .def_ro("predicate_kind", &AccessRegionNode::predicate_kind)
+        .def_ro("anchors", &AccessRegionNode::anchors);
+  }
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.AccessRegion", AccessRegionNode, Object);
+};
+
+class AccessRegion : public ObjectRef {
+ public:
+  TVM_DLL AccessRegion(ffi::String name, ffi::String subject, ffi::String unit_name,
+                       int64_t unit_index, ffi::String access_kind, ffi::String value_kind,
+                       int64_t logical_rank, ffi::Array<ffi::String> loop_vars,
+                       ffi::Array<PrimExpr> index_exprs, ffi::Array<PrimExpr> lower_bounds,
+                       ffi::Array<PrimExpr> extents, ffi::Array<PrimExpr> strides,
+                       ffi::String coverage_kind, ffi::String predicate_kind,
+                       ffi::Array<TIRAnchor> anchors);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(AccessRegion, ObjectRef, AccessRegionNode);
+};
+
 class DataflowEdgeNode : public Object {
  public:
   ffi::String name;
@@ -427,6 +480,7 @@ class SpatialPlanNode : public Object {
  public:
   ffi::String member_func;
   ffi::Array<ExecutionUnit> execution_units;
+  ffi::Array<AccessRegion> access_regions;
   ffi::Array<DataflowEdge> dataflow_edges;
   ffi::Array<LayoutSpec> layout_specs;
   ffi::Array<PhasePlan> phase_plans;
@@ -443,6 +497,7 @@ class SpatialPlanNode : public Object {
     refl::ObjectDef<SpatialPlanNode>()
         .def_ro("member_func", &SpatialPlanNode::member_func)
         .def_ro("execution_units", &SpatialPlanNode::execution_units)
+        .def_ro("access_regions", &SpatialPlanNode::access_regions)
         .def_ro("dataflow_edges", &SpatialPlanNode::dataflow_edges)
         .def_ro("layout_specs", &SpatialPlanNode::layout_specs)
         .def_ro("phase_plans", &SpatialPlanNode::phase_plans)
@@ -461,6 +516,7 @@ class SpatialPlanNode : public Object {
 class SpatialPlan : public ObjectRef {
  public:
   TVM_DLL SpatialPlan(ffi::String member_func, ffi::Array<ExecutionUnit> execution_units,
+                      ffi::Array<AccessRegion> access_regions,
                       ffi::Array<DataflowEdge> dataflow_edges, ffi::Array<LayoutSpec> layout_specs,
                       ffi::Array<PhasePlan> phase_plans, ffi::Array<LiveValue> live_values,
                       ffi::Array<LiveValueEdge> live_value_edges,

@@ -210,6 +210,45 @@ def _rebuild_dataflow_edge(
     )
 
 
+def _rebuild_access_region(
+    region,
+    *,
+    name=None,
+    subject=None,
+    unit_name=None,
+    unit_index=None,
+    access_kind=None,
+    value_kind=None,
+    logical_rank=None,
+    loop_vars=None,
+    index_exprs=None,
+    lower_bounds=None,
+    extents=None,
+    strides=None,
+    coverage_kind=None,
+    predicate_kind=None,
+    anchors=None,
+):
+    make_access_region = tvm.get_global_func("tl.AccessRegion")
+    return make_access_region(
+        str(region.name) if name is None else name,
+        str(region.subject) if subject is None else subject,
+        str(region.unit_name) if unit_name is None else unit_name,
+        int(region.unit_index) if unit_index is None else unit_index,
+        str(region.access_kind) if access_kind is None else access_kind,
+        str(region.value_kind) if value_kind is None else value_kind,
+        int(region.logical_rank) if logical_rank is None else logical_rank,
+        list(region.loop_vars) if loop_vars is None else loop_vars,
+        list(region.index_exprs) if index_exprs is None else index_exprs,
+        list(region.lower_bounds) if lower_bounds is None else lower_bounds,
+        list(region.extents) if extents is None else extents,
+        list(region.strides) if strides is None else strides,
+        str(region.coverage_kind) if coverage_kind is None else coverage_kind,
+        str(region.predicate_kind) if predicate_kind is None else predicate_kind,
+        list(region.anchors) if anchors is None else anchors,
+    )
+
+
 def _rebuild_live_value_edge(
     edge,
     *,
@@ -308,6 +347,7 @@ def _rebuild_spatial_plan(
     plan,
     *,
     execution_units=None,
+    access_regions=None,
     dataflow_edges=None,
     layout_specs=None,
     phase_plans=None,
@@ -323,6 +363,7 @@ def _rebuild_spatial_plan(
     return make_spatial_plan(
         str(plan.member_func),
         list(plan.execution_units) if execution_units is None else execution_units,
+        list(plan.access_regions) if access_regions is None else access_regions,
         list(plan.dataflow_edges) if dataflow_edges is None else dataflow_edges,
         list(plan.layout_specs) if layout_specs is None else layout_specs,
         list(plan.phase_plans) if phase_plans is None else phase_plans,
@@ -583,6 +624,36 @@ def test_task1_copy_spatial_plan_emits_flow_boundary_from_tir():
 
     assert len(plan.closures) == len(plan.execution_units)
     assert len(plan.boundaries) == len(plan.dataflow_edges)
+
+
+def test_algorithmic_access_region_covers_copy_unit_reads_and_writes():
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    plan = mod["main"].attrs["tl.spatial_plan"]
+
+    regions = list(plan.access_regions)
+    unit_access_count = sum(
+        len(unit.read_buffers) + len(unit.write_buffers)
+        for unit in plan.execution_units
+    )
+
+    assert len(regions) == unit_access_count
+    assert {str(region.access_kind) for region in regions} == {"read", "write"}
+    assert all(int(region.unit_index) >= 0 for region in regions)
+    assert all(str(region.unit_name) for region in regions)
+    assert all(str(region.subject) for region in regions)
+    assert all(int(region.logical_rank) >= 0 for region in regions)
+    assert all(str(region.coverage_kind) in {"full", "scalar"} for region in regions)
+    assert all(str(region.predicate_kind) == "unconditional" for region in regions)
+
+    by_unit_subject_kind = {
+        (str(region.unit_name), str(region.subject), str(region.access_kind))
+        for region in regions
+    }
+    for unit in plan.execution_units:
+        for subject in unit.read_buffers:
+            assert (str(unit.name), str(subject), "read") in by_unit_subject_kind
+        for subject in unit.write_buffers:
+            assert (str(unit.name), str(subject), "write") in by_unit_subject_kind
 
 
 def test_task1_spatial_plan_exposes_logical_live_value_boundaries():
@@ -1108,6 +1179,18 @@ def test_task1_validate_spatial_plan_rejects_incomplete_dataflow_edge():
     broken = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
     with pytest.raises(Exception, match="DataflowEdge.*subject"):
+        tilelang.transform.ValidateSpatialPlan()(broken)
+
+
+def test_algorithmic_validate_spatial_plan_rejects_missing_access_region():
+    mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
+    main = mod["main"]
+    plan = main.attrs["tl.spatial_plan"]
+    invalid_plan = _rebuild_spatial_plan(plan, access_regions=[])
+    func = main.with_attr("tl.spatial_plan", invalid_plan).without_attr("tl.spatial_plan_validated")
+    broken = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
+
+    with pytest.raises(Exception, match="SpatialPlan access_regions"):
         tilelang.transform.ValidateSpatialPlan()(broken)
 
 

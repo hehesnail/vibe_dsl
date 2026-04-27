@@ -9,15 +9,11 @@
 - Date: `2026-04-28`
 - Active lane: `Blackhole algorithmic generalization implementation queue`
 - Current item:
-  2026-04-28 follow-up task order refreshed after algorithmic
-  generalization design and architecture review.  The design is split into
-  `2026-04-28-blackhole-algorithmic-generalization.md`
-  for `AccessRegion`, graph-backed `SpatialPlan` dependence, and
-  `LiveValueSSA`, plus
-  `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
-  for `TileComputeDAG`, legalization, and TT-Metal leaf pattern covering.
-  The next implementation unit is
-  `Algorithmic generalization Phase A: AccessRegion foundation`.
+  2026-04-28 `Algorithmic generalization Phase A: AccessRegion foundation`
+  completed.  `SpatialPlan` now carries typed `AccessRegion` records
+  built from execution-unit reads/writes and validated for unit/subject/
+  shape coverage.  The next implementation unit is
+  `Algorithmic generalization Phase B: graph-backed SpatialPlan dependence`.
 - Blocker:
   No blocker remains for Blackhole tile-compute preservation itself.
   Active lowering no longer recovers row-reduction / broadcast /
@@ -68,6 +64,7 @@
 - `Blackhole tile compute legalizer / DAG covering design`: completed
 - `Blackhole algorithmic design architecture review`: completed
 - `Blackhole follow-up task queue refresh`: completed
+- `Algorithmic generalization Phase A AccessRegion foundation`: completed
 
 ## Current Support Boundary
 
@@ -130,48 +127,41 @@
   The current schema can express the direction; runtime admission must expand
   through typed `TTProgram -> ExecutableSpec` records, not runtime-only patching.
 - The next refactor lane is now ordered by representation dependency:
-  affine-lite `AccessRegion`, graph-backed `SpatialPlan` dependence,
+  graph-backed `SpatialPlan` dependence,
   `LiveValueSSA`, TT live-form solver, tile compute legalizer / DAG
-  covering, and only then wider runtime admission.  These are
-  design-complete but not implemented.
+  covering, and only then wider runtime admission.  `AccessRegion`
+  foundation is implemented; the remaining items are design-complete
+  but not implemented.
 
 ## Next Task Order
 
-1. `Algorithmic generalization Phase A: AccessRegion foundation`
-   - Add typed `AccessRegion` / affine-lite access analysis and validator
-     coverage.
-   - Keep it inside the existing
-     `Normalized Tile TIR -> SpatialPlan` boundary.
-   - First merge unit should be schema + builder + validator + structure
-     tests only; no TTProgram or source-generation behavior change.
-
-2. `Algorithmic generalization Phase B: graph-backed SpatialPlan dependence`
+1. `Algorithmic generalization Phase B: graph-backed SpatialPlan dependence`
    - Build graph-backed `SpatialPlan` dependence edges from
      `AccessRegion` and tile op dataflow evidence.
    - Replace ad hoc local value-flow edge construction with graph builder
      output and SCC-backed recurrence diagnostics.
 
-3. `Algorithmic generalization Phase C: LiveValueSSA`
+2. `Algorithmic generalization Phase C: LiveValueSSA`
    - Version logical values through `LiveValueSSA`,
      materialization boundaries, phi/join records, and source/target version
      references.
    - Delete any pass-local fallback as soon as the corresponding typed
      version field feeds downstream planning.
 
-4. `Algorithmic generalization Phase D: TT live-form solver`
+3. `Algorithmic generalization Phase D: TT live-form solver`
    - Add the live-form lattice solver and project solver decisions into
      `TTLiveFormPlan`, `TTMaterializationPlan`, and
      `TTConsumerBindingPlan`.
    - Replace exact-CB/source-live-form pass-local maps where the value
      survives across events or phases.
 
-5. `Tile compute legalizer / DAG covering Phase A-B`
+4. `Tile compute legalizer / DAG covering Phase A-B`
    - Add `TileComputeDAG` read-only dump, pattern schema, and legalizer
      diagnostics for current admitted leaf ops.
    - Keep existing source emission active until the legalizer accepts the
      same admitted compute set.
 
-6. `Tile compute legalizer / DAG covering Phase C-E`
+5. `Tile compute legalizer / DAG covering Phase C-E`
    - Add `TileComputeDAG`, legalization actions, TT-Metal leaf pattern
      covering, fanout/materialization-aware covering, and old branch
      deletion for current admitted compute ops.
@@ -179,26 +169,26 @@
    - Do not let covering output become a pass-to-pass DAG payload or
      source-string protocol.
 
-7. `Multi-block flash-attn direct-runtime admission`
+6. `Multi-block flash-attn direct-runtime admission`
    - Re-admit seq64 / multi-K-step direct runtime only after the
      online-softmax live-form contract is represented and verified through
      typed `TTProgram -> ExecutableSpec` state.
    - Correctness gate remains TT-Sim bf16; compile/source/spec stability
      alone is not runtime admission.
 
-8. `Post-P2 flash-attn wider exact-CB event support`
+7. `Post-P2 flash-attn wider exact-CB event support`
    - Admit larger stage2/block64 shapes only after the exact CB
      multi-page event contract is represented and validated through
      `TTProgram -> ExecutableSpec`.
    - Treat this as event-lifetime admission, not a source emitter patch.
 
-9. `P3 mesh/distributed runtime expansion`
+8. `P3 mesh/distributed runtime expansion`
    - Treat this as a deferred runtime admission lane.
    - Reuse `TTMeshPlan` / `TTBufferDistributionPlan` schema.
    - Add real sharded / multi-device / fabric semantics only through typed
      schema and validator extensions.
 
-10. Post-P2 flash-attn wider-shape support
+9. Post-P2 flash-attn wider-shape support
    - Expand workload scale only after the multi-K-step and multi-page
      event contracts above are admitted.
    - Do not jump straight to 4096.  The intended admission ladder is:
@@ -237,26 +227,31 @@
      (`mul_tiles`, `add_tiles`, `*_bcast_cols`, `exp2_tile`, `pack_tile`,
      etc.).
 
+## Completed Implementation Details
+
+- `Algorithmic generalization Phase A: AccessRegion foundation`
+  - Added typed `AccessRegion` / affine-lite access analysis and validator
+    coverage.
+  - Kept it inside the existing
+    `Normalized Tile TIR -> SpatialPlan` boundary.
+  - The merge unit is schema + builder + validator + structure tests only;
+    no TTProgram or source-generation behavior changed.
+
 ## Latest Verification
 
-Blackhole follow-up task queue refresh:
+Algorithmic generalization Phase A AccessRegion foundation:
 
 - docs updated:
   `tasks/progress.md`,
-  `tasks/dev_design/README.md`,
   `memory/general_dev.md`,
-  `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
+  and `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
+- tests added:
+  `test_algorithmic_access_region_covers_copy_unit_reads_and_writes`
   and
-  `tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
-- queue policy:
-  implementation order now follows representation dependency:
-  `AccessRegion -> SpatialPlan dependence graph -> LiveValueSSA ->
-  TT live-form solver -> TileComputeDAG/legalizer/covering ->
-  runtime admission -> mesh/distributed expansion`
-- placeholder scan:
-  `rg -n "TBD|TODO|fill in|later|open question|Open Question" tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
-  -> no matches
-- `git diff --check`
-  -> clean
+  `test_algorithmic_validate_spatial_plan_rejects_missing_access_region`
+- `cmake --build build -j32`
+  -> passed
+- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
+  -> `37 passed`
 - background process scan:
   no lingering `pytest` / `cmake --build` / `ninja` process

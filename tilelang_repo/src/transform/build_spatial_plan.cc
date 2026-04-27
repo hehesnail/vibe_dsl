@@ -25,6 +25,7 @@
 #include "common/blackhole_utils.h"
 #include "common/buffer_tile_bridge_spec_utils.h"
 #include "common/spatial_analysis.h"
+#include "common/spatial_access_region.h"
 #include "common/spatial_plan.h"
 
 namespace tvm {
@@ -106,6 +107,14 @@ Array<Integer> ToIntegerArray(const std::vector<int64_t>& values) {
   Array<Integer> result;
   for (int64_t value : values) {
     result.push_back(Integer(value));
+  }
+  return result;
+}
+
+Array<PrimExpr> ToPrimExprArray(const std::vector<int64_t>& values) {
+  Array<PrimExpr> result;
+  for (int64_t value : values) {
+    result.push_back(IntImm(DataType::Int(64), value));
   }
   return result;
 }
@@ -1026,6 +1035,98 @@ Array<LayoutSpec> PropagateLocalValueFlowLayoutSpecs(
   return propagated;
 }
 
+std::string DeriveAccessRegionValueKind(const std::string& scope) {
+  if (scope == "global") {
+    return "tensor";
+  }
+  if (scope == "blackhole.acc") {
+    return "accumulator";
+  }
+  if (scope == "local" || scope == "local.fragment") {
+    return "fragment";
+  }
+  if (scope.rfind("shared", 0) == 0 || scope.rfind("blackhole.cb", 0) == 0) {
+    return "tile";
+  }
+  return "tensor";
+}
+
+Array<PrimExpr> MakeZeroBounds(size_t rank) {
+  Array<PrimExpr> bounds;
+  for (size_t i = 0; i < rank; ++i) {
+    bounds.push_back(IntImm(DataType::Int(64), 0));
+  }
+  return bounds;
+}
+
+Array<PrimExpr> MakeUnitStrides(size_t rank) {
+  Array<PrimExpr> strides;
+  for (size_t i = 0; i < rank; ++i) {
+    strides.push_back(IntImm(DataType::Int(64), 1));
+  }
+  return strides;
+}
+
+Array<AccessRegion> BuildAccessRegions(
+    const Array<ExecutionUnit>& execution_units, const Array<LayoutSpec>& layout_specs,
+    const std::unordered_map<std::string, BufferMetadata>& metadata_by_buffer) {
+  std::unordered_map<std::string, LayoutSpec> layout_by_subject;
+  for (const LayoutSpec& layout : layout_specs) {
+    layout_by_subject.emplace(str(layout->subject), layout);
+  }
+
+  auto extents_for_subject = [&](const std::string& subject) -> Array<PrimExpr> {
+    auto layout_it = layout_by_subject.find(subject);
+    if (layout_it != layout_by_subject.end() && !layout_it->second->logical_shape.empty()) {
+      return layout_it->second->logical_shape;
+    }
+    auto metadata_it = metadata_by_buffer.find(subject);
+    if (metadata_it != metadata_by_buffer.end() && !metadata_it->second.shape.empty()) {
+      return ToPrimExprArray(metadata_it->second.shape);
+    }
+    return Array<PrimExpr>{};
+  };
+
+  auto value_kind_for_subject = [&](const std::string& subject) -> std::string {
+    auto layout_it = layout_by_subject.find(subject);
+    if (layout_it != layout_by_subject.end()) {
+      return DeriveAccessRegionValueKind(str(layout_it->second->scope));
+    }
+    auto metadata_it = metadata_by_buffer.find(subject);
+    return metadata_it == metadata_by_buffer.end()
+               ? "tensor"
+               : DeriveAccessRegionValueKind(metadata_it->second.scope);
+  };
+
+  Array<AccessRegion> regions;
+  for (int unit_index = 0; unit_index < execution_units.size(); ++unit_index) {
+    const ExecutionUnit& unit = execution_units[unit_index];
+    auto emit_region = [&](const String& subject, const char* access_kind) {
+      const std::string subject_name = str(subject);
+      if (subject_name.empty()) {
+        return;
+      }
+      const Array<PrimExpr> extents = extents_for_subject(subject_name);
+      const int64_t rank = static_cast<int64_t>(extents.size());
+      const std::string name = "access_" + str(unit->name) + "_" + access_kind + "_" +
+                               subject_name;
+      regions.push_back(AccessRegion(
+          String(name), String(subject_name), unit->name, unit_index, String(access_kind),
+          String(value_kind_for_subject(subject_name)), rank, Array<String>{}, Array<PrimExpr>{},
+          MakeZeroBounds(extents.size()), extents, MakeUnitStrides(extents.size()),
+          String(rank == 0 ? "scalar" : "full"), String("unconditional"),
+          MakeAnchors("access_region", name)));
+    };
+    for (const String& subject : unit->read_buffers) {
+      emit_region(subject, "read");
+    }
+    for (const String& subject : unit->write_buffers) {
+      emit_region(subject, "write");
+    }
+  }
+  return regions;
+}
+
 std::string DeriveLiveValueRole(const BufferMetadata* metadata) {
   if (metadata == nullptr) {
     return "consumer_input";
@@ -1277,11 +1378,13 @@ SpatialPlan BuildSpatialPlanForFunc(const std::string& member_func, const tir::P
       PropagateLocalValueFlowLayoutSpecs(
           MergePriorTypedLayoutSpecs(func, BuildLayoutSpecs(func, execution_units)),
           candidates);
-  const Array<PhasePlan> phase_plans =
-      BuildPhasePlans(execution_units, dataflow_edges, unit_phases);
   BufferMetadataCollector metadata_collector;
   const std::unordered_map<std::string, BufferMetadata> metadata_by_buffer =
       metadata_collector.Collect(func);
+  const Array<AccessRegion> access_regions =
+      BuildAccessRegions(execution_units, layout_specs, metadata_by_buffer);
+  const Array<PhasePlan> phase_plans =
+      BuildPhasePlans(execution_units, dataflow_edges, unit_phases);
   const Array<LiveValue> live_values =
       BuildLiveValues(dataflow_edges, execution_units, metadata_by_buffer);
   const Array<LiveValueEdge> live_value_edges = BuildLiveValueEdges(dataflow_edges, live_values);
@@ -1289,9 +1392,9 @@ SpatialPlan BuildSpatialPlanForFunc(const std::string& member_func, const tir::P
       BuildMaterializationBoundaries(dataflow_edges, live_values, live_value_edges,
                                      local_value_flow_edges.target_subject_by_edge);
 
-  return SpatialPlan(String(member_func), execution_units, dataflow_edges, layout_specs,
-                     phase_plans, live_values, live_value_edges, materialization_boundaries,
-                     validated_hints, closures, boundaries,
+  return SpatialPlan(String(member_func), execution_units, access_regions, dataflow_edges,
+                     layout_specs, phase_plans, live_values, live_value_edges,
+                     materialization_boundaries, validated_hints, closures, boundaries,
                      MakeAnchors("spatial_plan", member_func));
 }
 

@@ -240,6 +240,107 @@ void ValidateDataflowEdges(const SpatialPlan& plan, const std::vector<int>& phas
   }
 }
 
+void ValidateAccessRegions(const SpatialPlan& plan) {
+  std::unordered_set<std::string> seen_names;
+  std::unordered_set<std::string> covered_accesses;
+  for (const AccessRegion& region : plan->access_regions) {
+    ICHECK(!region->name.empty()) << "AccessRegion requires name";
+    ICHECK(seen_names.insert(str(region->name)).second)
+        << "duplicate AccessRegion name " << region->name;
+    ICHECK(!region->subject.empty()) << "AccessRegion " << region->name << " requires subject";
+    ICHECK(!region->unit_name.empty())
+        << "AccessRegion " << region->name << " requires unit_name";
+    ICHECK_GE(region->unit_index, 0)
+        << "AccessRegion " << region->name << " requires unit_index";
+    ICHECK_LT(region->unit_index, static_cast<int64_t>(plan->execution_units.size()))
+        << "AccessRegion " << region->name << " unit_index out of bounds";
+    const ExecutionUnit& unit = plan->execution_units[region->unit_index];
+    ICHECK_EQ(str(region->unit_name), str(unit->name))
+        << "AccessRegion " << region->name << " unit_name must match unit_index";
+
+    ICHECK(IsOneOf(str(region->access_kind),
+                   {"read", "write", "read_write", "reduce_read", "reduce_write"}))
+        << "AccessRegion " << region->name << " access_kind has unsupported value "
+        << region->access_kind;
+    ICHECK(IsOneOf(str(region->value_kind),
+                   {"tensor", "tile", "fragment", "accumulator", "scalar"}))
+        << "AccessRegion " << region->name << " value_kind has unsupported value "
+        << region->value_kind;
+    ICHECK(IsOneOf(str(region->coverage_kind),
+                   {"full", "slice", "row_slice", "grouped_slice", "scalar"}))
+        << "AccessRegion " << region->name << " coverage_kind has unsupported value "
+        << region->coverage_kind;
+    ICHECK(IsOneOf(str(region->predicate_kind), {"unconditional", "guarded", "unknown"}))
+        << "AccessRegion " << region->name << " predicate_kind has unsupported value "
+        << region->predicate_kind;
+    ValidateNoTTNoun(str(region->access_kind), "AccessRegion access_kind");
+    ValidateNoTTNoun(str(region->value_kind), "AccessRegion value_kind");
+    ValidateNoTTNoun(str(region->coverage_kind), "AccessRegion coverage_kind");
+    ValidateNoTTNoun(str(region->predicate_kind), "AccessRegion predicate_kind");
+
+    ICHECK_GE(region->logical_rank, 0)
+        << "AccessRegion " << region->name << " requires non-negative logical_rank";
+    ICHECK_EQ(region->logical_rank, static_cast<int64_t>(region->extents.size()))
+        << "AccessRegion " << region->name << " logical_rank must match extents";
+    ICHECK_EQ(region->lower_bounds.size(), region->extents.size())
+        << "AccessRegion " << region->name << " requires lower_bounds/extents alignment";
+    ICHECK_EQ(region->strides.size(), region->extents.size())
+        << "AccessRegion " << region->name << " requires strides/extents alignment";
+    if (str(region->coverage_kind) == "scalar") {
+      ICHECK_EQ(region->logical_rank, 0)
+          << "AccessRegion " << region->name << " scalar coverage requires rank 0";
+    } else {
+      ICHECK_GT(region->logical_rank, 0)
+          << "AccessRegion " << region->name << " non-scalar coverage requires rank";
+    }
+
+    const bool unit_reads_subject =
+        std::find_if(unit->read_buffers.begin(), unit->read_buffers.end(), [&](const String& name) {
+          return str(name) == str(region->subject);
+        }) != unit->read_buffers.end();
+    const bool unit_writes_subject =
+        std::find_if(unit->write_buffers.begin(), unit->write_buffers.end(),
+                     [&](const String& name) { return str(name) == str(region->subject); }) !=
+        unit->write_buffers.end();
+    if (str(region->access_kind) == "read" || str(region->access_kind) == "reduce_read") {
+      ICHECK(unit_reads_subject)
+          << "AccessRegion " << region->name << " read subject must be in ExecutionUnit reads";
+      covered_accesses.insert(std::to_string(region->unit_index) + "|" + str(region->subject) +
+                              "|read");
+    } else if (str(region->access_kind) == "write" ||
+               str(region->access_kind) == "reduce_write") {
+      ICHECK(unit_writes_subject)
+          << "AccessRegion " << region->name << " write subject must be in ExecutionUnit writes";
+      covered_accesses.insert(std::to_string(region->unit_index) + "|" + str(region->subject) +
+                              "|write");
+    } else {
+      ICHECK(unit_reads_subject && unit_writes_subject)
+          << "AccessRegion " << region->name
+          << " read_write subject must be in ExecutionUnit reads and writes";
+      covered_accesses.insert(std::to_string(region->unit_index) + "|" + str(region->subject) +
+                              "|read");
+      covered_accesses.insert(std::to_string(region->unit_index) + "|" + str(region->subject) +
+                              "|write");
+    }
+  }
+
+  for (int unit_index = 0; unit_index < plan->execution_units.size(); ++unit_index) {
+    const ExecutionUnit& unit = plan->execution_units[unit_index];
+    for (const String& subject : unit->read_buffers) {
+      const std::string key = std::to_string(unit_index) + "|" + str(subject) + "|read";
+      ICHECK(covered_accesses.count(key))
+          << "SpatialPlan access_regions must cover ExecutionUnit read " << unit->name << " "
+          << subject;
+    }
+    for (const String& subject : unit->write_buffers) {
+      const std::string key = std::to_string(unit_index) + "|" + str(subject) + "|write";
+      ICHECK(covered_accesses.count(key))
+          << "SpatialPlan access_regions must cover ExecutionUnit write " << unit->name << " "
+          << subject;
+    }
+  }
+}
+
 void ValidateLayoutSpecs(const SpatialPlan& plan) {
   std::unordered_map<std::string, std::unordered_set<int>> unit_indices_by_subject;
   for (int unit_index = 0; unit_index < static_cast<int>(plan->execution_units.size());
@@ -553,6 +654,7 @@ void CheckSpatialPlan(const SpatialPlan& plan) {
   ValidateExecutionUnits(plan);
   ValidateCompatibilityProjection(plan);
   const std::vector<int> phase_index_by_unit = BuildPhaseIndexByUnit(plan);
+  ValidateAccessRegions(plan);
   ValidateDataflowEdges(plan, phase_index_by_unit);
   ValidateLayoutSpecs(plan);
   ValidatePhasePlans(plan, phase_index_by_unit);

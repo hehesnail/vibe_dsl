@@ -1416,3 +1416,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   runtime / mesh admission 不能绕过 graph /
   version /
   event-lifetime 证据。
+- 2026-04-28 Algorithmic generalization Phase A
+  已添加 typed `AccessRegion` 到 `SpatialPlan`。
+  builder 从 execution-unit `read_buffers` /
+  `write_buffers`
+  和 layout / buffer metadata
+  生成 access regions；
+  validator 要求 unit/subject/kind/coverage
+  与 execution unit read/write 对齐。
+  Phase A 不改变 TTProgram 或 source generation 行为。

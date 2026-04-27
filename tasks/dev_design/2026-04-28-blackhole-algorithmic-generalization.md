@@ -540,6 +540,8 @@ records.
 
 ### Phase A: AccessRegion Foundation
 
+Status: completed in repo HEAD.
+
 Files:
 
 - create `tilelang_repo/src/transform/common/spatial_access_region.h`
