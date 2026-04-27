@@ -1219,17 +1219,35 @@ Post-P2 wider-shape target:
   multi-K-step admission smoke gate，
   不是 wider-shape payoff
   的目标规模
-- 先对齐 repo 里已有 CUDA regression
-  correctness 规模：
+- 不直接跳到 4096；
+  post-P2 admission
+  按下面阶梯推进：
+  - 保持 P2.3 tile geometry，
+    只增加 K step 数：
+    MHA/GQA bf16
+    `batch=1, heads=4, seq_len=128 and 256, dim=32,
+     block_M=32, block_N=32, num_stages=1, threads=128`
+  - 先扩大 tile footprint，
+    再上完整 GPU parity：
+    MHA bf16
+    `batch=1, heads=4, seq_len=128 and 256, dim=64,
+     block_M=64, block_N=64, num_stages=1, threads=128`，
+    然后 GQA bf16
+    使用同级 `dim=64, block_M=64, block_N=64`
+  - 再对齐 repo 里已有 CUDA regression
+    correctness 规模：
+    - MHA forward BSHD:
+      `batch=1, heads=32, seq_len=256, dim=128,
+       block_M=128, block_N=128, num_stages=1, threads=128`
+    - GQA forward BSHD:
+      `batch=1, heads=16, seq_len=1024, dim=128, groups=16,
+       block_M=64, block_N=64, num_stages=2, threads=128`
+- example default /
+  regression perf 规模
+  只作为 stretch target，
+  不是第一批 post-P2
+  correctness gate：
   - MHA forward BSHD:
-    `batch=1, heads=32, seq_len=256, dim=128,
-     block_M=128, block_N=128, num_stages=1, threads=128`
-  - GQA forward BSHD:
-    `batch=1, heads=16, seq_len=1024, dim=128, groups=16,
-     block_M=64, block_N=64, num_stages=2, threads=128`
-- 再对齐 example default /
-  regression perf 规模：
-  - MHA:
     `batch=8, heads=32, seq_len=4096, dim=128,
      block_M=128, block_N=128`
   - GQA:

@@ -102,16 +102,26 @@
    - Admit larger stage2/block64 shapes only after the exact CB
      multi-page event contract is represented and validated through
      `TTProgram -> ExecutableSpec`.
-   - GPU/example parity targets to record explicitly:
-     first correctness target is the existing CUDA regression scale:
+   - Do not jump straight to 4096.  The intended admission ladder is:
+     1. Same tile geometry as P2.3, more K steps:
+        MHA/GQA bf16
+        `(batch=1, heads=4, seq_len=128 and 256, dim=32,
+          block_M=32, block_N=32, num_stages=1, threads=128)`.
+     2. Grow tile footprint before full GPU parity:
+        MHA bf16
+        `(batch=1, heads=4, seq_len=128 and 256, dim=64,
+          block_M=64, block_N=64, num_stages=1, threads=128)`,
+        then GQA bf16 with matching `dim=64, block_M=64, block_N=64`.
+     3. Existing CUDA regression correctness scale:
+        MHA forward BSHD
+        `(batch=1, heads=32, seq_len=256, dim=128,
+          block_M=128, block_N=128, num_stages=1, threads=128)`
+        and GQA forward BSHD
+        `(batch=1, heads=16, seq_len=1024, dim=128, groups=16,
+          block_M=64, block_N=64, num_stages=2, threads=128)`.
+   - Stretch/perf parity remains the example default/regression scale,
+     not the first post-P2 correctness gate:
      MHA forward BSHD
-     `(batch=1, heads=32, seq_len=256, dim=128,
-       block_M=128, block_N=128, num_stages=1, threads=128)`
-     and GQA forward BSHD
-     `(batch=1, heads=16, seq_len=1024, dim=128, groups=16,
-       block_M=64, block_N=64, num_stages=2, threads=128)`.
-     Stretch/perf parity is the example default/regression scale:
-     MHA
      `(batch=8, heads=32, seq_len=4096, dim=128,
        block_M=128, block_N=128)`
      and GQA
