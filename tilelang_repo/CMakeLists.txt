@@ -263,8 +263,13 @@ elseif(USE_BLACKHOLE)
     src/transform/validate_tt_program.cc
     src/transform/materialize_blackhole_executable.cc
     src/transform/lower_blackhole_ops.cc
+    src/transform/lower_blackhole_abi.cc
     src/transform/lower_blackhole_exact_cb.cc
+    src/transform/lower_blackhole_matmul.cc
+    src/transform/lower_blackhole_materialization.cc
+    src/transform/lower_blackhole_state.cc
     src/transform/lower_blackhole_tile_compute.cc
+    src/transform/lower_blackhole_transport.cc
     src/transform/split_blackhole_kernel.cc
     src/transform/plan_blackhole_cb.cc
     src/transform/assign_blackhole_cores.cc

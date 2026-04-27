@@ -48,9 +48,19 @@ Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec
   `ExecutableSpec`
   state 表达。
 
-## Current Slice
+## Completed Splits
 
-第一刀拆出：
+本 lane 只做 implementation responsibility split，
+不引入新的 IR 层或跨 pass 语义通道。
+`lower_blackhole_ops.cc`
+从约 7.9k 行收缩到约 2.4k 行；
+保留 pass driver、
+CB requirement bookkeeping、
+logical shape loading、
+generic validators
+和 visitor orchestration。
+
+已拆出的责任文件：
 
 - `tilelang_repo/src/transform/lower_blackhole_tile_compute.cc`
   - owns explicit preserved tile compute lowering
@@ -79,22 +89,55 @@ pack tile 这些重复 leaf emission mechanics。
     typed state,
     without creating a new cross-pass protocol
 
-## Remaining Split Candidates
+- `tilelang_repo/src/transform/lower_blackhole_materialization.cc`
+  - owns fragment cast and local-to-CB
+    materialization sequence planning
+  - owns the pass-local structural matching
+    for those explicit materialization loops
+  - records typed live-form/materialization plans
+    through existing `PlanTTKernelABI` state
 
-`lower_blackhole_ops.cc`
-仍然承担多块相邻职责。
-后续应按下面顺序继续缩小：
+- `tilelang_repo/src/transform/lower_blackhole_abi.cc`
+  - owns segment plan storage,
+    accessor descriptor encoding,
+    runtime/per-work arg spec synthesis,
+    `TTKernel` seed construction,
+    `TTABIPlan` seed construction,
+    and exact compute op plan finalization
+  - keeps `TTComputeOpPlan.operation_name`
+    at TT-Metal leaf API granularity
 
-1. fragment cast /
-   local-to-CB materialization sequence planning
-2. ABI / accessor descriptor encoding
-3. staged copy / transport source emission
-4. matmul partial reload / post-merge publish support
+- `tilelang_repo/src/transform/lower_blackhole_state.cc`
+  - owns SpatialPlan live-value/materialization
+    references,
+    tiled-CB live-form alias state,
+    materialization plan host-buffer finalization,
+    physical compute buffer binding,
+    and buffer-flow future-use queries
+  - keeps this as pass-local mutable state;
+    durable cross-stage truth remains typed
+    `SpatialPlan` / `TTProgram` state
 
-这些都只是 implementation split。
-任何 split 都不能把旧 matcher /
-generate family 作为 compatibility shell
-留在 active chain。
+- `tilelang_repo/src/transform/lower_blackhole_transport.cc`
+  - owns staged copy shape inference,
+    accessor slot selection,
+    DRAM/CB copy direction handling,
+    page/tile transport source emission,
+    and fused staged copy sequence emission
+
+- `tilelang_repo/src/transform/lower_blackhole_matmul.cc`
+  - owns GEMM extraction,
+    matmul builtin sequence emission,
+    accumulator partial reload,
+    post-merge cast publication,
+    and merge/reload helper sequences
+
+The old downstream matcher / generate family remains deleted.
+No `GenerateScalar*`,
+`GenerateExplicit*`,
+`RejectLegacyScalar*`,
+or composite helper op protocol is retained
+as a compatibility shell.
 
 ## Other Pass Audit
 

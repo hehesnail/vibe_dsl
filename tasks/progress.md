@@ -6,14 +6,21 @@
 
 ## Status
 
-- Date: `2026-04-27`
+- Date: `2026-04-28`
 - Active lane: `Blackhole post-preservation pass shrink`
 - Current item:
-  2026-04-27 lower_blackhole_ops.cc responsibility shrink continued:
-  explicit preserved tile compute lowering lives in
+  2026-04-28 lower_blackhole_ops.cc responsibility shrink completed for
+  the current Blackhole lowering boundary.  The file now retains pass driver,
+  CB requirement bookkeeping, logical shape loading, generic validators,
+  and visitor orchestration.  Implementation responsibility moved to
+  dedicated TUs:
   `lower_blackhole_tile_compute.cc`,
-  and exact tiled-CB live-form/local materialization helpers live in
-  `lower_blackhole_exact_cb.cc`.
+  `lower_blackhole_exact_cb.cc`,
+  `lower_blackhole_materialization.cc`,
+  `lower_blackhole_abi.cc`,
+  `lower_blackhole_state.cc`,
+  `lower_blackhole_transport.cc`,
+  and `lower_blackhole_matmul.cc`.
 - Blocker:
   No blocker remains for Blackhole tile-compute preservation itself.
   Active lowering no longer recovers row-reduction / broadcast /
@@ -54,6 +61,11 @@
 - `Blackhole tile-compute preservation`: completed
 - `Post-preservation explicit tile-compute lowering split`: completed
 - `Post-preservation exact tiled-CB helper split`: completed
+- `Post-preservation fragment/local materialization split`: completed
+- `Post-preservation ABI/accessor planning split`: completed
+- `Post-preservation live-form/state bookkeeping split`: completed
+- `Post-preservation staged transport split`: completed
+- `Post-preservation matmul lowering split`: completed
 
 ## Current Support Boundary
 
@@ -94,17 +106,11 @@
 
 ## Open Debt
 
-- `lower_blackhole_ops.cc` no longer owns explicit preserved tile compute
-  lowering / TT-Metal leaf sequence emission, or exact tiled-CB live-form
-  helper implementations.  Those moved to
-  `lower_blackhole_tile_compute.cc`
-  and `lower_blackhole_exact_cb.cc`.
-  It still owns several adjacent responsibilities:
-  fragment cast / local-to-CB materialization sequence planning,
-  ABI/accessor descriptor planning,
-  staged copy / transport source emission,
-  matmul partial reload / post-merge publish support,
-  and visitor orchestration.
+- `lower_blackhole_ops.cc` is no longer the mixed owner for tile compute,
+  exact CB helpers, fragment/local materialization, ABI/accessor planning,
+  staged transport emission, live-form/state bookkeeping, or matmul lowering.
+  It is now the pass driver plus shared CB requirement / logical-shape /
+  validator / visitor orchestration surface.
 - `lower_tile_op.cc` remains the clearest next non-Blackhole-pass audit
   candidate: it still has duplicate Blackhole tile compute normalization
   logic in `LowerTileOpPass` and `BlackholeTileComputeNormalizer`.
@@ -124,32 +130,24 @@
 
 ## Next Task Order
 
-1. `Continue lower_blackhole_ops.cc responsibility shrink`
-   - Next splits should target fragment cast / local-to-CB materialization
-     sequence planning, ABI/accessor descriptor planning,
-     staged copy / transport source emission,
-     and matmul partial reload / post-merge publish support.
-   - Keep `TTComputeOpPlan.operation_name` and `KernelSpec.compute_ops`
-     at TT-Metal leaf API granularity.
-
-2. `lower_tile_op.cc Blackhole normalizer dedup`
+1. `lower_tile_op.cc Blackhole normalizer dedup`
    - Centralize the duplicate Blackhole tile compute normalization now split
      between `LowerTileOpPass` and `BlackholeTileComputeNormalizer`.
    - The output must remain explicit `tl.tileop.blackhole_compute` /
      typed tile op semantics, not downstream matcher recovery.
 
-3. `Multi-block flash-attn direct-runtime admission`
+2. `Multi-block flash-attn direct-runtime admission`
    - Re-admit seq64 / multi-K-step direct runtime only after the
      online-softmax live-form contract is represented and verified through
      typed `TTProgram -> ExecutableSpec` state.
 
-4. `P3 mesh/distributed runtime expansion`
+3. `P3 mesh/distributed runtime expansion`
    - Treat this as a later runtime admission lane.
    - Reuse `TTMeshPlan` / `TTBufferDistributionPlan` schema.
    - Add real sharded / multi-device / fabric semantics only through typed
      schema and validator extensions.
 
-5. Post-P2 flash-attn wider-shape support
+4. Post-P2 flash-attn wider-shape support
    - Admit larger stage2/block64 shapes only after the exact CB
      multi-page event contract is represented and validated through
      `TTProgram -> ExecutableSpec`.
@@ -191,9 +189,10 @@
 
 ## Latest Verification
 
-Blackhole post-preservation pass shrink:
+Blackhole post-preservation pass shrink completion:
 
 - `cmake --build build -j32`
+  -> passed
 - `pytest -q testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_gemm.py`
   -> `197 passed, 25 skipped, 1 xfailed`
 - TT-Sim:

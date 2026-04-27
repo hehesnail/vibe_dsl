@@ -1320,13 +1320,40 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   exact tiled-CB live-form /
   local materialization helpers
   已拆到
-  `lower_blackhole_exact_cb.cc`；
-  后续候选是 fragment cast /
-  local-to-CB materialization sequence planning、
-  ABI/accessor encoding、
-  staged transport/source emission。
+  `lower_blackhole_exact_cb.cc`。
+  该条是 2026-04-27 的中间状态；
+  2026-04-28 已继续拆完 fragment/local materialization、
+  ABI/accessor、
+  state/live-form、
+  staged transport
+  和 matmul 责任文件。
   `lower_tile_op.cc`
   还有重复的 Blackhole tile compute normalization，
   后续应集中成单一实现面，
   继续产出显式
   `tl.tileop.blackhole_compute`。
+- 2026-04-28 的 post-preservation shrink 已把
+  `lower_blackhole_ops.cc`
+  收缩到 pass driver /
+  CB requirement /
+  logical shape /
+  validator /
+  visitor orchestration surface。
+  责任文件为：
+  `lower_blackhole_tile_compute.cc`
+  （explicit tile compute）、
+  `lower_blackhole_exact_cb.cc`
+  （exact tiled-CB helper）、
+  `lower_blackhole_materialization.cc`
+  （fragment/local materialization）、
+  `lower_blackhole_abi.cc`
+  （segment/accessor/TTKernel/TTABI planning）、
+  `lower_blackhole_state.cc`
+  （live-form/materialization/buffer-flow state）、
+  `lower_blackhole_transport.cc`
+  （staged copy/transport emission）、
+  `lower_blackhole_matmul.cc`
+  （GEMM/matmul/merge lowering）。
+  后续第一个 cleanup task
+  应转向 `lower_tile_op.cc`
+  的 Blackhole normalizer 去重。
