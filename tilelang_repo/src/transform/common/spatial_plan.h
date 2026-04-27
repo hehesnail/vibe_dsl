@@ -248,6 +248,40 @@ class DataflowEdge : public ObjectRef {
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(DataflowEdge, ObjectRef, DataflowEdgeNode);
 };
 
+class DependenceComponentNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String component_kind;
+  ffi::Array<Integer> unit_indices;
+  ffi::Array<Integer> edge_indices;
+  ffi::Array<ffi::String> subjects;
+  ffi::Array<TIRAnchor> anchors;
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<DependenceComponentNode>()
+        .def_ro("name", &DependenceComponentNode::name)
+        .def_ro("component_kind", &DependenceComponentNode::component_kind)
+        .def_ro("unit_indices", &DependenceComponentNode::unit_indices)
+        .def_ro("edge_indices", &DependenceComponentNode::edge_indices)
+        .def_ro("subjects", &DependenceComponentNode::subjects)
+        .def_ro("anchors", &DependenceComponentNode::anchors);
+  }
+
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.DependenceComponent", DependenceComponentNode, Object);
+};
+
+class DependenceComponent : public ObjectRef {
+ public:
+  TVM_DLL DependenceComponent(ffi::String name, ffi::String component_kind,
+                              ffi::Array<Integer> unit_indices,
+                              ffi::Array<Integer> edge_indices,
+                              ffi::Array<ffi::String> subjects,
+                              ffi::Array<TIRAnchor> anchors);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(DependenceComponent, ObjectRef,
+                                             DependenceComponentNode);
+};
+
 class LayoutSpecNode : public Object {
  public:
   ffi::String name;
@@ -482,6 +516,7 @@ class SpatialPlanNode : public Object {
   ffi::Array<ExecutionUnit> execution_units;
   ffi::Array<AccessRegion> access_regions;
   ffi::Array<DataflowEdge> dataflow_edges;
+  ffi::Array<DependenceComponent> dependence_components;
   ffi::Array<LayoutSpec> layout_specs;
   ffi::Array<PhasePlan> phase_plans;
   ffi::Array<LiveValue> live_values;
@@ -499,6 +534,7 @@ class SpatialPlanNode : public Object {
         .def_ro("execution_units", &SpatialPlanNode::execution_units)
         .def_ro("access_regions", &SpatialPlanNode::access_regions)
         .def_ro("dataflow_edges", &SpatialPlanNode::dataflow_edges)
+        .def_ro("dependence_components", &SpatialPlanNode::dependence_components)
         .def_ro("layout_specs", &SpatialPlanNode::layout_specs)
         .def_ro("phase_plans", &SpatialPlanNode::phase_plans)
         .def_ro("live_values", &SpatialPlanNode::live_values)
@@ -517,7 +553,9 @@ class SpatialPlan : public ObjectRef {
  public:
   TVM_DLL SpatialPlan(ffi::String member_func, ffi::Array<ExecutionUnit> execution_units,
                       ffi::Array<AccessRegion> access_regions,
-                      ffi::Array<DataflowEdge> dataflow_edges, ffi::Array<LayoutSpec> layout_specs,
+                      ffi::Array<DataflowEdge> dataflow_edges,
+                      ffi::Array<DependenceComponent> dependence_components,
+                      ffi::Array<LayoutSpec> layout_specs,
                       ffi::Array<PhasePlan> phase_plans, ffi::Array<LiveValue> live_values,
                       ffi::Array<LiveValueEdge> live_value_edges,
                       ffi::Array<MaterializationBoundary> materialization_boundaries,

@@ -580,6 +580,8 @@ Completion gate:
 
 ### Phase B: Dependence Graph Builder
 
+Status: completed in repo HEAD.
+
 Files:
 
 - create `tilelang_repo/src/transform/common/spatial_dependence_graph.h`
@@ -599,6 +601,24 @@ Work:
 4. Replace ad hoc local value flow edge construction
    with graph builder output.
 5. Keep compatibility projection tests green.
+
+Implementation notes:
+
+- `SpatialPlan` now owns typed `DependenceComponent`
+  recurrence diagnostics.
+- `spatial_dependence_graph.{h,cc}` builds closure compatibility
+  boundaries from ordered `AccessRegion` read/write events and emits
+  same-unit materialize edges from local value-flow evidence.
+- `build_spatial_plan.cc` no longer decides flow/carry/join edge
+  construction from private closure read/write vectors; it projects the
+  typed access graph back to `ClosureBoundary` only for compatibility.
+- Current Phase B emits the edge kinds already admitted by downstream
+  `LiveValueEdge` and materialization planning
+  (`flow`, `carry`, `join`, `materialize`).
+  `reduction`, `broadcast`, `output_order`, and `anti_order`
+  remain reserved design vocabulary for later legalization/scheduling
+  admission, because the active downstream validators do not yet consume
+  those edge kinds.
 
 Completion gate:
 

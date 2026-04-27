@@ -5,6 +5,8 @@
 
 #include "spatial_access_region.h"
 
+#include "blackhole_utils.h"
+
 namespace tvm {
 namespace tl {
 

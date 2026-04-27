@@ -26,6 +26,7 @@
 #include "common/buffer_tile_bridge_spec_utils.h"
 #include "common/spatial_analysis.h"
 #include "common/spatial_access_region.h"
+#include "common/spatial_dependence_graph.h"
 #include "common/spatial_plan.h"
 
 namespace tvm {
@@ -442,61 +443,6 @@ std::vector<ClosureCandidateInfo> AnalyzeClosureCandidates(const tir::PrimFunc& 
   return candidates;
 }
 
-Array<ClosureBoundary> BuildBoundaryCandidates(const std::vector<ClosureCandidateInfo>& closures) {
-  Array<ClosureBoundary> boundaries;
-  std::unordered_set<std::string> emitted;
-  std::unordered_map<std::string, std::vector<int>> producer_indices_by_subject;
-
-  for (int closure_index = 0; closure_index < static_cast<int>(closures.size()); ++closure_index) {
-    const ClosureCandidateInfo& closure = closures[closure_index];
-    const std::unordered_set<std::string> read_set(closure.reads.begin(), closure.reads.end());
-
-    for (const std::string& subject : closure.writes) {
-      if (read_set.count(subject)) {
-        const std::string key = "carry|" + subject + "|" + std::to_string(closure_index) + "|" +
-                                std::to_string(closure_index);
-        if (emitted.insert(key).second) {
-          boundaries.push_back(ClosureBoundary(
-              String("carry_" + subject + "_" + std::to_string(closure_index)), String("carry"),
-              String(closure.name), String(closure.name), closure_index, closure_index,
-              String(subject), ToStringArray({"self_edge"}), MakeAnchors("closure_boundary", key)));
-        }
-      }
-    }
-
-    for (const std::string& subject : closure.reads) {
-      auto it = producer_indices_by_subject.find(subject);
-      if (it == producer_indices_by_subject.end() || it->second.empty()) {
-        continue;
-      }
-      const std::vector<int>& producers = it->second;
-      const bool is_join = producers.size() > 1;
-      const std::string boundary_kind = is_join ? "join" : "flow";
-      for (int producer_index : producers) {
-        const std::string key = boundary_kind + "|" + subject + "|" +
-                                std::to_string(producer_index) + "|" +
-                                std::to_string(closure_index);
-        if (!emitted.insert(key).second) {
-          continue;
-        }
-        boundaries.push_back(ClosureBoundary(
-            String(boundary_kind + "_" + subject + "_" + std::to_string(producer_index) + "_" +
-                   std::to_string(closure_index)),
-            String(boundary_kind), String(closures[producer_index].name), String(closure.name),
-            producer_index, closure_index, String(subject),
-            is_join ? MakeTraits({"multi_producer"}) : Array<String>{},
-            MakeAnchors("closure_boundary", key)));
-      }
-    }
-
-    for (const std::string& subject : closure.writes) {
-      producer_indices_by_subject[subject].push_back(closure_index);
-    }
-  }
-
-  return boundaries;
-}
-
 Array<String> ExecutionUnitNamesForIndices(const std::vector<int>& unit_indices,
                                            const Array<ExecutionUnit>& execution_units) {
   Array<String> unit_names;
@@ -567,33 +513,14 @@ Array<DataflowEdge> BuildDataflowEdges(const Array<ClosureBoundary>& boundaries,
   return dataflow_edges;
 }
 
-struct LocalValueFlowEdges {
-  Array<DataflowEdge> dataflow_edges;
-  std::unordered_map<std::string, std::string> target_subject_by_edge;
-};
-
-LocalValueFlowEdges BuildLocalValueFlowEdges(const std::vector<ClosureCandidateInfo>& candidates) {
-  LocalValueFlowEdges result;
-  std::unordered_set<std::string> emitted;
+std::vector<SpatialLocalValueFlowEvidence> BuildLocalValueFlowEvidence(
+    const std::vector<ClosureCandidateInfo>& candidates) {
+  std::vector<SpatialLocalValueFlowEvidence> result;
   for (int unit_index = 0; unit_index < static_cast<int>(candidates.size()); ++unit_index) {
     const ClosureCandidateInfo& candidate = candidates[unit_index];
     for (const LocalValueFlow& flow : candidate.local_value_flows) {
-      const std::string key =
-          flow.source + "|" + flow.target + "|" + std::to_string(unit_index);
-      if (!emitted.insert(key).second) {
-        continue;
-      }
-      const std::string name =
-          "materialize_" + flow.source + "_to_" + flow.target + "_" + std::to_string(unit_index);
-      std::vector<std::string> traits{"same_unit"};
-      if (flow.accepts_distributed_slice) {
-        AppendUnique(&traits, "distributed_slice_consumer");
-      }
-      result.dataflow_edges.push_back(DataflowEdge(
-          String(name), String("materialize"), String(candidate.name), String(candidate.name),
-          unit_index, unit_index, String(flow.source), false, ToStringArray(traits),
-          MakeAnchors("dataflow_edge", name)));
-      result.target_subject_by_edge.emplace(name, flow.target);
+      result.push_back(SpatialLocalValueFlowEvidence{flow.source, flow.target, unit_index,
+                                                     flow.accepts_distributed_slice});
     }
   }
   return result;
@@ -1365,15 +1292,8 @@ SpatialPlan BuildSpatialPlanForFunc(const std::string& member_func, const tir::P
   for (const ClosureCandidateInfo& candidate : candidates) {
     closures.push_back(candidate.closure);
   }
-  const Array<ClosureBoundary> boundaries = BuildBoundaryCandidates(candidates);
   const ValidatedHintSet validated_hints = BuildEmptyValidatedHintSet(member_func);
   const Array<ExecutionUnit> execution_units = BuildExecutionUnits(closures);
-  const std::vector<int> unit_phases =
-      ComputeExecutionUnitPhases(boundaries, static_cast<int>(execution_units.size()));
-  const Array<DataflowEdge> closure_dataflow_edges = BuildDataflowEdges(boundaries, unit_phases);
-  const LocalValueFlowEdges local_value_flow_edges = BuildLocalValueFlowEdges(candidates);
-  const Array<DataflowEdge> dataflow_edges =
-      ConcatDataflowEdges(closure_dataflow_edges, local_value_flow_edges.dataflow_edges);
   const Array<LayoutSpec> layout_specs =
       PropagateLocalValueFlowLayoutSpecs(
           MergePriorTypedLayoutSpecs(func, BuildLayoutSpecs(func, execution_units)),
@@ -1383,6 +1303,17 @@ SpatialPlan BuildSpatialPlanForFunc(const std::string& member_func, const tir::P
       metadata_collector.Collect(func);
   const Array<AccessRegion> access_regions =
       BuildAccessRegions(execution_units, layout_specs, metadata_by_buffer);
+  const Array<ClosureBoundary> boundaries =
+      BuildClosureBoundariesFromAccessRegions(execution_units, access_regions);
+  const std::vector<int> unit_phases =
+      ComputeExecutionUnitPhases(boundaries, static_cast<int>(execution_units.size()));
+  const Array<DataflowEdge> closure_dataflow_edges = BuildDataflowEdges(boundaries, unit_phases);
+  const SpatialLocalValueDependenceEdges local_value_flow_edges =
+      BuildLocalValueDependenceEdges(execution_units, BuildLocalValueFlowEvidence(candidates));
+  const Array<DataflowEdge> dataflow_edges =
+      ConcatDataflowEdges(closure_dataflow_edges, local_value_flow_edges.dataflow_edges);
+  const Array<DependenceComponent> dependence_components =
+      BuildDependenceComponents(execution_units, dataflow_edges);
   const Array<PhasePlan> phase_plans =
       BuildPhasePlans(execution_units, dataflow_edges, unit_phases);
   const Array<LiveValue> live_values =
@@ -1393,9 +1324,9 @@ SpatialPlan BuildSpatialPlanForFunc(const std::string& member_func, const tir::P
                                      local_value_flow_edges.target_subject_by_edge);
 
   return SpatialPlan(String(member_func), execution_units, access_regions, dataflow_edges,
-                     layout_specs, phase_plans, live_values, live_value_edges,
-                     materialization_boundaries, validated_hints, closures, boundaries,
-                     MakeAnchors("spatial_plan", member_func));
+                     dependence_components, layout_specs, phase_plans, live_values,
+                     live_value_edges, materialization_boundaries, validated_hints, closures,
+                     boundaries, MakeAnchors("spatial_plan", member_func));
 }
 
 }  // namespace

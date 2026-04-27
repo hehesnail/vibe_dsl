@@ -1425,3 +1425,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   validator 要求 unit/subject/kind/coverage
   与 execution unit read/write 对齐。
   Phase A 不改变 TTProgram 或 source generation 行为。
+- 2026-04-28 Algorithmic generalization Phase B
+  已添加 shared `spatial_dependence_graph` helper。
+  `BuildSpatialPlan` 现在从 typed `AccessRegion`
+  事件顺序生成 flow / carry / join closure boundaries，
+  从 local value-flow evidence 生成 same-unit materialize
+  `DataflowEdge`，
+  并把 Tarjan SCC / self-cycle 诊断保存为 typed
+  `SpatialPlan.dependence_components`。
+  `build_spatial_plan.cc` 不再本地维护 read/write boundary
+  matcher 或 materialize edge constructor。

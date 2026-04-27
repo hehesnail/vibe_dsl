@@ -90,6 +90,21 @@ DataflowEdge::DataflowEdge(ffi::String name, ffi::String kind, ffi::String produ
   data_ = std::move(n);
 }
 
+DependenceComponent::DependenceComponent(ffi::String name, ffi::String component_kind,
+                                         ffi::Array<Integer> unit_indices,
+                                         ffi::Array<Integer> edge_indices,
+                                         ffi::Array<ffi::String> subjects,
+                                         ffi::Array<TIRAnchor> anchors) {
+  auto n = ffi::make_object<DependenceComponentNode>();
+  n->name = std::move(name);
+  n->component_kind = std::move(component_kind);
+  n->unit_indices = std::move(unit_indices);
+  n->edge_indices = std::move(edge_indices);
+  n->subjects = std::move(subjects);
+  n->anchors = std::move(anchors);
+  data_ = std::move(n);
+}
+
 AccessRegion::AccessRegion(ffi::String name, ffi::String subject, ffi::String unit_name,
                            int64_t unit_index, ffi::String access_kind,
                            ffi::String value_kind, int64_t logical_rank,
@@ -228,6 +243,7 @@ MaterializationBoundary::MaterializationBoundary(
 SpatialPlan::SpatialPlan(ffi::String member_func, ffi::Array<ExecutionUnit> execution_units,
                          ffi::Array<AccessRegion> access_regions,
                          ffi::Array<DataflowEdge> dataflow_edges,
+                         ffi::Array<DependenceComponent> dependence_components,
                          ffi::Array<LayoutSpec> layout_specs, ffi::Array<PhasePlan> phase_plans,
                          ffi::Array<LiveValue> live_values,
                          ffi::Array<LiveValueEdge> live_value_edges,
@@ -239,6 +255,7 @@ SpatialPlan::SpatialPlan(ffi::String member_func, ffi::Array<ExecutionUnit> exec
   n->execution_units = std::move(execution_units);
   n->access_regions = std::move(access_regions);
   n->dataflow_edges = std::move(dataflow_edges);
+  n->dependence_components = std::move(dependence_components);
   n->layout_specs = std::move(layout_specs);
   n->phase_plans = std::move(phase_plans);
   n->live_values = std::move(live_values);
@@ -266,6 +283,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   ExecutionUnitNode::RegisterReflection();
   AccessRegionNode::RegisterReflection();
   DataflowEdgeNode::RegisterReflection();
+  DependenceComponentNode::RegisterReflection();
   LayoutSpecNode::RegisterReflection();
   PhasePlanNode::RegisterReflection();
   LiveValueNode::RegisterReflection();
@@ -340,6 +358,15 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                             std::move(anchors));
       });
   refl::GlobalDef().def(
+      "tl.DependenceComponent",
+      [](ffi::String name, ffi::String component_kind, ffi::Array<Integer> unit_indices,
+         ffi::Array<Integer> edge_indices, ffi::Array<ffi::String> subjects,
+         ffi::Array<TIRAnchor> anchors) {
+        return DependenceComponent(std::move(name), std::move(component_kind),
+                                   std::move(unit_indices), std::move(edge_indices),
+                                   std::move(subjects), std::move(anchors));
+      });
+  refl::GlobalDef().def(
       "tl.LayoutSpec",
       [](ffi::String name, ffi::String subject, ffi::String scope, ffi::String distribution_kind,
          ffi::Array<ffi::String> unit_names, ffi::Array<Integer> unit_indices,
@@ -410,6 +437,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       "tl.SpatialPlan",
       [](ffi::String member_func, ffi::Array<ExecutionUnit> execution_units,
          ffi::Array<AccessRegion> access_regions, ffi::Array<DataflowEdge> dataflow_edges,
+         ffi::Array<DependenceComponent> dependence_components,
          ffi::Array<LayoutSpec> layout_specs, ffi::Array<PhasePlan> phase_plans,
          ffi::Array<LiveValue> live_values,
          ffi::Array<LiveValueEdge> live_value_edges,
@@ -418,7 +446,8 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<ClosureBoundary> boundaries, ffi::Array<TIRAnchor> anchors) {
         return SpatialPlan(std::move(member_func), std::move(execution_units),
                            std::move(access_regions), std::move(dataflow_edges),
-                           std::move(layout_specs), std::move(phase_plans), std::move(live_values),
+                           std::move(dependence_components), std::move(layout_specs),
+                           std::move(phase_plans), std::move(live_values),
                            std::move(live_value_edges), std::move(materialization_boundaries),
                            std::move(validated_hints), std::move(closures), std::move(boundaries),
                            std::move(anchors));

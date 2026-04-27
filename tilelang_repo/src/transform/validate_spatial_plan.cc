@@ -240,6 +240,77 @@ void ValidateDataflowEdges(const SpatialPlan& plan, const std::vector<int>& phas
   }
 }
 
+void ValidateDependenceComponents(const SpatialPlan& plan) {
+  std::unordered_set<std::string> seen_names;
+  for (const DependenceComponent& component : plan->dependence_components) {
+    ICHECK(!component->name.empty()) << "DependenceComponent requires name";
+    ICHECK(seen_names.insert(str(component->name)).second)
+        << "duplicate DependenceComponent name " << component->name;
+    ICHECK(!component->component_kind.empty())
+        << "DependenceComponent " << component->name << " requires component_kind";
+    ICHECK(IsOneOf(str(component->component_kind),
+                   {"carry_cycle", "reduction_cycle", "recurrence"}))
+        << "DependenceComponent " << component->name << " component_kind has unsupported value "
+        << component->component_kind;
+    ValidateNoTTNoun(str(component->component_kind), "DependenceComponent component_kind");
+    ICHECK(!component->unit_indices.empty())
+        << "DependenceComponent " << component->name << " requires unit_indices";
+    ICHECK(!component->edge_indices.empty())
+        << "DependenceComponent " << component->name << " requires edge_indices";
+    ICHECK(!component->subjects.empty())
+        << "DependenceComponent " << component->name << " requires subjects";
+
+    std::unordered_set<int64_t> component_units;
+    for (const Integer& unit_index_value : component->unit_indices) {
+      const int64_t unit_index = unit_index_value->value;
+      ICHECK_GE(unit_index, 0)
+          << "DependenceComponent " << component->name << " unit_index must be non-negative";
+      ICHECK_LT(unit_index, static_cast<int64_t>(plan->execution_units.size()))
+          << "DependenceComponent " << component->name << " unit_index out of bounds";
+      ICHECK(component_units.insert(unit_index).second)
+          << "DependenceComponent " << component->name << " duplicate unit_index";
+    }
+
+    std::unordered_set<std::string> component_subjects;
+    for (const String& subject : component->subjects) {
+      ICHECK(!subject.empty())
+          << "DependenceComponent " << component->name << " subject must be non-empty";
+      component_subjects.insert(str(subject));
+    }
+
+    bool has_carry_edge = false;
+    bool has_reduction_edge = false;
+    for (const Integer& edge_index_value : component->edge_indices) {
+      const int64_t edge_index = edge_index_value->value;
+      ICHECK_GE(edge_index, 0)
+          << "DependenceComponent " << component->name << " edge_index must be non-negative";
+      ICHECK_LT(edge_index, static_cast<int64_t>(plan->dataflow_edges.size()))
+          << "DependenceComponent " << component->name << " edge_index out of bounds";
+      const DataflowEdge& edge = plan->dataflow_edges[edge_index];
+      ICHECK(component_units.count(edge->producer_unit_index))
+          << "DependenceComponent " << component->name
+          << " edge producer must be in component units";
+      ICHECK(component_units.count(edge->consumer_unit_index))
+          << "DependenceComponent " << component->name
+          << " edge consumer must be in component units";
+      ICHECK(component_subjects.count(str(edge->subject)))
+          << "DependenceComponent " << component->name
+          << " subjects must include every component edge subject";
+      has_carry_edge = has_carry_edge || str(edge->kind) == "carry";
+      has_reduction_edge = has_reduction_edge || str(edge->kind) == "reduction";
+    }
+    if (str(component->component_kind) == "carry_cycle") {
+      ICHECK(has_carry_edge)
+          << "DependenceComponent " << component->name << " carry_cycle requires a carry edge";
+    }
+    if (str(component->component_kind) == "reduction_cycle") {
+      ICHECK(has_reduction_edge)
+          << "DependenceComponent " << component->name
+          << " reduction_cycle requires a reduction edge";
+    }
+  }
+}
+
 void ValidateAccessRegions(const SpatialPlan& plan) {
   std::unordered_set<std::string> seen_names;
   std::unordered_set<std::string> covered_accesses;
@@ -656,6 +727,7 @@ void CheckSpatialPlan(const SpatialPlan& plan) {
   const std::vector<int> phase_index_by_unit = BuildPhaseIndexByUnit(plan);
   ValidateAccessRegions(plan);
   ValidateDataflowEdges(plan, phase_index_by_unit);
+  ValidateDependenceComponents(plan);
   ValidateLayoutSpecs(plan);
   ValidatePhasePlans(plan, phase_index_by_unit);
   ValidateLiveValueBoundaryObjects(plan, phase_index_by_unit);

@@ -249,6 +249,27 @@ def _rebuild_access_region(
     )
 
 
+def _rebuild_dependence_component(
+    component,
+    *,
+    name=None,
+    component_kind=None,
+    unit_indices=None,
+    edge_indices=None,
+    subjects=None,
+    anchors=None,
+):
+    make_dependence_component = tvm.get_global_func("tl.DependenceComponent")
+    return make_dependence_component(
+        str(component.name) if name is None else name,
+        str(component.component_kind) if component_kind is None else component_kind,
+        list(component.unit_indices) if unit_indices is None else unit_indices,
+        list(component.edge_indices) if edge_indices is None else edge_indices,
+        list(component.subjects) if subjects is None else subjects,
+        list(component.anchors) if anchors is None else anchors,
+    )
+
+
 def _rebuild_live_value_edge(
     edge,
     *,
@@ -349,6 +370,7 @@ def _rebuild_spatial_plan(
     execution_units=None,
     access_regions=None,
     dataflow_edges=None,
+    dependence_components=None,
     layout_specs=None,
     phase_plans=None,
     live_values=None,
@@ -365,6 +387,9 @@ def _rebuild_spatial_plan(
         list(plan.execution_units) if execution_units is None else execution_units,
         list(plan.access_regions) if access_regions is None else access_regions,
         list(plan.dataflow_edges) if dataflow_edges is None else dataflow_edges,
+        list(plan.dependence_components)
+        if dependence_components is None
+        else dependence_components,
         list(plan.layout_specs) if layout_specs is None else layout_specs,
         list(plan.phase_plans) if phase_plans is None else phase_plans,
         list(plan.live_values) if live_values is None else live_values,
@@ -814,6 +839,42 @@ def test_flash_attention_spatial_plan_keeps_local_state_and_shared_layouts():
     assert layout_scopes["logsum"] == "blackhole.acc"
 
 
+def test_algorithmic_spatial_plan_records_carry_dependence_components():
+    mod = _prepare_blackhole_phase_b_module(
+        gqa_example.flashattn.jit_impl.get_tir(
+            1,
+            16,
+            1024,
+            128,
+            False,
+            groups=16,
+            block_M=64,
+            block_N=64,
+            num_stages=4,
+            threads=128,
+        )
+    )
+    plan = mod["main"].attrs["tl.spatial_plan"]
+
+    carry_components = [
+        component
+        for component in plan.dependence_components
+        if str(component.component_kind) == "carry_cycle"
+    ]
+    component_subjects = {
+        str(subject) for component in carry_components for subject in component.subjects
+    }
+    component_edge_kinds = {
+        str(plan.dataflow_edges[int(edge_index)].kind)
+        for component in carry_components
+        for edge_index in component.edge_indices
+    }
+
+    assert carry_components
+    assert {"acc_o", "scores_max", "logsum"}.issubset(component_subjects)
+    assert "carry" in component_edge_kinds
+
+
 def test_phase_b_pipeline_records_live_values_without_logical_bridge_attr():
     mod = tvm.IRModule({"main": fragment_fill_cast_publish_kernel().with_attr("global_symbol", "main")})
     target = Target("blackhole")
@@ -1191,6 +1252,41 @@ def test_algorithmic_validate_spatial_plan_rejects_missing_access_region():
     broken = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
     with pytest.raises(Exception, match="SpatialPlan access_regions"):
+        tilelang.transform.ValidateSpatialPlan()(broken)
+
+
+def test_algorithmic_validate_spatial_plan_rejects_invalid_dependence_component_edge():
+    mod = _prepare_blackhole_phase_b_module(
+        gqa_example.flashattn.jit_impl.get_tir(
+            1,
+            16,
+            1024,
+            128,
+            False,
+            groups=16,
+            block_M=64,
+            block_N=64,
+            num_stages=4,
+            threads=128,
+        )
+    )
+    main = mod["main"]
+    plan = main.attrs["tl.spatial_plan"]
+    invalid_component = _rebuild_dependence_component(
+        plan.dependence_components[0],
+        edge_indices=[-1],
+    )
+    invalid_plan = _rebuild_spatial_plan(
+        plan,
+        dependence_components=[
+            invalid_component,
+            *list(plan.dependence_components[1:]),
+        ],
+    )
+    func = main.with_attr("tl.spatial_plan", invalid_plan).without_attr("tl.spatial_plan_validated")
+    broken = tvm.IRModule({"main": func}, global_infos=mod.global_infos)
+
+    with pytest.raises(Exception, match="DependenceComponent.*edge_index"):
         tilelang.transform.ValidateSpatialPlan()(broken)
 
 

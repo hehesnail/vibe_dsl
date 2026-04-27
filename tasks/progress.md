@@ -9,11 +9,12 @@
 - Date: `2026-04-28`
 - Active lane: `Blackhole algorithmic generalization implementation queue`
 - Current item:
-  2026-04-28 `Algorithmic generalization Phase A: AccessRegion foundation`
-  completed.  `SpatialPlan` now carries typed `AccessRegion` records
-  built from execution-unit reads/writes and validated for unit/subject/
-  shape coverage.  The next implementation unit is
-  `Algorithmic generalization Phase B: graph-backed SpatialPlan dependence`.
+  2026-04-28 `Algorithmic generalization Phase B: graph-backed SpatialPlan dependence`
+  completed.  `SpatialPlan` now carries typed `DependenceComponent`
+  SCC diagnostics, and flow/carry/join/materialize dataflow edges are
+  built through the shared dependence graph helper from `AccessRegion`
+  events plus local value-flow evidence.  The next implementation unit is
+  `Algorithmic generalization Phase C: LiveValueSSA`.
 - Blocker:
   No blocker remains for Blackhole tile-compute preservation itself.
   Active lowering no longer recovers row-reduction / broadcast /
@@ -65,6 +66,7 @@
 - `Blackhole algorithmic design architecture review`: completed
 - `Blackhole follow-up task queue refresh`: completed
 - `Algorithmic generalization Phase A AccessRegion foundation`: completed
+- `Algorithmic generalization Phase B graph-backed SpatialPlan dependence`: completed
 
 ## Current Support Boundary
 
@@ -127,41 +129,34 @@
   The current schema can express the direction; runtime admission must expand
   through typed `TTProgram -> ExecutableSpec` records, not runtime-only patching.
 - The next refactor lane is now ordered by representation dependency:
-  graph-backed `SpatialPlan` dependence,
   `LiveValueSSA`, TT live-form solver, tile compute legalizer / DAG
   covering, and only then wider runtime admission.  `AccessRegion`
-  foundation is implemented; the remaining items are design-complete
-  but not implemented.
+  and graph-backed `SpatialPlan` dependence are implemented; the remaining
+  items are design-complete but not implemented.
 
 ## Next Task Order
 
-1. `Algorithmic generalization Phase B: graph-backed SpatialPlan dependence`
-   - Build graph-backed `SpatialPlan` dependence edges from
-     `AccessRegion` and tile op dataflow evidence.
-   - Replace ad hoc local value-flow edge construction with graph builder
-     output and SCC-backed recurrence diagnostics.
-
-2. `Algorithmic generalization Phase C: LiveValueSSA`
+1. `Algorithmic generalization Phase C: LiveValueSSA`
    - Version logical values through `LiveValueSSA`,
      materialization boundaries, phi/join records, and source/target version
      references.
    - Delete any pass-local fallback as soon as the corresponding typed
      version field feeds downstream planning.
 
-3. `Algorithmic generalization Phase D: TT live-form solver`
+2. `Algorithmic generalization Phase D: TT live-form solver`
    - Add the live-form lattice solver and project solver decisions into
      `TTLiveFormPlan`, `TTMaterializationPlan`, and
      `TTConsumerBindingPlan`.
    - Replace exact-CB/source-live-form pass-local maps where the value
      survives across events or phases.
 
-4. `Tile compute legalizer / DAG covering Phase A-B`
+3. `Tile compute legalizer / DAG covering Phase A-B`
    - Add `TileComputeDAG` read-only dump, pattern schema, and legalizer
      diagnostics for current admitted leaf ops.
    - Keep existing source emission active until the legalizer accepts the
      same admitted compute set.
 
-5. `Tile compute legalizer / DAG covering Phase C-E`
+4. `Tile compute legalizer / DAG covering Phase C-E`
    - Add `TileComputeDAG`, legalization actions, TT-Metal leaf pattern
      covering, fanout/materialization-aware covering, and old branch
      deletion for current admitted compute ops.
@@ -169,26 +164,26 @@
    - Do not let covering output become a pass-to-pass DAG payload or
      source-string protocol.
 
-6. `Multi-block flash-attn direct-runtime admission`
+5. `Multi-block flash-attn direct-runtime admission`
    - Re-admit seq64 / multi-K-step direct runtime only after the
      online-softmax live-form contract is represented and verified through
      typed `TTProgram -> ExecutableSpec` state.
    - Correctness gate remains TT-Sim bf16; compile/source/spec stability
      alone is not runtime admission.
 
-7. `Post-P2 flash-attn wider exact-CB event support`
+6. `Post-P2 flash-attn wider exact-CB event support`
    - Admit larger stage2/block64 shapes only after the exact CB
      multi-page event contract is represented and validated through
      `TTProgram -> ExecutableSpec`.
    - Treat this as event-lifetime admission, not a source emitter patch.
 
-8. `P3 mesh/distributed runtime expansion`
+7. `P3 mesh/distributed runtime expansion`
    - Treat this as a deferred runtime admission lane.
    - Reuse `TTMeshPlan` / `TTBufferDistributionPlan` schema.
    - Add real sharded / multi-device / fabric semantics only through typed
      schema and validator extensions.
 
-9. Post-P2 flash-attn wider-shape support
+8. Post-P2 flash-attn wider-shape support
    - Expand workload scale only after the multi-K-step and multi-page
      event contracts above are admitted.
    - Do not jump straight to 4096.  The intended admission ladder is:
@@ -237,21 +232,32 @@
   - The merge unit is schema + builder + validator + structure tests only;
     no TTProgram or source-generation behavior changed.
 
+- `Algorithmic generalization Phase B: graph-backed SpatialPlan dependence`
+  - Added shared `spatial_dependence_graph` helper for
+    `AccessRegion`-ordered flow/carry/join construction, same-unit
+    materialize edges, and Tarjan SCC diagnostics.
+  - Added typed `DependenceComponent` to `SpatialPlan` and validator checks
+    for component kind, unit membership, edge membership, and carry-cycle
+    evidence.
+  - Removed the ad hoc closure read/write boundary builder and local
+    materialize-edge constructor from `build_spatial_plan.cc`; the pass now
+    orchestrates typed builders.
+
 ## Latest Verification
 
-Algorithmic generalization Phase A AccessRegion foundation:
+Algorithmic generalization Phase B graph-backed SpatialPlan dependence:
 
 - docs updated:
   `tasks/progress.md`,
   `memory/general_dev.md`,
   and `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
 - tests added:
-  `test_algorithmic_access_region_covers_copy_unit_reads_and_writes`
+  `test_algorithmic_spatial_plan_records_carry_dependence_components`
   and
-  `test_algorithmic_validate_spatial_plan_rejects_missing_access_region`
+  `test_algorithmic_validate_spatial_plan_rejects_invalid_dependence_component_edge`
 - `cmake --build build -j32`
   -> passed
-- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
-  -> `37 passed`
+- `python -m pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
+  -> `39 passed`
 - background process scan:
   no lingering `pytest` / `cmake --build` / `ninja` process
