@@ -1357,3 +1357,15 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   后续第一个 cleanup task
   应转向 `lower_tile_op.cc`
   的 Blackhole normalizer 去重。
+- `lower_tile_op.cc` 的 Blackhole tile compute normalization
+  已收成单一匿名命名空间 helper，
+  由 `LowerTileOpPass`
+  和 `BlackholeTileComputeNormalizer`
+  共享调用。
+  后续增加新的 admitted tile compute normalization
+  时，应扩这个共享 helper，
+  继续产出显式
+  `tl.tileop.blackhole_compute`
+  和 TT-Metal leaf API 粒度 operation name；
+  不要在两个 pass class 里重新复制 matcher /
+  generator surface。

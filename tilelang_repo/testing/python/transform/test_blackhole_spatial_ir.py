@@ -1,3 +1,4 @@
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -510,6 +511,22 @@ def test_blackhole_frontend_tile_compute_normalization_uses_leaf_operations():
 
     assert operations
     assert operations <= BLACKHOLE_TILE_COMPUTE_LEAF_OPS
+
+
+def test_lower_tile_op_has_single_blackhole_tile_compute_normalizer_surface():
+    source = (REPO_ROOT / "tilelang_repo/src/transform/lower_tile_op.cc").read_text()
+
+    helper_defs = re.findall(r"\bStmt\s+MakeBlackholeTileComputeCall\s*\(", source)
+    store_defs = re.findall(
+        r"\bStmt\s+TryNormalize(?:BlackholeTileCompute)?Store\s*\(", source
+    )
+    loop_defs = re.findall(
+        r"\bStmt\s+TryNormalize(?:BlackholeTileCompute)?Loop\s*\(", source
+    )
+
+    assert helper_defs == ["Stmt MakeBlackholeTileComputeCall("]
+    assert len(store_defs) == 1
+    assert len(loop_defs) == 1
 
 
 def test_spatial_plan_records_preserved_reduce_as_compute_producer():

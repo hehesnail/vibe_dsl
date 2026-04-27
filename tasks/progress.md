@@ -9,18 +9,11 @@
 - Date: `2026-04-28`
 - Active lane: `Blackhole post-preservation pass shrink`
 - Current item:
-  2026-04-28 lower_blackhole_ops.cc responsibility shrink completed for
-  the current Blackhole lowering boundary.  The file now retains pass driver,
-  CB requirement bookkeeping, logical shape loading, generic validators,
-  and visitor orchestration.  Implementation responsibility moved to
-  dedicated TUs:
-  `lower_blackhole_tile_compute.cc`,
-  `lower_blackhole_exact_cb.cc`,
-  `lower_blackhole_materialization.cc`,
-  `lower_blackhole_abi.cc`,
-  `lower_blackhole_state.cc`,
-  `lower_blackhole_transport.cc`,
-  and `lower_blackhole_matmul.cc`.
+  2026-04-28 `lower_tile_op.cc` Blackhole tile compute normalizer dedup
+  completed.  `LowerTileOpPass` and `BlackholeTileComputeNormalizer` now share
+  one pass-local normalizer helper that emits explicit
+  `tl.tileop.blackhole_compute` operations at TT-Metal leaf API granularity.
+  The old duplicate implementation surfaces inside both pass classes are gone.
 - Blocker:
   No blocker remains for Blackhole tile-compute preservation itself.
   Active lowering no longer recovers row-reduction / broadcast /
@@ -66,6 +59,7 @@
 - `Post-preservation live-form/state bookkeeping split`: completed
 - `Post-preservation staged transport split`: completed
 - `Post-preservation matmul lowering split`: completed
+- `Post-preservation lower_tile_op Blackhole normalizer dedup`: completed
 
 ## Current Support Boundary
 
@@ -111,11 +105,11 @@
   staged transport emission, live-form/state bookkeeping, or matmul lowering.
   It is now the pass driver plus shared CB requirement / logical-shape /
   validator / visitor orchestration surface.
-- `lower_tile_op.cc` remains the clearest next non-Blackhole-pass audit
-  candidate: it still has duplicate Blackhole tile compute normalization
-  logic in `LowerTileOpPass` and `BlackholeTileComputeNormalizer`.
-  Future cleanup should centralize that normalization without reintroducing
-  downstream scalar-loop matchers.
+- `lower_tile_op.cc` no longer has duplicate Blackhole tile compute
+  normalization implementations in `LowerTileOpPass` and
+  `BlackholeTileComputeNormalizer`.  Future additions to this normalization
+  surface should extend the shared helper and continue emitting explicit
+  `tl.tileop.blackhole_compute`, not downstream scalar-loop recovery.
 - Multi-block flash-attn direct-runtime correctness needs a separate
   online-softmax live-form admission.  Do not reopen it by bypassing the
   runtime gate; admit it only after typed source-live-form and event
@@ -130,24 +124,18 @@
 
 ## Next Task Order
 
-1. `lower_tile_op.cc Blackhole normalizer dedup`
-   - Centralize the duplicate Blackhole tile compute normalization now split
-     between `LowerTileOpPass` and `BlackholeTileComputeNormalizer`.
-   - The output must remain explicit `tl.tileop.blackhole_compute` /
-     typed tile op semantics, not downstream matcher recovery.
-
-2. `Multi-block flash-attn direct-runtime admission`
+1. `Multi-block flash-attn direct-runtime admission`
    - Re-admit seq64 / multi-K-step direct runtime only after the
      online-softmax live-form contract is represented and verified through
      typed `TTProgram -> ExecutableSpec` state.
 
-3. `P3 mesh/distributed runtime expansion`
+2. `P3 mesh/distributed runtime expansion`
    - Treat this as a later runtime admission lane.
    - Reuse `TTMeshPlan` / `TTBufferDistributionPlan` schema.
    - Add real sharded / multi-device / fabric semantics only through typed
      schema and validator extensions.
 
-4. Post-P2 flash-attn wider-shape support
+3. Post-P2 flash-attn wider-shape support
    - Admit larger stage2/block64 shapes only after the exact CB
      multi-page event contract is represented and validated through
      `TTProgram -> ExecutableSpec`.
@@ -189,12 +177,14 @@
 
 ## Latest Verification
 
-Blackhole post-preservation pass shrink completion:
+Blackhole `lower_tile_op.cc` normalizer dedup completion:
 
 - `cmake --build build -j32`
   -> passed
+- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py::test_lower_tile_op_has_single_blackhole_tile_compute_normalizer_surface testing/python/transform/test_blackhole_spatial_ir.py::test_blackhole_frontend_normalizes_flash_attention_leaf_tile_compute_before_tt_selection testing/python/transform/test_blackhole_spatial_ir.py::test_blackhole_frontend_tile_compute_normalization_uses_leaf_operations`
+  -> `3 passed`
 - `pytest -q testing/python/transform/test_blackhole_spatial_ir.py testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py testing/python/target/blackhole/test_blackhole_copy_pipeline.py testing/python/target/blackhole/test_blackhole_gemm.py`
-  -> `197 passed, 25 skipped, 1 xfailed`
+  -> `198 passed, 25 skipped, 1 xfailed`
 - TT-Sim:
   `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`
   -> `15 passed, 5 skipped`

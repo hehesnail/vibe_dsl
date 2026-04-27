@@ -143,20 +143,19 @@ as a compatibility shell.
 
 按文件规模和职责混杂度扫过
 `tilelang_repo/src/transform` 后，
-最明显的后续候选是：
+第一批后续 cleanup 已完成：
 
 - `lower_tile_op.cc`
   - 同时包含 generic tile op lowering
     和 Blackhole tile compute normalization
-  - 当前有两份相近的
+  - 已将原来两份相近的
     `MakeBlackholeTileComputeCall`
     /
     store normalization logic
     分别在 `LowerTileOpPass`
     和 `BlackholeTileComputeNormalizer`
-  - 后续 cleanup 应把 Blackhole-specific
-    normalization 收束成单一实现面，
-    继续产出显式
+    中的实现收束成单一共享 helper
+  - 继续产出显式
     `tl.tileop.blackhole_compute`
     而不是下游 matcher
 

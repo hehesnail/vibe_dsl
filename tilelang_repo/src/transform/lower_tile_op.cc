@@ -164,6 +164,193 @@ bool MatchExp2Call(const PrimExpr &expr, PrimExpr *arg) {
   return true;
 }
 
+Stmt MakeBlackholeTileComputeCall(const char *operation,
+                                  Array<PrimExpr> payload) {
+  Array<PrimExpr> args;
+  args.push_back(StringImm(operation));
+  for (const PrimExpr &arg : payload) {
+    args.push_back(arg);
+  }
+  return Evaluate(Call(DataType::Handle(),
+                       Op::Get(blackhole_tile_compute_schema::kOpName), args));
+}
+
+Stmt TryNormalizeBlackholeTileComputeStore(const BufferStoreNode *store,
+                                           const PrimExpr &linear_index,
+                                           const PrimExpr &num_elements) {
+  if (!store || !IsBlackholeComputeBuffer(store->buffer) ||
+      store->indices.size() != 1U ||
+      !ProvenEqual(store->indices[0], linear_index)) {
+    return Stmt();
+  }
+
+  Buffer src;
+  PrimExpr src_index;
+  if (const auto *cast = store->value.as<CastNode>()) {
+    if (MatchLoad(cast->value, &src, &src_index) &&
+        ProvenEqual(src_index, linear_index)) {
+      return MakeBlackholeTileComputeCall(
+          blackhole_tile_compute_schema::kTypecastTile,
+          {MakeFullRegionExpr(src, 1), MakeFullRegionExpr(store->buffer, 2),
+           num_elements});
+    }
+  }
+
+  if (MatchLoad(store->value, &src, &src_index) &&
+      !SameBufferStorage(src, store->buffer) &&
+      ProvenEqual(src_index, linear_index)) {
+    return MakeBlackholeTileComputeCall(
+        blackhole_tile_compute_schema::kCopyTile,
+        {MakeFullRegionExpr(src, 1), MakeFullRegionExpr(store->buffer, 2),
+         num_elements});
+  }
+
+  auto try_match_max = [&](const PrimExpr &lhs,
+                           const PrimExpr &rhs) -> Stmt {
+    Buffer rhs_buffer;
+    if (!MatchLoadFromBuffer(lhs, store->buffer, linear_index) ||
+        !MatchLoad(rhs, &rhs_buffer, nullptr)) {
+      return Stmt();
+    }
+    return MakeBlackholeTileComputeCall(
+        blackhole_tile_compute_schema::kBinaryMaxTile,
+        {MakeFullRegionExpr(store->buffer, 3),
+         MakeFullRegionExpr(rhs_buffer, 1), num_elements});
+  };
+  if (const auto *max = store->value.as<MaxNode>()) {
+    if (Stmt matched = try_match_max(max->a, max->b); matched.defined()) {
+      return matched;
+    }
+    if (Stmt matched = try_match_max(max->b, max->a); matched.defined()) {
+      return matched;
+    }
+  }
+
+  auto try_match_fma = [&](const PrimExpr &mul_expr,
+                           const PrimExpr &add_expr) -> Stmt {
+    const auto *mul = mul_expr.as<MulNode>();
+    if (!mul) {
+      return Stmt();
+    }
+    auto emit_fma = [&](const Buffer &other_mul,
+                        const Buffer &add_buffer) -> Stmt {
+      std::vector<Stmt> stmts{
+          MakeBlackholeTileComputeCall(
+              blackhole_tile_compute_schema::kMulTiles,
+              {MakeFullRegionExpr(store->buffer, 3),
+               MakeFullRegionExpr(other_mul, 1), num_elements}),
+          MakeBlackholeTileComputeCall(
+              blackhole_tile_compute_schema::kAddTiles,
+              {MakeFullRegionExpr(store->buffer, 3),
+               MakeFullRegionExpr(add_buffer, 1), num_elements})};
+      return SeqStmt::Flatten(stmts);
+    };
+    Buffer other_mul;
+    Buffer add_buffer;
+    if (MatchLoadFromBuffer(mul->a, store->buffer, linear_index) &&
+        MatchLoad(mul->b, &other_mul, nullptr) &&
+        MatchLoad(add_expr, &add_buffer, nullptr)) {
+      return emit_fma(other_mul, add_buffer);
+    }
+    if (MatchLoadFromBuffer(mul->b, store->buffer, linear_index) &&
+        MatchLoad(mul->a, &other_mul, nullptr) &&
+        MatchLoad(add_expr, &add_buffer, nullptr)) {
+      return emit_fma(other_mul, add_buffer);
+    }
+    return Stmt();
+  };
+  if (const auto *add = store->value.as<AddNode>()) {
+    if (Stmt matched = try_match_fma(add->a, add->b); matched.defined()) {
+      return matched;
+    }
+    if (Stmt matched = try_match_fma(add->b, add->a); matched.defined()) {
+      return matched;
+    }
+  }
+
+  PrimExpr exp2_arg;
+  if (MatchExp2Call(store->value, &exp2_arg)) {
+    if (const auto *sub = exp2_arg.as<SubNode>()) {
+      Buffer lhs;
+      Buffer rhs;
+      PrimExpr lhs_scale;
+      PrimExpr rhs_scale;
+      if (MatchScaledLoad(sub->a, &lhs, &lhs_scale) &&
+          MatchScaledLoad(sub->b, &rhs, &rhs_scale)) {
+        arith::Analyzer analyzer;
+        const char *mode =
+            SameBufferStorage(lhs, store->buffer) ? "bcast_cols" : "binary";
+        PrimExpr row_width =
+            IsOneDimensionalBuffer(store->buffer) ? num_elements : IntImm32(1);
+        return MakeBlackholeTileComputeCall(
+            blackhole_tile_compute_schema::kExp2Tile,
+            {StringImm(mode), MakeFullRegionExpr(store->buffer, 3),
+             MakeFullRegionExpr(lhs, 1), MakeFullRegionExpr(rhs, 1),
+             lhs_scale, analyzer.Simplify(-rhs_scale), row_width,
+             num_elements});
+      }
+    }
+  }
+
+  auto try_match_row_broadcast = [&](const PrimExpr &self_expr,
+                                     const PrimExpr &scalar_expr,
+                                     const char *kind) -> Stmt {
+    Buffer scalar;
+    if (!MatchLoadFromBuffer(self_expr, store->buffer, linear_index) ||
+        !MatchLoad(scalar_expr, &scalar, nullptr) ||
+        SameBufferStorage(scalar, store->buffer)) {
+      return Stmt();
+    }
+    return MakeBlackholeTileComputeCall(
+        blackhole_tile_compute_schema::kMulTilesBcastCols,
+        {StringImm(kind), MakeFullRegionExpr(store->buffer, 3),
+         MakeFullRegionExpr(scalar, 1), num_elements, num_elements});
+  };
+  if (const auto *mul = store->value.as<MulNode>()) {
+    if (Stmt matched = try_match_row_broadcast(mul->a, mul->b, "mul");
+        matched.defined()) {
+      return matched;
+    }
+    if (Stmt matched = try_match_row_broadcast(mul->b, mul->a, "mul");
+        matched.defined()) {
+      return matched;
+    }
+  }
+  if (const auto *div = store->value.as<DivNode>()) {
+    if (Stmt matched = try_match_row_broadcast(div->a, div->b, "div");
+        matched.defined()) {
+      return matched;
+    }
+  }
+
+  if (IsLiteralScalarValue(store->value)) {
+    return MakeBlackholeTileComputeCall(
+        blackhole_tile_compute_schema::kFillTile,
+        {MakeFullRegionExpr(store->buffer, 2), store->value, num_elements});
+  }
+
+  return Stmt();
+}
+
+Stmt TryNormalizeBlackholeTileComputeLoop(const ForNode *op) {
+  if (const auto *store = op->body.as<BufferStoreNode>()) {
+    if (store->indices.size() == 1U) {
+      return TryNormalizeBlackholeTileComputeStore(store, store->indices[0],
+                                                  op->extent);
+    }
+  }
+  const auto *inner_loop = op->body.as<ForNode>();
+  const auto *inner_store =
+      inner_loop ? inner_loop->body.as<BufferStoreNode>() : nullptr;
+  if (inner_loop && inner_store && inner_store->indices.size() == 1U) {
+    arith::Analyzer analyzer;
+    return TryNormalizeBlackholeTileComputeStore(
+        inner_store, inner_store->indices[0],
+        analyzer.Simplify(op->extent * inner_loop->extent));
+  }
+  return Stmt();
+}
+
 } // namespace
 
 static Buffer makeBufferWithLayout(const Buffer &buffer, const Layout &layout,
@@ -1169,208 +1356,6 @@ private:
     return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
   }
 
-  Stmt MakeBlackholeTileComputeCall(const char *operation,
-                                    Array<PrimExpr> payload) const {
-    Array<PrimExpr> args;
-    args.push_back(StringImm(operation));
-    for (const PrimExpr &arg : payload) {
-      args.push_back(arg);
-    }
-    return Evaluate(Call(DataType::Handle(),
-                         Op::Get(blackhole_tile_compute_schema::kOpName),
-                         args));
-  }
-
-  Stmt TryNormalizeBlackholeTileComputeStore(const BufferStoreNode *store,
-                                             const PrimExpr &linear_index,
-                                             const PrimExpr &num_elements) const {
-    if (!TargetIsBlackhole(target_) || !store ||
-        !IsBlackholeComputeBuffer(store->buffer) ||
-        store->indices.size() != 1U ||
-        !ProvenEqual(store->indices[0], linear_index)) {
-      return Stmt();
-    }
-
-    Buffer src;
-    PrimExpr src_index;
-    if (const auto *cast = store->value.as<CastNode>()) {
-      if (MatchLoad(cast->value, &src, &src_index) &&
-          ProvenEqual(src_index, linear_index)) {
-        return MakeBlackholeTileComputeCall(
-            blackhole_tile_compute_schema::kTypecastTile,
-            {MakeFullRegionExpr(src, 1),
-             MakeFullRegionExpr(store->buffer, 2), num_elements});
-      }
-    }
-
-    if (MatchLoad(store->value, &src, &src_index) &&
-        !SameBufferStorage(src, store->buffer) &&
-        ProvenEqual(src_index, linear_index)) {
-      return MakeBlackholeTileComputeCall(
-          blackhole_tile_compute_schema::kCopyTile,
-          {MakeFullRegionExpr(src, 1), MakeFullRegionExpr(store->buffer, 2),
-           num_elements});
-    }
-
-    auto try_match_max = [&](const PrimExpr &lhs,
-                             const PrimExpr &rhs) -> Stmt {
-      Buffer rhs_buffer;
-      if (!MatchLoadFromBuffer(lhs, store->buffer, linear_index) ||
-          !MatchLoad(rhs, &rhs_buffer, nullptr)) {
-        return Stmt();
-      }
-      return MakeBlackholeTileComputeCall(
-          blackhole_tile_compute_schema::kBinaryMaxTile,
-          {MakeFullRegionExpr(store->buffer, 3),
-           MakeFullRegionExpr(rhs_buffer, 1), num_elements});
-    };
-    if (const auto *max = store->value.as<MaxNode>()) {
-      if (Stmt matched = try_match_max(max->a, max->b); matched.defined()) {
-        return matched;
-      }
-      if (Stmt matched = try_match_max(max->b, max->a); matched.defined()) {
-        return matched;
-      }
-    }
-
-    auto try_match_fma = [&](const PrimExpr &mul_expr,
-                             const PrimExpr &add_expr) -> Stmt {
-      const auto *mul = mul_expr.as<MulNode>();
-      if (!mul) {
-        return Stmt();
-      }
-      Buffer other_mul;
-      Buffer add_buffer;
-      if (MatchLoadFromBuffer(mul->a, store->buffer, linear_index) &&
-          MatchLoad(mul->b, &other_mul, nullptr) &&
-          MatchLoad(add_expr, &add_buffer, nullptr)) {
-        std::vector<Stmt> stmts{
-            MakeBlackholeTileComputeCall(
-                blackhole_tile_compute_schema::kMulTiles,
-                {MakeFullRegionExpr(store->buffer, 3),
-                 MakeFullRegionExpr(other_mul, 1), num_elements}),
-            MakeBlackholeTileComputeCall(
-                blackhole_tile_compute_schema::kAddTiles,
-                {MakeFullRegionExpr(store->buffer, 3),
-                 MakeFullRegionExpr(add_buffer, 1), num_elements})};
-        return SeqStmt::Flatten(stmts);
-      }
-      if (MatchLoadFromBuffer(mul->b, store->buffer, linear_index) &&
-          MatchLoad(mul->a, &other_mul, nullptr) &&
-          MatchLoad(add_expr, &add_buffer, nullptr)) {
-        std::vector<Stmt> stmts{
-            MakeBlackholeTileComputeCall(
-                blackhole_tile_compute_schema::kMulTiles,
-                {MakeFullRegionExpr(store->buffer, 3),
-                 MakeFullRegionExpr(other_mul, 1), num_elements}),
-            MakeBlackholeTileComputeCall(
-                blackhole_tile_compute_schema::kAddTiles,
-                {MakeFullRegionExpr(store->buffer, 3),
-                 MakeFullRegionExpr(add_buffer, 1), num_elements})};
-        return SeqStmt::Flatten(stmts);
-      }
-      return Stmt();
-    };
-    if (const auto *add = store->value.as<AddNode>()) {
-      if (Stmt matched = try_match_fma(add->a, add->b); matched.defined()) {
-        return matched;
-      }
-      if (Stmt matched = try_match_fma(add->b, add->a); matched.defined()) {
-        return matched;
-      }
-    }
-
-    PrimExpr exp2_arg;
-    if (MatchExp2Call(store->value, &exp2_arg)) {
-      if (const auto *sub = exp2_arg.as<SubNode>()) {
-        Buffer lhs;
-        Buffer rhs;
-        PrimExpr lhs_scale;
-        PrimExpr rhs_scale;
-        if (MatchScaledLoad(sub->a, &lhs, &lhs_scale) &&
-            MatchScaledLoad(sub->b, &rhs, &rhs_scale)) {
-          arith::Analyzer analyzer;
-          const char *mode =
-              SameBufferStorage(lhs, store->buffer)
-                  ? "bcast_cols"
-                  : "binary";
-          PrimExpr row_width =
-              IsOneDimensionalBuffer(store->buffer) ? num_elements : IntImm32(1);
-          return MakeBlackholeTileComputeCall(
-              blackhole_tile_compute_schema::kExp2Tile,
-              {StringImm(mode), MakeFullRegionExpr(store->buffer, 3),
-               MakeFullRegionExpr(lhs, 1), MakeFullRegionExpr(rhs, 1),
-               lhs_scale, analyzer.Simplify(-rhs_scale), row_width,
-               num_elements});
-        }
-      }
-    }
-
-    auto try_match_row_broadcast = [&](const PrimExpr &self_expr,
-                                       const PrimExpr &scalar_expr,
-                                       const char *kind) -> Stmt {
-      Buffer scalar;
-      if (!MatchLoadFromBuffer(self_expr, store->buffer, linear_index) ||
-          !MatchLoad(scalar_expr, &scalar, nullptr) ||
-          SameBufferStorage(scalar, store->buffer)) {
-        return Stmt();
-      }
-      return MakeBlackholeTileComputeCall(
-          blackhole_tile_compute_schema::kMulTilesBcastCols,
-          {StringImm(kind), MakeFullRegionExpr(store->buffer, 3),
-           MakeFullRegionExpr(scalar, 1), num_elements, num_elements});
-    };
-    if (const auto *mul = store->value.as<MulNode>()) {
-      if (Stmt matched = try_match_row_broadcast(mul->a, mul->b, "mul");
-          matched.defined()) {
-        return matched;
-      }
-      if (Stmt matched = try_match_row_broadcast(mul->b, mul->a, "mul");
-          matched.defined()) {
-        return matched;
-      }
-    }
-    if (const auto *div = store->value.as<DivNode>()) {
-      if (Stmt matched = try_match_row_broadcast(div->a, div->b, "div");
-          matched.defined()) {
-        return matched;
-      }
-    }
-
-    if (IsLiteralScalarValue(store->value)) {
-      return MakeBlackholeTileComputeCall(
-          blackhole_tile_compute_schema::kFillTile,
-          {MakeFullRegionExpr(store->buffer, 2), store->value, num_elements});
-    }
-
-    return Stmt();
-  }
-
-  Stmt TryNormalizeBlackholeTileComputeLoop(const ForNode *op) const {
-    if (!TargetIsBlackhole(target_)) {
-      return Stmt();
-    }
-    if (const auto *store = op->body.as<BufferStoreNode>()) {
-      if (store->indices.size() == 1U) {
-        return TryNormalizeBlackholeTileComputeStore(
-            store, store->indices[0], op->extent);
-      }
-    }
-    const auto *inner_loop = op->body.as<ForNode>();
-    const auto *inner_store =
-        inner_loop ? inner_loop->body.as<BufferStoreNode>() : nullptr;
-    if (inner_loop && inner_store && inner_store->indices.size() == 1U) {
-      arith::Analyzer analyzer;
-      PrimExpr linear_index =
-          analyzer.Simplify(op->loop_var * inner_loop->extent +
-                            inner_loop->loop_var);
-      return TryNormalizeBlackholeTileComputeStore(
-          inner_store, inner_store->indices[0],
-          analyzer.Simplify(op->extent * inner_loop->extent));
-    }
-    return Stmt();
-  }
-
   /**
    * @brief Handle a Parallel For node, lowering it based on the layout
    * annotation.
@@ -1393,9 +1378,11 @@ private:
    * @return Stmt The lowered statement.
    */
   Stmt VisitStmt_(const ForNode *op) final {
-    if (Stmt normalized = TryNormalizeBlackholeTileComputeLoop(op);
-        normalized.defined()) {
-      return normalized;
+    if (TargetIsBlackhole(target_)) {
+      if (Stmt normalized = TryNormalizeBlackholeTileComputeLoop(op);
+          normalized.defined()) {
+        return normalized;
+      }
     }
 
     // Extract reducer info from annotations
@@ -1647,202 +1634,9 @@ public:
   }
 
 private:
-  Stmt MakeBlackholeTileComputeCall(const char *operation,
-                                    Array<PrimExpr> payload) const {
-    Array<PrimExpr> args;
-    args.push_back(StringImm(operation));
-    for (const PrimExpr &arg : payload) {
-      args.push_back(arg);
-    }
-    return Evaluate(Call(DataType::Handle(),
-                         Op::Get(blackhole_tile_compute_schema::kOpName),
-                         args));
-  }
-
-  Stmt TryNormalizeStore(const BufferStoreNode *store,
-                         const PrimExpr &linear_index,
-                         const PrimExpr &num_elements) const {
-    if (!store || !IsBlackholeComputeBuffer(store->buffer) ||
-        store->indices.size() != 1U ||
-        !ProvenEqual(store->indices[0], linear_index)) {
-      return Stmt();
-    }
-
-    Buffer src;
-    PrimExpr src_index;
-    if (const auto *cast = store->value.as<CastNode>()) {
-      if (MatchLoad(cast->value, &src, &src_index) &&
-          ProvenEqual(src_index, linear_index)) {
-        return MakeBlackholeTileComputeCall(
-            blackhole_tile_compute_schema::kTypecastTile,
-            {MakeFullRegionExpr(src, 1),
-             MakeFullRegionExpr(store->buffer, 2), num_elements});
-      }
-    }
-
-    if (MatchLoad(store->value, &src, &src_index) &&
-        !SameBufferStorage(src, store->buffer) &&
-        ProvenEqual(src_index, linear_index)) {
-      return MakeBlackholeTileComputeCall(
-          blackhole_tile_compute_schema::kCopyTile,
-          {MakeFullRegionExpr(src, 1), MakeFullRegionExpr(store->buffer, 2),
-           num_elements});
-    }
-
-    auto try_match_max = [&](const PrimExpr &lhs,
-                             const PrimExpr &rhs) -> Stmt {
-      Buffer rhs_buffer;
-      if (!MatchLoadFromBuffer(lhs, store->buffer, linear_index) ||
-          !MatchLoad(rhs, &rhs_buffer, nullptr)) {
-        return Stmt();
-      }
-      return MakeBlackholeTileComputeCall(
-          blackhole_tile_compute_schema::kBinaryMaxTile,
-          {MakeFullRegionExpr(store->buffer, 3),
-           MakeFullRegionExpr(rhs_buffer, 1), num_elements});
-    };
-    if (const auto *max = store->value.as<MaxNode>()) {
-      if (Stmt matched = try_match_max(max->a, max->b); matched.defined()) {
-        return matched;
-      }
-      if (Stmt matched = try_match_max(max->b, max->a); matched.defined()) {
-        return matched;
-      }
-    }
-
-    auto try_match_fma = [&](const PrimExpr &mul_expr,
-                             const PrimExpr &add_expr) -> Stmt {
-      const auto *mul = mul_expr.as<MulNode>();
-      if (!mul) {
-        return Stmt();
-      }
-      Buffer other_mul;
-      Buffer add_buffer;
-      if (MatchLoadFromBuffer(mul->a, store->buffer, linear_index) &&
-          MatchLoad(mul->b, &other_mul, nullptr) &&
-          MatchLoad(add_expr, &add_buffer, nullptr)) {
-        std::vector<Stmt> stmts{
-            MakeBlackholeTileComputeCall(
-                blackhole_tile_compute_schema::kMulTiles,
-                {MakeFullRegionExpr(store->buffer, 3),
-                 MakeFullRegionExpr(other_mul, 1), num_elements}),
-            MakeBlackholeTileComputeCall(
-                blackhole_tile_compute_schema::kAddTiles,
-                {MakeFullRegionExpr(store->buffer, 3),
-                 MakeFullRegionExpr(add_buffer, 1), num_elements})};
-        return SeqStmt::Flatten(stmts);
-      }
-      if (MatchLoadFromBuffer(mul->b, store->buffer, linear_index) &&
-          MatchLoad(mul->a, &other_mul, nullptr) &&
-          MatchLoad(add_expr, &add_buffer, nullptr)) {
-        std::vector<Stmt> stmts{
-            MakeBlackholeTileComputeCall(
-                blackhole_tile_compute_schema::kMulTiles,
-                {MakeFullRegionExpr(store->buffer, 3),
-                 MakeFullRegionExpr(other_mul, 1), num_elements}),
-            MakeBlackholeTileComputeCall(
-                blackhole_tile_compute_schema::kAddTiles,
-                {MakeFullRegionExpr(store->buffer, 3),
-                 MakeFullRegionExpr(add_buffer, 1), num_elements})};
-        return SeqStmt::Flatten(stmts);
-      }
-      return Stmt();
-    };
-    if (const auto *add = store->value.as<AddNode>()) {
-      if (Stmt matched = try_match_fma(add->a, add->b); matched.defined()) {
-        return matched;
-      }
-      if (Stmt matched = try_match_fma(add->b, add->a); matched.defined()) {
-        return matched;
-      }
-    }
-
-    PrimExpr exp2_arg;
-    if (MatchExp2Call(store->value, &exp2_arg)) {
-      if (const auto *sub = exp2_arg.as<SubNode>()) {
-        Buffer lhs;
-        Buffer rhs;
-        PrimExpr lhs_scale;
-        PrimExpr rhs_scale;
-        if (MatchScaledLoad(sub->a, &lhs, &lhs_scale) &&
-            MatchScaledLoad(sub->b, &rhs, &rhs_scale)) {
-          arith::Analyzer analyzer;
-          const char *mode =
-              SameBufferStorage(lhs, store->buffer)
-                  ? "bcast_cols"
-                  : "binary";
-          PrimExpr row_width =
-              IsOneDimensionalBuffer(store->buffer) ? num_elements : IntImm32(1);
-          return MakeBlackholeTileComputeCall(
-              blackhole_tile_compute_schema::kExp2Tile,
-              {StringImm(mode), MakeFullRegionExpr(store->buffer, 3),
-               MakeFullRegionExpr(lhs, 1), MakeFullRegionExpr(rhs, 1),
-               lhs_scale, analyzer.Simplify(-rhs_scale), row_width,
-               num_elements});
-        }
-      }
-    }
-
-    auto try_match_row_broadcast = [&](const PrimExpr &self_expr,
-                                       const PrimExpr &scalar_expr,
-                                       const char *kind) -> Stmt {
-      Buffer scalar;
-      if (!MatchLoadFromBuffer(self_expr, store->buffer, linear_index) ||
-          !MatchLoad(scalar_expr, &scalar, nullptr) ||
-          SameBufferStorage(scalar, store->buffer)) {
-        return Stmt();
-      }
-      return MakeBlackholeTileComputeCall(
-          blackhole_tile_compute_schema::kMulTilesBcastCols,
-          {StringImm(kind), MakeFullRegionExpr(store->buffer, 3),
-           MakeFullRegionExpr(scalar, 1), num_elements, num_elements});
-    };
-    if (const auto *mul = store->value.as<MulNode>()) {
-      if (Stmt matched = try_match_row_broadcast(mul->a, mul->b, "mul");
-          matched.defined()) {
-        return matched;
-      }
-      if (Stmt matched = try_match_row_broadcast(mul->b, mul->a, "mul");
-          matched.defined()) {
-        return matched;
-      }
-    }
-    if (const auto *div = store->value.as<DivNode>()) {
-      if (Stmt matched = try_match_row_broadcast(div->a, div->b, "div");
-          matched.defined()) {
-        return matched;
-      }
-    }
-
-    if (IsLiteralScalarValue(store->value)) {
-      return MakeBlackholeTileComputeCall(
-          blackhole_tile_compute_schema::kFillTile,
-          {MakeFullRegionExpr(store->buffer, 2), store->value, num_elements});
-    }
-
-    return Stmt();
-  }
-
-  Stmt TryNormalizeLoop(const ForNode *op) const {
-    if (const auto *store = op->body.as<BufferStoreNode>()) {
-      if (store->indices.size() == 1U) {
-        return TryNormalizeStore(store, store->indices[0], op->extent);
-      }
-    }
-    const auto *inner_loop = op->body.as<ForNode>();
-    const auto *inner_store =
-        inner_loop ? inner_loop->body.as<BufferStoreNode>() : nullptr;
-    if (inner_loop && inner_store && inner_store->indices.size() == 1U) {
-      arith::Analyzer analyzer;
-      return TryNormalizeStore(
-          inner_store, inner_store->indices[0],
-          analyzer.Simplify(op->extent * inner_loop->extent));
-    }
-    return Stmt();
-  }
-
   Stmt VisitStmt_(const ForNode *op) final {
-    if (Stmt normalized = TryNormalizeLoop(op); normalized.defined()) {
+    if (Stmt normalized = TryNormalizeBlackholeTileComputeLoop(op);
+        normalized.defined()) {
       return normalized;
     }
     return StmtExprMutator::VisitStmt_(op);
