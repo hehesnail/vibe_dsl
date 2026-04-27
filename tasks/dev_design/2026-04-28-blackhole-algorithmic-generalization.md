@@ -515,6 +515,27 @@ when a new typed field starts feeding a downstream phase,
 the corresponding pass-local fallback must be deleted in the same
 implementation phase.
 
+## Global Task Order
+
+This design owns the first four implementation units in the
+post-review queue:
+
+1. `AccessRegion` foundation
+2. graph-backed `SpatialPlan` dependence construction
+3. `LiveValueSSA`
+4. TT live-form solver
+
+The tile compute legalizer /
+DAG covering lane starts after these foundations have supplied
+typed access,
+dependence,
+version,
+and event-lifetime evidence.
+The runtime admission lanes start only after target planning can
+project that evidence into typed
+`TTProgram -> ExecutableSpec`
+records.
+
 ## Implementation Plan
 
 ### Phase A: AccessRegion Foundation

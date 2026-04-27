@@ -1401,3 +1401,18 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   和 leaf API 粒度 `operation_name`，
   不能变成新的 matcher payload
   或 source-string protocol。
+- 2026-04-28 重新排序后的 Blackhole 后续任务队列为：
+  `AccessRegion`
+  -> graph-backed `SpatialPlan` dependence
+  -> `LiveValueSSA`
+  -> TT live-form solver
+  -> `TileComputeDAG` read-only dump / pattern schema / legalizer
+  -> DAG covering migration and old branch deletion
+  -> multi-block flash-attn runtime admission
+  -> exact-CB multi-page event admission
+  -> P3 mesh/distributed runtime
+  -> wider flash-attn workload scale。
+  这个顺序按 typed evidence dependency 排；
+  runtime / mesh admission 不能绕过 graph /
+  version /
+  event-lifetime 证据。

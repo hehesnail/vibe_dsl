@@ -434,6 +434,30 @@ not a replacement matcher,
 not a source-string protocol,
 and not a pass-to-pass DAG payload.
 
+## Global Task Order
+
+This lane is sequenced after the algorithmic generalization
+foundations:
+
+1. `AccessRegion`
+2. graph-backed `SpatialPlan` dependence
+3. `LiveValueSSA`
+4. TT live-form solver
+
+Then tile compute selection proceeds in two implementation groups:
+
+1. `TileComputeDAG` read-only dump,
+   pattern schema,
+   and legalizer diagnostics
+2. DAG covering migration,
+   fanout/materialization-aware covering,
+   and old per-op selection branch deletion
+
+Runtime admission follows covering only when the selected patterns
+and live-form solver produce typed
+`TTProgram -> ExecutableSpec`
+evidence.
+
 ## Implementation Plan
 
 ### Phase A: Pattern Schema And Read-Only DAG Dump

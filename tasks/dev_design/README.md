@@ -125,6 +125,25 @@ DAG covering
     变成 pattern + legality + tests，
     而不是新增手写 per-op branch family
 
+当前后续实现顺序固定为：
+
+1. `AccessRegion` foundation
+2. graph-backed `SpatialPlan` dependence construction
+3. `LiveValueSSA`
+4. TT live-form solver
+5. `TileComputeDAG` read-only dump / pattern schema / legalizer
+6. DAG covering migration and old per-op branch deletion
+7. multi-block flash-attn direct-runtime admission
+8. exact-CB multi-page event admission
+9. P3 mesh/distributed runtime expansion
+10. wider flash-attn workload-scale admission
+
+这个顺序按表示依赖排列。
+runtime admission 和 mesh/distributed
+不得排到 typed graph /
+version /
+event evidence 之前。
+
 额外参考：
 
 - `archive/layered_ir_references.md`
