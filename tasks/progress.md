@@ -9,14 +9,16 @@
 - Date: `2026-04-28`
 - Active lane: `Blackhole algorithmic generalization design`
 - Current item:
-  2026-04-28 algorithmic generalization design completed for the next
-  Blackhole refactor lane.  The design is split into
+  2026-04-28 algorithmic generalization design and architecture review
+  completed for the next Blackhole refactor lane.  The design is split into
   `2026-04-28-blackhole-algorithmic-generalization.md`
   for `AccessRegion`, graph-backed `SpatialPlan` dependence, and
   `LiveValueSSA`, plus
   `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
   for `TileComputeDAG`, legalization, and TT-Metal leaf pattern covering.
-  No implementation has been started for this lane yet.
+  Both documents now include conformance review sections against the overall
+  IR-first design and compiler architecture practice.  No implementation has
+  been started for this lane yet.
 - Blocker:
   No blocker remains for Blackhole tile-compute preservation itself.
   Active lowering no longer recovers row-reduction / broadcast /
@@ -65,6 +67,7 @@
 - `Post-preservation lower_tile_op Blackhole normalizer dedup`: completed
 - `Blackhole algorithmic generalization design`: completed
 - `Blackhole tile compute legalizer / DAG covering design`: completed
+- `Blackhole algorithmic design architecture review`: completed
 
 ## Current Support Boundary
 
@@ -204,12 +207,20 @@
 
 ## Latest Verification
 
-Blackhole algorithmic generalization design completion:
+Blackhole algorithmic generalization design architecture review:
 
 - docs added:
   `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
   and
   `tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
+- architecture review:
+  both docs now explicitly check representation ownership,
+  analysis/protocol separation,
+  no-name-matching legality,
+  fail-closed behavior,
+  stage responsibility separation,
+  and the specific compiler practice borrowed
+  without introducing a new long-lived IR layer
 - placeholder scan:
   `rg -n "TBD|TODO|fill in|later|open question|Open Question" tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
   -> no matches

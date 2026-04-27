@@ -1382,3 +1382,22 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `TileComputeDAG` + legalizer + TT-Metal leaf pattern covering；
   新增 compute 支持应扩 pattern / legality / cost / tests，
   不要新增 workload-specific matcher branch。
+- 2026-04-28 对上述算法化设计做架构复核后，
+  固定两条实现纪律：
+  任何 `AccessRegion` /
+  dependence /
+  live-version /
+  event-lifetime
+  结果一旦被后续 phase 消费，
+  必须进入 typed
+  `SpatialPlan` /
+  `TTProgram`
+  字段，
+  不能留作 parallel map /
+  helper side channel；
+  `TileComputeDAG`
+  只能是 pass-local selection model，
+  covering 输出必须是 typed plans
+  和 leaf API 粒度 `operation_name`，
+  不能变成新的 matcher payload
+  或 source-string protocol。

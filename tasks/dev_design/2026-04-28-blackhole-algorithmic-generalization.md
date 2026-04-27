@@ -417,6 +417,104 @@ Join rules:
 - `Unsupported`
   fails closed with a typed unsupported reason
 
+## Architecture Review
+
+This section records the design review against
+`final_blackhole_backend_redesign.md`
+and compiler architecture practice.
+
+Review scope:
+
+- only the algorithmic foundation lane:
+  `AccessRegion`,
+  graph-backed `SpatialPlan` dependence,
+  `LiveValueSSA`,
+  and live-form propagation
+- not runtime admission policy beyond the typed evidence required
+  to admit or reject a runtime shape
+
+Primary checks:
+
+1. Representation ownership
+   stays on the existing chain:
+
+   ```text
+   Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec
+   ```
+
+   `AccessRegion`
+   is either builder-local analysis
+   or a typed `SpatialPlan` object when a downstream phase needs it.
+   dependence edges,
+   live-value versions,
+   and materialization boundaries
+   are `SpatialPlan` semantics.
+   physical forms are `TTProgram` realization.
+
+2. Analysis does not become protocol.
+   Access queries,
+   SCC detection,
+   reaching-def construction,
+   and worklist propagation
+   may use local caches,
+   but any result consumed by a downstream phase
+   must be reflected as typed IR fields.
+   Parallel maps are allowed only as pass-local implementation state;
+   they cannot be serialized,
+   exposed through helper APIs,
+   or read by downstream passes as owner truth.
+
+3. Lowering does not recover semantics from names.
+   Region overlap,
+   broadcast,
+   reduction,
+   carry,
+   and event lifetime
+   are derived from TIR structure,
+   tile op dataflow info,
+   access regions,
+   and explicit version edges.
+   Buffer names may appear in diagnostics,
+   but not in legality decisions.
+
+4. Legality fails closed.
+   Non-affine access,
+   unproven reaching definitions,
+   incompatible live-form joins,
+   missing event lifetime,
+   and unvalidated cross-phase visibility
+   all produce typed unsupported diagnostics.
+   They must not fall back to synthetic fill,
+   runtime-side source patching,
+   or leaf reader inference.
+
+5. Stage responsibilities remain separated.
+   `SpatialPlan`
+   owns target-independent dependence and logical value versions.
+   `TTProgram`
+   chooses TT physical forms and materialization protocols.
+   `ExecutableSpec`
+   only projects validated leaf records.
+   The live-form solver is a target-planning algorithm,
+   not a new IR layer and not a runtime admission shortcut.
+
+6. Compiler practice alignment:
+   the design borrows
+   affine-style access normalization,
+   dependence graph SCCs,
+   MemorySSA-like versioning,
+   and sparse dataflow lattice solving
+   because those algorithms match the queries this backend needs.
+   It does not import their framework boundaries
+   or add a new generic compiler layer.
+
+The review conclusion is that this design follows the overall
+IR-first architecture,
+provided the implementation keeps the transition rule strict:
+when a new typed field starts feeding a downstream phase,
+the corresponding pass-local fallback must be deleted in the same
+implementation phase.
+
 ## Implementation Plan
 
 ### Phase A: AccessRegion Foundation

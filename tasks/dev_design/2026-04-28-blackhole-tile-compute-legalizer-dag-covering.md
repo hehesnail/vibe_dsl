@@ -330,6 +330,110 @@ This design depends on the three earlier foundations:
 Without those,
 DAG covering would merely relocate today’s branch logic.
 
+## Architecture Review
+
+This section records the design review against
+`final_blackhole_backend_redesign.md`
+and compiler architecture practice.
+
+Review scope:
+
+- only tile compute selection:
+  `TileComputeDAG`,
+  legalization,
+  TT-Metal leaf pattern covering,
+  and source/plan emission for selected leaf operations
+- not broader transport,
+  ABI,
+  mesh,
+  or runtime admission expansion
+
+Primary checks:
+
+1. No new long-lived IR layer is introduced.
+   `TileComputeDAG`
+   is a pass-local selection model.
+   It may be dumped for diagnostics and tested structurally,
+   but no downstream phase may consume it as owner truth.
+   The only durable outputs are typed
+   `TTComputeOpPlan`,
+   `TTCBPlan`,
+   `TTLiveFormPlan`,
+   `TTMaterializationPlan`,
+   and `TTConsumerBindingPlan`
+   records.
+
+2. Semantics enter from explicit IR,
+   not from late scalar-loop recovery.
+   DAG nodes are built from preserved tile compute calls,
+   tile op dataflow evidence,
+   `AccessRegion`,
+   `LiveValueSSA`,
+   and validated planning context.
+   Operation family,
+   operand role,
+   broadcast axis,
+   reduction axis,
+   and live-form source
+   cannot be inferred from buffer names,
+   source text,
+   or workload-specific helper names.
+
+3. Legalization is separate from emission.
+   The legalizer answers whether an operation is legal,
+   needs lowering,
+   needs materialization,
+   needs dtype promotion,
+   or must be rejected.
+   It does not emit source and does not allocate runtime artifacts.
+   Pattern covering chooses among legal leaf patterns.
+   Source emission is a mechanical projection of the selected typed
+   plans and pattern IDs.
+
+4. Leaf granularity is preserved.
+   `TTComputeOpPlan.operation_name`
+   remains TT-Metal API granularity:
+   `mul_tiles`,
+   `add_tiles`,
+   `*_bcast_cols`,
+   `exp2_tile`,
+   `reduce_tile`,
+   `pack_tile`,
+   `matmul_tiles`,
+   and similar leaf APIs.
+   Composite helpers such as
+   `softmax`,
+   `exp2_affine`,
+   and row-broadcast affine variants
+   stay out of the production protocol.
+
+5. Lowering is an explicit information trade.
+   DAG covering may freeze a target leaf sequence,
+   operand forms,
+   and materialization points,
+   but it must preserve enough typed evidence for validators,
+   source projection,
+   and runtime admission to audit the decision.
+   If event lifetime or live-form source cannot be proven,
+   the candidate is unsupported,
+   not merely expensive.
+
+6. Compiler practice alignment:
+   the design borrows SelectionDAG-style
+   build/legalize/select structure
+   and TableGen-style pattern metadata,
+   but implements them as local C++ typed tables
+   because the current backend needs bounded target selection,
+   not a new multi-target instruction selection framework.
+
+The review conclusion is that the design follows the overall
+IR-first architecture
+provided the implementation keeps one invariant non-negotiable:
+covering output must be typed plans,
+not a replacement matcher,
+not a source-string protocol,
+and not a pass-to-pass DAG payload.
+
 ## Implementation Plan
 
 ### Phase A: Pattern Schema And Read-Only DAG Dump
