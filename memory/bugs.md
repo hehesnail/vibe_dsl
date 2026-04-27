@@ -136,6 +136,78 @@
 
 ## 2. 已解决但值得记住的模式
 
+### preserved tile op 缺少 dataflow access 会让 SpatialPlan 漏 producer truth
+
+- **症状**:
+  - Blackhole 上保留 `tl.tileop.reduce`
+    后，`SpatialPlan`
+    的 compute unit 能看到 source read，
+    但漏掉 reduce destination write；
+    flash-attn 里表现为
+    `scores_sum`
+    carry/dataflow truth 消失
+- **根因**:
+  - `ReduceOpNode`
+    之前没有实现
+    `GetDataflowAccessInfo()`；
+    旧路径靠 scalar-expanded
+    `BufferStore`
+    偶然提供 producer truth，
+    preserve tile op 后这个旁路不再存在
+- **修法**:
+  - 在 tile op 类型自身记录
+    `src` compute consume、
+    `dst` compute produce；
+    对 `clear=false`
+    reduce 还要记录
+    `dst` compute consume
+- **教训**:
+  - 将 TT-Metal API 粒度语义前移到
+    `Normalized Tile TIR`
+    时，operator-level dataflow contract
+    必须和 preservation 同轮补齐；
+    不能继续依赖 lower 后的 scalar IR
+    帮 `SpatialPlan` 恢复读写关系
+
+### reduce explicit lowering 不能提前清掉 accumulator live/fill truth
+
+- **症状**:
+  - preserved `tl.tileop.reduce`
+    接入 selector 后，
+    TT-Sim flash-attn runtime source
+    重新出现
+    `tilelang_cb_write_ptr_bytes_direct`
+    /
+    `get_local_cb_interface`，
+    并在 TRISC link 阶段报
+    `undefined reference to cb_interface`
+- **根因**:
+  - explicit reduce lowering 在调用
+    `GenerateRowReductionSequence()`
+    前提前 invalidated destination
+    fill/live facts。
+    对 `clear=false`
+    row max accumulator，
+    generator 因此无法复用
+    `-inf` fill 或已有 exact live CB，
+    退回到 raw fragment-to-CB tilize bridge
+- **修法**:
+  - 让 row-reduction generator
+    在消费 accumulator truth 后
+    自己通过
+    `RecordExactOutputLiveForm()`
+    更新/失效输出；
+    不在 match 分支提前清理
+    destination live/fill facts
+- **教训**:
+  - 对 read-write compute op，
+    “写 destination”
+    的失效点必须晚于
+    “读旧 destination”
+    的 materialization 决策；
+    否则会把 typed live-form path
+    降级回 forbidden direct CB interface
+
 ### pre-opt `SpatialPlan` 只能作为 typed layout merge source，不能整份替换 optimized plan
 
 - **症状**:

@@ -9,13 +9,15 @@
 - Date: `2026-04-27`
 - Active lane: `Blackhole tile-compute preservation design`
 - Current item:
-  `2026-04-27 Blackhole tile compute preservation design recorded; next implementation lane should move TT-Metal API-grain compute semantics upstream before wider P2/P3 admission work`
+  `2026-04-27 Phase A reduce preservation implemented; next tile-compute preservation work is Phase B unary/binary/broadcast upstream normalization`
 - Blocker:
   No P2 blocker remains for the admitted bf16 flash-attn direct-runtime
-  surface.  The current architectural blocker is that P2.2/P2.3 still rely
-  on late scalar-loop idiom recovery for TT-Metal API-grain tile compute
-  semantics.  That debt is generic across matmul/reduce/unary/binary/
-  broadcast/copy/pack/tilize/untilize leaf APIs, not a reduce-only issue.
+  surface.  Phase A removed active row-reduction scalar-loop recovery from
+  the production lowering path by preserving `tl.tileop.reduce` upstream and
+  selecting `reduce_tile` from explicit tile semantics.  The remaining
+  architectural blocker is that P2.2/P2.3 still rely on late scalar-loop
+  idiom recovery for unary/binary/broadcast/copy/pack/tilize/untilize
+  TT-Metal API-grain compute semantics.
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -85,9 +87,11 @@
 
 - P2.2/P2.3 admitted flash-attn through late TIR idiom recovery in
   `lower_blackhole_ops.cc`.
-  That path currently recovers row reduction, broadcast, exp2 affine,
+  Phase A has moved row reduction to preserved `tl.tileop.reduce` and
+  downgraded the scalar row-reduction matchers to residual fail-closed
+  diagnostics.  The remaining path still recovers broadcast, exp2 affine,
   scalar max/fma/copy/fill/cast shapes after generic scalar lowering.
-  It must be replaced by upstream preservation / normalization of
+  Those must be replaced by upstream preservation / normalization of
   TT-Metal API-grain tile compute semantics in `Normalized Tile TIR`.
   Composite/workload helper names such as `softmax`, `exp2_affine`,
   `row_broadcast_exp2_affine`, or `scalar_exp2_affine` must not become
@@ -105,11 +109,17 @@
 1. `Blackhole tile-compute preservation`
    - Implement
      `tasks/dev_design/2026-04-27-blackhole-tile-compute-preservation.md`.
-   - Move TT-Metal API-grain tile compute semantics upstream into
+   - Phase A reduce preservation is implemented:
+     Blackhole `LowerTileOp` preserves `tl.tileop.reduce`,
+     `ReduceOpNode` carries dataflow access truth,
+     `SelectBlackholeTTMetalBuiltins` emits typed `reduce_tile`,
+     and active scalar row-reduction lowering has been removed.
+   - Next: Phase B unary / binary / broadcast preservation.
+     Move those TT-Metal API-grain semantics upstream into
      `Normalized Tile TIR` preservation / normalization before destructive
      scalar expansion.
-   - Delete or make unreachable the P2.2/P2.3 late scalar-loop idiom
-     recovery path as each compute family is migrated.
+   - Continue deleting or making unreachable the P2.2/P2.3 late scalar-loop
+     idiom recovery path as each compute family is migrated.
    - Scope is generic:
      matmul / reduce / unary / binary / broadcast / copy / pack /
      tilize / untilize,
@@ -162,6 +172,26 @@
      etc.).
 
 ## Latest Verification
+
+Blackhole tile-compute preservation Phase A:
+
+- `cmake --build build -j32`
+- transform structural suite:
+  `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
+  -> `32 passed`
+- flash-attn pipeline:
+  `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
+  -> `67 passed`
+- flash-attn runtime metadata/source/direct-runtime file under TT-Sim env:
+  `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py`
+  -> `20 passed`
+- targeted regression:
+  preserved reduce survives frontend as `tl.tileop.reduce`,
+  selector lowers it to `reduce_tile`,
+  `SpatialPlan` records preserved reduce as a compute producer,
+  and the small bf16 compute source remains free of
+  `tilelang_cb_write_ptr_bytes_direct` /
+  `get_local_cb_interface`.
 
 P2.3 flash-attn multi-K exact CB-republish closeout:
 

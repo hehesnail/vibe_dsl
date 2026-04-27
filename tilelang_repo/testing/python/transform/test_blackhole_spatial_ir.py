@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 import tilelang
+from tilelang import language as T
 from tilelang import tvm
 from tilelang.engine.phase import (
     LowerAndLegalize,
@@ -82,6 +83,46 @@ def _prepare_blackhole_phase_b_module(prim_func):
     mod = tvm.tir.transform.Simplify()(mod)
     mod = tilelang.transform.HoistBroadcastValues()(mod)
     return LowerToBlackholePhaseB(mod)
+
+
+def _collect_call_op_names(node):
+    names = set()
+
+    def visit(expr):
+        if isinstance(expr, tvm.tir.Call):
+            op = expr.op
+            if hasattr(op, "name"):
+                names.add(op.name)
+
+    body = node.body if hasattr(node, "body") else node
+    tvm.tir.stmt_functor.post_order_visit(body, visit)
+    return names
+
+
+def _row_reduce_sum_kernel():
+    @T.prim_func
+    def main(
+        A: T.Tensor((32, 32), "bfloat16"),
+        B: T.Tensor((32,), "float32"),
+    ):
+        with T.Kernel(1, 1, threads=128) as (bx, by):
+            A_shared = T.alloc_shared((32, 32), "bfloat16")
+            A_local = T.alloc_fragment((32, 32), "float32")
+            B_local = T.alloc_fragment((32,), "float32")
+
+            T.copy(A, A_shared)
+            T.copy(A_shared, A_local)
+            T.reduce_sum(A_local, B_local, dim=1, clear=True)
+            T.copy(B_local, B)
+
+    return main
+
+
+def _lower_blackhole_frontend(prim_func):
+    target = Target("blackhole")
+    mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
+    with target:
+        return LowerAndLegalize(mod, target)
 
 
 def _prepare_blackhole_tt_program_module(prim_func):
@@ -406,6 +447,28 @@ def test_blackhole_compute_op_planning_has_no_map_seed_contract_surface():
     assert hits == []
 
 
+def test_blackhole_frontend_preserves_reduce_tileop_before_tt_selection():
+    mod = _lower_blackhole_frontend(_row_reduce_sum_kernel())
+    op_names = _collect_call_op_names(mod["main"])
+
+    assert "tl.tileop.reduce" in op_names
+    assert "tl.blackhole.reduce_tile" not in op_names
+    assert "tir.call_extern" not in op_names
+
+
+def test_spatial_plan_records_preserved_reduce_as_compute_producer():
+    mod = _prepare_blackhole_phase_b_module(_row_reduce_sum_kernel())
+    plan = mod["main"].attrs["tl.spatial_plan"]
+    compute_units = [unit for unit in plan.execution_units if str(unit.unit_role) == "compute"]
+    compute_reads = {str(buffer) for unit in compute_units for buffer in unit.read_buffers}
+    compute_writes = {str(buffer) for unit in compute_units for buffer in unit.write_buffers}
+    dataflow_subjects = {str(edge.subject) for edge in plan.dataflow_edges}
+
+    assert "A_local" in compute_reads
+    assert "B_local" in compute_writes
+    assert "B_local" in dataflow_subjects
+
+
 def test_task1_copy_spatial_plan_emits_flow_boundary_from_tir():
     mod = _prepare_blackhole_phase_b_module(staged_copy_kernel(tile_rows=1, tile_cols=1))
     main = mod["main"]
@@ -684,10 +747,10 @@ def test_tt_metal_builtin_selector_lowers_compute_idioms_before_plan_tt_compute(
         "mul_tiles",
         "add_tiles_init",
         "add_tiles",
-        "mul_bcast_rows_init_short",
-        "mul_tiles_bcast_rows",
-        "add_bcast_rows_init_short",
-        "add_tiles_bcast_rows",
+        "mul_bcast_cols_init_short",
+        "mul_tiles_bcast_cols",
+        "add_bcast_cols_init_short",
+        "add_tiles_bcast_cols",
         "exp2_tile_init",
         "exp2_tile",
         "pack_tile",
@@ -697,6 +760,26 @@ def test_tt_metal_builtin_selector_lowers_compute_idioms_before_plan_tt_compute(
         for name in _collect_blackhole_builtin_names(main)
     )
     assert not any(name in LEGACY_LOCAL_BLACKHOLE_BUILTINS for name in builtin_suffixes)
+
+
+def test_tt_metal_builtin_selector_lowers_preserved_reduce_tileop():
+    mod = _prepare_blackhole_builtin_selection_module(_row_reduce_sum_kernel())
+    main = mod["main"]
+    op_names = _collect_call_op_names(main)
+    reduce_ops = [
+        op
+        for op in main.attrs["tl.tt_program"].compute_op_plans
+        if str(op.operation_name) == "reduce_tile"
+    ]
+
+    assert "tl.tileop.reduce" not in op_names
+    assert {
+        "tl.blackhole.reduce_init",
+        "tl.blackhole.reduce_tile",
+        "tl.blackhole.reduce_uninit",
+    }.issubset(op_names)
+    assert reduce_ops
+    assert all(str(op.kind) == "reduce" for op in reduce_ops)
 
 
 def test_tt_builtin_selection_stages_cb_plans_without_legacy_attr_handoff():

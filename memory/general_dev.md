@@ -91,6 +91,17 @@
   不要先 scalar-expand
   再在后段按 workload idiom
   恢复 compute DAG。
+- Blackhole preserve 某个 `TileOperator`
+  时，这个 op 自身必须实现
+  `GetDataflowAccessInfo()`；
+  `SpatialPlan` 不应该再依赖
+  scalar-expanded `BufferStore` /
+  `BufferLoad`
+  作为 producer / consumer truth。
+  reduce 这类 op 需要显式记录
+  source consume、destination produce，
+  `clear=false` 时还要记录
+  destination consume。
 - `TTComputeOpPlan.operation_name`
   和 executable compute ops
   应保持 TT-Metal leaf API 粒度。

@@ -1478,22 +1478,6 @@ static std::vector<std::string> CollectLeafUnsupportedComputeOpsFromBody(const S
   return unsupported_ops;
 }
 
-static int CountLoweredRowReductionBuiltins(const Stmt& body) {
-  int count = 0;
-  tir::PostOrderVisit(body, [&](const ObjectRef& node) {
-    const auto* call = node.as<CallNode>();
-    if (!call || !call->op->IsInstance<OpNode>()) {
-      return;
-    }
-    const std::string& op_name = Downcast<Op>(call->op)->name;
-    if (op_name == "tl.blackhole.reduce_init" || op_name == "tl.blackhole.reduce_tile" ||
-        op_name == "tl.blackhole.reduce_uninit") {
-      ++count;
-    }
-  });
-  return count;
-}
-
 static bool IsStageLocalScopeForPipelineLegality(const std::string& scope) {
   return scope.rfind("shared", 0) == 0 || scope.rfind("blackhole.cb.", 0) == 0;
 }
@@ -3040,21 +3024,6 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   stmt_order_index_by_node_ = BuildExecutionOrderIndexByStmtNode(func->body);
   const std::vector<std::string> expected_unsupported_ops =
       CollectLeafUnsupportedComputeOpsFromBody(func->body);
-  int expected_row_reduction_count = 0;
-  tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
-    RowReductionMatch match;
-    if (const auto* loop = node.as<ForNode>()) {
-      if (MatchDirectRowReduction(loop, &match) || MatchGroupedRowReduction(loop, &match)) {
-        ++expected_row_reduction_count;
-      }
-      return;
-    }
-    if (const auto* allocate = node.as<AllocateNode>()) {
-      if (MatchAllocatedRowReduction(allocate, &match)) {
-        ++expected_row_reduction_count;
-      }
-    }
-  });
   // Pre-scan: register GEMM CB requirements first so their indices are stable
   // when copy stmts are visited.
   tir::PostOrderVisit(func->body, [&](const ObjectRef& node) {
@@ -3152,9 +3121,21 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
       unresolved_unsupported_ops.push_back(op_name);
     }
   };
-  if (expected_row_reduction_count > CountLoweredRowReductionBuiltins(body_with_segment_markers)) {
-    push_unresolved("reduction");
-  }
+  tir::PostOrderVisit(body_with_segment_markers, [&](const ObjectRef& node) {
+    RowReductionMatch match;
+    if (const auto* loop = node.as<ForNode>()) {
+      if (MatchDirectRowReduction(loop, &match) || MatchGroupedRowReduction(loop, &match) ||
+          MatchStandaloneRowReduction(loop, &match)) {
+        push_unresolved("reduction");
+      }
+      return;
+    }
+    if (const auto* allocate = node.as<AllocateNode>()) {
+      if (MatchAllocatedRowReduction(allocate, &match)) {
+        push_unresolved("reduction");
+      }
+    }
+  });
   for (const std::string& op_name : expected_unsupported_ops) {
     if (op_name == "broadcast" && HasResidualRowBroadcast(body_with_segment_markers)) {
       push_unresolved("broadcast");
@@ -7198,6 +7179,67 @@ bool MatchScaledGroupedScalarFragmentLoad(const PrimExpr& expr,
 
 }  // namespace
 
+bool PlanTTKernelABI::MatchExplicitTileReduce(const CallNode* op,
+                                              RowReductionMatch* match) const {
+  if (!op || !match || !op->op->IsInstance<OpNode>()) {
+    return false;
+  }
+  const Op call_op = Downcast<Op>(op->op);
+  if (call_op->name != "tl.tileop.reduce") {
+    return false;
+  }
+  ICHECK_GE(op->args.size(), 5U)
+      << "tl.tileop.reduce must carry src, dst, reduce_type, dim, and clear";
+
+  const Buffer logical_src = NormalizeToBufferRegion(op->args[0])->buffer;
+  const Buffer logical_dst = NormalizeToBufferRegion(op->args[1])->buffer;
+  const Buffer src = ResolvePhysicalComputeBuffer(logical_src);
+  const Buffer dst = ResolvePhysicalComputeBuffer(logical_dst);
+
+  const auto* kind_imm = op->args[2].as<StringImmNode>();
+  ICHECK(kind_imm) << "tl.tileop.reduce requires string reduce_type";
+  const std::string kind = kind_imm->value;
+  ICHECK(kind == "sum" || kind == "max")
+      << "Blackhole explicit tile reduce currently supports sum/max only, got "
+      << kind;
+
+  const auto* dim_imm = op->args[3].as<IntImmNode>();
+  ICHECK(dim_imm) << "tl.tileop.reduce requires static dim";
+  const std::vector<int64_t> src_shape = GetLogicalBufferShape(src);
+  ICHECK(!src_shape.empty())
+      << "Blackhole explicit tile reduce requires a static logical source shape for "
+      << BufferIdentityName(src);
+  int64_t dim = dim_imm->value;
+  if (dim < 0) {
+    dim += static_cast<int64_t>(src_shape.size());
+  }
+  ICHECK_GE(dim, 0) << "Blackhole explicit tile reduce dim out of range: " << dim_imm->value;
+  ICHECK_LT(dim, static_cast<int64_t>(src_shape.size()))
+      << "Blackhole explicit tile reduce dim " << dim << " out of rank "
+      << src_shape.size();
+  ICHECK_EQ(dim, static_cast<int64_t>(src_shape.size() - 1))
+      << "Blackhole explicit tile reduce Phase A supports row reductions over "
+      << "the innermost logical axis only";
+
+  const auto clear_bool = op->args[4].as<Bool>();
+  ICHECK(clear_bool) << "tl.tileop.reduce requires static clear bool";
+  const bool clear = clear_bool.value()->value;
+
+  const std::vector<int64_t> dst_shape = GetLogicalBufferShape(dst);
+  const int64_t dst_elements =
+      dst_shape.empty() ? GetLogicalBufferElementCount(dst)
+                        : ComputeStaticElementCount(dst_shape);
+  match->src = src;
+  match->dst = dst;
+  match->num_elements = IntImm32(static_cast<int>(std::max<int64_t>(1, dst_elements)));
+  match->row_width = IntImm32(static_cast<int>(std::max<int64_t>(1, src_shape[dim])));
+  match->kind = kind;
+  match->grouped = dst_elements > 1;
+  match->clear = clear;
+  match->accumulate_existing = !clear;
+  return true;
+}
+
 bool PlanTTKernelABI::MatchDirectRowReduction(const ForNode* op, RowReductionMatch* match) const {
   if (!op || !match || !tir::is_one(op->extent)) {
     return false;
@@ -9585,18 +9627,7 @@ Stmt PlanTTKernelABI::VisitStmt_(const DeclBufferNode* op) {
 }
 
 Stmt PlanTTKernelABI::VisitStmt_(const AllocateNode* op) {
-  RowReductionMatch pre_lower_match;
-  if (MatchAllocatedRowReduction(op, &pre_lower_match)) {
-    return GenerateRowReductionSequence(pre_lower_match);
-  }
-  Stmt lowered = StmtExprMutator::VisitStmt_(op);
-  if (const auto* allocate = lowered.as<AllocateNode>()) {
-    RowReductionMatch match;
-    if (MatchAllocatedRowReduction(allocate, &match)) {
-      return GenerateRowReductionSequence(match);
-    }
-  }
-  return lowered;
+  return StmtExprMutator::VisitStmt_(op);
 }
 
 Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
@@ -9866,34 +9897,6 @@ Stmt PlanTTKernelABI::VisitStmt_(const SeqStmtNode* op) {
         }
       }
     }
-    if (!select_compute_builtins_only_ && i + 1 < op->seq.size()) {
-      const Stmt& init_stmt = op->seq[i];
-      const Stmt& reduce_stmt = op->seq[i + 1];
-      const auto* init_store = AsUnwrappedBufferStore(init_stmt);
-      const auto* reduce_loop = AsUnwrappedFor(reduce_stmt);
-      if (init_store && reduce_loop && IsScalarLocalFragmentBuffer(init_store->buffer) &&
-          init_store->indices.size() == 1 && tir::is_zero(init_store->indices[0])) {
-        Buffer src_buffer;
-        std::string kind;
-        if (MatchScalarAccumulatorUpdate(AsUnwrappedBufferStore(reduce_loop->body),
-                                         init_store->buffer,
-                                         reduce_loop->loop_var,
-                                         &src_buffer,
-                                         &kind) &&
-            ((kind == "sum" && IsZeroValue(init_store->value)) ||
-             (kind == "max" && IsNegInfValue(init_store->value)))) {
-          RowReductionMatch match;
-          match.src = src_buffer;
-          match.dst = init_store->buffer;
-          match.num_elements = reduce_loop->extent;
-          match.kind = kind;
-          match.clear = true;
-          rewritten.push_back(GenerateRowReductionSequence(match));
-          ++i;
-          continue;
-        }
-      }
-    }
     rewritten.push_back(VisitStmt(op->seq[i]));
   }
   return SeqStmt::Flatten(rewritten);
@@ -9985,18 +9988,6 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
       }
     }
   }
-  RowReductionMatch direct_row_reduction_match;
-  if (MatchDirectRowReduction(op, &direct_row_reduction_match)) {
-    return GenerateRowReductionSequence(direct_row_reduction_match);
-  }
-  RowReductionMatch grouped_row_reduction_match;
-  if (MatchGroupedRowReduction(op, &grouped_row_reduction_match)) {
-    return GenerateRowReductionSequence(grouped_row_reduction_match);
-  }
-  RowReductionMatch standalone_row_reduction_match;
-  if (MatchStandaloneRowReduction(op, &standalone_row_reduction_match)) {
-    return GenerateRowReductionSequence(standalone_row_reduction_match);
-  }
   FragmentFillMatch direct_fill_match;
   if (MatchDirectFragmentFill(op, &direct_fill_match)) {
     return GenerateFragmentFillSequence(direct_fill_match);
@@ -10046,6 +10037,10 @@ Stmt PlanTTKernelABI::VisitStmt_(const ForNode* op) {
 Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
   if (select_compute_builtins_only_) {
     if (const auto* call = op->value.as<CallNode>()) {
+      RowReductionMatch explicit_reduce_match;
+      if (MatchExplicitTileReduce(call, &explicit_reduce_match)) {
+        return GenerateRowReductionSequence(explicit_reduce_match);
+      }
       if (call->op->IsInstance<OpNode>()) {
         const Op call_op = Downcast<Op>(call->op);
         if (call_op->name == "tl.blackhole.fill_fragment" && call->args.size() >= 3 &&
@@ -10074,6 +10069,10 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
     return GetRef<Stmt>(op);
   }
   if (const auto* call = op->value.as<CallNode>()) {
+    RowReductionMatch explicit_reduce_match;
+    if (MatchExplicitTileReduce(call, &explicit_reduce_match)) {
+      return GenerateRowReductionSequence(explicit_reduce_match);
+    }
     if (call->op->IsInstance<OpNode>()) {
       const Op call_op = Downcast<Op>(call->op);
       if (call_op->name == "tl.blackhole.fill_fragment" && call->args.size() >= 3 &&

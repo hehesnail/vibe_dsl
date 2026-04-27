@@ -108,6 +108,7 @@ public:
   /// Infer memory layout for buffers
   LayoutMap InferLayout(const LayoutInferArgs &T,
                         InferLevel level) const override;
+  std::vector<DataflowAccessInfo> GetDataflowAccessInfo() const override;
   static const Op &Get();
   TileOperator Clone() const;
 

@@ -19,6 +19,7 @@
 #include "../op/gemm_py.h"
 #include "../op/gemm_sp.h"
 #include "../op/operator.h"
+#include "../op/reduce.h"
 #include "../op/utils.h"
 #include "../target/utils.h"
 #include "ptx_async_copy_injector.h"
@@ -972,6 +973,9 @@ private:
     // Blackhole does not use MMA/WGMMA/MFMA. Preserve the tl.gemm call as-is
     // so that PlanTTKernelABI can recognise and lower it later.
     if (TargetIsBlackhole(target_) && tile_op->IsInstance<GemmPyNode>()) {
+      return tvm::ffi::GetRef<Stmt>(op);
+    }
+    if (TargetIsBlackhole(target_) && tile_op->IsInstance<ReduceOpNode>()) {
       return tvm::ffi::GetRef<Stmt>(op);
     }
 

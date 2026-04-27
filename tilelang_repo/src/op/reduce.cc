@@ -49,6 +49,17 @@ TileOperator ReduceOpNode::Clone() const {
   return ReduceOp(op);
 }
 
+std::vector<DataflowAccessInfo> ReduceOpNode::GetDataflowAccessInfo() const {
+  std::vector<DataflowAccessInfo> accesses{
+      DataflowAccessInfo{src, DataflowAccessKind::kComputeConsume},
+      DataflowAccessInfo{dst, DataflowAccessKind::kComputeProduce},
+  };
+  if (!clear) {
+    accesses.push_back(DataflowAccessInfo{dst, DataflowAccessKind::kComputeConsume});
+  }
+  return accesses;
+}
+
 TileOperator CumSumOpNode::Clone() const {
   auto op = tvm::ffi::make_object<CumSumOpNode>(*this);
   return CumSumOp(op);

@@ -453,6 +453,41 @@ runtime / codegen
 - 保持 P2.1 / P2.2 / P2.3
   flash-attn runtime tests 绿
 
+当前实现状态
+（`2026-04-27`）：
+
+- Blackhole `LowerTileOp`
+  已 preserve `ReduceOpNode`
+  为 `tl.tileop.reduce`
+  而不是 scalar expand
+- `ReduceOpNode`
+  已提供 operator-level
+  `GetDataflowAccessInfo()`，
+  因此 `SpatialPlan`
+  可直接从 preserved op
+  看到 source consume /
+  destination produce；
+  `clear=false`
+  reduce 额外表达
+  destination consume
+- `SelectBlackholeTTMetalBuiltins`
+  已从 explicit `tl.tileop.reduce`
+  生成 `reduce_tile`
+  typed `TTComputeOpPlan`
+  和 leaf builtin sequence
+- row-reduction scalar-loop matcher
+  已从 active lowering path 删除；
+  剩余 matcher 只在 residual scan
+  中作为 fail-closed diagnostic
+  判断 post-scalar reduction residue
+- explicit reduce lowering
+  保留 accumulator fill/live truth
+  到 generator 内消费，
+  避免 `clear=false`
+  reduction 退回 forbidden
+  direct CB interface
+  materialization
+
 ### Phase B: unary / binary / broadcast preservation
 
 - 添加 generic tile unary /

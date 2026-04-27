@@ -631,7 +631,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Generate clear builtin sequence */
   tvm::tir::Stmt GenerateClearSequence(const tvm::tir::CallNode* op);
 
-  /*! \brief Detect and lower canonical scalar row-reduction loops on local fragment buffers. */
+  /*! \brief Detect and lower explicit preserved tile reductions. */
+  bool MatchExplicitTileReduce(const tvm::tir::CallNode* op, RowReductionMatch* match) const;
+  /*! \brief Detect residual scalar row-reduction loops on local fragment buffers. */
   bool MatchDirectRowReduction(const tvm::tir::ForNode* op, RowReductionMatch* match) const;
   bool MatchAllocatedRowReduction(const tvm::tir::AllocateNode* op, RowReductionMatch* match) const;
   bool MatchGroupedRowReduction(const tvm::tir::ForNode* op, RowReductionMatch* match) const;
