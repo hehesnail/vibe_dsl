@@ -9,9 +9,11 @@
 - Date: `2026-04-27`
 - Active lane: `Blackhole post-preservation pass shrink`
 - Current item:
-  2026-04-27 lower_blackhole_ops.cc first responsibility split implemented:
-  explicit preserved tile compute lowering and TT-Metal leaf sequence emission now live in
-  `lower_blackhole_tile_compute.cc`.
+  2026-04-27 lower_blackhole_ops.cc responsibility shrink continued:
+  explicit preserved tile compute lowering lives in
+  `lower_blackhole_tile_compute.cc`,
+  and exact tiled-CB live-form/local materialization helpers live in
+  `lower_blackhole_exact_cb.cc`.
 - Blocker:
   No blocker remains for Blackhole tile-compute preservation itself.
   Active lowering no longer recovers row-reduction / broadcast /
@@ -51,6 +53,7 @@
 - `P2.3 seq64 exact CB-republish compile/source/spec admission`: completed
 - `Blackhole tile-compute preservation`: completed
 - `Post-preservation explicit tile-compute lowering split`: completed
+- `Post-preservation exact tiled-CB helper split`: completed
 
 ## Current Support Boundary
 
@@ -92,10 +95,12 @@
 ## Open Debt
 
 - `lower_blackhole_ops.cc` no longer owns explicit preserved tile compute
-  lowering / TT-Metal leaf sequence emission; that implementation moved to
-  `lower_blackhole_tile_compute.cc`.
+  lowering / TT-Metal leaf sequence emission, or exact tiled-CB live-form
+  helper implementations.  Those moved to
+  `lower_blackhole_tile_compute.cc`
+  and `lower_blackhole_exact_cb.cc`.
   It still owns several adjacent responsibilities:
-  exact-CB materialization/live-form helpers,
+  fragment cast / local-to-CB materialization sequence planning,
   ABI/accessor descriptor planning,
   staged copy / transport source emission,
   matmul partial reload / post-merge publish support,
@@ -120,8 +125,8 @@
 ## Next Task Order
 
 1. `Continue lower_blackhole_ops.cc responsibility shrink`
-   - Next splits should target exact-CB materialization/live-form helpers,
-     ABI/accessor descriptor planning,
+   - Next splits should target fragment cast / local-to-CB materialization
+     sequence planning, ABI/accessor descriptor planning,
      staged copy / transport source emission,
      and matmul partial reload / post-merge publish support.
    - Keep `TTComputeOpPlan.operation_name` and `KernelSpec.compute_ops`

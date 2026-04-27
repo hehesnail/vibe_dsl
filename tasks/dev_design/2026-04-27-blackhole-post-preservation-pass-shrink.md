@@ -67,14 +67,26 @@ Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec
 集中 reserve / wait / pop / push /
 pack tile 这些重复 leaf emission mechanics。
 
+第二刀拆出：
+
+- `tilelang_repo/src/transform/lower_blackhole_exact_cb.cc`
+  - owns exact tiled-CB live-form helpers
+  - owns local fragment
+    publish / materialize
+    helpers for exact tile compute consumers
+  - keeps lifetime and alias truth in
+    existing `PlanTTKernelABI`
+    typed state,
+    without creating a new cross-pass protocol
+
 ## Remaining Split Candidates
 
 `lower_blackhole_ops.cc`
 仍然承担多块相邻职责。
 后续应按下面顺序继续缩小：
 
-1. exact-CB live-form /
-   materialization helpers
+1. fragment cast /
+   local-to-CB materialization sequence planning
 2. ABI / accessor descriptor encoding
 3. staged copy / transport source emission
 4. matmul partial reload / post-merge publish support

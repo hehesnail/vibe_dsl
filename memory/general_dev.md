@@ -1317,7 +1317,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   explicit preserved tile compute lowering
   已拆到
   `lower_blackhole_tile_compute.cc`；
-  后续候选是 exact-CB materialization、
+  exact tiled-CB live-form /
+  local materialization helpers
+  已拆到
+  `lower_blackhole_exact_cb.cc`；
+  后续候选是 fragment cast /
+  local-to-CB materialization sequence planning、
   ABI/accessor encoding、
   staged transport/source emission。
   `lower_tile_op.cc`

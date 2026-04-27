@@ -84,7 +84,7 @@ constexpr int kBlackholeTileRows = 32;
 constexpr int kBlackholeTileCols = 32;
 
 Stmt MakeBlackholeCall(const Op& op, const std::vector<PrimExpr>& args) {
-  return Evaluate(Call(DataType::Void(), op, args));
+  return Evaluate(Call(DataType::Int(32), op, args));
 }
 
 PrimExpr IntImm32(int value) {
