@@ -41,10 +41,13 @@
    - `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
 3. 再看 `tasks/progress.md`
 4. 再看 `tasks/dev_design/README.md`
-5. 如果任务涉及构建、调试、历史问题，再看：
+5. 再看当前 algorithmic lane 设计：
+   - `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
+   - `tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
+6. 如果任务涉及构建、调试、历史问题，再看：
    - `memory/general_dev.md`
    - `memory/bugs.md`
-6. 然后读代码，不要只看文档
+7. 然后读代码，不要只看文档
 
 ## TT-Sim 环境入口
 
@@ -101,6 +104,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - `tasks/dev_design/task1_spatial_plan_companion.md`
    - `tasks/dev_design/task2_ttprogram_companion_cutover.md`
    - `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
+   - `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
+   - `tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
 2. cleanup `task0-task5`
    已完成并归档到
    `tasks/dev_design/archive/`；
@@ -109,12 +114,29 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 3. 当前 active lane
    统一看 `tasks/progress.md`；
    当前是
-   `P2 flash-attn direct runtime admission`
+   `Algorithmic generalization Phase E: Decision-Use Cutover`
 4. `materialization / source-live-form`
    已重新收束为
    `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
    下的 support-surface admission lane
-5. 后续更宽 workload /
+5. Algorithmic generalization
+   Phase A-D
+   已作为 foundation 完成；
+   当前 Phase E
+   必须让
+   `AccessRegion`、
+   `DependenceComponent`、
+   `LiveValueSSA`
+   和 TT live-form solver
+   成为 active legality /
+   query /
+   action inputs
+6. `TileComputeDAG` /
+   legalizer /
+   covering
+   必须等 Phase E decision-use gate
+   对 admitted compute surface 生效后再进入 production migration
+7. 后续更宽 workload /
    mesh /
    distributed runtime
    支持面必须通过
@@ -226,13 +248,31 @@ cd <当前 checkout 或 worktree>/tilelang_repo
     zero-preclear full-tile
     `pack_tile`
     path
-- `flash-attn` compile-path / source/spec baseline 已稳定，但 direct runtime correctness 还不是 admitted support surface
+- `flash-attn` compile-path / source/spec baseline 已稳定；
+  当前 admitted bf16 direct runtime subset
+  覆盖 small single-work-item
+  和 32x32 MHA / GQA；
+  seq64 / multi-K-step
+  只完成 compile/source/spec
+  exact-CB republish admission，
+  direct-runtime correctness
+  仍通过
+  `multi-block exact CB-republish flash-attention direct runtime correctness`
+  typed unsupported reason gate 住
 - 当前 blocker 统一以 `tasks/progress.md` 为准；
-  当前下一步是补齐 flash-attn exact row-reduction
-  的 source-live-form truth，
-  让它消费 upstream matmul
-  产生的 CB-live value，
-  而不是 stale synthetic fill fallback
+  当前下一步是完成
+  `Algorithmic generalization Phase E`
+  剩余 decision-use cutover：
+  wider subject-map deletion、
+  graph-wide worklist/lattice solver、
+  TTProgram / ExecutableSpec
+  projection admission audit
+- Algorithmic generalization
+  必须遵守 anti-overdesign pay-rent rule
+  和 problem-family generality rule；
+  当前 workload case
+  只能作为 active-chain witness，
+  不能成为协议定义
 - full mesh/distributed runtime
   仍是后续 admission lane；
   schema 已在 `TTProgram`

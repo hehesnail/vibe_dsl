@@ -1018,17 +1018,31 @@
 
 ## 5. 当前诊断
 
-当前代码的真实问题不是“旧协议太散”，
-而是已经从 legacy deletion
-转为 support-surface admission：
+当前代码的真实问题已经从 broad legacy protocol deletion
+转为 algorithmic decision-use cutover
+和后续 support-surface admission：
 
-- flash-attn exact row-reduction
-  的 source-live-form truth
-  仍需补齐
-- direct runtime admission
-  只能在 typed schema
-  和 validator 证明后打开
-- full mesh/distributed runtime
+- `AccessRegion`,
+  `DependenceComponent`,
+  `LiveValueSSA`,
+  和第一版 TT live-form solver
+  已经 foundation-complete，
+  但还没有完全 usage-complete；
+  它们必须先驱动 legality /
+  query / action / admission 决策，
+  才能进入 production
+  `TileComputeDAG` / legalizer /
+  covering 迁移
+- seq64 / multi-K-step flash-attn
+  compile/source/spec lowering
+  已稳定，
+  但 direct-runtime correctness
+  仍未 admission，
+  继续通过
+  `multi-block exact CB-republish flash-attention direct runtime correctness`
+  typed unsupported reason fail closed
+- stage2 / block64 multi-page exact-CB event、
+  full mesh / distributed runtime
   仍是后续 admission lane，
   不能反向收窄
   `TTProgram`
@@ -1040,11 +1054,19 @@
    / `TTProgram`
    / `ExecutableSpec`
    作为唯一主链
-2. 对 P2 support surface
-   补显式 live-form /
-   materialization truth
-3. 在 leaf admission
-   处 fail-closed
-   或打开已验证 subset
+2. 完成
+   `Algorithmic generalization Phase E`
+   decision-use cutover：
+   indexed query、
+   graph-wide solver、
+   typed plan action、
+   `ExecutableSpec`
+   admission audit
+3. 再推进
+   `TileComputeDAG` / legalizer /
+   DAG covering，
+   并遵守 anti-overdesign
+   pay-rent rule
+   和 problem-family generality rule
 4. 已删除 fake protocol
    不得重新进入 active chain

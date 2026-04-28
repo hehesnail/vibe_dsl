@@ -20,17 +20,36 @@
 - semantic manifest 路径已完成：
   - `AnalyzeSemanticStructure` 已是 manifest-first
   - 当前 compile path 已不再把 semantic mirror 当长期 owner 层
+- tile-compute preservation
+  和 post-preservation pass shrink
+  已完成：
+  downstream scalar-loop matcher /
+  composite generate family
+  不再是 active compute truth
 - 当前主实施阶段是
-  `P2 flash-attn direct runtime admission`
-- 当前总体 blocker 是
-  flash-attn exact row-reduction
-  的 source-live-form truth
-  还没有完整消费 upstream matmul
-  产生的 CB-live value；
-  gate-open probe 仍会退回 synthetic zero fill
+  `Algorithmic generalization Phase E: Decision-Use Cutover`
+- 当前重点是让
+  `AccessRegion`、
+  `DependenceComponent`、
+  `LiveValueSSA`
+  和 TT live-form solver
+  真正驱动 legality /
+  query /
+  typed plan /
+  unsupported diagnostic，
+  然后再启动 production
+  `TileComputeDAG` /
+  legalizer /
+  covering
 - `SpatialPlan` 当前定位已经收紧为
   virtual spatial/dataflow owner layer；
   它必须承载 task/flow/layout/partition/order 这些执行相关但非 TT-specific 的 truth
+- 算法化重构受两条 guardrail 约束：
+  - anti-overdesign pay-rent rule：
+    新结构必须改变 active-chain 决策或删除旧 side channel
+  - problem-family generality rule：
+    当前 workload case 只能作为 witness，
+    不能成为协议定义
 - 这套分层不是为单个 consumer 设计，而是用于统一承接复杂前端计算 family：
   - selection / indexing
   - routed / grouped / ragged dispatch
@@ -41,8 +60,13 @@
 - 当前验证面落在 `ExecutableSpec -> rt_mod_blackhole -> BlackholeModule` direct host path：
   - copy / GEMM direct path 已稳定
   - `flash-attn` compile/source/spec baseline 已稳定
-  - `flash-attn` direct-runtime correctness
-    是当前 active support-surface blocker
+  - small / 32x32 bf16 flash-attn
+    direct runtime subset 已 admission
+  - seq64 / multi-K-step
+    compile/source/spec lowering 已稳定，
+    direct-runtime correctness
+    仍通过 typed unsupported-reason metadata gate
+    fail closed
   - full mesh/distributed runtime
     仍是后续 admission lane；
     schema 已在 `TTProgram`
@@ -56,10 +80,12 @@
 1. `tasks/dev_design/final_blackhole_backend_redesign.md`
 2. `tasks/progress.md`
 3. `tasks/dev_design/README.md`
-4. `AGENTS.md` 或 `CLAUDE.md`
-5. `memory/general_dev.md`
-6. `memory/bugs.md`
-7. 相关源码与测试
+4. `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
+5. `tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
+6. `AGENTS.md` 或 `CLAUDE.md`
+7. `memory/general_dev.md`
+8. `memory/bugs.md`
+9. 相关源码与测试
 
 ## 仓库结构
 

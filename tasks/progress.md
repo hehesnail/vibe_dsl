@@ -226,19 +226,19 @@
    - Correctness gate remains TT-Sim bf16; compile/source/spec stability
      alone is not runtime admission.
 
-5. `Post-P2 flash-attn wider exact-CB event support`
+5. `Flash-attn wider exact-CB event admission`
    - Admit larger stage2/block64 shapes only after the exact CB
      multi-page event contract is represented and validated through
      `TTProgram -> ExecutableSpec`.
    - Treat this as event-lifetime admission, not a source emitter patch.
 
-6. `P3 mesh/distributed runtime expansion`
+6. `Mesh/distributed runtime expansion`
    - Treat this as a deferred runtime admission lane.
    - Reuse `TTMeshPlan` / `TTBufferDistributionPlan` schema.
    - Add real sharded / multi-device / fabric semantics only through typed
      schema and validator extensions.
 
-7. Post-P2 flash-attn wider-shape support
+7. Flash-attn wider-shape runtime admission ladder
    - Expand workload scale only after the multi-K-step and multi-page
      event contracts above are admitted.
    - Do not jump straight to 4096.  The intended admission ladder is:
@@ -345,6 +345,33 @@
     and TTProgram / ExecutableSpec projection admission audit.
 
 ## Latest Verification
+
+Top-level document sync after root-doc audit:
+
+- synced `README.md`,
+  `AGENTS.md`,
+  `CLAUDE.md`,
+  and `GEMINI.md`
+  to current
+  `Algorithmic generalization Phase E: Decision-Use Cutover`
+  status,
+  anti-overdesign / problem-family guardrails,
+  and seq64 / multi-K-step direct-runtime correctness gate
+- synced
+  `tasks/dev_design/blackhole_first_principles_protocol_audit.md`
+  so its current diagnosis no longer names the old flash-attn
+  source-live-form blocker as the active next step
+- normalized the remaining future wider-shape admission label in
+  `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
+  so it no longer reads as an active historical P2 follow-up phase
+- `git diff --check`
+  -> passed
+- stale-doc scan for legacy flash-attn source-live-form blocker,
+  old root README backlog markers,
+  and seq64 direct-runtime admission wording
+  -> no conflicting active-doc hits
+- background process scan:
+  no lingering `pytest` / `cmake --build` / `ninja` process
 
 Documentation status sync after algorithmic guardrail update:
 

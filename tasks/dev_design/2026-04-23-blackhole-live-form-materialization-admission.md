@@ -1247,14 +1247,14 @@ P2.3 closeout contract:
   继续作为 queryable
   unsupported reason
 
-Post-P2 wider-shape target:
+Wider-shape admission target:
 
 - seq64 只作为 P2.3
   multi-K-step admission smoke gate，
   不是 wider-shape payoff
   的目标规模
 - 不直接跳到 4096；
-  post-P2 admission
+  future runtime admission
   按下面阶梯推进：
   - 保持 P2.3 tile geometry，
     只增加 K step 数：

@@ -828,7 +828,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   的
   `pack_tile`
   path；
-  P2.3 后 direct runtime admitted subset
+  当前 direct runtime admitted subset
   仍只覆盖 small / 32x32 bf16 MHA-GQA；
   seq64 / multi-K-step
   只完成 compile/source/spec
@@ -1554,3 +1554,28 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   unsupported reason gate 住；
   archive README
   已补当前 2026-04-28 algorithmic design 入口。
+- 2026-04-28 主目录入口文档同步：
+  `README.md`,
+  `AGENTS.md`,
+  `CLAUDE.md`,
+  和 `GEMINI.md`
+  已从旧的 flash-attn source-live-form blocker
+  更新到当前
+  `Algorithmic generalization Phase E: Decision-Use Cutover`
+  状态。
+  根目录入口现在明确：
+  A-D 算法对象只是 foundation-complete，
+  Phase E 必须让这些对象驱动 legality / query /
+  typed plan / unsupported diagnostic；
+  seq64 / multi-K-step flash-attn
+  是 compile/source/spec 稳定，
+  direct-runtime correctness
+  仍通过 typed unsupported metadata fail closed。
+  `tasks/dev_design/blackhole_first_principles_protocol_audit.md`
+  的当前诊断也同步成同一判断，
+  不再把已解决的 exact row-reduction source-live-form state
+  写成 active next step。
+  `2026-04-23-blackhole-live-form-materialization-admission.md`
+  中的 wider-shape 目标也去掉了旧 P2 follow-up
+  阶段名，
+  改为 future runtime admission ladder。
