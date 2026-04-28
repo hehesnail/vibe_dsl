@@ -755,6 +755,31 @@ def test_tile_compute_legalizer_rejects_composite_operation_name_before_projecti
         tilelang.transform.ValidateTTProgram()(broken)
 
 
+def test_tile_compute_covering_selects_patterns_for_current_leaf_ops():
+    select_covering = tvm.get_global_func("tl.SelectBlackholeTileComputeCoveringDiagnostic")
+    pattern_table = tvm.get_global_func("tl.BlackholeTileComputePatternTable")()
+    for pattern in pattern_table:
+        operation_name = str(pattern["operation_name"])
+        decision = select_covering(operation_name)
+        assert str(decision["selection_kind"]) == "selected_pattern"
+        assert str(decision["operation_name"]) == operation_name
+        assert str(decision["result_kind"]) == str(pattern["result_kind"])
+        assert str(decision["selected_output"]) == "tt_compute_op_plan"
+
+
+def test_tile_compute_production_path_uses_covering_selection():
+    source_dispatch_hits = _source_tree_rg(
+        r"SelectBlackholeTileComputeCovering|EmitCoveredBlackholeTileCompute",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_tile_compute.cc",
+    )
+    plan_recording_hits = _source_tree_rg(
+        r"SelectBlackholeTileComputeCovering",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_abi.cc",
+    )
+    assert source_dispatch_hits
+    assert plan_recording_hits
+
+
 def test_blackhole_frontend_preserves_reduce_tileop_before_tt_selection():
     mod = _lower_blackhole_frontend(_row_reduce_sum_kernel())
     op_names = _collect_call_op_names(mod["main"])

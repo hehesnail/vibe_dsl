@@ -27,6 +27,7 @@
 
 #include "blackhole_cb_common.h"
 #include "common/blackhole_lowering_requirements.h"
+#include "common/blackhole_tile_compute_covering.h"
 #include "common/tt_target_program.h"
 
 #include <tvm/ir/op.h>
@@ -586,6 +587,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool MatchExplicitTileTypecast(const tvm::tir::CallNode* op,
                                  FragmentCastMatch* match) const;
   tvm::tir::Stmt LowerExplicitBlackholeTileCompute(const tvm::tir::CallNode* op);
+  tvm::tir::Stmt EmitCoveredBlackholeTileCompute(
+      const tvm::tir::CallNode* op,
+      const BlackholeTileComputeCoveringDecision& covering);
   tvm::tir::Stmt GenerateRowReductionSequence(const RowReductionMatch& match);
   tvm::tir::Stmt GenerateFillTileSequence(const tvm::tir::Buffer& dst,
                                           const tvm::PrimExpr& value,

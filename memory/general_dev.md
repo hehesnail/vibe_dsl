@@ -1608,3 +1608,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   Put detailed rationale in design docs,
   reusable lessons in `memory/`,
   and per-change narrative in commits.
+- 2026-04-28 Tile compute covering productionization:
+  the first useful migration step is to route both durable
+  `TTComputeOpPlan`
+  recording and source dispatch through the same covering selection,
+  while keeping source emission output unchanged.
+  This proves the selector is active on the main chain without turning the
+  pass-local covering object into a new cross-stage payload.
+  Full completion still requires selected-pattern ownership of source-plan
+  emission and deletion of the old per-op branches.

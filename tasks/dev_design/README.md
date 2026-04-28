@@ -143,8 +143,14 @@ DAG covering
     已对 admitted compute surface 生效；
     Phase A-B foundation
     已完成；
-    production covering
-    可从 Phase C-D 开始推进
+    Phase C 第一片 production gate
+    已接入
+    `TTComputeOpPlan`
+    recording
+    和 explicit tile-compute source dispatch；
+    剩余 Phase C-D 继续推进
+    local DP / fanout materialization /
+    old branch deletion
   - read-only DAG dump /
     pattern table /
     generic covering class
@@ -164,7 +170,8 @@ graph-backed `SpatialPlan` dependence、
 第一版 TT live-form solver，
 以及 Phase E decision-use cutover。
 当前活动实现单元是
-`Tile compute legalizer / DAG covering Phase C-D`，
+`Tile compute legalizer / DAG covering Phase C-D`
+的 production migration，
 再之后才是 multi-block flash-attn direct-runtime admission、
 multi-page exact-CB event admission、
 mesh/distributed runtime admission

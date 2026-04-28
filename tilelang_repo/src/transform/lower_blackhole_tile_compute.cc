@@ -327,6 +327,18 @@ Stmt PlanTTKernelABI::LowerExplicitBlackholeTileCompute(const CallNode* op) {
   const auto* operation_imm = op->args[0].as<StringImmNode>();
   ICHECK(operation_imm) << "tl.tileop.blackhole_compute requires string operation name";
   const std::string operation = operation_imm->value;
+  const BlackholeTileComputeCoveringDecision covering =
+      SelectBlackholeTileComputeCovering(operation);
+  ICHECK(covering.selected)
+      << "TileCompute covering rejected operation " << operation
+      << ": " << covering.reject_reason;
+  return EmitCoveredBlackholeTileCompute(op, covering);
+}
+
+Stmt PlanTTKernelABI::EmitCoveredBlackholeTileCompute(
+    const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
+  ICHECK(op != nullptr);
+  const std::string operation = covering.operation_name;
   auto buffer_arg = [&](size_t index) -> Buffer {
     ICHECK_LT(index, op->args.size())
         << "tl.tileop.blackhole_compute missing buffer argument " << index

@@ -24,6 +24,18 @@
   query /
   typed plans /
   unsupported diagnostics on the active chain.
+  Tile compute covering Phase C has its first production gate active:
+  `TTComputeOpPlan`
+  recording,
+  GEMM `matmul_tiles`
+  plan construction,
+  and explicit
+  `tl.tileop.blackhole_compute`
+  source dispatch now select a covering pattern before accepting the
+  operation.
+  The selected path still reuses the existing low-level source emitters;
+  full DAG DP / fanout-aware materialization and old branch deletion remain
+  open Phase C-D work.
 - Current blocker:
   none for tile-compute preservation.
   Multi-block flash-attn direct-runtime correctness remains outside the
@@ -76,6 +88,9 @@
   The legalizer validates current admitted compute plans and rejects
   unsupported synthetic operation names before `TTProgram` validation
   can pass.
+  Phase C first production gate is active:
+  local covering selection now gates typed compute-plan recording and
+  explicit tile-compute source dispatch for the migrated leaf-op family.
 
 ## Support Boundary
 
@@ -96,8 +111,12 @@
 
 ## Open Debt
 
-- `TileComputeDAG` / legalizer / covering has not yet migrated production
-  compute selection.
+- `TileComputeDAG` / legalizer / covering has only migrated the first
+  production gate:
+  covering selection now gates typed plan recording and source dispatch,
+  but local DP,
+  fanout/materialization-aware covering,
+  and old per-op emitter branch deletion are still open.
 - Multi-block flash-attn direct-runtime correctness remains runtime-gated
   behind typed unsupported-reason metadata.
 - Wider exact-CB multi-page publish/consume events remain outside the admitted
@@ -105,9 +124,10 @@
 
 ## Next Task Order
 
-1. Start `Tile compute legalizer / DAG covering Phase C-D`
-   production migration.
-2. Migrate legalizer / DAG covering to production and delete old per-op
+1. Continue `Tile compute legalizer / DAG covering Phase C-D`
+   from the first production gate into selected-pattern ownership of
+   binary / broadcast / exp2 / reduce source-plan emission.
+2. Add fanout/materialization-aware covering and delete old per-op
    branch mechanics for the admitted compute surface.
 3. Re-admit multi-block flash-attn direct runtime through typed
    `TTProgram -> ExecutableSpec` state and TT-Sim bf16 correctness.
@@ -143,10 +163,21 @@
   the pattern table covers current TT-Metal leaf operation names;
   and the legalizer is wired into current compute-plan recording plus
   `ValidateTTProgram`.
+- `Tile compute legalizer / DAG covering Phase C`
+  first production gate is active:
+  `SelectBlackholeTileComputeCovering`
+  gates `TTComputeOpPlan`
+  recording,
+  GEMM `matmul_tiles`
+  plan construction,
+  and explicit blackhole tile-compute source dispatch before the existing
+  low-level emitters run.
 - `cmake --build tilelang_repo/build -j32`
   -> passed.
+- `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -k 'tile_compute_covering_selects or tile_compute_production_path_uses'`
+  -> 2 passed, 53 deselected.
 - `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
-  -> 53 passed.
+  -> 55 passed.
 - `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
   -> 163 passed, 25 skipped, 1 xfailed.
 - `git diff --check`

@@ -25,6 +25,7 @@
 #include "lower_blackhole_ops.h"
 
 #include "common/blackhole_runtime_arg_schema.h"
+#include "common/blackhole_tile_compute_covering.h"
 #include "common/blackhole_tile_compute_legalizer.h"
 #include "common/blackhole_utils.h"
 
@@ -168,6 +169,12 @@ static TTComputeOpPlan BuildTTComputeOpPlanFromFact(
     const GemmComputeOpFact& fact,
     const std::unordered_map<std::string, std::string>& host_buffer_by_operand,
     const String& kernel_name, int64_t kernel_plan_index, int64_t ordinal) {
+  const BlackholeTileComputeCoveringDecision covering =
+      SelectBlackholeTileComputeCovering("matmul_tiles");
+  ICHECK(covering.selected)
+      << "TileCompute covering rejected operation matmul_tiles: "
+      << covering.reject_reason;
+
   Array<TTComputeOperandBindingPlan> operand_bindings;
   const TTComputeOperandBindingPlan a_binding =
       BuildGemmComputeOperandBindingPlan(fact, host_buffer_by_operand, "a");
@@ -191,8 +198,9 @@ static TTComputeOpPlan BuildTTComputeOpPlanFromFact(
   const std::string name = "compute_op_" + static_cast<std::string>(kernel_name) + "_" +
                            std::to_string(ordinal);
   TTComputeOpPlan plan = TTComputeOpPlan(
-      String(name), kernel_name, kernel_plan_index, String("gemm"), String("matmul_tiles"),
-      Bool(true), operand_bindings, BuildStringArray({"M", "N", "K"}),
+      String(name), kernel_name, kernel_plan_index, String(covering.result_kind),
+      String(covering.operation_name), Bool(true), operand_bindings,
+      BuildStringArray({"M", "N", "K"}),
       BuildIntegerArray({fact.m, fact.n, fact.k}), BuildIntegerArray({mt, nt, kt}),
       BuildIntegerArray({mt, nt, kt}), BuildIntegerArray({mt, nt}),
       String(DataTypeToDataFormatForBlackhole(fact.c_dtype)),
@@ -1436,7 +1444,17 @@ void PlanTTKernelABI::RecordExactComputeOpPlan(
   for (const TTComputeOperandBindingPlan& binding : operand_bindings) {
     operand_roles.push_back(static_cast<std::string>(binding->role));
   }
-  RequireLegalBlackholeTileComputeSelection(kind, operation_name, operand_roles);
+  const BlackholeTileComputeCoveringDecision covering =
+      SelectBlackholeTileComputeCovering(operation_name);
+  ICHECK(covering.selected)
+      << "TileCompute covering rejected operation " << operation_name
+      << ": " << covering.reject_reason;
+  ICHECK_EQ(kind, covering.result_kind)
+      << "TileCompute covering selected result kind " << covering.result_kind
+      << " for " << operation_name << ", but caller recorded " << kind;
+  RequireLegalBlackholeTileComputeSelection(covering.result_kind,
+                                            covering.operation_name,
+                                            operand_roles);
 
   if (output_buffer == nullptr) {
     output_buffer = &operands.back().buffer;
@@ -1474,8 +1492,9 @@ void PlanTTKernelABI::RecordExactComputeOpPlan(
   const std::string plan_name = "compute_op_" + kernel_name + "_" + operation_name + "_" +
                                 std::to_string(tt_compute_op_plans_.size());
   tt_compute_op_plans_.push_back(TTComputeOpPlan(
-      String(plan_name), String(kernel_name), /*kernel_plan_index=*/-1, String(kind),
-      String(operation_name), Bool(true), operand_bindings, problem_shape_axes, problem_shape,
+      String(plan_name), String(kernel_name), /*kernel_plan_index=*/-1,
+      String(covering.result_kind), String(covering.operation_name), Bool(true),
+      operand_bindings, problem_shape_axes, problem_shape,
       tile_shape, Array<Integer>{}, Array<Integer>{}, String(accumulator_dtype),
       String(""), String(""), Array<String>{}));
 }

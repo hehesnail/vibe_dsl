@@ -694,7 +694,10 @@ Status: completed in repo HEAD as foundation.
 The legalizer is active for current admitted
 `TTComputeOpPlan`
 validation and synthetic reject diagnostics,
-but production covering still uses the existing emitter branches.
+and Phase C now routes the first production gate through covering
+selection.
+The existing source emitter branches still exist and are reused after that
+selection gate until Phase C/E deletion work finishes.
 
 Files:
 
@@ -761,8 +764,18 @@ Completion gate:
 
 ### Phase C: Local DAG Covering For Current Ops
 
+Status: in progress in repo HEAD.
+The first production gate is active:
+covering selection now gates typed compute-plan recording and explicit
+source dispatch before existing low-level source emitters run.
+This is not yet full Phase C completion;
+local DP ownership of source-plan emission and old branch deletion remain
+open.
+
 Files:
 
+- create `tilelang_repo/src/transform/common/blackhole_tile_compute_covering.h`
+- create `tilelang_repo/src/transform/common/blackhole_tile_compute_covering.cc`
 - modify `blackhole_tile_compute_patterns.cc`
 - modify `lower_blackhole_tile_compute.cc`
 - modify `lower_blackhole_abi.cc`
@@ -779,6 +792,33 @@ Work:
 4. Migrate fill/copy/typecast first.
 5. Migrate binary/broadcast/exp2.
 6. Migrate reduce.
+
+Implementation notes:
+
+- Added
+  `blackhole_tile_compute_covering.{h,cc}`
+  with
+  `SelectBlackholeTileComputeCovering`
+  and a diagnostic FFI surface for tests.
+- `RecordExactComputeOpPlan`
+  and GEMM
+  `matmul_tiles`
+  plan construction now select a covering pattern before accepting a
+  durable
+  `TTComputeOpPlan`.
+- `LowerExplicitBlackholeTileCompute`
+  now selects a covering pattern before dispatching to
+  `EmitCoveredBlackholeTileCompute`.
+- The current selector is a greedy single-root exact pattern selection over
+  the Phase A-B pattern table.
+  It reuses the existing per-op source emitter functions after selection.
+  Full bottom-up local DP,
+  selected-pattern source-plan ownership,
+  and branch deletion remain Phase C work.
+- `materialization_policy`
+  is encoded as diagnostic / reserved selection metadata.
+  Real fanout and event-lifetime-aware materialization choices remain
+  Phase D work.
 
 Completion gate:
 
