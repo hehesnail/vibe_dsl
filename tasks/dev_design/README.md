@@ -166,6 +166,8 @@ DAG covering
     generic reduce source lowering enters covering before emission,
     and the implementation schema now uses typed C++ enums plus optional
     source-emitter metadata and pattern-owned call operand layouts
+    with compact enum/string lookup tables rather than per-enum switch
+    boilerplate
   - read-only DAG dump /
     pattern table /
     generic covering class

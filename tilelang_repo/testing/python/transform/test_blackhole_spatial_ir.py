@@ -728,6 +728,23 @@ def test_tile_compute_pattern_schema_uses_typed_enums_and_optional_emitters():
     assert "std::vector<std::string> operand_roles;" not in header
 
 
+def test_tile_compute_pattern_strings_use_compact_lookup_tables():
+    source = (
+        REPO_ROOT
+        / "tilelang_repo/src/transform/common/blackhole_tile_compute_patterns.cc"
+    ).read_text()
+
+    assert "EnumStringEntry" in source
+    assert "FindEnumName" in source
+    assert "switch (kind)" not in source
+    assert "switch (operation)" not in source
+    assert "switch (role)" not in source
+    assert "switch (form)" not in source
+    assert "switch (side_effect_class)" not in source
+    assert "switch (source_emitter)" not in source
+    assert "Args(" not in source
+
+
 def test_tile_compute_dag_builder_uses_pattern_operand_layout():
     source = (
         REPO_ROOT

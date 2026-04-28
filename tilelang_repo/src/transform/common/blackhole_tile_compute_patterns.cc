@@ -9,7 +9,6 @@
 #include <tvm/ir/expr.h>
 
 #include <algorithm>
-#include <initializer_list>
 
 namespace tvm {
 namespace tl {
@@ -22,9 +21,93 @@ using Role = BlackholeTileComputeOperandRole;
 using SideEffect = BlackholeTileComputeSideEffectClass;
 using SourceEmitter = BlackholeTileComputeSourceEmitterKind;
 
-std::vector<BlackholeTileComputeCallOperand> Args(
-    std::initializer_list<BlackholeTileComputeCallOperand> args) {
-  return std::vector<BlackholeTileComputeCallOperand>(args);
+template <typename Enum>
+struct EnumStringEntry {
+  Enum value;
+  const char* name;
+};
+
+template <typename Enum, size_t N>
+const char* FindEnumName(Enum value, const EnumStringEntry<Enum> (&entries)[N]) {
+  for (const EnumStringEntry<Enum>& entry : entries) {
+    if (entry.value == value) {
+      return entry.name;
+    }
+  }
+  return "";
+}
+
+constexpr EnumStringEntry<Result> kResultKindNames[] = {
+    {Result::kUnary, "unary"},
+    {Result::kBinary, "binary"},
+    {Result::kCopy, "copy"},
+    {Result::kReduce, "reduce"},
+    {Result::kPack, "pack"},
+    {Result::kGemm, "gemm"},
+};
+
+constexpr EnumStringEntry<Op> kOperationNames[] = {
+    {Op::kFillTile, "fill_tile"},
+    {Op::kCopyTile, "copy_tile"},
+    {Op::kTypecastTile, "typecast_tile"},
+    {Op::kBinaryMaxTile, "binary_max_tile"},
+    {Op::kAddTiles, "add_tiles"},
+    {Op::kMulTiles, "mul_tiles"},
+    {Op::kMulTilesBcastCols, "mul_tiles_bcast_cols"},
+    {Op::kAddTilesBcastCols, "add_tiles_bcast_cols"},
+    {Op::kExp2Tile, "exp2_tile"},
+    {Op::kRecipTile, "recip_tile"},
+    {Op::kReduceTile, "reduce_tile"},
+    {Op::kPackTile, "pack_tile"},
+    {Op::kMatmulTiles, "matmul_tiles"},
+};
+
+constexpr EnumStringEntry<Role> kOperandRoleNames[] = {
+    {Role::kInput, "input"},
+    {Role::kOutput, "output"},
+    {Role::kLhs, "lhs"},
+    {Role::kRhs, "rhs"},
+    {Role::kA, "a"},
+    {Role::kB, "b"},
+    {Role::kC, "c"},
+    {Role::kScaler, "scaler"},
+};
+
+constexpr EnumStringEntry<Form> kValueFormNames[] = {
+    {Form::kFragment, "fragment"},
+    {Form::kFragmentOrExactCB, "fragment_or_exact_cb"},
+    {Form::kExactCB, "exact_cb"},
+    {Form::kBroadcastExactCB, "broadcast_exact_cb"},
+    {Form::kAccumulator, "accumulator"},
+};
+
+constexpr EnumStringEntry<SideEffect> kSideEffectClassNames[] = {
+    {SideEffect::kDst, "dst"},
+    {SideEffect::kFragment, "fragment"},
+    {SideEffect::kTileRegs, "tile_regs"},
+    {SideEffect::kPack, "pack"},
+};
+
+constexpr EnumStringEntry<SourceEmitter> kSourceEmitterNames[] = {
+    {SourceEmitter::kFillFragment, "fill_fragment"},
+    {SourceEmitter::kCopyTile, "copy_tile"},
+    {SourceEmitter::kTypecastTile, "typecast_tile"},
+    {SourceEmitter::kBinaryMaxTile, "binary_max_tile"},
+    {SourceEmitter::kAddTiles, "add_tiles"},
+    {SourceEmitter::kMulTiles, "mul_tiles"},
+    {SourceEmitter::kMulTilesBcastCols, "mul_tiles_bcast_cols"},
+    {SourceEmitter::kExp2Tile, "exp2_tile"},
+    {SourceEmitter::kReduceTile, "reduce_tile"},
+};
+
+template <typename Enum>
+std::vector<std::string> EnumNames(const std::vector<Enum>& values) {
+  std::vector<std::string> names;
+  names.reserve(values.size());
+  for (Enum value : values) {
+    names.push_back(ToString(value));
+  }
+  return names;
 }
 
 ffi::Array<ffi::String> EncodeStringVector(const std::vector<std::string>& values) {
@@ -42,15 +125,9 @@ ffi::Map<ffi::String, ffi::Any> EncodePattern(const BlackholeTileComputePattern&
   encoded.Set(ffi::String("result_kind"), ffi::String(ToString(pattern.result_kind)));
   encoded.Set(ffi::String("operation_name"), ffi::String(ToString(pattern.operation)));
   encoded.Set(ffi::String("operand_roles"),
-              EncodeStringVector(BlackholeTileComputeOperandRoleNames(pattern.operand_roles)));
+              EncodeStringVector(EnumNames(pattern.operand_roles)));
   encoded.Set(ffi::String("required_input_forms"),
-              EncodeStringVector([&]() {
-                std::vector<std::string> forms;
-                for (BlackholeTileComputeValueForm form : pattern.required_input_forms) {
-                  forms.push_back(ToString(form));
-                }
-                return forms;
-              }()));
+              EncodeStringVector(EnumNames(pattern.required_input_forms)));
   encoded.Set(ffi::String("produced_form"), ffi::String(ToString(pattern.produced_form)));
   encoded.Set(ffi::String("side_effect_class"),
               ffi::String(ToString(pattern.side_effect_class)));
@@ -64,136 +141,34 @@ ffi::Map<ffi::String, ffi::Any> EncodePattern(const BlackholeTileComputePattern&
 }  // namespace
 
 const char* ToString(BlackholeTileComputeResultKind kind) {
-  switch (kind) {
-    case BlackholeTileComputeResultKind::kUnary:
-      return "unary";
-    case BlackholeTileComputeResultKind::kBinary:
-      return "binary";
-    case BlackholeTileComputeResultKind::kCopy:
-      return "copy";
-    case BlackholeTileComputeResultKind::kReduce:
-      return "reduce";
-    case BlackholeTileComputeResultKind::kPack:
-      return "pack";
-    case BlackholeTileComputeResultKind::kGemm:
-      return "gemm";
-  }
-  return "";
+  return FindEnumName(kind, kResultKindNames);
 }
 
 const char* ToString(BlackholeTileComputeOperation operation) {
-  switch (operation) {
-    case BlackholeTileComputeOperation::kFillTile:
-      return "fill_tile";
-    case BlackholeTileComputeOperation::kCopyTile:
-      return "copy_tile";
-    case BlackholeTileComputeOperation::kTypecastTile:
-      return "typecast_tile";
-    case BlackholeTileComputeOperation::kBinaryMaxTile:
-      return "binary_max_tile";
-    case BlackholeTileComputeOperation::kAddTiles:
-      return "add_tiles";
-    case BlackholeTileComputeOperation::kMulTiles:
-      return "mul_tiles";
-    case BlackholeTileComputeOperation::kMulTilesBcastCols:
-      return "mul_tiles_bcast_cols";
-    case BlackholeTileComputeOperation::kAddTilesBcastCols:
-      return "add_tiles_bcast_cols";
-    case BlackholeTileComputeOperation::kExp2Tile:
-      return "exp2_tile";
-    case BlackholeTileComputeOperation::kRecipTile:
-      return "recip_tile";
-    case BlackholeTileComputeOperation::kReduceTile:
-      return "reduce_tile";
-    case BlackholeTileComputeOperation::kPackTile:
-      return "pack_tile";
-    case BlackholeTileComputeOperation::kMatmulTiles:
-      return "matmul_tiles";
-  }
-  return "";
+  return FindEnumName(operation, kOperationNames);
 }
 
 const char* ToString(BlackholeTileComputeOperandRole role) {
-  switch (role) {
-    case BlackholeTileComputeOperandRole::kInput:
-      return "input";
-    case BlackholeTileComputeOperandRole::kOutput:
-      return "output";
-    case BlackholeTileComputeOperandRole::kLhs:
-      return "lhs";
-    case BlackholeTileComputeOperandRole::kRhs:
-      return "rhs";
-    case BlackholeTileComputeOperandRole::kA:
-      return "a";
-    case BlackholeTileComputeOperandRole::kB:
-      return "b";
-    case BlackholeTileComputeOperandRole::kC:
-      return "c";
-    case BlackholeTileComputeOperandRole::kScaler:
-      return "scaler";
-  }
-  return "";
+  return FindEnumName(role, kOperandRoleNames);
 }
 
 const char* ToString(BlackholeTileComputeValueForm form) {
-  switch (form) {
-    case BlackholeTileComputeValueForm::kFragment:
-      return "fragment";
-    case BlackholeTileComputeValueForm::kFragmentOrExactCB:
-      return "fragment_or_exact_cb";
-    case BlackholeTileComputeValueForm::kExactCB:
-      return "exact_cb";
-    case BlackholeTileComputeValueForm::kBroadcastExactCB:
-      return "broadcast_exact_cb";
-    case BlackholeTileComputeValueForm::kAccumulator:
-      return "accumulator";
-  }
-  return "";
+  return FindEnumName(form, kValueFormNames);
 }
 
 const char* ToString(BlackholeTileComputeSideEffectClass side_effect_class) {
-  switch (side_effect_class) {
-    case BlackholeTileComputeSideEffectClass::kDst:
-      return "dst";
-    case BlackholeTileComputeSideEffectClass::kFragment:
-      return "fragment";
-    case BlackholeTileComputeSideEffectClass::kTileRegs:
-      return "tile_regs";
-    case BlackholeTileComputeSideEffectClass::kPack:
-      return "pack";
-  }
-  return "";
+  return FindEnumName(side_effect_class, kSideEffectClassNames);
 }
 
 const char* ToString(BlackholeTileComputeSourceEmitterKind source_emitter) {
-  switch (source_emitter) {
-    case BlackholeTileComputeSourceEmitterKind::kFillFragment:
-      return "fill_fragment";
-    case BlackholeTileComputeSourceEmitterKind::kCopyTile:
-      return "copy_tile";
-    case BlackholeTileComputeSourceEmitterKind::kTypecastTile:
-      return "typecast_tile";
-    case BlackholeTileComputeSourceEmitterKind::kBinaryMaxTile:
-      return "binary_max_tile";
-    case BlackholeTileComputeSourceEmitterKind::kAddTiles:
-      return "add_tiles";
-    case BlackholeTileComputeSourceEmitterKind::kMulTiles:
-      return "mul_tiles";
-    case BlackholeTileComputeSourceEmitterKind::kMulTilesBcastCols:
-      return "mul_tiles_bcast_cols";
-    case BlackholeTileComputeSourceEmitterKind::kExp2Tile:
-      return "exp2_tile";
-    case BlackholeTileComputeSourceEmitterKind::kReduceTile:
-      return "reduce_tile";
-  }
-  return "";
+  return FindEnumName(source_emitter, kSourceEmitterNames);
 }
 
 std::optional<BlackholeTileComputeOperation> ParseBlackholeTileComputeOperation(
     const std::string& operation_name) {
-  for (const BlackholeTileComputePattern& pattern : GetBlackholeTileComputePatterns()) {
-    if (operation_name == ToString(pattern.operation)) {
-      return pattern.operation;
+  for (const EnumStringEntry<Op>& entry : kOperationNames) {
+    if (operation_name == entry.name) {
+      return entry.value;
     }
   }
   return std::nullopt;
@@ -201,69 +176,64 @@ std::optional<BlackholeTileComputeOperation> ParseBlackholeTileComputeOperation(
 
 std::vector<std::string> BlackholeTileComputeOperandRoleNames(
     const std::vector<BlackholeTileComputeOperandRole>& roles) {
-  std::vector<std::string> names;
-  names.reserve(roles.size());
-  for (BlackholeTileComputeOperandRole role : roles) {
-    names.push_back(ToString(role));
-  }
-  return names;
+  return EnumNames(roles);
 }
 
 const std::vector<BlackholeTileComputePattern>& GetBlackholeTileComputePatterns() {
   static const std::vector<BlackholeTileComputePattern> patterns = {
       {"fill_fragment_pattern", "fill_tile", Result::kUnary, Op::kFillTile,
        {Role::kOutput}, {}, Form::kFragment, SideEffect::kDst,
-       SourceEmitter::kFillFragment, Args({{Role::kOutput, 1}}), {}, 1},
+       SourceEmitter::kFillFragment, {{Role::kOutput, 1}}, {}, 1},
       {"copy_tile_pattern", "copy_tile", Result::kCopy, Op::kCopyTile,
        {Role::kInput, Role::kOutput}, {Form::kFragmentOrExactCB},
        Form::kFragmentOrExactCB, SideEffect::kDst, SourceEmitter::kCopyTile,
-       Args({{Role::kInput, 1}, {Role::kOutput, 2}}), {}, 1},
+       {{Role::kInput, 1}, {Role::kOutput, 2}}, {}, 1},
       {"typecast_tile_pattern", "typecast_tile", Result::kUnary, Op::kTypecastTile,
        {Role::kInput, Role::kOutput}, {Form::kFragment}, Form::kFragment,
        SideEffect::kDst, SourceEmitter::kTypecastTile,
-       Args({{Role::kInput, 1}, {Role::kOutput, 2}}), {}, 1},
+       {{Role::kInput, 1}, {Role::kOutput, 2}}, {}, 1},
       {"binary_max_tile_pattern", "binary_max_tile", Result::kBinary, Op::kBinaryMaxTile,
        {Role::kLhs, Role::kRhs, Role::kOutput}, {Form::kExactCB, Form::kExactCB},
        Form::kExactCB, SideEffect::kTileRegs, SourceEmitter::kBinaryMaxTile,
-       Args({{Role::kLhs, 1}, {Role::kRhs, 2}, {Role::kOutput, 1}}), {}, 2},
+       {{Role::kLhs, 1}, {Role::kRhs, 2}, {Role::kOutput, 1}}, {}, 2},
       {"add_tiles_pattern", "add_tiles", Result::kBinary, Op::kAddTiles,
        {Role::kLhs, Role::kRhs, Role::kOutput}, {Form::kExactCB, Form::kExactCB},
        Form::kExactCB, SideEffect::kTileRegs, SourceEmitter::kAddTiles,
-       Args({{Role::kLhs, 1}, {Role::kRhs, 2}, {Role::kOutput, 1}}), {}, 2},
+       {{Role::kLhs, 1}, {Role::kRhs, 2}, {Role::kOutput, 1}}, {}, 2},
       {"mul_tiles_pattern", "mul_tiles", Result::kBinary, Op::kMulTiles,
        {Role::kLhs, Role::kRhs, Role::kOutput}, {Form::kExactCB, Form::kExactCB},
        Form::kExactCB, SideEffect::kTileRegs, SourceEmitter::kMulTiles,
-       Args({{Role::kLhs, 1}, {Role::kRhs, 2}, {Role::kOutput, 1}}), {}, 2},
+       {{Role::kLhs, 1}, {Role::kRhs, 2}, {Role::kOutput, 1}}, {}, 2},
       {"mul_tiles_bcast_cols_pattern", "mul_tiles_bcast_cols", Result::kBinary,
        Op::kMulTilesBcastCols, {Role::kLhs, Role::kRhs, Role::kOutput},
        {Form::kExactCB, Form::kBroadcastExactCB}, Form::kExactCB,
        SideEffect::kTileRegs, SourceEmitter::kMulTilesBcastCols,
-       Args({{Role::kLhs, 2}, {Role::kRhs, 3}, {Role::kOutput, 2}}), {}, 2},
+       {{Role::kLhs, 2}, {Role::kRhs, 3}, {Role::kOutput, 2}}, {}, 2},
       {"add_tiles_bcast_cols_pattern", "add_tiles_bcast_cols", Result::kBinary,
        Op::kAddTilesBcastCols, {Role::kLhs, Role::kRhs, Role::kOutput},
        {Form::kExactCB, Form::kBroadcastExactCB}, Form::kExactCB,
        SideEffect::kTileRegs, std::nullopt,
-       Args({{Role::kLhs, 2}, {Role::kRhs, 3}, {Role::kOutput, 2}}), {}, 2},
+       {{Role::kLhs, 2}, {Role::kRhs, 3}, {Role::kOutput, 2}}, {}, 2},
       {"exp2_tile_pattern", "exp2_tile", Result::kUnary, Op::kExp2Tile,
        {Role::kInput, Role::kOutput}, {Form::kExactCB}, Form::kExactCB,
        SideEffect::kTileRegs, SourceEmitter::kExp2Tile,
-       Args({{Role::kOutput, 2}, {Role::kLhs, 3}, {Role::kRhs, 4}}), {}, 2},
+       {{Role::kOutput, 2}, {Role::kLhs, 3}, {Role::kRhs, 4}}, {}, 2},
       {"recip_tile_pattern", "recip_tile", Result::kUnary, Op::kRecipTile,
        {Role::kInput, Role::kOutput}, {Form::kExactCB}, Form::kExactCB,
        SideEffect::kTileRegs, std::nullopt,
-       Args({{Role::kInput, 2}, {Role::kOutput, 2}}), {}, 2},
+       {{Role::kInput, 2}, {Role::kOutput, 2}}, {}, 2},
       {"reduce_tile_pattern", "reduce_tile", Result::kReduce, Op::kReduceTile,
        {Role::kInput, Role::kScaler, Role::kOutput}, {Form::kExactCB, Form::kExactCB},
        Form::kExactCB, SideEffect::kTileRegs, SourceEmitter::kReduceTile,
-       {}, Args({{Role::kInput, 0}, {Role::kOutput, 1}}), 3},
+       {}, {{Role::kInput, 0}, {Role::kOutput, 1}}, 3},
       {"pack_tile_pattern", "pack_tile", Result::kPack, Op::kPackTile,
        {Role::kInput, Role::kOutput}, {Form::kFragment}, Form::kExactCB,
        SideEffect::kPack, std::nullopt,
-       Args({{Role::kInput, 1}, {Role::kOutput, 2}}), {}, 1},
+       {{Role::kInput, 1}, {Role::kOutput, 2}}, {}, 1},
       {"matmul_tiles_pattern", "gemm", Result::kGemm, Op::kMatmulTiles,
        {Role::kA, Role::kB, Role::kC}, {Form::kExactCB, Form::kExactCB},
        Form::kAccumulator, SideEffect::kDst, std::nullopt,
-       {}, Args({{Role::kA, 0}, {Role::kB, 1}, {Role::kC, 2}}), 4},
+       {}, {{Role::kA, 0}, {Role::kB, 1}, {Role::kC, 2}}, 4},
   };
   return patterns;
 }

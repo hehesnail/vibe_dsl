@@ -807,6 +807,11 @@ so patterns without a standalone explicit source path do not register fake
 unsupported emitters.
 DAG construction and explicit source buffer-argument lookup consume the same
 pattern-owned call operand layout.
+The implementation keeps the typed schema compact:
+enum/string conversion is driven by small lookup tables instead of one switch
+per enum family,
+and pattern call-operand vectors use direct aggregate initialization rather
+than helper wrappers.
 
 Files:
 
@@ -995,6 +1000,11 @@ Implementation notes:
   value form,
   side-effect class,
   and optional source-emitter kind.
+- Replaced per-enum
+  `ToString`
+  switch boilerplate with compact typed lookup tables,
+  and removed the call-operand vector wrapper helper in favor of direct
+  aggregate initialization in the pattern table.
 - Added pattern-owned call operand layouts for
   `tl.tileop.blackhole_compute`
   and generic tile-op source calls;
@@ -1023,6 +1033,7 @@ Implementation notes:
   `source_emitter`
   to have a registered hook,
   require typed enum / optional-emitter schema fields,
+  require compact enum/string lookup tables and no call-operand wrapper helper,
   require DAG construction to use pattern-owned operand layouts,
   forbid the old inline emitter table /
   `std::find_if`

@@ -1661,3 +1661,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   and keep blackhole/generic call operand layouts in the pattern table so DAG
   construction and source argument parsing do not each maintain their own
   operation-name branches.
+- 2026-04-28 Tile compute pattern schema boilerplate:
+  typed enums should not imply one handwritten
+  `ToString`
+  switch per enum family.
+  Keep enum/string conversion table-driven,
+  use a generic vector-to-name helper for schema encoding,
+  and prefer direct aggregate initialization for pattern call-operand vectors
+  over wrapper helpers that only restate
+  `std::vector`
+  construction.
