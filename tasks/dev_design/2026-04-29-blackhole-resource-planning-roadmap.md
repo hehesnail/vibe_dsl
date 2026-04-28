@@ -115,6 +115,15 @@ Immediate requirement:
   diagnostics,
   or remove an old branch family.
 
+Status:
+
+- complete for the current production boundary.
+  `PlanTTKernelABI`
+  does not persist DAG covering decisions,
+  the covering header does not expose a production DAG covering object,
+  and explicit source emission remains a selected leaf-pattern projection.
+  Further DAG work must continue to satisfy the same boundary tests.
+
 ### Direction 2: Add `ResourceDemand` / `ResourcePressureReport`
 
 This is the bridge between semantic planning and hardware resource admission.

@@ -953,6 +953,55 @@ def test_tile_compute_production_path_uses_covering_selection():
     assert plan_recording_hits
 
 
+def test_tile_compute_production_path_does_not_persist_dag_covering_cache():
+    tile_compute_source = (
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_tile_compute.cc"
+    ).read_text()
+    planner_source = (
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.cc"
+    ).read_text()
+    planner_header = (
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.h"
+    ).read_text()
+
+    assert "LoadTileComputeDAGCovering" not in planner_source
+    assert "LoadTileComputeDAGCovering" not in tile_compute_source
+    assert "TileComputeDAGCoveringDecisionForStmt" not in planner_header
+    assert "CurrentTileComputeDAGCoveringDecision" not in planner_header
+    assert "tile_compute_dag_covering_decisions_" not in planner_header
+    assert "active_tile_compute_dag_covering_decision_" not in planner_header
+
+
+def test_tile_compute_covering_header_does_not_expose_dag_covering_as_production_api():
+    covering_header = (
+        REPO_ROOT
+        / "tilelang_repo/src/transform/common/blackhole_tile_compute_covering.h"
+    ).read_text()
+
+    assert "struct BlackholeTileComputeDAGCovering" not in covering_header
+    assert "SelectBlackholeTileComputeDAGCovering(" not in covering_header
+
+
+def test_tile_compute_explicit_source_path_uses_leaf_covering_without_dag_cache():
+    tile_compute_source = (
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_tile_compute.cc"
+    ).read_text()
+    assert "SelectBlackholeTileComputeCovering(operation)" in tile_compute_source
+    assert "EmitCoveredBlackholeTileCompute(op, covering)" in tile_compute_source
+    assert "active_tile_compute_dag_covering_decision_" not in tile_compute_source
+
+
+def test_tile_compute_gemm_plan_construction_uses_leaf_covering_decision():
+    abi_source = (
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_abi.cc"
+    ).read_text()
+    assert (
+        "const BlackholeTileComputeCoveringDecision covering" in abi_source
+        and "BuildTTComputeOpPlanFromFact(" in abi_source
+        and "SelectBlackholeTileComputeCovering(\"matmul_tiles\")" in abi_source
+    )
+
+
 def test_tile_compute_covered_source_path_has_no_operation_name_dispatch_chain():
     legacy_dispatch_hits = _source_tree_rg(
         r"if \(operation == blackhole_tile_compute_schema::",

@@ -109,9 +109,8 @@
     Phase E decision-use cutover
     已完成；
     当前活动 lane 已根据 resource-planning
-    复查收回到
-    `Algorithmic generalization Phase E follow-up:
-    resource-planning alignment`
+    复查推进到
+    `ResourceDemand / ResourcePressureReport typed surface`
   - 强制执行
     anti-overdesign pay-rent rule
     和 problem-family generality rule：
@@ -153,6 +152,16 @@ DAG covering
     global scheduling 面。
     `TileComputeDAG`
     必须保持 pass-local compute covering；
+    当前 production boundary cleanup
+    已完成：
+    production code
+    不持久化 DAG covering cache，
+    public header
+    不暴露 durable DAG covering object，
+    source emission
+    仍只通过 selected leaf pattern
+    `source_emitter`
+    物化；
     只有影响 typed plans /
     unsupported diagnostics
     或删除旧 per-op branch
@@ -207,10 +216,9 @@ graph-backed `SpatialPlan` dependence、
 不能作为全局 resource /
 scheduling 面继续扩展；
 后续顺序改为：
-先清理 / 收缩
 `TileComputeDAG`
-production 边界，
-再建立 typed resource pressure
+production 边界已清理 / 收缩；
+下一步建立 typed resource pressure
 和 CB / L1 / core / buffer planning，
 然后回到
 multi-block flash-attn direct-runtime admission、

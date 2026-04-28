@@ -123,6 +123,15 @@
   `TTProgram`
   payload
   变成新的跨 pass truth。
+  生产代码也不要在
+  `PlanTTKernelABI`
+  这类 lowering object
+  中持久化 DAG covering cache /
+  active decision guard；
+  source emission 应只消费当前 selected leaf pattern
+  和 typed plan/diagnostic，
+  DAG covering object 只能留在 diagnostic /
+  test-visible API。
 - TT resource planning 不属于
   `TileComputeDAG`
   的职责。

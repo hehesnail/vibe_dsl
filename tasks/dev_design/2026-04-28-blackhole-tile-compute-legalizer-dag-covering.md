@@ -647,6 +647,23 @@ and `ExecutableSpec`
 as described by
 `2026-04-29-blackhole-resource-planning-roadmap.md`.
 
+Implementation status:
+
+- production code does not persist a function-level
+  `TileComputeDAG`
+  covering cache in
+  `PlanTTKernelABI`
+- `blackhole_tile_compute_covering.h`
+  exposes leaf covering decisions and diagnostic FFI only;
+  it does not expose a durable
+  `BlackholeTileComputeDAGCovering`
+  production object
+- explicit source emission continues through selected leaf pattern
+  `source_emitter`
+  hooks,
+  without a separate operation-name dispatch chain or active DAG decision guard
+- static tests guard these boundaries before the resource-planning lane starts
+
 ## Global Task Order
 
 This lane is sequenced after the algorithmic generalization

@@ -8,8 +8,7 @@
 
 - Date: `2026-04-29`
 - Active lane:
-  `Algorithmic generalization Phase E follow-up:
-  resource-planning alignment`
+  `ResourceDemand / ResourcePressureReport typed surface`
 - Current state:
   `AccessRegion`,
   graph-backed `SpatialPlan` dependence,
@@ -29,13 +28,20 @@
   `TTBufferDistributionPlan`,
   `TTHardwareModel`,
   and leaf runtime admission.
+  The first follow-up cleanup is complete:
+  production code no longer persists a function-level
+  `TileComputeDAG`
+  covering cache,
+  no public production API exposes a durable DAG covering object,
+  and explicit tile-compute source emission stays on selected leaf pattern
+  covering.
   CB planning is useful but partial;
   core placement and buffer distribution remain basic and need hardware-model
   backed planning before wider runtime admission resumes.
 - Current blocker:
-  resource-planning boundaries must be recorded and enforced before expanding
-  multi-block flash-attn direct-runtime admission or adding more DAG-covering
-  production hooks.
+  resource pressure has no first-class typed report yet;
+  wider runtime admission remains blocked until resource pressure can fail
+  closed before source / runtime emission.
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
@@ -73,6 +79,11 @@
   admitted compute surface.
   Production use remains valid only when the selected covering changes typed
   plans / unsupported diagnostics or deletes old per-op branch mechanics.
+- TileComputeDAG production-boundary cleanup:
+  production code does not persist DAG covering decisions in
+  `PlanTTKernelABI`,
+  the covering header exposes only leaf covering decisions and diagnostic FFI,
+  and static tests guard against reintroducing a production DAG cache.
 
 ## Support Boundary
 
@@ -93,11 +104,6 @@
 
 ## Open Debt
 
-- `TileComputeDAG`
-  production boundary must stay pass-local and compute-selection-only.
-  Any cursor / `try_*` / fallback hook that does not change typed plans,
-  diagnostics,
-  or delete old branch mechanics should be simplified or removed.
 - Resource pressure has no first-class typed report yet.
   The next surface is
   `ResourceDemand`
@@ -133,12 +139,7 @@
 
 ## Next Task Order
 
-1. Constrain and clean `TileComputeDAG`
-   production use:
-   keep it pass-local,
-   remove over-complex hooks that do not pay rent,
-   and make source emission a projection of selected typed plans.
-2. Add typed resource pressure:
+1. Add typed resource pressure:
    derive
    `ResourceDemand`
    /
@@ -146,19 +147,19 @@
    from validated `TTProgram`
    and `ExecutableSpec`,
    and wire it to validators / typed unsupported reasons.
-3. Upgrade CB / L1 admission:
+2. Upgrade CB / L1 admission:
    arch-aware CB limits,
    live-interval CB ID allocation,
    per-core L1 pressure,
    lock-step / alignment estimates,
    and memory-report validation where available.
-4. Upgrade core and buffer placement:
+3. Upgrade core and buffer placement:
    use `TTHardwareModel`
    for worker grid / L1 / DRAM facts,
    produce safe logical-coordinate core groups,
    and expand `TTBufferDistributionPlan`
    beyond `unit_mesh` / `replicated`.
-5. Resume wider runtime admission:
+4. Resume wider runtime admission:
    re-admit multi-block flash-attn direct runtime,
    then wider exact-CB events,
    mesh / distributed runtime,
@@ -166,9 +167,15 @@
 
 ## Latest Verification
 
-- Documentation-only update:
-  recorded resource-planning roadmap in
-  `tasks/dev_design/2026-04-29-blackhole-resource-planning-roadmap.md`,
-  updated the active design index,
-  and compacted this progress board around the revised task order.
-- No build or runtime test was required for this documentation change.
+- TileComputeDAG production-boundary cleanup:
+  added static regression tests that reject a production DAG covering cache,
+  reject public DAG covering production APIs,
+  and keep explicit source / GEMM plan recording on leaf covering decisions.
+- Verification:
+  `cd tilelang_repo && cmake --build build -j32`
+  rebuilt `libtilelang.so`
+  successfully.
+  `cd tilelang_repo && python -m pytest testing/python/transform/test_blackhole_spatial_ir.py -k 'tile_compute_production_path_uses_covering_selection or tile_compute_production_path_does_not_persist_dag_covering_cache or tile_compute_covering_header_does_not_expose_dag_covering_as_production_api or tile_compute_explicit_source_path_uses_leaf_covering_without_dag_cache or tile_compute_gemm_plan_construction_uses_leaf_covering_decision' -q`
+  passed with `5 passed, 64 deselected`.
+  `cd tilelang_repo && python -m pytest testing/python/transform/test_blackhole_spatial_ir.py -q`
+  passed with `69 passed`.
