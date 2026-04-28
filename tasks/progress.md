@@ -156,6 +156,17 @@
   `LiveValueSSA`, and the first TT live-form solver are implemented as
   foundations; they must now become active legality/query/action inputs
   instead of mostly structural evidence.
+- Algorithmic generalization now has an explicit anti-overdesign gate:
+  a new structure counts as implementation progress only when it changes
+  legality,
+  answers a query that removes a side channel,
+  selects typed TT plans,
+  emits an earlier typed unsupported diagnostic,
+  or deletes old matcher/helper/payload mechanics.
+  Pure dumps,
+  shape-only validators,
+  constant-output solvers,
+  and decorative DAG/pattern scaffolding remain foundation work only.
 
 ## Next Task Order
 
@@ -164,6 +175,10 @@
      legality/action, dependence, dataflow, and selection practice.
      Do not treat a single fragment/cast decision-use slice as completion
      of the whole phase.
+   - Enforce the anti-overdesign pay-rent rule:
+     each cutover must name the active consumer,
+     the decision it changes,
+     and the old side channel it removes or dominates.
    - Make `AccessRegion` drive full/slice compatibility and
      materialization coverage legality.
    - Make `DependenceComponent` drive recurrence /

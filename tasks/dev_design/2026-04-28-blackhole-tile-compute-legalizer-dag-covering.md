@@ -459,6 +459,25 @@ Otherwise a legalizer would be forced to rebuild semantics
 with its own matcher,
 which is exactly the architecture being deleted.
 
+This lane also inherits the Algorithmic Generalization
+anti-overdesign rule:
+`TileComputeDAG`,
+legalization,
+and covering
+are justified only when they change selected typed compute plans,
+emit earlier typed reject diagnostics,
+or delete current per-op branch mechanics.
+A read-only DAG dump,
+pattern table,
+or generic covering class
+is foundation work only.
+It must not be reported as production completion until its decision
+affects `TTComputeOpPlan`,
+`TTLiveFormPlan`,
+`TTMaterializationPlan`,
+`TTConsumerBindingPlan`,
+or a typed unsupported reason on the active chain.
+
 ## Architecture Review
 
 This section records the design review against

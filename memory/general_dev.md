@@ -1507,3 +1507,17 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   来决定 consumer full-tile vs distributed-slice requirement。
   subject 到 latest live value 的入口 cache 仍存在，
   Phase E 尚未完成。
+- 2026-04-28 记录 Algorithmic generalization anti-overdesign
+  pay-rent rule：
+  新的算法对象 / 字段 / solver 状态 / DAG pattern
+  只有在改变 legality、
+  回答 query 并删除 side channel、
+  选择 typed TT plans、
+  提前产生 typed unsupported diagnostic、
+  或删除旧 matcher/helper/payload/fallback 时，
+  才算真正实现进展。
+  仅构造对象、dump、shape-only validator、
+  constant-output solver、
+  或不影响生产计划的 pattern/DAG scaffolding
+  只能算 foundation work，
+  不能报告为 Algorithmic generalization 完成。

@@ -506,6 +506,67 @@ or typed plan projection,
 it is still foundation surface,
 not completed algorithmic generalization.
 
+### Anti-Overdesign Pay-Rent Rule
+
+Algorithmic generalization is allowed only when the structure
+solves an active compiler problem on the main chain.
+It is not allowed as framework imitation.
+
+A new algorithmic object,
+field,
+solver state,
+or pattern abstraction
+must pay rent in at least one of these ways:
+
+- it changes a legality decision,
+- it answers a query that previously required a side channel,
+- it chooses a target action that is projected into typed plans,
+- it produces a typed unsupported diagnostic earlier than source /
+  runtime emission,
+- or it deletes an old matcher,
+  helper fact,
+  subject-pair map,
+  payload,
+  or stale fallback.
+
+The following are explicitly not sufficient:
+
+- constructing a typed object and dumping it,
+- adding a validator that only checks shape while downstream still ignores it,
+- adding a general solver whose output is constant for all admitted cases,
+- moving branch logic behind a more abstract class without deleting
+  owner-truth side channels,
+- creating a DAG / legalizer that re-discovers semantics from scalar loops
+  or source-like idioms,
+- adding a candidate-plan structure before any downstream consumer can be
+  affected by the selected candidate.
+
+This rule is the overdesign guardrail.
+If a proposed structure cannot name its active consumer and the old
+mechanic it removes or dominates,
+it should stay out of the main design.
+If a structure is needed only for future work,
+it may be documented as a future candidate,
+but it must not be reported as completed implementation.
+
+Implementation discipline:
+
+1. Prefer the smallest algorithm that answers the current query.
+   Do not introduce full Presburger solving,
+   equality saturation,
+   ILP covering,
+   or a generic multi-target selector
+   until a concrete admitted workload requires it.
+2. Every algorithmic cutover needs a counterfactual test:
+   changing the evidence must change legality,
+   solver output,
+   typed plans,
+   or unsupported diagnostics.
+3. A local cache is acceptable only when it is recomputable from current IR.
+   It cannot become owner truth for cross-stage semantics.
+4. A phase is not complete while its new typed evidence coexists with
+   an older side channel that can still override or silently bypass it.
+
 ### Coverage Model
 
 这轮设计覆盖面不能被收窄成某一个 pass
