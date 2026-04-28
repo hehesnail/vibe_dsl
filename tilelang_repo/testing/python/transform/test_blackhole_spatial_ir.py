@@ -722,7 +722,7 @@ def test_tile_compute_read_only_dag_diagnostic_represents_flash_attention_leaf_o
     assert {"lhs", "rhs", "output"} <= edge_roles
 
 
-def test_tile_compute_legalizer_rejects_composite_operation_name_before_projection():
+def test_tile_compute_covering_rejects_composite_operation_name_before_projection():
     mod = _prepare_blackhole_tt_program_module(
         mha_example.flashattn.jit_impl.get_tir(
             1,
@@ -754,7 +754,7 @@ def test_tile_compute_legalizer_rejects_composite_operation_name_before_projecti
         global_infos=mod.global_infos,
     )
 
-    with pytest.raises(Exception, match="TileCompute legalizer rejected"):
+    with pytest.raises(Exception, match="TileCompute covering rejected"):
         tilelang.transform.ValidateTTProgram()(broken)
 
 
@@ -769,6 +769,90 @@ def test_tile_compute_covering_selects_patterns_for_current_leaf_ops():
         assert str(decision["result_kind"]) == str(pattern["result_kind"])
         assert str(decision["source_emitter"]) == str(pattern["source_emitter"])
         assert str(decision["selected_output"]) == "tt_compute_op_plan"
+
+
+def test_tile_compute_dag_covering_selects_patterns_in_dependence_order():
+    select_dag_covering = tvm.get_global_func(
+        "tl.SelectBlackholeTileComputeDAGCoveringDiagnostic"
+    )
+    mod = _lower_blackhole_frontend(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+
+    diagnostic = select_dag_covering(mod["main"])
+    selected_patterns = list(diagnostic["selected_patterns"])
+    selected_operations = {str(pattern["operation_name"]) for pattern in selected_patterns}
+
+    assert str(diagnostic["selection_kind"]) == "local_dag_dp"
+    assert str(diagnostic["selection_status"]) == "selected"
+    assert str(diagnostic["selection_order"]) == "dependence_order"
+    assert selected_patterns
+    assert int(diagnostic["total_cost"]) >= len(selected_patterns)
+    assert str(diagnostic["stale_fallback_policy"]) == "reject"
+    assert {
+        "fill_tile",
+        "copy_tile",
+        "binary_max_tile",
+        "mul_tiles",
+        "mul_tiles_bcast_cols",
+        "exp2_tile",
+        "typecast_tile",
+        "matmul_tiles",
+    } <= selected_operations
+    assert all(int(pattern["node_id"]) >= 0 for pattern in selected_patterns)
+    assert all(str(pattern["pattern_name"]) for pattern in selected_patterns)
+    assert all(str(pattern["source_emitter"]) for pattern in selected_patterns)
+    assert all(
+        str(pattern["selected_output"]) == "tt_compute_op_plan"
+        for pattern in selected_patterns
+    )
+
+
+def test_tile_compute_dag_covering_reports_fanout_materialization_policy():
+    select_dag_covering = tvm.get_global_func(
+        "tl.SelectBlackholeTileComputeDAGCoveringDiagnostic"
+    )
+    mod = _lower_blackhole_frontend(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+
+    diagnostic = select_dag_covering(mod["main"])
+    fanout_decisions = list(diagnostic["fanout_decisions"])
+    materialization_decisions = list(diagnostic["materialization_decisions"])
+
+    assert fanout_decisions
+    assert materialization_decisions
+    assert all(int(decision["producer_node"]) >= 0 for decision in fanout_decisions)
+    assert all(int(decision["use_count"]) >= 2 for decision in fanout_decisions)
+    assert {
+        "materialize_before_cross_event_use",
+        "share_live_value",
+    } >= {str(decision["policy"]) for decision in fanout_decisions}
+    assert any(
+        str(decision["policy"]) == "live_form_solver_required_for_cross_event_use"
+        for decision in materialization_decisions
+    )
+    assert all(str(decision["evidence"]) for decision in fanout_decisions)
 
 
 def test_tile_compute_production_path_uses_covering_selection():

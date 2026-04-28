@@ -10,8 +10,9 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "common/blackhole_utils.h"
+#include "common/blackhole_tile_compute_covering.h"
 #include "common/blackhole_tile_compute_legalizer.h"
+#include "common/blackhole_utils.h"
 #include "common/companion_base.h"
 #include "common/spatial_plan.h"
 #include "common/tt_target_program.h"
@@ -162,6 +163,26 @@ void ValidateComputeOperandBindingPlan(const TTComputeOperandBindingPlan& bindin
   }
 }
 
+void RequireSelectedBlackholeTileComputeCoveringForPlan(
+    const TTComputeOpPlan& plan, const std::vector<std::string>& operand_roles) {
+  const std::string operation_name = plan->operation_name;
+  const BlackholeTileComputeCoveringDecision covering =
+      SelectBlackholeTileComputeCovering(operation_name);
+  ICHECK(covering.selected)
+      << "TileCompute covering rejected operation " << operation_name
+      << ": " << covering.reject_reason;
+  ICHECK_EQ(static_cast<std::string>(plan->kind), covering.result_kind)
+      << "TileCompute covering selected result kind " << covering.result_kind
+      << " for " << operation_name << ", but TTComputeOpPlan recorded "
+      << plan->kind;
+  ICHECK(!covering.source_emitter.empty())
+      << "TileCompute covering selected pattern " << covering.pattern_name
+      << " without a source_emitter";
+  RequireLegalBlackholeTileComputeSelection(covering.result_kind,
+                                            covering.operation_name,
+                                            operand_roles);
+}
+
 void ValidateComputeOpPlan(const TTComputeOpPlan& plan, int64_t kernel_plan_count,
                            const std::unordered_set<std::string>& kernel_names) {
   ICHECK(!plan->name.empty()) << "TTComputeOpPlan requires name";
@@ -180,8 +201,10 @@ void ValidateComputeOpPlan(const TTComputeOpPlan& plan, int64_t kernel_plan_coun
   ICHECK(!plan->operand_bindings.empty())
       << "TTComputeOpPlan requires operand_bindings";
   std::unordered_set<std::string> roles;
+  std::vector<std::string> operand_roles;
   for (const TTComputeOperandBindingPlan& binding : plan->operand_bindings) {
     ValidateComputeOperandBindingPlan(binding);
+    operand_roles.push_back(static_cast<std::string>(binding->role));
     ICHECK(roles.insert(static_cast<std::string>(binding->role)).second)
         << "TTComputeOpPlan duplicate operand role " << binding->role;
   }
@@ -209,7 +232,7 @@ void ValidateComputeOpPlan(const TTComputeOpPlan& plan, int64_t kernel_plan_coun
     ICHECK(!plan->accumulator_dtype.empty())
         << "TTComputeOpPlan GEMM requires accumulator_dtype";
   }
-  RequireLegalBlackholeTileComputePlan(plan);
+  RequireSelectedBlackholeTileComputeCoveringForPlan(plan, operand_roles);
 }
 
 void ValidateSyncPlan(const TTSyncPlan& sync_plan) {

@@ -1625,3 +1625,15 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   and make low-level emitters receive already-selected TT-Metal builtins
   instead of rediscovering add-vs-mul or similar choices from
   `operation_name`.
+- 2026-04-28 Tile compute DAG covering:
+  if production covering needs the DAG,
+  expose a typed pass-local C++ DAG builder and let diagnostics encode that
+  structure.
+  Do not make C++ production code consume an FFI diagnostic map as a semantic
+  source.
+  Producer-use edges should be connected by IR object identity for buffer
+  values;
+  textual value strings / buffer names are only diagnostic output.
+  `ValidateTTProgram`
+  should check selected covering patterns before falling through to older
+  legality helpers, otherwise the old helper remains the real production gate.

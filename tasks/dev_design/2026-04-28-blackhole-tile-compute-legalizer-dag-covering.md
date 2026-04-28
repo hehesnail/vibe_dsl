@@ -694,10 +694,14 @@ Status: completed in repo HEAD as foundation.
 The legalizer is active for current admitted
 `TTComputeOpPlan`
 validation and synthetic reject diagnostics,
-and Phase C now routes the first production gate through covering
-selection.
-The existing source emitter branches still exist and are reused after that
-selection gate until Phase C/E deletion work finishes.
+and Phase C-D now routes typed plan recording,
+source dispatch,
+and
+`ValidateTTProgram`
+through covering selection.
+The existing low-level source emitter functions still exist and are reused
+after selected-pattern dispatch until Phase E cleanup deletes or collapses
+that mechanics.
 
 Files:
 
@@ -764,19 +768,26 @@ Completion gate:
 
 ### Phase C: Local DAG Covering For Current Ops
 
-Status: in progress in repo HEAD.
-The first production gate is active:
-covering selection now gates typed compute-plan recording and explicit
-source dispatch before existing low-level source emitters run.
-Pattern metadata now carries the selected
+Status: complete in repo HEAD for the admitted compute surface.
+Covering selection gates typed compute-plan recording,
+GEMM
+`matmul_tiles`
+plan construction,
+explicit source dispatch,
+and
+`ValidateTTProgram`
+before an operation is accepted.
+Pattern metadata carries the selected
 `source_emitter`
 hook and explicit source dispatch uses that hook.
 The old operation-name dispatch chain and add/mul operation-name
 builtin-selection branch have been deleted from the covered source path.
-This is not yet full Phase C completion:
-local DP ownership of source-plan emission,
-broadcast / exp2 / reduce source-plan ownership,
-and remaining low-level emitter cleanup remain open.
+`TileComputeDAG`
+now has a typed pass-local C++ builder,
+and DAG covering emits selected pattern IDs,
+source-emitter hooks,
+local-DP state keys,
+and costs in dependence order.
 
 Files:
 
@@ -831,17 +842,14 @@ Implementation notes:
   so their TT-Metal builtin selection is no longer recovered from
   `operation_name`
   inside the low-level generator.
-- The current selector is still a greedy single-root exact pattern selection over
-  the Phase A-B pattern table.
-  It reuses existing low-level source emitter functions after selection.
-  Full bottom-up local DP,
-  selected-pattern source-plan ownership for the remaining broadcast /
-  exp2 / reduce surface,
-  and remaining branch deletion remain Phase C work.
+- The current selector is a local DAG DP over the Phase A-B pattern table.
+  It still reuses existing low-level source emitter functions after
+  selected-pattern dispatch;
+  deleting or collapsing those low-level emitter mechanics is Phase E work,
+  outside the completed Phase C boundary.
 - `materialization_policy`
-  is encoded as diagnostic / reserved selection metadata.
-  Real fanout and event-lifetime-aware materialization choices remain
-  Phase D work.
+  is selected per pattern and reported by DAG covering.
+  Fanout policy is now computed from producer-use edges.
 
 Completion gate:
 
@@ -851,6 +859,31 @@ Completion gate:
 - no current workload regresses
 
 ### Phase D: Fanout And Materialization-Aware Covering
+
+Status: complete in repo HEAD for the admitted compute surface.
+The DAG builder connects producer-use edges using IR object identity
+for buffer values;
+textual value strings remain diagnostic output only.
+The covering diagnostic reports fanout decisions and materialization
+policy decisions.
+For fanout,
+fragment values may be shared,
+while
+`tile_regs`,
+`dst`,
+and
+`pack`
+producers conservatively require
+`materialize_before_cross_event_use`
+unless a later admitted path proves a stronger lifetime contract.
+The stale fallback policy is explicitly
+`reject`.
+
+This does not admit multi-block flash-attn direct runtime correctness.
+That support surface remains gated by typed unsupported-reason metadata
+until the runtime lane proves the wider exact-CB event behavior under
+TT-Sim
+`bf16`.
 
 Files:
 
@@ -875,6 +908,16 @@ Completion gate:
 - multi-block flash-attn source-live-form choice
   is selected by graph/lifetime evidence
 - stale fallback source cannot be selected
+
+Repo HEAD satisfies this gate for compile/source/spec planning:
+source-live-form choice already comes from
+`LiveValueSSA`
+/
+TT live-form solver evidence,
+and DAG covering now reports materialization/fanout policy without
+selecting stale fallback sources.
+Direct-runtime correctness for multi-block flash-attn remains a later
+runtime admission task.
 
 ### Phase E: Delete Old Per-Op Selection Branches
 

@@ -7,7 +7,7 @@
 ## Status
 
 - Date: `2026-04-28`
-- Active lane: `Tile compute legalizer / DAG covering Phase C-D`
+- Active lane: `Tile compute legalizer / DAG covering Phase E cleanup`
 - Current state:
   `AccessRegion`,
   `DependenceComponent`,
@@ -24,24 +24,39 @@
   query /
   typed plans /
   unsupported diagnostics on the active chain.
-  Tile compute covering Phase C has its first production gate active:
+  Tile compute legalizer / DAG covering Phase C-D is complete for the
+  admitted compute surface.
+  The pass-local
+  `TileComputeDAG`
+  now has a typed C++ builder with producer-use edges connected by IR object
+  identity,
+  and
+  `SelectBlackholeTileComputeDAGCoveringDiagnostic`
+  runs local DAG covering in dependence order.
+  The covering diagnostic reports selected patterns,
+  source-emitter hooks,
+  total cost,
+  fanout decisions,
+  materialization policy decisions,
+  and a fail-closed stale-fallback policy.
   `TTComputeOpPlan`
   recording,
   GEMM `matmul_tiles`
   plan construction,
-  and explicit
+  explicit
   `tl.tileop.blackhole_compute`
-  source dispatch now select a covering pattern before accepting the
-  operation.
+  source dispatch,
+  and
+  `ValidateTTProgram`
+  now select a covering pattern before accepting the operation.
   The selected pattern now carries a
   `source_emitter`
   hook used by explicit source dispatch;
   the old operation-name dispatch chain and add/mul builtin-selection branch
   have been removed from the covered source path.
   The selected path still reuses existing low-level emitter functions;
-  full DAG DP,
-  fanout-aware materialization,
-  and remaining low-level per-op emitter cleanup remain open Phase C-D work.
+  deleting the remaining low-level per-op emitter mechanics is the separate
+  tile-compute covering Phase E cleanup.
 - Current blocker:
   none for tile-compute preservation.
   Multi-block flash-attn direct-runtime correctness remains outside the
@@ -94,14 +109,19 @@
   The legalizer validates current admitted compute plans and rejects
   unsupported synthetic operation names before `TTProgram` validation
   can pass.
-  Phase C first production gate is active:
-  local covering selection now gates typed compute-plan recording and
-  explicit tile-compute source dispatch for the migrated leaf-op family.
+  Phase C-D production migration is complete:
+  local covering selection now gates typed compute-plan recording,
+  explicit tile-compute source dispatch,
+  and
+  `TTProgram`
+  validation for the migrated leaf-op family.
   Pattern metadata now owns source-emitter hook selection,
   including split hooks for
   `add_tiles`
   and
-  `mul_tiles`.
+  `mul_tiles`;
+  DAG covering now emits selected pattern IDs/costs plus fanout and
+  materialization policy decisions.
 
 ## Support Boundary
 
@@ -122,13 +142,10 @@
 
 ## Open Debt
 
-- `TileComputeDAG` / legalizer / covering production migration has reached
-  the source-emitter hook stage:
-  covering selection now gates typed plan recording and source dispatch,
-  and pattern metadata selects source-emitter hooks,
-  but local DP,
-  fanout/materialization-aware covering,
-  and remaining per-op source emitter cleanup are still open.
+- `TileComputeDAG` / legalizer / covering Phase E cleanup remains:
+  remove or collapse remaining low-level per-op emitter mechanics now that
+  pattern covering owns source-emitter selection and DAG covering exposes
+  fanout/materialization policy decisions.
 - Multi-block flash-attn direct-runtime correctness remains runtime-gated
   behind typed unsupported-reason metadata.
 - Wider exact-CB multi-page publish/consume events remain outside the admitted
@@ -136,16 +153,14 @@
 
 ## Next Task Order
 
-1. Continue `Tile compute legalizer / DAG covering Phase C-D`
-   from source-emitter hook ownership into local DAG covering /
-   selected-pattern source-plan ownership for broadcast / exp2 / reduce.
-2. Add fanout/materialization-aware covering and delete remaining old
-   per-op emitter mechanics for the admitted compute surface.
-3. Re-admit multi-block flash-attn direct runtime through typed
+1. Continue `Tile compute legalizer / DAG covering Phase E`
+   by deleting or collapsing remaining low-level per-op emitter mechanics
+   for the admitted compute surface.
+2. Re-admit multi-block flash-attn direct runtime through typed
    `TTProgram -> ExecutableSpec` state and TT-Sim bf16 correctness.
-4. Add wider exact-CB event admission for stage2/block64 shapes.
-5. Expand mesh/distributed runtime admission through typed schema.
-6. Expand flash-attn wider-shape runtime admission ladder.
+3. Add wider exact-CB event admission for stage2/block64 shapes.
+4. Expand mesh/distributed runtime admission through typed schema.
+5. Expand flash-attn wider-shape runtime admission ladder.
 
 ## Latest Verification
 
@@ -175,26 +190,34 @@
   the pattern table covers current TT-Metal leaf operation names;
   and the legalizer is wired into current compute-plan recording plus
   `ValidateTTProgram`.
-- `Tile compute legalizer / DAG covering Phase C`
-  production migration progressed:
+- `Tile compute legalizer / DAG covering Phase C-D`
+  production migration completed for the admitted compute surface:
   `SelectBlackholeTileComputeCovering`
   gates `TTComputeOpPlan`
   recording,
   GEMM `matmul_tiles`
   plan construction,
-  and explicit blackhole tile-compute source dispatch.
+  explicit blackhole tile-compute source dispatch,
+  and `ValidateTTProgram`.
   The selected pattern now carries
   `source_emitter`
   metadata,
   explicit source dispatch uses that hook,
   and the covered source path no longer has the old operation-name dispatch
   chain or add/mul operation-name builtin-selection branch.
+  `TileComputeDAG`
+  now exposes typed pass-local producer-use edges,
+  and DAG covering reports selected patterns,
+  local-DP cost,
+  fanout decisions,
+  materialization policies,
+  and stale-fallback rejection.
 - `cmake --build tilelang_repo/build -j32`
   -> passed.
-- `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -k 'tile_compute_pattern_table_covers or tile_compute_covering_selects or tile_compute_covered_source_path or binary_source_emission_has_no_operation_name_builtin_selection'`
-  -> 4 passed, 53 deselected.
+- `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -k 'tile_compute_covering_rejects_composite or tile_compute_dag_covering_selects or tile_compute_dag_covering_reports'`
+  -> 3 passed, 56 deselected.
 - `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
-  -> 57 passed.
+  -> 59 passed.
 - `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
   -> 163 passed, 25 skipped, 1 xfailed.
 - `git diff --check`

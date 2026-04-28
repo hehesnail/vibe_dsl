@@ -7,6 +7,7 @@
 #define TVM_TL_TRANSFORM_COMMON_BLACKHOLE_TILE_COMPUTE_COVERING_H_
 
 #include <tvm/ffi/container/map.h>
+#include <tvm/tir/function.h>
 
 #include <cstdint>
 #include <string>
@@ -34,6 +35,9 @@ BlackholeTileComputeCoveringDecision SelectBlackholeTileComputeCovering(
 
 ffi::Map<ffi::String, ffi::Any> EncodeBlackholeTileComputeCoveringDecision(
     const BlackholeTileComputeCoveringDecision& decision);
+
+ffi::Map<ffi::String, ffi::Any> SelectBlackholeTileComputeDAGCoveringDiagnostic(
+    const tir::PrimFunc& func);
 
 }  // namespace tl
 }  // namespace tvm

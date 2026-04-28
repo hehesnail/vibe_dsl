@@ -5,6 +5,7 @@
 
 #include "blackhole_tile_compute_dag.h"
 
+#include "../../op/utils.h"
 #include "blackhole_utils.h"
 
 #include <tvm/ffi/reflection/registry.h>
@@ -12,6 +13,7 @@
 
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace tvm {
@@ -20,28 +22,6 @@ namespace {
 
 using tir::CallNode;
 using tir::StringImmNode;
-
-struct TileComputeDAGEdge {
-  int64_t id{-1};
-  int64_t producer_node{-1};
-  int64_t consumer_node{-1};
-  std::string value_role;
-  std::string value_repr;
-};
-
-struct TileComputeDAGNode {
-  int64_t id{-1};
-  std::string op_kind;
-  std::string op_name;
-  std::string side_effect_class;
-  std::string token_input;
-  std::string token_output;
-};
-
-struct TileComputeDAGDiagnostic {
-  std::vector<TileComputeDAGNode> nodes;
-  std::vector<TileComputeDAGEdge> edges;
-};
 
 const CallNode* UnwrapEvaluateCall(const tir::Stmt& stmt) {
   const auto* eval = stmt.as<tir::EvaluateNode>();
@@ -57,6 +37,22 @@ std::string ExprDisplay(const PrimExpr& expr) {
   return os.str();
 }
 
+std::string ExprValueKey(const PrimExpr& expr) {
+  if (IsBufferLikeExpr(expr)) {
+    const tir::BufferRegion region = NormalizeToBufferRegion(expr);
+    return "buffer:" + BufferIdentityName(region->buffer);
+  }
+  return "expr:" + ExprDisplay(expr);
+}
+
+const Object* ExprValueIdentity(const PrimExpr& expr) {
+  if (!IsBufferLikeExpr(expr)) {
+    return nullptr;
+  }
+  const tir::BufferRegion region = NormalizeToBufferRegion(expr);
+  return BufferDataIdentity(region->buffer);
+}
+
 std::string SideEffectClassForOperation(const std::string& op_name) {
   if (op_name == "pack_tile") {
     return "pack";
@@ -70,23 +66,30 @@ std::string SideEffectClassForOperation(const std::string& op_name) {
   return "tile_regs";
 }
 
-void AddOperandEdge(TileComputeDAGDiagnostic* dag, int64_t node_id,
+bool IsOutputRole(const std::string& role) {
+  return role == "output" || role == "c";
+}
+
+void AddOperandEdge(BlackholeTileComputeDAG* dag, int64_t node_id,
                     const std::string& role, const PrimExpr& value) {
   ICHECK(dag != nullptr);
-  dag->edges.push_back(TileComputeDAGEdge{
+  dag->edges.push_back(BlackholeTileComputeDAGEdge{
       static_cast<int64_t>(dag->edges.size()),
       -1,
       node_id,
       role,
       ExprDisplay(value),
+      ExprValueKey(value),
+      ExprValueIdentity(value),
+      false,
   });
 }
 
-void AddNode(TileComputeDAGDiagnostic* dag, const std::string& op_kind,
+void AddNode(BlackholeTileComputeDAG* dag, const std::string& op_kind,
              const std::string& op_name, const std::vector<std::pair<std::string, PrimExpr>>& edges) {
   ICHECK(dag != nullptr);
   const int64_t node_id = static_cast<int64_t>(dag->nodes.size());
-  dag->nodes.push_back(TileComputeDAGNode{
+  dag->nodes.push_back(BlackholeTileComputeDAGNode{
       node_id,
       op_kind,
       op_name,
@@ -99,7 +102,7 @@ void AddNode(TileComputeDAGDiagnostic* dag, const std::string& op_kind,
   }
 }
 
-bool TryAddBlackholeComputeNode(TileComputeDAGDiagnostic* dag, const CallNode* call) {
+bool TryAddBlackholeComputeNode(BlackholeTileComputeDAG* dag, const CallNode* call) {
   if (call == nullptr || !call->op->IsInstance<OpNode>() || call->args.empty()) {
     return false;
   }
@@ -147,7 +150,7 @@ bool TryAddBlackholeComputeNode(TileComputeDAGDiagnostic* dag, const CallNode* c
   return true;
 }
 
-bool TryAddReduceNode(TileComputeDAGDiagnostic* dag, const CallNode* call) {
+bool TryAddReduceNode(BlackholeTileComputeDAG* dag, const CallNode* call) {
   if (call == nullptr || !call->op->IsInstance<OpNode>()) {
     return false;
   }
@@ -160,7 +163,7 @@ bool TryAddReduceNode(TileComputeDAGDiagnostic* dag, const CallNode* call) {
   return true;
 }
 
-bool TryAddGemmNode(TileComputeDAGDiagnostic* dag, const CallNode* call) {
+bool TryAddGemmNode(BlackholeTileComputeDAG* dag, const CallNode* call) {
   if (call == nullptr || !call->op->IsInstance<OpNode>()) {
     return false;
   }
@@ -173,7 +176,51 @@ bool TryAddGemmNode(TileComputeDAGDiagnostic* dag, const CallNode* call) {
   return true;
 }
 
-ffi::Map<ffi::String, ffi::Any> EncodeNode(const TileComputeDAGNode& node) {
+void ConnectProducerEdges(BlackholeTileComputeDAG* dag) {
+  ICHECK(dag != nullptr);
+  std::vector<std::vector<int64_t>> edge_indices_by_node(dag->nodes.size());
+  for (int64_t edge_index = 0; edge_index < static_cast<int64_t>(dag->edges.size());
+       ++edge_index) {
+    const int64_t consumer = dag->edges[edge_index].consumer_node;
+    if (consumer >= 0 && consumer < static_cast<int64_t>(edge_indices_by_node.size())) {
+      edge_indices_by_node[consumer].push_back(edge_index);
+    }
+  }
+
+  std::unordered_map<const Object*, int64_t> latest_producer_by_identity;
+  std::unordered_map<std::string, int64_t> latest_producer_by_value;
+  for (const BlackholeTileComputeDAGNode& node : dag->nodes) {
+    for (int64_t edge_index : edge_indices_by_node[node.id]) {
+      BlackholeTileComputeDAGEdge& edge = dag->edges[edge_index];
+      if (IsOutputRole(edge.value_role)) {
+        continue;
+      }
+      if (edge.value_identity != nullptr) {
+        auto producer_it = latest_producer_by_identity.find(edge.value_identity);
+        if (producer_it != latest_producer_by_identity.end()) {
+          edge.producer_node = producer_it->second;
+        }
+      } else {
+        auto producer_it = latest_producer_by_value.find(edge.value_key);
+        if (producer_it != latest_producer_by_value.end()) {
+          edge.producer_node = producer_it->second;
+        }
+      }
+    }
+    for (int64_t edge_index : edge_indices_by_node[node.id]) {
+      const BlackholeTileComputeDAGEdge& edge = dag->edges[edge_index];
+      if (IsOutputRole(edge.value_role)) {
+        if (edge.value_identity != nullptr) {
+          latest_producer_by_identity[edge.value_identity] = node.id;
+        } else {
+          latest_producer_by_value[edge.value_key] = node.id;
+        }
+      }
+    }
+  }
+}
+
+ffi::Map<ffi::String, ffi::Any> EncodeNode(const BlackholeTileComputeDAGNode& node) {
   ffi::Map<ffi::String, ffi::Any> encoded;
   encoded.Set(ffi::String("id"), Integer(node.id));
   encoded.Set(ffi::String("op_kind"), ffi::String(node.op_kind));
@@ -184,21 +231,22 @@ ffi::Map<ffi::String, ffi::Any> EncodeNode(const TileComputeDAGNode& node) {
   return encoded;
 }
 
-ffi::Map<ffi::String, ffi::Any> EncodeEdge(const TileComputeDAGEdge& edge) {
+ffi::Map<ffi::String, ffi::Any> EncodeEdge(const BlackholeTileComputeDAGEdge& edge) {
   ffi::Map<ffi::String, ffi::Any> encoded;
   encoded.Set(ffi::String("id"), Integer(edge.id));
   encoded.Set(ffi::String("producer_node"), Integer(edge.producer_node));
   encoded.Set(ffi::String("consumer_node"), Integer(edge.consumer_node));
   encoded.Set(ffi::String("value_role"), ffi::String(edge.value_role));
   encoded.Set(ffi::String("value_repr"), ffi::String(edge.value_repr));
+  encoded.Set(ffi::String("value_key"), ffi::String(edge.value_key));
+  encoded.Set(ffi::String("requires_materialization"), Bool(edge.requires_materialization));
   return encoded;
 }
 
 }  // namespace
 
-ffi::Map<ffi::String, ffi::Any> BuildBlackholeTileComputeDAGDiagnostic(
-    const tir::PrimFunc& func) {
-  TileComputeDAGDiagnostic dag;
+BlackholeTileComputeDAG BuildBlackholeTileComputeDAG(const tir::PrimFunc& func) {
+  BlackholeTileComputeDAG dag;
   for (const tir::Stmt& stmt : CollectExecutionOrderedStmts(func->body)) {
     const CallNode* call = UnwrapEvaluateCall(stmt);
     if (TryAddBlackholeComputeNode(&dag, call) ||
@@ -207,12 +255,19 @@ ffi::Map<ffi::String, ffi::Any> BuildBlackholeTileComputeDAGDiagnostic(
       continue;
     }
   }
+  ConnectProducerEdges(&dag);
+  return dag;
+}
+
+ffi::Map<ffi::String, ffi::Any> BuildBlackholeTileComputeDAGDiagnostic(
+    const tir::PrimFunc& func) {
+  const BlackholeTileComputeDAG dag = BuildBlackholeTileComputeDAG(func);
   ffi::Array<ffi::Map<ffi::String, ffi::Any>> nodes;
-  for (const TileComputeDAGNode& node : dag.nodes) {
+  for (const BlackholeTileComputeDAGNode& node : dag.nodes) {
     nodes.push_back(EncodeNode(node));
   }
   ffi::Array<ffi::Map<ffi::String, ffi::Any>> edges;
-  for (const TileComputeDAGEdge& edge : dag.edges) {
+  for (const BlackholeTileComputeDAGEdge& edge : dag.edges) {
     edges.push_back(EncodeEdge(edge));
   }
   ffi::Map<ffi::String, ffi::Any> encoded;
