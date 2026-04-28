@@ -478,6 +478,25 @@ affects `TTComputeOpPlan`,
 `TTConsumerBindingPlan`,
 or a typed unsupported reason on the active chain.
 
+It also inherits the problem-family generality rule.
+The first migrated op family is only a witness that DAG covering is
+on the active chain.
+It must not become the covering contract.
+The covering model must stay valid for the TT-Metal leaf compute
+problem family:
+unary,
+binary,
+broadcast,
+reduce,
+pack,
+matmul,
+fanout,
+and materialization-aware selection.
+If a proposed pattern table or legalizer rule can explain only the
+current workload shape,
+it belongs in a narrower local helper,
+not in the production DAG covering design.
+
 ## Architecture Review
 
 This section records the design review against

@@ -167,6 +167,17 @@
   shape-only validators,
   constant-output solvers,
   and decorative DAG/pattern scaffolding remain foundation work only.
+- The anti-overdesign gate is paired with a problem-family generality gate:
+  the current test/workload is only a witness that the abstraction is on the
+  active chain,
+  not the abstraction's specification.
+  Each new algorithmic structure must name both the reusable problem family
+  it serves and the minimal current witness that proves it changes a
+  decision.
+  If it cannot name the problem family,
+  it is too narrow;
+  if it cannot name the witness,
+  it is scaffolding.
 
 ## Next Task Order
 
@@ -179,6 +190,10 @@
      each cutover must name the active consumer,
      the decision it changes,
      and the old side channel it removes or dominates.
+   - Enforce the problem-family generality rule:
+     each cutover must name the broader problem family it serves,
+     and current workload cases may be used only as witnesses,
+     not as protocol definitions.
    - Make `AccessRegion` drive full/slice compatibility and
      materialization coverage legality.
    - Make `DependenceComponent` drive recurrence /

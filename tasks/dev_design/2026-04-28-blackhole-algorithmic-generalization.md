@@ -512,6 +512,12 @@ Algorithmic generalization is allowed only when the structure
 solves an active compiler problem on the main chain.
 It is not allowed as framework imitation.
 
+Pay-rent does not mean specializing the design to the smallest
+currently failing case.
+The current case is only a witness that the abstraction is connected
+to the active chain;
+it is not the abstraction's specification.
+
 A new algorithmic object,
 field,
 solver state,
@@ -548,6 +554,74 @@ it should stay out of the main design.
 If a structure is needed only for future work,
 it may be documented as a future candidate,
 but it must not be reported as completed implementation.
+
+### Problem-Family Generality Rule
+
+Every algorithmic abstraction must also name the problem family it serves.
+This prevents the pay-rent rule from collapsing into one-off special cases.
+
+Each new abstraction must answer both questions:
+
+1. Which reusable problem family does it solve?
+2. Which minimal current witness proves it changes an active-chain
+   decision?
+
+If it can answer only the first question,
+it is likely architecture scaffolding.
+If it can answer only the second question,
+it is likely workload overfitting.
+It is acceptable only when both answers are concrete.
+
+Problem-family examples:
+
+- `AccessRegion`
+  serves access overlap,
+  full/slice coverage,
+  axis legality,
+  stride/layout compatibility,
+  and distribution decisions.
+  A fragment/cast slice case can be a witness,
+  but it cannot define the whole abstraction.
+- `DependenceComponent`
+  serves recurrence,
+  carry,
+  reduction,
+  join,
+  no-reorder barrier,
+  and loop-carried lifetime decisions.
+  A flash-attn carry loop can be a witness,
+  but component semantics cannot be tied to flash-attn names.
+- `LiveValueSSA`
+  serves reaching-def,
+  stale-source rejection,
+  phi/join,
+  materialization ownership,
+  and source-live-form queries.
+  Exact-CB republish can be a witness,
+  but versioned live values must remain compute-pattern independent.
+- The live-form solver serves physical-form selection,
+  materialization protocol selection,
+  consumer requirement derivation,
+  and unsupported join diagnostics.
+  A fragment/cast transfer can be a witness,
+  but the solver contract must be graph-oriented.
+- `TileComputeDAG`
+  and covering serve leaf compute selection for unary,
+  binary,
+  broadcast,
+  reduce,
+  pack,
+  matmul,
+  fanout,
+  and materialization-aware choices.
+  A small op family can be the migration witness,
+  but the DAG cannot encode that workload as its protocol.
+
+The design must reject both extremes:
+
+- broad concepts that never affect active decisions,
+- and narrow mechanisms whose behavior is only correct for the current
+  test shape.
 
 Implementation discipline:
 

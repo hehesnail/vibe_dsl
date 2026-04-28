@@ -1521,3 +1521,14 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   或不影响生产计划的 pattern/DAG scaffolding
   只能算 foundation work，
   不能报告为 Algorithmic generalization 完成。
+- 2026-04-28 记录与 pay-rent rule 配套的
+  problem-family generality rule：
+  当前 case 只是证明抽象已经接入 active chain 的 witness，
+  不能成为抽象规格本身。
+  每个新算法结构必须同时说明：
+  它服务的可复用问题族是什么，
+  以及哪个最小当前 witness
+  证明它改变了 legality / query / typed plan /
+  unsupported diagnostic。
+  只能说明问题族的是架子货风险；
+  只能说明当前 witness 的是 workload overfit 风险。
