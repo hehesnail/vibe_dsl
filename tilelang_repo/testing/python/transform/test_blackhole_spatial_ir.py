@@ -173,9 +173,19 @@ def _source_emitter_hook_names():
     ).read_text()
     hook_table = source.split("GetTileComputeSourceEmitterHooks()", 1)[1]
     hook_table = hook_table.split("return hooks;", 1)[0]
-    return set(
-        re.findall(r'\{\s*"([^"]+)"\s*,\s*&PlanTTKernelABI::Emit', hook_table)
+    enum_hooks = set(
+        re.findall(
+            r"\{\s*BlackholeTileComputeSourceEmitterKind::k([A-Za-z0-9_]+)\s*,"
+            r"\s*&PlanTTKernelABI::Emit",
+            hook_table,
+        )
     )
+    if enum_hooks:
+        def _snake(name):
+            return re.sub(r"(?<!^)([A-Z])", r"_\1", name).lower()
+
+        return {_snake(name) for name in enum_hooks}
+    return set(re.findall(r'\{\s*"([^"]+)"\s*,\s*&PlanTTKernelABI::Emit', hook_table))
 
 
 def _drop_legacy_spatial_attrs(mod):
@@ -669,18 +679,65 @@ def test_blackhole_compute_op_planning_has_no_map_seed_contract_surface():
 def test_tile_compute_pattern_table_covers_current_leaf_operation_names():
     pattern_table = tvm.get_global_func("tl.BlackholeTileComputePatternTable")()
     operation_names = {str(pattern["operation_name"]) for pattern in pattern_table}
-    source_emitters = {str(pattern["source_emitter"]) for pattern in pattern_table}
+    source_emitters = {
+        str(pattern["source_emitter"])
+        for pattern in pattern_table
+        if str(pattern["source_emitter"])
+    }
     composite_names = {
         "softmax",
         "exp2_affine",
         "row_broadcast_exp2_affine",
     }
+    standalone_explicit_source_ops = {
+        "fill_tile",
+        "copy_tile",
+        "typecast_tile",
+        "binary_max_tile",
+        "add_tiles",
+        "mul_tiles",
+        "mul_tiles_bcast_cols",
+        "exp2_tile",
+        "reduce_tile",
+    }
 
     assert BLACKHOLE_TILE_COMPUTE_PATTERN_OPS <= operation_names
     assert operation_names.isdisjoint(composite_names)
     assert all(str(pattern["selected_output"]) == "tt_compute_op_plan" for pattern in pattern_table)
-    assert all(str(pattern["source_emitter"]) for pattern in pattern_table)
+    assert {
+        str(pattern["operation_name"])
+        for pattern in pattern_table
+        if str(pattern["source_emitter"])
+    } == standalone_explicit_source_ops
     assert "none" not in source_emitters
+
+
+def test_tile_compute_pattern_schema_uses_typed_enums_and_optional_emitters():
+    header = (
+        REPO_ROOT
+        / "tilelang_repo/src/transform/common/blackhole_tile_compute_patterns.h"
+    ).read_text()
+
+    assert "enum class BlackholeTileComputeOperation" in header
+    assert "enum class BlackholeTileComputeOperandRole" in header
+    assert "enum class BlackholeTileComputeSourceEmitterKind" in header
+    assert "std::optional<BlackholeTileComputeSourceEmitterKind> source_emitter" in header
+    assert "std::vector<BlackholeTileComputeCallOperand> blackhole_compute_operands" in header
+    assert "std::vector<BlackholeTileComputeCallOperand> generic_tile_op_operands" in header
+    assert "std::string source_emitter;" not in header
+    assert "std::vector<std::string> operand_roles;" not in header
+
+
+def test_tile_compute_dag_builder_uses_pattern_operand_layout():
+    source = (
+        REPO_ROOT
+        / "tilelang_repo/src/transform/common/blackhole_tile_compute_dag.cc"
+    ).read_text()
+
+    assert "AddPatternOperandEdges" in source
+    assert "blackhole_compute_operands" in source
+    assert "generic_tile_op_operands" in source
+    assert "operation == blackhole_tile_compute_schema::" not in source
 
 
 def test_tile_compute_read_only_dag_diagnostic_represents_explicit_reduce_and_gemm():
@@ -823,7 +880,6 @@ def test_tile_compute_dag_covering_selects_patterns_in_dependence_order():
     } <= selected_operations
     assert all(int(pattern["node_id"]) >= 0 for pattern in selected_patterns)
     assert all(str(pattern["pattern_name"]) for pattern in selected_patterns)
-    assert all(str(pattern["source_emitter"]) for pattern in selected_patterns)
     assert all(
         str(pattern["selected_output"]) == "tt_compute_op_plan"
         for pattern in selected_patterns
@@ -898,7 +954,11 @@ def test_tile_compute_binary_source_emission_has_no_operation_name_builtin_selec
 
 def test_tile_compute_source_emitter_hooks_cover_pattern_table():
     pattern_table = tvm.get_global_func("tl.BlackholeTileComputePatternTable")()
-    pattern_emitters = {str(pattern["source_emitter"]) for pattern in pattern_table}
+    pattern_emitters = {
+        str(pattern["source_emitter"])
+        for pattern in pattern_table
+        if str(pattern["source_emitter"])
+    }
     hook_emitters = _source_emitter_hook_names()
 
     assert pattern_emitters <= hook_emitters

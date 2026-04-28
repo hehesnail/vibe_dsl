@@ -60,8 +60,18 @@
   `tl.tileop.reduce`
   lowering enters the same covering dispatch before emission.
   Pattern entries that are not admitted as standalone explicit source calls
-  fail closed through typed selected-emitter hooks instead of falling back to
-  a branch-only path.
+  now carry no source-emitter hook,
+  so explicit source dispatch fails closed before emission instead of falling
+  back to a branch-only path.
+  The tile-compute pattern schema now uses typed C++ enums for operation,
+  result kind,
+  operand role,
+  value form,
+  side-effect class,
+  and optional source-emitter kind;
+  DAG operand extraction and explicit source buffer-argument lookup both read
+  pattern-owned call-operand layout instead of maintaining separate per-op
+  string/index branches.
 - Current blocker:
   none for tile-compute preservation.
   Multi-block flash-attn direct-runtime correctness remains outside the
@@ -132,6 +142,9 @@
   hook registry;
   there is no separate inline emitter table or direct reduce branch below the
   covering gate.
+  Pattern schema implementation has been narrowed from string metadata to
+  typed C++ enums plus optional source emitters and pattern-owned call operand
+  layouts.
 
 ## Support Boundary
 
@@ -231,14 +244,24 @@
   and the old inline source-emitter table /
   `std::find_if`
   dispatch plus direct reduce branch are guarded against reintroduction.
+- `Tile compute legalizer / DAG covering`
+  implementation cleanup completed:
+  pattern schema fields are typed C++ enums,
+  source emitter selection is optional enum metadata rather than duplicated
+  strings,
+  non-standalone explicit source patterns no longer register fake unsupported
+  emitters,
+  and DAG/source operand extraction uses pattern-owned call operand layouts.
 - `cmake --build tilelang_repo/build -j32`
   -> passed.
+- `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -k 'pattern_schema_uses_typed_enums or dag_builder_uses_pattern_operand_layout or pattern_table_covers_current_leaf_operation_names or source_emitter_hooks_cover_pattern_table'`
+  -> 4 passed, 60 deselected.
 - `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -k 'source_emitter_hooks_cover or covered_source_dispatch_has_no_inline or reduce_source_path_uses_covering'`
   -> 3 passed, 59 deselected.
 - `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -k 'tile_compute_covering_rejects_composite or tile_compute_dag_covering_selects or tile_compute_dag_covering_reports'`
   -> 3 passed, 56 deselected.
 - `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
-  -> 62 passed.
+  -> 64 passed.
 - `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
   -> 187 passed, 1 skipped, 1 xfailed.
 - `git diff --check`

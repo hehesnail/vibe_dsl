@@ -319,42 +319,70 @@ bool PlanTTKernelABI::MatchExplicitTileTypecast(const CallNode* op,
 const std::vector<PlanTTKernelABI::TileComputeSourceEmitterHook>&
 PlanTTKernelABI::GetTileComputeSourceEmitterHooks() {
   static const std::vector<TileComputeSourceEmitterHook> hooks = {
-      {"fill_fragment", &PlanTTKernelABI::EmitFillFragmentTileComputeSource},
-      {"copy_tile", &PlanTTKernelABI::EmitCopyTileComputeSource},
-      {"typecast_tile", &PlanTTKernelABI::EmitTypecastTileComputeSource},
-      {"binary_max_tile", &PlanTTKernelABI::EmitBinaryMaxTileComputeSource},
-      {"add_tiles", &PlanTTKernelABI::EmitAddTilesComputeSource},
-      {"mul_tiles", &PlanTTKernelABI::EmitMulTilesComputeSource},
-      {"mul_tiles_bcast_cols", &PlanTTKernelABI::EmitMulTilesBcastColsComputeSource},
-      {"add_tiles_bcast_cols", &PlanTTKernelABI::EmitUnsupportedExplicitTileComputeSource},
-      {"exp2_tile", &PlanTTKernelABI::EmitExp2TileComputeSource},
-      {"recip_tile", &PlanTTKernelABI::EmitUnsupportedExplicitTileComputeSource},
-      {"reduce_tile", &PlanTTKernelABI::EmitReduceTileComputeSource},
-      {"pack_tile", &PlanTTKernelABI::EmitUnsupportedExplicitTileComputeSource},
-      {"matmul_tiles", &PlanTTKernelABI::EmitUnsupportedExplicitTileComputeSource},
+      {BlackholeTileComputeSourceEmitterKind::kFillFragment,
+       &PlanTTKernelABI::EmitFillFragmentTileComputeSource},
+      {BlackholeTileComputeSourceEmitterKind::kCopyTile,
+       &PlanTTKernelABI::EmitCopyTileComputeSource},
+      {BlackholeTileComputeSourceEmitterKind::kTypecastTile,
+       &PlanTTKernelABI::EmitTypecastTileComputeSource},
+      {BlackholeTileComputeSourceEmitterKind::kBinaryMaxTile,
+       &PlanTTKernelABI::EmitBinaryMaxTileComputeSource},
+      {BlackholeTileComputeSourceEmitterKind::kAddTiles,
+       &PlanTTKernelABI::EmitAddTilesComputeSource},
+      {BlackholeTileComputeSourceEmitterKind::kMulTiles,
+       &PlanTTKernelABI::EmitMulTilesComputeSource},
+      {BlackholeTileComputeSourceEmitterKind::kMulTilesBcastCols,
+       &PlanTTKernelABI::EmitMulTilesBcastColsComputeSource},
+      {BlackholeTileComputeSourceEmitterKind::kExp2Tile,
+       &PlanTTKernelABI::EmitExp2TileComputeSource},
+      {BlackholeTileComputeSourceEmitterKind::kReduceTile,
+       &PlanTTKernelABI::EmitReduceTileComputeSource},
   };
   return hooks;
 }
 
 const PlanTTKernelABI::TileComputeSourceEmitterHook*
 PlanTTKernelABI::FindTileComputeSourceEmitterHook(
-    const std::string& source_emitter) const {
+    BlackholeTileComputeSourceEmitterKind source_emitter) const {
   for (const TileComputeSourceEmitterHook& hook : GetTileComputeSourceEmitterHooks()) {
-    if (source_emitter == hook.name) {
+    if (source_emitter == hook.kind) {
       return &hook;
     }
   }
   return nullptr;
 }
 
+size_t FindBlackholeTileComputeBufferArgIndex(
+    BlackholeTileComputeOperandRole role,
+    const BlackholeTileComputeCoveringDecision& covering) {
+  const BlackholeTileComputePattern* pattern =
+      FindBlackholeTileComputePattern(covering.operation_name);
+  ICHECK(pattern != nullptr)
+      << "Selected Blackhole tile compute covering references unknown operation "
+      << covering.operation_name;
+  for (const BlackholeTileComputeCallOperand& operand :
+       pattern->blackhole_compute_operands) {
+    if (operand.role == role) {
+      return operand.arg_index;
+    }
+  }
+  ICHECK(false) << "Selected Blackhole tile compute pattern "
+                << covering.pattern_name << " has no explicit source argument for role "
+                << ToString(role);
+  return 0;
+}
+
 Buffer PlanTTKernelABI::GetBlackholeTileComputeBufferArg(
-    const CallNode* op, size_t index,
+    const CallNode* op, BlackholeTileComputeOperandRole role,
     const BlackholeTileComputeCoveringDecision& covering) const {
   ICHECK(op != nullptr);
+  const size_t index = FindBlackholeTileComputeBufferArgIndex(role, covering);
   ICHECK_LT(index, op->args.size())
-      << "tl.tileop.blackhole_compute missing buffer argument " << index
+      << "tl.tileop.blackhole_compute missing buffer argument for role "
+      << ToString(role)
       << " for selected pattern " << covering.pattern_name
-      << " with emitter " << covering.source_emitter;
+      << " with emitter "
+      << (covering.source_emitter ? ToString(*covering.source_emitter) : "");
   return ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(op->args[index])->buffer);
 }
 
@@ -365,7 +393,8 @@ PrimExpr PlanTTKernelABI::GetBlackholeTileComputePrimArg(
   ICHECK_LT(index, op->args.size())
       << "tl.tileop.blackhole_compute missing scalar argument " << index
       << " for selected pattern " << covering.pattern_name
-      << " with emitter " << covering.source_emitter;
+      << " with emitter "
+      << (covering.source_emitter ? ToString(*covering.source_emitter) : "");
   return op->args[index];
 }
 
@@ -375,7 +404,8 @@ std::string PlanTTKernelABI::GetBlackholeTileComputeStringArg(
   const auto* imm = GetBlackholeTileComputePrimArg(op, index, covering).as<StringImmNode>();
   ICHECK(imm) << "tl.tileop.blackhole_compute expects string argument " << index
               << " for selected pattern " << covering.pattern_name
-              << " with emitter " << covering.source_emitter;
+              << " with emitter "
+              << (covering.source_emitter ? ToString(*covering.source_emitter) : "");
   return imm->value;
 }
 
@@ -410,18 +440,22 @@ Stmt PlanTTKernelABI::LowerExplicitTileComputeCall(const CallNode* op) {
 Stmt PlanTTKernelABI::EmitCoveredBlackholeTileCompute(
     const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
   ICHECK(op != nullptr);
+  ICHECK(covering.source_emitter)
+      << "Selected Blackhole tile compute pattern " << covering.pattern_name
+      << " for operation " << covering.operation_name
+      << " is not admitted on the explicit tile-compute source path";
   const TileComputeSourceEmitterHook* hook =
-      FindTileComputeSourceEmitterHook(covering.source_emitter);
+      FindTileComputeSourceEmitterHook(*covering.source_emitter);
   ICHECK(hook != nullptr)
       << "No explicit source emitter registered for selected Blackhole tile compute pattern "
-      << covering.pattern_name << " with emitter " << covering.source_emitter;
+      << covering.pattern_name << " with emitter " << ToString(*covering.source_emitter);
   return (this->*(hook->emit))(op, covering);
 }
 
 Stmt PlanTTKernelABI::EmitFillFragmentTileComputeSource(
     const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
   return GenerateFillTileSequence(
-      GetBlackholeTileComputeBufferArg(op, 1, covering),
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kOutput, covering),
       GetBlackholeTileComputePrimArg(op, 2, covering),
       GetBlackholeTileComputePrimArg(op, 3, covering));
 }
@@ -429,8 +463,8 @@ Stmt PlanTTKernelABI::EmitFillFragmentTileComputeSource(
 Stmt PlanTTKernelABI::EmitCopyTileComputeSource(
     const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
   return GenerateCopyTileSequence(
-      GetBlackholeTileComputeBufferArg(op, 1, covering),
-      GetBlackholeTileComputeBufferArg(op, 2, covering),
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kInput, covering),
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kOutput, covering),
       GetBlackholeTileComputePrimArg(op, 3, covering));
 }
 
@@ -468,23 +502,23 @@ Stmt PlanTTKernelABI::EmitTypecastTileComputeSource(
 Stmt PlanTTKernelABI::EmitBinaryMaxTileComputeSource(
     const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
   return GenerateBinaryMaxTileSequence(
-      GetBlackholeTileComputeBufferArg(op, 1, covering),
-      GetBlackholeTileComputeBufferArg(op, 2, covering));
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kLhs, covering),
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kRhs, covering));
 }
 
 Stmt PlanTTKernelABI::EmitAddTilesComputeSource(
     const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
   return GenerateBinaryTileSequence(
-      GetBlackholeTileComputeBufferArg(op, 1, covering),
-      GetBlackholeTileComputeBufferArg(op, 2, covering),
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kLhs, covering),
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kRhs, covering),
       covering.operation_name, blackhole_add_tiles_init(), blackhole_add_tiles());
 }
 
 Stmt PlanTTKernelABI::EmitMulTilesComputeSource(
     const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
   return GenerateBinaryTileSequence(
-      GetBlackholeTileComputeBufferArg(op, 1, covering),
-      GetBlackholeTileComputeBufferArg(op, 2, covering),
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kLhs, covering),
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kRhs, covering),
       covering.operation_name, blackhole_mul_tiles_init(), blackhole_mul_tiles());
 }
 
@@ -492,8 +526,8 @@ Stmt PlanTTKernelABI::EmitMulTilesBcastColsComputeSource(
     const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
   return GenerateMulTilesBcastColsSequence(
       GetBlackholeTileComputeStringArg(op, 1, covering),
-      GetBlackholeTileComputeBufferArg(op, 2, covering),
-      GetBlackholeTileComputeBufferArg(op, 3, covering),
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kLhs, covering),
+      GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kRhs, covering),
       GetBlackholeTileComputePrimArg(op, 4, covering),
       GetBlackholeTileComputePrimArg(op, 5, covering));
 }
@@ -504,9 +538,9 @@ Stmt PlanTTKernelABI::EmitExp2TileComputeSource(
   if (mode == "bcast_cols") {
     return GenerateExp2TileLeafDAGSequence(
         mode,
-        GetBlackholeTileComputeBufferArg(op, 2, covering),
-        GetBlackholeTileComputeBufferArg(op, 3, covering),
-        GetBlackholeTileComputeBufferArg(op, 4, covering),
+        GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kOutput, covering),
+        GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kLhs, covering),
+        GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kRhs, covering),
         GetBlackholeTileComputePrimArg(op, 5, covering),
         GetBlackholeTileComputePrimArg(op, 6, covering),
         GetBlackholeTileComputePrimArg(op, 7, covering),
@@ -515,9 +549,9 @@ Stmt PlanTTKernelABI::EmitExp2TileComputeSource(
   if (mode == "binary") {
     return GenerateExp2TileLeafDAGSequence(
         mode,
-        GetBlackholeTileComputeBufferArg(op, 2, covering),
-        GetBlackholeTileComputeBufferArg(op, 3, covering),
-        GetBlackholeTileComputeBufferArg(op, 4, covering),
+        GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kOutput, covering),
+        GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kLhs, covering),
+        GetBlackholeTileComputeBufferArg(op, BlackholeTileComputeOperandRole::kRhs, covering),
         GetBlackholeTileComputePrimArg(op, 5, covering),
         GetBlackholeTileComputePrimArg(op, 6, covering),
         PrimExpr(), PrimExpr());
@@ -533,17 +567,6 @@ Stmt PlanTTKernelABI::EmitReduceTileComputeSource(
   ICHECK(MatchExplicitTileReduce(op, &match))
       << "Selected reduce_tile source emitter requires tl.tileop.reduce";
   return GenerateRowReductionSequence(match);
-}
-
-Stmt PlanTTKernelABI::EmitUnsupportedExplicitTileComputeSource(
-    const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
-  (void)op;
-  ICHECK(false)
-      << "Selected Blackhole tile compute source emitter "
-      << covering.source_emitter
-      << " for pattern " << covering.pattern_name
-      << " is not admitted on the explicit tile-compute source path";
-  return Stmt();
 }
 
 Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& match) {

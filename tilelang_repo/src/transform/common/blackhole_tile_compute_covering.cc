@@ -30,12 +30,13 @@ ffi::Array<ffi::String> EncodeStringVector(const std::vector<std::string>& value
 }
 
 std::string MaterializationPolicyForPattern(const BlackholeTileComputePattern& pattern) {
-  if (pattern.operation_name == "copy_tile" ||
-      pattern.operation_name == "typecast_tile" ||
-      pattern.operation_name == "pack_tile") {
+  if (pattern.operation == BlackholeTileComputeOperation::kCopyTile ||
+      pattern.operation == BlackholeTileComputeOperation::kTypecastTile ||
+      pattern.operation == BlackholeTileComputeOperation::kPackTile) {
     return "materialization_boundary_required_when_cross_phase";
   }
-  if (pattern.side_effect_class == "tile_regs" || pattern.side_effect_class == "dst") {
+  if (pattern.side_effect_class == BlackholeTileComputeSideEffectClass::kTileRegs ||
+      pattern.side_effect_class == BlackholeTileComputeSideEffectClass::kDst) {
     return "live_form_solver_required_for_cross_event_use";
   }
   return "none";
@@ -148,9 +149,10 @@ BlackholeTileComputeCoveringDecision SelectBlackholeTileComputeCovering(
     return RejectCovering(operation_name, "no leaf pattern covers operation");
   }
   const BlackholeTileLegalizationDiagnostic legality =
-      LegalizeBlackholeTileComputeSelection(pattern->result_kind,
-                                            pattern->operation_name,
-                                            pattern->operand_roles);
+      LegalizeBlackholeTileComputeSelection(
+          ToString(pattern->result_kind),
+          ToString(pattern->operation),
+          BlackholeTileComputeOperandRoleNames(pattern->operand_roles));
   if (!legality.IsLegal()) {
     return RejectCovering(operation_name, legality.reason);
   }
@@ -158,9 +160,9 @@ BlackholeTileComputeCoveringDecision SelectBlackholeTileComputeCovering(
   decision.selected = true;
   decision.selection_kind = "selected_pattern";
   decision.pattern_name = pattern->name;
-  decision.operation_name = pattern->operation_name;
-  decision.result_kind = pattern->result_kind;
-  decision.operand_roles = pattern->operand_roles;
+  decision.operation_name = ToString(pattern->operation);
+  decision.result_kind = ToString(pattern->result_kind);
+  decision.operand_roles = BlackholeTileComputeOperandRoleNames(pattern->operand_roles);
   decision.selected_output = "tt_compute_op_plan";
   decision.source_emitter = pattern->source_emitter;
   decision.materialization_policy = MaterializationPolicyForPattern(*pattern);
@@ -178,7 +180,10 @@ ffi::Map<ffi::String, ffi::Any> EncodeBlackholeTileComputeCoveringDecision(
   encoded.Set(ffi::String("result_kind"), ffi::String(decision.result_kind));
   encoded.Set(ffi::String("operand_roles"), EncodeStringVector(decision.operand_roles));
   encoded.Set(ffi::String("selected_output"), ffi::String(decision.selected_output));
-  encoded.Set(ffi::String("source_emitter"), ffi::String(decision.source_emitter));
+  encoded.Set(ffi::String("source_emitter"),
+              ffi::String(decision.source_emitter
+                              ? ToString(*decision.source_emitter)
+                              : ""));
   encoded.Set(ffi::String("materialization_policy"),
               ffi::String(decision.materialization_policy));
   encoded.Set(ffi::String("cost"), Integer(decision.cost));

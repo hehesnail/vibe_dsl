@@ -175,9 +175,6 @@ void RequireSelectedBlackholeTileComputeCoveringForPlan(
       << "TileCompute covering selected result kind " << covering.result_kind
       << " for " << operation_name << ", but TTComputeOpPlan recorded "
       << plan->kind;
-  ICHECK(!covering.source_emitter.empty())
-      << "TileCompute covering selected pattern " << covering.pattern_name
-      << " without a source_emitter";
   RequireLegalBlackholeTileComputeSelection(covering.result_kind,
                                             covering.operation_name,
                                             operand_roles);

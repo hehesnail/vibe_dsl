@@ -60,9 +60,9 @@ BlackholeTileLegalizationDiagnostic LegalizeBlackholeTileComputeSelection(
   if (pattern == nullptr) {
     return Reject(operation_name, "no leaf pattern covers operation");
   }
-  if (pattern->result_kind != kind) {
+  if (std::string(ToString(pattern->result_kind)) != kind) {
     return Reject(operation_name, "kind " + kind + " does not match pattern result kind " +
-                                      pattern->result_kind);
+                                      ToString(pattern->result_kind));
   }
   std::unordered_set<std::string> role_set;
   for (const std::string& role : operand_roles) {
@@ -70,7 +70,8 @@ BlackholeTileLegalizationDiagnostic LegalizeBlackholeTileComputeSelection(
       return Reject(operation_name, "duplicate operand role " + role);
     }
   }
-  for (const std::string& required_role : pattern->operand_roles) {
+  for (const std::string& required_role :
+       BlackholeTileComputeOperandRoleNames(pattern->operand_roles)) {
     if (!HasRole(role_set, required_role)) {
       return Reject(operation_name,
                     "missing operand role " + required_role + " in [" +

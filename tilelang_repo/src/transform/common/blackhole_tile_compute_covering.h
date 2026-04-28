@@ -6,10 +6,13 @@
 #ifndef TVM_TL_TRANSFORM_COMMON_BLACKHOLE_TILE_COMPUTE_COVERING_H_
 #define TVM_TL_TRANSFORM_COMMON_BLACKHOLE_TILE_COMPUTE_COVERING_H_
 
+#include "blackhole_tile_compute_patterns.h"
+
 #include <tvm/ffi/container/map.h>
 #include <tvm/tir/function.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -24,7 +27,7 @@ struct BlackholeTileComputeCoveringDecision {
   std::string result_kind;
   std::vector<std::string> operand_roles;
   std::string selected_output;
-  std::string source_emitter;
+  std::optional<BlackholeTileComputeSourceEmitterKind> source_emitter;
   std::string materialization_policy;
   int64_t cost{0};
   std::string reject_reason;

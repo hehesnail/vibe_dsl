@@ -10,27 +10,115 @@
 #include <tvm/ffi/container/map.h>
 #include <tvm/runtime/object.h>
 
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace tvm {
 namespace tl {
 
+enum class BlackholeTileComputeResultKind {
+  kUnary,
+  kBinary,
+  kCopy,
+  kReduce,
+  kPack,
+  kGemm,
+};
+
+enum class BlackholeTileComputeOperation {
+  kFillTile,
+  kCopyTile,
+  kTypecastTile,
+  kBinaryMaxTile,
+  kAddTiles,
+  kMulTiles,
+  kMulTilesBcastCols,
+  kAddTilesBcastCols,
+  kExp2Tile,
+  kRecipTile,
+  kReduceTile,
+  kPackTile,
+  kMatmulTiles,
+};
+
+enum class BlackholeTileComputeOperandRole {
+  kInput,
+  kOutput,
+  kLhs,
+  kRhs,
+  kA,
+  kB,
+  kC,
+  kScaler,
+};
+
+enum class BlackholeTileComputeValueForm {
+  kFragment,
+  kFragmentOrExactCB,
+  kExactCB,
+  kBroadcastExactCB,
+  kAccumulator,
+};
+
+enum class BlackholeTileComputeSideEffectClass {
+  kDst,
+  kFragment,
+  kTileRegs,
+  kPack,
+};
+
+enum class BlackholeTileComputeSourceEmitterKind {
+  kFillFragment,
+  kCopyTile,
+  kTypecastTile,
+  kBinaryMaxTile,
+  kAddTiles,
+  kMulTiles,
+  kMulTilesBcastCols,
+  kExp2Tile,
+  kReduceTile,
+};
+
+struct BlackholeTileComputeCallOperand {
+  BlackholeTileComputeOperandRole role;
+  size_t arg_index{0};
+};
+
 struct BlackholeTileComputePattern {
-  std::string name;
-  std::string root_op_name;
-  std::string result_kind;
-  std::string operation_name;
-  std::vector<std::string> operand_roles;
-  std::vector<std::string> required_input_forms;
-  std::string produced_form;
-  std::string side_effect_class;
-  std::string source_emitter;
+  const char* name;
+  const char* root_op_name;
+  BlackholeTileComputeResultKind result_kind;
+  BlackholeTileComputeOperation operation;
+  std::vector<BlackholeTileComputeOperandRole> operand_roles;
+  std::vector<BlackholeTileComputeValueForm> required_input_forms;
+  BlackholeTileComputeValueForm produced_form;
+  BlackholeTileComputeSideEffectClass side_effect_class;
+  std::optional<BlackholeTileComputeSourceEmitterKind> source_emitter;
+  std::vector<BlackholeTileComputeCallOperand> blackhole_compute_operands;
+  std::vector<BlackholeTileComputeCallOperand> generic_tile_op_operands;
   int64_t base_cost{1};
 };
 
+const char* ToString(BlackholeTileComputeResultKind kind);
+const char* ToString(BlackholeTileComputeOperation operation);
+const char* ToString(BlackholeTileComputeOperandRole role);
+const char* ToString(BlackholeTileComputeValueForm form);
+const char* ToString(BlackholeTileComputeSideEffectClass side_effect_class);
+const char* ToString(BlackholeTileComputeSourceEmitterKind source_emitter);
+
+std::optional<BlackholeTileComputeOperation> ParseBlackholeTileComputeOperation(
+    const std::string& operation_name);
+
+std::vector<std::string> BlackholeTileComputeOperandRoleNames(
+    const std::vector<BlackholeTileComputeOperandRole>& roles);
+
 const std::vector<BlackholeTileComputePattern>& GetBlackholeTileComputePatterns();
+
+const BlackholeTileComputePattern* FindBlackholeTileComputePattern(
+    BlackholeTileComputeOperation operation);
 
 const BlackholeTileComputePattern* FindBlackholeTileComputePattern(
     const std::string& operation_name);

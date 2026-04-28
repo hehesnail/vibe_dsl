@@ -795,6 +795,18 @@ hook registry,
 generic reduce source lowering enters the same covering path,
 and unsupported standalone explicit-source patterns fail closed after
 selection instead of falling through to an old branch-only emitter path.
+The implementation now represents operation,
+result kind,
+operand role,
+value form,
+side-effect class,
+and source-emitter kind with typed C++ enums.
+`source_emitter`
+is optional in the pattern schema,
+so patterns without a standalone explicit source path do not register fake
+unsupported emitters.
+DAG construction and explicit source buffer-argument lookup consume the same
+pattern-owned call operand layout.
 
 Files:
 
@@ -975,6 +987,19 @@ Implementation notes:
   and
   `FindTileComputeSourceEmitterHook`
   as the selected source-emitter registry.
+- Refactored
+  `BlackholeTileComputePattern`
+  from string metadata into typed C++ enums for operation,
+  result kind,
+  operand role,
+  value form,
+  side-effect class,
+  and optional source-emitter kind.
+- Added pattern-owned call operand layouts for
+  `tl.tileop.blackhole_compute`
+  and generic tile-op source calls;
+  the DAG builder and explicit source buffer-argument helpers now read those
+  layouts instead of duplicating operation-name / argument-index branches.
 - Moved the old inline explicit-source lambda bodies into named hook methods
   such as
   `EmitFillFragmentTileComputeSource`,
@@ -997,6 +1022,8 @@ Implementation notes:
 - Added static tests that require every pattern-table
   `source_emitter`
   to have a registered hook,
+  require typed enum / optional-emitter schema fields,
+  require DAG construction to use pattern-owned operand layouts,
   forbid the old inline emitter table /
   `std::find_if`
   dispatch in

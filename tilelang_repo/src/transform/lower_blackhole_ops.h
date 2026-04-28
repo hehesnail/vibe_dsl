@@ -209,7 +209,7 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
           const BlackholeTileComputeCoveringDecision& covering);
 
   struct TileComputeSourceEmitterHook {
-    const char* name;
+    BlackholeTileComputeSourceEmitterKind kind;
     TileComputeSourceEmitterFn emit;
   };
 
@@ -603,10 +603,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   static const std::vector<TileComputeSourceEmitterHook>&
   GetTileComputeSourceEmitterHooks();
   const TileComputeSourceEmitterHook* FindTileComputeSourceEmitterHook(
-      const std::string& source_emitter) const;
+      BlackholeTileComputeSourceEmitterKind source_emitter) const;
   tvm::tir::Buffer GetBlackholeTileComputeBufferArg(
       const tvm::tir::CallNode* op,
-      size_t index,
+      BlackholeTileComputeOperandRole role,
       const BlackholeTileComputeCoveringDecision& covering) const;
   tvm::PrimExpr GetBlackholeTileComputePrimArg(
       const tvm::tir::CallNode* op,
@@ -641,9 +641,6 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
       const tvm::tir::CallNode* op,
       const BlackholeTileComputeCoveringDecision& covering);
   tvm::tir::Stmt EmitReduceTileComputeSource(
-      const tvm::tir::CallNode* op,
-      const BlackholeTileComputeCoveringDecision& covering);
-  tvm::tir::Stmt EmitUnsupportedExplicitTileComputeSource(
       const tvm::tir::CallNode* op,
       const BlackholeTileComputeCoveringDecision& covering);
   tvm::tir::Stmt GenerateRowReductionSequence(const RowReductionMatch& match);

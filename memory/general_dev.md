@@ -1648,5 +1648,16 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `tl.tileop.reduce`
   through the same covering dispatch before emission,
   and make source emitters that are not admitted as standalone explicit calls
-  fail closed through registered hooks instead of falling back to branch-only
+  fail closed before emission instead of falling back to branch-only
   lowering.
+- 2026-04-28 Tile compute covering implementation cleanup:
+  after the selector is active,
+  the next useful code cleanup is not an OOP strategy hierarchy;
+  it is shrinking string drift.
+  Use typed enums for operation / result kind / operand role / value form /
+  side-effect / source-emitter kind,
+  make source-emitter metadata optional for patterns without standalone
+  explicit source emission,
+  and keep blackhole/generic call operand layouts in the pattern table so DAG
+  construction and source argument parsing do not each maintain their own
+  operation-name branches.

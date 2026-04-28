@@ -163,7 +163,9 @@ DAG covering
     explicit source dispatch now uses the selected
     `source_emitter`
     hook registry,
-    and generic reduce source lowering enters covering before emission
+    generic reduce source lowering enters covering before emission,
+    and the implementation schema now uses typed C++ enums plus optional
+    source-emitter metadata and pattern-owned call operand layouts
   - read-only DAG dump /
     pattern table /
     generic covering class

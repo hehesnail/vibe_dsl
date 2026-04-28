@@ -7,6 +7,7 @@
 
 #include "../../op/utils.h"
 #include "blackhole_utils.h"
+#include "blackhole_tile_compute_patterns.h"
 
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/tir/op.h>
@@ -53,19 +54,6 @@ const Object* ExprValueIdentity(const PrimExpr& expr) {
   return BufferDataIdentity(region->buffer);
 }
 
-std::string SideEffectClassForOperation(const std::string& op_name) {
-  if (op_name == "pack_tile") {
-    return "pack";
-  }
-  if (op_name == "fill_tile" || op_name == "matmul_tiles") {
-    return "dst";
-  }
-  if (op_name == "copy_tile" || op_name == "typecast_tile") {
-    return "fragment";
-  }
-  return "tile_regs";
-}
-
 bool IsOutputRole(const std::string& role) {
   return role == "output" || role == "c";
 }
@@ -85,21 +73,32 @@ void AddOperandEdge(BlackholeTileComputeDAG* dag, int64_t node_id,
   });
 }
 
+void AddPatternOperandEdges(
+    BlackholeTileComputeDAG* dag, int64_t node_id,
+    const std::vector<BlackholeTileComputeCallOperand>& operands,
+    const ffi::Array<PrimExpr>& args) {
+  for (const BlackholeTileComputeCallOperand& operand : operands) {
+    if (operand.arg_index < args.size()) {
+      AddOperandEdge(dag, node_id, ToString(operand.role), args[operand.arg_index]);
+    }
+  }
+}
+
 void AddNode(BlackholeTileComputeDAG* dag, const std::string& op_kind,
-             const std::string& op_name, const std::vector<std::pair<std::string, PrimExpr>>& edges) {
+             const BlackholeTileComputePattern& pattern,
+             const std::vector<BlackholeTileComputeCallOperand>& operands,
+             const ffi::Array<PrimExpr>& args) {
   ICHECK(dag != nullptr);
   const int64_t node_id = static_cast<int64_t>(dag->nodes.size());
   dag->nodes.push_back(BlackholeTileComputeDAGNode{
       node_id,
       op_kind,
-      op_name,
-      SideEffectClassForOperation(op_name),
+      ToString(pattern.operation),
+      ToString(pattern.side_effect_class),
       "token_" + std::to_string(node_id),
       "token_" + std::to_string(node_id + 1),
   });
-  for (const auto& [role, value] : edges) {
-    AddOperandEdge(dag, node_id, role, value);
-  }
+  AddPatternOperandEdges(dag, node_id, operands, args);
 }
 
 bool TryAddBlackholeComputeNode(BlackholeTileComputeDAG* dag, const CallNode* call) {
@@ -115,38 +114,13 @@ bool TryAddBlackholeComputeNode(BlackholeTileComputeDAG* dag, const CallNode* ca
     return false;
   }
   const std::string operation = op_name->value;
-  std::vector<std::pair<std::string, PrimExpr>> edges;
-  auto add_if_present = [&](const std::string& role, size_t index) {
-    if (index < call->args.size()) {
-      edges.push_back({role, call->args[index]});
-    }
-  };
-  if (operation == blackhole_tile_compute_schema::kFillTile) {
-    add_if_present("output", 1);
-  } else if (operation == blackhole_tile_compute_schema::kCopyTile ||
-             operation == blackhole_tile_compute_schema::kTypecastTile) {
-    add_if_present("input", 1);
-    add_if_present("output", 2);
-  } else if (operation == blackhole_tile_compute_schema::kBinaryMaxTile ||
-             operation == blackhole_tile_compute_schema::kAddTiles ||
-             operation == blackhole_tile_compute_schema::kMulTiles) {
-    add_if_present("lhs", 1);
-    add_if_present("rhs", 2);
-    add_if_present("output", 1);
-  } else if (operation == blackhole_tile_compute_schema::kMulTilesBcastCols) {
-    add_if_present("lhs", 2);
-    add_if_present("rhs", 3);
-    add_if_present("output", 2);
-  } else if (operation == blackhole_tile_compute_schema::kExp2Tile) {
-    add_if_present("output", 2);
-    add_if_present("lhs", 3);
-    add_if_present("rhs", 4);
-  } else {
-    for (size_t i = 1; i < call->args.size(); ++i) {
-      add_if_present("operand" + std::to_string(i), i);
-    }
+  const BlackholeTileComputePattern* pattern =
+      FindBlackholeTileComputePattern(operation);
+  if (pattern == nullptr) {
+    return false;
   }
-  AddNode(dag, "blackhole_leaf_op", operation, edges);
+  AddNode(dag, "blackhole_leaf_op", *pattern, pattern->blackhole_compute_operands,
+          call->args);
   return true;
 }
 
@@ -158,8 +132,11 @@ bool TryAddReduceNode(BlackholeTileComputeDAG* dag, const CallNode* call) {
   if (call_op->name != "tl.tileop.reduce" || call->args.size() < 2U) {
     return false;
   }
-  AddNode(dag, "generic_tile_op", "reduce_tile",
-          {{"input", call->args[0]}, {"output", call->args[1]}});
+  const BlackholeTileComputePattern* pattern =
+      FindBlackholeTileComputePattern(BlackholeTileComputeOperation::kReduceTile);
+  ICHECK(pattern != nullptr);
+  AddNode(dag, "generic_tile_op", *pattern, pattern->generic_tile_op_operands,
+          call->args);
   return true;
 }
 
@@ -171,8 +148,11 @@ bool TryAddGemmNode(BlackholeTileComputeDAG* dag, const CallNode* call) {
   if (call_op->name != "tl.tileop.gemm_py" || call->args.size() < 3U) {
     return false;
   }
-  AddNode(dag, "generic_tile_op", "matmul_tiles",
-          {{"a", call->args[0]}, {"b", call->args[1]}, {"c", call->args[2]}});
+  const BlackholeTileComputePattern* pattern =
+      FindBlackholeTileComputePattern(BlackholeTileComputeOperation::kMatmulTiles);
+  ICHECK(pattern != nullptr);
+  AddNode(dag, "generic_tile_op", *pattern, pattern->generic_tile_op_operands,
+          call->args);
   return true;
 }
 
