@@ -1630,3 +1630,21 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   和 protocol audit，
   不能只列当前 Phase E
   两个算法文档。
+- 2026-04-28 progress.md 维护纪律：
+  `tasks/progress.md`
+  不是 changelog /
+  audit log /
+  文档同步流水账。
+  它只保留 repo HEAD 当前状态、
+  blocker、
+  support boundary、
+  open debt、
+  next task order
+  和最近一次验证摘要。
+  详细审计过程、
+  多轮文档同步细节、
+  长测试清单和历史解释
+  应放到对应设计文档、
+  memory
+  或 commit message，
+  不要塞进 progress。
