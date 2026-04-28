@@ -8,12 +8,16 @@
 #include <tvm/ir/transform.h>
 #include <tvm/target/target.h>
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "assign_blackhole_cores.h"
+#include "common/blackhole_tile_compute_covering.h"
+#include "common/blackhole_tile_compute_dag.h"
 #include "common/blackhole_utils.h"
 #include "common/buffer_tile_bridge_spec_utils.h"
 #include "common/companion_base.h"
@@ -197,6 +201,8 @@ struct TTProgramSlices {
   Array<TTLiveFormPlan> live_form_plans;
   Array<TTMaterializationPlan> materialization_plans;
   Array<TTConsumerBindingPlan> consumer_binding_plans;
+  Array<TTResourceDemand> resource_demands;
+  Array<TTResourcePressureReport> resource_pressure_reports;
 };
 
 TTProgramSlices UnpackTTProgram(const TTProgram& program) {
@@ -221,6 +227,8 @@ TTProgramSlices UnpackTTProgram(const TTProgram& program) {
   slices.live_form_plans = program->live_form_plans;
   slices.materialization_plans = program->materialization_plans;
   slices.consumer_binding_plans = program->consumer_binding_plans;
+  slices.resource_demands = program->resource_demands;
+  slices.resource_pressure_reports = program->resource_pressure_reports;
   return slices;
 }
 
@@ -237,7 +245,9 @@ TTProgram PackTTProgram(TTProgramSlices slices) {
                    std::move(slices.compute_sync_plans),
                    std::move(slices.dst_layout_plans), std::move(slices.live_form_plans),
                    std::move(slices.materialization_plans),
-                   std::move(slices.consumer_binding_plans));
+                   std::move(slices.consumer_binding_plans),
+                   std::move(slices.resource_demands),
+                   std::move(slices.resource_pressure_reports));
 }
 
 TTProgramSlices GetOrCreateTTProgramSlices(const tir::PrimFunc& func, const GlobalVar& gvar,
@@ -362,6 +372,246 @@ Array<TTKernelPlan> BuildKernelPlans(const Array<TTKernel>& kernels) {
                                         /*block_plan_index=*/0, kernel->abi_plan_index));
   }
   return kernel_plans;
+}
+
+bool IsTileComputeDAGOutputRole(const std::string& role) {
+  return role == "output" || role == "c";
+}
+
+String PrimaryComputeKernelName(const TTProgramSlices& slices) {
+  for (const TTKernelPlan& kernel_plan : slices.kernel_plans) {
+    if (kernel_plan->kind == "compute") {
+      return kernel_plan->name;
+    }
+  }
+  for (const TTKernel& kernel : slices.kernels) {
+    if (kernel->kind == "compute") {
+      return kernel->name;
+    }
+  }
+  return String("compute");
+}
+
+String PrimaryCoreGroupName(const TTProgramSlices& slices) {
+  if (!slices.core_groups.empty()) {
+    return slices.core_groups[0]->name;
+  }
+  return String("main_core_group");
+}
+
+int64_t PrimaryCoreGroupIndex(const TTProgramSlices& slices) {
+  return slices.core_groups.empty() ? -1 : 0;
+}
+
+int64_t TotalCBL1Bytes(const Array<TTCBPlan>& cb_plans) {
+  int64_t total = 0;
+  for (const TTCBPlan& cb : cb_plans) {
+    total += cb->num_pages * cb->page_size_bytes;
+  }
+  return total;
+}
+
+Array<TTTileComputeMaterializationDemand> BuildTileComputeMaterializationDemands(
+    const BlackholeTileComputeDAG& dag, const String& kernel_name,
+    Array<String>* unsupported_reasons) {
+  Array<TTTileComputeMaterializationDemand> demands;
+  for (const BlackholeTileComputeDAGNode& node : dag.nodes) {
+    const BlackholeTileComputeCoveringDecision decision =
+        SelectBlackholeTileComputeCovering(node.op_name);
+    if (!decision.selected) {
+      unsupported_reasons->push_back(String(
+          "node " + std::to_string(node.id) + " operation " + node.op_name +
+          ": " + decision.reject_reason));
+      continue;
+    }
+    if (decision.materialization_policy == "none") {
+      continue;
+    }
+    const std::string name =
+        "tile_compute_materialization_" + std::to_string(node.id);
+    demands.push_back(TTTileComputeMaterializationDemand(
+        String(name), kernel_name, node.id, String(decision.operation_name),
+        String(decision.pattern_name), String(decision.materialization_policy),
+        String("selected_pattern:" + decision.pattern_name +
+               ";side_effect:" + node.side_effect_class)));
+  }
+  return demands;
+}
+
+Array<TTTileComputeFanoutDemand> BuildTileComputeFanoutDemands(
+    const BlackholeTileComputeDAG& dag, const String& kernel_name) {
+  std::unordered_map<int64_t, std::vector<const BlackholeTileComputeDAGEdge*>>
+      uses_by_producer;
+  for (const BlackholeTileComputeDAGEdge& edge : dag.edges) {
+    if (edge.producer_node < 0 || IsTileComputeDAGOutputRole(edge.value_role)) {
+      continue;
+    }
+    uses_by_producer[edge.producer_node].push_back(&edge);
+  }
+
+  Array<TTTileComputeFanoutDemand> demands;
+  std::vector<int64_t> producer_nodes;
+  for (const auto& entry : uses_by_producer) {
+    producer_nodes.push_back(entry.first);
+  }
+  std::sort(producer_nodes.begin(), producer_nodes.end());
+
+  for (const int64_t producer_node : producer_nodes) {
+    const std::vector<const BlackholeTileComputeDAGEdge*>& uses =
+        uses_by_producer.at(producer_node);
+    if (uses.size() < 2U || producer_node < 0 ||
+        producer_node >= static_cast<int64_t>(dag.nodes.size())) {
+      continue;
+    }
+    const BlackholeTileComputeDAGNode& producer = dag.nodes[producer_node];
+    const bool requires_materialization =
+        producer.side_effect_class == "tile_regs" ||
+        producer.side_effect_class == "dst" ||
+        producer.side_effect_class == "pack";
+    Array<Integer> consumer_nodes;
+    for (const BlackholeTileComputeDAGEdge* use : uses) {
+      consumer_nodes.push_back(Integer(use->consumer_node));
+    }
+    const std::string name =
+        "tile_compute_fanout_" + std::to_string(producer_node);
+    demands.push_back(TTTileComputeFanoutDemand(
+        String(name), kernel_name, producer_node,
+        String(producer.op_name), String(uses.front()->value_repr),
+        static_cast<int64_t>(uses.size()), consumer_nodes,
+        String(requires_materialization
+                   ? "materialize_before_cross_event_use"
+                   : "share_live_value"),
+        String("producer_use_count:" + std::to_string(uses.size()) +
+               ";producer_side_effect:" + producer.side_effect_class)));
+  }
+  return demands;
+}
+
+Array<TTTileComputeFanoutDemand> RefreshFanoutDemandKernelNames(
+    const Array<TTTileComputeFanoutDemand>& demands, const String& kernel_name) {
+  Array<TTTileComputeFanoutDemand> refreshed;
+  for (const TTTileComputeFanoutDemand& demand : demands) {
+    refreshed.push_back(TTTileComputeFanoutDemand(
+        demand->name, kernel_name, demand->producer_node,
+        demand->producer_operation, demand->value_repr, demand->use_count,
+        demand->consumer_nodes, demand->policy, demand->evidence));
+  }
+  return refreshed;
+}
+
+Array<TTTileComputeMaterializationDemand> RefreshMaterializationDemandKernelNames(
+    const Array<TTTileComputeMaterializationDemand>& demands,
+    const String& kernel_name) {
+  Array<TTTileComputeMaterializationDemand> refreshed;
+  for (const TTTileComputeMaterializationDemand& demand : demands) {
+    refreshed.push_back(TTTileComputeMaterializationDemand(
+        demand->name, kernel_name, demand->node_id, demand->operation_name,
+        demand->pattern_name, demand->policy, demand->evidence));
+  }
+  return refreshed;
+}
+
+Array<TTResourceDemand> BuildTileComputeResourceDemands(
+    const tir::PrimFunc& func, const TTProgramSlices& slices) {
+  const BlackholeTileComputeDAG dag = BuildBlackholeTileComputeDAG(func);
+  if (dag.nodes.empty()) {
+    return {};
+  }
+
+  const String kernel_name = PrimaryComputeKernelName(slices);
+  Array<String> unsupported_reasons;
+  Array<TTTileComputeFanoutDemand> fanout_demands =
+      BuildTileComputeFanoutDemands(dag, kernel_name);
+  Array<TTTileComputeMaterializationDemand> materialization_demands =
+      BuildTileComputeMaterializationDemands(dag, kernel_name,
+                                             &unsupported_reasons);
+  if (fanout_demands.empty() && materialization_demands.empty() &&
+      unsupported_reasons.empty()) {
+    return {};
+  }
+
+  Array<TTResourceDemand> demands;
+  demands.push_back(TTResourceDemand(
+      String("resource_demand_" + static_cast<std::string>(kernel_name)),
+      kernel_name, PrimaryCoreGroupName(slices), PrimaryCoreGroupIndex(slices),
+      fanout_demands, materialization_demands, unsupported_reasons,
+      static_cast<int64_t>(slices.cb_plans.size()), TotalCBL1Bytes(slices.cb_plans),
+      static_cast<int64_t>(slices.semaphore_plans.size()),
+      static_cast<int64_t>(slices.transport_plans.size())));
+  return demands;
+}
+
+TTResourceDemand RefreshResourceDemandCounters(const TTResourceDemand& demand,
+                                               const TTProgramSlices& slices) {
+  const String kernel_name = PrimaryComputeKernelName(slices);
+  return TTResourceDemand(
+      String("resource_demand_" + static_cast<std::string>(kernel_name)),
+      kernel_name, PrimaryCoreGroupName(slices), PrimaryCoreGroupIndex(slices),
+      RefreshFanoutDemandKernelNames(demand->tile_compute_fanout_demands,
+                                     kernel_name),
+      RefreshMaterializationDemandKernelNames(
+          demand->tile_compute_materialization_demands, kernel_name),
+      demand->tile_compute_unsupported_reasons,
+      static_cast<int64_t>(slices.cb_plans.size()), TotalCBL1Bytes(slices.cb_plans),
+      static_cast<int64_t>(slices.semaphore_plans.size()),
+      static_cast<int64_t>(slices.transport_plans.size()));
+}
+
+Array<TTResourceDemand> RefreshResourceDemandCounters(
+    const Array<TTResourceDemand>& demands, const TTProgramSlices& slices) {
+  Array<TTResourceDemand> refreshed;
+  for (const TTResourceDemand& demand : demands) {
+    refreshed.push_back(RefreshResourceDemandCounters(demand, slices));
+  }
+  return refreshed;
+}
+
+String CoreGridRequirement(const TTProgramSlices& slices) {
+  if (slices.core_groups.empty()) {
+    return String("unassigned");
+  }
+  const TTCoreGroup& core_group = slices.core_groups[0];
+  return String("core_group:" + static_cast<std::string>(core_group->name) +
+                ";grid:" + std::to_string(core_group->logical_grid_x) + "x" +
+                std::to_string(core_group->logical_grid_y));
+}
+
+String DRAMViewRequirement(const TTProgramSlices& slices) {
+  int64_t dram_buffers = 0;
+  for (const TTBufferDistributionPlan& distribution :
+       slices.buffer_distribution_plans) {
+    if (distribution->memory_space == "DRAM") {
+      ++dram_buffers;
+    }
+  }
+  return String("dram_buffer_views:" + std::to_string(dram_buffers));
+}
+
+Array<TTResourcePressureReport> BuildResourcePressureReports(
+    const TTProgramSlices& slices) {
+  Array<TTResourcePressureReport> reports;
+  for (const TTResourceDemand& demand : slices.resource_demands) {
+    Array<String> unsupported_reasons = demand->tile_compute_unsupported_reasons;
+    reports.push_back(TTResourcePressureReport(
+        String("resource_pressure_" + static_cast<std::string>(demand->kernel_name)),
+        demand->kernel_name, demand->core_group, demand->core_group_index,
+        demand->tile_compute_unsupported_reasons,
+        demand->tile_compute_materialization_demands,
+        static_cast<int64_t>(slices.cb_plans.size()), TotalCBL1Bytes(slices.cb_plans),
+        /*per_core_l1_buffer_bytes=*/0, TotalCBL1Bytes(slices.cb_plans),
+        CoreGridRequirement(slices), DRAMViewRequirement(slices),
+        unsupported_reasons));
+  }
+  return reports;
+}
+
+void RefreshResourcePlanningSlices(TTProgramSlices* slices) {
+  if (slices->resource_demands.empty()) {
+    return;
+  }
+  slices->resource_demands =
+      RefreshResourceDemandCounters(slices->resource_demands, *slices);
+  slices->resource_pressure_reports = BuildResourcePressureReports(*slices);
 }
 
 Array<TTComputeOpPlan> AttachComputeOpKernelPlanIndices(
@@ -655,6 +905,8 @@ tvm::transform::Pass PlanTTBlocks() {
       slices.mesh_plans = BuildUnitMeshPlans();
       slices.block_plans = BuildBlockPlans(spatial_plan, core_groups);
       slices.core_groups = core_groups;
+      slices.resource_demands = BuildTileComputeResourceDemands(func.value(), slices);
+      RefreshResourcePlanningSlices(&slices);
       planned = WithTTProgramAttr(std::move(planned), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);
     }
@@ -686,6 +938,10 @@ tvm::transform::Pass PlanTTCompute() {
       slices.consumer_binding_plans = planner.GetTTConsumerBindingPlans();
       slices.compute_op_plans =
           AttachComputeOpKernelPlanIndices(planner.GetTTComputeOpPlans(), slices.kernel_plans);
+      if (slices.resource_demands.empty()) {
+        slices.resource_demands = BuildTileComputeResourceDemands(func.value(), slices);
+      }
+      RefreshResourcePlanningSlices(&slices);
       planned = WithTTProgramAttr(std::move(planned), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);
     }
@@ -711,6 +967,7 @@ tvm::transform::Pass PlanTTTransport() {
       slices.materialization_plans =
           RemapMaterializationCBRequirementIndices(slices.materialization_plans, slices.cb_plans);
       slices.transport_plans = BuildTransportPlans(spatial_plan);
+      RefreshResourcePlanningSlices(&slices);
       planned = WithTTProgramAttr(std::move(planned), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);
     }
@@ -734,6 +991,7 @@ tvm::transform::Pass PlanTTSync() {
       slices.sync_plans = BuildSyncPlans(compute_sync_plans);
       slices.compute_sync_plans = compute_sync_plans;
       slices.semaphore_plans = BuildSemaphorePlans(func.value());
+      RefreshResourcePlanningSlices(&slices);
       planned = WithTTProgramAttr(std::move(planned), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);
     }
@@ -759,6 +1017,7 @@ tvm::transform::Pass PlanTTABI() {
       slices.dst_layout_plans = BuildDstLayoutPlans(slices.abi_plans);
       slices.buffer_distribution_plans =
           BuildBufferDistributionPlans(spatial_plan, slices.dst_layout_plans, func.value());
+      RefreshResourcePlanningSlices(&slices);
       tir::PrimFunc planned = WithTTProgramAttr(func.value(), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);
     }
@@ -791,6 +1050,7 @@ tvm::transform::Pass PlanTTExecution() {
       ICHECK(!kernels.empty())
           << "PlanTTExecution requires TTKernel owner truth; Run PlanTTCompute before PlanTTExecution";
       slices.execution_plans = BuildExecutionPlans(spatial_plan, kernels);
+      RefreshResourcePlanningSlices(&slices);
       tir::PrimFunc planned = WithTTProgramAttr(func.value(), PackTTProgram(std::move(slices)));
       updated->Add(gvar, planned, true);
     }
@@ -831,6 +1091,10 @@ tvm::transform::Pass BuildTTProgram() {
           << "BuildTTProgram requires aligned TTKernelPlan and TTABIPlan owner truth";
       ICHECK_EQ(slices.sync_plans.size(), slices.compute_sync_plans.size())
           << "BuildTTProgram requires aligned TTSyncPlan and TTComputeSyncPlan owner truth";
+      if (!slices.resource_demands.empty()) {
+        ICHECK(!slices.resource_pressure_reports.empty())
+            << "BuildTTProgram requires ResourcePressureReport for ResourceDemand owner truth";
+      }
 
       tir::PrimFunc planned = WithTTProgramAttr(func.value(), staged);
       planned = StripTTIntermediateAttrs(std::move(planned));

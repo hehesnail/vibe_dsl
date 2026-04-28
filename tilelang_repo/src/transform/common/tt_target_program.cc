@@ -181,6 +181,171 @@ TTComputeOpPlan::TTComputeOpPlan(
   data_ = std::move(n);
 }
 
+void TTTileComputeFanoutDemandNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTTileComputeFanoutDemandNode>()
+      .def_ro("name", &TTTileComputeFanoutDemandNode::name)
+      .def_ro("kernel_name", &TTTileComputeFanoutDemandNode::kernel_name)
+      .def_ro("producer_node", &TTTileComputeFanoutDemandNode::producer_node)
+      .def_ro("producer_operation",
+              &TTTileComputeFanoutDemandNode::producer_operation)
+      .def_ro("value_repr", &TTTileComputeFanoutDemandNode::value_repr)
+      .def_ro("use_count", &TTTileComputeFanoutDemandNode::use_count)
+      .def_ro("consumer_nodes", &TTTileComputeFanoutDemandNode::consumer_nodes)
+      .def_ro("policy", &TTTileComputeFanoutDemandNode::policy)
+      .def_ro("evidence", &TTTileComputeFanoutDemandNode::evidence);
+}
+
+TTTileComputeFanoutDemand::TTTileComputeFanoutDemand(
+    ffi::String name, ffi::String kernel_name, int64_t producer_node,
+    ffi::String producer_operation, ffi::String value_repr, int64_t use_count,
+    ffi::Array<Integer> consumer_nodes, ffi::String policy,
+    ffi::String evidence) {
+  auto n = ffi::make_object<TTTileComputeFanoutDemandNode>();
+  n->name = std::move(name);
+  n->kernel_name = std::move(kernel_name);
+  n->producer_node = producer_node;
+  n->producer_operation = std::move(producer_operation);
+  n->value_repr = std::move(value_repr);
+  n->use_count = use_count;
+  n->consumer_nodes = std::move(consumer_nodes);
+  n->policy = std::move(policy);
+  n->evidence = std::move(evidence);
+  data_ = std::move(n);
+}
+
+void TTTileComputeMaterializationDemandNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTTileComputeMaterializationDemandNode>()
+      .def_ro("name", &TTTileComputeMaterializationDemandNode::name)
+      .def_ro("kernel_name",
+              &TTTileComputeMaterializationDemandNode::kernel_name)
+      .def_ro("node_id", &TTTileComputeMaterializationDemandNode::node_id)
+      .def_ro("operation_name",
+              &TTTileComputeMaterializationDemandNode::operation_name)
+      .def_ro("pattern_name",
+              &TTTileComputeMaterializationDemandNode::pattern_name)
+      .def_ro("policy", &TTTileComputeMaterializationDemandNode::policy)
+      .def_ro("evidence", &TTTileComputeMaterializationDemandNode::evidence);
+}
+
+TTTileComputeMaterializationDemand::TTTileComputeMaterializationDemand(
+    ffi::String name, ffi::String kernel_name, int64_t node_id,
+    ffi::String operation_name, ffi::String pattern_name, ffi::String policy,
+    ffi::String evidence) {
+  auto n = ffi::make_object<TTTileComputeMaterializationDemandNode>();
+  n->name = std::move(name);
+  n->kernel_name = std::move(kernel_name);
+  n->node_id = node_id;
+  n->operation_name = std::move(operation_name);
+  n->pattern_name = std::move(pattern_name);
+  n->policy = std::move(policy);
+  n->evidence = std::move(evidence);
+  data_ = std::move(n);
+}
+
+void TTResourceDemandNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTResourceDemandNode>()
+      .def_ro("name", &TTResourceDemandNode::name)
+      .def_ro("kernel_name", &TTResourceDemandNode::kernel_name)
+      .def_ro("core_group", &TTResourceDemandNode::core_group)
+      .def_ro("core_group_index", &TTResourceDemandNode::core_group_index)
+      .def_ro("tile_compute_fanout_demands",
+              &TTResourceDemandNode::tile_compute_fanout_demands)
+      .def_ro("tile_compute_materialization_demands",
+              &TTResourceDemandNode::tile_compute_materialization_demands)
+      .def_ro("tile_compute_unsupported_reasons",
+              &TTResourceDemandNode::tile_compute_unsupported_reasons)
+      .def_ro("cb_requirement_count",
+              &TTResourceDemandNode::cb_requirement_count)
+      .def_ro("cb_l1_bytes", &TTResourceDemandNode::cb_l1_bytes)
+      .def_ro("semaphore_count", &TTResourceDemandNode::semaphore_count)
+      .def_ro("communication_edge_count",
+              &TTResourceDemandNode::communication_edge_count);
+}
+
+TTResourceDemand::TTResourceDemand(
+    ffi::String name, ffi::String kernel_name, ffi::String core_group,
+    int64_t core_group_index,
+    ffi::Array<TTTileComputeFanoutDemand> tile_compute_fanout_demands,
+    ffi::Array<TTTileComputeMaterializationDemand>
+        tile_compute_materialization_demands,
+    ffi::Array<ffi::String> tile_compute_unsupported_reasons,
+    int64_t cb_requirement_count, int64_t cb_l1_bytes,
+    int64_t semaphore_count, int64_t communication_edge_count) {
+  auto n = ffi::make_object<TTResourceDemandNode>();
+  n->name = std::move(name);
+  n->kernel_name = std::move(kernel_name);
+  n->core_group = std::move(core_group);
+  n->core_group_index = core_group_index;
+  n->tile_compute_fanout_demands = std::move(tile_compute_fanout_demands);
+  n->tile_compute_materialization_demands =
+      std::move(tile_compute_materialization_demands);
+  n->tile_compute_unsupported_reasons =
+      std::move(tile_compute_unsupported_reasons);
+  n->cb_requirement_count = cb_requirement_count;
+  n->cb_l1_bytes = cb_l1_bytes;
+  n->semaphore_count = semaphore_count;
+  n->communication_edge_count = communication_edge_count;
+  data_ = std::move(n);
+}
+
+void TTResourcePressureReportNode::RegisterReflection() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TTResourcePressureReportNode>()
+      .def_ro("name", &TTResourcePressureReportNode::name)
+      .def_ro("kernel_name", &TTResourcePressureReportNode::kernel_name)
+      .def_ro("core_group", &TTResourcePressureReportNode::core_group)
+      .def_ro("core_group_index",
+              &TTResourcePressureReportNode::core_group_index)
+      .def_ro("tile_compute_unsupported_reasons",
+              &TTResourcePressureReportNode::tile_compute_unsupported_reasons)
+      .def_ro("required_materializations",
+              &TTResourcePressureReportNode::required_materializations)
+      .def_ro("per_core_cb_id_pressure",
+              &TTResourcePressureReportNode::per_core_cb_id_pressure)
+      .def_ro("per_core_cb_l1_bytes",
+              &TTResourcePressureReportNode::per_core_cb_l1_bytes)
+      .def_ro("per_core_l1_buffer_bytes",
+              &TTResourcePressureReportNode::per_core_l1_buffer_bytes)
+      .def_ro("max_simultaneous_l1_bytes",
+              &TTResourcePressureReportNode::max_simultaneous_l1_bytes)
+      .def_ro("core_grid_requirement",
+              &TTResourcePressureReportNode::core_grid_requirement)
+      .def_ro("dram_view_requirement",
+              &TTResourcePressureReportNode::dram_view_requirement)
+      .def_ro("unsupported_reasons",
+              &TTResourcePressureReportNode::unsupported_reasons);
+}
+
+TTResourcePressureReport::TTResourcePressureReport(
+    ffi::String name, ffi::String kernel_name, ffi::String core_group,
+    int64_t core_group_index,
+    ffi::Array<ffi::String> tile_compute_unsupported_reasons,
+    ffi::Array<TTTileComputeMaterializationDemand> required_materializations,
+    int64_t per_core_cb_id_pressure, int64_t per_core_cb_l1_bytes,
+    int64_t per_core_l1_buffer_bytes, int64_t max_simultaneous_l1_bytes,
+    ffi::String core_grid_requirement, ffi::String dram_view_requirement,
+    ffi::Array<ffi::String> unsupported_reasons) {
+  auto n = ffi::make_object<TTResourcePressureReportNode>();
+  n->name = std::move(name);
+  n->kernel_name = std::move(kernel_name);
+  n->core_group = std::move(core_group);
+  n->core_group_index = core_group_index;
+  n->tile_compute_unsupported_reasons =
+      std::move(tile_compute_unsupported_reasons);
+  n->required_materializations = std::move(required_materializations);
+  n->per_core_cb_id_pressure = per_core_cb_id_pressure;
+  n->per_core_cb_l1_bytes = per_core_cb_l1_bytes;
+  n->per_core_l1_buffer_bytes = per_core_l1_buffer_bytes;
+  n->max_simultaneous_l1_bytes = max_simultaneous_l1_bytes;
+  n->core_grid_requirement = std::move(core_grid_requirement);
+  n->dram_view_requirement = std::move(dram_view_requirement);
+  n->unsupported_reasons = std::move(unsupported_reasons);
+  data_ = std::move(n);
+}
+
 void TTBlockPlanNode::RegisterReflection() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<TTBlockPlanNode>()
@@ -868,7 +1033,10 @@ void TTProgramNode::RegisterReflection() {
       .def_ro("dst_layout_plans", &TTProgramNode::dst_layout_plans)
       .def_ro("live_form_plans", &TTProgramNode::live_form_plans)
       .def_ro("materialization_plans", &TTProgramNode::materialization_plans)
-      .def_ro("consumer_binding_plans", &TTProgramNode::consumer_binding_plans);
+      .def_ro("consumer_binding_plans", &TTProgramNode::consumer_binding_plans)
+      .def_ro("resource_demands", &TTProgramNode::resource_demands)
+      .def_ro("resource_pressure_reports",
+              &TTProgramNode::resource_pressure_reports);
 }
 
 TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
@@ -888,7 +1056,10 @@ TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
                      ffi::Array<TTDstLayoutPlan> dst_layout_plans,
                      ffi::Array<TTLiveFormPlan> live_form_plans,
                      ffi::Array<TTMaterializationPlan> materialization_plans,
-                     ffi::Array<TTConsumerBindingPlan> consumer_binding_plans) {
+                     ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
+                     ffi::Array<TTResourceDemand> resource_demands,
+                     ffi::Array<TTResourcePressureReport>
+                         resource_pressure_reports) {
   auto n = ffi::make_object<TTProgramNode>();
   n->entry_name = std::move(entry_name);
   n->member_func = std::move(member_func);
@@ -910,6 +1081,8 @@ TTProgram::TTProgram(ffi::String entry_name, ffi::String member_func,
   n->live_form_plans = std::move(live_form_plans);
   n->materialization_plans = std::move(materialization_plans);
   n->consumer_binding_plans = std::move(consumer_binding_plans);
+  n->resource_demands = std::move(resource_demands);
+  n->resource_pressure_reports = std::move(resource_pressure_reports);
   data_ = std::move(n);
 }
 
@@ -918,6 +1091,10 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   RegisterNodeReflection<TTBufferDistributionPlanNode>();
   RegisterNodeReflection<TTComputeOperandBindingPlanNode>();
   RegisterNodeReflection<TTComputeOpPlanNode>();
+  RegisterNodeReflection<TTTileComputeFanoutDemandNode>();
+  RegisterNodeReflection<TTTileComputeMaterializationDemandNode>();
+  RegisterNodeReflection<TTResourceDemandNode>();
+  RegisterNodeReflection<TTResourcePressureReportNode>();
   RegisterNodeReflection<TTBlockPlanNode>();
   RegisterNodeReflection<TTKernelPlanNode>();
   RegisterNodeReflection<TTKernelLaunchSpecNode>();
@@ -1003,6 +1180,63 @@ TVM_FFI_STATIC_INIT_BLOCK() {
             std::move(tile_shape), std::move(block_shape), std::move(subblock_shape),
             std::move(accumulator_dtype), std::move(mbarrier_buffer), std::move(mbarrier_scope),
             std::move(mbarrier_index_exprs));
+      });
+  refl::GlobalDef().def(
+      "tl.TTTileComputeFanoutDemand",
+      [](ffi::String name, ffi::String kernel_name, int64_t producer_node,
+         ffi::String producer_operation, ffi::String value_repr,
+         int64_t use_count, ffi::Array<Integer> consumer_nodes,
+         ffi::String policy, ffi::String evidence) {
+        return TTTileComputeFanoutDemand(
+            std::move(name), std::move(kernel_name), producer_node,
+            std::move(producer_operation), std::move(value_repr), use_count,
+            std::move(consumer_nodes), std::move(policy), std::move(evidence));
+      });
+  refl::GlobalDef().def(
+      "tl.TTTileComputeMaterializationDemand",
+      [](ffi::String name, ffi::String kernel_name, int64_t node_id,
+         ffi::String operation_name, ffi::String pattern_name,
+         ffi::String policy, ffi::String evidence) {
+        return TTTileComputeMaterializationDemand(
+            std::move(name), std::move(kernel_name), node_id,
+            std::move(operation_name), std::move(pattern_name),
+            std::move(policy), std::move(evidence));
+      });
+  refl::GlobalDef().def(
+      "tl.TTResourceDemand",
+      [](ffi::String name, ffi::String kernel_name, ffi::String core_group,
+         int64_t core_group_index,
+         ffi::Array<TTTileComputeFanoutDemand> tile_compute_fanout_demands,
+         ffi::Array<TTTileComputeMaterializationDemand>
+             tile_compute_materialization_demands,
+         ffi::Array<ffi::String> tile_compute_unsupported_reasons,
+         int64_t cb_requirement_count, int64_t cb_l1_bytes,
+         int64_t semaphore_count, int64_t communication_edge_count) {
+        return TTResourceDemand(
+            std::move(name), std::move(kernel_name), std::move(core_group),
+            core_group_index, std::move(tile_compute_fanout_demands),
+            std::move(tile_compute_materialization_demands),
+            std::move(tile_compute_unsupported_reasons), cb_requirement_count,
+            cb_l1_bytes, semaphore_count, communication_edge_count);
+      });
+  refl::GlobalDef().def(
+      "tl.TTResourcePressureReport",
+      [](ffi::String name, ffi::String kernel_name, ffi::String core_group,
+         int64_t core_group_index,
+         ffi::Array<ffi::String> tile_compute_unsupported_reasons,
+         ffi::Array<TTTileComputeMaterializationDemand>
+             required_materializations,
+         int64_t per_core_cb_id_pressure, int64_t per_core_cb_l1_bytes,
+         int64_t per_core_l1_buffer_bytes, int64_t max_simultaneous_l1_bytes,
+         ffi::String core_grid_requirement, ffi::String dram_view_requirement,
+         ffi::Array<ffi::String> unsupported_reasons) {
+        return TTResourcePressureReport(
+            std::move(name), std::move(kernel_name), std::move(core_group),
+            core_group_index, std::move(tile_compute_unsupported_reasons),
+            std::move(required_materializations), per_core_cb_id_pressure,
+            per_core_cb_l1_bytes, per_core_l1_buffer_bytes,
+            max_simultaneous_l1_bytes, std::move(core_grid_requirement),
+            std::move(dram_view_requirement), std::move(unsupported_reasons));
       });
   refl::GlobalDef().def(
       "tl.TTBlockPlan",
@@ -1242,7 +1476,9 @@ TVM_FFI_STATIC_INIT_BLOCK() {
          ffi::Array<TTDstLayoutPlan> dst_layout_plans,
          ffi::Array<TTLiveFormPlan> live_form_plans,
          ffi::Array<TTMaterializationPlan> materialization_plans,
-         ffi::Array<TTConsumerBindingPlan> consumer_binding_plans) {
+         ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
+         ffi::Array<TTResourceDemand> resource_demands,
+         ffi::Array<TTResourcePressureReport> resource_pressure_reports) {
         return TTProgram(std::move(entry_name), std::move(member_func),
                          std::move(mesh_plans), std::move(buffer_distribution_plans),
                          std::move(block_plans), std::move(kernel_plans),
@@ -1253,7 +1489,9 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                          std::move(semaphore_plans), std::move(compute_sync_plans),
                          std::move(dst_layout_plans), std::move(live_form_plans),
                          std::move(materialization_plans),
-                         std::move(consumer_binding_plans));
+                         std::move(consumer_binding_plans),
+                         std::move(resource_demands),
+                         std::move(resource_pressure_reports));
       });
 }
 

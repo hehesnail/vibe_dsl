@@ -1729,3 +1729,22 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   over wrapper helpers that only restate
   `std::vector`
   construction.
+- 2026-04-29 DAG-backed resource pressure:
+  if resource planning needs `TileComputeDAG`
+  fanout,
+  capture it before
+  `SelectBlackholeTTMetalBuiltins`.
+  Builtin selection deliberately reduces the visible compute graph to selected
+  leaf ops and can erase useful multi-consumer evidence.
+  Store the durable result as typed
+  `TTResourceDemand`
+  /
+  `TTResourcePressureReport`,
+  then let later TTProgram phases refresh kernel,
+  core,
+  CB,
+  semaphore,
+  transport,
+  and distribution counters.
+  Do not rebuild production resource demand from the reduced post-selection
+  DAG.

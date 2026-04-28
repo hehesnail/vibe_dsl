@@ -108,9 +108,11 @@
     和 admitted compute surface 上的
     Phase E decision-use cutover
     已完成；
-    当前活动 lane 已根据 resource-planning
-    复查推进到
-    `TileComputeDAG-backed ResourceDemand / ResourcePressureReport typed surface`
+    `TileComputeDAG`-backed
+    typed resource pressure
+    也已完成第一版 production-use gate；
+    当前活动 lane 已推进到
+    `CB / L1 resource admission upgrade`
   - 强制执行
     anti-overdesign pay-rent rule
     和 problem-family generality rule：
@@ -163,14 +165,14 @@ DAG covering
     `source_emitter`
     物化；
     DAG-wide fanout /
-    materialization
-    目前仍是 diagnostic foundation，
-    不算 production completion；
-    下一项必须把它并入
+    materialization /
+    unsupported covering reasons
+    已并入
     `ResourceDemand`
     /
     `ResourcePressureReport`
-    的 production input；
+    的 production input，
+    由 validator 和 executable projection 消费；
     只有影响 typed resource demand /
     typed plans /
     unsupported diagnostics
@@ -208,10 +210,12 @@ DAG covering
     也不是 direct-runtime workload admission
     的临时 patch 面
   - compute covering production 边界已完成收缩；
-    当前 active task 是建立
     `TileComputeDAG`-backed
-    typed resource pressure，
-    再升级 CB / L1 / core / buffer planning，
+    typed resource pressure
+    已完成第一版 production-use gate；
+    当前 active task 是升级
+    CB / L1 resource admission，
+    再推进 core / buffer planning，
     最后回到 wider runtime admission
 
 当前执行顺序不在 README 中重复维护；
@@ -230,10 +234,13 @@ scheduling 面继续扩展；
 后续顺序改为：
 `TileComputeDAG`
 production 边界已清理 / 收缩；
-下一步建立
 `TileComputeDAG`-backed
 typed resource pressure
-和 CB / L1 / core / buffer planning，
+已建立第一版 production-use gate；
+下一步升级
+CB / L1 admission，
+再推进
+core / buffer planning，
 然后回到
 multi-block flash-attn direct-runtime admission、
 multi-page exact-CB event admission、

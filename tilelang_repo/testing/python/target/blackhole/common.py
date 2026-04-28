@@ -858,6 +858,8 @@ def rebuild_tt_program(
     live_form_plans=None,
     materialization_plans=None,
     consumer_binding_plans=None,
+    resource_demands=None,
+    resource_pressure_reports=None,
     abi_plans=None,
     execution_plans=None,
 ):
@@ -901,6 +903,12 @@ def rebuild_tt_program(
         list(program.consumer_binding_plans)
         if consumer_binding_plans is None
         else consumer_binding_plans,
+        list(program.resource_demands)
+        if resource_demands is None
+        else resource_demands,
+        list(program.resource_pressure_reports)
+        if resource_pressure_reports is None
+        else resource_pressure_reports,
     )
 
 

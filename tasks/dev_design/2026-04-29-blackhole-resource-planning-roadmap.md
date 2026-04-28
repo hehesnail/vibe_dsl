@@ -42,11 +42,14 @@ mature hardware-aware resource planner.
   not a persisted DAG payload or a replacement scheduler.
   At current repo HEAD,
   DAG-wide fanout /
-  materialization reasoning is still diagnostic foundation.
-  The next production use is to project those decisions into
+  materialization /
+  unsupported covering reasoning is projected into
   `ResourceDemand`
   /
-  `ResourcePressureReport`.
+  `ResourcePressureReport`,
+  and those reports are validated and projected into the executable spec.
+  The DAG remains pass-local; the durable production surface is the typed
+  report, not the DAG itself.
 - CB allocation is currently the most concrete resource work.
   `PlanTTCBAlloc`
   already reasons about staged CB requirements,
@@ -191,6 +194,35 @@ Pay-rent rule:
   or a typed unsupported reason.
   If a DAG decision is not consumed here,
   it must remain diagnostic-only and cannot be cited as production progress.
+
+Status:
+
+- complete for the first typed surface.
+  `TTProgram`
+  now carries first-class
+  `TTResourceDemand`
+  and `TTResourcePressureReport`
+  fields.
+  `PlanTTBlocks`
+  captures the full pre-selection
+  `TileComputeDAG`
+  demand so fanout is not lost after builtin selection;
+  later TTProgram planning phases refresh kernel,
+  core,
+  CB,
+  semaphore,
+  transport,
+  and distribution counters without rebuilding the DAG from a reduced IR.
+  `ValidateTTProgram`
+  consumes the typed reports,
+  requires matching demand/report entries,
+  rejects typed resource-pressure unsupported reasons,
+  and
+  `MaterializeBlackholeExecutable`
+  projects
+  `resource_pressure_reports`.
+  The remaining work is Direction 3:
+  make the reported CB and L1 pressure hardware-aware and admission-relevant.
 
 ### Direction 3: Upgrade CB And L1 Admission
 

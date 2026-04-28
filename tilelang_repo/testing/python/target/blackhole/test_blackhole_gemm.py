@@ -1052,6 +1052,8 @@ def test_blackhole_executable_projection_has_no_plan_local_payload_records():
                 tt_program.live_form_plans,
                 tt_program.materialization_plans,
                 tt_program.consumer_binding_plans,
+                tt_program.resource_demands,
+                tt_program.resource_pressure_reports,
             ):
                 assert all(not hasattr(plan, "payload") for plan in plan_group)
         rewritten[gvar] = func
@@ -1084,8 +1086,10 @@ def test_blackhole_executable_projection_has_no_plan_local_payload_records():
         "live_form_plans",
         "materialization_plans",
         "consumer_binding_plans",
+        "resource_pressure_reports",
     ):
-        assert_no_payload_key(executable_spec[key])
+        if key in executable_spec:
+            assert_no_payload_key(executable_spec[key])
 
 
 def test_blackhole_fragment_fill_cast_publish_rejects_materialization_plan_without_host_buffer():

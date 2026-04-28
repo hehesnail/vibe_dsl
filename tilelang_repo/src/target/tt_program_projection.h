@@ -41,6 +41,7 @@ constexpr const char* kDirectRuntimeUnsupportedReasons = "direct_runtime_unsuppo
 constexpr const char* kLiveFormPlans = "live_form_plans";
 constexpr const char* kMaterializationPlans = "materialization_plans";
 constexpr const char* kConsumerBindingPlans = "consumer_binding_plans";
+constexpr const char* kResourcePressureReports = "resource_pressure_reports";
 }  // namespace executable_key
 
 inline Map<String, Any> AsMap(const Any& any) {
@@ -278,6 +279,57 @@ inline Array<Any> EncodeComputeOpPlans(const Array<TTComputeOpPlan>& compute_op_
   Array<Any> encoded;
   for (const TTComputeOpPlan& plan : compute_op_plans) {
     encoded.push_back(EncodeComputeOpPlan(plan));
+  }
+  return encoded;
+}
+
+inline Map<String, Any> EncodeTileComputeMaterializationDemand(
+    const TTTileComputeMaterializationDemand& demand) {
+  Map<String, Any> item;
+  item.Set("name", demand->name);
+  item.Set("kernel_name", demand->kernel_name);
+  item.Set("node_id", Integer(demand->node_id));
+  item.Set("operation_name", demand->operation_name);
+  item.Set("pattern_name", demand->pattern_name);
+  item.Set("policy", demand->policy);
+  item.Set("evidence", demand->evidence);
+  return item;
+}
+
+inline Array<Any> EncodeTileComputeMaterializationDemands(
+    const Array<TTTileComputeMaterializationDemand>& demands) {
+  Array<Any> encoded;
+  for (const TTTileComputeMaterializationDemand& demand : demands) {
+    encoded.push_back(EncodeTileComputeMaterializationDemand(demand));
+  }
+  return encoded;
+}
+
+inline Array<Any> EncodeResourcePressureReports(
+    const Array<TTResourcePressureReport>& reports) {
+  Array<Any> encoded;
+  for (const TTResourcePressureReport& report : reports) {
+    Map<String, Any> item;
+    item.Set("name", report->name);
+    item.Set("kernel_name", report->kernel_name);
+    item.Set("core_group", report->core_group);
+    item.Set("core_group_index", Integer(report->core_group_index));
+    item.Set("tile_compute_unsupported_reasons",
+             report->tile_compute_unsupported_reasons);
+    item.Set("required_materializations",
+             EncodeTileComputeMaterializationDemands(
+                 report->required_materializations));
+    item.Set("per_core_cb_id_pressure",
+             Integer(report->per_core_cb_id_pressure));
+    item.Set("per_core_cb_l1_bytes", Integer(report->per_core_cb_l1_bytes));
+    item.Set("per_core_l1_buffer_bytes",
+             Integer(report->per_core_l1_buffer_bytes));
+    item.Set("max_simultaneous_l1_bytes",
+             Integer(report->max_simultaneous_l1_bytes));
+    item.Set("core_grid_requirement", report->core_grid_requirement);
+    item.Set("dram_view_requirement", report->dram_view_requirement);
+    item.Set("unsupported_reasons", report->unsupported_reasons);
+    encoded.push_back(item);
   }
   return encoded;
 }
@@ -763,6 +815,12 @@ inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram
       EncodeConsumerBindingPlans(program->consumer_binding_plans);
   if (!consumer_binding_plans.empty()) {
     executable.Set(String(executable_key::kConsumerBindingPlans), consumer_binding_plans);
+  }
+  Array<Any> resource_pressure_reports =
+      EncodeResourcePressureReports(program->resource_pressure_reports);
+  if (!resource_pressure_reports.empty()) {
+    executable.Set(String(executable_key::kResourcePressureReports),
+                   resource_pressure_reports);
   }
   return executable;
 }

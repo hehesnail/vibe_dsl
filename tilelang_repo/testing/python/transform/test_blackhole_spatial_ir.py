@@ -489,6 +489,8 @@ def _rebuild_tt_program(
     live_form_plans=None,
     materialization_plans=None,
     consumer_binding_plans=None,
+    resource_demands=None,
+    resource_pressure_reports=None,
     kernels=None,
 ):
     make_tt_program = tvm.get_global_func("tl.TTProgram")
@@ -519,6 +521,12 @@ def _rebuild_tt_program(
         list(program.consumer_binding_plans)
         if consumer_binding_plans is None
         else consumer_binding_plans,
+        list(program.resource_demands)
+        if resource_demands is None
+        else resource_demands,
+        list(program.resource_pressure_reports)
+        if resource_pressure_reports is None
+        else resource_pressure_reports,
     )
 
 
@@ -603,6 +611,37 @@ def _rebuild_tt_consumer_binding_plan(
     )
 
 
+def _rebuild_tt_resource_pressure_report(
+    report,
+    *,
+    tile_compute_unsupported_reasons=None,
+    unsupported_reasons=None,
+    required_materializations=None,
+):
+    make_report = tvm.get_global_func("tl.TTResourcePressureReport")
+    return make_report(
+        str(report.name),
+        str(report.kernel_name),
+        str(report.core_group),
+        int(report.core_group_index),
+        list(report.tile_compute_unsupported_reasons)
+        if tile_compute_unsupported_reasons is None
+        else tile_compute_unsupported_reasons,
+        list(report.required_materializations)
+        if required_materializations is None
+        else required_materializations,
+        int(report.per_core_cb_id_pressure),
+        int(report.per_core_cb_l1_bytes),
+        int(report.per_core_l1_buffer_bytes),
+        int(report.max_simultaneous_l1_bytes),
+        str(report.core_grid_requirement),
+        str(report.dram_view_requirement),
+        list(report.unsupported_reasons)
+        if unsupported_reasons is None
+        else unsupported_reasons,
+    )
+
+
 def _assert_no_tt_plan_payload_surface(tt_program):
     plan_groups = (
         tt_program.mesh_plans,
@@ -619,6 +658,8 @@ def _assert_no_tt_plan_payload_surface(tt_program):
         tt_program.live_form_plans,
         tt_program.materialization_plans,
         tt_program.consumer_binding_plans,
+        tt_program.resource_demands,
+        tt_program.resource_pressure_reports,
     )
     for plans in plan_groups:
         assert all(not hasattr(plan, "payload") for plan in plans)
@@ -1000,6 +1041,134 @@ def test_tile_compute_gemm_plan_construction_uses_leaf_covering_decision():
         and "BuildTTComputeOpPlanFromFact(" in abi_source
         and "SelectBlackholeTileComputeCovering(\"matmul_tiles\")" in abi_source
     )
+
+
+def test_tile_compute_dag_feeds_typed_resource_pressure_report():
+    mod = _prepare_blackhole_tt_program_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    tt_program = mod["main"].attrs["tl.tt_program"]
+
+    assert tt_program.resource_demands
+    assert tt_program.resource_pressure_reports
+    assert all(not hasattr(plan, "payload") for plan in tt_program.resource_demands)
+    assert all(
+        not hasattr(plan, "payload") for plan in tt_program.resource_pressure_reports
+    )
+
+    demand = tt_program.resource_demands[0]
+    fanout_demands = list(demand.tile_compute_fanout_demands)
+    materialization_demands = list(demand.tile_compute_materialization_demands)
+    assert fanout_demands
+    assert materialization_demands
+    assert all(int(demand.use_count) >= 2 for demand in fanout_demands)
+    assert {
+        "share_live_value",
+        "materialize_before_cross_event_use",
+    } >= {str(demand.policy) for demand in fanout_demands}
+
+    report = tt_program.resource_pressure_reports[0]
+    assert report.required_materializations
+    assert not list(report.tile_compute_unsupported_reasons)
+    assert int(report.per_core_cb_id_pressure) == len(tt_program.cb_plans)
+    assert int(report.per_core_cb_l1_bytes) == sum(
+        int(plan.num_pages) * int(plan.page_size_bytes)
+        for plan in tt_program.cb_plans
+    )
+
+
+def test_validate_tt_program_consumes_typed_resource_pressure_report():
+    mod = _prepare_blackhole_tt_program_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    assert tt_program.resource_pressure_reports
+
+    broken_program = _rebuild_tt_program(
+        tt_program,
+        resource_pressure_reports=[],
+    )
+    broken = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", broken_program)},
+        global_infos=mod.global_infos,
+    )
+    with pytest.raises(Exception, match="ResourcePressureReport"):
+        tilelang.transform.ValidateTTProgram()(broken)
+
+    orphan_report_program = _rebuild_tt_program(
+        tt_program,
+        resource_demands=[],
+    )
+    orphan_report = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", orphan_report_program)},
+        global_infos=mod.global_infos,
+    )
+    with pytest.raises(Exception, match="ResourcePressureReport requires matching"):
+        tilelang.transform.ValidateTTProgram()(orphan_report)
+
+    report = tt_program.resource_pressure_reports[0]
+    rejected_report = _rebuild_tt_resource_pressure_report(
+        report,
+        tile_compute_unsupported_reasons=[
+            "forced tile-compute resource-pressure rejection"
+        ],
+        unsupported_reasons=["forced tile-compute resource-pressure rejection"],
+    )
+    rejected_program = _rebuild_tt_program(
+        tt_program,
+        resource_pressure_reports=[rejected_report],
+    )
+    rejected = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", rejected_program)},
+        global_infos=mod.global_infos,
+    )
+    with pytest.raises(Exception, match="ResourcePressureReport unsupported"):
+        tilelang.transform.ValidateTTProgram()(rejected)
+
+
+def test_executable_projection_carries_resource_pressure_report():
+    mod = _prepare_blackhole_tt_program_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    mod = tilelang.transform.MaterializeBlackholeExecutable()(mod)
+    executable = mod["main"].attrs["tl.blackhole_executable"]
+
+    assert "resource_pressure_reports" in executable
+    reports = list(executable["resource_pressure_reports"])
+    assert reports
+    assert reports[0]["required_materializations"]
+    assert not list(reports[0]["tile_compute_unsupported_reasons"])
 
 
 def test_tile_compute_covered_source_path_has_no_operation_name_dispatch_chain():

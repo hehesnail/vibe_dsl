@@ -232,6 +232,137 @@ void ValidateComputeOpPlan(const TTComputeOpPlan& plan, int64_t kernel_plan_coun
   RequireSelectedBlackholeTileComputeCoveringForPlan(plan, operand_roles);
 }
 
+void ValidateTileComputeFanoutDemand(
+    const TTTileComputeFanoutDemand& demand,
+    const std::unordered_set<std::string>& kernel_names) {
+  ICHECK(!demand->name.empty()) << "TTTileComputeFanoutDemand requires name";
+  ICHECK(!demand->kernel_name.empty())
+      << "TTTileComputeFanoutDemand requires kernel_name";
+  ICHECK(kernel_names.count(static_cast<std::string>(demand->kernel_name)))
+      << "TTTileComputeFanoutDemand references unknown kernel "
+      << demand->kernel_name;
+  ICHECK_GE(demand->producer_node, 0)
+      << "TTTileComputeFanoutDemand requires producer_node";
+  ICHECK(!demand->producer_operation.empty())
+      << "TTTileComputeFanoutDemand requires producer_operation";
+  ICHECK_GT(demand->use_count, 1)
+      << "TTTileComputeFanoutDemand requires fanout use_count > 1";
+  ICHECK_EQ(demand->consumer_nodes.size(),
+            static_cast<size_t>(demand->use_count))
+      << "TTTileComputeFanoutDemand consumer_nodes must match use_count";
+  const std::string policy = demand->policy;
+  ICHECK(policy == "share_live_value" ||
+         policy == "materialize_before_cross_event_use")
+      << "TTTileComputeFanoutDemand unsupported policy " << demand->policy;
+  ICHECK(!demand->evidence.empty())
+      << "TTTileComputeFanoutDemand requires evidence";
+}
+
+void ValidateTileComputeMaterializationDemand(
+    const TTTileComputeMaterializationDemand& demand,
+    const std::unordered_set<std::string>& kernel_names) {
+  ICHECK(!demand->name.empty())
+      << "TTTileComputeMaterializationDemand requires name";
+  ICHECK(!demand->kernel_name.empty())
+      << "TTTileComputeMaterializationDemand requires kernel_name";
+  ICHECK(kernel_names.count(static_cast<std::string>(demand->kernel_name)))
+      << "TTTileComputeMaterializationDemand references unknown kernel "
+      << demand->kernel_name;
+  ICHECK_GE(demand->node_id, 0)
+      << "TTTileComputeMaterializationDemand requires node_id";
+  ICHECK(!demand->operation_name.empty())
+      << "TTTileComputeMaterializationDemand requires operation_name";
+  ICHECK(!demand->pattern_name.empty())
+      << "TTTileComputeMaterializationDemand requires pattern_name";
+  ICHECK(!demand->policy.empty())
+      << "TTTileComputeMaterializationDemand requires policy";
+  ICHECK(demand->policy != "none")
+      << "TTTileComputeMaterializationDemand cannot record policy=none";
+  ICHECK(!demand->evidence.empty())
+      << "TTTileComputeMaterializationDemand requires evidence";
+}
+
+void ValidateResourceDemand(
+    const TTResourceDemand& demand,
+    const std::unordered_set<std::string>& kernel_names,
+    int64_t core_group_count) {
+  ICHECK(!demand->name.empty()) << "TTResourceDemand requires name";
+  ICHECK(!demand->kernel_name.empty())
+      << "TTResourceDemand requires kernel_name";
+  ICHECK(kernel_names.count(static_cast<std::string>(demand->kernel_name)))
+      << "TTResourceDemand references unknown kernel " << demand->kernel_name;
+  ICHECK(!demand->core_group.empty())
+      << "TTResourceDemand requires core_group";
+  ICHECK_GE(demand->core_group_index, 0)
+      << "TTResourceDemand requires core_group_index";
+  ICHECK_LT(demand->core_group_index, core_group_count)
+      << "TTResourceDemand core_group_index out of bounds";
+  ICHECK_GE(demand->cb_requirement_count, 0)
+      << "TTResourceDemand requires non-negative cb_requirement_count";
+  ICHECK_GE(demand->cb_l1_bytes, 0)
+      << "TTResourceDemand requires non-negative cb_l1_bytes";
+  ICHECK_GE(demand->semaphore_count, 0)
+      << "TTResourceDemand requires non-negative semaphore_count";
+  ICHECK_GE(demand->communication_edge_count, 0)
+      << "TTResourceDemand requires non-negative communication_edge_count";
+  ICHECK(!demand->tile_compute_fanout_demands.empty() ||
+         !demand->tile_compute_materialization_demands.empty() ||
+         !demand->tile_compute_unsupported_reasons.empty())
+      << "TTResourceDemand requires tile-compute demand evidence";
+  for (const TTTileComputeFanoutDemand& fanout :
+       demand->tile_compute_fanout_demands) {
+    ValidateTileComputeFanoutDemand(fanout, kernel_names);
+  }
+  for (const TTTileComputeMaterializationDemand& materialization :
+       demand->tile_compute_materialization_demands) {
+    ValidateTileComputeMaterializationDemand(materialization, kernel_names);
+  }
+  for (const String& reason : demand->tile_compute_unsupported_reasons) {
+    ICHECK(!reason.empty())
+        << "TTResourceDemand tile_compute_unsupported_reasons cannot be empty";
+  }
+}
+
+void ValidateResourcePressureReport(
+    const TTResourcePressureReport& report,
+    const std::unordered_set<std::string>& kernel_names,
+    int64_t core_group_count) {
+  ICHECK(!report->name.empty()) << "TTResourcePressureReport requires name";
+  ICHECK(!report->kernel_name.empty())
+      << "TTResourcePressureReport requires kernel_name";
+  ICHECK(kernel_names.count(static_cast<std::string>(report->kernel_name)))
+      << "TTResourcePressureReport references unknown kernel "
+      << report->kernel_name;
+  ICHECK(!report->core_group.empty())
+      << "TTResourcePressureReport requires core_group";
+  ICHECK_GE(report->core_group_index, 0)
+      << "TTResourcePressureReport requires core_group_index";
+  ICHECK_LT(report->core_group_index, core_group_count)
+      << "TTResourcePressureReport core_group_index out of bounds";
+  for (const TTTileComputeMaterializationDemand& materialization :
+       report->required_materializations) {
+    ValidateTileComputeMaterializationDemand(materialization, kernel_names);
+  }
+  ICHECK(report->tile_compute_unsupported_reasons.empty())
+      << "ResourcePressureReport unsupported tile compute: "
+      << report->tile_compute_unsupported_reasons[0];
+  ICHECK(report->unsupported_reasons.empty())
+      << "ResourcePressureReport unsupported: "
+      << report->unsupported_reasons[0];
+  ICHECK_GE(report->per_core_cb_id_pressure, 0)
+      << "TTResourcePressureReport requires non-negative per_core_cb_id_pressure";
+  ICHECK_GE(report->per_core_cb_l1_bytes, 0)
+      << "TTResourcePressureReport requires non-negative per_core_cb_l1_bytes";
+  ICHECK_GE(report->per_core_l1_buffer_bytes, 0)
+      << "TTResourcePressureReport requires non-negative per_core_l1_buffer_bytes";
+  ICHECK_GE(report->max_simultaneous_l1_bytes, 0)
+      << "TTResourcePressureReport requires non-negative max_simultaneous_l1_bytes";
+  ICHECK(!report->core_grid_requirement.empty())
+      << "TTResourcePressureReport requires core_grid_requirement";
+  ICHECK(!report->dram_view_requirement.empty())
+      << "TTResourcePressureReport requires dram_view_requirement";
+}
+
 void ValidateSyncPlan(const TTSyncPlan& sync_plan) {
   ICHECK(!sync_plan->name.empty()) << "TTSyncPlan requires name";
   ICHECK(!sync_plan->kind.empty()) << "TTSyncPlan requires kind";
@@ -532,6 +663,40 @@ void CheckTTProgram(const TTProgram& program, const SpatialPlan& spatial_plan) {
                           static_cast<int64_t>(program->kernel_plans.size()), kernel_names);
     ICHECK(compute_op_names.insert(static_cast<std::string>(compute_op_plan->name)).second)
         << "duplicate TTComputeOpPlan name " << compute_op_plan->name;
+  }
+
+  std::unordered_map<std::string, const TTResourcePressureReportNode*>
+      resource_report_by_kernel;
+  std::unordered_set<std::string> resource_demand_kernels;
+  for (const TTResourcePressureReport& report :
+       program->resource_pressure_reports) {
+    ValidateResourcePressureReport(
+        report, kernel_names, static_cast<int64_t>(program->core_groups.size()));
+    const std::string kernel_name = report->kernel_name;
+    ICHECK(resource_report_by_kernel.emplace(kernel_name, report.get()).second)
+        << "duplicate TTResourcePressureReport for kernel " << report->kernel_name;
+  }
+  for (const TTResourceDemand& demand : program->resource_demands) {
+    ValidateResourceDemand(
+        demand, kernel_names, static_cast<int64_t>(program->core_groups.size()));
+    ICHECK(resource_demand_kernels
+               .insert(static_cast<std::string>(demand->kernel_name))
+               .second)
+        << "duplicate TTResourceDemand for kernel " << demand->kernel_name;
+    auto report_it =
+        resource_report_by_kernel.find(static_cast<std::string>(demand->kernel_name));
+    ICHECK(report_it != resource_report_by_kernel.end())
+        << "TTResourceDemand requires matching ResourcePressureReport for kernel "
+        << demand->kernel_name;
+    ICHECK_GE(report_it->second->required_materializations.size(),
+              demand->tile_compute_materialization_demands.size())
+        << "ResourcePressureReport required_materializations must cover "
+           "TTResourceDemand tile_compute_materialization_demands";
+  }
+  for (const auto& entry : resource_report_by_kernel) {
+    ICHECK(resource_demand_kernels.count(entry.first))
+        << "TTResourcePressureReport requires matching TTResourceDemand for kernel "
+        << entry.first;
   }
 
   for (const TTCoreGroup& core_group : program->core_groups) {

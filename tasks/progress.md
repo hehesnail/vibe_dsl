@@ -8,7 +8,7 @@
 
 - Date: `2026-04-29`
 - Active lane:
-  `TileComputeDAG-backed ResourceDemand / ResourcePressureReport typed surface`
+  `CB / L1 resource admission upgrade`
 - Current state:
   `AccessRegion`,
   graph-backed `SpatialPlan` dependence,
@@ -35,21 +35,27 @@
   no public production API exposes a durable DAG covering object,
   and explicit tile-compute source emission stays on selected leaf pattern
   covering.
-  This cleanup did not make
   `TileComputeDAG`
-  a production decision input yet.
-  Its current DAG-wide fanout /
-  materialization reasoning remains diagnostic foundation until the next typed
-  resource-pressure task consumes it.
+  now pays rent on the production path through typed
+  `TTResourceDemand`
+  /
+  `TTResourcePressureReport`:
+  full pre-selection DAG fanout,
+  materialization,
+  and unsupported covering reasons are captured before builtin selection,
+  carried as typed TTProgram fields,
+  validated by `ValidateTTProgram`,
+  and projected into `ExecutableSpec`.
   CB planning is useful but partial;
   core placement and buffer distribution remain basic and need hardware-model
   backed planning before wider runtime admission resumes.
 - Current blocker:
-  resource pressure has no first-class typed report yet;
-  `TileComputeDAG`
-  fanout /
-  materialization decisions do not yet change production validation or
-  admission results;
+  CB / L1 admission is still coarse:
+  CB ID pressure and CB L1 bytes are reported,
+  but CB limits are not yet arch-aware,
+  CB reuse is not a live-interval allocator,
+  allocator-managed L1 buffer pressure is not included,
+  and worker L1 budget is not enforced through the resource pressure report;
   wider runtime admission remains blocked until resource pressure can fail
   closed before source / runtime emission.
 - Main chain:
@@ -87,15 +93,27 @@
 - Tile compute legalizer / DAG covering foundation:
   local `TileComputeDAG` and pattern / legalizer scaffolding exist for the
   admitted compute surface.
-  DAG-wide covering remains foundation only until its fanout /
-  materialization decisions feed typed resource demand,
-  typed unsupported diagnostics,
-  or delete old per-op branch mechanics.
+  DAG-wide fanout /
+  materialization /
+  unsupported-reason decisions now feed typed resource demand and validator /
+  executable projection,
+  while source emitters and runtime readers still consume only typed TT plans.
 - TileComputeDAG production-boundary cleanup:
   production code does not persist DAG covering decisions in
   `PlanTTKernelABI`,
   the covering header exposes only leaf covering decisions and diagnostic FFI,
   and static tests guard against reintroducing a production DAG cache.
+- DAG-backed typed resource pressure:
+  `TTResourceDemand`
+  and `TTResourcePressureReport`
+  are first-class TTProgram fields;
+  the full pre-selection `TileComputeDAG`
+  feeds typed fanout /
+  materialization /
+  unsupported-reason demand,
+  validators consume the reports,
+  and executable projection carries
+  `resource_pressure_reports`.
 
 ## Support Boundary
 
@@ -116,18 +134,6 @@
 
 ## Open Debt
 
-- Resource pressure has no first-class typed report yet.
-  The next surface is
-  `ResourceDemand`
-  /
-  `ResourcePressureReport`
-  derived from `TTProgram` / `ExecutableSpec`,
-  with pass-local `TileComputeDAG` fanout /
-  materialization decisions as the first production input.
-  If those DAG decisions cannot change validator /
-  admission outcomes,
-  the DAG surface must be downgraded to diagnostic-only or deleted rather than
-  kept as an active production item.
 - CB allocation needs arch-aware limits and live-interval allocation.
   Blackhole / Wormhole CB limits must come from target / hardware-model facts,
   not stale fixed constants.
@@ -157,32 +163,19 @@
 
 ## Next Task Order
 
-1. Add TileComputeDAG-backed typed resource pressure:
-   derive
-   `ResourceDemand`
-   /
-   `ResourcePressureReport`
-   from validated `TTProgram`
-   and `ExecutableSpec`,
-   consume pass-local `TileComputeDAG`
-   fanout /
-   materialization decisions as the first workload-derived demand source,
-   and wire the result to validators / typed unsupported reasons.
-   This is the production-use gate for the DAG;
-   source emitters and runtime readers must still consume only typed plans.
-2. Upgrade CB / L1 admission:
+1. Upgrade CB / L1 admission:
    arch-aware CB limits,
    live-interval CB ID allocation,
    per-core L1 pressure,
    lock-step / alignment estimates,
    and memory-report validation where available.
-3. Upgrade core and buffer placement:
+2. Upgrade core and buffer placement:
    use `TTHardwareModel`
    for worker grid / L1 / DRAM facts,
    produce safe logical-coordinate core groups,
    and expand `TTBufferDistributionPlan`
    beyond `unit_mesh` / `replicated`.
-4. Resume wider runtime admission:
+3. Resume wider runtime admission:
    re-admit multi-block flash-attn direct runtime,
    then wider exact-CB events,
    mesh / distributed runtime,
@@ -190,27 +183,27 @@
 
 ## Latest Verification
 
-- Current documentation alignment:
-  merged the
+- Current implementation:
+  added typed
+  `TTTileComputeFanoutDemand`,
+  `TTTileComputeMaterializationDemand`,
+  `TTResourceDemand`,
+  and `TTResourcePressureReport`;
+  captured the full pre-selection
   `TileComputeDAG`
-  production-use gate into the next
-  `ResourceDemand`
-  /
-  `ResourcePressureReport`
-  task,
-  because the DAG is not complete while it only feeds diagnostics.
-- Previous TileComputeDAG production-boundary cleanup:
-  added static regression tests that reject a production DAG covering cache,
-  reject public DAG covering production APIs,
-  and keep explicit source / GEMM plan recording on leaf covering decisions.
+  demand at `TTProgram` level;
+  refreshed resource counters through later TTProgram planning phases;
+  made `ValidateTTProgram`
+  require matching pressure reports and reject typed unsupported reasons;
+  and projected
+  `resource_pressure_reports`
+  into the executable spec.
 - Verification:
-  documentation-only adjustment;
-  no build was required for this progress / design realignment.
-  Previous code verification remains:
   `cd tilelang_repo && cmake --build build -j32`
-  rebuilt `libtilelang.so`
-  successfully.
-  `cd tilelang_repo && python -m pytest testing/python/transform/test_blackhole_spatial_ir.py -k 'tile_compute_production_path_uses_covering_selection or tile_compute_production_path_does_not_persist_dag_covering_cache or tile_compute_covering_header_does_not_expose_dag_covering_as_production_api or tile_compute_explicit_source_path_uses_leaf_covering_without_dag_cache or tile_compute_gemm_plan_construction_uses_leaf_covering_decision' -q`
-  passed with `5 passed, 64 deselected`.
+  passed.
+  `cd tilelang_repo && python -m pytest testing/python/transform/test_blackhole_spatial_ir.py -k 'validate_tt_program_consumes_typed_resource_pressure_report' -q`
+  passed with `1 passed, 71 deselected`.
   `cd tilelang_repo && python -m pytest testing/python/transform/test_blackhole_spatial_ir.py -q`
-  passed with `69 passed`.
+  passed with `72 passed`.
+  `cd tilelang_repo && python -m pytest testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_executable_projection_has_no_plan_local_payload_records testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py::test_flash_attention_forward_tt_target_emits_typed_tt_program_without_payload -q`
+  passed with `2 passed`.

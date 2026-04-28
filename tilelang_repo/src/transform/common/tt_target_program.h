@@ -151,6 +151,138 @@ class TTComputeOpPlan : public ObjectRef {
                                              TTComputeOpPlanNode);
 };
 
+class TTTileComputeFanoutDemandNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String kernel_name;
+  int64_t producer_node = -1;
+  ffi::String producer_operation;
+  ffi::String value_repr;
+  int64_t use_count = 0;
+  ffi::Array<Integer> consumer_nodes;
+  ffi::String policy;
+  ffi::String evidence;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTTileComputeFanoutDemand",
+                                    TTTileComputeFanoutDemandNode, Object);
+};
+
+class TTTileComputeFanoutDemand : public ObjectRef {
+ public:
+  TVM_DLL TTTileComputeFanoutDemand(ffi::String name, ffi::String kernel_name,
+                                    int64_t producer_node,
+                                    ffi::String producer_operation,
+                                    ffi::String value_repr, int64_t use_count,
+                                    ffi::Array<Integer> consumer_nodes,
+                                    ffi::String policy, ffi::String evidence);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTTileComputeFanoutDemand,
+                                             ObjectRef,
+                                             TTTileComputeFanoutDemandNode);
+};
+
+class TTTileComputeMaterializationDemandNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String kernel_name;
+  int64_t node_id = -1;
+  ffi::String operation_name;
+  ffi::String pattern_name;
+  ffi::String policy;
+  ffi::String evidence;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTTileComputeMaterializationDemand",
+                                    TTTileComputeMaterializationDemandNode,
+                                    Object);
+};
+
+class TTTileComputeMaterializationDemand : public ObjectRef {
+ public:
+  TVM_DLL TTTileComputeMaterializationDemand(ffi::String name,
+                                             ffi::String kernel_name,
+                                             int64_t node_id,
+                                             ffi::String operation_name,
+                                             ffi::String pattern_name,
+                                             ffi::String policy,
+                                             ffi::String evidence);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(
+      TTTileComputeMaterializationDemand, ObjectRef,
+      TTTileComputeMaterializationDemandNode);
+};
+
+class TTResourceDemandNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String kernel_name;
+  ffi::String core_group;
+  int64_t core_group_index = -1;
+  ffi::Array<TTTileComputeFanoutDemand> tile_compute_fanout_demands;
+  ffi::Array<TTTileComputeMaterializationDemand>
+      tile_compute_materialization_demands;
+  ffi::Array<ffi::String> tile_compute_unsupported_reasons;
+  int64_t cb_requirement_count = 0;
+  int64_t cb_l1_bytes = 0;
+  int64_t semaphore_count = 0;
+  int64_t communication_edge_count = 0;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTResourceDemand",
+                                    TTResourceDemandNode, Object);
+};
+
+class TTResourceDemand : public ObjectRef {
+ public:
+  TVM_DLL TTResourceDemand(
+      ffi::String name, ffi::String kernel_name, ffi::String core_group,
+      int64_t core_group_index,
+      ffi::Array<TTTileComputeFanoutDemand> tile_compute_fanout_demands,
+      ffi::Array<TTTileComputeMaterializationDemand>
+          tile_compute_materialization_demands,
+      ffi::Array<ffi::String> tile_compute_unsupported_reasons,
+      int64_t cb_requirement_count, int64_t cb_l1_bytes,
+      int64_t semaphore_count, int64_t communication_edge_count);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTResourceDemand, ObjectRef,
+                                             TTResourceDemandNode);
+};
+
+class TTResourcePressureReportNode : public Object {
+ public:
+  ffi::String name;
+  ffi::String kernel_name;
+  ffi::String core_group;
+  int64_t core_group_index = -1;
+  ffi::Array<ffi::String> tile_compute_unsupported_reasons;
+  ffi::Array<TTTileComputeMaterializationDemand> required_materializations;
+  int64_t per_core_cb_id_pressure = 0;
+  int64_t per_core_cb_l1_bytes = 0;
+  int64_t per_core_l1_buffer_bytes = 0;
+  int64_t max_simultaneous_l1_bytes = 0;
+  ffi::String core_grid_requirement;
+  ffi::String dram_view_requirement;
+  ffi::Array<ffi::String> unsupported_reasons;
+
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTResourcePressureReport",
+                                    TTResourcePressureReportNode, Object);
+};
+
+class TTResourcePressureReport : public ObjectRef {
+ public:
+  TVM_DLL TTResourcePressureReport(
+      ffi::String name, ffi::String kernel_name, ffi::String core_group,
+      int64_t core_group_index,
+      ffi::Array<ffi::String> tile_compute_unsupported_reasons,
+      ffi::Array<TTTileComputeMaterializationDemand> required_materializations,
+      int64_t per_core_cb_id_pressure, int64_t per_core_cb_l1_bytes,
+      int64_t per_core_l1_buffer_bytes, int64_t max_simultaneous_l1_bytes,
+      ffi::String core_grid_requirement, ffi::String dram_view_requirement,
+      ffi::Array<ffi::String> unsupported_reasons);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTResourcePressureReport,
+                                             ObjectRef,
+                                             TTResourcePressureReportNode);
+};
+
 class TTBlockPlanNode : public Object {
  public:
   ffi::String name;
@@ -752,6 +884,8 @@ class TTProgramNode : public Object {
   ffi::Array<TTLiveFormPlan> live_form_plans;
   ffi::Array<TTMaterializationPlan> materialization_plans;
   ffi::Array<TTConsumerBindingPlan> consumer_binding_plans;
+  ffi::Array<TTResourceDemand> resource_demands;
+  ffi::Array<TTResourcePressureReport> resource_pressure_reports;
 
   static void RegisterReflection();
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.TTProgram", TTProgramNode, Object);
@@ -776,7 +910,10 @@ class TTProgram : public ObjectRef {
                     ffi::Array<TTDstLayoutPlan> dst_layout_plans,
                     ffi::Array<TTLiveFormPlan> live_form_plans,
                     ffi::Array<TTMaterializationPlan> materialization_plans,
-                    ffi::Array<TTConsumerBindingPlan> consumer_binding_plans);
+                    ffi::Array<TTConsumerBindingPlan> consumer_binding_plans,
+                    ffi::Array<TTResourceDemand> resource_demands,
+                    ffi::Array<TTResourcePressureReport>
+                        resource_pressure_reports);
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TTProgram, ObjectRef, TTProgramNode);
 };
 
