@@ -1617,3 +1617,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   pass-local covering object into a new cross-stage payload.
   Full completion still requires selected-pattern ownership of source-plan
   emission and deletion of the old per-op branches.
+- 2026-04-28 Tile compute covering source dispatch:
+  once covering is on the production path,
+  do not keep a second operation-name selector below it.
+  Put the source-emitter hook in the pattern metadata,
+  carry that hook in the covering decision,
+  and make low-level emitters receive already-selected TT-Metal builtins
+  instead of rediscovering add-vs-mul or similar choices from
+  `operation_name`.

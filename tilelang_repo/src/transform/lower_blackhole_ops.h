@@ -601,7 +601,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
                                                const tvm::tir::Buffer& rhs);
   tvm::tir::Stmt GenerateBinaryTileSequence(const tvm::tir::Buffer& dst,
                                             const tvm::tir::Buffer& rhs,
-                                            const std::string& operation_name);
+                                            const std::string& operation_name,
+                                            const tvm::Op& init_op,
+                                            const tvm::Op& tile_op);
   tvm::tir::Stmt GenerateMulTilesBcastColsSequence(const std::string& kind,
                                                    const tvm::tir::Buffer& dst,
                                                    const tvm::tir::Buffer& rhs,

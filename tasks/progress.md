@@ -33,9 +33,15 @@
   `tl.tileop.blackhole_compute`
   source dispatch now select a covering pattern before accepting the
   operation.
-  The selected path still reuses the existing low-level source emitters;
-  full DAG DP / fanout-aware materialization and old branch deletion remain
-  open Phase C-D work.
+  The selected pattern now carries a
+  `source_emitter`
+  hook used by explicit source dispatch;
+  the old operation-name dispatch chain and add/mul builtin-selection branch
+  have been removed from the covered source path.
+  The selected path still reuses existing low-level emitter functions;
+  full DAG DP,
+  fanout-aware materialization,
+  and remaining low-level per-op emitter cleanup remain open Phase C-D work.
 - Current blocker:
   none for tile-compute preservation.
   Multi-block flash-attn direct-runtime correctness remains outside the
@@ -91,6 +97,11 @@
   Phase C first production gate is active:
   local covering selection now gates typed compute-plan recording and
   explicit tile-compute source dispatch for the migrated leaf-op family.
+  Pattern metadata now owns source-emitter hook selection,
+  including split hooks for
+  `add_tiles`
+  and
+  `mul_tiles`.
 
 ## Support Boundary
 
@@ -111,12 +122,13 @@
 
 ## Open Debt
 
-- `TileComputeDAG` / legalizer / covering has only migrated the first
-  production gate:
+- `TileComputeDAG` / legalizer / covering production migration has reached
+  the source-emitter hook stage:
   covering selection now gates typed plan recording and source dispatch,
+  and pattern metadata selects source-emitter hooks,
   but local DP,
   fanout/materialization-aware covering,
-  and old per-op emitter branch deletion are still open.
+  and remaining per-op source emitter cleanup are still open.
 - Multi-block flash-attn direct-runtime correctness remains runtime-gated
   behind typed unsupported-reason metadata.
 - Wider exact-CB multi-page publish/consume events remain outside the admitted
@@ -125,10 +137,10 @@
 ## Next Task Order
 
 1. Continue `Tile compute legalizer / DAG covering Phase C-D`
-   from the first production gate into selected-pattern ownership of
-   binary / broadcast / exp2 / reduce source-plan emission.
-2. Add fanout/materialization-aware covering and delete old per-op
-   branch mechanics for the admitted compute surface.
+   from source-emitter hook ownership into local DAG covering /
+   selected-pattern source-plan ownership for broadcast / exp2 / reduce.
+2. Add fanout/materialization-aware covering and delete remaining old
+   per-op emitter mechanics for the admitted compute surface.
 3. Re-admit multi-block flash-attn direct runtime through typed
    `TTProgram -> ExecutableSpec` state and TT-Sim bf16 correctness.
 4. Add wider exact-CB event admission for stage2/block64 shapes.
@@ -164,20 +176,25 @@
   and the legalizer is wired into current compute-plan recording plus
   `ValidateTTProgram`.
 - `Tile compute legalizer / DAG covering Phase C`
-  first production gate is active:
+  production migration progressed:
   `SelectBlackholeTileComputeCovering`
   gates `TTComputeOpPlan`
   recording,
   GEMM `matmul_tiles`
   plan construction,
-  and explicit blackhole tile-compute source dispatch before the existing
-  low-level emitters run.
+  and explicit blackhole tile-compute source dispatch.
+  The selected pattern now carries
+  `source_emitter`
+  metadata,
+  explicit source dispatch uses that hook,
+  and the covered source path no longer has the old operation-name dispatch
+  chain or add/mul operation-name builtin-selection branch.
 - `cmake --build tilelang_repo/build -j32`
   -> passed.
-- `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -k 'tile_compute_covering_selects or tile_compute_production_path_uses'`
-  -> 2 passed, 53 deselected.
+- `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -k 'tile_compute_pattern_table_covers or tile_compute_covering_selects or tile_compute_covered_source_path or binary_source_emission_has_no_operation_name_builtin_selection'`
+  -> 4 passed, 53 deselected.
 - `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
-  -> 55 passed.
+  -> 57 passed.
 - `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
   -> 163 passed, 25 skipped, 1 xfailed.
 - `git diff --check`

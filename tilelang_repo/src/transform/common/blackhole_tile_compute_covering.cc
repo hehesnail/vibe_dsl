@@ -69,6 +69,7 @@ BlackholeTileComputeCoveringDecision SelectBlackholeTileComputeCovering(
   decision.result_kind = pattern->result_kind;
   decision.operand_roles = pattern->operand_roles;
   decision.selected_output = "tt_compute_op_plan";
+  decision.source_emitter = pattern->source_emitter;
   decision.materialization_policy = MaterializationPolicyForPattern(*pattern);
   decision.cost = pattern->base_cost;
   return decision;
@@ -84,6 +85,7 @@ ffi::Map<ffi::String, ffi::Any> EncodeBlackholeTileComputeCoveringDecision(
   encoded.Set(ffi::String("result_kind"), ffi::String(decision.result_kind));
   encoded.Set(ffi::String("operand_roles"), EncodeStringVector(decision.operand_roles));
   encoded.Set(ffi::String("selected_output"), ffi::String(decision.selected_output));
+  encoded.Set(ffi::String("source_emitter"), ffi::String(decision.source_emitter));
   encoded.Set(ffi::String("materialization_policy"),
               ffi::String(decision.materialization_policy));
   encoded.Set(ffi::String("cost"), Integer(decision.cost));

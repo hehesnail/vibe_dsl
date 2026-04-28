@@ -30,8 +30,10 @@
 #include <tvm/tir/op.h>
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <numeric>
+#include <utility>
 #include <vector>
 
 #include "../tir/builtin_blackhole.h"
@@ -358,62 +360,86 @@ Stmt PlanTTKernelABI::EmitCoveredBlackholeTileCompute(
     return imm->value;
   };
 
-  if (operation == blackhole_tile_compute_schema::kFillTile) {
-    return GenerateFillTileSequence(buffer_arg(1), prim_arg(2), prim_arg(3));
-  }
-  if (operation == blackhole_tile_compute_schema::kCopyTile) {
-    return GenerateCopyTileSequence(buffer_arg(1), buffer_arg(2), prim_arg(3));
-  }
-  if (operation == blackhole_tile_compute_schema::kTypecastTile) {
-    FragmentCastMatch match;
-    ICHECK(MatchExplicitTileTypecast(op, &match))
-        << "tl.tileop.blackhole_compute typecast_tile requires source and destination regions";
-    const int cast_order_index =
-        ResolveCurrentBufferTransferOrder(match.src, match.dst,
-                                          current_lowering_order_index_);
-    const bool publish_cb =
-        !select_compute_builtins_only_ &&
-        ShouldPublishBufferResult(match.dst, cast_order_index);
-    std::vector<Stmt> prefix;
-    std::vector<Stmt> suffix;
-    if (publish_cb) {
-      ValidatePublishedBufferSourceEdge(match.src, match.dst);
-      const bool source_has_live_cb =
-          buffer_live_form_cb_by_buffer_identity_.count(BufferIdentityName(match.src)) != 0U;
-      const bool dst_has_republish_fact = FindBufferMaterializationFact(match.dst) != nullptr;
-      if (!(source_has_live_cb && dst_has_republish_fact)) {
-        AppendPublishedBufferSourceMaterialization(match.src, cast_order_index, &prefix, &suffix);
-      }
-    }
-    prefix.push_back(GenerateFragmentCastSequence(match, publish_cb, cast_order_index));
-    prefix.insert(prefix.end(), suffix.begin(), suffix.end());
-    return SeqStmt::Flatten(prefix);
-  }
-  if (operation == blackhole_tile_compute_schema::kBinaryMaxTile) {
-    return GenerateBinaryMaxTileSequence(buffer_arg(1), buffer_arg(2));
-  }
-  if (operation == blackhole_tile_compute_schema::kMulTiles ||
-      operation == blackhole_tile_compute_schema::kAddTiles) {
-    return GenerateBinaryTileSequence(buffer_arg(1), buffer_arg(2), operation);
-  }
-  if (operation == blackhole_tile_compute_schema::kMulTilesBcastCols) {
-    return GenerateMulTilesBcastColsSequence(string_arg(1), buffer_arg(2), buffer_arg(3),
-                                             prim_arg(4), prim_arg(5));
-  }
-  if (operation == blackhole_tile_compute_schema::kExp2Tile) {
-    const std::string mode = string_arg(1);
-    if (mode == "bcast_cols") {
-      return GenerateExp2TileLeafDAGSequence(mode, buffer_arg(2), buffer_arg(3), buffer_arg(4),
-                                             prim_arg(5), prim_arg(6), prim_arg(7), prim_arg(8));
-    }
-    if (mode == "binary") {
-      return GenerateExp2TileLeafDAGSequence(mode, buffer_arg(2), buffer_arg(3), buffer_arg(4),
-                                             prim_arg(5), prim_arg(6), PrimExpr(), PrimExpr());
-    }
-    ICHECK(false) << "Unsupported Blackhole exp2_tile mode: " << mode;
-  }
-  ICHECK(false) << "Unsupported Blackhole tile compute operation: " << operation;
-  return Stmt();
+  using SourceEmitter = std::function<Stmt()>;
+  const std::vector<std::pair<std::string, SourceEmitter>> emitters = {
+      {"fill_fragment", [&]() {
+         return GenerateFillTileSequence(buffer_arg(1), prim_arg(2), prim_arg(3));
+       }},
+      {"copy_tile", [&]() {
+         return GenerateCopyTileSequence(buffer_arg(1), buffer_arg(2), prim_arg(3));
+       }},
+      {"typecast_tile", [&]() {
+         FragmentCastMatch match;
+         ICHECK(MatchExplicitTileTypecast(op, &match))
+             << "tl.tileop.blackhole_compute typecast_tile requires source and destination "
+                "regions";
+         const int cast_order_index =
+             ResolveCurrentBufferTransferOrder(match.src, match.dst,
+                                               current_lowering_order_index_);
+         const bool publish_cb =
+             !select_compute_builtins_only_ &&
+             ShouldPublishBufferResult(match.dst, cast_order_index);
+         std::vector<Stmt> prefix;
+         std::vector<Stmt> suffix;
+         if (publish_cb) {
+           ValidatePublishedBufferSourceEdge(match.src, match.dst);
+           const bool source_has_live_cb =
+               buffer_live_form_cb_by_buffer_identity_.count(BufferIdentityName(match.src)) != 0U;
+           const bool dst_has_republish_fact =
+               FindBufferMaterializationFact(match.dst) != nullptr;
+           if (!(source_has_live_cb && dst_has_republish_fact)) {
+             AppendPublishedBufferSourceMaterialization(match.src, cast_order_index,
+                                                        &prefix, &suffix);
+           }
+         }
+         prefix.push_back(GenerateFragmentCastSequence(match, publish_cb, cast_order_index));
+         prefix.insert(prefix.end(), suffix.begin(), suffix.end());
+         return SeqStmt::Flatten(prefix);
+       }},
+      {"binary_max_tile", [&]() {
+         return GenerateBinaryMaxTileSequence(buffer_arg(1), buffer_arg(2));
+       }},
+      {"add_tiles", [&]() {
+         return GenerateBinaryTileSequence(buffer_arg(1), buffer_arg(2), operation,
+                                           blackhole_add_tiles_init(),
+                                           blackhole_add_tiles());
+       }},
+      {"mul_tiles", [&]() {
+         return GenerateBinaryTileSequence(buffer_arg(1), buffer_arg(2), operation,
+                                           blackhole_mul_tiles_init(),
+                                           blackhole_mul_tiles());
+       }},
+      {"mul_tiles_bcast_cols", [&]() {
+         return GenerateMulTilesBcastColsSequence(string_arg(1), buffer_arg(2),
+                                                  buffer_arg(3), prim_arg(4),
+                                                  prim_arg(5));
+       }},
+      {"exp2_tile", [&]() {
+         const std::string mode = string_arg(1);
+         if (mode == "bcast_cols") {
+           return GenerateExp2TileLeafDAGSequence(mode, buffer_arg(2), buffer_arg(3),
+                                                  buffer_arg(4), prim_arg(5),
+                                                  prim_arg(6), prim_arg(7),
+                                                  prim_arg(8));
+         }
+         if (mode == "binary") {
+           return GenerateExp2TileLeafDAGSequence(mode, buffer_arg(2), buffer_arg(3),
+                                                  buffer_arg(4), prim_arg(5),
+                                                  prim_arg(6), PrimExpr(), PrimExpr());
+         }
+         ICHECK(false) << "Unsupported Blackhole exp2_tile mode: " << mode;
+         return Stmt();
+       }},
+  };
+  auto it = std::find_if(
+      emitters.begin(), emitters.end(),
+      [&](const std::pair<std::string, SourceEmitter>& entry) {
+        return entry.first == covering.source_emitter;
+      });
+  ICHECK(it != emitters.end())
+      << "No explicit source emitter registered for selected Blackhole tile compute pattern "
+      << covering.pattern_name << " with emitter " << covering.source_emitter;
+  return it->second();
 }
 
 Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& match) {
@@ -713,10 +739,9 @@ Stmt PlanTTKernelABI::GenerateBinaryMaxTileSequence(const Buffer& dst, const Buf
 
 Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
                                                   const Buffer& rhs,
-                                                  const std::string& operation_name) {
-  ICHECK(operation_name == blackhole_tile_compute_schema::kMulTiles ||
-         operation_name == blackhole_tile_compute_schema::kAddTiles)
-      << "Unsupported explicit binary tile operation " << operation_name;
+                                                  const std::string& operation_name,
+                                                  const Op& init_op,
+                                                  const Op& tile_op) {
   ExactTiledCBValue lhs_in = CreateExactInputCBValue(dst, operation_name + "_lhs");
   ExactTiledCBValue rhs_in = CreateExactInputCBValue(rhs, operation_name + "_rhs");
   ExactTiledCBValue out = CreateEmptyExactTiledCBValue(dst, operation_name + "_out");
@@ -738,22 +763,12 @@ Stmt PlanTTKernelABI::GenerateBinaryTileSequence(const Buffer& dst,
   emit.Wait(lhs_in.cb_id, lhs_in.num_tiles);
   emit.Wait(rhs_in.cb_id, rhs_in.num_tiles);
   emit.ReconfigDataFormat(lhs_in.cb_id, rhs_in.cb_id);
-  if (operation_name == blackhole_tile_compute_schema::kMulTiles) {
-    emit.Append(blackhole_mul_tiles_init(), {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)});
-  } else {
-    emit.Append(blackhole_add_tiles_init(), {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)});
-  }
+  emit.Append(init_op, {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id)});
   for (int tile = 0; tile < out.num_tiles; ++tile) {
     emit.EmitPackedTile(out.cb_id, tile, [&](ExactTileComputeEmitter& tile_emit) {
-      if (operation_name == blackhole_tile_compute_schema::kMulTiles) {
-        tile_emit.Append(blackhole_mul_tiles(),
-                         {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id),
-                          IntImm32(tile), IntImm32(tile), IntImm32(0)});
-      } else {
-        tile_emit.Append(blackhole_add_tiles(),
-                         {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id),
-                          IntImm32(tile), IntImm32(tile), IntImm32(0)});
-      }
+      tile_emit.Append(tile_op,
+                       {IntImm32(lhs_in.cb_id), IntImm32(rhs_in.cb_id),
+                        IntImm32(tile), IntImm32(tile), IntImm32(0)});
     });
   }
   emit.PopIfOwned(lhs_in.cb_id, lhs_in.num_tiles, lhs_in.borrowed_live);

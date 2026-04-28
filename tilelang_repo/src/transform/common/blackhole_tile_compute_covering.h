@@ -23,6 +23,7 @@ struct BlackholeTileComputeCoveringDecision {
   std::string result_kind;
   std::vector<std::string> operand_roles;
   std::string selected_output;
+  std::string source_emitter;
   std::string materialization_policy;
   int64_t cost{0};
   std::string reject_reason;

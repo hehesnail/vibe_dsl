@@ -33,6 +33,7 @@ ffi::Map<ffi::String, ffi::Any> EncodePattern(const BlackholeTileComputePattern&
               EncodeStringVector(pattern.required_input_forms));
   encoded.Set(ffi::String("produced_form"), ffi::String(pattern.produced_form));
   encoded.Set(ffi::String("side_effect_class"), ffi::String(pattern.side_effect_class));
+  encoded.Set(ffi::String("source_emitter"), ffi::String(pattern.source_emitter));
   encoded.Set(ffi::String("base_cost"), Integer(pattern.base_cost));
   encoded.Set(ffi::String("selected_output"), ffi::String("tt_compute_op_plan"));
   return encoded;
@@ -43,34 +44,41 @@ ffi::Map<ffi::String, ffi::Any> EncodePattern(const BlackholeTileComputePattern&
 const std::vector<BlackholeTileComputePattern>& GetBlackholeTileComputePatterns() {
   static const std::vector<BlackholeTileComputePattern> patterns = {
       {"fill_fragment_pattern", "fill_tile", "unary", "fill_tile",
-       {"output"}, {}, "fragment", "dst", 1},
+       {"output"}, {}, "fragment", "dst", "fill_fragment", 1},
       {"copy_tile_pattern", "copy_tile", "copy", "copy_tile",
-       {"input", "output"}, {"fragment_or_exact_cb"}, "fragment_or_exact_cb", "dst", 1},
+       {"input", "output"}, {"fragment_or_exact_cb"}, "fragment_or_exact_cb", "dst",
+       "copy_tile", 1},
       {"typecast_tile_pattern", "typecast_tile", "unary", "typecast_tile",
-       {"input", "output"}, {"fragment"}, "fragment", "dst", 1},
+       {"input", "output"}, {"fragment"}, "fragment", "dst", "typecast_tile", 1},
       {"binary_max_tile_pattern", "binary_max_tile", "binary", "binary_max_tile",
-       {"lhs", "rhs", "output"}, {"exact_cb", "exact_cb"}, "exact_cb", "tile_regs", 2},
+       {"lhs", "rhs", "output"}, {"exact_cb", "exact_cb"}, "exact_cb", "tile_regs",
+       "binary_max_tile", 2},
       {"add_tiles_pattern", "add_tiles", "binary", "add_tiles",
-       {"lhs", "rhs", "output"}, {"exact_cb", "exact_cb"}, "exact_cb", "tile_regs", 2},
+       {"lhs", "rhs", "output"}, {"exact_cb", "exact_cb"}, "exact_cb", "tile_regs",
+       "add_tiles", 2},
       {"mul_tiles_pattern", "mul_tiles", "binary", "mul_tiles",
-       {"lhs", "rhs", "output"}, {"exact_cb", "exact_cb"}, "exact_cb", "tile_regs", 2},
+       {"lhs", "rhs", "output"}, {"exact_cb", "exact_cb"}, "exact_cb", "tile_regs",
+       "mul_tiles", 2},
       {"mul_tiles_bcast_cols_pattern", "mul_tiles_bcast_cols", "binary",
        "mul_tiles_bcast_cols", {"lhs", "rhs", "output"},
-       {"exact_cb", "broadcast_exact_cb"}, "exact_cb", "tile_regs", 2},
+       {"exact_cb", "broadcast_exact_cb"}, "exact_cb", "tile_regs",
+       "mul_tiles_bcast_cols", 2},
       {"add_tiles_bcast_cols_pattern", "add_tiles_bcast_cols", "binary",
        "add_tiles_bcast_cols", {"lhs", "rhs", "output"},
-       {"exact_cb", "broadcast_exact_cb"}, "exact_cb", "tile_regs", 2},
+       {"exact_cb", "broadcast_exact_cb"}, "exact_cb", "tile_regs",
+       "add_tiles_bcast_cols", 2},
       {"exp2_tile_pattern", "exp2_tile", "unary", "exp2_tile",
-       {"input", "output"}, {"exact_cb"}, "exact_cb", "tile_regs", 2},
+       {"input", "output"}, {"exact_cb"}, "exact_cb", "tile_regs", "exp2_tile", 2},
       {"recip_tile_pattern", "recip_tile", "unary", "recip_tile",
-       {"input", "output"}, {"exact_cb"}, "exact_cb", "tile_regs", 2},
+       {"input", "output"}, {"exact_cb"}, "exact_cb", "tile_regs", "recip_tile", 2},
       {"reduce_tile_pattern", "reduce_tile", "reduce", "reduce_tile",
        {"input", "scaler", "output"}, {"exact_cb", "exact_cb"}, "exact_cb",
-       "tile_regs", 3},
+       "tile_regs", "reduce_tile", 3},
       {"pack_tile_pattern", "pack_tile", "pack", "pack_tile",
-       {"input", "output"}, {"fragment"}, "exact_cb", "pack", 1},
+       {"input", "output"}, {"fragment"}, "exact_cb", "pack", "pack_tile", 1},
       {"matmul_tiles_pattern", "gemm", "gemm", "matmul_tiles",
-       {"a", "b", "c"}, {"exact_cb", "exact_cb"}, "accumulator", "dst", 4},
+       {"a", "b", "c"}, {"exact_cb", "exact_cb"}, "accumulator", "dst",
+       "matmul_tiles", 4},
   };
   return patterns;
 }

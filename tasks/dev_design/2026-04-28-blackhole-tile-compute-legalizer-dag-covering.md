@@ -768,9 +768,15 @@ Status: in progress in repo HEAD.
 The first production gate is active:
 covering selection now gates typed compute-plan recording and explicit
 source dispatch before existing low-level source emitters run.
-This is not yet full Phase C completion;
-local DP ownership of source-plan emission and old branch deletion remain
-open.
+Pattern metadata now carries the selected
+`source_emitter`
+hook and explicit source dispatch uses that hook.
+The old operation-name dispatch chain and add/mul operation-name
+builtin-selection branch have been deleted from the covered source path.
+This is not yet full Phase C completion:
+local DP ownership of source-plan emission,
+broadcast / exp2 / reduce source-plan ownership,
+and remaining low-level emitter cleanup remain open.
 
 Files:
 
@@ -809,12 +815,29 @@ Implementation notes:
 - `LowerExplicitBlackholeTileCompute`
   now selects a covering pattern before dispatching to
   `EmitCoveredBlackholeTileCompute`.
-- The current selector is a greedy single-root exact pattern selection over
+- `BlackholeTileComputePattern`
+  now includes
+  `source_emitter`
+  metadata.
+  The covering decision carries that hook,
+  and
+  `EmitCoveredBlackholeTileCompute`
+  dispatches by selected emitter hook instead of operation-name branches.
+- The
+  `add_tiles`
+  and
+  `mul_tiles`
+  source paths have separate emitter hooks,
+  so their TT-Metal builtin selection is no longer recovered from
+  `operation_name`
+  inside the low-level generator.
+- The current selector is still a greedy single-root exact pattern selection over
   the Phase A-B pattern table.
-  It reuses the existing per-op source emitter functions after selection.
+  It reuses existing low-level source emitter functions after selection.
   Full bottom-up local DP,
-  selected-pattern source-plan ownership,
-  and branch deletion remain Phase C work.
+  selected-pattern source-plan ownership for the remaining broadcast /
+  exp2 / reduce surface,
+  and remaining branch deletion remain Phase C work.
 - `materialization_policy`
   is encoded as diagnostic / reserved selection metadata.
   Real fanout and event-lifetime-aware materialization choices remain

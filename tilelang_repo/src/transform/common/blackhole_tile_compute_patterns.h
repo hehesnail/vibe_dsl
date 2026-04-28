@@ -26,6 +26,7 @@ struct BlackholeTileComputePattern {
   std::vector<std::string> required_input_forms;
   std::string produced_form;
   std::string side_effect_class;
+  std::string source_emitter;
   int64_t base_cost{1};
 };
 

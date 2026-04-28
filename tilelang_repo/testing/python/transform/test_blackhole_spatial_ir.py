@@ -657,6 +657,7 @@ def test_blackhole_compute_op_planning_has_no_map_seed_contract_surface():
 def test_tile_compute_pattern_table_covers_current_leaf_operation_names():
     pattern_table = tvm.get_global_func("tl.BlackholeTileComputePatternTable")()
     operation_names = {str(pattern["operation_name"]) for pattern in pattern_table}
+    source_emitters = {str(pattern["source_emitter"]) for pattern in pattern_table}
     composite_names = {
         "softmax",
         "exp2_affine",
@@ -666,6 +667,8 @@ def test_tile_compute_pattern_table_covers_current_leaf_operation_names():
     assert BLACKHOLE_TILE_COMPUTE_PATTERN_OPS <= operation_names
     assert operation_names.isdisjoint(composite_names)
     assert all(str(pattern["selected_output"]) == "tt_compute_op_plan" for pattern in pattern_table)
+    assert all(str(pattern["source_emitter"]) for pattern in pattern_table)
+    assert "none" not in source_emitters
 
 
 def test_tile_compute_read_only_dag_diagnostic_represents_explicit_reduce_and_gemm():
@@ -764,6 +767,7 @@ def test_tile_compute_covering_selects_patterns_for_current_leaf_ops():
         assert str(decision["selection_kind"]) == "selected_pattern"
         assert str(decision["operation_name"]) == operation_name
         assert str(decision["result_kind"]) == str(pattern["result_kind"])
+        assert str(decision["source_emitter"]) == str(pattern["source_emitter"])
         assert str(decision["selected_output"]) == "tt_compute_op_plan"
 
 
@@ -778,6 +782,22 @@ def test_tile_compute_production_path_uses_covering_selection():
     )
     assert source_dispatch_hits
     assert plan_recording_hits
+
+
+def test_tile_compute_covered_source_path_has_no_operation_name_dispatch_chain():
+    legacy_dispatch_hits = _source_tree_rg(
+        r"if \(operation == blackhole_tile_compute_schema::",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_tile_compute.cc",
+    )
+    assert legacy_dispatch_hits == []
+
+
+def test_tile_compute_binary_source_emission_has_no_operation_name_builtin_selection():
+    legacy_binary_selection_hits = _source_tree_rg(
+        r"operation_name == blackhole_tile_compute_schema::",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_tile_compute.cc",
+    )
+    assert legacy_binary_selection_hits == []
 
 
 def test_blackhole_frontend_preserves_reduce_tileop_before_tt_selection():

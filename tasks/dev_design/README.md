@@ -148,9 +148,16 @@ DAG covering
     `TTComputeOpPlan`
     recording
     和 explicit tile-compute source dispatch；
+    pattern metadata
+    现在携带
+    `source_emitter`
+    hook，
+    covered source path
+    已删除旧 operation-name dispatch chain
+    和 add/mul builtin-selection branch；
     剩余 Phase C-D 继续推进
     local DP / fanout materialization /
-    old branch deletion
+    remaining emitter branch deletion
   - read-only DAG dump /
     pattern table /
     generic covering class
