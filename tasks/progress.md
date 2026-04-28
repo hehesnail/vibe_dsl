@@ -346,6 +346,30 @@
 
 ## Latest Verification
 
+Documentation status sync after algorithmic guardrail update:
+
+- synced `tasks/dev_design/README.md`
+  so it no longer repeats stale implementation order;
+  current order remains delegated to this file
+- synced
+  `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
+  so seq64 / multi-K-step is recorded as compile/source/spec admission,
+  while direct-runtime correctness remains gated by
+  `multi-block exact CB-republish flash-attention direct runtime correctness`
+- synced `tasks/dev_design/archive/README.md`
+  so archived docs point at the current 2026-04-28 algorithmic design docs
+- synced `memory/general_dev.md`
+  and `memory/bugs.md`
+  to preserve the same distinction between compile/source/spec stability
+  and direct-runtime correctness admission
+- `git diff --check`
+  -> passed
+- stale-doc scan for seq64 direct-runtime admission /
+  old README backlog markers
+  -> no conflicting active-doc hits
+- background process scan:
+  no lingering `pytest` / `cmake --build` / `ninja` process
+
 Algorithmic generalization Phase E first decision-use slice:
 
 - docs updated:

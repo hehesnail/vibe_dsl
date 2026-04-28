@@ -20,6 +20,13 @@ Rules:
    - `tasks/dev_design/task1_spatial_plan_companion.md`
    - `tasks/dev_design/task2_ttprogram_companion_cutover.md`
    - `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
+   - `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
+   - `tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
+
+   `tasks/progress.md` remains the only current task-order source.
+   The 2026-04-28 algorithmic documents define the active
+   decision-use / legalizer design contracts;
+   archived milestone labels do not override them.
 
 Notable archived files:
 

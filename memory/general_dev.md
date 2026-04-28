@@ -828,11 +828,14 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   的
   `pack_tile`
   path；
-  P2.3 后还包括 bf16 flash-attn
-  small / 32x32 MHA-GQA /
-  seq64 MHA-GQA direct runtime，
-  前提是 exact CB republish
-  单次 publish/consume 仍为 one page；
+  P2.3 后 direct runtime admitted subset
+  仍只覆盖 small / 32x32 bf16 MHA-GQA；
+  seq64 / multi-K-step
+  只完成 compile/source/spec
+  exact-CB republish admission，
+  direct-runtime correctness
+  继续通过 typed unsupported-reason
+  metadata gate fail closed；
   更宽 direct cast /
   live-in materialization /
   stage2-block64 multi-page event
@@ -1272,10 +1275,12 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   truth should be recorded at TT-Metal API granularity such as `mul_tiles`,
   `add_tiles`, `*_bcast_cols`, `exp2_tile`, and `pack_tile`.
 - For exact CB live-form republish, distinguish total CB capacity from
-  per-event lifetime. Seq64 flash-attn uses multi-page CBs but admitted
-  one-page publish/consume events; stage2/block64 shapes that require one
-  event to publish or consume multiple pages still need a wider support
-  contract and should fail closed.
+  per-event lifetime and from runtime correctness admission. Seq64 flash-attn
+  uses multi-page CBs and has compile/source/spec support for one-page
+  publish/consume events, but multi-block direct-runtime correctness remains
+  behind the typed unsupported-reason metadata gate. Stage2/block64 shapes
+  that require one event to publish or consume multiple pages still need a
+  wider support contract and should fail closed.
 - When a borrowed live source CB is copied/repacked into a new CB, pop the
   borrowed source as soon as there is no future read before the next write.
   Events at the next write boundary are a redefinition, not a consumer of the
@@ -1370,7 +1375,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   不要在两个 pass class 里重新复制 matcher /
   generator surface。
 - 2026-04-28 后续 Blackhole refactor
-  应优先走算法化基础：
+  已优先走算法化基础：
   affine-lite `AccessRegion`、
   graph-backed `SpatialPlan` dependence construction、
   `LiveValueSSA` / BufferSSA-style version and event model。
@@ -1401,21 +1406,24 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   和 leaf API 粒度 `operation_name`，
   不能变成新的 matcher payload
   或 source-string protocol。
-- 2026-04-28 重新排序后的 Blackhole 后续任务队列为：
-  `AccessRegion`
-  -> graph-backed `SpatialPlan` dependence
-  -> `LiveValueSSA`
-  -> TT live-form solver
-  -> `TileComputeDAG` read-only dump / pattern schema / legalizer
-  -> DAG covering migration and old branch deletion
-  -> multi-block flash-attn runtime admission
-  -> exact-CB multi-page event admission
-  -> P3 mesh/distributed runtime
-  -> wider flash-attn workload scale。
-  这个顺序按 typed evidence dependency 排；
-  runtime / mesh admission 不能绕过 graph /
-  version /
-  event-lifetime 证据。
+- 2026-04-28 重新排序后的 Blackhole 后续任务队列
+  后续又被 Phase E decision-use cutover 修正：
+  `AccessRegion` /
+  graph-backed `SpatialPlan` dependence /
+  `LiveValueSSA` /
+  第一版 TT live-form solver
+  已是 foundation-complete；
+  当前 active lane
+  是 Algorithmic Generalization
+  `Phase E: Decision-Use Cutover`。
+  Phase E 完成后才进入
+  `TileComputeDAG` /
+  legalizer /
+  covering，
+  再进入 multi-block flash-attn runtime admission、
+  exact-CB multi-page event admission、
+  P3 mesh/distributed runtime
+  和 wider flash-attn workload scale。
 - 2026-04-28 Algorithmic generalization Phase A
   已添加 typed `AccessRegion` 到 `SpatialPlan`。
   builder 从 execution-unit `read_buffers` /
@@ -1532,3 +1540,17 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   unsupported diagnostic。
   只能说明问题族的是架子货风险；
   只能说明当前 witness 的是 workload overfit 风险。
+- 2026-04-28 文档状态同步：
+  `tasks/dev_design/README.md`
+  不再重复维护已过期的 A-D foundation backlog，
+  当前执行顺序只看
+  `tasks/progress.md`；
+  `2026-04-23-blackhole-live-form-materialization-admission.md`
+  已把 seq64 / multi-K-step
+  改写成 compile/source/spec admission，
+  direct-runtime correctness
+  仍由
+  `multi-block exact CB-republish flash-attention direct runtime correctness`
+  unsupported reason gate 住；
+  archive README
+  已补当前 2026-04-28 algorithmic design 入口。

@@ -31,8 +31,9 @@
   两类非 mailbox
   publication protocol；
   `tilize_cast_fragment_slice`
-  已对 exact CB-republish
-  bf16 flash-attn subset
+  已对 admitted small /
+  32x32 bf16 flash-attn
+  exact CB-republish subset
   进入 direct-runtime admitted set；
   `P2.1`
   已补齐 targeted small bf16 flash-attn
@@ -42,9 +43,14 @@
   已用 TT-Sim correctness gate
   admission 该 typed bf16 subset；
   `P2.3`
-  已 admission seq64 /
+  已完成 seq64 /
   multi-K-step
-  per-event one-page exact CB-republish；
+  per-event one-page exact CB-republish
+  的 compile/source/spec admission；
+  direct-runtime correctness
+  仍未 admission，
+  继续通过 typed metadata gate
+  fail closed；
   stage2/block64
   multi-page publish/consume event
   仍保留 queryable unsupported gate；
@@ -262,7 +268,13 @@ bf16 MHA / GQA
 在 `P2.3`
 中已通过 per-event one-page
 exact CB republish
-进入 direct-runtime admitted set。
+compile/source/spec admission。
+direct-runtime correctness
+仍不在 admitted surface；
+当前通过
+`multi-block exact CB-republish flash-attention direct runtime correctness`
+unsupported reason
+fail closed。
 stage2/block64
 仍需要 multi-page publish/consume
 event 级别的后续 admission；
@@ -1005,7 +1017,11 @@ buffer name
   和
   `tilize_cast_fragment_slice`
   per-event one-page republish
-  admitted
+  compile/source/spec admission；
+  seq64 / multi-K-step
+  direct-runtime correctness
+  仍通过 typed unsupported-reason
+  metadata gate fail closed
 - 非零 live-in /
   更宽 fragment/cast producer /
   multi-page publish/consume event
@@ -1133,22 +1149,34 @@ P2.2 当前验收：
   发布
 - seq64 /
   multi-K-step
-  direct runtime
+  compile/source/spec lowering
   已通过 per-event one-page
   exact CB republish
   admission；
+  direct-runtime correctness
+  仍未 admission，
+  当前通过
+  `multi-block exact CB-republish flash-attention direct runtime correctness`
+  unsupported reason
+  fail closed；
   stage2/block64
   的 multi-page publish/consume event
   仍 fail-closed
 
 P2.3 closeout contract:
 
-- P2.3 admitted surface
+- P2.3 closeout surface
   覆盖 seq64 /
   multi-K-step
   bf16 flash-attn
   的 per-event one-page
-  exact CB republish；
+  exact CB republish
+  compile/source/spec lowering；
+  direct-runtime correctness
+  不是 P2.3 closeout admitted runtime surface，
+  仍需后续 online-softmax
+  live-form /
+  event-lifetime admission；
   larger stage2/block64
   multi-page event
   仍是后续 support-surface backlog
@@ -1203,10 +1231,16 @@ P2.3 closeout contract:
   `exp2_tile`、
   `pack_tile`
   等
-- P2.3 admitted gate
+- P2.3 closeout gate
   是 seq64 /
   multi-K-step
-  bf16 flash-attn；
+  bf16 flash-attn
+  compile/source/spec；
+  direct-runtime correctness
+  继续由
+  `multi-block exact CB-republish flash-attention direct runtime correctness`
+  unsupported reason
+  gate 住；
   对 larger stage2/block64
   multi-page exact CB publish/consume event，
   `multi-page exact CB-republish live-form`

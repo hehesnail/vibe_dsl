@@ -1478,11 +1478,16 @@
     和 consumer binding
     语义
 - **修法**:
-  - P2.3 admission
+  - P2.3 compile/source/spec admission
     放行 seq64 /
     multi-K-step
     per-event one-page
-    exact CB republish
+    exact CB republish；
+    direct-runtime correctness
+    仍由
+    `multi-block exact CB-republish flash-attention direct runtime correctness`
+    typed unsupported reason
+    gate 住
   - stage2/block64
     仍用
     `multi-page exact CB-republish live-form`

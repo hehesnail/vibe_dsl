@@ -91,19 +91,31 @@
   - 定义
     `AccessRegion` /
     graph-backed `SpatialPlan` dependence model /
-    `LiveValueSSA`
-    三件事的重构设计
+    `LiveValueSSA` /
+    TT live-form solver /
+    decision-use cutover
+    的重构设计
   - 借鉴 LLVM Dependence Graph /
-    MemorySSA
-    和 MLIR affine/dataflow
+    MemorySSA /
+    VPlan /
+    LoopAccessAnalysis
+    和 MLIR affine/dataflow/Linalg
     的算法骨架，
     但不引入新的长期 IR 层
-  - 目标是让 multi-block flash-attn
-    和后续更复杂 fused compute
-    通过 typed graph /
-    version /
-    event evidence 扩展，
-    不再堆 workload-specific matcher
+  - 当前 Phase A-D
+    已作为 foundation 完成；
+    当前活动 lane 是
+    `Phase E: Decision-Use Cutover`
+  - 强制执行
+    anti-overdesign pay-rent rule
+    和 problem-family generality rule：
+    typed evidence 必须改变 legality /
+    query /
+    typed plan /
+    unsupported diagnostic，
+    当前 workload case
+    只能作为 witness，
+    不能成为协议定义
 
 当前 Blackhole tile compute legalizer /
 DAG covering
@@ -124,25 +136,36 @@ DAG covering
   - 目标是让新增 TT-Metal leaf compute op
     变成 pattern + legality + tests，
     而不是新增手写 per-op branch family
+  - 当前只处于设计完成状态；
+    production covering
+    必须等 Algorithmic Generalization
+    Phase E 的 decision-use gate
+    对 admitted compute surface 生效后再启动
+  - read-only DAG dump /
+    pattern table /
+    generic covering class
+    只算 foundation work；
+    只有影响 typed plans /
+    unsupported diagnostics
+    或删除旧 per-op branch
+    才算 production completion
 
-当前后续实现顺序固定为：
-
-1. `AccessRegion` foundation
-2. graph-backed `SpatialPlan` dependence construction
-3. `LiveValueSSA`
-4. TT live-form solver
-5. `TileComputeDAG` read-only dump / pattern schema / legalizer
-6. DAG covering migration and old per-op branch deletion
-7. multi-block flash-attn direct-runtime admission
-8. exact-CB multi-page event admission
-9. P3 mesh/distributed runtime expansion
-10. wider flash-attn workload-scale admission
-
-这个顺序按表示依赖排列。
-runtime admission 和 mesh/distributed
-不得排到 typed graph /
-version /
-event evidence 之前。
+当前执行顺序不在 README 中重复维护；
+唯一状态看板是 `tasks/progress.md`。
+截至当前 repo HEAD，
+已完成的 foundation 包括
+`AccessRegion`、
+graph-backed `SpatialPlan` dependence、
+`LiveValueSSA`
+和第一版 TT live-form solver。
+当前活动实现单元是
+`Algorithmic generalization Phase E: Decision-Use Cutover`。
+之后才是
+`Tile compute legalizer / DAG covering`，
+再之后才是 multi-block flash-attn direct-runtime admission、
+multi-page exact-CB event admission、
+P3 mesh/distributed runtime
+和 wider flash-attn workload-scale admission。
 
 额外参考：
 
@@ -196,8 +219,8 @@ pass 名字、helper、bag、payload、bridge attr
 | `2026-04-27-blackhole-tile-compute-preservation.md` | Blackhole tile compute preservation lane 的完成记录；定义 TT-Metal API 粒度 compute semantics 在 `Normalized Tile TIR` 的保留 / 规范化边界和 late matcher 删除边界 |
 | `2026-04-27-blackhole-post-preservation-pass-shrink.md` | tile-compute preservation 之后的实现瘦身 lane；定义 `lower_blackhole_ops.cc` 拆分边界、helper 复用纪律和后续 heavy pass audit 候选 |
 | `2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md` | `lower_tile_op.cc` cleanup 任务设计；定义 Blackhole tile compute normalization 的单一实现面和验证边界 |
-| `2026-04-28-blackhole-algorithmic-generalization.md` | Blackhole passes 算法化重构设计；定义 AccessRegion、SpatialPlan dependence graph 和 LiveValueSSA 的表示/算法/迁移边界 |
-| `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md` | Blackhole tile compute selection 算法化设计；定义 TileComputeDAG、legalizer、leaf pattern covering、cost model 和迁移边界 |
+| `2026-04-28-blackhole-algorithmic-generalization.md` | Blackhole passes 算法化重构设计；定义 AccessRegion、SpatialPlan dependence graph、LiveValueSSA、TT live-form solver、Phase E decision-use cutover，以及 anti-overdesign / problem-family guardrails |
+| `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md` | Blackhole tile compute selection 算法化设计；定义 TileComputeDAG、legalizer、leaf pattern covering、cost model 和迁移边界；production covering 受 Phase E decision-use gate 约束 |
 | `blackhole_first_principles_protocol_audit.md` | 删除/迁移表；列出现存 fake/legacy protocol 的表示层落点、validator 和 disposition |
 
 ### Runtime / mesh / distributed 调研索引
@@ -305,7 +328,8 @@ runtime 重构和 TT-Metal mesh/distributed API
 当前下一步，
 仍统一只看 `tasks/progress.md`。
 
-主线固定按下面这条理解：
+历史 cleanup 主线按下面这条理解；
+这不是当前 active backlog：
 
 `Task 1 -> Task 2 -> Task 3 -> Legacy Protocol Deletion`
 
