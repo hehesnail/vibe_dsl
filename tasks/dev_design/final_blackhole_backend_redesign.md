@@ -530,12 +530,13 @@ runtime-module build contract。
 - `segment_plan.kind`
   与其他 projected leaf records
   是当前 leaf truth；
-  如果 repo HEAD
-  里仍保留
+  如果未来
   `blackhole.segment_kind`
   之类 source marker，
-  它也只能是
-  cleanup debt，
+  重新进入 final IR /
+  `ExecutableSpec` /
+  leaf reader，
+  它只能视为 regression，
   不是 `ExecutableSpec`
   成立的前提
 - 当前 direct runtime admission
@@ -592,13 +593,13 @@ runtime-module build contract。
   和
   `ExecutableSpec`
   typed leaf schema
-- cleanup 收口后重新打开的
+- cleanup 之后的 support-surface
+  admission lane：
   direct cast /
   `fragment_fill -> cast -> publish`
   /
   flash-attn direct runtime
-  support 工作
-  只允许作为
+  support 工作只允许作为
   live-form /
   materialization admission
   问题推进；
@@ -1015,8 +1016,9 @@ planning seed
 
 ## 8. 当前 rewrite 方向
 
-当前 rewrite 不再围绕“补 fake attr”推进，
-而是围绕下面 4 个 closure set 推进：
+当前 rewrite 的长期 closure set
+不再围绕“补 fake attr”，
+而是围绕下面 4 个表示层边界判断：
 
 1. **中间层重建**
    - 把 `SpatialPlan`
@@ -1049,31 +1051,24 @@ planning seed
      决定 broader
      Program / MeshWorkload
      emission
-4. **`Legacy Protocol Deletion`**
-   - 删除 fake protocol 和 late matcher residue
+4. **legacy protocol deletion**
+   - fake protocol /
+     helper residue /
+     side channel /
+     late matcher family
+     只能作为历史 debt
+     被删除或审计，
+     不能定义新的长期协议
 
-架构收口仍按
+历史架构收口曾按
 `Task 1 -> Task 2 -> Task 3 -> Legacy Protocol Deletion`
-理解显式表示层边界。
-
-当前 cleanup 顺序和状态
-统一只看 `tasks/progress.md`；
-本文件不再重复维护
-repo HEAD 的当前任务队列。
-
-cleanup 文档的角色固定为：
-
-- 清理 legacy protocol /
-  helper residue /
-  side channel
-- 作为和主线 task
-  重叠的 cleanup workstream
-
-它不是：
-
-- `Task 1 / Task 2 / Task 3`
-  的替代路线图
-- 新的主设计分层
+推进；
+当前这些 cleanup workstream
+已归档为完成期历史记录。
+repo HEAD 的当前任务队列、
+blocker
+和下一步统一只看
+`tasks/progress.md`。
 
 补充：
 
@@ -1095,7 +1090,7 @@ support-surface admission lane；
 不再作为单独顶层路线，
 也不允许回退到 runtime-only matcher。
 
-当前活动设计文档按下面顺序约束实现：
+当前活动设计 / 约束文档按下面顺序理解：
 
 1. `task0_ir_layering_root_cause.md`
    - 固定根因和显式表示层边界判断
@@ -1113,17 +1108,65 @@ support-surface admission lane；
      不引入新的 IR 层
 4. `task3_runtime_gate_and_workload_cutover.md`
    - 固定 `Task 3: ExecutableSpec / Leaf Reader Cutover`
-5. `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
-   - 固定 cleanup ownership /
-     forced debt /
-     convergence gate
-   - 不替代
-     `Task 1 / Task 2 / Task 3`
-     主设计路线
-6. `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
-   到
-   `task5.md`
-   - 固定每一步 cleanup 的具体收口范围
+5. `2026-04-23-blackhole-live-form-materialization-admission.md`
+   - 固定 cleanup 之后的
+     support-surface admission lane
+   - 只定义 live-form /
+     materialization /
+     runtime admission
+     的显式表示边界
+6. `2026-04-27-blackhole-tile-compute-preservation.md`
+   - 固定 TT-Metal API 粒度
+     tile compute semantics
+     必须在
+     `Normalized Tile TIR`
+     中保留 / 规范化
+   - downstream scalar-loop
+     matcher family
+     不能再作为 active compute truth
+7. `2026-04-27-blackhole-post-preservation-pass-shrink.md`
+   和
+   `2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md`
+   - 固定 tile-compute preservation
+     之后的 implementation split /
+     helper reuse /
+     heavy-pass cleanup
+     边界
+8. `2026-04-28-blackhole-algorithmic-generalization.md`
+   - 固定
+     `AccessRegion` /
+     graph-backed dependence /
+     `LiveValueSSA` /
+     TT live-form solver /
+     Phase E decision-use cutover
+     的算法化重构合同
+9. `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
+   - 固定后续
+     `TileComputeDAG` /
+     legalizer /
+     covering
+     的生产迁移 gate；
+     production covering
+     必须等 Phase E
+     decision-use gate
+     对 admitted compute surface
+     生效后再启动
+10. `blackhole_first_principles_protocol_audit.md`
+   - 固定 legacy /
+     fake protocol
+     的迁移落点、
+     validator 责任和删除纪律
+
+归档的
+`archive/2026-04-16-blackhole-final-legacy-protocol-cleanup*.md`
+只作已完成 cleanup 的历史记录和审计参考；
+它们不再是当前活动设计入口，
+也不能被用来保留旧 wrapper /
+facts /
+bag /
+payload /
+matcher
+兼容面。
 
 ## 9. 完成判定
 

@@ -3,9 +3,9 @@
 > 本文档不是新的总体设计。
 >
 > 它只做一件事：
-> **基于第一性原理，对现存 historical surface 做表示层落点、validator 和删除/切换 disposition。**
+> **基于第一性原理，对 historical / legacy surface 做表示层落点、validator 和删除/切换 disposition。**
 >
-> 下表里出现的现存 surface 名，
+> 下表里出现的 surface 名，
 > 全部按当前仓库里的历史字面名列出，
 > 目的只有一个：做删除与切换清单。
 > 它们不是当前允许继续扩展的协议名。
@@ -27,7 +27,7 @@
 
 ## 2. Deletion / Migration Table
 
-| 现存 surface | 长期表示层落点 | 显式对象 / 语义来源 | 为什么当前 surface 必须退场 | validator / gate | 去留 |
+| historical surface | 长期表示层落点 | 显式对象 / 语义来源 | 为什么该 surface 必须退场 | validator / gate | 去留 |
 |---|---|---|---|---|---|
 | `blackhole.copy_semantics` | `Normalized Tile TIR -> SpatialPlan -> TTProgram` | `BufferLoad / BufferStore`、`DataflowEdge`、`TTTransportPlan` | 不能继续充当 copy 方向/角色的长期表示 | `ValidateSpatialPlan` 检查 edge completeness；`ValidateTTProgram` 检查 transport realization | 删除 |
 | `blackhole.segment_kind` | `TTProgram -> ExecutableSpec` | `TTKernelPlan.kind`、投影后的 executable kernel/segment 记录 | 不应再写回 TIR attr | `ValidateTTProgram` 检查 kernel/ABI/transport 闭合；leaf readers 只读投影记录 | 删除 |
@@ -42,10 +42,10 @@
 | `tl.blackhole_logical_buffer_tile_bridge_specs` | `SpatialPlan -> TTProgram -> ExecutableSpec` 的显式对象 | `LayoutSpec` / `LiveValue` / `MaterializationBoundary` / typed leaf materialization schema | 已从 active chain 删除；不能再作为 narrow bridge exception 恢复 | `ValidateSpatialPlan` / `ValidateTTProgram` / executable projection gate 验证 typed objects | 已删除 |
 | `compute_contract` / `gemm_contract` / `multi_*_contracts` | `TTProgram -> ExecutableSpec` typed compute / kernel / materialization schema | `TTComputeOpPlan`、`KernelSpec.compute_ops`、`TTKernelPlan`、`TTABIPlan`、`TTExecutionPlan`、`TTLiveFormPlan`、`TTMaterializationPlan`、`TTConsumerBindingPlan` 或等价 typed object | 已退出 `TTProgram -> ExecutableSpec -> runtime` active chain；不能作为 leaf compatibility fallback 恢复 | `ValidateTTProgram` 和 leaf tests 缺 typed schema 必须 fail-close | 已删除 fallback |
 
-## 3. 当前 cleanup 解释
+## 3. 已完成 legacy cleanup 解释
 
 `Legacy Protocol Deletion`
-在 repo HEAD 的目标含义固定为：
+在 repo HEAD 的完成态含义固定为：
 
 - canonical `LowerToBlackholePhaseB`
   不再发布
@@ -99,8 +99,9 @@
    AnalyzeBlackholePipelineStages`
   这些 public wrapper
   与对应的 internal evidence helper
-  都应从 active chain 删除，
-  不能继续以 debug / regression helper 名义常驻
+  不能继续以 debug /
+  regression helper
+  名义常驻 active chain
 
 下面 `3.1` 到 `3.7`
 保留为 cleanup 执行期的历史落地记录。
@@ -113,13 +114,13 @@
 ### 3.1 `2026-04-17` Task 0 落地补充
 
 - `SelectBlackholeTTMetalBuiltins`
-  现在已经位于
+  当时已经位于
   `PlanTTBlocks`
   与
   `PlanTTCompute`
   之间，
   compute-side exact builtin 选择前移到 planner helper 路线之前；
-  但 repo HEAD 里
+  但当时 repo HEAD 里
   它仍只是 front-door wrapper，
   真正的 primitive idiom
   match + rewrite owner
@@ -135,7 +136,7 @@
   仍属于
   `TTProgram -> ExecutableSpec`
   边界，
-  不能因为 repo HEAD
+  不能因为当时 repo HEAD
   还保留 seed / payload residue
   就倒灌回 task0
 - `compute_epilogue_ops`
@@ -340,7 +341,7 @@
   总包
   合法化成长期 planner 边界
 - `BuildBlackholeLoweringRequirements`
-  当前还会产出一批
+  当时还会产出一批
   repo 内找不到 active reader
   的 bag-only residue，
   例如
@@ -361,7 +362,7 @@
   pass-local helper
 - runtime / codegen / build
   reader
-  现在已经主要站在
+  当时已经主要站在
   `TTProgram -> tl.blackhole_executable`
   projection
   边界上，
@@ -487,13 +488,13 @@
   copy annotation
   的主要 consumer
 - target / codegen / build / runtime
-  现在已经主要站在
+  当时已经主要站在
   `TTProgram -> tl.blackhole_executable -> ExecutableSpec`
   projection
   边界上，
   不直接读取
   `blackhole.copy_semantics`；
-  现存
+  当时现存
   `buffer_tile_bridge_specs`
   /
   `compute_contract`
@@ -512,7 +513,7 @@
   `rt_mod_blackhole.cc`
   与
   `blackhole_module.cc`
-  当前还保留
+  当时还保留
   `compute_contract <- gemm_contract`
   的 leaf/runtime compatibility recovery。
   这属于 task3 的
@@ -738,7 +739,7 @@
 - task5 不能本地豁免
   task0-task4
   尚未删除的 wrong-now carrier。
-  当前 repo HEAD
+  当时 repo HEAD
   里仍然 live 的
   residue
   包括：
@@ -820,7 +821,7 @@
   integration lane；
   TT-Sim
   仍属于 simulator capability boundary，
-  不是 cleanup correctness gate
+  不是当前 correctness gate
 - TT-Metal
   target model
   也只要求

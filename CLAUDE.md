@@ -281,7 +281,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 - 默认开发构建目录固定为 `tilelang_repo/build/`
 - 默认并行编译线程数按 `-j32` 执行
 - `build_blackhole/` 和 legacy runner 都已删除
-- `tasks/dev_design/` 根目录只保留当前入口文档、当前 support-surface lane
+- `tasks/dev_design/` 根目录只保留当前入口文档、
+  当前活动 / 已完成但仍约束实现的 lane 设计文档
   和 protocol audit；
   `tasks/dev_design/archive/` 下内容全部视为历史记录，不再作为当前入口
 - semantic manifest 路径已完成；`AnalyzeSemanticStructure` 已全面改成 manifest-first

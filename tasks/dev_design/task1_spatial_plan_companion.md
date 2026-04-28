@@ -14,7 +14,8 @@
 - 本文档定义
   `SpatialPlan`
   的长期表示层合同
-  和它与 cleanup task1/task2 的关系
+  以及它与 archived cleanup task1/task2
+  的历史边界关系
 - 当前 repo HEAD 状态统一只看 `tasks/progress.md`
 
 ## 1. 目标
@@ -58,10 +59,11 @@
 
 补充说明：
 
-- cleanup task1/task2
-  只是把 repo HEAD
-  收回到这个合同上的执行切片
-- 它们不是新的表示层，
+- archived cleanup task1/task2
+  只是把历史 repo state
+  收回到这个合同上的执行记录
+- 它们不是当前活动路线图，
+  也不是新的表示层，
   也不能反向重写
   `SpatialPlan`
   的长期语义
@@ -420,13 +422,14 @@ active chain
 - `blackhole.compute_regions`
 - `blackhole.pipeline_stages`
 
-它们在 cleanup 期间
-如果仍然活着，
-也只能是：
+如果它们未来重新出现在
+active chain，
+只能视为：
 
-- compatibility residue
-- test migration surface
-- 尚未删除的 helper reader 输入
+- regression
+- 需要删除的 compatibility residue
+- 需要迁回 typed `SpatialPlan`
+  对象的临时 helper 输入
 
 而不能再定义
 当前 owner truth。
@@ -714,41 +717,34 @@ virtual spatial/dataflow 层。
    恢复
    virtual spatial/dataflow 语义
 
-## 10. 与 Cleanup Task 的关系
+## 10. 与 Archived Cleanup Task 的关系
 
 这份文档定义的是
 长期 `SpatialPlan` 合同，
-不是当前 cleanup 顺序说明。
+不是执行顺序说明。
 
-和 cleanup 文档的关系固定为：
+archive 里的 cleanup task1/task2
+只记录历史收口：
 
-1. cleanup task1
-   负责把
-   `SpatialPlan`
-   收成 direct builder，
-   并删除
+1. `SpatialPlan`
+   已收成 direct builder；
    public wrapper /
    facts object /
    facts attr
-   对 active chain
-   与 public surface
-   的控制；
-   `tl.blackhole_logical_buffer_tile_bridge_specs`
-   不能作为例外重新出现
-2. cleanup task2
-   负责把
-   `SpatialPlan -> TTProgram`
-   收回显式对象
-   和 direct planner 边界，
-   删除 broad planning bag
+   不能再控制 active chain
+   或 public surface。
+2. `SpatialPlan -> TTProgram`
+   的边界必须保持在显式对象
+   和 direct planner builder
+   上；
+   broad planning bag
    与 payload-style owner truth
-3. 如果 repo HEAD
-   在 cleanup 期间
-   仍然保留上述 residue，
-   正确写法也只能是
-   **wrong now, delete later**
-   或
-   **transitional debt**
+   不能重新出现。
+3. `tl.blackhole_logical_buffer_tile_bridge_specs`
+   已从 active code path 删除；
+   若未来重新出现，
+   应视为 regression，
+   不是 cleanup exception。
 
-当前实现依赖
+当前实现依赖或历史 archive 文档
 不能削弱这个 verdict。

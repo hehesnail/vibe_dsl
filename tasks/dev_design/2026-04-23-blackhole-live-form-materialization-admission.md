@@ -65,7 +65,7 @@
   - 后续 flash-attn direct runtime admission
 
 本文不是第二份总体设计文档。
-它只把 cleanup task5 之后重新打开的 support 工作
+它只把 cleanup 之后的 support 工作
 收束到当前长期主链：
 
 ```text
@@ -124,7 +124,7 @@ Normalized Tile TIR
 
 ## 3. 现状判断
 
-cleanup task5 之后，
+cleanup 之后，
 legacy protocol deletion
 已经收口。
 剩下的问题不是“旧协议还没删干净”，
@@ -1279,7 +1279,7 @@ Wider-shape admission target:
 - example default /
   regression perf 规模
   只作为 stretch target，
-  不是第一批 post-P2
+  不是第一批 wider-shape
   correctness gate：
   - MHA forward BSHD:
     `batch=8, heads=32, seq_len=4096, dim=128,

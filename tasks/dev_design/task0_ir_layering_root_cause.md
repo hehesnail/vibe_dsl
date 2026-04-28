@@ -590,25 +590,30 @@ TT-Metal 的稳定 host-side truth
   - 根因诊断
   - layered IR rewrite 方向
   - IR-first 纪律基线
-- cleanup `task0-task5`
+- archive 里的 cleanup `task0-task5`
   是已完成 broad convergence
-  的执行切片，
-  不是新的 IR 层；
-  当前剩余 narrow leaf debt
-  只按 `tasks/progress.md`
-  和对应任务设计继续跟踪
-- `2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
-  负责 cleanup 启动时
+  的历史执行切片，
+  不是当前活动路线图，
+  也不是新的 IR 层；
+  repo HEAD 当前状态 /
+  blocker /
+  下一步只按
+  `tasks/progress.md`
+  和根目录当前活动设计文档判断
+- `archive/2026-04-16-blackhole-final-legacy-protocol-cleanup-task0.md`
+  只记录 cleanup 启动时
   compute-side exact builtin legality
-  这条 cleanup 切片的 owner truth
+  这条历史切片的 owner truth；
+  它不能重新授权 downstream
+  scalar-loop matcher
+  或 legacy compute payload
 - `task1_spatial_plan_companion.md`
   负责定义 `SpatialPlan` 这层表示的合同
 - `task2_ttprogram_companion_cutover.md`
   负责定义 `TTProgram` 这层表示的合同
 - `task3_runtime_gate_and_workload_cutover.md`
   负责定义 leaf reader / workload cutover 合同
-- `2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
-  负责把 task0-task5
-  组织成 cleanup 完成边界和验证索引
+- `archive/2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
+  只作为 cleanup 完成边界和验证索引的历史记录
 - `tasks/progress.md`
   负责记录 repo HEAD 当前状态和下一步

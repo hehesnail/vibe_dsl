@@ -16,7 +16,8 @@
   `ExecutableSpec`
   的长期 leaf projection /
   runtime-module build contract，
-  以及它与 cleanup task3/task4/task5 的关系
+  以及它与 archived cleanup task3/task4/task5
+  的历史边界关系
 - 当前 repo HEAD 状态统一只看 `tasks/progress.md`
 
 ## 1. 目标
@@ -61,10 +62,11 @@
 
 补充说明：
 
-- cleanup task3/task4/task5
-  只是把 repo HEAD
-  收回到这个合同上的执行切片
-- 它们不是新的表示层，
+- archived cleanup task3/task4/task5
+  只是把历史 repo state
+  收回到这个合同上的执行记录
+- 它们不是当前活动路线图，
+  也不是新的表示层，
   也不能反向改写
   `ExecutableSpec`
   的长期语义
@@ -725,7 +727,8 @@ records；
 - 更早层表示
   是否该改
 
-cleanup task5 之后重新打开的
+cleanup 之后的
+support-surface admission lane：
 direct cast consumer、
 `fragment_fill -> cast -> publish`
 和 flash-attn direct runtime
@@ -1078,7 +1081,7 @@ workload payoff
 
 - `flash-attn`
   direct runtime
-  不是当前 cleanup hard gate
+  不是当前 mainline hard gate
 - unsupported workload
   不能反过来重写
   `ExecutableSpec`
@@ -1098,12 +1101,12 @@ workload payoff
   TT-Metal codegen/export
   不该表达这些路径
 
-## 7. 与 Cleanup Task 的关系
+## 7. 与 Archived Cleanup Task 的关系
 
 ### 7.1 cleanup task3
 
 cleanup task3
-负责删除：
+的历史收口是删除：
 
 - `blackhole.copy_semantics`
   及其 compiler-side consumers
@@ -1126,27 +1129,33 @@ cleanup task3
 ### 7.2 cleanup task4
 
 cleanup task4
-已经收敛：
+的历史收口是：
 
 - `segment_plan.kind`
   与 source-level marker
   之间不能再有 leaf-reader
   依赖
 
-所以 task3 文档里必须承认：
+所以当前合同固定为：
 
-- `segment_kind`
-  仍可能是 live residue
-- 但它不属于
-  `ExecutableSpec`
-  的 owner truth
+- `blackhole.segment_kind`
+  只允许作为
+  `lower_blackhole_ops.cc`
+  内部 pass-local mechanics
+- final IR /
+  `ExecutableSpec` /
+  leaf reader
+  前必须剥离
+- 若 leaf reader
+  重新依赖 `segment_kind`，
+  应视为 regression
 
 ### 7.3 cleanup task5
 
 cleanup task5
-负责最终 convergence /
+只记录最终 convergence /
 verification / residue scan /
-交付 gate，
+交付 gate 的历史执行，
 不是新的语义 owner。
 
 因此：
@@ -1154,10 +1163,11 @@ verification / residue scan /
 - task3 文档
   必须先写清楚
   真正的 leaf boundary
-- task5
-  只负责证明
-  当前实现
-  是否已经收回到这条边界
+- archive 里的 task5
+  只能作为完成期验证索引，
+  不能作为当前保留
+  leaf compatibility residue
+  的授权
 
 ## 8. Completion Contract
 

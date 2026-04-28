@@ -1302,7 +1302,7 @@
     当前 TT-Sim bf16 correctness
     不能 admission
 
-#### non-mailbox publication 之后仍可能卡在 source live-form truth
+#### non-mailbox publication 后曾卡在 source live-form truth
 
 - **症状**:
   - small bf16 flash-attn
@@ -1355,6 +1355,13 @@
     source live-form truth
     和 stale fill invalidation
     也必须被验证
+  - 当前 small / 32x32 bf16
+    flash-attn direct-runtime subset
+    已完成 admission；
+    seq64 / multi-K-step
+    是独立 multi-block correctness gate，
+    不要把它重新描述成旧 P2.1
+    live-form blocker。
 
 #### flash-attn row scalar broadcast 方向不能按名字直觉选 `bcast_rows`
 

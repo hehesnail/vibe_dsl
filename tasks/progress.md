@@ -259,7 +259,7 @@
         `(batch=1, heads=16, seq_len=1024, dim=128, groups=16,
           block_M=64, block_N=64, num_stages=2, threads=128)`.
    - Stretch/perf parity remains the example default/regression scale,
-     not the first post-P2 correctness gate:
+     not the first wider-shape correctness gate:
      MHA forward BSHD
      `(batch=8, heads=32, seq_len=4096, dim=128,
        block_M=128, block_N=128)`
@@ -346,6 +346,38 @@
 
 ## Latest Verification
 
+Second-pass document stale-state audit after reviewer correction:
+
+- re-audited the non-archive Blackhole design/status docs for current-state
+  wording, not just known stale phrases
+- synced `final_blackhole_backend_redesign.md`
+  so archived cleanup docs are no longer listed as current active design
+  constraints; current lane docs now include tile-compute preservation,
+  post-preservation split, lower-tile-op dedup, algorithmic generalization,
+  legalizer/DAG covering, support-surface admission, and protocol audit
+- synced `task0_ir_layering_root_cause.md`,
+  `task1_spatial_plan_companion.md`,
+  `task2_ttprogram_companion_cutover.md`,
+  and `task3_runtime_gate_and_workload_cutover.md`
+  so cleanup task references are historical archive relationships,
+  not active cleanup work or permission to keep residue
+- synced `blackhole_first_principles_protocol_audit.md`
+  to mark cleanup sections as historical and remove current-tense claims
+  about deleted bags / contracts / residues
+- synced root agent docs and `tasks/dev_design/README.md`
+  so `tasks/dev_design/` root is described as current entry docs plus
+  active/completed lane contracts, not only support-surface/protocol audit
+- `git diff --check`
+  -> passed
+- stale-current-state scan for old flash-attn lane wording,
+  old live-form blocker wording,
+  old follow-up phase labels,
+  current cleanup wording,
+  and direct-runtime admission contradictions
+  -> no conflicting active-doc hits
+- background process scan:
+  no lingering `pytest` / `cmake --build` / `ninja` process
+
 Top-level document sync after root-doc audit:
 
 - synced `README.md`,
@@ -360,13 +392,13 @@ Top-level document sync after root-doc audit:
 - synced
   `tasks/dev_design/blackhole_first_principles_protocol_audit.md`
   so its current diagnosis no longer names the old flash-attn
-  source-live-form blocker as the active next step
+  live-form blocker as the active next step
 - normalized the remaining future wider-shape admission label in
   `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
   so it no longer reads as an active historical P2 follow-up phase
 - `git diff --check`
   -> passed
-- stale-doc scan for legacy flash-attn source-live-form blocker,
+- stale-doc scan for legacy flash-attn live-form blocker,
   old root README backlog markers,
   and seq64 direct-runtime admission wording
   -> no conflicting active-doc hits

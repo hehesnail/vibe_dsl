@@ -14,10 +14,11 @@
 - 本文档定义
   `TTProgram`
   的长期表示层合同
-  和它与 cleanup task2/task3 的关系
+  以及它与 archived cleanup task2/task3
+  的历史边界关系
 - 当前 repo HEAD 状态统一只看 `tasks/progress.md`
 
-### repo HEAD note (`2026-04-22`)
+### Closeout invariant note (`2026-04-22`)
 
 - `tl.blackhole_lowering_requirements_seed`
   和
@@ -116,10 +117,11 @@
 
 补充说明：
 
-- cleanup task2/task3
-  只是把 repo HEAD
-  收回到这个合同上的执行切片
-- 它们不是新的表示层，
+- archived cleanup task2/task3
+  只是把历史 repo state
+  收回到这个合同上的执行记录
+- 它们不是当前活动路线图，
+  也不是新的表示层，
   也不能反向重写
   `TTProgram`
   的长期语义
@@ -556,8 +558,8 @@ leaf map schema。
 
 ### 4.1 public/internal analysis bag 不是 `TTProgram` 边界
 
-如果 repo HEAD
-里仍存在：
+如果未来 repo HEAD
+重新出现：
 
 - public `AnalyzeBlackhole*`
 - internal `*Evidence(...)`
@@ -567,9 +569,11 @@ leaf map schema。
 
 它们的正确口径只能是：
 
-- cleanup task2
-  尚未删完的 planning debt
-- 仍被局部实现依赖的 side channel
+- regression /
+  planning debt
+- 仍被局部实现依赖、
+  需要删除或迁回 typed object
+  的 side channel
 - 必须继续删除的 forced residue
 
 它们不是
@@ -580,11 +584,8 @@ medium-term bridge layer。
 
 ### 4.2 `BuildTTProgram` 不是 planning owner
 
-如果 repo HEAD
-里仍保留
 `BuildTTProgram`
-这个入口，
-它的长期角色只能是：
+这个入口的长期角色只能是：
 
 - staged slice aggregation
 - cross-slice completeness check
@@ -1008,40 +1009,35 @@ build / codegen / runtime /
    `TTProgram`
    完成态字段
 
-## 10. 与 Cleanup Task 的关系
+## 10. 与 Archived Cleanup Task 的关系
 
 这份文档定义的是
 长期 `TTProgram` 合同，
-不是当前 cleanup 顺序说明。
+不是执行顺序说明。
 
-和 cleanup 文档的关系固定为：
+archive 里的 cleanup task2/task3
+只记录历史收口：
 
-1. cleanup task2
-   负责删除
-   public/internal legacy analysis bag
-   对 active planning chain
-   的控制，
-   把
+1. public/internal legacy analysis bag
+   已不能控制 active planning chain；
    `SpatialPlan -> TTProgram`
-   收回到
-   current IR /
+   必须保持在 current IR /
    current object /
    direct planner builder
-2. cleanup task3
-   已删除 top-level
-   `TTProgram.payload`；
-   后续只负责继续删除 executable projection
-   /
+   边界上。
+2. top-level `TTProgram.payload`
+   已删除；
+   executable projection /
    codegen/runtime
-   仍在使用的
-   leaf compatibility residue
-3. 如果 repo HEAD
-   在 cleanup 期间
-   仍然保留上述 debt，
-   正确写法也只能是
-   **wrong now, delete later**
-   或
-   **transitional debt**
+   不能重新依赖 leaf compatibility
+   fallback residue。
+3. `compute_contract` /
+   `gemm_contract` /
+   `multi_*_contracts`
+   已退出 active chain；
+   若未来重新出现，
+   应视为 regression，
+   不是 compatibility exception。
 
-当前实现依赖
+当前实现依赖或历史 archive 文档
 不能削弱这个 verdict。

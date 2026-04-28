@@ -164,7 +164,7 @@ graph-backed `SpatialPlan` dependence、
 `Tile compute legalizer / DAG covering`，
 再之后才是 multi-block flash-attn direct-runtime admission、
 multi-page exact-CB event admission、
-P3 mesh/distributed runtime
+mesh/distributed runtime admission
 和 wider flash-attn workload-scale admission。
 
 额外参考：
@@ -221,7 +221,7 @@ pass 名字、helper、bag、payload、bridge attr
 | `2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md` | `lower_tile_op.cc` cleanup 任务设计；定义 Blackhole tile compute normalization 的单一实现面和验证边界 |
 | `2026-04-28-blackhole-algorithmic-generalization.md` | Blackhole passes 算法化重构设计；定义 AccessRegion、SpatialPlan dependence graph、LiveValueSSA、TT live-form solver、Phase E decision-use cutover，以及 anti-overdesign / problem-family guardrails |
 | `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md` | Blackhole tile compute selection 算法化设计；定义 TileComputeDAG、legalizer、leaf pattern covering、cost model 和迁移边界；production covering 受 Phase E decision-use gate 约束 |
-| `blackhole_first_principles_protocol_audit.md` | 删除/迁移表；列出现存 fake/legacy protocol 的表示层落点、validator 和 disposition |
+| `blackhole_first_principles_protocol_audit.md` | 删除/迁移表；列出 historical fake/legacy protocol 的表示层落点、validator 和 disposition |
 
 ### Runtime / mesh / distributed 调研索引
 
@@ -395,7 +395,7 @@ README 不再重复维护 backlog。
   下全部文档只作历史参考
 - `tasks/dev_design/`
   根目录只保留当前入口文档、
-  当前 support-surface lane
+  当前活动 / 已完成但仍约束实现的 lane 设计文档
   和 protocol audit；
   方法论 / 研究输入 /
   已完成阶段边界 /

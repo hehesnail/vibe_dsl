@@ -2,7 +2,10 @@
 
 ## Goal
 
-`lower_tile_op.cc` currently has two implementations of the same
+Status: completed.
+
+Before this cleanup,
+`lower_tile_op.cc` had two implementations of the same
 Blackhole tile-compute normalization:
 
 - `LowerTileOpPass`
@@ -11,7 +14,7 @@ Blackhole tile-compute normalization:
   normalizes the same scalar loop shapes when the standalone
   `tl.NormalizeBlackholeTileCompute` pass runs.
 
-This task removes the duplicate implementation surface and keeps one
+This task removed the duplicate implementation surface and keeps one
 pass-local normalizer helper shared by both callers.
 
 This is an implementation cleanup inside `Normalized Tile TIR`.
