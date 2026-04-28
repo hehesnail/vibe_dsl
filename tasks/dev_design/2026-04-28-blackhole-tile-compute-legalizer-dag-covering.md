@@ -600,6 +600,53 @@ not a replacement matcher,
 not a source-string protocol,
 and not a pass-to-pass DAG payload.
 
+### Resource-Planning Review Addendum (`2026-04-29`)
+
+The resource-planning review narrows this design's production boundary.
+
+`TileComputeDAG`
+is not a global dataflow analysis,
+resource allocator,
+core placer,
+NoC scheduler,
+or lifecycle engine.
+It is only the pass-local tile-compute selection model used to choose legal
+TT-Metal leaf compute patterns.
+
+The following responsibilities are outside this design and belong to the
+resource-planning roadmap:
+
+- CB live-interval allocation
+- L1/SRAM pressure admission
+- hardware-model-backed core placement
+- buffer distribution / sharding decisions
+- multicast / NoC / scheduling optimization
+
+This means a production migration is acceptable only when it pays rent through
+one of the established outputs:
+
+- changes a typed compute / CB / live-form /
+  materialization / consumer-binding plan,
+- emits a typed unsupported reason earlier than source/runtime emission,
+- or deletes an old per-op branch / fallback path.
+
+A cursor-based hook chain,
+`try_*` family,
+or source-emitter registry that merely wraps the old branch logic is not enough
+to claim production completion.
+Such mechanics must either be simplified into pattern-owned selected emission
+or deleted.
+
+The next resource-aware work is therefore not to expand this DAG.
+It is to add typed
+`ResourceDemand`
+/
+`ResourcePressureReport`
+and then upgrade CB / L1 / core / buffer planning in `TTProgram`
+and `ExecutableSpec`
+as described by
+`2026-04-29-blackhole-resource-planning-roadmap.md`.
+
 ## Global Task Order
 
 This lane is sequenced after the algorithmic generalization

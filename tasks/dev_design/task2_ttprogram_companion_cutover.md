@@ -312,6 +312,72 @@ backend admission
 处 reject
 更宽组合。
 
+### 3.0.2 Resource Demand / Pressure View
+
+`TTProgram`
+is also the source for target resource demand,
+but resource demand is a derived admission view,
+not a new payload or IR layer.
+
+The next resource-planning surface should be reconstructable from typed
+`TTProgram`
+slices and the corresponding executable projection:
+
+```text
+ResourceDemand
+  kernel
+  core_group
+  cb_requirements
+  l1_buffer_requirements
+  semaphore_requirements
+  buffer_distribution_requirements
+  communication_edges
+
+ResourcePressureReport
+  per_core_cb_id_pressure
+  per_core_cb_l1_bytes
+  per_core_l1_buffer_bytes
+  max_simultaneous_l1_bytes
+  core_grid_requirement
+  dram_view_requirement
+  unsupported_reasons
+```
+
+This view may feed
+`ValidateTTProgram`,
+`MaterializeBlackholeExecutable`,
+and backend admission diagnostics.
+It must not become another pass-to-pass bag.
+
+Resource ownership remains split:
+
+- `TTCBPlan`
+  owns CB identity / pages / format / lifetime realization.
+- `TTBufferDistributionPlan`
+  owns DRAM/L1,
+  interleaved/sharded,
+  page-size,
+  shard-shape,
+  and host-visible / device-local realization.
+- `TTCoreGroup`
+  owns logical worker placement and work packets.
+- `TTHardwareModel`
+  supplies arch facts:
+  worker grid,
+  functional worker count,
+  worker L1 size,
+  DRAM views,
+  and related target limits.
+- TT-Metal allocator remains the owner of physical addresses.
+
+`TileComputeDAG`
+must not own any of the above resource decisions.
+It may contribute compute-covering choices that create CB /
+live-form demand,
+but the resource pressure decision belongs here or in
+`ExecutableSpec`
+admission.
+
 ### 3.1 `TTBlockPlan`
 
 表示 target-side 的

@@ -21,6 +21,7 @@
 10. `2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md`
 11. `2026-04-28-blackhole-algorithmic-generalization.md`
 12. `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
+13. `2026-04-29-blackhole-resource-planning-roadmap.md`
 
 当前 support surface / workload payoff lane
 的任务级设计固定为：
@@ -104,10 +105,13 @@
     但不引入新的长期 IR 层
   - Phase A-D
     foundation
-    和 Phase E decision-use cutover
+    和 admitted compute surface 上的
+    Phase E decision-use cutover
     已完成；
-    当前活动 lane 是
-    `Multi-block flash-attn direct-runtime admission`
+    当前活动 lane 已根据 resource-planning
+    复查收回到
+    `Algorithmic generalization Phase E follow-up:
+    resource-planning alignment`
   - 强制执行
     anti-overdesign pay-rent rule
     和 problem-family generality rule：
@@ -143,31 +147,16 @@ DAG covering
     已对 admitted compute surface 生效；
     Phase A-B foundation
     已完成；
-    Phase C-E production migration
-    和 cleanup 已完成：
-    covering selection gates
-    `TTComputeOpPlan`
-    recording、
-    explicit tile-compute source dispatch
-    和
-    `ValidateTTProgram`；
-    typed
+    resource-planning 复查后，
+    production covering
+    不能继续扩成 resource allocation /
+    global scheduling 面。
     `TileComputeDAG`
-    builder
-    connects producer-use edges by IR object identity；
-    DAG covering reports selected patterns、
-    cost、
-    fanout decisions、
-    materialization policy
-    和 stale-fallback rejection；
-    explicit source dispatch now uses the selected
-    `source_emitter`
-    hook registry,
-    generic reduce source lowering enters covering before emission,
-    and the implementation schema now uses typed C++ enums plus optional
-    source-emitter metadata and pattern-owned call operand layouts
-    with compact enum/string lookup tables rather than per-enum switch
-    boilerplate
+    必须保持 pass-local compute covering；
+    只有影响 typed plans /
+    unsupported diagnostics
+    或删除旧 per-op branch
+    的部分才算 production completion。
   - read-only DAG dump /
     pattern table /
     generic covering class
@@ -177,6 +166,33 @@ DAG covering
     或删除旧 per-op branch
     才算 production completion
 
+当前 Blackhole TT resource planning
+的任务级设计记录为：
+
+- `2026-04-29-blackhole-resource-planning-roadmap.md`
+  - 记录
+    `TileComputeDAG`
+    scope 收缩、
+    `ResourceDemand` /
+    `ResourcePressureReport`、
+    CB live-interval allocation、
+    L1 pressure admission、
+    hardware-model-backed core placement /
+    buffer distribution、
+    以及后续 NoC / multicast /
+    scheduling optimization
+    的依赖关系
+  - 明确 resource planning
+    不是
+    `TileComputeDAG`
+    的职责，
+    也不是 direct-runtime workload admission
+    的临时 patch 面
+  - 当前顺序是先修正 compute covering 边界，
+    再建立 typed resource pressure，
+    再升级 CB / L1 / core / buffer planning，
+    最后回到 wider runtime admission
+
 当前执行顺序不在 README 中重复维护；
 唯一状态看板是 `tasks/progress.md`。
 截至当前 repo HEAD，
@@ -185,10 +201,18 @@ DAG covering
 graph-backed `SpatialPlan` dependence、
 `LiveValueSSA`、
 第一版 TT live-form solver，
-以及 Phase E decision-use cutover。
-当前已完成的 production migration / cleanup 包括
-`Tile compute legalizer / DAG covering Phase C-E`。
-后续顺序是
+以及 admitted compute surface 上的 Phase E decision-use cutover。
+资源规划复查后，
+`TileComputeDAG`
+不能作为全局 resource /
+scheduling 面继续扩展；
+后续顺序改为：
+先清理 / 收缩
+`TileComputeDAG`
+production 边界，
+再建立 typed resource pressure
+和 CB / L1 / core / buffer planning，
+然后回到
 multi-block flash-attn direct-runtime admission、
 multi-page exact-CB event admission、
 mesh/distributed runtime admission
@@ -248,6 +272,7 @@ pass 名字、helper、bag、payload、bridge attr
 | `2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md` | `lower_tile_op.cc` cleanup 任务设计；定义 Blackhole tile compute normalization 的单一实现面和验证边界 |
 | `2026-04-28-blackhole-algorithmic-generalization.md` | Blackhole passes 算法化重构设计；定义 AccessRegion、SpatialPlan dependence graph、LiveValueSSA、TT live-form solver、Phase E decision-use cutover，以及 anti-overdesign / problem-family guardrails |
 | `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md` | Blackhole tile compute selection 算法化设计；定义 TileComputeDAG、legalizer、leaf pattern covering、cost model 和迁移边界；production covering 受 Phase E decision-use gate 约束 |
+| `2026-04-29-blackhole-resource-planning-roadmap.md` | Blackhole TT resource planning 路线；定义 TileComputeDAG scope 收缩、ResourceDemand / ResourcePressureReport、CB live-interval allocation、L1 pressure admission、hardware-model-backed core / buffer placement、以及后续 NoC / multicast optimization 的依赖关系 |
 | `blackhole_first_principles_protocol_audit.md` | 删除/迁移表；列出 historical fake/legacy protocol 的表示层落点、validator 和 disposition |
 
 ### Runtime / mesh / distributed 调研索引

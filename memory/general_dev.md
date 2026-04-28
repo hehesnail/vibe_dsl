@@ -123,6 +123,43 @@
   `TTProgram`
   payload
   变成新的跨 pass truth。
+- TT resource planning 不属于
+  `TileComputeDAG`
+  的职责。
+  `TileComputeDAG`
+  只负责 pass-local tile compute
+  legalizer / covering；
+  CB ID allocation、
+  L1/SRAM pressure、
+  core placement、
+  buffer distribution、
+  NoC / multicast scheduling
+  都应进入
+  `TTProgram`
+  /
+  `ExecutableSpec`
+  的 typed resource planning /
+  admission surface。
+- CB allocation 更像寄存器分配：
+  第一版优先用 live-interval / linear-scan
+  模型和 arch-aware CB limits，
+  不要先上全局 graph coloring /
+  ILP。
+  L1/SRAM 先做 pressure admission
+  和 typed diagnostics，
+  不替代 TT-Metal allocator
+  的 physical address assignment。
+- Blackhole core placement
+  不能长期硬编码 worker grid。
+  规划应从
+  `TTHardwareModel`
+  和 TT-Metal / UMD
+  的 logical / translated / NoC
+  coordinate 事实出发；
+  logical coordinates
+  是 harvesting-safe baseline，
+  NoC-proximity / multicast optimization
+  属于后续 scoring / scheduling lane。
 - tile compute legalizer
   要同时卡住 producer 和 validator：
   当前选择器记录

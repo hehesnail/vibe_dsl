@@ -1,0 +1,285 @@
+# Blackhole Resource Planning Roadmap
+
+## Role
+
+This is a task-level design note for TT resource planning after the
+algorithmic-generalization and tile-compute-covering review.
+
+It is not a new overall design document.
+The only long-term chain remains:
+
+```text
+Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec
+```
+
+This document records how the next resource-planning work should be arranged
+without turning `TileComputeDAG` into a new scheduler,
+global dataflow engine,
+or side-channel protocol.
+
+## Current State
+
+The current implementation has useful pieces, but they do not yet form a
+mature hardware-aware resource planner.
+
+- `AccessRegion`,
+  graph-backed `SpatialPlan` dependence,
+  `LiveValueSSA`,
+  and the live-form solver are the right semantic foundations.
+  They should keep driving legality / query / typed plan decisions,
+  but they are not a global memory allocator.
+- `TileComputeDAG`
+  is valid only as a pass-local compute-selection model.
+  Its durable output must be typed plans and typed unsupported reasons,
+  not a persisted DAG payload or a replacement scheduler.
+- CB allocation is currently the most concrete resource work.
+  `PlanTTCBAlloc`
+  already reasons about staged CB requirements,
+  use intervals,
+  CB IDs,
+  auto-pops,
+  and L1 bytes,
+  but it still needs arch-aware limits and clearer pressure diagnostics.
+- Core placement and buffer distribution are still basic.
+  `PlanTTCoreGroups`
+  uses a hard-coded logical worker grid,
+  while `TTHardwareModel`
+  already carries device-derived grid / worker / L1 / DRAM facts.
+  `TTBufferDistributionPlan`
+  is mostly `unit_mesh` + `replicated`,
+  not a sharded / bank-aware placement result.
+- Direct runtime admission remains a leaf backend subset.
+  It must not define the capability of `TTProgram`
+  or the shape of the resource planner.
+
+## Research Inputs
+
+The algorithmic analogies that fit this backend are narrow:
+
+- CB ID allocation resembles register allocation.
+  Chaitin-style interference coloring explains the correctness model:
+  simultaneously live resources cannot share an ID.
+  Poletto/Sarkar-style linear scan is the better first implementation shape:
+  it is simpler, fast, and works directly from live intervals.
+- L1/SRAM planning resembles scratchpad-memory pressure analysis,
+  not a replacement for TT-Metal's allocator.
+  TT-Metal already owns physical addresses,
+  lock-step allocation,
+  alignment,
+  allocator-managed L1 buffers,
+  and memory reports.
+- Core placement and NoC-aware optimization resemble static task-graph
+  partitioning / scheduling with communication weights.
+  That belongs after core groups,
+  buffer distribution,
+  and resource pressure are represented explicitly.
+- SDF-style static buffering is relevant for future bounded FIFO /
+  publish-consume event sizing,
+  but only after exact-CB event lifetime is explicit in typed plans.
+
+## Direction Arrangement
+
+The five directions are not a linear checklist.
+They form a dependency-shaped roadmap.
+
+### Direction 1: Constrain `TileComputeDAG`
+
+Scope:
+
+- pass-local compute legalization and covering only
+- input from preserved tile compute semantics,
+  `AccessRegion`,
+  `LiveValueSSA`,
+  and validated planning context
+- output to typed
+  `TTComputeOpPlan`,
+  `TTCBPlan`,
+  `TTLiveFormPlan`,
+  `TTMaterializationPlan`,
+  `TTConsumerBindingPlan`,
+  or typed unsupported diagnostics
+
+Non-scope:
+
+- no global resource allocation
+- no core placement
+- no NoC scheduling
+- no persisted DAG payload
+- no source-emitter branch maze that simply wraps the old per-op logic
+
+Immediate requirement:
+
+- before expanding covering,
+  audit the current production hook surface and delete or simplify any
+  cursor / `try_*` / fallback mechanics that do not change typed plans,
+  diagnostics,
+  or remove an old branch family.
+
+### Direction 2: Add `ResourceDemand` / `ResourcePressureReport`
+
+This is the bridge between semantic planning and hardware resource admission.
+It should be derived from validated `TTProgram`
+and projected `ExecutableSpec`,
+not carried as a side bag.
+
+First typed surface:
+
+```text
+ResourceDemand
+  kernel
+  core_group
+  cb_requirements
+  l1_buffer_requirements
+  semaphore_requirements
+  buffer_distribution_requirements
+  communication_edges
+
+ResourcePressureReport
+  per_core_cb_id_pressure
+  per_core_cb_l1_bytes
+  per_core_l1_buffer_bytes
+  max_simultaneous_l1_bytes
+  core_grid_requirement
+  dram_view_requirement
+  unsupported_reasons
+```
+
+Pay-rent rule:
+
+- the report must drive validators or typed unsupported reasons;
+  a dump-only report is foundation work, not completion.
+
+### Direction 3: Upgrade CB And L1 Admission
+
+CB allocation should become an arch-aware live-interval allocator.
+
+Required changes:
+
+- get CB limit from target / hardware model / TT-Metal arch facts,
+  not a stale fixed constant
+- allocate architectural CB IDs with linear scan over live intervals
+- model reserved / precolored ranges for conventional input,
+  output,
+  intermediate,
+  and remote / state CB classes
+- score or reject incompatible reuse by role,
+  page size,
+  page count,
+  data format,
+  flow class,
+  publish / consume event shape,
+  and initial reserve semantics
+- emit pressure diagnostics before source emission
+
+L1 admission should stay at pressure / overlap level first.
+It should not assign physical addresses.
+
+Required L1 checks:
+
+- CB bytes per core range
+- program-local CB space vs allocator-managed L1 buffer pressure
+- worker L1 budget from `TTHardwareModel`
+- TT-Metal lock-step / alignment waste estimate when the layout is known
+- memory-report hooks for runtime validation when TT-Sim / TT-Metal exposes them
+
+### Direction 4: Make Core And Buffer Placement Hardware-Aware
+
+Core placement must stop treating the Blackhole grid as a fixed source-level
+constant.
+
+Required first step:
+
+- route `PlanTTCoreGroups`
+  through `TTHardwareModel`
+  for logical worker grid,
+  functional worker count,
+  worker L1 size,
+  and DRAM view count
+
+Placement should initially remain conservative:
+
+- logical coordinates for safety under harvesting
+- rectangular `CoreRange` / `CoreRangeSet`
+  when the program model benefits from group APIs
+- deterministic row-major work packets as the fallback policy
+- typed unsupported reason when requested work exceeds available workers
+
+`TTBufferDistributionPlan`
+should then grow from `unit_mesh` / `replicated`
+to explicit placement choices:
+
+- interleaved DRAM
+- interleaved L1
+- height / width / block sharded L1
+- host-visible vs device-local
+- page size and shard shape
+- core range attachment
+
+This still should not become a physical address allocator.
+TT-Metal owns the allocator.
+
+### Direction 5: Add NoC / Multicast / Scheduling Optimization Later
+
+Only after Directions 2-4 have typed evidence should the compiler add
+communication-aware placement or scheduling.
+
+Future inputs:
+
+- `SpatialPlan.DataflowEdge`
+  and `DependenceComponent`
+  for producer / consumer / recurrence structure
+- `ResourceDemand.communication_edges`
+  for data movement amount and direction
+- hardware topology / coordinate model
+  for logical vs translated vs NoC proximity
+- `TTBufferDistributionPlan`
+  for interleaved / sharded / core-local data placement
+
+Future algorithms:
+
+- communication-weighted core-range selection
+- multicast sender / receiver grouping
+- NoC0 / NoC1 role-aware scoring
+- bounded FIFO / exact-CB event sizing
+- list scheduling or local graph partitioning for high-pressure kernels
+
+This is explicitly not the first implementation step.
+Adding it before CB/L1/core/buffer typed evidence exists would recreate the
+same over-complexity problem under a different name.
+
+## Integration With Current Backlog
+
+The revised order is:
+
+1. Clean up the `TileComputeDAG` production boundary.
+   Keep it pass-local and prove it pays rent by deleting old selection logic
+   or changing typed plans / diagnostics.
+2. Add resource pressure reporting from existing typed `TTProgram`
+   and `ExecutableSpec` records.
+3. Upgrade CB allocation and L1 admission using arch-aware limits and
+   live-interval allocation.
+4. Replace hard-coded core grid and unit buffer placement with
+   hardware-model-backed core groups and explicit buffer distribution choices.
+5. Re-enter wider runtime admission:
+   multi-block flash-attn,
+   multi-page exact-CB events,
+   mesh / distributed runtime,
+   and later NoC / multicast optimization.
+
+This means multi-block flash-attn direct-runtime admission should not be used
+as the place to invent a resource planner.
+It is the workload witness after the resource-planning surface is explicit.
+
+## Completion Criteria
+
+This roadmap is implemented only when:
+
+- `TileComputeDAG`
+  remains pass-local and no downstream phase consumes it as owner truth
+- resource pressure changes validator decisions or typed unsupported reasons
+- CB allocation uses arch-aware limits and live intervals
+- L1 admission checks are visible before source / runtime emission
+- core groups are derived from hardware model facts rather than hard-coded grid
+- buffer distribution plans can express the memory placement choices needed by
+  current admitted workloads
+- no new bag / payload / helper wrapper carries resource truth across stages

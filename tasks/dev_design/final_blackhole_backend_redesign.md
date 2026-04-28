@@ -157,6 +157,82 @@ TT-Metal runtime model
   对未 admission 的组合
   fail-closed diagnostic
 
+`2026-04-29`
+TT resource-planning
+复查后再固定一条边界：
+
+- `TileComputeDAG`
+  只能是
+  `Normalized Tile TIR`
+  到 typed compute plans
+  之间的 pass-local compute legalization /
+  covering model，
+  不能扩成全局 resource allocator /
+  core placer /
+  NoC scheduler /
+  lifecycle engine
+- logical lifecycle
+  由
+  `SpatialPlan.LiveValue`
+  /
+  `LiveValueEdge`
+  /
+  `MaterializationBoundary`
+  和 target
+  `TTLiveFormPlan`
+  /
+  `TTMaterializationPlan`
+  表达；
+  CB ID、
+  L1 pressure、
+  core placement、
+  buffer distribution
+  属于
+  `TTProgram`
+  target realization
+  和
+  `ExecutableSpec`
+  admission，
+  不能倒灌回
+  `TileComputeDAG`
+  或 runtime fallback
+- 第一版 resource planning
+  应以 typed
+  `ResourceDemand`
+  /
+  `ResourcePressureReport`
+  这类从
+  `TTProgram`
+  /
+  `ExecutableSpec`
+  可重建的 admission view
+  为入口，
+  先服务 validator /
+  unsupported diagnostic；
+  它们不是第五个 IR 层，
+  也不能成为新的 bag / payload
+- CB allocation
+  采用 arch-aware live-interval /
+  linear-scan 方向；
+  L1/SRAM
+  先做 pressure admission，
+  不替代 TT-Metal allocator
+  的 physical address assignment
+- core /
+  buffer placement
+  应消费
+  `TTHardwareModel`
+  和显式
+  `TTCoreGroup`
+  /
+  `TTBufferDistributionPlan`
+  事实；
+  NoC /
+  multicast /
+  scheduling optimization
+  只能在这些 typed resource facts
+  稳定后进入
+
 ## 2. 第一性原理
 
 对 spatial/dataflow target，

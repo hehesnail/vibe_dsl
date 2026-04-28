@@ -245,6 +245,9 @@ owner truth。
 - CB config
 - core plan
 - semaphore plan
+- resource pressure summary derived from typed
+  `TTProgram`
+  records
 - execution-time 可直接读取的
   launch/resource records
 
@@ -253,6 +256,21 @@ TT-specific 显式程序构造边界，
 对齐的是 leaf build /
 runtime / codegen 消费面，
 不是上游 planner 再补一层的理由。
+
+Resource pressure at this layer is an admission view:
+
+- per-core CB ID pressure
+- per-core CB L1 bytes
+- allocator-managed L1 buffer pressure
+- worker L1 budget
+- core grid availability
+- buffer distribution support
+
+It may reject the current backend with a typed unsupported reason.
+It must not assign TT-Metal physical addresses,
+and it must not rebuild resource semantics from source strings,
+CB names,
+or runtime arg order.
 
 ### 3.4 backend admission metadata
 

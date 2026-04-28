@@ -641,6 +641,60 @@ Implementation discipline:
 4. A phase is not complete while its new typed evidence coexists with
    an older side channel that can still override or silently bypass it.
 
+### Resource-Planning Boundary Addendum (`2026-04-29`)
+
+The resource-planning review adds one more guardrail:
+algorithmic generalization is allowed to support resource planning,
+but it must not become a second global compiler hidden beside
+`TTProgram`.
+
+The correct split is:
+
+- `AccessRegion`
+  supports access coverage,
+  stride/layout compatibility,
+  and buffer-distribution evidence.
+- `DependenceComponent`
+  supports recurrence,
+  loop-carried lifetime,
+  no-reorder,
+  and event-lifetime legality.
+- `LiveValueSSA`
+  supports reaching-def,
+  source-live-form,
+  consumer binding,
+  and materialization ownership.
+- the live-form solver supports physical-form and materialization-protocol
+  choices.
+- resource allocation itself belongs in typed TT realization /
+  projection surfaces:
+  `ResourceDemand`,
+  `ResourcePressureReport`,
+  `TTCBPlan`,
+  `TTBufferDistributionPlan`,
+  `TTCoreGroup`,
+  and `ExecutableSpec`
+  admission metadata.
+
+This explicitly excludes two overextensions:
+
+- `LiveValueSSA`
+  is not a global memory allocator.
+  It can describe logical value lifetime and event lifetime,
+  but CB IDs,
+  L1 pressure,
+  core placement,
+  and buffer distribution must be separate target-resource decisions.
+- `TileComputeDAG`
+  is not a dataflow scheduler.
+  It may consume access/live/dependence evidence for compute covering,
+  but it must not re-own resource planning.
+
+The resource-planning roadmap is captured in
+`2026-04-29-blackhole-resource-planning-roadmap.md`.
+That roadmap is downstream of this design's semantic evidence and upstream of
+wider runtime admission.
+
 ### Coverage Model
 
 这轮设计覆盖面不能被收窄成某一个 pass
