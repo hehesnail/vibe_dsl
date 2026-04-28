@@ -1557,8 +1557,9 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `tt_live_form_solver`
   消费 boundary logical coverage
   来决定 consumer full-tile vs distributed-slice requirement。
-  subject 到 latest live value 的入口 cache 仍存在，
-  Phase E 尚未完成。
+  后续 Phase E 已删除 subject 到 latest live value 的 wider owner truth；
+  该记录保留的是 cutover 前的 migration checkpoint，
+  不再代表 repo HEAD 状态。
 - 2026-04-28 记录 Algorithmic generalization anti-overdesign
   pay-rent rule：
   新的算法对象 / 字段 / solver 状态 / DAG pattern
@@ -1615,8 +1616,8 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   while keeping source emission output unchanged.
   This proves the selector is active on the main chain without turning the
   pass-local covering object into a new cross-stage payload.
-  Full completion still requires selected-pattern ownership of source-plan
-  emission and deletion of the old per-op branches.
+  Later Phase E completed selected-pattern ownership of source-plan hook
+  selection and deleted the remaining inline per-op source dispatch table.
 - 2026-04-28 Tile compute covering source dispatch:
   once covering is on the production path,
   do not keep a second operation-name selector below it.
@@ -1637,3 +1638,15 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `ValidateTTProgram`
   should check selected covering patterns before falling through to older
   legality helpers, otherwise the old helper remains the real production gate.
+- 2026-04-28 Tile compute covering Phase E cleanup:
+  an inline source-emitter lambda table below covering is still a second
+  selector, even if it is keyed by selected metadata.
+  Keep pattern
+  `source_emitter`
+  values covered by a single hook registry,
+  route generic explicit ops such as
+  `tl.tileop.reduce`
+  through the same covering dispatch before emission,
+  and make source emitters that are not admitted as standalone explicit calls
+  fail closed through registered hooks instead of falling back to branch-only
+  lowering.

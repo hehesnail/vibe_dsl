@@ -7,7 +7,7 @@
 ## Status
 
 - Date: `2026-04-28`
-- Active lane: `Tile compute legalizer / DAG covering Phase E cleanup`
+- Active lane: `Multi-block flash-attn direct-runtime admission`
 - Current state:
   `AccessRegion`,
   `DependenceComponent`,
@@ -24,7 +24,7 @@
   query /
   typed plans /
   unsupported diagnostics on the active chain.
-  Tile compute legalizer / DAG covering Phase C-D is complete for the
+  Tile compute legalizer / DAG covering Phase C-E is complete for the
   admitted compute surface.
   The pass-local
   `TileComputeDAG`
@@ -49,14 +49,19 @@
   and
   `ValidateTTProgram`
   now select a covering pattern before accepting the operation.
-  The selected pattern now carries a
+  The selected pattern carries a
   `source_emitter`
   hook used by explicit source dispatch;
   the old operation-name dispatch chain and add/mul builtin-selection branch
   have been removed from the covered source path.
-  The selected path still reuses existing low-level emitter functions;
-  deleting the remaining low-level per-op emitter mechanics is the separate
-  tile-compute covering Phase E cleanup.
+  The remaining explicit source path now uses a single selected-emitter hook
+  registry,
+  and generic
+  `tl.tileop.reduce`
+  lowering enters the same covering dispatch before emission.
+  Pattern entries that are not admitted as standalone explicit source calls
+  fail closed through typed selected-emitter hooks instead of falling back to
+  a branch-only path.
 - Current blocker:
   none for tile-compute preservation.
   Multi-block flash-attn direct-runtime correctness remains outside the
@@ -109,7 +114,7 @@
   The legalizer validates current admitted compute plans and rejects
   unsupported synthetic operation names before `TTProgram` validation
   can pass.
-  Phase C-D production migration is complete:
+  Phase C-E production migration and cleanup are complete:
   local covering selection now gates typed compute-plan recording,
   explicit tile-compute source dispatch,
   and
@@ -122,6 +127,11 @@
   `mul_tiles`;
   DAG covering now emits selected pattern IDs/costs plus fanout and
   materialization policy decisions.
+  Explicit source emission now dispatches through the selected
+  `source_emitter`
+  hook registry;
+  there is no separate inline emitter table or direct reduce branch below the
+  covering gate.
 
 ## Support Boundary
 
@@ -142,10 +152,6 @@
 
 ## Open Debt
 
-- `TileComputeDAG` / legalizer / covering Phase E cleanup remains:
-  remove or collapse remaining low-level per-op emitter mechanics now that
-  pattern covering owns source-emitter selection and DAG covering exposes
-  fanout/materialization policy decisions.
 - Multi-block flash-attn direct-runtime correctness remains runtime-gated
   behind typed unsupported-reason metadata.
 - Wider exact-CB multi-page publish/consume events remain outside the admitted
@@ -153,14 +159,11 @@
 
 ## Next Task Order
 
-1. Continue `Tile compute legalizer / DAG covering Phase E`
-   by deleting or collapsing remaining low-level per-op emitter mechanics
-   for the admitted compute surface.
-2. Re-admit multi-block flash-attn direct runtime through typed
+1. Re-admit multi-block flash-attn direct runtime through typed
    `TTProgram -> ExecutableSpec` state and TT-Sim bf16 correctness.
-3. Add wider exact-CB event admission for stage2/block64 shapes.
-4. Expand mesh/distributed runtime admission through typed schema.
-5. Expand flash-attn wider-shape runtime admission ladder.
+2. Add wider exact-CB event admission for stage2/block64 shapes.
+3. Expand mesh/distributed runtime admission through typed schema.
+4. Expand flash-attn wider-shape runtime admission ladder.
 
 ## Latest Verification
 
@@ -212,14 +215,32 @@
   fanout decisions,
   materialization policies,
   and stale-fallback rejection.
+- `Tile compute legalizer / DAG covering Phase E`
+  cleanup completed for the admitted compute surface:
+  explicit source dispatch now uses
+  `GetTileComputeSourceEmitterHooks`
+  /
+  `FindTileComputeSourceEmitterHook`
+  as the single selected-emitter hook registry,
+  `tl.tileop.reduce`
+  source lowering enters
+  `LowerExplicitTileComputeCall`
+  and covering selection before emission,
+  pattern-table source emitters are statically checked against hook
+  registration,
+  and the old inline source-emitter table /
+  `std::find_if`
+  dispatch plus direct reduce branch are guarded against reintroduction.
 - `cmake --build tilelang_repo/build -j32`
   -> passed.
+- `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -k 'source_emitter_hooks_cover or covered_source_dispatch_has_no_inline or reduce_source_path_uses_covering'`
+  -> 3 passed, 59 deselected.
 - `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py -k 'tile_compute_covering_rejects_composite or tile_compute_dag_covering_selects or tile_compute_dag_covering_reports'`
   -> 3 passed, 56 deselected.
 - `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
-  -> 59 passed.
-- `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
-  -> 163 passed, 25 skipped, 1 xfailed.
+  -> 62 passed.
+- `source /root/dev/vibe_dsl/scripts/setup_tt_sim.sh && export TILELANG_HOME=/root/dev/vibe_dsl/tilelang_repo && pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
+  -> 187 passed, 1 skipped, 1 xfailed.
 - `git diff --check`
   -> passed.
 - stale-current-state scan for old flash-attn lane wording,

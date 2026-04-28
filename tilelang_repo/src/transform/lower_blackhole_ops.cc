@@ -2307,13 +2307,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
       if (MatchExplicitTileTypecast(call, &explicit_typecast_match)) {
         return GetRef<Stmt>(op);
       }
-      if (Stmt explicit_compute = LowerExplicitBlackholeTileCompute(call);
+      if (Stmt explicit_compute = LowerExplicitTileComputeCall(call);
           explicit_compute.defined()) {
         return explicit_compute;
-      }
-      RowReductionMatch explicit_reduce_match;
-      if (MatchExplicitTileReduce(call, &explicit_reduce_match)) {
-        return GenerateRowReductionSequence(explicit_reduce_match);
       }
       if (call->op->IsInstance<OpNode>()) {
         const Op call_op = Downcast<Op>(call->op);
@@ -2345,13 +2341,9 @@ Stmt PlanTTKernelABI::VisitStmt_(const EvaluateNode* op) {
     return GetRef<Stmt>(op);
   }
   if (const auto* call = op->value.as<CallNode>()) {
-    if (Stmt explicit_compute = LowerExplicitBlackholeTileCompute(call);
+    if (Stmt explicit_compute = LowerExplicitTileComputeCall(call);
         explicit_compute.defined()) {
       return explicit_compute;
-    }
-    RowReductionMatch explicit_reduce_match;
-    if (MatchExplicitTileReduce(call, &explicit_reduce_match)) {
-      return GenerateRowReductionSequence(explicit_reduce_match);
     }
     if (call->op->IsInstance<OpNode>()) {
       const Op call_op = Downcast<Op>(call->op);

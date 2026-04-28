@@ -30,7 +30,6 @@
 #include <tvm/tir/op.h>
 
 #include <algorithm>
-#include <functional>
 #include <limits>
 #include <numeric>
 #include <utility>
@@ -317,18 +316,89 @@ bool PlanTTKernelABI::MatchExplicitTileTypecast(const CallNode* op,
   return true;
 }
 
-Stmt PlanTTKernelABI::LowerExplicitBlackholeTileCompute(const CallNode* op) {
+const std::vector<PlanTTKernelABI::TileComputeSourceEmitterHook>&
+PlanTTKernelABI::GetTileComputeSourceEmitterHooks() {
+  static const std::vector<TileComputeSourceEmitterHook> hooks = {
+      {"fill_fragment", &PlanTTKernelABI::EmitFillFragmentTileComputeSource},
+      {"copy_tile", &PlanTTKernelABI::EmitCopyTileComputeSource},
+      {"typecast_tile", &PlanTTKernelABI::EmitTypecastTileComputeSource},
+      {"binary_max_tile", &PlanTTKernelABI::EmitBinaryMaxTileComputeSource},
+      {"add_tiles", &PlanTTKernelABI::EmitAddTilesComputeSource},
+      {"mul_tiles", &PlanTTKernelABI::EmitMulTilesComputeSource},
+      {"mul_tiles_bcast_cols", &PlanTTKernelABI::EmitMulTilesBcastColsComputeSource},
+      {"add_tiles_bcast_cols", &PlanTTKernelABI::EmitUnsupportedExplicitTileComputeSource},
+      {"exp2_tile", &PlanTTKernelABI::EmitExp2TileComputeSource},
+      {"recip_tile", &PlanTTKernelABI::EmitUnsupportedExplicitTileComputeSource},
+      {"reduce_tile", &PlanTTKernelABI::EmitReduceTileComputeSource},
+      {"pack_tile", &PlanTTKernelABI::EmitUnsupportedExplicitTileComputeSource},
+      {"matmul_tiles", &PlanTTKernelABI::EmitUnsupportedExplicitTileComputeSource},
+  };
+  return hooks;
+}
+
+const PlanTTKernelABI::TileComputeSourceEmitterHook*
+PlanTTKernelABI::FindTileComputeSourceEmitterHook(
+    const std::string& source_emitter) const {
+  for (const TileComputeSourceEmitterHook& hook : GetTileComputeSourceEmitterHooks()) {
+    if (source_emitter == hook.name) {
+      return &hook;
+    }
+  }
+  return nullptr;
+}
+
+Buffer PlanTTKernelABI::GetBlackholeTileComputeBufferArg(
+    const CallNode* op, size_t index,
+    const BlackholeTileComputeCoveringDecision& covering) const {
+  ICHECK(op != nullptr);
+  ICHECK_LT(index, op->args.size())
+      << "tl.tileop.blackhole_compute missing buffer argument " << index
+      << " for selected pattern " << covering.pattern_name
+      << " with emitter " << covering.source_emitter;
+  return ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(op->args[index])->buffer);
+}
+
+PrimExpr PlanTTKernelABI::GetBlackholeTileComputePrimArg(
+    const CallNode* op, size_t index,
+    const BlackholeTileComputeCoveringDecision& covering) const {
+  ICHECK(op != nullptr);
+  ICHECK_LT(index, op->args.size())
+      << "tl.tileop.blackhole_compute missing scalar argument " << index
+      << " for selected pattern " << covering.pattern_name
+      << " with emitter " << covering.source_emitter;
+  return op->args[index];
+}
+
+std::string PlanTTKernelABI::GetBlackholeTileComputeStringArg(
+    const CallNode* op, size_t index,
+    const BlackholeTileComputeCoveringDecision& covering) const {
+  const auto* imm = GetBlackholeTileComputePrimArg(op, index, covering).as<StringImmNode>();
+  ICHECK(imm) << "tl.tileop.blackhole_compute expects string argument " << index
+              << " for selected pattern " << covering.pattern_name
+              << " with emitter " << covering.source_emitter;
+  return imm->value;
+}
+
+Stmt PlanTTKernelABI::LowerExplicitTileComputeCall(const CallNode* op) {
   if (!op || !op->op->IsInstance<OpNode>()) {
     return Stmt();
   }
   const Op call_op = Downcast<Op>(op->op);
-  if (call_op->name != blackhole_tile_compute_schema::kOpName ||
-      op->args.empty()) {
-    return Stmt();
+  std::string operation;
+  if (call_op->name == blackhole_tile_compute_schema::kOpName) {
+    if (op->args.empty()) {
+      return Stmt();
+    }
+    const auto* operation_imm = op->args[0].as<StringImmNode>();
+    ICHECK(operation_imm) << "tl.tileop.blackhole_compute requires string operation name";
+    operation = operation_imm->value;
+  } else {
+    RowReductionMatch reduce_match;
+    if (!MatchExplicitTileReduce(op, &reduce_match)) {
+      return Stmt();
+    }
+    operation = "reduce_tile";
   }
-  const auto* operation_imm = op->args[0].as<StringImmNode>();
-  ICHECK(operation_imm) << "tl.tileop.blackhole_compute requires string operation name";
-  const std::string operation = operation_imm->value;
   const BlackholeTileComputeCoveringDecision covering =
       SelectBlackholeTileComputeCovering(operation);
   ICHECK(covering.selected)
@@ -340,106 +410,140 @@ Stmt PlanTTKernelABI::LowerExplicitBlackholeTileCompute(const CallNode* op) {
 Stmt PlanTTKernelABI::EmitCoveredBlackholeTileCompute(
     const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
   ICHECK(op != nullptr);
-  const std::string operation = covering.operation_name;
-  auto buffer_arg = [&](size_t index) -> Buffer {
-    ICHECK_LT(index, op->args.size())
-        << "tl.tileop.blackhole_compute missing buffer argument " << index
-        << " for operation " << operation;
-    return ResolvePhysicalComputeBuffer(NormalizeToBufferRegion(op->args[index])->buffer);
-  };
-  auto prim_arg = [&](size_t index) -> PrimExpr {
-    ICHECK_LT(index, op->args.size())
-        << "tl.tileop.blackhole_compute missing scalar argument " << index
-        << " for operation " << operation;
-    return op->args[index];
-  };
-  auto string_arg = [&](size_t index) -> std::string {
-    const auto* imm = prim_arg(index).as<StringImmNode>();
-    ICHECK(imm) << "tl.tileop.blackhole_compute expects string argument " << index
-                << " for operation " << operation;
-    return imm->value;
-  };
-
-  using SourceEmitter = std::function<Stmt()>;
-  const std::vector<std::pair<std::string, SourceEmitter>> emitters = {
-      {"fill_fragment", [&]() {
-         return GenerateFillTileSequence(buffer_arg(1), prim_arg(2), prim_arg(3));
-       }},
-      {"copy_tile", [&]() {
-         return GenerateCopyTileSequence(buffer_arg(1), buffer_arg(2), prim_arg(3));
-       }},
-      {"typecast_tile", [&]() {
-         FragmentCastMatch match;
-         ICHECK(MatchExplicitTileTypecast(op, &match))
-             << "tl.tileop.blackhole_compute typecast_tile requires source and destination "
-                "regions";
-         const int cast_order_index =
-             ResolveCurrentBufferTransferOrder(match.src, match.dst,
-                                               current_lowering_order_index_);
-         const bool publish_cb =
-             !select_compute_builtins_only_ &&
-             ShouldPublishBufferResult(match.dst, cast_order_index);
-         std::vector<Stmt> prefix;
-         std::vector<Stmt> suffix;
-         if (publish_cb) {
-           ValidatePublishedBufferSourceEdge(match.src, match.dst);
-           const bool source_has_live_cb =
-               buffer_live_form_cb_by_buffer_identity_.count(BufferIdentityName(match.src)) != 0U;
-           const bool dst_has_republish_fact =
-               FindBufferMaterializationFact(match.dst) != nullptr;
-           if (!(source_has_live_cb && dst_has_republish_fact)) {
-             AppendPublishedBufferSourceMaterialization(match.src, cast_order_index,
-                                                        &prefix, &suffix);
-           }
-         }
-         prefix.push_back(GenerateFragmentCastSequence(match, publish_cb, cast_order_index));
-         prefix.insert(prefix.end(), suffix.begin(), suffix.end());
-         return SeqStmt::Flatten(prefix);
-       }},
-      {"binary_max_tile", [&]() {
-         return GenerateBinaryMaxTileSequence(buffer_arg(1), buffer_arg(2));
-       }},
-      {"add_tiles", [&]() {
-         return GenerateBinaryTileSequence(buffer_arg(1), buffer_arg(2), operation,
-                                           blackhole_add_tiles_init(),
-                                           blackhole_add_tiles());
-       }},
-      {"mul_tiles", [&]() {
-         return GenerateBinaryTileSequence(buffer_arg(1), buffer_arg(2), operation,
-                                           blackhole_mul_tiles_init(),
-                                           blackhole_mul_tiles());
-       }},
-      {"mul_tiles_bcast_cols", [&]() {
-         return GenerateMulTilesBcastColsSequence(string_arg(1), buffer_arg(2),
-                                                  buffer_arg(3), prim_arg(4),
-                                                  prim_arg(5));
-       }},
-      {"exp2_tile", [&]() {
-         const std::string mode = string_arg(1);
-         if (mode == "bcast_cols") {
-           return GenerateExp2TileLeafDAGSequence(mode, buffer_arg(2), buffer_arg(3),
-                                                  buffer_arg(4), prim_arg(5),
-                                                  prim_arg(6), prim_arg(7),
-                                                  prim_arg(8));
-         }
-         if (mode == "binary") {
-           return GenerateExp2TileLeafDAGSequence(mode, buffer_arg(2), buffer_arg(3),
-                                                  buffer_arg(4), prim_arg(5),
-                                                  prim_arg(6), PrimExpr(), PrimExpr());
-         }
-         ICHECK(false) << "Unsupported Blackhole exp2_tile mode: " << mode;
-         return Stmt();
-       }},
-  };
-  auto it = std::find_if(
-      emitters.begin(), emitters.end(),
-      [&](const std::pair<std::string, SourceEmitter>& entry) {
-        return entry.first == covering.source_emitter;
-      });
-  ICHECK(it != emitters.end())
+  const TileComputeSourceEmitterHook* hook =
+      FindTileComputeSourceEmitterHook(covering.source_emitter);
+  ICHECK(hook != nullptr)
       << "No explicit source emitter registered for selected Blackhole tile compute pattern "
       << covering.pattern_name << " with emitter " << covering.source_emitter;
-  return it->second();
+  return (this->*(hook->emit))(op, covering);
+}
+
+Stmt PlanTTKernelABI::EmitFillFragmentTileComputeSource(
+    const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
+  return GenerateFillTileSequence(
+      GetBlackholeTileComputeBufferArg(op, 1, covering),
+      GetBlackholeTileComputePrimArg(op, 2, covering),
+      GetBlackholeTileComputePrimArg(op, 3, covering));
+}
+
+Stmt PlanTTKernelABI::EmitCopyTileComputeSource(
+    const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
+  return GenerateCopyTileSequence(
+      GetBlackholeTileComputeBufferArg(op, 1, covering),
+      GetBlackholeTileComputeBufferArg(op, 2, covering),
+      GetBlackholeTileComputePrimArg(op, 3, covering));
+}
+
+Stmt PlanTTKernelABI::EmitTypecastTileComputeSource(
+    const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
+  (void)covering;
+  FragmentCastMatch match;
+  ICHECK(MatchExplicitTileTypecast(op, &match))
+      << "tl.tileop.blackhole_compute typecast_tile requires source and destination "
+         "regions";
+  const int cast_order_index =
+      ResolveCurrentBufferTransferOrder(match.src, match.dst,
+                                        current_lowering_order_index_);
+  const bool publish_cb =
+      !select_compute_builtins_only_ &&
+      ShouldPublishBufferResult(match.dst, cast_order_index);
+  std::vector<Stmt> prefix;
+  std::vector<Stmt> suffix;
+  if (publish_cb) {
+    ValidatePublishedBufferSourceEdge(match.src, match.dst);
+    const bool source_has_live_cb =
+        buffer_live_form_cb_by_buffer_identity_.count(BufferIdentityName(match.src)) != 0U;
+    const bool dst_has_republish_fact =
+        FindBufferMaterializationFact(match.dst) != nullptr;
+    if (!(source_has_live_cb && dst_has_republish_fact)) {
+      AppendPublishedBufferSourceMaterialization(match.src, cast_order_index,
+                                                 &prefix, &suffix);
+    }
+  }
+  prefix.push_back(GenerateFragmentCastSequence(match, publish_cb, cast_order_index));
+  prefix.insert(prefix.end(), suffix.begin(), suffix.end());
+  return SeqStmt::Flatten(prefix);
+}
+
+Stmt PlanTTKernelABI::EmitBinaryMaxTileComputeSource(
+    const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
+  return GenerateBinaryMaxTileSequence(
+      GetBlackholeTileComputeBufferArg(op, 1, covering),
+      GetBlackholeTileComputeBufferArg(op, 2, covering));
+}
+
+Stmt PlanTTKernelABI::EmitAddTilesComputeSource(
+    const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
+  return GenerateBinaryTileSequence(
+      GetBlackholeTileComputeBufferArg(op, 1, covering),
+      GetBlackholeTileComputeBufferArg(op, 2, covering),
+      covering.operation_name, blackhole_add_tiles_init(), blackhole_add_tiles());
+}
+
+Stmt PlanTTKernelABI::EmitMulTilesComputeSource(
+    const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
+  return GenerateBinaryTileSequence(
+      GetBlackholeTileComputeBufferArg(op, 1, covering),
+      GetBlackholeTileComputeBufferArg(op, 2, covering),
+      covering.operation_name, blackhole_mul_tiles_init(), blackhole_mul_tiles());
+}
+
+Stmt PlanTTKernelABI::EmitMulTilesBcastColsComputeSource(
+    const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
+  return GenerateMulTilesBcastColsSequence(
+      GetBlackholeTileComputeStringArg(op, 1, covering),
+      GetBlackholeTileComputeBufferArg(op, 2, covering),
+      GetBlackholeTileComputeBufferArg(op, 3, covering),
+      GetBlackholeTileComputePrimArg(op, 4, covering),
+      GetBlackholeTileComputePrimArg(op, 5, covering));
+}
+
+Stmt PlanTTKernelABI::EmitExp2TileComputeSource(
+    const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
+  const std::string mode = GetBlackholeTileComputeStringArg(op, 1, covering);
+  if (mode == "bcast_cols") {
+    return GenerateExp2TileLeafDAGSequence(
+        mode,
+        GetBlackholeTileComputeBufferArg(op, 2, covering),
+        GetBlackholeTileComputeBufferArg(op, 3, covering),
+        GetBlackholeTileComputeBufferArg(op, 4, covering),
+        GetBlackholeTileComputePrimArg(op, 5, covering),
+        GetBlackholeTileComputePrimArg(op, 6, covering),
+        GetBlackholeTileComputePrimArg(op, 7, covering),
+        GetBlackholeTileComputePrimArg(op, 8, covering));
+  }
+  if (mode == "binary") {
+    return GenerateExp2TileLeafDAGSequence(
+        mode,
+        GetBlackholeTileComputeBufferArg(op, 2, covering),
+        GetBlackholeTileComputeBufferArg(op, 3, covering),
+        GetBlackholeTileComputeBufferArg(op, 4, covering),
+        GetBlackholeTileComputePrimArg(op, 5, covering),
+        GetBlackholeTileComputePrimArg(op, 6, covering),
+        PrimExpr(), PrimExpr());
+  }
+  ICHECK(false) << "Unsupported Blackhole exp2_tile mode: " << mode;
+  return Stmt();
+}
+
+Stmt PlanTTKernelABI::EmitReduceTileComputeSource(
+    const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
+  (void)covering;
+  RowReductionMatch match;
+  ICHECK(MatchExplicitTileReduce(op, &match))
+      << "Selected reduce_tile source emitter requires tl.tileop.reduce";
+  return GenerateRowReductionSequence(match);
+}
+
+Stmt PlanTTKernelABI::EmitUnsupportedExplicitTileComputeSource(
+    const CallNode* op, const BlackholeTileComputeCoveringDecision& covering) {
+  (void)op;
+  ICHECK(false)
+      << "Selected Blackhole tile compute source emitter "
+      << covering.source_emitter
+      << " for pattern " << covering.pattern_name
+      << " is not admitted on the explicit tile-compute source path";
+  return Stmt();
 }
 
 Stmt PlanTTKernelABI::GenerateRowReductionSequence(const RowReductionMatch& match) {

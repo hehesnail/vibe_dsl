@@ -166,6 +166,18 @@ def _source_tree_rg(pattern, *paths):
     return [line for line in result.stdout.splitlines() if line]
 
 
+def _source_emitter_hook_names():
+    source = (
+        REPO_ROOT
+        / "tilelang_repo/src/transform/lower_blackhole_tile_compute.cc"
+    ).read_text()
+    hook_table = source.split("GetTileComputeSourceEmitterHooks()", 1)[1]
+    hook_table = hook_table.split("return hooks;", 1)[0]
+    return set(
+        re.findall(r'\{\s*"([^"]+)"\s*,\s*&PlanTTKernelABI::Emit', hook_table)
+    )
+
+
 def _drop_legacy_spatial_attrs(mod):
     func = mod["main"]
     for attr_name in (
@@ -882,6 +894,38 @@ def test_tile_compute_binary_source_emission_has_no_operation_name_builtin_selec
         REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_tile_compute.cc",
     )
     assert legacy_binary_selection_hits == []
+
+
+def test_tile_compute_source_emitter_hooks_cover_pattern_table():
+    pattern_table = tvm.get_global_func("tl.BlackholeTileComputePatternTable")()
+    pattern_emitters = {str(pattern["source_emitter"]) for pattern in pattern_table}
+    hook_emitters = _source_emitter_hook_names()
+
+    assert pattern_emitters <= hook_emitters
+    assert "none" not in hook_emitters
+
+
+def test_tile_compute_covered_source_dispatch_has_no_inline_emitter_table():
+    legacy_dispatch_hits = _source_tree_rg(
+        r"using SourceEmitter|std::vector<std::pair<std::string, SourceEmitter>>|"
+        r"std::find_if\(",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_tile_compute.cc",
+    )
+    assert legacy_dispatch_hits == []
+
+
+def test_tile_compute_reduce_source_path_uses_covering_dispatch():
+    legacy_reduce_dispatch_hits = _source_tree_rg(
+        r"GenerateRowReductionSequence\(explicit_reduce_match\)",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.cc",
+    )
+    covered_dispatch_hits = _source_tree_rg(
+        r"LowerExplicitTileComputeCall\(call\)",
+        REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.cc",
+    )
+
+    assert legacy_reduce_dispatch_hits == []
+    assert covered_dispatch_hits
 
 
 def test_blackhole_frontend_preserves_reduce_tileop_before_tt_selection():

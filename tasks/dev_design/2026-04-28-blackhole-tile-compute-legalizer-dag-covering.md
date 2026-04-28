@@ -694,14 +694,14 @@ Status: completed in repo HEAD as foundation.
 The legalizer is active for current admitted
 `TTComputeOpPlan`
 validation and synthetic reject diagnostics,
-and Phase C-D now routes typed plan recording,
+and Phase C-E now routes typed plan recording,
 source dispatch,
 and
 `ValidateTTProgram`
 through covering selection.
-The existing low-level source emitter functions still exist and are reused
-after selected-pattern dispatch until Phase E cleanup deletes or collapses
-that mechanics.
+The remaining low-level source emitter functions are hook targets selected
+from pattern metadata; they are no longer selected by an independent inline
+per-op dispatch table.
 
 Files:
 
@@ -750,8 +750,8 @@ Implementation notes:
   or typed
   `Reject`
   diagnostics for the admitted operation set.
-  Lower/split/promote/materialize actions are reserved for Phase C-D
-  production migration.
+  Lower/split/promote/materialize actions are reserved for later production
+  migration when a pattern needs them.
 - `RecordExactComputeOpPlan`
   and GEMM compute-plan construction call the legalizer before storing
   new compute plans.
@@ -788,6 +788,13 @@ and DAG covering emits selected pattern IDs,
 source-emitter hooks,
 local-DP state keys,
 and costs in dependence order.
+Phase E cleanup is complete:
+explicit source emission now dispatches through the selected
+`source_emitter`
+hook registry,
+generic reduce source lowering enters the same covering path,
+and unsupported standalone explicit-source patterns fail closed after
+selection instead of falling through to an old branch-only emitter path.
 
 Files:
 
@@ -823,7 +830,7 @@ Implementation notes:
   plan construction now select a covering pattern before accepting a
   durable
   `TTComputeOpPlan`.
-- `LowerExplicitBlackholeTileCompute`
+- `LowerExplicitTileComputeCall`
   now selects a covering pattern before dispatching to
   `EmitCoveredBlackholeTileCompute`.
 - `BlackholeTileComputePattern`
@@ -843,10 +850,9 @@ Implementation notes:
   `operation_name`
   inside the low-level generator.
 - The current selector is a local DAG DP over the Phase A-B pattern table.
-  It still reuses existing low-level source emitter functions after
-  selected-pattern dispatch;
-  deleting or collapsing those low-level emitter mechanics is Phase E work,
-  outside the completed Phase C boundary.
+  It reuses existing low-level source emitter functions only as named hook
+  targets after selected-pattern dispatch;
+  the separate inline source-emitter table is deleted by Phase E.
 - `materialization_policy`
   is selected per pattern and reported by DAG covering.
   Fanout policy is now computed from producer-use edges.
@@ -921,6 +927,29 @@ runtime admission task.
 
 ### Phase E: Delete Old Per-Op Selection Branches
 
+Status: complete in repo HEAD for the admitted compute surface.
+Pattern metadata is now the single source of truth for explicit tile-compute
+source hook selection.
+`EmitCoveredBlackholeTileCompute`
+finds a registered
+`source_emitter`
+hook from the covering decision and invokes that hook directly;
+it no longer owns a local vector of per-op lambdas or a
+`std::find_if`
+operation-name selector.
+Generic
+`tl.tileop.reduce`
+source lowering now enters
+`LowerExplicitTileComputeCall`,
+selects the
+`reduce_tile`
+covering pattern,
+and then emits through the selected reduce hook.
+Pattern entries that are not admitted as standalone explicit
+`tl.tileop.blackhole_compute`
+source calls register fail-closed hooks,
+so adding a pattern cannot silently bypass the selected-emitter gate.
+
 Files:
 
 - modify `lower_blackhole_tile_compute.cc`
@@ -939,6 +968,42 @@ Work:
 3. Add static tests preventing
    duplicate manual selection branches.
 
+Implementation notes:
+
+- Added
+  `PlanTTKernelABI::GetTileComputeSourceEmitterHooks`
+  and
+  `FindTileComputeSourceEmitterHook`
+  as the selected source-emitter registry.
+- Moved the old inline explicit-source lambda bodies into named hook methods
+  such as
+  `EmitFillFragmentTileComputeSource`,
+  `EmitCopyTileComputeSource`,
+  `EmitTypecastTileComputeSource`,
+  `EmitAddTilesComputeSource`,
+  `EmitMulTilesComputeSource`,
+  `EmitExp2TileComputeSource`,
+  and
+  `EmitReduceTileComputeSource`.
+- Replaced the direct
+  `MatchExplicitTileReduce`
+  /
+  `GenerateRowReductionSequence`
+  branch in
+  `lower_blackhole_ops.cc`
+  with
+  `LowerExplicitTileComputeCall`,
+  so reduce source emission is covered by the same pattern-selection gate.
+- Added static tests that require every pattern-table
+  `source_emitter`
+  to have a registered hook,
+  forbid the old inline emitter table /
+  `std::find_if`
+  dispatch in
+  `lower_blackhole_tile_compute.cc`,
+  and forbid the direct explicit-reduce emission branch in
+  `lower_blackhole_ops.cc`.
+
 Completion gate:
 
 - no old branch-only path remains for admitted ops
@@ -947,6 +1012,8 @@ Completion gate:
   legality predicate,
   tests,
   and source emitter hook
+
+Repo HEAD satisfies this gate for the admitted compute surface.
 
 ## Cost Model
 

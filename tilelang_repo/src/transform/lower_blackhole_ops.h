@@ -203,6 +203,16 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     tvm::PrimExpr row_width;
   };
 
+  using TileComputeSourceEmitterFn =
+      tvm::tir::Stmt (PlanTTKernelABI::*)(
+          const tvm::tir::CallNode* op,
+          const BlackholeTileComputeCoveringDecision& covering);
+
+  struct TileComputeSourceEmitterHook {
+    const char* name;
+    TileComputeSourceEmitterFn emit;
+  };
+
   struct LocalToCBSliceMatch {
     tvm::tir::Buffer dst;
     tvm::tir::Buffer src;
@@ -586,8 +596,54 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   bool MatchExplicitTileReduce(const tvm::tir::CallNode* op, RowReductionMatch* match) const;
   bool MatchExplicitTileTypecast(const tvm::tir::CallNode* op,
                                  FragmentCastMatch* match) const;
-  tvm::tir::Stmt LowerExplicitBlackholeTileCompute(const tvm::tir::CallNode* op);
+  tvm::tir::Stmt LowerExplicitTileComputeCall(const tvm::tir::CallNode* op);
   tvm::tir::Stmt EmitCoveredBlackholeTileCompute(
+      const tvm::tir::CallNode* op,
+      const BlackholeTileComputeCoveringDecision& covering);
+  static const std::vector<TileComputeSourceEmitterHook>&
+  GetTileComputeSourceEmitterHooks();
+  const TileComputeSourceEmitterHook* FindTileComputeSourceEmitterHook(
+      const std::string& source_emitter) const;
+  tvm::tir::Buffer GetBlackholeTileComputeBufferArg(
+      const tvm::tir::CallNode* op,
+      size_t index,
+      const BlackholeTileComputeCoveringDecision& covering) const;
+  tvm::PrimExpr GetBlackholeTileComputePrimArg(
+      const tvm::tir::CallNode* op,
+      size_t index,
+      const BlackholeTileComputeCoveringDecision& covering) const;
+  std::string GetBlackholeTileComputeStringArg(
+      const tvm::tir::CallNode* op,
+      size_t index,
+      const BlackholeTileComputeCoveringDecision& covering) const;
+  tvm::tir::Stmt EmitFillFragmentTileComputeSource(
+      const tvm::tir::CallNode* op,
+      const BlackholeTileComputeCoveringDecision& covering);
+  tvm::tir::Stmt EmitCopyTileComputeSource(
+      const tvm::tir::CallNode* op,
+      const BlackholeTileComputeCoveringDecision& covering);
+  tvm::tir::Stmt EmitTypecastTileComputeSource(
+      const tvm::tir::CallNode* op,
+      const BlackholeTileComputeCoveringDecision& covering);
+  tvm::tir::Stmt EmitBinaryMaxTileComputeSource(
+      const tvm::tir::CallNode* op,
+      const BlackholeTileComputeCoveringDecision& covering);
+  tvm::tir::Stmt EmitAddTilesComputeSource(
+      const tvm::tir::CallNode* op,
+      const BlackholeTileComputeCoveringDecision& covering);
+  tvm::tir::Stmt EmitMulTilesComputeSource(
+      const tvm::tir::CallNode* op,
+      const BlackholeTileComputeCoveringDecision& covering);
+  tvm::tir::Stmt EmitMulTilesBcastColsComputeSource(
+      const tvm::tir::CallNode* op,
+      const BlackholeTileComputeCoveringDecision& covering);
+  tvm::tir::Stmt EmitExp2TileComputeSource(
+      const tvm::tir::CallNode* op,
+      const BlackholeTileComputeCoveringDecision& covering);
+  tvm::tir::Stmt EmitReduceTileComputeSource(
+      const tvm::tir::CallNode* op,
+      const BlackholeTileComputeCoveringDecision& covering);
+  tvm::tir::Stmt EmitUnsupportedExplicitTileComputeSource(
       const tvm::tir::CallNode* op,
       const BlackholeTileComputeCoveringDecision& covering);
   tvm::tir::Stmt GenerateRowReductionSequence(const RowReductionMatch& match);

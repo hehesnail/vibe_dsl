@@ -107,7 +107,7 @@
     和 Phase E decision-use cutover
     已完成；
     当前活动 lane 是
-    `Tile compute legalizer / DAG covering Phase C-D`
+    `Multi-block flash-attn direct-runtime admission`
   - 强制执行
     anti-overdesign pay-rent rule
     和 problem-family generality rule：
@@ -143,8 +143,8 @@ DAG covering
     已对 admitted compute surface 生效；
     Phase A-B foundation
     已完成；
-    Phase C-D production migration
-    已完成：
+    Phase C-E production migration
+    和 cleanup 已完成：
     covering selection gates
     `TTComputeOpPlan`
     recording、
@@ -160,8 +160,10 @@ DAG covering
     fanout decisions、
     materialization policy
     和 stale-fallback rejection；
-    remaining emitter branch deletion
-    是后续 Phase E cleanup
+    explicit source dispatch now uses the selected
+    `source_emitter`
+    hook registry,
+    and generic reduce source lowering enters covering before emission
   - read-only DAG dump /
     pattern table /
     generic covering class
@@ -180,10 +182,9 @@ graph-backed `SpatialPlan` dependence、
 `LiveValueSSA`、
 第一版 TT live-form solver，
 以及 Phase E decision-use cutover。
-当前已完成的 production migration 包括
-`Tile compute legalizer / DAG covering Phase C-D`。
+当前已完成的 production migration / cleanup 包括
+`Tile compute legalizer / DAG covering Phase C-E`。
 后续顺序是
-tile compute covering Phase E emitter cleanup、
 multi-block flash-attn direct-runtime admission、
 multi-page exact-CB event admission、
 mesh/distributed runtime admission
