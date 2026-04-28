@@ -7,18 +7,23 @@
 ## Status
 
 - Date: `2026-04-28`
-- Active lane: `Algorithmic generalization Phase E: Decision-Use Cutover`
+- Active lane: `Tile compute legalizer / DAG covering Phase A-B`
 - Current state:
   `AccessRegion`,
   `DependenceComponent`,
   `LiveValueSSA`,
-  and the first TT live-form solver are implemented as foundations.
-  The first decision-use slice is on the active chain:
+  and the TT live-form solver now satisfy
+  `Algorithmic generalization Phase E: Decision-Use Cutover`
+  for the admitted compute surface.
+  On the active chain,
   access-region compatibility,
   recurrence evidence,
-  live-value boundary indices,
-  and boundary logical coverage now affect legality / query /
-  solver output.
+  indexed live-value / materialization-boundary queries,
+  graph-worklist live-form solving,
+  and projection admission validation now affect legality /
+  query /
+  typed plans /
+  unsupported diagnostics on the active chain.
 - Current blocker:
   none for tile-compute preservation.
   Multi-block flash-attn direct-runtime correctness remains outside the
@@ -63,7 +68,8 @@
   Phase A `AccessRegion`,
   Phase B graph-backed `SpatialPlan` dependence,
   Phase C `LiveValueSSA`,
-  and Phase D first TT live-form solver are complete.
+  Phase D first TT live-form solver,
+  and Phase E decision-use cutover are complete.
 
 ## Support Boundary
 
@@ -84,29 +90,23 @@
 
 ## Open Debt
 
-- Finish Phase E by turning algorithmic evidence into broad active-chain
-  decisions, not just structure / dumps / validators.
-- Replace remaining subject-pair live-value lookup mechanics with indexed
-  `LiveValueEdge` / `MaterializationBoundary` queries.
-- Expand the live-form solver into a graph-wide worklist/lattice solver over
-  validated live edges.
-- Audit TTProgram / ExecutableSpec projection admission so unsupported
-  diagnostics are typed and early.
-- Keep `TileComputeDAG` / legalizer / covering out of production migration
-  until Phase E decision-use gates pay rent on the active chain.
+- `TileComputeDAG` / legalizer / covering has not yet migrated production
+  compute selection.
+- Multi-block flash-attn direct-runtime correctness remains runtime-gated
+  behind typed unsupported-reason metadata.
+- Wider exact-CB multi-page publish/consume events remain outside the admitted
+  direct-runtime support surface.
 
 ## Next Task Order
 
-1. Finish `Algorithmic generalization Phase E: Decision-Use Cutover`.
-2. Start `Tile compute legalizer / DAG covering Phase A-B`
-   only after Phase E usage-complete checks are in place.
-3. Migrate legalizer / DAG covering to production and delete old per-op
+1. Start `Tile compute legalizer / DAG covering Phase A-B`.
+2. Migrate legalizer / DAG covering to production and delete old per-op
    branch mechanics for the admitted compute surface.
-4. Re-admit multi-block flash-attn direct runtime through typed
+3. Re-admit multi-block flash-attn direct runtime through typed
    `TTProgram -> ExecutableSpec` state and TT-Sim bf16 correctness.
-5. Add wider exact-CB event admission for stage2/block64 shapes.
-6. Expand mesh/distributed runtime admission through typed schema.
-7. Expand flash-attn wider-shape runtime admission ladder.
+4. Add wider exact-CB event admission for stage2/block64 shapes.
+5. Expand mesh/distributed runtime admission through typed schema.
+6. Expand flash-attn wider-shape runtime admission ladder.
 
 ## Latest Verification
 
@@ -119,6 +119,21 @@
   next task order,
   and latest verification only.
 - Historical document-sync audit details were removed from this file.
+- `Algorithmic generalization Phase E: Decision-Use Cutover`
+  completed for the admitted compute surface:
+  wider subject live-value maps were removed from TT planning owner truth,
+  materialization planning now queries indexed
+  `MaterializationBoundary` records,
+  the live-form solver runs over a validated boundary graph with a
+  worklist/lattice surface,
+  and executable projection rejects missing live edge /
+  boundary evidence before leaf encoding.
+- `cmake --build tilelang_repo/build -j32`
+  -> passed.
+- `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
+  -> 49 passed.
+- `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
+  -> 163 passed, 25 skipped, 1 xfailed.
 - `git diff --check`
   -> passed.
 - stale-current-state scan for old flash-attn lane wording,

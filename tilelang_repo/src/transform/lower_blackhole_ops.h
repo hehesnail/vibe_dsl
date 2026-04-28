@@ -231,8 +231,10 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
     int64_t index = -1;
     std::string source_live_value;
     int64_t source_live_value_index = -1;
+    std::string source_subject;
     std::string target_live_value;
     int64_t target_live_value_index = -1;
+    std::string target_subject;
     std::string live_value_edge;
     int64_t live_value_edge_index = -1;
     std::string logical_coverage;
@@ -320,12 +322,9 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   /*! \brief Load first-class SpatialPlan live-value references for TT physical plans. */
   void LoadSpatialLiveValueBoundaries(const SpatialPlan& plan);
 
-  /*! \brief Return the SpatialPlan live value for a buffer subject, or nullptr if absent. */
-  const SpatialLiveValueRef* FindSpatialLiveValueRef(const std::string& subject) const;
-
-  /*! \brief Return the SpatialPlan materialization boundary for live-value indices. */
+  /*! \brief Return the SpatialPlan materialization boundary for a boundary index. */
   const SpatialMaterializationBoundaryRef* FindSpatialMaterializationBoundaryRef(
-      int64_t source_live_value_index, int64_t target_live_value_index) const;
+      int64_t materialization_boundary_index) const;
 
   /*! \brief Load compute-region buffer to physical accumulator bindings from compute regions. */
   void LoadPhysicalComputeBufferBindings(const tvm::tir::PrimFunc& func);
@@ -760,9 +759,8 @@ class PlanTTKernelABI : public tvm::tir::StmtExprMutator {
   std::unordered_map<std::string, int> exact_output_live_form_order_by_buffer_identity_;
   std::unordered_set<std::string> selected_source_live_producer_buffers_;
   std::unordered_set<std::string> seeded_cb_requirement_names_;
-  std::unordered_map<std::string, SpatialLiveValueRef> spatial_live_value_by_subject_;
-  std::unordered_map<std::string, SpatialMaterializationBoundaryRef>
-      spatial_materialization_boundary_by_live_value_pair_;
+  std::vector<SpatialMaterializationBoundaryRef> spatial_materialization_boundaries_;
+  std::unordered_map<int64_t, size_t> spatial_materialization_boundary_position_by_index_;
   std::unordered_map<std::string, tvm::PrimExpr> last_fragment_fill_value_by_buffer_identity_;
   std::unordered_map<const tvm::tir::VarNode*, tvm::PrimExpr> last_fragment_fill_value_by_data_;
   std::unordered_map<std::string, std::vector<int64_t>> logical_buffer_shapes_;

@@ -851,12 +851,11 @@ post-review queue:
 3. `LiveValueSSA`
 4. TT live-form solver
 
-The first four implementation units above are now classified as
-foundation-complete,
-not usage-complete.
-Before the tile compute legalizer /
-DAG covering lane starts,
-the active chain must complete a decision-use cutover:
+The first four implementation units plus
+`Phase E: Decision-Use Cutover`
+are now usage-complete for the admitted compute surface.
+The tile compute legalizer /
+DAG covering lane may rely on the following active-chain gates:
 
 1. `SpatialPlan` decision-use cutover
    - `AccessRegion`
@@ -885,13 +884,12 @@ the active chain must complete a decision-use cutover:
    - unsupported joins or event lifetimes fail closed
      with typed diagnostic.
 
-Only after those decision-use gates are active should the
-tile compute legalizer /
-DAG covering lane rely on them for pattern legality,
+The tile compute legalizer /
+DAG covering lane must rely on these gates for pattern legality,
 fanout handling,
 and materialization-aware covering.
-The runtime admission lanes start only after target planning can
-project that evidence into typed
+The runtime admission lanes start only after covering can continue
+projecting selected evidence into typed
 `TTProgram -> ExecutableSpec`
 records.
 
@@ -1105,7 +1103,7 @@ Completion gate:
 
 ### Phase E: Decision-Use Cutover
 
-Status: in progress.
+Status: completed in repo HEAD for the admitted compute surface.
 
 This phase corrects the current gap where the algorithmic structures
 exist but are not yet broadly decisive.
@@ -1117,7 +1115,7 @@ Current implementation notes:
 - `E0 Review`
   has been completed for the current scope and folded back into
   this document plus the tile-compute legalizer design.
-- The first `E1 Spatial legality` slice is active:
+- `E1 Spatial legality` is active:
   `AccessRegion`
   compatibility now gates distributed-slice consumer acceptance,
   and recurrence
@@ -1126,33 +1124,37 @@ Current implementation notes:
 - Validators now reject distributed-slice live edges without
   producer/consumer access-region evidence and loop-carried
   boundaries without recurrence component evidence.
-- The first `E2 Indexed query` slice is active for
-  fragment/cast materialization planning:
+- `E2 Indexed query` is active for
+  fragment/cast materialization planning and downstream live-form
+  action planning:
   `PlanTTKernelABI`
   now looks up `MaterializationBoundary`
-  by source/target live-value indices rather than
-  source/target subject pair.
-  Subject lookup remains only as a derived entry point from the current
-  TIR buffer to the latest `LiveValue`;
-  the wider subject-map deletion remains pending.
-- The first `E3 Solver` slice is active:
+  by the selected boundary index carried from
+  `SpatialPlan` materialization evidence,
+  not by subject-level latest-live-value maps.
+  TIR buffer subject names are retained only as local consistency
+  checks against the indexed boundary source/target subjects.
+- `E3 Solver` is active:
   `tt_live_form_solver`
-  consumes boundary logical coverage and changes consumer
-  full-tile vs distributed-slice requirements from typed
-  `MaterializationBoundary`
-  evidence.
+  consumes the validated materialization-boundary graph and runs a
+  worklist/lattice solver for the current physical live-form states.
+  Self carry boundaries are treated as lifetime evidence,
+  not as physical transfer edges that overwrite the source form.
+- `E4 Projection/admission audit` is active:
+  executable projection rejects `TTLiveFormPlan`,
+  `TTMaterializationPlan`,
+  and
+  `TTConsumerBindingPlan`
+  records that lack selected live edge /
+  materialization boundary evidence before leaf encoding.
 
-Remaining work:
+Downstream work after Phase E:
 
-- remove remaining owner-truth dependence on subject-level live-value
-  lookup in downstream TT planning,
-- expand the solver into a graph worklist/lattice over all validated
-  live edges,
-- add broader TTProgram / ExecutableSpec projection validators for
-  selected live edge /
-  boundary /
-  compute plan evidence,
-- only then start production DAG covering migration.
+- start the tile compute legalizer /
+  DAG covering lane from its Phase A-B foundation work,
+- migrate covering decisions into production typed compute plans,
+- then use the same typed evidence to re-admit wider runtime support
+  surfaces.
 
 Files:
 

@@ -1024,7 +1024,11 @@ void AppendUniqueSpatialPlanMaterializationFacts(
     }
     materialization_facts->push_back(fact);
   };
-  for (const MaterializationBoundary& boundary : plan->materialization_boundaries) {
+  for (int64_t boundary_index = 0;
+       boundary_index < static_cast<int64_t>(plan->materialization_boundaries.size());
+       ++boundary_index) {
+    const MaterializationBoundary& boundary =
+        plan->materialization_boundaries[static_cast<size_t>(boundary_index)];
     auto source_it = subject_by_live_value.find(str(boundary->source_live_value));
     auto target_it = subject_by_live_value.find(str(boundary->target_live_value));
     if (source_it == subject_by_live_value.end() ||
@@ -1043,9 +1047,18 @@ void AppendUniqueSpatialPlanMaterializationFacts(
     int64_t logical_element_count =
         std::max(GetLogicalElementCount(source_it->second, logical_buffer_shapes),
                  GetLogicalElementCount(target_it->second, logical_buffer_shapes));
-    upsert(MakeRepublishedLogicalTileMaterializationFact(
+    BlackholeBufferMaterializationFact fact = MakeRepublishedLogicalTileMaterializationFact(
         target_it->second, scope_it->second, source_it->second, logical_row_width,
-        logical_element_count));
+        logical_element_count);
+    fact.spatial_materialization_boundary = str(boundary->name);
+    fact.spatial_materialization_boundary_index = boundary_index;
+    fact.spatial_live_value_edge = str(boundary->live_value_edge);
+    fact.spatial_live_value_edge_index = boundary->live_value_edge_index;
+    fact.source_live_value = str(boundary->source_live_value);
+    fact.source_live_value_index = boundary->source_live_value_index;
+    fact.target_live_value = str(boundary->target_live_value);
+    fact.target_live_value_index = boundary->target_live_value_index;
+    upsert(fact);
   }
 }
 

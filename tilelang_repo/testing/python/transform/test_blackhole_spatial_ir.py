@@ -496,6 +496,59 @@ def _rebuild_tt_program(
     )
 
 
+def _rebuild_tt_materialization_plan(
+    plan,
+    *,
+    materialization_boundary=None,
+    materialization_boundary_index=None,
+):
+    make_tt_materialization_plan = tvm.get_global_func("tl.TTMaterializationPlan")
+    return make_tt_materialization_plan(
+        str(plan.name),
+        str(plan.source_live_form),
+        str(plan.materialization_boundary)
+        if materialization_boundary is None
+        else materialization_boundary,
+        int(plan.materialization_boundary_index)
+        if materialization_boundary_index is None
+        else materialization_boundary_index,
+        str(plan.target_buffer),
+        str(plan.host_buffer),
+        str(plan.target_kernel),
+        str(plan.bridge_kind),
+        str(plan.materialization_kind),
+        str(plan.materialization_protocol),
+        str(plan.publication_protocol),
+        list(plan.required_cb_plan_indices),
+        list(plan.required_sync_plan_indices),
+        str(plan.produced_live_form),
+    )
+
+
+def _rebuild_tt_consumer_binding_plan(
+    plan,
+    *,
+    live_value_edge=None,
+    live_value_edge_index=None,
+):
+    make_tt_consumer_binding_plan = tvm.get_global_func("tl.TTConsumerBindingPlan")
+    return make_tt_consumer_binding_plan(
+        str(plan.name),
+        str(plan.consumer_kernel),
+        str(plan.consumer_op_kind),
+        str(plan.source_live_form),
+        str(plan.live_value_edge) if live_value_edge is None else live_value_edge,
+        int(plan.live_value_edge_index)
+        if live_value_edge_index is None
+        else live_value_edge_index,
+        bool(plan.accepts_distributed_slice),
+        bool(plan.requires_full_logical_tile),
+        int(plan.abi_plan_index),
+        str(plan.target_buffer),
+        str(plan.materialization_plan),
+    )
+
+
 def _assert_no_tt_plan_payload_surface(tt_program):
     plan_groups = (
         tt_program.mesh_plans,
@@ -1520,6 +1573,72 @@ def test_algorithmic_live_form_solver_owns_tt_live_form_decision_literals():
         "tilelang_repo/src/transform/lower_blackhole_state.cc",
     )
     assert hits == []
+
+
+def test_algorithmic_plan_tt_kernel_abi_uses_boundary_indices_not_subject_live_value_maps():
+    hits = _source_tree_rg(
+        r"spatial_live_value_by_subject_|FindSpatialLiveValueRef|version_by_subject",
+        "tilelang_repo/src/transform/lower_blackhole_state.cc",
+        "tilelang_repo/src/transform/lower_blackhole_ops.h",
+    )
+    assert hits == []
+
+
+def test_algorithmic_live_form_solver_has_worklist_lattice_surface():
+    hits = _source_tree_rg(
+        r"TTLiveFormLatticeKind|TTLiveFormWorkItem|ApplyBoundaryTransfer|JoinLiveFormState",
+        "tilelang_repo/src/transform/common/tt_live_form_solver.h",
+        "tilelang_repo/src/transform/common/tt_live_form_solver.cc",
+    )
+    assert len(hits) >= 4
+
+
+def test_executable_projection_rejects_materialization_without_boundary_index():
+    mod = _prepare_blackhole_tt_program_module(fragment_fill_cast_publish_kernel())
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    assert tt_program.materialization_plans
+
+    materialization_plans = list(tt_program.materialization_plans)
+    materialization_plans[0] = _rebuild_tt_materialization_plan(
+        materialization_plans[0],
+        materialization_boundary_index=-1,
+    )
+    invalid_program = _rebuild_tt_program(
+        tt_program,
+        materialization_plans=materialization_plans,
+    )
+    broken = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", invalid_program)},
+        global_infos=mod.global_infos,
+    )
+
+    with pytest.raises(Exception, match="materialization_boundary_index"):
+        tilelang.transform.MaterializeBlackholeExecutable()(broken)
+
+
+def test_executable_projection_rejects_consumer_binding_without_live_edge_index():
+    mod = _prepare_blackhole_tt_program_module(fragment_fill_cast_publish_kernel())
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    assert tt_program.consumer_binding_plans
+
+    consumer_binding_plans = list(tt_program.consumer_binding_plans)
+    consumer_binding_plans[0] = _rebuild_tt_consumer_binding_plan(
+        consumer_binding_plans[0],
+        live_value_edge_index=-1,
+    )
+    invalid_program = _rebuild_tt_program(
+        tt_program,
+        consumer_binding_plans=consumer_binding_plans,
+    )
+    broken = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", invalid_program)},
+        global_infos=mod.global_infos,
+    )
+
+    with pytest.raises(Exception, match="live_value_edge_index"):
+        tilelang.transform.MaterializeBlackholeExecutable()(broken)
 
 
 def test_task1_validate_spatial_plan_rejects_materialization_without_target_value():

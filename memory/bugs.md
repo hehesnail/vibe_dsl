@@ -136,6 +136,47 @@
 
 ## 2. 已解决但值得记住的模式
 
+### live-form solver 不能把 self carry boundary 当成 physical transfer
+
+- **症状**:
+  - Phase E 把 materialization planning 切到 graph/worklist solver 后，
+    `fragment_fill -> cast -> publish`
+    的 planner 测试会在 live-form solver 内部拒绝 selected boundary
+  - 调试 dump 显示同一个图里既有
+    `C_local -> C_local`
+    /
+    `D_local -> D_local`
+    的 loop-carried self boundary，
+    又有
+    `C_local -> D_local`
+    的 materialize boundary
+- **根因**:
+  - self carry boundary 是 recurrence / lifetime evidence，
+    表示同一个 logical live value 跨事件保持可见；
+    初版 solver 把它当成 physical transfer edge，
+    导致 source live value 的
+    `Fragment`
+    状态和 self boundary 推出的
+    `ExactCB(multi_event)`
+    状态 join 成 conflict
+- **修法**:
+  - worklist solver 仍加载 self carry boundary
+    作为 validated graph evidence，
+    但 transfer 阶段跳过
+    `source_live_value_index == target_live_value_index`
+    的 boundary
+  - selected materialization boundary
+    仍按 indexed source/target live value
+    做 physical live-form transfer
+- **教训**:
+  - `MaterializationBoundary`
+    不是每条都代表物理 publication；
+    carry/self edge
+    和 materialize edge
+    在 graph 上都重要，
+    但 transfer function 必须按 live value identity
+    区分 lifetime evidence 和 physical form movement
+
 ### preserved tile op 缺少 dataflow access 会让 SpatialPlan 漏 producer truth
 
 - **症状**:

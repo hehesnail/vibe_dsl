@@ -319,6 +319,26 @@
   从 body order /
   buffer 名
   恢复
+- live-form / materialization planning
+  要从
+  `SpatialPlan`
+  的 indexed
+  `LiveValueEdge`
+  /
+  `MaterializationBoundary`
+  记录查询 owner truth。
+  pass-local fact 可以携带这些 index
+  作为当前 IR 派生证据，
+  但 subject 名只能用于核对当前 TIR buffer
+  是否匹配 indexed source/target，
+  不能重新成为 latest-live-value map。
+- live-form graph solver
+  里 self carry boundary
+  是 lifetime / recurrence evidence；
+  不应当成物理 form transfer
+  覆盖 source live value。
+  物理转移只发生在 source/target live value index
+  不同的 materialization boundary 上。
 - source/codegen regression
   要区分 logical element count
   和 thread-distributed

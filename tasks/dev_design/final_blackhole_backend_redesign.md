@@ -1146,11 +1146,11 @@ support-surface admission lane；
      legalizer /
      covering
      的生产迁移 gate；
+     当前 Phase E gate
+     已对 admitted compute surface
+     生效，
      production covering
-     必须等 Phase E
-     decision-use gate
-     对 admitted compute surface
-     生效后再启动
+     应在该 gate 之上启动
 10. `blackhole_first_principles_protocol_audit.md`
    - 固定 legacy /
      fake protocol

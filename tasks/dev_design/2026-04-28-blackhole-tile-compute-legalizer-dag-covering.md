@@ -408,18 +408,15 @@ This design depends on the three earlier foundations:
 Without those,
 DAG covering would merely relocate today’s branch logic.
 
-Because the current repo HEAD only has these structures
-foundation-complete,
-this lane is gated by the
 Algorithmic Generalization
-`Phase E: Decision-Use Cutover`.
-The compute legalizer must not start consuming
+`Phase E: Decision-Use Cutover`
+is now complete for the admitted compute surface in repo HEAD.
+The compute legalizer may start consuming
 `AccessRegion`,
 `DependenceComponent`,
-or
+and
 `LiveValueSSA`
-as decorative metadata.
-It may start only after those structures already drive:
+because those structures already drive:
 
 - access full/slice compatibility,
 - recurrence / loop-carried lifetime legality,
@@ -427,14 +424,14 @@ It may start only after those structures already drive:
 - TT live-form solver output,
 - and typed materialization / consumer binding plans.
 
-If this gate is skipped,
+If future covering work bypasses this gate,
 `TileComputeDAG`
 would become another parallel matcher surface,
 which violates the final backend redesign.
 
 The gate is intentionally broader than a single solver call.
-Before this lane starts selecting production compute plans,
-the following must already be true on the active chain:
+Before this lane selects production compute plans,
+the following must remain true on the active chain:
 
 - `AccessRegion`
   changes legality for slice/full,
@@ -454,8 +451,10 @@ the following must already be true on the active chain:
 - validators reject missing or inconsistent evidence
   before source emission.
 
-Only then does a DAG legalizer have stable facts to cover.
-Otherwise a legalizer would be forced to rebuild semantics
+With those facts active,
+a DAG legalizer has stable facts to cover.
+If a later implementation drops them,
+the legalizer would be forced to rebuild semantics
 with its own matcher,
 which is exactly the architecture being deleted.
 

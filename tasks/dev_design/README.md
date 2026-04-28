@@ -102,10 +102,12 @@
     和 MLIR affine/dataflow/Linalg
     的算法骨架，
     但不引入新的长期 IR 层
-  - 当前 Phase A-D
-    已作为 foundation 完成；
+  - Phase A-D
+    foundation
+    和 Phase E decision-use cutover
+    已完成；
     当前活动 lane 是
-    `Phase E: Decision-Use Cutover`
+    `Tile compute legalizer / DAG covering Phase A-B`
   - 强制执行
     anti-overdesign pay-rent rule
     和 problem-family generality rule：
@@ -136,11 +138,11 @@ DAG covering
   - 目标是让新增 TT-Metal leaf compute op
     变成 pattern + legality + tests，
     而不是新增手写 per-op branch family
-  - 当前只处于设计完成状态；
-    production covering
-    必须等 Algorithmic Generalization
+  - Algorithmic Generalization
     Phase E 的 decision-use gate
-    对 admitted compute surface 生效后再启动
+    已对 admitted compute surface 生效；
+    production covering
+    可从 Phase A-B foundation 开始推进
   - read-only DAG dump /
     pattern table /
     generic covering class
@@ -156,12 +158,11 @@ DAG covering
 已完成的 foundation 包括
 `AccessRegion`、
 graph-backed `SpatialPlan` dependence、
-`LiveValueSSA`
-和第一版 TT live-form solver。
+`LiveValueSSA`、
+第一版 TT live-form solver，
+以及 Phase E decision-use cutover。
 当前活动实现单元是
-`Algorithmic generalization Phase E: Decision-Use Cutover`。
-之后才是
-`Tile compute legalizer / DAG covering`，
+`Tile compute legalizer / DAG covering Phase A-B`，
 再之后才是 multi-block flash-attn direct-runtime admission、
 multi-page exact-CB event admission、
 mesh/distributed runtime admission

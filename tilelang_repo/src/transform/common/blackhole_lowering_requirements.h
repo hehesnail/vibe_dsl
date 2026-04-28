@@ -52,6 +52,14 @@ struct BlackholeBufferMaterializationFact {
   std::string source_buffer;
   int64_t logical_row_width = -1;
   int64_t logical_element_count = -1;
+  std::string spatial_materialization_boundary;
+  int64_t spatial_materialization_boundary_index = -1;
+  std::string spatial_live_value_edge;
+  int64_t spatial_live_value_edge_index = -1;
+  std::string source_live_value;
+  int64_t source_live_value_index = -1;
+  std::string target_live_value;
+  int64_t target_live_value_index = -1;
 };
 
 struct BlackholeLoweringSupportFacts {

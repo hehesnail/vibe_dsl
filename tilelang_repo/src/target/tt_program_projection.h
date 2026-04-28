@@ -10,6 +10,7 @@
 #include <tvm/tir/function.h>
 
 #include <string>
+#include <unordered_set>
 #include "../transform/common/blackhole_runtime_arg_schema.h"
 #include "../transform/common/companion_base.h"
 #include "../transform/common/tt_target_program.h"
@@ -648,7 +649,60 @@ inline Map<String, Any> GetCorePlanFromTTProgram(const tir::PrimFunc& func, cons
   return GetCorePlanFromTTProgram(RequireTTProgram(func, consumer));
 }
 
+inline void ValidateLiveProjectionEvidence(const TTProgram& program) {
+  std::unordered_set<std::string> live_form_names;
+  for (const TTLiveFormPlan& plan : program->live_form_plans) {
+    ICHECK(!plan->name.empty()) << "executable projection requires TTLiveFormPlan name";
+    ICHECK_GE(plan->spatial_live_value_index, 0)
+        << "executable projection requires TTLiveFormPlan spatial_live_value_index";
+    live_form_names.insert(plan->name);
+  }
+  for (const TTMaterializationPlan& plan : program->materialization_plans) {
+    ICHECK(!plan->name.empty()) << "executable projection requires TTMaterializationPlan name";
+    ICHECK(!plan->source_live_form.empty())
+        << "executable projection requires TTMaterializationPlan source_live_form";
+    ICHECK(live_form_names.count(static_cast<std::string>(plan->source_live_form)))
+        << "executable projection requires TTMaterializationPlan source_live_form to reference "
+           "a TTLiveFormPlan";
+    ICHECK(!plan->produced_live_form.empty())
+        << "executable projection requires TTMaterializationPlan produced_live_form";
+    ICHECK(live_form_names.count(static_cast<std::string>(plan->produced_live_form)))
+        << "executable projection requires TTMaterializationPlan produced_live_form to reference "
+           "a TTLiveFormPlan";
+    ICHECK(!plan->materialization_boundary.empty())
+        << "executable projection requires TTMaterializationPlan materialization_boundary";
+    ICHECK_GE(plan->materialization_boundary_index, 0)
+        << "executable projection requires TTMaterializationPlan materialization_boundary_index";
+    ICHECK(!plan->target_buffer.empty())
+        << "executable projection requires TTMaterializationPlan target_buffer";
+    ICHECK(!plan->materialization_protocol.empty())
+        << "executable projection requires TTMaterializationPlan materialization_protocol";
+    ICHECK(!plan->publication_protocol.empty())
+        << "executable projection requires TTMaterializationPlan publication_protocol";
+  }
+  for (const TTConsumerBindingPlan& plan : program->consumer_binding_plans) {
+    ICHECK(!plan->name.empty()) << "executable projection requires TTConsumerBindingPlan name";
+    ICHECK(!plan->source_live_form.empty())
+        << "executable projection requires TTConsumerBindingPlan source_live_form";
+    ICHECK(live_form_names.count(static_cast<std::string>(plan->source_live_form)))
+        << "executable projection requires TTConsumerBindingPlan source_live_form to reference "
+           "a TTLiveFormPlan";
+    ICHECK(!plan->live_value_edge.empty())
+        << "executable projection requires TTConsumerBindingPlan live_value_edge";
+    ICHECK_GE(plan->live_value_edge_index, 0)
+        << "executable projection requires TTConsumerBindingPlan live_value_edge_index";
+    ICHECK(plan->accepts_distributed_slice || plan->requires_full_logical_tile)
+        << "executable projection requires TTConsumerBindingPlan to declare a consumer "
+           "coverage requirement";
+    ICHECK(!(plan->accepts_distributed_slice && plan->requires_full_logical_tile))
+        << "executable projection requires TTConsumerBindingPlan to choose one consumer "
+           "coverage requirement";
+  }
+}
+
 inline Map<String, Any> MaterializeBlackholeExecutableProjection(const TTProgram& program) {
+  ValidateLiveProjectionEvidence(program);
+
   Map<String, Any> executable;
   executable.Set(String(executable_key::kSchemaVersion), Integer(1));
   executable.Set(String(executable_key::kSource), String(attr::kTLTTProgram));

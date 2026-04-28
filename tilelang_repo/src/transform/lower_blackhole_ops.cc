@@ -620,6 +620,9 @@ static int BufferMaterializationFactSpecificityScore(
   if (!fact.source_buffer.empty()) {
     score += 1;
   }
+  if (fact.spatial_materialization_boundary_index >= 0) {
+    score += 8;
+  }
   return score;
 }
 
@@ -758,8 +761,8 @@ PrimFunc PlanTTKernelABI::SelectComputeBuiltins(const PrimFunc& func) {
   block_index_var_names_.clear();
   requires_compute_segment_ = false;
   logical_tile_layout_specs_by_buffer_.clear();
-  spatial_live_value_by_subject_.clear();
-  spatial_materialization_boundary_by_live_value_pair_.clear();
+  spatial_materialization_boundaries_.clear();
+  spatial_materialization_boundary_position_by_index_.clear();
   buffer_materialization_facts_by_target_buffer_.clear();
   tt_compute_op_plans_.clear();
   select_compute_builtins_only_ = true;
@@ -1085,8 +1088,8 @@ PrimFunc PlanTTKernelABI::Transform(const PrimFunc& func) {
   gemm_compute_op_facts_.clear();
   tt_compute_op_plans_.clear();
   logical_tile_layout_specs_by_buffer_.clear();
-  spatial_live_value_by_subject_.clear();
-  spatial_materialization_boundary_by_live_value_pair_.clear();
+  spatial_materialization_boundaries_.clear();
+  spatial_materialization_boundary_position_by_index_.clear();
   buffer_materialization_facts_by_target_buffer_.clear();
   gemm_input_buffer_num_tiles_.clear();
   gemm_transpose_a_ = false;

@@ -165,24 +165,8 @@ void PlanTTKernelABI::LoadLogicalTileLayoutSpecs(const SpatialPlan& spatial_plan
 }
 
 void PlanTTKernelABI::LoadSpatialLiveValueBoundaries(const SpatialPlan& plan) {
-  spatial_live_value_by_subject_.clear();
-  spatial_materialization_boundary_by_live_value_pair_.clear();
-  std::unordered_map<std::string, int64_t> version_by_subject;
-
-  for (int64_t i = 0; i < static_cast<int64_t>(plan->live_values.size()); ++i) {
-    const LiveValue& live_value = plan->live_values[i];
-    const std::string subject = static_cast<std::string>(live_value->subject);
-    if (subject.empty()) {
-      continue;
-    }
-    auto version_it = version_by_subject.find(subject);
-    if (version_it == version_by_subject.end() ||
-        live_value->version_index >= version_it->second) {
-      version_by_subject[subject] = live_value->version_index;
-      spatial_live_value_by_subject_[subject] =
-          SpatialLiveValueRef{static_cast<std::string>(live_value->name), i};
-    }
-  }
+  spatial_materialization_boundaries_.clear();
+  spatial_materialization_boundary_position_by_index_.clear();
 
   for (int64_t i = 0; i < static_cast<int64_t>(plan->materialization_boundaries.size()); ++i) {
     const MaterializationBoundary& boundary = plan->materialization_boundaries[i];
@@ -194,25 +178,29 @@ void PlanTTKernelABI::LoadSpatialLiveValueBoundaries(const SpatialPlan& plan) {
     ICHECK_GE(boundary->target_live_value_index, 0)
         << "PlanTTKernelABI requires MaterializationBoundary target live-value index for "
         << boundary->name;
-    const std::string key = std::to_string(boundary->source_live_value_index) + "->" +
-                            std::to_string(boundary->target_live_value_index);
-    if (spatial_materialization_boundary_by_live_value_pair_.find(key) !=
-        spatial_materialization_boundary_by_live_value_pair_.end()) {
-      continue;
-    }
-    spatial_materialization_boundary_by_live_value_pair_[key] =
+    ICHECK_LT(boundary->source_live_value_index, static_cast<int64_t>(plan->live_values.size()))
+        << "PlanTTKernelABI requires MaterializationBoundary source live-value index in bounds";
+    ICHECK_LT(boundary->target_live_value_index, static_cast<int64_t>(plan->live_values.size()))
+        << "PlanTTKernelABI requires MaterializationBoundary target live-value index in bounds";
+    const LiveValue& source = plan->live_values[boundary->source_live_value_index];
+    const LiveValue& target = plan->live_values[boundary->target_live_value_index];
+    spatial_materialization_boundary_position_by_index_[i] =
+        spatial_materialization_boundaries_.size();
+    spatial_materialization_boundaries_.push_back(
         SpatialMaterializationBoundaryRef{static_cast<std::string>(boundary->name),
                                           i,
                                           source_live_value,
                                           boundary->source_live_value_index,
+                                          static_cast<std::string>(source->subject),
                                           target_live_value,
                                           boundary->target_live_value_index,
+                                          static_cast<std::string>(target->subject),
                                           static_cast<std::string>(boundary->live_value_edge),
                                           boundary->live_value_edge_index,
                                           static_cast<std::string>(boundary->logical_coverage),
                                           static_cast<std::string>(boundary->event_lifetime_kind),
                                           boundary->min_publish_pages,
-                                          boundary->max_consume_pages};
+                                          boundary->max_consume_pages});
   }
 }
 
@@ -238,25 +226,16 @@ const Map<String, Any>* PlanTTKernelABI::FindLogicalTileLayoutSpec(const Buffer&
   return &it->second;
 }
 
-const PlanTTKernelABI::SpatialLiveValueRef* PlanTTKernelABI::FindSpatialLiveValueRef(
-    const std::string& subject) const {
-  auto it = spatial_live_value_by_subject_.find(subject);
-  if (it == spatial_live_value_by_subject_.end()) {
-    return nullptr;
-  }
-  return &it->second;
-}
-
 const PlanTTKernelABI::SpatialMaterializationBoundaryRef*
 PlanTTKernelABI::FindSpatialMaterializationBoundaryRef(
-    int64_t source_live_value_index, int64_t target_live_value_index) const {
-  const std::string key =
-      std::to_string(source_live_value_index) + "->" + std::to_string(target_live_value_index);
-  auto it = spatial_materialization_boundary_by_live_value_pair_.find(key);
-  if (it == spatial_materialization_boundary_by_live_value_pair_.end()) {
+    int64_t materialization_boundary_index) const {
+  auto it =
+      spatial_materialization_boundary_position_by_index_.find(materialization_boundary_index);
+  if (it == spatial_materialization_boundary_position_by_index_.end()) {
     return nullptr;
   }
-  return &it->second;
+  ICHECK_LT(it->second, spatial_materialization_boundaries_.size());
+  return &spatial_materialization_boundaries_[it->second];
 }
 
 const BlackholeBufferMaterializationFact* PlanTTKernelABI::FindBufferMaterializationFact(
@@ -406,25 +385,38 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
   };
   const int64_t source_local_extent = bridge_local_extent(match.src);
   const int64_t target_local_extent = bridge_local_extent(match.dst);
-  const SpatialLiveValueRef* source_live_value_ref = FindSpatialLiveValueRef(source_name);
-  const SpatialLiveValueRef* target_live_value_ref = FindSpatialLiveValueRef(target_name);
-  ICHECK(source_live_value_ref != nullptr)
-      << "PlanTTKernelABI requires SpatialPlan LiveValue for materialization source "
-      << source_name;
-  ICHECK(target_live_value_ref != nullptr)
-      << "PlanTTKernelABI requires SpatialPlan LiveValue for materialization target "
-      << target_name;
+  ICHECK_GE(fact.spatial_materialization_boundary_index, 0)
+      << "PlanTTKernelABI requires materialization fact for " << target_name
+      << " to carry SpatialPlan MaterializationBoundary index";
   const SpatialMaterializationBoundaryRef* source_boundary_ref =
-      FindSpatialMaterializationBoundaryRef(source_live_value_ref->index,
-                                            target_live_value_ref->index);
+      FindSpatialMaterializationBoundaryRef(fact.spatial_materialization_boundary_index);
   ICHECK(source_boundary_ref != nullptr)
       << "PlanTTKernelABI requires SpatialPlan MaterializationBoundary for materialization "
-         "live-value indices "
-      << source_live_value_ref->index << " -> " << target_live_value_ref->index;
+      << fact.spatial_materialization_boundary_index;
+  ICHECK_EQ(source_boundary_ref->source_subject, source_name)
+      << "PlanTTKernelABI requires materialization fact source_buffer to match "
+         "SpatialPlan boundary source subject";
+  ICHECK_EQ(source_boundary_ref->target_subject, target_name)
+      << "PlanTTKernelABI requires materialization fact target_buffer to match "
+         "SpatialPlan boundary target subject";
   SpatialLiveValueRef boundary_source_live_value_ref{source_boundary_ref->source_live_value,
                                                      source_boundary_ref->source_live_value_index};
   SpatialLiveValueRef boundary_target_live_value_ref{source_boundary_ref->target_live_value,
                                                      source_boundary_ref->target_live_value_index};
+  std::vector<TTLiveFormBoundaryRequest> live_boundary_graph;
+  live_boundary_graph.reserve(spatial_materialization_boundaries_.size());
+  for (const SpatialMaterializationBoundaryRef& boundary : spatial_materialization_boundaries_) {
+    live_boundary_graph.push_back(TTLiveFormBoundaryRequest{boundary.name,
+                                                            boundary.index,
+                                                            boundary.source_live_value,
+                                                            boundary.source_live_value_index,
+                                                            boundary.target_live_value,
+                                                            boundary.target_live_value_index,
+                                                            boundary.event_lifetime_kind,
+                                                            boundary.logical_coverage,
+                                                            boundary.min_publish_pages,
+                                                            boundary.max_consume_pages});
+  }
   const TTLiveFormSolverResult live_form_solution = SolveFragmentCastLiveFormTransition(
       TTLiveFormSolverRequest{source_name,
                               target_name,
@@ -441,7 +433,9 @@ void PlanTTKernelABI::RecordFragmentCastMaterializationPlans(
                               source_boundary_ref->max_consume_pages,
                               fact.bridge_kind,
                               fact.materialization_kind,
-                              publication_protocol});
+                              publication_protocol,
+                              source_boundary_ref->index,
+                              std::move(live_boundary_graph)});
 
   auto has_live_form = [&](const std::string& name) {
     for (const TTLiveFormPlan& plan : tt_live_form_plans_) {

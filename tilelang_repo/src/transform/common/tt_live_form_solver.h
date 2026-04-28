@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace tvm {
 namespace tl {
@@ -38,6 +39,19 @@ struct TTLiveFormConsumerDecision {
   bool requires_full_logical_tile{true};
 };
 
+struct TTLiveFormBoundaryRequest {
+  std::string name;
+  int64_t index{-1};
+  std::string source_spatial_live_value;
+  int64_t source_spatial_live_value_index{-1};
+  std::string target_spatial_live_value;
+  int64_t target_spatial_live_value_index{-1};
+  std::string event_lifetime_kind;
+  std::string logical_coverage;
+  int64_t min_publish_pages{0};
+  int64_t max_consume_pages{0};
+};
+
 struct TTLiveFormSolverRequest {
   std::string source_logical_value;
   std::string target_logical_value;
@@ -55,6 +69,8 @@ struct TTLiveFormSolverRequest {
   std::string bridge_kind;
   std::string materialization_kind;
   std::string publication_protocol;
+  int64_t selected_boundary_index{-1};
+  std::vector<TTLiveFormBoundaryRequest> validated_live_boundaries;
 };
 
 struct TTLiveFormSolverResult {
