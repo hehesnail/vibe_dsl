@@ -211,6 +211,21 @@ TT resource-planning
   unsupported diagnostic；
   它们不是第五个 IR 层，
   也不能成为新的 bag / payload
+- `TileComputeDAG`
+  的 DAG-wide fanout /
+  materialization reasoning
+  只有在投影到
+  `ResourceDemand`
+  /
+  `ResourcePressureReport`
+  /
+  typed unsupported diagnostic
+  并改变 validator /
+  admission 结果时才算 production use；
+  diagnostic FFI /
+  tests
+  只能算 foundation，
+  不能算完成
 - CB allocation
   采用 arch-aware live-interval /
   linear-scan 方向；

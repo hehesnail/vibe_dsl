@@ -637,11 +637,14 @@ to claim production completion.
 Such mechanics must either be simplified into pattern-owned selected emission
 or deleted.
 
-The next resource-aware work is therefore not to expand this DAG.
-It is to add typed
+The next resource-aware work is therefore not to expand this DAG into a
+planner-owned resource system.
+It is to add DAG-backed typed
 `ResourceDemand`
 /
 `ResourcePressureReport`
+that consumes pass-local fanout /
+materialization decisions,
 and then upgrade CB / L1 / core / buffer planning in `TTProgram`
 and `ExecutableSpec`
 as described by
@@ -663,6 +666,18 @@ Implementation status:
   hooks,
   without a separate operation-name dispatch chain or active DAG decision guard
 - static tests guard these boundaries before the resource-planning lane starts
+- DAG-wide fanout /
+  materialization covering is currently diagnostic foundation,
+  not production completion.
+  Its first valid production use is merged into
+  `ResourceDemand`
+  /
+  `ResourcePressureReport`:
+  pass-local DAG decisions must change typed resource demand,
+  typed unsupported diagnostics,
+  or validator admission.
+  If they do not,
+  they remain diagnostic-only and cannot be counted as active-chain payoff.
 
 ## Global Task Order
 

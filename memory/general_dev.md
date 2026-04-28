@@ -132,6 +132,18 @@
   和 typed plan/diagnostic，
   DAG covering object 只能留在 diagnostic /
   test-visible API。
+  但 diagnostic-only DAG
+  不能算 production payoff；
+  如果要保留在 active backlog，
+  下一步必须把 fanout /
+  materialization decision
+  投影成
+  `ResourceDemand`
+  /
+  `ResourcePressureReport`
+  或 typed unsupported reason，
+  并让 validator /
+  admission 实际消费。
 - TT resource planning 不属于
   `TileComputeDAG`
   的职责。

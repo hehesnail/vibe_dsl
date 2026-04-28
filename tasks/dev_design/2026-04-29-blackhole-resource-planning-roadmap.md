@@ -17,6 +17,14 @@ without turning `TileComputeDAG` into a new scheduler,
 global dataflow engine,
 or side-channel protocol.
 
+The first resource-planning task is explicitly
+`TileComputeDAG`-backed.
+The DAG is not considered production-complete while it only powers diagnostic
+FFI and tests.
+It must either feed typed resource demand /
+typed unsupported reasons,
+or be downgraded to diagnostic-only support surface.
+
 ## Current State
 
 The current implementation has useful pieces, but they do not yet form a
@@ -32,6 +40,13 @@ mature hardware-aware resource planner.
   is valid only as a pass-local compute-selection model.
   Its durable output must be typed plans and typed unsupported reasons,
   not a persisted DAG payload or a replacement scheduler.
+  At current repo HEAD,
+  DAG-wide fanout /
+  materialization reasoning is still diagnostic foundation.
+  The next production use is to project those decisions into
+  `ResourceDemand`
+  /
+  `ResourcePressureReport`.
 - CB allocation is currently the most concrete resource work.
   `PlanTTCBAlloc`
   already reasons about staged CB requirements,
@@ -124,12 +139,20 @@ Status:
   and explicit source emission remains a selected leaf-pattern projection.
   Further DAG work must continue to satisfy the same boundary tests.
 
-### Direction 2: Add `ResourceDemand` / `ResourcePressureReport`
+### Direction 2: Add DAG-Backed `ResourceDemand` / `ResourcePressureReport`
 
 This is the bridge between semantic planning and hardware resource admission.
 It should be derived from validated `TTProgram`
 and projected `ExecutableSpec`,
 not carried as a side bag.
+Its first production input is the pass-local
+`TileComputeDAG`
+covering result:
+fanout,
+live-share vs materialize decisions,
+and unsupported materialization reasons.
+This folds the correct part of Route A into the resource-pressure lane instead
+of treating `TileComputeDAG` as a standalone production task.
 
 First typed surface:
 
@@ -137,6 +160,8 @@ First typed surface:
 ResourceDemand
   kernel
   core_group
+  tile_compute_fanout_demands
+  tile_compute_materialization_demands
   cb_requirements
   l1_buffer_requirements
   semaphore_requirements
@@ -144,6 +169,8 @@ ResourceDemand
   communication_edges
 
 ResourcePressureReport
+  tile_compute_unsupported_reasons
+  required_materializations
   per_core_cb_id_pressure
   per_core_cb_l1_bytes
   per_core_l1_buffer_bytes
@@ -157,6 +184,13 @@ Pay-rent rule:
 
 - the report must drive validators or typed unsupported reasons;
   a dump-only report is foundation work, not completion.
+- `TileComputeDAG`
+  pays rent only when its fanout /
+  materialization decisions change this report,
+  a validator decision,
+  or a typed unsupported reason.
+  If a DAG decision is not consumed here,
+  it must remain diagnostic-only and cannot be cited as production progress.
 
 ### Direction 3: Upgrade CB And L1 Admission
 
@@ -260,16 +294,21 @@ same over-complexity problem under a different name.
 
 The revised order is:
 
-1. Clean up the `TileComputeDAG` production boundary.
-   Keep it pass-local and prove it pays rent by deleting old selection logic
-   or changing typed plans / diagnostics.
-2. Add resource pressure reporting from existing typed `TTProgram`
-   and `ExecutableSpec` records.
-3. Upgrade CB allocation and L1 admission using arch-aware limits and
+1. Add DAG-backed resource pressure reporting from existing typed
+   `TTProgram`
+   and
+   `ExecutableSpec`
+   records.
+   Use pass-local
+   `TileComputeDAG`
+   fanout /
+   materialization decisions as the first production input,
+   and make validators / typed unsupported reasons consume the result.
+2. Upgrade CB allocation and L1 admission using arch-aware limits and
    live-interval allocation.
-4. Replace hard-coded core grid and unit buffer placement with
+3. Replace hard-coded core grid and unit buffer placement with
    hardware-model-backed core groups and explicit buffer distribution choices.
-5. Re-enter wider runtime admission:
+4. Re-enter wider runtime admission:
    multi-block flash-attn,
    multi-page exact-CB events,
    mesh / distributed runtime,
@@ -285,6 +324,14 @@ This roadmap is implemented only when:
 
 - `TileComputeDAG`
   remains pass-local and no downstream phase consumes it as owner truth
+- `TileComputeDAG`
+  fanout /
+  materialization decisions feed
+  `ResourceDemand`
+  /
+  `ResourcePressureReport`
+  or typed unsupported reasons;
+  diagnostic-only DAG covering is not production completion
 - resource pressure changes validator decisions or typed unsupported reasons
 - CB allocation uses arch-aware limits and live intervals
 - L1 admission checks are visible before source / runtime emission

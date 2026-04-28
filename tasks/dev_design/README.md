@@ -110,7 +110,7 @@
     已完成；
     当前活动 lane 已根据 resource-planning
     复查推进到
-    `ResourceDemand / ResourcePressureReport typed surface`
+    `TileComputeDAG-backed ResourceDemand / ResourcePressureReport typed surface`
   - 强制执行
     anti-overdesign pay-rent rule
     和 problem-family generality rule：
@@ -162,7 +162,17 @@ DAG covering
     仍只通过 selected leaf pattern
     `source_emitter`
     物化；
-    只有影响 typed plans /
+    DAG-wide fanout /
+    materialization
+    目前仍是 diagnostic foundation，
+    不算 production completion；
+    下一项必须把它并入
+    `ResourceDemand`
+    /
+    `ResourcePressureReport`
+    的 production input；
+    只有影响 typed resource demand /
+    typed plans /
     unsupported diagnostics
     或删除旧 per-op branch
     的部分才算 production completion。
@@ -197,8 +207,10 @@ DAG covering
     的职责，
     也不是 direct-runtime workload admission
     的临时 patch 面
-  - 当前顺序是先修正 compute covering 边界，
-    再建立 typed resource pressure，
+  - compute covering production 边界已完成收缩；
+    当前 active task 是建立
+    `TileComputeDAG`-backed
+    typed resource pressure，
     再升级 CB / L1 / core / buffer planning，
     最后回到 wider runtime admission
 
@@ -218,7 +230,9 @@ scheduling 面继续扩展；
 后续顺序改为：
 `TileComputeDAG`
 production 边界已清理 / 收缩；
-下一步建立 typed resource pressure
+下一步建立
+`TileComputeDAG`-backed
+typed resource pressure
 和 CB / L1 / core / buffer planning，
 然后回到
 multi-block flash-attn direct-runtime admission、
