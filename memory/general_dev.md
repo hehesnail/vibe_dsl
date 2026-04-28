@@ -1609,3 +1609,24 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   也同步为“当前入口文档 + active/completed lane contracts +
   protocol audit”，
   而不是只保留 support-surface lane。
+- 2026-04-28 README follow-up：
+  二次 stale-state 审计不能漏根 `README.md`。
+  根 README 也必须和 agent docs /
+  `tasks/dev_design/README.md`
+  使用同一当前文档边界：
+  `tasks/dev_design/`
+  根目录保留当前入口文档、
+  active/completed lane contracts
+  和 protocol audit；
+  archive 只作历史记录。
+  推荐阅读顺序需要列出
+  `task0-task3`、
+  support-surface admission、
+  tile-compute preservation、
+  post-preservation split、
+  lower-tile-op dedup、
+  algorithmic generalization、
+  DAG covering
+  和 protocol audit，
+  不能只列当前 Phase E
+  两个算法文档。

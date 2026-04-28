@@ -7,6 +7,8 @@
 - 总设计: `tasks/dev_design/final_blackhole_backend_redesign.md`
 - 当前进度: `tasks/progress.md`
 - 活动设计索引: `tasks/dev_design/README.md`
+- 协议面删除/迁移审计:
+  `tasks/dev_design/blackhole_first_principles_protocol_audit.md`
 - 仓库工作规范: `AGENTS.md`、`CLAUDE.md`
 - 稳定经验与问题记录: `memory/general_dev.md`、`memory/bugs.md`
 
@@ -21,7 +23,10 @@
   - `AnalyzeSemanticStructure` 已是 manifest-first
   - 当前 compile path 已不再把 semantic mirror 当长期 owner 层
 - tile-compute preservation
-  和 post-preservation pass shrink
+  /
+  post-preservation pass shrink
+  /
+  lower-tile-op normalizer dedup
   已完成：
   downstream scalar-loop matcher /
   composite generate family
@@ -80,12 +85,21 @@
 1. `tasks/dev_design/final_blackhole_backend_redesign.md`
 2. `tasks/progress.md`
 3. `tasks/dev_design/README.md`
-4. `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
-5. `tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
-6. `AGENTS.md` 或 `CLAUDE.md`
-7. `memory/general_dev.md`
-8. `memory/bugs.md`
-9. 相关源码与测试
+4. `tasks/dev_design/task0_ir_layering_root_cause.md`
+5. `tasks/dev_design/task1_spatial_plan_companion.md`
+6. `tasks/dev_design/task2_ttprogram_companion_cutover.md`
+7. `tasks/dev_design/task3_runtime_gate_and_workload_cutover.md`
+8. `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
+9. `tasks/dev_design/2026-04-27-blackhole-tile-compute-preservation.md`
+10. `tasks/dev_design/2026-04-27-blackhole-post-preservation-pass-shrink.md`
+11. `tasks/dev_design/2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md`
+12. `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
+13. `tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
+14. `tasks/dev_design/blackhole_first_principles_protocol_audit.md`
+15. `AGENTS.md` 或 `CLAUDE.md`
+16. `memory/general_dev.md`
+17. `memory/bugs.md`
+18. 相关源码与测试
 
 ## 仓库结构
 
@@ -99,5 +113,9 @@
 
 - 不再新增第二份总体设计文档。
 - 当前实现和后续计划都以 `tasks/dev_design/final_blackhole_backend_redesign.md` 为准。
-- `tasks/dev_design/` 根目录只保留活动文档；`archive/` 下全部视为历史记录。
+- `tasks/dev_design/` 根目录只保留当前入口文档、
+  当前活动 / 已完成但仍约束实现的 lane 设计文档
+  和 protocol audit；
+  `archive/` 下全部视为历史记录，
+  不再作为当前实现入口。
 - 如果文档与代码发生冲突，先同步设计，再动实现。

@@ -346,6 +346,37 @@
 
 ## Latest Verification
 
+README follow-up after second-pass audit:
+
+- synced root `README.md`
+  with the same current-document boundary as
+  `AGENTS.md`,
+  `CLAUDE.md`,
+  and `tasks/dev_design/README.md`
+- added protocol audit to the root entry list
+- expanded the root recommended reading order to include
+  `task0-task3`,
+  live-form admission,
+  tile-compute preservation,
+  post-preservation split,
+  lower-tile-op dedup,
+  algorithmic generalization,
+  DAG covering,
+  and protocol audit
+- clarified that `tasks/dev_design/` root contains current entry docs plus
+  active/completed lane contracts and protocol audit;
+  `archive/` remains historical only
+- `git diff --check`
+  -> passed
+- stale-current-state scan for old flash-attn lane wording,
+  old live-form blocker wording,
+  old follow-up phase labels,
+  current cleanup wording,
+  and root design-directory scope contradictions
+  -> no conflicting active-doc hits
+- background process scan:
+  no lingering `pytest` / `cmake --build` / `ninja` process
+
 Second-pass document stale-state audit after reviewer correction:
 
 - re-audited the non-archive Blackhole design/status docs for current-state
