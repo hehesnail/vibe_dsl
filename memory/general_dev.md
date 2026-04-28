@@ -1541,110 +1541,27 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   unsupported diagnostic。
   只能说明问题族的是架子货风险；
   只能说明当前 witness 的是 workload overfit 风险。
-- 2026-04-28 文档状态同步：
-  `tasks/dev_design/README.md`
-  不再重复维护已过期的 A-D foundation backlog，
-  当前执行顺序只看
-  `tasks/progress.md`；
-  `2026-04-23-blackhole-live-form-materialization-admission.md`
-  已把 seq64 / multi-K-step
-  改写成 compile/source/spec admission，
-  direct-runtime correctness
-  仍由
-  `multi-block exact CB-republish flash-attention direct runtime correctness`
-  unsupported reason gate 住；
-  archive README
-  已补当前 2026-04-28 algorithmic design 入口。
-- 2026-04-28 主目录入口文档同步：
+- 2026-04-28 文档维护纪律：
+  入口文档必须按“当前事实 vs 历史记录”逐篇审计；
+  不能只扫几个已知旧短语。
   `README.md`,
-  `AGENTS.md`,
-  `CLAUDE.md`,
-  和 `GEMINI.md`
-  已从旧的 flash-attn live-form blocker
-  更新到当前
-  `Algorithmic generalization Phase E: Decision-Use Cutover`
-  状态。
-  根目录入口现在明确：
-  A-D 算法对象只是 foundation-complete，
-  Phase E 必须让这些对象驱动 legality / query /
-  typed plan / unsupported diagnostic；
-  seq64 / multi-K-step flash-attn
-  是 compile/source/spec 稳定，
-  direct-runtime correctness
-  仍通过 typed unsupported metadata fail closed。
-  `tasks/dev_design/blackhole_first_principles_protocol_audit.md`
-  的当前诊断也同步成同一判断，
-  不再把已解决的 exact row-reduction source-live-form state
-  写成 active next step。
-  `2026-04-23-blackhole-live-form-materialization-admission.md`
-  中的 wider-shape 目标也去掉了旧 P2 follow-up
-  阶段名，
-  改为 future runtime admission ladder。
-- 2026-04-28 文档二次 stale-state 审计教训：
-  只扫几个已知旧短语不够，
-  必须把非 archive 的当前入口 /
-  task contract /
-  support lane /
-  protocol audit
-  逐篇按“当前事实 vs 历史记录”分类。
-  本轮修正包括：
-  `final_blackhole_backend_redesign.md`
-  不再把 archived cleanup 文档列为当前 active design；
-  `task0/task1/task2/task3`
-  把 cleanup task 关系改成历史 archive 边界，
-  不再用“cleanup 期间 / 后续删除”口吻描述完成态；
-  `task3`
-  明确 `blackhole.segment_kind`
-  只能是 pass-local mechanics，
-  final IR / `ExecutableSpec` /
-  leaf reader 前必须剥离；
-  `blackhole_first_principles_protocol_audit.md`
-  的 cleanup 落地段落改成历史“当时”状态，
-  不再把旧 bag /
-  contract /
-  residue
-  写成 repo HEAD 当前状态；
-  root agent docs
-  和 `tasks/dev_design/README.md`
-  也同步为“当前入口文档 + active/completed lane contracts +
-  protocol audit”，
-  而不是只保留 support-surface lane。
-- 2026-04-28 README follow-up：
-  二次 stale-state 审计不能漏根 `README.md`。
-  根 README 也必须和 agent docs /
-  `tasks/dev_design/README.md`
-  使用同一当前文档边界：
-  `tasks/dev_design/`
-  根目录保留当前入口文档、
-  active/completed lane contracts
-  和 protocol audit；
-  archive 只作历史记录。
-  推荐阅读顺序需要列出
-  `task0-task3`、
-  support-surface admission、
-  tile-compute preservation、
-  post-preservation split、
-  lower-tile-op dedup、
-  algorithmic generalization、
-  DAG covering
-  和 protocol audit，
-  不能只列当前 Phase E
-  两个算法文档。
-- 2026-04-28 progress.md 维护纪律：
+  agent docs,
+  `tasks/dev_design/README.md`,
+  task contracts,
+  support lane,
+  protocol audit,
+  and `progress.md`
+  must agree on the current active lane and support boundary.
+  Archive docs are historical only and cannot authorize legacy residue.
+- 2026-04-28 状态文件边界：
   `tasks/progress.md`
-  不是 changelog /
-  audit log /
-  文档同步流水账。
-  它只保留 repo HEAD 当前状态、
-  blocker、
-  support boundary、
-  open debt、
-  next task order
-  和最近一次验证摘要。
-  详细审计过程、
-  多轮文档同步细节、
-  长测试清单和历史解释
-  应放到对应设计文档、
-  memory
-  或 commit message，
-  不要塞进 progress。
+  is a status board, not a changelog.
+  Keep only repo HEAD status,
+  blocker,
+  support boundary,
+  open debt,
+  next task order,
+  and latest verification summary.
+  Put detailed rationale in design docs,
+  reusable lessons in `memory/`,
+  and per-change narrative in commits.
