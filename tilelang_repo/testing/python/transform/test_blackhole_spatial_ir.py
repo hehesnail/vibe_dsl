@@ -181,6 +181,19 @@ def _drop_validated_spatial_plan_stamp(mod):
     return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
 
 
+def _replace_spatial_plan(mod, spatial_plan):
+    func = mod["main"].with_attr("tl.spatial_plan", spatial_plan)
+    return tvm.IRModule({"main": func}, global_infos=mod.global_infos)
+
+
+def _prepare_blackhole_phase_b_without_target_opt_module(prim_func):
+    mod = tvm.IRModule({"main": prim_func.with_attr("global_symbol", "main")})
+    target = Target("blackhole")
+    with target:
+        mod = LowerAndLegalize(mod, target)
+    return LowerToBlackholePhaseB(mod)
+
+
 def _rebuild_dataflow_edge(
     edge,
     *,
@@ -1404,6 +1417,100 @@ def test_algorithmic_validate_spatial_plan_rejects_live_value_edge_version_misma
 
     with pytest.raises(Exception, match="LiveValueEdge.*source_version_index"):
         tilelang.transform.ValidateSpatialPlan()(broken)
+
+
+def test_algorithmic_validate_spatial_plan_rejects_distributed_slice_without_access_region():
+    mod = _prepare_blackhole_phase_b_module(fragment_fill_cast_publish_kernel())
+    plan = mod["main"].attrs["tl.spatial_plan"]
+    materialize_edge_index = next(
+        index
+        for index, edge in enumerate(plan.live_value_edges)
+        if str(edge.relation_kind) == "materialize"
+    )
+    invalid_edge = _rebuild_live_value_edge(
+        plan.live_value_edges[materialize_edge_index],
+        consumer_access_region_index=-1,
+        requires_full_logical_value=False,
+        accepts_distributed_slice=True,
+    )
+    live_value_edges = list(plan.live_value_edges)
+    live_value_edges[materialize_edge_index] = invalid_edge
+    invalid_plan = _rebuild_spatial_plan(plan, live_value_edges=live_value_edges)
+    broken = _drop_validated_spatial_plan_stamp(
+        _replace_spatial_plan(mod, invalid_plan)
+    )
+
+    with pytest.raises(Exception, match="distributed slice.*AccessRegion"):
+        tilelang.transform.ValidateSpatialPlan()(broken)
+
+
+def test_algorithmic_validate_spatial_plan_rejects_loop_carried_boundary_without_component():
+    mod = _prepare_blackhole_phase_b_module(
+        gqa_example.flashattn.jit_impl.get_tir(
+            1,
+            16,
+            1024,
+            128,
+            False,
+            groups=16,
+            block_M=64,
+            block_N=64,
+            num_stages=4,
+            threads=128,
+        )
+    )
+    plan = mod["main"].attrs["tl.spatial_plan"]
+    assert any(
+        str(boundary.event_lifetime_kind) == "loop_carried"
+        for boundary in plan.materialization_boundaries
+    )
+    invalid_plan = _rebuild_spatial_plan(plan, dependence_components=[])
+    broken = _drop_validated_spatial_plan_stamp(
+        _replace_spatial_plan(mod, invalid_plan)
+    )
+
+    with pytest.raises(Exception, match="loop_carried.*DependenceComponent"):
+        tilelang.transform.ValidateSpatialPlan()(broken)
+
+
+def test_algorithmic_live_form_solver_uses_boundary_coverage_for_consumer_binding():
+    mod = _prepare_blackhole_phase_b_without_target_opt_module(
+        fragment_fill_cast_publish_kernel()
+    )
+    plan = mod["main"].attrs["tl.spatial_plan"]
+    boundaries = list(plan.materialization_boundaries)
+    boundary_index = next(
+        index
+        for index, boundary in enumerate(boundaries)
+        if str(boundary.logical_coverage) == "distributed_slice"
+    )
+    boundaries[boundary_index] = _rebuild_materialization_boundary(
+        boundaries[boundary_index],
+        logical_coverage="full_logical_value",
+    )
+    mod = _drop_validated_spatial_plan_stamp(
+        _replace_spatial_plan(
+            mod, _rebuild_spatial_plan(plan, materialization_boundaries=boundaries)
+        )
+    )
+    mod = tilelang.transform.ValidateSpatialPlan()(mod)
+    mod = tilelang.transform.PlanTTBlocks()(mod)
+    mod = tilelang.transform.SelectBlackholeTTMetalBuiltins()(mod)
+    mod = tilelang.transform.PlanTTCompute()(mod)
+    mod = tilelang.transform.PlanTTTransport()(mod)
+    mod = tilelang.transform.PlanTTSync()(mod)
+    mod = tilelang.transform.PlanTTABI()(mod)
+    mod = tilelang.transform.PlanTTExecution()(mod)
+    mod = tilelang.transform.BuildTTProgram()(mod)
+
+    tt_program = mod["main"].attrs["tl.tt_program"]
+    binding = next(
+        plan
+        for plan in tt_program.consumer_binding_plans
+        if str(plan.consumer_op_kind) == "cast_fragment_slice"
+    )
+    assert bool(binding.accepts_distributed_slice) is False
+    assert bool(binding.requires_full_logical_tile) is True
 
 
 def test_algorithmic_live_form_solver_owns_tt_live_form_decision_literals():

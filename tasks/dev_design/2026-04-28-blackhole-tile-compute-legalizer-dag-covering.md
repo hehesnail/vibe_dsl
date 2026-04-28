@@ -59,6 +59,84 @@ tile compute semantics
 第一版用 C++ typed schema table
 表达 pattern 和 legalization rule。
 
+补充约束：
+
+- LLVM GlobalISel 的 useful boundary
+  不是“有一个 legalizer 类”，
+  而是 legalizer action
+  决定后续 selector
+  能否处理当前 IR。
+  对应本设计，
+  `TileComputeDAG`
+  不能只是 dump；
+  legalizer 必须产生
+  `Legal / Lower / Split / PromoteDType / Materialize / Reject`
+  action，
+  并且 action 必须影响
+  `TTComputeOpPlan`
+  或 typed unsupported diagnostic。
+- MLIR pattern infrastructure
+  把 cost model、
+  pattern benefit、
+  match failure reason
+  放在 driver contract 中。
+  对应本设计，
+  每个 rejected leaf pattern
+  必须能解释缺失的 access/live/dependence evidence。
+- Cranelift ISLE 要求 lowering rules
+  保持 pure SSA rewrite，
+  side effect 在 rule commit 后发生。
+  对应本设计，
+  DAG matcher/legality predicate
+  不分配 CB、
+  不改写 TIR、
+  不发 source；
+  只有 selected pattern
+  的 emitter 可以物化 typed plans
+  和 source sequence。
+- LLVM VPlan
+  把多个 transformation candidates
+  放进显式 plan，
+  用 cost / legality /
+  plan-to-plan transforms
+  决定最终 IR translation。
+  对应本设计，
+  DAG covering
+  不能只复刻当前 per-op branch；
+  它需要保留候选 pattern、
+  materialization choice、
+  live-form cost
+  和 reject reason，
+  让复杂 epilogue /
+  fanout /
+  event-lifetime-sensitive
+  选择可审计。
+- LLVM LoopAccessAnalysis
+  的经验是：
+  access legality query
+  要能解释 vectorization /
+  transform
+  失败原因，
+  必要时可以生成显式 runtime check。
+  Blackhole 第一版不新增 runtime check，
+  但必须把 unsupported 原因落到 typed diagnostic，
+  不能让 source emitter 隐式跳过。
+- MLIR Linalg
+  说明 structured compute semantics
+  和 indexing maps
+  是通用 tiling /
+  fusion /
+  library-special-instruction lowering
+  的前提。
+  对应本设计，
+  `TileComputeDAG`
+  的输入必须是 preserved tile compute semantics
+  加 `AccessRegion` /
+  `LiveValueSSA`
+  证据，
+  不能从 scalar loop idiom
+  重新恢复。
+
 ## Non-Goals
 
 - 不恢复 downstream scalar-loop matcher。
@@ -330,6 +408,57 @@ This design depends on the three earlier foundations:
 Without those,
 DAG covering would merely relocate today’s branch logic.
 
+Because the current repo HEAD only has these structures
+foundation-complete,
+this lane is gated by the
+Algorithmic Generalization
+`Phase E: Decision-Use Cutover`.
+The compute legalizer must not start consuming
+`AccessRegion`,
+`DependenceComponent`,
+or
+`LiveValueSSA`
+as decorative metadata.
+It may start only after those structures already drive:
+
+- access full/slice compatibility,
+- recurrence / loop-carried lifetime legality,
+- source-live reaching-def queries,
+- TT live-form solver output,
+- and typed materialization / consumer binding plans.
+
+If this gate is skipped,
+`TileComputeDAG`
+would become another parallel matcher surface,
+which violates the final backend redesign.
+
+The gate is intentionally broader than a single solver call.
+Before this lane starts selecting production compute plans,
+the following must already be true on the active chain:
+
+- `AccessRegion`
+  changes legality for slice/full,
+  axis,
+  and materialization coverage decisions.
+- `DependenceComponent`
+  changes legality for recurrence /
+  loop-carried lifetime decisions.
+- `LiveValueSSA`
+  answers source-live reaching-def
+  and consumer binding by explicit indices.
+- the live-form solver
+  changes physical form /
+  consumer requirement /
+  materialization protocol
+  from typed boundary evidence.
+- validators reject missing or inconsistent evidence
+  before source emission.
+
+Only then does a DAG legalizer have stable facts to cover.
+Otherwise a legalizer would be forced to rebuild semantics
+with its own matcher,
+which is exactly the architecture being deleted.
+
 ## Architecture Review
 
 This section records the design review against
@@ -443,6 +572,7 @@ foundations:
 2. graph-backed `SpatialPlan` dependence
 3. `LiveValueSSA`
 4. TT live-form solver
+5. decision-use cutover for those structures
 
 Then tile compute selection proceeds in two implementation groups:
 
@@ -474,6 +604,11 @@ Files:
 
 Work:
 
+0. Precondition:
+   Algorithmic Generalization
+   `Phase E: Decision-Use Cutover`
+   has completed its `E1-E4`
+   gates for the admitted compute surface.
 1. Build `TileComputeDAG`
    from existing explicit tile compute calls
    without changing selection.

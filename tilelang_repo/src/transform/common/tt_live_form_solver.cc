@@ -40,6 +40,12 @@ TTLiveFormSolverResult SolveFragmentCastLiveFormTransition(
       << "TT live-form solver requires positive logical element count";
   ICHECK(!request.boundary_event_lifetime_kind.empty())
       << "TT live-form solver requires boundary event lifetime";
+  ICHECK(!request.boundary_logical_coverage.empty())
+      << "TT live-form solver requires boundary logical coverage";
+  ICHECK(request.boundary_logical_coverage == "distributed_slice" ||
+         request.boundary_logical_coverage == "full_logical_value")
+      << "TT live-form solver unsupported boundary logical coverage "
+      << request.boundary_logical_coverage;
   ICHECK_GE(request.min_publish_pages, 1)
       << "TT live-form solver requires bounded publish pages";
   ICHECK_GE(request.max_consume_pages, request.min_publish_pages)
@@ -75,8 +81,11 @@ TTLiveFormSolverResult SolveFragmentCastLiveFormTransition(
       buffer_materialization::kCBRepublish,
       request.publication_protocol,
   };
-  result.consumer = TTLiveFormConsumerDecision{/*accepts_distributed_slice=*/true,
-                                              /*requires_full_logical_tile=*/false};
+  const bool accepts_distributed_slice = request.boundary_logical_coverage == "distributed_slice";
+  result.consumer = TTLiveFormConsumerDecision{
+      accepts_distributed_slice,
+      !accepts_distributed_slice,
+  };
   return result;
 }
 

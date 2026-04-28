@@ -19,6 +19,7 @@
 #include "common/blackhole_utils.h"
 #include "common/companion_base.h"
 #include "common/spatial_analysis.h"
+#include "common/spatial_access_region.h"
 #include "common/spatial_plan.h"
 
 namespace tvm {
@@ -697,6 +698,21 @@ void ValidateLiveValueBoundaryObjects(const SpatialPlan& plan,
       ICHECK(AccessRegionReads(region))
           << "LiveValueEdge " << live_edge->name << " consumer access must be a read";
     }
+    if (live_edge->accepts_distributed_slice) {
+      ICHECK_GE(live_edge->consumer_access_region_index, 0)
+          << "LiveValueEdge " << live_edge->name
+          << " distributed slice consumer requires AccessRegion evidence";
+      ICHECK_GE(source_live_value->defining_access_region_index, 0)
+          << "LiveValueEdge " << live_edge->name
+          << " distributed slice producer requires AccessRegion evidence";
+      const AccessRegion& producer_region =
+          plan->access_regions[source_live_value->defining_access_region_index];
+      const AccessRegion& consumer_region =
+          plan->access_regions[live_edge->consumer_access_region_index];
+      ICHECK(IsSliceCompatible(producer_region, consumer_region))
+          << "LiveValueEdge " << live_edge->name
+          << " distributed slice requires compatible producer/consumer AccessRegion";
+    }
     ICHECK(live_edge->requires_full_logical_value || live_edge->accepts_distributed_slice)
         << "LiveValueEdge " << live_edge->name
         << " must either require full logical value or accept distributed slice";
@@ -811,6 +827,28 @@ void ValidateLiveValueBoundaryObjects(const SpatialPlan& plan,
     ICHECK_GE(boundary->max_consume_pages, boundary->min_publish_pages)
         << "MaterializationBoundary " << boundary->name
         << " requires max_consume_pages >= min_publish_pages";
+    if (str(boundary->event_lifetime_kind) == "loop_carried") {
+      bool has_component_evidence = false;
+      for (const DependenceComponent& component : plan->dependence_components) {
+        const std::string component_kind = str(component->component_kind);
+        if (component_kind != "carry_cycle" && component_kind != "reduction_cycle" &&
+            component_kind != "recurrence") {
+          continue;
+        }
+        for (const Integer& component_edge_index : component->edge_indices) {
+          if (component_edge_index->value == live_edge->dataflow_edge_index) {
+            has_component_evidence = true;
+            break;
+          }
+        }
+        if (has_component_evidence) {
+          break;
+        }
+      }
+      ICHECK(has_component_evidence)
+          << "MaterializationBoundary " << boundary->name
+          << " loop_carried lifetime requires DependenceComponent evidence";
+    }
     ValidateNoTTNoun(str(boundary->required_visibility),
                      "MaterializationBoundary required_visibility");
     ValidateNoTTNoun(str(boundary->logical_coverage), "MaterializationBoundary logical_coverage");

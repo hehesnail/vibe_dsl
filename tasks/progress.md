@@ -7,14 +7,31 @@
 ## Status
 
 - Date: `2026-04-28`
-- Active lane: `Blackhole algorithmic generalization implementation queue`
+- Active lane: `Blackhole algorithmic generalization decision-use cutover`
 - Current item:
-  2026-04-28 `Algorithmic generalization Phase D: TT live-form solver`
-  completed.  Fragment/cast live-form decisions now flow through
-  `tt_live_form_solver` and are projected into typed
-  `TTLiveFormPlan`, `TTMaterializationPlan`, and
-  `TTConsumerBindingPlan` records.  The Algorithmic generalization
-  implementation queue is complete; the next implementation unit is
+  2026-04-28 prior-art review found that
+  `AccessRegion`, `DependenceComponent`, `LiveValueSSA`, and the first
+  live-form solver are foundation-complete but not yet usage-complete.
+  A second wider review was folded back into the active design because
+  the design coverage spans
+  `SpatialPlan` legality,
+  `LiveValueSSA` queries,
+  `TTProgram` actions,
+  `ExecutableSpec` admission,
+  and future tile-compute DAG covering.
+  `Algorithmic generalization Phase E: Decision-Use Cutover`
+  is now in progress:
+  the first slice makes access regions,
+  dependence components,
+  live-value boundary indices,
+  and boundary logical coverage
+  change legality / query / solver output
+  on the active chain.
+  The implementation unit remains
+  `Algorithmic generalization Phase E: Decision-Use Cutover`:
+  finish the remaining indexed-query,
+  graph solver,
+  and projection/admission audit work before starting
   `Tile compute legalizer / DAG covering Phase A-B`.
 - Blocker:
   No blocker remains for Blackhole tile-compute preservation itself.
@@ -132,20 +149,39 @@
   The current schema can express the direction; runtime admission must expand
   through typed `TTProgram -> ExecutableSpec` records, not runtime-only patching.
 - The next refactor lane is now ordered by representation dependency:
-  tile compute legalizer / DAG covering, and only then wider runtime
-  admission.  `AccessRegion`, graph-backed `SpatialPlan` dependence,
-  `LiveValueSSA`, and the first TT live-form solver are implemented; the
-  remaining items are design-complete but not implemented.
+  algorithmic decision-use cutover,
+  then tile compute legalizer / DAG covering,
+  and only then wider runtime admission.  `AccessRegion`,
+  graph-backed `SpatialPlan` dependence,
+  `LiveValueSSA`, and the first TT live-form solver are implemented as
+  foundations; they must now become active legality/query/action inputs
+  instead of mostly structural evidence.
 
 ## Next Task Order
 
-1. `Tile compute legalizer / DAG covering Phase A-B`
+1. `Algorithmic generalization Phase E: Decision-Use Cutover`
+   - Finish the broad `E0` review against LLVM/MLIR/Cranelift-style
+     legality/action, dependence, dataflow, and selection practice.
+     Do not treat a single fragment/cast decision-use slice as completion
+     of the whole phase.
+   - Make `AccessRegion` drive full/slice compatibility and
+     materialization coverage legality.
+   - Make `DependenceComponent` drive recurrence /
+     loop-carried lifetime legality.
+   - Replace subject-pair live-value lookup in downstream planning with
+     indexed `LiveValueEdge` / `MaterializationBoundary` queries.
+   - Expand the live-form solver from fragment/cast helper into a
+     worklist/lattice solver over validated live edges.
+   - Completion requires tests where changing the typed algorithmic
+     evidence changes legality / solver output / typed TT plans.
+
+2. `Tile compute legalizer / DAG covering Phase A-B`
    - Add `TileComputeDAG` read-only dump, pattern schema, and legalizer
      diagnostics for current admitted leaf ops.
    - Keep existing source emission active until the legalizer accepts the
      same admitted compute set.
 
-2. `Tile compute legalizer / DAG covering Phase C-E`
+3. `Tile compute legalizer / DAG covering Phase C-E`
    - Add `TileComputeDAG`, legalization actions, TT-Metal leaf pattern
      covering, fanout/materialization-aware covering, and old branch
      deletion for current admitted compute ops.
@@ -153,26 +189,26 @@
    - Do not let covering output become a pass-to-pass DAG payload or
      source-string protocol.
 
-3. `Multi-block flash-attn direct-runtime admission`
+4. `Multi-block flash-attn direct-runtime admission`
    - Re-admit seq64 / multi-K-step direct runtime only after the
      online-softmax live-form contract is represented and verified through
      typed `TTProgram -> ExecutableSpec` state.
    - Correctness gate remains TT-Sim bf16; compile/source/spec stability
      alone is not runtime admission.
 
-4. `Post-P2 flash-attn wider exact-CB event support`
+5. `Post-P2 flash-attn wider exact-CB event support`
    - Admit larger stage2/block64 shapes only after the exact CB
      multi-page event contract is represented and validated through
      `TTProgram -> ExecutableSpec`.
    - Treat this as event-lifetime admission, not a source emitter patch.
 
-5. `P3 mesh/distributed runtime expansion`
+6. `P3 mesh/distributed runtime expansion`
    - Treat this as a deferred runtime admission lane.
    - Reuse `TTMeshPlan` / `TTBufferDistributionPlan` schema.
    - Add real sharded / multi-device / fabric semantics only through typed
      schema and validator extensions.
 
-6. Post-P2 flash-attn wider-shape support
+7. Post-P2 flash-attn wider-shape support
    - Expand workload scale only after the multi-K-step and multi-page
      event contracts above are admitted.
    - Do not jump straight to 4096.  The intended admission ladder is:
@@ -254,23 +290,54 @@
     the typed multi-block exact-CB unsupported reason; no runtime-only
     source-live-form patch was added.
 
+- `Algorithmic generalization Phase E: decision-use cutover`
+  - Completed the broader E0 prior-art/design audit across
+    `SpatialPlan`,
+    `LiveValueSSA`,
+    `TTProgram`,
+    `ExecutableSpec`,
+    and future tile-compute DAG covering.
+  - Added the first active decision-use slice:
+    `AccessRegion`
+    compatibility gates distributed-slice live edges;
+    recurrence
+    `DependenceComponent`
+    evidence gates loop-carried materialization lifetime;
+    validators reject missing evidence;
+    fragment/cast materialization lookup now uses
+    live-value index pairs for
+    `MaterializationBoundary`;
+    and the live-form solver consumes boundary logical coverage to set
+    consumer full/slice requirements.
+  - Phase E remains in progress.
+    Remaining work is wider subject-map deletion,
+    graph-wide worklist/lattice solver,
+    and TTProgram / ExecutableSpec projection admission audit.
+
 ## Latest Verification
 
-Algorithmic generalization Phase D TT live-form solver:
+Algorithmic generalization Phase E first decision-use slice:
 
 - docs updated:
   `tasks/progress.md`,
   `memory/general_dev.md`,
-  and `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`
+  `tasks/dev_design/2026-04-28-blackhole-algorithmic-generalization.md`,
+  and
+  `tasks/dev_design/2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
 - tests added:
-  `test_algorithmic_live_form_solver_owns_tt_live_form_decision_literals`
+  `test_algorithmic_validate_spatial_plan_rejects_distributed_slice_without_access_region`,
+  `test_algorithmic_validate_spatial_plan_rejects_loop_carried_boundary_without_component`,
+  and
+  `test_algorithmic_live_form_solver_uses_boundary_coverage_for_consumer_binding`
 - `cmake --build build -j32`
   -> passed
+- `python -m pytest -q testing/python/transform/test_blackhole_spatial_ir.py::test_algorithmic_validate_spatial_plan_rejects_distributed_slice_without_access_region testing/python/transform/test_blackhole_spatial_ir.py::test_algorithmic_validate_spatial_plan_rejects_loop_carried_boundary_without_component testing/python/transform/test_blackhole_spatial_ir.py::test_algorithmic_live_form_solver_uses_boundary_coverage_for_consumer_binding`
+  -> `3 passed`
+- `python -m pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
+  -> `45 passed`
 - `python -m pytest -q testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_exposes_typed_live_form_owner_truth testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_tt_plans_reference_spatial_live_boundaries testing/python/target/blackhole/test_blackhole_gemm.py::test_blackhole_fragment_fill_cast_publish_projects_leaf_materialization_plans`
   -> `3 passed`
 - `python -m pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_runtime.py::test_blackhole_flash_attention_seq64_bf16_metadata_gates_multi_block_direct_runtime`
   -> `1 passed`
-- `python -m pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
-  -> `42 passed`
 - background process scan:
   no lingering `pytest` / `cmake --build` / `ninja` process

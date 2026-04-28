@@ -61,6 +61,118 @@ Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec
   作为 live-form propagation
   的算法骨架。
 
+补充调研结论：
+
+- LLVM GlobalISel
+  把 generic MIR 放进固定主链：
+  `IRTranslator -> Legalizer -> RegBankSelect -> InstructionSelect`。
+  Legalizer 的结果不是旁观 dump，
+  而是把当前 MIR 改写到 target selector
+  后续一定能处理的合法形态；
+  legality query 失败时必须走
+  lower / custom / unsupported
+  这类显式 action。
+- LLVM MemorySSA
+  是 virtual IR，
+  但它被真正使用的原因是
+  `MemoryDef / MemoryUse / MemoryPhi`
+  能回答 reaching-def /
+  clobber query。
+  如果版本化结构不能回答 query，
+  它只是日志结构。
+- LLVM dependence graph
+  的 SCC / pi-block
+  不是为了记录“有环”，
+  而是为了让 reordering /
+  scheduling /
+  vectorization
+  知道哪些 nodes 不能被独立移动。
+- MLIR dialect conversion /
+  pattern rewriter
+  把 legality target、
+  rewrite pattern、
+  type conversion、
+  match failure diagnostic
+  放进同一个 driver contract。
+  pattern/debug 信息能解释为什么没选中，
+  而不是让下游继续猜。
+- Cranelift ISLE
+  把 backend lowering rules
+  写成纯 SSA rewrite；
+  matcher/extractor
+  不能有 side effect，
+  真正的 mutation 只能在 rule
+  已经 commit 后发生。
+  这对应我们这里：
+  query 和 legality 可以是 pass-local，
+  但跨阶段选择结果必须进入 typed plan。
+- LLVM VPlan
+  的关键点是显式候选计划同时服务
+  cost / legality 后的优化
+  和最终 IR translation。
+  它提醒我们：
+  `SpatialPlan` /
+  `TTProgram`
+  不能只保存唯一已经手选好的路径；
+  当后续存在多种 live-form /
+  materialization /
+  compute leaf 覆盖选择时，
+  需要显式 plan object
+  承载候选与选择结果，
+  让 validator 和 projector
+  能审计为什么选中或为什么拒绝。
+- LLVM LoopAccessAnalysis
+  把 memory-dependence legality
+  与可生成的 runtime check /
+  failure diagnostic
+  连接起来。
+  对应本设计，
+  `AccessRegion`
+  不只是记录 index 表达式，
+  它必须回答 overlap /
+  coverage /
+  stride /
+  axis legality query；
+  query 不可证明时
+  应 fail closed
+  或进入显式 admission lane，
+  不能让下游按名字补猜。
+- MLIR affine dialect
+  通过受限 affine map /
+  integer set
+  换取可分析性和闭包性。
+  对应本设计，
+  affine-lite 的限制是算法合同，
+  不是实现偷懒：
+  超出限制的访问要么扩表示，
+  要么显式 unsupported。
+- MLIR Linalg
+  把 structured op
+  的 indexing /
+  iterator /
+  reduction 语义放在 IR 接口里，
+  使 tiling、
+  fusion、
+  library / special-instruction
+  lowering 成为通用 transform。
+  对应 Blackhole，
+  tile compute preservation
+  是 Algorithmic Generalization
+  的前置条件；
+  如果 tile leaf 语义先被 scalar lowering
+  打碎，
+  后续 DAG covering 只能退化成 matcher。
+
+因此本设计的实现标准要收紧：
+
+> Algorithmic structures are complete only when they become
+> legality / query / action inputs on the active chain.
+> Merely defining objects,
+> dumping them,
+> or validating that they are well-formed
+> is only foundation work,
+> not algorithmic generalization completion.
+
 ## Non-Goals
 
 - 不引入 MLIR、LLVM IR、TableGen、egg
@@ -372,6 +484,85 @@ does not prove a reaching live value,
 the planner must reject the shape or require an
 earlier normalization extension.
 
+### Active-Use Contract
+
+每个算法结构必须有明确 consumer。
+当前实现和后续 cutover
+按下面的 owner truth 收束：
+
+| Structure | Required active use | Current repo HEAD status | Required next use |
+| --- | --- | --- | --- |
+| `AccessRegion` | drive access overlap, coverage, axis legality, materialization shape, and compute DAG operands | already builds boundary seeds and validator coverage, but most regions are full/local and downstream still relies on helper facts | make dataflow/live/materialization legality query `AccessRegion` first; reject slice/full mismatch instead of trusting traits |
+| `DependenceComponent` | drive recurrence scheduling, loop-carried lifetime, phi/live-form join, and no-reorder barriers | constructed and validated, but not yet a decisive input to target planning | make `event_lifetime_kind=loop_carried` and recurrence live-form joins require component evidence |
+| `LiveValueSSA` | answer reaching-def, source-live-form, and consumer-binding queries | partially active: TT plans reference live values/edges/boundaries, but `PlanTTKernelABI` still indexes by subject string in places | replace subject-pair lookup with `LiveValueEdge` / `MaterializationBoundary` index queries |
+| live-form solver | choose physical form, topology, materialization protocol, and consumer requirements from typed boundary evidence | active only for fragment/cast transfer and still mostly constant-return | expand to a worklist/lattice solver over all `SpatialPlan` live edges consumed by TT planning |
+| tile compute legalizer / DAG covering | legalize and select compute leaf patterns using access/live/dependence evidence | design-complete, not implemented | start only after the above structures drive query/action decisions |
+
+This table is normative.
+If a field is not consumed by a validator,
+legalizer,
+solver,
+or typed plan projection,
+it is still foundation surface,
+not completed algorithmic generalization.
+
+### Coverage Model
+
+这轮设计覆盖面不能被收窄成某一个 pass
+或某一个 workload。
+算法化必须同时覆盖四类 decision surfaces：
+
+1. `SpatialPlan` legality surface
+   - `AccessRegion`
+     回答访问、覆盖、slice/full、
+     axis 和 overlap 问题。
+   - `DependenceComponent`
+     回答 recurrence、
+     loop-carried lifetime、
+     no-reorder barrier
+     和 phi/join 问题。
+2. `LiveValueSSA` query surface
+   - versioned live values
+     回答 reaching-def、
+     stale-source rejection、
+     source-live-form ownership
+     和 consumer binding 问题。
+3. `TTProgram` action surface
+   - target planner
+     把 validated logical evidence
+     变成 physical live form、
+     materialization protocol、
+     CB / ABI / sync binding
+     和 typed compute plans。
+   - action 结果必须进入
+     `TTLiveFormPlan`,
+     `TTMaterializationPlan`,
+     `TTConsumerBindingPlan`,
+     `TTComputeOpPlan`
+     等 typed records。
+4. `ExecutableSpec` admission surface
+   - leaf reader /
+     runtime /
+     codegen
+     只能消费 typed projection。
+   - backend support subset
+     通过 admission metadata
+     fail closed，
+     不能反向补 planner semantics。
+
+因此 Phase E 不能理解成
+“先把几个字段接到当前 fragment/cast 路径”。
+那只是一条可验证切片。
+完整 Phase E 的含义是：
+每个 Foundation structure
+至少被一个 active legality /
+query /
+action consumer 使用，
+且旧 subject-pair map /
+helper fact /
+stale fallback
+不能再作为 owner truth。
+
 ## Worklist Dataflow For Live Forms
 
 The Blackhole target planner should use a small
@@ -525,12 +716,45 @@ post-review queue:
 3. `LiveValueSSA`
 4. TT live-form solver
 
-The tile compute legalizer /
-DAG covering lane starts after these foundations have supplied
-typed access,
-dependence,
-version,
-and event-lifetime evidence.
+The first four implementation units above are now classified as
+foundation-complete,
+not usage-complete.
+Before the tile compute legalizer /
+DAG covering lane starts,
+the active chain must complete a decision-use cutover:
+
+1. `SpatialPlan` decision-use cutover
+   - `AccessRegion`
+     must be used for full/slice compatibility,
+     access overlap,
+     and materialization boundary coverage.
+   - `DependenceComponent`
+     must drive recurrence /
+     loop-carried lifetime legality.
+2. `LiveValueSSA` query cutover
+   - downstream planning must query by live value edge /
+     materialization boundary indices,
+     not by subject-pair maps.
+   - stale source-live fallback remains illegal.
+3. TT live-form solver cutover
+   - solver input is the set of validated
+     `LiveValueEdge`
+     and
+     `MaterializationBoundary`
+     records.
+   - output is typed
+     `TTLiveFormPlan`,
+     `TTMaterializationPlan`,
+     and
+     `TTConsumerBindingPlan`.
+   - unsupported joins or event lifetimes fail closed
+     with typed diagnostic.
+
+Only after those decision-use gates are active should the
+tile compute legalizer /
+DAG covering lane rely on them for pattern legality,
+fanout handling,
+and materialization-aware covering.
 The runtime admission lanes start only after target planning can
 project that evidence into typed
 `TTProgram -> ExecutableSpec`
@@ -743,6 +967,164 @@ Completion gate:
 - seq64 / multi-K-step flash-attn either passes TT-Sim bf16
   or fails closed with a typed missing contract reason.
 - no runtime-only patch is needed to select source-live-form.
+
+### Phase E: Decision-Use Cutover
+
+Status: in progress.
+
+This phase corrects the current gap where the algorithmic structures
+exist but are not yet broadly decisive.
+It is a broad main-chain cutover,
+not a single workload-specific implementation.
+
+Current implementation notes:
+
+- `E0 Review`
+  has been completed for the current scope and folded back into
+  this document plus the tile-compute legalizer design.
+- The first `E1 Spatial legality` slice is active:
+  `AccessRegion`
+  compatibility now gates distributed-slice consumer acceptance,
+  and recurrence
+  `DependenceComponent`
+  evidence now gates loop-carried materialization lifetime.
+- Validators now reject distributed-slice live edges without
+  producer/consumer access-region evidence and loop-carried
+  boundaries without recurrence component evidence.
+- The first `E2 Indexed query` slice is active for
+  fragment/cast materialization planning:
+  `PlanTTKernelABI`
+  now looks up `MaterializationBoundary`
+  by source/target live-value indices rather than
+  source/target subject pair.
+  Subject lookup remains only as a derived entry point from the current
+  TIR buffer to the latest `LiveValue`;
+  the wider subject-map deletion remains pending.
+- The first `E3 Solver` slice is active:
+  `tt_live_form_solver`
+  consumes boundary logical coverage and changes consumer
+  full-tile vs distributed-slice requirements from typed
+  `MaterializationBoundary`
+  evidence.
+
+Remaining work:
+
+- remove remaining owner-truth dependence on subject-level live-value
+  lookup in downstream TT planning,
+- expand the solver into a graph worklist/lattice over all validated
+  live edges,
+- add broader TTProgram / ExecutableSpec projection validators for
+  selected live edge /
+  boundary /
+  compute plan evidence,
+- only then start production DAG covering migration.
+
+Files:
+
+- modify `build_spatial_plan.cc`
+- modify `validate_spatial_plan.cc`
+- modify `lower_blackhole_state.cc`
+- modify `lower_blackhole_ops.h`
+- modify `tt_live_form_solver.{h,cc}`
+- update planner and runtime tests
+
+Work:
+
+0. Re-audit each existing algorithmic structure
+   against the Coverage Model above before adding more code.
+   A structure is allowed to remain pass-local only if no downstream
+   legality /
+   query /
+   action decision depends on it after the pass returns.
+1. Make `BuildMaterializationBoundaries`
+   consume `DependenceComponent`
+   evidence when choosing
+   `event_lifetime_kind`.
+2. Make `LiveValueEdge`
+   full/slice consumer requirements
+   depend on `AccessRegion`
+   compatibility,
+   not only local flow traits.
+3. Add validator rules that reject:
+   missing access-region evidence for distributed-slice consumers,
+   loop-carried boundaries without recurrence component evidence,
+   and TT plans that do not reference the exact live edge /
+   boundary selected by the solver.
+4. Replace
+   `PlanTTKernelABI`
+   subject-pair live-value maps with indexed
+   `LiveValueEdge`
+   / `MaterializationBoundary`
+   queries.
+5. Expand `tt_live_form_solver`
+   from a fragment/cast helper into a small worklist solver
+   over the validated live-value graph.
+   The first supported lattice states are:
+   `Fragment`,
+   `Accumulator`,
+   `ExactCB(single_event)`,
+   `ExactCB(multi_event)`,
+   `HostVisible`,
+   `Conflict`,
+   and
+   `Unsupported`.
+6. Keep pass-local maps only as caches derived from the current IR.
+   A cache cannot be the owner truth for legality,
+   source live form,
+   or event lifetime.
+7. Carry the same decision-use rule through
+   `TTProgram -> ExecutableSpec`
+   projection:
+   leaf records must preserve the selected live edge /
+   boundary /
+   compute plan indices needed for validators
+   and runtime admission diagnostics.
+
+Implementation order:
+
+1. `E0 Review`
+   - compare `AccessRegion`,
+     `DependenceComponent`,
+     `LiveValueSSA`,
+     solver,
+     and tile-compute DAG design
+     against the prior-art contracts above.
+   - update docs before further code.
+2. `E1 Spatial legality`
+   - access-region slice/full compatibility,
+     recurrence-backed lifetime,
+     validator rejects.
+3. `E2 Indexed query cutover`
+   - downstream TT planning queries
+     live edges /
+     materialization boundaries
+     by stable indices,
+     with subject maps reduced to derived caches only.
+4. `E3 Solver cutover`
+   - worklist/lattice live-form propagation over validated edges.
+5. `E4 Projection/admission audit`
+   - ensure typed TT plans
+     and executable records retain enough evidence
+     for fail-closed runtime/codegen decisions.
+
+Completion gate:
+
+- tests prove that changing
+  `AccessRegion`,
+  `DependenceComponent`,
+  or
+  `MaterializationBoundary`
+  evidence changes legality /
+  solver output /
+  typed TT plans.
+- existing copy,
+  GEMM,
+  fragment-fill-cast-publish,
+  and flash-attn metadata-gate tests remain green.
+- no admitted path gets source-live-form,
+  event lifetime,
+  or consumer full/slice requirements
+  from names or stale helper facts.
 
 ## Testing Strategy
 

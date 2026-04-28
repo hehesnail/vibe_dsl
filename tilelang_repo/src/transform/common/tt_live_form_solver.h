@@ -49,6 +49,7 @@ struct TTLiveFormSolverRequest {
   int64_t target_local_extent{0};
   int64_t logical_element_count{0};
   std::string boundary_event_lifetime_kind;
+  std::string boundary_logical_coverage;
   int64_t min_publish_pages{0};
   int64_t max_consume_pages{0};
   std::string bridge_kind;

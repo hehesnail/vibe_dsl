@@ -1125,6 +1125,18 @@ bool HasTrait(const Array<String>& traits, const std::string& trait) {
   return false;
 }
 
+bool IsAccessRegionCompatibleForSlice(const Array<AccessRegion>& access_regions,
+                                      int64_t producer_access_region_index,
+                                      int64_t consumer_access_region_index) {
+  if (producer_access_region_index < 0 || consumer_access_region_index < 0 ||
+      producer_access_region_index >= static_cast<int64_t>(access_regions.size()) ||
+      consumer_access_region_index >= static_cast<int64_t>(access_regions.size())) {
+    return false;
+  }
+  return IsSliceCompatible(access_regions[producer_access_region_index],
+                           access_regions[consumer_access_region_index]);
+}
+
 std::string DeriveLiveValueDefinitionKind(const DataflowEdge& edge) {
   const std::string edge_kind = str(edge->kind);
   if (edge_kind == "carry" || edge_kind == "join" || edge_kind == "reduction") {
@@ -1262,7 +1274,10 @@ Array<LiveValueEdge> BuildLiveValueEdges(const Array<DataflowEdge>& dataflow_edg
     const int64_t consumer_access_region_index =
         FindAccessRegionIndex(access_regions, edge->consumer_unit_index, str(edge->subject),
                               /*require_write=*/false);
-    const bool accepts_distributed_slice = HasTrait(edge->traits, "distributed_slice_consumer");
+    const bool accepts_distributed_slice =
+        HasTrait(edge->traits, "distributed_slice_consumer") &&
+        IsAccessRegionCompatibleForSlice(access_regions, live_value->defining_access_region_index,
+                                         consumer_access_region_index);
     live_value_edges.push_back(LiveValueEdge(
         String("live_edge_" + str(edge->name)), live_value->name, live_value_index, edge->name,
         edge_index, edge->producer_unit, edge->consumer_unit, edge->producer_unit_index,
@@ -1277,13 +1292,25 @@ Array<LiveValueEdge> BuildLiveValueEdges(const Array<DataflowEdge>& dataflow_edg
 Array<MaterializationBoundary> BuildMaterializationBoundaries(
     const Array<DataflowEdge>& dataflow_edges, const Array<LiveValue>& live_values,
     const Array<LiveValueEdge>& live_value_edges,
-    const std::unordered_map<std::string, std::string>& target_subject_by_edge) {
+    const std::unordered_map<std::string, std::string>& target_subject_by_edge,
+    const Array<DependenceComponent>& dependence_components) {
   Array<MaterializationBoundary> materialization_boundaries;
   ICHECK_EQ(dataflow_edges.size(), live_value_edges.size())
       << "BuildMaterializationBoundaries requires "
          "dataflow_edges/live_value_edges alignment";
   const std::unordered_map<std::string, int64_t> live_value_index_by_key =
       BuildLiveValueIndexByProducerSubject(live_values);
+  std::unordered_set<int64_t> recurrent_edge_indices;
+  for (const DependenceComponent& component : dependence_components) {
+    const std::string component_kind = str(component->component_kind);
+    if (component_kind != "carry_cycle" && component_kind != "reduction_cycle" &&
+        component_kind != "recurrence") {
+      continue;
+    }
+    for (const Integer& edge_index_value : component->edge_indices) {
+      recurrent_edge_indices.insert(edge_index_value->value);
+    }
+  }
   for (int edge_index = 0; edge_index < dataflow_edges.size(); ++edge_index) {
     const DataflowEdge& edge = dataflow_edges[edge_index];
     const LiveValueEdge& live_value_edge = live_value_edges[edge_index];
@@ -1306,9 +1333,9 @@ Array<MaterializationBoundary> BuildMaterializationBoundaries(
     const bool crosses_phase = edge->crosses_phase;
     const bool distributed_slice = live_value_edge->accepts_distributed_slice &&
                                    !live_value_edge->requires_full_logical_value;
-    const std::string event_lifetime_kind =
-        str(edge->kind) == "carry" ? "loop_carried" : (crosses_phase ? "multi_event"
-                                                                     : "single_event");
+    const std::string event_lifetime_kind = recurrent_edge_indices.count(edge_index)
+                                                ? "loop_carried"
+                                                : (crosses_phase ? "multi_event" : "single_event");
     materialization_boundaries.push_back(MaterializationBoundary(
         String("materialization_" + str(edge->name)), source_live_value->name,
         live_value_edge->source_live_value_index, target_live_value->name, target_live_value_index,
@@ -1429,7 +1456,8 @@ SpatialPlan BuildSpatialPlanForFunc(const std::string& member_func, const tir::P
                           local_value_flow_edges.target_subject_by_edge);
   const Array<MaterializationBoundary> materialization_boundaries =
       BuildMaterializationBoundaries(dataflow_edges, live_values, live_value_edges,
-                                     local_value_flow_edges.target_subject_by_edge);
+                                     local_value_flow_edges.target_subject_by_edge,
+                                     dependence_components);
 
   return SpatialPlan(String(member_func), execution_units, access_regions, dataflow_edges,
                      dependence_components, layout_specs, phase_plans, live_values,

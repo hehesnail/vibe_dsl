@@ -1460,3 +1460,50 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   seq64 / multi-K-step flash-attn direct runtime 仍通过 typed
   unsupported-reason metadata fail closed；
   这轮没有做 runtime-only source-live-form patch。
+- 2026-04-28 对 Algorithmic generalization 做第二轮 prior-art
+  对齐后，修正完成标准：
+  LLVM GlobalISel / MLIR conversion / MemorySSA /
+  dependence graph / Cranelift ISLE 的共同点是算法结构必须成为
+  query / legality / action 的入口。
+  因此 `AccessRegion`,
+  `DependenceComponent`,
+  `LiveValueSSA`,
+  和 live-form solver
+  只要还只是构造、dump、validator coverage，
+  就只能算 foundation-complete，
+  不能算 usage-complete。
+  后续必须先做
+  `Algorithmic generalization Phase E: Decision-Use Cutover`：
+  让这些 typed objects 改变 legality、solver output、
+  typed TT plans 或 unsupported diagnostic，
+  再进入 `TileComputeDAG` / legalizer / covering。
+- 2026-04-28 用户指出 Algorithmic generalization 不能过快收窄成
+  单个实现切片。补充调研 LLVM VPlan / LoopAccessAnalysis /
+  MLIR Affine / Linalg 后，Phase E 被重新定义为宽口径
+  decision-use cutover：
+  `SpatialPlan` legality、
+  `LiveValueSSA` query、
+  `TTProgram` action、
+  `ExecutableSpec` admission
+  和后续 `TileComputeDAG` covering
+  必须一起按 typed evidence dependency 排序。
+  fragment/cast solver 接入只能算 E1/E3 的局部验证切片，
+  不能代表 Phase E 完成。
+- 2026-04-28 Algorithmic generalization Phase E 第一条
+  decision-use 切片已接入：
+  `BuildSpatialPlan`
+  用 `AccessRegion`
+  compatibility 决定 distributed-slice live edge，
+  用 recurrence `DependenceComponent`
+  决定 loop-carried materialization lifetime；
+  `ValidateSpatialPlan`
+  对缺失 access-region evidence
+  和缺失 recurrence evidence fail closed；
+  `PlanTTKernelABI`
+  的 fragment/cast materialization boundary lookup
+  从 source/target subject pair 改成 source/target live-value index pair；
+  `tt_live_form_solver`
+  消费 boundary logical coverage
+  来决定 consumer full-tile vs distributed-slice requirement。
+  subject 到 latest live value 的入口 cache 仍存在，
+  Phase E 尚未完成。
