@@ -50,6 +50,10 @@ BLACKHOLE_TILE_COMPUTE_LEAF_OPS = {
     "recip_tile",
 }
 
+BLACKHOLE_TILE_COMPUTE_PATTERN_OPS = BLACKHOLE_TILE_COMPUTE_LEAF_OPS | {
+    "matmul_tiles",
+}
+
 
 def _collect_blackhole_builtin_names(node):
     names = set()
@@ -496,6 +500,34 @@ def _rebuild_tt_program(
     )
 
 
+def _rebuild_tt_compute_op_plan(
+    plan,
+    *,
+    kind=None,
+    operation_name=None,
+    operand_bindings=None,
+):
+    make_tt_compute_op = tvm.get_global_func("tl.TTComputeOpPlan")
+    return make_tt_compute_op(
+        str(plan.name),
+        str(plan.kernel_name),
+        int(plan.kernel_plan_index),
+        str(plan.kind) if kind is None else kind,
+        str(plan.operation_name) if operation_name is None else operation_name,
+        bool(plan.enabled),
+        list(plan.operand_bindings) if operand_bindings is None else operand_bindings,
+        list(plan.problem_shape_axes),
+        list(plan.problem_shape),
+        list(plan.tile_shape),
+        list(plan.block_shape),
+        list(plan.subblock_shape),
+        str(plan.accumulator_dtype),
+        str(plan.mbarrier_buffer),
+        str(plan.mbarrier_scope),
+        list(plan.mbarrier_index_exprs),
+    )
+
+
 def _rebuild_tt_materialization_plan(
     plan,
     *,
@@ -620,6 +652,107 @@ def test_blackhole_compute_op_planning_has_no_map_seed_contract_surface():
         REPO_ROOT / "tilelang_repo/src/transform/lower_blackhole_ops.cc",
     )
     assert hits == []
+
+
+def test_tile_compute_pattern_table_covers_current_leaf_operation_names():
+    pattern_table = tvm.get_global_func("tl.BlackholeTileComputePatternTable")()
+    operation_names = {str(pattern["operation_name"]) for pattern in pattern_table}
+    composite_names = {
+        "softmax",
+        "exp2_affine",
+        "row_broadcast_exp2_affine",
+    }
+
+    assert BLACKHOLE_TILE_COMPUTE_PATTERN_OPS <= operation_names
+    assert operation_names.isdisjoint(composite_names)
+    assert all(str(pattern["selected_output"]) == "tt_compute_op_plan" for pattern in pattern_table)
+
+
+def test_tile_compute_read_only_dag_diagnostic_represents_explicit_reduce_and_gemm():
+    build_dag = tvm.get_global_func("tl.BuildBlackholeTileComputeDAGDiagnostic")
+    reduce_mod = _prepare_blackhole_phase_b_module(_row_reduce_sum_kernel())
+    gemm_mod = _prepare_blackhole_phase_b_module(gemm_kernel())
+
+    reduce_diag = build_dag(reduce_mod["main"])
+    gemm_diag = build_dag(gemm_mod["main"])
+
+    reduce_nodes = {str(node["op_name"]) for node in reduce_diag["nodes"]}
+    reduce_roles = {str(edge["value_role"]) for edge in reduce_diag["edges"]}
+    gemm_nodes = {str(node["op_name"]) for node in gemm_diag["nodes"]}
+    gemm_roles = {str(edge["value_role"]) for edge in gemm_diag["edges"]}
+
+    assert "reduce_tile" in reduce_nodes
+    assert {"input", "output"} <= reduce_roles
+    assert "matmul_tiles" in gemm_nodes
+    assert {"a", "b", "c"} <= gemm_roles
+    assert all(str(node["token_output"]) for node in reduce_diag["nodes"])
+
+
+def test_tile_compute_read_only_dag_diagnostic_represents_flash_attention_leaf_ops():
+    build_dag = tvm.get_global_func("tl.BuildBlackholeTileComputeDAGDiagnostic")
+    mod = _lower_blackhole_frontend(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    diag = build_dag(mod["main"])
+    node_names = {str(node["op_name"]) for node in diag["nodes"]}
+    edge_roles = {str(edge["value_role"]) for edge in diag["edges"]}
+
+    assert {
+        "fill_tile",
+        "copy_tile",
+        "binary_max_tile",
+        "mul_tiles",
+        "mul_tiles_bcast_cols",
+        "exp2_tile",
+        "typecast_tile",
+    } <= node_names
+    assert {"lhs", "rhs", "output"} <= edge_roles
+
+
+def test_tile_compute_legalizer_rejects_composite_operation_name_before_projection():
+    mod = _prepare_blackhole_tt_program_module(
+        mha_example.flashattn.jit_impl.get_tir(
+            1,
+            32,
+            128,
+            128,
+            False,
+            block_M=128,
+            block_N=128,
+            num_stages=1,
+            threads=128,
+        )
+    )
+    main = mod["main"]
+    tt_program = main.attrs["tl.tt_program"]
+    assert tt_program.compute_op_plans
+
+    compute_op_plans = list(tt_program.compute_op_plans)
+    compute_op_plans[0] = _rebuild_tt_compute_op_plan(
+        compute_op_plans[0],
+        operation_name="softmax",
+    )
+    invalid_program = _rebuild_tt_program(
+        tt_program,
+        compute_op_plans=compute_op_plans,
+    )
+    broken = tvm.IRModule(
+        {"main": main.with_attr("tl.tt_program", invalid_program)},
+        global_infos=mod.global_infos,
+    )
+
+    with pytest.raises(Exception, match="TileCompute legalizer rejected"):
+        tilelang.transform.ValidateTTProgram()(broken)
 
 
 def test_blackhole_frontend_preserves_reduce_tileop_before_tt_selection():

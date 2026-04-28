@@ -25,6 +25,7 @@
 #include "lower_blackhole_ops.h"
 
 #include "common/blackhole_runtime_arg_schema.h"
+#include "common/blackhole_tile_compute_legalizer.h"
 #include "common/blackhole_utils.h"
 
 #include <tvm/tir/op.h>
@@ -189,13 +190,15 @@ static TTComputeOpPlan BuildTTComputeOpPlanFromFact(
 
   const std::string name = "compute_op_" + static_cast<std::string>(kernel_name) + "_" +
                            std::to_string(ordinal);
-  return TTComputeOpPlan(
+  TTComputeOpPlan plan = TTComputeOpPlan(
       String(name), kernel_name, kernel_plan_index, String("gemm"), String("matmul_tiles"),
       Bool(true), operand_bindings, BuildStringArray({"M", "N", "K"}),
       BuildIntegerArray({fact.m, fact.n, fact.k}), BuildIntegerArray({mt, nt, kt}),
       BuildIntegerArray({mt, nt, kt}), BuildIntegerArray({mt, nt}),
       String(DataTypeToDataFormatForBlackhole(fact.c_dtype)),
       String(fact.mbarrier_buffer), String(fact.mbarrier_scope), mbarrier_index_exprs);
+  RequireLegalBlackholeTileComputePlan(plan);
+  return plan;
 }
 
 static std::string MakeBlackholeRuntimeArgIdentity(const std::string& kind, const std::string& name,
@@ -1428,6 +1431,12 @@ void PlanTTKernelABI::RecordExactComputeOpPlan(
   if (operand_bindings.empty()) {
     return;
   }
+  std::vector<std::string> operand_roles;
+  operand_roles.reserve(operand_bindings.size());
+  for (const TTComputeOperandBindingPlan& binding : operand_bindings) {
+    operand_roles.push_back(static_cast<std::string>(binding->role));
+  }
+  RequireLegalBlackholeTileComputeSelection(kind, operation_name, operand_roles);
 
   if (output_buffer == nullptr) {
     output_buffer = &operands.back().buffer;

@@ -629,13 +629,18 @@ evidence.
 
 ### Phase A: Pattern Schema And Read-Only DAG Dump
 
+Status: completed in repo HEAD as foundation.
+The diagnostic surface is pass-local /
+test-visible only;
+it is not a new IR layer and is not persisted as a cross-pass payload.
+
 Files:
 
 - create `tilelang_repo/src/transform/common/blackhole_tile_compute_dag.h`
 - create `tilelang_repo/src/transform/common/blackhole_tile_compute_dag.cc`
 - create `tilelang_repo/src/transform/common/blackhole_tile_compute_patterns.h`
 - create `tilelang_repo/src/transform/common/blackhole_tile_compute_patterns.cc`
-- modify `lower_blackhole_tile_compute.cc`
+- modify `lower_blackhole_abi.cc`
 - add tests under
   `tilelang_repo/testing/python/transform/`
 
@@ -658,6 +663,24 @@ Work:
    `operation_name`
    has a pattern entry.
 
+Implementation notes:
+
+- Added
+  `blackhole_tile_compute_dag.{h,cc}`
+  with
+  `BuildBlackholeTileComputeDAGDiagnostic`
+  for read-only node/edge diagnostics over explicit tile compute calls.
+- Added
+  `blackhole_tile_compute_patterns.{h,cc}`
+  with a typed C++ leaf pattern table covering the current TT-Metal
+  leaf operation names,
+  including
+  `matmul_tiles`.
+- Tests assert reduce,
+  GEMM,
+  and flash-attn explicit tile compute calls are represented by the
+  diagnostic DAG without changing source emission.
+
 Completion gate:
 
 - no emitted source changes
@@ -667,10 +690,17 @@ Completion gate:
 
 ### Phase B: Legalizer Scaffolding
 
+Status: completed in repo HEAD as foundation.
+The legalizer is active for current admitted
+`TTComputeOpPlan`
+validation and synthetic reject diagnostics,
+but production covering still uses the existing emitter branches.
+
 Files:
 
 - create `tilelang_repo/src/transform/common/blackhole_tile_compute_legalizer.h`
 - create `tilelang_repo/src/transform/common/blackhole_tile_compute_legalizer.cc`
+- modify `lower_blackhole_abi.cc`
 - modify `validate_tt_program.cc`
 - modify frontend / transform tests
 
@@ -694,6 +724,35 @@ Work:
    or event lifetime.
 4. Keep legacy branch emission alive until covering
    owns the same ops.
+
+Implementation notes:
+
+- Added
+  `BlackholeTileLegalizationAction`
+  with
+  `Legal`,
+  `Lower`,
+  `Split`,
+  `PromoteDType`,
+  `Materialize`,
+  and
+  `Reject`
+  actions.
+- Current scaffold returns
+  `Legal`
+  or typed
+  `Reject`
+  diagnostics for the admitted operation set.
+  Lower/split/promote/materialize actions are reserved for Phase C-D
+  production migration.
+- `RecordExactComputeOpPlan`
+  and GEMM compute-plan construction call the legalizer before storing
+  new compute plans.
+- `ValidateTTProgram`
+  calls the legalizer again so corrupted /
+  synthetic unsupported
+  `operation_name`
+  values fail closed before projection.
 
 Completion gate:
 

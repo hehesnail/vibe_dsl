@@ -111,6 +111,29 @@
   这类 composite/helper 名
   只能是历史债务或调试描述，
   不能成为生产协议。
+- `TileComputeDAG`
+  这类 selection foundation
+  只能作为 pass-local diagnostic /
+  covering model。
+  Phase A 读图可以通过 FFI diagnostic
+  给测试看，
+  但不能写回
+  `PrimFunc.attrs`
+  或
+  `TTProgram`
+  payload
+  变成新的跨 pass truth。
+- tile compute legalizer
+  要同时卡住 producer 和 validator：
+  当前选择器记录
+  `TTComputeOpPlan`
+  前先跑 legality，
+  `ValidateTTProgram`
+  也要重跑 legality，
+  这样 synthetic /
+  corrupted
+  `operation_name`
+  不会穿过 projection。
 - 任何需要跨 pass 保留、
   且不能从当前层重新推出的事实，
   都应进入当前层显式对象；

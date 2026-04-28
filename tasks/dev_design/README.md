@@ -107,7 +107,7 @@
     和 Phase E decision-use cutover
     已完成；
     当前活动 lane 是
-    `Tile compute legalizer / DAG covering Phase A-B`
+    `Tile compute legalizer / DAG covering Phase C-D`
   - 强制执行
     anti-overdesign pay-rent rule
     和 problem-family generality rule：
@@ -141,8 +141,10 @@ DAG covering
   - Algorithmic Generalization
     Phase E 的 decision-use gate
     已对 admitted compute surface 生效；
+    Phase A-B foundation
+    已完成；
     production covering
-    可从 Phase A-B foundation 开始推进
+    可从 Phase C-D 开始推进
   - read-only DAG dump /
     pattern table /
     generic covering class
@@ -162,7 +164,7 @@ graph-backed `SpatialPlan` dependence、
 第一版 TT live-form solver，
 以及 Phase E decision-use cutover。
 当前活动实现单元是
-`Tile compute legalizer / DAG covering Phase A-B`，
+`Tile compute legalizer / DAG covering Phase C-D`，
 再之后才是 multi-block flash-attn direct-runtime admission、
 multi-page exact-CB event admission、
 mesh/distributed runtime admission

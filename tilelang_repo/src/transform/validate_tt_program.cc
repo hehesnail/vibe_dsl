@@ -11,6 +11,7 @@
 #include <unordered_set>
 
 #include "common/blackhole_utils.h"
+#include "common/blackhole_tile_compute_legalizer.h"
 #include "common/companion_base.h"
 #include "common/spatial_plan.h"
 #include "common/tt_target_program.h"
@@ -208,6 +209,7 @@ void ValidateComputeOpPlan(const TTComputeOpPlan& plan, int64_t kernel_plan_coun
     ICHECK(!plan->accumulator_dtype.empty())
         << "TTComputeOpPlan GEMM requires accumulator_dtype";
   }
+  RequireLegalBlackholeTileComputePlan(plan);
 }
 
 void ValidateSyncPlan(const TTSyncPlan& sync_plan) {

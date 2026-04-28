@@ -7,7 +7,7 @@
 ## Status
 
 - Date: `2026-04-28`
-- Active lane: `Tile compute legalizer / DAG covering Phase A-B`
+- Active lane: `Tile compute legalizer / DAG covering Phase C-D`
 - Current state:
   `AccessRegion`,
   `DependenceComponent`,
@@ -70,6 +70,12 @@
   Phase C `LiveValueSSA`,
   Phase D first TT live-form solver,
   and Phase E decision-use cutover are complete.
+- Tile compute legalizer / DAG covering:
+  Phase A read-only `TileComputeDAG` diagnostic /
+  pattern schema and Phase B legalizer scaffolding are complete.
+  The legalizer validates current admitted compute plans and rejects
+  unsupported synthetic operation names before `TTProgram` validation
+  can pass.
 
 ## Support Boundary
 
@@ -99,7 +105,8 @@
 
 ## Next Task Order
 
-1. Start `Tile compute legalizer / DAG covering Phase A-B`.
+1. Start `Tile compute legalizer / DAG covering Phase C-D`
+   production migration.
 2. Migrate legalizer / DAG covering to production and delete old per-op
    branch mechanics for the admitted compute surface.
 3. Re-admit multi-block flash-attn direct runtime through typed
@@ -128,10 +135,18 @@
   worklist/lattice surface,
   and executable projection rejects missing live edge /
   boundary evidence before leaf encoding.
+- `Tile compute legalizer / DAG covering Phase A-B`
+  completed as foundation:
+  `TileComputeDAG` read-only diagnostic covers explicit reduce,
+  GEMM,
+  and flash-attn leaf compute calls;
+  the pattern table covers current TT-Metal leaf operation names;
+  and the legalizer is wired into current compute-plan recording plus
+  `ValidateTTProgram`.
 - `cmake --build tilelang_repo/build -j32`
   -> passed.
 - `pytest -q tilelang_repo/testing/python/transform/test_blackhole_spatial_ir.py`
-  -> 49 passed.
+  -> 53 passed.
 - `pytest -q tilelang_repo/testing/python/target/blackhole/test_blackhole_copy_pipeline.py tilelang_repo/testing/python/target/blackhole/test_blackhole_gemm.py tilelang_repo/testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py`
   -> 163 passed, 25 skipped, 1 xfailed.
 - `git diff --check`
