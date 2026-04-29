@@ -1,152 +1,106 @@
-# Blackhole LowerTileOp Normalizer Dedup
+# Blackhole LowerTileOp Normalizer Boundary
+
+## Role
+
+This document defines the Blackhole tile-compute normalization boundary inside
+`Normalized Tile TIR`.
+It is a task-level implementation contract, not a history log.
 
 ## Goal
 
-Status: completed as a deduplication cleanup.
-The follow-up boundary correction from the
-`2026-04-29`
-tile-compute review is also complete for the known active residues.
-
-Before this cleanup,
-`lower_tile_op.cc` had two implementations of the same
-Blackhole tile-compute normalization:
+Keep one shared Blackhole tile-compute normalizer used by:
 
 - `LowerTileOpPass`
-  normalizes scalar loops while generic tile ops are lowered.
-- `BlackholeTileComputeNormalizer`
-  normalizes the same scalar loop shapes when the standalone
-  `tl.NormalizeBlackholeTileCompute` pass runs.
+- standalone `tl.NormalizeBlackholeTileCompute`
 
-This task removed the duplicate implementation surface and keeps one
-pass-local normalizer helper shared by both callers.
-
-This is an implementation cleanup inside `Normalized Tile TIR`.
-It does not add a new IR layer, pass protocol, or cross-stage side channel.
-The helper is allowed to normalize TIR expressions into explicit leaf
-tile-compute TIR statements.
-It is not allowed to encode a composite expression as a single
-leaf-looking
+The helper normalizes current TIR into explicit
 `tl.tileop.blackhole_compute`
-payload and leave the real decomposition to
-`PlanTTKernelABI`
-or `TileComputeDAG`.
+leaf statements.
+It does not create a new IR layer or cross-stage protocol.
 
 ## Contract
 
-- The output remains explicit `tl.tileop.blackhole_compute` calls,
-  one call per TT-Metal semantic leaf op.
+- Output is explicit tile-compute TIR.
+- One emitted call represents one TT-Metal semantic leaf op.
 - Operation names stay at TT-Metal leaf API granularity:
-  `fill_tile`, `copy_tile`, `typecast_tile`, `binary_max_tile`,
-  `mul_tiles`, `add_tiles`, `mul_tiles_bcast_cols`,
-  `add_tiles_bcast_cols`, `recip_tile`, and `exp2_tile`.
-- Leaf source-call schemas must expose the real leaf operands.
-  Binary leaf calls use explicit
+  `fill_tile`,
+  `copy_tile`,
+  `typecast_tile`,
+  `binary_max_tile`,
+  `add_tiles`,
+  `mul_tiles`,
+  `add_tiles_bcast_cols`,
+  `mul_tiles_bcast_cols`,
+  `exp2_tile`,
+  `recip_tile`,
+  `reduce_tile`,
+  `pack_tile`.
+- Binary leaf calls expose
   `lhs`,
   `rhs`,
   and
   `output`
-  roles;
-  unary leaf calls use explicit
+  roles.
+- Unary leaf calls expose
   `input`
   and
   `output`
   roles.
-  A payload field such as
-  `mode`
-  or
+- Operation-changing `mode` /
   `kind`
-  may select a leaf API variant only if it does not change the semantic op
-  family or cause multi-op expansion.
-- The helper may use local structural matching over current TIR as a
-  normalization mechanic, but it cannot become a downstream semantic
-  recovery path.
-  For expressions such as
-  `exp2(lhs * s0 - rhs * s1)`
-  or row-broadcast division,
-  the helper must emit an explicit sequence of leaf TIR statements
-  with logical temps when required.
-  It must not emit
-  `exp2_tile(mode, lhs, rhs, scale, ...)`
-  or
-  `mul_tiles_bcast_cols("div", ...)`.
-- `LowerTileOpPass` and `BlackholeTileComputeNormalizer` may differ only
-  in when they invoke the helper:
-  `LowerTileOpPass` gates it on the active target,
-  while `BlackholeTileComputeNormalizer` gates the whole pass on the
-  function target.
-- No old composite matcher/generate family is reintroduced.
-- Copy insertion is not a default decomposition step.
-  Semantic copy belongs in explicit TIR when the source program asks for it;
-  preservation copies must be justified by def-use /
-  liveness;
-  physical form copies belong to live-form /
-  materialization planning.
+  payloads are forbidden.
 
-## Implementation Boundary
+## Composite Expression Rule
 
-The shared helper owns:
+If the current TIR contains a composite expression expressible by admitted
+TT-Metal leaf ops,
+the normalizer must emit an explicit leaf statement sequence before DAG
+construction.
 
-- construction of `tl.tileop.blackhole_compute`
-- one-dimensional local/fragment store normalization
-- simple nested-loop normalization for full tile regions
-- local expression patterns already admitted by the preservation lane
-- bottom-up expression decomposition into explicit leaf tile-compute
-  statements when the TT-Metal leaf set can express the value
+Forbidden outputs:
 
-It does not own:
+- `exp2_tile(mode, lhs, rhs, scale, ...)`
+- `mul_tiles_bcast_cols("div", ...)`
 
-- generic tile op lowering
-- TT builtin selection
-- `SpatialPlan`, `TTProgram`, or `ExecutableSpec` construction
-- source emission
-- CB allocation,
-  tile-register protocol,
-  or physical materialization
-- runtime/codegen support admission
+Required examples:
 
-## Boundary Correction (`2026-04-29`)
-
-The previous implementation accidentally treated the current in-place
-binary shorthand
-(`dst = op(dst, rhs)`)
-as if it were the semantic leaf contract.
-That is wrong.
-The logical leaf contract is three-address for binary ops
-and two-address for unary ops;
-the source emitter may choose an in-place physical realization later,
-but the TIR leaf statement must not collapse input and output identities
-unless the source semantics actually do so.
-
-Completed repair:
-
-- composite `exp2_tile` payload normalization is removed
-- `mul_tiles_bcast_cols("div", ...)` is removed
-- admitted
-  `exp2(lhs * s0 - rhs * s1)`
-  lowers to explicit leaf TIR statements with logical temps before DAG
-  construction
-- row-broadcast division lowers to
+- `exp2(lhs * s0 - rhs * s1)`
+  becomes explicit
+  `copy_tile` /
+  `fill_tile` /
+  `mul_tiles` /
+  `add_tiles` or `add_tiles_bcast_cols` /
+  `exp2_tile`
+  leaf statements with logical temps as needed.
+- row-broadcast division becomes
   `recip_tile`
   plus
-  `mul_tiles_bcast_cols`
-- unsupported diagnostics must still use the correct category:
-  `lowering_missing`,
-  `backend_op_missing`,
-  `admission_blocked`,
-  or true semantic unsupported after TT-Metal primitive coverage audit
+  `mul_tiles_bcast_cols`.
+
+## Copy / Materialization Boundary
+
+The normalizer may introduce logical temps when required to express the
+current TIR value as leaf statements.
+
+It must not introduce physical-form copies as a workaround.
+Physical form and event-lifetime materialization belong to live-form /
+materialization planning.
+
+## Non-Goals
+
+- No source emission.
+- No CB allocation.
+- No tile-register protocol.
+- No runtime admission.
+- No downstream semantic recovery.
+- No source-hook expression decomposition.
 
 ## Validation
 
-- Static regression that `lower_tile_op.cc` has a single Blackhole tile
-  compute normalizer surface.
-- Existing Blackhole frontend normalization tests for flash-attn leaf
-  compute operations.
-- `cmake --build build -j32`.
-- Blackhole transform/target regression tests.
-- Cleanup scan for deleted composite matcher/generate names.
+Required checks:
 
-Latest verification:
-
-- `cmake --build build -j32`
-- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
-- `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -k 'leaf_compute_ops or optimized_path_lowers_acc_o_broadcast_updates or optimized_path_lowers_exp2_to_leaf_tile_ops or projects_non_gemm_exact_compute_ops'`
+- there is a single shared Blackhole tile-compute normalizer surface
+- frontend normalization emits only admitted leaf operation names
+- composite payload strings are absent from leaf-looking calls
+- row-division normalization produces `recip_tile`
+- Blackhole transform tests cover the normalized source surface

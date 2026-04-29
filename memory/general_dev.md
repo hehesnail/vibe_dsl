@@ -1854,3 +1854,15 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   `PlanTTKernelABI`
   are one-leaf projections for selected typed plans;
   they are not a fallback place to expand composite expressions.
+- 2026-04-29 core-doc maintenance:
+  keep core docs role-specific.
+  `final_blackhole_backend_redesign.md`
+  is for durable architecture contracts only;
+  `tasks/progress.md`
+  is for current HEAD status, blocker, next task, and verification;
+  `tasks/dev_design/README.md`
+  is an index and maintenance policy;
+  task-level design docs should contain goal, non-goal, representation
+  contract, validation, and completion criteria.
+  Do not dump implementation patch notes, phase logs, repeated verification,
+  or historical justification into these entry docs.

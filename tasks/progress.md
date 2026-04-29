@@ -1,137 +1,24 @@
 # TileLang Blackhole Backend Progress
 
-> 设计依据只看 `tasks/dev_design/final_blackhole_backend_redesign.md`。
-> 本文件只记录 repo HEAD 当前状态、阻塞、下一步和最近验证；
-> 细节设计、审计过程和历史流水账不要写在这里。
+> 当前 HEAD 看板只放状态、blocker、下一步和最近验证。
+> 设计合同不要写在这里；设计依据看
+> `tasks/dev_design/final_blackhole_backend_redesign.md`
+> 和对应任务级设计文档。
 
 ## Status
 
 - Date: `2026-04-29`
-- Active lane:
-  `Hardware-model-backed core and buffer placement`
-- Current state:
-  Repo-level design discipline now has a hardware-codegen usefulness gate:
-  new algorithmic structures,
-  typed fields,
-  validators,
-  or DAG machinery count as mainline progress only when they make a
-  DSL-authored kernel lower to real TT-Metal hardware code more reliably or
-  more efficiently by changing leaf normalization,
-  legality,
-  typed plans,
-  resource plans,
-  admission diagnostics,
-  or by deleting old side channels.
-  `AccessRegion`,
-  graph-backed `SpatialPlan` dependence,
-  `LiveValueSSA`,
-  and the first TT live-form solver are established foundations and already
-  affect admitted live-form / materialization decisions.
-  They are not a global resource allocator.
-  `TileComputeDAG`
-  is constrained to pass-local explicit-leaf graph legalization /
-  covering.
-  It has no mainline value merely because it exists or checks op names;
-  it must drive leaf-graph fanout,
-  materialization,
-  physical-form,
-  resource-demand,
-  typed reject decisions,
-  or delete old per-op branches.
-  It must not become composite lowering,
-  resource allocation,
-  core placement,
-  NoC scheduling,
-  or a cross-pass payload surface.
-  Resource allocation today is split across
-  `PlanTTCBAlloc`,
-  `PlanTTCoreGroups`,
-  `TTBufferDistributionPlan`,
-  `TTHardwareModel`,
-  and leaf runtime admission.
-  The first follow-up cleanup narrowed the API boundary:
-  production code no longer persists a function-level
-  `TileComputeDAG`
-  covering cache,
-  no public production API exposes a durable DAG covering object,
-  and explicit tile-compute source emission stays on selected leaf pattern
-  covering.
-  It did not complete production source lowering by itself,
-  because selected hooks still needed a leaf-normalization repair.
-  That repair is now complete for the known residues:
-  `lower_tile_op.cc`
-  decomposes
-  `exp2(lhs * s0 - rhs * s1)`
-  into explicit
-  `copy_tile` /
-  `fill_tile` /
-  `mul_tiles` /
-  `add_tiles` or
-  `add_tiles_bcast_cols` /
-  `exp2_tile`
-  leaf statements,
-  and row-broadcast division into
-  `recip_tile` plus
-  `mul_tiles_bcast_cols`.
-  `PlanTTKernelABI`
-  no longer accepts string-mode source payloads for
-  `exp2_tile`
-  or
-  `mul_tiles_bcast_cols`;
-  `add_tiles_bcast_cols`
-  and
-  `recip_tile`
-  are admitted as one-to-one leaf source projections.
-  A first typed surface exists through
-  `TTResourceDemand`
-  /
-  `TTResourcePressureReport`:
-  full pre-selection DAG fanout,
-  materialization,
-  and unsupported covering reasons are captured before builtin selection,
-  carried as typed TTProgram fields,
-  validated by `ValidateTTProgram`,
-  and projected into `ExecutableSpec`.
-  The repaired DAG path now covers explicit leaf graph nodes only:
-  one DAG source node maps to one semantic
-  `TTComputeOpPlan.operation_name`,
-  and source hooks are leaf projections rather than composite expanders.
-  The DAG remains justified only as long as these selected leaf decisions
-  affect typed lower plans,
-  fanout /
-  materialization /
-  resource demand,
-  validator decisions,
-  or delete old per-op branch mechanics.
-  CB / L1 resource admission now uses hardware-model-backed CB count,
-  worker L1 budget,
-  and L1 alignment facts in both `PlanTTCBAlloc`
-  and `TTResourcePressureReport`.
-  `ValidateTTProgram`
-  rejects over-CB and over-L1 reports before source / runtime emission,
-  and executable projection carries the admission facts.
-  Core placement and buffer distribution remain basic and need hardware-model
-  backed planning before wider runtime admission resumes.
-- Current blocker:
-  core / buffer placement is still coarse:
-  `PlanTTCoreGroups`
-  still routes through a hard-coded grid path,
-  and `TTBufferDistributionPlan`
-  remains mostly `unit_mesh` / `replicated`.
-  Wider runtime admission remains blocked until core groups and buffer
-  placement consume `TTHardwareModel`
-  facts and can fail closed before source / runtime emission.
+- Active lane: `Hardware-model-backed core and buffer placement`
 - Main chain:
   `Normalized Tile TIR -> SpatialPlan -> TTProgram -> ExecutableSpec`
 
-## Completed Baseline
+## Current HEAD
 
-- Legacy external runner / `build_blackhole/`: deleted.
-- Blackhole formal execution path:
-  in-process `BlackholeModule` direct host path.
-- `tilelang.compile(..., execution_backend="tvm_ffi")`
-  Blackhole wrapper/export path: restored.
-- Broad legacy protocol deletion:
+- Legacy external runner / `build_blackhole/` 已删除。
+- Blackhole 正式执行路径是进程内 `BlackholeModule` direct host path；
+  `tilelang.compile(..., execution_backend="tvm_ffi")`
+  Blackhole wrapper/export path 可用。
+- Broad legacy protocols 已退出 active chain：
   `compute_contract`,
   `gemm_contract`,
   `multi_*_contracts`,
@@ -139,81 +26,78 @@
   bridge attrs,
   lowering facts contract maps,
   compute-op seed maps,
-  and leaf name/default fallbacks are out of the active chain.
-- Flash-attn support:
-  P2.1 exact row-reduction source-live truth,
-  P2.2 small / 32x32 bf16 direct-runtime admission,
-  and P2.3 seq64 exact-CB compile/source/spec admission are complete.
-- Tile-compute preservation:
-  downstream scalar-loop matcher / generate families are deleted;
-  compute truth is preserved at TT-Metal leaf API granularity.
-- Algorithmic generalization foundation:
+  leaf name/default fallbacks。
+- Tile compute truth 保持 TT-Metal leaf API 粒度。
+  已删除 late scalar-loop matcher / generate family。
+- Algorithmic generalization foundation 已存在并在 admitted live-form /
+  materialization 决策中使用：
   `AccessRegion`,
   graph-backed `SpatialPlan` dependence,
   `LiveValueSSA`,
-  first TT live-form solver,
-  and selected admitted-surface decision-use cutover are present for
-  live-form /
-  materialization decisions.
-  They are not a compute expression lowering solution and not a global
-  resource allocator.
-- Tile compute legalizer / DAG covering foundation:
-  local `TileComputeDAG` and pattern / legalizer scaffolding exist for the
-  admitted compute surface.
-  DAG-wide fanout /
-  materialization /
-  unsupported-reason decisions now feed typed resource demand and validator /
-  executable projection,
-  and source hooks now map one selected source node to one semantic leaf
-  projection.
-  Composite expression decomposition belongs to
-  `Normalized Tile TIR`,
-  not DAG covering or source emission.
-- TileComputeDAG production-boundary cleanup:
-  production code does not persist a durable function-level DAG covering cache;
-  `PlanTTKernelABI`
-  only owns per-run pass-local DAG lowering decisions,
-  the covering header exposes only leaf covering decisions and diagnostic FFI,
-  and static tests guard against reintroducing a production DAG cache.
-- Typed resource pressure surface:
-  `TTResourceDemand`
-  and `TTResourcePressureReport`
-  are first-class TTProgram fields;
-  the full pre-selection `TileComputeDAG`
-  feeds typed fanout /
-  materialization /
-  unsupported-reason demand,
-  validators consume the reports,
-  and executable projection carries
-  `resource_pressure_reports`.
-  This is a typed surface, not final proof that DAG belongs on the production
-  path; that proof still depends on post-cleanup leaf-graph decisions changing
-  real lowering/resource/admission behavior.
-- Hardware-backed CB / L1 resource admission:
-  `TTHardwareModel`
-  carries CB count and L1 alignment facts;
-  `PlanTTCBAlloc`
-  uses target-derived CB and worker-L1 limits;
-  `TTResourcePressureReport`
-  records hardware limits,
-  aligned CB bytes,
-  alignment waste,
-  allocator-managed L1 buffer pressure,
-  and max simultaneous L1 pressure;
-  `ValidateTTProgram`
-  rejects CB and L1 over-pressure.
-- Tile-compute explicit leaf normalization boundary repair:
-  composite pseudo-leaf source payloads have been deleted for the known
-  active residues.
+  first TT live-form solver。
+  这些不是 compute expression lowering 或全局 resource allocator。
+- `TileComputeDAG`
+  只允许作为 pass-local explicit-leaf graph legalization /
+  covering model。
+  它不能做 composite lowering、
+  resource allocation、
+  core placement、
+  NoC scheduling
+  或跨阶段 payload。
+- Known composite pseudo-leaf source payload 已清理：
   `exp2_tile(mode, lhs, rhs, scale, ...)`
-  is replaced by an explicit leaf statement sequence before DAG construction;
+  改为 normalized explicit leaf sequence；
   `mul_tiles_bcast_cols("div", ...)`
-  is replaced by
-  `recip_tile`
-  plus
-  `mul_tiles_bcast_cols`.
-  The string-argument helper and old composite source generators are removed,
-  and tests guard the frontend normalization and one-leaf source schema.
+  改为
+  `recip_tile + mul_tiles_bcast_cols`。
+  Source hooks 现在只能投影一个 selected semantic TT-Metal leaf op。
+- First typed resource-pressure surface 已存在：
+  `TTResourceDemand`
+  /
+  `TTResourcePressureReport`
+  进入 `TTProgram`，
+  被 `ValidateTTProgram` 消费，
+  并投影到 `ExecutableSpec`。
+- CB / L1 admission 已接入第一版 hardware facts：
+  `TTHardwareModel.max_cb_count`,
+  worker L1 budget,
+  L1 alignment,
+  aligned CB bytes,
+  allocator-managed L1 pressure。
+  `ValidateTTProgram`
+  会在 source / runtime emission 前 fail closed。
+
+## Current Blocker
+
+Core placement 和 buffer distribution 仍然过粗：
+
+- `PlanTTCoreGroups`
+  仍主要走 hard-coded logical grid path。
+- `TTBufferDistributionPlan`
+  仍主要是
+  `unit_mesh`
+  /
+  `replicated`。
+- Wider runtime admission
+  需要 core groups 和 buffer placement
+  先消费
+  `TTHardwareModel`
+  facts，
+  并在 source / runtime emission 前给出 typed reject。
+
+## Next Task Order
+
+1. Upgrade core and buffer placement:
+   use `TTHardwareModel`
+   for worker grid / worker count / L1 / DRAM facts,
+   produce safe logical-coordinate core groups,
+   and expand `TTBufferDistributionPlan`
+   beyond `unit_mesh` / `replicated`.
+2. Resume wider runtime admission:
+   multi-block flash-attn direct runtime,
+   wider exact-CB events,
+   mesh / distributed runtime,
+   later NoC / multicast / scheduling optimization.
 
 ## Support Boundary
 
@@ -222,96 +106,50 @@
   GEMM A/B-separated reader range plus writer output range;
   interleaved DRAM accessor with `common_runtime_arg_count = 0`;
   non-oversubscribed explicit semaphore / remote-endpoint subset;
-  admitted bf16 live-form paths already covered by the typed gate.
+  admitted bf16 live-form paths.
 - Flash-attn admitted direct-runtime subset:
   small single-work-item and 32x32 MHA / GQA bf16.
 - Flash-attn compile/source/spec stable but runtime-gated subset:
   seq64 / multi-K-step MHA and GQA.
 - Not admitted:
   multi-block flash-attn direct-runtime correctness,
-  larger stage2/block64 multi-page exact-CB publish/consume events,
+  larger multi-page exact-CB publish/consume events,
   full multi-device / sharded / fabric collective runtime.
-
-## Open Debt
-
-- Hardware-model-backed core placement:
-  route
-  `PlanTTCoreGroups`
-  through
-  `TTHardwareModel`
-  worker-grid /
-  harvesting /
-  worker-count facts,
-  and fail closed when requested work exceeds available workers.
-- Explicit buffer distribution:
-  grow
-  `TTBufferDistributionPlan`
-  beyond mostly
-  `unit_mesh`
-  /
-  `replicated`
-  into the concrete placement choices needed by admitted workloads,
-  while keeping TT-Metal responsible for physical address allocation.
-- CB / L1 admission still has future precision work:
-  reserved / precolored CB class modeling can be made more explicit,
-  L1 buffer sizing is still a conservative plan-level estimate,
-  and runtime memory-report hooks should be wired when TT-Sim / TT-Metal
-  exposes a stable report interface.
-- Core placement still relies on a hard-coded grid path.
-  It must consume `TTHardwareModel`
-  and produce safe logical-coordinate core groups /
-  `CoreRangeSet`-compatible plans.
-- Buffer distribution remains mostly unit mesh / replicated.
-  It needs explicit interleaved DRAM,
-  interleaved L1,
-  sharded L1,
-  host-visible,
-  device-local,
-  page-size,
-  shard-shape,
-  and core-range decisions.
-- Multi-block flash-attn direct-runtime correctness remains runtime-gated
-  behind typed unsupported-reason metadata.
-- Wider exact-CB multi-page publish/consume events remain outside the admitted
-  direct-runtime support surface.
-
-## Next Task Order
-
-1. Upgrade core and buffer placement:
-   use `TTHardwareModel`
-   for worker grid / L1 / DRAM facts,
-   produce safe logical-coordinate core groups,
-   and expand `TTBufferDistributionPlan`
-   beyond `unit_mesh` / `replicated`.
-2. Resume wider runtime admission:
-   re-admit multi-block flash-attn direct runtime,
-   then wider exact-CB events,
-   mesh / distributed runtime,
-   and later NoC / multicast / scheduling optimization.
 
 ## Latest Verification
 
-- Current implementation:
-  completed tile-compute explicit leaf normalization boundary repair.
-  Composite pseudo-leaf payloads for
-  `exp2_tile(mode, lhs, rhs, scale, ...)`
-  and
-  `mul_tiles_bcast_cols("div", ...)`
-  are removed from active source lowering.
-  Frontend normalization now emits explicit leaf TIR sequences,
-  and DAG-driven source hooks project only one selected semantic TT-Metal
-  leaf op.
-- Verification:
-  `cmake --build build -j32`
-  passed.
-  `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
-  passed
-  (`79 passed`).
-  `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -k 'leaf_compute_ops or optimized_path_lowers_acc_o_broadcast_updates or optimized_path_lowers_exp2_to_leaf_tile_ops or projects_non_gemm_exact_compute_ops'`
-  passed
-  (`3 passed, 64 deselected`).
-  Cleanup scan found no active
+Latest code implementation commit:
+`5dc3af5 Repair tile compute leaf normalization boundary`.
+
+Verification from that commit:
+
+- `cmake --build build -j32`
+- `pytest -q testing/python/transform/test_blackhole_spatial_ir.py`
+  (`79 passed`)
+- `pytest -q testing/python/target/blackhole/test_blackhole_flash_attention_pipeline.py -k 'leaf_compute_ops or optimized_path_lowers_acc_o_broadcast_updates or optimized_path_lowers_exp2_to_leaf_tile_ops or projects_non_gemm_exact_compute_ops'`
+  (`3 passed, 64 deselected`)
+- Cleanup scan found no active
   `GetBlackholeTileComputeStringArg`,
   old composite generator,
   or string-mode composite payload residue under
   `tilelang_repo/src/transform`.
+
+Latest doc cleanup verification:
+
+- Core active docs were reduced back to role-specific contracts:
+  `final_blackhole_backend_redesign.md`,
+  `README.md`,
+  `progress.md`,
+  `2026-04-28-blackhole-algorithmic-generalization.md`,
+  `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`,
+  `2026-04-29-blackhole-resource-planning-roadmap.md`,
+  and
+  `2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md`.
+- `rg`
+  stale-log scan over those docs found no lingering
+  phase-log /
+  stale production-completion wording.
+- `git diff --check`
+  passed.
+- Docs-only cleanup;
+  no build or pytest was required for this change.

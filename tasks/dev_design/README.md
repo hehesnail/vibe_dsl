@@ -1,349 +1,45 @@
 # 任务开发设计文档
 
-> 当前唯一总体设计文档: `final_blackhole_backend_redesign.md`
+> 本目录只维护设计入口和任务级合同。
+> 当前 repo HEAD 状态、blocker、下一步只看
+> `../progress.md`。
 
-> 当前协议面删除/迁移表:
-> `blackhole_first_principles_protocol_audit.md`
-
-## 1. 当前入口
-
-当前入口顺序固定为：
+## Entry Order
 
 1. `final_blackhole_backend_redesign.md`
 2. `task0_ir_layering_root_cause.md`
 3. `task1_spatial_plan_companion.md`
 4. `task2_ttprogram_companion_cutover.md`
 5. `task3_runtime_gate_and_workload_cutover.md`
-6. `tasks/progress.md`
-7. `2026-04-23-blackhole-live-form-materialization-admission.md`
-8. `2026-04-27-blackhole-tile-compute-preservation.md`
-9. `2026-04-27-blackhole-post-preservation-pass-shrink.md`
-10. `2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md`
-11. `2026-04-28-blackhole-algorithmic-generalization.md`
-12. `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
-13. `2026-04-29-blackhole-resource-planning-roadmap.md`
+6. `../progress.md`
+7. Current activity / support-lane docs listed below
 
-当前 support surface / workload payoff lane
-的任务级设计固定为：
+## Core Contracts
 
-- `2026-04-23-blackhole-live-form-materialization-admission.md`
-  - 只定义 direct cast /
-    `fragment_fill -> cast -> publish`
-    /
-    flash-attn direct runtime admission
-    的 live-form / materialization
-    representation contract
-  - 不替代总体设计，
-    不引入新的长期 IR 层
+| Document | Role |
+| --- | --- |
+| `final_blackhole_backend_redesign.md` | 唯一总体设计；定义长期 IR 主链、层边界、validator 纪律、fake protocol 删除规则、hardware-codegen usefulness gate。 |
+| `task0_ir_layering_root_cause.md` | 根因诊断；解释为什么必须以显式 IR 主链替代 late matcher / bag / payload。 |
+| `task1_spatial_plan_companion.md` | `SpatialPlan` 表示层合同；定义 target-independent virtual spatial/dataflow program。 |
+| `task2_ttprogram_companion_cutover.md` | `TTProgram` 表示层合同；定义 TT-specific target realization。 |
+| `task3_runtime_gate_and_workload_cutover.md` | `ExecutableSpec` / leaf reader 合同；定义 leaf projection、backend admission、runtime-module build 边界。 |
 
-当前 Blackhole tile compute preservation lane
-的任务级设计记录为：
+## Current Lane Docs
 
-- `2026-04-27-blackhole-tile-compute-preservation.md`
-  - 定义 TT-Metal API 粒度 tile compute semantics
-    在 `Normalized Tile TIR`
-    中被保留 / 规范化的合同
-  - 覆盖 matmul / reduce / unary / binary /
-    broadcast / copy / pack /
-    tilize / untilize
-    等通用 tile compute API 粒度，
-    不是 reduce 或 flash-attn 专项设计
-  - 明确 P2.2/P2.3
-    late scalar-loop idiom recovery
-    已作为本 lane 清理目标删除，
-    后续不能重新作为 guard /
-    wrapper /
-    compatibility shell 引入
+| Document | Role |
+| --- | --- |
+| `2026-04-23-blackhole-live-form-materialization-admission.md` | Live-form / materialization support surface；direct cast、`fragment_fill -> cast -> publish`、flash-attn runtime admission 合同。 |
+| `2026-04-27-blackhole-tile-compute-preservation.md` | Tile compute preservation；要求 TT-Metal API 粒度 compute semantics 在 `Normalized Tile TIR` 中保留或规范化。 |
+| `2026-04-27-blackhole-post-preservation-pass-shrink.md` | Post-preservation pass shrink；约束 `lower_blackhole_ops.cc` 拆分、helper 复用和 heavy-pass cleanup。 |
+| `2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md` | `lower_tile_op.cc` normalizer 边界；定义 explicit leaf tile-compute normalization。 |
+| `2026-04-28-blackhole-algorithmic-generalization.md` | `AccessRegion` / dependence graph / `LiveValueSSA` / TT live-form solver 合同。 |
+| `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md` | `TileComputeDAG` / legalizer / leaf pattern covering 合同。 |
+| `2026-04-29-blackhole-resource-planning-roadmap.md` | Resource planning roadmap；定义 CB/L1 admission、core placement、buffer distribution、later NoC work 的依赖关系。 |
+| `blackhole_first_principles_protocol_audit.md` | Historical fake/legacy protocol 删除/迁移表。 |
 
-当前 post-preservation pass shrink lane
-的任务级设计记录为：
+## Stable Architecture Skeleton
 
-- `2026-04-27-blackhole-post-preservation-pass-shrink.md`
-  - 定义 tile-compute preservation 完成后
-    `lower_blackhole_ops.cc`
-    的责任缩小边界
-  - 只允许 implementation split /
-    pass-local helper reuse，
-    不引入新的长期 IR 层或 side-channel
-  - 记录其他 heavy mixed-responsibility pass
-    的后续候选，
-    尤其是 `lower_tile_op.cc`
-    中重复的 Blackhole tile compute normalization
-
-当前 `lower_tile_op.cc` cleanup
-的任务级设计记录为：
-
-- `2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md`
-  - 定义 `LowerTileOpPass`
-    和 `BlackholeTileComputeNormalizer`
-    共享同一个 Blackhole tile compute normalizer
-    implementation surface
-  - 继续产出显式
-    `tl.tileop.blackhole_compute`
-    和 TT-Metal leaf API 粒度 operation name
-  - 不引入新的 IR 层、
-    downstream matcher
-    或跨阶段 side-channel
-  - `2026-04-29`
-    boundary review
-    后补充并已完成已知 active residue 修复：
-    该 normalizer
-    必须把可表达的复合 TIR expression
-    显式分解成 leaf tile-compute TIR sequence；
-    不能产生
-    `exp2_tile(mode, lhs, rhs, scale, ...)`
-    或
-    `mul_tiles_bcast_cols("div", ...)`
-    这类 leaf-looking composite payload。
-
-当前 Blackhole algorithmic generalization
-的任务级设计记录为：
-
-- `2026-04-28-blackhole-algorithmic-generalization.md`
-  - 定义
-    `AccessRegion` /
-    graph-backed `SpatialPlan` dependence model /
-    `LiveValueSSA` /
-    TT live-form solver /
-    decision-use cutover
-    的重构设计
-  - 借鉴 LLVM Dependence Graph /
-    MemorySSA /
-    VPlan /
-    LoopAccessAnalysis
-    和 MLIR affine/dataflow/Linalg
-    的算法骨架，
-    但不引入新的长期 IR 层
-  - Phase A-D
-    foundation
-    和 selected Phase E
-    decision-use
-    已进入 admitted live-form /
-    materialization 决策；
-    这不是 compute expression lowering
-    或全局 resource allocation
-    的完成声明
-  - 当前活动 lane
-    以 `tasks/progress.md`
-    为准：
-    先修复 explicit leaf normalization
-    和 composite pseudo-leaf
-    残留，
-    再评估
-    `TileComputeDAG`
-    是否继续作为 production leaf-graph
-    legalizer /
-    resource-demand input
-  - 强制执行
-    anti-overdesign pay-rent rule
-    和 problem-family generality rule：
-    typed evidence 必须改变 legality /
-    query /
-    typed plan /
-    unsupported diagnostic，
-    当前 workload case
-    只能作为 witness，
-    不能成为协议定义
-
-当前 Blackhole tile compute legalizer /
-DAG covering
-的任务级设计记录为：
-
-- `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
-  - 定义
-    `TileComputeDAG`
-    /
-    legalization
-    /
-    target leaf pattern covering
-    的 selection 架构
-  - 对齐 LLVM SelectionDAG /
-    TableGen pattern selection
-    的思想，
-    但第一版只用 C++ typed schema
-  - 目标是让新增 TT-Metal leaf compute op
-    变成 pattern + legality + tests，
-    而不是新增手写 per-op branch family
-  - Algorithmic Generalization
-    Phase E 只有 selected
-    live-form /
-    materialization
-    decision-use
-    已进入 active chain；
-    这不是 admitted compute surface
-    的 compute-lowering 完成声明；
-    Phase A-B foundation
-    已完成；
-    resource-planning 复查后，
-    production covering
-    不能继续扩成 resource allocation /
-    global scheduling 面。
-    `TileComputeDAG`
-    必须保持 pass-local compute covering；
-    当前 production boundary
-    已收缩：
-    production code
-    不持久化 DAG covering cache，
-    public header
-    不暴露 durable DAG covering object，
-    source emission
-    只能通过 selected leaf pattern
-    hook
-    物化同一个 semantic leaf op；
-    不能通过 hook
-    做 composite expression lowering；
-    DAG-wide fanout /
-    materialization /
-    unsupported covering reasons
-    已进入
-    `ResourceDemand`
-    /
-    `ResourcePressureReport`
-    的 typed surface，
-    由 validator 和 executable projection 消费；
-    explicit source lowering
-    已消费 pass-local
-    `TileComputeDAG`
-    lower plan，
-    并把 DAG node /
-    source hook /
-    materialization /
-    fanout 决策写进
-    `TTComputeOpPlan`
-    和 executable projection，
-    且
-    `2026-04-29`
-    boundary review
-    发现的 composite payload
-    残留已完成修复：
-    `exp2_tile`
-    source decision
-    和
-    row-broadcast division
-    不再由
-    `TileComputeDAG`
-    /
-    source hook
-    展开，
-    已迁回
-    `Normalized Tile TIR`
-    显式 leaf sequence；
-    只有影响 typed resource demand /
-    typed plans /
-    unsupported diagnostics
-    或删除旧 per-op branch
-    的部分才算 production completion。
-  - read-only DAG dump /
-    pattern table /
-    generic covering class
-    只算 foundation work；
-    只有影响 typed plans /
-    unsupported diagnostics
-    或删除旧 per-op branch
-    才算 production completion
-
-当前 Blackhole TT resource planning
-的任务级设计记录为：
-
-- `2026-04-29-blackhole-resource-planning-roadmap.md`
-  - 记录
-    `TileComputeDAG`
-    scope 收缩、
-    `ResourceDemand` /
-    `ResourcePressureReport`、
-    CB live-interval allocation、
-    L1 pressure admission、
-    hardware-model-backed core placement /
-    buffer distribution、
-    以及后续 NoC / multicast /
-    scheduling optimization
-    的依赖关系
-  - 明确 resource planning
-    不是
-    `TileComputeDAG`
-    的职责，
-    也不是 direct-runtime workload admission
-    的临时 patch 面
-  - compute covering production 边界已收缩；
-    `TileComputeDAG`-backed
-    typed resource pressure
-    已建立第一版 typed surface，
-    但不能单独证明 DAG
-    production 价值；
-    CB / L1 resource admission
-    已完成第一版 production-use gate；
-    但当前 active task
-    仍以 `tasks/progress.md`
-    为准；
-    当前已进入
-    core / buffer planning
-
-当前执行顺序不在 README 中重复维护；
-唯一状态看板是 `tasks/progress.md`。
-截至当前 repo HEAD，
-已完成的 foundation / repair 包括
-`AccessRegion`、
-graph-backed `SpatialPlan` dependence、
-`LiveValueSSA`、
-第一版 TT live-form solver，
-以及 admitted live-form /
-materialization surface
-上的 selected Phase E decision-use cutover，
-以及 tile-compute explicit leaf normalization
-boundary repair。
-资源规划复查后，
-`TileComputeDAG`
-不能作为全局 resource /
-scheduling 面继续扩展；
-后续顺序改为：
-`TileComputeDAG`
-production 边界已收缩，
-但仍需在 known composite pseudo-leaf
-已清理的基础上持续证明 production 价值；
-`TileComputeDAG`-backed
-typed resource pressure
-已建立第一版 typed surface；
-`TileComputeDAG`
-source-lowering / typed compute lower-plan
-接入的 known composite pseudo-leaf
-边界错误已经删除；
-CB / L1 admission
-已完成第一版 production-use gate；
-下一步推进
-core / buffer planning，
-然后回到
-multi-block flash-attn direct-runtime admission、
-multi-page exact-CB event admission、
-mesh/distributed runtime admission
-和 wider flash-attn workload-scale admission。
-
-所有当前和后续设计均受同一条主线准则约束：
-新结构只有在让 DSL 写出的 kernel
-更可靠或更高效地 lower 到真实 TT-Metal 硬件代码时
-才算主线进展；
-只构造、dump、check、
-或投影不驱动 leaf codegen /
-resource plan /
-admission
-的 metadata
-只能算 foundation work。
-
-额外参考：
-
-- `archive/layered_ir_references.md`
-  - 研究输入和方法论参考，不是当前活动设计入口
-- `blackhole_first_principles_protocol_audit.md`
-  - 历史 surface 的删除/迁移落点表
-- `archive/2026-04-16-blackhole-final-legacy-protocol-cleanup.md`
-  - 已完成 cleanup 的历史边界索引；
-    配套 task0-task5 分文件也在
-    `archive/`
-  - 只作历史参考，
-    不是当前活动设计入口
-
-## 2. 当前长期设计骨架
-
-当前唯一长期主链是：
+长期主链只有：
 
 ```text
 Normalized Tile TIR
@@ -352,218 +48,61 @@ Normalized Tile TIR
   -> ExecutableSpec
 ```
 
-其中：
+解释：
 
 - `Normalized Tile TIR`
-  - 承载算法与访存语义
+  承载算法、访存、tile compute leaf semantics。
 - `SpatialPlan`
-  - 承载 target-independent 的 virtual spatial/dataflow 表示
+  承载 target-independent virtual spatial/dataflow program。
 - `TTProgram`
-  - 承载 TT-specific physical realization 表示
+  承载 TT-specific physical realization。
 - `ExecutableSpec`
-  - 只做 leaf projection 和执行物化
+  承载 leaf projection 和 backend admission。
 
-当前活动协议只以上面四层显式表示为准。
-pass 名字、helper、bag、payload、bridge attr
+Pass 名字、helper、payload、bag、bridge attr
 都不是长期协议边界。
 
-## 3. 当前活动文档
+## Current Execution Priority
 
-| 文档 | 角色 |
-|------|------|
-| `final_blackhole_backend_redesign.md` | 唯一总体设计；定义长期层边界、validator 纪律、rewrite 方向 |
-| `task0_ir_layering_root_cause.md` | 根因诊断与 IR-first 纪律基线；解释为什么必须立起中间显式表示层 |
-| `task1_spatial_plan_companion.md` | `SpatialPlan` 合同文档；定义这一层的显式对象、validator、construction/lowering 边界 |
-| `task2_ttprogram_companion_cutover.md` | `TTProgram` 合同文档；定义 target realization 的显式 slice、mesh/buffer distribution、reader/writer 边界与完成判据 |
-| `task3_runtime_gate_and_workload_cutover.md` | `ExecutableSpec / leaf reader` 合同文档；定义 leaf reader 纪律、direct runtime 与 codegen/export backend 分离、workload 恢复顺序与完成判据 |
-| `2026-04-23-blackhole-live-form-materialization-admission.md` | cleanup 之后 support surface lane 的任务级设计；定义 live-form / materialization owner truth、admission 顺序和禁止的 runtime-only patch |
-| `2026-04-27-blackhole-tile-compute-preservation.md` | Blackhole tile compute preservation lane 的完成记录；定义 TT-Metal API 粒度 compute semantics 在 `Normalized Tile TIR` 的保留 / 规范化边界和 late matcher 删除边界 |
-| `2026-04-27-blackhole-post-preservation-pass-shrink.md` | tile-compute preservation 之后的实现瘦身 lane；定义 `lower_blackhole_ops.cc` 拆分边界、helper 复用纪律和后续 heavy pass audit 候选 |
-| `2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md` | `lower_tile_op.cc` cleanup 任务设计；定义 Blackhole tile compute normalization 的单一实现面和验证边界 |
-| `2026-04-28-blackhole-algorithmic-generalization.md` | Blackhole passes 算法化重构设计；定义 AccessRegion、SpatialPlan dependence graph、LiveValueSSA、TT live-form solver、Phase E decision-use cutover，以及 anti-overdesign / problem-family guardrails |
-| `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md` | Blackhole tile compute selection 算法化设计；定义 TileComputeDAG、legalizer、leaf pattern covering、cost model 和迁移边界；production covering 必须以 explicit leaf graph 为输入，并通过 fanout / materialization / resource-demand / typed reject 决策证明价值 |
-| `2026-04-29-blackhole-resource-planning-roadmap.md` | Blackhole TT resource planning 路线；定义 TileComputeDAG scope 收缩、ResourceDemand / ResourcePressureReport、CB live-interval allocation、L1 pressure admission、hardware-model-backed core / buffer placement、以及后续 NoC / multicast optimization 的依赖关系 |
-| `blackhole_first_principles_protocol_audit.md` | 删除/迁移表；列出 historical fake/legacy protocol 的表示层落点、validator 和 disposition |
+当前执行顺序不在 README 重复维护。
+唯一看板是
+`tasks/progress.md`。
 
-### Runtime / mesh / distributed 调研索引
+截至当前状态，
+下一条主线是：
 
-runtime 重构和 TT-Metal mesh/distributed API
-调研结论不单独另立总体设计文档，
-统一落在下面几处：
+```text
+Hardware-model-backed core and buffer placement
+  -> wider runtime admission
+```
 
-- `final_blackhole_backend_redesign.md`
-  - 固定 direct runtime
-    只是 `ExecutableSpec`
-    的 leaf execution backend；
-    当前 unit-mesh /
-    replicated-buffer /
-    admitted subset
-    不能作为 codegen /
-    export /
-    `TTProgram`
-    的能力上限
-  - 定义 `TTMeshPlan` /
-    `TTBufferDistributionPlan`
-    作为 `TTProgram`
-    的显式表示对象
-- `task0_ir_layering_root_cause.md`
-  - 记录根因：
-    multi-device /
-    distributed /
-    mesh /
-    fabric
-    语义不能藏在 runtime fallback
-    或 host-side recovery 里
-- `task1_spatial_plan_companion.md`
-  - 记录 logical mesh axis、
-    distributed-slice consumer
-    和 live value 边界
-- `task2_ttprogram_companion_cutover.md`
-  - 记录 TT-Metal
-    `MeshDevice` /
-    `MeshWorkload` /
-    `MeshBuffer`
-    对应的 physical mesh、
-    buffer distribution、
-    device-coordinate
-    schema
-- `task3_runtime_gate_and_workload_cutover.md`
-  - 记录 direct runtime
-    与 codegen/export
-    的边界：
-    `BlackholeModule`
-    当前可以用 TT-Metal distributed API
-    执行 unit mesh /
-    replicated `MeshBuffer`
-    admitted subset，
-    但 distributed /
-    mesh /
-    fabric
-    未 admission 时只能是该 backend
-    fail-closed unsupported
-- 历史调研和开发记录只作辅助参考：
-  `blackhole_first_principles_protocol_audit.md`、
-  `archive/layered_ir_references.md`、
-  `archive/stage3_multicore_design.md`、
-  `archive/stage2_concrete_dev_task_plan.md`、
-  `archive/task2_task3_tt_target_cutover.md`、
-  `memory/general_dev.md`
+## Maintenance Rules
 
-当前结论：
-
-- Blackhole runtime 主路径已经收敛到
-  `BlackholeModule`
-  进程内 direct host path；
-  legacy external runner
-  不再是支持路径
-- 当前 direct runtime
-  只 admission
-  unit mesh /
-  replicated `MeshBuffer`
-  /
-  已验证 workload subset；
-  这不等于完整 multi-device /
-  fabric collective /
-  distributed runtime
-  已支持
-- 完整 mesh/distributed 能力必须继续通过
-  `TTProgram -> ExecutableSpec`
-  的 typed schema
-  和 leaf admission
-  扩展，
-  不能回到 runtime-only patch
-  或隐式 payload 通道
-
-补充说明：
-
-- `task1_spatial_plan_companion.md`
-- `task2_ttprogram_companion_cutover.md`
-
-这两个文件名里的 `companion`
-只是历史文件名，
-不是新的 IR 层命名。
-
-## 4. 当前执行优先级
-
-当前 repo HEAD 的总体状态 /
-当前 blocker /
-当前下一步，
-仍统一只看 `tasks/progress.md`。
-
-历史 cleanup 主线按下面这条理解；
-这不是当前 active backlog：
-
-`Task 1 -> Task 2 -> Task 3 -> Legacy Protocol Deletion`
-
-这里不再重复维护当前 repo HEAD
-的阶段队列。
-
-- `tasks/progress.md`
-  - 唯一当前执行顺序 / 状态看板
-- `task1_spatial_plan_companion.md`
-- `task2_ttprogram_companion_cutover.md`
-- `task3_runtime_gate_and_workload_cutover.md`
-  - 主设计路线和 completion contract
-- cleanup `task0-task5`
-  已归档到
-  `archive/2026-04-16-blackhole-final-legacy-protocol-cleanup*.md`；
-  它们只作完成期历史记录，
-  不再参与当前执行优先级
-
-其中：
-
-- `buffer effect / use-role`
-- `liveness`
-- `materialization / source-live-form`
-
-曾经只是前置分析/局部构造子问题；
-cleanup 收口后，
-`materialization / source-live-form`
-已重新收束为
-`2026-04-23-blackhole-live-form-materialization-admission.md`
-里的 support surface admission
-任务级设计，
-仍不单独充当新的顶层路线。
-当前执行顺序只在
-`tasks/progress.md`
-维护；
-README 不再重复维护 backlog。
-
-## 5. 文档维护规则
-
-- 不再把历史层名词、legacy transition attrs
-  或 bridge attr 写成长期协议
-- 不新增第二份总体设计文档
+- 总体设计只写长期架构和不可违反的合同。
+- 任务级设计只写该任务的 goal / non-goal / representation contract /
+  validation contract / completion criteria。
 - `progress.md`
-  只维护 repo HEAD 的总体状态 /
-  当前 blocker /
-  当前下一步
-- `task1/task2/task3`
-  这组表示层合同文档
-  定义主设计路线 /
-  目标合同 /
-  完成判据，
-  不维护 repo HEAD 的阶段性状态快照
-- cleanup `task0-task5`
-  分文件已归档；
-  archive 里的完成期状态 /
-  grep 合同 /
-  residue 表述
-  不替代 `progress.md`
-  作为当前状态来源
-- `README`
-  只做入口索引，不重复维护详细 backlog
-- `archive/`
-  下全部文档只作历史参考
-- `tasks/dev_design/`
-  根目录只保留当前入口文档、
-  当前活动 / 已完成但仍约束实现的 lane 设计文档
-  和 protocol audit；
-  方法论 / 研究输入 /
-  已完成阶段边界 /
-  旧阶段设计全部放在
+  只写当前 HEAD 状态、blocker、下一步、最近验证。
+- 经验沉淀写入
+  `memory/`；
+  不要倒灌回核心设计文档。
+- 历史流水、阶段日志、已完成 patch notes
+  不写入核心入口；
+  如果确实需要保留，放入
   `archive/`
+  或对应历史文档。
+- 不新增第二份总体设计。
+- 不把当前 implementation residue
+  写成 design legitimacy。
 
-## 6. Archive
+## Archive
 
-查看 `archive/README.md`。
+`archive/`
+只作历史参考。
+归档文档不能作为当前 active design entry，
+也不能作为保留旧 wrapper /
+facts /
+bag /
+payload /
+matcher
+兼容面的理由。
