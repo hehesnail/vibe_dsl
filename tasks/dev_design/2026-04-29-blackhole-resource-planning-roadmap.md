@@ -386,6 +386,10 @@ It is the workload witness after the resource-planning surface is explicit.
 
 This roadmap is implemented only when:
 
+- every resource-planning structure can state how it makes a DSL-authored
+  kernel lower to real TT-Metal hardware code more reliably or more
+  efficiently, by changing typed plans, validator decisions, admission
+  diagnostics, or deleting old side channels
 - `TileComputeDAG`
   remains pass-local and no downstream phase consumes it as owner truth
 - `TileComputeDAG`

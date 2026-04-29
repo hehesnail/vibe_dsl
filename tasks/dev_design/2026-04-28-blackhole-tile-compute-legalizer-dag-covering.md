@@ -21,6 +21,20 @@ TIR scalar expression / generic tile op semantics
   -> TTComputeOpPlan / leaf source sequence
 ```
 
+The usefulness gate for this design is not that a DAG exists.
+It is that DSL-authored tile compute lowers to real TT-Metal hardware code
+more reliably or more efficiently:
+the legalizer must either choose a typed leaf plan,
+produce a typed unsupported diagnostic before source/runtime emission,
+feed resource planning,
+or delete an old per-op matcher /
+payload /
+fallback.
+Diagnostic-only DAG construction,
+metadata that source/runtime does not need to act on,
+or source hooks that recover composite semantics
+do not satisfy this gate.
+
 它不是新的长期 IR 层。
 `TileComputeDAG`
 是显式 leaf

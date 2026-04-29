@@ -1650,6 +1650,16 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   unsupported diagnostic。
   只能说明问题族的是架子货风险；
   只能说明当前 witness 的是 workload overfit 风险。
+- 2026-04-29 记录硬件代码生成有效性准则：
+  新设计对象、算法结构、pass、typed field 或 validator
+  必须能说明它如何让 DSL 写出来的 kernel
+  更可靠或更高效地 lower 到真实 TT-Metal 硬件代码。
+  只构造对象、dump、shape-only check、metadata projection、
+  测试覆盖或 paper-like algorithm name
+  都不能算主线完成；
+  它必须改变 leaf normalization、legality、typed plan、
+  resource plan、admission diagnostic，
+  或删除旧 matcher / payload / fallback / side channel。
 - 2026-04-28 文档维护纪律：
   入口文档必须按“当前事实 vs 历史记录”逐篇审计；
   不能只扫几个已知旧短语。

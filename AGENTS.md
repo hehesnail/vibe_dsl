@@ -196,6 +196,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - 不允许把当前 repo HEAD / 当前 active chain / 当前残留实现当成继续保留旧面的授权；这些描述默认只是问题现状，不是目标形态
    - 不要把一个 task 拆成“这一轮先迁 owner truth，下一轮再删旧壳”的 transition-minded implementation；如果旧 pass / 旧 attr / 旧 object / 旧 Python wrapper 仍在当前 task 边界里活着，就默认这个 task 还没按原则完成
 
+8. **硬件代码生成有效性准则**
+   - 每个新设计对象、算法结构、pass、typed field 或 validator 都必须回答：它是否让 DSL 写出来的 kernel 更可靠或更高效地 lower 到真实 TT-Metal 硬件代码
+   - 只构造对象、dump、shape-only check、metadata projection、测试覆盖或 paper-like algorithm name，都不算主线完成；它必须改变 leaf normalization、legality、typed plan、resource plan、admission diagnostic，或删除旧 matcher / payload / fallback / side channel
+   - 如果当前只能说明“未来可能有用”，只能记录为 future candidate，不能进入 active-chain completion 或被当作当前任务完成依据
+
 **对 Blackhole 的具体要求**：
 
 - `runtime_args`、`buffer`、`cb`、`segment` 等绑定必须由 IR / attrs / typed fields 明确表达或可从 IR 稳定推导

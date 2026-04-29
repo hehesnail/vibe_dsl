@@ -258,9 +258,12 @@ DAG covering
     已完成第一版 production-use gate；
     CB / L1 resource admission
     已完成第一版 production-use gate；
-    当前 active task 是推进
-    core / buffer planning，
-    最后回到 wider runtime admission
+    但当前 active task
+    仍以 `tasks/progress.md`
+    为准；
+    composite pseudo-leaf
+    清理完成前，
+    不进入 core / buffer planning
 
 当前执行顺序不在 README 中重复维护；
 唯一状态看板是 `tasks/progress.md`。
@@ -283,16 +286,31 @@ typed resource pressure
 已建立第一版 production-use gate；
 `TileComputeDAG`
 source-lowering / typed compute lower-plan
-接入已完成；
+接入存在 composite pseudo-leaf
+边界错误，
+不能作为 production completion；
 CB / L1 admission
 已完成第一版 production-use gate；
-下一步推进
-core / buffer planning，
+下一步先修复 explicit leaf normalization
+和 one DAG source node
+to one semantic leaf plan，
+再推进 core / buffer planning，
 然后回到
 multi-block flash-attn direct-runtime admission、
 multi-page exact-CB event admission、
 mesh/distributed runtime admission
 和 wider flash-attn workload-scale admission。
+
+所有当前和后续设计均受同一条主线准则约束：
+新结构只有在让 DSL 写出的 kernel
+更可靠或更高效地 lower 到真实 TT-Metal 硬件代码时
+才算主线进展；
+只构造、dump、check、
+或投影不驱动 leaf codegen /
+resource plan /
+admission
+的 metadata
+只能算 foundation work。
 
 额外参考：
 

@@ -551,6 +551,22 @@ Algorithmic generalization is allowed only when the structure
 solves an active compiler problem on the main chain.
 It is not allowed as framework imitation.
 
+The main gate is hardware-codegen usefulness:
+every new algorithmic object,
+field,
+solver state,
+query,
+or validator
+must make a DSL-authored kernel lower to real TT-Metal hardware code
+more reliably or more efficiently.
+If it does not change leaf normalization,
+legality,
+typed plan selection,
+resource planning,
+admission diagnostics,
+or delete an old side channel,
+it is foundation work at most.
+
 Pay-rent does not mean specializing the design to the smallest
 currently failing case.
 The current case is only a witness that the abstraction is connected
@@ -578,6 +594,9 @@ The following are explicitly not sufficient:
 
 - constructing a typed object and dumping it,
 - adding a validator that only checks shape while downstream still ignores it,
+- projecting metadata that no leaf codegen,
+  runtime admission,
+  or resource planner needs to act on,
 - adding a general solver whose output is constant for all admitted cases,
 - moving branch logic behind a more abstract class without deleting
   owner-truth side channels,

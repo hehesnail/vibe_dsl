@@ -10,6 +10,18 @@
 - Active lane:
   `Tile-compute explicit leaf normalization boundary repair`
 - Current state:
+  Repo-level design discipline now has a hardware-codegen usefulness gate:
+  new algorithmic structures,
+  typed fields,
+  validators,
+  or DAG machinery count as mainline progress only when they make a
+  DSL-authored kernel lower to real TT-Metal hardware code more reliably or
+  more efficiently by changing leaf normalization,
+  legality,
+  typed plans,
+  resource plans,
+  admission diagnostics,
+  or by deleting old side channels.
   `AccessRegion`,
   graph-backed `SpatialPlan` dependence,
   `LiveValueSSA`,

@@ -352,6 +352,61 @@ Normalized Tile TIR
   必须补到 IR 本身，
   而不是继续堆旁路协议
 
+### 2.2 Hardware-Codegen Usefulness Gate
+
+后续任何新设计对象、
+算法结构、
+pass、
+typed field
+或 validator
+都必须先回答一条问题：
+
+> 它是否让 DSL 写出来的 kernel
+> 更可靠或更高效地 lower 到真实 TT-Metal 硬件代码？
+
+这条是主线完成门槛，
+不是事后解释。
+有效进展必须至少改变下面之一：
+
+- `Normalized Tile TIR`
+  的显式 leaf compute /
+  access /
+  dataflow 表达
+- legality /
+  covering /
+  typed
+  `TTComputeOpPlan`
+  决策
+- live value /
+  materialization /
+  consumer binding
+  的 typed plan
+- CB /
+  L1 /
+  core /
+  buffer /
+  semaphore
+  resource plan
+- validator /
+  admission
+  的 fail-closed diagnostic
+- 或删除旧 matcher、
+  helper fact、
+  payload、
+  fallback、
+  side-channel
+
+只构造对象、
+dump、
+shape-only validator、
+metadata projection、
+测试覆盖、
+或引入 paper-like algorithm name，
+都只能算 foundation work。
+如果一个结构当前只能说明“未来可能有用”，
+它只能作为 future candidate 记录，
+不能作为 active-chain completion。
+
 ## 3. 层间边界
 
 ### 3.1 `Normalized Tile TIR`
