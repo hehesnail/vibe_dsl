@@ -1516,20 +1516,32 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   不能变成新的 matcher payload
   或 source-string protocol。
 - 2026-04-28 早先记录的 Blackhole 任务顺序
-  后来被 Phase E decision-use cutover 修正：
+  后来又被 2026-04-29 hardware-codegen usefulness gate 修正：
   `AccessRegion` /
   graph-backed `SpatialPlan` dependence /
   `LiveValueSSA` /
   第一版 TT live-form solver
-  已是 foundation-complete；
+  已是 foundation-complete，
+  并在 admitted live-form /
+  materialization surface
+  上有 selected decision-use；
   当前 active lane
-  是 Algorithmic Generalization
-  `Phase E: Decision-Use Cutover`。
-  Phase E 完成后才进入
+  是 tile-compute explicit leaf normalization boundary repair。
   `TileComputeDAG` /
   legalizer /
-  covering，
-  再进入 multi-block flash-attn runtime admission、
+  covering
+  只能在 explicit leaf graph
+  上证明 fanout /
+  materialization /
+  physical-form /
+  resource-demand /
+  typed reject 决策价值；
+  不能靠 composite pseudo-leaf
+  或 source hook expansion
+  证明 production 价值。
+  完成该修复后再进入 core /
+  buffer planning、
+  multi-block flash-attn runtime admission、
   exact-CB multi-page event admission、
   mesh/distributed runtime admission
   和 wider flash-attn workload scale。
@@ -1691,8 +1703,11 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   while keeping source emission output unchanged.
   This proves the selector is active on the main chain without turning the
   pass-local covering object into a new cross-stage payload.
-  Later Phase E completed selected-pattern ownership of source-plan hook
-  selection and deleted the remaining inline per-op source dispatch table.
+  后续 boundary review 发现：
+  selected-pattern ownership of source-plan hook
+  只能算 mechanics；
+  如果 hook 仍然展开 composite pseudo-leaf，
+  不能报告为 production completion。
 - 2026-04-28 Tile compute covering source dispatch:
   once covering is on the production path,
   do not keep a second operation-name selector below it.
@@ -1782,12 +1797,15 @@ cd <当前 checkout 或 worktree>/tilelang_repo
   a DAG analysis only pays rent when its selected decisions change the
   production lowering path or typed plans.
   For Blackhole tile compute,
-  source lowering should consume a pass-local DAG lower plan,
-  and exact compute plans should carry the source DAG node /
-  leaf source hook /
+  source lowering may consume a pass-local DAG lower plan only as a selected
+  leaf projection.
+  Exact compute plans should carry the source DAG node /
   materialization /
-  fanout decision into `TTComputeOpPlan`
-  and executable projection.
+  fanout decision into typed plans when those fields drive validators,
+  resource admission,
+  or old branch deletion.
+  A leaf source hook is projection metadata,
+  not runtime-facing semantic truth.
   Boundary correction:
   that source hook must be one-to-one with the semantic leaf op selected for
   the DAG node.

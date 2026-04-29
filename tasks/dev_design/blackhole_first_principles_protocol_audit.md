@@ -1041,7 +1041,7 @@
 ## 5. 当前诊断
 
 当前代码的真实问题已经从 broad legacy protocol deletion
-转为 algorithmic decision-use cutover
+转为 tile-compute explicit leaf normalization
 和后续 support-surface admission：
 
 - `AccessRegion`,
@@ -1049,12 +1049,38 @@
   `LiveValueSSA`,
   和第一版 TT live-form solver
   已经 foundation-complete，
-  但还没有完全 usage-complete；
-  它们必须先驱动 legality /
-  query / action / admission 决策，
-  才能进入 production
-  `TileComputeDAG` / legalizer /
-  covering 迁移
+  并在 admitted live-form /
+  materialization surface
+  上有 selected decision-use。
+  它们的主线价值是 dataflow /
+  liveness /
+  materialization /
+  resource-planning substrate，
+  不是 compute expression lowering
+  的替代方案。
+- `TileComputeDAG`
+  只能作为 explicit leaf graph
+  上的 pass-local legality /
+  covering /
+  fanout /
+  materialization /
+  resource-demand input。
+  如果修复后它不能改变 typed plans、
+  validators、
+  admission diagnostics
+  或删除旧 branch，
+  就必须降级为 debug /
+  validation support。
+- 当前 blocker 是 composite pseudo-leaf
+  source payload：
+  `exp2_tile(mode, lhs, rhs, scale, ...)`
+  和
+  `mul_tiles_bcast_cols("div", ...)`
+  必须删除，
+  对应 TIR expression
+  必须在
+  `Normalized Tile TIR`
+  中显式分解成 TT-Metal leaf sequence
 - seq64 / multi-K-step flash-attn
   compile/source/spec lowering
   已稳定，
@@ -1076,19 +1102,19 @@
    / `TTProgram`
    / `ExecutableSpec`
    作为唯一主链
-2. 完成
-   `Algorithmic generalization Phase E`
-   decision-use cutover：
-   indexed query、
-   graph-wide solver、
-   typed plan action、
-   `ExecutableSpec`
-   admission audit
-3. 再推进
+2. 修复 tile-compute explicit leaf normalization：
+   删除 composite pseudo-leaf
+   和 source-hook composite expansion
+3. 重新评估
    `TileComputeDAG` / legalizer /
    DAG covering，
-   并遵守 anti-overdesign
-   pay-rent rule
-   和 problem-family generality rule
-4. 已删除 fake protocol
+   只保留能改变 leaf-graph fanout /
+   materialization /
+   physical-form /
+   resource-demand /
+   typed reject 决策的 production 机制
+4. 在此基础上推进 core /
+   buffer /
+   wider runtime admission
+5. 已删除 fake protocol
    不得重新进入 active chain

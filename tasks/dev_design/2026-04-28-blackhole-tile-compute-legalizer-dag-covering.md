@@ -75,24 +75,26 @@ DAG covering
 materialization
 结果送进 resource admission。
 凡是 DAG covering 决定了 leaf pattern、
-leaf source hook、
 materialization policy
 或 fanout policy，
 这些决定必须写入 typed lower plan，
 至少进入
 `TTComputeOpPlan`
 的 DAG node /
-leaf source hook /
 materialization /
 fanout 字段，
-并由 executable projection 继续携带。
+并由 validator /
+resource planning /
+executable projection
+在需要时继续携带。
 source lowering 只能消费这份 pass-local DAG lower plan；
 不能在 explicit tile-compute source path
 重新按 operation name 做第二次 production selection。
-但该 lower plan
-只能选择当前 leaf node
-对应的 leaf source hook，
-不能授权 source hook
+如果实现为了 codegen
+保留 source hook，
+它只能是当前 semantic leaf
+的投影策略，
+不能授权 hook
 展开成多个 semantic
 `TTComputeOpPlan`
 或多个不同 operation family。
@@ -110,20 +112,19 @@ source lowering 只能消费这份 pass-local DAG lower plan；
   决定 leaf source hook。
 - DAG-driven exact compute
   会把 source DAG node id、
-  source hook、
   materialization policy、
   fanout use count
   和 fanout policy
   记录到
   `TTComputeOpPlan`；
-  `ExecutableSpec`
-  投影继续携带这些字段。
+  source hook 只能作为 leaf projection metadata，
+  不能成为 runtime-facing semantic truth。
 - `ValidateTTProgram`
   必须校验 DAG source node、
   selected covering、
+  和
   `TTComputeOpPlan.operation_name`
-  和 source hook
-  都指向同一个 semantic leaf op。
+  指向同一个 semantic leaf op。
   一个 DAG source node
   不能合法展开成多个不同
   `TTComputeOpPlan.operation_name`
@@ -565,21 +566,28 @@ This design depends on the three earlier foundations:
 Without those,
 DAG covering would merely relocate today’s branch logic.
 
-Algorithmic Generalization
+Algorithmic Generalization has selected
 `Phase E: Decision-Use Cutover`
-is now complete for the admitted compute surface in repo HEAD.
-The compute legalizer may start consuming
+on the active chain for admitted live-form /
+materialization decisions.
+That is sufficient for the compute legalizer to consume
 `AccessRegion`,
 `DependenceComponent`,
 and
 `LiveValueSSA`
-because those structures already drive:
+as typed evidence, because those structures already drive:
 
 - access full/slice compatibility,
 - recurrence / loop-carried lifetime legality,
 - source-live reaching-def queries,
 - TT live-form solver output,
 - and typed materialization / consumer binding plans.
+
+It is not a claim that algorithmic generalization solved compute expression
+lowering,
+global lifecycle planning,
+or hardware-aware resource allocation.
+Those remain separate contracts under the hardware-codegen usefulness gate.
 
 If future covering work bypasses this gate,
 `TileComputeDAG`
@@ -648,6 +656,16 @@ pack,
 matmul,
 fanout,
 and materialization-aware selection.
+
+If the admitted surface is too small for the DAG to make a real graph-level
+decision,
+the DAG remains foundation/debug infrastructure.
+It becomes a production mechanism only when leaf-graph fanout,
+materialization,
+physical-form,
+resource-demand,
+or typed reject decisions change downstream behavior or delete old branches.
+
 If a proposed pattern table or legalizer rule can explain only the
 current workload shape,
 it belongs in a narrower local helper,
@@ -799,7 +817,9 @@ resource-planning roadmap:
 - multicast / NoC / scheduling optimization
 
 This means a production migration is acceptable only when it pays rent through
-one of the established outputs:
+leaf-graph decisions,
+not through composite source expansion.
+Accepted outputs are:
 
 - changes a typed compute / CB / live-form /
   materialization / consumer-binding plan,
@@ -815,13 +835,21 @@ or deleted.
 
 The next resource-aware work is therefore not to expand this DAG into a
 planner-owned resource system.
-The first production-use step is DAG-backed typed
+The first typed-resource step is DAG-backed
 `ResourceDemand`
 /
 `ResourcePressureReport`
 that consumes pass-local fanout /
 materialization decisions.
-That step is now complete for the first typed surface.
+That first typed surface exists in repo HEAD,
+but it is not enough by itself to prove the DAG should remain on the production
+path.
+After composite pseudo-leaf cleanup,
+the DAG must still prove that its leaf-graph fanout /
+materialization /
+resource-demand decisions affect typed plans,
+validators,
+or admission diagnostics.
 The remaining resource-planning work is to upgrade CB / L1 / core / buffer
 planning in `TTProgram`
 and `ExecutableSpec`
@@ -841,7 +869,6 @@ Implementation status:
   production object
 - explicit source emission continues through selected leaf pattern
   source hooks
-  hooks,
   but the current implementation must still be repaired so each hook is
   one-to-one with its semantic leaf op and cannot expand composite payloads
   into multiple compute plans
@@ -872,28 +899,27 @@ leaf normalization.
 
 ## Global Task Order
 
-This lane is sequenced after the algorithmic generalization
-foundations:
+This lane is sequenced after the selected algorithmic generalization
+decision-use facts,
+but before wider core / buffer / runtime expansion:
 
-1. `AccessRegion`
-2. graph-backed `SpatialPlan` dependence
-3. `LiveValueSSA`
-4. TT live-form solver
-5. decision-use cutover for those structures
-
-Then tile compute selection proceeds in two implementation groups:
-
-1. `TileComputeDAG` read-only dump,
-   pattern schema,
-   and legalizer diagnostics
-2. DAG covering migration,
-   fanout/materialization-aware covering,
-   and old per-op selection branch deletion
-
-Runtime admission follows covering only when the selected patterns
-and live-form solver produce typed
-`TTProgram -> ExecutableSpec`
-evidence.
+1. Repair explicit leaf normalization in
+   `Normalized Tile TIR`.
+2. Delete composite pseudo-leaf source payloads and source-hook expansion.
+3. Enforce one DAG source node to one semantic TT-Metal leaf plan.
+4. Keep or delete production DAG mechanics based on whether they drive
+   leaf-graph fanout /
+   materialization /
+   physical-form /
+   resource-demand /
+   typed reject decisions.
+5. Resume core /
+   buffer /
+   runtime admission only after selected patterns,
+   live-form solver,
+   and resource plans produce typed
+   `TTProgram -> ExecutableSpec`
+   evidence.
 
 ## Implementation Plan
 
@@ -919,8 +945,10 @@ Work:
 0. Precondition:
    Algorithmic Generalization
    `Phase E: Decision-Use Cutover`
-   has completed its `E1-E4`
-   gates for the admitted compute surface.
+   has selected live-form /
+   materialization decision-use on the active chain.
+   This is typed evidence for legality and materialization;
+   it is not a compute expression lowering completion claim.
 1. Build `TileComputeDAG`
    from existing explicit tile compute calls
    without changing selection.
@@ -964,11 +992,13 @@ Status: completed in repo HEAD as foundation.
 The legalizer is active for current admitted
 `TTComputeOpPlan`
 validation and synthetic reject diagnostics,
-and Phase C-E now routes typed plan recording,
+and later phases added mechanics for typed plan recording,
 source dispatch,
 and
 `ValidateTTProgram`
 through covering selection.
+Those mechanics are not production-complete while source hooks can still carry
+composite pseudo-leaf payloads.
 The remaining low-level source hooks are hook targets selected
 from pattern metadata; they must be leaf projections only,
 not composite lowering owners.
@@ -1182,7 +1212,8 @@ Completion gate:
 
 ### Phase D: Fanout And Materialization-Aware Covering
 
-Status: complete in repo HEAD for the admitted compute surface.
+Status: mechanically present in repo HEAD for the admitted compute surface;
+not a production-complete DAG claim.
 The DAG builder connects producer-use edges using IR object identity
 for buffer values;
 textual value strings remain diagnostic output only.
@@ -1231,7 +1262,7 @@ Completion gate:
   is selected by graph/lifetime evidence
 - stale fallback source cannot be selected
 
-Repo HEAD satisfies this gate for compile/source/spec planning:
+Repo HEAD partially satisfies this gate for compile/source/spec planning:
 source-live-form choice already comes from
 `LiveValueSSA`
 /
@@ -1239,7 +1270,8 @@ TT live-form solver evidence,
 and DAG covering now reports materialization/fanout policy without
 selecting stale fallback sources.
 This statement is limited to live-form / fanout evidence;
-it does not admit the Phase E pseudo-leaf composite source paths.
+it does not admit the Phase E pseudo-leaf composite source paths and does not
+by itself prove production DAG usefulness.
 Direct-runtime correctness for multi-block flash-attn remains a later
 runtime admission task.
 

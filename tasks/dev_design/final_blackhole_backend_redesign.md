@@ -1341,17 +1341,32 @@ support-surface admission lane；
      TT live-form solver /
      Phase E decision-use cutover
      的算法化重构合同
+   - 这些结构的主线价值是 dataflow /
+     liveness /
+     materialization /
+     resource-planning substrate；
+     不能把它们写成 compute expression lowering
+     的替代方案
 9. `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md`
-   - 固定后续
+   - 固定
      `TileComputeDAG` /
      legalizer /
      covering
-     的生产迁移 gate；
-     当前 Phase E gate
-     已对 admitted compute surface
-     生效，
-     production covering
-     应在该 gate 之上启动
+     的生产迁移 gate
+   - `TileComputeDAG`
+     只有作为 explicit leaf graph
+     上的 pass-local legality /
+     fanout /
+     materialization /
+     resource-demand input
+     才有主线价值；
+     它不能成为 composite expression lowering owner
+   - 当前 active repair
+     是删除 composite pseudo-leaf source payload，
+     在
+     `Normalized Tile TIR`
+     中显式 leaf 化后，
+     才能重新评估 DAG production 价值
 10. `blackhole_first_principles_protocol_audit.md`
    - 固定 legacy /
      fake protocol

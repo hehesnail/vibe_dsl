@@ -236,7 +236,7 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 3. 当前 active lane
    统一看 `tasks/progress.md`；
    当前是
-   `Algorithmic generalization Phase E: Decision-Use Cutover`
+   `Tile-compute explicit leaf normalization boundary repair`
 4. `tasks/progress.md`
    只维护 repo HEAD 当前状态 /
    blocker /
@@ -255,9 +255,13 @@ cd <当前 checkout 或 worktree>/tilelang_repo
    - graph-backed `SpatialPlan` dependence
    - `LiveValueSSA`
    - 第一版 TT live-form solver
-   当前 Phase E 必须让这些结构成为 active
-   legality / query / action inputs，
-   不能只停留在 typed object / dump / validator coverage
+   Phase E 已有 selected decision-use：
+   这些结构已经影响 admitted live-form /
+   materialization legality 和 typed plans。
+   但它们不是 compute expression lowering 解法，
+   也不是全局 resource allocator；
+   后续扩展必须继续通过 hardware-codegen usefulness gate
+   证明其 active-chain 作用
 7. `materialization / source-live-form`
    已重新收束为
    `tasks/dev_design/2026-04-23-blackhole-live-form-materialization-admission.md`
@@ -266,8 +270,16 @@ cd <当前 checkout 或 worktree>/tilelang_repo
 8. `TileComputeDAG` /
    legalizer /
    covering
-   只有在 Phase E decision-use gate
-   对 admitted compute surface 生效后才能进入 production migration
+   只能保留为 explicit leaf graph
+   上的 pass-local legality /
+   covering /
+   fanout /
+   materialization /
+   resource-demand input。
+   在 composite pseudo-leaf
+   清理完成前，
+   不能作为 production-complete 面进入更宽 resource /
+   runtime migration
 
 ---
 

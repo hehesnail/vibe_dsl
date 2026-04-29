@@ -116,16 +116,24 @@
     但不引入新的长期 IR 层
   - Phase A-D
     foundation
-    和 admitted compute surface 上的
-    Phase E decision-use cutover
-    已完成；
-    `TileComputeDAG`-backed
-    typed resource pressure
-    也已完成第一版 production-use gate；
-    `CB / L1 resource admission upgrade`
-    已完成第一版 production-use gate；
-    当前活动 lane 已推进到
-    `Core / buffer placement hardware-model upgrade`
+    和 selected Phase E
+    decision-use
+    已进入 admitted live-form /
+    materialization 决策；
+    这不是 compute expression lowering
+    或全局 resource allocation
+    的完成声明
+  - 当前活动 lane
+    以 `tasks/progress.md`
+    为准：
+    先修复 explicit leaf normalization
+    和 composite pseudo-leaf
+    残留，
+    再评估
+    `TileComputeDAG`
+    是否继续作为 production leaf-graph
+    legalizer /
+    resource-demand input
   - 强制执行
     anti-overdesign pay-rent rule
     和 problem-family generality rule：
@@ -157,8 +165,13 @@ DAG covering
     变成 pattern + legality + tests，
     而不是新增手写 per-op branch family
   - Algorithmic Generalization
-    Phase E 的 decision-use gate
-    已对 admitted compute surface 生效；
+    Phase E 只有 selected
+    live-form /
+    materialization
+    decision-use
+    已进入 active chain；
+    这不是 admitted compute surface
+    的 compute-lowering 完成声明；
     Phase A-B foundation
     已完成；
     resource-planning 复查后，
@@ -167,8 +180,8 @@ DAG covering
     global scheduling 面。
     `TileComputeDAG`
     必须保持 pass-local compute covering；
-    当前 production boundary cleanup
-    已完成：
+    当前 production boundary
+    已收缩：
     production code
     不持久化 DAG covering cache，
     public header
@@ -182,14 +195,14 @@ DAG covering
     DAG-wide fanout /
     materialization /
     unsupported covering reasons
-    已并入
+    已进入
     `ResourceDemand`
     /
     `ResourcePressureReport`
-    的 production input，
+    的 typed surface，
     由 validator 和 executable projection 消费；
     explicit source lowering
-    也已消费 pass-local
+    当前虽已消费 pass-local
     `TileComputeDAG`
     lower plan，
     并把 DAG node /
@@ -197,7 +210,9 @@ DAG covering
     materialization /
     fanout 决策写进
     `TTComputeOpPlan`
-    和 executable projection；
+    和 executable projection，
+    但这只能算 mechanics，
+    不能算 production completion；
     但
     `2026-04-29`
     boundary review
@@ -252,10 +267,12 @@ DAG covering
     的职责，
     也不是 direct-runtime workload admission
     的临时 patch 面
-  - compute covering production 边界已完成收缩；
+  - compute covering production 边界已收缩；
     `TileComputeDAG`-backed
     typed resource pressure
-    已完成第一版 production-use gate；
+    已建立第一版 typed surface，
+    但不能单独证明 DAG
+    production 价值；
     CB / L1 resource admission
     已完成第一版 production-use gate；
     但当前 active task
@@ -273,17 +290,21 @@ DAG covering
 graph-backed `SpatialPlan` dependence、
 `LiveValueSSA`、
 第一版 TT live-form solver，
-以及 admitted compute surface 上的 Phase E decision-use cutover。
+以及 admitted live-form /
+materialization surface
+上的 selected Phase E decision-use cutover。
 资源规划复查后，
 `TileComputeDAG`
 不能作为全局 resource /
 scheduling 面继续扩展；
 后续顺序改为：
 `TileComputeDAG`
-production 边界已清理 / 收缩；
+production 边界已收缩，
+但仍需在 composite pseudo-leaf
+清理后重新证明 production 价值；
 `TileComputeDAG`-backed
 typed resource pressure
-已建立第一版 production-use gate；
+已建立第一版 typed surface；
 `TileComputeDAG`
 source-lowering / typed compute lower-plan
 接入存在 composite pseudo-leaf
@@ -365,7 +386,7 @@ pass 名字、helper、bag、payload、bridge attr
 | `2026-04-27-blackhole-post-preservation-pass-shrink.md` | tile-compute preservation 之后的实现瘦身 lane；定义 `lower_blackhole_ops.cc` 拆分边界、helper 复用纪律和后续 heavy pass audit 候选 |
 | `2026-04-28-blackhole-lower-tile-op-normalizer-dedup.md` | `lower_tile_op.cc` cleanup 任务设计；定义 Blackhole tile compute normalization 的单一实现面和验证边界 |
 | `2026-04-28-blackhole-algorithmic-generalization.md` | Blackhole passes 算法化重构设计；定义 AccessRegion、SpatialPlan dependence graph、LiveValueSSA、TT live-form solver、Phase E decision-use cutover，以及 anti-overdesign / problem-family guardrails |
-| `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md` | Blackhole tile compute selection 算法化设计；定义 TileComputeDAG、legalizer、leaf pattern covering、cost model 和迁移边界；production covering 受 Phase E decision-use gate 约束 |
+| `2026-04-28-blackhole-tile-compute-legalizer-dag-covering.md` | Blackhole tile compute selection 算法化设计；定义 TileComputeDAG、legalizer、leaf pattern covering、cost model 和迁移边界；production covering 必须以 explicit leaf graph 为输入，并通过 fanout / materialization / resource-demand / typed reject 决策证明价值 |
 | `2026-04-29-blackhole-resource-planning-roadmap.md` | Blackhole TT resource planning 路线；定义 TileComputeDAG scope 收缩、ResourceDemand / ResourcePressureReport、CB live-interval allocation、L1 pressure admission、hardware-model-backed core / buffer placement、以及后续 NoC / multicast optimization 的依赖关系 |
 | `blackhole_first_principles_protocol_audit.md` | 删除/迁移表；列出 historical fake/legacy protocol 的表示层落点、validator 和 disposition |
 

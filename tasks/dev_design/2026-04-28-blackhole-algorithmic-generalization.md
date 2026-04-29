@@ -963,11 +963,15 @@ post-review queue:
 3. `LiveValueSSA`
 4. TT live-form solver
 
-The first four implementation units plus
+The first four implementation units plus selected
 `Phase E: Decision-Use Cutover`
-are now usage-complete for the admitted compute surface.
+are active for admitted live-form /
+materialization decisions.
+They are not a complete compute-lowering solution,
+not a global resource allocator,
+and not evidence that tile-compute expression normalization is solved.
 The tile compute legalizer /
-DAG covering lane may rely on the following active-chain gates:
+DAG covering lane may rely only on the following active-chain facts:
 
 1. `SpatialPlan` decision-use cutover
    - `AccessRegion`
@@ -997,9 +1001,11 @@ DAG covering lane may rely on the following active-chain gates:
      with typed diagnostic.
 
 The tile compute legalizer /
-DAG covering lane must rely on these gates for pattern legality,
+DAG covering lane may use these gates for pattern legality,
 fanout handling,
-and materialization-aware covering.
+materialization-aware covering,
+and later resource planning.
+It must not use them to justify source-hook composite lowering.
 The runtime admission lanes start only after covering can continue
 projecting selected evidence into typed
 `TTProgram -> ExecutableSpec`
@@ -1215,12 +1221,19 @@ Completion gate:
 
 ### Phase E: Decision-Use Cutover
 
-Status: completed in repo HEAD for the admitted compute surface.
+Status: selected decision-use is present in repo HEAD;
+not globally usage-complete.
 
 This phase corrects the current gap where the algorithmic structures
 exist but are not yet broadly decisive.
 It is a broad main-chain cutover,
 not a single workload-specific implementation.
+Its completed scope is limited to admitted live-form /
+materialization decisions and selected validator /
+projection gates.
+It does not complete tile-compute leaf normalization,
+global lifecycle analysis,
+or hardware-aware resource planning.
 
 Current implementation notes:
 
@@ -1260,13 +1273,19 @@ Current implementation notes:
   records that lack selected live edge /
   materialization boundary evidence before leaf encoding.
 
-Downstream work after Phase E:
+Downstream work after the current selected Phase E cutover:
 
-- start the tile compute legalizer /
-  DAG covering lane from its Phase A-B foundation work,
-- migrate covering decisions into production typed compute plans,
-- then use the same typed evidence to re-admit wider runtime support
-  surfaces.
+- repair tile-compute explicit leaf normalization before treating
+  DAG/source-lowering as production-complete,
+- keep `TileComputeDAG`
+  limited to explicit leaf graph legality /
+  fanout /
+  materialization /
+  resource-demand decisions,
+- then use the same typed evidence to expand core /
+  CB /
+  L1 /
+  buffer planning and re-admit wider runtime support surfaces.
 
 Files:
 

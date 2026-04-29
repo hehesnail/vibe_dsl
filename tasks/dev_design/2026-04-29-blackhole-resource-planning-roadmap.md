@@ -17,13 +17,19 @@ without turning `TileComputeDAG` into a new scheduler,
 global dataflow engine,
 or side-channel protocol.
 
-The first resource-planning task is explicitly
-`TileComputeDAG`-backed.
-The DAG is not considered production-complete while it only powers diagnostic
-FFI and tests.
-It must either feed typed resource demand /
-typed unsupported reasons,
-or be downgraded to diagnostic-only support surface.
+The first resource-planning task may use pass-local
+`TileComputeDAG`
+facts,
+but the DAG is not considered production-complete merely because it feeds a
+report or powers diagnostic FFI.
+It must make real leaf-graph fanout /
+materialization /
+physical-form /
+resource-demand /
+typed reject decisions that change typed plans,
+validator results,
+or admission diagnostics.
+Otherwise it must be downgraded to diagnostic-only support surface.
 
 ## Current State
 
@@ -53,6 +59,14 @@ mature hardware-aware resource planner.
   /
   `ResourcePressureReport`,
   and those reports are validated and projected into the executable spec.
+  This is a first typed surface,
+  not final proof that the DAG should stay in production.
+  After composite pseudo-leaf cleanup,
+  the DAG must still prove hardware-codegen usefulness by changing real
+  leaf-graph legality /
+  materialization /
+  resource /
+  admission decisions.
   The DAG remains pass-local; the durable production surface is the typed
   report, not the DAG itself.
 - CB allocation is currently the most concrete resource work.
@@ -145,12 +159,18 @@ Immediate requirement:
 
 Status:
 
-- complete for the current production boundary.
+- boundary constrained,
+  but not production-complete while composite pseudo-leaf source payloads
+  remain.
   `PlanTTKernelABI`
   does not persist DAG covering decisions,
   the covering header does not expose a production DAG covering object,
   and explicit source emission remains a selected leaf-pattern projection.
-  Further DAG work must continue to satisfy the same boundary tests.
+  The remaining gate is explicit leaf normalization plus proof that the DAG
+  changes leaf-graph fanout /
+  materialization /
+  resource-demand /
+  typed reject decisions or deletes old branch mechanics.
 
 ### Direction 2: Add DAG-Backed `ResourceDemand` / `ResourcePressureReport`
 
@@ -158,7 +178,7 @@ This is the bridge between semantic planning and hardware resource admission.
 It should be derived from validated `TTProgram`
 and projected `ExecutableSpec`,
 not carried as a side bag.
-Its first production input is the pass-local
+Its first typed input may come from the pass-local
 `TileComputeDAG`
 covering result:
 fanout,
@@ -207,7 +227,7 @@ Pay-rent rule:
 
 Status:
 
-- complete for the first typed surface.
+- present for the first typed surface.
   `TTProgram`
   now carries first-class
   `TTResourceDemand`
@@ -231,6 +251,10 @@ Status:
   `MaterializeBlackholeExecutable`
   projects
   `resource_pressure_reports`.
+  This counts as useful typed infrastructure,
+  but it is not enough to claim the DAG itself is production-essential until
+  repaired leaf-graph decisions affect real lowering/resource/admission
+  behavior.
   The remaining work is Direction 3:
   make the reported CB and L1 pressure hardware-aware and admission-relevant.
 
@@ -357,7 +381,14 @@ same over-complexity problem under a different name.
 
 The revised order is:
 
-1. Add DAG-backed resource pressure reporting from existing typed
+1. Repair tile-compute explicit leaf normalization and delete composite
+   pseudo-leaf source payloads.
+2. Keep or downgrade `TileComputeDAG`
+   based on whether post-cleanup leaf-graph decisions affect typed plans,
+   validators,
+   resource admission,
+   or old branch deletion.
+3. Use typed resource pressure reporting from existing typed
    `TTProgram`
    and
    `ExecutableSpec`
@@ -365,14 +396,14 @@ The revised order is:
    Use pass-local
    `TileComputeDAG`
    fanout /
-   materialization decisions as the first production input,
+   materialization decisions only when they satisfy the usefulness gate,
    and make validators / typed unsupported reasons consume the result.
-2. Upgrade CB allocation and L1 admission using arch-aware limits and
+4. Upgrade CB allocation and L1 admission using arch-aware limits and
    live-interval allocation.
    This is complete for the first production gate.
-3. Replace hard-coded core grid and unit buffer placement with
+5. Replace hard-coded core grid and unit buffer placement with
    hardware-model-backed core groups and explicit buffer distribution choices.
-4. Re-enter wider runtime admission:
+6. Re-enter wider runtime admission:
    multi-block flash-attn,
    multi-page exact-CB events,
    mesh / distributed runtime,

@@ -29,26 +29,36 @@
   affect admitted live-form / materialization decisions.
   They are not a global resource allocator.
   `TileComputeDAG`
-  is constrained to pass-local tile-compute legalization / covering;
-  it must not become a resource allocation,
+  is constrained to pass-local explicit-leaf graph legalization /
+  covering.
+  It has no mainline value merely because it exists or checks op names;
+  it must drive leaf-graph fanout,
+  materialization,
+  physical-form,
+  resource-demand,
+  typed reject decisions,
+  or delete old per-op branches.
+  It must not become composite lowering,
+  resource allocation,
   core placement,
   NoC scheduling,
-  or cross-pass payload surface.
+  or a cross-pass payload surface.
   Resource allocation today is split across
   `PlanTTCBAlloc`,
   `PlanTTCoreGroups`,
   `TTBufferDistributionPlan`,
   `TTHardwareModel`,
   and leaf runtime admission.
-  The first follow-up cleanup is complete:
+  The first follow-up cleanup narrowed the API boundary:
   production code no longer persists a function-level
   `TileComputeDAG`
   covering cache,
   no public production API exposes a durable DAG covering object,
   and explicit tile-compute source emission stays on selected leaf pattern
   covering.
-  `TileComputeDAG`
-  pays rent on the production path through typed
+  It did not complete production source lowering,
+  because selected hooks can still carry composite pseudo-leaf payloads.
+  A first typed surface exists through
   `TTResourceDemand`
   /
   `TTResourcePressureReport`:
@@ -58,6 +68,12 @@
   carried as typed TTProgram fields,
   validated by `ValidateTTProgram`,
   and projected into `ExecutableSpec`.
+  This does not by itself prove the production DAG is justified:
+  after composite pseudo-leaf cleanup,
+  the DAG must still show real leaf-graph decisions that change typed plans,
+  validators,
+  resource admission,
+  or old branch deletion.
   The
   `2026-04-29`
   boundary review found that the source-lowering use went too far:
@@ -131,7 +147,11 @@
   graph-backed `SpatialPlan` dependence,
   `LiveValueSSA`,
   first TT live-form solver,
-  and admitted-surface decision-use cutover are present.
+  and selected admitted-surface decision-use cutover are present for
+  live-form /
+  materialization decisions.
+  They are not a compute expression lowering solution and not a global
+  resource allocator.
 - Tile compute legalizer / DAG covering foundation:
   local `TileComputeDAG` and pattern / legalizer scaffolding exist for the
   admitted compute surface.
@@ -147,7 +167,7 @@
   only owns per-run pass-local DAG lowering decisions,
   the covering header exposes only leaf covering decisions and diagnostic FFI,
   and static tests guard against reintroducing a production DAG cache.
-- DAG-backed typed resource pressure:
+- Typed resource pressure surface:
   `TTResourceDemand`
   and `TTResourcePressureReport`
   are first-class TTProgram fields;
@@ -158,6 +178,9 @@
   validators consume the reports,
   and executable projection carries
   `resource_pressure_reports`.
+  This is a typed surface, not final proof that DAG belongs on the production
+  path; that proof still depends on post-cleanup leaf-graph decisions changing
+  real lowering/resource/admission behavior.
 - Hardware-backed CB / L1 resource admission:
   `TTHardwareModel`
   carries CB count and L1 alignment facts;
@@ -171,12 +194,20 @@
   and max simultaneous L1 pressure;
   `ValidateTTProgram`
   rejects CB and L1 over-pressure.
-- DAG-driven tile-compute lower plan:
+- Tile-compute lower-plan residue:
   current repo HEAD has the pass-local lower-plan mechanics,
   but the production boundary is not clean while source hooks can expand
   composite pseudo-leaf payloads.
   Completion now requires explicit leaf TIR normalization and one DAG source
   node to one semantic `TTComputeOpPlan.operation_name` validation.
+  If the repaired DAG only wraps already-selected leaves without changing
+  fanout,
+  materialization,
+  resource-demand,
+  typed rejects,
+  or deleting old branches,
+  it must be downgraded to debug /
+  validation support instead of production machinery.
 
 ## Support Boundary
 
@@ -251,16 +282,27 @@
 ## Latest Verification
 
 - Current implementation:
-  doc-only boundary correction for
+  doc-only synchronization after the hardware-codegen usefulness review.
+  The docs now classify
+  `AccessRegion` /
+  `LiveValueSSA`
+  as dataflow /
+  liveness /
+  materialization substrate,
+  not compute expression lowering.
   `TileComputeDAG`
-  /
-  tile-compute source lowering.
-  The previous source-lowering route is now documented as incomplete because
-  it permits composite pseudo-leaf payloads.
+  is now documented as useful only if post-cleanup explicit leaf graph
+  decisions affect fanout,
+  materialization,
+  physical form,
+  resource demand,
+  typed rejects,
+  or old branch deletion.
+  Existing
   `PlanTTKernelABI`
   lower-plan mechanics still exist in code,
-  but the accepted design requires explicit leaf TIR normalization before DAG
-  covering and one source node to one semantic leaf plan validation.
+  but they are not production-complete while composite pseudo-leaf source
+  payloads remain.
 - Verification:
   docs-only change;
   no build or pytest was run.
